@@ -1,0 +1,45 @@
+name: echo-rest
+type: skill
+version: 0.1.0
+description: Smoke-test REST interface. Exposes /status, /echo (POST), /whoami (GET).
+author: tngtech
+dependencies: []
+
+sidecar:
+  # The facade sets SIDECAR_PORT in the child's environment. The Python
+  # server reads it; we don't pass it as a CLI arg (argv is public via `ps`).
+  command: ["python3", "sidecar.py"]
+
+  # Routing prefix on the bridge socket. Inside the sandbox, this skill is
+  # reachable at  curl --unix-socket "$OMAC_SOCKET" http://x/echo/...
+  mount: echo
+
+  # For this smoke-test we forward the secret via env_passthrough (works even
+  # when the OS keychain is unavailable, e.g. inside a sandboxed CI runner).
+  # Production skills should prefer the `secrets:` block below (see §16) so
+  # the value lives in the OS keychain instead of the invoking user's shell.
+  env_passthrough:
+    - ECHO_API_KEY
+
+  # Declared secrets would normally be prompted at `omac register` time and
+  # stored in the OS keychain under service "omac/echo-rest". Left as a
+  # schema example; we skip them with `--no-secrets` for this demo.
+  secrets:
+    - name: ECHO_API_KEY
+      description: "Mock API key used to prove secret injection (any non-empty string)."
+      required: false
+      pattern: "^[A-Za-z0-9_-]{3,}$"
+
+  # omac waits for GET /status → 2xx before mounting routes.
+  health:
+    path: /status
+    initial_delay_ms: 100
+    timeout_ms: 4000
+    interval_ms: 200
+
+  # Per-OS install scripts. omac prints these at register time; it never runs them.
+  install_scripts:
+    macos: install/install.macos.sh
+    linux: install/install.linux.sh
+
+  protocols: ["http"]
