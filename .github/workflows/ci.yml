@@ -72,7 +72,7 @@ jobs:
           fi
 
       - name: staticcheck
-        uses: dominikh/[email protected]
+        uses: dominikh/staticcheck-action@v1
         with:
           version: latest
           install-go: false
