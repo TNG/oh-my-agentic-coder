@@ -103,8 +103,10 @@ brews:
       branch: main
       token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
     commit_author:
+      # Quoted because the literal value starts with '[' which YAML
+      # otherwise parses as the start of a flow sequence.
       name: tng-release-bot
-      email: [email protected]
+      email: "[email protected]"
     commit_msg_template: "chore(formula): bump oh-my-agentic-coder to {{ .Tag }}"
     install: |
       bin.install "omac"
