@@ -75,14 +75,23 @@ func runStart(args []string, env *Env) int {
 	}
 
 	// 2. Load registry and every meta.
+	//
+	// An empty registry is NOT an error: omac is still useful as a thin
+	// sandbox launcher even before any skills have been registered. In
+	// that case there's nothing to spawn (no sidecars, no facade routes)
+	// but the rest of the pipeline (facade listener, sandbox exec) still
+	// makes sense and the inner command runs as configured by the
+	// sandbox profile. We just emit a one-line notice so the user
+	// understands why no facade traffic will work.
 	reg, err := registry.Load(env.Workdir)
 	if err != nil {
 		fmt.Fprintln(env.Stderr, "omac start: registry:", err)
 		return ExitIOError
 	}
 	if len(reg.Registered) == 0 {
-		fmt.Fprintln(env.Stderr, "omac start: no skills registered in this workdir")
-		return ExitPrerequisiteMissing
+		fmt.Fprintln(env.Stderr,
+			"omac start: no skills registered in this workdir; "+
+				"starting sandbox without sidecars (run `omac register` to add some)")
 	}
 
 	type resolved struct {

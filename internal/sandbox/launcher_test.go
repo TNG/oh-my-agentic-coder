@@ -70,6 +70,43 @@ func TestExpand_NonoNetprofile(t *testing.T) {
 	}
 }
 
+// TestExpand_NoMounts asserts that the launcher template substitution
+// produces a valid argv when no skills are registered (Mounts is empty).
+// This is the common case immediately after install: `omac start` should
+// still bring up a sandbox so the user can iterate on inner commands
+// before they decide which skills to register.
+//
+// Specifically, the {{per_skill_env_flags}} splat must expand to nothing
+// (rather than e.g. erroring or leaving a literal token in the argv) and
+// {{skills_csv}} must yield "".
+func TestExpand_NoMounts(t *testing.T) {
+	lc := config.DefaultLauncherConfig()
+	prof := lc.Sandbox.Profiles["nono"]
+	got, err := Expand(prof, Inputs{
+		Workdir:  "/work",
+		Socket:   "/tmp/omac-abc/bridge.sock",
+		TCPPort:  41017,
+		Mounts:   nil,
+		InnerCmd: []string{"opencode"},
+	})
+	if err != nil {
+		t.Fatalf("Expand: %v", err)
+	}
+	want := []string{
+		"nono", "run",
+		"--allow-cwd",
+		"--profile", "tng-sandbox",
+		"--allow-file", "/tmp/omac-abc/bridge.sock",
+		"--read", "/tmp/omac-abc",
+		"--open-port", "41017",
+		"--",
+		"opencode",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("Expand mismatch\n got: %#v\nwant: %#v", got, want)
+	}
+}
+
 func TestOmacEnvName(t *testing.T) {
 	cases := map[string]string{
 		"slack":          "OMAC_SLACK_BASE",
