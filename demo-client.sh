@@ -46,14 +46,21 @@ echo
 echo "--- GET /echo/tick  (Server-Sent Events stream; five frames with a gap) ---"
 # -N disables curl's output buffering, so the frames print as they arrive,
 # just like they would inside a sandboxed agent reading an LLM stream.
-curl -sS -N --max-time 4 \
-  --unix-socket "$OMAC_SOCKET" \
-  'http://x/echo/tick?n=5&gap_ms=30' \
-  | awk '
-      /^event:/ { ev=$2 }
-      /^id:/    { id=$2 }
-      /^data:/  { sub(/^data: /,""); printf "  [%s #%s] %s\n", ev, id, $0 }
-    '
+# The sidecar closes the connection after sending 'done', so curl exits
+# 0 on normal SSE termination. The `|| true` guards against environments
+# where the server's connection close is interpreted as a transient error
+# (curl can exit 18 or 28 depending on platform); we don't want a
+# successful demo to fail the script just because of a final-frame race.
+{
+  curl -sS -N --max-time 30 \
+    --unix-socket "$OMAC_SOCKET" \
+    'http://x/echo/tick?n=5&gap_ms=30' \
+    || true
+} | awk '
+    /^event:/ { ev=$2 }
+    /^id:/    { id=$2 }
+    /^data:/  { sub(/^data: /,""); printf "  [%s #%s] %s\n", ev, id, $0 }
+  '
 
 echo
 echo "--- negative: unknown mount must 404 ---"

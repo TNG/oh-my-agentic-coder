@@ -54,7 +54,9 @@ class H(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
             self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "close")
             self.end_headers()
+            self.close_connection = True
             for i in range(1, 6):
                 self.wfile.write(
                     ("event: tick\nid: %d\ndata: " % i).encode()
@@ -301,7 +303,12 @@ ready:
 					firstTickAt = now
 				}
 				lastTickAt = now
-				if strings.Contains(payload, "\"secret_fingerprint\":\"sha256:") {
+				// Python's json.dumps emits a space between key and value
+				// by default ("a": "b"), Go's encoding/json does not.
+				// Accept either to keep the assertion robust against
+				// upstream serialization choices.
+				if strings.Contains(payload, "secret_fingerprint") &&
+					strings.Contains(payload, "sha256:") {
 					fpSeen = true
 				}
 			} else if currEvent == "done" {

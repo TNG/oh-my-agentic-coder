@@ -96,12 +96,18 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError:
             gap = 0.05
 
+        # We want the client to see EOF after the final "done" event so
+        # blocking readers (curl without --max-time, line-based pipelines,
+        # etc.) terminate cleanly. Sending Connection: close + setting
+        # close_connection=True ensures BaseHTTPRequestHandler closes the
+        # socket as soon as do_GET returns, with no Content-Length and no
+        # transfer encoding ambiguity.
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
-        self.send_header("Connection", "keep-alive")
-        # No Content-Length: we stream.
+        self.send_header("Connection", "close")
         self.end_headers()
+        self.close_connection = True
         try:
             for i in range(1, n + 1):
                 frame = (
