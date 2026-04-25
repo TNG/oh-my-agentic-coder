@@ -203,13 +203,18 @@ func (s *sseHTTPServer) startLoopback(t *testing.T) int {
 		}
 		for i := 1; i <= 5; i++ {
 			fmt.Fprintf(w, "event: tick\nid: %d\ndata: {\"n\":%d}\n\n", i, i)
-			fl.Flush()
+			// Increment BEFORE Flush so that the post-test assertion
+			// `framesSent == 6` cannot race with the client reading the
+			// final frame and tearing down the connection (which would
+			// preempt the goroutine right after Flush but before the
+			// AddInt32, leaving the counter stuck at 5).
 			atomic.AddInt32(s.framesSent, 1)
+			fl.Flush()
 			time.Sleep(30 * time.Millisecond)
 		}
 		fmt.Fprint(w, "event: done\ndata: {}\n\n")
-		fl.Flush()
 		atomic.AddInt32(s.framesSent, 1)
+		fl.Flush()
 	})
 	s.srv = &http.Server{Handler: mux}
 	go func() { _ = s.srv.Serve(ln) }()
