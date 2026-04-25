@@ -231,16 +231,35 @@ your sidecar, with header `X-Forwarded-Prefix: /<mount>`. So a sidecar
 that implements `GET /status` is reachable from the sandbox as
 `GET http://x/<mount>/status`.
 
-`omac start` also exports a convenience env var per skill into the sandbox:
+`omac start` also exports a set of env vars into the sandbox so agents
+can discover the facade without having to know its hash-derived path:
 
-```
-OMAC_SOCKET            = /tmp/omac-<hash>/bridge.sock
-OMAC_<MOUNT>_BASE      = http+unix://%2Ftmp%2Fomac-<hash>%2Fbridge.sock/<mount>/
-```
+| Env var | Value | Notes |
+| --- | --- | --- |
+| `OMAC_SOCKET` | `/tmp/omac-<hash>/bridge.sock` | Unix-domain socket path. |
+| `OMAC_HOST` | `127.0.0.1` | Loopback host the facade is bound to. |
+| `OMAC_PORT` | e.g. `41017` | Ephemeral TCP port. |
+| `OMAC_BASE` | `http://127.0.0.1:<port>/` | Facade root, TCP form. |
+| `OMAC_SKILLS` | e.g. `echo,slack,himalaya-email` | Comma-separated mount names. Empty when no skills are registered. |
+| `OMAC_VERSION` | e.g. `0.1.5` | The omac binary's version string. |
+| `OMAC_<MOUNT>_BASE` | `http://127.0.0.1:<port>/<mount>/` | **TCP** URL for this skill. Prefer this one — it works under nono proxy mode on macOS, where Seatbelt's `(deny network*)` blocks Unix-socket `connect(2)`. |
+| `OMAC_<MOUNT>_SOCKET_BASE` | `http+unix://%2Ftmp%2Fomac-<hash>%2Fbridge.sock/<mount>/` | Unix-socket form. Lower overhead when available; fails on macOS under nono proxy mode. |
 
-Mount is uppercased and `-` becomes `_` (e.g. `mount: himalaya-email` →
-`OMAC_HIMALAYA_EMAIL_BASE`). Agents/libraries that understand the
-`http+unix://` scheme can use this directly.
+The `<MOUNT>` portion of the per-skill var names is derived from the
+mount string by uppercasing letters and replacing every non-alphanumeric
+character with `_`. Examples (pinned in
+`internal/sandbox/launcher_test.go`):
+
+| `mount:` in meta.yaml | Env var name |
+| --- | --- |
+| `echo` | `OMAC_ECHO_BASE` |
+| `himalaya-email` | `OMAC_HIMALAYA_EMAIL_BASE` |
+| `mail2` | `OMAC_MAIL2_BASE` |
+| `a-b_c` | `OMAC_A_B_C_BASE` |
+
+Both transports are advertised at the same time so a sandbox-aware
+client library can fall back from one to the other. As a rule of thumb
+inside the sandbox, **use the TCP form first**.
 
 ---
 
@@ -264,7 +283,14 @@ omac start --no-sandbox --inner bash
 # inside the spawned shell:
 echo "$OMAC_SOCKET"
 curl --unix-socket "$OMAC_SOCKET" http://x/my-skill/status
+# or via the TCP form (works the same outside the sandbox):
+curl "$OMAC_MY_SKILL_BASE/status"
 ```
+
+`omac start` runs successfully even with no skills registered yet — it
+will just bring up the facade with no upstream routes and exec the
+inner command. Useful when you're iterating on a sidecar before the
+first `omac register` of the day.
 
 ### 7.3 Run the stack inside `nono`
 
@@ -285,9 +311,17 @@ That file captures the sidecar's stderr/stdout.
 
 ### 7.5 Use a smoke-test client
 
-Model your manual smoke test on `demo-client.sh` in the repo root: it
-does `omac start --no-sandbox --inner bash -- ./demo-client.sh` and
-exercises every route via the Unix socket.
+Model your manual smoke test on `demo-client.sh` in the repo root. It
+hits every route on the echo-rest reference skill via both the TCP and
+Unix-socket transports, and prints the values of every `OMAC_*` env var
+it received. Run it as the inner command:
+
+```bash
+omac start --no-sandbox --inner=./demo-client.sh
+```
+
+(Anything after `--` becomes argv for the inner command, so you can pass
+flags through if your client takes any.)
 
 ---
 

@@ -196,6 +196,15 @@ Minimal by design:
 
 Everything else is stdlib.
 
+## Authoring a skill
+
+If you want to build a new skill from scratch — or just get a deeper
+walkthrough of the schema, the sidecar contract, and the dev loop — see
+[`CREATING_A_SKILL.md`](./CREATING_A_SKILL.md). It covers the on-disk
+layout, the full `meta.yaml` schema, every env var omac sets in the
+sidecar and inside the sandbox, secrets best practices, and a
+pre-shipping checklist.
+
 ## Example skill: `echo-rest`
 
 A working example skill lives under `.opencode/skills/echo-rest/` and is
