@@ -707,10 +707,15 @@ The existing `tng-sandbox.json` Nono profile remains the trust policy for filesy
 
 No change to the existing `tng-sandbox.json` content is required; `omac` only wraps Nono. **However, if you author a custom nono profile with `environment.allow_vars` set, you must include `OMAC_*` (or the explicit names `OMAC_SOCKET`, `OMAC_SKILLS`, `OMAC_VERSION`, and one `OMAC_<SKILL>_BASE` per registered skill) in the allow-list, or the sandbox will not see them.**
 
-**Unix-socket semantics under Nono.** Per [Nono's Seatbelt documentation](https://nono.sh/docs/cli/internals/seatbelt), macOS classifies `connect(2)` on a Unix socket as `network-outbound`, not as a file operation. On Linux, AF_UNIX is governed by Landlock's file-path ACLs and is not part of its TCP port filter. Two consequences follow:
+**Unix-socket semantics under Nono.** Per [Nono's Seatbelt documentation](https://nono.sh/docs/cli/internals/seatbelt), macOS classifies `connect(2)` on a Unix socket as `network-outbound`, not as a file operation. On Linux, AF_UNIX is governed by Landlock's file-path ACLs and is not part of its TCP port filter.
 
-1. **Default profile works:** Nono's default network policy is *allow*, so `--allow-file` is sufficient for the sandbox to reach the bridge socket on both platforms. `--network-profile` variants also work because they only constrain TCP.
-2. **`--block-net` is incompatible on macOS:** it installs a `(deny network*)` Seatbelt rule that also denies `network-outbound` to Unix-socket paths. If you need to block outbound TCP while keeping the facade reachable, prefer `--network-profile minimal` (and add `--allow-domain` for anything the sidecars themselves talk to; note that sidecars run *outside* the sandbox and are unaffected).
+Three platform-specific consequences:
+
+1. **Linux**: `--allow-file <socket>` is sufficient. AF_UNIX is purely filesystem-governed.
+2. **macOS without proxy mode**: `--allow-file` is sufficient *and* the default network policy is allow.
+3. **macOS with proxy mode** (the common case — proxy mode is automatically activated whenever the active nono profile defines `custom_credentials`, sets `network_profile`, or whenever the user passes `--allow-domain`/`--credential`/`--upstream-proxy`/`--network-profile`): `--allow-file` alone is *not* sufficient. Proxy mode installs `(deny network*)` plus a single `(allow network-outbound (remote tcp "localhost:PORT"))`. The blanket deny applies to Unix-socket `connect(2)` too. The fix is `--override-deny <socket>`, which lifts the deny for that exact path while keeping the matching `--allow-file` grant. Both omac-shipped profiles include this flag unconditionally; it is harmless when proxy mode is not active.
+
+`--block-net` remains incompatible with this design on macOS for the same reason — it also emits `(deny network*)`. There is no documented `--override-deny` analogue for `--block-net`'s rules. Use `--network-profile minimal` instead if you need outbound TCP filtering.
 
 The launcher config shipped with `omac` (see `internal/config/launcher.go`) provides two ready-made profiles — `nono` and `nono-netprofile` — that encode these choices. See the repository README for the full flag-to-behavior matrix.
 
@@ -1047,17 +1052,31 @@ OMAC_VERSION=0.1.0
 nono run \
   --allow-cwd \
   --profile tng-sandbox \
-  --allow-file /tmp/omac-9f4b3a8c2e10/bridge.sock \
-  --read      /tmp/omac-9f4b3a8c2e10 \
+  --allow-file    /tmp/omac-9f4b3a8c2e10/bridge.sock \
+  --override-deny /tmp/omac-9f4b3a8c2e10/bridge.sock \
+  --read          /tmp/omac-9f4b3a8c2e10 \
   -- \
   opencode
 ```
 
-(`nono` no longer accepts a literal `--env KEY=VAL` flag; the only
-`--env-*` flag is `--env-credential`, which is keystore-only. Profiles
-with `environment.allow_vars` set must include `OMAC_*` to receive these.
-The shipped `tng-sandbox.json` profile leaves that section unset, so the
-default-allow behaviour delivers them automatically.)
+Two non-obvious things in that argv:
+
+1. **`--override-deny`** is paired with `--allow-file` on the socket path.
+   It lifts macOS Seatbelt's `(deny network*)` rule (installed by Nono
+   whenever proxy mode is active — and proxy mode is auto-activated by
+   the `custom_credentials.tng_skills` block in `tng-sandbox.json`) so
+   the sandbox can `connect(2)` to the AF_UNIX socket. Without this
+   flag, `--allow-file` alone grants `open(2)` but not the
+   network-classified connect, and the agent gets `EPERM` on connect.
+
+2. **Env-var injection is via process env, not flags.** Nono no longer
+   accepts a literal `--env KEY=VAL` flag (the only `--env-*` flag is
+   `--env-credential`, which is keystore-only). `omac` sets `OMAC_*` in
+   nono's process environment before exec; nono propagates the parent
+   env to the inner process by default. Profiles with
+   `environment.allow_vars` set must include `OMAC_*` in the list.
+   The shipped `tng-sandbox.json` leaves that section unset, so the
+   default-allow behaviour delivers them automatically.
 
 ## Appendix D — End-to-end walkthrough
 

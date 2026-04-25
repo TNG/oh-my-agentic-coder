@@ -48,47 +48,66 @@ func DefaultLauncherConfig() LauncherConfig {
 				"nono": {
 					// Reference invocation for nono (https://nono.sh).
 					//
-					// The --allow-file entry grants access to the bridge socket's
-					// inode. On macOS, Seatbelt classifies connect(2) to a Unix
-					// socket as `network-outbound`; since nono's default network
-					// policy is allow, no extra network flag is needed. On Linux
-					// (Landlock), Unix sockets are governed by filesystem
-					// capabilities alone, so --allow-file is sufficient there too.
+					// Why each flag is here:
 					//
-					// We also --read the containing directory so component-wise
-					// path lookup succeeds without depending on the
-					// system_read_macos group covering $TMPDIR/omac-* specifically.
+					//  --allow-file <socket>
+					//      Grants the sandbox `open(2)` on the bridge socket
+					//      inode. On macOS, Seatbelt classifies `connect(2)`
+					//      on a Unix socket as `network-outbound`, NOT a file
+					//      operation; this flag therefore covers only half of
+					//      what is needed (see --override-deny below).
+					//      On Linux (Landlock) AF_UNIX is governed entirely
+					//      by filesystem ACLs, so this flag alone is
+					//      sufficient.
 					//
-					// Env-var injection: nono no longer accepts a `--env KEY=VAL`
-					// flag (the only --env-* flag now is --env-credential, which
-					// is keystore-only). Instead, sandbox.Exec sets OMAC_SOCKET
-					// / OMAC_SKILLS / OMAC_<SKILL>_BASE in nono's own process
-					// environment before exec, and nono propagates the parent
-					// environment to the inner process unless the profile sets
-					// `environment.allow_vars`. The shipped tng-sandbox.json
-					// profile leaves that section unset, so the variables flow
-					// through automatically. If you write a custom nono profile
-					// with environment.allow_vars, add `OMAC_*` to the list.
+					//  --read <socket-dir>
+					//      Component-wise path resolution during connect(2)
+					//      walks the parent dir's stat. $TMPDIR/omac-<hash>/
+					//      is not part of the system_read_macos group, so we
+					//      grant it explicitly.
 					//
-					// IMPORTANT: this profile does NOT use --block-net. Combining
-					// --block-net with a Unix-socket facade requires additional
-					// configuration (see README "Running under nono"). If you need
-					// outbound network filtering, use --network-profile instead;
-					// that does not block Unix-socket connect on either platform.
+					//  --override-deny <socket>
+					//      MUST be present whenever the active nono profile
+					//      activates proxy mode (i.e. defines
+					//      custom_credentials, sets network_profile, or uses
+					//      --allow-domain / --credential / --upstream-proxy).
+					//      Proxy mode installs `(deny network*)` on macOS,
+					//      which blocks `network-outbound` to the Unix
+					//      socket — even though --allow-file granted
+					//      filesystem access. --override-deny lifts the
+					//      deny for this specific path AND requires a
+					//      matching --allow-file (which we have above).
+					//      Harmless when proxy mode is not active.
+					//
+					// Env-var injection: nono no longer accepts a literal
+					// `--env KEY=VAL` flag. Instead sandbox.Exec sets
+					// OMAC_SOCKET / OMAC_SKILLS / OMAC_<SKILL>_BASE in
+					// nono's own process environment, and nono propagates
+					// the parent env to the inner process by default. If
+					// you author a custom nono profile with
+					// environment.allow_vars set, add OMAC_* to the list.
+					//
+					// IMPORTANT: this profile does NOT use --block-net.
+					// On macOS that installs `(deny network*)` and there
+					// is currently no documented way to punch a Unix-socket
+					// hole through it. Use --network-profile (handled by
+					// our nono-netprofile variant) instead.
 					Command: []string{
 						"nono", "run",
 						"--allow-cwd",
 						"--profile", "tng-sandbox",
 						"--allow-file", "{{socket}}",
+						"--override-deny", "{{socket}}",
 						"--read", "{{socket_dir}}",
 						"--",
 						"{{inner_cmd}}", "{{inner_args}}",
 					},
 					InnerCmd: []string{"opencode"},
 				},
-				// Same as above but adds --network-profile opencode so outbound
-				// HTTP goes through nono's credential-injection proxy. The Unix
-				// socket is unaffected by network-profile filtering.
+				// Same as above but adds --network-profile opencode so
+				// outbound HTTP goes through nono's credential-injection
+				// proxy. --override-deny is required here because
+				// network-profile activates proxy mode (see notes above).
 				"nono-netprofile": {
 					Command: []string{
 						"nono", "run",
@@ -96,6 +115,7 @@ func DefaultLauncherConfig() LauncherConfig {
 						"--profile", "tng-sandbox",
 						"--network-profile", "opencode",
 						"--allow-file", "{{socket}}",
+						"--override-deny", "{{socket}}",
 						"--read", "{{socket_dir}}",
 						"--",
 						"{{inner_cmd}}", "{{inner_args}}",

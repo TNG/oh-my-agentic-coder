@@ -24,6 +24,7 @@ func TestExpand_Nono(t *testing.T) {
 		"--allow-cwd",
 		"--profile", "tng-sandbox",
 		"--allow-file", "/tmp/omac-abc/bridge.sock",
+		"--override-deny", "/tmp/omac-abc/bridge.sock",
 		"--read", "/tmp/omac-abc",
 		"--",
 		"opencode", "--model", "opus",
@@ -33,9 +34,11 @@ func TestExpand_Nono(t *testing.T) {
 	}
 }
 
-// TestExpand_NonoNetprofile asserts the --network-profile variant is wired
-// identically plus the extra flag. Unix-socket connect is unaffected by
-// nono's network profiles (they filter TCP outbound only; see README).
+// TestExpand_NonoNetprofile asserts the --network-profile variant.
+// Both profiles include --override-deny on the socket, because both
+// `custom_credentials` (in tng-sandbox.json) and `--network-profile`
+// activate Nono's proxy mode, which installs `(deny network*)` on
+// macOS — including Unix-socket connects. --override-deny lifts that.
 func TestExpand_NonoNetprofile(t *testing.T) {
 	lc := config.DefaultLauncherConfig()
 	prof := lc.Sandbox.Profiles["nono-netprofile"]
@@ -54,6 +57,7 @@ func TestExpand_NonoNetprofile(t *testing.T) {
 		"--profile", "tng-sandbox",
 		"--network-profile", "opencode",
 		"--allow-file", "/tmp/omac-abc/bridge.sock",
+		"--override-deny", "/tmp/omac-abc/bridge.sock",
 		"--read", "/tmp/omac-abc",
 		"--",
 		"opencode",
