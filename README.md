@@ -143,20 +143,29 @@ omac secrets set slack SLACK_BOT_TOKEN
 ```
 omac [--workdir <dir>] <subcommand> [flags] [args]
 
-  register     Validate meta, prompt for secrets → keychain, print install
-               script, add to sidecar.json. Flags:
+  register     Validate meta, prompt for secrets → keychain, prompt for
+               config fields → skill-config.yaml, print install script,
+               add to sidecar.json. Flags:
                  --force                 replace existing registry entry
                  --reprompt-secrets      re-prompt even if secrets exist
                  --no-secrets            skip all secret prompts
                  --secrets-from <file>   KEY=VALUE file instead of prompting
+                 --reprompt-fields       re-prompt config fields
+                 --no-fields             skip all config-field prompts
+                 --fields-from <file>    KEY=VALUE file for fields
 
   deregister   Remove from registry. Flags:
                  --purge-secrets         also delete from keychain
+                 --purge-fields          also delete from skill-config.yaml
 
   list         Show registered skills with mount, secret count, binary status.
 
   secrets <sub> <skill> [name]
     list, set, unset, import --from <file>
+
+  config <sub> <skill> [args]
+    show <skill> [--json]   resolved config + secret fingerprints
+    get  <skill> <field>    one resolved value, suitable for $(...)
 
   start        Spawn sidecars → bind socket → exec sandbox runtime. Flags:
                  --sandbox <profile>     pick a sandbox profile

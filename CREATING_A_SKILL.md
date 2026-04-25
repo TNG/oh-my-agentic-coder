@@ -294,6 +294,7 @@ inside the sandbox, **use the TCP form first**.
 omac register --no-secrets my-skill   # validates meta.yaml + adds to registry
 omac doctor                           # runs sanity checks
 omac list                             # shows mount, secret count, binary status
+omac config show my-skill             # inspect resolved config + secret fingerprints
 ```
 
 ### 7.2 Run the stack outside the sandbox
@@ -461,7 +462,58 @@ For non-interactive flows (CI provisioning, scripted setup) the
 `skill-config.yaml` (in addition to `--purge-secrets` for the
 keychain).
 
-### 9.5 When to use `secrets:` vs `config:`
+### 9.5 Inspecting resolved values
+
+`omac config show <skill>` is the host-side counterpart to a sidecar's
+`/whoami` endpoint: it shows what omac WOULD inject into the sidecar's
+environment if `omac start` ran right now, without actually spawning
+anything. Useful for "why isn't my sidecar seeing X?" debugging.
+
+```bash
+$ omac config show tng-email
+skill:   tng-email
+mount:   /tng-email/
+workdir: /Users/you/work/tng-sandbox
+
+config:
+  NAME                    TYPE    REQ  SOURCE                     VALUE
+  TNG_EMAIL_ADDRESS       string  yes  stored                     [email protected]
+  TNG_EMAIL_DISPLAY_NAME  string  yes  default_from_env:USER      jane
+  TNG_EMAIL_SIGNATURE     string  no   default                    Regards,
+  TNG_EMAIL_IMAP_HOST     string  yes  default                    mail.tngtech.com
+  TNG_EMAIL_IMAP_PORT     int     yes  default                    993
+  TNG_GPG_DEFAULT_KEY     string  no   missing-optional           <missing-optional>
+  TNG_GPG_REQUIRED        bool    no   stored                     false
+
+secrets:
+  NAME                REQ  FINGERPRINT
+  TNG_EMAIL_PASSWORD  yes  sha256:e3b0c44298fc
+  TNG_GPG_PASSPHRASE  no   <missing>
+```
+
+The `SOURCE` column tells you *which* of the resolution rungs in §9.3
+produced the displayed value. `--json` emits the same data as a single
+JSON object so it's pipeable into `jq`.
+
+`omac config get <skill> <field>` prints just the resolved value,
+suitable for shell-script substitution:
+
+```bash
+imap_port=$(omac config get tng-email TNG_EMAIL_IMAP_PORT)
+```
+
+This deliberately does NOT support fetching secrets — exposing a
+plaintext credential to stdout (and your shell's history) defeats the
+keychain. Use `omac config show --json` and inspect the fingerprint
+to verify a secret is the value you expect.
+
+The fingerprint format is `sha256(value)[:12]`, byte-for-byte
+identical to the reference `echo-rest` sidecar's `/whoami` route. So a
+quick visual diff between `omac config show` and `curl
+$OMAC_ECHO_BASE/whoami` confirms the value the sidecar is actually
+seeing matches the value omac thinks it should be injecting.
+
+### 9.6 When to use `secrets:` vs `config:`
 
 If the value would be embarrassing in a screenshot, use `secrets:`.
 If it would be embarrassing in `git log` of a private repo, use
@@ -469,7 +521,7 @@ If it would be embarrassing in `git log` of a private repo, use
 flags, log verbosity — use `config:`. Anything that gets typed into a
 public chat ("set my region to eu-central-1") is a config field.
 
-### 9.6 Example: reading a config field in Python
+### 9.7 Example: reading a config field in Python
 
 ```python
 import os
