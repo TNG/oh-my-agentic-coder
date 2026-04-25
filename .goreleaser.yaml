@@ -1,0 +1,143 @@
+# GoReleaser configuration for oh-my-agentic-coder.
+#
+# Produces, on every tag push:
+#   * Cross-compiled `omac` binaries for linux/amd64, linux/arm64,
+#     darwin/amd64, darwin/arm64.
+#   * Per-platform .tar.gz archives.
+#   * Linux .deb (apt) and .pkg.tar.zst (pacman) packages.
+#   * A Homebrew formula attached as a release artifact (no tap push).
+#   * SHA256 checksums file.
+#
+# Run locally with:
+#   goreleaser release --clean --snapshot --skip=publish
+version: 2
+
+project_name: oh-my-agentic-coder
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: omac
+    main: ./cmd/omac
+    binary: omac
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X main.Version={{.Version}}
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - id: default
+    ids: [omac]
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_
+      {{- if eq .Os "darwin" }}macOS{{- else }}{{ .Os }}{{ end }}_
+      {{- if eq .Arch "amd64" }}x86_64{{- else if eq .Arch "386" }}i386{{- else }}{{ .Arch }}{{ end }}
+    formats: [tar.gz]
+    files:
+      - README.md
+      - LICENSE*
+
+# Linux packages: .deb (apt/Debian/Ubuntu) and .pkg.tar.zst (pacman/Arch).
+# Both are attached to the GitHub release; users download and install with
+# `sudo dpkg -i ...` or `sudo pacman -U ...` respectively.
+nfpms:
+  - id: linux-packages
+    package_name: oh-my-agentic-coder
+    ids: [omac]
+    vendor: TNG Technology Consulting GmbH
+    homepage: https://github.com/TNG/oh-my-agentic-coder
+    maintainer: TNG Technology Consulting GmbH <[email protected]>
+    description: |-
+      oh-my-agentic-coder (omac) bridges host-side sidecar HTTP services into a
+      sandboxed agent-coding environment via a single Unix-domain-socket
+      facade, with per-skill secrets stored in the OS keychain.
+    license: Apache-2.0
+    formats:
+      - deb
+      - archlinux
+    bindir: /usr/bin
+    file_name_template: >-
+      {{ .PackageName }}_{{ .Version }}_{{ .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64{{- else }}{{ .Arch }}{{ end }}
+    contents:
+      - src: README.md
+        dst: /usr/share/doc/oh-my-agentic-coder/README.md
+    deb:
+      lintian_overrides:
+        - statically-linked-binary
+        - changelog-file-missing-in-native-package
+    archlinux:
+      packager: TNG Technology Consulting GmbH <[email protected]>
+
+# Homebrew formula: emitted as a release artifact only (no tap push).
+# Users can install with `brew install <url-to-formula>` or by manually
+# adding the formula to a tap.
+brews:
+  - name: oh-my-agentic-coder
+    ids: [default]
+    homepage: https://github.com/TNG/oh-my-agentic-coder
+    description: Sandboxed agent-coding facade with keychain-backed secrets.
+    license: Apache-2.0
+    skip_upload: "true"
+    install: |
+      bin.install "omac"
+    test: |
+      assert_match version.to_s, shell_output("#{bin}/omac --version")
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  use: github
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - "merge conflict"
+      - Merge pull request
+      - Merge remote-tracking branch
+      - Merge branch
+  groups:
+    - title: Features
+      regexp: '^.*?feat(\([[:word:]]+\))??!?:.+$'
+      order: 0
+    - title: Bug fixes
+      regexp: '^.*?fix(\([[:word:]]+\))??!?:.+$'
+      order: 1
+    - title: Other
+      order: 999
+
+release:
+  github:
+    owner: TNG
+    name: oh-my-agentic-coder
+  draft: false
+  prerelease: auto
+  mode: replace
+  header: |
+    ## oh-my-agentic-coder {{ .Tag }}
+
+    Built from commit {{ .ShortCommit }} on {{ .Date }}.
+  footer: |
+    ---
+    See the [README](https://github.com/TNG/oh-my-agentic-coder#installation)
+    for installation instructions on macOS (Homebrew), Debian/Ubuntu (apt),
+    and Arch Linux (pacman).

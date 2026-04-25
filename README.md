@@ -8,6 +8,68 @@ environment through a single Unix-domain-socket facade. Per-skill secrets are
 stored in the OS keychain and injected into sidecar processes at start time —
 they never reach the sandbox.
 
+## Installation
+
+Pre-built binaries and packages are published to
+[GitHub Releases](https://github.com/TNG/oh-my-agentic-coder/releases) on every
+tagged version. The release pipeline produces:
+
+- `oh-my-agentic-coder_<version>_macOS_{x86_64,arm64}.tar.gz` — macOS binaries
+- `oh-my-agentic-coder_<version>_linux_{x86_64,arm64}.tar.gz` — Linux binaries
+- `oh-my-agentic-coder_<version>_linux_{x86_64,arm64}.deb` — Debian/Ubuntu (apt)
+- `oh-my-agentic-coder_<version>_linux_{x86_64,arm64}.pkg.tar.zst` — Arch (pacman)
+- `oh-my-agentic-coder.rb` — Homebrew formula (also bundled in the archive)
+- `checksums.txt` — SHA-256 sums of every artifact
+
+### macOS (Homebrew)
+
+The Homebrew formula is attached to each release as a standalone artifact
+(no tap is published). Install it directly from the release URL:
+
+```sh
+brew install --formula \
+  https://github.com/TNG/oh-my-agentic-coder/releases/latest/download/oh-my-agentic-coder.rb
+```
+
+To pin to a specific version, replace `latest/download` with `download/v<X.Y.Z>`.
+
+### Debian / Ubuntu (apt)
+
+```sh
+ARCH=$(dpkg --print-architecture)   # amd64 or arm64
+curl -L -o omac.deb \
+  "https://github.com/TNG/oh-my-agentic-coder/releases/latest/download/oh-my-agentic-coder_$(curl -s https://api.github.com/repos/TNG/oh-my-agentic-coder/releases/latest | grep tag_name | cut -d '"' -f4 | sed 's/^v//')_linux_${ARCH/amd64/x86_64}.deb"
+sudo dpkg -i omac.deb
+```
+
+Or, more simply, download the `.deb` matching your architecture from the
+[releases page](https://github.com/TNG/oh-my-agentic-coder/releases) and run
+`sudo dpkg -i <file>.deb`.
+
+### Arch Linux (pacman)
+
+```sh
+ARCH=$(uname -m)   # x86_64 or aarch64; map aarch64 -> arm64 in URL
+curl -L -O \
+  "https://github.com/TNG/oh-my-agentic-coder/releases/latest/download/oh-my-agentic-coder_<version>_linux_${ARCH}.pkg.tar.zst"
+sudo pacman -U oh-my-agentic-coder_*.pkg.tar.zst
+```
+
+### Verifying downloads
+
+Every release includes `checksums.txt`:
+
+```sh
+curl -L -O https://github.com/TNG/oh-my-agentic-coder/releases/latest/download/checksums.txt
+sha256sum -c checksums.txt --ignore-missing
+```
+
+### From source
+
+```sh
+go install github.com/tngtech/oh-my-agentic-coder/cmd/omac@latest
+```
+
 ## Layout
 
 ```
