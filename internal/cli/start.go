@@ -275,8 +275,10 @@ func runStart(args []string, env *Env) int {
 	// When the child exits the deferred cleanups below tear down the
 	// facade and the supervised sidecars in order.
 
-	// Extra env for the sandbox child. The sandbox profile is responsible for
-	// forwarding these into the actual sandbox (via --env or equivalent).
+	// Extra env passed into the sandbox runtime's own process environment.
+	// The runtime is expected to propagate parent env to the inner process
+	// (nono's default behavior; controllable via the profile's
+	// `environment.allow_vars` field — if set, OMAC_* must be in it).
 	extra := map[string]string{
 		"OMAC_SOCKET":  socketPath,
 		"OMAC_SKILLS":  strings.Join(mounts, ","),

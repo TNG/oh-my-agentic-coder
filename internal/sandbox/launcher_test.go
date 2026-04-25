@@ -25,10 +25,6 @@ func TestExpand_Nono(t *testing.T) {
 		"--profile", "tng-sandbox",
 		"--allow-file", "/tmp/omac-abc/bridge.sock",
 		"--read", "/tmp/omac-abc",
-		"--env", "OMAC_SOCKET=/tmp/omac-abc/bridge.sock",
-		"--env", "OMAC_SKILLS=slack,himalaya-email",
-		"--env", "OMAC_SLACK_BASE=http+unix://%2Ftmp%2Fomac-abc%2Fbridge.sock/slack/",
-		"--env", "OMAC_HIMALAYA_EMAIL_BASE=http+unix://%2Ftmp%2Fomac-abc%2Fbridge.sock/himalaya-email/",
 		"--",
 		"opencode", "--model", "opus",
 	}
@@ -59,9 +55,6 @@ func TestExpand_NonoNetprofile(t *testing.T) {
 		"--network-profile", "opencode",
 		"--allow-file", "/tmp/omac-abc/bridge.sock",
 		"--read", "/tmp/omac-abc",
-		"--env", "OMAC_SOCKET=/tmp/omac-abc/bridge.sock",
-		"--env", "OMAC_SKILLS=slack",
-		"--env", "OMAC_SLACK_BASE=http+unix://%2Ftmp%2Fomac-abc%2Fbridge.sock/slack/",
 		"--",
 		"opencode",
 	}

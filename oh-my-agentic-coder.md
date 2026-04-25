@@ -703,9 +703,9 @@ The existing `tng-sandbox.json` Nono profile remains the trust policy for filesy
 
 - Adds `--allow-file {{socket}}` so the sandbox can `open(2)` the bridge socket inode.
 - Adds `--read {{socket_dir}}` so component-wise path resolution during `connect(2)` succeeds without depending on Nono's `system_read_macos` group covering `$TMPDIR/omac-*`.
-- Injects `OMAC_*` env via `--env`.
+- Sets `OMAC_*` variables in its own process environment before `exec`ing nono. Nono propagates the parent environment to the inner process by default. (Nono no longer accepts literal `--env KEY=VAL` flags; the only `--env-*` flag is `--env-credential`, which is keystore-only.)
 
-No change to the existing `tng-sandbox.json` content is required; `omac` only wraps Nono.
+No change to the existing `tng-sandbox.json` content is required; `omac` only wraps Nono. **However, if you author a custom nono profile with `environment.allow_vars` set, you must include `OMAC_*` (or the explicit names `OMAC_SOCKET`, `OMAC_SKILLS`, `OMAC_VERSION`, and one `OMAC_<SKILL>_BASE` per registered skill) in the allow-list, or the sandbox will not see them.**
 
 **Unix-socket semantics under Nono.** Per [Nono's Seatbelt documentation](https://nono.sh/docs/cli/internals/seatbelt), macOS classifies `connect(2)` on a Unix socket as `network-outbound`, not as a file operation. On Linux, AF_UNIX is governed by Landlock's file-path ACLs and is not part of its TCP port filter. Two consequences follow:
 
@@ -1036,19 +1036,28 @@ sidecar:
 With two skills (`slack`, `himalaya-email`) registered and profile `nono`:
 
 ```
+# omac sets these in its own process env before exec'ing nono;
+# nono propagates the parent env to the inner process.
+OMAC_SOCKET=/tmp/omac-9f4b3a8c2e10/bridge.sock
+OMAC_SKILLS=slack,himalaya-email
+OMAC_SLACK_BASE=http+unix://%2Ftmp%2Fomac-9f4b3a8c2e10%2Fbridge.sock/slack/
+OMAC_HIMALAYA_EMAIL_BASE=http+unix://%2Ftmp%2Fomac-9f4b3a8c2e10%2Fbridge.sock/himalaya/
+OMAC_VERSION=0.1.0
+
 nono run \
   --allow-cwd \
   --profile tng-sandbox \
   --allow-file /tmp/omac-9f4b3a8c2e10/bridge.sock \
   --read      /tmp/omac-9f4b3a8c2e10 \
-  --env OMAC_SOCKET=/tmp/omac-9f4b3a8c2e10/bridge.sock \
-  --env OMAC_SKILLS=slack,himalaya-email \
-  --env OMAC_SLACK_BASE=http+unix://%2Ftmp%2Fomac-9f4b3a8c2e10%2Fbridge.sock/slack/ \
-  --env OMAC_HIMALAYA_EMAIL_BASE=http+unix://%2Ftmp%2Fomac-9f4b3a8c2e10%2Fbridge.sock/himalaya/ \
-  --env OMAC_VERSION=0.1.0 \
   -- \
   opencode
 ```
+
+(`nono` no longer accepts a literal `--env KEY=VAL` flag; the only
+`--env-*` flag is `--env-credential`, which is keystore-only. Profiles
+with `environment.allow_vars` set must include `OMAC_*` to receive these.
+The shipped `tng-sandbox.json` profile leaves that section unset, so the
+default-allow behaviour delivers them automatically.)
 
 ## Appendix D — End-to-end walkthrough
 

@@ -59,6 +59,17 @@ func DefaultLauncherConfig() LauncherConfig {
 					// path lookup succeeds without depending on the
 					// system_read_macos group covering $TMPDIR/omac-* specifically.
 					//
+					// Env-var injection: nono no longer accepts a `--env KEY=VAL`
+					// flag (the only --env-* flag now is --env-credential, which
+					// is keystore-only). Instead, sandbox.Exec sets OMAC_SOCKET
+					// / OMAC_SKILLS / OMAC_<SKILL>_BASE in nono's own process
+					// environment before exec, and nono propagates the parent
+					// environment to the inner process unless the profile sets
+					// `environment.allow_vars`. The shipped tng-sandbox.json
+					// profile leaves that section unset, so the variables flow
+					// through automatically. If you write a custom nono profile
+					// with environment.allow_vars, add `OMAC_*` to the list.
+					//
 					// IMPORTANT: this profile does NOT use --block-net. Combining
 					// --block-net with a Unix-socket facade requires additional
 					// configuration (see README "Running under nono"). If you need
@@ -70,9 +81,6 @@ func DefaultLauncherConfig() LauncherConfig {
 						"--profile", "tng-sandbox",
 						"--allow-file", "{{socket}}",
 						"--read", "{{socket_dir}}",
-						"--env", "OMAC_SOCKET={{socket}}",
-						"--env", "OMAC_SKILLS={{skills_csv}}",
-						"{{per_skill_env_flags}}",
 						"--",
 						"{{inner_cmd}}", "{{inner_args}}",
 					},
@@ -89,9 +97,6 @@ func DefaultLauncherConfig() LauncherConfig {
 						"--network-profile", "opencode",
 						"--allow-file", "{{socket}}",
 						"--read", "{{socket_dir}}",
-						"--env", "OMAC_SOCKET={{socket}}",
-						"--env", "OMAC_SKILLS={{skills_csv}}",
-						"{{per_skill_env_flags}}",
 						"--",
 						"{{inner_cmd}}", "{{inner_args}}",
 					},
