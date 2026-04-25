@@ -11,7 +11,6 @@ import (
 	"bufio"
 	"context"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"strings"
@@ -43,10 +42,11 @@ func TestFacadeSSE_InMemory(t *testing.T) {
 	//    client half. No sockets, no OS networking.
 	clientSide, serverSide := net.Pipe()
 	srv := &http.Server{Handler: handler}
+	listener := &singleConnListener{conn: serverSide}
 	serverDone := make(chan struct{})
 	go func() {
 		defer close(serverDone)
-		srv.Serve(singleConnListener{conn: serverSide})
+		srv.Serve(listener)
 	}()
 	t.Cleanup(func() {
 		srv.Close()
@@ -134,24 +134,36 @@ func TestFacadeSSE_InMemory(t *testing.T) {
 }
 
 // singleConnListener is a net.Listener that returns one preset connection
-// and then blocks. It lets us drive an http.Server over a net.Pipe.
+// and then signals EOF. It lets us drive an http.Server over a net.Pipe.
+//
+// IMPORTANT: methods take a pointer receiver so the `returned` flag is
+// shared across Accept calls. With a value receiver each call would
+// receive a fresh struct, the CAS would always succeed, and Serve would
+// loop forever spawning connection handlers on a closed Pipe. Don't
+// "simplify" this back to a value receiver.
 type singleConnListener struct {
 	conn     net.Conn
-	returned int32
+	returned atomic.Int32
+	closed   atomic.Int32
 }
 
-func (l singleConnListener) Accept() (net.Conn, error) {
-	if atomic.CompareAndSwapInt32(&l.returned, 0, 1) {
+func (l *singleConnListener) Accept() (net.Conn, error) {
+	if l.returned.CompareAndSwap(0, 1) {
 		return l.conn, nil
 	}
-	// Block forever so Serve() stays alive until Server.Close is called.
-	c := make(chan struct{})
-	<-c
-	return nil, io.EOF
+	// After the first connection, return ErrClosed so Server.Serve exits
+	// cleanly when Server.Close is called by the test cleanup.
+	for l.closed.Load() == 0 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	return nil, net.ErrClosed
 }
 
-func (l singleConnListener) Close() error { return l.conn.Close() }
-func (l singleConnListener) Addr() net.Addr {
+func (l *singleConnListener) Close() error {
+	l.closed.Store(1)
+	return l.conn.Close()
+}
+func (l *singleConnListener) Addr() net.Addr {
 	return &net.UnixAddr{Name: "inproc", Net: "unix"}
 }
 
