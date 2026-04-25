@@ -33,6 +33,18 @@ SKILL = os.environ.get("SIDECAR_SKILL", "echo-rest")
 PORT = int(os.environ.get("SIDECAR_PORT", "0"))
 SECRET = os.environ.get("ECHO_API_KEY", "")
 
+# Non-secret config fields, surfaced via env vars by omac from
+# .opencode/skill-config.json. The defaults below match the meta.yaml
+# defaults so the sidecar still works when omac register --no-fields
+# was used.
+GREETING = os.environ.get("ECHO_GREETING", "hello")
+VERBOSE = os.environ.get("ECHO_VERBOSE", "false").lower() == "true"
+try:
+    MAX_TICK = max(int(os.environ.get("ECHO_MAX_TICK", "100")), 1)
+except ValueError:
+    MAX_TICK = 100
+MODE = os.environ.get("ECHO_MODE", "demo")
+
 
 def fingerprint(s: str) -> str:
     """Short, non-reversible identifier for a secret, suitable for logs."""
@@ -60,15 +72,24 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, {"ok": True, "skill": SKILL})
             return
         if url.path == "/whoami":
-            self._json(
-                200,
-                {
-                    "skill": SKILL,
-                    "secret_present": bool(SECRET),
-                    "secret_fingerprint": fingerprint(SECRET),
-                    "pid": os.getpid(),
+            body = {
+                "skill": SKILL,
+                "secret_present": bool(SECRET),
+                "secret_fingerprint": fingerprint(SECRET),
+                "pid": os.getpid(),
+                # Echo the non-secret config so callers can verify omac
+                # injected the values from .opencode/skill-config.json.
+                "config": {
+                    "greeting": GREETING,
+                    "verbose": VERBOSE,
+                    "max_tick": MAX_TICK,
+                    "mode": MODE,
                 },
-            )
+                "greeting": f"{GREETING}, {SKILL} caller!",
+            }
+            if VERBOSE:
+                body["request_headers"] = {k: v for k, v in self.headers.items()}
+            self._json(200, body)
             return
         if url.path == "/tick":
             self._sse_stream(url)
@@ -88,7 +109,9 @@ class Handler(BaseHTTPRequestHandler):
         """
         params = parse_qs(url.query)
         try:
-            n = min(max(int(params.get("n", ["3"])[0]), 1), 100)
+            # Cap by ECHO_MAX_TICK from skill-config so an authoring
+            # mistake (or malicious client) can't pin the sidecar.
+            n = min(max(int(params.get("n", ["3"])[0]), 1), MAX_TICK)
         except ValueError:
             n = 3
         try:

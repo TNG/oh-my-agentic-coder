@@ -99,6 +99,28 @@ sidecar:
       default_from_env: MY_API_TOKEN     # optional: pre-fill from env at prompt
       multiline: false                   # optional: PEM keys etc.
 
+  # Declared non-secret config fields. `omac register` prompts (echoing input),
+  # stores in plain JSON under <workdir>/.opencode/skill-config.json, and
+  # injects at sidecar start as env vars exactly the same way as secrets.
+  # See §8 below for the full type system.
+  config:
+    - name: API_BASE_URL
+      type: string                          # default: string
+      description: "Base URL of the upstream API."
+      default: "https://api.example.com"
+      pattern: "^https://"
+    - name: ENABLE_DEBUG
+      type: bool
+      default: "false"
+      required: false
+    - name: REQUEST_TIMEOUT_MS
+      type: int
+      default: "5000"
+    - name: REGION
+      type: enum
+      choices: [eu-central-1, us-east-1, ap-northeast-1]
+      default: eu-central-1
+
   # Liveness probe. omac waits for `path` to return 2xx before mounting routes.
   health:
     path: /status                  # default /status
@@ -147,6 +169,7 @@ Your sidecar is a normal HTTP server. Requirements:
 | `SIDECAR_SKILL`  | The skill name (handy for log lines).                  |
 | `OMAC_WORKDIR`   | Absolute path of the workdir omac was invoked in.      |
 | Each declared secret | The value from the keychain (or `env_passthrough` host env). |
+| Each declared config field | The value from `.opencode/skill-config.json` (canonicalized — see §8). |
 
 ### Minimal Python sidecar
 
@@ -329,8 +352,13 @@ flags through if your client takes any.)
 
 - **Always declare** real credentials under `sidecar.secrets`. They go
   through the OS keychain (`omac/<skill>/<NAME>` service URI).
-- **Reserve `env_passthrough`** for non-secret config or for CI runners
-  where the keychain is unavailable. Document this in your description.
+- **Use `sidecar.config`** for non-secret operational values (URLs,
+  flags, region names) instead of overloading `secrets:` or
+  `env_passthrough:`. See §9 for the typed-field schema.
+- **Reserve `env_passthrough`** for the legacy fallback case: a value
+  that's normally a secret, but in some environments (CI runners
+  without a keychain) needs to come from the host shell. Document this
+  in your description.
 - **Validate with `pattern`** so users get an early failure at register
   time rather than a 500 from the upstream API.
 - **Never log secrets**. Use a fingerprint (`sha256(secret)[:12]`) to
@@ -339,7 +367,125 @@ flags through if your client takes any.)
 
 ---
 
-## 9. Distributing the skill
+## 9. Configuration fields (non-secret config)
+
+Skills often have *operational* configuration that isn't a credential
+but still varies between users or deployments: an API base URL, a
+default region, a feature flag, a retry limit. Putting these in the
+keychain is overkill (and obscures them); hard-coding them in
+`meta.yaml` makes the skill un-reusable. Declare them under
+`sidecar.config:` instead.
+
+The lifecycle:
+
+1. `omac register` prompts for every declared field (echoing input
+   visibly, **not** masked — these are not secret).
+2. Values are stored in plain JSON under
+   `<workdir>/.opencode/skill-config.json`, mode `0600`.
+3. At `omac start` time the values are injected into the sidecar's
+   environment alongside secrets, so the sidecar reads them with
+   `os.environ.get("FIELD_NAME")` exactly like a secret.
+
+### 9.1 Field schema
+
+```yaml
+sidecar:
+  config:
+    - name: FIELD_NAME              # required; ^[A-Z_][A-Z0-9_]*$ (env-var name)
+      description: "Shown above the prompt."
+      type: string                  # one of: string (default) | bool | int | enum
+      required: true                # default true; false ⇒ stored only if user
+                                    #   types something
+      default: "..."                # pre-filled at the prompt; press Enter to accept
+      default_from_env: "..."       # if `default` is empty and this env var is set
+                                    #   in the host shell at register time, use it
+                                    #   as the default
+      pattern: "^https://"          # string-only; regex applied to input
+      choices: [a, b, c]            # enum-only; non-empty list
+```
+
+### 9.2 Type system
+
+| `type:` | Accepted input | Stored as |
+|---|---|---|
+| `string` (default) | any text; if `pattern` set, must match | input verbatim |
+| `bool` | `true / false / yes / no / y / n / 1 / 0 / on / off` (case-insensitive) | the canonical `"true"` or `"false"` |
+| `int` | base-10 64-bit integer (whitespace tolerated) | `strconv.FormatInt` rendering |
+| `enum` | exact match against one of `choices` | input verbatim |
+
+`pattern` is only valid with `type: string`; `choices` is required for
+`type: enum` and forbidden for the others. Defaults are validated at
+meta-load time using the same rules as input — an `int` default of
+`"twelve"` is a meta error, not a runtime surprise.
+
+### 9.3 Naming, collisions, and `env_passthrough`
+
+Field names share the env-var namespace with `secrets:` and
+`env_passthrough:`. The validation rules:
+
+- A field name colliding with a `secrets:` entry is rejected at
+  meta-load time. Pick one or the other; secrets are stricter.
+- A field name colliding with an `env_passthrough:` entry is rejected.
+  `env_passthrough` is for non-declared host env you want to opt
+  into; if the value is important enough to declare, declare it under
+  `config:` (or `secrets:`) instead.
+- A `secrets:` entry colliding with `env_passthrough` is **allowed**.
+  This is the established fallback pattern: declare the secret, but
+  also list it in `env_passthrough` so it works in environments where
+  the keychain is unavailable (sandboxed CI runners). At runtime the
+  keychain value wins over the host-env value when both are present.
+
+### 9.4 Updating values after registration
+
+Two ways:
+
+```bash
+omac register --reprompt-fields my-skill   # interactive, keeps secrets
+```
+
+…or edit `.opencode/skill-config.json` directly (mode 0600 — chmod it
+back if you `chown` it). Re-running `omac start` picks up the new
+values on the next sidecar spawn.
+
+For non-interactive flows (CI provisioning, scripted setup) the
+`omac register` command also accepts:
+
+- `--fields-from <file>` — read `KEY=VALUE` lines (same wire format as
+  `--secrets-from`).
+- `OMAC_CONFIG_<NAME>` env vars at register time, by analogy with
+  `OMAC_SECRET_<NAME>`.
+- `--no-fields` — skip field prompts entirely (the inverse of
+  `--no-secrets`).
+
+`omac deregister --purge-fields` drops a skill's entries from
+`skill-config.json` (in addition to `--purge-secrets` for the
+keychain).
+
+### 9.5 When to use `secrets:` vs `config:`
+
+If the value would be embarrassing in a screenshot, use `secrets:`.
+If it would be embarrassing in `git log` of a private repo, use
+`secrets:`. Otherwise — base URLs, region names, retry limits, feature
+flags, log verbosity — use `config:`. Anything that gets typed into a
+public chat ("set my region to eu-central-1") is a config field.
+
+### 9.6 Example: reading a config field in Python
+
+```python
+import os
+GREETING = os.environ.get("ECHO_GREETING", "hello")     # string
+VERBOSE  = os.environ.get("ECHO_VERBOSE", "false") == "true"
+TIMEOUT  = int(os.environ.get("ECHO_MAX_TICK", "100"))  # int
+MODE     = os.environ.get("ECHO_MODE", "demo")          # enum: just a string
+```
+
+The reference skill `.opencode/skills/echo-rest/` exercises every type;
+its `/whoami` route echoes the resolved values back to the caller so
+you can verify omac injected them correctly.
+
+---
+
+## 10. Distributing the skill
 
 `omac` is the **runtime**, not an installer. The marketplace installer
 (e.g. `scripts/install.sh <skill>`) drops your skill directory under
@@ -366,7 +512,7 @@ omac start
 
 ---
 
-## 10. Checklist before shipping
+## 11. Checklist before shipping
 
 - [ ] `meta.yaml` validates (`omac register --no-secrets …` succeeds).
 - [ ] `mount` matches `^[a-z0-9][a-z0-9-]*$`.

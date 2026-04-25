@@ -36,9 +36,16 @@ type SidecarSpec struct {
 	Command        []string
 	EnvPassthrough []string
 	Secrets        map[string]secrets.Secret // name → value
-	Health         config.HealthSpec
-	LogPath        string
-	Workdir        string // host workdir
+	// Config holds non-secret values from .opencode/skill-config.json
+	// keyed by env-var name. These are injected into the sidecar's
+	// environment alongside Secrets but are surfaced from a plain JSON
+	// file, not the OS keychain. Secrets take precedence on collision
+	// (also enforced at meta-validation time, so the conflict shouldn't
+	// reach this point).
+	Config  map[string]string
+	Health  config.HealthSpec
+	LogPath string
+	Workdir string // host workdir
 }
 
 // Running represents a started sidecar.
@@ -157,7 +164,14 @@ func (s *Supervisor) buildEnv(spec SidecarSpec, port int) []string {
 	vars["SIDECAR_SKILL"] = spec.Name
 	vars["OMAC_WORKDIR"] = spec.Workdir
 
-	// Secrets — always win over passthrough.
+	// Non-secret config fields. Win over passthrough; lose to secrets
+	// (which is also a meta-validation-time error, so practically these
+	// two maps share no keys).
+	for name, v := range spec.Config {
+		vars[name] = v
+	}
+
+	// Secrets — always win over passthrough and config.
 	for name, s := range spec.Secrets {
 		vars[name] = s.ExposeString()
 	}

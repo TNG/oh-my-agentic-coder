@@ -18,6 +18,7 @@ import (
 	"github.com/tngtech/oh-my-agentic-coder/internal/registry"
 	"github.com/tngtech/oh-my-agentic-coder/internal/sandbox"
 	"github.com/tngtech/oh-my-agentic-coder/internal/secrets"
+	"github.com/tngtech/oh-my-agentic-coder/internal/skillconfig"
 	"github.com/tngtech/oh-my-agentic-coder/internal/supervisor"
 )
 
@@ -127,10 +128,13 @@ func runStart(args []string, env *Env) int {
 		skills = append(skills, resolved{entry: e, meta: m, abs: absDir})
 	}
 
-	// 3. Resolve secrets from keychain.
+	// 3. Resolve secrets from keychain and non-secret config from
+	//    .opencode/skill-config.json. Both feed the sidecar's env;
+	//    secrets win on collision (validated at meta load).
 	type withSecrets struct {
 		resolved
 		secrets map[string]secrets.Secret
+		config  map[string]string
 	}
 	armed := make([]withSecrets, 0, len(skills))
 	// Zero-on-exit; collect all Secrets so we can wipe them at the end.
@@ -140,6 +144,14 @@ func runStart(args []string, env *Env) int {
 			allSecrets[i].Zero()
 		}
 	}()
+	var configStore *skillconfig.Store
+	if len(skills) > 0 {
+		configStore, err = skillconfig.Load(env.Workdir)
+		if err != nil {
+			fmt.Fprintln(env.Stderr, "omac start: skill-config:", err)
+			return ExitIOError
+		}
+	}
 	for _, s := range skills {
 		m := map[string]secrets.Secret{}
 		for _, spec := range s.meta.Sidecar.Secrets {
@@ -160,7 +172,23 @@ func runStart(args []string, env *Env) int {
 			m[spec.Name] = val
 			allSecrets = append(allSecrets, val)
 		}
-		armed = append(armed, withSecrets{resolved: s, secrets: m})
+
+		cfg := map[string]string{}
+		for _, spec := range s.meta.Sidecar.Config {
+			v, ok := configStore.Get(s.entry.Name, spec.Name)
+			if !ok {
+				if spec.IsRequired() {
+					fmt.Fprintf(env.Stderr,
+						"omac start: %s: required config field %s missing. Re-run: omac register --reprompt-fields %s\n",
+						s.entry.Name, spec.Name, s.entry.Name)
+					return ExitSecretRefused
+				}
+				continue
+			}
+			cfg[spec.Name] = v
+		}
+
+		armed = append(armed, withSecrets{resolved: s, secrets: m, config: cfg})
 	}
 
 	// 4. Create runtime directory.
@@ -193,6 +221,7 @@ func runStart(args []string, env *Env) int {
 			Command:        s.meta.Sidecar.Command,
 			EnvPassthrough: s.meta.Sidecar.EnvPassthrough,
 			Secrets:        s.secrets,
+			Config:         s.config,
 			Health:         health.Defaults(),
 			LogPath:        filepath.Join(rtDir, "logs", s.entry.Name+".log"),
 			Workdir:        env.Workdir,

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	"github.com/tngtech/oh-my-agentic-coder/internal/osinfo"
 	"github.com/tngtech/oh-my-agentic-coder/internal/registry"
 	"github.com/tngtech/oh-my-agentic-coder/internal/secrets"
+	"github.com/tngtech/oh-my-agentic-coder/internal/skillconfig"
 )
 
 func runRegister(args []string, env *Env) int {
@@ -27,6 +29,9 @@ func runRegister(args []string, env *Env) int {
 		reprompt        = fs.Bool("reprompt-secrets", false, "Re-prompt for secrets even if already stored.")
 		noSecrets       = fs.Bool("no-secrets", false, "Skip all secret prompts; caller promises to supply them at start time.")
 		secretsFromPath = fs.String("secrets-from", "", "Read KEY=VALUE secrets from this file instead of prompting.")
+		repromptFields  = fs.Bool("reprompt-fields", false, "Re-prompt for non-secret config fields even if already stored.")
+		noFields        = fs.Bool("no-fields", false, "Skip all config-field prompts; caller promises to supply them at start time.")
+		fieldsFromPath  = fs.String("fields-from", "", "Read KEY=VALUE config fields from this file instead of prompting.")
 	)
 	fs.Usage = func() {
 		fmt.Fprintln(env.Stderr, "Usage: omac register <skill> [flags]")
@@ -88,6 +93,39 @@ func runRegister(args []string, env *Env) int {
 				fmt.Fprintln(env.Stderr, "omac register:", err)
 				return ExitGeneric
 			}
+		}
+	}
+
+	// 2b. Non-secret config fields. Stored in plain JSON under
+	//     <workdir>/.opencode/skill-config.json (NOT the keychain).
+	if !*noFields && len(meta.Sidecar.Config) > 0 {
+		fromFile, err := loadFieldsFile(*fieldsFromPath)
+		if err != nil {
+			fmt.Fprintln(env.Stderr, "omac register:", err)
+			return ExitConfigInvalid
+		}
+		// Single load+save cycle so partial failures don't leave half a
+		// skill's config behind. The flock further down is shared with
+		// the registry update so the whole register operation is atomic
+		// from another concurrent omac invocation's point of view.
+		if err := registry.WithLock(env.Workdir, func() error {
+			store, err := skillconfig.Load(env.Workdir)
+			if err != nil {
+				return err
+			}
+			for _, spec := range meta.Sidecar.Config {
+				if err := handleOneField(env, store, skillName, spec, *repromptFields, fromFile); err != nil {
+					return err
+				}
+			}
+			return skillconfig.Save(env.Workdir, store)
+		}); err != nil {
+			if strings.HasPrefix(err.Error(), "refused:") {
+				fmt.Fprintln(env.Stderr, "omac register:", err)
+				return ExitSecretRefused
+			}
+			fmt.Fprintln(env.Stderr, "omac register: skill-config:", err)
+			return ExitIOError
 		}
 	}
 
@@ -261,6 +299,204 @@ func validatePattern(spec config.SecretSpec, v string) error {
 		return fmt.Errorf("value for %s does not match /%s/", spec.Name, spec.Pattern)
 	}
 	return nil
+}
+
+// handleOneField implements the per-field prompting flow. Mirrors
+// handleOneSecret but writes to the skillconfig store instead of the
+// keychain, and supports typed inputs (string/bool/int/enum).
+//
+// Errors with the prefix "refused:" map to ExitSecretRefused at the
+// caller level (we reuse that exit code because the semantics — user
+// explicitly didn't supply a required value — are the same).
+func handleOneField(env *Env, store *skillconfig.Store, skill string, spec config.ConfigSpec, reprompt bool, fromFile map[string]string) error {
+	// 1. Already stored?
+	if !reprompt {
+		if _, ok := store.Get(skill, spec.Name); ok {
+			fmt.Fprintf(env.Stderr, "  [skip] %s already configured\n", spec.Name)
+			return nil
+		}
+	}
+
+	// 2. --fields-from file beats prompting.
+	if v, ok := fromFile[spec.Name]; ok {
+		canon, err := canonicalizeFieldValue(spec, v)
+		if err != nil {
+			return err
+		}
+		store.Set(skill, spec.Name, canon)
+		fmt.Fprintf(env.Stderr, "  set %s = %s (from file)\n", spec.Name, canon)
+		return nil
+	}
+
+	// 3. Env-based non-interactive supply: OMAC_CONFIG_<NAME>.
+	//    Distinct from OMAC_SECRET_<NAME> so a misuse can't accidentally
+	//    leak a secret into the world-readable skill-config.json.
+	if v, ok := os.LookupEnv("OMAC_CONFIG_" + spec.Name); ok {
+		canon, err := canonicalizeFieldValue(spec, v)
+		if err != nil {
+			return err
+		}
+		store.Set(skill, spec.Name, canon)
+		fmt.Fprintf(env.Stderr, "  set %s = %s (from $OMAC_CONFIG_%s)\n", spec.Name, canon, spec.Name)
+		return nil
+	}
+
+	// 4. Pre-computed default for the prompt: explicit `default:`,
+	//    or `default_from_env: <VAR>` if set in the host env.
+	defaultVal := spec.Default
+	defaultSource := "spec.default"
+	if defaultVal == "" && spec.DefaultFromEnv != "" {
+		if v, ok := os.LookupEnv(spec.DefaultFromEnv); ok && v != "" {
+			defaultVal = v
+			defaultSource = "$" + spec.DefaultFromEnv
+		}
+	}
+
+	// 5. Interactive prompt loop.
+	if spec.Description != "" {
+		fmt.Fprintf(env.Stderr, "  %s: %s\n", spec.Name, spec.Description)
+	}
+	if spec.EffectiveType() == config.ConfigFieldEnum {
+		fmt.Fprintf(env.Stderr, "    choices: %s\n", strings.Join(spec.Choices, ", "))
+	}
+
+	reader := bufio.NewReader(env.Stdin)
+	attempts := 0
+	for {
+		attempts++
+		var hint string
+		if defaultVal != "" {
+			hint = fmt.Sprintf(" [%s, from %s]", defaultVal, defaultSource)
+		}
+		fmt.Fprintf(env.Stderr, "  enter %s%s: ", spec.Name, hint)
+
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			// EOF on stdin (non-tty / piped). Treat as empty input
+			// for the same default/required logic as a tty.
+			line = ""
+		}
+		line = strings.TrimRight(line, "\r\n")
+
+		if line == "" {
+			if defaultVal != "" {
+				canon, err := canonicalizeFieldValue(spec, defaultVal)
+				if err != nil {
+					// Default itself is invalid (e.g. enum default not in choices,
+					// caught at meta validation but we double-check here). Don't
+					// silently store garbage.
+					return fmt.Errorf("default for %s rejected: %w", spec.Name, err)
+				}
+				store.Set(skill, spec.Name, canon)
+				fmt.Fprintf(env.Stderr, "  set %s = %s (default from %s)\n", spec.Name, canon, defaultSource)
+				return nil
+			}
+			if !spec.IsRequired() {
+				fmt.Fprintf(env.Stderr, "  [skip] %s (optional, not provided)\n", spec.Name)
+				return nil
+			}
+			if attempts >= 3 {
+				return fmt.Errorf("refused: required config field %q not supplied", spec.Name)
+			}
+			fmt.Fprintln(env.Stderr, "  [retry] required; please enter a value")
+			continue
+		}
+
+		canon, err := canonicalizeFieldValue(spec, line)
+		if err != nil {
+			if attempts >= 3 {
+				return fmt.Errorf("refused: %s rejected after %d attempts: %w", spec.Name, attempts, err)
+			}
+			fmt.Fprintf(env.Stderr, "  [retry] %s\n", err)
+			continue
+		}
+		store.Set(skill, spec.Name, canon)
+		fmt.Fprintf(env.Stderr, "  set %s = %s\n", spec.Name, canon)
+		return nil
+	}
+}
+
+// canonicalizeFieldValue type-checks a raw input string against the
+// field spec and returns the canonical string form to be stored.
+//
+// For type=string, validates against the optional regex.
+// For type=bool, accepts the spellings handled by config.ParseBoolField
+//
+//	and stores either "true" or "false".
+//
+// For type=int, requires a base-10 64-bit integer and stores the
+//
+//	strconv.FormatInt rendering.
+//
+// For type=enum, requires exact match against one of the choices.
+func canonicalizeFieldValue(spec config.ConfigSpec, raw string) (string, error) {
+	switch spec.EffectiveType() {
+	case config.ConfigFieldString:
+		if spec.Pattern != "" {
+			re, err := regexp.Compile(spec.Pattern)
+			if err != nil {
+				return "", fmt.Errorf("invalid pattern for %s: %w", spec.Name, err)
+			}
+			if !re.MatchString(raw) {
+				return "", fmt.Errorf("value for %s does not match /%s/", spec.Name, spec.Pattern)
+			}
+		}
+		return raw, nil
+	case config.ConfigFieldBool:
+		v, err := config.ParseBoolField(raw)
+		if err != nil {
+			return "", fmt.Errorf("value for %s: %w", spec.Name, err)
+		}
+		return v, nil
+	case config.ConfigFieldInt:
+		n, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+		if err != nil {
+			return "", fmt.Errorf("value for %s: not a valid integer: %q", spec.Name, raw)
+		}
+		return strconv.FormatInt(n, 10), nil
+	case config.ConfigFieldEnum:
+		for _, choice := range spec.Choices {
+			if choice == raw {
+				return raw, nil
+			}
+		}
+		return "", fmt.Errorf("value for %s must be one of: %s", spec.Name, strings.Join(spec.Choices, ", "))
+	default:
+		return "", fmt.Errorf("internal: unknown field type %q", spec.Type)
+	}
+}
+
+// loadFieldsFile reads KEY=VALUE config-field lines. Same wire format
+// as loadSecretsFile (which it intentionally duplicates rather than
+// shares, in case the two formats diverge in future — e.g. fields may
+// gain support for nested values).
+func loadFieldsFile(path string) (map[string]string, error) {
+	if path == "" {
+		return nil, nil
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("open --fields-from: %w", err)
+	}
+	defer f.Close()
+	out := map[string]string{}
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 4096), 1024*1024)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		eq := strings.IndexByte(line, '=')
+		if eq < 0 {
+			return nil, fmt.Errorf("--fields-from: missing '=' in line: %s", line)
+		}
+		out[line[:eq]] = line[eq+1:]
+	}
+	if err := sc.Err(); err != nil {
+		return nil, fmt.Errorf("read --fields-from: %w", err)
+	}
+	return out, nil
 }
 
 // loadSecretsFile reads KEY=VALUE lines. Empty lines and # comments are skipped.

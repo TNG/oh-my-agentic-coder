@@ -30,6 +30,31 @@ sidecar:
       required: false
       pattern: "^[A-Za-z0-9_-]{3,}$"
 
+  # Non-secret config fields. Stored in plain JSON under
+  # <workdir>/.opencode/skill-config.json (NOT the keychain). Surfaced
+  # to the sidecar via env vars at start time, just like secrets.
+  # Used here purely to demonstrate the four supported types.
+  config:
+    - name: ECHO_GREETING
+      type: string
+      description: "Word the /whoami endpoint uses to greet you."
+      default: "hello"
+      pattern: "^[A-Za-z][A-Za-z -]{0,30}$"
+    - name: ECHO_VERBOSE
+      type: bool
+      description: "If true, /whoami includes the request headers."
+      default: "false"
+      required: false
+    - name: ECHO_MAX_TICK
+      type: int
+      description: "Upper bound on the n= query param of /tick."
+      default: "100"
+    - name: ECHO_MODE
+      type: enum
+      description: "Behavior selector for the smoke routes."
+      choices: [demo, strict, debug]
+      default: "demo"
+
   # omac waits for GET /status → 2xx before mounting routes.
   health:
     path: /status
