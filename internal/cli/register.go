@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -91,6 +92,18 @@ func runRegister(args []string, env *Env) int {
 		declaredNames = append(declaredNames, s.Name)
 	}
 
+	// Pull the previous registration's "intentionally skipped" lists so
+	// re-register doesn't re-prompt for optional values the user
+	// already explicitly declined. This must happen before the prompt
+	// loop runs.
+	prevSkippedSecrets, prevSkippedFields := loadPrevSkipped(env.Workdir, skillName)
+
+	// We rebuild these on every register run so the registry reflects
+	// the user's most recent answers. A field that was skipped last
+	// time but answered this time correctly drops out of the list.
+	skippedSecrets := make([]string, 0)
+	skippedFields := make([]string, 0)
+
 	if !*noSecrets {
 		fromFile, err := loadSecretsFile(*secretsFromPath)
 		if err != nil {
@@ -98,7 +111,8 @@ func runRegister(args []string, env *Env) int {
 			return ExitConfigInvalid
 		}
 		for _, spec := range meta.Sidecar.Secrets {
-			if err := handleOneSecret(env, skillName, spec, *reprompt, fromFile); err != nil {
+			skipped, err := handleOneSecret(env, skillName, spec, *reprompt, prevSkippedSecrets, fromFile)
+			if err != nil {
 				// Determine exit code from err message tag.
 				if strings.HasPrefix(err.Error(), "keychain:") {
 					fmt.Fprintln(env.Stderr, "omac register:", err)
@@ -111,6 +125,16 @@ func runRegister(args []string, env *Env) int {
 				fmt.Fprintln(env.Stderr, "omac register:", err)
 				return ExitGeneric
 			}
+			if skipped {
+				skippedSecrets = append(skippedSecrets, spec.Name)
+			}
+		}
+	} else {
+		// --no-secrets: the user opted out of secret handling for this
+		// run. Preserve the previous skipped-list verbatim so a later
+		// register without --no-secrets still benefits from the memory.
+		for n := range prevSkippedSecrets {
+			skippedSecrets = append(skippedSecrets, n)
 		}
 	}
 
@@ -132,8 +156,12 @@ func runRegister(args []string, env *Env) int {
 				return err
 			}
 			for _, spec := range meta.Sidecar.Config {
-				if err := handleOneField(env, store, skillName, spec, *repromptFields, fromFile); err != nil {
+				skipped, err := handleOneField(env, store, skillName, spec, *repromptFields, prevSkippedFields, fromFile)
+				if err != nil {
 					return err
+				}
+				if skipped {
+					skippedFields = append(skippedFields, spec.Name)
 				}
 			}
 			return skillconfig.Save(env.Workdir, store)
@@ -144,6 +172,11 @@ func runRegister(args []string, env *Env) int {
 			}
 			fmt.Fprintln(env.Stderr, "omac register: skill-config:", err)
 			return ExitIOError
+		}
+	} else if *noFields {
+		// Symmetric to the --no-secrets branch above.
+		for n := range prevSkippedFields {
+			skippedFields = append(skippedFields, n)
 		}
 	}
 
@@ -198,12 +231,18 @@ func runRegister(args []string, env *Env) int {
 		if src.Kind == "workdir" {
 			stored = rel(env.Workdir, skillDir)
 		}
+		// Sort for stable on-disk diffs; nil out empty slices so the
+		// omitempty JSON tag actually elides them.
+		skippedSecretsOut := dedupSorted(skippedSecrets)
+		skippedFieldsOut := dedupSorted(skippedFields)
 		reg.Upsert(registry.Entry{
 			Name:                skillName,
 			SkillDir:            stored,
 			BundleHash:          bundleHash,
 			RegisteredAt:        time.Now().UTC(),
 			DeclaredSecretNames: declaredNames,
+			SkippedSecretNames:  skippedSecretsOut,
+			SkippedConfigFields: skippedFieldsOut,
 		})
 		return registry.Save(env.Workdir, reg)
 	}); err != nil {
@@ -224,46 +263,114 @@ func rel(base, path string) string {
 	return r
 }
 
+// loadPrevSkipped looks up the previously-recorded skip lists for
+// skill in the workdir's registry. Both maps are non-nil even when
+// the skill is unregistered or has no prior skips, so call sites can
+// always do `prev[name]` without a nil check.
+//
+// Failures (registry parse errors, missing file, etc.) are swallowed
+// and treated as "no prior skips" — re-prompting too much on a corrupt
+// registry is the safer failure mode than silently honoring stale
+// skips, and the registry update step further down will surface the
+// real error if there is one.
+func loadPrevSkipped(workdir, skill string) (secrets, fields map[string]bool) {
+	secrets = map[string]bool{}
+	fields = map[string]bool{}
+	reg, err := registry.Load(workdir)
+	if err != nil || reg == nil {
+		return
+	}
+	e, _ := reg.Find(skill)
+	if e == nil {
+		return
+	}
+	for _, n := range e.SkippedSecretNames {
+		secrets[n] = true
+	}
+	for _, n := range e.SkippedConfigFields {
+		fields[n] = true
+	}
+	return
+}
+
+// dedupSorted returns a stable, deduplicated, sorted copy of names, or
+// nil for an empty input so JSON `omitempty` actually elides it.
+func dedupSorted(names []string) []string {
+	if len(names) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(names))
+	out := make([]string, 0, len(names))
+	for _, n := range names {
+		if _, ok := seen[n]; ok {
+			continue
+		}
+		seen[n] = struct{}{}
+		out = append(out, n)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // handleOneSecret implements the per-secret flow from §16.4.
-func handleOneSecret(env *Env, skill string, spec config.SecretSpec, reprompt bool, fromFile map[string]string) error {
+//
+// The bool return reports whether the user explicitly skipped an
+// optional secret on this run (entered an empty line, no
+// default_from_env, required: false). Callers persist the names of
+// skipped optional secrets in the registry so a later
+// `omac register --force <skill>` doesn't pester the user about the
+// same optional value over and over. `--reprompt-secrets` ignores the
+// memory and resets it.
+//
+// The "already in keychain" branch and the "from --secrets-from / env"
+// branches all return skipped=false: they record actual values, which
+// take priority over any previous skip.
+func handleOneSecret(env *Env, skill string, spec config.SecretSpec, reprompt bool, prevSkipped map[string]bool, fromFile map[string]string) (bool, error) {
 	// 1. Already in keychain?
 	if !reprompt {
 		present, err := keychain.Has(skill, spec.Name)
 		if err != nil {
-			return fmt.Errorf("keychain: %w", err)
+			return false, fmt.Errorf("keychain: %w", err)
 		}
 		if present {
 			fmt.Fprintf(env.Stderr, "  [skip] %s already in keychain\n", spec.Name)
-			return nil
+			return false, nil
+		}
+		// 1b. Previously skipped on a prior register run? Honor that
+		//     unless --reprompt-secrets is set. This is the fix for
+		//     "register --force re-asks every optional secret".
+		if prevSkipped[spec.Name] && !spec.IsRequired() {
+			fmt.Fprintf(env.Stderr, "  [skip] %s (optional, previously declined)\n", spec.Name)
+			return true, nil
 		}
 	}
 
 	// 2. --secrets-from file takes precedence over prompting.
 	if v, ok := fromFile[spec.Name]; ok {
 		if err := validatePattern(spec, v); err != nil {
-			return err
+			return false, err
 		}
 		s := secrets.NewSecretString(v)
 		defer s.Zero()
 		if err := keychain.Set(skill, spec.Name, s); err != nil {
-			return fmt.Errorf("keychain: %w", err)
+			return false, fmt.Errorf("keychain: %w", err)
 		}
 		fmt.Fprintf(env.Stderr, "  stored %s (from file)\n", spec.Name)
-		return nil
+		return false, nil
 	}
 
 	// 3. Env-based non-interactive supply: OMAC_SECRET_<NAME>.
 	if v, ok := os.LookupEnv("OMAC_SECRET_" + spec.Name); ok {
 		if err := validatePattern(spec, v); err != nil {
-			return err
+			return false, err
 		}
 		s := secrets.NewSecretString(v)
 		defer s.Zero()
 		if err := keychain.Set(skill, spec.Name, s); err != nil {
-			return fmt.Errorf("keychain: %w", err)
+			return false, fmt.Errorf("keychain: %w", err)
 		}
 		fmt.Fprintf(env.Stderr, "  stored %s (from OMAC_SECRET_%s)\n", spec.Name, spec.Name)
-		return nil
+		return false, nil
 	}
 
 	// 4. default_from_env offers a pre-filled default on the prompt.
@@ -287,7 +394,7 @@ func handleOneSecret(env *Env, skill string, spec config.SecretSpec, reprompt bo
 		prompt := fmt.Sprintf("  enter %s%s: ", spec.Name, defaultHint)
 		value, err := secrets.ReadPassword(prompt)
 		if err != nil {
-			return fmt.Errorf("read %s: %w", spec.Name, err)
+			return false, fmt.Errorf("read %s: %w", spec.Name, err)
 		}
 		// Empty input → accept default_from_env if offered, else treat per `required`.
 		if value.IsEmpty() {
@@ -297,19 +404,19 @@ func handleOneSecret(env *Env, skill string, spec config.SecretSpec, reprompt bo
 					s := secrets.NewSecretString(v)
 					if err := keychain.Set(skill, spec.Name, s); err != nil {
 						s.Zero()
-						return fmt.Errorf("keychain: %w", err)
+						return false, fmt.Errorf("keychain: %w", err)
 					}
 					s.Zero()
 					fmt.Fprintf(env.Stderr, "  stored %s (from $%s)\n", spec.Name, spec.DefaultFromEnv)
-					return nil
+					return false, nil
 				}
 			}
 			if !spec.IsRequired() {
 				fmt.Fprintf(env.Stderr, "  [skip] %s (optional, not provided)\n", spec.Name)
-				return nil
+				return true, nil
 			}
 			if attempts >= 3 {
-				return fmt.Errorf("refused: required secret %q not supplied", spec.Name)
+				return false, fmt.Errorf("refused: required secret %q not supplied", spec.Name)
 			}
 			fmt.Fprintln(env.Stderr, "  [retry] required; please enter a value")
 			continue
@@ -317,18 +424,18 @@ func handleOneSecret(env *Env, skill string, spec config.SecretSpec, reprompt bo
 		if err := validatePattern(spec, value.ExposeString()); err != nil {
 			value.Zero()
 			if attempts >= 3 {
-				return fmt.Errorf("refused: %s does not match pattern after %d attempts", spec.Name, attempts)
+				return false, fmt.Errorf("refused: %s does not match pattern after %d attempts", spec.Name, attempts)
 			}
 			fmt.Fprintf(env.Stderr, "  [retry] %s\n", err)
 			continue
 		}
 		if err := keychain.Set(skill, spec.Name, value); err != nil {
 			value.Zero()
-			return fmt.Errorf("keychain: %w", err)
+			return false, fmt.Errorf("keychain: %w", err)
 		}
 		value.Zero()
 		fmt.Fprintf(env.Stderr, "  stored %s\n", spec.Name)
-		return nil
+		return false, nil
 	}
 }
 
@@ -350,15 +457,28 @@ func validatePattern(spec config.SecretSpec, v string) error {
 // handleOneSecret but writes to the skillconfig store instead of the
 // keychain, and supports typed inputs (string/bool/int/enum).
 //
+// The bool return reports whether the user explicitly skipped an
+// optional field on this run (entered an empty line, no default,
+// required: false). Symmetric to handleOneSecret. See its doc comment.
+//
 // Errors with the prefix "refused:" map to ExitSecretRefused at the
 // caller level (we reuse that exit code because the semantics — user
 // explicitly didn't supply a required value — are the same).
-func handleOneField(env *Env, store *skillconfig.Store, skill string, spec config.ConfigSpec, reprompt bool, fromFile map[string]string) error {
+func handleOneField(env *Env, store *skillconfig.Store, skill string, spec config.ConfigSpec, reprompt bool, prevSkipped map[string]bool, fromFile map[string]string) (bool, error) {
 	// 1. Already stored?
 	if !reprompt {
 		if _, ok := store.Get(skill, spec.Name); ok {
 			fmt.Fprintf(env.Stderr, "  [skip] %s already configured\n", spec.Name)
-			return nil
+			return false, nil
+		}
+		// 1b. Previously skipped on a prior register run? Honor that
+		//     unless --reprompt-fields is set. Without this branch
+		//     `omac register --force <skill>` re-asks every optional
+		//     field on every run, which the user reasonably treats as
+		//     a regression.
+		if prevSkipped[spec.Name] && !spec.IsRequired() {
+			fmt.Fprintf(env.Stderr, "  [skip] %s (optional, previously declined)\n", spec.Name)
+			return true, nil
 		}
 	}
 
@@ -366,11 +486,11 @@ func handleOneField(env *Env, store *skillconfig.Store, skill string, spec confi
 	if v, ok := fromFile[spec.Name]; ok {
 		canon, err := canonicalizeFieldValue(spec, v)
 		if err != nil {
-			return err
+			return false, err
 		}
 		store.Set(skill, spec.Name, canon)
 		fmt.Fprintf(env.Stderr, "  set %s = %s (from file)\n", spec.Name, canon)
-		return nil
+		return false, nil
 	}
 
 	// 3. Env-based non-interactive supply: OMAC_CONFIG_<NAME>.
@@ -379,11 +499,11 @@ func handleOneField(env *Env, store *skillconfig.Store, skill string, spec confi
 	if v, ok := os.LookupEnv("OMAC_CONFIG_" + spec.Name); ok {
 		canon, err := canonicalizeFieldValue(spec, v)
 		if err != nil {
-			return err
+			return false, err
 		}
 		store.Set(skill, spec.Name, canon)
 		fmt.Fprintf(env.Stderr, "  set %s = %s (from $OMAC_CONFIG_%s)\n", spec.Name, canon, spec.Name)
-		return nil
+		return false, nil
 	}
 
 	// 4. Pre-computed default for the prompt: explicit `default:`,
@@ -430,18 +550,18 @@ func handleOneField(env *Env, store *skillconfig.Store, skill string, spec confi
 					// Default itself is invalid (e.g. enum default not in choices,
 					// caught at meta validation but we double-check here). Don't
 					// silently store garbage.
-					return fmt.Errorf("default for %s rejected: %w", spec.Name, err)
+					return false, fmt.Errorf("default for %s rejected: %w", spec.Name, err)
 				}
 				store.Set(skill, spec.Name, canon)
 				fmt.Fprintf(env.Stderr, "  set %s = %s (default from %s)\n", spec.Name, canon, defaultSource)
-				return nil
+				return false, nil
 			}
 			if !spec.IsRequired() {
 				fmt.Fprintf(env.Stderr, "  [skip] %s (optional, not provided)\n", spec.Name)
-				return nil
+				return true, nil
 			}
 			if attempts >= 3 {
-				return fmt.Errorf("refused: required config field %q not supplied", spec.Name)
+				return false, fmt.Errorf("refused: required config field %q not supplied", spec.Name)
 			}
 			fmt.Fprintln(env.Stderr, "  [retry] required; please enter a value")
 			continue
@@ -450,14 +570,14 @@ func handleOneField(env *Env, store *skillconfig.Store, skill string, spec confi
 		canon, err := canonicalizeFieldValue(spec, line)
 		if err != nil {
 			if attempts >= 3 {
-				return fmt.Errorf("refused: %s rejected after %d attempts: %w", spec.Name, attempts, err)
+				return false, fmt.Errorf("refused: %s rejected after %d attempts: %w", spec.Name, attempts, err)
 			}
 			fmt.Fprintf(env.Stderr, "  [retry] %s\n", err)
 			continue
 		}
 		store.Set(skill, spec.Name, canon)
 		fmt.Fprintf(env.Stderr, "  set %s = %s\n", spec.Name, canon)
-		return nil
+		return false, nil
 	}
 }
 

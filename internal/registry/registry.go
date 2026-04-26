@@ -38,6 +38,17 @@ type Entry struct {
 	BundleHash          string    `json:"bundle_hash"`
 	RegisteredAt        time.Time `json:"registered_at"`
 	DeclaredSecretNames []string  `json:"declared_secret_names,omitempty"`
+	// SkippedSecretNames records optional secrets the user explicitly
+	// declined to provide at register time (entered an empty value at
+	// the prompt). Re-registration must NOT re-ask for these unless
+	// --reprompt-secrets is passed; otherwise every `omac register
+	// --force <skill>` would force the user to mash Enter through every
+	// optional secret again.
+	SkippedSecretNames []string `json:"skipped_secret_names,omitempty"`
+	// SkippedConfigFields is the analogous list for non-secret config
+	// fields (skill-config.yaml). Same rationale as
+	// SkippedSecretNames; cleared by --reprompt-fields.
+	SkippedConfigFields []string `json:"skipped_config_fields,omitempty"`
 }
 
 // Path returns the registry file path for a given workdir.

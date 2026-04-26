@@ -82,8 +82,13 @@ func runSecretsSet(args []string, env *Env) int {
 		fmt.Fprintf(env.Stderr, "omac secrets set: %q does not declare a secret named %q\n", skill, name)
 		return ExitConfigInvalid
 	}
-	// Always re-prompt.
-	if err := handleOneSecret(env, skill, spec, true, nil); err != nil {
+	// Always re-prompt. The prev-skipped map is irrelevant here because
+	// reprompt=true bypasses both the keychain-cache check and the
+	// previously-declined check inside handleOneSecret. The skipped
+	// return value is also irrelevant: `omac secrets set` is a
+	// pinpoint operation on a single secret and does not touch the
+	// registry's skip list — that is solely owned by `omac register`.
+	if _, err := handleOneSecret(env, skill, spec, true, nil, nil); err != nil {
 		fmt.Fprintln(env.Stderr, "omac secrets set:", err)
 		return ExitKeychainError
 	}
