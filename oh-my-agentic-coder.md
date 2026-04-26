@@ -471,11 +471,14 @@ All commands are idempotent unless noted. All accept `--workdir <dir>` (default:
    - `--reprompt-secrets` forces re-prompting even if values already exist in the keychain.
    - `--no-secrets` skips the keychain path entirely; the user commits to providing secrets via `env_passthrough` at start time (useful in CI).
 4. Detects OS (`macos` / `linux` / `wsl`) and looks up `sidecar.install_scripts.<os>`.
-5. **Prints** (never executes):
-   - The absolute path of the install script.
-   - The full script contents (with a header like `# ===== BEGIN install.macos.sh =====`).
-   - The recommended invocation: `bash <path>`.
-   - A reminder to inspect/modify before running.
+5. Surfaces (never executes) the install script for the host OS:
+   - Prints the absolute path of the install script.
+   - Prints the recommended invocation: `bash <path>`.
+   - Prints a reminder that omac will not run it.
+   The script body itself is NOT dumped to the terminal; users inspect
+   the file and run it themselves. If `meta.yaml` declares an install
+   script for this OS but the file is missing on disk, a `[warn]` is
+   emitted but registration proceeds.
 6. Appends the skill to `.opencode/sidecar.json` (atomic rename), recording the list of secret **names** (never values) that were populated. If already present with a matching `bundle_hash`, is a no-op for metadata. If present with a different hash, prints a diff and updates on `--force`.
 
 Exit codes: `0` success, `2` no sidecar block, `3` schema validation failed, `4` skill not installed, `5` registry write failed, `8` keychain access failed, `9` required secret refused by user.
@@ -560,7 +563,7 @@ user: omac register slack
  │    ├─ default_from_env hit?    → take value, confirm with user
  │    └─ else                     → masked prompt, validate pattern, store in keychain
  ├─ detect OS → select install_scripts.macos
- ├─ print: install-script path + contents + "run it yourself"
+ ├─ print: install-script path + "run it yourself" hint (no body dump)
  ├─ acquire .opencode/sidecar.json.lock (flock)
  ├─ read registry → append entry
  │   (name, skill_dir, bundle_hash, timestamp, declared_secret_names[])

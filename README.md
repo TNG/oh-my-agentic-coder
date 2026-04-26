@@ -144,8 +144,9 @@ omac secrets set slack SLACK_BOT_TOKEN
 omac [--workdir <dir>] <subcommand> [flags] [args]
 
   register     Validate meta, prompt for secrets → keychain, prompt for
-               config fields → skill-config.yaml, print install script,
-               add to sidecar.json. Flags:
+               config fields → skill-config.yaml, surface the install
+               script path (omac never runs it), add to sidecar.json.
+               Flags:
                  --force                 replace existing registry entry
                  --reprompt-secrets      re-prompt even if secrets exist
                  --no-secrets            skip all secret prompts

@@ -128,7 +128,9 @@ sidecar:
     timeout_ms: 4000               # default 5000
     interval_ms: 200               # default 500
 
-  # Per-OS install scripts. omac PRINTS these at register time; it never runs them.
+  # Per-OS install scripts. omac SURFACES these at register time
+  # (path + run-it-yourself hint); it never executes them, and as of
+  # the current omac it no longer dumps their contents to the terminal.
   # Use them to document `brew install …` / `apt install …` / build steps.
   install_scripts:
     macos: install/install.macos.sh
@@ -213,8 +215,9 @@ automatically. See `echo-rest`'s `/tick` route for a worked example.
 
 ## 5. Install scripts
 
-`omac register <skill>` prints `install/install.<os>.sh` to stdout but
-**never executes it**. Keep these scripts:
+`omac register <skill>` surfaces the path of `install/install.<os>.sh`
+and reminds the user to run it manually (it does NOT print the script
+body, and never executes it). Keep these scripts:
 
 - Idempotent.
 - Free of side effects on `$HOME` or globally installed packages where possible.

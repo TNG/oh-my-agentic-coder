@@ -129,15 +129,33 @@ func runRegister(args []string, env *Env) int {
 		}
 	}
 
-	// 3. Install-script print (never executed).
+	// 3. Install-script discovery. We surface the path so users know
+	//    where to look and what to run, but we do NOT print the body
+	//    of the script — the dump was historically useful when most
+	//    skills shipped tiny one-liner scripts; modern skills often
+	//    have hundreds of lines of brew/apt logic, and the noise hurt
+	//    more than the discoverability helped. omac never runs the
+	//    script for you; that's still entirely the user's call.
 	host := osinfo.Detect()
-	scriptRel := meta.Sidecar.InstallScriptFor(host)
-	if scriptRel == "" {
-		fmt.Fprintf(env.Stdout, "\n[info] skill %q declares no install script for OS %q; assuming the sidecar is ready to run.\n", skillName, host)
-	} else {
+	if scriptRel := meta.Sidecar.InstallScriptFor(host); scriptRel != "" {
 		scriptAbs := filepath.Join(skillDir, scriptRel)
-		if err := printInstallScript(env, scriptAbs, host); err != nil {
-			fmt.Fprintln(env.Stderr, "omac register: print install script:", err)
+		if _, statErr := os.Stat(scriptAbs); statErr == nil {
+			fmt.Fprintf(env.Stdout,
+				"\n[info] install script for %s: %s\n"+
+					"       omac does not run this; inspect it and run it yourself if needed:\n"+
+					"         bash %s\n",
+				host, scriptAbs, scriptAbs)
+		} else if errors.Is(statErr, os.ErrNotExist) {
+			// meta.yaml declares an install script but the file isn't on
+			// disk. Surface this as a hint instead of a hard error
+			// because the meta has already been validated and lots of
+			// skills reference an install_scripts: entry without
+			// shipping every OS variant.
+			fmt.Fprintf(env.Stderr,
+				"[warn] install script for %s declared in meta.yaml but missing on disk: %s\n",
+				host, scriptAbs)
+		} else {
+			fmt.Fprintln(env.Stderr, "omac register: stat install script:", statErr)
 			return ExitIOError
 		}
 	}
@@ -528,25 +546,4 @@ func loadSecretsFile(path string) (map[string]string, error) {
 		return nil, fmt.Errorf("read --secrets-from: %w", err)
 	}
 	return out, nil
-}
-
-// printInstallScript prints the script path + full contents. Never executes.
-func printInstallScript(env *Env, path string, host osinfo.OS) error {
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return err
-	}
-	sep := strings.Repeat("=", 70)
-	fmt.Fprintf(env.Stdout, "\n%s\n", sep)
-	fmt.Fprintf(env.Stdout, "Install script for OS %q: %s\n", host, path)
-	fmt.Fprintln(env.Stdout, "omac does not run this for you. Inspect it, then run:")
-	fmt.Fprintf(env.Stdout, "  bash %s\n", path)
-	fmt.Fprintf(env.Stdout, "%s\n", sep)
-	fmt.Fprintln(env.Stdout, "# ===== BEGIN install script =====")
-	_, _ = env.Stdout.Write(raw)
-	if len(raw) > 0 && raw[len(raw)-1] != '\n' {
-		fmt.Fprintln(env.Stdout)
-	}
-	fmt.Fprintln(env.Stdout, "# ===== END install script =====")
-	return nil
 }
