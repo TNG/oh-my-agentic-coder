@@ -168,7 +168,14 @@ func loadRegisteredMeta(env *Env, skill string) (*config.Meta, error) {
 	if entry == nil {
 		return nil, fmt.Errorf("skill %q is not registered in this workdir", skill)
 	}
-	return config.LoadMeta(filepath.Join(env.Workdir, entry.SkillDir, "meta.yaml"))
+	// SkillDir is stored relative to the workdir for workdir-local
+	// skills and absolute for user-global ones; only join when the
+	// stored path isn't already absolute.
+	absDir := entry.SkillDir
+	if !filepath.IsAbs(absDir) {
+		absDir = filepath.Join(env.Workdir, absDir)
+	}
+	return config.LoadMeta(filepath.Join(absDir, "meta.yaml"))
 }
 
 func findSecret(m *config.Meta, name string) (config.SecretSpec, bool) {

@@ -43,10 +43,28 @@ it only gets a socket path.
 
 ## 2. Skill on-disk layout
 
-A skill lives under `.opencode/skills/<name>/` in the workdir:
+A skill is a directory containing a `meta.yaml`. omac looks in two
+locations, in this order:
+
+1. **Workdir-local** — `<workdir>/.opencode/skills/<name>/`. The
+   project-specific layer; what most users mean by "their skills".
+2. **User-global** — `$XDG_CONFIG_HOME/opencode/skills/<name>/`
+   (default `~/.config/opencode/skills/<name>/`). Skills that you want
+   available across every project on your machine. As a legacy
+   fallback, `~/.opencode/skills/<name>/` is also consulted.
+
+If a skill name exists in both layers, the **workdir copy wins** (so
+a project can fork a user-global skill without touching the global
+one). Registration data — `sidecar.json`, `skill-config.yaml`, and OS
+keychain entries — always lives in the workdir, regardless of which
+layer the source came from. Each project explicitly opts into a
+user-global skill by running `omac register <name>` in that project's
+workdir.
+
+Inside either location the per-skill layout is the same:
 
 ```
-.opencode/skills/<name>/
+<location>/skills/<name>/
 ├── meta.yaml                 required — schema below
 ├── <your sidecar>            any executable: python, node, go binary, bash, …
 └── install/
@@ -346,7 +364,8 @@ checked:
    tree.
 
 2. **Unregistered skill on disk** (a directory with `meta.yaml` under
-   `.opencode/skills/` that omac has never seen). Refuses to start;
+   *either* skill source — the workdir-local layer or the user-global
+   layer, see §2 — that omac has never seen). Refuses to start;
    prints the exact register command for each one. Re-registration is
    mandatory because it's the only point at which secret-prompting and
    config-prompting happen.

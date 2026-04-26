@@ -20,6 +20,7 @@ import (
 	"github.com/tngtech/oh-my-agentic-coder/internal/sandbox"
 	"github.com/tngtech/oh-my-agentic-coder/internal/secrets"
 	"github.com/tngtech/oh-my-agentic-coder/internal/skillconfig"
+	"github.com/tngtech/oh-my-agentic-coder/internal/skillsource"
 	"github.com/tngtech/oh-my-agentic-coder/internal/supervisor"
 )
 
@@ -543,40 +544,27 @@ func autoDeregisterMissing(env *Env, reg *registry.Registry) ([]string, error) {
 	return pruned, nil
 }
 
-// findUnregisteredSkills returns the names of every directory under
-// <workdir>/.opencode/skills/ that contains a meta.yaml but is NOT
-// in the registry. Names are sorted for deterministic error output.
+// findUnregisteredSkills returns the names of every skill discovered
+// across BOTH the workdir-local layer (<workdir>/.opencode/skills) and
+// the user-global layer ($XDG_CONFIG_HOME/opencode/skills, with
+// ~/.opencode/skills as a legacy fallback) that has a meta.yaml but
+// is NOT in the registry. Names are sorted for deterministic output.
 //
-// The check is intentionally limited to top-level entries directly
-// under skills/ — nested layouts aren't supported by `omac register`
-// and would cause confusion if surfaced here.
+// Workdir-local skills win over user-global skills when both layers
+// have the same name (skillsource.Discover handles dedup internally).
 func findUnregisteredSkills(workdir string, reg *registry.Registry) ([]string, error) {
-	skillsRoot := filepath.Join(workdir, ".opencode", "skills")
-	entries, err := os.ReadDir(skillsRoot)
+	discovered, err := skillsource.Discover(workdir)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("read %s: %w", skillsRoot, err)
+		return nil, err
 	}
 	registered := map[string]struct{}{}
 	for _, e := range reg.Registered {
 		registered[e.Name] = struct{}{}
 	}
 	var out []string
-	for _, ent := range entries {
-		if !ent.IsDir() {
-			continue
-		}
-		// A directory only counts as a skill if it carries a meta.yaml.
-		// This excludes incidental subdirectories like "_template/"
-		// that the user might keep alongside real skills.
-		metaPath := filepath.Join(skillsRoot, ent.Name(), "meta.yaml")
-		if _, err := os.Stat(metaPath); err != nil {
-			continue
-		}
-		if _, ok := registered[ent.Name()]; !ok {
-			out = append(out, ent.Name())
+	for _, e := range discovered {
+		if _, ok := registered[e.Name]; !ok {
+			out = append(out, e.Name)
 		}
 	}
 	sort.Strings(out)

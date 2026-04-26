@@ -19,6 +19,7 @@ import (
 	"github.com/tngtech/oh-my-agentic-coder/internal/registry"
 	"github.com/tngtech/oh-my-agentic-coder/internal/secrets"
 	"github.com/tngtech/oh-my-agentic-coder/internal/skillconfig"
+	"github.com/tngtech/oh-my-agentic-coder/internal/skillsource"
 )
 
 func runRegister(args []string, env *Env) int {
@@ -45,8 +46,25 @@ func runRegister(args []string, env *Env) int {
 		return ExitMisuse
 	}
 	skillName := fs.Arg(0)
-	skillDir := filepath.Join(env.Workdir, ".opencode", "skills", skillName)
+
+	// Locate the skill in the workdir-local layer first, then fall
+	// back to user-global ($XDG_CONFIG_HOME/opencode/skills, then
+	// ~/.opencode/skills). The path that wins is recorded in the
+	// registry; downstream code (start, config show) just uses
+	// SkillDir verbatim, so the source layer is transparent after
+	// registration.
+	skillDir, src, err := skillsource.Resolve(env.Workdir, skillName)
+	if err != nil {
+		fmt.Fprintln(env.Stderr, "omac register:", err)
+		if errors.Is(err, iofs.ErrNotExist) {
+			return ExitPrerequisiteMissing
+		}
+		return ExitConfigInvalid
+	}
 	metaPath := filepath.Join(skillDir, "meta.yaml")
+	if src.Kind != "workdir" {
+		fmt.Fprintf(env.Stdout, "[info] using user-global skill source: %s\n", skillDir)
+	}
 
 	// 1. Load + validate meta.
 	meta, err := config.LoadMeta(metaPath)
@@ -171,9 +189,18 @@ func runRegister(args []string, env *Env) int {
 				return fmt.Errorf("already registered with a different bundle_hash; pass --force to update")
 			}
 		}
+		// SkillDir is stored relative to the workdir for workdir-local
+		// skills (so the registry stays portable when the project is
+		// moved or shared) and absolute for everything else
+		// (user-global, ad-hoc paths). Downstream code joins with
+		// env.Workdir only when the stored path is not already absolute.
+		stored := skillDir
+		if src.Kind == "workdir" {
+			stored = rel(env.Workdir, skillDir)
+		}
 		reg.Upsert(registry.Entry{
 			Name:                skillName,
-			SkillDir:            rel(env.Workdir, skillDir),
+			SkillDir:            stored,
 			BundleHash:          bundleHash,
 			RegisteredAt:        time.Now().UTC(),
 			DeclaredSecretNames: declaredNames,

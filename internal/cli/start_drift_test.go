@@ -15,6 +15,17 @@ import (
 	"github.com/tngtech/oh-my-agentic-coder/internal/registry"
 )
 
+// isolateHome points HOME and XDG_CONFIG_HOME at empty temp dirs so
+// findUnregisteredSkills's user-global scan doesn't pick up real
+// skills installed under the developer's actual ~/.config/opencode.
+// All tests that don't deliberately stage user-global content should
+// call this; otherwise their assertions become machine-dependent.
+func isolateHome(t *testing.T) {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+}
+
 // stageWorkdir creates a workdir layout suitable for the drift
 // helpers: .opencode/ exists, with optional skill directories under
 // .opencode/skills/<name>/ each containing a meta.yaml.
@@ -107,6 +118,7 @@ func TestAutoDeregisterMissing_EmptyRegistry(t *testing.T) {
 }
 
 func TestFindUnregisteredSkills_FindsNew(t *testing.T) {
+	isolateHome(t)
 	dir := stageWorkdir(t, "alpha", "bravo", "charlie")
 	reg := &registry.Registry{Registered: []registry.Entry{
 		{Name: "alpha"}, // bravo and charlie are unregistered
@@ -122,6 +134,7 @@ func TestFindUnregisteredSkills_FindsNew(t *testing.T) {
 }
 
 func TestFindUnregisteredSkills_AllRegistered(t *testing.T) {
+	isolateHome(t)
 	dir := stageWorkdir(t, "alpha", "bravo")
 	reg := &registry.Registry{Registered: []registry.Entry{
 		{Name: "alpha"},
@@ -137,6 +150,7 @@ func TestFindUnregisteredSkills_AllRegistered(t *testing.T) {
 }
 
 func TestFindUnregisteredSkills_SkipsDirsWithoutMetaYaml(t *testing.T) {
+	isolateHome(t)
 	dir := stageWorkdir(t, "alpha")
 	// Stage a directory under skills/ but without a meta.yaml. It's
 	// an incidental subdirectory (e.g. _template/), not a real skill,
@@ -158,6 +172,7 @@ func TestFindUnregisteredSkills_NoSkillsDir(t *testing.T) {
 	// Workdir without an .opencode/skills/ at all should yield nil
 	// (no error). This is the fresh-clone case before any skill has
 	// been installed.
+	isolateHome(t)
 	dir := t.TempDir()
 	got, err := findUnregisteredSkills(dir, &registry.Registry{})
 	if err != nil {
@@ -165,5 +180,64 @@ func TestFindUnregisteredSkills_NoSkillsDir(t *testing.T) {
 	}
 	if got != nil {
 		t.Errorf("findUnregisteredSkills with no skills dir = %v, want nil", got)
+	}
+}
+
+// TestFindUnregisteredSkills_SeesUserGlobal proves that an
+// unregistered skill in the user-global layer is surfaced exactly
+// like an unregistered workdir-local one. The user must explicitly
+// `omac register` it before `omac start` is willing to proceed.
+func TestFindUnregisteredSkills_SeesUserGlobal(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+
+	wd := stageWorkdir(t, "alpha") // alpha registered below
+	globalRoot := filepath.Join(home, ".config", "opencode", "skills")
+	if err := os.MkdirAll(filepath.Join(globalRoot, "bravo"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(globalRoot, "bravo", "meta.yaml"), []byte("name: bravo\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	reg := &registry.Registry{Registered: []registry.Entry{{Name: "alpha"}}}
+	got, err := findUnregisteredSkills(wd, reg)
+	if err != nil {
+		t.Fatalf("findUnregisteredSkills: %v", err)
+	}
+	want := []string{"bravo"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("findUnregisteredSkills = %v, want %v", got, want)
+	}
+}
+
+// TestFindUnregisteredSkills_WorkdirHidesUserGlobalDup proves that
+// when the same skill name exists in both layers, the workdir version
+// shadows the user-global one. Dedup happens inside skillsource.
+func TestFindUnregisteredSkills_WorkdirHidesUserGlobalDup(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+
+	// Workdir-local 'shared' is registered; user-global 'shared' should
+	// be hidden by workdir precedence and must NOT appear as
+	// unregistered (it's the same logical skill).
+	wd := stageWorkdir(t, "shared")
+	globalRoot := filepath.Join(home, ".config", "opencode", "skills", "shared")
+	if err := os.MkdirAll(globalRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(globalRoot, "meta.yaml"), []byte("name: shared\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	reg := &registry.Registry{Registered: []registry.Entry{{Name: "shared"}}}
+	got, err := findUnregisteredSkills(wd, reg)
+	if err != nil {
+		t.Fatalf("findUnregisteredSkills: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("user-global dup should be hidden by workdir; got %v", got)
 	}
 }

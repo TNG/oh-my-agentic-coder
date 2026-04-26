@@ -64,13 +64,20 @@ func runList(_ []string, env *Env) int {
 	for _, e := range reg.Registered {
 		mount := e.Name
 		binaryPresent := "?"
-		metaPath := filepath.Join(env.Workdir, e.SkillDir, "meta.yaml")
+		// SkillDir is stored relative to the workdir for workdir-local
+		// skills and absolute for user-global ones; only join when the
+		// stored path isn't already absolute.
+		absDir := e.SkillDir
+		if !filepath.IsAbs(absDir) {
+			absDir = filepath.Join(env.Workdir, absDir)
+		}
+		metaPath := filepath.Join(absDir, "meta.yaml")
 		if m, err := config.LoadMeta(metaPath); err == nil && m.Sidecar != nil {
 			mount = m.Sidecar.MountOrDefault(e.Name)
 			if candidate := skillArtifactCandidate(m.Sidecar.Command); candidate != "" {
 				abs := candidate
 				if !filepath.IsAbs(abs) {
-					abs = filepath.Join(env.Workdir, e.SkillDir, abs)
+					abs = filepath.Join(absDir, abs)
 				}
 				if _, err := os.Stat(abs); err == nil {
 					binaryPresent = "yes"
