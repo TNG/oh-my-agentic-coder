@@ -120,3 +120,12 @@ func TestOmacEnvName(t *testing.T) {
 		}
 	}
 }
+
+func TestOmacEnvValuesHaveNoTrailingSlash(t *testing.T) {
+	if got, want := OmacTCPEnvValue("tng-slack", 41017), "http://127.0.0.1:41017/tng-slack"; got != want {
+		t.Errorf("OmacTCPEnvValue() = %q, want %q", got, want)
+	}
+	if got, want := OmacEnvValue("tng-slack", "/tmp/omac/bridge.sock"), "http+unix://%2Ftmp%2Fomac%2Fbridge.sock/tng-slack"; got != want {
+		t.Errorf("OmacEnvValue() = %q, want %q", got, want)
+	}
+}

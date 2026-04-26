@@ -3,10 +3,11 @@
 # agent inside a real sandbox. Hits the echo-rest sidecar via two
 # transports:
 #
-#   1. TCP loopback ($OMAC_ECHO_BASE = http://127.0.0.1:<port>/echo/) —
+#   1. TCP loopback ($OMAC_ECHO_BASE = http://127.0.0.1:<port>/echo) —
 #      this is the form that works under nono proxy mode (auto-activated
 #      by tng-sandbox.json's custom_credentials block) thanks to
-#      --open-port in the launcher profile.
+#      --open-port in the launcher profile. NB: the value has no trailing
+#      slash; callers append "/<route>" themselves.
 #
 #   2. Unix socket ($OMAC_ECHO_SOCKET_BASE = http+unix://...) — the
 #      lower-overhead form. Works in --no-sandbox runs and in nono on
@@ -44,18 +45,18 @@ echo
 echo "############# TCP transport ($OMAC_BASE) #############"
 
 section "GET /echo/status (TCP)"
-try curl -sS "${OMAC_ECHO_BASE}status"
+try curl -sS "${OMAC_ECHO_BASE}/status"
 echo
 
 section "GET /echo/whoami (TCP, proves secret injection)"
-try curl -sS "${OMAC_ECHO_BASE}whoami"
+try curl -sS "${OMAC_ECHO_BASE}/whoami"
 echo
 
 section "POST /echo/echo (TCP)"
 try curl -sS \
   -H 'Content-Type: application/json' \
   -d '{"hello":"from sandbox","n":7}' \
-  "${OMAC_ECHO_BASE}echo"
+  "${OMAC_ECHO_BASE}/echo"
 echo
 
 section "GET / (facade status, TCP)"
@@ -64,7 +65,7 @@ echo
 
 section "GET /echo/tick — SSE stream (TCP)"
 {
-  curl -sS -N --max-time 30 "${OMAC_ECHO_BASE}tick?n=5&gap_ms=30" || true
+  curl -sS -N --max-time 30 "${OMAC_ECHO_BASE}/tick?n=5&gap_ms=30" || true
 } | awk '
     /^event:/ { ev=$2 }
     /^id:/    { id=$2 }

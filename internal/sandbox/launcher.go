@@ -135,7 +135,7 @@ func substituteScalars(tok string, scalar map[string]string, list map[string][]s
 	return b.String(), nil
 }
 
-// perSkillEnv returns "OMAC_<SKILL>_BASE=http+unix://...".
+// perSkillEnv returns "OMAC_<SKILL>_BASE=http+unix://.../<mount>".
 func perSkillEnv(mount, socket string) string {
 	return OmacEnvName(mount) + "=" + OmacEnvValue(mount, socket)
 }
@@ -173,14 +173,14 @@ func OmacSocketEnvName(mount string) string {
 
 // OmacEnvValue returns the http+unix URL for the given mount.
 func OmacEnvValue(mount, socket string) string {
-	return "http+unix://" + url.PathEscape(socket) + "/" + mount + "/"
+	return "http+unix://" + url.PathEscape(socket) + "/" + mount
 }
 
-// OmacTCPEnvValue returns the http://127.0.0.1:<port>/<mount>/ URL.
+// OmacTCPEnvValue returns the http://127.0.0.1:<port>/<mount> URL.
 // This is the form sandboxed clients should use when nono proxy mode
 // is active (or any other environment that blocks AF_UNIX connect).
 func OmacTCPEnvValue(mount string, port int) string {
-	return fmt.Sprintf("http://127.0.0.1:%d/%s/", port, mount)
+	return fmt.Sprintf("http://127.0.0.1:%d/%s", port, mount)
 }
 
 // Exec runs the argv as a child process and waits for it, forwarding stdio
