@@ -136,12 +136,61 @@ func runStart(args []string, env *Env) int {
 				"starting sandbox without sidecars (run `omac register` to add some)")
 	}
 
-	type resolved struct {
-		entry registry.Entry
-		meta  *config.Meta
-		abs   string // absolute skill dir
+	// 2c-d / 3. Per-skill validation + secret/config resolution.
+	//
+	// We do this in a single pass that accumulates every per-skill
+	// problem rather than returning on the first one. The user's
+	// complaint when this returned early was that fixing skill A
+	// revealed skill B revealed skill C, etc. — N invocations to fix
+	// N problems. With accumulation, the user sees every
+	// re-registration command they need at once.
+	//
+	// Problems are bucketed by class so the consolidated error block
+	// has a section header per class with an actionable hint. A skill
+	// that hits multiple classes appears in every relevant section
+	// (we don't short-circuit to "first failing class").
+	//
+	// Secret values are eagerly fetched from the keychain even when
+	// we may not end up using them; they're zeroed by the deferred
+	// cleanup below regardless of which path we take.
+	type withSecrets struct {
+		entry   registry.Entry
+		meta    *config.Meta
+		abs     string
+		secrets map[string]secrets.Secret
+		config  map[string]string
 	}
-	skills := make([]resolved, 0, len(reg.Registered))
+	var allSecrets []secrets.Secret
+	defer func() {
+		for i := range allSecrets {
+			allSecrets[i].Zero()
+		}
+	}()
+
+	configStore, err := skillconfig.Load(env.Workdir)
+	if err != nil {
+		fmt.Fprintln(env.Stderr, "omac start: skill-config:", err)
+		return ExitIOError
+	}
+
+	// Per-class problem accumulators. Each maps a hint template to
+	// the affected skill names so we can render "do X for these N
+	// skills" rather than N copies of the same hint. Order is
+	// preserved by also tracking which classes saw any input.
+	type bundleDriftProblem struct{ skill string }
+	type missingSecretProblem struct{ skill, secret string }
+	type missingFieldProblem struct {
+		skill  string
+		fields []string
+	}
+	type metaProblem struct{ skill, msg string }
+
+	var bundleDrifts []bundleDriftProblem
+	var missingSecrets []missingSecretProblem
+	var missingFields []missingFieldProblem
+	var metaProblems []metaProblem
+
+	armed := make([]withSecrets, 0, len(reg.Registered))
 	for _, e := range reg.Registered {
 		absDir := e.SkillDir
 		if !filepath.IsAbs(absDir) {
@@ -150,114 +199,133 @@ func runStart(args []string, env *Env) int {
 		metaPath := filepath.Join(absDir, "meta.yaml")
 		m, err := config.LoadMeta(metaPath)
 		if err != nil {
-			fmt.Fprintf(env.Stderr, "omac start: %s: %v\n", e.Name, err)
-			return ExitConfigInvalid
+			metaProblems = append(metaProblems, metaProblem{skill: e.Name, msg: err.Error()})
+			continue
 		}
 		if m.Sidecar == nil {
-			fmt.Fprintf(env.Stderr, "omac start: %s: meta no longer has a sidecar block\n", e.Name)
-			return ExitConfigInvalid
+			metaProblems = append(metaProblems, metaProblem{skill: e.Name, msg: "meta no longer has a sidecar block"})
+			continue
 		}
-		// 2c. Bundle-hash drift. The bundle covers meta.yaml and the
-		//     sidecar source files; runtime artifacts (caches, venvs)
-		//     are excluded so a `pip install` doesn't trip detection.
-		bundle, err := config.BundleHash(absDir)
-		if err != nil {
-			fmt.Fprintln(env.Stderr, "omac start: bundle hash:", err)
-			return ExitIOError
-		}
-		if bundle != e.BundleHash && !*acceptSkillChanges {
-			fmt.Fprintf(env.Stderr,
-				"omac start: %s: skill bundle changed since register "+
-					"(pass --accept-skill-changes to proceed, or `omac register --force %s` to re-register)\n",
-				e.Name, e.Name)
-			return ExitConfigInvalid
-		}
-		skills = append(skills, resolved{entry: e, meta: m, abs: absDir})
-	}
 
-	// 3. Resolve secrets from keychain and non-secret config from
-	//    .opencode/skill-config.yaml. Both feed the sidecar's env;
-	//    secrets win on collision (validated at meta load).
-	type withSecrets struct {
-		resolved
-		secrets map[string]secrets.Secret
-		config  map[string]string
-	}
-	armed := make([]withSecrets, 0, len(skills))
-	// Zero-on-exit; collect all Secrets so we can wipe them at the end.
-	var allSecrets []secrets.Secret
-	defer func() {
-		for i := range allSecrets {
-			allSecrets[i].Zero()
+		// Bundle hash. Excluded from scanning when the user has
+		// explicitly opted in to drift via --accept-skill-changes.
+		if !*acceptSkillChanges {
+			bundle, err := config.BundleHash(absDir)
+			if err != nil {
+				// I/O errors during hashing are class-level (we can't
+				// produce useful per-skill diagnostics if the directory
+				// is unreadable). Abort immediately.
+				fmt.Fprintln(env.Stderr, "omac start: bundle hash:", err)
+				return ExitIOError
+			}
+			if bundle != e.BundleHash {
+				bundleDrifts = append(bundleDrifts, bundleDriftProblem{skill: e.Name})
+				// Don't `continue`: continue collecting problems for
+				// THIS skill (missing secret + missing field) so the
+				// user sees everything needed in one shot.
+			}
 		}
-	}()
-	var configStore *skillconfig.Store
-	if len(skills) > 0 {
-		configStore, err = skillconfig.Load(env.Workdir)
-		if err != nil {
-			fmt.Fprintln(env.Stderr, "omac start: skill-config:", err)
-			return ExitIOError
-		}
-	}
-	for _, s := range skills {
-		m := map[string]secrets.Secret{}
-		for _, spec := range s.meta.Sidecar.Secrets {
-			val, err := keychain.Get(s.entry.Name, spec.Name)
+
+		// Secrets.
+		secMap := map[string]secrets.Secret{}
+		for _, spec := range m.Sidecar.Secrets {
+			val, err := keychain.Get(e.Name, spec.Name)
 			if err != nil {
 				if errors.Is(err, keychain.ErrNotFound) {
 					if spec.IsRequired() {
-						fmt.Fprintf(env.Stderr,
-							"omac start: %s: required secret %s missing. Run: omac secrets set %s %s\n",
-							s.entry.Name, spec.Name, s.entry.Name, spec.Name)
-						return ExitSecretRefused
+						missingSecrets = append(missingSecrets,
+							missingSecretProblem{skill: e.Name, secret: spec.Name})
 					}
 					continue
 				}
+				// Keychain I/O failure is class-level (likely auth
+				// rejection on macOS); the user fixes it once and
+				// retries. No point continuing.
 				fmt.Fprintln(env.Stderr, "omac start: keychain:", err)
 				return ExitKeychainError
 			}
-			m[spec.Name] = val
+			secMap[spec.Name] = val
 			allSecrets = append(allSecrets, val)
 		}
 
-		// Resolve config fields with the same precedence as
-		// `omac config show`: stored value > spec.Default >
-		// $spec.DefaultFromEnv > <missing>. A required field is "truly
-		// missing" only when none of those produce a value; that's
-		// the case the user wants us to refuse on. Optional fields are
-		// silently dropped from the env (they get whatever fallback
-		// the sidecar implements internally).
-		cfg := map[string]string{}
-		var missingRequired []string
-		for _, spec := range s.meta.Sidecar.Config {
-			v, ok := configStore.Get(s.entry.Name, spec.Name)
+		// Config fields. Same precedence as `omac config show`:
+		// stored > spec.Default > $spec.DefaultFromEnv > missing.
+		cfgMap := map[string]string{}
+		var missingForSkill []string
+		for _, spec := range m.Sidecar.Config {
+			v, ok := configStore.Get(e.Name, spec.Name)
 			if ok {
-				cfg[spec.Name] = v
+				cfgMap[spec.Name] = v
 				continue
 			}
 			if spec.Default != "" {
-				cfg[spec.Name] = spec.Default
+				cfgMap[spec.Name] = spec.Default
 				continue
 			}
 			if spec.DefaultFromEnv != "" {
 				if envVal, ok := os.LookupEnv(spec.DefaultFromEnv); ok && envVal != "" {
-					cfg[spec.Name] = envVal
+					cfgMap[spec.Name] = envVal
 					continue
 				}
 			}
 			if spec.IsRequired() {
-				missingRequired = append(missingRequired, spec.Name)
+				missingForSkill = append(missingForSkill, spec.Name)
 			}
 		}
-		if len(missingRequired) > 0 {
-			fmt.Fprintf(env.Stderr,
-				"omac start: %s: required config field(s) missing: %s\n"+
-					"  Run: omac register --reprompt-fields %s\n",
-				s.entry.Name, strings.Join(missingRequired, ", "), s.entry.Name)
-			return ExitSecretRefused
+		if len(missingForSkill) > 0 {
+			missingFields = append(missingFields,
+				missingFieldProblem{skill: e.Name, fields: missingForSkill})
 		}
 
-		armed = append(armed, withSecrets{resolved: s, secrets: m, config: cfg})
+		armed = append(armed, withSecrets{
+			entry: e, meta: m, abs: absDir,
+			secrets: secMap, config: cfgMap,
+		})
+	}
+
+	// If anything went wrong above, render one consolidated report
+	// (grouped by problem class) and abort.
+	if len(bundleDrifts) > 0 || len(missingSecrets) > 0 || len(missingFields) > 0 || len(metaProblems) > 0 {
+		total := len(bundleDrifts) + len(missingSecrets) + len(missingFields) + len(metaProblems)
+		fmt.Fprintf(env.Stderr, "omac start: refusing to start, found %d problem(s):\n", total)
+
+		if len(metaProblems) > 0 {
+			fmt.Fprintln(env.Stderr, "\n  meta.yaml broken:")
+			for _, p := range metaProblems {
+				fmt.Fprintf(env.Stderr, "    %s — %s\n", p.skill, p.msg)
+			}
+		}
+		if len(bundleDrifts) > 0 {
+			fmt.Fprintln(env.Stderr, "\n  bundle changed since register (pass --accept-skill-changes to proceed, or re-register):")
+			for _, p := range bundleDrifts {
+				fmt.Fprintf(env.Stderr, "    %s — omac register --force %s\n", p.skill, p.skill)
+			}
+		}
+		if len(missingSecrets) > 0 {
+			fmt.Fprintln(env.Stderr, "\n  required secret missing:")
+			for _, p := range missingSecrets {
+				fmt.Fprintf(env.Stderr, "    %s/%s — omac secrets set %s %s\n",
+					p.skill, p.secret, p.skill, p.secret)
+			}
+		}
+		if len(missingFields) > 0 {
+			fmt.Fprintln(env.Stderr, "\n  required config field missing:")
+			for _, p := range missingFields {
+				fmt.Fprintf(env.Stderr, "    %s — fields: %s — omac register --reprompt-fields %s\n",
+					p.skill, strings.Join(p.fields, ", "), p.skill)
+			}
+		}
+		fmt.Fprintln(env.Stderr)
+
+		// Pick the most actionable exit code: secrets/fields refused
+		// outweighs config-invalid (the latter is a build/dev problem,
+		// the former usually a one-command fix). Bundle drift is
+		// strictly config-invalid because the user hasn't explicitly
+		// accepted the change yet. Meta problems are config-invalid.
+		if len(missingSecrets) > 0 || len(missingFields) > 0 {
+			return ExitSecretRefused
+		}
+		return ExitConfigInvalid
 	}
 
 	// 4. Create runtime directory.
