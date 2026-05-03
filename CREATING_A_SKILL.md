@@ -6,19 +6,31 @@ extension: each one ships a small **sidecar** HTTP service that runs **outside**
 the agent sandbox and is reached **inside** the sandbox through `omac`'s
 single Unix-domain-socket facade.
 
+omac skills are also valid [agentskills.io](https://agentskills.io/) skills:
+every skill ships a `SKILL.md` (the agentskills.io standard file — the
+agent uses its YAML frontmatter for progressive-disclosure discovery) **and**
+an `omac.yaml` (omac's runtime contract describing the sidecar process,
+secrets, mounts, and health probe). The two files cover non-overlapping
+concerns; see §3 below.
+
 If you have not already, read:
 
 - [`README.md`](./README.md) — high-level workflow and CLI reference.
 - [`oh-my-agentic-coder.md`](./oh-my-agentic-coder.md) — full design doc.
 - [`.opencode/skills/echo-rest/`](./.opencode/skills/echo-rest/) — the
   reference skill. Copy it as a starting point.
+- [agentskills.io specification](https://agentskills.io/specification) —
+  authoritative spec for `SKILL.md`'s frontmatter and progressive
+  disclosure semantics.
 
 > **Heads-up if you read an older version of this guide:** omac's
-> per-skill metadata file is now `omac.yaml`, not `meta.yaml`. The old
-> name collided with the marketplace publishing pipeline's own
+> per-skill *runtime* metadata file is now `omac.yaml`, not `meta.yaml`.
+> The old name collided with the marketplace publishing pipeline's own
 > `meta.yaml`. A skill that wants to be both publishable and have an
 > omac sidecar should ship both files. See §7.1 of the design doc for
-> rationale.
+> rationale. Separately, every skill should also ship a `SKILL.md` —
+> that is the agentskills.io discovery file the agent reads, and is
+> orthogonal to either `omac.yaml` or `meta.yaml`.
 
 ---
 
@@ -50,8 +62,9 @@ it only gets a socket path.
 
 ## 2. Skill on-disk layout
 
-A skill is a directory containing an `omac.yaml`. omac looks in two
-locations, in this order:
+A skill is a directory containing both a `SKILL.md` (the agentskills.io
+discovery/instructions file) and an `omac.yaml` (omac's runtime contract).
+omac looks in two locations, in this order:
 
 1. **Workdir-local** — `<workdir>/.opencode/skills/<name>/`. The
    project-specific layer; what most users mean by "their skills".
@@ -72,22 +85,160 @@ Inside either location the per-skill layout is the same:
 
 ```
 <location>/skills/<name>/
-├── omac.yaml                 required — schema below
-├── <your sidecar>            any executable: python, node, go binary, bash, …
+├── SKILL.md                  required — agentskills.io frontmatter + Markdown
+│                                       instructions (§3 below)
+├── omac.yaml                 required — sidecar/runtime schema (§4 below)
+├── scripts/                  bundled executables (agentskills.io convention)
+│   ├── sidecar.py            the sidecar entry-point referenced from
+│   │                         omac.yaml's `command:`. Any language as long as
+│   │                         it speaks HTTP on $SIDECAR_PORT (§5).
+│   └── …                     any other helper scripts the agent may invoke.
+├── references/               optional — agentskills.io convention; deeper
+│                             docs the agent loads on demand
+├── assets/                   optional — agentskills.io convention; templates,
+│                             schemas, lookup tables
 └── install/
-    ├── install.macos.sh      optional but recommended
+    ├── install.macos.sh      optional but recommended (host-side prerequisites)
     └── install.linux.sh      optional but recommended
 ```
 
+Two paths to be aware of:
+
+- **Sidecar entry-point**: by convention it lives at `scripts/sidecar.<ext>`
+  (Python, Node, Go binary, shell — whatever you ship). omac sets the
+  spawned process's working directory to the skill root, so the
+  `omac.yaml` `command:` value is `["python3", "scripts/sidecar.py"]`,
+  not the bare filename. Compiled-language skills typically have the
+  install script drop a binary at `scripts/sidecar` and reference
+  `["./scripts/sidecar"]`.
+- **`scripts/` is shared between two consumers**: the *omac supervisor*
+  spawns the sidecar entry-point as a long-running HTTP service outside
+  the sandbox; the *agent* may also invoke other helper scripts in this
+  directory during a task (the agentskills.io meaning of `scripts/`).
+  Both are fine; they are different lifecycles. Keep helper scripts
+  small and self-contained per the agentskills.io spec.
+
 Naming rules:
 
-- `name` must match the directory name.
-- `mount` (URL prefix) must match `^[a-z0-9][a-z0-9-]*$`.
-- Secret env-var names must match `^[A-Z_][A-Z0-9_]*$`.
+- The directory name must match BOTH `SKILL.md`'s frontmatter `name:`
+  and `omac.yaml`'s top-level `name:`. omac validates the latter; the
+  agentskills.io [`skills-ref` validator](https://github.com/agentskills/agentskills/tree/main/skills-ref)
+  validates the former.
+- The agentskills.io `name` rules are stricter than omac's: 1–64
+  characters, lowercase a–z + digits + hyphens, no leading/trailing
+  hyphen, no consecutive hyphens. Pick a name that satisfies both.
+- `mount` (URL prefix on the omac facade) must match
+  `^[a-z0-9][a-z0-9-]*$`. It defaults to the skill name, which already
+  satisfies this regex if you followed the rule above.
+- Secret and config env-var names must match `^[A-Z_][A-Z0-9_]*$`.
 
 ---
 
-## 3. `omac.yaml` schema
+## 3. `SKILL.md` (agentskills.io discovery file)
+
+Every skill ships a `SKILL.md` at its root. The agent — not omac — uses
+this file. omac never parses it; it is part of the bundle hash (so
+edits to it count as "the skill changed", in line with the bundle-drift
+rules in §8.4) but otherwise opaque to the runtime.
+
+`SKILL.md` is YAML frontmatter followed by Markdown body. Its purpose
+is **progressive disclosure** to the agent:
+
+1. **Discovery** (~100 tokens): at agent startup, only the frontmatter
+   `name` + `description` are loaded. They are how the agent decides
+   whether a skill is relevant to the current task.
+2. **Activation** (~5 000 tokens recommended): when a task matches, the
+   agent loads the full `SKILL.md` body into context.
+3. **Execution** (on demand): the agent loads files from `scripts/`,
+   `references/`, `assets/` only when a step calls for them.
+
+Keep the frontmatter description sharp and keyword-rich, and keep the
+body itself under 500 lines — move detailed reference material into
+`references/` files and link to them.
+
+### 3.1 Frontmatter schema
+
+```yaml
+---
+name: my-skill                       # required; matches directory name
+description: >                       # required; max 1024 chars
+  One- or two-sentence pitch covering BOTH what the skill does AND
+  when an agent should reach for it. Include keywords the agent can
+  match against user prompts. This is the most important field —
+  it is the only thing the agent sees during the discovery stage.
+license: Apache-2.0                  # optional; license name or path
+compatibility: >                     # optional; max 500 chars; environment
+  Requires the omac runtime, Python 3, and (for real skills) network
+  access to <upstream API>.
+metadata:                            # optional; arbitrary string-keyed map
+  author: your-org
+  version: "0.1.0"
+  omac-mount: my-skill               # mirror omac.yaml's mount/command for
+  omac-sidecar: "python3 scripts/sidecar.py" # discoverability; not authoritative
+allowed-tools: Bash(curl:*) Read     # optional; experimental; space-separated
+---
+```
+
+Frontmatter rules (from the agentskills.io
+[specification](https://agentskills.io/specification)):
+
+| Field           | Required | Constraints                                                                                 |
+| --------------- | -------- | ------------------------------------------------------------------------------------------- |
+| `name`          | yes      | 1–64 chars, lowercase `a–z` + digits + `-`, no leading/trailing or consecutive hyphens.     |
+| `description`   | yes      | 1–1024 chars; non-empty; covers both *what* and *when*.                                     |
+| `license`       | no       | Short string (license name) or reference to a bundled file.                                 |
+| `compatibility` | no       | ≤ 500 chars; environment requirements (intended product, packages, network).                |
+| `metadata`      | no       | String-keyed map. Use unique-ish keys to avoid clashes between clients.                     |
+| `allowed-tools` | no       | Space-separated tool whitelist. Experimental — support varies across agents.                |
+
+Validate with the agentskills.io reference tool:
+
+```bash
+skills-ref validate ./.opencode/skills/<name>
+```
+
+### 3.2 Frontmatter and `omac.yaml` — who owns what
+
+The two files describe non-overlapping facets of the same skill. Treat
+them as a contract: keep the names in sync, but don't try to mirror the
+whole sidecar config into `SKILL.md`.
+
+| Concern                                | Lives in                | Notes                                                                                      |
+| -------------------------------------- | ----------------------- | ------------------------------------------------------------------------------------------ |
+| Skill identity (`name`)                | both                    | Must match each other and the directory name.                                              |
+| Human/agent-facing description         | `SKILL.md` frontmatter  | Authoritative for activation; `omac.yaml`'s `description` is just for `omac list` output.  |
+| When/why an agent should use the skill | `SKILL.md` body         | omac doesn't care.                                                                         |
+| HTTP API exposed via the facade        | `SKILL.md` body         | Endpoints, request/response shapes, example `curl` lines using `OMAC_<MOUNT>_BASE`.        |
+| Sidecar process command, port, mount   | `omac.yaml`             | Runtime-only; not duplicated in `SKILL.md` (mention it in `metadata:` if useful).          |
+| Secrets, config fields, health probe   | `omac.yaml`             | Reference them by *name* in `SKILL.md` so the agent knows what env vars to expect.         |
+| Per-OS install scripts                 | `omac.yaml` + `install/` | omac surfaces them at register time.                                                       |
+| Tool / capability whitelist            | `SKILL.md` `allowed-tools` | Hint to the agent runtime; not enforced by omac.                                        |
+
+### 3.3 Body content — recommended structure
+
+There is no spec-mandated structure for the Markdown body, but for an
+omac sidecar skill the following sections cover what an agent typically
+needs:
+
+1. **When to use this skill** — restate the trigger conditions in prose.
+2. **How to call it from inside the sandbox** — show `curl` lines using
+   `OMAC_<MOUNT>_BASE` (TCP, preferred) and `OMAC_SOCKET` (Unix, fallback).
+3. **Endpoints** — table of method/path/purpose for each route the
+   sidecar exposes.
+4. **Configuration surface** — list the env vars the sidecar reads
+   (declared in `omac.yaml`'s `secrets:` and `config:`), with a brief
+   pointer to §10 for the lifecycle.
+5. **Verifying the wiring** — a smoke-test recipe (e.g. "run
+   `demo-client.sh`", "look for `503 X-Omac-Reason: sidecar-down` in
+   logs at $TMPDIR/omac-…/logs/<skill>.log").
+
+The `echo-rest` reference skill's
+[`SKILL.md`](./.opencode/skills/echo-rest/SKILL.md) is a worked example
+of all five.
+
+---
+
+## 4. `omac.yaml` schema
 
 Minimal example (based on `echo-rest`):
 
@@ -102,7 +253,9 @@ dependencies: []
 sidecar:
   # argv to spawn the sidecar process. ${SIDECAR_PORT} is substituted by omac.
   # Prefer reading $SIDECAR_PORT from env; argv is visible to all users via `ps`.
-  command: ["python3", "sidecar.py"]
+  # The path is resolved relative to the skill root (omac sets the spawned
+  # process's cwd there), so by convention sidecars live under scripts/.
+  command: ["python3", "scripts/sidecar.py"]
 
   # URL prefix on the bridge socket. Inside the sandbox the skill is reached at
   #   curl --unix-socket "$OMAC_SOCKET" http://x/<mount>/...
@@ -127,7 +280,7 @@ sidecar:
   # Declared non-secret config fields. `omac register` prompts (echoing input),
   # stores in plain YAML under <workdir>/.opencode/skill-config.yaml, and
   # injects at sidecar start as env vars exactly the same way as secrets.
-  # See §8 below for the full type system.
+  # See §10 below for the full type system.
   config:
     - name: API_BASE_URL
       type: string                          # default: string
@@ -174,7 +327,7 @@ See `internal/config/meta.go` for the authoritative struct definitions.
 
 ---
 
-## 4. The sidecar HTTP server
+## 5. The sidecar HTTP server
 
 Your sidecar is a normal HTTP server. Requirements:
 
@@ -196,7 +349,7 @@ Your sidecar is a normal HTTP server. Requirements:
 | `SIDECAR_SKILL`  | The skill name (handy for log lines).                  |
 | `OMAC_WORKDIR`   | Absolute path of the workdir omac was invoked in.      |
 | Each declared secret | The value from the keychain (or `env_passthrough` host env). |
-| Each declared config field | The value from `.opencode/skill-config.yaml` (canonicalized — see §8). |
+| Each declared config field | The value from `.opencode/skill-config.yaml` (canonicalized — see §10). |
 
 ### Minimal Python sidecar
 
@@ -238,7 +391,7 @@ automatically. See `echo-rest`'s `/tick` route for a worked example.
 
 ---
 
-## 5. Install scripts
+## 6. Install scripts
 
 `omac register <skill>` surfaces the path of `install/install.<os>.sh`
 and reminds the user to run it manually (it does NOT print the script
@@ -269,7 +422,7 @@ Mark them executable: `chmod +x install/install.*.sh`.
 
 ---
 
-## 6. Routes the agent will see (URL rewriting)
+## 7. Routes the agent will see (URL rewriting)
 
 Inside the sandbox the agent calls:
 
@@ -314,9 +467,9 @@ inside the sandbox, **use the TCP form first**.
 
 ---
 
-## 7. Develop & test the skill
+## 8. Develop & test the skill
 
-### 7.1 Validate the metadata
+### 8.1 Validate the metadata
 
 ```bash
 omac register --no-secrets my-skill   # validates omac.yaml + adds to registry
@@ -325,7 +478,7 @@ omac list                             # shows mount, secret count, binary status
 omac config show my-skill             # inspect resolved config + secret fingerprints
 ```
 
-### 7.2 Run the stack outside the sandbox
+### 8.2 Run the stack outside the sandbox
 
 The fastest dev loop is `--no-sandbox`, which spawns sidecars + the facade
 but execs your inner command directly instead of `nono run …`:
@@ -344,14 +497,14 @@ will just bring up the facade with no upstream routes and exec the
 inner command. Useful when you're iterating on a sidecar before the
 first `omac register` of the day.
 
-### 7.3 Run the stack inside `nono`
+### 8.3 Run the stack inside `nono`
 
 ```bash
 omac start                    # default profile: nono
 omac start --sandbox nono-netprofile   # network-restricted variant
 ```
 
-### 7.4 What `omac start` verifies before running
+### 8.4 What `omac start` verifies before running
 
 `omac start` reconciles the on-disk state against what was registered
 and refuses to spawn anything if the gap is wider than the user has
@@ -400,7 +553,7 @@ checked:
 In all refusal cases the exit is non-zero so wrapper scripts can
 catch the condition and prompt the user.
 
-### 7.5 Inspect logs on failure
+### 8.5 Inspect logs on failure
 
 If a request returns `503 X-Omac-Reason: sidecar-down`, look at:
 
@@ -410,7 +563,7 @@ $TMPDIR/omac-<workdir-hash>/logs/<skill>.log
 
 That file captures the sidecar's stderr/stdout.
 
-### 7.6 Use a smoke-test client
+### 8.6 Use a smoke-test client
 
 Model your manual smoke test on `demo-client.sh` in the repo root. It
 hits every route on the echo-rest reference skill via both the TCP and
@@ -426,13 +579,13 @@ flags through if your client takes any.)
 
 ---
 
-## 8. Secrets handling — best practices
+## 9. Secrets handling — best practices
 
 - **Always declare** real credentials under `sidecar.secrets`. They go
   through the OS keychain (`omac/<skill>/<NAME>` service URI).
 - **Use `sidecar.config`** for non-secret operational values (URLs,
   flags, region names) instead of overloading `secrets:` or
-  `env_passthrough:`. See §9 for the typed-field schema.
+  `env_passthrough:`. See §10 for the typed-field schema.
 - **Reserve `env_passthrough`** for the legacy fallback case: a value
   that's normally a secret, but in some environments (CI runners
   without a keychain) needs to come from the host shell. Document this
@@ -445,7 +598,7 @@ flags through if your client takes any.)
 
 ---
 
-## 9. Configuration fields (non-secret config)
+## 10. Configuration fields (non-secret config)
 
 Skills often have *operational* configuration that isn't a credential
 but still varies between users or deployments: an API base URL, a
@@ -464,7 +617,7 @@ The lifecycle:
    environment alongside secrets, so the sidecar reads them with
    `os.environ.get("FIELD_NAME")` exactly like a secret.
 
-### 9.1 Field schema
+### 10.1 Field schema
 
 ```yaml
 sidecar:
@@ -482,7 +635,7 @@ sidecar:
       choices: [a, b, c]            # enum-only; non-empty list
 ```
 
-### 9.2 Type system
+### 10.2 Type system
 
 | `type:` | Accepted input | Stored as |
 |---|---|---|
@@ -496,7 +649,7 @@ sidecar:
 meta-load time using the same rules as input — an `int` default of
 `"twelve"` is a meta error, not a runtime surprise.
 
-### 9.3 Naming, collisions, and `env_passthrough`
+### 10.3 Naming, collisions, and `env_passthrough`
 
 Field names share the env-var namespace with `secrets:` and
 `env_passthrough:`. The validation rules:
@@ -513,7 +666,7 @@ Field names share the env-var namespace with `secrets:` and
   the keychain is unavailable (sandboxed CI runners). At runtime the
   keychain value wins over the host-env value when both are present.
 
-### 9.4 Updating values after registration
+### 10.4 Updating values after registration
 
 Two ways:
 
@@ -539,7 +692,7 @@ For non-interactive flows (CI provisioning, scripted setup) the
 `skill-config.yaml` (in addition to `--purge-secrets` for the
 keychain).
 
-### 9.5 Inspecting resolved values
+### 10.5 Inspecting resolved values
 
 `omac config show <skill>` is the host-side counterpart to a sidecar's
 `/whoami` endpoint: it shows what omac WOULD inject into the sidecar's
@@ -568,7 +721,7 @@ secrets:
   TNG_GPG_PASSPHRASE  no   <missing>
 ```
 
-The `SOURCE` column tells you *which* of the resolution rungs in §9.3
+The `SOURCE` column tells you *which* of the resolution rungs in §10.3
 produced the displayed value. `--json` emits the same data as a single
 JSON object so it's pipeable into `jq`.
 
@@ -590,7 +743,7 @@ quick visual diff between `omac config show` and `curl
 $OMAC_ECHO_BASE/whoami` confirms the value the sidecar is actually
 seeing matches the value omac thinks it should be injecting.
 
-### 9.6 When to use `secrets:` vs `config:`
+### 10.6 When to use `secrets:` vs `config:`
 
 If the value would be embarrassing in a screenshot, use `secrets:`.
 If it would be embarrassing in `git log` of a private repo, use
@@ -598,7 +751,7 @@ If it would be embarrassing in `git log` of a private repo, use
 flags, log verbosity — use `config:`. Anything that gets typed into a
 public chat ("set my region to eu-central-1") is a config field.
 
-### 9.7 Example: reading a config field in Python
+### 10.7 Example: reading a config field in Python
 
 ```python
 import os
@@ -614,18 +767,24 @@ you can verify omac injected them correctly.
 
 ---
 
-## 10. Distributing the skill
+## 11. Distributing the skill
 
 `omac` is the **runtime**, not an installer. The marketplace installer
 (e.g. `scripts/install.sh <skill>`) drops your skill directory under
 `.opencode/skills/<name>/`. To distribute:
 
-1. Pick a stable `name` (kebab-case) and `mount` (URL-safe).
-2. Pin a `version` and bump it on breaking changes.
-3. Ship the source layout described in §2.
-4. Make sure `install/install.<os>.sh` documents every host-side
+1. Pick a stable `name` (kebab-case, agentskills.io-compliant — see §3.1)
+   and `mount` (URL-safe; defaults to the name).
+2. Pin a `version` in `omac.yaml` and (optionally) in `SKILL.md`'s
+   `metadata.version`. Bump on breaking changes.
+3. Ship the source layout described in §2 — `SKILL.md` and `omac.yaml`
+   at the root, plus whichever of `scripts/`, `references/`, `assets/`,
+   `install/` you actually need.
+4. Validate: `skills-ref validate ./.opencode/skills/<name>` (agentskills.io
+   side) **and** `omac register --no-secrets <name>` (omac side).
+5. Make sure `install/install.<os>.sh` documents every host-side
    dependency (interpreters, build tools, native libs).
-5. Test with at least:
+6. Test with at least:
    - `omac register --no-secrets <skill>`
    - `omac start --no-sandbox --inner bash` and a smoke-test script.
    - `omac start` (full sandbox path) on macOS and Linux.
@@ -641,11 +800,24 @@ omac start
 
 ---
 
-## 11. Checklist before shipping
+## 12. Checklist before shipping
 
+- [ ] `SKILL.md` exists at the skill root with valid agentskills.io
+      frontmatter (`name`, `description`; optionally `license`,
+      `compatibility`, `metadata`, `allowed-tools`). `skills-ref
+      validate` passes.
+- [ ] `SKILL.md`'s `name`, `omac.yaml`'s `name`, and the directory
+      name all match.
+- [ ] `SKILL.md`'s `description` covers both *what* the skill does
+      and *when* the agent should activate it; under 1024 chars.
+- [ ] `SKILL.md` body is under 500 lines (move deeper material into
+      `references/`).
 - [ ] `omac.yaml` validates (`omac register --no-secrets …` succeeds).
 - [ ] `mount` matches `^[a-z0-9][a-z0-9-]*$`.
 - [ ] Sidecar binds on `127.0.0.1:$SIDECAR_PORT` (not `0.0.0.0`).
+- [ ] Sidecar entry-point lives under `scripts/` and `omac.yaml`'s
+      `command:` references it via the relative path
+      (e.g. `["python3", "scripts/sidecar.py"]`).
 - [ ] `GET /status` returns 2xx within `health.timeout_ms`.
 - [ ] All credentials declared under `secrets:` (not just `env_passthrough`).
 - [ ] No secret value logged or returned in any response body.
@@ -661,6 +833,9 @@ omac start
 ## References inside this repo
 
 - Reference skill: [`.opencode/skills/echo-rest/`](./.opencode/skills/echo-rest/)
+- Reference `SKILL.md`: [`.opencode/skills/echo-rest/SKILL.md`](./.opencode/skills/echo-rest/SKILL.md)
+- agentskills.io spec: <https://agentskills.io/specification>
+- agentskills.io validator: <https://github.com/agentskills/agentskills/tree/main/skills-ref>
 - `omac.yaml` schema: [`internal/config/meta.go`](./internal/config/meta.go)
 - Sidecar lifecycle (env injection, port assignment): [`internal/supervisor/supervisor.go`](./internal/supervisor/supervisor.go)
 - Facade routing & SSE: [`internal/facade/facade.go`](./internal/facade/facade.go)

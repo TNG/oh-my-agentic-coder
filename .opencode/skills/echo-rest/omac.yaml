@@ -8,7 +8,10 @@ dependencies: []
 sidecar:
   # The facade sets SIDECAR_PORT in the child's environment. The Python
   # server reads it; we don't pass it as a CLI arg (argv is public via `ps`).
-  command: ["python3", "sidecar.py"]
+  # The path is resolved relative to the skill directory (omac sets the
+  # spawned process's cwd to the skill root), so `scripts/sidecar.py`
+  # picks up the file under .opencode/skills/echo-rest/scripts/.
+  command: ["python3", "scripts/sidecar.py"]
 
   # Routing prefix on the bridge socket. Inside the sandbox, this skill is
   # reachable at  curl --unix-socket "$OMAC_SOCKET" http://x/echo/...

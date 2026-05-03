@@ -226,12 +226,24 @@ pre-shipping checklist.
 ## Example skill: `echo-rest`
 
 A working example skill lives under `.opencode/skills/echo-rest/` and is
-the reference for how to write a sidecar-backed skill:
+the reference for how to write a sidecar-backed skill. omac skills are
+also valid [agentskills.io](https://agentskills.io/) skills — every
+skill ships a `SKILL.md` (the agentskills.io discovery file the agent
+reads via progressive disclosure) **and** an `omac.yaml` (omac's
+runtime contract for the sidecar process). See
+[`CREATING_A_SKILL.md`](./CREATING_A_SKILL.md) §3 for the split:
 
 ```
 .opencode/skills/echo-rest/
+├── SKILL.md                     agentskills.io frontmatter + Markdown
+│                                instructions (name, description, when
+│                                to use, endpoints, env vars)
 ├── omac.yaml                    sidecar block + declared secrets + health
-├── sidecar.py                   stdlib-only Python HTTP server
+├── scripts/
+│   └── sidecar.py               stdlib-only Python HTTP server (the
+│                                sidecar entry-point, referenced from
+│                                omac.yaml's `command:` as
+│                                `["python3", "scripts/sidecar.py"]`)
 └── install/
     ├── install.macos.sh
     └── install.linux.sh
@@ -280,7 +292,7 @@ full request matrix in any environment that permits at least one of them.
   404, facade status route, **and a 5-frame SSE stream** with incremental
   delivery assertion.
 - `internal/facade/integration_test.go::TestEchoRestEndToEnd` — spawns the
-  Python `sidecar.py` as a real subprocess, routes through the facade's
+  Python `scripts/sidecar.py` as a real subprocess, routes through the facade's
   Unix socket, asserts the secret was injected into the sidecar's env and
   round-trips a POST body, **and consumes the `/tick` SSE stream with the
   same incremental-delivery check**.

@@ -174,11 +174,28 @@ Rust is chosen because:
 
 ### 7.1 omac.yaml: a separate file from the marketplace's meta.yaml
 
-omac reads its per-skill metadata from `omac.yaml`, NOT `meta.yaml`.
-The original design extended the marketplace's `meta.yaml`, but the
-two pipelines (publishing vs. omac) ended up wanting different
-schemas in the same file, so they're now decoupled. A skill that
-wants to be both publishable and omac-managed ships both files.
+omac reads its per-skill *runtime* metadata from `omac.yaml`, NOT
+`meta.yaml`. The original design extended the marketplace's
+`meta.yaml`, but the two pipelines (publishing vs. omac) ended up
+wanting different schemas in the same file, so they're now decoupled.
+A skill that wants to be both publishable and omac-managed ships both
+files.
+
+Independently, every skill also ships a `SKILL.md` at its root —
+the [agentskills.io](https://agentskills.io/) standard discovery file.
+omac never parses `SKILL.md` (it's part of the bundle hash but
+otherwise opaque to the runtime); the agent does, using its YAML
+frontmatter for progressive-disclosure activation. The three files
+have non-overlapping responsibilities:
+
+- `SKILL.md` — agent-facing: name, description, when to activate,
+  prose instructions for using the skill, references, scripts.
+- `omac.yaml` — runtime-facing: sidecar `command`, `mount`,
+  `secrets:`, `config:`, `health`, `install_scripts:`.
+- `meta.yaml` — marketplace publishing pipeline (out of scope here).
+
+See [`CREATING_A_SKILL.md`](./CREATING_A_SKILL.md) §3 for the
+SKILL.md ↔ omac.yaml split in full detail.
 
 The omac.yaml has the same top-level surface as the marketplace
 `meta.yaml` (`name, type, version, description, author, dependencies`)
@@ -195,7 +212,7 @@ dependencies: []
 sidecar:
   # Argv run by the facade to start the sidecar.
   # The facade sets SIDECAR_PORT in the child env.
-  command: ["./bin/slack-sidecar", "--port", "${SIDECAR_PORT}"]
+  command: ["./scripts/slack-sidecar", "--port", "${SIDECAR_PORT}"]
 
   # Optional: subpath on the bridge socket. Defaults to skill name.
   mount: slack
@@ -835,14 +852,19 @@ Each skill that ships a sidecar also ships install scripts under an `install/` d
 
 ```
 .opencode/skills/slack/
+├── SKILL.md                   agentskills.io discovery file (§7.1)
 ├── omac.yaml
-├── SKILL.md
-├── bin/                      # produced by install script
-├── src/
+├── scripts/
+│   ├── slack-sidecar          sidecar entry-point (binary or script,
+│   │                          referenced from omac.yaml's `command:`).
+│   │                          Drop here from the install script for
+│   │                          compiled languages.
+│   └── …                      other agent-invokable helpers
+├── src/                       (optional) source the install script compiles
 └── install/
     ├── install.macos.sh
     ├── install.linux.sh
-    └── install.wsl.sh        # may be a symlink to install.linux.sh
+    └── install.wsl.sh         may be a symlink to install.linux.sh
 ```
 
 ### 15.2 Script contract
@@ -850,7 +872,7 @@ Each skill that ships a sidecar also ships install scripts under an `install/` d
 An install script MUST:
 
 - Be idempotent (safe to re-run).
-- Leave behind the binary/entrypoint that `sidecar.command` references (e.g. `bin/slack-sidecar`).
+- Leave behind the binary/entrypoint that `sidecar.command` references (e.g. `scripts/slack-sidecar`). By convention this lives under `scripts/`, the agentskills.io directory for bundled executable code.
 - Not require interactive input beyond `sudo` prompts.
 - Exit `0` on success.
 
@@ -1085,7 +1107,7 @@ author: tngtech
 dependencies: []
 
 sidecar:
-  command: ["./bin/slack-sidecar", "--port", "${SIDECAR_PORT}"]
+  command: ["./scripts/slack-sidecar", "--port", "${SIDECAR_PORT}"]
   mount: slack
   env_passthrough:
     - HTTPS_PROXY
@@ -1207,7 +1229,7 @@ omac register slack
 # 4. Inspect and run the install script manually.
 less .opencode/skills/slack/install/install.macos.sh
 bash .opencode/skills/slack/install/install.macos.sh
-# → produces .opencode/skills/slack/bin/slack-sidecar
+# → produces .opencode/skills/slack/scripts/slack-sidecar
 
 # 5. (Optional) inspect what is stored and verify health.
 omac secrets list slack
