@@ -379,19 +379,29 @@ Write semantics:
 
 ### 8.2 Skill layout
 
-Skills live in one of two source layers, both keyed by `<name>`:
+Skills live in one of two source layers, both keyed by `<name>`.
+Within each layer, omac honors two parallel naming conventions: the
+agentskills.io-aligned `agents/skills` location (preferred for new
+skills) and the legacy `opencode/skills` location.
 
-1. **Workdir-local** — `<workdir>/.opencode/skills/<name>/`.
-2. **User-global** — `$XDG_CONFIG_HOME/opencode/skills/<name>/`
-   (default `~/.config/opencode/skills/<name>/`); legacy fallback
-   `~/.opencode/skills/<name>/` is also consulted.
+1. **Workdir-local** (always scanned, in this order):
+   1. `<workdir>/.agents/skills/<name>/`
+   2. `<workdir>/.opencode/skills/<name>/`
+2. **User-global** (only roots that exist on disk are scanned):
+   1. `$XDG_CONFIG_HOME/agents/skills/<name>/`
+   2. `$XDG_CONFIG_HOME/opencode/skills/<name>/`
+   3. `~/.config/agents/skills/<name>/`
+   4. `~/.config/opencode/skills/<name>/`
+   5. `~/.agents/skills/<name>/` (legacy flat layout)
+   6. `~/.opencode/skills/<name>/` (legacy flat layout)
 
-`omac register <name>` resolves the source by trying layers in the
-above order and using the first hit (workdir wins). Registration data
-(`sidecar.json`, `skill-config.yaml`, OS keychain entries) is always
-per-workdir; the source layer only controls **where the skill code
-lives**. `omac` does not manage download or update — that remains
-the job of `skill-installer`.
+`omac register <name>` resolves the source by trying these in order
+and using the first hit. `.agents/skills` ranks above
+`.opencode/skills` in every layer; workdir-local always wins over
+user-global. Registration data (`sidecar.json`, `skill-config.yaml`,
+OS keychain entries) is always per-workdir; the source layer only
+controls **where the skill code lives**. `omac` does not manage
+download or update — that remains the job of `skill-installer`.
 
 The `skill_dir` field in `sidecar.json` records the exact location
 the skill was registered from: a path relative to the workdir for
@@ -499,9 +509,11 @@ All commands are idempotent unless noted. All accept `--workdir <dir>` (default:
 ### 10.1 `omac register <skill>`
 
 1. Resolves `<skill>` against the layered source list (§8.2):
-   workdir-local first, then `$XDG_CONFIG_HOME/opencode/skills/`,
-   then `~/.opencode/skills/`. Loads `omac.yaml` from the first
-   layer that contains it.
+   workdir-local first (`.agents/skills/` then `.opencode/skills/`),
+   then user-global (`agents/skills/` then `opencode/skills/` under
+   the XDG config home, with a legacy `~/.agents/skills/` and
+   `~/.opencode/skills/` flat fallback). Loads `omac.yaml` from the
+   first layer that contains it.
 2. Validates the `sidecar` block against the JSON-Schema. If the skill has no sidecar block, exits with code `2` and a clear message.
 3. **Secret prompting** (new, see §16 for the keychain details):
    - For each entry in `sidecar.secrets`, checks whether a value already exists in the OS keychain under `service = omac/<skill>`, `account = <secret.name>`.
@@ -633,12 +645,12 @@ omac:
        leftover secrets/config (`omac deregister --purge-secrets
        --purge-fields <skill>`). Stored values are KEPT to make
        accidental `rm -rf` recoverable.
-    b. Refuse if any directory in EITHER source layer (workdir-local
-       .opencode/skills/ or user-global ~/.config/opencode/skills/)
-       contains a omac.yaml but is not in the registry; print the
-       exact `omac register <skill>` command for each one. Workdir
-       and user-global names with the same value are deduplicated
-       (workdir wins).
+     b. Refuse if any directory in any source layer (workdir-local
+        .agents/skills/ + .opencode/skills/, or any of the user-global
+        roots — see §8.2) contains a omac.yaml but is not in the
+        registry; print the exact `omac register <skill>` command for
+        each one. Names duplicated across layers are deduplicated
+        (workdir wins, .agents wins over .opencode).
     c. For each registered skill, recompute bundle_hash; if it
        differs from the stored value, refuse unless
        --accept-skill-changes is set. (`omac register --force <skill>`

@@ -1,22 +1,31 @@
 // Package skillsource resolves skill source directories. omac looks
-// for a skill named X in two layers, in this order:
+// for a skill named X across two layers — workdir-local and
+// user-global. Within each layer, omac honors two parallel naming
+// conventions: the agentskills.io-aligned `.agents/skills` location
+// and the legacy `.opencode/skills` location. Lookup order is:
 //
-//  1. <workdir>/.opencode/skills/X        — workdir-local
-//  2. <user-config>/opencode/skills/X     — user-global
+//	workdir-local:
+//	  1. <workdir>/.agents/skills/X
+//	  2. <workdir>/.opencode/skills/X
 //
-// Workdir wins on collision, so a workdir-local skill can override a
-// user-global one with the same name (handy for project-specific
-// forks).
+//	user-global (only roots that exist on disk are scanned):
+//	  3. $XDG_CONFIG_HOME/agents/skills/X     (if XDG_CONFIG_HOME set)
+//	  4. $XDG_CONFIG_HOME/opencode/skills/X   (if XDG_CONFIG_HOME set)
+//	  5. $HOME/.config/agents/skills/X
+//	  6. $HOME/.config/opencode/skills/X
+//	  7. $HOME/.agents/skills/X               (legacy flat, agents)
+//	  8. $HOME/.opencode/skills/X             (legacy flat, opencode)
 //
-// Where does <user-config> resolve to?
+// `.agents/skills` ranks above `.opencode/skills` in every layer so a
+// project can override an existing `.opencode/skills` entry by
+// dropping a sibling under `.agents/skills`. Workdir-local always
+// wins over user-global on name collision.
 //
-//   - If $XDG_CONFIG_HOME is set and non-empty, it is honored:
-//     $XDG_CONFIG_HOME/opencode/skills.
-//   - Otherwise we fall back to $HOME/.config/opencode/skills.
-//   - As a final compatibility fallback (for users who set up their
-//     dotfiles before omac existed and still have a flat layout),
-//     $HOME/.opencode/skills is consulted if the XDG-style path
-//     doesn't exist.
+// What omac considers a "skill" is the same across every root: a
+// directory containing an `omac.yaml` at its top level. A directory
+// with only a `SKILL.md` is a valid agentskills.io skill but does
+// not have an omac sidecar contract, so omac ignores it (no
+// registration, no spawning).
 //
 // Registration data (sidecar.json, skill-config.yaml, keychain
 // entries) always lives in the workdir regardless of where the
@@ -43,19 +52,24 @@ type Source struct {
 	Kind string
 }
 
-// Sources returns the candidate roots in priority order. The first
-// element is always the workdir; subsequent elements are user-global
-// candidates that actually exist on disk.
+// Sources returns the candidate roots in priority order. Workdir-local
+// roots come first; subsequent elements are user-global candidates
+// that actually exist on disk.
 //
-// The workdir root is always included (even if it doesn't exist yet)
+// Workdir roots are always included (even if they don't exist yet)
 // because that's where new skills will be created. User-global roots
 // are only included when present, since dangling references would
 // just produce noisy "stat: no such file" errors at scan time.
+//
+// Within each layer, `.agents/skills` (the agentskills.io-aligned
+// location) ranks above `.opencode/skills` (the legacy location), so
+// a project can override an existing `.opencode/skills` entry by
+// dropping a sibling under `.agents/skills`.
 func Sources(workdir string) []Source {
-	out := []Source{{
-		Root: filepath.Join(workdir, ".opencode", "skills"),
-		Kind: "workdir",
-	}}
+	out := []Source{
+		{Root: filepath.Join(workdir, ".agents", "skills"), Kind: "workdir"},
+		{Root: filepath.Join(workdir, ".opencode", "skills"), Kind: "workdir"},
+	}
 	for _, root := range userGlobalRoots() {
 		// Don't bother including a root that isn't a directory; the
 		// scanner would return ENOENT every time. ReadDir on a
@@ -68,28 +82,42 @@ func Sources(workdir string) []Source {
 }
 
 // userGlobalRoots returns user-config-dir candidates in priority
-// order. Only the first hit on disk is consumed, but we surface all
-// candidates so Sources() can pick the existing one.
+// order. Sources() picks every candidate that exists on disk; missing
+// ones are silently skipped.
+//
+// Within each base location (XDG/explicit, XDG/default, legacy flat)
+// we surface BOTH the agents-skills root and the opencode-skills
+// root, with agents ranked first to match the in-workdir ordering.
 //
 // The order is:
 //
-//  1. $XDG_CONFIG_HOME/opencode/skills  (only if XDG_CONFIG_HOME set)
-//  2. $HOME/.config/opencode/skills      (XDG default on macOS+Linux)
-//  3. $HOME/.opencode/skills             (legacy flat layout)
+//	if $XDG_CONFIG_HOME set:
+//	  1. $XDG_CONFIG_HOME/agents/skills
+//	  2. $XDG_CONFIG_HOME/opencode/skills
+//	XDG default (always tried):
+//	  3. $HOME/.config/agents/skills
+//	  4. $HOME/.config/opencode/skills
+//	legacy flat layout:
+//	  5. $HOME/.agents/skills
+//	  6. $HOME/.opencode/skills
 //
-// 1 and 2 are usually the same path on a fresh macOS or Linux box
-// (XDG_CONFIG_HOME defaults to ~/.config); they only diverge when
-// the user has explicitly set XDG_CONFIG_HOME.
+// On a fresh macOS/Linux box where $XDG_CONFIG_HOME is unset (or set
+// to its default of $HOME/.config), the XDG-style and default paths
+// collapse; dedupe() drops the duplicates so each filesystem path
+// appears at most once.
 func userGlobalRoots() []string {
 	var out []string
 	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
+		out = append(out, filepath.Join(xdg, "agents", "skills"))
 		out = append(out, filepath.Join(xdg, "opencode", "skills"))
 	}
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
 		return out
 	}
+	out = append(out, filepath.Join(home, ".config", "agents", "skills"))
 	out = append(out, filepath.Join(home, ".config", "opencode", "skills"))
+	out = append(out, filepath.Join(home, ".agents", "skills"))
 	out = append(out, filepath.Join(home, ".opencode", "skills"))
 	return dedupe(out)
 }

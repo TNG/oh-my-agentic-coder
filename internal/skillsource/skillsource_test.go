@@ -46,32 +46,43 @@ func TestSources_WorkdirAlwaysIncluded(t *testing.T) {
 	withFakeHome(t)
 	wd := t.TempDir()
 	got := Sources(wd)
-	if len(got) == 0 || got[0].Kind != "workdir" {
-		t.Fatalf("first source must be workdir; got %+v", got)
+	// Both workdir-local roots (.agents first, then .opencode) must
+	// be present and come before any user-global root.
+	if len(got) < 2 {
+		t.Fatalf("expected at least the two workdir roots; got %+v", got)
 	}
-	want := filepath.Join(wd, ".opencode", "skills")
-	if got[0].Root != want {
-		t.Errorf("workdir root = %q, want %q", got[0].Root, want)
+	wantFirst := filepath.Join(wd, ".agents", "skills")
+	wantSecond := filepath.Join(wd, ".opencode", "skills")
+	if got[0].Kind != "workdir" || got[0].Root != wantFirst {
+		t.Errorf("source[0] = %+v, want kind=workdir root=%q", got[0], wantFirst)
+	}
+	if got[1].Kind != "workdir" || got[1].Root != wantSecond {
+		t.Errorf("source[1] = %+v, want kind=workdir root=%q", got[1], wantSecond)
 	}
 }
 
 func TestSources_UserGlobalAppearsWhenPresent(t *testing.T) {
 	home := withFakeHome(t)
-	// Create the XDG-style root.
+	// Create the XDG-style opencode root.
 	root := filepath.Join(home, ".config", "opencode", "skills")
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	got := Sources(t.TempDir())
-	// Expect: workdir, then user-global.
-	if len(got) < 2 {
-		t.Fatalf("expected at least 2 sources, got %+v", got)
+	// First two entries are the two workdir-local roots; the
+	// user-global root we just created should appear afterwards.
+	if len(got) < 3 {
+		t.Fatalf("expected at least 3 sources, got %+v", got)
 	}
-	if got[1].Kind != "user-global" {
-		t.Errorf("source[1].Kind = %q, want user-global", got[1].Kind)
+	var foundUG bool
+	for _, s := range got {
+		if s.Kind == "user-global" && s.Root == root {
+			foundUG = true
+			break
+		}
 	}
-	if got[1].Root != root {
-		t.Errorf("user-global root = %q, want %q", got[1].Root, root)
+	if !foundUG {
+		t.Errorf("user-global root %q not found in sources %+v", root, got)
 	}
 }
 
@@ -215,6 +226,174 @@ func TestDiscover_MissingDirsAreNoOp(t *testing.T) {
 	}
 	if got != nil {
 		t.Errorf("Discover with empty layers = %+v, want nil", got)
+	}
+}
+
+func TestSources_AgentsRanksAboveOpencodeInWorkdir(t *testing.T) {
+	withFakeHome(t)
+	wd := t.TempDir()
+	got := Sources(wd)
+	// Find the two workdir roots in the slice and assert .agents
+	// comes first.
+	var agentsIdx, opencodeIdx = -1, -1
+	for i, s := range got {
+		switch s.Root {
+		case filepath.Join(wd, ".agents", "skills"):
+			agentsIdx = i
+		case filepath.Join(wd, ".opencode", "skills"):
+			opencodeIdx = i
+		}
+	}
+	if agentsIdx == -1 || opencodeIdx == -1 {
+		t.Fatalf("both workdir roots must be present; got %+v", got)
+	}
+	if agentsIdx >= opencodeIdx {
+		t.Errorf(".agents/skills (idx=%d) must rank above .opencode/skills (idx=%d); got %+v",
+			agentsIdx, opencodeIdx, got)
+	}
+}
+
+func TestResolve_AgentsWinsOverOpencodeInWorkdir(t *testing.T) {
+	withFakeHome(t)
+	wd := t.TempDir()
+	stageSkill(t, filepath.Join(wd, ".agents", "skills"), "echo-rest")
+	stageSkill(t, filepath.Join(wd, ".opencode", "skills"), "echo-rest")
+
+	dir, src, err := Resolve(wd, "echo-rest")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	want := filepath.Join(wd, ".agents", "skills", "echo-rest")
+	if dir != want {
+		t.Errorf("Resolve picked %q, want %q (.agents must win)", dir, want)
+	}
+	if src.Kind != "workdir" {
+		t.Errorf("source.Kind = %q, want workdir", src.Kind)
+	}
+}
+
+func TestResolve_FromAgentsOnly(t *testing.T) {
+	withFakeHome(t)
+	wd := t.TempDir()
+	stageSkill(t, filepath.Join(wd, ".agents", "skills"), "agents-only")
+
+	dir, _, err := Resolve(wd, "agents-only")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	want := filepath.Join(wd, ".agents", "skills", "agents-only")
+	if dir != want {
+		t.Errorf("Resolve from .agents/skills picked %q, want %q", dir, want)
+	}
+}
+
+func TestResolve_UserGlobalAgentsRoot(t *testing.T) {
+	home := withFakeHome(t)
+	wd := t.TempDir()
+	// Skill lives ONLY in the user-global agents root.
+	stageSkill(t, filepath.Join(home, ".config", "agents", "skills"), "tng-email")
+
+	dir, src, err := Resolve(wd, "tng-email")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	want := filepath.Join(home, ".config", "agents", "skills", "tng-email")
+	if dir != want {
+		t.Errorf("Resolve picked %q, want %q", dir, want)
+	}
+	if src.Kind != "user-global" {
+		t.Errorf("source.Kind = %q, want user-global", src.Kind)
+	}
+}
+
+func TestResolve_UserGlobalLegacyAgents(t *testing.T) {
+	home := withFakeHome(t)
+	wd := t.TempDir()
+	// Only the legacy ~/.agents/skills exists, not the XDG path.
+	stageSkill(t, filepath.Join(home, ".agents", "skills"), "legacy-agents-skill")
+
+	dir, src, err := Resolve(wd, "legacy-agents-skill")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	want := filepath.Join(home, ".agents", "skills", "legacy-agents-skill")
+	if dir != want {
+		t.Errorf("Resolve picked %q, want %q", dir, want)
+	}
+	if src.Kind != "user-global" {
+		t.Errorf("source.Kind = %q, want user-global", src.Kind)
+	}
+}
+
+func TestDiscover_MergesAgentsAndOpencodeLayers(t *testing.T) {
+	home := withFakeHome(t)
+	wd := t.TempDir()
+
+	// One skill in each of the four locations the production user
+	// is most likely to have populated.
+	stageSkill(t, filepath.Join(wd, ".agents", "skills"), "wd-agents-skill")
+	stageSkill(t, filepath.Join(wd, ".opencode", "skills"), "wd-opencode-skill")
+	stageSkill(t, filepath.Join(home, ".config", "agents", "skills"), "ug-agents-skill")
+	stageSkill(t, filepath.Join(home, ".config", "opencode", "skills"), "ug-opencode-skill")
+
+	got, err := Discover(wd)
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	sort.Slice(got, func(i, j int) bool { return got[i].Name < got[j].Name })
+
+	want := []Entry{
+		{Name: "ug-agents-skill", Dir: filepath.Join(home, ".config", "agents", "skills", "ug-agents-skill"), Kind: "user-global"},
+		{Name: "ug-opencode-skill", Dir: filepath.Join(home, ".config", "opencode", "skills", "ug-opencode-skill"), Kind: "user-global"},
+		{Name: "wd-agents-skill", Dir: filepath.Join(wd, ".agents", "skills", "wd-agents-skill"), Kind: "workdir"},
+		{Name: "wd-opencode-skill", Dir: filepath.Join(wd, ".opencode", "skills", "wd-opencode-skill"), Kind: "workdir"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("Discover mismatch:\n got:  %+v\n want: %+v", got, want)
+	}
+}
+
+func TestDiscover_AgentsWinsOverOpencodeOnNameCollision(t *testing.T) {
+	withFakeHome(t)
+	wd := t.TempDir()
+
+	// Same skill name in both workdir-local layers.
+	stageSkill(t, filepath.Join(wd, ".agents", "skills"), "shared")
+	stageSkill(t, filepath.Join(wd, ".opencode", "skills"), "shared")
+
+	got, err := Discover(wd)
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected exactly 1 entry (deduped); got %+v", got)
+	}
+	want := filepath.Join(wd, ".agents", "skills", "shared")
+	if got[0].Dir != want {
+		t.Errorf("dedup picked %q, want %q (.agents must win)", got[0].Dir, want)
+	}
+}
+
+func TestUserGlobalRoots_IncludesAgentsAndOpencode(t *testing.T) {
+	home := withFakeHome(t)
+	roots := userGlobalRoots()
+	wantAny := []string{
+		filepath.Join(home, ".config", "agents", "skills"),
+		filepath.Join(home, ".config", "opencode", "skills"),
+		filepath.Join(home, ".agents", "skills"),
+		filepath.Join(home, ".opencode", "skills"),
+	}
+	for _, w := range wantAny {
+		var found bool
+		for _, r := range roots {
+			if r == w {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("userGlobalRoots missing %q; got %+v", w, roots)
+		}
 	}
 }
 

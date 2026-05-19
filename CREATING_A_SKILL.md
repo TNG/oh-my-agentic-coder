@@ -64,18 +64,32 @@ it only gets a socket path.
 
 A skill is a directory containing both a `SKILL.md` (the agentskills.io
 discovery/instructions file) and an `omac.yaml` (omac's runtime contract).
-omac looks in two locations, in this order:
+omac looks in two layers, and within each layer it honors two parallel
+naming conventions: the agentskills.io-aligned `agents/skills` location
+and the legacy `opencode/skills` location.
 
-1. **Workdir-local** — `<workdir>/.opencode/skills/<name>/`. The
-   project-specific layer; what most users mean by "their skills".
-2. **User-global** — `$XDG_CONFIG_HOME/opencode/skills/<name>/`
-   (default `~/.config/opencode/skills/<name>/`). Skills that you want
-   available across every project on your machine. As a legacy
-   fallback, `~/.opencode/skills/<name>/` is also consulted.
+1. **Workdir-local** (always scanned, in this order):
+   1. `<workdir>/.agents/skills/<name>/` — the agentskills.io-aligned
+      layout most users will pick for new skills.
+   2. `<workdir>/.opencode/skills/<name>/` — the legacy layout; still
+      fully supported.
+2. **User-global** (only roots that exist on disk are scanned, in this
+   order):
+   1. `$XDG_CONFIG_HOME/agents/skills/<name>/` (if `$XDG_CONFIG_HOME`
+      is set; defaults to `~/.config/agents/skills/`)
+   2. `$XDG_CONFIG_HOME/opencode/skills/<name>/` (if set; defaults to
+      `~/.config/opencode/skills/`)
+   3. `~/.config/agents/skills/<name>/`
+   4. `~/.config/opencode/skills/<name>/`
+   5. `~/.agents/skills/<name>/` — legacy flat layout.
+   6. `~/.opencode/skills/<name>/` — legacy flat layout.
 
-If a skill name exists in both layers, the **workdir copy wins** (so
-a project can fork a user-global skill without touching the global
-one). Registration data — `sidecar.json`, `skill-config.yaml`, and OS
+`.agents/skills` ranks above `.opencode/skills` in every layer so a
+project can override an existing `.opencode/skills` entry by dropping
+a sibling under `.agents/skills`. Workdir-local always wins over
+user-global on name collision.
+
+Registration data — `sidecar.json`, `skill-config.yaml`, and OS
 keychain entries — always lives in the workdir, regardless of which
 layer the source came from. Each project explicitly opts into a
 user-global skill by running `omac register <name>` in that project's

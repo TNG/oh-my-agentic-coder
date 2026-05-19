@@ -49,8 +49,9 @@ func runRegister(args []string, env *Env) int {
 	skillName := fs.Arg(0)
 
 	// Locate the skill in the workdir-local layer first, then fall
-	// back to user-global ($XDG_CONFIG_HOME/opencode/skills, then
-	// ~/.opencode/skills). The path that wins is recorded in the
+	// back to user-global. Within each layer, .agents/skills ranks
+	// above the legacy .opencode/skills; see skillsource for the
+	// full precedence list. The path that wins is recorded in the
 	// registry; downstream code (start, config show) just uses
 	// SkillDir verbatim, so the source layer is transparent after
 	// registration.

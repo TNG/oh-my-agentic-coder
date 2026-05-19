@@ -143,12 +143,14 @@ omac secrets set slack SLACK_BOT_TOKEN
 ```
 omac [--workdir <dir>] <subcommand> [flags] [args]
 
-  register     Locate the skill (workdir-local first, then user-global
-               at $XDG_CONFIG_HOME/opencode/skills, with ~/.opencode/
-               skills as legacy fallback), validate meta, prompt for
-               secrets → keychain, prompt for config fields →
-               skill-config.yaml, surface the install script path (omac
-               never runs it), add to sidecar.json. Flags:
+  register     Locate the skill (workdir-local first, then user-global;
+               within each layer, .agents/skills ranks above the legacy
+               .opencode/skills — see CREATING_A_SKILL.md §2 for the
+               full search order including XDG and legacy fallbacks),
+               validate meta, prompt for secrets → keychain, prompt for
+               config fields → skill-config.yaml, surface the install
+               script path (omac never runs it), add to sidecar.json.
+               Flags:
                  --force                 replace existing registry entry
                  --reprompt-secrets      re-prompt even if secrets exist
                  --no-secrets            skip all secret prompts
@@ -171,10 +173,11 @@ omac [--workdir <dir>] <subcommand> [flags] [args]
     get  <skill> <field>    one resolved value, suitable for $(...)
 
   start        Spawn sidecars → bind socket → exec sandbox runtime. Refuses
-               to start if any skill is unregistered (in workdir-local
-               .opencode/skills/ OR user-global ~/.config/opencode/skills/),
-               or if a registered skill's bundle changed since register, or
-               if a required config field is unresolvable. Auto-deregisters
+               to start if any skill is unregistered in any of the search
+               roots (workdir-local .agents/skills + .opencode/skills,
+               plus the user-global layers), or if a registered skill's
+               bundle changed since register, or if a required config
+               field is unresolvable. Auto-deregisters
                (silently) skills whose directory has vanished; secrets +
                config persist for safety. Flags:
                  --sandbox <profile>     pick a sandbox profile

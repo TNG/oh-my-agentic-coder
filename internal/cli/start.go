@@ -114,7 +114,10 @@ func runStart(args []string, env *Env) int {
 			p, p)
 	}
 
-	// 2b. Refuse if any unregistered skill exists under .opencode/skills/.
+	// 2b. Refuse if any unregistered skill exists under any of the
+	//     skill source roots (workdir-local .agents/skills and
+	//     .opencode/skills, plus the user-global layers — see the
+	//     skillsource package for the full list).
 	//     "Skill" here means a directory with a omac.yaml. The user
 	//     must explicitly register each one (so registration prompts,
 	//     keychain seeding, etc. don't get silently skipped).
@@ -545,13 +548,16 @@ func autoDeregisterMissing(env *Env, reg *registry.Registry) ([]string, error) {
 }
 
 // findUnregisteredSkills returns the names of every skill discovered
-// across BOTH the workdir-local layer (<workdir>/.opencode/skills) and
-// the user-global layer ($XDG_CONFIG_HOME/opencode/skills, with
-// ~/.opencode/skills as a legacy fallback) that has a omac.yaml but
+// across every source omac knows about and that has a omac.yaml but
 // is NOT in the registry. Names are sorted for deterministic output.
 //
-// Workdir-local skills win over user-global skills when both layers
-// have the same name (skillsource.Discover handles dedup internally).
+// Sources include the workdir-local roots (<workdir>/.agents/skills
+// and <workdir>/.opencode/skills, with .agents winning on collision)
+// and every user-global root that exists on disk (XDG-style and
+// legacy flat layouts under both `agents/` and `opencode/`). See the
+// skillsource package for the full precedence list. Workdir-local
+// skills always win over user-global ones with the same name;
+// skillsource.Discover handles dedup internally.
 func findUnregisteredSkills(workdir string, reg *registry.Registry) ([]string, error) {
 	discovered, err := skillsource.Discover(workdir)
 	if err != nil {
