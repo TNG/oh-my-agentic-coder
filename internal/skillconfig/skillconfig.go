@@ -35,6 +35,12 @@ const SchemaVersion = 1
 type Store struct {
 	Version int                          `yaml:"version"`
 	Skills  map[string]map[string]string `yaml:"skills"`
+	// Defaults holds "last-known-good" config values keyed by
+	// skill→field, mirrored on every write so a future `register
+	// --defaults` elsewhere can reuse them as suggestions
+	// (docs/MULTI_DIR_DESKTOP.md §4.4). Only meaningful in the global
+	// store; never consulted at runtime (runtime uses Skills only).
+	Defaults map[string]map[string]string `yaml:"defaults,omitempty"`
 }
 
 // Path returns the skill-config file path for a given workdir.
@@ -223,6 +229,39 @@ func (s *Store) RemoveSkill(skill string) bool {
 		return false
 	}
 	delete(s.Skills, skill)
+	return true
+}
+
+// GetDefault returns the remembered default for a (skill, field), plus
+// whether present (docs/MULTI_DIR_DESKTOP.md §4.4).
+func (s *Store) GetDefault(skill, field string) (string, bool) {
+	if m, ok := s.Defaults[skill]; ok {
+		v, present := m[field]
+		return v, present
+	}
+	return "", false
+}
+
+// SetDefault records a remembered default for a (skill, field).
+func (s *Store) SetDefault(skill, field, value string) {
+	if s.Defaults == nil {
+		s.Defaults = map[string]map[string]string{}
+	}
+	m, ok := s.Defaults[skill]
+	if !ok {
+		m = map[string]string{}
+		s.Defaults[skill] = m
+	}
+	m[field] = value
+}
+
+// RemoveDefaults drops every remembered default for a skill. Used by
+// `deregister --purge-defaults`. Returns true if anything was removed.
+func (s *Store) RemoveDefaults(skill string) bool {
+	if _, ok := s.Defaults[skill]; !ok {
+		return false
+	}
+	delete(s.Defaults, skill)
 	return true
 }
 

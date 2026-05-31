@@ -12,11 +12,12 @@ func runDeregister(args []string, env *Env) int {
 	fs := flag.NewFlagSet("deregister", flag.ContinueOnError)
 	fs.SetOutput(env.Stderr)
 	var (
-		purge       = fs.Bool("purge-secrets", false, "Also delete every omac/<skill>/* entry from the keychain.")
-		purgeFields = fs.Bool("purge-fields", false, "Also delete this skill's entries from .opencode/skill-config.yaml.")
+		purge         = fs.Bool("purge-secrets", false, "Also delete every omac/<skill>/* entry from the keychain.")
+		purgeFields   = fs.Bool("purge-fields", false, "Also delete this skill's entries from .opencode/skill-config.yaml.")
+		purgeDefaults = fs.Bool("purge-defaults", false, "Also delete this skill's remembered global defaults (secrets + config).")
 	)
 	fs.Usage = func() {
-		fmt.Fprintln(env.Stderr, "Usage: omac deregister <skill> [--purge-secrets] [--purge-fields]")
+		fmt.Fprintln(env.Stderr, "Usage: omac deregister <skill> [--purge-secrets] [--purge-fields] [--purge-defaults]")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(reorderFlagsFirst(args)); err != nil {
@@ -96,6 +97,27 @@ func runDeregister(args []string, env *Env) int {
 		fmt.Fprintf(env.Stdout, "; deleted %d config field(s)", removedFields)
 	} else if existed {
 		fmt.Fprintf(env.Stdout, " (use --purge-fields to also drop config fields)")
+	}
+
+	// Purge remembered global defaults (docs/MULTI_DIR_DESKTOP.md §4.4):
+	// the secret defaults under omac/__defaults__/<skill> and the config
+	// defaults block in the global skill-config.yaml.
+	if *purgeDefaults {
+		_ = keychain.DeleteAllScoped(keychain.DefaultsScope, name, declared)
+		if err := registry.WithGlobalLock(func() error {
+			store, err := loadSkillConfig(env.Workdir, true)
+			if err != nil {
+				return err
+			}
+			if store.RemoveDefaults(name) {
+				return saveSkillConfig(env.Workdir, true, store)
+			}
+			return nil
+		}); err != nil {
+			fmt.Fprintln(env.Stderr, "\nomac deregister: purge defaults:", err)
+			return ExitIOError
+		}
+		fmt.Fprintf(env.Stdout, "; purged remembered defaults")
 	}
 	fmt.Fprintln(env.Stdout)
 	return ExitOK

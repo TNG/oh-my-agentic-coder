@@ -146,7 +146,7 @@ func TestHandleOneField_PreviouslySkippedOptional(t *testing.T) {
 	r := false
 	spec := config.ConfigSpec{Name: "F", Type: config.ConfigFieldString, Required: &r}
 
-	skipped, err := handleOneField(env, store, "skill", spec, false, map[string]bool{"F": true}, nil)
+	skipped, err := handleOneField(env, store, "skill", spec, false, map[string]bool{"F": true}, nil, false, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -170,7 +170,7 @@ func TestHandleOneField_PreviouslySkippedRequired(t *testing.T) {
 	store := &skillconfig.Store{}
 	spec := config.ConfigSpec{Name: "F", Type: config.ConfigFieldString} // required by default
 
-	_, err := handleOneField(env, store, "skill", spec, false, map[string]bool{"F": true}, nil)
+	_, err := handleOneField(env, store, "skill", spec, false, map[string]bool{"F": true}, nil, false, nil)
 	if err == nil || !strings.Contains(err.Error(), "refused: required config field") {
 		t.Errorf("expected refused-required error, got %v", err)
 	}
@@ -185,7 +185,7 @@ func TestHandleOneField_RepromptIgnoresPrevSkipped(t *testing.T) {
 	r := false
 	spec := config.ConfigSpec{Name: "F", Type: config.ConfigFieldString, Required: &r}
 
-	skipped, err := handleOneField(env, store, "skill", spec, true, map[string]bool{"F": true}, nil)
+	skipped, err := handleOneField(env, store, "skill", spec, true, map[string]bool{"F": true}, nil, false, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -207,7 +207,7 @@ func TestHandleOneField_OptionalSkipReturnsTrue(t *testing.T) {
 	r := false
 	spec := config.ConfigSpec{Name: "F", Type: config.ConfigFieldString, Required: &r}
 
-	skipped, err := handleOneField(env, store, "skill", spec, false, nil, nil)
+	skipped, err := handleOneField(env, store, "skill", spec, false, nil, nil, false, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -229,7 +229,7 @@ func TestHandleOneField_AlreadyConfiguredReturnsFalse(t *testing.T) {
 	store.Set("skill", "F", "previously-stored")
 	spec := config.ConfigSpec{Name: "F", Type: config.ConfigFieldString}
 
-	skipped, err := handleOneField(env, store, "skill", spec, false, map[string]bool{"F": true}, nil)
+	skipped, err := handleOneField(env, store, "skill", spec, false, map[string]bool{"F": true}, nil, false, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

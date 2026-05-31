@@ -87,6 +87,51 @@ func (s *Supervisor) StartAll(ctx context.Context, specs []SidecarSpec) ([]*Runn
 	return out, nil
 }
 
+// AddSidecar starts a single sidecar at runtime and tracks it. Used by
+// serve mode to bring a directory's skills (or a global skill) online
+// lazily, after StartAll has already run (or instead of it). Safe to call
+// concurrently. On health-check failure the child is torn down and the
+// error returned; nothing is added to the tracked set.
+func (s *Supervisor) AddSidecar(ctx context.Context, spec SidecarSpec) (*Running, error) {
+	r, err := s.startOne(ctx, spec)
+	if err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	s.children = append(s.children, r)
+	s.mu.Unlock()
+	return r, nil
+}
+
+// StopSidecar terminates the tracked sidecar with the given name and
+// removes it from the tracked set. A no-op (returns false) if no such
+// sidecar is tracked. Used by serve mode on directory deactivation and
+// when swapping a stub for a live route.
+func (s *Supervisor) StopSidecar(name string, timeout time.Duration) bool {
+	s.mu.Lock()
+	var target *Running
+	keep := s.children[:0:0]
+	for _, r := range s.children {
+		if r.Name == name && target == nil {
+			target = r
+			continue
+		}
+		keep = append(keep, r)
+	}
+	if target != nil {
+		s.children = keep
+	}
+	s.mu.Unlock()
+	if target == nil {
+		return false
+	}
+	_ = terminate(target.Cmd, timeout)
+	if target.LogFile != nil {
+		_ = target.LogFile.Close()
+	}
+	return true
+}
+
 // startOne allocates a port, spawns the child, and waits on health.
 func (s *Supervisor) startOne(ctx context.Context, spec SidecarSpec) (*Running, error) {
 	port, err := allocEphemeralPort()

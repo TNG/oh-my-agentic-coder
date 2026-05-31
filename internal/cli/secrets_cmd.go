@@ -88,7 +88,7 @@ func runSecretsSet(args []string, env *Env) int {
 	// return value is also irrelevant: `omac secrets set` is a
 	// pinpoint operation on a single secret and does not touch the
 	// registry's skip list — that is solely owned by `omac register`.
-	if _, err := handleOneSecret(env, skill, spec, true, nil, nil); err != nil {
+	if _, err := handleOneSecret(env, skill, spec, true, nil, nil, false); err != nil {
 		fmt.Fprintln(env.Stderr, "omac secrets set:", err)
 		return ExitKeychainError
 	}

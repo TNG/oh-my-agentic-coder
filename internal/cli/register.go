@@ -34,6 +34,7 @@ func runRegister(args []string, env *Env) int {
 		repromptFields  = fs.Bool("reprompt-fields", false, "Re-prompt for non-secret config fields even if already stored.")
 		noFields        = fs.Bool("no-fields", false, "Skip all config-field prompts; caller promises to supply them at start time.")
 		fieldsFromPath  = fs.String("fields-from", "", "Read KEY=VALUE config fields from this file instead of prompting.")
+		useDefaults     = fs.Bool("defaults", false, "Non-interactive: use remembered global defaults where available; prompt only for values never set anywhere.")
 	)
 	fs.Usage = func() {
 		fmt.Fprintln(env.Stderr, "Usage: omac register <skill> [flags]")
@@ -119,7 +120,7 @@ func runRegister(args []string, env *Env) int {
 			return ExitConfigInvalid
 		}
 		for _, spec := range meta.Sidecar.Secrets {
-			skipped, err := handleOneSecret(env, skillName, spec, *reprompt, prevSkippedSecrets, fromFile)
+			skipped, err := handleOneSecret(env, skillName, spec, *reprompt, prevSkippedSecrets, fromFile, *useDefaults)
 			if err != nil {
 				// Determine exit code from err message tag.
 				if strings.HasPrefix(err.Error(), "keychain:") {
@@ -165,8 +166,24 @@ func runRegister(args []string, env *Env) int {
 			if err != nil {
 				return err
 			}
+			// For --defaults, load the global store so we can read the
+			// remembered config defaults and mirror new values back into
+			// them. When registering a global skill, store IS the global
+			// store, so reuse it.
+			var defStore *skillconfig.Store
+			if *useDefaults {
+				if global {
+					defStore = store
+				} else {
+					gs, err := skillconfig.LoadGlobal()
+					if err != nil {
+						return err
+					}
+					defStore = gs
+				}
+			}
 			for _, spec := range meta.Sidecar.Config {
-				skipped, err := handleOneField(env, store, skillName, spec, *repromptFields, prevSkippedFields, fromFile)
+				skipped, err := handleOneField(env, store, skillName, spec, *repromptFields, prevSkippedFields, fromFile, *useDefaults, defStore)
 				if err != nil {
 					return err
 				}
@@ -174,7 +191,20 @@ func runRegister(args []string, env *Env) int {
 					skippedFields = append(skippedFields, spec.Name)
 				}
 			}
-			return saveSkillConfig(env.Workdir, global, store)
+			if err := saveSkillConfig(env.Workdir, global, store); err != nil {
+				return err
+			}
+			// Persist mirrored config defaults when they live in a
+			// separate (global) store. For a global skill, defStore ==
+			// store and was already saved above.
+			if *useDefaults && !global && defStore != nil {
+				if err := registry.WithGlobalLock(func() error {
+					return saveSkillConfig(env.Workdir, true, defStore)
+				}); err != nil {
+					return err
+				}
+			}
+			return nil
 		}); err != nil {
 			if strings.HasPrefix(err.Error(), "refused:") {
 				fmt.Fprintln(env.Stderr, "omac register:", err)
@@ -380,7 +410,7 @@ func dedupSorted(names []string) []string {
 // The "already in keychain" branch and the "from --secrets-from / env"
 // branches all return skipped=false: they record actual values, which
 // take priority over any previous skip.
-func handleOneSecret(env *Env, skill string, spec config.SecretSpec, reprompt bool, prevSkipped map[string]bool, fromFile map[string]string) (bool, error) {
+func handleOneSecret(env *Env, skill string, spec config.SecretSpec, reprompt bool, prevSkipped map[string]bool, fromFile map[string]string, useDefaults bool) (bool, error) {
 	// 1. Already in keychain?
 	if !reprompt {
 		present, err := keychain.Has(skill, spec.Name)
@@ -400,6 +430,25 @@ func handleOneSecret(env *Env, skill string, spec config.SecretSpec, reprompt bo
 		}
 	}
 
+	// 1c. --defaults: adopt the remembered global default silently if one
+	//     exists (docs/MULTI_DIR_DESKTOP.md §4.4). If none exists we fall
+	//     through and still prompt — --defaults means "don't re-ask for
+	//     things I've already answered", not "skip required values".
+	if useDefaults {
+		if def, err := keychain.GetDefault(skill, spec.Name); err == nil {
+			if verr := validatePattern(spec, def.ExposeString()); verr == nil {
+				if serr := keychain.SetWithDefault("", skill, spec.Name, def); serr != nil {
+					def.Zero()
+					return false, fmt.Errorf("keychain: %w", serr)
+				}
+				def.Zero()
+				fmt.Fprintf(env.Stderr, "  stored %s (from remembered default)\n", spec.Name)
+				return false, nil
+			}
+			def.Zero()
+		}
+	}
+
 	// 2. --secrets-from file takes precedence over prompting.
 	if v, ok := fromFile[spec.Name]; ok {
 		if err := validatePattern(spec, v); err != nil {
@@ -407,7 +456,7 @@ func handleOneSecret(env *Env, skill string, spec config.SecretSpec, reprompt bo
 		}
 		s := secrets.NewSecretString(v)
 		defer s.Zero()
-		if err := keychain.Set(skill, spec.Name, s); err != nil {
+		if err := keychain.SetWithDefault("", skill, spec.Name, s); err != nil {
 			return false, fmt.Errorf("keychain: %w", err)
 		}
 		fmt.Fprintf(env.Stderr, "  stored %s (from file)\n", spec.Name)
@@ -421,7 +470,7 @@ func handleOneSecret(env *Env, skill string, spec config.SecretSpec, reprompt bo
 		}
 		s := secrets.NewSecretString(v)
 		defer s.Zero()
-		if err := keychain.Set(skill, spec.Name, s); err != nil {
+		if err := keychain.SetWithDefault("", skill, spec.Name, s); err != nil {
 			return false, fmt.Errorf("keychain: %w", err)
 		}
 		fmt.Fprintf(env.Stderr, "  stored %s (from OMAC_SECRET_%s)\n", spec.Name, spec.Name)
@@ -457,7 +506,7 @@ func handleOneSecret(env *Env, skill string, spec config.SecretSpec, reprompt bo
 			if defaultHint != "" {
 				if v, ok := os.LookupEnv(spec.DefaultFromEnv); ok && v != "" {
 					s := secrets.NewSecretString(v)
-					if err := keychain.Set(skill, spec.Name, s); err != nil {
+					if err := keychain.SetWithDefault("", skill, spec.Name, s); err != nil {
 						s.Zero()
 						return false, fmt.Errorf("keychain: %w", err)
 					}
@@ -484,7 +533,7 @@ func handleOneSecret(env *Env, skill string, spec config.SecretSpec, reprompt bo
 			fmt.Fprintf(env.Stderr, "  [retry] %s\n", err)
 			continue
 		}
-		if err := keychain.Set(skill, spec.Name, value); err != nil {
+		if err := keychain.SetWithDefault("", skill, spec.Name, value); err != nil {
 			value.Zero()
 			return false, fmt.Errorf("keychain: %w", err)
 		}
@@ -519,7 +568,16 @@ func validatePattern(spec config.SecretSpec, v string) error {
 // Errors with the prefix "refused:" map to ExitSecretRefused at the
 // caller level (we reuse that exit code because the semantics — user
 // explicitly didn't supply a required value — are the same).
-func handleOneField(env *Env, store *skillconfig.Store, skill string, spec config.ConfigSpec, reprompt bool, prevSkipped map[string]bool, fromFile map[string]string) (bool, error) {
+func handleOneField(env *Env, store *skillconfig.Store, skill string, spec config.ConfigSpec, reprompt bool, prevSkipped map[string]bool, fromFile map[string]string, useDefaults bool, defStore *skillconfig.Store) (bool, error) {
+	// setField stores the value in the runtime store and, when defaults
+	// are in play, mirrors it into the defaults store too.
+	setField := func(val string) {
+		store.Set(skill, spec.Name, val)
+		if defStore != nil {
+			defStore.SetDefault(skill, spec.Name, val)
+		}
+	}
+
 	// 1. Already stored?
 	if !reprompt {
 		if _, ok := store.Get(skill, spec.Name); ok {
@@ -537,13 +595,26 @@ func handleOneField(env *Env, store *skillconfig.Store, skill string, spec confi
 		}
 	}
 
+	// 1c. --defaults: adopt the remembered global default silently if one
+	//     exists and is valid (docs/MULTI_DIR_DESKTOP.md §4.4). Otherwise
+	//     fall through and prompt.
+	if useDefaults && defStore != nil {
+		if def, ok := defStore.GetDefault(skill, spec.Name); ok {
+			if canon, err := canonicalizeFieldValue(spec, def); err == nil {
+				setField(canon)
+				fmt.Fprintf(env.Stderr, "  set %s = %s (from remembered default)\n", spec.Name, canon)
+				return false, nil
+			}
+		}
+	}
+
 	// 2. --fields-from file beats prompting.
 	if v, ok := fromFile[spec.Name]; ok {
 		canon, err := canonicalizeFieldValue(spec, v)
 		if err != nil {
 			return false, err
 		}
-		store.Set(skill, spec.Name, canon)
+		setField(canon)
 		fmt.Fprintf(env.Stderr, "  set %s = %s (from file)\n", spec.Name, canon)
 		return false, nil
 	}
@@ -556,7 +627,7 @@ func handleOneField(env *Env, store *skillconfig.Store, skill string, spec confi
 		if err != nil {
 			return false, err
 		}
-		store.Set(skill, spec.Name, canon)
+		setField(canon)
 		fmt.Fprintf(env.Stderr, "  set %s = %s (from $OMAC_CONFIG_%s)\n", spec.Name, canon, spec.Name)
 		return false, nil
 	}
@@ -607,7 +678,7 @@ func handleOneField(env *Env, store *skillconfig.Store, skill string, spec confi
 					// silently store garbage.
 					return false, fmt.Errorf("default for %s rejected: %w", spec.Name, err)
 				}
-				store.Set(skill, spec.Name, canon)
+				setField(canon)
 				fmt.Fprintf(env.Stderr, "  set %s = %s (default from %s)\n", spec.Name, canon, defaultSource)
 				return false, nil
 			}
@@ -630,7 +701,7 @@ func handleOneField(env *Env, store *skillconfig.Store, skill string, spec confi
 			fmt.Fprintf(env.Stderr, "  [retry] %s\n", err)
 			continue
 		}
-		store.Set(skill, spec.Name, canon)
+		setField(canon)
 		fmt.Fprintf(env.Stderr, "  set %s = %s\n", spec.Name, canon)
 		return false, nil
 	}

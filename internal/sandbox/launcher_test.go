@@ -129,3 +129,24 @@ func TestOmacEnvValuesHaveNoTrailingSlash(t *testing.T) {
 		t.Errorf("OmacEnvValue() = %q, want %q", got, want)
 	}
 }
+
+func TestOmacEnvNameNamespaced(t *testing.T) {
+	if got, want := OmacDirEnvName("a17f3c", "slack"), "OMAC_D_A17F3C_SLACK_BASE"; got != want {
+		t.Errorf("OmacDirEnvName() = %q, want %q", got, want)
+	}
+	if got, want := OmacGlobalEnvName("weather"), "OMAC_G_WEATHER_BASE"; got != want {
+		t.Errorf("OmacGlobalEnvName() = %q, want %q", got, want)
+	}
+}
+
+func TestOmacTCPEnvValueNS(t *testing.T) {
+	if got, want := OmacTCPEnvValueNS("a17f3c", "slack", 41017), "http://127.0.0.1:41017/a17f3c/slack"; got != want {
+		t.Errorf("OmacTCPEnvValueNS(dir) = %q, want %q", got, want)
+	}
+	if got, want := OmacTCPEnvValueNS("__global__", "weather", 41017), "http://127.0.0.1:41017/__global__/weather"; got != want {
+		t.Errorf("OmacTCPEnvValueNS(global) = %q, want %q", got, want)
+	}
+	if got, want := OmacTCPEnvValueNS("", "flat", 41017), "http://127.0.0.1:41017/flat"; got != want {
+		t.Errorf("OmacTCPEnvValueNS(flat) = %q, want %q", got, want)
+	}
+}

@@ -141,10 +141,28 @@ func perSkillEnv(mount, socket string) string {
 }
 
 // OmacEnvName maps a mount like "himalaya-email" to "OMAC_HIMALAYA_EMAIL_BASE".
+// This is the flat (single-workdir / start-mode) form.
 func OmacEnvName(mount string) string {
+	return "OMAC_" + envIdent(mount) + "_BASE"
+}
+
+// OmacDirEnvName maps a (dir-token, mount) to the serve-mode workdir-local
+// form "OMAC_D_<TOKEN>_<MOUNT>_BASE" (docs/MULTI_DIR_DESKTOP.md §4.1).
+func OmacDirEnvName(dirToken, mount string) string {
+	return "OMAC_D_" + envIdent(dirToken) + "_" + envIdent(mount) + "_BASE"
+}
+
+// OmacGlobalEnvName maps a mount to the serve-mode global (shared) form
+// "OMAC_G_<MOUNT>_BASE" (docs/MULTI_DIR_DESKTOP.md §4.5).
+func OmacGlobalEnvName(mount string) string {
+	return "OMAC_G_" + envIdent(mount) + "_BASE"
+}
+
+// envIdent upper-cases an identifier and replaces every non-alphanumeric
+// rune with '_', matching the historical OmacEnvName behaviour.
+func envIdent(s string) string {
 	var b strings.Builder
-	b.WriteString("OMAC_")
-	for _, r := range mount {
+	for _, r := range s {
 		switch {
 		case r >= 'a' && r <= 'z':
 			b.WriteByte(byte(r) - 32)
@@ -156,7 +174,6 @@ func OmacEnvName(mount string) string {
 			b.WriteByte('_')
 		}
 	}
-	b.WriteString("_BASE")
 	return b.String()
 }
 
@@ -183,6 +200,25 @@ func OmacTCPEnvValue(mount string, port int) string {
 	return fmt.Sprintf("http://127.0.0.1:%d/%s", port, mount)
 }
 
+// OmacTCPEnvValueNS returns the http://127.0.0.1:<port>/<namespace>/<mount>
+// URL for serve-mode namespaced routes (dir token or "__global__"). An
+// empty namespace falls back to the flat form.
+func OmacTCPEnvValueNS(namespace, mount string, port int) string {
+	if namespace == "" {
+		return OmacTCPEnvValue(mount, port)
+	}
+	return fmt.Sprintf("http://127.0.0.1:%d/%s/%s", port, namespace, mount)
+}
+
+// OmacEnvValueNS returns the http+unix URL for a serve-mode namespaced
+// route. An empty namespace falls back to the flat form.
+func OmacEnvValueNS(namespace, mount, socket string) string {
+	if namespace == "" {
+		return OmacEnvValue(mount, socket)
+	}
+	return "http+unix://" + url.PathEscape(socket) + "/" + namespace + "/" + mount
+}
+
 // Exec runs the argv as a child process and waits for it, forwarding stdio
 // and signals.
 //
@@ -202,6 +238,21 @@ func OmacTCPEnvValue(mount string, port int) string {
 // Returns the child's exit code in 0..255. A signal-killed child maps to
 // 128+signum, matching shell convention.
 func Exec(argv []string, extraEnv map[string]string) (int, error) {
+	return ExecWithReady(argv, extraEnv, nil)
+}
+
+// ExecWithReady is like Exec but invokes onReady (if non-nil) on a
+// background goroutine immediately after the child has been started (and
+// the terminal handed over), then blocks waiting for the child exactly as
+// Exec does. This lets serve mode run its control plane / activation loop
+// concurrently with `opencode serve` while preserving the signal- and
+// terminal-handling contract of Exec (docs/MULTI_DIR_DESKTOP.md §5.3).
+//
+// onReady must not block indefinitely on its own; it should spin up its
+// goroutines and return. Any teardown it needs to do on child exit should
+// be wired via the caller's own defers (the caller still owns the facade
+// and supervisor).
+func ExecWithReady(argv []string, extraEnv map[string]string, onReady func()) (int, error) {
 	if len(argv) == 0 {
 		return 1, fmt.Errorf("empty argv")
 	}
@@ -299,6 +350,12 @@ func Exec(argv []string, extraEnv map[string]string) (int, error) {
 			}
 		}
 	}()
+
+	// The child is up and (when interactive) owns the terminal foreground.
+	// Kick off the caller's concurrent work (serve's control plane).
+	if onReady != nil {
+		go onReady()
+	}
 
 	waitErr := cmd.Wait()
 	close(done)

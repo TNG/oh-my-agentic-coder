@@ -121,6 +121,7 @@ func commands() map[string]Command {
 		"secrets":    {Name: "secrets", Short: "Manage skill secrets in the OS keychain.", Run: runSecrets},
 		"config":     {Name: "config", Short: "Show resolved config + secret fingerprints for a skill.", Run: runConfig},
 		"start":      {Name: "start", Short: "Start sidecars + facade + sandbox.", Run: runStart},
+		"serve":      {Name: "serve", Short: "Long-lived multi-directory server (OpenCode Desktop).", Run: runServe},
 		"doctor":     {Name: "doctor", Short: "Run sanity checks.", Run: runDoctor},
 		"version":    {Name: "version", Short: "Print version.", Run: runVersion},
 	}
@@ -144,6 +145,7 @@ Subcommands:
   secrets      Manage skill secrets in the OS keychain.
   config       Show resolved config + secret fingerprints for a skill.
   start        Start sidecars + facade + sandbox.
+  serve        Long-lived multi-directory server (OpenCode Desktop).
   doctor       Run sanity checks.
   version      Print version.
 

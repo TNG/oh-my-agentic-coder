@@ -30,13 +30,64 @@ import (
 	"time"
 )
 
+// RouteState describes whether a route forwards to a live sidecar or
+// serves a stub response. See the serve-mode design (docs/MULTI_DIR_DESKTOP.md
+// §5.2): a registered skill whose required secrets/config are missing is
+// mounted anyway, but as a stub that returns a structured 409 until the
+// values are supplied; a skill that is broken (bad omac.yaml / bundle drift)
+// is mounted as a 502 stub with diagnostics.
+type RouteState string
+
+const (
+	// RouteReady forwards to UpstreamPort.
+	RouteReady RouteState = "ready"
+	// RoutePendingCredentials returns 409 with X-Omac-Reason: pending-credentials.
+	RoutePendingCredentials RouteState = "pending-credentials"
+	// RouteBroken returns 502 with X-Omac-Reason: skill-broken.
+	RouteBroken RouteState = "broken"
+)
+
 // Route maps a mount prefix to an upstream localhost port.
+//
+// In single-workdir (omac start) mode the mount is a single segment
+// (e.g. "slack") and the request path is /<mount>/<rest>. In serve mode
+// (omac serve) the mount is namespaced by a directory token or the
+// reserved literal "__global__", and the request path carries that as a
+// first segment: /<dirtoken>/<mount>/<rest> or /__global__/<mount>/<rest>.
+// The Namespace field, when non-empty, is that first segment; the routing
+// key registered in the facade is then "<Namespace>/<Mount>".
 type Route struct {
 	Mount        string // e.g. "slack"
+	Namespace    string // "" (flat) or a dir token or "__global__" (serve mode)
 	UpstreamPort int
 	MaxBodyBytes int64         // 0 = inherit facade default
 	IdleTimeout  time.Duration // 0 = inherit facade default
 	Skill        string        // registry name
+
+	// State selects forward vs. stub behavior. The zero value ("") is
+	// treated as RouteReady so existing callers that don't set it keep
+	// working unchanged.
+	State RouteState
+	// Detail carries human-readable diagnostics for stub routes (e.g. the
+	// missing secret/config names and the fix commands). Ignored when
+	// State is RouteReady.
+	Detail string
+}
+
+// GlobalNamespace is the reserved, non-mintable first-segment token under
+// which user-global (shared) skills are routed in serve mode. A directory
+// token can never equal this value.
+const GlobalNamespace = "__global__"
+
+// key returns the routing-table key for a route: "<namespace>/<mount>"
+// when namespaced, else just "<mount>".
+func (r Route) key() string { return routeKey(r.Namespace, r.Mount) }
+
+func routeKey(namespace, mount string) string {
+	if namespace == "" {
+		return mount
+	}
+	return namespace + "/" + mount
 }
 
 // Facade is an HTTP reverse proxy that simultaneously serves on a Unix
@@ -82,7 +133,7 @@ func New(socketPath, tcpAddr string, routes []Route, maxBody int64, idle time.Du
 	m := make(map[string]*Route, len(routes))
 	for i := range routes {
 		r := routes[i]
-		m[r.Mount] = &r
+		m[r.key()] = &r
 	}
 	return &Facade{
 		SocketPath:    socketPath,
@@ -99,6 +150,48 @@ func New(socketPath, tcpAddr string, routes []Route, maxBody int64, idle time.Du
 // TCPPort returns the bound TCP port (after Start). Zero means TCP is
 // disabled or not yet bound.
 func (f *Facade) TCPPort() int { return f.boundTCPort }
+
+// AddRoute installs (or replaces) a route at runtime. Safe to call after
+// Start and from multiple goroutines. Used by serve mode to mount a
+// directory's skills lazily and to swap a stub route for a live one once
+// credentials arrive.
+func (f *Facade) AddRoute(r Route) {
+	rr := r
+	f.mu.Lock()
+	if f.routes == nil {
+		f.routes = make(map[string]*Route)
+	}
+	f.routes[rr.key()] = &rr
+	f.mu.Unlock()
+}
+
+// RemoveRoute drops the route with the given namespace/mount. A no-op if
+// absent. Used by serve mode when a directory is deactivated.
+func (f *Facade) RemoveRoute(namespace, mount string) {
+	f.mu.Lock()
+	delete(f.routes, routeKey(namespace, mount))
+	f.mu.Unlock()
+}
+
+// HasRoute reports whether a route exists for namespace/mount.
+func (f *Facade) HasRoute(namespace, mount string) bool {
+	f.mu.RLock()
+	_, ok := f.routes[routeKey(namespace, mount)]
+	f.mu.RUnlock()
+	return ok
+}
+
+// UpstreamPort returns the upstream port of the route for namespace/mount,
+// or 0 if there is no such route (or it is a stub with no upstream). Used
+// by serve mode to mirror a live route as a flat single-dir alias (§5.5).
+func (f *Facade) UpstreamPort(namespace, mount string) int {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	if r, ok := f.routes[routeKey(namespace, mount)]; ok {
+		return r.UpstreamPort
+	}
+	return 0
+}
 
 // Start opens the listeners and begins serving. Returns once both are
 // bound. Call Close to stop.
@@ -219,25 +312,84 @@ func (f *Facade) handle(w http.ResponseWriter, r *http.Request) {
 		f.writeStatus(w, r)
 		return
 	}
-	mount, rest := splitMount(r.URL.Path)
-	if mount == "" {
-		http.Error(w, "omac: invalid path", http.StatusNotFound)
-		return
-	}
-	f.mu.RLock()
-	route, ok := f.routes[mount]
-	f.mu.RUnlock()
+	route, rest, ok := f.resolve(r.URL.Path)
 	if !ok {
+		if route == nil {
+			// No segment at all.
+			http.Error(w, "omac: invalid path", http.StatusNotFound)
+			return
+		}
 		w.Header().Set("X-Omac-Reason", "unknown-mount")
-		http.Error(w, fmt.Sprintf("omac: unknown skill mount %q", mount), http.StatusNotFound)
+		http.Error(w, "omac: unknown skill mount", http.StatusNotFound)
 		return
 	}
+
+	// Stub routes never reach an upstream; they answer directly.
+	switch route.State {
+	case RoutePendingCredentials:
+		w.Header().Set("X-Omac-Reason", "pending-credentials")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"error":  "pending-credentials",
+			"skill":  route.Skill,
+			"detail": route.Detail,
+		})
+		f.logAccess(r, route, rest, http.StatusConflict, 0, time.Since(started))
+		return
+	case RouteBroken:
+		w.Header().Set("X-Omac-Reason", "skill-broken")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadGateway)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"error":  "skill-broken",
+			"skill":  route.Skill,
+			"detail": route.Detail,
+		})
+		f.logAccess(r, route, rest, http.StatusBadGateway, 0, time.Since(started))
+		return
+	}
+
 	// WebSocket / generic Upgrade path.
 	if isUpgrade(r) {
 		f.proxyUpgrade(w, r, route, rest, started)
 		return
 	}
 	f.proxyHTTP(w, r, route, rest, started)
+}
+
+// resolve maps a request path to a route and the remaining path.
+//
+// It supports both flat mounts (/<mount>/<rest>, single-workdir mode) and
+// namespaced mounts (/<namespace>/<mount>/<rest>, serve mode). It prefers
+// the more specific two-segment key when one exists, so a namespaced route
+// is never shadowed by a same-named flat route. Returns ok=false with a
+// non-nil route==nil only when the path has no usable first segment;
+// ok=false with route==nil also signals "no segment", while a real
+// unknown-mount returns (nil, "", false) too — callers distinguish via the
+// first segment having been present (we keep it simple: any miss => 404).
+func (f *Facade) resolve(path string) (*Route, string, bool) {
+	first, after := splitSegment(path)
+	if first == "" {
+		return nil, "", false
+	}
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	// Try namespaced: first=namespace, next=mount.
+	if after != "" {
+		mount, rest := splitSegment("/" + after)
+		if mount != "" {
+			if route, ok := f.routes[routeKey(first, mount)]; ok {
+				return route, rest, true
+			}
+		}
+	}
+	// Fall back to flat: first=mount, after=rest.
+	if route, ok := f.routes[first]; ok {
+		return route, after, true
+	}
+	// Present first segment but no match.
+	return &Route{}, "", false
 }
 
 func (f *Facade) writeStatus(w http.ResponseWriter, _ *http.Request) {
@@ -248,7 +400,7 @@ func (f *Facade) writeStatus(w http.ResponseWriter, _ *http.Request) {
 	out := status{Version: f.Version}
 	f.mu.RLock()
 	for _, r := range f.routes {
-		out.Skills = append(out.Skills, r.Mount)
+		out.Skills = append(out.Skills, r.key())
 	}
 	f.mu.RUnlock()
 	w.Header().Set("Content-Type", "application/json")
@@ -266,7 +418,7 @@ func (f *Facade) proxyHTTP(w http.ResponseWriter, r *http.Request, route *Route,
 		req.URL.Host = upstream.Host
 		req.URL.Path = "/" + rest
 		req.Host = upstream.Host
-		req.Header.Set("X-Forwarded-Prefix", "/"+route.Mount)
+		req.Header.Set("X-Forwarded-Prefix", "/"+route.key())
 		// Hop-by-hop headers are stripped by httputil automatically.
 	}
 
@@ -337,7 +489,7 @@ func (f *Facade) proxyUpgrade(w http.ResponseWriter, r *http.Request, route *Rou
 	clone.Host = upstreamAddr
 	clone.RequestURI = clone.URL.RequestURI()
 	clone.Header = r.Header.Clone()
-	clone.Header.Set("X-Forwarded-Prefix", "/"+route.Mount)
+	clone.Header.Set("X-Forwarded-Prefix", "/"+route.key())
 	if err := clone.Write(upConn); err != nil {
 		w.Header().Set("X-Omac-Reason", "upstream-error")
 		http.Error(w, "omac: write upstream: "+err.Error(), http.StatusBadGateway)
@@ -389,12 +541,12 @@ func (f *Facade) logAccess(r *http.Request, route *Route, rest string, status in
 	f.accLog.Println(string(b))
 }
 
-// splitMount returns (mount, rest) for a request path.
+// splitSegment returns (firstSegment, rest) for a request path.
 // "/slack/foo/bar" → ("slack", "foo/bar").
 // "/slack/"        → ("slack", "").
 // "/slack"         → ("slack", "").
 // "/"              → ("", "").
-func splitMount(p string) (string, string) {
+func splitSegment(p string) (string, string) {
 	if len(p) < 2 || p[0] != '/' {
 		return "", ""
 	}
@@ -405,6 +557,10 @@ func splitMount(p string) (string, string) {
 	}
 	return rest[:slash], rest[slash+1:]
 }
+
+// splitMount is the historical name for splitSegment, retained for the
+// single-segment path case and its existing test.
+func splitMount(p string) (string, string) { return splitSegment(p) }
 
 func upstreamHost(port int) string { return "127.0.0.1:" + strconv.Itoa(port) }
 
