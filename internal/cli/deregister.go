@@ -6,7 +6,6 @@ import (
 
 	"github.com/tngtech/oh-my-agentic-coder/internal/keychain"
 	"github.com/tngtech/oh-my-agentic-coder/internal/registry"
-	"github.com/tngtech/oh-my-agentic-coder/internal/skillconfig"
 )
 
 func runDeregister(args []string, env *Env) int {
@@ -32,8 +31,26 @@ func runDeregister(args []string, env *Env) int {
 	var declared []string
 	var existed bool
 	var removedFields int
-	if err := registry.WithLock(env.Workdir, func() error {
-		reg, err := registry.Load(env.Workdir)
+	var global bool
+
+	// A skill is registered in exactly one layer: the workdir registry
+	// for workdir-local skills, or the user-global registry
+	// (~/.config/omac) for user-global skills. Try the workdir layer
+	// first; if the skill isn't there, fall through to the global
+	// layer so `omac deregister <name>` works from anywhere for a
+	// globally-registered skill.
+	if gReg, err := registry.LoadGlobal(); err == nil {
+		if e, _ := gReg.Find(name); e != nil {
+			if wReg, err := registry.Load(env.Workdir); err == nil {
+				if e, _ := wReg.Find(name); e == nil {
+					global = true
+				}
+			}
+		}
+	}
+
+	if err := withRegistryLock(env.Workdir, global, func() error {
+		reg, err := loadRegistry(env.Workdir, global)
 		if err != nil {
 			return err
 		}
@@ -41,19 +58,19 @@ func runDeregister(args []string, env *Env) int {
 			declared = e.DeclaredSecretNames
 		}
 		existed = reg.Remove(name)
-		if err := registry.Save(env.Workdir, reg); err != nil {
+		if err := saveRegistry(env.Workdir, global, reg); err != nil {
 			return err
 		}
 		// Field purge sits under the same flock as the registry update
-		// so the two .opencode/ files stay consistent.
+		// so the two files stay consistent.
 		if *purgeFields {
-			store, err := skillconfig.Load(env.Workdir)
+			store, err := loadSkillConfig(env.Workdir, global)
 			if err != nil {
 				return err
 			}
 			removedFields = len(store.FieldsFor(name))
 			if store.RemoveSkill(name) {
-				if err := skillconfig.Save(env.Workdir, store); err != nil {
+				if err := saveSkillConfig(env.Workdir, global, store); err != nil {
 					return err
 				}
 			}

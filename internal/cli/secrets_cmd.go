@@ -163,15 +163,24 @@ func runSecretsImport(args []string, env *Env) int {
 	return ExitOK
 }
 
-// loadRegisteredMeta looks up the skill in the workdir's registry and loads its meta.
+// loadRegisteredMeta looks up the skill in the merged registry view
+// (workdir registry plus the user-global registry, workdir winning on
+// name collision) and loads its meta. This lets `omac secrets`/`omac
+// config` operate on globally-registered skills without re-registering
+// them in the workdir.
 func loadRegisteredMeta(env *Env, skill string) (*config.Meta, error) {
-	reg, err := registry.Load(env.Workdir)
+	workdirReg, err := registry.Load(env.Workdir)
 	if err != nil {
 		return nil, err
 	}
+	globalReg, err := registry.LoadGlobal()
+	if err != nil {
+		return nil, err
+	}
+	reg := mergeRegistries(globalReg, workdirReg)
 	entry, _ := reg.Find(skill)
 	if entry == nil {
-		return nil, fmt.Errorf("skill %q is not registered in this workdir", skill)
+		return nil, fmt.Errorf("skill %q is not registered in this workdir or globally", skill)
 	}
 	// SkillDir is stored relative to the workdir for workdir-local
 	// skills and absolute for user-global ones; only join when the

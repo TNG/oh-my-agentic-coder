@@ -186,11 +186,19 @@ func buildSkillView(env *Env, skill string) (*skillView, int) {
 		return nil, ExitConfigInvalid
 	}
 
-	store, err := skillconfig.Load(env.Workdir)
+	workdirStore, err := skillconfig.Load(env.Workdir)
 	if err != nil {
 		fmt.Fprintln(env.Stderr, "omac config: skill-config:", err)
 		return nil, ExitIOError
 	}
+	globalStore, err := skillconfig.LoadGlobal()
+	if err != nil {
+		fmt.Fprintln(env.Stderr, "omac config: global skill-config:", err)
+		return nil, ExitIOError
+	}
+	// Merge so a globally-registered skill's stored values surface
+	// here exactly as `omac start` would resolve them (workdir wins).
+	store := mergeConfig(globalStore, workdirStore)
 
 	out := &skillView{
 		Skill:   skill,

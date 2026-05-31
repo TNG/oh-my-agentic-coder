@@ -50,18 +50,34 @@ func skillArtifactCandidate(command []string) string {
 }
 
 func runList(_ []string, env *Env) int {
-	reg, err := registry.Load(env.Workdir)
+	workdirReg, err := registry.Load(env.Workdir)
 	if err != nil {
 		fmt.Fprintln(env.Stderr, "omac list:", err)
 		return ExitIOError
 	}
+	globalReg, err := registry.LoadGlobal()
+	if err != nil {
+		fmt.Fprintln(env.Stderr, "omac list:", err)
+		return ExitIOError
+	}
+	// Track which names came from the workdir layer so we can label
+	// scope and so the merged view honors "workdir wins".
+	workdirNames := map[string]struct{}{}
+	for _, e := range workdirReg.Registered {
+		workdirNames[e.Name] = struct{}{}
+	}
+	reg := mergeRegistries(globalReg, workdirReg)
 	if len(reg.Registered) == 0 {
-		fmt.Fprintln(env.Stdout, "(no skills registered in this workdir)")
+		fmt.Fprintln(env.Stdout, "(no skills registered in this workdir or globally)")
 		return ExitOK
 	}
 	tw := tabwriter.NewWriter(env.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "NAME\tMOUNT\tSECRETS\tBINARY-PRESENT\tREGISTERED")
+	fmt.Fprintln(tw, "NAME\tSCOPE\tMOUNT\tSECRETS\tBINARY-PRESENT\tREGISTERED")
 	for _, e := range reg.Registered {
+		scope := "global"
+		if _, ok := workdirNames[e.Name]; ok {
+			scope = "workdir"
+		}
 		mount := e.Name
 		binaryPresent := "?"
 		// SkillDir is stored relative to the workdir for workdir-local
@@ -89,8 +105,8 @@ func runList(_ []string, env *Env) int {
 				}
 			}
 		}
-		fmt.Fprintf(tw, "%s\t/%s/\t%d\t%s\t%s\n",
-			e.Name, mount, len(e.DeclaredSecretNames), binaryPresent,
+		fmt.Fprintf(tw, "%s\t%s\t/%s/\t%d\t%s\t%s\n",
+			e.Name, scope, mount, len(e.DeclaredSecretNames), binaryPresent,
 			e.RegisteredAt.Format("2006-01-02 15:04"))
 	}
 	tw.Flush()

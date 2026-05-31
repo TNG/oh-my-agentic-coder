@@ -93,11 +93,18 @@ func runRegister(args []string, env *Env) int {
 		declaredNames = append(declaredNames, s.Name)
 	}
 
+	// User-global skills register once, globally; workdir-local skills
+	// register per-workdir. `global` selects which set of registry /
+	// skill-config locations and locks the rest of this function uses.
+	// (Keychain secrets are keyed by skill name and are global either
+	// way, so they are unaffected.)
+	global := src.Kind == "user-global"
+
 	// Pull the previous registration's "intentionally skipped" lists so
 	// re-register doesn't re-prompt for optional values the user
 	// already explicitly declined. This must happen before the prompt
 	// loop runs.
-	prevSkippedSecrets, prevSkippedFields := loadPrevSkipped(env.Workdir, skillName)
+	prevSkippedSecrets, prevSkippedFields := loadPrevSkipped(env.Workdir, skillName, global)
 
 	// We rebuild these on every register run so the registry reflects
 	// the user's most recent answers. A field that was skipped last
@@ -140,7 +147,9 @@ func runRegister(args []string, env *Env) int {
 	}
 
 	// 2b. Non-secret config fields. Stored in plain YAML under
-	//     <workdir>/.opencode/skill-config.yaml (NOT the keychain).
+	//     <workdir>/.opencode/skill-config.yaml for workdir-local
+	//     skills, or ~/.config/omac/skill-config.yaml for user-global
+	//     skills (NOT the keychain in either case).
 	if !*noFields && len(meta.Sidecar.Config) > 0 {
 		fromFile, err := loadFieldsFile(*fieldsFromPath)
 		if err != nil {
@@ -151,8 +160,8 @@ func runRegister(args []string, env *Env) int {
 		// skill's config behind. The flock further down is shared with
 		// the registry update so the whole register operation is atomic
 		// from another concurrent omac invocation's point of view.
-		if err := registry.WithLock(env.Workdir, func() error {
-			store, err := skillconfig.Load(env.Workdir)
+		if err := withRegistryLock(env.Workdir, global, func() error {
+			store, err := loadSkillConfig(env.Workdir, global)
 			if err != nil {
 				return err
 			}
@@ -165,7 +174,7 @@ func runRegister(args []string, env *Env) int {
 					skippedFields = append(skippedFields, spec.Name)
 				}
 			}
-			return skillconfig.Save(env.Workdir, store)
+			return saveSkillConfig(env.Workdir, global, store)
 		}); err != nil {
 			if strings.HasPrefix(err.Error(), "refused:") {
 				fmt.Fprintln(env.Stderr, "omac register:", err)
@@ -212,9 +221,11 @@ func runRegister(args []string, env *Env) int {
 		}
 	}
 
-	// 4. Registry update (atomic, under flock).
-	if err := registry.WithLock(env.Workdir, func() error {
-		reg, err := registry.Load(env.Workdir)
+	// 4. Registry update (atomic, under flock). Targets the global
+	//    registry for user-global skills, the workdir registry
+	//    otherwise.
+	if err := withRegistryLock(env.Workdir, global, func() error {
+		reg, err := loadRegistry(env.Workdir, global)
 		if err != nil {
 			return err
 		}
@@ -245,14 +256,57 @@ func runRegister(args []string, env *Env) int {
 			SkippedSecretNames:  skippedSecretsOut,
 			SkippedConfigFields: skippedFieldsOut,
 		})
-		return registry.Save(env.Workdir, reg)
+		return saveRegistry(env.Workdir, global, reg)
 	}); err != nil {
 		fmt.Fprintln(env.Stderr, "omac register: registry:", err)
 		return ExitIOError
 	}
 
-	fmt.Fprintf(env.Stdout, "\n[ok] registered %s (workdir=%s)\n", skillName, env.Workdir)
+	if global {
+		fmt.Fprintf(env.Stdout, "\n[ok] registered %s (global; available in every workdir)\n", skillName)
+	} else {
+		fmt.Fprintf(env.Stdout, "\n[ok] registered %s (workdir=%s)\n", skillName, env.Workdir)
+	}
 	return ExitOK
+}
+
+// loadRegistry / saveRegistry / withRegistryLock and the skillconfig
+// equivalents route to either the workdir-scoped or the user-global
+// store depending on `global`. They keep the per-source branching in
+// one place so register/start/deregister can stay readable.
+func loadRegistry(workdir string, global bool) (*registry.Registry, error) {
+	if global {
+		return registry.LoadGlobal()
+	}
+	return registry.Load(workdir)
+}
+
+func saveRegistry(workdir string, global bool, reg *registry.Registry) error {
+	if global {
+		return registry.SaveGlobal(reg)
+	}
+	return registry.Save(workdir, reg)
+}
+
+func withRegistryLock(workdir string, global bool, fn func() error) error {
+	if global {
+		return registry.WithGlobalLock(fn)
+	}
+	return registry.WithLock(workdir, fn)
+}
+
+func loadSkillConfig(workdir string, global bool) (*skillconfig.Store, error) {
+	if global {
+		return skillconfig.LoadGlobal()
+	}
+	return skillconfig.Load(workdir)
+}
+
+func saveSkillConfig(workdir string, global bool, store *skillconfig.Store) error {
+	if global {
+		return skillconfig.SaveGlobal(store)
+	}
+	return skillconfig.Save(workdir, store)
 }
 
 // rel returns path relative to base, or the original if not reachable.
@@ -274,10 +328,10 @@ func rel(base, path string) string {
 // registry is the safer failure mode than silently honoring stale
 // skips, and the registry update step further down will surface the
 // real error if there is one.
-func loadPrevSkipped(workdir, skill string) (secrets, fields map[string]bool) {
+func loadPrevSkipped(workdir, skill string, global bool) (secrets, fields map[string]bool) {
 	secrets = map[string]bool{}
 	fields = map[string]bool{}
-	reg, err := registry.Load(workdir)
+	reg, err := loadRegistry(workdir, global)
 	if err != nil || reg == nil {
 		return
 	}

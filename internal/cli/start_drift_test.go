@@ -44,6 +44,26 @@ func stageWorkdir(t *testing.T, skills ...string) string {
 	return dir
 }
 
+// stageUserGlobalSkill creates a user-global skill source under
+// $XDG_CONFIG_HOME/opencode/skills/<name>/omac.yaml (falling back to
+// $HOME/.config when XDG_CONFIG_HOME is unset). Callers must have
+// already pointed HOME / XDG_CONFIG_HOME at a temp dir.
+func stageUserGlobalSkill(t *testing.T, name string) string {
+	t.Helper()
+	base := os.Getenv("XDG_CONFIG_HOME")
+	if base == "" {
+		base = filepath.Join(os.Getenv("HOME"), ".config")
+	}
+	skillDir := filepath.Join(base, "opencode", "skills", name)
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll %s: %v", skillDir, err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "omac.yaml"), []byte("name: "+name+"\n"), 0o644); err != nil {
+		t.Fatalf("write omac.yaml: %v", err)
+	}
+	return skillDir
+}
+
 func makeEnv(workdir string) *Env {
 	null, _ := os.OpenFile(os.DevNull, os.O_RDWR, 0)
 	return &Env{
@@ -65,7 +85,7 @@ func TestAutoDeregisterMissing_DeletesGoneSkills(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 
-	pruned, err := autoDeregisterMissing(makeEnv(dir), reg)
+	pruned, err := autoDeregisterMissing(makeEnv(dir), reg, false)
 	if err != nil {
 		t.Fatalf("autoDeregisterMissing: %v", err)
 	}
@@ -93,7 +113,7 @@ func TestAutoDeregisterMissing_NoOpWhenAllPresent(t *testing.T) {
 		{Name: "alpha", SkillDir: ".opencode/skills/alpha"},
 		{Name: "bravo", SkillDir: ".opencode/skills/bravo"},
 	}}
-	pruned, err := autoDeregisterMissing(makeEnv(dir), reg)
+	pruned, err := autoDeregisterMissing(makeEnv(dir), reg, false)
 	if err != nil {
 		t.Fatalf("autoDeregisterMissing: %v", err)
 	}
@@ -108,7 +128,7 @@ func TestAutoDeregisterMissing_NoOpWhenAllPresent(t *testing.T) {
 func TestAutoDeregisterMissing_EmptyRegistry(t *testing.T) {
 	dir := stageWorkdir(t)
 	reg := &registry.Registry{}
-	pruned, err := autoDeregisterMissing(makeEnv(dir), reg)
+	pruned, err := autoDeregisterMissing(makeEnv(dir), reg, false)
 	if err != nil {
 		t.Fatalf("autoDeregisterMissing: %v", err)
 	}

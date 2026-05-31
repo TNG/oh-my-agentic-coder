@@ -89,9 +89,22 @@ func runStart(args []string, env *Env) int {
 	//
 	// An empty registry is NOT in itself an error: omac still works as
 	// a thin sandbox launcher even before any skills are registered.
-	reg, err := registry.Load(env.Workdir)
+	//
+	// Registrations live in two layers: the workdir registry
+	// (.opencode/sidecar.json) and the user-global registry
+	// (~/.config/omac/sidecar.json). User-global skills register once,
+	// globally; workdir-local skills register per-workdir. We load both
+	// and merge them with the workdir layer winning on name collision
+	// (same precedence as skillsource). Auto-deregister still operates
+	// on the workdir layer only — see autoDeregisterMissing.
+	workdirReg, err := registry.Load(env.Workdir)
 	if err != nil {
 		fmt.Fprintln(env.Stderr, "omac start: registry:", err)
+		return ExitIOError
+	}
+	globalReg, err := registry.LoadGlobal()
+	if err != nil {
+		fmt.Fprintln(env.Stderr, "omac start: global registry:", err)
 		return ExitIOError
 	}
 
@@ -102,17 +115,27 @@ func runStart(args []string, env *Env) int {
 	//     intentionally KEPT so an accidental `rm -rf` on the skills
 	//     dir doesn't lose values; the hint tells the user how to
 	//     purge them later.
-	pruned, err := autoDeregisterMissing(env, reg)
+	pruned, err := autoDeregisterMissing(env, workdirReg, false)
 	if err != nil {
 		fmt.Fprintln(env.Stderr, "omac start: auto-deregister:", err)
 		return ExitIOError
 	}
-	for _, p := range pruned {
+	globalPruned, err := autoDeregisterMissing(env, globalReg, true)
+	if err != nil {
+		fmt.Fprintln(env.Stderr, "omac start: auto-deregister (global):", err)
+		return ExitIOError
+	}
+	for _, p := range append(pruned, globalPruned...) {
 		fmt.Fprintf(env.Stderr,
 			"[info] %s: skill directory missing on disk; auto-deregistered. "+
 				"Stored secrets and config remain. To purge: omac deregister --purge-secrets --purge-fields %s\n",
 			p, p)
 	}
+
+	// Merge the two layers into the working registry used by the rest
+	// of start. Workdir entries win over global entries with the same
+	// name.
+	reg := mergeRegistries(globalReg, workdirReg)
 
 	// 2b. Refuse if any unregistered skill exists under any of the
 	//     skill source roots (workdir-local .agents/skills and
@@ -171,11 +194,19 @@ func runStart(args []string, env *Env) int {
 		}
 	}()
 
-	configStore, err := skillconfig.Load(env.Workdir)
+	workdirCfg, err := skillconfig.Load(env.Workdir)
 	if err != nil {
 		fmt.Fprintln(env.Stderr, "omac start: skill-config:", err)
 		return ExitIOError
 	}
+	globalCfg, err := skillconfig.LoadGlobal()
+	if err != nil {
+		fmt.Fprintln(env.Stderr, "omac start: global skill-config:", err)
+		return ExitIOError
+	}
+	// Merge config the same way as the registry: workdir values
+	// override global values per (skill, field).
+	configStore := mergeConfig(globalCfg, workdirCfg)
 
 	// Per-class problem accumulators. Each maps a hint template to
 	// the affected skill names so we can render "do X for these N
@@ -498,9 +529,15 @@ func runStart(args []string, env *Env) int {
 // skill-config entries are deliberately NOT touched: an accidental
 // `rm -rf` shouldn't lose values.
 //
-// Operates under the registry's flock so concurrent `omac register`
+// The `global` flag selects which layer is being reconciled: the
+// user-global registry (~/.config/omac/sidecar.json) or the workdir
+// registry. Workdir-relative SkillDir paths only occur in the workdir
+// layer; global entries always store absolute paths, so joining with
+// env.Workdir for a non-absolute path is harmless either way.
+//
+// Operates under the matching flock so concurrent `omac register`
 // calls don't race with us.
-func autoDeregisterMissing(env *Env, reg *registry.Registry) ([]string, error) {
+func autoDeregisterMissing(env *Env, reg *registry.Registry, global bool) ([]string, error) {
 	if len(reg.Registered) == 0 {
 		return nil, nil
 	}
@@ -527,24 +564,71 @@ func autoDeregisterMissing(env *Env, reg *registry.Registry) ([]string, error) {
 	if len(pruned) == 0 {
 		return nil, nil
 	}
-	if err := registry.WithLock(env.Workdir, func() error {
+	reload := func() (*registry.Registry, error) { return registry.Load(env.Workdir) }
+	persist := func(r *registry.Registry) error { return registry.Save(env.Workdir, r) }
+	lock := func(fn func() error) error { return registry.WithLock(env.Workdir, fn) }
+	if global {
+		reload = registry.LoadGlobal
+		persist = registry.SaveGlobal
+		lock = registry.WithGlobalLock
+	}
+	if err := lock(func() error {
 		// Re-load under the lock and re-apply the prune. Don't reuse
 		// the in-memory reg (it might be stale relative to a parallel
 		// `omac register`).
-		fresh, err := registry.Load(env.Workdir)
+		fresh, err := reload()
 		if err != nil {
 			return err
 		}
 		for _, name := range pruned {
 			fresh.Remove(name)
 		}
-		return registry.Save(env.Workdir, fresh)
+		return persist(fresh)
 	}); err != nil {
 		return nil, err
 	}
 	// Update caller's view so subsequent steps don't iterate pruned skills.
 	reg.Registered = keep
 	return pruned, nil
+}
+
+// mergeRegistries returns a registry whose entries are the union of the
+// global and workdir layers, with the workdir entry winning on a name
+// collision (matching skillsource's "workdir wins" precedence). Neither
+// input is mutated.
+func mergeRegistries(global, workdir *registry.Registry) *registry.Registry {
+	out := &registry.Registry{Version: registry.SchemaVersion}
+	seen := map[string]struct{}{}
+	for _, e := range workdir.Registered {
+		out.Registered = append(out.Registered, e)
+		seen[e.Name] = struct{}{}
+	}
+	for _, e := range global.Registered {
+		if _, dup := seen[e.Name]; dup {
+			continue
+		}
+		out.Registered = append(out.Registered, e)
+		seen[e.Name] = struct{}{}
+	}
+	return out
+}
+
+// mergeConfig returns a store whose (skill, field) values are the union
+// of the global and workdir layers, with workdir values overriding
+// global ones field-by-field. Neither input is mutated.
+func mergeConfig(global, workdir *skillconfig.Store) *skillconfig.Store {
+	out := &skillconfig.Store{Version: skillconfig.SchemaVersion, Skills: map[string]map[string]string{}}
+	for skill, fields := range global.Skills {
+		for field, val := range fields {
+			out.Set(skill, field, val)
+		}
+	}
+	for skill, fields := range workdir.Skills {
+		for field, val := range fields {
+			out.Set(skill, field, val)
+		}
+	}
+	return out
 }
 
 // findUnregisteredSkills returns the names of every skill discovered

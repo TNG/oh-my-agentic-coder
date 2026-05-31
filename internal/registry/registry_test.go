@@ -60,3 +60,55 @@ func TestWithLock(t *testing.T) {
 		t.Fatalf("lock file missing: %v", err)
 	}
 }
+
+// TestGlobalRoundTrip verifies the user-global registry writes to
+// $XDG_CONFIG_HOME/omac/sidecar.json and round-trips independently of
+// any workdir.
+func TestGlobalRoundTrip(t *testing.T) {
+	xdg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+
+	want := filepath.Join(xdg, "omac", "sidecar.json")
+	if got := GlobalPath(); got != want {
+		t.Fatalf("GlobalPath() = %q, want %q", got, want)
+	}
+
+	r := &Registry{}
+	r.Upsert(Entry{Name: "tng-email", SkillDir: "/abs/skills/tng-email", BundleHash: "sha256:xyz"})
+	if err := WithGlobalLock(func() error { return SaveGlobal(r) }); err != nil {
+		t.Fatalf("SaveGlobal: %v", err)
+	}
+	if _, err := os.Stat(want); err != nil {
+		t.Fatalf("global registry file missing: %v", err)
+	}
+	loaded, err := LoadGlobal()
+	if err != nil {
+		t.Fatalf("LoadGlobal: %v", err)
+	}
+	if len(loaded.Registered) != 1 || loaded.Registered[0].Name != "tng-email" {
+		t.Fatalf("unexpected global registry: %+v", loaded)
+	}
+}
+
+// TestGlobalDirXDGPrecedence confirms XDG_CONFIG_HOME wins over HOME.
+func TestGlobalDirXDGPrecedence(t *testing.T) {
+	xdg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	t.Setenv("HOME", t.TempDir())
+	if got, want := GlobalDir(), filepath.Join(xdg, "omac"); got != want {
+		t.Fatalf("GlobalDir() = %q, want %q", got, want)
+	}
+}
+
+// TestLoadGlobalMissingIsEmpty confirms a missing global file yields an
+// empty registry rather than an error, so callers can always merge it.
+func TestLoadGlobalMissingIsEmpty(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	r, err := LoadGlobal()
+	if err != nil {
+		t.Fatalf("LoadGlobal on empty: %v", err)
+	}
+	if len(r.Registered) != 0 {
+		t.Fatalf("expected empty registry, got %+v", r)
+	}
+}

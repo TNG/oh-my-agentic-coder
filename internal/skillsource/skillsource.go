@@ -27,11 +27,16 @@
 // not have an omac sidecar contract, so omac ignores it (no
 // registration, no spawning).
 //
-// Registration data (sidecar.json, skill-config.yaml, keychain
-// entries) always lives in the workdir regardless of where the
-// skill source came from. Each project explicitly opts in to a
-// user-global skill by running `omac register <name>` in that
-// project's workdir.
+// Registration data follows the source layer. A skill resolved from
+// a workdir-local source records its registry entry and config in
+// that workdir (.opencode/sidecar.json, .opencode/skill-config.yaml).
+// A skill resolved from a user-global source records its registry
+// entry and config once, globally (~/.config/omac/sidecar.json,
+// ~/.config/omac/skill-config.yaml — XDG_CONFIG_HOME honored), so a
+// single `omac register <name>` makes it available in every workdir.
+// Keychain secrets are keyed by skill name and are therefore already
+// global. When both layers hold state for the same skill name, the
+// workdir layer wins.
 package skillsource
 
 import (

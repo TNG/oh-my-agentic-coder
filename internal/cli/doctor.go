@@ -37,13 +37,22 @@ func runDoctor(args []string, env *Env) int {
 		fmt.Fprintln(env.Stdout, "[ok] launcher config:", cfgPath)
 	}
 
-	// Registry.
-	reg, err := registry.Load(env.Workdir)
+	// Registry. Merge the workdir layer with the user-global layer
+	// (workdir wins on name collision), matching what `omac start`
+	// resolves.
+	workdirReg, err := registry.Load(env.Workdir)
 	if err != nil {
 		fmt.Fprintln(env.Stdout, "[fail] registry:", err)
 		return ExitIOError
 	}
-	fmt.Fprintf(env.Stdout, "[ok] registry: %d skill(s) registered\n", len(reg.Registered))
+	globalReg, err := registry.LoadGlobal()
+	if err != nil {
+		fmt.Fprintln(env.Stdout, "[fail] global registry:", err)
+		return ExitIOError
+	}
+	reg := mergeRegistries(globalReg, workdirReg)
+	fmt.Fprintf(env.Stdout, "[ok] registry: %d skill(s) registered (%d workdir, %d global)\n",
+		len(reg.Registered), len(workdirReg.Registered), len(globalReg.Registered))
 
 	// Per-skill checks.
 	failures := 0
