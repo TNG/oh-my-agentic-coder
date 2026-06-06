@@ -191,18 +191,39 @@ export const OmacMultiDirPlugin: Plugin = async ({ client, directory, worktree }
       )
     }
     lines.push("")
+    let anyUnavailable = false
     for (const sk of (m.skills ?? []).slice().sort((a, b) => a.name.localeCompare(b.name))) {
       if (sk.state === "ready" && sk.base) {
         lines.push(`- **${sk.name}** (${sk.scope}) — ready — base: \`${sk.base}\``)
       } else if (sk.state === "pending-credentials") {
+        anyUnavailable = true
         const miss = (sk.missing ?? []).join(", ")
         lines.push(
           `- **${sk.name}** (${sk.scope}) — UNAVAILABLE (missing credentials: ${miss}). ` +
-            `Tell the user to run \`omac secrets set ${sk.name} <NAME>\` then reload.`,
+            `Run \`omac secrets set ${sk.name} <NAME>\`, then reload (see below).`,
         )
       } else if (sk.state === "broken") {
+        anyUnavailable = true
         lines.push(`- **${sk.name}** (${sk.scope}) — BROKEN: ${sk.detail ?? "see omac logs"}`)
       }
+    }
+    // Tell the agent how to recover WITHOUT a full restart. The running
+    // server is `omac serve`, NOT `omac start`; the way to re-activate a
+    // directory after installing/fixing a skill is the control-plane reload
+    // endpoint, which re-discovers, re-registers, re-resolves secrets and
+    // re-spawns sidecars for the directory in place.
+    if (anyUnavailable && controlBase) {
+      lines.push("")
+      lines.push(
+        "To make a newly installed or just-fixed skill available, do NOT run " +
+          "`omac start` (this is an `omac serve` deployment). Instead reload this " +
+          `directory in place by POSTing to the omac control plane:\n` +
+          "```\n" +
+          `curl -s -X POST "${controlBase}/__omac__/reload" ` +
+          `-H 'content-type: application/json' -d '{"dir":"${m.dir}"}'\n` +
+          "```\n" +
+          "Then re-read this list — the skill should move from BROKEN/UNAVAILABLE to ready.",
+      )
     }
     return lines.join("\n")
   }
