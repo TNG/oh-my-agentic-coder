@@ -169,6 +169,7 @@ export const OmacMultiDirPlugin: Plugin = async ({ client, directory, worktree }
 
   // Build the system-prompt block describing the skills available to a dir.
   function renderManifest(m: DirManifest): string {
+    const hasGlobal = (m.skills ?? []).some((s) => s.scope === "global" && s.state === "ready")
     const lines: string[] = []
     lines.push("## omac skills available in this workspace")
     lines.push("")
@@ -176,6 +177,19 @@ export const OmacMultiDirPlugin: Plugin = async ({ client, directory, worktree }
       "You can call the following skill HTTP endpoints. Each `base` is the " +
         "root URL for that skill's sidecar; append the skill's documented path.",
     )
+    lines.push("")
+    lines.push(`This workspace's project directory is: \`${m.dir}\``)
+    if (hasGlobal) {
+      lines.push("")
+      lines.push(
+        "IMPORTANT: **global** skills are shared by every workspace and run as a " +
+          "single process; they do NOT know which project you are in. When a global " +
+          "skill writes into the project (e.g. the marketplace installing a skill), " +
+          "you MUST pass this workspace's project directory explicitly — for the " +
+          `marketplace use \`"target_path": "${m.dir}/.opencode/skills"\` in the ` +
+          "/install request body. Otherwise it installs into the wrong directory.",
+      )
+    }
     lines.push("")
     for (const sk of (m.skills ?? []).slice().sort((a, b) => a.name.localeCompare(b.name))) {
       if (sk.state === "ready" && sk.base) {
