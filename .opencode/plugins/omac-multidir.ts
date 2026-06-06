@@ -284,7 +284,11 @@ export const OmacMultiDirPlugin: Plugin = async ({ client, directory, worktree }
       if (!enabled()) return
       const dir = await dirForSession(input.sessionID)
       if (!dir) return
-      const m = manifests.get(dir)
+      // Refresh from omac on every shell exec, so a skill registered mid-
+      // session (which reloads the running serve) is reachable from the
+      // very next command — no new session needed. activate() is cheap and
+      // idempotent on the omac side.
+      const m = (await activate(dir, true)) ?? manifests.get(dir)
       if (!m || !m.skills) return
       for (const sk of m.skills) {
         if (sk.state !== "ready" || !sk.base) continue
