@@ -92,6 +92,11 @@ func runSecretsSet(args []string, env *Env) int {
 		fmt.Fprintln(env.Stderr, "omac secrets set:", err)
 		return ExitKeychainError
 	}
+	// A supplied secret most often unblocks a pending-credentials skill, so
+	// ask a running omac serve to reload this directory and promote it.
+	if ok, msg := notifyReload(env.Workdir); ok {
+		fmt.Fprintf(env.Stdout, "[ok] %s\n", msg)
+	}
 	return ExitOK
 }
 

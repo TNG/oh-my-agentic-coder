@@ -120,5 +120,14 @@ func runDeregister(args []string, env *Env) int {
 		fmt.Fprintf(env.Stdout, "; purged remembered defaults")
 	}
 	fmt.Fprintln(env.Stdout)
+
+	// Ask a running omac serve to reload this directory so the deregistered
+	// skill is dropped without a restart (workdir-local only; global skills
+	// only re-activate at serve cold start).
+	if !global {
+		if ok, msg := notifyReload(env.Workdir); ok {
+			fmt.Fprintf(env.Stdout, "[ok] %s\n", msg)
+		}
+	}
 	return ExitOK
 }

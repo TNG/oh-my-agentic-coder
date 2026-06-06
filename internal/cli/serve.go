@@ -173,6 +173,13 @@ func runServe(args []string, env *Env) int {
 	}
 	controlURL := fmt.Sprintf("http://%s", cln.Addr().String())
 	srv.controlBase = controlURL
+	// Publish the control URL so other omac CLI invocations (register,
+	// deregister, secrets, config) can notify this running serve to reload a
+	// directory after they change on-disk state. Best-effort.
+	if err := writeControlInfo(controlURL); err != nil && *verbose {
+		fmt.Fprintln(env.Stderr, "[verbose] could not write control-info file:", err)
+	}
+	defer removeControlInfo()
 	httpSrv := &http.Server{Handler: srv.controlMux()}
 	go func() {
 		if err := httpSrv.Serve(cln); err != nil && !errors.Is(err, http.ErrServerClosed) {
