@@ -193,6 +193,41 @@ func TestRootsPolicy(t *testing.T) {
 	}
 }
 
+func TestInjectOpenPort(t *testing.T) {
+	// With a `--` separator, the flag goes right before it.
+	in := []string{"nono", "run", "--open-port", "5000", "--", "opencode", "serve"}
+	got := injectOpenPort(in, "6000")
+	want := []string{"nono", "run", "--open-port", "5000", "--open-port", "6000", "--", "opencode", "serve"}
+	if !equalStrings(got, want) {
+		t.Errorf("with --: got %v, want %v", got, want)
+	}
+
+	// Without a `--`, it goes right after argv[0].
+	in2 := []string{"nono", "run", "--allow-cwd"}
+	got2 := injectOpenPort(in2, "6000")
+	want2 := []string{"nono", "--open-port", "6000", "run", "--allow-cwd"}
+	if !equalStrings(got2, want2) {
+		t.Errorf("without --: got %v, want %v", got2, want2)
+	}
+
+	// Empty argv is a no-op.
+	if got3 := injectOpenPort(nil, "6000"); len(got3) != 0 {
+		t.Errorf("empty argv: got %v, want []", got3)
+	}
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func TestEnsureServeSubcommand(t *testing.T) {
 	cases := []struct {
 		name     string

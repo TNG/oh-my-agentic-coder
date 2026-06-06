@@ -245,6 +245,14 @@ func runServe(args []string, env *Env) int {
 			fmt.Fprintln(env.Stderr, "omac serve: sandbox argv:", err)
 			return ExitConfigInvalid
 		}
+		// The control-plane port is distinct from the facade TCP port and
+		// is NOT whitelisted by the profile's `--open-port {{tcp_port}}`.
+		// Without opening it, the sandboxed `opencode serve` (and the plugin
+		// inside it) cannot reach OMAC_CONTROL_BASE — nono denies the
+		// loopback connect (FailedToOpenSocket). Whitelist it too.
+		if cp := controlPortOf(cln); cp != "" {
+			argv = injectOpenPort(argv, cp)
+		}
 	}
 	if *verbose {
 		fmt.Fprintf(env.Stderr, "[verbose] inner argv: %v\n", argv)
@@ -317,6 +325,45 @@ func lastSlash(s string) int {
 		}
 	}
 	return -1
+}
+
+// controlPortOf returns the port the control-plane listener is bound to,
+// as a string, or "" if it can't be determined.
+func controlPortOf(ln net.Listener) string {
+	if ta, ok := ln.Addr().(*net.TCPAddr); ok {
+		return fmt.Sprintf("%d", ta.Port)
+	}
+	_, port, err := net.SplitHostPort(ln.Addr().String())
+	if err != nil {
+		return ""
+	}
+	return port
+}
+
+// injectOpenPort splices `--open-port <port>` into a sandbox argv so the
+// sandboxed inner command may connect to that loopback port. It inserts the
+// flag right before the `--` argument separator (the conventional boundary
+// between sandbox flags and the inner command); if there is no `--`, it
+// appends before the first inner-command token is impossible to locate
+// reliably, so it falls back to inserting at the front after argv[0].
+func injectOpenPort(argv []string, port string) []string {
+	for i, a := range argv {
+		if a == "--" {
+			out := make([]string, 0, len(argv)+2)
+			out = append(out, argv[:i]...)
+			out = append(out, "--open-port", port)
+			out = append(out, argv[i:]...)
+			return out
+		}
+	}
+	// No `--` separator: insert just after the sandbox executable.
+	if len(argv) == 0 {
+		return argv
+	}
+	out := make([]string, 0, len(argv)+2)
+	out = append(out, argv[0], "--open-port", port)
+	out = append(out, argv[1:]...)
+	return out
 }
 
 // multiFlag collects a repeatable string flag (e.g. --root a --root b).
