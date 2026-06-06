@@ -764,15 +764,27 @@ func (s *serveServer) baseEnv() map[string]string {
 		"OMAC_VERSION":      s.env.Version,
 		"OMAC_CONTROL_BASE": s.controlBase,
 	}
-	// Global skills are known at cold start (§4.5/§5.1): inject their
-	// OMAC_G_<SKILL>_BASE vars and list their mounts in OMAC_SKILLS.
+	// Global skills are known at cold start (§4.5/§5.1): inject their base
+	// URLs and list their mounts in OMAC_SKILLS.
+	//
+	// We emit BOTH names for each global skill:
+	//   - OMAC_G_<MOUNT>_BASE  — the serve-mode global form (§4.5);
+	//   - OMAC_<MOUNT>_BASE    — the flat form that single-workdir `start`
+	//                            emits, which existing SKILL.md files hardcode.
+	// A global skill's mount is unique server-wide (it lives under the
+	// reserved __global__ namespace), so the flat alias is unambiguous — no
+	// collision risk. Emitting both means a skill authored for `start`
+	// (e.g. skill-marketplace reading OMAC_SKILL_MARKETPLACE_BASE) works
+	// unchanged under serve.
 	s.mu.RLock()
 	mounts := make([]string, 0, len(s.global))
 	for mount, sr := range s.global {
 		if sr.State != facade.RouteReady {
 			continue
 		}
-		extra[sandbox.OmacGlobalEnvName(mount)] = sandbox.OmacTCPEnvValueNS(facade.GlobalNamespace, mount, s.tcpPort)
+		url := sandbox.OmacTCPEnvValueNS(facade.GlobalNamespace, mount, s.tcpPort)
+		extra[sandbox.OmacGlobalEnvName(mount)] = url
+		extra[sandbox.OmacEnvName(mount)] = url // flat alias for start-mode skills
 		mounts = append(mounts, facade.GlobalNamespace+"/"+mount)
 	}
 	s.mu.RUnlock()

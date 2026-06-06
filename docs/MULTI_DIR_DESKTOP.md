@@ -318,11 +318,23 @@ namespace** instead:
 ```
 /__global__/<mount>/<rest>          facade route for a global skill
 OMAC_G_<SKILL>_BASE                 env var (note the G_, parallel to the D_ form)
+OMAC_<SKILL>_BASE                   flat alias (same URL) for start-mode skills
 ```
 
 The `__global__` segment is a reserved, non-mintable token (a dir can never
 be assigned it), so there is no collision with dir tokens and no ambiguity
-about which upstream a request targets. Every active dir's **manifest** (§6.3)
+about which upstream a request targets.
+
+**Flat alias for compatibility.** A global skill *also* gets the unprefixed
+`OMAC_<MOUNT>_BASE` env var (pointing at the same `/__global__/<mount>` URL),
+because skills authored for single-workdir `start` mode hardcode that flat
+name in their `SKILL.md` (e.g. `skill-marketplace` reads
+`OMAC_SKILL_MARKETPLACE_BASE`). A global skill's mount is unique server-wide
+(it lives under the reserved `__global__` namespace), so the flat alias is
+unambiguous — unlike per-dir workdir-local skills, where flat names would
+collide across directories (hence §5.5 only emits the flat alias when exactly
+one dir is active). For global skills the flat alias is always safe and is
+emitted unconditionally. Every active dir's **manifest** (§6.3)
 lists the server's global skills alongside that dir's local ones, each marked
 `"scope": "global"`, so the agent in any project sees them with their
 `OMAC_G_*` URLs. (Alternative considered: alias the global skill under every
