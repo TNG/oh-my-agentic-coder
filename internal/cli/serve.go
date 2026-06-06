@@ -482,7 +482,9 @@ func (s *serveServer) activateGlobals() error {
 			// Global entries should be absolute; skip otherwise.
 			continue
 		}
-		sr := s.bringUp(e, absDir, facade.GlobalNamespace, "" /* unscoped secrets */, gCfg)
+		// Global skill: no single project, so OMAC_WORKDIR defaults to the
+		// server's launch workdir.
+		sr := s.bringUp(e, absDir, s.env.Workdir, facade.GlobalNamespace, "" /* unscoped secrets */, gCfg)
 		s.mu.Lock()
 		s.global[sr.Mount] = sr
 		s.mu.Unlock()
@@ -566,7 +568,9 @@ func (s *serveServer) activate(absDir string) (map[string]any, error) {
 			}
 			e = ne
 		}
-		sr := s.bringUp(*e, ent.Dir, token, workdirID, wCfg)
+		// workdir-local skill: OMAC_WORKDIR is the activated project dir
+		// (absDir), not the skill's own directory (ent.Dir).
+		sr := s.bringUp(*e, ent.Dir, absDir, token, workdirID, wCfg)
 		if sr.State != facade.RouteReady {
 			partial = true
 		}
@@ -641,7 +645,15 @@ func (s *serveServer) autoRegister(absDir string, ent skillsource.Entry) (*regis
 // live sidecar (and live route) or installs a stub route (pending-credentials
 // / broken). secretScope is "" for global skills (unscoped keychain) or the
 // workdir-id for workdir-local skills.
-func (s *serveServer) bringUp(e registry.Entry, absDir, namespace, secretScope string, cfg *skillconfig.Store) *skillRoute {
+// bringUp resolves and (if ready) spawns a skill's sidecar.
+//
+//   - absDir is the skill's own directory (used as the sidecar's cwd and
+//     for bundle hashing).
+//   - workdir is the value exposed to the sidecar as OMAC_WORKDIR, i.e. the
+//     project directory the skill should operate on. For a workdir-local
+//     skill this is the activated project; for a global skill there is no
+//     single project, so the server's launch workdir is used as a default.
+func (s *serveServer) bringUp(e registry.Entry, absDir, workdir, namespace, secretScope string, cfg *skillconfig.Store) *skillRoute {
 	metaPath := filepath.Join(absDir, config.MetaFileName)
 	m, err := config.LoadMeta(metaPath)
 	if err != nil || m.Sidecar == nil {
@@ -718,7 +730,8 @@ func (s *serveServer) bringUp(e registry.Entry, absDir, namespace, secretScope s
 		health = *m.Sidecar.Health
 	}
 	spec := supervisor.SidecarSpec{
-		Name:           namespace + "/" + e.Name, // unique across dirs
+		Name:           namespace + "/" + e.Name, // unique tracking key across dirs
+		SkillName:      e.Name,                   // plain name -> SIDECAR_SKILL (no slash)
 		SkillDir:       absDir,
 		Command:        m.Sidecar.Command,
 		EnvPassthrough: m.Sidecar.EnvPassthrough,
@@ -726,7 +739,7 @@ func (s *serveServer) bringUp(e registry.Entry, absDir, namespace, secretScope s
 		Config:         cfgMap,
 		Health:         health.Defaults(),
 		LogPath:        filepath.Join(s.rtDir, "logs", namespace+"-"+e.Name+".log"),
-		Workdir:        absDir,
+		Workdir:        workdir, // -> OMAC_WORKDIR (the project, not the skill dir)
 	}
 	running, serr := s.sup.AddSidecar(s.ctx, spec)
 	// Wipe secret material now that the sidecar has been spawned (its env

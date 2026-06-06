@@ -31,7 +31,17 @@ import (
 
 // SidecarSpec is the supervisor's view of one sidecar to run.
 type SidecarSpec struct {
-	Name           string
+	// Name is the supervisor's unique tracking key for this sidecar (used
+	// by StopSidecar and log filenames). In serve mode it may be a
+	// namespaced value like "__global__/skill-marketplace" so two
+	// directories' same-named skills stay distinct.
+	Name string
+	// SkillName is the plain skill name exposed to the sidecar as
+	// SIDECAR_SKILL. It must NOT contain a namespace prefix or any path
+	// separator, because sidecars commonly use it to build filesystem
+	// paths (e.g. tempfile prefixes). When empty, Name is used (the
+	// single-workdir `start` case, where Name is already the plain name).
+	SkillName      string
 	SkillDir       string // absolute
 	Command        []string
 	EnvPassthrough []string
@@ -206,7 +216,11 @@ func (s *Supervisor) buildEnv(spec SidecarSpec, port int) []string {
 	}
 	// Facade-injected.
 	vars["SIDECAR_PORT"] = fmt.Sprint(port)
-	vars["SIDECAR_SKILL"] = spec.Name
+	skillName := spec.SkillName
+	if skillName == "" {
+		skillName = spec.Name
+	}
+	vars["SIDECAR_SKILL"] = skillName
 	vars["OMAC_WORKDIR"] = spec.Workdir
 
 	// Non-secret config fields. Win over passthrough; lose to secrets
