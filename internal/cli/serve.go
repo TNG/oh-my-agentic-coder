@@ -654,22 +654,26 @@ func (s *serveServer) rediscover(d *dirState) {
 		if ent.Kind != "workdir" {
 			continue // globals handled separately
 		}
-		// Skip skills that are already mounted AND ready.
+		// Skip skills that are already mounted AND ready — never touch a
+		// working route/sidecar (removing it even momentarily is what caused
+		// a healthy skill to 404 mid-session). d.Skills is keyed by MOUNT
+		// (matching how every other path stores it), so look up by mount.
+		mnt := ent.Name
+		if m, merr := config.LoadMeta(filepath.Join(ent.Dir, config.MetaFileName)); merr == nil && m.Sidecar != nil {
+			mnt = m.Sidecar.MountOrDefault(ent.Name)
+		}
 		d.mu.Lock()
-		cur, mounted := d.Skills[ent.Name]
+		cur, mounted := d.Skills[mnt]
 		ready := mounted && cur.State == facade.RouteReady
 		d.mu.Unlock()
 		if ready {
 			continue
 		}
-		// If a previously non-ready skill is being retried, drop its stale
-		// route/sidecar first so bringUp can install a fresh one.
-		if mounted {
-			s.facade.RemoveRoute(token, cur.Mount)
-			if cur.State == facade.RouteReady {
-				s.sup.StopSidecar(token+"/"+cur.Name, 5*time.Second)
-			}
-		}
+		// A previously non-ready skill is being retried. We do NOT pre-remove
+		// its stub route: bringUp installs the new route via facade.AddRoute,
+		// which replaces the entry by key atomically, so there is never a
+		// window with no route. (A non-ready route has no live sidecar to
+		// stop.)
 		e, _ := wReg.Find(ent.Name)
 		if e == nil {
 			ne, rerr := s.autoRegister(absDir, ent)
