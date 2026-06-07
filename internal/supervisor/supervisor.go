@@ -168,6 +168,14 @@ func (s *Supervisor) startOne(ctx context.Context, spec SidecarSpec) (*Running, 
 		return nil, fmt.Errorf("%s: empty command", spec.Name)
 	}
 
+	// Some skills declare command: ["./scripts/sidecar.py"] and rely on the
+	// script being executable (shebang). Installers (e.g. the marketplace)
+	// don't always preserve/set the execute bit when unpacking, which makes
+	// the spawn fail with "permission denied". omac owns the spawn, so make
+	// a relative in-skill script executable before exec'ing it — no manual
+	// `chmod +x` required after install.
+	ensureExecutable(spec.SkillDir, argv[0])
+
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Dir = spec.SkillDir
 	cmd.Env = s.buildEnv(spec, port)
@@ -330,6 +338,35 @@ func allocEphemeralPort() (int, error) {
 	port := ln.Addr().(*net.TCPAddr).Port
 	_ = ln.Close()
 	return port, nil
+}
+
+// ensureExecutable makes a relative in-skill script executable so it can be
+// exec'd directly (command: ["./scripts/sidecar.py"]). It is a no-op for
+// absolute paths and bare interpreter names (e.g. "python3", resolved on
+// PATH) — only a path that resolves to an existing regular file *inside*
+// skillDir is touched, and only to add the owner-execute bit if missing.
+func ensureExecutable(skillDir, exe string) {
+	// Bare command (interpreter on PATH) — nothing in the skill to chmod.
+	if !strings.Contains(exe, "/") {
+		return
+	}
+	path := exe
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(skillDir, exe)
+	}
+	// Confine to the skill directory: don't chmod arbitrary absolute paths.
+	rel, err := filepath.Rel(skillDir, path)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return
+	}
+	info, err := os.Stat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		return
+	}
+	if info.Mode()&0o100 != 0 {
+		return // already owner-executable
+	}
+	_ = os.Chmod(path, info.Mode()|0o100)
 }
 
 // expandArgv expands ${VAR} tokens inside argv elements from vars.

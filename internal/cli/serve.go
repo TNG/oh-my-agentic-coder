@@ -538,11 +538,15 @@ func (s *serveServer) activate(absDir string) (map[string]any, error) {
 	defer lock.Unlock()
 
 	s.mu.RLock()
-	if d, ok := s.dirs[absDir]; ok {
-		s.mu.RUnlock()
-		return s.manifestFor(d), nil
-	}
+	existing, already := s.dirs[absDir]
 	s.mu.RUnlock()
+	if already {
+		// Already active: re-discover so a skill installed/registered since
+		// this dir was first activated is mounted now — no manual reload or
+		// restart needed. Existing healthy skills are left untouched.
+		s.rediscover(existing)
+		return s.manifestFor(existing), nil
+	}
 
 	// Validate it's a real directory.
 	if info, err := os.Stat(absDir); err != nil || !info.IsDir() {
@@ -620,6 +624,87 @@ func (s *serveServer) activate(absDir string) (map[string]any, error) {
 
 	s.refreshSingleDirAliases()
 	return s.manifestFor(d), nil
+}
+
+// rediscover re-scans an already-active directory and brings up workdir-local
+// skills that are not yet mounted, or that are mounted in a non-ready state
+// (broken/pending-credentials) and may now succeed (e.g. after a chmod fix or
+// a newly-supplied secret). Skills that are already ready are left untouched,
+// so this is cheap to call on every agent turn and never churns healthy
+// sidecars. It is the mechanism that makes "install a skill -> it appears"
+// work without a manual reload.
+func (s *serveServer) rediscover(d *dirState) {
+	absDir := d.Dir
+	token := d.Token
+	discovered, err := skillsource.Discover(absDir)
+	if err != nil {
+		return
+	}
+	wReg, err := registry.Load(absDir)
+	if err != nil {
+		return
+	}
+	wCfg, err := skillconfig.Load(absDir)
+	if err != nil {
+		return
+	}
+	workdirID := keychain.WorkdirID(absDir)
+
+	for _, ent := range discovered {
+		if ent.Kind != "workdir" {
+			continue // globals handled separately
+		}
+		// Skip skills that are already mounted AND ready.
+		d.mu.Lock()
+		cur, mounted := d.Skills[ent.Name]
+		ready := mounted && cur.State == facade.RouteReady
+		d.mu.Unlock()
+		if ready {
+			continue
+		}
+		// If a previously non-ready skill is being retried, drop its stale
+		// route/sidecar first so bringUp can install a fresh one.
+		if mounted {
+			s.facade.RemoveRoute(token, cur.Mount)
+			if cur.State == facade.RouteReady {
+				s.sup.StopSidecar(token+"/"+cur.Name, 5*time.Second)
+			}
+		}
+		e, _ := wReg.Find(ent.Name)
+		if e == nil {
+			ne, rerr := s.autoRegister(absDir, ent)
+			if rerr != nil {
+				sr := &skillRoute{Name: ent.Name, Mount: ent.Name, Namespace: token,
+					State: facade.RouteBroken, Detail: rerr.Error()}
+				s.installRoute(sr, 0)
+				d.mu.Lock()
+				d.Skills[sr.Mount] = sr
+				d.mu.Unlock()
+				continue
+			}
+			e = ne
+		}
+		sr := s.bringUp(*e, ent.Dir, absDir, token, workdirID, wCfg)
+		d.mu.Lock()
+		d.Skills[sr.Mount] = sr
+		d.mu.Unlock()
+	}
+
+	// Recompute aggregate state.
+	d.mu.Lock()
+	partial := false
+	for _, sr := range d.Skills {
+		if sr.State != facade.RouteReady {
+			partial = true
+			break
+		}
+	}
+	if partial {
+		d.State = "active_partial"
+	} else {
+		d.State = "active"
+	}
+	d.mu.Unlock()
 }
 
 // autoRegister writes a registry entry for a discovered workdir-local skill

@@ -345,3 +345,42 @@ func TestTwoDirsDistinctTokensAndRoutes(t *testing.T) {
 		t.Error("tokens must be non-empty")
 	}
 }
+
+func TestRediscoverPicksUpNewSkill(t *testing.T) {
+	s := newServeServerForTest(t)
+	wd := t.TempDir()
+	stageSkillWithSecret(t, wd, "slack")
+
+	m1, err := s.activate(wd)
+	if err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+	if len(m1["skills"].([]map[string]any)) != 1 {
+		t.Fatalf("want 1 skill initially, got %d", len(m1["skills"].([]map[string]any)))
+	}
+
+	// Install a second skill AFTER the dir is already active.
+	stageSkillWithSecret(t, wd, "email")
+
+	// A repeat activate must re-discover and surface the new skill — no
+	// manual reload.
+	m2, err := s.activate(wd)
+	if err != nil {
+		t.Fatalf("re-activate: %v", err)
+	}
+	skills := m2["skills"].([]map[string]any)
+	if len(skills) != 2 {
+		t.Fatalf("want 2 skills after rediscover, got %d", len(skills))
+	}
+	names := map[string]bool{}
+	for _, sk := range skills {
+		names[sk["name"].(string)] = true
+	}
+	if !names["slack"] || !names["email"] {
+		t.Errorf("expected both slack and email, got %v", names)
+	}
+	// Token is stable across rediscover (same activation).
+	if m1["dir_token"] != m2["dir_token"] {
+		t.Errorf("token changed on rediscover: %v -> %v", m1["dir_token"], m2["dir_token"])
+	}
+}
