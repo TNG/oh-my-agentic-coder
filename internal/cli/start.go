@@ -7,6 +7,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"sort"
@@ -457,6 +458,23 @@ func runStart(args []string, env *Env) int {
 			socketPath, tcpPort, len(routes))
 	}
 
+	// Live-reload control plane: lets `omac register` from an outside
+	// terminal mount a new skill onto this running session without a
+	// restart (mirrors serve). Non-fatal if it can't bind.
+	reloader := &startReloader{
+		env: env, facade: f, sup: sup, ctx: ctx,
+		rtDir: rtDir, socket: socketPath, tcpPort: tcpPort, verbose: *verbose,
+		mounted: map[string]struct{}{},
+	}
+	for _, a := range armed {
+		reloader.markMounted(a.entry.Name)
+	}
+	controlURL, closeControl, controlOK := startControlPlane(reloader)
+	defer closeControl()
+	if controlOK && *verbose {
+		fmt.Fprintf(env.Stderr, "[verbose] control plane: %s\n", controlURL)
+	}
+
 	// 8. Build sandbox argv and exec.
 	inner := prof.InnerCmd
 	if *innerCmdOverride != "" {
@@ -484,6 +502,14 @@ func runStart(args []string, env *Env) int {
 		if err != nil {
 			fmt.Fprintln(env.Stderr, "omac start: sandbox argv:", err)
 			return ExitConfigInvalid
+		}
+		// Whitelist the control-plane port into the sandbox so the inner
+		// command (and the omac plugin inside it) can reach
+		// OMAC_CONTROL_BASE for live reloads.
+		if controlOK {
+			if _, port, perr := net.SplitHostPort(controlURL[len("http://"):]); perr == nil {
+				argv = injectOpenPort(argv, port)
+			}
 		}
 	}
 	if *verbose {
@@ -518,8 +544,11 @@ func runStart(args []string, env *Env) int {
 		extra[sandbox.OmacEnvName(m)] = sandbox.OmacTCPEnvValue(m, tcpPort)
 		extra[sandbox.OmacSocketEnvName(m)] = sandbox.OmacEnvValue(m, socketPath)
 	}
+	if controlOK {
+		extra["OMAC_CONTROL_BASE"] = controlURL
+	}
 
-	code, err := sandbox.Exec(argv, extra)
+	code, err := sandbox.ExecWithReady(argv, extra, nil)
 	if err != nil {
 		fmt.Fprintln(env.Stderr, "omac start: exec:", err)
 		return ExitSandboxAbnormal
