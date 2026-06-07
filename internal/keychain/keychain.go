@@ -174,6 +174,14 @@ func GetDefault(skillName, name string) (secrets.Secret, error) {
 	return GetScoped(DefaultsScope, skillName, name)
 }
 
+// SetScopedDefaultMirror writes value only into the remembered-defaults
+// scope (omac/__defaults__/<skill>), without touching any per-workdir or
+// unscoped key. Used to backfill the default from an already-stored secret
+// so `register --defaults` can reuse it later.
+func SetScopedDefaultMirror(skillName, name string, value secrets.Secret) error {
+	return SetScoped(DefaultsScope, skillName, name, value)
+}
+
 // DeleteAll removes every declared unscoped secret for a skill. Secrets not
 // listed are left in place (go-keyring has no list-by-service primitive).
 func DeleteAll(skillName string, names []string) error {

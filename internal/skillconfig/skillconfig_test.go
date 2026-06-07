@@ -214,3 +214,24 @@ func TestStore_BadYAML(t *testing.T) {
 		t.Fatalf("Load: expected parse error, got %v", err)
 	}
 }
+
+func TestDefaultsRoundTrip(t *testing.T) {
+	s := &Store{Version: SchemaVersion, Skills: map[string]map[string]string{}}
+	// Simulate first register: store a value AND mirror to defaults.
+	s.Set("slack", "REGION", "eu")
+	s.SetDefault("slack", "REGION", "eu")
+
+	v, ok := s.GetDefault("slack", "REGION")
+	if !ok || v != "eu" {
+		t.Fatalf("GetDefault = %q,%v want eu,true", v, ok)
+	}
+	// Backfill case: a value present in Skills but not Defaults gets mirrored.
+	s2 := &Store{Version: SchemaVersion, Skills: map[string]map[string]string{"x": {"F": "1"}}}
+	if _, ok := s2.GetDefault("x", "F"); ok {
+		t.Fatal("precondition: no default yet")
+	}
+	s2.SetDefault("x", "F", "1")
+	if v, ok := s2.GetDefault("x", "F"); !ok || v != "1" {
+		t.Errorf("backfilled default = %q,%v", v, ok)
+	}
+}

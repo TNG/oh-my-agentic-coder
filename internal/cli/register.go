@@ -179,17 +179,20 @@ func runRegister(args []string, env *Env) int {
 			// remembered config defaults and mirror new values back into
 			// them. When registering a global skill, store IS the global
 			// store, so reuse it.
+			// The defaults store is ALWAYS populated (not just under
+			// --defaults), so the first register remembers config values for
+			// later `register --defaults` reuse. --defaults only controls the
+			// read/adopt side inside handleOneField. For a global skill the
+			// global skill-config IS the defaults store.
 			var defStore *skillconfig.Store
-			if *useDefaults {
-				if global {
-					defStore = store
-				} else {
-					gs, err := skillconfig.LoadGlobal()
-					if err != nil {
-						return err
-					}
-					defStore = gs
+			if global {
+				defStore = store
+			} else {
+				gs, err := skillconfig.LoadGlobal()
+				if err != nil {
+					return err
 				}
+				defStore = gs
 			}
 			for _, spec := range meta.Sidecar.Config {
 				skipped, err := handleOneField(env, store, skillName, spec, *repromptFields, prevSkippedFields, fromFile, *useDefaults, defStore)
@@ -206,7 +209,7 @@ func runRegister(args []string, env *Env) int {
 			// Persist mirrored config defaults when they live in a
 			// separate (global) store. For a global skill, defStore ==
 			// store and was already saved above.
-			if *useDefaults && !global && defStore != nil {
+			if !global && defStore != nil {
 				if err := registry.WithGlobalLock(func() error {
 					return saveSkillConfig(env.Workdir, true, defStore)
 				}); err != nil {
@@ -446,6 +449,14 @@ func handleOneSecret(env *Env, scope, skill string, spec config.SecretSpec, repr
 			return false, fmt.Errorf("keychain: %w", err)
 		}
 		if present {
+			// Backfill the remembered-default mirror from the already-stored
+			// value, so a secret stored before the defaults feature (or via a
+			// path that didn't mirror) still becomes reusable with
+			// `register --defaults`. Best-effort; never fails the skip.
+			if cur, gerr := keychain.GetScoped(scope, skill, spec.Name); gerr == nil {
+				_ = keychain.SetScopedDefaultMirror(skill, spec.Name, cur)
+				cur.Zero()
+			}
 			fmt.Fprintf(env.Stderr, "  [skip] %s already in keychain\n", spec.Name)
 			return false, nil
 		}
@@ -608,7 +619,13 @@ func handleOneField(env *Env, store *skillconfig.Store, skill string, spec confi
 
 	// 1. Already stored?
 	if !reprompt {
-		if _, ok := store.Get(skill, spec.Name); ok {
+		if cur, ok := store.Get(skill, spec.Name); ok {
+			// Backfill the remembered default from the already-stored value
+			// so `register --defaults` can reuse it later, even if the value
+			// predates the defaults feature.
+			if defStore != nil {
+				defStore.SetDefault(skill, spec.Name, cur)
+			}
 			fmt.Fprintf(env.Stderr, "  [skip] %s already configured\n", spec.Name)
 			return false, nil
 		}
