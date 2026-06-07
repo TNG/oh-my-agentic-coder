@@ -24,6 +24,8 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
+	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -63,6 +65,15 @@ type Route struct {
 	MaxBodyBytes int64         // 0 = inherit facade default
 	IdleTimeout  time.Duration // 0 = inherit facade default
 	Skill        string        // registry name
+
+	// SkillDir is the skill's on-disk directory (the dir holding its
+	// omac.yaml and, when present, SKILL.md). It is the source for the
+	// auto-discovery response served at the skill's top-level URL
+	// (GET /<ns>/<mount>/ with no further path): the bridge reads
+	// <SkillDir>/SKILL.md and returns it verbatim, so callers who probe
+	// the root learn what the skill exposes without the skill needing to
+	// implement a discovery endpoint itself. Empty disables this.
+	SkillDir string
 
 	// State selects forward vs. stub behavior. The zero value ("") is
 	// treated as RouteReady so existing callers that don't set it keep
@@ -350,12 +361,58 @@ func (f *Facade) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Auto-discovery at the skill's top-level URL. When the request
+	// addresses the mount root (no path beyond /<ns>/<mount>[/]) and the
+	// skill ships a SKILL.md, serve that file instead of forwarding a bare
+	// GET / to the sidecar. This gives every skill a useful landing page
+	// (the same doc the agent reads) for free, with no per-sidecar code,
+	// and turns the previously-confusing upstream 404 into real content.
+	// It is a fallback, not an override: it only triggers for GET with an
+	// empty remainder, so any real subpath — including a sidecar that
+	// genuinely wants to serve its own root via a non-empty path — is
+	// untouched. Skills without a SKILL.md keep proxying / as before.
+	if rest == "" && r.Method == http.MethodGet && !isUpgrade(r) {
+		if f.serveSkillDoc(w, r, route, started) {
+			return
+		}
+	}
+
 	// WebSocket / generic Upgrade path.
 	if isUpgrade(r) {
 		f.proxyUpgrade(w, r, route, rest, started)
 		return
 	}
 	f.proxyHTTP(w, r, route, rest, started)
+}
+
+// skillDocName is the conventional human-readable manifest a skill ships
+// at its root. The bridge serves it verbatim at the skill's top-level URL.
+const skillDocName = "SKILL.md"
+
+// serveSkillDoc writes <route.SkillDir>/SKILL.md to w and reports true when
+// it handled the request. It returns false (handling nothing) when the
+// route has no SkillDir, the file is absent/unreadable, or it escapes the
+// skill dir — in which case the caller falls through to normal proxying.
+func (f *Facade) serveSkillDoc(w http.ResponseWriter, r *http.Request, route *Route, started time.Time) bool {
+	if route.SkillDir == "" {
+		return false
+	}
+	docPath := filepath.Join(route.SkillDir, skillDocName)
+	// Defense in depth: SkillDir comes from omac's own registry, but make
+	// sure the resolved path stays inside the skill dir regardless.
+	if !strings.HasPrefix(filepath.Clean(docPath), filepath.Clean(route.SkillDir)+string(os.PathSeparator)) {
+		return false
+	}
+	data, err := os.ReadFile(docPath)
+	if err != nil {
+		return false
+	}
+	w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
+	w.Header().Set("X-Omac-Discovery", "skill-md")
+	w.WriteHeader(http.StatusOK)
+	n, _ := w.Write(data)
+	f.logAccess(r, route, "", http.StatusOK, int64(n), time.Since(started))
+	return true
 }
 
 // resolve maps a request path to a route and the remaining path.
@@ -400,9 +457,23 @@ func (f *Facade) writeStatus(w http.ResponseWriter, _ *http.Request) {
 	out := status{Version: f.Version}
 	f.mu.RLock()
 	for _, r := range f.routes {
-		out.Skills = append(out.Skills, r.key())
+		// SECURITY: do NOT enumerate per-directory routes here. In serve
+		// mode every active directory's skills share this one facade port,
+		// and a per-dir route's namespace is a random, secret bearer token
+		// (see docs/MULTI_DIR_DESKTOP.md §4.1/§8.1). Listing those tokens on
+		// the unauthenticated GET / index would let any session harvest them
+		// and reach another directory's skills — a cross-workdir isolation
+		// breach. Only expose routes that are not gated by a secret dir
+		// token: flat start-mode mounts (empty namespace) and the
+		// intentionally-shared global skills (__global__, the one designed
+		// cross-dir surface, §4.5). A caller discovers its OWN directory's
+		// skills via the per-session bridge manifest, never via this index.
+		if r.Namespace == "" || r.Namespace == GlobalNamespace {
+			out.Skills = append(out.Skills, r.key())
+		}
 	}
 	f.mu.RUnlock()
+	sort.Strings(out.Skills)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(out)
 }

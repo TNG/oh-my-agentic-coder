@@ -11,9 +11,34 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
+
+// requireUnixSocket skips the test when AF_UNIX listen/dial is not permitted
+// in the current environment (e.g. some sandboxes), mirroring the inline
+// probe the older integration tests do.
+func requireUnixSocket(t *testing.T) {
+	t.Helper()
+	probeDir, err := os.MkdirTemp(".", "omac-probe-")
+	if err != nil {
+		t.Skip("mkdir temp:", err)
+	}
+	defer os.RemoveAll(probeDir)
+	ps := filepath.Join(probeDir, "p.sock")
+	pl, err := net.Listen("unix", ps)
+	if err != nil {
+		t.Skip("unix listen not permitted:", err)
+	}
+	c, err := net.Dial("unix", ps)
+	if err != nil {
+		pl.Close()
+		t.Skip("unix dial not permitted:", err)
+	}
+	c.Close()
+	pl.Close()
+}
 
 func TestFacadePlainHTTPAndSSE(t *testing.T) {
 	// Probe whether unix-socket connect is permitted at all.
@@ -391,3 +416,155 @@ func unixClient(socket string) *http.Client {
 
 // Keep os imported in this test file for future fixture needs.
 var _ = os.Getenv
+
+func TestWriteStatusHidesPerDirTokens(t *testing.T) {
+	// Mix of routes: a flat start-mode mount, a global skill, and two
+	// per-directory token-namespaced skills. The status index must expose
+	// only the flat + global ones, never the secret dir tokens.
+	f := New("", "", []Route{
+		{Mount: "echo", Namespace: "", State: RouteReady, UpstreamPort: 1},
+		{Mount: "skill-marketplace", Namespace: GlobalNamespace, State: RouteReady, UpstreamPort: 2},
+		{Mount: "tng-email", Namespace: "d31b174d117e4bb9739f8a96f3b0b66d", State: RouteReady, UpstreamPort: 3},
+		{Mount: "apple-calendar", Namespace: "34e8502d4fbd9ae9fd054d3f89e34b61", State: RouteReady, UpstreamPort: 4},
+	}, 1<<20, 0, "", "test")
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/", nil)
+	f.handle(rec, req)
+
+	body := rec.Body.String()
+	// Allowed: flat + global.
+	if !strings.Contains(body, `"echo"`) {
+		t.Errorf("status should list flat mount echo; body=%s", body)
+	}
+	if !strings.Contains(body, "__global__/skill-marketplace") {
+		t.Errorf("status should list global skill; body=%s", body)
+	}
+	// Forbidden: the secret dir tokens and their skills must NOT leak.
+	for _, leak := range []string{
+		"d31b174d117e4bb9739f8a96f3b0b66d",
+		"34e8502d4fbd9ae9fd054d3f89e34b61",
+		"tng-email",
+		"apple-calendar",
+	} {
+		if strings.Contains(body, leak) {
+			t.Errorf("status leaked per-directory routing info %q; body=%s", leak, body)
+		}
+	}
+}
+
+// TestSkillDocDiscovery covers the bridge serving <SkillDir>/SKILL.md at a
+// skill's top-level URL (the empty-remainder case), and the fallback rules
+// around it.
+func TestSkillDocDiscovery(t *testing.T) {
+	skillDir := t.TempDir()
+	docBody := "# echo-rest\n\nGET /status, POST /echo, GET /whoami\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(docBody), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// UpstreamPort points nowhere; a request that reaches the proxy would
+	// fail with a 5xx, which lets us prove the doc path short-circuits
+	// before any upstream dial.
+	f := New("", "", []Route{
+		{Mount: "echo", Namespace: GlobalNamespace, State: RouteReady, UpstreamPort: 1, SkillDir: skillDir},
+	}, 1<<20, 0, "", "test")
+
+	// The mount root, both with and without a trailing slash, serves the doc.
+	for _, path := range []string{"/__global__/echo", "/__global__/echo/"} {
+		rec := httptest.NewRecorder()
+		f.handle(rec, httptest.NewRequest("GET", path, nil))
+		if rec.Code != http.StatusOK {
+			t.Errorf("%s: code = %d, want 200", path, rec.Code)
+		}
+		if rec.Body.String() != docBody {
+			t.Errorf("%s: body = %q, want SKILL.md content", path, rec.Body.String())
+		}
+		if got := rec.Header().Get("X-Omac-Discovery"); got != "skill-md" {
+			t.Errorf("%s: X-Omac-Discovery = %q, want skill-md", path, got)
+		}
+		if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/markdown") {
+			t.Errorf("%s: Content-Type = %q, want text/markdown", path, ct)
+		}
+	}
+
+	// A non-GET method at the root is NOT intercepted; it falls through to
+	// the proxy (which dials the dead upstream and fails — proving no
+	// interception happened).
+	rec := httptest.NewRecorder()
+	f.handle(rec, httptest.NewRequest("POST", "/__global__/echo", nil))
+	if rec.Header().Get("X-Omac-Discovery") != "" {
+		t.Errorf("POST at root should not be intercepted as discovery")
+	}
+}
+
+// TestSkillDocDiscoveryFallthrough proves the discovery is a fallback: a real
+// subpath is proxied untouched, and a route without a SKILL.md does not get
+// the discovery treatment. It runs the real proxy over a unix socket (the
+// recorder path can't exercise ReverseProxy), so it skips where AF_UNIX is
+// unavailable, like the other integration tests in this file.
+func TestSkillDocDiscoveryFallthrough(t *testing.T) {
+	requireUnixSocket(t)
+
+	// Fake upstream that records the path it received.
+	var mu sync.Mutex
+	var gotPath string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		gotPath = r.URL.Path
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("upstream:" + r.URL.Path))
+	})
+	upstream := httptest.NewServer(mux)
+	defer upstream.Close()
+	_, portStr, _ := net.SplitHostPort(strings.TrimPrefix(upstream.URL, "http://"))
+	var port int
+	fmt.Sscanf(portStr, "%d", &port)
+	lastPath := func() string { mu.Lock(); defer mu.Unlock(); return gotPath }
+
+	skillDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("doc"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	dir := t.TempDir()
+	socket := filepath.Join(dir, "b.sock")
+	f := New(socket, "", []Route{
+		// withdoc: has SKILL.md. nodoc: no SKILL.md (empty SkillDir).
+		{Mount: "withdoc", Namespace: GlobalNamespace, State: RouteReady, UpstreamPort: port, SkillDir: skillDir},
+		{Mount: "nodoc", Namespace: GlobalNamespace, State: RouteReady, UpstreamPort: port},
+	}, 1<<20, 2*time.Second, "", "test")
+	if err := f.Start(context.Background()); err != nil {
+		t.Fatalf("facade start: %v", err)
+	}
+	defer f.Close()
+	client := unixClient(socket)
+
+	// Real subpath on the doc'd skill still proxies (prefix stripped).
+	resp, err := client.Get("http://x/__global__/withdoc/status")
+	if err != nil {
+		t.Fatalf("subpath GET: %v", err)
+	}
+	resp.Body.Close()
+	if resp.Header.Get("X-Omac-Discovery") != "" {
+		t.Errorf("subpath should not be discovery-intercepted")
+	}
+	if lastPath() != "/status" {
+		t.Errorf("upstream got path %q, want /status", lastPath())
+	}
+
+	// Root of the skill WITHOUT a SKILL.md falls through to the proxy.
+	resp, err = client.Get("http://x/__global__/nodoc")
+	if err != nil {
+		t.Fatalf("nodoc GET: %v", err)
+	}
+	resp.Body.Close()
+	if resp.Header.Get("X-Omac-Discovery") != "" {
+		t.Errorf("nodoc root should not be discovery-intercepted")
+	}
+	if lastPath() != "/" {
+		t.Errorf("upstream got path %q, want / (proxied root)", lastPath())
+	}
+}
