@@ -707,7 +707,7 @@ func (s *serveServer) bringUp(e registry.Entry, absDir, workdir, namespace, secr
 	secMap := map[string]secrets.Secret{}
 	var missing []string
 	for _, spec := range m.Sidecar.Secrets {
-		val, gerr := keychain.GetScoped(secretScope, e.Name, spec.Name)
+		val, gerr := keychain.GetWithFallback(secretScope, e.Name, spec.Name)
 		if gerr == nil {
 			secMap[spec.Name] = val
 			continue

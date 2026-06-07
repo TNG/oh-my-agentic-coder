@@ -261,10 +261,14 @@ func runStart(args []string, env *Env) int {
 			}
 		}
 
-		// Secrets.
+		// Secrets. Read with the workdir-scoped key first, falling back to
+		// the unscoped key — so secrets stored by a serve-aware register
+		// (scoped per workdir) and legacy/global secrets (unscoped) both
+		// resolve. See docs/MULTI_DIR_DESKTOP.md §4.3.
+		secScope := keychain.WorkdirID(env.Workdir)
 		secMap := map[string]secrets.Secret{}
 		for _, spec := range m.Sidecar.Secrets {
-			val, err := keychain.Get(e.Name, spec.Name)
+			val, err := keychain.GetWithFallback(secScope, e.Name, spec.Name)
 			if err != nil {
 				if errors.Is(err, keychain.ErrNotFound) {
 					if spec.IsRequired() {

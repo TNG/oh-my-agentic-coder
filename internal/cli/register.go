@@ -97,9 +97,18 @@ func runRegister(args []string, env *Env) int {
 	// User-global skills register once, globally; workdir-local skills
 	// register per-workdir. `global` selects which set of registry /
 	// skill-config locations and locks the rest of this function uses.
-	// (Keychain secrets are keyed by skill name and are global either
-	// way, so they are unaffected.)
 	global := src.Kind == "user-global"
+
+	// Keychain scope for this skill's secrets. Global skills use the
+	// unscoped key (omac/<skill>); workdir-local skills use the
+	// workdir-scoped key (omac/<workdir-id>/<skill>) so two projects'
+	// same-named skills don't share a credential. This MUST match the
+	// scope serve reads with (serve.go bringUp), or the secret is invisible
+	// to the running sidecar. See docs/MULTI_DIR_DESKTOP.md §4.3.
+	secretScope := ""
+	if !global {
+		secretScope = keychain.WorkdirID(env.Workdir)
+	}
 
 	// Pull the previous registration's "intentionally skipped" lists so
 	// re-register doesn't re-prompt for optional values the user
@@ -120,7 +129,7 @@ func runRegister(args []string, env *Env) int {
 			return ExitConfigInvalid
 		}
 		for _, spec := range meta.Sidecar.Secrets {
-			skipped, err := handleOneSecret(env, skillName, spec, *reprompt, prevSkippedSecrets, fromFile, *useDefaults)
+			skipped, err := handleOneSecret(env, secretScope, skillName, spec, *reprompt, prevSkippedSecrets, fromFile, *useDefaults)
 			if err != nil {
 				// Determine exit code from err message tag.
 				if strings.HasPrefix(err.Error(), "keychain:") {
@@ -424,10 +433,15 @@ func dedupSorted(names []string) []string {
 // The "already in keychain" branch and the "from --secrets-from / env"
 // branches all return skipped=false: they record actual values, which
 // take priority over any previous skip.
-func handleOneSecret(env *Env, skill string, spec config.SecretSpec, reprompt bool, prevSkipped map[string]bool, fromFile map[string]string, useDefaults bool) (bool, error) {
+// handleOneSecret stores a secret under the given keychain scope. scope is
+// "" for global skills (unscoped omac/<skill>) and the workdir-id for
+// workdir-local skills (omac/<workdir-id>/<skill>) — it MUST match the scope
+// serve reads with (see serve.go bringUp), or the skill will never see the
+// value. See docs/MULTI_DIR_DESKTOP.md §4.3.
+func handleOneSecret(env *Env, scope, skill string, spec config.SecretSpec, reprompt bool, prevSkipped map[string]bool, fromFile map[string]string, useDefaults bool) (bool, error) {
 	// 1. Already in keychain?
 	if !reprompt {
-		present, err := keychain.Has(skill, spec.Name)
+		present, err := keychain.HasScoped(scope, skill, spec.Name)
 		if err != nil {
 			return false, fmt.Errorf("keychain: %w", err)
 		}
@@ -451,7 +465,7 @@ func handleOneSecret(env *Env, skill string, spec config.SecretSpec, reprompt bo
 	if useDefaults {
 		if def, err := keychain.GetDefault(skill, spec.Name); err == nil {
 			if verr := validatePattern(spec, def.ExposeString()); verr == nil {
-				if serr := keychain.SetWithDefault("", skill, spec.Name, def); serr != nil {
+				if serr := keychain.SetWithDefault(scope, skill, spec.Name, def); serr != nil {
 					def.Zero()
 					return false, fmt.Errorf("keychain: %w", serr)
 				}
@@ -470,7 +484,7 @@ func handleOneSecret(env *Env, skill string, spec config.SecretSpec, reprompt bo
 		}
 		s := secrets.NewSecretString(v)
 		defer s.Zero()
-		if err := keychain.SetWithDefault("", skill, spec.Name, s); err != nil {
+		if err := keychain.SetWithDefault(scope, skill, spec.Name, s); err != nil {
 			return false, fmt.Errorf("keychain: %w", err)
 		}
 		fmt.Fprintf(env.Stderr, "  stored %s (from file)\n", spec.Name)
@@ -484,7 +498,7 @@ func handleOneSecret(env *Env, skill string, spec config.SecretSpec, reprompt bo
 		}
 		s := secrets.NewSecretString(v)
 		defer s.Zero()
-		if err := keychain.SetWithDefault("", skill, spec.Name, s); err != nil {
+		if err := keychain.SetWithDefault(scope, skill, spec.Name, s); err != nil {
 			return false, fmt.Errorf("keychain: %w", err)
 		}
 		fmt.Fprintf(env.Stderr, "  stored %s (from OMAC_SECRET_%s)\n", spec.Name, spec.Name)
@@ -520,7 +534,7 @@ func handleOneSecret(env *Env, skill string, spec config.SecretSpec, reprompt bo
 			if defaultHint != "" {
 				if v, ok := os.LookupEnv(spec.DefaultFromEnv); ok && v != "" {
 					s := secrets.NewSecretString(v)
-					if err := keychain.SetWithDefault("", skill, spec.Name, s); err != nil {
+					if err := keychain.SetWithDefault(scope, skill, spec.Name, s); err != nil {
 						s.Zero()
 						return false, fmt.Errorf("keychain: %w", err)
 					}
@@ -547,7 +561,7 @@ func handleOneSecret(env *Env, skill string, spec config.SecretSpec, reprompt bo
 			fmt.Fprintf(env.Stderr, "  [retry] %s\n", err)
 			continue
 		}
-		if err := keychain.SetWithDefault("", skill, spec.Name, value); err != nil {
+		if err := keychain.SetWithDefault(scope, skill, spec.Name, value); err != nil {
 			value.Zero()
 			return false, fmt.Errorf("keychain: %w", err)
 		}

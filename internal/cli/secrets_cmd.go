@@ -38,17 +38,18 @@ func runSecretsList(args []string, env *Env) int {
 		return ExitMisuse
 	}
 	skill := args[0]
-	meta, err := loadRegisteredMeta(env, skill)
+	meta, global, err := loadRegisteredMeta(env, skill)
 	if err != nil {
 		fmt.Fprintln(env.Stderr, "omac secrets list:", err)
 		return ExitPrerequisiteMissing
 	}
+	scope := secretScopeFor(env, global)
 	if meta.Sidecar == nil || len(meta.Sidecar.Secrets) == 0 {
 		fmt.Fprintln(env.Stdout, "(no secrets declared)")
 		return ExitOK
 	}
 	for _, s := range meta.Sidecar.Secrets {
-		present, err := keychain.Has(skill, s.Name)
+		present, err := keychain.HasScoped(scope, skill, s.Name)
 		status := "absent"
 		if err != nil {
 			fmt.Fprintln(env.Stderr, "omac secrets list:", err)
@@ -72,11 +73,12 @@ func runSecretsSet(args []string, env *Env) int {
 		return ExitMisuse
 	}
 	skill, name := args[0], args[1]
-	meta, err := loadRegisteredMeta(env, skill)
+	meta, global, err := loadRegisteredMeta(env, skill)
 	if err != nil {
 		fmt.Fprintln(env.Stderr, "omac secrets set:", err)
 		return ExitPrerequisiteMissing
 	}
+	scope := secretScopeFor(env, global)
 	spec, ok := findSecret(meta, name)
 	if !ok {
 		fmt.Fprintf(env.Stderr, "omac secrets set: %q does not declare a secret named %q\n", skill, name)
@@ -88,7 +90,7 @@ func runSecretsSet(args []string, env *Env) int {
 	// return value is also irrelevant: `omac secrets set` is a
 	// pinpoint operation on a single secret and does not touch the
 	// registry's skip list — that is solely owned by `omac register`.
-	if _, err := handleOneSecret(env, skill, spec, true, nil, nil, false); err != nil {
+	if _, err := handleOneSecret(env, scope, skill, spec, true, nil, nil, false); err != nil {
 		fmt.Fprintln(env.Stderr, "omac secrets set:", err)
 		return ExitKeychainError
 	}
@@ -111,7 +113,15 @@ func runSecretsUnset(args []string, env *Env) int {
 		return ExitMisuse
 	}
 	skill, name := args[0], args[1]
-	if err := keychain.Delete(skill, name); err != nil {
+	// Delete from both the workdir-scoped key and the unscoped/global key so
+	// unset works regardless of how the secret was stored (missing entries
+	// are not an error in keychain.DeleteScoped).
+	scope := keychain.WorkdirID(env.Workdir)
+	if err := keychain.DeleteScoped(scope, skill, name); err != nil {
+		fmt.Fprintln(env.Stderr, "omac secrets unset:", err)
+		return ExitKeychainError
+	}
+	if err := keychain.DeleteScoped("", skill, name); err != nil {
 		fmt.Fprintln(env.Stderr, "omac secrets unset:", err)
 		return ExitKeychainError
 	}
@@ -135,11 +145,12 @@ func runSecretsImport(args []string, env *Env) int {
 		return ExitMisuse
 	}
 	skill := fs.Arg(0)
-	meta, err := loadRegisteredMeta(env, skill)
+	meta, global, err := loadRegisteredMeta(env, skill)
 	if err != nil {
 		fmt.Fprintln(env.Stderr, "omac secrets import:", err)
 		return ExitPrerequisiteMissing
 	}
+	scope := secretScopeFor(env, global)
 	declared := map[string]config.SecretSpec{}
 	if meta.Sidecar != nil {
 		for _, s := range meta.Sidecar.Secrets {
@@ -162,7 +173,7 @@ func runSecretsImport(args []string, env *Env) int {
 			return ExitConfigInvalid
 		}
 		s := secrets.NewSecretString(v)
-		if err := keychain.Set(skill, k, s); err != nil {
+		if err := keychain.SetScoped(scope, skill, k, s); err != nil {
 			s.Zero()
 			fmt.Fprintln(env.Stderr, "omac secrets import: keychain:", err)
 			return ExitKeychainError
@@ -173,33 +184,51 @@ func runSecretsImport(args []string, env *Env) int {
 	return ExitOK
 }
 
-// loadRegisteredMeta looks up the skill in the merged registry view
-// (workdir registry plus the user-global registry, workdir winning on
-// name collision) and loads its meta. This lets `omac secrets`/`omac
-// config` operate on globally-registered skills without re-registering
-// them in the workdir.
-func loadRegisteredMeta(env *Env, skill string) (*config.Meta, error) {
+// secretScopeFor returns the keychain scope for a skill's secrets: "" for a
+// global skill (unscoped omac/<skill>), or the workdir-id for a workdir-local
+// skill (omac/<workdir-id>/<skill>). This MUST match the scope serve reads
+// with (serve.go bringUp). See docs/MULTI_DIR_DESKTOP.md §4.3.
+func secretScopeFor(env *Env, global bool) string {
+	if global {
+		return ""
+	}
+	return keychain.WorkdirID(env.Workdir)
+}
+
+// loadRegisteredMeta resolves a registered skill's meta. It also reports
+// whether the skill is registered as user-global (true) or workdir-local
+// (false) — the workdir layer wins on a name collision, matching
+// mergeRegistries — so callers can pick the right keychain scope.
+func loadRegisteredMeta(env *Env, skill string) (*config.Meta, bool, error) {
 	workdirReg, err := registry.Load(env.Workdir)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	globalReg, err := registry.LoadGlobal()
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	reg := mergeRegistries(globalReg, workdirReg)
-	entry, _ := reg.Find(skill)
+	// Workdir-local wins on collision; it's global only if present in the
+	// global registry and NOT the workdir registry.
+	wEntry, _ := workdirReg.Find(skill)
+	gEntry, _ := globalReg.Find(skill)
+	var entry *registry.Entry
+	global := false
+	if wEntry != nil {
+		entry = wEntry
+	} else if gEntry != nil {
+		entry = gEntry
+		global = true
+	}
 	if entry == nil {
-		return nil, fmt.Errorf("skill %q is not registered in this workdir or globally", skill)
+		return nil, false, fmt.Errorf("skill %q is not registered in this workdir or globally", skill)
 	}
-	// SkillDir is stored relative to the workdir for workdir-local
-	// skills and absolute for user-global ones; only join when the
-	// stored path isn't already absolute.
 	absDir := entry.SkillDir
 	if !filepath.IsAbs(absDir) {
 		absDir = filepath.Join(env.Workdir, absDir)
 	}
-	return config.LoadMeta(filepath.Join(absDir, config.MetaFileName))
+	m, err := config.LoadMeta(filepath.Join(absDir, config.MetaFileName))
+	return m, global, err
 }
 
 func findSecret(m *config.Meta, name string) (config.SecretSpec, bool) {

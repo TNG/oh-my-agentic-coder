@@ -111,6 +111,25 @@ func GetScoped(scope, skillName, name string) (secrets.Secret, error) {
 	return secrets.NewSecretString(v), nil
 }
 
+// GetWithFallback retrieves a secret under (scope, skill), falling back to
+// the unscoped key (omac/<skill>) when the scoped key is absent. This lets
+// readers (start, serve) find secrets whether they were stored scoped
+// (per-workdir, written by serve-aware register) or unscoped (legacy /
+// global). An empty scope is just the unscoped lookup. Returns ErrNotFound
+// only when neither key exists.
+func GetWithFallback(scope, skillName, name string) (secrets.Secret, error) {
+	if scope != "" {
+		v, err := GetScoped(scope, skillName, name)
+		if err == nil {
+			return v, nil
+		}
+		if !errors.Is(err, ErrNotFound) {
+			return secrets.Secret{}, err
+		}
+	}
+	return GetScoped("", skillName, name)
+}
+
 // HasScoped reports whether a secret is present under (scope, skill).
 func HasScoped(scope, skillName, name string) (bool, error) {
 	svc := ScopedService(scope, skillName)

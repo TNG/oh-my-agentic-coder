@@ -174,7 +174,7 @@ func (v *skillView) zero() {
 // failure it prints to env.Stderr and returns a non-ExitOK code so
 // callers can return it verbatim.
 func buildSkillView(env *Env, skill string) (*skillView, int) {
-	meta, err := loadRegisteredMeta(env, skill)
+	meta, _, err := loadRegisteredMeta(env, skill)
 	if err != nil {
 		fmt.Fprintln(env.Stderr, "omac config:", err)
 		return nil, ExitPrerequisiteMissing
