@@ -69,27 +69,31 @@ func claimTerminalFor(pgid int) (tty *os.File, restore func()) {
 	return tty, restore
 }
 
-// signalIgnore sets SIG_IGN-equivalent behaviour for the given signal and
-// returns a token that signalReset can use to put it back. We implement
-// this with signal.Notify(unbuffered, no listener) — Go does not expose
-// SIG_IGN directly. The handler installed by Notify simply discards the
-// signal, which is functionally equivalent for our purposes.
-type sigToken struct{ ch chan os.Signal }
+// signalIgnore sets true SIG_IGN behaviour for the given signal and returns
+// a token that signalReset can use to put it back.
+//
+// We use signal.Ignore (which installs the real SIG_IGN disposition) rather
+// than signal.Notify with a drain goroutine. The latter installs an *active*
+// Go-runtime handler that catches and queues every delivery of the signal —
+// it does not ignore it. That distinction is critical here: after
+// claimTerminalFor hands the terminal foreground to the child, omac becomes a
+// background process whose stdio is still wired to the controlling tty. On
+// Linux the terminal driver then re-raises SIGTTIN/SIGTTOU continuously on
+// every background tty access. With a Notify+drain handler those repeated
+// signals were dispatched into a channel and spun on in a tight `for range
+// ch` loop, pinning a CPU until the child exited (and, if the child wedged
+// after Ctrl-C, indefinitely). signal.Ignore drops the signals in the kernel
+// with no per-delivery goroutine work, so there is nothing to busy-spin on.
+type sigToken struct{ sig syscall.Signal }
 
 func signalIgnore(sig syscall.Signal) sigToken {
-	ch := make(chan os.Signal, 1)
-	signal.Notify(ch, sig)
-	go func() {
-		for range ch {
-		}
-	}()
-	return sigToken{ch: ch}
+	signal.Ignore(sig)
+	return sigToken{sig: sig}
 }
 
-func signalReset(_ syscall.Signal, t sigToken) {
-	if t.ch == nil {
-		return
-	}
-	signal.Stop(t.ch)
-	close(t.ch)
+func signalReset(sig syscall.Signal, _ sigToken) {
+	// Restore the default disposition for the signal. (We only ever ignore
+	// SIGTTIN/SIGTTOU here, whose default action is to stop the process —
+	// the correct behaviour for a foreground process touching the tty.)
+	signal.Reset(sig)
 }
