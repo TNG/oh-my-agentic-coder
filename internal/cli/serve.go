@@ -119,6 +119,16 @@ func runServe(args []string, env *Env) int {
 	}
 	socketPath := filepath.Join(rtDir, "bridge.sock")
 
+	// Per-session sandbox temp dir exported as TMPDIR; the nono profile
+	// grants RW on it via {{tmpdir}} so Bun-built harnesses (opencode) can
+	// extract their embedded runtime. Removed on exit. See start.go.
+	sandboxTmp, err := os.MkdirTemp("", "omac-sandbox-tmp-")
+	if err != nil {
+		fmt.Fprintln(env.Stderr, "omac serve: sandbox temp dir:", err)
+		return ExitIOError
+	}
+	defer os.RemoveAll(sandboxTmp)
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -147,6 +157,7 @@ func runServe(args []string, env *Env) int {
 		sup:           sup,
 		ctx:           ctx,
 		rtDir:         rtDir,
+		sandboxTmp:    sandboxTmp,
 		socketPath:    socketPath,
 		tcpPort:       f.TCPPort(),
 		acceptChanges: *acceptChanges,
@@ -267,6 +278,7 @@ func runServe(args []string, env *Env) int {
 			TCPPort:  srv.tcpPort,
 			Mounts:   srv.facadeMounts(),
 			InnerCmd: inner,
+			TmpDir:   srv.sandboxTmp,
 		})
 		if err != nil {
 			fmt.Fprintln(env.Stderr, "omac serve: sandbox argv:", err)
@@ -377,6 +389,7 @@ type serveServer struct {
 	sup           *supervisor.Supervisor
 	ctx           context.Context
 	rtDir         string
+	sandboxTmp    string // host temp dir granted RW + exported as TMPDIR
 	socketPath    string
 	tcpPort       int
 	controlBase   string
@@ -975,6 +988,9 @@ func (s *serveServer) baseEnv() map[string]string {
 		"OMAC_CONTROL_BASE":       s.controlBase,
 		"OMAC_HARNESS":            s.harness.Name,
 		"OMAC_HARNESS_SKILLS_DIR": s.harness.WorkdirSkillsDir(),
+		// Sandbox-granted temp dir exported as TMPDIR (see start.go and
+		// the nono profile's {{tmpdir}} grant).
+		"TMPDIR": s.sandboxTmp,
 	}
 	// Global skills are known at cold start (§4.5/§5.1): inject their base
 	// URLs and list their mounts in OMAC_SKILLS.

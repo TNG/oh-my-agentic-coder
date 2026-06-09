@@ -7,6 +7,9 @@
 //	{{socket_dir}}          directory containing the socket
 //	{{workdir}}             absolute workdir
 //	{{skills_csv}}          comma-separated list of registered skill mounts
+//	{{tmpdir}}              host temp dir exported as TMPDIR (scalar)
+//	{{tmpdir_flags}}        --read <tmpdir> --write <tmpdir>, or nothing
+//	                        when no temp dir is set (splats in place)
 //	{{inner_cmd}}           first element of inner argv
 //	{{inner_args}}          remaining inner argv (splats in place)
 //	{{per_skill_env_flags}} --env OMAC_<SKILL>_BASE=... flags (splats)
@@ -33,6 +36,13 @@ type Inputs struct {
 	TCPPort  int      // bound 127.0.0.1 port (TCP transport); 0 disables {{tcp_port}}
 	Mounts   []string // skill mount names
 	InnerCmd []string // [cmd, args...] — InnerCmd[0] is {{inner_cmd}}; rest is {{inner_args}}
+	// TmpDir is a host directory that omac grants the sandbox read+write
+	// access to and exports as TMPDIR for the inner command. Bun-built
+	// harnesses (opencode) extract an embedded runtime into TMPDIR at
+	// startup; without a writable, sandbox-granted temp dir the extraction
+	// fails. Expanded as the {{tmpdir}} placeholder. Empty leaves the
+	// placeholder resolving to "".
+	TmpDir string
 }
 
 // Expand applies the profile template to Inputs and returns the resulting argv.
@@ -59,6 +69,15 @@ func Expand(profile config.SandboxProfile, in Inputs) ([]string, error) {
 		perSkillFlags = append(perSkillFlags, "--env", perSkillEnv(m, in.Socket))
 	}
 
+	// tmpdir_flags grants the sandbox read+write on the host temp dir that
+	// omac exports as TMPDIR. We splat it as a list so the flags vanish
+	// entirely when no temp dir is configured (rather than emitting
+	// `--read "" --write ""`, which would hand nono empty paths).
+	var tmpdirFlags []string
+	if in.TmpDir != "" {
+		tmpdirFlags = []string{"--read", in.TmpDir, "--write", in.TmpDir}
+	}
+
 	scalar := map[string]string{
 		"socket":     in.Socket,
 		"socket_dir": filepath.Dir(in.Socket),
@@ -66,10 +85,12 @@ func Expand(profile config.SandboxProfile, in Inputs) ([]string, error) {
 		"skills_csv": skillsCSV,
 		"inner_cmd":  innerCmd,
 		"tcp_port":   fmt.Sprintf("%d", in.TCPPort),
+		"tmpdir":     in.TmpDir,
 	}
 	list := map[string][]string{
 		"inner_args":          innerArgs,
 		"per_skill_env_flags": perSkillFlags,
+		"tmpdir_flags":        tmpdirFlags,
 	}
 
 	out := make([]string, 0, len(profile.Command))

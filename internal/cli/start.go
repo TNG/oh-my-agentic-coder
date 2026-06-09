@@ -398,6 +398,21 @@ func runStart(args []string, env *Env) int {
 	}
 	socketPath := filepath.Join(rtDir, "bridge.sock")
 
+	// Per-session sandbox temp dir. Bun-built harnesses (opencode) extract
+	// an embedded runtime into TMPDIR at startup; the sandbox must grant
+	// read+write on it (the nono profile does, via {{tmpdir}}) AND the inner
+	// command must see it as TMPDIR (set in `extra` below). We create a
+	// fresh, isolated dir per launch and remove it on exit.
+	sandboxTmp, err := os.MkdirTemp("", "omac-sandbox-tmp-")
+	if err != nil {
+		fmt.Fprintln(env.Stderr, "omac start: sandbox temp dir:", err)
+		return ExitIOError
+	}
+	defer os.RemoveAll(sandboxTmp)
+	if *verbose {
+		fmt.Fprintf(env.Stderr, "[verbose] sandbox TMPDIR: %s\n", sandboxTmp)
+	}
+
 	// 5. Spawn sidecars.
 	sup := supervisor.New(lc.Facade.BaseEnvPassthrough)
 	defer func() {
@@ -516,6 +531,7 @@ func runStart(args []string, env *Env) int {
 			TCPPort:  tcpPort,
 			Mounts:   mounts,
 			InnerCmd: inner,
+			TmpDir:   sandboxTmp,
 		})
 		if err != nil {
 			fmt.Fprintln(env.Stderr, "omac start: sandbox argv:", err)
@@ -559,6 +575,11 @@ func runStart(args []string, env *Env) int {
 		"OMAC_VERSION":            env.Version,
 		"OMAC_HARNESS":            harness.Name,
 		"OMAC_HARNESS_SKILLS_DIR": harness.WorkdirSkillsDir(),
+		// Point the inner command at the sandbox-granted temp dir. The
+		// nono profile grants RW on this path via {{tmpdir}}; exporting it
+		// as TMPDIR is what makes Bun-built harnesses (opencode) extract
+		// their runtime into a writable, allowed location.
+		"TMPDIR": sandboxTmp,
 	}
 	for _, m := range mounts {
 		extra[sandbox.OmacEnvName(m)] = sandbox.OmacTCPEnvValue(m, tcpPort)

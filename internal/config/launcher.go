@@ -127,12 +127,27 @@ func defaultLauncherConfigFor(h Harness) LauncherConfig {
 					// --network-profile and Seatbelt rule ordering is
 					// untested for our use case. Use --network-profile
 					// instead (see nono-netprofile below).
+					//
+					//   - --read <tmpdir> --write <tmpdir>
+					//                                grant the inner command
+					//                                read+write on a host temp
+					//                                dir that omac also exports
+					//                                as TMPDIR. Bun-built
+					//                                harnesses (opencode)
+					//                                extract their embedded
+					//                                runtime into TMPDIR at
+					//                                startup; without a
+					//                                writable, sandbox-granted
+					//                                temp dir that extraction
+					//                                fails and the agent never
+					//                                starts.
 					Command: []string{
 						"nono", "run",
 						"--allow-cwd",
 						"--profile", "tng-sandbox",
 						"--allow-file", "{{socket}}",
 						"--read", "{{socket_dir}}",
+						"{{tmpdir_flags}}",
 						"--open-port", "{{tcp_port}}",
 						"--",
 						"{{inner_cmd}}", "{{inner_args}}",
@@ -152,6 +167,10 @@ func defaultLauncherConfigFor(h Harness) LauncherConfig {
 						"--network-profile", "opencode",
 						"--allow-file", "{{socket}}",
 						"--read", "{{socket_dir}}",
+						// See the nono profile above: grant RW on the
+						// host temp dir exported as TMPDIR so Bun-built
+						// harnesses can extract their runtime.
+						"{{tmpdir_flags}}",
 						"--open-port", "{{tcp_port}}",
 						"--",
 						"{{inner_cmd}}", "{{inner_args}}",

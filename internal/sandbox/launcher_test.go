@@ -16,6 +16,7 @@ func TestExpand_Nono(t *testing.T) {
 		TCPPort:  41017,
 		Mounts:   []string{"slack", "himalaya-email"},
 		InnerCmd: []string{"opencode", "--model", "opus"},
+		TmpDir:   "/tmp/omac-sandbox-tmp-xyz",
 	})
 	if err != nil {
 		t.Fatalf("Expand: %v", err)
@@ -26,9 +27,47 @@ func TestExpand_Nono(t *testing.T) {
 		"--profile", "tng-sandbox",
 		"--allow-file", "/tmp/omac-abc/bridge.sock",
 		"--read", "/tmp/omac-abc",
+		"--read", "/tmp/omac-sandbox-tmp-xyz",
+		"--write", "/tmp/omac-sandbox-tmp-xyz",
 		"--open-port", "41017",
 		"--",
 		"opencode", "--model", "opus",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("Expand mismatch\n got: %#v\nwant: %#v", got, want)
+	}
+}
+
+// TestExpand_NoTmpDir asserts that when no TmpDir is configured, the
+// {{tmpdir_flags}} splat vanishes entirely (no `--read ""`/`--write ""`
+// with empty paths, which would hand nono unusable arguments).
+func TestExpand_NoTmpDir(t *testing.T) {
+	lc := config.DefaultLauncherConfig()
+	prof := lc.Sandbox.Profiles["nono"]
+	got, err := Expand(prof, Inputs{
+		Workdir:  "/work",
+		Socket:   "/tmp/omac-abc/bridge.sock",
+		TCPPort:  41017,
+		InnerCmd: []string{"opencode"},
+		// TmpDir intentionally empty.
+	})
+	if err != nil {
+		t.Fatalf("Expand: %v", err)
+	}
+	for i, a := range got {
+		if a == "" {
+			t.Fatalf("argv[%d] is an empty string; tmpdir flags leaked: %#v", i, got)
+		}
+	}
+	want := []string{
+		"nono", "run",
+		"--allow-cwd",
+		"--profile", "tng-sandbox",
+		"--allow-file", "/tmp/omac-abc/bridge.sock",
+		"--read", "/tmp/omac-abc",
+		"--open-port", "41017",
+		"--",
+		"opencode",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("Expand mismatch\n got: %#v\nwant: %#v", got, want)
@@ -50,6 +89,7 @@ func TestExpand_NonoNetprofile(t *testing.T) {
 		TCPPort:  41017,
 		Mounts:   []string{"slack"},
 		InnerCmd: []string{"opencode"},
+		TmpDir:   "/tmp/omac-sandbox-tmp-xyz",
 	})
 	if err != nil {
 		t.Fatalf("Expand: %v", err)
@@ -61,6 +101,8 @@ func TestExpand_NonoNetprofile(t *testing.T) {
 		"--network-profile", "opencode",
 		"--allow-file", "/tmp/omac-abc/bridge.sock",
 		"--read", "/tmp/omac-abc",
+		"--read", "/tmp/omac-sandbox-tmp-xyz",
+		"--write", "/tmp/omac-sandbox-tmp-xyz",
 		"--open-port", "41017",
 		"--",
 		"opencode",
