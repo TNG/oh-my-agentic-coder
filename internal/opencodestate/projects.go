@@ -2,12 +2,17 @@
 // installation so `omac serve --for-opencode-desktop` can grant every
 // known project worktree to the sandbox up front.
 //
-// OpenCode persists projects twice (storage JSON files and a SQLite
-// db), and the two can drift: recently opened projects may exist only
-// in the db. We read both — the storage files as plain JSON, and the
-// db via the sqlite3 CLI when available (no driver dependency) — and
-// merge. The pseudo-project with worktree "/" (OpenCode's "global"
-// record) is always skipped, as are worktrees that no longer exist.
+// OpenCode persists projects in three places that all drift apart:
+//   - storage JSON files under ~/.local/share/opencode/storage/project/
+//   - the opencode.db SQLite `project` table
+//   - the Desktop app's own store (opencode.global.dat, key
+//     "globalSync.project") under the ai.opencode.desktop[.beta] data
+//     dir — folders opened in the Desktop UI can exist ONLY here.
+//
+// We read all three (the db via the sqlite3 CLI when available — no
+// driver dependency) and merge. The pseudo-project with worktree "/"
+// (OpenCode's "global" record) is always skipped, as are worktrees
+// that no longer exist.
 package opencodestate
 
 import (
@@ -48,6 +53,7 @@ func Worktrees() (worktrees []string, skipped []string, err error) {
 		return nil, nil, err
 	}
 	raw = append(raw, dbWorktrees()...)
+	raw = append(raw, desktopWorktrees()...)
 
 	seen := map[string]bool{}
 	for _, wt := range raw {
@@ -115,6 +121,74 @@ func storageWorktrees() ([]string, error) {
 		out = append(out, rec.Worktree)
 	}
 	return out, nil
+}
+
+// desktopWorktrees reads the OpenCode Desktop app's own project store
+// (key "globalSync.project" in opencode.global.dat). Folders opened in
+// the Desktop UI may exist only here, not yet in the CLI's storage/db.
+// Both the stable and beta app data dirs are consulted. Best-effort:
+// missing files or unexpected shapes yield nil.
+func desktopWorktrees() []string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, appID := range []string{"ai.opencode.desktop", "ai.opencode.desktop.beta"} {
+		for _, base := range desktopDataDirs(home, appID) {
+			out = append(out, desktopGlobalWorktrees(filepath.Join(base, "opencode.global.dat"))...)
+		}
+	}
+	return out
+}
+
+// desktopDataDirs returns the platform candidates for a desktop app's
+// data directory.
+func desktopDataDirs(home, appID string) []string {
+	dirs := []string{
+		filepath.Join(home, "Library", "Application Support", appID), // macOS
+		filepath.Join(home, ".local", "share", appID),                // Linux
+	}
+	if xdg := os.Getenv("XDG_DATA_HOME"); xdg != "" {
+		dirs = append(dirs, filepath.Join(xdg, appID))
+	}
+	return dirs
+}
+
+// desktopGlobalWorktrees extracts project worktrees from one
+// opencode.global.dat file. The file is JSON; the "globalSync.project"
+// value is itself a JSON-encoded string of {"value":[{"worktree":...}]}.
+func desktopGlobalWorktrees(path string) []string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var top map[string]json.RawMessage
+	if json.Unmarshal(data, &top) != nil {
+		return nil
+	}
+	rawProj, ok := top["globalSync.project"]
+	if !ok {
+		return nil
+	}
+	// The value may be double-encoded (a JSON string containing JSON)
+	// or a plain object; handle both.
+	var inner []byte = rawProj
+	var asString string
+	if json.Unmarshal(rawProj, &asString) == nil {
+		inner = []byte(asString)
+	}
+	var sync struct {
+		Value []projectRecord `json:"value"`
+	}
+	if json.Unmarshal(inner, &sync) != nil {
+		return nil
+	}
+	var out []string
+	for _, rec := range sync.Value {
+		out = append(out, rec.Worktree)
+	}
+	return out
 }
 
 // dbWorktrees scrapes the project table from opencode.db via the

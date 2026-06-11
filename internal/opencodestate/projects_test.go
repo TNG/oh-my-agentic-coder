@@ -1,6 +1,7 @@
 package opencodestate
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"slices"
@@ -69,6 +70,74 @@ func TestCollapseNested(t *testing.T) {
 	})
 	if !slices.Equal(got, []string{"/a/b", "/a/bc", "/d"}) {
 		t.Errorf("collapseNested = %v", got)
+	}
+}
+
+func TestDesktopWorktrees(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", "")
+
+	proj := filepath.Join(home, "desktop-proj")
+	if err := os.MkdirAll(proj, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Shape captured from a real opencode.global.dat: the
+	// globalSync.project value is a JSON-encoded *string* of
+	// {"value":[{...,"worktree":...}]}.
+	inner := `{"value":[{"id":"abc","worktree":"` + proj + `","vcs":"git"},{"id":"global","worktree":"/"}]}`
+	top := map[string]any{
+		"model":              "{}",
+		"globalSync.project": inner,
+	}
+	data, err := json.Marshal(top)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(home, "Library", "Application Support", "ai.opencode.desktop")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "opencode.global.dat"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	worktrees, skipped, err := Worktrees()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(worktrees, []string{proj}) {
+		t.Errorf("worktrees = %v, want [%s]", worktrees, proj)
+	}
+	if len(skipped) != 0 {
+		t.Errorf("skipped = %v", skipped)
+	}
+}
+
+func TestDesktopWorktreesPlainObject(t *testing.T) {
+	// Defensive: also accept the non-double-encoded form.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", "")
+	proj := filepath.Join(home, "p2")
+	if err := os.MkdirAll(proj, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	raw := `{"globalSync.project": {"value":[{"id":"x","worktree":"` + proj + `"}]}}`
+	dir := filepath.Join(home, ".local", "share", "ai.opencode.desktop.beta")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "opencode.global.dat"), []byte(raw), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	worktrees, _, err := Worktrees()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(worktrees, []string{proj}) {
+		t.Errorf("worktrees = %v", worktrees)
 	}
 }
 
