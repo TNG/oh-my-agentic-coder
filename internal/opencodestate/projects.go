@@ -36,6 +36,9 @@ func storageProjectDir() (string, error) {
 
 // Worktrees returns the deduplicated, existing project worktree
 // directories recorded by OpenCode (storage files + db), sorted.
+// Worktrees nested inside another recorded worktree are collapsed
+// into the ancestor: granting the parent already covers the child, so
+// emitting both would only add redundant sandbox rules.
 // Missing state (OpenCode not installed / never run) yields an empty
 // list, not an error. skipped receives worktrees that were recorded
 // but no longer exist.
@@ -59,9 +62,28 @@ func Worktrees() (worktrees []string, skipped []string, err error) {
 		}
 		worktrees = append(worktrees, wt)
 	}
-	sort.Strings(worktrees)
 	sort.Strings(skipped)
-	return worktrees, skipped, nil
+	return collapseNested(worktrees), skipped, nil
+}
+
+// collapseNested sorts paths and drops every path that lies inside
+// another path in the list (lexicographic sort puts ancestors first).
+func collapseNested(paths []string) []string {
+	sort.Strings(paths)
+	var out []string
+	for _, p := range paths {
+		covered := false
+		for _, kept := range out {
+			if p == kept || strings.HasPrefix(p, kept+string(filepath.Separator)) {
+				covered = true
+				break
+			}
+		}
+		if !covered {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // storageWorktrees reads the JSON records under storage/project.

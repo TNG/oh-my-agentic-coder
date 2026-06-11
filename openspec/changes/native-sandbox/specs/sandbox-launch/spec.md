@@ -51,7 +51,7 @@ The compiled-in `default` sandbox profile SHALL provide the equivalent of today'
 - **THEN** doctor warns that network prompts will fall back to the `on_unavailable` policy
 
 ### Requirement: OpenCode Desktop folder grants
-`omac serve` SHALL accept a `--for-opencode-desktop` flag. When set, omac SHALL read the project worktrees recorded in the local OpenCode state (the `project` records under `~/.local/share/opencode/` — JSON storage files and/or the `opencode.db` SQLite `project.worktree` column) and grant each existing worktree directory read+write in the sandbox, in addition to the profile's grants. The pseudo-project with worktree `/` MUST be ignored. The list of granted worktrees SHALL be logged at startup.
+`omac serve` SHALL accept a `--for-opencode-desktop` flag. When set, omac SHALL read the project worktrees recorded in the local OpenCode state (the `project` records under `~/.local/share/opencode/` — JSON storage files and/or the `opencode.db` SQLite `project.worktree` column) and grant each existing worktree directory read+write in the sandbox, in addition to the profile's grants. The pseudo-project with worktree `/` MUST be ignored. Worktrees nested inside another recorded worktree SHALL be collapsed into the ancestor (granting the parent already covers the child); path-prefix siblings (e.g. `/a/proj` and `/a/proj-2`) MUST NOT be collapsed. The list of granted worktrees SHALL be logged at startup.
 
 #### Scenario: Desktop projects granted
 - **WHEN** `omac serve --for-opencode-desktop` starts and the OpenCode state lists worktrees `/a` and `/b` (both existing) plus the global `/` record
@@ -60,6 +60,10 @@ The compiled-in `default` sandbox profile SHALL provide the equivalent of today'
 #### Scenario: Stale worktree skipped
 - **WHEN** a recorded worktree no longer exists on disk
 - **THEN** it is skipped with a notice and the launch proceeds
+
+#### Scenario: Nested worktree collapsed
+- **WHEN** the OpenCode state lists both `/a/proj` and `/a/proj/sub/module`
+- **THEN** only `/a/proj` is granted (the subdirectory is covered by the parent), while an unrelated `/a/proj-2` remains granted separately
 
 #### Scenario: Newly opened folder outside grants
 - **WHEN** the desktop opens a folder that was not in the OpenCode state at launch time

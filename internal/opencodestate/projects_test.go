@@ -25,7 +25,9 @@ func TestWorktrees(t *testing.T) {
 
 	existing1 := filepath.Join(home, "proj-a")
 	existing2 := filepath.Join(home, "proj-b")
-	for _, d := range []string{existing1, existing2} {
+	nested := filepath.Join(existing1, "sub", "module") // inside proj-a
+	prefixSib := filepath.Join(home, "proj-a-suffix")   // shares prefix, NOT nested
+	for _, d := range []string{existing1, existing2, nested, prefixSib} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -36,6 +38,8 @@ func TestWorktrees(t *testing.T) {
 	writeProject(t, stateDir, "bbb", existing2)
 	writeProject(t, stateDir, "ccc", existing2) // duplicate worktree
 	writeProject(t, stateDir, "ddd", stale)     // doesn't exist
+	writeProject(t, stateDir, "eee", nested)    // nested inside existing1 -> collapsed
+	writeProject(t, stateDir, "fff", prefixSib) // prefix sibling -> kept
 	writeProject(t, stateDir, "global", "/")    // pseudo-project
 	writeProject(t, stateDir, "rel", "relative/path")
 	// Garbage file must not break parsing.
@@ -47,11 +51,24 @@ func TestWorktrees(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(worktrees, []string{existing1, existing2}) {
-		t.Errorf("worktrees = %v", worktrees)
+	if !slices.Equal(worktrees, []string{existing1, prefixSib, existing2}) {
+		t.Errorf("worktrees = %v (nested must collapse into parent, prefix sibling must stay)", worktrees)
 	}
 	if !slices.Equal(skipped, []string{stale}) {
 		t.Errorf("skipped = %v", skipped)
+	}
+}
+
+func TestCollapseNested(t *testing.T) {
+	got := collapseNested([]string{
+		"/a/b/c",
+		"/a/b",
+		"/a/bc", // prefix sibling of /a/b — must survive
+		"/d",
+		"/a/b/x/y",
+	})
+	if !slices.Equal(got, []string{"/a/b", "/a/bc", "/d"}) {
+		t.Errorf("collapseNested = %v", got)
 	}
 }
 
