@@ -6,16 +6,33 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 
 	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxprofile"
 )
 
-// CheckPlatform verifies the Linux sandbox prerequisites.
+// CheckPlatform verifies the Linux sandbox prerequisites: bwrap must
+// be installed AND functional (unprivileged user namespaces can be
+// disabled by distro policy, in containers, or via sysctl, in which
+// case bwrap exists but cannot sandbox anything).
 func CheckPlatform() error {
 	if _, err := exec.LookPath("bwrap"); err != nil {
 		return fmt.Errorf("bubblewrap (bwrap) not found on PATH — install it with your package manager (e.g. apt install bubblewrap / dnf install bubblewrap): %w", err)
 	}
+	smoke := exec.Command("bwrap", "--ro-bind", "/", "/", "true")
+	if out, err := smoke.CombinedOutput(); err != nil {
+		return fmt.Errorf("bwrap is installed but not functional (user namespaces disabled?): %v — %s", err, firstLine(out))
+	}
 	return nil
+}
+
+func firstLine(b []byte) string {
+	s := strings.TrimSpace(string(b))
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = s[:i]
+	}
+	return s
 }
 
 // BuildChildArgv wraps the inner command in bwrap + the stage2
@@ -24,21 +41,37 @@ func BuildChildArgv(g *Grants, innerArgv []string) ([]string, error) {
 	if err := CheckPlatform(); err != nil {
 		return nil, err
 	}
-	if g.NetworkMode == sandboxprofile.ModeFiltered && g.Enforcement == sandboxprofile.EnforceKernel {
-		if !LandlockNetSupported() {
-			return nil, fmt.Errorf(
-				"kernel-enforced network filtering needs Landlock ABI >= 4 (Linux >= 6.7); this kernel has ABI %d.\n"+
-					"Either upgrade the kernel or set network.enforcement to \"env-only\" in the sandbox profile (WARNING: advisory-only filtering)",
-				LandlockABI())
-		}
+	// Both filtered (kernel enforcement) and blocked mode apply a
+	// Landlock TCP ruleset in stage2; gate on ABI v4 up front so the
+	// failure is a clear pre-launch error, not a stage2 crash.
+	needsLandlock := (g.NetworkMode == sandboxprofile.ModeFiltered && g.Enforcement == sandboxprofile.EnforceKernel) ||
+		g.NetworkMode == sandboxprofile.ModeBlocked
+	if needsLandlock && !LandlockNetSupported() {
+		return nil, fmt.Errorf(
+			"kernel-enforced network filtering needs Landlock ABI >= 4 (Linux >= 6.7); this kernel has ABI %d.\n"+
+				"Either upgrade the kernel or set network.enforcement to \"env-only\" in the sandbox profile (WARNING: advisory-only filtering)",
+			LandlockABI())
 	}
 	self, err := os.Executable()
 	if err != nil {
 		return nil, fmt.Errorf("resolve omac executable: %w", err)
 	}
+	// Resolve symlinks so the bind target is the real file (a symlink
+	// bind would dangle if its target dir is not in the namespace).
+	if resolved, rerr := filepath.EvalSymlinks(self); rerr == nil {
+		self = resolved
+	}
+	// The omac binary itself must exist inside the mount namespace for
+	// bwrap to exec stage2. It commonly lives outside the granted
+	// trees (~/go/bin, ~/.local/bin, /opt/omac, ...), so grant it
+	// read-only explicitly; the dedupe in BuildBwrapArgv collapses it
+	// when an existing grant already covers it.
+	gz := *g
+	gz.ReadPaths = append(append([]string{}, g.ReadPaths...), self)
+
 	stage2 := []string{self, "sandbox", "stage2"}
-	stage2 = append(stage2, Stage2Args(g)...)
+	stage2 = append(stage2, Stage2Args(&gz)...)
 	stage2 = append(stage2, "--")
 	stage2 = append(stage2, innerArgv...)
-	return BuildBwrapArgv(g, stage2)
+	return BuildBwrapArgv(&gz, stage2)
 }

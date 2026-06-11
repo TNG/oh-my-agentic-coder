@@ -26,7 +26,7 @@ In `blocked` mode no proxy SHALL be started and all network access except grante
 - **THEN** the sandbox launches with proxy env vars but no kernel network rules, and a prominent warning states that network filtering is advisory only
 
 ### Requirement: Filtering CONNECT proxy
-The supervisor SHALL run an HTTP proxy on an ephemeral loopback port, outside the sandbox. It SHALL support CONNECT tunnelling (TLS is never terminated) and absolute-URI forwarding for plain HTTP. Filtering SHALL be performed on the requested hostname. The proxy SHALL resolve DNS once per request and connect to the resolved addresses (not re-resolve), to prevent DNS-rebinding. The proxy SHALL refuse CONNECT to loopback addresses. Filtered denials SHALL return `403` with a body naming the blocked host.
+The supervisor SHALL run an HTTP proxy on an ephemeral loopback port, outside the sandbox. It SHALL support CONNECT tunnelling (TLS is never terminated) and absolute-URI forwarding for plain HTTP. Filtering SHALL be performed on the requested hostname. The proxy SHALL resolve DNS once per request and connect to the resolved addresses (not re-resolve), to prevent DNS-rebinding. The proxy SHALL refuse CONNECT to loopback addresses. Filtered denials SHALL return `403` with a body that names the blocked host, explicitly attributes the denial to the sandbox network policy (so it cannot be mistaken for an upstream 403; the destination is never contacted), and points at the configuration that changes the policy (prompt, `network.allow_domain`, `network.deny_domain`, the pages file). Deny responses SHALL also carry the machine-readable header `X-Omac-Sandbox: denied`.
 
 The child SHALL receive `HTTP_PROXY`, `HTTPS_PROXY` (and lowercase variants) set to `http://omac:<token>@127.0.0.1:<port>` where `<token>` is a per-session 256-bit random hex token, and `NO_PROXY=localhost,127.0.0.1,::1`. The proxy MUST reject requests lacking the correct token (constant-time comparison).
 
@@ -40,7 +40,7 @@ The child SHALL receive `HTTP_PROXY`, `HTTPS_PROXY` (and lowercase variants) set
 
 #### Scenario: Denied host
 - **WHEN** the child issues `CONNECT tracker.example:443` and the filter decision is deny
-- **THEN** the proxy responds `403` naming `tracker.example` and no upstream connection is made
+- **THEN** the proxy responds `403` with the `X-Omac-Sandbox: denied` header and a body naming `tracker.example`, stating the denial comes from the sandbox policy, and no upstream connection is made
 
 ### Requirement: Filter decision order with allowlist and blocklist
 For each requested hostname the proxy SHALL decide in this order:

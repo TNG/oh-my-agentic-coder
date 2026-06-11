@@ -21,6 +21,29 @@ import (
 // connectTimeout bounds the upstream dial.
 const connectTimeout = 30 * time.Second
 
+// sandboxDenyHeader marks deny responses as originating from the omac
+// sandbox (not the destination server), so both humans and agents can
+// tell a policy denial from a real upstream 403.
+const sandboxDenyHeader = "X-Omac-Sandbox: denied\r\n"
+
+// denyBody renders the body for a filtered denial. It explicitly
+// attributes the denial to the sandbox network policy and points at
+// the knobs that change it.
+func denyBody(host, reason string) string {
+	return fmt.Sprintf(`omac sandbox: access to %q was DENIED BY THE SANDBOX network policy (%s).
+
+This response comes from the omac sandbox proxy, not from %s.
+The destination was never contacted.
+
+To allow this host, either:
+  - answer "Allow" in the network prompt (if enabled),
+  - add it to network.allow_domain in your sandbox profile
+    (~/.config/omac/sandbox-profiles/<profile>.json),
+  - or remove a matching deny entry from network.deny_domain or the
+    <profile>.pages.json learned-policy file.
+`, host, reason, host)
+}
+
 // Server is the filtering proxy. It binds 127.0.0.1:0 and serves
 // CONNECT tunnels (HTTPS) and absolute-URI forwarding (plain HTTP).
 type Server struct {
@@ -196,15 +219,15 @@ func (s *Server) handleConnect(conn net.Conn, req *http.Request) {
 	// Loopback CONNECTs are refused: in-sandbox loopback traffic goes
 	// direct via open_port, not through the proxy.
 	if isLoopbackHost(host) {
-		writeRawResponse(conn, http.StatusForbidden, "", fmt.Sprintf("omac sandbox: CONNECT to loopback %q refused\n", host))
+		writeRawResponse(conn, http.StatusForbidden, sandboxDenyHeader,
+			fmt.Sprintf("omac sandbox: CONNECT to loopback %q refused by the sandbox (loopback traffic must use a granted open_port, not the proxy)\n", host))
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), connectTimeout)
 	defer cancel()
 	verdict, addrs := s.filter.Check(ctx, host, port)
 	if verdict.Decision != Allow {
-		writeRawResponse(conn, http.StatusForbidden, "",
-			fmt.Sprintf("omac sandbox: connection to %q blocked (%s)\n", host, verdict.Reason))
+		writeRawResponse(conn, http.StatusForbidden, sandboxDenyHeader, denyBody(host, verdict.Reason))
 		return
 	}
 	upstream, err := dialPinned(ctx, addrs, port)
@@ -238,15 +261,15 @@ func (s *Server) handleForward(conn net.Conn, br *bufio.Reader, req *http.Reques
 		}
 	}
 	if isLoopbackHost(host) {
-		writeRawResponse(conn, http.StatusForbidden, "", fmt.Sprintf("omac sandbox: forward to loopback %q refused\n", host))
+		writeRawResponse(conn, http.StatusForbidden, sandboxDenyHeader,
+			fmt.Sprintf("omac sandbox: forward to loopback %q refused by the sandbox (loopback traffic must use a granted open_port, not the proxy)\n", host))
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), connectTimeout)
 	defer cancel()
 	verdict, addrs := s.filter.Check(ctx, host, port)
 	if verdict.Decision != Allow {
-		writeRawResponse(conn, http.StatusForbidden, "",
-			fmt.Sprintf("omac sandbox: connection to %q blocked (%s)\n", host, verdict.Reason))
+		writeRawResponse(conn, http.StatusForbidden, sandboxDenyHeader, denyBody(host, verdict.Reason))
 		return
 	}
 	upstream, err := dialPinned(ctx, addrs, port)

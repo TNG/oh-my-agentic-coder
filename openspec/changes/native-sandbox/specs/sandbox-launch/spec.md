@@ -49,3 +49,46 @@ The compiled-in `default` sandbox profile SHALL provide the equivalent of today'
 #### Scenario: Headless host warning
 - **WHEN** no dialog backend is available
 - **THEN** doctor warns that network prompts will fall back to the `on_unavailable` policy
+
+### Requirement: OpenCode Desktop folder grants
+`omac serve` SHALL accept a `--for-opencode-desktop` flag. When set, omac SHALL read the project worktrees recorded in the local OpenCode state (the `project` records under `~/.local/share/opencode/` — JSON storage files and/or the `opencode.db` SQLite `project.worktree` column) and grant each existing worktree directory read+write in the sandbox, in addition to the profile's grants. The pseudo-project with worktree `/` MUST be ignored. The list of granted worktrees SHALL be logged at startup.
+
+#### Scenario: Desktop projects granted
+- **WHEN** `omac serve --for-opencode-desktop` starts and the OpenCode state lists worktrees `/a` and `/b` (both existing) plus the global `/` record
+- **THEN** the sandboxed harness can read and write `/a` and `/b`, and `/` is not granted
+
+#### Scenario: Stale worktree skipped
+- **WHEN** a recorded worktree no longer exists on disk
+- **THEN** it is skipped with a notice and the launch proceeds
+
+#### Scenario: Newly opened folder outside grants
+- **WHEN** the desktop opens a folder that was not in the OpenCode state at launch time
+- **THEN** the folder is not accessible in the running sandbox (kernel sandboxes cannot grow); omac surfaces a log line advising a restart (or learn mode)
+
+### Requirement: Learn mode
+`omac start` and `omac serve` SHALL accept a `--learn` flag. In learn mode the sandbox SHALL NOT restrict filesystem access (network filtering and env filtering remain active), and omac SHALL record every directory the inner process opens outside the already-granted set. At session end omac SHALL present the recorded folders and ask the user whether to append them to the active profile's `filesystem.allow` list; on confirmation the profile file is rewritten pretty-printed with the additions.
+
+Folder recording SHALL aggregate to a sensible granularity (project/directory level, deduplicated, ancestors-collapse-descendants) and SHALL exclude paths already granted, baseline system paths, temp dirs, and protected paths (protected paths are never offered for allowlisting).
+
+#### Scenario: Learn mode records and offers folders
+- **WHEN** a learn-mode session reads files under `/Users/u/newproject` (not granted in the profile) and then exits
+- **THEN** omac asks whether to add `/Users/u/newproject` to the profile, and on "yes" the profile's `filesystem.allow` gains that entry, pretty-printed
+
+#### Scenario: Learn mode declines
+- **WHEN** the user answers "no" at session end
+- **THEN** the profile file is unchanged
+
+#### Scenario: Protected paths never offered
+- **WHEN** a learn-mode session touches `~/.ssh`
+- **THEN** `~/.ssh` does not appear in the offered folder list
+
+### Requirement: Human-readable output formatting
+All JSON files omac writes (profiles, pages files, scaffolded defaults) SHALL be pretty-printed (2-space indent, trailing newline). Sandbox log lines (`~/.local/state/omac/sandbox.log` and stderr diagnostics) SHALL carry a timestamp and a level/category prefix in aligned columns so the log is scannable.
+
+#### Scenario: Scaffolded profile is pretty-printed
+- **WHEN** `default.json` is auto-created on first start
+- **THEN** the file is indented JSON with a trailing newline, suitable for hand-editing
+
+#### Scenario: Log line format
+- **WHEN** the proxy denies a host
+- **THEN** the log line contains a timestamp, a level, the `net` category, and the decision (e.g. `2026-06-11 10:42:01 INFO  net   DENY tracker.example:443 (deny_domain)`)

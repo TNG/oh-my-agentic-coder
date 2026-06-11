@@ -146,6 +146,16 @@ Child env is built from scratch (`env_clear` semantics):
 | (implicit) proxy port | only outbound route for everything else | `(allow network-outbound (remote tcp "localhost:proxyport"))` | `ConnectTcp(proxyport)` |
 | bridge Unix socket | AF_UNIX connect | explicit SBPL allow for the socket path (fixes nono's blanket `deny network*` issue) | plain file access via bind mount; Landlock net rules don't affect AF_UNIX |
 
+### D8b: Profile directory, first-start scaffolding, pages file
+
+Profiles live in `~/.config/omac/sandbox-profiles/<name>.json` (NOT `profiles/`, which is unrelated omac config). On first start, `default.json` is scaffolded from the compiled-in defaults (pretty-printed) and loaded from disk thereafter — the compiled-in copy is only a template, never a silent fallback once the file exists. Learned website decisions move from `~/.config/omac/learned/<name>.json` to a sibling `<name>.pages.json` so a profile and its page policy travel together. All JSON written by omac is pretty-printed (2-space indent, trailing newline).
+
+### D8c: OpenCode Desktop folders and learn mode
+
+- `omac serve --for-opencode-desktop` reads project worktrees from OpenCode's local state (storage JSON files under `~/.local/share/opencode/storage/project/`, falling back to the `opencode.db` SQLite `project` table) and passes each existing worktree as an `--allow` flag to the sandbox. The `/` global record is skipped. This grants everything the desktop currently knows about; folders opened for the first time *during* a session still need a restart (kernel sandboxes are frozen) — learn mode covers discovery.
+- `--learn` (start + serve) runs the sandbox with **unrestricted filesystem** (workdir access + a `~` and `/` grant; network/env filtering stay active) while recording filesystem activity. Recording uses platform tracing of the child process tree (macOS: `fs_usage`-style via `ktrace`/`eslogger` is too privileged — instead we use a simpler approach: periodic sampling of open file descriptors via `lsof -p` on the process group, plus the proxy-style notice hook in stage2 on Linux via `/proc/<pid>/fd`). Aggregation collapses to top-level directories outside the granted/baseline/protected sets. At exit omac prints the candidate list and asks y/n per the spec; "yes" rewrites the profile with the additions.
+- fd-sampling is approximate (short-lived opens can be missed) — acceptable: learn mode is a convenience for building the allowlist, not an enforcement mechanism, and missed paths simply resurface next session.
+
 ### D9: Launcher & lifecycle integration
 
 - `internal/config/launcher.go`: built-in profiles become `builtin` (default, the `{{self}} sandbox run ...` template above), `no-sandbox-debug` (unchanged), and `nono` retained as a named non-default template for transition.

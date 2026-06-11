@@ -40,18 +40,6 @@ type LearnedPolicy struct {
 	entries []LearnedEntry
 }
 
-// DefaultLearnedPath returns ~/.config/omac/learned/<profile>.json.
-func DefaultLearnedPath(profileName string) (string, error) {
-	if profileName == "" {
-		profileName = "ad-hoc"
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".config", "omac", "learned", profileName+".json"), nil
-}
-
 // LoadLearnedPolicy reads the file at path (missing file = empty store).
 func LoadLearnedPolicy(path string) (*LearnedPolicy, error) {
 	lp := &LearnedPolicy{path: path}
@@ -138,10 +126,11 @@ func (lp *LearnedPolicy) saveLocked() error {
 	if err := os.MkdirAll(filepath.Dir(lp.path), 0o755); err != nil {
 		return fmt.Errorf("create learned policy dir: %w", err)
 	}
-	data, err := json.Marshal(learnedFile{Schema: learnedSchema, Entries: lp.entries})
+	data, err := json.MarshalIndent(learnedFile{Schema: learnedSchema, Entries: lp.entries}, "", "  ")
 	if err != nil {
 		return err
 	}
+	data = append(data, '\n')
 	tmp, err := os.CreateTemp(filepath.Dir(lp.path), ".learned-*")
 	if err != nil {
 		return err

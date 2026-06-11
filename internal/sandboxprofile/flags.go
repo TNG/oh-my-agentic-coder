@@ -21,6 +21,7 @@ type Flags struct {
 	AllowDomain   []string // --allow-domain <domain>
 	DenyDomain    []string // --deny-domain <domain>
 	BlockNet      bool     // --block-net
+	Learn         bool     // --learn: unrestricted fs + folder recording
 	WorkdirAccess string   // --workdir-access <level>
 	InnerArgv     []string // everything after --
 }
@@ -149,6 +150,11 @@ func ParseFlags(args []string) (*Flags, error) {
 				return nil, fmt.Errorf("--block-net takes no value")
 			}
 			f.BlockNet = true
+		case "--learn":
+			if hasInline {
+				return nil, fmt.Errorf("--learn takes no value")
+			}
+			f.Learn = true
 		case "--workdir-access":
 			v, err := val(a)
 			if err != nil {

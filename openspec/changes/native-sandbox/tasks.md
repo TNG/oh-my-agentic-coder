@@ -47,10 +47,19 @@
 
 ## 7. Launcher integration
 
-- [ ] 7.1 Add `builtin` launch profile with `{{self}}` placeholder to `internal/config/launcher.go`; keep `nono` and `no-sandbox-debug` templates
-- [ ] 7.2 Make `builtin` the default; ensure `OMAC_*` env propagation works through `omac sandbox run`
-- [ ] 7.3 Extend `omac doctor`: bwrap presence, Landlock ABI, `sandbox-exec` presence, dialog backend availability
+- [x] 7.1 Add `builtin` launch profile with `{{self}}` placeholder to `internal/config/launcher.go`; keep `nono` and `no-sandbox-debug` templates
+- [x] 7.2 Make `builtin` the default; ensure `OMAC_*` env propagation works through `omac sandbox run`
+- [x] 7.3 Extend `omac doctor`: bwrap presence, Landlock ABI, `sandbox-exec` presence, dialog backend availability
 - [ ] 7.4 End-to-end test: `omac start opencode` under built-in sandbox — bridge Unix socket and TCP transports, SSE streaming, skill round-trip (echo-rest), workdir writes, denied home reads
+
+## 9. Profiles dir, desktop folders, learn mode, formatting
+
+- [x] 9.1 Move profile resolution to ~/.config/omac/sandbox-profiles/; first-start scaffolding of pretty-printed default.json; drop compiled-in fallback once the file exists
+- [x] 9.2 Move learned page policy to sibling <name>.pages.json (pretty-printed); migrate path resolution in run.go
+- [x] 9.3 `omac serve --for-opencode-desktop`: read OpenCode project worktrees (storage JSON, opencode.db fallback), grant existing worktrees rw via --allow flags, skip "/", log the grant list
+- [x] 9.4 `--learn` mode for start+serve: unrestricted fs sandbox variant, fd-sampling recorder, aggregation (dedupe/collapse, exclude granted+baseline+protected), end-of-session y/n prompt, pretty-printed profile rewrite
+- [x] 9.5 Pretty-print all JSON omac writes; timestamped/aligned log format for sandbox.log and diagnostics
+- [x] 9.6 Tests: scaffolding, pages file round-trip, desktop worktree extraction, learn aggregation/exclusions, profile rewrite, log format
 
 ## 8. Documentation and finalization
 

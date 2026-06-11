@@ -21,6 +21,7 @@ import (
 	"github.com/tngtech/oh-my-agentic-coder/internal/config"
 	"github.com/tngtech/oh-my-agentic-coder/internal/facade"
 	"github.com/tngtech/oh-my-agentic-coder/internal/keychain"
+	"github.com/tngtech/oh-my-agentic-coder/internal/opencodestate"
 	"github.com/tngtech/oh-my-agentic-coder/internal/registry"
 	"github.com/tngtech/oh-my-agentic-coder/internal/sandbox"
 	"github.com/tngtech/oh-my-agentic-coder/internal/secrets"
@@ -51,6 +52,8 @@ func runServe(args []string, env *Env) int {
 		noSandbox        = fs.Bool("no-sandbox", false, "Run the inner command directly, without a sandbox (debug only).")
 		noInner          = fs.Bool("no-inner", false, "Do not launch any inner command; run the control plane only (testing/headless).")
 		verbose          = fs.Bool("verbose", false, "Verbose lifecycle logging.")
+		forDesktop       = fs.Bool("for-opencode-desktop", false, "Grant every project worktree from the local OpenCode state (Desktop projects) read+write in the sandbox.")
+		learn            = fs.Bool("learn", false, "Learn mode: do not restrict filesystem access; record folders used and offer to add them to the sandbox profile at session end.")
 	)
 	var roots multiFlag
 	fs.Var(&roots, "root", "Pre-declared root directory under which projects may be activated (§5.4 Option B). Repeatable. Empty = allow any directory.")
@@ -292,6 +295,34 @@ func runServe(args []string, env *Env) int {
 		if cp := controlPortOf(cln); cp != "" {
 			argv = injectOpenPort(argv, cp)
 		}
+		// --for-opencode-desktop: grant every project worktree OpenCode
+		// knows about. The kernel sandbox cannot grow after launch, so
+		// folders opened for the first time during this session still
+		// need a restart (or --learn).
+		if *forDesktop {
+			worktrees, skipped, derr := opencodestate.Worktrees()
+			if derr != nil {
+				fmt.Fprintln(env.Stderr, "omac serve: --for-opencode-desktop:", derr)
+				return ExitIOError
+			}
+			for _, wt := range skipped {
+				fmt.Fprintf(env.Stderr, "omac serve: skipping stale OpenCode worktree %s (no longer exists)\n", wt)
+			}
+			if len(worktrees) == 0 {
+				fmt.Fprintln(env.Stderr, "omac serve: --for-opencode-desktop: no OpenCode projects found")
+			} else {
+				fmt.Fprintf(env.Stderr, "omac serve: granting %d OpenCode project folder(s):\n", len(worktrees))
+				for _, wt := range worktrees {
+					fmt.Fprintf(env.Stderr, "  r+w %s\n", wt)
+					argv = injectSandboxFlag(argv, "--allow", wt)
+				}
+			}
+		}
+		// --learn: pass through to the built-in sandbox, which lifts
+		// filesystem restrictions and records folder usage.
+		if *learn {
+			argv = injectSandboxFlag(argv, "--learn", "")
+		}
 	}
 	if *verbose {
 		fmt.Fprintf(env.Stderr, "[verbose] inner argv: %v\n", argv)
@@ -328,17 +359,26 @@ func controlPortOf(ln net.Listener) string {
 }
 
 // injectOpenPort splices `--open-port <port>` into a sandbox argv so the
-// sandboxed inner command may connect to that loopback port. It inserts the
-// flag right before the `--` argument separator (the conventional boundary
-// between sandbox flags and the inner command); if there is no `--`, it
-// appends before the first inner-command token is impossible to locate
-// reliably, so it falls back to inserting at the front after argv[0].
+// sandboxed inner command may connect to that loopback port.
 func injectOpenPort(argv []string, port string) []string {
+	return injectSandboxFlag(argv, "--open-port", port)
+}
+
+// injectSandboxFlag splices a sandbox flag (with optional value; pass
+// "" for boolean flags) into a sandbox argv. It inserts right before
+// the `--` argument separator (the conventional boundary between
+// sandbox flags and the inner command); if there is no `--`, it falls
+// back to inserting just after argv[0].
+func injectSandboxFlag(argv []string, flagName, value string) []string {
+	ins := []string{flagName}
+	if value != "" {
+		ins = append(ins, value)
+	}
 	for i, a := range argv {
 		if a == "--" {
-			out := make([]string, 0, len(argv)+2)
+			out := make([]string, 0, len(argv)+len(ins))
 			out = append(out, argv[:i]...)
-			out = append(out, "--open-port", port)
+			out = append(out, ins...)
 			out = append(out, argv[i:]...)
 			return out
 		}
@@ -347,8 +387,9 @@ func injectOpenPort(argv []string, port string) []string {
 	if len(argv) == 0 {
 		return argv
 	}
-	out := make([]string, 0, len(argv)+2)
-	out = append(out, argv[0], "--open-port", port)
+	out := make([]string, 0, len(argv)+len(ins))
+	out = append(out, argv[0])
+	out = append(out, ins...)
 	out = append(out, argv[1:]...)
 	return out
 }

@@ -38,9 +38,22 @@ func BuildBwrapArgv(g *Grants, stage2Argv []string) ([]string, error) {
 		"--unshare-pid",
 		"--unshare-ipc",
 		"--unshare-uts",
+	}
+	// Learn mode grants "/" read+write: bind the whole tree first (the
+	// fresh /proc and /dev below still shadow the host's).
+	rootGranted := false
+	for _, p := range g.AllowPaths {
+		if p == "/" {
+			rootGranted = true
+		}
+	}
+	if rootGranted {
+		argv = append(argv, "--bind", "/", "/")
+	}
+	argv = append(argv,
 		"--proc", "/proc",
 		"--dev", "/dev",
-	}
+	)
 
 	// Deduplicate: allow (rw) wins over read (ro) for the same path.
 	mounts := map[string]*mount{}
@@ -71,10 +84,13 @@ func BuildBwrapArgv(g *Grants, stage2Argv []string) ([]string, error) {
 	}
 	sort.Slice(ordered, func(i, j int) bool { return ordered[i].path < ordered[j].path })
 
-	tmpGranted := false
+	tmpGranted := rootGranted
 	for _, m := range ordered {
 		if m.path == "/tmp" || strings.HasPrefix(m.path, "/tmp/") {
 			tmpGranted = true
+		}
+		if rootGranted {
+			continue // everything is already bound rw via "/"
 		}
 		flag := "--ro-bind"
 		if m.rw {
@@ -104,7 +120,16 @@ func BuildBwrapArgv(g *Grants, stage2Argv []string) ([]string, error) {
 		}
 	}
 
-	argv = append(argv, "--chdir", g.Workdir, "--")
+	// --chdir only works when the workdir is actually present in the
+	// namespace (root grant or covered by a bind). With
+	// workdir.access=none the directory is unbound; chdir would fail
+	// the whole launch, so fall back to / (matching macOS, where the
+	// child simply cannot read an ungranted cwd).
+	chdir := g.Workdir
+	if !rootGranted && !coveredByAny(g.Workdir, ordered) && g.Workdir != "/" {
+		chdir = "/"
+	}
+	argv = append(argv, "--chdir", chdir, "--")
 	argv = append(argv, stage2Argv...)
 	return argv, nil
 }

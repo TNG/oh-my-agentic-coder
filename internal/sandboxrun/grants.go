@@ -123,6 +123,17 @@ func dedupeInts(in []int) []int {
 	return out
 }
 
+// withUnrestrictedFilesystem returns a copy of the grants with the
+// filesystem opened up (learn mode): the root directory becomes a
+// read+write grant and the protected-path denials are dropped.
+// Network and env restrictions are untouched.
+func (g *Grants) withUnrestrictedFilesystem() *Grants {
+	out := *g
+	out.AllowPaths = append(append([]string{}, g.AllowPaths...), "/")
+	out.ProtectedPaths = nil
+	return &out
+}
+
 // Validate sanity-checks the grant set before launch.
 func (g *Grants) Validate() error {
 	if g.Workdir == "" {

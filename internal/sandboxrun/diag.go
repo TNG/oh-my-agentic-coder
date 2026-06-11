@@ -5,7 +5,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
+	"time"
 
 	"golang.org/x/term"
 )
@@ -58,19 +60,52 @@ func defaultDiagLogPath() (string, error) {
 	return filepath.Join(home, ".local", "state", "omac", "sandbox.log"), nil
 }
 
-// Logf writes one diagnostic line (file or stderr, per sink mode).
+// Logf writes one diagnostic line (file or stderr, per sink mode),
+// prefixed with a timestamp and aligned level/category columns:
+//
+//	2026-06-11 10:42:01 INFO  net   DENY tracker.example:443 (deny_domain)
+//
+// Messages from the proxy/prompt arrive with an "omac sandbox: "
+// prefix and embedded category words; normalize them into columns.
 func (d *diagSink) Logf(format string, args ...any) {
+	msg := fmt.Sprintf(format, args...)
+	level, category, rest := classifyDiag(msg)
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	fmt.Fprintf(d.w, format+"\n", args...)
+	fmt.Fprintf(d.w, "%s %-5s %-5s %s\n",
+		time.Now().Format("2006-01-02 15:04:05"), level, category, rest)
+}
+
+// classifyDiag derives (level, category, message) columns from the
+// free-form diagnostic strings the subsystems emit.
+func classifyDiag(msg string) (level, category, rest string) {
+	rest = strings.TrimPrefix(msg, "omac sandbox: ")
+	switch {
+	case strings.HasPrefix(rest, "net "):
+		return "INFO", "net", strings.TrimPrefix(rest, "net ")
+	case strings.HasPrefix(rest, "warning: "):
+		return "WARN", "core", strings.TrimPrefix(rest, "warning: ")
+	case strings.HasPrefix(rest, "WARNING: "):
+		return "WARN", "core", strings.TrimPrefix(rest, "WARNING: ")
+	case strings.HasPrefix(rest, "notice: "):
+		return "INFO", "fs", strings.TrimPrefix(rest, "notice: ")
+	case strings.Contains(rest, "prompt"):
+		return "INFO", "ask", rest
+	default:
+		return "INFO", "core", rest
+	}
 }
 
 // Writer exposes the sink as an io.Writer (for ResolveGrants notices).
 func (d *diagSink) Writer() io.Writer {
 	return writerFunc(func(p []byte) (int, error) {
-		d.mu.Lock()
-		defer d.mu.Unlock()
-		return d.w.Write(p)
+		for _, line := range strings.Split(strings.TrimRight(string(p), "\n"), "\n") {
+			if strings.TrimSpace(line) == "" {
+				continue
+			}
+			d.Logf("%s", line)
+		}
+		return len(p), nil
 	})
 }
 

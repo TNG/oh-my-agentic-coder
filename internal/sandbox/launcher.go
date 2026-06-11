@@ -287,14 +287,19 @@ func ExecWithReady(argv []string, extraEnv map[string]string, onReady func()) (i
 	for k, v := range extraEnv {
 		env = append(env, k+"="+v)
 	}
-	return ExecWithEnv(argv, env, onReady)
+	var hook func(int)
+	if onReady != nil {
+		hook = func(int) { onReady() }
+	}
+	return ExecWithEnv(argv, env, hook)
 }
 
 // ExecWithEnv is like ExecWithReady but takes the child environment
-// verbatim (no host-env inheritance). Used by `omac sandbox run`,
-// which builds the child env from scratch (env_clear semantics with
-// blocklist/allowlist filtering).
-func ExecWithEnv(argv []string, env []string, onReady func()) (int, error) {
+// verbatim (no host-env inheritance) and passes the child pid to the
+// onReady hook (the learn-mode recorder samples the child's process
+// group). Used by `omac sandbox run`, which builds the child env from
+// scratch (env_clear semantics with blocklist/allowlist filtering).
+func ExecWithEnv(argv []string, env []string, onReady func(pid int)) (int, error) {
 	if len(argv) == 0 {
 		return 1, fmt.Errorf("empty argv")
 	}
@@ -388,9 +393,10 @@ func ExecWithEnv(argv []string, env []string, onReady func()) (int, error) {
 	}()
 
 	// The child is up and (when interactive) owns the terminal foreground.
-	// Kick off the caller's concurrent work (serve's control plane).
+	// Kick off the caller's concurrent work (serve's control plane,
+	// learn-mode recorder).
 	if onReady != nil {
-		go onReady()
+		go onReady(pid)
 	}
 
 	waitErr := cmd.Wait()

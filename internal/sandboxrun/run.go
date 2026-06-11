@@ -39,7 +39,7 @@ func Run(opts Options) int {
 		return 1
 	}
 
-	profile, err := sandboxprofile.Resolve(opts.Flags.ProfileRef)
+	profile, profilePath, err := sandboxprofile.Resolve(opts.Flags.ProfileRef)
 	if err != nil {
 		return fail("%v", err)
 	}
@@ -59,6 +59,17 @@ func Run(opts Options) int {
 		return fail("%v", err)
 	}
 
+	// Learn mode: lift filesystem restrictions (network/env filtering
+	// stay active) and record the folders the session touches. The
+	// recorder's exclusion sets are built from the *restricted* grants
+	// so already-granted folders are never offered.
+	var recorder *learnRecorder
+	if opts.Flags.Learn {
+		fmt.Fprintln(stderr, "omac sandbox: LEARN MODE — filesystem access is unrestricted this session; folders used will be offered for the profile at exit")
+		recorder = newLearnRecorder(grants)
+		grants = grants.withUnrestrictedFilesystem()
+	}
+
 	logf := diag.Logf
 
 	// Injected child env (proxy vars). Built before the backend so the
@@ -72,7 +83,7 @@ func Run(opts Options) int {
 				"filtering relies on HTTP(S)_PROXY env vars only and is trivially bypassable. "+
 				"No kernel network guarantee is in effect.")
 		}
-		proxy, err = buildProxy(merged, diag.Writer(), logf)
+		proxy, err = buildProxy(merged, profilePath, diag.Writer(), logf)
 		if err != nil {
 			return fail("%v", err)
 		}
@@ -93,25 +104,36 @@ func Run(opts Options) int {
 	diag.AnnouncePath()
 
 	env := sandboxprofile.FilterEnv(os.Environ(), merged.Environment.AllowVars, injected)
-	code, err := sandbox.ExecWithEnv(childArgv, env, nil)
+	var onReady func(int)
+	if recorder != nil {
+		onReady = recorder.Start
+	}
+	code, err := sandbox.ExecWithEnv(childArgv, env, onReady)
 	if err != nil {
 		return fail("%v", err)
+	}
+
+	if recorder != nil {
+		candidates := recorder.Stop()
+		if oerr := OfferLearnedFolders(profilePath, candidates, os.Stdin, stderr); oerr != nil {
+			fmt.Fprintf(stderr, "omac sandbox: %v\n", oerr)
+		}
 	}
 	return code
 }
 
-// buildProxy assembles learned policy, prompter, filter and server.
-func buildProxy(p *sandboxprofile.Profile, stderr io.Writer, logf func(string, ...any)) (*netproxy.Server, error) {
+// buildProxy assembles page policy, prompter, filter and server. The
+// page policy (learned website decisions) lives next to the profile:
+// <profile>.pages.json (e.g. default.pages.json).
+func buildProxy(p *sandboxprofile.Profile, profilePath string, stderr io.Writer, logf func(string, ...any)) (*netproxy.Server, error) {
 	var learned netproxy.LearnedStore
-	learnedPath, err := netprompt.DefaultLearnedPath(profileNameOrDefault(p))
-	if err == nil {
-		lp, lerr := netprompt.LoadLearnedPolicy(learnedPath)
-		if lerr != nil {
-			fmt.Fprintf(stderr, "omac sandbox: warning: %v (starting with empty learned policy)\n", lerr)
-			lp, _ = netprompt.LoadLearnedPolicy("")
-		}
-		learned = lp
+	pagesPath := sandboxprofile.PagesPath(profilePath)
+	lp, lerr := netprompt.LoadLearnedPolicy(pagesPath)
+	if lerr != nil {
+		fmt.Fprintf(stderr, "omac sandbox: warning: %v (starting with empty page policy)\n", lerr)
+		lp, _ = netprompt.LoadLearnedPolicy("")
 	}
+	learned = lp
 
 	var prompter netproxy.Prompter
 	onUnavailableAllow := p.Network.OnUnavailable() == sandboxprofile.OnUnavailableAllow
@@ -142,11 +164,4 @@ func buildProxy(p *sandboxprofile.Profile, stderr io.Writer, logf func(string, .
 		return nil, err
 	}
 	return srv, nil
-}
-
-func profileNameOrDefault(p *sandboxprofile.Profile) string {
-	if p.Meta.Name != "" {
-		return p.Meta.Name
-	}
-	return "default"
 }

@@ -45,16 +45,29 @@ Filesystem path entries SHALL support `~` expansion to the user home directory a
 - **WHEN** a profile grants a path that does not exist on disk
 - **THEN** launch proceeds, a notice naming the skipped path is printed, and no rule is emitted for it
 
-### Requirement: Profile resolution
-`omac sandbox run --profile <ref>` SHALL resolve `<ref>` as follows: if `<ref>` is a path (contains a path separator or ends in `.json`), load that file; otherwise load `~/.config/omac/profiles/<ref>.json` if it exists; otherwise fall back to a compiled-in profile of that name. A compiled-in profile named `default` MUST exist. If no `--profile` flag is given, `default` is used.
+### Requirement: Profile resolution and first-start scaffolding
+Sandbox profiles SHALL reside in `~/.config/omac/sandbox-profiles/`, one file per profile (`<name>.json`). `omac sandbox run --profile <ref>` SHALL resolve `<ref>` as follows: if `<ref>` is a path (contains a path separator or ends in `.json`), load that file; otherwise load `~/.config/omac/sandbox-profiles/<ref>.json`. If no `--profile` flag is given, `default` is used.
 
-#### Scenario: User profile overrides builtin
-- **WHEN** `~/.config/omac/profiles/default.json` exists and `omac sandbox run` is invoked without `--profile`
-- **THEN** the user file is loaded instead of the compiled-in `default`
+On first start (when `~/.config/omac/sandbox-profiles/default.json` does not exist), the compiled-in default settings SHALL be written to that file — pretty-printed — and then loaded from it, so the user always has an editable on-disk copy. Other profile names that have no file SHALL fail with an error listing the search location; only `default` is auto-created.
+
+#### Scenario: First start writes default.json
+- **WHEN** `omac sandbox run` is invoked and `~/.config/omac/sandbox-profiles/default.json` does not exist
+- **THEN** the file is created with the compiled-in default settings, pretty-printed, and the sandbox launches with exactly those settings
+
+#### Scenario: Existing default.json wins
+- **WHEN** `~/.config/omac/sandbox-profiles/default.json` exists and was edited by the user
+- **THEN** the edited file is loaded verbatim and the compiled-in defaults are not consulted
 
 #### Scenario: Unknown profile name
-- **WHEN** `--profile nosuch` matches no file and no compiled-in profile
-- **THEN** the command exits non-zero with an error listing the search locations
+- **WHEN** `--profile nosuch` matches no file
+- **THEN** the command exits non-zero with an error naming `~/.config/omac/sandbox-profiles/nosuch.json`
+
+### Requirement: Page policy lives in a sibling pages file
+Interactive website decisions (the "permanently" prompt choices) SHALL be stored next to the profile as `~/.config/omac/sandbox-profiles/<name>.pages.json` (e.g. `default.pages.json`), pretty-printed, in the schema `{"schema": 1, "entries": [{"host": "...", "scope": "host"|"suffix", "decision": "allow"|"deny"}]}` (nono-compatible). The file SHALL be loaded at launch and updated atomically on every permanent prompt decision.
+
+#### Scenario: Permanent decision written to pages file
+- **WHEN** the user picks `Allow permanently (*.npmjs.org)` while running with profile `default`
+- **THEN** `~/.config/omac/sandbox-profiles/default.pages.json` contains the suffix allow entry, pretty-printed, and a later session with the same profile allows `registry.npmjs.org` without prompting
 
 ### Requirement: CLI flags merge additively onto the profile
 `omac sandbox run` SHALL accept the flags `--allow <path>`, `--read <path>`, `--write <path>`, `--allow-file <path>`, `--open-port <port>`, `--listen-port <port>`, `--allow-tcp-connect <port>`, `--allow-domain <domain>`, `--deny-domain <domain>`, `--block-net`, `--workdir-access <level>`, and `--profile <ref>`, each repeatable where list-valued. Flag values SHALL be merged additively into the loaded profile, except `--block-net` which sets `network.mode` to `blocked` and overrides all other network settings, and `--workdir-access` which replaces `workdir.access`. The command to run inside the sandbox follows a `--` separator.

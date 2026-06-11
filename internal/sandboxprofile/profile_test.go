@@ -134,31 +134,43 @@ func TestExpandExistingSkipsMissing(t *testing.T) {
 	}
 }
 
-func TestResolveBuiltinDefault(t *testing.T) {
-	// Point HOME at an empty dir so no user profile shadows the builtin.
-	t.Setenv("HOME", t.TempDir())
-	p, err := Resolve("")
+func TestResolveFirstStartScaffoldsDefault(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	p, path, err := Resolve("")
 	if err != nil {
 		t.Fatal(err)
 	}
+	wantPath := filepath.Join(home, ".config", "omac", "sandbox-profiles", "default.json")
+	if path != wantPath {
+		t.Errorf("path = %q, want %q", path, wantPath)
+	}
+	// File must now exist, pretty-printed, and parse back to the same settings.
+	raw, err := os.ReadFile(wantPath)
+	if err != nil {
+		t.Fatalf("default.json not scaffolded: %v", err)
+	}
+	if !strings.Contains(string(raw), "\n  ") || !strings.HasSuffix(string(raw), "\n") {
+		t.Error("scaffolded default.json is not pretty-printed")
+	}
 	if p.Workdir.Access != AccessReadWrite {
-		t.Errorf("builtin default workdir.access = %q", p.Workdir.Access)
+		t.Errorf("default workdir.access = %q", p.Workdir.Access)
 	}
 	if len(p.Network.ListenPort) != 1 || p.Network.ListenPort[0] != 4097 {
-		t.Errorf("builtin default listen_port = %v", p.Network.ListenPort)
+		t.Errorf("default listen_port = %v", p.Network.ListenPort)
 	}
 	if len(p.Network.AllowTCPConnect) != 1 || p.Network.AllowTCPConnect[0] != 22 {
-		t.Errorf("builtin default allow_tcp_connect = %v", p.Network.AllowTCPConnect)
+		t.Errorf("default allow_tcp_connect = %v", p.Network.AllowTCPConnect)
 	}
 	if !p.Network.PromptEnabled() {
-		t.Error("builtin default prompt should be enabled")
+		t.Error("default prompt should be enabled")
 	}
 }
 
-func TestResolveUserProfileOverridesBuiltin(t *testing.T) {
+func TestResolveExistingDefaultWins(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	dir := filepath.Join(home, ".config", "omac", "profiles")
+	dir := filepath.Join(home, ".config", "omac", "sandbox-profiles")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -166,12 +178,15 @@ func TestResolveUserProfileOverridesBuiltin(t *testing.T) {
 		[]byte(`{"workdir": {"access": "read"}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	p, err := Resolve("default")
+	p, _, err := Resolve("default")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if p.Workdir.Access != AccessRead {
-		t.Errorf("user profile should win, got access %q", p.Workdir.Access)
+		t.Errorf("edited file should win, got access %q", p.Workdir.Access)
+	}
+	if len(p.Network.ListenPort) != 0 {
+		t.Error("compiled-in defaults must not be merged into the user file")
 	}
 }
 
@@ -181,23 +196,32 @@ func TestResolveExplicitPath(t *testing.T) {
 	if err := os.WriteFile(path, []byte(`{"meta": {"name": "custom"}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	p, err := Resolve(path)
+	p, gotPath, err := Resolve(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if p.Meta.Name != "custom" {
 		t.Errorf("name = %q", p.Meta.Name)
 	}
+	if gotPath != path {
+		t.Errorf("returned path = %q", gotPath)
+	}
 }
 
-func TestResolveUnknownProfileListsSearchLocations(t *testing.T) {
+func TestResolveUnknownProfileNamesExpectedPath(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	_, err := Resolve("nosuch")
+	_, _, err := Resolve("nosuch")
 	if err == nil {
-		t.Fatal("expected error")
+		t.Fatal("expected error (only default is auto-created)")
 	}
-	if !strings.Contains(err.Error(), "searched") || !strings.Contains(err.Error(), "builtin") {
-		t.Errorf("error should list search locations: %v", err)
+	if !strings.Contains(err.Error(), "sandbox-profiles/nosuch.json") {
+		t.Errorf("error should name the expected path: %v", err)
+	}
+}
+
+func TestPagesPath(t *testing.T) {
+	if got := PagesPath("/x/sandbox-profiles/default.json"); got != "/x/sandbox-profiles/default.pages.json" {
+		t.Errorf("PagesPath = %q", got)
 	}
 }
 

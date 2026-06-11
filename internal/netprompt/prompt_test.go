@@ -208,17 +208,24 @@ func TestLearnedPolicyNonoFixture(t *testing.T) {
 	}
 }
 
-func TestDefaultLearnedPath(t *testing.T) {
-	t.Setenv("HOME", "/home/u")
-	p, err := DefaultLearnedPath("default")
+func TestLearnedPolicyFileIsPrettyPrinted(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "default.pages.json")
+	lp, err := LoadLearnedPolicy(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p != "/home/u/.config/omac/learned/default.json" {
-		t.Errorf("path = %q", p)
+	if err := lp.Record("npmjs.org", "suffix", true); err != nil {
+		t.Fatal(err)
 	}
-	p, _ = DefaultLearnedPath("")
-	if !strings.HasSuffix(p, "ad-hoc.json") {
-		t.Errorf("empty profile name path = %q", p)
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(raw)
+	if !strings.Contains(s, "\n  ") {
+		t.Errorf("pages file not indented: %q", s)
+	}
+	if !strings.HasSuffix(s, "\n") {
+		t.Error("pages file missing trailing newline")
 	}
 }

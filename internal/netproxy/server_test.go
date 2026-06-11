@@ -146,6 +146,17 @@ func TestConnectDenied403NamesHost(t *testing.T) {
 	if !strings.Contains(string(body), "tracker.example") {
 		t.Errorf("deny body should name the host: %q", body)
 	}
+	// The denial must be clearly attributed to the sandbox, both in
+	// the body and via a machine-readable header.
+	if !strings.Contains(string(body), "DENIED BY THE SANDBOX") {
+		t.Errorf("deny body should attribute the denial to the sandbox: %q", body)
+	}
+	if !strings.Contains(string(body), "allow_domain") {
+		t.Errorf("deny body should point at the profile knobs: %q", body)
+	}
+	if resp.Header.Get("X-Omac-Sandbox") != "denied" {
+		t.Errorf("X-Omac-Sandbox header missing, got %v", resp.Header)
+	}
 }
 
 func TestMissingToken407(t *testing.T) {
