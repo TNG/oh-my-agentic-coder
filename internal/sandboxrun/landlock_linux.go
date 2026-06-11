@@ -47,7 +47,7 @@ type landlockNetPortAttr struct {
 // all descendants. Empty slices mean "deny all" for that operation.
 func ApplyLandlockNet(connectPorts, bindPorts []int) error {
 	if !LandlockNetSupported() {
-		return fmt.Errorf("Landlock ABI >= %d required for network rules (kernel >= 6.7); this kernel has ABI %d",
+		return fmt.Errorf("landlock ABI >= %d required for network rules (kernel >= 6.7); this kernel has ABI %d",
 			landlockNetABI, LandlockABI())
 	}
 	attr := unix.LandlockRulesetAttr{

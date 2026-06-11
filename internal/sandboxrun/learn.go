@@ -47,9 +47,8 @@ func newLearnRecorder(g *Grants) *learnRecorder {
 	r.excluded = append(r.excluded, g.AllowPaths...)
 	r.excluded = append(r.excluded, g.Workdir)
 	// Never offer temp dirs or the omac state dir.
-	for _, p := range []string{os.TempDir(), "/tmp", "/private/tmp", "/private/var/folders", "/var/folders"} {
-		r.excluded = append(r.excluded, p)
-	}
+	r.excluded = append(r.excluded,
+		os.TempDir(), "/tmp", "/private/tmp", "/private/var/folders", "/var/folders")
 	if home != "" {
 		r.excluded = append(r.excluded,
 			filepath.Join(home, ".local", "state", "omac"),

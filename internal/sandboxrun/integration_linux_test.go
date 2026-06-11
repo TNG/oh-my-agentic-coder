@@ -153,9 +153,8 @@ func TestIntegrationStage2LandlockPorts(t *testing.T) {
 	allowedPort := allowed.Listener.Addr().(*net.TCPAddr).Port
 	blockedPort := blocked.Listener.Addr().(*net.TCPAddr).Port
 
-	self, err := os.Executable() // the test binary can act as stage2 via helper below? No — use omac? Build it.
-	_ = self
-	// Build the omac binary for stage2.
+	// Build the omac binary: stage2 must be a real `omac sandbox stage2`
+	// invocation (the test binary cannot stand in for it).
 	omac := filepath.Join(t.TempDir(), "omac")
 	build := exec.Command("go", "build", "-o", omac, "github.com/tngtech/oh-my-agentic-coder/cmd/omac")
 	build.Env = os.Environ()
