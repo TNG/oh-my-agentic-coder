@@ -51,11 +51,15 @@ The compiled-in `default` sandbox profile SHALL provide the equivalent of today'
 - **THEN** doctor warns that network prompts will fall back to the `on_unavailable` policy
 
 ### Requirement: OpenCode Desktop folder grants
-`omac serve` SHALL accept a `--for-opencode-desktop` flag. When set, omac SHALL read the project worktrees recorded in the local OpenCode state and grant each existing worktree directory read+write in the sandbox, in addition to the profile's grants. All three OpenCode project stores SHALL be merged, since they drift apart: the JSON storage files under `~/.local/share/opencode/storage/project/`, the `opencode.db` SQLite `project.worktree` column, and the Desktop app's own store (`opencode.global.dat`, key `globalSync.project`, in the `ai.opencode.desktop` / `ai.opencode.desktop.beta` application data directories) — folders opened in the Desktop UI may exist only in the latter. The pseudo-project with worktree `/` MUST be ignored. Worktrees nested inside another recorded worktree SHALL be collapsed into the ancestor (granting the parent already covers the child); path-prefix siblings (e.g. `/a/proj` and `/a/proj-2`) MUST NOT be collapsed. The list of granted worktrees SHALL be logged at startup.
+`omac serve` SHALL accept a `--for-opencode-desktop` flag. When set, omac SHALL read the project worktrees recorded in the local OpenCode state and grant each existing worktree directory read+write in the sandbox, in addition to the profile's grants. All three OpenCode project stores SHALL be merged, since they drift apart: the JSON storage files under `~/.local/share/opencode/storage/project/`, the `opencode.db` SQLite `project.worktree` column, and the Desktop app's own store (`opencode.global.dat` in the `ai.opencode.desktop` / `ai.opencode.desktop.beta` application data directories) — folders opened in the Desktop UI may exist only in the latter. Within the Desktop store both the saved project list (key `globalSync.project`) and the directories of currently open tabs/windows (key `layout.page`, field `lastProjectSession`) SHALL be harvested, since an open tab is not necessarily a saved project. The pseudo-project with worktree `/` MUST be ignored. Worktrees nested inside another recorded worktree SHALL be collapsed into the ancestor (granting the parent already covers the child); path-prefix siblings (e.g. `/a/proj` and `/a/proj-2`) MUST NOT be collapsed. The list of granted worktrees SHALL be logged at startup.
 
 #### Scenario: Desktop projects granted
 - **WHEN** `omac serve --for-opencode-desktop` starts and the OpenCode state lists worktrees `/a` and `/b` (both existing) plus the global `/` record
 - **THEN** the sandboxed harness can read and write `/a` and `/b`, and `/` is not granted
+
+#### Scenario: Currently open Desktop tab granted
+- **WHEN** a folder is open as a Desktop tab (present in `layout.page.lastProjectSession`) but is not in the saved `globalSync.project` list
+- **THEN** that folder is still granted read+write
 
 #### Scenario: Stale worktree skipped
 - **WHEN** a recorded worktree no longer exists on disk

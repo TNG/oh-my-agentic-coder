@@ -123,9 +123,14 @@ func storageWorktrees() ([]string, error) {
 	return out, nil
 }
 
-// desktopWorktrees reads the OpenCode Desktop app's own project store
-// (key "globalSync.project" in opencode.global.dat). Folders opened in
-// the Desktop UI may exist only here, not yet in the CLI's storage/db.
+// desktopWorktrees reads the OpenCode Desktop app's own state. Folders
+// opened in the Desktop UI may exist only here, not yet in the CLI's
+// storage/db. Two kinds of records are harvested from
+// opencode.global.dat:
+//   - "globalSync.project": the saved/pinned project list.
+//   - "layout.page" -> lastProjectSession: the directories of currently
+//     open tabs/windows, which are NOT necessarily in globalSync.project.
+//
 // Both the stable and beta app data dirs are consulted. Best-effort:
 // missing files or unexpected shapes yield nil.
 func desktopWorktrees() []string {
@@ -155,9 +160,12 @@ func desktopDataDirs(home, appID string) []string {
 	return dirs
 }
 
-// desktopGlobalWorktrees extracts project worktrees from one
-// opencode.global.dat file. The file is JSON; the "globalSync.project"
-// value is itself a JSON-encoded string of {"value":[{"worktree":...}]}.
+// desktopGlobalWorktrees extracts project directories from one
+// opencode.global.dat file: the saved project list ("globalSync.project")
+// plus the directories of currently open tabs ("layout.page" ->
+// lastProjectSession). The top-level values are frequently
+// double-encoded (a JSON string containing JSON); unwrapValue handles
+// both shapes.
 func desktopGlobalWorktrees(path string) []string {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -167,28 +175,50 @@ func desktopGlobalWorktrees(path string) []string {
 	if json.Unmarshal(data, &top) != nil {
 		return nil
 	}
-	rawProj, ok := top["globalSync.project"]
-	if !ok {
-		return nil
-	}
-	// The value may be double-encoded (a JSON string containing JSON)
-	// or a plain object; handle both.
-	var inner []byte = rawProj
-	var asString string
-	if json.Unmarshal(rawProj, &asString) == nil {
-		inner = []byte(asString)
-	}
-	var sync struct {
-		Value []projectRecord `json:"value"`
-	}
-	if json.Unmarshal(inner, &sync) != nil {
-		return nil
-	}
 	var out []string
-	for _, rec := range sync.Value {
-		out = append(out, rec.Worktree)
+
+	// 1. Saved/pinned projects.
+	if raw, ok := top["globalSync.project"]; ok {
+		var sync struct {
+			Value []projectRecord `json:"value"`
+		}
+		if json.Unmarshal(unwrapValue(raw), &sync) == nil {
+			for _, rec := range sync.Value {
+				out = append(out, rec.Worktree)
+			}
+		}
+	}
+
+	// 2. Currently open tabs/windows. layout.page.lastProjectSession is
+	//    a map keyed by directory, each value carrying a "directory"
+	//    field too. Harvest the keys (the directories) directly.
+	if raw, ok := top["layout.page"]; ok {
+		var page struct {
+			LastProjectSession map[string]struct {
+				Directory string `json:"directory"`
+			} `json:"lastProjectSession"`
+		}
+		if json.Unmarshal(unwrapValue(raw), &page) == nil {
+			for dir, sess := range page.LastProjectSession {
+				if sess.Directory != "" {
+					out = append(out, sess.Directory)
+				} else {
+					out = append(out, dir)
+				}
+			}
+		}
 	}
 	return out
+}
+
+// unwrapValue returns the inner JSON when raw is a JSON-encoded string
+// (the Desktop store's common double-encoding), otherwise raw itself.
+func unwrapValue(raw json.RawMessage) []byte {
+	var asString string
+	if json.Unmarshal(raw, &asString) == nil {
+		return []byte(asString)
+	}
+	return raw
 }
 
 // dbWorktrees scrapes the project table from opencode.db via the

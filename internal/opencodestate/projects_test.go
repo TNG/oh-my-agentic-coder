@@ -115,6 +115,46 @@ func TestDesktopWorktrees(t *testing.T) {
 	}
 }
 
+func TestDesktopOpenTabsPickedUp(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", "")
+
+	pinned := filepath.Join(home, "pinned-proj")
+	openTab := filepath.Join(home, "open-tab-proj") // open tab, NOT in globalSync.project
+	for _, d := range []string{pinned, openTab} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	syncInner := `{"value":[{"id":"a","worktree":"` + pinned + `"}]}`
+	pageInner := `{"lastProjectSession":{"` + openTab + `":{"directory":"` + openTab + `","id":"ses_x","at":1}}}`
+	top := map[string]any{
+		"globalSync.project": syncInner, // double-encoded string
+		"layout.page":        pageInner, // double-encoded string
+	}
+	data, err := json.Marshal(top)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(home, "Library", "Application Support", "ai.opencode.desktop")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "opencode.global.dat"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	worktrees, _, err := Worktrees()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(worktrees, []string{openTab, pinned}) { // sorted
+		t.Errorf("worktrees = %v, want both pinned and open-tab dirs", worktrees)
+	}
+}
+
 func TestDesktopWorktreesPlainObject(t *testing.T) {
 	// Defensive: also accept the non-double-encoded form.
 	home := t.TempDir()
