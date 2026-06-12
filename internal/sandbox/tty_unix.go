@@ -43,8 +43,7 @@ func claimTerminalFor(pgid int) (tty *os.File, restore func()) {
 		return nil, noop
 	}
 
-	// Ignore SIGTTOU so the imminent tcsetpgrp does not stop us. We restore
-	// the previous disposition in the restore func.
+	// Ignore SIGTTOU so the imminent tcsetpgrp does not stop us.
 	prevTTOU := signalIgnore(syscall.SIGTTOU)
 	prevTTIN := signalIgnore(syscall.SIGTTIN)
 
@@ -62,8 +61,17 @@ func claimTerminalFor(pgid int) (tty *os.File, restore func()) {
 		// Hand the terminal back to whoever owned it before us. Errors
 		// here are non-fatal and not user-actionable.
 		_ = unix.IoctlSetPointerInt(fd, unix.TIOCSPGRP, prevPgid)
-		signalReset(syscall.SIGTTOU, prevTTOU)
-		signalReset(syscall.SIGTTIN, prevTTIN)
+		// Do NOT reset SIGTTOU/SIGTTIN back to SIG_DFL here. The
+		// caller (ExecWithReady) runs this restore func via defer
+		// after the child exits, while goroutines may still be
+		// writing to the TTY (stderr). If we restore SIG_DFL, the
+		// kernel re-raises SIGTTOU on every background TTY write,
+		// and the Go runtime's signal handler spins on each
+		// delivery — a busy-wait loop that pins a CPU until the
+		// process finally exits. Keeping SIG_IGN until process exit
+		// is harmless: omac is shutting down and no code path
+		// benefits from SIGTTOU/SIGTTIN having their default (stop)
+		// disposition during teardown.
 		_ = tty.Close()
 	}
 	return tty, restore
