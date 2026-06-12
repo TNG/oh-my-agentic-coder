@@ -11,20 +11,20 @@ they never reach the sandbox.
 ## Quickstart
 
 ```sh
-# 1. Install omac (pick one)
-brew tap TNG-release/tap && brew install oh-my-agentic-coder   # macOS
-sudo dpkg -i oh-my-agentic-coder_<version>_linux_<arch>.deb    # Debian/Ubuntu
-go install github.com/tngtech/oh-my-agentic-coder/cmd/omac@latest  # from source
-
-# 2. (Linux only) Install bubblewrap — the built-in sandbox needs it
+# 1. (Linux only) Install bubblewrap — the built-in sandbox needs it
 sudo apt install bubblewrap    # Debian/Ubuntu
 sudo dnf install bubblewrap    # Fedora
 # macOS uses the built-in Seatbelt framework; no extra install needed.
 
+# 2. Install omac (pick one), for details see Installation section
+brew tap TNG-release/tap && brew install oh-my-agentic-coder   # macOS
+sudo dpkg -i oh-my-agentic-coder_<version>_linux_<arch>.deb    # Debian/Ubuntu
+go install github.com/tngtech/oh-my-agentic-coder/cmd/omac@latest  # from source
+
 # 3. Verify the setup
 omac doctor
 
-# 4. Register a skill (prompts for secrets → OS keychain)
+# 4. Optional: Register a skill (prompts for secrets → OS keychain)
 omac register <skill>
 
 # 5. Launch — default sandbox (Seatbelt/bwrap) + default harness (opencode)
