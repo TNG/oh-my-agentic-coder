@@ -8,6 +8,33 @@ environment through a single Unix-domain-socket facade. Per-skill secrets are
 stored in the OS keychain and injected into sidecar processes at start time —
 they never reach the sandbox.
 
+## Quickstart
+
+```sh
+# 1. (Linux only) Install bubblewrap — the built-in sandbox needs it
+sudo apt install bubblewrap    # Debian/Ubuntu
+sudo dnf install bubblewrap    # Fedora
+# macOS uses the built-in Seatbelt framework; no extra install needed.
+
+# 2. Install omac (pick one), for details see Installation section
+brew tap TNG-release/tap && brew install oh-my-agentic-coder   # macOS
+sudo dpkg -i oh-my-agentic-coder_<version>_linux_<arch>.deb    # Debian/Ubuntu
+go install github.com/tngtech/oh-my-agentic-coder/cmd/omac@latest  # from source
+
+# 3. Verify the setup
+omac doctor
+
+# 4. Optional: Register a skill (prompts for secrets → OS keychain)
+omac register <skill>
+
+# 5. Launch — default sandbox (Seatbelt/bwrap) + default harness (opencode)
+omac start
+```
+
+The built-in sandbox (`Seatbelt` on macOS, `bubblewrap` + `Landlock` on Linux)
+is the default — no external sandbox runtime required. To use the nono sandbox
+instead, see [Running under nono](#running-under-nono).
+
 ## Choosing an inner harness
 
 omac is harness-agnostic: it launches an inner agentic coder inside the
@@ -140,103 +167,114 @@ sha256sum -c checksums.txt --ignore-missing
 go install github.com/tngtech/oh-my-agentic-coder/cmd/omac@latest
 ```
 
-## Layout
+For the project layout, build instructions (dev and release), and test
+details, see [`docs/DEVELOP.md`](docs/DEVELOP.md).
 
-```
-cmd/omac/                  Entrypoint.
-internal/cli/              Subcommand dispatch (register/deregister/list/
-                           secrets/start/doctor/version).
-internal/config/           omac.yaml + oh-my-agentic-coder.yaml types.
-internal/registry/         .opencode/sidecar.json (atomic writes, flock).
-internal/keychain/         Thin wrapper over github.com/zalando/go-keyring.
-internal/secrets/          Secret type (redacted Stringer, zeroize) + masked prompt.
-internal/osinfo/           macos / linux / wsl detection.
-internal/facade/           Unix-socket HTTP reverse proxy (SSE + upgrades).
-internal/supervisor/       Sidecar lifecycle (spawn, health, shutdown).
-internal/sandbox/          Templated sandbox-runtime launcher.
-```
+### Configuration
 
-## Build
+omac uses several configuration files. None are required — compiled-in
+defaults work out of the box — but you can override them as needed.
 
-```bash
-# Plain dev build (version reports as the default "0.1.0-dev").
-go build -o omac ./cmd/omac
-```
+#### Launcher config
 
-### Release-style local build
+`oh-my-agentic-coder.yaml` controls sandbox profiles and facade tuning.
+omac looks for it in two locations (first found wins):
 
-Reproduce the release binary for your current platform — stripped
-(`-s -w`), reproducible (`-trimpath`), with the version stamped in (the
-same ldflags GoReleaser uses; see `.goreleaser.yaml`):
+| Layer | Path |
+|---|---|
+| Workdir-local | `<workdir>/.opencode/oh-my-agentic-coder.yaml` |
+| User-global | `~/.config/omac/config.yaml` (`$XDG_CONFIG_HOME` honored) |
 
-```bash
-go build -trimpath -ldflags "-s -w -X main.Version=0.1.0-local" -o omac ./cmd/omac
-./omac version   # -> omac 0.1.0-local   (note: `version` subcommand, not --version)
+If neither file exists, `DefaultLauncherConfig()` is used (profile
+`builtin`, 300 s idle timeout, 10 MB max body).
+
+```yaml
+sandbox:
+  default_profile: builtin          # or nono, nono-netprofile, no-sandbox-debug
+  profiles: { }                     # override or add profiles; defaults are merged
+facade:
+  idle_timeout_secs: 300
+  max_body_bytes: 10485760
+  base_env_passthrough: [PATH, HOME, USER, LANG, LC_ALL, LC_CTYPE, TMPDIR]
 ```
 
-For the full multi-platform release artifacts (archives, `.deb`,
-`.pkg.tar.zst`, checksums) build with GoReleaser, no tag or publish:
+#### Skill registry
 
-```bash
-brew install goreleaser
-goreleaser release --clean --snapshot --skip=publish   # output in dist/
-# current platform only:
-goreleaser build --clean --snapshot --single-target
+`sidecar.json` records which skills are registered (name, directory,
+bundle hash, declared secrets). It lives in two layers, merged at
+startup with workdir winning on collision:
+
+| Layer | Path |
+|---|---|
+| Workdir-local | `<workdir>/.opencode/sidecar.json` |
+| User-global | `~/.config/omac/sidecar.json` |
+
+Written by `omac register` / `omac deregister`; read by `omac start`,
+`omac list`, `omac doctor`. **Not mounted into the sandbox.**
+
+#### Skill config
+
+`skill-config.yaml` stores non-secret per-skill fields (API base URLs,
+region names, feature flags — anything safe to commit). Same two-layer
+merge as the registry:
+
+| Layer | Path |
+|---|---|
+| Workdir-local | `<workdir>/.opencode/skill-config.yaml` |
+| User-global | `~/.config/omac/skill-config.yaml` |
+
+Written by `omac register` (prompts for fields) and `omac config`;
+read by `omac start` to inject field values into sidecar env vars.
+**Not mounted into the sandbox** — resolved values are passed as
+environment variables.
+
+#### Sandbox profiles
+
+The built-in sandbox reads JSON profiles from
+`~/.config/omac/sandbox-profiles/`. On first `omac start` with the
+`builtin` profile, omac scaffolds `default.json` from the compiled-in
+defaults so you can edit it:
+
+```
+~/.config/omac/sandbox-profiles/
+├── default.json              # filesystem grants, network mode, protected paths
+└── default.pages.json        # learned allow/deny decisions (network prompts)
 ```
 
-## Test
+Profile fields: `workdir.access` (none/read/write/readwrite),
+`filesystem.allow` / `.read` / `.write` (path grants, `~` and `$VAR`
+expansion), `filesystem.override_deny` (punch holes in the
+built-in protected-path list), `network.mode`
+(filtered/blocked/open), `network.network_prompt`, and
+`environment.allow_vars`. See the scaffolded `default.json` for the
+full schema.
 
-```bash
-# Unit + integration tests for every package.
-go test ./...
+#### Secrets
 
-# Formatting and static checks (run both before committing).
-gofmt -l .        # prints nothing when clean
-go vet ./...
-```
+Secrets (API keys, tokens) are stored in the **OS keychain**
+(Keychain on macOS, Secret Service / D-Bus on Linux, Credential
+Manager on Windows) — never on disk. Managed via `omac secrets`.
+**Never reachable inside the sandbox.**
 
-Some facade and serve tests open a loopback TCP port (and/or a Unix
-socket) and skip automatically in environments where `connect(2)` to
-`127.0.0.1` or to a Unix socket is disallowed (e.g. a hardened sandbox).
-On a normal dev machine they all run.
+#### What the sandbox can see
 
-### Multi-directory serve mode (`omac serve`)
+The sandbox receives resolved **values** (env vars, socket paths), not
+config files. Only these paths from the host are accessible inside the
+sandbox:
 
-End-to-end smoke test of the control plane, facade routing, per-workdir
-isolation, and a real skill round trip (requires loopback; needs `curl`
-and `python3`):
-
-```bash
-bash scripts/serve_smoke.sh        # expect "PASS=15  FAIL=0 / ALL GREEN"
-```
-
-The OpenCode-side plugin (`.opencode/plugins/omac-multidir.ts`)
-typechecks against the published plugin types:
-
-```bash
-cd .opencode
-npx -p typescript tsc --noEmit --strict --moduleResolution bundler \
-  --module esnext --target es2022 --lib es2022,dom --skipLibCheck \
-  plugins/omac-multidir.ts
-```
-
-To try it with a real OpenCode server, see
-[`docs/MULTI_DIR_DESKTOP.md`](docs/MULTI_DIR_DESKTOP.md):
-
-```bash
-# Wrap `opencode serve`; --root pre-declares the allowed project roots.
-# The positional harness token (opencode|claude) goes right after `serve`.
-omac serve opencode --no-sandbox --root "$HOME/code" --verbose -- --port 4096 --print-logs
-# Note the logged "control plane on http://127.0.0.1:<CTRL>", then open a
-# project under the root in OpenCode Desktop and confirm activation:
-#   curl -s http://127.0.0.1:<CTRL>/__omac__/dirs | python3 -m json.tool
-```
-
-Under the Claude Code harness, `omac serve claude` / `omac start claude` run
-the `claude` CLI instead; the `.claude/` hooks bridge it to the same control
-plane. Claude Code has no `opencode serve`-style daemon convention, so it runs
-as-is (no subcommand is injected). See `docs/MULTI_DIR_DESKTOP.md` for the
-per-harness `serve` notes and limitations.
+| Path | Access | Source |
+|---|---|---|
+| `<workdir>` | read+write | `workdir.access: readwrite` (default) |
+| `~/.local/share/opencode`, `~/.local/state/opencode` | read+write | default profile `filesystem.allow` |
+| `~/.claude` | read+write | default profile `filesystem.allow` |
+| `~/.cache`, `~/Library/Caches` | read+write | default profile `filesystem.allow` |
+| `~/go`, `~/.rustup`, `~/.cargo` | read+write | default profile `filesystem.allow` |
+| `~/.config/opencode`, `~/.opencode/bin` | read-only | default profile `filesystem.read` |
+| `~/.nvm`, `~/.gitconfig`, `~/.gitignore_global`, `~/.claude.json` | read-only | default profile `filesystem.read` |
+| `/usr`, `/bin`, `/lib`, `/etc`, … | read-only | platform baseline |
+| `/tmp`, `$TMPDIR` | read+write | platform baseline + per-session TMPDIR |
+| Bridge socket (`$TMPDIR/omac-<hash>/bridge.sock`) | read+write | `--allow-file` / `--read` flags |
+| Paths in `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.kube`, … | **denied** | protected paths (override with `filesystem.override_deny`) |
 
 ## Typical workflow
 
@@ -455,131 +493,18 @@ The 60 ms span assertion in the tests (with a 30 ms upstream gap between
 frames) guards against any future regression that would collapse the
 stream into a single response write.
 
-## Running under nono
+## Using the nono sandbox
 
-[nono](https://nono.sh) is the sandbox runtime the default omac launcher
-profile targets. This section explains exactly what needs to be
-configured so the facade is reachable from inside a nono sandbox, with
-references to the relevant nono documentation pages.
+omac uses a built-in sandbox by default (Seatbelt on macOS, bubblewrap +
+Landlock on Linux). You may want the [nono](https://nono.sh) sandbox instead
+if you need nono's credential injection, network profiles with interactive
+domain prompts, or are migrating from an existing nono setup. Select it with
+`omac start --sandbox nono` (or `--sandbox nono-netprofile` for domain-filtered
+outbound HTTP).
 
-### Two transports, by design
-
-The facade binds **both** a Unix domain socket *and* a 127.0.0.1 TCP
-port on every run. Inside the sandbox the agent gets four env vars per
-skill plus three top-level ones:
-
-| Env var | Value | Notes |
-| --- | --- | --- |
-| `OMAC_BASE` | `http://127.0.0.1:<port>/` | TCP transport (preferred). |
-| `OMAC_HOST` / `OMAC_PORT` | `127.0.0.1` / `<port>` | Components of `OMAC_BASE`. |
-| `OMAC_SOCKET` | `/tmp/omac-<hash>/bridge.sock` | Unix transport (fallback). |
-| `OMAC_<SKILL>_BASE` | `http://127.0.0.1:<port>/<skill>` | Per-skill TCP URL, without a trailing slash. |
-| `OMAC_<SKILL>_SOCKET_BASE` | `http+unix://%2F.../<skill>` | Per-skill Unix URL, without a trailing slash. |
-| `OMAC_SKILLS` | comma-separated mounts | Introspection. |
-
-Why both:
-
-- **TCP loopback** is the form that works on macOS under nono's *proxy
-  mode* (auto-activated whenever the active nono profile defines
-  `custom_credentials` — including the shipped `tng-sandbox.json`'s
-  `tng_skills` block — or you pass `--network-profile`,
-  `--allow-domain`, `--credential`, or `--upstream-proxy`). Proxy
-  mode installs `(deny network*)` in Seatbelt, and Seatbelt classifies
-  AF_UNIX `connect(2)` as `network-outbound` — so the Unix socket
-  becomes unreachable. The launcher profile uses `--open-port <tcp-port>`
-  to whitelist the facade's loopback port; per nono's
-  [Networking](https://nono.sh/docs/cli/features/networking#localhost-ipc)
-  docs that emits a Seatbelt allow rule that takes precedence over the
-  blanket deny.
-
-- **Unix socket** is the lower-overhead form and works everywhere
-  *except* macOS-under-proxy-mode: on Linux it's purely
-  filesystem-governed (Landlock has no AF_UNIX filter), and on macOS
-  *without* proxy mode the default network policy is `allow`. We
-  expose it so any agent that prefers it can still use it.
-
-Inside the sandbox a client should prefer `OMAC_<SKILL>_BASE` (TCP)
-and treat `OMAC_<SKILL>_SOCKET_BASE` as an opportunistic fallback.
-
-### TL;DR — what omac actually runs
-
-```
-nono run \
-  --allow-cwd \
-  --profile tng-sandbox \
-  --allow-file <socket-path>  \
-  --read       <socket-dir>   \
-  --open-port  <tcp-port>     \
-  -- opencode
-```
-
-`OMAC_*` env vars are set in nono's parent process and propagate to the
-inner child by default. (Nono no longer accepts a literal `--env KEY=VAL`
-flag; the only `--env-*` flag is `--env-credential`, which is keystore-
-only. If you author a custom nono profile with `environment.allow_vars`
-set, add `OMAC_*` to that list or the variables will be filtered.)
-
-### Built-in omac profiles
-
-`omac start --sandbox <name>` selects from:
-
-| Profile             | nono flags                                                                                 | Use when                                                      |
-| ------------------- | ------------------------------------------------------------------------------------------ | ------------------------------------------------------------- |
-| `nono` *(default)*  | `--allow-cwd --profile tng-sandbox --allow-file <sock> --read <sockdir> --open-port <p>`   | Default. Works under host-default network policy *and* under proxy mode auto-activated by `tng-sandbox.json`'s `custom_credentials`. |
-| `nono-netprofile`   | As above plus `--network-profile opencode`                                                 | Restrict outbound HTTP to nono's `opencode` profile domains.  |
-| `no-sandbox-debug`  | *(no nono — runs inner command directly)*                                                  | Local debugging only. Not a security boundary.                |
-
-You can add your own profiles by creating
-`.opencode/oh-my-agentic-coder.yaml` in the workdir (or the user-global
-`~/.config/omac/config.yaml`). See the design doc §14 for the full
-launcher-config schema. Available placeholders: `{{socket}}`,
-`{{socket_dir}}`, `{{tcp_port}}`, `{{workdir}}`, `{{skills_csv}}`,
-`{{inner_cmd}}`, `{{inner_args}}`, `{{per_skill_env_flags}}`.
-
-### Combining with other nono flags
-
-| nono flag/config                                            | Effect on the facade                              | What you need to do                                                                       |
-| ----------------------------------------------------------- | ------------------------------------------------- | ----------------------------------------------------------------------------------------- |
-| *(no extra flags; default-allow network)*                   | Both transports reachable.                        | Nothing extra. Use profile `nono`.                                                        |
-| `--network-profile <name>` (e.g. `opencode`, `claude-code`) | TCP reachable via `--open-port`.                  | Nothing extra. Use profile `nono-netprofile` (or add `--open-port` to your own profile).  |
-| `--allow-domain …`                                          | Same as above (also activates proxy mode).        | Nothing extra.                                                                            |
-| `--credential …`                                            | Same as above.                                    | Nothing extra.                                                                            |
-| `--upstream-proxy …` / `--upstream-bypass …`                | Same as above.                                    | Nothing extra.                                                                            |
-| `--block-net`                                               | **Both transports blocked on macOS.**             | `--open-port` *should* still allow the loopback TCP port even under `--block-net` (see nono's "Localhost IPC" docs). Untested; report any failures. The Unix socket remains blocked because of `(deny network*)`. On Linux the picture is different (Landlock filters TCP only). |
-
-### Setting it up from scratch
-
-1. Install nono per the
-   [nono installation guide](https://nono.sh/docs/cli/getting_started/installation).
-2. Copy the repository's `tng-sandbox.json` nono profile into
-   `~/.config/nono/profiles/` (see `install.sh` in the workspace root
-   or [Profile Authoring](https://nono.sh/docs/cli/features/profile-authoring)).
-   This profile grants cwd + the paths OpenCode itself needs.
-3. Install omac (`go build -o omac ./cmd/omac` in this directory, then
-   move to `$PATH`).
-4. `omac register <skill>` once per skill.
-5. `omac start` launches the stack: sidecars → facade → `nono run ... -- opencode`.
-6. From inside the sandbox the agent uses `$OMAC_<SKILL>_BASE`:
-
-    ```bash
-    curl -sS "${OMAC_ECHO_BASE}/whoami"         # TCP, works under proxy mode
-    curl -sS --unix-socket "$OMAC_SOCKET" \     # Unix fallback
-         http://x/echo/whoami
-    ```
-
-### Debugging inside the sandbox
-
-```bash
-# Verify the loopback port is open:
-nono why --self --host 127.0.0.1 --port "$OMAC_PORT" --json
-# Verify the Unix socket is reachable (filesystem layer):
-nono why --self --path "$OMAC_SOCKET" --op read --json
-```
-
-See [Policy Introspection](https://nono.sh/docs/cli/features/policy-introspection)
-and [Troubleshooting](https://nono.sh/docs/cli/usage/troubleshooting) for
-more. If a skill's request returns HTTP 503 with `X-Omac-Reason: sidecar-down`,
-check the per-skill log under `$TMPDIR/omac-<hash>/logs/<skill>.log`.
+See [`docs/NONO_SANDBOX.md`](docs/NONO_SANDBOX.md) for the full setup guide,
+transport details (TCP vs Unix socket under proxy mode), flag combinations,
+and debugging instructions.
 
 ## Not yet implemented (v0)
 
