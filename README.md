@@ -11,10 +11,14 @@ they never reach the sandbox.
 ## Quickstart
 
 ```sh
-# 1. (Linux only) Install bubblewrap — the built-in sandbox needs it
-sudo apt install bubblewrap    # Debian/Ubuntu
-sudo dnf install bubblewrap    # Fedora
-# macOS uses the built-in Seatbelt framework; no extra install needed.
+# 1. (Linux only) Install system dependencies
+#    bubblewrap: required by the built-in sandbox
+#    zenity: needed for the interactive network-access dialog
+#    libnotify-bin: desktop notifications when a network prompt appears
+sudo apt install bubblewrap zenity libnotify-bin      # Debian/Ubuntu
+sudo dnf install bubblewrap zenity libnotify          # Fedora
+# macOS uses the built-in Seatbelt framework and native AppleScript dialogs;
+# no extra install needed.
 
 # 2. Install omac (pick one), for details see Installation section
 brew tap TNG-release/tap && brew install oh-my-agentic-coder   # macOS
@@ -169,6 +173,61 @@ go install github.com/tngtech/oh-my-agentic-coder/cmd/omac@latest
 
 For the project layout, build instructions (dev and release), and test
 details, see [`docs/DEVELOP.md`](docs/DEVELOP.md).
+
+### Prerequisites
+
+omac depends on a few system-level packages. `omac doctor` checks all of
+them; this section explains what each one does and what happens when it's
+missing.
+
+#### Core (required)
+
+| Package | Linux | macOS | Purpose |
+|---|---|---|---|
+| **bubblewrap** (`bwrap`) | `apt install bubblewrap` / `dnf install bubblewrap` | built-in (Seatbelt) | Sandboxes the inner process via Linux user namespaces + Landlock. Without it the built-in sandbox cannot start. |
+| **Secret Service / D-Bus** | ships with GNOME/KDE; `apt install libsecret-1-0` | built-in (Keychain) | Stores skill secrets (API keys, tokens) in the OS keychain so they never touch disk. If no Secret Service is running, `omac secrets` operations will fail. |
+| **Python 3** (stdlib only) | pre-installed on most distros | pre-installed | Sidecar processes are written against the Python standard library only. No pip packages required. |
+
+#### Network prompt dialog (strongly recommended)
+
+When the default sandbox profile's `network.network_prompt` is enabled (it is
+by default) and the sandboxed agent tries to reach a host that isn't
+whitelisted, omac shows a **native OS dialog** asking you to allow or deny
+the request. The dialog backend is platform-specific:
+
+| Package | Linux | macOS | Purpose |
+|---|---|---|---|
+| **zenity** | `apt install zenity` / `dnf install zenity` | — | GTK dialog for GNOME/XFCE/etc. (first choice on Linux) |
+| **kdialog** | `apt install kdialog` / `dnf install kdialog` | — | Qt dialog for KDE (fallback on Linux) |
+| **osascript** | — | built-in | AppleScript "choose from list" dialog (always available) |
+| **libnotify-bin** / **notify-send** | `apt install libnotify-bin` / `dnf install libnotify` | built-in (notification center) | Desktop notification alerting you that a dialog is waiting |
+
+If no dialog backend is available (e.g. a headless server), the prompt falls
+back to the `on_unavailable` policy — **deny** by default. This means every
+non-whitelisted network request is silently blocked. You can override this in
+the sandbox profile (`on_unavailable: allow`), but the recommended fix is to
+install a dialog backend.
+
+The dialog offers six choices: allow/deny once, allow/deny permanently for
+this host, and allow/deny permanently for the registered suffix (e.g.
+`*.example.com`). Permanent decisions are persisted in
+`default.pages.json` next to the sandbox profile.
+
+#### Inner harness (pick at least one)
+
+| Package | Install | Purpose |
+|---|---|---|
+| **opencode** | see [opencode docs](https://github.com/opencode-ai/opencode) | Default inner harness (`omac start`) |
+| **claude** (Claude Code CLI) | see [Claude Code docs](https://docs.anthropic.com/en/docs/claude-code) | Alternative harness (`omac start claude`) |
+
+At least one inner harness must be installed; `opencode` is the default.
+
+#### Optional
+
+| Package | Purpose |
+|---|---|
+| **nono** | Alternative sandbox runtime with credential injection and network profiles (`omac start --sandbox nono`). See [Running under nono](#running-under-nono). |
+| **Go** | Only needed to build omac from source (`go install …`). Pre-built binaries have no Go dependency. |
 
 ### Configuration
 
