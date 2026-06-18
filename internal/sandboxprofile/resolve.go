@@ -25,6 +25,7 @@ func DefaultProfile() *Profile {
 			Allow: []string{
 				"~/.local/share/opencode",
 				"~/.local/state/opencode",
+				"~/.local/share/claude",
 				"~/.claude",
 				"~/.cache",
 				"~/Library/Caches",
