@@ -37,6 +37,8 @@ func DefaultProfile() *Profile {
 				"~/.config/opencode",
 				"~/.opencode/bin",
 				"~/.nvm",
+				"~/.bun/bin",
+				"~/.bun/install/global/node_modules/opencode-ai",
 				"~/.gitconfig",
 				"~/.gitignore_global",
 				"~/.claude.json",
