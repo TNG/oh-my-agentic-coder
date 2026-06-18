@@ -27,6 +27,21 @@ func CheckPlatform() error {
 	return nil
 }
 
+// kernelVersionString returns the running kernel version string from
+// /proc/version (e.g. "6.1.0-28-amd64"). Returns "unknown" on failure.
+func kernelVersionString() string {
+	data, err := os.ReadFile("/proc/version")
+	if err != nil {
+		return "unknown"
+	}
+	// Format: "Linux version 6.19.11-200.fc43.x86_64 (builder@...) ..."
+	fields := strings.Fields(string(data))
+	if len(fields) >= 3 {
+		return fields[2]
+	}
+	return strings.TrimSpace(string(data))
+}
+
 func firstLine(b []byte) string {
 	s := strings.TrimSpace(string(b))
 	if i := strings.IndexByte(s, '\n'); i >= 0 {
@@ -48,9 +63,13 @@ func BuildChildArgv(g *Grants, innerArgv []string) ([]string, error) {
 		g.NetworkMode == sandboxprofile.ModeBlocked
 	if needsLandlock && !LandlockNetSupported() {
 		return nil, fmt.Errorf(
-			"kernel-enforced network filtering needs Landlock ABI >= 4 (Linux >= 6.7); this kernel has ABI %d.\n"+
-				"Either upgrade the kernel or set network.enforcement to \"env-only\" in the sandbox profile (WARNING: advisory-only filtering)",
-			LandlockABI())
+			"kernel-enforced network filtering needs Landlock ABI >= 4 (Linux >= 6.7, e.g. Ubuntu 24.04 LTS, Fedora 40+);\n"+
+				"this kernel has ABI %d (%s).\n"+
+				"Fix A: upgrade to a kernel >= 6.7.\n"+
+				"Fix B: set enforcement to env-only in ~/.config/omac/sandbox-profiles/default.json:\n"+
+				"  {\"network\": {\"enforcement\": \"env-only\"}}\n"+
+				"(env-only: filtering via the omac proxy, not the kernel — advisory only)",
+			LandlockABI(), kernelVersionString())
 	}
 	self, err := os.Executable()
 	if err != nil {
