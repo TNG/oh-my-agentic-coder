@@ -33,7 +33,7 @@ Under the default `builtin` profile, the inner harness MUST be able to reach the
 - **THEN** the request reaches the facade and the response streams back (including SSE without buffering)
 
 ### Requirement: Default sandbox profile content
-The compiled-in `default` sandbox profile SHALL provide the equivalent of today's `tng-sandbox.json`: readwrite workdir; `filesystem.allow` for the harness state/cache paths (`~/.local/share/opencode`, `~/.local/state/opencode`, `~/.claude`, `~/.cache`, `~/Library/Caches`, `~/go`, `~/.rustup`, `~/.cargo`); `filesystem.read` for config paths (`~/.config/opencode`, `~/.opencode/bin`, `~/.nvm`, `~/.gitconfig`, `~/.gitignore_global`, `~/.claude.json`); `network.listen_port: [4097]`; `network.allow_tcp_connect: [22]`; prompt enabled with 60 s timeout and `on_unavailable: deny`; `environment.allow_vars` unset (pass-through minus blocklist).
+The compiled-in `default` sandbox profile SHALL provide the equivalent of today's `tng-sandbox.json`: readwrite workdir; `filesystem.allow` for the harness state/cache paths (`~/.local/share/opencode`, `~/.local/state/opencode`, `~/.local/share/claude`, `~/.claude`, `~/.cache`, `~/Library/Caches`, `~/go`, `~/.rustup`, `~/.cargo`); `filesystem.read` for config paths (`~/.config/opencode`, `~/.opencode/bin`, `~/.nvm`, `~/.gitconfig`, `~/.gitignore_global`, `~/.claude.json`); `network.listen_port: [4097]`; `network.allow_tcp_connect: [22]`; prompt enabled with 60 s timeout and `on_unavailable: deny`; `environment.allow_vars` unset (pass-through minus blocklist).
 
 #### Scenario: Harness state persists
 - **WHEN** the inner harness writes session state under `~/.local/share/opencode`
