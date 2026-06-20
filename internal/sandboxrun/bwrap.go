@@ -20,7 +20,7 @@ import (
 //   - system baseline as --ro-bind
 //   - fresh --proc /proc and --dev /dev, --tmpfs /tmp unless granted
 //   - --unshare-pid --unshare-ipc --unshare-uts (NOT --unshare-net)
-//   - --die-with-parent --new-session
+//   - --die-with-parent (NOT --new-session, see below)
 //   - protected paths inside granted trees masked with --tmpfs (dirs)
 //     or --ro-bind /dev/null (files), honoring override_deny
 //
@@ -34,7 +34,15 @@ func BuildBwrapArgv(g *Grants, stage2Argv []string) ([]string, error) {
 	argv := []string{
 		"bwrap",
 		"--die-with-parent",
-		"--new-session",
+		// Deliberately NOT --new-session. setsid(2) detaches the inner
+		// process tree from the controlling terminal, which stops the
+		// kernel from delivering SIGWINCH on window resize — so an inner
+		// TUI (e.g. opencode) renders once and never reflows. --new-session
+		// exists only to block TIOCSTI terminal-input injection; that
+		// vector is gated off by the kernel on Linux >= 6.2 via the
+		// dev.tty.legacy_tiocsti sysctl (default 0). We keep the real
+		// terminal so resize works; filesystem/network/PID isolation is
+		// unaffected (it comes from the binds, Landlock, and --unshare-*).
 		"--unshare-pid",
 		"--unshare-ipc",
 		"--unshare-uts",

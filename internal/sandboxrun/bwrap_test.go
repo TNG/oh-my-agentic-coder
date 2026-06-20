@@ -35,7 +35,6 @@ func TestBwrapArgvStructure(t *testing.T) {
 	for _, want := range []string{
 		"bwrap",
 		"--die-with-parent",
-		"--new-session",
 		"--unshare-pid",
 		"--unshare-ipc",
 		"--unshare-uts",
@@ -56,6 +55,11 @@ func TestBwrapArgvStructure(t *testing.T) {
 	}
 	if strings.Contains(joined, "--unshare-net") {
 		t.Error("network namespace must NOT be unshared")
+	}
+	// --new-session detaches the controlling terminal and breaks SIGWINCH
+	// resize propagation into the inner TUI; it must stay out.
+	if strings.Contains(joined, "--new-session") {
+		t.Error("must NOT use --new-session (breaks terminal resize/SIGWINCH)")
 	}
 }
 
