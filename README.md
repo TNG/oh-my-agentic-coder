@@ -386,11 +386,22 @@ omac [--workdir <dir>] <subcommand> [flags] [args]
                  --no-fields             skip all config-field prompts
                  --fields-from <file>    KEY=VALUE file for fields
 
-  deregister   Remove from registry. Flags:
+  deregister   Remove a skill from the registry. Flags:
+                 --global                force removal from the user-global
+                                         registry (~/.config/omac)
+                 --harness <name>        remove only one harness's entry
                  --purge-secrets         also delete from keychain
                  --purge-fields          also delete from skill-config.yaml
+                 --purge-defaults        also delete remembered global defaults
+                 --prune                 remove ALL stale registrations
+                                         (workdir + global) whose skill
+                                         directory no longer exists
 
   list         Show registered skills with mount, secret count, binary status.
+               Registrations whose skill directory no longer exists are
+               hidden from the live list and reported separately as "stale"
+               with the exact `omac deregister` command to remove them; pass
+               --all to include stale rows in the table.
 
   secrets <sub> <skill> [name]
     list, set, unset, import --from <file>

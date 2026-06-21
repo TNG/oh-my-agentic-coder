@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"flag"
 	"fmt"
 	"os"
 	"os/exec"
@@ -49,7 +50,18 @@ func skillArtifactCandidate(command []string) string {
 	return command[0]
 }
 
-func runList(_ []string, env *Env) int {
+func runList(args []string, env *Env) int {
+	fs := flag.NewFlagSet("list", flag.ContinueOnError)
+	fs.SetOutput(env.Stderr)
+	showAll := fs.Bool("all", false, "Also list stale registrations whose skill directory no longer exists on disk.")
+	fs.Usage = func() {
+		fmt.Fprintln(env.Stderr, "Usage: omac list [--all]")
+		fs.PrintDefaults()
+	}
+	if err := fs.Parse(reorderFlagsFirst(args)); err != nil {
+		return ExitMisuse
+	}
+
 	workdirReg, err := registry.Load(env.Workdir)
 	if err != nil {
 		fmt.Fprintln(env.Stderr, "omac list:", err)
@@ -71,15 +83,17 @@ func runList(_ []string, env *Env) int {
 		fmt.Fprintln(env.Stdout, "(no skills registered in this workdir or globally)")
 		return ExitOK
 	}
+
 	tw := tabwriter.NewWriter(env.Stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "NAME\tSCOPE\tMOUNT\tSECRETS\tBINARY-PRESENT\tREGISTERED")
+
+	var stale []staleEntry
+	shown := 0
 	for _, e := range reg.Registered {
 		scope := "global"
 		if _, ok := workdirNames[e.Name]; ok {
 			scope = "workdir"
 		}
-		mount := e.Name
-		binaryPresent := "?"
 		// SkillDir is stored relative to the workdir for workdir-local
 		// skills and absolute for user-global ones; only join when the
 		// stored path isn't already absolute.
@@ -88,7 +102,22 @@ func runList(_ []string, env *Env) int {
 			absDir = filepath.Join(env.Workdir, absDir)
 		}
 		metaPath := filepath.Join(absDir, config.MetaFileName)
-		if m, err := config.LoadMeta(metaPath); err == nil && m.Sidecar != nil {
+		m, metaErr := config.LoadMeta(metaPath)
+		// A skill whose directory / omac.yaml no longer exists is a
+		// stale registration: the on-disk skill is gone even though a
+		// registry entry (possibly in the global layer) survives. Do
+		// NOT list it as a live skill — that was the source of "deleted
+		// the .opencode dir but the skill still shows up".
+		if metaErr != nil || m.Sidecar == nil {
+			stale = append(stale, staleEntry{name: e.Name, scope: scope, dir: absDir})
+			if !*showAll {
+				continue
+			}
+		}
+
+		mount := e.Name
+		binaryPresent := "?"
+		if metaErr == nil && m.Sidecar != nil {
 			mount = m.Sidecar.MountOrDefault(e.Name)
 			if candidate := skillArtifactCandidate(m.Sidecar.Command); candidate != "" {
 				abs := candidate
@@ -104,11 +133,41 @@ func runList(_ []string, env *Env) int {
 					binaryPresent = "no"
 				}
 			}
+		} else {
+			mount = "(stale: skill directory missing)"
+			binaryPresent = "no"
 		}
 		fmt.Fprintf(tw, "%s\t%s\t/%s/\t%d\t%s\t%s\n",
 			e.Name, scope, mount, len(e.DeclaredSecretNames), binaryPresent,
 			e.RegisteredAt.Format("2006-01-02 15:04"))
+		shown++
 	}
 	tw.Flush()
+
+	if shown == 0 && !*showAll {
+		fmt.Fprintln(env.Stdout, "(no live skills; only stale registrations remain — see below)")
+	}
+
+	// Surface stale registrations and how to clean them up. These are
+	// hidden from the live list by default so a deleted skill stops
+	// appearing, but we tell the user they exist and how to remove them.
+	if len(stale) > 0 {
+		fmt.Fprintf(env.Stderr, "\nomac list: %d stale registration(s) whose skill directory no longer exists:\n", len(stale))
+		for _, s := range stale {
+			delCmd := "omac deregister " + s.name
+			if s.scope == "global" {
+				delCmd = "omac deregister --global " + s.name
+			}
+			fmt.Fprintf(env.Stderr, "  %s (%s, was %s) — remove with: %s\n", s.name, s.scope, s.dir, delCmd)
+		}
+		fmt.Fprintln(env.Stderr, "  or run `omac deregister --prune` to remove all stale registrations at once.")
+	}
 	return ExitOK
+}
+
+// staleEntry is a registry entry whose on-disk skill is gone.
+type staleEntry struct {
+	name  string
+	scope string // "workdir" | "global"
+	dir   string
 }
