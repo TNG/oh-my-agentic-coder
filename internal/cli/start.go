@@ -171,10 +171,19 @@ func runStart(args []string, env *Env) int {
 	}
 	if len(unregistered) > 0 {
 		fmt.Fprintln(env.Stderr, "omac start: unregistered skills found in this workdir:")
-		for _, name := range unregistered {
-			fmt.Fprintf(env.Stderr, "  %s — register with: omac register %s   (or remove it with: omac deregister %s)\n", name, name, name)
+		for _, u := range unregistered {
+			fmt.Fprintf(env.Stderr, "  %s — register with: omac register %s\n", u.Name, u.Name)
 		}
-		fmt.Fprintln(env.Stderr, "  Tip: a skill you no longer want can be deleted from the registry with `omac deregister <skill>` (add --global for a user-global skill).")
+		// These skills are on disk but never registered, so `omac
+		// deregister` cannot remove them — it only touches the
+		// registry. To make one go away, delete its source directory.
+		fmt.Fprintln(env.Stderr, "\nA skill you no longer want can be removed by deleting its source directory:")
+		for _, u := range unregistered {
+			if u.Dir != "" {
+				fmt.Fprintf(env.Stderr, "  rm -rf %q   (%s skill %s)\n", u.Dir, u.Kind, u.Name)
+			}
+		}
+		fmt.Fprintln(env.Stderr, "(Already-registered skills are removed instead with `omac deregister <skill>`, adding --global for a user-global skill.)")
 		return ExitPrerequisiteMissing
 	}
 
@@ -739,7 +748,29 @@ func filterRegistryByHarness(reg *registry.Registry, workdir string, harness con
 	return out
 }
 
-func findUnregisteredSkills(workdir string, harness config.Harness, reg *registry.Registry) ([]string, error) {
+// unregisteredSkill is a skill discovered on disk that has no registry
+// entry. Dir/Kind identify where it lives so the user can either
+// register it or remove its source directory.
+type unregisteredSkill struct {
+	Name string
+	Dir  string // absolute source directory
+	Kind string // "workdir" | "user-global"
+}
+
+// unregisteredNames returns just the names, sorted, for callers (and
+// tests) that only care about identity.
+func unregisteredNames(us []unregisteredSkill) []string {
+	if len(us) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(us))
+	for _, u := range us {
+		out = append(out, u.Name)
+	}
+	return out
+}
+
+func findUnregisteredSkills(workdir string, harness config.Harness, reg *registry.Registry) ([]unregisteredSkill, error) {
 	discovered, err := skillsource.Discover(workdir, harness)
 	if err != nil {
 		return nil, err
@@ -748,13 +779,19 @@ func findUnregisteredSkills(workdir string, harness config.Harness, reg *registr
 	for _, e := range reg.Registered {
 		registered[e.Name] = struct{}{}
 	}
-	var out []string
+	var out []unregisteredSkill
 	for _, e := range discovered {
-		if _, ok := registered[e.Name]; !ok {
-			out = append(out, e.Name)
+		if _, ok := registered[e.Name]; ok {
+			continue
 		}
+		u := unregisteredSkill{Name: e.Name}
+		if dir, src, rerr := skillsource.Resolve(workdir, harness, e.Name); rerr == nil {
+			u.Dir = dir
+			u.Kind = src.Kind
+		}
+		out = append(out, u)
 	}
-	sort.Strings(out)
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil
 }
 

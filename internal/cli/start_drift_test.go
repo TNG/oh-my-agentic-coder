@@ -149,8 +149,8 @@ func TestFindUnregisteredSkills_FindsNew(t *testing.T) {
 		t.Fatalf("findUnregisteredSkills: %v", err)
 	}
 	want := []string{"bravo", "charlie"}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("findUnregisteredSkills = %v, want %v", got, want)
+	if !reflect.DeepEqual(unregisteredNames(got), want) {
+		t.Errorf("findUnregisteredSkills = %v, want %v", unregisteredNames(got), want)
 	}
 }
 
@@ -228,8 +228,8 @@ func TestFindUnregisteredSkills_SeesUserGlobal(t *testing.T) {
 		t.Fatalf("findUnregisteredSkills: %v", err)
 	}
 	want := []string{"bravo"}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("findUnregisteredSkills = %v, want %v", got, want)
+	if !reflect.DeepEqual(unregisteredNames(got), want) {
+		t.Errorf("findUnregisteredSkills = %v, want %v", unregisteredNames(got), want)
 	}
 }
 
