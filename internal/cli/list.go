@@ -115,7 +115,7 @@ func runList(args []string, env *Env) int {
 			}
 		}
 
-		mount := e.Name
+		var mount string
 		binaryPresent := "?"
 		if metaErr == nil && m.Sidecar != nil {
 			mount = m.Sidecar.MountOrDefault(e.Name)
