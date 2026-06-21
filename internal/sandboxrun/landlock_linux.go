@@ -3,6 +3,7 @@
 package sandboxrun
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -99,10 +100,33 @@ func ApplyLandlockNet(connectPorts, bindPorts []int) error {
 
 // ExecInner replaces the current process with the inner command
 // (stage2 tail call). Landlock restrictions survive execve.
+//
+// This runs inside the bwrap mount namespace, so PATH and the visible
+// filesystem are the sandboxed ones: a binary that exists on the host
+// but whose directory was not bound into the namespace is simply absent
+// here. The bare execve error for that case is "no such file or
+// directory", which gives the user no idea which file or how to fix it,
+// so wrap it with the resolved path, the likely cause, and the grant
+// flag that unblocks it.
 func ExecInner(argv []string) error {
-	path := argv[0]
+	requested := argv[0]
+	path := requested
 	if p, err := exec.LookPath(path); err == nil {
 		path = p
 	}
-	return unix.Exec(path, argv, os.Environ())
+	err := unix.Exec(path, argv, os.Environ())
+	// unix.Exec only returns on failure.
+	if errors.Is(err, unix.ENOENT) || errors.Is(err, exec.ErrNotFound) {
+		return fmt.Errorf(
+			"cannot run %q inside the sandbox: %q not found in the sandbox filesystem.\n"+
+				"This usually means the harness binary lives in a directory that was not\n"+
+				"mounted into the sandbox (e.g. a version-manager path like\n"+
+				"~/.local/share/mise/installs/..., ~/.asdf/, ~/.nvm/, or a custom prefix).\n"+
+				"Grant read access to its directory, e.g.:\n"+
+				"    omac sandbox run --read \"$(dirname \"$(command -v %s)\")\" -- ...\n"+
+				"or add that directory to filesystem.read in your sandbox profile.\n"+
+				"underlying error: %w",
+			requested, path, requested, err)
+	}
+	return fmt.Errorf("exec %q (resolved to %q): %w", requested, path, err)
 }

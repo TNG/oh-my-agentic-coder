@@ -42,6 +42,32 @@ func kernelVersionString() string {
 	return strings.TrimSpace(string(data))
 }
 
+// resolveInnerBinaryDir resolves the inner command's executable on the
+// host PATH and returns the directory holding its real (symlink-resolved)
+// file, or "" when the command cannot be found or resolved. It runs on
+// the supervisor (outside the namespace), so the lookup sees the user's
+// real PATH — the same resolution `which opencode` performs. Directories
+// already covered by the baseline (e.g. /usr/bin) are harmless: the
+// dedupe in BuildBwrapArgv collapses the duplicate grant.
+func resolveInnerBinaryDir(innerArgv []string) string {
+	if len(innerArgv) == 0 || innerArgv[0] == "" {
+		return ""
+	}
+	// LookPath handles both bare PATH names and explicit (absolute or
+	// relative) paths, returning an error when nothing resolves.
+	resolved, err := exec.LookPath(innerArgv[0])
+	if err != nil {
+		return ""
+	}
+	if abs, aerr := filepath.Abs(resolved); aerr == nil {
+		resolved = abs
+	}
+	if real, rerr := filepath.EvalSymlinks(resolved); rerr == nil {
+		resolved = real
+	}
+	return filepath.Dir(resolved)
+}
+
 func firstLine(b []byte) string {
 	s := strings.TrimSpace(string(b))
 	if i := strings.IndexByte(s, '\n'); i >= 0 {
@@ -87,6 +113,20 @@ func BuildChildArgv(g *Grants, innerArgv []string) ([]string, error) {
 	// when an existing grant already covers it.
 	gz := *g
 	gz.ReadPaths = append(append([]string{}, g.ReadPaths...), self)
+
+	// The inner harness binary (e.g. opencode / claude) must also be
+	// reachable inside the namespace. Harnesses are frequently installed
+	// outside the baseline trees — version managers like mise, asdf, nvm,
+	// or volta put them under ~/.local/share/<mgr>/installs/... — so a
+	// plain ~/.local/bin grant is not enough. Resolve the binary on the
+	// host PATH (the same lookup `which opencode` performs), follow
+	// symlinks to the real file, and grant its containing directory
+	// read-only so sibling files (shared libs, node runtime, shims) are
+	// reachable too. dedupe in BuildBwrapArgv collapses it when an
+	// existing grant already covers it.
+	if dir := resolveInnerBinaryDir(innerArgv); dir != "" {
+		gz.ReadPaths = append(gz.ReadPaths, dir)
+	}
 
 	stage2 := []string{self, "sandbox", "stage2"}
 	stage2 = append(stage2, Stage2Args(&gz)...)
