@@ -356,17 +356,16 @@ func TestRediscoverPicksUpNewSkill(t *testing.T) {
 	}
 }
 
-func TestCheckGlobalDriftRefusesUnregistered(t *testing.T) {
+func TestCheckGlobalDriftWarnsUnregistered(t *testing.T) {
 	s := newServeServerForTest(t)
 	// Stage a global skill on disk but never register it.
 	stageUserGlobalSkill(t, "weather")
 
+	// Unregistered global skills no longer block startup; they are warned
+	// and skipped so installed-but-unregistered skills don't prevent serve.
 	code := s.checkGlobalDrift()
-	if code == ExitOK {
-		t.Fatal("expected serve to refuse on an unregistered global skill")
-	}
-	if code != ExitPrerequisiteMissing {
-		t.Errorf("exit code = %d, want ExitPrerequisiteMissing (%d)", code, ExitPrerequisiteMissing)
+	if code != ExitOK {
+		t.Errorf("expected ExitOK (unregistered warned, not fatal), got %d", code)
 	}
 }
 

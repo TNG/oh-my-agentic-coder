@@ -99,12 +99,12 @@ func TestListAllShowsStale(t *testing.T) {
 		t.Fatal(err)
 	}
 	env, read := captureEnv(t, wd)
-	if code := runList([]string{"--all"}, env); code != ExitOK {
-		t.Fatalf("list --all code = %d", code)
+	if code := runList(nil, env); code != ExitOK {
+		t.Fatalf("list code = %d", code)
 	}
 	out, _ := read()
-	if !strings.Contains(out, "demo") || !strings.Contains(out, "stale") {
-		t.Errorf("--all should show the stale row: %q", out)
+	if !strings.Contains(out, "demo") || !strings.Contains(out, "missing") {
+		t.Errorf("stale row should show with STATUS=missing: %q", out)
 	}
 }
 

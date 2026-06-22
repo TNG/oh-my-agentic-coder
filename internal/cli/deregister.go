@@ -31,8 +31,10 @@ func runDeregister(args []string, env *Env) int {
 		fmt.Fprintln(env.Stderr, "Usage: omac deregister <skill> [--global] [--harness <name>] [--yes] [--purge-secrets] [--purge-fields] [--purge-defaults]")
 		fmt.Fprintln(env.Stderr, "       omac deregister --prune   # remove all stale registrations")
 		fmt.Fprintln(env.Stderr, "\nRemoves the skill from the registry. If the skill was never registered but")
-		fmt.Fprintln(env.Stderr, "still exists on disk (so `omac start` keeps flagging it), its source directory")
-		fmt.Fprintln(env.Stderr, "is deleted instead (after confirmation, or immediately with --yes).")
+		fmt.Fprintln(env.Stderr, "still exists on disk, its source directory is deleted instead (after")
+		fmt.Fprintln(env.Stderr, "confirmation, or immediately with --yes). Removing a user-global skill")
+		fmt.Fprintln(env.Stderr, "(--purge-secrets or directory deletion) records a tombstone so every other")
+		fmt.Fprintln(env.Stderr, "project that had it registered sees a one-time warning on its next omac start.")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(reorderFlagsFirst(args)); err != nil {
@@ -128,20 +130,35 @@ func runDeregister(args []string, env *Env) int {
 			return ExitKeychainError
 		}
 		fmt.Fprintf(env.Stdout, "[ok] deregistered %s; deleted %d secret(s) from keychain", name, len(declared))
+		// A user-global skill being purged affects every project that has
+		// it registered: those projects will silently lose the skill on
+		// their next omac start because the directory is gone. Record a
+		// tombstone so each of those projects gets a one-time warning.
+		if global {
+			if err := recordGlobalRemoval(name); err != nil {
+				fmt.Fprintf(env.Stderr, "\nomac deregister: could not record removal for other projects: %v\n", err)
+			}
+		}
 	} else if existed {
 		fmt.Fprintf(env.Stdout, "[ok] deregistered %s; kept %d secret(s) in keychain (use --purge-secrets to remove)", name, len(declared))
 	} else {
 		// Not in the registry. The skill may still exist on disk as a
-		// discovered-but-unregistered skill (omac start refuses to run
-		// with those). `omac deregister <skill>` should still get rid of
-		// it: locate its source directory and remove it. This is
-		// destructive, so confirm unless --yes / a non-interactive
-		// stdin says otherwise.
-		if removed, dir, derr := deleteUnregisteredSource(env, name, harnessKey, *assumeYes); derr != nil {
+		// discovered-but-unregistered skill. `omac deregister <skill>`
+		// should still get rid of it: locate its source directory and
+		// remove it. This is destructive, so confirm unless --yes / a
+		// non-interactive stdin says otherwise.
+		removed, dir, globalOnDisk, derr := deleteUnregisteredSource(env, name, harnessKey, *assumeYes)
+		if derr != nil {
 			fmt.Fprintln(env.Stderr, "\nomac deregister:", derr)
 			return ExitIOError
 		} else if removed {
 			fmt.Fprintf(env.Stdout, "[ok] deleted unregistered skill %s (removed %s)", name, dir)
+			// Same tombstone for user-global on-disk skills.
+			if globalOnDisk {
+				if err := recordGlobalRemoval(name); err != nil {
+					fmt.Fprintf(env.Stderr, "\nomac deregister: could not record removal for other projects: %v\n", err)
+				}
+			}
 		} else if dir != "" {
 			// Found on disk but the user declined.
 			fmt.Fprintf(env.Stdout, "[noop] %s left in place at %s", name, dir)
@@ -194,17 +211,18 @@ func runDeregister(args []string, env *Env) int {
 
 // deleteUnregisteredSource handles `omac deregister <skill>` when the
 // skill has no registry entry but still exists on disk as a discovered
-// skill (which is exactly what makes `omac start` refuse to run). It
-// locates the skill's source directory and deletes it.
+// skill. It locates the skill's source directory and deletes it.
 //
-// Returns (removed, dir, err): removed is true when the directory was
-// deleted; dir is the source directory found (empty when no skill of
-// that name exists on disk); a non-nil err is an I/O failure.
+// Returns (removed, dir, global, err): removed is true when the directory
+// was deleted; dir is the source directory found (empty when no skill of
+// that name exists on disk); global is true when the resolved skill lives
+// under a user-global root (so the caller can write a tombstone); a
+// non-nil err is an I/O failure.
 //
 // harnessKey scopes discovery when the caller passed --harness; empty
 // means search every harness's scope so `omac deregister <skill>`
 // works without the user having to remember which harness owns it.
-func deleteUnregisteredSource(env *Env, name, harnessKey string, assumeYes bool) (bool, string, error) {
+func deleteUnregisteredSource(env *Env, name, harnessKey string, assumeYes bool) (bool, string, bool, error) {
 	harnesses := config.AllHarnesses()
 	if harnessKey != "" {
 		if h, ok := config.LookupHarness(harnessKey); ok {
@@ -212,14 +230,16 @@ func deleteUnregisteredSource(env *Env, name, harnessKey string, assumeYes bool)
 		}
 	}
 	dir := ""
+	global := false
 	for _, h := range harnesses {
-		if d, _, err := skillsource.Resolve(env.Workdir, h, name); err == nil {
+		if d, src, err := skillsource.Resolve(env.Workdir, h, name); err == nil {
 			dir = d
+			global = src.Kind == "user-global"
 			break
 		}
 	}
 	if dir == "" {
-		return false, "", nil
+		return false, "", false, nil
 	}
 	if !assumeYes {
 		fmt.Fprintf(env.Stdout, "%s is not registered but exists on disk at:\n  %s\nDelete this directory? [y/N] ", name, dir)
@@ -227,13 +247,107 @@ func deleteUnregisteredSource(env *Env, name, harnessKey string, assumeYes bool)
 		answer, _ := reader.ReadString('\n')
 		answer = strings.ToLower(strings.TrimSpace(answer))
 		if answer != "y" && answer != "yes" {
-			return false, dir, nil
+			return false, dir, global, nil
 		}
 	}
 	if err := os.RemoveAll(dir); err != nil {
-		return false, dir, fmt.Errorf("delete %s: %w", dir, err)
+		return false, dir, global, fmt.Errorf("delete %s: %w", dir, err)
 	}
-	return true, dir, nil
+	return true, dir, global, nil
+}
+
+// deregisterSkill removes a skill from the registry and, when purgeAll is
+// true, also wipes its secrets, config fields, and remembered defaults.
+// It does NOT remove the on-disk skill directory — callers handle that
+// separately (runDeregister via deleteUnregisteredSource, sync.go via
+// os.RemoveAll). The global flag forces the user-global layer; when false
+// the layer is auto-detected the same way runDeregister does it.
+//
+// Used by runDeregister (via --purge-secrets --purge-fields --purge-defaults)
+// and by the skills.yaml sync/prune path in sync.go so the two stay in sync.
+func deregisterSkill(name, harnessKey string, env *Env, global, purgeAll bool) int {
+	var declared []string
+	var removedFields int
+
+	if err := withRegistryLock(env.Workdir, global, func() error {
+		reg, err := loadRegistry(env.Workdir, global)
+		if err != nil {
+			return err
+		}
+		if e, _ := reg.FindForHarness(name, harnessKey); e != nil {
+			declared = e.DeclaredSecretNames
+		}
+		if harnessKey != "" {
+			reg.RemoveForHarness(name, harnessKey)
+		} else {
+			reg.Remove(name)
+		}
+		if err := saveRegistry(env.Workdir, global, reg); err != nil {
+			return err
+		}
+		if purgeAll {
+			store, err := loadSkillConfig(env.Workdir, global)
+			if err != nil {
+				return err
+			}
+			removedFields = len(store.FieldsFor(name))
+			if store.RemoveSkill(name) {
+				if err := saveSkillConfig(env.Workdir, global, store); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}); err != nil {
+		fmt.Fprintln(env.Stderr, "omac deregister:", err)
+		return ExitIOError
+	}
+
+	if purgeAll {
+		if err := keychain.DeleteAll(name, declared); err != nil {
+			fmt.Fprintln(env.Stderr, "omac deregister: keychain:", err)
+			return ExitKeychainError
+		}
+		fmt.Fprintf(env.Stdout, "[ok] deregistered %s; deleted %d secret(s) from keychain", name, len(declared))
+		// Purge remembered global defaults.
+		_ = keychain.DeleteAllScoped(keychain.DefaultsScope, name, declared)
+		if err := registry.WithGlobalLock(func() error {
+			store, err := loadSkillConfig(env.Workdir, true)
+			if err != nil {
+				return err
+			}
+			if store.RemoveDefaults(name) {
+				return saveSkillConfig(env.Workdir, true, store)
+			}
+			return nil
+		}); err != nil {
+			fmt.Fprintln(env.Stderr, "\nomac deregister: purge defaults:", err)
+			return ExitIOError
+		}
+		// Record tombstone so other projects warn once.
+		if global {
+			if err := recordGlobalRemoval(name); err != nil {
+				fmt.Fprintf(env.Stderr, "\nomac deregister: could not record removal for other projects: %v\n", err)
+			}
+		}
+	} else {
+		fmt.Fprintf(env.Stdout, "[ok] deregistered %s; kept %d secret(s) in keychain (use --purge-secrets to remove)", name, len(declared))
+	}
+	if purgeAll {
+		fmt.Fprintf(env.Stdout, "; deleted %d config field(s); purged remembered defaults", removedFields)
+	}
+	fmt.Fprintln(env.Stdout)
+
+	if global {
+		if ok, msg := notifyReloadGlobal(); ok {
+			fmt.Fprintf(env.Stdout, "[ok] %s\n", msg)
+		}
+	} else {
+		if ok, msg := notifyReload(env.Workdir); ok {
+			fmt.Fprintf(env.Stdout, "[ok] %s\n", msg)
+		}
+	}
+	return ExitOK
 }
 
 // runDeregisterPrune removes every registry entry, in both the workdir

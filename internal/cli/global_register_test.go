@@ -112,7 +112,7 @@ func TestStartSeesGloballyRegisteredSkill(t *testing.T) {
 	// Merge the empty workdir registry with the global one, the way
 	// runStart does, then verify nothing is reported unregistered.
 	merged := mergeRegistries(greg, &registry.Registry{})
-	unreg, err := findUnregisteredSkills(wd, config.DefaultHarness(), merged)
+	_, unreg, err := findUnregisteredSkills(wd, config.DefaultHarness(), merged)
 	if err != nil {
 		t.Fatalf("findUnregisteredSkills: %v", err)
 	}

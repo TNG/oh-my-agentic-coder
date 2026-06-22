@@ -6,10 +6,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"text/tabwriter"
 
 	"github.com/tngtech/oh-my-agentic-coder/internal/config"
 	"github.com/tngtech/oh-my-agentic-coder/internal/registry"
+	"github.com/tngtech/oh-my-agentic-coder/internal/skillsource"
 )
 
 // wellKnownInterpreters is the set of command[0] values that indicate the
@@ -53,13 +55,23 @@ func skillArtifactCandidate(command []string) string {
 func runList(args []string, env *Env) int {
 	fs := flag.NewFlagSet("list", flag.ContinueOnError)
 	fs.SetOutput(env.Stderr)
-	showAll := fs.Bool("all", false, "Also list stale registrations whose skill directory no longer exists on disk.")
+	harnessName := fs.String("harness", "", "Harness scope for discovering installed skills (opencode|claude). Default: opencode.")
 	fs.Usage = func() {
-		fmt.Fprintln(env.Stderr, "Usage: omac list [--all]")
+		fmt.Fprintln(env.Stderr, "Usage: omac list [--harness <name>]")
 		fs.PrintDefaults()
 	}
-	if err := fs.Parse(reorderFlagsFirst(args)); err != nil {
+	if err := fs.Parse(args); err != nil {
 		return ExitMisuse
+	}
+
+	harness := config.DefaultHarness()
+	if *harnessName != "" {
+		h, ok := config.LookupHarness(*harnessName)
+		if !ok {
+			fmt.Fprintln(env.Stderr, "omac list:", config.UnknownHarnessError(*harnessName))
+			return ExitMisuse
+		}
+		harness = h
 	}
 
 	workdirReg, err := registry.Load(env.Workdir)
@@ -79,16 +91,32 @@ func runList(args []string, env *Env) int {
 		workdirNames[e.Name] = struct{}{}
 	}
 	reg := mergeRegistries(globalReg, workdirReg)
-	if len(reg.Registered) == 0 {
-		fmt.Fprintln(env.Stdout, "(no skills registered in this workdir or globally)")
-		return ExitOK
+
+	// Discover on-disk skills (installed but possibly not registered).
+	discovered, err := skillsource.Discover(env.Workdir, harness)
+	if err != nil {
+		fmt.Fprintln(env.Stderr, "omac list: scan skills:", err)
+		return ExitIOError
+	}
+	discoveredByName := map[string]skillsource.Entry{}
+	for _, d := range discovered {
+		discoveredByName[d.Name] = d
 	}
 
-	tw := tabwriter.NewWriter(env.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "NAME\tSCOPE\tMOUNT\tSECRETS\tBINARY-PRESENT\tREGISTERED")
+	type listRow struct {
+		status        string // "registered" | "installed" | "missing"
+		name          string
+		scope         string // "workdir" | "global"
+		mount         string
+		secrets       int
+		binaryPresent string
+		registered    string // timestamp or "-"
+	}
 
-	var stale []staleEntry
-	shown := 0
+	rowsByName := map[string]*listRow{}
+	var order []string
+
+	// Registered skills first.
 	for _, e := range reg.Registered {
 		scope := "global"
 		if _, ok := workdirNames[e.Name]; ok {
@@ -103,21 +131,15 @@ func runList(args []string, env *Env) int {
 		}
 		metaPath := filepath.Join(absDir, config.MetaFileName)
 		m, metaErr := config.LoadMeta(metaPath)
-		// A skill whose directory / omac.yaml no longer exists is a
-		// stale registration: the on-disk skill is gone even though a
-		// registry entry (possibly in the global layer) survives. Do
-		// NOT list it as a live skill — that was the source of "deleted
-		// the .opencode dir but the skill still shows up".
-		if metaErr != nil || m.Sidecar == nil {
-			stale = append(stale, staleEntry{name: e.Name, scope: scope, dir: absDir})
-			if !*showAll {
-				continue
-			}
-		}
-
+		status := "registered"
 		var mount string
 		binaryPresent := "?"
-		if metaErr == nil && m.Sidecar != nil {
+		if metaErr != nil || m.Sidecar == nil {
+			// On-disk skill is gone even though a registry entry survives.
+			status = "missing"
+			mount = "(stale: skill directory missing)"
+			binaryPresent = "no"
+		} else {
 			mount = m.Sidecar.MountOrDefault(e.Name)
 			if candidate := skillArtifactCandidate(m.Sidecar.Command); candidate != "" {
 				abs := candidate
@@ -133,41 +155,97 @@ func runList(args []string, env *Env) int {
 					binaryPresent = "no"
 				}
 			}
-		} else {
-			mount = "(stale: skill directory missing)"
-			binaryPresent = "no"
 		}
-		fmt.Fprintf(tw, "%s\t%s\t/%s/\t%d\t%s\t%s\n",
-			e.Name, scope, mount, len(e.DeclaredSecretNames), binaryPresent,
-			e.RegisteredAt.Format("2006-01-02 15:04"))
-		shown++
+		rowsByName[e.Name] = &listRow{
+			status:        status,
+			name:          e.Name,
+			scope:         scope,
+			mount:         mount,
+			secrets:       len(e.DeclaredSecretNames),
+			binaryPresent: binaryPresent,
+			registered:    e.RegisteredAt.Format("2006-01-02 15:04"),
+		}
+		order = append(order, e.Name)
+	}
+
+	// On-disk skills not in the registry (installed but not registered).
+	var installedNames []string
+	for _, d := range discovered {
+		if _, inReg := rowsByName[d.Name]; !inReg {
+			installedNames = append(installedNames, d.Name)
+		}
+	}
+	sort.Strings(installedNames)
+	for _, name := range installedNames {
+		d := discoveredByName[name]
+		mount := name
+		secrets := 0
+		binaryPresent := "?"
+		if m, err := config.LoadMeta(filepath.Join(d.Dir, config.MetaFileName)); err == nil && m.Sidecar != nil {
+			mount = m.Sidecar.MountOrDefault(name)
+			secrets = len(m.Sidecar.Secrets)
+			if candidate := skillArtifactCandidate(m.Sidecar.Command); candidate != "" {
+				abs := candidate
+				if !filepath.IsAbs(abs) {
+					abs = filepath.Join(d.Dir, abs)
+				}
+				if _, err := os.Stat(abs); err == nil {
+					binaryPresent = "yes"
+				} else if _, err := exec.LookPath(candidate); err == nil {
+					binaryPresent = "yes (on $PATH)"
+				} else {
+					binaryPresent = "no"
+				}
+			}
+		}
+		scope := "workdir"
+		if d.Kind == "user-global" {
+			scope = "global"
+		}
+		rowsByName[name] = &listRow{
+			status:        "installed",
+			name:          name,
+			scope:         scope,
+			mount:         mount,
+			secrets:       secrets,
+			binaryPresent: binaryPresent,
+			registered:    "-",
+		}
+		order = append(order, name)
+	}
+
+	if len(rowsByName) == 0 {
+		fmt.Fprintln(env.Stdout, "(no skills installed or registered in this workdir or globally)")
+		return ExitOK
+	}
+
+	tw := tabwriter.NewWriter(env.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "STATUS\tNAME\tSCOPE\tMOUNT\tSECRETS\tBINARY-PRESENT\tREGISTERED")
+	for _, name := range order {
+		r := rowsByName[name]
+		fmt.Fprintf(tw, "%s\t%s\t%s\t/%s/\t%d\t%s\t%s\n",
+			r.status, r.name, r.scope, r.mount, r.secrets, r.binaryPresent, r.registered)
 	}
 	tw.Flush()
 
-	if shown == 0 && !*showAll {
-		fmt.Fprintln(env.Stdout, "(no live skills; only stale registrations remain — see below)")
+	// Surface stale registrations (STATUS=missing) and how to clean them up.
+	var stale []string
+	for _, name := range order {
+		if rowsByName[name].status == "missing" {
+			stale = append(stale, name)
+		}
 	}
-
-	// Surface stale registrations and how to clean them up. These are
-	// hidden from the live list by default so a deleted skill stops
-	// appearing, but we tell the user they exist and how to remove them.
 	if len(stale) > 0 {
 		fmt.Fprintf(env.Stderr, "\nomac list: %d stale registration(s) whose skill directory no longer exists:\n", len(stale))
-		for _, s := range stale {
-			delCmd := "omac deregister " + s.name
-			if s.scope == "global" {
-				delCmd = "omac deregister --global " + s.name
+		for _, name := range stale {
+			r := rowsByName[name]
+			delCmd := "omac deregister " + name
+			if r.scope == "global" {
+				delCmd = "omac deregister --global " + name
 			}
-			fmt.Fprintf(env.Stderr, "  %s (%s, was %s) — remove with: %s\n", s.name, s.scope, s.dir, delCmd)
+			fmt.Fprintf(env.Stderr, "  %s (%s) — remove with: %s\n", name, r.scope, delCmd)
 		}
 		fmt.Fprintln(env.Stderr, "  or run `omac deregister --prune` to remove all stale registrations at once.")
 	}
 	return ExitOK
-}
-
-// staleEntry is a registry entry whose on-disk skill is gone.
-type staleEntry struct {
-	name  string
-	scope string // "workdir" | "global"
-	dir   string
 }

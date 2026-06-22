@@ -117,7 +117,7 @@ func commands() map[string]Command {
 	return map[string]Command{
 		"register":   {Name: "register", Short: "Register a skill's sidecar in this workdir.", Run: runRegister},
 		"deregister": {Name: "deregister", Short: "Deregister a skill's sidecar.", Run: runDeregister},
-		"list":       {Name: "list", Short: "List registered skills.", Run: runList},
+		"list":       {Name: "list", Short: "List installed and registered skills.", Run: runList},
 		"secrets":    {Name: "secrets", Short: "Manage skill secrets in the OS keychain.", Run: runSecrets},
 		"config":     {Name: "config", Short: "Show resolved config + secret fingerprints for a skill.", Run: runConfig},
 		"start":      {Name: "start", Short: "Start sidecars + facade + sandbox. Optional [harness]: opencode|claude.", Run: runStart},
@@ -140,13 +140,21 @@ func printUsage(w *os.File) {
 Usage:
   omac [--workdir <dir>] <subcommand> [flags] [args]
 
+Skill lifecycle (install → register → use → deregister):
+  A skill is "installed" when its directory exists on disk (.opencode/skills/<name>/).
+  It must also be "registered" (omac register) to be loaded by omac start.
+  Declare skills in .opencode/skills.yaml and omac start will install+register them automatically.
+  Use omac start --prune to also remove skills not listed in that file.
+  Remove a skill with omac deregister <skill> (add --purge-secrets --purge-fields --purge-defaults
+  for a full uninstall; user-global removals warn every other project once).
+
 Subcommands:
   register     Register a skill's sidecar in this workdir.
-  deregister   Deregister a skill's sidecar.
-  list         List registered skills.
+  deregister   Deregister a skill's sidecar (also deletes its directory when unregistered).
+  list         List installed and registered skills (STATUS column shows state).
   secrets      Manage skill secrets in the OS keychain.
   config       Show resolved config + secret fingerprints for a skill.
-  start        Start sidecars + facade + sandbox.       [harness]: opencode|claude
+  start        Start sidecars + facade + sandbox.       [harness]: opencode|claude  [--prune]
   serve        Long-lived multi-directory server.        [harness]: opencode|claude
   plugin       Install client-side bridge plugins (e.g. opencode-desktop).
   sandbox      Built-in kernel sandbox: omac sandbox run [flags] -- <cmd>.

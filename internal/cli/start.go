@@ -34,6 +34,7 @@ func runStart(args []string, env *Env) int {
 		noSandbox          = fs.Bool("no-sandbox", false, "Run inner command directly, without a sandbox (debug only).")
 		keepRunning        = fs.Bool("keep-running", false, "Do not stop sidecars when the inner command exits.")
 		acceptSkillChanges = fs.Bool("accept-skill-changes", false, "Tolerate bundle_hash drift in registered skills (proceed even if the on-disk skill differs from what was registered).")
+		prune              = fs.Bool("prune", false, "Remove installed skills not listed in .opencode/skills.yaml (requires skills.yaml to be present).")
 		verbose            = fs.Bool("verbose", false, "Verbose lifecycle logging.")
 	)
 	fs.Usage = func() {
@@ -157,26 +158,24 @@ func runStart(args []string, env *Env) int {
 	// name.
 	reg := mergeRegistries(globalReg, workdirReg)
 
-	// 2b. Refuse if any unregistered skill exists under any of the
-	//     skill source roots (workdir-local .agents/skills and
-	//     .opencode/skills, plus the user-global layers — see the
-	//     skillsource package for the full list).
-	//     "Skill" here means a directory with a omac.yaml. The user
-	//     must explicitly register each one (so registration prompts,
-	//     keychain seeding, etc. don't get silently skipped).
-	unregistered, err := findUnregisteredSkills(env.Workdir, harness, reg)
+	// 2b. Warn (do not fail) if any installed skill is not registered.
+	//     Installed-but-unregistered skills are visible in `omac list`
+	//     (STATUS=installed) and can be activated later with `omac register`.
+	//     Only registered skills are loaded by this start run.
+	discovered, unregistered, err := findUnregisteredSkills(env.Workdir, harness, reg)
 	if err != nil {
 		fmt.Fprintln(env.Stderr, "omac start: scan skills:", err)
 		return ExitIOError
 	}
 	if len(unregistered) > 0 {
-		fmt.Fprintln(env.Stderr, "omac start: unregistered skills found in this workdir:")
+		fmt.Fprintln(env.Stderr, "omac start: installed skills not yet registered (skipping, run omac register to activate):")
 		for _, name := range unregistered {
-			fmt.Fprintf(env.Stderr, "  %s — register with: omac register %s\n", name, name)
+			fmt.Fprintf(env.Stderr, "  %s\n", name)
 		}
-		fmt.Fprintln(env.Stderr, "\nA skill you no longer want can be deleted with `omac deregister <skill>` (add --global for a user-global skill).")
-		return ExitPrerequisiteMissing
 	}
+
+	// Warn once per project about globally-uninstalled skills (tombstone check).
+	warnUnacknowledgedRemovals(env)
 
 	if len(reg.Registered) == 0 {
 		fmt.Fprintln(env.Stderr,
@@ -512,6 +511,14 @@ func runStart(args []string, env *Env) int {
 		fmt.Fprintf(env.Stderr, "[verbose] control plane: %s\n", controlURL)
 	}
 
+	// 7b. Sync declarative skill manifest (.opencode/skills.yaml) if present.
+	// This runs after sidecars are healthy so the marketplace sidecar is
+	// reachable. Non-fatal: a missing marketplace or absent secrets are warned
+	// and skipped; the session proceeds regardless.
+	if code := maybeSync(env, discovered, reg, tcpPort, *prune, harness); code != ExitOK {
+		return code
+	}
+
 	// 8. Build sandbox argv and exec.
 	//
 	// Resolve the inner command for the selected harness: an explicit
@@ -739,10 +746,10 @@ func filterRegistryByHarness(reg *registry.Registry, workdir string, harness con
 	return out
 }
 
-func findUnregisteredSkills(workdir string, harness config.Harness, reg *registry.Registry) ([]string, error) {
+func findUnregisteredSkills(workdir string, harness config.Harness, reg *registry.Registry) ([]skillsource.Entry, []string, error) {
 	discovered, err := skillsource.Discover(workdir, harness)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	registered := map[string]struct{}{}
 	for _, e := range reg.Registered {
@@ -755,7 +762,7 @@ func findUnregisteredSkills(workdir string, harness config.Harness, reg *registr
 		}
 	}
 	sort.Strings(out)
-	return out, nil
+	return discovered, out, nil
 }
 
 // createRuntimeDir creates ${TMPDIR}/omac-<workdir-hash>/{logs,pids}.

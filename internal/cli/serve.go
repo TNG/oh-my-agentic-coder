@@ -171,6 +171,9 @@ func runServe(args []string, env *Env) int {
 		global:        map[string]*skillRoute{},
 	}
 
+	// Warn once per project about globally-uninstalled skills (tombstone check).
+	warnUnacknowledgedRemovals(env)
+
 	// Cold start: global skills are a fixed, known set, so — unlike the lazy
 	// workdir-local skills — we validate them up front and refuse to start on
 	// drift, mirroring `omac start`. Workdir skills stay lazy/auto-registered.
@@ -564,22 +567,26 @@ func (s *serveServer) checkGlobalDrift() int {
 	sort.Strings(drifted)
 	sort.Strings(brokenMeta)
 
-	if len(unregistered) == 0 && len(drifted) == 0 && len(brokenMeta) == 0 {
+	// Unregistered global skills are installed but not activated — warn and
+	// continue. Only drifted/broken registered skills block startup.
+	if len(unregistered) > 0 {
+		fmt.Fprintln(s.env.Stderr, "omac serve: global skills installed but not registered (skipping, run omac register to activate):")
+		for _, n := range unregistered {
+			fmt.Fprintf(s.env.Stderr, "  %s\n", n)
+		}
+		fmt.Fprintln(s.env.Stderr)
+	}
+
+	if len(drifted) == 0 && len(brokenMeta) == 0 {
 		return ExitOK
 	}
 
-	total := len(unregistered) + len(drifted) + len(brokenMeta)
+	total := len(drifted) + len(brokenMeta)
 	fmt.Fprintf(s.env.Stderr, "omac serve: refusing to start, %d global-skill problem(s):\n", total)
 	if len(brokenMeta) > 0 {
 		fmt.Fprintln(s.env.Stderr, "\n  "+config.MetaFileName+" broken:")
 		for _, n := range brokenMeta {
 			fmt.Fprintf(s.env.Stderr, "    %s — re-register: omac register --force %s\n", n, n)
-		}
-	}
-	if len(unregistered) > 0 {
-		fmt.Fprintln(s.env.Stderr, "\n  global skill present but not registered:")
-		for _, n := range unregistered {
-			fmt.Fprintf(s.env.Stderr, "    %s — run: omac register %s\n", n, n)
 		}
 	}
 	if len(drifted) > 0 {
@@ -589,9 +596,6 @@ func (s *serveServer) checkGlobalDrift() int {
 		}
 	}
 	fmt.Fprintln(s.env.Stderr)
-	if len(unregistered) > 0 || len(brokenMeta) > 0 {
-		return ExitPrerequisiteMissing
-	}
 	return ExitConfigInvalid
 }
 
