@@ -224,12 +224,17 @@ func (p *Profile) Validate() error {
 	for _, group := range []struct {
 		name  string
 		ports []int
+		// open_port alone accepts the 0 sentinel.
+		allowZero bool
 	}{
-		{"listen_port", p.Network.ListenPort},
-		{"allow_tcp_connect", p.Network.AllowTCPConnect},
-		{"open_port", p.Network.OpenPort},
+		{name: "listen_port", ports: p.Network.ListenPort},
+		{name: "allow_tcp_connect", ports: p.Network.AllowTCPConnect},
+		{name: "open_port", ports: p.Network.OpenPort, allowZero: true},
 	} {
 		for _, port := range group.ports {
+			if group.allowZero && port == 0 {
+				continue
+			}
 			if port < 1 || port > 65535 {
 				return fmt.Errorf("sandbox profile: network.%s contains invalid port %d", group.name, port)
 			}

@@ -335,6 +335,24 @@ func TestMergeBlockNetOverrides(t *testing.T) {
 	}
 }
 
+func TestValidateOpenPortZeroSentinel(t *testing.T) {
+	p := &Profile{Network: Network{OpenPort: []int{0, 4097}}}
+	if err := p.Validate(); err != nil {
+		t.Errorf("open_port 0 sentinel rejected: %v", err)
+	}
+	// The sentinel is open_port-only; 0 stays invalid for the others.
+	if err := (&Profile{Network: Network{ListenPort: []int{0}}}).Validate(); err == nil {
+		t.Error("listen_port 0 must be rejected")
+	}
+	if err := (&Profile{Network: Network{AllowTCPConnect: []int{0}}}).Validate(); err == nil {
+		t.Error("allow_tcp_connect 0 must be rejected")
+	}
+	// Out-of-range ports are still rejected for open_port.
+	if err := (&Profile{Network: Network{OpenPort: []int{70000}}}).Validate(); err == nil {
+		t.Error("open_port 70000 must be rejected")
+	}
+}
+
 func TestEffectiveProtectedPaths(t *testing.T) {
 	t.Setenv("HOME", "/home/u")
 	b := Baseline{ProtectedPaths: []string{"~/.git-credentials", "~/.netrc", "~/.ssh"}}

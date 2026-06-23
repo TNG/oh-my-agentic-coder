@@ -158,6 +158,76 @@ func TestSBPLNoBindWithoutPorts(t *testing.T) {
 	}
 }
 
+func TestSBPLOpenPortZeroWildcard(t *testing.T) {
+	g := baseGrants()
+	g.OpenPorts = []int{0}
+	p := GenerateSBPL(g)
+	if !strings.Contains(p, `(allow network-outbound (remote tcp "localhost:*"))`) {
+		t.Error("open_port 0 sentinel must emit the localhost:* wildcard rule")
+	}
+	if strings.Contains(p, `localhost:0`) {
+		t.Error("open_port 0 must not emit the invalid localhost:0 literal")
+	}
+	// The blanket bind/inbound rules still apply with an open port present.
+	if !strings.Contains(p, "(allow network-bind)") || !strings.Contains(p, "(allow network-inbound)") {
+		t.Error("open_port 0 must keep blanket bind/inbound rules")
+	}
+	if strings.Contains(p, `remote tcp "*:*"`) {
+		t.Error("open_port 0 must not allow outbound to any host (remote tcp \"*:*\")")
+	}
+}
+
+// open_port 0 must never widen into non-loopback egress: no (local ip ...)
+// outbound (it matches every unbound socket) and no "*:*" allow.
+func TestSBPLOpenPortZeroNoEgressHole(t *testing.T) {
+	g := baseGrants()
+	g.OpenPorts = []int{0}
+	p := GenerateSBPL(g)
+	for _, forbidden := range []string{
+		`(allow network-outbound (local ip "*:*"))`,
+		`(allow network-outbound (local ip "localhost:*"))`,
+		`(allow network-outbound (local tcp "localhost:*"))`,
+		`(allow network-outbound (remote tcp "*:*"))`,
+		`(allow network-outbound (remote ip "*:*"))`,
+	} {
+		if strings.Contains(p, forbidden) {
+			t.Errorf("open_port 0 emitted an egress-opening rule: %q", forbidden)
+		}
+	}
+	if !strings.Contains(p, `(allow network-outbound (remote tcp "localhost:*"))`) {
+		t.Error("open_port 0 must keep the remote-scoped localhost:* allow")
+	}
+}
+
+func TestSBPLOpenPortZeroMixed(t *testing.T) {
+	g := baseGrants()
+	g.OpenPorts = []int{4097, 0}
+	p := GenerateSBPL(g)
+	for _, want := range []string{
+		`(allow network-outbound (remote tcp "localhost:4097"))`,
+		`(allow network-outbound (remote tcp "localhost:*"))`,
+	} {
+		if !strings.Contains(p, want) {
+			t.Errorf("profile missing %q", want)
+		}
+	}
+	if strings.Contains(p, `localhost:0`) {
+		t.Error("mixed open_port set must not emit the invalid localhost:0 literal")
+	}
+}
+
+func TestSBPLOpenPortNonZeroNoWildcard(t *testing.T) {
+	g := baseGrants()
+	g.OpenPorts = []int{4097}
+	p := GenerateSBPL(g)
+	if !strings.Contains(p, `(allow network-outbound (remote tcp "localhost:4097"))`) {
+		t.Error("non-zero open_port must emit its per-port rule")
+	}
+	if strings.Contains(p, `(allow network-outbound (remote tcp "localhost:*"))`) {
+		t.Error("non-sentinel open_port set must not emit the wildcard rule")
+	}
+}
+
 func TestSBPLQuoteEscaping(t *testing.T) {
 	g := baseGrants()
 	g.ReadPaths = []string{`/path/with"quote`}
