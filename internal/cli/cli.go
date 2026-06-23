@@ -122,6 +122,7 @@ func commands() map[string]Command {
 		"config":     {Name: "config", Short: "Show resolved config + secret fingerprints for a skill.", Run: runConfig},
 		"start":      {Name: "start", Short: "Start sidecars + facade + sandbox. Optional [harness]: opencode|claude.", Run: runStart},
 		"serve":      {Name: "serve", Short: "Long-lived multi-directory server. Optional [harness]: opencode|claude.", Run: runServe},
+		"setup":      {Name: "setup", Short: "Provision omac's built-in skills into installed harnesses' skills dirs.", Run: runSetup},
 		"plugin":     {Name: "plugin", Short: "Install client-side harness bridge plugins (e.g. opencode-desktop).", Run: runPlugin},
 		"sandbox":    {Name: "sandbox", Short: "Built-in kernel sandbox (run|stage2).", Run: runSandbox},
 		"doctor":     {Name: "doctor", Short: "Run sanity checks.", Run: runDoctor},
@@ -146,6 +147,7 @@ Subcommands:
   list         List registered skills.
   secrets      Manage skill secrets in the OS keychain.
   config       Show resolved config + secret fingerprints for a skill.
+  setup        Provision omac's built-in skills into installed harnesses.
   start        Start sidecars + facade + sandbox.       [harness]: opencode|claude
   serve        Long-lived multi-directory server.        [harness]: opencode|claude
   plugin       Install client-side bridge plugins (e.g. opencode-desktop).

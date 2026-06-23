@@ -32,6 +32,7 @@ omac doctor
 omac register <skill>
 
 # 5. Launch — default sandbox (Seatbelt/bwrap) + default harness (opencode)
+#    (omac's built-in skills are auto-provisioned on launch; no extra step)
 omac start
 ```
 
@@ -70,6 +71,23 @@ under any harness. Adding a new agentic harness means registering one
 descriptor in `internal/config/harness.go` plus shipping its bridge; no
 command-dispatch code changes. See `CREATING_A_SKILL.md` and
 `docs/MULTI_DIR_DESKTOP.md`.
+
+### Built-in skills
+
+omac ships a small set of **built-in skills** embedded in the binary and
+**auto-provisions them on `omac start` / `omac serve`** — no separate step. On
+launch, omac idempotently writes them into the active harness's skills directory
+(`~/.config/opencode/skills`, `~/.claude/skills`); it stays silent when they're
+already current and never overwrites a same-named directory it doesn't own.
+
+Today the only built-in is **`omac-write-a-skill`** — a guidance-only skill
+(just a `SKILL.md`, no sidecar) carrying the `CREATING_A_SKILL.md` authoring
+guide, so the agent can author new omac skills in any project.
+
+`omac setup` is available to (re)provision **all** installed harnesses at once
+or to refresh after upgrading omac (`omac setup [harness] [--force]`), but you
+don't need to run it for the everyday flow. (This replaces the old external
+`opencode-nono/install.sh` skill-copy step.)
 
 ### Harness-scoped skill discovery
 

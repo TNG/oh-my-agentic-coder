@@ -246,6 +246,11 @@ func runServe(args []string, env *Env) int {
 		return ExitOK
 	}
 
+	// Idempotently provision omac's built-in skills for this harness so they
+	// are available with no separate setup step. Quiet when already current;
+	// never blocks the launch.
+	ensureBuiltinSkills(env, harness)
+
 	// Build the inner argv. serve mode runs the selected harness's *server*
 	// form: the inner executable is resolved from the profile (or --inner, or
 	// the harness default), then the harness's ServerLaunch convention is
