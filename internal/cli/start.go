@@ -184,6 +184,11 @@ func runStart(args []string, env *Env) int {
 				"starting sandbox without sidecars (run `omac register` to add some)")
 	}
 
+	// Idempotently provision omac's built-in skills for this harness so they
+	// are available with no separate setup step. Quiet when already current;
+	// never blocks the launch.
+	ensureBuiltinSkills(env, harness)
+
 	// 2c-d / 3. Per-skill validation + secret/config resolution.
 	//
 	// We do this in a single pass that accumulates every per-skill

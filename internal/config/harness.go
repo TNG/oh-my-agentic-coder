@@ -53,6 +53,15 @@ type Harness struct {
 	// addition to the active harness's own base. Skill discovery NEVER scans
 	// another harness's own base — see internal/skillsource.
 	SkillsBase string
+
+	// UserConfigHome, when non-empty, is the harness's user-global config
+	// directory as a $HOME-relative path (e.g. ".claude" for Claude Code,
+	// whose config home is ~/.claude rather than ~/.config/claude). When
+	// empty, the harness follows the XDG convention and its user config dir is
+	// <userConfigRoot>/<SkillsBase> (i.e. ~/.config/<base>, honoring
+	// $XDG_CONFIG_HOME). GlobalSkillsDir derives "<config home>/skills" from
+	// this — the directory the harness's own loader reads global skills from.
+	UserConfigHome string
 }
 
 // SharedSkillsBase is the neutral, harness-independent skills directory base
@@ -105,6 +114,9 @@ func harnessRegistry() []Harness {
 			ServerLaunch: nil,
 			BridgeDir:    ".claude",
 			SkillsBase:   "claude",
+			// Claude Code's config home is ~/.claude, not ~/.config/claude,
+			// so its global skills live in ~/.claude/skills.
+			UserConfigHome: ".claude",
 		},
 	}
 }
@@ -252,6 +264,32 @@ func (h Harness) GlobalBridgeDir() string {
 		return ""
 	}
 	return filepath.Join(root, base, leaf)
+}
+
+// GlobalSkillsDir returns the absolute user-global skills directory that THIS
+// harness's own loader reads — the place a guidance-only skill must be written
+// to be surfaced by the harness (omac does not register or activate such
+// skills). OpenCode follows XDG (~/.config/opencode/skills, $XDG_CONFIG_HOME
+// honored); Claude Code uses ~/.claude/skills (see UserConfigHome).
+//
+// It returns "" when no home/config directory can be resolved.
+func (h Harness) GlobalSkillsDir() string {
+	base := h.SkillsBase
+	if base == "" {
+		base = SharedSkillsBase
+	}
+	if h.UserConfigHome != "" {
+		home, err := os.UserHomeDir()
+		if err != nil || home == "" {
+			return ""
+		}
+		return filepath.Join(home, h.UserConfigHome, "skills")
+	}
+	root := userConfigRoot()
+	if root == "" {
+		return ""
+	}
+	return filepath.Join(root, base, "skills")
 }
 
 // userConfigRoot resolves the base user config directory, honoring

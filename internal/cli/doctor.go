@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 
+	"github.com/tngtech/oh-my-agentic-coder/internal/builtinskills"
 	"github.com/tngtech/oh-my-agentic-coder/internal/config"
 	"github.com/tngtech/oh-my-agentic-coder/internal/keychain"
 	"github.com/tngtech/oh-my-agentic-coder/internal/netprompt"
@@ -114,6 +115,9 @@ func runDoctor(args []string, env *Env) int {
 			status, e.Name, binOK, missingReq)
 	}
 
+	// Built-in skills provisioned by `omac setup`, per installed harness.
+	doctorBuiltinSkills(env)
+
 	// Sandbox binary.
 	lc, _, _ := config.LoadLauncher(env.Workdir)
 	profName := lc.Sandbox.DefaultProfile
@@ -133,6 +137,41 @@ func runDoctor(args []string, env *Env) int {
 		return ExitConfigInvalid
 	}
 	return ExitOK
+}
+
+// doctorBuiltinSkills reports whether omac's built-in skills (provisioned by
+// `omac setup`) are present and current in each installed harness's native
+// skills dir. It is advisory: a missing/stale/foreign bundle is a warning, not
+// a doctor failure.
+func doctorBuiltinSkills(env *Env) {
+	harnesses := installedHarnesses()
+	if len(harnesses) == 0 {
+		fmt.Fprintln(env.Stdout, "[warn] built-in skills: no harness detected on $PATH; run `omac setup` after installing one")
+		return
+	}
+	for _, h := range harnesses {
+		dir := h.GlobalSkillsDir()
+		if dir == "" {
+			continue
+		}
+		for _, name := range builtinskills.Names() {
+			st, err := builtinskills.Check(name, dir)
+			if err != nil {
+				fmt.Fprintf(env.Stdout, "  [warn] built-in %s (%s): %v\n", name, h.Name, err)
+				continue
+			}
+			switch st {
+			case builtinskills.StateCurrent:
+				fmt.Fprintf(env.Stdout, "  [ok] built-in %s (%s): present\n", name, h.Name)
+			case builtinskills.StateMissing:
+				fmt.Fprintf(env.Stdout, "  [warn] built-in %s (%s): missing — run `omac setup`\n", name, h.Name)
+			case builtinskills.StateStale:
+				fmt.Fprintf(env.Stdout, "  [warn] built-in %s (%s): out of date — run `omac setup`\n", name, h.Name)
+			case builtinskills.StateForeign:
+				fmt.Fprintf(env.Stdout, "  [warn] built-in %s (%s): a non-omac directory occupies that name\n", name, h.Name)
+			}
+		}
+	}
 }
 
 // doctorBuiltinSandbox reports the platform prerequisites of the
