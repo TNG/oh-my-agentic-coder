@@ -6,37 +6,40 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
 
-func TestResolveInnerBinaryDir(t *testing.T) {
+func TestResolveInnerBinaryDirs(t *testing.T) {
 	// Empty / blank argv resolves to nothing.
-	if got := resolveInnerBinaryDir(nil); got != "" {
-		t.Errorf("nil argv = %q, want empty", got)
+	if got := resolveInnerBinaryDirs(nil); got != nil {
+		t.Errorf("nil argv = %v, want nil", got)
 	}
-	if got := resolveInnerBinaryDir([]string{""}); got != "" {
-		t.Errorf("blank argv[0] = %q, want empty", got)
+	if got := resolveInnerBinaryDirs([]string{""}); got != nil {
+		t.Errorf("blank argv[0] = %v, want nil", got)
 	}
 
 	// A name not on PATH resolves to nothing rather than guessing.
-	if got := resolveInnerBinaryDir([]string{"definitely-not-a-real-binary-xyz"}); got != "" {
-		t.Errorf("missing binary = %q, want empty", got)
+	if got := resolveInnerBinaryDirs([]string{"definitely-not-a-real-binary-xyz"}); got != nil {
+		t.Errorf("missing binary = %v, want nil", got)
 	}
 
-	// A real binary on a version-manager-style path is resolved to its
-	// containing directory, following symlinks (mimicking a mise shim
-	// -> installs/<ver>/bin/<bin> layout).
+	// A shim whose symlink target lives in a different tree, with the
+	// real file renamed (mimicking bun: ~/.bun/bin/opencode ->
+	// ~/.bun/install/.../bin/opencode.exe). BOTH the shim dir (on PATH,
+	// needed by stage2's own LookPath) and the resolved real dir must be
+	// granted.
 	root := t.TempDir()
-	realDir := filepath.Join(root, "installs", "opencode", "1.2.3", "bin")
+	realDir := filepath.Join(root, "install", "opencode-ai", "bin")
 	if err := os.MkdirAll(realDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	realBin := filepath.Join(realDir, "opencode")
+	realBin := filepath.Join(realDir, "opencode.exe")
 	if err := os.WriteFile(realBin, []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	shimDir := filepath.Join(root, "shims")
+	shimDir := filepath.Join(root, "bin")
 	if err := os.MkdirAll(shimDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -45,16 +48,30 @@ func TestResolveInnerBinaryDir(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Resolve via an absolute path to the shim: must follow the symlink
-	// to the real install dir, not return the shim dir.
-	if got := resolveInnerBinaryDir([]string{shim}); got != realDir {
-		t.Errorf("symlinked binary dir = %q, want %q", got, realDir)
+	wantBoth := []string{shimDir, realDir}
+
+	// Resolve via an absolute path to the shim.
+	if got := resolveInnerBinaryDirs([]string{shim}); !reflect.DeepEqual(got, wantBoth) {
+		t.Errorf("symlinked binary dirs = %v, want %v", got, wantBoth)
 	}
 
 	// Resolve via PATH lookup (the `which opencode` case).
 	t.Setenv("PATH", shimDir)
-	if got := resolveInnerBinaryDir([]string{"opencode"}); got != realDir {
-		t.Errorf("PATH-resolved binary dir = %q, want %q", got, realDir)
+	if got := resolveInnerBinaryDirs([]string{"opencode"}); !reflect.DeepEqual(got, wantBoth) {
+		t.Errorf("PATH-resolved binary dirs = %v, want %v", got, wantBoth)
+	}
+
+	// A non-symlinked binary yields a single dir (no duplicate grant).
+	plainDir := filepath.Join(root, "plain")
+	if err := os.MkdirAll(plainDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	plainBin := filepath.Join(plainDir, "tool")
+	if err := os.WriteFile(plainBin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := resolveInnerBinaryDirs([]string{plainBin}); !reflect.DeepEqual(got, []string{plainDir}) {
+		t.Errorf("plain binary dirs = %v, want %v", got, []string{plainDir})
 	}
 }
 
