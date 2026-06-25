@@ -58,6 +58,25 @@ Supported harnesses (and aliases): `opencode` (`oc`), `claude-code`
 is rejected with the list of supported names. Inner arguments that happen to be
 barewords go after `--` (e.g. `omac start claude -- --model sonnet`).
 
+### Resuming prior work
+
+Two convenience subcommands re-enter earlier sessions through the same
+sandboxed launch pipeline as `start`:
+
+```bash
+omac continue          # reopen the last session for this folder (opencode)
+omac continue claude   # ...with Claude Code
+omac resume            # pick from this folder's recent sessions, then launch
+omac resume claude     # ...with Claude Code
+```
+
+`omac resume` lists only the current folder's sessions, newest first, and
+launches the one you pick inside omac. It reads each harness's own session
+store — opencode via `opencode session list`, Claude Code by reading
+`~/.claude/projects/<folder>/<id>.jsonl` (titles come from the session's
+`aiTitle`, and a file's embedded `cwd` decides which folder it belongs to).
+Both subcommands take the same flags and optional `[harness]` token as `start`.
+
 Each harness ships a small client-side **bridge** that wires the agent to
 omac's control plane (skill activation, the skills manifest, skill base URLs):
 
@@ -450,6 +469,19 @@ omac [--workdir <dir>] <subcommand> [flags] [args]
                  --skip-secret-pattern   don't enforce a secret's pattern
                                          on an env_passthrough value
                  --verbose               lifecycle logging
+
+  continue     Like `start`, but continue the most recent session for this
+               workdir (appends the harness's continue flag: opencode/claude
+               `--continue`). Accepts the same flags as `start` and an
+               optional [harness] token.
+
+  resume       List recent sessions for this workdir, show an interactive
+               numbered picker (title + relative time), and launch the
+               selected one inside omac (opencode `--session <id>`, claude
+               `--resume <id>`). Sessions come from the harness's own store
+               (opencode `session list`; Claude Code's ~/.claude/projects
+               files). Non-interactive stdin prints the list and exits.
+               Accepts the same flags as `start` and an optional [harness].
 
   doctor       Sanity checks: config, registry, binaries, secrets, sandbox.
   version

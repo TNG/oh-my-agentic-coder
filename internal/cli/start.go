@@ -25,8 +25,31 @@ import (
 	"github.com/tngtech/oh-my-agentic-coder/internal/supervisor"
 )
 
-func runStart(args []string, env *Env) int {
-	fs := flag.NewFlagSet("start", flag.ContinueOnError)
+// launchOpts carries everything runLaunch needs: the resolved harness, the
+// parsed start-family flags, and the inner args to append to the resolved
+// inner command. `omac start`, `omac continue`, and `omac resume` all build
+// one of these and call runLaunch, so the launch pipeline has a single
+// implementation.
+type launchOpts struct {
+	harness            config.Harness
+	profile            string
+	innerCmdOverride   string
+	noSandbox          bool
+	keepRunning        bool
+	acceptSkillChanges bool
+	verbose            bool
+	// innerArgs are appended to the resolved inner command (user-supplied
+	// trailing `-- args` plus any command-specific flags like --continue).
+	innerArgs []string
+}
+
+// parseLaunchArgs parses the shared start-family command line: an optional
+// leading positional harness token, the start flags, and trailing `-- inner
+// args`. cmdName is used in usage/error text (e.g. "start", "continue"). It
+// returns the assembled opts and true on success; on a parse/usage error it
+// prints to stderr and returns false (callers map that to ExitMisuse).
+func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, bool) {
+	fs := flag.NewFlagSet(cmdName, flag.ContinueOnError)
 	fs.SetOutput(env.Stderr)
 	var (
 		profile            = fs.String("sandbox", "", "Name of a sandbox profile from the launcher config.")
@@ -38,7 +61,7 @@ func runStart(args []string, env *Env) int {
 		verbose            = fs.Bool("verbose", false, "Verbose lifecycle logging.")
 	)
 	fs.Usage = func() {
-		fmt.Fprintln(env.Stderr, "Usage: omac start [harness] [flags] [-- inner args...]")
+		fmt.Fprintf(env.Stderr, "Usage: omac %s [harness] [flags] [-- inner args...]\n", cmdName)
 		fmt.Fprintf(env.Stderr, "\nharness: one of %s (default: %s)\n\n",
 			strings.Join(config.HarnessNames(), ", "), config.DefaultHarness().Name)
 		fs.PrintDefaults()
@@ -62,13 +85,45 @@ func runStart(args []string, env *Env) int {
 	// flags (+ any non-flag positionals, which become inner args).
 	harness, ourArgs, err := splitHarnessToken(ourArgs)
 	if err != nil {
-		fmt.Fprintln(env.Stderr, "omac start:", err)
-		return ExitMisuse
+		fmt.Fprintf(env.Stderr, "omac %s: %v\n", cmdName, err)
+		return launchOpts{}, false
 	}
 	if err := fs.Parse(reorderFlagsFirst(ourArgs)); err != nil {
-		return ExitMisuse
+		return launchOpts{}, false
 	}
 	innerArgs = append(fs.Args(), innerArgs...)
+	return launchOpts{
+		harness:            harness,
+		profile:            *profile,
+		innerCmdOverride:   *innerCmdOverride,
+		noSandbox:          *noSandbox,
+		keepRunning:        *keepRunning,
+		acceptSkillChanges: *acceptSkillChanges,
+		verbose:            *verbose,
+		innerArgs:          innerArgs,
+	}, true
+}
+
+func runStart(args []string, env *Env) int {
+	opts, ok := parseLaunchArgs("start", args, env)
+	if !ok {
+		return ExitMisuse
+	}
+	return runLaunch(env, opts)
+}
+
+// runLaunch is the shared start pipeline: load config, reconcile the registry,
+// spawn sidecars + facade + control plane, build the sandbox argv, and exec
+// the inner command. It is invoked by `start`, `continue`, and `resume`.
+func runLaunch(env *Env, opts launchOpts) int {
+	harness := opts.harness
+	profile := opts.profile
+	innerCmdOverride := opts.innerCmdOverride
+	noSandbox := opts.noSandbox
+	keepRunning := opts.keepRunning
+	acceptSkillChanges := opts.acceptSkillChanges
+	verbose := opts.verbose
+	innerArgs := opts.innerArgs
 
 	// 1. Load launcher config.
 	lc, cfgPath, err := config.LoadLauncher(env.Workdir)
@@ -76,15 +131,15 @@ func runStart(args []string, env *Env) int {
 		fmt.Fprintln(env.Stderr, "omac start: launcher config:", err)
 		return ExitConfigInvalid
 	}
-	if *verbose && cfgPath != "" {
+	if verbose && cfgPath != "" {
 		fmt.Fprintf(env.Stderr, "[verbose] loaded launcher config: %s\n", cfgPath)
 	}
-	profName := *profile
+	profName := profile
 	if profName == "" {
 		profName = lc.Sandbox.DefaultProfile
 	}
 	prof, ok := lc.Sandbox.Profiles[profName]
-	if !ok && !*noSandbox {
+	if !ok && !noSandbox {
 		fmt.Fprintf(env.Stderr, "omac start: unknown sandbox profile %q\n", profName)
 		return ExitConfigInvalid
 	}
@@ -273,7 +328,7 @@ func runStart(args []string, env *Env) int {
 
 		// Bundle hash. Excluded from scanning when the user has
 		// explicitly opted in to drift via --accept-skill-changes.
-		if !*acceptSkillChanges {
+		if !acceptSkillChanges {
 			bundle, err := config.BundleHash(absDir)
 			if err != nil {
 				// I/O errors during hashing are class-level (we can't
@@ -437,7 +492,7 @@ func runStart(args []string, env *Env) int {
 		fmt.Fprintln(env.Stderr, "omac start: runtime dir:", err)
 		return ExitIOError
 	}
-	if *verbose {
+	if verbose {
 		fmt.Fprintf(env.Stderr, "[verbose] runtime dir: %s\n", rtDir)
 	}
 	socketPath := filepath.Join(rtDir, "bridge.sock")
@@ -453,14 +508,14 @@ func runStart(args []string, env *Env) int {
 		return ExitIOError
 	}
 	defer os.RemoveAll(sandboxTmp)
-	if *verbose {
+	if verbose {
 		fmt.Fprintf(env.Stderr, "[verbose] sandbox TMPDIR: %s\n", sandboxTmp)
 	}
 
 	// 5. Spawn sidecars.
 	sup := supervisor.New(lc.Facade.BaseEnvPassthrough)
 	defer func() {
-		if !*keepRunning {
+		if !keepRunning {
 			sup.ShutdownAll(5 * time.Second)
 		}
 	}()
@@ -533,7 +588,7 @@ func runStart(args []string, env *Env) int {
 	}
 	defer f.Close()
 	tcpPort := f.TCPPort()
-	if *verbose {
+	if verbose {
 		fmt.Fprintf(env.Stderr, "[verbose] facade listening on %s and 127.0.0.1:%d (%d route(s))\n",
 			socketPath, tcpPort, len(routes))
 	}
@@ -543,7 +598,7 @@ func runStart(args []string, env *Env) int {
 	// restart (mirrors serve). Non-fatal if it can't bind.
 	reloader := &startReloader{
 		env: env, facade: f, sup: sup, ctx: ctx,
-		rtDir: rtDir, socket: socketPath, tcpPort: tcpPort, verbose: *verbose,
+		rtDir: rtDir, socket: socketPath, tcpPort: tcpPort, verbose: verbose,
 		mounted: map[string]string{},
 	}
 	for i, a := range armed {
@@ -551,7 +606,7 @@ func runStart(args []string, env *Env) int {
 	}
 	controlURL, closeControl, controlOK := startControlPlane(reloader)
 	defer closeControl()
-	if controlOK && *verbose {
+	if controlOK && verbose {
 		fmt.Fprintf(env.Stderr, "[verbose] control plane: %s\n", controlURL)
 	}
 
@@ -560,13 +615,13 @@ func runStart(args []string, env *Env) int {
 	// Resolve the inner command for the selected harness: an explicit
 	// --inner override wins, else the profile's inner_cmd, else the
 	// harness's default InnerCmd (config.Harness.ResolveInnerCmd).
-	inner := harness.ResolveInnerCmd(prof.InnerCmd, *innerCmdOverride)
+	inner := harness.ResolveInnerCmd(prof.InnerCmd, innerCmdOverride)
 	if len(innerArgs) > 0 {
 		inner = append(inner, innerArgs...)
 	}
 
 	var argv []string
-	if *noSandbox {
+	if noSandbox {
 		argv = inner
 	} else {
 		argv, err = sandbox.Expand(prof, sandbox.Inputs{
@@ -590,7 +645,7 @@ func runStart(args []string, env *Env) int {
 			}
 		}
 	}
-	if *verbose {
+	if verbose {
 		fmt.Fprintf(env.Stderr, "[verbose] sandbox argv: %v\n", argv)
 	}
 

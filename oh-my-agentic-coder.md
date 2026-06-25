@@ -132,6 +132,8 @@ Single Rust binary. Subcommands (detailed in §10):
 - `omac deregister <skill>`
 - `omac list`
 - `omac start [-- …inner args]`
+- `omac continue [harness] [-- …inner args]`
+- `omac resume [harness]`
 - `omac doctor`
 - `omac version`
 
@@ -585,6 +587,35 @@ Common flags:
 - `--accept-skill-changes` — tolerate `bundle_hash` drift.
 - `--skip-secret-pattern` — do not enforce a secret's `pattern` against an `env_passthrough`-supplied value (escape hatch for an outdated pattern; the raw value is still passed through to the sidecar).
 - `--verbose`, `--log-level <level>`.
+
+### 10.4a `omac continue [harness] [-- …inner args]`
+
+Runs the full `omac start` lifecycle (§12) but re-enters the most recent
+session for the current workdir by appending the resolved harness's "continue"
+inner flag (opencode and Claude Code: `--continue`). Accepts the same flags and
+optional leading `[harness]` token as `start`. If the harness declares no
+session support, it exits with a clear message (code `2`).
+
+### 10.4b `omac resume [harness]`
+
+Lists the recent sessions scoped to the current workdir, presents an
+interactive numbered picker (index, relative time, title), and launches the
+selected session through the `start` lifecycle with the harness's "resume by
+id" inner flag (opencode `--session <id>`, Claude Code `--resume <id>`).
+
+Sessions are read from each harness's own store via a per-harness strategy:
+
+- **opencode** — parse `opencode session list --format json`, keep records
+  whose `directory` is the workdir.
+- **claude-code** — read `~/.claude/projects/<encoded-cwd>/<session-id>.jsonl`;
+  the id is the filename, the title is the latest `aiTitle` record (falling
+  back to the first user message, then the id), the time is the latest record
+  timestamp (falling back to file mtime). The lossy directory encoding is only
+  a lookup hint — membership is confirmed against each file's embedded `cwd`.
+
+Listing is best-effort: a missing CLI/store yields "no resumable sessions"
+rather than an error. With non-interactive stdin, the list is printed with a
+hint and no selection is made. Cancelling the picker exits without launching.
 
 ### 10.5 `omac doctor`
 

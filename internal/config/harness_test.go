@@ -227,3 +227,43 @@ func TestGlobalBridgeDir(t *testing.T) {
 		t.Errorf("claude GlobalBridgeDir = %q, want empty", got)
 	}
 }
+
+func TestHarnessSessionMetadata(t *testing.T) {
+	oc, _ := LookupHarness("opencode")
+	if oc.Session == nil {
+		t.Fatal("opencode Session is nil, want session metadata")
+	}
+	if !reflect.DeepEqual(oc.Session.ContinueArgs, []string{"--continue"}) {
+		t.Errorf("opencode ContinueArgs = %v, want [--continue]", oc.Session.ContinueArgs)
+	}
+	if got := oc.Session.ResumeByIDArgs("ses_X"); !reflect.DeepEqual(got, []string{"--session", "ses_X"}) {
+		t.Errorf("opencode ResumeByIDArgs = %v, want [--session ses_X]", got)
+	}
+	if oc.Session.ListKind != SessionListOpenCodeCLI {
+		t.Errorf("opencode ListKind = %v, want SessionListOpenCodeCLI", oc.Session.ListKind)
+	}
+
+	cc, _ := LookupHarness("claude-code")
+	if cc.Session == nil {
+		t.Fatal("claude Session is nil, want session metadata")
+	}
+	if !reflect.DeepEqual(cc.Session.ContinueArgs, []string{"--continue"}) {
+		t.Errorf("claude ContinueArgs = %v, want [--continue]", cc.Session.ContinueArgs)
+	}
+	if got := cc.Session.ResumeByIDArgs("abc-123"); !reflect.DeepEqual(got, []string{"--resume", "abc-123"}) {
+		t.Errorf("claude ResumeByIDArgs = %v, want [--resume abc-123]", got)
+	}
+	if cc.Session.ListKind != SessionListClaudeFiles {
+		t.Errorf("claude ListKind = %v, want SessionListClaudeFiles", cc.Session.ListKind)
+	}
+}
+
+// TestHarnessSessionNilIsSafe documents that a harness with no Session block
+// (the zero default for any future descriptor) is tolerated: callers must
+// nil-check before using session metadata.
+func TestHarnessSessionNilIsSafe(t *testing.T) {
+	var h Harness // zero value: Session == nil
+	if h.Session != nil {
+		t.Fatal("zero Harness should have nil Session")
+	}
+}

@@ -62,6 +62,47 @@ type Harness struct {
 	// $XDG_CONFIG_HOME). GlobalSkillsDir derives "<config home>/skills" from
 	// this — the directory the harness's own loader reads global skills from.
 	UserConfigHome string
+
+	// Session, when non-nil, declares how omac re-enters prior sessions of
+	// this harness for `omac continue` and `omac resume`. A nil Session means
+	// the harness exposes no session continue/resume support, and those
+	// subcommands report it as unsupported. See HarnessSession.
+	Session *HarnessSession
+}
+
+// SessionListKind selects how omac enumerates a harness's prior sessions for
+// `omac resume`. The actual listing logic lives in the session package (so
+// config stays free of CLI/filesystem dependencies); this enum is the data
+// that keys it.
+type SessionListKind int
+
+const (
+	// SessionListNone means the harness has no way to list sessions; `omac
+	// resume` reports listing unsupported (continue may still work).
+	SessionListNone SessionListKind = iota
+	// SessionListOpenCodeCLI lists via `opencode session list --format json`.
+	SessionListOpenCodeCLI
+	// SessionListClaudeFiles lists by reading Claude Code's per-project
+	// session store under ~/.claude/projects/<encoded-cwd>/<session-id>.jsonl.
+	SessionListClaudeFiles
+)
+
+// HarnessSession encodes the harness-specific knowledge `omac continue` and
+// `omac resume` need: the inner flags that re-enter sessions, and how to
+// enumerate prior sessions for the picker. It is pure data so the harness
+// registry stays declarative (the I/O lives in the session package, keyed on
+// ListKind).
+type HarnessSession struct {
+	// ContinueArgs are appended to the inner command to continue the most
+	// recent session for the current workdir (opencode/claude: ["--continue"]).
+	ContinueArgs []string
+
+	// ResumeByIDArgs builds the inner args that resume a specific session id
+	// (opencode: ["--session", id]; claude: ["--resume", id]).
+	ResumeByIDArgs func(id string) []string
+
+	// ListKind selects the strategy `omac resume` uses to enumerate sessions.
+	ListKind SessionListKind
 }
 
 // SharedSkillsBase is the neutral, harness-independent skills directory base
@@ -102,6 +143,11 @@ func harnessRegistry() []Harness {
 			ServerLaunch: &ServerLaunch{Subcommand: "serve"},
 			BridgeDir:    filepath.Join(".opencode", "plugins"),
 			SkillsBase:   "opencode",
+			Session: &HarnessSession{
+				ContinueArgs:   []string{"--continue"},
+				ResumeByIDArgs: func(id string) []string { return []string{"--session", id} },
+				ListKind:       SessionListOpenCodeCLI,
+			},
 		},
 		{
 			Name:    "claude-code",
@@ -117,6 +163,11 @@ func harnessRegistry() []Harness {
 			// Claude Code's config home is ~/.claude, not ~/.config/claude,
 			// so its global skills live in ~/.claude/skills.
 			UserConfigHome: ".claude",
+			Session: &HarnessSession{
+				ContinueArgs:   []string{"--continue"},
+				ResumeByIDArgs: func(id string) []string { return []string{"--resume", id} },
+				ListKind:       SessionListClaudeFiles,
+			},
 		},
 	}
 }
