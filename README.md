@@ -447,6 +447,8 @@ omac [--workdir <dir>] <subcommand> [flags] [args]
                  --no-sandbox            debug: run inner cmd directly
                  --keep-running          don't stop sidecars on exit
                  --accept-skill-changes  tolerate bundle_hash drift
+                 --skip-secret-pattern   don't enforce a secret's pattern
+                                         on an env_passthrough value
                  --verbose               lifecycle logging
 
   doctor       Sanity checks: config, registry, binaries, secrets, sandbox.

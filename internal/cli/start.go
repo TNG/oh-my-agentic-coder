@@ -34,6 +34,7 @@ func runStart(args []string, env *Env) int {
 		noSandbox          = fs.Bool("no-sandbox", false, "Run inner command directly, without a sandbox (debug only).")
 		keepRunning        = fs.Bool("keep-running", false, "Do not stop sidecars when the inner command exits.")
 		acceptSkillChanges = fs.Bool("accept-skill-changes", false, "Tolerate bundle_hash drift in registered skills (proceed even if the on-disk skill differs from what was registered).")
+		skipSecretPattern  = fs.Bool("skip-secret-pattern", false, "Do not enforce a secret's pattern against an env_passthrough-supplied value (escape hatch for an outdated pattern; the raw value is still passed through).")
 		verbose            = fs.Bool("verbose", false, "Verbose lifecycle logging.")
 	)
 	fs.Usage = func() {
@@ -240,6 +241,7 @@ func runStart(args []string, env *Env) int {
 	// preserved by also tracking which classes saw any input.
 	type bundleDriftProblem struct{ skill string }
 	type missingSecretProblem struct{ skill, secret string }
+	type invalidSecretProblem struct{ skill, secret, pattern string }
 	type missingFieldProblem struct {
 		skill  string
 		fields []string
@@ -248,6 +250,7 @@ func runStart(args []string, env *Env) int {
 
 	var bundleDrifts []bundleDriftProblem
 	var missingSecrets []missingSecretProblem
+	var invalidSecrets []invalidSecretProblem
 	var missingFields []missingFieldProblem
 	var metaProblems []metaProblem
 
@@ -292,11 +295,39 @@ func runStart(args []string, env *Env) int {
 		// (scoped per workdir) and legacy/global secrets (unscoped) both
 		// resolve. See docs/MULTI_DIR_DESKTOP.md §4.3.
 		secScope := keychain.WorkdirID(env.Workdir)
+		// A secret listed under env_passthrough is allowed to come from the
+		// host environment instead of the keychain — the documented fallback
+		// for keychain-less environments (CI runners, headless servers). The
+		// supervisor injects these at spawn time (see supervisor.buildEnv),
+		// so a required secret absent from the keychain is NOT missing when
+		// the shell already exports it. Without this check the preflight
+		// would refuse to start before runtime injection ever happens.
+		envPassthrough := map[string]struct{}{}
+		for _, k := range m.Sidecar.EnvPassthrough {
+			envPassthrough[k] = struct{}{}
+		}
 		secMap := map[string]secrets.Secret{}
 		for _, spec := range m.Sidecar.Secrets {
 			val, err := keychain.GetWithFallback(secScope, e.Name, spec.Name)
 			if err != nil {
 				if errors.Is(err, keychain.ErrNotFound) {
+					// Not in the keychain — see whether env_passthrough
+					// supplies it from the host at runtime. A value found
+					// there must still match the secret's pattern: keychain
+					// values were validated at register time, so this is the
+					// only chance to vet an env-supplied one before the
+					// sidecar gets a malformed token. --skip-secret-pattern
+					// is the escape hatch for a stale pattern: the raw value
+					// is still passed through, just not vetted here.
+					if envVal, ok := secretFromEnv(spec.Name, envPassthrough); ok {
+						if !*skipSecretPattern {
+							if perr := validatePattern(spec, envVal); perr != nil {
+								invalidSecrets = append(invalidSecrets,
+									invalidSecretProblem{skill: e.Name, secret: spec.Name, pattern: spec.Pattern})
+							}
+						}
+						continue
+					}
 					if spec.IsRequired() {
 						missingSecrets = append(missingSecrets,
 							missingSecretProblem{skill: e.Name, secret: spec.Name})
@@ -350,8 +381,8 @@ func runStart(args []string, env *Env) int {
 
 	// If anything went wrong above, render one consolidated report
 	// (grouped by problem class) and abort.
-	if len(bundleDrifts) > 0 || len(missingSecrets) > 0 || len(missingFields) > 0 || len(metaProblems) > 0 {
-		total := len(bundleDrifts) + len(missingSecrets) + len(missingFields) + len(metaProblems)
+	if len(bundleDrifts) > 0 || len(missingSecrets) > 0 || len(invalidSecrets) > 0 || len(missingFields) > 0 || len(metaProblems) > 0 {
+		total := len(bundleDrifts) + len(missingSecrets) + len(invalidSecrets) + len(missingFields) + len(metaProblems)
 		fmt.Fprintf(env.Stderr, "omac start: refusing to start, found %d problem(s):\n", total)
 
 		if len(metaProblems) > 0 {
@@ -373,6 +404,13 @@ func runStart(args []string, env *Env) int {
 					p.skill, p.secret, p.skill, p.secret)
 			}
 		}
+		if len(invalidSecrets) > 0 {
+			fmt.Fprintln(env.Stderr, "\n  secret from environment does not match required pattern (pass --skip-secret-pattern if the pattern is outdated):")
+			for _, p := range invalidSecrets {
+				fmt.Fprintf(env.Stderr, "    %s/%s — $%s does not match /%s/ (fix the exported value, or run omac secrets set %s %s)\n",
+					p.skill, p.secret, p.secret, p.pattern, p.skill, p.secret)
+			}
+		}
 		if len(missingFields) > 0 {
 			fmt.Fprintln(env.Stderr, "\n  required config field missing:")
 			for _, p := range missingFields {
@@ -387,7 +425,7 @@ func runStart(args []string, env *Env) int {
 		// the former usually a one-command fix). Bundle drift is
 		// strictly config-invalid because the user hasn't explicitly
 		// accepted the change yet. Meta problems are config-invalid.
-		if len(missingSecrets) > 0 || len(missingFields) > 0 {
+		if len(missingSecrets) > 0 || len(invalidSecrets) > 0 || len(missingFields) > 0 {
 			return ExitSecretRefused
 		}
 		return ExitConfigInvalid
@@ -601,6 +639,25 @@ func runStart(args []string, env *Env) int {
 		return ExitSandboxAbnormal
 	}
 	return code
+}
+
+// secretFromEnv returns the host value that will satisfy a keychain-absent
+// secret at runtime, if any. It returns ok=true only when the secret is
+// listed under sidecar.env_passthrough AND the shell exports a non-empty
+// value for it — the conditions under which the supervisor injects the var
+// from the host at spawn time (see supervisor.buildEnv). In that case the
+// secret is genuinely available at runtime and the preflight must not
+// refuse to start. See the skainet skills' omac.yaml for the canonical
+// "keychain or env_passthrough" fallback contract.
+func secretFromEnv(name string, envPassthrough map[string]struct{}) (string, bool) {
+	if _, ok := envPassthrough[name]; !ok {
+		return "", false
+	}
+	v, ok := os.LookupEnv(name)
+	if !ok || v == "" {
+		return "", false
+	}
+	return v, true
 }
 
 // autoDeregisterMissing prunes registry entries whose skill directory

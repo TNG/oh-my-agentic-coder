@@ -76,6 +76,65 @@ func makeEnv(workdir string) *Env {
 	}
 }
 
+// secretFromEnv governs whether a required secret absent from the keychain
+// can instead be supplied by the host env via env_passthrough. This is the
+// fallback the skainet skills' omac.yaml documents ("keychain or
+// env_passthrough"); without it `omac start` refuses to launch even though
+// the supervisor would inject the var at runtime.
+func TestSecretFromEnv(t *testing.T) {
+	const name = "SKAINET_TOKEN"
+	passthrough := map[string]struct{}{name: {}}
+	none := map[string]struct{}{}
+
+	t.Run("passthrough listed and env set", func(t *testing.T) {
+		t.Setenv(name, "tngai_abcdefgh")
+		v, ok := secretFromEnv(name, passthrough)
+		if !ok || v != "tngai_abcdefgh" {
+			t.Errorf("want (tngai_abcdefgh, true) for a secret in env_passthrough with a non-empty host value, got (%q, %v)", v, ok)
+		}
+	})
+
+	t.Run("passthrough listed but env unset", func(t *testing.T) {
+		os.Unsetenv(name)
+		if _, ok := secretFromEnv(name, passthrough); ok {
+			t.Error("want ok=false: env_passthrough lists it but the shell exports nothing")
+		}
+	})
+
+	t.Run("passthrough listed but env empty", func(t *testing.T) {
+		t.Setenv(name, "")
+		if _, ok := secretFromEnv(name, passthrough); ok {
+			t.Error("want ok=false: an empty value is no value")
+		}
+	})
+
+	t.Run("env set but not in passthrough", func(t *testing.T) {
+		t.Setenv(name, "tngai_abcdefgh")
+		if _, ok := secretFromEnv(name, none); ok {
+			t.Error("want ok=false: host env alone must not satisfy a secret the skill never opted into passing through")
+		}
+	})
+}
+
+// validatePattern is what gates an env-supplied secret's shape in the
+// preflight: a keychain value was vetted at register time, but an
+// env_passthrough value reaches the sidecar unvalidated unless start
+// checks it. These cases mirror the skainet SKAINET_TOKEN pattern.
+func TestValidatePattern_EnvSuppliedSecret(t *testing.T) {
+	spec := config.SecretSpec{Name: "SKAINET_TOKEN", Pattern: `^tngai_[A-Za-z0-9_-]{8,}$`}
+
+	if err := validatePattern(spec, "tngai_abcdefgh"); err != nil {
+		t.Errorf("well-formed token should pass, got %v", err)
+	}
+	if err := validatePattern(spec, "not-a-token"); err == nil {
+		t.Error("malformed token should fail the pattern")
+	}
+	// A secret with no pattern accepts anything (can't validate shape).
+	if err := validatePattern(config.SecretSpec{Name: "X"}, "anything"); err != nil {
+		t.Errorf("empty pattern should accept any value, got %v", err)
+	}
+}
+
 func TestAutoDeregisterMissing_DeletesGoneSkills(t *testing.T) {
 	dir := stageWorkdir(t, "alpha") // alpha exists on disk; bravo doesn't
 	reg := &registry.Registry{Registered: []registry.Entry{
