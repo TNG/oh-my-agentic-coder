@@ -19,15 +19,6 @@ func opencodeHarness(t *testing.T) config.Harness {
 	return h
 }
 
-func claudeHarness(t *testing.T) config.Harness {
-	t.Helper()
-	h, ok := config.LookupHarness("claude-code")
-	if !ok {
-		t.Fatal("claude harness not registered")
-	}
-	return h
-}
-
 func TestListUnsupported(t *testing.T) {
 	// Harness with no Session block.
 	if _, err := list(config.Harness{}, "/w", nil, ""); !errors.Is(err, ErrUnsupported) {
