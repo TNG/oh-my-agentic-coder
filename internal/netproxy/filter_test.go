@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/netip"
 	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -220,15 +221,27 @@ func TestPromptUnavailableFallback(t *testing.T) {
 }
 
 func TestPromptCoalescing(t *testing.T) {
+	const n = 5
 	block := make(chan struct{})
 	p := &blockingPrompter{block: block, res: PromptResult{Allow: true}}
+	// coalesced counts followers that have committed to waiting on the
+	// leader's in-flight prompt. Exactly one of the n goroutines becomes
+	// the leader (registers inflight, calls Prompt); the other n-1 take
+	// the coalescing path and bump this. Waiting for n-1 before releasing
+	// the leader makes the test deterministic: every follower has parked
+	// on the shared prompt — and so cannot start its own — by the time
+	// the leader's Prompt is allowed to return. (The old version released
+	// after merely started>=1, so a late follower could arrive after the
+	// leader cleared inflight and prompt a second time. Hence the flake.)
+	var coalesced atomic.Int32
 	f := NewFilter(FilterConfig{
-		PromptEnabled: true,
-		Prompter:      p,
-		Resolve:       staticResolver("93.184.216.34"),
+		PromptEnabled:  true,
+		Prompter:       p,
+		Resolve:        staticResolver("93.184.216.34"),
+		onCoalesceWait: func() { coalesced.Add(1) },
 	})
 	var wg sync.WaitGroup
-	for range 5 {
+	for range n {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -238,8 +251,8 @@ func TestPromptCoalescing(t *testing.T) {
 			}
 		}()
 	}
-	// Give the goroutines a chance to all reach the prompt.
-	waitUntil(t, func() bool { return p.started.Load() >= 1 })
+	// All followers have parked on the single in-flight prompt.
+	waitUntil(t, func() bool { return coalesced.Load() == n-1 })
 	close(block)
 	wg.Wait()
 	if got := p.started.Load(); got != 1 {
