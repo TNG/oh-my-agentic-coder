@@ -137,19 +137,45 @@ func generateSBPLNetwork(g *Grants) string {
 			fmt.Fprintf(&b, "(allow network-outbound (literal %s))\n", sbplQuote(fp))
 		}
 	}
+	// AF_UNIX dirs: connect to any socket under the dir (subpath), for
+	// daemons with dynamic socket names. Path-scoped, so it can't reach
+	// other host sockets; a path filter matches only AF_UNIX, no TCP egress.
+	for _, dir := range g.UnixSocketDirs {
+		for _, fp := range pathForms(dir) {
+			fmt.Fprintf(&b, "(allow network-outbound (subpath %s))\n", sbplQuote(fp))
+		}
+	}
 	// mDNSResponder carve-out so DNS keeps working under deny network*.
 	fmt.Fprintf(&b, "(allow network-outbound (literal %s))\n", sbplQuote("/private/var/run/mDNSResponder"))
 	return b.String()
 }
 
 // pathForms returns the literal path plus its canonicalized form when
-// they differ (/tmp vs /private/tmp).
+// they differ (/tmp vs /private/tmp). When the path doesn't exist yet
+// (e.g. an --allow-unix-dir whose daemon mints it after launch),
+// EvalSymlinks can't resolve it, so we canonicalize the deepest existing
+// ancestor and re-graft the tail — otherwise a /tmp rule never matches
+// the kernel's /private/tmp path.
 func pathForms(p string) []string {
 	out := []string{p}
-	if resolved, err := filepath.EvalSymlinks(p); err == nil && resolved != p {
+	if resolved := canonicalPath(p); resolved != "" && resolved != p {
 		out = append(out, resolved)
 	}
 	return out
+}
+
+func canonicalPath(p string) string {
+	if resolved, err := filepath.EvalSymlinks(p); err == nil {
+		return resolved
+	}
+	dir, tail := filepath.Dir(p), filepath.Base(p)
+	for dir != "/" && dir != "." {
+		if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+			return filepath.Join(resolved, tail)
+		}
+		dir, tail = filepath.Dir(dir), filepath.Join(filepath.Base(dir), tail)
+	}
+	return ""
 }
 
 // ancestorDirs returns every distinct ancestor directory of the given

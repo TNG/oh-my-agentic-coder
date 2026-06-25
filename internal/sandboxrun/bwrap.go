@@ -84,6 +84,16 @@ func BuildBwrapArgv(g *Grants, stage2Argv []string) ([]string, error) {
 	for _, p := range g.AllowPaths {
 		add(p, true)
 	}
+	// Unix-socket dirs are the one grant ResolveGrants doesn't
+	// existence-filter (the daemon may mint the dir after launch). bwrap
+	// --bind aborts the launch on a missing source, so bind them with the
+	// -try variant. AF_UNIX connect isn't mediated by Landlock, so once
+	// the dir exists at launch the shared-inode bind is all Linux needs.
+	for _, d := range g.UnixSocketDirs {
+		if m, ok := mounts[d]; ok {
+			m.try = true
+		}
+	}
 
 	// Sort parents before children so nested binds layer correctly.
 	ordered := make([]*mount, 0, len(mounts))
@@ -94,7 +104,9 @@ func BuildBwrapArgv(g *Grants, stage2Argv []string) ([]string, error) {
 
 	tmpGranted := rootGranted
 	for _, m := range ordered {
-		if m.path == "/tmp" || strings.HasPrefix(m.path, "/tmp/") {
+		// A missing -try mount binds nothing, so it can't stand in for the
+		// /tmp tmpfs fallback below.
+		if (m.path == "/tmp" || strings.HasPrefix(m.path, "/tmp/")) && (!m.try || exists(m.path)) {
 			tmpGranted = true
 		}
 		if rootGranted {
@@ -103,6 +115,9 @@ func BuildBwrapArgv(g *Grants, stage2Argv []string) ([]string, error) {
 		flag := "--ro-bind"
 		if m.rw {
 			flag = "--bind"
+		}
+		if m.try {
+			flag += "-try"
 		}
 		argv = append(argv, flag, m.path, m.path)
 	}
@@ -146,6 +161,12 @@ func BuildBwrapArgv(g *Grants, stage2Argv []string) ([]string, error) {
 type mount struct {
 	path string
 	rw   bool
+	try  bool // use the -try variant: skip silently if the source is absent
+}
+
+func exists(p string) bool {
+	_, err := os.Lstat(p)
+	return err == nil
 }
 
 // coveredByAny reports whether path lies under (or equals) any mount.

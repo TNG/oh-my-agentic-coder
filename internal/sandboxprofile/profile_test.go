@@ -7,6 +7,31 @@ import (
 	"testing"
 )
 
+func TestParseFlagsAllowUnixDir(t *testing.T) {
+	for _, argv := range [][]string{
+		{"--allow-unix-dir", "/tmp/cc-daemon-502", "--", "true"},
+		{"--allow-unix-dir=/tmp/cc-daemon-502", "--", "true"},
+	} {
+		f, err := ParseFlags(argv)
+		if err != nil {
+			t.Fatalf("ParseFlags(%v): %v", argv, err)
+		}
+		if len(f.AllowUnixDir) != 1 || f.AllowUnixDir[0] != "/tmp/cc-daemon-502" {
+			t.Fatalf("AllowUnixDir not parsed from %v: %v", argv, f.AllowUnixDir)
+		}
+		p, _ := Merge(&Profile{}, f)
+		found := false
+		for _, d := range p.Filesystem.AllowUnixDir {
+			if d == "/tmp/cc-daemon-502" {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("Merge dropped AllowUnixDir: %v", p.Filesystem.AllowUnixDir)
+		}
+	}
+}
+
 func TestParseValidProfile(t *testing.T) {
 	data := []byte(`{
 	  "meta": {"name": "tng-sandbox"},

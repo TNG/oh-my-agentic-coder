@@ -351,6 +351,7 @@ sandbox:
 | `/usr`, `/bin`, `/lib`, `/etc`, … | read-only | platform baseline |
 | `/tmp`, `$TMPDIR` | read+write | platform baseline + per-session TMPDIR |
 | Bridge socket (`$TMPDIR/omac-<hash>/bridge.sock`) | read+write | `--allow-file` / `--read` flags |
+| Dynamic socket dir (e.g. Agent View `/tmp/cc-daemon-<uid>`) | read+write + AF_UNIX connect | `--allow-unix-dir` flag / `filesystem.allow_unix_dir` |
 | Paths in `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.kube`, … | **denied** | protected paths (override with `filesystem.override_deny`) |
 
 ## Typical workflow

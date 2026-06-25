@@ -42,7 +42,7 @@ func runSandboxRun(args []string, env *Env) int {
 	flags, err := sandboxprofile.ParseFlags(args)
 	if err != nil {
 		fmt.Fprintln(env.Stderr, "omac sandbox run:", err)
-		fmt.Fprintln(env.Stderr, "usage: omac sandbox run [--profile <ref>] [--allow <path>] [--read <path>] [--write <path>] [--allow-file <path>] [--open-port <port>] [--listen-port <port>] [--allow-tcp-connect <port>] [--allow-domain <d>] [--deny-domain <d>] [--block-net] [--workdir-access <level>] -- <cmd> [args...]")
+		fmt.Fprintln(env.Stderr, "usage: omac sandbox run [--profile <ref>] [--allow <path>] [--read <path>] [--write <path>] [--allow-file <path>] [--allow-unix-dir <dir>] [--open-port <port>] [--listen-port <port>] [--allow-tcp-connect <port>] [--allow-domain <d>] [--deny-domain <d>] [--block-net] [--workdir-access <level>] -- <cmd> [args...]")
 		return ExitMisuse
 	}
 	return sandboxrun.Run(sandboxrun.Options{
@@ -64,6 +64,7 @@ Flags (list flags are repeatable; they merge additively onto the profile):
   --read <path>              grant read-only
   --write <path>             grant write-only
   --allow-file <path>        grant read+write on a single file (e.g. a unix socket)
+  --allow-unix-dir <dir>     allow AF_UNIX connect to any socket under <dir> (dynamic sockets)
   --open-port <port>         localhost TCP, connect+bind (e.g. the omac bridge port)
   --listen-port <port>       allow binding/listening on a TCP port
   --allow-tcp-connect <port> direct outbound TCP to any host on this port (e.g. 22)

@@ -151,6 +151,52 @@ func TestBwrapProtectedOutsideGrantsNotMasked(t *testing.T) {
 	}
 }
 
+func TestBwrapUnixSocketDirNonexistentUsesBindTry(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "cc-daemon-502")
+	g := bwrapGrants()
+	g.UnixSocketDirs = []string{missing}
+	g.AllowPaths = append(g.AllowPaths, missing) // mirrors ResolveGrants
+	argv, err := BuildBwrapArgv(g, []string{"true"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(argv, " ")
+	if strings.Contains(joined, "--bind "+missing+" "+missing) {
+		t.Errorf("missing unix dir must not use --bind (aborts launch): %s", joined)
+	}
+	if !strings.Contains(joined, "--bind-try "+missing+" "+missing) {
+		t.Errorf("missing unix dir must use --bind-try: %s", joined)
+	}
+}
+
+func TestBwrapUnixSocketDirExistingIsBound(t *testing.T) {
+	dir := t.TempDir()
+	g := bwrapGrants()
+	g.UnixSocketDirs = []string{dir}
+	g.AllowPaths = append(g.AllowPaths, dir)
+	argv, err := BuildBwrapArgv(g, []string{"true"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(argv, " ")
+	if !strings.Contains(joined, "--bind-try "+dir+" "+dir) {
+		t.Errorf("existing unix dir must be bound rw: %s", joined)
+	}
+}
+
+func TestBwrapUnixSocketDirMissingUnderTmpKeepsTmpfs(t *testing.T) {
+	g := bwrapGrants()
+	g.UnixSocketDirs = []string{"/tmp/cc-daemon-does-not-exist-9999"}
+	g.AllowPaths = append(g.AllowPaths, "/tmp/cc-daemon-does-not-exist-9999")
+	argv, err := BuildBwrapArgv(g, []string{"true"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.Join(argv, " "), "--tmpfs /tmp") {
+		t.Errorf("missing /tmp unix dir must not suppress tmpfs /tmp: %v", argv)
+	}
+}
+
 func TestStage2ArgsFiltered(t *testing.T) {
 	got := Stage2Args(bwrapGrants())
 	want := []string{

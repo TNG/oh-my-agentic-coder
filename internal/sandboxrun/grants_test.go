@@ -116,6 +116,41 @@ func TestResolveGrantsDetectsUnixSockets(t *testing.T) {
 	}
 }
 
+func TestResolveGrantsUnixSocketDir(t *testing.T) {
+	dir := t.TempDir() // stands in for the daemon socket dir
+	p := &sandboxprofile.Profile{
+		Filesystem: sandboxprofile.Filesystem{AllowUnixDir: []string{dir}},
+	}
+	g, err := ResolveGrants(p, t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(g.UnixSocketDirs, dir) {
+		t.Errorf("AllowUnixDir not resolved into UnixSocketDirs: %v", g.UnixSocketDirs)
+	}
+	// File access must come along so the socket files can be opened.
+	if !slices.Contains(g.AllowPaths, dir) {
+		t.Errorf("AllowUnixDir must also grant file access: %v", g.AllowPaths)
+	}
+}
+
+// The grant must survive even when the dir does not exist at launch: the
+// daemon may create it later and Seatbelt matches subpaths at syscall time.
+// (Contrast --allow / --read, which existence-filter their paths.)
+func TestResolveGrantsUnixSocketDirNonexistent(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "cc-daemon-502")
+	p := &sandboxprofile.Profile{
+		Filesystem: sandboxprofile.Filesystem{AllowUnixDir: []string{missing}},
+	}
+	g, err := ResolveGrants(p, t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(g.UnixSocketDirs, missing) {
+		t.Errorf("nonexistent unix dir must still be granted: %v", g.UnixSocketDirs)
+	}
+}
+
 func TestResolveGrantsSkipsMissingProfilePaths(t *testing.T) {
 	var notices strings.Builder
 	p := &sandboxprofile.Profile{

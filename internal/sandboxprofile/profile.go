@@ -87,6 +87,12 @@ type Filesystem struct {
 	Allow []string `json:"allow,omitempty"` // read+write
 	Read  []string `json:"read,omitempty"`  // read-only
 	Write []string `json:"write,omitempty"` // write-only
+	// AllowUnixDir grants AF_UNIX connect to every socket under the given
+	// directory (a subpath rule) plus read+write access to it, for tools
+	// that mint sockets with dynamic names at runtime (e.g. Claude Code's
+	// Agent View under /tmp/cc-daemon-<uid>). Unlike allow/read/write it is
+	// not existence-filtered: the daemon may create the dir after launch.
+	AllowUnixDir []string `json:"allow_unix_dir,omitempty"`
 	// OverrideDeny removes entries from the built-in protected-path
 	// deny set (Baseline.ProtectedPaths). It does not grant access by
 	// itself; a matching allow/read/write grant is still required.

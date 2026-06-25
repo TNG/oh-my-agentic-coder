@@ -1,6 +1,8 @@
 package sandboxrun
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -155,6 +157,70 @@ func TestSBPLNoBindWithoutPorts(t *testing.T) {
 	p := GenerateSBPL(g)
 	if strings.Contains(p, "(allow network-bind)") {
 		t.Error("no listen/open ports: bind must stay denied")
+	}
+}
+
+func TestSBPLUnixSocketDir(t *testing.T) {
+	g := baseGrants()
+	g.UnixSocketDirs = []string{"/tmp/cc-daemon-502"}
+	p := GenerateSBPL(g)
+	if !strings.Contains(p, `(allow network-outbound (subpath "/tmp/cc-daemon-502"))`) {
+		t.Error("unix socket dir must emit a subpath network-outbound rule for AF_UNIX connect")
+	}
+}
+
+// The unix-dir grant must stay path-scoped. A path-less unix allow or a root
+// subpath would let the sandboxed process connect to EVERY unix socket on the
+// host (docker.sock, ssh-agent, the omac facade socket itself) — a real hole.
+func TestSBPLUnixSocketDirScoped(t *testing.T) {
+	g := baseGrants()
+	g.UnixSocketDirs = []string{"/tmp/cc-daemon-502"}
+	p := GenerateSBPL(g)
+	for _, forbidden := range []string{
+		"(allow network-outbound)\n",
+		`(allow network-outbound (subpath "/"))`,
+		"(allow network*)",
+	} {
+		if strings.Contains(p, forbidden) {
+			t.Errorf("unix-dir grant emitted an over-broad rule: %q", forbidden)
+		}
+	}
+}
+
+// Seatbelt resolves symlinks before matching, so a rule for a dir that
+// doesn't exist yet (the daemon mints it after launch) must name the
+// canonical path. In production this is the /tmp -> /private/tmp firmlink;
+// here an explicit symlink stands in so the test is platform-independent.
+func TestSBPLUnixSocketDirCanonicalizesNonexistent(t *testing.T) {
+	base := t.TempDir()
+	real := filepath.Join(base, "real")
+	if err := os.Mkdir(real, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(base, "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	realResolved, err := filepath.EvalSymlinks(real)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	g := baseGrants()
+	g.UnixSocketDirs = []string{filepath.Join(link, "cc-daemon-502")} // under the symlink, not yet created
+	p := GenerateSBPL(g)
+	want := `(allow network-outbound (subpath "` + filepath.Join(realResolved, "cc-daemon-502") + `"))`
+	if !strings.Contains(p, want) {
+		t.Errorf("expected canonical (symlink-resolved) subpath rule for a not-yet-created dir\nwant: %s\ngot:\n%s", want, p)
+	}
+}
+
+func TestSBPLNoUnixSocketDirByDefault(t *testing.T) {
+	g := baseGrants()
+	g.UnixSocketDirs = nil
+	p := GenerateSBPL(g)
+	if strings.Contains(p, "network-outbound (subpath") {
+		t.Error("no unix dir grant: must not emit any subpath network-outbound rule")
 	}
 }
 
