@@ -3,7 +3,9 @@ package session
 import (
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -21,12 +23,12 @@ func opencodeHarness(t *testing.T) config.Harness {
 
 func TestListUnsupported(t *testing.T) {
 	// Harness with no Session block.
-	if _, err := list(config.Harness{}, "/w", nil, ""); !errors.Is(err, ErrUnsupported) {
+	if _, err := list(config.Harness{}, "/w", nil, "", ""); !errors.Is(err, ErrUnsupported) {
 		t.Errorf("nil Session: err = %v, want ErrUnsupported", err)
 	}
 	// Harness whose Session declares no listing strategy.
 	h := config.Harness{Session: &config.HarnessSession{ListKind: config.SessionListNone}}
-	if _, err := list(h, "/w", nil, ""); !errors.Is(err, ErrUnsupported) {
+	if _, err := list(h, "/w", nil, "", ""); !errors.Is(err, ErrUnsupported) {
 		t.Errorf("SessionListNone: err = %v, want ErrUnsupported", err)
 	}
 }
@@ -40,7 +42,7 @@ func TestListOpenCodeParseAndFilter(t *testing.T) {
 			{"id":"ses_other","title":"elsewhere","updated":3000,"directory":"/home/u/other"}
 		]`), nil
 	}
-	got, err := list(opencodeHarness(t), wd, run, "")
+	got, err := list(opencodeHarness(t), wd, run, "", "")
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -57,12 +59,66 @@ func TestListOpenCodeParseAndFilter(t *testing.T) {
 
 func TestListOpenCodeCLIFailureIsEmpty(t *testing.T) {
 	run := func(name string, args ...string) ([]byte, error) { return nil, errors.New("not found") }
-	got, err := list(opencodeHarness(t), "/w", run, "")
+	got, err := list(opencodeHarness(t), "/w", run, "", "")
 	if err != nil {
 		t.Fatalf("CLI failure should not error, got %v", err)
 	}
 	if got != nil {
 		t.Errorf("CLI failure should yield nil sessions, got %+v", got)
+	}
+}
+
+func TestListOpenCodeDBMissingReturnsNil(t *testing.T) {
+	// No db file -> nil (falls back to CLI, which also returns nil here).
+	if got := listOpenCodeDB("/w", filepath.Join(t.TempDir(), "nope.db")); got != nil {
+		t.Errorf("missing db should yield nil, got %+v", got)
+	}
+}
+
+func TestListOpenCodeDBParseAndFilter(t *testing.T) {
+	// Build a fake db with a session table mirroring opencode's schema and
+	// verify listOpenCodeDB parses it. Requires sqlite3 on PATH; skip when
+	// unavailable (best-effort, like the production path).
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("sqlite3 not on PATH; skipping DB parse test")
+	}
+	db := filepath.Join(t.TempDir(), "opencode.db")
+	wd := "/home/u/proj"
+	createSessionTable(t, db, []ocDBRow{
+		{ID: "ses_new", Title: "newest", Updated: 2000, Directory: wd},
+		{ID: "ses_old", Title: "oldest", Updated: 1000, Directory: wd},
+		{ID: "ses_other", Title: "elsewhere", Updated: 3000, Directory: "/home/u/other"},
+	})
+	got := listOpenCodeDB(wd, db)
+	if len(got) != 2 {
+		t.Fatalf("got %d sessions, want 2 (filtered to workdir): %+v", len(got), got)
+	}
+	if got[0].ID != "ses_new" || got[1].ID != "ses_old" {
+		t.Errorf("order = [%s,%s], want newest-first [ses_new,ses_old]", got[0].ID, got[1].ID)
+	}
+	if !got[0].When.Equal(time.UnixMilli(2000)) {
+		t.Errorf("ses_new When = %v, want epoch-ms 2000", got[0].When)
+	}
+}
+
+type ocDBRow struct {
+	ID, Title string
+	Updated   int64
+	Directory string
+}
+
+func createSessionTable(t *testing.T, db string, rows []ocDBRow) {
+	t.Helper()
+	args := []string{db,
+		"CREATE TABLE session (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, slug TEXT NOT NULL, directory TEXT NOT NULL, title TEXT NOT NULL, version TEXT NOT NULL, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL);"}
+	for _, r := range rows {
+		args = append(args,
+			"INSERT INTO session (id, project_id, slug, directory, title, version, time_created, time_updated) VALUES ('"+
+				r.ID+"','p','s','"+r.Directory+"','"+r.Title+"','v',0,"+strconv.FormatInt(r.Updated, 10)+");")
+	}
+	cmd := exec.Command("sqlite3", args...)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("create session table: %v\n%s", err, out)
 	}
 }
 

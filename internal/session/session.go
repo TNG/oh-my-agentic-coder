@@ -20,6 +20,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -50,19 +51,19 @@ func execRunner(name string, args ...string) ([]byte, error) {
 // List returns harness's prior sessions for workdir, most-recent first.
 // workdir SHOULD be absolute; it is cleaned before comparison.
 func List(h config.Harness, workdir string) ([]Session, error) {
-	return list(h, workdir, execRunner, claudeProjectsRoot())
+	return list(h, workdir, execRunner, claudeProjectsRoot(), opencodeDBPath())
 }
 
-// list is the testable core: callers inject the command runner and the Claude
-// projects root.
-func list(h config.Harness, workdir string, run runner, claudeRoot string) ([]Session, error) {
+// list is the testable core: callers inject the command runner, the Claude
+// projects root, and the opencode SQLite db path.
+func list(h config.Harness, workdir string, run runner, claudeRoot, ocDBPath string) ([]Session, error) {
 	if h.Session == nil {
 		return nil, ErrUnsupported
 	}
 	workdir = filepath.Clean(workdir)
 	switch h.Session.ListKind {
 	case config.SessionListOpenCodeCLI:
-		return listOpenCode(workdir, run), nil
+		return listOpenCode(workdir, run, ocDBPath), nil
 	case config.SessionListClaudeFiles:
 		return listClaude(workdir, claudeRoot), nil
 	default:
@@ -91,9 +92,83 @@ type ocRecord struct {
 	Directory string `json:"directory"`
 }
 
-// listOpenCode runs the opencode CLI and keeps records for workdir. A missing
-// CLI, non-zero exit, or unparseable output yields nil (best-effort).
-func listOpenCode(workdir string, run runner) []Session {
+// listOpenCode returns sessions for workdir. It prefers reading the opencode
+// SQLite db directly (~6ms) when the sqlite3 CLI is available, and falls back
+// to shelling out to `opencode session list` (~1s) otherwise. A missing db,
+// missing sqlite3, or unparseable output yields nil (best-effort).
+func listOpenCode(workdir string, run runner, ocDBPath string) []Session {
+	if sessions := listOpenCodeDB(workdir, ocDBPath); sessions != nil {
+		return sessions
+	}
+	return listOpenCodeCLI(workdir, run)
+}
+
+// opencodeDBPath returns ~/.local/share/opencode/opencode.db, or "" when no
+// home dir resolves.
+func opencodeDBPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return ""
+	}
+	return filepath.Join(home, ".local", "share", "opencode", "opencode.db")
+}
+
+// listOpenCodeDB reads sessions directly from opencode.db via the sqlite3 CLI.
+// The db is opened read-only so a live opencode instance is not disturbed.
+// Returns nil when sqlite3 is missing, the db is missing, or the query fails
+// (best-effort — the caller falls back to the opencode CLI).
+func listOpenCodeDB(workdir, dbPath string) []Session {
+	if dbPath == "" {
+		return nil
+	}
+	if _, err := os.Stat(dbPath); err != nil {
+		return nil
+	}
+	sqlite, err := exec.LookPath("sqlite3")
+	if err != nil {
+		return nil
+	}
+	// ponytail: workdir is cleaned by the caller; embed it literally. The
+	// session table's directory column holds the absolute path opencode was
+	// launched from, which is what we match against.
+	q := "SELECT id, title, time_updated FROM session WHERE directory = '" +
+		strings.ReplaceAll(workdir, "'", "''") +
+		"' ORDER BY time_updated DESC;"
+	out, err := exec.Command(sqlite, "file:"+dbPath+"?mode=ro", q).Output()
+	if err != nil {
+		return nil
+	}
+	var sessions []Session
+	for _, line := range strings.Split(string(out), "\n") {
+		if line = strings.TrimSpace(line); line == "" {
+			continue
+		}
+		// sqlite3's default separator is '|'. Title may contain '|' but that
+		// is vanishingly rare for session titles; SplitN keeps the title whole.
+		parts := strings.SplitN(line, "|", 3)
+		if len(parts) < 3 {
+			continue
+		}
+		id, title, tsStr := parts[0], parts[1], parts[2]
+		if id == "" {
+			continue
+		}
+		var when time.Time
+		if ms, perr := strconv.ParseInt(tsStr, 10, 64); perr == nil && ms > 0 {
+			when = time.UnixMilli(ms)
+		}
+		sessions = append(sessions, Session{ID: id, Title: title, When: when})
+	}
+	// Already sorted by time_updated DESC in SQL; re-sort to be safe (also
+	// sinks zero-time rows deterministically).
+	sortNewestFirst(sessions)
+	return sessions
+}
+
+// listOpenCodeCLI runs the opencode CLI and keeps records for workdir. A
+// missing CLI, non-zero exit, or unparseable output yields nil (best-effort).
+// This is the slow fallback (~1s) used when sqlite3 is not on PATH.
+func listOpenCodeCLI(workdir string, run runner) []Session {
 	out, err := run("opencode", "session", "list", "--format", "json")
 	if err != nil {
 		return nil
