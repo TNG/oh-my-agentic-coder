@@ -251,7 +251,32 @@ export const OmacMultiDirPlugin: Plugin = async ({ client, directory, worktree }
       if (!enabled()) return
       const e: any = event
       switch (e?.type) {
-        case "session.created":
+        case "session.created": {
+          const info = e.properties?.info
+          const id: string | undefined = info?.id
+          const dir: string | undefined = info?.directory
+          if (id && dir) {
+            sessionDir.set(id, dir)
+            await activate(dir)
+          }
+          // Persistent-ish omac-vs-bare indicator: fire a toast once on
+          // session start. Not in the transcript, so it cannot confuse the
+          // model. Reads OMAC_VERSION (omac injects it; bare = no toast).
+          // tui.showToast is a documented SDK API (not experimental.*).
+          {
+            const ver = process.env.OMAC_VERSION
+            if (ver) {
+              try {
+                await (client as any).tui.showToast({
+                  body: { message: `omac v${ver}`, variant: "info" },
+                })
+              } catch {
+                // TUI client may be absent (headless/CI); ignore.
+              }
+            }
+          }
+          break
+        }
         case "session.updated": {
           const info = e.properties?.info
           const id: string | undefined = info?.id
