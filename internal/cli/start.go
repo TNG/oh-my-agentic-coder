@@ -241,7 +241,7 @@ func runStart(args []string, env *Env) int {
 	// preserved by also tracking which classes saw any input.
 	type bundleDriftProblem struct{ skill string }
 	type missingSecretProblem struct{ skill, secret string }
-	type invalidSecretProblem struct{ skill, secret, pattern string }
+	type invalidSecretProblem struct{ skill, secret, reason string }
 	type missingFieldProblem struct {
 		skill  string
 		fields []string
@@ -323,7 +323,7 @@ func runStart(args []string, env *Env) int {
 						if !*skipSecretPattern {
 							if perr := validatePattern(spec, envVal); perr != nil {
 								invalidSecrets = append(invalidSecrets,
-									invalidSecretProblem{skill: e.Name, secret: spec.Name, pattern: spec.Pattern})
+									invalidSecretProblem{skill: e.Name, secret: spec.Name, reason: perr.Error()})
 							}
 						}
 						continue
@@ -405,10 +405,10 @@ func runStart(args []string, env *Env) int {
 			}
 		}
 		if len(invalidSecrets) > 0 {
-			fmt.Fprintln(env.Stderr, "\n  secret from environment does not match required pattern (pass --skip-secret-pattern if the pattern is outdated):")
+			fmt.Fprintln(env.Stderr, "\n  secret from environment failed pattern validation (pass --skip-secret-pattern if the pattern is outdated):")
 			for _, p := range invalidSecrets {
-				fmt.Fprintf(env.Stderr, "    %s/%s — $%s does not match /%s/ (fix the exported value, or run omac secrets set %s %s)\n",
-					p.skill, p.secret, p.secret, p.pattern, p.skill, p.secret)
+				fmt.Fprintf(env.Stderr, "    %s/%s — %s (fix the exported value, or run omac secrets set %s %s)\n",
+					p.skill, p.secret, p.reason, p.skill, p.secret)
 			}
 		}
 		if len(missingFields) > 0 {
@@ -644,11 +644,13 @@ func runStart(args []string, env *Env) int {
 // secretFromEnv returns the host value that will satisfy a keychain-absent
 // secret at runtime, if any. It returns ok=true only when the secret is
 // listed under sidecar.env_passthrough AND the shell exports a non-empty
-// value for it — the conditions under which the supervisor injects the var
-// from the host at spawn time (see supervisor.buildEnv). In that case the
-// secret is genuinely available at runtime and the preflight must not
-// refuse to start. See the skainet skills' omac.yaml for the canonical
-// "keychain or env_passthrough" fallback contract.
+// value for it. The supervisor passes env_passthrough vars to the sidecar
+// at spawn time (see supervisor.buildEnv) whenever the var is present, even
+// if empty; here we deliberately treat an empty value as not satisfying a
+// required secret, since an empty token is no token. In that case the
+// secret is genuinely usable at runtime and the preflight must not refuse
+// to start. See the skainet skills' omac.yaml for the canonical "keychain
+// or env_passthrough" fallback contract.
 func secretFromEnv(name string, envPassthrough map[string]struct{}) (string, bool) {
 	if _, ok := envPassthrough[name]; !ok {
 		return "", false

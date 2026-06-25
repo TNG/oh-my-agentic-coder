@@ -83,6 +83,14 @@ func makeEnv(workdir string) *Env {
 // the supervisor would inject the var at runtime.
 func TestSecretFromEnv(t *testing.T) {
 	const name = "SKAINET_TOKEN"
+	// The "env unset" subtest calls os.Unsetenv directly (t.Setenv can't
+	// unset a var), so restore whatever the surrounding env had to avoid
+	// leaking state into later tests in this package.
+	if orig, ok := os.LookupEnv(name); ok {
+		t.Cleanup(func() { os.Setenv(name, orig) })
+	} else {
+		t.Cleanup(func() { os.Unsetenv(name) })
+	}
 	passthrough := map[string]struct{}{name: {}}
 	none := map[string]struct{}{}
 
