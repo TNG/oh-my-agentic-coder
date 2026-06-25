@@ -751,16 +751,35 @@ func printContinueHint(env *Env, harness config.Harness) {
 	if harness.Session == nil || len(harness.Session.ContinueArgs) == 0 {
 		return
 	}
-	sessions, err := session.List(harness, env.Workdir)
-	if err != nil || len(sessions) == 0 {
-		return
+	// session.List may shell out to the harness CLI (opencode: ~500ms) or
+	// read many JSONL files (claude). Run it with a deadline so the hint
+	// never blocks exit by more than hintTimeout; if it doesn't finish in
+	// time we simply skip the hint (best-effort, never user-visible delay).
+	type result struct {
+		sessions []session.Session
+		err      error
 	}
-	// Show the most recent session's id so the user can copy-paste the
-	// exact `omac continue -s <id>` command. sessions[0] is newest-first
-	// (see sortNewestFirst in internal/session).
-	tok := continueHintToken(harness)
-	fmt.Fprintf(env.Stderr, "\nTo resume this session: omac continue%s -s %s\n", tok, sessions[0].ID)
+	ch := make(chan result, 1)
+	go func() {
+		s, err := session.List(harness, env.Workdir)
+		ch <- result{s, err}
+	}()
+	select {
+	case r := <-ch:
+		if r.err != nil || len(r.sessions) == 0 {
+			return
+		}
+		tok := continueHintToken(harness)
+		fmt.Fprintf(env.Stderr, "\nTo resume this session: omac continue%s -s %s\n", tok, r.sessions[0].ID)
+	case <-time.After(hintTimeout):
+		// Timed out — skip the hint rather than blocking exit.
+	}
 }
+
+// hintTimeout bounds how long printContinueHint will block exit waiting for
+// the harness's session list. opencode shells out to its CLI; 2s is plenty
+// on a warm cache and a sane ceiling for the pathological slow case.
+const hintTimeout = 2 * time.Second
 
 // secretFromEnv returns the host value that will satisfy a keychain-absent
 // secret at runtime, if any. It returns ok=true only when the secret is
