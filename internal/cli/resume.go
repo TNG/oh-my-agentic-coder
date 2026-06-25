@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
+	"os"
+	"os/signal"
 	"strconv"
 	"strings"
 	"time"
@@ -63,13 +65,14 @@ func buildResumeInnerArgs(sess *config.HarnessSession, id string, userInner []st
 
 // pickSession renders the session list and reads a 1-based selection from
 // stdin. It returns the chosen 0-based index and true, or false when the user
-// cancels (empty line / EOF), enters an invalid choice, or stdin is not a TTY
-// (in which case the list is still printed with a hint).
+// cancels (empty line / EOF / Ctrl-C), enters an invalid choice, or the
+// session is not interactive (in which case the list is still printed with a
+// hint). Interactivity requires BOTH stdin and stdout to be a TTY.
 func pickSession(env *Env, harnessName string, sessions []session.Session) (int, bool) {
 	st := newStyler(env.Stdout)
 	renderSessions(env, st, harnessName, sessions)
 
-	if !term.IsTerminal(int(env.Stdin.Fd())) {
+	if !term.IsTerminal(int(env.Stdin.Fd())) || !term.IsTerminal(int(env.Stdout.Fd())) {
 		fmt.Fprintln(env.Stderr,
 			"\nomac resume: run in an interactive terminal to select a session "+
 				"(or use `omac continue`).")
@@ -77,12 +80,31 @@ func pickSession(env *Env, harnessName string, sessions []session.Session) (int,
 	}
 
 	fmt.Fprintf(env.Stdout, "\nSelect a session [1-%d] (Enter to cancel): ", len(sessions))
-	line, _ := bufio.NewReader(env.Stdin).ReadString('\n')
-	idx, ok := parseSelection(line, len(sessions))
-	if !ok && strings.TrimSpace(line) != "" {
-		fmt.Fprintf(env.Stderr, "omac resume: invalid selection %q\n", strings.TrimSpace(line))
+
+	// Treat Ctrl-C during the prompt as cancel (exit OK), not a process kill.
+	// We intercept SIGINT only for the duration of the read; the default
+	// handler is restored on return via signal.Stop.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt)
+	defer signal.Stop(sigCh)
+
+	lineCh := make(chan string, 1)
+	go func() {
+		line, _ := bufio.NewReader(env.Stdin).ReadString('\n')
+		lineCh <- line
+	}()
+
+	select {
+	case <-sigCh:
+		fmt.Fprintln(env.Stdout) // finish the prompt line the ^C interrupted
+		return 0, false
+	case line := <-lineCh:
+		idx, ok := parseSelection(line, len(sessions))
+		if !ok && strings.TrimSpace(line) != "" {
+			fmt.Fprintf(env.Stderr, "omac resume: invalid selection %q\n", strings.TrimSpace(line))
+		}
+		return idx, ok
 	}
-	return idx, ok
 }
 
 // parseSelection interprets a picker input line against a list of n items. It

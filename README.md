@@ -73,8 +73,10 @@ omac resume claude     # ...with Claude Code
 `omac resume` lists only the current folder's sessions, newest first, and
 launches the one you pick inside omac. It reads each harness's own session
 store — opencode via `opencode session list`, Claude Code by reading
-`~/.claude/projects/<folder>/<id>.jsonl` (titles come from the session's
-`aiTitle`, and a file's embedded `cwd` decides which folder it belongs to).
+`~/.claude/projects/<encoded-cwd>/<id>.jsonl` (where `<encoded-cwd>` is the
+folder path with non-alphanumerics replaced by `-`, the way Claude Code names
+it). Titles come from the session's `aiTitle`, and a file's embedded `cwd`
+decides which folder it belongs to.
 Both subcommands take the same flags and optional `[harness]` token as `start`.
 
 Each harness ships a small client-side **bridge** that wires the agent to

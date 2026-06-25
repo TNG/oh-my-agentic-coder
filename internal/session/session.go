@@ -223,7 +223,9 @@ func parseClaudeSession(path, workdir string) (Session, bool) {
 			firstUser = firstUserText(rec.Message)
 		}
 		if rec.Timestamp != "" {
-			if t, err := time.Parse(time.RFC3339, rec.Timestamp); err == nil {
+			// RFC3339Nano accepts both fractional (e.g. ...:57.378Z) and
+			// whole-second timestamps; Claude emits the fractional form.
+			if t, err := time.Parse(time.RFC3339Nano, rec.Timestamp); err == nil {
 				latest = t
 			}
 		}
