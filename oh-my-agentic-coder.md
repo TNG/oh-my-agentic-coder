@@ -583,6 +583,7 @@ Common flags:
 - `--no-sandbox` — run the inner command directly without a sandbox (dangerous; for debugging only).
 - `--keep-running` — do not stop sidecars when the inner command exits (useful when iterating on sidecar development).
 - `--accept-skill-changes` — tolerate `bundle_hash` drift.
+- `--skip-secret-pattern` — do not enforce a secret's `pattern` against an `env_passthrough`-supplied value (escape hatch for an outdated pattern; the raw value is still passed through to the sidecar).
 - `--verbose`, `--log-level <level>`.
 
 ### 10.5 `omac doctor`
