@@ -151,9 +151,10 @@ func kernelVersionString() string {
 // PATH entry and the real binary live in different trees. It runs on the
 // supervisor (outside the namespace), so the lookup sees the user's real
 // PATH — the same resolution `which opencode` performs. Directories already
-// covered by the baseline (e.g. /usr/bin) are harmless: the dedupe in
-// BuildBwrapArgv collapses duplicate grants. Returns nil when the command
-// cannot be found or resolved.
+// covered by the baseline (e.g. /usr/bin) are harmless: bwrap re-binding a
+// path that a parent bind already covers is idempotent. (BuildBwrapArgv's
+// dedupe only drops exact-duplicate path strings, not child-of-parent
+// overlaps.) Returns nil when the command cannot be found or resolved.
 func resolveInnerBinaryDirs(innerArgv []string) []string {
 	if len(innerArgv) == 0 || innerArgv[0] == "" {
 		return nil
@@ -217,8 +218,9 @@ func BuildChildArgv(g *Grants, innerArgv []string) ([]string, error) {
 	// The omac binary itself must exist inside the mount namespace for
 	// bwrap to exec stage2. It commonly lives outside the granted
 	// trees (~/go/bin, ~/.local/bin, /opt/omac, ...), so grant it
-	// read-only explicitly; the dedupe in BuildBwrapArgv collapses it
-	// when an existing grant already covers it.
+	// read-only explicitly. If a baseline grant already covers it, the
+	// redundant bind is harmless (bwrap re-binding under a parent bind is
+	// idempotent; BuildBwrapArgv's dedupe drops only exact-duplicate paths).
 	gz := *g
 	gz.ReadPaths = append(append([]string{}, g.ReadPaths...), self)
 
@@ -231,8 +233,9 @@ func BuildChildArgv(g *Grants, innerArgv []string) ([]string, error) {
 	// host PATH (the same lookup `which opencode` performs) and grant both
 	// the PATH-entry (shim) directory and the symlink-resolved real
 	// directory read-only, so the shim is found on PATH and its target plus
-	// sibling files (shared libs, node runtime) are reachable too. dedupe
-	// in BuildBwrapArgv collapses any grant an existing one already covers.
+	// sibling files (shared libs, node runtime) are reachable too. Redundant
+	// grants are harmless (bwrap re-binding under a parent bind is idempotent;
+	// BuildBwrapArgv's dedupe drops only exact-duplicate paths, not overlaps).
 	gz.ReadPaths = append(gz.ReadPaths, resolveInnerBinaryDirs(innerArgv)...)
 
 	stage2 := []string{self, "sandbox", "stage2"}
