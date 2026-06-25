@@ -85,6 +85,13 @@ type FilterConfig struct {
 	Resolve func(ctx context.Context, host string) ([]netip.Addr, error)
 	// Logf receives one line per decision; nil discards.
 	Logf func(format string, args ...any)
+
+	// onCoalesceWait, when non-nil, is called just before a request blocks
+	// on an in-flight prompt for the same host (the coalescing path). It is
+	// a test seam that lets a test deterministically observe that all
+	// followers have parked before releasing the leader's prompt; it is
+	// never set in production.
+	onCoalesceWait func()
 }
 
 // Filter decides host admission and pins DNS results.
@@ -239,6 +246,9 @@ func (f *Filter) promptCoalesced(host string, port int) (PromptResult, bool) {
 	f.promptMu.Lock()
 	if w, ok := f.inflight[host]; ok {
 		f.promptMu.Unlock()
+		if f.cfg.onCoalesceWait != nil {
+			f.cfg.onCoalesceWait()
+		}
 		<-w.done
 		return w.res, true
 	}
