@@ -150,9 +150,12 @@ func TestEchoRestEndToEnd(t *testing.T) {
 		_ = cmd.Wait()
 	})
 
-	// Wait for /status to answer 2xx.
+	// Wait for /status to answer 2xx. The deadline is generous because a
+	// cold Python interpreter start on a loaded CI runner (notably macOS)
+	// can take well over 5s; a tight bound here flaked as "sidecar never
+	// became healthy" even though the sidecar was merely slow to boot.
 	sidecarURL := fmt.Sprintf("http://127.0.0.1:%d/status", sidecarPort)
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		resp, err := http.Get(sidecarURL)
 		if err == nil {
