@@ -20,6 +20,7 @@ import (
 	"github.com/tngtech/oh-my-agentic-coder/internal/registry"
 	"github.com/tngtech/oh-my-agentic-coder/internal/sandbox"
 	"github.com/tngtech/oh-my-agentic-coder/internal/secrets"
+	"github.com/tngtech/oh-my-agentic-coder/internal/session"
 	"github.com/tngtech/oh-my-agentic-coder/internal/skillconfig"
 	"github.com/tngtech/oh-my-agentic-coder/internal/skillsource"
 	"github.com/tngtech/oh-my-agentic-coder/internal/supervisor"
@@ -709,7 +710,43 @@ func runLaunch(env *Env, opts launchOpts) int {
 		fmt.Fprintln(env.Stderr, prefix+": exec:", err)
 		return ExitSandboxAbnormal
 	}
+	printContinueHint(env, harness)
 	return code
+}
+
+// continueHintToken returns the harness token to embed in the post-exit
+// `omac continue` hint, or "" when the harness is the default (so the hint
+// reads `omac continue` with no token, matching what the user typed).
+// For non-default harnesses the first alias is preferred — it is the
+// shortest spelling users type (e.g. "claude" over "claude-code").
+func continueHintToken(h config.Harness) string {
+	if h.Name == config.DefaultHarness().Name {
+		return ""
+	}
+	for _, a := range h.Aliases {
+		if a != "" {
+			return " " + a
+		}
+	}
+	return " " + h.Name
+}
+
+// printContinueHint emits a one-line `omac continue [harness]` hint to stderr
+// after the inner command exits, but only when this harness supports
+// continuing AND a session for this workdir is resumable. Best-effort: a
+// missing harness CLI, an unreadable session store, or a harness with no
+// session strategy yields no sessions → no hint (never an error, never
+// blocks). Reuses session.List — the same path `omac resume` takes — so the
+// hint only appears when continue would actually find a session.
+func printContinueHint(env *Env, harness config.Harness) {
+	if harness.Session == nil || len(harness.Session.ContinueArgs) == 0 {
+		return
+	}
+	sessions, err := session.List(harness, env.Workdir)
+	if err != nil || len(sessions) == 0 {
+		return
+	}
+	fmt.Fprintf(env.Stderr, "\nTo resume this session: omac continue%s\n", continueHintToken(harness))
 }
 
 // secretFromEnv returns the host value that will satisfy a keychain-absent

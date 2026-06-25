@@ -128,3 +128,14 @@ func TestRelativeTime(t *testing.T) {
 		t.Errorf("2d ago = %q", got)
 	}
 }
+
+func TestContinueHintToken(t *testing.T) {
+	oc, _ := config.LookupHarness("opencode")
+	cc, _ := config.LookupHarness("claude-code")
+	if got := continueHintToken(oc); got != "" {
+		t.Errorf("opencode token = %q, want empty (default harness)", got)
+	}
+	if got := continueHintToken(cc); got != " claude" {
+		t.Errorf("claude token = %q, want \" claude\" (first alias)", got)
+	}
+}
