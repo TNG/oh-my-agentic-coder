@@ -36,6 +36,10 @@ func TestBuildContinueOpts(t *testing.T) {
 		{"start flags preserved", []string{"--verbose", "--no-sandbox"}, "opencode", []string{"--continue"}, true, true},
 		{"trailing inner args preserved", []string{"--", "--model", "anthropic/x"}, "opencode", []string{"--continue", "--model", "anthropic/x"}, false, false},
 		{"claude with flags and inner", []string{"claude", "--verbose", "--", "--foo"}, "claude-code", []string{"--continue", "--foo"}, true, false},
+		{"session id flag (-s)", []string{"-s", "ses_X"}, "opencode", []string{"--session", "ses_X"}, false, false},
+		{"session id flag (--session)", []string{"--session", "ses_Y"}, "opencode", []string{"--session", "ses_Y"}, false, false},
+		{"claude session id", []string{"claude", "-s", "uuid-9"}, "claude-code", []string{"--resume", "uuid-9"}, false, false},
+		{"session id with inner args", []string{"-s", "ses_Z", "--", "--model", "x"}, "opencode", []string{"--session", "ses_Z", "--model", "x"}, false, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

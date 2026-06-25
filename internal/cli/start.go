@@ -44,6 +44,9 @@ type launchOpts struct {
 	acceptSkillChanges bool
 	skipSecretPattern  bool
 	verbose            bool
+	// sessionID, when non-empty, selects a specific session to continue by id
+	// (`omac continue -s <id>`). Empty means "most recent" (the default).
+	sessionID string
 	// innerArgs are appended to the resolved inner command (user-supplied
 	// trailing `-- args` plus any command-specific flags like --continue).
 	innerArgs []string
@@ -65,7 +68,12 @@ func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, bool)
 		acceptSkillChanges = fs.Bool("accept-skill-changes", false, "Tolerate bundle_hash drift in registered skills (proceed even if the on-disk skill differs from what was registered).")
 		skipSecretPattern  = fs.Bool("skip-secret-pattern", false, "Do not enforce a secret's pattern against an env_passthrough-supplied value (escape hatch for an outdated pattern; the raw value is still passed through).")
 		verbose            = fs.Bool("verbose", false, "Verbose lifecycle logging.")
+		sessionID          = fs.String("session", "", "Continue a specific session by id instead of the most recent one. (shorthand: -s)")
 	)
+	// -s is the documented shorthand for --session (opencode mirrors this
+	// with `opencode -s <id>`; claude uses --resume, so its shorthand is
+	// different, but `omac -s` is harness-agnostic).
+	fs.StringVar(sessionID, "s", "", "Shorthand for --session.")
 	fs.Usage = func() {
 		fmt.Fprintf(env.Stderr, "Usage: omac %s [harness] [flags] [-- inner args...]\n", cmdName)
 		fmt.Fprintf(env.Stderr, "\nharness: one of %s (default: %s)\n\n",
@@ -108,6 +116,7 @@ func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, bool)
 		acceptSkillChanges: *acceptSkillChanges,
 		skipSecretPattern:  *skipSecretPattern,
 		verbose:            *verbose,
+		sessionID:          *sessionID,
 		innerArgs:          innerArgs,
 	}, true
 }
@@ -746,7 +755,11 @@ func printContinueHint(env *Env, harness config.Harness) {
 	if err != nil || len(sessions) == 0 {
 		return
 	}
-	fmt.Fprintf(env.Stderr, "\nTo resume this session: omac continue%s\n", continueHintToken(harness))
+	// Show the most recent session's id so the user can copy-paste the
+	// exact `omac continue -s <id>` command. sessions[0] is newest-first
+	// (see sortNewestFirst in internal/session).
+	tok := continueHintToken(harness)
+	fmt.Fprintf(env.Stderr, "\nTo resume this session: omac continue%s -s %s\n", tok, sessions[0].ID)
 }
 
 // secretFromEnv returns the host value that will satisfy a keychain-absent
