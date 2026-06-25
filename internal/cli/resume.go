@@ -105,13 +105,20 @@ func parseSelection(line string, n int) (int, bool) {
 func renderSessions(env *Env, st styler, harnessName string, sessions []session.Session) {
 	fmt.Fprintf(env.Stdout, "Recent sessions for %s (%s):\n\n",
 		st.bold(env.Workdir), harnessName)
-	// Width of the largest index, for alignment.
+	// Column widths for alignment: index and (variable-length) session id.
 	idxWidth := len(strconv.Itoa(len(sessions)))
+	idWidth := 0
+	for _, s := range sessions {
+		if len(s.ID) > idWidth {
+			idWidth = len(s.ID)
+		}
+	}
 	for i, s := range sessions {
 		num := fmt.Sprintf("%*d", idxWidth, i+1)
 		when := fmt.Sprintf("%-8s", relativeTime(s.When))
-		fmt.Fprintf(env.Stdout, "  %s  %s  %s\n",
-			st.cyan(num), st.gray(when), s.Title)
+		id := fmt.Sprintf("%-*s", idWidth, s.ID)
+		fmt.Fprintf(env.Stdout, "  %s  %s  %s  %s\n",
+			st.cyan(num), st.gray(when), st.gray(id), s.Title)
 	}
 }
 
