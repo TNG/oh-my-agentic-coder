@@ -20,6 +20,7 @@ import (
 	"github.com/tngtech/oh-my-agentic-coder/internal/registry"
 	"github.com/tngtech/oh-my-agentic-coder/internal/sandbox"
 	"github.com/tngtech/oh-my-agentic-coder/internal/secrets"
+	"github.com/tngtech/oh-my-agentic-coder/internal/session"
 	"github.com/tngtech/oh-my-agentic-coder/internal/skillconfig"
 	"github.com/tngtech/oh-my-agentic-coder/internal/skillsource"
 	"github.com/tngtech/oh-my-agentic-coder/internal/supervisor"
@@ -43,6 +44,9 @@ type launchOpts struct {
 	acceptSkillChanges bool
 	skipSecretPattern  bool
 	verbose            bool
+	// sessionID, when non-empty, selects a specific session to continue by id
+	// (`omac continue -s <id>`). Empty means "most recent" (the default).
+	sessionID string
 	// innerArgs are appended to the resolved inner command (user-supplied
 	// trailing `-- args` plus any command-specific flags like --continue).
 	innerArgs []string
@@ -64,7 +68,12 @@ func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, bool)
 		acceptSkillChanges = fs.Bool("accept-skill-changes", false, "Tolerate bundle_hash drift in registered skills (proceed even if the on-disk skill differs from what was registered).")
 		skipSecretPattern  = fs.Bool("skip-secret-pattern", false, "Do not enforce a secret's pattern against an env_passthrough-supplied value (escape hatch for an outdated pattern; the raw value is still passed through).")
 		verbose            = fs.Bool("verbose", false, "Verbose lifecycle logging.")
+		sessionID          = fs.String("session", "", "Continue a specific session by id instead of the most recent one. (shorthand: -s)")
 	)
+	// -s is the documented shorthand for --session (opencode mirrors this
+	// with `opencode -s <id>`; claude uses --resume, so its shorthand is
+	// different, but `omac -s` is harness-agnostic).
+	fs.StringVar(sessionID, "s", "", "Shorthand for --session.")
 	fs.Usage = func() {
 		fmt.Fprintf(env.Stderr, "Usage: omac %s [harness] [flags] [-- inner args...]\n", cmdName)
 		fmt.Fprintf(env.Stderr, "\nharness: one of %s (default: %s)\n\n",
@@ -107,6 +116,7 @@ func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, bool)
 		acceptSkillChanges: *acceptSkillChanges,
 		skipSecretPattern:  *skipSecretPattern,
 		verbose:            *verbose,
+		sessionID:          *sessionID,
 		innerArgs:          innerArgs,
 	}, true
 }
@@ -709,8 +719,67 @@ func runLaunch(env *Env, opts launchOpts) int {
 		fmt.Fprintln(env.Stderr, prefix+": exec:", err)
 		return ExitSandboxAbnormal
 	}
+	printContinueHint(env, harness)
 	return code
 }
+
+// continueHintToken returns the harness token to embed in the post-exit
+// `omac continue` hint, or "" when the harness is the default (so the hint
+// reads `omac continue` with no token, matching what the user typed).
+// For non-default harnesses the first alias is preferred — it is the
+// shortest spelling users type (e.g. "claude" over "claude-code").
+func continueHintToken(h config.Harness) string {
+	if h.Name == config.DefaultHarness().Name {
+		return ""
+	}
+	for _, a := range h.Aliases {
+		if a != "" {
+			return " " + a
+		}
+	}
+	return " " + h.Name
+}
+
+// printContinueHint emits a one-line `omac continue [harness]` hint to stderr
+// after the inner command exits, but only when this harness supports
+// continuing AND a session for this workdir is resumable. Best-effort: a
+// missing harness CLI, an unreadable session store, or a harness with no
+// session strategy yields no sessions → no hint (never an error, never
+// blocks). Reuses session.List — the same path `omac resume` takes — so the
+// hint only appears when continue would actually find a session.
+func printContinueHint(env *Env, harness config.Harness) {
+	if harness.Session == nil || len(harness.Session.ContinueArgs) == 0 {
+		return
+	}
+	// session.List may shell out to the harness CLI (opencode: ~500ms) or
+	// read many JSONL files (claude). Run it with a deadline so the hint
+	// never blocks exit by more than hintTimeout; if it doesn't finish in
+	// time we simply skip the hint (best-effort, never user-visible delay).
+	type result struct {
+		sessions []session.Session
+		err      error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		s, err := session.List(harness, env.Workdir)
+		ch <- result{s, err}
+	}()
+	select {
+	case r := <-ch:
+		if r.err != nil || len(r.sessions) == 0 {
+			return
+		}
+		tok := continueHintToken(harness)
+		fmt.Fprintf(env.Stderr, "\nTo resume this session: omac continue%s -s %s\n", tok, r.sessions[0].ID)
+	case <-time.After(hintTimeout):
+		// Timed out — skip the hint rather than blocking exit.
+	}
+}
+
+// hintTimeout bounds how long printContinueHint will block exit waiting for
+// the harness's session list. opencode shells out to its CLI; 2s is plenty
+// on a warm cache and a sane ceiling for the pathological slow case.
+const hintTimeout = 2 * time.Second
 
 // secretFromEnv returns the host value that will satisfy a keychain-absent
 // secret at runtime, if any. It returns ok=true only when the secret is

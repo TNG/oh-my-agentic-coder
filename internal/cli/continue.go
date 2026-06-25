@@ -28,9 +28,24 @@ func buildContinueOpts(args []string, env *Env) (launchOpts, int) {
 			"omac continue: harness %q does not support continuing sessions\n", opts.harness.Name)
 		return launchOpts{}, ExitMisuse
 	}
-	// Put the continue flag first, then any user-supplied inner args, so a
-	// trailing user positional (if any) is not mistaken for the flag's value.
-	inner := append([]string(nil), sess.ContinueArgs...)
+	// A specific session id (--session/-s) routes through the harness's
+	// resume-by-id flag (opencode --session <id>, claude --resume <id>).
+	// Without one we fall back to the bare continue flag (--continue),
+	// which re-enters the most recent session for this workdir.
+	var inner []string
+	if id := opts.sessionID; id != "" {
+		if sess.ResumeByIDArgs == nil {
+			fmt.Fprintf(env.Stderr,
+				"omac continue: harness %q does not support resuming a specific session id\n", opts.harness.Name)
+			return launchOpts{}, ExitMisuse
+		}
+		inner = append([]string(nil), sess.ResumeByIDArgs(id)...)
+	} else {
+		inner = append([]string(nil), sess.ContinueArgs...)
+	}
+	// Put the continue/resume flag first, then any user-supplied inner
+	// args, so a trailing user positional (if any) is not mistaken for the
+	// flag's value.
 	opts.innerArgs = append(inner, opts.innerArgs...)
 	return opts, ExitOK
 }

@@ -66,8 +66,18 @@ sandboxed launch pipeline as `start`:
 ```bash
 omac continue          # reopen the last session for this folder (opencode)
 omac continue claude   # ...with Claude Code
+omac continue -s <id>  # reopen a specific session by id (shorthand for --session)
 omac resume            # pick from this folder's recent sessions, then launch
 omac resume claude     # ...with Claude Code
+```
+
+`omac continue` re-enters the most recent session for this folder. Pass
+`-s`/`--session <id>` to target a specific session non-interactively
+(opencode `--session <id>`, claude `--resume <id>`). After the inner
+command exits, omac prints a one-line hint with the most recent session id:
+
+```
+To resume this session: omac continue -s ses_abc123
 ```
 
 `omac resume` lists only the current folder's sessions, newest first, and
@@ -474,8 +484,11 @@ omac [--workdir <dir>] <subcommand> [flags] [args]
 
   continue     Like `start`, but continue the most recent session for this
                workdir (appends the harness's continue flag: opencode/claude
-               `--continue`). Accepts the same flags as `start` and an
-               optional [harness] token.
+               `--continue`). Pass `-s`/`--session <id>` to target a specific
+               session (opencode `--session <id>`, claude `--resume <id>`).
+               Accepts the same flags as `start` and an optional [harness]
+               token. After exit, prints an `omac continue -s <id>` hint when a
+               resumable session exists for this workdir.
 
   resume       List recent sessions for this workdir, show an interactive
                numbered picker (title + relative time), and launch the
