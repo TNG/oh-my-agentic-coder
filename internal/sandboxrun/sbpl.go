@@ -120,8 +120,18 @@ func generateSBPLNetwork(g *Grants) string {
 		for _, p := range g.AllowTCPConnect {
 			fmt.Fprintf(&b, "(allow network-outbound (remote tcp \"*:%d\"))\n", p)
 		}
+		// 0 is the "any loopback port" sentinel: for tools that connect
+		// back over a random ephemeral port they can't predeclare.
+		wildcardLoopback := false
 		for _, p := range g.OpenPorts {
+			if p == 0 {
+				wildcardLoopback = true
+				continue
+			}
 			fmt.Fprintf(&b, "(allow network-outbound (remote tcp \"localhost:%d\"))\n", p)
+		}
+		if wildcardLoopback {
+			b.WriteString("(allow network-outbound (remote tcp \"localhost:*\"))\n")
 		}
 		// Seatbelt cannot filter bind by port: any listen/open port
 		// grants bind+inbound generally (documented platform limit).

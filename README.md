@@ -58,6 +58,37 @@ Supported harnesses (and aliases): `opencode` (`oc`), `claude-code`
 is rejected with the list of supported names. Inner arguments that happen to be
 barewords go after `--` (e.g. `omac start claude -- --model sonnet`).
 
+### Resuming prior work
+
+Two convenience subcommands re-enter earlier sessions through the same
+sandboxed launch pipeline as `start`:
+
+```bash
+omac continue          # reopen the last session for this folder (opencode)
+omac continue claude   # ...with Claude Code
+omac continue -s <id>  # reopen a specific session by id (shorthand for --session)
+omac resume            # pick from this folder's recent sessions, then launch
+omac resume claude     # ...with Claude Code
+```
+
+`omac continue` re-enters the most recent session for this folder. Pass
+`-s`/`--session <id>` to target a specific session non-interactively
+(opencode `--session <id>`, claude `--resume <id>`). After the inner
+command exits, omac prints a one-line hint with the most recent session id:
+
+```
+To resume this session: omac continue -s ses_abc123
+```
+
+`omac resume` lists only the current folder's sessions, newest first, and
+launches the one you pick inside omac. It reads each harness's own session
+store — opencode via `opencode session list`, Claude Code by reading
+`~/.claude/projects/<encoded-cwd>/<id>.jsonl` (where `<encoded-cwd>` is the
+folder path with non-alphanumerics replaced by `-`, the way Claude Code names
+it). Titles come from the session's `aiTitle`, and a file's embedded `cwd`
+decides which folder it belongs to.
+Both subcommands take the same flags and optional `[harness]` token as `start`.
+
 Each harness ships a small client-side **bridge** that wires the agent to
 omac's control plane (skill activation, the skills manifest, skill base URLs):
 
@@ -448,7 +479,25 @@ omac [--workdir <dir>] <subcommand> [flags] [args]
                  --no-sandbox            debug: run inner cmd directly
                  --keep-running          don't stop sidecars on exit
                  --accept-skill-changes  tolerate bundle_hash drift
+                 --skip-secret-pattern   don't enforce a secret's pattern
+                                         on an env_passthrough value
                  --verbose               lifecycle logging
+
+  continue     Like `start`, but continue the most recent session for this
+               workdir (appends the harness's continue flag: opencode/claude
+               `--continue`). Pass `-s`/`--session <id>` to target a specific
+               session (opencode `--session <id>`, claude `--resume <id>`).
+               Accepts the same flags as `start` and an optional [harness]
+               token. After exit, prints an `omac continue -s <id>` hint when a
+               resumable session exists for this workdir.
+
+  resume       List recent sessions for this workdir, show an interactive
+               numbered picker (title + relative time), and launch the
+               selected one inside omac (opencode `--session <id>`, claude
+               `--resume <id>`). Sessions come from the harness's own store
+               (opencode `session list`; Claude Code's ~/.claude/projects
+               files). Non-interactive stdin prints the list and exits.
+               Accepts the same flags as `start` and an optional [harness].
 
   doctor       Sanity checks: config, registry, binaries, secrets, sandbox.
   version

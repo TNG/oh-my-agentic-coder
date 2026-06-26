@@ -121,6 +121,8 @@ func commands() map[string]Command {
 		"secrets":    {Name: "secrets", Short: "Manage skill secrets in the OS keychain.", Run: runSecrets},
 		"config":     {Name: "config", Short: "Show resolved config + secret fingerprints for a skill.", Run: runConfig},
 		"start":      {Name: "start", Short: "Start sidecars + facade + sandbox. Optional [harness]: opencode|claude.", Run: runStart},
+		"continue":   {Name: "continue", Short: "Continue the last session for this workdir. Optional [harness].", Run: runContinue},
+		"resume":     {Name: "resume", Short: "Pick a recent session for this workdir and launch it. Optional [harness].", Run: runResume},
 		"serve":      {Name: "serve", Short: "Long-lived multi-directory server. Optional [harness]: opencode|claude.", Run: runServe},
 		"setup":      {Name: "setup", Short: "Provision omac's built-in skills into installed harnesses' skills dirs.", Run: runSetup},
 		"plugin":     {Name: "plugin", Short: "Install client-side harness bridge plugins (e.g. opencode-desktop).", Run: runPlugin},
@@ -149,6 +151,8 @@ Subcommands:
   config       Show resolved config + secret fingerprints for a skill.
   setup        Provision omac's built-in skills into installed harnesses.
   start        Start sidecars + facade + sandbox.       [harness]: opencode|claude
+  continue     Continue the last session for this workdir.   [harness]: opencode|claude
+  resume       Pick a recent session for this workdir, launch it. [harness]: opencode|claude
   serve        Long-lived multi-directory server.        [harness]: opencode|claude
   plugin       Install client-side bridge plugins (e.g. opencode-desktop).
   sandbox      Built-in kernel sandbox: omac sandbox run [flags] -- <cmd>.

@@ -134,30 +134,47 @@ func kernelVersionString() string {
 	return strings.TrimSpace(string(data))
 }
 
-// resolveInnerBinaryDir resolves the inner command's executable on the
-// host PATH and returns the directory holding its real (symlink-resolved)
-// file, or "" when the command cannot be found or resolved. It runs on
-// the supervisor (outside the namespace), so the lookup sees the user's
-// real PATH — the same resolution `which opencode` performs. Directories
-// already covered by the baseline (e.g. /usr/bin) are harmless: the
-// dedupe in BuildBwrapArgv collapses the duplicate grant.
-func resolveInnerBinaryDir(innerArgv []string) string {
+// resolveInnerBinaryDirs resolves the inner command's executable on the
+// host PATH and returns the directories that must be granted for it to be
+// reachable inside the namespace:
+//
+//   - the directory of the PATH entry itself, which is frequently a symlink
+//     or shim (e.g. ~/.bun/bin/opencode, a mise/asdf shim). stage2 re-runs
+//     LookPath inside the namespace, so this dir must be mounted and on PATH
+//     or the lookup fails even when the real binary is present elsewhere.
+//   - the directory of its symlink-resolved real file (e.g.
+//     ~/.bun/install/.../opencode-ai/bin/opencode.exe), so the link target
+//     and its sibling files (shared libs, node runtime) are reachable.
+//
+// Granting only the resolved dir (the historical behavior) left the shim on
+// PATH unmounted, breaking version-manager installs like bun where the
+// PATH entry and the real binary live in different trees. It runs on the
+// supervisor (outside the namespace), so the lookup sees the user's real
+// PATH — the same resolution `which opencode` performs. Directories already
+// covered by the baseline (e.g. /usr/bin) are harmless: bwrap re-binding a
+// path that a parent bind already covers is idempotent. (BuildBwrapArgv's
+// dedupe only drops exact-duplicate path strings, not child-of-parent
+// overlaps.) Returns nil when the command cannot be found or resolved.
+func resolveInnerBinaryDirs(innerArgv []string) []string {
 	if len(innerArgv) == 0 || innerArgv[0] == "" {
-		return ""
+		return nil
 	}
 	// LookPath handles both bare PATH names and explicit (absolute or
 	// relative) paths, returning an error when nothing resolves.
 	resolved, err := exec.LookPath(innerArgv[0])
 	if err != nil {
-		return ""
+		return nil
 	}
 	if abs, aerr := filepath.Abs(resolved); aerr == nil {
 		resolved = abs
 	}
+	dirs := []string{filepath.Dir(resolved)}
 	if real, rerr := filepath.EvalSymlinks(resolved); rerr == nil {
-		resolved = real
+		if d := filepath.Dir(real); d != dirs[0] {
+			dirs = append(dirs, d)
+		}
 	}
-	return filepath.Dir(resolved)
+	return dirs
 }
 
 func firstLine(b []byte) string {
@@ -201,24 +218,25 @@ func BuildChildArgv(g *Grants, innerArgv []string) ([]string, error) {
 	// The omac binary itself must exist inside the mount namespace for
 	// bwrap to exec stage2. It commonly lives outside the granted
 	// trees (~/go/bin, ~/.local/bin, /opt/omac, ...), so grant it
-	// read-only explicitly; the dedupe in BuildBwrapArgv collapses it
-	// when an existing grant already covers it.
+	// read-only explicitly. If a baseline grant already covers it, the
+	// redundant bind is harmless (bwrap re-binding under a parent bind is
+	// idempotent; BuildBwrapArgv's dedupe drops only exact-duplicate paths).
 	gz := *g
 	gz.ReadPaths = append(append([]string{}, g.ReadPaths...), self)
 
 	// The inner harness binary (e.g. opencode / claude) must also be
 	// reachable inside the namespace. Harnesses are frequently installed
 	// outside the baseline trees — version managers like mise, asdf, nvm,
-	// or volta put them under ~/.local/share/<mgr>/installs/... — so a
+	// or volta put them under ~/.local/share/<mgr>/installs/..., and bun
+	// installs a ~/.bun/bin shim pointing into ~/.bun/install/... — so a
 	// plain ~/.local/bin grant is not enough. Resolve the binary on the
-	// host PATH (the same lookup `which opencode` performs), follow
-	// symlinks to the real file, and grant its containing directory
-	// read-only so sibling files (shared libs, node runtime, shims) are
-	// reachable too. dedupe in BuildBwrapArgv collapses it when an
-	// existing grant already covers it.
-	if dir := resolveInnerBinaryDir(innerArgv); dir != "" {
-		gz.ReadPaths = append(gz.ReadPaths, dir)
-	}
+	// host PATH (the same lookup `which opencode` performs) and grant both
+	// the PATH-entry (shim) directory and the symlink-resolved real
+	// directory read-only, so the shim is found on PATH and its target plus
+	// sibling files (shared libs, node runtime) are reachable too. Redundant
+	// grants are harmless (bwrap re-binding under a parent bind is idempotent;
+	// BuildBwrapArgv's dedupe drops only exact-duplicate paths, not overlaps).
+	gz.ReadPaths = append(gz.ReadPaths, resolveInnerBinaryDirs(innerArgv)...)
 
 	stage2 := []string{self, "sandbox", "stage2"}
 	stage2 = append(stage2, Stage2Args(&gz)...)
