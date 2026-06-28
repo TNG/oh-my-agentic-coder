@@ -13,6 +13,7 @@ The supported fields are:
 - `filesystem.allow` (string[]) — read+write paths (directories or files)
 - `filesystem.read` (string[]) — read-only paths
 - `filesystem.write` (string[]) — write-only paths
+- `filesystem.deny` (string[]) — paths masked (denied read+write) inside granted trees. An entry with a path separator, `~`, or `$VAR` denies that exact expanded path; a bare basename glob (no separator, e.g. `.env` or `*.key`) is denied wherever that name appears in a granted tree, the working directory included. See sandbox-process-isolation.
 - `filesystem.override_deny` (string[]) — paths removed from the built-in protected-path deny set (see sandbox-process-isolation); does not grant access by itself
 - `network.mode` — one of `filtered` (default), `blocked`, `open`
 - `network.allow_domain` (string[]) — exact hostnames or `*.suffix` wildcards
@@ -70,7 +71,7 @@ Interactive website decisions (the "permanently" prompt choices) SHALL be stored
 - **THEN** `~/.config/omac/sandbox-profiles/default.pages.json` contains the suffix allow entry, pretty-printed, and a later session with the same profile allows `registry.npmjs.org` without prompting
 
 ### Requirement: CLI flags merge additively onto the profile
-`omac sandbox run` SHALL accept the flags `--allow <path>`, `--read <path>`, `--write <path>`, `--allow-file <path>`, `--open-port <port>`, `--listen-port <port>`, `--allow-tcp-connect <port>`, `--allow-domain <domain>`, `--deny-domain <domain>`, `--block-net`, `--workdir-access <level>`, and `--profile <ref>`, each repeatable where list-valued. Flag values SHALL be merged additively into the loaded profile, except `--block-net` which sets `network.mode` to `blocked` and overrides all other network settings, and `--workdir-access` which replaces `workdir.access`. The command to run inside the sandbox follows a `--` separator.
+`omac sandbox run` SHALL accept the flags `--allow <path>`, `--read <path>`, `--write <path>`, `--deny <path|glob>`, `--allow-file <path>`, `--open-port <port>`, `--listen-port <port>`, `--allow-tcp-connect <port>`, `--allow-domain <domain>`, `--deny-domain <domain>`, `--block-net`, `--workdir-access <level>`, and `--profile <ref>`, each repeatable where list-valued. Flag values SHALL be merged additively into the loaded profile, except `--block-net` which sets `network.mode` to `blocked` and overrides all other network settings, and `--workdir-access` which replaces `workdir.access`. The `--deny` flag merges into `filesystem.deny`. The command to run inside the sandbox follows a `--` separator.
 
 #### Scenario: Launcher-style invocation
 - **WHEN** `omac sandbox run --profile tng-sandbox --allow-file /tmp/x/bridge.sock --read /tmp/x --open-port 49152 -- opencode` is invoked

@@ -9,7 +9,7 @@ omac currently depends on the external `nono` binary for sandboxing, but we only
 - Add a built-in sandbox to omac, exposed as `omac sandbox run` (re-exec'd internally by the launcher), backed by **Seatbelt on macOS** and **bubblewrap (+ Landlock net rules) on Linux**.
 - Add a **filtering HTTPS/HTTP CONNECT proxy** that runs unsandboxed in the supervisor process: domain-based allowlist or blocklist filtering, hard-denied cloud-metadata endpoints, DNS pinning, and token-authenticated access.
 - Add an **interactive network prompt** with the same UX as nono (same dialog text, same six allow/deny options, timeout with `on_unavailable` fallback, learned-policy persistence).
-- Add **filesystem isolation** configured via a profile file with the same shape as nono's `tng-sandbox.json` (`workdir.access`, `filesystem.allow/read/write`).
+- Add **filesystem isolation** configured via a profile file with the same shape as nono's `tng-sandbox.json` (`workdir.access`, `filesystem.allow/read/write`, plus `filesystem.deny` to mask files such as `.env` inside granted trees).
 - Add **environment variable filtering**: always-on dangerous-variable blocklist plus optional allowlist with prefix wildcards.
 - Add **port openings**: `listen_port` (bind), `allow_tcp_connect` (outbound direct, e.g. SSH on 22), `open_port` (localhost both ways — used for the omac bridge TCP port).
 - Change the default launcher profile from the external `nono run ...` template to the built-in sandbox; keep the template mechanism so users can still configure external sandboxes. **BREAKING** for users relying on the implicit `nono` default.

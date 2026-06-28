@@ -9,7 +9,7 @@
 //	  "meta": { "name": "tng-sandbox" },
 //	  "workdir": { "access": "readwrite" },
 //	  "filesystem": { "allow": [...], "read": [...], "write": [...],
-//	                  "override_deny": [...] },
+//	                  "deny": [...], "override_deny": [...] },
 //	  "network": { "mode": "filtered", "allow_domain": [...],
 //	               "deny_domain": [...], "listen_port": [...],
 //	               "allow_tcp_connect": [...], "open_port": [...],
