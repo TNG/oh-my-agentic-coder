@@ -68,6 +68,14 @@ type Harness struct {
 	// the harness exposes no session continue/resume support, and those
 	// subcommands report it as unsupported. See HarnessSession.
 	Session *HarnessSession
+
+	// SystemContextArgs builds the inner args that inject an always-on
+	// system-context briefing for harnesses that support a system-prompt
+	// flag (Claude Code: --append-system-prompt). Nil means the harness has
+	// no such flag and delivery happens via another channel — for OpenCode,
+	// its plugin reads the OMAC_SANDBOX_BRIEFING env var. Mirrors the
+	// existing func-field pattern (ResumeByIDArgs).
+	SystemContextArgs func(briefing string) []string
 }
 
 // SessionListKind selects how omac enumerates a harness's prior sessions for
@@ -167,6 +175,9 @@ func harnessRegistry() []Harness {
 				ContinueArgs:   []string{"--continue"},
 				ResumeByIDArgs: func(id string) []string { return []string{"--resume", id} },
 				ListKind:       SessionListClaudeFiles,
+			},
+			SystemContextArgs: func(briefing string) []string {
+				return []string{"--append-system-prompt", briefing}
 			},
 		},
 	}

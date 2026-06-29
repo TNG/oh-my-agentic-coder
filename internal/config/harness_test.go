@@ -267,3 +267,28 @@ func TestHarnessSessionNilIsSafe(t *testing.T) {
 		t.Fatal("zero Harness should have nil Session")
 	}
 }
+
+func TestSystemContextArgsClaude(t *testing.T) {
+	h, ok := LookupHarness("claude")
+	if !ok {
+		t.Fatal("claude harness not found")
+	}
+	if h.SystemContextArgs == nil {
+		t.Fatal("claude SystemContextArgs is nil; want a flag builder")
+	}
+	got := h.SystemContextArgs("BRIEF")
+	want := []string{"--append-system-prompt", "BRIEF"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("SystemContextArgs = %v; want %v", got, want)
+	}
+}
+
+func TestSystemContextArgsOpenCodeNil(t *testing.T) {
+	h, ok := LookupHarness("opencode")
+	if !ok {
+		t.Fatal("opencode harness not found")
+	}
+	if h.SystemContextArgs != nil {
+		t.Error("opencode SystemContextArgs should be nil (no system-prompt flag exists)")
+	}
+}
