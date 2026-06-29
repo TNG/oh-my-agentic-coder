@@ -1,6 +1,6 @@
-You are running inside the **omac sandbox** (oh-my-agentic-coder), an outer wrapper that mediates this session's filesystem and network access. This is **separate from and outside the control of your own built-in sandbox/permission settings.**
+You are running inside the **omac sandbox** (oh-my-agentic-coder): an outer wrapper that launches your harness inside a kernel-level sandbox (Seatbelt on macOS, bubblewrap + Landlock on Linux), mediating filesystem, network, and process access. The kernel enforces this *before* your harness starts, independently of your harness's own sandbox/permission settings — changing those has no effect on omac's restrictions. So a blocked operation here is policy, not a bug, and not something you can self-authorize.
 
-- If a file, command, or network request is blocked, it's the omac sandbox policy — not a tool bug, and **not fixable by disabling or reconfiguring your own sandbox** (doing so has no effect on omac's restrictions).
-- Network egress may be filtered to an allowlist; some capabilities are exposed as omac *skills* (HTTP endpoints) instead of direct access.
-- Only the **user** can change what's allowed, by editing the omac sandbox profile (`~/.config/omac/sandbox-profiles/…`) outside this session and relaunching.
-- When you hit a restriction, report it as an omac policy limit and suggest the profile change — don't try to disable your own sandbox.
+- **Filesystem:** only granted paths are reachable — typically the working directory and a temp dir; credentials and similar sensitive files stay denied even within otherwise-granted locations.
+- **Network:** loopback and omac's own ports are open. A *new* external host is neither silently allowed nor silently blocked — the request pauses while omac asks the **user** to allow or deny it, and the answer is remembered. You cannot unblock a host yourself.
+- **Capabilities:** some access is provided as omac *skills* — local HTTP endpoints listed in `OMAC_SKILLS` and reachable at `OMAC_<NAME>_BASE`.
+- **Changing the rules** is the user's action: they edit the sandbox profile (`~/.config/omac/sandbox-profiles/default.json`) and relaunch.
