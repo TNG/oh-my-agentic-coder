@@ -69,12 +69,11 @@ type Harness struct {
 	// subcommands report it as unsupported. See HarnessSession.
 	Session *HarnessSession
 
-	// SystemContextArgs builds the inner args that inject an always-on
-	// system-context briefing for harnesses that support a system-prompt
-	// flag (Claude Code: --append-system-prompt). Nil means the harness has
-	// no such flag and delivery happens via another channel — for OpenCode,
-	// its plugin reads the OMAC_SANDBOX_BRIEFING env var. Mirrors the
-	// existing func-field pattern (ResumeByIDArgs).
+	// SystemContextArgs builds the inner args that inject the always-on
+	// sandbox briefing for harnesses with a system-prompt flag (Claude:
+	// --append-system-prompt). Nil means no such flag — OpenCode instead
+	// delivers the briefing through its plugin via OMAC_SANDBOX_BRIEFING.
+	// Mirrors the ResumeByIDArgs func-field pattern.
 	SystemContextArgs func(briefing string) []string
 }
 

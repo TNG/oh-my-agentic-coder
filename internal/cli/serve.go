@@ -251,10 +251,7 @@ func runServe(args []string, env *Env) int {
 	// never blocks the launch.
 	ensureBuiltinSkills(env, harness)
 
-	// Idempotently provision omac's OpenCode bridge plugin (global) so the
-	// sandbox-briefing relay fires under serve too, even without a prior
-	// `omac plugin install`. No-op for non-OpenCode harnesses. Never blocks
-	// the launch.
+	// Likewise provision the OpenCode bridge plugin that carries the briefing.
 	ensureOpenCodePlugin(env, harness)
 
 	// Build the inner argv. serve mode runs the selected harness's *server*
@@ -273,12 +270,7 @@ func runServe(args []string, env *Env) int {
 	// `serve` when no subcommand is present). Harnesses without a server
 	// mode leave the inner command unchanged.
 	inner = harness.ApplyServerLaunch(inner, innerArgs)
-	// Inject the omac sandbox briefing on the same terms as `omac start`:
-	// only when a sandbox wraps the harness's own binary. Claude gets the
-	// --append-system-prompt flag (before user innerArgs so user args win);
-	// OpenCode has no such flag (SystemContextArgs nil) and instead receives
-	// OMAC_SANDBOX_BRIEFING via baseEnv below, which its plugin pushes into
-	// the system prompt.
+	// Inject the sandbox briefing on the same terms as `omac start` (see there).
 	briefingText, injectBriefing := briefingInjection(*noSandbox, inner, harness, lc.Sandbox.Briefing)
 	if injectBriefing && harness.SystemContextArgs != nil {
 		inner = append(inner, harness.SystemContextArgs(briefingText)...)
@@ -292,9 +284,7 @@ func runServe(args []string, env *Env) int {
 	// come and go; the static globals are set here once.
 	extra := srv.baseEnv()
 	if injectBriefing {
-		// Universal channel: the OpenCode plugin reads this from the sandbox
-		// env and pushes it into the system prompt. Only omac sets it, so it
-		// is inert outside the sandbox.
+		// Consumed by the OpenCode plugin; see start.go.
 		extra["OMAC_SANDBOX_BRIEFING"] = briefingText
 	}
 

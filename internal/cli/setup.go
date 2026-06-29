@@ -123,18 +123,12 @@ func ensureBuiltinSkills(env *Env, harness config.Harness) {
 }
 
 // ensureOpenCodePlugin idempotently provisions omac's OpenCode bridge plugin
-// into the harness's GLOBAL plugins dir (~/.config/opencode/plugins) on
-// launch, so the sandbox-briefing relay (and the skills manifest) work even
-// when the user never ran `omac plugin install`. This mirrors the global
-// provisioning ensureBuiltinSkills already does for skills.
-//
-// Only the OpenCode harness has this plugin; other harnesses are skipped.
-// Uses force=false: an existing file with identical content is left
-// untouched (the quiet common path); a *different* existing file (foreign or
-// a stale omac copy) is NOT overwritten — instead the install returns an
-// error and we warn the user to resolve it manually (e.g. `omac plugin
-// install opencode-desktop --global`). A failure is a warning, never a launch
-// blocker.
+// into the harness's global plugins dir (~/.config/opencode/plugins) on
+// launch, so the sandbox-briefing relay works even when the user never ran
+// `omac plugin install`. Mirrors the global provisioning ensureBuiltinSkills
+// does for skills: OpenCode-only, quiet when unchanged, and a failure (or a
+// foreign same-named file, which InstallMultiDirIn refuses to clobber) is a
+// warning, never a launch blocker.
 func ensureOpenCodePlugin(env *Env, harness config.Harness) {
 	if harness.Name != "opencode" {
 		return
@@ -143,17 +137,14 @@ func ensureOpenCodePlugin(env *Env, harness config.Harness) {
 	if dir == "" {
 		return
 	}
+	// force=false, so an existing differing file yields an error (not an
+	// overwrite) and Unchanged covers the silent common path.
 	res, err := plugin.InstallMultiDirIn(dir, false)
 	if err != nil {
 		fmt.Fprintf(env.Stderr, "[warn] could not provision the omac OpenCode plugin (%v); the sandbox briefing won't appear in OpenCode. Install it with: omac plugin install opencode-desktop --global\n", err)
 		return
 	}
-	switch {
-	case res.Unchanged:
-		// Common case on every launch — stay silent.
-	case res.Overwrote:
-		fmt.Fprintln(env.Stderr, "[ok] refreshed the omac OpenCode plugin")
-	default:
+	if !res.Unchanged {
 		fmt.Fprintln(env.Stderr, "[ok] provisioned the omac OpenCode plugin")
 	}
 }
