@@ -7,6 +7,7 @@ import (
 
 	"github.com/tngtech/oh-my-agentic-coder/internal/builtinskills"
 	"github.com/tngtech/oh-my-agentic-coder/internal/config"
+	"github.com/tngtech/oh-my-agentic-coder/internal/plugin"
 )
 
 // runSetup provisions omac's built-in skill bundles into the native skills
@@ -118,6 +119,42 @@ func ensureBuiltinSkills(env *Env, harness config.Harness) {
 			fmt.Fprintf(env.Stderr, "[hint] a non-omac %q directory exists for %s; not overwriting (run `omac setup --force` to replace)\n", name, harness.Name)
 			// StatusUnchanged: stay silent — the common case on every launch.
 		}
+	}
+}
+
+// ensureOpenCodePlugin idempotently provisions omac's OpenCode bridge plugin
+// into the harness's GLOBAL plugins dir (~/.config/opencode/plugins) on
+// launch, so the sandbox-briefing relay (and the skills manifest) work even
+// when the user never ran `omac plugin install`. This mirrors the global
+// provisioning ensureBuiltinSkills already does for skills.
+//
+// Only the OpenCode harness has this plugin; other harnesses are skipped.
+// Uses force=false: an existing file with identical content is left
+// untouched (the quiet common path); a *different* existing file (foreign or
+// a stale omac copy) is NOT overwritten — instead the install returns an
+// error and we warn the user to resolve it manually (e.g. `omac plugin
+// install opencode-desktop --global`). A failure is a warning, never a launch
+// blocker.
+func ensureOpenCodePlugin(env *Env, harness config.Harness) {
+	if harness.Name != "opencode" {
+		return
+	}
+	dir := harness.GlobalBridgeDir()
+	if dir == "" {
+		return
+	}
+	res, err := plugin.InstallMultiDirIn(dir, false)
+	if err != nil {
+		fmt.Fprintf(env.Stderr, "[warn] could not provision the omac OpenCode plugin (%v); the sandbox briefing won't appear in OpenCode. Install it with: omac plugin install opencode-desktop --global\n", err)
+		return
+	}
+	switch {
+	case res.Unchanged:
+		// Common case on every launch — stay silent.
+	case res.Overwrote:
+		fmt.Fprintln(env.Stderr, "[ok] refreshed the omac OpenCode plugin")
+	default:
+		fmt.Fprintln(env.Stderr, "[ok] provisioned the omac OpenCode plugin")
 	}
 }
 

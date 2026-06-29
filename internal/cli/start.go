@@ -271,6 +271,11 @@ func runLaunch(env *Env, opts launchOpts) int {
 	// never blocks the launch.
 	ensureBuiltinSkills(env, harness)
 
+	// Idempotently provision omac's OpenCode bridge plugin (global) so the
+	// sandbox-briefing relay fires even without a prior `omac plugin install`.
+	// No-op for non-OpenCode harnesses. Never blocks the launch.
+	ensureOpenCodePlugin(env, harness)
+
 	// 2c-d / 3. Per-skill validation + secret/config resolution.
 	//
 	// We do this in a single pass that accumulates every per-skill

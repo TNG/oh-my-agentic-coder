@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"os"
 	"testing"
 
 	"github.com/tngtech/oh-my-agentic-coder/internal/config"
@@ -45,4 +46,19 @@ func TestBriefingInjectionSkippedForEmptyInner(t *testing.T) {
 	if _, ok := briefingInjection(false, nil, h, ""); ok {
 		t.Error("expected injection skipped for empty inner command")
 	}
+}
+
+func TestEnsureOpenCodePluginSkipsNonOpenCode(t *testing.T) {
+	// Claude has no bridge plugin (GlobalBridgeDir returns ""); the
+	// provisioner must be a no-op — no panic, no filesystem write. We use
+	// the Claude harness precisely so the test never touches
+	// ~/.config/opencode.
+	h := claudeHarness(t)
+	f, err := os.CreateTemp(t.TempDir(), "stderr-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	env := &Env{Stderr: f}
+	ensureOpenCodePlugin(env, h) // must simply return for a non-opencode harness
 }
