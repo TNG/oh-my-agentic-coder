@@ -277,6 +277,12 @@ export const OmacMultiDirPlugin: Plugin = async ({ client, directory, worktree }
 
     // --- 2: surface the per-dir skills to the model (§6.3) ---
     "experimental.chat.system.transform": async (input, output) => {
+      // omac sandbox briefing: always-on, independent of the control plane.
+      // omac sets OMAC_SANDBOX_BRIEFING only inside the sandbox, so this is
+      // inert when opencode runs outside omac. Purely additive — never
+      // touches the user's instructions/config.
+      const brief = process.env.OMAC_SANDBOX_BRIEFING
+      if (brief && brief.trim().length > 0) output.system.push(brief)
       if (!enabled()) return
       const dir = await dirForSession(input.sessionID)
       if (!dir) return
