@@ -6,8 +6,9 @@
 - [x] 1.2 Implement `~`/`$VAR` path expansion and skip-with-notice for nonexistent paths
 - [x] 1.3 Implement profile resolution (path → `~/.config/omac/profiles/<name>.json` → compiled-in), with compiled-in `default` profile mirroring `tng-sandbox.json`
 - [x] 1.3b Define the built-in protected-path deny set (credentials, keychains, browser data, shell history/configs, macOS private data) and `filesystem.override_deny` hole-punching; define the platform read/temp-write baselines
-- [x] 1.4 Add `omac sandbox run` subcommand: flag parsing (`--allow`, `--read`, `--write`, `--allow-file`, `--open-port`, `--listen-port`, `--allow-tcp-connect`, `--allow-domain`, `--deny-domain`, `--block-net`, `--workdir-access`, `--profile`, `--` separator) and additive merge onto the profile
-- [x] 1.5 Unit tests: parsing, unknown-field rejection, resolution order, flag merging, `--block-net` override
+- [x] 1.3c Add `filesystem.deny` / `--deny` user deny list: explicit-path and basename-glob forms, glob walk over granted trees + workdir (baseline trees excluded, bounded), resolving into the protected-path masks
+- [x] 1.4 Add `omac sandbox run` subcommand: flag parsing (`--allow`, `--read`, `--write`, `--deny`, `--allow-file`, `--open-port`, `--listen-port`, `--allow-tcp-connect`, `--allow-domain`, `--deny-domain`, `--block-net`, `--workdir-access`, `--profile`, `--` separator) and additive merge onto the profile
+- [x] 1.5 Unit tests: parsing, unknown-field rejection, resolution order, flag merging, `--block-net` override, `filesystem.deny` resolution + masking
 
 ## 2. Filtering proxy (`internal/netproxy`)
 

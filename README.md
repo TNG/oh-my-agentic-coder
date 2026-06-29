@@ -351,8 +351,10 @@ defaults so you can edit it:
 
 Profile fields: `workdir.access` (none/read/write/readwrite),
 `filesystem.allow` / `.read` / `.write` (path grants, `~` and `$VAR`
-expansion), `filesystem.override_deny` (punch holes in the
-built-in protected-path list), `network.mode`
+expansion), `filesystem.deny` (mask files inside granted trees — a
+bare name like `.env` or `*.key` is denied in every granted directory,
+the working directory included), `filesystem.override_deny` (punch
+holes in the built-in protected-path list), `network.mode`
 (filtered/blocked/open), `network.network_prompt`, and
 `environment.allow_vars`. See the scaffolded `default.json` for the
 full schema.
@@ -384,6 +386,7 @@ sandbox:
 | Bridge socket (`$TMPDIR/omac-<hash>/bridge.sock`) | read+write | `--allow-file` / `--read` flags |
 | Dynamic socket dir (e.g. Agent View `/tmp/cc-daemon-<uid>`) | read+write + AF_UNIX connect | `--allow-unix-dir` flag / `filesystem.allow_unix_dir` |
 | Paths in `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.kube`, … | **denied** | protected paths (override with `filesystem.override_deny`) |
+| Files matching `filesystem.deny` (e.g. `.env`, `*.key`) inside granted trees | **denied** | user deny list (`filesystem.deny` / `--deny`) |
 
 ## Typical workflow
 

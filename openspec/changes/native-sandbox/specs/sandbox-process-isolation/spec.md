@@ -50,6 +50,21 @@ A profile MAY punch holes through the protected set via `filesystem.override_den
 - **WHEN** the child attempts to read `~/.zsh_history`
 - **THEN** the access is denied
 
+### Requirement: User deny list masks files within granted trees
+A profile MAY mask files inside otherwise-granted trees via `filesystem.deny` (string[]); the `--deny <path|glob>` flag merges into it. Each entry SHALL be classified by form:
+- an entry containing a path separator, or beginning with `~` or `$`, is an explicit path: it is expanded and denied at that exact path;
+- a bare basename glob (no separator, e.g. `.env` or `*.key`) SHALL be matched against the file and directory names found by walking the explicitly granted trees and the working directory, and every match denied. Baseline system trees (e.g. `/usr`) SHALL NOT be walked. A matched directory is masked as a whole and not descended into.
+
+Denied paths SHALL be enforced with the same mechanism as the built-in protected set (macOS deny rules between read- and write-allows covering literal and canonicalized forms; Linux `--ro-bind /dev/null` for files and `--tmpfs` for directories). A malformed glob or empty entry SHALL fail profile validation.
+
+#### Scenario: cwd .env denied while the workdir is granted
+- **WHEN** the profile grants the workdir `readwrite` and sets `filesystem.deny: [".env"]`, and the working directory contains `.env` and `sub/.env`
+- **THEN** both `.env` and `sub/.env` are denied while sibling files (e.g. `main.go`) remain accessible
+
+#### Scenario: explicit deny path
+- **WHEN** the profile sets `filesystem.deny: ["./config/prod.env"]` under a granted workdir
+- **THEN** that exact file is denied and a same-named file in another directory is not
+
 ### Requirement: Workdir access grant
 The working directory in which `omac sandbox run` is invoked SHALL be granted to the child at the level given by `workdir.access`: `none` (no grant), `read`, `write`, or `readwrite`. The child's initial working directory SHALL be that directory.
 

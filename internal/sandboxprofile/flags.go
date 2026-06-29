@@ -14,6 +14,7 @@ type Flags struct {
 	Allow         []string // --allow <path>        read+write dir/file
 	Read          []string // --read <path>         read-only
 	Write         []string // --write <path>        write-only
+	Deny          []string // --deny <path|glob>    mask within granted trees
 	AllowFile     []string // --allow-file <path>   read+write single file
 	AllowUnixDir  []string // --allow-unix-dir <dir> AF_UNIX connect to any socket under dir
 	OpenPort      []int    // --open-port <port>
@@ -110,6 +111,12 @@ func ParseFlags(args []string) (*Flags, error) {
 				return nil, err
 			}
 			f.Write = append(f.Write, v)
+		case "--deny":
+			v, err := val(a)
+			if err != nil {
+				return nil, err
+			}
+			f.Deny = append(f.Deny, v)
 		case "--allow-file":
 			v, err := val(a)
 			if err != nil {
@@ -192,6 +199,7 @@ func Merge(p *Profile, f *Flags) (*Profile, []string) {
 	out.Filesystem.Read = appendCopy(p.Filesystem.Read, f.Read...)
 	out.Filesystem.Write = appendCopy(p.Filesystem.Write, f.Write...)
 	out.Filesystem.AllowUnixDir = appendCopy(p.Filesystem.AllowUnixDir, f.AllowUnixDir...)
+	out.Filesystem.Deny = appendCopy(p.Filesystem.Deny, f.Deny...)
 
 	out.Network.OpenPort = appendIntCopy(p.Network.OpenPort, f.OpenPort...)
 	out.Network.ListenPort = appendIntCopy(p.Network.ListenPort, f.ListenPort...)

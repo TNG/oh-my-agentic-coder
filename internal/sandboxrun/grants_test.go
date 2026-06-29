@@ -2,6 +2,7 @@ package sandboxrun
 
 import (
 	"net"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -188,4 +189,202 @@ func TestResolveGrantsDeduplicates(t *testing.T) {
 
 func listenUnix(path string) (interface{ Close() error }, error) {
 	return net.Listen("unix", path)
+}
+
+// writeFile is a tiny helper for the deny tests.
+func writeFile(t *testing.T, path string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestDenyFullCLIPipeline exercises the exact path `omac sandbox run`
+// takes — ParseFlags -> Merge -> ResolveGrants -> backend generation —
+// to prove a `--deny .env` on the command line reaches the actual mask.
+// (A live sandbox-exec/bwrap launch cannot run in this dev environment,
+// so this is the end-to-end check below the process boundary.)
+func TestDenyFullCLIPipeline(t *testing.T) {
+	wd := t.TempDir()
+	env := filepath.Join(wd, ".env")
+	writeFile(t, env)
+	keep := filepath.Join(wd, "app.py")
+	writeFile(t, keep)
+
+	// Args exactly as a user would type after `omac sandbox run`.
+	flags, err := sandboxprofile.ParseFlags([]string{
+		"--deny", ".env", "--block-net", "--", "cat", ".env",
+	})
+	if err != nil {
+		t.Fatalf("ParseFlags: %v", err)
+	}
+
+	// Start from a profile that grants the cwd read+write (the default
+	// posture) and merge the flags, as run.go does.
+	base := &sandboxprofile.Profile{
+		Workdir: sandboxprofile.Workdir{Access: sandboxprofile.AccessReadWrite},
+	}
+	merged, _ := sandboxprofile.Merge(base, flags)
+	if err := merged.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	g, err := ResolveGrants(merged, wd, nil)
+	if err != nil {
+		t.Fatalf("ResolveGrants: %v", err)
+	}
+
+	// .env masked, app.py not.
+	if !slices.Contains(g.ProtectedPaths, env) {
+		t.Errorf("--deny .env did not protect %s: %v", env, g.ProtectedPaths)
+	}
+	if slices.Contains(g.ProtectedPaths, keep) {
+		t.Error("app.py must remain accessible")
+	}
+
+	// Linux backend masks the file with --ro-bind /dev/null.
+	argv, err := BuildBwrapArgv(g, []string{"x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.Join(argv, " "), "--ro-bind /dev/null "+env) {
+		t.Errorf("bwrap argv missing deny mask for %s", env)
+	}
+	// macOS backend denies read+write on the file.
+	sbpl := GenerateSBPL(g)
+	if !strings.Contains(sbpl, "(deny file-read* (subpath \""+env+"\"))") ||
+		!strings.Contains(sbpl, "(deny file-write* (subpath \""+env+"\"))") {
+		t.Errorf("SBPL missing deny rules for %s:\n%s", env, sbpl)
+	}
+}
+
+func TestResolveGrantsDenyBasenameGlobInWorkdir(t *testing.T) {
+	wd := t.TempDir()
+	env := filepath.Join(wd, ".env")
+	writeFile(t, env)
+	nested := filepath.Join(wd, "sub")
+	if err := os.Mkdir(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	nestedEnv := filepath.Join(nested, ".env")
+	writeFile(t, nestedEnv)
+	keep := filepath.Join(wd, "main.go")
+	writeFile(t, keep)
+
+	p := &sandboxprofile.Profile{
+		Workdir:    sandboxprofile.Workdir{Access: sandboxprofile.AccessReadWrite},
+		Filesystem: sandboxprofile.Filesystem{Deny: []string{".env"}},
+	}
+	g, err := ResolveGrants(p, wd, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(g.ProtectedPaths, env) {
+		t.Errorf("cwd .env not protected: %v", g.ProtectedPaths)
+	}
+	if !slices.Contains(g.ProtectedPaths, nestedEnv) {
+		t.Errorf("nested .env not protected: %v", g.ProtectedPaths)
+	}
+	if slices.Contains(g.ProtectedPaths, keep) {
+		t.Error("non-matching file must not be protected")
+	}
+}
+
+func TestResolveGrantsDenyExplicitPath(t *testing.T) {
+	wd := t.TempDir()
+	secret := filepath.Join(wd, "config", "prod.env")
+	if err := os.MkdirAll(filepath.Dir(secret), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, secret)
+
+	p := &sandboxprofile.Profile{
+		Workdir:    sandboxprofile.Workdir{Access: sandboxprofile.AccessReadWrite},
+		Filesystem: sandboxprofile.Filesystem{Deny: []string{secret}}, // absolute path form
+	}
+	g, err := ResolveGrants(p, wd, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(g.ProtectedPaths, secret) {
+		t.Errorf("explicit deny path not protected: %v", g.ProtectedPaths)
+	}
+}
+
+func TestResolveGrantsDenyDirGlobMatchesDirectory(t *testing.T) {
+	wd := t.TempDir()
+	secretsDir := filepath.Join(wd, ".secrets")
+	if err := os.Mkdir(secretsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	inside := filepath.Join(secretsDir, "token")
+	writeFile(t, inside)
+
+	p := &sandboxprofile.Profile{
+		Workdir:    sandboxprofile.Workdir{Access: sandboxprofile.AccessReadWrite},
+		Filesystem: sandboxprofile.Filesystem{Deny: []string{".secrets"}},
+	}
+	g, err := ResolveGrants(p, wd, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(g.ProtectedPaths, secretsDir) {
+		t.Errorf("matched directory not protected: %v", g.ProtectedPaths)
+	}
+	// The walk must not descend into the matched dir (the dir mask
+	// covers everything inside it), so the inner file is not listed.
+	if slices.Contains(g.ProtectedPaths, inside) {
+		t.Error("walk should not descend into a matched directory")
+	}
+}
+
+func TestDenyProducesMaskInBackends(t *testing.T) {
+	wd := t.TempDir()
+	env := filepath.Join(wd, ".env")
+	writeFile(t, env)
+
+	p := &sandboxprofile.Profile{
+		Workdir:    sandboxprofile.Workdir{Access: sandboxprofile.AccessReadWrite},
+		Filesystem: sandboxprofile.Filesystem{Deny: []string{".env"}},
+	}
+	g, err := ResolveGrants(p, wd, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Linux: a denied file inside a granted tree is masked with
+	// --ro-bind /dev/null <path>.
+	argv, err := BuildBwrapArgv(g, []string{"x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.Join(argv, " "), "--ro-bind /dev/null "+env) {
+		t.Errorf("bwrap argv missing deny mask for %s", env)
+	}
+
+	// macOS: a deny rule for the path appears in the SBPL.
+	sbpl := GenerateSBPL(g)
+	if !strings.Contains(sbpl, "(deny file-read* (subpath \""+env+"\"))") {
+		t.Errorf("SBPL missing deny rule for %s:\n%s", env, sbpl)
+	}
+}
+
+func TestResolveGrantsDenyGlobDoesNotScanBaseline(t *testing.T) {
+	// A deny glob like "*.so" must not trigger a walk of baseline
+	// system trees (e.g. /usr); only granted non-baseline roots. We
+	// assert by timing/behaviour proxy: an empty workdir grant with a
+	// broad glob yields no matches and returns promptly.
+	wd := t.TempDir()
+	p := &sandboxprofile.Profile{
+		Workdir:    sandboxprofile.Workdir{Access: sandboxprofile.AccessReadWrite},
+		Filesystem: sandboxprofile.Filesystem{Deny: []string{"*.so"}},
+	}
+	g, err := ResolveGrants(p, wd, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, prot := range g.ProtectedPaths {
+		if strings.HasPrefix(prot, "/usr/") || strings.HasPrefix(prot, "/lib") {
+			t.Errorf("baseline tree was scanned for glob: %s", prot)
+		}
+	}
 }

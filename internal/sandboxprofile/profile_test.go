@@ -93,10 +93,43 @@ func TestParseValidationErrors(t *testing.T) {
 		`{"network": {"listen_port": [70000]}}`,
 		`{"network": {"network_prompt": {"on_unavailable": "ask"}}}`,
 		`{"environment": {"allow_vars": [" "]}}`,
+		`{"filesystem": {"deny": [" "]}}`,   // empty deny entry
+		`{"filesystem": {"deny": ["[a-"]}}`, // malformed basename glob
 	}
 	for _, c := range cases {
 		if _, err := Parse([]byte(c)); err == nil {
 			t.Errorf("Parse(%s) should fail validation", c)
+		}
+	}
+}
+
+func TestParseDeny(t *testing.T) {
+	p, err := Parse([]byte(`{"filesystem": {"deny": [".env", "*.key", "~/.aws", "./config/prod.env"]}}`))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	want := []string{".env", "*.key", "~/.aws", "./config/prod.env"}
+	if len(p.Filesystem.Deny) != len(want) {
+		t.Fatalf("deny = %v, want %v", p.Filesystem.Deny, want)
+	}
+	for i, w := range want {
+		if p.Filesystem.Deny[i] != w {
+			t.Errorf("deny[%d] = %q, want %q", i, p.Filesystem.Deny[i], w)
+		}
+	}
+}
+
+func TestIsBasenameGlob(t *testing.T) {
+	glob := []string{".env", "*.key", "secret", "prod*.env"}
+	pathy := []string{"~/.env", "$HOME/.env", "/etc/passwd", "./x", "a/b", "config/prod.env"}
+	for _, g := range glob {
+		if !IsBasenameGlob(g) {
+			t.Errorf("%q should be a basename glob", g)
+		}
+	}
+	for _, p := range pathy {
+		if IsBasenameGlob(p) {
+			t.Errorf("%q should be treated as a path", p)
 		}
 	}
 }
@@ -303,6 +336,24 @@ func TestParseFlagsInlineValues(t *testing.T) {
 	}
 	if f.ProfileRef != "p" || len(f.OpenPort) != 1 || f.OpenPort[0] != 8080 {
 		t.Errorf("inline parse failed: %+v", f)
+	}
+}
+
+func TestParseAndMergeDenyFlag(t *testing.T) {
+	f, err := ParseFlags([]string{"--deny", ".env", "--deny=*.key", "--", "true"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(f.Deny) != 2 || f.Deny[0] != ".env" || f.Deny[1] != "*.key" {
+		t.Fatalf("deny flags = %v", f.Deny)
+	}
+	p := &Profile{Filesystem: Filesystem{Deny: []string{"~/.aws"}}}
+	merged, _ := Merge(p, f)
+	if len(merged.Filesystem.Deny) != 3 {
+		t.Errorf("merged deny = %v, want 3 (profile + 2 flags)", merged.Filesystem.Deny)
+	}
+	if len(p.Filesystem.Deny) != 1 {
+		t.Error("Merge mutated base profile deny")
 	}
 }
 

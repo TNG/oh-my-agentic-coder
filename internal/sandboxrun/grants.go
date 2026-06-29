@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sort"
 
 	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxprofile"
@@ -82,6 +83,17 @@ func ResolveGrants(p *sandboxprofile.Profile, workdir string, notices io.Writer)
 	}
 	allow = append(allow, unixDirs...)
 
+	// Explicit (non-baseline) grants are the roots a basename-glob deny
+	// scans. Computed before the baseline-merged read/write so a deny
+	// like ".env" never triggers a walk of /usr or /lib. The workdir
+	// grant is always an explicit root.
+	denyScan, err := sandboxprofile.ExpandExisting(
+		append(append(append([]string{}, p.Filesystem.Read...), p.Filesystem.Write...), p.Filesystem.Allow...),
+		nil)
+	if err != nil {
+		return nil, err
+	}
+
 	// Workdir grant.
 	switch p.Workdir.Access {
 	case sandboxprofile.AccessRead:
@@ -91,13 +103,24 @@ func ResolveGrants(p *sandboxprofile.Profile, workdir string, notices io.Writer)
 	case sandboxprofile.AccessReadWrite:
 		allow = append(allow, workdir)
 	}
+	if p.Workdir.Access != "" && p.Workdir.Access != sandboxprofile.AccessNone {
+		denyScan = append(denyScan, workdir)
+	}
+
+	protected := sandboxprofile.EffectiveProtectedPaths(base, p.Filesystem.OverrideDeny)
+
+	// User deny entries carve holes out of the granted trees. Path-form
+	// entries expand to an explicit path; basename globs (e.g. ".env")
+	// are matched against the files inside the granted (non-baseline)
+	// trees so the same deny covers the cwd and any explicit grant.
+	protected = append(protected, resolveUserDeny(p.Filesystem.Deny, dedupe(denyScan), notices)...)
 
 	g := &Grants{
 		Workdir:         workdir,
 		ReadPaths:       dedupe(read),
 		WritePaths:      dedupe(write),
 		AllowPaths:      dedupe(allow),
-		ProtectedPaths:  sandboxprofile.EffectiveProtectedPaths(base, p.Filesystem.OverrideDeny),
+		ProtectedPaths:  dedupe(protected),
 		NetworkMode:     p.Network.EffectiveMode(),
 		ListenPorts:     dedupeInts(p.Network.ListenPort),
 		AllowTCPConnect: dedupeInts(p.Network.AllowTCPConnect),
@@ -114,6 +137,90 @@ func ResolveGrants(p *sandboxprofile.Profile, workdir string, notices io.Writer)
 		}
 	}
 	return g, nil
+}
+
+// maxDenyScanEntries bounds the basename-glob walk so a deny like
+// ".env" over a huge granted tree cannot stall launch. Reaching the cap
+// stops the walk for that root (already-found matches are still masked).
+const maxDenyScanEntries = 200000
+
+// resolveUserDeny turns filesystem.deny entries into concrete protected
+// paths. Path-form entries (with a separator, ~ or $VAR) expand to a
+// single explicit path. Basename globs (e.g. ".env", "*.key") are
+// matched against the files found by walking scanRoots — the explicit
+// (non-baseline) granted trees plus the workdir — so one deny covers
+// the cwd and every directory the user granted. Baseline system trees
+// (e.g. /usr) are never scanned because they are not in scanRoots.
+func resolveUserDeny(deny, scanRoots []string, notices io.Writer) []string {
+	if len(deny) == 0 {
+		return nil
+	}
+	var explicit []string
+	var globs []string
+	for _, d := range deny {
+		if sandboxprofile.IsBasenameGlob(d) {
+			globs = append(globs, d)
+			continue
+		}
+		exp, err := sandboxprofile.ExpandPath(d)
+		if err != nil {
+			if notices != nil {
+				fmt.Fprintf(notices, "omac sandbox: notice: skipping filesystem.deny %q (%v)\n", d, err)
+			}
+			continue
+		}
+		explicit = append(explicit, exp)
+	}
+
+	out := explicit
+	if len(globs) > 0 {
+		out = append(out, walkGlobMatches(scanRoots, globs, notices)...)
+	}
+	return out
+}
+
+// walkGlobMatches walks each root and returns every file/dir whose base
+// name matches one of the globs. The walk is bounded by
+// maxDenyScanEntries and never descends into matched directories
+// (masking the dir is enough).
+func walkGlobMatches(roots, globs []string, notices io.Writer) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, root := range roots {
+		count := 0
+		stop := false
+		_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+			if err != nil {
+				return nil // unreadable entry: skip, don't abort the walk
+			}
+			count++
+			if count > maxDenyScanEntries {
+				if !stop && notices != nil {
+					fmt.Fprintf(notices, "omac sandbox: notice: filesystem.deny scan of %s hit the %d-entry limit; some matches may be unmasked\n", root, maxDenyScanEntries)
+				}
+				stop = true
+				return filepath.SkipAll
+			}
+			if path == root {
+				return nil // never match the root grant itself
+			}
+			name := d.Name()
+			for _, g := range globs {
+				if ok, _ := filepath.Match(g, name); ok {
+					if !seen[path] {
+						seen[path] = true
+						out = append(out, path)
+					}
+					if d.IsDir() {
+						return filepath.SkipDir
+					}
+					return nil
+				}
+			}
+			return nil
+		})
+	}
+	return out
 }
 
 func dedupe(in []string) []string {
