@@ -29,6 +29,13 @@ const sidecarPython = `
 import os, json, hashlib, sys, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+# Bind an ephemeral loopback port chosen by the kernel, then print it
+# for the parent (this test) to read. Letting Python claim its own port
+# removes the reuse race that existed when Go pre-allocated a port,
+# closed its listener, and handed the number to Python — on a busy CI
+# runner that port could be taken in the gap, Python would exit with
+# EADDRINUSE, and (because stderr was discarded) the test only saw
+# "sidecar never became healthy" 30s later.
 PORT = int(os.environ.get("SIDECAR_PORT", "0"))
 SECRET = os.environ.get("ECHO_API_KEY", "")
 
@@ -75,7 +82,12 @@ class H(BaseHTTPRequestHandler):
         body = json.loads(raw.decode() or "{}")
         self._j(200, {"echoed": body, "secret_fingerprint": fp(SECRET)})
 
-ThreadingHTTPServer(("127.0.0.1", PORT), H).serve_forever()
+srv = ThreadingHTTPServer(("127.0.0.1", PORT), H)
+# Report the kernel-assigned port to the parent. Flush so the parent
+# can read it before we enter serve_forever().
+sys.stdout.write("PORT=%d\n" % srv.server_address[1])
+sys.stdout.flush()
+srv.serve_forever()
 `
 
 // TestEchoRestEndToEnd spawns a real Python sidecar, mounts it behind the
@@ -84,6 +96,18 @@ ThreadingHTTPServer(("127.0.0.1", PORT), H).serve_forever()
 func TestEchoRestEndToEnd(t *testing.T) {
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not installed")
+	}
+
+	// Warm the Python interpreter. The first exec of python3 on a fresh
+	// macOS GitHub runner can take well over 30s: the kernel validates
+	// the binary's code signature / notarization ticket on first launch,
+	// and on a loaded ARM64 runner that gate is slow. Pay that cost once
+	// here, up front, so the sidecar spawn below starts fast and the
+	// port-read deadline is measured against a warm interpreter.
+	if out, err := exec.Command("python3", "-c", "import sys; print(sys.version)").CombinedOutput(); err != nil {
+		t.Skipf("python3 not runnable: %v (%s)", err, strings.TrimSpace(string(out)))
+	} else {
+		t.Logf("python3: %s", strings.TrimSpace(string(out)))
 	}
 
 	// Can we listen + dial on loopback at all?
@@ -119,14 +143,6 @@ func TestEchoRestEndToEnd(t *testing.T) {
 	}
 	pl.Close()
 
-	// Allocate an ephemeral port for the sidecar.
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	sidecarPort := ln.Addr().(*net.TCPAddr).Port
-	ln.Close()
-
 	// Write the sidecar script to the working dir and start Python.
 	script := filepath.Join(workDir, "sidecar.py")
 	if err := os.WriteFile(script, []byte(sidecarPython), 0o600); err != nil {
@@ -137,11 +153,18 @@ func TestEchoRestEndToEnd(t *testing.T) {
 
 	cmd := exec.CommandContext(ctx, "python3", script)
 	cmd.Env = append(os.Environ(),
-		fmt.Sprintf("SIDECAR_PORT=%d", sidecarPort),
 		"ECHO_API_KEY=super-secret-demo-key",
 	)
-	cmd.Stdout = io.Discard
-	cmd.Stderr = io.Discard
+	// The sidecar prints "PORT=<n>\n" on its stdout once it has bound.
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatalf("stdout pipe: %v", err)
+	}
+	// Capture stderr so a sidecar crash is diagnosable instead of the
+	// old "never became healthy" dead-end. io.Discard here made every
+	// macOS CI failure invisible.
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("spawn sidecar: %v", err)
 	}
@@ -150,10 +173,48 @@ func TestEchoRestEndToEnd(t *testing.T) {
 		_ = cmd.Wait()
 	})
 
-	// Wait for /status to answer 2xx. The deadline is generous because a
-	// cold Python interpreter start on a loaded CI runner (notably macOS)
-	// can take well over 5s; a tight bound here flaked as "sidecar never
-	// became healthy" even though the sidecar was merely slow to boot.
+	// Read the port the kernel assigned to the sidecar. The sidecar
+	// binds 127.0.0.1:0 and prints the real port; we must not
+	// pre-allocate one (see script comment). A genuinely cold Python
+	// first-exec on a loaded macOS runner can take a while (signature
+	// validation), so the deadline is generous; the warm-up above makes
+	// it virtually never the bottleneck.
+	type portResult struct {
+		port int
+		err  error
+	}
+	prCh := make(chan portResult, 1)
+	go func() {
+		r := bufio.NewReader(stdout)
+		line, err := r.ReadString('\n')
+		if err != nil {
+			prCh <- portResult{0, fmt.Errorf("read port line: %w (stderr: %s)", err, stderr.String())}
+			return
+		}
+		line = strings.TrimSpace(line)
+		var p int
+		if _, err := fmt.Sscanf(line, "PORT=%d", &p); err != nil {
+			prCh <- portResult{0, fmt.Errorf("parse %q: %w (stderr: %s)", line, err, stderr.String())}
+			return
+		}
+		prCh <- portResult{p, nil}
+	}()
+
+	var sidecarPort int
+	select {
+	case pr := <-prCh:
+		if pr.err != nil {
+			t.Fatalf("sidecar did not report its port: %v", pr.err)
+		}
+		sidecarPort = pr.port
+	case <-time.After(120 * time.Second):
+		t.Fatalf("sidecar never bound a port within 120s (stderr: %s)", stderr.String())
+	}
+
+	// Wait for /status to answer 2xx. A cold Python interpreter on a
+	// loaded CI runner (notably macOS) can take a while to start
+	// serving; the previous tight bound flaked as "sidecar never
+	// became healthy" even though the sidecar was merely slow.
 	sidecarURL := fmt.Sprintf("http://127.0.0.1:%d/status", sidecarPort)
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
@@ -166,7 +227,7 @@ func TestEchoRestEndToEnd(t *testing.T) {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	t.Fatal("sidecar never became healthy")
+	t.Fatalf("sidecar never became healthy (stderr: %s)", stderr.String())
 
 ready:
 	// Start the facade on a Unix socket routing /echo/* → sidecarPort.
