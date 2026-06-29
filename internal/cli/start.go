@@ -271,6 +271,9 @@ func runLaunch(env *Env, opts launchOpts) int {
 	// never blocks the launch.
 	ensureBuiltinSkills(env, harness)
 
+	// Likewise provision the OpenCode bridge plugin that carries the briefing.
+	ensureOpenCodePlugin(env, harness)
+
 	// 2c-d / 3. Per-skill validation + secret/config resolution.
 	//
 	// We do this in a single pass that accumulates every per-skill
@@ -642,6 +645,12 @@ func runLaunch(env *Env, opts launchOpts) int {
 	// --inner override wins, else the profile's inner_cmd, else the
 	// harness's default InnerCmd (config.Harness.ResolveInnerCmd).
 	inner := harness.ResolveInnerCmd(prof.InnerCmd, innerCmdOverride)
+	// Inject the sandbox briefing: Claude via its --append-system-prompt flag
+	// (SystemContextArgs), OpenCode via OMAC_SANDBOX_BRIEFING set below.
+	briefingText, injectBriefing := briefingInjection(noSandbox, inner, harness, lc.Sandbox.Briefing)
+	if injectBriefing && harness.SystemContextArgs != nil {
+		inner = append(inner, harness.SystemContextArgs(briefingText)...)
+	}
 	if len(innerArgs) > 0 {
 		inner = append(inner, innerArgs...)
 	}
@@ -712,6 +721,11 @@ func runLaunch(env *Env, opts launchOpts) int {
 	}
 	if controlOK {
 		extra["OMAC_CONTROL_BASE"] = controlURL
+	}
+	if injectBriefing {
+		// The OpenCode plugin reads this and pushes it into the system prompt;
+		// Claude ignores it (it gets the briefing via the flag above).
+		extra["OMAC_SANDBOX_BRIEFING"] = briefingText
 	}
 
 	code, err := sandbox.ExecWithReady(argv, extra, nil)

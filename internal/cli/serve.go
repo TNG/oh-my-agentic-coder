@@ -251,6 +251,9 @@ func runServe(args []string, env *Env) int {
 	// never blocks the launch.
 	ensureBuiltinSkills(env, harness)
 
+	// Likewise provision the OpenCode bridge plugin that carries the briefing.
+	ensureOpenCodePlugin(env, harness)
+
 	// Build the inner argv. serve mode runs the selected harness's *server*
 	// form: the inner executable is resolved from the profile (or --inner, or
 	// the harness default), then the harness's ServerLaunch convention is
@@ -267,6 +270,11 @@ func runServe(args []string, env *Env) int {
 	// `serve` when no subcommand is present). Harnesses without a server
 	// mode leave the inner command unchanged.
 	inner = harness.ApplyServerLaunch(inner, innerArgs)
+	// Inject the sandbox briefing on the same terms as `omac start` (see there).
+	briefingText, injectBriefing := briefingInjection(*noSandbox, inner, harness, lc.Sandbox.Briefing)
+	if injectBriefing && harness.SystemContextArgs != nil {
+		inner = append(inner, harness.SystemContextArgs(briefingText)...)
+	}
 	if len(innerArgs) > 0 {
 		inner = append(inner, innerArgs...)
 	}
@@ -275,6 +283,10 @@ func runServe(args []string, env *Env) int {
 	// per-skill OMAC_G_*/OMAC_D_* vars are added on top by serve as routes
 	// come and go; the static globals are set here once.
 	extra := srv.baseEnv()
+	if injectBriefing {
+		// Consumed by the OpenCode plugin; see start.go.
+		extra["OMAC_SANDBOX_BRIEFING"] = briefingText
+	}
 
 	var argv []string
 	if *noSandbox {

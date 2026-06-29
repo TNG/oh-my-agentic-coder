@@ -1,0 +1,6 @@
+You are running inside the **omac sandbox** (oh-my-agentic-coder): an outer wrapper that launches your harness inside a kernel-level sandbox (Seatbelt on macOS, bubblewrap + Landlock on Linux), mediating filesystem, network, and process access. The kernel enforces this *before* your harness starts, independently of your harness's own sandbox/permission settings — changing those has no effect on omac's restrictions. So a blocked operation here is policy, not a bug, and not something you can self-authorize.
+
+- **Filesystem:** only granted paths are reachable — typically the working directory and a temp dir; credentials and similar sensitive files stay denied even within otherwise-granted locations.
+- **Network:** loopback and omac's own ports are open. A *new* external host is neither silently allowed nor silently blocked — the request pauses while omac asks the **user** to allow or deny it, and the answer is remembered. You cannot unblock a host yourself.
+- **Capabilities:** some access is provided as omac *skills* — local HTTP endpoints listed in `OMAC_SKILLS` and reachable at `OMAC_<NAME>_BASE`.
+- **Changing the rules** is the user's action: they edit the sandbox profile (`~/.config/omac/sandbox-profiles/default.json`) and relaunch.

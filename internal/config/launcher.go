@@ -25,6 +25,11 @@ type LauncherConfig struct {
 type SandboxConfig struct {
 	DefaultProfile string                    `yaml:"default_profile" json:"default_profile"`
 	Profiles       map[string]SandboxProfile `yaml:"profiles"        json:"profiles"`
+
+	// Briefing optionally overrides the embedded sandbox briefing text.
+	// Empty/unset uses the compiled-in default (sandboxbrief.Default);
+	// resolution happens at launch, not here.
+	Briefing string `yaml:"briefing"        json:"briefing"`
 }
 
 // SandboxProfile describes how to launch the sandbox for a given runtime.

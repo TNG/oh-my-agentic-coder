@@ -7,6 +7,7 @@ import (
 
 	"github.com/tngtech/oh-my-agentic-coder/internal/builtinskills"
 	"github.com/tngtech/oh-my-agentic-coder/internal/config"
+	"github.com/tngtech/oh-my-agentic-coder/internal/plugin"
 )
 
 // runSetup provisions omac's built-in skill bundles into the native skills
@@ -118,6 +119,33 @@ func ensureBuiltinSkills(env *Env, harness config.Harness) {
 			fmt.Fprintf(env.Stderr, "[hint] a non-omac %q directory exists for %s; not overwriting (run `omac setup --force` to replace)\n", name, harness.Name)
 			// StatusUnchanged: stay silent — the common case on every launch.
 		}
+	}
+}
+
+// ensureOpenCodePlugin idempotently provisions omac's OpenCode bridge plugin
+// into the harness's global plugins dir (~/.config/opencode/plugins) on
+// launch, so the sandbox-briefing relay works even when the user never ran
+// `omac plugin install`. Mirrors the global provisioning ensureBuiltinSkills
+// does for skills: OpenCode-only, quiet when unchanged, and a failure (or a
+// foreign same-named file, which InstallMultiDirIn refuses to clobber) is a
+// warning, never a launch blocker.
+func ensureOpenCodePlugin(env *Env, harness config.Harness) {
+	if harness.Name != "opencode" {
+		return
+	}
+	dir := harness.GlobalBridgeDir()
+	if dir == "" {
+		return
+	}
+	// force=false, so an existing differing file yields an error (not an
+	// overwrite) and Unchanged covers the silent common path.
+	res, err := plugin.InstallMultiDirIn(dir, false)
+	if err != nil {
+		fmt.Fprintf(env.Stderr, "[warn] could not provision the omac OpenCode plugin (%v); the sandbox briefing won't appear in OpenCode. Install it with: omac plugin install opencode-desktop --global\n", err)
+		return
+	}
+	if !res.Unchanged {
+		fmt.Fprintln(env.Stderr, "[ok] provisioned the omac OpenCode plugin")
 	}
 }
 
