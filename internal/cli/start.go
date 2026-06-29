@@ -642,6 +642,10 @@ func runLaunch(env *Env, opts launchOpts) int {
 	// --inner override wins, else the profile's inner_cmd, else the
 	// harness's default InnerCmd (config.Harness.ResolveInnerCmd).
 	inner := harness.ResolveInnerCmd(prof.InnerCmd, innerCmdOverride)
+	briefingText, injectBriefing := briefingInjection(noSandbox, inner, harness, lc.Sandbox.Briefing)
+	if injectBriefing && harness.SystemContextArgs != nil {
+		inner = append(inner, harness.SystemContextArgs(briefingText)...)
+	}
 	if len(innerArgs) > 0 {
 		inner = append(inner, innerArgs...)
 	}
@@ -712,6 +716,13 @@ func runLaunch(env *Env, opts launchOpts) int {
 	}
 	if controlOK {
 		extra["OMAC_CONTROL_BASE"] = controlURL
+	}
+	if injectBriefing {
+		// Universal channel: the OpenCode plugin reads this from the
+		// sandbox env and pushes it into the system prompt. Harmless to
+		// harnesses (Claude) that get the briefing via --append-system-prompt
+		// instead. Only omac sets it, so it is inert outside the sandbox.
+		extra["OMAC_SANDBOX_BRIEFING"] = briefingText
 	}
 
 	code, err := sandbox.ExecWithReady(argv, extra, nil)
