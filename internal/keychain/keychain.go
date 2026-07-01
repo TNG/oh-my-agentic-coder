@@ -25,6 +25,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/zalando/go-keyring"
 
@@ -98,17 +99,39 @@ func SetScoped(scope, skillName, name string, value secrets.Secret) error {
 }
 
 // GetScoped retrieves a secret under (scope, skill). Returns ErrNotFound if
-// absent.
+// absent, or if the OS keychain backend is unavailable (e.g. headless Linux
+// with no Secret Service daemon). The latter is treated as "not found"
+// because the secret cannot exist in a keychain that doesn't run; callers
+// relying on env_passthrough or optional secrets still work.
 func GetScoped(scope, skillName, name string) (secrets.Secret, error) {
 	svc := ScopedService(scope, skillName)
 	v, err := keyring.Get(svc, name)
 	if err != nil {
-		if errors.Is(err, keyring.ErrNotFound) {
+		if errors.Is(err, keyring.ErrNotFound) || isKeychainUnavailable(err) {
 			return secrets.Secret{}, ErrNotFound
 		}
 		return secrets.Secret{}, fmt.Errorf("keychain get %s/%s: %w", svc, name, err)
 	}
 	return secrets.NewSecretString(v), nil
+}
+
+// isKeychainUnavailable reports whether err indicates the OS keychain
+// backend is missing (no Secret Service daemon on headless Linux, no
+// keychain daemon on macOS, etc.). Such errors are not per-secret failures
+// but environment-level ones; mapping them to ErrNotFound lets optional
+// secrets and env_passthrough fallbacks work in CI.
+func isKeychainUnavailable(err error) bool {
+	msg := err.Error()
+	// Linux: org.freedesktop.secrets not provided by any .service files
+	// (dbus.ServiceUnknown when no Secret Service implementation is running).
+	if strings.Contains(msg, "org.freedesktop.secrets") {
+		return true
+	}
+	// Linux: dbus connection failures (no session bus on headless runners).
+	if strings.Contains(msg, "dbus") || strings.Contains(msg, "D-Bus") {
+		return true
+	}
+	return false
 }
 
 // GetWithFallback retrieves a secret under (scope, skill), falling back to
@@ -131,13 +154,14 @@ func GetWithFallback(scope, skillName, name string) (secrets.Secret, error) {
 }
 
 // HasScoped reports whether a secret is present under (scope, skill).
+// Returns false (not an error) when the keychain backend is unavailable.
 func HasScoped(scope, skillName, name string) (bool, error) {
 	svc := ScopedService(scope, skillName)
 	_, err := keyring.Get(svc, name)
 	if err == nil {
 		return true, nil
 	}
-	if errors.Is(err, keyring.ErrNotFound) {
+	if errors.Is(err, keyring.ErrNotFound) || isKeychainUnavailable(err) {
 		return false, nil
 	}
 	return false, fmt.Errorf("keychain probe %s/%s: %w", svc, name, err)

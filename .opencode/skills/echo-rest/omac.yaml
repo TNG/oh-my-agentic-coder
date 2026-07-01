@@ -2,7 +2,7 @@ name: echo-rest
 type: skill
 version: 0.1.0
 description: Smoke-test REST interface. Exposes /status, /echo (POST), /whoami (GET).
-author: tngtech
+author: omac
 dependencies: []
 
 sidecar:
@@ -61,9 +61,9 @@ sidecar:
   # omac waits for GET /status → 2xx before mounting routes.
   health:
     path: /status
-    initial_delay_ms: 100
-    timeout_ms: 4000
-    interval_ms: 200
+    initial_delay_ms: 500
+    timeout_ms: 60000
+    interval_ms: 500
 
   # Per-OS install scripts. omac prints these at register time; it never runs them.
   install_scripts:
