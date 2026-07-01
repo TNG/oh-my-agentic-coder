@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "hooks": {
+    "SessionStart": [
+      {
+        "type": "command",
+        "bash": "bash \"$(git rev-parse --show-toplevel)/.copilot/hooks/omac-bridge.sh\"",
+        "cwd": ".",
+        "timeoutSec": 30
+      }
+    ],
+    "SessionEnd": [
+      {
+        "type": "command",
+        "bash": "bash \"$(git rev-parse --show-toplevel)/.copilot/hooks/omac-bridge.sh\"",
+        "cwd": ".",
+        "timeoutSec": 10
+      }
+    ]
+  }
+}

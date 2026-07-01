@@ -130,7 +130,7 @@ func ensureBuiltinSkills(env *Env, harness config.Harness) {
 // foreign same-named file, which InstallMultiDirIn refuses to clobber) is a
 // warning, never a launch blocker.
 func ensureOpenCodePlugin(env *Env, harness config.Harness) {
-	if harness.Name != "opencode" {
+	if !harness.NeedsPluginBootstrap {
 		return
 	}
 	dir := harness.GlobalBridgeDir()

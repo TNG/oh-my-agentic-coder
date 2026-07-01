@@ -11,22 +11,21 @@ import (
 // boolPtr is a tiny helper for NetworkPrompt.Enabled.
 func boolPtr(b bool) *bool { return &b }
 
-// DefaultProfile returns the compiled-in default settings. It mirrors
-// the tng-sandbox nono profile that omac shipped before the built-in
-// sandbox existed (opencode-nono/tng-sandbox.json), minus the dropped
-// credential-injection block. It is used only as the template for the
-// scaffolded ~/.config/omac/sandbox-profiles/default.json — once that
-// file exists, the file is authoritative.
+// DefaultProfile returns the compiled-in default settings. It is used
+// only as the template for the scaffolded
+// ~/.config/omac/sandbox-profiles/default.json — once that file exists,
+// the file is authoritative.
+//
+// Harness-specific dirs (config, state, sessions) are NOT here — they
+// are declared per-harness via Harness.SandboxDirs and injected at
+// launch time. This profile contains platform-level system paths and
+// common toolchain/cache dirs.
 func DefaultProfile() *Profile {
 	return &Profile{
 		Meta:    Meta{Name: "default"},
 		Workdir: Workdir{Access: AccessReadWrite},
 		Filesystem: Filesystem{
 			Allow: []string{
-				"~/.local/share/opencode",
-				"~/.local/state/opencode",
-				"~/.local/share/claude",
-				"~/.claude",
 				"~/.cache",
 				"~/Library/Caches",
 				"~/go",
@@ -34,14 +33,11 @@ func DefaultProfile() *Profile {
 				"~/.cargo",
 			},
 			Read: []string{
-				"~/.config/opencode",
-				"~/.opencode/bin",
+				"~/.gitconfig",
+				"~/.gitignore_global",
 				"~/.nvm",
 				"~/.bun/bin",
 				"~/.bun/install/global/node_modules/opencode-ai",
-				"~/.gitconfig",
-				"~/.gitignore_global",
-				"~/.claude.json",
 			},
 		},
 		Network: Network{

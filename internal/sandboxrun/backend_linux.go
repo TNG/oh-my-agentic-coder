@@ -145,6 +145,9 @@ func kernelVersionString() string {
 //   - the directory of its symlink-resolved real file (e.g.
 //     ~/.bun/install/.../opencode-ai/bin/opencode.exe), so the link target
 //     and its sibling files (shared libs, node runtime) are reachable.
+//   - when the resolved file is a script with a shebang (e.g.
+//     #!/usr/bin/env node), the interpreter's directory too — so the
+//     kernel can exec the script inside the namespace.
 //
 // Granting only the resolved dir (the historical behavior) left the shim on
 // PATH unmounted, breaking version-manager installs like bun where the
@@ -163,6 +166,105 @@ func resolveInnerBinaryDirs(innerArgv []string) []string {
 	// relative) paths, returning an error when nothing resolves.
 	resolved, err := exec.LookPath(innerArgv[0])
 	if err != nil {
+		return nil
+	}
+	if abs, aerr := filepath.Abs(resolved); aerr == nil {
+		resolved = abs
+	}
+	dirs := []string{filepath.Dir(resolved)}
+	if real, rerr := filepath.EvalSymlinks(resolved); rerr == nil {
+		if d := filepath.Dir(real); d != dirs[0] {
+			dirs = append(dirs, d)
+		}
+		// If the resolved file is a script with a shebang, the kernel
+		// needs the interpreter inside the namespace too. Resolve it and
+		// grant its dir.
+		if interp := shebangInterpreter(real); interp != "" {
+			if idirs := resolveInterpreterDirs(interp); len(idirs) > 0 {
+				dirs = append(dirs, idirs...)
+			}
+		}
+	}
+	return dirs
+}
+
+// resolveInnerBinaryPath resolves the inner command's executable to its
+// real absolute path (following all symlinks). This is used to rewrite
+// argv[0] so stage2 execs the real binary directly instead of following a
+// symlink chain inside the sandbox — which would require granting read
+// access to every intermediate directory (a security risk).
+//
+// Returns the original argv[0] when resolution fails (LookPath will then
+// fail inside the namespace too, producing the standard error message).
+func resolveInnerBinaryPath(innerArgv []string) string {
+	if len(innerArgv) == 0 || innerArgv[0] == "" {
+		return ""
+	}
+	resolved, err := exec.LookPath(innerArgv[0])
+	if err != nil {
+		return innerArgv[0]
+	}
+	if real, rerr := filepath.EvalSymlinks(resolved); rerr == nil {
+		return real
+	}
+	if abs, aerr := filepath.Abs(resolved); aerr == nil {
+		return abs
+	}
+	return innerArgv[0]
+}
+
+// shebangInterpreter reads the first line of path and, if it is a shebang
+// (#!), returns the interpreter. Handles two forms:
+//   - #!/usr/bin/env node       → "node"
+//   - #!/usr/bin/node           → "/usr/bin/node"
+//
+// Returns "" when the file is not a script or has no shebang.
+func shebangInterpreter(path string) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	hdr := make([]byte, 256)
+	n, _ := f.Read(hdr)
+	line := string(hdr[:n])
+	if !strings.HasPrefix(line, "#!") {
+		return ""
+	}
+	if i := strings.IndexByte(line, '\n'); i >= 0 {
+		line = line[:i]
+	}
+	// Strip "#!" and surrounding whitespace.
+	line = strings.TrimSpace(strings.TrimPrefix(line, "#!"))
+	if line == "" {
+		return ""
+	}
+	parts := strings.Fields(line)
+	interp := parts[0]
+	// /usr/bin/env <name> — resolve <name> on PATH. Skip env flags like -S.
+	if filepath.Base(interp) == "env" && len(parts) > 1 {
+		for _, p := range parts[1:] {
+			if !strings.HasPrefix(p, "-") {
+				return p
+			}
+		}
+		return ""
+	}
+	return interp
+}
+
+// resolveInterpreterDirs resolves an interpreter (bare name like "node" or
+// absolute path like "/usr/bin/node") on the host and returns the dirs to
+// grant: the interpreter's dir and its symlink-resolved dir.
+func resolveInterpreterDirs(interp string) []string {
+	resolved, err := exec.LookPath(interp)
+	if err != nil {
+		// Absolute path that doesn't need PATH lookup.
+		if filepath.IsAbs(interp) {
+			if _, err := os.Stat(interp); err == nil {
+				return []string{filepath.Dir(interp)}
+			}
+		}
 		return nil
 	}
 	if abs, aerr := filepath.Abs(resolved); aerr == nil {
@@ -238,9 +340,22 @@ func BuildChildArgv(g *Grants, innerArgv []string) ([]string, error) {
 	// BuildBwrapArgv's dedupe drops only exact-duplicate paths, not overlaps).
 	gz.ReadPaths = append(gz.ReadPaths, resolveInnerBinaryDirs(innerArgv)...)
 
+	// Rewrite argv[0] to the symlink-resolved real path so stage2 execs
+	// the real binary directly instead of following a symlink chain inside
+	// the sandbox. This avoids granting read access to intermediate
+	// directories in the chain (e.g. ~/.codex/packages/standalone/current/
+	// when ~/.local/bin/codex -> ~/.codex/.../current/bin/codex ->
+	// ~/.codex/.../releases/.../bin/codex). Only the binary's final
+	// directory is granted (via resolveInnerBinaryDirs above).
+	resolvedArgv := make([]string, len(innerArgv))
+	copy(resolvedArgv, innerArgv)
+	if p := resolveInnerBinaryPath(innerArgv); p != "" {
+		resolvedArgv[0] = p
+	}
+
 	stage2 := []string{self, "sandbox", "stage2"}
 	stage2 = append(stage2, Stage2Args(&gz)...)
 	stage2 = append(stage2, "--")
-	stage2 = append(stage2, innerArgv...)
+	stage2 = append(stage2, resolvedArgv...)
 	return BuildBwrapArgv(&gz, stage2)
 }

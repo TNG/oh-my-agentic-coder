@@ -1,6 +1,7 @@
 package config
 
 import (
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -290,5 +291,316 @@ func TestSystemContextArgsOpenCodeNil(t *testing.T) {
 	}
 	if h.SystemContextArgs != nil {
 		t.Error("opencode SystemContextArgs should be nil (no system-prompt flag exists)")
+	}
+}
+
+func TestSystemContextArgsCodex(t *testing.T) {
+	h, ok := LookupHarness("codex")
+	if !ok {
+		t.Fatal("codex harness not found")
+	}
+	if h.SystemContextArgs == nil {
+		t.Fatal("codex SystemContextArgs is nil; want a config-override builder")
+	}
+	got := h.SystemContextArgs("BRIEF")
+	want := []string{"-c", "instructions=BRIEF"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("SystemContextArgs = %v; want %v", got, want)
+	}
+}
+
+func TestSystemContextArgsCopilotNil(t *testing.T) {
+	h, ok := LookupHarness("copilot")
+	if !ok {
+		t.Fatal("copilot harness not found")
+	}
+	if h.SystemContextArgs != nil {
+		t.Error("copilot SystemContextArgs should be nil (no system-prompt flag exists)")
+	}
+	if h.BriefingEnvFunc == nil {
+		t.Fatal("copilot BriefingEnvFunc is nil; want an env+file builder")
+	}
+}
+
+func TestBriefingEnvFuncCopilot(t *testing.T) {
+	h, ok := LookupHarness("copilot")
+	if !ok {
+		t.Fatal("copilot harness not found")
+	}
+	if h.BriefingEnvFunc == nil {
+		t.Fatal("copilot BriefingEnvFunc is nil")
+	}
+	tmp := t.TempDir()
+	got := h.BriefingEnvFunc("BRIEF", tmp)
+	if got["COPILOT_CUSTOM_INSTRUCTIONS_DIRS"] != tmp {
+		t.Errorf("COPILOT_CUSTOM_INSTRUCTIONS_DIRS = %q; want %q", got["COPILOT_CUSTOM_INSTRUCTIONS_DIRS"], tmp)
+	}
+	data, err := os.ReadFile(filepath.Join(tmp, "AGENTS.md"))
+	if err != nil {
+		t.Fatalf("AGENTS.md not written: %v", err)
+	}
+	if string(data) != "BRIEF" {
+		t.Errorf("AGENTS.md = %q; want %q", string(data), "BRIEF")
+	}
+}
+
+func TestSandboxDirsCodex(t *testing.T) {
+	h, ok := LookupHarness("codex")
+	if !ok {
+		t.Fatal("codex harness not found")
+	}
+	if !reflect.DeepEqual(h.SandboxDirs, []string{"~/.codex", "~/.cache/codex"}) {
+		t.Errorf("codex SandboxDirs = %v; want [~/.codex ~/.cache/codex]", h.SandboxDirs)
+	}
+}
+
+func TestSandboxDirsCopilot(t *testing.T) {
+	h, ok := LookupHarness("copilot")
+	if !ok {
+		t.Fatal("copilot harness not found")
+	}
+	if !reflect.DeepEqual(h.SandboxDirs, []string{"~/.copilot", "~/.cache/copilot"}) {
+		t.Errorf("copilot SandboxDirs = %v; want [~/.copilot ~/.cache/copilot]", h.SandboxDirs)
+	}
+}
+
+func TestSandboxDirsOpenCode(t *testing.T) {
+	h, ok := LookupHarness("opencode")
+	if !ok {
+		t.Fatal("opencode harness not found")
+	}
+	want := []string{"~/.local/share/opencode", "~/.local/state/opencode", "~/.config/opencode", "~/.opencode", "~/.cache/opencode"}
+	if !reflect.DeepEqual(h.SandboxDirs, want) {
+		t.Errorf("opencode SandboxDirs = %v; want %v", h.SandboxDirs, want)
+	}
+}
+
+func TestSandboxDirsClaude(t *testing.T) {
+	h, ok := LookupHarness("claude")
+	if !ok {
+		t.Fatal("claude harness not found")
+	}
+	want := []string{"~/.claude", "~/.local/share/claude", "~/.cache/claude"}
+	if !reflect.DeepEqual(h.SandboxDirs, want) {
+		t.Errorf("claude SandboxDirs = %v; want %v", h.SandboxDirs, want)
+	}
+}
+
+// --- Codex + Copilot harness descriptors -------------------------------------
+
+func TestLookupCodexHarness(t *testing.T) {
+	cases := []struct {
+		in       string
+		wantName string
+		wantOK   bool
+	}{
+		{"codex", "codex", true},
+		{"Codex", "codex", true},
+		{"cx", "codex", true},
+		{"CX", "codex", true},
+	}
+	for _, c := range cases {
+		h, ok := LookupHarness(c.in)
+		if ok != c.wantOK {
+			t.Errorf("LookupHarness(%q) ok=%v, want %v", c.in, ok, c.wantOK)
+			continue
+		}
+		if ok && h.Name != c.wantName {
+			t.Errorf("LookupHarness(%q) name=%q, want %q", c.in, h.Name, c.wantName)
+		}
+	}
+}
+
+func TestLookupCopilotHarness(t *testing.T) {
+	cases := []struct {
+		in       string
+		wantName string
+		wantOK   bool
+	}{
+		{"copilot", "copilot", true},
+		{"Copilot", "copilot", true},
+		{"co", "copilot", true},
+		{"CO", "copilot", true},
+	}
+	for _, c := range cases {
+		h, ok := LookupHarness(c.in)
+		if ok != c.wantOK {
+			t.Errorf("LookupHarness(%q) ok=%v, want %v", c.in, ok, c.wantOK)
+			continue
+		}
+		if ok && h.Name != c.wantName {
+			t.Errorf("LookupHarness(%q) name=%q, want %q", c.in, h.Name, c.wantName)
+		}
+	}
+}
+
+func TestCodexHarnessDescriptor(t *testing.T) {
+	h, ok := LookupHarness("codex")
+	if !ok {
+		t.Fatal("codex harness not registered")
+	}
+	if !reflect.DeepEqual(h.InnerCmd, []string{"codex"}) {
+		t.Errorf("codex InnerCmd = %v, want [codex]", h.InnerCmd)
+	}
+	if h.ServerLaunch != nil {
+		t.Errorf("codex ServerLaunch = %v, want nil", h.ServerLaunch)
+	}
+	if h.BridgeDir != ".codex" {
+		t.Errorf("codex BridgeDir = %q, want .codex", h.BridgeDir)
+	}
+	if h.SkillsBase != "codex" {
+		t.Errorf("codex SkillsBase = %q, want codex", h.SkillsBase)
+	}
+	if h.UserConfigHome != ".codex" {
+		t.Errorf("codex UserConfigHome = %q, want .codex", h.UserConfigHome)
+	}
+}
+
+func TestCopilotHarnessDescriptor(t *testing.T) {
+	h, ok := LookupHarness("copilot")
+	if !ok {
+		t.Fatal("copilot harness not registered")
+	}
+	if !reflect.DeepEqual(h.InnerCmd, []string{"copilot"}) {
+		t.Errorf("copilot InnerCmd = %v, want [copilot]", h.InnerCmd)
+	}
+	if h.ServerLaunch != nil {
+		t.Errorf("copilot ServerLaunch = %v, want nil", h.ServerLaunch)
+	}
+	if h.BridgeDir != ".copilot" {
+		t.Errorf("copilot BridgeDir = %q, want .copilot", h.BridgeDir)
+	}
+	if h.SkillsBase != "copilot" {
+		t.Errorf("copilot SkillsBase = %q, want copilot", h.SkillsBase)
+	}
+	if h.UserConfigHome != ".copilot" {
+		t.Errorf("copilot UserConfigHome = %q, want .copilot", h.UserConfigHome)
+	}
+}
+
+func TestCodexSessionMetadata(t *testing.T) {
+	h, ok := LookupHarness("codex")
+	if !ok {
+		t.Fatal("codex harness not registered")
+	}
+	if h.Session == nil {
+		t.Fatal("codex Session is nil, want session metadata")
+	}
+	if !reflect.DeepEqual(h.Session.ContinueArgs, []string{"resume", "--last"}) {
+		t.Errorf("codex ContinueArgs = %v, want [resume --last]", h.Session.ContinueArgs)
+	}
+	if got := h.Session.ResumeByIDArgs("abc123"); !reflect.DeepEqual(got, []string{"resume", "abc123"}) {
+		t.Errorf("codex ResumeByIDArgs = %v, want [resume abc123]", got)
+	}
+	if h.Session.ListKind != SessionListCodex {
+		t.Errorf("codex ListKind = %v, want SessionListCodex", h.Session.ListKind)
+	}
+}
+
+func TestCopilotSessionMetadata(t *testing.T) {
+	h, ok := LookupHarness("copilot")
+	if !ok {
+		t.Fatal("copilot harness not registered")
+	}
+	if h.Session == nil {
+		t.Fatal("copilot Session is nil, want session metadata")
+	}
+	if !reflect.DeepEqual(h.Session.ContinueArgs, []string{"--continue"}) {
+		t.Errorf("copilot ContinueArgs = %v, want [--continue]", h.Session.ContinueArgs)
+	}
+	if got := h.Session.ResumeByIDArgs("abc123"); !reflect.DeepEqual(got, []string{"--session-id", "abc123"}) {
+		t.Errorf("copilot ResumeByIDArgs = %v, want [--session-id abc123]", got)
+	}
+	if h.Session.ListKind != SessionListCopilot {
+		t.Errorf("copilot ListKind = %v, want SessionListCopilot", h.Session.ListKind)
+	}
+}
+
+func TestCodexWorkdirSkillsDir(t *testing.T) {
+	h, _ := LookupHarness("codex")
+	if got := h.WorkdirSkillsDir(); got != ".codex/skills" {
+		t.Errorf("codex WorkdirSkillsDir = %q, want .codex/skills", got)
+	}
+}
+
+func TestCopilotWorkdirSkillsDir(t *testing.T) {
+	h, _ := LookupHarness("copilot")
+	if got := h.WorkdirSkillsDir(); got != ".copilot/skills" {
+		t.Errorf("copilot WorkdirSkillsDir = %q, want .copilot/skills", got)
+	}
+}
+
+func TestCodexInScopeSkillsBases(t *testing.T) {
+	h, _ := LookupHarness("codex")
+	if got := h.InScopeSkillsBases(); !reflect.DeepEqual(got, []string{"codex", SharedSkillsBase}) {
+		t.Errorf("codex bases = %v, want [codex agents]", got)
+	}
+}
+
+func TestCopilotInScopeSkillsBases(t *testing.T) {
+	h, _ := LookupHarness("copilot")
+	if got := h.InScopeSkillsBases(); !reflect.DeepEqual(got, []string{"copilot", SharedSkillsBase}) {
+		t.Errorf("copilot bases = %v, want [copilot agents]", got)
+	}
+}
+
+func TestConfigHomeEnvOverride(t *testing.T) {
+	h, _ := LookupHarness("codex")
+	t.Setenv("CODEX_HOME", "/tmp/codex-home")
+	if got := h.ConfigHome(); got != "/tmp/codex-home" {
+		t.Errorf("ConfigHome() = %q, want /tmp/codex-home", got)
+	}
+}
+
+func TestConfigHomeEnvOverrideUnset(t *testing.T) {
+	h, _ := LookupHarness("codex")
+	t.Setenv("CODEX_HOME", "")
+	home, _ := os.UserHomeDir()
+	want := filepath.Join(home, ".codex")
+	if got := h.ConfigHome(); got != want {
+		t.Errorf("ConfigHome() = %q, want %q", got, want)
+	}
+}
+
+func TestConfigHomeEnvOverrideClaude(t *testing.T) {
+	h, _ := LookupHarness("claude-code")
+	t.Setenv("CLAUDE_HOME", "/tmp/claude-home")
+	if got := h.ConfigHome(); got != "/tmp/claude-home" {
+		t.Errorf("ConfigHome() = %q, want /tmp/claude-home", got)
+	}
+}
+
+func TestConfigHomeEnvOverrideOpenCode(t *testing.T) {
+	h, _ := LookupHarness("opencode")
+	t.Setenv("OPENCODE_HOME", "/tmp/oc-home")
+	if got := h.ConfigHome(); got != "/tmp/oc-home" {
+		t.Errorf("ConfigHome() = %q, want /tmp/oc-home", got)
+	}
+}
+
+func TestGlobalSkillsDirEnvOverride(t *testing.T) {
+	h, _ := LookupHarness("codex")
+	t.Setenv("CODEX_HOME", "/tmp/codex-skills")
+	want := "/tmp/codex-skills/skills"
+	if got := h.GlobalSkillsDir(); got != want {
+		t.Errorf("GlobalSkillsDir() = %q, want %q", got, want)
+	}
+}
+
+func TestGlobalSkillsDirEnvOverrideClaude(t *testing.T) {
+	h, _ := LookupHarness("claude-code")
+	t.Setenv("CLAUDE_HOME", "/tmp/claude-skills")
+	want := "/tmp/claude-skills/skills"
+	if got := h.GlobalSkillsDir(); got != want {
+		t.Errorf("GlobalSkillsDir() = %q, want %q", got, want)
+	}
+}
+
+func TestGlobalSkillsDirEnvOverrideOpenCode(t *testing.T) {
+	h, _ := LookupHarness("opencode")
+	t.Setenv("OPENCODE_HOME", "/tmp/oc-skills")
+	want := "/tmp/oc-skills/skills"
+	if got := h.GlobalSkillsDir(); got != want {
+		t.Errorf("GlobalSkillsDir() = %q, want %q", got, want)
 	}
 }

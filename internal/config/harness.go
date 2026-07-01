@@ -63,6 +63,12 @@ type Harness struct {
 	// this — the directory the harness's own loader reads global skills from.
 	UserConfigHome string
 
+	// HomeEnv, when non-empty, names an environment variable whose value
+	// replaces the harness's full config home directory. When the env var
+	// is unset or empty, the harness falls back to its default config home
+	// (UserConfigHome under $HOME, or XDG for opencode).
+	HomeEnv string
+
 	// Session, when non-nil, declares how omac re-enters prior sessions of
 	// this harness for `omac continue` and `omac resume`. A nil Session means
 	// the harness exposes no session continue/resume support, and those
@@ -70,11 +76,36 @@ type Harness struct {
 	Session *HarnessSession
 
 	// SystemContextArgs builds the inner args that inject the always-on
-	// sandbox briefing for harnesses with a system-prompt flag (Claude:
-	// --append-system-prompt). Nil means no such flag — OpenCode instead
-	// delivers the briefing through its plugin via OMAC_SANDBOX_BRIEFING.
-	// Mirrors the ResumeByIDArgs func-field pattern.
+	// sandbox briefing for harnesses with a system-prompt flag:
+	//   - Claude: --append-system-prompt flag
+	//   - Codex:  -c instructions=<briefing> config override
+	// Nil means no such flag exists.
 	SystemContextArgs func(briefing string) []string
+
+	// BriefingEnvFunc returns extra env vars to inject when the briefing
+	// cannot be delivered via SystemContextArgs (no CLI flag exists).
+	// tmpDir is a per-launch temp dir the func may write files into.
+	//   - Copilot: writes AGENTS.md into tmpDir, sets
+	//     COPILOT_CUSTOM_INSTRUCTIONS_DIRS so copilot loads it as an
+	//     always-on custom instruction file.
+	// OpenCode reads OMAC_SANDBOX_BRIEFING directly via its plugin, so it
+	// leaves this nil.
+	BriefingEnvFunc func(briefing, tmpDir string) map[string]string
+
+	// SandboxDirs are directories the harness needs at runtime for
+	// config, state, and session storage. omac grants these read+write
+	// to the sandbox — only for the selected harness. Typically the
+	// harness's home dir (e.g. ~/.codex, ~/.copilot). nil/empty means
+	// the harness's runtime dirs are already covered by the sandbox
+	// profile (e.g. ~/.claude and ~/.local/share/opencode are in the
+	// default profile's allow list).
+	SandboxDirs []string
+
+	// NeedsPluginBootstrap is true for harnesses that require omac to
+	// idempotently provision a client-side bridge plugin on launch.
+	// Currently only OpenCode (whose briefing relay depends on the
+	// omac plugin in ~/.config/opencode/plugins).
+	NeedsPluginBootstrap bool
 }
 
 // SessionListKind selects how omac enumerates a harness's prior sessions for
@@ -92,6 +123,10 @@ const (
 	// SessionListClaudeFiles lists by reading Claude Code's per-project
 	// session store under ~/.claude/projects/<encoded-cwd>/<session-id>.jsonl.
 	SessionListClaudeFiles
+	// SessionListCodex lists by reading Codex's session store on disk.
+	SessionListCodex
+	// SessionListCopilot lists by reading Copilot's session-store.db (SQLite).
+	SessionListCopilot
 )
 
 // HarnessSession encodes the harness-specific knowledge `omac continue` and
@@ -150,11 +185,21 @@ func harnessRegistry() []Harness {
 			ServerLaunch: &ServerLaunch{Subcommand: "serve"},
 			BridgeDir:    filepath.Join(".opencode", "plugins"),
 			SkillsBase:   "opencode",
+			HomeEnv:      "OPENCODE_HOME",
 			Session: &HarnessSession{
 				ContinueArgs:   []string{"--continue"},
 				ResumeByIDArgs: func(id string) []string { return []string{"--session", id} },
 				ListKind:       SessionListOpenCodeCLI,
 			},
+			// OpenCode stores config/state under XDG dirs and ~/.opencode.
+			SandboxDirs: []string{
+				"~/.local/share/opencode",
+				"~/.local/state/opencode",
+				"~/.config/opencode",
+				"~/.opencode",
+				"~/.cache/opencode",
+			},
+			NeedsPluginBootstrap: true,
 		},
 		{
 			Name:    "claude-code",
@@ -170,6 +215,9 @@ func harnessRegistry() []Harness {
 			// Claude Code's config home is ~/.claude, not ~/.config/claude,
 			// so its global skills live in ~/.claude/skills.
 			UserConfigHome: ".claude",
+			HomeEnv:        "CLAUDE_HOME",
+			// Claude stores config/history in ~/.claude, versions in ~/.local/share/claude.
+			SandboxDirs: []string{"~/.claude", "~/.local/share/claude", "~/.cache/claude"},
 			Session: &HarnessSession{
 				ContinueArgs:   []string{"--continue"},
 				ResumeByIDArgs: func(id string) []string { return []string{"--resume", id} },
@@ -177,6 +225,62 @@ func harnessRegistry() []Harness {
 			},
 			SystemContextArgs: func(briefing string) []string {
 				return []string{"--append-system-prompt", briefing}
+			},
+		},
+		{
+			Name:    "codex",
+			Aliases: []string{"cx"},
+			// OpenAI Codex CLI executable is `codex`.
+			InnerCmd: []string{"codex"},
+			// codex app-server is experimental; under `omac serve` it runs as-is.
+			ServerLaunch:   nil,
+			BridgeDir:      ".codex",
+			SkillsBase:     "codex",
+			UserConfigHome: ".codex", // ~/.codex, not ~/.config/codex
+			HomeEnv:        "CODEX_HOME",
+			// Codex stores config.toml, sessions, and auth in ~/.codex.
+			SandboxDirs: []string{"~/.codex", "~/.cache/codex"},
+			Session: &HarnessSession{
+				ContinueArgs:   []string{"resume", "--last"},
+				ResumeByIDArgs: func(id string) []string { return []string{"resume", id} },
+				ListKind:       SessionListCodex,
+			},
+			// Codex CLI exposes system-prompt injection via the `-c key=value`
+			// config-override flag; the `instructions` config field is the
+			// system-prompt override (codex-rs/config/src/config_toml.rs).
+			SystemContextArgs: func(briefing string) []string {
+				return []string{"-c", "instructions=" + briefing}
+			},
+		},
+		{
+			Name:    "copilot",
+			Aliases: []string{"co"},
+			// GitHub Copilot CLI executable is `copilot` (standalone binary,
+			// not the `gh copilot` extension).
+			InnerCmd: []string{"copilot"},
+			// Copilot has no server mode; under `omac serve` it runs as-is.
+			ServerLaunch:   nil,
+			BridgeDir:      ".copilot",
+			SkillsBase:     "copilot",
+			UserConfigHome: ".copilot", // ~/.copilot, not ~/.config/copilot
+			HomeEnv:        "COPILOT_HOME",
+			// Copilot stores config.json, session-store.db, and logs in ~/.copilot.
+			SandboxDirs: []string{"~/.copilot", "~/.cache/copilot"},
+			Session: &HarnessSession{
+				ContinueArgs:   []string{"--continue"},
+				ResumeByIDArgs: func(id string) []string { return []string{"--session-id", id} },
+				ListKind:       SessionListCopilot,
+			},
+			// Copilot has no system-prompt flag and no plugin architecture.
+			// The briefing is delivered as an always-on custom instruction
+			// file: BriefingEnvFunc writes AGENTS.md into the per-launch
+			// temp dir and points COPILOT_CUSTOM_INSTRUCTIONS_DIRS at it,
+			// so copilot loads the briefing into the system prompt.
+			BriefingEnvFunc: func(briefing, tmpDir string) map[string]string {
+				if err := os.WriteFile(filepath.Join(tmpDir, "AGENTS.md"), []byte(briefing), 0o644); err != nil {
+					return nil
+				}
+				return map[string]string{"COPILOT_CUSTOM_INSTRUCTIONS_DIRS": tmpDir}
 			},
 		},
 	}
@@ -294,6 +398,36 @@ func (h Harness) WorkdirSkillsDir() string {
 	return filepath.Join("."+base, "skills")
 }
 
+// ConfigHome returns the harness's full config home directory, honoring
+// the HomeEnv override. For UserConfigHome harnesses (claude, codex,
+// copilot), this is $HOME/<UserConfigHome> by default. For XDG harnesses
+// (opencode), this is $XDG_CONFIG_HOME/<base> or ~/.config/<base> by
+// default. When HomeEnv is set and non-empty, its value replaces the
+// default entirely. Returns "" when no home can be resolved.
+func (h Harness) ConfigHome() string {
+	if h.HomeEnv != "" {
+		if dir := os.Getenv(h.HomeEnv); dir != "" {
+			return dir
+		}
+	}
+	base := h.SkillsBase
+	if base == "" {
+		base = SharedSkillsBase
+	}
+	if h.UserConfigHome != "" {
+		home, err := os.UserHomeDir()
+		if err != nil || home == "" {
+			return ""
+		}
+		return filepath.Join(home, h.UserConfigHome)
+	}
+	root := userConfigRoot()
+	if root == "" {
+		return ""
+	}
+	return filepath.Join(root, base)
+}
+
 // GlobalBridgeDir returns the absolute, user-global directory where this
 // harness loads bridge plugins from, mirroring BridgeDir but rooted at the
 // harness's user config dir instead of a project. For OpenCode this is
@@ -320,11 +454,11 @@ func (h Harness) GlobalBridgeDir() string {
 	if leaf == "."+base || leaf == base {
 		return ""
 	}
-	root := userConfigRoot()
-	if root == "" {
+	home := h.ConfigHome()
+	if home == "" {
 		return ""
 	}
-	return filepath.Join(root, base, leaf)
+	return filepath.Join(home, leaf)
 }
 
 // GlobalSkillsDir returns the absolute user-global skills directory that THIS
@@ -335,22 +469,11 @@ func (h Harness) GlobalBridgeDir() string {
 //
 // It returns "" when no home/config directory can be resolved.
 func (h Harness) GlobalSkillsDir() string {
-	base := h.SkillsBase
-	if base == "" {
-		base = SharedSkillsBase
-	}
-	if h.UserConfigHome != "" {
-		home, err := os.UserHomeDir()
-		if err != nil || home == "" {
-			return ""
-		}
-		return filepath.Join(home, h.UserConfigHome, "skills")
-	}
-	root := userConfigRoot()
-	if root == "" {
+	home := h.ConfigHome()
+	if home == "" {
 		return ""
 	}
-	return filepath.Join(root, base, "skills")
+	return filepath.Join(home, "skills")
 }
 
 // userConfigRoot resolves the base user config directory, honoring

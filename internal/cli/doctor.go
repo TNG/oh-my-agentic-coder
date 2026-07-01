@@ -115,6 +115,9 @@ func runDoctor(args []string, env *Env) int {
 			status, e.Name, binOK, missingReq)
 	}
 
+	// Inner harness binary status.
+	doctorHarnessBinaries(env)
+
 	// Built-in skills provisioned by `omac setup`, per installed harness.
 	doctorBuiltinSkills(env)
 
@@ -190,5 +193,22 @@ func doctorBuiltinSandbox(env *Env) {
 		fmt.Fprintln(env.Stdout, "[ok] network prompt: dialog backend available")
 	} else {
 		fmt.Fprintln(env.Stdout, "[warn] network prompt: no dialog backend (osascript/zenity/kdialog); prompts fall back to the on_unavailable policy (default: deny)")
+	}
+}
+
+// doctorHarnessBinaries reports which harness binaries are on $PATH.
+// Advisory only — does not affect the exit code.
+func doctorHarnessBinaries(env *Env) {
+	fmt.Fprintln(env.Stdout, "Inner harnesses:")
+	for _, h := range config.AllHarnesses() {
+		if len(h.InnerCmd) == 0 {
+			continue
+		}
+		bin := h.InnerCmd[0]
+		if _, err := exec.LookPath(bin); err == nil {
+			fmt.Fprintf(env.Stdout, "  [ok]   %-12s binary=%s found\n", h.Name, bin)
+		} else {
+			fmt.Fprintf(env.Stdout, "  [warn] %-12s binary=%s not on $PATH\n", h.Name, bin)
+		}
 	}
 }
