@@ -104,6 +104,14 @@ func runServe(args []string, env *Env) int {
 		return ExitConfigInvalid
 	}
 
+	// Pre-flight: inner harness binary must be on $PATH (unless --no-inner
+	// or --inner override).
+	if !*noInner && *innerCmdOverride == "" {
+		if code := checkInnerBinary(harness, "omac serve", env); code != ExitOK {
+			return code
+		}
+	}
+
 	// Normalize pre-declared roots to absolute paths (§5.4 Option B).
 	absRoots := make([]string, 0, len(roots))
 	for _, r := range roots {
@@ -286,6 +294,13 @@ func runServe(args []string, env *Env) int {
 	if injectBriefing {
 		// Consumed by the OpenCode plugin; see start.go.
 		extra["OMAC_SANDBOX_BRIEFING"] = briefingText
+		// Harnesses without a CLI flag (copilot) deliver the briefing via
+		// an env-var + file mechanism (e.g. COPILOT_CUSTOM_INSTRUCTIONS_DIRS).
+		if harness.BriefingEnvFunc != nil {
+			for k, v := range harness.BriefingEnvFunc(briefingText, srv.sandboxTmp) {
+				extra[k] = v
+			}
+		}
 	}
 
 	var argv []string
@@ -312,6 +327,9 @@ func runServe(args []string, env *Env) int {
 		if cp := controlPortOf(cln); cp != "" {
 			argv = injectOpenPort(argv, cp)
 		}
+		// Grant the selected harness's runtime dirs (config, state,
+		// sessions) read+write — only for the selected harness.
+		argv = injectSandboxDirs(argv, harness.SandboxDirs)
 		// --for-opencode-desktop: grant every project worktree OpenCode
 		// knows about. The kernel sandbox cannot grow after launch, so
 		// folders opened for the first time during this session still
@@ -379,6 +397,19 @@ func controlPortOf(ln net.Listener) string {
 // sandboxed inner command may connect to that loopback port.
 func injectOpenPort(argv []string, port string) []string {
 	return injectSandboxFlag(argv, "--open-port", port)
+}
+
+// injectSandboxDirs splices --allow flags (read+write) for each
+// harness-declared runtime directory into the sandbox argv, before the
+// -- separator. Empty/nil dirs is a no-op.
+func injectSandboxDirs(argv []string, dirs []string) []string {
+	for _, d := range dirs {
+		if d == "" {
+			continue
+		}
+		argv = injectSandboxFlag(argv, "--allow", d)
+	}
+	return argv
 }
 
 // injectSandboxFlag splices a sandbox flag (with optional value; pass

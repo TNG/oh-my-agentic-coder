@@ -48,20 +48,29 @@ func TestResolveInnerBinaryDirs(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	wantBoth := []string{shimDir, realDir}
+	// The test binary is a #!/bin/sh script, so shebang detection
+	// resolves "/bin/sh" (absolute path from shebang) and grants
+	// its dir + symlink-resolved dir. Compute the expected interpreter
+	// dirs the same way the function does.
+	interpDirs := resolveInterpreterDirs("/bin/sh")
 
-	// Resolve via an absolute path to the shim.
+	wantBoth := append([]string{shimDir, realDir}, interpDirs...)
+
+	// Resolve via an absolute path to the shim (uses host PATH for sh).
 	if got := resolveInnerBinaryDirs([]string{shim}); !reflect.DeepEqual(got, wantBoth) {
 		t.Errorf("symlinked binary dirs = %v, want %v", got, wantBoth)
 	}
 
-	// Resolve via PATH lookup (the `which opencode` case).
+	// Resolve via PATH lookup (the `which opencode` case). After
+	// t.Setenv PATH=shimDir, the shebang #!/bin/sh is an absolute
+	// path so the interpreter is still found via os.Stat, not PATH.
 	t.Setenv("PATH", shimDir)
-	if got := resolveInnerBinaryDirs([]string{"opencode"}); !reflect.DeepEqual(got, wantBoth) {
-		t.Errorf("PATH-resolved binary dirs = %v, want %v", got, wantBoth)
+	wantPath := append([]string{shimDir, realDir}, interpDirs...)
+	if got := resolveInnerBinaryDirs([]string{"opencode"}); !reflect.DeepEqual(got, wantPath) {
+		t.Errorf("PATH-resolved binary dirs = %v, want %v", got, wantPath)
 	}
 
-	// A non-symlinked binary yields a single dir (no duplicate grant).
+	// A non-symlinked binary yields a single dir + interpreter dirs.
 	plainDir := filepath.Join(root, "plain")
 	if err := os.MkdirAll(plainDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -70,8 +79,9 @@ func TestResolveInnerBinaryDirs(t *testing.T) {
 	if err := os.WriteFile(plainBin, []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if got := resolveInnerBinaryDirs([]string{plainBin}); !reflect.DeepEqual(got, []string{plainDir}) {
-		t.Errorf("plain binary dirs = %v, want %v", got, []string{plainDir})
+	wantPlain := append([]string{plainDir}, interpDirs...)
+	if got := resolveInnerBinaryDirs([]string{plainBin}); !reflect.DeepEqual(got, wantPlain) {
+		t.Errorf("plain binary dirs = %v, want %v", got, wantPlain)
 	}
 }
 

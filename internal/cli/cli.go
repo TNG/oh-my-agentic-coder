@@ -128,6 +128,7 @@ func commands() map[string]Command {
 		"plugin":     {Name: "plugin", Short: "Install client-side harness bridge plugins (e.g. opencode-desktop).", Run: runPlugin},
 		"sandbox":    {Name: "sandbox", Short: "Built-in kernel sandbox (run|stage2).", Run: runSandbox},
 		"doctor":     {Name: "doctor", Short: "Run sanity checks.", Run: runDoctor},
+		"manifest":   {Name: "manifest", Short: "Render the skills manifest from activate-response JSON.", Run: runManifest},
 		"version":    {Name: "version", Short: "Print version.", Run: runVersion},
 	}
 }
@@ -157,6 +158,7 @@ Subcommands:
   plugin       Install client-side bridge plugins (e.g. opencode-desktop).
   sandbox      Built-in kernel sandbox: omac sandbox run [flags] -- <cmd>.
   doctor       Run sanity checks.
+  manifest    Render the skills manifest from activate-response JSON.
   version      Print version.
 
 Harness selection (start/serve):

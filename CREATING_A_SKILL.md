@@ -32,17 +32,21 @@ which harness is chosen:
 - **Reaching your sidecar.** Inside the sandbox the agent reads
   `OMAC_<MOUNT>_BASE` (a `http://127.0.0.1:<port>/<mount>` URL) — or
   `OMAC_<MOUNT>_SOCKET_BASE` for the `http+unix://` form — and appends your
-  documented path. These names are the same under OpenCode and Claude Code.
-  Global skills also get `OMAC_G_<MOUNT>_BASE`.
+  documented path. These names are the same under every harness (OpenCode,
+  Claude Code, Codex, Copilot). Global skills also get `OMAC_G_<MOUNT>_BASE`.
 - **Discovery.** Each harness ships a *bridge* that surfaces a skills manifest
   to the agent listing every ready skill's `base` URL. Under **OpenCode** this
   is the plugin in `.opencode/plugins/`; under **Claude Code** it is the
-  `SessionStart` hook in `.claude/`. Both produce the same manifest content
-  from omac's control plane — you do not interact with either directly.
+  `SessionStart` hook in `.claude/`; under **Codex** it is the hook in
+  `.codex/hooks.json`; under **Copilot** it is the hook in
+  `.copilot/hooks/omac.json`. All produce the same manifest content from
+  omac's control plane — you do not interact with any of them directly.
 - **Where skills live (harness-scoped).** Each harness reads `SKILL.md` from
   its own skills dir, and omac scopes discovery to match:
   - OpenCode → `.opencode/skills` (+ `~/.config/opencode/skills`)
   - Claude Code → `.claude/skills` (+ `~/.claude/skills`)
+  - Codex → `.codex/skills` (+ `~/.codex/skills`)
+  - Copilot → `.copilot/skills` (+ `~/.copilot/skills`)
   - **Shared** → `.agents/skills` (+ `~/.config/agents/skills`), in scope for
     every harness.
 

@@ -14,6 +14,7 @@ package session
 
 import (
 	"bufio"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"os"
@@ -26,6 +27,8 @@ import (
 	"unicode"
 
 	"github.com/tngtech/oh-my-agentic-coder/internal/config"
+	"gopkg.in/yaml.v3"
+	_ "modernc.org/sqlite"
 )
 
 // Session is one resumable session, normalized across harnesses.
@@ -51,12 +54,13 @@ func execRunner(name string, args ...string) ([]byte, error) {
 // List returns harness's prior sessions for workdir, most-recent first.
 // workdir SHOULD be absolute; it is cleaned before comparison.
 func List(h config.Harness, workdir string) ([]Session, error) {
-	return list(h, workdir, execRunner, claudeProjectsRoot(), opencodeDBPath())
+	return list(h, workdir, execRunner, claudeProjectsRoot(h), opencodeDBPath(), codexSessionsRoot(h), copilotDBPath(h), copilotStateDir(h))
 }
 
 // list is the testable core: callers inject the command runner, the Claude
-// projects root, and the opencode SQLite db path.
-func list(h config.Harness, workdir string, run runner, claudeRoot, ocDBPath string) ([]Session, error) {
+// projects root, the opencode SQLite db path, the codex sessions root, the
+// copilot SQLite db path, and the copilot session-state dir (yaml fallback).
+func list(h config.Harness, workdir string, run runner, claudeRoot, ocDBPath, codexRoot, copilotDB, copilotState string) ([]Session, error) {
 	if h.Session == nil {
 		return nil, ErrUnsupported
 	}
@@ -66,6 +70,10 @@ func list(h config.Harness, workdir string, run runner, claudeRoot, ocDBPath str
 		return listOpenCode(workdir, run, ocDBPath), nil
 	case config.SessionListClaudeFiles:
 		return listClaude(workdir, claudeRoot), nil
+	case config.SessionListCodex:
+		return listCodex(workdir, codexRoot), nil
+	case config.SessionListCopilot:
+		return listCopilot(workdir, copilotDB, copilotState), nil
 	default:
 		return nil, ErrUnsupported
 	}
@@ -194,14 +202,14 @@ func listOpenCodeCLI(workdir string, run runner) []Session {
 
 // --- Claude Code backend ----------------------------------------------------
 
-// claudeProjectsRoot returns ~/.claude/projects, or "" when no home dir
-// resolves (best-effort: an empty root yields no sessions).
-func claudeProjectsRoot() string {
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
+// claudeProjectsRoot returns the claude projects dir, honoring CLAUDE_HOME.
+// Returns "" when no home dir resolves (best-effort: an empty root yields no sessions).
+func claudeProjectsRoot(h config.Harness) string {
+	home := h.ConfigHome()
+	if home == "" {
 		return ""
 	}
-	return filepath.Join(home, ".claude", "projects")
+	return filepath.Join(home, "projects")
 }
 
 // encodeProjectDir mirrors Claude Code's per-project directory naming: every
@@ -364,4 +372,308 @@ func truncate(s string) string {
 		return string(r[:max-1]) + "…"
 	}
 	return s
+}
+
+// --- Codex backend ----------------------------------------------------------
+
+// codexSessionsRoot returns the codex sessions dir, honoring CODEX_HOME.
+// Returns "" when no home dir resolves. Listing is best-effort and returns
+// nil when the directory is absent.
+func codexSessionsRoot(h config.Harness) string {
+	home := h.ConfigHome()
+	if home == "" {
+		return ""
+	}
+	return filepath.Join(home, "sessions")
+}
+
+// listCodex reads Codex sessions from the codex session store. Sessions are
+// stored as rollout-*.jsonl files nested under codexRoot/YYYY/MM/DD/. The first
+// line of each file is a session_meta JSON record carrying session_id, cwd, and
+// timestamp. workdir filters by the session's cwd; sessions whose cwd doesn't
+// match are excluded (missing cwd → included, safer to show than hide).
+// Returns nil when the store is missing or unreadable.
+func listCodex(workdir, codexRoot string) []Session {
+	if codexRoot == "" {
+		return nil
+	}
+	workdir = filepath.Clean(workdir)
+	var sessions []Session
+	_ = filepath.WalkDir(codexRoot, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		if !strings.HasPrefix(d.Name(), "rollout-") || !strings.HasSuffix(d.Name(), ".jsonl") {
+			return nil
+		}
+		f, err := os.Open(path)
+		if err != nil {
+			return nil
+		}
+		defer f.Close()
+		r := bufio.NewReader(f)
+		line, err := r.ReadString('\n')
+		if err != nil && line == "" {
+			return nil
+		}
+		var meta codexSessionMeta
+		if err := json.Unmarshal([]byte(line), &meta); err != nil {
+			return nil
+		}
+		if meta.Type != "session_meta" {
+			return nil
+		}
+		id := meta.Payload.SessionID
+		if id == "" {
+			id = meta.Payload.ID
+		}
+		if id == "" {
+			return nil
+		}
+		if meta.Payload.CWD != "" && filepath.Clean(meta.Payload.CWD) != workdir {
+			return nil
+		}
+		when := parseCodexTimestamp(meta.Payload.Timestamp)
+		if when.IsZero() {
+			if info, err := d.Info(); err == nil {
+				when = info.ModTime()
+			}
+		}
+		title := id
+		if meta.Payload.CWD != "" {
+			title = filepath.Base(meta.Payload.CWD)
+		}
+		sessions = append(sessions, Session{ID: id, Title: title, When: when})
+		return nil
+	})
+	sortNewestFirst(sessions)
+	return sessions
+}
+
+// codexSessionMeta is the JSON shape of the first line of a codex rollout file.
+type codexSessionMeta struct {
+	Type    string `json:"type"`
+	Payload struct {
+		SessionID string `json:"session_id"`
+		ID        string `json:"id"`
+		CWD       string `json:"cwd"`
+		Timestamp string `json:"timestamp"`
+	} `json:"payload"`
+}
+
+// parseCodexTimestamp parses a codex ISO-8601 timestamp (e.g.
+// "2026-06-30T13:34:10.222Z"). Returns zero on failure.
+func parseCodexTimestamp(s string) time.Time {
+	if s == "" {
+		return time.Time{}
+	}
+	for _, layout := range []string{time.RFC3339Nano, time.RFC3339} {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t
+		}
+	}
+	return time.Time{}
+}
+
+// --- Copilot backend --------------------------------------------------------
+
+// copilotDBPath returns the copilot session-store.db path, honoring COPILOT_HOME.
+// Returns "" when no home dir resolves.
+func copilotDBPath(h config.Harness) string {
+	home := h.ConfigHome()
+	if home == "" {
+		return ""
+	}
+	return filepath.Join(home, "session-store.db")
+}
+
+// copilotStateDir returns the copilot session-state directory (per-session
+// workspace.yaml files), honoring COPILOT_HOME. Returns "" when no home dir
+// resolves. Used as a fallback when the SQLite db is unavailable.
+func copilotStateDir(h config.Harness) string {
+	home := h.ConfigHome()
+	if home == "" {
+		return ""
+	}
+	return filepath.Join(home, "session-state")
+}
+
+// listCopilot reads Copilot sessions for workdir. Primary path: query the
+// session-store.db via the pure-Go modernc.org/sqlite driver (no external
+// sqlite3 binary needed). Fallback: walk copilotState/<uuid>/workspace.yaml
+// files when the db is missing, locked, or the schema is unrecognized.
+// Returns nil when both paths yield nothing (best-effort, never errors).
+func listCopilot(workdir, dbPath, copilotState string) []Session {
+	if dbPath != "" {
+		if s := listCopilotDB(workdir, dbPath); s != nil {
+			return s
+		}
+	}
+	if copilotState == "" {
+		return nil
+	}
+	return listCopilotYAML(workdir, copilotState)
+}
+
+// listCopilotDB queries the copilot session-store.db. The schema (as of
+// copilot CLI 1.0.x): table "sessions" with columns id, cwd, repository,
+// host_type, branch, summary, created_at, updated_at. We filter by cwd and
+// order by updated_at DESC. Returns nil on any error (db missing, locked,
+// schema mismatch).
+func listCopilotDB(workdir, dbPath string) []Session {
+	if _, err := os.Stat(dbPath); err != nil {
+		return nil
+	}
+	dsn := "file:" + dbPath + "?mode=ro&_pragma=busy_timeout=500"
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return nil
+	}
+	defer db.Close()
+	// Schema-gate: verify the sessions table has the expected columns.
+	cols, err := db.Query("PRAGMA table_info(sessions)")
+	if err != nil {
+		return nil
+	}
+	hasID, hasCWD, hasSummary, hasUpdated := false, false, false, false
+	for cols.Next() {
+		var cid int
+		var name, ctype string
+		var notnull, pk int
+		var dflt sql.NullString
+		if err := cols.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			cols.Close()
+			return nil
+		}
+		switch name {
+		case "id":
+			hasID = true
+		case "cwd":
+			hasCWD = true
+		case "summary":
+			hasSummary = true
+		case "updated_at":
+			hasUpdated = true
+		}
+	}
+	cols.Close()
+	if !hasID || !hasCWD {
+		return nil
+	}
+	// Build query based on available columns.
+	idCol := "id"
+	cwdCol := "cwd"
+	summaryCol := "id"
+	if hasSummary {
+		summaryCol = "summary"
+	}
+	updatedCol := ""
+	if hasUpdated {
+		updatedCol = "updated_at"
+	}
+	q := "SELECT " + idCol + ", " + summaryCol + ", COALESCE(" + cwdCol + ", '') AS cwd"
+	if updatedCol != "" {
+		q += ", " + updatedCol
+	}
+	q += " FROM sessions ORDER BY "
+	if updatedCol != "" {
+		q += updatedCol + " DESC"
+	} else {
+		q += "rowid DESC"
+	}
+	q += " LIMIT 100"
+	rows, err := db.Query(q)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var sessions []Session
+	for rows.Next() {
+		var id, title, cwd string
+		var updated sql.NullString
+		args := []any{&id, &title, &cwd}
+		if updatedCol != "" {
+			args = append(args, &updated)
+		}
+		if err := rows.Scan(args...); err != nil {
+			continue
+		}
+		if id == "" {
+			continue
+		}
+		if cwd != "" && filepath.Clean(cwd) != workdir {
+			continue
+		}
+		when := parseCodexTimestamp(updated.String)
+		if title == "" {
+			title = id
+		}
+		sessions = append(sessions, Session{ID: id, Title: title, When: when})
+	}
+	if len(sessions) == 0 {
+		return nil
+	}
+	if updatedCol == "" {
+		// No updated_at — already ordered by rowid DESC, but sort for consistency.
+		sortNewestFirst(sessions)
+	}
+	return sessions
+}
+
+// listCopilotYAML walks the session-state directory reading workspace.yaml
+// files (one per session). Each file contains id, cwd, name, updated_at.
+// Filters by cwd == workdir.
+func listCopilotYAML(workdir, stateDir string) []Session {
+	entries, err := os.ReadDir(stateDir)
+	if err != nil {
+		return nil
+	}
+	var sessions []Session
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		yamlPath := filepath.Join(stateDir, e.Name(), "workspace.yaml")
+		data, err := os.ReadFile(yamlPath)
+		if err != nil {
+			continue
+		}
+		var ws copilotWorkspaceYAML
+		if err := yamlUnmarshal(data, &ws); err != nil {
+			continue
+		}
+		if ws.ID == "" {
+			continue
+		}
+		if ws.CWD != "" && filepath.Clean(ws.CWD) != workdir {
+			continue
+		}
+		title := ws.Name
+		if title == "" {
+			title = ws.ID
+		}
+		when := parseCodexTimestamp(ws.UpdatedAt)
+		if when.IsZero() {
+			if fi, err := os.Stat(yamlPath); err == nil {
+				when = fi.ModTime()
+			}
+		}
+		sessions = append(sessions, Session{ID: ws.ID, Title: title, When: when})
+	}
+	sortNewestFirst(sessions)
+	return sessions
+}
+
+// copilotWorkspaceYAML is the minimal shape of a copilot workspace.yaml file.
+type copilotWorkspaceYAML struct {
+	ID        string `yaml:"id"`
+	CWD       string `yaml:"cwd"`
+	Name      string `yaml:"name"`
+	UpdatedAt string `yaml:"updated_at"`
+}
+
+// yamlUnmarshal is a thin wrapper over yaml.v3 so callers don't import it
+// directly. It mirrors json.Unmarshal's signature.
+func yamlUnmarshal(data []byte, v any) error {
+	return yaml.Unmarshal(data, v)
 }

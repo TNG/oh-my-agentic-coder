@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -121,6 +122,20 @@ func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, bool)
 	}, true
 }
 
+// checkInnerBinary verifies the harness's inner command binary is on $PATH.
+// Returns ExitOK when found, ExitPrerequisiteMissing when missing, ExitOK
+// when InnerCmd is empty (defensive skip). Called by runLaunch and runServe.
+func checkInnerBinary(harness config.Harness, prefix string, env *Env) int {
+	if len(harness.InnerCmd) == 0 {
+		return ExitOK
+	}
+	if _, err := exec.LookPath(harness.InnerCmd[0]); err != nil {
+		fmt.Fprintf(env.Stderr, "%s: harness binary %q not found on $PATH; install it or pass --inner-cmd <path>\n", prefix, harness.InnerCmd[0])
+		return ExitPrerequisiteMissing
+	}
+	return ExitOK
+}
+
 func runStart(args []string, env *Env) int {
 	opts, ok := parseLaunchArgs("start", args, env)
 	if !ok {
@@ -168,6 +183,13 @@ func runLaunch(env *Env, opts launchOpts) int {
 	if !ok && !noSandbox {
 		fmt.Fprintf(env.Stderr, prefix+": unknown sandbox profile %q\n", profName)
 		return ExitConfigInvalid
+	}
+
+	// 1b. Pre-flight: inner harness binary must be on $PATH.
+	if innerCmdOverride == "" {
+		if code := checkInnerBinary(harness, prefix, env); code != ExitOK {
+			return code
+		}
 	}
 
 	// 2. Reconcile registry against on-disk reality.
@@ -679,6 +701,10 @@ func runLaunch(env *Env, opts launchOpts) int {
 				argv = injectOpenPort(argv, port)
 			}
 		}
+		// Grant the selected harness's runtime dirs (config, state,
+		// sessions) read+write — only for the selected harness, not all
+		// harnesses.
+		argv = injectSandboxDirs(argv, harness.SandboxDirs)
 	}
 	if verbose {
 		fmt.Fprintf(env.Stderr, "[verbose] sandbox argv: %v\n", argv)
@@ -726,6 +752,13 @@ func runLaunch(env *Env, opts launchOpts) int {
 		// The OpenCode plugin reads this and pushes it into the system prompt;
 		// Claude ignores it (it gets the briefing via the flag above).
 		extra["OMAC_SANDBOX_BRIEFING"] = briefingText
+		// Harnesses without a CLI flag (copilot) deliver the briefing via
+		// an env-var + file mechanism (e.g. COPILOT_CUSTOM_INSTRUCTIONS_DIRS).
+		if harness.BriefingEnvFunc != nil {
+			for k, v := range harness.BriefingEnvFunc(briefingText, sandboxTmp) {
+				extra[k] = v
+			}
+		}
 	}
 
 	code, err := sandbox.ExecWithReady(argv, extra, nil)

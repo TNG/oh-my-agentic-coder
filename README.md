@@ -33,6 +33,7 @@ omac register <skill>
 
 # 5. Launch — default sandbox (Seatbelt/bwrap) + default harness (opencode)
 #    (omac's built-in skills are auto-provisioned on launch; no extra step)
+#    Harness options: opencode (oc), claude (cc), codex (cx), copilot (co)
 omac start
 ```
 
@@ -50,13 +51,16 @@ harness is selected by an optional **positional token** after `start` / `serve`:
 omac start            # default harness (opencode) — unchanged behavior
 omac start opencode   # OpenCode
 omac start claude     # Claude Code
+omac start codex      # OpenAI Codex CLI
+omac start copilot    # GitHub Copilot CLI
 omac serve claude     # multi-directory server, Claude Code harness
 ```
 
 Supported harnesses (and aliases): `opencode` (`oc`), `claude-code`
-(`claude`, `cc`). Omitting the token defaults to `opencode`. An unknown token
-is rejected with the list of supported names. Inner arguments that happen to be
-barewords go after `--` (e.g. `omac start claude -- --model sonnet`).
+(`claude`, `cc`), `codex` (`cx`), `copilot` (`co`). Omitting the token
+defaults to `opencode`. An unknown token is rejected with the list of
+supported names. Inner arguments that happen to be barewords go after `--`
+(e.g. `omac start claude -- --model sonnet`).
 
 ### Resuming prior work
 
@@ -66,6 +70,8 @@ sandboxed launch pipeline as `start`:
 ```bash
 omac continue          # reopen the last session for this folder (opencode)
 omac continue claude   # ...with Claude Code
+omac continue codex    # ...with OpenAI Codex
+omac continue copilot  # ...with GitHub Copilot
 omac continue -s <id>  # reopen a specific session by id (shorthand for --session)
 omac resume            # pick from this folder's recent sessions, then launch
 omac resume claude     # ...with Claude Code
@@ -73,20 +79,23 @@ omac resume claude     # ...with Claude Code
 
 `omac continue` re-enters the most recent session for this folder. Pass
 `-s`/`--session <id>` to target a specific session non-interactively
-(opencode `--session <id>`, claude `--resume <id>`). After the inner
-command exits, omac prints a one-line hint with the most recent session id:
+(opencode `--session <id>`, claude `--resume <id>`, codex `resume <id>`,
+copilot `--session-id <id>`). After the inner command exits, omac prints a
+one-line hint with the most recent session id:
 
 ```
 To resume this session: omac continue -s ses_abc123
 ```
 
-`omac resume` lists only the current folder's sessions, newest first, and
-launches the one you pick inside omac. It reads each harness's own session
-store — opencode via `opencode session list`, Claude Code by reading
+`omac resume` lists sessions newest first and launches the one you pick
+inside omac. It reads each harness's own session store — opencode via
+`opencode session list`, Claude Code by reading
 `~/.claude/projects/<encoded-cwd>/<id>.jsonl` (where `<encoded-cwd>` is the
 folder path with non-alphanumerics replaced by `-`, the way Claude Code names
-it). Titles come from the session's `aiTitle`, and a file's embedded `cwd`
-decides which folder it belongs to.
+it), Codex by scanning `~/.codex/sessions/`, Copilot by querying
+`~/.copilot/session-store.db`. Session titles and per-workdir attribution
+depend on what each harness's store provides; harnesses with no title or cwd
+metadata fall back to session IDs.
 Both subcommands take the same flags and optional `[harness]` token as `start`.
 
 Each harness ships a small client-side **bridge** that wires the agent to
@@ -96,20 +105,24 @@ omac's control plane (skill activation, the skills manifest, skill base URLs):
 | ----------- | ---------------------------- | --------------------------------- |
 | OpenCode    | `.opencode/plugins/`         | OpenCode plugin (`omac-multidir.ts`) |
 | Claude Code | `.claude/` (settings + hook) | `SessionStart`/`SessionEnd` hooks |
+| Codex       | `.codex/`                    | SessionStart hook                  |
+| Copilot     | `.copilot/`                  | SessionStart + SessionEnd hooks    |
 
 Skills themselves are **harness-agnostic** — the same skill works unchanged
 under any harness. Adding a new agentic harness means registering one
 descriptor in `internal/config/harness.go` plus shipping its bridge; no
-command-dispatch code changes. See `CREATING_A_SKILL.md` and
-`docs/MULTI_DIR_DESKTOP.md`.
+command-dispatch code changes. The four supported harnesses — OpenCode,
+Claude Code, Codex, Copilot — are worked examples. See `CREATING_A_SKILL.md`
+and `docs/MULTI_DIR_DESKTOP.md`.
 
 ### Built-in skills
 
 omac ships a small set of **built-in skills** embedded in the binary and
 **auto-provisions them on `omac start` / `omac serve`** — no separate step. On
 launch, omac idempotently writes them into the active harness's skills directory
-(`~/.config/opencode/skills`, `~/.claude/skills`); it stays silent when they're
-already current and never overwrites a same-named directory it doesn't own.
+(`~/.config/opencode/skills`, `~/.claude/skills`, `~/.codex/skills`,
+`~/.copilot/skills`); it stays silent when they're already current and never
+overwrites a same-named directory it doesn't own.
 
 Today the only built-in is **`omac-write-a-skill`** — a guidance-only skill
 (just a `SKILL.md`, no sidecar) carrying the `CREATING_A_SKILL.md` authoring
@@ -129,6 +142,8 @@ matches that: discovery is scoped to the active harness.
 | ----------- | ---------------------------------------------- |
 | OpenCode    | `.opencode/skills` / `~/.config/opencode/skills` |
 | Claude Code | `.claude/skills` / `~/.claude/skills`            |
+| Codex       | `.codex/skills` / `~/.codex/skills`               |
+| Copilot     | `.copilot/skills` / `~/.copilot/skills`           |
 | *(shared)*  | `.agents/skills` / `~/.config/agents/skills`     |
 
 - The active harness scans **its own dir + the shared `.agents/skills`**, and
@@ -268,6 +283,8 @@ this host, and allow/deny permanently for the registered suffix (e.g.
 |---|---|---|
 | **opencode** | see [opencode docs](https://github.com/opencode-ai/opencode) | Default inner harness (`omac start`) |
 | **claude** (Claude Code CLI) | see [Claude Code docs](https://docs.anthropic.com/en/docs/claude-code) | Alternative harness (`omac start claude`) |
+| **codex** (OpenAI Codex CLI) | see [Codex docs](https://github.com/openai/codex) | Alternative harness (`omac start codex`) |
+| **copilot** (GitHub Copilot CLI) | see [Copilot CLI docs](https://docs.github.com/en/copilot/copilot-cli) | Alternative harness (`omac start copilot`) |
 
 At least one inner harness must be installed; `opencode` is the default.
 
@@ -375,8 +392,7 @@ sandbox:
 | Path | Access | Source |
 |---|---|---|
 | `<workdir>` | read+write | `workdir.access: readwrite` (default) |
-| `~/.local/share/opencode`, `~/.local/state/opencode` | read+write | default profile `filesystem.allow` |
-| `~/.claude` | read+write | default profile `filesystem.allow` |
+| Selected harness config/state dirs (e.g. `~/.claude`, `~/.codex`, `~/.copilot`, `~/.local/share/opencode`) | read+write | `harness.SandboxDirs` → `--allow` flags (injected at launch) |
 | `~/.cache`, `~/Library/Caches` | read+write | default profile `filesystem.allow` |
 | `~/go`, `~/.rustup`, `~/.cargo` | read+write | default profile `filesystem.allow` |
 | `~/.config/opencode`, `~/.opencode/bin` | read-only | default profile `filesystem.read` |
@@ -410,6 +426,8 @@ omac secrets list slack
 # 5. Launch the full stack: sidecars → facade (Unix socket) → sandbox → agent.
 omac start            # default harness (opencode)
 # or: omac start claude   # launch Claude Code as the inner harness instead
+# or: omac start codex    # launch OpenAI Codex as the inner harness
+# or: omac start copilot  # launch GitHub Copilot as the inner harness
 
 # Inside the sandbox the skill reaches its sidecar via the socket:
 #   curl --unix-socket "$OMAC_SOCKET" http://x/slack/api/chat.postMessage ...
@@ -488,19 +506,24 @@ omac [--workdir <dir>] <subcommand> [flags] [args]
 
   continue     Like `start`, but continue the most recent session for this
                workdir (appends the harness's continue flag: opencode/claude
-               `--continue`). Pass `-s`/`--session <id>` to target a specific
-               session (opencode `--session <id>`, claude `--resume <id>`).
-               Accepts the same flags as `start` and an optional [harness]
-               token. After exit, prints an `omac continue -s <id>` hint when a
-               resumable session exists for this workdir.
+               `--continue`, codex `resume`, copilot `--continue`). Pass
+               `-s`/`--session <id>` to target a specific session (opencode
+               `--session <id>`, claude `--resume <id>`, codex `resume <id>`,
+               copilot `--session-id <id>`). Accepts the same flags as `start`
+               and an optional [harness] token. After exit, prints an
+               `omac continue -s <id>` hint when a resumable session exists
+               for this workdir.
 
   resume       List recent sessions for this workdir, show an interactive
                numbered picker (title + relative time), and launch the
                selected one inside omac (opencode `--session <id>`, claude
-               `--resume <id>`). Sessions come from the harness's own store
-               (opencode `session list`; Claude Code's ~/.claude/projects
-               files). Non-interactive stdin prints the list and exits.
-               Accepts the same flags as `start` and an optional [harness].
+               `--resume <id>`, codex `resume <id>`, copilot
+               `--session-id <id>`). Sessions come from the harness's own
+               store (opencode `session list`; Claude Code's
+               ~/.claude/projects files; codex `codex session list`; copilot
+               `copilot session list`). Non-interactive stdin prints the
+               list and exits. Accepts the same flags as `start` and an
+               optional [harness].
 
   doctor       Sanity checks: config, registry, binaries, secrets, sandbox.
   version

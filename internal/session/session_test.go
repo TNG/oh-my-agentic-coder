@@ -23,12 +23,12 @@ func opencodeHarness(t *testing.T) config.Harness {
 
 func TestListUnsupported(t *testing.T) {
 	// Harness with no Session block.
-	if _, err := list(config.Harness{}, "/w", nil, "", ""); !errors.Is(err, ErrUnsupported) {
+	if _, err := list(config.Harness{}, "/w", nil, "", "", "", "", ""); !errors.Is(err, ErrUnsupported) {
 		t.Errorf("nil Session: err = %v, want ErrUnsupported", err)
 	}
 	// Harness whose Session declares no listing strategy.
 	h := config.Harness{Session: &config.HarnessSession{ListKind: config.SessionListNone}}
-	if _, err := list(h, "/w", nil, "", ""); !errors.Is(err, ErrUnsupported) {
+	if _, err := list(h, "/w", nil, "", "", "", "", ""); !errors.Is(err, ErrUnsupported) {
 		t.Errorf("SessionListNone: err = %v, want ErrUnsupported", err)
 	}
 }
@@ -42,7 +42,7 @@ func TestListOpenCodeParseAndFilter(t *testing.T) {
 			{"id":"ses_other","title":"elsewhere","updated":3000,"directory":"/home/u/other"}
 		]`), nil
 	}
-	got, err := list(opencodeHarness(t), wd, run, "", "")
+	got, err := list(opencodeHarness(t), wd, run, "", "", "", "", "")
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -59,7 +59,7 @@ func TestListOpenCodeParseAndFilter(t *testing.T) {
 
 func TestListOpenCodeCLIFailureIsEmpty(t *testing.T) {
 	run := func(name string, args ...string) ([]byte, error) { return nil, errors.New("not found") }
-	got, err := list(opencodeHarness(t), "/w", run, "", "")
+	got, err := list(opencodeHarness(t), "/w", run, "", "", "", "", "")
 	if err != nil {
 		t.Fatalf("CLI failure should not error, got %v", err)
 	}
@@ -222,5 +222,189 @@ func TestListClaudeMtimeFallback(t *testing.T) {
 	}
 	if got[0].When.IsZero() {
 		t.Error("When should fall back to file mtime, got zero")
+	}
+}
+
+// --- Codex + Copilot session listing -----------------------------------------
+
+func codexHarness(t *testing.T) config.Harness {
+	t.Helper()
+	h, ok := config.LookupHarness("codex")
+	if !ok {
+		t.Fatal("codex harness not registered")
+	}
+	return h
+}
+
+func copilotHarness(t *testing.T) config.Harness {
+	t.Helper()
+	h, ok := config.LookupHarness("copilot")
+	if !ok {
+		t.Fatal("copilot harness not registered")
+	}
+	return h
+}
+
+func TestListCodexDispatchesNotUnsupported(t *testing.T) {
+	// Even with empty paths, codex listing must NOT return ErrUnsupported —
+	// it dispatches to the codex backend (which returns nil best-effort).
+	_, err := list(codexHarness(t), "/w", nil, "", "", "", "", "")
+	if errors.Is(err, ErrUnsupported) {
+		t.Errorf("codex listing returned ErrUnsupported, want dispatch (err=%v)", err)
+	}
+}
+
+func TestListCopilotDispatchesNotUnsupported(t *testing.T) {
+	_, err := list(copilotHarness(t), "/w", nil, "", "", "", "", "")
+	if errors.Is(err, ErrUnsupported) {
+		t.Errorf("copilot listing returned ErrUnsupported, want dispatch (err=%v)", err)
+	}
+}
+
+func TestListCodexMissingStoreIsEmpty(t *testing.T) {
+	// No codex session store at the given root → nil, no error.
+	root := filepath.Join(t.TempDir(), "no-sessions-dir")
+	got, err := list(codexHarness(t), "/w", nil, "", "", root, "", "")
+	if err != nil {
+		t.Fatalf("codex missing store: err = %v, want nil", err)
+	}
+	if got != nil {
+		t.Errorf("codex missing store: got %+v, want nil", got)
+	}
+}
+
+func TestListCopilotMissingDBIsEmpty(t *testing.T) {
+	// No copilot session-store.db → nil, no error.
+	dbPath := filepath.Join(t.TempDir(), "nope.db")
+	got, err := list(copilotHarness(t), "/w", nil, "", "", "", dbPath, "")
+	if err != nil {
+		t.Fatalf("copilot missing db: err = %v, want nil", err)
+	}
+	if got != nil {
+		t.Errorf("copilot missing db: got %+v, want nil", got)
+	}
+}
+
+// --- Codex nested rollout files ---------------------------------------------
+
+func writeCodexRollout(t *testing.T, root, dateDir, filename, sessionMeta string) {
+	t.Helper()
+	dir := filepath.Join(root, dateDir)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// session_meta line + a trailing junk line (must not be parsed).
+	content := sessionMeta + "\n" + `{"type":"event_msg","payload":{"type":"task_started"}}` + "\n"
+	if err := os.WriteFile(filepath.Join(dir, filename), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestListCodexNestedParseAndFilter(t *testing.T) {
+	root := t.TempDir()
+	const wd = "/home/u/proj"
+	// Two matching sessions, nested under YYYY/MM/DD/.
+	writeCodexRollout(t, root, "2026/06/29",
+		"rollout-2026-06-29T10-00-00-aaaa.jsonl",
+		`{"timestamp":"2026-06-29T10:00:00.000Z","type":"session_meta","payload":{"session_id":"aaaa","id":"aaaa","cwd":"/home/u/proj","timestamp":"2026-06-29T10:00:00.000Z"}}`)
+	writeCodexRollout(t, root, "2026/06/30",
+		"rollout-2026-06-30T12-00-00-bbbb.jsonl",
+		`{"timestamp":"2026-06-30T12:00:00.000Z","type":"session_meta","payload":{"session_id":"bbbb","id":"bbbb","cwd":"/home/u/proj","timestamp":"2026-06-30T12:00:00.000Z"}}`)
+	// Different cwd → excluded.
+	writeCodexRollout(t, root, "2026/06/30",
+		"rollout-2026-06-30T13-00-00-cccc.jsonl",
+		`{"timestamp":"2026-06-30T13:00:00.000Z","type":"session_meta","payload":{"session_id":"cccc","id":"cccc","cwd":"/home/u/other","timestamp":"2026-06-30T13:00:00.000Z"}}`)
+	// Non-rollout file → skipped.
+	writeCodexRollout(t, root, "2026/06/30",
+		"other.jsonl",
+		`{"type":"session_meta","payload":{"session_id":"dddd","cwd":"/home/u/proj"}}`)
+
+	got := listCodex(wd, root)
+	if len(got) != 2 {
+		t.Fatalf("got %d sessions, want 2: %+v", len(got), got)
+	}
+	// bbbb (Jun 30) is newer than aaaa (Jun 29) → first.
+	if got[0].ID != "bbbb" || got[1].ID != "aaaa" {
+		t.Errorf("order = [%s,%s], want newest-first [bbbb,aaaa]", got[0].ID, got[1].ID)
+	}
+	if got[0].Title != "proj" {
+		t.Errorf("bbbb title = %q, want 'proj' (cwd basename)", got[0].Title)
+	}
+	want := time.Date(2026, 6, 30, 12, 0, 0, 0, time.UTC)
+	if !got[0].When.Equal(want) {
+		t.Errorf("bbbb When = %v, want %v", got[0].When, want)
+	}
+}
+
+func TestListCodexMissingCwdIncluded(t *testing.T) {
+	// Session with no cwd field → included (don't filter out what we can't
+	// classify; safer to show).
+	root := t.TempDir()
+	writeCodexRollout(t, root, "2026/06/30",
+		"rollout-2026-06-30T12-00-00-nocwd.jsonl",
+		`{"timestamp":"2026-06-30T12:00:00.000Z","type":"session_meta","payload":{"session_id":"nocwd","timestamp":"2026-06-30T12:00:00.000Z"}}`)
+	got := listCodex("/home/u/proj", root)
+	if len(got) != 1 {
+		t.Fatalf("got %d sessions, want 1 (missing cwd included): %+v", len(got), got)
+	}
+	if got[0].ID != "nocwd" {
+		t.Errorf("ID = %q, want 'nocwd'", got[0].ID)
+	}
+}
+
+func TestListCodexGarbageFirstLineSkipped(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "2026/06/30")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// First line is not valid JSON → skipped, no panic.
+	if err := os.WriteFile(filepath.Join(dir, "rollout-bad.jsonl"),
+		[]byte("not json at all\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := listCodex("/w", root); got != nil {
+		t.Errorf("garbage first line should yield nil, got %+v", got)
+	}
+}
+
+// --- Copilot YAML fallback ---------------------------------------------------
+
+func writeCopilotWorkspace(t *testing.T, stateDir, id, cwd, name, updated string) {
+	t.Helper()
+	dir := filepath.Join(stateDir, id)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := "id: " + id + "\ncwd: " + cwd + "\nname: '" + name + "'\nupdated_at: " + updated + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "workspace.yaml"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestListCopilotYAMLParseAndFilter(t *testing.T) {
+	stateDir := t.TempDir()
+	const wd = "/home/u/proj"
+	writeCopilotWorkspace(t, stateDir, "aaa-111", wd, "fix bug", "2026-06-29T10:00:00.000Z")
+	writeCopilotWorkspace(t, stateDir, "bbb-222", wd, "add tests", "2026-06-30T12:00:00.000Z")
+	// Different cwd → excluded.
+	writeCopilotWorkspace(t, stateDir, "ccc-333", "/home/u/other", "other", "2026-06-30T13:00:00.000Z")
+
+	got := listCopilotYAML(wd, stateDir)
+	if len(got) != 2 {
+		t.Fatalf("got %d sessions, want 2: %+v", len(got), got)
+	}
+	// bbb (Jun 30) newer than aaa (Jun 29) → first.
+	if got[0].ID != "bbb-222" || got[1].ID != "aaa-111" {
+		t.Errorf("order = [%s,%s], want [bbb-222,aaa-111]", got[0].ID, got[1].ID)
+	}
+	if got[0].Title != "add tests" {
+		t.Errorf("bbb title = %q, want 'add tests'", got[0].Title)
+	}
+}
+
+func TestListCopilotYAMLMissingDirIsEmpty(t *testing.T) {
+	if got := listCopilotYAML("/w", filepath.Join(t.TempDir(), "nope")); got != nil {
+		t.Errorf("missing state dir should yield nil, got %+v", got)
 	}
 }
