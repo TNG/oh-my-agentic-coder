@@ -395,6 +395,117 @@ func TestResolveGrantsRealGitWorktreePipeline(t *testing.T) {
 	}
 }
 
+// TestResolveGrantsWorktreeRejectsSymlinkEscape guards the sandbox
+// boundary: because the grant paths are derived from in-workdir file
+// content a prior sandboxed session could tamper with, and the backends
+// symlink-canonicalize every grant into a kernel rule, a planted symlink
+// under the common dir (e.g. objects -> a sensitive dir) must NOT widen
+// any grant to the symlink target.
+func TestResolveGrantsWorktreeRejectsSymlinkEscape(t *testing.T) {
+	base := t.TempDir()
+	// The sensitive dir the attacker aims a symlink at.
+	secret := filepath.Join(base, "secret")
+	if err := os.MkdirAll(secret, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	secretResolved, err := filepath.EvalSymlinks(secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Attacker-controlled common dir with git's structural shape.
+	common := filepath.Join(base, "evil", ".git")
+	admin := filepath.Join(common, "worktrees", "wt")
+	if err := os.MkdirAll(admin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, real := range []string{"logs", "info"} {
+		if err := os.MkdirAll(filepath.Join(common, real), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeFile(t, filepath.Join(common, "config"))
+	if err := os.WriteFile(filepath.Join(admin, "commondir"), []byte("../..\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The poisoned entries: objects/refs symlinked at the secret dir.
+	if err := os.Symlink(secret, filepath.Join(common, "objects")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(secret, filepath.Join(common, "refs")); err != nil {
+		t.Fatal(err)
+	}
+
+	wd := filepath.Join(base, "wt")
+	if err := os.MkdirAll(wd, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wd, ".git"), []byte("gitdir: "+admin+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	p := &sandboxprofile.Profile{Workdir: sandboxprofile.Workdir{Access: sandboxprofile.AccessReadWrite}}
+	g, err := ResolveGrants(p, wd, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// No grant — nor its symlink-resolved form, which is what the kernel
+	// rules use — may reach the secret dir.
+	for _, list := range [][]string{g.ReadPaths, g.WritePaths, g.AllowPaths} {
+		for _, gp := range list {
+			resolved, rerr := filepath.EvalSymlinks(gp)
+			if rerr != nil {
+				continue
+			}
+			if resolved == secretResolved || strings.HasPrefix(resolved, secretResolved+string(filepath.Separator)) {
+				t.Errorf("ESCAPE: grant %s resolves into the secret dir %s", gp, secretResolved)
+			}
+		}
+	}
+}
+
+// TestResolveGrantsWorktreeRejectsSpoofedCommondir ensures a commondir
+// that violates git's <common>/worktrees/<name> invariant (pointing the
+// grant root somewhere unrelated) yields no worktree grants at all.
+func TestResolveGrantsWorktreeRejectsSpoofedCommondir(t *testing.T) {
+	wd, _ := makeLinkedWorktree(t)
+	// Repoint commondir at an absolute, unrelated dir.
+	elsewhere := t.TempDir()
+	admin := readAdminDir(t, wd)
+	if err := os.WriteFile(filepath.Join(admin, "commondir"), []byte(elsewhere+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	p := &sandboxprofile.Profile{Workdir: sandboxprofile.Workdir{Access: sandboxprofile.AccessReadWrite}}
+	g, err := ResolveGrants(p, wd, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, list := range [][]string{g.ReadPaths, g.AllowPaths} {
+		for _, gp := range list {
+			if strings.HasPrefix(gp, elsewhere) {
+				t.Errorf("spoofed commondir leaked a grant under %s: %s", elsewhere, gp)
+			}
+		}
+	}
+	// Only the workdir itself should be the allow grant.
+	for _, ap := range g.AllowPaths {
+		if ap != wd {
+			t.Errorf("unexpected allow grant for spoofed worktree: %s", ap)
+		}
+	}
+}
+
+// readAdminDir parses the admin-dir path out of a linked worktree's .git.
+func readAdminDir(t *testing.T, workdir string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(workdir, ".git"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(string(data)), "gitdir:"))
+}
+
 func TestResolveGrantsWorktreeAccessNone(t *testing.T) {
 	wd, common := makeLinkedWorktree(t)
 	p := &sandboxprofile.Profile{Workdir: sandboxprofile.Workdir{Access: sandboxprofile.AccessNone}}

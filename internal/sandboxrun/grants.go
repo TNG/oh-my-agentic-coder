@@ -183,7 +183,27 @@ func gitWorktreeGrants(workdir, access string) (readAdds, allowAdds, denyAdds []
 	if !ok {
 		return nil, nil, nil, false
 	}
-	writeSubdirs := []string{
+	// SECURITY: these grant paths are derived from in-workdir file content
+	// (.git, <admin>/commondir) that a prior sandboxed session could have
+	// tampered with, and both backends symlink-canonicalize every grant
+	// into a kernel rule. Resolve the common dir and admit only entries
+	// that physically live inside it, so a planted symlink (e.g. a crafted
+	// `objects` -> ~/.ssh) cannot widen a grant to an out-of-tree path and
+	// punch through the protected-path denials.
+	root, err := filepath.EvalSymlinks(common)
+	if err != nil {
+		return nil, nil, nil, false
+	}
+	contained := func(paths ...string) []string {
+		out := make([]string, 0, len(paths))
+		for _, p := range paths {
+			if pathWithinRoot(p, root) {
+				out = append(out, p)
+			}
+		}
+		return out
+	}
+	writeSubdirs := contained(
 		filepath.Join(common, "objects"),
 		filepath.Join(common, "refs"),
 		filepath.Join(common, "logs"),
@@ -192,11 +212,11 @@ func gitWorktreeGrants(workdir, access string) (readAdds, allowAdds, denyAdds []
 		// writable — same trust level as refs/, which is already rw.
 		filepath.Join(common, "packed-refs"),
 		admin, // the per-worktree index, HEAD, ORIG_HEAD, COMMIT_EDITMSG, logs
-	}
-	readOnly := []string{
+	)
+	readOnly := contained(
 		filepath.Join(common, "config"),
 		filepath.Join(common, "info"),
-	}
+	)
 	denyAdds = []string{filepath.Join(common, "hooks")}
 
 	switch access {
@@ -242,7 +262,26 @@ func resolveWorktreeCommonDir(workdir string) (common, admin string, ok bool) {
 	if !filepath.IsAbs(common) {
 		common = filepath.Join(admin, common)
 	}
-	return filepath.Clean(common), admin, true
+	common = filepath.Clean(common)
+	// git invariant: the admin dir is exactly <common>/worktrees/<name>.
+	// Enforce it so a crafted commondir cannot point the grant root at an
+	// unrelated location (e.g. an absolute commondir aimed elsewhere).
+	if filepath.Base(filepath.Dir(admin)) != "worktrees" || filepath.Dir(filepath.Dir(admin)) != common {
+		return "", "", false
+	}
+	return common, admin, true
+}
+
+// pathWithinRoot reports whether path, with all symlinks resolved, is root
+// itself or lies inside it. A path that cannot be resolved (missing, or a
+// dangling/looping symlink) is treated as NOT contained: the grant is
+// dropped rather than risk canonicalizing to an out-of-tree location.
+func pathWithinRoot(path, root string) bool {
+	rp, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return false
+	}
+	return rp == root || strings.HasPrefix(rp, root+string(filepath.Separator))
 }
 
 // readGitdirPointer parses a linked worktree's .git file ("gitdir: <path>")
