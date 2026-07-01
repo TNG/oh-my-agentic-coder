@@ -237,17 +237,17 @@ func TestResolveGrantsLinkedWorktreeReadWrite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The subdirs git add/commit/gc actually write are read+write
-	// (packed-refs included — auto-gc/pack-refs rewrite it).
-	for _, sub := range []string{"objects", "refs", "logs", "packed-refs", filepath.Join("worktrees", "wt")} {
+	// The subdirs git add/commit actually write are read+write.
+	for _, sub := range []string{"objects", "refs", "logs", filepath.Join("worktrees", "wt")} {
 		want := filepath.Join(common, sub)
 		if !slices.Contains(g.AllowPaths, want) {
 			t.Errorf("allow missing %s: %v", want, g.AllowPaths)
 		}
 	}
-	// config/info are read-only: readable but never writable
-	// (blocks core.hooksPath / credential.helper mutation).
-	for _, sub := range []string{"config", "info"} {
+	// config/info/packed-refs are read-only: readable but never writable
+	// (blocks core.hooksPath / credential.helper mutation; a normal
+	// add/commit only writes loose refs, never packed-refs).
+	for _, sub := range []string{"config", "info", "packed-refs"} {
 		want := filepath.Join(common, sub)
 		if !slices.Contains(g.ReadPaths, want) {
 			t.Errorf("read missing %s: %v", want, g.ReadPaths)

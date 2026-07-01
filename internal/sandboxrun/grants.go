@@ -114,9 +114,9 @@ func ResolveGrants(p *sandboxprofile.Profile, workdir string, notices io.Writer)
 	// reflogs and the per-worktree index/HEAD) get EPERM from the sandbox.
 	// Restore plain-clone parity — where .git lives inside the granted
 	// workdir — by granting the commit-relevant common-dir subdirs at the
-	// workdir's access level, read-only on config/info, and a hard deny on
-	// hooks/. No-op for a plain clone or a non-worktree workdir (including a
-	// submodule, whose admin dir has no commondir).
+	// workdir's access level, read-only on config/info/packed-refs, and a
+	// hard deny on hooks/. No-op for a plain clone or a non-worktree workdir
+	// (including a submodule, whose admin dir has no commondir).
 	var worktreeDeny []string
 	if p.Workdir.Access != "" && p.Workdir.Access != sandboxprofile.AccessNone {
 		if wr, wa, wd, ok := gitWorktreeGrants(workdir, p.Workdir.Access); ok {
@@ -173,11 +173,23 @@ func ResolveGrants(p *sandboxprofile.Profile, workdir string, notices io.Writer)
 // gitWorktreeGrants returns the extra grants a linked git worktree needs
 // so git operations work inside the sandbox. It returns ok=false unless
 // workdir is a linked worktree (its .git is a file pointing at an admin
-// dir under a shared common dir). The commit-write subdirs (objects,
-// refs, logs, packed-refs, and this worktree's admin dir) are granted at
-// the workdir's access level; config/info stay read-only (blocking
-// core.hooksPath / credential.helper mutation); hooks/ is denied (a
-// writable hooks dir would run un-sandboxed on the host's next commit).
+// dir under a shared common dir). The commit-write subdirs (objects, refs,
+// logs, and this worktree's admin dir) are granted at the workdir's access
+// level; config/info/packed-refs stay read-only (blocking core.hooksPath /
+// credential.helper mutation); hooks/ is denied (a writable hooks dir would
+// run un-sandboxed on the host's next commit).
+//
+// The shared common-dir ROOT is deliberately never granted, only named
+// subdirs/files under it. One visible consequence: git's ref transaction
+// tries to create <common>/packed-refs.lock in that ungranted root on every
+// ref update, so a "cannot create packed-refs.lock" EPERM is printed — but
+// it is non-fatal (git 2.x writes the loose ref and the commit succeeds).
+// Granting packed-refs writable would NOT silence it (the lock is a sibling
+// in the root, not packed-refs itself), and granting the root writable would
+// expose config to a lock-file rename that defeats the core.hooksPath guard,
+// so the harmless noise is the accepted cost. `git gc`/`pack-refs` ref
+// packing (which does need that lock) therefore no-ops in the sandbox;
+// object packing under objects/ is unaffected.
 func gitWorktreeGrants(workdir, access string) (readAdds, allowAdds, denyAdds []string, ok bool) {
 	common, admin, ok := resolveWorktreeCommonDir(workdir)
 	if !ok {
@@ -207,15 +219,17 @@ func gitWorktreeGrants(workdir, access string) (readAdds, allowAdds, denyAdds []
 		filepath.Join(common, "objects"),
 		filepath.Join(common, "refs"),
 		filepath.Join(common, "logs"),
-		// packed-refs holds only ref->SHA mappings (no hook/exec/credential
-		// vector), and auto-gc / git pack-refs rewrite it, so it must be
-		// writable — same trust level as refs/, which is already rw.
-		filepath.Join(common, "packed-refs"),
 		admin, // the per-worktree index, HEAD, ORIG_HEAD, COMMIT_EDITMSG, logs
 	)
 	readOnly := contained(
 		filepath.Join(common, "config"),
 		filepath.Join(common, "info"),
+		// packed-refs is read-only: git reads it for status/log/committing
+		// onto a packed ref, but a normal add/commit only ever writes loose
+		// refs under refs/. Rewriting packed-refs (gc/pack-refs) needs a
+		// lock file in the ungranted common root anyway, so writable here
+		// buys nothing — see the note on this function.
+		filepath.Join(common, "packed-refs"),
 	)
 	denyAdds = []string{filepath.Join(common, "hooks")}
 
