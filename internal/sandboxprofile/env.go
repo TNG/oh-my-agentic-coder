@@ -1,6 +1,9 @@
 package sandboxprofile
 
-import "strings"
+import (
+	"sort"
+	"strings"
+)
 
 // dangerousEnvExact are always dropped from the child environment,
 // even when matched by allow_vars (nono's env_sanitization list plus
@@ -49,6 +52,22 @@ func IsDangerousEnvVar(key string) bool {
 		}
 	}
 	return false
+}
+
+// DangerousEnvBlocklist returns sorted copies of the always-drop env
+// blocklist: exact names (e.g. "BASH_ENV") and prefix families (e.g.
+// "LD_"). Provenance uses this to display the effective deny set; the
+// returned slices are copies so callers cannot mutate the package
+// state.
+func DangerousEnvBlocklist() (exact []string, prefixes []string) {
+	exact = make([]string, 0, len(dangerousEnvExact))
+	for k := range dangerousEnvExact {
+		exact = append(exact, k)
+	}
+	sort.Strings(exact)
+	prefixes = append([]string(nil), dangerousEnvPrefixes...)
+	sort.Strings(prefixes)
+	return exact, prefixes
 }
 
 // envVarAllowed checks key against the allow_vars list (exact names or
