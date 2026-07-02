@@ -136,7 +136,7 @@ func harnessByName(name string) (harnessConfig, bool) {
 //   - models.dev         — opencode fetches model metadata at startup
 //   - registry.npmjs.org — opencode fetches npm provider packages at runtime
 //   - CWD (macOS only)   — opencode lstat's the process CWD; sandbox
-//                          denies it with EPERM unless explicitly granted
+//     denies it with EPERM unless explicitly granted
 //
 // Paths: opencode writes to ~/.cache/opencode and ~/.local/{share,state}/opencode
 // at runtime — these are in the base allow list.

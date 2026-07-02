@@ -91,8 +91,8 @@ func allowanceSpecFor(h harnessConfig) AllowanceSpec {
 	}
 
 	return AllowanceSpec{
-		EnvAllowVars: allow,
-		EnvDenyVars:  deny,
+		EnvAllowVars:     allow,
+		EnvDenyVars:      deny,
 		EnvExpectVisible: h.ExpectVisibleEnv(),
 		FsDenyPaths: []string{
 			"/etc/shadow",

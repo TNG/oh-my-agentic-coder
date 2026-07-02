@@ -446,7 +446,7 @@ func assertEnvVarsDenied(t *testing.T, output string, denyVars []string) {
 	for _, v := range denyVars {
 		needle := v + "="
 		if strings.Contains(output, needle) {
-			t.Errorf("SECURITY FAIL: %s visible in agent env output\n" +
+			t.Errorf("SECURITY FAIL: %s visible in agent env output\n"+
 				"the sandbox did not filter this env var", v)
 		}
 	}
@@ -459,7 +459,7 @@ func assertEnvVarsVisible(t *testing.T, output string, expectVars []string) {
 	t.Helper()
 	for _, v := range expectVars {
 		if !strings.Contains(output, v) {
-			t.Errorf("POSITIVE FAIL: %s not found in agent env output\n" +
+			t.Errorf("POSITIVE FAIL: %s not found in agent env output\n"+
 				"the sandbox may be over-filtering env vars", v)
 			return
 		}
@@ -501,11 +501,11 @@ func assertNetworkDenied(t *testing.T, output string, denyDomain string) {
 		"Could not resolve host",
 		"Connection timed out",
 		"Failed to connect",
-		"curl: (6)",  // Could not resolve host
-		"curl: (7)",  // Failed to connect
-		"curl: (28)", // Operation timed out
+		"curl: (6)",             // Could not resolve host
+		"curl: (7)",             // Failed to connect
+		"curl: (28)",            // Operation timed out
 		"DENIED BY THE SANDBOX", // omac proxy denial body
-		"403",                    // HTTP 403 from proxy
+		"403",                   // HTTP 403 from proxy
 	}
 	found := false
 	for _, d := range denials {
@@ -515,7 +515,7 @@ func assertNetworkDenied(t *testing.T, output string, denyDomain string) {
 		}
 	}
 	if !found {
-		t.Errorf("SECURITY FAIL: no network denial message found in agent output\n" +
+		t.Errorf("SECURITY FAIL: no network denial message found in agent output\n"+
 			"the sandbox may not be enforcing network egress filtering for %s", denyDomain)
 		return
 	}
