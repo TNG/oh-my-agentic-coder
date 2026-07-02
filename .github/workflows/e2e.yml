@@ -9,6 +9,8 @@ name: E2E
 
 on:
   workflow_dispatch:
+  push:
+    branches: [feat/e2e-harness-skill-tests]
   schedule:
     - cron: '0 8 * * 6' # Saturdays 10:00 CEST
 
