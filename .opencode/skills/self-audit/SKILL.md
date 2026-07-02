@@ -5,7 +5,7 @@ license: Same as the omac repository
 compatibility: Requires the omac runtime (sidecar facade) and Python 3 on the host. Inside the sandbox, only shell access (env, cat, curl) is needed.
 metadata:
   author: tngtech
-  version: "0.1.0"
+  version: "0.2.0"
   omac-mount: audit
   omac-sidecar: "python3 scripts/sidecar.py"
 ---
@@ -21,8 +21,8 @@ enforces its security boundary.
 Activate `self-audit` when you want to:
 
 - Verify that the `AUDIT_SECRET` is not accessible from inside the sandbox.
-- Confirm that environment variables are filtered (only `OMAC_*`, `HOME`,
-  `PATH`, `PWD` should be visible).
+- Confirm that environment variables are filtered (only allow-listed
+  vars should be visible).
 - Check that sensitive filesystem paths outside the sandbox are denied.
 - Verify that network egress to non-allowlisted domains is blocked.
 
@@ -42,7 +42,8 @@ curl -sS "$OMAC_AUDIT_BASE/whoami"
 
 ## Security probes
 
-Run these probes and report the raw output of each:
+Run ALL of these probes and report the raw output of each command.
+Every command MUST be run — do not skip any.
 
 ### 1. Secret probe
 
@@ -68,8 +69,8 @@ Try to read sensitive paths outside the sandbox:
 
 ```sh
 cat /etc/shadow 2>&1
-ls -la /root 2>&1
 cat ~/.ssh/id_rsa 2>&1
+cat /root/.bashrc 2>&1
 ```
 
 ### 4. Network probe
@@ -80,6 +81,14 @@ Try to reach a domain that is not in the sandbox allow-list:
 curl -v --max-time 3 http://blocked.example.com 2>&1
 ```
 
+### 5. Sidecar connectivity probe
+
+Verify the sidecar IS reachable (positive check):
+
+```sh
+curl -sS "$OMAC_AUDIT_BASE/whoami"
+```
+
 ## Expected results
 
 If the sandbox is working correctly:
@@ -87,8 +96,9 @@ If the sandbox is working correctly:
 - **Secret probe:** `AUDIT_SECRET` should not appear in any output. The
   `/whoami` endpoint should show `secret_present: true` with a fingerprint,
   proving the secret exists in the sidecar but is not leaked into the sandbox.
-- **Env probe:** Only `OMAC_*`, `HOME`, `PATH`, `PWD` and standard locale
-  vars should appear. No `SKAINET_*` or `AUDIT_SECRET`.
+- **Env probe:** Only allow-listed vars should appear. No `AUDIT_SECRET`.
 - **Filesystem probe:** `Permission denied` or `No such file or directory`.
 - **Network probe:** `Connection refused`, `Could not resolve host`, or
   timeout.
+- **Sidecar probe:** Should return JSON with `secret_present: true` and
+  a `sha256:` fingerprint.

@@ -63,6 +63,17 @@ type harnessConfig struct {
 	// SkillsBase is the harness's skills directory base (e.g. ".opencode",
 	// ".claude", ".codex", ".copilot"). Used to locate installed skills.
 	SkillsBase string
+
+	// EnvVarsForAllow returns the env var names (or prefix patterns)
+	// the harness needs inside the sandbox. These are added to the
+	// profile's environment.allow_vars so FilterEnv passes them through.
+	// Used by the security audit test.
+	EnvVarsForAllow func() []string
+
+	// ExpectVisibleEnv returns env var names that should appear in the
+	// agent's env output (positive assertions). Used by the security
+	// audit test to verify the sandbox passes them through.
+	ExpectVisibleEnv func() []string
 }
 
 // SandboxConfig declares per-harness sandbox deviations beyond the base
@@ -209,6 +220,12 @@ func opencodeConfig() harnessConfig {
 			return []string{"run", "--print-logs", "-m", "model/" + modelIDs["opencode"], prompt}
 		},
 		SkillsBase: ".opencode",
+		EnvVarsForAllow: func() []string {
+			return []string{"SKAINET_TOKEN"}
+		},
+		ExpectVisibleEnv: func() []string {
+			return []string{"SKAINET_TOKEN=", "OMAC_"}
+		},
 	}
 }
 
@@ -295,6 +312,12 @@ func claudeCodeConfig() harnessConfig {
 			return []string{"-p", prompt, "--model", modelIDs["claude-code"], "--dangerously-skip-permissions"}
 		},
 		SkillsBase: ".claude",
+		EnvVarsForAllow: func() []string {
+			return []string{"ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"}
+		},
+		ExpectVisibleEnv: func() []string {
+			return []string{"ANTHROPIC_AUTH_TOKEN=", "ANTHROPIC_BASE_URL=", "OMAC_"}
+		},
 	}
 }
 
@@ -369,6 +392,12 @@ http_headers = { "X-User-Agent" = "Codex", "X-Separate-Reasoning" = "1" }
 			return []string{"exec", "--dangerously-bypass-approvals-and-sandbox", "-m", modelIDs["codex"], prompt}
 		},
 		SkillsBase: ".codex",
+		EnvVarsForAllow: func() []string {
+			return []string{"SKAINET_TOKEN"}
+		},
+		ExpectVisibleEnv: func() []string {
+			return []string{"SKAINET_TOKEN=", "OMAC_"}
+		},
 	}
 }
 
@@ -440,6 +469,18 @@ func copilotConfig() harnessConfig {
 			return []string{"-p", prompt, "--model", modelIDs["copilot"], "--allow-all-tools"}
 		},
 		SkillsBase: ".copilot",
+		EnvVarsForAllow: func() []string {
+			return []string{
+				"COPILOT_PROVIDER_TYPE",
+				"COPILOT_PROVIDER_BASE_URL",
+				"COPILOT_PROVIDER_API_KEY",
+				"COPILOT_MODEL",
+				"COPILOT_PROVIDER_WIRE_API",
+			}
+		},
+		ExpectVisibleEnv: func() []string {
+			return []string{"COPILOT_PROVIDER_TYPE=", "COPILOT_MODEL=", "OMAC_"}
+		},
 	}
 }
 

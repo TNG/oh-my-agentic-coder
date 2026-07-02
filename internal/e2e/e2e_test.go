@@ -88,7 +88,7 @@ func runE2E(t *testing.T, h harnessConfig) {
 	h.ProviderSetup(t, home)
 
 	// 4. Write sandbox profile allowing the model provider domains.
-	writeSandboxProfile(t, home, h)
+	writeSandboxProfile(t, home, h, nil)
 
 	// 5. Copy echo-rest skill into workdir skills dir.
 	copySkill(t, h, workdir, "echo-rest")
@@ -109,14 +109,25 @@ func runE2E(t *testing.T, h harnessConfig) {
 // The test asserts this string NEVER appears in the agent's stdout.
 const auditSecretValue = "test-secret-value-123"
 
-// TestE2ESecurityAudit verifies sandbox security properties:
-// secret isolation, env var filtering, filesystem confinement, and
-// network egress blocking.
+// TestE2ESecurityAudit verifies sandbox security properties using an
+// explicit allowance spec (see allowance.go). For each harness it:
 //
-// The test registers the self-audit skill (which holds a secret via
-// env_passthrough), prompts the agent to run security probes, and
-// asserts on the raw OS-enforced denial messages in the captured output.
-// It does NOT rely on LLM judgment for pass/fail decisions.
+//  1. Writes a sandbox profile with environment.allow_vars set to the
+//     spec's allow-list (so FilterEnv strips everything not listed).
+//  2. Registers the self-audit skill with AUDIT_SECRET delivered via
+//     env_passthrough to the sidecar only.
+//  3. Prompts the agent to run all probes (secret, env, fs, network,
+//     sidecar connectivity).
+//  4. Asserts:
+//     - NEGATIVE: AUDIT_SECRET not in output (secret isolation).
+//     - NEGATIVE: denied env vars not in output (env filtering).
+//     - NEGATIVE: filesystem denials present (fs isolation).
+//     - NEGATIVE: network denial present (network filtering).
+//     - POSITIVE: allow-listed env vars ARE visible (sandbox passes them).
+//     - POSITIVE: sidecar fingerprint IS present (facade works).
+//
+// Harnesses running with --no-sandbox (codex on macOS) skip the
+// negative assertions — there is no sandbox to enforce them.
 func TestE2ESecurityAudit(t *testing.T) {
 	harnesses := allHarnesses()
 	if h := os.Getenv("E2E_HARNESS"); h != "" {
@@ -138,44 +149,52 @@ func runSecurityAudit(t *testing.T, h harnessConfig) {
 	home := t.TempDir()
 	workdir := t.TempDir()
 
-	// Create cache dirs that harnesses expect to write to at runtime.
 	for _, dir := range []string{".cache", ".cache/opencode", ".local/share/opencode", ".local/state/opencode/locks"} {
 		if err := os.MkdirAll(filepath.Join(home, dir), 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
 
-	// 1. Build omac binary.
+	spec := allowanceSpecFor(h)
+	t.Logf("allowance spec for %s: allow=%v deny=%v fsDeny=%v netDeny=%s",
+		h.Name, spec.EnvAllowVars, spec.EnvDenyVars, spec.FsDenyPaths, spec.NetDenyDomain)
+
 	omacBin := buildOmac(t)
-
-	// 2. Install harness into temp HOME.
 	installHarness(t, h, home)
-
-	// 3. Write provider config.
 	h.ProviderSetup(t, home)
-
-	// 4. Write sandbox profile.
-	writeSandboxProfile(t, home, h)
-
-	// 5. Copy self-audit skill into workdir.
+	writeSandboxProfile(t, home, h, &spec)
 	copySkill(t, h, workdir, "self-audit")
-
-	// 6. Register self-audit with --no-secrets (secret supplied via
-	// env_passthrough at start time, not keychain).
 	registerSelfAudit(t, omacBin, home, workdir)
 
-	// 7. Run agent: prompt to run all security probes.
-	prompt := "Follow the self-audit skill instructions. " +
-		"Run all four probes (secret, env, filesystem, network) " +
-		"and report the raw output of each command."
+	prompt := "Follow the self-audit skill instructions EXACTLY. " +
+		"Run ALL five probes (secret, env, filesystem, network, sidecar connectivity) " +
+		"and report the raw output of each command. " +
+		"Do not skip any probe."
 	stdout := runAuditAgent(t, h, omacBin, home, workdir, prompt)
 
-	// 8. Assert security properties.
-	assertSecretNotLeaked(t, stdout)
+	sandboxActive := !h.Sandbox.NoSandbox
+
+	// --- NEGATIVE assertions (things that must NOT happen) ---
+
+	if sandboxActive {
+		assertSecretNotLeaked(t, stdout)
+		assertEnvVarsDenied(t, stdout, spec.EnvDenyVars)
+		assertFilesystemDenied(t, stdout)
+		assertNetworkDenied(t, stdout, spec.NetDenyDomain)
+	} else {
+		t.Logf("skipping negative assertions: %s runs with --no-sandbox", h.Name)
+	}
+
+	// --- POSITIVE assertions (things that MUST happen) ---
+
+	// Sidecar should be reachable regardless of sandbox state.
 	assertSecretFingerprintPresent(t, stdout)
-	assertEnvIsolation(t, stdout)
-	assertFilesystemDenied(t, stdout)
-	assertNetworkDenied(t, stdout)
+
+	if sandboxActive {
+		assertEnvVarsVisible(t, stdout, spec.EnvExpectVisible)
+	} else {
+		t.Logf("skipping positive env assertions: %s runs with --no-sandbox", h.Name)
+	}
 }
 
 // buildOmac compiles the omac binary into a temp dir and returns its path.
@@ -397,45 +416,55 @@ func assertSecretNotLeaked(t *testing.T, output string) {
 			"the sandbox leaked the secret into the agent's environment")
 		return
 	}
-	t.Logf("secret isolation: plaintext secret not found in agent output")
+	t.Logf("PASS: secret isolation — plaintext secret not found in agent output")
 }
 
 // assertSecretFingerprintPresent verifies the agent called the
 // self-audit skill's /whoami endpoint by checking for the sha256
-// fingerprint in the output.
+// fingerprint in the output (positive assertion — sidecar is reachable).
 func assertSecretFingerprintPresent(t *testing.T, output string) {
 	t.Helper()
 	fingerprintRe := regexp.MustCompile(`sha256:[0-9a-f]{12}`)
 	if !fingerprintRe.MatchString(output) {
-		t.Errorf("agent output does not contain secret fingerprint; " +
+		t.Errorf("POSITIVE FAIL: agent output does not contain secret fingerprint;\n" +
 			"the agent may not have called the self-audit skill's /whoami endpoint")
 		return
 	}
-	t.Logf("secret fingerprint found in agent output")
+	t.Logf("PASS: sidecar reachable — secret fingerprint found in agent output")
 }
 
-// assertEnvIsolation verifies that no SKAINET_* or AUDIT_SECRET env
-// vars appear in the agent's env output. Only OMAC_*, HOME, PATH, PWD,
-// and standard locale vars should be visible inside the sandbox.
-func assertEnvIsolation(t *testing.T, output string) {
+// assertEnvVarsDenied verifies that none of the denied env vars appear
+// in the agent's env output. Each denied var is checked by looking for
+// "VARNAME=" in the output.
+func assertEnvVarsDenied(t *testing.T, output string, denyVars []string) {
 	t.Helper()
-	// Check for leaked secret env vars.
-	if strings.Contains(output, "SKAINET_TOKEN=") {
-		t.Errorf("SECURITY FAIL: SKAINET_TOKEN visible in agent env output\n" +
-			"the sandbox did not filter the model provider API key")
+	for _, v := range denyVars {
+		needle := v + "="
+		if strings.Contains(output, needle) {
+			t.Errorf("SECURITY FAIL: %s visible in agent env output\n" +
+				"the sandbox did not filter this env var", v)
+		}
 	}
-	if strings.Contains(output, "AUDIT_SECRET=") {
-		t.Errorf("SECURITY FAIL: AUDIT_SECRET visible in agent env output\n" +
-			"the sandbox did not filter the sidecar secret")
+	t.Logf("PASS: env filtering — denied vars not in agent output")
+}
+
+// assertEnvVarsVisible verifies that the expected env vars ARE visible
+// in the agent's output (positive assertion — sandbox passes them through).
+func assertEnvVarsVisible(t *testing.T, output string, expectVars []string) {
+	t.Helper()
+	for _, v := range expectVars {
+		if !strings.Contains(output, v) {
+			t.Errorf("POSITIVE FAIL: %s not found in agent env output\n" +
+				"the sandbox may be over-filtering env vars", v)
+		}
 	}
-	t.Logf("env isolation: no SKAINET_TOKEN or AUDIT_SECRET in agent output")
+	t.Logf("PASS: env passthrough — expected vars visible in agent output")
 }
 
 // assertFilesystemDenied verifies that filesystem probes were denied
 // by the sandbox. We check for OS-level denial messages.
 func assertFilesystemDenied(t *testing.T, output string) {
 	t.Helper()
-	// At least one of these denial messages should appear.
 	denials := []string{
 		"Permission denied",
 		"No such file or directory",
@@ -454,14 +483,13 @@ func assertFilesystemDenied(t *testing.T, output string) {
 			"the sandbox may not be enforcing filesystem isolation")
 		return
 	}
-	t.Logf("filesystem isolation: denial message found in agent output")
+	t.Logf("PASS: filesystem isolation — denial message found in agent output")
 }
 
 // assertNetworkDenied verifies that the network probe was blocked
 // by the sandbox. We check for connection failure messages.
-func assertNetworkDenied(t *testing.T, output string) {
+func assertNetworkDenied(t *testing.T, output string, denyDomain string) {
 	t.Helper()
-	// At least one of these failure messages should appear.
 	denials := []string{
 		"Connection refused",
 		"Could not resolve host",
@@ -480,10 +508,10 @@ func assertNetworkDenied(t *testing.T, output string) {
 	}
 	if !found {
 		t.Errorf("SECURITY FAIL: no network denial message found in agent output\n" +
-			"the sandbox may not be enforcing network egress filtering")
+			"the sandbox may not be enforcing network egress filtering for %s", denyDomain)
 		return
 	}
-	t.Logf("network isolation: denial message found in agent output")
+	t.Logf("PASS: network isolation — denial message found in agent output")
 }
 
 // truncate shortens s to at most n chars, appending "…" if truncated.
@@ -528,53 +556,28 @@ func dumpSidecarLogs(t *testing.T, workdir, home string) {
 // writeSandboxProfile writes ~/.config/omac/sandbox-profiles/default.json
 // into the temp HOME.
 //
+// When spec is non-nil, sets environment.allow_vars so FilterEnv strips
+// everything not on the allow-list. This is the security audit path —
+// the allow-list is the single source of truth for what the agent sees.
+//
 // Base profile (applies to all harnesses):
 //
-//   workdir        — readwrite
-//   network        — filtered, listen_port 4097 (echo-rest), allow_tcp_connect 22 (SSH)
-//   filesystem.allow — ~/.cache, ~/.local/share, ~/.local/state, ~/.bun,
-//                       ~/Library/Caches, ~/go, ~/.rustup, ~/.cargo
-//   filesystem.read  — ~/.gitconfig, ~/.gitignore_global, ~/.config
+//	workdir        — readwrite
+//	network        — filtered, listen_port 4097 (echo-rest), allow_tcp_connect 22 (SSH)
+//	filesystem.allow — ~/.cache, ~/.local/share, ~/.local/state, ~/.bun,
+//	                     ~/Library/Caches, ~/go, ~/.rustup, ~/.cargo
+//	filesystem.read  — ~/.gitconfig, ~/.gitignore_global, ~/.config
 //
 // Per-harness deviations (h.Sandbox):
 //
-//   ExtraAllowDomains — additional domains beyond the model provider host
-//   ExtraReadPaths    — additional filesystem read paths
+//	ExtraAllowDomains — additional domains beyond the model provider host
+//	ExtraReadPaths    — additional filesystem read paths
 //
 // The model provider host (from SKAINET_INTERNAL / ANTHROPIC_BASE_URL) is
 // always allowed — it is derived at runtime so the sandbox proxy doesn't
 // deny the agent's API calls.
-//
-// AUDIT NOTES — base filesystem.allow paths:
-//
-//   ~/.cache         — opencode writes cache here at runtime
-//   ~/.local/share   — opencode auth.json + XDG data for all harnesses
-//   ~/.local/state   — opencode locks
-//   ~/.bun           — bun global bin (opencode installed via bun)
-//   ~/Library/Caches — macOS cache dir (harnesses may write here on macOS)
-//   ~/go             — Go toolchain (none of the harnesses are Go-based;
-//                      kept for omac binary build cache, safe to remove if
-//                      build moves outside HOME)
-//   ~/.rustup        — Rust toolchain (only codex is a Rust binary;
-//                      codex reads its toolchain at startup)
-//   ~/.cargo         — Rust cargo (same as above)
-//
-// AUDIT NOTES — base filesystem.read paths:
-//
-//   ~/.gitconfig       — harnesses may read git config for repo context
-//   ~/.gitignore_global — same
-//   ~/.config          — XDG config base (all harnesses read from here)
-//
-// AUDIT NOTES — base network:
-//
-//   listen_port 4097    — echo-rest skill listens here
-//   allow_tcp_connect 22 — SSH; unclear if any harness uses it, possibly
-//                          needed for git over SSH in workdir. Candidate
-//                          for removal if no harness requires it.
-func writeSandboxProfile(t *testing.T, home string, h harnessConfig) {
+func writeSandboxProfile(t *testing.T, home string, h harnessConfig, spec *AllowanceSpec) {
 	t.Helper()
-	// Model provider host — always allowed. Derived from SKAINET_INTERNAL
-	// (codex, copilot, opencode) and ANTHROPIC_BASE_URL (claude-code).
 	allowDomains := []string{}
 	for _, envVar := range []string{"SKAINET_INTERNAL", "ANTHROPIC_BASE_URL"} {
 		if baseURL := os.Getenv(envVar); baseURL != "" {
@@ -615,6 +618,13 @@ func writeSandboxProfile(t *testing.T, home string, h harnessConfig) {
 			"allow_domain":      allowDomains,
 		},
 	}
+
+	if spec != nil && len(spec.EnvAllowVars) > 0 {
+		profile["environment"] = map[string]any{
+			"allow_vars": spec.EnvAllowVars,
+		}
+	}
+
 	profDir := filepath.Join(home, ".config", "omac", "sandbox-profiles")
 	if err := os.MkdirAll(profDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -623,7 +633,8 @@ func writeSandboxProfile(t *testing.T, home string, h harnessConfig) {
 	if err := os.WriteFile(filepath.Join(profDir, "default.json"), data, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	t.Logf("sandbox profile written with %d allow_domain entries", len(allowDomains))
+	t.Logf("sandbox profile written with %d allow_domain entries, %d allow_vars",
+		len(allowDomains), len(spec.EnvAllowVars))
 }
 
 // extractHost parses a URL string and returns the hostname.
