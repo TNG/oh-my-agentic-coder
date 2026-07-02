@@ -105,6 +105,79 @@ func runE2E(t *testing.T, h harnessConfig) {
 	assertEchoOK(t, stdout)
 }
 
+// auditSecretValue is the plaintext secret injected via env_passthrough.
+// The test asserts this string NEVER appears in the agent's stdout.
+const auditSecretValue = "test-secret-value-123"
+
+// TestE2ESecurityAudit verifies sandbox security properties:
+// secret isolation, env var filtering, filesystem confinement, and
+// network egress blocking.
+//
+// The test registers the self-audit skill (which holds a secret via
+// env_passthrough), prompts the agent to run security probes, and
+// asserts on the raw OS-enforced denial messages in the captured output.
+// It does NOT rely on LLM judgment for pass/fail decisions.
+func TestE2ESecurityAudit(t *testing.T) {
+	harnesses := allHarnesses()
+	if h := os.Getenv("E2E_HARNESS"); h != "" {
+		cfg, ok := harnessByName(h)
+		if !ok {
+			t.Fatalf("E2E_HARNESS=%q not a known harness", h)
+		}
+		harnesses = []harnessConfig{cfg}
+	}
+
+	for _, h := range harnesses {
+		t.Run(h.Name, func(t *testing.T) {
+			runSecurityAudit(t, h)
+		})
+	}
+}
+
+func runSecurityAudit(t *testing.T, h harnessConfig) {
+	home := t.TempDir()
+	workdir := t.TempDir()
+
+	// Create cache dirs that harnesses expect to write to at runtime.
+	for _, dir := range []string{".cache", ".cache/opencode", ".local/share/opencode", ".local/state/opencode/locks"} {
+		if err := os.MkdirAll(filepath.Join(home, dir), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// 1. Build omac binary.
+	omacBin := buildOmac(t)
+
+	// 2. Install harness into temp HOME.
+	installHarness(t, h, home)
+
+	// 3. Write provider config.
+	h.ProviderSetup(t, home)
+
+	// 4. Write sandbox profile.
+	writeSandboxProfile(t, home, h)
+
+	// 5. Copy self-audit skill into workdir.
+	copySkill(t, h, workdir, "self-audit")
+
+	// 6. Register self-audit with --no-secrets (secret supplied via
+	// env_passthrough at start time, not keychain).
+	registerSelfAudit(t, omacBin, home, workdir)
+
+	// 7. Run agent: prompt to run all security probes.
+	prompt := "Follow the self-audit skill instructions. " +
+		"Run all four probes (secret, env, filesystem, network) " +
+		"and report the raw output of each command."
+	stdout := runAuditAgent(t, h, omacBin, home, workdir, prompt)
+
+	// 8. Assert security properties.
+	assertSecretNotLeaked(t, stdout)
+	assertSecretFingerprintPresent(t, stdout)
+	assertEnvIsolation(t, stdout)
+	assertFilesystemDenied(t, stdout)
+	assertNetworkDenied(t, stdout)
+}
+
 // buildOmac compiles the omac binary into a temp dir and returns its path.
 func buildOmac(t *testing.T) string {
 	t.Helper()
@@ -195,6 +268,20 @@ func registerEchoRest(t *testing.T, omacBin, home, workdir string) {
 	t.Logf("echo-rest registered")
 }
 
+// registerSelfAudit runs `omac register self-audit --no-secrets`
+// in the workdir. The AUDIT_SECRET is supplied via env_passthrough at
+// start time, not the keychain.
+func registerSelfAudit(t *testing.T, omacBin, home, workdir string) {
+	t.Helper()
+	cmd := exec.Command(omacBin, "register", "self-audit", "--no-secrets")
+	cmd.Dir = workdir
+	cmd.Env = withHome(os.Environ(), home)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("register self-audit: %v\n%s", err, out)
+	}
+	t.Logf("self-audit registered")
+}
+
 // runAgent starts omac with the harness, passes the prompt as inner args,
 // and returns the agent's stdout. Fails on timeout or non-zero exit.
 func runAgent(t *testing.T, h harnessConfig, omacBin, home, workdir, prompt string) string {
@@ -234,6 +321,49 @@ func runAgent(t *testing.T, h harnessConfig, omacBin, home, workdir, prompt stri
 	return stdout.String()
 }
 
+// runAuditAgent starts omac with the harness and the AUDIT_SECRET env
+// var set for env_passthrough. Otherwise identical to runAgent.
+func runAuditAgent(t *testing.T, h harnessConfig, omacBin, home, workdir, prompt string) string {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), runTimeout)
+	defer cancel()
+
+	innerArgs := h.RunArgs(prompt)
+	args := []string{"start", h.Name}
+	if h.Sandbox.NoSandbox {
+		args = append(args, "--no-sandbox")
+	}
+	args = append(args, "--")
+	args = append(args, innerArgs...)
+
+	cmd := exec.CommandContext(ctx, omacBin, args...)
+	cmd.Dir = workdir
+	// Inject AUDIT_SECRET into the omac start subprocess env so the
+	// sidecar receives it via env_passthrough.
+	env := buildAgentEnv(t, h, home)
+	env = append(env, "AUDIT_SECRET="+auditSecretValue)
+	env = append(env, "PWD="+workdir)
+	cmd.Env = env
+	cmd.Stdin = strings.NewReader("")
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	t.Logf("running: omac %s (prompt: %q)", h.Name, truncate(prompt, 80))
+	err := cmd.Run()
+	if ctx.Err() == context.DeadlineExceeded {
+		t.Fatalf("agent did not exit within %v\nSTDOUT (last 200 lines):\n%s\nSTDERR (last 200 lines):\n%s",
+			runTimeout, tailLines(stdout.String(), 200), tailLines(stderr.String(), 200))
+	}
+	if err != nil {
+		dumpSidecarLogs(t, workdir, home)
+		t.Fatalf("omac start failed: %v\nSTDOUT:\n%s\nSTDERR:\n%s",
+			err, stdout.String(), stderr.String())
+	}
+	return stdout.String()
+}
+
 // buildAgentEnv constructs the environment for the omac start subprocess.
 // It sets HOME (via withHome) and adds harness-specific env vars from
 // h.EnvVars. SKAINET_TOKEN propagates via os.Environ() inheritance.
@@ -255,6 +385,105 @@ func assertEchoOK(t *testing.T, output string) {
 		return
 	}
 	t.Logf("echo-rest /status response found in agent output")
+}
+
+// assertSecretNotLeaked verifies the plaintext AUDIT_SECRET value does
+// not appear anywhere in the agent's output. If it does, the sandbox
+// leaked the secret into the agent's environment.
+func assertSecretNotLeaked(t *testing.T, output string) {
+	t.Helper()
+	if strings.Contains(output, auditSecretValue) {
+		t.Errorf("SECURITY FAIL: plaintext AUDIT_SECRET value found in agent output\n" +
+			"the sandbox leaked the secret into the agent's environment")
+		return
+	}
+	t.Logf("secret isolation: plaintext secret not found in agent output")
+}
+
+// assertSecretFingerprintPresent verifies the agent called the
+// self-audit skill's /whoami endpoint by checking for the sha256
+// fingerprint in the output.
+func assertSecretFingerprintPresent(t *testing.T, output string) {
+	t.Helper()
+	fingerprintRe := regexp.MustCompile(`sha256:[0-9a-f]{12}`)
+	if !fingerprintRe.MatchString(output) {
+		t.Errorf("agent output does not contain secret fingerprint; " +
+			"the agent may not have called the self-audit skill's /whoami endpoint")
+		return
+	}
+	t.Logf("secret fingerprint found in agent output")
+}
+
+// assertEnvIsolation verifies that no SKAINET_* or AUDIT_SECRET env
+// vars appear in the agent's env output. Only OMAC_*, HOME, PATH, PWD,
+// and standard locale vars should be visible inside the sandbox.
+func assertEnvIsolation(t *testing.T, output string) {
+	t.Helper()
+	// Check for leaked secret env vars.
+	if strings.Contains(output, "SKAINET_TOKEN=") {
+		t.Errorf("SECURITY FAIL: SKAINET_TOKEN visible in agent env output\n" +
+			"the sandbox did not filter the model provider API key")
+	}
+	if strings.Contains(output, "AUDIT_SECRET=") {
+		t.Errorf("SECURITY FAIL: AUDIT_SECRET visible in agent env output\n" +
+			"the sandbox did not filter the sidecar secret")
+	}
+	t.Logf("env isolation: no SKAINET_TOKEN or AUDIT_SECRET in agent output")
+}
+
+// assertFilesystemDenied verifies that filesystem probes were denied
+// by the sandbox. We check for OS-level denial messages.
+func assertFilesystemDenied(t *testing.T, output string) {
+	t.Helper()
+	// At least one of these denial messages should appear.
+	denials := []string{
+		"Permission denied",
+		"No such file or directory",
+		"cannot open",
+		"Operation not permitted",
+	}
+	found := false
+	for _, d := range denials {
+		if strings.Contains(output, d) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("SECURITY FAIL: no filesystem denial message found in agent output\n" +
+			"the sandbox may not be enforcing filesystem isolation")
+		return
+	}
+	t.Logf("filesystem isolation: denial message found in agent output")
+}
+
+// assertNetworkDenied verifies that the network probe was blocked
+// by the sandbox. We check for connection failure messages.
+func assertNetworkDenied(t *testing.T, output string) {
+	t.Helper()
+	// At least one of these failure messages should appear.
+	denials := []string{
+		"Connection refused",
+		"Could not resolve host",
+		"Connection timed out",
+		"Failed to connect",
+		"curl: (6)",  // Could not resolve host
+		"curl: (7)",  // Failed to connect
+		"curl: (28)", // Operation timed out
+	}
+	found := false
+	for _, d := range denials {
+		if strings.Contains(output, d) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("SECURITY FAIL: no network denial message found in agent output\n" +
+			"the sandbox may not be enforcing network egress filtering")
+		return
+	}
+	t.Logf("network isolation: denial message found in agent output")
 }
 
 // truncate shortens s to at most n chars, appending "…" if truncated.
