@@ -31,7 +31,6 @@ jobs:
       SKAINET_TOKEN: ${{ secrets.SKAINET_TOKEN }}
       SKAINET_INTERNAL: ${{ secrets.SKAINET_INTERNAL }}
       ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
-      COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
       E2E_HARNESS: ${{ matrix.harness }}
     steps:
       - name: Checkout

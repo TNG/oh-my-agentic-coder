@@ -215,25 +215,20 @@ func copilotConfig() harnessConfig {
 		BinaryName: "copilot",
 		InstallCmd: []string{"npm", "install", "-g", pinnedPackage("copilot")},
 		ProviderSetup: func(t *testing.T, home string) {
-			token := os.Getenv("SKAINET_TOKEN")
-			if token == "" {
-				t.Fatal("SKAINET_TOKEN not set")
-			}
-			baseURL := os.Getenv("SKAINET_INTERNAL")
-			if baseURL == "" {
-				t.Fatal("SKAINET_INTERNAL not set (CI secret for the responses API URL)")
-			}
+			// Provider config (COPILOT_PROVIDER_*) is injected as process
+			// env vars in buildAgentEnv — copilot CLI reads them from the
+			// environment, not from a sourced file. ProviderSetup only
+			// pre-trusts the workdir so the first-run "trust this folder?"
+			// prompt doesn't block the non-interactive run.
 			copilotDir := filepath.Join(home, ".copilot")
 			if err := os.MkdirAll(copilotDir, 0o755); err != nil {
 				t.Fatal(err)
 			}
-			// provider.env: copilot sources this at startup.
-			envContent := `export COPILOT_PROVIDER_BASE_URL=` + baseURL + `
-export COPILOT_PROVIDER_API_KEY=` + token + `
-export COPILOT_MODEL=` + modelIDs["copilot"] + `
-export COPILOT_PROVIDER_WIRE_API=responses
-`
-			if err := os.WriteFile(filepath.Join(copilotDir, "provider.env"), []byte(envContent), 0o600); err != nil {
+			config := map[string]any{
+				"trustedFolders": []string{home},
+			}
+			b, _ := json.Marshal(config)
+			if err := os.WriteFile(filepath.Join(copilotDir, "config.json"), b, 0o600); err != nil {
 				t.Fatal(err)
 			}
 		},
