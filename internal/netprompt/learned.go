@@ -84,6 +84,13 @@ func (lp *LearnedPolicy) Lookup(host string) (allow bool, found bool) {
 	return false, false
 }
 
+// Entries returns a copy of the learned decisions for display.
+func (lp *LearnedPolicy) Entries() []LearnedEntry {
+	lp.mu.Lock()
+	defer lp.mu.Unlock()
+	return append([]LearnedEntry(nil), lp.entries...)
+}
+
 func entryMatches(e *LearnedEntry, host string) bool {
 	target := strings.ToLower(e.Host)
 	if e.Scope == "suffix" {
