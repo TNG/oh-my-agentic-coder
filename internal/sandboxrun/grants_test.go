@@ -256,9 +256,17 @@ func TestResolveGrantsLinkedWorktreeReadWrite(t *testing.T) {
 			t.Errorf("%s must not be writable", want)
 		}
 	}
-	// hooks/ is denied outright (host-side un-sandboxed persistence vector).
-	if !slices.Contains(g.ProtectedPaths, filepath.Join(common, "hooks")) {
-		t.Errorf("hooks not protected: %v", g.ProtectedPaths)
+	// hooks is read-only: readable+runnable, never writable, never hard-denied
+	// (rationale in gitWorktreeGrants).
+	hooks := filepath.Join(common, "hooks")
+	if !slices.Contains(g.ReadPaths, hooks) {
+		t.Errorf("hooks must be readable: %v", g.ReadPaths)
+	}
+	if slices.Contains(g.AllowPaths, hooks) || slices.Contains(g.WritePaths, hooks) {
+		t.Errorf("hooks must not be writable: allow=%v write=%v", g.AllowPaths, g.WritePaths)
+	}
+	if slices.Contains(g.ProtectedPaths, hooks) {
+		t.Errorf("hooks must not be hard-denied: %v", g.ProtectedPaths)
 	}
 }
 
@@ -361,12 +369,15 @@ func TestResolveGrantsRealGitWorktreePipeline(t *testing.T) {
 	if !slices.Contains(g.ReadPaths, filepath.Join(common, "config")) {
 		t.Errorf("read missing config: %v", g.ReadPaths)
 	}
-	if !slices.Contains(g.ProtectedPaths, filepath.Join(common, "hooks")) {
-		t.Errorf("hooks not protected: %v", g.ProtectedPaths)
+	if !slices.Contains(g.ReadPaths, filepath.Join(common, "hooks")) {
+		t.Errorf("hooks must be readable: %v", g.ReadPaths)
+	}
+	if slices.Contains(g.ProtectedPaths, filepath.Join(common, "hooks")) {
+		t.Errorf("hooks must not be hard-denied: %v", g.ProtectedPaths)
 	}
 
-	// macOS backend: objects gets read+write; config read but not write;
-	// hooks denied.
+	// macOS backend: objects read+write, config read-only, hooks read-only
+	// (readable, never write-allowed, never read-denied).
 	sbpl := GenerateSBPL(g)
 	objects := filepath.Join(common, "objects")
 	if !strings.Contains(sbpl, "(allow file-write* (subpath \""+objects+"\"))") {
@@ -377,8 +388,14 @@ func TestResolveGrantsRealGitWorktreePipeline(t *testing.T) {
 		t.Errorf("SBPL must not allow writing config")
 	}
 	hooks := filepath.Join(common, "hooks")
-	if !strings.Contains(sbpl, "(deny file-write* (subpath \""+hooks+"\"))") {
-		t.Errorf("SBPL missing hooks deny:\n%s", sbpl)
+	if !strings.Contains(sbpl, "(allow file-read* (subpath \""+hooks+"\"))") {
+		t.Errorf("SBPL missing hooks read allow:\n%s", sbpl)
+	}
+	if strings.Contains(sbpl, "(allow file-write* (subpath \""+hooks+"\"))") {
+		t.Errorf("SBPL must not allow writing hooks:\n%s", sbpl)
+	}
+	if strings.Contains(sbpl, "(deny file-read* (subpath \""+hooks+"\"))") {
+		t.Errorf("SBPL must not deny reading hooks (read-only, not hard-deny):\n%s", sbpl)
 	}
 
 	// Linux backend: objects bound rw (--bind), config read-only (--ro-bind).
@@ -392,6 +409,89 @@ func TestResolveGrantsRealGitWorktreePipeline(t *testing.T) {
 	}
 	if !strings.Contains(joined, "--ro-bind "+config+" "+config) {
 		t.Errorf("bwrap argv missing ro bind for config:\n%s", joined)
+	}
+	if !strings.Contains(joined, "--ro-bind "+hooks+" "+hooks) {
+		t.Errorf("bwrap argv missing ro bind for hooks:\n%s", joined)
+	}
+}
+
+// TestResolveGrantsWorktreeHooksRunnableNotWritable pins the read-only hooks
+// policy (readable+runnable, never writable, never hard-denied) at both
+// writable and read-only workdir access.
+func TestResolveGrantsWorktreeHooksRunnableNotWritable(t *testing.T) {
+	wd, common := makeLinkedWorktree(t)
+	hooks := filepath.Join(common, "hooks")
+	for _, access := range []string{sandboxprofile.AccessReadWrite, sandboxprofile.AccessRead} {
+		p := &sandboxprofile.Profile{Workdir: sandboxprofile.Workdir{Access: access}}
+		g, err := ResolveGrants(p, wd, nil)
+		if err != nil {
+			t.Fatalf("access %s: %v", access, err)
+		}
+		if !slices.Contains(g.ReadPaths, hooks) {
+			t.Errorf("access %s: hooks must be readable: %v", access, g.ReadPaths)
+		}
+		if slices.Contains(g.AllowPaths, hooks) || slices.Contains(g.WritePaths, hooks) {
+			t.Errorf("access %s: hooks must not be writable (allow=%v write=%v)", access, g.AllowPaths, g.WritePaths)
+		}
+		if slices.Contains(g.ProtectedPaths, hooks) {
+			t.Errorf("access %s: hooks must not be hard-denied: %v", access, g.ProtectedPaths)
+		}
+	}
+}
+
+// TestResolveGrantsWorktreeHooksSymlinkEscape guards the new hooks READ grant:
+// a planted `hooks -> <secret>` symlink must be dropped by the containment
+// check, not canonicalized into a read of the target.
+func TestResolveGrantsWorktreeHooksSymlinkEscape(t *testing.T) {
+	base := t.TempDir()
+	secret := filepath.Join(base, "secret")
+	if err := os.MkdirAll(secret, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	secretResolved, err := filepath.EvalSymlinks(secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	common := filepath.Join(base, "repo", ".git")
+	admin := filepath.Join(common, "worktrees", "wt")
+	if err := os.MkdirAll(admin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, real := range []string{"objects", "refs", "logs", "info"} {
+		if err := os.MkdirAll(filepath.Join(common, real), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeFile(t, filepath.Join(common, "config"))
+	if err := os.WriteFile(filepath.Join(admin, "commondir"), []byte("../..\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The poisoned entry: hooks symlinked at the secret dir.
+	if err := os.Symlink(secret, filepath.Join(common, "hooks")); err != nil {
+		t.Fatal(err)
+	}
+	wd := filepath.Join(base, "wt")
+	if err := os.MkdirAll(wd, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wd, ".git"), []byte("gitdir: "+admin+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	p := &sandboxprofile.Profile{Workdir: sandboxprofile.Workdir{Access: sandboxprofile.AccessReadWrite}}
+	g, err := ResolveGrants(p, wd, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, list := range [][]string{g.ReadPaths, g.WritePaths, g.AllowPaths} {
+		for _, gp := range list {
+			resolved, rerr := filepath.EvalSymlinks(gp)
+			if rerr != nil {
+				continue
+			}
+			if resolved == secretResolved || strings.HasPrefix(resolved, secretResolved+string(filepath.Separator)) {
+				t.Errorf("ESCAPE: grant %s resolves into the secret dir %s via hooks symlink", gp, secretResolved)
+			}
+		}
 	}
 }
 
