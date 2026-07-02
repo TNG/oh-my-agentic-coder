@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxprofile"
 )
@@ -107,7 +108,33 @@ func ResolveGrants(p *sandboxprofile.Profile, workdir string, notices io.Writer)
 		denyScan = append(denyScan, workdir)
 	}
 
+	// A linked worktree's .git is a *file* pointing at an admin dir under the
+	// shared common dir, which sits OUTSIDE the workdir — so git add/commit hit
+	// EPERM writing the object store, refs and per-worktree admin. Grant those
+	// common-dir subdirs at the workdir's access level to restore plain-clone
+	// parity. No-op for a plain clone or a submodule (no commondir).
+	var worktreeDeny []string
+	if p.Workdir.Access != "" && p.Workdir.Access != sandboxprofile.AccessNone {
+		if wr, wa, wd, ok := gitWorktreeGrants(workdir, p.Workdir.Access); ok {
+			// Existence-filter silently: these are omac-derived internal
+			// paths (a missing packed-refs is normal), not user grants, so
+			// a "skipping nonexistent path" notice would only confuse.
+			wr, err = sandboxprofile.ExpandExisting(wr, nil)
+			if err != nil {
+				return nil, err
+			}
+			wa, err = sandboxprofile.ExpandExisting(wa, nil)
+			if err != nil {
+				return nil, err
+			}
+			read = append(read, wr...)
+			allow = append(allow, wa...)
+			worktreeDeny = wd
+		}
+	}
+
 	protected := sandboxprofile.EffectiveProtectedPaths(base, p.Filesystem.OverrideDeny)
+	protected = append(protected, worktreeDeny...)
 
 	// User deny entries carve holes out of the granted trees. Path-form
 	// entries expand to an explicit path; basename globs (e.g. ".env")
@@ -137,6 +164,150 @@ func ResolveGrants(p *sandboxprofile.Profile, workdir string, notices io.Writer)
 		}
 	}
 	return g, nil
+}
+
+// gitWorktreeGrants returns the extra grants a linked git worktree needs so
+// git works inside the sandbox. ok=false unless workdir is a linked worktree
+// (.git is a file pointing at an admin dir under a shared common dir).
+//
+// objects/refs/logs and this worktree's admin dir are granted at the workdir's
+// access level (git writes them on commit); config/info/packed-refs/hooks stay
+// read-only — readable (so git reads config and RUNS host commit hooks inside
+// the sandbox) but never writable, so the agent can't plant a hook or mutate
+// core.hooksPath to run un-sandboxed on the host's next commit (the #30 vector).
+//
+// The common-dir ROOT is never granted. Consequence: git can't create
+// <common>/packed-refs.lock, so a non-fatal EPERM prints on ref updates (the
+// loose ref still writes, commit succeeds) and gc/pack-refs ref-packing no-ops.
+// Granting the root writable would expose config to a lock-rename that defeats
+// the read-only guard, so the noise is the accepted cost.
+func gitWorktreeGrants(workdir, access string) (readAdds, allowAdds, denyAdds []string, ok bool) {
+	common, admin, ok := resolveWorktreeCommonDir(workdir)
+	if !ok {
+		return nil, nil, nil, false
+	}
+	// SECURITY: these grant paths are derived from in-workdir file content
+	// (.git, <admin>/commondir) that a prior sandboxed session could have
+	// tampered with, and both backends symlink-canonicalize every grant
+	// into a kernel rule. Resolve the common dir and admit only entries
+	// that physically live inside it, so a planted symlink (e.g. a crafted
+	// `objects` -> ~/.ssh) cannot widen a grant to an out-of-tree path and
+	// punch through the protected-path denials.
+	root, err := filepath.EvalSymlinks(common)
+	if err != nil {
+		return nil, nil, nil, false
+	}
+	contained := func(paths ...string) []string {
+		out := make([]string, 0, len(paths))
+		for _, p := range paths {
+			if pathWithinRoot(p, root) {
+				out = append(out, p)
+			}
+		}
+		return out
+	}
+	writeSubdirs := contained(
+		filepath.Join(common, "objects"),
+		filepath.Join(common, "refs"),
+		filepath.Join(common, "logs"),
+		admin, // the per-worktree index, HEAD, ORIG_HEAD, COMMIT_EDITMSG, logs
+	)
+	readOnly := contained(
+		filepath.Join(common, "config"),
+		filepath.Join(common, "info"),
+		filepath.Join(common, "packed-refs"),
+		// hooks MUST stay inside contained(): unlike a hard deny, a read grant
+		// on a planted `hooks -> secret` symlink would widen to the target (see
+		// TestResolveGrantsWorktreeHooksSymlinkEscape).
+		filepath.Join(common, "hooks"),
+	)
+
+	switch access {
+	case sandboxprofile.AccessReadWrite, sandboxprofile.AccessWrite:
+		// The write subdirs are granted read+write even when the workdir
+		// itself is write-only (AccessWrite): git must read the objects and
+		// refs it commits, so read-only here would break commit.
+		return readOnly, writeSubdirs, denyAdds, true
+	case sandboxprofile.AccessRead:
+		// Read-only workdir: git status/log/diff still read the common
+		// dir, but nothing under it may be written.
+		return append(writeSubdirs, readOnly...), nil, denyAdds, true
+	default:
+		return nil, nil, nil, false
+	}
+}
+
+// resolveWorktreeCommonDir inspects workdir/.git. For a linked worktree
+// it is a regular file "gitdir: <admin>"; the admin dir's commondir file
+// (a path relative to the admin dir, as git writes it) points at the
+// shared common dir. Returns (common, admin, true) only for a linked
+// worktree — a plain clone (.git is a directory) or a non-repo workdir
+// yields ok=false.
+func resolveWorktreeCommonDir(workdir string) (common, admin string, ok bool) {
+	dotgit := filepath.Join(workdir, ".git")
+	fi, err := os.Lstat(dotgit)
+	if err != nil || fi.IsDir() {
+		return "", "", false
+	}
+	admin, err = readGitdirPointer(dotgit)
+	if err != nil {
+		return "", "", false
+	}
+	data, err := os.ReadFile(filepath.Join(admin, "commondir"))
+	if err != nil {
+		return "", "", false
+	}
+	rel := strings.TrimSpace(string(data))
+	if rel == "" {
+		return "", "", false
+	}
+	common = rel
+	if !filepath.IsAbs(common) {
+		common = filepath.Join(admin, common)
+	}
+	common = filepath.Clean(common)
+	// git invariant: the admin dir is exactly <common>/worktrees/<name>.
+	// Enforce it so a crafted commondir cannot point the grant root at an
+	// unrelated location (e.g. an absolute commondir aimed elsewhere).
+	if filepath.Base(filepath.Dir(admin)) != "worktrees" || filepath.Dir(filepath.Dir(admin)) != common {
+		return "", "", false
+	}
+	return common, admin, true
+}
+
+// pathWithinRoot reports whether path, with all symlinks resolved, is root
+// itself or lies inside it. A path that cannot be resolved (missing, or a
+// dangling/looping symlink) is treated as NOT contained: the grant is
+// dropped rather than risk canonicalizing to an out-of-tree location.
+func pathWithinRoot(path, root string) bool {
+	rp, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return false
+	}
+	return rp == root || strings.HasPrefix(rp, root+string(filepath.Separator))
+}
+
+// readGitdirPointer parses a linked worktree's .git file ("gitdir: <path>")
+// and returns the absolute admin-dir path it points at. A relative pointer
+// is resolved against the .git file's directory (the workdir).
+func readGitdirPointer(dotgit string) (string, error) {
+	data, err := os.ReadFile(dotgit)
+	if err != nil {
+		return "", err
+	}
+	line := strings.TrimSpace(string(data))
+	const prefix = "gitdir:"
+	if !strings.HasPrefix(line, prefix) {
+		return "", fmt.Errorf("%s: missing %q pointer", dotgit, prefix)
+	}
+	p := strings.TrimSpace(strings.TrimPrefix(line, prefix))
+	if p == "" {
+		return "", fmt.Errorf("%s: empty gitdir pointer", dotgit)
+	}
+	if !filepath.IsAbs(p) {
+		p = filepath.Join(filepath.Dir(dotgit), p)
+	}
+	return filepath.Clean(p), nil
 }
 
 // maxDenyScanEntries bounds the basename-glob walk so a deny like
