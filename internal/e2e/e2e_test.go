@@ -7,6 +7,10 @@
 // with the sandbox, and prompts the agent to call the skill's /status
 // endpoint. The test passes if the agent output contains {"ok":true}.
 //
+// Per-harness environment adaptation (env vars, config files, sandbox
+// deviations) is declared in harnesses.go — see the doc comment on each
+// *Config() function for the full list of assumptions.
+//
 // Required CI secrets / env vars:
 //
 //   SKAINET_TOKEN         — API key for the model provider (all harnesses except claude-code)
@@ -34,7 +38,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -85,7 +88,7 @@ func runE2E(t *testing.T, h harnessConfig) {
 	h.ProviderSetup(t, home)
 
 	// 4. Write sandbox profile allowing the model provider domains.
-	writeSandboxProfile(t, home, h.Name)
+	writeSandboxProfile(t, home, h)
 
 	// 5. Copy echo-rest skill into workdir skills dir.
 	copyEchoRest(t, h, workdir)
@@ -201,11 +204,7 @@ func runAgent(t *testing.T, h harnessConfig, omacBin, home, workdir, prompt stri
 
 	innerArgs := h.RunArgs(prompt)
 	args := []string{"start", h.Name}
-	// codex on macOS: use --no-sandbox because codex's Rust HTTP client
-	// is incompatible with sandbox-exec (fails with "stream disconnected"
-	// even with network=open). codex already bypasses its own sandbox via
-	// --dangerously-bypass-approvals-and-sandbox.
-	if h.Name == "codex" && runtime.GOOS == "darwin" {
+	if h.Sandbox.NoSandbox {
 		args = append(args, "--no-sandbox")
 	}
 	args = append(args, "--")
@@ -236,43 +235,12 @@ func runAgent(t *testing.T, h harnessConfig, omacBin, home, workdir, prompt stri
 }
 
 // buildAgentEnv constructs the environment for the omac start subprocess.
-// It sets HOME (via withHome) and adds harness-specific env vars
-// (e.g. ANTHROPIC_AUTH_TOKEN + ANTHROPIC_BASE_URL for claude-code).
-// SKAINET_TOKEN propagates via os.Environ() inheritance.
+// It sets HOME (via withHome) and adds harness-specific env vars from
+// h.EnvVars. SKAINET_TOKEN propagates via os.Environ() inheritance.
 func buildAgentEnv(t *testing.T, h harnessConfig, home string) []string {
 	t.Helper()
 	env := withHome(os.Environ(), home)
-
-	switch h.Name {
-	case "claude-code":
-		token := os.Getenv("SKAINET_TOKEN")
-		baseURL := os.Getenv("ANTHROPIC_BASE_URL")
-		env = append(env,
-			"ANTHROPIC_AUTH_TOKEN="+token,
-			"ANTHROPIC_BASE_URL="+baseURL,
-			"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1",
-		)
-	case "copilot":
-		// BYOK path: COPILOT_PROVIDER_* routes inference to the skainet
-		// responses API and bypasses GitHub OAuth/PAT entirely. A GitHub
-		// token is only needed for /delegate, the GitHub MCP server, or
-		// GitHub Code Search — none of which this test exercises.
-		token := os.Getenv("SKAINET_TOKEN")
-		if token == "" {
-			t.Fatal("SKAINET_TOKEN not set")
-		}
-		baseURL := os.Getenv("SKAINET_INTERNAL")
-		if baseURL == "" {
-			t.Fatal("SKAINET_INTERNAL not set (CI secret for the responses API URL)")
-		}
-		env = append(env,
-			"COPILOT_PROVIDER_TYPE=openai",
-			"COPILOT_PROVIDER_BASE_URL="+baseURL,
-			"COPILOT_PROVIDER_API_KEY="+token,
-			"COPILOT_MODEL="+modelIDs["copilot"],
-			"COPILOT_PROVIDER_WIRE_API=responses",
-		)
-	}
+	env = append(env, h.EnvVars(t)...)
 	return env
 }
 
@@ -329,14 +297,55 @@ func dumpSidecarLogs(t *testing.T, workdir, home string) {
 }
 
 // writeSandboxProfile writes ~/.config/omac/sandbox-profiles/default.json
-// into the temp HOME, allowing the model provider domains so the sandbox
-// proxy doesn't deny the agent's API calls.
-func writeSandboxProfile(t *testing.T, home, harnessName string) {
+// into the temp HOME.
+//
+// Base profile (applies to all harnesses):
+//
+//   workdir        — readwrite
+//   network        — filtered, listen_port 4097 (echo-rest), allow_tcp_connect 22 (SSH)
+//   filesystem.allow — ~/.cache, ~/.local/share, ~/.local/state, ~/.bun,
+//                       ~/Library/Caches, ~/go, ~/.rustup, ~/.cargo
+//   filesystem.read  — ~/.gitconfig, ~/.gitignore_global, ~/.config
+//
+// Per-harness deviations (h.Sandbox):
+//
+//   ExtraAllowDomains — additional domains beyond the model provider host
+//   ExtraReadPaths    — additional filesystem read paths
+//
+// The model provider host (from SKAINET_INTERNAL / ANTHROPIC_BASE_URL) is
+// always allowed — it is derived at runtime so the sandbox proxy doesn't
+// deny the agent's API calls.
+//
+// AUDIT NOTES — base filesystem.allow paths:
+//
+//   ~/.cache         — opencode writes cache here at runtime
+//   ~/.local/share   — opencode auth.json + XDG data for all harnesses
+//   ~/.local/state   — opencode locks
+//   ~/.bun           — bun global bin (opencode installed via bun)
+//   ~/Library/Caches — macOS cache dir (harnesses may write here on macOS)
+//   ~/go             — Go toolchain (none of the harnesses are Go-based;
+//                      kept for omac binary build cache, safe to remove if
+//                      build moves outside HOME)
+//   ~/.rustup        — Rust toolchain (only codex is a Rust binary;
+//                      codex reads its toolchain at startup)
+//   ~/.cargo         — Rust cargo (same as above)
+//
+// AUDIT NOTES — base filesystem.read paths:
+//
+//   ~/.gitconfig       — harnesses may read git config for repo context
+//   ~/.gitignore_global — same
+//   ~/.config          — XDG config base (all harnesses read from here)
+//
+// AUDIT NOTES — base network:
+//
+//   listen_port 4097    — echo-rest skill listens here
+//   allow_tcp_connect 22 — SSH; unclear if any harness uses it, possibly
+//                          needed for git over SSH in workdir. Candidate
+//                          for removal if no harness requires it.
+func writeSandboxProfile(t *testing.T, home string, h harnessConfig) {
 	t.Helper()
-	// All harnesses use SKAINET_INTERNAL as the
-	// model provider URL. claude-code uses ANTHROPIC_BASE_URL.
-	// opencode fetches model metadata from models.dev and npm packages
-	// from registry.npmjs.org at runtime.
+	// Model provider host — always allowed. Derived from SKAINET_INTERNAL
+	// (codex, copilot, opencode) and ANTHROPIC_BASE_URL (claude-code).
 	allowDomains := []string{}
 	for _, envVar := range []string{"SKAINET_INTERNAL", "ANTHROPIC_BASE_URL"} {
 		if baseURL := os.Getenv(envVar); baseURL != "" {
@@ -345,23 +354,15 @@ func writeSandboxProfile(t *testing.T, home, harnessName string) {
 			}
 		}
 	}
-	allowDomains = append(allowDomains, "models.dev", "registry.npmjs.org")
-	// codex checks ChatGPT auth and GitHub on macOS before starting.
-	if harnessName == "codex" {
-		allowDomains = append(allowDomains, "chatgpt.com", "github.com")
-	}
+	allowDomains = append(allowDomains, h.Sandbox.ExtraAllowDomains...)
+
 	readPaths := []string{
 		"~/.gitconfig",
 		"~/.gitignore_global",
-		"~/.nvm",
 		"~/.config",
 	}
-	// opencode on macOS lstat's the test process's CWD (EPERM otherwise).
-	if harnessName == "opencode" {
-		if cwd, err := os.Getwd(); err == nil {
-			readPaths = append(readPaths, cwd)
-		}
-	}
+	readPaths = append(readPaths, h.Sandbox.ExtraReadPaths...)
+
 	profile := map[string]any{
 		"meta":    map[string]string{"name": "default"},
 		"workdir": map[string]string{"access": "readwrite"},
