@@ -482,7 +482,9 @@ func copilotConfig() harnessConfig {
 			}
 		},
 		ExpectVisibleEnv: func() []string {
-			return []string{"COPILOT_PROVIDER_TYPE=", "COPILOT_MODEL=", "OMAC_"}
+			// copilot strips COPILOT_PROVIDER_* vars after reading them.
+			// COPILOT_MODEL and COPILOT_CLI survive.
+			return []string{"COPILOT_MODEL=", "COPILOT_CLI", "OMAC_"}
 		},
 	}
 }
