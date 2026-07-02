@@ -633,8 +633,12 @@ func writeSandboxProfile(t *testing.T, home string, h harnessConfig, spec *Allow
 	if err := os.WriteFile(filepath.Join(profDir, "default.json"), data, 0o644); err != nil {
 		t.Fatal(err)
 	}
+	allowVarsCount := 0
+	if spec != nil {
+		allowVarsCount = len(spec.EnvAllowVars)
+	}
 	t.Logf("sandbox profile written with %d allow_domain entries, %d allow_vars",
-		len(allowDomains), len(spec.EnvAllowVars))
+		len(allowDomains), allowVarsCount)
 }
 
 // extractHost parses a URL string and returns the hostname.
