@@ -194,6 +194,16 @@ func (s *Supervisor) startOne(ctx context.Context, spec SidecarSpec) (*Running, 
 		lf.Close()
 		return nil, fmt.Errorf("%s: start: %w", spec.Name, err)
 	}
+	// Log the command and PATH to the sidecar log file for diagnostics.
+	fmt.Fprintf(lf, "[omac] sidecar %s starting: argv=%v cwd=%s\n", spec.Name, argv, spec.SkillDir)
+	for _, kv := range cmd.Env {
+		if strings.HasPrefix(kv, "PATH=") {
+			fmt.Fprintf(lf, "[omac] sidecar PATH=%s\n", kv[5:])
+		}
+		if strings.HasPrefix(kv, "SIDECAR_PORT=") {
+			fmt.Fprintf(lf, "[omac] sidecar SIDECAR_PORT=%s\n", kv[13:])
+		}
+	}
 
 	r := &Running{Name: spec.Name, Port: port, Cmd: cmd, LogFile: lf}
 

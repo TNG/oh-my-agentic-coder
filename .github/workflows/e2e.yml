@@ -1,0 +1,79 @@
+# E2E: full harness×skill lifecycle tests.
+#
+# Runs on manual trigger and every Saturday at 10:00 CET (08:00 UTC in
+# summer / 09:00 UTC in winter). Tests that each harness can start under
+# the omac sandbox and that an agent running on GLM-5.2-TEE (or
+# claude-sonnet-5 for claude-code) can call the bundled echo-rest skill
+# through the omac facade.
+name: E2E
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 8 * * 6' # Saturdays 10:00 CEST
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    name: E2E (${{ matrix.harness }} / ${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        harness: [opencode, claude-code, codex, copilot]
+    runs-on: ${{ matrix.os }}
+    concurrency:
+      group: e2e-${{ matrix.os }}-${{ matrix.harness }}
+      cancel-in-progress: false
+    env:
+      SKAINET_TOKEN: ${{ secrets.SKAINET_TOKEN }}
+      SKAINET_INTERNAL: ${{ secrets.SKAINET_EXTERNAL }}
+      ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
+      E2E_HARNESS: ${{ matrix.harness }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install bubblewrap (Linux only)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update && sudo apt-get install -y bubblewrap
+          # Ubuntu 24.04 AppArmor restricts unprivileged user namespaces.
+          # Grant bwrap the userns permission so it can create sandboxes.
+          sudo tee /etc/apparmor.d/bwrap > /dev/null <<'EOF'
+          abi <abi/4.0>,
+          /usr/bin/bwrap flags=(unconfined) {
+            userns,
+          }
+          EOF
+          sudo apparmor_parser -r /etc/apparmor.d/bwrap
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Run e2e test
+        env:
+          E2E_LOG_DIR: ${{ runner.temp }}/e2e-logs
+        run: go test -tags=e2e -timeout=30m -v ./internal/e2e/
+
+      - name: Upload session artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-logs-${{ matrix.harness }}-${{ matrix.os }}
+          path: ${{ runner.temp }}/e2e-logs/
+          if-no-files-found: ignore
+          retention-days: 14

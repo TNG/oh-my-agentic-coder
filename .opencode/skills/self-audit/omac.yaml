@@ -1,0 +1,27 @@
+name: self-audit
+type: skill
+version: 0.1.0
+description: Security self-audit skill. Probes sandbox isolation (secret, env, filesystem, network).
+author: omac
+dependencies: []
+
+sidecar:
+  command: ["python3", "scripts/sidecar.py"]
+  mount: audit
+
+  env_passthrough:
+    - AUDIT_SECRET
+
+  secrets:
+    - name: AUDIT_SECRET
+      description: "Mock secret used to verify sandbox secret isolation."
+      required: false
+      pattern: "^[A-Za-z0-9_-]{3,}$"
+
+  health:
+    path: /status
+    initial_delay_ms: 500
+    timeout_ms: 60000
+    interval_ms: 500
+
+  protocols: ["http"]
