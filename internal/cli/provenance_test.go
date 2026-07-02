@@ -1,6 +1,11 @@
 package cli
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
 
 func TestProvenanceViewJSONRoundTrip(t *testing.T) {
 	v := provenanceView{
@@ -37,5 +42,150 @@ func TestProvenanceViewJSONRoundTrip(t *testing.T) {
 	}
 	if v.Skills.Workdir != "/home/user/proj" {
 		t.Fatal("workdir mismatch")
+	}
+}
+
+func TestBuildProvenanceView_NetworkEntries(t *testing.T) {
+	isolateHome(t)
+	wd := t.TempDir()
+
+	// Write a profile with allow_domain + deny_domain.
+	profDir := filepath.Join(wd, ".opencode")
+	if err := os.MkdirAll(profDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	profileJSON := `{
+		"meta": {"name": "test"},
+		"workdir": {"access": "readwrite"},
+		"network": {
+			"mode": "filtered",
+			"allow_domain": ["github.com"],
+			"deny_domain": ["evil.com"]
+		}
+	}`
+	profPath := filepath.Join(profDir, "test-profile.json")
+	if err := os.WriteFile(profPath, []byte(profileJSON), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	view, err := buildProvenanceView(wd, profPath)
+	if err != nil {
+		t.Fatalf("buildProvenanceView: %v", err)
+	}
+
+	// Profile attribution: explicit path → source "workdir" (under wd).
+	if view.Profile.Source != "workdir" {
+		t.Errorf("profile source = %q; want workdir", view.Profile.Source)
+	}
+
+	// allow_domain entry present.
+	foundAllow := false
+	for _, e := range view.Network.Entries {
+		if e.Entry == "github.com" && e.Action == "allow" && e.Source == "workdir" {
+			foundAllow = true
+		}
+	}
+	if !foundAllow {
+		t.Errorf("github.com allow entry missing; got %+v", view.Network.Entries)
+	}
+
+	// deny_domain entry present.
+	foundDeny := false
+	for _, e := range view.Network.Entries {
+		if e.Entry == "evil.com" && e.Action == "deny" {
+			foundDeny = true
+		}
+	}
+	if !foundDeny {
+		t.Errorf("evil.com deny entry missing; got %+v", view.Network.Entries)
+	}
+
+	// Hard-deny metadata host always present.
+	foundMeta := false
+	for _, e := range view.Network.Entries {
+		if e.Entry == "169.254.169.254" && e.Action == "deny" && e.Source == "builtin" {
+			foundMeta = true
+		}
+	}
+	if !foundMeta {
+		t.Errorf("metadata host deny missing; got %+v", view.Network.Entries)
+	}
+}
+
+func TestBuildProvenanceView_LearnedDecisions(t *testing.T) {
+	isolateHome(t)
+	wd := t.TempDir()
+	profDir := filepath.Join(wd, ".opencode")
+	if err := os.MkdirAll(profDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	profPath := filepath.Join(profDir, "p.json")
+	os.WriteFile(profPath, []byte(`{"meta":{"name":"p"},"workdir":{"access":"readwrite"}}`), 0o644)
+	// Write learned decisions file.
+	pagesPath := filepath.Join(profDir, "p.pages.json")
+	os.WriteFile(pagesPath, []byte(`{"schema":1,"entries":[{"host":"learned.example.com","scope":"host","decision":"allow"}]}`), 0o644)
+
+	view, err := buildProvenanceView(wd, profPath)
+	if err != nil {
+		t.Fatalf("buildProvenanceView: %v", err)
+	}
+	found := false
+	for _, e := range view.Network.Entries {
+		if e.Entry == "learned.example.com" && e.Action == "allow" && e.Source == "learned" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("learned entry missing; got %+v", view.Network.Entries)
+	}
+}
+
+func TestBuildProvenanceView_FilesystemBaseline(t *testing.T) {
+	isolateHome(t)
+	wd := t.TempDir()
+	profDir := filepath.Join(wd, ".opencode")
+	os.MkdirAll(profDir, 0o755)
+	profPath := filepath.Join(profDir, "p.json")
+	os.WriteFile(profPath, []byte(`{"meta":{"name":"p"},"workdir":{"access":"readwrite"}}`), 0o644)
+
+	view, err := buildProvenanceView(wd, profPath)
+	if err != nil {
+		t.Fatalf("buildProvenanceView: %v", err)
+	}
+	// Baseline protected path ~/.ssh must appear as builtin deny.
+	found := false
+	for _, e := range view.Filesystem.Entries {
+		if e.Action == "deny" && e.Source == "builtin" {
+			// Protected paths are expanded; check the ~/.ssh prefix.
+			if strings.Contains(e.Entry, ".ssh") {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Errorf("~/.ssh protected path missing; got %+v", view.Filesystem.Entries)
+	}
+}
+
+func TestBuildProvenanceView_EnvironmentBlocklist(t *testing.T) {
+	isolateHome(t)
+	wd := t.TempDir()
+	profDir := filepath.Join(wd, ".opencode")
+	os.MkdirAll(profDir, 0o755)
+	profPath := filepath.Join(profDir, "p.json")
+	os.WriteFile(profPath, []byte(`{"meta":{"name":"p"},"workdir":{"access":"readwrite"}}`), 0o644)
+
+	view, err := buildProvenanceView(wd, profPath)
+	if err != nil {
+		t.Fatalf("buildProvenanceView: %v", err)
+	}
+	found := false
+	for _, e := range view.Environment.Entries {
+		if e.Entry == "BASH_ENV" && e.Action == "deny" && e.Source == "blocklist" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("BASH_ENV blocklist entry missing; got %+v", view.Environment.Entries)
 	}
 }
