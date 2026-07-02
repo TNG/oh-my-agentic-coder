@@ -326,16 +326,20 @@ func runAgent(t *testing.T, h harnessConfig, omacBin, home, workdir, prompt stri
 
 	t.Logf("running: omac %s (prompt: %q)", h.Name, truncate(prompt, 80))
 	err := cmd.Run()
+	profPath := filepath.Join(home, ".config", "omac", "sandbox-profiles", "default.json")
+	env := buildAgentEnv(t, h, home)
 	if ctx.Err() == context.DeadlineExceeded {
+		writeSessionArtifacts(t, h, "echo-rest", home, workdir, prompt, stdout.String(), stderr.String(), env, profPath)
 		t.Fatalf("agent did not exit within %v\nSTDOUT (last 200 lines):\n%s\nSTDERR (last 200 lines):\n%s",
 			runTimeout, tailLines(stdout.String(), 200), tailLines(stderr.String(), 200))
 	}
 	if err != nil {
-		// Dump sidecar logs if present (helps diagnose health timeouts).
 		dumpSidecarLogs(t, workdir, home)
+		writeSessionArtifacts(t, h, "echo-rest", home, workdir, prompt, stdout.String(), stderr.String(), env, profPath)
 		t.Fatalf("omac start failed: %v\nSTDOUT:\n%s\nSTDERR:\n%s",
 			err, stdout.String(), stderr.String())
 	}
+	writeSessionArtifacts(t, h, "echo-rest", home, workdir, prompt, stdout.String(), stderr.String(), env, profPath)
 	return stdout.String()
 }
 
@@ -356,8 +360,6 @@ func runAuditAgent(t *testing.T, h harnessConfig, omacBin, home, workdir, prompt
 
 	cmd := exec.CommandContext(ctx, omacBin, args...)
 	cmd.Dir = workdir
-	// Inject AUDIT_SECRET into the omac start subprocess env so the
-	// sidecar receives it via env_passthrough.
 	env := buildAgentEnv(t, h, home)
 	env = append(env, "AUDIT_SECRET="+auditSecretValue)
 	env = append(env, "PWD="+workdir)
@@ -370,15 +372,19 @@ func runAuditAgent(t *testing.T, h harnessConfig, omacBin, home, workdir, prompt
 
 	t.Logf("running: omac %s (prompt: %q)", h.Name, truncate(prompt, 80))
 	err := cmd.Run()
+	profPath := filepath.Join(home, ".config", "omac", "sandbox-profiles", "default.json")
 	if ctx.Err() == context.DeadlineExceeded {
+		writeSessionArtifacts(t, h, "security-audit", home, workdir, prompt, stdout.String(), stderr.String(), env, profPath)
 		t.Fatalf("agent did not exit within %v\nSTDOUT (last 200 lines):\n%s\nSTDERR (last 200 lines):\n%s",
 			runTimeout, tailLines(stdout.String(), 200), tailLines(stderr.String(), 200))
 	}
 	if err != nil {
 		dumpSidecarLogs(t, workdir, home)
+		writeSessionArtifacts(t, h, "security-audit", home, workdir, prompt, stdout.String(), stderr.String(), env, profPath)
 		t.Fatalf("omac start failed: %v\nSTDOUT:\n%s\nSTDERR:\n%s",
 			err, stdout.String(), stderr.String())
 	}
+	writeSessionArtifacts(t, h, "security-audit", home, workdir, prompt, stdout.String(), stderr.String(), env, profPath)
 	return stdout.String()
 }
 
