@@ -1,3 +1,5 @@
+//go:build e2e
+
 package e2e
 
 // AllowanceSpec is the human-readable security contract for the e2e
@@ -74,9 +76,7 @@ func allowanceSpecFor(h harnessConfig) AllowanceSpec {
 	}
 
 	// Add harness-specific env vars the agent needs.
-	for _, v := range h.EnvVarsForAllow() {
-		allow = append(allow, v)
-	}
+	allow = append(allow, h.EnvVarsForAllow()...)
 
 	// AUDIT_SECRET must NEVER be visible to the agent — it's a sidecar
 	// secret delivered via env_passthrough. The sandbox must strip it.

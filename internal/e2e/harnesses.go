@@ -1,3 +1,5 @@
+//go:build e2e
+
 // Package e2e provides end-to-end test infrastructure for the omac
 // harness×skill matrix. The test itself lives in e2e_test.go behind the
 // "e2e" build tag; this file holds pure data and config-writing helpers
