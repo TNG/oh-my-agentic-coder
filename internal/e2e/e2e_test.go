@@ -91,7 +91,7 @@ func runE2E(t *testing.T, h harnessConfig) {
 	writeSandboxProfile(t, home, h)
 
 	// 5. Copy echo-rest skill into workdir skills dir.
-	copyEchoRest(t, h, workdir)
+	copySkill(t, h, workdir, "echo-rest")
 
 	// 6. Register echo-rest (no secrets, no fields — all optional).
 	registerEchoRest(t, omacBin, home, workdir)
@@ -149,15 +149,15 @@ func installHarness(t *testing.T, h harnessConfig, home string) {
 	}
 }
 
-// copyEchoRest copies the echo-rest skill from the repo's bundled copy
+// copySkill copies a skill from the repo's bundled .opencode/skills/<name>/
 // into the workdir's harness-scoped skills directory.
-func copyEchoRest(t *testing.T, h harnessConfig, workdir string) {
+func copySkill(t *testing.T, h harnessConfig, workdir, skillName string) {
 	t.Helper()
-	// The echo-rest skill is bundled in the repo at .opencode/skills/echo-rest/.
-	// The test binary runs from internal/e2e/, so ../../.opencode/skills/echo-rest.
+	// Skills are bundled in the repo at .opencode/skills/<name>/.
+	// The test binary runs from internal/e2e/, so ../../.opencode/skills/<name>.
 	srcCandidates := []string{
-		filepath.Join("..", "..", ".opencode", "skills", "echo-rest"),
-		filepath.Join("..", "..", "..", ".opencode", "skills", "echo-rest"),
+		filepath.Join("..", "..", ".opencode", "skills", skillName),
+		filepath.Join("..", "..", "..", ".opencode", "skills", skillName),
 	}
 	var src string
 	for _, c := range srcCandidates {
@@ -169,17 +169,17 @@ func copyEchoRest(t *testing.T, h harnessConfig, workdir string) {
 		}
 	}
 	if src == "" {
-		t.Fatal("echo-rest skill not found in repo; the test requires .opencode/skills/echo-rest/")
+		t.Fatalf("skill %q not found in repo; the test requires .opencode/skills/%s/", skillName, skillName)
 	}
-	dst := filepath.Join(workdir, h.SkillsBase, "skills", "echo-rest")
+	dst := filepath.Join(workdir, h.SkillsBase, "skills", skillName)
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	cmd := exec.Command("cp", "-r", src, dst)
 	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("copy echo-rest: %v\n%s", err, out)
+		t.Fatalf("copy %s: %v\n%s", skillName, err, out)
 	}
-	t.Logf("echo-rest copied to %s", dst)
+	t.Logf("%s copied to %s", skillName, dst)
 }
 
 // registerEchoRest runs `omac register echo-rest --no-secrets --no-fields`
