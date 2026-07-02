@@ -12,7 +12,7 @@ import "os"
 var harnessVersions = map[string]string{
 	"opencode":    "opencode-ai@1.17.12",
 	"claude-code": "@anthropic-ai/claude-code@2.1.197",
-	"codex":       "@openai/codex@1.0.67",
+	"codex":       "@openai/codex@0.142.5",
 	"copilot":     "@github/copilot@1.0.68",
 }
 
