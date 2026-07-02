@@ -18,10 +18,10 @@ var harnessVersions = map[string]string{
 
 // Model identifiers per harness.
 var modelIDs = map[string]string{
-	"opencode":    "zai-org/GLM-5.2",
+	"opencode":    "zai-org/GLM-5.1-FP8",
 	"claude-code": "claude-sonnet-5",
-	"codex":       "zai-org/GLM-5.2",
-	"copilot":     "zai-org/GLM-5.2",
+	"codex":       "zai-org/GLM-5.1-FP8",
+	"copilot":     "zai-org/GLM-5.1-FP8",
 }
 
 // pinnedPackage returns the package spec for a harness.
