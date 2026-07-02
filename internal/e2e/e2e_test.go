@@ -12,7 +12,6 @@
 //   SKAINET_TOKEN         — API key for the model provider (all harnesses except claude-code)
 //   SKAINET_INTERNAL      — Model provider base URL (responses API; codex, copilot, opencode)
 //   ANTHROPIC_BASE_URL    — Anthropic-compatible proxy URL (claude-code only)
-//   COPILOT_GITHUB_TOKEN  — GitHub PAT with copilot scope (copilot only; falls back to GITHUB_TOKEN)
 //
 // The sandbox profile is derived at runtime from SKAINET_INTERNAL /
 // ANTHROPIC_BASE_URL so the proxy allows the model API host.
@@ -254,16 +253,25 @@ func buildAgentEnv(t *testing.T, h harnessConfig, home string) []string {
 			"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1",
 		)
 	case "copilot":
-		// Copilot requires GitHub auth even with a custom provider.
-		// Prefer a dedicated COPILOT_GITHUB_TOKEN secret (PAT with
-		// copilot scope); fall back to the CI GITHUB_TOKEN.
-		token := os.Getenv("COPILOT_GITHUB_TOKEN")
+		// BYOK path: COPILOT_PROVIDER_* routes inference to the skainet
+		// responses API and bypasses GitHub OAuth/PAT entirely. A GitHub
+		// token is only needed for /delegate, the GitHub MCP server, or
+		// GitHub Code Search — none of which this test exercises.
+		token := os.Getenv("SKAINET_TOKEN")
 		if token == "" {
-			token = os.Getenv("GITHUB_TOKEN")
+			t.Fatal("SKAINET_TOKEN not set")
 		}
-		if token != "" {
-			env = append(env, "COPILOT_GITHUB_TOKEN="+token)
+		baseURL := os.Getenv("SKAINET_INTERNAL")
+		if baseURL == "" {
+			t.Fatal("SKAINET_INTERNAL not set (CI secret for the responses API URL)")
 		}
+		env = append(env,
+			"COPILOT_PROVIDER_TYPE=openai",
+			"COPILOT_PROVIDER_BASE_URL="+baseURL,
+			"COPILOT_PROVIDER_API_KEY="+token,
+			"COPILOT_MODEL="+modelIDs["copilot"],
+			"COPILOT_PROVIDER_WIRE_API=responses",
+		)
 	}
 	return env
 }
