@@ -49,7 +49,7 @@ A new `self-audit` skill with a minimal Python sidecar that holds a secret. The 
 
 #### `omac.yaml`
 
-Declares a secret (`AUDIT_SECRET`) via `env_passthrough` (same pattern as echo-rest — works in CI without a keychain). No `--no-secrets`; the test supplies the secret value through `env_passthrough`.
+Declares a secret (`AUDIT_SECRET`) via `env_passthrough` (same pattern as echo-rest — works in CI without a keychain). The test registers with `--no-secrets` and supplies the secret value through `env_passthrough` at start time.
 
 ```yaml
 name: self-audit
@@ -124,10 +124,11 @@ Report the raw output of each command.
 2. Write provider config (reuse `h.ProviderSetup`)
 3. Write sandbox profile (reuse `writeSandboxProfile`)
 4. Copy `self-audit` skill into workdir (reuse `copyEchoRest` pattern, parameterized by skill name)
-5. Register self-audit — set `AUDIT_SECRET=test-secret-value-123` in the omac start env via `env_passthrough`
-6. Prompt agent: "Follow the self-audit skill instructions. Run all probes and report raw output."
-7. Capture stdout
-8. Assert
+5. Register self-audit with `--no-secrets` (the secret is supplied via `env_passthrough` at start time, not the keychain)
+6. Set `AUDIT_SECRET=test-secret-value-123` in the omac start subprocess env (via `h.EnvVars` or `buildAgentEnv`), so the sidecar receives it through `env_passthrough`
+7. Prompt agent: "Follow the self-audit skill instructions. Run all probes and report raw output."
+8. Capture stdout
+9. Assert
 
 #### Assertions
 
