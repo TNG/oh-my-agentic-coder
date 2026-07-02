@@ -32,7 +32,12 @@ echo "=== END: secret ==="
 
 echo ""
 echo "=== PROBE: env ==="
-env | sort
+echo "--- OMAC vars ---"
+env | grep "^OMAC_" | sort
+echo "--- provider vars ---"
+env | grep -E "^(SKAINET_|ANTHROPIC_|COPILOT_)" | sort
+echo "--- AUDIT vars ---"
+env | grep "^AUDIT" || echo "(no AUDIT vars)"
 echo "=== END: env ==="
 
 echo ""

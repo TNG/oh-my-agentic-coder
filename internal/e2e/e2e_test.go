@@ -455,6 +455,7 @@ func assertEnvVarsVisible(t *testing.T, output string, expectVars []string) {
 		if !strings.Contains(output, v) {
 			t.Errorf("POSITIVE FAIL: %s not found in agent env output\n" +
 				"the sandbox may be over-filtering env vars", v)
+			return
 		}
 	}
 	t.Logf("PASS: env passthrough — expected vars visible in agent output")
@@ -497,6 +498,8 @@ func assertNetworkDenied(t *testing.T, output string, denyDomain string) {
 		"curl: (6)",  // Could not resolve host
 		"curl: (7)",  // Failed to connect
 		"curl: (28)", // Operation timed out
+		"DENIED BY THE SANDBOX", // omac proxy denial body
+		"403",                    // HTTP 403 from proxy
 	}
 	found := false
 	for _, d := range denials {
