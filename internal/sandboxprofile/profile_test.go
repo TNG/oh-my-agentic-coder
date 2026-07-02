@@ -3,6 +3,7 @@ package sandboxprofile
 import (
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -493,6 +494,42 @@ func TestFilterEnv(t *testing.T) {
 	got = FilterEnv(environ, []string{"NODE_OPTIONS"}, nil)
 	if len(got) != 0 {
 		t.Errorf("blocklist must beat allowlist: %v", got)
+	}
+}
+
+func TestDangerousEnvBlocklist(t *testing.T) {
+	exact, prefixes := DangerousEnvBlocklist()
+	if len(exact) == 0 {
+		t.Fatal("exact blocklist is empty")
+	}
+	if len(prefixes) == 0 {
+		t.Fatal("prefix blocklist is empty")
+	}
+	// Spot-check known entries.
+	found := false
+	for _, e := range exact {
+		if e == "BASH_ENV" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("BASH_ENV not in exact blocklist")
+	}
+	found = false
+	for _, p := range prefixes {
+		if p == "LD_" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("LD_ not in prefix blocklist")
+	}
+	// Must be sorted for stable display.
+	if !sort.StringsAreSorted(exact) {
+		t.Error("exact blocklist not sorted")
+	}
+	if !sort.StringsAreSorted(prefixes) {
+		t.Error("prefix blocklist not sorted")
 	}
 }
 
