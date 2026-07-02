@@ -5,7 +5,7 @@ license: Same as the omac repository
 compatibility: Requires the omac runtime (sidecar facade) and Python 3 on the host. Inside the sandbox, only shell access (env, cat, curl) is needed.
 metadata:
   author: tngtech
-  version: "0.2.0"
+  version: "0.3.0"
   omac-mount: audit
   omac-sidecar: "python3 scripts/sidecar.py"
 ---
@@ -16,89 +16,30 @@ A security self-audit skill for the [omac](../../../README.md) execution
 shell. It runs probes from inside the sandbox to verify that the sandbox
 enforces its security boundary.
 
-## When to use this skill
+## Usage
 
-Activate `self-audit` when you want to:
-
-- Verify that the `AUDIT_SECRET` is not accessible from inside the sandbox.
-- Confirm that environment variables are filtered (only allow-listed
-  vars should be visible).
-- Check that sensitive filesystem paths outside the sandbox are denied.
-- Verify that network egress to non-allowlisted domains is blocked.
-
-## How to call it from inside the sandbox
-
-First, get the base URL for the audit skill:
+Run the audit script. It executes all probes and prints tagged output:
 
 ```sh
-echo "$OMAC_AUDIT_BASE"
+sh "$OMAC_AUDIT_SKILL_DIR/scripts/audit.sh"
 ```
 
-Then check the secret fingerprint (the plaintext secret is never returned):
+Or run individual probes — see `scripts/audit.sh` for the probe
+definitions.
 
-```sh
-curl -sS "$OMAC_AUDIT_BASE/whoami"
-```
+## Probes
 
-## Security probes
-
-Run ALL of these probes and report the raw output of each command.
-Every command MUST be run — do not skip any.
-
-### 1. Secret probe
-
-Try to find the value of `AUDIT_SECRET`:
-
-```sh
-env | grep AUDIT
-printenv AUDIT_SECRET
-cat /proc/self/environ 2>/dev/null | tr '\0' '\n' | grep AUDIT
-```
-
-### 2. Env probe
-
-List all environment variables visible inside the sandbox:
-
-```sh
-env | sort
-```
-
-### 3. Filesystem probe
-
-Try to read sensitive paths outside the sandbox:
-
-```sh
-cat /etc/shadow 2>&1
-cat ~/.ssh/id_rsa 2>&1
-cat /root/.bashrc 2>&1
-```
-
-### 4. Network probe
-
-Try to reach a domain that is not in the sandbox allow-list:
-
-```sh
-curl -v --max-time 3 http://blocked.example.com 2>&1
-```
-
-### 5. Sidecar connectivity probe
-
-Verify the sidecar IS reachable (positive check):
-
-```sh
-curl -sS "$OMAC_AUDIT_BASE/whoami"
-```
+1. **Secret probe** — tries to find `AUDIT_SECRET` in env and /proc.
+2. **Env probe** — lists all env vars visible inside the sandbox.
+3. **Filesystem probe** — tries to read `/etc/shadow`, `~/.ssh/id_rsa`,
+   `/root/.bashrc`.
+4. **Network probe** — curls `blocked.example.com` (not allow-listed).
+5. **Sidecar probe** — curls `$OMAC_AUDIT_BASE/whoami` (should succeed).
 
 ## Expected results
 
-If the sandbox is working correctly:
-
-- **Secret probe:** `AUDIT_SECRET` should not appear in any output. The
-  `/whoami` endpoint should show `secret_present: true` with a fingerprint,
-  proving the secret exists in the sidecar but is not leaked into the sandbox.
-- **Env probe:** Only allow-listed vars should appear. No `AUDIT_SECRET`.
-- **Filesystem probe:** `Permission denied` or `No such file or directory`.
-- **Network probe:** `Connection refused`, `Could not resolve host`, or
-  timeout.
-- **Sidecar probe:** Should return JSON with `secret_present: true` and
-  a `sha256:` fingerprint.
+- **Secret:** `AUDIT_SECRET` not in output. `/whoami` shows fingerprint.
+- **Env:** No `AUDIT_SECRET`. Allow-listed vars visible.
+- **Filesystem:** `Permission denied` or `No such file or directory`.
+- **Network:** `Connection refused`, `Could not resolve host`, or timeout.
+- **Sidecar:** JSON with `secret_present: true` and `sha256:` fingerprint.

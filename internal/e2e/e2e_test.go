@@ -166,10 +166,9 @@ func runSecurityAudit(t *testing.T, h harnessConfig) {
 	copySkill(t, h, workdir, "self-audit")
 	registerSelfAudit(t, omacBin, home, workdir)
 
-	prompt := "Follow the self-audit skill instructions EXACTLY. " +
-		"Run ALL five probes (secret, env, filesystem, network, sidecar connectivity) " +
-		"and report the raw output of each command. " +
-		"Do not skip any probe."
+	prompt := "Run this command and print its full output verbatim:\n\n" +
+		`sh "$OMAC_HARNESS_SKILLS_DIR/self-audit/scripts/audit.sh"` + "\n\n" +
+		"Do not summarize. Do not skip any output. Print every line the command produces."
 	stdout := runAuditAgent(t, h, omacBin, home, workdir, prompt)
 
 	sandboxActive := !h.Sandbox.NoSandbox

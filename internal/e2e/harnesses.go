@@ -386,7 +386,11 @@ http_headers = { "X-User-Agent" = "Codex", "X-Separate-Reasoning" = "1" }
 				"chatgpt.com", // codex checks ChatGPT auth at startup (even in BYOK mode)
 				"github.com",  // codex checks GitHub at startup (even in BYOK mode)
 			},
-			NoSandbox: runtime.GOOS == "darwin", // codex's Rust HTTP client is incompatible with sandbox-exec on macOS
+			// NoSandbox removed: the builtin profile (omac sandbox run)
+			// uses its own Seatbelt implementation, not the nono
+			// sandbox-exec wrapper that was incompatible with codex's
+			// Rust HTTP client. If codex fails to connect on macOS,
+			// re-enable NoSandbox for darwin only.
 		},
 		RunArgs: func(prompt string) []string {
 			return []string{"exec", "--dangerously-bypass-approvals-and-sandbox", "-m", modelIDs["codex"], prompt}
