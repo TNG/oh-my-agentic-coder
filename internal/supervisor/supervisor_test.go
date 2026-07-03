@@ -20,7 +20,7 @@ func envMap(kv []string) map[string]string {
 }
 
 func TestBuildEnvSidecarSkillIsPlainName(t *testing.T) {
-	s := New(nil)
+	s := New(nil, nil)
 
 	// SkillName set (serve mode): SIDECAR_SKILL must be the plain name,
 	// never the namespaced tracking Name (which contains a slash that
@@ -51,7 +51,7 @@ func TestBuildEnvSidecarSkillIsPlainName(t *testing.T) {
 // spawning real processes: a Running with a nil Cmd.Process terminates as a
 // no-op (terminate handles nil), so we can assert set membership directly.
 func TestStopSidecarTracking(t *testing.T) {
-	s := New(nil)
+	s := New(nil, nil)
 	s.children = []*Running{
 		{Name: "a"},
 		{Name: "b"},

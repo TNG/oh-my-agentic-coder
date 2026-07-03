@@ -20,11 +20,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 
+	"github.com/tngtech/oh-my-agentic-coder/internal/audit"
 	"github.com/tngtech/oh-my-agentic-coder/internal/config"
 	"github.com/tngtech/oh-my-agentic-coder/internal/secrets"
 )
@@ -42,6 +44,10 @@ type SidecarSpec struct {
 	// paths (e.g. tempfile prefixes). When empty, Name is used (the
 	// single-workdir `start` case, where Name is already the plain name).
 	SkillName      string
+	// Namespace is the facade namespace this sidecar is mounted under
+	// ("" flat/start, a dir token, or "__global__"). Used only for audit
+	// events (it is hashed before being written). Optional.
+	Namespace      string
 	SkillDir       string // absolute
 	Command        []string
 	EnvPassthrough []string
@@ -70,19 +76,30 @@ type Running struct {
 	Port    int
 	Cmd     *exec.Cmd
 	LogFile *os.File
+
+	// audit bookkeeping (unexported): captured at spawn so process.exit
+	// can report duration and identity when the child is terminated.
+	startedAt      time.Time
+	auditSkill     string
+	auditNamespace string
 }
 
 // Supervisor coordinates all sidecars.
 type Supervisor struct {
 	baseEnvPassthrough []string
+	auditor            audit.Auditor
 
 	mu       sync.Mutex
 	children []*Running
 }
 
-// New returns a fresh Supervisor.
-func New(baseEnvPassthrough []string) *Supervisor {
-	return &Supervisor{baseEnvPassthrough: baseEnvPassthrough}
+// New returns a fresh Supervisor. auditor may be nil (a no-op auditor is
+// substituted) so existing callers/tests keep working.
+func New(baseEnvPassthrough []string, auditor audit.Auditor) *Supervisor {
+	if auditor == nil {
+		auditor = audit.Nop()
+	}
+	return &Supervisor{baseEnvPassthrough: baseEnvPassthrough, auditor: auditor}
 }
 
 // StartAll starts every sidecar in specs. On any failure it terminates the
@@ -142,10 +159,28 @@ func (s *Supervisor) StopSidecar(name string, timeout time.Duration) bool {
 		return false
 	}
 	_ = terminate(target.Cmd, timeout)
+	s.auditExit(target)
 	if target.LogFile != nil {
 		_ = target.LogFile.Close()
 	}
 	return true
+}
+
+// auditExit emits a process.exit event for a terminated child. Safe to call
+// once per child after terminate() has reaped it.
+func (s *Supervisor) auditExit(r *Running) {
+	if r == nil {
+		return
+	}
+	code := -1
+	if r.Cmd != nil && r.Cmd.ProcessState != nil {
+		code = r.Cmd.ProcessState.ExitCode()
+	}
+	var durMS int64
+	if !r.startedAt.IsZero() {
+		durMS = time.Since(r.startedAt).Milliseconds()
+	}
+	s.auditor.Emit(audit.ProcessExit(r.auditSkill, r.auditNamespace, code, durMS))
 }
 
 // startOne allocates a port, spawns the child, and waits on health.
@@ -205,7 +240,31 @@ func (s *Supervisor) startOne(ctx context.Context, spec SidecarSpec) (*Running, 
 		}
 	}
 
+	// Audit: record the spawn (argv redacted downstream), the injected
+	// secret/config NAMES (never values), and — separately — a
+	// secret.inject event so the "which skill got which secret names"
+	// question is answerable. skillName is the plain name; namespace is
+	// hashed by the auditor.
+	skillName := spec.SkillName
+	if skillName == "" {
+		skillName = spec.Name
+	}
+	secretNames := mapKeys(spec.Secrets)
+	configNames := mapKeysStr(spec.Config)
+	s.auditor.Emit(audit.ProcessExec(skillName, spec.Namespace, spec.SkillDir, argv, secretNames, configNames))
+	if len(secretNames) > 0 || len(configNames) > 0 {
+		s.auditor.Emit(audit.SecretInject(skillName, spec.Namespace, secretNames, configNames))
+	}
+
 	r := &Running{Name: spec.Name, Port: port, Cmd: cmd, LogFile: lf}
+	// Audit the process exit asynchronously. This extra Wait races with
+	// terminate()'s Wait, but os/exec tolerates a single Wait only — so we
+	// record exit via a lightweight ProcessState poll after termination
+	// instead (see StopSidecar/ShutdownAll, which call terminate and then
+	// emit). Here we only capture the start time for duration.
+	r.startedAt = time.Now()
+	r.auditSkill = skillName
+	r.auditNamespace = spec.Namespace
 
 	if err := waitHealth(ctx, port, spec.Health); err != nil {
 		_ = terminate(cmd, 3*time.Second)
@@ -283,6 +342,7 @@ func (s *Supervisor) ShutdownAll(timeout time.Duration) {
 		go func() {
 			defer wg.Done()
 			_ = terminate(r.Cmd, timeout)
+			s.auditExit(r)
 			if r.LogFile != nil {
 				_ = r.LogFile.Close()
 			}
@@ -386,6 +446,32 @@ func ensureExecutable(skillDir, exe string) {
 		return // already owner-executable
 	}
 	_ = os.Chmod(path, info.Mode()|0o100)
+}
+
+// mapKeys returns the sorted keys of a secrets map (names only).
+func mapKeys(m map[string]secrets.Secret) []string {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// mapKeysStr returns the sorted keys of a string map.
+func mapKeysStr(m map[string]string) []string {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // expandArgv expands ${VAR} tokens inside argv elements from vars.

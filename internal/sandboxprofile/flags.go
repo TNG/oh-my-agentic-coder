@@ -25,6 +25,7 @@ type Flags struct {
 	BlockNet      bool     // --block-net
 	Learn         bool     // --learn: unrestricted fs + folder recording
 	WorkdirAccess string   // --workdir-access <level>
+	AuditLog      string   // --audit-log <path>: append net.decision events here ("" = disabled)
 	InnerArgv     []string // everything after --
 }
 
@@ -169,6 +170,12 @@ func ParseFlags(args []string) (*Flags, error) {
 				return nil, fmt.Errorf("--learn takes no value")
 			}
 			f.Learn = true
+		case "--audit-log":
+			v, err := val(a)
+			if err != nil {
+				return nil, err
+			}
+			f.AuditLog = v
 		case "--workdir-access":
 			v, err := val(a)
 			if err != nil {

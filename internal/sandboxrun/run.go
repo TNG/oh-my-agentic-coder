@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 
+	"github.com/tngtech/oh-my-agentic-coder/internal/audit"
 	"github.com/tngtech/oh-my-agentic-coder/internal/netprompt"
 	"github.com/tngtech/oh-my-agentic-coder/internal/netproxy"
 	"github.com/tngtech/oh-my-agentic-coder/internal/sandbox"
@@ -76,6 +77,24 @@ func Run(opts Options) int {
 	// proxy port can land in the kernel rules.
 	injected := map[string]string{}
 
+	// Audit sink for network decisions. This subprocess is separate from
+	// the parent omac, so it opens its own append-only handle to the same
+	// persistent audit file (append-safe across processes). Non-strict
+	// here: a net-decision audit write failure must never kill the sandbox
+	// (strict is enforced by the parent's pre-launch probe). Disabled when
+	// no --audit-log path was passed down.
+	netAuditor := audit.Nop()
+	if opts.Flags.AuditLog != "" {
+		if a, aerr := audit.New(audit.Config{
+			Enabled: true, Path: opts.Flags.AuditLog, Mode: audit.ModeStart, Strict: false,
+		}); aerr != nil {
+			fmt.Fprintf(stderr, "omac sandbox: warning: audit log unavailable (%v)\n", aerr)
+		} else {
+			netAuditor = a
+			defer netAuditor.Close()
+		}
+	}
+
 	var proxy *netproxy.Server
 	if grants.NetworkMode == sandboxprofile.ModeFiltered {
 		if grants.Enforcement == sandboxprofile.EnforceEnvOnly {
@@ -83,7 +102,7 @@ func Run(opts Options) int {
 				"filtering relies on HTTP(S)_PROXY env vars only and is trivially bypassable. "+
 				"No kernel network guarantee is in effect.")
 		}
-		proxy, err = buildProxy(merged, profilePath, diag.Writer(), logf)
+		proxy, err = buildProxy(merged, profilePath, diag.Writer(), logf, netAuditor)
 		if err != nil {
 			return fail("%v", err)
 		}
@@ -125,7 +144,7 @@ func Run(opts Options) int {
 // buildProxy assembles page policy, prompter, filter and server. The
 // page policy (learned website decisions) lives next to the profile:
 // <profile>.pages.json (e.g. default.pages.json).
-func buildProxy(p *sandboxprofile.Profile, profilePath string, stderr io.Writer, logf func(string, ...any)) (*netproxy.Server, error) {
+func buildProxy(p *sandboxprofile.Profile, profilePath string, stderr io.Writer, logf func(string, ...any), auditor audit.Auditor) (*netproxy.Server, error) {
 	var learned netproxy.LearnedStore
 	pagesPath := sandboxprofile.PagesPath(profilePath)
 	lp, lerr := netprompt.LoadLearnedPolicy(pagesPath)
@@ -155,6 +174,7 @@ func buildProxy(p *sandboxprofile.Profile, profilePath string, stderr io.Writer,
 		Prompter:           prompter,
 		Learned:            learned,
 		Logf:               logf,
+		Auditor:            auditor,
 	})
 	srv, err := netproxy.NewServer(filter, logf)
 	if err != nil {

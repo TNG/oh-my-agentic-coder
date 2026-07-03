@@ -30,6 +30,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/tngtech/oh-my-agentic-coder/internal/audit"
 )
 
 // RouteState describes whether a route forwards to a live sidecar or
@@ -126,6 +128,12 @@ type Facade struct {
 	AccessLogPath string
 	Version       string
 
+	// Auditor, when set, receives a facade.request event per proxied
+	// request (namespace hashed). Set via SetAuditor after New; nil means
+	// the legacy AccessLogPath file is the only sink. Never nil at Emit
+	// time (guarded in logAccess).
+	auditor audit.Auditor
+
 	mu          sync.RWMutex
 	routes      map[string]*Route
 	server      *http.Server
@@ -161,6 +169,14 @@ func New(socketPath, tcpAddr string, routes []Route, maxBody int64, idle time.Du
 // TCPPort returns the bound TCP port (after Start). Zero means TCP is
 // disabled or not yet bound.
 func (f *Facade) TCPPort() int { return f.boundTCPort }
+
+// SetAuditor installs the audit sink for facade.request events. Safe to
+// call before Start. Passing nil is a no-op.
+func (f *Facade) SetAuditor(a audit.Auditor) {
+	if a != nil {
+		f.auditor = a
+	}
+}
 
 // AddRoute installs (or replaces) a route at runtime. Safe to call after
 // Start and from multiple goroutines. Used by serve mode to mount a
@@ -596,6 +612,13 @@ func (f *Facade) proxyUpgrade(w http.ResponseWriter, r *http.Request, route *Rou
 }
 
 func (f *Facade) logAccess(r *http.Request, route *Route, rest string, status int, bytes int64, dur time.Duration) {
+	// Audit sink: one facade.request event per request, with the namespace
+	// hashed by the auditor (a secret dir-token must never be written).
+	if f.auditor != nil {
+		f.auditor.Emit(audit.FacadeRequest(
+			r.Method, route.Mount, route.Namespace, "/"+rest,
+			status, bytes, dur.Milliseconds()))
+	}
 	if f.accLog == nil {
 		return
 	}

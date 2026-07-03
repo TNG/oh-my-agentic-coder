@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tngtech/oh-my-agentic-coder/internal/audit"
 	"github.com/tngtech/oh-my-agentic-coder/internal/config"
 	"github.com/tngtech/oh-my-agentic-coder/internal/facade"
 	"github.com/tngtech/oh-my-agentic-coder/internal/keychain"
@@ -45,6 +46,11 @@ type launchOpts struct {
 	acceptSkillChanges bool
 	skipSecretPattern  bool
 	verbose            bool
+	// audit flags (see internal/audit). auditLog overrides the config/default
+	// path; noAudit disables; auditStrict makes an unwritable log fatal.
+	auditLog    string
+	noAudit     bool
+	auditStrict bool
 	// sessionID, when non-empty, selects a specific session to continue by id
 	// (`omac continue -s <id>`). Empty means "most recent" (the default).
 	sessionID string
@@ -69,6 +75,9 @@ func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, bool)
 		acceptSkillChanges = fs.Bool("accept-skill-changes", false, "Tolerate bundle_hash drift in registered skills (proceed even if the on-disk skill differs from what was registered).")
 		skipSecretPattern  = fs.Bool("skip-secret-pattern", false, "Do not enforce a secret's pattern against an env_passthrough-supplied value (escape hatch for an outdated pattern; the raw value is still passed through).")
 		verbose            = fs.Bool("verbose", false, "Verbose lifecycle logging.")
+		auditLog           = fs.String("audit-log", "", "Path to the audit log (default: persistent central location). Overrides config.")
+		noAudit            = fs.Bool("no-audit", false, "Disable the security audit trail.")
+		auditStrict        = fs.Bool("audit-strict", false, "Fail-closed: abort if the audit log cannot be written.")
 		sessionID          = fs.String("session", "", "Continue a specific session by id instead of the most recent one. (shorthand: -s)")
 	)
 	// -s is the documented shorthand for --session (opencode mirrors this
@@ -117,6 +126,9 @@ func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, bool)
 		acceptSkillChanges: *acceptSkillChanges,
 		skipSecretPattern:  *skipSecretPattern,
 		verbose:            *verbose,
+		auditLog:           *auditLog,
+		noAudit:            *noAudit,
+		auditStrict:        *auditStrict,
 		sessionID:          *sessionID,
 		innerArgs:          innerArgs,
 	}, true
@@ -165,6 +177,12 @@ func runLaunch(env *Env, opts launchOpts) int {
 		label = "start"
 	}
 	prefix := "omac " + label
+
+	// Reject the audit misuse combination up front (before any work).
+	if opts.noAudit && opts.auditStrict {
+		fmt.Fprintln(env.Stderr, prefix+": --no-audit cannot be combined with --audit-strict")
+		return ExitMisuse
+	}
 
 	// 1. Load launcher config.
 	lc, cfgPath, err := config.LoadLauncher(env.Workdir)
@@ -548,6 +566,42 @@ func runLaunch(env *Env, opts launchOpts) int {
 	}
 	socketPath := filepath.Join(rtDir, "bridge.sock")
 
+	// 4a. Construct the audit trail BEFORE launching the inner command.
+	//
+	// The log lives at a persistent, central path (audit.DefaultPath) that
+	// survives restarts — NOT the per-run rtDir. Under --audit-strict a
+	// failure to open/write is fatal: fatalTeardown runs the same cleanup
+	// the deferred teardowns do and exits non-zero. We collect the resolved
+	// secret VALUES to seed the redactor (belt-and-suspenders; secret names
+	// are always logged, values never).
+	var secretValues []string
+	for _, s := range armed {
+		for _, sec := range s.secrets {
+			secretValues = append(secretValues, sec.ExposeString())
+		}
+	}
+	// fatalTeardown is assigned its real body once sup/facade/control exist;
+	// until then a strict write failure (only possible after those are up)
+	// cannot occur, but we default it to a plain exit for safety.
+	var fatalTeardown func(error)
+	auditCfg, misuse := resolveAuditConfig(lc.Audit, auditFlags{
+		logPath: opts.auditLog, disable: opts.noAudit, strict: opts.auditStrict,
+	}, audit.ModeStart, env.Version, secretValues, func(err error) {
+		if fatalTeardown != nil {
+			fatalTeardown(err)
+		}
+	})
+	if misuse != "" {
+		fmt.Fprintln(env.Stderr, prefix+": "+misuse)
+		return ExitMisuse
+	}
+	auditor, aerr := newAuditor(env, auditCfg)
+	if aerr != nil {
+		fmt.Fprintln(env.Stderr, prefix+": audit:", aerr)
+		return ExitIOError
+	}
+	defer auditor.Close()
+
 	// Per-session sandbox temp dir. Bun-built harnesses (opencode) extract
 	// an embedded runtime into TMPDIR at startup; the sandbox must grant
 	// read+write on it (the nono profile does, via {{tmpdir}}) AND the inner
@@ -564,7 +618,7 @@ func runLaunch(env *Env, opts launchOpts) int {
 	}
 
 	// 5. Spawn sidecars.
-	sup := supervisor.New(lc.Facade.BaseEnvPassthrough)
+	sup := supervisor.New(lc.Facade.BaseEnvPassthrough, auditor)
 	defer func() {
 		if !keepRunning {
 			sup.ShutdownAll(5 * time.Second)
@@ -633,6 +687,7 @@ func runLaunch(env *Env, opts launchOpts) int {
 		filepath.Join(rtDir, "logs", "facade.log"),
 		env.Version,
 	)
+	f.SetAuditor(auditor)
 	if err := f.Start(ctx); err != nil {
 		fmt.Fprintln(env.Stderr, prefix+": facade:", err)
 		return ExitIOError
@@ -705,6 +760,12 @@ func runLaunch(env *Env, opts launchOpts) int {
 		// sessions) read+write — only for the selected harness, not all
 		// harnesses.
 		argv = injectSandboxDirs(argv, harness.SandboxDirs)
+		// Pass the resolved audit path down to `omac sandbox run` so the
+		// network-filter subprocess appends net.decision events to the
+		// same persistent log.
+		if ap := audit.EffectivePath(auditCfg); ap != "" {
+			argv = injectSandboxFlag(argv, "--audit-log", ap)
+		}
 	}
 	if verbose {
 		fmt.Fprintf(env.Stderr, "[verbose] sandbox argv: %v\n", argv)
@@ -761,7 +822,32 @@ func runLaunch(env *Env, opts launchOpts) int {
 		}
 	}
 
+	// Now that the supervisor, facade, and control plane exist, give the
+	// strict-mode fatal handler a real teardown: stop sidecars, close the
+	// facade + control plane, then exit non-zero. A strict-mode audit write
+	// failure mid-run lands here.
+	fatalTeardown = func(ferr error) {
+		fmt.Fprintln(env.Stderr, prefix+": audit (strict) write failed, aborting:", ferr)
+		if !keepRunning {
+			sup.ShutdownAll(5 * time.Second)
+		}
+		_ = f.Close()
+		closeControl()
+		os.Exit(ExitIOError)
+	}
+
+	// session.start is emitted just before the inner command launches. In
+	// strict mode a failure to write it invokes fatalTeardown above.
+	sandboxed := !noSandbox
+	sandboxBackend := ""
+	if sandboxed {
+		sandboxBackend = profName
+	}
+	auditor.Emit(audit.SessionStart(env.Version, harness.Name, profName, sandboxBackend))
+	auditor.Emit(audit.InnerExec(argv, profName, sandboxed))
+
 	code, err := sandbox.ExecWithReady(argv, extra, nil)
+	auditor.Emit(audit.SessionStop(code))
 	if err != nil {
 		fmt.Fprintln(env.Stderr, prefix+": exec:", err)
 		return ExitSandboxAbnormal

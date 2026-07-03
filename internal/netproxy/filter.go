@@ -16,6 +16,8 @@ import (
 	"net/netip"
 	"strings"
 	"sync"
+
+	"github.com/tngtech/oh-my-agentic-coder/internal/audit"
 )
 
 // Decision is the outcome of a filter check.
@@ -86,6 +88,9 @@ type FilterConfig struct {
 	// Logf receives one line per decision; nil discards.
 	Logf func(format string, args ...any)
 
+	// Auditor receives a net.decision event per decision. nil => no-op.
+	Auditor audit.Auditor
+
 	// onCoalesceWait, when non-nil, is called just before a request blocks
 	// on an in-flight prompt for the same host (the coalescing path). It is
 	// a test seam that lets a test deterministically observe that all
@@ -118,6 +123,9 @@ func NewFilter(cfg FilterConfig) *Filter {
 	}
 	if cfg.Logf == nil {
 		cfg.Logf = func(string, ...any) {}
+	}
+	if cfg.Auditor == nil {
+		cfg.Auditor = audit.Nop()
 	}
 	return &Filter{cfg: cfg, inflight: map[string]*promptWait{}}
 }
@@ -271,7 +279,35 @@ func (f *Filter) log(host string, port int, v Verdict) Verdict {
 		word = "ALLOW"
 	}
 	f.cfg.Logf("omac sandbox: net %s %s:%d (%s)", word, host, port, v.Reason)
+	source, scope, persisted := classifyReason(v.Reason)
+	f.cfg.Auditor.Emit(audit.NetDecision(host, port, v.Decision == Allow, scope, source, persisted))
 	return v
+}
+
+// classifyReason maps a Verdict.Reason to the audit fields (source, scope,
+// persisted). The reason strings are the single source of truth for how a
+// decision was reached (see checkRules / defaultDecision).
+func classifyReason(reason string) (source, scope string, persisted bool) {
+	switch {
+	case strings.HasPrefix(reason, "hard-deny"):
+		return "hard-deny", "", false
+	case strings.HasPrefix(reason, "learned"):
+		return "learned", "", true
+	case reason == "deny_domain":
+		return "blocklist", "", false
+	case reason == "allow_domain":
+		return "allowlist", "", false
+	case strings.HasPrefix(reason, "prompt unavailable"):
+		return "unavailable", "", false
+	case strings.HasPrefix(reason, "prompt:"):
+		return "prompt", "", false
+	case reason == "not in allowlist":
+		return "allowlist", "", false
+	case strings.HasPrefix(reason, "dns"):
+		return "dns", "", false
+	default:
+		return "default", "", false
+	}
 }
 
 // matchDomainList reports whether host matches any entry. Entries are
