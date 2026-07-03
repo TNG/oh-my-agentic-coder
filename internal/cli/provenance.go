@@ -94,10 +94,10 @@ func buildProvenanceView(workdir, profileRef string) (*provenanceView, error) {
 	view.Network = buildNetworkView(profile, profPath, workdir)
 
 	// --- Filesystem ---
-	view.Filesystem = buildFilesystemView(profile)
+	view.Filesystem = buildFilesystemView(profile, profPath, workdir)
 
 	// --- Environment ---
-	view.Environment = buildEnvironmentView(profile)
+	view.Environment = buildEnvironmentView(profile, profPath, workdir)
 
 	// --- Skills ---
 	view.Skills = buildSkillsView(workdir)
@@ -153,29 +153,29 @@ func buildNetworkView(profile *sandboxprofile.Profile, profPath, workdir string)
 	return nv
 }
 
-func buildFilesystemView(profile *sandboxprofile.Profile) filesystemView {
-	src := "builtin"
+func buildFilesystemView(profile *sandboxprofile.Profile, profPath, workdir string) filesystemView {
+	profSrc := classifyProfilePath(profPath, workdir)
 	fv := filesystemView{WorkdirAccess: profile.Workdir.Access}
 	if fv.WorkdirAccess == "" {
 		fv.WorkdirAccess = sandboxprofile.AccessNone
 	}
-	add := func(entries []string, action string) {
+	add := func(entries []string, action, src string) {
 		for _, e := range entries {
 			fv.Entries = append(fv.Entries, provEntry{Entry: e, Action: action, Source: src})
 		}
 	}
-	add(profile.Filesystem.Allow, "allow")
-	add(profile.Filesystem.Read, "read")
-	add(profile.Filesystem.Write, "write")
-	add(profile.Filesystem.Deny, "deny")
-	add(profile.Filesystem.OverrideDeny, "override-deny")
+	add(profile.Filesystem.Allow, "allow", profSrc)
+	add(profile.Filesystem.Read, "read", profSrc)
+	add(profile.Filesystem.Write, "write", profSrc)
+	add(profile.Filesystem.Deny, "deny", profSrc)
+	add(profile.Filesystem.OverrideDeny, "override-deny", profSrc)
 	for _, d := range profile.Filesystem.AllowUnixDir {
-		fv.Entries = append(fv.Entries, provEntry{Entry: d + " (unix-dir)", Action: "allow", Source: src})
+		fv.Entries = append(fv.Entries, provEntry{Entry: d + " (unix-dir)", Action: "allow", Source: profSrc})
 	}
 	// Baseline read/write.
 	baseline := sandboxprofile.PlatformBaseline()
-	add(baseline.Read, "read")
-	add(baseline.Write, "write")
+	add(baseline.Read, "read", "builtin")
+	add(baseline.Write, "write", "builtin")
 	// Effective protected paths.
 	for _, p := range sandboxprofile.EffectiveProtectedPaths(baseline, profile.Filesystem.OverrideDeny) {
 		fv.Entries = append(fv.Entries, provEntry{Entry: p, Action: "deny", Source: "builtin"})
@@ -183,8 +183,9 @@ func buildFilesystemView(profile *sandboxprofile.Profile) filesystemView {
 	return fv
 }
 
-func buildEnvironmentView(profile *sandboxprofile.Profile) environmentView {
+func buildEnvironmentView(profile *sandboxprofile.Profile, profPath, workdir string) environmentView {
 	ev := environmentView{}
+	profSrc := classifyProfilePath(profPath, workdir)
 	exact, prefixes := sandboxprofile.DangerousEnvBlocklist()
 	for _, name := range exact {
 		ev.Entries = append(ev.Entries, provEntry{Entry: name, Action: "deny", Source: "blocklist"})
@@ -200,7 +201,7 @@ func buildEnvironmentView(profile *sandboxprofile.Profile) environmentView {
 		})
 	} else {
 		for _, v := range profile.Environment.AllowVars {
-			ev.Entries = append(ev.Entries, provEntry{Entry: v, Action: "allow", Source: classifyProfilePath("", "")})
+			ev.Entries = append(ev.Entries, provEntry{Entry: v, Action: "allow", Source: profSrc})
 		}
 	}
 	return ev
