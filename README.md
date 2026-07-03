@@ -487,6 +487,11 @@ omac [--workdir <dir>] <subcommand> [flags] [args]
     show <skill> [--json]   resolved config + secret fingerprints
     get  <skill> <field>    one resolved value, suitable for $(...)
 
+  provenance   Show effective allow/deny entries across network, filesystem,
+               environment, and skills. Flags:
+                 --profile <ref>     sandbox profile name/path/builtin
+                 --json             emit JSON instead of tables
+
   start        Spawn sidecars → bind socket → exec sandbox runtime. Refuses
                to start if any skill is unregistered in any of the search
                roots (workdir-local .agents/skills + .opencode/skills,
