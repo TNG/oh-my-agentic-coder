@@ -11,9 +11,12 @@
 package cli
 
 import (
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"text/tabwriter"
 
 	"github.com/tngtech/oh-my-agentic-coder/internal/netprompt"
 	"github.com/tngtech/oh-my-agentic-coder/internal/registry"
@@ -234,4 +237,56 @@ func buildSkillsView(workdir string) skillsView {
 		})
 	}
 	return sv
+}
+
+// writeProvenanceText renders the view as four tabwriter tables.
+func writeProvenanceText(w io.Writer, v *provenanceView) int {
+	// Network
+	fmt.Fprintf(w, "\nnetwork (profile: %s, mode: %s, prompt: %s, on_unavailable: %s)\n",
+		v.Profile.Name, v.Network.Mode,
+		onOff(v.Network.PromptOn), v.Network.OnUnavailable)
+	writeProvTable(w, v.Network.Entries)
+
+	// Filesystem
+	fmt.Fprintf(w, "\nfilesystem (profile: %s, workdir.access: %s)\n",
+		v.Profile.Name, v.Filesystem.WorkdirAccess)
+	writeProvTable(w, v.Filesystem.Entries)
+
+	// Environment
+	fmt.Fprintln(w, "\nenvironment")
+	writeProvTable(w, v.Environment.Entries)
+
+	// Skills
+	fmt.Fprintf(w, "\nskills (workdir: %s)\n", v.Skills.Workdir)
+	writeProvTable(w, v.Skills.Entries)
+	return ExitOK
+}
+
+func writeProvTable(w io.Writer, entries []provEntry) {
+	if len(entries) == 0 {
+		fmt.Fprintln(w, "  (none)")
+		return
+	}
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "  ENTRY\tACTION\tSOURCE")
+	for _, e := range entries {
+		fmt.Fprintf(tw, "  %s\t%s\t%s\n", truncateEntry(e.Entry), e.Action, e.Source)
+	}
+	_ = tw.Flush()
+}
+
+func onOff(b bool) string {
+	if b {
+		return "on"
+	}
+	return "off"
+}
+
+// truncateEntry truncates display values at 60 chars, appending ….
+func truncateEntry(s string) string {
+	const max = 60
+	if len(s) <= max {
+		return s
+	}
+	return s[:max-1] + "…"
 }

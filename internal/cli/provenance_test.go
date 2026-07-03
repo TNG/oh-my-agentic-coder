@@ -189,3 +189,61 @@ func TestBuildProvenanceView_EnvironmentBlocklist(t *testing.T) {
 		t.Errorf("BASH_ENV blocklist entry missing; got %+v", view.Environment.Entries)
 	}
 }
+
+func TestWriteProvenanceText_NetworkSection(t *testing.T) {
+	v := &provenanceView{
+		Profile: profileSource{Name: "default", Source: "global"},
+		Network: networkView{
+			Mode: "filtered", PromptOn: true, OnUnavailable: "deny",
+			Entries: []provEntry{
+				{Entry: "github.com", Action: "allow", Source: "workdir"},
+			},
+		},
+	}
+	var buf strings.Builder
+	code := writeProvenanceText(&buf, v)
+	if code != ExitOK {
+		t.Fatalf("code = %d", code)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "network") {
+		t.Errorf("missing network section: %q", out)
+	}
+	if !strings.Contains(out, "github.com") {
+		t.Errorf("missing github.com entry: %q", out)
+	}
+	if !strings.Contains(out, "allow") {
+		t.Errorf("missing allow action: %q", out)
+	}
+}
+
+func TestWriteProvenanceText_EmptySection(t *testing.T) {
+	v := &provenanceView{
+		Profile: profileSource{Name: "default", Source: "global"},
+	}
+	var buf strings.Builder
+	code := writeProvenanceText(&buf, v)
+	if code != ExitOK {
+		t.Fatalf("code = %d", code)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "(none)") {
+		t.Errorf("empty section should print (none): %q", out)
+	}
+}
+
+func TestWriteProvenanceText_Truncation(t *testing.T) {
+	longPath := "/" + strings.Repeat("a", 80)
+	v := &provenanceView{
+		Profile: profileSource{Name: "default", Source: "global"},
+		Filesystem: filesystemView{
+			Entries: []provEntry{{Entry: longPath, Action: "allow", Source: "builtin"}},
+		},
+	}
+	var buf strings.Builder
+	writeProvenanceText(&buf, v)
+	out := buf.String()
+	if !strings.Contains(out, "…") {
+		t.Errorf("long entry should be truncated: %q", out)
+	}
+}
