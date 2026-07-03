@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -266,5 +267,34 @@ func TestTruncateEntry_ShortString(t *testing.T) {
 	got := truncateEntry("short")
 	if got != "short" {
 		t.Errorf("short string should be unchanged; got %q", got)
+	}
+}
+
+func TestWriteProvenanceJSON(t *testing.T) {
+	v := &provenanceView{
+		Profile: profileSource{Name: "default", Path: "/x.json", Source: "global"},
+		Network: networkView{
+			Mode: "filtered",
+			Entries: []provEntry{
+				{Entry: "github.com", Action: "allow", Source: "workdir"},
+			},
+		},
+	}
+	var buf strings.Builder
+	code := writeProvenanceJSON(&buf, v)
+	if code != ExitOK {
+		t.Fatalf("code = %d", code)
+	}
+	out := buf.String()
+	if !strings.Contains(out, `"profile"`) {
+		t.Errorf("missing profile key: %q", out)
+	}
+	if !strings.Contains(out, `"github.com"`) {
+		t.Errorf("missing github.com entry: %q", out)
+	}
+	// Must be valid JSON.
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
 	}
 }
