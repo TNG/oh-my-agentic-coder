@@ -285,8 +285,9 @@ func onOff(b bool) string {
 // truncateEntry truncates display values at 60 chars, appending ….
 func truncateEntry(s string) string {
 	const max = 60
-	if len(s) <= max {
+	r := []rune(s)
+	if len(r) <= max {
 		return s
 	}
-	return s[:max-1] + "…"
+	return string(r[:max-1]) + "…"
 }

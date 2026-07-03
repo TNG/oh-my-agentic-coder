@@ -247,3 +247,24 @@ func TestWriteProvenanceText_Truncation(t *testing.T) {
 		t.Errorf("long entry should be truncated: %q", out)
 	}
 }
+
+func TestTruncateEntry_Multibyte(t *testing.T) {
+	// 80 runes of multi-byte chars — must truncate by rune, not byte.
+	s := strings.Repeat("ü", 80)
+	got := truncateEntry(s)
+	if !strings.HasSuffix(got, "…") {
+		t.Errorf("expected … suffix; got %q", got)
+	}
+	// Result should be max-1 runes + … = 60 runes total.
+	r := []rune(got)
+	if len(r) != 60 {
+		t.Errorf("expected 60 runes; got %d", len(r))
+	}
+}
+
+func TestTruncateEntry_ShortString(t *testing.T) {
+	got := truncateEntry("short")
+	if got != "short" {
+		t.Errorf("short string should be unchanged; got %q", got)
+	}
+}
