@@ -11,6 +11,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -237,6 +238,17 @@ func buildSkillsView(workdir string) skillsView {
 		})
 	}
 	return sv
+}
+
+// writeProvenanceJSON marshals the view as indented JSON.
+func writeProvenanceJSON(w io.Writer, v *provenanceView) int {
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(v); err != nil {
+		fmt.Fprintln(os.Stderr, "omac provenance: json:", err)
+		return ExitIOError
+	}
+	return ExitOK
 }
 
 // writeProvenanceText renders the view as four tabwriter tables.
