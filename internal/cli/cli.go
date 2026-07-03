@@ -119,7 +119,8 @@ func commands() map[string]Command {
 		"deregister": {Name: "deregister", Short: "Deregister a skill's sidecar.", Run: runDeregister},
 		"list":       {Name: "list", Short: "List registered skills.", Run: runList},
 		"secrets":    {Name: "secrets", Short: "Manage skill secrets in the OS keychain.", Run: runSecrets},
-		"config":     {Name: "config", Short: "Show resolved config + secret fingerprints for a skill.", Run: runConfig},
+		"config":      {Name: "config", Short: "Show resolved config + secret fingerprints for a skill.", Run: runConfig},
+		"provenance":  {Name: "provenance", Short: "Show effective allow/deny entries across all subsystems.", Run: runProvenance},
 		"start":      {Name: "start", Short: "Start sidecars + facade + sandbox. Optional [harness]: opencode|claude.", Run: runStart},
 		"continue":   {Name: "continue", Short: "Continue the last session for this workdir. Optional [harness].", Run: runContinue},
 		"resume":     {Name: "resume", Short: "Pick a recent session for this workdir and launch it. Optional [harness].", Run: runResume},
@@ -150,6 +151,7 @@ Subcommands:
   list         List registered skills.
   secrets      Manage skill secrets in the OS keychain.
   config       Show resolved config + secret fingerprints for a skill.
+  provenance   Show effective allow/deny entries (network, filesystem, env, skills).
   setup        Provision omac's built-in skills into installed harnesses.
   start        Start sidecars + facade + sandbox.       [harness]: opencode|claude
   continue     Continue the last session for this workdir.   [harness]: opencode|claude
