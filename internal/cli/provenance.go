@@ -12,6 +12,7 @@ package cli
 
 import (
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -302,4 +303,29 @@ func truncateEntry(s string) string {
 		return s
 	}
 	return string(r[:max-1]) + "…"
+}
+
+// runProvenance implements `omac provenance [--profile <ref>] [--json]`.
+func runProvenance(args []string, env *Env) int {
+	fs := flag.NewFlagSet("provenance", flag.ContinueOnError)
+	fs.SetOutput(env.Stderr)
+	profileRef := fs.String("profile", "", "sandbox profile name, path, or builtin (default: default)")
+	jsonOut := fs.Bool("json", false, "Emit a JSON object instead of tabular text.")
+	fs.Usage = func() {
+		fmt.Fprintln(env.Stderr, "Usage: omac provenance [--profile <ref>] [--json]")
+		fs.PrintDefaults()
+	}
+	if err := fs.Parse(reorderFlagsFirst(args)); err != nil {
+		return ExitMisuse
+	}
+
+	view, err := buildProvenanceView(env.Workdir, *profileRef)
+	if err != nil {
+		fmt.Fprintln(env.Stderr, "omac provenance:", err)
+		return ExitConfigInvalid
+	}
+	if *jsonOut {
+		return writeProvenanceJSON(env.Stdout, view)
+	}
+	return writeProvenanceText(env.Stdout, view)
 }

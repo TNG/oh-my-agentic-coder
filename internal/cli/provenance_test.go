@@ -298,3 +298,60 @@ func TestWriteProvenanceJSON(t *testing.T) {
 		t.Fatalf("invalid JSON: %v", err)
 	}
 }
+
+func TestRunProvenance_DefaultProfile(t *testing.T) {
+	isolateHome(t)
+	wd := t.TempDir()
+	// Scaffold a minimal default profile so Resolve succeeds.
+	profDir := filepath.Join(wd, ".opencode")
+	os.MkdirAll(profDir, 0o755)
+	// isolateHome sets HOME to a temp dir, so the default profile
+	// would be scaffolded under there. Instead, write one to the
+	// workdir's .opencode and reference it by path.
+	profPath := filepath.Join(profDir, "default.json")
+	os.WriteFile(profPath, []byte(`{"meta":{"name":"default"},"workdir":{"access":"readwrite"}}`), 0o644)
+
+	env, read := captureEnv(t, wd)
+	code := runProvenance([]string{"--profile", profPath, "--json"}, env)
+	if code != ExitOK {
+		out, errOut := read()
+		t.Fatalf("code = %d; stdout=%q stderr=%q", code, out, errOut)
+	}
+	out, _ := read()
+	if !strings.Contains(out, `"profile"`) {
+		t.Errorf("expected JSON output with profile key; got %q", out)
+	}
+}
+
+func TestRunProvenance_BadProfile(t *testing.T) {
+	isolateHome(t)
+	wd := t.TempDir()
+	env, _ := captureEnv(t, wd)
+	code := runProvenance([]string{"--profile", "/nonexistent/profile.json"}, env)
+	if code != ExitConfigInvalid && code != ExitIOError {
+		t.Errorf("expected error exit code; got %d", code)
+	}
+}
+
+func TestRunProvenance_TextMode(t *testing.T) {
+	isolateHome(t)
+	wd := t.TempDir()
+	profDir := filepath.Join(wd, ".opencode")
+	os.MkdirAll(profDir, 0o755)
+	profPath := filepath.Join(profDir, "default.json")
+	os.WriteFile(profPath, []byte(`{"meta":{"name":"default"},"workdir":{"access":"readwrite"},"network":{"mode":"filtered","allow_domain":["github.com"]}}`), 0o644)
+
+	env, read := captureEnv(t, wd)
+	code := runProvenance([]string{"--profile", profPath}, env)
+	if code != ExitOK {
+		out, errOut := read()
+		t.Fatalf("code = %d; stdout=%q stderr=%q", code, out, errOut)
+	}
+	out, _ := read()
+	if !strings.Contains(out, "network") {
+		t.Errorf("missing network section: %q", out)
+	}
+	if !strings.Contains(out, "github.com") {
+		t.Errorf("missing github.com: %q", out)
+	}
+}
