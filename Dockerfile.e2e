@@ -1,0 +1,53 @@
+# syntax=docker/dockerfile:1.7
+#
+# Dockerfile.e2e — reproducible environment for omac e2e tests.
+#
+# Build:   scripts/e2e-docker.sh build
+# Drive:   scripts/e2e-docker.sh run opencode
+#
+# Bakes in: Go, bun, node, bubblewrap, and the AppArmor profile that
+# e2e.yml installs on Ubuntu runners. The container runs privileged so
+# bwrap can create user namespaces; on macOS Docker Desktop the default
+# VM already permits this.
+
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    GOPATH=/root/go \
+    PATH=/root/go/bin:/root/.bun/bin:/usr/local/go/bin:/root/.local/bin:$PATH
+
+# Core toolchain: Go, bun, node, bubblewrap, git, curl, jq.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        bubblewrap \
+        ca-certificates \
+        curl \
+        git \
+        jq \
+        xz-utils \
+    && rm -rf /var/lib/apt/lists/*
+
+# Go — match go.mod (1.25.x line; 1.25.0 at time of writing).
+RUN curl -fsSL https://go.dev/dl/go1.25.0.linux-amd64.tar.gz | tar -C /usr/local -xz
+
+# Bun — opencode harness install needs it.
+RUN curl -fsSL https://bun.sh/install | bash
+
+# Node 24 — claude-code/codex/copilot harness installs need npm.
+RUN curl -fsSL https://nodejs.org/dist/v24.0.0/node-v24.0.0-linux-x64.tar.xz \
+    | tar -xJ -C /usr/local --strip-components=1
+
+# AppArmor profile so bwrap can create user namespaces inside the container.
+# Mirrors .github/workflows/e2e.yml:45-50. The container runs --privileged,
+# but having the profile avoids depending on the host's AppArmor state.
+RUN mkdir -p /etc/apparmor.d && \
+    cat > /etc/apparmor.d/bwrap <<'EOF'
+abi <abi/4.0>,
+/usr/bin/bwrap flags=(unconfined) {
+  userns,
+}
+EOF
+
+WORKDIR /repo
+
+# Default: sleep so the container stays up; scripts/e2e-docker.sh execs into it.
+CMD ["sleep", "infinity"]

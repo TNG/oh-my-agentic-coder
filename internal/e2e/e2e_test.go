@@ -97,8 +97,15 @@ func runE2E(t *testing.T, h harnessConfig) {
 	registerEchoRest(t, omacBin, home, workdir)
 
 	// 7. Run agent: call the echo-rest /status endpoint.
-	prompt := "Use the echo-rest skill to check its health. " +
-		"Call curl on the OMAC_ECHO_BASE/status endpoint and report the response."
+	// E2E_PROMPT overrides the default prompt (set by scripts/e2e-docker.sh
+	// prompt/run subcommands for agent-driven iteration).
+	prompt := os.Getenv("E2E_PROMPT")
+	if prompt == "" {
+		prompt = "Use the echo-rest skill to check its health. " +
+			"Call curl on the OMAC_ECHO_BASE/status endpoint and report the response."
+	} else {
+		t.Logf("using E2E_PROMPT override: %q", truncate(prompt, 80))
+	}
 	stdout := runAgent(t, h, omacBin, home, workdir, prompt)
 
 	// 8. Assert output contains the health-check ok flag.
