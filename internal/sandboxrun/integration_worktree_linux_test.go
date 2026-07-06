@@ -245,7 +245,7 @@ func TestIntegrationWorktreeKnownLimitations(t *testing.T) {
 	}
 
 	// 3. branch -d should fail cleanly (exit non-zero), ref preserved.
-	out, code = sandboxGit("branch", "-d", "feature")
+	_, code = sandboxGit("branch", "-d", "feature")
 	if code == 0 {
 		t.Errorf("branch -d succeeded inside sandbox — PR says it should fail (needs common-root lock)")
 	}
