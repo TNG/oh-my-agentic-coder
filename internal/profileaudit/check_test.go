@@ -183,3 +183,131 @@ func TestCheck_FSGrantCleanPathNoFinding(t *testing.T) {
 		}
 	}
 }
+
+func TestCheck_NetworkMetadataHostIsHigh(t *testing.T) {
+	p := cleanProfile()
+	p.Network.AllowDomain = []string{"169.254.169.254"}
+	findings := Check(p)
+	var got *Finding
+	for i := range findings {
+		if findings[i].Category == CatNetwork && findings[i].Field == "network.allow_domain" {
+			got = &findings[i]
+			break
+		}
+	}
+	if got == nil {
+		t.Fatalf("no network finding for metadata host; got %+v", findings)
+	}
+	if got.Severity != SeverityHigh {
+		t.Errorf("severity = %q; want high", got.Severity)
+	}
+	if !strings.Contains(got.Message, "metadata") {
+		t.Errorf("message %q should mention metadata", got.Message)
+	}
+}
+
+func TestCheck_NetworkInternalSuffixIsMedium(t *testing.T) {
+	p := cleanProfile()
+	p.Network.AllowDomain = []string{"evil.internal"}
+	findings := Check(p)
+	var got *Finding
+	for i := range findings {
+		if findings[i].Category == CatNetwork && findings[i].Field == "network.allow_domain" {
+			got = &findings[i]
+			break
+		}
+	}
+	if got == nil {
+		t.Fatalf("no network finding for .internal host; got %+v", findings)
+	}
+	if got.Severity != SeverityMedium {
+		t.Errorf("severity = %q; want medium", got.Severity)
+	}
+}
+
+func TestCheck_NetworkOpenPortZeroIsLow(t *testing.T) {
+	p := cleanProfile()
+	p.Network.OpenPort = []int{0}
+	findings := Check(p)
+	var got *Finding
+	for i := range findings {
+		if findings[i].Category == CatNetwork && findings[i].Field == "network.open_port" {
+			got = &findings[i]
+			break
+		}
+	}
+	if got == nil {
+		t.Fatalf("no finding for open_port 0; got %+v", findings)
+	}
+	if got.Severity != SeverityLow {
+		t.Errorf("severity = %q; want low", got.Severity)
+	}
+}
+
+func TestCheck_NetworkAllowTCPConnect22IsMedium(t *testing.T) {
+	p := cleanProfile()
+	p.Network.AllowTCPConnect = []int{22}
+	findings := Check(p)
+	var got *Finding
+	for i := range findings {
+		if findings[i].Category == CatNetwork && findings[i].Field == "network.allow_tcp_connect" {
+			got = &findings[i]
+			break
+		}
+	}
+	if got == nil {
+		t.Fatalf("no finding for allow_tcp_connect 22; got %+v", findings)
+	}
+	if got.Severity != SeverityMedium {
+		t.Errorf("severity = %q; want medium", got.Severity)
+	}
+}
+
+func TestCheck_NetworkCleanDomainNoFinding(t *testing.T) {
+	p := cleanProfile()
+	p.Network.AllowDomain = []string{"github.com"}
+	findings := Check(p)
+	for _, f := range findings {
+		if f.Category == CatNetwork {
+			t.Errorf("clean domain should not be flagged; got %+v", f)
+		}
+	}
+}
+
+func TestCheck_NetworkTableDriven(t *testing.T) {
+	tests := []struct {
+		name      string
+		allow     []string
+		openPorts []int
+		tcpPorts  []int
+		wantField string
+		wantSev   Severity
+	}{
+		{"metadata.google.internal", []string{"metadata.google.internal"}, nil, nil, "network.allow_domain", SeverityHigh},
+		{"metadata.azure.internal", []string{"metadata.azure.internal"}, nil, nil, "network.allow_domain", SeverityHigh},
+		{".local suffix", []string{"evil.local"}, nil, nil, "network.allow_domain", SeverityMedium},
+		{"tcp 3389", nil, nil, []int{3389}, "network.allow_tcp_connect", SeverityMedium},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			p := cleanProfile()
+			p.Network.AllowDomain = tc.allow
+			p.Network.OpenPort = tc.openPorts
+			p.Network.AllowTCPConnect = tc.tcpPorts
+			findings := Check(p)
+			var got *Finding
+			for i := range findings {
+				if findings[i].Category == CatNetwork && findings[i].Field == tc.wantField {
+					got = &findings[i]
+					break
+				}
+			}
+			if got == nil {
+				t.Fatalf("no %s finding; got %+v", tc.wantField, findings)
+			}
+			if got.Severity != tc.wantSev {
+				t.Errorf("severity = %q; want %q", got.Severity, tc.wantSev)
+			}
+		})
+	}
+}

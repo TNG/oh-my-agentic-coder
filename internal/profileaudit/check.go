@@ -3,6 +3,7 @@ package profileaudit
 import (
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxprofile"
@@ -252,7 +253,61 @@ func isParent(parent, child string) bool {
 	return strings.HasPrefix(child, parent+string(filepath.Separator))
 }
 
-// checkNetwork is a stub; implemented in Task 5.
+// cloudMetadataHosts are the cloud instance-metadata endpoints that
+// allow credential theft from inside a sandbox. They must never appear
+// in allow_domain.
+var cloudMetadataHosts = map[string]bool{
+	"169.254.169.254":          true, // AWS / Azure / GCP (link-local)
+	"metadata.google.internal": true, // GCP
+	"metadata.azure.internal":  true, // Azure
+}
+
+// checkNetwork flags allow_domain entries that point at cloud metadata
+// endpoints or SSRF-prone suffixes, and flags risky port openings.
 func checkNetwork(profile *sandboxprofile.Profile) []Finding {
-	return nil
+	var findings []Finding
+	for _, d := range profile.Network.AllowDomain {
+		switch {
+		case cloudMetadataHosts[d]:
+			findings = append(findings, Finding{
+				Severity: SeverityHigh,
+				Category: CatNetwork,
+				Field:    "network.allow_domain",
+				Value:    d,
+				Message:  "cloud metadata endpoint (credential theft surface)",
+			})
+		case strings.HasSuffix(d, ".internal") || strings.HasSuffix(d, ".local"):
+			findings = append(findings, Finding{
+				Severity: SeverityMedium,
+				Category: CatNetwork,
+				Field:    "network.allow_domain",
+				Value:    d,
+				Message:  "internal/local suffix (SSRF surface)",
+			})
+		}
+	}
+	for _, port := range profile.Network.OpenPort {
+		if port == 0 {
+			findings = append(findings, Finding{
+				Severity: SeverityLow,
+				Category: CatNetwork,
+				Field:    "network.open_port",
+				Value:    "0",
+				Message:  "any loopback port",
+			})
+		}
+	}
+	for _, port := range profile.Network.AllowTCPConnect {
+		switch port {
+		case 22, 3389:
+			findings = append(findings, Finding{
+				Severity: SeverityMedium,
+				Category: CatNetwork,
+				Field:    "network.allow_tcp_connect",
+				Value:    strconv.Itoa(port),
+				Message:  "direct outbound TCP to SSH/RDP port",
+			})
+		}
+	}
+	return findings
 }
