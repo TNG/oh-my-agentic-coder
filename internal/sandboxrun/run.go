@@ -85,8 +85,13 @@ func Run(opts Options) int {
 	// no --audit-log path was passed down.
 	netAuditor := audit.Nop()
 	if opts.Flags.AuditLog != "" {
+		mode := audit.ModeStart
+		if opts.Flags.AuditMode == string(audit.ModeServe) {
+			mode = audit.ModeServe
+		}
 		if a, aerr := audit.New(audit.Config{
-			Enabled: true, Path: opts.Flags.AuditLog, Mode: audit.ModeStart, Strict: false,
+			Enabled: true, Path: opts.Flags.AuditLog, Mode: mode, Strict: false,
+			RunID: opts.Flags.AuditRunID,
 		}); aerr != nil {
 			fmt.Fprintf(stderr, "omac sandbox: warning: audit log unavailable (%v)\n", aerr)
 		} else {

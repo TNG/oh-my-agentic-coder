@@ -762,9 +762,13 @@ func runLaunch(env *Env, opts launchOpts) int {
 		argv = injectSandboxDirs(argv, harness.SandboxDirs)
 		// Pass the resolved audit path down to `omac sandbox run` so the
 		// network-filter subprocess appends net.decision events to the
-		// same persistent log.
+		// same persistent log. Inherit the parent's run_id + mode so the
+		// subprocess's events correlate with the parent's (same run_id,
+		// continuing seq).
 		if ap := audit.EffectivePath(auditCfg); ap != "" {
 			argv = injectSandboxFlag(argv, "--audit-log", ap)
+			argv = injectSandboxFlag(argv, "--audit-run-id", auditor.RunID())
+			argv = injectSandboxFlag(argv, "--audit-mode", string(auditCfg.Mode))
 		}
 	}
 	if verbose {

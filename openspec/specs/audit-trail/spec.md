@@ -70,6 +70,16 @@ omac SHALL record a `net.decision` event for every outbound network access decis
 - **WHEN** a network access is decided by the learned-policy store, an allowlist, or a blocklist without prompting
 - **THEN** a `net.decision` event records the host, port, `allow` boolean, and `source` (`learned`, `allowlist`, or `blocklist`)
 
+#### Scenario: Hard-deny and DNS failure decisions are logged
+
+- **WHEN** a network access is hard-denied (metadata host, link-local address) or DNS resolution fails
+- **THEN** a `net.decision` event records the host, port, `allow` boolean, and `source` (`hard-deny` or `dns`)
+
+#### Scenario: Default decision is logged
+
+- **WHEN** no rule matches and prompting is disabled or unavailable, and a default allow/deny applies
+- **THEN** a `net.decision` event records the host, port, `allow` boolean, and `source` (`default`)
+
 #### Scenario: Timeout default is logged
 
 - **WHEN** a network prompt times out or no prompt backend is available and the `on_unavailable` policy applies

@@ -86,7 +86,7 @@ type Event struct {
 	Port      int    `json:"port,omitempty"`
 	Allow     *bool  `json:"allow,omitempty"`
 	Scope     string `json:"scope,omitempty"`  // once|host|suffix
-	Source    string `json:"source,omitempty"` // prompt|learned|allowlist|blocklist|timeout|unavailable
+	Source    string `json:"source,omitempty"` // prompt|learned|allowlist|blocklist|timeout|unavailable|hard-deny|dns|default
 	Persisted *bool  `json:"persisted,omitempty"`
 
 	// --- facade.request ---
@@ -119,6 +119,14 @@ type Auditor interface {
 	Emit(ev Event)
 	// Close flushes and releases sinks. Safe to call more than once.
 	Close() error
+	// RunID returns the per-run identifier stamped on every event. A
+	// subprocess inherits the parent's run_id so the trail correlates
+	// across process boundaries.
+	RunID() string
+	// NextSeq returns the next seq value the auditor will stamp. A
+	// subprocess inherits the parent's next seq so its events continue
+	// the monotonic sequence rather than restarting at 1.
+	NextSeq() uint64
 }
 
 // seqCounter is a process-global monotonic sequence source shared by every

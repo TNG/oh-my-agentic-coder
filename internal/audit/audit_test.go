@@ -266,3 +266,71 @@ func TestValidJSONPerLine(t *testing.T) {
 		t.Fatalf("want 3 lines, got %d", n)
 	}
 }
+
+// TestInheritedRunIDPreservesCorrelation asserts that when a subprocess
+// inherits the parent's run_id, the resulting log has a single run_id
+// across both writers. The spec says "all events in the run share the
+// same run_id". Seq is per-process (the pid field distinguishes writers
+// within a run); the test asserts seq is monotonic within each writer.
+func TestInheritedRunIDPreservesCorrelation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "audit.jsonl")
+
+	// Parent: emits 2 events (seq 1, 2), run_id R1.
+	parent, err := New(Config{Enabled: true, Path: path, Mode: ModeServe})
+	if err != nil {
+		t.Fatalf("parent New: %v", err)
+	}
+	parent.Emit(ControlMutation("activate", "/a", "ok")) // seq 1
+	parent.Emit(ControlMutation("activate", "/b", "ok")) // seq 2
+	// Subprocess: inherits run_id R1 + parent's mode. Seq restarts at 1
+	// (per-process); the pid field distinguishes the two writers.
+	child, err := New(Config{
+		Enabled: true,
+		Path:    path,
+		Mode:    ModeServe,
+		RunID:   parent.RunID(),
+	})
+	if err != nil {
+		t.Fatalf("child New: %v", err)
+	}
+	child.Emit(NetDecision("host.example", 443, true, "host", "prompt", false)) // seq 1
+	_ = parent.Close()
+	_ = child.Close()
+
+	evs := readEvents(t, path)
+	if len(evs) != 3 {
+		t.Fatalf("want 3 events, got %d", len(evs))
+	}
+	parentRunID := evs[0].RunID
+	for i, ev := range evs {
+		if ev.RunID != parentRunID {
+			t.Fatalf("event %d: run_id %q != parent %q (correlation broken)", i, ev.RunID, parentRunID)
+		}
+		if ev.Mode != ModeServe {
+			t.Fatalf("event %d: mode %q, want %q (mode not inherited)", i, ev.Mode, ModeServe)
+		}
+	}
+	// Parent's two events must be monotonic.
+	if evs[0].Seq >= evs[1].Seq {
+		t.Fatalf("parent seq not monotonic: %d >= %d", evs[0].Seq, evs[1].Seq)
+	}
+	// Child's seq restarts at 1 (per-process).
+	if evs[2].Seq != 1 {
+		t.Fatalf("child seq: want 1 (per-process restart), got %d", evs[2].Seq)
+	}
+}
+
+// TestNewRunIDIsRandom verifies the default (no inheritance) still
+// produces distinct run_ids (the original behavior).
+func TestNewRunIDIsRandom(t *testing.T) {
+	a1, _ := New(Config{Enabled: true, Path: filepath.Join(t.TempDir(), "a.jsonl")})
+	a2, _ := New(Config{Enabled: true, Path: filepath.Join(t.TempDir(), "b.jsonl")})
+	if a1.RunID() == a2.RunID() {
+		t.Fatalf("two independent auditors share run_id %q (should be distinct)", a1.RunID())
+	}
+	if a1.RunID() == "" {
+		t.Fatalf("run_id should not be empty")
+	}
+	_ = a1.Close()
+	_ = a2.Close()
+}

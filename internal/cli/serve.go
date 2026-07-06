@@ -369,9 +369,12 @@ func runServe(args []string, env *Env) int {
 		argv = injectSandboxDirs(argv, harness.SandboxDirs)
 		// Pass the resolved audit path to `omac sandbox run` so its
 		// network-filter subprocess appends net.decision events to the
-		// same persistent log.
+		// same persistent log. Inherit the parent's run_id + mode so the
+		// subprocess's events correlate with the parent's.
 		if ap := audit.EffectivePath(auditCfg); ap != "" {
 			argv = injectSandboxFlag(argv, "--audit-log", ap)
+			argv = injectSandboxFlag(argv, "--audit-run-id", auditor.RunID())
+			argv = injectSandboxFlag(argv, "--audit-mode", string(auditCfg.Mode))
 		}
 		// --for-opencode-desktop: grant every project worktree OpenCode
 		// knows about. The kernel sandbox cannot grow after launch, so

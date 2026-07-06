@@ -35,6 +35,10 @@ type Config struct {
 	// Warnf receives one-time warnings (fail-open path, syslog open
 	// failure, non-persistent fallback dir). Defaults to stderr.
 	Warnf func(format string, args ...any)
+	// RunID, when non-empty, overrides the minted run_id. A subprocess
+	// inherits the parent's run_id so the audit trail correlates across
+	// process boundaries. Empty (default) => mint a fresh run_id.
+	RunID string
 }
 
 // auditor is the live Auditor: envelope stamping + redaction + fan-out to
@@ -95,6 +99,9 @@ func New(cfg Config) (Auditor, error) {
 		warnf:    warnf,
 		fileSink: fs,
 	}
+	if cfg.RunID != "" {
+		a.runID = cfg.RunID
+	}
 
 	if cfg.Syslog {
 		ss, serr := openSyslogSink()
@@ -133,6 +140,14 @@ func (a *auditor) Emit(ev Event) {
 		_ = a.syslogSink.write(line)
 	}
 }
+
+// RunID returns the per-run identifier stamped on every event.
+func (a *auditor) RunID() string { return a.runID }
+
+// NextSeq returns the next seq value the auditor will stamp. Note: seq
+// is per-process; a subprocess that inherits the parent's run_id restarts
+// seq at 1 (the run_id correlates, the pid distinguishes processes).
+func (a *auditor) NextSeq() uint64 { return a.seq.n.Load() + 1 }
 
 // onWriteError applies the selected failure mode to a file-sink error.
 func (a *auditor) onWriteError(err error) {
@@ -179,6 +194,8 @@ func Nop() Auditor { return nopAuditor{} }
 
 func (nopAuditor) Emit(Event)   {}
 func (nopAuditor) Close() error { return nil }
+func (nopAuditor) RunID() string { return "" }
+func (nopAuditor) NextSeq() uint64 { return 0 }
 
 // newRunID mints a per-invocation random hex identifier. On the vanishingly
 // unlikely rand failure it falls back to a time-based value.

@@ -82,6 +82,7 @@ type Running struct {
 	startedAt      time.Time
 	auditSkill     string
 	auditNamespace string
+	exitOnce       sync.Once
 }
 
 // Supervisor coordinates all sidecars.
@@ -159,28 +160,50 @@ func (s *Supervisor) StopSidecar(name string, timeout time.Duration) bool {
 		return false
 	}
 	_ = terminate(target.Cmd, timeout)
-	s.auditExit(target)
-	if target.LogFile != nil {
-		_ = target.LogFile.Close()
-	}
+	s.auditExit(target) // closes LogFile via exitOnce
 	return true
 }
 
-// auditExit emits a process.exit event for a terminated child. Safe to call
-// once per child after terminate() has reaped it.
+// auditExit emits a process.exit event for a terminated child and closes
+// its log file. Safe to call once per child after terminate() has reaped
+// it. Idempotent via exitOnce: if watchChild already fired (self-terminated
+// child), this is a no-op. LogFile.Close is centralized here so the fd is
+// released exactly once regardless of which path reaps the child.
 func (s *Supervisor) auditExit(r *Running) {
 	if r == nil {
 		return
 	}
-	code := -1
-	if r.Cmd != nil && r.Cmd.ProcessState != nil {
-		code = r.Cmd.ProcessState.ExitCode()
+	r.exitOnce.Do(func() {
+		code := -1
+		if r.Cmd != nil && r.Cmd.ProcessState != nil {
+			code = r.Cmd.ProcessState.ExitCode()
+		}
+		var durMS int64
+		if !r.startedAt.IsZero() {
+			durMS = time.Since(r.startedAt).Milliseconds()
+		}
+		s.auditor.Emit(audit.ProcessExit(r.auditSkill, r.auditNamespace, code, durMS))
+		if r.LogFile != nil {
+			_ = r.LogFile.Close()
+		}
+	})
+}
+
+// watchChild spawns a reaper goroutine for a sidecar. When the child
+// terminates on its own (before StopSidecar/ShutdownAll is called), the
+// reaper reaps it via cmd.Wait() and calls auditExit (which emits
+// process.exit + closes the log file) so the trail reflects actual
+// termination time, not time-to-teardown. auditExit is idempotent via
+// exitOnce: if StopSidecar/ShutdownAll later call auditExit on an
+// already-reaped child, it's a no-op.
+func (s *Supervisor) watchChild(r *Running) {
+	if r == nil || r.Cmd == nil || r.Cmd.Process == nil {
+		return
 	}
-	var durMS int64
-	if !r.startedAt.IsZero() {
-		durMS = time.Since(r.startedAt).Milliseconds()
-	}
-	s.auditor.Emit(audit.ProcessExit(r.auditSkill, r.auditNamespace, code, durMS))
+	go func() {
+		_ = r.Cmd.Wait()
+		s.auditExit(r)
+	}()
 }
 
 // startOne allocates a port, spawns the child, and waits on health.
@@ -257,11 +280,7 @@ func (s *Supervisor) startOne(ctx context.Context, spec SidecarSpec) (*Running, 
 	}
 
 	r := &Running{Name: spec.Name, Port: port, Cmd: cmd, LogFile: lf}
-	// Audit the process exit asynchronously. This extra Wait races with
-	// terminate()'s Wait, but os/exec tolerates a single Wait only — so we
-	// record exit via a lightweight ProcessState poll after termination
-	// instead (see StopSidecar/ShutdownAll, which call terminate and then
-	// emit). Here we only capture the start time for duration.
+	// Capture audit bookkeeping for the reaper + process.exit.
 	r.startedAt = time.Now()
 	r.auditSkill = skillName
 	r.auditNamespace = spec.Namespace
@@ -271,6 +290,10 @@ func (s *Supervisor) startOne(ctx context.Context, spec SidecarSpec) (*Running, 
 		lf.Close()
 		return nil, fmt.Errorf("%s: health: %w", spec.Name, err)
 	}
+	// Start the reaper only after health check passes, so a sidecar that
+	// fails to start is handled by the error path (terminate + lf.Close)
+	// without the reaper racing to emit process.exit / close lf.
+	s.watchChild(r)
 	return r, nil
 }
 
@@ -342,10 +365,7 @@ func (s *Supervisor) ShutdownAll(timeout time.Duration) {
 		go func() {
 			defer wg.Done()
 			_ = terminate(r.Cmd, timeout)
-			s.auditExit(r)
-			if r.LogFile != nil {
-				_ = r.LogFile.Close()
-			}
+			s.auditExit(r) // closes LogFile via exitOnce
 		}()
 	}
 	wg.Wait()
