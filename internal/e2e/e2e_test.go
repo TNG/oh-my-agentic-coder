@@ -431,13 +431,31 @@ func buildAgentEnv(t *testing.T, h harnessConfig, home string) []string {
 var okRe = regexp.MustCompile(`"ok"\s*:\s*true`)
 
 // assertEchoOK checks the agent's output contains the echo-rest health response.
+// Classifies failure: did the agent call /status at all? Did it get a response?
 func assertEchoOK(t *testing.T, output string) {
 	t.Helper()
-	if !okRe.MatchString(output) {
-		t.Errorf("agent output does not contain echo-rest health response\nOUTPUT:\n%s", tailLines(output, 200))
+	if okRe.MatchString(output) {
+		t.Logf("PASS: echo-rest /status response found in agent output")
 		return
 	}
-	t.Logf("echo-rest /status response found in agent output")
+	// Classify the failure.
+	if strings.Contains(output, "stream error") || strings.Contains(output, "AI_APICallError") {
+		t.Errorf("FAIL [echoOK]: INFRA_ERROR — model API error, agent could not complete the task\n%s",
+			classifyAgentOutput(output))
+		return
+	}
+	if !strings.Contains(output, "curl") && !strings.Contains(output, "OMAC_ECHO_BASE") {
+		t.Errorf("FAIL [echoOK]: AGENT_NO_OUTPUT — agent did not attempt to call the echo-rest endpoint\n%s",
+			classifyAgentOutput(output))
+		return
+	}
+	if strings.Contains(output, "Connection refused") || strings.Contains(output, "curl: (7)") {
+		t.Errorf("FAIL [echoOK]: INFRA_ERROR — sidecar not reachable (connection refused)\n%s",
+			classifyAgentOutput(output))
+		return
+	}
+	t.Errorf("FAIL [echoOK]: AGENT_PARTIAL — agent attempted the call but /status response not in output\n%s",
+		classifyAgentOutput(output))
 }
 
 // assertSecretNotLeaked verifies the plaintext AUDIT_SECRET value does
@@ -446,8 +464,8 @@ func assertEchoOK(t *testing.T, output string) {
 func assertSecretNotLeaked(t *testing.T, output string) {
 	t.Helper()
 	if strings.Contains(output, auditSecretValue) {
-		t.Errorf("SECURITY FAIL: plaintext AUDIT_SECRET value found in agent output\n" +
-			"the sandbox leaked the secret into the agent's environment")
+		t.Errorf("FAIL [secretNotLeaked]: SANDBOX_FAIL — plaintext AUDIT_SECRET value found in agent output\nthe sandbox leaked the secret into the agent's environment\n%s",
+			classifyAgentOutput(output))
 		return
 	}
 	t.Logf("PASS: secret isolation — plaintext secret not found in agent output")
@@ -459,12 +477,33 @@ func assertSecretNotLeaked(t *testing.T, output string) {
 func assertSecretFingerprintPresent(t *testing.T, output string) {
 	t.Helper()
 	fingerprintRe := regexp.MustCompile(`sha256:[0-9a-f]{12}`)
-	if !fingerprintRe.MatchString(output) {
-		t.Errorf("POSITIVE FAIL: agent output does not contain secret fingerprint;\n" +
-			"the agent may not have called the self-audit skill's /whoami endpoint")
+	if fingerprintRe.MatchString(output) {
+		t.Logf("PASS: sidecar reachable — secret fingerprint found in agent output")
 		return
 	}
-	t.Logf("PASS: sidecar reachable — secret fingerprint found in agent output")
+	// Classify: did the agent run the sidecar probe at all?
+	mode := classifyProbe(output, "sidecar")
+	switch mode {
+	case fmAgentNoOutput:
+		t.Errorf("FAIL [sidecarReachable]: AGENT_NO_OUTPUT — agent did not run the sidecar probe\n%s",
+			classifyAgentOutput(output))
+	case fmAgentPartial:
+		t.Errorf("FAIL [sidecarReachable]: AGENT_PARTIAL — sidecar probe ran but output incomplete\n%s",
+			classifyAgentOutput(output))
+	case fmPass:
+		// Probe ran but no fingerprint — check if sidecar was reachable at all.
+		probeOut := extractProbe(output, "sidecar")
+		if strings.Contains(probeOut, "Connection refused") || strings.Contains(probeOut, "curl: (7)") {
+			t.Errorf("FAIL [sidecarReachable]: INFRA_ERROR — sidecar not reachable (connection refused)\n%s",
+				classifyAgentOutput(output))
+		} else if strings.Contains(probeOut, "OMAC_AUDIT_BASE not set") {
+			t.Errorf("FAIL [sidecarReachable]: INFRA_ERROR — OMAC_AUDIT_BASE not set (sidecar not started?)\n%s",
+				classifyAgentOutput(output))
+		} else {
+			t.Errorf("FAIL [sidecarReachable]: SANDBOX_FAIL — probe ran but no fingerprint in response\n%s",
+				classifyAgentOutput(output))
+		}
+	}
 }
 
 // assertEnvVarsDenied verifies that none of the denied env vars appear
@@ -472,12 +511,18 @@ func assertSecretFingerprintPresent(t *testing.T, output string) {
 // "VARNAME=" in the output.
 func assertEnvVarsDenied(t *testing.T, output string, denyVars []string) {
 	t.Helper()
+	leaked := []string{}
 	for _, v := range denyVars {
 		needle := v + "="
 		if strings.Contains(output, needle) {
-			t.Errorf("SECURITY FAIL: %s visible in agent env output\n"+
-				"the sandbox did not filter this env var", v)
+			leaked = append(leaked, v)
 		}
+	}
+	if len(leaked) > 0 {
+		t.Errorf("FAIL [envVarsDenied]: SANDBOX_FAIL — denied env vars visible in agent output: %v\n"+
+			"the sandbox did not filter these env vars\n%s",
+			leaked, classifyAgentOutput(output))
+		return
 	}
 	t.Logf("PASS: env filtering — denied vars not in agent output")
 }
@@ -486,12 +531,28 @@ func assertEnvVarsDenied(t *testing.T, output string, denyVars []string) {
 // in the agent's output (positive assertion — sandbox passes them through).
 func assertEnvVarsVisible(t *testing.T, output string, expectVars []string) {
 	t.Helper()
+	missing := []string{}
 	for _, v := range expectVars {
 		if !strings.Contains(output, v) {
-			t.Errorf("POSITIVE FAIL: %s not found in agent env output\n"+
-				"the sandbox may be over-filtering env vars", v)
-			return
+			missing = append(missing, v)
 		}
+	}
+	if len(missing) > 0 {
+		// Classify: did the agent run the env probe at all?
+		mode := classifyProbe(output, "env")
+		switch mode {
+		case fmAgentNoOutput:
+			t.Errorf("FAIL [envVarsVisible]: AGENT_NO_OUTPUT — agent did not run the env probe; cannot check %v\n%s",
+				missing, classifyAgentOutput(output))
+		case fmAgentPartial:
+			t.Errorf("FAIL [envVarsVisible]: AGENT_PARTIAL — env probe ran but output incomplete; missing %v\n%s",
+				missing, classifyAgentOutput(output))
+		case fmPass:
+			t.Errorf("FAIL [envVarsVisible]: SANDBOX_FAIL — env probe complete but vars missing: %v\n"+
+				"the sandbox may be over-filtering env vars\n%s",
+				missing, classifyAgentOutput(output))
+		}
+		return
 	}
 	t.Logf("PASS: env passthrough — expected vars visible in agent output")
 }
@@ -501,6 +562,19 @@ func assertEnvVarsVisible(t *testing.T, output string, expectVars []string) {
 // fs_read probe section.
 func assertFilesystemReadDenied(t *testing.T, output string) {
 	t.Helper()
+	mode := classifyProbe(output, "fs_read")
+	switch mode {
+	case fmAgentNoOutput:
+		t.Errorf("FAIL [fsReadDenied]: AGENT_NO_OUTPUT — agent did not run the fs_read probe\n%s",
+			classifyAgentOutput(output))
+		return
+	case fmAgentPartial:
+		t.Errorf("FAIL [fsReadDenied]: AGENT_PARTIAL — fs_read probe ran but output incomplete\n%s",
+			classifyAgentOutput(output))
+		return
+	}
+	// Probe ran completely — check for denial messages.
+	probeOut := extractProbe(output, "fs_read")
 	denials := []string{
 		"Permission denied",
 		"No such file or directory",
@@ -509,14 +583,15 @@ func assertFilesystemReadDenied(t *testing.T, output string) {
 	}
 	found := false
 	for _, d := range denials {
-		if strings.Contains(output, d) {
+		if strings.Contains(probeOut, d) {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Errorf("SECURITY FAIL: no filesystem read denial message found in agent output\n" +
-			"the sandbox may not be enforcing filesystem read isolation")
+		t.Errorf("FAIL [fsReadDenied]: SANDBOX_FAIL — no filesystem read denial in probe output\n"+
+			"the sandbox may not be enforcing filesystem read isolation\n%s",
+			classifyAgentOutput(output))
 		return
 	}
 	t.Logf("PASS: filesystem read isolation — denial message found in agent output")
@@ -526,6 +601,18 @@ func assertFilesystemReadDenied(t *testing.T, output string) {
 // paths (read-only mounts) were denied by the sandbox.
 func assertFilesystemWriteDenied(t *testing.T, output string) {
 	t.Helper()
+	mode := classifyProbe(output, "fs_write")
+	switch mode {
+	case fmAgentNoOutput:
+		t.Errorf("FAIL [fsWriteDenied]: AGENT_NO_OUTPUT — agent did not run the fs_write probe\n%s",
+			classifyAgentOutput(output))
+		return
+	case fmAgentPartial:
+		t.Errorf("FAIL [fsWriteDenied]: AGENT_PARTIAL — fs_write probe ran but output incomplete\n%s",
+			classifyAgentOutput(output))
+		return
+	}
+	probeOut := extractProbe(output, "fs_write")
 	denials := []string{
 		"Read-only file system",
 		"Permission denied",
@@ -533,14 +620,15 @@ func assertFilesystemWriteDenied(t *testing.T, output string) {
 	}
 	found := false
 	for _, d := range denials {
-		if strings.Contains(output, d) {
+		if strings.Contains(probeOut, d) {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Errorf("SECURITY FAIL: no filesystem write denial message found in agent output\n" +
-			"the sandbox may not be enforcing write protection on system paths")
+		t.Errorf("FAIL [fsWriteDenied]: SANDBOX_FAIL — no filesystem write denial in probe output\n"+
+			"the sandbox may not be enforcing write protection on system paths\n%s",
+			classifyAgentOutput(output))
 		return
 	}
 	t.Logf("PASS: filesystem write protection — denial message found in agent output")
@@ -592,6 +680,18 @@ func logExecProbeResults(t *testing.T, output string, probePaths []string) {
 // by the sandbox. We check for connection failure messages.
 func assertNetworkDenied(t *testing.T, output string, denyDomain string) {
 	t.Helper()
+	mode := classifyProbe(output, "net")
+	switch mode {
+	case fmAgentNoOutput:
+		t.Errorf("FAIL [networkDenied]: AGENT_NO_OUTPUT — agent did not run the net probe\n%s",
+			classifyAgentOutput(output))
+		return
+	case fmAgentPartial:
+		t.Errorf("FAIL [networkDenied]: AGENT_PARTIAL — net probe ran but output incomplete\n%s",
+			classifyAgentOutput(output))
+		return
+	}
+	probeOut := extractProbe(output, "net")
 	denials := []string{
 		"Connection refused",
 		"Could not resolve host",
@@ -605,14 +705,15 @@ func assertNetworkDenied(t *testing.T, output string, denyDomain string) {
 	}
 	found := false
 	for _, d := range denials {
-		if strings.Contains(output, d) {
+		if strings.Contains(probeOut, d) {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Errorf("SECURITY FAIL: no network denial message found in agent output\n"+
-			"the sandbox may not be enforcing network egress filtering for %s", denyDomain)
+		t.Errorf("FAIL [networkDenied]: SANDBOX_FAIL — no network denial in probe output\n"+
+			"the sandbox may not be enforcing network egress filtering for %s\n%s",
+			denyDomain, classifyAgentOutput(output))
 		return
 	}
 	t.Logf("PASS: network isolation — denial message found in agent output")

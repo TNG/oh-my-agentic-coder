@@ -82,22 +82,22 @@ echo "=== END: fs_read ==="
 echo ""
 echo "=== PROBE: fs_write ==="
 echo "--- write /etc/omac-audit-test ---"
-echo "test" > /etc/omac-audit-test 2>&1 || true
+( echo "test" > /etc/omac-audit-test ) 2>&1 || true
 echo "--- write /usr/omac-audit-test ---"
-echo "test" > /usr/omac-audit-test 2>&1 || true
+( echo "test" > /usr/omac-audit-test ) 2>&1 || true
 echo "--- write /bin/omac-audit-test ---"
-echo "test" > /bin/omac-audit-test 2>&1 || true
+( echo "test" > /bin/omac-audit-test ) 2>&1 || true
 echo "--- write /sbin/omac-audit-test ---"
-echo "test" > /sbin/omac-audit-test 2>&1 || true
+( echo "test" > /sbin/omac-audit-test ) 2>&1 || true
 echo "=== END: fs_write ==="
 
 echo ""
 echo "=== PROBE: fs_exec ==="
 echo "--- exec /usr/bin/python3 (read-only mount, exec should fail or be denied) ---"
 # /usr is granted read-only; executing a binary from it tests no-exec enforcement.
-/usr/bin/python3 -c 'print("EXEC_OK")' 2>&1 || true
+( /usr/bin/python3 -c 'print("EXEC_OK")' ) 2>&1 || true
 echo "--- exec /bin/sh -c (read-only mount) ---"
-/bin/sh -c 'echo "SHELL_EXEC_OK"' 2>&1 || true
+( /bin/sh -c 'echo "SHELL_EXEC_OK"' ) 2>&1 || true
 echo "=== END: fs_exec ==="
 
 echo ""
