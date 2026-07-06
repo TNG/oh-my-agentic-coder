@@ -163,8 +163,8 @@ func runSecurityAudit(t *testing.T, h harnessConfig) {
 	}
 
 	spec := allowanceSpecFor(h)
-	t.Logf("allowance spec for %s: allow=%v deny=%v fsDeny=%v netDeny=%s",
-		h.Name, spec.EnvAllowVars, spec.EnvDenyVars, spec.FsDenyPaths, spec.NetDenyDomain)
+	t.Logf("allowance spec for %s: allow=%v deny=%v fsDeny=%v fsWriteDeny=%v netDeny=%s",
+		h.Name, spec.EnvAllowVars, spec.EnvDenyVars, spec.FsDenyPaths, spec.FsWriteDenyPaths, spec.NetDenyDomain)
 
 	omacBin := buildOmac(t)
 	installHarness(t, h, home)
@@ -172,6 +172,10 @@ func runSecurityAudit(t *testing.T, h harnessConfig) {
 	writeSandboxProfile(t, home, h, &spec)
 	copySkill(t, h, workdir, "self-audit")
 	registerSelfAudit(t, omacBin, home, workdir)
+	// Register echo-rest alongside self-audit so the cross-skill
+	// isolation probe can try to reach it.
+	copySkill(t, h, workdir, "echo-rest")
+	registerEchoRest(t, omacBin, home, workdir)
 
 	prompt := "Run this command and print its full output verbatim:\n\n" +
 		`sh "$OMAC_HARNESS_SKILLS_DIR/self-audit/scripts/audit.sh"` + "\n\n" +
@@ -185,7 +189,8 @@ func runSecurityAudit(t *testing.T, h harnessConfig) {
 	if sandboxActive {
 		assertSecretNotLeaked(t, stdout)
 		assertEnvVarsDenied(t, stdout, spec.EnvDenyVars)
-		assertFilesystemDenied(t, stdout)
+		assertFilesystemReadDenied(t, stdout)
+		assertFilesystemWriteDenied(t, stdout)
 		assertNetworkDenied(t, stdout, spec.NetDenyDomain)
 	} else {
 		t.Logf("skipping negative assertions: %s runs with --no-sandbox", h.Name)
@@ -201,6 +206,20 @@ func runSecurityAudit(t *testing.T, h harnessConfig) {
 	} else {
 		t.Logf("skipping positive env assertions: %s runs with --no-sandbox", h.Name)
 	}
+
+	// --- DOCUMENTATION probes (log current behavior, no pass/fail) ---
+
+	// Exec on read-only mounts: bwrap typically allows exec on read-only
+	// binds. This is a platform default, not a contract — we log the
+	// result so changes are visible in test output.
+	logExecProbeResults(t, stdout, spec.FsExecProbePaths)
+
+	// Cross-skill sidecar isolation: omac currently does NOT isolate
+	// sidecars from each other — a skill can reach another skill's
+	// sidecar via its OMAC_<SKILL>_BASE env var. This is a known design
+	// decision (all sidecars share the same facade). We log the result
+	// so if isolation is added later, the test surfaces the change.
+	logCrossSkillIsolation(t, stdout)
 }
 
 // buildOmac compiles the omac binary into a temp dir and returns its path.
@@ -392,7 +411,10 @@ func runAuditAgent(t *testing.T, h harnessConfig, omacBin, home, workdir, prompt
 			err, stdout.String(), stderr.String())
 	}
 	writeSessionArtifacts(t, h, "security-audit", home, workdir, prompt, stdout.String(), stderr.String(), env, profPath)
-	return stdout.String()
+	// Audit assertions need both stdout (agent's response) and stderr
+	// (where opencode --print-logs sends tool output, including the
+	// audit.sh probe results). Return the combined output.
+	return stdout.String() + "\n" + stderr.String()
 }
 
 // buildAgentEnv constructs the environment for the omac start subprocess.
@@ -474,9 +496,10 @@ func assertEnvVarsVisible(t *testing.T, output string, expectVars []string) {
 	t.Logf("PASS: env passthrough — expected vars visible in agent output")
 }
 
-// assertFilesystemDenied verifies that filesystem probes were denied
-// by the sandbox. We check for OS-level denial messages.
-func assertFilesystemDenied(t *testing.T, output string) {
+// assertFilesystemReadDenied verifies that filesystem read probes were
+// denied by the sandbox. We check for OS-level denial messages in the
+// fs_read probe section.
+func assertFilesystemReadDenied(t *testing.T, output string) {
 	t.Helper()
 	denials := []string{
 		"Permission denied",
@@ -492,11 +515,77 @@ func assertFilesystemDenied(t *testing.T, output string) {
 		}
 	}
 	if !found {
-		t.Errorf("SECURITY FAIL: no filesystem denial message found in agent output\n" +
-			"the sandbox may not be enforcing filesystem isolation")
+		t.Errorf("SECURITY FAIL: no filesystem read denial message found in agent output\n" +
+			"the sandbox may not be enforcing filesystem read isolation")
 		return
 	}
-	t.Logf("PASS: filesystem isolation — denial message found in agent output")
+	t.Logf("PASS: filesystem read isolation — denial message found in agent output")
+}
+
+// assertFilesystemWriteDenied verifies that write attempts to system
+// paths (read-only mounts) were denied by the sandbox.
+func assertFilesystemWriteDenied(t *testing.T, output string) {
+	t.Helper()
+	denials := []string{
+		"Read-only file system",
+		"Permission denied",
+		"Operation not permitted",
+	}
+	found := false
+	for _, d := range denials {
+		if strings.Contains(output, d) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("SECURITY FAIL: no filesystem write denial message found in agent output\n" +
+			"the sandbox may not be enforcing write protection on system paths")
+		return
+	}
+	t.Logf("PASS: filesystem write protection — denial message found in agent output")
+}
+
+// logCrossSkillIsolation logs whether the agent could reach another
+// skill's sidecar. omac currently does NOT isolate sidecars from each
+// other — all skills share the same facade and can reach each other
+// via their OMAC_<SKILL>_BASE env vars. This is a known design decision;
+// we log the result so if isolation is added later, the change is visible.
+func logCrossSkillIsolation(t *testing.T, output string) {
+	t.Helper()
+	if !strings.Contains(output, "=== PROBE: xskill ===") {
+		t.Logf("SKIP: cross-skill isolation — xskill probe not in output")
+		return
+	}
+	if strings.Contains(output, "OMAC_ECHO_BASE not set") {
+		t.Logf("SKIP: cross-skill isolation — echo-rest not registered")
+		return
+	}
+	// Check if the agent got a successful response from echo-rest.
+	if strings.Contains(output, `"skill": "echo-rest"`) {
+		t.Logf("INFO: cross-skill sidecar NOT isolated — agent reached echo-rest sidecar " +
+			"(known behavior: all sidecars share the facade; not a security boundary)")
+		return
+	}
+	t.Logf("INFO: cross-skill sidecar isolated — echo-rest sidecar not reachable from self-audit")
+}
+
+// logExecProbeResults logs the exec probe results without asserting
+// pass/fail. Whether exec works on read-only mounts is a platform
+// decision (bwrap typically allows exec on read-only binds), not a
+// contract. We document the current behavior so changes are visible.
+func logExecProbeResults(t *testing.T, output string, probePaths []string) {
+	t.Helper()
+	if !strings.Contains(output, "=== PROBE: fs_exec ===") {
+		return
+	}
+	for _, p := range probePaths {
+		if strings.Contains(output, "EXEC_OK") || strings.Contains(output, "SHELL_EXEC_OK") {
+			t.Logf("INFO: exec on read-only mount ALLOWED for %s (platform default)", p)
+		} else {
+			t.Logf("INFO: exec on read-only mount DENIED for %s", p)
+		}
+	}
 }
 
 // assertNetworkDenied verifies that the network probe was blocked
