@@ -355,3 +355,107 @@ func TestRunProvenance_TextMode(t *testing.T) {
 		t.Errorf("missing github.com: %q", out)
 	}
 }
+
+func TestRunProvenance_CheckDefaultProfileClean(t *testing.T) {
+	isolateHome(t)
+	wd := t.TempDir()
+	profDir := filepath.Join(wd, ".opencode")
+	os.MkdirAll(profDir, 0o755)
+	profPath := filepath.Join(profDir, "default.json")
+	os.WriteFile(profPath, []byte(`{"meta":{"name":"default"},"workdir":{"access":"readwrite"}}`), 0o644)
+
+	env, read := captureEnv(t, wd)
+	code := runProvenance([]string{"--profile", profPath, "--check"}, env)
+	if code != ExitOK {
+		out, errOut := read()
+		t.Fatalf("code = %d; stdout=%q stderr=%q", code, out, errOut)
+	}
+	out, _ := read()
+	if !strings.Contains(out, "no findings") {
+		t.Errorf("clean profile should print '(no findings)'; got %q", out)
+	}
+}
+
+func TestRunProvenance_CheckJSONEmptyArray(t *testing.T) {
+	isolateHome(t)
+	wd := t.TempDir()
+	profDir := filepath.Join(wd, ".opencode")
+	os.MkdirAll(profDir, 0o755)
+	profPath := filepath.Join(profDir, "default.json")
+	os.WriteFile(profPath, []byte(`{"meta":{"name":"default"},"workdir":{"access":"readwrite"}}`), 0o644)
+
+	env, read := captureEnv(t, wd)
+	code := runProvenance([]string{"--profile", profPath, "--check", "--json"}, env)
+	if code != ExitOK {
+		out, errOut := read()
+		t.Fatalf("code = %d; stdout=%q stderr=%q", code, out, errOut)
+	}
+	out, _ := read()
+	var parsed []map[string]any
+	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
+		t.Fatalf("invalid JSON %q: %v", out, err)
+	}
+	if len(parsed) != 0 {
+		t.Errorf("clean profile should produce empty JSON array; got %d items", len(parsed))
+	}
+}
+
+func TestRunProvenance_CheckRiskyProfileExitsNonZero(t *testing.T) {
+	isolateHome(t)
+	wd := t.TempDir()
+	profDir := filepath.Join(wd, ".opencode")
+	os.MkdirAll(profDir, 0o755)
+	profPath := filepath.Join(profDir, "risky.json")
+	os.WriteFile(profPath, []byte(`{
+		"meta":{"name":"risky"},
+		"workdir":{"access":"readwrite"},
+		"filesystem":{"allow":["~/.ssh"],"override_deny":["~/.aws"]}
+	}`), 0o644)
+
+	env, read := captureEnv(t, wd)
+	code := runProvenance([]string{"--profile", profPath, "--check"}, env)
+	if code == ExitOK {
+		out, _ := read()
+		t.Fatalf("expected non-zero exit for risky profile; got 0; stdout=%q", out)
+	}
+	out, _ := read()
+	if !strings.Contains(out, "[HIGH]") {
+		t.Errorf("output should contain [HIGH] findings; got %q", out)
+	}
+}
+
+func TestRunProvenance_CheckJSONRiskyProfileHasFindings(t *testing.T) {
+	isolateHome(t)
+	wd := t.TempDir()
+	profDir := filepath.Join(wd, ".opencode")
+	os.MkdirAll(profDir, 0o755)
+	profPath := filepath.Join(profDir, "risky.json")
+	os.WriteFile(profPath, []byte(`{
+		"meta":{"name":"risky"},
+		"workdir":{"access":"readwrite"},
+		"network":{"allow_domain":["169.254.169.254"]}
+	}`), 0o644)
+
+	env, read := captureEnv(t, wd)
+	code := runProvenance([]string{"--profile", profPath, "--check", "--json"}, env)
+	if code == ExitOK {
+		t.Fatal("expected non-zero exit for metadata host in allow_domain")
+	}
+	out, _ := read()
+	var parsed []map[string]any
+	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
+		t.Fatalf("invalid JSON %q: %v", out, err)
+	}
+	if len(parsed) == 0 {
+		t.Errorf("expected at least one finding; got empty array")
+	}
+	foundHigh := false
+	for _, f := range parsed {
+		if sev, _ := f["severity"].(string); sev == "high" {
+			foundHigh = true
+		}
+	}
+	if !foundHigh {
+		t.Errorf("expected at least one high finding; got %v", parsed)
+	}
+}

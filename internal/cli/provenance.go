@@ -21,6 +21,7 @@ import (
 	"text/tabwriter"
 
 	"github.com/tngtech/oh-my-agentic-coder/internal/netprompt"
+	"github.com/tngtech/oh-my-agentic-coder/internal/profileaudit"
 	"github.com/tngtech/oh-my-agentic-coder/internal/registry"
 	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxprofile"
 )
@@ -305,18 +306,35 @@ func truncateEntry(s string) string {
 	return string(r[:max-1]) + "…"
 }
 
-// runProvenance implements `omac provenance [--profile <ref>] [--json]`.
+// runProvenance implements `omac provenance [--profile <ref>] [--check] [--json]`.
 func runProvenance(args []string, env *Env) int {
 	fs := flag.NewFlagSet("provenance", flag.ContinueOnError)
 	fs.SetOutput(env.Stderr)
 	profileRef := fs.String("profile", "", "sandbox profile name, path, or builtin (default: default)")
+	checkMode := fs.Bool("check", false, "Static security lint of the resolved profile.")
 	jsonOut := fs.Bool("json", false, "Emit a JSON object instead of tabular text.")
 	fs.Usage = func() {
-		fmt.Fprintln(env.Stderr, "Usage: omac provenance [--profile <ref>] [--json]")
+		fmt.Fprintln(env.Stderr, "Usage: omac provenance [--profile <ref>] [--check] [--json]")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(reorderFlagsFirst(args)); err != nil {
 		return ExitMisuse
+	}
+
+	// --check resolves the profile itself and runs the lint; it does
+	// not build the provenance view. Keeps --check independent of the
+	// view-build path and its (registry, learned-policy) dependencies.
+	if *checkMode {
+		profile, _, err := sandboxprofile.Resolve(*profileRef)
+		if err != nil {
+			fmt.Fprintln(env.Stderr, "omac provenance --check:", err)
+			return ExitConfigInvalid
+		}
+		findings := profileaudit.Check(profile)
+		if *jsonOut {
+			return writeCheckJSON(env.Stdout, findings)
+		}
+		return writeCheckText(env.Stdout, findings)
 	}
 
 	view, err := buildProvenanceView(env.Workdir, *profileRef)
@@ -328,4 +346,32 @@ func runProvenance(args []string, env *Env) int {
 		return writeProvenanceJSON(env.Stdout, view)
 	}
 	return writeProvenanceText(env.Stdout, view)
+}
+
+// writeCheckText renders findings one per line, sorted by severity.
+func writeCheckText(w io.Writer, findings []profileaudit.Finding) int {
+	if len(findings) == 0 {
+		fmt.Fprintln(w, "(no findings)")
+		return ExitOK
+	}
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "  SEVERITY\tFIELD\tVALUE\tMESSAGE")
+	for _, f := range findings {
+		fmt.Fprintf(tw, "  [%s]\t%s\t%s\t%s\n",
+			strings.ToUpper(string(f.Severity)),
+			f.Field, f.Value, f.Message)
+	}
+	_ = tw.Flush()
+	return profileaudit.ExitCode(findings)
+}
+
+// writeCheckJSON marshals findings as a JSON array.
+func writeCheckJSON(w io.Writer, findings []profileaudit.Finding) int {
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(findings); err != nil {
+		fmt.Fprintln(os.Stderr, "omac provenance --check: json:", err)
+		return ExitIOError
+	}
+	return profileaudit.ExitCode(findings)
 }

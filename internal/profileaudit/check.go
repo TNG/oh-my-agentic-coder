@@ -14,6 +14,9 @@ import (
 // network I/O. The returned findings are sorted by severity
 // (high → medium → low), then by category, then by field.
 func Check(profile *sandboxprofile.Profile) []Finding {
+	if profile == nil {
+		return nil
+	}
 	var findings []Finding
 	findings = append(findings, checkOverrideDeny(profile)...)
 	findings = append(findings, checkFSGrants(profile)...)
@@ -177,11 +180,17 @@ func checkOneFSGrant(field, entry string, baseline, extension []string) []Findin
 	return checkBroadGrant(field, entry)
 }
 
-// isBroadGlob reports whether entry is a literal broad/wildcard grant
-// that cannot be meaningfully compared against secret paths.
+// isBroadGlob reports whether entry is a wildcard/glob grant that cannot
+// be meaningfully compared against explicit secret paths. Any entry
+// containing a "*" is treated as broad; the literal cwd forms "." and
+// "./" are also broad because ExpandPath would resolve them to cwd
+// rather than a meaningful parent.
 func isBroadGlob(entry string) bool {
+	if strings.Contains(entry, "*") {
+		return true
+	}
 	switch entry {
-	case ".", "*", "./", "./*", "**":
+	case ".", "./":
 		return true
 	}
 	return false
@@ -206,7 +215,6 @@ func checkExplicitGrant(field, entry, exp string, baseline, extension []string) 
 				Value:    entry,
 				Message:  "intersects baseline protected path " + expandedSP + " (" + secretDescription(expandedSP) + ")",
 			})
-			return findings
 		}
 	}
 	for _, sp := range extension {
@@ -222,7 +230,6 @@ func checkExplicitGrant(field, entry, exp string, baseline, extension []string) 
 				Value:    entry,
 				Message:  "overlaps known secret path " + expandedSP + " not in baseline (" + secretDescription(expandedSP) + ")",
 			})
-			return findings
 		}
 	}
 	return findings

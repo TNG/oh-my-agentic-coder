@@ -127,17 +127,60 @@ func TestCheck_FSGrantExtensionPathIsMedium(t *testing.T) {
 
 func TestCheck_FSGrantParentOfSecretPathIsFlagged(t *testing.T) {
 	// Granting ~ (the home dir) is a parent of ~/.ssh → should flag high.
+	// ~ is also a parent of ~30 baseline secret paths, so the audit must
+	// emit one finding per match, not stop at the first.
 	p := cleanProfile()
 	p.Filesystem.Allow = []string{"~"}
 	findings := Check(p)
 	foundSSH := false
+	count := 0
 	for _, f := range findings {
 		if f.Category == CatFSGrant && strings.Contains(f.Message, ".ssh") {
 			foundSSH = true
 		}
+		if f.Category == CatFSGrant {
+			count++
+		}
 	}
 	if !foundSSH {
 		t.Errorf("granting ~ should flag ~/.ssh as exposed; got %+v", findings)
+	}
+	if count < 5 {
+		t.Errorf("granting ~ should produce ≥5 findings (one per baseline secret under home); got %d: %+v", count, findings)
+	}
+}
+
+func TestCheck_NilProfileNoPanic(t *testing.T) {
+	// A nil profile must not panic; Check returns nil/empty.
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("Check(nil) panicked: %v", r)
+		}
+	}()
+	findings := Check(nil)
+	if len(findings) != 0 {
+		t.Errorf("Check(nil) should return no findings; got %d: %+v", len(findings), findings)
+	}
+}
+
+func TestCheck_FSGrantWildcardGlobIsMedium(t *testing.T) {
+	// ~/.* contains a "*" and must be treated as a broad glob, emitting
+	// MEDIUM findings for each known secret basename glob. Without the
+	// wildcard check this entry would slip through checkExplicitGrant and
+	// likely produce no finding.
+	p := cleanProfile()
+	p.Filesystem.Allow = []string{"~/.*"}
+	findings := Check(p)
+	if len(findings) == 0 {
+		t.Fatal("wildcard glob '~/.*' should produce findings for known secret basename globs")
+	}
+	for _, f := range findings {
+		if f.Severity != SeverityMedium {
+			t.Errorf("wildcard-glob finding %q severity = %q; want medium", f.Value, f.Severity)
+		}
+		if f.Category != CatFSGrant {
+			t.Errorf("wildcard-glob finding category = %q; want filesystem", f.Category)
+		}
 	}
 }
 
