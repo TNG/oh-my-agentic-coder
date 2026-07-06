@@ -27,15 +27,15 @@ func gitInDir(t *testing.T, dir string, args ...string) {
 }
 
 // TestIntegrationWorktreeHooksRunButNotWritable is the real-Seatbelt proof of
-// the linked-worktree hooks policy: a host-authored prepare-commit-msg hook
-// RUNS during a sandboxed commit (the #30 bug was that it couldn't) and the
-// commit succeeds, yet the shared hooks dir is NOT writable — so the agent
-// cannot plant a hook that would run un-sandboxed on the host's next commit.
+// the linked-worktree hooks policy: a host-authored prepare-commit-msg hook RUNS
+// during a sandboxed commit (the #30 bug was that it couldn't) and the commit
+// succeeds, yet the shared hooks dir is NOT writable — so the agent can't plant
+// a hook that runs un-sandboxed on the host's next commit.
 //
-// The repo is rooted under $HOME on purpose: t.TempDir() lives under $TMPDIR,
-// which the sandbox baseline grants WRITE, and that blanket temp-write would
-// mask the read-only hooks grant and make the write-denied assertion a false
-// pass. $HOME is read-only baseline, so only the explicit git grants apply.
+// Repo under $HOME on purpose: t.TempDir() lives under $TMPDIR, which the
+// sandbox baseline grants WRITE — that blanket temp-write would mask the
+// read-only hooks grant and make the write-denied assertion a false pass. $HOME
+// is read-only baseline, so only the explicit git grants apply.
 func TestIntegrationWorktreeHooksRunButNotWritable(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
@@ -61,8 +61,8 @@ func TestIntegrationWorktreeHooksRunButNotWritable(t *testing.T) {
 	gitInDir(t, repo, "add", "seed")
 	gitInDir(t, repo, "commit", "-q", "-m", "seed")
 
-	// A host hook in the shared common hooks dir that appends a marker to the
-	// commit message — the marker lands in the commit only if the hook ran.
+	// A host hook that appends a marker to the commit message — the marker
+	// lands in the commit only if the hook ran.
 	hooksDir := filepath.Join(repo, ".git", "hooks")
 	hook := filepath.Join(hooksDir, "prepare-commit-msg")
 	if err := os.WriteFile(hook, []byte("#!/bin/sh\necho 'HOOK-RAN' >> \"$1\"\n"), 0o755); err != nil {

@@ -192,11 +192,9 @@ func listenUnix(path string) (interface{ Close() error }, error) {
 	return net.Listen("unix", path)
 }
 
-// makeLinkedWorktree builds a minimal linked-worktree layout under a
-// temp dir and returns (workdir, commonDir), mirroring what
-// `git worktree add` produces: the workdir's .git is a *file*
-// ("gitdir: <admin>") and the admin dir's commondir file points back at
-// the shared common dir.
+// makeLinkedWorktree builds a minimal linked-worktree layout mirroring
+// `git worktree add`: .git is a "gitdir: <admin>" file, and <admin>/commondir
+// points back at the shared common dir.
 func makeLinkedWorktree(t *testing.T) (workdir, common string) {
 	t.Helper()
 	base := t.TempDir()
@@ -216,7 +214,7 @@ func makeLinkedWorktree(t *testing.T) (workdir, common string) {
 	}
 	writeFile(t, filepath.Join(common, "config"))
 	writeFile(t, filepath.Join(common, "packed-refs"))
-	// commondir is relative to the admin dir, exactly as git writes it.
+	// commondir is relative to the admin dir, as git writes it.
 	if err := os.WriteFile(filepath.Join(admin, "commondir"), []byte("../..\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -244,9 +242,8 @@ func TestResolveGrantsLinkedWorktreeReadWrite(t *testing.T) {
 			t.Errorf("allow missing %s: %v", want, g.AllowPaths)
 		}
 	}
-	// config/info/packed-refs are read-only: readable but never writable
-	// (blocks core.hooksPath / credential.helper mutation; a normal
-	// add/commit only writes loose refs, never packed-refs).
+	// config/info/packed-refs are read-only (blocks core.hooksPath/credential.helper
+	// mutation; add/commit only writes loose refs, never packed-refs).
 	for _, sub := range []string{"config", "info", "packed-refs"} {
 		want := filepath.Join(common, sub)
 		if !slices.Contains(g.ReadPaths, want) {
@@ -256,8 +253,7 @@ func TestResolveGrantsLinkedWorktreeReadWrite(t *testing.T) {
 			t.Errorf("%s must not be writable", want)
 		}
 	}
-	// hooks is read-only: readable+runnable, never writable, never hard-denied
-	// (rationale in gitWorktreeGrants).
+	// hooks: readable+runnable, never writable, never hard-denied.
 	hooks := filepath.Join(common, "hooks")
 	if !slices.Contains(g.ReadPaths, hooks) {
 		t.Errorf("hooks must be readable: %v", g.ReadPaths)
@@ -277,8 +273,7 @@ func TestResolveGrantsLinkedWorktreeReadOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Read-only workdir: git read ops (status/log/diff) still need the
-	// common dir, so everything is readable but nothing is writable.
+	// Read-only workdir: git read ops still need the common dir.
 	for _, sub := range []string{"objects", "refs", "logs", "config", "info", "packed-refs", filepath.Join("worktrees", "wt")} {
 		want := filepath.Join(common, sub)
 		if !slices.Contains(g.ReadPaths, want) {
@@ -294,8 +289,7 @@ func TestResolveGrantsLinkedWorktreeReadOnly(t *testing.T) {
 
 func TestResolveGrantsPlainCloneNoWorktreeGrants(t *testing.T) {
 	wd := t.TempDir()
-	// Plain clone: .git is a directory that lives inside the workdir, so
-	// it is already covered by the workdir grant — no extra paths added.
+	// Plain clone: .git is a directory inside the workdir, already covered.
 	if err := os.MkdirAll(filepath.Join(wd, ".git", "objects"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -311,12 +305,10 @@ func TestResolveGrantsPlainCloneNoWorktreeGrants(t *testing.T) {
 	}
 }
 
-// TestResolveGrantsRealGitWorktreePipeline drives the full resolve ->
-// backend-generation path against a worktree produced by real `git`, so
-// it catches any drift between the assumed .git/commondir format and what
-// git actually writes. (A live sandbox-exec/bwrap launch can't run in
-// this dev environment, so this is the end-to-end check below the process
-// boundary, matching TestDenyFullCLIPipeline.)
+// TestResolveGrantsRealGitWorktreePipeline drives resolve -> backend-generation
+// against a real `git worktree add`, catching any drift from git's actual
+// .git/commondir format. (A live sandbox-exec/bwrap launch can't run here, so
+// this is the end-to-end check below the process boundary.)
 func TestResolveGrantsRealGitWorktreePipeline(t *testing.T) {
 	git, err := exec.LookPath("git")
 	if err != nil {
@@ -342,9 +334,8 @@ func TestResolveGrantsRealGitWorktreePipeline(t *testing.T) {
 	wt := filepath.Join(base, "wt")
 	run(mainRepo, "worktree", "add", "-q", wt, "-b", "feature")
 
-	// git writes canonical (symlink-resolved) paths into its worktree
-	// metadata, and ResolveGrants canonicalizes grants too, so compare
-	// against the resolved common dir (/var -> /private/var on macOS).
+	// git writes canonical paths; ResolveGrants canonicalizes grants too,
+	// so compare against the resolved common dir (/var -> /private/var on macOS).
 	common := filepath.Join(mainRepo, ".git")
 	if resolved, rerr := filepath.EvalSymlinks(common); rerr == nil {
 		common = resolved
@@ -376,8 +367,7 @@ func TestResolveGrantsRealGitWorktreePipeline(t *testing.T) {
 		t.Errorf("hooks must not be hard-denied: %v", g.ProtectedPaths)
 	}
 
-	// macOS backend: objects read+write, config read-only, hooks read-only
-	// (readable, never write-allowed, never read-denied).
+	// macOS backend: objects rw, config read-only, hooks read-only.
 	sbpl := GenerateSBPL(g)
 	objects := filepath.Join(common, "objects")
 	if !strings.Contains(sbpl, "(allow file-write* (subpath \""+objects+"\"))") {
@@ -415,9 +405,8 @@ func TestResolveGrantsRealGitWorktreePipeline(t *testing.T) {
 	}
 }
 
-// TestResolveGrantsWorktreeHooksRunnableNotWritable pins the read-only hooks
-// policy (readable+runnable, never writable, never hard-denied) at both
-// writable and read-only workdir access.
+// TestResolveGrantsWorktreeHooksRunnableNotWritable pins the hooks policy
+// (readable+runnable, never writable, never hard-denied) at both access levels.
 func TestResolveGrantsWorktreeHooksRunnableNotWritable(t *testing.T) {
 	wd, common := makeLinkedWorktree(t)
 	hooks := filepath.Join(common, "hooks")
@@ -439,9 +428,9 @@ func TestResolveGrantsWorktreeHooksRunnableNotWritable(t *testing.T) {
 	}
 }
 
-// TestResolveGrantsWorktreeHooksSymlinkEscape guards the new hooks READ grant:
-// a planted `hooks -> <secret>` symlink must be dropped by the containment
-// check, not canonicalized into a read of the target.
+// TestResolveGrantsWorktreeHooksSymlinkEscape guards the hooks READ grant:
+// a planted `hooks -> <secret>` symlink must be dropped by containment,
+// not canonicalized into a read of the target.
 func TestResolveGrantsWorktreeHooksSymlinkEscape(t *testing.T) {
 	base := t.TempDir()
 	secret := filepath.Join(base, "secret")
@@ -495,15 +484,13 @@ func TestResolveGrantsWorktreeHooksSymlinkEscape(t *testing.T) {
 	}
 }
 
-// TestResolveGrantsWorktreeRejectsSymlinkEscape guards the sandbox
-// boundary: because the grant paths are derived from in-workdir file
-// content a prior sandboxed session could tamper with, and the backends
-// symlink-canonicalize every grant into a kernel rule, a planted symlink
-// under the common dir (e.g. objects -> a sensitive dir) must NOT widen
-// any grant to the symlink target.
+// TestResolveGrantsWorktreeRejectsSymlinkEscape guards the sandbox boundary:
+// grant paths derive from in-workdir files a prior sandboxed session could
+// tamper with, and backends symlink-canonicalize every grant. A planted
+// symlink under the common dir (e.g. objects -> secret) must NOT widen any
+// grant to the target.
 func TestResolveGrantsWorktreeRejectsSymlinkEscape(t *testing.T) {
 	base := t.TempDir()
-	// The sensitive dir the attacker aims a symlink at.
 	secret := filepath.Join(base, "secret")
 	if err := os.MkdirAll(secret, 0o755); err != nil {
 		t.Fatal(err)
@@ -550,8 +537,8 @@ func TestResolveGrantsWorktreeRejectsSymlinkEscape(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// No grant — nor its symlink-resolved form, which is what the kernel
-	// rules use — may reach the secret dir.
+	// No grant — nor its symlink-resolved form (what kernel rules use) —
+	// may reach the secret dir.
 	for _, list := range [][]string{g.ReadPaths, g.WritePaths, g.AllowPaths} {
 		for _, gp := range list {
 			resolved, rerr := filepath.EvalSymlinks(gp)
@@ -565,12 +552,11 @@ func TestResolveGrantsWorktreeRejectsSymlinkEscape(t *testing.T) {
 	}
 }
 
-// TestResolveGrantsWorktreeRejectsSpoofedCommondir ensures a commondir
-// that violates git's <common>/worktrees/<name> invariant (pointing the
-// grant root somewhere unrelated) yields no worktree grants at all.
+// TestResolveGrantsWorktreeRejectsSpoofedCommondir: a commondir violating
+// git's <common>/worktrees/<name> invariant yields no worktree grants.
 func TestResolveGrantsWorktreeRejectsSpoofedCommondir(t *testing.T) {
 	wd, _ := makeLinkedWorktree(t)
-	// Repoint commondir at an absolute, unrelated dir.
+	// Repoint commondir at an unrelated absolute dir.
 	elsewhere := t.TempDir()
 	admin := readAdminDir(t, wd)
 	if err := os.WriteFile(filepath.Join(admin, "commondir"), []byte(elsewhere+"\n"), 0o600); err != nil {
@@ -588,7 +574,7 @@ func TestResolveGrantsWorktreeRejectsSpoofedCommondir(t *testing.T) {
 			}
 		}
 	}
-	// Only the workdir itself should be the allow grant.
+	// Only the workdir itself should be allow-granted.
 	for _, ap := range g.AllowPaths {
 		if ap != wd {
 			t.Errorf("unexpected allow grant for spoofed worktree: %s", ap)
