@@ -22,10 +22,10 @@ type failureMode string
 
 const (
 	fmPass          failureMode = "PASS"
-	fmAgentNoOutput failureMode = "AGENT_NO_OUTPUT"  // agent didn't run the probe at all
+	fmAgentNoOutput failureMode = "AGENT_NO_OUTPUT" // agent didn't run the probe at all
 	fmAgentPartial  failureMode = "AGENT_PARTIAL"   // agent ran it but output is incomplete/summarized
 	fmSandboxFail   failureMode = "SANDBOX_FAIL"    // agent ran it, probe output present, security violated
-	fmInfraError    failureMode = "INFRA_ERROR"      // omac/sidecar crashed or returned error
+	fmInfraError    failureMode = "INFRA_ERROR"     // omac/sidecar crashed or returned error
 )
 
 // classifyProbe checks whether a named probe's output is present
