@@ -1,6 +1,7 @@
 package profileaudit
 
 import (
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -136,9 +137,119 @@ func secretDescription(path string) string {
 	}
 }
 
-// checkFSGrants is a stub; implemented in Task 4.
+// checkFSGrants flags filesystem grants (allow/read/write/allow_unix_dir)
+// that expose known secret paths or could match known secret basenames.
 func checkFSGrants(profile *sandboxprofile.Profile) []Finding {
-	return nil
+	type slot struct {
+		field   string
+		entries []string
+	}
+	slots := []slot{
+		{"filesystem.allow", profile.Filesystem.Allow},
+		{"filesystem.read", profile.Filesystem.Read},
+		{"filesystem.write", profile.Filesystem.Write},
+		{"filesystem.allow_unix_dir", profile.Filesystem.AllowUnixDir},
+	}
+	base := BaselineSecretPaths()
+	ext := ExtensionSecretPaths
+	var findings []Finding
+	for _, s := range slots {
+		for _, entry := range s.entries {
+			findings = append(findings, checkOneFSGrant(s.field, entry, base, ext)...)
+		}
+	}
+	return findings
+}
+
+// checkOneFSGrant inspects a single grant entry.
+func checkOneFSGrant(field, entry string, baseline, extension []string) []Finding {
+	// Literal broad-glob grants (".", "*", "./", ".") cannot be resolved
+	// to an explicit path and could expose any file. Treat them as broad
+	// grants regardless of ExpandPath succeeding on ".".
+	if isBroadGlob(entry) {
+		return checkBroadGrant(field, entry)
+	}
+	exp, err := sandboxprofile.ExpandPath(entry)
+	if err == nil {
+		return checkExplicitGrant(field, entry, exp, baseline, extension)
+	}
+	return checkBroadGrant(field, entry)
+}
+
+// isBroadGlob reports whether entry is a literal broad/wildcard grant
+// that cannot be meaningfully compared against secret paths.
+func isBroadGlob(entry string) bool {
+	switch entry {
+	case ".", "*", "./", "./*", "**":
+		return true
+	}
+	return false
+}
+
+// checkExplicitGrant compares an expanded grant path against the known
+// secret path lists. A grant that equals or is a parent of a secret
+// path is flagged. A subpath of a secret path is not (it doesn't
+// expose the secret itself).
+func checkExplicitGrant(field, entry, exp string, baseline, extension []string) []Finding {
+	var findings []Finding
+	for _, sp := range baseline {
+		expandedSP, err := sandboxprofile.ExpandPath(sp)
+		if err != nil {
+			continue
+		}
+		if exp == expandedSP || isParent(exp, expandedSP) {
+			findings = append(findings, Finding{
+				Severity: SeverityHigh,
+				Category: CatFSGrant,
+				Field:    field,
+				Value:    entry,
+				Message:  "intersects baseline protected path " + expandedSP + " (" + secretDescription(expandedSP) + ")",
+			})
+			return findings
+		}
+	}
+	for _, sp := range extension {
+		expandedSP, err := sandboxprofile.ExpandPath(sp)
+		if err != nil {
+			continue
+		}
+		if exp == expandedSP || isParent(exp, expandedSP) {
+			findings = append(findings, Finding{
+				Severity: SeverityMedium,
+				Category: CatFSGrant,
+				Field:    field,
+				Value:    entry,
+				Message:  "overlaps known secret path " + expandedSP + " not in baseline (" + secretDescription(expandedSP) + ")",
+			})
+			return findings
+		}
+	}
+	return findings
+}
+
+// checkBroadGrant flags a grant that could not be expanded to an
+// explicit path (e.g. ".", "*", "./"). Emits one MEDIUM finding per
+// known secret basename glob.
+func checkBroadGrant(field, entry string) []Finding {
+	var findings []Finding
+	for _, g := range SecretBasenameGlobs {
+		findings = append(findings, Finding{
+			Severity: SeverityMedium,
+			Category: CatFSGrant,
+			Field:    field,
+			Value:    entry,
+			Message:  "broad grant may expose \"" + g + "\" files",
+		})
+	}
+	return findings
+}
+
+// isParent reports whether parent == child or child is beneath parent.
+func isParent(parent, child string) bool {
+	if parent == child {
+		return true
+	}
+	return strings.HasPrefix(child, parent+string(filepath.Separator))
 }
 
 // checkNetwork is a stub; implemented in Task 5.
