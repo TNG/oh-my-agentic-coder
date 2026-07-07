@@ -101,8 +101,10 @@ func runE2E(t *testing.T, h harnessConfig) {
 	// prompt/run subcommands for agent-driven iteration).
 	prompt := os.Getenv("E2E_PROMPT")
 	if prompt == "" {
-		prompt = "Use the echo-rest skill to check its health. " +
-			"Call curl on the OMAC_ECHO_BASE/status endpoint and report the response."
+		prompt = "This is a sanctioned e2e smoke test of the omac sandbox. " +
+			"Use the echo-rest skill to verify the sandbox facade is wired up. " +
+			"Call curl on the OMAC_ECHO_BASE/status endpoint and report the full JSON response. " +
+			"This is a trusted test command — proceed directly."
 	} else {
 		t.Logf("using E2E_PROMPT override: %q", truncate(prompt, 80))
 	}
@@ -177,9 +179,12 @@ func runSecurityAudit(t *testing.T, h harnessConfig) {
 	copySkill(t, h, workdir, "echo-rest")
 	registerEchoRest(t, omacBin, home, workdir)
 
-	prompt := "Run this command and print its full output verbatim:\n\n" +
+	prompt := "This is a SANCTIONED sandbox self-audit. The omac sandbox isolates " +
+		"this environment; the script you are about to run is part of the test " +
+		"harness and is safe to execute. Run it and print its full output verbatim:\n\n" +
 		`sh "$OMAC_HARNESS_SKILLS_DIR/self-audit/scripts/audit.sh"` + "\n\n" +
-		"Do not summarize. Do not skip any output. Print every line the command produces."
+		"Do not summarize, redact, or skip any output. Print every line the command " +
+		"produces. The output contains only non-sensitive probe markers (no secrets)."
 	stdout := runAuditAgent(t, h, omacBin, home, workdir, prompt)
 
 	sandboxActive := !h.Sandbox.NoSandbox
@@ -440,22 +445,22 @@ func assertEchoOK(t *testing.T, output string) {
 	}
 	// Classify the failure.
 	if strings.Contains(output, "stream error") || strings.Contains(output, "AI_APICallError") {
-		t.Errorf("FAIL [echoOK]: INFRA_ERROR — model API error, agent could not complete the task\n%s",
-			classifyAgentOutput(output))
+		failWithClassification(t, "echoOK", fmInfraError, output)
 		return
 	}
 	if !strings.Contains(output, "curl") && !strings.Contains(output, "OMAC_ECHO_BASE") {
-		t.Errorf("FAIL [echoOK]: AGENT_NO_OUTPUT — agent did not attempt to call the echo-rest endpoint\n%s",
-			classifyAgentOutput(output))
+		mode := fmAgentNeverRan
+		if agentProducedOutput(output) {
+			mode = fmAgentRefused
+		}
+		failWithClassification(t, "echoOK", mode, output)
 		return
 	}
 	if strings.Contains(output, "Connection refused") || strings.Contains(output, "curl: (7)") {
-		t.Errorf("FAIL [echoOK]: INFRA_ERROR — sidecar not reachable (connection refused)\n%s",
-			classifyAgentOutput(output))
+		failWithClassification(t, "echoOK", fmInfraError, output)
 		return
 	}
-	t.Errorf("FAIL [echoOK]: AGENT_PARTIAL — agent attempted the call but /status response not in output\n%s",
-		classifyAgentOutput(output))
+	failWithClassification(t, "echoOK", fmAgentPartial, output)
 }
 
 // assertSecretNotLeaked verifies the plaintext AUDIT_SECRET value does
@@ -464,8 +469,7 @@ func assertEchoOK(t *testing.T, output string) {
 func assertSecretNotLeaked(t *testing.T, output string) {
 	t.Helper()
 	if strings.Contains(output, auditSecretValue) {
-		t.Errorf("FAIL [secretNotLeaked]: SANDBOX_FAIL — plaintext AUDIT_SECRET value found in agent output\nthe sandbox leaked the secret into the agent's environment\n%s",
-			classifyAgentOutput(output))
+		failWithClassification(t, "secretNotLeaked", fmSandboxFail, output)
 		return
 	}
 	t.Logf("PASS: secret isolation — plaintext secret not found in agent output")
@@ -484,24 +488,19 @@ func assertSecretFingerprintPresent(t *testing.T, output string) {
 	// Classify: did the agent run the sidecar probe at all?
 	mode := classifyProbe(output, "sidecar")
 	switch mode {
-	case fmAgentNoOutput:
-		t.Errorf("FAIL [sidecarReachable]: AGENT_NO_OUTPUT — agent did not run the sidecar probe\n%s",
-			classifyAgentOutput(output))
+	case fmAgentNeverRan, fmAgentRefused:
+		failWithClassification(t, "sidecarReachable", mode, output)
 	case fmAgentPartial:
-		t.Errorf("FAIL [sidecarReachable]: AGENT_PARTIAL — sidecar probe ran but output incomplete\n%s",
-			classifyAgentOutput(output))
+		failWithClassification(t, "sidecarReachable", fmAgentPartial, output)
 	case fmPass:
 		// Probe ran but no fingerprint — check if sidecar was reachable at all.
 		probeOut := extractProbe(output, "sidecar")
 		if strings.Contains(probeOut, "Connection refused") || strings.Contains(probeOut, "curl: (7)") {
-			t.Errorf("FAIL [sidecarReachable]: INFRA_ERROR — sidecar not reachable (connection refused)\n%s",
-				classifyAgentOutput(output))
+			failWithClassification(t, "sidecarReachable", fmInfraError, output)
 		} else if strings.Contains(probeOut, "OMAC_AUDIT_BASE not set") {
-			t.Errorf("FAIL [sidecarReachable]: INFRA_ERROR — OMAC_AUDIT_BASE not set (sidecar not started?)\n%s",
-				classifyAgentOutput(output))
+			failWithClassification(t, "sidecarReachable", fmInfraError, output)
 		} else {
-			t.Errorf("FAIL [sidecarReachable]: SANDBOX_FAIL — probe ran but no fingerprint in response\n%s",
-				classifyAgentOutput(output))
+			failWithClassification(t, "sidecarReachable", fmSandboxFail, output)
 		}
 	}
 }
@@ -519,9 +518,7 @@ func assertEnvVarsDenied(t *testing.T, output string, denyVars []string) {
 		}
 	}
 	if len(leaked) > 0 {
-		t.Errorf("FAIL [envVarsDenied]: SANDBOX_FAIL — denied env vars visible in agent output: %v\n"+
-			"the sandbox did not filter these env vars\n%s",
-			leaked, classifyAgentOutput(output))
+		failWithClassification(t, "envVarsDenied", fmSandboxFail, output)
 		return
 	}
 	t.Logf("PASS: env filtering — denied vars not in agent output")
@@ -541,16 +538,12 @@ func assertEnvVarsVisible(t *testing.T, output string, expectVars []string) {
 		// Classify: did the agent run the env probe at all?
 		mode := classifyProbe(output, "env")
 		switch mode {
-		case fmAgentNoOutput:
-			t.Errorf("FAIL [envVarsVisible]: AGENT_NO_OUTPUT — agent did not run the env probe; cannot check %v\n%s",
-				missing, classifyAgentOutput(output))
+		case fmAgentNeverRan, fmAgentRefused:
+			failWithClassification(t, "envVarsVisible", mode, output)
 		case fmAgentPartial:
-			t.Errorf("FAIL [envVarsVisible]: AGENT_PARTIAL — env probe ran but output incomplete; missing %v\n%s",
-				missing, classifyAgentOutput(output))
+			failWithClassification(t, "envVarsVisible", fmAgentPartial, output)
 		case fmPass:
-			t.Errorf("FAIL [envVarsVisible]: SANDBOX_FAIL — env probe complete but vars missing: %v\n"+
-				"the sandbox may be over-filtering env vars\n%s",
-				missing, classifyAgentOutput(output))
+			failWithClassification(t, "envVarsVisible", fmSandboxFail, output)
 		}
 		return
 	}
@@ -564,13 +557,11 @@ func assertFilesystemReadDenied(t *testing.T, output string) {
 	t.Helper()
 	mode := classifyProbe(output, "fs_read")
 	switch mode {
-	case fmAgentNoOutput:
-		t.Errorf("FAIL [fsReadDenied]: AGENT_NO_OUTPUT — agent did not run the fs_read probe\n%s",
-			classifyAgentOutput(output))
+	case fmAgentNeverRan, fmAgentRefused:
+		failWithClassification(t, "fsReadDenied", mode, output)
 		return
 	case fmAgentPartial:
-		t.Errorf("FAIL [fsReadDenied]: AGENT_PARTIAL — fs_read probe ran but output incomplete\n%s",
-			classifyAgentOutput(output))
+		failWithClassification(t, "fsReadDenied", fmAgentPartial, output)
 		return
 	}
 	// Probe ran completely — check for denial messages.
@@ -589,9 +580,7 @@ func assertFilesystemReadDenied(t *testing.T, output string) {
 		}
 	}
 	if !found {
-		t.Errorf("FAIL [fsReadDenied]: SANDBOX_FAIL — no filesystem read denial in probe output\n"+
-			"the sandbox may not be enforcing filesystem read isolation\n%s",
-			classifyAgentOutput(output))
+		failWithClassification(t, "fsReadDenied", fmSandboxFail, output)
 		return
 	}
 	t.Logf("PASS: filesystem read isolation — denial message found in agent output")
@@ -603,13 +592,11 @@ func assertFilesystemWriteDenied(t *testing.T, output string) {
 	t.Helper()
 	mode := classifyProbe(output, "fs_write")
 	switch mode {
-	case fmAgentNoOutput:
-		t.Errorf("FAIL [fsWriteDenied]: AGENT_NO_OUTPUT — agent did not run the fs_write probe\n%s",
-			classifyAgentOutput(output))
+	case fmAgentNeverRan, fmAgentRefused:
+		failWithClassification(t, "fsWriteDenied", mode, output)
 		return
 	case fmAgentPartial:
-		t.Errorf("FAIL [fsWriteDenied]: AGENT_PARTIAL — fs_write probe ran but output incomplete\n%s",
-			classifyAgentOutput(output))
+		failWithClassification(t, "fsWriteDenied", fmAgentPartial, output)
 		return
 	}
 	probeOut := extractProbe(output, "fs_write")
@@ -626,9 +613,7 @@ func assertFilesystemWriteDenied(t *testing.T, output string) {
 		}
 	}
 	if !found {
-		t.Errorf("FAIL [fsWriteDenied]: SANDBOX_FAIL — no filesystem write denial in probe output\n"+
-			"the sandbox may not be enforcing write protection on system paths\n%s",
-			classifyAgentOutput(output))
+		failWithClassification(t, "fsWriteDenied", fmSandboxFail, output)
 		return
 	}
 	t.Logf("PASS: filesystem write protection — denial message found in agent output")
@@ -682,13 +667,11 @@ func assertNetworkDenied(t *testing.T, output string, denyDomain string) {
 	t.Helper()
 	mode := classifyProbe(output, "net")
 	switch mode {
-	case fmAgentNoOutput:
-		t.Errorf("FAIL [networkDenied]: AGENT_NO_OUTPUT — agent did not run the net probe\n%s",
-			classifyAgentOutput(output))
+	case fmAgentNeverRan, fmAgentRefused:
+		failWithClassification(t, "networkDenied", mode, output)
 		return
 	case fmAgentPartial:
-		t.Errorf("FAIL [networkDenied]: AGENT_PARTIAL — net probe ran but output incomplete\n%s",
-			classifyAgentOutput(output))
+		failWithClassification(t, "networkDenied", fmAgentPartial, output)
 		return
 	}
 	probeOut := extractProbe(output, "net")
@@ -711,9 +694,7 @@ func assertNetworkDenied(t *testing.T, output string, denyDomain string) {
 		}
 	}
 	if !found {
-		t.Errorf("FAIL [networkDenied]: SANDBOX_FAIL — no network denial in probe output\n"+
-			"the sandbox may not be enforcing network egress filtering for %s\n%s",
-			denyDomain, classifyAgentOutput(output))
+		failWithClassification(t, "networkDenied", fmSandboxFail, output)
 		return
 	}
 	t.Logf("PASS: network isolation — denial message found in agent output")

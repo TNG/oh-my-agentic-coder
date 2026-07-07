@@ -67,7 +67,23 @@ jobs:
       - name: Run e2e test
         env:
           E2E_LOG_DIR: ${{ runner.temp }}/e2e-logs
-        run: go test -tags=e2e -timeout=30m -v ./internal/e2e/
+        run: go test -tags=e2e -timeout=30m -v ./internal/e2e/ 2>&1 | tee /tmp/e2e-out.txt
+
+      - name: Failure classification summary
+        if: always()
+        run: |
+          # Extract every "FAIL [assertName]: MODE — reason" line and render a
+          # markdown table on the run-summary page so the cause is visible by
+          # indicator without opening the full log.
+          {
+            echo "## E2E failure classification (${{ matrix.harness }} / ${{ matrix.os }})"
+            echo ""
+            echo "| Assertion | Mode | Reason |"
+            echo "|-----------|------|--------|"
+            grep -oE 'FAIL \[[^]]+\]: [A-Z_]+ — [^\\]*' /tmp/e2e-out.txt \
+              | sed -E 's/FAIL \[([^]]+)\]: ([A-Z_]+) — (.*)/| `\1` | `\2` | \3 |/' \
+              || echo "| _none_ | _pass_ | all assertions passed |"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload session artifacts
         if: always()
