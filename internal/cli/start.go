@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -190,6 +191,22 @@ func runLaunch(env *Env, opts launchOpts) int {
 		if code := checkInnerBinary(harness, prefix, env); code != ExitOK {
 			return code
 		}
+	}
+
+	// 1c. Pre-flight: codex on macOS is incompatible with the omac Seatbelt
+	//     sandbox — its Rust HTTP client disconnects mid-stream even with
+	//     network=open. Fail loud rather than hang. --no-sandbox disables
+	//     the entire omac sandbox (fs/network/secret isolation) so it is
+	//     not a safe workaround. See issue #48.
+	if runtime.GOOS == "darwin" && harness.Name == "codex" && !noSandbox {
+		fmt.Fprintf(env.Stderr, "%s: codex is incompatible with the macOS Seatbelt sandbox "+
+			"(its HTTP client disconnects mid-stream even with network=open). "+
+			"codex on macOS is not supported under the omac sandbox; use a "+
+			"different harness (opencode, claude-code, copilot) or run codex "+
+			"on Linux (bwrap works). --no-sandbox is not a safe workaround — "+
+			"it disables the entire omac sandbox (filesystem, network, secret "+
+			"isolation). See issue #48.\n", prefix)
+		return ExitConfigInvalid
 	}
 
 	// 2. Reconcile registry against on-disk reality.

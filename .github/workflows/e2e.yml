@@ -23,6 +23,14 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
         harness: [opencode, claude-code, codex, copilot]
+        # codex on macOS is excluded — its Rust HTTP client is incompatible
+        # with the macOS Seatbelt sandbox (stream disconnected mid-completion,
+        # even with network=open). `omac start codex` on macOS fails loud;
+        # --no-sandbox would disable the entire omac sandbox, leaving nothing
+        # to assert against. See issue #48.
+        exclude:
+          - os: macos-latest
+            harness: codex
     runs-on: ${{ matrix.os }}
     concurrency:
       group: e2e-${{ matrix.os }}-${{ matrix.harness }}

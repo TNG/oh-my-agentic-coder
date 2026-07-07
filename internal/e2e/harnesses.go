@@ -99,14 +99,28 @@ type SandboxConfig struct {
 	NoSandbox bool
 }
 
-// allHarnesses returns the full 4-harness registry.
+// allHarnesses returns the harnesses eligible on this host. codex is
+// excluded on darwin — its Rust HTTP client is incompatible with the
+// macOS Seatbelt sandbox; `omac start codex` on macOS fails loud (see
+// issue #48). Running the e2e with --no-sandbox would disable the entire
+// omac sandbox, leaving nothing to assert against.
 func allHarnesses() []harnessConfig {
-	return []harnessConfig{
+	all := []harnessConfig{
 		opencodeConfig(),
 		claudeCodeConfig(),
 		codexConfig(),
 		copilotConfig(),
 	}
+	if runtime.GOOS == "darwin" {
+		out := all[:0]
+		for _, h := range all {
+			if h.Name != "codex" {
+				out = append(out, h)
+			}
+		}
+		return out
+	}
+	return all
 }
 
 // harnessByName returns the config for a single harness by canonical name.

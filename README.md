@@ -62,6 +62,20 @@ defaults to `opencode`. An unknown token is rejected with the list of
 supported names. Inner arguments that happen to be barewords go after `--`
 (e.g. `omac start claude -- --model sonnet`).
 
+#### Platform support: codex on macOS
+
+`codex` is **not supported under the omac sandbox on macOS**. Its Rust HTTP
+client is incompatible with the macOS Seatbelt sandbox (`sandbox-exec`):
+the stream disconnects mid-completion even with `network=open`, so every
+model call hangs. `omac start codex` (and `continue` / `resume` / `serve`)
+on macOS refuses to start rather than hanging silently. `--no-sandbox` is
+**not** a safe workaround — it disables the entire omac sandbox
+(filesystem isolation, network egress filtering, secret isolation, env
+filtering). Use a different harness (`opencode`, `claude-code`, `copilot`)
+or run codex on Linux (bwrap works). See
+[issue #48](https://github.com/TNG/oh-my-agentic-coder/issues/48)
+for the root-cause analysis.
+
 ### Resuming prior work
 
 Two convenience subcommands re-enter earlier sessions through the same

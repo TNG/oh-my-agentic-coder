@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -110,6 +111,20 @@ func runServe(args []string, env *Env) int {
 		if code := checkInnerBinary(harness, "omac serve", env); code != ExitOK {
 			return code
 		}
+	}
+
+	// Pre-flight: codex on macOS is incompatible with the omac Seatbelt
+	// sandbox (see start.go for the rationale).
+	if runtime.GOOS == "darwin" && harness.Name == "codex" && !*noSandbox {
+		fmt.Fprintf(env.Stderr,
+			"omac serve: codex is incompatible with the macOS Seatbelt sandbox "+
+				"(its HTTP client disconnects mid-stream even with network=open). "+
+				"codex on macOS is not supported under the omac sandbox; use a "+
+				"different harness (opencode, claude-code, copilot) or run codex "+
+				"on Linux (bwrap works). --no-sandbox is not a safe workaround — "+
+				"it disables the entire omac sandbox (filesystem, network, secret "+
+				"isolation). See issue #48.\n")
+		return ExitConfigInvalid
 	}
 
 	// Normalize pre-declared roots to absolute paths (§5.4 Option B).
