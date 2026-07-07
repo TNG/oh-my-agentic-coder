@@ -225,6 +225,28 @@ func TestResolveFirstStartScaffoldsDefault(t *testing.T) {
 	}
 }
 
+func TestDefaultProfileGrantsSharedAgentsSkillsRead(t *testing.T) {
+	// The shared neutral skills base ("agents") is in scope for every
+	// harness, so its user-global roots must be readable inside the
+	// sandbox. Per-harness global skills dirs are granted RW via
+	// Harness.SandboxDirs; only the shared base needs an explicit read
+	// grant in the default profile.
+	p := DefaultProfile()
+	want := []string{"~/.config/agents/skills", "~/.agents/skills"}
+	for _, w := range want {
+		found := false
+		for _, r := range p.Filesystem.Read {
+			if r == w {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("DefaultProfile.Filesystem.Read missing %q (got %v)", w, p.Filesystem.Read)
+		}
+	}
+}
+
 func TestResolveExistingDefaultWins(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

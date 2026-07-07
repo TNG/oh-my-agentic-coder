@@ -38,6 +38,13 @@ func DefaultProfile() *Profile {
 				"~/.nvm",
 				"~/.bun/bin",
 				"~/.bun/install/global/node_modules/opencode-ai",
+				// Shared neutral skills base (agentskills.io). In scope for every
+				// harness via InScopeSkillsBases, so a guidance-only SKILL.md
+				// placed under the shared global root is readable inside the
+				// sandbox. Per-harness global skills dirs are granted RW via
+				// Harness.SandboxDirs at launch.
+				"~/.config/agents/skills",
+				"~/.agents/skills",
 			},
 		},
 		Network: Network{
