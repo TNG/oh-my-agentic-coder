@@ -17,6 +17,12 @@ type Baseline struct {
 	// ProtectedPaths are denied even when covered by a broader grant,
 	// unless listed in filesystem.override_deny.
 	ProtectedPaths []string
+	// WorkdirProtected are basenames (e.g. ".env") denied inside the
+	// workdir and any explicitly granted tree. Unlike ProtectedPaths,
+	// they are resolved at launch time against the actual workdir, so
+	// they catch workdir-relative files the static ProtectedPaths set
+	// cannot. override_deny holes punch through here too.
+	WorkdirProtected []string
 }
 
 // PlatformBaseline returns the baseline for the current GOOS.
@@ -72,6 +78,17 @@ func protectedCommon() []string {
 	}
 }
 
+// workdirProtectedCommon are basenames denied inside the workdir and
+// any explicitly granted tree. Resolved at launch time against the
+// actual workdir (see ResolveGrants), so workdir-relative files like
+// `<workdir>/.env` are blocked by default without a --deny flag.
+func workdirProtectedCommon() []string {
+	return []string{
+		".env",
+		".envrc",
+	}
+}
+
 func darwinBaseline() Baseline {
 	return Baseline{
 		Read: []string{
@@ -122,6 +139,7 @@ func darwinBaseline() Baseline {
 			"~/Library/Containers/com.apple.Safari",
 			"~/Library/Application Support/MobileSync",
 		),
+		WorkdirProtected: workdirProtectedCommon(),
 	}
 }
 
@@ -151,6 +169,7 @@ func linuxBaseline() Baseline {
 			"~/.config/microsoft-edge",
 			"~/.config/BraveSoftware",
 		),
+		WorkdirProtected: workdirProtectedCommon(),
 	}
 }
 

@@ -388,3 +388,84 @@ func TestResolveGrantsDenyGlobDoesNotScanBaseline(t *testing.T) {
 		}
 	}
 }
+
+// TestResolveGrantsWorkdirEnvProtectedByDefault verifies that a
+// workdir-local .env / .envrc is masked by the baseline
+// WorkdirProtected set without any --deny flag, and that
+// filesystem.override_deny can punch a hole through it.
+func TestResolveGrantsWorkdirEnvProtectedByDefault(t *testing.T) {
+	wd := t.TempDir()
+	env := filepath.Join(wd, ".env")
+	writeFile(t, env)
+	envrc := filepath.Join(wd, ".envrc")
+	writeFile(t, envrc)
+	nested := filepath.Join(wd, "config")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	nestedEnv := filepath.Join(nested, ".env")
+	writeFile(t, nestedEnv)
+	keep := filepath.Join(wd, "main.go")
+	writeFile(t, keep)
+
+	t.Run("default protects .env and .envrc", func(t *testing.T) {
+		p := &sandboxprofile.Profile{
+			Workdir: sandboxprofile.Workdir{Access: sandboxprofile.AccessReadWrite},
+		}
+		g, err := ResolveGrants(p, wd, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Contains(g.ProtectedPaths, env) {
+			t.Errorf("workdir .env not protected by default: %v", g.ProtectedPaths)
+		}
+		if !slices.Contains(g.ProtectedPaths, envrc) {
+			t.Errorf("workdir .envrc not protected by default: %v", g.ProtectedPaths)
+		}
+		if !slices.Contains(g.ProtectedPaths, nestedEnv) {
+			t.Errorf("nested .env not protected by default: %v", g.ProtectedPaths)
+		}
+		if slices.Contains(g.ProtectedPaths, keep) {
+			t.Error("non-.env file must not be protected")
+		}
+	})
+
+	t.Run("override_deny basename punches hole", func(t *testing.T) {
+		p := &sandboxprofile.Profile{
+			Workdir:    sandboxprofile.Workdir{Access: sandboxprofile.AccessReadWrite},
+			Filesystem: sandboxprofile.Filesystem{OverrideDeny: []string{".env"}},
+		}
+		g, err := ResolveGrants(p, wd, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if slices.Contains(g.ProtectedPaths, env) {
+			t.Errorf(".env should be unprotected via override_deny: %v", g.ProtectedPaths)
+		}
+		if slices.Contains(g.ProtectedPaths, nestedEnv) {
+			t.Errorf("nested .env should be unprotected via override_deny: %v", g.ProtectedPaths)
+		}
+		// .envrc is not overridden and stays protected.
+		if !slices.Contains(g.ProtectedPaths, envrc) {
+			t.Errorf(".envrc should remain protected: %v", g.ProtectedPaths)
+		}
+	})
+
+	t.Run("override_deny absolute path punches hole", func(t *testing.T) {
+		p := &sandboxprofile.Profile{
+			Workdir:    sandboxprofile.Workdir{Access: sandboxprofile.AccessReadWrite},
+			Filesystem: sandboxprofile.Filesystem{OverrideDeny: []string{env}},
+		}
+		g, err := ResolveGrants(p, wd, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if slices.Contains(g.ProtectedPaths, env) {
+			t.Errorf("absolute override_deny should unprotect %s: %v", env, g.ProtectedPaths)
+		}
+		// Nested .env is a different absolute path and stays protected.
+		if !slices.Contains(g.ProtectedPaths, nestedEnv) {
+			t.Errorf("nested .env should remain protected: %v", g.ProtectedPaths)
+		}
+	})
+}

@@ -115,6 +115,12 @@ func ResolveGrants(p *sandboxprofile.Profile, workdir string, notices io.Writer)
 	// trees so the same deny covers the cwd and any explicit grant.
 	protected = append(protected, resolveUserDeny(p.Filesystem.Deny, dedupe(denyScan), notices)...)
 
+	// Baseline workdir-protected basenames (e.g. ".env") are resolved
+	// against the same scan roots as user deny globs, so workdir-relative
+	// secret files are blocked by default without a --deny flag. Holes
+	// can be punched via filesystem.override_deny (basename form).
+	protected = append(protected, resolveBaselineWorkdirDeny(base.WorkdirProtected, p.Filesystem.OverrideDeny, dedupe(denyScan), notices)...)
+
 	g := &Grants{
 		Workdir:         workdir,
 		ReadPaths:       dedupe(read),
@@ -175,6 +181,45 @@ func resolveUserDeny(deny, scanRoots []string, notices io.Writer) []string {
 	out := explicit
 	if len(globs) > 0 {
 		out = append(out, walkGlobMatches(scanRoots, globs, notices)...)
+	}
+	return out
+}
+
+// resolveBaselineWorkdirDeny resolves the baseline workdir-protected
+// basenames (e.g. ".env") against the granted scan roots, mirroring
+// resolveUserDeny's glob walk. override_deny entries that are bare
+// basenames (e.g. ".env") or absolute paths matching a found file
+// punch holes in the result, so a skill that legitimately needs to
+// read a workdir .env can opt out via filesystem.override_deny.
+func resolveBaselineWorkdirDeny(basenames, overrideDeny, scanRoots []string, notices io.Writer) []string {
+	if len(basenames) == 0 {
+		return nil
+	}
+	// Build an override lookup keyed by both basename and absolute path.
+	overrides := make(map[string]bool, len(overrideDeny))
+	for _, o := range overrideDeny {
+		overrides[o] = true
+		if exp, err := sandboxprofile.ExpandPath(o); err == nil {
+			overrides[exp] = true
+		}
+	}
+	// Filter the basenames before walking.
+	var active []string
+	for _, b := range basenames {
+		if !overrides[b] {
+			active = append(active, b)
+		}
+	}
+	if len(active) == 0 {
+		return nil
+	}
+	matches := walkGlobMatches(scanRoots, active, notices)
+	// Drop matches that are also covered by an absolute override_deny.
+	var out []string
+	for _, m := range matches {
+		if !overrides[m] {
+			out = append(out, m)
+		}
 	}
 	return out
 }
