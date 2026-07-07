@@ -29,10 +29,11 @@ definitions.
 
 ## Probes
 
-1. **Secret probe** — tries to find `AUDIT_SECRET` in env and /proc.
-2. **Env probe** — lists all env vars visible inside the sandbox.
-3. **Filesystem probe** — tries to read `/etc/shadow`, `~/.ssh/id_rsa`,
-   `/root/.bashrc`.
+1. **Secret probe** — checks if `AUDIT_SECRET` is set (name only, value never printed).
+2. **Env probe** — lists env var names (provider token values redacted).
+3. **Filesystem probe** — checks if sensitive paths (`/etc/shadow`, `~/.ssh/id_rsa`,
+   `~/.aws/credentials`, etc.) are readable. Reports denial messages only —
+   file contents are never printed.
 4. **Network probe** — curls `blocked.example.com` (not allow-listed).
 5. **Sidecar probe** — curls `$OMAC_AUDIT_BASE/whoami` (should succeed).
 

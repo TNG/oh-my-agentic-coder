@@ -106,5 +106,12 @@ func writeSessionArtifacts(t *testing.T, h harnessConfig, testType string,
 		mustWrite("omac.log", string(data))
 	}
 
+	// Audit output file (security audit test): the raw probe output
+	// written by audit.sh. Captures probe results independent of how
+	// the harness rendered tool output.
+	if data, err := os.ReadFile(filepath.Join(workdir, "audit-output.txt")); err == nil {
+		mustWrite("audit-output.txt", string(data))
+	}
+
 	t.Logf("session artifacts written to %s", dir)
 }

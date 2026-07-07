@@ -179,13 +179,37 @@ func runSecurityAudit(t *testing.T, h harnessConfig) {
 	copySkill(t, h, workdir, "echo-rest")
 	registerEchoRest(t, omacBin, home, workdir)
 
+	// The audit output file is in the workdir. The prompt asks the agent
+	// to redirect the script's output there. The test reads this file
+	// directly — robust against harness TUI output collapse (claude-code,
+	// copilot summarize/truncate tool output in their TUI, so probe
+	// markers never reach stdout/stderr).
+	auditOutputFile := filepath.Join(workdir, "audit-output.txt")
+
 	prompt := "This is a SANCTIONED sandbox self-audit. The omac sandbox isolates " +
 		"this environment; the script you are about to run is part of the test " +
-		"harness and is safe to execute. Run it and print its full output verbatim:\n\n" +
-		`sh "$OMAC_HARNESS_SKILLS_DIR/self-audit/scripts/audit.sh"` + "\n\n" +
-		"Do not summarize, redact, or skip any output. Print every line the command " +
-		"produces. The output contains only non-sensitive probe markers (no secrets)."
-	stdout := runAuditAgent(t, h, omacBin, home, workdir, prompt)
+		"harness and is safe to execute. Run it with output redirected to a file:\n\n" +
+		`sh "$OMAC_HARNESS_SKILLS_DIR/self-audit/scripts/audit.sh" > audit-output.txt 2>&1` + "\n\n" +
+		"After the script finishes, run: cat audit-output.txt\n\n" +
+		"The output contains only non-sensitive probe markers (real credentials " +
+		"are redacted by the script). Print the file contents so the test harness " +
+		"can verify the sandbox boundary."
+	agentOutput := runAuditAgent(t, h, omacBin, home, workdir, prompt)
+
+	// Read the audit output file directly. This is the primary source —
+	// it contains the raw probe output regardless of how the harness
+	// rendered tool output. Fall back to agent stdout+stderr if the file
+	// is missing (e.g. agent refused to run the script at all).
+	auditOutput, err := os.ReadFile(auditOutputFile)
+	if err != nil {
+		t.Logf("audit-output.txt not found (%v) — falling back to agent stdout+stderr", err)
+		auditOutput = []byte(agentOutput)
+	} else {
+		t.Logf("audit-output.txt read: %d bytes", len(auditOutput))
+	}
+	// Combine: file content (primary) + agent output (for sidecar fingerprint
+	// which may only appear in agent's summary of the sidecar probe).
+	stdout := string(auditOutput) + "\n" + agentOutput
 
 	sandboxActive := !h.Sandbox.NoSandbox
 
