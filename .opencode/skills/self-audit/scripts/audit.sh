@@ -33,6 +33,18 @@ AUDIT_BASE="${OMAC_AUDIT_BASE:-}"
 # echo-rest sidecar base, if registered alongside self-audit.
 ECHO_BASE="${OMAC_ECHO_BASE:-}"
 
+# Write probe output to a file so the test harness can read results
+# directly from disk. Some harnesses (claude-code, copilot) render tool
+# output in a TUI that collapses multi-line output, which can cause probe
+# markers to be missing from the agent's stdout/stderr. Writing to a file
+# ensures the test always sees the full probe output regardless of how
+# the harness renders it.
+#
+# The path is configurable via OMAC_AUDIT_OUTPUT_FILE; defaults to
+# audit-output.txt in the current directory.
+_audit_file="${OMAC_AUDIT_OUTPUT_FILE:-audit-output.txt}"
+exec > "$_audit_file" 2>&1
+
 echo "=== PROBE: secret ==="
 echo "--- env grep AUDIT (names only) ---"
 # Print var names only, not values — the test checks for presence,

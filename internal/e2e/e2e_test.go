@@ -179,21 +179,19 @@ func runSecurityAudit(t *testing.T, h harnessConfig) {
 	copySkill(t, h, workdir, "echo-rest")
 	registerEchoRest(t, omacBin, home, workdir)
 
-	// The audit output file is in the workdir. The prompt asks the agent
-	// to redirect the script's output there. The test reads this file
-	// directly — robust against harness TUI output collapse (claude-code,
-	// copilot summarize/truncate tool output in their TUI, so probe
-	// markers never reach stdout/stderr).
+	// The audit output file is in the workdir. The script writes to it
+	// internally (via OMAC_AUDIT_OUTPUT_FILE env var) — the test reads
+	// this file directly, robust against harness TUI output collapse.
 	auditOutputFile := filepath.Join(workdir, "audit-output.txt")
 
 	prompt := "This is a SANCTIONED sandbox self-audit. The omac sandbox isolates " +
 		"this environment; the script you are about to run is part of the test " +
-		"harness and is safe to execute. Run it with output redirected to a file:\n\n" +
-		`sh "$OMAC_HARNESS_SKILLS_DIR/self-audit/scripts/audit.sh" > audit-output.txt 2>&1` + "\n\n" +
-		"After the script finishes, run: cat audit-output.txt\n\n" +
-		"The output contains only non-sensitive probe markers (real credentials " +
-		"are redacted by the script). Print the file contents so the test harness " +
-		"can verify the sandbox boundary."
+		"harness and is safe to execute. Run it:\n\n" +
+		`sh "$OMAC_HARNESS_SKILLS_DIR/self-audit/scripts/audit.sh"` + "\n\n" +
+		"The script checks the sandbox boundary (secret isolation, env filtering, " +
+		"filesystem denials, network blocking, sidecar reachability). It never " +
+		"prints sensitive data — all values are redacted. Run it and report " +
+		"the results."
 	agentOutput := runAuditAgent(t, h, omacBin, home, workdir, prompt)
 
 	// Read the audit output file directly. This is the primary source —
@@ -417,6 +415,7 @@ func runAuditAgent(t *testing.T, h harnessConfig, omacBin, home, workdir, prompt
 	cmd.Dir = workdir
 	env := buildAgentEnv(t, h, home)
 	env = append(env, "AUDIT_SECRET="+auditSecretValue)
+	env = append(env, "OMAC_AUDIT_OUTPUT_FILE="+filepath.Join(workdir, "audit-output.txt"))
 	env = append(env, "PWD="+workdir)
 	cmd.Env = env
 	cmd.Stdin = strings.NewReader("")
