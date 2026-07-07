@@ -676,6 +676,20 @@ See [`docs/NONO_SANDBOX.md`](docs/NONO_SANDBOX.md) for the full setup guide,
 transport details (TCP vs Unix socket under proxy mode), flag combinations,
 and debugging instructions.
 
+## Development
+
+CI (`.github/workflows/ci.yml`) gates on `gofmt`, `go vet`, `staticcheck`,
+build, and `go test -race`. To avoid pushing gofmt drift, install the local
+pre-commit hook — it auto-formats staged `.go` files and re-stages them:
+
+```sh
+scripts/install-hooks.sh
+```
+
+Re-run after a fresh clone or after pulling hook changes. The hook only
+runs `gofmt`; vet, staticcheck, build, and tests stay in CI to keep the
+hook fast.
+
 ## Not yet implemented (v0)
 
 See the design doc's "Open questions / future work" section. Notably:
