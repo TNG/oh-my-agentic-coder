@@ -32,6 +32,7 @@ import (
 	"time"
 
 	"github.com/tngtech/oh-my-agentic-coder/internal/audit"
+	"github.com/tngtech/oh-my-agentic-coder/internal/intent"
 )
 
 // RouteState describes whether a route forwards to a live sidecar or
@@ -134,6 +135,21 @@ type Facade struct {
 	// time (guarded in logAccess).
 	auditor audit.Auditor
 
+	// ProtectedPathChecker answers "is this path protected by the sandbox
+	// policy, and by which rule?" for the GET /sandbox/denied endpoint.
+	// nil disables the endpoint (returns 404). The checker must be safe
+	// for concurrent reads.
+	ProtectedPathChecker ProtectedPathChecker
+
+	// DenialNote is the human-readable note returned in the JSON body of
+	// the /sandbox/denied endpoint. When empty the facade uses
+	// sandboxdeny.Default().FacadeNote.
+	DenialNote string
+
+	// IntentRegistry records agent-declared access intents from
+	// POST /sandbox/intent. nil disables the endpoint (returns 503).
+	IntentRegistry *intent.Registry
+
 	mu          sync.RWMutex
 	routes      map[string]*Route
 	server      *http.Server
@@ -142,6 +158,14 @@ type Facade struct {
 	boundTCPort int // resolved port if TCPAddr ends in :0
 	accLog      *log.Logger
 	accFile     *os.File
+}
+
+// ProtectedPathChecker reports whether a given absolute path is covered
+// by the sandbox's protected-paths set. Rule is a short, neutral tag
+// identifying which policy layer denied it (e.g. "baseline",
+// "profile"). Returns ok=false when the path is not protected.
+type ProtectedPathChecker interface {
+	IsProtected(absPath string) (rule string, ok bool)
 }
 
 // New constructs a Facade. socketPath may be empty to disable the Unix
@@ -335,6 +359,15 @@ func (f *Facade) Close() error {
 // handle is the root HTTP handler.
 func (f *Facade) handle(w http.ResponseWriter, r *http.Request) {
 	started := time.Now()
+	// Built-in meta routes take precedence over skill mounts.
+	if r.URL.Path == "/sandbox/denied" {
+		f.handleSandboxDenied(w, r)
+		return
+	}
+	if r.URL.Path == "/sandbox/intent" {
+		f.handleSandboxIntent(w, r)
+		return
+	}
 	if r.URL.Path == "/" || r.URL.Path == "" {
 		f.writeStatus(w, r)
 		return
@@ -463,6 +496,86 @@ func (f *Facade) resolve(path string) (*Route, string, bool) {
 	}
 	// Present first segment but no match.
 	return &Route{}, "", false
+}
+
+// handleSandboxDenied answers "was this path denied by the sandbox, or
+// is it genuinely missing?" The agent queries this after a read returns
+// EACCES (macOS) or an omac marker file (Linux). The checker only
+// answers for paths the agent already probed — it never enumerates the
+// full protected set, so no list is leaked.
+func (f *Facade) handleSandboxDenied(w http.ResponseWriter, r *http.Request) {
+	if f.ProtectedPathChecker == nil {
+		w.Header().Set("X-Omac-Reason", "denied-endpoint-disabled")
+		http.Error(w, "omac: protected-path checker not configured", http.StatusNotFound)
+		return
+	}
+	q := r.URL.Query().Get("path")
+	if q == "" {
+		w.Header().Set("X-Omac-Reason", "missing-path")
+		http.Error(w, "omac: path query parameter required", http.StatusBadRequest)
+		return
+	}
+	abs := q
+	if !filepath.IsAbs(abs) {
+		// Resolve relative to the request's notion of home. An agent
+		// inside the sandbox has its own HOME; we honor it literally.
+		// ~ expansion is the caller's responsibility — the marker file
+		// already tells the agent to query here with an absolute path.
+	}
+	rule, ok := f.ProtectedPathChecker.IsProtected(abs)
+	note := f.DenialNote
+	if note == "" {
+		note = "Intentionally restricted by sandbox policy. Not missing, not a bug. " +
+			"Escalate to the user only if the task cannot proceed without this path."
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Omac-Sandbox", "denied")
+	type deniedResp struct {
+		Denied bool   `json:"denied"`
+		Path   string `json:"path"`
+		Rule   string `json:"rule,omitempty"`
+		Note   string `json:"note"`
+	}
+	if !ok {
+		w.WriteHeader(http.StatusNotFound)
+		_ = json.NewEncoder(w).Encode(deniedResp{Denied: false, Path: abs, Note: "not sandbox-protected"})
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(deniedResp{Denied: true, Path: abs, Rule: rule, Note: note})
+}
+
+// handleSandboxIntent records an agent-declared intent: why the agent
+// wants to reach a host or path. The registry is read in-process by
+// the network popup and learn-mode review; there is no GET endpoint.
+func (f *Facade) handleSandboxIntent(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		http.Error(w, "omac: method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if f.IntentRegistry == nil {
+		w.Header().Set("X-Omac-Reason", "intent-endpoint-disabled")
+		http.Error(w, "omac: intent registry not configured", http.StatusServiceUnavailable)
+		return
+	}
+	if f.MaxBodyBytes > 0 && r.Body != nil {
+		r.Body = http.MaxBytesReader(w, r.Body, f.MaxBodyBytes)
+	}
+	var body struct {
+		Target string `json:"target"`
+		Reason string `json:"reason"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "omac: malformed JSON: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(body.Target) == "" || strings.TrimSpace(body.Reason) == "" {
+		http.Error(w, "omac: both \"target\" and \"reason\" are required", http.StatusBadRequest)
+		return
+	}
+	f.IntentRegistry.Record(body.Target, body.Reason)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (f *Facade) writeStatus(w http.ResponseWriter, _ *http.Request) {
