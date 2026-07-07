@@ -180,15 +180,36 @@ func sidecarSawRequests() bool {
 // ghaAnnotation emits a GitHub Actions workflow command so the failure
 // shows up as a red indicator on the run summary (no log digging needed).
 // Safe no-op outside GHA (no $GITHUB_ACTIONS env var). level: error|warning|notice.
-func ghaAnnotation(t *testing.T, level, assertName, message string) {
+//
+// The annotation is a one-liner (assertion + mode + short reason); the full
+// classification block stays in the test log via t.Errorf so it isn't duplicated.
+func ghaAnnotation(t *testing.T, level string, assertName string, mode failureMode, output string) {
 	t.Helper()
 	if os.Getenv("GITHUB_ACTIONS") != "true" {
 		return
 	}
-	// Workflow commands are printed to stdout; GHA parses lines starting
-	// with "::". Newlines in message must be %-encoded as %0A.
-	safe := strings.ReplaceAll(message, "\n", "%0A")
-	fmt.Printf("::%s file=internal/e2e/e2e_test.go,title=%s::%s\n", level, assertName, safe)
+	short := shortReason(mode)
+	// Workflow commands: newlines must be %-encoded as %0A.
+	fmt.Printf("::%s file=internal/e2e/e2e_test.go,title=%s [%s]::%s — %s\n",
+		level, assertName, mode, assertName, short)
+}
+
+// shortReason returns a single-line human description for a failure mode.
+func shortReason(mode failureMode) string {
+	switch mode {
+	case fmAgentNeverRan:
+		return "agent produced no output (likely infra: API error, crash, or never started)"
+	case fmAgentRefused:
+		return "agent ran but did not run the probe (refused or off-script)"
+	case fmAgentPartial:
+		return "agent ran probe but output is incomplete (summarized?)"
+	case fmSandboxFail:
+		return "sandbox did not enforce security property"
+	case fmInfraError:
+		return "infrastructure error"
+	default:
+		return string(mode)
+	}
 }
 
 // failWithClassification records a test failure with the failure mode and
@@ -198,7 +219,7 @@ func failWithClassification(t *testing.T, assertName string, mode failureMode, o
 	t.Helper()
 	msg := failureMessage(assertName, mode, output)
 	t.Errorf("%s", msg)
-	ghaAnnotation(t, "error", assertName, msg)
+	ghaAnnotation(t, "error", assertName, mode, output)
 	localBanner(assertName, mode)
 }
 
