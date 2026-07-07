@@ -67,7 +67,9 @@ jobs:
       - name: Run e2e test
         env:
           E2E_LOG_DIR: ${{ runner.temp }}/e2e-logs
-        run: go test -tags=e2e -timeout=30m -v ./internal/e2e/ 2>&1 | tee /tmp/e2e-out.txt
+        run: |
+          set -o pipefail
+          go test -tags=e2e -timeout=30m -v ./internal/e2e/ 2>&1 | tee /tmp/e2e-out.txt
 
       - name: Failure classification summary
         if: always()
