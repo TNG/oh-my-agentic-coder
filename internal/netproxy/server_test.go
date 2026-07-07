@@ -352,3 +352,26 @@ func TestCloseTearsDownTunnels(t *testing.T) {
 func basicAuth(user, pass string) string {
 	return "Basic " + base64.StdEncoding.EncodeToString([]byte(user+":"+pass))
 }
+
+func TestDenyBodyNeedsIntent(t *testing.T) {
+	body := denyBody("example.com", "prompt:needs_intent")
+	if !strings.Contains(body, "DENIED") {
+		t.Errorf("missing DENIED: %q", body)
+	}
+	if !strings.Contains(body, "/sandbox/intent") {
+		t.Errorf("missing intent hint: %q", body)
+	}
+	if !strings.Contains(body, "example.com") {
+		t.Errorf("missing host: %q", body)
+	}
+}
+
+func TestDenyBodyRegularDeny(t *testing.T) {
+	body := denyBody("example.com", "prompt:deny")
+	if !strings.Contains(body, "DENIED BY THE SANDBOX") {
+		t.Errorf("regular deny lost its wording: %q", body)
+	}
+	if strings.Contains(body, "/sandbox/intent") {
+		t.Errorf("regular deny should not mention intent: %q", body)
+	}
+}

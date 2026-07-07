@@ -28,8 +28,18 @@ const sandboxDenyHeader = "X-Omac-Sandbox: denied\r\n"
 
 // denyBody renders the body for a filtered denial. It explicitly
 // attributes the denial to the sandbox network policy and points at
-// the knobs that change it.
+// the knobs that change it. When reason indicates the user clicked
+// "Explain more", the body directs the agent to declare or refine an
+// intent via POST /sandbox/intent and retry.
 func denyBody(host, reason string) string {
+	if strings.Contains(reason, "needs_intent") {
+		return fmt.Sprintf(`omac sandbox: access to %q was DENIED — the user asked for more explanation.
+
+Declare or refine your intent via:
+  POST $OMAC_BASE/sandbox/intent  {"target":%q,"reason":"..."}
+then retry the request.
+`, host, host)
+	}
 	return fmt.Sprintf(`omac sandbox: access to %q was DENIED BY THE SANDBOX network policy (%s).
 
 This response comes from the omac sandbox proxy, not from %s.
