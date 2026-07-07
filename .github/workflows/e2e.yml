@@ -73,25 +73,23 @@ jobs:
 
       - name: Failure classification summary
         if: always()
-        env:
-          SUMMARY_FILE: ${{ github.workspace }}/../summary-${{ matrix.harness }}-${{ matrix.os }}.md
         run: |
-          # Extract every "FAIL [assertName]: MODE — reason" line and render a
-          # markdown table on the run-summary page so the cause is visible by
-          # indicator without opening the full log.
-          {
-            echo "## E2E failure classification (${{ matrix.harness }} / ${{ matrix.os }})"
-            echo ""
-            echo "| Assertion | Mode | Reason |"
-            echo "|-----------|------|--------|"
-            if grep -qE 'FAIL \[[^]]+\]: [A-Z_]+ — ' /tmp/e2e-out.txt; then
-              grep -oE 'FAIL \[[^]]+\]: [A-Z_]+ — [^\\]*' /tmp/e2e-out.txt \
-                | sort -u \
-                | sed -E 's/FAIL \[([^]]+)\]: ([A-Z_]+) — (.*)/| `\1` | `\2` | \3 |/'
-            else
-              echo "| _all passed_ | PASS | no failures |"
-            fi
-          } >> "$GITHUB_STEP_SUMMARY"
+          # Render a markdown table on the run-summary page so the failure
+          # cause is visible by indicator without opening the full log.
+          echo "## E2E failure classification (${{ matrix.harness }} / ${{ matrix.os }})" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Assertion | Mode | Reason |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|-----------|------|--------|" >> "$GITHUB_STEP_SUMMARY"
+          if grep -qE 'FAIL \[[^]]+\]: [A-Z_]+ — ' /tmp/e2e-out.txt; then
+            grep -oE 'FAIL \[[^]]+\]: [A-Z_]+ — [^\\]*' /tmp/e2e-out.txt \
+              | sort -u \
+              | sed -E 's/FAIL \[([^]]+)\]: ([A-Z_]+) — (.*)/| `\1` | `\2` | \3 |/' \
+              >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "| _all passed_ | PASS | no failures |" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          # Also echo to stdout so the table is visible in the raw log too.
+          cat "$GITHUB_STEP_SUMMARY"
 
       - name: Upload session artifacts
         if: always()
