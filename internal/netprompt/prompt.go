@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"os"
 	"os/exec"
 	"runtime"
 	"strings"
@@ -142,6 +143,17 @@ func NewPrompter(timeoutSecs int, logf func(string, ...any), lookupIntent func(h
 		timeout:      time.Duration(timeoutSecs) * time.Second,
 		logf:         logf,
 		lookupIntent: lookupIntent,
+	}
+	// Stub backend: activated by OMAC_PROMPT_STUB=1. Reads per-host
+	// decisions from OMAC_PROMPT_DECISIONS (JSON file). Used by e2e
+	// tests and any non-interactive environment. The decisionSource
+	// interface allows a future socket-based source without changing
+	// NewPrompter or the backend interface.
+	if os.Getenv("OMAC_PROMPT_STUB") != "" {
+		src := newFileDecisionSource(os.Getenv("OMAC_PROMPT_DECISIONS"))
+		p.backends = []dialogBackend{stubBackend{source: src, logf: logf}}
+		p.notify = nil // no OS notification in stub mode
+		return p, true
 	}
 	if runtime.GOOS == "darwin" {
 		p.backends = []dialogBackend{osascriptBackend{}}
