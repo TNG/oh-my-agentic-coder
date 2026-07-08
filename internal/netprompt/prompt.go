@@ -20,9 +20,10 @@ const (
 	tokenDenyOnce             = "deny_once"
 	tokenDenyPermanentHost    = "deny_permanent_host"
 	tokenDenyPermanentSuffix  = "deny_permanent_suffix"
+	tokenNeedsIntent          = "needs_intent"
 )
 
-// optionLabels are the exact six dialog choices (nono parity, product
+// optionLabels are the exact seven dialog choices (nono parity, product
 // name swapped). Order matters: Deny once is the default.
 func optionLabels(suffix string) []string {
 	return []string{
@@ -32,6 +33,7 @@ func optionLabels(suffix string) []string {
 		"Deny once",
 		"Deny permanently (this host)",
 		fmt.Sprintf("Deny permanently (*.%s)", suffix),
+		"Explain more",
 	}
 }
 
@@ -48,6 +50,8 @@ func labelToToken(label, suffix string) string {
 		return tokenDenyPermanentHost
 	case fmt.Sprintf("Deny permanently (*.%s)", suffix):
 		return tokenDenyPermanentSuffix
+	case "Explain more":
+		return tokenNeedsIntent
 	default:
 		return tokenDenyOnce
 	}
@@ -66,6 +70,8 @@ func tokenToResult(token, host, suffix string) netproxy.PromptResult {
 		return netproxy.PromptResult{Allow: false, Persist: true, Scope: "host"}
 	case tokenDenyPermanentSuffix:
 		return netproxy.PromptResult{Allow: false, Persist: true, Scope: "suffix", Suffix: suffix}
+	case tokenNeedsIntent:
+		return netproxy.PromptResult{Allow: false, NeedsIntent: true}
 	default: // deny_once and anything unparseable
 		return netproxy.PromptResult{Allow: false}
 	}
@@ -85,9 +91,19 @@ func RegisteredSuffixHint(host string) string {
 	return host
 }
 
-// promptText is the dialog body (nono parity, product name swapped).
-func promptText(host string, port int) string {
-	return fmt.Sprintf("The sandboxed process is trying to reach:\n\n    %s:%d\n\nHow should omac handle this destination?", host, port)
+// promptText is the dialog body. urlPath is the request path when known
+// (forward HTTP only; CONNECT can't see it). intent is the agent-declared
+// reason; empty means "not declared".
+func promptText(host string, port int, urlPath, intent string) string {
+	target := fmt.Sprintf("%s:%d", host, port)
+	if urlPath != "" {
+		target = fmt.Sprintf("https://%s:%d%s", host, port, urlPath)
+	}
+	intentLine := "Agent intent: (not declared)"
+	if intent != "" {
+		intentLine = fmt.Sprintf("Agent intent: %q", intent)
+	}
+	return fmt.Sprintf("The sandboxed process is trying to reach:\n\n    %s\n\n%s\n\nHow should omac handle this destination?", target, intentLine)
 }
 
 // notificationText is the parallel OS notification body.
@@ -102,27 +118,30 @@ type dialogBackend interface {
 	// show blocks until the user chooses, the dialog is cancelled, or
 	// ctx is done (the implementation must kill the dialog process).
 	// Returns the chosen label ("" on cancel).
-	show(ctx context.Context, host string, port int, suffix string) (string, error)
+	show(ctx context.Context, host string, port int, suffix, urlPath, intent string) (string, error)
 }
 
 // Prompter implements netproxy.Prompter with native dialogs.
 type Prompter struct {
-	timeout  time.Duration
-	backends []dialogBackend
-	notify   func(host string, port int)
-	logf     func(format string, args ...any)
+	timeout      time.Duration
+	backends     []dialogBackend
+	notify       func(host string, port int)
+	logf         func(format string, args ...any)
+	lookupIntent func(host string) (string, bool)
 }
 
 // NewPrompter builds the platform prompter. Returns the prompter and
 // whether any dialog backend is available (callers feed that into the
-// on_unavailable policy).
-func NewPrompter(timeoutSecs int, logf func(string, ...any)) (*Prompter, bool) {
+// on_unavailable policy). lookupIntent, when non-nil, supplies the
+// agent-declared reason for the host; nil = no registry.
+func NewPrompter(timeoutSecs int, logf func(string, ...any), lookupIntent func(host string) (string, bool)) (*Prompter, bool) {
 	if logf == nil {
 		logf = func(string, ...any) {}
 	}
 	p := &Prompter{
-		timeout: time.Duration(timeoutSecs) * time.Second,
-		logf:    logf,
+		timeout:      time.Duration(timeoutSecs) * time.Second,
+		logf:         logf,
+		lookupIntent: lookupIntent,
 	}
 	if runtime.GOOS == "darwin" {
 		p.backends = []dialogBackend{osascriptBackend{}}
@@ -161,9 +180,15 @@ func (p *Prompter) Prompt(host string, port int) netproxy.PromptResult {
 		go p.notify(host, port)
 	}
 	suffix := RegisteredSuffixHint(host)
+	intent := ""
+	if p.lookupIntent != nil {
+		if reason, ok := p.lookupIntent(host); ok {
+			intent = reason
+		}
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), p.timeout)
 	defer cancel()
-	label, err := backend.show(ctx, host, port, suffix)
+	label, err := backend.show(ctx, host, port, suffix, "", intent)
 	if err != nil {
 		if ctx.Err() != nil {
 			p.logf("omac sandbox: network prompt for %s:%d timed out", host, port)
@@ -187,7 +212,7 @@ func (osascriptBackend) available() bool {
 	return err == nil
 }
 
-func (osascriptBackend) show(ctx context.Context, host string, port int, suffix string) (string, error) {
+func (osascriptBackend) show(ctx context.Context, host string, port int, suffix, urlPath, intent string) (string, error) {
 	opts := optionLabels(suffix)
 	quoted := make([]string, len(opts))
 	for i, o := range opts {
@@ -196,7 +221,7 @@ func (osascriptBackend) show(ctx context.Context, host string, port int, suffix 
 	script := fmt.Sprintf(
 		`choose from list {%s} with title "omac: network access" with prompt %s default items {%s} OK button name "Select" cancel button name "Cancel"`,
 		strings.Join(quoted, ", "),
-		appleScriptString(promptText(host, port)),
+		appleScriptString(promptText(host, port, urlPath, intent)),
 		appleScriptString("Deny once"),
 	)
 	out, err := exec.CommandContext(ctx, "osascript", "-e", script).Output()
@@ -235,11 +260,11 @@ func (zenityBackend) available() bool {
 	return err == nil
 }
 
-func (zenityBackend) show(ctx context.Context, host string, port int, suffix string) (string, error) {
+func (zenityBackend) show(ctx context.Context, host string, port int, suffix, urlPath, intent string) (string, error) {
 	args := []string{
 		"--list", "--radiolist",
 		"--title", "omac: network access",
-		"--text", promptText(host, port),
+		"--text", promptText(host, port, urlPath, intent),
 		"--column", "", "--column", "Decision",
 		"--height", "320",
 	}
@@ -270,11 +295,11 @@ func (kdialogBackend) available() bool {
 	return err == nil
 }
 
-func (kdialogBackend) show(ctx context.Context, host string, port int, suffix string) (string, error) {
+func (kdialogBackend) show(ctx context.Context, host string, port int, suffix, urlPath, intent string) (string, error) {
 	opts := optionLabels(suffix)
 	args := []string{
 		"--title", "omac: network access",
-		"--radiolist", fmt.Sprintf("The sandboxed process is trying to reach %s:%d.\nHow should omac handle this destination?", host, port),
+		"--radiolist", promptText(host, port, urlPath, intent),
 	}
 	for i, o := range opts {
 		state := "off"

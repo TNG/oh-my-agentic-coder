@@ -35,6 +35,7 @@ func TestLabelTokenRoundTrip(t *testing.T) {
 		"Deny once":                         tokenDenyOnce,
 		"Deny permanently (this host)":      tokenDenyPermanentHost,
 		"Deny permanently (*.example.com)":  tokenDenyPermanentSuffix,
+		"Explain more":                      tokenNeedsIntent,
 		"":                                  tokenDenyOnce, // cancel
 		"garbage":                           tokenDenyOnce,
 	}
@@ -67,6 +68,10 @@ func TestTokenToResult(t *testing.T) {
 	if r.Allow || !r.Persist || r.Scope != "suffix" {
 		t.Errorf("deny_permanent_suffix: %+v", r)
 	}
+	r = tokenToResult(tokenNeedsIntent, host, suffix)
+	if r.Allow || r.Persist || !r.NeedsIntent {
+		t.Errorf("needs_intent: %+v", r)
+	}
 }
 
 func TestOptionLabelsExactAndDefault(t *testing.T) {
@@ -78,6 +83,7 @@ func TestOptionLabelsExactAndDefault(t *testing.T) {
 		"Deny once",
 		"Deny permanently (this host)",
 		"Deny permanently (*.example.com)",
+		"Explain more",
 	}
 	if len(opts) != len(want) {
 		t.Fatalf("got %d options", len(opts))
@@ -90,11 +96,35 @@ func TestOptionLabelsExactAndDefault(t *testing.T) {
 }
 
 func TestPromptTextParity(t *testing.T) {
-	got := promptText("api.example.com", 443)
-	want := "The sandboxed process is trying to reach:\n\n    api.example.com:443\n\nHow should omac handle this destination?"
+	got := promptText("api.example.com", 443, "", "")
+	want := "The sandboxed process is trying to reach:\n\n    api.example.com:443\n\nAgent intent: (not declared)\n\nHow should omac handle this destination?"
 	if got != want {
-		t.Errorf("promptText = %q", got)
+		t.Errorf("promptText (no intent) = %q", got)
 	}
+}
+
+func TestPromptTextWithURLAndIntent(t *testing.T) {
+	got := promptText("api.example.com", 443, "/v1/releases", "fetch release notes")
+	want := "The sandboxed process is trying to reach:\n\n    https://api.example.com:443/v1/releases\n\nAgent intent: \"fetch release notes\"\n\nHow should omac handle this destination?"
+	if got != want {
+		t.Errorf("promptText (with intent) = %q", got)
+	}
+}
+
+func TestPromptTextIntentOnly(t *testing.T) {
+	got := promptText("api.example.com", 443, "", "verify the version")
+	if !strings.Contains(got, "api.example.com:443") {
+		t.Errorf("missing host:port: %q", got)
+	}
+	if !strings.Contains(got, `"verify the version"`) {
+		t.Errorf("missing intent: %q", got)
+	}
+	if strings.Contains(got, "https://") {
+		t.Errorf("should not show https when no path: %q", got)
+	}
+}
+
+func TestNotificationText(t *testing.T) {
 	n := notificationText("api.example.com", 443)
 	if !strings.Contains(n, "api.example.com:443") || !strings.Contains(n, "decision dialog is waiting") {
 		t.Errorf("notificationText = %q", n)

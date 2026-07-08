@@ -9,6 +9,7 @@ import (
 	"github.com/tngtech/oh-my-agentic-coder/internal/netprompt"
 	"github.com/tngtech/oh-my-agentic-coder/internal/netproxy"
 	"github.com/tngtech/oh-my-agentic-coder/internal/sandbox"
+	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxdeny"
 	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxprofile"
 )
 
@@ -59,6 +60,7 @@ func Run(opts Options) int {
 	if err := grants.Validate(); err != nil {
 		return fail("%v", err)
 	}
+	grants.DenialText = resolvedDenialText(merged.Denial)
 
 	// Learn mode: lift filesystem restrictions (network/env filtering
 	// stay active) and record the folders the session touches. The
@@ -162,7 +164,7 @@ func buildProxy(p *sandboxprofile.Profile, profilePath string, stderr io.Writer,
 	var prompter netproxy.Prompter
 	onUnavailableAllow := p.Network.OnUnavailable() == sandboxprofile.OnUnavailableAllow
 	if p.Network.PromptEnabled() {
-		np, available := netprompt.NewPrompter(p.Network.PromptTimeoutSecs(), logf)
+		np, available := netprompt.NewPrompter(p.Network.PromptTimeoutSecs(), logf, nil)
 		if available {
 			prompter = np
 		} else {
@@ -189,4 +191,18 @@ func buildProxy(p *sandboxprofile.Profile, profilePath string, stderr io.Writer,
 		return nil, err
 	}
 	return srv, nil
+}
+
+// resolvedDenialText merges a profile's Denial override with the
+// compiled-in default and returns the marker-file content. Empty
+// override fields inherit the default.
+func resolvedDenialText(d *sandboxprofile.Denial) string {
+	if d == nil {
+		return sandboxdeny.Default().MarkerFile
+	}
+	return sandboxdeny.Resolve(sandboxdeny.Text{
+		MarkerFile:    d.MarkerFile,
+		MarkerDirName: d.MarkerDirName,
+		FacadeNote:    d.FacadeNote,
+	}).MarkerFile
 }
