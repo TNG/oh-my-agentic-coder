@@ -3,6 +3,7 @@ package sandboxrun
 import (
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -189,6 +190,613 @@ func TestResolveGrantsDeduplicates(t *testing.T) {
 
 func listenUnix(path string) (interface{ Close() error }, error) {
 	return net.Listen("unix", path)
+}
+
+// makeLinkedWorktree builds a minimal linked-worktree layout mirroring
+// `git worktree add`: .git is a "gitdir: <admin>" file, and <admin>/commondir
+// points back at the shared common dir.
+func makeLinkedWorktree(t *testing.T) (workdir, common string) {
+	t.Helper()
+	base := t.TempDir()
+	common = filepath.Join(base, "repo", ".git")
+	admin := filepath.Join(common, "worktrees", "wt")
+	for _, d := range []string{
+		filepath.Join(common, "objects"),
+		filepath.Join(common, "refs"),
+		filepath.Join(common, "logs"),
+		filepath.Join(common, "info"),
+		filepath.Join(common, "hooks"),
+		admin,
+	} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeFile(t, filepath.Join(common, "config"))
+	writeFile(t, filepath.Join(common, "packed-refs"))
+	// commondir is relative to the admin dir, as git writes it.
+	if err := os.WriteFile(filepath.Join(admin, "commondir"), []byte("../..\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	workdir = filepath.Join(base, "wt")
+	if err := os.MkdirAll(workdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workdir, ".git"), []byte("gitdir: "+admin+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return workdir, common
+}
+
+func TestResolveGrantsLinkedWorktreeReadWrite(t *testing.T) {
+	wd, common := makeLinkedWorktree(t)
+	p := &sandboxprofile.Profile{Workdir: sandboxprofile.Workdir{Access: sandboxprofile.AccessReadWrite}}
+	g, err := ResolveGrants(p, wd, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The subdirs git add/commit actually write are read+write.
+	for _, sub := range []string{"objects", "refs", "logs", filepath.Join("worktrees", "wt")} {
+		want := filepath.Join(common, sub)
+		if !slices.Contains(g.AllowPaths, want) {
+			t.Errorf("allow missing %s: %v", want, g.AllowPaths)
+		}
+	}
+	// config/info/packed-refs are read-only (blocks core.hooksPath/credential.helper
+	// mutation; add/commit only writes loose refs, never packed-refs).
+	for _, sub := range []string{"config", "info", "packed-refs"} {
+		want := filepath.Join(common, sub)
+		if !slices.Contains(g.ReadPaths, want) {
+			t.Errorf("read missing %s: %v", want, g.ReadPaths)
+		}
+		if slices.Contains(g.AllowPaths, want) {
+			t.Errorf("%s must not be writable", want)
+		}
+	}
+	// hooks: readable+runnable, never writable, never hard-denied.
+	hooks := filepath.Join(common, "hooks")
+	if !slices.Contains(g.ReadPaths, hooks) {
+		t.Errorf("hooks must be readable: %v", g.ReadPaths)
+	}
+	if slices.Contains(g.AllowPaths, hooks) || slices.Contains(g.WritePaths, hooks) {
+		t.Errorf("hooks must not be writable: allow=%v write=%v", g.AllowPaths, g.WritePaths)
+	}
+	if slices.Contains(g.ProtectedPaths, hooks) {
+		t.Errorf("hooks must not be hard-denied: %v", g.ProtectedPaths)
+	}
+}
+
+func TestResolveGrantsLinkedWorktreeReadOnly(t *testing.T) {
+	wd, common := makeLinkedWorktree(t)
+	p := &sandboxprofile.Profile{Workdir: sandboxprofile.Workdir{Access: sandboxprofile.AccessRead}}
+	g, err := ResolveGrants(p, wd, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Read-only workdir: git read ops still need the common dir.
+	for _, sub := range []string{"objects", "refs", "logs", "config", "info", "packed-refs", filepath.Join("worktrees", "wt")} {
+		want := filepath.Join(common, sub)
+		if !slices.Contains(g.ReadPaths, want) {
+			t.Errorf("read missing %s: %v", want, g.ReadPaths)
+		}
+	}
+	for _, ap := range g.AllowPaths {
+		if strings.HasPrefix(ap, common) {
+			t.Errorf("read-only workdir must not grant writes under common: %s", ap)
+		}
+	}
+}
+
+func TestResolveGrantsPlainCloneNoWorktreeGrants(t *testing.T) {
+	wd := t.TempDir()
+	// Plain clone: .git is a directory inside the workdir, already covered.
+	if err := os.MkdirAll(filepath.Join(wd, ".git", "objects"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := &sandboxprofile.Profile{Workdir: sandboxprofile.Workdir{Access: sandboxprofile.AccessReadWrite}}
+	g, err := ResolveGrants(p, wd, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ap := range g.AllowPaths {
+		if ap != wd {
+			t.Errorf("plain clone must not add extra allow grants, got %s", ap)
+		}
+	}
+}
+
+// TestResolveGrantsRealGitWorktreePipeline drives resolve -> backend-generation
+// against a real `git worktree add`, catching any drift from git's actual
+// .git/commondir format. (A live sandbox-exec/bwrap launch can't run here, so
+// this is the end-to-end check below the process boundary.)
+func TestResolveGrantsRealGitWorktreePipeline(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	base := t.TempDir()
+	mainRepo := filepath.Join(base, "main")
+	testGitRun(t, base, "init", "-q", mainRepo)
+	writeFile(t, filepath.Join(mainRepo, "a.txt"))
+	testGitRun(t, mainRepo, "add", "a.txt")
+	testGitRun(t, mainRepo, "commit", "-qm", "init")
+	wt := filepath.Join(base, "wt")
+	testGitRun(t, mainRepo, "worktree", "add", "-q", wt, "-b", "feature")
+
+	// git writes canonical paths; ResolveGrants canonicalizes grants too,
+	// so compare against the resolved common dir (/var -> /private/var on macOS).
+	common := filepath.Join(mainRepo, ".git")
+	if resolved, rerr := filepath.EvalSymlinks(common); rerr == nil {
+		common = resolved
+	}
+	p := &sandboxprofile.Profile{Workdir: sandboxprofile.Workdir{Access: sandboxprofile.AccessReadWrite}}
+	g, err := ResolveGrants(p, wt, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	admin := filepath.Join(common, "worktrees", "wt")
+	for _, want := range []string{
+		filepath.Join(common, "objects"),
+		filepath.Join(common, "refs"),
+		filepath.Join(common, "logs"),
+		admin,
+	} {
+		if !slices.Contains(g.AllowPaths, want) {
+			t.Errorf("allow missing %s: %v", want, g.AllowPaths)
+		}
+	}
+	if !slices.Contains(g.ReadPaths, filepath.Join(common, "config")) {
+		t.Errorf("read missing config: %v", g.ReadPaths)
+	}
+	if !slices.Contains(g.ReadPaths, filepath.Join(common, "hooks")) {
+		t.Errorf("hooks must be readable: %v", g.ReadPaths)
+	}
+	if slices.Contains(g.ProtectedPaths, filepath.Join(common, "hooks")) {
+		t.Errorf("hooks must not be hard-denied: %v", g.ProtectedPaths)
+	}
+
+	// macOS backend: objects rw, config read-only, hooks read-only.
+	sbpl := GenerateSBPL(g)
+	objects := filepath.Join(common, "objects")
+	if !strings.Contains(sbpl, "(allow file-write* (subpath \""+objects+"\"))") {
+		t.Errorf("SBPL missing write allow for objects:\n%s", sbpl)
+	}
+	config := filepath.Join(common, "config")
+	if strings.Contains(sbpl, "(allow file-write* (subpath \""+config+"\"))") {
+		t.Errorf("SBPL must not allow writing config")
+	}
+	hooks := filepath.Join(common, "hooks")
+	if !strings.Contains(sbpl, "(allow file-read* (subpath \""+hooks+"\"))") {
+		t.Errorf("SBPL missing hooks read allow:\n%s", sbpl)
+	}
+	if strings.Contains(sbpl, "(allow file-write* (subpath \""+hooks+"\"))") {
+		t.Errorf("SBPL must not allow writing hooks:\n%s", sbpl)
+	}
+	if strings.Contains(sbpl, "(deny file-read* (subpath \""+hooks+"\"))") {
+		t.Errorf("SBPL must not deny reading hooks (read-only, not hard-deny):\n%s", sbpl)
+	}
+
+	// Linux backend: objects bound rw (--bind), config read-only (--ro-bind).
+	argv, err := BuildBwrapArgv(g, []string{"x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(argv, " ")
+	if !strings.Contains(joined, "--bind "+objects+" "+objects) {
+		t.Errorf("bwrap argv missing rw bind for objects:\n%s", joined)
+	}
+	if !strings.Contains(joined, "--ro-bind "+config+" "+config) {
+		t.Errorf("bwrap argv missing ro bind for config:\n%s", joined)
+	}
+	if !strings.Contains(joined, "--ro-bind "+hooks+" "+hooks) {
+		t.Errorf("bwrap argv missing ro bind for hooks:\n%s", joined)
+	}
+}
+
+// TestResolveGrantsWorktreeHooksRunnableNotWritable pins the hooks policy
+// (readable+runnable, never writable, never hard-denied) at both access levels.
+func TestResolveGrantsWorktreeHooksRunnableNotWritable(t *testing.T) {
+	wd, common := makeLinkedWorktree(t)
+	hooks := filepath.Join(common, "hooks")
+	for _, access := range []string{sandboxprofile.AccessReadWrite, sandboxprofile.AccessRead} {
+		p := &sandboxprofile.Profile{Workdir: sandboxprofile.Workdir{Access: access}}
+		g, err := ResolveGrants(p, wd, nil)
+		if err != nil {
+			t.Fatalf("access %s: %v", access, err)
+		}
+		if !slices.Contains(g.ReadPaths, hooks) {
+			t.Errorf("access %s: hooks must be readable: %v", access, g.ReadPaths)
+		}
+		if slices.Contains(g.AllowPaths, hooks) || slices.Contains(g.WritePaths, hooks) {
+			t.Errorf("access %s: hooks must not be writable (allow=%v write=%v)", access, g.AllowPaths, g.WritePaths)
+		}
+		if slices.Contains(g.ProtectedPaths, hooks) {
+			t.Errorf("access %s: hooks must not be hard-denied: %v", access, g.ProtectedPaths)
+		}
+	}
+}
+
+// TestResolveGrantsWorktreeHooksSymlinkEscape guards the hooks READ grant:
+// a planted `hooks -> <secret>` symlink must be dropped by containment,
+// not canonicalized into a read of the target.
+func TestResolveGrantsWorktreeHooksSymlinkEscape(t *testing.T) {
+	base := t.TempDir()
+	secret := filepath.Join(base, "secret")
+	if err := os.MkdirAll(secret, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	secretResolved, err := filepath.EvalSymlinks(secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	common := filepath.Join(base, "repo", ".git")
+	admin := filepath.Join(common, "worktrees", "wt")
+	if err := os.MkdirAll(admin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, real := range []string{"objects", "refs", "logs", "info"} {
+		if err := os.MkdirAll(filepath.Join(common, real), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeFile(t, filepath.Join(common, "config"))
+	if err := os.WriteFile(filepath.Join(admin, "commondir"), []byte("../..\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The poisoned entry: hooks symlinked at the secret dir.
+	if err := os.Symlink(secret, filepath.Join(common, "hooks")); err != nil {
+		t.Fatal(err)
+	}
+	wd := filepath.Join(base, "wt")
+	if err := os.MkdirAll(wd, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wd, ".git"), []byte("gitdir: "+admin+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	p := &sandboxprofile.Profile{Workdir: sandboxprofile.Workdir{Access: sandboxprofile.AccessReadWrite}}
+	g, err := ResolveGrants(p, wd, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, list := range [][]string{g.ReadPaths, g.WritePaths, g.AllowPaths} {
+		for _, gp := range list {
+			resolved, rerr := filepath.EvalSymlinks(gp)
+			if rerr != nil {
+				continue
+			}
+			if resolved == secretResolved || strings.HasPrefix(resolved, secretResolved+string(filepath.Separator)) {
+				t.Errorf("ESCAPE: grant %s resolves into the secret dir %s via hooks symlink", gp, secretResolved)
+			}
+		}
+	}
+}
+
+// TestResolveGrantsWorktreeRejectsSymlinkEscape guards the sandbox boundary:
+// grant paths derive from in-workdir files a prior sandboxed session could
+// tamper with, and backends symlink-canonicalize every grant. A planted
+// symlink under the common dir (e.g. objects -> secret) must NOT widen any
+// grant to the target.
+func TestResolveGrantsWorktreeRejectsSymlinkEscape(t *testing.T) {
+	base := t.TempDir()
+	secret := filepath.Join(base, "secret")
+	if err := os.MkdirAll(secret, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	secretResolved, err := filepath.EvalSymlinks(secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Attacker-controlled common dir with git's structural shape.
+	common := filepath.Join(base, "evil", ".git")
+	admin := filepath.Join(common, "worktrees", "wt")
+	if err := os.MkdirAll(admin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, real := range []string{"logs", "info"} {
+		if err := os.MkdirAll(filepath.Join(common, real), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeFile(t, filepath.Join(common, "config"))
+	if err := os.WriteFile(filepath.Join(admin, "commondir"), []byte("../..\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The poisoned entries: objects/refs symlinked at the secret dir.
+	if err := os.Symlink(secret, filepath.Join(common, "objects")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(secret, filepath.Join(common, "refs")); err != nil {
+		t.Fatal(err)
+	}
+
+	wd := filepath.Join(base, "wt")
+	if err := os.MkdirAll(wd, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wd, ".git"), []byte("gitdir: "+admin+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	p := &sandboxprofile.Profile{Workdir: sandboxprofile.Workdir{Access: sandboxprofile.AccessReadWrite}}
+	g, err := ResolveGrants(p, wd, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// No grant — nor its symlink-resolved form (what kernel rules use) —
+	// may reach the secret dir.
+	for _, list := range [][]string{g.ReadPaths, g.WritePaths, g.AllowPaths} {
+		for _, gp := range list {
+			resolved, rerr := filepath.EvalSymlinks(gp)
+			if rerr != nil {
+				continue
+			}
+			if resolved == secretResolved || strings.HasPrefix(resolved, secretResolved+string(filepath.Separator)) {
+				t.Errorf("ESCAPE: grant %s resolves into the secret dir %s", gp, secretResolved)
+			}
+		}
+	}
+}
+
+// TestResolveGrantsWorktreeRejectsSpoofedCommondir: a commondir violating
+// git's <common>/worktrees/<name> invariant yields no worktree grants.
+func TestResolveGrantsWorktreeRejectsSpoofedCommondir(t *testing.T) {
+	wd, _ := makeLinkedWorktree(t)
+	// Repoint commondir at an unrelated absolute dir.
+	elsewhere := t.TempDir()
+	admin := readAdminDir(t, wd)
+	if err := os.WriteFile(filepath.Join(admin, "commondir"), []byte(elsewhere+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	p := &sandboxprofile.Profile{Workdir: sandboxprofile.Workdir{Access: sandboxprofile.AccessReadWrite}}
+	g, err := ResolveGrants(p, wd, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, list := range [][]string{g.ReadPaths, g.AllowPaths} {
+		for _, gp := range list {
+			if strings.HasPrefix(gp, elsewhere) {
+				t.Errorf("spoofed commondir leaked a grant under %s: %s", elsewhere, gp)
+			}
+		}
+	}
+	// Only the workdir itself should be allow-granted.
+	for _, ap := range g.AllowPaths {
+		if ap != wd {
+			t.Errorf("unexpected allow grant for spoofed worktree: %s", ap)
+		}
+	}
+}
+
+// readAdminDir parses the admin-dir path out of a linked worktree's .git.
+func readAdminDir(t *testing.T, workdir string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(workdir, ".git"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(string(data)), "gitdir:"))
+}
+
+func TestResolveGrantsWorktreeAccessNone(t *testing.T) {
+	wd, common := makeLinkedWorktree(t)
+	p := &sandboxprofile.Profile{Workdir: sandboxprofile.Workdir{Access: sandboxprofile.AccessNone}}
+	g, err := ResolveGrants(p, wd, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, list := range [][]string{g.ReadPaths, g.AllowPaths} {
+		for _, x := range list {
+			if strings.HasPrefix(x, common) {
+				t.Errorf("access=none must not grant common paths: %s", x)
+			}
+		}
+	}
+}
+
+// TestResolveGrantsSubmoduleNoWorktreeGrants pins the submodule exclusion
+// claim in the PR body: a submodule's admin dir lives under the parent's
+// .git/modules/ but has NO commondir file, so resolveWorktreeCommonDir
+// returns ok=false and no extra grants are added.
+func TestResolveGrantsSubmoduleNoWorktreeGrants(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	base := t.TempDir()
+	mainRepo := filepath.Join(base, "main")
+	testGitRun(t, base, "init", "-q", mainRepo)
+	writeFile(t, filepath.Join(mainRepo, "a.txt"))
+	testGitRun(t, mainRepo, "add", "a.txt")
+	testGitRun(t, mainRepo, "commit", "-qm", "init")
+	// Add mainRepo as a submodule of itself (creates a nested repo).
+	subPath := filepath.Join(mainRepo, "sub")
+	testGitRun(t, mainRepo, "-c", "protocol.file.allow=always", "submodule", "add", "-q", mainRepo, "sub")
+	testGitRun(t, mainRepo, "commit", "-qm", "add submodule")
+
+	// The submodule workdir's .git is a gitdir: file.
+	dotgit := filepath.Join(subPath, ".git")
+	if fi, err := os.Lstat(dotgit); err != nil || !fi.Mode().IsRegular() {
+		t.Fatalf("submodule .git must be a file, got Lstat=%v", fi)
+	}
+	// Confirm the submodule admin dir has NO commondir (the exclusion trigger).
+	admin := readAdminDir(t, subPath)
+	if _, err := os.Stat(filepath.Join(admin, "commondir")); err == nil {
+		t.Fatalf("submodule admin dir has a commondir file — exclusion premise changed")
+	}
+
+	p := &sandboxprofile.Profile{Workdir: sandboxprofile.Workdir{Access: sandboxprofile.AccessReadWrite}}
+	g, err := ResolveGrants(p, subPath, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// No grant may reach the parent repo's common dir via the submodule.
+	// (subPath = mainRepo/sub lives under mainRepo, not under
+	// mainRepo/.git, so the common-prefix check alone is sufficient.)
+	common := filepath.Join(mainRepo, ".git")
+	if resolved, rerr := filepath.EvalSymlinks(common); rerr == nil {
+		common = resolved
+	}
+	for _, list := range [][]string{g.ReadPaths, g.WritePaths, g.AllowPaths} {
+		for _, gp := range list {
+			if gp == common || strings.HasPrefix(gp, common+string(filepath.Separator)) {
+				t.Errorf("submodule leaked a grant into the parent common dir: %s", gp)
+			}
+		}
+	}
+	// Only the submodule workdir itself should be allow-granted (plus baseline).
+	for _, ap := range g.AllowPaths {
+		if ap == subPath {
+			continue
+		}
+		if strings.HasPrefix(ap, common+string(filepath.Separator)) {
+			t.Errorf("submodule must not allow-grant paths under the parent common dir: %s", ap)
+		}
+	}
+}
+
+// TestResolveGrantsWorktreeAccessWrite pins the AccessWrite (write-only)
+// worktree path: git must read objects/refs to commit, so the worktree
+// subdirs are granted read+write even though the workdir access is
+// write-only. config/info/packed-refs/hooks stay read-only.
+func TestResolveGrantsWorktreeAccessWrite(t *testing.T) {
+	wd, common := makeLinkedWorktree(t)
+	p := &sandboxprofile.Profile{Workdir: sandboxprofile.Workdir{Access: sandboxprofile.AccessWrite}}
+	g, err := ResolveGrants(p, wd, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Write subdirs must be in AllowPaths (read+write), not just WritePaths,
+	// because git must read objects/refs it commits.
+	for _, sub := range []string{"objects", "refs", "logs", filepath.Join("worktrees", "wt")} {
+		want := filepath.Join(common, sub)
+		if !slices.Contains(g.AllowPaths, want) {
+			t.Errorf("AccessWrite: allow missing %s: %v", want, g.AllowPaths)
+		}
+	}
+	// Read-only subdirs must be in ReadPaths, never writable.
+	for _, sub := range []string{"config", "info", "packed-refs", "hooks"} {
+		want := filepath.Join(common, sub)
+		if !slices.Contains(g.ReadPaths, want) {
+			t.Errorf("AccessWrite: read missing %s: %v", want, g.ReadPaths)
+		}
+		if slices.Contains(g.AllowPaths, want) || slices.Contains(g.WritePaths, want) {
+			t.Errorf("AccessWrite: %s must not be writable", want)
+		}
+	}
+}
+
+// TestResolveGrantsBareRepoWorktree pins that a worktree created from a
+// bare repository (common dir is the bare repo dir itself) resolves
+// correctly through the git-invariant check.
+func TestResolveGrantsBareRepoWorktree(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	base := t.TempDir()
+	bareRepo := filepath.Join(base, "repo.git")
+	testGitRun(t, base, "init", "-q", "--bare", bareRepo)
+	// Seed the bare repo with an initial commit via a temp clone.
+	clone := filepath.Join(base, "clone")
+	testGitRun(t, base, "clone", "-q", bareRepo, clone)
+	writeFile(t, filepath.Join(clone, "seed"))
+	testGitRun(t, clone, "add", "seed")
+	testGitRun(t, clone, "commit", "-qm", "init")
+	testGitRun(t, clone, "push", "-q", "origin", "HEAD:main")
+	// Point the bare repo's HEAD at the pushed branch so worktree add works.
+	testGitRun(t, bareRepo, "symbolic-ref", "HEAD", "refs/heads/main")
+
+	// Add a worktree from the bare repo.
+	wt := filepath.Join(base, "wt")
+	testGitRun(t, bareRepo, "worktree", "add", "-q", wt, "-b", "feature")
+
+	common := bareRepo
+	if resolved, rerr := filepath.EvalSymlinks(common); rerr == nil {
+		common = resolved
+	}
+	p := &sandboxprofile.Profile{Workdir: sandboxprofile.Workdir{Access: sandboxprofile.AccessReadWrite}}
+	g, err := ResolveGrants(p, wt, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	admin := filepath.Join(common, "worktrees", "wt")
+	wantAllow := []string{
+		filepath.Join(common, "objects"),
+		filepath.Join(common, "refs"),
+		admin,
+	}
+	// logs/ exists only when core.logAllRefUpdates is set (default off
+	// for bare repos); ExpandExisting drops it if absent, which is correct.
+	if _, lerr := os.Stat(filepath.Join(common, "logs")); lerr == nil {
+		wantAllow = append(wantAllow, filepath.Join(common, "logs"))
+	}
+	for _, want := range wantAllow {
+		if !slices.Contains(g.AllowPaths, want) {
+			t.Errorf("bare repo: allow missing %s: %v", want, g.AllowPaths)
+		}
+	}
+	if !slices.Contains(g.ReadPaths, filepath.Join(common, "config")) {
+		t.Errorf("bare repo: read missing config: %v", g.ReadPaths)
+	}
+	if !slices.Contains(g.ReadPaths, filepath.Join(common, "hooks")) {
+		t.Errorf("bare repo: hooks must be readable: %v", g.ReadPaths)
+	}
+}
+
+// TestResolveGrantsConcurrentWorktreesIsolation verifies that two
+// worktrees sharing one common dir each get grants for their OWN admin
+// dir only — never the sibling worktree's admin dir. Without this, a
+// second worktree's index/HEAD could be corrupted by the first.
+func TestResolveGrantsConcurrentWorktreesIsolation(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	base := t.TempDir()
+	mainRepo := filepath.Join(base, "main")
+	testGitRun(t, base, "init", "-q", mainRepo)
+	writeFile(t, filepath.Join(mainRepo, "a.txt"))
+	testGitRun(t, mainRepo, "add", "a.txt")
+	testGitRun(t, mainRepo, "commit", "-qm", "init")
+
+	wt1 := filepath.Join(base, "wt1")
+	wt2 := filepath.Join(base, "wt2")
+	testGitRun(t, mainRepo, "worktree", "add", "-q", wt1, "-b", "feature1")
+	testGitRun(t, mainRepo, "worktree", "add", "-q", wt2, "-b", "feature2")
+
+	common := filepath.Join(mainRepo, ".git")
+	if resolved, rerr := filepath.EvalSymlinks(common); rerr == nil {
+		common = resolved
+	}
+	admin1 := filepath.Join(common, "worktrees", "wt1")
+	admin2 := filepath.Join(common, "worktrees", "wt2")
+
+	p := &sandboxprofile.Profile{Workdir: sandboxprofile.Workdir{Access: sandboxprofile.AccessReadWrite}}
+
+	g1, err := ResolveGrants(p, wt1, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g2, err := ResolveGrants(p, wt2, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// wt1 must grant admin1, NOT admin2.
+	if !slices.Contains(g1.AllowPaths, admin1) {
+		t.Errorf("wt1 missing own admin dir %s: %v", admin1, g1.AllowPaths)
+	}
+	if slices.Contains(g1.AllowPaths, admin2) {
+		t.Errorf("wt1 must not grant sibling admin dir %s", admin2)
+	}
+	// wt2 must grant admin2, NOT admin1.
+	if !slices.Contains(g2.AllowPaths, admin2) {
+		t.Errorf("wt2 missing own admin dir %s: %v", admin2, g2.AllowPaths)
+	}
+	if slices.Contains(g2.AllowPaths, admin1) {
+		t.Errorf("wt2 must not grant sibling admin dir %s", admin1)
+	}
+	// Both share objects/refs/logs (the common subdirs) — that's correct
+	// and expected. The isolation is about per-worktree admin dirs only.
 }
 
 // writeFile is a tiny helper for the deny tests.
