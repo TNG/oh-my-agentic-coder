@@ -68,6 +68,7 @@ func Run(opts Options) int {
 	// and learn-mode review look them up over HTTP — the facade owns
 	// the registry, not this process.
 	intentBase := os.Getenv("OMAC_BASE")
+	logf := diag.Logf
 
 	// Learn mode: lift filesystem restrictions (network/env filtering
 	// stay active) and record the folders the session touches. The
@@ -79,8 +80,6 @@ func Run(opts Options) int {
 		recorder = newLearnRecorder(grants, intentBase)
 		grants = grants.withUnrestrictedFilesystem()
 	}
-
-	logf := diag.Logf
 
 	// Injected child env (proxy vars). Built before the backend so the
 	// proxy port can land in the kernel rules.

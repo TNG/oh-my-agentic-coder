@@ -247,10 +247,8 @@ func (f *Facade) UpstreamPort(namespace, mount string) int {
 // Start opens the listeners and begins serving. Returns once both are
 // bound. Call Close to stop.
 func (f *Facade) Start(ctx context.Context) error {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/", f.handle)
 	f.server = &http.Server{
-		Handler:           mux,
+		Handler:           http.HandlerFunc(f.handle),
 		ReadHeaderTimeout: 15 * time.Second,
 		IdleTimeout:       f.IdleTimeout,
 	}
@@ -359,6 +357,13 @@ func (f *Facade) Close() error {
 // handle is the root HTTP handler.
 func (f *Facade) handle(w http.ResponseWriter, r *http.Request) {
 	started := time.Now()
+	// Normalize: collapse double slashes so $OMAC_BASE/sandbox/intent
+	// works even when OMAC_BASE ends with a trailing slash (which it
+	// always does — set to "http://127.0.0.1:PORT/" by start.go).
+	if strings.Contains(r.URL.Path, "//") {
+		r.URL.Path = "/" + strings.TrimLeft(r.URL.Path, "/")
+		r.URL.RawPath = ""
+	}
 	// Built-in meta routes take precedence over skill mounts.
 	if r.URL.Path == "/sandbox/denied" {
 		f.handleSandboxDenied(w, r)
