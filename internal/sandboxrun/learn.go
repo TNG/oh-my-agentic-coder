@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/tngtech/oh-my-agentic-coder/internal/intent"
 	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxprofile"
 )
 
@@ -28,19 +29,23 @@ type learnRecorder struct {
 	stop    chan struct{}
 	stopped sync.WaitGroup
 
-	excluded  []string // expanded: granted + baseline-read/write roots
-	protected []string // expanded protected paths (never offered)
-	home      string
+	excluded   []string // expanded: granted + baseline-read/write roots
+	protected  []string // expanded protected paths (never offered)
+	home       string
+	intentBase string // OMAC_BASE for HTTP intent lookup; "" = no lookup
 }
 
 // newLearnRecorder builds the exclusion sets from the effective grants.
-func newLearnRecorder(g *Grants) *learnRecorder {
+// intentBase, when non-empty, is the facade URL for looking up
+// agent-declared intents at session end.
+func newLearnRecorder(g *Grants, intentBase string) *learnRecorder {
 	home, _ := os.UserHomeDir()
 	r := &learnRecorder{
-		seen:      map[string]bool{},
-		stop:      make(chan struct{}),
-		protected: g.ProtectedPaths,
-		home:      home,
+		seen:       map[string]bool{},
+		stop:       make(chan struct{}),
+		protected:  g.ProtectedPaths,
+		home:       home,
+		intentBase: intentBase,
 	}
 	r.excluded = append(r.excluded, g.ReadPaths...)
 	r.excluded = append(r.excluded, g.WritePaths...)
@@ -189,14 +194,22 @@ func collapseAncestors(paths []string) []string {
 // whether to append them to the profile's filesystem.allow list. It
 // rewrites the profile pretty-printed on confirmation. in/out default
 // to the controlling terminal so the prompt works after a TUI session.
-func OfferLearnedFolders(profilePath string, candidates []string, in io.Reader, out io.Writer) error {
+// intentBase, when non-empty, is the facade URL for looking up
+// agent-declared intents shown next to each candidate.
+func OfferLearnedFolders(profilePath string, candidates []string, in io.Reader, out io.Writer, intentBase string) error {
 	if len(candidates) == 0 {
 		fmt.Fprintln(out, "omac sandbox: learn mode: no new folders observed")
 		return nil
 	}
 	fmt.Fprintln(out, "\nomac sandbox: learn mode observed these folders outside the current profile:")
 	for _, c := range candidates {
-		fmt.Fprintf(out, "  %s\n", c)
+		intentLine := "(no intent declared)"
+		if intentBase != "" {
+			if reason, ok := intentLookup(intentBase, c); ok {
+				intentLine = fmt.Sprintf("agent said: %q", reason)
+			}
+		}
+		fmt.Fprintf(out, "  %-40s — %s\n", c, intentLine)
 	}
 	fmt.Fprintf(out, "Add them to filesystem.allow in %s? [y/N] ", profilePath)
 	reader := bufio.NewReader(in)
@@ -236,6 +249,12 @@ func OfferLearnedFolders(profilePath string, candidates []string, in io.Reader, 
 	}
 	fmt.Fprintf(out, "omac sandbox: added %d folder(s) to %s\n", added, profilePath)
 	return nil
+}
+
+// intentLookup queries the facade for an agent-declared intent for a
+// path. Returns the reason and whether one was found.
+func intentLookup(baseURL, target string) (string, bool) {
+	return intent.LookupOverHTTP(baseURL, target)
 }
 
 // abbreviateHome renders /Users/u/x as ~/x for nicer profile entries.

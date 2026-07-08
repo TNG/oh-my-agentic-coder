@@ -2,6 +2,7 @@ package facade
 
 import (
 	"bytes"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -58,15 +59,40 @@ func TestIntentEndpointNilRegistry(t *testing.T) {
 	}
 }
 
-func TestIntentEndpointGetNotAllowed(t *testing.T) {
+func TestIntentEndpointGetLookup(t *testing.T) {
+	reg := intent.New(time.Minute)
+	t.Cleanup(reg.Close)
+	reg.Record("example.com", "fetch release notes")
+	f := &Facade{IntentRegistry: reg}
+
+	req := httptest.NewRequest(http.MethodGet, "/sandbox/intent?target=example.com", nil)
+	w := httptest.NewRecorder()
+	f.handleSandboxIntent(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200", w.Code)
+	}
+	var resp struct {
+		Target string `json:"target"`
+		Reason string `json:"reason"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Reason != "fetch release notes" {
+		t.Errorf("reason = %q; want 'fetch release notes'", resp.Reason)
+	}
+}
+
+func TestIntentEndpointGetNotFound(t *testing.T) {
 	reg := intent.New(time.Minute)
 	t.Cleanup(reg.Close)
 	f := &Facade{IntentRegistry: reg}
-	req := httptest.NewRequest(http.MethodGet, "/sandbox/intent", nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/sandbox/intent?target=unknown.example", nil)
 	w := httptest.NewRecorder()
 	f.handleSandboxIntent(w, req)
-	if w.Code != http.StatusMethodNotAllowed {
-		t.Fatalf("status = %d; want 405", w.Code)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d; want 404", w.Code)
 	}
 }
 

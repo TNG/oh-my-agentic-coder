@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"github.com/tngtech/oh-my-agentic-coder/internal/audit"
+	"github.com/tngtech/oh-my-agentic-coder/internal/intent"
 	"github.com/tngtech/oh-my-agentic-coder/internal/netprompt"
 	"github.com/tngtech/oh-my-agentic-coder/internal/netproxy"
 	"github.com/tngtech/oh-my-agentic-coder/internal/sandbox"
@@ -62,6 +63,12 @@ func Run(opts Options) int {
 	}
 	grants.DenialText = resolvedDenialText(merged.Denial)
 
+	// Intent lookup: the agent declares intents via POST $OMAC_BASE/
+	// /sandbox/intent (the facade, in the parent process). The popup
+	// and learn-mode review look them up over HTTP — the facade owns
+	// the registry, not this process.
+	intentBase := os.Getenv("OMAC_BASE")
+
 	// Learn mode: lift filesystem restrictions (network/env filtering
 	// stay active) and record the folders the session touches. The
 	// recorder's exclusion sets are built from the *restricted* grants
@@ -69,7 +76,7 @@ func Run(opts Options) int {
 	var recorder *learnRecorder
 	if opts.Flags.Learn {
 		fmt.Fprintln(stderr, "omac sandbox: LEARN MODE — filesystem access is unrestricted this session; folders used will be offered for the profile at exit")
-		recorder = newLearnRecorder(grants)
+		recorder = newLearnRecorder(grants, intentBase)
 		grants = grants.withUnrestrictedFilesystem()
 	}
 
@@ -109,7 +116,7 @@ func Run(opts Options) int {
 				"filtering relies on HTTP(S)_PROXY env vars only and is trivially bypassable. "+
 				"No kernel network guarantee is in effect.")
 		}
-		proxy, err = buildProxy(merged, profilePath, diag.Writer(), logf, netAuditor)
+		proxy, err = buildProxy(merged, profilePath, diag.Writer(), logf, netAuditor, intentBase)
 		if err != nil {
 			return fail("%v", err)
 		}
@@ -141,7 +148,7 @@ func Run(opts Options) int {
 
 	if recorder != nil {
 		candidates := recorder.Stop()
-		if oerr := OfferLearnedFolders(profilePath, candidates, os.Stdin, stderr); oerr != nil {
+		if oerr := OfferLearnedFolders(profilePath, candidates, os.Stdin, stderr, intentBase); oerr != nil {
 			fmt.Fprintf(stderr, "omac sandbox: %v\n", oerr)
 		}
 	}
@@ -151,7 +158,7 @@ func Run(opts Options) int {
 // buildProxy assembles page policy, prompter, filter and server. The
 // page policy (learned website decisions) lives next to the profile:
 // <profile>.pages.json (e.g. default.pages.json).
-func buildProxy(p *sandboxprofile.Profile, profilePath string, stderr io.Writer, logf func(string, ...any), auditor audit.Auditor) (*netproxy.Server, error) {
+func buildProxy(p *sandboxprofile.Profile, profilePath string, stderr io.Writer, logf func(string, ...any), auditor audit.Auditor, intentBase string) (*netproxy.Server, error) {
 	var learned netproxy.LearnedStore
 	pagesPath := sandboxprofile.PagesPath(profilePath)
 	lp, lerr := netprompt.LoadLearnedPolicy(pagesPath)
@@ -164,7 +171,9 @@ func buildProxy(p *sandboxprofile.Profile, profilePath string, stderr io.Writer,
 	var prompter netproxy.Prompter
 	onUnavailableAllow := p.Network.OnUnavailable() == sandboxprofile.OnUnavailableAllow
 	if p.Network.PromptEnabled() {
-		np, available := netprompt.NewPrompter(p.Network.PromptTimeoutSecs(), logf, nil)
+		np, available := netprompt.NewPrompter(p.Network.PromptTimeoutSecs(), logf, func(host string) (string, bool) {
+			return intent.LookupOverHTTP(intentBase, host)
+		})
 		if available {
 			prompter = np
 		} else {

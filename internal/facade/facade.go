@@ -549,8 +549,12 @@ func (f *Facade) handleSandboxDenied(w http.ResponseWriter, r *http.Request) {
 // wants to reach a host or path. The registry is read in-process by
 // the network popup and learn-mode review; there is no GET endpoint.
 func (f *Facade) handleSandboxIntent(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		f.handleSandboxIntentLookup(w, r)
+		return
+	}
 	if r.Method != http.MethodPost {
-		w.Header().Set("Allow", http.MethodPost)
+		w.Header().Set("Allow", http.MethodPost+", "+http.MethodGet)
 		http.Error(w, "omac: method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
@@ -576,6 +580,32 @@ func (f *Facade) handleSandboxIntent(w http.ResponseWriter, r *http.Request) {
 	}
 	f.IntentRegistry.Record(body.Target, body.Reason)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleSandboxIntentLookup answers GET /sandbox/intent?target=<host or
+// path> — returns the agent-declared reason for that target. Used by
+// the netproxy prompter (in the sandbox child) to enrich the network
+// popup with the agent's intent.
+func (f *Facade) handleSandboxIntentLookup(w http.ResponseWriter, r *http.Request) {
+	if f.IntentRegistry == nil {
+		w.Header().Set("X-Omac-Reason", "intent-endpoint-disabled")
+		http.Error(w, "omac: intent registry not configured", http.StatusServiceUnavailable)
+		return
+	}
+	q := r.URL.Query().Get("target")
+	if q == "" {
+		http.Error(w, "omac: target query parameter required", http.StatusBadRequest)
+		return
+	}
+	e, ok := f.IntentRegistry.Lookup(q)
+	w.Header().Set("Content-Type", "application/json")
+	if !ok {
+		w.WriteHeader(http.StatusNotFound)
+		_ = json.NewEncoder(w).Encode(map[string]any{"target": q, "reason": ""})
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]any{"target": e.Target, "reason": e.Reason})
 }
 
 func (f *Facade) writeStatus(w http.ResponseWriter, _ *http.Request) {
