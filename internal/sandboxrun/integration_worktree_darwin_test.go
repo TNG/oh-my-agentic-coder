@@ -12,20 +12,6 @@ import (
 	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxprofile"
 )
 
-// gitInDir runs git in dir during test setup (outside the sandbox), with a
-// hermetic identity and no host config.
-func gitInDir(t *testing.T, dir string, args ...string) {
-	t.Helper()
-	c := exec.Command("git", args...)
-	c.Dir = dir
-	c.Env = append(os.Environ(),
-		"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null",
-		"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
-	if out, err := c.CombinedOutput(); err != nil {
-		t.Fatalf("git %v: %v\n%s", args, err, out)
-	}
-}
-
 // TestIntegrationWorktreeHooksRunButNotWritable is the real-Seatbelt proof of
 // the linked-worktree hooks policy: a host-authored prepare-commit-msg hook RUNS
 // during a sandboxed commit (the #30 bug was that it couldn't) and the commit
