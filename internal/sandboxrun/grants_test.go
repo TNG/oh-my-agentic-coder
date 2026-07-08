@@ -310,29 +310,17 @@ func TestResolveGrantsPlainCloneNoWorktreeGrants(t *testing.T) {
 // .git/commondir format. (A live sandbox-exec/bwrap launch can't run here, so
 // this is the end-to-end check below the process boundary.)
 func TestResolveGrantsRealGitWorktreePipeline(t *testing.T) {
-	git, err := exec.LookPath("git")
-	if err != nil {
+	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
 	}
 	base := t.TempDir()
 	mainRepo := filepath.Join(base, "main")
-	run := func(dir string, args ...string) {
-		t.Helper()
-		cmd := exec.Command(git, args...)
-		cmd.Dir = dir
-		cmd.Env = append(os.Environ(),
-			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t.t",
-			"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t.t")
-		if out, cerr := cmd.CombinedOutput(); cerr != nil {
-			t.Fatalf("git %v: %v\n%s", args, cerr, out)
-		}
-	}
-	run(base, "init", "-q", mainRepo)
+	testGitRun(t, base, "init", "-q", mainRepo)
 	writeFile(t, filepath.Join(mainRepo, "a.txt"))
-	run(mainRepo, "add", "a.txt")
-	run(mainRepo, "commit", "-qm", "init")
+	testGitRun(t, mainRepo, "add", "a.txt")
+	testGitRun(t, mainRepo, "commit", "-qm", "init")
 	wt := filepath.Join(base, "wt")
-	run(mainRepo, "worktree", "add", "-q", wt, "-b", "feature")
+	testGitRun(t, mainRepo, "worktree", "add", "-q", wt, "-b", "feature")
 
 	// git writes canonical paths; ResolveGrants canonicalizes grants too,
 	// so compare against the resolved common dir (/var -> /private/var on macOS).
@@ -613,31 +601,19 @@ func TestResolveGrantsWorktreeAccessNone(t *testing.T) {
 // .git/modules/ but has NO commondir file, so resolveWorktreeCommonDir
 // returns ok=false and no extra grants are added.
 func TestResolveGrantsSubmoduleNoWorktreeGrants(t *testing.T) {
-	git, err := exec.LookPath("git")
-	if err != nil {
+	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
 	}
 	base := t.TempDir()
 	mainRepo := filepath.Join(base, "main")
-	run := func(dir string, args ...string) {
-		t.Helper()
-		cmd := exec.Command(git, args...)
-		cmd.Dir = dir
-		cmd.Env = append(os.Environ(),
-			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t.t",
-			"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t.t")
-		if out, cerr := cmd.CombinedOutput(); cerr != nil {
-			t.Fatalf("git %v: %v\n%s", args, cerr, out)
-		}
-	}
-	run(base, "init", "-q", mainRepo)
+	testGitRun(t, base, "init", "-q", mainRepo)
 	writeFile(t, filepath.Join(mainRepo, "a.txt"))
-	run(mainRepo, "add", "a.txt")
-	run(mainRepo, "commit", "-qm", "init")
+	testGitRun(t, mainRepo, "add", "a.txt")
+	testGitRun(t, mainRepo, "commit", "-qm", "init")
 	// Add mainRepo as a submodule of itself (creates a nested repo).
 	subPath := filepath.Join(mainRepo, "sub")
-	run(mainRepo, "-c", "protocol.file.allow=always", "submodule", "add", "-q", mainRepo, "sub")
-	run(mainRepo, "commit", "-qm", "add submodule")
+	testGitRun(t, mainRepo, "-c", "protocol.file.allow=always", "submodule", "add", "-q", mainRepo, "sub")
+	testGitRun(t, mainRepo, "commit", "-qm", "add submodule")
 
 	// The submodule workdir's .git is a gitdir: file.
 	dotgit := filepath.Join(subPath, ".git")
@@ -656,6 +632,8 @@ func TestResolveGrantsSubmoduleNoWorktreeGrants(t *testing.T) {
 		t.Fatal(err)
 	}
 	// No grant may reach the parent repo's common dir via the submodule.
+	// (subPath = mainRepo/sub lives under mainRepo, not under
+	// mainRepo/.git, so the common-prefix check alone is sufficient.)
 	common := filepath.Join(mainRepo, ".git")
 	if resolved, rerr := filepath.EvalSymlinks(common); rerr == nil {
 		common = resolved
@@ -663,9 +641,7 @@ func TestResolveGrantsSubmoduleNoWorktreeGrants(t *testing.T) {
 	for _, list := range [][]string{g.ReadPaths, g.WritePaths, g.AllowPaths} {
 		for _, gp := range list {
 			if gp == common || strings.HasPrefix(gp, common+string(filepath.Separator)) {
-				if !strings.HasPrefix(gp, subPath) {
-					t.Errorf("submodule leaked a grant into the parent common dir: %s", gp)
-				}
+				t.Errorf("submodule leaked a grant into the parent common dir: %s", gp)
 			}
 		}
 	}
@@ -715,37 +691,25 @@ func TestResolveGrantsWorktreeAccessWrite(t *testing.T) {
 // bare repository (common dir is the bare repo dir itself) resolves
 // correctly through the git-invariant check.
 func TestResolveGrantsBareRepoWorktree(t *testing.T) {
-	git, err := exec.LookPath("git")
-	if err != nil {
+	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
 	}
 	base := t.TempDir()
 	bareRepo := filepath.Join(base, "repo.git")
-	run := func(dir string, args ...string) {
-		t.Helper()
-		cmd := exec.Command(git, args...)
-		cmd.Dir = dir
-		cmd.Env = append(os.Environ(),
-			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t.t",
-			"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t.t")
-		if out, cerr := cmd.CombinedOutput(); cerr != nil {
-			t.Fatalf("git %v: %v\n%s", args, cerr, out)
-		}
-	}
-	run(base, "init", "-q", "--bare", bareRepo)
+	testGitRun(t, base, "init", "-q", "--bare", bareRepo)
 	// Seed the bare repo with an initial commit via a temp clone.
 	clone := filepath.Join(base, "clone")
-	run(base, "clone", "-q", bareRepo, clone)
+	testGitRun(t, base, "clone", "-q", bareRepo, clone)
 	writeFile(t, filepath.Join(clone, "seed"))
-	run(clone, "add", "seed")
-	run(clone, "commit", "-qm", "init")
-	run(clone, "push", "-q", "origin", "HEAD:main")
+	testGitRun(t, clone, "add", "seed")
+	testGitRun(t, clone, "commit", "-qm", "init")
+	testGitRun(t, clone, "push", "-q", "origin", "HEAD:main")
 	// Point the bare repo's HEAD at the pushed branch so worktree add works.
-	run(bareRepo, "symbolic-ref", "HEAD", "refs/heads/main")
+	testGitRun(t, bareRepo, "symbolic-ref", "HEAD", "refs/heads/main")
 
 	// Add a worktree from the bare repo.
 	wt := filepath.Join(base, "wt")
-	run(bareRepo, "worktree", "add", "-q", wt, "-b", "feature")
+	testGitRun(t, bareRepo, "worktree", "add", "-q", wt, "-b", "feature")
 
 	common := bareRepo
 	if resolved, rerr := filepath.EvalSymlinks(common); rerr == nil {
@@ -785,32 +749,20 @@ func TestResolveGrantsBareRepoWorktree(t *testing.T) {
 // dir only — never the sibling worktree's admin dir. Without this, a
 // second worktree's index/HEAD could be corrupted by the first.
 func TestResolveGrantsConcurrentWorktreesIsolation(t *testing.T) {
-	git, err := exec.LookPath("git")
-	if err != nil {
+	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
 	}
 	base := t.TempDir()
 	mainRepo := filepath.Join(base, "main")
-	run := func(dir string, args ...string) {
-		t.Helper()
-		cmd := exec.Command(git, args...)
-		cmd.Dir = dir
-		cmd.Env = append(os.Environ(),
-			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t.t",
-			"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t.t")
-		if out, cerr := cmd.CombinedOutput(); cerr != nil {
-			t.Fatalf("git %v: %v\n%s", args, cerr, out)
-		}
-	}
-	run(base, "init", "-q", mainRepo)
+	testGitRun(t, base, "init", "-q", mainRepo)
 	writeFile(t, filepath.Join(mainRepo, "a.txt"))
-	run(mainRepo, "add", "a.txt")
-	run(mainRepo, "commit", "-qm", "init")
+	testGitRun(t, mainRepo, "add", "a.txt")
+	testGitRun(t, mainRepo, "commit", "-qm", "init")
 
 	wt1 := filepath.Join(base, "wt1")
 	wt2 := filepath.Join(base, "wt2")
-	run(mainRepo, "worktree", "add", "-q", wt1, "-b", "feature1")
-	run(mainRepo, "worktree", "add", "-q", wt2, "-b", "feature2")
+	testGitRun(t, mainRepo, "worktree", "add", "-q", wt1, "-b", "feature1")
+	testGitRun(t, mainRepo, "worktree", "add", "-q", wt2, "-b", "feature2")
 
 	common := filepath.Join(mainRepo, ".git")
 	if resolved, rerr := filepath.EvalSymlinks(common); rerr == nil {

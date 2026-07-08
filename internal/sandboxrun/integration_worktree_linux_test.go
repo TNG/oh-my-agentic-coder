@@ -12,20 +12,6 @@ import (
 	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxprofile"
 )
 
-// gitInDir runs git in dir during test setup (outside the sandbox), with a
-// hermetic identity and no host config.
-func gitInDir(t *testing.T, dir string, args ...string) {
-	t.Helper()
-	c := exec.Command("git", args...)
-	c.Dir = dir
-	c.Env = append(os.Environ(),
-		"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null",
-		"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
-	if out, err := c.CombinedOutput(); err != nil {
-		t.Fatalf("git %v: %v\n%s", args, err, out)
-	}
-}
-
 // TestIntegrationWorktreeHooksRunButNotWritable is the Linux bwrap
 // counterpart of the darwin test: a host-authored prepare-commit-msg hook
 // RUNS during a sandboxed commit (the #30 bug was that it couldn't) and the
@@ -151,6 +137,9 @@ func TestIntegrationWorktreeSymlinkEscape(t *testing.T) {
 	// Plant the symlink: objects -> secret. The real objects dir is moved
 	// aside so git's structural shape is preserved but the grant target
 	// would escape if containment failed.
+	// NOTE: after this point the repo is structurally invalid (objects is a
+	// symlink to an empty dir); no further git ops are run against it. The
+	// test only exercises grant resolution + bwrap containment, not git.
 	common := filepath.Join(repo, ".git")
 	realObjects := filepath.Join(common, "objects")
 	if err := os.Rename(realObjects, filepath.Join(base, "real-objects")); err != nil {
@@ -239,6 +228,8 @@ func TestIntegrationWorktreeKnownLimitations(t *testing.T) {
 	}
 
 	// 2. git gc should no-op or succeed, not corrupt.
+	// gc may emit warnings (non-zero exit without "fatal"); only flag
+	// fatal failures — a non-zero exit with mere warnings is acceptable.
 	out, code = sandboxGit("gc", "--quiet")
 	if code != 0 && strings.Contains(strings.ToLower(out), "fatal") {
 		t.Errorf("gc produced fatal output (warnings OK, fatals not):\n%s", out)
@@ -318,7 +309,7 @@ func TestIntegrationWorktreeLandlockCombined(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	g.ReadPaths = append(g.ReadPaths, filepath.Dir(omac))
+	g.ReadPaths = append(g.ReadPaths, omac)
 
 	stage2 := []string{omac, "sandbox", "stage2"}
 	stage2 = append(stage2, Stage2Args(g)...)
