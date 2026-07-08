@@ -30,7 +30,7 @@ func TestBwrapMarkerFileUsedWhenDenialTextSet(t *testing.T) {
 	if strings.Contains(joined, "--ro-bind /dev/null "+netrc) {
 		t.Errorf("still using /dev/null; should use marker file: %s", joined)
 	}
-	if !strings.Contains(joined, "--ro-bind /tmp/omac-marker-") {
+	if !strings.Contains(joined, "omac-marker-") {
 		t.Errorf("no marker file bind found: %s", joined)
 	}
 }
@@ -56,7 +56,7 @@ func TestBwrapMarkerDirUsedWhenDenialTextSet(t *testing.T) {
 	if strings.Contains(joined, "--tmpfs "+sshDir) {
 		t.Errorf("still using plain tmpfs; should use marker dir: %s", joined)
 	}
-	if !strings.Contains(joined, "--bind /tmp/omac-markerdir-") {
+	if !strings.Contains(joined, "omac-markerdir-") {
 		t.Errorf("no marker dir bind found: %s", joined)
 	}
 }

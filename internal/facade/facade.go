@@ -516,12 +516,10 @@ func (f *Facade) handleSandboxDenied(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	abs := q
-	if !filepath.IsAbs(abs) {
-		// Resolve relative to the request's notion of home. An agent
-		// inside the sandbox has its own HOME; we honor it literally.
-		// ~ expansion is the caller's responsibility — the marker file
-		// already tells the agent to query here with an absolute path.
-	}
+	// ponytail: the caller is expected to pass an absolute path (the
+	// marker file tells the agent to query with an absolute path).
+	// Relative paths are passed through literally — IsProtected
+	// decides what to do with them.
 	rule, ok := f.ProtectedPathChecker.IsProtected(abs)
 	note := f.DenialNote
 	if note == "" {
