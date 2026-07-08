@@ -48,6 +48,11 @@ type Grants struct {
 	UnixSocketDirs []string
 
 	Enforcement string // kernel|env-only
+
+	// DenialText holds the configurable marker-file content written over
+	// protected files (Linux bwrap fast path). When empty, bwrap falls
+	// back to /dev/null (opaque ENOENT/EACCES, the historical behavior).
+	DenialText string
 }
 
 // ResolveGrants merges the profile, the platform baseline, and the

@@ -69,6 +69,9 @@ type Profile struct {
 	Filesystem  Filesystem  `json:"filesystem,omitempty"`
 	Network     Network     `json:"network,omitempty"`
 	Environment Environment `json:"environment,omitempty"`
+	// Denial configures the text shown to an agent that touches a
+	// protected path. When nil, compiled-in defaults are used.
+	Denial *Denial `json:"denial,omitempty"`
 }
 
 // Meta carries informational fields only.
@@ -140,6 +143,23 @@ type NetworkPrompt struct {
 	PromptTimeoutSecs int `json:"prompt_timeout_secs,omitempty"`
 	// OnUnavailable is deny (default) or allow.
 	OnUnavailable string `json:"on_unavailable,omitempty"`
+}
+
+// Denial holds the configurable text shown to an agent that touches a
+// protected path. All fields are optional; empty fields fall back to
+// the compiled-in defaults (sandboxdeny.Default). This is the single
+// knob for tuning the denial wording without editing code.
+type Denial struct {
+	// MarkerFile is written into the sandbox over a protected file
+	// (Linux bwrap fast path). The first line is a machine-parseable
+	// sentinel.
+	MarkerFile string `json:"marker_file,omitempty"`
+	// MarkerDirName is the placeholder filename placed inside a
+	// protected directory masked with a tmpfs. Default: ".omac-denied".
+	MarkerDirName string `json:"marker_dir_name,omitempty"`
+	// FacadeNote is the "note" field in the JSON body returned by the
+	// facade GET /sandbox/denied endpoint.
+	FacadeNote string `json:"facade_note,omitempty"`
 }
 
 // PromptEnabled reports whether the interactive prompt is on.
