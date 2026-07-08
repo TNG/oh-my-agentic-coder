@@ -21,7 +21,7 @@ type Baseline struct {
 	// workdir and any explicitly granted tree. Unlike ProtectedPaths,
 	// they are resolved at launch time against the actual workdir, so
 	// they catch workdir-relative files the static ProtectedPaths set
-	// cannot. override_deny holes punch through here too.
+	// cannot.
 	WorkdirProtected []string
 }
 

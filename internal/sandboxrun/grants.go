@@ -115,10 +115,7 @@ func ResolveGrants(p *sandboxprofile.Profile, workdir string, notices io.Writer)
 	// trees so the same deny covers the cwd and any explicit grant.
 	protected = append(protected, resolveUserDeny(p.Filesystem.Deny, dedupe(denyScan), notices)...)
 
-	// Baseline workdir-protected basenames (e.g. ".env") are resolved
-	// against the same scan roots as user deny globs, so workdir-relative
-	// secret files are blocked by default without a --deny flag. Holes
-	// can be punched via filesystem.override_deny (basename form).
+	// Baseline workdir-protected basenames resolved against the same scan roots.
 	protected = append(protected, resolveBaselineWorkdirDeny(base.WorkdirProtected, p.Filesystem.OverrideDeny, dedupe(denyScan), notices)...)
 
 	g := &Grants{
@@ -186,10 +183,10 @@ func resolveUserDeny(deny, scanRoots []string, notices io.Writer) []string {
 }
 
 // resolveBaselineWorkdirDeny resolves the baseline workdir-protected
-// basenames (e.g. ".env") against the granted scan roots, mirroring
-// resolveUserDeny's glob walk. override_deny entries that are bare
-// basenames (e.g. ".env") or absolute paths matching a found file
-// punch holes in the result, so a skill that legitimately needs to
+// basenames (e.g. ".env") against the granted scan roots, sharing the
+// walkGlobMatches walk with resolveUserDeny. override_deny entries that
+// are bare basenames (e.g. ".env") or absolute paths matching a found
+// file punch holes in the result, so a skill that legitimately needs to
 // read a workdir .env can opt out via filesystem.override_deny.
 func resolveBaselineWorkdirDeny(basenames, overrideDeny, scanRoots []string, notices io.Writer) []string {
 	if len(basenames) == 0 {
