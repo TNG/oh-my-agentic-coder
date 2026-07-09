@@ -122,6 +122,37 @@ func TestConnectTunnelAllowed(t *testing.T) {
 	}
 }
 
+func TestDialPinnedRacesPastDeadAddress(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "tls-hello")
+	}))
+	defer upstream.Close()
+	_, port := upstreamHostPort(t, upstream.URL)
+
+	// Pin a dead (unroutable, SYN-blackhole) address FIRST, then the working
+	// loopback upstream. Sequential dialing stalls on the blackhole past the
+	// client's 5s timeout; Happy-Eyeballs racing reaches the good address at
+	// once. So a successful GET is itself the proof the race works.
+	blackhole := netip.MustParseAddr("192.0.2.1") // TEST-NET-1, no route
+	good := netip.MustParseAddr("127.0.0.1")
+	s := startProxy(t, FilterConfig{
+		AllowDomains: []string{"fake.example"},
+		Resolve: func(context.Context, string) ([]netip.Addr, error) {
+			return []netip.Addr{blackhole, good}, nil
+		},
+	})
+	client := proxyClient(s) // 5s timeout
+	resp, err := client.Get(fmt.Sprintf("https://fake.example:%d/", port))
+	if err != nil {
+		t.Fatalf("dial should race past the dead address to the good one: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if string(body) != "tls-hello" {
+		t.Errorf("body = %q", body)
+	}
+}
+
 func TestConnectDenied403NamesHost(t *testing.T) {
 	s := startProxy(t, FilterConfig{
 		AllowDomains: []string{"github.com"},

@@ -323,16 +323,48 @@ func (s *Server) handleForward(conn net.Conn, br *bufio.Reader, req *http.Reques
 	_ = br // request body (if any) was consumed by outReq.Write via req.Body
 }
 
-// dialPinned connects to the already-resolved addresses in order.
+// dialPinned connects to the already-resolved addresses, racing them
+// concurrently (Happy Eyeballs, RFC 8305) rather than in strict order.
+// Only the pre-resolved IPs are dialed, so DNS pinning (anti-rebinding)
+// is preserved — but a dead address family (e.g. an AAAA that resolves
+// yet has no route) can no longer stall the whole connection ahead of a
+// working address. The first successful connection wins; the losing
+// dials are cancelled and any that still connected are closed.
 func dialPinned(ctx context.Context, addrs []netip.Addr, port int) (net.Conn, error) {
-	var d net.Dialer
-	var lastErr error
+	if len(addrs) == 0 {
+		return nil, fmt.Errorf("no addresses")
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	type result struct {
+		conn net.Conn
+		err  error
+	}
+	ch := make(chan result, len(addrs))
 	for _, a := range addrs {
-		conn, err := d.DialContext(ctx, "tcp", net.JoinHostPort(a.String(), strconv.Itoa(port)))
-		if err == nil {
-			return conn, nil
+		addr := net.JoinHostPort(a.String(), strconv.Itoa(port))
+		go func() {
+			var d net.Dialer
+			conn, err := d.DialContext(ctx, "tcp", addr)
+			ch <- result{conn, err}
+		}()
+	}
+	var winner net.Conn
+	var lastErr error
+	for range addrs {
+		r := <-ch
+		switch {
+		case r.err != nil:
+			lastErr = r.err
+		case winner == nil:
+			winner = r.conn
+			cancel() // let the remaining in-flight dials bail out fast
+		default:
+			_ = r.conn.Close() // connected but lost the race
 		}
-		lastErr = err
+	}
+	if winner != nil {
+		return winner, nil
 	}
 	if lastErr == nil {
 		lastErr = fmt.Errorf("no addresses")
