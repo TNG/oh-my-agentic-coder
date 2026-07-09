@@ -469,3 +469,71 @@ func TestResolveGrantsWorkdirEnvProtectedByDefault(t *testing.T) {
 		}
 	})
 }
+
+// TestResolveGrantsBaselineWorkdirDenyDoesNotScanBaseline mirrors
+// TestResolveGrantsDenyGlobDoesNotScanBaseline but for the baseline
+// WorkdirProtected walk (resolveBaselineWorkdirDeny). The invariant
+// holds today (shares denyScan), but a regression that accidentally
+// passed base.Read into the baseline resolver would go undetected
+// without this guard.
+func TestResolveGrantsBaselineWorkdirDenyDoesNotScanBaseline(t *testing.T) {
+	wd := t.TempDir()
+	env := filepath.Join(wd, ".env")
+	writeFile(t, env)
+
+	p := &sandboxprofile.Profile{
+		Workdir: sandboxprofile.Workdir{Access: sandboxprofile.AccessReadWrite},
+	}
+	g, err := ResolveGrants(p, wd, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Baseline .env protection is active.
+	if !slices.Contains(g.ProtectedPaths, env) {
+		t.Errorf("workdir .env not protected by default: %v", g.ProtectedPaths)
+	}
+	// No baseline system tree was scanned.
+	for _, prot := range g.ProtectedPaths {
+		if strings.HasPrefix(prot, "/usr/") || strings.HasPrefix(prot, "/lib") {
+			t.Errorf("baseline tree was scanned for workdir deny: %s", prot)
+		}
+	}
+}
+
+// TestResolveGrantsUserDenyAndBaselineBothActive verifies that when
+// both user deny globs and baseline workdir-protected basenames are
+// active simultaneously, all matches are found and no duplicates appear.
+func TestResolveGrantsUserDenyAndBaselineBothActive(t *testing.T) {
+	wd := t.TempDir()
+	env := filepath.Join(wd, ".env")
+	writeFile(t, env)
+	keyFile := filepath.Join(wd, "secret.key")
+	writeFile(t, keyFile)
+	keep := filepath.Join(wd, "app.go")
+	writeFile(t, keep)
+
+	p := &sandboxprofile.Profile{
+		Workdir:    sandboxprofile.Workdir{Access: sandboxprofile.AccessReadWrite},
+		Filesystem: sandboxprofile.Filesystem{Deny: []string{"*.key"}},
+	}
+	g, err := ResolveGrants(p, wd, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(g.ProtectedPaths, env) {
+		t.Errorf(".env (baseline) not protected: %v", g.ProtectedPaths)
+	}
+	if !slices.Contains(g.ProtectedPaths, keyFile) {
+		t.Errorf("secret.key (user deny) not protected: %v", g.ProtectedPaths)
+	}
+	if slices.Contains(g.ProtectedPaths, keep) {
+		t.Error("app.go must not be protected")
+	}
+	seen := map[string]bool{}
+	for _, prot := range g.ProtectedPaths {
+		if seen[prot] {
+			t.Errorf("duplicate protected path: %s", prot)
+		}
+		seen[prot] = true
+	}
+}

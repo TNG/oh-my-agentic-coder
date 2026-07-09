@@ -109,14 +109,14 @@ func ResolveGrants(p *sandboxprofile.Profile, workdir string, notices io.Writer)
 
 	protected := sandboxprofile.EffectiveProtectedPaths(base, p.Filesystem.OverrideDeny)
 
-	// User deny entries carve holes out of the granted trees. Path-form
-	// entries expand to an explicit path; basename globs (e.g. ".env")
-	// are matched against the files inside the granted (non-baseline)
-	// trees so the same deny covers the cwd and any explicit grant.
-	protected = append(protected, resolveUserDeny(p.Filesystem.Deny, dedupe(denyScan), notices)...)
-
-	// Baseline workdir-protected basenames resolved against the same scan roots.
-	protected = append(protected, resolveBaselineWorkdirDeny(base.WorkdirProtected, p.Filesystem.OverrideDeny, dedupe(denyScan), notices)...)
+	// User deny entries and baseline workdir-protected basenames share
+	// a single walk over the granted (non-baseline) scan roots. Path-form
+	// deny entries expand to explicit paths; basename globs and baseline
+	// basenames are matched together in one pass.
+	protected = append(protected, resolveDenyPaths(
+		p.Filesystem.Deny, base.WorkdirProtected, p.Filesystem.OverrideDeny,
+		dedupe(denyScan), notices,
+	)...)
 
 	g := &Grants{
 		Workdir:         workdir,
@@ -147,20 +147,19 @@ func ResolveGrants(p *sandboxprofile.Profile, workdir string, notices io.Writer)
 // stops the walk for that root (already-found matches are still masked).
 const maxDenyScanEntries = 200000
 
-// resolveUserDeny turns filesystem.deny entries into concrete protected
-// paths. Path-form entries (with a separator, ~ or $VAR) expand to a
-// single explicit path. Basename globs (e.g. ".env", "*.key") are
-// matched against the files found by walking scanRoots — the explicit
-// (non-baseline) granted trees plus the workdir — so one deny covers
-// the cwd and every directory the user granted. Baseline system trees
-// (e.g. /usr) are never scanned because they are not in scanRoots.
-func resolveUserDeny(deny, scanRoots []string, notices io.Writer) []string {
-	if len(deny) == 0 {
+// resolveDenyPaths resolves user deny entries and baseline workdir-protected
+// basenames in a single filesystem walk. User deny path-form entries expand
+// to explicit protected paths; basename globs and baseline basenames are
+// matched together. override_deny holes (basename or absolute path) are
+// punched through baseline matches.
+func resolveDenyPaths(userDeny, baselineBasenames, overrideDeny, scanRoots []string, notices io.Writer) []string {
+	if len(userDeny) == 0 && len(baselineBasenames) == 0 {
 		return nil
 	}
+
 	var explicit []string
 	var globs []string
-	for _, d := range deny {
+	for _, d := range userDeny {
 		if sandboxprofile.IsBasenameGlob(d) {
 			globs = append(globs, d)
 			continue
@@ -175,47 +174,22 @@ func resolveUserDeny(deny, scanRoots []string, notices io.Writer) []string {
 		explicit = append(explicit, exp)
 	}
 
+	// Filter baseline basenames through overrides before walking.
+	overrides := sandboxprofile.BuildOverrideLookup(overrideDeny)
+	for _, b := range baselineBasenames {
+		if !overrides[b] {
+			globs = append(globs, b)
+		}
+	}
+
 	out := explicit
 	if len(globs) > 0 {
-		out = append(out, walkGlobMatches(scanRoots, globs, notices)...)
-	}
-	return out
-}
-
-// resolveBaselineWorkdirDeny resolves the baseline workdir-protected
-// basenames (e.g. ".env") against the granted scan roots, sharing the
-// walkGlobMatches walk with resolveUserDeny. override_deny entries that
-// are bare basenames (e.g. ".env") or absolute paths matching a found
-// file punch holes in the result, so a skill that legitimately needs to
-// read a workdir .env can opt out via filesystem.override_deny.
-func resolveBaselineWorkdirDeny(basenames, overrideDeny, scanRoots []string, notices io.Writer) []string {
-	if len(basenames) == 0 {
-		return nil
-	}
-	// Build an override lookup keyed by both basename and absolute path.
-	overrides := make(map[string]bool, len(overrideDeny))
-	for _, o := range overrideDeny {
-		overrides[o] = true
-		if exp, err := sandboxprofile.ExpandPath(o); err == nil {
-			overrides[exp] = true
-		}
-	}
-	// Filter the basenames before walking.
-	var active []string
-	for _, b := range basenames {
-		if !overrides[b] {
-			active = append(active, b)
-		}
-	}
-	if len(active) == 0 {
-		return nil
-	}
-	matches := walkGlobMatches(scanRoots, active, notices)
-	// Drop matches that are also covered by an absolute override_deny.
-	var out []string
-	for _, m := range matches {
-		if !overrides[m] {
-			out = append(out, m)
+		matches := walkGlobMatches(scanRoots, globs, notices)
+		// Drop baseline matches covered by an absolute-path override.
+		for _, m := range matches {
+			if !overrides[m] {
+				out = append(out, m)
+			}
 		}
 	}
 	return out

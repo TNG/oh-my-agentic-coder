@@ -177,14 +177,7 @@ func linuxBaseline() Baseline {
 // profile's override_deny holes. Comparison happens on the expanded
 // form of both lists; entries that fail to expand are kept verbatim.
 func EffectiveProtectedPaths(b Baseline, overrideDeny []string) []string {
-	overrides := make(map[string]bool, len(overrideDeny))
-	for _, o := range overrideDeny {
-		if exp, err := ExpandPath(o); err == nil {
-			overrides[exp] = true
-		} else {
-			overrides[o] = true
-		}
-	}
+	overrides := BuildOverrideLookup(overrideDeny)
 	var out []string
 	for _, p := range b.ProtectedPaths {
 		exp, err := ExpandPath(p)
@@ -198,4 +191,20 @@ func EffectiveProtectedPaths(b Baseline, overrideDeny []string) []string {
 		out = append(out, exp)
 	}
 	return out
+}
+
+// BuildOverrideLookup creates a set keyed by both the raw and expanded
+// form of each override_deny entry, so overrides work as bare basenames
+// (e.g. ".env") or absolute paths. Shared by EffectiveProtectedPaths
+// and the workdir-protected resolver to keep the override-keying policy
+// in one place.
+func BuildOverrideLookup(overrideDeny []string) map[string]bool {
+	overrides := make(map[string]bool, len(overrideDeny))
+	for _, o := range overrideDeny {
+		overrides[o] = true
+		if exp, err := ExpandPath(o); err == nil {
+			overrides[exp] = true
+		}
+	}
+	return overrides
 }

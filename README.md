@@ -402,7 +402,7 @@ sandbox:
 | Bridge socket (`$TMPDIR/omac-<hash>/bridge.sock`) | read+write | `--allow-file` / `--read` flags |
 | Dynamic socket dir (e.g. Agent View `/tmp/cc-daemon-<uid>`) | read+write + AF_UNIX connect | `--allow-unix-dir` flag / `filesystem.allow_unix_dir` |
 | Paths in `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.kube`, … | **denied** | protected paths (override with `filesystem.override_deny`) |
-| Workdir `.env` and `.envrc` (incl. nested) | **denied** | baseline workdir-protected set (override with `filesystem.override_deny: [".env"]`) |
+| Workdir and granted-tree `.env` / `.envrc` (incl. nested) | **denied** | baseline workdir-protected set (override with `filesystem.override_deny: [".env"]`) |
 | Files matching `filesystem.deny` (e.g. `*.key`) inside granted trees | **denied** | user deny list (`filesystem.deny` / `--deny`) |
 
 ## Typical workflow
