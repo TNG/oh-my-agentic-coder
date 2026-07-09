@@ -96,31 +96,28 @@ func TestOptionLabelsExactAndDefault(t *testing.T) {
 }
 
 func TestPromptTextParity(t *testing.T) {
-	got := promptText("api.example.com", 443, "", "")
+	got := promptText("api.example.com", 443, "")
 	want := "The sandboxed process is trying to reach:\n\n    api.example.com:443\n\nAgent intent: (not declared)\n\nHow should omac handle this destination?"
 	if got != want {
 		t.Errorf("promptText (no intent) = %q", got)
 	}
 }
 
-func TestPromptTextWithURLAndIntent(t *testing.T) {
-	got := promptText("api.example.com", 443, "/v1/releases", "fetch release notes")
-	want := "The sandboxed process is trying to reach:\n\n    https://api.example.com:443/v1/releases\n\nAgent intent: \"fetch release notes\"\n\nHow should omac handle this destination?"
+func TestPromptTextWithIntent(t *testing.T) {
+	got := promptText("api.example.com", 443, "fetch release notes")
+	want := "The sandboxed process is trying to reach:\n\n    api.example.com:443\n\nAgent intent: \"fetch release notes\"\n\nHow should omac handle this destination?"
 	if got != want {
 		t.Errorf("promptText (with intent) = %q", got)
 	}
 }
 
 func TestPromptTextIntentOnly(t *testing.T) {
-	got := promptText("api.example.com", 443, "", "verify the version")
+	got := promptText("api.example.com", 443, "verify the version")
 	if !strings.Contains(got, "api.example.com:443") {
 		t.Errorf("missing host:port: %q", got)
 	}
 	if !strings.Contains(got, `"verify the version"`) {
 		t.Errorf("missing intent: %q", got)
-	}
-	if strings.Contains(got, "https://") {
-		t.Errorf("should not show https when no path: %q", got)
 	}
 }
 

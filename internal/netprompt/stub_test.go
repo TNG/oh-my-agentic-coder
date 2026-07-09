@@ -46,7 +46,7 @@ func TestStubBackendShow(t *testing.T) {
 	ctx := context.Background()
 
 	// Allow
-	label, err := b.show(ctx, "allow.example", 443, "example.com", "", "")
+	label, err := b.show(ctx, "allow.example", 443, "example.com", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,13 +55,13 @@ func TestStubBackendShow(t *testing.T) {
 	}
 
 	// Deny
-	label, _ = b.show(ctx, "deny.example", 443, "example.com", "", "")
+	label, _ = b.show(ctx, "deny.example", 443, "example.com", "")
 	if label != "Deny once" {
 		t.Errorf("deny label = %q; want 'Deny once'", label)
 	}
 
 	// Explain more
-	label, _ = b.show(ctx, "explain.example", 443, "example.com", "", "fetch data")
+	label, _ = b.show(ctx, "explain.example", 443, "example.com", "fetch data")
 	if label != "Explain more" {
 		t.Errorf("explain label = %q; want 'Explain more'", label)
 	}
@@ -70,7 +70,7 @@ func TestStubBackendShow(t *testing.T) {
 func TestStubBackendNoDecisionDenies(t *testing.T) {
 	src := &fileDecisionSource{loaded: true, decisions: map[string]stubDecision{}}
 	b := stubBackend{source: src, logf: func(string, ...any) {}}
-	label, _ := b.show(context.Background(), "unknown.example", 443, "example.com", "", "")
+	label, _ := b.show(context.Background(), "unknown.example", 443, "example.com", "")
 	if label != "Deny once" {
 		t.Errorf("unknown host label = %q; want 'Deny once'", label)
 	}
@@ -81,7 +81,7 @@ func TestStubBackendWildcard(t *testing.T) {
 		"*": {Allow: true, Persist: true, Scope: "host"},
 	}}
 	b := stubBackend{source: src, logf: func(string, ...any) {}}
-	label, _ := b.show(context.Background(), "anything.example", 443, "example.com", "", "")
+	label, _ := b.show(context.Background(), "anything.example", 443, "example.com", "")
 	if label != "Allow permanently (this host)" {
 		t.Errorf("wildcard label = %q; want 'Allow permanently (this host)'", label)
 	}
@@ -158,7 +158,7 @@ func TestStubBackendIntentLogged(t *testing.T) {
 	b := stubBackend{source: src, logf: func(format string, args ...any) {
 		logged = append(logged, format)
 	}}
-	b.show(context.Background(), "test.example", 443, "example.com", "", "fetch data")
+	b.show(context.Background(), "test.example", 443, "example.com", "fetch data")
 	if len(logged) != 1 {
 		t.Fatalf("expected 1 log line, got %d", len(logged))
 	}

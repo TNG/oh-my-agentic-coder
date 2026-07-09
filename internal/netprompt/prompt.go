@@ -92,14 +92,10 @@ func RegisteredSuffixHint(host string) string {
 	return host
 }
 
-// promptText is the dialog body. urlPath is the request path when known
-// (forward HTTP only; CONNECT can't see it). intent is the agent-declared
-// reason; empty means "not declared".
-func promptText(host string, port int, urlPath, intent string) string {
+// promptText is the dialog body. intent is the agent-declared reason;
+// empty means "not declared".
+func promptText(host string, port int, intent string) string {
 	target := fmt.Sprintf("%s:%d", host, port)
-	if urlPath != "" {
-		target = fmt.Sprintf("https://%s:%d%s", host, port, urlPath)
-	}
 	intentLine := "Agent intent: (not declared)"
 	if intent != "" {
 		intentLine = fmt.Sprintf("Agent intent: %q", intent)
@@ -119,7 +115,7 @@ type dialogBackend interface {
 	// show blocks until the user chooses, the dialog is cancelled, or
 	// ctx is done (the implementation must kill the dialog process).
 	// Returns the chosen label ("" on cancel).
-	show(ctx context.Context, host string, port int, suffix, urlPath, intent string) (string, error)
+	show(ctx context.Context, host string, port int, suffix, intent string) (string, error)
 }
 
 // Prompter implements netproxy.Prompter with native dialogs.
@@ -200,7 +196,7 @@ func (p *Prompter) Prompt(host string, port int) netproxy.PromptResult {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), p.timeout)
 	defer cancel()
-	label, err := backend.show(ctx, host, port, suffix, "", intent)
+	label, err := backend.show(ctx, host, port, suffix, intent)
 	if err != nil {
 		if ctx.Err() != nil {
 			p.logf("omac sandbox: network prompt for %s:%d timed out", host, port)
@@ -224,7 +220,7 @@ func (osascriptBackend) available() bool {
 	return err == nil
 }
 
-func (osascriptBackend) show(ctx context.Context, host string, port int, suffix, urlPath, intent string) (string, error) {
+func (osascriptBackend) show(ctx context.Context, host string, port int, suffix, intent string) (string, error) {
 	opts := optionLabels(suffix)
 	quoted := make([]string, len(opts))
 	for i, o := range opts {
@@ -233,7 +229,7 @@ func (osascriptBackend) show(ctx context.Context, host string, port int, suffix,
 	script := fmt.Sprintf(
 		`choose from list {%s} with title "omac: network access" with prompt %s default items {%s} OK button name "Select" cancel button name "Cancel"`,
 		strings.Join(quoted, ", "),
-		appleScriptString(promptText(host, port, urlPath, intent)),
+		appleScriptString(promptText(host, port, intent)),
 		appleScriptString("Deny once"),
 	)
 	out, err := exec.CommandContext(ctx, "osascript", "-e", script).Output()
@@ -272,11 +268,11 @@ func (zenityBackend) available() bool {
 	return err == nil
 }
 
-func (zenityBackend) show(ctx context.Context, host string, port int, suffix, urlPath, intent string) (string, error) {
+func (zenityBackend) show(ctx context.Context, host string, port int, suffix, intent string) (string, error) {
 	args := []string{
 		"--list", "--radiolist",
 		"--title", "omac: network access",
-		"--text", promptText(host, port, urlPath, intent),
+		"--text", promptText(host, port, intent),
 		"--column", "", "--column", "Decision",
 		"--height", "320",
 	}
@@ -307,11 +303,11 @@ func (kdialogBackend) available() bool {
 	return err == nil
 }
 
-func (kdialogBackend) show(ctx context.Context, host string, port int, suffix, urlPath, intent string) (string, error) {
+func (kdialogBackend) show(ctx context.Context, host string, port int, suffix, intent string) (string, error) {
 	opts := optionLabels(suffix)
 	args := []string{
 		"--title", "omac: network access",
-		"--radiolist", promptText(host, port, urlPath, intent),
+		"--radiolist", promptText(host, port, intent),
 	}
 	for i, o := range opts {
 		state := "off"
