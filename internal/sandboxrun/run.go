@@ -61,7 +61,9 @@ func Run(opts Options) int {
 	if err := grants.Validate(); err != nil {
 		return fail("%v", err)
 	}
-	grants.DenialText = resolvedDenialText(merged.Denial)
+	den := resolvedDenial(merged.Denial)
+	grants.DenialText = den.MarkerFile
+	grants.DenialDirName = den.MarkerDirName
 
 	// Intent lookup: the agent declares intents via POST $OMAC_BASE/
 	// /sandbox/intent (the facade, in the parent process). The popup
@@ -210,16 +212,16 @@ func buildProxy(p *sandboxprofile.Profile, profilePath string, stderr io.Writer,
 	return srv, nil
 }
 
-// resolvedDenialText merges a profile's Denial override with the
-// compiled-in default and returns the marker-file content. Empty
-// override fields inherit the default.
-func resolvedDenialText(d *sandboxprofile.Denial) string {
+// resolvedDenial merges a profile's Denial override with the compiled-in
+// default and returns the resolved text (marker file + dir-notice name).
+// Empty override fields inherit the default.
+func resolvedDenial(d *sandboxprofile.Denial) sandboxdeny.Text {
 	if d == nil {
-		return sandboxdeny.Default().MarkerFile
+		return sandboxdeny.Default()
 	}
 	return sandboxdeny.Resolve(sandboxdeny.Text{
 		MarkerFile:    d.MarkerFile,
 		MarkerDirName: d.MarkerDirName,
 		FacadeNote:    d.FacadeNote,
-	}).MarkerFile
+	})
 }

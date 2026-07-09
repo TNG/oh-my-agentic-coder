@@ -13,9 +13,9 @@ type Text struct {
 	// bwrap fast path). The first line is a machine-parseable sentinel.
 	MarkerFile string `yaml:"marker_file" json:"marker_file"`
 
-	// MarkerDir is the name of the placeholder file placed inside a
-	// protected directory masked with a tmpfs. Empty disables dir-level
-	// markers (agent sees an empty directory).
+	// MarkerDirName is the name of the placeholder file placed inside a
+	// protected directory masked with a tmpfs. Empty inherits the default
+	// (Resolve treats an empty override as "keep the default").
 	MarkerDirName string `yaml:"marker_dir_name" json:"marker_dir_name"`
 
 	// FacadeNote is the "note" field in the JSON body returned by the

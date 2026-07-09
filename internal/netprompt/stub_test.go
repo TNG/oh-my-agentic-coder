@@ -9,6 +9,26 @@ import (
 	"time"
 )
 
+func TestStubActivatedOnlyByTruthyEnv(t *testing.T) {
+	isStub := func() bool {
+		p, _ := NewPrompter(1, nil, nil)
+		_, ok := p.backends[0].(stubBackend)
+		return len(p.backends) == 1 && ok
+	}
+	for _, v := range []string{"1", "true", "yes", "on"} {
+		t.Setenv("OMAC_PROMPT_STUB", v)
+		if !isStub() {
+			t.Errorf("OMAC_PROMPT_STUB=%q should activate the stub", v)
+		}
+	}
+	for _, v := range []string{"", "0", "false", "no"} {
+		t.Setenv("OMAC_PROMPT_STUB", v)
+		if isStub() {
+			t.Errorf("OMAC_PROMPT_STUB=%q must not activate the stub", v)
+		}
+	}
+}
+
 func TestStubBackendDecisionToLabel(t *testing.T) {
 	suffix := "example.com"
 	cases := []struct {

@@ -93,6 +93,37 @@ func TestBwrapMarkerDirUsedWhenDenialTextSet(t *testing.T) {
 	}
 }
 
+func TestBwrapMarkerDirHonorsCustomName(t *testing.T) {
+	home := t.TempDir()
+	sshDir := filepath.Join(home, ".ssh")
+	if err := os.MkdirAll(sshDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	const customName = ".access-restricted"
+	g := &Grants{
+		Workdir:        home,
+		AllowPaths:     []string{home},
+		ProtectedPaths: []string{sshDir},
+		NetworkMode:    sandboxprofile.ModeBlocked,
+		DenialText:     testDenialText,
+		DenialDirName:  customName,
+	}
+	cleanup, err := g.prepareMarkers()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+
+	// The notice inside the marker dir must use the configured name, not
+	// the hard-coded default.
+	if _, err := os.Stat(filepath.Join(g.markerDir, customName)); err != nil {
+		t.Errorf("custom marker_dir_name %q not honored: %v", customName, err)
+	}
+	if _, err := os.Stat(filepath.Join(g.markerDir, markerDirFileName)); err == nil {
+		t.Errorf("default name %q written despite custom marker_dir_name", markerDirFileName)
+	}
+}
+
 func TestBwrapFallsBackToDevnullWhenNoDenialText(t *testing.T) {
 	home := t.TempDir()
 	netrc := filepath.Join(home, ".netrc")

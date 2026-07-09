@@ -127,6 +127,17 @@ type Prompter struct {
 	lookupIntent func(host string) (string, bool)
 }
 
+// isTruthyEnv reports whether an env var value means "on". Anything else
+// (empty, "0", "false", "no") means "off".
+func isTruthyEnv(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
 // NewPrompter builds the platform prompter. Returns the prompter and
 // whether any dialog backend is available (callers feed that into the
 // on_unavailable policy). lookupIntent, when non-nil, supplies the
@@ -140,12 +151,14 @@ func NewPrompter(timeoutSecs int, logf func(string, ...any), lookupIntent func(h
 		logf:         logf,
 		lookupIntent: lookupIntent,
 	}
-	// Stub backend: activated by OMAC_PROMPT_STUB=1. Reads per-host
-	// decisions from OMAC_PROMPT_DECISIONS (JSON file). Used by e2e
-	// tests and any non-interactive environment. The decisionSource
-	// interface allows a future socket-based source without changing
-	// NewPrompter or the backend interface.
-	if os.Getenv("OMAC_PROMPT_STUB") != "" {
+	// Stub backend: activated by a truthy OMAC_PROMPT_STUB (1/true/yes/on).
+	// Reads per-host decisions from OMAC_PROMPT_DECISIONS (JSON file). Used
+	// by e2e tests and any non-interactive environment. A falsey value
+	// (e.g. "0") leaves the real dialog backends in place, so exporting the
+	// var to "off" does not silently disable interactive prompting. The
+	// decisionSource interface allows a future socket-based source without
+	// changing NewPrompter or the backend interface.
+	if isTruthyEnv(os.Getenv("OMAC_PROMPT_STUB")) {
 		src := newFileDecisionSource(os.Getenv("OMAC_PROMPT_DECISIONS"))
 		p.backends = []dialogBackend{stubBackend{source: src, logf: logf}}
 		p.notify = nil // no OS notification in stub mode

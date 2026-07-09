@@ -54,6 +54,11 @@ type Grants struct {
 	// back to /dev/null (opaque ENOENT/EACCES, the historical behavior).
 	DenialText string
 
+	// DenialDirName is the filename of the notice placed inside a masked
+	// protected directory (from the profile's denial.marker_dir_name).
+	// Empty falls back to markerDirFileName.
+	DenialDirName string
+
 	// markerFile and markerDir are the bind sources used to mask
 	// protected files and directories with an explanatory denial marker.
 	// They are populated by prepareMarkers and consumed by BuildBwrapArgv;
@@ -100,7 +105,11 @@ func (g *Grants) prepareMarkers() (func(), error) {
 		cleanup()
 		return noop, err
 	}
-	if err := os.WriteFile(filepath.Join(markerDir, markerDirFileName), []byte(g.DenialText), 0o444); err != nil {
+	dirFileName := g.DenialDirName
+	if dirFileName == "" {
+		dirFileName = markerDirFileName
+	}
+	if err := os.WriteFile(filepath.Join(markerDir, dirFileName), []byte(g.DenialText), 0o444); err != nil {
 		cleanup()
 		return noop, err
 	}

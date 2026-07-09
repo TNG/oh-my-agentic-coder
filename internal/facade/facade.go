@@ -33,6 +33,7 @@ import (
 
 	"github.com/tngtech/oh-my-agentic-coder/internal/audit"
 	"github.com/tngtech/oh-my-agentic-coder/internal/intent"
+	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxdeny"
 )
 
 // RouteState describes whether a route forwards to a live sidecar or
@@ -358,11 +359,14 @@ func (f *Facade) Close() error {
 // handle is the root HTTP handler.
 func (f *Facade) handle(w http.ResponseWriter, r *http.Request) {
 	started := time.Now()
-	// Normalize: collapse double slashes so $OMAC_BASE/sandbox/intent
-	// works even when OMAC_BASE ends with a trailing slash (which it
-	// always does — set to "http://127.0.0.1:PORT/" by start.go).
+	// Normalize: collapse every run of slashes so $OMAC_BASE/sandbox/intent
+	// works when OMAC_BASE ends with a trailing slash (it always does —
+	// "http://127.0.0.1:PORT/" from start.go) regardless of where the
+	// doubling lands (leading "//sandbox" or internal "sandbox//intent").
 	if strings.Contains(r.URL.Path, "//") {
-		r.URL.Path = "/" + strings.TrimLeft(r.URL.Path, "/")
+		for strings.Contains(r.URL.Path, "//") {
+			r.URL.Path = strings.ReplaceAll(r.URL.Path, "//", "/")
+		}
 		r.URL.RawPath = ""
 	}
 	// Built-in meta routes take precedence over skill mounts.
@@ -529,8 +533,9 @@ func (f *Facade) handleSandboxDenied(w http.ResponseWriter, r *http.Request) {
 	rule, ok := f.ProtectedPathChecker.IsProtected(abs)
 	note := f.DenialNote
 	if note == "" {
-		note = "Intentionally restricted by sandbox policy. Not missing, not a bug. " +
-			"Escalate to the user only if the task cannot proceed without this path."
+		// Matches the struct doc and keeps the /sandbox/intent hint that the
+		// marker file also carries, so both denial surfaces agree.
+		note = sandboxdeny.Default().FacadeNote
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("X-Omac-Sandbox", "denied")
