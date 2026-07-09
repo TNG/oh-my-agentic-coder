@@ -174,7 +174,7 @@ type ProtectedPathChecker interface {
 // read as absent simply because it is outside the sandbox's granted
 // directories (never mounted). The agent — which knows its own granted
 // dirs — applies the rule.
-const noteNotProtected = "Not protected by the sandbox — but this does not confirm the path exists. If it is inside your granted directories it is genuinely missing; if it is outside them it is simply not mounted into the sandbox and may exist on the host. Do not conclude it is missing — if the task needs it, declare intent (POST $OMAC_BASE/sandbox/intent) and ask the user to grant access."
+const noteNotProtected = "Not protected by the sandbox — but this does not confirm the path exists. If it is inside your granted directories it is genuinely missing; if it is outside them it is simply not mounted into the sandbox and may exist on the host. Do not conclude it is missing. A running sandbox cannot mount new folders and there is no live approval popup for a path — that popup is network-only. The only way to reach it is for the user to add it to the sandbox profile (~/.config/omac/sandbox-profiles/default.json) and relaunch. Declaring intent (POST $OMAC_BASE/sandbox/intent) only records your reason for the session-end review; it does not grant access and raises no dialog. So tell the user which path you need and why, and ask them to add it and relaunch — do not tell them to approve a popup."
 
 // New constructs a Facade. socketPath may be empty to disable the Unix
 // listener; tcpAddr may be empty to disable the TCP listener. Passing
