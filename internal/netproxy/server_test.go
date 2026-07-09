@@ -353,6 +353,51 @@ func basicAuth(user, pass string) string {
 	return "Basic " + base64.StdEncoding.EncodeToString([]byte(user+":"+pass))
 }
 
+// delayedAllowPrompter sleeps (simulating a slow human) then allows.
+type delayedAllowPrompter struct{ delay time.Duration }
+
+func (p delayedAllowPrompter) Prompt(host string, port int) PromptResult {
+	time.Sleep(p.delay)
+	return PromptResult{Allow: true}
+}
+
+// TestSlowPromptDoesNotExpireDial is the regression guard for the shared
+// deadline bug: filter.Check (which blocks on the prompt) and the
+// upstream dial once shared one connectTimeout context, so an approval
+// slower than connectTimeout left the dial with a dead context — the
+// grant was honored but the connection failed with 502. With the fix the
+// dial gets a fresh deadline, so a granted host connects regardless of
+// how long the human took.
+func TestSlowPromptDoesNotExpireDial(t *testing.T) {
+	old := connectTimeout
+	connectTimeout = 40 * time.Millisecond
+	defer func() { connectTimeout = old }()
+
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "tls-hello")
+	}))
+	defer upstream.Close()
+	_, port := upstreamHostPort(t, upstream.URL)
+
+	// Prompt delay (150ms) far exceeds connectTimeout (40ms); the client
+	// timeout (5s) exceeds both, so only the server-side bug could fail it.
+	s := startProxy(t, FilterConfig{
+		PromptEnabled: true,
+		Prompter:      delayedAllowPrompter{delay: 150 * time.Millisecond},
+		Resolve:       resolveTo("127.0.0.1"),
+	})
+	client := proxyClient(s)
+	resp, err := client.Get(fmt.Sprintf("https://slow.example:%d/", port))
+	if err != nil {
+		t.Fatalf("granted host after a slow prompt must still connect: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if string(body) != "tls-hello" {
+		t.Errorf("body = %q", body)
+	}
+}
+
 func TestDenyBodyNeedsIntent(t *testing.T) {
 	body := denyBody("example.com", "prompt:needs_intent")
 	if !strings.Contains(body, "DENIED") {

@@ -18,8 +18,11 @@ import (
 	"time"
 )
 
-// connectTimeout bounds the upstream dial.
-const connectTimeout = 30 * time.Second
+// connectTimeout bounds the upstream dial (and the early DNS resolve).
+// It is a var, not a const, only so tests can shorten it. The
+// interactive prompt is bounded separately by prompt_timeout_secs and
+// must never share this deadline — see checkAndDial.
+var connectTimeout = 30 * time.Second
 
 // sandboxDenyHeader marks deny responses as originating from the omac
 // sandbox (not the destination server), so both humans and agents can
@@ -233,14 +236,11 @@ func (s *Server) handleConnect(conn net.Conn, req *http.Request) {
 			fmt.Sprintf("omac sandbox: CONNECT to loopback %q refused by the sandbox (loopback traffic must use a granted open_port, not the proxy)\n", host))
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), connectTimeout)
-	defer cancel()
-	verdict, addrs := s.filter.Check(ctx, host, port)
+	upstream, verdict, err := s.checkAndDial(host, port)
 	if verdict.Decision != Allow {
 		writeRawResponse(conn, http.StatusForbidden, sandboxDenyHeader, denyBody(host, verdict.Reason))
 		return
 	}
-	upstream, err := dialPinned(ctx, addrs, port)
 	if err != nil {
 		writeRawResponse(conn, http.StatusBadGateway, "", fmt.Sprintf("upstream dial failed: %v\n", err))
 		return
@@ -250,6 +250,26 @@ func (s *Server) handleConnect(conn net.Conn, req *http.Request) {
 		return
 	}
 	splice(conn, upstream)
+}
+
+// checkAndDial runs the filter — which may block on the interactive
+// prompt for up to prompt_timeout_secs — and, on Allow, dials the
+// pinned upstream on a *fresh* connectTimeout deadline. The two phases
+// use independent deadlines on purpose: a slow human approval must not
+// spend the dial budget, or a granted host would fail on an
+// already-expired context. verdict is always meaningful; upstream/err
+// are only set when the verdict is Allow.
+func (s *Server) checkAndDial(host string, port int) (net.Conn, Verdict, error) {
+	checkCtx, checkCancel := context.WithTimeout(context.Background(), connectTimeout)
+	verdict, addrs := s.filter.Check(checkCtx, host, port)
+	checkCancel()
+	if verdict.Decision != Allow {
+		return nil, verdict, nil
+	}
+	dialCtx, dialCancel := context.WithTimeout(context.Background(), connectTimeout)
+	defer dialCancel()
+	upstream, err := dialPinned(dialCtx, addrs, port)
+	return upstream, verdict, err
 }
 
 // handleForward proxies a plain-HTTP absolute-URI request, streaming
@@ -275,14 +295,11 @@ func (s *Server) handleForward(conn net.Conn, br *bufio.Reader, req *http.Reques
 			fmt.Sprintf("omac sandbox: forward to loopback %q refused by the sandbox (loopback traffic must use a granted open_port, not the proxy)\n", host))
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), connectTimeout)
-	defer cancel()
-	verdict, addrs := s.filter.Check(ctx, host, port)
+	upstream, verdict, err := s.checkAndDial(host, port)
 	if verdict.Decision != Allow {
 		writeRawResponse(conn, http.StatusForbidden, sandboxDenyHeader, denyBody(host, verdict.Reason))
 		return
 	}
-	upstream, err := dialPinned(ctx, addrs, port)
 	if err != nil {
 		writeRawResponse(conn, http.StatusBadGateway, "", fmt.Sprintf("upstream dial failed: %v\n", err))
 		return
