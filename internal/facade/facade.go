@@ -169,6 +169,13 @@ type ProtectedPathChecker interface {
 	IsProtected(absPath string) (rule string, ok bool)
 }
 
+// noteNotProtected is returned for a path that is not in the protected
+// set. It deliberately does NOT claim the path is missing: a path can
+// read as absent simply because it is outside the sandbox's granted
+// directories (never mounted). The agent — which knows its own granted
+// dirs — applies the rule.
+const noteNotProtected = "Not protected by the sandbox — but this does not confirm the path exists. If it is inside your granted directories it is genuinely missing; if it is outside them it is simply not mounted into the sandbox and may exist on the host. Do not conclude it is missing — if the task needs it, declare intent (POST $OMAC_BASE/sandbox/intent) and ask the user to grant access."
+
 // New constructs a Facade. socketPath may be empty to disable the Unix
 // listener; tcpAddr may be empty to disable the TCP listener. Passing
 // "127.0.0.1:0" asks the OS for an ephemeral port (read it back via
@@ -530,13 +537,7 @@ func (f *Facade) handleSandboxDenied(w http.ResponseWriter, r *http.Request) {
 	// marker file tells the agent to query with an absolute path).
 	// Relative paths are passed through literally — IsProtected
 	// decides what to do with them.
-	rule, ok := f.ProtectedPathChecker.IsProtected(abs)
-	note := f.DenialNote
-	if note == "" {
-		// Matches the struct doc and keeps the /sandbox/intent hint that the
-		// marker file also carries, so both denial surfaces agree.
-		note = sandboxdeny.Default().FacadeNote
-	}
+	rule, protected := f.ProtectedPathChecker.IsProtected(abs)
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("X-Omac-Sandbox", "denied")
 	type deniedResp struct {
@@ -545,13 +546,19 @@ func (f *Facade) handleSandboxDenied(w http.ResponseWriter, r *http.Request) {
 		Rule   string `json:"rule,omitempty"`
 		Note   string `json:"note"`
 	}
-	if !ok {
-		w.WriteHeader(http.StatusNotFound)
-		_ = json.NewEncoder(w).Encode(deniedResp{Denied: false, Path: abs, Note: "not sandbox-protected"})
+	if protected {
+		note := f.DenialNote
+		if note == "" {
+			// Matches the struct doc and keeps the /sandbox/intent hint that the
+			// marker file also carries, so both denial surfaces agree.
+			note = sandboxdeny.Default().FacadeNote
+		}
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(deniedResp{Denied: true, Path: abs, Rule: rule, Note: note})
 		return
 	}
-	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(deniedResp{Denied: true, Path: abs, Rule: rule, Note: note})
+	w.WriteHeader(http.StatusNotFound)
+	_ = json.NewEncoder(w).Encode(deniedResp{Denied: false, Path: abs, Note: noteNotProtected})
 }
 
 // handleSandboxIntent records (POST) an agent-declared intent — why the

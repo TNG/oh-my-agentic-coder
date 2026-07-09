@@ -76,6 +76,37 @@ func TestSandboxDeniedNotProtected(t *testing.T) {
 	}
 }
 
+// TestSandboxDeniedNotProtectedNote guards the false-"missing" bug: for a
+// non-protected path the note must not claim the path is absent — it must
+// point the agent at requesting access, since the path may exist on the
+// host and simply be outside the (unmounted) grant.
+func TestSandboxDeniedNotProtectedNote(t *testing.T) {
+	f := &Facade{ProtectedPathChecker: stubChecker{protected: map[string]string{}}}
+	req := httptest.NewRequest(http.MethodGet, "/sandbox/denied?path=/home/u/gitspace/other-project", nil)
+	w := httptest.NewRecorder()
+	f.handleSandboxDenied(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d; want 404", w.Code)
+	}
+	var resp struct {
+		Denied bool   `json:"denied"`
+		Note   string `json:"note"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Denied {
+		t.Error("denied = true; want false")
+	}
+	if !strings.Contains(resp.Note, "/sandbox/intent") {
+		t.Errorf("note should point at requesting access: %q", resp.Note)
+	}
+	if !strings.Contains(strings.ToLower(resp.Note), "not mounted") {
+		t.Errorf("note should explain the not-mounted case: %q", resp.Note)
+	}
+}
+
 func TestSandboxDeniedNoChecker(t *testing.T) {
 	f := &Facade{}
 	req := httptest.NewRequest(http.MethodGet, "/sandbox/denied?path=/x", nil)
