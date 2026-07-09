@@ -351,6 +351,7 @@ func (f *Facade) Close() error {
 	if f.SocketPath != "" {
 		_ = os.Remove(f.SocketPath)
 	}
+	f.IntentRegistry.Close() // nil-safe; stops the TTL sweeper goroutine
 	return firstErr
 }
 
@@ -548,9 +549,10 @@ func (f *Facade) handleSandboxDenied(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(deniedResp{Denied: true, Path: abs, Rule: rule, Note: note})
 }
 
-// handleSandboxIntent records an agent-declared intent: why the agent
-// wants to reach a host or path. The registry is read in-process by
-// the network popup and learn-mode review; there is no GET endpoint.
+// handleSandboxIntent records (POST) an agent-declared intent — why the
+// agent wants to reach a host or path — and answers lookups (GET) from
+// the sandbox child's network popup and learn-mode review, which read
+// the registry over HTTP rather than sharing memory across processes.
 func (f *Facade) handleSandboxIntent(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
 		f.handleSandboxIntentLookup(w, r)
@@ -600,8 +602,24 @@ func (f *Facade) handleSandboxIntentLookup(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "omac: target query parameter required", http.StatusBadRequest)
 		return
 	}
-	e, ok := f.IntentRegistry.Lookup(q)
 	w.Header().Set("Content-Type", "application/json")
+
+	// subtree=1: the folder learn-review passes a candidate directory and
+	// wants intents the agent declared for paths within (or above) it,
+	// since the offered candidate is a reduced ancestor of those paths.
+	if r.URL.Query().Get("subtree") != "" {
+		entries := f.IntentRegistry.LookupSubtree(q)
+		if len(entries) == 0 {
+			w.WriteHeader(http.StatusNotFound)
+			_ = json.NewEncoder(w).Encode(map[string]any{"target": q, "reason": ""})
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]any{"target": q, "reason": joinReasons(entries)})
+		return
+	}
+
+	e, ok := f.IntentRegistry.Lookup(q)
 	if !ok {
 		w.WriteHeader(http.StatusNotFound)
 		_ = json.NewEncoder(w).Encode(map[string]any{"target": q, "reason": ""})
@@ -609,6 +627,20 @@ func (f *Facade) handleSandboxIntentLookup(w http.ResponseWriter, r *http.Reques
 	}
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(map[string]any{"target": e.Target, "reason": e.Reason})
+}
+
+// joinReasons renders one or more subtree intents as a single line. A
+// single intent is returned verbatim; multiple are prefixed with their
+// target basename so the user can tell them apart.
+func joinReasons(entries []intent.Entry) string {
+	if len(entries) == 1 {
+		return entries[0].Reason
+	}
+	parts := make([]string, 0, len(entries))
+	for _, e := range entries {
+		parts = append(parts, fmt.Sprintf("%s: %s", filepath.Base(e.Target), e.Reason))
+	}
+	return strings.Join(parts, "; ")
 }
 
 func (f *Facade) writeStatus(w http.ResponseWriter, _ *http.Request) {

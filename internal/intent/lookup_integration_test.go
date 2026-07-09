@@ -161,3 +161,43 @@ func TestIntentPOSTRejectsEmpty(t *testing.T) {
 		t.Errorf("POST empty body status = %d; want 400", resp.StatusCode)
 	}
 }
+
+// TestIntentSubtreeRoundTripOverHTTP declares intent for a specific file
+// and looks it up via the subtree endpoint using a parent directory —
+// the mismatch the folder learn-review must tolerate.
+func TestIntentSubtreeRoundTripOverHTTP(t *testing.T) {
+	reg := intent.New(time.Minute)
+	t.Cleanup(reg.Close)
+
+	f := facade.New("", "127.0.0.1:0", nil, 1<<20, 0, "", "test")
+	f.IntentRegistry = reg
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := f.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+
+	baseURL := "http://127.0.0.1:" + strconv.Itoa(f.TCPPort()) + "/"
+
+	// Agent declares intent for a deep file.
+	postBody := bytes.NewReader([]byte(`{"target":"/home/user/project/fixtures/big.json","reason":"load fixture data"}`))
+	resp, err := http.Post(baseURL+"sandbox/intent", "application/json", postBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	// Exact lookup of the reduced ancestor misses...
+	if _, ok := intent.LookupOverHTTP(baseURL, "/home/user/project"); ok {
+		t.Error("exact lookup of ancestor unexpectedly matched")
+	}
+	// ...but the subtree lookup finds it.
+	reason, ok := intent.LookupSubtreeOverHTTP(baseURL, "/home/user/project")
+	if !ok {
+		t.Fatal("LookupSubtreeOverHTTP returned false for ancestor dir")
+	}
+	if reason != "load fixture data" {
+		t.Errorf("reason = %q; want 'load fixture data'", reason)
+	}
+}

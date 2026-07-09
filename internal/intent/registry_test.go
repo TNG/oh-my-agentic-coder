@@ -93,3 +93,72 @@ func TestRegistryCloseStopsSweeper(t *testing.T) {
 		t.Error("record after close should still work")
 	}
 }
+
+func TestRegistryNormalizeNetworkForms(t *testing.T) {
+	// All three forms must resolve to the same bare-host key so a popup
+	// lookup by host finds the agent's declaration however it was phrased.
+	for _, target := range []string{
+		"https://API.example.com/v1/releases",
+		"API.example.com:443",
+		"api.example.com",
+	} {
+		r := New(time.Minute)
+		r.Record(target, "why")
+		if _, ok := r.LookupHost("api.example.com"); !ok {
+			t.Errorf("declared %q; host lookup api.example.com missed", target)
+		}
+	}
+}
+
+func TestRegistryLookupSubtree(t *testing.T) {
+	r := New(time.Minute)
+	root, _ := filepath.Abs("/tmp/proj")
+	child := filepath.Join(root, "fixtures", "big.json")
+	r.Record(child, "load fixture data")
+
+	// Candidate offered at learn-review is the reduced ancestor dir.
+	got := r.LookupSubtree(root)
+	if len(got) != 1 || got[0].Reason != "load fixture data" {
+		t.Fatalf("subtree lookup of ancestor = %+v; want the child's intent", got)
+	}
+	// A host entry must never surface in a path subtree lookup.
+	r.Record("example.com", "net reason")
+	if got := r.LookupSubtree(root); len(got) != 1 {
+		t.Errorf("host intent leaked into subtree lookup: %+v", got)
+	}
+	// Unrelated directory yields nothing.
+	other, _ := filepath.Abs("/tmp/other")
+	if got := r.LookupSubtree(other); len(got) != 0 {
+		t.Errorf("unrelated subtree lookup = %+v; want none", got)
+	}
+}
+
+func TestRegistryReasonTruncated(t *testing.T) {
+	r := New(time.Minute)
+	long := ""
+	for i := 0; i < maxReasonLen*2; i++ {
+		long += "x"
+	}
+	r.Record("example.com", long)
+	e, ok := r.Lookup("example.com")
+	if !ok {
+		t.Fatal("not found")
+	}
+	if len(e.Reason) != maxReasonLen {
+		t.Errorf("reason length = %d; want %d", len(e.Reason), maxReasonLen)
+	}
+}
+
+func TestRegistryMaxEntriesEvictsOldest(t *testing.T) {
+	r := New(time.Minute)
+	// Fill past the cap; the map must never exceed maxEntries.
+	for i := 0; i < maxEntries+50; i++ {
+		r.Record("host"+string(rune('a'+i%26))+string(rune('0'+i/26))+".example", "r")
+	}
+	r.mu.Lock()
+	n := len(r.entries)
+	r.mu.Unlock()
+	if n > maxEntries {
+		t.Errorf("registry holds %d entries; cap is %d", n, maxEntries)
+	}
+}

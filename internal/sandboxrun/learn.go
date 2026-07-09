@@ -205,7 +205,9 @@ func OfferLearnedFolders(profilePath string, candidates []string, in io.Reader, 
 	for _, c := range candidates {
 		intentLine := "(no intent declared)"
 		if intentBase != "" {
-			if reason, ok := intentLookup(intentBase, c); ok {
+			// Subtree lookup: the candidate is a reduced ancestor of the
+			// specific paths the agent declared, so an exact match would miss.
+			if reason, ok := intent.LookupSubtreeOverHTTP(intentBase, c); ok {
 				intentLine = fmt.Sprintf("agent said: %q", reason)
 			}
 		}
@@ -249,12 +251,6 @@ func OfferLearnedFolders(profilePath string, candidates []string, in io.Reader, 
 	}
 	fmt.Fprintf(out, "omac sandbox: added %d folder(s) to %s\n", added, profilePath)
 	return nil
-}
-
-// intentLookup queries the facade for an agent-declared intent for a
-// path. Returns the reason and whether one was found.
-func intentLookup(baseURL, target string) (string, bool) {
-	return intent.LookupOverHTTP(baseURL, target)
 }
 
 // abbreviateHome renders /Users/u/x as ~/x for nicer profile entries.
