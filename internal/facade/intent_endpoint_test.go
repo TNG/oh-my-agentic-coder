@@ -96,6 +96,62 @@ func TestIntentEndpointGetNotFound(t *testing.T) {
 	}
 }
 
+// TestIntentEndpointLookupHint verifies the reactive-recovery channel: the
+// GET response carries a `declared` flag and an actionable `hint` so an
+// HTTPS agent (whose CONNECT denial body was discarded by its client) can
+// query out-of-band and learn whether to declare-and-retry or to stop.
+func TestIntentEndpointLookupHint(t *testing.T) {
+	reg := intent.New(time.Minute)
+	t.Cleanup(reg.Close)
+	f := &Facade{IntentRegistry: reg}
+
+	type resp struct {
+		Target   string `json:"target"`
+		Declared bool   `json:"declared"`
+		Reason   string `json:"reason"`
+		Hint     string `json:"hint"`
+	}
+	decode := func(w *httptest.ResponseRecorder) resp {
+		t.Helper()
+		var r resp
+		if err := json.NewDecoder(w.Body).Decode(&r); err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+
+	// Undeclared: 404, declared=false, hint tells the agent to declare + retry.
+	req := httptest.NewRequest(http.MethodGet, "/sandbox/intent?target=fresh.example", nil)
+	w := httptest.NewRecorder()
+	f.handleSandboxIntent(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("undeclared status = %d; want 404", w.Code)
+	}
+	got := decode(w)
+	if got.Declared {
+		t.Error("undeclared: declared should be false")
+	}
+	if !strings.Contains(got.Hint, "/sandbox/intent") || !strings.Contains(got.Hint, "retry") {
+		t.Errorf("undeclared hint should point at declaring + retrying: %q", got.Hint)
+	}
+
+	// Declared: 200, declared=true, reason preserved, hint warns against retry.
+	reg.Record("fresh.example", "fetch the changelog")
+	req = httptest.NewRequest(http.MethodGet, "/sandbox/intent?target=fresh.example", nil)
+	w = httptest.NewRecorder()
+	f.handleSandboxIntent(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("declared status = %d; want 200", w.Code)
+	}
+	got = decode(w)
+	if !got.Declared || got.Reason != "fetch the changelog" {
+		t.Errorf("declared resp = %+v", got)
+	}
+	if !strings.Contains(got.Hint, "declined") || !strings.Contains(got.Hint, "do not retry") {
+		t.Errorf("declared hint should warn against retrying a user-declined host: %q", got.Hint)
+	}
+}
+
 func TestIntentEndpointMalformedJSON(t *testing.T) {
 	reg := intent.New(time.Minute)
 	t.Cleanup(reg.Close)

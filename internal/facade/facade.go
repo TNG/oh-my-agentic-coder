@@ -621,13 +621,32 @@ func (f *Facade) handleSandboxIntentLookup(w http.ResponseWriter, r *http.Reques
 
 	e, ok := f.IntentRegistry.Lookup(q)
 	if !ok {
+		// Reliable reactive channel: an HTTPS/CONNECT denial cannot deliver
+		// the deny-body hint, so the agent queries here after a failed or
+		// hanging request and the hint tells it what to do next.
 		w.WriteHeader(http.StatusNotFound)
-		_ = json.NewEncoder(w).Encode(map[string]any{"target": q, "reason": ""})
+		_ = json.NewEncoder(w).Encode(intentLookupResp{Target: q, Declared: false, Hint: intentHintUndeclared})
 		return
 	}
 	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(map[string]any{"target": e.Target, "reason": e.Reason})
+	_ = json.NewEncoder(w).Encode(intentLookupResp{Target: e.Target, Declared: true, Reason: e.Reason, Hint: intentHintDeclared})
 }
+
+// intentLookupResp is the GET /sandbox/intent body. Reason and Target
+// are unchanged from the original shape (existing consumers read only
+// those); Declared and Hint make the endpoint a self-explaining remedy
+// channel for an agent whose request was denied or is hanging.
+type intentLookupResp struct {
+	Target   string `json:"target"`
+	Declared bool   `json:"declared"`
+	Reason   string `json:"reason"`
+	Hint     string `json:"hint"`
+}
+
+const (
+	intentHintUndeclared = "No intent on file for this target. If a request to it was denied by the sandbox or is waiting on user approval, POST $OMAC_BASE/sandbox/intent {\"target\":\"...\",\"reason\":\"...\"} and retry, so the user sees why you need it. If you already declared an intent earlier and the request was still denied, the user reviewed it and declined — do not retry."
+	intentHintDeclared   = "An intent is on file for this target. If the request was still denied, the user reviewed your reason and declined it — do not retry; choose another approach or ask the user."
+)
 
 // joinReasons renders one or more subtree intents as a single line. A
 // single intent is returned verbatim; multiple are prefixed with their

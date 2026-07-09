@@ -235,6 +235,22 @@ agent's ability to spam or bloat the registry.
 
 - Uses the literal `$OMAC_BASE` token (the brief defines what it resolves
   to; same convention as the existing deny body referencing profile paths).
+- **Limitation:** this body only reaches the agent for plain-HTTP forwards.
+  For HTTPS the denial is the `CONNECT` tunnel-establishment response, whose
+  body virtually every client discards (curl reports only `CONNECT tunnel
+  failed, response 403`). So the "Explain more" re-ask cannot be delivered
+  in-band over HTTPS/CONNECT.
+- **Reliable reactive channel:** the agent recovers out-of-band by querying
+  `GET $OMAC_BASE/sandbox/intent?target=<host>` after any denied/hanging
+  request. The response carries `declared` and a `hint`: when no intent is
+  on file the hint says to declare one and retry (which re-prompts the user,
+  now with the reason); when one is already on file and the request was
+  still denied, the hint says the user declined — do not retry. This reuses
+  the existing registry (the facade holds no network policy, so it cannot
+  compute a network verdict — the agent's own declaration is the memo that
+  makes the loop self-correcting). Pre-declaration remains the primary path;
+  the brief directs the agent to declare before the first request and to
+  consult this endpoint on failure.
 - The three backends (osascript, zenity, kdialog) each gain the seventh
   radio option. No new dependencies; the dialogs already support N
   options.
