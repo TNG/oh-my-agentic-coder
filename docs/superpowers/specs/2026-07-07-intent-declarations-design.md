@@ -72,9 +72,13 @@ learn-mode review).
                     └─────────────────────────────────────────────┘
 ```
 
-All components live in the same process; the registry is an in-memory
-map, never persisted. The agent only talks to the facade endpoint; the
-popup reads the registry directly.
+The registry is an in-memory map, never persisted, and lives in the
+**facade (supervisor) process**. The netproxy prompter and learn recorder
+run in the **sandbox child** (`omac sandbox run`), so they read intents
+back over HTTP (`GET /sandbox/intent`) rather than sharing memory — see
+the endpoint below. (An earlier draft placed everything in one process
+with in-process lookups and no GET endpoint; the implementation split the
+components across processes, so the GET endpoint exists.)
 
 ## Components
 
@@ -101,15 +105,21 @@ type Registry struct {
 
 - `New(ttl time.Duration, logf func(string, ...any)) *Registry` — default
   ttl 10 minutes (caller passes this; tests use a short ttl).
-- `Record(target, reason string)` — normalizes the target:
-  - For network targets (no path separator, parseable as host): lowercase.
-  - For path targets: `filepath.Clean` + `filepath.Abs`.
-  - Empty reason → no-op (logged at debug).
-  - Overwrites any prior entry for the same target.
+- `Record(target, reason string)` — normalizes the target so a lookup
+  matches however the agent phrased it:
+  - Network: URL (`https://api.x/y`), `host:port`, or bare host all
+    collapse to the lowercased hostname.
+  - Path (has a separator, `~`, or is absolute): `filepath.Clean` +
+    `filepath.Abs` (with `~` expansion).
+  - Empty reason → no-op; reason longer than `maxReasonLen` is truncated.
+  - Overwrites any prior entry for the same target; when the map is at
+    `maxEntries`, recording a new target evicts the oldest.
 - `Lookup(target string) (Entry, bool)` — exact match after the same
   normalization. Returns false if expired (entry is lazily deleted).
 - `LookupHost(host string) (Entry, bool)` — lowercases host, delegates to
   `Lookup`. Convenience for the netproxy layer.
+- `LookupSubtree(dir string) []Entry` — path intents equal to, under, or
+  above `dir`. Backs the folder learn-review's `&subtree=1` lookup.
 - `Record` is a no-op when the registry is nil (tests, `--learn` without
   facade).
 - Background goroutine sweeps expired entries every `ttl/2`. Started by
@@ -123,19 +133,31 @@ external surface is the facade endpoint (below).
 **`internal/facade/facade.go`** — new route `POST /sandbox/intent` next
 to the existing `/sandbox/denied` route.
 
-- Request body: `{"target":"<host or absolute path>","reason":"<one sentence>"}`
-- Auth: same `OMAC_TOKEN` bearer as other facade endpoints.
+- `POST` body: `{"target":"<host or absolute path>","reason":"<one sentence>"}`
 - On success: records to the injected `*intent.Registry`, returns `204 No
   Content`.
 - On empty/missing `target` or `reason`: `400` with a short body naming
   the required fields.
-- Registry injected at facade construction time (same pattern as
-  `deniedChecker` today). Nil registry → endpoint returns `503` with a
-  "intent registry not available" body (defensive; should not happen in
-  production wiring).
+- `GET /sandbox/intent?target=<host or path>` returns the recorded reason
+  (`{"target","reason"}`, `404` when absent). `&subtree=1` returns intents
+  the agent declared for paths at/under/above the given directory, joined
+  into one reason — used by the folder learn-review, where the offered
+  candidate is a *reduced ancestor* of the paths the agent actually named
+  (an exact match would miss them).
+- Registry injected at facade construction time (same pattern as the
+  protected-path checker). Nil registry → `503`.
 
-No GET endpoint. The popup reads the registry in-process; the agent
-never needs to read intents back.
+**Trust boundary (no bearer auth).** These endpoints are unauthenticated,
+matching the sibling `/sandbox/denied` endpoint. The facade is reachable
+only through its unix socket (file-permission gated) and `127.0.0.1`
+loopback. A bearer token was considered and rejected: the sandboxed agent
+is both the untrusted party *and* the legitimate writer of intent, so a
+token it holds cannot constrain it; and any token readable by the agent
+(via `OMAC_BASE`/env) is equally readable by any same-user local process.
+The recorded reason is therefore treated as **advisory** — shown to the
+user before a decision, but it never auto-grants access. Defensive limits
+(reason length, max entries with oldest-eviction) bound a misbehaving
+agent's ability to spam or bloat the registry.
 
 ### 3. Brief update
 
@@ -176,8 +198,12 @@ never needs to read intents back.
   Agent intent: "fetch the latest release notes to verify the version"
   ```
 
-  - URL path shown when known. CONNECT (HTTPS) can't see the path — only
-    `host:port`. Forward HTTP can. When unknown, show `host:port` as today.
+  - **URL path display: descoped (not implemented).** The common case is
+    CONNECT (HTTPS), which can never see the path — only `host:port`. Wiring
+    the path through for forward-HTTP alone would require threading it
+    through the `netproxy.Prompter.Prompt` interface for marginal benefit,
+    so the popup shows `host:port` in all cases. Revisit only if
+    forward-HTTP intent visibility proves valuable.
   - Intent line shown when the lookup returns a reason. Otherwise:
     `Agent intent: (not declared)`.
 - `optionLabels` gains a seventh entry: `"Explain more"`. Maps to new
@@ -235,9 +261,11 @@ marker).
 
 - `learnRecorder` gains a reference to the `*intent.Registry` (passed via
   `newLearnRecorder(g, reg)`; nil in tests that don't care).
-- During `candidates()` aggregation, for each candidate path, call
-  `reg.Lookup(path)`. Stash the reason alongside the path in a new
-  internal struct `{Path, Intent string}`.
+- `OfferLearnedFolders` looks up each candidate via
+  `intent.LookupSubtreeOverHTTP` (not an exact `Lookup`): `candidates()`
+  reduces observed paths to ancestor directories, so the declared target
+  is typically a descendant of the offered candidate and only a subtree
+  match connects them.
 - `OfferLearnedFolders` prints the intent next to each candidate:
 
   ```
