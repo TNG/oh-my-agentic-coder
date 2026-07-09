@@ -138,6 +138,67 @@ func TestIntegrationProtectedMaskedUnderGrant(t *testing.T) {
 	}
 }
 
+// TestIntegrationProtectedMarkerLaunchAndContent guards the regression
+// where the marker bind sources were deleted before bwrap exec: with
+// DenialText set and a protected path present, the sandbox must still
+// launch, the masked file must expose the marker text, and the masked
+// directory must show the .omac-denied notice instead of its contents.
+func TestIntegrationProtectedMarkerLaunchAndContent(t *testing.T) {
+	requireBwrap(t)
+	wd := t.TempDir()
+	secretFile := filepath.Join(wd, "secret.txt")
+	if err := os.WriteFile(secretFile, []byte("TOPSECRET"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	secretDir := filepath.Join(wd, "secretdir")
+	if err := os.MkdirAll(secretDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(secretDir, "key"), []byte("KEY"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	const marker = "DENIED-MARKER-XYZ"
+	// ResolveGrants provides the system baseline (so /bin/cat resolves in
+	// the namespace) and the workdir grant that shadows the protected
+	// paths; augment it with the denial text and our protected entries.
+	p := &sandboxprofile.Profile{
+		Workdir: sandboxprofile.Workdir{Access: sandboxprofile.AccessReadWrite},
+		Network: sandboxprofile.Network{Mode: sandboxprofile.ModeBlocked},
+	}
+	g, err := ResolveGrants(p, wd, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.DenialText = marker + "\n"
+	g.ProtectedPaths = append(g.ProtectedPaths, secretFile, secretDir)
+	cleanup, err := g.prepareMarkers()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+
+	// Protected file: reading it yields the marker, not the secret (and
+	// the sandbox launched — code 0 is itself the regression guard).
+	out, code := runBwrapped(t, g, "/bin/cat", secretFile)
+	if code != 0 {
+		t.Fatalf("sandbox failed to launch reading masked file (code %d): %s", code, out)
+	}
+	if !strings.Contains(out, marker) || strings.Contains(out, "TOPSECRET") {
+		t.Errorf("masked file content = %q; want marker, not secret", out)
+	}
+
+	// Protected dir: it shows only the .omac-denied notice; the real key
+	// is gone.
+	out, code = runBwrapped(t, g, "/bin/cat", filepath.Join(secretDir, markerDirFileName))
+	if code != 0 || !strings.Contains(out, marker) {
+		t.Errorf("marker-dir notice = %q (code %d); want marker text", out, code)
+	}
+	if _, code := runBwrapped(t, g, "/bin/cat", filepath.Join(secretDir, "key")); code == 0 {
+		t.Error("masked directory still exposes its original contents")
+	}
+}
+
 func TestIntegrationStage2LandlockPorts(t *testing.T) {
 	requireBwrap(t)
 	if !LandlockNetSupported() {

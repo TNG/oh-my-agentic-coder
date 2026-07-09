@@ -47,15 +47,10 @@ func NewProtectedPathSet(p *sandboxprofile.Profile, workdir string) *ProtectedPa
 			set.rules = append(set.rules, "baseline")
 		}
 	}
-	// User path-form denies (globs are skipped — they need a walk).
-	for _, d := range p.Filesystem.Deny {
-		if sandboxprofile.IsBasenameGlob(d) {
-			continue
-		}
-		exp, err := sandboxprofile.ExpandPath(d)
-		if err != nil {
-			continue
-		}
+	// User path-form denies (globs are skipped — they need a walk). Shared
+	// with ResolveGrants via pathFormDenies so both agree on which paths
+	// count as explicitly denied.
+	for _, exp := range pathFormDenies(p.Filesystem.Deny, nil) {
 		set.entries = append(set.entries, exp)
 		set.rules = append(set.rules, "profile")
 	}

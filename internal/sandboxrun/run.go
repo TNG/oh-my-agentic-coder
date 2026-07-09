@@ -126,6 +126,15 @@ func Run(opts Options) int {
 		}
 	}
 
+	// Denial markers must outlive argv construction: bwrap reads the
+	// bind sources at launch, so cleanup is deferred until after the
+	// child exits (below), not when BuildChildArgv returns.
+	markerCleanup, err := grants.prepareMarkers()
+	if err != nil {
+		return fail("prepare denial markers: %v", err)
+	}
+	defer markerCleanup()
+
 	childArgv, err := BuildChildArgv(grants, opts.Flags.InnerArgv)
 	if err != nil {
 		return fail("%v", err)

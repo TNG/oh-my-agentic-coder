@@ -129,17 +129,11 @@ func BuildBwrapArgv(g *Grants, stage2Argv []string) ([]string, error) {
 	// otherwise expose the protected path. Everything else is already
 	// absent (unbound). Masks must come after the binds they shadow.
 	//
-	// When DenialText is set, protected files are masked with a marker
-	// file whose contents explain the denial (agent reads it and gets
-	// an actionable signal instead of opaque ENOENT). Protected dirs get
-	// a tmpfs with a single .omac-denied marker file inside. When
-	// DenialText is empty, the historical /dev/null + empty-tmpfs
-	// behavior is preserved.
-	markerFile, markerDirName, cleanup, err := prepareMarkers(g.DenialText)
-	if err != nil {
-		return nil, fmt.Errorf("bwrap: prepare markers: %w", err)
-	}
-	defer cleanup()
+	// When denial markers are prepared (see Grants.prepareMarkers), a
+	// protected file is masked with a read-only marker file whose contents
+	// explain the denial, and a protected dir is masked with a read-only
+	// marker dir holding a single .omac-denied file. When no markers are
+	// prepared, the historical /dev/null + empty-tmpfs behavior applies.
 	for _, prot := range g.ProtectedPaths {
 		if !coveredByAny(prot, ordered) {
 			continue
@@ -149,22 +143,14 @@ func BuildBwrapArgv(g *Grants, stage2Argv []string) ([]string, error) {
 			continue // doesn't exist; nothing to mask
 		}
 		if fi.IsDir() {
-			if markerDirName != "" {
-				// Bind a pre-built marker dir (tmpfs + marker file) over
-				// the protected dir so the agent sees a non-empty dir
-				// containing only the denial notice.
-				marker, mErr := buildMarkerDir(markerDirName, markerFile)
-				if mErr != nil {
-					continue // fall back to plain tmpfs
-				}
-				defer os.RemoveAll(marker)
-				argv = append(argv, "--bind", marker, prot)
-				continue
+			if g.markerDir != "" {
+				argv = append(argv, "--ro-bind", g.markerDir, prot)
+			} else {
+				argv = append(argv, "--tmpfs", prot)
 			}
-			argv = append(argv, "--tmpfs", prot)
 		} else {
-			if markerFile != "" {
-				argv = append(argv, "--ro-bind", markerFile, prot)
+			if g.markerFile != "" {
+				argv = append(argv, "--ro-bind", g.markerFile, prot)
 			} else {
 				argv = append(argv, "--ro-bind", "/dev/null", prot)
 			}
@@ -205,47 +191,6 @@ func coveredByAny(path string, mounts []*mount) bool {
 		}
 	}
 	return false
-}
-
-// prepareMarkers writes the marker file content to a temp file and
-// returns its path, the marker-dir filename, and a cleanup function.
-// When denialText is empty, both return values are empty and cleanup
-// is a no-op (historical /dev/null + plain tmpfs behavior).
-func prepareMarkers(denialText string) (markerFile, markerDirName string, cleanup func(), err error) {
-	cleanup = func() {}
-	if strings.TrimSpace(denialText) == "" {
-		return "", "", cleanup, nil
-	}
-	tmp, err := os.CreateTemp("", "omac-marker-*")
-	if err != nil {
-		return "", "", cleanup, err
-	}
-	if _, werr := tmp.WriteString(denialText); werr != nil {
-		tmp.Close()
-		os.Remove(tmp.Name())
-		return "", "", cleanup, werr
-	}
-	if cerr := tmp.Close(); cerr != nil {
-		os.Remove(tmp.Name())
-		return "", "", cleanup, cerr
-	}
-	cleanup = func() { os.Remove(tmp.Name()) }
-	return tmp.Name(), ".omac-denied", cleanup, nil
-}
-
-// buildMarkerDir creates a temp directory containing a single marker
-// file with the given name and content. Returns the temp dir path.
-// Caller must RemoveAll the returned path.
-func buildMarkerDir(name, content string) (string, error) {
-	dir, err := os.MkdirTemp("", "omac-markerdir-*")
-	if err != nil {
-		return "", err
-	}
-	if werr := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); werr != nil {
-		os.RemoveAll(dir)
-		return "", werr
-	}
-	return dir, nil
 }
 
 // Stage2Args serializes the network rules for the stage2 re-exec.

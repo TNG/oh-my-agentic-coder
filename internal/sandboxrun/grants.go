@@ -53,6 +53,60 @@ type Grants struct {
 	// protected files (Linux bwrap fast path). When empty, bwrap falls
 	// back to /dev/null (opaque ENOENT/EACCES, the historical behavior).
 	DenialText string
+
+	// markerFile and markerDir are the bind sources used to mask
+	// protected files and directories with an explanatory denial marker.
+	// They are populated by prepareMarkers and consumed by BuildBwrapArgv;
+	// empty means "fall back to /dev/null + tmpfs".
+	markerFile string
+	markerDir  string
+}
+
+// markerDirFileName is the single file placed inside a masked protected
+// directory; the agent reads it to learn the directory is intentionally
+// restricted.
+const markerDirFileName = ".omac-denied"
+
+// prepareMarkers creates the bind sources that mask protected paths with
+// an explanatory denial marker: a read-only file bound over protected
+// files, and a directory holding a single .omac-denied file bound over
+// protected directories. Both carry DenialText.
+//
+// It sets g.markerFile and g.markerDir and returns a cleanup that removes
+// the backing temp dir. The caller MUST defer cleanup until after the
+// sandbox process has exited: bwrap reads bind sources at launch, not at
+// argv-construction time, so deleting them earlier would leave dangling
+// --ro-bind sources and abort the launch.
+//
+// A no-op cleanup is returned when there is no denial text or nothing to
+// protect; BuildBwrapArgv then falls back to /dev/null + tmpfs.
+func (g *Grants) prepareMarkers() (func(), error) {
+	noop := func() {}
+	if strings.TrimSpace(g.DenialText) == "" || len(g.ProtectedPaths) == 0 {
+		return noop, nil
+	}
+	dir, err := os.MkdirTemp("", "omac-markers-*")
+	if err != nil {
+		return noop, err
+	}
+	cleanup := func() { _ = os.RemoveAll(dir) }
+	markerFile := filepath.Join(dir, "file")
+	if err := os.WriteFile(markerFile, []byte(g.DenialText), 0o444); err != nil {
+		cleanup()
+		return noop, err
+	}
+	markerDir := filepath.Join(dir, "dir")
+	if err := os.Mkdir(markerDir, 0o755); err != nil {
+		cleanup()
+		return noop, err
+	}
+	if err := os.WriteFile(filepath.Join(markerDir, markerDirFileName), []byte(g.DenialText), 0o444); err != nil {
+		cleanup()
+		return noop, err
+	}
+	g.markerFile = markerFile
+	g.markerDir = markerDir
+	return cleanup, nil
 }
 
 // ResolveGrants merges the profile, the platform baseline, and the
@@ -317,21 +371,12 @@ func resolveDenyPaths(userDeny, baselineBasenames, overrideDeny, scanRoots []str
 		return nil
 	}
 
-	var explicit []string
+	explicit := pathFormDenies(userDeny, notices)
 	var globs []string
 	for _, d := range userDeny {
 		if sandboxprofile.IsBasenameGlob(d) {
 			globs = append(globs, d)
-			continue
 		}
-		exp, err := sandboxprofile.ExpandPath(d)
-		if err != nil {
-			if notices != nil {
-				fmt.Fprintf(notices, "omac sandbox: notice: skipping filesystem.deny %q (%v)\n", d, err)
-			}
-			continue
-		}
-		explicit = append(explicit, exp)
 	}
 
 	// Filter baseline basenames through overrides before walking.
@@ -351,6 +396,30 @@ func resolveDenyPaths(userDeny, baselineBasenames, overrideDeny, scanRoots []str
 				out = append(out, m)
 			}
 		}
+	}
+	return out
+}
+
+// pathFormDenies expands the path-form (non basename-glob) entries of a
+// filesystem.deny list to absolute paths. Glob entries are skipped —
+// they need a tree walk (walkGlobMatches). Shared by ResolveGrants (the
+// child's real enforcement) and NewProtectedPathSet (the facade-side
+// coarse checker) so the two agree on what counts as an explicitly
+// denied path.
+func pathFormDenies(deny []string, notices io.Writer) []string {
+	var out []string
+	for _, d := range deny {
+		if sandboxprofile.IsBasenameGlob(d) {
+			continue
+		}
+		exp, err := sandboxprofile.ExpandPath(d)
+		if err != nil {
+			if notices != nil {
+				fmt.Fprintf(notices, "omac sandbox: notice: skipping filesystem.deny %q (%v)\n", d, err)
+			}
+			continue
+		}
+		out = append(out, exp)
 	}
 	return out
 }
