@@ -838,9 +838,10 @@ you can verify omac injected them correctly.
 
 ## 11. Distributing the skill
 
-`omac` is the **runtime**, not an installer. The marketplace installer
-(e.g. `scripts/install.sh <skill>`) drops your skill directory under
-`.opencode/skills/<name>/`. To distribute:
+`omac` is the **runtime**, not an installer. Skills can be installed from the
+marketplace via the `skill-marketplace` skill's `/install` endpoint (from
+inside the sandbox), or placed manually under `.opencode/skills/<name>/`.
+To distribute:
 
 1. Pick a stable `name` (kebab-case, agentskills.io-compliant — see §3.1)
    and `mount` (URL-safe; defaults to the name).
@@ -861,7 +862,8 @@ you can verify omac injected them correctly.
 Users will then:
 
 ```bash
-scripts/install.sh <your-skill>     # marketplace pulls your tree
+# Inside the sandbox (skill-marketplace /install), or manually copy the
+# skill directory to .opencode/skills/<your-skill>/
 omac register <your-skill>          # prompts for declared secrets
 bash .opencode/skills/<your-skill>/install/install.macos.sh
 omac start

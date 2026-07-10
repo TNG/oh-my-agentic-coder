@@ -296,7 +296,7 @@ this host, and allow/deny permanently for the registered suffix (e.g.
 | Package | Install | Purpose |
 |---|---|---|
 | **opencode** | see [opencode docs](https://github.com/anomalyco/opencode) | Default inner harness (`omac start`) |
-| **claude** (Claude Code CLI) | see [Claude Code docs](https://docs.anthropic.com/en/docs/claude-code) | Alternative harness (`omac start claude`) |
+| **claude** (Claude Code CLI) | see [Claude Code docs](https://code.claude.com/docs) | Alternative harness (`omac start claude`) |
 | **codex** (OpenAI Codex CLI) | see [Codex docs](https://github.com/openai/codex) | Alternative harness (`omac start codex`) |
 | **copilot** (GitHub Copilot CLI) | see [Copilot CLI docs](https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli) | Alternative harness (`omac start copilot`) |
 
@@ -421,23 +421,21 @@ sandbox:
 ## Typical workflow
 
 ```bash
-# 1. Install a skill with the existing marketplace installer.
-#    (Skill must declare a `sidecar:` block in its omac.yaml — see the design doc §7.)
-scripts/install.sh slack
-
-# 2. Register its sidecar in this workdir. Prompts for every declared secret
+# 1. Register a skill in this workdir. Prompts for every declared secret
 #    (masked input, stored in the OS keychain; nothing touches disk under .opencode/).
+#    The skill directory must already exist under .opencode/skills/, .agents/skills/,
+#    or the user-global skills dir.
 omac register slack
 
-# 3. Inspect the install script (omac never runs it for you).
+# 2. Inspect the install script (omac never runs it for you).
 bash .opencode/skills/slack/install/install.macos.sh
 
-# 4. (Optional) status.
+# 3. (Optional) status.
 omac doctor
 omac list
 omac secrets list slack
 
-# 5. Launch the full stack: sidecars → facade (Unix socket) → sandbox → agent.
+# 4. Launch the full stack: sidecars → facade (Unix socket) → sandbox → agent.
 omac start            # default harness (opencode)
 # or: omac start claude   # launch Claude Code as the inner harness instead
 # or: omac start codex    # launch OpenAI Codex as the inner harness
@@ -446,9 +444,13 @@ omac start            # default harness (opencode)
 # Inside the sandbox the skill reaches its sidecar via the socket:
 #   curl --unix-socket "$OMAC_SOCKET" http://x/slack/api/chat.postMessage ...
 
-# 6. Rotate a secret without re-registering.
+# 5. Rotate a secret without re-registering.
 omac secrets set slack SLACK_BOT_TOKEN
 ```
+
+Skills can also be installed from the marketplace from inside the sandbox via
+the `skill-marketplace` skill's `/install` endpoint. See
+[`CREATING_A_SKILL.md`](./CREATING_A_SKILL.md) §11.
 
 ## CLI summary
 
