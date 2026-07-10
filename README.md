@@ -295,10 +295,10 @@ this host, and allow/deny permanently for the registered suffix (e.g.
 
 | Package | Install | Purpose |
 |---|---|---|
-| **opencode** | see [opencode docs](https://github.com/opencode-ai/opencode) | Default inner harness (`omac start`) |
+| **opencode** | see [opencode docs](https://github.com/anomalyco/opencode) | Default inner harness (`omac start`) |
 | **claude** (Claude Code CLI) | see [Claude Code docs](https://docs.anthropic.com/en/docs/claude-code) | Alternative harness (`omac start claude`) |
 | **codex** (OpenAI Codex CLI) | see [Codex docs](https://github.com/openai/codex) | Alternative harness (`omac start codex`) |
-| **copilot** (GitHub Copilot CLI) | see [Copilot CLI docs](https://docs.github.com/en/copilot/copilot-cli) | Alternative harness (`omac start copilot`) |
+| **copilot** (GitHub Copilot CLI) | see [Copilot CLI docs](https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli) | Alternative harness (`omac start copilot`) |
 
 At least one inner harness must be installed; `opencode` is the default.
 
