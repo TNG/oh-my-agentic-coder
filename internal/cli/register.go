@@ -273,7 +273,13 @@ func runRegister(args []string, env *Env) int {
 		if err != nil {
 			return err
 		}
-		if existing, _ := reg.Find(skillName); existing != nil {
+		// Scope the conflict check to the harness we're registering under.
+		// The registry keys entries by (Name, Harness) and the same skill
+		// may legitimately be registered under multiple harnesses (each with
+		// its own on-disk copy and bundle hash). Using the name-only Find
+		// here would compare against another harness's entry and reject a
+		// genuinely new-harness registration as a false bundle_hash conflict.
+		if existing, _ := reg.FindForHarness(skillName, regHarness); existing != nil {
 			if existing.BundleHash != bundleHash && !*force {
 				return fmt.Errorf("already registered with a different bundle_hash; pass --force to update")
 			}
