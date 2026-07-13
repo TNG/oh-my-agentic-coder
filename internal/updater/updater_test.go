@@ -29,6 +29,7 @@ func (f fakeReleaseSource) LatestRelease(ctx context.Context) (Release, error) {
 type fakeFetcher struct {
 	files map[string][]byte // url -> body
 	calls int
+	paths []string // temp files created by FetchToFile
 }
 
 func (f *fakeFetcher) FetchAll(ctx context.Context, url string) ([]byte, error) {
@@ -54,6 +55,7 @@ func (f *fakeFetcher) FetchToFile(ctx context.Context, url, dir, pattern string)
 	if _, err := tmp.Write(body); err != nil {
 		return "", err
 	}
+	f.paths = append(f.paths, tmp.Name())
 	return tmp.Name(), nil
 }
 
@@ -224,6 +226,37 @@ func TestCheck_ChecksumMismatch(t *testing.T) {
 	_, err := Check(context.Background(), Options{CurrentVersion: "1.0.0"}, deps)
 	if !errors.Is(err, ErrChecksumMismatch) {
 		t.Fatalf("err = %v, want ErrChecksumMismatch", err)
+	}
+}
+
+func TestCheck_ChecksumMismatch_CleansTempFile(t *testing.T) {
+	sumsURL := "https://example.invalid/checksums.txt"
+	debURL := "https://example.invalid/oh-my-agentic-coder_2.0.0_linux_x86_64.deb"
+
+	deps := baseDeps(t)
+	deps.Source = fakeReleaseSource{rel: Release{TagName: "v2.0.0", Assets: []Asset{
+		{Name: "oh-my-agentic-coder_2.0.0_linux_x86_64.deb", BrowserDownloadURL: debURL},
+		{Name: "checksums.txt", BrowserDownloadURL: sumsURL},
+	}}}
+	fetcher := &fakeFetcher{files: map[string][]byte{
+		sumsURL: checksumsFile("oh-my-agentic-coder_2.0.0_linux_x86_64.deb", []byte("expected-bytes")),
+		debURL:  []byte("actually-different-bytes"),
+	}}
+	deps.Fetcher = fetcher
+	deps.GOOS, deps.GOARCH = "linux", "amd64"
+	deps.PkgManagers = []PackageManager{
+		{Name: "dpkg", AssetSuffix: ".deb", InstallArgs: func(p string) []string { return []string{"-i", p} }},
+	}
+
+	_, err := Check(context.Background(), Options{CurrentVersion: "1.0.0"}, deps)
+	if !errors.Is(err, ErrChecksumMismatch) {
+		t.Fatalf("err = %v, want ErrChecksumMismatch", err)
+	}
+	if len(fetcher.paths) != 1 {
+		t.Fatalf("expected 1 temp file created, got %d", len(fetcher.paths))
+	}
+	if _, statErr := os.Stat(fetcher.paths[0]); !os.IsNotExist(statErr) {
+		t.Fatalf("temp file %q still exists after checksum mismatch: %v", fetcher.paths[0], statErr)
 	}
 }
 

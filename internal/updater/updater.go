@@ -211,6 +211,11 @@ func downloadAndVerify(ctx context.Context, p *Plan, rel Release, deps Deps) err
 	if err != nil {
 		return fmt.Errorf("download %s: %w", p.Asset.Name, err)
 	}
+	defer func() {
+		if p.LocalPath == "" {
+			os.Remove(path)
+		}
+	}()
 	gotSum, err := sha256File(path)
 	if err != nil {
 		return fmt.Errorf("checksum %s: %w", p.Asset.Name, err)

@@ -652,7 +652,7 @@ checksum status, then asks `Proceed with update? [y/N]`. Pass `--yes`/`-y`
 to skip the prompt for scripting. There is no separate `--check`/`--dry-run`
 flag — declining the prompt *is* the dry run. In a non-interactive session
 (no TTY) without `--yes`, it prints a hint and exits `0` without changing
-anything, rather than hanging or failing.
+anything, rather than hanging on a prompt.
 
 ### 10.6 Exit codes (global)
 
