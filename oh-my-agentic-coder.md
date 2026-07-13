@@ -972,12 +972,12 @@ Rules:
 - `name` must match `^[A-Z_][A-Z0-9_]*$` (a valid env-var name).
 - Each entry describes **one** env var that will be present in the sidecar process's environment at start time.
 - `description` is required in practice (we lint it during `omac register`) so the prompt is self-explanatory.
-- `pattern` is a Rust regex. Matching is non-anchored unless `^…$` are provided explicitly.
+- `pattern` is a Go regexp (`regexp/syntax`). Matching is non-anchored unless `^…$` are provided explicitly.
 - `default_from_env` points at a host env var; if that env var is present at register time, its value is offered as a pre-filled default (still masked; the user confirms with Enter).
 
 ### 16.2 Storage backends
 
-`omac` uses the [`keyring`](https://crates.io/crates/keyring) crate (or equivalent) to abstract over the native backend:
+`omac` uses the [`go-keyring`](https://github.com/zalando/go-keyring) library (or equivalent) to abstract over the native backend:
 
 | OS | Backend |
 | --- | --- |
@@ -1267,8 +1267,9 @@ Three non-obvious things in that argv:
 # 1. Install omac (separate from Nono, from skill-installer).
 brew install tng/tap/oh-my-agentic-coder
 
-# 2. Install a skill from the marketplace (existing workflow).
-scripts/install.sh slack
+# 2. Install a skill from the marketplace (via the skill-marketplace skill's
+#    /install endpoint inside the sandbox, or place it manually under
+#    .opencode/skills/slack/).
 
 # 3. Register its sidecar with omac in this workdir.
 omac register slack
