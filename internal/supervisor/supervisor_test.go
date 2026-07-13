@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -222,5 +223,44 @@ func TestStopSidecarDoesNotDoubleEmitProcessExit(t *testing.T) {
 	s.StopSidecar("double", time.Second)
 	if got := aud.countType(audit.TypeProcessExit); got != 1 {
 		t.Fatalf("want 1 process.exit (no double-emit), got %d", got)
+	}
+}
+
+// TestShutdownAllReapsLongRunningChildWithoutHanging is a regression test
+// for a deadlock where watchChild's reaper goroutine and terminate() both
+// called Cmd.Wait() concurrently on the same child. os/exec.Cmd.Wait must
+// only ever have one caller in flight; a second concurrent caller can
+// block forever even after the process has been killed. That bug only
+// shows up for a child that is still running when shutdown starts (a
+// self-terminated child, as in the tests above, has no live race to lose).
+// Uses a long-running child (sleep) plus a hard test-level timeout so a
+// regression fails fast instead of hanging the whole test binary.
+func TestShutdownAllReapsLongRunningChildWithoutHanging(t *testing.T) {
+	s := New(nil, nil)
+
+	cmd := exec.Command("sleep", "30")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	r := &Running{Name: "long-lived", Cmd: cmd, startedAt: time.Now()}
+	s.mu.Lock()
+	s.children = append(s.children, r)
+	s.mu.Unlock()
+
+	// Reaper is now racing to Wait() on a child that is still alive —
+	// exactly the state that triggered the deadlock.
+	s.watchChild(r)
+
+	done := make(chan struct{})
+	go func() {
+		s.ShutdownAll(2 * time.Second)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("ShutdownAll did not return within 5s — terminate() likely deadlocked racing watchChild's Cmd.Wait()")
 	}
 }
