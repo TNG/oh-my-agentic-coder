@@ -23,11 +23,6 @@ permissions:
 jobs:
   e2e:
     name: E2E (${{ matrix.harness }} / ${{ matrix.os }})
-    # claude-code is the only harness billed against a real external
-    # Anthropic account (the others run against the internal SKAINET
-    # gateway) — included by default, skippable via the workflow_dispatch
-    # input above. The scheduled run always includes it.
-    if: matrix.harness != 'claude-code' || github.event.inputs.skip_claude_code != 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -95,6 +90,14 @@ jobs:
             e2e-install-${{ runner.os }}-${{ matrix.harness }}-
 
       - name: Run e2e test
+        id: run_e2e
+        # claude-code is the only harness billed against a real external
+        # Anthropic account (the others run against the internal SKAINET
+        # gateway) — included by default, skippable via the workflow_dispatch
+        # input above. The scheduled run always includes it. (job-level `if:`
+        # can't reference `matrix` — only `github`/`inputs`/`needs`/`vars` are
+        # available there — so the guard lives on this step instead.)
+        if: matrix.harness != 'claude-code' || github.event.inputs.skip_claude_code != 'true'
         env:
           E2E_LOG_DIR: ${{ runner.temp }}/e2e-logs
           E2E_CACHE_DIR: ${{ runner.temp }}/e2e-install-cache
@@ -132,8 +135,14 @@ jobs:
             sleep 15
           done
 
+      - name: Skipped notice
+        if: steps.run_e2e.outcome == 'skipped'
+        run: |
+          echo "## E2E (${{ matrix.harness }} / ${{ matrix.os }}): SKIPPED" >> "$GITHUB_STEP_SUMMARY"
+          echo "skip_claude_code was set on this workflow_dispatch run." >> "$GITHUB_STEP_SUMMARY"
+
       - name: Failure classification summary
-        if: always()
+        if: always() && steps.run_e2e.outcome != 'skipped'
         run: |
           # Render a markdown table on the run-summary page so the failure
           # cause is visible by indicator without opening the full log.
