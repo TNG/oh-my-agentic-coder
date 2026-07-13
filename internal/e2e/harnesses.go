@@ -104,6 +104,12 @@ type SandboxConfig struct {
 // macOS Seatbelt sandbox; `omac start codex` on macOS fails loud (see
 // issue #48). Running the e2e with --no-sandbox would disable the entire
 // omac sandbox, leaving nothing to assert against.
+//
+// claude-code is excluded when E2E_SKIP_CLAUDE_CODE=1 — it is the only
+// harness billed against a real external Anthropic account (the others
+// run against the internal SKAINET gateway), so it's the one harness
+// worth an easy opt-out when iterating locally or controlling CI cost.
+// Included by default.
 func allHarnesses() []harnessConfig {
 	all := []harnessConfig{
 		opencodeConfig(),
@@ -118,9 +124,26 @@ func allHarnesses() []harnessConfig {
 				out = append(out, h)
 			}
 		}
-		return out
+		all = out
+	}
+	if skipClaudeCode() {
+		out := all[:0]
+		for _, h := range all {
+			if h.Name != "claude-code" {
+				out = append(out, h)
+			}
+		}
+		all = out
 	}
 	return all
+}
+
+// skipClaudeCode reports whether E2E_SKIP_CLAUDE_CODE=1 is set, excluding
+// claude-code from allHarnesses(). Set this to iterate locally without an
+// ANTHROPIC_BASE_URL / Anthropic-billed token configured, or to skip the
+// one harness that costs real money on a given CI run.
+func skipClaudeCode() bool {
+	return os.Getenv("E2E_SKIP_CLAUDE_CODE") == "1"
 }
 
 // harnessByName returns the config for a single harness by canonical name.

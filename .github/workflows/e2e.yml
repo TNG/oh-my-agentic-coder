@@ -9,6 +9,11 @@ name: E2E
 
 on:
   workflow_dispatch:
+    inputs:
+      skip_claude_code:
+        description: 'Skip claude-code (the only harness billed against the real Anthropic account)'
+        type: boolean
+        default: false
   schedule:
     - cron: '0 8 * * 6' # Saturdays 10:00 CEST
 
@@ -18,6 +23,11 @@ permissions:
 jobs:
   e2e:
     name: E2E (${{ matrix.harness }} / ${{ matrix.os }})
+    # claude-code is the only harness billed against a real external
+    # Anthropic account (the others run against the internal SKAINET
+    # gateway) — included by default, skippable via the workflow_dispatch
+    # input above. The scheduled run always includes it.
+    if: matrix.harness != 'claude-code' || github.event.inputs.skip_claude_code != 'true'
     strategy:
       fail-fast: false
       matrix:

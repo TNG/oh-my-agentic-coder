@@ -21,12 +21,19 @@
 // The sandbox profile is derived at runtime from SKAINET_INTERNAL /
 // ANTHROPIC_BASE_URL so the proxy allows the model API host.
 //
-// Run locally: go test -tags=e2e -timeout=30m -v ./internal/e2e/
-// Run one:     E2E_HARNESS=opencode go test -tags=e2e -timeout=30m -v ./internal/e2e/
-// Latest:      E2E_USE_LATEST=1 go test -tags=e2e -timeout=30m -v ./internal/e2e/
+// Run locally:      go test -tags=e2e -timeout=30m -v ./internal/e2e/
+// Run one:          E2E_HARNESS=opencode go test -tags=e2e -timeout=30m -v ./internal/e2e/
+// Latest:           E2E_USE_LATEST=1 go test -tags=e2e -timeout=30m -v ./internal/e2e/
+// Skip claude-code: E2E_SKIP_CLAUDE_CODE=1 go test -tags=e2e -timeout=30m -v ./internal/e2e/
 //
 // Harness versions and model IDs are pinned in versions.go.
 // Set E2E_USE_LATEST=1 to test with latest releases (no pinning).
+//
+// claude-code is the only harness billed against a real external
+// Anthropic account (the others run against the internal SKAINET
+// gateway). Set E2E_SKIP_CLAUDE_CODE=1 to exclude it — useful for local
+// iteration without an ANTHROPIC_BASE_URL configured, or to avoid the
+// cost on a given run. Included by default.
 
 package e2e
 
