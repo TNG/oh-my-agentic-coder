@@ -983,10 +983,10 @@ Rules:
 | --- | --- |
 | macOS | Keychain Services (`security` framework). |
 | Linux (GNOME/KDE) | Secret Service API (`libsecret`, D-Bus). |
-| WSL / headless Linux | Pass-through to the native backend if present; otherwise fallback to an age-encrypted file under `~/.local/share/omac/secrets.age` with the passphrase unlocked once per session via keyring if available. |
+| WSL / headless Linux | Pass-through to the native backend if present. A file-based fallback (age-encrypted file under `~/.local/share/omac/secrets.age`, passphrase unlocked once per session via keyring if available) was proposed here but is **not implemented in v0** — see `internal/keychain`. Without a running Secret Service provider, keychain operations fail; `omac doctor` reports backend reachability and README.md#prerequisites has the gnome-keyring setup snippet. |
 | Windows (native, future) | Windows Credential Manager. |
 
-The backend selection is logged once on first use (`omac doctor` shows the active backend). Users can pin a backend via `OMAC_KEYRING_BACKEND=secret-service|keychain|file`.
+`omac doctor` reports whether the keychain backend is reachable. `OMAC_KEYRING_BACKEND=secret-service|keychain|file` pinning described in earlier drafts of this doc is likewise **not implemented**.
 
 ### 16.3 Naming convention
 

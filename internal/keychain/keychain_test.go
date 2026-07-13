@@ -1,6 +1,9 @@
 package keychain
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 // TestScopedServiceNaming locks the keychain service-name scheme so the
 // write side (register/secrets set) and the read side (start/serve) can
@@ -34,5 +37,27 @@ func TestWorkdirIDDeterministicAndDistinct(t *testing.T) {
 	}
 	if a1 == "" {
 		t.Error("WorkdirID returned empty")
+	}
+}
+
+// TestIsUnavailable locks the classification used to attach a WSL/headless
+// hint on the write path (see cli.wrapKeychainErr) vs. leaving genuine
+// per-secret errors (permission denied, corrupt entry, ...) untouched.
+func TestIsUnavailable(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"dbus service unknown", errors.New(`keychain set omac/slack/TOKEN: The name org.freedesktop.secrets was not provided by any .service files`), true},
+		{"no dbus session", errors.New("dbus: could not connect: no such file or directory"), true},
+		{"D-Bus capitalized", errors.New("D-Bus connection failed"), true},
+		{"unrelated error", errors.New("permission denied"), false},
+		{"not found", ErrNotFound, false},
+	}
+	for _, c := range cases {
+		if got := IsUnavailable(c.err); got != c.want {
+			t.Errorf("IsUnavailable(%q) = %v, want %v", c.err, got, c.want)
+		}
 	}
 }

@@ -266,6 +266,19 @@ missing.
 | **Secret Service / D-Bus** | ships with GNOME/KDE; `apt install libsecret-1-0` | built-in (Keychain) | Stores skill secrets (API keys, tokens) in the OS keychain so they never touch disk. If no Secret Service is running, `omac secrets` operations will fail. |
 | **Python 3** (stdlib only) | pre-installed on most distros | pre-installed | Sidecar processes are written against the Python standard library only. No pip packages required. |
 
+> **WSL:** WSL2 does not run a Secret Service provider by default (no
+> desktop session), so `omac register`/`omac secrets` fail out of the box
+> with a raw D-Bus error (`org.freedesktop.secrets was not provided by any
+> .service files`). Install and start gnome-keyring once per session:
+> ```bash
+> sudo apt install gnome-keyring dbus-x11
+> eval "$(dbus-launch --sh-syntax)"
+> gnome-keyring-daemon --unlock --components=secrets
+> ```
+> `omac doctor` reports whether the keychain backend is reachable. There is
+> no file-based fallback yet (see design doc §16.2) — a running Secret
+> Service provider is required on Linux/WSL.
+
 #### Network prompt dialog (strongly recommended)
 
 When the default sandbox profile's `network.network_prompt` is enabled (it is
