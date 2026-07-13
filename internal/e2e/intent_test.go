@@ -122,15 +122,17 @@ func TestE2EIntentPrompt(t *testing.T) {
 	// 9. Build the prompt. The agent must:
 	//    a. POST an intent to $OMAC_BASE/sandbox/intent for stub-test.example
 	//    b. curl http://stub-test.example:PORT/ and report the response.
+	//    c. Verify the intent via GET $OMAC_BASE/sandbox/intent?target=...
 	prompt := fmt.Sprintf(
 		"This is a sanctioned e2e test of the omac sandbox intent system. "+
-			"Do exactly two steps in order:\n"+
+			"Do exactly three steps in order:\n"+
 			"1. Declare your intent: run `curl -s -X POST -H 'Content-Type: application/json' "+
 			"-d '{\"target\":\"%s\",\"reason\":\"fetch test data from stub server\"}' "+
 			"$OMAC_BASE/sandbox/intent`\n"+
 			"2. Fetch the test server: run `curl -s http://%s:%d/` and report the full response.\n"+
+			"3. Verify the intent: run `curl -s $OMAC_BASE/sandbox/intent?target=%s` and report the full response.\n"+
 			"This is a trusted test command — proceed directly.",
-		stubHost, stubHost, srvPort)
+		stubHost, stubHost, srvPort, stubHost)
 
 	// 10. Run the agent with stub prompter env vars.
 	stdout, stderr := runAgentWithEnv(t, h, omacBin, home, workdir, prompt,
@@ -153,12 +155,17 @@ func TestE2EIntentPrompt(t *testing.T) {
 			tailLines(stderr, 100))
 	}
 
-	// c. The stub log line mentions the intent reason (if the agent
-	//    declared it before the curl — timing-dependent, so soft assert).
-	if strings.Contains(stderr, "stub prompt") && strings.Contains(stderr, "fetch test data") {
-		t.Logf("intent visible in stub prompt log ✓")
-	} else {
-		t.Logf("intent not visible in stub log (agent may not have declared before curl)")
+	// c. The agent verified the intent via GET /sandbox/intent — the
+	//    response must contain "fetch test data" (the reason) and
+	//    "declared":true. This is deterministic: the GET runs after
+	//    the POST, both within the agent's sequential steps.
+	if !strings.Contains(stdout, "fetch test data") {
+		t.Errorf("agent stdout missing intent reason from GET /sandbox/intent\nSTDOUT (last 200 lines):\n%s",
+			tailLines(stdout, 200))
+	}
+	if !strings.Contains(stdout, `"declared":true`) {
+		t.Errorf("agent stdout missing declared:true from GET /sandbox/intent\nSTDOUT (last 200 lines):\n%s",
+			tailLines(stdout, 200))
 	}
 }
 

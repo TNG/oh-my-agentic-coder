@@ -233,3 +233,35 @@ func containsStr(s, substr string) bool {
 // Ensure the file compiles with the time import (used in future tests
 // that may need timeouts).
 var _ = time.Second
+
+func TestFileDecisionSourceConcurrentLookupNoDeadlock(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "decisions.json")
+	_ = os.WriteFile(path, []byte(`{"host.example":{"allow":true}}`), 0o600)
+
+	src := newFileDecisionSource(path)
+	done := make(chan struct{})
+	for i := 0; i < 10; i++ {
+		go func() {
+			defer func() { done <- struct{}{} }()
+			for j := 0; j < 100; j++ {
+				src.lookup("host.example")
+			}
+		}()
+	}
+	for i := 0; i < 10; i++ {
+		<-done
+	}
+
+	done2 := make(chan struct{})
+	go func() {
+		src.mu.Lock()
+		src.mu.Unlock()
+		close(done2)
+	}()
+	select {
+	case <-done2:
+	case <-time.After(5 * time.Second):
+		t.Fatal("write lock blocked — RLock leak from lookup()")
+	}
+}

@@ -595,6 +595,10 @@ func (f *Facade) handleSandboxIntent(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "omac: both \"target\" and \"reason\" are required", http.StatusBadRequest)
 		return
 	}
+	if isRelativePathTarget(body.Target) {
+		http.Error(w, "omac: path-form targets must be absolute (start with / or ~)", http.StatusBadRequest)
+		return
+	}
 	f.IntentRegistry.Record(body.Target, body.Reason)
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -672,6 +676,32 @@ func joinReasons(entries []intent.Entry) string {
 		parts = append(parts, fmt.Sprintf("%s: %s", filepath.Base(e.Target), e.Reason))
 	}
 	return strings.Join(parts, "; ")
+}
+
+// isRelativePathTarget reports whether target looks like a relative
+// path (contains a separator but is not absolute, not a URL, not
+// host:port). Such targets resolve against the facade's CWD via
+// filepath.Abs, which is meaningless to the sandbox child — reject them
+// at the API boundary so the agent gets a clear error instead of a
+// silently wrong lookup key.
+func isRelativePathTarget(target string) bool {
+	t := strings.TrimSpace(target)
+	if t == "" {
+		return false
+	}
+	if strings.Contains(t, "://") {
+		return false
+	}
+	if strings.HasPrefix(t, "~") {
+		return false
+	}
+	if filepath.IsAbs(t) {
+		return false
+	}
+	if _, _, err := net.SplitHostPort(t); err == nil {
+		return false
+	}
+	return strings.ContainsRune(t, filepath.Separator)
 }
 
 func (f *Facade) writeStatus(w http.ResponseWriter, _ *http.Request) {

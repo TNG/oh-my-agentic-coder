@@ -47,6 +47,7 @@ func (f *fileDecisionSource) lookup(host string) (stubDecision, bool) {
 		f.load()
 		f.mu.RLock()
 	}
+	defer f.mu.RUnlock()
 	host = strings.ToLower(host)
 	if d, ok := f.decisions[host]; ok {
 		return d, true

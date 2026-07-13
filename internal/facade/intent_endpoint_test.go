@@ -164,3 +164,34 @@ func TestIntentEndpointMalformedJSON(t *testing.T) {
 		t.Fatalf("status = %d; want 400", w.Code)
 	}
 }
+
+func TestIntentEndpointRejectsRelativePath(t *testing.T) {
+	cases := []struct {
+		target string
+		want   int
+		desc   string
+	}{
+		{"./config", http.StatusBadRequest, "relative path with ./"},
+		{"../etc/passwd", http.StatusBadRequest, "relative path with ../"},
+		{"config/file", http.StatusBadRequest, "relative path with separator"},
+		{"/abs/path", http.StatusNoContent, "absolute path accepted"},
+		{"~/secrets", http.StatusNoContent, "tilde path accepted"},
+		{"example.com", http.StatusNoContent, "bare hostname accepted"},
+		{"example.com:443", http.StatusNoContent, "host:port accepted"},
+		{"https://example.com/path", http.StatusNoContent, "URL accepted"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.desc, func(t *testing.T) {
+			reg := intent.New(time.Minute)
+			t.Cleanup(reg.Close)
+			f := &Facade{IntentRegistry: reg}
+			body := bytes.NewReader([]byte(`{"target":"` + tc.target + `","reason":"test"}`))
+			req := httptest.NewRequest(http.MethodPost, "/sandbox/intent", body)
+			w := httptest.NewRecorder()
+			f.handleSandboxIntent(w, req)
+			if w.Code != tc.want {
+				t.Errorf("target %q: status = %d; want %d", tc.target, w.Code, tc.want)
+			}
+		})
+	}
+}

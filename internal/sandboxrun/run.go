@@ -71,6 +71,9 @@ func Run(opts Options) int {
 	// the registry, not this process.
 	intentBase := os.Getenv("OMAC_BASE")
 	logf := diag.Logf
+	if intentBase == "" {
+		logf("omac sandbox: OMAC_BASE unset — intent lookup disabled, popups will show (not declared)")
+	}
 
 	// Learn mode: lift filesystem restrictions (network/env filtering
 	// stay active) and record the folders the session touches. The
