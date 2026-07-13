@@ -335,7 +335,55 @@ facade:
   idle_timeout_secs: 300
   max_body_bytes: 10485760
   base_env_passthrough: [PATH, HOME, USER, LANG, LC_ALL, LC_CTYPE, TMPDIR]
+audit:
+  enabled: true                     # security audit trail (default on)
+  path: ""                          # "" => persistent central path (see below)
+  syslog: false                     # also mirror events to the system log (Unix)
+  strict: false                     # fail-closed: abort if the log can't be written
 ```
+
+#### Audit trail
+
+omac records a security audit trail: an append-only, structured
+(JSON Lines) log of every security-relevant action it performs — the
+sandboxed inner command and each sidecar it spawns (`process.exec` /
+`process.exit`), outbound network allow/deny decisions and their source
+(`net.decision`), facade requests (`facade.request`), control-plane
+mutations (`control.mutation`), secret injection by name
+(`secret.inject`), non-ready routes (`route.state`), and session
+lifecycle (`session.start` / `session.stop`).
+
+The log lives at a **persistent, central** location that survives
+restarts (successive runs append, distinguished by a per-run `run_id`):
+
+| Platform | Default path |
+|---|---|
+| Linux | `$XDG_STATE_HOME/omac/audit/audit.jsonl` → `~/.local/state/omac/audit/audit.jsonl` |
+| macOS | `~/Library/Logs/omac/audit/audit.jsonl` |
+
+The directory is `0700` and the file `0600`, and the default location is
+**outside** the sandbox's writable grants, so the confined process cannot
+tamper with the host's audit trail. Secret values and per-directory
+namespace tokens are **never** written verbatim: secrets are logged by
+name only, and namespaces are hashed (`ns_…`).
+
+Flags (precedence: flag > config > default):
+
+| Flag | Effect |
+|---|---|
+| `--audit-log <path>` | Write the log to `<path>` instead of the default. |
+| `--no-audit` | Disable the audit trail. |
+| `--audit-strict` | Fail-closed: refuse to start if the log can't be opened, and abort the run if a write fails mid-session. (Cannot be combined with `--no-audit`.) |
+
+By default writing is **fail-open**: a write error degrades to a single
+stderr warning and the run continues. Use `--audit-strict` (or
+`audit.strict: true`) for a compliance/forensics posture where an
+unrecorded run is unacceptable. Enable `audit.syslog` for a tamper-
+resistant out-of-band copy via the system log.
+
+The log is a single growing file; use `logrotate` (Linux) or `newsyslog`
+(macOS) for rotation — the append-only JSON Lines format is
+rotation-safe.
 
 #### Skill registry
 

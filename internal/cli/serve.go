@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/tngtech/oh-my-agentic-coder/internal/audit"
 	"github.com/tngtech/oh-my-agentic-coder/internal/config"
 	"github.com/tngtech/oh-my-agentic-coder/internal/facade"
 	"github.com/tngtech/oh-my-agentic-coder/internal/keychain"
@@ -55,6 +56,9 @@ func runServe(args []string, env *Env) int {
 		verbose          = fs.Bool("verbose", false, "Verbose lifecycle logging.")
 		forDesktop       = fs.Bool("for-opencode-desktop", false, "Grant every project worktree from the local OpenCode state (Desktop projects) read+write in the sandbox.")
 		learn            = fs.Bool("learn", false, "Learn mode: do not restrict filesystem access; record folders used and offer to add them to the sandbox profile at session end.")
+		auditLog         = fs.String("audit-log", "", "Path to the audit log (default: persistent central location). Overrides config.")
+		noAudit          = fs.Bool("no-audit", false, "Disable the security audit trail.")
+		auditStrict      = fs.Bool("audit-strict", false, "Fail-closed: abort if the audit log cannot be written.")
 	)
 	var roots multiFlag
 	fs.Var(&roots, "root", "Pre-declared root directory under which projects may be activated (§5.4 Option B). Repeatable. Empty = allow any directory.")
@@ -138,12 +142,41 @@ func runServe(args []string, env *Env) int {
 		absRoots = append(absRoots, ar)
 	}
 
+	if *noAudit && *auditStrict {
+		fmt.Fprintln(env.Stderr, "omac serve: --no-audit cannot be combined with --audit-strict")
+		return ExitMisuse
+	}
+
 	rtDir, err := createRuntimeDirServe(env.Workdir)
 	if err != nil {
 		fmt.Fprintln(env.Stderr, "omac serve: runtime dir:", err)
 		return ExitIOError
 	}
 	socketPath := filepath.Join(rtDir, "bridge.sock")
+
+	// Audit trail (persistent central path; NOT rtDir). Constructed before
+	// the inner command launches. In serve there is no set of pre-resolved
+	// secret values at this point (skills are brought up lazily), so the
+	// redactor's value-matching is seeded empty; secret NAMES are still
+	// always logged and never values, and namespaces are always hashed.
+	var auditFatal func(error) // assigned once sup/facade exist
+	auditCfg, auditMisuse := resolveAuditConfig(lc.Audit, auditFlags{
+		logPath: *auditLog, disable: *noAudit, strict: *auditStrict,
+	}, audit.ModeServe, env.Version, nil, func(err error) {
+		if auditFatal != nil {
+			auditFatal(err)
+		}
+	})
+	if auditMisuse != "" {
+		fmt.Fprintln(env.Stderr, "omac serve: "+auditMisuse)
+		return ExitMisuse
+	}
+	auditor, aerr := newAuditor(env, auditCfg)
+	if aerr != nil {
+		fmt.Fprintln(env.Stderr, "omac serve: audit:", aerr)
+		return ExitIOError
+	}
+	defer auditor.Close()
 
 	// Per-session sandbox temp dir exported as TMPDIR; the nono profile
 	// grants RW on it via {{tmpdir}} so Bun-built harnesses (opencode) can
@@ -158,7 +191,7 @@ func runServe(args []string, env *Env) int {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	sup := supervisor.New(lc.Facade.BaseEnvPassthrough)
+	sup := supervisor.New(lc.Facade.BaseEnvPassthrough, auditor)
 	defer sup.ShutdownAll(5 * time.Second)
 
 	f := facade.New(
@@ -170,6 +203,7 @@ func runServe(args []string, env *Env) int {
 		filepath.Join(rtDir, "logs", "facade.log"),
 		env.Version,
 	)
+	f.SetAuditor(auditor)
 	if err := f.Start(ctx); err != nil {
 		fmt.Fprintln(env.Stderr, "omac serve: facade:", err)
 		return ExitIOError
@@ -181,6 +215,7 @@ func runServe(args []string, env *Env) int {
 		harness:       harness,
 		facade:        f,
 		sup:           sup,
+		auditor:       auditor,
 		ctx:           ctx,
 		rtDir:         rtDir,
 		sandboxTmp:    sandboxTmp,
@@ -254,8 +289,10 @@ func runServe(args []string, env *Env) int {
 
 	// --no-inner: run the control plane only (testing / headless drivers).
 	if *noInner {
+		auditor.Emit(audit.SessionStart(env.Version, harness.Name, profName, ""))
 		fmt.Fprintf(env.Stdout, "OMAC_CONTROL_BASE=%s\n", controlURL)
 		<-ctx.Done()
+		auditor.Emit(audit.SessionStop(ExitOK))
 		return ExitOK
 	}
 
@@ -345,6 +382,15 @@ func runServe(args []string, env *Env) int {
 		// Grant the selected harness's runtime dirs (config, state,
 		// sessions) read+write — only for the selected harness.
 		argv = injectSandboxDirs(argv, harness.SandboxDirs)
+		// Pass the resolved audit path to `omac sandbox run` so its
+		// network-filter subprocess appends net.decision events to the
+		// same persistent log. Inherit the parent's run_id + mode so the
+		// subprocess's events correlate with the parent's.
+		if ap := audit.EffectivePath(auditCfg); ap != "" {
+			argv = injectSandboxFlag(argv, "--audit-log", ap)
+			argv = injectSandboxFlag(argv, "--audit-run-id", auditor.RunID())
+			argv = injectSandboxFlag(argv, "--audit-mode", string(auditCfg.Mode))
+		}
 		// --for-opencode-desktop: grant every project worktree OpenCode
 		// knows about. The kernel sandbox cannot grow after launch, so
 		// folders opened for the first time during this session still
@@ -383,11 +429,28 @@ func runServe(args []string, env *Env) int {
 	// exits; the deferred facade/supervisor/control teardown then runs
 	// (§5.3). The onReady hook is where any post-launch work would go; the
 	// control plane is already up, so it's a no-op marker here.
+	// Wire the strict-mode fatal handler now that sup/facade/control exist.
+	auditFatal = func(ferr error) {
+		fmt.Fprintln(env.Stderr, "omac serve: audit (strict) write failed, aborting:", ferr)
+		sup.ShutdownAll(5 * time.Second)
+		_ = f.Close()
+		httpSrv.Close()
+		os.Exit(ExitIOError)
+	}
+	sandboxed := !*noSandbox && !*noInner
+	backend := ""
+	if sandboxed {
+		backend = profName
+	}
+	auditor.Emit(audit.SessionStart(env.Version, harness.Name, profName, backend))
+	auditor.Emit(audit.InnerExec(argv, profName, sandboxed))
+
 	code, err := sandbox.ExecWithReady(argv, extra, func() {
 		if *verbose {
 			fmt.Fprintln(env.Stderr, "[verbose] inner command started; control plane live")
 		}
 	})
+	auditor.Emit(audit.SessionStop(code))
 	if err != nil {
 		fmt.Fprintln(env.Stderr, "omac serve: exec:", err)
 		return ExitSandboxAbnormal
@@ -491,6 +554,7 @@ type serveServer struct {
 	harness       config.Harness // active harness; scopes skill discovery
 	facade        *facade.Facade
 	sup           *supervisor.Supervisor
+	auditor       audit.Auditor
 	ctx           context.Context
 	rtDir         string
 	sandboxTmp    string // host temp dir granted RW + exported as TMPDIR
@@ -517,6 +581,15 @@ type serveServer struct {
 	// directory activates.
 	flatAliasMu sync.Mutex
 	flatAliases map[string]struct{}
+}
+
+// aud returns the server's auditor, or a no-op when unset (tests construct
+// serveServer directly without an auditor).
+func (s *serveServer) aud() audit.Auditor {
+	if s.auditor == nil {
+		return audit.Nop()
+	}
+	return s.auditor
 }
 
 // dirAllowed reports whether absDir may be activated under the configured
@@ -1045,6 +1118,7 @@ func (s *serveServer) bringUp(e registry.Entry, absDir, workdir, namespace, secr
 	spec := supervisor.SidecarSpec{
 		Name:             namespace + "/" + e.Name, // unique tracking key across dirs
 		SkillName:        e.Name,                   // plain name -> SIDECAR_SKILL (no slash)
+		Namespace:        namespace,                // audit only (hashed)
 		SkillDir:         absDir,
 		Command:          m.Sidecar.Command,
 		EnvPassthrough:   m.Sidecar.EnvPassthrough,
@@ -1163,6 +1237,11 @@ func (s *serveServer) installRoute(sr *skillRoute, port int) {
 		State:        sr.State,
 		Detail:       sr.Detail,
 	})
+	// Audit a route entering a non-ready state (pending-credentials or
+	// broken). Ready routes are covered by process.exec/facade.request.
+	if sr.State != facade.RouteReady {
+		s.aud().Emit(audit.RouteStateEvent(sr.Name, sr.Namespace, string(sr.State), sr.Detail))
+	}
 }
 
 // refreshSingleDirAliases maintains the §5.5 single-directory compatibility
@@ -1297,9 +1376,11 @@ func (s *serveServer) handleReloadGlobal(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if err := s.reloadGlobals(); err != nil {
+		s.aud().Emit(audit.ControlMutation("reload-global", "", "error: "+err.Error()))
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+	s.aud().Emit(audit.ControlMutation("reload-global", "", "ok"))
 	s.handleGlobal(w, r) // respond with the refreshed global list
 }
 
@@ -1336,9 +1417,11 @@ func (s *serveServer) handleActivate(w http.ResponseWriter, r *http.Request) {
 	}
 	manifest, err := s.activate(abs)
 	if err != nil {
+		s.aud().Emit(audit.ControlMutation("activate", abs, "error: "+err.Error()))
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+	s.aud().Emit(audit.ControlMutation("activate", abs, "ok"))
 	writeJSON(w, http.StatusOK, manifest)
 }
 
@@ -1353,6 +1436,7 @@ func (s *serveServer) handleDeactivate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.deactivate(abs)
+	s.aud().Emit(audit.ControlMutation("deactivate", abs, "ok"))
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deactivated", "dir": abs})
 }
 
@@ -1371,9 +1455,11 @@ func (s *serveServer) handleReload(w http.ResponseWriter, r *http.Request) {
 	s.deactivate(abs)
 	manifest, err := s.activate(abs)
 	if err != nil {
+		s.aud().Emit(audit.ControlMutation("reload", abs, "error: "+err.Error()))
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+	s.aud().Emit(audit.ControlMutation("reload", abs, "ok"))
 	writeJSON(w, http.StatusOK, manifest)
 }
 

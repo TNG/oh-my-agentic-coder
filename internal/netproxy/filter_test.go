@@ -7,6 +7,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+
+	"github.com/tngtech/oh-my-agentic-coder/internal/audit"
 )
 
 // staticResolver returns fixed addresses for every host.
@@ -291,4 +293,143 @@ func TestIPLiteralTargets(t *testing.T) {
 	})
 	check(t, f, "8.8.8.8", Allow)
 	check(t, f, "9.9.9.9", Deny)
+}
+
+// capturingAuditor collects emitted events for inspection in tests.
+type capturingAuditor struct {
+	mu     sync.Mutex
+	events []audit.Event
+}
+
+func (c *capturingAuditor) Emit(ev audit.Event) {
+	c.mu.Lock()
+	c.events = append(c.events, ev)
+	c.mu.Unlock()
+}
+func (c *capturingAuditor) Close() error  { return nil }
+func (c *capturingAuditor) RunID() string { return "test" }
+func (c *capturingAuditor) NextSeq() uint64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return uint64(len(c.events) + 1)
+}
+
+func (c *capturingAuditor) len() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.events)
+}
+
+func (c *capturingAuditor) first() audit.Event {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.events) == 0 {
+		return audit.Event{}
+	}
+	return c.events[0]
+}
+
+// TestPromptDecisionRecordsScopeAndPersisted asserts that a prompt
+// decision with scope="host" and persist=true is recorded in the
+// net.decision audit event with those values, not the defaults ("", false).
+// Spec: "records scope (once/host/suffix) and whether the decision was
+// persisted."
+func TestPromptDecisionRecordsScopeAndPersisted(t *testing.T) {
+	aud := &capturingAuditor{}
+	p := &fakePrompter{res: PromptResult{Allow: true, Persist: true, Scope: "host"}}
+	f := NewFilter(FilterConfig{
+		PromptEnabled: true,
+		Prompter:      p,
+		Resolve:       staticResolver("93.184.216.34"),
+		Auditor:       aud,
+	})
+	v, _ := f.Check(context.Background(), "prompted.example", 443)
+	if v.Decision != Allow {
+		t.Fatalf("want Allow, got %v", v.Decision)
+	}
+	if n := aud.len(); n != 1 {
+		t.Fatalf("want 1 audit event, got %d", n)
+	}
+	ev := aud.first()
+	if ev.Type != audit.TypeNetDecision {
+		t.Fatalf("want %q, got %q", audit.TypeNetDecision, ev.Type)
+	}
+	if ev.Source != "prompt" {
+		t.Fatalf("source: want %q, got %q", "prompt", ev.Source)
+	}
+	if ev.Scope != "host" {
+		t.Fatalf("scope: want %q, got %q (prompt scope lost)", "host", ev.Scope)
+	}
+	if ev.Persisted == nil || !*ev.Persisted {
+		t.Fatalf("persisted: want true, got %v (prompt persist lost)", ev.Persisted)
+	}
+}
+
+// TestPromptOnceDecisionRecordsOnceScope asserts that a once-scoped prompt
+// decision (persist=false) is recorded with scope="once".
+func TestPromptOnceDecisionRecordsOnceScope(t *testing.T) {
+	aud := &capturingAuditor{}
+	p := &fakePrompter{res: PromptResult{Allow: true, Persist: false}}
+	f := NewFilter(FilterConfig{
+		PromptEnabled: true,
+		Prompter:      p,
+		Resolve:       staticResolver("93.184.216.34"),
+		Auditor:       aud,
+	})
+	check(t, f, "once.example", Allow)
+	ev := aud.first()
+	if ev.Scope != "once" {
+		t.Fatalf("scope: want %q, got %q", "once", ev.Scope)
+	}
+	if ev.Persisted != nil && *ev.Persisted {
+		t.Fatalf("persisted: want false, got true")
+	}
+}
+
+// validNetDecisionSources is the set of source values the spec says
+// net.decision events may carry. classifyReason must only emit values
+// from this set.
+var validNetDecisionSources = map[string]bool{
+	"prompt":      true,
+	"learned":     true,
+	"allowlist":   true,
+	"blocklist":   true,
+	"timeout":     true,
+	"unavailable": true,
+	"hard-deny":   true,
+	"dns":         true,
+	"default":     true,
+}
+
+// TestClassifyReasonEmitsOnlySpecSources drives every Verdict.Reason
+// through classifyReason and asserts each emitted source is in the
+// documented enum. Catches drift if a new reason string is added without
+// a matching classifyReason branch (it would fall to "default", which
+// is itself a valid source, but the test also guards against typos
+// producing an unhandled source).
+func TestClassifyReasonEmitsOnlySpecSources(t *testing.T) {
+	reasons := []string{
+		"hard-deny metadata host",
+		"hard-deny link-local address",
+		"hard-deny: resolves to link-local",
+		"learned permanent deny",
+		"learned permanent allow",
+		"deny_domain",
+		"allow_domain",
+		"prompt unavailable: on_unavailable=allow",
+		"prompt unavailable: on_unavailable=deny",
+		"prompt:allow",
+		"prompt:deny",
+		"not in allowlist",
+		"dns resolution failed",
+		"default deny",
+		"default allow (blocklist mode)",
+		"some-unknown-reason",
+	}
+	for _, r := range reasons {
+		src := classifyReason(r)
+		if !validNetDecisionSources[src] {
+			t.Errorf("reason %q -> source %q not in spec enum %v", r, src, validNetDecisionSources)
+		}
+	}
 }

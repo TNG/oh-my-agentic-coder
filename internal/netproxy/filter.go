@@ -16,6 +16,8 @@ import (
 	"net/netip"
 	"strings"
 	"sync"
+
+	"github.com/tngtech/oh-my-agentic-coder/internal/audit"
 )
 
 // Decision is the outcome of a filter check.
@@ -28,10 +30,14 @@ const (
 	Allow
 )
 
-// Verdict carries the decision and the reason for logging.
+// Verdict carries the decision, the reason for logging, and the scope +
+// persisted flag for audit. Scope and Persisted are only meaningful for
+// prompt decisions; non-prompt verdicts leave them empty.
 type Verdict struct {
-	Decision Decision
-	Reason   string // e.g. "hard-deny metadata", "deny_domain", "allowlist", "prompt:allow_once"
+	Decision  Decision
+	Reason    string // e.g. "hard-deny metadata", "deny_domain", "allowlist", "prompt:allow_once"
+	Scope     string // once|host|suffix (prompt decisions only)
+	Persisted bool   // true when the decision was persisted (prompt decisions only)
 }
 
 // hardDenyHosts can never be allowed, even interactively (nono parity).
@@ -86,6 +92,9 @@ type FilterConfig struct {
 	// Logf receives one line per decision; nil discards.
 	Logf func(format string, args ...any)
 
+	// Auditor receives a net.decision event per decision. nil => no-op.
+	Auditor audit.Auditor
+
 	// onCoalesceWait, when non-nil, is called just before a request blocks
 	// on an in-flight prompt for the same host (the coalescing path). It is
 	// a test seam that lets a test deterministically observe that all
@@ -119,6 +128,9 @@ func NewFilter(cfg FilterConfig) *Filter {
 	if cfg.Logf == nil {
 		cfg.Logf = func(string, ...any) {}
 	}
+	if cfg.Auditor == nil {
+		cfg.Auditor = audit.Nop()
+	}
 	return &Filter{cfg: cfg, inflight: map[string]*promptWait{}}
 }
 
@@ -137,11 +149,11 @@ func (f *Filter) Check(ctx context.Context, host string, port int) (Verdict, []n
 
 	// 1. Hard denies. Never promptable.
 	if hardDenyHosts[h] {
-		return f.log(h, port, Verdict{Deny, "hard-deny metadata host"}), nil
+		return f.log(h, port, Verdict{Decision: Deny, Reason: "hard-deny metadata host"}), nil
 	}
 	if ip, err := netip.ParseAddr(h); err == nil {
 		if isLinkLocal(ip) {
-			return f.log(h, port, Verdict{Deny, "hard-deny link-local address"}), nil
+			return f.log(h, port, Verdict{Decision: Deny, Reason: "hard-deny link-local address"}), nil
 		}
 		if v := f.checkRules(h); v != nil {
 			return f.log(h, port, *v), []netip.Addr{ip}
@@ -149,18 +161,18 @@ func (f *Filter) Check(ctx context.Context, host string, port int) (Verdict, []n
 		if v, ok := f.defaultDecision(h, port); ok {
 			return f.log(h, port, v), []netip.Addr{ip}
 		}
-		return f.log(h, port, Verdict{Deny, "default deny"}), nil
+		return f.log(h, port, Verdict{Decision: Deny, Reason: "default deny"}), nil
 	}
 
 	// Resolve once; pin results (anti-rebinding).
 	addrs, err := f.cfg.Resolve(ctx, h)
 	if err != nil || len(addrs) == 0 {
-		return f.log(h, port, Verdict{Deny, "dns resolution failed"}), nil
+		return f.log(h, port, Verdict{Decision: Deny, Reason: "dns resolution failed"}), nil
 	}
 	safe := addrs[:0:0]
 	for _, a := range addrs {
 		if isLinkLocal(a) {
-			return f.log(h, port, Verdict{Deny, "hard-deny: resolves to link-local"}), nil
+			return f.log(h, port, Verdict{Decision: Deny, Reason: "hard-deny: resolves to link-local"}), nil
 		}
 		safe = append(safe, a)
 	}
@@ -180,7 +192,7 @@ func (f *Filter) Check(ctx context.Context, host string, port int) (Verdict, []n
 		}
 		return f.log(h, port, v), safe
 	}
-	return f.log(h, port, Verdict{Deny, "default deny"}), nil
+	return f.log(h, port, Verdict{Decision: Deny, Reason: "default deny"}), nil
 }
 
 // checkRules evaluates learned-deny, deny_domain, allow_domain and
@@ -188,18 +200,18 @@ func (f *Filter) Check(ctx context.Context, host string, port int) (Verdict, []n
 func (f *Filter) checkRules(host string) *Verdict {
 	if f.cfg.Learned != nil {
 		if allow, found := f.cfg.Learned.Lookup(host); found && !allow {
-			return &Verdict{Deny, "learned permanent deny"}
+			return &Verdict{Decision: Deny, Reason: "learned permanent deny", Persisted: true}
 		}
 	}
 	if matchDomainList(host, f.cfg.DenyDomains) {
-		return &Verdict{Deny, "deny_domain"}
+		return &Verdict{Decision: Deny, Reason: "deny_domain"}
 	}
 	if matchDomainList(host, f.cfg.AllowDomains) {
-		return &Verdict{Allow, "allow_domain"}
+		return &Verdict{Decision: Allow, Reason: "allow_domain"}
 	}
 	if f.cfg.Learned != nil {
 		if allow, found := f.cfg.Learned.Lookup(host); found && allow {
-			return &Verdict{Allow, "learned permanent allow"}
+			return &Verdict{Decision: Allow, Reason: "learned permanent allow", Persisted: true}
 		}
 	}
 	return nil
@@ -212,9 +224,9 @@ func (f *Filter) defaultDecision(host string, port int) (Verdict, bool) {
 		res, prompted := f.promptCoalesced(host, port)
 		if !prompted {
 			if f.cfg.OnUnavailableAllow {
-				return Verdict{Allow, "prompt unavailable: on_unavailable=allow"}, true
+				return Verdict{Decision: Allow, Reason: "prompt unavailable: on_unavailable=allow"}, true
 			}
-			return Verdict{Deny, "prompt unavailable: on_unavailable=deny"}, true
+			return Verdict{Decision: Deny, Reason: "prompt unavailable: on_unavailable=deny"}, true
 		}
 		if res.Persist && f.cfg.Learned != nil {
 			target := host
@@ -225,16 +237,20 @@ func (f *Filter) defaultDecision(host string, port int) (Verdict, bool) {
 				f.cfg.Logf("omac sandbox: warning: persist learned decision: %v", err)
 			}
 		}
-		if res.Allow {
-			return Verdict{Allow, "prompt:allow"}, true
+		scope := res.Scope
+		if !res.Persist {
+			scope = "once"
 		}
-		return Verdict{Deny, "prompt:deny"}, true
+		if res.Allow {
+			return Verdict{Decision: Allow, Reason: "prompt:allow", Scope: scope, Persisted: res.Persist}, true
+		}
+		return Verdict{Decision: Deny, Reason: "prompt:deny", Scope: scope, Persisted: res.Persist}, true
 	}
 	if len(f.cfg.AllowDomains) > 0 {
-		return Verdict{Deny, "not in allowlist"}, true
+		return Verdict{Decision: Deny, Reason: "not in allowlist"}, true
 	}
 	// Pure blocklist (or no rules at all): allow.
-	return Verdict{Allow, "default allow (blocklist mode)"}, true
+	return Verdict{Decision: Allow, Reason: "default allow (blocklist mode)"}, true
 }
 
 // promptCoalesced ensures concurrent requests for the same host share
@@ -271,7 +287,38 @@ func (f *Filter) log(host string, port int, v Verdict) Verdict {
 		word = "ALLOW"
 	}
 	f.cfg.Logf("omac sandbox: net %s %s:%d (%s)", word, host, port, v.Reason)
+	source := classifyReason(v.Reason)
+	scope := v.Scope
+	persisted := v.Persisted
+	f.cfg.Auditor.Emit(audit.NetDecision(host, port, v.Decision == Allow, scope, source, persisted))
 	return v
+}
+
+// classifyReason maps a Verdict.Reason to the audit source field. Scope and
+// persisted are taken from the Verdict (set by defaultDecision for prompt
+// decisions) rather than derived here, so the prompt's actual scope/persist
+// propagate to the audit event.
+func classifyReason(reason string) (source string) {
+	switch {
+	case strings.HasPrefix(reason, "hard-deny"):
+		return "hard-deny"
+	case strings.HasPrefix(reason, "learned"):
+		return "learned"
+	case reason == "deny_domain":
+		return "blocklist"
+	case reason == "allow_domain":
+		return "allowlist"
+	case strings.HasPrefix(reason, "prompt unavailable"):
+		return "unavailable"
+	case strings.HasPrefix(reason, "prompt:"):
+		return "prompt"
+	case reason == "not in allowlist":
+		return "allowlist"
+	case strings.HasPrefix(reason, "dns"):
+		return "dns"
+	default:
+		return "default"
+	}
 }
 
 // matchDomainList reports whether host matches any entry. Entries are

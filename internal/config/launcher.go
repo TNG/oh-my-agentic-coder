@@ -19,7 +19,23 @@ import (
 type LauncherConfig struct {
 	Sandbox SandboxConfig `yaml:"sandbox" json:"sandbox"`
 	Facade  FacadeConfig  `yaml:"facade"  json:"facade"`
+	Audit   AuditConfig   `yaml:"audit"   json:"audit"`
 }
+
+// AuditConfig controls the security audit trail (see internal/audit).
+//
+// Enabled defaults to true. Because Go's zero value for a bool is false,
+// the field is a *bool so "unset in YAML" (nil) can be distinguished from
+// an explicit `enabled: false`; mergeDefaults fills nil with true.
+type AuditConfig struct {
+	Enabled *bool  `yaml:"enabled" json:"enabled"`
+	Path    string `yaml:"path"    json:"path"`   // "" => audit.DefaultPath()
+	Syslog  bool   `yaml:"syslog"  json:"syslog"` // mirror to system log (Unix)
+	Strict  bool   `yaml:"strict"  json:"strict"` // fail-closed on write failure
+}
+
+// AuditEnabled reports whether auditing is on, treating unset as true.
+func (a AuditConfig) AuditEnabled() bool { return a.Enabled == nil || *a.Enabled }
 
 // SandboxConfig declares named sandbox profiles.
 type SandboxConfig struct {
@@ -231,8 +247,16 @@ func defaultLauncherConfigFor(h Harness) LauncherConfig {
 			MaxBodyBytes:       10 * 1024 * 1024,
 			BaseEnvPassthrough: []string{"PATH", "HOME", "USER", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR"},
 		},
+		Audit: AuditConfig{
+			Enabled: boolPtr(true),
+			Path:    "", // audit.DefaultPath() (persistent central location)
+			Syslog:  false,
+			Strict:  false,
+		},
 	}
 }
+
+func boolPtr(b bool) *bool { return &b }
 
 // LoadLauncher loads the launcher config from
 // <workdir>/.opencode/oh-my-agentic-coder.yaml or, failing that,
@@ -284,6 +308,11 @@ func mergeDefaults(lc LauncherConfig) LauncherConfig {
 	}
 	if lc.Facade.BaseEnvPassthrough == nil {
 		lc.Facade.BaseEnvPassthrough = def.Facade.BaseEnvPassthrough
+	}
+	// Audit defaults on when the block is unset. An explicit
+	// `enabled: false` is preserved (that's why Enabled is a *bool).
+	if lc.Audit.Enabled == nil {
+		lc.Audit.Enabled = def.Audit.Enabled
 	}
 	return lc
 }
