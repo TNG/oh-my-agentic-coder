@@ -448,10 +448,6 @@ omac start            # default harness (opencode)
 omac secrets set slack SLACK_BOT_TOKEN
 ```
 
-Skills can also be installed from the marketplace from inside the sandbox via
-the `skill-marketplace` skill's `/install` endpoint. See
-[`CREATING_A_SKILL.md`](./CREATING_A_SKILL.md) §11.
-
 ## CLI summary
 
 ```
