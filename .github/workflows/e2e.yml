@@ -32,8 +32,17 @@ jobs:
           - os: macos-latest
             harness: codex
     runs-on: ${{ matrix.os }}
+    # opencode/codex/copilot all share the SKAINET_TOKEN-backed GLM-5.2
+    # endpoint; claude-code talks to Anthropic directly via a separate
+    # proxy. Running all three GLM-backed harnesses concurrently has been
+    # observed to overload/stall that shared backend, causing the CLI to
+    # sit on an open connection well past its final response and blow the
+    # per-agent 5m timeout ("agent did not exit within 5m0s") across
+    # unrelated tests in the same job. Serialize the GLM-backed harnesses
+    # per OS (one at a time) while leaving claude-code free to run in
+    # parallel, since it doesn't contend for that backend.
     concurrency:
-      group: e2e-${{ matrix.os }}-${{ matrix.harness }}
+      group: e2e-${{ matrix.os }}-${{ contains(fromJSON('["opencode","codex","copilot"]'), matrix.harness) && 'skainet-shared' || matrix.harness }}
       cancel-in-progress: false
     env:
       SKAINET_TOKEN: ${{ secrets.SKAINET_TOKEN }}
