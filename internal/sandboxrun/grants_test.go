@@ -996,3 +996,152 @@ func TestResolveGrantsDenyGlobDoesNotScanBaseline(t *testing.T) {
 		}
 	}
 }
+
+// TestResolveGrantsWorkdirEnvProtectedByDefault verifies that a
+// workdir-local .env / .envrc is masked by the baseline
+// WorkdirProtected set without any --deny flag, and that
+// filesystem.override_deny can punch a hole through it.
+func TestResolveGrantsWorkdirEnvProtectedByDefault(t *testing.T) {
+	wd := t.TempDir()
+	env := filepath.Join(wd, ".env")
+	writeFile(t, env)
+	envrc := filepath.Join(wd, ".envrc")
+	writeFile(t, envrc)
+	nested := filepath.Join(wd, "config")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	nestedEnv := filepath.Join(nested, ".env")
+	writeFile(t, nestedEnv)
+	keep := filepath.Join(wd, "main.go")
+	writeFile(t, keep)
+
+	t.Run("default protects .env and .envrc", func(t *testing.T) {
+		p := &sandboxprofile.Profile{
+			Workdir: sandboxprofile.Workdir{Access: sandboxprofile.AccessReadWrite},
+		}
+		g, err := ResolveGrants(p, wd, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Contains(g.ProtectedPaths, env) {
+			t.Errorf("workdir .env not protected by default: %v", g.ProtectedPaths)
+		}
+		if !slices.Contains(g.ProtectedPaths, envrc) {
+			t.Errorf("workdir .envrc not protected by default: %v", g.ProtectedPaths)
+		}
+		if !slices.Contains(g.ProtectedPaths, nestedEnv) {
+			t.Errorf("nested .env not protected by default: %v", g.ProtectedPaths)
+		}
+		if slices.Contains(g.ProtectedPaths, keep) {
+			t.Error("non-.env file must not be protected")
+		}
+	})
+
+	t.Run("override_deny basename punches hole", func(t *testing.T) {
+		p := &sandboxprofile.Profile{
+			Workdir:    sandboxprofile.Workdir{Access: sandboxprofile.AccessReadWrite},
+			Filesystem: sandboxprofile.Filesystem{OverrideDeny: []string{".env"}},
+		}
+		g, err := ResolveGrants(p, wd, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if slices.Contains(g.ProtectedPaths, env) {
+			t.Errorf(".env should be unprotected via override_deny: %v", g.ProtectedPaths)
+		}
+		if slices.Contains(g.ProtectedPaths, nestedEnv) {
+			t.Errorf("nested .env should be unprotected via override_deny: %v", g.ProtectedPaths)
+		}
+		// .envrc is not overridden and stays protected.
+		if !slices.Contains(g.ProtectedPaths, envrc) {
+			t.Errorf(".envrc should remain protected: %v", g.ProtectedPaths)
+		}
+	})
+
+	t.Run("override_deny absolute path punches hole", func(t *testing.T) {
+		p := &sandboxprofile.Profile{
+			Workdir:    sandboxprofile.Workdir{Access: sandboxprofile.AccessReadWrite},
+			Filesystem: sandboxprofile.Filesystem{OverrideDeny: []string{env}},
+		}
+		g, err := ResolveGrants(p, wd, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if slices.Contains(g.ProtectedPaths, env) {
+			t.Errorf("absolute override_deny should unprotect %s: %v", env, g.ProtectedPaths)
+		}
+		// Nested .env is a different absolute path and stays protected.
+		if !slices.Contains(g.ProtectedPaths, nestedEnv) {
+			t.Errorf("nested .env should remain protected: %v", g.ProtectedPaths)
+		}
+	})
+}
+
+// TestResolveGrantsBaselineWorkdirDenyDoesNotScanBaseline mirrors
+// TestResolveGrantsDenyGlobDoesNotScanBaseline but for the baseline
+// WorkdirProtected walk (resolveBaselineWorkdirDeny). The invariant
+// holds today (shares denyScan), but a regression that accidentally
+// passed base.Read into the baseline resolver would go undetected
+// without this guard.
+func TestResolveGrantsBaselineWorkdirDenyDoesNotScanBaseline(t *testing.T) {
+	wd := t.TempDir()
+	env := filepath.Join(wd, ".env")
+	writeFile(t, env)
+
+	p := &sandboxprofile.Profile{
+		Workdir: sandboxprofile.Workdir{Access: sandboxprofile.AccessReadWrite},
+	}
+	g, err := ResolveGrants(p, wd, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Baseline .env protection is active.
+	if !slices.Contains(g.ProtectedPaths, env) {
+		t.Errorf("workdir .env not protected by default: %v", g.ProtectedPaths)
+	}
+	// No baseline system tree was scanned.
+	for _, prot := range g.ProtectedPaths {
+		if strings.HasPrefix(prot, "/usr/") || strings.HasPrefix(prot, "/lib") {
+			t.Errorf("baseline tree was scanned for workdir deny: %s", prot)
+		}
+	}
+}
+
+// TestResolveGrantsUserDenyAndBaselineBothActive verifies that when
+// both user deny globs and baseline workdir-protected basenames are
+// active simultaneously, all matches are found and no duplicates appear.
+func TestResolveGrantsUserDenyAndBaselineBothActive(t *testing.T) {
+	wd := t.TempDir()
+	env := filepath.Join(wd, ".env")
+	writeFile(t, env)
+	keyFile := filepath.Join(wd, "secret.key")
+	writeFile(t, keyFile)
+	keep := filepath.Join(wd, "app.go")
+	writeFile(t, keep)
+
+	p := &sandboxprofile.Profile{
+		Workdir:    sandboxprofile.Workdir{Access: sandboxprofile.AccessReadWrite},
+		Filesystem: sandboxprofile.Filesystem{Deny: []string{"*.key"}},
+	}
+	g, err := ResolveGrants(p, wd, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(g.ProtectedPaths, env) {
+		t.Errorf(".env (baseline) not protected: %v", g.ProtectedPaths)
+	}
+	if !slices.Contains(g.ProtectedPaths, keyFile) {
+		t.Errorf("secret.key (user deny) not protected: %v", g.ProtectedPaths)
+	}
+	if slices.Contains(g.ProtectedPaths, keep) {
+		t.Error("app.go must not be protected")
+	}
+	seen := map[string]bool{}
+	for _, prot := range g.ProtectedPaths {
+		if seen[prot] {
+			t.Errorf("duplicate protected path: %s", prot)
+		}
+		seen[prot] = true
+	}
+}
