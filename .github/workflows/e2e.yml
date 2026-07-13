@@ -72,12 +72,55 @@ jobs:
         with:
           node-version: '24'
 
+      # npm/bun package downloads are a leading cause of e2e infra flakiness
+      # (registry throttling, transient network errors). Cache them keyed on
+      # the pinned harness versions so a version bump invalidates the cache
+      # but repeated runs at the same versions reuse already-fetched packages.
+      - name: Cache harness install packages
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/e2e-install-cache
+          key: e2e-install-${{ runner.os }}-${{ matrix.harness }}-${{ hashFiles('internal/e2e/versions.go') }}
+          restore-keys: |
+            e2e-install-${{ runner.os }}-${{ matrix.harness }}-
+
       - name: Run e2e test
         env:
           E2E_LOG_DIR: ${{ runner.temp }}/e2e-logs
+          E2E_CACHE_DIR: ${{ runner.temp }}/e2e-install-cache
         run: |
           set -o pipefail
-          go test -tags=e2e -timeout=30m -v ./internal/e2e/ 2>&1 | tee /tmp/e2e-out.txt
+          max_attempts=3
+          attempt=1
+          while :; do
+            echo "::group::e2e attempt $attempt/$max_attempts"
+            if go test -tags=e2e -timeout=30m -v ./internal/e2e/ 2>&1 | tee /tmp/e2e-out.txt; then
+              echo "::endgroup::"
+              exit 0
+            fi
+            echo "::endgroup::"
+            # Only retry when no failure this attempt was classified as a real
+            # regression: SANDBOX_FAIL (a security property went unenforced)
+            # or AGENT_REFUSED/AGENT_PARTIAL (a model-behavior signal, not
+            # infra). Every other failure path — install/build errors,
+            # AGENT_NEVER_RAN, INFRA_ERROR, agent timeout — is either a
+            # t.Fatalf before any assertion ran, or an infra-classified
+            # assertion, and is safe to retry. This ensures a real sandbox
+            # regression can never be silently masked by a retry.
+            bad=$(grep -oE 'FAIL \[[^]]+\]: (SANDBOX_FAIL|AGENT_REFUSED|AGENT_PARTIAL)' /tmp/e2e-out.txt | sort -u || true)
+            if [ -n "$bad" ]; then
+              echo "non-infra failure — not retrying:"
+              echo "$bad"
+              exit 1
+            fi
+            if [ "$attempt" -ge "$max_attempts" ]; then
+              echo "max attempts ($max_attempts) reached — giving up"
+              exit 1
+            fi
+            attempt=$((attempt + 1))
+            echo "infra-only failure — retrying in 15s (attempt $attempt/$max_attempts)"
+            sleep 15
+          done
 
       - name: Failure classification summary
         if: always()

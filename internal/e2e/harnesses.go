@@ -511,6 +511,13 @@ func copilotConfig() harnessConfig {
 // system node prefix). Without NPM_CONFIG_PREFIX, npm's global
 // packages land in the host's node prefix, and platform-specific
 // optional deps (e.g. @openai/codex-linux-x64) may not resolve.
+//
+// npm's and bun's *download* caches are pointed at a location outside
+// the per-test temp HOME (see sharedInstallCacheRoot) so a package
+// already fetched by one subtest — or by a previous CI run, when
+// E2E_CACHE_DIR is restored from a workflow cache — doesn't need a
+// fresh registry round-trip. Registry flakiness under CI network
+// throttling is a leading cause of e2e infra failures.
 func withHome(environ []string, home string) []string {
 	extraBins := []string{
 		filepath.Join(home, ".bun", "bin"),
@@ -518,8 +525,12 @@ func withHome(environ []string, home string) []string {
 		filepath.Join(home, ".local", "bin"),
 	}
 	npmPrefix := filepath.Join(home)
-	out := make([]string, 0, len(environ)+4)
+	cacheRoot := sharedInstallCacheRoot()
+	npmCacheDir := filepath.Join(cacheRoot, "npm")
+	bunCacheDir := filepath.Join(cacheRoot, "bun-install-cache")
+	out := make([]string, 0, len(environ)+8)
 	seenHome, seenNpmPrefix, seenXDG, seenXDGData, seenXDGState := false, false, false, false, false
+	seenNpmCache, seenBunCache := false, false
 	for _, kv := range environ {
 		switch {
 		case strings.HasPrefix(kv, "HOME="):
@@ -540,6 +551,12 @@ func withHome(environ []string, home string) []string {
 		case strings.HasPrefix(kv, "XDG_STATE_HOME="):
 			out = append(out, "XDG_STATE_HOME="+filepath.Join(home, ".local", "state"))
 			seenXDGState = true
+		case strings.HasPrefix(kv, "NPM_CONFIG_CACHE="):
+			out = append(out, "NPM_CONFIG_CACHE="+npmCacheDir)
+			seenNpmCache = true
+		case strings.HasPrefix(kv, "BUN_INSTALL_CACHE_DIR="):
+			out = append(out, "BUN_INSTALL_CACHE_DIR="+bunCacheDir)
+			seenBunCache = true
 		default:
 			out = append(out, kv)
 		}
@@ -559,5 +576,27 @@ func withHome(environ []string, home string) []string {
 	if !seenXDGState {
 		out = append(out, "XDG_STATE_HOME="+filepath.Join(home, ".local", "state"))
 	}
+	if !seenNpmCache {
+		out = append(out, "NPM_CONFIG_CACHE="+npmCacheDir)
+	}
+	if !seenBunCache {
+		out = append(out, "BUN_INSTALL_CACHE_DIR="+bunCacheDir)
+	}
 	return out
+}
+
+// sharedInstallCacheRoot returns a directory outside any per-test temp
+// HOME for npm/bun package download caches, so it survives across the
+// two subtests (TestE2EEchoRest, TestE2ESecurityAudit) that each install
+// the harness fresh within one test binary run. CI sets E2E_CACHE_DIR to
+// a path restored from a workflow cache (see .github/workflows/e2e.yml)
+// so the cache also survives across CI runs, not just within one.
+func sharedInstallCacheRoot() string {
+	if dir := os.Getenv("E2E_CACHE_DIR"); dir != "" {
+		return dir
+	}
+	if dir, err := os.UserCacheDir(); err == nil {
+		return filepath.Join(dir, "omac-e2e-install")
+	}
+	return filepath.Join(os.TempDir(), "omac-e2e-install-cache")
 }

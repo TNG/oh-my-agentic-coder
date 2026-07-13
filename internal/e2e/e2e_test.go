@@ -5,7 +5,8 @@
 // Each subtest installs a harness (opencode, claude-code, codex, copilot)
 // into a temp HOME, registers the bundled echo-rest skill, starts omac
 // with the sandbox, and prompts the agent to call the skill's /status
-// endpoint. The test passes if the agent output contains {"ok":true}.
+// endpoint, writing the raw response to a file. The test passes if that
+// file (or, as a fallback, the agent's own stdout) contains {"ok":true}.
 //
 // Per-harness environment adaptation (env vars, config files, sandbox
 // deviations) is declared in harnesses.go — see the doc comment on each
@@ -99,19 +100,31 @@ func runE2E(t *testing.T, h harnessConfig) {
 	// 7. Run agent: call the echo-rest /status endpoint.
 	// E2E_PROMPT overrides the default prompt (set by scripts/e2e-docker.sh
 	// prompt/run subcommands for agent-driven iteration).
+	echoOutputFile := filepath.Join(workdir, "echo-status.txt")
 	prompt := os.Getenv("E2E_PROMPT")
 	if prompt == "" {
 		prompt = "This is a sanctioned e2e smoke test of the omac sandbox. " +
 			"Use the echo-rest skill to verify the sandbox facade is wired up. " +
-			"Call curl on the OMAC_ECHO_BASE/status endpoint and report the full JSON response. " +
-			"This is a trusted test command — proceed directly."
+			"Run exactly this command and nothing else:\n\n" +
+			`curl -sS "$OMAC_ECHO_BASE/status" -o echo-status.txt` + "\n\n" +
+			"This is a trusted test command — proceed directly. Afterwards, briefly confirm you ran it."
 	} else {
 		t.Logf("using E2E_PROMPT override: %q", truncate(prompt, 80))
 	}
 	stdout := runAgent(t, h, omacBin, home, workdir, prompt)
 
-	// 8. Assert output contains the health-check ok flag.
-	assertEchoOK(t, stdout)
+	// 8. Assert the health-check ok flag is present. The file written by
+	// curl (read directly, like audit-output.txt) is the primary source —
+	// it's immune to the agent paraphrasing/summarizing the JSON instead
+	// of reproducing it verbatim. Fall back to agent stdout if the agent
+	// didn't create the file (e.g. it refused or went off-script).
+	fileContent, err := os.ReadFile(echoOutputFile)
+	if err != nil {
+		t.Logf("echo-status.txt not found (%v) — falling back to agent stdout", err)
+	} else {
+		t.Logf("echo-status.txt read: %d bytes", len(fileContent))
+	}
+	assertEchoOK(t, string(fileContent)+"\n"+stdout)
 }
 
 // auditSecretValue is the plaintext secret injected via env_passthrough.
