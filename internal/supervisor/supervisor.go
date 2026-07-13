@@ -83,6 +83,12 @@ type Running struct {
 	auditSkill     string
 	auditNamespace string
 	exitOnce       sync.Once
+
+	// waitDone is closed by watchChild once it has reaped Cmd (Cmd.Wait
+	// returned). terminate() waits on this instead of calling Cmd.Wait
+	// itself: os/exec.Cmd.Wait must only ever have one caller in flight,
+	// and a second concurrent caller can block forever (see watchChild).
+	waitDone chan struct{}
 }
 
 // Supervisor coordinates all sidecars.
@@ -159,7 +165,7 @@ func (s *Supervisor) StopSidecar(name string, timeout time.Duration) bool {
 	if target == nil {
 		return false
 	}
-	_ = terminate(target.Cmd, timeout)
+	_ = terminate(target.Cmd, timeout, target.waitDone)
 	s.auditExit(target) // closes LogFile via exitOnce
 	return true
 }
@@ -196,12 +202,21 @@ func (s *Supervisor) auditExit(r *Running) {
 // termination time, not time-to-teardown. auditExit is idempotent via
 // exitOnce: if StopSidecar/ShutdownAll later call auditExit on an
 // already-reaped child, it's a no-op.
+//
+// watchChild is the sole owner of r.Cmd.Wait() for this child's lifetime.
+// terminate() must never call Wait() itself on a child that has a running
+// watchChild reaper (i.e. anything reachable via s.children) — it waits on
+// r.waitDone instead. Calling Cmd.Wait() concurrently from two goroutines
+// is unsupported by os/exec and can block the second caller forever, even
+// after the process has actually exited.
 func (s *Supervisor) watchChild(r *Running) {
 	if r == nil || r.Cmd == nil || r.Cmd.Process == nil {
 		return
 	}
+	r.waitDone = make(chan struct{})
 	go func() {
 		_ = r.Cmd.Wait()
+		close(r.waitDone)
 		s.auditExit(r)
 	}()
 }
@@ -286,7 +301,10 @@ func (s *Supervisor) startOne(ctx context.Context, spec SidecarSpec) (*Running, 
 	r.auditNamespace = spec.Namespace
 
 	if err := waitHealth(ctx, port, spec.Health); err != nil {
-		_ = terminate(cmd, 3*time.Second)
+		// No watchChild reaper is running yet for this child (it only
+		// starts after the health check passes below), so terminate must
+		// reap it itself: pass nil.
+		_ = terminate(cmd, 3*time.Second, nil)
 		lf.Close()
 		return nil, fmt.Errorf("%s: health: %w", spec.Name, err)
 	}
@@ -364,7 +382,7 @@ func (s *Supervisor) ShutdownAll(timeout time.Duration) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_ = terminate(r.Cmd, timeout)
+			_ = terminate(r.Cmd, timeout, r.waitDone)
 			s.auditExit(r) // closes LogFile via exitOnce
 		}()
 	}
@@ -372,8 +390,13 @@ func (s *Supervisor) ShutdownAll(timeout time.Duration) {
 }
 
 // terminate sends SIGTERM to the child's process group, waits up to timeout,
-// then sends SIGKILL.
-func terminate(cmd *exec.Cmd, timeout time.Duration) error {
+// then sends SIGKILL. reaped, when non-nil, is a channel already being
+// closed by a watchChild reaper once it reaps cmd; terminate waits on it
+// instead of calling cmd.Wait() itself, since Wait must only ever have one
+// caller in flight (a second concurrent caller can hang forever). Pass nil
+// only when no reaper is running yet for cmd (e.g. a health-check failure
+// during startup, before watchChild is started).
+func terminate(cmd *exec.Cmd, timeout time.Duration, reaped <-chan struct{}) error {
 	if cmd == nil || cmd.Process == nil {
 		return nil
 	}
@@ -382,8 +405,15 @@ func terminate(cmd *exec.Cmd, timeout time.Duration) error {
 		pgid = cmd.Process.Pid
 	}
 	_ = syscall.Kill(-pgid, syscall.SIGTERM)
-	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
+	done := reaped
+	if done == nil {
+		ch := make(chan struct{})
+		go func() {
+			_ = cmd.Wait()
+			close(ch)
+		}()
+		done = ch
+	}
 	select {
 	case <-done:
 		return nil
