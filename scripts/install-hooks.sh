@@ -18,15 +18,14 @@ set -euo pipefail
 # Resolve repo root via git; falls back to script's parent dir for bare setups.
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null || printf '%s' "$(cd "$SCRIPT_DIR/.." && pwd)")"
-HOOK="$REPO/.git/hooks/pre-commit"
 SENTINEL="# omac-install-hooks: pre-commit"
 
-if [ ! -d "$REPO/.git" ]; then
+if ! HOOK="$(git -C "$REPO" rev-parse --path-format=absolute --git-path hooks/pre-commit 2>/dev/null)"; then
   echo "not at a git worktree root: $REPO" >&2
   exit 1
 fi
 
-mkdir -p "$REPO/.git/hooks"
+mkdir -p "$(dirname "$HOOK")"
 
 # Replace a previous install; preserve anything else.
 if [ -f "$HOOK" ] && ! grep -q "^$SENTINEL" "$HOOK"; then
