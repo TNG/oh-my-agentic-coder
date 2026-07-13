@@ -130,10 +130,25 @@ func TestE2EProvenance(t *testing.T) {
 	}
 
 	// --- Step 3: Behavior cross-check via the audit agent ---
+	// The audit script writes its probe output to this file (via
+	// OMAC_AUDIT_OUTPUT_FILE, set by runAuditAgent) instead of stdout — some
+	// harness TUIs collapse tool output, so the test reads the file directly
+	// rather than depending on the agent pasting it back verbatim in chat.
+	auditOutputFile := filepath.Join(workdir, "audit-output.txt")
+
 	prompt := "Run this command and print its full output verbatim:\n\n" +
 		`sh "$OMAC_HARNESS_SKILLS_DIR/self-audit/scripts/audit.sh"` + "\n\n" +
 		"Do not summarize. Print every line."
-	auditStdout := runAuditAgent(t, h, omacBin, home, workdir, prompt)
+	agentOutput := runAuditAgent(t, h, omacBin, home, workdir, prompt)
+
+	auditOutput, err := os.ReadFile(auditOutputFile)
+	if err != nil {
+		t.Logf("audit-output.txt not found (%v) — falling back to agent stdout+stderr", err)
+		auditOutput = []byte(agentOutput)
+	} else {
+		t.Logf("audit-output.txt read: %d bytes", len(auditOutput))
+	}
+	auditStdout := string(auditOutput) + "\n" + agentOutput
 
 	// 3a. Network denial: spec.NetDenyDomain should be denied by the sandbox.
 	// The provenance output doesn't list it as allow → audit shows denial.
