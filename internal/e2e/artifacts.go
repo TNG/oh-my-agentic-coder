@@ -113,5 +113,11 @@ func writeSessionArtifacts(t *testing.T, h harnessConfig, testType string,
 		mustWrite("audit-output.txt", string(data))
 	}
 
+	// Echo-rest output file (smoke test): the raw curl response, captured
+	// independent of how the harness rendered/paraphrased tool output.
+	if data, err := os.ReadFile(filepath.Join(workdir, "echo-status.txt")); err == nil {
+		mustWrite("echo-status.txt", string(data))
+	}
+
 	t.Logf("session artifacts written to %s", dir)
 }
