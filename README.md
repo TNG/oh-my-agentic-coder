@@ -234,6 +234,28 @@ curl -L -O \
 sudo pacman -U oh-my-agentic-coder_*.pkg.tar.zst
 ```
 
+### Updating
+
+However you installed omac, `omac update` detects the right method for this
+host and does it for you:
+
+```sh
+omac update            # prompts for confirmation before installing
+omac update --yes      # skip the confirmation prompt (scripting/CI)
+```
+
+It checks GitHub's latest release, and:
+
+- on macOS with a Homebrew-managed install, runs `brew upgrade
+  oh-my-agentic-coder` (equivalent to the `brew upgrade` above);
+- on Linux, detects `dpkg`/`rpm`/`pacman`/`apk` (in that priority) and
+  installs the matching package with `sudo`, same as the manual commands
+  above, after verifying its SHA-256 against `checksums.txt`;
+- otherwise (macOS without brew, or a Linux host with none of the above),
+  downloads the tarball and replaces the running binary in place.
+
+Declining the confirmation prompt does nothing — that's the dry run.
+
 ### Verifying downloads
 
 Every release includes `checksums.txt`:
