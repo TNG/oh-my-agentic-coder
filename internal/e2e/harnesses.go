@@ -533,19 +533,30 @@ func copilotConfig() harnessConfig {
 // pi
 // ---------------------------------------------------------------------------
 
-// pi reads its provider config from ~/.pi/agent/auth.json and
-// ~/.pi/agent/settings.json. It supports API key providers via env vars
-// (e.g. ANTHROPIC_API_KEY, OPENAI_API_KEY) or auth.json.
+// pi reads custom OpenAI-compatible provider definitions from
+// ~/.pi/agent/models.json (a "providers" map of name -> {baseUrl, api,
+// apiKey, models}) — this is pi's actual documented custom-provider
+// mechanism (https://pi.dev/docs/latest/custom-provider), confirmed live
+// against the real SKAINET gateway. An earlier version of this config
+// wrote ~/.pi/agent/auth.json + settings.json instead; that schema isn't
+// one pi's provider loader recognizes, and RunArgs omitted the required
+// --provider flag (pi defaults to "google" without it) — together those
+// caused every real pi invocation to hang indefinitely rather than fail
+// fast, both confirmed by reproducing it against the real gateway.
 //
-// Env vars: none beyond os.Environ() inheritance. SKAINET_TOKEN is read
-// from auth.json's "key" field, not from a process env var at runtime.
+// Env vars: none beyond os.Environ() inheritance. apiKey is written as the
+// literal string "$SKAINET_TOKEN" in models.json; pi resolves $ENV_VAR
+// references from the process env at call time, so the raw token is never
+// written to disk (same env_key trick codex's config.toml uses).
 //
-// Sandbox deviations: none. The model provider host (from
-// SKAINET_INTERNAL) is allowed by the base profile.
+// Sandbox deviations: none. Verified live: `omac start pi` under the real
+// bwrap sandbox against SKAINET needed no ExtraAllowDomains/ExtraReadPaths
+// beyond the base profile (pi is pure Node/TypeScript, no Rust-HTTP-client
+// issue like codex has on macOS — that specific exclusion is unverified on
+// darwin here, only Linux was exercised).
 //
 // Files written:
-//   - ~/.pi/agent/auth.json — API key for the model provider
-//   - ~/.pi/agent/settings.json — model provider definition
+//   - ~/.pi/agent/models.json — custom provider definition
 func piConfig() harnessConfig {
 	return harnessConfig{
 		Name:       "pi",
@@ -561,40 +572,48 @@ func piConfig() harnessConfig {
 				t.Fatal("SKAINET_INTERNAL not set (CI secret for the model provider URL)")
 			}
 			t.Logf("pi provider: baseURL=%s tokenLen=%d", baseURL, len(token))
-			authDir := filepath.Join(home, ".pi", "agent")
-			if err := os.MkdirAll(authDir, 0o755); err != nil {
+			agentDir := filepath.Join(home, ".pi", "agent")
+			if err := os.MkdirAll(agentDir, 0o755); err != nil {
 				t.Fatal(err)
 			}
-			auth := map[string]map[string]string{
-				"openai": {
-					"type": "api_key",
-					"key":  token,
-				},
-			}
-			authBytes, _ := json.Marshal(auth)
-			if err := os.WriteFile(filepath.Join(authDir, "auth.json"), authBytes, 0o600); err != nil {
-				t.Fatal(err)
-			}
-			t.Logf("auth.json written to %s", authDir)
-			settings := map[string]any{
-				"model": modelIDs["pi"],
-				"provider": map[string]any{
-					"openai": map[string]any{
-						"baseURL": baseURL,
+			// models.json: apiKey is the literal string "$SKAINET_TOKEN" —
+			// pi resolves $ENV_VAR references from the process env at
+			// runtime, so the token itself is never written to disk.
+			modelsJSON := map[string]any{
+				"providers": map[string]any{
+					"model": map[string]any{
+						"baseUrl": baseURL,
+						"api":     "openai-completions",
+						"apiKey":  "$SKAINET_TOKEN",
+						"headers": map[string]string{
+							"X-User-Agent":         "pi",
+							"X-Separate-Reasoning": "1",
+						},
+						"models": []map[string]any{
+							{"id": modelIDs["pi"]},
+						},
 					},
 				},
 			}
-			settingsBytes, _ := json.Marshal(settings)
-			if err := os.WriteFile(filepath.Join(authDir, "settings.json"), settingsBytes, 0o644); err != nil {
+			b, _ := json.Marshal(modelsJSON)
+			if err := os.WriteFile(filepath.Join(agentDir, "models.json"), b, 0o644); err != nil {
 				t.Fatal(err)
 			}
+			t.Logf("models.json written to %s", agentDir)
 		},
 		EnvVars: func(t *testing.T) []string {
+			// pi reads SKAINET_TOKEN from the process env (referenced via
+			// "$SKAINET_TOKEN" in models.json). It propagates via
+			// os.Environ() inheritance — no additional env vars needed.
 			return nil
 		},
-		Sandbox: SandboxConfig{},
+		Sandbox: SandboxConfig{}, // no deviations — confirmed via a real `omac start pi` run (Linux)
 		RunArgs: func(prompt string) []string {
-			return []string{"-p", prompt, "--model", modelIDs["pi"]}
+			// pi has no built-in tool-approval popups, so no
+			// --dangerously-skip-permissions-equivalent flag is needed.
+			// --provider is required: pi defaults to "google" without it,
+			// which would silently ignore the "model" custom provider above.
+			return []string{"-p", prompt, "--provider", "model", "--model", modelIDs["pi"]}
 		},
 		SkillsBase: ".pi",
 		EnvVarsForAllow: func() []string {

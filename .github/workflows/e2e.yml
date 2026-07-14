@@ -27,7 +27,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
-        harness: [opencode, claude-code, codex, copilot]
+        harness: [opencode, claude-code, codex, copilot, pi]
         # codex on macOS is excluded — its Rust HTTP client is incompatible
         # with the macOS Seatbelt sandbox (stream disconnected mid-completion,
         # even with network=open). `omac start codex` on macOS fails loud;

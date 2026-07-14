@@ -16,7 +16,7 @@ var harnessVersions = map[string]string{
 	"claude-code": "@anthropic-ai/claude-code@2.1.197",
 	"codex":       "@openai/codex@0.142.5",
 	"copilot":     "@github/copilot@1.0.68",
-	"pi":          "@earendil-works/pi-coding-agent@2026.7.7",
+	"pi":          "@earendil-works/pi-coding-agent@0.80.6",
 }
 
 // Model identifiers per harness.

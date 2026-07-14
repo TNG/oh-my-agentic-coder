@@ -684,14 +684,15 @@ func yamlUnmarshal(data []byte, v any) error {
 // --- Pi backend -------------------------------------------------------------
 
 // piSessionsRoot returns the pi sessions dir, derived from the harness's
-// config home. Pi stores sessions under <config home>/agent/sessions/.
-// Returns "" when no home dir resolves.
+// config home. ConfigHome() already resolves to ~/.pi/agent (via
+// UserConfigHome), so sessions live directly under <config home>/sessions/ —
+// do not append "agent" again here. Returns "" when no home dir resolves.
 func piSessionsRoot(h config.Harness) string {
 	home := h.ConfigHome()
 	if home == "" {
 		return ""
 	}
-	return filepath.Join(home, "agent", "sessions")
+	return filepath.Join(home, "sessions")
 }
 
 // listPi reads Pi sessions from the session store. Sessions are JSONL files

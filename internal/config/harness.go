@@ -292,15 +292,26 @@ func harnessRegistry() []Harness {
 			// Pi coding agent CLI executable is `pi` (pi.dev).
 			InnerCmd: []string{"pi"},
 			// Pi has no server mode; under `omac serve` it runs as-is.
-			ServerLaunch:   nil,
-			BridgeDir:      ".pi/extensions",
-			SkillsBase:     "pi",
-			UserConfigHome: ".pi", // ~/.pi, not ~/.config/pi
-			// Pi has no documented env override for its config dir.
-			HomeEnv: "",
-			// Pi stores auth.json, settings.json, sessions, and extensions
-			// under ~/.pi/agent/.
-			SandboxDirs: []string{"~/.pi", "~/.cache/pi"},
+			ServerLaunch: nil,
+			BridgeDir:    ".pi/extensions",
+			SkillsBase:   "pi",
+			// Pi's real config home is ~/.pi/agent (not ~/.pi) — confirmed
+			// from pi's own docs and a live install: models.json, sessions/,
+			// skills/, and extensions/ all live under ~/.pi/agent/, not
+			// directly under ~/.pi/. UserConfigHome must include the "agent"
+			// segment so ConfigHome()/GlobalSkillsDir()/GlobalBridgeDir() all
+			// resolve to the paths pi's own loader actually reads (e.g.
+			// GlobalSkillsDir() -> ~/.pi/agent/skills, matching pi's
+			// documented global skills dir; previously this pointed at the
+			// non-existent ~/.pi/skills, so omac's auto-provisioned built-in
+			// skill would never be visible to pi).
+			UserConfigHome: filepath.Join(".pi", "agent"),
+			// PI_CODING_AGENT_DIR is pi's documented config-home override.
+			HomeEnv: "PI_CODING_AGENT_DIR",
+			// Pi stores models.json, sessions, skills, and extensions under
+			// ~/.pi/agent/ (git/npm package caches also nest under there —
+			// no separate ~/.cache/pi was observed in a live install).
+			SandboxDirs: []string{"~/.pi"},
 			Session: &HarnessSession{
 				ContinueArgs:   []string{"-c"},
 				ResumeByIDArgs: func(id string) []string { return []string{"--session", id} },
