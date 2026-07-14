@@ -21,9 +21,8 @@ package e2e
 //   - EnvExpectVisible: env vars the agent SHOULD see (positive
 //     assertion — verifies the sandbox passes them through).
 //   - FsDenyPaths: paths the agent must NOT be able to read.
-//   - FsAllowPaths: paths the agent CAN read/write (echo-rest
-//     workdir, skill mounts, cache dirs).
-//   - NetAllowDomains: domains the agent CAN reach.
+//   - FsAllowLabels: paths the agent CAN read/write (workdir, cache
+//     dir, $TMPDIR) — the positive counterpart to FsDenyPaths.
 //   - NetDenyDomain: a domain the agent must NOT be able to reach.
 //   - SidecarReachable: the sidecar /whoami endpoint should work.
 type AllowanceSpec struct {
@@ -43,6 +42,14 @@ type AllowanceSpec struct {
 	// FsDenyPaths are filesystem paths the agent must NOT be able to
 	// read. The test prompts the agent to cat each and asserts denial.
 	FsDenyPaths []string
+
+	// FsAllowLabels are the fs_allow probe labels (audit.sh) for paths a
+	// LEGITIMATE user needs — workdir read/write, the harness cache dir,
+	// $TMPDIR — that must stay accessible. The positive counterpart to
+	// FsDenyPaths: catches a hardening change (a new ProtectedPaths
+	// entry, a tightened deny-glob) that accidentally shadows something
+	// ordinary work depends on, which FsDenyPaths alone cannot detect.
+	FsAllowLabels []string
 
 	// FsWriteDenyPaths are system paths that must NOT be writable.
 	// The sandbox grants them read-only; write attempts must fail.
@@ -134,6 +141,16 @@ func allowanceSpecFor(h harnessConfig) AllowanceSpec {
 			"~/.azure/credentials",
 			"~/.config/gcloud/credentials.db",
 			"/var/run/docker.sock", // container-escape vector if reachable
+		},
+		// FsAllowLabels mirror the labels audit.sh's fs_allow probe emits
+		// for a legitimate user's paths. Positive counterpart to
+		// FsDenyPaths: catches a hardening change that accidentally
+		// shadows the workdir, cache dir, or $TMPDIR.
+		FsAllowLabels: []string{
+			"--- write workdir file ---",
+			"--- read workdir file ---",
+			"--- write $HOME/.cache file ---",
+			"--- write ${TMPDIR:-/tmp} file ---",
 		},
 		// FsWriteDenyPaths are system paths that must NOT be writable.
 		// The sandbox grants them read-only; write attempts must fail.

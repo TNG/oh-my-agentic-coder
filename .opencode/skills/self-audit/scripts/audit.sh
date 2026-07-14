@@ -22,10 +22,13 @@
 #   2. env       — list env var names (values redacted)
 #   3. fs_read   — check if sensitive paths are readable (denial msg only)
 #   4. fs_write  — check if system paths are writable (denial msg only)
-#   5. fs_exec   — check if binaries execute from read-only mounts
-#   6. net       — check if network egress is blocked (error only)
-#   7. sidecar   — verify own sidecar is reachable (fingerprint only)
-#   8. xskill    — try to reach another skill's sidecar
+#   5. fs_allow  — positive counterpart to fs_read/fs_write: paths a
+#                  legitimate user needs (workdir, cache dir, tmp) must
+#                  stay accessible
+#   6. fs_exec   — check if binaries execute from read-only mounts
+#   7. net       — check if network egress is blocked (error only)
+#   8. sidecar   — verify own sidecar is reachable (fingerprint only)
+#   9. xskill    — try to reach another skill's sidecar
 
 set -u
 
@@ -134,6 +137,27 @@ probe_write "--- write /usr/omac-audit-test ---" /usr/omac-audit-test
 probe_write "--- write /bin/omac-audit-test ---" /bin/omac-audit-test
 probe_write "--- write /sbin/omac-audit-test ---" /sbin/omac-audit-test
 echo "=== END: fs_write ==="
+
+echo ""
+echo "=== PROBE: fs_allow ==="
+# Positive counterpart to fs_read/fs_write: paths a LEGITIMATE user needs
+# must stay accessible. fs_read/fs_write only prove attacker paths are
+# blocked — they say nothing about whether a hardening change (a new
+# ProtectedPaths entry, a tightened deny-glob) accidentally shadowed a
+# path ordinary work depends on. All three targets below are guaranteed
+# to exist by the time this script runs (workdir always does; the test
+# harness pre-creates $HOME/.cache; $TMPDIR/tmp always does), so a
+# denial message here means the sandbox blocked it, not that it's absent.
+if echo test > ./omac-audit-allow-test 2>/tmp/audit-allow-write-err.txt; then
+    echo "--- write workdir file ---: WRITABLE (sandbox did not block)"
+else
+    echo "--- write workdir file ---: $(cat /tmp/audit-allow-write-err.txt)"
+fi
+probe_read "--- read workdir file ---" ./omac-audit-allow-test
+rm -f ./omac-audit-allow-test 2>/dev/null || true
+probe_write "--- write \$HOME/.cache file ---" "$HOME/.cache/omac-audit-allow-test"
+probe_write "--- write \${TMPDIR:-/tmp} file ---" "${TMPDIR:-/tmp}/omac-audit-allow-test"
+echo "=== END: fs_allow ==="
 
 echo ""
 echo "=== PROBE: fs_exec ==="

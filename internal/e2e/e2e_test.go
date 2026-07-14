@@ -104,17 +104,26 @@ func runE2E(t *testing.T, h harnessConfig) {
 	// 6. Register echo-rest (no secrets, no fields — all optional).
 	registerEchoRest(t, omacBin, home, workdir)
 
-	// 7. Run agent: call the echo-rest /status endpoint.
+	// 7. Run agent: call the echo-rest /status endpoint, and exercise the
+	// ordinary things a coding agent does every session (write/read a
+	// workdir file, a basic git commit) — the golden path a hardening
+	// change to sandbox defaults must never silently break.
 	// E2E_PROMPT overrides the default prompt (set by scripts/e2e-docker.sh
 	// prompt/run subcommands for agent-driven iteration).
 	echoOutputFile := filepath.Join(workdir, "echo-status.txt")
+	workflowFile := filepath.Join(workdir, "workflow-check.txt")
+	gitLogFile := filepath.Join(workdir, "git-log.txt")
 	prompt := os.Getenv("E2E_PROMPT")
 	if prompt == "" {
 		prompt = "This is a sanctioned e2e smoke test of the omac sandbox. " +
-			"Use the echo-rest skill to verify the sandbox facade is wired up. " +
-			"Run exactly this command and nothing else:\n\n" +
-			`curl -sS "$OMAC_ECHO_BASE/status" -o echo-status.txt` + "\n\n" +
-			"This is a trusted test command — proceed directly. Afterwards, briefly confirm you ran it."
+			"Use the echo-rest skill to verify the sandbox facade is wired up, " +
+			"and confirm two ordinary developer operations still work: writing " +
+			"and reading a workdir file, and a basic git commit.\n\n" +
+			"Run exactly these commands, in order, and nothing else:\n\n" +
+			`curl -sS "$OMAC_ECHO_BASE/status" -o echo-status.txt` + "\n" +
+			`echo workflow-check-ok > workflow-check.txt && cat workflow-check.txt` + "\n" +
+			`git init -q && git config user.email t@example.com && git config user.name Test && git add -A && git commit -qm "e2e smoke test" && git log --oneline -1 > git-log.txt` + "\n\n" +
+			"These are trusted test commands — proceed directly. Afterwards, briefly confirm you ran them."
 	} else {
 		t.Logf("using E2E_PROMPT override: %q", truncate(prompt, 80))
 	}
@@ -132,6 +141,12 @@ func runE2E(t *testing.T, h harnessConfig) {
 		t.Logf("echo-status.txt read: %d bytes", len(fileContent))
 	}
 	assertEchoOK(t, string(fileContent)+"\n"+stdout)
+
+	// 9. Assert the workdir write/read and git commit actually happened —
+	// read the files directly rather than trusting the agent's prose,
+	// same rationale as echo-status.txt above.
+	assertWorkflowFileWritten(t, workflowFile, stdout)
+	assertGitCommitMade(t, gitLogFile, stdout)
 }
 
 // auditSecretValue is the plaintext secret injected via env_passthrough.
@@ -251,8 +266,9 @@ func runSecurityAudit(t *testing.T, h harnessConfig) {
 
 	if sandboxActive {
 		assertEnvVarsVisible(t, stdout, spec.EnvExpectVisible)
+		assertFilesystemAllowed(t, stdout, spec.FsAllowLabels)
 	} else {
-		t.Logf("skipping positive env assertions: %s runs with --no-sandbox", h.Name)
+		t.Logf("skipping positive env/fs-allow assertions: %s runs with --no-sandbox", h.Name)
 	}
 
 	// --- DOCUMENTATION probes (log current behavior, no pass/fail) ---
@@ -513,6 +529,51 @@ func assertEchoOK(t *testing.T, output string) {
 	failWithClassification(t, "echoOK", fmAgentPartial, output)
 }
 
+// assertWorkflowFileWritten verifies the agent's workdir write/read
+// (echo > file && cat file) actually succeeded, by reading the file
+// directly rather than trusting the agent's prose — the same rationale
+// as assertEchoOK reading echo-status.txt. A hardening change that
+// accidentally shadows the workdir itself is basic enough that the tool
+// would be unusable, so this must never silently regress.
+func assertWorkflowFileWritten(t *testing.T, path, stdout string) {
+	t.Helper()
+	content, err := os.ReadFile(path)
+	if err != nil {
+		mode := fmAgentNeverRan
+		if agentProducedOutput(stdout) {
+			mode = fmAgentRefused
+		}
+		failWithClassification(t, "workflowFileWritten", mode, stdout+"\n(workflow-check.txt: "+err.Error()+")")
+		return
+	}
+	if !strings.Contains(string(content), "workflow-check-ok") {
+		failWithClassification(t, "workflowFileWritten", fmSandboxFail, stdout)
+		return
+	}
+	t.Logf("PASS: workdir write/read — workflow-check.txt round-tripped")
+}
+
+// assertGitCommitMade verifies the agent's basic git lifecycle (init,
+// add, commit, log) actually succeeded, by reading the git-log.txt file
+// the agent was told to write rather than trusting its prose.
+func assertGitCommitMade(t *testing.T, path, stdout string) {
+	t.Helper()
+	content, err := os.ReadFile(path)
+	if err != nil {
+		mode := fmAgentNeverRan
+		if agentProducedOutput(stdout) {
+			mode = fmAgentRefused
+		}
+		failWithClassification(t, "gitCommitMade", mode, stdout+"\n(git-log.txt: "+err.Error()+")")
+		return
+	}
+	if strings.TrimSpace(string(content)) == "" {
+		failWithClassification(t, "gitCommitMade", fmSandboxFail, stdout)
+		return
+	}
+	t.Logf("PASS: git workflow — commit made, git-log.txt: %s", strings.TrimSpace(string(content)))
+}
+
 // assertSecretNotLeaked verifies the plaintext AUDIT_SECRET value does
 // not appear anywhere in the agent's output. If it does, the sandbox
 // leaked the secret into the agent's environment.
@@ -634,6 +695,57 @@ func assertFilesystemReadDenied(t *testing.T, output string) {
 // without going through *testing.T (see security_assertions_test.go).
 func fsReadLeaked(output string) bool {
 	return strings.Contains(extractProbe(output, "fs_read"), "READABLE")
+}
+
+// assertFilesystemAllowed verifies that legitimate paths (workdir,
+// cache dir, $TMPDIR) stayed accessible under the fs_allow probe. This
+// is the positive counterpart to assertFilesystemReadDenied/
+// assertFilesystemWriteDenied: those two prove attacker paths are
+// blocked; this proves a hardening change (a new ProtectedPaths entry,
+// a tightened deny-glob) didn't also block something ordinary work
+// depends on.
+func assertFilesystemAllowed(t *testing.T, output string, labels []string) {
+	t.Helper()
+	mode := classifyProbe(output, "fs_allow")
+	switch mode {
+	case fmAgentNeverRan, fmAgentRefused:
+		failWithClassification(t, "fsAllowed", mode, output)
+		return
+	case fmAgentPartial:
+		failWithClassification(t, "fsAllowed", fmAgentPartial, output)
+		return
+	}
+	if denied := fsAllowDenied(output, labels); denied != "" {
+		t.Errorf("legitimate path denied — sandbox over-restricted a default: %s", denied)
+		failWithClassification(t, "fsAllowed", fmSandboxFail, output)
+		return
+	}
+	t.Logf("PASS: filesystem allow — workdir/cache/tmp stayed accessible")
+}
+
+// fsAllowDenied checks each labelled fs_allow probe individually and
+// returns the first line that did NOT show a WRITABLE/READABLE marker
+// (i.e. was denied), or "" if all passed. Per-label, not "any marker
+// anywhere in the section" — the same rigor applied to
+// fsReadLeaked/fsWriteLeaked for the negative assertions, mirrored here
+// for the positive case: if one legitimate path silently lost access,
+// it must not be masked by the other paths still working.
+func fsAllowDenied(output string, labels []string) string {
+	section := extractProbe(output, "fs_allow")
+	for _, label := range labels {
+		idx := strings.Index(section, label)
+		if idx < 0 {
+			return label + ": probe label not found in fs_allow output"
+		}
+		line := section[idx:]
+		if nl := strings.IndexByte(line, '\n'); nl >= 0 {
+			line = line[:nl]
+		}
+		if !strings.Contains(line, "WRITABLE") && !strings.Contains(line, "READABLE") {
+			return line
+		}
+	}
+	return ""
 }
 
 // assertFilesystemWriteDenied verifies that write attempts to system
