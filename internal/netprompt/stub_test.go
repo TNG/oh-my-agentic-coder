@@ -256,6 +256,7 @@ func TestFileDecisionSourceConcurrentLookupNoDeadlock(t *testing.T) {
 	done2 := make(chan struct{})
 	go func() {
 		src.mu.Lock()
+		//lint:ignore SA2001 empty critical section intentionally probes for an RLock leak
 		src.mu.Unlock()
 		close(done2)
 	}()
