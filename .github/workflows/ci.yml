@@ -29,6 +29,23 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Install bubblewrap (Linux only)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update && sudo apt-get install -y bubblewrap
+          # Ubuntu 24.04 AppArmor restricts unprivileged user namespaces.
+          # Grant bwrap the userns permission so it can create sandboxes.
+          # Without this, every internal/sandboxrun integration test that
+          # launches a real bwrap sandbox silently skips via requireBwrap,
+          # instead of actually exercising the sandbox it claims to test.
+          sudo tee /etc/apparmor.d/bwrap > /dev/null <<'EOF'
+          abi <abi/4.0>,
+          /usr/bin/bwrap flags=(unconfined) {
+            userns,
+          }
+          EOF
+          sudo apparmor_parser -r /etc/apparmor.d/bwrap
+
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
