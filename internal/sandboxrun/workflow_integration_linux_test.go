@@ -83,7 +83,17 @@ func TestIntegrationWorkflowGitBattery(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("git workflow failed, exit %d: %s", code, out)
 	}
-	if got := strings.TrimSpace(out); got != "2" {
+	// Take the last whitespace-separated token rather than comparing the
+	// whole trimmed output — robust against any shell/sandbox diagnostic
+	// noise CombinedOutput() mixes in ahead of the real `wc -l` result
+	// (see the darwin variant, where a narrowly-scoped Seatbelt grant
+	// causes /bin/sh to print such a diagnostic).
+	fields := strings.Fields(out)
+	got := ""
+	if len(fields) > 0 {
+		got = fields[len(fields)-1]
+	}
+	if got != "2" {
 		t.Errorf("expected 2 commits in git log, got %q (full output: %s)", got, out)
 	}
 }

@@ -82,7 +82,17 @@ func TestIntegrationWorkflowGitBattery(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("git workflow failed, exit %d: %s", code, out)
 	}
-	if got := strings.TrimSpace(out); got != "2" {
+	// Take the last whitespace-separated token rather than comparing the
+	// whole trimmed output: under a narrowly-scoped Seatbelt grant, /bin/sh
+	// can't resolve getcwd()'s parent-directory chain and prints a harmless
+	// "shell-init"/"chdir" diagnostic to stderr before running the command,
+	// which CombinedOutput() mixes in ahead of the real `wc -l` result.
+	fields := strings.Fields(out)
+	got := ""
+	if len(fields) > 0 {
+		got = fields[len(fields)-1]
+	}
+	if got != "2" {
 		t.Errorf("expected 2 commits in git log, got %q (full output: %s)", got, out)
 	}
 }
