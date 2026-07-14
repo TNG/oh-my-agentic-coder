@@ -1,0 +1,7 @@
+{
+  "meta": { "name": "env-deny-glob" },
+  "workdir": { "access": "readwrite" },
+  "filesystem": {
+    "deny": [".env", "*.pem"]
+  }
+}

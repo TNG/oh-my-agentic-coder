@@ -1,0 +1,8 @@
+{
+  "meta": { "name": "docker-socket-recipe" },
+  "workdir": { "access": "readwrite" },
+  "filesystem": {
+    "allow_unix_dir": ["/var/run"],
+    "override_deny": ["/var/run/docker.sock"]
+  }
+}
