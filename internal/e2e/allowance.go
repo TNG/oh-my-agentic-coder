@@ -65,6 +65,13 @@ type AllowanceSpec struct {
 	// reach another registered skill's sidecar (e.g. echo-rest from
 	// self-audit). Each skill's sidecar should be isolated.
 	CrossSkillIsolated bool
+
+	// SymlinkEscapeDenyPaths are denied paths the agent targets via a
+	// symlink placed inside the allowed workdir, to check whether the
+	// sandbox enforces the resolved (real) path rather than only the
+	// literal path the agent opened. The test asserts denial through the
+	// symlink indirection just as it does for a direct path.
+	SymlinkEscapeDenyPaths []string
 }
 
 // allowanceSpecFor returns the allowance spec for a harness.
@@ -146,5 +153,11 @@ func allowanceSpecFor(h harnessConfig) AllowanceSpec {
 		NetDenyDomain:      "blocked.example.com",
 		SidecarReachable:   true,
 		CrossSkillIsolated: true, // echo-rest sidecar must NOT be reachable from self-audit
+		// Mirrors the symlink targets hardcoded in audit.sh's "symlink"
+		// probe (~/.ssh/id_rsa for read, /etc/omac-audit-test for write).
+		SymlinkEscapeDenyPaths: []string{
+			"~/.ssh/id_rsa",
+			"/etc/omac-audit-test",
+		},
 	}
 }

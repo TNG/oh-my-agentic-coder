@@ -18,6 +18,18 @@ var harnessVersions = map[string]string{
 	"copilot":     "@github/copilot@1.0.68",
 }
 
+// versionEnvVar maps a harness name to the env var that can override its
+// pinned package spec for a single run, without editing this file. Wired
+// from the e2e workflow's workflow_dispatch *_version inputs
+// (.github/workflows/e2e.yml); unset in the scheduled run, so that run
+// always uses the harnessVersions map above.
+var versionEnvVar = map[string]string{
+	"opencode":    "E2E_VERSION_OPENCODE",
+	"claude-code": "E2E_VERSION_CLAUDE_CODE",
+	"codex":       "E2E_VERSION_CODEX",
+	"copilot":     "E2E_VERSION_COPILOT",
+}
+
 // Model identifiers per harness.
 var modelIDs = map[string]string{
 	"opencode":    "zai-org/GLM-5.2",
@@ -27,7 +39,10 @@ var modelIDs = map[string]string{
 }
 
 // pinnedPackage returns the package spec for a harness.
-// When E2E_USE_LATEST=1, returns the bare package name (latest).
+// When E2E_USE_LATEST=1, returns the bare package name (latest), ignoring
+// any per-harness version override. Otherwise, a non-empty versionEnvVar
+// override takes precedence over the harnessVersions map, so a single run
+// can test a candidate version without editing this file.
 func pinnedPackage(harness string) string {
 	if useLatest() {
 		// Strip @version from "pkg@1.2.3" → "pkg".
@@ -36,6 +51,11 @@ func pinnedPackage(harness string) string {
 			return pkg[:i]
 		}
 		return pkg
+	}
+	if ev, ok := versionEnvVar[harness]; ok {
+		if v := os.Getenv(ev); v != "" {
+			return v
+		}
 	}
 	return harnessVersions[harness]
 }

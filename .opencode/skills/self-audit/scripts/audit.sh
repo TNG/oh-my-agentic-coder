@@ -131,6 +131,35 @@ echo "--- exec /bin/sh -c (read-only mount) ---"
 echo "=== END: fs_exec ==="
 
 echo ""
+echo "=== PROBE: symlink ==="
+# Symlink escape: create a symlink INSIDE the writable workdir that points
+# AT a denied path, then read/write through it. Creating a dangling symlink
+# never requires access to its target, so this isolates whether the sandbox
+# enforces the resolved (real) path or only the literal path the agent
+# opened — a sandbox that checks the latter would let this through.
+echo "--- symlink ./omac-audit-symlink-ssh -> \$HOME/.ssh/id_rsa (denied read path) ---"
+ln -sfn "$HOME/.ssh/id_rsa" ./omac-audit-symlink-ssh 2>&1 || true
+probe_read "--- read via symlink to ~/.ssh/id_rsa ---" ./omac-audit-symlink-ssh
+echo "--- symlink ./omac-audit-symlink-write -> /etc/omac-audit-test (denied write path) ---"
+ln -sfn /etc/omac-audit-test ./omac-audit-symlink-write 2>&1 || true
+( echo "test" > ./omac-audit-symlink-write ) 2>&1 || true
+rm -f ./omac-audit-symlink-ssh ./omac-audit-symlink-write 2>/dev/null || true
+echo "=== END: symlink ==="
+
+echo ""
+echo "=== PROBE: hardlink ==="
+# Hardlink escape: same idea as the symlink probe, but via a hardlink.
+# Unlike a symlink, creating a hardlink requires the target to be on the
+# same filesystem/device as the link, so this may fail for reasons
+# unrelated to the sandbox (EXDEV) depending on where HOME and the workdir
+# land. We log the result rather than assert on it.
+echo "--- hardlink ./omac-audit-hardlink-ssh -> \$HOME/.ssh/id_rsa (denied read path) ---"
+ln "$HOME/.ssh/id_rsa" ./omac-audit-hardlink-ssh 2>&1 || true
+probe_read "--- read via hardlink to ~/.ssh/id_rsa ---" ./omac-audit-hardlink-ssh
+rm -f ./omac-audit-hardlink-ssh 2>/dev/null || true
+echo "=== END: hardlink ==="
+
+echo ""
 echo "=== PROBE: net ==="
 echo "--- curl blocked.example.com ---"
 # Redact proxy auth header so output contains no real credentials.

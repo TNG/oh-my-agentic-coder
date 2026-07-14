@@ -14,6 +14,26 @@ on:
         description: 'Skip claude-code (the only harness billed against the real Anthropic account)'
         type: boolean
         default: false
+      use_latest:
+        description: 'Install each harness''s latest release instead of the pinned version below (drift-detection run; the *_version inputs are ignored when checked)'
+        type: boolean
+        default: false
+      opencode_version:
+        description: 'Pinned opencode package spec (ignored if "use latest" is checked)'
+        type: string
+        default: 'opencode-ai@1.17.12'
+      claude_code_version:
+        description: 'Pinned claude-code package spec (ignored if "use latest" is checked)'
+        type: string
+        default: '@anthropic-ai/claude-code@2.1.197'
+      codex_version:
+        description: 'Pinned codex package spec (ignored if "use latest" is checked)'
+        type: string
+        default: '@openai/codex@0.142.5'
+      copilot_version:
+        description: 'Pinned copilot package spec (ignored if "use latest" is checked)'
+        type: string
+        default: '@github/copilot@1.0.68'
   schedule:
     - cron: '0 8 * * 6' # Saturdays 10:00 CEST
 
@@ -45,6 +65,18 @@ jobs:
       SKAINET_INTERNAL: ${{ secrets.SKAINET_EXTERNAL }}
       ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
       E2E_HARNESS: ${{ matrix.harness }}
+      # Drift-detection: install latest instead of the pinned versions below.
+      # Empty (falsy) on schedule runs and on any workflow_dispatch where the
+      # box isn't checked — versions.go then falls back to its pinned map.
+      E2E_USE_LATEST: ${{ github.event.inputs.use_latest == 'true' && '1' || '' }}
+      # Per-harness pinned-version overrides for a manual run, so a version
+      # can be bumped/tested without editing internal/e2e/versions.go. Empty
+      # on schedule runs; versions.go falls back to its pinned map when unset.
+      # Ignored entirely when E2E_USE_LATEST is set.
+      E2E_VERSION_OPENCODE: ${{ github.event.inputs.opencode_version }}
+      E2E_VERSION_CLAUDE_CODE: ${{ github.event.inputs.claude_code_version }}
+      E2E_VERSION_CODEX: ${{ github.event.inputs.codex_version }}
+      E2E_VERSION_COPILOT: ${{ github.event.inputs.copilot_version }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -81,11 +113,14 @@ jobs:
       # (registry throttling, transient network errors). Cache them keyed on
       # the pinned harness versions so a version bump invalidates the cache
       # but repeated runs at the same versions reuse already-fetched packages.
+      # The use_latest/*_version inputs are folded in too, so a manual
+      # drift-detection or version-override run never reuses a cache keyed
+      # for the versions.go-pinned versions (or vice versa).
       - name: Cache harness install packages
         uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/e2e-install-cache
-          key: e2e-install-${{ runner.os }}-${{ matrix.harness }}-${{ hashFiles('internal/e2e/versions.go') }}
+          key: e2e-install-${{ runner.os }}-${{ matrix.harness }}-${{ hashFiles('internal/e2e/versions.go') }}-${{ github.event.inputs.use_latest }}-${{ github.event.inputs.opencode_version }}-${{ github.event.inputs.claude_code_version }}-${{ github.event.inputs.codex_version }}-${{ github.event.inputs.copilot_version }}
           restore-keys: |
             e2e-install-${{ runner.os }}-${{ matrix.harness }}-
 

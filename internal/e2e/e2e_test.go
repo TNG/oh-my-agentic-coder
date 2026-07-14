@@ -185,8 +185,8 @@ func runSecurityAudit(t *testing.T, h harnessConfig) {
 	}
 
 	spec := allowanceSpecFor(h)
-	t.Logf("allowance spec for %s: allow=%v deny=%v fsDeny=%v fsWriteDeny=%v netDeny=%s",
-		h.Name, spec.EnvAllowVars, spec.EnvDenyVars, spec.FsDenyPaths, spec.FsWriteDenyPaths, spec.NetDenyDomain)
+	t.Logf("allowance spec for %s: allow=%v deny=%v fsDeny=%v fsWriteDeny=%v symlinkDeny=%v netDeny=%s",
+		h.Name, spec.EnvAllowVars, spec.EnvDenyVars, spec.FsDenyPaths, spec.FsWriteDenyPaths, spec.SymlinkEscapeDenyPaths, spec.NetDenyDomain)
 
 	omacBin := buildOmac(t)
 	installHarness(t, h, home)
@@ -238,6 +238,7 @@ func runSecurityAudit(t *testing.T, h harnessConfig) {
 		assertEnvVarsDenied(t, stdout, spec.EnvDenyVars)
 		assertFilesystemReadDenied(t, stdout)
 		assertFilesystemWriteDenied(t, stdout)
+		assertSymlinkEscapeDenied(t, stdout)
 		assertNetworkDenied(t, stdout, spec.NetDenyDomain)
 	} else {
 		t.Logf("skipping negative assertions: %s runs with --no-sandbox", h.Name)
@@ -260,6 +261,12 @@ func runSecurityAudit(t *testing.T, h harnessConfig) {
 	// binds. This is a platform default, not a contract — we log the
 	// result so changes are visible in test output.
 	logExecProbeResults(t, stdout, spec.FsExecProbePaths)
+
+	// Hardlink escape: like the symlink probe, but hardlinks require the
+	// same filesystem/device as the target, so failure can mean either
+	// "sandbox denied it" or "cross-device link, unrelated to the
+	// sandbox". We log the result rather than assert on it.
+	logHardlinkProbeResults(t, stdout)
 
 	// Cross-skill sidecar isolation: omac currently does NOT isolate
 	// sidecars from each other — a skill can reach another skill's
@@ -660,6 +667,84 @@ func assertFilesystemWriteDenied(t *testing.T, output string) {
 		return
 	}
 	t.Logf("PASS: filesystem write protection — denial message found in agent output")
+}
+
+// assertSymlinkEscapeDenied verifies that the agent could not read a denied
+// path, nor write a denied path, through a symlink it planted inside the
+// allowed (writable) workdir. A sandbox that only checks the literal path
+// an agent opens — rather than the path a symlink resolves to — would let
+// this through even though assertFilesystemReadDenied/WriteDenied (direct
+// access, no indirection) pass.
+func assertSymlinkEscapeDenied(t *testing.T, output string) {
+	t.Helper()
+	mode := classifyProbe(output, "symlink")
+	switch mode {
+	case fmAgentNeverRan, fmAgentRefused:
+		failWithClassification(t, "symlinkEscapeDenied", mode, output)
+		return
+	case fmAgentPartial:
+		failWithClassification(t, "symlinkEscapeDenied", fmAgentPartial, output)
+		return
+	}
+	probeOut := extractProbe(output, "symlink")
+	readDenials := []string{
+		"Permission denied",
+		"No such file or directory",
+		"cannot open",
+		"Operation not permitted",
+	}
+	writeDenials := []string{
+		"Read-only file system",
+		"Permission denied",
+		"Operation not permitted",
+	}
+	foundRead := false
+	for _, d := range readDenials {
+		if strings.Contains(probeOut, d) {
+			foundRead = true
+			break
+		}
+	}
+	if !foundRead {
+		failWithClassification(t, "symlinkEscapeDenied", fmSandboxFail, output)
+		return
+	}
+	foundWrite := false
+	for _, d := range writeDenials {
+		if strings.Contains(probeOut, d) {
+			foundWrite = true
+			break
+		}
+	}
+	if !foundWrite {
+		failWithClassification(t, "symlinkEscapeDenied", fmSandboxFail, output)
+		return
+	}
+	t.Logf("PASS: symlink escape denied — read and write through a workdir symlink to a denied path both blocked")
+}
+
+// logHardlinkProbeResults logs whether a hardlink escape (same idea as the
+// symlink probe, but via a hardlink) succeeded or failed, without
+// asserting pass/fail. Hardlink creation requires the same filesystem as
+// the target, so a failure here can mean "sandbox denied it" or "cross-
+// device link" (EXDEV, unrelated to the sandbox) depending on where HOME
+// and the workdir land — not a stable cross-platform contract.
+func logHardlinkProbeResults(t *testing.T, output string) {
+	t.Helper()
+	if !strings.Contains(output, "=== PROBE: hardlink ===") {
+		return
+	}
+	probeOut := extractProbe(output, "hardlink")
+	switch {
+	case strings.Contains(probeOut, "Invalid cross-device link"):
+		t.Logf("INFO: hardlink escape probe — cross-device link (EXDEV), not a sandbox signal")
+	case strings.Contains(probeOut, "Permission denied"),
+		strings.Contains(probeOut, "Operation not permitted"),
+		strings.Contains(probeOut, "No such file or directory"):
+		t.Logf("INFO: hardlink escape DENIED")
+	default:
+		t.Logf("INFO: hardlink escape probe result inconclusive/allowed — see output:\n%s", probeOut)
+	}
 }
 
 // logCrossSkillIsolation logs whether the agent could reach another

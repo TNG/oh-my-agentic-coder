@@ -90,7 +90,7 @@ func extractProbe(output, probeName string) string {
 // human-readable summary of what the agent did. Called on assertion
 // failure so CI output explains the failure mode.
 func classifyAgentOutput(output string) string {
-	probes := []string{"secret", "env", "fs_read", "fs_write", "fs_exec", "net", "sidecar", "xskill"}
+	probes := []string{"secret", "env", "fs_read", "fs_write", "fs_exec", "symlink", "hardlink", "net", "sidecar", "xskill"}
 	var present, complete, refused, neverRan []string
 	for _, p := range probes {
 		switch classifyProbe(output, p) {
