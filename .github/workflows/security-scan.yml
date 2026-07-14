@@ -46,8 +46,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 180
     env:
-      STRIX_LLM: openai/zai-org/GLM-5.2
-      LLM_API_BASE: https://chat.model.tngtech.com/v1
+      # SKAINET_EXTERNAL is the same secret e2e.yml uses for the model
+      # provider base URL (named for "reachable from GitHub-hosted CI",
+      # as opposed to a TNG-internal-only address) -- reused here rather
+      # than duplicating the URL.
+      LLM_API_BASE: ${{ secrets.SKAINET_EXTERNAL }}
       LLM_API_KEY: ${{ secrets.SKAINET_TOKEN }}
       GH_TOKEN: ${{ github.token }}
     steps:
@@ -64,8 +67,24 @@ jobs:
       - name: Install strix
         run: pip install --user strix-agent==1.0.4
 
+      - name: Resolve model from e2e config
+        id: model
+        run: |
+          # Single source of truth is internal/e2e/versions.go's modelIDs map
+          # (opencode's entry -- GLM-5.2-TEE, same as e2e.yml uses) rather
+          # than duplicating the model name here.
+          model=$(awk '/^var modelIDs = map\[string\]string\{/{flag=1; next} /^\}/{flag=0} flag' \
+            target/internal/e2e/versions.go | grep '"opencode"' | sed -E 's/.*:\s*"([^"]+)".*/\1/')
+          if [ -z "$model" ]; then
+            echo "::error::could not resolve model from internal/e2e/versions.go"
+            exit 1
+          fi
+          echo "strix_llm=openai/$model" >> "$GITHUB_OUTPUT"
+
       - name: Run strix scan
         id: scan
+        env:
+          STRIX_LLM: ${{ steps.model.outputs.strix_llm }}
         run: |
           set -o pipefail
           run_label="$(date -u +%Y%m%d-%H%M%S)"
@@ -85,6 +104,8 @@ jobs:
           echo "run_dir=$run_dir" >> "$GITHUB_OUTPUT"
 
       - name: Dedupe against open issues + build triage report
+        env:
+          STRIX_LLM: ${{ steps.model.outputs.strix_llm }}
         run: |
           python3 target/.github/scripts/security_scan_triage.py \
             --vulns "${{ steps.scan.outputs.run_dir }}/vulnerabilities.json" \
