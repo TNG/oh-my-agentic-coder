@@ -65,7 +65,13 @@ jobs:
           python-version: '3.12'
 
       - name: Install strix
-        run: pip install --user strix-agent==1.0.4
+        run: |
+          # No --user: actions/setup-python's toolcached interpreter is
+          # already user-writable and its bin/ is on PATH, so --user risks
+          # installing the console script somewhere PATH doesn't cover.
+          pip install strix-agent==1.0.4
+          # Safe to print -- version string only, no scan content.
+          strix --version
 
       - name: Resolve model from e2e config
         id: model
@@ -92,16 +98,23 @@ jobs:
           # Redirected to a file, NEVER printed to this (public) job log --
           # strix's console output includes full vulnerability detail and
           # working PoCs once findings surface.
-          "$HOME/.local/bin/strix" -n --mount "$PWD/target" \
+          strix -n --mount "$PWD/target" \
             --scan-mode "${{ inputs.scan_mode || 'deep' }}" \
             --max-budget-usd "${{ inputs.max_budget_usd || '10' }}" \
             > strix_scan.log 2>&1 || true
-          run_dir=$(ls -td target/strix_runs/*/ 2>/dev/null | head -1)
-          if [ -z "$run_dir" ]; then
+
+          # nullglob + array, not `ls glob | head`: under bash -e + pipefail
+          # (this shell's default), a non-matching glob inside `$(...)`
+          # aborts the script with ls's own exit code, skipping the
+          # friendly ::error:: below entirely.
+          shopt -s nullglob
+          run_dirs=(target/strix_runs/*/)
+          shopt -u nullglob
+          if [ ${#run_dirs[@]} -eq 0 ]; then
             echo "::error::strix produced no run directory -- scan likely failed to start (see strix_scan.log via the private artifact push step)"
             exit 1
           fi
-          echo "run_dir=$run_dir" >> "$GITHUB_OUTPUT"
+          echo "run_dir=${run_dirs[-1]}" >> "$GITHUB_OUTPUT"
 
       - name: Dedupe against open issues + build triage report
         env:
