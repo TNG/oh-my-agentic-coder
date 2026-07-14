@@ -1,0 +1,137 @@
+# Security scan: runs `strix` (an LLM-driven pentest agent) against this
+# repo. Scheduled weekly and available on demand (including as a manual
+# pre-release check before cutting a release tag).
+#
+# Disclosure model: this workflow's own job log and step summary NEVER
+# contain finding titles, descriptions, or PoCs -- strix's full output is
+# redirected straight to a file and never printed to the console, because
+# this is a public repo and both the job log and (if used) upload-artifact
+# would be publicly downloadable. Full reports are pushed to a private
+# companion repo instead, and only aggregate severity/dedupe counts reach
+# the public step summary. A human reviews the private repo and decides
+# what -- if anything -- becomes a public GitHub issue. See
+# nhuelstng/oh-my-agentic-coder-security for the artifact history.
+name: Security Scan
+
+on:
+  schedule:
+    - cron: '0 8 * * 6' # Saturdays 10:00 CEST (same slot as e2e.yml)
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: 'Why this run is happening (e.g. "pre-release v0.3.0", "manual check")'
+        type: string
+        default: 'manual'
+      scan_mode:
+        description: 'strix scan depth'
+        type: choice
+        options: [quick, standard, deep]
+        default: deep
+      max_budget_usd:
+        description: 'LLM cost cap in USD for this run'
+        type: string
+        default: '10'
+
+permissions:
+  contents: read
+  issues: read # for dedupe against currently-open issues
+
+concurrency:
+  group: security-scan
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    name: Strix security scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      # SKAINET_EXTERNAL is the same secret e2e.yml uses for the model
+      # provider base URL (named for "reachable from GitHub-hosted CI",
+      # as opposed to a TNG-internal-only address) -- reused here rather
+      # than duplicating the URL.
+      LLM_API_BASE: ${{ secrets.SKAINET_EXTERNAL }}
+      LLM_API_KEY: ${{ secrets.SKAINET_TOKEN }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout target repo
+        uses: actions/checkout@v4
+        with:
+          path: target
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install strix
+        run: pip install --user strix-agent==1.0.4
+
+      - name: Resolve model from e2e config
+        id: model
+        run: |
+          # Single source of truth is internal/e2e/versions.go's modelIDs map
+          # (opencode's entry -- GLM-5.2-TEE, same as e2e.yml uses) rather
+          # than duplicating the model name here.
+          model=$(awk '/^var modelIDs = map\[string\]string\{/{flag=1; next} /^\}/{flag=0} flag' \
+            target/internal/e2e/versions.go | grep '"opencode"' | sed -E 's/.*:\s*"([^"]+)".*/\1/')
+          if [ -z "$model" ]; then
+            echo "::error::could not resolve model from internal/e2e/versions.go"
+            exit 1
+          fi
+          echo "strix_llm=openai/$model" >> "$GITHUB_OUTPUT"
+
+      - name: Run strix scan
+        id: scan
+        env:
+          STRIX_LLM: ${{ steps.model.outputs.strix_llm }}
+        run: |
+          set -o pipefail
+          run_label="$(date -u +%Y%m%d-%H%M%S)"
+          echo "run_label=$run_label" >> "$GITHUB_OUTPUT"
+          # Redirected to a file, NEVER printed to this (public) job log --
+          # strix's console output includes full vulnerability detail and
+          # working PoCs once findings surface.
+          "$HOME/.local/bin/strix" -n --mount "$PWD/target" \
+            --scan-mode "${{ inputs.scan_mode || 'deep' }}" \
+            --max-budget-usd "${{ inputs.max_budget_usd || '10' }}" \
+            > strix_scan.log 2>&1 || true
+          run_dir=$(ls -td target/strix_runs/*/ 2>/dev/null | head -1)
+          if [ -z "$run_dir" ]; then
+            echo "::error::strix produced no run directory -- scan likely failed to start (see strix_scan.log via the private artifact push step)"
+            exit 1
+          fi
+          echo "run_dir=$run_dir" >> "$GITHUB_OUTPUT"
+
+      - name: Dedupe against open issues + build triage report
+        env:
+          STRIX_LLM: ${{ steps.model.outputs.strix_llm }}
+        run: |
+          python3 target/.github/scripts/security_scan_triage.py \
+            --vulns "${{ steps.scan.outputs.run_dir }}/vulnerabilities.json" \
+            --repo "${{ github.repository }}" \
+            --triage-out triage-report.md \
+            --summary-out step-summary.md
+
+      - name: Public summary (counts only, no exploit detail)
+        run: cat step-summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Push full report to private artifact repo
+        env:
+          SECURITY_SCAN_PAT: ${{ secrets.SECURITY_SCAN_PAT }}
+        run: |
+          set -euo pipefail
+          dest=$(mktemp -d)
+          git clone --quiet --depth 1 \
+            "https://x-access-token:${SECURITY_SCAN_PAT}@github.com/nhuelstng/oh-my-agentic-coder-security.git" \
+            "$dest"
+          scan_dir="$dest/scans/${{ steps.scan.outputs.run_label }}-${{ inputs.reason || 'scheduled' }}"
+          mkdir -p "$scan_dir"
+          cp -r "${{ steps.scan.outputs.run_dir }}"/* "$scan_dir"/
+          cp triage-report.md strix_scan.log "$scan_dir"/
+          cd "$dest"
+          git config user.name "strix-ci-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add .
+          git commit --quiet -m "scan: ${{ inputs.reason || 'scheduled' }} ($(date -u +%F))"
+          git push --quiet
