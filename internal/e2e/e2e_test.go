@@ -555,7 +555,11 @@ func assertWorkflowFileWritten(t *testing.T, path, stdout string) {
 
 // assertGitCommitMade verifies the agent's basic git lifecycle (init,
 // add, commit, log) actually succeeded, by reading the git-log.txt file
-// the agent was told to write rather than trusting its prose.
+// the agent was told to write rather than trusting its prose. Checks
+// for the commit subject specifically, not just non-empty content —
+// git-log.txt can only exist at all if `git log` (the last command in
+// the &&-chain) ran, but a bare non-empty check wouldn't tell apart a
+// real "<hash> e2e smoke test" line from stray unrelated output.
 func assertGitCommitMade(t *testing.T, path, stdout string) {
 	t.Helper()
 	content, err := os.ReadFile(path)
@@ -567,8 +571,8 @@ func assertGitCommitMade(t *testing.T, path, stdout string) {
 		failWithClassification(t, "gitCommitMade", mode, stdout+"\n(git-log.txt: "+err.Error()+")")
 		return
 	}
-	if strings.TrimSpace(string(content)) == "" {
-		failWithClassification(t, "gitCommitMade", fmSandboxFail, stdout)
+	if !strings.Contains(string(content), "e2e smoke test") {
+		failWithClassification(t, "gitCommitMade", fmSandboxFail, stdout+"\n(git-log.txt: "+string(content)+")")
 		return
 	}
 	t.Logf("PASS: git workflow — commit made, git-log.txt: %s", strings.TrimSpace(string(content)))
