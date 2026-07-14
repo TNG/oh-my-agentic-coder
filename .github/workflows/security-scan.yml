@@ -27,10 +27,6 @@ on:
         type: choice
         options: [quick, standard, deep]
         default: deep
-      max_budget_usd:
-        description: 'LLM cost cap in USD for this run'
-        type: string
-        default: '10'
 
 permissions:
   contents: read
@@ -95,12 +91,17 @@ jobs:
           set -o pipefail
           run_label="$(date -u +%Y%m%d-%H%M%S)"
           echo "run_label=$run_label" >> "$GITHUB_OUTPUT"
+          # --target, not --mount: the PyPI release (strix-agent, pinned
+          # below) doesn't have --mount or --max-budget-usd -- those only
+          # exist in unreleased commits ahead of the 1.0.4 tag. --target
+          # copies the checkout into the sandbox rather than a read-only
+          # bind-mount; no cost cap beyond this job's timeout-minutes.
+          #
           # Redirected to a file, NEVER printed to this (public) job log --
           # strix's console output includes full vulnerability detail and
           # working PoCs once findings surface.
-          strix -n --mount "$PWD/target" \
+          strix -n --target "$PWD/target" \
             --scan-mode "${{ inputs.scan_mode || 'deep' }}" \
-            --max-budget-usd "${{ inputs.max_budget_usd || '10' }}" \
             > strix_scan.log 2>&1 || true
 
           # nullglob + array, not `ls glob | head`: under bash -e + pipefail
