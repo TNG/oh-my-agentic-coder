@@ -138,6 +138,41 @@ func TestIntegrationProtectedMaskedUnderGrant(t *testing.T) {
 	}
 }
 
+// TestIntegrationOverrideDenyGrantsAccess proves the documented
+// filesystem.override_deny escape hatch (README's Docker-socket / cloud
+// creds recipe) actually works through a real bwrap sandbox, not just
+// at the Grants-struct level (TestResolveGrantsOverrideDeny in
+// grants_test.go only checks ProtectedPaths no longer contains the
+// entry).
+func TestIntegrationOverrideDenyGrantsAccess(t *testing.T) {
+	requireBwrap(t)
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("no home")
+	}
+	sshDir := filepath.Join(home, ".ssh")
+	if _, err := os.Stat(sshDir); err != nil {
+		t.Skip("no ~/.ssh on this machine")
+	}
+	wd := t.TempDir()
+	p := &sandboxprofile.Profile{
+		Workdir: sandboxprofile.Workdir{Access: sandboxprofile.AccessReadWrite},
+		Filesystem: sandboxprofile.Filesystem{
+			Read:         []string{home},
+			OverrideDeny: []string{sshDir},
+		},
+		Network: sandboxprofile.Network{Mode: sandboxprofile.ModeBlocked},
+	}
+	g, err := ResolveGrants(p, wd, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, code := runBwrapped(t, g, "/bin/sh", "-c", "ls -A "+sshDir+" | wc -l")
+	if code != 0 {
+		t.Errorf("override_deny should punch a hole granting ~/.ssh access, got exit %d: %s", code, out)
+	}
+}
+
 func TestIntegrationStage2LandlockPorts(t *testing.T) {
 	requireBwrap(t)
 	if !LandlockNetSupported() {
