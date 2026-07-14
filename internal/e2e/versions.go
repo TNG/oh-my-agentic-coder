@@ -16,6 +16,7 @@ var harnessVersions = map[string]string{
 	"claude-code": "@anthropic-ai/claude-code@2.1.197",
 	"codex":       "@openai/codex@0.142.5",
 	"copilot":     "@github/copilot@1.0.68",
+	"pi":          "@earendil-works/pi-coding-agent@2026.7.7",
 }
 
 // Model identifiers per harness.
@@ -24,6 +25,7 @@ var modelIDs = map[string]string{
 	"claude-code": "claude-sonnet-5",
 	"codex":       "zai-org/GLM-5.2",
 	"copilot":     "zai-org/GLM-5.2",
+	"pi":          "zai-org/GLM-5.2",
 }
 
 // pinnedPackage returns the package spec for a harness.

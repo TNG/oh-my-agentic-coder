@@ -27,6 +27,7 @@ and the `/__omac__/*` endpoints.
 | ----------- | ------------------------------ | ------------------------------- | ----------------------------------------- | -------------------------------------------- |
 | OpenCode    | `.opencode/plugins/omac-multidir.ts` | plugin construction + `session.*` events | `experimental.chat.system.transform`      | `shell.env` → `OMAC_D_*` per session (§4.1)  |
 | Claude Code | `.claude/` (`settings.json` + `hooks/omac-bridge.sh`) | `SessionStart` hook              | `SessionStart` hook `additionalContext`   | process-level flat aliases (`OMAC_<MOUNT>_BASE`) — see below |
+| Pi          | `.pi/extensions/omac-bridge/index.ts` | `session_start` event           | `before_agent_start` event (system prompt)| process-level flat aliases (`OMAC_<MOUNT>_BASE`) |
 
 **OpenCode** has a true per-session env hook, so it can inject distinct
 `OMAC_D_<token>_<MOUNT>_BASE` for every session and supports the full

@@ -127,6 +127,9 @@ const (
 	SessionListCodex
 	// SessionListCopilot lists by reading Copilot's session-store.db (SQLite).
 	SessionListCopilot
+	// SessionListPi lists by reading Pi's session store (JSONL files under
+	// ~/.pi/agent/sessions/).
+	SessionListPi
 )
 
 // HarnessSession encodes the harness-specific knowledge `omac continue` and
@@ -282,6 +285,34 @@ func harnessRegistry() []Harness {
 				}
 				return map[string]string{"COPILOT_CUSTOM_INSTRUCTIONS_DIRS": tmpDir}
 			},
+		},
+		{
+			Name:    "pi",
+			Aliases: []string{},
+			// Pi coding agent CLI executable is `pi` (pi.dev).
+			InnerCmd: []string{"pi"},
+			// Pi has no server mode; under `omac serve` it runs as-is.
+			ServerLaunch:   nil,
+			BridgeDir:      ".pi/extensions",
+			SkillsBase:     "pi",
+			UserConfigHome: ".pi", // ~/.pi, not ~/.config/pi
+			// Pi has no documented env override for its config dir.
+			HomeEnv: "",
+			// Pi stores auth.json, settings.json, sessions, and extensions
+			// under ~/.pi/agent/.
+			SandboxDirs: []string{"~/.pi", "~/.cache/pi"},
+			Session: &HarnessSession{
+				ContinueArgs:   []string{"-c"},
+				ResumeByIDArgs: func(id string) []string { return []string{"--session", id} },
+				ListKind:       SessionListPi,
+			},
+			// Pi has no system-prompt CLI flag. The briefing is delivered via
+			// OMAC_SANDBOX_BRIEFING env var (set by omac at launch), read by
+			// the TS extension in before_agent_start and injected into the
+			// system prompt.
+			SystemContextArgs:    nil,
+			BriefingEnvFunc:      nil,
+			NeedsPluginBootstrap: false,
 		},
 	}
 }

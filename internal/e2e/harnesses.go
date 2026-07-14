@@ -116,6 +116,7 @@ func allHarnesses() []harnessConfig {
 		claudeCodeConfig(),
 		codexConfig(),
 		copilotConfig(),
+		piConfig(),
 	}
 	if runtime.GOOS == "darwin" {
 		out := all[:0]
@@ -524,6 +525,83 @@ func copilotConfig() harnessConfig {
 			// copilot strips COPILOT_PROVIDER_* vars after reading them.
 			// COPILOT_MODEL and COPILOT_CLI survive.
 			return []string{"COPILOT_MODEL=", "COPILOT_CLI", "OMAC_"}
+		},
+	}
+}
+
+// ---------------------------------------------------------------------------
+// pi
+// ---------------------------------------------------------------------------
+
+// pi reads its provider config from ~/.pi/agent/auth.json and
+// ~/.pi/agent/settings.json. It supports API key providers via env vars
+// (e.g. ANTHROPIC_API_KEY, OPENAI_API_KEY) or auth.json.
+//
+// Env vars: none beyond os.Environ() inheritance. SKAINET_TOKEN is read
+// from auth.json's "key" field, not from a process env var at runtime.
+//
+// Sandbox deviations: none. The model provider host (from
+// SKAINET_INTERNAL) is allowed by the base profile.
+//
+// Files written:
+//   - ~/.pi/agent/auth.json — API key for the model provider
+//   - ~/.pi/agent/settings.json — model provider definition
+func piConfig() harnessConfig {
+	return harnessConfig{
+		Name:       "pi",
+		BinaryName: "pi",
+		InstallCmd: []string{"npm", "install", "-g", pinnedPackage("pi")},
+		ProviderSetup: func(t *testing.T, home string) {
+			token := os.Getenv("SKAINET_TOKEN")
+			if token == "" {
+				t.Fatal("SKAINET_TOKEN not set")
+			}
+			baseURL := os.Getenv("SKAINET_INTERNAL")
+			if baseURL == "" {
+				t.Fatal("SKAINET_INTERNAL not set (CI secret for the model provider URL)")
+			}
+			t.Logf("pi provider: baseURL=%s tokenLen=%d", baseURL, len(token))
+			authDir := filepath.Join(home, ".pi", "agent")
+			if err := os.MkdirAll(authDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			auth := map[string]map[string]string{
+				"openai": {
+					"type": "api_key",
+					"key":  token,
+				},
+			}
+			authBytes, _ := json.Marshal(auth)
+			if err := os.WriteFile(filepath.Join(authDir, "auth.json"), authBytes, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			t.Logf("auth.json written to %s", authDir)
+			settings := map[string]any{
+				"model": modelIDs["pi"],
+				"provider": map[string]any{
+					"openai": map[string]any{
+						"baseURL": baseURL,
+					},
+				},
+			}
+			settingsBytes, _ := json.Marshal(settings)
+			if err := os.WriteFile(filepath.Join(authDir, "settings.json"), settingsBytes, 0o644); err != nil {
+				t.Fatal(err)
+			}
+		},
+		EnvVars: func(t *testing.T) []string {
+			return nil
+		},
+		Sandbox: SandboxConfig{},
+		RunArgs: func(prompt string) []string {
+			return []string{"-p", prompt, "--model", modelIDs["pi"]}
+		},
+		SkillsBase: ".pi",
+		EnvVarsForAllow: func() []string {
+			return []string{"SKAINET_TOKEN"}
+		},
+		ExpectVisibleEnv: func() []string {
+			return []string{"SKAINET_TOKEN=", "OMAC_"}
 		},
 	}
 }
