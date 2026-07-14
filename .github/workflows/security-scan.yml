@@ -111,12 +111,13 @@ jobs:
           run_dirs=(target/strix_runs/*/)
           shopt -u nullglob
           if [ ${#run_dirs[@]} -eq 0 ]; then
-            echo "::error::strix produced no run directory -- scan likely failed to start (see strix_scan.log via the private artifact push step)"
+            echo "::error::strix produced no run directory -- scan likely failed to start (strix_scan.log is pushed to the private artifact repo below regardless of outcome -- check there, never printed here since it can contain scan content)"
             exit 1
           fi
           echo "run_dir=${run_dirs[-1]}" >> "$GITHUB_OUTPUT"
 
       - name: Dedupe against open issues + build triage report
+        if: steps.scan.outcome == 'success'
         env:
           STRIX_LLM: ${{ steps.model.outputs.strix_llm }}
         run: |
@@ -127,9 +128,15 @@ jobs:
             --summary-out step-summary.md
 
       - name: Public summary (counts only, no exploit detail)
+        if: steps.scan.outcome == 'success'
         run: cat step-summary.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Push full report to private artifact repo
+        # Runs even when the scan step failed: strix_scan.log is the only
+        # way to debug a startup failure, and it must never be printed to
+        # this (public) job log -- the private repo is the one place it's
+        # safe to look, whether or not the scan actually produced findings.
+        if: always()
         env:
           SECURITY_SCAN_PAT: ${{ secrets.SECURITY_SCAN_PAT }}
         run: |
@@ -138,13 +145,18 @@ jobs:
           git clone --quiet --depth 1 \
             "https://x-access-token:${SECURITY_SCAN_PAT}@github.com/nhuelstng/oh-my-agentic-coder-security.git" \
             "$dest"
-          scan_dir="$dest/scans/${{ steps.scan.outputs.run_label }}-${{ inputs.reason || 'scheduled' }}"
+          status="${{ steps.scan.outcome == 'success' && 'ok' || 'FAILED' }}"
+          scan_dir="$dest/scans/${{ steps.scan.outputs.run_label }}-${{ inputs.reason || 'scheduled' }}-${status}"
           mkdir -p "$scan_dir"
-          cp -r "${{ steps.scan.outputs.run_dir }}"/* "$scan_dir"/
-          cp triage-report.md strix_scan.log "$scan_dir"/
+          run_dir="${{ steps.scan.outputs.run_dir }}"
+          if [ -n "$run_dir" ] && [ -d "$run_dir" ]; then
+            cp -r "$run_dir"/* "$scan_dir"/
+          fi
+          [ -f triage-report.md ] && cp triage-report.md "$scan_dir"/
+          [ -f strix_scan.log ] && cp strix_scan.log "$scan_dir"/
           cd "$dest"
           git config user.name "strix-ci-bot"
           git config user.email "actions@users.noreply.github.com"
           git add .
-          git commit --quiet -m "scan: ${{ inputs.reason || 'scheduled' }} ($(date -u +%F))"
+          git commit --quiet -m "scan: ${{ inputs.reason || 'scheduled' }} [$status] ($(date -u +%F))"
           git push --quiet
