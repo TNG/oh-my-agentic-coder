@@ -614,26 +614,26 @@ func assertFilesystemReadDenied(t *testing.T, output string) {
 		failWithClassification(t, "fsReadDenied", fmAgentPartial, output)
 		return
 	}
-	// Probe ran completely — check for denial messages.
-	probeOut := extractProbe(output, "fs_read")
-	denials := []string{
-		"Permission denied",
-		"No such file or directory",
-		"cannot open",
-		"Operation not permitted",
-	}
-	found := false
-	for _, d := range denials {
-		if strings.Contains(probeOut, d) {
-			found = true
-			break
-		}
-	}
-	if !found {
+	// Probe ran completely. probe_read (audit.sh) prints an explicit
+	// "READABLE" marker only when a path was NOT blocked; denied paths
+	// print the OS error instead and never contain that word. Failing
+	// on its presence — rather than passing when any denial substring
+	// appears anywhere in the section — means a single leaked path
+	// among the ~14 probed here fails the assertion, instead of being
+	// masked by other paths in the same section that were denied.
+	if fsReadLeaked(output) {
 		failWithClassification(t, "fsReadDenied", fmSandboxFail, output)
 		return
 	}
-	t.Logf("PASS: filesystem read isolation — denial message found in agent output")
+	t.Logf("PASS: filesystem read isolation — no probed path was readable")
+}
+
+// fsReadLeaked reports whether any path probed by audit.sh's fs_read
+// section was readable. Pulled out of assertFilesystemReadDenied so the
+// marker-absence decision is unit-testable against synthetic probe output
+// without going through *testing.T (see security_assertions_test.go).
+func fsReadLeaked(output string) bool {
+	return strings.Contains(extractProbe(output, "fs_read"), "READABLE")
 }
 
 // assertFilesystemWriteDenied verifies that write attempts to system
@@ -649,24 +649,21 @@ func assertFilesystemWriteDenied(t *testing.T, output string) {
 		failWithClassification(t, "fsWriteDenied", fmAgentPartial, output)
 		return
 	}
-	probeOut := extractProbe(output, "fs_write")
-	denials := []string{
-		"Read-only file system",
-		"Permission denied",
-		"Operation not permitted",
-	}
-	found := false
-	for _, d := range denials {
-		if strings.Contains(probeOut, d) {
-			found = true
-			break
-		}
-	}
-	if !found {
+	// probe_write (audit.sh) prints an explicit "WRITABLE" marker only
+	// on a successful write; a denied write is otherwise silent, so the
+	// marker's absence — not the presence of some denial substring
+	// among the 4 probed paths — is what proves none of them leaked.
+	if fsWriteLeaked(output) {
 		failWithClassification(t, "fsWriteDenied", fmSandboxFail, output)
 		return
 	}
-	t.Logf("PASS: filesystem write protection — denial message found in agent output")
+	t.Logf("PASS: filesystem write protection — no probed path was writable")
+}
+
+// fsWriteLeaked reports whether any path probed by audit.sh's fs_write
+// section was writable. See fsReadLeaked.
+func fsWriteLeaked(output string) bool {
+	return strings.Contains(extractProbe(output, "fs_write"), "WRITABLE")
 }
 
 // assertSymlinkEscapeDenied verifies that the agent could not read a denied
@@ -686,41 +683,24 @@ func assertSymlinkEscapeDenied(t *testing.T, output string) {
 		failWithClassification(t, "symlinkEscapeDenied", fmAgentPartial, output)
 		return
 	}
-	probeOut := extractProbe(output, "symlink")
-	readDenials := []string{
-		"Permission denied",
-		"No such file or directory",
-		"cannot open",
-		"Operation not permitted",
-	}
-	writeDenials := []string{
-		"Read-only file system",
-		"Permission denied",
-		"Operation not permitted",
-	}
-	foundRead := false
-	for _, d := range readDenials {
-		if strings.Contains(probeOut, d) {
-			foundRead = true
-			break
-		}
-	}
-	if !foundRead {
-		failWithClassification(t, "symlinkEscapeDenied", fmSandboxFail, output)
-		return
-	}
-	foundWrite := false
-	for _, d := range writeDenials {
-		if strings.Contains(probeOut, d) {
-			foundWrite = true
-			break
-		}
-	}
-	if !foundWrite {
+	// Same marker-absence logic as assertFilesystemReadDenied /
+	// assertFilesystemWriteDenied: probe_read/probe_write print
+	// READABLE/WRITABLE only on a leak, so checking for their absence
+	// catches either half of the escape (read or write) leaking
+	// through the symlink indirection.
+	readLeaked, writeLeaked := symlinkEscapeLeaked(output)
+	if readLeaked || writeLeaked {
 		failWithClassification(t, "symlinkEscapeDenied", fmSandboxFail, output)
 		return
 	}
 	t.Logf("PASS: symlink escape denied — read and write through a workdir symlink to a denied path both blocked")
+}
+
+// symlinkEscapeLeaked reports whether the read half and/or write half of
+// audit.sh's symlink escape probe leaked. See fsReadLeaked.
+func symlinkEscapeLeaked(output string) (readLeaked, writeLeaked bool) {
+	probeOut := extractProbe(output, "symlink")
+	return strings.Contains(probeOut, "READABLE"), strings.Contains(probeOut, "WRITABLE")
 }
 
 // logHardlinkProbeResults logs whether a hardlink escape (same idea as the

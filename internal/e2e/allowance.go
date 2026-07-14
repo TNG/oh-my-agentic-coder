@@ -131,6 +131,9 @@ func allowanceSpecFor(h harnessConfig) AllowanceSpec {
 			"~/.env",
 			"~/.envrc",
 			"/root/.bashrc", // Linux; macOS baseline doesn't include /root
+			"~/.azure/credentials",
+			"~/.config/gcloud/credentials.db",
+			"/var/run/docker.sock", // container-escape vector if reachable
 		},
 		// FsWriteDenyPaths are system paths that must NOT be writable.
 		// The sandbox grants them read-only; write attempts must fail.
