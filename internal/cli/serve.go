@@ -1468,7 +1468,7 @@ func (s *serveServer) handleDirs(w http.ResponseWriter, r *http.Request) {
 	dirs := make([]map[string]string, 0, len(s.dirs))
 	for _, d := range s.dirs {
 		d.mu.Lock()
-		dirs = append(dirs, map[string]string{"dir": d.Dir, "dir_token": d.Token, "state": d.State})
+		dirs = append(dirs, map[string]string{"dir": d.Dir, "state": d.State})
 		d.mu.Unlock()
 	}
 	s.mu.RUnlock()

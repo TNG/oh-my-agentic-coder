@@ -259,6 +259,30 @@ func TestReloadGlobalEndpointExists(t *testing.T) {
 	}
 }
 
+func TestDirsEndpointDoesNotLeakTokens(t *testing.T) {
+	s := newServeServerForTest(t)
+	wdA := t.TempDir()
+	wdB := t.TempDir()
+	stageSkillWithSecret(t, wdA, "slack")
+	stageSkillWithSecret(t, wdB, "slack")
+	if _, err := s.activate(wdA); err != nil {
+		t.Fatalf("activate A: %v", err)
+	}
+	if _, err := s.activate(wdB); err != nil {
+		t.Fatalf("activate B: %v", err)
+	}
+
+	req := httptest.NewRequest("GET", "/__omac__/dirs", nil)
+	rec := httptest.NewRecorder()
+	s.controlMux().ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("dirs status = %d, want 200 (body=%s)", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "dir_token") {
+		t.Errorf("/__omac__/dirs leaked dir_token: %s", rec.Body.String())
+	}
+}
+
 func TestRootsEmptyAllowsAny(t *testing.T) {
 	s := newServeServerForTest(t)
 	// No roots configured -> any directory allowed.
