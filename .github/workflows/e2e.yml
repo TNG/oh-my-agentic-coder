@@ -15,23 +15,23 @@ on:
         type: boolean
         default: false
       use_latest:
-        description: 'Install each harness''s latest release instead of the pinned version below (drift-detection run; the *_version inputs are ignored when checked)'
+        description: 'Install each harness''s latest release for THIS RUN ONLY instead of internal/e2e/versions.go''s pin (drift-detection run; the *_version inputs below are ignored when checked)'
         type: boolean
         default: false
       opencode_version:
-        description: 'Pinned opencode package spec (ignored if "use latest" is checked)'
+        description: 'Pinned opencode package spec. Overrides internal/e2e/versions.go for THIS RUN ONLY (the file itself is untouched); ignored if "use latest" is checked'
         type: string
         default: 'opencode-ai@1.17.12'
       claude_code_version:
-        description: 'Pinned claude-code package spec (ignored if "use latest" is checked)'
+        description: 'Pinned claude-code package spec. Overrides internal/e2e/versions.go for THIS RUN ONLY (the file itself is untouched); ignored if "use latest" is checked'
         type: string
         default: '@anthropic-ai/claude-code@2.1.197'
       codex_version:
-        description: 'Pinned codex package spec (ignored if "use latest" is checked)'
+        description: 'Pinned codex package spec. Overrides internal/e2e/versions.go for THIS RUN ONLY (the file itself is untouched); ignored if "use latest" is checked'
         type: string
         default: '@openai/codex@0.142.5'
       copilot_version:
-        description: 'Pinned copilot package spec (ignored if "use latest" is checked)'
+        description: 'Pinned copilot package spec. Overrides internal/e2e/versions.go for THIS RUN ONLY (the file itself is untouched); ignored if "use latest" is checked'
         type: string
         default: '@github/copilot@1.0.68'
   schedule:
