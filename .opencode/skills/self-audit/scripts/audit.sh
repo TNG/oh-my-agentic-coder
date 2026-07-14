@@ -107,18 +107,32 @@ probe_read "--- ~/.zshrc ---" "$HOME/.zshrc"
 probe_read "--- ~/.profile ---" "$HOME/.profile"
 probe_read "--- ~/.env ---" "$HOME/.env"
 probe_read "--- ~/.envrc ---" "$HOME/.envrc"
+probe_read "--- ~/.azure ---" "$HOME/.azure/credentials"
+probe_read "--- ~/.config/gcloud ---" "$HOME/.config/gcloud/credentials.db"
+probe_read "--- /var/run/docker.sock ---" /var/run/docker.sock
 echo "=== END: fs_read ==="
 
 echo ""
 echo "=== PROBE: fs_write ==="
-echo "--- write /etc/omac-audit-test ---"
-( echo "test" > /etc/omac-audit-test ) 2>&1 || true
-echo "--- write /usr/omac-audit-test ---"
-( echo "test" > /usr/omac-audit-test ) 2>&1 || true
-echo "--- write /bin/omac-audit-test ---"
-( echo "test" > /bin/omac-audit-test ) 2>&1 || true
-echo "--- write /sbin/omac-audit-test ---"
-( echo "test" > /sbin/omac-audit-test ) 2>&1 || true
+# Mirrors probe_read: an explicit WRITABLE marker on success, since a
+# successful write is otherwise silent. Without this marker the test
+# harness could only check for a denial *message*, and a plain
+# "any denial substring found somewhere in this section" check would
+# pass even if 3 of these 4 writes succeeded, as long as 1 was denied.
+probe_write() {
+    label="$1"
+    path="$2"
+    if ( echo "test" > "$path" ) 2>/tmp/audit-write-err.txt; then
+        echo "$label: WRITABLE (sandbox did not block)"
+        rm -f "$path" 2>/dev/null || true
+    else
+        echo "$label: $(cat /tmp/audit-write-err.txt)"
+    fi
+}
+probe_write "--- write /etc/omac-audit-test ---" /etc/omac-audit-test
+probe_write "--- write /usr/omac-audit-test ---" /usr/omac-audit-test
+probe_write "--- write /bin/omac-audit-test ---" /bin/omac-audit-test
+probe_write "--- write /sbin/omac-audit-test ---" /sbin/omac-audit-test
 echo "=== END: fs_write ==="
 
 echo ""
@@ -142,7 +156,7 @@ ln -sfn "$HOME/.ssh/id_rsa" ./omac-audit-symlink-ssh 2>&1 || true
 probe_read "--- read via symlink to ~/.ssh/id_rsa ---" ./omac-audit-symlink-ssh
 echo "--- symlink ./omac-audit-symlink-write -> /etc/omac-audit-test (denied write path) ---"
 ln -sfn /etc/omac-audit-test ./omac-audit-symlink-write 2>&1 || true
-( echo "test" > ./omac-audit-symlink-write ) 2>&1 || true
+probe_write "--- write via symlink to /etc/omac-audit-test ---" ./omac-audit-symlink-write
 rm -f ./omac-audit-symlink-ssh ./omac-audit-symlink-write 2>/dev/null || true
 echo "=== END: symlink ==="
 

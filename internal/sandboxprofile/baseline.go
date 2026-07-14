@@ -117,6 +117,8 @@ func darwinBaseline() Baseline {
 			"$TMPDIR",
 		},
 		ProtectedPaths: append(protectedCommon(),
+			// container sockets: root-equivalent host access if reachable
+			"/var/run/docker.sock",
 			// keychains / password stores
 			"~/Library/Keychains",
 			"/Library/Keychains",
@@ -158,6 +160,13 @@ func linuxBaseline() Baseline {
 			"$TMPDIR",
 		},
 		ProtectedPaths: append(protectedCommon(),
+			// container sockets: root-equivalent host access if reachable.
+			// Both entries are listed because /var/run is a symlink to
+			// /run on most modern distros but not universally, and
+			// ProtectedPaths matching is a literal string prefix check
+			// (no symlink resolution).
+			"/var/run/docker.sock",
+			"/run/docker.sock",
 			// keyring / password stores
 			"~/.password-store",
 			"~/.local/share/keyrings",

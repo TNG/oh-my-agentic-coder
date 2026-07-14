@@ -67,6 +67,18 @@ func TestResolveGrantsBaselineIncluded(t *testing.T) {
 	if !hasSSH {
 		t.Errorf("protected paths missing ~/.ssh: %d entries", len(g.ProtectedPaths))
 	}
+	// Docker socket must be masked even under a broad grant (defense in
+	// depth for the container-escape vector: a covered docker.sock
+	// gives root-equivalent host access).
+	hasDockerSock := false
+	for _, p := range g.ProtectedPaths {
+		if strings.HasSuffix(p, "docker.sock") {
+			hasDockerSock = true
+		}
+	}
+	if !hasDockerSock {
+		t.Errorf("protected paths missing docker.sock: %v", g.ProtectedPaths)
+	}
 }
 
 func TestResolveGrantsOverrideDeny(t *testing.T) {
