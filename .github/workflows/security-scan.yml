@@ -113,12 +113,18 @@ jobs:
             --scan-mode "${{ inputs.scan_mode || 'deep' }}" \
             > strix_scan.log 2>&1 || true
 
+          # strix_runs/ lands relative to strix's OWN invocation cwd (this
+          # job's default workspace root), as a sibling of target/ -- NOT
+          # nested inside target/strix_runs/, regardless of --target vs.
+          # --mount. Confirmed against a real run's own reported Output
+          # path: .../oh-my-agentic-coder/strix_runs/target_<id>.
+          #
           # nullglob + array, not `ls glob | head`: under bash -e + pipefail
           # (this shell's default), a non-matching glob inside `$(...)`
           # aborts the script with ls's own exit code, skipping the
           # friendly ::error:: below entirely.
           shopt -s nullglob
-          run_dirs=(target/strix_runs/*/)
+          run_dirs=(strix_runs/*/)
           shopt -u nullglob
           if [ ${#run_dirs[@]} -eq 0 ]; then
             echo "::error::strix produced no run directory -- scan likely failed to start (strix_scan.log is pushed to the private artifact repo below regardless of outcome -- check there, never printed here since it can contain scan content)"
