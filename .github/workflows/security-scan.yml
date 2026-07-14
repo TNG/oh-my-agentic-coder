@@ -65,7 +65,16 @@ jobs:
           # No --user: actions/setup-python's toolcached interpreter is
           # already user-writable and its bin/ is on PATH, so --user risks
           # installing the console script somewhere PATH doesn't cover.
-          pip install strix-agent==1.0.4
+          #
+          # openai==2.44.0 pinned deliberately: strix-agent==1.0.4's own
+          # constraints let pip resolve openai==2.45.0, which changes the
+          # response shape openai-agents==0.14.6 parses just enough that
+          # `Usage(input_tokens_details=...)` fails pydantic validation
+          # (missing `cache_write_tokens`) against Skainet/litellm's
+          # translated response -- confirmed by reproducing locally and
+          # bisecting to this one package. Revisit this pin whenever
+          # strix-agent/openai-agents get bumped upstream.
+          pip install strix-agent==1.0.4 openai==2.44.0
           # Safe to print -- version string only, no scan content.
           strix --version
 
