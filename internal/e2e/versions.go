@@ -29,6 +29,7 @@ var versionEnvVar = map[string]string{
 	"claude-code": "E2E_VERSION_CLAUDE_CODE",
 	"codex":       "E2E_VERSION_CODEX",
 	"copilot":     "E2E_VERSION_COPILOT",
+	"pi":          "E2E_VERSION_PI",
 }
 
 // Model identifiers per harness.
