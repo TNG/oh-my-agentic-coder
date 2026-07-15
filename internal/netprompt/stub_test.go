@@ -3,8 +3,10 @@ package netprompt
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -119,7 +121,7 @@ func TestFileDecisionSourceLoadsFromDisk(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	src := newFileDecisionSource(path)
+	src := newFileDecisionSource(path, nil)
 	d, ok := src.lookup("api.example.com")
 	if !ok || !d.Allow || d.Scope != "suffix" {
 		t.Errorf("lookup failed: %+v ok=%v", d, ok)
@@ -133,10 +135,34 @@ func TestFileDecisionSourceLoadsFromDisk(t *testing.T) {
 }
 
 func TestFileDecisionSourceMissingFile(t *testing.T) {
-	src := newFileDecisionSource("/nonexistent/path/decisions.json")
+	var logged []string
+	src := newFileDecisionSource("/nonexistent/path/decisions.json",
+		func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) })
 	d, ok := src.lookup("anything.example")
 	if ok {
 		t.Errorf("missing file should return not-found: %+v", d)
+	}
+	if len(logged) == 0 || !strings.Contains(logged[0], "cannot read decisions file") {
+		t.Errorf("missing file should be logged, got: %v", logged)
+	}
+}
+
+func TestFileDecisionSourceMalformedFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "decisions.json")
+	if err := os.WriteFile(path, []byte("{ this is not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var logged []string
+	src := newFileDecisionSource(path,
+		func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) })
+	// A malformed file must not silently yield "deny once for every host"
+	// with no diagnostic — the load error is surfaced via logf.
+	if _, ok := src.lookup("anything.example"); ok {
+		t.Error("malformed file should yield no decision")
+	}
+	if len(logged) == 0 || !strings.Contains(logged[0], "malformed decisions file") {
+		t.Errorf("malformed file should be logged, got: %v", logged)
 	}
 }
 
@@ -145,7 +171,7 @@ func TestFileDecisionSourceReloadOnFirstLookup(t *testing.T) {
 	path := filepath.Join(dir, "decisions.json")
 
 	// File doesn't exist yet → no decisions.
-	src := newFileDecisionSource(path)
+	src := newFileDecisionSource(path, nil)
 	if _, ok := src.lookup("test.example"); ok {
 		t.Error("should be no decision before file exists")
 	}
@@ -156,7 +182,7 @@ func TestFileDecisionSourceReloadOnFirstLookup(t *testing.T) {
 	if err := os.WriteFile(path, raw, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	src2 := newFileDecisionSource(path)
+	src2 := newFileDecisionSource(path, nil)
 	d, ok := src2.lookup("test.example")
 	if !ok || !d.Allow {
 		t.Errorf("should load from disk: %+v ok=%v", d, ok)
@@ -239,7 +265,7 @@ func TestFileDecisionSourceConcurrentLookupNoDeadlock(t *testing.T) {
 	path := filepath.Join(dir, "decisions.json")
 	_ = os.WriteFile(path, []byte(`{"host.example":{"allow":true}}`), 0o600)
 
-	src := newFileDecisionSource(path)
+	src := newFileDecisionSource(path, nil)
 	done := make(chan struct{})
 	for i := 0; i < 10; i++ {
 		go func() {

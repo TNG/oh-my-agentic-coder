@@ -8,7 +8,7 @@ import (
 
 func TestProtectedPathSetBaselineMatch(t *testing.T) {
 	prof := &sandboxprofile.Profile{}
-	set := NewProtectedPathSet(prof, "/work")
+	set := NewProtectedPathSet(prof)
 	if set == nil {
 		t.Fatal("nil set")
 	}
@@ -34,7 +34,7 @@ func TestProtectedPathSetBaselineMatch(t *testing.T) {
 
 func TestProtectedPathSetSubpathMatch(t *testing.T) {
 	prof := &sandboxprofile.Profile{}
-	set := NewProtectedPathSet(prof, "/work")
+	set := NewProtectedPathSet(prof)
 	var sample string
 	for _, e := range set.entries {
 		if len(e) > 0 && e[0] == '/' {
@@ -57,7 +57,7 @@ func TestProtectedPathSetSubpathMatch(t *testing.T) {
 
 func TestProtectedPathSetNoMatch(t *testing.T) {
 	prof := &sandboxprofile.Profile{}
-	set := NewProtectedPathSet(prof, "/work")
+	set := NewProtectedPathSet(prof)
 	_, ok := set.IsProtected("/tmp/random-file")
 	if ok {
 		t.Error("IsProtected(/tmp/random-file) = true; want false")
@@ -70,7 +70,7 @@ func TestProtectedPathSetProfileDeny(t *testing.T) {
 			Deny: []string{"~/secrets.json"},
 		},
 	}
-	set := NewProtectedPathSet(prof, "/work")
+	set := NewProtectedPathSet(prof)
 	var found bool
 	for _, e := range set.entries {
 		rule, ok := set.IsProtected(e)

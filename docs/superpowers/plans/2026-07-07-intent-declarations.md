@@ -1,5 +1,17 @@
 # Intent declarations for sandbox prompts — Implementation Plan
 
+> ⚠️ **Historical planning snapshot (2026-07-07).** This is the
+> point-in-time plan written *before* the feature was built; it is kept as
+> a record of the intended approach, not as documentation of shipped
+> behavior. The feature landed in PR #51 and the implementation diverged
+> from this plan in several places (e.g. `intent.New` takes only a `ttl`;
+> the registry is constructed in the parent process and read over HTTP by
+> the sandbox child; the registry is capped at 512 entries). For shipped
+> behavior see the retrofitted spec
+> (`docs/superpowers/specs/2026-07-07-intent-declarations-design.md`) and
+> the code. The unchecked task boxes below reflect the plan's original
+> state and are **not** an implementation to-do list.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Surface the agent's declared intent (why it needs access, what it expects to find) in network permission popups and session-end folder reviews, via a new in-supervisor intent registry and facade endpoint.

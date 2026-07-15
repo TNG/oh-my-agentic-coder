@@ -34,10 +34,14 @@ type fileDecisionSource struct {
 	path      string
 	loaded    bool
 	decisions map[string]stubDecision
+	logf      func(string, ...any)
 }
 
-func newFileDecisionSource(path string) *fileDecisionSource {
-	return &fileDecisionSource{path: path}
+func newFileDecisionSource(path string, logf func(string, ...any)) *fileDecisionSource {
+	if logf == nil {
+		logf = func(string, ...any) {}
+	}
+	return &fileDecisionSource{path: path, logf: logf}
 }
 
 func (f *fileDecisionSource) lookup(host string) (stubDecision, bool) {
@@ -67,10 +71,16 @@ func (f *fileDecisionSource) load() {
 	f.decisions = map[string]stubDecision{}
 	data, err := os.ReadFile(f.path)
 	if err != nil {
+		// A missing/unreadable file is a real misconfiguration: without it
+		// every host falls through to "Deny once" with no signal. Surface
+		// it rather than silently denying.
+		f.logf("omac sandbox: stub prompt: cannot read decisions file %q: %v; denying every host", f.path, err)
 		f.loaded = true
 		return
 	}
-	_ = json.Unmarshal(data, &f.decisions)
+	if err := json.Unmarshal(data, &f.decisions); err != nil {
+		f.logf("omac sandbox: stub prompt: malformed decisions file %q: %v; denying every host", f.path, err)
+	}
 	f.loaded = true
 }
 

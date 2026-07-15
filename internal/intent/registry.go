@@ -15,6 +15,12 @@ import (
 	"time"
 )
 
+// DefaultTTL is the session-scoped lifetime the CLI gives a Registry.
+// Intents are advisory and short-lived: long enough to bridge a declare →
+// request round-trip, short enough that a stale reason never outlives its
+// task.
+const DefaultTTL = 10 * time.Minute
+
 const (
 	// maxReasonLen bounds a recorded reason. The reason is agent-supplied
 	// and surfaced verbatim in a fixed-size dialog; a runaway reason is

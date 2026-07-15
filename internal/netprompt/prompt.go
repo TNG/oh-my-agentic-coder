@@ -159,7 +159,7 @@ func NewPrompter(timeoutSecs int, logf func(string, ...any), lookupIntent func(h
 	// decisionSource interface allows a future socket-based source without
 	// changing NewPrompter or the backend interface.
 	if isTruthyEnv(os.Getenv("OMAC_PROMPT_STUB")) {
-		src := newFileDecisionSource(os.Getenv("OMAC_PROMPT_DECISIONS"))
+		src := newFileDecisionSource(os.Getenv("OMAC_PROMPT_DECISIONS"), logf)
 		p.backends = []dialogBackend{stubBackend{source: src, logf: logf}}
 		p.notify = nil // no OS notification in stub mode
 		return p, true
@@ -207,6 +207,17 @@ func (p *Prompter) Prompt(host string, port int) netproxy.PromptResult {
 			intent = reason
 		}
 	}
+	// Behavioral signal: whether the agent pre-declared intent before this
+	// host triggered a popup is the feature's core reliability metric, and
+	// it depends on LLM behavior, not a deterministic code path. Emit one
+	// stable, machine-parseable line per prompt so the pre-declaration rate
+	// can be computed by grepping any session's diag log (or asserted by a
+	// brief-only behavioral e2e) without extra instrumentation.
+	declared := "missing"
+	if intent != "" {
+		declared = "declared"
+	}
+	p.logf("omac sandbox: intent-signal: network prompt host=%s port=%d intent=%s", host, port, declared)
 	ctx, cancel := context.WithTimeout(context.Background(), p.timeout)
 	defer cancel()
 	label, err := backend.show(ctx, host, port, suffix, intent)

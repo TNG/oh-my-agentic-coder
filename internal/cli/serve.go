@@ -22,13 +22,10 @@ import (
 	"github.com/tngtech/oh-my-agentic-coder/internal/audit"
 	"github.com/tngtech/oh-my-agentic-coder/internal/config"
 	"github.com/tngtech/oh-my-agentic-coder/internal/facade"
-	"github.com/tngtech/oh-my-agentic-coder/internal/intent"
 	"github.com/tngtech/oh-my-agentic-coder/internal/keychain"
 	"github.com/tngtech/oh-my-agentic-coder/internal/opencodestate"
 	"github.com/tngtech/oh-my-agentic-coder/internal/registry"
 	"github.com/tngtech/oh-my-agentic-coder/internal/sandbox"
-	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxprofile"
-	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxrun"
 	"github.com/tngtech/oh-my-agentic-coder/internal/secrets"
 	"github.com/tngtech/oh-my-agentic-coder/internal/skillconfig"
 	"github.com/tngtech/oh-my-agentic-coder/internal/skillsource"
@@ -207,16 +204,9 @@ func runServe(args []string, env *Env) int {
 		env.Version,
 	)
 	f.SetAuditor(auditor)
-	// Wire the protected-path checker (see start.go for rationale).
-	if !*noSandbox {
-		if prof, _, perr := sandboxprofile.Resolve(profName); perr == nil {
-			f.ProtectedPathChecker = sandboxrun.NewProtectedPathSet(prof, env.Workdir)
-			if prof.Denial != nil && prof.Denial.FacadeNote != "" {
-				f.DenialNote = prof.Denial.FacadeNote
-			}
-		}
-	}
-	f.IntentRegistry = intent.New(10 * time.Minute)
+	wireFacadeSandbox(f, *noSandbox, profName, func(format string, args ...any) {
+		fmt.Fprintf(env.Stderr, format+"\n", args...)
+	})
 	if err := f.Start(ctx); err != nil {
 		fmt.Fprintln(env.Stderr, "omac serve: facade:", err)
 		return ExitIOError

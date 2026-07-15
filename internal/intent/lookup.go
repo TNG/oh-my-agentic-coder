@@ -1,6 +1,7 @@
 package intent
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -9,12 +10,28 @@ import (
 	"time"
 )
 
+const (
+	// popupLookupTimeout bounds the exact lookup on the network-popup path.
+	// The call is loopback and the result is advisory (a miss just shows
+	// "(not declared)"), so a wedged facade must not delay the popup: cap
+	// it short rather than making the user wait.
+	popupLookupTimeout = 500 * time.Millisecond
+	// subtreeLookupTimeout bounds the subtree lookup on the learn-mode
+	// teardown path, which is less latency-sensitive than a live popup.
+	subtreeLookupTimeout = 2 * time.Second
+)
+
+// httpClient is shared across lookups so the loopback dial is amortized
+// (connection reuse) instead of building a fresh transport per call. Per-call
+// deadlines are applied via context, not a client-level Timeout.
+var httpClient = &http.Client{}
+
 // LookupOverHTTP queries a facade's GET /sandbox/intent?target=<target>
 // endpoint for an exact agent-declared intent (used by the network
 // popup, which looks up by host). Returns ("", false) on any error
 // (network, missing endpoint, etc.) — the caller shows "(not declared)".
 func LookupOverHTTP(baseURL, target string) (string, bool) {
-	return lookupOverHTTP(baseURL, target, false)
+	return lookupOverHTTP(baseURL, target, false, popupLookupTimeout)
 }
 
 // LookupSubtreeOverHTTP is like LookupOverHTTP but asks the facade for
@@ -22,10 +39,10 @@ func LookupOverHTTP(baseURL, target string) (string, bool) {
 // ancestor of the given path). Used by the folder learn-review, where
 // the offered candidate is a reduced ancestor of the declared paths.
 func LookupSubtreeOverHTTP(baseURL, target string) (string, bool) {
-	return lookupOverHTTP(baseURL, target, true)
+	return lookupOverHTTP(baseURL, target, true, subtreeLookupTimeout)
 }
 
-func lookupOverHTTP(baseURL, target string, subtree bool) (string, bool) {
+func lookupOverHTTP(baseURL, target string, subtree bool, timeout time.Duration) (string, bool) {
 	if baseURL == "" || target == "" {
 		return "", false
 	}
@@ -34,8 +51,13 @@ func lookupOverHTTP(baseURL, target string, subtree bool) (string, bool) {
 	if subtree {
 		u += "&subtree=1"
 	}
-	client := &http.Client{Timeout: 2 * time.Second}
-	resp, err := client.Get(u)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return "", false
+	}
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return "", false
 	}

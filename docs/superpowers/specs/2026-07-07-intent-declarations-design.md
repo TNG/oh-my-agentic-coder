@@ -2,7 +2,10 @@
 
 **Issue:** [#41 — Better descriptions for web requests](https://github.com/TNG/oh-my-agentic-coder/issues/41)
 **Date:** 2026-07-07
-**Status:** Approved, awaiting implementation plan
+**Status:** Implemented (PR #51). This spec was updated post-merge to
+describe the shipped behavior; where the original design and the
+implementation diverged, the implementation is authoritative and this
+document follows it.
 
 ## Problem
 
@@ -99,12 +102,15 @@ type Registry struct {
     mu      sync.Mutex
     entries map[string]Entry
     ttl     time.Duration
-    logf    func(string, ...any)
+    stop    chan struct{}   // stops the background TTL sweeper
+    stopped sync.Once
 }
 ```
 
-- `New(ttl time.Duration, logf func(string, ...any)) *Registry` — default
-  ttl 10 minutes (caller passes this; tests use a short ttl).
+- `New(ttl time.Duration) *Registry` — the caller passes the ttl
+  (`intent.DefaultTTL` is 10 minutes; tests use a short ttl). `New` starts
+  a background sweeper that evicts expired entries every `ttl/2`; call
+  `Close` to stop it.
 - `Record(target, reason string)` — normalizes the target so a lookup
   matches however the agent phrased it:
   - Network: URL (`https://api.x/y`), `host:port`, or bare host all
@@ -138,12 +144,19 @@ to the existing `/sandbox/denied` route.
   Content`.
 - On empty/missing `target` or `reason`: `400` with a short body naming
   the required fields.
-- `GET /sandbox/intent?target=<host or path>` returns the recorded reason
-  (`{"target","reason"}`, `404` when absent). `&subtree=1` returns intents
-  the agent declared for paths at/under/above the given directory, joined
-  into one reason — used by the folder learn-review, where the offered
-  candidate is a *reduced ancestor* of the paths the agent actually named
-  (an exact match would miss them).
+- `GET /sandbox/intent?target=<host or path>` returns
+  `{"target","declared","reason","hint"}`. When an intent is on file:
+  `declared:true`, the recorded `reason`, and a `hint` confirming it was
+  shown. When absent it returns the **same shape** with HTTP `404`,
+  `declared:false`, empty `reason`, and a `hint` telling the agent to
+  declare an intent and retry — the reactive-recovery channel the brief
+  points the agent at. `&subtree=1` returns intents the agent declared for
+  paths at/under/above the given directory, joined into one reason — used
+  by the folder learn-review, where the offered candidate is a *reduced
+  ancestor* of the paths the agent actually named (an exact match would
+  miss them). (The `intent.LookupOverHTTP` / `LookupSubtreeOverHTTP`
+  client helpers decode only the `reason` they need and ignore the other
+  fields.)
 - Registry injected at facade construction time (same pattern as the
   protected-path checker). Nil registry → `503`.
 
@@ -188,12 +201,13 @@ agent's ability to spam or bloat the registry.
 - `Prompter` gains a field `lookupIntent func(host string) (string, bool)`.
   Wired in `NewPrompter` via an extra parameter from `run.go`. Nil → no
   registry (tests); all lookups return false.
-- `promptText(host, port, urlPath, intent string)` — new signature:
+- `promptText(host string, port int, intent string)` — the signature
+  carries no `urlPath` (URL path display was descoped, below):
 
   ```
   The sandboxed process is trying to reach:
 
-      https://example.com:443/some/path
+      https://example.com:443
 
   Agent intent: "fetch the latest release notes to verify the version"
   ```
@@ -300,22 +314,34 @@ marker).
 
 ## Wiring
 
-**`internal/sandboxrun/run.go`** constructs one `*intent.Registry` per
-session and threads it through:
+The registry lives in the **parent (facade) process**, so that is where it
+is constructed — the shared `cli.wireFacadeSandbox` helper (called by both
+`internal/cli/start.go` and `internal/cli/serve.go`) does
+`f.IntentRegistry = intent.New(intent.DefaultTTL)` and attaches it to the
+facade, which owns `POST /sandbox/intent` recording. Registry lifetime =
+session; the facade's `Close()` stops the sweeper.
 
-1. Facade construction (for `POST /sandbox/intent` recording).
-2. `NewPrompter` (for `lookupIntent` in the popup).
-3. `newLearnRecorder` (for candidate intent lookup at session end).
+The consumers run in the **sandbox child** (`omac sandbox run`) and read
+intents back **over HTTP** (they cannot share the parent's memory):
 
-Registry lifetime = session. `Close()` called on shutdown.
+1. `internal/sandboxrun/run.go` reads `OMAC_BASE` and passes
+   `intent.LookupOverHTTP` to `NewPrompter` as `lookupIntent` (the network
+   popup, exact host lookup).
+2. The learn recorder resolves candidate intents at session end via
+   `intent.LookupSubtreeOverHTTP` (subtree match).
+
+This is the cross-process split the Architecture section describes; the
+in-process threading of an earlier draft does not exist.
 
 ## Error handling
 
 - `POST /sandbox/intent` with missing/empty `target` or `reason` → `400`
   with a short body naming the required fields.
-- Registry full? No cap — entries are small and TTL-evicted; a
-  misbehaving agent spamming intents just churns the map. Logged at
-  debug level via the injected `logf`.
+- Registry full? Capped at `maxEntries = 512`. Recording a new target
+  when full evicts the oldest entry, so a misbehaving agent spamming
+  distinct targets within one TTL window churns the map rather than
+  growing it without bound. (Entries are also TTL-evicted by the
+  background sweeper.)
 - `Lookup` on a missing key returns `("", false)` — callers already
   handle this (popup shows "not declared").
 - Registry nil (tests, `--learn` without facade) → all lookups return

@@ -260,9 +260,14 @@ func (s *Server) handleConnect(conn net.Conn, req *http.Request) {
 // already-expired context. verdict is always meaningful; upstream/err
 // are only set when the verdict is Allow.
 func (s *Server) checkAndDial(host string, port int) (net.Conn, Verdict, error) {
-	checkCtx, checkCancel := context.WithTimeout(context.Background(), connectTimeout)
-	verdict, addrs := s.filter.Check(checkCtx, host, port)
-	checkCancel()
+	// The check phase runs in its own scope so checkCancel is deferred
+	// (fires even if filter.Check panics) yet still releases the check
+	// context before the dial phase begins.
+	verdict, addrs := func() (Verdict, []netip.Addr) {
+		checkCtx, checkCancel := context.WithTimeout(context.Background(), connectTimeout)
+		defer checkCancel()
+		return s.filter.Check(checkCtx, host, port)
+	}()
 	if verdict.Decision != Allow {
 		return nil, verdict, nil
 	}
@@ -323,6 +328,11 @@ func (s *Server) handleForward(conn net.Conn, br *bufio.Reader, req *http.Reques
 	_ = br // request body (if any) was consumed by outReq.Write via req.Body
 }
 
+// maxParallelDials caps how many pinned addresses are dialed at once.
+// RFC 8305 recommends racing only a small number of connection attempts
+// concurrently rather than an unbounded fan-out.
+const maxParallelDials = 8
+
 // dialPinned connects to the already-resolved addresses, racing them
 // concurrently (Happy Eyeballs, RFC 8305) rather than in strict order.
 // Only the pre-resolved IPs are dialed, so DNS pinning (anti-rebinding)
@@ -341,9 +351,21 @@ func dialPinned(ctx context.Context, addrs []netip.Addr, port int) (net.Conn, er
 		err  error
 	}
 	ch := make(chan result, len(addrs))
+	// Bound concurrent dials (RFC 8305 recommends racing only a small
+	// number). All addresses are still attempted; at most maxParallelDials
+	// are in flight at once. Goroutines waiting for a slot bail as soon as
+	// a winner cancels ctx.
+	sem := make(chan struct{}, maxParallelDials)
 	for _, a := range addrs {
 		addr := net.JoinHostPort(a.String(), strconv.Itoa(port))
 		go func() {
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-ctx.Done():
+				ch <- result{nil, ctx.Err()}
+				return
+			}
 			var d net.Dialer
 			conn, err := d.DialContext(ctx, "tcp", addr)
 			ch <- result{conn, err}

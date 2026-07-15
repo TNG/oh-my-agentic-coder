@@ -169,13 +169,6 @@ type ProtectedPathChecker interface {
 	IsProtected(absPath string) (rule string, ok bool)
 }
 
-// noteNotProtected is returned for a path that is not in the protected
-// set. It deliberately does NOT claim the path is missing: a path can
-// read as absent simply because it is outside the sandbox's granted
-// directories (never mounted). The agent — which knows its own granted
-// dirs — applies the rule.
-const noteNotProtected = "Not protected by the sandbox — but this does not confirm the path exists. If it is inside your granted directories it is genuinely missing; if it is outside them it is simply not mounted into the sandbox and may exist on the host. Do not conclude it is missing. A running sandbox cannot mount new folders and there is no live approval popup for a path — that popup is network-only. The only way to reach it is for the user to add it to the sandbox profile (~/.config/omac/sandbox-profiles/default.json) and relaunch. Declaring intent (POST $OMAC_BASE/sandbox/intent) only records your reason for the session-end review; it does not grant access and raises no dialog. So tell the user which path you need and why, and ask them to add it and relaunch — do not tell them to approve a popup."
-
 // New constructs a Facade. socketPath may be empty to disable the Unix
 // listener; tcpAddr may be empty to disable the TCP listener. Passing
 // "127.0.0.1:0" asks the OS for an ephemeral port (read it back via
@@ -533,7 +526,7 @@ func (f *Facade) handleSandboxDenied(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	abs := q
-	// ponytail: the caller is expected to pass an absolute path (the
+	// note: the caller is expected to pass an absolute path (the
 	// marker file tells the agent to query with an absolute path).
 	// Relative paths are passed through literally — IsProtected
 	// decides what to do with them.
@@ -558,7 +551,13 @@ func (f *Facade) handleSandboxDenied(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNotFound)
-	_ = json.NewEncoder(w).Encode(deniedResp{Denied: false, Path: abs, Note: noteNotProtected})
+	// The not-protected note lives in sandboxdeny alongside its siblings
+	// (MarkerFile, FacadeNote) so all user-facing denial strings form one
+	// tunable knob. It deliberately does NOT claim the path is missing: a
+	// path can read as absent simply because it is outside the sandbox's
+	// granted directories (never mounted). The agent — which knows its own
+	// granted dirs — applies the rule.
+	_ = json.NewEncoder(w).Encode(deniedResp{Denied: false, Path: abs, Note: sandboxdeny.Default().NotProtectedNote})
 }
 
 // handleSandboxIntent records (POST) an agent-declared intent — why the

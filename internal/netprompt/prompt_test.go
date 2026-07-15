@@ -1,12 +1,65 @@
 package netprompt
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
+
+// signalBackend is a dialogBackend stub that returns a fixed label without
+// showing any GUI, for exercising Prompt's instrumentation path.
+type signalBackend struct{ label string }
+
+func (signalBackend) name() string    { return "signal-test" }
+func (signalBackend) available() bool { return true }
+func (b signalBackend) show(ctx context.Context, host string, port int, suffix, intent string) (string, error) {
+	return b.label, nil
+}
+
+// TestPromptEmitsIntentSignal locks the machine-parseable behavioral signal
+// that lets the pre-declaration rate be computed from a session's diag log:
+// every network prompt logs exactly one "intent-signal:" line tagged
+// declared|missing depending on whether the agent pre-declared.
+func TestPromptEmitsIntentSignal(t *testing.T) {
+	cases := []struct {
+		name       string
+		lookup     func(string) (string, bool)
+		wantSignal string
+	}{
+		{"declared", func(string) (string, bool) { return "fetch release notes", true }, "intent=declared"},
+		{"missing", func(string) (string, bool) { return "", false }, "intent=missing"},
+		{"no-registry", nil, "intent=missing"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var logs []string
+			p := &Prompter{
+				timeout:      time.Second,
+				logf:         func(f string, a ...any) { logs = append(logs, fmt.Sprintf(f, a...)) },
+				backends:     []dialogBackend{signalBackend{label: "Allow once"}},
+				lookupIntent: c.lookup,
+			}
+			p.Prompt("api.example.com", 443)
+			var signals []string
+			for _, l := range logs {
+				if strings.Contains(l, "intent-signal:") {
+					signals = append(signals, l)
+				}
+			}
+			if len(signals) != 1 {
+				t.Fatalf("want exactly 1 intent-signal line, got %d: %v", len(signals), signals)
+			}
+			if !strings.Contains(signals[0], c.wantSignal) || !strings.Contains(signals[0], "host=api.example.com") {
+				t.Errorf("signal = %q; want %q + host=api.example.com", signals[0], c.wantSignal)
+			}
+		})
+	}
+}
 
 func TestRegisteredSuffixHint(t *testing.T) {
 	cases := map[string]string{

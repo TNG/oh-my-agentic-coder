@@ -36,7 +36,7 @@ type ProtectedPathSet struct {
 // (those need the workdir and granted trees; the facade doesn't have
 // them). Baseline and explicit path-form denies are enough to answer
 // "is this the kind of path the sandbox protects?" for the agent.
-func NewProtectedPathSet(p *sandboxprofile.Profile, workdir string) *ProtectedPathSet {
+func NewProtectedPathSet(p *sandboxprofile.Profile) *ProtectedPathSet {
 	base := sandboxprofile.PlatformBaseline()
 	protected := sandboxprofile.EffectiveProtectedPaths(base, p.Filesystem.OverrideDeny)
 
