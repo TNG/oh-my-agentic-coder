@@ -71,6 +71,7 @@ _COMPACT_TARGET = _int_env("STRIX_COMPACT_TARGET_TOKENS", 150_000)
 _COMPACT_KEEP_RECENT = _int_env("STRIX_COMPACT_KEEP_RECENT_TURNS", 3)
 _COMPACT_CHARS_PER_TOKEN = _float_env("STRIX_COMPACT_CHARS_PER_TOKEN", 3.5)
 _SUMMARY_MAX_TOKENS = _int_env("STRIX_COMPACT_SUMMARY_MAX_TOKENS", 1200)
+_TOOLCALL_422_RETRIES = _int_env("STRIX_TOOLCALL_422_RETRIES", 2)
 
 _SUMMARY_SYSTEM_PROMPT = (
     "You are compacting the transcript of an autonomous security-pentest agent "
@@ -170,6 +171,34 @@ def _maybe_compact(body: bytes, path: str, authorization: str) -> bytes:
     return json.dumps(parsed).encode()
 
 
+def _is_toolcall_parse_422(status_code: int, body: bytes) -> bool:
+    """Whether a 422 is the gateway's vLLM ``tool_choice=auto`` handler failing
+    to parse malformed tool-call JSON emitted by the model.
+
+    Distinct from ``context_length_exceeded`` (also a 422): that is a context
+    problem compaction handles and a retry can never fix, whereas a malformed
+    tool call is stochastic -- resampling usually yields valid JSON. The gateway
+    message carries ``tool_choice`` only for the former.
+    """
+    return status_code == 422 and b"tool_choice" in body
+
+
+def _bump_temperature(body: bytes, attempt: int) -> bytes:
+    """Raise sampling temperature for a retry so the model resamples a fresh
+    tool call instead of deterministically repeating the malformed one (greedy
+    decoding at temperature 0 reproduces it). Returns body unchanged if not JSON."""
+    try:
+        parsed = json.loads(body)
+    except (ValueError, TypeError):
+        return body
+    parsed["temperature"] = round(min(0.4 + 0.3 * attempt, 1.0), 2)
+    return json.dumps(parsed).encode()
+
+
+def _clean_response_headers(resp: httpx.Response) -> dict[str, str]:
+    return {k: v for k, v in resp.headers.items() if k.lower() not in _HOP_BY_HOP}
+
+
 async def healthz(request: Request) -> Response:
     return JSONResponse({"ok": True})
 
@@ -181,27 +210,48 @@ async def proxy(request: Request) -> Response:
         _maybe_compact, body, request.url.path, request.headers.get("authorization", "")
     )
 
-    upstream_req = _client.build_request(
-        request.method,
-        request.url.path,
-        headers=headers,
-        params=request.query_params,
-        content=body,
-    )
-    upstream_resp = await _client.send(upstream_req, stream=True)
+    attempt_body = body
+    for attempt in range(_TOOLCALL_422_RETRIES + 1):
+        upstream_resp = await _client.send(
+            _client.build_request(
+                request.method,
+                request.url.path,
+                headers=headers,
+                params=request.query_params,
+                content=attempt_body,
+            ),
+            stream=True,
+        )
+        if attempt < _TOOLCALL_422_RETRIES and upstream_resp.status_code == 422:
+            error_body = await upstream_resp.aread()
+            await upstream_resp.aclose()
+            if _is_toolcall_parse_422(422, error_body):
+                logger.warning(
+                    "gateway tool_choice 422 (malformed tool call); resampling at higher "
+                    "temperature (attempt %d/%d)",
+                    attempt + 1,
+                    _TOOLCALL_422_RETRIES,
+                )
+                attempt_body = _bump_temperature(attempt_body, attempt + 1)
+                continue
+            # A different 422 (e.g. context_length_exceeded) -- not resamplable;
+            # return it verbatim so strix sees the real error.
+            return Response(
+                content=error_body,
+                status_code=422,
+                headers=_clean_response_headers(upstream_resp),
+            )
+        break
 
     async def relay() -> object:
         async for chunk in upstream_resp.aiter_raw():
             yield chunk
         await upstream_resp.aclose()
 
-    response_headers = {
-        k: v for k, v in upstream_resp.headers.items() if k.lower() not in _HOP_BY_HOP
-    }
     return StreamingResponse(
         relay(),
         status_code=upstream_resp.status_code,
-        headers=response_headers,
+        headers=_clean_response_headers(upstream_resp),
     )
 
 
