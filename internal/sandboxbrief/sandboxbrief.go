@@ -6,7 +6,11 @@ package sandboxbrief
 
 import (
 	_ "embed"
+	"fmt"
+	"sort"
 	"strings"
+
+	"github.com/tngtech/oh-my-agentic-coder/internal/toolcache"
 )
 
 //go:embed brief.md
@@ -26,4 +30,29 @@ func Resolve(override string) string {
 		return override
 	}
 	return Default()
+}
+
+// CacheGuidance renders the cache paragraph appended to every briefing
+// (default or custom) so an override can never suppress it. It names
+// the actual cache path/mode selected for this launch, the OMAC_CACHE_*
+// selectors, every tool-specific variable omac injects, and explains
+// that hardcoded host cache locations are denied by the sandbox.
+func CacheGuidance(dir string, mode toolcache.Mode) string {
+	env := toolcache.Environment(dir, mode)
+	keys := make([]string, 0, len(env))
+	for k := range env {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var b strings.Builder
+	fmt.Fprintf(&b, "\n## Tool cache\n\n")
+	fmt.Fprintf(&b, "omac redirects every tool's cache into a sandbox-granted directory: `%s` (mode `%s`). ", dir, mode)
+	fmt.Fprintf(&b, "The selector variables `OMAC_CACHE_DIR` and `OMAC_CACHE_MODE` name this directory and mode; ")
+	fmt.Fprintf(&b, "the tool-specific variables below all point underneath `OMAC_CACHE_DIR`:\n\n")
+	for _, k := range keys {
+		fmt.Fprintf(&b, "- `%s` → `%s`\n", k, env[k])
+	}
+	fmt.Fprintf(&b, "\nHardcoded host cache locations (e.g. `~/.cache`, `~/Library/Caches`, `~/.cargo`, `~/.npm`) ")
+	fmt.Fprintf(&b, "are denied by the sandbox: write through the variables above instead of touching host paths.\n")
+	return b.String()
 }

@@ -3,6 +3,7 @@ package cli
 import (
 	"github.com/tngtech/oh-my-agentic-coder/internal/config"
 	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxbrief"
+	"github.com/tngtech/oh-my-agentic-coder/internal/toolcache"
 )
 
 // briefingInjection reports whether omac should inject the sandbox briefing
@@ -13,12 +14,24 @@ import (
 // is the harness's own agent binary. The latter excludes profile-pinned or
 // --inner-overridden commands such as the no-sandbox-debug `bash` profile, so
 // the briefing never lands on the wrong process.
-func briefingInjection(noSandbox bool, inner []string, harness config.Harness, override string) (string, bool) {
+//
+// The cache guidance paragraph is always appended (default or custom
+// briefing) because hardcoded host caches are denied by the sandbox —
+// an override must not be able to suppress it.
+func briefingInjection(noSandbox bool, inner []string, harness config.Harness, override string, cacheScope *toolcache.Scope) (string, bool) {
 	if noSandbox || len(inner) == 0 || len(harness.InnerCmd) == 0 {
 		return "", false
 	}
 	if inner[0] != harness.InnerCmd[0] {
 		return "", false
 	}
-	return sandboxbrief.Resolve(override), true
+	text := sandboxbrief.Resolve(override)
+	var dir string
+	var mode toolcache.Mode
+	if cacheScope != nil {
+		dir = cacheScope.Dir
+		mode = cacheScope.Mode
+	}
+	text += sandboxbrief.CacheGuidance(dir, mode)
+	return text, true
 }
