@@ -135,6 +135,19 @@ func IsUnavailable(err error) bool {
 	if strings.Contains(msg, "dbus") || strings.Contains(msg, "D-Bus") {
 		return true
 	}
+	// Linux: the session-bus socket named by DBUS_SESSION_BUS_ADDRESS has
+	// been torn down while the env var still points at it — the WSL2 /
+	// `Linger=no` case where systemd removes /run/user/<uid> when the login
+	// session ends. go-keyring surfaces the raw dial failure ("dial unix
+	// <path>: connect: no such file or directory" / "connection refused"),
+	// which carries no dbus marker but is an environment-level unavailability,
+	// not a per-secret error.
+	if strings.Contains(msg, "dial unix") &&
+		(strings.Contains(msg, "no such file or directory") ||
+			strings.Contains(msg, "connection refused") ||
+			strings.Contains(msg, "permission denied")) {
+		return true
+	}
 	return false
 }
 

@@ -52,7 +52,14 @@ func TestIsUnavailable(t *testing.T) {
 		{"dbus service unknown", errors.New(`keychain set omac/slack/TOKEN: The name org.freedesktop.secrets was not provided by any .service files`), true},
 		{"no dbus session", errors.New("dbus: could not connect: no such file or directory"), true},
 		{"D-Bus capitalized", errors.New("D-Bus connection failed"), true},
+		// go-keyring's real error when DBUS_SESSION_BUS_ADDRESS names a
+		// torn-down socket (WSL2 / Linger=no): a bare dial failure with no
+		// dbus marker, so the checks above don't catch it.
+		{"dead bus socket removed", errors.New("keychain get omac/slack/TOKEN: dial unix /run/user/1000/bus: connect: no such file or directory"), true},
+		{"dead bus socket refused", errors.New("dial unix /run/user/1000/bus: connect: connection refused"), true},
 		{"unrelated error", errors.New("permission denied"), false},
+		// A generic "no such file" that is NOT a bus dial must not be masked.
+		{"unrelated missing file", errors.New("open /some/config: no such file or directory"), false},
 		{"not found", ErrNotFound, false},
 	}
 	for _, c := range cases {
