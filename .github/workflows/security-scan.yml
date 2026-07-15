@@ -78,24 +78,95 @@ jobs:
           # Safe to print -- version string only, no scan content.
           strix --version
 
-      - name: Resolve model from e2e config
+      - name: Start context-compaction proxy
+        id: proxy
+        # strix resends the whole conversation on every request and has no
+        # context compaction, so a long scan overflows the model window
+        # (GLM-5.2: 202752 tokens) and every request then 422s with
+        # context_length_exceeded -- silently truncating results (a partial run
+        # dir survives, so the scan can look finished). This local proxy
+        # compacts requests in flight (summarising the oldest exchanges); strix
+        # is repointed at it below. See
+        # target/.github/scripts/security_scan/skainet_proxy.py.
+        env:
+          SKAINET_PROXY_PORT: '8899'
+        run: |
+          set -euo pipefail
+          # Split the gateway base into host + path suffix so the proxy forwards
+          # to the host and preserves whatever chat path strix used (with or
+          # without a /v1 prefix). LLM_API_BASE here is still the job-level
+          # gateway URL; the scan step below points strix at the proxy instead.
+          # Values are secret-derived -- never echoed.
+          host=$(printf '%s' "$LLM_API_BASE" | sed -E 's#(https?://[^/]+).*#\1#')
+          suffix=$(printf '%s' "$LLM_API_BASE" | sed -E 's#https?://[^/]+##; s#/$##')
+          nohup env \
+            SKAINET_UPSTREAM="$host" \
+            SKAINET_CHAT_PATH="${suffix}/chat/completions" \
+            SKAINET_PROXY_PORT="$SKAINET_PROXY_PORT" \
+            python target/.github/scripts/security_scan/skainet_proxy.py \
+            > proxy.log 2>&1 &
+          echo $! > proxy.pid
+          ok=0
+          for _ in $(seq 1 20); do
+            if curl -sf "http://127.0.0.1:${SKAINET_PROXY_PORT}/healthz" >/dev/null; then ok=1; break; fi
+            sleep 0.5
+          done
+          if [ "$ok" != "1" ]; then
+            echo "::error::compaction proxy did not become healthy"
+            cat proxy.log  # startup-only output (uvicorn lines) -- no scan content yet
+            exit 1
+          fi
+          echo "base=http://127.0.0.1:${SKAINET_PROXY_PORT}${suffix}" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve and verify model
         id: model
         run: |
-          # Single source of truth is internal/e2e/versions.go's modelIDs map
-          # (opencode's entry -- GLM-5.2-TEE, same as e2e.yml uses) rather
-          # than duplicating the model name here.
-          model=$(awk '/^var modelIDs = map\[string\]string\{/{flag=1; next} /^\}/{flag=0} flag' \
+          set -euo pipefail
+          # Base model name: single source of truth is internal/e2e/versions.go's
+          # modelIDs map (opencode's entry -- the plain GLM-5.2 name, which is
+          # what opencode's own resolution uses) rather than duplicating it here.
+          base=$(awk '/^var modelIDs = map\[string\]string\{/{flag=1; next} /^\}/{flag=0} flag' \
             target/internal/e2e/versions.go | grep '"opencode"' | sed -E 's/.*:\s*"([^"]+)".*/\1/')
-          if [ -z "$model" ]; then
+          if [ -z "$base" ]; then
             echo "::error::could not resolve model from internal/e2e/versions.go"
             exit 1
           fi
-          echo "strix_llm=openai/$model" >> "$GITHUB_OUTPUT"
+          # Harden against the gateway's raw /v1/chat/completions path only
+          # serving one model-name variant at a time: unlike opencode, strix
+          # calls that path directly, and it recently flipped from accepting the
+          # plain name to requiring the -TEE variant (422 model_unavailable).
+          # Probe the base name first, fall back to <base>-TEE, and use
+          # whichever the gateway currently accepts -- so a future flip in
+          # either direction self-heals. Model names aren't secret; the bearer
+          # in the header is and is never printed.
+          endpoint="${LLM_API_BASE%/}/chat/completions"
+          chosen=""
+          for candidate in "$base" "${base}-TEE"; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 \
+              -X POST "$endpoint" \
+              -H "authorization: Bearer ${LLM_API_KEY}" \
+              -H 'content-type: application/json' \
+              -d "{\"model\":\"${candidate}\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}],\"max_tokens\":1}") || true
+            if [ "$code" = "200" ]; then chosen="$candidate"; break; fi
+            echo "model '${candidate}' not accepted (HTTP ${code}); trying next variant"
+          done
+          if [ -z "$chosen" ]; then
+            echo "::error::neither '${base}' nor '${base}-TEE' was accepted by the gateway -- check the model provider and SKAINET_TOKEN validity"
+            exit 1
+          fi
+          echo "selected model: ${chosen}"
+          echo "strix_llm=openai/${chosen}" >> "$GITHUB_OUTPUT"
 
       - name: Run strix scan
         id: scan
         env:
           STRIX_LLM: ${{ steps.model.outputs.strix_llm }}
+          # Route strix through the compaction proxy started above instead of
+          # straight at the gateway, so requests are compacted before they can
+          # overflow the model window. LLM_API_KEY (the bearer) is inherited and
+          # passed through by the proxy untouched; only triage below still talks
+          # to the gateway directly.
+          LLM_API_BASE: ${{ steps.proxy.outputs.base }}
         run: |
           set -o pipefail
           run_label="$(date -u +%Y%m%d-%H%M%S)"
@@ -132,6 +203,18 @@ jobs:
           fi
           echo "run_dir=${run_dirs[-1]}" >> "$GITHUB_OUTPUT"
 
+          # The proxy in front should keep every request under the model window.
+          # If it ever fails to, the scan overflows and every subsequent request
+          # 422s with context_length_exceeded -- but a partial run dir still
+          # exists, so WITHOUT this guard the truncated scan would be reported as
+          # successful and triaged as if complete. Fail loudly instead. grep -q:
+          # never print the log, it can contain scan content on this public
+          # runner (the full log is in the private artifact repo).
+          if grep -q "context_length_exceeded" strix_scan.log; then
+            echo "::error::strix hit context_length_exceeded -- scan truncated despite compaction; inspect proxy.log / strix_scan.log in the private artifact repo. Failing so a partial scan is not reported as complete."
+            exit 1
+          fi
+
       - name: Dedupe against open issues + build triage report
         if: steps.scan.outcome == 'success'
         env:
@@ -146,6 +229,10 @@ jobs:
       - name: Public summary (counts only, no exploit detail)
         if: steps.scan.outcome == 'success'
         run: cat step-summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Stop context-compaction proxy
+        if: always()
+        run: kill "$(cat proxy.pid)" 2>/dev/null || true
 
       - name: Push full report to private artifact repo
         # Runs even when the scan step failed: strix_scan.log is the only
@@ -170,6 +257,11 @@ jobs:
           fi
           [ -f triage-report.md ] && cp triage-report.md "$scan_dir"/
           [ -f strix_scan.log ] && cp strix_scan.log "$scan_dir"/
+          # proxy.log holds the compaction telemetry (which requests were
+          # compacted, before/after token estimates) -- useful for debugging an
+          # overflow that slipped past compaction. Safe: it logs counts, not
+          # message content.
+          [ -f proxy.log ] && cp proxy.log "$scan_dir"/
           cd "$dest"
           git config user.name "strix-ci-bot"
           git config user.email "actions@users.noreply.github.com"
