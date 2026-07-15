@@ -25,8 +25,19 @@ func runDoctor(args []string, env *Env) int {
 	}
 
 	fmt.Fprintf(env.Stdout, "omac %s\n", env.Version)
-	fmt.Fprintf(env.Stdout, "OS: %s\n", osinfo.Detect())
+	host := osinfo.Detect()
+	fmt.Fprintf(env.Stdout, "OS: %s\n", host)
 	fmt.Fprintf(env.Stdout, "workdir: %s\n", env.Workdir)
+
+	if err := keychain.Ping(); err != nil {
+		if keychain.IsUnavailable(err) {
+			fmt.Fprintf(env.Stdout, "[warn] keychain backend: unavailable — %s\n", keychainUnavailableHint(host))
+		} else {
+			fmt.Fprintln(env.Stdout, "[warn] keychain backend:", err)
+		}
+	} else {
+		fmt.Fprintln(env.Stdout, "[ok] keychain backend: reachable")
+	}
 
 	// Launcher config resolution.
 	_, cfgPath, err := config.LoadLauncher(env.Workdir)
