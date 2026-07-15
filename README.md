@@ -15,15 +15,20 @@ they never reach the sandbox.
 #    bubblewrap: required by the built-in sandbox
 #    zenity: needed for the interactive network-access dialog
 #    libnotify-bin: desktop notifications when a network prompt appears
-sudo apt install bubblewrap zenity libnotify-bin      # Debian/Ubuntu
-sudo dnf install bubblewrap zenity libnotify          # Fedora
+#    libsecret-1-0: OS keychain (Secret Service) backing for skill secrets
+sudo apt install bubblewrap zenity libnotify-bin libsecret-1-0   # Debian/Ubuntu
+sudo dnf install bubblewrap zenity libnotify libsecret           # Fedora
+# On Ubuntu 23.10+/24.04+, AppArmor restricts unprivileged user namespaces by
+# default, which leaves a freshly-installed bwrap non-functional until it's
+# granted an exception — see "AppArmor and bubblewrap" below.
 # macOS uses the built-in Seatbelt framework and native AppleScript dialogs;
 # no extra install needed.
 
 # 2. Install omac (pick one), for details see Installation section
-brew tap TNG-release/tap && brew install oh-my-agentic-coder   # macOS
+brew tap TNG-release/tap && brew trust tng-release/tap && brew install oh-my-agentic-coder   # macOS
 sudo dpkg -i oh-my-agentic-coder_<version>_linux_<arch>.deb    # Debian/Ubuntu
-go install github.com/tngtech/oh-my-agentic-coder/cmd/omac@latest  # from source
+# from source: see "Installation → From source" below (a plain
+# `go install .../cmd/omac@latest` does not work for this repo)
 
 # 3. Verify the setup
 omac doctor
@@ -145,6 +150,10 @@ Today the only built-in is **`omac-write-a-skill`** — a guidance-only skill
 (just a `SKILL.md`, no sidecar) carrying the `CREATING_A_SKILL.md` authoring
 guide, so the agent can author new omac skills in any project.
 
+Since provisioning happens on launch, `omac doctor` run *before* the first
+`omac start`/`omac serve` will report the built-in as `missing` — that's
+expected, not a sign anything is wrong, and resolves itself on first launch.
+
 `omac setup` is available to (re)provision **all** installed harnesses at once
 or to refresh after upgrading omac (`omac setup [harness] [--force]`), but you
 don't need to run it for the everyday flow. (This replaces the old external
@@ -203,6 +212,7 @@ Releases are auto-published to the
 
 ```sh
 brew tap TNG-release/tap
+brew trust tng-release/tap   # Homebrew normalizes tap names to lowercase; refuses untrusted taps by default
 brew install oh-my-agentic-coder
 ```
 
@@ -220,10 +230,15 @@ tap; install those from the per-release tarball below.
 
 ```sh
 ARCH=$(dpkg --print-architecture)   # amd64 or arm64
-curl -L -o omac.deb \
+curl -L -O \
   "https://github.com/TNG/oh-my-agentic-coder/releases/latest/download/oh-my-agentic-coder_$(curl -s https://api.github.com/repos/TNG/oh-my-agentic-coder/releases/latest | grep tag_name | cut -d '"' -f4 | sed 's/^v//')_linux_${ARCH/amd64/x86_64}.deb"
-sudo dpkg -i omac.deb
+sudo dpkg -i oh-my-agentic-coder_*_linux_*.deb
 ```
+
+`-O` (not `-o omac.deb`) keeps the file's original release name, which
+matters for the checksum step below: `checksums.txt` lists artifacts by
+that name, so renaming the download makes `sha256sum -c` silently verify
+nothing instead of failing loudly.
 
 Or, more simply, download the `.deb` matching your architecture from the
 [releases page](https://github.com/TNG/oh-my-agentic-coder/releases) and run
@@ -249,8 +264,17 @@ sha256sum -c checksums.txt --ignore-missing
 
 ### From source
 
+`go.mod`'s declared module path (`github.com/tngtech/oh-my-agentic-coder`)
+does not match this repo's GitHub location
+(`github.com/TNG/oh-my-agentic-coder`), so a path-based
+`go install github.com/.../cmd/omac@latest` cannot resolve it either way —
+clone and build locally instead, which uses local module resolution and
+avoids the mismatch:
+
 ```sh
-go install github.com/tngtech/oh-my-agentic-coder/cmd/omac@latest
+git clone https://github.com/TNG/oh-my-agentic-coder.git
+cd oh-my-agentic-coder
+go build -o "$(go env GOPATH)/bin/omac" ./cmd/omac   # or any dir on your $PATH
 ```
 
 For the project layout, build instructions (dev and release), and test
@@ -269,6 +293,23 @@ missing.
 | **bubblewrap** (`bwrap`) | `apt install bubblewrap` / `dnf install bubblewrap` | built-in (Seatbelt) | Sandboxes the inner process via Linux user namespaces + Landlock. Without it the built-in sandbox cannot start. |
 | **Secret Service / D-Bus** | ships with GNOME/KDE; `apt install libsecret-1-0` | built-in (Keychain) | Stores skill secrets (API keys, tokens) in the OS keychain so they never touch disk. If no Secret Service is running, `omac secrets` operations will fail. |
 | **Python 3** (stdlib only) | pre-installed on most distros | pre-installed | Sidecar processes are written against the Python standard library only. No pip packages required. |
+
+> **AppArmor and bubblewrap (Ubuntu 23.10+/24.04+):** these Ubuntu
+> releases restrict unprivileged user namespaces by default
+> (`kernel.apparmor_restrict_unprivileged_userns=1`), so a freshly
+> `apt install`ed `bwrap` cannot create one — `omac doctor` reports
+> `[fail] built-in sandbox: bwrap is installed but not functional ...
+> Permission denied`. Grant bwrap an AppArmor exception once:
+> ```bash
+> sudo tee /etc/apparmor.d/bwrap > /dev/null <<'EOF'
+> abi <abi/4.0>,
+> /usr/bin/bwrap flags=(unconfined) {
+>   userns,
+> }
+> EOF
+> sudo apparmor_parser -r /etc/apparmor.d/bwrap
+> ```
+> `omac doctor` prints this same fix in its failure message.
 
 > **WSL:** WSL2 does not run a Secret Service provider by default (no
 > desktop session), so `omac register`/`omac secrets` fail out of the box
