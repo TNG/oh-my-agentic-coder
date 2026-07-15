@@ -21,9 +21,9 @@ import (
 // numbered picker, and launch it inside omac via the shared start pipeline
 // with the harness's "resume by id" inner flag.
 func runResume(args []string, env *Env) int {
-	opts, ok := parseLaunchArgs("resume", args, env)
-	if !ok {
-		return ExitMisuse
+	opts, code := buildResumeOpts(args, env)
+	if code != ExitOK {
+		return code
 	}
 	h := opts.harness
 	if h.Session == nil || h.Session.ResumeByIDArgs == nil {
@@ -54,6 +54,17 @@ func runResume(args []string, env *Env) int {
 
 	opts.innerArgs = buildResumeInnerArgs(h.Session, sessions[idx].ID, opts.innerArgs)
 	return runLaunch(env, opts)
+}
+
+// buildResumeOpts parses the resume command line using the shared start-family
+// flag surface. Keeping this separate from session selection ensures every
+// launch option, including cache mode, reaches runLaunch unchanged.
+func buildResumeOpts(args []string, env *Env) (launchOpts, int) {
+	opts, ok := parseLaunchArgs("resume", args, env)
+	if !ok {
+		return launchOpts{}, ExitMisuse
+	}
+	return opts, ExitOK
 }
 
 // buildResumeInnerArgs puts the harness's resume-by-id flag first, then any

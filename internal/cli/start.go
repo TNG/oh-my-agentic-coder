@@ -27,6 +27,7 @@ import (
 	"github.com/tngtech/oh-my-agentic-coder/internal/skillconfig"
 	"github.com/tngtech/oh-my-agentic-coder/internal/skillsource"
 	"github.com/tngtech/oh-my-agentic-coder/internal/supervisor"
+	"github.com/tngtech/oh-my-agentic-coder/internal/toolcache"
 )
 
 // launchOpts carries everything runLaunch needs: the resolved harness, the
@@ -43,6 +44,7 @@ type launchOpts struct {
 	profile            string
 	innerCmdOverride   string
 	noSandbox          bool
+	ephemeralCache     bool
 	keepRunning        bool
 	acceptSkillChanges bool
 	skipSecretPattern  bool
@@ -72,6 +74,7 @@ func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, bool)
 		profile            = fs.String("sandbox", "", "Name of a sandbox profile from the launcher config.")
 		innerCmdOverride   = fs.String("inner", "", "Override inner_cmd's executable.")
 		noSandbox          = fs.Bool("no-sandbox", false, "Run inner command directly, without a sandbox (debug only).")
+		ephemeralCache     = fs.Bool("ephemeral-cache", false, "Use a per-launch cache instead of the persistent workdir cache.")
 		keepRunning        = fs.Bool("keep-running", false, "Do not stop sidecars when the inner command exits.")
 		acceptSkillChanges = fs.Bool("accept-skill-changes", false, "Tolerate bundle_hash drift in registered skills (proceed even if the on-disk skill differs from what was registered).")
 		skipSecretPattern  = fs.Bool("skip-secret-pattern", false, "Do not enforce a secret's pattern against an env_passthrough-supplied value (escape hatch for an outdated pattern; the raw value is still passed through).")
@@ -116,6 +119,10 @@ func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, bool)
 	if err := fs.Parse(reorderFlagsFirst(ourArgs)); err != nil {
 		return launchOpts{}, false
 	}
+	if *ephemeralCache && *noSandbox {
+		fmt.Fprintf(env.Stderr, "omac %s: --ephemeral-cache cannot be used with --no-sandbox\n", cmdName)
+		return launchOpts{}, false
+	}
 	innerArgs = append(fs.Args(), innerArgs...)
 	return launchOpts{
 		label:              cmdName,
@@ -123,6 +130,7 @@ func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, bool)
 		profile:            *profile,
 		innerCmdOverride:   *innerCmdOverride,
 		noSandbox:          *noSandbox,
+		ephemeralCache:     *ephemeralCache,
 		keepRunning:        *keepRunning,
 		acceptSkillChanges: *acceptSkillChanges,
 		skipSecretPattern:  *skipSecretPattern,
@@ -633,6 +641,20 @@ func runLaunch(env *Env, opts launchOpts) int {
 	if verbose {
 		fmt.Fprintf(env.Stderr, "[verbose] sandbox TMPDIR: %s\n", sandboxTmp)
 	}
+	cacheScope, err := prepareLaunchCache(noSandbox, opts.ephemeralCache, env.Workdir, sandboxTmp)
+	if err != nil {
+		if opts.ephemeralCache {
+			fmt.Fprintln(env.Stderr, prefix+": cache:", err)
+		} else {
+			fmt.Fprintln(env.Stderr, prefix+": cache:", err,
+				"retry with --ephemeral-cache to bypass persistent cache setup")
+		}
+		return ExitIOError
+	}
+	defer cacheScope.Close()
+	if verbose && cacheScope != nil {
+		fmt.Fprintf(env.Stderr, "[verbose] cache mode=%s path=%s\n", cacheScope.Mode, cacheScope.Dir)
+	}
 
 	// 5. Spawn sidecars.
 	sup := supervisor.New(lc.Facade.BaseEnvPassthrough, auditor)
@@ -741,7 +763,7 @@ func runLaunch(env *Env, opts launchOpts) int {
 	inner := harness.ResolveInnerCmd(prof.InnerCmd, innerCmdOverride)
 	// Inject the sandbox briefing: Claude via its --append-system-prompt flag
 	// (SystemContextArgs), OpenCode via OMAC_SANDBOX_BRIEFING set below.
-	briefingText, injectBriefing := briefingInjection(noSandbox, inner, harness, lc.Sandbox.Briefing)
+	briefingText, injectBriefing := briefingInjection(noSandbox, inner, harness, lc.Sandbox.Briefing, cacheScope)
 	if injectBriefing && harness.SystemContextArgs != nil {
 		inner = append(inner, harness.SystemContextArgs(briefingText)...)
 	}
@@ -777,6 +799,7 @@ func runLaunch(env *Env, opts launchOpts) int {
 		// sessions) read+write — only for the selected harness, not all
 		// harnesses.
 		argv = injectSandboxDirs(argv, harness.SandboxDirs)
+		argv = injectSandboxFlag(argv, "--allow", cacheScope.Dir)
 		// Pass the resolved audit path down to `omac sandbox run` so the
 		// network-filter subprocess appends net.decision events to the
 		// same persistent log. Inherit the parent's run_id + mode so the
@@ -827,6 +850,11 @@ func runLaunch(env *Env, opts launchOpts) int {
 		extra[sandbox.OmacEnvName(m)] = sandbox.OmacTCPEnvValue(m, tcpPort)
 		extra[sandbox.OmacSocketEnvName(m)] = sandbox.OmacEnvValue(m, socketPath)
 	}
+	if cacheScope != nil {
+		for k, v := range toolcache.Environment(cacheScope.Dir, cacheScope.Mode) {
+			extra[k] = v
+		}
+	}
 	if controlOK {
 		extra["OMAC_CONTROL_BASE"] = controlURL
 	}
@@ -875,6 +903,16 @@ func runLaunch(env *Env, opts launchOpts) int {
 	}
 	printContinueHint(env, harness)
 	return code
+}
+
+func prepareLaunchCache(noSandbox, ephemeral bool, workdir, sandboxTmp string) (*toolcache.Scope, error) {
+	if noSandbox {
+		return nil, nil
+	}
+	if ephemeral {
+		return toolcache.PrepareEphemeral(sandboxTmp)
+	}
+	return toolcache.PreparePersistent(toolcache.DomainWorkdir, workdir)
 }
 
 // continueHintToken returns the harness token to embed in the post-exit

@@ -132,6 +132,7 @@ func commands() map[string]Command {
 		"doctor":     {Name: "doctor", Short: "Run sanity checks.", Run: runDoctor},
 		"update":     {Name: "update", Short: "Check GitHub for a newer release and install it.", Run: runUpdate},
 		"manifest":   {Name: "manifest", Short: "Render the skills manifest from activate-response JSON.", Run: runManifest},
+		"cache":      {Name: "cache", Short: "Manage the tool cache (clear [--all]).", Run: runCache},
 		"version":    {Name: "version", Short: "Print version.", Run: runVersion},
 	}
 }
@@ -164,6 +165,7 @@ Subcommands:
   doctor       Run sanity checks.
   update       Check GitHub for a newer release and install it.
   manifest    Render the skills manifest from activate-response JSON.
+  cache       Manage the tool cache: omac cache clear [--all].
   version      Print version.
 
 Harness selection (start/serve):
