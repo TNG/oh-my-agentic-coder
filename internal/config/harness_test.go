@@ -646,11 +646,58 @@ func TestPiHarnessDescriptor(t *testing.T) {
 	if h.SkillsBase != "pi" {
 		t.Errorf("pi SkillsBase = %q, want pi", h.SkillsBase)
 	}
-	if h.UserConfigHome != ".pi" {
-		t.Errorf("pi UserConfigHome = %q, want .pi", h.UserConfigHome)
+	if want := filepath.Join(".pi", "agent"); h.UserConfigHome != want {
+		t.Errorf("pi UserConfigHome = %q, want %q", h.UserConfigHome, want)
 	}
-	if h.HomeEnv != "" {
-		t.Errorf("pi HomeEnv = %q, want empty", h.HomeEnv)
+	if h.HomeEnv != "PI_CODING_AGENT_DIR" {
+		t.Errorf("pi HomeEnv = %q, want PI_CODING_AGENT_DIR", h.HomeEnv)
+	}
+}
+
+// TestPiConfigHome guards the ~/.pi/agent (not ~/.pi) config home: pi's own
+// docs and a live install confirm models.json, sessions/, skills/, and
+// extensions/ all live under ~/.pi/agent/, not directly under ~/.pi/. This
+// is the property GlobalSkillsDir/GlobalBridgeDir/piSessionsRoot all derive
+// from, so a regression here silently breaks skill/bridge/session discovery
+// for pi without any single test catching it directly.
+func TestPiConfigHome(t *testing.T) {
+	h, _ := LookupHarness("pi")
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(home, ".pi", "agent"); h.ConfigHome() != want {
+		t.Errorf("pi ConfigHome() = %q, want %q", h.ConfigHome(), want)
+	}
+}
+
+func TestPiConfigHomeEnvOverride(t *testing.T) {
+	h, _ := LookupHarness("pi")
+	t.Setenv("PI_CODING_AGENT_DIR", "/custom/pi/agent")
+	if got := h.ConfigHome(); got != "/custom/pi/agent" {
+		t.Errorf("pi ConfigHome() with PI_CODING_AGENT_DIR set = %q, want /custom/pi/agent", got)
+	}
+}
+
+func TestPiGlobalSkillsDir(t *testing.T) {
+	h, _ := LookupHarness("pi")
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(home, ".pi", "agent", "skills"); h.GlobalSkillsDir() != want {
+		t.Errorf("pi GlobalSkillsDir() = %q, want %q", h.GlobalSkillsDir(), want)
+	}
+}
+
+func TestPiGlobalBridgeDir(t *testing.T) {
+	h, _ := LookupHarness("pi")
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(home, ".pi", "agent", "extensions"); h.GlobalBridgeDir() != want {
+		t.Errorf("pi GlobalBridgeDir() = %q, want %q", h.GlobalBridgeDir(), want)
 	}
 }
 
@@ -692,8 +739,8 @@ func TestPiSandboxDirs(t *testing.T) {
 	if !ok {
 		t.Fatal("pi harness not found")
 	}
-	if !reflect.DeepEqual(h.SandboxDirs, []string{"~/.pi", "~/.cache/pi"}) {
-		t.Errorf("pi SandboxDirs = %v, want [~/.pi ~/.cache/pi]", h.SandboxDirs)
+	if !reflect.DeepEqual(h.SandboxDirs, []string{"~/.pi"}) {
+		t.Errorf("pi SandboxDirs = %v, want [~/.pi]", h.SandboxDirs)
 	}
 }
 

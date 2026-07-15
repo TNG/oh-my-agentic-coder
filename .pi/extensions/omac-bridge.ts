@@ -20,6 +20,18 @@
  *
  * Degradation: if OMAC_CONTROL_BASE is unset (Pi not running under omac),
  * every branch is a no-op. The extension is inert and safe to ship anywhere.
+ *
+ * File layout: this MUST be a single flat file directly under
+ * .pi/extensions/ (not a subdirectory with an index.ts). A subdirectory
+ * form (.pi/extensions/omac-bridge/index.ts) was tried and reproducibly
+ * hung `pi` indefinitely on every launch in this repo's real CLI (0.80.6) —
+ * the exact same file content loaded instantly as a flat .ts file. Pi's
+ * docs (https://pi.dev/docs/latest/extensions) only document flat-file
+ * auto-discovery under .pi/extensions/*.ts and ~/.pi/agent/extensions/*.ts.
+ *
+ * Requirements: pi's extension system auto-discovers .pi/extensions/*.ts
+ * (project-local) and ~/.pi/agent/extensions/*.ts (global). This file uses
+ * only bundled modules (no package.json or npm install needed).
  */
 
 // Minimal ambient declaration so this file typechecks without pulling in
@@ -140,15 +152,23 @@ export default function (api: {
     if (cachedManifest) {
       const manifestText = renderManifest(cachedManifest)
       const briefing = process.env.OMAC_SANDBOX_BRIEFING || ""
+      const contextBlock = briefing
+        ? `${briefing}\n\n${manifestText}`
+        : manifestText
 
+      // Prefer the documented systemPrompt return contract (pi's
+      // before_agent_start docs: "can return modified systemPrompt or
+      // inject a message"). Also unshift a system message when the event
+      // exposes a mutable messages array, for hosts that apply mutations
+      // in place rather than the return value — belt-and-suspenders since
+      // this hook's exact application semantics aren't fully documented.
       if (event?.messages && Array.isArray(event.messages)) {
-        const contextBlock = briefing
-          ? `${briefing}\n\n${manifestText}`
-          : manifestText
-        event.messages.unshift({
-          role: "system",
-          content: contextBlock,
-        })
+        event.messages.unshift({ role: "system", content: contextBlock })
+      }
+
+      const original = event?.systemPrompt ?? ""
+      return {
+        systemPrompt: original ? `${original}\n\n${contextBlock}` : contextBlock,
       }
     }
   })
