@@ -19,10 +19,10 @@ on:
         description: 'Pinned opencode package spec for the driving agent. Overrides scripts/e2e-readme-onboarding.sh''s default for THIS RUN ONLY'
         type: string
         default: 'opencode-ai@1.17.12'
-      timeout:
-        description: 'Wall-clock timeout for the onboarding agent session (e.g. 20m, 30m)'
+      timeout_secs:
+        description: 'Wall-clock timeout for the onboarding agent session, in seconds'
         type: string
-        default: '20m'
+        default: '1200'
 
 permissions:
   contents: read
@@ -42,7 +42,7 @@ jobs:
       SKAINET_TOKEN: ${{ secrets.SKAINET_TOKEN }}
       SKAINET_INTERNAL: ${{ secrets.SKAINET_EXTERNAL }}
       E2E_VERSION_OPENCODE: ${{ github.event.inputs.opencode_version }}
-      E2E_ONBOARDING_TIMEOUT: ${{ github.event.inputs.timeout }}
+      E2E_ONBOARDING_TIMEOUT_SECS: ${{ github.event.inputs.timeout_secs }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
