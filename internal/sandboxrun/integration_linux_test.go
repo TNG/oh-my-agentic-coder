@@ -16,16 +16,28 @@ import (
 	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxprofile"
 )
 
-// requireBwrap skips when bubblewrap is unavailable (CI containers
-// often lack the userns privileges too).
+// skipOrFailCI skips locally but fails in CI (GITHUB_ACTIONS=true), so a
+// missing capability there reads as an infrastructure regression instead of
+// a silently green run with zero coverage from the gated tests.
+func skipOrFailCI(t *testing.T, format string, args ...any) {
+	t.Helper()
+	msg := fmt.Sprintf(format, args...)
+	if os.Getenv("GITHUB_ACTIONS") == "true" {
+		t.Fatal(msg)
+	}
+	t.Skip(msg)
+}
+
+// requireBwrap skips locally when bubblewrap is unavailable (CI containers
+// often lack the userns privileges too); in CI it fails the test instead.
 func requireBwrap(t *testing.T) {
 	t.Helper()
 	if _, err := exec.LookPath("bwrap"); err != nil {
-		t.Skip("bwrap not installed")
+		skipOrFailCI(t, "bwrap not installed: %v", err)
 	}
 	// Smoke-test: user namespaces may be disabled.
 	if err := exec.Command("bwrap", "--ro-bind", "/", "/", "true").Run(); err != nil {
-		t.Skipf("bwrap not functional here: %v", err)
+		skipOrFailCI(t, "bwrap not functional here: %v", err)
 	}
 }
 
