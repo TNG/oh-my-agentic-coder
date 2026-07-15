@@ -27,7 +27,9 @@ func TestE2EProvenance(t *testing.T) {
 	home := t.TempDir()
 	workdir := t.TempDir()
 
-	for _, dir := range []string{".cache", ".cache/opencode", ".local/share/opencode", ".local/state/opencode/locks"} {
+	// Pre-create harness state dirs (see runE2E for why). The tool cache
+	// under XDG_CACHE_HOME / OMAC_CACHE_DIR is created by omac at launch.
+	for _, dir := range []string{".local/share/opencode", ".local/state/opencode/locks"} {
 		if err := os.MkdirAll(filepath.Join(home, dir), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -78,6 +80,12 @@ func TestE2EProvenance(t *testing.T) {
 				Source string `json:"source"`
 			} `json:"entries"`
 		} `json:"skills"`
+		Cache struct {
+			Scope       string            `json:"scope"`
+			Mode        string            `json:"mode"`
+			Path        string            `json:"path"`
+			Environment map[string]string `json:"environment"`
+		} `json:"cache"`
 	}
 	if err := json.Unmarshal(provOut, &view); err != nil {
 		t.Fatalf("parse provenance JSON: %v\n%s", err, provOut)
@@ -127,6 +135,34 @@ func TestE2EProvenance(t *testing.T) {
 	}
 	if !foundSkill {
 		t.Error("provenance: self-audit skill not in skills section")
+	}
+
+	// 2d. cache section: the default persistent workdir-scoped cache
+	// must be reported with a non-empty path and the eight-variable
+	// environment map toolcache.Environment produces. The path is
+	// derived from the workdir, so it must be non-empty here.
+	if view.Cache.Path == "" {
+		t.Error("provenance: cache.path is empty")
+	}
+	if view.Cache.Mode != "persistent" {
+		t.Errorf("provenance: cache.mode = %q; want %q", view.Cache.Mode, "persistent")
+	}
+	if view.Cache.Scope == "" {
+		t.Error("provenance: cache.scope is empty")
+	}
+	for _, k := range []string{
+		"XDG_CACHE_HOME", "GOCACHE", "GOMODCACHE",
+		"NPM_CONFIG_CACHE", "PIP_CACHE_DIR", "CARGO_HOME",
+		"OMAC_CACHE_DIR", "OMAC_CACHE_MODE",
+	} {
+		if _, ok := view.Cache.Environment[k]; !ok {
+			t.Errorf("provenance: cache.environment missing %q", k)
+			continue
+		}
+		if k != "OMAC_CACHE_MODE" && !strings.HasPrefix(view.Cache.Environment[k], view.Cache.Path) {
+			t.Errorf("provenance: cache.environment[%q] = %q; want under %q",
+				k, view.Cache.Environment[k], view.Cache.Path)
+		}
 	}
 
 	// --- Step 3: Behavior cross-check via the audit agent ---

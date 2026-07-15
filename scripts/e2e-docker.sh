@@ -14,6 +14,7 @@
 #   scripts/e2e-docker.sh build                  # build the e2e image
 #   scripts/e2e-docker.sh run [harness] [prompt] # run TestE2EEchoRest
 #   scripts/e2e-docker.sh audit [harness]        # run TestE2ESecurityAudit
+#   scripts/e2e-docker.sh cache                   # run TestE2ECache* (no model calls)
 #   scripts/e2e-docker.sh logs                   # tail container logs
 #   scripts/e2e-docker.sh artifact <name>       # copy artifact dir to stdout
 #   scripts/e2e-docker.sh prompt <text>          # run echo-rest with a custom prompt
@@ -113,6 +114,30 @@ cmd_audit() {
         "$CONTAINER" go test -tags=e2e -timeout=30m -v -run TestE2ESecurityAudit ./internal/e2e/
 }
 
+# cmd_cache runs the cache isolation e2e tests (TestE2ECache*) without
+# model credentials — the probes are deterministic, network-free tool
+# probes (go, npm, pip, cargo). Missing Go, node/npm, Python/pip, Cargo,
+# or bubblewrap are a FAILURE here (not a skip) so the container image
+# is the contract: Dockerfile.e2e installs all five; if one is absent
+# the image is broken, not the test.
+cmd_cache() {
+    ensure_running
+    local missing=()
+    for tool in go npm python3 pip3 cargo bwrap; do
+        if ! "$DOCKER" exec "$CONTAINER" command -v "$tool" >/dev/null 2>&1; then
+            missing+=("$tool")
+        fi
+    done
+    if [[ ${#missing[@]} -gt 0 ]]; then
+        echo "required tools missing from container: ${missing[*]}" >&2
+        echo "the Dockerfile.e2e image must install go, npm, python3/pip, cargo, and bwrap" >&2
+        exit 1
+    fi
+    "$DOCKER" exec -i \
+        -e "E2E_LOG_DIR=$LOG_DIR" \
+        "$CONTAINER" go test -tags=e2e -timeout=15m -v -run '^TestE2ECache' ./internal/e2e/
+}
+
 cmd_logs() {
     ensure_running
     "$DOCKER" logs --tail=200 "$CONTAINER"
@@ -161,6 +186,7 @@ main() {
         build)    cmd_build "$@" ;;
         run)      cmd_run "$@" ;;
         audit)    cmd_audit "$@" ;;
+        cache)    cmd_cache "$@" ;;
         logs)     cmd_logs "$@" ;;
         artifact) cmd_artifact "$@" ;;
         prompt)   cmd_prompt "$@" ;;

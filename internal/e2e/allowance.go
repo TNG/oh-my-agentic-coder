@@ -87,6 +87,16 @@ type AllowanceSpec struct {
 // others use SKAINET_TOKEN directly).
 func allowanceSpecFor(h harnessConfig) AllowanceSpec {
 	// Base env vars all harnesses need.
+	//
+	// Intentionally DOES NOT include the tool-cache env names
+	// (XDG_CACHE_HOME, GOCACHE, GOMODCACHE, NPM_CONFIG_CACHE,
+	// PIP_CACHE_DIR, CARGO_HOME). Those are re-injected by omac
+	// after FilterEnv via the trusted re-injection path (Task 3),
+	// bypassing the allow_vars filter. Listing only OMAC_* here
+	// keeps the fixture unaware of the cache names so the
+	// self-audit cache probe proves re-injection worked: if the
+	// non-OMAC_* mappings appear in the agent env, omac put them
+	// there, not the allow-list.
 	allow := []string{
 		"OMAC_*",
 		"HOME",

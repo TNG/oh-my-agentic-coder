@@ -29,6 +29,10 @@
 #   7. net       — check if network egress is blocked (error only)
 #   8. sidecar   — verify own sidecar is reachable (fingerprint only)
 #   9. xskill    — try to reach another skill's sidecar
+#  10. cache     — verify OMAC_CACHE_DIR / OMAC_CACHE_MODE / tool mappings,
+#                 write a marker to the selected cache, and prove the
+#                 host-global cache root (~/.cache, ~/Library/Caches) is
+#                 denied so cache isolation (Tasks 1-10) holds.
 
 set -u
 
@@ -223,3 +227,62 @@ else
     curl -sS "$ECHO_BASE/whoami" 2>&1 || true
 fi
 echo "=== END: xskill ==="
+
+echo ""
+echo "=== PROBE: cache ==="
+# Cache isolation probe (Tasks 1-10). Verifies the sandbox redirected
+# every tool cache to OMAC_CACHE_DIR (injected by omac via the trusted
+# re-injection path, bypassing the allow_vars filter) and that the
+# host-global cache roots (~/.cache, ~/Library/Caches) are denied so
+# the agent cannot escape the scoped cache.
+#
+# The allow_vars fixture intentionally lists only OMAC_* for cache
+# names (see allowance.go), so the non-OMAC_* tool mappings
+# (GOCACHE, GOMODCACHE, NPM_CONFIG_CACHE, PIP_CACHE_DIR, CARGO_HOME,
+# XDG_CACHE_HOME) appearing here proves Task 3's trusted re-injection
+# re-added them after FilterEnv stripped the inherited values.
+echo "--- OMAC cache env ---"
+echo "OMAC_CACHE_DIR=${OMAC_CACHE_DIR:-<unset>}"
+echo "OMAC_CACHE_MODE=${OMAC_CACHE_MODE:-<unset>}"
+echo "--- tool cache mappings (must point under OMAC_CACHE_DIR) ---"
+for var in XDG_CACHE_HOME GOCACHE GOMODCACHE NPM_CONFIG_CACHE PIP_CACHE_DIR CARGO_HOME; do
+    eval "val=\${$var:-<unset>}"
+    echo "$var=$val"
+done
+echo "--- write marker to OMAC_CACHE_DIR ---"
+if [ -z "${OMAC_CACHE_DIR:-}" ]; then
+    echo "OMAC_CACHE_DIR not set (cache not injected)"
+else
+    marker="audit-cache-marker-$$"
+    if echo "$marker" > "$OMAC_CACHE_DIR/audit-marker.txt" 2>/tmp/audit-cache-write.txt; then
+        echo "CACHE_MARKER_WROTE: $OMAC_CACHE_DIR/audit-marker.txt"
+        # Read it back to confirm round-trip.
+        if cat "$OMAC_CACHE_DIR/audit-marker.txt" 2>/dev/null | grep -q "$marker"; then
+            echo "CACHE_MARKER_READ_BACK: ok"
+        else
+            echo "CACHE_MARKER_READ_BACK: failed (marker not found)"
+        fi
+    else
+        echo "CACHE_MARKER_WRITE_FAILED: $(cat /tmp/audit-cache-write.txt)"
+    fi
+fi
+echo "--- host-global cache roots must be denied (write) ---"
+# ~/.cache and ~/Library/Caches are NOT granted by DefaultProfile
+# (Tasks 1-10 removed them). A write attempt must fail; a success is a
+# security boundary violation the test asserts on.
+host_cache="$HOME/.cache"
+( echo "pwn" > "$host_cache/audit-host-marker.txt" ) 2>/tmp/audit-host-cache.txt \
+    && echo "HOST_CACHE_WRITABLE: SECURITY VIOLATION ($host_cache)" \
+    || echo "HOST_CACHE_DENIED: $(cat /tmp/audit-host-cache.txt)"
+if [ -d "$HOME/Library/Caches" ]; then
+    ( echo "pwn" > "$HOME/Library/Caches/audit-host-marker.txt" ) 2>/tmp/audit-host-caches.txt \
+        && echo "HOST_LIBRARY_CACHES_WRITABLE: SECURITY VIOLATION" \
+        || echo "HOST_LIBRARY_CACHES_DENIED: $(cat /tmp/audit-host-caches.txt)"
+else
+    echo "HOST_LIBRARY_CACHES_DENIED: ~/Library/Caches does not exist"
+fi
+# Clean up the scratch files used to capture inner-command stderr so
+# they don't accumulate across runs. The denial messages have already
+# been folded into the probe output above.
+rm -f /tmp/audit-cache-write.txt /tmp/audit-host-cache.txt /tmp/audit-host-caches.txt 2>/dev/null || true
+echo "=== END: cache ==="
