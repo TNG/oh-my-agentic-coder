@@ -113,7 +113,17 @@ func defaultLauncherConfigFor(h Harness) LauncherConfig {
 				// allow_tcp_connect, network prompt) is resolved by
 				// `omac sandbox run --profile default`: user override at
 				// ~/.config/omac/profiles/default.json, else compiled-in
-				// defaults equivalent to nono's tng-sandbox profile.
+				// defaults. The compiled-in default profile is NOT a
+				// byte-for-byte equivalent of nono's external
+				// tng-sandbox.json: it intentionally does NOT broad-grant
+				// the host cache roots (~/.cache, ~/Library/Caches) or
+				// the whole tool homes (~/go, ~/.cargo, ~/.rustup). Only
+				// the toolchain bin leaves (~/.cargo/bin, ~/.rustup,
+				// ~/go/bin, ~/.nvm, ~/.bun/bin) are read-only; the
+				// selected tool-cache scope leaf
+				// (~/.cache/omac/<sha256(scope)>) is granted rw at launch
+				// via --allow (see internal/toolcache and
+				// internal/cli/start.go's prepareLaunchCache).
 				"builtin": {
 					Command: []string{
 						"{{self}}", "sandbox", "run",

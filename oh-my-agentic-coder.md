@@ -2,21 +2,21 @@
 
 - **Status:** Draft v1
 - **Audience:** Engineers building and operating the TNG sandboxed agent-coding stack (OpenCode / Claude Code / future clients) on top of Nono or any other sandbox runtime.
-- **Scope:** Mechanism for streaming arbitrary REST/HTTP(S) interfaces from the host into a sandboxed agent-coding environment through a single Unix-domain-socket facade, driven by skill-sidecar metadata.
+- **Scope:** Mechanism for streaming arbitrary REST/HTTP(S) interfaces from the host into a sandboxed agent-coding environment through a dual-transport facade (Unix-domain socket plus explicitly granted loopback TCP), driven by skill-sidecar metadata.
 - **Non-goals:** Defining a new marketplace protocol; replacing Nono; authoring concrete skills.
 
 ---
 
 ## 1. Executive summary
 
-`oh-my-agentic-coder` (CLI name: `omac`) is a small Rust binary and on-disk convention that:
+`oh-my-agentic-coder` (CLI name: `omac`) is a small Go binary and on-disk convention that:
 
 1. Lets marketplace skills ship an optional **sidecar** — a host-side HTTP service that holds secrets the sandbox is not allowed to see.
-2. Exposes all such sidecars to the sandbox through a single **Unix-domain socket facade**. Each skill is mounted under a path prefix (`/<skill>/…`) on that socket. No TCP port is ever exposed to the sandbox.
+2. Exposes all such sidecars to the sandbox through a facade available on a **Unix-domain socket** and an explicitly granted loopback TCP port. Each skill is mounted under a path prefix (`/<skill>/…`) on both transports; sidecar ports are not exposed directly.
 3. Provides `omac register / deregister / list / start / doctor` commands so the user can curate which sidecars are active per workdir, with an explicit, user-inspectable install step for each skill.
 4. Is **sandbox-runtime agnostic**: the concrete launch command (Nono today, something else tomorrow) and the inner agent command (OpenCode, Claude Code, a plain shell) are both configured as templated argv.
 
-The design generalizes the pattern already used by `himalaya-email`, which today runs a hand-started HTTP service on `127.0.0.1:7823` and is reached by the sandbox over loopback. The facade replaces that with a Unix socket plus a registry-driven supervisor.
+The design generalizes the pattern already used by `himalaya-email`, which today runs a hand-started HTTP service on `127.0.0.1:7823` and is reached by the sandbox over loopback. The facade replaces that with an omac-managed Unix socket and explicitly granted loopback TCP endpoint plus a registry-driven supervisor.
 
 ---
 
@@ -35,7 +35,7 @@ Problems with the status quo:
 - Secrets (GPG passphrases, Slack tokens, Jira tokens, …) leak into env vars or config files the skill itself reads, which implies the sandbox or the agent sees them.
 - There is no uniform way for the marketplace to ship "this skill needs a background helper."
 
-The proposal: a facade that the sandbox reaches via a **bind-mounted Unix socket** only, behind which the facade multiplexes requests to per-skill sidecar processes that run **outside** the sandbox and **own all secrets**.
+The proposal: a facade that the sandbox reaches via a **bind-mounted Unix socket** or an explicitly granted loopback TCP port, behind which the facade multiplexes requests to per-skill sidecar processes that run **outside** the sandbox and **own all secrets**. Sidecar ports are not exposed directly.
 
 ---
 
@@ -43,19 +43,19 @@ The proposal: a facade that the sandbox reaches via a **bind-mounted Unix socket
 
 ### 3.1 Goals
 
-- **No TCP surface** from sandbox to host for skill traffic. Only a Unix socket file.
-- **Secrets stay outside.** Sidecars run in the host user's context with their own env; the sandbox only sees the socket.
+- **Limited facade surface.** Skill traffic uses the facade's Unix socket or its explicitly granted `127.0.0.1` TCP port; sidecar ports are not exposed directly.
+- **Secrets stay outside.** Sidecars run in the host user's context with their own env; the sandbox sees only the facade's Unix-socket and loopback-TCP transports.
 - **Marketplace-driven.** Skills declare their sidecar in `omac.yaml`; the existing marketplace / skill-installer workflow is enough to distribute them.
 - **Explicit installs.** No skill may execute arbitrary install commands during `register`; users inspect and run install scripts themselves.
 - **Runtime-agnostic.** Nono is just one sandbox profile. The launcher is templated argv.
 - **Streaming-first.** Supports plain HTTP, chunked transfer, Server-Sent Events, and WebSocket upgrades end-to-end.
-- **Per-workdir isolation.** Socket path and sidecar set are scoped to the workdir the user is starting `omac` in.
+- **Per-workdir isolation.** Facade transport endpoints and the sidecar set are scoped to the workdir the user is starting `omac` in.
 - **Graceful lifecycle.** Supervisor cleans up sidecars and the socket on sandbox exit.
 
 ### 3.2 Non-goals
 
 - Cryptographic isolation between sidecars of the same workdir.
-- Mutual TLS or peer-credential auth on the socket (future work, §21).
+- Mutual TLS or peer-credential auth on the Unix socket (future work, §21).
 - Windows (non-WSL) support in v1.
 - A general service mesh. This is a single-process reverse proxy.
 
@@ -65,13 +65,13 @@ The proposal: a facade that the sandbox reaches via a **bind-mounted Unix socket
 
 | Term | Meaning |
 | --- | --- |
-| **Facade** | The `omac` process that owns the Unix socket and proxies requests to sidecars. Also the supervisor. |
+| **Facade** | The `omac` process that owns the Unix socket and loopback TCP listener, and proxies requests to sidecars. Also the supervisor. |
 | **Sidecar** | A host-side HTTP server process spawned from a skill's metadata. Owns the secrets and talks to the real upstream (Slack, Jira, Gmail, …). |
 | **Skill** | A marketplace package installed under `.opencode/skills/<name>/`. May include an optional sidecar. |
 | **Sandbox runtime** | The binary that actually creates the sandbox (Nono today). Swappable. |
 | **Inner command** | What runs inside the sandbox (OpenCode, Claude Code, `bash`, …). Configurable. |
-| **Bridge socket** | The single Unix socket through which all sidecar traffic flows. Path: `${TMPDIR}/omac-<workdir-hash>/bridge.sock`. |
-| **Subpath mount** | A skill's routing prefix on the bridge socket. Defaults to the skill name. |
+| **Bridge socket** | The facade's Unix transport. Path: `${TMPDIR}/omac-<workdir-hash>/bridge.sock`. |
+| **Subpath mount** | A skill's routing prefix on either facade transport. Defaults to the skill name. |
 | **sidecar.json** | Per-workdir registry file under `.opencode/sidecar.json`. |
 | **Secret** | A named credential declared in `sidecar.secrets`, stored in the OS keychain, injected into the sidecar's env at start time, and never visible to the sandbox. |
 | **Keychain** | OS-native secret store: macOS Keychain Services, Linux Secret Service (libsecret/GNOME Keyring/KWallet), or Windows Credential Manager. |
@@ -94,12 +94,14 @@ The proposal: a facade that the sandbox reaches via a **bind-mounted Unix socket
 │          └────┤  omac facade (reverse proxy)      │                 │
 │               │                                   │                 │
 │               │   Unix socket: bridge.sock        │                 │
+│               │   TCP loopback: 127.0.0.1:<port>  │                 │
 │               │   routes:                         │                 │
 │               │     /slack/*       → sidecar A    │                 │
 │               │     /himalaya/*    → sidecar B    │                 │
 │               │     /jira/*        → sidecar C    │                 │
 │               └─────────────────┬─────────────────┘                 │
-│                                 │ bind-mounted / allow-listed       │
+│                                 │ socket bind-mounted; TCP port      │
+│                                 │ explicitly allow-listed            │
 └─────────────────────────────────┼───────────────────────────────────┘
                                   │
 ┌─────────────────────────────────┼─ Sandbox (Nono) ──────────────────┐
@@ -109,6 +111,7 @@ The proposal: a facade that the sandbox reaches via a **bind-mounted Unix socket
 │   OMAC_SLACK_BASE=http://127.0.0.1:<port>/slack                    │
 │                                                                     │
 │   opencode / claude-code:                                           │
+│     curl "$OMAC_SLACK_BASE/api/chat…"  # TCP preferred              │
 │     curl --unix-socket "$OMAC_SOCKET" http://x/slack/api/chat…      │
 │                                                                     │
 └─────────────────────────────────────────────────────────────────────┘
@@ -126,7 +129,7 @@ Key invariants:
 
 ### 6.1 `omac` CLI binary
 
-Single Rust binary. Subcommands (detailed in §10):
+Single Go binary. Subcommands (detailed in §10):
 
 - `omac register <skill>`
 - `omac deregister <skill>`
@@ -137,18 +140,17 @@ Single Rust binary. Subcommands (detailed in §10):
 - `omac doctor`
 - `omac version`
 
-Rust is chosen because:
+Go is chosen because:
 
-- Nono is already Rust; easy code-sharing and dependency overlap (`tokio`, `hyper`, `tower`).
 - A single statically-linked binary ships cleanly — the user runs one thing on the host.
-- Strong story for Unix sockets, async HTTP, WebSocket upgrade proxying (`hyper`, `hyper-util`, `tokio-tungstenite`).
-- First-class ecosystem for the secret/keychain path that the CLI needs (`keyring`, `rpassword`, `secrecy`, `zeroize`), with native macOS Keychain and Secret Service backends out of the box.
-- Process supervision with `tokio::process`, signal handling (`tokio::signal::unix`), and deterministic cleanup via `Drop`.
-- Cross-compilable to the same targets Nono already ships.
+- The standard library supports Unix sockets, HTTP streaming, and connection upgrades used by the facade.
+- `github.com/zalando/go-keyring` provides native macOS Keychain and Linux Secret Service backends.
+- The standard library provides process supervision and Unix signal handling.
+- It cross-compiles to the project’s supported targets.
 
 ### 6.2 Facade (reverse proxy)
 
-- `tokio` + `hyper` server bound to the bridge Unix socket.
+- Go `net/http` server serving the same router on the bridge Unix socket and loopback TCP listener.
 - Per-request router strips the `/<skill>/` prefix and forwards to `http://127.0.0.1:<port>/<rest>`.
 - Full support for:
   - `Transfer-Encoding: chunked`
@@ -451,7 +453,124 @@ variables:
 | `OMAC_<SKILL>_SOCKET_BASE` | `http+unix://<pct-encoded-socket>/<mount>` | Per-skill Unix URL (fallback), without a trailing slash. |
 | `OMAC_VERSION` | `omac` binary version. | Skill compatibility checks. |
 
-Skill name → env suffix mapping: uppercase, `-` → `_`, non-alphanumerics stripped. `himalaya-email` → `OMAC_HIMALAYA_EMAIL_BASE` and `OMAC_HIMALAYA_EMAIL_SOCKET_BASE`.
+Skill name → env suffix mapping: uppercase, `-` → `_`, and every other non-alphanumeric character → `_`. `himalaya-email` → `OMAC_HIMALAYA_EMAIL_BASE` and `OMAC_HIMALAYA_EMAIL_SOCKET_BASE`.
+
+In addition to the transport variables above, the launcher injects a
+**tool-cache redirection** block. omac prepares a per-scope cache
+directory and redirects the caches supported by `XDG_CACHE_HOME`,
+`GOCACHE`, `GOMODCACHE`, `NPM_CONFIG_CACHE`, `PIP_CACHE_DIR`, and
+`CARGO_HOME` into it:
+
+| Variable | Value | Purpose |
+| --- | --- | --- |
+| `OMAC_CACHE_DIR` | the selected cache scope directory | Selector — names the directory. |
+| `OMAC_CACHE_MODE` | `persistent` or `ephemeral` | Selector — names the mode. |
+| `XDG_CACHE_HOME` | `$OMAC_CACHE_DIR/xdg` | Generic XDG cache (opencode, gh, …). |
+| `GOCACHE` | `$OMAC_CACHE_DIR/go-build` | Go build cache. |
+| `GOMODCACHE` | `$OMAC_CACHE_DIR/go-mod` | Go module download cache. |
+| `NPM_CONFIG_CACHE` | `$OMAC_CACHE_DIR/npm` | npm cache. |
+| `PIP_CACHE_DIR` | `$OMAC_CACHE_DIR/pip` | pip cache. |
+| `CARGO_HOME` | `$OMAC_CACHE_DIR/cargo` | cargo home (registry index, git checkouts, …). |
+
+The default profile grants **only** the selected scope leaf
+(`~/.cache/omac/<sha256(scope-identity)>`) read+write for caches; the
+broad cache roots and tool homes are not granted. `~/.cargo/bin`,
+`~/.rustup`, `~/go/bin`, `~/.nvm`, and `~/.bun/bin` are read-only
+runtime installation paths so installed toolchain binaries stay
+runnable, not writable or cache grants. Unsupported third-party tools
+that hardcode another cache path need explicit profile configuration;
+omac does not redirect them automatically. `~/.cargo/config`,
+`~/.cargo/config.toml`, `~/.cargo/credentials`, and
+`~/.cargo/credentials.toml` and the rest of `~/go` / `~/.cargo` are
+not. `omac sandbox run` re-derives the cache
+environment map only after it has verified that `OMAC_CACHE_DIR`
+matches an exact writable grant in the active sandbox profile, so an
+inherited tool-specific variable cannot bypass the profile's
+environment allowlist.
+
+### 9.1 Cache modes and trust domains
+
+The cache scope is selected at launch from the launch command and the
+workdir identity (the canonical absolute path after symlink
+resolution):
+
+| Launch | Scope identity | Mode | Path |
+| --- | --- | --- | --- |
+| `omac start` (default) | `v1:workdir:<canonical workdir>` | `persistent` | `~/.cache/omac/<sha256(identity)>` |
+| `omac start --ephemeral-cache` | per-launch sandbox temp dir | `ephemeral` | `$TMPDIR/omac-sandbox-tmp-*/cache` (removed on exit) |
+| `omac serve` (no `--workdir`) | `v1:serve:<canonical launch workdir>` | `persistent` | `~/.cache/omac/<sha256(identity)>` — shared Desktop serve cache |
+| `omac serve --workdir <dir>` | `v1:workdir:<canonical <dir>>` | `persistent` | as `omac start` from that dir |
+| `omac serve --ephemeral-cache` | per-launch sandbox temp dir | `ephemeral` | removed on exit |
+| `omac start --no-sandbox` / `omac serve --no-sandbox` | none | — | no cache scope prepared |
+
+- **Persistent (default).** The same workdir reuses the same cache
+  directory across launches, so incremental builds survive. The scope
+  identity is the canonical workdir path, **not** the bare directory
+  name, so `~/work/acme` and `~/clients/acme` are distinct scopes.
+  Because identity follows the resolved path, the main worktree and a
+  linked worktree of the same repository have distinct cache scopes.
+- **Accepted same-domain poisoning.** Two paths that resolve to the
+  same canonical absolute path share a scope; omac does not try to
+  distinguish them.
+- **`--ephemeral-cache`.** A fresh directory under the per-launch
+  sandbox temp dir, removed on exit. Use it for a clean-room build or
+  when persistent-scope setup fails (e.g. an unsafe `~/.cache/omac`
+  symlink); omac's failure hint names the flag. Cannot be combined
+  with `--no-sandbox` (no sandbox to grant the temp dir).
+- **`--no-sandbox`.** Disables the entire omac sandbox. No cache
+  scope is prepared and no `OMAC_CACHE_*` / tool redirects are
+  injected. Normal `OMAC_*` transport variables and the per-launch
+  `TMPDIR` remain available to the inner command.
+- **Single-directory `omac serve`.** `omac serve --workdir <dir>`
+  pre-activates that one directory at cold start; its cache scope is
+  the workdir-scope identity, not the shared serve scope.
+- **Shared multi-directory `omac serve` cache.** Without `--workdir`,
+  all directories served by one `omac serve` process share the single
+  serve-scope cache directory. This is the Desktop path: many
+  projects reuse one cache. It is strictly weaker isolation than
+  per-workdir `omac start` and is an explicit, documented consequence
+  of the shared-sandbox decision. Use `--ephemeral-cache` or
+  `omac serve --workdir` per project to opt back into per-directory
+  isolation.
+
+### 9.2 Cleaning up cache scopes
+
+```text
+omac cache clear           # Remove the current workdir's cache scope.
+omac cache clear --all     # Remove every inactive cache scope (destructive).
+```
+
+`omac cache clear` removes the current workdir's persistent cache
+scope; `omac cache clear --all` walks every scope under
+`~/.cache/omac` and removes the inactive ones. Each scope is reported
+as `removed`, `active` (lock held by a running launch, left intact),
+or `skipped` (unsafe, missing, or replaced between open and remove).
+Active scopes are never removed: omac holds a shared lock on a
+persistent scope for the lifetime of the launch, and `--all` takes an
+exclusive lock per scope, so a running launch's cache is always
+skipped (the active-scope refusal).
+
+### 9.3 Private Cargo registry setup
+
+Because `CARGO_HOME` is redirected to `$OMAC_CACHE_DIR/cargo`, the
+host's `~/.cargo/config`, `~/.cargo/config.toml`,
+`~/.cargo/credentials`, and `~/.cargo/credentials.toml` are not picked
+up inside the sandbox. Supply a private registry token via:
+
+1. A project-local `.cargo/config.toml` declaring the registry (e.g.
+   under the `[registries.<name>]` table).
+2. Export `CARGO_REGISTRIES_<NAME>_TOKEN` in the environment that
+   starts `omac`, where `<NAME>` is the registry key uppercased with
+   `-` changed to `_`. If the sandbox profile sets
+   `environment.allow_vars`, include that exact token variable. Cargo
+   receives it through the sandboxed harness environment;
+   `sidecar.env_passthrough` configures only the sidecar.
+
+`omac doctor` detects the presence of `~/.cargo/config`,
+`~/.cargo/config.toml`, `~/.cargo/credentials`, and
+`~/.cargo/credentials.toml` with `Lstat` only, never reading or
+copying them, and warns that an isolated `CARGO_HOME` will not use
+them.
 
 **Why two transports.** On macOS, when nono runs in proxy mode (auto-
 activated by any nono profile defining `custom_credentials`, by
@@ -582,11 +701,12 @@ Common flags:
 
 - `--inner <cmd>` — override `sandbox.inner_cmd` from config.
 - `--sandbox <profile>` — select a named sandbox profile from config (`sandbox.profiles.<name>`).
-- `--no-sandbox` — run the inner command directly without a sandbox (dangerous; for debugging only).
+- `--no-sandbox` — run the inner command directly without a sandbox (dangerous; for debugging only). Disables the entire omac sandbox: no filesystem isolation, no network egress filtering, no secret isolation, no env filtering. No cache scope is prepared and no `OMAC_CACHE_*` / tool redirects are injected; normal `OMAC_*` transport variables and the per-launch `TMPDIR` remain available.
+- `--ephemeral-cache` — use a per-launch cache directory under the sandbox temp dir instead of the persistent workdir cache scope; removed on exit. Use it for a clean-room build or when persistent-scope setup fails (omac's failure hint names the flag). Cannot be combined with `--no-sandbox` (no sandbox to grant the temp dir).
 - `--keep-running` — do not stop sidecars when the inner command exits (useful when iterating on sidecar development).
 - `--accept-skill-changes` — tolerate `bundle_hash` drift.
 - `--skip-secret-pattern` — do not enforce a secret's `pattern` against an `env_passthrough`-supplied value (escape hatch for an outdated pattern; the raw value is still passed through to the sidecar).
-- `--verbose`, `--log-level <level>`.
+- `--verbose`, `--log-level <level>`. `--verbose` prints the resolved cache mode/path, the sandbox TMPDIR, the control-plane URL, and the sandbox argv before exec.
 
 ### 10.4a `omac continue [harness] [-- …inner args]`
 
@@ -625,6 +745,42 @@ Runs sanity checks:
 - Each registered skill: meta valid, install artifact (if declared) present and executable, health-probe dry parse.
 - Stale runtime directories for this workdir (offers `--fix` to remove them).
 - Configured sandbox binary resolvable on `$PATH`.
+- Sandbox-profile grant warnings (advisory, never mutate the profile):
+  for each successfully inspectable built-in `{{self}} sandbox run`
+  profile, warns when the profile re-introduces a broad read/write
+  grant on the cache roots (`~/.cache`, `~/Library/Caches`) or the tool
+  homes (`~/go`, `~/.cargo`, `~/.rustup`); warns on a whole-home `Read`
+  that transitively covers `~/.cargo/config` and credentials; and
+  detects the presence of `~/.cargo/config`, `~/.cargo/config.toml`,
+  `~/.cargo/credentials`, and `~/.cargo/credentials.toml` (by `Lstat`
+  only — never reads them) so an isolated `CARGO_HOME` user knows the
+  host files won't be picked up. External nono profiles are opaque to
+  these diagnostics and skipped.
+
+### 10.5.1 `omac provenance`
+
+`omac provenance [--profile <ref>] [--json]` prints the effective
+allow/deny entries across network, filesystem, environment, and
+skills, plus a `cache` section describing the default persistent
+tool-cache scope for the current workdir (scope, mode, path, and the
+eight-variable `environment` map `toolcache.Environment` produces).
+The cache section always reports the default workdir scope — not a
+live ephemeral or serve-process scope — and never creates the
+directory. `--check` emits findings for risky profile grants instead
+of the view.
+
+### 10.5.2 `omac cache`
+
+```text
+omac cache clear           # Remove the current workdir's cache scope.
+omac cache clear --all     # Remove every inactive cache scope (destructive).
+```
+
+Manages the persistent tool-cache scopes under `~/.cache/omac`. There
+is no interactive prompt; `--all` is the explicit destructive
+confirmation. Each scope is reported as `removed`, `active` (lock
+held by a running launch, left intact), or `skipped` (unsafe,
+missing, or replaced between open and remove). See §9.2.
 
 ### 10.5a `omac update`
 
@@ -781,7 +937,7 @@ Step 5c detail: `env_passthrough` is a strict allowlist. Anything not listed is 
 
 ### 13.3 Bodies & streaming
 
-- Request and response bodies are streamed (`hyper::Body`), not buffered, except when `Content-Length` ≤ 64 KiB, where a one-shot copy is permitted for latency.
+- Request and response bodies stream through Go's `net/http` reverse proxy rather than being buffered.
 - `text/event-stream` responses are detected by `Content-Type`; the facade disables any chunk coalescing and flushes on every upstream frame.
 - `Transfer-Encoding: chunked` both ways is transparent.
 - `max_body_bytes` (per skill, else facade default) is enforced; exceeding it yields `413 Payload Too Large` and the upstream request is cancelled.
@@ -820,7 +976,11 @@ Shape:
 
 ```yaml
 sandbox:
-  default_profile: nono
+  # The compiled-in default is `builtin` (the omac native sandbox:
+  # Seatbelt on macOS, bubblewrap+Landlock on Linux). `nono`,
+  # `nono-netprofile`, and `no-sandbox-debug` are retained as
+  # non-default profiles.
+  default_profile: builtin
   profiles:
     nono:
       command:
@@ -898,9 +1058,26 @@ The existing `tng-sandbox.json` Nono profile remains the trust policy for filesy
 - Adds `--allow-file {{socket}}` so the sandbox can `open(2)` the bridge socket inode (covers the Unix transport on Linux and on macOS without proxy mode).
 - Adds `--read {{socket_dir}}` so component-wise path resolution during `connect(2)` succeeds without depending on Nono's `system_read_macos` group covering `$TMPDIR/omac-*`.
 - Adds `--open-port {{tcp_port}}` to whitelist the facade's loopback TCP port. Per nono's [Networking](https://nono.sh/docs/cli/features/networking#localhost-ipc) docs, `--open-port` allows bidirectional `127.0.0.1:<port>` and works alongside proxy mode. **This is the transport that works under proxy mode on macOS.**
-- Sets `OMAC_*` variables in its own process environment before `exec`ing nono. Nono propagates the parent environment to the inner process by default. (Nono no longer accepts literal `--env KEY=VAL` flags; the only `--env-*` flag is `--env-credential`, which is keystore-only.)
+- Sets `OMAC_*` variables and the supported cache redirects in its own process environment before `exec`ing nono. Nono propagates the parent environment to the inner process by default. (Nono no longer accepts literal `--env KEY=VAL` flags; the only `--env-*` flag is `--env-credential`, which is keystore-only.)
 
-No change to the existing `tng-sandbox.json` content is required; `omac` only wraps Nono. **However, if you author a custom nono profile with `environment.allow_vars` set, you must include `OMAC_*` (or the explicit names `OMAC_SOCKET`, `OMAC_HOST`, `OMAC_PORT`, `OMAC_BASE`, `OMAC_SKILLS`, `OMAC_VERSION`, and `OMAC_<SKILL>_BASE` / `OMAC_<SKILL>_SOCKET_BASE` per registered skill) in the allow-list, or the sandbox will not see them.**
+No change to the existing `tng-sandbox.json` content is required; `omac` only wraps Nono. If you author an external nono profile with `environment.allow_vars` set, include the complete required set:
+
+```yaml
+environment:
+  allow_vars:
+    - OMAC_*
+    - XDG_CACHE_HOME
+    - GOCACHE
+    - GOMODCACHE
+    - NPM_CONFIG_CACHE
+    - PIP_CACHE_DIR
+    - CARGO_HOME
+```
+
+External nono profiles do not receive the built-in sandbox re-exec's
+trusted cache reinjection. If a redirect is omitted from their
+allow-list, its tool falls back to its default cache location rather
+than receiving an automatic substitute.
 
 **Two transports, by design.** Per [Nono's Seatbelt documentation](https://nono.sh/docs/cli/internals/seatbelt), macOS classifies `connect(2)` on a Unix socket as `network-outbound`, not as a file operation. On Linux, AF_UNIX is governed by Landlock's file-path ACLs and is not part of its TCP port filter. Three platform-specific consequences:
 
@@ -1076,7 +1253,7 @@ Non-interactive alternatives:
 
 ### 16.8 Trust boundary (revisited)
 
-- **Inside sandbox**: untrusted with respect to the host. It may run agent-generated code that tries to exfiltrate anything it sees. Therefore the sandbox sees only the socket; the sandbox never sees any secret, any host env var that isn't explicitly forwarded, or any part of the keychain.
+- **Inside sandbox**: untrusted with respect to the host. It may run agent-generated code that tries to exfiltrate anything it sees. Therefore the sandbox sees only the facade's Unix-socket and loopback-TCP transports; it never sees any secret, any host env var that isn't explicitly forwarded, or any part of the keychain.
 - **Facade (`omac`)**: semi-trusted. Written and distributed by us. It handles secrets only long enough to inject them into a child process and then drops them.
 - **Sidecar**: trusted with its own secrets (they appear in its env). Trusted with respect to the upstream it talks to. The facade enforces body-size and timeout limits to blunt DoS from inside the sandbox.
 - **Keychain**: trusted; protected by the OS login session / screensaver lock.
@@ -1286,13 +1463,15 @@ Three non-obvious things in that argv:
    is blocked anyway).
 
 3. **Env-var injection is via process env, not flags.** Nono no
-   longer accepts a literal `--env KEY=VAL` flag (the only `--env-*`
-   flag is `--env-credential`, which is keystore-only). `omac` sets
-   `OMAC_*` in nono's process environment before exec; nono
-   propagates the parent env to the inner process by default.
-   Profiles with `environment.allow_vars` set must include `OMAC_*`
-   in the list. The shipped `tng-sandbox.json` leaves that section
-   unset, so the default-allow behaviour delivers them automatically.
+    longer accepts a literal `--env KEY=VAL` flag (the only `--env-*`
+    flag is `--env-credential`, which is keystore-only). `omac` sets
+    `OMAC_*` and the supported cache redirects in nono's process
+    environment before exec; nono propagates the parent env to the
+    inner process by default. Profiles with `environment.allow_vars`
+    set must include `OMAC_*`, `XDG_CACHE_HOME`, `GOCACHE`,
+    `GOMODCACHE`, `NPM_CONFIG_CACHE`, `PIP_CACHE_DIR`, and
+    `CARGO_HOME`. The shipped `tng-sandbox.json` leaves that section
+    unset, so the default-allow behaviour delivers them automatically.
 
 ## Appendix D — End-to-end walkthrough
 
