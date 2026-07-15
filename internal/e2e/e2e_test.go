@@ -25,6 +25,7 @@
 // Run one:          E2E_HARNESS=opencode go test -tags=e2e -timeout=30m -v ./internal/e2e/
 // Latest:           E2E_USE_LATEST=1 go test -tags=e2e -timeout=30m -v ./internal/e2e/
 // Skip claude-code: E2E_SKIP_CLAUDE_CODE=1 go test -tags=e2e -timeout=30m -v ./internal/e2e/
+// Fast subset:      go test -tags=e2e_fast ./internal/e2e/  (model-free, no token/harness; runs in PR CI)
 //
 // Harness versions and model IDs are pinned in versions.go.
 // Set E2E_USE_LATEST=1 to test with latest releases (no pinning).
@@ -256,7 +257,12 @@ func runSecurityAudit(t *testing.T, h harnessConfig) {
 		assertSymlinkEscapeDenied(t, stdout)
 		assertNetworkDenied(t, stdout, spec.NetDenyDomain)
 	} else {
-		t.Logf("skipping negative assertions: %s runs with --no-sandbox", h.Name)
+		// A --no-sandbox harness (e.g. codex on macOS) has no sandbox to
+		// enforce the negative properties, so we can't assert they hold.
+		// But we do assert the audit still RAN to completion and document
+		// the resulting exposure surface — so the risk is recorded instead
+		// of silently excluded (issue #66).
+		assertNoSandboxAuditReported(t, stdout, spec)
 	}
 
 	// --- POSITIVE assertions (things that MUST happen) ---
@@ -290,21 +296,6 @@ func runSecurityAudit(t *testing.T, h harnessConfig) {
 	// decision (all sidecars share the same facade). We log the result
 	// so if isolation is added later, the test surfaces the change.
 	logCrossSkillIsolation(t, stdout)
-}
-
-// buildOmac compiles the omac binary into a temp dir and returns its path.
-func buildOmac(t *testing.T) string {
-	t.Helper()
-	binPath := filepath.Join(t.TempDir(), "omac")
-	// Build from repo root (test CWD is internal/e2e/).
-	repoRoot := filepath.Join("..", "..")
-	cmd := exec.Command("go", "build", "-buildvcs=false", "-o", binPath, "./cmd/omac")
-	cmd.Dir = repoRoot
-	cmd.Env = os.Environ()
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("build omac: %v\n%s", err, out)
-	}
-	return binPath
 }
 
 // installHarness installs the harness CLI into the temp HOME.
@@ -583,7 +574,7 @@ func assertGitCommitMade(t *testing.T, path, stdout string) {
 // leaked the secret into the agent's environment.
 func assertSecretNotLeaked(t *testing.T, output string) {
 	t.Helper()
-	if strings.Contains(output, auditSecretValue) {
+	if secretLeaked(output, auditSecretValue) {
 		failWithClassification(t, "secretNotLeaked", fmSandboxFail, output)
 		return
 	}
@@ -625,14 +616,7 @@ func assertSecretFingerprintPresent(t *testing.T, output string) {
 // "VARNAME=" in the output.
 func assertEnvVarsDenied(t *testing.T, output string, denyVars []string) {
 	t.Helper()
-	leaked := []string{}
-	for _, v := range denyVars {
-		needle := v + "="
-		if strings.Contains(output, needle) {
-			leaked = append(leaked, v)
-		}
-	}
-	if len(leaked) > 0 {
+	if len(envVarsLeaked(output, denyVars)) > 0 {
 		failWithClassification(t, "envVarsDenied", fmSandboxFail, output)
 		return
 	}
@@ -693,14 +677,6 @@ func assertFilesystemReadDenied(t *testing.T, output string) {
 	t.Logf("PASS: filesystem read isolation — no probed path was readable")
 }
 
-// fsReadLeaked reports whether any path probed by audit.sh's fs_read
-// section was readable. Pulled out of assertFilesystemReadDenied so the
-// marker-absence decision is unit-testable against synthetic probe output
-// without going through *testing.T (see security_assertions_test.go).
-func fsReadLeaked(output string) bool {
-	return strings.Contains(extractProbe(output, "fs_read"), "READABLE")
-}
-
 // assertFilesystemAllowed verifies that legitimate paths (workdir,
 // cache dir, $TMPDIR) stayed accessible under the fs_allow probe. This
 // is the positive counterpart to assertFilesystemReadDenied/
@@ -727,31 +703,6 @@ func assertFilesystemAllowed(t *testing.T, output string, labels []string) {
 	t.Logf("PASS: filesystem allow — workdir/cache/tmp stayed accessible")
 }
 
-// fsAllowDenied checks each labelled fs_allow probe individually and
-// returns the first line that did NOT show a WRITABLE/READABLE marker
-// (i.e. was denied), or "" if all passed. Per-label, not "any marker
-// anywhere in the section" — the same rigor applied to
-// fsReadLeaked/fsWriteLeaked for the negative assertions, mirrored here
-// for the positive case: if one legitimate path silently lost access,
-// it must not be masked by the other paths still working.
-func fsAllowDenied(output string, labels []string) string {
-	section := extractProbe(output, "fs_allow")
-	for _, label := range labels {
-		idx := strings.Index(section, label)
-		if idx < 0 {
-			return label + ": probe label not found in fs_allow output"
-		}
-		line := section[idx:]
-		if nl := strings.IndexByte(line, '\n'); nl >= 0 {
-			line = line[:nl]
-		}
-		if !strings.Contains(line, "WRITABLE") && !strings.Contains(line, "READABLE") {
-			return line
-		}
-	}
-	return ""
-}
-
 // assertFilesystemWriteDenied verifies that write attempts to system
 // paths (read-only mounts) were denied by the sandbox.
 func assertFilesystemWriteDenied(t *testing.T, output string) {
@@ -774,12 +725,6 @@ func assertFilesystemWriteDenied(t *testing.T, output string) {
 		return
 	}
 	t.Logf("PASS: filesystem write protection — no probed path was writable")
-}
-
-// fsWriteLeaked reports whether any path probed by audit.sh's fs_write
-// section was writable. See fsReadLeaked.
-func fsWriteLeaked(output string) bool {
-	return strings.Contains(extractProbe(output, "fs_write"), "WRITABLE")
 }
 
 // assertSymlinkEscapeDenied verifies that the agent could not read a denied
@@ -810,13 +755,6 @@ func assertSymlinkEscapeDenied(t *testing.T, output string) {
 		return
 	}
 	t.Logf("PASS: symlink escape denied — read and write through a workdir symlink to a denied path both blocked")
-}
-
-// symlinkEscapeLeaked reports whether the read half and/or write half of
-// audit.sh's symlink escape probe leaked. See fsReadLeaked.
-func symlinkEscapeLeaked(output string) (readLeaked, writeLeaked bool) {
-	probeOut := extractProbe(output, "symlink")
-	return strings.Contains(probeOut, "READABLE"), strings.Contains(probeOut, "WRITABLE")
 }
 
 // logHardlinkProbeResults logs whether a hardlink escape (same idea as the
@@ -898,30 +836,37 @@ func assertNetworkDenied(t *testing.T, output string, denyDomain string) {
 		failWithClassification(t, "networkDenied", fmAgentPartial, output)
 		return
 	}
-	probeOut := extractProbe(output, "net")
-	denials := []string{
-		"Connection refused",
-		"Could not resolve host",
-		"Connection timed out",
-		"Failed to connect",
-		"curl: (6)",             // Could not resolve host
-		"curl: (7)",             // Failed to connect
-		"curl: (28)",            // Operation timed out
-		"DENIED BY THE SANDBOX", // omac proxy denial body
-		"403",                   // HTTP 403 from proxy
-	}
-	found := false
-	for _, d := range denials {
-		if strings.Contains(probeOut, d) {
-			found = true
-			break
-		}
-	}
-	if !found {
+	if !netProbeDenied(output) {
 		failWithClassification(t, "networkDenied", fmSandboxFail, output)
 		return
 	}
 	t.Logf("PASS: network isolation — denial message found in agent output")
+}
+
+// assertNoSandboxAuditReported handles the --no-sandbox path of the security
+// audit. There is no sandbox to enforce the negative properties, so instead
+// of silently skipping every negative assertion — which hid the real risk
+// surface for these harnesses — it asserts the audit actually ran to
+// completion and logs an explicit per-property exposure table. A no-sandbox
+// run that produces no audit output now fails loudly rather than passing
+// green with nothing checked (issue #66).
+func assertNoSandboxAuditReported(t *testing.T, output string, spec AllowanceSpec) {
+	t.Helper()
+	t.Logf("--no-sandbox harness: negative properties are NOT enforced by omac; documenting exposure surface:")
+	for _, r := range noSandboxExposureReport(output, auditSecretValue, spec.EnvDenyVars) {
+		if !r.Ran() {
+			// The probe never completed, so there is no exposure reading to
+			// document. Unlike the old silent skip, that is a failure: a
+			// no-sandbox run must still produce a full audit to be meaningful.
+			failWithClassification(t, "noSandboxAudit:"+r.Probe, r.Mode, output)
+			continue
+		}
+		status := "contained (OS-level or incidental — not omac-enforced)"
+		if r.Exposed {
+			status = "EXPOSED (no sandbox enforcing this property)"
+		}
+		t.Logf("  %-28s [%-8s] %s", r.Property, r.Probe, status)
+	}
 }
 
 // truncate shortens s to at most n chars, appending "…" if truncated.

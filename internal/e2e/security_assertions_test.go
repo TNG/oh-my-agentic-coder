@@ -1,4 +1,4 @@
-//go:build e2e
+//go:build e2e || e2e_fast
 
 package e2e
 
@@ -9,7 +9,7 @@ import "testing"
 // assertFilesystemReadDenied/assertFilesystemWriteDenied/
 // assertSymlinkEscapeDenied/assertFilesystemAllowed
 // (fsReadLeaked/fsWriteLeaked/symlinkEscapeLeaked/fsAllowDenied in
-// e2e_test.go). Before this fix, those assertions passed as long as ANY
+// security_assertions.go). Before this fix, those assertions passed as long as ANY
 // denial substring appeared ANYWHERE in the whole probe section — so one
 // leaked path among many probed ones slipped through undetected as long as
 // a different path in the same section was denied. That is exactly the
@@ -140,5 +140,67 @@ func TestSymlinkEscapeLeakedCatchesEitherHalf(t *testing.T) {
 		"=== END: symlink ===\n"
 	if readLeaked, writeLeaked := symlinkEscapeLeaked(writeLeakedOutput); readLeaked || !writeLeaked {
 		t.Errorf("expected write leak only, got read=%v write=%v", readLeaked, writeLeaked)
+	}
+}
+
+// TestNoSandboxExposureReport covers the --no-sandbox documentation path
+// (issue #66): the report must (a) flag a property as EXPOSED when the audit
+// output shows it unenforced, (b) flag it contained when the probe shows a
+// denial, and (c) mark a probe as not-Ran when its section is missing, so the
+// live wrapper fails a no-sandbox run that produced no audit instead of
+// silently passing with nothing checked.
+func TestNoSandboxExposureReport(t *testing.T) {
+	secret := "test-secret-value-123"
+	denyVars := []string{"HOST_SECRET"}
+
+	// A no-sandbox run: every probe ran to completion and every property is
+	// exposed (secret leaked, denied var visible, fs readable/writable,
+	// symlink escaped, network reached).
+	exposed := "=== PROBE: secret ===\nAUDIT_SECRET=" + secret + "\n=== END: secret ===\n" +
+		"=== PROBE: env ===\nHOST_SECRET=leaked\n=== END: env ===\n" +
+		"=== PROBE: fs_read ===\n--- /etc/shadow ---: READABLE\n=== END: fs_read ===\n" +
+		"=== PROBE: fs_write ===\n--- /etc ---: WRITABLE\n=== END: fs_write ===\n" +
+		"=== PROBE: symlink ===\n--- read ---: READABLE\n=== END: symlink ===\n" +
+		"=== PROBE: net ===\nHTTP/1.1 200 OK\n=== END: net ===\n"
+	byProbe := map[string]exposureRecord{}
+	for _, r := range noSandboxExposureReport(exposed, secret, denyVars) {
+		byProbe[r.Probe] = r
+	}
+	for _, p := range []string{"secret", "env", "fs_read", "fs_write", "symlink", "net"} {
+		r, ok := byProbe[p]
+		if !ok {
+			t.Fatalf("report missing probe %q", p)
+		}
+		if !r.Ran() {
+			t.Errorf("probe %q: expected Ran (complete section present)", p)
+		}
+		if !r.Exposed {
+			t.Errorf("probe %q: expected Exposed on a fully-open no-sandbox run", p)
+		}
+	}
+
+	// A contained run: probes ran but each property is denied — nothing
+	// should read as exposed even though there is no sandbox.
+	contained := "=== PROBE: secret ===\n(redacted)\n=== END: secret ===\n" +
+		"=== PROBE: env ===\n(no host vars)\n=== END: env ===\n" +
+		"=== PROBE: fs_read ===\ncat: /etc/shadow: Permission denied\n=== END: fs_read ===\n" +
+		"=== PROBE: fs_write ===\ncannot create: Read-only file system\n=== END: fs_write ===\n" +
+		"=== PROBE: symlink ===\nPermission denied\n=== END: symlink ===\n" +
+		"=== PROBE: net ===\ncurl: (7) Failed to connect\n=== END: net ===\n"
+	for _, r := range noSandboxExposureReport(contained, secret, denyVars) {
+		if !r.Ran() {
+			t.Errorf("probe %q: expected Ran", r.Probe)
+		}
+		if r.Exposed {
+			t.Errorf("probe %q: expected contained (denial present), got Exposed", r.Probe)
+		}
+	}
+
+	// A silently-empty run: the audit produced nothing. Every probe must be
+	// reported as not-Ran so the live wrapper fails instead of skipping.
+	for _, r := range noSandboxExposureReport("", secret, denyVars) {
+		if r.Ran() {
+			t.Errorf("probe %q: expected not-Ran on empty audit output", r.Probe)
+		}
 	}
 }

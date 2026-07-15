@@ -141,3 +141,31 @@ jobs:
         with:
           version: latest
           install-go: false
+
+  e2e-fast:
+    # Model-free slice of the e2e suite (build tag `e2e_fast`): the security
+    # regression tests that need no live LLM harness, API token, or OS
+    # sandbox — dir_token isolation driven over real loopback sockets, the
+    # mutation-tested assertion predicates, the --no-sandbox exposure report,
+    # and the harness/version registry invariants. The full e2e.yml suite
+    # (live models) still runs weekly; this gate keeps these regressions off
+    # the merge path instead of surfacing them up to a week later. No
+    # bubblewrap: `omac serve --no-inner` exercises the control plane only.
+    name: E2E fast (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run model-free e2e tests
+        run: go test -tags=e2e_fast -race -count=1 -timeout=5m ./internal/e2e/
