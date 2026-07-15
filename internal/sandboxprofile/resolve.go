@@ -19,25 +19,21 @@ func boolPtr(b bool) *bool { return &b }
 // Harness-specific dirs (config, state, sessions) are NOT here — they
 // are declared per-harness via Harness.SandboxDirs and injected at
 // launch time. This profile contains platform-level system paths and
-// common toolchain/cache dirs.
+// common tool locations.
 func DefaultProfile() *Profile {
 	return &Profile{
 		Meta:    Meta{Name: "default"},
 		Workdir: Workdir{Access: AccessReadWrite},
 		Filesystem: Filesystem{
-			Allow: []string{
-				"~/.cache",
-				"~/Library/Caches",
-				"~/go",
-				"~/.rustup",
-				"~/.cargo",
-			},
 			Read: []string{
 				"~/.gitconfig",
 				"~/.gitignore_global",
 				"~/.nvm",
 				"~/.bun/bin",
 				"~/.bun/install/global/node_modules/opencode-ai",
+				"~/.cargo/bin",
+				"~/.rustup",
+				"~/go/bin",
 				// Shared neutral skills base (agentskills.io). In scope for every
 				// harness via InScopeSkillsBases, so a guidance-only SKILL.md
 				// placed under the shared global root is readable inside the
@@ -82,6 +78,49 @@ func ProfilePath(name string) (string, error) {
 // <dir>/<name>.pages.json.
 func PagesPath(profilePath string) string {
 	return strings.TrimSuffix(profilePath, ".json") + ".pages.json"
+}
+
+// ResolveReadOnly is the inspection variant of Resolve: it loads the
+// referenced profile exactly like Resolve, but never scaffolds a
+// default.json when "default" is missing. Instead it returns the
+// compiled-in DefaultProfile() with an empty path, so callers (doctor,
+// provenance) can reason about the effective policy without mutating
+// the user's filesystem.
+//
+// Resolution rules mirror Resolve:
+//   - a ref containing a path separator or ending in .json is loaded
+//     from that exact path (returned path is the ref itself);
+//   - otherwise the profile is looked up under
+//     ~/.config/omac/sandbox-profiles/<ref>.json;
+//   - an empty ref means "default";
+//   - a missing named (non-default) profile is an error;
+//   - a missing "default" returns DefaultProfile() with path "".
+func ResolveReadOnly(ref string) (*Profile, string, error) {
+	if ref == "" {
+		ref = "default"
+	}
+	if strings.ContainsRune(ref, os.PathSeparator) || strings.HasSuffix(ref, ".json") {
+		p, err := loadFile(ref)
+		return p, ref, err
+	}
+	path, err := ProfilePath(ref)
+	if err != nil {
+		return nil, "", fmt.Errorf("resolve sandbox profile dir: %w", err)
+	}
+	if _, statErr := os.Stat(path); statErr != nil {
+		if !os.IsNotExist(statErr) {
+			return nil, "", fmt.Errorf("stat sandbox profile %s: %w", path, statErr)
+		}
+		if ref != "default" {
+			return nil, "", fmt.Errorf("sandbox profile %q not found (expected %s)", ref, path)
+		}
+		// Missing default: return compiled-in defaults without
+		// scaffolding the file. Path is "" so callers know no file
+		// was consulted.
+		return DefaultProfile(), "", nil
+	}
+	p, err := loadFile(path)
+	return p, path, err
 }
 
 // Resolve loads a profile reference:

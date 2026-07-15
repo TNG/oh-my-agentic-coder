@@ -248,6 +248,35 @@ func TestDefaultProfileGrantsSharedAgentsSkillsRead(t *testing.T) {
 	}
 }
 
+func TestDefaultProfileIsolatesToolCaches(t *testing.T) {
+	p := DefaultProfile()
+
+	for _, dir := range []string{"~/.cache", "~/Library/Caches"} {
+		for _, paths := range [][]string{p.Filesystem.Allow, p.Filesystem.Read, p.Filesystem.Write} {
+			if containsPath(paths, dir) {
+				t.Errorf("DefaultProfile grants %q: %v", dir, paths)
+			}
+		}
+	}
+	for _, dir := range []string{"~/go", "~/.cargo", "~/.rustup"} {
+		for _, paths := range [][]string{p.Filesystem.Allow, p.Filesystem.Write} {
+			if containsPath(paths, dir) {
+				t.Errorf("DefaultProfile grants write access to %q: %v", dir, paths)
+			}
+		}
+	}
+	for _, dir := range []string{"~/go", "~/.cargo"} {
+		if containsPath(p.Filesystem.Read, dir) {
+			t.Errorf("DefaultProfile grants read access to %q: %v", dir, p.Filesystem.Read)
+		}
+	}
+	for _, dir := range []string{"~/.nvm", "~/.bun/bin", "~/.cargo/bin", "~/.rustup", "~/go/bin"} {
+		if !containsPath(p.Filesystem.Read, dir) {
+			t.Errorf("DefaultProfile.Filesystem.Read missing %q: %v", dir, p.Filesystem.Read)
+		}
+	}
+}
+
 func TestResolveExistingDefaultWins(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -298,6 +327,100 @@ func TestResolveUnknownProfileNamesExpectedPath(t *testing.T) {
 	if !strings.Contains(err.Error(), "sandbox-profiles/nosuch.json") {
 		t.Errorf("error should name the expected path: %v", err)
 	}
+}
+
+// TestResolveReadOnly verifies the read-only resolver mirrors Resolve
+// for existing/explicit-path profiles but never scaffolds a default.json
+// when "default" is missing.
+func TestResolveReadOnly(t *testing.T) {
+	t.Run("missing named profile errors", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		_, _, err := ResolveReadOnly("nosuch")
+		if err == nil {
+			t.Fatal("expected error for missing named profile")
+		}
+		if !strings.Contains(err.Error(), "sandbox-profiles/nosuch.json") {
+			t.Errorf("error should name expected path: %v", err)
+		}
+	})
+
+	t.Run("existing profile loads", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		dir := filepath.Join(home, ".config", "omac", "sandbox-profiles")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "custom.json"),
+			[]byte(`{"meta": {"name": "custom"}}`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		p, path, err := ResolveReadOnly("custom")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if p.Meta.Name != "custom" {
+			t.Errorf("name = %q", p.Meta.Name)
+		}
+		wantPath := filepath.Join(dir, "custom.json")
+		if path != wantPath {
+			t.Errorf("path = %q, want %q", path, wantPath)
+		}
+	})
+
+	t.Run("missing default returns DefaultProfile without scaffolding", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		p, path, err := ResolveReadOnly("default")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if p.Workdir.Access != AccessReadWrite {
+			t.Errorf("default workdir.access = %q", p.Workdir.Access)
+		}
+		if path != "" {
+			t.Errorf("path should be empty for scaffolded default, got %q", path)
+		}
+		// No file must have been created.
+		defaultPath := filepath.Join(home, ".config", "omac", "sandbox-profiles", "default.json")
+		if _, err := os.Stat(defaultPath); !os.IsNotExist(err) {
+			t.Errorf("ResolveReadOnly scaffolded default.json (err=%v); must not mutate filesystem", err)
+		}
+	})
+
+	t.Run("explicit path loads", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "explicit.json")
+		if err := os.WriteFile(path, []byte(`{"meta": {"name": "x"}}`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		p, gotPath, err := ResolveReadOnly(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if p.Meta.Name != "x" {
+			t.Errorf("name = %q", p.Meta.Name)
+		}
+		if gotPath != path {
+			t.Errorf("returned path = %q", gotPath)
+		}
+	})
+
+	t.Run("empty ref resolves default without scaffolding", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		p, _, err := ResolveReadOnly("")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if p.Workdir.Access != AccessReadWrite {
+			t.Errorf("default workdir.access = %q", p.Workdir.Access)
+		}
+		defaultPath := filepath.Join(home, ".config", "omac", "sandbox-profiles", "default.json")
+		if _, err := os.Stat(defaultPath); !os.IsNotExist(err) {
+			t.Errorf("ResolveReadOnly(\"\") scaffolded default.json; must not mutate filesystem")
+		}
+	})
 }
 
 func TestPagesPath(t *testing.T) {
@@ -563,4 +686,13 @@ func envMap(env []string) map[string]string {
 		}
 	}
 	return m
+}
+
+func containsPath(paths []string, want string) bool {
+	for _, path := range paths {
+		if path == want {
+			return true
+		}
+	}
+	return false
 }

@@ -92,13 +92,9 @@ type Harness struct {
 	// leaves this nil.
 	BriefingEnvFunc func(briefing, tmpDir string) map[string]string
 
-	// SandboxDirs are directories the harness needs at runtime for
-	// config, state, and session storage. omac grants these read+write
-	// to the sandbox — only for the selected harness. Typically the
-	// harness's home dir (e.g. ~/.codex, ~/.copilot). nil/empty means
-	// the harness's runtime dirs are already covered by the sandbox
-	// profile (e.g. ~/.claude and ~/.local/share/opencode are in the
-	// default profile's allow list).
+	// SandboxDirs are directories the selected harness needs at runtime
+	// for configuration, authentication, state, and session storage.
+	// omac grants them read+write only for that selected harness.
 	SandboxDirs []string
 
 	// NeedsPluginBootstrap is true for harnesses that require omac to
@@ -194,13 +190,12 @@ func harnessRegistry() []Harness {
 				ResumeByIDArgs: func(id string) []string { return []string{"--session", id} },
 				ListKind:       SessionListOpenCodeCLI,
 			},
-			// OpenCode stores config/state under XDG dirs and ~/.opencode.
+			// OpenCode stores configuration and runtime state under XDG dirs and ~/.opencode.
 			SandboxDirs: []string{
 				"~/.local/share/opencode",
 				"~/.local/state/opencode",
 				"~/.config/opencode",
 				"~/.opencode",
-				"~/.cache/opencode",
 			},
 			NeedsPluginBootstrap: true,
 		},
@@ -219,8 +214,8 @@ func harnessRegistry() []Harness {
 			// so its global skills live in ~/.claude/skills.
 			UserConfigHome: ".claude",
 			HomeEnv:        "CLAUDE_HOME",
-			// Claude stores config/history in ~/.claude, versions in ~/.local/share/claude.
-			SandboxDirs: []string{"~/.claude", "~/.local/share/claude", "~/.cache/claude"},
+			// Claude stores configuration, authentication, and sessions in ~/.claude; runtime state is in ~/.local/share/claude.
+			SandboxDirs: []string{"~/.claude", "~/.local/share/claude"},
 			Session: &HarnessSession{
 				ContinueArgs:   []string{"--continue"},
 				ResumeByIDArgs: func(id string) []string { return []string{"--resume", id} },
@@ -241,8 +236,8 @@ func harnessRegistry() []Harness {
 			SkillsBase:     "codex",
 			UserConfigHome: ".codex", // ~/.codex, not ~/.config/codex
 			HomeEnv:        "CODEX_HOME",
-			// Codex stores config.toml, sessions, and auth in ~/.codex.
-			SandboxDirs: []string{"~/.codex", "~/.cache/codex"},
+			// Codex stores configuration, sessions, and authentication in ~/.codex.
+			SandboxDirs: []string{"~/.codex"},
 			Session: &HarnessSession{
 				ContinueArgs:   []string{"resume", "--last"},
 				ResumeByIDArgs: func(id string) []string { return []string{"resume", id} },
@@ -267,8 +262,8 @@ func harnessRegistry() []Harness {
 			SkillsBase:     "copilot",
 			UserConfigHome: ".copilot", // ~/.copilot, not ~/.config/copilot
 			HomeEnv:        "COPILOT_HOME",
-			// Copilot stores config.json, session-store.db, and logs in ~/.copilot.
-			SandboxDirs: []string{"~/.copilot", "~/.cache/copilot"},
+			// Copilot stores configuration, session state, and authentication in ~/.copilot.
+			SandboxDirs: []string{"~/.copilot"},
 			Session: &HarnessSession{
 				ContinueArgs:   []string{"--continue"},
 				ResumeByIDArgs: func(id string) []string { return []string{"--session-id", id} },

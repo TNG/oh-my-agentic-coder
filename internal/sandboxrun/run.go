@@ -1,15 +1,18 @@
 package sandboxrun
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 
 	"github.com/tngtech/oh-my-agentic-coder/internal/audit"
 	"github.com/tngtech/oh-my-agentic-coder/internal/netprompt"
 	"github.com/tngtech/oh-my-agentic-coder/internal/netproxy"
 	"github.com/tngtech/oh-my-agentic-coder/internal/sandbox"
 	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxprofile"
+	"github.com/tngtech/oh-my-agentic-coder/internal/toolcache"
 )
 
 // Options bundles the inputs for Run.
@@ -59,6 +62,10 @@ func Run(opts Options) int {
 	if err := grants.Validate(); err != nil {
 		return fail("%v", err)
 	}
+	cacheEnv, err := injectedToolCacheEnv(grants, os.Getenv)
+	if err != nil {
+		return fail("%v", err)
+	}
 
 	// Learn mode: lift filesystem restrictions (network/env filtering
 	// stay active) and record the folders the session touches. The
@@ -73,9 +80,9 @@ func Run(opts Options) int {
 
 	logf := diag.Logf
 
-	// Injected child env (proxy vars). Built before the backend so the
-	// proxy port can land in the kernel rules.
-	injected := map[string]string{}
+	// Injected child env. The validated cache redirect is recreated here
+	// and proxy vars are added before the backend builds its rules.
+	injected := cacheEnv
 
 	// Audit sink for network decisions. This subprocess is separate from
 	// the parent omac, so it opens its own append-only handle to the same
@@ -144,6 +151,64 @@ func Run(opts Options) int {
 		}
 	}
 	return code
+}
+
+// injectedToolCacheEnv recreates the cache redirects for a sandbox re-exec
+// only after the outer launcher-provided cache directory is an exact writable
+// grant. This prevents inherited tool-specific cache paths from bypassing the
+// profile's environment allowlist.
+func injectedToolCacheEnv(grants *Grants, getenv func(string) string) (map[string]string, error) {
+	dir := getenv("OMAC_CACHE_DIR")
+	if dir == "" {
+		return map[string]string{}, nil
+	}
+
+	var mode toolcache.Mode
+	switch getenv("OMAC_CACHE_MODE") {
+	case string(toolcache.ModePersistent):
+		mode = toolcache.ModePersistent
+	case string(toolcache.ModeEphemeral):
+		mode = toolcache.ModeEphemeral
+	default:
+		return nil, fmt.Errorf("invalid OMAC_CACHE_MODE %q", getenv("OMAC_CACHE_MODE"))
+	}
+
+	cacheDir, err := canonicalCachePath(dir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve OMAC_CACHE_DIR: %w", err)
+	}
+	info, err := os.Stat(cacheDir)
+	if err != nil {
+		return nil, fmt.Errorf("stat OMAC_CACHE_DIR: %w", err)
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("OMAC_CACHE_DIR %q is not a directory", dir)
+	}
+	for _, allowed := range grants.AllowPaths {
+		allowedDir, err := canonicalCachePath(allowed)
+		if err != nil {
+			return nil, fmt.Errorf("resolve writable grant %q: %w", allowed, err)
+		}
+		if cacheDir == allowedDir {
+			return toolcache.Environment(cacheDir, mode), nil
+		}
+	}
+	return nil, fmt.Errorf("OMAC_CACHE_DIR %q does not match an exact writable grant", dir)
+}
+
+// canonicalCachePath compares cleaned absolute paths and resolves symlinks for
+// existing entries, matching the paths that the platform backends enforce.
+func canonicalCachePath(path string) (string, error) {
+	abs, err := filepath.Abs(filepath.Clean(path))
+	if err != nil {
+		return "", err
+	}
+	if _, err := os.Lstat(abs); err == nil {
+		return filepath.EvalSymlinks(abs)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+	return abs, nil
 }
 
 // buildProxy assembles page policy, prompter, filter and server. The
