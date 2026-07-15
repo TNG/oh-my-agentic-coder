@@ -31,7 +31,7 @@
 #   E2E_ONBOARDING_MODEL           override the model id (default: zai-org/GLM-5.2)
 #   E2E_LOG_DIR                    artifact output dir (default: /tmp/e2e-readme-logs)
 #   E2E_README_REF                 git ref to extract README.md from (default: HEAD)
-#   E2E_ONBOARDING_TIMEOUT         agent wall-clock timeout, e.g. "20m" (default: 20m)
+#   E2E_ONBOARDING_TIMEOUT_SECS    agent wall-clock timeout in seconds (default: 1200)
 #
 # Exit code 0 = README was sufficient (doctor healthy + report written).
 # Exit code 1 = gaps blocked a working setup, or the agent never produced
@@ -44,14 +44,40 @@ set -euo pipefail
 # (duplicated there too, per existing e2e.yml convention).
 DEFAULT_OPENCODE_VERSION="opencode-ai@1.17.12"
 DEFAULT_MODEL="zai-org/GLM-5.2"
-DEFAULT_TIMEOUT="20m"
+DEFAULT_TIMEOUT_SECS="1200"
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 LOG_DIR="${E2E_LOG_DIR:-/tmp/e2e-readme-logs}"
 README_REF="${E2E_README_REF:-HEAD}"
 OPENCODE_VERSION="${E2E_VERSION_OPENCODE:-$DEFAULT_OPENCODE_VERSION}"
 MODEL="${E2E_ONBOARDING_MODEL:-$DEFAULT_MODEL}"
-TIMEOUT="${E2E_ONBOARDING_TIMEOUT:-$DEFAULT_TIMEOUT}"
+# Seconds, not a duration string ("20m") — macOS ships only BSD sleep,
+# which (unlike GNU sleep) rejects unit suffixes, and has no `timeout`
+# binary at all. See run_with_timeout below.
+TIMEOUT_SECS="${E2E_ONBOARDING_TIMEOUT_SECS:-$DEFAULT_TIMEOUT_SECS}"
+
+# Portable stand-in for GNU coreutils `timeout` (absent on macOS by
+# default — only Linux runners have it). Backgrounds the command, races
+# a sleep+kill watchdog against it, and returns the command's exit
+# status (or 143/SIGTERM if the watchdog fired first).
+run_with_timeout() {
+  local secs="$1"; shift
+  "$@" &
+  local pid=$!
+  ( sleep "$secs"; kill -TERM "$pid" 2>/dev/null ) &
+  local watchdog=$!
+  # `|| status=$?` (not set +e/-e) — set -e/+e are global, not scoped to
+  # this function, so toggling them here would leak into the caller and
+  # (if the caller had errexit off to inspect $?, as the one call site
+  # below does) silently re-enable it before this function returns,
+  # aborting the script on a non-zero exit instead of letting the caller
+  # read agent_status.
+  local status=0
+  wait "$pid" || status=$?
+  kill "$watchdog" 2>/dev/null || true
+  wait "$watchdog" 2>/dev/null || true
+  return "$status"
+}
 
 : "${SKAINET_TOKEN:?SKAINET_TOKEN not set}"
 : "${SKAINET_INTERNAL:?SKAINET_INTERNAL not set}"
@@ -174,7 +200,7 @@ EOF
 # read sidesteps the bug entirely, regardless of body content.
 PROMPT="$(cat "$PROMPT_FILE")"
 
-echo "== Running onboarding agent (timeout $TIMEOUT) =="
+echo "== Running onboarding agent (timeout ${TIMEOUT_SECS}s) =="
 cd "$ONBOARD_DIR"
 set +e
 # GH Actions runners preset XDG_CONFIG_HOME/XDG_DATA_HOME (pointing at the
@@ -183,14 +209,22 @@ set +e
 # override all three to match where auth.json/opencode.json were
 # written above, or opencode silently reads the real machine's config
 # instead of ours. Same fix as withHome() in internal/e2e/harnesses.go.
+#
+# --auto: opencode's non-interactive `run` mode auto-REJECTS any
+# permission request it can't ask about interactively — including
+# reading paths outside the workdir (e.g. /etc/os-release) or running
+# package managers. Without it the agent can't do anything this test
+# needs (installing prerequisites, omac, a harness). Equivalent to
+# claude-code's --dangerously-skip-permissions; same rationale as that
+# flag in claudeCodeConfig() (internal/e2e/harnesses.go).
 HOME="$DRIVER_HOME" \
 XDG_CONFIG_HOME="$DRIVER_HOME/.config" \
 XDG_DATA_HOME="$DRIVER_HOME/.local/share" \
 XDG_STATE_HOME="$DRIVER_HOME/.local/state" \
 SKAINET_TOKEN="$SKAINET_TOKEN" \
 PATH="$PATH" \
-timeout --signal=TERM "$TIMEOUT" \
-  opencode run --print-logs -m "model/$MODEL" "$PROMPT" \
+run_with_timeout "$TIMEOUT_SECS" \
+  opencode run --print-logs --auto -m "model/$MODEL" "$PROMPT" \
   > "$TRANSCRIPT_FILE" 2>&1
 agent_status=$?
 set -e
