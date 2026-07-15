@@ -12,19 +12,19 @@ import (
 	"time"
 )
 
-// requireLoopback skips the test when this environment forbids dialing
-// 127.0.0.1 (some sandboxes deny loopback TCP connect). Mirrors the
-// unix-socket probe-and-skip in facade_test.go.
+// requireLoopback skips locally when this environment forbids dialing
+// 127.0.0.1 (some sandboxes deny loopback TCP connect); in CI it fails the
+// test instead. Mirrors the unix-socket probe in facade_test.go.
 func requireLoopback(t *testing.T) {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		t.Skip("loopback listen not permitted:", err)
+		skipOrFailCI(t, "loopback listen not permitted: %v", err)
 	}
 	defer ln.Close()
 	c, err := net.DialTimeout("tcp", ln.Addr().String(), time.Second)
 	if err != nil {
-		t.Skip("loopback dial not permitted in this environment:", err)
+		skipOrFailCI(t, "loopback dial not permitted in this environment: %v", err)
 	}
 	c.Close()
 }
