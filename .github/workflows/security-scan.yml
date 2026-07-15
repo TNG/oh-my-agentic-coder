@@ -118,19 +118,44 @@ jobs:
           fi
           echo "base=http://127.0.0.1:${SKAINET_PROXY_PORT}${suffix}" >> "$GITHUB_OUTPUT"
 
-      - name: Resolve model from e2e config
+      - name: Resolve and verify model
         id: model
         run: |
-          # Single source of truth is internal/e2e/versions.go's modelIDs map
-          # (opencode's entry -- GLM-5.2-TEE, same as e2e.yml uses) rather
-          # than duplicating the model name here.
-          model=$(awk '/^var modelIDs = map\[string\]string\{/{flag=1; next} /^\}/{flag=0} flag' \
+          set -euo pipefail
+          # Base model name: single source of truth is internal/e2e/versions.go's
+          # modelIDs map (opencode's entry -- the plain GLM-5.2 name, which is
+          # what opencode's own resolution uses) rather than duplicating it here.
+          base=$(awk '/^var modelIDs = map\[string\]string\{/{flag=1; next} /^\}/{flag=0} flag' \
             target/internal/e2e/versions.go | grep '"opencode"' | sed -E 's/.*:\s*"([^"]+)".*/\1/')
-          if [ -z "$model" ]; then
+          if [ -z "$base" ]; then
             echo "::error::could not resolve model from internal/e2e/versions.go"
             exit 1
           fi
-          echo "strix_llm=openai/$model" >> "$GITHUB_OUTPUT"
+          # Harden against the gateway's raw /v1/chat/completions path only
+          # serving one model-name variant at a time: unlike opencode, strix
+          # calls that path directly, and it recently flipped from accepting the
+          # plain name to requiring the -TEE variant (422 model_unavailable).
+          # Probe the base name first, fall back to <base>-TEE, and use
+          # whichever the gateway currently accepts -- so a future flip in
+          # either direction self-heals. Model names aren't secret; the bearer
+          # in the header is and is never printed.
+          endpoint="${LLM_API_BASE%/}/chat/completions"
+          chosen=""
+          for candidate in "$base" "${base}-TEE"; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 \
+              -X POST "$endpoint" \
+              -H "authorization: Bearer ${LLM_API_KEY}" \
+              -H 'content-type: application/json' \
+              -d "{\"model\":\"${candidate}\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}],\"max_tokens\":1}") || true
+            if [ "$code" = "200" ]; then chosen="$candidate"; break; fi
+            echo "model '${candidate}' not accepted (HTTP ${code}); trying next variant"
+          done
+          if [ -z "$chosen" ]; then
+            echo "::error::neither '${base}' nor '${base}-TEE' was accepted by the gateway -- check the model provider and SKAINET_TOKEN validity"
+            exit 1
+          fi
+          echo "selected model: ${chosen}"
+          echo "strix_llm=openai/${chosen}" >> "$GITHUB_OUTPUT"
 
       - name: Run strix scan
         id: scan
