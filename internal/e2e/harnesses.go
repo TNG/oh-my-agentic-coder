@@ -1,4 +1,4 @@
-//go:build e2e
+//go:build e2e || e2e_fast
 
 // Package e2e provides end-to-end test infrastructure for the omac
 // harness×skill matrix. The test itself lives in e2e_test.go behind the
