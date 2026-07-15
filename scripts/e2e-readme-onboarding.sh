@@ -85,7 +85,14 @@ run_with_timeout() {
 mkdir -p "$LOG_DIR"
 
 WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
+# The agent may `go install` something (the README's "from source" path),
+# which populates the Go module cache read-only by design (go's own
+# tamper-protection) — a plain `rm -rf` on it fails with "Permission
+# denied", and since this is the script's own EXIT trap, that failure
+# status silently overrides whatever exit code the script explicitly
+# set, turning a real success into a false failure. chmod everything
+# writable first.
+trap 'chmod -R u+w "$WORK" 2>/dev/null; rm -rf "$WORK"' EXIT
 
 # Fresh HOME for the driving opencode CLI — a real onboarding session
 # starts with no prior omac/opencode state, and this must never see the
