@@ -98,7 +98,8 @@ cat > "$DRIVER_HOME/.config/opencode/opencode.json" <<EOF
 }
 EOF
 
-PROMPT=$(cat <<EOF
+PROMPT_FILE="$WORK/prompt.md"
+cat > "$PROMPT_FILE" <<EOF
 You are a brand-new developer who just joined a project called "omac"
 (oh-my-agentic-coder). The ONLY thing you have been given is the
 README.md file in your current directory — nothing else from the
@@ -165,12 +166,27 @@ don't summarize it as working if it didn't.
 This is a sanctioned, pre-authorized test session — proceed directly
 without asking for confirmation.
 EOF
-)
+# Read back from a plain file rather than nesting the heredoc inside
+# $(...) directly: bash 3.2 (macOS's stock /bin/bash) misparses a
+# command-substitution-nested heredoc whose body contains an apostrophe
+# (e.g. "project's", "don't") — "unexpected EOF while looking for
+# matching `''" or a stray body line executed as a command. A plain file
+# read sidesteps the bug entirely, regardless of body content.
+PROMPT="$(cat "$PROMPT_FILE")"
 
 echo "== Running onboarding agent (timeout $TIMEOUT) =="
 cd "$ONBOARD_DIR"
 set +e
+# GH Actions runners preset XDG_CONFIG_HOME/XDG_DATA_HOME (pointing at the
+# real runner $HOME), and opencode resolves config from those before
+# falling back to $HOME — so HOME alone does not isolate it. Must
+# override all three to match where auth.json/opencode.json were
+# written above, or opencode silently reads the real machine's config
+# instead of ours. Same fix as withHome() in internal/e2e/harnesses.go.
 HOME="$DRIVER_HOME" \
+XDG_CONFIG_HOME="$DRIVER_HOME/.config" \
+XDG_DATA_HOME="$DRIVER_HOME/.local/share" \
+XDG_STATE_HOME="$DRIVER_HOME/.local/state" \
 SKAINET_TOKEN="$SKAINET_TOKEN" \
 PATH="$PATH" \
 timeout --signal=TERM "$TIMEOUT" \
@@ -188,7 +204,11 @@ doctor_output="$LOG_DIR/doctor-output.txt"
 doctor_ok=0
 if command -v omac >/dev/null 2>&1 || [ -x "$DRIVER_HOME/go/bin/omac" ]; then
   OMAC_BIN="$(command -v omac || echo "$DRIVER_HOME/go/bin/omac")"
-  if HOME="$DRIVER_HOME" "$OMAC_BIN" doctor > "$doctor_output" 2>&1; then
+  if HOME="$DRIVER_HOME" \
+     XDG_CONFIG_HOME="$DRIVER_HOME/.config" \
+     XDG_DATA_HOME="$DRIVER_HOME/.local/share" \
+     XDG_STATE_HOME="$DRIVER_HOME/.local/state" \
+     "$OMAC_BIN" doctor > "$doctor_output" 2>&1; then
     doctor_ok=1
   fi
 else
