@@ -70,7 +70,7 @@ func TestIntegrationCacheScopeIsolation(t *testing.T) {
 		t.Fatal(err)
 	}
 	siblingMarker := filepath.Join(scope2.Dir, "sibling-secret")
-	if err := os.WriteFile(siblingMarker, []byte("sibling-secret"), 0o600); err != nil {
+	if err := os.WriteFile(siblingMarker, []byte("sibling-leaked"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	lockMarker := filepath.Join(locksDir, scope1.Digest+".lock")
@@ -116,7 +116,7 @@ func TestIntegrationCacheScopeIsolation(t *testing.T) {
 	if code == 0 {
 		t.Errorf("sibling scope leaf should be unreadable, got: %s", out)
 	}
-	if strings.Contains(out, "sibling-secret") {
+	if strings.Contains(out, "sibling-leaked") {
 		t.Errorf("SECURITY: sibling scope marker leaked: %s", out)
 	}
 
