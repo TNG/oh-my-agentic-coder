@@ -1,0 +1,444 @@
+# E2E: drift — harness-version drift detection.
+#
+# Runs weekly (and on manual dispatch). For every harness × OS it installs the
+# harness's LATEST release and records three stages — see docs/HARNESS_COMPAT.md:
+#
+#   contract — model-free: every CLI flag/subcommand omac derives from its
+#              registry still exists in the harness's --help.
+#   launch   — model-free: `omac start <harness>` reaches the real binary
+#              through the sandbox.
+#   llm      — a real agent turn against the model provider (verifies the
+#              auth/proxy path). Run for every harness, claude-code included.
+#
+# Outcomes are recorded in a single, stable "Harness compatibility matrix"
+# tracking issue (label: "auto-update tracker") whose DESCRIPTION is rewritten
+# in place every run — never via comments — showing current status plus a
+# rolling 30-day window. The same rows are mirrored to the private security repo
+# (nhuelstng/oh-my-agentic-coder-security) under harness-compat/ for permanent
+# history, reusing the SECURITY_SCAN_PAT that security-scan.yml already uses.
+# Every run (pass or fail) posts a status message to Slack; on a failure the
+# message carries a short SKAINET-generated summary of exactly what broke.
+# Nothing is pushed to this repo's main. This is the regular tripwire that
+# catches a harness release breaking omac's assumptions.
+name: "E2E: drift"
+
+on:
+  workflow_dispatch:
+    inputs:
+      use_latest:
+        description: 'Install each harness''s latest release (drift detection). Uncheck to test the versions.go pins instead.'
+        type: boolean
+        default: true
+  schedule:
+    # Same slot as e2e.yml — Saturdays 08:00 UTC (10:00 CEST).
+    - cron: '0 8 * * 6'
+
+permissions:
+  contents: read
+  issues: write # report job maintains the tracking issue
+
+jobs:
+  smoke:
+    name: "${{ matrix.harness }} / ${{ matrix.os }}"
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        harness: [opencode, claude-code, codex, copilot, pi]
+        exclude:
+          # codex's Rust HTTP client is incompatible with the macOS Seatbelt
+          # sandbox (see e2e.yml / issue #48).
+          - os: macos-latest
+            harness: codex
+    runs-on: ${{ matrix.os }}
+    concurrency:
+      group: e2e-smoke-${{ matrix.os }}-${{ matrix.harness }}
+      cancel-in-progress: false
+    env:
+      SKAINET_TOKEN: ${{ secrets.SKAINET_TOKEN }}
+      SKAINET_INTERNAL: ${{ secrets.SKAINET_EXTERNAL }}
+      ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
+      E2E_HARNESS: ${{ matrix.harness }}
+      # Schedule runs always test latest (drift); dispatch honors the input.
+      E2E_USE_LATEST: ${{ (github.event_name == 'schedule' || github.event.inputs.use_latest != 'false') && '1' || '' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install bubblewrap (Linux only)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update && sudo apt-get install -y bubblewrap
+          sudo tee /etc/apparmor.d/bwrap > /dev/null <<'EOF'
+          abi <abi/4.0>,
+          /usr/bin/bwrap flags=(unconfined) {
+            userns,
+          }
+          EOF
+          sudo apparmor_parser -r /etc/apparmor.d/bwrap
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Cache harness install packages
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/e2e-install-cache
+          # Latest-tracking, so the key rotates weekly rather than on a version
+          # file, to avoid pinning to a stale "latest".
+          key: e2e-smoke-install-${{ runner.os }}-${{ matrix.harness }}-${{ github.run_id }}
+          restore-keys: |
+            e2e-smoke-install-${{ runner.os }}-${{ matrix.harness }}-
+
+      - name: Resolve omac version
+        id: omac
+        run: echo "version=$(git describe --tags --always --dirty)" >> "$GITHUB_OUTPUT"
+
+      - name: Model-free smoke (contract + launch)
+        id: modelfree
+        env:
+          E2E_CACHE_DIR: ${{ runner.temp }}/e2e-install-cache
+        run: |
+          set -o pipefail
+          go test -tags=e2e -timeout=15m -v \
+            -run 'TestHarnessCLIContract|TestHarnessLaunchProbe' \
+            ./internal/e2e/ 2>&1 | tee modelfree.log || true
+
+      - name: LLM turn
+        id: llm
+        continue-on-error: true
+        # Run for every harness, claude-code included (it is billed against the
+        # real Anthropic account, but this suite is weekly so the cost is bounded).
+        env:
+          E2E_CACHE_DIR: ${{ runner.temp }}/e2e-install-cache
+        run: |
+          set -o pipefail
+          go test -tags=e2e -timeout=25m -v \
+            -run 'TestE2EEchoRest|TestE2ESecurityAudit' \
+            ./internal/e2e/ 2>&1 | tee llm.log
+
+      - name: Build compatibility row
+        id: row
+        if: always()
+        run: |
+          # Read a stage's PASS/FAIL out of the OMAC_COMPAT lines the Go tests
+          # print; absent line ⇒ the test crashed before emitting ⇒ ❌.
+          stage_mark() {
+            local stage="$1"
+            local line
+            line=$(grep -oE "OMAC_COMPAT .*stage=$stage .*result=[A-Z]+" modelfree.log 2>/dev/null | head -1 || true)
+            case "$line" in
+              *result=PASS) echo '✅' ;;
+              '') echo '❌' ;;
+              *) echo '❌' ;;
+            esac
+          }
+          version=$(grep -oE 'OMAC_COMPAT .*stage=contract .*' modelfree.log 2>/dev/null \
+            | sed -E 's/.*version=([^ ]+).*/\1/' | head -1)
+          [ -z "$version" ] && version="unknown"
+          contract=$(stage_mark contract)
+          launch=$(stage_mark launch)
+          case "${{ steps.llm.outcome }}" in
+            success) llm='✅' ;;
+            failure) llm='❌' ;;
+            *)       llm='➖' ;;  # not run (e.g. leg crashed earlier)
+          esac
+          date_utc=$(date -u +%Y-%m-%d)
+          row="| $date_utc | ${{ steps.omac.outputs.version }} | ${{ matrix.os }} | ${{ matrix.harness }} | $version | $contract | $launch | $llm |"
+          mkdir -p compat
+          printf '%s\n' "$row" > "compat/${{ matrix.os }}-${{ matrix.harness }}.row"
+          echo "$row"
+          echo "row<<EOF" >> "$GITHUB_OUTPUT"; echo "$row" >> "$GITHUB_OUTPUT"; echo "EOF" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Compatibility: ${{ matrix.harness }} / ${{ matrix.os }}"
+            echo ""
+            echo "| Date (UTC) | omac | OS | Harness | Version | contract | launch | llm |"
+            echo "|---|---|---|---|---|:-:|:-:|:-:|"
+            echo "$row"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload compatibility row
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compat-${{ matrix.os }}-${{ matrix.harness }}
+          path: compat/*.row
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-logs-${{ matrix.os }}-${{ matrix.harness }}
+          path: |
+            modelfree.log
+            llm.log
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Fail this leg on drift
+        if: always()
+        run: |
+          row='${{ steps.row.outputs.row }}'
+          echo "$row"
+          if printf '%s' "$row" | grep -q '❌'; then
+            echo "::error::compatibility drift detected for ${{ matrix.harness }} / ${{ matrix.os }}"
+            exit 1
+          fi
+
+  report:
+    name: Record & report
+    needs: smoke
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download compatibility rows
+        uses: actions/download-artifact@v4
+        with:
+          pattern: compat-*
+          path: compat
+          merge-multiple: true
+
+      - name: Download smoke logs
+        uses: actions/download-artifact@v4
+        with:
+          # No merge-multiple: keep each leg's logs under its own
+          # smoke-logs-<os>-<harness>/ dir so modelfree.log/llm.log don't collide.
+          pattern: smoke-logs-*
+          path: logs
+
+      - name: Prepare this run's rows
+        id: rows
+        run: |
+          shopt -s nullglob
+          rows=$(cat compat/*.row 2>/dev/null | sort -r || true)
+          if [ -z "$rows" ]; then
+            echo "no rows produced (all legs crashed before emitting) — nothing to record"
+            echo "has_rows=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          printf '%s\n' "$rows" > run.rows
+          echo "has_rows=true" >> "$GITHUB_OUTPUT"
+          echo "total=$(wc -l < run.rows | tr -d ' ')" >> "$GITHUB_OUTPUT"
+          grep '❌' run.rows > failing.rows || true
+          fail_count=$(wc -l < failing.rows | tr -d ' ')
+          echo "fail_count=$fail_count" >> "$GITHUB_OUTPUT"
+          if [ "$fail_count" -gt 0 ]; then
+            echo "has_failures=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_failures=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Summarize failures (SKAINET)
+        id: summary
+        if: always() && steps.rows.outputs.has_failures == 'true'
+        continue-on-error: true # a summariser hiccup must never mask the failure
+        env:
+          SKAINET_TOKEN: ${{ secrets.SKAINET_TOKEN }}
+          SKAINET_INTERNAL: ${{ secrets.SKAINET_EXTERNAL }}
+        run: |
+          # Build a bounded failure context from each failing leg's own logs.
+          : > failure-context.txt
+          while IFS= read -r row; do
+            os=$(printf '%s' "$row" | awk -F'|' '{gsub(/^[ \t]+|[ \t]+$/,"",$4); print $4}')
+            harness=$(printf '%s' "$row" | awk -F'|' '{gsub(/^[ \t]+|[ \t]+$/,"",$5); print $5}')
+            dir="logs/smoke-logs-$os-$harness"
+            echo "=== $harness / $os ===" >> failure-context.txt
+            grep -hE 'CLI contract drift|no longer exposes|--- FAIL|omac start .* failed|FAIL \[|Error|panic:' \
+              "$dir"/modelfree.log "$dir"/llm.log 2>/dev/null | head -40 >> failure-context.txt || true
+            tail -n 30 "$dir"/llm.log 2>/dev/null >> failure-context.txt || true
+            echo >> failure-context.txt
+          done < failing.rows
+
+          if [ -z "$SKAINET_TOKEN" ] || [ -z "$SKAINET_INTERNAL" ]; then
+            echo "SKAINET creds missing — skipping AI summary (Slack will fall back to the failing-row list)"
+            exit 0
+          fi
+          # Single source of truth for the model id: internal/e2e/versions.go.
+          model=$(awk '/^var modelIDs = map\[string\]string\{/{f=1;next} /^\}/{f=0} f' internal/e2e/versions.go \
+            | grep '"opencode"' | sed -E 's/.*:\s*"([^"]+)".*/\1/')
+          [ -z "$model" ] && model="zai-org/GLM-5.2"
+          ctx=$(head -c 6000 failure-context.txt)
+          sys="You are a CI assistant for the omac project. In at most 3 short sentences, state exactly what went wrong in these harness compatibility logs: name the harness, OS, the failing stage (contract/launch/llm), and the specific flag or error message when present. No preamble, no fixes."
+          payload=$(jq -n --arg m "$model" --arg s "$sys" --arg u "$ctx" \
+            '{model:$m,temperature:0.2,max_tokens:220,messages:[{role:"system",content:$s},{role:"user",content:$u}]}')
+          resp=$(curl -sS --max-time 60 "$SKAINET_INTERNAL/chat/completions" \
+            -H "Authorization: Bearer $SKAINET_TOKEN" -H 'Content-Type: application/json' \
+            --data "$payload" || true)
+          summary=$(printf '%s' "$resp" | jq -r '.choices[0].message.content // empty' 2>/dev/null || true)
+          if [ -n "$summary" ]; then
+            printf '%s\n' "$summary" > failure-summary.txt
+            echo "AI summary:"; cat failure-summary.txt
+          else
+            echo "no summary returned (resp head: $(printf '%s' "$resp" | head -c 300))"
+          fi
+
+      - name: Update the tracking-issue dashboard
+        id: dashboard
+        if: always() && steps.rows.outputs.has_rows == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # Tracking-issue label, pre-created in this repo by the maintainer.
+          TRACKER_LABEL: auto-update tracker
+          # Permanent archive lives under harness-compat/ in the private
+          # security repo (a different subpath from the security scans).
+          ARCHIVE_REPO: nhuelstng/oh-my-agentic-coder-security
+          ARCHIVE_PATH: harness-compat/HARNESS_COMPAT.md
+          WF_URL: ${{ github.server_url }}/${{ github.repository }}/blob/main/.github/workflows/e2e-smoke.yml
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          HAS_FAILURES: ${{ steps.rows.outputs.has_failures }}
+          FAIL_COUNT: ${{ steps.rows.outputs.fail_count }}
+          TOTAL: ${{ steps.rows.outputs.total }}
+        run: |
+          title="Harness compatibility matrix"
+          # One stable issue, any state: reopen if it was closed so it is always
+          # the SAME issue, updated in place (never a comment, never a new one).
+          num=$(gh issue list --state all --search "in:title \"$title\"" \
+            --json number,title --jq "map(select(.title==\"$title\")) | .[0].number // empty" 2>/dev/null || true)
+          existing=""
+          if [ -n "$num" ]; then
+            gh issue view "$num" --json body --jq .body > body.md || true
+            # Existing data rows begin with a "| YYYY-..." date cell.
+            existing=$(grep -E '^\| [0-9]{4}-' body.md 2>/dev/null || true)
+          fi
+          # Rolling 30-day window: keep rows whose embedded date is recent, newest first.
+          cutoff=$(date -u -d '30 days ago' +%Y-%m-%d)
+          all=$(printf '%s\n%s\n' "$(cat run.rows)" "$existing" \
+            | awk 'NF' \
+            | awk -v c="$cutoff" '{ if (match($0,/[0-9]{4}-[0-9]{2}-[0-9]{2}/)) { d=substr($0,RSTART,10); if (d>=c) print } }' \
+            | sort -r -u)
+          if [ "$HAS_FAILURES" = "true" ]; then
+            status="🔴 **$FAIL_COUNT of $TOTAL failing** as of latest run"
+          else
+            status="🟢 **all $TOTAL green** as of latest run"
+          fi
+          {
+            echo "# Harness compatibility matrix"
+            echo ""
+            echo "$status — [run log]($RUN_URL). Updated in place by [\`e2e-smoke.yml\`]($WF_URL); rolling 30-day window, newest first. Full permanent history: \`$ARCHIVE_REPO\` (\`$ARCHIVE_PATH\`)."
+            echo ""
+            echo "\`✅\` pass · \`❌\` fail · \`➖\` not run"
+            if [ "$HAS_FAILURES" = "true" ]; then
+              echo ""
+              echo "## Currently failing"
+              echo ""
+              if [ -s failure-summary.txt ]; then
+                echo "**What went wrong** (SKAINET summary):"
+                echo ""
+                sed 's/^/> /' failure-summary.txt
+                echo ""
+              fi
+              echo "| Date (UTC) | omac | OS | Harness | Version | contract | launch | llm |"
+              echo "|---|---|---|---|---|:-:|:-:|:-:|"
+              cat failing.rows
+              echo ""
+              echo "A ❌ in **contract** means the installed release renamed/removed a flag omac depends on — fix \`internal/config/harness.go\` and/or \`internal/e2e/harnesses.go\`. See docs/HARNESS_COMPAT.md."
+            fi
+            echo ""
+            echo "## History (rolling 30 days)"
+            echo ""
+            echo "| Date (UTC) | omac | OS | Harness | Version | contract | launch | llm |"
+            echo "|---|---|---|---|---|:-:|:-:|:-:|"
+            printf '%s\n' "$all"
+          } > dashboard.md
+          if [ -n "$num" ]; then
+            gh issue reopen "$num" 2>/dev/null || true
+            gh issue edit "$num" --body-file dashboard.md
+          else
+            num=$(gh issue create --title "$title" --label "$TRACKER_LABEL" --body-file dashboard.md | grep -oE '[0-9]+$')
+          fi
+          echo "issue_url=${{ github.server_url }}/${{ github.repository }}/issues/$num" >> "$GITHUB_OUTPUT"
+          echo "updated tracking issue #$num"
+
+      - name: Mirror to private archive repo
+        if: always() && steps.rows.outputs.has_rows == 'true'
+        env:
+          # Reuses the security repo + PAT that security-scan.yml already uses,
+          # writing to a distinct subpath so the two never collide.
+          ARCHIVE_REPO: nhuelstng/oh-my-agentic-coder-security
+          ARCHIVE_SUBPATH: harness-compat/HARNESS_COMPAT.md
+          ARCHIVE_TOKEN: ${{ secrets.SECURITY_SCAN_PAT }}
+        run: |
+          if [ -z "$ARCHIVE_TOKEN" ]; then
+            echo "SECURITY_SCAN_PAT missing — skipping archive mirror"
+            exit 0
+          fi
+          git clone --depth 1 "https://x-access-token:${ARCHIVE_TOKEN}@github.com/${ARCHIVE_REPO}.git" archive
+          file="archive/$ARCHIVE_SUBPATH"
+          mkdir -p "$(dirname "$file")"
+          if [ ! -f "$file" ]; then
+            {
+              echo "# Harness compatibility matrix (permanent archive)"
+              echo ""
+              echo "Appended by omac's e2e-smoke workflow. Do not edit by hand."
+              echo ""
+              echo "| Date (UTC) | omac | OS | Harness | Version | contract | launch | llm |"
+              echo "|---|---|---|---|---|:-:|:-:|:-:|"
+              echo "<!-- COMPAT_TABLE_END -->"
+            } > "$file"
+          fi
+          # Append this run's rows just above the end marker (chronological).
+          awk -v rows="$(cat run.rows)" '/<!-- COMPAT_TABLE_END -->/{print rows} {print}' "$file" > "$file.tmp" && mv "$file.tmp" "$file"
+          cd archive
+          git config user.name  'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add "$ARCHIVE_SUBPATH"
+          if git diff --cached --quiet; then
+            echo "no changes to mirror"
+            exit 0
+          fi
+          git commit -s -m "chore: record harness compatibility matrix ($(date -u +%Y-%m-%d))"
+          git push
+
+      - name: Slack notification
+        if: always() && steps.rows.outputs.has_rows == 'true'
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          ISSUE_URL: ${{ steps.dashboard.outputs.issue_url }}
+          HAS_FAILURES: ${{ steps.rows.outputs.has_failures }}
+          FAIL_COUNT: ${{ steps.rows.outputs.fail_count }}
+          TOTAL: ${{ steps.rows.outputs.total }}
+        run: |
+          if [ -z "$SLACK_WEBHOOK_URL" ]; then
+            echo "SLACK_WEBHOOK_URL not set — skipping Slack notification"
+            exit 0
+          fi
+          # Posted on every run — green and red alike.
+          if [ "$HAS_FAILURES" = "true" ]; then
+            # Prefer the SKAINET summary of what broke; fall back to a terse
+            # per-leg stage list if the summariser produced nothing.
+            if [ -s failure-summary.txt ]; then
+              detail=$(cat failure-summary.txt)
+            else
+              detail=$(awk -F'|' '{
+                for (i=1;i<=NF;i++){gsub(/^[ \t]+|[ \t]+$/,"",$i)}
+                s="";
+                if ($7=="❌") s=s" contract";
+                if ($8=="❌") s=s" launch";
+                if ($9=="❌") s=s" llm";
+                printf "- %s/%s:%s\n", $5, $4, s
+              }' failing.rows)
+            fi
+            text=$(printf '🔴 omac harness compatibility: %s of %s combination(s) FAILED.\n%s\nDashboard: %s — Run: %s' \
+              "$FAIL_COUNT" "$TOTAL" "$detail" "$ISSUE_URL" "$RUN_URL")
+          else
+            text="🟢 omac harness compatibility: all $TOTAL combination(s) green. Dashboard: $ISSUE_URL — Run: $RUN_URL"
+          fi
+          payload=$(printf '{"text":%s}' "$(printf '%s' "$text" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')")
+          curl -sS -X POST -H 'Content-type: application/json' --data "$payload" "$SLACK_WEBHOOK_URL"

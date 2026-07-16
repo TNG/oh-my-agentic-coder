@@ -5,7 +5,7 @@
 # the omac sandbox and that an agent running on GLM-5.2-TEE (or
 # claude-sonnet-5 for claude-code) can call the bundled echo-rest skill
 # through the omac facade.
-name: E2E
+name: "E2E: full"
 
 on:
   workflow_dispatch:
@@ -46,7 +46,7 @@ permissions:
 
 jobs:
   e2e:
-    name: E2E (${{ matrix.harness }} / ${{ matrix.os }})
+    name: "${{ matrix.harness }} / ${{ matrix.os }}"
     strategy:
       fail-fast: false
       matrix:
