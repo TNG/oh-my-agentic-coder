@@ -29,8 +29,8 @@
 // Smoke subset:     go test -tags=e2e -run 'TestHarnessCLIContract|TestHarnessLaunchProbe' ./internal/e2e/
 //                     (installs the real harness but makes NO model call — the CLI
 //                      contract check + sandbox launch probe. Gates harness version
-//                      bumps in harness-contract.yml; runs nightly on latest in
-//                      e2e-smoke.yml, which records docs/HARNESS_COMPAT.md.)
+//                      bumps in harness-contract.yml; runs weekly on latest in
+//                      e2e-smoke.yml, which records the compatibility matrix.)
 //
 // Harness versions and model IDs are pinned in versions.go.
 // Set E2E_USE_LATEST=1 to test with latest releases (no pinning).

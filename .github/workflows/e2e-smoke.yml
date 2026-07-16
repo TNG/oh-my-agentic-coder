@@ -1,6 +1,6 @@
 # E2E smoke: harness-version drift detection.
 #
-# Runs nightly (and on manual dispatch). For every harness × OS it installs the
+# Runs weekly (and on manual dispatch). For every harness × OS it installs the
 # harness's LATEST release and records three stages — see docs/HARNESS_COMPAT.md:
 #
 #   contract — model-free: every CLI flag/subcommand omac derives from its
@@ -8,18 +8,17 @@
 #   launch   — model-free: `omac start <harness>` reaches the real binary
 #              through the sandbox.
 #   llm      — a real agent turn against the model provider (verifies the
-#              auth/proxy path). Skipped for claude-code by default because it
-#              is the only externally-billed harness (its llm stage runs weekly
-#              via e2e.yml); the model-free stages still run for it nightly.
+#              auth/proxy path). Run for every harness, claude-code included.
 #
-# Outcomes are recorded in a living "Harness compatibility matrix" tracking
-# issue (rolling 30-day dashboard, label: "auto-update tracker") and mirrored
-# to the private security repo (nhuelstng/oh-my-agentic-coder-security) under
-# harness-compat/ for permanent history — reusing the SECURITY_SCAN_PAT that
-# security-scan.yml already uses. Any failure additionally opens/updates a
-# deduplicated drift issue (label: harness-drift) and posts to Slack. Nothing
-# is pushed to this repo's main. This is the cheap, regular tripwire that catches
-# a harness release breaking omac's assumptions long before the weekly full suite.
+# Outcomes are recorded in a single, stable "Harness compatibility matrix"
+# tracking issue (label: "auto-update tracker") whose DESCRIPTION is rewritten
+# in place every run — never via comments — showing current status plus a
+# rolling 30-day window. The same rows are mirrored to the private security repo
+# (nhuelstng/oh-my-agentic-coder-security) under harness-compat/ for permanent
+# history, reusing the SECURITY_SCAN_PAT that security-scan.yml already uses.
+# Every run (pass or fail) posts a status message to Slack. Nothing is pushed to
+# this repo's main. This is the regular tripwire that catches a harness release
+# breaking omac's assumptions.
 name: E2E smoke
 
 on:
@@ -29,18 +28,14 @@ on:
         description: 'Install each harness''s latest release (drift detection). Uncheck to test the versions.go pins instead.'
         type: boolean
         default: true
-      run_claude_code_llm:
-        description: 'Also run the billed claude-code llm stage (off by default; the model-free stages always run).'
-        type: boolean
-        default: false
   schedule:
-    # 03:00 UTC daily. The weekly full suite (e2e.yml) runs Saturdays; this
-    # nightly is deliberately model-light and fast.
-    - cron: '0 3 * * *'
+    # Weekly, Wednesday 03:00 UTC — offset from e2e.yml's Saturday slot so the
+    # two model-heavy suites don't run on the same day.
+    - cron: '0 3 * * 3'
 
 permissions:
   contents: read
-  issues: write # report job maintains the tracking + drift issues
+  issues: write # report job maintains the tracking issue
 
 jobs:
   smoke:
@@ -123,8 +118,8 @@ jobs:
       - name: LLM turn
         id: llm
         continue-on-error: true
-        # Skip only claude-code's billed llm stage unless explicitly opted in.
-        if: matrix.harness != 'claude-code' || github.event.inputs.run_claude_code_llm == 'true'
+        # Run for every harness, claude-code included (it is billed against the
+        # real Anthropic account, but this suite is weekly so the cost is bounded).
         env:
           E2E_CACHE_DIR: ${{ runner.temp }}/e2e-install-cache
         run: |
@@ -157,7 +152,7 @@ jobs:
           case "${{ steps.llm.outcome }}" in
             success) llm='✅' ;;
             failure) llm='❌' ;;
-            *)       llm='➖' ;;  # skipped (claude-code) or not run
+            *)       llm='➖' ;;  # not run (e.g. leg crashed earlier)
           esac
           date_utc=$(date -u +%Y-%m-%d)
           row="| $date_utc | ${{ steps.omac.outputs.version }} | ${{ matrix.os }} | ${{ matrix.harness }} | $version | $contract | $launch | $llm |"
@@ -231,14 +226,18 @@ jobs:
           fi
           printf '%s\n' "$rows" > run.rows
           echo "has_rows=true" >> "$GITHUB_OUTPUT"
-          if grep -q '❌' run.rows; then
+          echo "total=$(wc -l < run.rows | tr -d ' ')" >> "$GITHUB_OUTPUT"
+          grep '❌' run.rows > failing.rows || true
+          fail_count=$(wc -l < failing.rows | tr -d ' ')
+          echo "fail_count=$fail_count" >> "$GITHUB_OUTPUT"
+          if [ "$fail_count" -gt 0 ]; then
             echo "has_failures=true" >> "$GITHUB_OUTPUT"
           else
             echo "has_failures=false" >> "$GITHUB_OUTPUT"
           fi
-          grep '❌' run.rows > failing.rows || true
 
       - name: Update the tracking-issue dashboard
+        id: dashboard
         if: always() && steps.rows.outputs.has_rows == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -249,9 +248,15 @@ jobs:
           ARCHIVE_REPO: nhuelstng/oh-my-agentic-coder-security
           ARCHIVE_PATH: harness-compat/HARNESS_COMPAT.md
           WF_URL: ${{ github.server_url }}/${{ github.repository }}/blob/main/.github/workflows/e2e-smoke.yml
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          HAS_FAILURES: ${{ steps.rows.outputs.has_failures }}
+          FAIL_COUNT: ${{ steps.rows.outputs.fail_count }}
+          TOTAL: ${{ steps.rows.outputs.total }}
         run: |
           title="Harness compatibility matrix"
-          num=$(gh issue list --state open --search "in:title \"$title\"" \
+          # One stable issue, any state: reopen if it was closed so it is always
+          # the SAME issue, updated in place (never a comment, never a new one).
+          num=$(gh issue list --state all --search "in:title \"$title\"" \
             --json number,title --jq "map(select(.title==\"$title\")) | .[0].number // empty" 2>/dev/null || true)
           existing=""
           if [ -n "$num" ]; then
@@ -265,23 +270,42 @@ jobs:
             | awk 'NF' \
             | awk -v c="$cutoff" '{ if (match($0,/[0-9]{4}-[0-9]{2}-[0-9]{2}/)) { d=substr($0,RSTART,10); if (d>=c) print } }' \
             | sort -r -u)
+          if [ "$HAS_FAILURES" = "true" ]; then
+            status="🔴 **$FAIL_COUNT of $TOTAL failing** as of latest run"
+          else
+            status="🟢 **all $TOTAL green** as of latest run"
+          fi
           {
             echo "# Harness compatibility matrix"
             echo ""
-            echo "Updated automatically by [\`e2e-smoke.yml\`]($WF_URL). Newest first; rolling 30-day window. Full permanent history: \`$ARCHIVE_REPO\` (\`$ARCHIVE_PATH\`)."
+            echo "$status — [run log]($RUN_URL). Updated in place by [\`e2e-smoke.yml\`]($WF_URL); rolling 30-day window, newest first. Full permanent history: \`$ARCHIVE_REPO\` (\`$ARCHIVE_PATH\`)."
             echo ""
             echo "\`✅\` pass · \`❌\` fail · \`➖\` not run"
+            if [ "$HAS_FAILURES" = "true" ]; then
+              echo ""
+              echo "## Currently failing"
+              echo ""
+              echo "| Date (UTC) | omac | OS | Harness | Version | contract | launch | llm |"
+              echo "|---|---|---|---|---|:-:|:-:|:-:|"
+              cat failing.rows
+              echo ""
+              echo "A ❌ in **contract** means the installed release renamed/removed a flag omac depends on — fix \`internal/config/harness.go\` and/or \`internal/e2e/harnesses.go\`. See docs/HARNESS_COMPAT.md."
+            fi
+            echo ""
+            echo "## History (rolling 30 days)"
             echo ""
             echo "| Date (UTC) | omac | OS | Harness | Version | contract | launch | llm |"
             echo "|---|---|---|---|---|:-:|:-:|:-:|"
             printf '%s\n' "$all"
           } > dashboard.md
           if [ -n "$num" ]; then
+            gh issue reopen "$num" 2>/dev/null || true
             gh issue edit "$num" --body-file dashboard.md
-            echo "updated tracking issue #$num"
           else
-            gh issue create --title "$title" --label "$TRACKER_LABEL" --body-file dashboard.md
+            num=$(gh issue create --title "$title" --label "$TRACKER_LABEL" --body-file dashboard.md | grep -oE '[0-9]+$')
           fi
+          echo "issue_url=${{ github.server_url }}/${{ github.repository }}/issues/$num" >> "$GITHUB_OUTPUT"
+          echo "updated tracking issue #$num"
 
       - name: Mirror to private archive repo
         if: always() && steps.rows.outputs.has_rows == 'true'
@@ -323,56 +347,25 @@ jobs:
           git commit -s -m "chore: record harness compatibility matrix ($(date -u +%Y-%m-%d))"
           git push
 
-      - name: Ensure drift label exists
-        if: always()
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh label create harness-drift --color B60205 --description "A harness release broke an omac assumption" 2>/dev/null || true
-
-      - name: Open or update drift issue
-        if: always()
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          existing=$(gh issue list --label harness-drift --state open --json number --jq '.[0].number' 2>/dev/null || true)
-          if [ "${{ steps.rows.outputs.has_failures }}" = "true" ]; then
-            {
-              echo "Harness compatibility drift detected on the nightly latest-release run."
-              echo ""
-              echo "| Date (UTC) | omac | OS | Harness | Version | contract | launch | llm |"
-              echo "|---|---|---|---|---|:-:|:-:|:-:|"
-              cat failing.rows
-              echo ""
-              echo "Run: $RUN_URL"
-              echo ""
-              echo "A ❌ in **contract** means the installed release renamed/removed a flag omac depends on — fix \`internal/config/harness.go\` and/or \`internal/e2e/harnesses.go\`. See docs/HARNESS_COMPAT.md."
-            } > issue-body.md
-            if [ -n "$existing" ]; then
-              gh issue comment "$existing" --body-file issue-body.md
-            else
-              gh issue create --title "🔴 Harness compatibility drift" --label harness-drift --body-file issue-body.md
-            fi
-          elif [ -n "$existing" ]; then
-            gh issue comment "$existing" --body "✅ All harnesses green again as of $RUN_URL — closing."
-            gh issue close "$existing"
-          fi
-
       - name: Slack notification
-        if: always()
+        if: always() && steps.rows.outputs.has_rows == 'true'
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          ISSUE_URL: ${{ steps.dashboard.outputs.issue_url }}
+          HAS_FAILURES: ${{ steps.rows.outputs.has_failures }}
+          FAIL_COUNT: ${{ steps.rows.outputs.fail_count }}
+          TOTAL: ${{ steps.rows.outputs.total }}
         run: |
           if [ -z "$SLACK_WEBHOOK_URL" ]; then
             echo "SLACK_WEBHOOK_URL not set — skipping Slack notification"
             exit 0
           fi
-          if [ "${{ steps.rows.outputs.has_failures }}" != "true" ]; then
-            echo "no failures — no Slack notification"
-            exit 0
+          # Posted on every run — green and red alike.
+          if [ "$HAS_FAILURES" = "true" ]; then
+            text="🔴 omac harness compatibility: $FAIL_COUNT of $TOTAL combination(s) FAILED. Dashboard: $ISSUE_URL — Run: $RUN_URL"
+          else
+            text="🟢 omac harness compatibility: all $TOTAL combination(s) green. Dashboard: $ISSUE_URL — Run: $RUN_URL"
           fi
-          count=$(wc -l < failing.rows | tr -d ' ')
-          text="🔴 omac harness drift: $count harness/OS combination(s) failed the nightly compatibility check. $RUN_URL"
           payload=$(printf '{"text":%s}' "$(printf '%s' "$text" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')")
           curl -sS -X POST -H 'Content-type: application/json' --data "$payload" "$SLACK_WEBHOOK_URL"

@@ -2,15 +2,16 @@
 
 omac supports several inner harnesses (opencode, claude-code, codex, copilot, pi).
 A harness release can silently break omac by renaming a CLI flag, moving a
-subcommand, or changing a config schema. The nightly
-[E2E smoke workflow](../.github/workflows/e2e-smoke.yml) is the tripwire: it
-installs every harness's **latest** release and records three stages per harness.
+subcommand, or changing a config schema. The weekly
+[E2E smoke workflow](../.github/workflows/e2e-smoke.yml) (also manually
+dispatchable) is the tripwire: it installs every harness's **latest** release and
+records three stages per harness.
 
 | Stage | What it proves | Model call? |
 |-------|----------------|-------------|
 | `contract` | Every CLI flag/subcommand omac derives from its registry still exists in the harness's `--help` (see `internal/e2e/contract.go`). | no |
 | `launch` | `omac start <harness>` reaches the real binary through the sandbox (PATH, config-home, sandbox admission). | no |
-| `llm` | A real agent turn against the model provider — verifies the auth/proxy path. Skipped nightly for claude-code (billed externally; runs weekly via [`e2e.yml`](../.github/workflows/e2e.yml)). | yes |
+| `llm` | A real agent turn against the model provider — verifies the auth/proxy path. Run for **every** harness, claude-code included. | yes |
 
 `✅` pass · `❌` fail · `➖` not run.
 
@@ -18,14 +19,15 @@ installs every harness's **latest** release and records three stages per harness
 
 The matrix is **not** committed to this repo (no bot pushes to `main`):
 
-- **Live dashboard** — a single tracking issue titled *"Harness compatibility matrix"*
-  (label `auto-update tracker`), rewritten each run with a rolling 30-day window,
-  newest first. This is the at-a-glance status.
+- **Live dashboard** — one stable tracking issue titled *"Harness compatibility matrix"*
+  (label `auto-update tracker`). Its **description is rewritten in place** every run —
+  never via comments — with a status header, the currently-failing rows (if any),
+  and a rolling 30-day history, newest first.
 - **Permanent archive** — every run appends to `harness-compat/HARNESS_COMPAT.md`
   in the private security repo `nhuelstng/oh-my-agentic-coder-security` (a distinct
   subpath from the security scans' `scans/`), giving full diffable history.
-- **Alerts** — a `❌` opens/updates a deduplicated drift issue (label
-  `harness-drift`, auto-closes when green again) and posts to Slack.
+- **Slack** — every run (pass or fail) posts a one-line status message with links
+  to the dashboard issue and the run log.
 
 ## Configuration
 
@@ -33,7 +35,7 @@ The matrix is **not** committed to this repo (no bot pushes to `main`):
 |---------|------|--------|---------|
 | `auto-update tracker` | label | created | Applied to the dashboard tracking issue. |
 | `SECURITY_SCAN_PAT` | secret | reused | Same PAT `security-scan.yml` uses; needs `contents: write` on the security repo. Archive mirror is skipped if absent. |
-| `SLACK_WEBHOOK_URL` | secret | **you add** | Incoming-webhook URL for drift notifications. Unset ⇒ Slack step is a no-op (everything else still runs). |
+| `SLACK_WEBHOOK_URL` | secret | **you add** | Incoming-webhook URL for the per-run status message. Unset ⇒ Slack step is a no-op (everything else still runs). |
 
 ### Configuring Slack
 
@@ -43,8 +45,8 @@ The matrix is **not** committed to this repo (no bot pushes to `main`):
 2. In GitHub: **Settings → Secrets and variables → Actions → New repository secret**,
    name `SLACK_WEBHOOK_URL`, paste the URL.
 
-The workflow posts only on a `❌` (a short message + run link); it never posts on
-green runs.
+The workflow posts on **every** run — `🟢 all green` or `🔴 N failing` — with links
+to the dashboard issue and the run log.
 
 ## Gating version bumps
 
