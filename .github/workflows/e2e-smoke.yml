@@ -16,9 +16,10 @@
 # Outcomes are recorded in a single, stable "Harness compatibility matrix"
 # tracking issue (label: "auto-update tracker") whose DESCRIPTION is rewritten
 # in place every run — never via comments — showing current status plus a
-# rolling 30-day window. The same rows are mirrored to the private security repo
-# (nhuelstng/oh-my-agentic-coder-security) under harness-compat/ for permanent
-# history, reusing the SECURITY_SCAN_PAT that security-scan.yml already uses.
+# rolling 30-day window. The same rows are mirrored to a private archive repo
+# (the security repo) under harness-compat/ for permanent history, reusing the
+# SECURITY_SCAN_PAT that security-scan.yml already uses. The repo name is never
+# printed into the public dashboard issue.
 # Every run (pass or fail) posts a status message to Slack; on a failure the
 # message carries a short SKAINET-generated summary of exactly what broke.
 # Nothing is pushed to this repo's main. This is the regular tripwire that
@@ -42,12 +43,18 @@ permissions:
 
 jobs:
   smoke:
-    name: "${{ matrix.harness }} / ${{ matrix.os }}"
+    name: "${{ matrix.harness }} / ${{ matrix.os }} / omac@${{ matrix.omac }}"
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
         harness: [opencode, claude-code, codex, copilot, pi]
+        # Two omac versions: main (built from source) and release (the latest
+        # published binary — what users actually run). The contract stage is
+        # identical across both (it's compiled from source), but launch + llm
+        # exercise the selected omac binary, catching a released omac that can't
+        # drive a current harness.
+        omac: [main, release]
         exclude:
           # codex's Rust HTTP client is incompatible with the macOS Seatbelt
           # sandbox (see e2e.yml / issue #48).
@@ -55,7 +62,7 @@ jobs:
             harness: codex
     runs-on: ${{ matrix.os }}
     concurrency:
-      group: e2e-smoke-${{ matrix.os }}-${{ matrix.harness }}
+      group: e2e-smoke-${{ matrix.os }}-${{ matrix.harness }}-${{ matrix.omac }}
       cancel-in-progress: false
     env:
       SKAINET_TOKEN: ${{ secrets.SKAINET_TOKEN }}
@@ -100,13 +107,38 @@ jobs:
           path: ${{ runner.temp }}/e2e-install-cache
           # Latest-tracking, so the key rotates weekly rather than on a version
           # file, to avoid pinning to a stale "latest".
-          key: e2e-smoke-install-${{ runner.os }}-${{ matrix.harness }}-${{ github.run_id }}
+          key: e2e-smoke-install-${{ runner.os }}-${{ matrix.harness }}-${{ matrix.omac }}-${{ github.run_id }}
           restore-keys: |
-            e2e-smoke-install-${{ runner.os }}-${{ matrix.harness }}-
+            e2e-smoke-install-${{ runner.os }}-${{ matrix.harness }}-${{ matrix.omac }}-
 
-      - name: Resolve omac version
+      - name: Provision released omac (omac@release)
+        if: matrix.omac == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag=$(gh release view --json tagName --jq .tagName)
+          echo "OMAC_RELEASE_TAG=$tag" >> "$GITHUB_ENV"
+          case "$(uname -s)" in Linux) os=linux;; Darwin) os=macOS;; *) echo "unknown os"; exit 1;; esac
+          case "$(uname -m)" in x86_64|amd64) arch=x86_64;; arm64|aarch64) arch=arm64;; *) echo "unknown arch"; exit 1;; esac
+          dir="$RUNNER_TEMP/omac-release"; mkdir -p "$dir"
+          gh release download "$tag" --dir "$dir" --pattern "oh-my-agentic-coder_*_${os}_${arch}.tar.gz"
+          f=$(ls "$dir"/*.tar.gz | head -1)
+          tar -xzf "$f" -C "$dir"
+          bin=$(find "$dir" -type f -name omac | head -1)
+          [ -x "$bin" ] || { echo "omac binary missing in release asset"; ls -R "$dir"; exit 1; }
+          # OMAC_BIN is read by buildOmac(): subsequent test steps use this
+          # prebuilt binary instead of compiling from source.
+          echo "OMAC_BIN=$bin" >> "$GITHUB_ENV"
+          echo "provisioned omac@release $tag -> $bin"; "$bin" version || true
+
+      - name: Resolve omac version label
         id: omac
-        run: echo "version=$(git describe --tags --always --dirty)" >> "$GITHUB_OUTPUT"
+        run: |
+          if [ "${{ matrix.omac }}" = "release" ]; then
+            echo "version=${OMAC_RELEASE_TAG:-release}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=main@$(git describe --tags --always --dirty)" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Model-free smoke (contract + launch)
         id: modelfree
@@ -172,13 +204,30 @@ jobs:
           date_utc=$(date -u +%Y-%m-%d)
           row="| $date_utc | ${{ steps.omac.outputs.version }} | ${{ matrix.os }} | ${{ matrix.harness }} | $version | $contract | $launch | $llm |"
           mkdir -p compat
-          printf '%s\n' "$row" > "compat/${{ matrix.os }}-${{ matrix.harness }}.row"
+          slug="${{ matrix.os }}-${{ matrix.harness }}-${{ matrix.omac }}"
+          printf '%s\n' "$row" > "compat/$slug.row"
           echo "$row"
           echo "row<<EOF" >> "$GITHUB_OUTPUT"; echo "$row" >> "$GITHUB_OUTPUT"; echo "EOF" >> "$GITHUB_OUTPUT"
+          # On any failure, emit a self-contained context file for the report
+          # job's SKAINET summariser — built here, where the logs live, so the
+          # report job never has to reconstruct per-leg log paths.
+          if printf '%s' "$row" | grep -q '❌'; then
+            stages=""
+            [ "$contract" = "❌" ] && stages="$stages contract"
+            [ "$launch" = "❌" ] && stages="$stages launch"
+            [ "$llm" = "❌" ] && stages="$stages llm"
+            {
+              echo "=== ${{ matrix.harness }} / ${{ matrix.os }} / omac@${{ matrix.omac }} — failing stage(s):$stages ==="
+              grep -hE 'CLI contract drift|no longer exposes|--- FAIL|omac start .* failed|FAIL \[|Error|panic:' \
+                modelfree.log llm.log 2>/dev/null | head -40 || true
+              tail -n 30 llm.log 2>/dev/null || true
+              echo
+            } > "compat/$slug.ctx"
+          fi
           {
-            echo "### Compatibility: ${{ matrix.harness }} / ${{ matrix.os }}"
+            echo "### ${{ matrix.harness }} / ${{ matrix.os }} / omac@${{ matrix.omac }}"
             echo ""
-            echo "| Date (UTC) | omac | OS | Harness | Version | contract | launch | llm |"
+            echo "| Timestamp (UTC) | omac | OS | Harness | Version | contract | launch | llm |"
             echo "|---|---|---|---|---|:-:|:-:|:-:|"
             echo "$row"
           } >> "$GITHUB_STEP_SUMMARY"
@@ -187,8 +236,10 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: compat-${{ matrix.os }}-${{ matrix.harness }}
-          path: compat/*.row
+          name: compat-${{ matrix.os }}-${{ matrix.harness }}-${{ matrix.omac }}
+          path: |
+            compat/*.row
+            compat/*.ctx
           if-no-files-found: warn
           retention-days: 30
 
@@ -196,7 +247,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: smoke-logs-${{ matrix.os }}-${{ matrix.harness }}
+          name: smoke-logs-${{ matrix.os }}-${{ matrix.harness }}-${{ matrix.omac }}
           path: |
             modelfree.log
             llm.log
@@ -229,19 +280,16 @@ jobs:
           path: compat
           merge-multiple: true
 
-      - name: Download smoke logs
-        uses: actions/download-artifact@v4
-        with:
-          # No merge-multiple: keep each leg's logs under its own
-          # smoke-logs-<os>-<harness>/ dir so modelfree.log/llm.log don't collide.
-          pattern: smoke-logs-*
-          path: logs
-
       - name: Prepare this run's rows
         id: rows
         run: |
           shopt -s nullglob
-          rows=$(cat compat/*.row 2>/dev/null | sort -r || true)
+          # Stamp every row of THIS run with one shared UTC timestamp (minute
+          # precision) so all its legs group together when the table is sorted;
+          # the leg-local date in the .row file is overwritten here (field 2).
+          run_ts=$(date -u +'%Y-%m-%d %H:%M')
+          rows=$(cat compat/*.row 2>/dev/null \
+            | awk -v ts="$run_ts" 'BEGIN{FS=OFS="|"} NF{$2=" "ts" "; print}' || true)
           if [ -z "$rows" ]; then
             echo "no rows produced (all legs crashed before emitting) — nothing to record"
             echo "has_rows=false" >> "$GITHUB_OUTPUT"
@@ -250,7 +298,8 @@ jobs:
           printf '%s\n' "$rows" > run.rows
           echo "has_rows=true" >> "$GITHUB_OUTPUT"
           echo "total=$(wc -l < run.rows | tr -d ' ')" >> "$GITHUB_OUTPUT"
-          grep '❌' run.rows > failing.rows || true
+          # Failing rows, in the canonical order (date desc, omac, os, harness).
+          grep '❌' run.rows | sort -t'|' -k2,2r -k3,3 -k4,4 -k5,5 > failing.rows || true
           fail_count=$(wc -l < failing.rows | tr -d ' ')
           echo "fail_count=$fail_count" >> "$GITHUB_OUTPUT"
           if [ "$fail_count" -gt 0 ]; then
@@ -267,22 +316,14 @@ jobs:
           SKAINET_TOKEN: ${{ secrets.SKAINET_TOKEN }}
           SKAINET_INTERNAL: ${{ secrets.SKAINET_EXTERNAL }}
         run: |
-          # Build a bounded failure context from each failing leg's own logs.
-          # The failing stage is taken from the row's ❌ columns and stated
-          # explicitly so the summariser attributes it correctly instead of
-          # guessing (contract=col7, launch=col8, llm=col9).
-          : > failure-context.txt
-          while IFS= read -r row; do
-            os=$(printf '%s' "$row" | awk -F'|' '{gsub(/^[ \t]+|[ \t]+$/,"",$4); print $4}')
-            harness=$(printf '%s' "$row" | awk -F'|' '{gsub(/^[ \t]+|[ \t]+$/,"",$5); print $5}')
-            stages=$(printf '%s' "$row" | awk -F'|' '{s=""; if($7 ~ /❌/)s=s" contract"; if($8 ~ /❌/)s=s" launch"; if($9 ~ /❌/)s=s" llm"; print s}')
-            dir="logs/smoke-logs-$os-$harness"
-            echo "=== $harness / $os — failing stage(s):$stages ===" >> failure-context.txt
-            grep -hE 'CLI contract drift|no longer exposes|--- FAIL|omac start .* failed|FAIL \[|Error|panic:' \
-              "$dir"/modelfree.log "$dir"/llm.log 2>/dev/null | head -40 >> failure-context.txt || true
-            tail -n 30 "$dir"/llm.log 2>/dev/null >> failure-context.txt || true
-            echo >> failure-context.txt
-          done < failing.rows
+          # Each failing leg already wrote a self-contained .ctx file (header
+          # with harness/OS/omac + failing stage, plus its own log excerpts), so
+          # the context needs no log-path reconstruction here.
+          cat compat/*.ctx > failure-context.txt 2>/dev/null || true
+          if [ ! -s failure-context.txt ]; then
+            echo "no .ctx context files found — skipping AI summary"
+            exit 0
+          fi
 
           if [ -z "$SKAINET_TOKEN" ] || [ -z "$SKAINET_INTERNAL" ]; then
             echo "SKAINET creds missing — skipping AI summary (Slack will fall back to the failing-row list)"
@@ -320,10 +361,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           # Tracking-issue label, pre-created in this repo by the maintainer.
           TRACKER_LABEL: auto-update tracker
-          # Permanent archive lives under harness-compat/ in the private
-          # security repo (a different subpath from the security scans).
-          ARCHIVE_REPO: nhuelstng/oh-my-agentic-coder-security
-          ARCHIVE_PATH: harness-compat/HARNESS_COMPAT.md
           WF_URL: ${{ github.server_url }}/${{ github.repository }}/blob/main/.github/workflows/e2e-smoke.yml
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           HAS_FAILURES: ${{ steps.rows.outputs.has_failures }}
@@ -341,12 +378,16 @@ jobs:
             # Existing data rows begin with a "| YYYY-..." date cell.
             existing=$(grep -E '^\| [0-9]{4}-' body.md 2>/dev/null || true)
           fi
-          # Rolling 30-day window: keep rows whose embedded date is recent, newest first.
+          # Rolling 30-day window, then the canonical order: date DESC (newest
+          # first), grouped by omac version, then OS, then harness ascending —
+          # so the same combo always sits in the same place run to run.
+          #   fields: | ts(2) | omac(3) | os(4) | harness(5) | ver | c | l | llm |
           cutoff=$(date -u -d '30 days ago' +%Y-%m-%d)
           all=$(printf '%s\n%s\n' "$(cat run.rows)" "$existing" \
             | awk 'NF' \
             | awk -v c="$cutoff" '{ if (match($0,/[0-9]{4}-[0-9]{2}-[0-9]{2}/)) { d=substr($0,RSTART,10); if (d>=c) print } }' \
-            | sort -r -u)
+            | awk '!seen[$0]++' \
+            | sort -t'|' -k2,2r -k3,3 -k4,4 -k5,5)
           if [ "$HAS_FAILURES" = "true" ]; then
             status="🔴 **$FAIL_COUNT of $TOTAL failing** as of latest run"
           else
@@ -355,7 +396,7 @@ jobs:
           {
             echo "# Harness compatibility matrix"
             echo ""
-            echo "$status — [run log]($RUN_URL). Updated in place by [\`e2e-smoke.yml\`]($WF_URL); rolling 30-day window, newest first. Full permanent history: \`$ARCHIVE_REPO\` (\`$ARCHIVE_PATH\`)."
+            echo "$status — [run log]($RUN_URL). Updated in place by [\`e2e-smoke.yml\`]($WF_URL); rolling 30-day window (newest first, grouped by omac / OS / harness). Full permanent history is mirrored to a private archive repo."
             echo ""
             echo "\`✅\` pass · \`❌\` fail · \`➖\` not run"
             if [ "$HAS_FAILURES" = "true" ]; then
@@ -368,7 +409,7 @@ jobs:
                 sed 's/^/> /' failure-summary.txt
                 echo ""
               fi
-              echo "| Date (UTC) | omac | OS | Harness | Version | contract | launch | llm |"
+              echo "| Timestamp (UTC) | omac | OS | Harness | Version | contract | launch | llm |"
               echo "|---|---|---|---|---|:-:|:-:|:-:|"
               cat failing.rows
               echo ""
@@ -383,7 +424,7 @@ jobs:
             echo ""
             echo "## History (rolling 30 days)"
             echo ""
-            echo "| Date (UTC) | omac | OS | Harness | Version | contract | launch | llm |"
+            echo "| Timestamp (UTC) | omac | OS | Harness | Version | contract | launch | llm |"
             echo "|---|---|---|---|---|:-:|:-:|:-:|"
             printf '%s\n' "$all"
           } > dashboard.md
@@ -418,7 +459,7 @@ jobs:
               echo ""
               echo "Appended by omac's e2e-smoke workflow. Do not edit by hand."
               echo ""
-              echo "| Date (UTC) | omac | OS | Harness | Version | contract | launch | llm |"
+              echo "| Timestamp (UTC) | omac | OS | Harness | Version | contract | launch | llm |"
               echo "|---|---|---|---|---|:-:|:-:|:-:|"
               echo "<!-- COMPAT_TABLE_END -->"
             } > "$file"
