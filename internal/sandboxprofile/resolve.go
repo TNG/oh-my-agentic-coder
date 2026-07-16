@@ -53,6 +53,11 @@ func DefaultProfile() *Profile {
 				OnUnavailable:     OnUnavailableDeny,
 			},
 		},
+		// Explicit allowlist: only the operational minimum passes through.
+		// An empty list would inherit every ambient variable (secrets,
+		// capability pointers) except the danger blocklist — the leak
+		// fixed here. Harness auth vars are merged at launch.
+		Environment: Environment{AllowVars: DefaultAllowVars()},
 	}
 }
 

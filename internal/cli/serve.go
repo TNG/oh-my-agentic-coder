@@ -398,6 +398,10 @@ func runServe(args []string, env *Env) int {
 		if cacheScope != nil {
 			argv = injectSandboxFlag(argv, "--allow", cacheScope.Dir)
 		}
+		// Forward the selected harness's auth env vars through the
+		// default profile's restrictive allow_vars filter. (Control-plane
+		// port and harness runtime dirs are granted inside sandboxServeArgv.)
+		argv = injectSandboxEnvAllow(argv, harness.SandboxEnvAllow)
 		// Pass the resolved audit path to `omac sandbox run` so its
 		// network-filter subprocess appends net.decision events to the
 		// same persistent log. Inherit the parent's run_id + mode so the
@@ -567,6 +571,41 @@ func injectSandboxDirs(argv []string, dirs []string) []string {
 		argv = injectSandboxFlag(argv, "--allow", d)
 	}
 	return argv
+}
+
+// injectSandboxEnvAllow splices --allow-env flags for each harness-declared
+// auth env var into the sandbox argv, so they survive the default profile's
+// restrictive allow_vars filter. Only the selected harness's vars are added.
+//
+// --allow-env is understood only by omac's native `sandbox run` backend
+// (where FilterEnv applies the allowlist); other backends (nono) do their
+// own env filtering via their own profile, so injecting the flag there
+// would be meaningless and could fail on an unknown flag. Guarded by
+// argvRunsNativeSandbox. Empty/nil is a no-op.
+func injectSandboxEnvAllow(argv []string, names []string) []string {
+	if !argvRunsNativeSandbox(argv) {
+		return argv
+	}
+	for _, n := range names {
+		if n == "" {
+			continue
+		}
+		argv = injectSandboxFlag(argv, "--allow-env", n)
+	}
+	return argv
+}
+
+// argvRunsNativeSandbox reports whether argv invokes omac's native
+// sandbox supervisor (`omac sandbox run …`), identified by consecutive
+// "sandbox" "run" tokens. This is the only backend that parses the
+// launch-injected sandbox flags omac itself defines (e.g. --allow-env).
+func argvRunsNativeSandbox(argv []string) bool {
+	for i := 0; i+1 < len(argv); i++ {
+		if argv[i] == "sandbox" && argv[i+1] == "run" {
+			return true
+		}
+	}
+	return false
 }
 
 // injectSandboxFlag splices a sandbox flag (with optional value; pass

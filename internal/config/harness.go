@@ -102,6 +102,27 @@ type Harness struct {
 	// Currently only OpenCode (whose briefing relay depends on the
 	// omac plugin in ~/.config/opencode/plugins).
 	NeedsPluginBootstrap bool
+
+	// SandboxEnvAllow lists the environment variables omac forwards into
+	// the sandbox for this harness: the vars it reads from the ambient
+	// environment to authenticate to its LLM provider (API keys, auth
+	// tokens, base-URL overrides), plus any omac-injected harness-config
+	// var whose name is not OMAC_*-prefixed (e.g. Copilot's briefing dir).
+	// The sandbox default profile ships a restrictive allowlist
+	// (sandboxprofile.DefaultAllowVars) that strips every other inherited
+	// variable; omac merges these names into the profile's
+	// environment.allow_vars at launch (via --allow-env) so they survive
+	// the filter — for the selected harness only.
+	//
+	// The auth names are the provider-agnostic ones each CLI documents
+	// reading from the environment. Users on other providers add their own
+	// names to the user-editable default.json allow_vars. Entries are
+	// exact names or trailing-* prefixes (sandboxprofile.envVarAllowed).
+	//
+	// Harnesses that authenticate exclusively via on-disk config in their
+	// SandboxDirs (granted read+write) and inject no non-OMAC_* env need
+	// nothing here.
+	SandboxEnvAllow []string
 }
 
 // SessionListKind selects how omac enumerates a harness's prior sessions for
@@ -212,6 +233,17 @@ func harnessRegistry() []Harness {
 				"~/.config/opencode",
 				"~/.opencode",
 			},
+			// OpenCode stores provider credentials in auth.json (in
+			// SandboxDirs) but also reads provider API keys from the
+			// environment. Forward the common provider keys so env-based
+			// auth works for the selected harness.
+			SandboxEnvAllow: []string{
+				"ANTHROPIC_API_KEY",
+				"OPENAI_API_KEY",
+				"OPENROUTER_API_KEY",
+				"GEMINI_API_KEY",
+				"GROQ_API_KEY",
+			},
 			NeedsPluginBootstrap: true,
 		},
 		{
@@ -231,6 +263,15 @@ func harnessRegistry() []Harness {
 			HomeEnv:        "CLAUDE_HOME",
 			// Claude stores configuration, authentication, and sessions in ~/.claude; runtime state is in ~/.local/share/claude.
 			SandboxDirs: []string{"~/.claude", "~/.local/share/claude"},
+			// Interactive login credentials live in ~/.claude (SandboxDirs);
+			// these are the documented env vars for API-key / custom-endpoint
+			// auth (Anthropic-compatible gateway).
+			SandboxEnvAllow: []string{
+				"ANTHROPIC_API_KEY",
+				"ANTHROPIC_AUTH_TOKEN",
+				"ANTHROPIC_BASE_URL",
+				"ANTHROPIC_MODEL",
+			},
 			Session: &HarnessSession{
 				ContinueArgs:   []string{"--continue"},
 				ResumeByIDArgs: func(id string) []string { return []string{"--resume", id} },
@@ -253,6 +294,12 @@ func harnessRegistry() []Harness {
 			HomeEnv:        "CODEX_HOME",
 			// Codex stores configuration, sessions, and authentication in ~/.codex.
 			SandboxDirs: []string{"~/.codex"},
+			// Codex reads the OpenAI API key (and optional base-URL override)
+			// from the environment; config.toml may also reference env vars.
+			SandboxEnvAllow: []string{
+				"OPENAI_API_KEY",
+				"OPENAI_BASE_URL",
+			},
 			Session: &HarnessSession{
 				ContinueArgs:   []string{"resume", "--last"},
 				ResumeByIDArgs: func(id string) []string { return []string{"resume", id} },
@@ -279,6 +326,15 @@ func harnessRegistry() []Harness {
 			HomeEnv:        "COPILOT_HOME",
 			// Copilot stores configuration, session state, and authentication in ~/.copilot.
 			SandboxDirs: []string{"~/.copilot"},
+			// Copilot authenticates with a GitHub token (both spellings are
+			// accepted by the GitHub toolchain). COPILOT_CUSTOM_INSTRUCTIONS_DIRS
+			// is set by omac's BriefingEnvFunc to point copilot at the
+			// per-launch briefing dir; it must survive the env filter.
+			SandboxEnvAllow: []string{
+				"GITHUB_TOKEN",
+				"GH_TOKEN",
+				"COPILOT_CUSTOM_INSTRUCTIONS_DIRS",
+			},
 			Session: &HarnessSession{
 				ContinueArgs:   []string{"--continue"},
 				ResumeByIDArgs: func(id string) []string { return []string{"--session-id", id} },
@@ -322,6 +378,13 @@ func harnessRegistry() []Harness {
 			// ~/.pi/agent/ (git/npm package caches also nest under there —
 			// no separate ~/.cache/pi was observed in a live install).
 			SandboxDirs: []string{"~/.pi"},
+			// Pi resolves $ENV_VAR references in models.json; forward the
+			// common provider keys so those references resolve. Users with a
+			// differently-named key add it to the profile's allow_vars.
+			SandboxEnvAllow: []string{
+				"OPENAI_API_KEY",
+				"ANTHROPIC_API_KEY",
+			},
 			Session: &HarnessSession{
 				ContinueArgs:   []string{"-c"},
 				ResumeByIDArgs: func(id string) []string { return []string{"--session", id} },

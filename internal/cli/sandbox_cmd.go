@@ -42,7 +42,7 @@ func runSandboxRun(args []string, env *Env) int {
 	flags, err := sandboxprofile.ParseFlags(args)
 	if err != nil {
 		fmt.Fprintln(env.Stderr, "omac sandbox run:", err)
-		fmt.Fprintln(env.Stderr, "usage: omac sandbox run [--profile <ref>] [--allow <path>] [--read <path>] [--write <path>] [--deny <path|glob>] [--allow-file <path>] [--allow-unix-dir <dir>] [--open-port <port>] [--listen-port <port>] [--allow-tcp-connect <port>] [--allow-domain <d>] [--deny-domain <d>] [--block-net] [--workdir-access <level>] -- <cmd> [args...]")
+		fmt.Fprintln(env.Stderr, "usage: omac sandbox run [--profile <ref>] [--allow <path>] [--read <path>] [--write <path>] [--deny <path|glob>] [--allow-file <path>] [--allow-unix-dir <dir>] [--open-port <port>] [--listen-port <port>] [--allow-tcp-connect <port>] [--allow-domain <d>] [--deny-domain <d>] [--allow-env <name>] [--block-net] [--workdir-access <level>] -- <cmd> [args...]")
 		return ExitMisuse
 	}
 	return sandboxrun.Run(sandboxrun.Options{

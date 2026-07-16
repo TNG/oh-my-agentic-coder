@@ -6,6 +6,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxprofile"
 )
 
 func TestLookupHarness(t *testing.T) {
@@ -186,6 +188,26 @@ func TestDefaultSandboxProfilesHaveEmptyInnerCmd(t *testing.T) {
 	// no-sandbox-debug is a debug shell, not an agent harness: it keeps bash.
 	if got := lc.Sandbox.Profiles["no-sandbox-debug"].InnerCmd; !reflect.DeepEqual(got, []string{"bash"}) {
 		t.Errorf("no-sandbox-debug inner_cmd = %v, want [bash]", got)
+	}
+}
+
+func TestHarnessSandboxEnvAllowIsSafe(t *testing.T) {
+	// Every harness must declare the auth env vars it needs (they would
+	// otherwise be stripped by the default profile's allowlist — issue
+	// #102), and none of those names may collide with the always-drop
+	// danger blocklist, which would make the forward a silent no-op.
+	for _, h := range AllHarnesses() {
+		if len(h.SandboxEnvAllow) == 0 {
+			t.Errorf("harness %q declares no SandboxEnvAllow", h.Name)
+		}
+		for _, name := range h.SandboxEnvAllow {
+			if strings.TrimSpace(name) == "" {
+				t.Errorf("harness %q has an empty SandboxEnvAllow entry", h.Name)
+			}
+			if sandboxprofile.IsDangerousEnvVar(name) {
+				t.Errorf("harness %q forwards blocklisted env var %q (would be stripped)", h.Name, name)
+			}
+		}
 	}
 }
 

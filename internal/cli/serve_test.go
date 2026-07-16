@@ -318,6 +318,35 @@ func TestInjectOpenPort(t *testing.T) {
 	}
 }
 
+func TestInjectSandboxEnvAllow(t *testing.T) {
+	in := []string{"omac", "sandbox", "run", "--profile", "default", "--", "claude"}
+	got := injectSandboxEnvAllow(in, []string{"ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"})
+	want := []string{
+		"omac", "sandbox", "run", "--profile", "default",
+		"--allow-env", "ANTHROPIC_API_KEY",
+		"--allow-env", "ANTHROPIC_BASE_URL",
+		"--", "claude",
+	}
+	if !equalStrings(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+
+	// Empty names is a no-op; empty entries are skipped.
+	if got := injectSandboxEnvAllow(in, nil); !equalStrings(got, in) {
+		t.Errorf("nil names should be a no-op: %v", got)
+	}
+	if got := injectSandboxEnvAllow(in, []string{""}); !equalStrings(got, in) {
+		t.Errorf("empty entry should be skipped: %v", got)
+	}
+
+	// Non-native backend (nono) does not understand --allow-env: the argv
+	// must be left untouched (env filtering is nono's own concern).
+	nono := []string{"nono", "run", "--allow-cwd", "--profile", "tng-sandbox", "--", "opencode"}
+	if got := injectSandboxEnvAllow(nono, []string{"ANTHROPIC_API_KEY"}); !equalStrings(got, nono) {
+		t.Errorf("nono argv must be untouched: %v", got)
+	}
+}
+
 func equalStrings(a, b []string) bool {
 	if len(a) != len(b) {
 		return false

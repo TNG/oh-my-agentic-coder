@@ -21,8 +21,28 @@ func Check(profile *sandboxprofile.Profile) []Finding {
 	findings = append(findings, checkOverrideDeny(profile)...)
 	findings = append(findings, checkFSGrants(profile)...)
 	findings = append(findings, checkNetwork(profile)...)
+	findings = append(findings, checkEnvironment(profile)...)
 	sortFindings(findings)
 	return findings
+}
+
+// checkEnvironment flags an empty env allowlist. With no allow_vars the
+// sandbox inherits every ambient variable except the danger blocklist —
+// credentials, capability pointers, proxy settings — contradicting the
+// "no host env unless explicitly forwarded" trust model (issue #102).
+// MEDIUM: it is a real leak but affects only the launching shell's own
+// environment, not an on-disk secret.
+func checkEnvironment(profile *sandboxprofile.Profile) []Finding {
+	if len(profile.Environment.AllowVars) > 0 {
+		return nil
+	}
+	return []Finding{{
+		Severity: SeverityMedium,
+		Category: CatEnvironment,
+		Field:    "environment.allow_vars",
+		Value:    "(empty)",
+		Message:  "empty allowlist inherits all ambient env vars except the danger blocklist; add an explicit allow_vars list",
+	}}
 }
 
 // sortFindings orders findings by severity (high first), then category,

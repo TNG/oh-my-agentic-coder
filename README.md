@@ -603,6 +603,19 @@ sandbox:
 | Paths in `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.kube`, … | **denied** | protected paths (override with `filesystem.override_deny`) |
 | Workdir and granted-tree `.env` / `.envrc` (incl. nested) | **denied** | baseline workdir-protected set (override with `filesystem.override_deny: [".env"]`) |
 | Files matching `filesystem.deny` (e.g. `*.key`) inside granted trees | **denied** | user deny list (`filesystem.deny` / `--deny`) |
+| Environment variables in `environment.allow_vars` (`OMAC_*`, `HOME`, `PATH`, `LANG`, `TERM`, … + the selected harness's auth vars) | passed through | default profile `environment.allow_vars` + `harness.SandboxEnvAllow` (injected at launch) |
+| Any other ambient env var (cloud/CI secrets, `DOCKER_HOST`, `SSH_AUTH_SOCK`, proxy config) | **stripped** | not on the allowlist |
+
+> **Environment allowlist (upgrade note).** The default profile ships an
+> explicit `environment.allow_vars` allowlist, so the sandbox no longer
+> inherits arbitrary ambient variables from the launching shell — only the
+> operational minimum plus the selected harness's provider-auth variables
+> pass through. **If you have an existing `~/.config/omac/sandbox-profiles/default.json`
+> with an empty `"environment": {}`**, it still inherits everything; run
+> `omac provenance --check` (it now flags the empty allowlist) and either
+> delete the file to let omac re-scaffold it, or add an `allow_vars` list.
+> Using a provider whose auth var isn't forwarded by default? Add its name
+> to `environment.allow_vars`.
 
 For successfully inspectable built-in `{{self}} sandbox run` profiles,
 `omac doctor` warns when a profile re-introduces a broad read/write

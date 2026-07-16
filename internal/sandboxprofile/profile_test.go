@@ -486,6 +486,29 @@ func TestParseFlagsInlineValues(t *testing.T) {
 	}
 }
 
+func TestParseAndMergeAllowEnvFlag(t *testing.T) {
+	f, err := ParseFlags([]string{"--allow-env", "ANTHROPIC_API_KEY", "--allow-env=OPENAI_API_KEY", "--", "true"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(f.AllowEnv) != 2 || f.AllowEnv[0] != "ANTHROPIC_API_KEY" || f.AllowEnv[1] != "OPENAI_API_KEY" {
+		t.Fatalf("allow-env flags = %v", f.AllowEnv)
+	}
+	p := &Profile{Environment: Environment{AllowVars: []string{"HOME", "PATH"}}}
+	merged, _ := Merge(p, f)
+	if len(merged.Environment.AllowVars) != 4 {
+		t.Errorf("merged allow_vars = %v, want 4 (profile + 2 flags)", merged.Environment.AllowVars)
+	}
+	// Merge must not mutate the input profile's slice.
+	if len(p.Environment.AllowVars) != 2 {
+		t.Errorf("Merge mutated input allow_vars: %v", p.Environment.AllowVars)
+	}
+	// The merged allowlist must actually admit the forwarded var.
+	if !envVarAllowed("ANTHROPIC_API_KEY", merged.Environment.AllowVars) {
+		t.Error("merged allow_vars should admit ANTHROPIC_API_KEY")
+	}
+}
+
 func TestParseAndMergeDenyFlag(t *testing.T) {
 	f, err := ParseFlags([]string{"--deny", ".env", "--deny=*.key", "--", "true"})
 	if err != nil {
@@ -640,6 +663,45 @@ func TestFilterEnv(t *testing.T) {
 	got = FilterEnv(environ, []string{"NODE_OPTIONS"}, nil)
 	if len(got) != 0 {
 		t.Errorf("blocklist must beat allowlist: %v", got)
+	}
+
+	// Inverse of the no-allowlist case: with the default allowlist an
+	// ambient secret that is neither injected nor listed must be stripped
+	// (issue #102 — ambient env leak). HOME/PATH still pass.
+	got = FilterEnv(environ, DefaultAllowVars(), nil)
+	gotMap = envMap(got)
+	if _, ok := gotMap["AWS_SECRET_ACCESS_KEY"]; ok {
+		t.Error("default allowlist: ambient secret AWS_SECRET_ACCESS_KEY must be stripped")
+	}
+	for _, k := range []string{"HOME", "PATH", "OMAC_BASE"} {
+		if _, ok := gotMap[k]; !ok {
+			t.Errorf("default allowlist: operational var %s should pass", k)
+		}
+	}
+}
+
+// TestDefaultProfileEnvAllowlist asserts the compiled-in (and therefore
+// scaffolded) default profile ships an explicit env allowlist, so the
+// sandbox does not inherit arbitrary ambient variables (issue #102).
+func TestDefaultProfileEnvAllowlist(t *testing.T) {
+	p := DefaultProfile()
+	if len(p.Environment.AllowVars) == 0 {
+		t.Fatal("DefaultProfile must ship a non-empty environment.allow_vars")
+	}
+	want := map[string]bool{"OMAC_*": false, "HOME": false, "PATH": false}
+	for _, v := range p.Environment.AllowVars {
+		if _, ok := want[v]; ok {
+			want[v] = true
+		}
+	}
+	for k, seen := range want {
+		if !seen {
+			t.Errorf("default allowlist missing %q", k)
+		}
+	}
+	// A known ambient secret must NOT be allowed by the default list.
+	if envVarAllowed("AWS_SECRET_ACCESS_KEY", p.Environment.AllowVars) {
+		t.Error("default allowlist must not permit AWS_SECRET_ACCESS_KEY")
 	}
 }
 
