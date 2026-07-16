@@ -1,0 +1,122 @@
+# Collaboration Guide
+
+This repo is worked on by humans and agents together. The rules below
+apply to **everyone** — please follow them.
+
+## 1. Work is tracked via issues
+
+- Every change starts with a GitHub issue. **No issue, no PR.**
+- One issue = one coherent piece of work. Split large efforts into
+  multiple issues / small PRs rather than one big one.
+- Link related work with `Refs #NN`; close it automatically with
+  `Closes #NN` in the PR description.
+
+## 2. Assign yourself before starting
+
+- Assign yourself to the issue the moment you begin work, so nobody
+  else picks up the same thing.
+- If an issue is unassigned and you start on it, assign yourself
+  first — even mid-flight.
+
+## 3. Never push to `main`
+
+- `main` is protected. Never commit or push directly to it.
+- Work on a small **feature/fix branch**:
+  - `feat/<topic>` for new functionality
+  - `fix/<topic>` for bug fixes
+  - `docs/<topic>` for documentation
+- Keep branches short-lived and focused. One concern per branch.
+
+## 4. Reviews
+
+- Open a PR as soon as the work is reviewable; mark it **Draft** if it
+  isn't ready.
+- **Request reviewers by name** when you want specific eyes on it.
+- As a reviewer, finish a review with the **Approve** or **Request
+  changes** button — a bare comment does not signal a decision.
+- After you (the author) implement review feedback, **re-request
+  review** so reviewers know it is ready again.
+- **Never merge without at least one approval.**
+
+## 5. Issues & MRs are concise and agent-first
+
+Both issues and PRs are written so a human *or* an agent can pick them
+up and act. Keep them **concise** — prefer structured bullets over
+prose walls. See the spec below for the expected structure.
+
+---
+
+## Spec: Issue structure
+
+A good issue is self-contained and locatable. Use these sections (omit
+a section if it adds nothing):
+
+```
+## Context / Summary      Why this issue exists; origin (prior PR/issue refs)
+## Problem / What         The gap, with file:line references and evidence
+## Suggested fix / Ask    Proposed direction; checklist of sub-items (- [ ])
+## Non-goals              Explicitly out of scope — prevents scope creep
+## Evidence / Environment repro commands, CI links, logs (when relevant)
+```
+
+Rules:
+- **Title:** plain descriptive sentence or noun phrase framing the
+  problem (e.g. `WSL: keychain registration fails with unhelpful D-Bus
+  error`). No conventional-commit prefix on issues.
+- Cite code with `path/to/file.go:NN` so it is jumpable.
+- Use `- [ ]` checkboxes for actionable sub-items.
+- Add an `Acceptance criteria` checklist for substantive work.
+- Terse one-liners are fine when the ask is self-evident — but never
+  omit the *why*.
+- Labels are optional but helpful (`bug`, `enhancement`,
+  `security`, `documentation`, `agent-created`).
+
+## Spec: Pull Request structure
+
+PRs mirror the conventions already established in this repo:
+
+```
+## What            1-4 bullets of what changed
+## Why             Motivation — failing CI run, security gap, related issue
+## How             Implementation approach, per bullet with code refs if useful
+## Verification    Commands run (go build / go test / ...) with pass status
+## Follow-up       Optional next steps or linked issues
+```
+
+Rules:
+- **Title:** Conventional Commits with scope —
+  `fix(sandbox): protect docker.sock by default`,
+  `feat(update): add omac self-update`, `docs(readme): fix onboarding
+  gaps`, `test(e2e): ...`. Types: `feat`, `fix`, `test`, `docs`,
+  `chore`. Scope is a package/area; comma-separate cross-cutting
+  scopes (`fix(sandbox,e2e):`).
+- **Always link the issue:** `Closes #NN` (auto-closes on merge) or
+  `Refs #NN` (reference only). Prefer `Closes` when the PR fully
+  resolves the issue.
+- **Verification is the most valued section** — show the actual
+  commands you ran and their result. No claim of "done" without it.
+- No screenshots needed (infra/backend repo).
+- Signal agent authorship with a `🤖 Generated with ...` footer or
+  `Co-Authored-By:` line when an agent wrote the change.
+- Keep the body **concise** — structured bullets, not essays.
+
+---
+
+## Open question: how do we handle specs?
+
+Several workflows (e.g. the superpowers/plans skills) produce spec or
+plan artifacts before implementation. We have not decided where they
+live. Options:
+
+1. **Inline** — keep the spec inside the issue body.
+2. **Committed** — store under `docs/specs/` (or `specs/`) and link
+   from the issue.
+3. **Ephemeral** — don't persist; treat as scratch and discard after
+   the issue closes.
+
+Decision needed. Until then, prefer option 1 (inline in the issue) so
+nothing is lost and no new directory convention is silently assumed.
+
+---
+
+*Tracked in #105.*
