@@ -1,4 +1,4 @@
-//go:build e2e
+//go:build e2e || e2e_fast
 
 package e2e
 
@@ -24,5 +24,21 @@ func TestPinnedPackageOverride(t *testing.T) {
 	t.Setenv("E2E_USE_LATEST", "1")
 	if got, want := pinnedPackage("opencode"), "opencode-ai"; got != want {
 		t.Errorf("use_latest should win over the override and strip the version: pinnedPackage(opencode) = %q, want %q", got, want)
+	}
+}
+
+// TestVersionEnvVarCompleteness guards against a harness being registered
+// (allHarnesses(), harnessVersions) without also wiring its workflow_dispatch
+// override — the class of bug fixed for pi, which shipped with a pinned
+// version but no E2E_VERSION_PI entry, so its version couldn't be overridden
+// for a manual run the way every other harness's could.
+func TestVersionEnvVarCompleteness(t *testing.T) {
+	for _, h := range allHarnesses() {
+		if _, ok := harnessVersions[h.Name]; !ok {
+			t.Errorf("harness %q has no entry in harnessVersions", h.Name)
+		}
+		if _, ok := versionEnvVar[h.Name]; !ok {
+			t.Errorf("harness %q has no entry in versionEnvVar (add its *_version workflow_dispatch input in .github/workflows/e2e.yml too)", h.Name)
+		}
 	}
 }

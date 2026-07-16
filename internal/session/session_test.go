@@ -23,12 +23,12 @@ func opencodeHarness(t *testing.T) config.Harness {
 
 func TestListUnsupported(t *testing.T) {
 	// Harness with no Session block.
-	if _, err := list(config.Harness{}, "/w", nil, "", "", "", "", ""); !errors.Is(err, ErrUnsupported) {
+	if _, err := list(config.Harness{}, "/w", nil, "", "", "", "", "", ""); !errors.Is(err, ErrUnsupported) {
 		t.Errorf("nil Session: err = %v, want ErrUnsupported", err)
 	}
 	// Harness whose Session declares no listing strategy.
 	h := config.Harness{Session: &config.HarnessSession{ListKind: config.SessionListNone}}
-	if _, err := list(h, "/w", nil, "", "", "", "", ""); !errors.Is(err, ErrUnsupported) {
+	if _, err := list(h, "/w", nil, "", "", "", "", "", ""); !errors.Is(err, ErrUnsupported) {
 		t.Errorf("SessionListNone: err = %v, want ErrUnsupported", err)
 	}
 }
@@ -42,7 +42,7 @@ func TestListOpenCodeParseAndFilter(t *testing.T) {
 			{"id":"ses_other","title":"elsewhere","updated":3000,"directory":"/home/u/other"}
 		]`), nil
 	}
-	got, err := list(opencodeHarness(t), wd, run, "", "", "", "", "")
+	got, err := list(opencodeHarness(t), wd, run, "", "", "", "", "", "")
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -59,7 +59,7 @@ func TestListOpenCodeParseAndFilter(t *testing.T) {
 
 func TestListOpenCodeCLIFailureIsEmpty(t *testing.T) {
 	run := func(name string, args ...string) ([]byte, error) { return nil, errors.New("not found") }
-	got, err := list(opencodeHarness(t), "/w", run, "", "", "", "", "")
+	got, err := list(opencodeHarness(t), "/w", run, "", "", "", "", "", "")
 	if err != nil {
 		t.Fatalf("CLI failure should not error, got %v", err)
 	}
@@ -248,14 +248,14 @@ func copilotHarness(t *testing.T) config.Harness {
 func TestListCodexDispatchesNotUnsupported(t *testing.T) {
 	// Even with empty paths, codex listing must NOT return ErrUnsupported —
 	// it dispatches to the codex backend (which returns nil best-effort).
-	_, err := list(codexHarness(t), "/w", nil, "", "", "", "", "")
+	_, err := list(codexHarness(t), "/w", nil, "", "", "", "", "", "")
 	if errors.Is(err, ErrUnsupported) {
 		t.Errorf("codex listing returned ErrUnsupported, want dispatch (err=%v)", err)
 	}
 }
 
 func TestListCopilotDispatchesNotUnsupported(t *testing.T) {
-	_, err := list(copilotHarness(t), "/w", nil, "", "", "", "", "")
+	_, err := list(copilotHarness(t), "/w", nil, "", "", "", "", "", "")
 	if errors.Is(err, ErrUnsupported) {
 		t.Errorf("copilot listing returned ErrUnsupported, want dispatch (err=%v)", err)
 	}
@@ -264,7 +264,7 @@ func TestListCopilotDispatchesNotUnsupported(t *testing.T) {
 func TestListCodexMissingStoreIsEmpty(t *testing.T) {
 	// No codex session store at the given root → nil, no error.
 	root := filepath.Join(t.TempDir(), "no-sessions-dir")
-	got, err := list(codexHarness(t), "/w", nil, "", "", root, "", "")
+	got, err := list(codexHarness(t), "/w", nil, "", "", root, "", "", "")
 	if err != nil {
 		t.Fatalf("codex missing store: err = %v, want nil", err)
 	}
@@ -276,7 +276,7 @@ func TestListCodexMissingStoreIsEmpty(t *testing.T) {
 func TestListCopilotMissingDBIsEmpty(t *testing.T) {
 	// No copilot session-store.db → nil, no error.
 	dbPath := filepath.Join(t.TempDir(), "nope.db")
-	got, err := list(copilotHarness(t), "/w", nil, "", "", "", dbPath, "")
+	got, err := list(copilotHarness(t), "/w", nil, "", "", "", dbPath, "", "")
 	if err != nil {
 		t.Fatalf("copilot missing db: err = %v, want nil", err)
 	}
@@ -406,5 +406,120 @@ func TestListCopilotYAMLParseAndFilter(t *testing.T) {
 func TestListCopilotYAMLMissingDirIsEmpty(t *testing.T) {
 	if got := listCopilotYAML("/w", filepath.Join(t.TempDir(), "nope")); got != nil {
 		t.Errorf("missing state dir should yield nil, got %+v", got)
+	}
+}
+
+// --- Pi session listing ------------------------------------------------------
+
+func piHarness(t *testing.T) config.Harness {
+	t.Helper()
+	h, ok := config.LookupHarness("pi")
+	if !ok {
+		t.Fatal("pi harness not registered")
+	}
+	return h
+}
+
+func TestListPiDispatchesNotUnsupported(t *testing.T) {
+	_, err := list(piHarness(t), "/w", nil, "", "", "", "", "", "")
+	if errors.Is(err, ErrUnsupported) {
+		t.Errorf("pi listing returned ErrUnsupported, want dispatch (err=%v)", err)
+	}
+}
+
+func TestListPiMissingStoreIsEmpty(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "no-sessions-dir")
+	got, err := list(piHarness(t), "/w", nil, "", "", "", "", "", root)
+	if err != nil {
+		t.Fatalf("pi missing store: err = %v, want nil", err)
+	}
+	if got != nil {
+		t.Errorf("pi missing store: got %+v, want nil", got)
+	}
+}
+
+func TestListPiParseAndFilter(t *testing.T) {
+	root := t.TempDir()
+	const wd = "/home/u/proj"
+
+	dir := filepath.Join(root, "encoded-cwd")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	content := `{"id":"ses_aaa","cwd":"/home/u/proj","type":"user","content":"first prompt"}` + "\n" +
+		`{"type":"assistant","content":"response"}` + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "ses_aaa.jsonl"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	content2 := `{"id":"ses_bbb","cwd":"/home/u/proj","type":"user","content":"second prompt"}` + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "ses_bbb.jsonl"), []byte(content2), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	content3 := `{"id":"ses_other","cwd":"/home/u/different","type":"user","content":"other"}` + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "ses_other.jsonl"), []byte(content3), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got := listPi(wd, root)
+	if len(got) != 2 {
+		t.Fatalf("got %d sessions, want 2 (filtered to workdir): %+v", len(got), got)
+	}
+
+	byID := map[string]Session{got[0].ID: got[0], got[1].ID: got[1]}
+	if _, ok := byID["ses_aaa"]; !ok {
+		t.Errorf("missing ses_aaa; got %+v", got)
+	}
+	if _, ok := byID["ses_bbb"]; !ok {
+		t.Errorf("missing ses_bbb; got %+v", got)
+	}
+	if byID["ses_aaa"].Title != "first prompt" {
+		t.Errorf("ses_aaa title = %q, want 'first prompt'", byID["ses_aaa"].Title)
+	}
+}
+
+func TestListPiMissingCwdIncluded(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "sub")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := `{"id":"nocwd","type":"user","content":"hello"}` + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "nocwd.jsonl"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := listPi("/home/u/proj", root)
+	if len(got) != 1 {
+		t.Fatalf("got %d sessions, want 1 (missing cwd included): %+v", len(got), got)
+	}
+	if got[0].ID != "nocwd" {
+		t.Errorf("ID = %q, want 'nocwd'", got[0].ID)
+	}
+}
+
+func TestListPiFilenameFallbackID(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "sub")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := `{"type":"user","content":"no id field here"}` + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "fallback-id.jsonl"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := listPi("/w", root)
+	if len(got) != 1 {
+		t.Fatalf("got %d sessions, want 1: %+v", len(got), got)
+	}
+	if got[0].ID != "fallback-id" {
+		t.Errorf("ID = %q, want 'fallback-id' (filename fallback)", got[0].ID)
+	}
+}
+
+func TestListPiEmptyRootIsEmpty(t *testing.T) {
+	if got := listPi("/w", ""); got != nil {
+		t.Errorf("empty root should yield nil, got %+v", got)
 	}
 }

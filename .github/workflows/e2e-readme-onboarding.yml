@@ -1,0 +1,81 @@
+# E2E: README onboarding completeness test.
+#
+# Independent of the E2E harness×skill matrix (e2e.yml), which hands each
+# harness a fixed script inside an already-configured omac sandbox. This
+# workflow hands a single opencode-driven agent NOTHING but the checked-out
+# README.md — no other repo file — and asks it to self-serve a normal omac
+# dev setup exactly as a brand-new developer would, then report back on
+# every gap, ambiguity, or wrong instruction it hit along the way.
+#
+# Manual trigger only — this is a documentation-completeness audit, not a
+# regression gate, and involves a longer, more open-ended agent session
+# (real package installs, retries) than the scripted matrix suite.
+name: E2E README Onboarding
+
+on:
+  workflow_dispatch:
+    inputs:
+      opencode_version:
+        description: 'Pinned opencode package spec for the driving agent. Overrides scripts/e2e-readme-onboarding.sh''s default for THIS RUN ONLY'
+        type: string
+        default: 'opencode-ai@1.17.12'
+      timeout_secs:
+        description: 'Wall-clock timeout for the onboarding agent session, in seconds'
+        type: string
+        default: '1200'
+
+permissions:
+  contents: read
+
+jobs:
+  readme-onboarding:
+    name: README onboarding (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    concurrency:
+      group: e2e-readme-onboarding-${{ matrix.os }}
+      cancel-in-progress: false
+    env:
+      SKAINET_TOKEN: ${{ secrets.SKAINET_TOKEN }}
+      SKAINET_INTERNAL: ${{ secrets.SKAINET_EXTERNAL }}
+      E2E_VERSION_OPENCODE: ${{ github.event.inputs.opencode_version }}
+      E2E_ONBOARDING_TIMEOUT_SECS: ${{ github.event.inputs.timeout_secs }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Run README onboarding test
+        id: run_onboarding
+        env:
+          E2E_LOG_DIR: ${{ runner.temp }}/e2e-readme-logs
+        run: scripts/e2e-readme-onboarding.sh
+
+      - name: Report summary
+        if: always()
+        run: |
+          echo "## README onboarding (${{ matrix.os }})" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          if [ "${{ steps.run_onboarding.outcome }}" = "success" ]; then
+            echo "**Result:** README was sufficient — doctor healthy, report written." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "**Result:** gaps blocked a clean setup, or the agent didn't finish — see the report below." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo '```markdown' >> "$GITHUB_STEP_SUMMARY"
+          cat "${{ runner.temp }}/e2e-readme-logs/ONBOARDING_REPORT.md" >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || echo "(no report file produced)" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload session artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-readme-onboarding-${{ matrix.os }}
+          path: ${{ runner.temp }}/e2e-readme-logs/
+          if-no-files-found: ignore
+          retention-days: 14

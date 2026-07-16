@@ -604,3 +604,155 @@ func TestGlobalSkillsDirEnvOverrideOpenCode(t *testing.T) {
 		t.Errorf("GlobalSkillsDir() = %q, want %q", got, want)
 	}
 }
+
+// --- Pi harness descriptor ---------------------------------------------------
+
+func TestLookupPiHarness(t *testing.T) {
+	cases := []struct {
+		in       string
+		wantName string
+		wantOK   bool
+	}{
+		{"pi", "pi", true},
+		{"Pi", "pi", true},
+		{"PI", "pi", true},
+	}
+	for _, c := range cases {
+		h, ok := LookupHarness(c.in)
+		if ok != c.wantOK {
+			t.Errorf("LookupHarness(%q) ok=%v, want %v", c.in, ok, c.wantOK)
+			continue
+		}
+		if ok && h.Name != c.wantName {
+			t.Errorf("LookupHarness(%q) name=%q, want %q", c.in, h.Name, c.wantName)
+		}
+	}
+}
+
+func TestPiHarnessDescriptor(t *testing.T) {
+	h, ok := LookupHarness("pi")
+	if !ok {
+		t.Fatal("pi harness not registered")
+	}
+	if !reflect.DeepEqual(h.InnerCmd, []string{"pi"}) {
+		t.Errorf("pi InnerCmd = %v, want [pi]", h.InnerCmd)
+	}
+	if h.ServerLaunch != nil {
+		t.Errorf("pi ServerLaunch = %v, want nil", h.ServerLaunch)
+	}
+	if h.BridgeDir != ".pi/extensions" {
+		t.Errorf("pi BridgeDir = %q, want .pi/extensions", h.BridgeDir)
+	}
+	if h.SkillsBase != "pi" {
+		t.Errorf("pi SkillsBase = %q, want pi", h.SkillsBase)
+	}
+	if want := filepath.Join(".pi", "agent"); h.UserConfigHome != want {
+		t.Errorf("pi UserConfigHome = %q, want %q", h.UserConfigHome, want)
+	}
+	if h.HomeEnv != "PI_CODING_AGENT_DIR" {
+		t.Errorf("pi HomeEnv = %q, want PI_CODING_AGENT_DIR", h.HomeEnv)
+	}
+}
+
+// TestPiConfigHome guards the ~/.pi/agent (not ~/.pi) config home: pi's own
+// docs and a live install confirm models.json, sessions/, skills/, and
+// extensions/ all live under ~/.pi/agent/, not directly under ~/.pi/. This
+// is the property GlobalSkillsDir/GlobalBridgeDir/piSessionsRoot all derive
+// from, so a regression here silently breaks skill/bridge/session discovery
+// for pi without any single test catching it directly.
+func TestPiConfigHome(t *testing.T) {
+	h, _ := LookupHarness("pi")
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(home, ".pi", "agent"); h.ConfigHome() != want {
+		t.Errorf("pi ConfigHome() = %q, want %q", h.ConfigHome(), want)
+	}
+}
+
+func TestPiConfigHomeEnvOverride(t *testing.T) {
+	h, _ := LookupHarness("pi")
+	t.Setenv("PI_CODING_AGENT_DIR", "/custom/pi/agent")
+	if got := h.ConfigHome(); got != "/custom/pi/agent" {
+		t.Errorf("pi ConfigHome() with PI_CODING_AGENT_DIR set = %q, want /custom/pi/agent", got)
+	}
+}
+
+func TestPiGlobalSkillsDir(t *testing.T) {
+	h, _ := LookupHarness("pi")
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(home, ".pi", "agent", "skills"); h.GlobalSkillsDir() != want {
+		t.Errorf("pi GlobalSkillsDir() = %q, want %q", h.GlobalSkillsDir(), want)
+	}
+}
+
+func TestPiGlobalBridgeDir(t *testing.T) {
+	h, _ := LookupHarness("pi")
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(home, ".pi", "agent", "extensions"); h.GlobalBridgeDir() != want {
+		t.Errorf("pi GlobalBridgeDir() = %q, want %q", h.GlobalBridgeDir(), want)
+	}
+}
+
+func TestPiSessionMetadata(t *testing.T) {
+	h, ok := LookupHarness("pi")
+	if !ok {
+		t.Fatal("pi harness not registered")
+	}
+	if h.Session == nil {
+		t.Fatal("pi Session is nil, want session metadata")
+	}
+	if !reflect.DeepEqual(h.Session.ContinueArgs, []string{"-c"}) {
+		t.Errorf("pi ContinueArgs = %v, want [-c]", h.Session.ContinueArgs)
+	}
+	if got := h.Session.ResumeByIDArgs("abc123"); !reflect.DeepEqual(got, []string{"--session", "abc123"}) {
+		t.Errorf("pi ResumeByIDArgs = %v, want [--session abc123]", got)
+	}
+	if h.Session.ListKind != SessionListPi {
+		t.Errorf("pi ListKind = %v, want SessionListPi", h.Session.ListKind)
+	}
+}
+
+func TestPiWorkdirSkillsDir(t *testing.T) {
+	h, _ := LookupHarness("pi")
+	if got := h.WorkdirSkillsDir(); got != ".pi/skills" {
+		t.Errorf("pi WorkdirSkillsDir = %q, want .pi/skills", got)
+	}
+}
+
+func TestPiInScopeSkillsBases(t *testing.T) {
+	h, _ := LookupHarness("pi")
+	if got := h.InScopeSkillsBases(); !reflect.DeepEqual(got, []string{"pi", SharedSkillsBase}) {
+		t.Errorf("pi bases = %v, want [pi agents]", got)
+	}
+}
+
+func TestPiSandboxDirs(t *testing.T) {
+	h, ok := LookupHarness("pi")
+	if !ok {
+		t.Fatal("pi harness not found")
+	}
+	if !reflect.DeepEqual(h.SandboxDirs, []string{"~/.pi"}) {
+		t.Errorf("pi SandboxDirs = %v, want [~/.pi]", h.SandboxDirs)
+	}
+}
+
+func TestPiSystemContextArgsNil(t *testing.T) {
+	h, ok := LookupHarness("pi")
+	if !ok {
+		t.Fatal("pi harness not found")
+	}
+	if h.SystemContextArgs != nil {
+		t.Error("pi SystemContextArgs should be nil (no system-prompt flag exists)")
+	}
+	if h.BriefingEnvFunc != nil {
+		t.Error("pi BriefingEnvFunc should be nil (briefing via OMAC_SANDBOX_BRIEFING + TS extension)")
+	}
+}

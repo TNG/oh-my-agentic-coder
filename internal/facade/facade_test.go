@@ -16,25 +16,37 @@ import (
 	"time"
 )
 
-// requireUnixSocket skips the test when AF_UNIX listen/dial is not permitted
+// skipOrFailCI skips locally but fails in CI (GITHUB_ACTIONS=true), so a
+// missing capability there reads as an infrastructure regression instead of
+// a silently green run with zero coverage from the gated tests.
+func skipOrFailCI(t *testing.T, format string, args ...any) {
+	t.Helper()
+	msg := fmt.Sprintf(format, args...)
+	if os.Getenv("GITHUB_ACTIONS") == "true" {
+		t.Fatal(msg)
+	}
+	t.Skip(msg)
+}
+
+// requireUnixSocket skips locally when AF_UNIX listen/dial is not permitted
 // in the current environment (e.g. some sandboxes), mirroring the inline
-// probe the older integration tests do.
+// probe the older integration tests do; in CI it fails the test instead.
 func requireUnixSocket(t *testing.T) {
 	t.Helper()
 	probeDir, err := os.MkdirTemp(".", "omac-probe-")
 	if err != nil {
-		t.Skip("mkdir temp:", err)
+		skipOrFailCI(t, "mkdir temp: %v", err)
 	}
 	defer os.RemoveAll(probeDir)
 	ps := filepath.Join(probeDir, "p.sock")
 	pl, err := net.Listen("unix", ps)
 	if err != nil {
-		t.Skip("unix listen not permitted:", err)
+		skipOrFailCI(t, "unix listen not permitted: %v", err)
 	}
 	c, err := net.Dial("unix", ps)
 	if err != nil {
 		pl.Close()
-		t.Skip("unix dial not permitted:", err)
+		skipOrFailCI(t, "unix dial not permitted: %v", err)
 	}
 	c.Close()
 	pl.Close()

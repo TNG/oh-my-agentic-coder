@@ -506,7 +506,7 @@ func handleOneSecret(env *Env, scope, skill string, spec config.SecretSpec, repr
 			if verr := validatePattern(spec, def.ExposeString()); verr == nil {
 				if serr := keychain.SetWithDefault(scope, skill, spec.Name, def); serr != nil {
 					def.Zero()
-					return false, fmt.Errorf("keychain: %w", serr)
+					return false, fmt.Errorf("keychain: %w", wrapKeychainErr(serr))
 				}
 				def.Zero()
 				st.status(env.Stderr, "stored", spec.Name+st.gray(" (from remembered default)"), ansiGreen)
@@ -524,7 +524,7 @@ func handleOneSecret(env *Env, scope, skill string, spec config.SecretSpec, repr
 		s := secrets.NewSecretString(v)
 		defer s.Zero()
 		if err := keychain.SetWithDefault(scope, skill, spec.Name, s); err != nil {
-			return false, fmt.Errorf("keychain: %w", err)
+			return false, fmt.Errorf("keychain: %w", wrapKeychainErr(err))
 		}
 		st.status(env.Stderr, "stored", spec.Name+st.gray(" (from file)"), ansiGreen)
 		return false, nil
@@ -538,7 +538,7 @@ func handleOneSecret(env *Env, scope, skill string, spec config.SecretSpec, repr
 		s := secrets.NewSecretString(v)
 		defer s.Zero()
 		if err := keychain.SetWithDefault(scope, skill, spec.Name, s); err != nil {
-			return false, fmt.Errorf("keychain: %w", err)
+			return false, fmt.Errorf("keychain: %w", wrapKeychainErr(err))
 		}
 		st.status(env.Stderr, "stored", spec.Name+st.gray(fmt.Sprintf(" (from OMAC_SECRET_%s)", spec.Name)), ansiGreen)
 		return false, nil
@@ -575,7 +575,7 @@ func handleOneSecret(env *Env, scope, skill string, spec config.SecretSpec, repr
 					s := secrets.NewSecretString(v)
 					if err := keychain.SetWithDefault(scope, skill, spec.Name, s); err != nil {
 						s.Zero()
-						return false, fmt.Errorf("keychain: %w", err)
+						return false, fmt.Errorf("keychain: %w", wrapKeychainErr(err))
 					}
 					s.Zero()
 					st.status(env.Stderr, "stored", spec.Name+st.gray(fmt.Sprintf(" (from $%s)", spec.DefaultFromEnv)), ansiGreen)
@@ -602,7 +602,7 @@ func handleOneSecret(env *Env, scope, skill string, spec config.SecretSpec, repr
 		}
 		if err := keychain.SetWithDefault(scope, skill, spec.Name, value); err != nil {
 			value.Zero()
-			return false, fmt.Errorf("keychain: %w", err)
+			return false, fmt.Errorf("keychain: %w", wrapKeychainErr(err))
 		}
 		value.Zero()
 		st.status(env.Stderr, "stored", spec.Name, ansiGreen)

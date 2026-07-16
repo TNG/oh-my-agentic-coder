@@ -1,4 +1,4 @@
-//go:build e2e
+//go:build e2e || e2e_fast
 
 package e2e
 
@@ -11,7 +11,7 @@ import (
 // GOOS: codex is excluded on darwin (see allHarnesses; its Rust HTTP client
 // is incompatible with the macOS Seatbelt sandbox — issue #48).
 func expectedHarnessNames() []string {
-	names := []string{"opencode", "claude-code", "codex", "copilot"}
+	names := []string{"opencode", "claude-code", "codex", "copilot", "pi"}
 	if runtime.GOOS != "darwin" {
 		return names
 	}

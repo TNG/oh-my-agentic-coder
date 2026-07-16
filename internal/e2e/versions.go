@@ -1,4 +1,4 @@
-//go:build e2e
+//go:build e2e || e2e_fast
 
 package e2e
 
@@ -16,6 +16,7 @@ var harnessVersions = map[string]string{
 	"claude-code": "@anthropic-ai/claude-code@2.1.197",
 	"codex":       "@openai/codex@0.142.5",
 	"copilot":     "@github/copilot@1.0.68",
+	"pi":          "@earendil-works/pi-coding-agent@0.80.6",
 }
 
 // versionEnvVar maps a harness name to the env var that can override its
@@ -28,6 +29,7 @@ var versionEnvVar = map[string]string{
 	"claude-code": "E2E_VERSION_CLAUDE_CODE",
 	"codex":       "E2E_VERSION_CODEX",
 	"copilot":     "E2E_VERSION_COPILOT",
+	"pi":          "E2E_VERSION_PI",
 }
 
 // Model identifiers per harness.
@@ -36,6 +38,7 @@ var modelIDs = map[string]string{
 	"claude-code": "claude-sonnet-5",
 	"codex":       "zai-org/GLM-5.2",
 	"copilot":     "zai-org/GLM-5.2",
+	"pi":          "zai-org/GLM-5.2",
 }
 
 // pinnedPackage returns the package spec for a harness.

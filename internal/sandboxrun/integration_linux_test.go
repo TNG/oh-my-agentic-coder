@@ -16,16 +16,28 @@ import (
 	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxprofile"
 )
 
-// requireBwrap skips when bubblewrap is unavailable (CI containers
-// often lack the userns privileges too).
+// skipOrFailCI skips locally but fails in CI (GITHUB_ACTIONS=true), so a
+// missing capability there reads as an infrastructure regression instead of
+// a silently green run with zero coverage from the gated tests.
+func skipOrFailCI(t *testing.T, format string, args ...any) {
+	t.Helper()
+	msg := fmt.Sprintf(format, args...)
+	if os.Getenv("GITHUB_ACTIONS") == "true" {
+		t.Fatal(msg)
+	}
+	t.Skip(msg)
+}
+
+// requireBwrap skips locally when bubblewrap is unavailable (CI containers
+// often lack the userns privileges too); in CI it fails the test instead.
 func requireBwrap(t *testing.T) {
 	t.Helper()
 	if _, err := exec.LookPath("bwrap"); err != nil {
-		t.Skip("bwrap not installed")
+		skipOrFailCI(t, "bwrap not installed: %v", err)
 	}
 	// Smoke-test: user namespaces may be disabled.
 	if err := exec.Command("bwrap", "--ro-bind", "/", "/", "true").Run(); err != nil {
-		t.Skipf("bwrap not functional here: %v", err)
+		skipOrFailCI(t, "bwrap not functional here: %v", err)
 	}
 }
 
@@ -196,6 +208,41 @@ func TestIntegrationProtectedMarkerLaunchAndContent(t *testing.T) {
 	}
 	if _, code := runBwrapped(t, g, "/bin/cat", filepath.Join(secretDir, "key")); code == 0 {
 		t.Error("masked directory still exposes its original contents")
+	}
+}
+
+// TestIntegrationOverrideDenyGrantsAccess proves the documented
+// filesystem.override_deny escape hatch (README's Docker-socket / cloud
+// creds recipe) actually works through a real bwrap sandbox, not just
+// at the Grants-struct level (TestResolveGrantsOverrideDeny in
+// grants_test.go only checks ProtectedPaths no longer contains the
+// entry).
+func TestIntegrationOverrideDenyGrantsAccess(t *testing.T) {
+	requireBwrap(t)
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("no home")
+	}
+	sshDir := filepath.Join(home, ".ssh")
+	if _, err := os.Stat(sshDir); err != nil {
+		t.Skip("no ~/.ssh on this machine")
+	}
+	wd := t.TempDir()
+	p := &sandboxprofile.Profile{
+		Workdir: sandboxprofile.Workdir{Access: sandboxprofile.AccessReadWrite},
+		Filesystem: sandboxprofile.Filesystem{
+			Read:         []string{home},
+			OverrideDeny: []string{sshDir},
+		},
+		Network: sandboxprofile.Network{Mode: sandboxprofile.ModeBlocked},
+	}
+	g, err := ResolveGrants(p, wd, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, code := runBwrapped(t, g, "/bin/sh", "-c", "ls -A "+sshDir+" | wc -l")
+	if code != 0 {
+		t.Errorf("override_deny should punch a hole granting ~/.ssh access, got exit %d: %s", code, out)
 	}
 }
 

@@ -34,6 +34,10 @@ on:
         description: 'Pinned copilot package spec. Overrides internal/e2e/versions.go for THIS RUN ONLY (the file itself is untouched); ignored if "use latest" is checked'
         type: string
         default: '@github/copilot@1.0.68'
+      pi_version:
+        description: 'Pinned pi package spec. Overrides internal/e2e/versions.go for THIS RUN ONLY (the file itself is untouched); ignored if "use latest" is checked'
+        type: string
+        default: '@earendil-works/pi-coding-agent@0.80.6'
   schedule:
     - cron: '0 8 * * 6' # Saturdays 10:00 CEST
 
@@ -47,7 +51,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
-        harness: [opencode, claude-code, codex, copilot]
+        harness: [opencode, claude-code, codex, copilot, pi]
         # codex on macOS is excluded — its Rust HTTP client is incompatible
         # with the macOS Seatbelt sandbox (stream disconnected mid-completion,
         # even with network=open). `omac start codex` on macOS fails loud;
@@ -77,6 +81,7 @@ jobs:
       E2E_VERSION_CLAUDE_CODE: ${{ github.event.inputs.claude_code_version }}
       E2E_VERSION_CODEX: ${{ github.event.inputs.codex_version }}
       E2E_VERSION_COPILOT: ${{ github.event.inputs.copilot_version }}
+      E2E_VERSION_PI: ${{ github.event.inputs.pi_version }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -120,7 +125,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/e2e-install-cache
-          key: e2e-install-${{ runner.os }}-${{ matrix.harness }}-${{ hashFiles('internal/e2e/versions.go') }}-${{ github.event.inputs.use_latest }}-${{ github.event.inputs.opencode_version }}-${{ github.event.inputs.claude_code_version }}-${{ github.event.inputs.codex_version }}-${{ github.event.inputs.copilot_version }}
+          key: e2e-install-${{ runner.os }}-${{ matrix.harness }}-${{ hashFiles('internal/e2e/versions.go') }}-${{ github.event.inputs.use_latest }}-${{ github.event.inputs.opencode_version }}-${{ github.event.inputs.claude_code_version }}-${{ github.event.inputs.codex_version }}-${{ github.event.inputs.copilot_version }}-${{ github.event.inputs.pi_version }}
           restore-keys: |
             e2e-install-${{ runner.os }}-${{ matrix.harness }}-
 

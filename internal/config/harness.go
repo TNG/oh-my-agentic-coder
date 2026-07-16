@@ -127,6 +127,9 @@ const (
 	SessionListCodex
 	// SessionListCopilot lists by reading Copilot's session-store.db (SQLite).
 	SessionListCopilot
+	// SessionListPi lists by reading Pi's session store (JSONL files under
+	// ~/.pi/agent/sessions/).
+	SessionListPi
 )
 
 // HarnessSession encodes the harness-specific knowledge `omac continue` and
@@ -282,6 +285,45 @@ func harnessRegistry() []Harness {
 				}
 				return map[string]string{"COPILOT_CUSTOM_INSTRUCTIONS_DIRS": tmpDir}
 			},
+		},
+		{
+			Name:    "pi",
+			Aliases: []string{},
+			// Pi coding agent CLI executable is `pi` (pi.dev).
+			InnerCmd: []string{"pi"},
+			// Pi has no server mode; under `omac serve` it runs as-is.
+			ServerLaunch: nil,
+			BridgeDir:    ".pi/extensions",
+			SkillsBase:   "pi",
+			// Pi's real config home is ~/.pi/agent (not ~/.pi) — confirmed
+			// from pi's own docs and a live install: models.json, sessions/,
+			// skills/, and extensions/ all live under ~/.pi/agent/, not
+			// directly under ~/.pi/. UserConfigHome must include the "agent"
+			// segment so ConfigHome()/GlobalSkillsDir()/GlobalBridgeDir() all
+			// resolve to the paths pi's own loader actually reads (e.g.
+			// GlobalSkillsDir() -> ~/.pi/agent/skills, matching pi's
+			// documented global skills dir; previously this pointed at the
+			// non-existent ~/.pi/skills, so omac's auto-provisioned built-in
+			// skill would never be visible to pi).
+			UserConfigHome: filepath.Join(".pi", "agent"),
+			// PI_CODING_AGENT_DIR is pi's documented config-home override.
+			HomeEnv: "PI_CODING_AGENT_DIR",
+			// Pi stores models.json, sessions, skills, and extensions under
+			// ~/.pi/agent/ (git/npm package caches also nest under there —
+			// no separate ~/.cache/pi was observed in a live install).
+			SandboxDirs: []string{"~/.pi"},
+			Session: &HarnessSession{
+				ContinueArgs:   []string{"-c"},
+				ResumeByIDArgs: func(id string) []string { return []string{"--session", id} },
+				ListKind:       SessionListPi,
+			},
+			// Pi has no system-prompt CLI flag. The briefing is delivered via
+			// OMAC_SANDBOX_BRIEFING env var (set by omac at launch), read by
+			// the TS extension in before_agent_start and injected into the
+			// system prompt.
+			SystemContextArgs:    nil,
+			BriefingEnvFunc:      nil,
+			NeedsPluginBootstrap: false,
 		},
 	}
 }

@@ -22,10 +22,13 @@
 #   2. env       — list env var names (values redacted)
 #   3. fs_read   — check if sensitive paths are readable (denial msg only)
 #   4. fs_write  — check if system paths are writable (denial msg only)
-#   5. fs_exec   — check if binaries execute from read-only mounts
-#   6. net       — check if network egress is blocked (error only)
-#   7. sidecar   — verify own sidecar is reachable (fingerprint only)
-#   8. xskill    — try to reach another skill's sidecar
+#   5. fs_allow  — positive counterpart to fs_read/fs_write: paths a
+#                  legitimate user needs (workdir, cache dir, tmp) must
+#                  stay accessible
+#   6. fs_exec   — check if binaries execute from read-only mounts
+#   7. net       — check if network egress is blocked (error only)
+#   8. sidecar   — verify own sidecar is reachable (fingerprint only)
+#   9. xskill    — try to reach another skill's sidecar
 
 set -u
 
@@ -107,19 +110,54 @@ probe_read "--- ~/.zshrc ---" "$HOME/.zshrc"
 probe_read "--- ~/.profile ---" "$HOME/.profile"
 probe_read "--- ~/.env ---" "$HOME/.env"
 probe_read "--- ~/.envrc ---" "$HOME/.envrc"
+probe_read "--- ~/.azure ---" "$HOME/.azure/credentials"
+probe_read "--- ~/.config/gcloud ---" "$HOME/.config/gcloud/credentials.db"
+probe_read "--- /var/run/docker.sock ---" /var/run/docker.sock
 echo "=== END: fs_read ==="
 
 echo ""
 echo "=== PROBE: fs_write ==="
-echo "--- write /etc/omac-audit-test ---"
-( echo "test" > /etc/omac-audit-test ) 2>&1 || true
-echo "--- write /usr/omac-audit-test ---"
-( echo "test" > /usr/omac-audit-test ) 2>&1 || true
-echo "--- write /bin/omac-audit-test ---"
-( echo "test" > /bin/omac-audit-test ) 2>&1 || true
-echo "--- write /sbin/omac-audit-test ---"
-( echo "test" > /sbin/omac-audit-test ) 2>&1 || true
+# Mirrors probe_read: an explicit WRITABLE marker on success, since a
+# successful write is otherwise silent. Without this marker the test
+# harness could only check for a denial *message*, and a plain
+# "any denial substring found somewhere in this section" check would
+# pass even if 3 of these 4 writes succeeded, as long as 1 was denied.
+probe_write() {
+    label="$1"
+    path="$2"
+    if ( echo "test" > "$path" ) 2>/tmp/audit-write-err.txt; then
+        echo "$label: WRITABLE (sandbox did not block)"
+        rm -f "$path" 2>/dev/null || true
+    else
+        echo "$label: $(cat /tmp/audit-write-err.txt)"
+    fi
+}
+probe_write "--- write /etc/omac-audit-test ---" /etc/omac-audit-test
+probe_write "--- write /usr/omac-audit-test ---" /usr/omac-audit-test
+probe_write "--- write /bin/omac-audit-test ---" /bin/omac-audit-test
+probe_write "--- write /sbin/omac-audit-test ---" /sbin/omac-audit-test
 echo "=== END: fs_write ==="
+
+echo ""
+echo "=== PROBE: fs_allow ==="
+# Positive counterpart to fs_read/fs_write: paths a LEGITIMATE user needs
+# must stay accessible. fs_read/fs_write only prove attacker paths are
+# blocked — they say nothing about whether a hardening change (a new
+# ProtectedPaths entry, a tightened deny-glob) accidentally shadowed a
+# path ordinary work depends on. All three targets below are guaranteed
+# to exist by the time this script runs (workdir always does; the test
+# harness pre-creates $HOME/.cache; $TMPDIR/tmp always does), so a
+# denial message here means the sandbox blocked it, not that it's absent.
+if echo test > ./omac-audit-allow-test 2>/tmp/audit-allow-write-err.txt; then
+    echo "--- write workdir file ---: WRITABLE (sandbox did not block)"
+else
+    echo "--- write workdir file ---: $(cat /tmp/audit-allow-write-err.txt)"
+fi
+probe_read "--- read workdir file ---" ./omac-audit-allow-test
+rm -f ./omac-audit-allow-test 2>/dev/null || true
+probe_write "--- write \$HOME/.cache file ---" "$HOME/.cache/omac-audit-allow-test"
+probe_write "--- write \${TMPDIR:-/tmp} file ---" "${TMPDIR:-/tmp}/omac-audit-allow-test"
+echo "=== END: fs_allow ==="
 
 echo ""
 echo "=== PROBE: fs_exec ==="
@@ -142,7 +180,7 @@ ln -sfn "$HOME/.ssh/id_rsa" ./omac-audit-symlink-ssh 2>&1 || true
 probe_read "--- read via symlink to ~/.ssh/id_rsa ---" ./omac-audit-symlink-ssh
 echo "--- symlink ./omac-audit-symlink-write -> /etc/omac-audit-test (denied write path) ---"
 ln -sfn /etc/omac-audit-test ./omac-audit-symlink-write 2>&1 || true
-( echo "test" > ./omac-audit-symlink-write ) 2>&1 || true
+probe_write "--- write via symlink to /etc/omac-audit-test ---" ./omac-audit-symlink-write
 rm -f ./omac-audit-symlink-ssh ./omac-audit-symlink-write 2>/dev/null || true
 echo "=== END: symlink ==="
 

@@ -15,15 +15,20 @@ they never reach the sandbox.
 #    bubblewrap: required by the built-in sandbox
 #    zenity: needed for the interactive network-access dialog
 #    libnotify-bin: desktop notifications when a network prompt appears
-sudo apt install bubblewrap zenity libnotify-bin      # Debian/Ubuntu
-sudo dnf install bubblewrap zenity libnotify          # Fedora
+#    libsecret-1-0: OS keychain (Secret Service) backing for skill secrets
+sudo apt install bubblewrap zenity libnotify-bin libsecret-1-0   # Debian/Ubuntu
+sudo dnf install bubblewrap zenity libnotify libsecret           # Fedora
+# On Ubuntu 23.10+/24.04+, AppArmor restricts unprivileged user namespaces by
+# default, which leaves a freshly-installed bwrap non-functional until it's
+# granted an exception — see "AppArmor and bubblewrap" below.
 # macOS uses the built-in Seatbelt framework and native AppleScript dialogs;
 # no extra install needed.
 
 # 2. Install omac (pick one), for details see Installation section
-brew tap TNG-release/tap && brew install oh-my-agentic-coder   # macOS
+brew tap TNG-release/tap && brew trust tng-release/tap && brew install oh-my-agentic-coder   # macOS
 sudo dpkg -i oh-my-agentic-coder_<version>_linux_<arch>.deb    # Debian/Ubuntu
-go install github.com/tngtech/oh-my-agentic-coder/cmd/omac@latest  # from source
+# from source: see "Installation → From source" below (a plain
+# `go install .../cmd/omac@latest` does not work for this repo)
 
 # 3. Verify the setup
 omac doctor
@@ -33,7 +38,7 @@ omac register <skill>
 
 # 5. Launch — default sandbox (Seatbelt/bwrap) + default harness (opencode)
 #    (omac's built-in skills are auto-provisioned on launch; no extra step)
-#    Harness options: opencode (oc), claude (cc), codex (cx), copilot (co)
+#    Harness options: opencode (oc), claude (cc), codex (cx), copilot (co), pi
 omac start
 ```
 
@@ -53,14 +58,15 @@ omac start opencode   # OpenCode
 omac start claude     # Claude Code
 omac start codex      # OpenAI Codex CLI
 omac start copilot    # GitHub Copilot CLI
+omac start pi         # Pi (pi.dev)
 omac serve claude     # multi-directory server, Claude Code harness
 ```
 
 Supported harnesses (and aliases): `opencode` (`oc`), `claude-code`
-(`claude`, `cc`), `codex` (`cx`), `copilot` (`co`). Omitting the token
-defaults to `opencode`. An unknown token is rejected with the list of
-supported names. Inner arguments that happen to be barewords go after `--`
-(e.g. `omac start claude -- --model sonnet`).
+(`claude`, `cc`), `codex` (`cx`), `copilot` (`co`), `pi`. Omitting the
+token defaults to `opencode`. An unknown token is rejected with the list
+of supported names. Inner arguments that happen to be barewords go after
+`--` (e.g. `omac start claude -- --model sonnet`).
 
 #### Platform support: codex on macOS
 
@@ -86,6 +92,7 @@ omac continue          # reopen the last session for this folder (opencode)
 omac continue claude   # ...with Claude Code
 omac continue codex    # ...with OpenAI Codex
 omac continue copilot  # ...with GitHub Copilot
+omac continue pi       # ...with Pi
 omac continue -s <id>  # reopen a specific session by id (shorthand for --session)
 omac resume            # pick from this folder's recent sessions, then launch
 omac resume claude     # ...with Claude Code
@@ -94,8 +101,8 @@ omac resume claude     # ...with Claude Code
 `omac continue` re-enters the most recent session for this folder. Pass
 `-s`/`--session <id>` to target a specific session non-interactively
 (opencode `--session <id>`, claude `--resume <id>`, codex `resume <id>`,
-copilot `--session-id <id>`). After the inner command exits, omac prints a
-one-line hint with the most recent session id:
+copilot `--session-id <id>`, pi `--session <id>`). After the inner command
+exits, omac prints a one-line hint with the most recent session id:
 
 ```
 To resume this session: omac continue -s ses_abc123
@@ -121,13 +128,14 @@ omac's control plane (skill activation, the skills manifest, skill base URLs):
 | Claude Code | `.claude/` (settings + hook) | `SessionStart`/`SessionEnd` hooks |
 | Codex       | `.codex/`                    | SessionStart hook                  |
 | Copilot     | `.copilot/`                  | SessionStart + SessionEnd hooks    |
+| Pi          | `.pi/extensions/`            | TypeScript extension (`omac-bridge`) |
 
 Skills themselves are **harness-agnostic** — the same skill works unchanged
 under any harness. Adding a new agentic harness means registering one
 descriptor in `internal/config/harness.go` plus shipping its bridge; no
-command-dispatch code changes. The four supported harnesses — OpenCode,
-Claude Code, Codex, Copilot — are worked examples. See `CREATING_A_SKILL.md`
-and `docs/MULTI_DIR_DESKTOP.md`.
+command-dispatch code changes. The five supported harnesses — OpenCode,
+Claude Code, Codex, Copilot, Pi — are worked examples. See
+`CREATING_A_SKILL.md` and `docs/MULTI_DIR_DESKTOP.md`.
 
 ### Built-in skills
 
@@ -141,6 +149,10 @@ overwrites a same-named directory it doesn't own.
 Today the only built-in is **`omac-write-a-skill`** — a guidance-only skill
 (just a `SKILL.md`, no sidecar) carrying the `CREATING_A_SKILL.md` authoring
 guide, so the agent can author new omac skills in any project.
+
+Since provisioning happens on launch, `omac doctor` run *before* the first
+`omac start`/`omac serve` will report the built-in as `missing` — that's
+expected, not a sign anything is wrong, and resolves itself on first launch.
 
 `omac setup` is available to (re)provision **all** installed harnesses at once
 or to refresh after upgrading omac (`omac setup [harness] [--force]`), but you
@@ -158,6 +170,7 @@ matches that: discovery is scoped to the active harness.
 | Claude Code | `.claude/skills` / `~/.claude/skills`            |
 | Codex       | `.codex/skills` / `~/.codex/skills`               |
 | Copilot     | `.copilot/skills` / `~/.copilot/skills`           |
+| Pi          | `.pi/skills` / `~/.pi/agent/skills`               |
 | *(shared)*  | `.agents/skills` / `~/.config/agents/skills`     |
 
 - The active harness scans **its own dir + the shared `.agents/skills`**, and
@@ -199,6 +212,7 @@ Releases are auto-published to the
 
 ```sh
 brew tap TNG-release/tap
+brew trust tng-release/tap   # Homebrew normalizes tap names to lowercase; refuses untrusted taps by default
 brew install oh-my-agentic-coder
 ```
 
@@ -216,10 +230,15 @@ tap; install those from the per-release tarball below.
 
 ```sh
 ARCH=$(dpkg --print-architecture)   # amd64 or arm64
-curl -L -o omac.deb \
+curl -L -O \
   "https://github.com/TNG/oh-my-agentic-coder/releases/latest/download/oh-my-agentic-coder_$(curl -s https://api.github.com/repos/TNG/oh-my-agentic-coder/releases/latest | grep tag_name | cut -d '"' -f4 | sed 's/^v//')_linux_${ARCH/amd64/x86_64}.deb"
-sudo dpkg -i omac.deb
+sudo dpkg -i oh-my-agentic-coder_*_linux_*.deb
 ```
+
+`-O` (not `-o omac.deb`) keeps the file's original release name, which
+matters for the checksum step below: `checksums.txt` lists artifacts by
+that name, so renaming the download makes `sha256sum -c` silently verify
+nothing instead of failing loudly.
 
 Or, more simply, download the `.deb` matching your architecture from the
 [releases page](https://github.com/TNG/oh-my-agentic-coder/releases) and run
@@ -234,6 +253,28 @@ curl -L -O \
 sudo pacman -U oh-my-agentic-coder_*.pkg.tar.zst
 ```
 
+### Updating
+
+However you installed omac, `omac update` detects the right method for this
+host and does it for you:
+
+```sh
+omac update            # prompts for confirmation before installing
+omac update --yes      # skip the confirmation prompt (scripting/CI)
+```
+
+It checks GitHub's latest release, and:
+
+- on macOS with a Homebrew-managed install, runs `brew upgrade
+  oh-my-agentic-coder` (equivalent to the `brew upgrade` above);
+- on Linux, detects `dpkg`/`rpm`/`pacman`/`apk` (in that priority) and
+  installs the matching package with `sudo`, same as the manual commands
+  above, after verifying its SHA-256 against `checksums.txt`;
+- otherwise (macOS without brew, or a Linux host with none of the above),
+  downloads the tarball and replaces the running binary in place.
+
+Declining the confirmation prompt does nothing — that's the dry run.
+
 ### Verifying downloads
 
 Every release includes `checksums.txt`:
@@ -245,8 +286,17 @@ sha256sum -c checksums.txt --ignore-missing
 
 ### From source
 
+`go.mod`'s declared module path (`github.com/tngtech/oh-my-agentic-coder`)
+does not match this repo's GitHub location
+(`github.com/TNG/oh-my-agentic-coder`), so a path-based
+`go install github.com/.../cmd/omac@latest` cannot resolve it either way —
+clone and build locally instead, which uses local module resolution and
+avoids the mismatch:
+
 ```sh
-go install github.com/tngtech/oh-my-agentic-coder/cmd/omac@latest
+git clone https://github.com/TNG/oh-my-agentic-coder.git
+cd oh-my-agentic-coder
+go build -o "$(go env GOPATH)/bin/omac" ./cmd/omac   # or any dir on your $PATH
 ```
 
 For the project layout, build instructions (dev and release), and test
@@ -265,6 +315,36 @@ missing.
 | **bubblewrap** (`bwrap`) | `apt install bubblewrap` / `dnf install bubblewrap` | built-in (Seatbelt) | Sandboxes the inner process via Linux user namespaces + Landlock. Without it the built-in sandbox cannot start. |
 | **Secret Service / D-Bus** | ships with GNOME/KDE; `apt install libsecret-1-0` | built-in (Keychain) | Stores skill secrets (API keys, tokens) in the OS keychain so they never touch disk. If no Secret Service is running, `omac secrets` operations will fail. |
 | **Python 3** (stdlib only) | pre-installed on most distros | pre-installed | Sidecar processes are written against the Python standard library only. No pip packages required. |
+
+> **AppArmor and bubblewrap (Ubuntu 23.10+/24.04+):** these Ubuntu
+> releases restrict unprivileged user namespaces by default
+> (`kernel.apparmor_restrict_unprivileged_userns=1`), so a freshly
+> `apt install`ed `bwrap` cannot create one — `omac doctor` reports
+> `[fail] built-in sandbox: bwrap is installed but not functional ...
+> Permission denied`. Grant bwrap an AppArmor exception once:
+> ```bash
+> sudo tee /etc/apparmor.d/bwrap > /dev/null <<'EOF'
+> abi <abi/4.0>,
+> /usr/bin/bwrap flags=(unconfined) {
+>   userns,
+> }
+> EOF
+> sudo apparmor_parser -r /etc/apparmor.d/bwrap
+> ```
+> `omac doctor` prints this same fix in its failure message.
+
+> **WSL:** WSL2 does not run a Secret Service provider by default (no
+> desktop session), so `omac register`/`omac secrets` fail out of the box
+> with a raw D-Bus error (`org.freedesktop.secrets was not provided by any
+> .service files`). Install and start gnome-keyring once per session:
+> ```bash
+> sudo apt install gnome-keyring dbus-x11
+> eval "$(dbus-launch --sh-syntax)"
+> gnome-keyring-daemon --unlock --components=secrets
+> ```
+> `omac doctor` reports whether the keychain backend is reachable. There is
+> no file-based fallback yet (see design doc §16.2) — a running Secret
+> Service provider is required on Linux/WSL.
 
 #### Network prompt dialog (strongly recommended)
 
@@ -299,6 +379,7 @@ this host, and allow/deny permanently for the registered suffix (e.g.
 | **claude** (Claude Code CLI) | see [Claude Code docs](https://code.claude.com/docs) | Alternative harness (`omac start claude`) |
 | **codex** (OpenAI Codex CLI) | see [Codex docs](https://github.com/openai/codex) | Alternative harness (`omac start codex`) |
 | **copilot** (GitHub Copilot CLI) | see [Copilot CLI docs](https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli) | Alternative harness (`omac start copilot`) |
+| **pi** (Pi coding agent) | see [Pi docs](https://pi.dev) | Alternative harness (`omac start pi`) |
 
 At least one inner harness must be installed; `opencode` is the default.
 
@@ -454,7 +535,7 @@ sandbox:
 | Path | Access | Source |
 |---|---|---|
 | `<workdir>` | read+write | `workdir.access: readwrite` (default) |
-| Selected harness config/state dirs (e.g. `~/.claude`, `~/.codex`, `~/.copilot`, `~/.local/share/opencode`) | read+write | `harness.SandboxDirs` → `--allow` flags (injected at launch) |
+| Selected harness config/state dirs (e.g. `~/.claude`, `~/.codex`, `~/.copilot`, `~/.pi`, `~/.local/share/opencode`) | read+write | `harness.SandboxDirs` → `--allow` flags (injected at launch) |
 | `~/.cache`, `~/Library/Caches` | read+write | default profile `filesystem.allow` |
 | `~/go`, `~/.rustup`, `~/.cargo` | read+write | default profile `filesystem.allow` |
 | `~/.config/opencode`, `~/.opencode/bin` | read-only | default profile `filesystem.read` |
@@ -570,26 +651,26 @@ omac [--workdir <dir>] <subcommand> [flags] [args]
                                          on an env_passthrough value
                  --verbose               lifecycle logging
 
-  continue     Like `start`, but continue the most recent session for this
-               workdir (appends the harness's continue flag: opencode/claude
-               `--continue`, codex `resume`, copilot `--continue`). Pass
-               `-s`/`--session <id>` to target a specific session (opencode
-               `--session <id>`, claude `--resume <id>`, codex `resume <id>`,
-               copilot `--session-id <id>`). Accepts the same flags as `start`
-               and an optional [harness] token. After exit, prints an
-               `omac continue -s <id>` hint when a resumable session exists
-               for this workdir.
+   continue     Like `start`, but continue the most recent session for this
+                workdir (appends the harness's continue flag: opencode/claude
+                `--continue`, codex `resume`, copilot `--continue`, pi `-c`).
+                Pass `-s`/`--session <id>` to target a specific session
+                (opencode `--session <id>`, claude `--resume <id>`, codex
+                `resume <id>`, copilot `--session-id <id>`, pi `--session <id>`).
+                Accepts the same flags as `start` and an optional [harness]
+                token. After exit, prints an `omac continue -s <id>` hint
+                when a resumable session exists for this workdir.
 
   resume       List recent sessions for this workdir, show an interactive
                numbered picker (title + relative time), and launch the
                selected one inside omac (opencode `--session <id>`, claude
                `--resume <id>`, codex `resume <id>`, copilot
-               `--session-id <id>`). Sessions come from the harness's own
-               store (opencode `session list`; Claude Code's
+               `--session-id <id>`, pi `--session <id>`). Sessions come from
+               the harness's own store (opencode `session list`; Claude Code's
                ~/.claude/projects files; codex `codex session list`; copilot
-               `copilot session list`). Non-interactive stdin prints the
-               list and exits. Accepts the same flags as `start` and an
-               optional [harness].
+               `copilot session list`; pi's ~/.pi/agent/sessions/ JSONL
+               files). Non-interactive stdin prints the list and exits.
+               Accepts the same flags as `start` and an optional [harness].
 
   doctor       Sanity checks: config, registry, binaries, secrets, sandbox.
   version

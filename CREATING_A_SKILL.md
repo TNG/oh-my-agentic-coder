@@ -47,6 +47,7 @@ which harness is chosen:
   - Claude Code → `.claude/skills` (+ `~/.claude/skills`)
   - Codex → `.codex/skills` (+ `~/.codex/skills`)
   - Copilot → `.copilot/skills` (+ `~/.copilot/skills`)
+  - Pi → `.pi/skills` (+ `~/.pi/agent/skills`)
   - **Shared** → `.agents/skills` (+ `~/.config/agents/skills`), in scope for
     every harness.
 

@@ -15,9 +15,11 @@
 // docs/MULTI_DIR_DESKTOP.md §4.3/§8.2.
 //
 // The backend (macOS Keychain, Secret Service, Windows Credential Manager)
-// is selected by go-keyring based on the host OS. A file-based fallback
-// for headless Linux is declared as future work in the design doc and is
-// not implemented in v0.
+// is selected by go-keyring based on the host OS. A file-based fallback for
+// headless Linux (age-encrypted secrets.age, oh-my-agentic-coder.md §16.2)
+// is not implemented; on WSL / headless Linux without a running Secret
+// Service provider, keychain operations fail — see IsUnavailable and
+// README.md#prerequisites for the actionable fix.
 package keychain
 
 import (
@@ -107,7 +109,7 @@ func GetScoped(scope, skillName, name string) (secrets.Secret, error) {
 	svc := ScopedService(scope, skillName)
 	v, err := keyring.Get(svc, name)
 	if err != nil {
-		if errors.Is(err, keyring.ErrNotFound) || isKeychainUnavailable(err) {
+		if errors.Is(err, keyring.ErrNotFound) || IsUnavailable(err) {
 			return secrets.Secret{}, ErrNotFound
 		}
 		return secrets.Secret{}, fmt.Errorf("keychain get %s/%s: %w", svc, name, err)
@@ -115,12 +117,14 @@ func GetScoped(scope, skillName, name string) (secrets.Secret, error) {
 	return secrets.NewSecretString(v), nil
 }
 
-// isKeychainUnavailable reports whether err indicates the OS keychain
-// backend is missing (no Secret Service daemon on headless Linux, no
-// keychain daemon on macOS, etc.). Such errors are not per-secret failures
-// but environment-level ones; mapping them to ErrNotFound lets optional
-// secrets and env_passthrough fallbacks work in CI.
-func isKeychainUnavailable(err error) bool {
+// IsUnavailable reports whether err indicates the OS keychain backend
+// itself is missing (no Secret Service daemon on headless Linux, no
+// keychain daemon on macOS, etc.), as opposed to a per-secret failure. Read
+// paths (GetScoped/HasScoped) map such errors to ErrNotFound so optional
+// secrets and env_passthrough fallbacks still work in CI; write-path
+// callers (register, secrets set) use it instead to attach an actionable,
+// OS-specific hint rather than surfacing the raw backend error verbatim.
+func IsUnavailable(err error) bool {
 	msg := err.Error()
 	// Linux: org.freedesktop.secrets not provided by any .service files
 	// (dbus.ServiceUnknown when no Secret Service implementation is running).
@@ -131,7 +135,33 @@ func isKeychainUnavailable(err error) bool {
 	if strings.Contains(msg, "dbus") || strings.Contains(msg, "D-Bus") {
 		return true
 	}
+	// Linux: the session-bus socket named by DBUS_SESSION_BUS_ADDRESS has
+	// been torn down while the env var still points at it — the WSL2 /
+	// `Linger=no` case where systemd removes /run/user/<uid> when the login
+	// session ends. go-keyring surfaces the raw dial failure ("dial unix
+	// <path>: connect: no such file or directory" / "connection refused"),
+	// which carries no dbus marker but is an environment-level unavailability,
+	// not a per-secret error.
+	if strings.Contains(msg, "dial unix") &&
+		(strings.Contains(msg, "no such file or directory") ||
+			strings.Contains(msg, "connection refused") ||
+			strings.Contains(msg, "permission denied")) {
+		return true
+	}
 	return false
+}
+
+// Ping probes whether the OS keychain backend itself is reachable, for
+// diagnostics (`omac doctor`). It looks up a secret that will never exist:
+// a not-found result means the backend answered (available), while a
+// backend-level error is returned as-is so callers can classify it with
+// IsUnavailable and attach a hint.
+func Ping() error {
+	_, err := keyring.Get("omac/__doctor_probe__", "probe")
+	if err == nil || errors.Is(err, keyring.ErrNotFound) {
+		return nil
+	}
+	return err
 }
 
 // GetWithFallback retrieves a secret under (scope, skill), falling back to
@@ -161,7 +191,7 @@ func HasScoped(scope, skillName, name string) (bool, error) {
 	if err == nil {
 		return true, nil
 	}
-	if errors.Is(err, keyring.ErrNotFound) || isKeychainUnavailable(err) {
+	if errors.Is(err, keyring.ErrNotFound) || IsUnavailable(err) {
 		return false, nil
 	}
 	return false, fmt.Errorf("keychain probe %s/%s: %w", svc, name, err)

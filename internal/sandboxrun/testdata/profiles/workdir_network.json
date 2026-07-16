@@ -1,0 +1,8 @@
+{
+  "meta": { "name": "workdir-network" },
+  "workdir": { "access": "readwrite" },
+  "network": {
+    "mode": "filtered",
+    "allow_domain": ["api.example.com", "*.pypi.org"]
+  }
+}

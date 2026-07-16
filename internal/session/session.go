@@ -54,13 +54,14 @@ func execRunner(name string, args ...string) ([]byte, error) {
 // List returns harness's prior sessions for workdir, most-recent first.
 // workdir SHOULD be absolute; it is cleaned before comparison.
 func List(h config.Harness, workdir string) ([]Session, error) {
-	return list(h, workdir, execRunner, claudeProjectsRoot(h), opencodeDBPath(), codexSessionsRoot(h), copilotDBPath(h), copilotStateDir(h))
+	return list(h, workdir, execRunner, claudeProjectsRoot(h), opencodeDBPath(), codexSessionsRoot(h), copilotDBPath(h), copilotStateDir(h), piSessionsRoot(h))
 }
 
 // list is the testable core: callers inject the command runner, the Claude
 // projects root, the opencode SQLite db path, the codex sessions root, the
-// copilot SQLite db path, and the copilot session-state dir (yaml fallback).
-func list(h config.Harness, workdir string, run runner, claudeRoot, ocDBPath, codexRoot, copilotDB, copilotState string) ([]Session, error) {
+// copilot SQLite db path, the copilot session-state dir (yaml fallback),
+// and the pi sessions root.
+func list(h config.Harness, workdir string, run runner, claudeRoot, ocDBPath, codexRoot, copilotDB, copilotState, piRoot string) ([]Session, error) {
 	if h.Session == nil {
 		return nil, ErrUnsupported
 	}
@@ -74,6 +75,8 @@ func list(h config.Harness, workdir string, run runner, claudeRoot, ocDBPath, co
 		return listCodex(workdir, codexRoot), nil
 	case config.SessionListCopilot:
 		return listCopilot(workdir, copilotDB, copilotState), nil
+	case config.SessionListPi:
+		return listPi(workdir, piRoot), nil
 	default:
 		return nil, ErrUnsupported
 	}
@@ -676,4 +679,109 @@ type copilotWorkspaceYAML struct {
 // directly. It mirrors json.Unmarshal's signature.
 func yamlUnmarshal(data []byte, v any) error {
 	return yaml.Unmarshal(data, v)
+}
+
+// --- Pi backend -------------------------------------------------------------
+
+// piSessionsRoot returns the pi sessions dir, derived from the harness's
+// config home. ConfigHome() already resolves to ~/.pi/agent (via
+// UserConfigHome), so sessions live directly under <config home>/sessions/ —
+// do not append "agent" again here. Returns "" when no home dir resolves.
+func piSessionsRoot(h config.Harness) string {
+	home := h.ConfigHome()
+	if home == "" {
+		return ""
+	}
+	return filepath.Join(home, "sessions")
+}
+
+// listPi reads Pi sessions from the session store. Sessions are JSONL files
+// under piRoot, organized by working directory. Each file is a tree-structured
+// session containing message entries, model changes, labels, compactions, and
+// branch summaries. The first JSON object on each line may carry an "id" field
+// identifying the session. When the schema is not determinable, falls back to
+// using the filename as the session ID. workdir filters by a "cwd" field if
+// present; sessions with missing cwd are included (safer to show than hide).
+// Returns nil when the store is missing or unreadable.
+func listPi(workdir, piRoot string) []Session {
+	if piRoot == "" {
+		return nil
+	}
+	workdir = filepath.Clean(workdir)
+	var sessions []Session
+	_ = filepath.WalkDir(piRoot, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		if !strings.HasSuffix(d.Name(), ".jsonl") {
+			return nil
+		}
+		id := ""
+		title := ""
+		cwd := ""
+		var when time.Time
+		f, err := os.Open(path)
+		if err != nil {
+			return nil
+		}
+		defer f.Close()
+		scanner := bufio.NewScanner(f)
+		for scanner.Scan() {
+			line := scanner.Bytes()
+			if len(line) == 0 {
+				continue
+			}
+			var raw map[string]json.RawMessage
+			if err := jsonUnmarshal(line, &raw); err != nil {
+				continue
+			}
+			if v, ok := raw["id"]; ok && id == "" {
+				jsonUnmarshal(v, &id)
+			}
+			if v, ok := raw["cwd"]; ok && cwd == "" {
+				jsonUnmarshal(v, &cwd)
+			}
+			if v, ok := raw["type"]; ok {
+				var t string
+				jsonUnmarshal(v, &t)
+				if t == "user" {
+					if v, ok := raw["content"]; ok && title == "" {
+						var c string
+						jsonUnmarshal(v, &c)
+						if c != "" {
+							title = truncate(c)
+						}
+					}
+				}
+			}
+			if id != "" && title != "" {
+				break
+			}
+		}
+		if id == "" {
+			base := strings.TrimSuffix(d.Name(), ".jsonl")
+			id = base
+		}
+		if title == "" {
+			title = id
+		}
+		if cwd != "" && filepath.Clean(cwd) != workdir {
+			return nil
+		}
+		if when.IsZero() {
+			if info, err := d.Info(); err == nil {
+				when = info.ModTime()
+			}
+		}
+		sessions = append(sessions, Session{ID: id, Title: title, When: when})
+		return nil
+	})
+	sortNewestFirst(sessions)
+	return sessions
+}
+
+// jsonUnmarshal is a thin wrapper over json.Unmarshal so callers don't
+// import encoding/json directly for one-off parsing.
+func jsonUnmarshal(data []byte, v any) error {
+	return json.Unmarshal(data, v)
 }

@@ -142,6 +142,85 @@ func TestIntegrationProtectedPathDeniedUnderBroadGrant(t *testing.T) {
 	}
 }
 
+// TestIntegrationOverrideDenyGrantsAccess proves the documented
+// filesystem.override_deny escape hatch (README's Docker-socket / cloud
+// creds recipe) actually works through a real Seatbelt sandbox, not
+// just at the Grants-struct level (TestResolveGrantsOverrideDeny in
+// grants_test.go only checks ProtectedPaths no longer contains the
+// entry).
+func TestIntegrationOverrideDenyGrantsAccess(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("no home")
+	}
+	sshDir := filepath.Join(home, ".ssh")
+	if _, err := os.Stat(sshDir); err != nil {
+		t.Skip("no ~/.ssh on this machine")
+	}
+	wd := t.TempDir()
+	p := &sandboxprofile.Profile{
+		Workdir: sandboxprofile.Workdir{Access: sandboxprofile.AccessReadWrite},
+		Filesystem: sandboxprofile.Filesystem{
+			Read:         []string{home},
+			OverrideDeny: []string{sshDir},
+		},
+		Network: sandboxprofile.Network{Mode: sandboxprofile.ModeBlocked},
+	}
+	g, err := ResolveGrants(p, wd, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out, code := runSandboxed(t, g, "/bin/ls", sshDir); code != 0 {
+		t.Errorf("override_deny should punch a hole granting ~/.ssh access, got exit %d: %s", code, out)
+	}
+}
+
+// TestIntegrationAllowUnixDirGrantsSocketAccess proves
+// filesystem.allow_unix_dir — the field the README's Docker/Agent View
+// daemon-socket recipes actually use, distinct from the single-socket
+// filesystem.allow already covered by TestIntegrationUnixSocketUnderNetworkDeny
+// above — grants real AF_UNIX connect access through a real Seatbelt
+// sandbox. Only tested structurally today (grants_test.go's
+// TestResolveGrantsUnixSocketDir just checks it resolves into
+// UnixSocketDirs); this is the missing end-to-end proof that the
+// generated SBPL rule actually works, which matters here specifically
+// because macOS classifies AF_UNIX connect() as a network operation
+// rather than file I/O (sbpl.go).
+func TestIntegrationAllowUnixDirGrantsSocketAccess(t *testing.T) {
+	sockDir, err := os.MkdirTemp("/tmp", "omac-unixdir-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(sockDir)
+	sock := filepath.Join(sockDir, "daemon.sock")
+	l, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	go http.Serve(l, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "unixdir-ok")
+	}))
+
+	wd := t.TempDir()
+	p := &sandboxprofile.Profile{
+		Workdir: sandboxprofile.Workdir{Access: sandboxprofile.AccessReadWrite},
+		Filesystem: sandboxprofile.Filesystem{
+			AllowUnixDir: []string{sockDir},
+		},
+		Network: sandboxprofile.Network{Mode: sandboxprofile.ModeFiltered},
+	}
+	g, err := ResolveGrants(p, wd, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, code := runSandboxed(t, g, "/usr/bin/curl", "-sS", "--max-time", "3",
+		"--unix-socket", sock, "http://x/")
+	if code != 0 || !strings.Contains(out, "unixdir-ok") {
+		t.Errorf("allow_unix_dir should grant AF_UNIX connect access to a socket in the dir: exit=%d out=%s", code, out)
+	}
+}
+
 func TestIntegrationKeychainDenied(t *testing.T) {
 	// The hard guarantee is layered: (a) the keychain DB files under
 	// ~/Library/Keychains are protected paths (unreadable even under a

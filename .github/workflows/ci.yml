@@ -29,6 +29,23 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Install bubblewrap (Linux only)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update && sudo apt-get install -y bubblewrap
+          # Ubuntu 24.04 AppArmor restricts unprivileged user namespaces.
+          # Grant bwrap the userns permission so it can create sandboxes.
+          # Without this, every internal/sandboxrun integration test that
+          # launches a real bwrap sandbox silently skips via requireBwrap,
+          # instead of actually exercising the sandbox it claims to test.
+          sudo tee /etc/apparmor.d/bwrap > /dev/null <<'EOF'
+          abi <abi/4.0>,
+          /usr/bin/bwrap flags=(unconfined) {
+            userns,
+          }
+          EOF
+          sudo apparmor_parser -r /etc/apparmor.d/bwrap
+
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
@@ -47,6 +64,54 @@ jobs:
         run: go build -v ./...
 
       - name: Test
+        run: go test -race -count=1 -timeout=5m ./...
+
+  wsl2-session:
+    # WSL2-style degraded session. WSL2 distros commonly run without systemd
+    # (needs systemd=true in wsl.conf), and even with it, `Linger=no` makes
+    # systemd tear down /run/user/<uid> — including the session-bus socket —
+    # when the login session ends, while DBUS_SESSION_BUS_ADDRESS still points
+    # at the now-dead socket. Real WSL2 isn't worth running on CI (hosted
+    # windows runners only give WSL1; WSL2 needs nested virtualization), but
+    # the failure mode reproduces deterministically here: point the bus address
+    # at a socket that doesn't exist and confirm omac's keychain/Secret Service
+    # reads degrade gracefully (keychain.IsUnavailable) instead of surfacing
+    # raw dial errors.
+    name: WSL2-style session (dead bus)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install bubblewrap
+        run: |
+          sudo apt-get update && sudo apt-get install -y bubblewrap
+          # This job degrades the session, not the sandbox, so bwrap still
+          # needs the unprivileged-userns permission AppArmor denies by default
+          # on Ubuntu 24.04 — otherwise the sandbox integration tests would
+          # skip rather than run under the degraded session.
+          sudo tee /etc/apparmor.d/bwrap > /dev/null <<'EOF'
+          abi <abi/4.0>,
+          /usr/bin/bwrap flags=(unconfined) {
+            userns,
+          }
+          EOF
+          sudo apparmor_parser -r /etc/apparmor.d/bwrap
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Test under a torn-down session bus
+        env:
+          # A /run/user/<uid>/bus that systemd already removed: the address is
+          # still exported, but the socket is gone (Linger=no teardown).
+          DBUS_SESSION_BUS_ADDRESS: unix:path=${{ runner.temp }}/dead-user-bus
+          # The runtime dir was never created — mimics a session with no
+          # systemd --user instance to populate it.
+          XDG_RUNTIME_DIR: ${{ runner.temp }}/nonexistent-run-user
         run: go test -race -count=1 -timeout=5m ./...
 
   lint:
@@ -76,3 +141,31 @@ jobs:
         with:
           version: latest
           install-go: false
+
+  e2e-fast:
+    # Model-free slice of the e2e suite (build tag `e2e_fast`): the security
+    # regression tests that need no live LLM harness, API token, or OS
+    # sandbox — dir_token isolation driven over real loopback sockets, the
+    # mutation-tested assertion predicates, the --no-sandbox exposure report,
+    # and the harness/version registry invariants. The full e2e.yml suite
+    # (live models) still runs weekly; this gate keeps these regressions off
+    # the merge path instead of surfacing them up to a week later. No
+    # bubblewrap: `omac serve --no-inner` exercises the control plane only.
+    name: E2E fast (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run model-free e2e tests
+        run: go test -tags=e2e_fast -race -count=1 -timeout=5m ./internal/e2e/

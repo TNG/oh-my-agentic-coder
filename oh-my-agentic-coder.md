@@ -626,6 +626,36 @@ Runs sanity checks:
 - Stale runtime directories for this workdir (offers `--fix` to remove them).
 - Configured sandbox binary resolvable on `$PATH`.
 
+### 10.5a `omac update`
+
+Checks GitHub's `/releases/latest` endpoint (prereleases are excluded
+automatically) and, if the release is *strictly newer* than the running build
+(compared as semver, so a dev or pre-release build already ahead of the latest
+tag is left alone — it never downgrades), installs it using whichever method
+matches how this host runs omac:
+
+1. **macOS, Homebrew-installed** (detected via the resolved binary path or
+   `brew list --formula oh-my-agentic-coder`) — runs `brew upgrade
+   oh-my-agentic-coder`.
+2. **Linux, a known package manager is on `$PATH`** — in priority order
+   `dpkg` > `rpm` > `pacman` > `apk`, downloads the matching release asset
+   (`.deb`/`.rpm`/`.pkg.tar.zst`/`.apk`) and runs `sudo <tool> <install-verb>
+   <path>`.
+3. **Otherwise** (macOS without brew, or Linux with none of the above) —
+   downloads the release tarball and atomically replaces the running binary
+   in place.
+
+Every downloaded asset (except brew's own bottle) is verified against the
+release's published `checksums.txt` (SHA-256) before anything is installed;
+a mismatch aborts with exit code `10` and installs nothing.
+
+Before installing, it prints the current → latest version, the method, and
+checksum status, then asks `Proceed with update? [y/N]`. Pass `--yes`/`-y`
+to skip the prompt for scripting. There is no separate `--check`/`--dry-run`
+flag — declining the prompt *is* the dry run. In a non-interactive session
+(no TTY) without `--yes`, it prints a hint and exits `0` without changing
+anything, rather than hanging on a prompt.
+
 ### 10.6 Exit codes (global)
 
 | Code | Meaning |
@@ -635,9 +665,12 @@ Runs sanity checks:
 | `2` | misuse / invalid arguments |
 | `3` | configuration or metadata invalid |
 | `4` | prerequisite missing (skill not installed, binary not built) |
-| `5` | I/O error (registry, socket, fs) |
+| `5` | I/O error (registry, socket, fs, network) |
 | `6` | sidecar failed health check before sandbox was launched |
 | `7` | sandbox process exited with a non-zero code (exit code is propagated into the low 8 bits where possible) |
+| `8` | OS keychain (Secret Service) operation failed |
+| `9` | user refused a secret prompt |
+| `10` | `omac update` checksum verification failed |
 
 ---
 
@@ -983,10 +1016,10 @@ Rules:
 | --- | --- |
 | macOS | Keychain Services (`security` framework). |
 | Linux (GNOME/KDE) | Secret Service API (`libsecret`, D-Bus). |
-| WSL / headless Linux | Pass-through to the native backend if present; otherwise fallback to an age-encrypted file under `~/.local/share/omac/secrets.age` with the passphrase unlocked once per session via keyring if available. |
+| WSL / headless Linux | Pass-through to the native backend if present. A file-based fallback (age-encrypted file under `~/.local/share/omac/secrets.age`, passphrase unlocked once per session via keyring if available) was proposed here but is **not implemented in v0** — see `internal/keychain`. Without a running Secret Service provider, keychain operations fail; `omac doctor` reports backend reachability and README.md#prerequisites has the gnome-keyring setup snippet. |
 | Windows (native, future) | Windows Credential Manager. |
 
-The backend selection is logged once on first use (`omac doctor` shows the active backend). Users can pin a backend via `OMAC_KEYRING_BACKEND=secret-service|keychain|file`.
+`omac doctor` reports whether the keychain backend is reachable. `OMAC_KEYRING_BACKEND=secret-service|keychain|file` pinning described in earlier drafts of this doc is likewise **not implemented**.
 
 ### 16.3 Naming convention
 

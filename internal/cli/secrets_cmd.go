@@ -175,7 +175,7 @@ func runSecretsImport(args []string, env *Env) int {
 		s := secrets.NewSecretString(v)
 		if err := keychain.SetScoped(scope, skill, k, s); err != nil {
 			s.Zero()
-			fmt.Fprintln(env.Stderr, "omac secrets import: keychain:", err)
+			fmt.Fprintln(env.Stderr, "omac secrets import: keychain:", wrapKeychainErr(err))
 			return ExitKeychainError
 		}
 		s.Zero()

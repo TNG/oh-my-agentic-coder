@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -10,18 +11,31 @@ import (
 	"time"
 )
 
-// requireLoopbackDial skips when this environment forbids connecting to
-// 127.0.0.1 (some sandboxes deny loopback TCP connect).
+// skipOrFailCI skips locally but fails in CI (GITHUB_ACTIONS=true), so a
+// missing capability there reads as an infrastructure regression instead of
+// a silently green run with zero coverage from the gated tests.
+func skipOrFailCI(t *testing.T, format string, args ...any) {
+	t.Helper()
+	msg := fmt.Sprintf(format, args...)
+	if os.Getenv("GITHUB_ACTIONS") == "true" {
+		t.Fatal(msg)
+	}
+	t.Skip(msg)
+}
+
+// requireLoopbackDial skips locally when this environment forbids connecting
+// to 127.0.0.1 (some sandboxes deny loopback TCP connect); in CI it fails
+// the test instead.
 func requireLoopbackDial(t *testing.T) {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		t.Skip("loopback listen not permitted:", err)
+		skipOrFailCI(t, "loopback listen not permitted: %v", err)
 	}
 	defer ln.Close()
 	c, err := net.DialTimeout("tcp", ln.Addr().String(), time.Second)
 	if err != nil {
-		t.Skip("loopback dial not permitted in this environment:", err)
+		skipOrFailCI(t, "loopback dial not permitted in this environment: %v", err)
 	}
 	c.Close()
 }
