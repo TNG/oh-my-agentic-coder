@@ -18,8 +18,8 @@
 # in place every run — never via comments — showing current status plus a
 # rolling 30-day window. The same rows are mirrored to a private archive repo
 # (the security repo) under harness-compat/ for permanent history, reusing the
-# SECURITY_SCAN_PAT that security-scan.yml already uses. The repo name is never
-# printed into the public dashboard issue.
+# SECURITY_SCAN_PAT that security-scan.yml already uses. The repo name comes from
+# the SECURITY_ARCHIVE_REPO secret and is never printed into the public issue.
 # Every run (pass or fail) posts a status message to Slack; on a failure the
 # message carries a short SKAINET-generated summary of exactly what broke.
 # Nothing is pushed to this repo's main. This is the regular tripwire that
@@ -440,15 +440,15 @@ jobs:
       - name: Mirror to private archive repo
         if: always() && steps.rows.outputs.has_rows == 'true'
         env:
-          # Repo name comes from the SECURITY_ARCHIVE_REPO repo variable (kept
-          # out of public source); reuses the SECURITY_SCAN_PAT secret and a
-          # distinct subpath so it never collides with the security scans.
-          ARCHIVE_REPO: ${{ vars.SECURITY_ARCHIVE_REPO }}
+          # Repo name comes from the SECURITY_ARCHIVE_REPO secret (kept out of
+          # public source); reuses the SECURITY_SCAN_PAT secret and a distinct
+          # subpath so it never collides with the security scans.
+          ARCHIVE_REPO: ${{ secrets.SECURITY_ARCHIVE_REPO }}
           ARCHIVE_SUBPATH: harness-compat/HARNESS_COMPAT.md
           ARCHIVE_TOKEN: ${{ secrets.SECURITY_SCAN_PAT }}
         run: |
           if [ -z "$ARCHIVE_REPO" ] || [ -z "$ARCHIVE_TOKEN" ]; then
-            echo "SECURITY_ARCHIVE_REPO variable or SECURITY_SCAN_PAT secret missing — skipping archive mirror"
+            echo "SECURITY_ARCHIVE_REPO or SECURITY_SCAN_PAT secret missing — skipping archive mirror"
             exit 0
           fi
           git clone --depth 1 "https://x-access-token:${ARCHIVE_TOKEN}@github.com/${ARCHIVE_REPO}.git" archive
