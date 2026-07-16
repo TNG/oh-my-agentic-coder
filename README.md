@@ -390,11 +390,59 @@ holes in the built-in protected-path list), `network.mode`
 `environment.allow_vars`. See the scaffolded `default.json` for the
 full schema.
 
+### Corporate proxy
+
+In corporate environments where outbound traffic must go through a proxy,
+omac auto-detects the standard proxy environment variables
+(`HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY` — case-insensitive) from the
+host environment. Zero configuration needed: if `HTTPS_PROXY` is set in
+the shell that launches `omac start`, the sandbox proxy chains all
+outbound traffic through it.
+
+**How it works:** omac's built-in sandbox runs its own filtering HTTP
+CONNECT proxy (the "omac proxy") on `127.0.0.1`. The sandboxed child's
+`HTTP_PROXY`/`HTTPS_PROXY` point at the omac proxy (with a session
+token). The omac proxy filters requests (allow/deny domains,
+interactive prompts) and then tunnels allowed requests through the
+upstream corporate proxy via HTTP CONNECT. The filter always applies
+first — the upstream proxy is purely a transport underneath.
+
+**Override via sandbox profile:** If you need a different upstream
+proxy than the host environment provides, set it in the sandbox profile:
+
+```json
+// ~/.config/omac/sandbox-profiles/default.json
+{
+  "network": {
+    "upstream_proxy": "http://proxy.corp.example.com:8080",
+    "no_proxy": ["internal.corp", "10.0.0.0/8"]
+  }
+}
+```
+
+Profile fields take precedence over environment variables.
+
+**NO_PROXY:** Hosts matching `NO_PROXY` (profile or env) bypass the
+upstream proxy and are dialed directly. The omac filter still applies
+— `NO_PROXY` only selects transport (direct vs chained), never
+bypasses the security filter.
+
+**Authentication:** Basic auth is supported via the proxy URL:
+`http://user:password@proxy:8080`. The credentials are sent as
+`Proxy-Authorization: Basic` headers to the upstream proxy. They are
+never logged or included in error responses.
+
+**NTLM / Kerberos:** Not supported directly. Use a local authentication
+bridge like [`cntlm`](http://cntlm.sourceforge.net/) or
+[`px`](https://github.com/genotrance/px) that handles NTLM/Kerberos
+and exposes a plain HTTP proxy with Basic auth. Point
+`network.upstream_proxy` (or `HTTPS_PROXY`) at the local bridge.
+
 #### Secrets
 
 Secrets (API keys, tokens) are stored in the **OS keychain**
 (Keychain on macOS, Secret Service / D-Bus on Linux, Credential
-Manager on Windows) — never on disk. Managed via `omac secrets`.
+ Manager on Windows) — never on disk. Managed via `omac secrets`.
 **Never reachable inside the sandbox.**
 
 #### What the sandbox can see

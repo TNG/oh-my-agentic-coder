@@ -10,13 +10,15 @@
 //	  "workdir": { "access": "readwrite" },
 //	  "filesystem": { "allow": [...], "read": [...], "write": [...],
 //	                  "deny": [...], "override_deny": [...] },
-//	  "network": { "mode": "filtered", "allow_domain": [...],
+//	 "network": { "mode": "filtered", "allow_domain": [...],
 //	               "deny_domain": [...], "listen_port": [...],
 //	               "allow_tcp_connect": [...], "open_port": [...],
 //	               "network_prompt": { "enabled": true,
 //	                                   "prompt_timeout_secs": 60,
 //	                                   "on_unavailable": "deny" },
-//	               "enforcement": "kernel" },
+//	               "enforcement": "kernel",
+//	               "upstream_proxy": "http://proxy:8080",
+//	               "no_proxy": ["internal.corp"] },
 //	  "environment": { "allow_vars": [...] }
 //	}
 //
@@ -28,6 +30,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"path/filepath"
 	"strings"
 )
@@ -129,6 +132,15 @@ type Network struct {
 	// Enforcement is kernel (default) or env-only (Linux escape hatch
 	// for kernels without Landlock ABI >= 4; advisory only).
 	Enforcement string `json:"enforcement,omitempty"`
+	// UpstreamProxy is an optional http:// or https:// URL pointing to a
+	// proxy that all outbound traffic must be routed through.  When set,
+	// the sandbox must enforce that every outbound connection goes through
+	// this proxy.
+	UpstreamProxy string `json:"upstream_proxy,omitempty"`
+	// NoProxy is a list of destination descriptors (hostnames, IP CIDRs,
+	// or domains prefixed with ".") that must bypass the upstream proxy.
+	// Empty entries are rejected.
+	NoProxy []string `json:"no_proxy,omitempty"`
 }
 
 // NetworkPrompt mirrors nono's network_prompt block.
@@ -235,6 +247,17 @@ func (p *Profile) Validate() error {
 		}
 		if np.PromptTimeoutSecs < 0 {
 			return fmt.Errorf("sandbox profile: network.network_prompt.prompt_timeout_secs must be >= 0")
+		}
+	}
+	if p.Network.UpstreamProxy != "" {
+		u, err := url.Parse(p.Network.UpstreamProxy)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return fmt.Errorf("sandbox profile: invalid network.upstream_proxy %q (want http://host or https://host)", p.Network.UpstreamProxy)
+		}
+	}
+	for _, entry := range p.Network.NoProxy {
+		if strings.TrimSpace(entry) == "" {
+			return fmt.Errorf("sandbox profile: network.no_proxy contains an empty entry")
 		}
 	}
 	for _, group := range []struct {

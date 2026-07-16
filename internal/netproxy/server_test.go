@@ -49,7 +49,8 @@ func waitUntil(t *testing.T, cond func() bool) {
 // given upstream listener.
 func startProxy(t *testing.T, cfg FilterConfig) *Server {
 	t.Helper()
-	s, err := NewServer(NewFilter(cfg), nil)
+	filter := NewFilter(cfg)
+	s, err := NewServer(filter, NewDirectDialer(filter), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -351,4 +352,317 @@ func TestCloseTearsDownTunnels(t *testing.T) {
 
 func basicAuth(user, pass string) string {
 	return "Basic " + base64.StdEncoding.EncodeToString([]byte(user+":"+pass))
+}
+
+// startProxyWithDialer spins up a Server using the given dialer (for
+// upstream-proxy chaining tests).
+func startProxyWithDialer(t *testing.T, cfg FilterConfig, dialer Dialer) *Server {
+	t.Helper()
+	filter := NewFilter(cfg)
+	s, err := NewServer(filter, dialer, t.Logf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(s.Close)
+	return s
+}
+
+// startSplicingUpstreamProxy starts a fake upstream proxy that accepts a
+// CONNECT, responds 200, and splices to the real target at targetAddr.
+// Returns the listener. The number of accepted connections is tracked in
+// *connections (if non-nil).
+func startSplicingUpstreamProxy(t *testing.T, targetAddr string, connections *int32) net.Listener {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("splicing upstream proxy: %v", err)
+	}
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			if connections != nil {
+				atomic.AddInt32(connections, 1)
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				br := bufio.NewReader(c)
+				for {
+					line, err := br.ReadString('\n')
+					if err != nil {
+						return
+					}
+					if line == "\r\n" || line == "\n" {
+						break
+					}
+				}
+				if _, err := c.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n")); err != nil {
+					return
+				}
+				target, err := net.Dial("tcp", targetAddr)
+				if err != nil {
+					return
+				}
+				defer target.Close()
+				if n := br.Buffered(); n > 0 {
+					buf := make([]byte, n)
+					_, _ = io.ReadFull(br, buf)
+					_, _ = target.Write(buf)
+				}
+				done := make(chan struct{}, 2)
+				go func() { _, _ = io.Copy(target, c); done <- struct{}{} }()
+				go func() { _, _ = io.Copy(c, target); done <- struct{}{} }()
+				<-done
+				<-done
+			}(conn)
+		}
+	}()
+	return ln
+}
+
+// startRejectingUpstreamProxy starts a fake upstream proxy that responds
+// to every CONNECT with rejectWith and closes.
+func startRejectingUpstreamProxy(t *testing.T, rejectWith string) net.Listener {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("rejecting upstream proxy: %v", err)
+	}
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				br := bufio.NewReader(c)
+				for {
+					line, err := br.ReadString('\n')
+					if err != nil {
+						return
+					}
+					if line == "\r\n" || line == "\n" {
+						break
+					}
+				}
+				_, _ = c.Write([]byte(rejectWith))
+			}(conn)
+		}
+	}()
+	return ln
+}
+
+func TestServerHandleConnectThroughUpstream(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "chained-tls-hello")
+	}))
+	defer upstream.Close()
+	_, port := upstreamHostPort(t, upstream.URL)
+	targetAddr := fmt.Sprintf("127.0.0.1:%d", port)
+
+	proxyLn := startSplicingUpstreamProxy(t, targetAddr, nil)
+	defer proxyLn.Close()
+
+	proxyURL, _ := url.Parse("http://" + proxyLn.Addr().String())
+	filter := NewFilter(FilterConfig{
+		AllowDomains: []string{"fake.example"},
+		Resolve:      resolveTo("127.0.0.1"),
+	})
+	dialer := NewUpstreamProxyDialer(proxyURL, nil, filter, t.Logf)
+
+	s := startProxyWithDialer(t, FilterConfig{
+		AllowDomains: []string{"fake.example"},
+		Resolve:      resolveTo("127.0.0.1"),
+	}, dialer)
+
+	client := proxyClient(s)
+	resp, err := client.Get(fmt.Sprintf("https://fake.example:%d/", port))
+	if err != nil {
+		t.Fatalf("GET through chained upstream: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if string(body) != "chained-tls-hello" {
+		t.Errorf("body = %q, want chained-tls-hello", body)
+	}
+}
+
+func TestServerFilterDenyBeforeUpstream(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "should-not-reach")
+	}))
+	defer upstream.Close()
+	_, port := upstreamHostPort(t, upstream.URL)
+	targetAddr := fmt.Sprintf("127.0.0.1:%d", port)
+
+	var conns int32
+	proxyLn := startSplicingUpstreamProxy(t, targetAddr, &conns)
+	defer proxyLn.Close()
+
+	proxyURL, _ := url.Parse("http://" + proxyLn.Addr().String())
+	filter := NewFilter(FilterConfig{
+		AllowDomains: []string{"fake.example"},
+		Resolve:      resolveTo("127.0.0.1"),
+	})
+	dialer := NewUpstreamProxyDialer(proxyURL, nil, filter, t.Logf)
+
+	s := startProxyWithDialer(t, FilterConfig{
+		DenyDomains: []string{"blocked.test"},
+		Resolve:     resolveTo("127.0.0.1"),
+	}, dialer)
+
+	conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", s.Port()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	fmt.Fprintf(conn, "CONNECT blocked.test:443 HTTP/1.1\r\nHost: blocked.test:443\r\nProxy-Authorization: %s\r\n\r\n",
+		basicAuth("omac", s.Token()))
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("status = %d, want 403", resp.StatusCode)
+	}
+	if resp.Header.Get("X-Omac-Sandbox") != "denied" {
+		t.Errorf("X-Omac-Sandbox = %q, want denied", resp.Header.Get("X-Omac-Sandbox"))
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "blocked.test") {
+		t.Errorf("deny body should name the host: %q", body)
+	}
+	if got := atomic.LoadInt32(&conns); got != 0 {
+		t.Errorf("upstream proxy got %d connections, want 0 (filter denies before chaining)", got)
+	}
+}
+
+func TestServer502OnUpstreamFailure(t *testing.T) {
+	reject := "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n"
+	proxyLn := startRejectingUpstreamProxy(t, reject)
+	defer proxyLn.Close()
+
+	proxyURL, _ := url.Parse("http://" + proxyLn.Addr().String())
+	filter := NewFilter(FilterConfig{
+		AllowDomains: []string{"fake.example"},
+		Resolve:      resolveTo("127.0.0.1"),
+	})
+	dialer := NewUpstreamProxyDialer(proxyURL, nil, filter, t.Logf)
+
+	s := startProxyWithDialer(t, FilterConfig{
+		AllowDomains: []string{"fake.example"},
+		Resolve:      resolveTo("127.0.0.1"),
+	}, dialer)
+
+	conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", s.Port()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	fmt.Fprintf(conn, "CONNECT fake.example:443 HTTP/1.1\r\nHost: fake.example:443\r\nProxy-Authorization: %s\r\n\r\n",
+		basicAuth("omac", s.Token()))
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Errorf("status = %d, want 502", resp.StatusCode)
+	}
+	if resp.Header.Get("X-Omac-Sandbox") != "upstream-error" {
+		t.Errorf("X-Omac-Sandbox = %q, want upstream-error", resp.Header.Get("X-Omac-Sandbox"))
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "upstream proxy") {
+		t.Errorf("502 body should mention upstream proxy: %q", body)
+	}
+}
+
+func TestServer502OnUpstreamDialFailure(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	ln.Close()
+
+	proxyURL, _ := url.Parse("http://" + addr)
+	filter := NewFilter(FilterConfig{
+		AllowDomains: []string{"fake.example"},
+		Resolve:      resolveTo("127.0.0.1"),
+	})
+	dialer := NewUpstreamProxyDialer(proxyURL, nil, filter, t.Logf)
+
+	s := startProxyWithDialer(t, FilterConfig{
+		AllowDomains: []string{"fake.example"},
+		Resolve:      resolveTo("127.0.0.1"),
+	}, dialer)
+
+	conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", s.Port()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	fmt.Fprintf(conn, "CONNECT fake.example:443 HTTP/1.1\r\nHost: fake.example:443\r\nProxy-Authorization: %s\r\n\r\n",
+		basicAuth("omac", s.Token()))
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Errorf("status = %d, want 502", resp.StatusCode)
+	}
+	if resp.Header.Get("X-Omac-Sandbox") != "upstream-error" {
+		t.Errorf("X-Omac-Sandbox = %q, want upstream-error", resp.Header.Get("X-Omac-Sandbox"))
+	}
+}
+
+func TestServerForwardThroughUpstreamWithAuth(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Marker") != "forwarded" {
+			t.Errorf("upstream missing X-Marker header")
+		}
+		fmt.Fprint(w, "forwarded-plain")
+	}))
+	defer upstream.Close()
+	_, port := upstreamHostPort(t, upstream.URL)
+	targetAddr := fmt.Sprintf("127.0.0.1:%d", port)
+
+	var conns int32
+	proxyLn := startSplicingUpstreamProxy(t, targetAddr, &conns)
+	defer proxyLn.Close()
+
+	proxyURL, _ := url.Parse("http://" + proxyLn.Addr().String())
+	proxyURL.User = url.UserPassword("corp", "secret")
+	filter := NewFilter(FilterConfig{
+		AllowDomains: []string{"fake.example"},
+		Resolve:      resolveTo("127.0.0.1"),
+	})
+	dialer := NewUpstreamProxyDialer(proxyURL, nil, filter, t.Logf)
+
+	s := startProxyWithDialer(t, FilterConfig{
+		AllowDomains: []string{"fake.example"},
+		Resolve:      resolveTo("127.0.0.1"),
+	}, dialer)
+
+	client := proxyClient(s)
+	req, _ := http.NewRequest(http.MethodGet, fmt.Sprintf("http://fake.example:%d/fwd", port), nil)
+	req.Header.Set("X-Marker", "forwarded")
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("GET through upstream forward: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if string(body) != "forwarded-plain" {
+		t.Errorf("body = %q, want forwarded-plain", body)
+	}
 }

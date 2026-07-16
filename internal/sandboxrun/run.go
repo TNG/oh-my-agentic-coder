@@ -3,7 +3,9 @@ package sandboxrun
 import (
 	"fmt"
 	"io"
+	"net/url"
 	"os"
+	"strings"
 
 	"github.com/tngtech/oh-my-agentic-coder/internal/netprompt"
 	"github.com/tngtech/oh-my-agentic-coder/internal/netproxy"
@@ -156,7 +158,7 @@ func buildProxy(p *sandboxprofile.Profile, profilePath string, stderr io.Writer,
 		Learned:            learned,
 		Logf:               logf,
 	})
-	srv, err := netproxy.NewServer(filter, logf)
+	srv, err := netproxy.NewServer(filter, resolveUpstreamProxy(p, filter, stderr, logf), logf)
 	if err != nil {
 		return nil, err
 	}
@@ -164,4 +166,67 @@ func buildProxy(p *sandboxprofile.Profile, profilePath string, stderr io.Writer,
 		return nil, err
 	}
 	return srv, nil
+}
+
+// resolveUpstreamProxy resolves the upstream proxy URL and NO_PROXY list
+// from the profile first, then the host environment, and returns the
+// appropriate Dialer. If no upstream proxy is configured, it returns a
+// direct dialer. An invalid proxy URL is a soft warning: log and fall
+// back to direct dialing (the proxy URL may be wrong but the sandbox
+// should still start; per-request upstream errors are deferred to 502s).
+//
+// Resolution order for the proxy URL:
+//   - profile network.upstream_proxy
+//   - env HTTPS_PROXY / https_proxy
+//   - env HTTP_PROXY  / http_proxy
+//
+// Resolution order for NO_PROXY:
+//   - profile network.no_proxy (if non-empty)
+//   - env NO_PROXY / no_proxy (comma-separated, trimmed)
+//
+// Only proxyURL.Host is logged — never the userinfo (credentials).
+func resolveUpstreamProxy(p *sandboxprofile.Profile, filter *netproxy.Filter, stderr io.Writer, logf func(string, ...any)) netproxy.Dialer {
+	proxyStr := p.Network.UpstreamProxy
+	if proxyStr == "" {
+		proxyStr = os.Getenv("HTTPS_PROXY")
+	}
+	if proxyStr == "" {
+		proxyStr = os.Getenv("https_proxy")
+	}
+	if proxyStr == "" {
+		proxyStr = os.Getenv("HTTP_PROXY")
+	}
+	if proxyStr == "" {
+		proxyStr = os.Getenv("http_proxy")
+	}
+
+	if proxyStr == "" {
+		return netproxy.NewDirectDialer(filter)
+	}
+
+	proxyURL, err := url.Parse(proxyStr)
+	if err != nil {
+		fmt.Fprintf(stderr, "omac sandbox: warning: invalid upstream proxy %q: %v — falling back to direct dialing\n", proxyStr, err)
+		return netproxy.NewDirectDialer(filter)
+	}
+
+	var noProxy []string
+	if len(p.Network.NoProxy) > 0 {
+		noProxy = p.Network.NoProxy
+	} else {
+		noProxyStr := os.Getenv("NO_PROXY")
+		if noProxyStr == "" {
+			noProxyStr = os.Getenv("no_proxy")
+		}
+		if noProxyStr != "" {
+			noProxy = strings.Split(noProxyStr, ",")
+			for i, s := range noProxy {
+				noProxy[i] = strings.TrimSpace(s)
+			}
+		}
+	}
+
+	logf("omac sandbox: using upstream proxy %s", proxyURL.Host)
+
+	return netproxy.NewUpstreamProxyDialer(proxyURL, noProxy, filter, logf)
 }
