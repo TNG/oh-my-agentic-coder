@@ -5,7 +5,8 @@ A harness release can silently break omac by renaming a CLI flag, moving a
 subcommand, or changing a config schema. The weekly
 [`E2E: drift` workflow](../.github/workflows/e2e-smoke.yml) (also manually
 dispatchable) is the tripwire: it installs every harness's **latest** release and
-records three stages per harness.
+records three stages per harness, against **two omac versions** — `main` (built
+from source) and `release` (the latest published binary, i.e. what users run):
 
 | Stage | What it proves | Model call? |
 |-------|----------------|-------------|
@@ -13,7 +14,9 @@ records three stages per harness.
 | `launch` | `omac start <harness>` reaches the real binary through the sandbox (PATH, config-home, sandbox admission). | no |
 | `llm` | A **single lightweight** agent turn (echo-rest) — confirms the model auth/proxy path and sidecar facade. Run for every harness, claude-code included. The heavy multi-probe security-audit stays in the pinned weekly `E2E: full`. | yes |
 
-`✅` pass · `❌` fail · `➖` not run.
+`✅` pass · `❌` fail · `➖` not run. The matrix is
+`harness × os × omac{main,release}` (codex/macOS excluded), and rows are sorted
+newest-first, then grouped by omac version, OS, and harness.
 
 ## Where the record lives
 
@@ -23,9 +26,9 @@ The matrix is **not** committed to this repo (no bot pushes to `main`):
   (label `auto-update tracker`). Its **description is rewritten in place** every run —
   never via comments — with a status header, the currently-failing rows (if any),
   and a rolling 30-day history, newest first.
-- **Permanent archive** — every run appends to `harness-compat/HARNESS_COMPAT.md`
-  in the private security repo `nhuelstng/oh-my-agentic-coder-security` (a distinct
-  subpath from the security scans' `scans/`), giving full diffable history.
+- **Permanent archive** — every run appends to a private archive repo (the same
+  repo the security scans use), under a `harness-compat/` subpath, giving full
+  diffable history. The repo name is not printed into the public dashboard issue.
 - **Slack** — every run (pass or fail) posts a status message with links to the
   dashboard issue and the run log. On a failure it includes a short **SKAINET**-
   generated summary of exactly what broke (which harness/OS/stage and the specific
@@ -37,7 +40,8 @@ The matrix is **not** committed to this repo (no bot pushes to `main`):
 | Setting | Type | Status | Purpose |
 |---------|------|--------|---------|
 | `auto-update tracker` | label | created | Applied to the dashboard tracking issue. |
-| `SECURITY_SCAN_PAT` | secret | reused | Same PAT `security-scan.yml` uses; needs `contents: write` on the security repo. Archive mirror is skipped if absent. |
+| `SECURITY_ARCHIVE_REPO` | secret | **set once** | `owner/repo` of the private archive repo, kept out of public source. Shared with `security-scan.yml`. Archive mirror (and the security-scan report push) skip if unset. |
+| `SECURITY_SCAN_PAT` | secret | reused | Same PAT `security-scan.yml` uses; needs `contents: write` on `SECURITY_ARCHIVE_REPO`. Archive mirror is skipped if absent. |
 | `SLACK_WEBHOOK_URL` | secret | **you add** | Incoming-webhook URL for the per-run status message. Unset ⇒ Slack step is a no-op (everything else still runs). |
 
 ### Configuring Slack
