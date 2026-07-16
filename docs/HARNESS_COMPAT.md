@@ -11,7 +11,7 @@ records three stages per harness.
 |-------|----------------|-------------|
 | `contract` | Every CLI flag/subcommand omac derives from its registry still exists in the harness's `--help` (see `internal/e2e/contract.go`). | no |
 | `launch` | `omac start <harness>` reaches the real binary through the sandbox (PATH, config-home, sandbox admission). | no |
-| `llm` | A real agent turn against the model provider — verifies the auth/proxy path. Run for **every** harness, claude-code included. | yes |
+| `llm` | A **single lightweight** agent turn (echo-rest) — confirms the model auth/proxy path and sidecar facade. Run for every harness, claude-code included. The heavy multi-probe security-audit stays in the pinned weekly `E2E: full`. | yes |
 
 `✅` pass · `❌` fail · `➖` not run.
 

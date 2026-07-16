@@ -7,8 +7,11 @@
 #              registry still exists in the harness's --help.
 #   launch   — model-free: `omac start <harness>` reaches the real binary
 #              through the sandbox.
-#   llm      — a real agent turn against the model provider (verifies the
-#              auth/proxy path). Run for every harness, claude-code included.
+#   llm      — a SINGLE lightweight agent turn (echo-rest) against the model
+#              provider, verifying the auth/proxy path and sidecar facade. Run
+#              for every harness, claude-code included. The heavy multi-probe
+#              security-audit is NOT run here — it stays in the pinned weekly
+#              "E2E: full".
 #
 # Outcomes are recorded in a single, stable "Harness compatibility matrix"
 # tracking issue (label: "auto-update tracker") whose DESCRIPTION is rewritten
@@ -118,15 +121,27 @@ jobs:
       - name: LLM turn
         id: llm
         continue-on-error: true
-        # Run for every harness, claude-code included (it is billed against the
-        # real Anthropic account, but this suite is weekly so the cost is bounded).
+        # A SINGLE lightweight agent turn (echo-rest) — just enough to confirm
+        # the model auth/proxy path and the sidecar facade still work on the
+        # latest release. The heavy multi-probe security-audit suite is NOT run
+        # here; it stays in the pinned weekly "E2E: full". Run for every harness,
+        # claude-code included (billed, but this suite is weekly).
+        #
+        # Retry once: a single agent turn can non-deterministically refuse or go
+        # off-script (AGENT_REFUSED) — that's model behavior, not an omac break —
+        # so one retry keeps a transient refusal from reddening the whole run.
         env:
           E2E_CACHE_DIR: ${{ runner.temp }}/e2e-install-cache
         run: |
           set -o pipefail
-          go test -tags=e2e -timeout=25m -v \
-            -run 'TestE2EEchoRest|TestE2ESecurityAudit' \
-            ./internal/e2e/ 2>&1 | tee llm.log
+          attempt=1; max=2
+          while :; do
+            if go test -tags=e2e -timeout=12m -v -run TestE2EEchoRest ./internal/e2e/ 2>&1 | tee llm.log; then
+              break
+            fi
+            if [ "$attempt" -ge "$max" ]; then exit 1; fi
+            attempt=$((attempt + 1)); echo "llm turn flaked — retrying ($attempt/$max)"; sleep 5
+          done
 
       - name: Build compatibility row
         id: row
@@ -253,12 +268,16 @@ jobs:
           SKAINET_INTERNAL: ${{ secrets.SKAINET_EXTERNAL }}
         run: |
           # Build a bounded failure context from each failing leg's own logs.
+          # The failing stage is taken from the row's ❌ columns and stated
+          # explicitly so the summariser attributes it correctly instead of
+          # guessing (contract=col7, launch=col8, llm=col9).
           : > failure-context.txt
           while IFS= read -r row; do
             os=$(printf '%s' "$row" | awk -F'|' '{gsub(/^[ \t]+|[ \t]+$/,"",$4); print $4}')
             harness=$(printf '%s' "$row" | awk -F'|' '{gsub(/^[ \t]+|[ \t]+$/,"",$5); print $5}')
+            stages=$(printf '%s' "$row" | awk -F'|' '{s=""; if($7 ~ /❌/)s=s" contract"; if($8 ~ /❌/)s=s" launch"; if($9 ~ /❌/)s=s" llm"; print s}')
             dir="logs/smoke-logs-$os-$harness"
-            echo "=== $harness / $os ===" >> failure-context.txt
+            echo "=== $harness / $os — failing stage(s):$stages ===" >> failure-context.txt
             grep -hE 'CLI contract drift|no longer exposes|--- FAIL|omac start .* failed|FAIL \[|Error|panic:' \
               "$dir"/modelfree.log "$dir"/llm.log 2>/dev/null | head -40 >> failure-context.txt || true
             tail -n 30 "$dir"/llm.log 2>/dev/null >> failure-context.txt || true
@@ -274,14 +293,20 @@ jobs:
             | grep '"opencode"' | sed -E 's/.*:\s*"([^"]+)".*/\1/')
           [ -z "$model" ] && model="zai-org/GLM-5.2"
           ctx=$(head -c 6000 failure-context.txt)
-          sys="You are a CI assistant for the omac project. In at most 3 short sentences, state exactly what went wrong in these harness compatibility logs: name the harness, OS, the failing stage (contract/launch/llm), and the specific flag or error message when present. No preamble, no fixes."
+          sys="You are a CI assistant for the omac project. In at most 3 short sentences, state exactly what went wrong in these harness compatibility logs: name the harness, OS, and the specific flag or error message when present. Use the failing stage(s) stated in each '=== ... ===' header verbatim — do NOT infer or rename the stage. Output only the summary: no preamble, no fixes, and no chain-of-thought or <think> tags."
           payload=$(jq -n --arg m "$model" --arg s "$sys" --arg u "$ctx" \
             '{model:$m,temperature:0.2,max_tokens:220,messages:[{role:"system",content:$s},{role:"user",content:$u}]}')
+          # X-Separate-Reasoning routes GLM's reasoning to a separate field so it
+          # stays out of message.content (same header the codex/pi configs use).
           resp=$(curl -sS --max-time 60 "$SKAINET_INTERNAL/chat/completions" \
             -H "Authorization: Bearer $SKAINET_TOKEN" -H 'Content-Type: application/json' \
+            -H 'X-Separate-Reasoning: 1' -H 'X-User-Agent: omac-ci' \
             --data "$payload" || true)
           summary=$(printf '%s' "$resp" | jq -r '.choices[0].message.content // empty' 2>/dev/null || true)
-          if [ -n "$summary" ]; then
+          # Belt-and-suspenders: strip any residual <think>…</think> block and
+          # leading blank lines the model may still emit inline.
+          summary=$(printf '%s' "$summary" | perl -0777 -pe 's{<think>.*?</think>}{}gs; s/\A\s+//' 2>/dev/null || printf '%s' "$summary")
+          if [ -n "$(printf '%s' "$summary" | tr -d '[:space:]')" ]; then
             printf '%s\n' "$summary" > failure-summary.txt
             echo "AI summary:"; cat failure-summary.txt
           else
@@ -347,7 +372,13 @@ jobs:
               echo "|---|---|---|---|---|:-:|:-:|:-:|"
               cat failing.rows
               echo ""
-              echo "A ❌ in **contract** means the installed release renamed/removed a flag omac depends on — fix \`internal/config/harness.go\` and/or \`internal/e2e/harnesses.go\`. See docs/HARNESS_COMPAT.md."
+              # Footer hint depends on the failing stage: the contract-drift
+              # guidance is only relevant when a contract check actually failed.
+              if awk -F'|' '{gsub(/ /,"",$7)} $7 ~ /❌/{f=1} END{exit f?0:1}' failing.rows; then
+                echo "A ❌ in **contract** means the installed release renamed/removed a flag omac depends on — fix \`internal/config/harness.go\` and/or \`internal/e2e/harnesses.go\`. See docs/HARNESS_COMPAT.md."
+              else
+                echo "See the summary above and the [run log]($RUN_URL) for the failing stage; a **launch**/**llm** ❌ is a sandbox-launch or model/agent-turn failure, not a CLI-contract break."
+              fi
             fi
             echo ""
             echo "## History (rolling 30 days)"
@@ -440,5 +471,8 @@ jobs:
           else
             text="🟢 omac harness compatibility: all $TOTAL combination(s) green. Dashboard: $ISSUE_URL — Run: $RUN_URL"
           fi
-          payload=$(printf '{"text":%s}' "$(printf '%s' "$text" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')")
+          # The Slack endpoint is a Workflow Builder webhook: its payload keys
+          # must match the workflow's declared variables, which expect "message"
+          # (a "text" key is ignored and the downstream block fails invalid_blocks).
+          payload=$(printf '{"message":%s}' "$(printf '%s' "$text" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')")
           curl -sS -X POST -H 'Content-type: application/json' --data "$payload" "$SLACK_WEBHOOK_URL"
