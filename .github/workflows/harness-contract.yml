@@ -1,0 +1,87 @@
+# Harness CLI-contract gate.
+#
+# Runs ONLY on PRs that touch the harness descriptors or the e2e harness
+# wiring/pins. It installs each harness at its PINNED version and runs the
+# model-free smoke tier (contract + launch probe) — no model call, no SKAINET
+# token — so a version bump or a change to RunArgs/SystemContextArgs is checked
+# against the harness's actual CLI before merge, instead of surfacing up to a
+# week later in the weekly full suite. Latest-release drift is covered nightly
+# by e2e-smoke.yml.
+name: Harness contract
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - internal/config/harness.go
+      - internal/e2e/harnesses.go
+      - internal/e2e/versions.go
+      - internal/e2e/contract.go
+      - internal/e2e/contract_test.go
+      - internal/e2e/smoke_test.go
+
+permissions:
+  contents: read
+
+concurrency:
+  group: harness-contract-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contract:
+    name: Contract + launch (${{ matrix.harness }})
+    # Linux only: the launch probe needs bwrap. macOS-specific behavior is
+    # covered by the nightly e2e-smoke.yml.
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        harness: [opencode, claude-code, codex, copilot, pi]
+    env:
+      E2E_HARNESS: ${{ matrix.harness }}
+      # No E2E_USE_LATEST: gate against the pinned version in versions.go, which
+      # is the version this PR is proposing to ship.
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install bubblewrap
+        run: |
+          sudo apt-get update && sudo apt-get install -y bubblewrap
+          sudo tee /etc/apparmor.d/bwrap > /dev/null <<'EOF'
+          abi <abi/4.0>,
+          /usr/bin/bwrap flags=(unconfined) {
+            userns,
+          }
+          EOF
+          sudo apparmor_parser -r /etc/apparmor.d/bwrap
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Cache harness install packages
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/e2e-install-cache
+          key: harness-contract-${{ runner.os }}-${{ matrix.harness }}-${{ hashFiles('internal/e2e/versions.go') }}
+          restore-keys: |
+            harness-contract-${{ runner.os }}-${{ matrix.harness }}-
+
+      - name: Contract + launch probe (model-free)
+        env:
+          E2E_CACHE_DIR: ${{ runner.temp }}/e2e-install-cache
+        run: |
+          go test -tags=e2e -timeout=15m -v \
+            -run 'TestHarnessCLIContract|TestHarnessLaunchProbe' \
+            ./internal/e2e/
