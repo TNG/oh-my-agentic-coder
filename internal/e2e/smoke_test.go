@@ -20,8 +20,8 @@
 //
 //	go test -tags=e2e -run 'TestHarnessCLIContract|TestHarnessLaunchProbe' ./internal/e2e/
 //
-// so a version-bump PR can gate on them cheaply. The nightly drift workflow
-// runs them with E2E_USE_LATEST=1 across every harness and OS.
+// The weekly "E2E: drift" workflow runs them with E2E_USE_LATEST=1 across every
+// harness and OS (alongside the llm stage), never as a separate per-PR job.
 //
 // Each test prints one machine-readable OMAC_COMPAT line per harness/stage
 // (see compatLine); the workflow parses those into the persisted compatibility
@@ -145,7 +145,11 @@ func TestHarnessLaunchProbe(t *testing.T) {
 
 			cmd := exec.CommandContext(ctx, omacBin, args...)
 			cmd.Dir = workdir
-			cmd.Env = append(buildAgentEnv(t, h, home), "PWD="+workdir)
+			// A `--version` probe needs no provider creds, so use a bare HOME
+			// env — NOT buildAgentEnv, whose per-harness EnvVars t.Fatal when
+			// SKAINET_TOKEN is unset (claude-code, copilot). This keeps the
+			// launch probe genuinely model-free and secret-free.
+			cmd.Env = append(withHome(os.Environ(), home), "PWD="+workdir)
 			cmd.Stdin = strings.NewReader("")
 			var stdout, stderr bytes.Buffer
 			cmd.Stdout = &stdout

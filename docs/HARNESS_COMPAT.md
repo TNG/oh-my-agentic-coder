@@ -3,7 +3,7 @@
 omac supports several inner harnesses (opencode, claude-code, codex, copilot, pi).
 A harness release can silently break omac by renaming a CLI flag, moving a
 subcommand, or changing a config schema. The weekly
-[E2E smoke workflow](../.github/workflows/e2e-smoke.yml) (also manually
+[`E2E: drift` workflow](../.github/workflows/e2e-smoke.yml) (also manually
 dispatchable) is the tripwire: it installs every harness's **latest** release and
 records three stages per harness.
 
@@ -51,15 +51,13 @@ The matrix is **not** committed to this repo (no bot pushes to `main`):
 The workflow posts on **every** run — `🟢 all green` or `🔴 N failing` (with the
 SKAINET summary of what broke) — plus links to the dashboard issue and the run log.
 
-## Gating version bumps
+## Running the model-free checks
 
-A PR that touches the harness descriptors or pins (`internal/config/harness.go`,
-`internal/e2e/harnesses.go`, `internal/e2e/versions.go`) triggers
-[`harness-contract.yml`](../.github/workflows/harness-contract.yml), which runs the
-model-free `contract` + `launch` stages against the **pinned** version before merge —
-no token, no model call. Latest-release drift is caught nightly.
-
-Run the smoke tier locally:
+The `contract` and `launch` stages need no token or model call. They run weekly as
+part of `E2E: drift` (never as a separate per-PR job). On every PR, `CI` →
+`E2E: model-free` also runs the pure-Go derivation unit tests (`contract_test.go`),
+which verify the checked flags stay wired to the registry — without installing any
+harness. Run the full model-free tier locally:
 
 ```sh
 go test -tags=e2e -run 'TestHarnessCLIContract|TestHarnessLaunchProbe' -v ./internal/e2e/

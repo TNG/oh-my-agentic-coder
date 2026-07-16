@@ -1,4 +1,4 @@
-# E2E smoke: harness-version drift detection.
+# E2E: drift — harness-version drift detection.
 #
 # Runs weekly (and on manual dispatch). For every harness × OS it installs the
 # harness's LATEST release and records three stages — see docs/HARNESS_COMPAT.md:
@@ -20,7 +20,7 @@
 # message carries a short SKAINET-generated summary of exactly what broke.
 # Nothing is pushed to this repo's main. This is the regular tripwire that
 # catches a harness release breaking omac's assumptions.
-name: E2E smoke
+name: "E2E: drift"
 
 on:
   workflow_dispatch:
@@ -39,7 +39,7 @@ permissions:
 
 jobs:
   smoke:
-    name: Smoke (${{ matrix.harness }} / ${{ matrix.os }})
+    name: "${{ matrix.harness }} / ${{ matrix.os }}"
     strategy:
       fail-fast: false
       matrix:
@@ -199,7 +199,7 @@ jobs:
           fi
 
   report:
-    name: Record matrix + report drift
+    name: Record & report
     needs: smoke
     if: always()
     runs-on: ubuntu-latest

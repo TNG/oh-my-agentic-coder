@@ -28,9 +28,10 @@
 // Fast subset:      go test -tags=e2e_fast ./internal/e2e/  (model-free, no token/harness; runs in PR CI)
 // Smoke subset:     go test -tags=e2e -run 'TestHarnessCLIContract|TestHarnessLaunchProbe' ./internal/e2e/
 //                     (installs the real harness but makes NO model call — the CLI
-//                      contract check + sandbox launch probe. Gates harness version
-//                      bumps in harness-contract.yml; runs weekly on latest in
-//                      e2e-smoke.yml, which records the compatibility matrix.)
+//                      contract check + sandbox launch probe. Runs weekly on latest
+//                      as part of "E2E: drift" (e2e-smoke.yml), which records the
+//                      compatibility matrix. The pure-Go derivation checks run on
+//                      every PR under -tags=e2e_fast.)
 //
 // Harness versions and model IDs are pinned in versions.go.
 // Set E2E_USE_LATEST=1 to test with latest releases (no pinning).

@@ -10,7 +10,7 @@
 # Manual trigger only — this is a documentation-completeness audit, not a
 # regression gate, and involves a longer, more open-ended agent session
 # (real package installs, retries) than the scripted matrix suite.
-name: E2E README Onboarding
+name: "E2E: onboarding"
 
 on:
   workflow_dispatch:

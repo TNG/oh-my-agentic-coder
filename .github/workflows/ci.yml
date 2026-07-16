@@ -147,11 +147,11 @@ jobs:
     # regression tests that need no live LLM harness, API token, or OS
     # sandbox — dir_token isolation driven over real loopback sockets, the
     # mutation-tested assertion predicates, the --no-sandbox exposure report,
-    # and the harness/version registry invariants. The full e2e.yml suite
-    # (live models) still runs weekly; this gate keeps these regressions off
-    # the merge path instead of surfacing them up to a week later. No
+    # and the harness/version registry invariants. The full "E2E: full" suite
+    # (e2e.yml, live models) still runs weekly; this gate keeps these regressions
+    # off the merge path instead of surfacing them up to a week later. No
     # bubblewrap: `omac serve --no-inner` exercises the control plane only.
-    name: E2E fast (${{ matrix.os }})
+    name: "E2E: model-free (${{ matrix.os }})"
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
