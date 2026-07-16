@@ -66,9 +66,8 @@ Rules:
 - Cite code with `path/to/file.go:NN` so it is jumpable.
 - Use `- [ ]` checkboxes for actionable sub-items.
 - Add an `Acceptance criteria` checklist for substantive work.
-- Terse one-liners are fine when the ask is self-evident — but never
-  omit the *why*.
-- Labels are optional but helpful (`bug`, `enhancement`,
+- Always include the *why* — an issue without motivation is untriageable.
+- Labels are helpful and recommended (`bug`, `enhancement`,
   `security`, `documentation`, `agent-created`).
 
 ## Spec: Pull Request structure
@@ -84,18 +83,16 @@ PRs mirror the conventions already established in this repo:
 ```
 
 Rules:
-- **Title:** Conventional Commits with scope —
-  `fix(sandbox): protect docker.sock by default`,
-  `feat(update): add omac self-update`, `docs(readme): fix onboarding
-  gaps`, `test(e2e): ...`. Types: `feat`, `fix`, `test`, `docs`,
-  `chore`. Scope is a package/area; comma-separate cross-cutting
+- **Title:** Conventional Commits with scope — e.g.
+  `fix(sandbox): protect docker.sock by default` or
+  `feat(update): add omac self-update`. Types: `feat`, `fix`, `test`,
+  `docs`, `chore`. Scope is a package/area; comma-separate cross-cutting
   scopes (`fix(sandbox,e2e):`).
 - **Always link the issue:** `Closes #NN` (auto-closes on merge) or
   `Refs #NN` (reference only). Prefer `Closes` when the PR fully
   resolves the issue.
 - **Verification is the most valued section** — show the actual
   commands you ran and their result. No claim of "done" without it.
-- No screenshots needed (infra/backend repo).
 - Signal agent authorship with a `🤖 Generated with ...` footer or
   `Co-Authored-By:` line when an agent wrote the change.
 - Keep the body **concise** — structured bullets, not essays.

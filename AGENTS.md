@@ -1,5 +1,11 @@
 # AGENTS.md
 
+Before starting any work in this repo, read and adhere to
+[`COLLABORATION.md`](./COLLABORATION.md). It defines the workflow
+(issue-tracked work, self-assignment, small branches, explicit
+reviews, no merge without approval) and the expected structure for
+issues and PRs.
+
 ## E2E testing via Docker
 
 The omac e2e suite (`internal/e2e/`, build tag `e2e`) verifies every
