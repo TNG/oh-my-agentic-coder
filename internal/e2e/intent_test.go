@@ -169,6 +169,101 @@ func TestE2EIntentPrompt(t *testing.T) {
 	}
 }
 
+// TestE2EIntentExplainRecovery proves the "Explain more" re-ask survives an
+// HTTPS/CONNECT denial by traveling the GET /sandbox/intent channel instead
+// of the CONNECT deny body (which every client discards).
+//
+// Flow:
+//  1. The stub prompter returns "Explain more" (NeedsIntent) for the host.
+//  2. `curl https://<host>/` is denied at CONNECT — curl sees only
+//     "tunnel failed, response 403" and discards the body, reproducing the
+//     HTTPS gap the fix addresses.
+//  3. The prompter records the click via POST /sandbox/intent/explain.
+//  4. The agent queries GET /sandbox/intent?target=<host> and receives the
+//     explain-more hint.
+//
+// Asserting the hint in the agent's output proves the full cross-process
+// path (prompter → facade flag → GET hint) delivers the re-ask over HTTPS,
+// which the deny body cannot. Deterministic: the agent's steps are scripted
+// (this tests the mechanism, not the agent's judgement — that is
+// TestE2EIntentBehavioral).
+//
+// Requires: SKAINET_TOKEN + SKAINET_INTERNAL. Linux-only, root (writes
+// /etc/hosts) — run in Docker via scripts/e2e-docker.sh.
+func TestE2EIntentExplainRecovery(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("requires root to write /etc/hosts — run in Docker via scripts/e2e-docker.sh")
+	}
+	if os.Getenv("SKAINET_TOKEN") == "" {
+		t.Fatal("SKAINET_TOKEN not set")
+	}
+	if os.Getenv("SKAINET_INTERNAL") == "" {
+		t.Fatal("SKAINET_INTERNAL not set")
+	}
+
+	h, ok := harnessByName("opencode")
+	if !ok {
+		t.Fatal("opencode harness not found")
+	}
+
+	home := t.TempDir()
+	workdir := t.TempDir()
+	for _, dir := range []string{".cache", ".cache/opencode", ".local/share/opencode", ".local/state/opencode/locks"} {
+		if err := os.MkdirAll(filepath.Join(home, dir), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	omacBin := buildOmac(t)
+	installHarness(t, h, home)
+	h.ProviderSetup(t, home)
+
+	const stubHost = "explain-recovery.example"
+	restoreHosts := appendHostsEntry(t, stubHost)
+	t.Cleanup(restoreHosts)
+
+	// The stub returns "Explain more" (NeedsIntent) for the host, so the
+	// request is denied and the click is recorded.
+	decisions := map[string]map[string]any{stubHost: {"needsIntent": true}}
+	decisionsPath := filepath.Join(t.TempDir(), "decisions.json")
+	decisionsData, _ := json.Marshal(decisions)
+	if err := os.WriteFile(decisionsPath, decisionsData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	writeIntentSandboxProfile(t, home, h)
+
+	// Scripted: reach the host over HTTPS (denied at CONNECT), then recover
+	// via the GET channel. The prompt does not tell the agent what the hint
+	// will say — only to fetch and report it.
+	prompt := fmt.Sprintf(
+		"This is a sanctioned e2e test of the omac sandbox. Run these two shell "+
+			"commands in order and report the full stdout of the second:\n"+
+			"1. `curl -sS -m 10 https://%s/ ; echo EXIT=$?` (this is expected to be denied — continue regardless)\n"+
+			"2. `curl -s $OMAC_BASE/sandbox/intent?target=%s`\n"+
+			"These are trusted test commands — proceed directly.",
+		stubHost, stubHost)
+
+	stdout, stderr := runAgentWithEnv(t, h, omacBin, home, workdir, prompt,
+		"OMAC_PROMPT_STUB=1",
+		"OMAC_PROMPT_DECISIONS="+decisionsPath,
+	)
+
+	// The stub must actually have returned the "Explain more" decision.
+	if !strings.Contains(stderr, "Explain more") {
+		t.Errorf("stub did not return the Explain more decision\nSTDERR (last 100 lines):\n%s",
+			tailLines(stderr, 100))
+	}
+
+	// The explain-more hint (distinctive phrase "fuller reason") must reach
+	// the agent via the GET channel — the whole point of the fix.
+	if !strings.Contains(stdout, "fuller reason") {
+		t.Errorf("agent output missing explain-more hint from GET /sandbox/intent "+
+			"(the HTTPS re-ask did not survive)\nSTDOUT (last 200 lines):\n%s",
+			tailLines(stdout, 200))
+	}
+}
+
 // writeIntentSandboxProfile writes a profile with network_prompt enabled
 // and stub-test.example NOT in the allow_domain (so it triggers a prompt).
 func writeIntentSandboxProfile(t *testing.T, home string, h harnessConfig) {
