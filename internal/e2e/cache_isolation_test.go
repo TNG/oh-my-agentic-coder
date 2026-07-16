@@ -1129,8 +1129,12 @@ func TestE2ECacheTools(t *testing.T) {
 		fixture.start()
 		defer fixture.stop()
 
-		// Write a profile that opens the fixture's port.
-		writeCacheTestProfile(t, home, runtimeReadPaths, nil, fixture.port)
+		// Write a profile that opens the fixture's port. Preserve the
+		// rustup update-hashes writable grant so subsequent rustc/cargo
+		// subtests (which reuse this profile) still pass: the rustup
+		// proxy shim unconditionally mkdirs ~/.rustup/update-hashes on
+		// every invocation and fails if the parent isn't writable.
+		writeCacheTestProfile(t, home, runtimeReadPaths, rustupAllowPaths, fixture.port)
 
 		// Generate a local source archive served from the fixture.
 		archive := fixture.serveSourceArchive(t)
@@ -1140,7 +1144,7 @@ func TestE2ECacheTools(t *testing.T) {
 			"PROBE_PIP_TARGET=" + filepath.Join(workdir, "pip-install"),
 		},
 			"/bin/sh", "-c",
-			"python3 -m pip download --no-deps --dest \"$PROBE_PIP_TARGET\" --index-url \"$PROBE_PIP_INDEX_URL\" omac-cache-probe 2>&1 && "+
+			"python3 -m pip download --no-deps --dest \"$PROBE_PIP_TARGET\" --index-url \"$PROBE_PIP_INDEX_URL\" --trusted-host 127.0.0.1 omac-cache-probe 2>&1 && "+
 				"test -d \"$PIP_CACHE_DIR\" && echo PIP_CACHE_EXISTS && "+
 				"test -n \"$(ls -A \"$PIP_CACHE_DIR\")\" && echo PIP_CACHE_NONEMPTY && "+
 				"python3 -m pip cache purge >/dev/null 2>&1; true")
@@ -1398,13 +1402,24 @@ func newPipFixture(t *testing.T) *pipFixture {
 
 func (p *pipFixture) start() {
 	p.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// pip only caches responses from trusted (HTTPS or explicitly
+		// trusted) hosts — see pip's InsecureHTTPAdapter vs.
+		// CacheControlAdapter mount in pip._internal.network.session.
+		// The pip subtest passes --trusted-host 127.0.0.1 so the
+		// InsecureCacheControlAdapter (which does cache) is used for
+		// our loopback HTTP fixture. cachecontrol additionally requires
+		// an ETag (or Date + Cache-Control: max-age) to deem a response
+		// cacheable; without it pip never writes to PIP_CACHE_DIR.
+		w.Header().Set("ETag", `"omac-pip-fixture"`)
 		// pip --index-url points at /simple/. pip fetches the package list
 		// from /simple/ (top-level) and then /simple/<name>/ (per-package).
 		if r.URL.Path == "/simple/" || r.URL.Path == "/simple" {
+			w.Header().Set("Content-Type", "text/html")
 			fmt.Fprint(w, `<!DOCTYPE html><html><body><a href="/simple/omac-cache-probe/">omac-cache-probe</a></body></html>`)
 			return
 		}
 		if r.URL.Path == "/simple/omac-cache-probe/" {
+			w.Header().Set("Content-Type", "text/html")
 			fmt.Fprint(w, `<!DOCTYPE html><html><body><a href="/packages/omac_cache_probe-0.0.1-py3-none-any.whl">omac-cache-probe-0.0.1</a></body></html>`)
 			return
 		}
