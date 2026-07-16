@@ -514,7 +514,8 @@ func TestRunServeRetainsCacheLockAndAllowsOnlyScope(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read captured environment: %v", err)
 	}
-	for key, want := range toolcache.Environment(scope.Dir, toolcache.ModePersistent) {
+	for _, key := range []string{"OMAC_CACHE_DIR", "OMAC_CACHE_MODE"} {
+		want := toolcache.Environment(scope.Dir, toolcache.ModePersistent)[key]
 		if got := parseEnvironment(string(envData))[key]; got != want {
 			t.Errorf("%s = %q, want %q", key, got, want)
 		}

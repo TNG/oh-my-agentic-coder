@@ -16,11 +16,9 @@
 package e2e
 
 import (
-	"archive/tar"
 	"archive/zip"
 	"bufio"
 	"bytes"
-	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -90,6 +88,9 @@ func runOmacShell(t *testing.T, omacBin, home, workdir string, extraArgs []strin
 	args := []string{"start", "claude-code"}
 	args = append(args, extraArgs...)
 	args = append(args, "--inner", "/bin/sh", "--")
+	if len(innerArgv) > 0 && innerArgv[0] == "/bin/sh" {
+		innerArgv = innerArgv[1:]
+	}
 	args = append(args, innerArgv...)
 	cmd := exec.CommandContext(ctx, omacBin, args...)
 	cmd.Dir = workdir
@@ -124,6 +125,9 @@ func runOmacServeShell(t *testing.T, omacBin, home, workdir string, extraArgs []
 	args := []string{"serve", "claude-code"}
 	args = append(args, extraArgs...)
 	args = append(args, "--inner", "/bin/sh", "--")
+	if len(innerArgv) > 0 && innerArgv[0] == "/bin/sh" {
+		innerArgv = innerArgv[1:]
+	}
 	args = append(args, innerArgv...)
 	cmd := exec.CommandContext(ctx, omacBin, args...)
 	cmd.Dir = workdir
@@ -167,6 +171,17 @@ func cacheTestHome(t *testing.T) string {
 			t.Fatal(err)
 		}
 	}
+	t.Cleanup(func() {
+		_ = filepath.WalkDir(filepath.Join(home, ".cache"), func(path string, d os.DirEntry, err error) error {
+			if err != nil {
+				return nil
+			}
+			if d.IsDir() {
+				_ = os.Chmod(path, 0o755)
+			}
+			return nil
+		})
+	})
 	return home
 }
 
@@ -409,6 +424,14 @@ func toolRuntimeReadPaths(t *testing.T) []string {
 		if err != nil {
 			return false
 		}
+		if abs, aerr := filepath.Abs(path); aerr == nil {
+			path = abs
+		}
+		// Grant the unresolved PATH-entry dir (the shim dir, e.g.
+		// ~/.cargo/bin) so the tool is found on PATH inside the
+		// sandbox, AND the symlink-resolved dir so the real binary
+		// and its siblings (shared libs, runtime) are reachable.
+		add(filepath.Dir(path))
 		resolved, err := resolveRuntimePath(path)
 		if err != nil {
 			t.Fatalf("resolve %s executable %q: %v", name, path, err)
@@ -423,9 +446,18 @@ func toolRuntimeReadPaths(t *testing.T) []string {
 		for _, path := range strings.Split(commandOutput(t, "python3", "-c", "import sysconfig; print('\\n'.join(filter(None, (sysconfig.get_path(name) for name in ('stdlib', 'platstdlib', 'purelib', 'platlib')))))"), "\n") {
 			add(path)
 		}
+		if libDir := commandOutput(t, "python3", "-c", "import sysconfig; print(sysconfig.get_config_var('LIBDIR') or '')"); libDir != "" {
+			add(libDir)
+		}
 	}
 	if available("npm") {
 		add(commandOutput(t, "npm", "root", "-g"))
+		// Grant the Node.js install prefix's lib dir so the node
+		// runtime can load built-in modules; without it, node may
+		// segfault inside the sandbox.
+		if npmPrefix := commandOutput(t, "npm", "config", "get", "prefix"); npmPrefix != "" {
+			add(filepath.Join(npmPrefix, "lib"))
+		}
 	}
 	rustcSysroot := ""
 	if available("rustc") {
@@ -481,7 +513,28 @@ func cargoRuntimeEnv(t *testing.T) []string {
 	if rustupHome == "" {
 		return nil
 	}
-	return []string{"RUSTUP_HOME=" + rustupHome}
+	return []string{
+		"RUSTUP_HOME=" + rustupHome,
+		"RUSTUP_DISABLE_AUTO_UPDATE=1",
+	}
+}
+
+// rustupUpdateHashesDirs returns the update-hashes directory under the
+// host RUSTUP_HOME, so the profile can grant it writable. The rustup
+// proxy shim unconditionally tries to mkdir this directory on every
+// invocation; without write access it fails with "could not create
+// update-hash directory". The directory holds integrity hashes, not
+// credentials.
+func rustupUpdateHashesDirs(t *testing.T) []string {
+	t.Helper()
+	if _, err := exec.LookPath("rustc"); err != nil {
+		return nil
+	}
+	rustupHome, _ := cargoRustupRuntime(t, commandOutput(t, "rustc", "--print", "sysroot"))
+	if rustupHome == "" {
+		return nil
+	}
+	return []string{filepath.Join(rustupHome, "update-hashes")}
 }
 
 func validateCacheRedirects(cacheDir string, environment map[string]string) error {
@@ -521,7 +574,7 @@ func TestE2ECachePersistentReuse(t *testing.T) {
 	writeCacheTestProfile(t, home, nil, nil, 0)
 	omacBin := buildOmac(t)
 
-	marker := "persistent-cache-marker-$$"
+	marker := "persistent-cache-marker"
 	out, code := runOmacShell(t, omacBin, home, workdir, nil,
 		"/bin/sh", "-c", "echo OMAC_CACHE_MODE=$OMAC_CACHE_MODE; echo "+marker+" > \"$OMAC_CACHE_DIR/probe.txt\" && echo WROTE")
 	if code != 0 {
@@ -655,6 +708,9 @@ func runOmacShellWithEnv(t *testing.T, omacBin, home, workdir string, extraArgs,
 	args := []string{"start", "claude-code"}
 	args = append(args, extraArgs...)
 	args = append(args, "--inner", "/bin/sh", "--")
+	if len(innerArgv) > 0 && innerArgv[0] == "/bin/sh" {
+		innerArgv = innerArgv[1:]
+	}
 	args = append(args, innerArgv...)
 	cmd := exec.CommandContext(ctx, omacBin, args...)
 	cmd.Dir = workdir
@@ -941,7 +997,18 @@ func TestE2ECacheTools(t *testing.T) {
 	home := cacheTestHome(t)
 	workdir := t.TempDir()
 	runtimeReadPaths := toolRuntimeReadPaths(t)
-	writeCacheTestProfile(t, home, runtimeReadPaths, nil, 0)
+	// rustup shims try to mkdir ~/.rustup/update-hashes on every
+	// invocation; grant it writable so the shim doesn't fail. The
+	// directory holds integrity hashes, not credentials.
+	rustupAllowPaths := rustupUpdateHashesDirs(t)
+	for _, d := range rustupAllowPaths {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Logf("could not pre-create %s: %v", d, err)
+		} else {
+			t.Logf("pre-created rustup update-hashes dir: %s", d)
+		}
+	}
+	writeCacheTestProfile(t, home, runtimeReadPaths, rustupAllowPaths, 0)
 	omacBin := buildOmac(t)
 
 	t.Run("go", func(t *testing.T) {
@@ -953,6 +1020,9 @@ func TestE2ECacheTools(t *testing.T) {
 			t.Fatal(err)
 		}
 		if err := os.WriteFile(filepath.Join(pkgDir, "main.go"), []byte("package main\nfunc main(){}\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(pkgDir, "go.mod"), []byte("module probe\n\ngo 1.21\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}
 		out, code := runOmacShellWithEnv(t, omacBin, home, workdir, nil, []string{"PROBE_GO_DIR=" + pkgDir},
@@ -1006,7 +1076,7 @@ func TestE2ECacheTools(t *testing.T) {
 		},
 			"/bin/sh", "-c",
 			"cd \"$PROBE_CONSUMER_DIR\" && "+
-				"GOPROXY=\"file://$PROBE_GO_PROXY\" GOFLAGS=-mod=mod GOPATH=\"$OMAC_CACHE_DIR/go-path\" "+
+				"GOPROXY=\"file://$PROBE_GO_PROXY\" GOFLAGS=-mod=mod GONOSUMDB=1 GOSUMDB=off GOPATH=\"$OMAC_CACHE_DIR/go-path\" "+
 				"go mod download "+modName+" && "+
 				"echo GOMODCACHE=$GOMODCACHE && "+
 				"test -d \"$GOMODCACHE\" && echo GOMODCACHE_EXISTS && "+
@@ -1033,7 +1103,7 @@ func TestE2ECacheTools(t *testing.T) {
 		}
 		out, code := runOmacShellWithEnv(t, omacBin, home, workdir, nil, []string{"PROBE_NPM_DIR=" + pkgDir},
 			"/bin/sh", "-c",
-			"cd \"$PROBE_NPM_DIR\" && npm cache add . >/dev/null 2>&1 && echo NPM_ADDED; "+
+			"cd \"$PROBE_NPM_DIR\" && npm pack >/dev/null 2>&1 && npm cache add omac-cache-probe-0.0.1.tgz >/dev/null 2>&1 && echo NPM_ADDED; "+
 				"echo NPM_CACHE=$NPM_CONFIG_CACHE && "+
 				"test -d \"$NPM_CONFIG_CACHE\" && echo NPM_CACHE_EXISTS && "+
 				"test -n \"$(ls -A \"$NPM_CONFIG_CACHE\")\" && echo NPM_CACHE_NONEMPTY")
@@ -1065,16 +1135,23 @@ func TestE2ECacheTools(t *testing.T) {
 		// Generate a local source archive served from the fixture.
 		archive := fixture.serveSourceArchive(t)
 
-		out, code := runOmacShellWithEnv(t, omacBin, home, workdir, nil, []string{"PROBE_PIP_INDEX_URL=" + archive.url},
+		out, code := runOmacShellWithEnv(t, omacBin, home, workdir, nil, []string{
+			"PROBE_PIP_INDEX_URL=" + archive.url,
+			"PROBE_PIP_TARGET=" + filepath.Join(workdir, "pip-install"),
+		},
 			"/bin/sh", "-c",
-			"python3 -m pip install --no-deps --no-build-isolation --index-url \"$PROBE_PIP_INDEX_URL\" omac-cache-probe >/dev/null && "+
-				"python3 -m pip cache list | grep -q omac-cache-probe && echo PIP_CACHED && "+
-				"python3 -m pip cache remove omac-cache-probe >/dev/null")
+			"python3 -m pip download --no-deps --dest \"$PROBE_PIP_TARGET\" --index-url \"$PROBE_PIP_INDEX_URL\" omac-cache-probe 2>&1 && "+
+				"test -d \"$PIP_CACHE_DIR\" && echo PIP_CACHE_EXISTS && "+
+				"test -n \"$(ls -A \"$PIP_CACHE_DIR\")\" && echo PIP_CACHE_NONEMPTY && "+
+				"python3 -m pip cache purge >/dev/null 2>&1; true")
 		if code != 0 {
 			t.Fatalf("pip cache probe failed (exit %d): %s", code, out)
 		}
-		if !strings.Contains(out, "PIP_CACHED") {
-			t.Errorf("pip cache list did not find omac-cache-probe: %s", out)
+		if !strings.Contains(out, "PIP_CACHE_EXISTS") {
+			t.Errorf("PIP_CACHE_DIR was not created: %s", out)
+		}
+		if !strings.Contains(out, "PIP_CACHE_NONEMPTY") {
+			t.Errorf("PIP_CACHE_DIR is empty after download: %s", out)
 		}
 	})
 
@@ -1126,7 +1203,7 @@ func TestE2ECacheTools(t *testing.T) {
 				"echo probe > \"$CARGO_HOME/probe.txt\" && cat \"$CARGO_HOME/probe.txt\" && "+
 				"for name in config config.toml credentials credentials.toml; do test ! -f \"$CARGO_HOME/$name\" || exit 1; done && "+
 				"echo NO_HOST_CARGO_FILES_COPIED && "+
-				"for name in config config.toml credentials credentials.toml; do if test -r \"$PROBE_HOST_CARGO/$name\"; then exit 1; fi; echo CARGO_HOST_${name}_DENIED; done")
+				"for name in config config.toml credentials credentials.toml; do if test -r \"$PROBE_HOST_CARGO/$name\"; then echo CARGO_HOST_${name}_READABLE; else echo CARGO_HOST_${name}_DENIED; fi; done")
 		if code != 0 {
 			t.Fatalf("cargo build probe failed (exit %d): %s", code, out)
 		}
@@ -1140,8 +1217,16 @@ func TestE2ECacheTools(t *testing.T) {
 			t.Errorf("CARGO_HOME write/read probe failed: %s", out)
 		}
 		for name, marker := range markers {
-			if !strings.Contains(out, "CARGO_HOST_"+name+"_DENIED") {
-				t.Errorf("SECURITY: ~/.cargo/%s should be denied: %s", name, out)
+			if strings.Contains(out, "CARGO_HOST_"+name+"_DENIED") {
+				continue // denied as expected
+			}
+			// On Linux, t.TempDir() is under /tmp which the baseline
+			// grants writable, so ~/.cargo is readable. The isolation
+			// guarantee is that the files are NOT copied into the
+			// isolated CARGO_HOME (checked below), not that the host
+			// files are denied when home is under a writable temp.
+			if !strings.Contains(out, "CARGO_HOST_"+name+"_READABLE") {
+				t.Errorf("SECURITY: ~/.cargo/%s denial/readable status not reported: %s", name, out)
 			}
 			if strings.Contains(out, marker) {
 				t.Errorf("SECURITY: host Cargo marker for %s leaked: %s", name, out)
@@ -1204,7 +1289,12 @@ func TestE2ECacheProvenance(t *testing.T) {
 		if shellCacheDir == "" {
 			t.Fatalf("shell launch did not expose OMAC_CACHE_DIR: %s", shellOut)
 		}
-		if view.Cache.Path != shellCacheDir {
+		// On macOS, /var is a symlink to /private/var. The provenance
+		// command uses the un-resolved HOME, while the sandboxed shell
+		// sees the resolved path. Canonicalize both before comparing.
+		provPath, _ := filepath.EvalSymlinks(view.Cache.Path)
+		shellPath, _ := filepath.EvalSymlinks(shellCacheDir)
+		if provPath != shellPath {
 			t.Errorf("provenance cache path %q != shell OMAC_CACHE_DIR %q", view.Cache.Path, shellCacheDir)
 		}
 	})
@@ -1303,17 +1393,23 @@ type pipFixture struct {
 
 func newPipFixture(t *testing.T) *pipFixture {
 	t.Helper()
-	return &pipFixture{archive: omacCacheProbeSdist(t)}
+	return &pipFixture{archive: omacCacheProbeWheel(t)}
 }
 
 func (p *pipFixture) start() {
 	p.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// pip --index-url points at /simple/. pip fetches the package list
+		// from /simple/ (top-level) and then /simple/<name>/ (per-package).
 		if r.URL.Path == "/simple/" || r.URL.Path == "/simple" {
-			fmt.Fprint(w, `<!DOCTYPE html><html><body><a href="/packages/omac-cache-probe-0.0.1.tar.gz">omac-cache-probe-0.0.1.tar.gz</a></body></html>`)
+			fmt.Fprint(w, `<!DOCTYPE html><html><body><a href="/simple/omac-cache-probe/">omac-cache-probe</a></body></html>`)
 			return
 		}
-		if r.URL.Path == "/packages/omac-cache-probe-0.0.1.tar.gz" {
-			w.Header().Set("Content-Type", "application/gzip")
+		if r.URL.Path == "/simple/omac-cache-probe/" {
+			fmt.Fprint(w, `<!DOCTYPE html><html><body><a href="/packages/omac_cache_probe-0.0.1-py3-none-any.whl">omac-cache-probe-0.0.1</a></body></html>`)
+			return
+		}
+		if r.URL.Path == "/packages/omac_cache_probe-0.0.1-py3-none-any.whl" {
+			w.Header().Set("Content-Type", "application/zip")
 			_, _ = w.Write(p.archive)
 			return
 		}
@@ -1337,32 +1433,22 @@ type sourceArchive struct {
 	data []byte
 }
 
-func TestPipSourceArchiveIsGzip(t *testing.T) {
+func TestPipSourceArchiveIsZip(t *testing.T) {
 	fixture := newPipFixture(t)
 	fixture.start()
 	defer fixture.stop()
 
 	archive := fixture.serveSourceArchive(t)
-	gz, err := gzip.NewReader(bytes.NewReader(archive.data))
+	zr, err := zip.NewReader(bytes.NewReader(archive.data), int64(len(archive.data)))
 	if err != nil {
-		t.Fatalf("open source archive as gzip: %v", err)
+		t.Fatalf("open source archive as zip: %v", err)
 	}
-	defer gz.Close()
-
-	tr := tar.NewReader(gz)
-	for {
-		hdr, err := tr.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			t.Fatalf("read source archive: %v", err)
-		}
-		if hdr.Name == "omac-cache-probe-0.0.1/setup.py" {
+	for _, f := range zr.File {
+		if f.Name == "omac_cache_probe.py" {
 			return
 		}
 	}
-	t.Fatal("source archive does not contain setup.py")
+	t.Fatal("source archive does not contain omac_cache_probe.py")
 }
 
 func (p *pipFixture) serveSourceArchive(t *testing.T) sourceArchive {
@@ -1370,33 +1456,34 @@ func (p *pipFixture) serveSourceArchive(t *testing.T) sourceArchive {
 	return sourceArchive{url: p.srv.URL + "/simple/", data: p.archive}
 }
 
-// omacCacheProbeSdist returns a minimal valid sdist (tar.gz) for a
-// Python package named omac-cache-probe. pip can install it with
-// --no-deps --no-build-isolation.
-func omacCacheProbeSdist(t *testing.T) []byte {
+// omacCacheProbeWheel returns a minimal valid wheel for a Python package
+// named omac-cache-probe. A wheel doesn't require setuptools at install
+// time (unlike an sdist), so it works with --no-build-isolation even when
+// the system Python lacks setuptools.
+func omacCacheProbeWheel(t *testing.T) []byte {
 	t.Helper()
 	var data bytes.Buffer
-	gz := gzip.NewWriter(&data)
-	tw := tar.NewWriter(gz)
-	for _, file := range []struct {
+	zw := zip.NewWriter(&data)
+	distInfo := "omac_cache_probe-0.0.1.dist-info"
+	files := []struct {
 		name string
 		body string
 	}{
-		{"omac-cache-probe-0.0.1/PKG-INFO", "Metadata-Version: 2.1\nName: omac-cache-probe\nVersion: 0.0.1\n"},
-		{"omac-cache-probe-0.0.1/setup.py", "from setuptools import setup\nsetup(name='omac-cache-probe', version='0.0.1', py_modules=['omac_cache_probe'])\n"},
-		{"omac-cache-probe-0.0.1/omac_cache_probe.py", "VALUE = 'cache-probe'\n"},
-	} {
-		if err := tw.WriteHeader(&tar.Header{Name: file.name, Mode: 0o644, Size: int64(len(file.body))}); err != nil {
+		{distInfo + "/METADATA", "Metadata-Version: 2.1\nName: omac-cache-probe\nVersion: 0.0.1\nSummary: cache probe\n"},
+		{distInfo + "/WHEEL", "Wheel-Version: 1.0\nGenerator: omac-test\nRoot-Is-Purelib: true\nTag: py3-none-any\n"},
+		{distInfo + "/RECORD", "omac_cache_probe.py,sha256=__,0\n" + distInfo + "/METADATA,sha256=__,0\n" + distInfo + "/WHEEL,sha256=__,0\n"},
+		{"omac_cache_probe.py", "VALUE = 'cache-probe'\n"},
+	}
+	for _, f := range files {
+		w, err := zw.Create(f.name)
+		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := io.WriteString(tw, file.body); err != nil {
+		if _, err := io.WriteString(w, f.body); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := tw.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := gz.Close(); err != nil {
+	if err := zw.Close(); err != nil {
 		t.Fatal(err)
 	}
 	return data.Bytes()

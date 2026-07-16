@@ -131,5 +131,13 @@ func ensurePrivateDir(path string) error {
 	if !info.IsDir() {
 		return fmt.Errorf("cache path %q is not a directory", path)
 	}
-	return os.Chmod(path, 0o700)
+	dir, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("open cache directory for chmod: %w", err)
+	}
+	defer dir.Close()
+	if err := dir.Chmod(0o700); err != nil {
+		return fmt.Errorf("chmod cache directory: %w", err)
+	}
+	return nil
 }

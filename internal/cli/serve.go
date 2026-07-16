@@ -243,7 +243,10 @@ func runServe(args []string, env *Env) int {
 		global:        map[string]*skillRoute{},
 	}
 	if cacheScope != nil {
-		srv.cacheEnv = toolcache.Environment(cacheScope.Dir, cacheScope.Mode)
+		srv.cacheEnv = map[string]string{
+			"OMAC_CACHE_DIR":  cacheScope.Dir,
+			"OMAC_CACHE_MODE": string(cacheScope.Mode),
+		}
 	}
 
 	// Cold start: global skills are a fixed, known set, so — unlike the lazy

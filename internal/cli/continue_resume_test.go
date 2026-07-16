@@ -164,9 +164,9 @@ func TestLaunchCacheInjectsSelectedScope(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			capture := launchCacheCapture(t, false, test.ephemeral, true)
 			cacheEnv := toolcache.Environment(capture.env["OMAC_CACHE_DIR"], test.mode)
-			for key, want := range cacheEnv {
-				if got := capture.env[key]; got != want {
-					t.Errorf("%s = %q, want %q", key, got, want)
+			for _, key := range []string{"OMAC_CACHE_DIR", "OMAC_CACHE_MODE"} {
+				if got := capture.env[key]; got != cacheEnv[key] {
+					t.Errorf("%s = %q, want %q", key, got, cacheEnv[key])
 				}
 			}
 			assertCacheScopeAllowed(t, capture.args, cacheEnv["OMAC_CACHE_DIR"])

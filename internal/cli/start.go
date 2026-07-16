@@ -851,9 +851,8 @@ func runLaunch(env *Env, opts launchOpts) int {
 		extra[sandbox.OmacSocketEnvName(m)] = sandbox.OmacEnvValue(m, socketPath)
 	}
 	if cacheScope != nil {
-		for k, v := range toolcache.Environment(cacheScope.Dir, cacheScope.Mode) {
-			extra[k] = v
-		}
+		extra["OMAC_CACHE_DIR"] = cacheScope.Dir
+		extra["OMAC_CACHE_MODE"] = string(cacheScope.Mode)
 	}
 	if controlOK {
 		extra["OMAC_CONTROL_BASE"] = controlURL

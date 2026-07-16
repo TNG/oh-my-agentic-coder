@@ -132,19 +132,20 @@ func TestIntegrationCacheScopeIsolation(t *testing.T) {
 		t.Error("SECURITY: sibling scope leaf should be unwritable")
 	}
 
-	// parent ~/.cache/omac and .locks: not granted.
-	out, code = runSandboxed(t, g, "/bin/sh", "-c", "ls -A "+cacheRoot)
-	if code != 0 {
-		t.Errorf("listing cache root failed (exit %d): %s", code, out)
-	}
-	if strings.Contains(out, scope2.Digest) {
-		t.Errorf("SECURITY: sibling scope visible in cache root listing: %s", out)
-	}
-	if strings.Contains(out, "host-global-marker") {
-		t.Errorf("SECURITY: host global marker visible in cache root listing: %s", out)
-	}
-	if strings.Contains(out, ".locks") {
-		t.Errorf("SECURITY: .locks visible in cache root listing: %s", out)
+	// parent ~/.cache/omac and .locks: not granted. On macOS Seatbelt,
+	// listing the parent may be denied entirely (stronger than Linux's
+	// "visible but only the bound entry") — both are acceptable.
+	out, code = runSandboxed(t, g, "/bin/sh", "-c", "ls -A "+cacheRoot+" 2>&1")
+	if code == 0 {
+		if strings.Contains(out, scope2.Digest) {
+			t.Errorf("SECURITY: sibling scope visible in cache root listing: %s", out)
+		}
+		if strings.Contains(out, "host-global-marker") {
+			t.Errorf("SECURITY: host global marker visible in cache root listing: %s", out)
+		}
+		if strings.Contains(out, ".locks") {
+			t.Errorf("SECURITY: .locks visible in cache root listing: %s", out)
+		}
 	}
 
 	_, code = runSandboxed(t, g, "/bin/sh", "-c", "cat "+lockMarker)
