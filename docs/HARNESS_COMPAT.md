@@ -40,7 +40,8 @@ The matrix is **not** committed to this repo (no bot pushes to `main`):
 | Setting | Type | Status | Purpose |
 |---------|------|--------|---------|
 | `auto-update tracker` | label | created | Applied to the dashboard tracking issue. |
-| `SECURITY_SCAN_PAT` | secret | reused | Same PAT `security-scan.yml` uses; needs `contents: write` on the security repo. Archive mirror is skipped if absent. |
+| `SECURITY_ARCHIVE_REPO` | variable | **set once** | `owner/repo` of the private archive repo, kept out of public source. Shared with `security-scan.yml`. Archive mirror (and the security-scan report push) skip if unset. |
+| `SECURITY_SCAN_PAT` | secret | reused | Same PAT `security-scan.yml` uses; needs `contents: write` on `SECURITY_ARCHIVE_REPO`. Archive mirror is skipped if absent. |
 | `SLACK_WEBHOOK_URL` | secret | **you add** | Incoming-webhook URL for the per-run status message. Unset ⇒ Slack step is a no-op (everything else still runs). |
 
 ### Configuring Slack

@@ -9,8 +9,9 @@
 # would be publicly downloadable. Full reports are pushed to a private
 # companion repo instead, and only aggregate severity/dedupe counts reach
 # the public step summary. A human reviews the private repo and decides
-# what -- if anything -- becomes a public GitHub issue. See
-# nhuelstng/oh-my-agentic-coder-security for the artifact history.
+# what -- if anything -- becomes a public GitHub issue. The private artifact
+# repo is named by the SECURITY_ARCHIVE_REPO repo variable (kept out of public
+# source); see it for the artifact history.
 name: Security Scan
 
 on:
@@ -242,11 +243,18 @@ jobs:
         if: always()
         env:
           SECURITY_SCAN_PAT: ${{ secrets.SECURITY_SCAN_PAT }}
+          # Repo name lives in a repo variable, not in this public source.
+          ARCHIVE_REPO: ${{ vars.SECURITY_ARCHIVE_REPO }}
         run: |
           set -euo pipefail
+          if [ -z "${ARCHIVE_REPO:-}" ] || [ -z "${SECURITY_SCAN_PAT:-}" ]; then
+            echo "::warning::SECURITY_ARCHIVE_REPO variable or SECURITY_SCAN_PAT secret missing — skipping report push"
+            echo "## Security scan: report push SKIPPED (SECURITY_ARCHIVE_REPO unset)" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
           dest=$(mktemp -d)
           git clone --quiet --depth 1 \
-            "https://x-access-token:${SECURITY_SCAN_PAT}@github.com/nhuelstng/oh-my-agentic-coder-security.git" \
+            "https://x-access-token:${SECURITY_SCAN_PAT}@github.com/${ARCHIVE_REPO}.git" \
             "$dest"
           status="${{ steps.scan.outcome == 'success' && 'ok' || 'FAILED' }}"
           scan_dir="$dest/scans/${{ steps.scan.outputs.run_label }}-${{ inputs.reason || 'scheduled' }}-${status}"

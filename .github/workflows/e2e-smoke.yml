@@ -440,14 +440,15 @@ jobs:
       - name: Mirror to private archive repo
         if: always() && steps.rows.outputs.has_rows == 'true'
         env:
-          # Reuses the security repo + PAT that security-scan.yml already uses,
-          # writing to a distinct subpath so the two never collide.
-          ARCHIVE_REPO: nhuelstng/oh-my-agentic-coder-security
+          # Repo name comes from the SECURITY_ARCHIVE_REPO repo variable (kept
+          # out of public source); reuses the SECURITY_SCAN_PAT secret and a
+          # distinct subpath so it never collides with the security scans.
+          ARCHIVE_REPO: ${{ vars.SECURITY_ARCHIVE_REPO }}
           ARCHIVE_SUBPATH: harness-compat/HARNESS_COMPAT.md
           ARCHIVE_TOKEN: ${{ secrets.SECURITY_SCAN_PAT }}
         run: |
-          if [ -z "$ARCHIVE_TOKEN" ]; then
-            echo "SECURITY_SCAN_PAT missing — skipping archive mirror"
+          if [ -z "$ARCHIVE_REPO" ] || [ -z "$ARCHIVE_TOKEN" ]; then
+            echo "SECURITY_ARCHIVE_REPO variable or SECURITY_SCAN_PAT secret missing — skipping archive mirror"
             exit 0
           fi
           git clone --depth 1 "https://x-access-token:${ARCHIVE_TOKEN}@github.com/${ARCHIVE_REPO}.git" archive
