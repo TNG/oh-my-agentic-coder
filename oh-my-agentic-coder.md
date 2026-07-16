@@ -629,8 +629,10 @@ Runs sanity checks:
 ### 10.5a `omac update`
 
 Checks GitHub's `/releases/latest` endpoint (prereleases are excluded
-automatically) and, if a newer version is available, installs it using
-whichever method matches how this host runs omac:
+automatically) and, if the release is *strictly newer* than the running build
+(compared as semver, so a dev or pre-release build already ahead of the latest
+tag is left alone — it never downgrades), installs it using whichever method
+matches how this host runs omac:
 
 1. **macOS, Homebrew-installed** (detected via the resolved binary path or
    `brew list --formula oh-my-agentic-coder`) — runs `brew upgrade

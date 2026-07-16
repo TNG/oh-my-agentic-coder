@@ -145,7 +145,12 @@ func Check(ctx context.Context, opts Options, deps Deps) (Plan, error) {
 	latest := strings.TrimPrefix(rel.TagName, "v")
 
 	p := Plan{CurrentVersion: current, LatestVersion: latest}
-	if current == latest {
+	// Install only when the latest release is strictly newer. If this build is
+	// the same as, or ahead of, the latest release (a dev or pre-release build
+	// built past the last tag), there is nothing newer to install — never
+	// downgrade. When the versions are not comparable as semver, fall back to
+	// the conservative string-equality check.
+	if cmp, ok := compareVersions(current, latest); current == latest || (ok && cmp >= 0) {
 		p.Method = MethodUpToDate
 		return p, nil
 	}

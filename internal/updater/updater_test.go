@@ -126,6 +126,60 @@ func TestCheck_AlreadyUpToDate(t *testing.T) {
 	}
 }
 
+func TestCheck_CurrentNewerThanLatestIsUpToDate(t *testing.T) {
+	deps := baseDeps(t)
+	// A dev/hotfix build ahead of the latest published release: with a package
+	// manager present and matching assets available, the only thing stopping an
+	// install is the version guard — so this proves it never downgrades.
+	deps.Source = fakeReleaseSource{rel: Release{TagName: "v1.2.0", Assets: []Asset{
+		{Name: "oh-my-agentic-coder_1.2.0_linux_x86_64.deb", BrowserDownloadURL: "https://example.invalid/x.deb"},
+		{Name: "checksums.txt", BrowserDownloadURL: "https://example.invalid/checksums.txt"},
+	}}}
+	fetch := &fakeFetcher{files: map[string][]byte{}}
+	deps.Fetcher = fetch
+	deps.GOOS, deps.GOARCH = "linux", "amd64"
+	deps.PkgManagers = []PackageManager{
+		{Name: "dpkg", AssetSuffix: ".deb", InstallArgs: func(p string) []string { return []string{"-i", p} }},
+	}
+
+	plan, err := Check(context.Background(), Options{CurrentVersion: "1.3.0"}, deps)
+	if err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+	if plan.Method != MethodUpToDate {
+		t.Fatalf("Method = %v, want MethodUpToDate (no downgrade)", plan.Method)
+	}
+	if fetch.calls != 0 {
+		t.Fatalf("expected zero downloads when already newer, got %d", fetch.calls)
+	}
+}
+
+func TestCheck_DevBuildUpdatesToRelease(t *testing.T) {
+	tgzBody := []byte("fake-tar-gz-bytes")
+	sumsURL := "https://example.invalid/checksums.txt"
+	tgzURL := "https://example.invalid/oh-my-agentic-coder_0.1.0_linux_x86_64.tar.gz"
+
+	deps := baseDeps(t)
+	deps.Source = fakeReleaseSource{rel: Release{TagName: "v0.1.0", Assets: []Asset{
+		{Name: "oh-my-agentic-coder_0.1.0_linux_x86_64.tar.gz", BrowserDownloadURL: tgzURL},
+		{Name: "checksums.txt", BrowserDownloadURL: sumsURL},
+	}}}
+	deps.Fetcher = &fakeFetcher{files: map[string][]byte{
+		sumsURL: checksumsFile("oh-my-agentic-coder_0.1.0_linux_x86_64.tar.gz", tgzBody),
+		tgzURL:  tgzBody,
+	}}
+	deps.GOOS, deps.GOARCH = "linux", "amd64"
+
+	// A pre-release build of the same core version installs the release.
+	plan, err := Check(context.Background(), Options{CurrentVersion: "0.1.0-dev"}, deps)
+	if err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+	if plan.Method != MethodTarballSelfReplace {
+		t.Fatalf("Method = %v, want MethodTarballSelfReplace", plan.Method)
+	}
+}
+
 func TestCheck_DarwinBrewInstalled(t *testing.T) {
 	deps := baseDeps(t)
 	deps.Source = fakeReleaseSource{rel: Release{TagName: "v2.0.0"}}

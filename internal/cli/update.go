@@ -56,7 +56,11 @@ func runUpdateWithDeps(env *Env, yes bool, deps updater.Deps) int {
 	}
 
 	if plan.Method == updater.MethodUpToDate {
-		fmt.Fprintf(env.Stdout, "[ok] omac %s is already up to date\n", plan.CurrentVersion)
+		if plan.CurrentVersion != plan.LatestVersion {
+			fmt.Fprintf(env.Stdout, "[ok] omac %s is newer than the latest release %s; nothing to do\n", plan.CurrentVersion, plan.LatestVersion)
+		} else {
+			fmt.Fprintf(env.Stdout, "[ok] omac %s is already up to date\n", plan.CurrentVersion)
+		}
 		return ExitOK
 	}
 

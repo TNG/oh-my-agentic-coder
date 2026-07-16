@@ -139,6 +139,25 @@ func TestRunUpdate_AlreadyUpToDate(t *testing.T) {
 	}
 }
 
+func TestRunUpdate_CurrentNewerThanLatestNoDowngrade(t *testing.T) {
+	deps := baseTestDeps(t)
+	// runUpdateCapture pins env.Version to 1.0.0; the latest release is older.
+	deps.Source = fakeSource{rel: updater.Release{TagName: "v0.9.0"}}
+	deps.Fetcher = fakeFetcher{files: map[string][]byte{}}
+	deps.Runner = fakeRunner{}
+
+	out, _, code := runUpdateCapture(t, true, deps, "")
+	if code != ExitOK {
+		t.Fatalf("code = %d, want ExitOK; out=%s", code, out)
+	}
+	if !strings.Contains(out, "newer than the latest release") {
+		t.Fatalf("out = %q, want a 'newer than the latest release' notice", out)
+	}
+	if strings.Contains(out, "updated omac") {
+		t.Fatalf("out = %q, must not downgrade to an older release", out)
+	}
+}
+
 func TestRunUpdate_NonInteractiveWithoutYesNoops(t *testing.T) {
 	debURL := "https://example.invalid/x.deb"
 	sumsURL := "https://example.invalid/checksums.txt"
