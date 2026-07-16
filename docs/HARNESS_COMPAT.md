@@ -26,8 +26,11 @@ The matrix is **not** committed to this repo (no bot pushes to `main`):
 - **Permanent archive** — every run appends to `harness-compat/HARNESS_COMPAT.md`
   in the private security repo `nhuelstng/oh-my-agentic-coder-security` (a distinct
   subpath from the security scans' `scans/`), giving full diffable history.
-- **Slack** — every run (pass or fail) posts a one-line status message with links
-  to the dashboard issue and the run log.
+- **Slack** — every run (pass or fail) posts a status message with links to the
+  dashboard issue and the run log. On a failure it includes a short **SKAINET**-
+  generated summary of exactly what broke (which harness/OS/stage and the specific
+  flag or error), built from the failing legs' own logs; the same summary is
+  written into the dashboard issue.
 
 ## Configuration
 
@@ -45,8 +48,8 @@ The matrix is **not** committed to this repo (no bot pushes to `main`):
 2. In GitHub: **Settings → Secrets and variables → Actions → New repository secret**,
    name `SLACK_WEBHOOK_URL`, paste the URL.
 
-The workflow posts on **every** run — `🟢 all green` or `🔴 N failing` — with links
-to the dashboard issue and the run log.
+The workflow posts on **every** run — `🟢 all green` or `🔴 N failing` (with the
+SKAINET summary of what broke) — plus links to the dashboard issue and the run log.
 
 ## Gating version bumps
 

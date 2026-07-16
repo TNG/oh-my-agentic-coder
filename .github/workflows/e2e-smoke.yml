@@ -16,9 +16,10 @@
 # rolling 30-day window. The same rows are mirrored to the private security repo
 # (nhuelstng/oh-my-agentic-coder-security) under harness-compat/ for permanent
 # history, reusing the SECURITY_SCAN_PAT that security-scan.yml already uses.
-# Every run (pass or fail) posts a status message to Slack. Nothing is pushed to
-# this repo's main. This is the regular tripwire that catches a harness release
-# breaking omac's assumptions.
+# Every run (pass or fail) posts a status message to Slack; on a failure the
+# message carries a short SKAINET-generated summary of exactly what broke.
+# Nothing is pushed to this repo's main. This is the regular tripwire that
+# catches a harness release breaking omac's assumptions.
 name: E2E smoke
 
 on:
@@ -29,9 +30,8 @@ on:
         type: boolean
         default: true
   schedule:
-    # Weekly, Wednesday 03:00 UTC — offset from e2e.yml's Saturday slot so the
-    # two model-heavy suites don't run on the same day.
-    - cron: '0 3 * * 3'
+    # Same slot as e2e.yml — Saturdays 08:00 UTC (10:00 CEST).
+    - cron: '0 8 * * 6'
 
 permissions:
   contents: read
@@ -214,6 +214,14 @@ jobs:
           path: compat
           merge-multiple: true
 
+      - name: Download smoke logs
+        uses: actions/download-artifact@v4
+        with:
+          # No merge-multiple: keep each leg's logs under its own
+          # smoke-logs-<os>-<harness>/ dir so modelfree.log/llm.log don't collide.
+          pattern: smoke-logs-*
+          path: logs
+
       - name: Prepare this run's rows
         id: rows
         run: |
@@ -234,6 +242,50 @@ jobs:
             echo "has_failures=true" >> "$GITHUB_OUTPUT"
           else
             echo "has_failures=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Summarize failures (SKAINET)
+        id: summary
+        if: always() && steps.rows.outputs.has_failures == 'true'
+        continue-on-error: true # a summariser hiccup must never mask the failure
+        env:
+          SKAINET_TOKEN: ${{ secrets.SKAINET_TOKEN }}
+          SKAINET_INTERNAL: ${{ secrets.SKAINET_EXTERNAL }}
+        run: |
+          # Build a bounded failure context from each failing leg's own logs.
+          : > failure-context.txt
+          while IFS= read -r row; do
+            os=$(printf '%s' "$row" | awk -F'|' '{gsub(/^[ \t]+|[ \t]+$/,"",$4); print $4}')
+            harness=$(printf '%s' "$row" | awk -F'|' '{gsub(/^[ \t]+|[ \t]+$/,"",$5); print $5}')
+            dir="logs/smoke-logs-$os-$harness"
+            echo "=== $harness / $os ===" >> failure-context.txt
+            grep -hE 'CLI contract drift|no longer exposes|--- FAIL|omac start .* failed|FAIL \[|Error|panic:' \
+              "$dir"/modelfree.log "$dir"/llm.log 2>/dev/null | head -40 >> failure-context.txt || true
+            tail -n 30 "$dir"/llm.log 2>/dev/null >> failure-context.txt || true
+            echo >> failure-context.txt
+          done < failing.rows
+
+          if [ -z "$SKAINET_TOKEN" ] || [ -z "$SKAINET_INTERNAL" ]; then
+            echo "SKAINET creds missing — skipping AI summary (Slack will fall back to the failing-row list)"
+            exit 0
+          fi
+          # Single source of truth for the model id: internal/e2e/versions.go.
+          model=$(awk '/^var modelIDs = map\[string\]string\{/{f=1;next} /^\}/{f=0} f' internal/e2e/versions.go \
+            | grep '"opencode"' | sed -E 's/.*:\s*"([^"]+)".*/\1/')
+          [ -z "$model" ] && model="zai-org/GLM-5.2"
+          ctx=$(head -c 6000 failure-context.txt)
+          sys="You are a CI assistant for the omac project. In at most 3 short sentences, state exactly what went wrong in these harness compatibility logs: name the harness, OS, the failing stage (contract/launch/llm), and the specific flag or error message when present. No preamble, no fixes."
+          payload=$(jq -n --arg m "$model" --arg s "$sys" --arg u "$ctx" \
+            '{model:$m,temperature:0.2,max_tokens:220,messages:[{role:"system",content:$s},{role:"user",content:$u}]}')
+          resp=$(curl -sS --max-time 60 "$SKAINET_INTERNAL/chat/completions" \
+            -H "Authorization: Bearer $SKAINET_TOKEN" -H 'Content-Type: application/json' \
+            --data "$payload" || true)
+          summary=$(printf '%s' "$resp" | jq -r '.choices[0].message.content // empty' 2>/dev/null || true)
+          if [ -n "$summary" ]; then
+            printf '%s\n' "$summary" > failure-summary.txt
+            echo "AI summary:"; cat failure-summary.txt
+          else
+            echo "no summary returned (resp head: $(printf '%s' "$resp" | head -c 300))"
           fi
 
       - name: Update the tracking-issue dashboard
@@ -285,6 +337,12 @@ jobs:
               echo ""
               echo "## Currently failing"
               echo ""
+              if [ -s failure-summary.txt ]; then
+                echo "**What went wrong** (SKAINET summary):"
+                echo ""
+                sed 's/^/> /' failure-summary.txt
+                echo ""
+              fi
               echo "| Date (UTC) | omac | OS | Harness | Version | contract | launch | llm |"
               echo "|---|---|---|---|---|:-:|:-:|:-:|"
               cat failing.rows
@@ -363,7 +421,22 @@ jobs:
           fi
           # Posted on every run — green and red alike.
           if [ "$HAS_FAILURES" = "true" ]; then
-            text="🔴 omac harness compatibility: $FAIL_COUNT of $TOTAL combination(s) FAILED. Dashboard: $ISSUE_URL — Run: $RUN_URL"
+            # Prefer the SKAINET summary of what broke; fall back to a terse
+            # per-leg stage list if the summariser produced nothing.
+            if [ -s failure-summary.txt ]; then
+              detail=$(cat failure-summary.txt)
+            else
+              detail=$(awk -F'|' '{
+                for (i=1;i<=NF;i++){gsub(/^[ \t]+|[ \t]+$/,"",$i)}
+                s="";
+                if ($7=="❌") s=s" contract";
+                if ($8=="❌") s=s" launch";
+                if ($9=="❌") s=s" llm";
+                printf "- %s/%s:%s\n", $5, $4, s
+              }' failing.rows)
+            fi
+            text=$(printf '🔴 omac harness compatibility: %s of %s combination(s) FAILED.\n%s\nDashboard: %s — Run: %s' \
+              "$FAIL_COUNT" "$TOTAL" "$detail" "$ISSUE_URL" "$RUN_URL")
           else
             text="🟢 omac harness compatibility: all $TOTAL combination(s) green. Dashboard: $ISSUE_URL — Run: $RUN_URL"
           fi
