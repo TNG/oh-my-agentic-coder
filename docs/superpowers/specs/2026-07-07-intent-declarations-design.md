@@ -157,6 +157,13 @@ to the existing `/sandbox/denied` route.
   miss them). (The `intent.LookupOverHTTP` / `LookupSubtreeOverHTTP`
   client helpers decode only the `reason` they need and ignore the other
   fields.)
+- `POST /sandbox/intent/explain?target=<host>` records that the user clicked
+  "Explain more" in the network popup (set by the prompter in the sandbox
+  child via `intent.MarkExplainMoreOverHTTP`). It sets a TTL-bounded,
+  one-shot per-host flag that the GET lookup surfaces as the explain-more
+  hint. `204` on success, `400` without `target`, `503` when the registry is
+  nil. See §4 for why the click travels this channel rather than the deny
+  body.
 - Registry injected at facade construction time (same pattern as the
   protected-path checker). Nil registry → `503`.
 
@@ -265,6 +272,19 @@ agent's ability to spam or bloat the registry.
   makes the loop self-correcting). Pre-declaration remains the primary path;
   the brief directs the agent to declare before the first request and to
   consult this endpoint on failure.
+- **"Explain more" delivered on the GET channel (not the deny body).** Because
+  the deny body cannot survive an HTTPS/CONNECT denial, the "Explain more"
+  click is not carried there. Instead, when the user picks "Explain more" the
+  prompter (sandbox child) calls `POST $OMAC_BASE/sandbox/intent/explain?target=<host>`,
+  which sets a TTL-bounded, one-shot per-host flag in the registry. The next
+  `GET /sandbox/intent?target=<host>` then returns a distinct hint —
+  *"the user asked for a fuller reason; POST a better reason and retry"* —
+  that **overrides** both the undeclared and the "user declined — do not
+  retry" hints, since an explicit "Explain more" is a request to re-declare.
+  The flag is consumed on read so it drives exactly one retry, never a loop:
+  a subsequent real denial reverts to the "do not retry" hint. This moves the
+  re-ask signal off the channel HTTPS drops and onto the one the agent can
+  always reach.
 - The three backends (osascript, zenity, kdialog) each gain the seventh
   radio option. No new dependencies; the dialogs already support N
   options.

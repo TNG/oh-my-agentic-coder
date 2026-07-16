@@ -3,6 +3,7 @@ package intent_test
 import (
 	"bytes"
 	"context"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -49,6 +50,57 @@ func TestIntentRoundTripOverHTTP(t *testing.T) {
 	}
 	if reason != "fetch release notes" {
 		t.Errorf("reason = %q; want 'fetch release notes'", reason)
+	}
+}
+
+// TestExplainMoreRoundTripOverHTTP exercises the full cross-process
+// "Explain more" path: the prompter (sandbox child) marks the host via
+// MarkExplainMoreOverHTTP, then the agent's out-of-band GET lookup sees the
+// explain-more hint. This is the channel that replaces the HTTPS-undeliverable
+// deny body.
+func TestExplainMoreRoundTripOverHTTP(t *testing.T) {
+	reg := intent.New(time.Minute)
+	t.Cleanup(reg.Close)
+
+	f := facade.New("", "127.0.0.1:0", nil, 1<<20, 0, "", "test")
+	f.IntentRegistry = reg
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := f.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+
+	baseURL := "http://127.0.0.1:" + strconv.Itoa(f.TCPPort()) + "/"
+
+	// Prompter records the click over HTTP (fire-and-forget).
+	intent.MarkExplainMoreOverHTTP(baseURL, "api.example.com")
+
+	// The agent's GET lookup must now see the explain-more re-ask.
+	get := func() (int, string) {
+		t.Helper()
+		resp, err := http.Get(baseURL + "sandbox/intent?target=api.example.com")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		buf := new(strings.Builder)
+		if _, err := io.Copy(buf, resp.Body); err != nil {
+			t.Fatal(err)
+		}
+		return resp.StatusCode, buf.String()
+	}
+
+	code, body := get()
+	if code != http.StatusNotFound {
+		t.Fatalf("GET status = %d; want 404 (undeclared)", code)
+	}
+	if !strings.Contains(body, "Explain more") {
+		t.Errorf("hint should surface the explain-more re-ask: %q", body)
+	}
+	// One-shot: a second GET no longer carries the explain-more hint.
+	if _, body2 := get(); strings.Contains(body2, "Explain more") {
+		t.Errorf("explain-more hint should be consumed after one read: %q", body2)
 	}
 }
 

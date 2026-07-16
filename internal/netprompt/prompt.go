@@ -120,11 +120,12 @@ type dialogBackend interface {
 
 // Prompter implements netproxy.Prompter with native dialogs.
 type Prompter struct {
-	timeout      time.Duration
-	backends     []dialogBackend
-	notify       func(host string, port int)
-	logf         func(format string, args ...any)
-	lookupIntent func(host string) (string, bool)
+	timeout           time.Duration
+	backends          []dialogBackend
+	notify            func(host string, port int)
+	logf              func(format string, args ...any)
+	lookupIntent      func(host string) (string, bool)
+	recordExplainMore func(host string)
 }
 
 // isTruthyEnv reports whether an env var value means "on". Anything else
@@ -141,15 +142,19 @@ func isTruthyEnv(v string) bool {
 // NewPrompter builds the platform prompter. Returns the prompter and
 // whether any dialog backend is available (callers feed that into the
 // on_unavailable policy). lookupIntent, when non-nil, supplies the
-// agent-declared reason for the host; nil = no registry.
-func NewPrompter(timeoutSecs int, logf func(string, ...any), lookupIntent func(host string) (string, bool)) (*Prompter, bool) {
+// agent-declared reason for the host; nil = no registry. recordExplainMore,
+// when non-nil, is called with the host when the user picks "Explain more",
+// so the click is recorded where the agent's out-of-band GET lookup can
+// reach it (an HTTPS/CONNECT denial cannot carry the re-ask in-band).
+func NewPrompter(timeoutSecs int, logf func(string, ...any), lookupIntent func(host string) (string, bool), recordExplainMore func(host string)) (*Prompter, bool) {
 	if logf == nil {
 		logf = func(string, ...any) {}
 	}
 	p := &Prompter{
-		timeout:      time.Duration(timeoutSecs) * time.Second,
-		logf:         logf,
-		lookupIntent: lookupIntent,
+		timeout:           time.Duration(timeoutSecs) * time.Second,
+		logf:              logf,
+		lookupIntent:      lookupIntent,
+		recordExplainMore: recordExplainMore,
 	}
 	// Stub backend: activated by a truthy OMAC_PROMPT_STUB (1/true/yes/on).
 	// Reads per-host decisions from OMAC_PROMPT_DECISIONS (JSON file). Used
@@ -230,7 +235,14 @@ func (p *Prompter) Prompt(host string, port int) netproxy.PromptResult {
 		return netproxy.PromptResult{Allow: false}
 	}
 	token := labelToToken(label, suffix)
-	return tokenToResult(token, host, suffix)
+	result := tokenToResult(token, host, suffix)
+	if result.NeedsIntent && p.recordExplainMore != nil {
+		// Synchronous: the flag must be on file before the denial reaches the
+		// client, so the agent's follow-up GET lookup sees it. Bounded by the
+		// client-side timeout in the callback.
+		p.recordExplainMore(host)
+	}
+	return result
 }
 
 // --- macOS ---

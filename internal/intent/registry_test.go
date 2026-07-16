@@ -6,6 +6,51 @@ import (
 	"time"
 )
 
+func TestRegistryExplainMore(t *testing.T) {
+	r := New(time.Minute)
+	t.Cleanup(r.Close)
+
+	if r.ConsumeExplainMore("example.com") {
+		t.Error("unset host should return false")
+	}
+
+	// Case-insensitive; consumed on read (one-shot).
+	r.MarkExplainMore("Example.COM")
+	if !r.ConsumeExplainMore("example.com") {
+		t.Error("marked host should return true (case-insensitive)")
+	}
+	if r.ConsumeExplainMore("example.com") {
+		t.Error("second consume should return false (one-shot)")
+	}
+
+	// URL and host:port forms normalize to the bare host, matching the popup lookup.
+	r.MarkExplainMore("https://api.example.com/v2")
+	if !r.ConsumeExplainMore("api.example.com") {
+		t.Error("URL-form mark should match bare-host consume")
+	}
+	r.MarkExplainMore("db.example.com:5432")
+	if !r.ConsumeExplainMore("db.example.com") {
+		t.Error("host:port mark should match bare-host consume")
+	}
+
+	// nil-safe.
+	var nilReg *Registry
+	nilReg.MarkExplainMore("x")
+	if nilReg.ConsumeExplainMore("x") {
+		t.Error("nil registry should return false")
+	}
+}
+
+func TestRegistryExplainMoreTTLExpiry(t *testing.T) {
+	r := New(20 * time.Millisecond)
+	t.Cleanup(r.Close)
+	r.MarkExplainMore("host.example")
+	time.Sleep(60 * time.Millisecond)
+	if r.ConsumeExplainMore("host.example") {
+		t.Error("expired explain-more flag should return false")
+	}
+}
+
 func TestRegistryRecordLookup(t *testing.T) {
 	r := New(time.Minute)
 	r.Record("example.com", "fetch release notes")

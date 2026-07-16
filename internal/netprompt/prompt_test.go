@@ -61,6 +61,47 @@ func TestPromptEmitsIntentSignal(t *testing.T) {
 	}
 }
 
+// TestPromptRecordsExplainMore verifies the popup records the "Explain more"
+// click via the recordExplainMore seam (so it lands on the GET channel an
+// HTTPS/CONNECT denial cannot reach), and only for that click.
+func TestPromptRecordsExplainMore(t *testing.T) {
+	cases := []struct {
+		name       string
+		label      string
+		wantRecord bool
+		wantIntent bool
+	}{
+		{"explain-more records", "Explain more", true, true},
+		{"deny-once does not record", "Deny once", false, false},
+		{"allow-once does not record", "Allow once", false, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var got string
+			recorded := false
+			p := &Prompter{
+				timeout:  time.Second,
+				logf:     func(string, ...any) {},
+				backends: []dialogBackend{signalBackend{label: c.label}},
+				recordExplainMore: func(host string) {
+					got = host
+					recorded = true
+				},
+			}
+			res := p.Prompt("api.example.com", 443)
+			if res.NeedsIntent != c.wantIntent {
+				t.Errorf("NeedsIntent = %v; want %v", res.NeedsIntent, c.wantIntent)
+			}
+			if recorded != c.wantRecord {
+				t.Errorf("recordExplainMore called = %v; want %v", recorded, c.wantRecord)
+			}
+			if c.wantRecord && got != "api.example.com" {
+				t.Errorf("recorded host = %q; want api.example.com", got)
+			}
+		})
+	}
+}
+
 func TestRegisteredSuffixHint(t *testing.T) {
 	cases := map[string]string{
 		"api.example.com":    "example.com",

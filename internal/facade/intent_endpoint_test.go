@@ -152,6 +152,103 @@ func TestIntentEndpointLookupHint(t *testing.T) {
 	}
 }
 
+// TestIntentExplainEndpoint verifies the "Explain more" delivery channel:
+// POST /sandbox/intent/explain marks the host, and the next GET lookup
+// surfaces the explain-more hint — the re-ask an HTTPS/CONNECT denial body
+// cannot carry. The flag is one-shot: a second GET reverts to the plain hint.
+func TestIntentExplainEndpoint(t *testing.T) {
+	reg := intent.New(time.Minute)
+	t.Cleanup(reg.Close)
+	f := &Facade{IntentRegistry: reg}
+
+	hintOf := func(path string, wantStatus int) string {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		w := httptest.NewRecorder()
+		f.handleSandboxIntent(w, req)
+		if w.Code != wantStatus {
+			t.Fatalf("GET %s status = %d; want %d", path, w.Code, wantStatus)
+		}
+		var resp struct {
+			Hint string `json:"hint"`
+		}
+		if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+			t.Fatal(err)
+		}
+		return resp.Hint
+	}
+
+	// Mark the host.
+	req := httptest.NewRequest(http.MethodPost, "/sandbox/intent/explain?target=example.com", nil)
+	w := httptest.NewRecorder()
+	f.handleSandboxIntentExplain(w, req)
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("explain POST status = %d; want 204", w.Code)
+	}
+
+	// Undeclared + explain-more: 404, but the hint is the explain-more re-ask.
+	if h := hintOf("/sandbox/intent?target=example.com", http.StatusNotFound); !strings.Contains(h, "Explain more") {
+		t.Errorf("first GET hint should surface the explain-more re-ask: %q", h)
+	}
+	// One-shot: the second GET reverts to the generic undeclared hint.
+	if h := hintOf("/sandbox/intent?target=example.com", http.StatusNotFound); strings.Contains(h, "Explain more") {
+		t.Errorf("explain-more hint should be consumed after one read: %q", h)
+	}
+}
+
+// TestIntentExplainOverridesDeclinedHint verifies that when an intent is
+// already on file, an "Explain more" click still wins over the "user
+// declined — do not retry" hint (the user asked for a fuller reason).
+func TestIntentExplainOverridesDeclinedHint(t *testing.T) {
+	reg := intent.New(time.Minute)
+	t.Cleanup(reg.Close)
+	reg.Record("example.com", "fetch notes")
+	reg.MarkExplainMore("example.com")
+	f := &Facade{IntentRegistry: reg}
+
+	req := httptest.NewRequest(http.MethodGet, "/sandbox/intent?target=example.com", nil)
+	w := httptest.NewRecorder()
+	f.handleSandboxIntent(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200", w.Code)
+	}
+	var resp struct {
+		Declared bool   `json:"declared"`
+		Hint     string `json:"hint"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	if !resp.Declared {
+		t.Error("should still report declared=true")
+	}
+	if !strings.Contains(resp.Hint, "Explain more") {
+		t.Errorf("explain-more must override the declined hint: %q", resp.Hint)
+	}
+}
+
+func TestIntentExplainEndpointNilRegistry(t *testing.T) {
+	f := &Facade{}
+	req := httptest.NewRequest(http.MethodPost, "/sandbox/intent/explain?target=x", nil)
+	w := httptest.NewRecorder()
+	f.handleSandboxIntentExplain(w, req)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d; want 503", w.Code)
+	}
+}
+
+func TestIntentExplainEndpointRequiresTarget(t *testing.T) {
+	reg := intent.New(time.Minute)
+	t.Cleanup(reg.Close)
+	f := &Facade{IntentRegistry: reg}
+	req := httptest.NewRequest(http.MethodPost, "/sandbox/intent/explain", nil)
+	w := httptest.NewRecorder()
+	f.handleSandboxIntentExplain(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d; want 400", w.Code)
+	}
+}
+
 func TestIntentEndpointMalformedJSON(t *testing.T) {
 	reg := intent.New(time.Minute)
 	t.Cleanup(reg.Close)

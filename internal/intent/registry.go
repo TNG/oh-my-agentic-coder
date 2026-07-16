@@ -55,9 +55,17 @@ type Entry struct {
 type Registry struct {
 	mu      sync.Mutex
 	entries map[string]Entry
-	ttl     time.Duration
-	stop    chan struct{}
-	stopped sync.Once
+	// explainMore tracks hosts for which the user clicked "Explain more" in
+	// the network popup, keyed by normalized host → time requested. It is the
+	// carrier for the "Explain more" signal on the GET /sandbox/intent
+	// channel: an HTTPS/CONNECT denial discards the deny body, so the click is
+	// surfaced here instead, where the agent's out-of-band lookup can reach
+	// it. Consumed on read (one-shot) so a stale flag never drives a retry
+	// loop after the user later declines for real.
+	explainMore map[string]time.Time
+	ttl         time.Duration
+	stop        chan struct{}
+	stopped     sync.Once
 }
 
 // New builds a Registry with the given TTL. Starts a background
@@ -65,9 +73,10 @@ type Registry struct {
 // the sweeper.
 func New(ttl time.Duration) *Registry {
 	r := &Registry{
-		entries: map[string]Entry{},
-		ttl:     ttl,
-		stop:    make(chan struct{}),
+		entries:     map[string]Entry{},
+		explainMore: map[string]time.Time{},
+		ttl:         ttl,
+		stop:        make(chan struct{}),
 	}
 	go r.sweep()
 	return r
@@ -152,6 +161,63 @@ func (r *Registry) LookupHost(host string) (Entry, bool) {
 	return r.Lookup(strings.ToLower(host))
 }
 
+// MarkExplainMore records that the user clicked "Explain more" for target
+// (a host) in the network popup. The flag is TTL-bounded and, like Record,
+// is a no-op on a nil registry. It is set by the popup path (via the facade
+// POST /sandbox/intent/explain endpoint) so the agent's out-of-band GET
+// lookup can learn the user wants a fuller reason — the one signal an
+// HTTPS/CONNECT denial cannot deliver in-band.
+func (r *Registry) MarkExplainMore(target string) {
+	if r == nil {
+		return
+	}
+	target = normalize(target)
+	if target == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, exists := r.explainMore[target]; !exists && len(r.explainMore) >= maxEntries {
+		r.evictOldestExplainMore()
+	}
+	r.explainMore[target] = time.Now()
+}
+
+// ConsumeExplainMore reports whether the user clicked "Explain more" for
+// target and clears the flag (one-shot). Returns false if unset or expired.
+// Consuming on read keeps the signal from outliving the click: after the
+// agent reads it, re-declares, and retries, a subsequent real denial reverts
+// to the "user declined — do not retry" hint rather than looping.
+func (r *Registry) ConsumeExplainMore(target string) bool {
+	if r == nil {
+		return false
+	}
+	target = normalize(target)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	t, ok := r.explainMore[target]
+	if !ok {
+		return false
+	}
+	delete(r.explainMore, target)
+	return !r.expiredTime(t)
+}
+
+// evictOldestExplainMore removes the earliest explain-more flag. Caller
+// holds mu. Bounds a pathological flood even though the flag is user-gated.
+func (r *Registry) evictOldestExplainMore() {
+	var oldestKey string
+	var oldest time.Time
+	for k, t := range r.explainMore {
+		if oldestKey == "" || t.Before(oldest) {
+			oldestKey, oldest = k, t
+		}
+	}
+	if oldestKey != "" {
+		delete(r.explainMore, oldestKey)
+	}
+}
+
 // LookupSubtree returns the live path intents related to dir: those
 // whose target equals dir, lies under dir, or is an ancestor of dir.
 // Host intents are ignored. It exists for the folder learn-review, where
@@ -184,7 +250,12 @@ func (r *Registry) LookupSubtree(dir string) []Entry {
 
 // expired reports whether e is past the TTL. Caller holds mu.
 func (r *Registry) expired(e Entry) bool {
-	return r.ttl > 0 && time.Since(e.Time) > r.ttl
+	return r.expiredTime(e.Time)
+}
+
+// expiredTime reports whether a timestamp is past the TTL. Caller holds mu.
+func (r *Registry) expiredTime(t time.Time) bool {
+	return r.ttl > 0 && time.Since(t) > r.ttl
 }
 
 // pathRelated reports whether a and b are equal or one contains the other.
@@ -272,6 +343,11 @@ func (r *Registry) evictExpired() {
 	for k, e := range r.entries {
 		if r.expired(e) {
 			delete(r.entries, k)
+		}
+	}
+	for k, t := range r.explainMore {
+		if r.expiredTime(t) {
+			delete(r.explainMore, k)
 		}
 	}
 }

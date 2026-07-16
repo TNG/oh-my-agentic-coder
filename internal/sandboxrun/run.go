@@ -186,6 +186,8 @@ func buildProxy(p *sandboxprofile.Profile, profilePath string, stderr io.Writer,
 	if p.Network.PromptEnabled() {
 		np, available := netprompt.NewPrompter(p.Network.PromptTimeoutSecs(), logf, func(host string) (string, bool) {
 			return intent.LookupOverHTTP(intentBase, host)
+		}, func(host string) {
+			intent.MarkExplainMoreOverHTTP(intentBase, host)
 		})
 		if available {
 			prompter = np

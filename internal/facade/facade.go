@@ -378,6 +378,10 @@ func (f *Facade) handle(w http.ResponseWriter, r *http.Request) {
 		f.handleSandboxIntent(w, r)
 		return
 	}
+	if r.URL.Path == "/sandbox/intent/explain" {
+		f.handleSandboxIntentExplain(w, r)
+		return
+	}
 	if r.URL.Path == "/" || r.URL.Path == "" {
 		f.writeStatus(w, r)
 		return
@@ -634,17 +638,58 @@ func (f *Facade) handleSandboxIntentLookup(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	// The "Explain more" click is delivered on this channel, not the deny
+	// body (which HTTPS/CONNECT discards). If the user asked for a fuller
+	// reason, that hint overrides both the undeclared and the declined hint:
+	// the user wants the agent to re-declare and retry, regardless of whether
+	// a reason was already on file. Consumed on read so it drives exactly one
+	// retry, not a loop.
+	explain := f.IntentRegistry.ConsumeExplainMore(q)
+
 	e, ok := f.IntentRegistry.Lookup(q)
 	if !ok {
 		// Reliable reactive channel: an HTTPS/CONNECT denial cannot deliver
 		// the deny-body hint, so the agent queries here after a failed or
 		// hanging request and the hint tells it what to do next.
+		hint := intentHintUndeclared
+		if explain {
+			hint = intentHintExplainMore
+		}
 		w.WriteHeader(http.StatusNotFound)
-		_ = json.NewEncoder(w).Encode(intentLookupResp{Target: q, Declared: false, Hint: intentHintUndeclared})
+		_ = json.NewEncoder(w).Encode(intentLookupResp{Target: q, Declared: false, Hint: hint})
 		return
 	}
+	hint := intentHintDeclared
+	if explain {
+		hint = intentHintExplainMore
+	}
 	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(intentLookupResp{Target: e.Target, Declared: true, Reason: e.Reason, Hint: intentHintDeclared})
+	_ = json.NewEncoder(w).Encode(intentLookupResp{Target: e.Target, Declared: true, Reason: e.Reason, Hint: hint})
+}
+
+// handleSandboxIntentExplain records that the user clicked "Explain more" for
+// a host in the network popup (POST /sandbox/intent/explain?target=<host>).
+// The sandbox child's prompter calls this over HTTP; the flag is then
+// surfaced by the GET lookup's hint. This is the delivery channel for the
+// "Explain more" re-ask that an HTTPS/CONNECT denial body cannot carry.
+func (f *Facade) handleSandboxIntentExplain(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		http.Error(w, "omac: method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if f.IntentRegistry == nil {
+		w.Header().Set("X-Omac-Reason", "intent-endpoint-disabled")
+		http.Error(w, "omac: intent registry not configured", http.StatusServiceUnavailable)
+		return
+	}
+	target := r.URL.Query().Get("target")
+	if strings.TrimSpace(target) == "" {
+		http.Error(w, "omac: target query parameter required", http.StatusBadRequest)
+		return
+	}
+	f.IntentRegistry.MarkExplainMore(target)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // intentLookupResp is the GET /sandbox/intent body. Reason and Target
@@ -659,8 +704,9 @@ type intentLookupResp struct {
 }
 
 const (
-	intentHintUndeclared = "No intent on file for this target. If a request to it was denied by the sandbox or is waiting on user approval, POST $OMAC_BASE/sandbox/intent {\"target\":\"...\",\"reason\":\"...\"} and retry, so the user sees why you need it. If you already declared an intent earlier and the request was still denied, the user reviewed it and declined — do not retry."
-	intentHintDeclared   = "An intent is on file for this target. If the request was still denied, the user reviewed your reason and declined it — do not retry; choose another approach or ask the user."
+	intentHintUndeclared  = "No intent on file for this target. If a request to it was denied by the sandbox or is waiting on user approval, POST $OMAC_BASE/sandbox/intent {\"target\":\"...\",\"reason\":\"...\"} and retry, so the user sees why you need it. If you already declared an intent earlier and the request was still denied, the user reviewed it and declined — do not retry."
+	intentHintDeclared    = "An intent is on file for this target. If the request was still denied, the user reviewed your reason and declined it — do not retry; choose another approach or ask the user."
+	intentHintExplainMore = "The user clicked \"Explain more\" in the approval dialog: your reason (if any) was not enough to decide. POST a fuller reason to $OMAC_BASE/sandbox/intent {\"target\":\"...\",\"reason\":\"...\"} explaining why you need this host and what you expect to find, then retry the request so the user can reconsider."
 )
 
 // joinReasons renders one or more subtree intents as a single line. A

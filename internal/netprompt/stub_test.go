@@ -13,7 +13,7 @@ import (
 
 func TestStubActivatedOnlyByTruthyEnv(t *testing.T) {
 	isStub := func() bool {
-		p, _ := NewPrompter(1, nil, nil)
+		p, _ := NewPrompter(1, nil, nil, nil)
 		_, ok := p.backends[0].(stubBackend)
 		return len(p.backends) == 1 && ok
 	}
