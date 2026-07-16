@@ -389,7 +389,13 @@ func cargoRustupRuntime(t *testing.T, sysroot string) (string, []string) {
 	if !pathWithin(toolchains, resolvedSysroot) {
 		return "", nil
 	}
-	paths := []string{resolvedSysroot}
+	// Grant the toolchains directory itself (not just the active
+	// toolchain subpath) so the rustup proxy shim can list it to
+	// discover installed toolchains. Without this, Seatbelt denies
+	// readdir(~/.rustup/toolchains/) with EPERM on macOS, producing
+	// "IO Error: Operation not permitted (os error 1)". The directory
+	// contains only installed Rust toolchains — no credentials.
+	paths := []string{resolvedSysroot, toolchains}
 	settings := filepath.Join(rustupHome, "settings.toml")
 	if _, err := os.Stat(settings); err == nil {
 		resolvedSettings, err := resolveRuntimePath(settings)
