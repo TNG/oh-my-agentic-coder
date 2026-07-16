@@ -50,7 +50,7 @@ func waitUntil(t *testing.T, cond func() bool) {
 func startProxy(t *testing.T, cfg FilterConfig) *Server {
 	t.Helper()
 	filter := NewFilter(cfg)
-	s, err := NewServer(filter, NewDirectDialer(filter), nil)
+	s, err := NewServer(filter, NewDirectDialer(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -470,11 +470,7 @@ func TestServerHandleConnectThroughUpstream(t *testing.T) {
 	defer proxyLn.Close()
 
 	proxyURL, _ := url.Parse("http://" + proxyLn.Addr().String())
-	filter := NewFilter(FilterConfig{
-		AllowDomains: []string{"fake.example"},
-		Resolve:      resolveTo("127.0.0.1"),
-	})
-	dialer := NewUpstreamProxyDialer(proxyURL, nil, filter, t.Logf)
+	dialer := NewUpstreamProxyDialer(proxyURL, nil, t.Logf)
 
 	s := startProxyWithDialer(t, FilterConfig{
 		AllowDomains: []string{"fake.example"},
@@ -506,11 +502,7 @@ func TestServerFilterDenyBeforeUpstream(t *testing.T) {
 	defer proxyLn.Close()
 
 	proxyURL, _ := url.Parse("http://" + proxyLn.Addr().String())
-	filter := NewFilter(FilterConfig{
-		AllowDomains: []string{"fake.example"},
-		Resolve:      resolveTo("127.0.0.1"),
-	})
-	dialer := NewUpstreamProxyDialer(proxyURL, nil, filter, t.Logf)
+	dialer := NewUpstreamProxyDialer(proxyURL, nil, t.Logf)
 
 	s := startProxyWithDialer(t, FilterConfig{
 		DenyDomains: []string{"blocked.test"},
@@ -550,11 +542,7 @@ func TestServer502OnUpstreamFailure(t *testing.T) {
 	defer proxyLn.Close()
 
 	proxyURL, _ := url.Parse("http://" + proxyLn.Addr().String())
-	filter := NewFilter(FilterConfig{
-		AllowDomains: []string{"fake.example"},
-		Resolve:      resolveTo("127.0.0.1"),
-	})
-	dialer := NewUpstreamProxyDialer(proxyURL, nil, filter, t.Logf)
+	dialer := NewUpstreamProxyDialer(proxyURL, nil, t.Logf)
 
 	s := startProxyWithDialer(t, FilterConfig{
 		AllowDomains: []string{"fake.example"},
@@ -594,11 +582,7 @@ func TestServer502OnUpstreamDialFailure(t *testing.T) {
 	ln.Close()
 
 	proxyURL, _ := url.Parse("http://" + addr)
-	filter := NewFilter(FilterConfig{
-		AllowDomains: []string{"fake.example"},
-		Resolve:      resolveTo("127.0.0.1"),
-	})
-	dialer := NewUpstreamProxyDialer(proxyURL, nil, filter, t.Logf)
+	dialer := NewUpstreamProxyDialer(proxyURL, nil, t.Logf)
 
 	s := startProxyWithDialer(t, FilterConfig{
 		AllowDomains: []string{"fake.example"},
@@ -642,11 +626,7 @@ func TestServerForwardThroughUpstreamWithAuth(t *testing.T) {
 
 	proxyURL, _ := url.Parse("http://" + proxyLn.Addr().String())
 	proxyURL.User = url.UserPassword("corp", "secret")
-	filter := NewFilter(FilterConfig{
-		AllowDomains: []string{"fake.example"},
-		Resolve:      resolveTo("127.0.0.1"),
-	})
-	dialer := NewUpstreamProxyDialer(proxyURL, nil, filter, t.Logf)
+	dialer := NewUpstreamProxyDialer(proxyURL, nil, t.Logf)
 
 	s := startProxyWithDialer(t, FilterConfig{
 		AllowDomains: []string{"fake.example"},

@@ -158,7 +158,7 @@ func buildProxy(p *sandboxprofile.Profile, profilePath string, stderr io.Writer,
 		Learned:            learned,
 		Logf:               logf,
 	})
-	srv, err := netproxy.NewServer(filter, resolveUpstreamProxy(p, filter, stderr, logf), logf)
+	srv, err := netproxy.NewServer(filter, resolveUpstreamProxy(p, stderr, logf), logf)
 	if err != nil {
 		return nil, err
 	}
@@ -185,7 +185,7 @@ func buildProxy(p *sandboxprofile.Profile, profilePath string, stderr io.Writer,
 //   - env NO_PROXY / no_proxy (comma-separated, trimmed)
 //
 // Only proxyURL.Host is logged — never the userinfo (credentials).
-func resolveUpstreamProxy(p *sandboxprofile.Profile, filter *netproxy.Filter, stderr io.Writer, logf func(string, ...any)) netproxy.Dialer {
+func resolveUpstreamProxy(p *sandboxprofile.Profile, stderr io.Writer, logf func(string, ...any)) netproxy.Dialer {
 	proxyStr := p.Network.UpstreamProxy
 	if proxyStr == "" {
 		proxyStr = os.Getenv("HTTPS_PROXY")
@@ -201,13 +201,13 @@ func resolveUpstreamProxy(p *sandboxprofile.Profile, filter *netproxy.Filter, st
 	}
 
 	if proxyStr == "" {
-		return netproxy.NewDirectDialer(filter)
+		return netproxy.NewDirectDialer()
 	}
 
 	proxyURL, err := url.Parse(proxyStr)
 	if err != nil {
 		fmt.Fprintf(stderr, "omac sandbox: warning: invalid upstream proxy %q: %v — falling back to direct dialing\n", proxyStr, err)
-		return netproxy.NewDirectDialer(filter)
+		return netproxy.NewDirectDialer()
 	}
 
 	var noProxy []string
@@ -228,5 +228,5 @@ func resolveUpstreamProxy(p *sandboxprofile.Profile, filter *netproxy.Filter, st
 
 	logf("omac sandbox: using upstream proxy %s", proxyURL.Host)
 
-	return netproxy.NewUpstreamProxyDialer(proxyURL, noProxy, filter, logf)
+	return netproxy.NewUpstreamProxyDialer(proxyURL, noProxy, logf)
 }

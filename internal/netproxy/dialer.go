@@ -7,15 +7,30 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strings"
 )
 
-// Dialer establishes a tunnel connection to host:port.
-// The direct implementation resolves DNS and dials pinned IPs;
-// the upstream-proxy implementation tunnels through a corporate proxy.
+// Dialer establishes a tunnel connection to host:port. It is a pure
+// transport: admission control and DNS resolution are performed once by
+// the server's Filter.Check, whose pinned, approved addresses are passed
+// in as addrs. The direct implementation dials those pinned IPs
+// (anti-DNS-rebinding); the upstream-proxy implementation ignores them
+// and passes the hostname to the corporate proxy for its own DNS, except
+// on a NO_PROXY match where it dials the pinned IPs directly.
 type Dialer interface {
-	DialTunnel(ctx context.Context, host string, port int) (net.Conn, error)
+	DialTunnel(ctx context.Context, host string, port int, addrs []netip.Addr) (net.Conn, error)
+}
+
+// TunnelPlanner reports whether a host will be tunneled through an
+// upstream proxy (which does its own DNS) rather than dialed directly.
+// When ChainsHost is true the server admits the host WITHOUT local DNS
+// resolution: the upstream proxy resolves it and the hostname is the
+// admission boundary. Only the upstream-proxy dialer implements it;
+// direct dialers do not (they always need pinned IPs to dial).
+type TunnelPlanner interface {
+	ChainsHost(host string) bool
 }
 
 // ProxyAuthenticator returns the Proxy-Authorization header value
@@ -28,24 +43,18 @@ type ProxyAuthenticator interface {
 	ProxyAuthHeader() string
 }
 
-// directDialer resolves the hostname via the filter (which also
-// enforces allow/deny rules and returns pinned IPs) and dials
-// the resolved addresses in order (anti-DNS-rebinding).
-type directDialer struct {
-	filter *Filter
+// directDialer dials the pinned addresses the server already resolved
+// and approved via Filter.Check. It performs no admission control or DNS
+// resolution of its own — that is the server's single responsibility.
+type directDialer struct{}
+
+// NewDirectDialer creates a Dialer that dials the server-pinned IPs
+// directly (anti-DNS-rebinding preserved by reusing the server's addrs).
+func NewDirectDialer() Dialer {
+	return &directDialer{}
 }
 
-// NewDirectDialer creates a Dialer that resolves DNS locally and
-// dials pinned IPs, using the filter for admission control.
-func NewDirectDialer(filter *Filter) Dialer {
-	return &directDialer{filter: filter}
-}
-
-func (d *directDialer) DialTunnel(ctx context.Context, host string, port int) (net.Conn, error) {
-	verdict, addrs := d.filter.Check(ctx, host, port)
-	if verdict.Decision != Allow {
-		return nil, fmt.Errorf("omac sandbox: net DENY %s:%d (%s)", host, port, verdict.Reason)
-	}
+func (d *directDialer) DialTunnel(ctx context.Context, host string, port int, addrs []netip.Addr) (net.Conn, error) {
 	return dialPinned(ctx, addrs, port)
 }
 
@@ -77,9 +86,9 @@ type upstreamProxyDialer struct {
 
 // NewUpstreamProxyDialer creates a Dialer that tunnels through the
 // corporate proxy at proxyURL. Hosts matching any entry in noProxy
-// (suffix match on the hostname) bypass the upstream proxy and use
-// direct dialing through the filter instead.
-func NewUpstreamProxyDialer(proxyURL *url.URL, noProxy []string, filter *Filter, logf func(string, ...any)) Dialer {
+// (suffix match on the hostname) bypass the upstream proxy and dial the
+// server-pinned IPs directly instead.
+func NewUpstreamProxyDialer(proxyURL *url.URL, noProxy []string, logf func(string, ...any)) Dialer {
 	var proxyAuth string
 	if proxyURL.User != nil {
 		username := proxyURL.User.Username()
@@ -91,7 +100,7 @@ func NewUpstreamProxyDialer(proxyURL *url.URL, noProxy []string, filter *Filter,
 		proxyURL:  proxyURL,
 		proxyAuth: proxyAuth,
 		noProxy:   noProxy,
-		direct:    NewDirectDialer(filter),
+		direct:    NewDirectDialer(),
 		logf:      logf,
 	}
 }
@@ -121,10 +130,16 @@ func hostMatchesNoProxy(host string, entries []string) bool {
 // it on plain-HTTP requests tunneled through the upstream proxy.
 func (d *upstreamProxyDialer) ProxyAuthHeader() string { return d.proxyAuth }
 
-func (d *upstreamProxyDialer) DialTunnel(ctx context.Context, host string, port int) (net.Conn, error) {
+// ChainsHost reports whether host will be tunneled through the upstream
+// proxy (true) or bypassed via NO_PROXY and dialed directly (false).
+func (d *upstreamProxyDialer) ChainsHost(host string) bool {
+	return !hostMatchesNoProxy(host, d.noProxy)
+}
+
+func (d *upstreamProxyDialer) DialTunnel(ctx context.Context, host string, port int, addrs []netip.Addr) (net.Conn, error) {
 	if hostMatchesNoProxy(host, d.noProxy) {
 		d.logf("omac netproxy: NO_PROXY match for %s — dialing direct", host)
-		return d.direct.DialTunnel(ctx, host, port)
+		return d.direct.DialTunnel(ctx, host, port, addrs)
 	}
 
 	target := net.JoinHostPort(host, fmt.Sprintf("%d", port))

@@ -237,6 +237,19 @@ func (s *Server) authorized(req *http.Request) bool {
 	return subtle.ConstantTimeCompare([]byte(pass), []byte(s.token)) == 1
 }
 
+// admit runs the network filter for host:port, resolving locally only
+// when the connection will be dialed directly. Hosts routed through an
+// upstream proxy are admitted on the hostname alone (the proxy does its
+// own DNS), so an internal-only hostname is not rejected by a local DNS
+// failure. Returns the verdict and the pinned addrs to dial (nil on the
+// chained path, where the dialer ignores them).
+func (s *Server) admit(ctx context.Context, host string, port int) (Verdict, []netip.Addr) {
+	if planner, ok := s.dialer.(TunnelPlanner); ok && planner.ChainsHost(host) {
+		return s.filter.CheckHost(host, port), nil
+	}
+	return s.filter.Check(ctx, host, port)
+}
+
 // handleConnect filters and splices a raw TCP tunnel. TLS bytes pass
 // through untouched.
 func (s *Server) handleConnect(conn net.Conn, req *http.Request) {
@@ -254,12 +267,12 @@ func (s *Server) handleConnect(conn net.Conn, req *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), connectTimeout)
 	defer cancel()
-	verdict, _ := s.filter.Check(ctx, host, port)
+	verdict, addrs := s.admit(ctx, host, port)
 	if verdict.Decision != Allow {
 		writeRawResponse(conn, http.StatusForbidden, sandboxDenyHeader, denyBody(host, verdict.Reason))
 		return
 	}
-	upstream, err := s.dialer.DialTunnel(ctx, host, port)
+	upstream, err := s.dialer.DialTunnel(ctx, host, port, addrs)
 	if err != nil {
 		var ue *UpstreamError
 		if errors.As(err, &ue) {
@@ -303,12 +316,12 @@ func (s *Server) handleForward(conn net.Conn, br *bufio.Reader, req *http.Reques
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), connectTimeout)
 	defer cancel()
-	verdict, _ := s.filter.Check(ctx, host, port)
+	verdict, addrs := s.admit(ctx, host, port)
 	if verdict.Decision != Allow {
 		writeRawResponse(conn, http.StatusForbidden, sandboxDenyHeader, denyBody(host, verdict.Reason))
 		return
 	}
-	upstream, err := s.dialer.DialTunnel(ctx, host, port)
+	upstream, err := s.dialer.DialTunnel(ctx, host, port, addrs)
 	if err != nil {
 		var ue *UpstreamError
 		if errors.As(err, &ue) {

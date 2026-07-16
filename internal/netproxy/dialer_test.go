@@ -16,6 +16,19 @@ import (
 	"time"
 )
 
+// pin is the server-resolved, filter-approved address set the Dialer
+// receives. The direct dialer dials these; the upstream-proxy dialer
+// ignores them on the CONNECT path and uses them only on a NO_PROXY
+// bypass. Admission control and DNS resolution are the server's job
+// (Filter.Check) — the Dialer is pure transport.
+func pin(ips ...string) []netip.Addr {
+	addrs := make([]netip.Addr, 0, len(ips))
+	for _, ip := range ips {
+		addrs = append(addrs, netip.MustParseAddr(ip))
+	}
+	return addrs
+}
+
 func startEchoListener(t *testing.T) net.Listener {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -138,21 +151,21 @@ func handleFakeUpstreamConn(t *testing.T, conn net.Conn, expectedHost string, ex
 	_, _ = io.Copy(conn, conn)
 }
 
+// TestDirectDialer verifies the direct dialer dials the pinned addresses
+// it is handed and splices the connection. It performs no filtering or
+// resolution of its own — that boundary is exercised at the server level
+// (TestConnectDenied403NamesHost / TestServerFilterDenyBeforeUpstream).
 func TestDirectDialer(t *testing.T) {
 	ln := startEchoListener(t)
 	defer ln.Close()
 	port := ln.Addr().(*net.TCPAddr).Port
 
-	filter := NewFilter(FilterConfig{
-		AllowDomains: []string{"localhost"},
-		Resolve:      resolveTo("127.0.0.1"),
-	})
-	d := NewDirectDialer(filter)
+	d := NewDirectDialer()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	conn, err := d.DialTunnel(ctx, "localhost", port)
+	conn, err := d.DialTunnel(ctx, "localhost", port, pin("127.0.0.1"))
 	if err != nil {
 		t.Fatalf("DialTunnel localhost:%d: %v", port, err)
 	}
@@ -169,31 +182,17 @@ func TestDirectDialer(t *testing.T) {
 	if string(buf) != string(payload) {
 		t.Errorf("echo mismatch: got %q want %q", buf, payload)
 	}
-
-	deniedFilter := NewFilter(FilterConfig{
-		AllowDomains: []string{"allowed.example"},
-		Resolve:      resolveTo("127.0.0.1"),
-	})
-	dDeny := NewDirectDialer(deniedFilter)
-	_, err = dDeny.DialTunnel(ctx, "blocked.example", port)
-	if err == nil {
-		t.Fatal("DialTunnel for denied host should return an error")
-	}
-	if !strings.Contains(err.Error(), "DENY") {
-		t.Errorf("denied error should mention DENY: %v", err)
-	}
 }
 
-func TestDirectDialerLoopbackIPDeny(t *testing.T) {
-	filter := NewFilter(FilterConfig{
-		DenyDomains: []string{"127.0.0.1"},
-	})
-	d := NewDirectDialer(filter)
+// TestDirectDialerNoAddrs verifies the direct dialer fails cleanly when
+// the server hands it no addresses (e.g. an Allow verdict with an empty
+// pin set should never happen, but the transport must not panic).
+func TestDirectDialerNoAddrs(t *testing.T) {
+	d := NewDirectDialer()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	_, err := d.DialTunnel(ctx, "127.0.0.1", 80)
-	if err == nil {
-		t.Fatal("DialTunnel for denied IP should return an error")
+	if _, err := d.DialTunnel(ctx, "anything.example", 443, nil); err == nil {
+		t.Fatal("DialTunnel with no pinned addresses should return an error")
 	}
 }
 
@@ -204,16 +203,13 @@ func TestUpstreamProxyDialerCONNECT(t *testing.T) {
 	defer ln.Close()
 
 	proxyURL := &url.URL{Scheme: "http", Host: ln.Addr().String()}
-	filter := NewFilter(FilterConfig{
-		AllowDomains: []string{"example.com"},
-		Resolve:      resolveTo("127.0.0.1"),
-	})
-	d := NewUpstreamProxyDialer(proxyURL, nil, filter, t.Logf)
+	d := NewUpstreamProxyDialer(proxyURL, nil, t.Logf)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	conn, err := d.DialTunnel(ctx, "example.com", 443)
+	// Pass a pin the dialer must IGNORE: the upstream proxy does its own DNS.
+	conn, err := d.DialTunnel(ctx, "example.com", 443, pin("203.0.113.9"))
 	if err != nil {
 		t.Fatalf("DialTunnel example.com:443: %v", err)
 	}
@@ -253,16 +249,12 @@ func TestUpstreamProxyDialerAuth(t *testing.T) {
 		Host:   ln.Addr().String(),
 		User:   url.UserPassword("user", "pass"),
 	}
-	filter := NewFilter(FilterConfig{
-		AllowDomains: []string{"example.com"},
-		Resolve:      resolveTo("127.0.0.1"),
-	})
-	d := NewUpstreamProxyDialer(proxyURL, nil, filter, t.Logf)
+	d := NewUpstreamProxyDialer(proxyURL, nil, t.Logf)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	conn, err := d.DialTunnel(ctx, "example.com", 443)
+	conn, err := d.DialTunnel(ctx, "example.com", 443, nil)
 	if err != nil {
 		t.Fatalf("DialTunnel: %v", err)
 	}
@@ -284,16 +276,12 @@ func TestUpstreamProxyDialerNoAuthWhenNoUserinfo(t *testing.T) {
 	defer ln.Close()
 
 	proxyURL := &url.URL{Scheme: "http", Host: ln.Addr().String()}
-	filter := NewFilter(FilterConfig{
-		AllowDomains: []string{"example.com"},
-		Resolve:      resolveTo("127.0.0.1"),
-	})
-	d := NewUpstreamProxyDialer(proxyURL, nil, filter, t.Logf)
+	d := NewUpstreamProxyDialer(proxyURL, nil, t.Logf)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	conn, err := d.DialTunnel(ctx, "example.com", 443)
+	conn, err := d.DialTunnel(ctx, "example.com", 443, nil)
 	if err != nil {
 		t.Fatalf("DialTunnel: %v", err)
 	}
@@ -312,16 +300,12 @@ func TestUpstreamProxyDialerNon200(t *testing.T) {
 	defer ln.Close()
 
 	proxyURL := &url.URL{Scheme: "http", Host: ln.Addr().String()}
-	filter := NewFilter(FilterConfig{
-		AllowDomains: []string{"example.com"},
-		Resolve:      resolveTo("127.0.0.1"),
-	})
-	d := NewUpstreamProxyDialer(proxyURL, nil, filter, t.Logf)
+	d := NewUpstreamProxyDialer(proxyURL, nil, t.Logf)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	_, err := d.DialTunnel(ctx, "example.com", 443)
+	_, err := d.DialTunnel(ctx, "example.com", 443, nil)
 	if err == nil {
 		t.Fatal("DialTunnel should fail on 407")
 	}
@@ -353,16 +337,13 @@ func TestUpstreamProxyDialerNoProxyBypass(t *testing.T) {
 	echoPort := echoLn.Addr().(*net.TCPAddr).Port
 
 	proxyURL := &url.URL{Scheme: "http", Host: ln.Addr().String()}
-	filter := NewFilter(FilterConfig{
-		AllowDomains: []string{"localhost"},
-		Resolve:      resolveTo("127.0.0.1"),
-	})
-	d := NewUpstreamProxyDialer(proxyURL, []string{"localhost"}, filter, t.Logf)
+	d := NewUpstreamProxyDialer(proxyURL, []string{"localhost"}, t.Logf)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	conn, err := d.DialTunnel(ctx, "localhost", echoPort)
+	// NO_PROXY match → dial the server-pinned IPs directly, never the proxy.
+	conn, err := d.DialTunnel(ctx, "localhost", echoPort, pin("127.0.0.1"))
 	if err != nil {
 		t.Fatalf("DialTunnel localhost bypass: %v", err)
 	}
@@ -384,14 +365,8 @@ func TestUpstreamProxyDialerNoProxyBypass(t *testing.T) {
 		t.Errorf("upstream connections for bypass = %d, want 0", got)
 	}
 
-	filter2 := NewFilter(FilterConfig{
-		AllowDomains: []string{"nonproxy.test"},
-		Resolve:      resolveTo("127.0.0.1"),
-	})
-	d2 := NewUpstreamProxyDialer(proxyURL, []string{"localhost"}, filter2, t.Logf)
-	ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel2()
-	conn2, err := d2.DialTunnel(ctx2, "nonproxy.test", 443)
+	// Non-match → chained through the upstream proxy (pin ignored).
+	conn2, err := d.DialTunnel(ctx, "nonproxy.test", 443, pin("203.0.113.9"))
 	if err != nil {
 		t.Fatalf("DialTunnel nonproxy.test via upstream: %v", err)
 	}
@@ -408,8 +383,7 @@ func TestProxyAuthHeader(t *testing.T) {
 		Host:   "proxy.example:8080",
 		User:   url.UserPassword("user", "pass"),
 	}
-	filter := NewFilter(FilterConfig{Resolve: resolveTo("127.0.0.1")})
-	d := NewUpstreamProxyDialer(proxyURL, nil, filter, nil)
+	d := NewUpstreamProxyDialer(proxyURL, nil, nil)
 	up, ok := d.(ProxyAuthenticator)
 	if !ok {
 		t.Fatal("upstreamProxyDialer should implement ProxyAuthenticator")
@@ -420,7 +394,7 @@ func TestProxyAuthHeader(t *testing.T) {
 	}
 
 	proxyURL2 := &url.URL{Scheme: "http", Host: "proxy.example:8080"}
-	d2 := NewUpstreamProxyDialer(proxyURL2, nil, filter, nil)
+	d2 := NewUpstreamProxyDialer(proxyURL2, nil, nil)
 	up2, ok := d2.(ProxyAuthenticator)
 	if !ok {
 		t.Fatal("upstreamProxyDialer should implement ProxyAuthenticator")
@@ -429,7 +403,7 @@ func TestProxyAuthHeader(t *testing.T) {
 		t.Errorf("ProxyAuthHeader() = %q, want empty", got)
 	}
 
-	dDirect := NewDirectDialer(filter)
+	dDirect := NewDirectDialer()
 	if _, ok := dDirect.(ProxyAuthenticator); ok {
 		t.Error("directDialer should NOT implement ProxyAuthenticator")
 	}
@@ -494,16 +468,12 @@ func TestUpstreamProxyDialerBufferedConn(t *testing.T) {
 	}()
 
 	proxyURL := &url.URL{Scheme: "http", Host: ln.Addr().String()}
-	filter := NewFilter(FilterConfig{
-		AllowDomains: []string{"example.com"},
-		Resolve:      resolveTo("127.0.0.1"),
-	})
-	d := NewUpstreamProxyDialer(proxyURL, nil, filter, t.Logf)
+	d := NewUpstreamProxyDialer(proxyURL, nil, t.Logf)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	conn, err := d.DialTunnel(ctx, "example.com", 443)
+	conn, err := d.DialTunnel(ctx, "example.com", 443, nil)
 	if err != nil {
 		t.Fatalf("DialTunnel: %v", err)
 	}
@@ -539,15 +509,11 @@ func TestUpstreamProxyDialerDialFailure(t *testing.T) {
 	ln.Close()
 
 	proxyURL := &url.URL{Scheme: "http", Host: addr}
-	filter := NewFilter(FilterConfig{
-		AllowDomains: []string{"example.com"},
-		Resolve:      resolveTo("127.0.0.1"),
-	})
-	d := NewUpstreamProxyDialer(proxyURL, nil, filter, t.Logf)
+	d := NewUpstreamProxyDialer(proxyURL, nil, t.Logf)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	_, err = d.DialTunnel(ctx, "example.com", 443)
+	_, err = d.DialTunnel(ctx, "example.com", 443, nil)
 	if err == nil {
 		t.Fatal("DialTunnel should fail when upstream is unreachable")
 	}
@@ -574,15 +540,11 @@ func TestUpstreamProxyDialer503(t *testing.T) {
 	defer ln.Close()
 
 	proxyURL := &url.URL{Scheme: "http", Host: ln.Addr().String()}
-	filter := NewFilter(FilterConfig{
-		AllowDomains: []string{"example.com"},
-		Resolve:      resolveTo("127.0.0.1"),
-	})
-	d := NewUpstreamProxyDialer(proxyURL, nil, filter, t.Logf)
+	d := NewUpstreamProxyDialer(proxyURL, nil, t.Logf)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, err := d.DialTunnel(ctx, "example.com", 443)
+	_, err := d.DialTunnel(ctx, "example.com", 443, nil)
 	if err == nil {
 		t.Fatal("DialTunnel should fail on 503")
 	}
@@ -601,42 +563,34 @@ func TestUpstreamProxyDialerContextCanceled(t *testing.T) {
 	defer ln.Close()
 
 	proxyURL := &url.URL{Scheme: "http", Host: ln.Addr().String()}
-	filter := NewFilter(FilterConfig{
-		AllowDomains: []string{"example.com"},
-		Resolve:      resolveTo("127.0.0.1"),
-	})
-	d := NewUpstreamProxyDialer(proxyURL, nil, filter, t.Logf)
+	d := NewUpstreamProxyDialer(proxyURL, nil, t.Logf)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	_, err := d.DialTunnel(ctx, "example.com", 443)
+	_, err := d.DialTunnel(ctx, "example.com", 443, nil)
 	if err == nil {
 		t.Fatal("DialTunnel should fail with canceled context")
 	}
 }
 
 // TestUpstreamProxyDialerFilterNotEnforcedAtDialerLevel documents the layering:
-// the upstream dialer itself does not re-check the filter on the upstream
-// path — the Server does that before calling DialTunnel. A denied host
-// therefore still reaches the upstream proxy at the dialer layer. This test
-// pins that boundary so a future refactor doesn't silently double-check.
+// the upstream dialer itself does not enforce the filter — the Server does that
+// via Filter.Check before ever calling DialTunnel. A request that reaches the
+// dialer therefore always proceeds to the upstream proxy. This pins the
+// boundary so a future refactor doesn't reintroduce dialer-level filtering.
 func TestUpstreamProxyDialerFilterNotEnforcedAtDialerLevel(t *testing.T) {
 	var conns int32
 	ln := startFakeUpstreamProxy(t, "", "", "", nil, &conns)
 	defer ln.Close()
 
 	proxyURL := &url.URL{Scheme: "http", Host: ln.Addr().String()}
-	filter := NewFilter(FilterConfig{
-		DenyDomains: []string{"example.com"},
-		Resolve:     resolveTo("127.0.0.1"),
-	})
-	d := NewUpstreamProxyDialer(proxyURL, nil, filter, t.Logf)
+	d := NewUpstreamProxyDialer(proxyURL, nil, t.Logf)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	conn, err := d.DialTunnel(ctx, "example.com", 443)
+	conn, err := d.DialTunnel(ctx, "example.com", 443, nil)
 	if err != nil {
 		t.Fatalf("DialTunnel: %v", err)
 	}
@@ -648,17 +602,15 @@ func TestUpstreamProxyDialerFilterNotEnforcedAtDialerLevel(t *testing.T) {
 }
 
 func TestNewDirectDialerType(t *testing.T) {
-	filter := NewFilter(FilterConfig{Resolve: resolveTo("127.0.0.1")})
-	d := NewDirectDialer(filter)
+	d := NewDirectDialer()
 	if _, ok := d.(*directDialer); !ok {
 		t.Errorf("NewDirectDialer should return *directDialer, got %T", d)
 	}
 }
 
 func TestNewUpstreamProxyDialerType(t *testing.T) {
-	filter := NewFilter(FilterConfig{Resolve: resolveTo("127.0.0.1")})
 	proxyURL := &url.URL{Scheme: "http", Host: "proxy.example:8080"}
-	d := NewUpstreamProxyDialer(proxyURL, nil, filter, nil)
+	d := NewUpstreamProxyDialer(proxyURL, nil, nil)
 	if _, ok := d.(*upstreamProxyDialer); !ok {
 		t.Errorf("NewUpstreamProxyDialer should return *upstreamProxyDialer, got %T", d)
 	}
@@ -686,15 +638,11 @@ func TestUpstreamProxyDialerWithBodyInResponse(t *testing.T) {
 	defer ln.Close()
 
 	proxyURL := &url.URL{Scheme: "http", Host: ln.Addr().String()}
-	filter := NewFilter(FilterConfig{
-		AllowDomains: []string{"example.com"},
-		Resolve:      resolveTo("127.0.0.1"),
-	})
-	d := NewUpstreamProxyDialer(proxyURL, nil, filter, t.Logf)
+	d := NewUpstreamProxyDialer(proxyURL, nil, t.Logf)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, err := d.DialTunnel(ctx, "example.com", 443)
+	_, err := d.DialTunnel(ctx, "example.com", 443, nil)
 	if err == nil {
 		t.Fatal("DialTunnel should fail on 502")
 	}
@@ -707,20 +655,19 @@ func TestUpstreamProxyDialerWithBodyInResponse(t *testing.T) {
 	}
 }
 
-func TestDirectDialerPinsResolvedIP(t *testing.T) {
+// TestDirectDialerDialsPin verifies the direct dialer dials exactly the
+// pinned address it is handed (anti-DNS-rebinding: the server resolved and
+// pinned; the dialer must not re-resolve).
+func TestDirectDialerDialsPin(t *testing.T) {
 	ln := startEchoListener(t)
 	defer ln.Close()
 	port := ln.Addr().(*net.TCPAddr).Port
 
-	filter := NewFilter(FilterConfig{
-		AllowDomains: []string{"anything.example"},
-		Resolve:      resolveTo("127.0.0.1"),
-	})
-	d := NewDirectDialer(filter)
+	d := NewDirectDialer()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	conn, err := d.DialTunnel(ctx, "anything.example", port)
+	conn, err := d.DialTunnel(ctx, "anything.example", port, pin("127.0.0.1"))
 	if err != nil {
 		t.Fatalf("DialTunnel: %v", err)
 	}
@@ -762,15 +709,11 @@ func TestUpstreamProxyDialerUpstreamClosesConn(t *testing.T) {
 	}()
 
 	proxyURL := &url.URL{Scheme: "http", Host: ln.Addr().String()}
-	filter := NewFilter(FilterConfig{
-		AllowDomains: []string{"example.com"},
-		Resolve:      resolveTo("127.0.0.1"),
-	})
-	d := NewUpstreamProxyDialer(proxyURL, nil, filter, t.Logf)
+	d := NewUpstreamProxyDialer(proxyURL, nil, t.Logf)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	conn, err := d.DialTunnel(ctx, "example.com", 443)
+	conn, err := d.DialTunnel(ctx, "example.com", 443, nil)
 	if err != nil {
 		t.Fatalf("DialTunnel: %v", err)
 	}
@@ -785,4 +728,3 @@ func TestUpstreamProxyDialerUpstreamClosesConn(t *testing.T) {
 }
 
 var _ = readCONNECTRequest
-var _ = netip.Addr{}

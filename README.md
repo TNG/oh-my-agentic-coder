@@ -415,7 +415,7 @@ proxy than the host environment provides, set it in the sandbox profile:
 {
   "network": {
     "upstream_proxy": "http://proxy.corp.example.com:8080",
-    "no_proxy": ["internal.corp", "10.0.0.0/8"]
+    "no_proxy": ["internal.corp", "registry.internal"]
   }
 }
 ```
@@ -423,9 +423,12 @@ proxy than the host environment provides, set it in the sandbox profile:
 Profile fields take precedence over environment variables.
 
 **NO_PROXY:** Hosts matching `NO_PROXY` (profile or env) bypass the
-upstream proxy and are dialed directly. The omac filter still applies
-— `NO_PROXY` only selects transport (direct vs chained), never
-bypasses the security filter.
+upstream proxy and are dialed directly. An entry matches that exact
+host or any subdomain of it (`internal.corp` also matches
+`api.internal.corp`); matching is case-insensitive. CIDR ranges and
+leading-dot forms (`.internal.corp`) are not supported. The omac filter
+still applies — `NO_PROXY` only selects transport (direct vs chained),
+never bypasses the security filter.
 
 **Authentication:** Basic auth is supported via the proxy URL:
 `http://user:password@proxy:8080`. The credentials are sent as
