@@ -138,7 +138,7 @@ func TestHarnessLaunchProbe(t *testing.T) {
 			defer cancel()
 
 			args := []string{"start", h.Name}
-			if h.Sandbox.NoSandbox {
+			if forceNoSandbox(h) {
 				args = append(args, "--no-sandbox")
 			}
 			args = append(args, "--", "--version")
@@ -149,7 +149,16 @@ func TestHarnessLaunchProbe(t *testing.T) {
 			// env — NOT buildAgentEnv, whose per-harness EnvVars t.Fatal when
 			// SKAINET_TOKEN is unset (claude-code, copilot). This keeps the
 			// launch probe genuinely model-free and secret-free.
-			cmd.Env = append(withHome(os.Environ(), home), "PWD="+workdir)
+			//
+			// When nested in an omac sandbox, still apply the short-TMPDIR
+			// override (buildAgentEnv does this for runAgent; the launch
+			// probe can't use buildAgentEnv because of the creds issue, so
+			// replicate just the TMPDIR piece here).
+			probeEnv := append(withHome(os.Environ(), home), "PWD="+workdir)
+			if shortTmp := shortTmpDirForNested(t); shortTmp != "" {
+				probeEnv = withEnv(probeEnv, "TMPDIR", shortTmp)
+			}
+			cmd.Env = probeEnv
 			cmd.Stdin = strings.NewReader("")
 			var stdout, stderr bytes.Buffer
 			cmd.Stdout = &stdout

@@ -78,6 +78,14 @@ func TestE2EServeDirTokenIsolation(t *testing.T) {
 	cmd := exec.CommandContext(ctx, omacBin, "serve", "opencode", "--no-inner", "--control-addr", "127.0.0.1:0")
 	cmd.Dir = cwd
 	cmd.Env = withHome(os.Environ(), home)
+	// When nested inside an omac sandbox, shorten TMPDIR so the serve
+	// facade's bridge.sock path stays under macOS's 104-byte SUN_LEN limit
+	// (the sandbox TMPDIR is a deep /var/folders/... path). Same fix as
+	// buildAgentEnv applies to `omac start`. withEnv replaces any existing
+	// TMPDIR rather than appending a duplicate entry.
+	if shortTmp := shortTmpDirForNested(t); shortTmp != "" {
+		cmd.Env = withEnv(cmd.Env, "TMPDIR", shortTmp)
+	}
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
 		t.Fatal(err)
