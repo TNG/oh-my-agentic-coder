@@ -81,3 +81,81 @@ No MCP server needed — `bash` + `docker exec` + reading artifact files
 is the full interface. If a restricted subagent (no bash) later needs to
 drive the container, wrap these commands in an MCP server then; the
 script remains the single source of truth.
+
+## E2E from inside an omac sandbox (agent-driven local iteration)
+
+`scripts/e2e-local.sh` lets an agent running inside an omac sandbox
+(OMAC_SOCKET set) run the e2e suite without a host shell. Three blockers
+that make the host-shell path fail inside a sandbox are auto-detected and
+accommodated — CI runs are unaffected because it never sets OMAC_SOCKET.
+
+```sh
+# Smoke tier (no secrets, ~10s per harness) — install + CLI contract + launch probe
+scripts/e2e-local.sh smoke opencode
+scripts/e2e-local.sh smoke claude-code
+
+# Full echo-rest lifecycle (needs SKAINET_TOKEN + SKAINET_INTERNAL)
+SKAINET_TOKEN=... SKAINET_INTERNAL=... scripts/e2e-local.sh echo opencode
+
+# Security audit (needs SKAINET_TOKEN + SKAINET_INTERNAL)
+SKAINET_TOKEN=... SKAINET_INTERNAL=... scripts/e2e-local.sh audit opencode
+
+# Default (no args) = smoke opencode
+scripts/e2e-local.sh
+
+# Pass extra go-test flags after --
+scripts/e2e-local.sh smoke opencode -- -run TestHarnessCLIContract
+```
+
+### What the script auto-detects and fixes
+
+When `OMAC_SOCKET` is set (only true inside an omac sandbox), the wrapper
+exports three env vars the test code reads:
+
+- `E2E_NESTED=1` — `omac start` runs with `--no-sandbox`. macOS denies
+  nested Seatbelt profile application (`sandbox_apply: Operation not
+  permitted`); the inner sandbox can't be applied from inside an existing
+  one. The security audit's `sandboxActive` is derived from the same
+  `forceNoSandbox` decision, so a nested run takes the "document exposure"
+  branch (codex-on-macOS path) rather than asserting sandbox-active
+  behavior against an unsandboxed agent.
+- `E2E_RECOVER_INSTALL=1` — `installHarness` retries a failed install with
+  `--ignore-scripts`, then runs the package's own `postinstall` script via
+  `sh -c` directly. The omac sandbox blocks the postinstall subprocess the
+  package manager spawns (EPERM on fork), leaving the binary without its
+  platform binary. A direct `sh -c "$postinstall"` invocation works because
+  it's not a spawned lifecycle hook. Also falls back from bun to npm for
+  opencode when bun isn't on PATH (bun installs to `~/.bun`, which the
+  sandbox blocks writes to).
+- `TMPDIR=/tmp/omac-e2e` (wrapper) / `/tmp/omac-e2e-<pid>` (test code, for
+  omac start/serve subprocesses) — short paths so the facade's
+  `bridge.sock` stays under macOS's 104-byte `SUN_LEN` limit. The sandbox
+  TMPDIR is a deep `/var/folders/...` path that makes
+  `$TMPDIR/omac-<hash>/bridge.sock` exceed it, yielding
+  `bind: invalid argument`.
+
+### One-time host setup (outside the sandbox)
+
+None required for the smoke tier. The wrapper detects missing bun and the
+test code falls back to npm. If you want the faster bun install path, a
+host-level `brew install bun` (outside the sandbox) is picked up
+automatically.
+
+For the full echo-rest / security-audit tiers you need secrets on the env:
+`SKAINET_TOKEN`, `SKAINET_INTERNAL` (and `ANTHROPIC_BASE_URL` for
+claude-code, which the wrapper passes through).
+
+### Tiers
+
+| Tier | Needs | What it does |
+|------|-------|--------------|
+| `smoke` | nothing | installs harness, checks `--help` flags omac depends on, runs `omac start -- --version` through the (no-sandbox) launch path. Under nesting the install runs the recovery path (full `--ignore-scripts` + manual postinstall) because the omac sandbox blocks the package manager's postinstall subprocess, so each harness install takes ~5-15s instead of <1s. |
+| `echo` | secrets | full lifecycle: build omac, install harness, start agent, call echo-rest `/status`, assert `{"ok":true}` + workdir write + git commit |
+| `audit` | secrets | security audit: inject a secret, run the self-audit probes, assert isolation properties (or document exposure under `--no-sandbox`) |
+
+### Outside a sandbox
+
+`scripts/e2e-local.sh` is a thin passthrough when `OMAC_SOCKET` is unset —
+it sets none of the `E2E_NESTED`/`E2E_RECOVER_INSTALL` vars and just runs
+`go test`. Use it on a host shell too; the bare `go test -tags=e2e ...`
+recipe in `internal/e2e/e2e_test.go`'s doc comment also works.
