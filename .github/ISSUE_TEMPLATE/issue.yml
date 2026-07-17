@@ -3,6 +3,14 @@ description: Describe a gap or a piece of work. Keep it concise.
 labels: []
 assignees: []
 body:
+  - type: checkboxes
+    id: duplicate-check
+    attributes:
+      label: Duplicate check
+      description: Please search existing issues before filing.
+      options:
+        - label: I have searched the existing issues
+          required: true
   - type: markdown
     attributes:
       value: |
