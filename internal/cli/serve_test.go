@@ -220,6 +220,34 @@ func TestInjectServerListenPort(t *testing.T) {
 	}
 }
 
+func TestServerExposureWarning(t *testing.T) {
+	oc, _ := config.LookupHarness("opencode")
+	cc, _ := config.LookupHarness("claude-code")
+
+	// opencode server + auth env UNSET -> warn (names the port + the env var).
+	unset := func(string) string { return "" }
+	w := serverExposureWarning(oc, unset)
+	if w == "" || !strings.Contains(w, "4096") || !strings.Contains(w, "OPENCODE_SERVER_PASSWORD") {
+		t.Errorf("expected warning naming :4096 and OPENCODE_SERVER_PASSWORD, got %q", w)
+	}
+
+	// Auth env SET -> no warning (the exposed port is protected).
+	set := func(k string) string {
+		if k == "OPENCODE_SERVER_PASSWORD" {
+			return "secret"
+		}
+		return ""
+	}
+	if w := serverExposureWarning(oc, set); w != "" {
+		t.Errorf("auth set should suppress the warning, got %q", w)
+	}
+
+	// Harness with no server mode -> nothing to warn about.
+	if w := serverExposureWarning(cc, unset); w != "" {
+		t.Errorf("non-server harness should not warn, got %q", w)
+	}
+}
+
 func TestInjectOpenPort(t *testing.T) {
 	// With a `--` separator, the flag goes right before it.
 	in := []string{"nono", "run", "--open-port", "5000", "--", "opencode", "serve"}

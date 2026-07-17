@@ -458,6 +458,12 @@ func runServe(args []string, env *Env) int {
 		fmt.Fprintf(env.Stderr, "[verbose] inner argv: %v\n", argv)
 	}
 
+	// Caution when the harness server will expose an unauthenticated loopback
+	// port (fires whether sandboxed or not — the server listens either way).
+	if w := serverExposureWarning(harness, os.Getenv); w != "" {
+		fmt.Fprintln(env.Stderr, w)
+	}
+
 	// Run the inner command (opencode serve) in the sandbox, with the
 	// control plane already serving. ExecWithReady blocks until the child
 	// exits; the deferred facade/supervisor/control teardown then runs
@@ -515,6 +521,24 @@ func injectServerListenPort(argv []string, h config.Harness) []string {
 		return argv
 	}
 	return injectSandboxFlag(argv, "--listen-port", strconv.Itoa(h.ServerLaunch.ListenPort))
+}
+
+// serverExposureWarning returns a one-line caution when a harness's server
+// daemon will bind a loopback port that is NOT protected by its auth env var
+// — that port is reachable by any local process, so an unauthenticated server
+// lets local callers drive the agent (bounded by the sandbox, but still). It
+// returns "" when there is no server port or the auth env var is set. getenv
+// is injected for testability.
+func serverExposureWarning(h config.Harness, getenv func(string) string) string {
+	sl := h.ServerLaunch
+	if sl == nil || sl.ListenPort <= 0 || sl.AuthEnvVar == "" {
+		return ""
+	}
+	if getenv(sl.AuthEnvVar) != "" {
+		return ""
+	}
+	return fmt.Sprintf("omac serve: %s server will listen on 127.0.0.1:%d, reachable by any local "+
+		"process; set %s to require authentication.", h.Name, sl.ListenPort, sl.AuthEnvVar)
 }
 
 // injectOpenPort splices `--open-port <port>` into a sandbox argv so the

@@ -128,6 +128,11 @@ func TestServerLaunchListenPort(t *testing.T) {
 	if oc.ServerLaunch.ListenPort != 4096 {
 		t.Errorf("opencode ServerLaunch.ListenPort = %d, want 4096", oc.ServerLaunch.ListenPort)
 	}
+	// opencode's server is unauthenticated unless OPENCODE_SERVER_PASSWORD is
+	// set; declaring it lets omac warn when the exposed loopback port is open.
+	if oc.ServerLaunch.AuthEnvVar != "OPENCODE_SERVER_PASSWORD" {
+		t.Errorf("opencode ServerLaunch.AuthEnvVar = %q, want OPENCODE_SERVER_PASSWORD", oc.ServerLaunch.AuthEnvVar)
+	}
 	for _, name := range []string{"claude-code", "codex", "copilot", "pi"} {
 		h, _ := LookupHarness(name)
 		if h.ServerLaunch != nil {
