@@ -147,6 +147,26 @@ type Network struct {
 	// leading-dot forms (".example.com") are not supported. Empty entries
 	// are rejected.
 	NoProxy []string `json:"no_proxy,omitempty"`
+	// ProxyInjection opts proxy-unaware toolchains into the omac proxy by
+	// injecting their native proxy configuration at launch. The JVM
+	// ignores HTTP(S)_PROXY, so JVM tools (Gradle, Maven, sbt, …) cannot
+	// reach any repository under a filtered sandbox; listing "jvm" here
+	// makes omac set a controlled JAVA_TOOL_OPTIONS that points every JVM
+	// at the proxy (token included). Values: "jvm".
+	ProxyInjection []string `json:"proxy_injection,omitempty"`
+}
+
+// ProxyInjectJVM is the proxy_injection identifier for the JVM toolchain.
+const ProxyInjectJVM = "jvm"
+
+// HasProxyInjection reports whether tool is listed in proxy_injection.
+func (n *Network) HasProxyInjection(tool string) bool {
+	for _, t := range n.ProxyInjection {
+		if t == tool {
+			return true
+		}
+	}
+	return false
 }
 
 // NetworkPrompt mirrors nono's network_prompt block.
@@ -281,6 +301,13 @@ func (p *Profile) Validate() error {
 	for _, entry := range p.Network.NoProxy {
 		if strings.TrimSpace(entry) == "" {
 			return fmt.Errorf("sandbox profile: network.no_proxy contains an empty entry")
+		}
+	}
+	for _, tool := range p.Network.ProxyInjection {
+		switch tool {
+		case ProxyInjectJVM:
+		default:
+			return fmt.Errorf("sandbox profile: invalid network.proxy_injection %q (want jvm)", tool)
 		}
 	}
 	for _, group := range []struct {
