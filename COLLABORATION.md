@@ -48,12 +48,6 @@ Both issues and PRs are written so a human *or* an agent can pick them
 up and act. Keep them **concise** — prefer structured bullets over
 prose walls. See the spec below for the expected structure.
 
-The **issue/PR body is the living source of truth.** As understanding
-evolves, update the body rather than burying the current state deep in
-a comment thread (GitHub preserves the edit history, so nothing is
-lost). Use the comment thread for discussion; resolve comments and fold
-the outcome back into the body.
-
 ---
 
 ## Spec: Issue structure
@@ -85,7 +79,8 @@ Rules:
 PRs mirror the conventions already established in this repo:
 
 ```
-## What            1-4 bullets of what changed
+## What            1-4 bullets summarizing the change at a glance — do NOT
+                   restate what is clearly readable in the diff
 ## Why             Motivation — failing CI run, security gap, related issue
 ## How             Implementation approach, per bullet with code refs if useful
 ## Verification    Commands run (go build / go test / ...) with pass status
@@ -121,6 +116,23 @@ artifacts before implementation. We keep it simple:
 
 This avoids a parallel "spec for specs" convention and keeps decisions
 where they are actually read.
+
+## Open question: issue/PR body vs. comment thread
+
+When understanding evolves on an issue or PR, do we keep the **body**
+updated as the source of truth, or let the discussion **evolve as a
+thread**? Two options on the table:
+
+- **A — body is the living source of truth.** As understanding
+  evolves, update the body; GitHub preserves the edit history, so
+  nothing is lost. A reader gets the current state in one place but
+  the author must maintain it, and silent edits can hide reasoning.
+- **B — let it evolve as a thread.** The discussion *is* the record;
+  every change is an explicit comment with an author and timestamp.
+  Zero extra work, but the "current truth" is scattered and late
+  readers must read the whole thread to know where things landed.
+
+Decision pending — discuss in #105.
 
 ---
 
