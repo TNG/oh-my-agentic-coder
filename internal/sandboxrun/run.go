@@ -142,6 +142,14 @@ func Run(opts Options) int {
 		for k, v := range proxy.EnvVars() {
 			injected[k] = v
 		}
+		if merged.Network.HasProxyInjection(sandboxprofile.ProxyInjectJVM) {
+			opt, oerr := JVMProxyToolOptions(proxy.ProxyURL())
+			if oerr != nil {
+				return fail("%v", oerr)
+			}
+			injected["JAVA_TOOL_OPTIONS"] = opt
+			fmt.Fprintln(stderr, "omac sandbox: proxy_injection: JVM tools (Gradle/Maven/…) routed through the omac proxy via JAVA_TOOL_OPTIONS")
+		}
 	}
 
 	// Denial markers must outlive argv construction: bwrap reads the
