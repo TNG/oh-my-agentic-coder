@@ -201,6 +201,25 @@ func TestRootsPolicy(t *testing.T) {
 	}
 }
 
+func TestInjectServerListenPort(t *testing.T) {
+	oc, _ := config.LookupHarness("opencode")
+	cc, _ := config.LookupHarness("claude-code")
+
+	// A server harness gets its listen port allowlisted, spliced before `--`.
+	in := []string{"omac", "sandbox", "run", "--profile", "tng-default", "--open-port", "5000", "--", "opencode", "serve"}
+	got := injectServerListenPort(in, oc)
+	want := []string{"omac", "sandbox", "run", "--profile", "tng-default", "--open-port", "5000", "--listen-port", "4096", "--", "opencode", "serve"}
+	if !equalStrings(got, want) {
+		t.Errorf("opencode: got %v, want %v", got, want)
+	}
+
+	// A harness with no server mode is a no-op (nothing to allowlist).
+	in2 := []string{"nono", "run", "--", "claude"}
+	if got2 := injectServerListenPort(in2, cc); !equalStrings(got2, in2) {
+		t.Errorf("claude-code should be a no-op: got %v, want %v", got2, in2)
+	}
+}
+
 func TestInjectOpenPort(t *testing.T) {
 	// With a `--` separator, the flag goes right before it.
 	in := []string{"nono", "run", "--open-port", "5000", "--", "opencode", "serve"}

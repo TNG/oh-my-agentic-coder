@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -405,6 +406,13 @@ func runServe(args []string, env *Env) int {
 		if cp := controlPortOf(cln); cp != "" {
 			argv = injectOpenPort(argv, cp)
 		}
+		// Allowlist the inner server daemon's own listen port so its bind()
+		// is permitted inside the sandbox. The profile's `--open-port
+		// {{tcp_port}}` covers only the facade; the harness's server (e.g.
+		// `opencode serve` on 4096) binds a distinct port that no other
+		// grant covers, so a restrictive profile (network_prompt: deny)
+		// denies the bind and the daemon crashes on startup (issue #115).
+		argv = injectServerListenPort(argv, harness)
 		// Grant the selected harness's runtime dirs (config, state,
 		// sessions) read+write — only for the selected harness.
 		argv = injectSandboxDirs(argv, harness.SandboxDirs)
@@ -495,6 +503,18 @@ func controlPortOf(ln net.Listener) string {
 		return ""
 	}
 	return port
+}
+
+// injectServerListenPort splices `--listen-port <port>` into a sandbox argv
+// for a harness whose server daemon binds a fixed loopback port (declared on
+// its ServerLaunch descriptor). Without this the daemon's bind() is denied
+// under a restrictive sandbox profile and it crashes on startup (issue #115).
+// Harnesses with no server mode, or none declaring a port, are a no-op.
+func injectServerListenPort(argv []string, h config.Harness) []string {
+	if h.ServerLaunch == nil || h.ServerLaunch.ListenPort <= 0 {
+		return argv
+	}
+	return injectSandboxFlag(argv, "--listen-port", strconv.Itoa(h.ServerLaunch.ListenPort))
 }
 
 // injectOpenPort splices `--open-port <port>` into a sandbox argv so the
