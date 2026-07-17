@@ -7,6 +7,11 @@
 #              registry still exists in the harness's --help.
 #   launch   — model-free: `omac start <harness>` reaches the real binary
 #              through the sandbox.
+#   serve    — model-free: `omac serve <harness>` (Desktop mode) launches the
+#              real inner server daemon under the sandbox and its control plane
+#              drives an activate/deactivate cycle. Only harnesses with a
+#              server-launch convention (opencode → OpenCode Desktop) run it;
+#              others record ➖.
 #   llm      — a SINGLE lightweight agent turn (echo-rest) against the model
 #              provider, verifying the auth/proxy path and sidecar facade. Run
 #              for every harness, claude-code included. The heavy multi-probe
@@ -140,14 +145,14 @@ jobs:
             echo "version=main@$(git describe --tags --always --dirty)" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Model-free smoke (contract + launch)
+      - name: Model-free smoke (contract + launch + serve)
         id: modelfree
         env:
           E2E_CACHE_DIR: ${{ runner.temp }}/e2e-install-cache
         run: |
           set -o pipefail
-          go test -tags=e2e -timeout=15m -v \
-            -run 'TestHarnessCLIContract|TestHarnessLaunchProbe' \
+          go test -tags=e2e -timeout=20m -v \
+            -run 'TestHarnessCLIContract|TestHarnessLaunchProbe|TestHarnessServeProbe' \
             ./internal/e2e/ 2>&1 | tee modelfree.log || true
 
       - name: LLM turn
@@ -180,14 +185,18 @@ jobs:
         if: always()
         run: |
           # Read a stage's PASS/FAIL out of the OMAC_COMPAT lines the Go tests
-          # print; absent line ⇒ the test crashed before emitting ⇒ ❌.
+          # print. result=SKIP ⇒ ➖ (stage not applicable to this harness). The
+          # second arg is the mark for an ABSENT line: ❌ for stages that always
+          # run (a missing line ⇒ crash-before-emit), ➖ for serve (only server-
+          # mode harnesses emit it, so absence is "not applicable", not failure).
           stage_mark() {
-            local stage="$1"
+            local stage="$1" absent="${2:-❌}"
             local line
             line=$(grep -oE "OMAC_COMPAT .*stage=$stage .*result=[A-Z]+" modelfree.log 2>/dev/null | head -1 || true)
             case "$line" in
               *result=PASS) echo '✅' ;;
-              '') echo '❌' ;;
+              *result=SKIP) echo '➖' ;;
+              '') echo "$absent" ;;
               *) echo '❌' ;;
             esac
           }
@@ -196,13 +205,14 @@ jobs:
           [ -z "$version" ] && version="unknown"
           contract=$(stage_mark contract)
           launch=$(stage_mark launch)
+          serve=$(stage_mark serve ➖)
           case "${{ steps.llm.outcome }}" in
             success) llm='✅' ;;
             failure) llm='❌' ;;
             *)       llm='➖' ;;  # not run (e.g. leg crashed earlier)
           esac
           date_utc=$(date -u +%Y-%m-%d)
-          row="| $date_utc | ${{ steps.omac.outputs.version }} | ${{ matrix.os }} | ${{ matrix.harness }} | $version | $contract | $launch | $llm |"
+          row="| $date_utc | ${{ steps.omac.outputs.version }} | ${{ matrix.os }} | ${{ matrix.harness }} | $version | $contract | $launch | $serve | $llm |"
           mkdir -p compat
           slug="${{ matrix.os }}-${{ matrix.harness }}-${{ matrix.omac }}"
           printf '%s\n' "$row" > "compat/$slug.row"
@@ -215,10 +225,11 @@ jobs:
             stages=""
             [ "$contract" = "❌" ] && stages="$stages contract"
             [ "$launch" = "❌" ] && stages="$stages launch"
+            [ "$serve" = "❌" ] && stages="$stages serve"
             [ "$llm" = "❌" ] && stages="$stages llm"
             {
               echo "=== ${{ matrix.harness }} / ${{ matrix.os }} / omac@${{ matrix.omac }} — failing stage(s):$stages ==="
-              grep -hE 'CLI contract drift|no longer exposes|--- FAIL|omac start .* failed|FAIL \[|Error|panic:' \
+              grep -hE 'CLI contract drift|no longer exposes|--- FAIL|omac start .* failed|serve probe failed|omac serve exited|FAIL \[|Error|panic:' \
                 modelfree.log llm.log 2>/dev/null | head -40 || true
               tail -n 30 llm.log 2>/dev/null || true
               echo
@@ -227,8 +238,8 @@ jobs:
           {
             echo "### ${{ matrix.harness }} / ${{ matrix.os }} / omac@${{ matrix.omac }}"
             echo ""
-            echo "| Timestamp (UTC) | omac | OS | Harness | Version | contract | launch | llm |"
-            echo "|---|---|---|---|---|:-:|:-:|:-:|"
+            echo "| Timestamp (UTC) | omac | OS | Harness | Version | contract | launch | serve | llm |"
+            echo "|---|---|---|---|---|:-:|:-:|:-:|:-:|"
             echo "$row"
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -409,8 +420,8 @@ jobs:
                 sed 's/^/> /' failure-summary.txt
                 echo ""
               fi
-              echo "| Timestamp (UTC) | omac | OS | Harness | Version | contract | launch | llm |"
-              echo "|---|---|---|---|---|:-:|:-:|:-:|"
+              echo "| Timestamp (UTC) | omac | OS | Harness | Version | contract | launch | serve | llm |"
+              echo "|---|---|---|---|---|:-:|:-:|:-:|:-:|"
               cat failing.rows
               echo ""
               # Footer hint depends on the failing stage: the contract-drift
@@ -418,14 +429,14 @@ jobs:
               if awk -F'|' '{gsub(/ /,"",$7)} $7 ~ /❌/{f=1} END{exit f?0:1}' failing.rows; then
                 echo "A ❌ in **contract** means the installed release renamed/removed a flag omac depends on — fix \`internal/config/harness.go\` and/or \`internal/e2e/harnesses.go\`. See docs/HARNESS_COMPAT.md."
               else
-                echo "See the summary above and the [run log]($RUN_URL) for the failing stage; a **launch**/**llm** ❌ is a sandbox-launch or model/agent-turn failure, not a CLI-contract break."
+                echo "See the summary above and the [run log]($RUN_URL) for the failing stage; a **launch**/**serve**/**llm** ❌ is a sandbox-launch, Desktop serve-mode, or model/agent-turn failure, not a CLI-contract break."
               fi
             fi
             echo ""
             echo "## History (rolling 30 days)"
             echo ""
-            echo "| Timestamp (UTC) | omac | OS | Harness | Version | contract | launch | llm |"
-            echo "|---|---|---|---|---|:-:|:-:|:-:|"
+            echo "| Timestamp (UTC) | omac | OS | Harness | Version | contract | launch | serve | llm |"
+            echo "|---|---|---|---|---|:-:|:-:|:-:|:-:|"
             printf '%s\n' "$all"
           } > dashboard.md
           if [ -n "$num" ]; then
@@ -460,8 +471,8 @@ jobs:
               echo ""
               echo "Appended by omac's e2e-smoke workflow. Do not edit by hand."
               echo ""
-              echo "| Timestamp (UTC) | omac | OS | Harness | Version | contract | launch | llm |"
-              echo "|---|---|---|---|---|:-:|:-:|:-:|"
+              echo "| Timestamp (UTC) | omac | OS | Harness | Version | contract | launch | serve | llm |"
+              echo "|---|---|---|---|---|:-:|:-:|:-:|:-:|"
               echo "<!-- COMPAT_TABLE_END -->"
             } > "$file"
           fi
@@ -504,7 +515,8 @@ jobs:
                 s="";
                 if ($7=="❌") s=s" contract";
                 if ($8=="❌") s=s" launch";
-                if ($9=="❌") s=s" llm";
+                if ($9=="❌") s=s" serve";
+                if ($10=="❌") s=s" llm";
                 printf "- %s/%s:%s\n", $5, $4, s
               }' failing.rows)
             fi

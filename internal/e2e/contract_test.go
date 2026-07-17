@@ -138,6 +138,25 @@ func TestCompatLine(t *testing.T) {
 	}
 }
 
+func TestHarnessHasServerMode(t *testing.T) {
+	// Derived from the live registry: only opencode ships a server-launch
+	// convention today. This test locks the serve-probe eligibility to that
+	// fact so adding/removing a harness's ServerLaunch is a conscious change.
+	cases := map[string]bool{
+		"opencode":    true,
+		"claude-code": false,
+		"codex":       false,
+		"copilot":     false,
+		"pi":          false,
+		"nonexistent": false,
+	}
+	for name, want := range cases {
+		if got := harnessHasServerMode(name); got != want {
+			t.Errorf("harnessHasServerMode(%q) = %v, want %v", name, got, want)
+		}
+	}
+}
+
 func TestParseVersion(t *testing.T) {
 	cases := []struct{ raw, want string }{
 		{"opencode 1.17.12", "1.17.12"},
