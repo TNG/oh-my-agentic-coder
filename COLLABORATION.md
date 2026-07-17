@@ -37,12 +37,22 @@ apply to **everyone** — please follow them.
 - After you (the author) implement review feedback, **re-request
   review** so reviewers know it is ready again.
 - **Never merge without at least one approval.**
+- **Resolve review comments as you address them.** When you resolve a
+  thread, a reply is optional if you implemented the suggestion as
+  discussed; if you deviated from the suggestion, reply with a short
+  note explaining the deviation *before* resolving.
 
 ## 5. Issues & MRs are concise and agent-first
 
 Both issues and PRs are written so a human *or* an agent can pick them
 up and act. Keep them **concise** — prefer structured bullets over
 prose walls. See the spec below for the expected structure.
+
+The **issue/PR body is the living source of truth.** As understanding
+evolves, update the body rather than burying the current state deep in
+a comment thread (GitHub preserves the edit history, so nothing is
+lost). Use the comment thread for discussion; resolve comments and fold
+the outcome back into the body.
 
 ---
 
@@ -99,20 +109,18 @@ Rules:
 
 ---
 
-## Open question: how do we handle specs?
+## Specs
 
-Several workflows (e.g. the superpowers/plans skills) produce spec or
-plan artifacts before implementation. We have not decided where they
-live. Options:
+Workflows like the superpowers/plans skills produce spec or plan
+artifacts before implementation. We keep it simple:
 
-1. **Inline** — keep the spec inside the issue body.
-2. **Committed** — store under `docs/specs/` (or `specs/`) and link
-   from the issue.
-3. **Ephemeral** — don't persist; treat as scratch and discard after
-   the issue closes.
+- **Do not commit spec artifacts.** Keep specs inline in the issue body.
+- When a spec encodes an architecture or pattern decision worth
+  persisting, fold it into the committed docs (`docs/`, `AGENTS.md`,
+  or an ADR/BDR) rather than maintaining a `specs/` tree.
 
-Decision needed. Until then, prefer option 1 (inline in the issue) so
-nothing is lost and no new directory convention is silently assumed.
+This avoids a parallel "spec for specs" convention and keeps decisions
+where they are actually read.
 
 ---
 
