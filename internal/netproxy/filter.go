@@ -199,6 +199,30 @@ func (f *Filter) Check(ctx context.Context, host string, port int) (Verdict, []n
 	return f.log(h, port, Verdict{Decision: Deny, Reason: "default deny"}), nil
 }
 
+// CheckHost runs the admission pipeline WITHOUT local DNS resolution, for
+// hosts that will be tunneled through an upstream proxy (which performs
+// its own DNS). All hostname rules apply — metadata hard-deny, deny_domain,
+// allow_domain, learned rules, and the prompt/default decision. Anti-DNS-
+// rebinding IP pinning does not: on the chained path omac never dials the
+// pinned IPs, so the hostname the child requested is the admission
+// boundary (the upstream proxy resolves it).
+func (f *Filter) CheckHost(host string, port int) Verdict {
+	h := strings.ToLower(strings.TrimSuffix(host, "."))
+	if hardDenyHosts[h] {
+		return f.log(h, port, Verdict{Decision: Deny, Reason: "hard-deny metadata host"})
+	}
+	if ip, err := netip.ParseAddr(h); err == nil && isLinkLocal(ip) {
+		return f.log(h, port, Verdict{Decision: Deny, Reason: "hard-deny link-local address"})
+	}
+	if v := f.checkRules(h); v != nil {
+		return f.log(h, port, *v)
+	}
+	if v, ok := f.defaultDecision(h, port); ok {
+		return f.log(h, port, v)
+	}
+	return f.log(h, port, Verdict{Decision: Deny, Reason: "default deny"})
+}
+
 // checkRules evaluates learned-deny, deny_domain, allow_domain and
 // learned-allow. Returns nil when no rule matches.
 func (f *Filter) checkRules(host string) *Verdict {

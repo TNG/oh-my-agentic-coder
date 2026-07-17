@@ -22,7 +22,7 @@ nono's architecture (verified against its source) that we replicate in reduced f
 **Non-Goals:**
 
 - Credential injection / reverse proxy (omac sidecars already keep secrets out of the sandbox).
-- Attestation, snapshots/rollback, audit logging, agent multiplexing, policy groups/packs, profile `extends`, WSL2 support, enterprise upstream-proxy chaining, seccomp-notify supervision for pre-Landlock-v4 kernels.
+- Attestation, snapshots/rollback, audit logging, agent multiplexing, policy groups/packs, profile `extends`, WSL2 support, seccomp-notify supervision for pre-Landlock-v4 kernels.
 - Windows native support.
 
 ## Decisions
