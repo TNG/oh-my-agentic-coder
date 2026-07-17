@@ -258,8 +258,12 @@ func resolveUpstreamProxy(p *sandboxprofile.Profile, stderr io.Writer, logf func
 	// Scheme-less URLs like "proxy.corp:8080" parse with Scheme="proxy.corp"
 	// and Host="" (or fail outright for IP:port like "127.0.0.1:8080") —
 	// silently kills all egress. Match stdlib's http.ProxyFromEnvironment:
-	// prepend http:// and re-parse.
-	proxyURL, err := url.Parse("http://" + proxyStr)
+	// prepend http:// only when the value has no scheme.
+	parsedStr := proxyStr
+	if !strings.Contains(proxyStr, "://") {
+		parsedStr = "http://" + proxyStr
+	}
+	proxyURL, err := url.Parse(parsedStr)
 	if err != nil || proxyURL.Host == "" {
 		fmt.Fprintf(stderr, "omac sandbox: warning: invalid upstream proxy %q — falling back to direct dialing\n", proxyStr)
 		return netproxy.NewDirectDialer()
