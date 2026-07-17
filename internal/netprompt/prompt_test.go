@@ -1,12 +1,106 @@
 package netprompt
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
+
+// signalBackend is a dialogBackend stub that returns a fixed label without
+// showing any GUI, for exercising Prompt's instrumentation path.
+type signalBackend struct{ label string }
+
+func (signalBackend) name() string    { return "signal-test" }
+func (signalBackend) available() bool { return true }
+func (b signalBackend) show(ctx context.Context, host string, port int, suffix, intent string) (string, error) {
+	return b.label, nil
+}
+
+// TestPromptEmitsIntentSignal locks the machine-parseable behavioral signal
+// that lets the pre-declaration rate be computed from a session's diag log:
+// every network prompt logs exactly one "intent-signal:" line tagged
+// declared|missing depending on whether the agent pre-declared.
+func TestPromptEmitsIntentSignal(t *testing.T) {
+	cases := []struct {
+		name       string
+		lookup     func(string) (string, bool)
+		wantSignal string
+	}{
+		{"declared", func(string) (string, bool) { return "fetch release notes", true }, "intent=declared"},
+		{"missing", func(string) (string, bool) { return "", false }, "intent=missing"},
+		{"no-registry", nil, "intent=missing"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var logs []string
+			p := &Prompter{
+				timeout:      time.Second,
+				logf:         func(f string, a ...any) { logs = append(logs, fmt.Sprintf(f, a...)) },
+				backends:     []dialogBackend{signalBackend{label: "Allow once"}},
+				lookupIntent: c.lookup,
+			}
+			p.Prompt("api.example.com", 443)
+			var signals []string
+			for _, l := range logs {
+				if strings.Contains(l, "intent-signal:") {
+					signals = append(signals, l)
+				}
+			}
+			if len(signals) != 1 {
+				t.Fatalf("want exactly 1 intent-signal line, got %d: %v", len(signals), signals)
+			}
+			if !strings.Contains(signals[0], c.wantSignal) || !strings.Contains(signals[0], "host=api.example.com") {
+				t.Errorf("signal = %q; want %q + host=api.example.com", signals[0], c.wantSignal)
+			}
+		})
+	}
+}
+
+// TestPromptRecordsExplainMore verifies the popup records the "Explain more"
+// click via the recordExplainMore seam (so it lands on the GET channel an
+// HTTPS/CONNECT denial cannot reach), and only for that click.
+func TestPromptRecordsExplainMore(t *testing.T) {
+	cases := []struct {
+		name       string
+		label      string
+		wantRecord bool
+		wantIntent bool
+	}{
+		{"explain-more records", "Explain more", true, true},
+		{"deny-once does not record", "Deny once", false, false},
+		{"allow-once does not record", "Allow once", false, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var got string
+			recorded := false
+			p := &Prompter{
+				timeout:  time.Second,
+				logf:     func(string, ...any) {},
+				backends: []dialogBackend{signalBackend{label: c.label}},
+				recordExplainMore: func(host string) {
+					got = host
+					recorded = true
+				},
+			}
+			res := p.Prompt("api.example.com", 443)
+			if res.NeedsIntent != c.wantIntent {
+				t.Errorf("NeedsIntent = %v; want %v", res.NeedsIntent, c.wantIntent)
+			}
+			if recorded != c.wantRecord {
+				t.Errorf("recordExplainMore called = %v; want %v", recorded, c.wantRecord)
+			}
+			if c.wantRecord && got != "api.example.com" {
+				t.Errorf("recorded host = %q; want api.example.com", got)
+			}
+		})
+	}
+}
 
 func TestRegisteredSuffixHint(t *testing.T) {
 	cases := map[string]string{
@@ -35,6 +129,7 @@ func TestLabelTokenRoundTrip(t *testing.T) {
 		"Deny once":                         tokenDenyOnce,
 		"Deny permanently (this host)":      tokenDenyPermanentHost,
 		"Deny permanently (*.example.com)":  tokenDenyPermanentSuffix,
+		"Explain more":                      tokenNeedsIntent,
 		"":                                  tokenDenyOnce, // cancel
 		"garbage":                           tokenDenyOnce,
 	}
@@ -67,6 +162,10 @@ func TestTokenToResult(t *testing.T) {
 	if r.Allow || !r.Persist || r.Scope != "suffix" {
 		t.Errorf("deny_permanent_suffix: %+v", r)
 	}
+	r = tokenToResult(tokenNeedsIntent, host, suffix)
+	if r.Allow || r.Persist || !r.NeedsIntent {
+		t.Errorf("needs_intent: %+v", r)
+	}
 }
 
 func TestOptionLabelsExactAndDefault(t *testing.T) {
@@ -78,6 +177,7 @@ func TestOptionLabelsExactAndDefault(t *testing.T) {
 		"Deny once",
 		"Deny permanently (this host)",
 		"Deny permanently (*.example.com)",
+		"Explain more",
 	}
 	if len(opts) != len(want) {
 		t.Fatalf("got %d options", len(opts))
@@ -90,11 +190,32 @@ func TestOptionLabelsExactAndDefault(t *testing.T) {
 }
 
 func TestPromptTextParity(t *testing.T) {
-	got := promptText("api.example.com", 443)
-	want := "The sandboxed process is trying to reach:\n\n    api.example.com:443\n\nHow should omac handle this destination?"
+	got := promptText("api.example.com", 443, "")
+	want := "The sandboxed process is trying to reach:\n\n    api.example.com:443\n\nAgent intent: (not declared)\n\nHow should omac handle this destination?"
 	if got != want {
-		t.Errorf("promptText = %q", got)
+		t.Errorf("promptText (no intent) = %q", got)
 	}
+}
+
+func TestPromptTextWithIntent(t *testing.T) {
+	got := promptText("api.example.com", 443, "fetch release notes")
+	want := "The sandboxed process is trying to reach:\n\n    api.example.com:443\n\nAgent intent: \"fetch release notes\"\n\nHow should omac handle this destination?"
+	if got != want {
+		t.Errorf("promptText (with intent) = %q", got)
+	}
+}
+
+func TestPromptTextIntentOnly(t *testing.T) {
+	got := promptText("api.example.com", 443, "verify the version")
+	if !strings.Contains(got, "api.example.com:443") {
+		t.Errorf("missing host:port: %q", got)
+	}
+	if !strings.Contains(got, `"verify the version"`) {
+		t.Errorf("missing intent: %q", got)
+	}
+}
+
+func TestNotificationText(t *testing.T) {
 	n := notificationText("api.example.com", 443)
 	if !strings.Contains(n, "api.example.com:443") || !strings.Contains(n, "decision dialog is waiting") {
 		t.Errorf("notificationText = %q", n)

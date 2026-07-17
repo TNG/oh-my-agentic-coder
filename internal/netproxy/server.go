@@ -18,8 +18,11 @@ import (
 	"time"
 )
 
-// connectTimeout bounds the upstream dial.
-const connectTimeout = 30 * time.Second
+// connectTimeout bounds the upstream dial (and the early DNS resolve).
+// It is a var, not a const, only so tests can shorten it. The
+// interactive prompt is bounded separately by prompt_timeout_secs and
+// must never share this deadline — see checkAndDial.
+var connectTimeout = 30 * time.Second
 
 // sandboxDenyHeader marks deny responses as originating from the omac
 // sandbox (not the destination server), so both humans and agents can
@@ -28,8 +31,18 @@ const sandboxDenyHeader = "X-Omac-Sandbox: denied\r\n"
 
 // denyBody renders the body for a filtered denial. It explicitly
 // attributes the denial to the sandbox network policy and points at
-// the knobs that change it.
+// the knobs that change it. When reason indicates the user clicked
+// "Explain more", the body directs the agent to declare or refine an
+// intent via POST /sandbox/intent and retry.
 func denyBody(host, reason string) string {
+	if strings.Contains(reason, "needs_intent") {
+		return fmt.Sprintf(`omac sandbox: access to %q was DENIED — the user asked for more explanation.
+
+Declare or refine your intent via:
+  POST $OMAC_BASE/sandbox/intent  {"target":%q,"reason":"..."}
+then retry the request.
+`, host, host)
+	}
 	return fmt.Sprintf(`omac sandbox: access to %q was DENIED BY THE SANDBOX network policy (%s).
 
 This response comes from the omac sandbox proxy, not from %s.
@@ -223,14 +236,11 @@ func (s *Server) handleConnect(conn net.Conn, req *http.Request) {
 			fmt.Sprintf("omac sandbox: CONNECT to loopback %q refused by the sandbox (loopback traffic must use a granted open_port, not the proxy)\n", host))
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), connectTimeout)
-	defer cancel()
-	verdict, addrs := s.filter.Check(ctx, host, port)
+	upstream, verdict, err := s.checkAndDial(host, port)
 	if verdict.Decision != Allow {
 		writeRawResponse(conn, http.StatusForbidden, sandboxDenyHeader, denyBody(host, verdict.Reason))
 		return
 	}
-	upstream, err := dialPinned(ctx, addrs, port)
 	if err != nil {
 		writeRawResponse(conn, http.StatusBadGateway, "", fmt.Sprintf("upstream dial failed: %v\n", err))
 		return
@@ -240,6 +250,31 @@ func (s *Server) handleConnect(conn net.Conn, req *http.Request) {
 		return
 	}
 	splice(conn, upstream)
+}
+
+// checkAndDial runs the filter — which may block on the interactive
+// prompt for up to prompt_timeout_secs — and, on Allow, dials the
+// pinned upstream on a *fresh* connectTimeout deadline. The two phases
+// use independent deadlines on purpose: a slow human approval must not
+// spend the dial budget, or a granted host would fail on an
+// already-expired context. verdict is always meaningful; upstream/err
+// are only set when the verdict is Allow.
+func (s *Server) checkAndDial(host string, port int) (net.Conn, Verdict, error) {
+	// The check phase runs in its own scope so checkCancel is deferred
+	// (fires even if filter.Check panics) yet still releases the check
+	// context before the dial phase begins.
+	verdict, addrs := func() (Verdict, []netip.Addr) {
+		checkCtx, checkCancel := context.WithTimeout(context.Background(), connectTimeout)
+		defer checkCancel()
+		return s.filter.Check(checkCtx, host, port)
+	}()
+	if verdict.Decision != Allow {
+		return nil, verdict, nil
+	}
+	dialCtx, dialCancel := context.WithTimeout(context.Background(), connectTimeout)
+	defer dialCancel()
+	upstream, err := dialPinned(dialCtx, addrs, port)
+	return upstream, verdict, err
 }
 
 // handleForward proxies a plain-HTTP absolute-URI request, streaming
@@ -265,14 +300,11 @@ func (s *Server) handleForward(conn net.Conn, br *bufio.Reader, req *http.Reques
 			fmt.Sprintf("omac sandbox: forward to loopback %q refused by the sandbox (loopback traffic must use a granted open_port, not the proxy)\n", host))
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), connectTimeout)
-	defer cancel()
-	verdict, addrs := s.filter.Check(ctx, host, port)
+	upstream, verdict, err := s.checkAndDial(host, port)
 	if verdict.Decision != Allow {
 		writeRawResponse(conn, http.StatusForbidden, sandboxDenyHeader, denyBody(host, verdict.Reason))
 		return
 	}
-	upstream, err := dialPinned(ctx, addrs, port)
 	if err != nil {
 		writeRawResponse(conn, http.StatusBadGateway, "", fmt.Sprintf("upstream dial failed: %v\n", err))
 		return
@@ -296,16 +328,65 @@ func (s *Server) handleForward(conn net.Conn, br *bufio.Reader, req *http.Reques
 	_ = br // request body (if any) was consumed by outReq.Write via req.Body
 }
 
-// dialPinned connects to the already-resolved addresses in order.
+// maxParallelDials caps how many pinned addresses are dialed at once.
+// RFC 8305 recommends racing only a small number of connection attempts
+// concurrently rather than an unbounded fan-out.
+const maxParallelDials = 8
+
+// dialPinned connects to the already-resolved addresses, racing them
+// concurrently (Happy Eyeballs, RFC 8305) rather than in strict order.
+// Only the pre-resolved IPs are dialed, so DNS pinning (anti-rebinding)
+// is preserved — but a dead address family (e.g. an AAAA that resolves
+// yet has no route) can no longer stall the whole connection ahead of a
+// working address. The first successful connection wins; the losing
+// dials are cancelled and any that still connected are closed.
 func dialPinned(ctx context.Context, addrs []netip.Addr, port int) (net.Conn, error) {
-	var d net.Dialer
-	var lastErr error
+	if len(addrs) == 0 {
+		return nil, fmt.Errorf("no addresses")
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	type result struct {
+		conn net.Conn
+		err  error
+	}
+	ch := make(chan result, len(addrs))
+	// Bound concurrent dials (RFC 8305 recommends racing only a small
+	// number). All addresses are still attempted; at most maxParallelDials
+	// are in flight at once. Goroutines waiting for a slot bail as soon as
+	// a winner cancels ctx.
+	sem := make(chan struct{}, maxParallelDials)
 	for _, a := range addrs {
-		conn, err := d.DialContext(ctx, "tcp", net.JoinHostPort(a.String(), strconv.Itoa(port)))
-		if err == nil {
-			return conn, nil
+		addr := net.JoinHostPort(a.String(), strconv.Itoa(port))
+		go func() {
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-ctx.Done():
+				ch <- result{nil, ctx.Err()}
+				return
+			}
+			var d net.Dialer
+			conn, err := d.DialContext(ctx, "tcp", addr)
+			ch <- result{conn, err}
+		}()
+	}
+	var winner net.Conn
+	var lastErr error
+	for range addrs {
+		r := <-ch
+		switch {
+		case r.err != nil:
+			lastErr = r.err
+		case winner == nil:
+			winner = r.conn
+			cancel() // let the remaining in-flight dials bail out fast
+		default:
+			_ = r.conn.Close() // connected but lost the race
 		}
-		lastErr = err
+	}
+	if winner != nil {
+		return winner, nil
 	}
 	if lastErr == nil {
 		lastErr = fmt.Errorf("no addresses")

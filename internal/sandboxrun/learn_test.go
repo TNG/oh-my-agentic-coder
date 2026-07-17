@@ -24,12 +24,13 @@ func learnGrants(t *testing.T, home string) *Grants {
 // testRecorder builds a learnRecorder with a fixed fake home so the
 // test is independent of the real temp-dir layout (t.TempDir() lives
 // under /var/folders on macOS, which the recorder excludes by design).
-func testRecorder(home string, g *Grants) *learnRecorder {
+func testRecorder(home string, g *Grants, intentBase string) *learnRecorder {
 	r := &learnRecorder{
-		seen:      map[string]bool{},
-		stop:      make(chan struct{}),
-		protected: g.ProtectedPaths,
-		home:      home,
+		seen:       map[string]bool{},
+		stop:       make(chan struct{}),
+		protected:  g.ProtectedPaths,
+		home:       home,
+		intentBase: intentBase,
 	}
 	r.excluded = append(r.excluded, g.ReadPaths...)
 	r.excluded = append(r.excluded, g.WritePaths...)
@@ -40,7 +41,7 @@ func testRecorder(home string, g *Grants) *learnRecorder {
 
 func TestLearnRecorderAggregation(t *testing.T) {
 	home := "/home/u"
-	r := testRecorder(home, learnGrants(t, home))
+	r := testRecorder(home, learnGrants(t, home), "")
 
 	// Observed: files in a new project, a granted dir, a protected dir,
 	// a system dir, and a temp dir.
@@ -67,7 +68,7 @@ func TestLearnRecorderAggregation(t *testing.T) {
 
 func TestLearnRecorderProtectedAncestorsExcluded(t *testing.T) {
 	home := "/home/u"
-	r := testRecorder(home, learnGrants(t, home))
+	r := testRecorder(home, learnGrants(t, home), "")
 	// home itself is an ancestor of ~/.ssh: offering it would cover the
 	// protected path -> must be excluded.
 	r.record(home)
@@ -110,7 +111,7 @@ func TestOfferLearnedFoldersYes(t *testing.T) {
 	}
 	newProj := filepath.Join(home, "newproj")
 	var out strings.Builder
-	err := OfferLearnedFolders(profilePath, []string{newProj}, strings.NewReader("y\n"), &out)
+	err := OfferLearnedFolders(profilePath, []string{newProj}, strings.NewReader("y\n"), &out, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,7 +135,7 @@ func TestOfferLearnedFoldersNo(t *testing.T) {
 	}
 	before, _ := os.ReadFile(profilePath)
 	var out strings.Builder
-	if err := OfferLearnedFolders(profilePath, []string{"/x"}, strings.NewReader("n\n"), &out); err != nil {
+	if err := OfferLearnedFolders(profilePath, []string{"/x"}, strings.NewReader("n\n"), &out, ""); err != nil {
 		t.Fatal(err)
 	}
 	after, _ := os.ReadFile(profilePath)
@@ -148,11 +149,31 @@ func TestOfferLearnedFoldersNo(t *testing.T) {
 
 func TestOfferLearnedFoldersEmpty(t *testing.T) {
 	var out strings.Builder
-	if err := OfferLearnedFolders("/nonexistent.json", nil, strings.NewReader(""), &out); err != nil {
+	if err := OfferLearnedFolders("/nonexistent.json", nil, strings.NewReader(""), &out, ""); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "no new folders") {
 		t.Errorf("output = %q", out.String())
+	}
+}
+
+func TestOfferLearnedFoldersNoIntentLabel(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := t.TempDir()
+	profilePath := filepath.Join(dir, "default.json")
+	if err := sandboxprofile.WriteProfile(profilePath, &sandboxprofile.Profile{}); err != nil {
+		t.Fatal(err)
+	}
+	newProj := filepath.Join(home, "newproj")
+
+	var out strings.Builder
+	// No intentBase → no HTTP lookup → all folders show "(no intent declared)".
+	if err := OfferLearnedFolders(profilePath, []string{newProj}, strings.NewReader("n\n"), &out, ""); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "(no intent declared)") {
+		t.Errorf("missing no-intent label: %q", out.String())
 	}
 }
 

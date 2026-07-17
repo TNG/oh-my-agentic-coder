@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/tngtech/oh-my-agentic-coder/internal/intent"
 	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxprofile"
 )
 
@@ -28,19 +29,23 @@ type learnRecorder struct {
 	stop    chan struct{}
 	stopped sync.WaitGroup
 
-	excluded  []string // expanded: granted + baseline-read/write roots
-	protected []string // expanded protected paths (never offered)
-	home      string
+	excluded   []string // expanded: granted + baseline-read/write roots
+	protected  []string // expanded protected paths (never offered)
+	home       string
+	intentBase string // OMAC_BASE for HTTP intent lookup; "" = no lookup
 }
 
 // newLearnRecorder builds the exclusion sets from the effective grants.
-func newLearnRecorder(g *Grants) *learnRecorder {
+// intentBase, when non-empty, is the facade URL for looking up
+// agent-declared intents at session end.
+func newLearnRecorder(g *Grants, intentBase string) *learnRecorder {
 	home, _ := os.UserHomeDir()
 	r := &learnRecorder{
-		seen:      map[string]bool{},
-		stop:      make(chan struct{}),
-		protected: g.ProtectedPaths,
-		home:      home,
+		seen:       map[string]bool{},
+		stop:       make(chan struct{}),
+		protected:  g.ProtectedPaths,
+		home:       home,
+		intentBase: intentBase,
 	}
 	r.excluded = append(r.excluded, g.ReadPaths...)
 	r.excluded = append(r.excluded, g.WritePaths...)
@@ -185,18 +190,59 @@ func collapseAncestors(paths []string) []string {
 	return out
 }
 
+// intentLookupParallelism bounds concurrent intent lookups during the
+// learn-mode teardown review. A small pool keeps an unreachable facade
+// from turning N candidates into N serial 2s stalls while not flooding
+// the loopback facade.
+const intentLookupParallelism = 4
+
+// lookupIntentLines returns, per candidate (in order), the display line
+// describing any agent-declared intent for that folder. Lookups run with
+// bounded concurrency so session teardown can't stall for 2s × N when the
+// facade is wedged. Each goroutine writes a distinct index, so no locking
+// is needed.
+func lookupIntentLines(intentBase string, candidates []string) []string {
+	lines := make([]string, len(candidates))
+	for i := range lines {
+		lines[i] = "(no intent declared)"
+	}
+	if intentBase == "" {
+		return lines
+	}
+	sem := make(chan struct{}, intentLookupParallelism)
+	var wg sync.WaitGroup
+	for i, c := range candidates {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(i int, c string) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			// Subtree lookup: the candidate is a reduced ancestor of the
+			// specific paths the agent declared, so an exact match would miss.
+			if reason, ok := intent.LookupSubtreeOverHTTP(intentBase, c); ok {
+				lines[i] = fmt.Sprintf("agent said: %q", reason)
+			}
+		}(i, c)
+	}
+	wg.Wait()
+	return lines
+}
+
 // OfferLearnedFolders presents the candidates on the terminal and asks
 // whether to append them to the profile's filesystem.allow list. It
 // rewrites the profile pretty-printed on confirmation. in/out default
 // to the controlling terminal so the prompt works after a TUI session.
-func OfferLearnedFolders(profilePath string, candidates []string, in io.Reader, out io.Writer) error {
+// intentBase, when non-empty, is the facade URL for looking up
+// agent-declared intents shown next to each candidate.
+func OfferLearnedFolders(profilePath string, candidates []string, in io.Reader, out io.Writer, intentBase string) error {
 	if len(candidates) == 0 {
 		fmt.Fprintln(out, "omac sandbox: learn mode: no new folders observed")
 		return nil
 	}
 	fmt.Fprintln(out, "\nomac sandbox: learn mode observed these folders outside the current profile:")
-	for _, c := range candidates {
-		fmt.Fprintf(out, "  %s\n", c)
+	intentLines := lookupIntentLines(intentBase, candidates)
+	for i, c := range candidates {
+		fmt.Fprintf(out, "  %-40s — %s\n", c, intentLines[i])
 	}
 	fmt.Fprintf(out, "Add them to filesystem.allow in %s? [y/N] ", profilePath)
 	reader := bufio.NewReader(in)

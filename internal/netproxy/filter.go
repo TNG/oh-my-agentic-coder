@@ -63,6 +63,10 @@ type PromptResult struct {
 	Persist bool   // permanent (host or suffix scope) vs once
 	Scope   string // "host" or "suffix" when Persist
 	Suffix  string // populated when Scope == "suffix"
+	// NeedsIntent signals that the user clicked "Explain more" — the
+	// request is denied with a marker pointing the agent at the intent
+	// endpoint. Never persisted.
+	NeedsIntent bool
 }
 
 // LearnedStore persists permanent prompt decisions. Implemented by the
@@ -240,6 +244,9 @@ func (f *Filter) defaultDecision(host string, port int) (Verdict, bool) {
 		scope := res.Scope
 		if !res.Persist {
 			scope = "once"
+		}
+		if res.NeedsIntent {
+			return Verdict{Decision: Deny, Reason: "prompt:needs_intent", Scope: scope, Persisted: res.Persist}, true
 		}
 		if res.Allow {
 			return Verdict{Decision: Allow, Reason: "prompt:allow", Scope: scope, Persisted: res.Persist}, true

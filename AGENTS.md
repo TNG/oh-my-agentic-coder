@@ -22,6 +22,10 @@ SKAINET_TOKEN=... SKAINET_INTERNAL=... \
 SKAINET_TOKEN=... SKAINET_INTERNAL=... \
   scripts/e2e-docker.sh audit opencode
 
+# Run the intent prompt test (stub prompter + intent round-trip)
+SKAINET_TOKEN=... SKAINET_INTERNAL=... \
+  scripts/e2e-docker.sh intent
+
 # Run with a custom prompt (overrides the default echo-rest prompt)
 SKAINET_TOKEN=... SKAINET_INTERNAL=... \
   scripts/e2e-docker.sh prompt "Check the echo-rest /echo endpoint with JSON"

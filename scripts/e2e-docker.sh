@@ -14,6 +14,7 @@
 #   scripts/e2e-docker.sh build                  # build the e2e image
 #   scripts/e2e-docker.sh run [harness] [prompt] # run TestE2EEchoRest
 #   scripts/e2e-docker.sh audit [harness]        # run TestE2ESecurityAudit
+#   scripts/e2e-docker.sh intent                # run TestE2EIntentPrompt
 #   scripts/e2e-docker.sh logs                   # tail container logs
 #   scripts/e2e-docker.sh artifact <name>       # copy artifact dir to stdout
 #   scripts/e2e-docker.sh prompt <text>          # run echo-rest with a custom prompt
@@ -113,6 +114,17 @@ cmd_audit() {
         "$CONTAINER" go test -tags=e2e -timeout=30m -v -run TestE2ESecurityAudit ./internal/e2e/
 }
 
+cmd_intent() {
+    require_secret SKAINET_TOKEN
+    require_secret SKAINET_INTERNAL
+    ensure_running
+    # shellcheck disable=SC2207
+    local -a sec=($(env_flags))
+    "$DOCKER" exec -i "${sec[@]}" \
+        -e "E2E_LOG_DIR=$LOG_DIR" \
+        "$CONTAINER" go test -tags=e2e -timeout=30m -v -run TestE2EIntentPrompt ./internal/e2e/
+}
+
 cmd_logs() {
     ensure_running
     "$DOCKER" logs --tail=200 "$CONTAINER"
@@ -161,6 +173,7 @@ main() {
         build)    cmd_build "$@" ;;
         run)      cmd_run "$@" ;;
         audit)    cmd_audit "$@" ;;
+        intent)   cmd_intent "$@" ;;
         logs)     cmd_logs "$@" ;;
         artifact) cmd_artifact "$@" ;;
         prompt)   cmd_prompt "$@" ;;

@@ -200,7 +200,7 @@ func doctorBuiltinSandbox(env *Env) {
 	for _, line := range sandboxrun.DoctorNotes() {
 		fmt.Fprintln(env.Stdout, line)
 	}
-	if _, available := netprompt.NewPrompter(1, nil); available {
+	if _, available := netprompt.NewPrompter(1, nil, nil, nil); available {
 		fmt.Fprintln(env.Stdout, "[ok] network prompt: dialog backend available")
 	} else {
 		fmt.Fprintln(env.Stdout, "[warn] network prompt: no dialog backend (osascript/zenity/kdialog); prompts fall back to the on_unavailable policy (default: deny)")
