@@ -433,3 +433,19 @@ func TestClassifyReasonEmitsOnlySpecSources(t *testing.T) {
 		}
 	}
 }
+
+func TestPromptNeedsIntentVerdictReason(t *testing.T) {
+	p := &fakePrompter{res: PromptResult{NeedsIntent: true}}
+	f := NewFilter(FilterConfig{
+		PromptEnabled: true,
+		Prompter:      p,
+		Resolve:       staticResolver("93.184.216.34"),
+	})
+	v, _ := f.Check(context.Background(), "api.example.com", 443)
+	if v.Decision != Deny {
+		t.Fatalf("decision = %v; want Deny", v.Decision)
+	}
+	if v.Reason != "prompt:needs_intent" {
+		t.Errorf("reason = %q; want prompt:needs_intent", v.Reason)
+	}
+}

@@ -32,6 +32,8 @@ import (
 	"time"
 
 	"github.com/tngtech/oh-my-agentic-coder/internal/audit"
+	"github.com/tngtech/oh-my-agentic-coder/internal/intent"
+	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxdeny"
 )
 
 // RouteState describes whether a route forwards to a live sidecar or
@@ -134,6 +136,21 @@ type Facade struct {
 	// time (guarded in logAccess).
 	auditor audit.Auditor
 
+	// ProtectedPathChecker answers "is this path protected by the sandbox
+	// policy, and by which rule?" for the GET /sandbox/denied endpoint.
+	// nil disables the endpoint (returns 404). The checker must be safe
+	// for concurrent reads.
+	ProtectedPathChecker ProtectedPathChecker
+
+	// DenialNote is the human-readable note returned in the JSON body of
+	// the /sandbox/denied endpoint. When empty the facade uses
+	// sandboxdeny.Default().FacadeNote.
+	DenialNote string
+
+	// IntentRegistry records agent-declared access intents from
+	// POST /sandbox/intent. nil disables the endpoint (returns 503).
+	IntentRegistry *intent.Registry
+
 	mu          sync.RWMutex
 	routes      map[string]*Route
 	server      *http.Server
@@ -142,6 +159,14 @@ type Facade struct {
 	boundTCPort int // resolved port if TCPAddr ends in :0
 	accLog      *log.Logger
 	accFile     *os.File
+}
+
+// ProtectedPathChecker reports whether a given absolute path is covered
+// by the sandbox's protected-paths set. Rule is a short, neutral tag
+// identifying which policy layer denied it (e.g. "baseline",
+// "profile"). Returns ok=false when the path is not protected.
+type ProtectedPathChecker interface {
+	IsProtected(absPath string) (rule string, ok bool)
 }
 
 // New constructs a Facade. socketPath may be empty to disable the Unix
@@ -223,10 +248,8 @@ func (f *Facade) UpstreamPort(namespace, mount string) int {
 // Start opens the listeners and begins serving. Returns once both are
 // bound. Call Close to stop.
 func (f *Facade) Start(ctx context.Context) error {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/", f.handle)
 	f.server = &http.Server{
-		Handler:           mux,
+		Handler:           http.HandlerFunc(f.handle),
 		ReadHeaderTimeout: 15 * time.Second,
 		IdleTimeout:       f.IdleTimeout,
 	}
@@ -329,12 +352,36 @@ func (f *Facade) Close() error {
 	if f.SocketPath != "" {
 		_ = os.Remove(f.SocketPath)
 	}
+	f.IntentRegistry.Close() // nil-safe; stops the TTL sweeper goroutine
 	return firstErr
 }
 
 // handle is the root HTTP handler.
 func (f *Facade) handle(w http.ResponseWriter, r *http.Request) {
 	started := time.Now()
+	// Normalize: collapse every run of slashes so $OMAC_BASE/sandbox/intent
+	// works when OMAC_BASE ends with a trailing slash (it always does —
+	// "http://127.0.0.1:PORT/" from start.go) regardless of where the
+	// doubling lands (leading "//sandbox" or internal "sandbox//intent").
+	if strings.Contains(r.URL.Path, "//") {
+		for strings.Contains(r.URL.Path, "//") {
+			r.URL.Path = strings.ReplaceAll(r.URL.Path, "//", "/")
+		}
+		r.URL.RawPath = ""
+	}
+	// Built-in meta routes take precedence over skill mounts.
+	if r.URL.Path == "/sandbox/denied" {
+		f.handleSandboxDenied(w, r)
+		return
+	}
+	if r.URL.Path == "/sandbox/intent" {
+		f.handleSandboxIntent(w, r)
+		return
+	}
+	if r.URL.Path == "/sandbox/intent/explain" {
+		f.handleSandboxIntentExplain(w, r)
+		return
+	}
 	if r.URL.Path == "/" || r.URL.Path == "" {
 		f.writeStatus(w, r)
 		return
@@ -463,6 +510,243 @@ func (f *Facade) resolve(path string) (*Route, string, bool) {
 	}
 	// Present first segment but no match.
 	return &Route{}, "", false
+}
+
+// handleSandboxDenied answers "was this path denied by the sandbox, or
+// is it genuinely missing?" The agent queries this after a read returns
+// EACCES (macOS) or an omac marker file (Linux). The checker only
+// answers for paths the agent already probed — it never enumerates the
+// full protected set, so no list is leaked.
+func (f *Facade) handleSandboxDenied(w http.ResponseWriter, r *http.Request) {
+	if f.ProtectedPathChecker == nil {
+		w.Header().Set("X-Omac-Reason", "denied-endpoint-disabled")
+		http.Error(w, "omac: protected-path checker not configured", http.StatusNotFound)
+		return
+	}
+	q := r.URL.Query().Get("path")
+	if q == "" {
+		w.Header().Set("X-Omac-Reason", "missing-path")
+		http.Error(w, "omac: path query parameter required", http.StatusBadRequest)
+		return
+	}
+	abs := q
+	// note: the caller is expected to pass an absolute path (the
+	// marker file tells the agent to query with an absolute path).
+	// Relative paths are passed through literally — IsProtected
+	// decides what to do with them.
+	rule, protected := f.ProtectedPathChecker.IsProtected(abs)
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Omac-Sandbox", "denied")
+	type deniedResp struct {
+		Denied bool   `json:"denied"`
+		Path   string `json:"path"`
+		Rule   string `json:"rule,omitempty"`
+		Note   string `json:"note"`
+	}
+	if protected {
+		note := f.DenialNote
+		if note == "" {
+			// Matches the struct doc and keeps the /sandbox/intent hint that the
+			// marker file also carries, so both denial surfaces agree.
+			note = sandboxdeny.Default().FacadeNote
+		}
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(deniedResp{Denied: true, Path: abs, Rule: rule, Note: note})
+		return
+	}
+	w.WriteHeader(http.StatusNotFound)
+	// The not-protected note lives in sandboxdeny alongside its siblings
+	// (MarkerFile, FacadeNote) so all user-facing denial strings form one
+	// tunable knob. It deliberately does NOT claim the path is missing: a
+	// path can read as absent simply because it is outside the sandbox's
+	// granted directories (never mounted). The agent — which knows its own
+	// granted dirs — applies the rule.
+	_ = json.NewEncoder(w).Encode(deniedResp{Denied: false, Path: abs, Note: sandboxdeny.Default().NotProtectedNote})
+}
+
+// handleSandboxIntent records (POST) an agent-declared intent — why the
+// agent wants to reach a host or path — and answers lookups (GET) from
+// the sandbox child's network popup and learn-mode review, which read
+// the registry over HTTP rather than sharing memory across processes.
+func (f *Facade) handleSandboxIntent(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		f.handleSandboxIntentLookup(w, r)
+		return
+	}
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost+", "+http.MethodGet)
+		http.Error(w, "omac: method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if f.IntentRegistry == nil {
+		w.Header().Set("X-Omac-Reason", "intent-endpoint-disabled")
+		http.Error(w, "omac: intent registry not configured", http.StatusServiceUnavailable)
+		return
+	}
+	if f.MaxBodyBytes > 0 && r.Body != nil {
+		r.Body = http.MaxBytesReader(w, r.Body, f.MaxBodyBytes)
+	}
+	var body struct {
+		Target string `json:"target"`
+		Reason string `json:"reason"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "omac: malformed JSON: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(body.Target) == "" || strings.TrimSpace(body.Reason) == "" {
+		http.Error(w, "omac: both \"target\" and \"reason\" are required", http.StatusBadRequest)
+		return
+	}
+	if isRelativePathTarget(body.Target) {
+		http.Error(w, "omac: path-form targets must be absolute (start with / or ~)", http.StatusBadRequest)
+		return
+	}
+	f.IntentRegistry.Record(body.Target, body.Reason)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleSandboxIntentLookup answers GET /sandbox/intent?target=<host or
+// path> — returns the agent-declared reason for that target. Used by
+// the netproxy prompter (in the sandbox child) to enrich the network
+// popup with the agent's intent.
+func (f *Facade) handleSandboxIntentLookup(w http.ResponseWriter, r *http.Request) {
+	if f.IntentRegistry == nil {
+		w.Header().Set("X-Omac-Reason", "intent-endpoint-disabled")
+		http.Error(w, "omac: intent registry not configured", http.StatusServiceUnavailable)
+		return
+	}
+	q := r.URL.Query().Get("target")
+	if q == "" {
+		http.Error(w, "omac: target query parameter required", http.StatusBadRequest)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+
+	// subtree=1: the folder learn-review passes a candidate directory and
+	// wants intents the agent declared for paths within (or above) it,
+	// since the offered candidate is a reduced ancestor of those paths.
+	if r.URL.Query().Get("subtree") != "" {
+		entries := f.IntentRegistry.LookupSubtree(q)
+		if len(entries) == 0 {
+			w.WriteHeader(http.StatusNotFound)
+			_ = json.NewEncoder(w).Encode(map[string]any{"target": q, "reason": ""})
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]any{"target": q, "reason": joinReasons(entries)})
+		return
+	}
+
+	// The "Explain more" click is delivered on this channel, not the deny
+	// body (which HTTPS/CONNECT discards). If the user asked for a fuller
+	// reason, that hint overrides both the undeclared and the declined hint:
+	// the user wants the agent to re-declare and retry, regardless of whether
+	// a reason was already on file. Consumed on read so it drives exactly one
+	// retry, not a loop.
+	explain := f.IntentRegistry.ConsumeExplainMore(q)
+
+	e, ok := f.IntentRegistry.Lookup(q)
+	if !ok {
+		// Reliable reactive channel: an HTTPS/CONNECT denial cannot deliver
+		// the deny-body hint, so the agent queries here after a failed or
+		// hanging request and the hint tells it what to do next.
+		hint := intentHintUndeclared
+		if explain {
+			hint = intentHintExplainMore
+		}
+		w.WriteHeader(http.StatusNotFound)
+		_ = json.NewEncoder(w).Encode(intentLookupResp{Target: q, Declared: false, Hint: hint})
+		return
+	}
+	hint := intentHintDeclared
+	if explain {
+		hint = intentHintExplainMore
+	}
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(intentLookupResp{Target: e.Target, Declared: true, Reason: e.Reason, Hint: hint})
+}
+
+// handleSandboxIntentExplain records that the user clicked "Explain more" for
+// a host in the network popup (POST /sandbox/intent/explain?target=<host>).
+// The sandbox child's prompter calls this over HTTP; the flag is then
+// surfaced by the GET lookup's hint. This is the delivery channel for the
+// "Explain more" re-ask that an HTTPS/CONNECT denial body cannot carry.
+func (f *Facade) handleSandboxIntentExplain(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		http.Error(w, "omac: method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if f.IntentRegistry == nil {
+		w.Header().Set("X-Omac-Reason", "intent-endpoint-disabled")
+		http.Error(w, "omac: intent registry not configured", http.StatusServiceUnavailable)
+		return
+	}
+	target := r.URL.Query().Get("target")
+	if strings.TrimSpace(target) == "" {
+		http.Error(w, "omac: target query parameter required", http.StatusBadRequest)
+		return
+	}
+	f.IntentRegistry.MarkExplainMore(target)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// intentLookupResp is the GET /sandbox/intent body. Reason and Target
+// are unchanged from the original shape (existing consumers read only
+// those); Declared and Hint make the endpoint a self-explaining remedy
+// channel for an agent whose request was denied or is hanging.
+type intentLookupResp struct {
+	Target   string `json:"target"`
+	Declared bool   `json:"declared"`
+	Reason   string `json:"reason"`
+	Hint     string `json:"hint"`
+}
+
+const (
+	intentHintUndeclared  = "No intent on file for this target. If a request to it was denied by the sandbox or is waiting on user approval, POST $OMAC_BASE/sandbox/intent {\"target\":\"...\",\"reason\":\"...\"} and retry, so the user sees why you need it. If you already declared an intent earlier and the request was still denied, the user reviewed it and declined — do not retry."
+	intentHintDeclared    = "An intent is on file for this target. If the request was still denied, the user reviewed your reason and declined it — do not retry; choose another approach or ask the user."
+	intentHintExplainMore = "The user clicked \"Explain more\" in the approval dialog: your reason (if any) was not enough to decide. POST a fuller reason to $OMAC_BASE/sandbox/intent {\"target\":\"...\",\"reason\":\"...\"} explaining why you need this host and what you expect to find, then retry the request so the user can reconsider."
+)
+
+// joinReasons renders one or more subtree intents as a single line. A
+// single intent is returned verbatim; multiple are prefixed with their
+// target basename so the user can tell them apart.
+func joinReasons(entries []intent.Entry) string {
+	if len(entries) == 1 {
+		return entries[0].Reason
+	}
+	parts := make([]string, 0, len(entries))
+	for _, e := range entries {
+		parts = append(parts, fmt.Sprintf("%s: %s", filepath.Base(e.Target), e.Reason))
+	}
+	return strings.Join(parts, "; ")
+}
+
+// isRelativePathTarget reports whether target looks like a relative
+// path (contains a separator but is not absolute, not a URL, not
+// host:port). Such targets resolve against the facade's CWD via
+// filepath.Abs, which is meaningless to the sandbox child — reject them
+// at the API boundary so the agent gets a clear error instead of a
+// silently wrong lookup key.
+func isRelativePathTarget(target string) bool {
+	t := strings.TrimSpace(target)
+	if t == "" {
+		return false
+	}
+	if strings.Contains(t, "://") {
+		return false
+	}
+	if strings.HasPrefix(t, "~") {
+		return false
+	}
+	if filepath.IsAbs(t) {
+		return false
+	}
+	if _, _, err := net.SplitHostPort(t); err == nil {
+		return false
+	}
+	return strings.ContainsRune(t, filepath.Separator)
 }
 
 func (f *Facade) writeStatus(w http.ResponseWriter, _ *http.Request) {

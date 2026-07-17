@@ -128,6 +128,12 @@ func BuildBwrapArgv(g *Grants, stage2Argv []string) ([]string, error) {
 	// Protected-path masking: only needed where a granted tree would
 	// otherwise expose the protected path. Everything else is already
 	// absent (unbound). Masks must come after the binds they shadow.
+	//
+	// When denial markers are prepared (see Grants.prepareMarkers), a
+	// protected file is masked with a read-only marker file whose contents
+	// explain the denial, and a protected dir is masked with a read-only
+	// marker dir holding a single .omac-denied file. When no markers are
+	// prepared, the historical /dev/null + empty-tmpfs behavior applies.
 	for _, prot := range g.ProtectedPaths {
 		if !coveredByAny(prot, ordered) {
 			continue
@@ -137,9 +143,17 @@ func BuildBwrapArgv(g *Grants, stage2Argv []string) ([]string, error) {
 			continue // doesn't exist; nothing to mask
 		}
 		if fi.IsDir() {
-			argv = append(argv, "--tmpfs", prot)
+			if g.markerDir != "" {
+				argv = append(argv, "--ro-bind", g.markerDir, prot)
+			} else {
+				argv = append(argv, "--tmpfs", prot)
+			}
 		} else {
-			argv = append(argv, "--ro-bind", "/dev/null", prot)
+			if g.markerFile != "" {
+				argv = append(argv, "--ro-bind", g.markerFile, prot)
+			} else {
+				argv = append(argv, "--ro-bind", "/dev/null", prot)
+			}
 		}
 	}
 
