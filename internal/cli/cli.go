@@ -130,6 +130,7 @@ func commands() map[string]Command {
 		"plugin":     {Name: "plugin", Short: "Install client-side harness bridge plugins (e.g. opencode-desktop).", Run: runPlugin},
 		"sandbox":    {Name: "sandbox", Short: "Built-in kernel sandbox (run|stage2).", Run: runSandbox},
 		"doctor":     {Name: "doctor", Short: "Run sanity checks.", Run: runDoctor},
+		"diagnose":   {Name: "diagnose", Short: "Explain why a run failed: blocked connections + config clashes.", Run: runDiagnose},
 		"update":     {Name: "update", Short: "Check GitHub for a newer release and install it.", Run: runUpdate},
 		"manifest":   {Name: "manifest", Short: "Render the skills manifest from activate-response JSON.", Run: runManifest},
 		"version":    {Name: "version", Short: "Print version.", Run: runVersion},
@@ -161,7 +162,8 @@ Subcommands:
   serve        Long-lived multi-directory server.        [harness]: opencode|claude
   plugin       Install client-side bridge plugins (e.g. opencode-desktop).
   sandbox      Built-in kernel sandbox: omac sandbox run [flags] -- <cmd>.
-  doctor       Run sanity checks.
+  doctor       Run sanity checks (is my setup correct?).
+  diagnose     Explain why a run failed: blocked connections + config clashes.
   update       Check GitHub for a newer release and install it.
   manifest    Render the skills manifest from activate-response JSON.
   version      Print version.

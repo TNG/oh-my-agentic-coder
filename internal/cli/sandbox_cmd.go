@@ -28,6 +28,10 @@ func runSandbox(args []string, env *Env) int {
 			return ExitSandboxAbnormal
 		}
 		return ExitOK
+	case "probe-connect":
+		// Hidden: the inner command run inside the sandbox by
+		// `omac diagnose --probe --live`. Not shown in the usage.
+		return runSandboxProbeConnect(rest, env)
 	case "--help", "-h", "help":
 		printSandboxUsage(env)
 		return ExitOK

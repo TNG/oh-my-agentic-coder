@@ -3,6 +3,7 @@ package cli
 import (
 	"flag"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,7 +13,9 @@ import (
 	"github.com/tngtech/oh-my-agentic-coder/internal/keychain"
 	"github.com/tngtech/oh-my-agentic-coder/internal/netprompt"
 	"github.com/tngtech/oh-my-agentic-coder/internal/osinfo"
+	"github.com/tngtech/oh-my-agentic-coder/internal/profileaudit"
 	"github.com/tngtech/oh-my-agentic-coder/internal/registry"
+	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxprofile"
 	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxrun"
 )
 
@@ -147,10 +150,65 @@ func runDoctor(args []string, env *Env) int {
 		}
 	}
 
+	// Static security lint of the resolved profile (advisory). Reuses the
+	// same engine as `omac provenance --check` — findings are warnings
+	// here, never a doctor failure.
+	doctorProfileLint(env, "")
+
+	// Bridge/facade port availability: a port already in use makes the
+	// sandbox fail to bind at start. Advisory.
+	doctorBridgePorts(env)
+
+	fmt.Fprintln(env.Stdout, "\nWhen a run fails, `omac diagnose` shows what the sandbox blocked and why.")
+
 	if failures > 0 {
 		return ExitConfigInvalid
 	}
 	return ExitOK
+}
+
+// doctorBridgePorts checks that the sandbox's fixed loopback ports
+// (listen_port + open_port, e.g. the bridge on 4097) are free to bind. A
+// port already in use makes `omac start` fail to bind the bridge/facade —
+// an easy-to-miss cause that produces a confusing startup error. Advisory.
+func doctorBridgePorts(env *Env) {
+	profile, _, err := sandboxprofile.Resolve("")
+	if err != nil {
+		return
+	}
+	seen := map[int]bool{}
+	for _, p := range append(append([]int{}, profile.Network.ListenPort...), profile.Network.OpenPort...) {
+		if p <= 0 || seen[p] {
+			continue
+		}
+		seen[p] = true
+		ln, lerr := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", p))
+		if lerr != nil {
+			fmt.Fprintf(env.Stdout, "[warn] loopback port %d is in use — `omac start` may fail to bind the bridge/facade (free the port or change the profile)\n", p)
+			continue
+		}
+		_ = ln.Close()
+	}
+}
+
+// doctorProfileLint runs the profileaudit static linter over the resolved
+// sandbox profile and prints its findings as advisory warnings. It closes
+// the gap where doctor never surfaced the security lint (previously only
+// reachable via `omac provenance --check`).
+func doctorProfileLint(env *Env, profileRef string) {
+	profile, _, err := sandboxprofile.Resolve(profileRef)
+	if err != nil {
+		return // profile problems are already reported by the sandbox section
+	}
+	findings := profileaudit.Check(profile)
+	if len(findings) == 0 {
+		fmt.Fprintln(env.Stdout, "[ok] sandbox profile lint: no findings")
+		return
+	}
+	fmt.Fprintf(env.Stdout, "sandbox profile lint (%d finding(s), advisory):\n", len(findings))
+	for _, f := range findings {
+		fmt.Fprintf(env.Stdout, "  [%s] %s: %s (%s)\n", f.Severity, f.Field, f.Message, f.Value)
+	}
 }
 
 // doctorBuiltinSkills reports whether omac's built-in skills (provisioned by
