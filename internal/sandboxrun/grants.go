@@ -11,8 +11,10 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxprofile"
 )
@@ -433,48 +435,102 @@ func pathFormDenies(deny []string, notices io.Writer) []string {
 	return out
 }
 
+// denyScanConcurrency bounds how many roots walkGlobMatches walks in
+// parallel. The walks are I/O-bound (readdir/lstat), so overlapping them
+// across the many granted roots — every project folder under
+// --for-opencode-desktop, plus large cache/toolchain dirs like
+// ~/Library/Caches, ~/go and ~/.cargo — cuts launch time substantially
+// without changing the result set. Clamped to a sensible range.
+var denyScanConcurrency = clampInt(runtime.NumCPU(), 4, 16)
+
+func clampInt(v, lo, hi int) int {
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
+}
+
 // walkGlobMatches walks each root and returns every file/dir whose base
-// name matches one of the globs. The walk is bounded by
-// maxDenyScanEntries and never descends into matched directories
-// (masking the dir is enough).
+// name matches one of the globs. Each root walk is bounded by
+// maxDenyScanEntries and never descends into a matched directory
+// (masking the dir is enough). Roots are walked concurrently (bounded by
+// denyScanConcurrency); the result set is order-independent — callers
+// dedupe+sort — so concurrency doesn't affect the resolved grants.
 func walkGlobMatches(roots, globs []string, notices io.Writer) []string {
+	if len(globs) == 0 || len(roots) == 0 {
+		return nil
+	}
+	type rootResult struct {
+		matches []string
+		hitCap  bool
+	}
+	results := make([]rootResult, len(roots))
+	sem := make(chan struct{}, denyScanConcurrency)
+	var wg sync.WaitGroup
+	for i, root := range roots {
+		i, root := i, root
+		wg.Add(1)
+		sem <- struct{}{}
+		go func() {
+			defer wg.Done()
+			defer func() { <-sem }()
+			results[i].matches, results[i].hitCap = walkOneDenyRoot(root, globs)
+		}()
+	}
+	wg.Wait()
+
+	// Merge deterministically in root order; dedupe paths matched under
+	// overlapping roots. Cap notices are emitted here (not inside the
+	// concurrent walks) so notice output stays ordered and race-free.
 	seen := map[string]bool{}
 	var out []string
-	for _, root := range roots {
-		count := 0
-		stop := false
-		_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
-			if err != nil {
-				return nil // unreadable entry: skip, don't abort the walk
+	for i, root := range roots {
+		if results[i].hitCap && notices != nil {
+			fmt.Fprintf(notices, "omac sandbox: notice: filesystem.deny scan of %s hit the %d-entry limit; some matches may be unmasked\n", root, maxDenyScanEntries)
+		}
+		for _, m := range results[i].matches {
+			if !seen[m] {
+				seen[m] = true
+				out = append(out, m)
 			}
-			count++
-			if count > maxDenyScanEntries {
-				if !stop && notices != nil {
-					fmt.Fprintf(notices, "omac sandbox: notice: filesystem.deny scan of %s hit the %d-entry limit; some matches may be unmasked\n", root, maxDenyScanEntries)
-				}
-				stop = true
-				return filepath.SkipAll
-			}
-			if path == root {
-				return nil // never match the root grant itself
-			}
-			name := d.Name()
-			for _, g := range globs {
-				if ok, _ := filepath.Match(g, name); ok {
-					if !seen[path] {
-						seen[path] = true
-						out = append(out, path)
-					}
-					if d.IsDir() {
-						return filepath.SkipDir
-					}
-					return nil
-				}
-			}
-			return nil
-		})
+		}
 	}
 	return out
+}
+
+// walkOneDenyRoot walks a single root and returns the paths whose base
+// name matches a glob, plus whether the entry cap was reached. It holds
+// no shared state so walkGlobMatches can run it concurrently per root.
+func walkOneDenyRoot(root string, globs []string) (matches []string, hitCap bool) {
+	count := 0
+	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil // unreadable entry: skip, don't abort the walk
+		}
+		count++
+		if count > maxDenyScanEntries {
+			hitCap = true
+			return filepath.SkipAll
+		}
+		if path == root {
+			return nil // never match the root grant itself
+		}
+		name := d.Name()
+		for _, g := range globs {
+			if ok, _ := filepath.Match(g, name); ok {
+				matches = append(matches, path)
+				if d.IsDir() {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+		}
+		return nil
+	})
+	return matches, hitCap
 }
 
 func dedupe(in []string) []string {
