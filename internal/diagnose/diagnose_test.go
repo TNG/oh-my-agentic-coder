@@ -3,7 +3,6 @@ package diagnose
 import (
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/tngtech/oh-my-agentic-coder/internal/netproxy"
 )
@@ -13,13 +12,13 @@ import (
 var realMatch DomainMatcher = netproxy.MatchDomainList
 
 func dec(host string, allowed bool, source string) Decision {
-	return Decision{Host: host, Port: 443, Allowed: allowed, Source: source, When: time.Unix(0, 0)}
+	return Decision{Host: host, Port: 443, Allowed: allowed, Source: source}
 }
 
 func hintTitles(hs []Hint) string {
 	var b strings.Builder
 	for _, h := range hs {
-		b.WriteString(string(h.Severity))
+		b.WriteString(string(h.Kind))
 		b.WriteString(": ")
 		b.WriteString(h.Title)
 		b.WriteString("\n")
@@ -66,8 +65,8 @@ func TestAllowlistedButDeniedIsFlaggedAsClash(t *testing.T) {
 	if h == nil {
 		t.Fatalf("clash hint missing.\n%s", hintTitles(hints))
 	}
-	if h.Severity != SevWarn {
-		t.Fatalf("clash must be a warning, got %s", h.Severity)
+	if h.Kind != KindProblem {
+		t.Fatalf("clash must be a problem, got %s", h.Kind)
 	}
 }
 
@@ -83,8 +82,8 @@ func TestAllowAndDenyOverlapReportsClashNamingDenyDomain(t *testing.T) {
 	if h == nil {
 		t.Fatalf("clash must outrank the deny_domain note.\n%s", hintTitles(hints))
 	}
-	if h.Severity != SevWarn {
-		t.Fatalf("want warning, got %s", h.Severity)
+	if h.Kind != KindProblem {
+		t.Fatalf("want problem, got %s", h.Kind)
 	}
 	if !strings.Contains(strings.Join(h.Detail, " "), "deny_domain") {
 		t.Fatalf("clash should name deny_domain as the shadow: %v", h.Detail)
@@ -124,8 +123,8 @@ func TestOverBroadAllowRuleFlagged(t *testing.T) {
 	if h == nil {
 		t.Fatalf("whole-TLD wildcard not flagged.\n%s", hintTitles(hints))
 	}
-	if h.Severity != SevWarn {
-		t.Fatalf("over-broad allow should be a warning, got %s", h.Severity)
+	if h.Kind != KindAdvisory {
+		t.Fatalf("over-broad allow should be an advisory, got %s", h.Kind)
 	}
 	if findHint(hints, `allow_domain "*.example.com" is very broad`) != nil {
 		t.Fatalf("a scoped wildcard must NOT be flagged as over-broad")
@@ -214,10 +213,10 @@ func TestEnvironmentHintsAreOrderedAfterWarnings(t *testing.T) {
 	decisions := []Decision{dec("blocked.example", false, "allowlist")}
 	hints := Analyze(pol, decisions, realMatch)
 	if len(hints) < 2 {
-		t.Fatalf("expected warning + info hints, got %d", len(hints))
+		t.Fatalf("expected a problem + advisories, got %d", len(hints))
 	}
-	if hints[0].Severity != SevWarn {
-		t.Fatalf("warnings must sort first, got %s first:\n%s", hints[0].Severity, hintTitles(hints))
+	if hints[0].Kind != KindProblem {
+		t.Fatalf("problems must sort first, got %s first:\n%s", hints[0].Kind, hintTitles(hints))
 	}
 	if findHint(hints, "upstream (corporate) proxy is configured") == nil || findHint(hints, "Environment variables are allow-listed") == nil {
 		t.Fatalf("generic env/proxy hints missing.\n%s", hintTitles(hints))
