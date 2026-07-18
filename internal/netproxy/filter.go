@@ -231,10 +231,10 @@ func (f *Filter) checkRules(host string) *Verdict {
 			return &Verdict{Decision: Deny, Reason: "learned permanent deny", Persisted: true}
 		}
 	}
-	if matchDomainList(host, f.cfg.DenyDomains) {
+	if MatchDomainList(host, f.cfg.DenyDomains) {
 		return &Verdict{Decision: Deny, Reason: "deny_domain"}
 	}
-	if matchDomainList(host, f.cfg.AllowDomains) {
+	if MatchDomainList(host, f.cfg.AllowDomains) {
 		return &Verdict{Decision: Allow, Reason: "allow_domain"}
 	}
 	if f.cfg.Learned != nil {
@@ -352,10 +352,10 @@ func classifyReason(reason string) (source string) {
 	}
 }
 
-// matchDomainList reports whether host matches any entry. Entries are
+// MatchDomainList reports whether host matches any entry. Entries are
 // exact hostnames or "*.suffix" wildcards; a wildcard matches the
 // suffix itself and any subdomain. Case-insensitive.
-func matchDomainList(host string, list []string) bool {
+func MatchDomainList(host string, list []string) bool {
 	for _, raw := range list {
 		entry := strings.ToLower(strings.TrimSpace(raw))
 		if entry == "" {

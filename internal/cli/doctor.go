@@ -12,7 +12,9 @@ import (
 	"github.com/tngtech/oh-my-agentic-coder/internal/keychain"
 	"github.com/tngtech/oh-my-agentic-coder/internal/netprompt"
 	"github.com/tngtech/oh-my-agentic-coder/internal/osinfo"
+	"github.com/tngtech/oh-my-agentic-coder/internal/profileaudit"
 	"github.com/tngtech/oh-my-agentic-coder/internal/registry"
+	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxprofile"
 	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxrun"
 )
 
@@ -147,10 +149,37 @@ func runDoctor(args []string, env *Env) int {
 		}
 	}
 
+	// Static security lint of the resolved profile (advisory). Reuses the
+	// same engine as `omac provenance --check` — findings are warnings
+	// here, never a doctor failure.
+	doctorProfileLint(env, "")
+
+	fmt.Fprintln(env.Stdout, "\nWhen a run fails, `omac diagnose` shows what the sandbox blocked and why.")
+
 	if failures > 0 {
 		return ExitConfigInvalid
 	}
 	return ExitOK
+}
+
+// doctorProfileLint runs the profileaudit static linter over the resolved
+// sandbox profile and prints its findings as advisory warnings. It closes
+// the gap where doctor never surfaced the security lint (previously only
+// reachable via `omac provenance --check`).
+func doctorProfileLint(env *Env, profileRef string) {
+	profile, _, err := sandboxprofile.Resolve(profileRef)
+	if err != nil {
+		return // profile problems are already reported by the sandbox section
+	}
+	findings := profileaudit.Check(profile)
+	if len(findings) == 0 {
+		fmt.Fprintln(env.Stdout, "[ok] sandbox profile lint: no findings")
+		return
+	}
+	fmt.Fprintf(env.Stdout, "sandbox profile lint (%d finding(s), advisory):\n", len(findings))
+	for _, f := range findings {
+		fmt.Fprintf(env.Stdout, "  [%s] %s: %s (%s)\n", f.Severity, f.Field, f.Message, f.Value)
+	}
 }
 
 // doctorBuiltinSkills reports whether omac's built-in skills (provisioned by
