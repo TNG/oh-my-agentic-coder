@@ -291,6 +291,40 @@ func TestRootsEmptyAllowsAny(t *testing.T) {
 	}
 }
 
+func TestResolveDesktopStateDir(t *testing.T) {
+	t.Run("not desktop mode: no injection", func(t *testing.T) {
+		t.Setenv("XDG_STATE_HOME", "/whatever")
+		dir, inject := resolveDesktopStateDir(false)
+		if dir != "" || inject {
+			t.Errorf("resolveDesktopStateDir(false) = (%q, %v), want (\"\", false)", dir, inject)
+		}
+	})
+
+	t.Run("respects an explicit XDG_STATE_HOME (nothing to set)", func(t *testing.T) {
+		t.Setenv("XDG_STATE_HOME", "/custom/state")
+		dir, setEnv := resolveDesktopStateDir(true)
+		if dir != "" || setEnv {
+			t.Errorf("got (%q, %v), want (\"\", false)", dir, setEnv)
+		}
+	})
+
+	t.Run("defaults to the Desktop dir when unset", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		t.Setenv("XDG_CONFIG_HOME", "")
+		t.Setenv("XDG_DATA_HOME", "")
+		t.Setenv("XDG_STATE_HOME", "") // empty == unset
+		want := filepath.Join(home, "Library", "Application Support", "ai.opencode.desktop")
+		if err := os.MkdirAll(want, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		dir, setEnv := resolveDesktopStateDir(true)
+		if dir != want || !setEnv {
+			t.Errorf("got (%q, %v), want (%q, true)", dir, setEnv, want)
+		}
+	})
+}
+
 func TestBaseEnvStaticVars(t *testing.T) {
 	s := newServeServerForTest(t)
 	s.controlBase = "http://127.0.0.1:9999"

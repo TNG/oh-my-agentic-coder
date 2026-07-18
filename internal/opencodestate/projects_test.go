@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -14,6 +15,78 @@ func writeProject(t *testing.T, dir, id, worktree string) {
 	if err := os.WriteFile(filepath.Join(dir, id+".json"), []byte(data), 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestDesktopStateDir(t *testing.T) {
+	// clearXDG makes a subtest hermetic against the runner's own XDG env.
+	clearXDG := func(t *testing.T, home string) {
+		t.Setenv("HOME", home)
+		t.Setenv("XDG_CONFIG_HOME", "")
+		t.Setenv("XDG_DATA_HOME", "")
+	}
+
+	t.Run("prefers the macOS Application Support dir when it exists", func(t *testing.T) {
+		home := t.TempDir()
+		clearXDG(t, home)
+		want := filepath.Join(home, "Library", "Application Support", "ai.opencode.desktop")
+		if err := os.MkdirAll(want, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if got := DesktopStateDir(); got != want {
+			t.Errorf("DesktopStateDir() = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("finds the Linux ~/.config dir when it exists", func(t *testing.T) {
+		home := t.TempDir()
+		clearXDG(t, home)
+		want := filepath.Join(home, ".config", "ai.opencode.desktop")
+		if err := os.MkdirAll(want, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if got := DesktopStateDir(); got != want {
+			t.Errorf("DesktopStateDir() = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("honors XDG_CONFIG_HOME when set", func(t *testing.T) {
+		home := t.TempDir()
+		clearXDG(t, home)
+		xdg := t.TempDir()
+		t.Setenv("XDG_CONFIG_HOME", xdg)
+		want := filepath.Join(xdg, "ai.opencode.desktop")
+		if err := os.MkdirAll(want, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if got := DesktopStateDir(); got != want {
+			t.Errorf("DesktopStateDir() = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("falls back to beta when only beta exists", func(t *testing.T) {
+		home := t.TempDir()
+		clearXDG(t, home)
+		want := filepath.Join(home, ".config", "ai.opencode.desktop.beta")
+		if err := os.MkdirAll(want, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if got := DesktopStateDir(); got != want {
+			t.Errorf("DesktopStateDir() = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("returns a platform default when none exists", func(t *testing.T) {
+		home := t.TempDir()
+		clearXDG(t, home)
+		want := defaultDesktopStateDir(home) // darwin: App Support; linux: ~/.config
+		got := DesktopStateDir()
+		if got != want {
+			t.Errorf("DesktopStateDir() = %q, want platform default %q", got, want)
+		}
+		if filepath.Base(got) != "ai.opencode.desktop" || !strings.HasPrefix(got, home) {
+			t.Errorf("DesktopStateDir() = %q, want basename ai.opencode.desktop under HOME %q", got, home)
+		}
+	})
 }
 
 func TestWorktrees(t *testing.T) {
