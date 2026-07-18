@@ -104,8 +104,31 @@ func TestBlockedNotInAnyRuleSuggestsAllowlist(t *testing.T) {
 	if !strings.Contains(joined, "allow_domain") {
 		t.Fatalf("hint should point at allow_domain, got %q", joined)
 	}
-	if !strings.Contains(joined, "denied by default") {
-		t.Fatalf("prompt-disabled hint should explain default-deny, got %q", joined)
+	// Least privilege: the fix must scope to the exact host and legitimize
+	// leaving it denied — never suggest a broad allow.
+	if !strings.Contains(joined, "exact host") {
+		t.Fatalf("hint should recommend the exact host, got %q", joined)
+	}
+	if !strings.Contains(strings.ToLower(joined), "leave it denied") {
+		t.Fatalf("hint should present denying as a valid outcome, got %q", joined)
+	}
+	if strings.Contains(strings.ToLower(joined), "wildcard") && !strings.Contains(joined, "not a broad wildcard") {
+		t.Fatalf("hint must not steer toward broad wildcards, got %q", joined)
+	}
+}
+
+func TestOverBroadAllowRuleFlagged(t *testing.T) {
+	pol := Policy{AllowDomains: []string{"*.com", "*.example.com"}}
+	hints := Analyze(pol, nil, realMatch)
+	h := findHint(hints, `allow_domain "*.com" is very broad`)
+	if h == nil {
+		t.Fatalf("whole-TLD wildcard not flagged.\n%s", hintTitles(hints))
+	}
+	if h.Severity != SevWarn {
+		t.Fatalf("over-broad allow should be a warning, got %s", h.Severity)
+	}
+	if findHint(hints, `allow_domain "*.example.com" is very broad`) != nil {
+		t.Fatalf("a scoped wildcard must NOT be flagged as over-broad")
 	}
 }
 

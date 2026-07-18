@@ -195,21 +195,36 @@ func runDiagnoseProbe(env *Env, profileRef string, profile *sandboxprofile.Profi
 		return ExitMisuse
 	}
 
-	learned, _ := netprompt.LoadLearnedPolicy(sandboxprofile.PagesPath(profPath))
-	// PromptEnabled is false here so the filter evaluates the static rules
-	// only and never blocks on an interactive prompt; the "would prompt"
-	// outcome is derived afterwards from the profile's real setting.
-	f := netproxy.NewFilter(netproxy.FilterConfig{
-		AllowDomains:  profile.Network.AllowDomain,
-		DenyDomains:   profile.Network.DenyDomain,
-		PromptEnabled: false,
-		Learned:       learned,
-	})
-	outcome, reason := classifyProbe(f.CheckHost(host, port), profile.Network.PromptEnabled())
+	var outcome probeOutcome
+	var reason string
+	loopback := isLoopbackHost(host)
+	if loopback {
+		// Loopback reachability is kernel-enforced by network.open_port, not
+		// the proxy/domain filter — and a kernel denial leaves no trace in
+		// the audit trail, so this static check is the only way to diagnose
+		// it (e.g. a sandboxed tool reaching a local Ollama/DB, or the bridge
+		// port). It is independent of allow_domain entirely.
+		outcome, reason = loopbackProbe(profile, port)
+	} else {
+		learned, _ := netprompt.LoadLearnedPolicy(sandboxprofile.PagesPath(profPath))
+		// PromptEnabled is false here so the filter evaluates the static rules
+		// only and never blocks on an interactive prompt; the "would prompt"
+		// outcome is derived afterwards from the profile's real setting.
+		f := netproxy.NewFilter(netproxy.FilterConfig{
+			AllowDomains:  profile.Network.AllowDomain,
+			DenyDomains:   profile.Network.DenyDomain,
+			PromptEnabled: false,
+			Learned:       learned,
+		})
+		outcome, reason = classifyProbe(f.CheckHost(host, port), profile.Network.PromptEnabled())
+	}
 
 	pv := probeView{Host: host, Port: port, Outcome: string(outcome), Reason: reason}
 
-	if live {
+	if live && loopback {
+		pv.Live = &probeResult{Target: target, Class: "skipped",
+			Detail: "loopback ports are kernel-enforced (network.open_port); the static verdict is authoritative"}
+	} else if live {
 		if outcome != probeAllow {
 			// Only allow-listed hosts are worth a live dial: a DENY is
 			// already definitive, and an unlisted host would pop the
@@ -296,6 +311,28 @@ func runLiveProbe(env *Env, profileRef, target string) (*probeResult, error) {
 		return nil, fmt.Errorf("parse probe result: %w", jerr)
 	}
 	return &res, nil
+}
+
+// isLoopbackHost reports whether target names the local host, whose
+// reachability is governed by network.open_port rather than the proxy.
+func isLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// loopbackProbe returns the verdict for a localhost:port connection: allowed
+// iff the port is listed in network.open_port (which grants localhost TCP
+// connect+bind), otherwise denied with the concrete fix.
+func loopbackProbe(profile *sandboxprofile.Profile, port int) (probeOutcome, string) {
+	for _, p := range profile.Network.OpenPort {
+		if p == port {
+			return probeAllow, "loopback port is in network.open_port"
+		}
+	}
+	return probeDeny, fmt.Sprintf("loopback port %d is not in network.open_port — if the sandboxed tool needs this local service, add just this port; otherwise leave it closed", port)
 }
 
 type probeOutcome string
