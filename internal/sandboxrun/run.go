@@ -131,13 +131,15 @@ func Run(opts Options) int {
 		for k, v := range proxy.EnvVars() {
 			injected[k] = v
 		}
-		if merged.Network.HasProxyInjection(sandboxprofile.ProxyInjectJVM) {
-			opt, oerr := JVMProxyToolOptions(proxy.ProxyURL())
+		if families := merged.Network.ProxyInjection; len(families) > 0 {
+			env, oerr := ProxyInjectionEnv(families, proxy.ProxyURL())
 			if oerr != nil {
 				return fail("%v", oerr)
 			}
-			injected["JAVA_TOOL_OPTIONS"] = opt
-			fmt.Fprintln(stderr, "omac sandbox: proxy_injection: JVM tools (Gradle/Maven/…) routed through the omac proxy via JAVA_TOOL_OPTIONS")
+			for k, v := range env {
+				injected[k] = v
+			}
+			fmt.Fprintf(stderr, "omac sandbox: proxy_injection: %s routed through the omac proxy\n", strings.Join(families, ", "))
 		}
 	}
 
