@@ -166,30 +166,34 @@ func TestNoDeadRuleHintWithoutObservedTraffic(t *testing.T) {
 	}
 }
 
-// The gradle/JVM blind spot: filtered mode + nothing blocked → warn that a
-// proxy-unaware tool fails invisibly, and steer to the proxy, not a wider
+// The blind-spot hint: filtered mode + nothing blocked → explain the failures
+// that leave no trace (proxy-unaware direct connect; filesystem/socket/loopback
+// denials such as docker.sock), and steer to the narrowest fix, not a wider
 // allowlist.
-func TestProxyUnawareHintFiresWhenNothingBlocked(t *testing.T) {
+func TestInvisibleFailureHintFiresWhenNothingBlocked(t *testing.T) {
 	pol := Policy{Mode: "filtered", AllowDomains: []string{"example.com"}}
 	decisions := []Decision{dec("example.com", true, "allowlist")} // all allowed
-	h := findHint(Analyze(pol, decisions, realMatch), "may be proxy-unaware")
+	h := findHint(Analyze(pol, decisions, realMatch), "can be invisible to this report")
 	if h == nil {
-		t.Fatalf("proxy-unaware hint should fire when nothing was blocked")
+		t.Fatalf("invisible-failure hint should fire when nothing was blocked")
 	}
 	joined := strings.Join(h.Detail, " ")
-	if !strings.Contains(joined, "route it through the proxy") && !strings.Contains(joined, "proxy_injection") {
-		t.Fatalf("hint should point at the proxy, got %q", joined)
+	if !strings.Contains(joined, "proxy_injection") {
+		t.Fatalf("hint should cover the proxy-unaware case, got %q", joined)
+	}
+	if !strings.Contains(joined, "docker.sock") || !strings.Contains(joined, "provenance") {
+		t.Fatalf("hint should cover the socket/filesystem case and point at provenance, got %q", joined)
 	}
 	if !strings.Contains(joined, "do not widen") {
 		t.Fatalf("hint must not steer toward widening the policy, got %q", joined)
 	}
 }
 
-func TestProxyUnawareHintSuppressedWhenSomethingBlocked(t *testing.T) {
+func TestInvisibleFailureHintSuppressedWhenSomethingBlocked(t *testing.T) {
 	pol := Policy{Mode: "filtered"}
 	decisions := []Decision{dec("blocked.example", false, "allowlist")}
-	if findHint(Analyze(pol, decisions, realMatch), "may be proxy-unaware") != nil {
-		t.Fatalf("proxy-unaware note must stay quiet when a concrete block exists")
+	if findHint(Analyze(pol, decisions, realMatch), "can be invisible to this report") != nil {
+		t.Fatalf("blind-spot note must stay quiet when a concrete block exists")
 	}
 }
 
