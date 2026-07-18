@@ -139,6 +139,7 @@ func Analyze(p Policy, decisions []Decision, match DomainMatcher) []Hint {
 	}
 
 	hints = append(hints, deadAllowRuleHints(p, decisions, match)...)
+	hints = append(hints, overBroadAllowHints(p)...)
 	hints = append(hints, sourceHints(decisions)...)
 	hints = append(hints, environmentHints(p)...)
 
@@ -176,16 +177,15 @@ func blockedHostHint(p Policy, b BlockedHost, match DomainMatcher) Hint {
 			},
 		}
 	default:
-		detail := []string{fmt.Sprintf("Denied %d time(s); not matched by any network.allow_domain entry.", b.Count)}
+		detail := []string{fmt.Sprintf("Denied %d time(s); no network.allow_domain entry matches.", b.Count)}
+		fix := "If it is a required dependency, allow the exact host (not a broad wildcard). If you don't recognize it, leave it denied — the sandbox is correctly blocking unexpected egress."
 		if p.PromptEnabled {
-			detail = append(detail, "Answer \"Allow\" in the network prompt, or add it to network.allow_domain.")
-		} else {
-			detail = append(detail, "The network prompt is disabled, so unlisted hosts are denied by default. Add it to network.allow_domain.")
+			fix = "If it is a required dependency, answer \"Allow\" for the exact host or add it to network.allow_domain. If you don't recognize it, deny it — the sandbox is correctly blocking unexpected egress."
 		}
 		return Hint{
 			Severity: SevWarn,
 			Title:    fmt.Sprintf("%s was blocked and is not in any allow rule", b.Host),
-			Detail:   detail,
+			Detail:   []string{detail[0], fix},
 		}
 	}
 }
@@ -228,7 +228,25 @@ func deadAllowRuleHints(p Policy, decisions []Decision, match DomainMatcher) []H
 			hints = append(hints, Hint{
 				Severity: SevInfo,
 				Title:    fmt.Sprintf("allow_domain %q matched no traffic this run", entry),
-				Detail:   []string{"Possibly a typo or an unused rule. Wildcards use the form \"*.example.com\"."},
+				Detail:   []string{"No connection used it. Consider removing it to keep the allowlist minimal (least privilege), or check for a typo (wildcards use \"*.example.com\")."},
+			})
+		}
+	}
+	return hints
+}
+
+// overBroadAllowHints flags allow_domain entries that open far more than a
+// specific host — a whole-TLD wildcard like "*.com". Surfacing these steers
+// the profile toward least privilege rather than blanket allow.
+func overBroadAllowHints(p Policy) []Hint {
+	var hints []Hint
+	for _, e := range p.AllowDomains {
+		suffix, ok := strings.CutPrefix(strings.ToLower(strings.TrimSpace(e)), "*.")
+		if ok && suffix != "" && !strings.Contains(suffix, ".") {
+			hints = append(hints, Hint{
+				Severity: SevWarn,
+				Title:    fmt.Sprintf("allow_domain %q is very broad", e),
+				Detail:   []string{fmt.Sprintf("It matches every host under .%s. Narrow it to the specific hosts you actually use (least privilege).", suffix)},
 			})
 		}
 	}
