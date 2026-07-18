@@ -65,12 +65,40 @@ const (
 	SevInfo Severity = "info"
 )
 
+// Kind separates hints that explain an observed failure (Problem — shown by
+// default) from least-privilege/context notes (Advisory — collapsed unless
+// -v). This is the core of keeping the default output focused: the user
+// debugging a failure sees the problem, not a wall of hygiene advice.
+type Kind string
+
+const (
+	KindProblem  Kind = "problem"
+	KindAdvisory Kind = "advisory"
+)
+
 // Hint is a human-actionable diagnostic derived from correlating observed
 // decisions against the effective policy.
 type Hint struct {
 	Severity Severity
+	Kind     Kind
 	Title    string
 	Detail   []string
+}
+
+// Problems returns the failure-explaining hints, most-severe first.
+func (r Report) Problems() []Hint { return filterKind(r.Hints, KindProblem) }
+
+// Advisories returns the least-privilege / context hints.
+func (r Report) Advisories() []Hint { return filterKind(r.Hints, KindAdvisory) }
+
+func filterKind(hints []Hint, k Kind) []Hint {
+	var out []Hint
+	for _, h := range hints {
+		if h.Kind == k {
+			out = append(out, h)
+		}
+	}
+	return out
 }
 
 // Report is the full result of analyzing one set of decisions.
@@ -134,6 +162,16 @@ func Analyze(p Policy, decisions []Decision, match DomainMatcher) []Hint {
 	}
 	var hints []Hint
 
+	// A fully blocked network dwarfs everything else: say it plainly and
+	// stop, so the one thing that matters is not buried under advisories.
+	if p.Mode == "blocked" {
+		return []Hint{{
+			Severity: SevWarn, Kind: KindProblem,
+			Title:  "network mode is \"blocked\" — no tool can reach the network",
+			Detail: []string{"Every outbound connection is denied by design. If this run needs network, switch the profile's network.mode to \"filtered\" (and allow the specific hosts)."},
+		}}
+	}
+
 	for _, b := range Blocked(decisions) {
 		hints = append(hints, blockedHostHint(p, b, match))
 	}
@@ -144,7 +182,12 @@ func Analyze(p Policy, decisions []Decision, match DomainMatcher) []Hint {
 	hints = append(hints, invisibleFailureHint(p, decisions)...)
 	hints = append(hints, environmentHints(p)...)
 
+	// Stable order: problems before advisories, warnings before infos. The
+	// renderer splits on Kind, but a stable global order keeps -v readable.
 	sort.SliceStable(hints, func(i, j int) bool {
+		if (hints[i].Kind == KindProblem) != (hints[j].Kind == KindProblem) {
+			return hints[i].Kind == KindProblem
+		}
 		return sevRank(hints[i].Severity) < sevRank(hints[j].Severity)
 	})
 	return hints
@@ -162,8 +205,8 @@ func blockedHostHint(p Policy, b BlockedHost, match DomainMatcher) Hint {
 		// true, this is what the user did not expect, so it outranks the
 		// plain deny_domain note even when the host is in both lists.
 		return Hint{
-			Severity: SevWarn,
-			Title:    fmt.Sprintf("%s is in allow_domain but was still DENIED", b.Host),
+			Severity: SevWarn, Kind: KindProblem,
+			Title: fmt.Sprintf("%s is in allow_domain but was still DENIED", b.Host),
 			Detail: []string{
 				fmt.Sprintf("Denied %d time(s) with source=%s.", b.Count, strings.Join(b.Sources, ",")),
 				shadowExplanation(inDeny, b.Sources),
@@ -171,8 +214,8 @@ func blockedHostHint(p Policy, b BlockedHost, match DomainMatcher) Hint {
 		}
 	case inDeny:
 		return Hint{
-			Severity: SevInfo,
-			Title:    fmt.Sprintf("%s is blocked by network.deny_domain", b.Host),
+			Severity: SevInfo, Kind: KindProblem,
+			Title: fmt.Sprintf("%s is blocked by network.deny_domain", b.Host),
 			Detail: []string{
 				fmt.Sprintf("Denied %d time(s). If this host is actually needed, remove the matching deny_domain entry.", b.Count),
 			},
@@ -184,9 +227,9 @@ func blockedHostHint(p Policy, b BlockedHost, match DomainMatcher) Hint {
 			fix = "If it is a required dependency, answer \"Allow\" for the exact host or add it to network.allow_domain. If you don't recognize it, deny it — the sandbox is correctly blocking unexpected egress."
 		}
 		return Hint{
-			Severity: SevWarn,
-			Title:    fmt.Sprintf("%s was blocked and is not in any allow rule", b.Host),
-			Detail:   []string{detail[0], fix},
+			Severity: SevWarn, Kind: KindProblem,
+			Title:  fmt.Sprintf("%s was blocked and is not in any allow rule", b.Host),
+			Detail: []string{detail[0], fix},
 		}
 	}
 }
@@ -227,9 +270,9 @@ func deadAllowRuleHints(p Policy, decisions []Decision, match DomainMatcher) []H
 		}
 		if !used {
 			hints = append(hints, Hint{
-				Severity: SevInfo,
-				Title:    fmt.Sprintf("allow_domain %q matched no traffic this run", entry),
-				Detail:   []string{"No connection used it. Consider removing it to keep the allowlist minimal (least privilege), or check for a typo (wildcards use \"*.example.com\")."},
+				Severity: SevInfo, Kind: KindAdvisory,
+				Title:  fmt.Sprintf("allow_domain %q matched no traffic this run", entry),
+				Detail: []string{"No connection used it. Consider removing it to keep the allowlist minimal (least privilege), or check for a typo (wildcards use \"*.example.com\")."},
 			})
 		}
 	}
@@ -245,9 +288,9 @@ func overBroadAllowHints(p Policy) []Hint {
 		suffix, ok := strings.CutPrefix(strings.ToLower(strings.TrimSpace(e)), "*.")
 		if ok && suffix != "" && !strings.Contains(suffix, ".") {
 			hints = append(hints, Hint{
-				Severity: SevWarn,
-				Title:    fmt.Sprintf("allow_domain %q is very broad", e),
-				Detail:   []string{fmt.Sprintf("It matches every host under .%s. Narrow it to the specific hosts you actually use (least privilege).", suffix)},
+				Severity: SevWarn, Kind: KindAdvisory,
+				Title:  fmt.Sprintf("allow_domain %q is very broad", e),
+				Detail: []string{fmt.Sprintf("It matches every host under .%s. Narrow it to the specific hosts you actually use (least privilege).", suffix)},
 			})
 		}
 	}
@@ -260,16 +303,16 @@ func sourceHints(decisions []Decision) []Hint {
 	var hints []Hint
 	if anyDeniedSource(decisions, "dns") {
 		hints = append(hints, Hint{
-			Severity: SevWarn,
-			Title:    "Some hosts failed DNS resolution",
-			Detail:   []string{"source=dns: the name did not resolve. Check for typos, or that the sandbox has egress for DNS."},
+			Severity: SevWarn, Kind: KindProblem,
+			Title:  "Some hosts failed DNS resolution",
+			Detail: []string{"source=dns: the name did not resolve. Check for typos, or that the sandbox has egress for DNS."},
 		})
 	}
 	if anyDeniedSource(decisions, "unavailable") {
 		hints = append(hints, Hint{
-			Severity: SevInfo,
-			Title:    "Some prompts fell back to deny",
-			Detail:   []string{"source=unavailable: the prompt timed out or no dialog backend was available. Install a dialog backend, or pre-populate network.allow_domain."},
+			Severity: SevInfo, Kind: KindProblem,
+			Title:  "Some prompts fell back to deny",
+			Detail: []string{"source=unavailable: the prompt timed out or no dialog backend was available. Install a dialog backend, or pre-populate network.allow_domain."},
 		})
 	}
 	return hints
@@ -282,16 +325,19 @@ func environmentHints(p Policy) []Hint {
 	var hints []Hint
 	if p.UpstreamProxy != "" {
 		hints = append(hints, Hint{
-			Severity: SevInfo,
-			Title:    "An upstream proxy is configured",
-			Detail:   []string{"omac injects HTTP(S)_PROXY into the sandbox. A proxy-unaware tool that reads its own config instead of the environment may bypass it and fail."},
+			Severity: SevInfo, Kind: KindAdvisory,
+			Title: "An upstream (corporate) proxy is configured",
+			Detail: []string{
+				"omac injects HTTP(S)_PROXY into the sandbox. A proxy-unaware tool that reads its own config instead of the environment may bypass it and fail.",
+				"Such proxies often re-sign TLS with a private CA. If a tool fails with a certificate error on an allowed host, point it at the corporate CA (e.g. NODE_EXTRA_CA_CERTS, pip --cert, REQUESTS_CA_BUNDLE, the JVM truststore) rather than disabling verification.",
+			},
 		})
 	}
 	if len(p.AllowVars) > 0 {
 		hints = append(hints, Hint{
-			Severity: SevInfo,
-			Title:    "Environment variables are allow-listed",
-			Detail:   []string{"Ambient variables not in environment.allow_vars are stripped inside the sandbox. If a tool needs one, add it there."},
+			Severity: SevInfo, Kind: KindAdvisory,
+			Title:  "Environment variables are allow-listed",
+			Detail: []string{"Ambient variables not in environment.allow_vars are stripped inside the sandbox. If a tool needs one, add it there."},
 		})
 	}
 	return hints
@@ -313,11 +359,12 @@ func invisibleFailureHint(p Policy, decisions []Decision) []Hint {
 		}
 	}
 	return []Hint{{
-		Severity: SevInfo,
-		Title:    "Nothing was blocked by the network policy — a failure here can be invisible to this report",
+		Severity: SevInfo, Kind: KindProblem,
+		Title: "Nothing was blocked by the network policy — a failure here can be invisible to this report",
 		Detail: []string{
 			"Proxy-unaware tool? In filtered mode every tool must use the omac proxy (HTTP(S)_PROXY). A JVM/gradle or native client that connects directly is blocked by the kernel with no entry here — route it through the proxy (JAVA_TOOL_OPTIONS / proxy_injection).",
-			"Local socket or port? A daemon socket (e.g. docker.sock) or a 127.0.0.1 service is a filesystem/loopback grant, not network — check `omac provenance` and `omac diagnose --probe 127.0.0.1:<port>`.",
+			"Raw TCP (SSH, git@…, Postgres, Redis)? Non-HTTP connections do not use the proxy; they need the port in network.allow_tcp_connect. Check with `omac diagnose --probe <host>:<port>`.",
+			"Local socket or 127.0.0.1 service? A daemon socket (e.g. docker.sock) or loopback port is a filesystem/open_port grant, not network — check `omac provenance` and `omac diagnose --probe 127.0.0.1:<port>`.",
 			"Either way, prefer the narrowest grant; do not widen the network policy.",
 		},
 	}}

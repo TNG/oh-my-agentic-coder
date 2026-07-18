@@ -219,7 +219,7 @@ func TestEnvironmentHintsAreOrderedAfterWarnings(t *testing.T) {
 	if hints[0].Severity != SevWarn {
 		t.Fatalf("warnings must sort first, got %s first:\n%s", hints[0].Severity, hintTitles(hints))
 	}
-	if findHint(hints, "upstream proxy is configured") == nil || findHint(hints, "Environment variables are allow-listed") == nil {
+	if findHint(hints, "upstream (corporate) proxy is configured") == nil || findHint(hints, "Environment variables are allow-listed") == nil {
 		t.Fatalf("generic env/proxy hints missing.\n%s", hintTitles(hints))
 	}
 }

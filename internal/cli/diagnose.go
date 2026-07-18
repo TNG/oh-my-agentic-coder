@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"strconv"
@@ -39,6 +40,8 @@ func runDiagnose(args []string, env *Env) int {
 	runSel := fs.String("run", "last", "Which run(s) to analyze: last|all.")
 	probe := fs.String("probe", "", "Statically check whether host[:port] would be admitted, then exit.")
 	live := fs.Bool("live", false, "With --probe: if the static check says ALLOW, also attempt a real connection through the sandbox.")
+	verbose := fs.Bool("verbose", false, "Show every hint and the full effective config, not just the focused view.")
+	fs.BoolVar(verbose, "v", false, "Alias for --verbose.")
 	if err := fs.Parse(reorderFlagsFirst(args)); err != nil {
 		return ExitMisuse
 	}
@@ -98,6 +101,7 @@ func runDiagnose(args []string, env *Env) int {
 		Profile:    profileSummary(profile, profPath),
 		RunScope:   *runSel,
 		RunID:      runID,
+		ExitCode:   runExitCode(events, runID),
 		AuditLog:   auditPath,
 		SandboxLog: logPath,
 		AuditNote:  auditNote,
@@ -107,8 +111,25 @@ func runDiagnose(args []string, env *Env) int {
 	if *asJSON {
 		return writeDiagnoseJSON(env, view)
 	}
-	writeDiagnoseText(env, view)
+	writeDiagnoseText(env, view, *verbose)
 	return ExitOK
+}
+
+// runExitCode returns the exit code recorded by the session.stop event for
+// the scoped run, or nil when unknown. It lets diagnose lead with "the last
+// run exited N", framing the evidence around the failure the user is chasing.
+func runExitCode(events []audit.Event, runID string) *int {
+	for i := len(events) - 1; i >= 0; i-- {
+		ev := events[i]
+		if ev.Type != audit.TypeSessionStop {
+			continue
+		}
+		if runID != "" && ev.RunID != runID {
+			continue
+		}
+		return ev.ExitCode
+	}
+	return nil
 }
 
 // diagnoseView is the full result payload (text + JSON share it).
@@ -119,6 +140,7 @@ type diagnoseView struct {
 	Profile    profileSummaryV `json:"profile"`
 	RunScope   string          `json:"run_scope"`
 	RunID      string          `json:"run_id,omitempty"`
+	ExitCode   *int            `json:"exit_code,omitempty"`
 	AuditLog   string          `json:"audit_log,omitempty"`
 	SandboxLog string          `json:"sandbox_log,omitempty"`
 	AuditNote  string          `json:"audit_note,omitempty"`
@@ -220,6 +242,14 @@ func runDiagnoseProbe(env *Env, profileRef string, profile *sandboxprofile.Profi
 	}
 
 	pv := probeView{Host: host, Port: port, Outcome: string(outcome), Reason: reason}
+	if !loopback {
+		// A remote host has two independent paths: HTTP(S) via the proxy
+		// (allow_domain, above) and raw TCP (SSH/git/DB), which bypasses the
+		// proxy and needs the port in allow_tcp_connect. Report both so a
+		// user debugging e.g. `git@github.com` (SSH:22) sees the right one.
+		ro, rr := rawTCPProbe(profile, port)
+		pv.RawTCP = &rawTCPView{Outcome: string(ro), Reason: rr}
+	}
 
 	if live && loopback {
 		pv.Live = &probeResult{Target: target, Class: "skipped",
@@ -241,11 +271,29 @@ func runDiagnoseProbe(env *Env, profileRef string, profile *sandboxprofile.Profi
 	if asJSON {
 		return writeDiagnoseJSON(env, pv)
 	}
-	fmt.Fprintf(env.Stdout, "%s %s:%d (%s)\n", outcome, host, port, reason)
+	if loopback {
+		fmt.Fprintf(env.Stdout, "%s %s:%d (%s)\n", outcome, host, port, reason)
+	} else {
+		fmt.Fprintf(env.Stdout, "%s:%d\n", host, port)
+		fmt.Fprintf(env.Stdout, "  HTTP(S) via proxy: %-6s (%s)\n", outcome, reason)
+		fmt.Fprintf(env.Stdout, "  raw TCP (SSH/DB):  %-6s (%s)\n", pv.RawTCP.Outcome, pv.RawTCP.Reason)
+	}
 	if pv.Live != nil {
-		fmt.Fprintf(env.Stdout, "live: %s (%s)\n", pv.Live.Class, pv.Live.Detail)
+		fmt.Fprintf(env.Stdout, "  live:              %s (%s)\n", pv.Live.Class, pv.Live.Detail)
 	}
 	return ExitOK
+}
+
+// rawTCPProbe reports whether a direct (non-proxied) TCP connection to port
+// would be admitted — the path SSH, git@…, and database clients use. It is
+// gated by network.allow_tcp_connect (kernel-enforced, host-independent).
+func rawTCPProbe(profile *sandboxprofile.Profile, port int) (probeOutcome, string) {
+	for _, p := range profile.Network.AllowTCPConnect {
+		if p == port {
+			return probeAllow, fmt.Sprintf("port %d is in network.allow_tcp_connect", port)
+		}
+	}
+	return probeDeny, fmt.Sprintf("port %d is not in network.allow_tcp_connect — add it only if a raw-TCP tool needs this port", port)
 }
 
 // Live-probe timeouts. The child bounds its own HTTP request to
@@ -366,7 +414,15 @@ type probeView struct {
 	Port    int          `json:"port"`
 	Outcome string       `json:"outcome"`
 	Reason  string       `json:"reason"`
+	RawTCP  *rawTCPView  `json:"raw_tcp,omitempty"`
 	Live    *probeResult `json:"live,omitempty"`
+}
+
+// rawTCPView is the direct-TCP (allow_tcp_connect) verdict for a remote probe,
+// alongside the proxy verdict in the top-level probeView fields.
+type rawTCPView struct {
+	Outcome string `json:"outcome"`
+	Reason  string `json:"reason"`
 }
 
 func splitHostPortDefault(target string, defPort int) (string, int, error) {
@@ -392,61 +448,138 @@ func writeDiagnoseJSON(env *Env, v any) int {
 	return ExitOK
 }
 
-func writeDiagnoseText(env *Env, v diagnoseView) {
+// maxBlockedShown caps the blocked-host list in the focused view so a noisy
+// run does not scroll the actionable findings off-screen. -v shows all.
+const maxBlockedShown = 8
+
+// writeDiagnoseText renders the focused view by default: a one-line status,
+// the blocked hosts, the problems to act on, and a single collapsed line for
+// least-privilege/context advisories. -v expands everything (all advisories,
+// full effective config, all log paths). The goal is that a user sees what
+// they came for without a wall of warn/info noise.
+func writeDiagnoseText(env *Env, v diagnoseView, verbose bool) {
 	w := env.Stdout
-	fmt.Fprintf(w, "omac %s\n", v.Version)
-	fmt.Fprintf(w, "OS: %s\n", v.OS)
-	fmt.Fprintf(w, "workdir: %s\n\n", v.Workdir)
+	fmt.Fprintf(w, "omac %s · %s · %s\n", v.Version, v.OS, v.Workdir)
 
-	fmt.Fprintf(w, "Effective network policy (profile %q, %s):\n", v.Profile.Name, v.Profile.Path)
-	fmt.Fprintf(w, "  mode=%s  prompt=%s", v.Profile.Mode, onOff(v.Profile.PromptEnabled))
-	if v.Profile.UpstreamProxy != "" {
-		fmt.Fprintf(w, "  upstream_proxy=%s", v.Profile.UpstreamProxy)
-	}
-	fmt.Fprintf(w, "\n  allow_domain: %s\n", joinOrNone(v.Profile.AllowDomains))
-	if len(v.Profile.DenyDomains) > 0 {
-		fmt.Fprintf(w, "  deny_domain:  %s\n", joinOrNone(v.Profile.DenyDomains))
-	}
-	fmt.Fprintln(w, "  (full effective config across all subsystems: `omac provenance`)")
-	fmt.Fprintln(w)
-
-	if v.AuditNote != "" {
-		fmt.Fprintf(w, "[warn] %s\n\n", v.AuditNote)
-	}
-
-	scope := "most recent run"
+	// One status line: run/exit + mode + blocked count.
+	scope := "last run"
 	if v.RunScope == "all" {
 		scope = "all runs"
 	}
-	fmt.Fprintf(w, "Network decisions (%s): %d total, %d denied\n", scope, v.Report.Total, v.Report.Denied)
-	if len(v.Report.Blocked) == 0 {
-		fmt.Fprintln(w, "  no blocked connections recorded.")
-	} else {
-		fmt.Fprintln(w, "  blocked hosts (most-blocked first):")
-		for _, b := range v.Report.Blocked {
-			fmt.Fprintf(w, "    %4dx  DENY %-40s (%s)\n", b.Count, hostPorts(b.Host, b.Ports), joinOrNone(b.Sources))
+	status := scope
+	if v.ExitCode != nil {
+		if *v.ExitCode == 0 {
+			status += " exited 0"
+		} else {
+			status += fmt.Sprintf(" exited %d", *v.ExitCode)
 		}
 	}
+	status += fmt.Sprintf(" · %s mode · %d/%d connection(s) blocked", v.Profile.Mode, v.Report.Denied, v.Report.Total)
+	fmt.Fprintln(w, status)
 	fmt.Fprintln(w)
 
-	if len(v.Report.Hints) > 0 {
-		fmt.Fprintln(w, "Hints:")
-		for _, h := range v.Report.Hints {
-			fmt.Fprintf(w, "  [%s] %s\n", h.Severity, h.Title)
-			for _, d := range h.Detail {
-				fmt.Fprintf(w, "         %s\n", d)
-			}
+	if v.AuditNote != "" {
+		fmt.Fprintf(w, "note: %s\n\n", v.AuditNote)
+	}
+
+	// Blocked hosts (capped unless -v).
+	if len(v.Report.Blocked) > 0 {
+		fmt.Fprintln(w, "Blocked connections:")
+		shown := v.Report.Blocked
+		if !verbose && len(shown) > maxBlockedShown {
+			shown = shown[:maxBlockedShown]
+		}
+		for _, b := range shown {
+			fmt.Fprintf(w, "  %d×  %-40s (%s)\n", b.Count, hostPorts(b.Host, b.Ports), reasonWord(b.Sources))
+		}
+		if n := len(v.Report.Blocked) - len(shown); n > 0 {
+			fmt.Fprintf(w, "  … and %d more (run with -v)\n", n)
 		}
 		fmt.Fprintln(w)
 	}
 
-	if v.AuditLog != "" {
+	// Problems: the failure-explaining hints, shown in full — this is what
+	// the user came for.
+	problems := v.Report.Problems()
+	if len(problems) > 0 {
+		fmt.Fprintln(w, "What to look at:")
+		for _, h := range problems {
+			fmt.Fprintf(w, "  • %s\n", h.Title)
+			for _, d := range h.Detail {
+				fmt.Fprintf(w, "    %s\n", d)
+			}
+		}
+		fmt.Fprintln(w)
+	} else if len(v.Report.Blocked) == 0 {
+		fmt.Fprintln(w, "No problems detected.")
+		fmt.Fprintln(w)
+	}
+
+	// Advisories: collapsed by default, expanded under -v.
+	advisories := v.Report.Advisories()
+	if len(advisories) > 0 {
+		if verbose {
+			fmt.Fprintln(w, "Advisories (least-privilege / context):")
+			for _, h := range advisories {
+				fmt.Fprintf(w, "  • %s\n", h.Title)
+				for _, d := range h.Detail {
+					fmt.Fprintf(w, "    %s\n", d)
+				}
+			}
+		} else {
+			fmt.Fprintf(w, "%d advisory note(s) about config hygiene / least privilege — run `omac diagnose -v` to see them.\n", len(advisories))
+		}
+		fmt.Fprintln(w)
+	}
+
+	if verbose {
+		writeEffectiveConfig(w, v.Profile)
+	}
+
+	// Footer: where to dig further.
+	if verbose && v.AuditLog != "" {
 		fmt.Fprintf(w, "audit trail: %s\n", v.AuditLog)
 	}
-	if v.SandboxLog != "" {
+	if verbose && v.SandboxLog != "" {
 		fmt.Fprintf(w, "raw sandbox log (TTY sessions): %s\n", v.SandboxLog)
 	}
-	fmt.Fprintln(w, "probe a host without running:  omac diagnose --probe <host>")
+	fmt.Fprintln(w, "More: `omac diagnose -v` (detail) · `omac diagnose --probe <host[:port]>` (test a host) · `omac provenance` (full config)")
+}
+
+// writeEffectiveConfig prints the resolved network policy (verbose only). The
+// authoritative, all-subsystem view remains `omac provenance`.
+func writeEffectiveConfig(w io.Writer, p profileSummaryV) {
+	fmt.Fprintf(w, "Effective network policy (profile %q, %s):\n", p.Name, p.Path)
+	fmt.Fprintf(w, "  mode=%s  prompt=%s", p.Mode, onOff(p.PromptEnabled))
+	if p.UpstreamProxy != "" {
+		fmt.Fprintf(w, "  upstream_proxy=%s", p.UpstreamProxy)
+	}
+	fmt.Fprintf(w, "\n  allow_domain: %s\n", joinOrNone(p.AllowDomains))
+	if len(p.DenyDomains) > 0 {
+		fmt.Fprintf(w, "  deny_domain:  %s\n", joinOrNone(p.DenyDomains))
+	}
+	fmt.Fprintln(w, "  (full effective config across all subsystems: `omac provenance`)")
+	fmt.Fprintln(w)
+}
+
+// reasonWord turns the audit source tokens into a short plain-language reason
+// for the blocked-host line (the detail lives in the problem hint).
+func reasonWord(sources []string) string {
+	for _, s := range sources {
+		switch s {
+		case "blocklist":
+			return "deny_domain"
+		case "hard-deny":
+			return "hard-deny"
+		case "learned":
+			return "learned deny"
+		case "dns":
+			return "DNS failed"
+		case "unavailable":
+			return "prompt unavailable"
+		}
+	}
+	return "not allowed"
 }
 
 func joinOrNone(xs []string) string {
