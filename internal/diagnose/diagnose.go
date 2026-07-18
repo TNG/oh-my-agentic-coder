@@ -141,7 +141,7 @@ func Analyze(p Policy, decisions []Decision, match DomainMatcher) []Hint {
 	hints = append(hints, deadAllowRuleHints(p, decisions, match)...)
 	hints = append(hints, overBroadAllowHints(p)...)
 	hints = append(hints, sourceHints(decisions)...)
-	hints = append(hints, proxyUnawareHint(p, decisions)...)
+	hints = append(hints, invisibleFailureHint(p, decisions)...)
 	hints = append(hints, environmentHints(p)...)
 
 	sort.SliceStable(hints, func(i, j int) bool {
@@ -297,13 +297,13 @@ func environmentHints(p Policy) []Hint {
 	return hints
 }
 
-// proxyUnawareHint addresses filtered mode's biggest blind spot: a
-// proxy-unaware tool (JVM/gradle, some native clients) connects directly
-// instead of via HTTP(S)_PROXY, and the kernel blocks that with NO entry in
-// the audit trail. It fires only when nothing was blocked — so it never
-// competes with a concrete blocked-host finding — and steers toward routing
-// through the proxy rather than widening the policy.
-func proxyUnawareHint(p Policy, decisions []Decision) []Hint {
+// invisibleFailureHint covers filtered mode's blind spots: a failure that
+// leaves NO entry in this network report. Two kernel-enforced classes never
+// reach the proxy log — a proxy-unaware tool connecting directly, and a
+// filesystem/socket or loopback access denial. It fires only when nothing was
+// blocked — so it never competes with a concrete blocked-host finding — and
+// steers toward the narrowest fix rather than widening the network policy.
+func invisibleFailureHint(p Policy, decisions []Decision) []Hint {
 	if p.Mode != "filtered" {
 		return nil
 	}
@@ -314,10 +314,11 @@ func proxyUnawareHint(p Policy, decisions []Decision) []Hint {
 	}
 	return []Hint{{
 		Severity: SevInfo,
-		Title:    "Nothing was blocked — a failing tool may be proxy-unaware",
+		Title:    "Nothing was blocked by the network policy — a failure here can be invisible to this report",
 		Detail: []string{
-			"In filtered mode every tool must use the omac proxy (HTTP(S)_PROXY). A proxy-unaware tool (JVM/gradle, some native clients) connects directly, which the kernel blocks with no entry in this report.",
-			"If a tool failed to reach an already-allowed host, route it through the proxy (e.g. JAVA_TOOL_OPTIONS, or omac's proxy_injection) — do not widen the network policy.",
+			"Proxy-unaware tool? In filtered mode every tool must use the omac proxy (HTTP(S)_PROXY). A JVM/gradle or native client that connects directly is blocked by the kernel with no entry here — route it through the proxy (JAVA_TOOL_OPTIONS / proxy_injection).",
+			"Local socket or port? A daemon socket (e.g. docker.sock) or a 127.0.0.1 service is a filesystem/loopback grant, not network — check `omac provenance` and `omac diagnose --probe 127.0.0.1:<port>`.",
+			"Either way, prefer the narrowest grant; do not widen the network policy.",
 		},
 	}}
 }
