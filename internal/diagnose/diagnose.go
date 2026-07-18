@@ -141,6 +141,7 @@ func Analyze(p Policy, decisions []Decision, match DomainMatcher) []Hint {
 	hints = append(hints, deadAllowRuleHints(p, decisions, match)...)
 	hints = append(hints, overBroadAllowHints(p)...)
 	hints = append(hints, sourceHints(decisions)...)
+	hints = append(hints, proxyUnawareHint(p, decisions)...)
 	hints = append(hints, environmentHints(p)...)
 
 	sort.SliceStable(hints, func(i, j int) bool {
@@ -294,6 +295,31 @@ func environmentHints(p Policy) []Hint {
 		})
 	}
 	return hints
+}
+
+// proxyUnawareHint addresses filtered mode's biggest blind spot: a
+// proxy-unaware tool (JVM/gradle, some native clients) connects directly
+// instead of via HTTP(S)_PROXY, and the kernel blocks that with NO entry in
+// the audit trail. It fires only when nothing was blocked — so it never
+// competes with a concrete blocked-host finding — and steers toward routing
+// through the proxy rather than widening the policy.
+func proxyUnawareHint(p Policy, decisions []Decision) []Hint {
+	if p.Mode != "filtered" {
+		return nil
+	}
+	for _, d := range decisions {
+		if !d.Allowed {
+			return nil // concrete denials are shown; this note would be noise
+		}
+	}
+	return []Hint{{
+		Severity: SevInfo,
+		Title:    "Nothing was blocked — a failing tool may be proxy-unaware",
+		Detail: []string{
+			"In filtered mode every tool must use the omac proxy (HTTP(S)_PROXY). A proxy-unaware tool (JVM/gradle, some native clients) connects directly, which the kernel blocks with no entry in this report.",
+			"If a tool failed to reach an already-allowed host, route it through the proxy (e.g. JAVA_TOOL_OPTIONS, or omac's proxy_injection) — do not widen the network policy.",
+		},
+	}}
 }
 
 func anyDeniedSource(decisions []Decision, source string) bool {
