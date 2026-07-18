@@ -107,12 +107,15 @@ func TestParseValidationErrors(t *testing.T) {
 }
 
 func TestProxyInjection(t *testing.T) {
-	p, err := Parse([]byte(`{"network": {"proxy_injection": ["jvm"]}}`))
+	p, err := Parse([]byte(`{"network": {"proxy_injection": ["jvm", "node"]}}`))
 	if err != nil {
 		t.Fatalf("valid proxy_injection rejected: %v", err)
 	}
 	if !p.Network.HasProxyInjection(ProxyInjectJVM) {
 		t.Error("HasProxyInjection(jvm) = false, want true")
+	}
+	if !p.Network.HasProxyInjection(ProxyInjectNode) {
+		t.Error("HasProxyInjection(node) = false, want true")
 	}
 	if p.Network.HasProxyInjection("python") {
 		t.Error("HasProxyInjection(python) = true, want false")

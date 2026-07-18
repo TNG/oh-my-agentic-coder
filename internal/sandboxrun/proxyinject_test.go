@@ -3,7 +3,55 @@ package sandboxrun
 import (
 	"strings"
 	"testing"
+
+	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxprofile"
 )
+
+// TestProxyInjectorsCoverProfileTools guards against drift: every family
+// accepted by the profile validator must have an injector, and vice versa.
+func TestProxyInjectorsCoverProfileTools(t *testing.T) {
+	for _, tool := range sandboxprofile.ProxyInjectionTools() {
+		if _, ok := proxyInjectors[tool]; !ok {
+			t.Errorf("profile accepts %q but no injector is registered", tool)
+		}
+	}
+	for tool := range proxyInjectors {
+		if !contains(sandboxprofile.ProxyInjectionTools(), tool) {
+			t.Errorf("injector registered for %q but profile validation rejects it", tool)
+		}
+	}
+}
+
+func contains(xs []string, x string) bool {
+	for _, v := range xs {
+		if v == x {
+			return true
+		}
+	}
+	return false
+}
+
+func TestProxyInjectionEnv(t *testing.T) {
+	env, err := ProxyInjectionEnv(
+		[]string{sandboxprofile.ProxyInjectJVM, sandboxprofile.ProxyInjectNode},
+		"http://omac:sekret@127.0.0.1:40981",
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(env["JAVA_TOOL_OPTIONS"], "-Dhttps.proxyHost=127.0.0.1") {
+		t.Errorf("JAVA_TOOL_OPTIONS not set for jvm family: %q", env["JAVA_TOOL_OPTIONS"])
+	}
+	if env["NODE_USE_ENV_PROXY"] != "1" {
+		t.Errorf("NODE_USE_ENV_PROXY = %q, want 1", env["NODE_USE_ENV_PROXY"])
+	}
+}
+
+func TestProxyInjectionEnv_UnknownFamily(t *testing.T) {
+	if _, err := ProxyInjectionEnv([]string{"python"}, "http://127.0.0.1:8080"); err == nil {
+		t.Error("expected error for unknown family, got nil")
+	}
+}
 
 func TestJVMProxyToolOptions(t *testing.T) {
 	got, err := JVMProxyToolOptions("http://omac:sekret@127.0.0.1:40981")
