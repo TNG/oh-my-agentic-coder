@@ -96,3 +96,140 @@ jobs:
           name: dist
           path: dist/
           retention-days: 7
+
+  notify:
+    name: Announce release on Slack
+    needs: goreleaser
+    runs-on: ubuntu-latest
+    # Only announce actual publishes: a real tag push, or a manual dispatch
+    # that is not a dry run. Snapshot dry-runs never publish a Release, so
+    # they must not post to Slack.
+    if: >-
+      github.event_name == 'push' ||
+      (github.event_name == 'workflow_dispatch' && !inputs.dry_run)
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # need all tags to classify the version bump
+
+      - name: Post release summary
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_RELEASE_WEBHOOK }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          VERSION: ${{ github.ref_name }}
+          RELEASE_URL: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ github.ref_name }}
+        run: |
+          if [ -z "$SLACK_WEBHOOK_URL" ]; then
+            echo "SLACK_RELEASE_WEBHOOK not set — skipping Slack notification"
+            exit 0
+          fi
+          # Classify the bump by diffing this tag against the previous semver
+          # tag: major/minor/patch drive the announcement emoji. A first-ever
+          # release (no predecessor) counts as major.
+          prev_tag=$(git tag -l 'v*.*.*' --sort=-v:refname | grep -Fx -A1 "$VERSION" | tail -1)
+          IFS=. read -r cmaj cmin _ <<<"${VERSION#v}"
+          if [ -z "$prev_tag" ] || [ "$prev_tag" = "$VERSION" ]; then
+            kind=major
+          else
+            IFS=. read -r pmaj pmin _ <<<"${prev_tag#v}"
+            if [ "$cmaj" != "$pmaj" ]; then kind=major
+            elif [ "$cmin" != "$pmin" ]; then kind=minor
+            else kind=patch
+            fi
+          fi
+          case "$kind" in
+            major) emoji="🚀" ;;   # breaking / headline release
+            minor) emoji="✨" ;;   # new features
+            patch) emoji="🔧" ;;   # fixes
+          esac
+          body=$(gh release view "$VERSION" --repo "$REPO" --json body --jq .body 2>/dev/null || true)
+          # Workflow Builder variables render as plain text only (no bold or
+          # headings). So the changelog is emitted as SEPARATE variables —
+          # features, fixes (plain bullet lists) and footer — and the bold
+          # "Features"/"Bug fixes" headings are typed statically in the
+          # Reply-in-thread step, each variable inserted beneath its heading.
+          # summary is the channel message. Items are cleaned (SHAs, author
+          # groups and type prefixes stripped); other commit types -> a count.
+          payload=$(BODY="$body" python3 - "$emoji" "$VERSION" "$kind" "$RELEASE_URL" <<'PY'
+          import json, os, re, sys
+
+          def strip_trailing_author(s):
+              """Drop trailing (author)/(<email>)/(Co-authored…) groups, balancing
+              nested parens, while keeping PR refs like (#37) (#38)."""
+              s = s.rstrip()
+              while s.endswith(")"):
+                  depth, idx = 0, -1
+                  for i in range(len(s) - 1, -1, -1):
+                      if s[i] == ")":
+                          depth += 1
+                      elif s[i] == "(":
+                          depth -= 1
+                          if depth == 0:
+                              idx = i
+                              break
+                  if idx < 0:
+                      break
+                  inner = s[idx + 1:-1]
+                  if "@" in inner or ("<" in inner and ">" in inner) or re.search(r"co-authored", inner, re.I):
+                      s = s[:idx].rstrip()
+                  else:
+                      break
+              return s
+
+          def clean_item(s):
+              s = re.sub(r"^[0-9a-f]{7,40}:\s*", "", s)   # drop commit SHA
+              s = strip_trailing_author(s)                # drop author/email groups
+              s = s.replace("`", "")                      # drop inline-code chips
+              m = re.match(r"^\s*[A-Za-z]+(?:\(([^)]*)\))?!?:\s*(.*)$", s)  # strip type, keep scope
+              if m:
+                  scope, rest = m.group(1), m.group(2)
+                  s = f"{scope}: {rest}" if scope else rest
+              return re.sub(r"\s+", " ", s).strip()
+
+          def parse_sections(md):
+              sections, cur = {}, None
+              for ln in md.splitlines():
+                  h = re.match(r"^#{1,6}\s+(.*)", ln)
+                  if h:
+                      name = h.group(1).strip()
+                      cur = None if name.lower() == "changelog" else name
+                      if cur:
+                          sections.setdefault(cur, [])
+                      continue
+                  b = re.match(r"^\s*[-*+]\s+(.*)", ln)
+                  if b and cur is not None:
+                      it = clean_item(b.group(1))
+                      if it:
+                          sections[cur].append(it)
+              return sections
+
+          emoji, version, kind, url = sys.argv[1:5]
+          sections = parse_sections(os.environ.get("BODY", ""))
+
+          def section_list(names, cap=1800):
+              items = [it for k in sections if k.lower() in names for it in sections[k]]
+              if not items:
+                  return "(none)"
+              text = "\n".join(f"• {it}" for it in items)
+              if len(text) > cap:
+                  cut = text[:cap]
+                  nl = cut.rfind("\n")
+                  if nl > 0:
+                      cut = cut[:nl]
+                  text = cut.rstrip() + "\n• …"
+              return text
+
+          other = sum(len(v) for k, v in sections.items()
+                      if k.lower() not in ("features", "bug fixes"))
+          footer = (f"+{other} internal changes (tests/ci/docs) · " if other else "") + f"Full notes: {url}"
+          print(json.dumps({
+              "summary":  f"{emoji} oh-my-agentic-coder {version} released ({kind})\n\n{url}",
+              "features": section_list({"features"}),
+              "fixes":    section_list({"bug fixes"}),
+              "footer":   footer,
+          }))
+          PY
+          )
+          curl -sS -X POST -H 'Content-type: application/json' --data "$payload" "$SLACK_WEBHOOK_URL"
