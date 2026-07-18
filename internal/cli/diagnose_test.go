@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/tngtech/oh-my-agentic-coder/internal/audit"
+	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxprofile"
 )
 
 // writeAuditFixture writes a JSONL audit trail at the default path under the
@@ -23,8 +24,27 @@ func writeAuditFixture(t *testing.T, lines ...string) {
 	}
 }
 
+// writeProfileFixture writes a default sandbox profile at its resolved path
+// under the isolated HOME; callers isolateHome(t) first.
+func writeProfileFixture(t *testing.T, json string) {
+	t.Helper()
+	path, err := sandboxprofile.ProfilePath("default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(json), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestDiagnoseSurfacesBlockedHostAndHint(t *testing.T) {
 	isolateHome(t)
+	// A profile with an unused allow entry, so there is one advisory to
+	// collapse alongside the blocked-host problem.
+	writeProfileFixture(t, `{"meta":{"name":"default"},"network":{"mode":"filtered","allow_domain":["unused.example"],"network_prompt":{"enabled":false}}}`)
 	writeAuditFixture(t,
 		`{"ts":"2026-07-18T10:00:00Z","run_id":"r1","type":"session.start"}`,
 		`{"ts":"2026-07-18T10:00:01Z","run_id":"r1","type":"net.decision","host":"registry.npmjs.org","port":443,"allow":false,"source":"allowlist"}`,
@@ -43,14 +63,38 @@ func TestDiagnoseSurfacesBlockedHostAndHint(t *testing.T) {
 	if !strings.Contains(s, "registry.npmjs.org") {
 		t.Fatalf("blocked host not surfaced:\n%s", s)
 	}
-	if !strings.Contains(s, "2 denied") {
-		t.Fatalf("denied count not shown:\n%s", s)
+	if !strings.Contains(s, "2/2 connection(s) blocked") {
+		t.Fatalf("blocked count not shown in status line:\n%s", s)
 	}
-	if !strings.Contains(s, "is not in any allow rule") {
-		t.Fatalf("actionable hint missing:\n%s", s)
+	if !strings.Contains(s, "What to look at:") || !strings.Contains(s, "is not in any allow rule") {
+		t.Fatalf("actionable problem not surfaced:\n%s", s)
+	}
+	// The dead-rule note (example.com unused) is an advisory: collapsed, not
+	// dumped inline — keeping the default view focused.
+	if strings.Contains(s, "matched no traffic") {
+		t.Fatalf("advisory should be collapsed by default, not shown inline:\n%s", s)
+	}
+	if !strings.Contains(s, "advisory note(s)") {
+		t.Fatalf("advisory collapse summary missing:\n%s", s)
+	}
+}
+
+func TestDiagnoseVerboseExpandsAdvisoriesAndConfig(t *testing.T) {
+	isolateHome(t)
+	writeAuditFixture(t,
+		`{"ts":"2026-07-18T10:00:00Z","run_id":"r1","type":"session.start"}`,
+		`{"ts":"2026-07-18T10:00:01Z","run_id":"r1","type":"net.decision","host":"registry.npmjs.org","port":443,"allow":false,"source":"allowlist"}`,
+	)
+	env, out, _, drain := newPipeEnv(t, "")
+	env.Workdir = t.TempDir()
+	runDiagnose([]string{"-v"}, env)
+	drain()
+	s := out.String()
+	if !strings.Contains(s, "Effective network policy") {
+		t.Fatalf("-v should show the effective config:\n%s", s)
 	}
 	if !strings.Contains(s, "audit trail:") {
-		t.Fatalf("audit log path not shown:\n%s", s)
+		t.Fatalf("-v should show log paths:\n%s", s)
 	}
 }
 
@@ -110,8 +154,30 @@ func TestDiagnoseProbeHardDeny(t *testing.T) {
 	if code != ExitOK {
 		t.Fatalf("code=%d", code)
 	}
-	if !strings.HasPrefix(out.String(), "DENY 169.254.169.254") {
-		t.Fatalf("hard-deny probe should DENY:\n%s", out.String())
+	s := out.String()
+	if !strings.Contains(s, "HTTP(S) via proxy: DENY") || !strings.Contains(s, "hard-deny") {
+		t.Fatalf("hard-deny probe should DENY the proxy path:\n%s", s)
+	}
+	if !strings.Contains(s, "raw TCP") {
+		t.Fatalf("remote probe should also report the raw-TCP path:\n%s", s)
+	}
+}
+
+// A raw-TCP tool (SSH, DB) uses allow_tcp_connect, not the proxy. The probe
+// must report that path independently so `git@host` (SSH:22) is diagnosable.
+func TestDiagnoseProbeRawTCP(t *testing.T) {
+	isolateHome(t)
+	writeProfileFixture(t, `{"meta":{"name":"default"},"network":{"mode":"filtered","allow_tcp_connect":[22]}}`)
+	env, out, _, drain := newPipeEnv(t, "")
+	env.Workdir = t.TempDir()
+	code := runDiagnose([]string{"--probe", "github.com:22"}, env)
+	drain()
+	if code != ExitOK {
+		t.Fatalf("code=%d", code)
+	}
+	s := out.String()
+	if !strings.Contains(s, "raw TCP (SSH/DB):  ALLOW") {
+		t.Fatalf("port 22 in allow_tcp_connect should ALLOW the raw-TCP path:\n%s", s)
 	}
 }
 
@@ -153,7 +219,7 @@ func TestDiagnoseProbeUnlistedHostReportsPrompt(t *testing.T) {
 	if code != ExitOK {
 		t.Fatalf("code=%d", code)
 	}
-	if !strings.HasPrefix(out.String(), "PROMPT example.com:443") {
-		t.Fatalf("unlisted host on default profile should report PROMPT:\n%s", out.String())
+	if !strings.Contains(out.String(), "HTTP(S) via proxy: PROMPT") {
+		t.Fatalf("unlisted host on default profile should report PROMPT on the proxy path:\n%s", out.String())
 	}
 }
