@@ -27,6 +27,7 @@ import (
 	"github.com/tngtech/oh-my-agentic-coder/internal/opencodestate"
 	"github.com/tngtech/oh-my-agentic-coder/internal/registry"
 	"github.com/tngtech/oh-my-agentic-coder/internal/sandbox"
+	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxprofile"
 	"github.com/tngtech/oh-my-agentic-coder/internal/secrets"
 	"github.com/tngtech/oh-my-agentic-coder/internal/skillconfig"
 	"github.com/tngtech/oh-my-agentic-coder/internal/skillsource"
@@ -421,6 +422,10 @@ func runServe(args []string, env *Env) int {
 		if cacheScope != nil {
 			argv = injectSandboxFlag(argv, "--allow", cacheScope.Dir)
 		}
+		// Forward the selected harness's auth env vars through the default
+		// profile's restrictive allow_vars filter. (Control-plane port and
+		// harness runtime dirs are granted inside sandboxServeArgv.)
+		argv = forwardHarnessEnv(env, argv, harness, prof, profName)
 		// Pass the resolved audit path to `omac sandbox run` so its
 		// network-filter subprocess appends net.decision events to the
 		// same persistent log. Inherit the parent's run_id + mode so the
@@ -624,6 +629,87 @@ func injectSandboxDirs(argv []string, dirs []string) []string {
 		argv = injectSandboxFlag(argv, "--allow", d)
 	}
 	return argv
+}
+
+// emptyAllowVarsWarnDelay is how long omac pauses after warning about an
+// empty-allow_vars profile at launch, so the message is seen before the
+// harness UI takes over. Overridable in tests.
+var emptyAllowVarsWarnDelay = 2 * time.Second
+
+// forwardHarnessEnv forwards the selected harness's auth env vars into the
+// sandbox via --allow-env. If the resolved sandbox profile has an EMPTY
+// environment.allow_vars, leaving it empty would inherit every ambient host
+// var (the pre-#102 leak). Rather than either leak or break, omac fails
+// closed: it seeds ONLY the operational minimum (sandboxprofile.DefaultAllowVars)
+// so the empty inherit-all list becomes a restrictive allowlist — ambient
+// secrets are stripped while HOME/PATH/locale keep the harness runnable.
+// Provider-auth vars are deliberately NOT auto-forwarded here: an empty
+// profile is a misconfiguration, and omac does not silently push provider
+// credentials into the sandbox to paper over it. It warns that this differs
+// from the old inherit-everything behavior and pauses so the message is seen.
+func forwardHarnessEnv(env *Env, argv []string, harness config.Harness, prof config.SandboxProfile, profName string) []string {
+	if empty, ok := sandboxProfileAllowVarsEmpty(prof); ok && empty {
+		fmt.Fprintf(env.Stderr, "omac: sandbox profile %q has an empty environment.allow_vars.\n", profName)
+		fmt.Fprintln(env.Stderr, "      Forwarding only the operational minimum (HOME, PATH, TERM, locale, …).")
+		fmt.Fprintln(env.Stderr, "      No provider-auth or other ambient env vars are passed through (previously every")
+		fmt.Fprintln(env.Stderr, "      var was inherited). The harness starts but will not authenticate until you add")
+		fmt.Fprintln(env.Stderr, `      the vars it needs to allow_vars (see "omac doctor"), or set allow_vars: ["*"].`)
+		fmt.Fprintln(env.Stderr, "      Continuing shortly…")
+		time.Sleep(emptyAllowVarsWarnDelay)
+		// Seed only the operational minimum; do NOT auto-forward auth vars.
+		return injectSandboxEnvAllow(argv, sandboxprofile.DefaultAllowVars(), prof)
+	}
+	return injectSandboxEnvAllow(argv, harness.SandboxEnvAllow, prof)
+}
+
+// sandboxProfileAllowVarsEmpty reports whether the native sandbox profile
+// referenced by prof resolves to an empty environment.allow_vars. ok is false
+// when prof is not an inspectable native ({{self}} sandbox run) profile or the
+// referenced profile cannot be resolved read-only.
+func sandboxProfileAllowVarsEmpty(prof config.SandboxProfile) (empty bool, ok bool) {
+	ref, isNative := inspectBuiltinProfileRef(prof.Command)
+	if !isNative {
+		return false, false
+	}
+	sp, _, err := sandboxprofile.ResolveReadOnly(ref)
+	if err != nil {
+		return false, false
+	}
+	return len(sp.Environment.AllowVars) == 0, true
+}
+
+// injectSandboxEnvAllow splices --allow-env flags for each harness-declared
+// auth env var into the sandbox argv, so they survive the default profile's
+// restrictive allow_vars filter. Only the selected harness's vars are added.
+//
+// --allow-env is understood only by omac's native `sandbox run` backend
+// (where FilterEnv applies the allowlist); other backends (nono) do their
+// own env filtering via their own profile, so injecting the flag there
+// would be meaningless and could fail on an unknown flag. Guarded by
+// profileRunsNativeSandbox. Empty/nil is a no-op.
+func injectSandboxEnvAllow(argv []string, names []string, prof config.SandboxProfile) []string {
+	if !profileRunsNativeSandbox(prof) {
+		return argv
+	}
+	for _, n := range names {
+		if n == "" {
+			continue
+		}
+		argv = injectSandboxFlag(argv, "--allow-env", n)
+	}
+	return argv
+}
+
+// profileRunsNativeSandbox reports whether prof's command template invokes
+// omac's native sandbox supervisor ({{self}} sandbox run …) — the only
+// backend that parses the launch-injected sandbox flags omac defines (e.g.
+// --allow-env). Anchored on the leading template tokens rather than a bare
+// token scan of the expanded argv: {{self}} resolves to os.Executable() (an
+// absolute path, not "omac"), and a nono profile whose inner command merely
+// contains "sandbox"/"run" tokens must not be misclassified.
+func profileRunsNativeSandbox(prof config.SandboxProfile) bool {
+	c := prof.Command
+	return len(c) >= 3 && c[0] == "{{self}}" && c[1] == "sandbox" && c[2] == "run"
 }
 
 // injectSandboxFlag splices a sandbox flag (with optional value; pass

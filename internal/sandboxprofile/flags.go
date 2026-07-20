@@ -22,6 +22,7 @@ type Flags struct {
 	AllowTCP      []int    // --allow-tcp-connect <port>
 	AllowDomain   []string // --allow-domain <domain>
 	DenyDomain    []string // --deny-domain <domain>
+	AllowEnv      []string // --allow-env <name>    additive env allow_vars entry
 	BlockNet      bool     // --block-net
 	Learn         bool     // --learn: unrestricted fs + folder recording
 	WorkdirAccess string   // --workdir-access <level>
@@ -162,6 +163,12 @@ func ParseFlags(args []string) (*Flags, error) {
 				return nil, err
 			}
 			f.DenyDomain = append(f.DenyDomain, v)
+		case "--allow-env":
+			v, err := val(a)
+			if err != nil {
+				return nil, err
+			}
+			f.AllowEnv = append(f.AllowEnv, v)
 		case "--block-net":
 			if hasInline {
 				return nil, fmt.Errorf("--block-net takes no value")
@@ -227,6 +234,8 @@ func Merge(p *Profile, f *Flags) (*Profile, []string) {
 	out.Network.AllowTCPConnect = appendIntCopy(p.Network.AllowTCPConnect, f.AllowTCP...)
 	out.Network.AllowDomain = appendCopy(p.Network.AllowDomain, f.AllowDomain...)
 	out.Network.DenyDomain = appendCopy(p.Network.DenyDomain, f.DenyDomain...)
+
+	out.Environment.AllowVars = appendCopy(p.Environment.AllowVars, f.AllowEnv...)
 
 	if f.WorkdirAccess != "" {
 		out.Workdir.Access = f.WorkdirAccess

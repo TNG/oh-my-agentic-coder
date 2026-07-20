@@ -8,11 +8,14 @@ import (
 )
 
 // cleanProfile returns a minimal profile with no grants, ready for tests
-// to populate specific fields.
+// to populate specific fields. It carries an explicit env allowlist so it
+// stays clean under checkEnvironment (an empty allow_vars is itself a
+// finding); tests exercising other categories start from a clean base.
 func cleanProfile() *sandboxprofile.Profile {
 	return &sandboxprofile.Profile{
-		Meta:    sandboxprofile.Meta{Name: "test"},
-		Workdir: sandboxprofile.Workdir{Access: sandboxprofile.AccessNone},
+		Meta:        sandboxprofile.Meta{Name: "test"},
+		Workdir:     sandboxprofile.Workdir{Access: sandboxprofile.AccessNone},
+		Environment: sandboxprofile.Environment{AllowVars: []string{"HOME", "PATH"}},
 	}
 }
 
@@ -20,6 +23,39 @@ func TestCheck_EmptyProfileNoFindings(t *testing.T) {
 	findings := Check(cleanProfile())
 	if len(findings) != 0 {
 		t.Errorf("empty profile should produce no findings; got %d: %+v", len(findings), findings)
+	}
+}
+
+func TestCheck_EmptyAllowVarsIsMedium(t *testing.T) {
+	p := cleanProfile()
+	p.Environment.AllowVars = nil
+	findings := Check(p)
+	var found bool
+	for _, f := range findings {
+		if f.Category == CatEnvironment && f.Field == "environment.allow_vars" {
+			found = true
+			if f.Severity != SeverityMedium {
+				t.Errorf("empty allow_vars severity = %q, want medium", f.Severity)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("empty allow_vars should produce an environment finding; got %+v", findings)
+	}
+}
+
+// TestCheck_WildcardAllowVarsNoFinding documents allow_vars: ["*"] as the
+// explicit "inherit everything (except the danger blocklist)" escape hatch:
+// it is non-empty, so it suppresses the empty-allowlist finding, and it is
+// still safe because IsDangerousEnvVar wins over the allowlist in FilterEnv
+// (issue #111 review).
+func TestCheck_WildcardAllowVarsNoFinding(t *testing.T) {
+	p := cleanProfile()
+	p.Environment.AllowVars = []string{"*"}
+	for _, f := range Check(p) {
+		if f.Category == CatEnvironment && f.Field == "environment.allow_vars" {
+			t.Errorf(`allow_vars ["*"] must not produce an environment finding; got %+v`, f)
+		}
 	}
 }
 
