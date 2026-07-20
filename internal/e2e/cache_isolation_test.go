@@ -48,6 +48,15 @@ const cacheRunTimeout = 3 * time.Minute
 func skipIfSandboxUnavailable(t *testing.T) {
 	t.Helper()
 	if unavailable, reason := sandboxUnavailable(); unavailable {
+		// Linux CI provisions a functional bubblewrap (the
+		// cache-integration and e2e jobs install it and smoke-test it),
+		// so an unavailable sandbox there is a real regression, not an
+		// environment gap — fail instead of silently passing. macOS
+		// keeps skipping: the SUN_LEN socket-path limit is a genuine
+		// per-runner constraint, not a backend regression.
+		if runtime.GOOS == "linux" && os.Getenv("GITHUB_ACTIONS") == "true" {
+			t.Fatalf("omac sandbox unavailable in CI: %s", reason)
+		}
 		t.Skipf("omac sandbox unavailable in this environment: %s; CI exercises this test", reason)
 	}
 }
