@@ -383,14 +383,14 @@ func runServe(args []string, env *Env) int {
 	if *noSandbox {
 		argv = inner
 	} else {
-		argv, err = sandbox.Expand(prof, sandbox.Inputs{
+		argv, err = sandboxServeArgv(prof, sandbox.Inputs{
 			Workdir:  env.Workdir,
 			Socket:   socketPath,
 			TCPPort:  srv.tcpPort,
 			Mounts:   srv.facadeMounts(),
 			InnerCmd: inner,
 			TmpDir:   srv.sandboxTmp,
-		})
+		}, controlPortOf(cln), harness)
 		if err != nil {
 			fmt.Fprintln(env.Stderr, "omac serve: sandbox argv:", err)
 			return ExitConfigInvalid
@@ -398,24 +398,6 @@ func runServe(args []string, env *Env) int {
 		if cacheScope != nil {
 			argv = injectSandboxFlag(argv, "--allow", cacheScope.Dir)
 		}
-		// The control-plane port is distinct from the facade TCP port and
-		// is NOT whitelisted by the profile's `--open-port {{tcp_port}}`.
-		// Without opening it, the sandboxed `opencode serve` (and the plugin
-		// inside it) cannot reach OMAC_CONTROL_BASE — nono denies the
-		// loopback connect (FailedToOpenSocket). Whitelist it too.
-		if cp := controlPortOf(cln); cp != "" {
-			argv = injectOpenPort(argv, cp)
-		}
-		// Allowlist the inner server daemon's own listen port so its bind()
-		// is permitted inside the sandbox. The profile's `--open-port
-		// {{tcp_port}}` covers only the facade; the harness's server (e.g.
-		// `opencode serve` on 4096) binds a distinct port that no other
-		// grant covers, so a restrictive profile (network_prompt: deny)
-		// denies the bind and the daemon crashes on startup (issue #115).
-		argv = injectServerListenPort(argv, harness)
-		// Grant the selected harness's runtime dirs (config, state,
-		// sessions) read+write — only for the selected harness.
-		argv = injectSandboxDirs(argv, harness.SandboxDirs)
 		// Pass the resolved audit path to `omac sandbox run` so its
 		// network-filter subprocess appends net.decision events to the
 		// same persistent log. Inherit the parent's run_id + mode so the
@@ -509,6 +491,33 @@ func controlPortOf(ln net.Listener) string {
 		return ""
 	}
 	return port
+}
+
+// sandboxServeArgv expands the sandbox profile into an inner argv and applies
+// the serve-mode grants the profile template can't express on its own:
+//
+//   - the control-plane port — distinct from the facade `--open-port
+//     {{tcp_port}}`; without it the sandboxed inner (and its plugin) can't
+//     reach OMAC_CONTROL_BASE and the loopback connect is denied. Skipped
+//     when controlPort is "".
+//   - the harness server daemon's own listen port, so its bind() is permitted
+//     (issue #115 — otherwise a restrictive profile denies the bind and the
+//     daemon crashes on startup).
+//   - the selected harness's runtime dirs (config/state/sessions) read+write.
+//
+// Kept as one pure function so the grant sequence stays unit-testable without
+// launching the control plane.
+func sandboxServeArgv(prof config.SandboxProfile, in sandbox.Inputs, controlPort string, h config.Harness) ([]string, error) {
+	argv, err := sandbox.Expand(prof, in)
+	if err != nil {
+		return nil, err
+	}
+	if controlPort != "" {
+		argv = injectOpenPort(argv, controlPort)
+	}
+	argv = injectServerListenPort(argv, h)
+	argv = injectSandboxDirs(argv, h.SandboxDirs)
+	return argv, nil
 }
 
 // injectServerListenPort splices `--listen-port <port>` into a sandbox argv

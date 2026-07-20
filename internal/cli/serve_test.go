@@ -12,6 +12,7 @@ import (
 
 	"github.com/tngtech/oh-my-agentic-coder/internal/config"
 	"github.com/tngtech/oh-my-agentic-coder/internal/facade"
+	"github.com/tngtech/oh-my-agentic-coder/internal/sandbox"
 	"github.com/tngtech/oh-my-agentic-coder/internal/toolcache"
 )
 
@@ -217,6 +218,52 @@ func TestInjectServerListenPort(t *testing.T) {
 	in2 := []string{"nono", "run", "--", "claude"}
 	if got2 := injectServerListenPort(in2, cc); !equalStrings(got2, in2) {
 		t.Errorf("claude-code should be a no-op: got %v, want %v", got2, in2)
+	}
+}
+
+// TestSandboxServeArgvInjectsListenPort exercises the serve argv assembly
+// end-to-end (the pipeline runServe actually calls), not just the
+// injectServerListenPort helper in isolation. It guards against the #115 bind
+// grant being dropped from the pipeline during a refactor.
+func TestSandboxServeArgvInjectsListenPort(t *testing.T) {
+	oc, _ := config.LookupHarness("opencode")
+	prof := config.SandboxProfile{
+		Command:  []string{"omac", "sandbox", "run", "--", "{{inner_cmd}}", "{{inner_args}}"},
+		InnerCmd: []string{"opencode"},
+	}
+	in := sandbox.Inputs{Workdir: "/w", InnerCmd: []string{"opencode", "serve"}}
+
+	argv, err := sandboxServeArgv(prof, in, "51234", oc)
+	if err != nil {
+		t.Fatalf("sandboxServeArgv: %v", err)
+	}
+	joined := strings.Join(argv, " ")
+
+	// The opencode server binds 4096; the pipeline must allowlist it for bind.
+	if !contains(joined, "--listen-port 4096") {
+		t.Errorf("serve argv missing --listen-port 4096: %s", joined)
+	}
+	// The control-plane port is opened for connect too.
+	if !contains(joined, "--open-port 51234") {
+		t.Errorf("serve argv missing --open-port 51234: %s", joined)
+	}
+	// Grants splice before the `--` separator, not after it.
+	if lp, sep := strings.Index(joined, "--listen-port"), strings.Index(joined, " -- "); lp < 0 || sep < 0 || lp > sep {
+		t.Errorf("--listen-port must appear before `--`: %s", joined)
+	}
+
+	// Empty control port skips only the control-plane grant; the #115 bind
+	// grant still applies.
+	noCP, err := sandboxServeArgv(prof, in, "", oc)
+	if err != nil {
+		t.Fatalf("sandboxServeArgv (no control port): %v", err)
+	}
+	nj := strings.Join(noCP, " ")
+	if contains(nj, "--open-port") {
+		t.Errorf("empty control port should add no --open-port: %s", nj)
+	}
+	if !contains(nj, "--listen-port 4096") {
+		t.Errorf("listen-port grant must still apply without a control port: %s", nj)
 	}
 }
 
