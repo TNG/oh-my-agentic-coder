@@ -1,6 +1,7 @@
 package sandboxprofile
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -675,6 +676,91 @@ func TestDangerousEnvBlocklist(t *testing.T) {
 	}
 	if !sort.StringsAreSorted(prefixes) {
 		t.Error("prefix blocklist not sorted")
+	}
+}
+
+func TestUpstreamProxyValidation(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+		want  bool
+	}{
+		{"empty", "", true},
+		{"http", "http://proxy:8080", true},
+		{"https_rejected", "https://proxy:8080", false},
+		{"http_no_host", "http://", false},
+		{"invalid_scheme", "ftp://proxy:8080", false},
+		{"malformed", "///not-a-url", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			network := fmt.Sprintf(`{"network": {"upstream_proxy": %q}}`, tc.input)
+			_, err := Parse([]byte(network))
+			if tc.want && err != nil {
+				t.Fatalf("Parse(%s) unexpectedly failed: %v", network, err)
+			}
+			if !tc.want && err == nil {
+				t.Errorf("Parse(%s) should have failed validation", network)
+			}
+		})
+	}
+}
+
+func TestNoProxyValidation(t *testing.T) {
+	// Valid entries accepted.
+	p, err := Parse([]byte(`{"network": {"no_proxy": ["example.com", "10.0.0.0/8", ".local"]}}`))
+	if err != nil {
+		t.Fatalf("Parse valid no_proxy should succeed: %v", err)
+	}
+	if len(p.Network.NoProxy) != 3 {
+		t.Errorf("NoProxy = %v, want 3 entries", p.Network.NoProxy)
+	}
+	// Empty entry rejected.
+	if _, err := Parse([]byte(`{"network": {"no_proxy": ["example.com", ""]}}`)); err == nil {
+		t.Error("Parse empty no_proxy entry should fail")
+	}
+	// Whitespace-only entry rejected.
+	if _, err := Parse([]byte(`{"network": {"no_proxy": ["example.com", "   "]}}`)); err == nil {
+		t.Error("Parse whitespace-only no_proxy entry should fail")
+	}
+	// Empty array accepted.
+	p, err = Parse([]byte(`{"network": {"no_proxy": []}}`))
+	if err != nil {
+		t.Fatalf("Parse empty no_proxy array should succeed: %v", err)
+	}
+	if len(p.Network.NoProxy) != 0 {
+		t.Errorf("NoProxy = %v, want []", p.Network.NoProxy)
+	}
+}
+
+func TestUpstreamProxyAndNoProxyCombined(t *testing.T) {
+	p, err := Parse([]byte(`{
+		"network": {
+			"upstream_proxy": "http://proxy:8080",
+			"no_proxy": ["internal.corp", "10.0.0.0/8"]
+		}
+	}`))
+	if err != nil {
+		t.Fatalf("Parse combined valid should succeed: %v", err)
+	}
+	if p.Network.UpstreamProxy != "http://proxy:8080" {
+		t.Errorf("UpstreamProxy = %q", p.Network.UpstreamProxy)
+	}
+	if len(p.Network.NoProxy) != 2 {
+		t.Errorf("NoProxy = %v, want 2 entries", p.Network.NoProxy)
+	}
+}
+
+func TestTypoFieldRejected(t *testing.T) {
+	// DisallowUnknownFields rejects misspelled field names.
+	cases := []string{
+		`{"network": {"upstream_prox": "http://x"}}`,
+		`{"network": {"no_proxyy": ["x"]}}`,
+	}
+	for _, c := range cases {
+		if _, err := Parse([]byte(c)); err == nil {
+			t.Errorf("Parse(%s) should fail on unknown field", c)
+		}
 	}
 }
 

@@ -4,8 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/tngtech/oh-my-agentic-coder/internal/audit"
 	"github.com/tngtech/oh-my-agentic-coder/internal/intent"
@@ -273,7 +275,7 @@ func buildProxy(p *sandboxprofile.Profile, profilePath string, stderr io.Writer,
 		Logf:               logf,
 		Auditor:            auditor,
 	})
-	srv, err := netproxy.NewServer(filter, logf)
+	srv, err := netproxy.NewServer(filter, resolveUpstreamProxy(p, stderr, logf), logf)
 	if err != nil {
 		return nil, err
 	}
@@ -281,6 +283,73 @@ func buildProxy(p *sandboxprofile.Profile, profilePath string, stderr io.Writer,
 		return nil, err
 	}
 	return srv, nil
+}
+
+// resolveUpstreamProxy resolves the upstream proxy URL and NO_PROXY list
+// from the profile first, then the host environment, and returns the
+// appropriate Dialer. If no upstream proxy is configured, it returns a
+// direct dialer. An invalid proxy URL is a soft warning: log and fall
+// back to direct dialing (the proxy URL may be wrong but the sandbox
+// should still start; per-request upstream errors are deferred to 502s).
+//
+// Resolution order for the proxy URL:
+//   - profile network.upstream_proxy
+//   - env HTTPS_PROXY / https_proxy
+//   - env HTTP_PROXY  / http_proxy
+//
+// Resolution order for NO_PROXY:
+//   - profile network.no_proxy (if non-empty)
+//   - env NO_PROXY / no_proxy (comma-separated, trimmed)
+//
+// Only proxyURL.Host is logged — never the userinfo (credentials).
+func resolveUpstreamProxy(p *sandboxprofile.Profile, stderr io.Writer, logf func(string, ...any)) netproxy.Dialer {
+	proxyStr := p.Network.UpstreamProxy
+	if proxyStr == "" {
+		proxyStr = os.Getenv("HTTPS_PROXY")
+	}
+	if proxyStr == "" {
+		proxyStr = os.Getenv("https_proxy")
+	}
+	if proxyStr == "" {
+		proxyStr = os.Getenv("HTTP_PROXY")
+	}
+	if proxyStr == "" {
+		proxyStr = os.Getenv("http_proxy")
+	}
+
+	if proxyStr == "" {
+		return netproxy.NewDirectDialer()
+	}
+
+	// Scheme-less URLs like "proxy.corp:8080" parse with Scheme="proxy.corp"
+	// and Host="" (or fail outright for IP:port like "127.0.0.1:8080") —
+	// silently kills all egress. Match stdlib's http.ProxyFromEnvironment:
+	// prepend http:// and re-parse.
+	proxyURL, err := url.Parse("http://" + proxyStr)
+	if err != nil || proxyURL.Host == "" {
+		fmt.Fprintf(stderr, "omac sandbox: warning: invalid upstream proxy %q — falling back to direct dialing\n", proxyStr)
+		return netproxy.NewDirectDialer()
+	}
+
+	var noProxy []string
+	if len(p.Network.NoProxy) > 0 {
+		noProxy = p.Network.NoProxy
+	} else {
+		noProxyStr := os.Getenv("NO_PROXY")
+		if noProxyStr == "" {
+			noProxyStr = os.Getenv("no_proxy")
+		}
+		if noProxyStr != "" {
+			noProxy = strings.Split(noProxyStr, ",")
+			for i, s := range noProxy {
+				noProxy[i] = strings.TrimSpace(s)
+			}
+		}
+	}
+
+	logf("omac sandbox: using upstream proxy %s", proxyURL.Host)
+
+	return netproxy.NewUpstreamProxyDialer(proxyURL, noProxy, logf)
 }
 
 // resolvedDenial merges a profile's Denial override with the compiled-in

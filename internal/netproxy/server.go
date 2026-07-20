@@ -7,6 +7,7 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -57,10 +58,37 @@ To allow this host, either:
 `, host, reason, host)
 }
 
+// upstreamErrorBody renders the body for an upstream-proxy error. It
+// attributes the failure to the omac sandbox proxy (never the
+// destination) and provides actionable fix guidance.
+func upstreamErrorBody(proxyHost, statusLine string) string {
+	if statusLine != "" {
+		return fmt.Sprintf(`omac sandbox: upstream proxy %q rejected the tunnel (%s).
+
+This error comes from the omac sandbox proxy, not from the destination.
+The upstream proxy was contacted but refused the CONNECT.
+
+To fix this:
+  - verify the upstream proxy URL and credentials in your sandbox profile
+  - check that the upstream proxy allows CONNECT to the target host:port
+`, proxyHost, statusLine)
+	}
+	return fmt.Sprintf(`omac sandbox: could not connect to upstream proxy %q.
+
+This error comes from the omac sandbox proxy.
+The upstream proxy was unreachable.
+
+To fix this:
+  - verify the upstream proxy URL in your sandbox profile or HTTPS_PROXY env var
+  - check that the upstream proxy host is reachable from this machine
+`, proxyHost)
+}
+
 // Server is the filtering proxy. It binds 127.0.0.1:0 and serves
 // CONNECT tunnels (HTTPS) and absolute-URI forwarding (plain HTTP).
 type Server struct {
 	filter *Filter
+	dialer Dialer
 	token  string
 	ln     net.Listener
 	logf   func(format string, args ...any)
@@ -71,7 +99,7 @@ type Server struct {
 }
 
 // NewServer creates a proxy with a fresh 256-bit session token.
-func NewServer(filter *Filter, logf func(string, ...any)) (*Server, error) {
+func NewServer(filter *Filter, dialer Dialer, logf func(string, ...any)) (*Server, error) {
 	tok := make([]byte, 32)
 	if _, err := rand.Read(tok); err != nil {
 		return nil, fmt.Errorf("generate proxy token: %w", err)
@@ -81,6 +109,7 @@ func NewServer(filter *Filter, logf func(string, ...any)) (*Server, error) {
 	}
 	return &Server{
 		filter: filter,
+		dialer: dialer,
 		token:  hex.EncodeToString(tok),
 		logf:   logf,
 		conns:  map[net.Conn]struct{}{},
@@ -221,6 +250,19 @@ func (s *Server) authorized(req *http.Request) bool {
 	return subtle.ConstantTimeCompare([]byte(pass), []byte(s.token)) == 1
 }
 
+// admit runs the network filter for host:port, resolving locally only
+// when the connection will be dialed directly. Hosts routed through an
+// upstream proxy are admitted on the hostname alone (the proxy does its
+// own DNS), so an internal-only hostname is not rejected by a local DNS
+// failure. Returns the verdict and the pinned addrs to dial (nil on the
+// chained path, where the dialer ignores them).
+func (s *Server) admit(ctx context.Context, host string, port int) (Verdict, []netip.Addr) {
+	if planner, ok := s.dialer.(TunnelPlanner); ok && planner.ChainsHost(host) {
+		return s.filter.CheckHost(host, port), nil
+	}
+	return s.filter.Check(ctx, host, port)
+}
+
 // handleConnect filters and splices a raw TCP tunnel. TLS bytes pass
 // through untouched.
 func (s *Server) handleConnect(conn net.Conn, req *http.Request) {
@@ -242,7 +284,14 @@ func (s *Server) handleConnect(conn net.Conn, req *http.Request) {
 		return
 	}
 	if err != nil {
-		writeRawResponse(conn, http.StatusBadGateway, "", fmt.Sprintf("upstream dial failed: %v\n", err))
+		var ue *UpstreamError
+		if errors.As(err, &ue) {
+			s.logf("omac sandbox: upstream error: %v", err)
+			writeRawResponse(conn, http.StatusBadGateway, "X-Omac-Sandbox: upstream-error\r\n",
+				upstreamErrorBody(ue.ProxyHost, ue.StatusLine))
+		} else {
+			writeRawResponse(conn, http.StatusBadGateway, "", fmt.Sprintf("upstream dial failed: %v\n", err))
+		}
 		return
 	}
 	defer upstream.Close()
@@ -254,26 +303,26 @@ func (s *Server) handleConnect(conn net.Conn, req *http.Request) {
 
 // checkAndDial runs the filter — which may block on the interactive
 // prompt for up to prompt_timeout_secs — and, on Allow, dials the
-// pinned upstream on a *fresh* connectTimeout deadline. The two phases
+// upstream tunnel on a *fresh* connectTimeout deadline. The two phases
 // use independent deadlines on purpose: a slow human approval must not
 // spend the dial budget, or a granted host would fail on an
 // already-expired context. verdict is always meaningful; upstream/err
 // are only set when the verdict is Allow.
 func (s *Server) checkAndDial(host string, port int) (net.Conn, Verdict, error) {
 	// The check phase runs in its own scope so checkCancel is deferred
-	// (fires even if filter.Check panics) yet still releases the check
+	// (fires even if the filter panics) yet still releases the check
 	// context before the dial phase begins.
 	verdict, addrs := func() (Verdict, []netip.Addr) {
 		checkCtx, checkCancel := context.WithTimeout(context.Background(), connectTimeout)
 		defer checkCancel()
-		return s.filter.Check(checkCtx, host, port)
+		return s.admit(checkCtx, host, port)
 	}()
 	if verdict.Decision != Allow {
 		return nil, verdict, nil
 	}
 	dialCtx, dialCancel := context.WithTimeout(context.Background(), connectTimeout)
 	defer dialCancel()
-	upstream, err := dialPinned(dialCtx, addrs, port)
+	upstream, err := s.dialer.DialTunnel(dialCtx, host, port, addrs)
 	return upstream, verdict, err
 }
 
@@ -306,18 +355,40 @@ func (s *Server) handleForward(conn net.Conn, br *bufio.Reader, req *http.Reques
 		return
 	}
 	if err != nil {
-		writeRawResponse(conn, http.StatusBadGateway, "", fmt.Sprintf("upstream dial failed: %v\n", err))
+		var ue *UpstreamError
+		if errors.As(err, &ue) {
+			s.logf("omac sandbox: upstream error: %v", err)
+			writeRawResponse(conn, http.StatusBadGateway, "X-Omac-Sandbox: upstream-error\r\n",
+				upstreamErrorBody(ue.ProxyHost, ue.StatusLine))
+		} else {
+			writeRawResponse(conn, http.StatusBadGateway, "", fmt.Sprintf("upstream dial failed: %v\n", err))
+		}
 		return
 	}
 	defer upstream.Close()
 
-	// Rewrite to origin-form and strip hop-by-hop proxy headers.
+	// Strip hop-by-hop proxy headers. Proxy-Authorization carries the
+	// child's omac session token and must never reach an upstream proxy
+	// or the origin; it is re-added below with the upstream's own creds
+	// when the dialer is an upstream-proxy dialer.
 	req.Header.Del("Proxy-Authorization")
 	req.Header.Del("Proxy-Connection")
 	req.RequestURI = ""
 	outReq := req.Clone(context.Background())
-	outReq.URL.Scheme = ""
-	outReq.URL.Host = ""
+
+	// Upstream-proxy path: forward in absolute-URI form (so the proxy
+	// knows where to send the request) and set the upstream's
+	// Proxy-Authorization credentials. Direct path: rewrite to
+	// origin-form and send no Proxy-Authorization.
+	if pa, ok := s.dialer.(ProxyAuthenticator); ok {
+		if h := pa.ProxyAuthHeader(); h != "" {
+			outReq.Header.Set("Proxy-Authorization", h)
+		}
+		// Keep absolute-URI (outReq.URL.Scheme / .Host preserved).
+	} else {
+		outReq.URL.Scheme = ""
+		outReq.URL.Host = ""
+	}
 	if err := outReq.Write(upstream); err != nil {
 		return
 	}
