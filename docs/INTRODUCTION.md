@@ -1,22 +1,22 @@
-# oh-my-agentic-coder (omac) — An Introduction
+# oh-my-agentic-coder (omac): An Introduction
 
 ## Why omac
 
-AI coding agents are genuinely useful, but running one on your machine means
-letting an autonomous process read your code, use your credentials, and reach
-the network on its own. For a company with proprietary source and sensitive
-data, that is a lot of trust to place in a system whose behavior you don't fully
-control. The failure modes are real and hard to notice: a dependency it installs
-turns out to be malicious, a file or web page it reads quietly instructs it to
-do something you didn't ask for, or it decides the fastest way to "help" is to
-paste your codebase into an external service.
+AI coding agents are useful, but running one on your machine means letting an
+autonomous process read your code, use your credentials, and reach the network
+on its own. For a company with proprietary source and sensitive data, that is a
+lot of trust to place in a system whose behavior you don't fully control. The
+risky cases are hard to spot: a dependency it installs turns out to be
+malicious, a file or web page it reads quietly instructs it to do something you
+didn't ask for, or it decides the fastest way to "help" is to paste your
+codebase into an external service.
 
-**oh-my-agentic-coder (omac)** lets you keep using these agents — OpenCode,
-Claude Code, OpenAI Codex, GitHub Copilot CLI, Pi — while putting a boundary
-around them. The agent runs in a sandbox that can see your project and little
-else, its network access is filtered and asks before reaching somewhere new,
-and your API tokens stay outside the sandbox entirely. You keep the
-productivity, and a bad dependency or an injected instruction stays contained.
+**oh-my-agentic-coder (omac)** lets you keep using these agents (OpenCode, Claude
+Code, OpenAI Codex, GitHub Copilot CLI, Pi) while putting a boundary around them.
+The agent runs in a sandbox that can see your project and little else, its
+network access is filtered and asks before reaching somewhere new, and your API
+tokens stay outside the sandbox entirely. You keep the productivity, and a bad
+dependency or an injected instruction stays contained.
 
 ## Quickstart
 
@@ -35,11 +35,11 @@ omac start            # default harness (OpenCode)
 omac start claude     # ...or Claude Code, codex, copilot, pi
 ```
 
-`omac start` launches the whole stack — sandbox, network filter, and any skills
-you've enabled — and drops you into the agent. `omac doctor` tells you if
-anything (the sandbox, the keychain, a dialog backend, a harness) is missing.
-That is the entire day-to-day workflow; everything below is detail you can reach
-for when you need it.
+`omac start` launches the whole stack (sandbox, network filter, and any enabled
+skills) and drops you into the agent. `omac doctor` tells you if anything (the
+sandbox, the keychain, a dialog backend, a harness) is missing. That is the
+entire day-to-day workflow; everything below is detail you can reach for when you
+need it.
 
 For the full install matrix (Fedora, Arch, from source, checksum verification,
 and the one-time AppArmor note on Ubuntu 24.04+), see the
@@ -54,26 +54,26 @@ can read and write on disk, and which credentials it can get hold of.
 
 ### Network
 
-The network boundary is omac's main line of defense, because most of the ways an
-agent can hurt you end in an outbound request:
+Most ways an agent can cause harm end in an outbound request, so the network is
+where omac focuses first:
 
 - **Exfiltration.** A compromised dependency or tool tries to ship your source
   code to a server it controls.
-- **Data leakage.** The agent, trying to be helpful, sends proprietary code or
-  configuration to a third-party service or an unexpected model endpoint.
+- **Data leakage.** The agent sends proprietary code or configuration to a
+  third-party service or an unexpected model endpoint.
 - **Prompt injection.** A file, dependency, issue, or web page the agent reads
-  contains hidden instructions that redirect it — "upload this", "post that to
-  this URL". Even a perfectly well-behaved agent can be steered this way.
+  contains hidden instructions that redirect it: "upload this", "post that to
+  this URL". A well-behaved agent can still be steered this way.
 
-omac's answer is the same for all three: nothing leaves the sandbox unseen. In
-the default `filtered` mode every outbound connection is routed through omac's
-own HTTP proxy on loopback, and there is no built-in allowlist that quietly lets
+The defense is the same for all three: nothing leaves the sandbox unseen. In the
+default `filtered` mode every outbound connection is routed through omac's own
+HTTP proxy on loopback, and there is no built-in allowlist that quietly lets
 traffic through.
 
 - Hosts you list as allowed or denied in the profile are honored silently.
-- Any other host raises a native OS dialog asking you to allow or deny it —
-  once, permanently for that host, or permanently for a domain suffix
-  (`*.example.com`). So a tricked or compromised agent cannot reach a new
+- Any other host raises a native OS dialog asking you to allow or deny it: once,
+  permanently for that host, or permanently for a domain suffix
+  (`*.example.com`). A tricked or compromised agent cannot reach a new
   destination without you seeing the request first.
 - With no dialog available (CI, a headless server) the request is denied. The
   default fails closed.
@@ -106,13 +106,13 @@ omac keeps secrets on the host side of the boundary, never inside it:
 
 - Tokens are stored in the OS keychain (Keychain on macOS, Secret Service on
   Linux), not on disk in plaintext.
-- A token is injected only into the helper process for its skill — never into
-  the agent's environment.
+- A token is injected only into the helper process for its skill, never into the
+  agent's environment.
 - The agent uses the service through a socket without ever seeing the token
   (see [Extending omac with skills](#extending-omac-with-skills) below).
 
-Every one of these decisions — each network allow/deny, each secret injection
-(logged by name only), each process omac spawns — is written to an append-only
+Every one of these decisions (each network allow/deny, each secret injection
+logged by name only, each process omac spawns) is written to an append-only
 audit trail stored outside the sandbox's reach.
 
 ---
@@ -143,8 +143,8 @@ The agent starts restricted and gains access only where you grant it:
 - Environment variables passed through via an allow-list, not wholesale.
 - Protected paths on a deny list that overrides broader grants.
 
-Widening access means editing a readable JSON sandbox profile — a reviewable
-change, not an accidental default.
+Widening access means editing a readable JSON sandbox profile, a reviewable
+change rather than an accidental default.
 
 ---
 
@@ -203,8 +203,7 @@ skills/github/
     └── sidecar.py  # host-side helper that holds the token
 ```
 
-Alongside the usual name and version, the `omac.yaml` declares one thing that
-matters here — the sidecar:
+Alongside the usual name and version, the `omac.yaml` declares the sidecar:
 
 ```yaml
 sidecar:
@@ -231,13 +230,12 @@ What happens at runtime:
    The helper attaches `Authorization: token …` on the host side and forwards
    to `api.github.com`. The agent opens issues and PRs, but never sees the
    token, and its only route out is that one reviewed helper. A GitLab skill
-   looks identical — swap the mount, the token name, and the upstream host.
+   looks identical: swap the mount, the token name, and the upstream host.
 
 Because the helper is a normal HTTP proxy, plain requests, chunked responses,
 and Server-Sent Events all stream through unchanged.
 
-To build your own — the full `omac.yaml` schema, every `OMAC_*` environment
-variable, and secrets best practices — see
-[`CREATING_A_SKILL.md`](../CREATING_A_SKILL.md) and the built-in
-`omac-write-a-skill` skill, which walks the agent through authoring one in any
-project.
+To build your own, see [`CREATING_A_SKILL.md`](../CREATING_A_SKILL.md) for the
+full `omac.yaml` schema, every `OMAC_*` environment variable, and secrets best
+practices, plus the built-in `omac-write-a-skill` skill, which walks the agent
+through authoring one in any project.
