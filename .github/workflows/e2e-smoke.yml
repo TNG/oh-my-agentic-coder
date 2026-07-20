@@ -308,9 +308,25 @@ jobs:
             echo "has_failures=false" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Classify failure reasons (log-based)
+        id: reason
+        if: always() && steps.rows.outputs.has_failures == 'true'
+        run: |
+          # Deterministic, backend-independent failure classification from the
+          # per-leg .ctx logs. Runs regardless of the SKAINET summariser below,
+          # which calls the same model backend that is down in the commonest
+          # infra failure — so Slack and the issue always carry a concrete
+          # reason, and infra_only lets them flag "not a harness regression".
+          out=$(python3 scripts/classify-compat-failure.py --ctx-dir compat --out failure-reason.txt)
+          echo "$out"; echo "$out" >> "$GITHUB_OUTPUT"
+          echo "---- failure reasons ----"; cat failure-reason.txt || true
+
       - name: Summarize failures (SKAINET)
         id: summary
-        if: always() && steps.rows.outputs.has_failures == 'true'
+        # Skipped when every failure is infra (infra_only): the summariser
+        # calls the same backend that is unavailable, so it would only add a
+        # doomed 60s call and empty output — the log-based reasons cover it.
+        if: always() && steps.rows.outputs.has_failures == 'true' && steps.reason.outputs.infra_only != 'true'
         continue-on-error: true # a summariser hiccup must never mask the failure
         env:
           SKAINET_TOKEN: ${{ secrets.SKAINET_TOKEN }}
@@ -366,6 +382,7 @@ jobs:
           HAS_FAILURES: ${{ steps.rows.outputs.has_failures }}
           FAIL_COUNT: ${{ steps.rows.outputs.fail_count }}
           TOTAL: ${{ steps.rows.outputs.total }}
+          INFRA_ONLY: ${{ steps.reason.outputs.infra_only }}
         run: |
           title="Harness compatibility matrix"
           # One stable issue, any state: reopen if it was closed so it is always
@@ -403,6 +420,18 @@ jobs:
               echo ""
               echo "## Currently failing"
               echo ""
+              if [ "$INFRA_ONLY" = "true" ]; then
+                echo "> ⚠️ **Likely infrastructure, not a harness regression** — every failing leg is a model-backend / availability issue (reasons below)."
+                echo ""
+              fi
+              # Deterministic, log-based reasons — always present on a failure,
+              # unlike the SKAINET summary, which is empty when the backend is down.
+              if [ -s failure-reason.txt ]; then
+                echo "**Failure reasons** (from logs):"
+                echo ""
+                sed 's/^/> /' failure-reason.txt
+                echo ""
+              fi
               if [ -s failure-summary.txt ]; then
                 echo "**What went wrong** (SKAINET summary):"
                 echo ""
@@ -487,6 +516,7 @@ jobs:
           HAS_FAILURES: ${{ steps.rows.outputs.has_failures }}
           FAIL_COUNT: ${{ steps.rows.outputs.fail_count }}
           TOTAL: ${{ steps.rows.outputs.total }}
+          INFRA_ONLY: ${{ steps.reason.outputs.infra_only }}
         run: |
           if [ -z "$SLACK_WEBHOOK_URL" ]; then
             echo "SLACK_WEBHOOK_URL not set — skipping Slack notification"
@@ -494,9 +524,17 @@ jobs:
           fi
           # Posted on every run — green and red alike.
           if [ "$HAS_FAILURES" = "true" ]; then
-            # Prefer the SKAINET summary of what broke; fall back to a terse
-            # per-leg stage list if the summariser produced nothing.
-            if [ -s failure-summary.txt ]; then
+            hdr=$(printf '🔴 omac harness compatibility: %s of %s combination(s) FAILED.' "$FAIL_COUNT" "$TOTAL")
+            if [ "$INFRA_ONLY" = "true" ]; then
+              hdr=$(printf '%s\n⚠️ Likely infrastructure (model backend unavailable / auth / timeout) — not a harness-contract regression.' "$hdr")
+            fi
+            # Prefer the deterministic, log-based reasons: they are always
+            # present on a failure and, unlike the SKAINET summary, survive the
+            # backend being down (the exact case this detail matters most). Fall
+            # back to the summary, then to a terse per-leg stage list.
+            if [ -s failure-reason.txt ]; then
+              detail=$(cat failure-reason.txt)
+            elif [ -s failure-summary.txt ]; then
               detail=$(cat failure-summary.txt)
             else
               detail=$(awk -F'|' '{
@@ -508,8 +546,12 @@ jobs:
                 printf "- %s/%s:%s\n", $5, $4, s
               }' failing.rows)
             fi
-            text=$(printf '🔴 omac harness compatibility: %s of %s combination(s) FAILED.\n%s\nDashboard: %s — Run: %s' \
-              "$FAIL_COUNT" "$TOTAL" "$detail" "$ISSUE_URL" "$RUN_URL")
+            # Append the SKAINET summary as extra colour when it produced one.
+            if [ -s failure-summary.txt ] && [ -s failure-reason.txt ]; then
+              detail=$(printf '%s\n— summary: %s' "$detail" "$(tr '\n' ' ' < failure-summary.txt)")
+            fi
+            text=$(printf '%s\n%s\nDashboard: %s — Run: %s' \
+              "$hdr" "$detail" "$ISSUE_URL" "$RUN_URL")
           else
             text="🟢 omac harness compatibility: all $TOTAL combination(s) green. Dashboard: $ISSUE_URL — Run: $RUN_URL"
           fi
