@@ -1092,3 +1092,108 @@ func resultStatus(results []ClearResult, path string) ClearStatus {
 	}
 	return ""
 }
+
+// TestClearWorkdirRemovesNestedSubtree exercises the recursive
+// removeRootContents path: real tool caches populate a scope with nested
+// directories (go-build/ab/cd, cargo/registry, …), so cleanup must
+// recurse rather than only unlinking top-level files.
+func TestClearWorkdirRemovesNestedSubtree(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	workdir := t.TempDir()
+	scope, err := PreparePersistent(DomainWorkdir, workdir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nested := filepath.Join(scope.Dir, "go-build", "ab", "cd")
+	if err := os.MkdirAll(nested, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(nested, "obj"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(scope.Dir, "go-build", "top.txt"), []byte("y"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := scope.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := ClearWorkdir(workdir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != ClearRemoved {
+		t.Errorf("status = %q, want %q", result.Status, ClearRemoved)
+	}
+	if _, err := os.Lstat(scope.Dir); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("scope directory (with nested subtree) still exists: %v", err)
+	}
+}
+
+// TestClearWorkdirRefusesRootReplacedAfterLeafRemoval covers the final
+// verifyTrustedRoot check that runs after the leaf directory is removed.
+// The scopeDeleteHook swaps the whole cache root (via its pathname) while
+// removal proceeds over the still-open trusted descriptor; the post-removal
+// re-stat must observe the pathname now resolves to a different inode and
+// report the scope as skipped rather than silently claiming success.
+func TestClearWorkdirRefusesRootReplacedAfterLeafRemoval(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	workdir := t.TempDir()
+	scope, err := PreparePersistent(DomainWorkdir, workdir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(scope.Dir, "cache-data"), []byte("cache"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := scope.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	root := filepath.Dir(scope.Dir)
+	parent := filepath.Dir(root)
+	replacement := filepath.Join(parent, "omac-replacement")
+	if err := os.Mkdir(replacement, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(replacement, "must-survive"), []byte("replacement"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	displaced := filepath.Join(parent, "omac-displaced")
+
+	hookEntered := make(chan struct{})
+	replacementDone := make(chan struct{})
+	replaceErr := make(chan error, 1)
+	oldHook := scopeDeleteHook
+	scopeDeleteHook = func() {
+		close(hookEntered)
+		<-replacementDone
+	}
+	t.Cleanup(func() { scopeDeleteHook = oldHook })
+	go func() {
+		<-hookEntered
+		if err := os.Rename(root, displaced); err != nil {
+			replaceErr <- err
+			close(replacementDone)
+			return
+		}
+		replaceErr <- os.Rename(replacement, root)
+		close(replacementDone)
+	}()
+
+	result, err := ClearWorkdir(workdir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := <-replaceErr; err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != ClearSkipped || result.Reason != "cache root changed" {
+		t.Errorf("result = %+v, want skipped / cache root changed", result)
+	}
+	if _, err := os.Stat(filepath.Join(root, "must-survive")); err != nil {
+		t.Errorf("swapped-in root was modified by cleanup: %v", err)
+	}
+}

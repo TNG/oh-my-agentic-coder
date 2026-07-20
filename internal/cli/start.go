@@ -802,7 +802,9 @@ func runLaunch(env *Env, opts launchOpts) int {
 		// sessions) read+write — only for the selected harness, not all
 		// harnesses.
 		argv = injectSandboxDirs(argv, harness.SandboxDirs)
-		argv = injectSandboxFlag(argv, "--allow", cacheScope.Dir)
+		if cacheScope != nil {
+			argv = injectSandboxFlag(argv, "--allow", cacheScope.Dir)
+		}
 		// Pass the resolved audit path down to `omac sandbox run` so the
 		// network-filter subprocess appends net.decision events to the
 		// same persistent log. Inherit the parent's run_id + mode so the
