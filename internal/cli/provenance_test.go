@@ -364,7 +364,7 @@ func TestRunProvenance_CheckDefaultProfileClean(t *testing.T) {
 	profDir := filepath.Join(wd, ".opencode")
 	os.MkdirAll(profDir, 0o755)
 	profPath := filepath.Join(profDir, "default.json")
-	os.WriteFile(profPath, []byte(`{"meta":{"name":"default"},"workdir":{"access":"readwrite"}}`), 0o644)
+	os.WriteFile(profPath, []byte(`{"meta":{"name":"default"},"workdir":{"access":"readwrite"},"environment":{"allow_vars":["HOME","PATH"]}}`), 0o644)
 
 	env, read := captureEnv(t, wd)
 	code := runProvenance([]string{"--profile", profPath, "--check"}, env)
@@ -384,7 +384,7 @@ func TestRunProvenance_CheckJSONEmptyArray(t *testing.T) {
 	profDir := filepath.Join(wd, ".opencode")
 	os.MkdirAll(profDir, 0o755)
 	profPath := filepath.Join(profDir, "default.json")
-	os.WriteFile(profPath, []byte(`{"meta":{"name":"default"},"workdir":{"access":"readwrite"}}`), 0o644)
+	os.WriteFile(profPath, []byte(`{"meta":{"name":"default"},"workdir":{"access":"readwrite"},"environment":{"allow_vars":["HOME","PATH"]}}`), 0o644)
 
 	env, read := captureEnv(t, wd)
 	code := runProvenance([]string{"--profile", profPath, "--check", "--json"}, env)

@@ -41,6 +41,48 @@ var dangerousEnvPrefixes = []string{
 	"OP_SESSION_",
 }
 
+// DefaultAllowVars is the minimal set of environment variables the
+// sandboxed runtime needs to function. It is compiled into
+// DefaultProfile so the scaffolded default.json ships an explicit
+// allowlist rather than the implicit "inherit everything" behaviour of
+// an empty list. Harness-specific auth variables (e.g. the LLM provider
+// token) are NOT here — they are merged in per-harness at launch via
+// Harness.SandboxEnvAllow (mirroring how SandboxDirs are injected).
+//
+// Entries are exact names or trailing-* prefixes (see envVarAllowed).
+// Injected variables (HTTP(S)_PROXY, OMAC_* skill bases) bypass the
+// allowlist entirely via the injected overlay in FilterEnv, but OMAC_*
+// is listed too because omac sets several OMAC_* vars in its own process
+// environment before exec (see internal/cli/start.go), and those reach
+// the child through inheritance rather than the injected overlay.
+//
+// USER/LOGNAME (default identity for git/npm/ssh — also forwarded to the
+// facade via FacadeConfig.BaseEnvPassthrough), TZ (date formatting), and
+// EDITOR/VISUAL (harnesses that shell out to an editor) round out the
+// operational minimum; all are non-secret.
+func DefaultAllowVars() []string {
+	return []string{
+		"OMAC_*",
+		"HOME",
+		"PATH",
+		"PWD",
+		"TMPDIR",
+		"LANG",
+		"LC_*",
+		"TERM",
+		"SHELL",
+		"USER",
+		"LOGNAME",
+		"TZ",
+		"EDITOR",
+		"VISUAL",
+		"XDG_CONFIG_HOME",
+		"XDG_DATA_HOME",
+		"XDG_STATE_HOME",
+		"NPM_CONFIG_PREFIX",
+	}
+}
+
 // IsDangerousEnvVar reports whether key is on the always-drop blocklist.
 func IsDangerousEnvVar(key string) bool {
 	if dangerousEnvExact[key] {

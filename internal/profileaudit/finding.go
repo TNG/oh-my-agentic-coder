@@ -20,6 +20,7 @@ const (
 	CatFSGrant      Category = "filesystem"
 	CatNetwork      Category = "network"
 	CatOverrideDeny Category = "override_deny"
+	CatEnvironment  Category = "environment"
 )
 
 // Finding is one static-check result.

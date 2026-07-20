@@ -805,6 +805,10 @@ func runLaunch(env *Env, opts launchOpts) int {
 		if cacheScope != nil {
 			argv = injectSandboxFlag(argv, "--allow", cacheScope.Dir)
 		}
+		// Forward the selected harness's auth env vars through the
+		// default profile's restrictive allow_vars filter — only for the
+		// selected harness.
+		argv = forwardHarnessEnv(env, argv, harness, prof, profName)
 		// Pass the resolved audit path down to `omac sandbox run` so the
 		// network-filter subprocess appends net.decision events to the
 		// same persistent log. Inherit the parent's run_id + mode so the

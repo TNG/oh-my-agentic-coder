@@ -219,6 +219,14 @@ func writeCacheTestProfile(t *testing.T, home string, extraRead, extraAllow []st
 		"network": map[string]any{
 			"mode": "blocked",
 		},
+		// This fixture exercises cache-dir isolation, not env allowlisting: the
+		// dev tools (go/node/npm/pip/cargo/rustc) need their ambient env
+		// (GOPATH, GOMODCACHE, node paths, …). "*" inherits every ambient var
+		// (still minus the danger blocklist) so an empty allow_vars is not
+		// fail-closed to the operational minimum at launch (see forwardHarnessEnv).
+		"environment": map[string]any{
+			"allow_vars": []string{"*"},
+		},
 	}
 	if extraOpenPort > 0 {
 		profile["network"] = map[string]any{

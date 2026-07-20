@@ -318,6 +318,131 @@ func TestInjectOpenPort(t *testing.T) {
 	}
 }
 
+func TestInjectSandboxEnvAllow(t *testing.T) {
+	profiles := config.DefaultLauncherConfig().Sandbox.Profiles
+	expand := func(t *testing.T, prof config.SandboxProfile) []string {
+		t.Helper()
+		argv, err := sandbox.Expand(prof, sandbox.Inputs{
+			Workdir:  "/w",
+			Socket:   "/w/bridge.sock",
+			TCPPort:  6000,
+			InnerCmd: []string{"claude"},
+			TmpDir:   "/w/tmp",
+		})
+		if err != nil {
+			t.Fatalf("Expand: %v", err)
+		}
+		return argv
+	}
+
+	// Native backend: use the real Expand output (argv[0] is os.Executable(),
+	// an absolute path — NOT the literal "omac"), so the detector cannot rely
+	// on argv[0] matching a hand-rolled name.
+	builtinProf := profiles["builtin"]
+	builtin := expand(t, builtinProf)
+	got := injectSandboxEnvAllow(builtin, []string{"ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"}, builtinProf)
+	joined := strings.Join(got, " ")
+	if !strings.Contains(joined, "--allow-env ANTHROPIC_API_KEY") ||
+		!strings.Contains(joined, "--allow-env ANTHROPIC_BASE_URL") {
+		t.Errorf("native backend must gain --allow-env flags: %v", got)
+	}
+
+	// Empty names is a no-op; empty entries are skipped.
+	if g := injectSandboxEnvAllow(builtin, nil, builtinProf); !equalStrings(g, builtin) {
+		t.Errorf("nil names should be a no-op: %v", g)
+	}
+	if g := injectSandboxEnvAllow(builtin, []string{""}, builtinProf); !equalStrings(g, builtin) {
+		t.Errorf("empty entry should be skipped: %v", g)
+	}
+
+	// Non-native backend (nono) does not understand --allow-env: the argv
+	// must be left untouched (env filtering is nono's own concern).
+	nonoProf := profiles["nono"]
+	nono := expand(t, nonoProf)
+	if g := injectSandboxEnvAllow(nono, []string{"ANTHROPIC_API_KEY"}, nonoProf); !equalStrings(g, nono) {
+		t.Errorf("nono argv must be untouched: %v", g)
+	}
+
+	// Regression (issue #111 review): a nono profile whose inner command
+	// itself contains "sandbox" "run" tokens must NOT be misclassified as the
+	// native backend. Detection anchors on the profile template, not on a
+	// bare token scan of the expanded argv.
+	nonoInnerProf := nonoProf
+	nonoArgv, err := sandbox.Expand(nonoInnerProf, sandbox.Inputs{
+		Workdir:  "/w",
+		Socket:   "/w/bridge.sock",
+		TCPPort:  6000,
+		InnerCmd: []string{"sandbox", "run", "--weird"},
+		TmpDir:   "/w/tmp",
+	})
+	if err != nil {
+		t.Fatalf("Expand nono-inner: %v", err)
+	}
+	if g := injectSandboxEnvAllow(nonoArgv, []string{"ANTHROPIC_API_KEY"}, nonoInnerProf); !equalStrings(g, nonoArgv) {
+		t.Errorf("nono argv with inner sandbox/run tokens must be untouched: %v", g)
+	}
+}
+
+// TestForwardHarnessEnvEmptyProfileForwardsOperationalMinimum: with an
+// empty-allow_vars profile, omac fails closed — it seeds ONLY the operational
+// minimum (so HOME/PATH keep the harness runnable), does NOT auto-forward the
+// harness's provider-auth vars, strips everything else, and warns.
+func TestForwardHarnessEnvEmptyProfileForwardsOperationalMinimum(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	stageProfile(t, home, `{"meta": {"name": "default"}}`)
+
+	old := emptyAllowVarsWarnDelay
+	emptyAllowVarsWarnDelay = 0
+	defer func() { emptyAllowVarsWarnDelay = old }()
+
+	env, _, errBuf, drain := newPipeEnv(t, "")
+	prof := config.SandboxProfile{Command: []string{"{{self}}", "sandbox", "run", "--profile", "default", "--", "x"}}
+	harness := config.Harness{Name: "test", SandboxEnvAllow: []string{"ANTHROPIC_API_KEY"}}
+	argv := []string{"/usr/bin/omac", "sandbox", "run", "--profile", "default", "--", "x"}
+
+	got := forwardHarnessEnv(env, argv, harness, prof, "default")
+	drain()
+
+	joined := strings.Join(got, " ")
+	// Operational minimum is forwarded so the harness runs.
+	for _, want := range []string{"--allow-env HOME", "--allow-env PATH"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("empty profile should forward %q; got %v", want, got)
+		}
+	}
+	// Provider-auth vars are NOT auto-forwarded on an empty profile.
+	if strings.Contains(joined, "ANTHROPIC_API_KEY") {
+		t.Errorf("empty profile must not auto-forward provider-auth vars; got %v", got)
+	}
+	if !strings.Contains(errBuf.String(), "allow_vars") {
+		t.Errorf("expected empty-allow_vars warning on stderr; got:\n%s", errBuf.String())
+	}
+}
+
+// TestForwardHarnessEnvNonEmptyProfileInjects: a profile with an explicit
+// allowlist still gets the harness auth vars injected as --allow-env.
+func TestForwardHarnessEnvNonEmptyProfileInjects(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	stageProfile(t, home, `{"meta": {"name": "default"}, "environment": {"allow_vars": ["HOME"]}}`)
+
+	env, _, errBuf, drain := newPipeEnv(t, "")
+	prof := config.SandboxProfile{Command: []string{"{{self}}", "sandbox", "run", "--profile", "default", "--", "x"}}
+	harness := config.Harness{Name: "test", SandboxEnvAllow: []string{"ANTHROPIC_API_KEY"}}
+	argv := []string{"/usr/bin/omac", "sandbox", "run", "--profile", "default", "--", "x"}
+
+	got := forwardHarnessEnv(env, argv, harness, prof, "default")
+	drain()
+
+	if !strings.Contains(strings.Join(got, " "), "--allow-env ANTHROPIC_API_KEY") {
+		t.Errorf("non-empty profile: expected --allow-env injection; got %v", got)
+	}
+	if strings.Contains(errBuf.String(), "allow_vars") {
+		t.Errorf("non-empty profile must not warn; got:\n%s", errBuf.String())
+	}
+}
+
 func equalStrings(a, b []string) bool {
 	if len(a) != len(b) {
 		return false
