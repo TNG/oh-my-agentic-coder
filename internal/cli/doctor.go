@@ -265,6 +265,17 @@ func doctorSandboxProfileWarnings(env *Env, lc config.LauncherConfig) {
 			fmt.Fprintf(env.Stdout, "  [warn] sandbox profile %q: %v\n", profName, err)
 			continue
 		}
+		if len(p.Environment.AllowVars) == 0 {
+			fmt.Fprintf(env.Stdout, "  [warn] sandbox profile %q has an empty environment.allow_vars\n", profName)
+			fmt.Fprintln(env.Stdout, "         impact:      at launch omac forwards only the operational minimum (HOME, PATH,")
+			fmt.Fprintln(env.Stdout, "                      TERM, locale, …); all other ambient env vars — including provider")
+			fmt.Fprintln(env.Stdout, "                      tokens and secrets — are NOT passed through, and omac does not")
+			fmt.Fprintln(env.Stdout, "                      auto-forward auth vars. This differs from the pre-#102 inherit-")
+			fmt.Fprintln(env.Stdout, "                      everything behavior; the harness starts but will not authenticate.")
+			fmt.Fprintln(env.Stdout, `         remediation: add the vars the harness needs to allow_vars (see`)
+			fmt.Fprintln(env.Stdout, `                      sandboxprofile.DefaultAllowVars), or set allow_vars: ["*"] to forward`)
+			fmt.Fprintln(env.Stdout, "                      every ambient var (minus the danger blocklist).")
+		}
 		warns := profileGrantWarnings(p)
 		// Cargo-specific presence warning (mode-000 sentinel files).
 		warns = append(warns, cargoSentinelWarnings()...)

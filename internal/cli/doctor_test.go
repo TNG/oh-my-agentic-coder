@@ -472,6 +472,74 @@ func TestDoctorOmittedProfileInspectsDefault(t *testing.T) {
 	}
 }
 
+// TestDoctorEmptyAllowVarsWarned asserts doctor flags a native sandbox
+// profile whose environment.allow_vars is empty: at launch the selected
+// harness's auth vars are injected as --allow-env, flipping the empty
+// (inherit-all) list into a restrictive allowlist that strips HOME/PATH and
+// provider tokens. Advisory only — exit stays ExitOK.
+func TestDoctorEmptyAllowVarsWarned(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	workdir := t.TempDir()
+
+	writeWorkdirConfig(t, workdir, "builtin", []string{
+		"{{self}}", "sandbox", "run",
+		"--profile", "default",
+		"--", "{{inner_cmd}}", "{{inner_args}}",
+	})
+
+	// No "environment" block → empty allow_vars (the legacy inherit-all shape).
+	stageProfile(t, home, `{
+	  "meta": {"name": "default"}
+	}`)
+
+	env, outBuf, _, drain := newPipeEnv(t, "")
+	env.Workdir = workdir
+	code := runDoctor([]string{}, env)
+	drain()
+	output := outBuf.String()
+
+	if code != ExitOK {
+		t.Errorf("doctor exit = %d, want ExitOK (advisory)", code)
+	}
+	if !strings.Contains(output, "allow_vars") {
+		t.Errorf("doctor output missing empty allow_vars warning; got:\n%s", output)
+	}
+	if !strings.Contains(strings.ToLower(output), "impact") ||
+		!strings.Contains(strings.ToLower(output), "remediation") {
+		t.Errorf("doctor output missing impact/remediation; got:\n%s", output)
+	}
+}
+
+// TestDoctorNonEmptyAllowVarsNotWarned asserts the empty-allow_vars warning
+// does NOT fire when the profile ships an explicit allowlist.
+func TestDoctorNonEmptyAllowVarsNotWarned(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	workdir := t.TempDir()
+
+	writeWorkdirConfig(t, workdir, "builtin", []string{
+		"{{self}}", "sandbox", "run",
+		"--profile", "default",
+		"--", "{{inner_cmd}}", "{{inner_args}}",
+	})
+
+	stageProfile(t, home, `{
+	  "meta": {"name": "default"},
+	  "environment": {"allow_vars": ["HOME", "PATH"]}
+	}`)
+
+	env, outBuf, _, drain := newPipeEnv(t, "")
+	env.Workdir = workdir
+	_ = runDoctor([]string{}, env)
+	drain()
+	output := outBuf.String()
+
+	if strings.Contains(output, "empty environment.allow_vars") {
+		t.Errorf("doctor warned on a profile with an explicit allowlist; got:\n%s", output)
+	}
+}
+
 func TestDoctorExplicitProfilePathInspected(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
