@@ -12,6 +12,7 @@ import (
 
 	"github.com/tngtech/oh-my-agentic-coder/internal/config"
 	"github.com/tngtech/oh-my-agentic-coder/internal/facade"
+	"github.com/tngtech/oh-my-agentic-coder/internal/sandbox"
 	"github.com/tngtech/oh-my-agentic-coder/internal/toolcache"
 )
 
@@ -198,6 +199,99 @@ func TestRootsPolicy(t *testing.T) {
 	stageSkillWithSecret(t, sub, "slack")
 	if _, err := s.activate(sub); err != nil {
 		t.Errorf("activate inside root should succeed: %v", err)
+	}
+}
+
+func TestInjectServerListenPort(t *testing.T) {
+	oc, _ := config.LookupHarness("opencode")
+	cc, _ := config.LookupHarness("claude-code")
+
+	// A server harness gets its listen port allowlisted, spliced before `--`.
+	in := []string{"omac", "sandbox", "run", "--profile", "tng-default", "--open-port", "5000", "--", "opencode", "serve"}
+	got := injectServerListenPort(in, oc)
+	want := []string{"omac", "sandbox", "run", "--profile", "tng-default", "--open-port", "5000", "--listen-port", "4096", "--", "opencode", "serve"}
+	if !equalStrings(got, want) {
+		t.Errorf("opencode: got %v, want %v", got, want)
+	}
+
+	// A harness with no server mode is a no-op (nothing to allowlist).
+	in2 := []string{"nono", "run", "--", "claude"}
+	if got2 := injectServerListenPort(in2, cc); !equalStrings(got2, in2) {
+		t.Errorf("claude-code should be a no-op: got %v, want %v", got2, in2)
+	}
+}
+
+// TestSandboxServeArgvInjectsListenPort exercises the serve argv assembly
+// end-to-end (the pipeline runServe actually calls), not just the
+// injectServerListenPort helper in isolation. It guards against the #115 bind
+// grant being dropped from the pipeline during a refactor.
+func TestSandboxServeArgvInjectsListenPort(t *testing.T) {
+	oc, _ := config.LookupHarness("opencode")
+	prof := config.SandboxProfile{
+		Command:  []string{"omac", "sandbox", "run", "--", "{{inner_cmd}}", "{{inner_args}}"},
+		InnerCmd: []string{"opencode"},
+	}
+	in := sandbox.Inputs{Workdir: "/w", InnerCmd: []string{"opencode", "serve"}}
+
+	argv, err := sandboxServeArgv(prof, in, "51234", oc)
+	if err != nil {
+		t.Fatalf("sandboxServeArgv: %v", err)
+	}
+	joined := strings.Join(argv, " ")
+
+	// The opencode server binds 4096; the pipeline must allowlist it for bind.
+	if !contains(joined, "--listen-port 4096") {
+		t.Errorf("serve argv missing --listen-port 4096: %s", joined)
+	}
+	// The control-plane port is opened for connect too.
+	if !contains(joined, "--open-port 51234") {
+		t.Errorf("serve argv missing --open-port 51234: %s", joined)
+	}
+	// Grants splice before the `--` separator, not after it.
+	if lp, sep := strings.Index(joined, "--listen-port"), strings.Index(joined, " -- "); lp < 0 || sep < 0 || lp > sep {
+		t.Errorf("--listen-port must appear before `--`: %s", joined)
+	}
+
+	// Empty control port skips only the control-plane grant; the #115 bind
+	// grant still applies.
+	noCP, err := sandboxServeArgv(prof, in, "", oc)
+	if err != nil {
+		t.Fatalf("sandboxServeArgv (no control port): %v", err)
+	}
+	nj := strings.Join(noCP, " ")
+	if contains(nj, "--open-port") {
+		t.Errorf("empty control port should add no --open-port: %s", nj)
+	}
+	if !contains(nj, "--listen-port 4096") {
+		t.Errorf("listen-port grant must still apply without a control port: %s", nj)
+	}
+}
+
+func TestServerExposureWarning(t *testing.T) {
+	oc, _ := config.LookupHarness("opencode")
+	cc, _ := config.LookupHarness("claude-code")
+
+	// opencode server + auth env UNSET -> warn (names the port + the env var).
+	unset := func(string) string { return "" }
+	w := serverExposureWarning(oc, unset)
+	if w == "" || !strings.Contains(w, "4096") || !strings.Contains(w, "OPENCODE_SERVER_PASSWORD") {
+		t.Errorf("expected warning naming :4096 and OPENCODE_SERVER_PASSWORD, got %q", w)
+	}
+
+	// Auth env SET -> no warning (the exposed port is protected).
+	set := func(k string) string {
+		if k == "OPENCODE_SERVER_PASSWORD" {
+			return "secret"
+		}
+		return ""
+	}
+	if w := serverExposureWarning(oc, set); w != "" {
+		t.Errorf("auth set should suppress the warning, got %q", w)
+	}
+
+	// Harness with no server mode -> nothing to warn about.
+	if w := serverExposureWarning(cc, unset); w != "" {
+		t.Errorf("non-server harness should not warn, got %q", w)
 	}
 }
 

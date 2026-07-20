@@ -165,6 +165,21 @@ type ServerLaunch struct {
 	// already begin with a subcommand (a non-flag positional). For OpenCode
 	// this is "serve".
 	Subcommand string
+
+	// ListenPort is the TCP port the harness's server daemon binds on
+	// loopback by default (OpenCode's `serve` listens on 4096). `omac serve`
+	// must allowlist this port for binding in the sandbox — otherwise the
+	// daemon's bind() is denied under a restrictive profile and it crashes on
+	// startup (issue #115). Zero means the harness declares no fixed port and
+	// omac injects no listen-port grant.
+	ListenPort int
+
+	// AuthEnvVar names the environment variable the harness's server reads to
+	// require authentication on its exposed loopback port (OpenCode uses
+	// OPENCODE_SERVER_PASSWORD). `omac serve` warns when a listen port is
+	// exposed while this var is unset — the port is reachable by any local
+	// process otherwise. Empty means the harness declares no auth control.
+	AuthEnvVar string
 }
 
 // defaultHarnessName is the harness used when `omac start`/`omac serve` is
@@ -181,7 +196,7 @@ func harnessRegistry() []Harness {
 			Name:         "opencode",
 			Aliases:      []string{"oc"},
 			InnerCmd:     []string{"opencode"},
-			ServerLaunch: &ServerLaunch{Subcommand: "serve"},
+			ServerLaunch: &ServerLaunch{Subcommand: "serve", ListenPort: 4096, AuthEnvVar: "OPENCODE_SERVER_PASSWORD"},
 			BridgeDir:    filepath.Join(".opencode", "plugins"),
 			SkillsBase:   "opencode",
 			HomeEnv:      "OPENCODE_HOME",

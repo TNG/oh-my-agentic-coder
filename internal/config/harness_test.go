@@ -116,6 +116,31 @@ func TestApplyServerLaunch(t *testing.T) {
 	}
 }
 
+// TestServerLaunchListenPort locks the per-harness server listen port that
+// omac serve must allowlist in the sandbox. opencode's `serve` daemon binds
+// 4096 by default; without this the bind is denied under a restrictive
+// profile (issue #115). Harnesses with no server mode declare no port.
+func TestServerLaunchListenPort(t *testing.T) {
+	oc, ok := LookupHarness("opencode")
+	if !ok || oc.ServerLaunch == nil {
+		t.Fatal("opencode must have a ServerLaunch")
+	}
+	if oc.ServerLaunch.ListenPort != 4096 {
+		t.Errorf("opencode ServerLaunch.ListenPort = %d, want 4096", oc.ServerLaunch.ListenPort)
+	}
+	// opencode's server is unauthenticated unless OPENCODE_SERVER_PASSWORD is
+	// set; declaring it lets omac warn when the exposed loopback port is open.
+	if oc.ServerLaunch.AuthEnvVar != "OPENCODE_SERVER_PASSWORD" {
+		t.Errorf("opencode ServerLaunch.AuthEnvVar = %q, want OPENCODE_SERVER_PASSWORD", oc.ServerLaunch.AuthEnvVar)
+	}
+	for _, name := range []string{"claude-code", "codex", "copilot", "pi"} {
+		h, _ := LookupHarness(name)
+		if h.ServerLaunch != nil {
+			t.Errorf("%s unexpectedly declares a ServerLaunch (%+v)", name, h.ServerLaunch)
+		}
+	}
+}
+
 func TestResolveInnerCmd(t *testing.T) {
 	oc, _ := LookupHarness("opencode")
 	cc, _ := LookupHarness("claude-code")
