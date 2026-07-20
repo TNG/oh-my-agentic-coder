@@ -20,6 +20,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 )
@@ -158,6 +159,78 @@ func desktopDataDirs(home, appID string) []string {
 		dirs = append(dirs, filepath.Join(xdg, appID))
 	}
 	return dirs
+}
+
+// DesktopStateDir returns the OpenCode Desktop app's data directory —
+// the location the Desktop exposes to its child processes as
+// XDG_STATE_HOME so they share its auth, credentials and config.
+//
+// `omac serve --for-opencode-desktop` uses this to point the inner
+// opencode at the same state store the Desktop uses when the launching
+// shell didn't already set XDG_STATE_HOME (e.g. a manual run from a
+// terminal). Without it the inner reads an empty state dir, provider
+// credentials don't resolve, and opencode's /config/providers 500s —
+// which surfaces to clients like `opencode attach` as an opaque
+// "Unexpected server error".
+//
+// It prefers an existing stable-then-beta directory (so a machine with
+// only the beta installed still works, and so the actual on-disk
+// location is used regardless of platform); when none exists yet it
+// returns the platform-native default. Returns "" only if the home
+// directory can't be resolved.
+func DesktopStateDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	for _, appID := range []string{"ai.opencode.desktop", "ai.opencode.desktop.beta"} {
+		for _, dir := range desktopStateCandidates(home, appID) {
+			if fi, statErr := os.Stat(dir); statErr == nil && fi.IsDir() {
+				return dir
+			}
+		}
+	}
+	return defaultDesktopStateDir(home)
+}
+
+// desktopStateCandidates lists the per-user directories the OpenCode
+// Desktop (an Electron app) may use for its data/state — the location it
+// points opencode at via XDG_STATE_HOME (opencode then keeps its state
+// under <dir>/opencode). Electron's userData default is
+// ~/Library/Application Support/<id> on macOS and
+// $XDG_CONFIG_HOME (~/.config)/<id> on Linux; the XDG data dir is also
+// probed for older layouts. Candidates are listed for every platform
+// (not branched on GOOS) so the on-disk Stat check finds the real one on
+// any host and unit tests stay platform-independent. Most likely first.
+func desktopStateCandidates(home, appID string) []string {
+	dirs := []string{
+		filepath.Join(home, "Library", "Application Support", appID), // macOS (Electron userData)
+	}
+	if x := os.Getenv("XDG_CONFIG_HOME"); x != "" { // Linux (Electron userData)
+		dirs = append(dirs, filepath.Join(x, appID))
+	}
+	dirs = append(dirs, filepath.Join(home, ".config", appID)) // Linux default
+	if x := os.Getenv("XDG_DATA_HOME"); x != "" {              // legacy/data layout
+		dirs = append(dirs, filepath.Join(x, appID))
+	}
+	dirs = append(dirs, filepath.Join(home, ".local", "share", appID))
+	return dirs
+}
+
+// defaultDesktopStateDir is the platform-native Electron userData path
+// for the stable Desktop app, used only when no Desktop directory exists
+// on disk yet (a degenerate case: --for-opencode-desktop with no Desktop
+// installed). macOS: ~/Library/Application Support/<id>; Linux:
+// $XDG_CONFIG_HOME (~/.config)/<id>.
+func defaultDesktopStateDir(home string) string {
+	const appID = "ai.opencode.desktop"
+	if runtime.GOOS == "darwin" {
+		return filepath.Join(home, "Library", "Application Support", appID)
+	}
+	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
+		return filepath.Join(xdg, appID)
+	}
+	return filepath.Join(home, ".config", appID)
 }
 
 // desktopGlobalWorktrees extracts project directories from one
