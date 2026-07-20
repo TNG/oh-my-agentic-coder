@@ -5,16 +5,17 @@ A harness release can silently break omac by renaming a CLI flag, moving a
 subcommand, or changing a config schema. The weekly
 [`E2E: drift` workflow](../.github/workflows/e2e-smoke.yml) (also manually
 dispatchable) is the tripwire: it installs every harness's **latest** release and
-records three stages per harness, against **two omac versions** — `main` (built
+records four stages per harness, against **two omac versions** — `main` (built
 from source) and `release` (the latest published binary, i.e. what users run):
 
 | Stage | What it proves | Model call? |
 |-------|----------------|-------------|
 | `contract` | Every CLI flag/subcommand omac derives from its registry still exists in the harness's `--help` (see `internal/e2e/contract.go`). | no |
 | `launch` | `omac start <harness>` reaches the real binary through the sandbox (PATH, config-home, sandbox admission). | no |
+| `serve` | `omac serve <harness>` (Desktop mode) launches the real inner **server daemon** under the sandbox, and its host-side control plane drives an activate → manifest → deactivate cycle (see `internal/e2e/smoke_test.go`). Only run for harnesses with a server-launch convention — today **opencode** (`opencode serve`, backing OpenCode Desktop); the rest run their inner command as-is under serve and record `➖`. Eligibility is derived from the registry (`config.Harness.ServerLaunch`), not hardcoded. | no |
 | `llm` | A **single lightweight** agent turn (echo-rest) — confirms the model auth/proxy path and sidecar facade. Run for every harness, claude-code included. The heavy multi-probe security-audit stays in the pinned weekly `E2E: full`. | yes |
 
-`✅` pass · `❌` fail · `➖` not run. The matrix is
+`✅` pass · `❌` fail · `➖` not run / not applicable. The matrix is
 `harness × os × omac{main,release}` (codex/macOS excluded), and rows are sorted
 newest-first, then grouped by omac version, OS, and harness.
 
@@ -57,12 +58,17 @@ SKAINET summary of what broke) — plus links to the dashboard issue and the run
 
 ## Running the model-free checks
 
-The `contract` and `launch` stages need no token or model call. They run weekly as
-part of `E2E: drift` (never as a separate per-PR job). On every PR, `CI` →
+The `contract`, `launch`, and `serve` stages need no token or model call. They run
+weekly as part of `E2E: drift` (never as a separate per-PR job). On every PR, `CI` →
 `E2E: model-free` also runs the pure-Go derivation unit tests (`contract_test.go`),
-which verify the checked flags stay wired to the registry — without installing any
-harness. Run the full model-free tier locally:
+which verify the checked flags stay wired to the registry (and that serve eligibility
+tracks `ServerLaunch`) — without installing any harness. Run the full model-free tier
+locally:
 
 ```sh
-go test -tags=e2e -run 'TestHarnessCLIContract|TestHarnessLaunchProbe' -v ./internal/e2e/
+go test -tags=e2e -run 'TestHarnessCLIContract|TestHarnessLaunchProbe|TestHarnessServeProbe' -v ./internal/e2e/
 ```
+
+The `serve` probe launches the real `opencode serve` daemon under the sandbox, so it
+needs `opencode` installable via `bun` and a working sandbox backend (bubblewrap on
+Linux, Seatbelt on macOS); it is model-free and needs no provider token.

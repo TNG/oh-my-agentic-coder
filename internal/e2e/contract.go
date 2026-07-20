@@ -164,6 +164,22 @@ func parseVersion(raw string) string {
 	return strings.TrimSpace(raw)
 }
 
+// harnessHasServerMode reports whether the harness declares a server-launch
+// convention in the registry (config.Harness.ServerLaunch) — i.e. whether
+// `omac serve <harness>` turns its inner command into a long-lived daemon.
+// Only such harnesses have a meaningful Desktop/serve mode to probe (today
+// opencode → `opencode serve`, for OpenCode Desktop); the rest run the inner
+// command as-is under serve, so the serve probe skips them. Deriving this from
+// the live registry keeps the probe in lockstep with harness.go rather than a
+// hardcoded name list. Returns false for an unknown harness name.
+func harnessHasServerMode(name string) bool {
+	reg, ok := config.LookupHarness(name)
+	if !ok {
+		return false
+	}
+	return reg.ServerLaunch != nil && reg.ServerLaunch.Subcommand != ""
+}
+
 // compatLine renders the stable machine-readable line the smoke test prints so
 // the workflow can parse it into the compatibility matrix without re-deriving
 // anything. The date and omac version are stamped by the workflow (they are not
