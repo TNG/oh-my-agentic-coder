@@ -615,21 +615,45 @@ sandbox:
 > arbitrary `OMAC_*` variables in the host env expecting them to stay out of
 > the sandbox.
 >
-> **If you have an existing `~/.config/omac/sandbox-profiles/default.json`
-> with an empty `"environment": {}`**, it still inherits everything, and omac
-> does **not** auto-migrate it (`default.json` is only scaffolded on first
-> miss, never rewritten). Run `omac provenance --check` (it now flags the
-> empty allowlist as MEDIUM), then either:
-> - back up and delete the file to let omac re-scaffold it (hand edits are
->   lost), or
-> - add an `allow_vars` list (see `DefaultAllowVars()` in
->   `internal/sandboxprofile/env.go` for the operational minimum), or
-> - set `allow_vars: ["*"]` to restore the pre-#102 "inherit everything"
->   behavior — the danger blocklist (`LD_*`, `NODE_OPTIONS`, 1Password
->   tokens, …) still wins, so this is not the same as no filtering.
+> **Empty `allow_vars` — fail-closed at launch.** If a sandbox profile has an
+> empty `environment.allow_vars` (e.g. an existing `default.json` with
+> `"environment": {}`, or a hand-authored profile), `omac start` / `omac serve`
+> does **not** inherit every ambient var. It prints a warning, pauses briefly
+> so you can read it, then forwards **only the operational minimum** —
+> `sandboxprofile.DefaultAllowVars()`: `HOME`, `PATH`, `PWD`, `TMPDIR`, `LANG`,
+> `LC_*`, `TERM`, `SHELL`, `USER`, `LOGNAME`, `TZ`, `EDITOR`, `VISUAL`,
+> `XDG_*`, `NPM_CONFIG_PREFIX`, `OMAC_*`.
 >
-> Using a provider whose auth var isn't forwarded by default? Add its name
-> to `environment.allow_vars`.
+> Everything else is **stripped** — secrets, *and* provider-auth vars.
+> omac deliberately does **not** auto-forward the harness's auth variables for
+> an empty profile: an empty allowlist is a misconfiguration, and omac will not
+> silently push provider credentials into the sandbox to hide it. The harness
+> process starts (it has `HOME`/`PATH`), but it **cannot authenticate** until
+> you configure the profile. `omac doctor` and `omac provenance --check` both
+> flag an empty allowlist.
+>
+> To resolve an empty profile, either:
+> - add an explicit `allow_vars` list (start from `DefaultAllowVars()` in
+>   `internal/sandboxprofile/env.go`, then add the provider/token vars the
+>   harness reads — e.g. `ANTHROPIC_API_KEY`, or a custom `SKAINET_*`); back up
+>   + delete a scaffolded `default.json` to have omac re-scaffold the full list
+>   (it is not auto-migrated), or
+> - set `allow_vars: ["*"]` to forward **every** ambient var — the danger
+>   blocklist (`LD_*`, `NODE_OPTIONS`, 1Password tokens, …) still wins, so this
+>   is not the same as no filtering.
+>
+> Note: with a **non-empty** `allow_vars`, omac injects the selected harness's
+> documented auth vars (`harness.SandboxEnvAllow`) on top at launch — but only
+> for **single-provider** harnesses where the key is unambiguous (claude-code
+> → `ANTHROPIC_*`, codex → `OPENAI_*`, copilot → `GITHUB_TOKEN`). **Multi-provider
+> harnesses (opencode, pi) auto-forward nothing**: omac will not blindly push
+> every third-party provider key into the sandbox, so a user relying on an
+> env-based provider key lists it in `allow_vars` themselves (opencode's primary
+> `auth.json` login, in its granted dirs, is unaffected). Auto-forwarding is
+> skipped entirely for the empty (misconfigured) case. A direct
+> `omac sandbox run --profile X` invocation — not via `start`/`serve` — still
+> treats an empty `allow_vars` as inherit-all; the fail-closed seeding happens
+> in the `start`/`serve` launch path.
 
 For successfully inspectable built-in `{{self}} sandbox run` profiles,
 `omac doctor` warns when a profile re-introduces a broad read/write

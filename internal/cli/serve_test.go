@@ -383,6 +383,66 @@ func TestInjectSandboxEnvAllow(t *testing.T) {
 	}
 }
 
+// TestForwardHarnessEnvEmptyProfileForwardsOperationalMinimum: with an
+// empty-allow_vars profile, omac fails closed — it seeds ONLY the operational
+// minimum (so HOME/PATH keep the harness runnable), does NOT auto-forward the
+// harness's provider-auth vars, strips everything else, and warns.
+func TestForwardHarnessEnvEmptyProfileForwardsOperationalMinimum(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	stageProfile(t, home, `{"meta": {"name": "default"}}`)
+
+	old := emptyAllowVarsWarnDelay
+	emptyAllowVarsWarnDelay = 0
+	defer func() { emptyAllowVarsWarnDelay = old }()
+
+	env, _, errBuf, drain := newPipeEnv(t, "")
+	prof := config.SandboxProfile{Command: []string{"{{self}}", "sandbox", "run", "--profile", "default", "--", "x"}}
+	harness := config.Harness{Name: "test", SandboxEnvAllow: []string{"ANTHROPIC_API_KEY"}}
+	argv := []string{"/usr/bin/omac", "sandbox", "run", "--profile", "default", "--", "x"}
+
+	got := forwardHarnessEnv(env, argv, harness, prof, "default")
+	drain()
+
+	joined := strings.Join(got, " ")
+	// Operational minimum is forwarded so the harness runs.
+	for _, want := range []string{"--allow-env HOME", "--allow-env PATH"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("empty profile should forward %q; got %v", want, got)
+		}
+	}
+	// Provider-auth vars are NOT auto-forwarded on an empty profile.
+	if strings.Contains(joined, "ANTHROPIC_API_KEY") {
+		t.Errorf("empty profile must not auto-forward provider-auth vars; got %v", got)
+	}
+	if !strings.Contains(errBuf.String(), "allow_vars") {
+		t.Errorf("expected empty-allow_vars warning on stderr; got:\n%s", errBuf.String())
+	}
+}
+
+// TestForwardHarnessEnvNonEmptyProfileInjects: a profile with an explicit
+// allowlist still gets the harness auth vars injected as --allow-env.
+func TestForwardHarnessEnvNonEmptyProfileInjects(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	stageProfile(t, home, `{"meta": {"name": "default"}, "environment": {"allow_vars": ["HOME"]}}`)
+
+	env, _, errBuf, drain := newPipeEnv(t, "")
+	prof := config.SandboxProfile{Command: []string{"{{self}}", "sandbox", "run", "--profile", "default", "--", "x"}}
+	harness := config.Harness{Name: "test", SandboxEnvAllow: []string{"ANTHROPIC_API_KEY"}}
+	argv := []string{"/usr/bin/omac", "sandbox", "run", "--profile", "default", "--", "x"}
+
+	got := forwardHarnessEnv(env, argv, harness, prof, "default")
+	drain()
+
+	if !strings.Contains(strings.Join(got, " "), "--allow-env ANTHROPIC_API_KEY") {
+		t.Errorf("non-empty profile: expected --allow-env injection; got %v", got)
+	}
+	if strings.Contains(errBuf.String(), "allow_vars") {
+		t.Errorf("non-empty profile must not warn; got:\n%s", errBuf.String())
+	}
+}
+
 func equalStrings(a, b []string) bool {
 	if len(a) != len(b) {
 		return false
