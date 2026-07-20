@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -23,6 +24,36 @@ const (
 	tokenDenyPermanentSuffix  = "deny_permanent_suffix"
 	tokenNeedsIntent          = "needs_intent"
 )
+
+// Default dialog dimensions in pixels. The GTK/Qt auto-size makes the popup
+// unreadable on Ubuntu: too narrow to show the longest option label ("Allow
+// permanently (this host)") and too short to show all seven options — the
+// multi-line prompt text consumes the height and the radiolist collapses to a
+// two-row scroll box. The width fits the labels; the height fits the prompt
+// text plus all seven rows plus the buttons without scrolling.
+//
+// These are defaults: OMAC_PROMPT_WIDTH / OMAC_PROMPT_HEIGHT override them for
+// users on unusual displays (small/720p laptops where 560 px crowds the
+// viewport, tiling WMs, HiDPI) — see dialogDimensions.
+const (
+	dialogWidth  = 520
+	dialogHeight = 560
+)
+
+// dialogDimensions returns the popup width and height in pixels, honouring the
+// OMAC_PROMPT_WIDTH / OMAC_PROMPT_HEIGHT overrides. A missing, non-numeric, or
+// non-positive value falls back to the default constant.
+func dialogDimensions() (int, int) {
+	return envDimension("OMAC_PROMPT_WIDTH", dialogWidth),
+		envDimension("OMAC_PROMPT_HEIGHT", dialogHeight)
+}
+
+func envDimension(key string, def int) int {
+	if n, err := strconv.Atoi(strings.TrimSpace(os.Getenv(key))); err == nil && n > 0 {
+		return n
+	}
+	return def
+}
 
 // optionLabels are the exact seven dialog choices (nono parity, product
 // name swapped). Order matters: Deny once is the default.
@@ -304,13 +335,18 @@ func (zenityBackend) available() bool {
 	return err == nil
 }
 
-func (zenityBackend) show(ctx context.Context, host string, port int, suffix, intent string) (string, error) {
+// zenityArgs builds the full zenity radiolist argv, including the explicit
+// window size. Extracted so the sizing can be asserted without launching a
+// dialog.
+func zenityArgs(host string, port int, suffix, intent string) []string {
+	width, height := dialogDimensions()
 	args := []string{
 		"--list", "--radiolist",
 		"--title", "omac: network access",
 		"--text", promptText(host, port, intent),
 		"--column", "", "--column", "Decision",
-		"--height", "320",
+		"--width", strconv.Itoa(width),
+		"--height", strconv.Itoa(height),
 	}
 	for _, o := range optionLabels(suffix) {
 		sel := "FALSE"
@@ -319,7 +355,11 @@ func (zenityBackend) show(ctx context.Context, host string, port int, suffix, in
 		}
 		args = append(args, sel, o)
 	}
-	out, err := exec.CommandContext(ctx, "zenity", args...).Output()
+	return args
+}
+
+func (zenityBackend) show(ctx context.Context, host string, port int, suffix, intent string) (string, error) {
+	out, err := exec.CommandContext(ctx, "zenity", zenityArgs(host, port, suffix, intent)...).Output()
 	if err != nil {
 		// zenity exits 1 on Cancel; treat as cancel unless ctx expired.
 		if ctx.Err() != nil {
@@ -339,9 +379,22 @@ func (kdialogBackend) available() bool {
 	return err == nil
 }
 
-func (kdialogBackend) show(ctx context.Context, host string, port int, suffix, intent string) (string, error) {
+// kdialogArgs builds the full kdialog radiolist argv, including the explicit
+// --geometry window size. Extracted so the sizing can be asserted without
+// launching a dialog.
+//
+// --geometry is a global option (registered by kdialog against
+// QCommandLineParser, KF6) whose value accepts the X11 "WxH" form; the parser
+// is position-independent for options, so it may precede --radiolist. The
+// dialog-type flag --radiolist takes its prompt text as the immediate
+// positional argument, before the option triples. Verified against
+// KDE/kdialog master; geometry is applied under X11/XWayland (on a pure
+// Wayland build kdialog accepts but may ignore it — never errors).
+func kdialogArgs(host string, port int, suffix, intent string) []string {
 	opts := optionLabels(suffix)
+	width, height := dialogDimensions()
 	args := []string{
+		"--geometry", fmt.Sprintf("%dx%d", width, height),
 		"--title", "omac: network access",
 		"--radiolist", promptText(host, port, intent),
 	}
@@ -350,9 +403,14 @@ func (kdialogBackend) show(ctx context.Context, host string, port int, suffix, i
 		if o == "Deny once" {
 			state = "on"
 		}
-		args = append(args, fmt.Sprintf("%d", i), o, state)
+		args = append(args, strconv.Itoa(i), o, state)
 	}
-	out, err := exec.CommandContext(ctx, "kdialog", args...).Output()
+	return args
+}
+
+func (kdialogBackend) show(ctx context.Context, host string, port int, suffix, intent string) (string, error) {
+	opts := optionLabels(suffix)
+	out, err := exec.CommandContext(ctx, "kdialog", kdialogArgs(host, port, suffix, intent)...).Output()
 	if err != nil {
 		if ctx.Err() != nil {
 			return "", ctx.Err()
