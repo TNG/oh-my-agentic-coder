@@ -319,31 +319,67 @@ func TestInjectOpenPort(t *testing.T) {
 }
 
 func TestInjectSandboxEnvAllow(t *testing.T) {
-	in := []string{"omac", "sandbox", "run", "--profile", "default", "--", "claude"}
-	got := injectSandboxEnvAllow(in, []string{"ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"})
-	want := []string{
-		"omac", "sandbox", "run", "--profile", "default",
-		"--allow-env", "ANTHROPIC_API_KEY",
-		"--allow-env", "ANTHROPIC_BASE_URL",
-		"--", "claude",
+	profiles := config.DefaultLauncherConfig().Sandbox.Profiles
+	expand := func(t *testing.T, prof config.SandboxProfile) []string {
+		t.Helper()
+		argv, err := sandbox.Expand(prof, sandbox.Inputs{
+			Workdir:  "/w",
+			Socket:   "/w/bridge.sock",
+			TCPPort:  6000,
+			InnerCmd: []string{"claude"},
+			TmpDir:   "/w/tmp",
+		})
+		if err != nil {
+			t.Fatalf("Expand: %v", err)
+		}
+		return argv
 	}
-	if !equalStrings(got, want) {
-		t.Errorf("got %v, want %v", got, want)
+
+	// Native backend: use the real Expand output (argv[0] is os.Executable(),
+	// an absolute path — NOT the literal "omac"), so the detector cannot rely
+	// on argv[0] matching a hand-rolled name.
+	builtinProf := profiles["builtin"]
+	builtin := expand(t, builtinProf)
+	got := injectSandboxEnvAllow(builtin, []string{"ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"}, builtinProf)
+	joined := strings.Join(got, " ")
+	if !strings.Contains(joined, "--allow-env ANTHROPIC_API_KEY") ||
+		!strings.Contains(joined, "--allow-env ANTHROPIC_BASE_URL") {
+		t.Errorf("native backend must gain --allow-env flags: %v", got)
 	}
 
 	// Empty names is a no-op; empty entries are skipped.
-	if got := injectSandboxEnvAllow(in, nil); !equalStrings(got, in) {
-		t.Errorf("nil names should be a no-op: %v", got)
+	if g := injectSandboxEnvAllow(builtin, nil, builtinProf); !equalStrings(g, builtin) {
+		t.Errorf("nil names should be a no-op: %v", g)
 	}
-	if got := injectSandboxEnvAllow(in, []string{""}); !equalStrings(got, in) {
-		t.Errorf("empty entry should be skipped: %v", got)
+	if g := injectSandboxEnvAllow(builtin, []string{""}, builtinProf); !equalStrings(g, builtin) {
+		t.Errorf("empty entry should be skipped: %v", g)
 	}
 
 	// Non-native backend (nono) does not understand --allow-env: the argv
 	// must be left untouched (env filtering is nono's own concern).
-	nono := []string{"nono", "run", "--allow-cwd", "--profile", "tng-sandbox", "--", "opencode"}
-	if got := injectSandboxEnvAllow(nono, []string{"ANTHROPIC_API_KEY"}); !equalStrings(got, nono) {
-		t.Errorf("nono argv must be untouched: %v", got)
+	nonoProf := profiles["nono"]
+	nono := expand(t, nonoProf)
+	if g := injectSandboxEnvAllow(nono, []string{"ANTHROPIC_API_KEY"}, nonoProf); !equalStrings(g, nono) {
+		t.Errorf("nono argv must be untouched: %v", g)
+	}
+
+	// Regression (issue #111 review): a nono profile whose inner command
+	// itself contains "sandbox" "run" tokens must NOT be misclassified as the
+	// native backend. Detection anchors on the profile template, not on a
+	// bare token scan of the expanded argv.
+	nonoInnerProf := nonoProf
+	nonoArgv, err := sandbox.Expand(nonoInnerProf, sandbox.Inputs{
+		Workdir:  "/w",
+		Socket:   "/w/bridge.sock",
+		TCPPort:  6000,
+		InnerCmd: []string{"sandbox", "run", "--weird"},
+		TmpDir:   "/w/tmp",
+	})
+	if err != nil {
+		t.Fatalf("Expand nono-inner: %v", err)
+	}
+	if g := injectSandboxEnvAllow(nonoArgv, []string{"ANTHROPIC_API_KEY"}, nonoInnerProf); !equalStrings(g, nonoArgv) {
+		t.Errorf("nono argv with inner sandbox/run tokens must be untouched: %v", g)
 	}
 }
 

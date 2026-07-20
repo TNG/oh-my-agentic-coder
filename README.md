@@ -610,10 +610,24 @@ sandbox:
 > explicit `environment.allow_vars` allowlist, so the sandbox no longer
 > inherits arbitrary ambient variables from the launching shell — only the
 > operational minimum plus the selected harness's provider-auth variables
-> pass through. **If you have an existing `~/.config/omac/sandbox-profiles/default.json`
-> with an empty `"environment": {}`**, it still inherits everything; run
-> `omac provenance --check` (it now flags the empty allowlist) and either
-> delete the file to let omac re-scaffold it, or add an `allow_vars` list.
+> pass through. Entries are exact names or trailing-`*` prefixes (e.g.
+> `OMAC_*`); `OMAC_*` is a **broad prefix**, so skill sidecars must not set
+> arbitrary `OMAC_*` variables in the host env expecting them to stay out of
+> the sandbox.
+>
+> **If you have an existing `~/.config/omac/sandbox-profiles/default.json`
+> with an empty `"environment": {}`**, it still inherits everything, and omac
+> does **not** auto-migrate it (`default.json` is only scaffolded on first
+> miss, never rewritten). Run `omac provenance --check` (it now flags the
+> empty allowlist as MEDIUM), then either:
+> - back up and delete the file to let omac re-scaffold it (hand edits are
+>   lost), or
+> - add an `allow_vars` list (see `DefaultAllowVars()` in
+>   `internal/sandboxprofile/env.go` for the operational minimum), or
+> - set `allow_vars: ["*"]` to restore the pre-#102 "inherit everything"
+>   behavior — the danger blocklist (`LD_*`, `NODE_OPTIONS`, 1Password
+>   tokens, …) still wins, so this is not the same as no filtering.
+>
 > Using a provider whose auth var isn't forwarded by default? Add its name
 > to `environment.allow_vars`.
 

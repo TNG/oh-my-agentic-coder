@@ -705,6 +705,92 @@ func TestDefaultProfileEnvAllowlist(t *testing.T) {
 	}
 }
 
+// TestFilterEnvMergedLaunchEnv exercises the full launch-time composition:
+// the default allowlist, PLUS a harness's SandboxEnvAllow (merged in at
+// launch via --allow-env), PLUS the injected HTTP(S)_PROXY/OMAC_* overlay.
+// It asserts the exact resulting child env — operational + auth vars pass,
+// the injected overlay wins over an inherited value, and an ambient secret
+// not on either list is stripped (issue #111 review: no default-CI coverage
+// of the merged env, only the e2e build tag).
+func TestFilterEnvMergedLaunchEnv(t *testing.T) {
+	environ := []string{
+		"HOME=/home/u",
+		"PATH=/usr/bin",
+		"USER=alice",
+		"TZ=Europe/Berlin",
+		"OMAC_BASE=http://127.0.0.1:1/x",
+		"ANTHROPIC_API_KEY=sk-secret", // harness auth var (merged allow)
+		"AWS_SECRET_ACCESS_KEY=oops",  // ambient secret, on neither list
+		"HTTP_PROXY=http://stale:1",   // overridden by the injected overlay
+	}
+	// DefaultAllowVars() + the selected harness's auth names, mirroring the
+	// launch-time --allow-env merge.
+	allow := append(DefaultAllowVars(), "ANTHROPIC_API_KEY")
+	injected := map[string]string{
+		"HTTP_PROXY": "http://omac:tok@127.0.0.1:9",
+		"OMAC_GATE":  "1",
+	}
+
+	got := envMap(FilterEnv(environ, allow, injected))
+	want := map[string]string{
+		"HOME":              "/home/u",
+		"PATH":              "/usr/bin",
+		"USER":              "alice",
+		"TZ":                "Europe/Berlin",
+		"OMAC_BASE":         "http://127.0.0.1:1/x",
+		"ANTHROPIC_API_KEY": "sk-secret",
+		"HTTP_PROXY":        "http://omac:tok@127.0.0.1:9", // injected wins
+		"OMAC_GATE":         "1",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("merged env has %d entries, want %d:\n got  %v\n want %v", len(got), len(want), got, want)
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("%s = %q, want %q", k, got[k], v)
+		}
+	}
+	if _, leaked := got["AWS_SECRET_ACCESS_KEY"]; leaked {
+		t.Error("ambient secret AWS_SECRET_ACCESS_KEY must be stripped")
+	}
+}
+
+// TestDefaultAllowVarsGoldenList pins the exact membership of
+// DefaultAllowVars so future drift (an accidental add or removal) is caught
+// by the test suite rather than silently changing the sandbox's operational
+// minimum (issue #111 review).
+func TestDefaultAllowVarsGoldenList(t *testing.T) {
+	want := []string{
+		"OMAC_*",
+		"HOME",
+		"PATH",
+		"PWD",
+		"TMPDIR",
+		"LANG",
+		"LC_*",
+		"TERM",
+		"SHELL",
+		"USER",
+		"LOGNAME",
+		"TZ",
+		"EDITOR",
+		"VISUAL",
+		"XDG_CONFIG_HOME",
+		"XDG_DATA_HOME",
+		"XDG_STATE_HOME",
+		"NPM_CONFIG_PREFIX",
+	}
+	got := DefaultAllowVars()
+	if len(got) != len(want) {
+		t.Fatalf("DefaultAllowVars() has %d entries, want %d:\n got  %v\n want %v", len(got), len(want), got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("DefaultAllowVars()[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
 func TestDangerousEnvBlocklist(t *testing.T) {
 	exact, prefixes := DangerousEnvBlocklist()
 	if len(exact) == 0 {

@@ -401,7 +401,7 @@ func runServe(args []string, env *Env) int {
 		// Forward the selected harness's auth env vars through the
 		// default profile's restrictive allow_vars filter. (Control-plane
 		// port and harness runtime dirs are granted inside sandboxServeArgv.)
-		argv = injectSandboxEnvAllow(argv, harness.SandboxEnvAllow)
+		argv = injectSandboxEnvAllow(argv, harness.SandboxEnvAllow, prof)
 		// Pass the resolved audit path to `omac sandbox run` so its
 		// network-filter subprocess appends net.decision events to the
 		// same persistent log. Inherit the parent's run_id + mode so the
@@ -581,9 +581,9 @@ func injectSandboxDirs(argv []string, dirs []string) []string {
 // (where FilterEnv applies the allowlist); other backends (nono) do their
 // own env filtering via their own profile, so injecting the flag there
 // would be meaningless and could fail on an unknown flag. Guarded by
-// argvRunsNativeSandbox. Empty/nil is a no-op.
-func injectSandboxEnvAllow(argv []string, names []string) []string {
-	if !argvRunsNativeSandbox(argv) {
+// profileRunsNativeSandbox. Empty/nil is a no-op.
+func injectSandboxEnvAllow(argv []string, names []string, prof config.SandboxProfile) []string {
+	if !profileRunsNativeSandbox(prof) {
 		return argv
 	}
 	for _, n := range names {
@@ -595,17 +595,16 @@ func injectSandboxEnvAllow(argv []string, names []string) []string {
 	return argv
 }
 
-// argvRunsNativeSandbox reports whether argv invokes omac's native
-// sandbox supervisor (`omac sandbox run …`), identified by consecutive
-// "sandbox" "run" tokens. This is the only backend that parses the
-// launch-injected sandbox flags omac itself defines (e.g. --allow-env).
-func argvRunsNativeSandbox(argv []string) bool {
-	for i := 0; i+1 < len(argv); i++ {
-		if argv[i] == "sandbox" && argv[i+1] == "run" {
-			return true
-		}
-	}
-	return false
+// profileRunsNativeSandbox reports whether prof's command template invokes
+// omac's native sandbox supervisor ({{self}} sandbox run …) — the only
+// backend that parses the launch-injected sandbox flags omac defines (e.g.
+// --allow-env). Anchored on the leading template tokens rather than a bare
+// token scan of the expanded argv: {{self}} resolves to os.Executable() (an
+// absolute path, not "omac"), and a nono profile whose inner command merely
+// contains "sandbox"/"run" tokens must not be misclassified.
+func profileRunsNativeSandbox(prof config.SandboxProfile) bool {
+	c := prof.Command
+	return len(c) >= 3 && c[0] == "{{self}}" && c[1] == "sandbox" && c[2] == "run"
 }
 
 // injectSandboxFlag splices a sandbox flag (with optional value; pass

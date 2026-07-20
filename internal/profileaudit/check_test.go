@@ -44,6 +44,21 @@ func TestCheck_EmptyAllowVarsIsMedium(t *testing.T) {
 	}
 }
 
+// TestCheck_WildcardAllowVarsNoFinding documents allow_vars: ["*"] as the
+// explicit "inherit everything (except the danger blocklist)" escape hatch:
+// it is non-empty, so it suppresses the empty-allowlist finding, and it is
+// still safe because IsDangerousEnvVar wins over the allowlist in FilterEnv
+// (issue #111 review).
+func TestCheck_WildcardAllowVarsNoFinding(t *testing.T) {
+	p := cleanProfile()
+	p.Environment.AllowVars = []string{"*"}
+	for _, f := range Check(p) {
+		if f.Category == CatEnvironment && f.Field == "environment.allow_vars" {
+			t.Errorf(`allow_vars ["*"] must not produce an environment finding; got %+v`, f)
+		}
+	}
+}
+
 func TestCheck_OverrideDenyBaselinePathIsHigh(t *testing.T) {
 	// ~/.ssh is in the cross-platform protectedCommon set (baseline.go:35).
 	p := cleanProfile()

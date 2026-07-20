@@ -222,8 +222,14 @@ func (n *Network) EffectiveEnforcement() string {
 
 // Environment configures env-var filtering for the child.
 type Environment struct {
-	// AllowVars lists exact names or trailing-* prefixes. Empty/absent
-	// means every variable passes (minus the always-on blocklist).
+	// AllowVars lists env-var patterns to pass through. Each entry is
+	// either an exact name ("HOME") or a trailing-* prefix ("OMAC_*",
+	// matched from the key start — "FOO_OMAC_*" does not match). Only a
+	// trailing "*" is special; a bare "*" allows everything. An entry
+	// without a trailing "*" is an exact match, so a typo like "OMAC"
+	// (no "*") matches only the literal "OMAC", not "OMAC_BASE".
+	// Empty/absent means every variable passes (minus the always-on
+	// danger blocklist, which wins over any allow entry).
 	AllowVars []string `json:"allow_vars,omitempty"`
 }
 
