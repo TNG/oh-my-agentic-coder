@@ -1,9 +1,45 @@
 # Origin attribution for sandbox network prompts
 
 **Date:** 2026-07-20
-**Status:** Design. Not yet implemented.
+**Status:** Phased after independent review. **Phase 1 (cause line) implemented; Phase 2 (`/proc` Origin) deferred.**
 **Companion:** [Intent declarations for sandbox prompts](2026-07-07-intent-declarations-design.md)
 **Data dependency:** `internal/netprompt/hostmap/opencode-egress.json` (host→subsystem map, already landed).
+
+## Post-review revision (2026-07-20)
+
+An independent review confirmed the crux technical claims — the child shares the
+host **net** namespace (`internal/sandboxrun/bwrap.go` does *not* pass
+`--unshare-net`, asserted by `bwrap_test.go`), so its socket is visible in the
+host `/proc/net/tcp`; the `/proc` source-port→PID direction is right; and the
+`comm`-only (never `cmdline`) rule is the correct anti-secret-leak choice. It also
+found the design over-scoped and surfaced fixes. Resulting plan:
+
+- **Split into two phases.** The **cause line** (host map) is cross-platform and
+  needs *no* interface changes — `host` already reaches `promptText`/`Prompt`. It
+  meets the stated goal (make the prompt legible) on its own. Ship it as **Phase 1**.
+  The **`/proc` Origin line** carries marginal extra signal (opencode-core and the
+  agent share one PID; the number is a *host* PID) at high cost (interface ripple,
+  Linux-only, hex parsing). It becomes **Phase 2**, to be re-justified separately.
+- **Harness-gate the map (must-fix).** `omac sandbox run` is harness-agnostic;
+  loading the opencode map unconditionally would mislabel codex/copilot traffic. The
+  map is keyed by harness (`hostmap.For(harness)`), resolved from the inner command
+  basename (`Options.Flags.InnerArgv[0]`); non-opencode → no cause line.
+- **Don't discard disambiguation (must-fix).** The loader returns the whole `Entry`
+  (cause, `user_initiated`, `notes`), not just a string, so Phase 2 can feed the
+  resolved process into cause selection for process-dependent hosts
+  (`raw.githubusercontent.com`). Phase 1 renders the label **"Likely cause:"** —
+  the "Likely" is the honest hedge that it may be background infra, not the agent.
+- **Phase 2 corrections (when built):** match the full `/proc/net/tcp` 4-tuple
+  (`local == 127.0.0.1:<srcport>` **and** `rem == proxy LocalAddr`, state
+  ESTABLISHED), not local port alone (ephemeral ports can repeat across
+  connections); inject the resolver at `server.go` (where `conn` is in hand) via a
+  closure, rather than threading `src netip.AddrPort` through `Filter.Check`; add a
+  real-socket integration test (dial a loopback listener, assert resolved PID ==
+  `os.Getpid()`) alongside the `/proc` fixture test; note in the dialog that the PID
+  shown is the host PID.
+
+The sections below describe the full (both-phase) design; treat the `/proc`/Origin
+parts and the `Check`/`Prompt` interface change as **Phase 2**.
 
 ## Problem
 

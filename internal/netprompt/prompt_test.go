@@ -17,7 +17,7 @@ type signalBackend struct{ label string }
 
 func (signalBackend) name() string    { return "signal-test" }
 func (signalBackend) available() bool { return true }
-func (b signalBackend) show(ctx context.Context, host string, port int, suffix, intent string) (string, error) {
+func (b signalBackend) show(ctx context.Context, host string, port int, suffix, intent, cause string) (string, error) {
 	return b.label, nil
 }
 
@@ -190,7 +190,7 @@ func TestOptionLabelsExactAndDefault(t *testing.T) {
 }
 
 func TestPromptTextParity(t *testing.T) {
-	got := promptText("api.example.com", 443, "")
+	got := promptText("api.example.com", 443, "", "")
 	want := "The sandboxed process is trying to reach:\n\n    api.example.com:443\n\nAgent intent: (not declared)\n\nHow should omac handle this destination?"
 	if got != want {
 		t.Errorf("promptText (no intent) = %q", got)
@@ -198,7 +198,7 @@ func TestPromptTextParity(t *testing.T) {
 }
 
 func TestPromptTextWithIntent(t *testing.T) {
-	got := promptText("api.example.com", 443, "fetch release notes")
+	got := promptText("api.example.com", 443, "fetch release notes", "")
 	want := "The sandboxed process is trying to reach:\n\n    api.example.com:443\n\nAgent intent: \"fetch release notes\"\n\nHow should omac handle this destination?"
 	if got != want {
 		t.Errorf("promptText (with intent) = %q", got)
@@ -206,12 +206,32 @@ func TestPromptTextWithIntent(t *testing.T) {
 }
 
 func TestPromptTextIntentOnly(t *testing.T) {
-	got := promptText("api.example.com", 443, "verify the version")
+	got := promptText("api.example.com", 443, "verify the version", "")
 	if !strings.Contains(got, "api.example.com:443") {
 		t.Errorf("missing host:port: %q", got)
 	}
 	if !strings.Contains(got, `"verify the version"`) {
 		t.Errorf("missing intent: %q", got)
+	}
+}
+
+func TestPromptTextWithCause(t *testing.T) {
+	got := promptText("raw.githubusercontent.com", 443, "", "syntax-highlighting grammar")
+	if !strings.Contains(got, "Likely cause: syntax-highlighting grammar\n") {
+		t.Errorf("missing cause line: %q", got)
+	}
+	if !strings.Contains(got, "Agent intent: (not declared)") {
+		t.Errorf("cause must not replace intent line: %q", got)
+	}
+	// Cause precedes intent.
+	if strings.Index(got, "Likely cause") > strings.Index(got, "Agent intent") {
+		t.Errorf("cause should precede intent: %q", got)
+	}
+}
+
+func TestPromptTextCauseOmittedWhenEmpty(t *testing.T) {
+	if strings.Contains(promptText("api.example.com", 443, "", ""), "Likely cause") {
+		t.Error("empty cause must omit the line")
 	}
 }
 

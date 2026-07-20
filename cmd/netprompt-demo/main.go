@@ -35,7 +35,7 @@ func main() {
 	}
 
 	logf := func(format string, a ...any) { fmt.Fprintf(os.Stderr, format+"\n", a...) }
-	p, ok := netprompt.NewPrompter(120, logf, lookupIntent, nil)
+	p, ok := netprompt.NewPrompter(120, logf, lookupIntent, nil, nil)
 	if !ok {
 		fmt.Fprintln(os.Stderr, "no dialog backend available (install zenity or kdialog on Linux, osascript ships with macOS)")
 		os.Exit(1)
