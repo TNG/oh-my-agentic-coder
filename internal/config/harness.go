@@ -114,14 +114,17 @@ type Harness struct {
 	// environment.allow_vars at launch (via --allow-env) so they survive
 	// the filter — for the selected harness only.
 	//
-	// The auth names are the provider-agnostic ones each CLI documents
-	// reading from the environment. Users on other providers add their own
-	// names to the user-editable default.json allow_vars. Entries are
-	// exact names or trailing-* prefixes (sandboxprofile.envVarAllowed).
+	// Only unambiguous, single-provider auth vars belong here (e.g.
+	// claude-code → ANTHROPIC_*, codex → OPENAI_*). Multi-provider harnesses
+	// (opencode, pi) leave this empty: omac must not blindly forward a
+	// grab-bag of third-party keys regardless of which provider is
+	// configured — the user declares the specific key their setup uses in the
+	// profile's environment.allow_vars. Entries are exact names or trailing-*
+	// prefixes (sandboxprofile.envVarAllowed).
 	//
 	// Harnesses that authenticate exclusively via on-disk config in their
-	// SandboxDirs (granted read+write) and inject no non-OMAC_* env need
-	// nothing here.
+	// SandboxDirs (granted read+write) and inject no non-OMAC_* env leave
+	// this empty.
 	SandboxEnvAllow []string
 }
 
@@ -233,17 +236,13 @@ func harnessRegistry() []Harness {
 				"~/.config/opencode",
 				"~/.opencode",
 			},
-			// OpenCode stores provider credentials in auth.json (in
-			// SandboxDirs) but also reads provider API keys from the
-			// environment. Forward the common provider keys so env-based
-			// auth works for the selected harness.
-			SandboxEnvAllow: []string{
-				"ANTHROPIC_API_KEY",
-				"OPENAI_API_KEY",
-				"OPENROUTER_API_KEY",
-				"GEMINI_API_KEY",
-				"GROQ_API_KEY",
-			},
+			// OpenCode authenticates primarily via auth.json (in SandboxDirs,
+			// granted read+write). It also supports several providers'
+			// env-var API keys, but omac does NOT auto-forward them: pushing
+			// every third-party key (Anthropic/OpenAI/OpenRouter/Gemini/Groq)
+			// into the sandbox regardless of which provider is configured is
+			// too broad. A user relying on env-based provider auth declares the
+			// specific key in the profile's environment.allow_vars.
 			NeedsPluginBootstrap: true,
 		},
 		{
@@ -378,13 +377,10 @@ func harnessRegistry() []Harness {
 			// ~/.pi/agent/ (git/npm package caches also nest under there —
 			// no separate ~/.cache/pi was observed in a live install).
 			SandboxDirs: []string{"~/.pi"},
-			// Pi resolves $ENV_VAR references in models.json; forward the
-			// common provider keys so those references resolve. Users with a
-			// differently-named key add it to the profile's allow_vars.
-			SandboxEnvAllow: []string{
-				"OPENAI_API_KEY",
-				"ANTHROPIC_API_KEY",
-			},
+			// Pi resolves $ENV_VAR references in models.json. It is
+			// multi-provider, so omac does NOT auto-forward a grab-bag of
+			// provider keys: the user declares the specific key their
+			// models.json references in the profile's environment.allow_vars.
 			Session: &HarnessSession{
 				ContinueArgs:   []string{"-c"},
 				ResumeByIDArgs: func(id string) []string { return []string{"--session", id} },

@@ -192,14 +192,13 @@ func TestDefaultSandboxProfilesHaveEmptyInnerCmd(t *testing.T) {
 }
 
 func TestHarnessSandboxEnvAllowIsSafe(t *testing.T) {
-	// Every harness must declare the auth env vars it needs (they would
-	// otherwise be stripped by the default profile's allowlist — issue
-	// #102), and none of those names may collide with the always-drop
-	// danger blocklist, which would make the forward a silent no-op.
+	// A harness may auto-forward the provider-auth vars it unambiguously
+	// needs (injected via --allow-env for the selected harness); the list is
+	// allowed to be empty for multi-provider harnesses that must not blindly
+	// forward a grab-bag of third-party keys (declare them in allow_vars
+	// instead). Whatever IS declared must be a real, non-blocklisted name —
+	// a blank or always-drop entry would be a silent no-op.
 	for _, h := range AllHarnesses() {
-		if len(h.SandboxEnvAllow) == 0 {
-			t.Errorf("harness %q declares no SandboxEnvAllow", h.Name)
-		}
 		for _, name := range h.SandboxEnvAllow {
 			if strings.TrimSpace(name) == "" {
 				t.Errorf("harness %q has an empty SandboxEnvAllow entry", h.Name)
@@ -207,6 +206,44 @@ func TestHarnessSandboxEnvAllowIsSafe(t *testing.T) {
 			if sandboxprofile.IsDangerousEnvVar(name) {
 				t.Errorf("harness %q forwards blocklisted env var %q (would be stripped)", h.Name, name)
 			}
+		}
+	}
+}
+
+// TestHarnessAuthForwardPolicy pins the auto-forward policy: single-provider
+// harnesses inject their targeted auth vars; multi-provider harnesses
+// (opencode, pi) auto-forward NOTHING — a user relying on env-based provider
+// auth declares the specific key in the profile's allow_vars, so omac does not
+// blindly push every third-party key into the sandbox.
+func TestHarnessAuthForwardPolicy(t *testing.T) {
+	multiProvider := map[string]bool{"opencode": true, "pi": true}
+	for _, h := range AllHarnesses() {
+		if multiProvider[h.Name] {
+			if len(h.SandboxEnvAllow) != 0 {
+				t.Errorf("multi-provider harness %q must not auto-forward provider keys; got %v", h.Name, h.SandboxEnvAllow)
+			}
+			continue
+		}
+	}
+	// Single-provider harnesses keep their targeted forwarding.
+	for name, want := range map[string]string{
+		"claude-code": "ANTHROPIC_API_KEY",
+		"codex":       "OPENAI_API_KEY",
+		"copilot":     "GITHUB_TOKEN",
+	} {
+		h, ok := LookupHarness(name)
+		if !ok {
+			t.Errorf("harness %q not found", name)
+			continue
+		}
+		found := false
+		for _, v := range h.SandboxEnvAllow {
+			if v == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("single-provider harness %q should forward %q; got %v", name, want, h.SandboxEnvAllow)
 		}
 	}
 }
