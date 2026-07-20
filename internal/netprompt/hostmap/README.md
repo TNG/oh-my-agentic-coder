@@ -43,9 +43,9 @@ from" without weakening the guardrail by silently allowlisting the hosts.
 | `notes` | ambiguity, overrides, redirect targets |
 
 `opt_in` lists hosts dialed only under explicit env config (telemetry).
-`unattributed_runtime_hosts` records hosts seen in a runtime audit that could
-**not** be tied to opencode source — kept out of the map on purpose, flagged for
-follow-up.
+`not_egress` records hosts that look like opencode traffic but are not — e.g.
+`1.1.1.1` appears only in a webfetch test fixture and a code comment; it is
+never dialed at runtime. Documented so it is not re-investigated.
 
 ## Provenance & regeneration
 

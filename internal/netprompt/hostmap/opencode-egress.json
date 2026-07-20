@@ -167,10 +167,10 @@
       "notes": "OPT-IN ONLY: no export unless OTEL_EXPORTER_OTLP_ENDPOINT is set. A Datadog intake host seen at runtime comes from local/TNG env config, not an opencode default."
     }
   ],
-  "unattributed_runtime_hosts": [
+  "not_egress": [
     {
-      "hosts": ["apple.com", "google.com", "microsoft.com", "1.1.1.1"],
-      "note": "Observed dialed at runtime in an omac sandbox audit but NOT attributable to any opencode source call-site (1.1.1.1 appears only in a code comment). Likely a dependency/runtime connectivity probe. Flagged for follow-up; deliberately excluded from the attribution map."
+      "host": "1.1.1.1",
+      "note": "NOT an opencode egress. Appears only as source text — a webfetch test fixture (packages/core/test/tool-webfetch.test.ts, a dummy 'Unable to fetch' target) and a code comment (packages/opencode/src/permission/arity.ts:96). Never dialed at runtime (absent from the sandbox audit). Documented so it is not re-investigated."
     }
   ]
 }
