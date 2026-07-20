@@ -1,0 +1,129 @@
+{
+  "schema_version": 1,
+  "meta": {
+    "harness": "claude-code",
+    "source": "Claude Code v2.1.215 (native binary) + omac sandbox audit",
+    "authority": "https://code.claude.com/docs/en/network-config (Anthropic's documented 'Network access requirements' allowlist)",
+    "method": "Causes taken from Anthropic's published allowlist table, corroborated against the binary's embedded hosts and a sandbox-audit run. Unlike opencode, no source repo was available (minified bundle), so attribution is host-level from the documented allowlist, not call-site.",
+    "purpose": "Map a Claude Code egress hostname to a human-readable 'likely cause' for the network prompt. The proxy never sees the URL (TLS), so the hostname is the only signal.",
+    "origin_values": {
+      "harness-core": "Dialed by Claude Code itself.",
+      "provider": "Model/auth traffic to a configured provider or gateway (Bedrock/Vertex/Foundry/LLM gateway) instead of api.anthropic.com; only when configured.",
+      "browser": "Required by a browser/viewer, NOT the CLI's own egress — documented for completeness, not shown as a CLI dial."
+    }
+  },
+  "entries": [
+    {
+      "host": "api.anthropic.com",
+      "match": "exact",
+      "origin": "harness-core",
+      "category": "llm-inference",
+      "cause": "Claude API request (model inference; also the WebFetch domain-safety preflight and the fast-mode availability check)",
+      "user_initiated": true,
+      "source": "network-config: 'Claude API requests'"
+    },
+    {
+      "host": "claude.ai",
+      "match": "exact",
+      "origin": "harness-core",
+      "category": "auth",
+      "cause": "claude.ai account authentication",
+      "user_initiated": false,
+      "source": "network-config: 'claude.ai account authentication'"
+    },
+    {
+      "host": "platform.claude.com",
+      "match": "exact",
+      "origin": "harness-core",
+      "category": "auth",
+      "cause": "Anthropic Console account authentication",
+      "user_initiated": false,
+      "source": "network-config: 'Anthropic Console account authentication'"
+    },
+    {
+      "host": "mcp-proxy.anthropic.com",
+      "match": "exact",
+      "origin": "harness-core",
+      "category": "integration",
+      "cause": "MCP connectors from claude.ai (connector traffic proxy)",
+      "user_initiated": false,
+      "source": "network-config: 'MCP connectors from claude.ai'",
+      "notes": "Enabled by default for claude.ai-authenticated users; disable via ENABLE_CLAUDEAI_MCP_SERVERS=false."
+    },
+    {
+      "host": "downloads.claude.ai",
+      "match": "exact",
+      "origin": "harness-core",
+      "category": "update",
+      "cause": "Native installer / auto-updater, and plugin executable downloads",
+      "user_initiated": false,
+      "source": "network-config: 'Plugin executable downloads; native installer and native auto-updater'",
+      "notes": "npm/self-managed installs do not use the native installer/auto-updater path."
+    },
+    {
+      "host": "storage.googleapis.com",
+      "match": "exact",
+      "origin": "harness-core",
+      "category": "catalog",
+      "cause": "Plugin metadata and install counts for /plugin; signed artifact uploads (falls back to api.anthropic.com if blocked)",
+      "user_initiated": false,
+      "source": "network-config: '/plugin metadata; artifact uploads'",
+      "notes": "Shared Google host; also the installer/auto-updater host on Claude Code versions prior to 2.1.116."
+    },
+    {
+      "host": "bridge.claudeusercontent.com",
+      "match": "exact",
+      "origin": "harness-core",
+      "category": "integration",
+      "cause": "Claude-in-Chrome extension WebSocket bridge",
+      "user_initiated": false,
+      "source": "network-config: 'Claude in Chrome extension WebSocket bridge'"
+    },
+    {
+      "host": "raw.githubusercontent.com",
+      "match": "exact",
+      "origin": "harness-core",
+      "category": "update",
+      "cause": "Changelog / release-notes feed for /release-notes",
+      "user_initiated": false,
+      "source": "network-config: 'Changelog feed for /release-notes'",
+      "notes": "Same host serves a completely different purpose in opencode (tree-sitter grammars) — this is why the map is harness-keyed."
+    },
+    {
+      "host": "code.claude.com",
+      "match": "exact",
+      "origin": "harness-core",
+      "category": "config-assets",
+      "cause": "Claude Code documentation (docs pages / docs map)",
+      "user_initiated": false,
+      "source": "binary: code.claude.com/docs/* link + docs-map references"
+    },
+    {
+      "host": "api.anthropic.com (or configured provider/gateway host)",
+      "match": "exact",
+      "origin": "provider",
+      "category": "llm-inference",
+      "cause": "Model inference / provider auth via Amazon Bedrock, Google Vertex, Microsoft Foundry, or an LLM gateway",
+      "user_initiated": true,
+      "source": "network-config: provider routing section",
+      "notes": "Representative entry: when a provider/gateway is configured, model + auth traffic go to Bedrock (bedrock-runtime.*.amazonaws.com + STS), Vertex (*.googleapis.com), Foundry (*.microsoftonline.com), or the gateway host instead of api.anthropic.com. Only dialed when configured."
+    }
+  ],
+  "opt_in": [
+    {
+      "host_pattern": "OTEL_EXPORTER_OTLP_ENDPOINT (e.g. *.datadoghq.com) and default operational telemetry",
+      "origin": "harness-core",
+      "category": "telemetry",
+      "cause": "OpenTelemetry metrics/logs export and operational telemetry",
+      "user_initiated": false,
+      "source": "network-config: 'optional operational telemetry by default'; data-usage/telemetry-services",
+      "notes": "Claude Code sends operational telemetry by default (disable via env). A Datadog intake host observed in a sandbox audit is the OTEL export configured by OTEL_EXPORTER_OTLP_ENDPOINT (local/TNG env), not a Claude Code default endpoint."
+    }
+  ],
+  "not_egress": [
+    {
+      "host": "*.claudeusercontent.com",
+      "note": "Required by the artifact VIEWER's browser (loads artifact content from a sandboxed subdomain), NOT by the Claude Code CLI. Documented for completeness; not a CLI dial, so not shown as a cause."
+    }
+  ]
+}

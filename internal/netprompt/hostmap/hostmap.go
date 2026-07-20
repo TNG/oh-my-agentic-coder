@@ -17,6 +17,9 @@ import (
 //go:embed opencode-egress.json
 var opencodeEgress []byte
 
+//go:embed claude-code-egress.json
+var claudeCodeEgress []byte
+
 // Entry is one host→cause mapping. The whole entry is returned (not just the
 // cause string) so callers that also know the originating process can honour
 // the process-dependent disambiguation recorded in Notes.
@@ -44,17 +47,26 @@ type file struct {
 // For returns the egress map for a harness, or nil when none is known for it.
 // A nil *Map is safe to use: its Lookup always returns (Entry{}, false), so
 // callers need no nil check.
+//
+// harness must be a CANONICAL harness name (e.g. "opencode", "claude-code"),
+// as resolved through config.LookupHarness by the caller — not a binary
+// basename or alias ("claude"). Keying on the canonical name keeps harness
+// identity single-sourced in the config registry.
 func For(harness string) *Map {
+	var raw []byte
 	switch strings.ToLower(strings.TrimSpace(harness)) {
 	case "opencode":
-		m, err := parse(opencodeEgress)
-		if err != nil {
-			return nil
-		}
-		return m
+		raw = opencodeEgress
+	case "claude-code":
+		raw = claudeCodeEgress
 	default:
 		return nil
 	}
+	m, err := parse(raw)
+	if err != nil {
+		return nil
+	}
+	return m
 }
 
 func parse(raw []byte) (*Map, error) {

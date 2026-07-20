@@ -11,7 +11,11 @@ func TestHarnessName(t *testing.T) {
 		{[]string{"/usr/bin/opencode.exe", "serve"}, "opencode"},
 		{[]string{"OpenCode"}, "opencode"},
 		{[]string{"codex"}, "codex"},
-		{[]string{"~/.bun/bin/claude"}, "claude"},
+		// Binary "claude" resolves to the canonical harness name "claude-code"
+		// (alias -> canonical), the single source of truth the host map keys on.
+		{[]string{"~/.bun/bin/claude"}, "claude-code"},
+		{[]string{"cc"}, "claude-code"}, // alias
+		{[]string{"node"}, ""},          // not a known harness
 		{nil, ""},
 		{[]string{}, ""},
 	}

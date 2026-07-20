@@ -1,10 +1,29 @@
-# opencode egress host map
+# Egress host maps
 
-`opencode-egress.json` maps an egress **hostname** to the opencode subsystem
-that dials it and a human-readable *cause*. It is the data behind a future
-network-prompt enhancement: because the sandbox proxy never terminates TLS,
-only `host`, `port`, and the source process are observable — this map recovers
-the *why* from the hostname alone.
+`<harness>-egress.json` maps an egress **hostname** to the harness subsystem
+that dials it and a human-readable *cause*, powering the network prompt's
+"Likely cause" line. Because the sandbox proxy never terminates TLS, only
+`host`, `port`, and the source process are observable — this map recovers the
+*why* from the hostname alone.
+
+Maps ship per harness: `opencode-egress.json`, `claude-code-egress.json`.
+
+## Multi-harness contract
+
+- **One file per harness**, named `<canonical>-egress.json` where `<canonical>`
+  is the harness's canonical name in the `config` registry (`opencode`,
+  `claude-code`, …) — *not* a binary basename or alias.
+- **`For(harness)` keys on the canonical name.** The caller resolves identity
+  once through `config.LookupHarness` (in `sandboxrun.harnessName`) so binary
+  basenames and aliases (`claude`, `cc`) collapse to `claude-code` before they
+  reach the map. This keeps harness identity single-sourced in `config`.
+- **The same host can mean different things per harness** — e.g.
+  `raw.githubusercontent.com` is a tree-sitter grammar in opencode but the
+  `/release-notes` changelog in claude-code. Keying by harness is what keeps the
+  cause honest; an unknown harness yields a nil map (no cause line), never a
+  wrong one.
+- **Adding a harness is a data task:** audit that harness's egress, drop in
+  `<canonical>-egress.json`, add one `case` + `//go:embed` in `hostmap.go`.
 
 ## Why this exists
 
@@ -35,7 +54,7 @@ from" without weakening the guardrail by silently allowlisting the hosts.
 | field | meaning |
 |-------|---------|
 | `host` / `match` | hostname and match mode (`exact` \| `suffix`) |
-| `origin` | `opencode-core` \| `opencode-tool` \| `provider` \| `external` (see `meta.origin_values`) |
+| `origin` | harness-specific — see each file's `meta.origin_values` (opencode: `opencode-core`/`opencode-tool`/`provider`/`external`; claude-code: `harness-core`/`provider`/`browser`) |
 | `category` | `render`, `language-tooling`, `catalog`, `config-assets`, `auth`, `integration`, `llm-inference`, `telemetry` |
 | `cause` | the string a prompt would show as "likely cause" |
 | `user_initiated` | `false` = background infra; `true` = agent/user-driven |
@@ -49,25 +68,42 @@ never dialed at runtime. Documented so it is not re-investigated.
 
 ## Provenance & regeneration
 
+Provenance differs per harness — each file's `meta` block records its own
+sources. Both are **manually authored, not generated.**
+
+### opencode (`opencode-egress.json`)
+
 - Source: `anomalyco/opencode` @ `355a0bcf5` (`v1.17.8`), audited against the
-  installed `v1.17.12`.
-- **Manually authored, not generated.** Rebuild by re-auditing call-sites:
+  installed `v1.17.12` — call-site attribution from the real source tree.
+- Rebuild by re-auditing call-sites:
 
 ```sh
-# hosts hardcoded in the running packages
 grep -rhoiE "https://[a-z0-9._-]+" packages --include=*.ts --include=*.go \
   | sed -E 's#https://##' | sort | uniq -c | sort -rn
-
-# attribute a host to its subsystem
 grep -rniE "<host>" packages --include=*.ts --include=*.go | grep -viE "test|dist"
 ```
 
-Key call-sites: `packages/tui/src/parsers-config.ts` (grammars/queries),
-`packages/opencode/src/lsp/server.ts` (LSP downloads),
-`packages/core/src/models-dev.ts` (catalog),
-`packages/core/src/npm-config.ts` (npm registry),
-`packages/opencode/src/installation/index.ts` (self-update),
-`packages/core/src/observability/otlp.ts` (opt-in telemetry).
+Key call-sites: `parsers-config.ts` (grammars/queries), `lsp/server.ts` (LSP
+downloads), `models-dev.ts` (catalog), `npm-config.ts` (registry),
+`installation/index.ts` (self-update), `observability/otlp.ts` (opt-in
+telemetry). Re-verify on opencode bumps: new languages/LSPs add hosts.
 
-Re-verify on opencode minor/major bumps: new languages add grammar hosts, new
-LSPs add download hosts.
+### claude-code (`claude-code-egress.json`)
+
+- **Authority:** Anthropic's documented allowlist —
+  <https://code.claude.com/docs/en/network-config> ("Network access
+  requirements") — corroborated against the Claude Code **v2.1.215** binary and
+  a sandbox-audit run.
+- **Coarser than opencode's on purpose:** the shipped Claude Code is a minified
+  bundle with no source repo, so attribution is host-level from the published
+  allowlist, not call-site. Rebuild by re-reading that doc on Claude Code
+  releases and diffing the binary's embedded hosts:
+
+```sh
+strings -n 6 "$(readlink -f "$(command -v claude)")" \
+  | grep -oiE "https://[a-z0-9._-]+" | sed -E 's#https://##' | sort | uniq -c | sort -rn
+```
+
+Re-verify when Anthropic updates the network-config allowlist (hosts and their
+purposes change across versions — e.g. the installer host moved off
+`storage.googleapis.com` in 2.1.116).

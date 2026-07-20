@@ -18,11 +18,38 @@ func TestForCaseInsensitiveAndTrimmed(t *testing.T) {
 	}
 }
 
-func TestForUnknownHarnessNil(t *testing.T) {
-	for _, h := range []string{"codex", "copilot", "claude", ""} {
+func TestForClaudeCodeLoads(t *testing.T) {
+	m := For("claude-code")
+	if m == nil {
+		t.Fatal("For(claude-code) returned nil; embedded JSON should parse")
+	}
+	if _, ok := m.Lookup("downloads.claude.ai"); !ok {
+		t.Error("expected downloads.claude.ai in the claude-code map")
+	}
+}
+
+func TestForCanonicalOnly_AliasMisses(t *testing.T) {
+	// For keys on canonical names; the alias "claude" is resolved to
+	// "claude-code" upstream (config.LookupHarness), so For itself must not
+	// accept it. Unknown/empty harnesses also miss.
+	for _, h := range []string{"claude", "cc", "codex", "copilot", ""} {
 		if m := For(h); m != nil {
-			t.Errorf("For(%q) = non-nil; only opencode has a map", h)
+			t.Errorf("For(%q) = non-nil; expected no map", h)
 		}
+	}
+}
+
+// TestSameHostDivergesByHarness locks the reason the map is harness-keyed:
+// raw.githubusercontent.com is a tree-sitter grammar in opencode but a
+// release-notes changelog in claude-code.
+func TestSameHostDivergesByHarness(t *testing.T) {
+	oc, _ := For("opencode").Lookup("raw.githubusercontent.com")
+	cc, _ := For("claude-code").Lookup("raw.githubusercontent.com")
+	if oc.Cause == "" || cc.Cause == "" {
+		t.Fatal("both harnesses should map raw.githubusercontent.com")
+	}
+	if oc.Cause == cc.Cause {
+		t.Errorf("expected divergent causes per harness, both = %q", oc.Cause)
 	}
 }
 

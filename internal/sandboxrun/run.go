@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/tngtech/oh-my-agentic-coder/internal/audit"
+	"github.com/tngtech/oh-my-agentic-coder/internal/config"
 	"github.com/tngtech/oh-my-agentic-coder/internal/intent"
 	"github.com/tngtech/oh-my-agentic-coder/internal/netprompt"
 	"github.com/tngtech/oh-my-agentic-coder/internal/netprompt/hostmap"
@@ -238,17 +239,22 @@ func canonicalCachePath(path string) (string, error) {
 	return abs, nil
 }
 
-// harnessName derives the harness identity from the sandboxed command's
-// binary (e.g. ["opencode","serve"] -> "opencode"), lowercased and stripped of
-// any directory and ".exe" suffix. It gates harness-specific behaviour such as
-// the egress host map; an unknown or empty command yields "".
+// harnessName resolves the canonical harness identity from the sandboxed
+// command's binary (e.g. ["claude"] -> "claude-code"), so harness-specific
+// behaviour such as the egress host map keys on one source of truth — the
+// config registry — rather than the raw binary basename (which diverges from
+// the canonical name, e.g. "claude" vs "claude-code"). Returns "" when the
+// command is empty or names no known harness.
 func harnessName(innerArgv []string) string {
 	if len(innerArgv) == 0 {
 		return ""
 	}
 	base := filepath.Base(innerArgv[0])
-	base = strings.TrimSuffix(base, filepath.Ext(base))
-	return strings.ToLower(base)
+	base = strings.ToLower(strings.TrimSuffix(base, filepath.Ext(base)))
+	if h, ok := config.LookupHarness(base); ok {
+		return h.Name
+	}
+	return ""
 }
 
 // buildProxy assembles page policy, prompter, filter and server. The
