@@ -169,3 +169,47 @@ jobs:
 
       - name: Run model-free e2e tests
         run: go test -tags=e2e_fast -race -count=1 -timeout=5m ./internal/e2e/
+
+  external-tooling:
+    # Proves proxy-unaware / proxy-aware external toolchains actually reach
+    # the network through the omac filtering proxy under a filtered bwrap
+    # sandbox (build tag `external_tools`): curl (honors HTTP(S)_PROXY) and
+    # Node's native fetch via the `node` proxy_injection family
+    # (NODE_USE_ENV_PROXY, Node >= 24). Split out from the main test job
+    # because it needs a real tool matrix (bubblewrap + Landlock ABI >= 4 +
+    # curl + Node 24) that the hermetic unit tests don't; keeping it separate
+    # keeps `go test ./...` free of that runtime dependency. Linux-only: the
+    # kernel proxy/Landlock path is Linux-specific.
+    name: "External tooling (proxy egress)"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install bubblewrap
+        run: |
+          sudo apt-get update && sudo apt-get install -y bubblewrap
+          # Ubuntu 24.04 AppArmor restricts unprivileged user namespaces;
+          # grant bwrap the userns permission (see the test job above) so the
+          # sandbox launches instead of silently skipping via requireBwrap.
+          sudo tee /etc/apparmor.d/bwrap > /dev/null <<'EOF'
+          abi <abi/4.0>,
+          /usr/bin/bwrap flags=(unconfined) {
+            userns,
+          }
+          EOF
+          sudo apparmor_parser -r /etc/apparmor.d/bwrap
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Run external-tooling proxy tests
+        run: go test -tags=external_tools -count=1 -timeout=10m ./internal/sandboxrun/
