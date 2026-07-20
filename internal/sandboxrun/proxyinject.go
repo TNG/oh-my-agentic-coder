@@ -108,7 +108,6 @@ func JVMProxyToolOptions(proxyURL string) (string, error) {
 		opts = append(opts,
 			fmt.Sprintf("-D%s.proxyHost=%s", scheme, host),
 			fmt.Sprintf("-D%s.proxyPort=%s", scheme, port),
-			fmt.Sprintf("-D%s.nonProxyHosts=localhost|127.*|[::1]", scheme),
 		)
 		if user != "" {
 			opts = append(opts,
@@ -117,6 +116,9 @@ func JVMProxyToolOptions(proxyURL string) (string, error) {
 			)
 		}
 	}
+	// The JDK has no https.nonProxyHosts; http.nonProxyHosts governs both
+	// schemes, so set it once.
+	opts = append(opts, "-Dhttp.nonProxyHosts=localhost|127.*|[::1]")
 	// Java 8u111+ disables Basic auth on HTTPS CONNECT tunnels by
 	// default; re-enable it so the proxy token is accepted.
 	opts = append(opts, "-Djdk.http.auth.tunneling.disabledSchemes=")

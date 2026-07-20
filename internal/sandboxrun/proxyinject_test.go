@@ -67,7 +67,7 @@ func TestJVMProxyToolOptions(t *testing.T) {
 		"-Dhttps.proxyPassword=sekret",
 		"-Dhttp.proxyUser=omac",
 		"-Dhttp.proxyPassword=sekret",
-		"-Dhttps.nonProxyHosts=localhost|127.*|[::1]",
+		"-Dhttp.nonProxyHosts=localhost|127.*|[::1]",
 		"-Djdk.http.auth.tunneling.disabledSchemes=",
 	}
 	for _, w := range want {
