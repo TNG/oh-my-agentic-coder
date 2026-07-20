@@ -74,11 +74,16 @@ func nodeProxyInject(proxyURL string) (map[string]string, error) {
 	return map[string]string{"NODE_USE_ENV_PROXY": "1"}, nil
 }
 
-// JVMProxyToolOptions renders a JAVA_TOOL_OPTIONS value that routes every
+// JVMProxyToolOptions renders a JAVA_TOOL_OPTIONS value that points every
 // JVM launched in the sandbox — Gradle, Maven, sbt, Kotlin, plain java —
-// through proxyURL. Setting the proxy system properties this way makes the
-// JVM dial the omac proxy and forward the proxy Basic-auth credentials that
-// the CONNECT tunnel requires (bare proxyHost/Port would 407).
+// at proxyURL via the http(s).proxyHost/Port system properties.
+//
+// The proxyUser/proxyPassword properties carry the proxy's Basic-auth
+// credentials, but only tools that parse them themselves (Gradle, Maven)
+// authenticate with them. The core JDK HTTP clients (HttpURLConnection,
+// java.net.http.HttpClient — e.g. a bare java) ignore these and would 407
+// against the CONNECT tunnel; host/port routing still applies. omac targets
+// the JVM build tools here — bare-JDK proxy auth is out of scope.
 //
 // proxyURL is netproxy.Server.ProxyURL (http://omac:<token>@127.0.0.1:<port>).
 // The token already lives in the child's HTTP_PROXY variable, so this
