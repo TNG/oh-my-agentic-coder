@@ -27,7 +27,7 @@ type blockingPrompter struct {
 	started atomic.Int32
 }
 
-func (p *blockingPrompter) Prompt(host string, port int) PromptResult {
+func (p *blockingPrompter) Prompt(ctx context.Context, host string, port int) PromptResult {
 	p.started.Add(1)
 	<-p.block
 	return p.res
@@ -681,7 +681,7 @@ func TestServerForwardThroughUpstreamWithAuth(t *testing.T) {
 // delayedAllowPrompter sleeps (simulating a slow human) then allows.
 type delayedAllowPrompter struct{ delay time.Duration }
 
-func (p delayedAllowPrompter) Prompt(host string, port int) PromptResult {
+func (p delayedAllowPrompter) Prompt(ctx context.Context, host string, port int) PromptResult {
 	time.Sleep(p.delay)
 	return PromptResult{Allow: true}
 }

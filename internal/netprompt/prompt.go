@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/tngtech/oh-my-agentic-coder/internal/netprompt/hostmap"
+	"github.com/tngtech/oh-my-agentic-coder/internal/netprompt/origin"
 	"github.com/tngtech/oh-my-agentic-coder/internal/netproxy"
 )
 
@@ -129,10 +130,13 @@ func RegisteredSuffixHint(host string) string {
 // host (empty means unknown, line omitted). cause is labelled "Likely" because
 // it is inferred from the hostname alone — the proxy never sees the URL — and
 // may reflect background harness infrastructure rather than the agent.
-func promptText(host string, port int, intent, cause string) string {
+func promptText(host string, port int, intent, cause, originLine string) string {
 	target := fmt.Sprintf("%s:%d", host, port)
 	var b strings.Builder
 	fmt.Fprintf(&b, "The sandboxed process is trying to reach:\n\n    %s\n\n", target)
+	if originLine != "" {
+		fmt.Fprintf(&b, "Origin: %s\n", originLine)
+	}
 	if cause != "" {
 		fmt.Fprintf(&b, "Likely cause: %s\n", cause)
 	}
@@ -157,7 +161,7 @@ type dialogBackend interface {
 	// show blocks until the user chooses, the dialog is cancelled, or
 	// ctx is done (the implementation must kill the dialog process).
 	// Returns the chosen label ("" on cancel).
-	show(ctx context.Context, host string, port int, suffix, intent, cause string) (string, error)
+	show(ctx context.Context, host string, port int, suffix, intent, cause, originLine string) (string, error)
 }
 
 // Prompter implements netproxy.Prompter with native dialogs.
@@ -168,7 +172,8 @@ type Prompter struct {
 	logf              func(format string, args ...any)
 	lookupIntent      func(host string) (string, bool)
 	recordExplainMore func(host string)
-	hostMap           *hostmap.Map // harness egress map; nil => no cause line
+	hostMap           *hostmap.Map    // harness egress map; nil => no cause line
+	origin            origin.Resolver // process attribution; nil => no origin line
 }
 
 // isTruthyEnv reports whether an env var value means "on". Anything else
@@ -190,8 +195,10 @@ func isTruthyEnv(v string) bool {
 // so the click is recorded where the agent's out-of-band GET lookup can
 // reach it (an HTTPS/CONNECT denial cannot carry the re-ask in-band).
 // hostMap, when non-nil, supplies the "likely cause" line for a host; nil (a
-// non-opencode harness, or a load failure) omits the line.
-func NewPrompter(timeoutSecs int, logf func(string, ...any), lookupIntent func(host string) (string, bool), recordExplainMore func(host string), hostMap *hostmap.Map) (*Prompter, bool) {
+// non-opencode harness, or a load failure) omits the line. resolver, when
+// non-nil, supplies the originating-process "Origin" line; nil (or an
+// unsupported OS) omits it.
+func NewPrompter(timeoutSecs int, logf func(string, ...any), lookupIntent func(host string) (string, bool), recordExplainMore func(host string), hostMap *hostmap.Map, resolver origin.Resolver) (*Prompter, bool) {
 	if logf == nil {
 		logf = func(string, ...any) {}
 	}
@@ -201,6 +208,7 @@ func NewPrompter(timeoutSecs int, logf func(string, ...any), lookupIntent func(h
 		lookupIntent:      lookupIntent,
 		recordExplainMore: recordExplainMore,
 		hostMap:           hostMap,
+		origin:            resolver,
 	}
 	// Stub backend: activated by a truthy OMAC_PROMPT_STUB (1/true/yes/on).
 	// Reads per-host decisions from OMAC_PROMPT_DECISIONS (JSON file). Used
@@ -237,7 +245,7 @@ func NewPrompter(timeoutSecs int, logf func(string, ...any), lookupIntent func(h
 // (run.go) wires OnUnavailableAllow into the filter, which handles the
 // no-backend case before Prompt is ever called. A timed-out dialog is
 // always deny (nono: "a missed prompt never silently allows").
-func (p *Prompter) Prompt(host string, port int) netproxy.PromptResult {
+func (p *Prompter) Prompt(ctx context.Context, host string, port int) netproxy.PromptResult {
 	var backend dialogBackend
 	for _, b := range p.backends {
 		if b.available() {
@@ -273,11 +281,12 @@ func (p *Prompter) Prompt(host string, port int) netproxy.PromptResult {
 	if e, ok := p.hostMap.Lookup(host); ok {
 		cause = e.Cause
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), p.timeout)
+	originLine := p.resolveOrigin(ctx)
+	dctx, cancel := context.WithTimeout(context.Background(), p.timeout)
 	defer cancel()
-	label, err := backend.show(ctx, host, port, suffix, intent, cause)
+	label, err := backend.show(dctx, host, port, suffix, intent, cause, originLine)
 	if err != nil {
-		if ctx.Err() != nil {
+		if dctx.Err() != nil {
 			p.logf("omac sandbox: network prompt for %s:%d timed out", host, port)
 		} else {
 			p.logf("omac sandbox: network prompt failed: %v", err)
@@ -295,6 +304,25 @@ func (p *Prompter) Prompt(host string, port int) netproxy.PromptResult {
 	return result
 }
 
+// resolveOrigin attributes the dial to a process for the "Origin" line. It runs
+// only here (the prompt path), never on the allow/deny hot path. Empty string
+// when there is no resolver, no ClientSource on ctx, or resolution fails —
+// which simply omits the line. The PID is the host PID (see origin.Origin).
+func (p *Prompter) resolveOrigin(ctx context.Context) string {
+	if p.origin == nil {
+		return ""
+	}
+	cs, ok := netproxy.ClientSourceFromContext(ctx)
+	if !ok {
+		return ""
+	}
+	o, ok := p.origin.Resolve(cs.Src, cs.Proxy)
+	if !ok {
+		return ""
+	}
+	return fmt.Sprintf("%s (host pid %d)", o.Name, o.PID)
+}
+
 // --- macOS ---
 
 type osascriptBackend struct{}
@@ -306,7 +334,7 @@ func (osascriptBackend) available() bool {
 	return err == nil
 }
 
-func (osascriptBackend) show(ctx context.Context, host string, port int, suffix, intent, cause string) (string, error) {
+func (osascriptBackend) show(ctx context.Context, host string, port int, suffix, intent, cause, originLine string) (string, error) {
 	opts := optionLabels(suffix)
 	quoted := make([]string, len(opts))
 	for i, o := range opts {
@@ -315,7 +343,7 @@ func (osascriptBackend) show(ctx context.Context, host string, port int, suffix,
 	script := fmt.Sprintf(
 		`choose from list {%s} with title "omac: network access" with prompt %s default items {%s} OK button name "Select" cancel button name "Cancel"`,
 		strings.Join(quoted, ", "),
-		appleScriptString(promptText(host, port, intent, cause)),
+		appleScriptString(promptText(host, port, intent, cause, originLine)),
 		appleScriptString("Deny once"),
 	)
 	out, err := exec.CommandContext(ctx, "osascript", "-e", script).Output()
@@ -357,12 +385,12 @@ func (zenityBackend) available() bool {
 // zenityArgs builds the full zenity radiolist argv, including the explicit
 // window size. Extracted so the sizing can be asserted without launching a
 // dialog.
-func zenityArgs(host string, port int, suffix, intent, cause string) []string {
+func zenityArgs(host string, port int, suffix, intent, cause, originLine string) []string {
 	width, height := dialogDimensions()
 	args := []string{
 		"--list", "--radiolist",
 		"--title", "omac: network access",
-		"--text", promptText(host, port, intent, cause),
+		"--text", promptText(host, port, intent, cause, originLine),
 		"--column", "", "--column", "Decision",
 		"--width", strconv.Itoa(width),
 		"--height", strconv.Itoa(height),
@@ -377,8 +405,8 @@ func zenityArgs(host string, port int, suffix, intent, cause string) []string {
 	return args
 }
 
-func (zenityBackend) show(ctx context.Context, host string, port int, suffix, intent, cause string) (string, error) {
-	out, err := exec.CommandContext(ctx, "zenity", zenityArgs(host, port, suffix, intent, cause)...).Output()
+func (zenityBackend) show(ctx context.Context, host string, port int, suffix, intent, cause, originLine string) (string, error) {
+	out, err := exec.CommandContext(ctx, "zenity", zenityArgs(host, port, suffix, intent, cause, originLine)...).Output()
 	if err != nil {
 		// zenity exits 1 on Cancel; treat as cancel unless ctx expired.
 		if ctx.Err() != nil {
@@ -409,13 +437,13 @@ func (kdialogBackend) available() bool {
 // positional argument, before the option triples. Verified against
 // KDE/kdialog master; geometry is applied under X11/XWayland (on a pure
 // Wayland build kdialog accepts but may ignore it — never errors).
-func kdialogArgs(host string, port int, suffix, intent, cause string) []string {
+func kdialogArgs(host string, port int, suffix, intent, cause, originLine string) []string {
 	opts := optionLabels(suffix)
 	width, height := dialogDimensions()
 	args := []string{
 		"--geometry", fmt.Sprintf("%dx%d", width, height),
 		"--title", "omac: network access",
-		"--radiolist", promptText(host, port, intent, cause),
+		"--radiolist", promptText(host, port, intent, cause, originLine),
 	}
 	for i, o := range opts {
 		state := "off"
@@ -427,9 +455,9 @@ func kdialogArgs(host string, port int, suffix, intent, cause string) []string {
 	return args
 }
 
-func (kdialogBackend) show(ctx context.Context, host string, port int, suffix, intent, cause string) (string, error) {
+func (kdialogBackend) show(ctx context.Context, host string, port int, suffix, intent, cause, originLine string) (string, error) {
 	opts := optionLabels(suffix)
-	out, err := exec.CommandContext(ctx, "kdialog", kdialogArgs(host, port, suffix, intent, cause)...).Output()
+	out, err := exec.CommandContext(ctx, "kdialog", kdialogArgs(host, port, suffix, intent, cause, originLine)...).Output()
 	if err != nil {
 		if ctx.Err() != nil {
 			return "", ctx.Err()

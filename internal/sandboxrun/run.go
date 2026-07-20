@@ -13,6 +13,7 @@ import (
 	"github.com/tngtech/oh-my-agentic-coder/internal/intent"
 	"github.com/tngtech/oh-my-agentic-coder/internal/netprompt"
 	"github.com/tngtech/oh-my-agentic-coder/internal/netprompt/hostmap"
+	"github.com/tngtech/oh-my-agentic-coder/internal/netprompt/origin"
 	"github.com/tngtech/oh-my-agentic-coder/internal/netproxy"
 	"github.com/tngtech/oh-my-agentic-coder/internal/sandbox"
 	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxdeny"
@@ -270,7 +271,7 @@ func buildProxy(p *sandboxprofile.Profile, profilePath string, stderr io.Writer,
 			return intent.LookupOverHTTP(intentBase, host)
 		}, func(host string) {
 			intent.MarkExplainMoreOverHTTP(intentBase, host)
-		}, hostmap.For(harness))
+		}, hostmap.For(harness), origin.NewResolver())
 		if available {
 			prompter = np
 		} else {

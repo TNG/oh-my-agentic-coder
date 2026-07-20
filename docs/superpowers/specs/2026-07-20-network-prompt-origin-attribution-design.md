@@ -1,7 +1,7 @@
 # Origin attribution for sandbox network prompts
 
 **Date:** 2026-07-20
-**Status:** Phased after independent review. **Phase 1 (cause line) implemented; Phase 2 (`/proc` Origin) deferred.**
+**Status:** Phased after independent review. **Phase 1 (cause line) and Phase 2 (`/proc` Origin) implemented.**
 **Companion:** [Intent declarations for sandbox prompts](2026-07-07-intent-declarations-design.md)
 **Data dependency:** `internal/netprompt/hostmap/opencode-egress.json` (host→subsystem map, already landed).
 
@@ -29,14 +29,16 @@ found the design over-scoped and surfaced fixes. Resulting plan:
   resolved process into cause selection for process-dependent hosts
   (`raw.githubusercontent.com`). Phase 1 renders the label **"Likely cause:"** —
   the "Likely" is the honest hedge that it may be background infra, not the agent.
-- **Phase 2 corrections (when built):** match the full `/proc/net/tcp` 4-tuple
-  (`local == 127.0.0.1:<srcport>` **and** `rem == proxy LocalAddr`, state
-  ESTABLISHED), not local port alone (ephemeral ports can repeat across
-  connections); inject the resolver at `server.go` (where `conn` is in hand) via a
-  closure, rather than threading `src netip.AddrPort` through `Filter.Check`; add a
-  real-socket integration test (dial a loopback listener, assert resolved PID ==
-  `os.Getpid()`) alongside the `/proc` fixture test; note in the dialog that the PID
-  shown is the host PID.
+- **Phase 2 corrections (as built):** matches the full `/proc/net/tcp` 4-tuple
+  (`local == src` **and** `rem == proxy`), not local port alone (ephemeral ports can
+  repeat across connections). The per-connection endpoints travel on the **request
+  context** (`netproxy.WithClientSource`, set in `server.go` where `conn` is in
+  hand) — `Filter.Check`/`CheckHost` gain no source parameter; only the `Prompter`
+  interface gains `ctx`, and the resolver lives in the prompter, invoked lazily on
+  the prompt path only. The `/proc` resolver is a build-tagged package
+  (`internal/netprompt/origin`, noop off-Linux). It reads `comm` only, never
+  `cmdline`. The dialog labels the number "host pid". A real-socket integration test
+  (dial a loopback listener, assert resolved PID == `os.Getpid()`) backs the parser.
 
 The sections below describe the full (both-phase) design; treat the `/proc`/Origin
 parts and the `Check`/`Prompt` interface change as **Phase 2**.

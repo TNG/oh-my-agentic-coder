@@ -12,6 +12,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
@@ -35,14 +36,14 @@ func main() {
 	}
 
 	logf := func(format string, a ...any) { fmt.Fprintf(os.Stderr, format+"\n", a...) }
-	p, ok := netprompt.NewPrompter(120, logf, lookupIntent, nil, nil)
+	p, ok := netprompt.NewPrompter(120, logf, lookupIntent, nil, nil, nil)
 	if !ok {
 		fmt.Fprintln(os.Stderr, "no dialog backend available (install zenity or kdialog on Linux, osascript ships with macOS)")
 		os.Exit(1)
 	}
 
 	fmt.Fprintf(os.Stderr, "showing network-access dialog for %s:%d ...\n", *host, *port)
-	res := p.Prompt(*host, *port)
+	res := p.Prompt(context.Background(), *host, *port)
 	fmt.Printf("decision: allow=%v persist=%v scope=%q suffix=%q needs_intent=%v\n",
 		res.Allow, res.Persist, res.Scope, res.Suffix, res.NeedsIntent)
 }
