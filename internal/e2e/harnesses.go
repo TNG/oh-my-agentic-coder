@@ -178,8 +178,10 @@ func harnessByName(name string) (harnessConfig, bool) {
 //   - CWD (macOS only)   — opencode lstat's the process CWD; sandbox
 //     denies it with EPERM unless explicitly granted
 //
-// Paths: opencode writes to ~/.cache/opencode and ~/.local/{share,state}/opencode
-// at runtime — these are in the base allow list.
+// Paths: opencode writes to ~/.local/{share,state}/opencode at runtime —
+// these are granted via Harness.SandboxDirs at launch. The tool cache
+// (XDG_CACHE_HOME / OMAC_CACHE_DIR) is injected by omac and isolated
+// per workdir (Tasks 1-10); ~/.cache is NOT broad-granted by the profile.
 func opencodeConfig() harnessConfig {
 	return harnessConfig{
 		Name:       "opencode",

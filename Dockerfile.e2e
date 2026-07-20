@@ -14,16 +14,22 @@ FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive \
     GOPATH=/root/go \
-    PATH=/root/go/bin:/root/.bun/bin:/usr/local/go/bin:/root/.local/bin:$PATH
+    PATH=/root/go/bin:/root/.bun/bin:/usr/local/go/bin:/root/.local/bin:/root/.cargo/bin:$PATH
 
 # Core toolchain: Go, bun, node, bubblewrap, git, curl, jq.
+# python3-pip + build-essential are required by the cache isolation
+# e2e (pip cache probe); rustup provides the cargo toolchain the
+# cargo cache probe exercises. CI is authoritative (the local Docker
+# path covers Linux/bwrap only — macOS Seatbelt runs in GitHub Actions).
 RUN apt-get update && apt-get install -y --no-install-recommends \
         bubblewrap \
+        build-essential \
         ca-certificates \
         curl \
         git \
         jq \
         python3 \
+        python3-pip \
         unzip \
         xz-utils \
     && rm -rf /var/lib/apt/lists/*
@@ -37,6 +43,12 @@ RUN curl -fsSL https://bun.sh/install | bash
 # Node 24 — claude-code/codex/copilot harness installs need npm.
 RUN curl -fsSL https://nodejs.org/dist/v24.0.0/node-v24.0.0-linux-x64.tar.xz \
     | tar -xJ -C /usr/local --strip-components=1
+
+# Rustup minimal stable toolchain — the cargo cache probe (TestE2ECacheTools)
+# builds a real crate and asserts CARGO_HOME is redirected under
+# OMAC_CACHE_DIR. `minimal` keeps the image smaller; `cargo` is the
+# only component the probe needs.
+RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
 
 # AppArmor profile so bwrap can create user namespaces inside the container.
 # Mirrors .github/workflows/e2e.yml:45-50. The container runs --privileged,

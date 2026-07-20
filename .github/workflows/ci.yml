@@ -169,3 +169,37 @@ jobs:
 
       - name: Run model-free e2e tests
         run: go test -tags=e2e_fast -race -count=1 -timeout=5m ./internal/e2e/
+
+  cache-integration:
+    name: Cache integration (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap python3-pip
+          printf '%s\n' \
+            'abi <abi/4.0>,' \
+            '/usr/bin/bwrap flags=(unconfined) {' \
+            '  userns,' \
+            '}' \
+            | sudo tee /etc/apparmor.d/bwrap > /dev/null
+          sudo apparmor_parser -r /etc/apparmor.d/bwrap
+          bwrap --ro-bind / / -- /bin/true
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: dtolnay/rust-toolchain@stable
+      - run: go test -count=1 -run '^TestIntegration.*Cache' ./internal/sandboxrun
+      - run: go test -tags=e2e -count=1 -timeout=15m -run '^TestE2ECache' ./internal/e2e/

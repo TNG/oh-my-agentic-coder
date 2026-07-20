@@ -17,6 +17,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"text/tabwriter"
 
@@ -24,6 +25,7 @@ import (
 	"github.com/tngtech/oh-my-agentic-coder/internal/profileaudit"
 	"github.com/tngtech/oh-my-agentic-coder/internal/registry"
 	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxprofile"
+	"github.com/tngtech/oh-my-agentic-coder/internal/toolcache"
 )
 
 // provEntry is one row in any provenance section.
@@ -65,6 +67,18 @@ type skillsView struct {
 	Entries []provEntry `json:"entries"`
 }
 
+// cacheView describes the default persistent tool-cache scope for the
+// current workdir — not a live ephemeral/serve process's scope. The
+// environment field is the eight-variable map toolcache.Environment
+// produces for this scope; provenance does not re-derive hashing or
+// environment mappings.
+type cacheView struct {
+	Scope       string            `json:"scope"`
+	Mode        string            `json:"mode"`
+	Path        string            `json:"path"`
+	Environment map[string]string `json:"environment"`
+}
+
 // provenanceView is the top-level payload. JSON mode marshals this
 // directly; text mode walks each section.
 type provenanceView struct {
@@ -73,6 +87,7 @@ type provenanceView struct {
 	Filesystem  filesystemView  `json:"filesystem"`
 	Environment environmentView `json:"environment"`
 	Skills      skillsView      `json:"skills"`
+	Cache       cacheView       `json:"cache"`
 }
 
 // hardDenyHosts mirrors netproxy.hardDenyHosts (not exported). Kept here
@@ -108,7 +123,32 @@ func buildProvenanceView(workdir, profileRef string) (*provenanceView, error) {
 	// --- Skills ---
 	view.Skills = buildSkillsView(workdir)
 
+	// --- Cache (default persistent scope for this workdir) ---
+	cv, err := buildCacheView(workdir)
+	if err != nil {
+		return nil, fmt.Errorf("cache: %w", err)
+	}
+	view.Cache = cv
+
 	return view, nil
+}
+
+// buildCacheView describes the default persistent cache scope for the
+// given workdir via toolcache.DescribePersistent — which does NOT create
+// the directory. It always reports the default workdir scope, not a live
+// ephemeral or serve-process scope. An error from DescribePersistent
+// (e.g. HOME unset) is returned to the caller rather than swallowed.
+func buildCacheView(workdir string) (cacheView, error) {
+	scope, err := toolcache.DescribePersistent(toolcache.DomainWorkdir, workdir)
+	if err != nil {
+		return cacheView{}, err
+	}
+	return cacheView{
+		Scope:       string(scope.Domain),
+		Mode:        string(scope.Mode),
+		Path:        scope.Dir,
+		Environment: toolcache.Environment(scope.Dir, scope.Mode),
+	}, nil
 }
 
 // classifyProfilePath attributes a profile path to a config layer.
@@ -273,6 +313,25 @@ func writeProvenanceText(w io.Writer, v *provenanceView) int {
 	// Skills
 	fmt.Fprintf(w, "\nskills (workdir: %s)\n", v.Skills.Workdir)
 	writeProvTable(w, v.Skills.Entries)
+
+	// Cache
+	fmt.Fprintf(w, "\ncache (default scope: %s, mode: %s)\n", v.Cache.Scope, v.Cache.Mode)
+	if v.Cache.Path == "" {
+		fmt.Fprintln(w, "  (none)")
+	} else {
+		fmt.Fprintf(w, "  PATH\t%s\n", v.Cache.Path)
+		envKeys := make([]string, 0, len(v.Cache.Environment))
+		for k := range v.Cache.Environment {
+			envKeys = append(envKeys, k)
+		}
+		sort.Strings(envKeys)
+		tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(tw, "  ENV\tVALUE")
+		for _, k := range envKeys {
+			fmt.Fprintf(tw, "  %s\t%s\n", k, v.Cache.Environment[k])
+		}
+		_ = tw.Flush()
+	}
 	return ExitOK
 }
 

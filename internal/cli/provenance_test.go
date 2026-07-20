@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/tngtech/oh-my-agentic-coder/internal/toolcache"
 )
 
 func TestProvenanceViewJSONRoundTrip(t *testing.T) {
@@ -457,5 +459,166 @@ func TestRunProvenance_CheckJSONRiskyProfileHasFindings(t *testing.T) {
 	}
 	if !foundHigh {
 		t.Errorf("expected at least one high finding; got %v", parsed)
+	}
+}
+
+func TestBuildProvenanceView_CacheSection(t *testing.T) {
+	isolateHome(t)
+	wd := t.TempDir()
+	profDir := filepath.Join(wd, ".opencode")
+	os.MkdirAll(profDir, 0o755)
+	profPath := filepath.Join(profDir, "default.json")
+	os.WriteFile(profPath, []byte(`{"meta":{"name":"default"},"workdir":{"access":"readwrite"}}`), 0o644)
+
+	view, err := buildProvenanceView(wd, profPath)
+	if err != nil {
+		t.Fatalf("buildProvenanceView: %v", err)
+	}
+
+	// Describe what the scope *should* be — DescribePersistent does not
+	// create the directory, and neither should buildProvenanceView.
+	want, err := toolcache.DescribePersistent(toolcache.DomainWorkdir, wd)
+	if err != nil {
+		t.Fatalf("DescribePersistent: %v", err)
+	}
+
+	if view.Cache.Scope != string(toolcache.DomainWorkdir) {
+		t.Errorf("Cache.Scope = %q; want %q", view.Cache.Scope, toolcache.DomainWorkdir)
+	}
+	if view.Cache.Mode != string(toolcache.ModePersistent) {
+		t.Errorf("Cache.Mode = %q; want %q", view.Cache.Mode, toolcache.ModePersistent)
+	}
+	if view.Cache.Path != want.Dir {
+		t.Errorf("Cache.Path = %q; want %q", view.Cache.Path, want.Dir)
+	}
+	if view.Cache.Path == "" {
+		t.Fatal("Cache.Path should not be empty")
+	}
+	// The cache directory must NOT have been created by provenance.
+	if _, err := os.Stat(view.Cache.Path); err == nil {
+		t.Errorf("provenance should not create the cache dir %q", view.Cache.Path)
+	}
+
+	// All eight environment mappings must be present.
+	env := view.Cache.Environment
+	for _, k := range []string{
+		"XDG_CACHE_HOME", "GOCACHE", "GOMODCACHE", "NPM_CONFIG_CACHE",
+		"PIP_CACHE_DIR", "CARGO_HOME", "OMAC_CACHE_DIR", "OMAC_CACHE_MODE",
+	} {
+		if _, ok := env[k]; !ok {
+			t.Errorf("Cache.Environment missing %q; got %v", k, env)
+		}
+	}
+	if got := env["OMAC_CACHE_MODE"]; got != string(toolcache.ModePersistent) {
+		t.Errorf("OMAC_CACHE_MODE = %q; want %q", got, toolcache.ModePersistent)
+	}
+}
+
+func TestWriteProvenanceText_CacheSection(t *testing.T) {
+	isolateHome(t)
+	wd := t.TempDir()
+	profDir := filepath.Join(wd, ".opencode")
+	os.MkdirAll(profDir, 0o755)
+	profPath := filepath.Join(profDir, "default.json")
+	os.WriteFile(profPath, []byte(`{"meta":{"name":"default"},"workdir":{"access":"readwrite"}}`), 0o644)
+
+	view, err := buildProvenanceView(wd, profPath)
+	if err != nil {
+		t.Fatalf("buildProvenanceView: %v", err)
+	}
+	var buf strings.Builder
+	if code := writeProvenanceText(&buf, view); code != ExitOK {
+		t.Fatalf("writeProvenanceText: code %d", code)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "cache") && !strings.Contains(out, "CACHE") {
+		t.Errorf("text should render a cache section; got:\n%s", out)
+	}
+	if !strings.Contains(out, view.Cache.Path) {
+		t.Errorf("text should name the cache path %q; got:\n%s", view.Cache.Path, out)
+	}
+	if !strings.Contains(out, "workdir") {
+		t.Errorf("text should label scope as default workdir; got:\n%s", out)
+	}
+}
+
+func TestWriteProvenanceJSON_CacheSection(t *testing.T) {
+	isolateHome(t)
+	wd := t.TempDir()
+	profDir := filepath.Join(wd, ".opencode")
+	os.MkdirAll(profDir, 0o755)
+	profPath := filepath.Join(profDir, "default.json")
+	os.WriteFile(profPath, []byte(`{"meta":{"name":"default"},"workdir":{"access":"readwrite"}}`), 0o644)
+
+	view, err := buildProvenanceView(wd, profPath)
+	if err != nil {
+		t.Fatalf("buildProvenanceView: %v", err)
+	}
+	var buf strings.Builder
+	if code := writeProvenanceJSON(&buf, view); code != ExitOK {
+		t.Fatalf("writeProvenanceJSON: code %d", code)
+	}
+	out := buf.String()
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	cache, ok := parsed["cache"].(map[string]any)
+	if !ok {
+		t.Fatalf("JSON missing cache object; got %v", parsed)
+	}
+	if scope, _ := cache["scope"].(string); scope != string(toolcache.DomainWorkdir) {
+		t.Errorf("cache.scope = %q; want %q", scope, toolcache.DomainWorkdir)
+	}
+	if mode, _ := cache["mode"].(string); mode != string(toolcache.ModePersistent) {
+		t.Errorf("cache.mode = %q; want %q", mode, toolcache.ModePersistent)
+	}
+	env, _ := cache["environment"].(map[string]any)
+	if env == nil {
+		t.Fatalf("cache.environment missing; got %v", cache)
+	}
+	for _, k := range []string{
+		"XDG_CACHE_HOME", "GOCACHE", "GOMODCACHE", "NPM_CONFIG_CACHE",
+		"PIP_CACHE_DIR", "CARGO_HOME", "OMAC_CACHE_DIR", "OMAC_CACHE_MODE",
+	} {
+		if _, ok := env[k]; !ok {
+			t.Errorf("cache.environment missing %q; got %v", k, env)
+		}
+	}
+}
+
+func TestBuildProvenanceView_CacheErrorSurfaced(t *testing.T) {
+	isolateHome(t)
+	wd := t.TempDir()
+	profDir := filepath.Join(wd, ".opencode")
+	os.MkdirAll(profDir, 0o755)
+	profPath := filepath.Join(profDir, "default.json")
+	os.WriteFile(profPath, []byte(`{"meta":{"name":"default"},"workdir":{"access":"readwrite"}}`), 0o644)
+
+	// DescribePersistent calls os.UserHomeDir; an empty HOME makes it
+	// fail. buildCacheView must surface that error rather than swallow
+	// it and render an empty "no cache" section.
+	t.Setenv("HOME", "")
+
+	view, err := buildProvenanceView(wd, profPath)
+	if err == nil {
+		t.Fatalf("expected error from buildProvenanceView when HOME is unset; got view=%+v", view)
+	}
+	if view != nil {
+		t.Errorf("expected nil view on error; got %+v", view)
+	}
+}
+
+func TestBuildCacheView_ErrorNotSwallowed(t *testing.T) {
+	isolateHome(t)
+	wd := t.TempDir()
+	t.Setenv("HOME", "")
+
+	cv, err := buildCacheView(wd)
+	if err == nil {
+		t.Fatalf("expected error from buildCacheView when HOME is unset; got %+v", cv)
+	}
+	if cv.Path != "" {
+		t.Errorf("expected empty cacheView on error; got Path=%q", cv.Path)
 	}
 }

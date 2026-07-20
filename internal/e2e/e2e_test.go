@@ -56,6 +56,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxprofile"
 )
 
 // runTimeout is the per-agent-run deadline.
@@ -84,10 +86,14 @@ func runE2E(t *testing.T, h harnessConfig) {
 	home := t.TempDir()
 	workdir := t.TempDir()
 
-	// Create cache dirs that harnesses expect to write to at runtime.
-	// The sandbox ExpandExisting skips nonexistent allow paths, so these
-	// must exist before the sandbox starts.
-	for _, dir := range []string{".cache", ".cache/opencode", ".local/share/opencode", ".local/state/opencode/locks"} {
+	// Pre-create the runtime dirs harnesses expect to write to. The
+	// sandbox's ExpandExisting step skips nonexistent allow paths, so
+	// these must exist before the sandbox starts. The tool cache itself
+	// (~/.cache/omac, exposed as XDG_CACHE_HOME / OMAC_CACHE_DIR inside
+	// the sandbox) is created by omac at launch via PreparePersistent —
+	// it is NOT pre-created here, so the test exercises the real cache
+	// isolation (Tasks 1-10). Only harness state dirs are staged.
+	for _, dir := range []string{".local/share/opencode", ".local/state/opencode/locks"} {
 		if err := os.MkdirAll(filepath.Join(home, dir), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -200,7 +206,9 @@ func runSecurityAudit(t *testing.T, h harnessConfig) {
 	home := t.TempDir()
 	workdir := t.TempDir()
 
-	for _, dir := range []string{".cache", ".cache/opencode", ".local/share/opencode", ".local/state/opencode/locks"} {
+	// Pre-create harness state dirs (see runE2E for why). The tool cache
+	// under XDG_CACHE_HOME / OMAC_CACHE_DIR is created by omac at launch.
+	for _, dir := range []string{".local/share/opencode", ".local/state/opencode/locks"} {
 		if err := os.MkdirAll(filepath.Join(home, dir), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -273,6 +281,7 @@ func runSecurityAudit(t *testing.T, h harnessConfig) {
 		assertFilesystemWriteDenied(t, stdout)
 		assertSymlinkEscapeDenied(t, stdout)
 		assertNetworkDenied(t, stdout, spec.NetDenyDomain)
+		assertCacheHostRootDenied(t, stdout)
 	} else {
 		// A --no-sandbox harness (e.g. codex on macOS) has no sandbox to
 		// enforce the negative properties, so we can't assert they hold.
@@ -290,6 +299,7 @@ func runSecurityAudit(t *testing.T, h harnessConfig) {
 	if sandboxActive {
 		assertEnvVarsVisible(t, stdout, spec.EnvExpectVisible)
 		assertFilesystemAllowed(t, stdout, spec.FsAllowLabels)
+		assertCacheIsolation(t, stdout)
 	} else {
 		t.Logf("skipping positive env/fs-allow assertions: %s runs with --no-sandbox", h.Name)
 	}
@@ -1119,6 +1129,97 @@ func logCrossSkillIsolation(t *testing.T, output string) {
 	t.Logf("INFO: cross-skill sidecar isolated — echo-rest sidecar not reachable from self-audit")
 }
 
+// assertCacheIsolation verifies the cache probe ran and proves omac
+// injected OMAC_CACHE_DIR / OMAC_CACHE_MODE plus the six tool cache
+// mappings (XDG_CACHE_HOME, GOCACHE, GOMODCACHE, NPM_CONFIG_CACHE,
+// PIP_CACHE_DIR, CARGO_HOME) and that the agent could write a marker
+// to the selected cache and read it back.
+//
+// The allow_vars fixture (allowance.go) only lists OMAC_* for cache
+// names, so the non-OMAC_* tool mappings appearing here proves Task 3's
+// trusted re-injection re-added them after FilterEnv stripped the
+// inherited host values.
+func assertCacheIsolation(t *testing.T, output string) {
+	t.Helper()
+	if !strings.Contains(output, "=== PROBE: cache ===") {
+		failWithClassification(t, "cacheIsolation", fmAgentNeverRan, output)
+		return
+	}
+	cacheDir := extractEnv(output, "OMAC_CACHE_DIR=")
+	if cacheDir == "" || cacheDir == "<unset>" {
+		failWithClassification(t, "cacheIsolation", fmSandboxFail,
+			output+": OMAC_CACHE_DIR not exposed")
+		return
+	}
+	if mode := extractEnv(output, "OMAC_CACHE_MODE="); mode == "" || mode == "<unset>" {
+		failWithClassification(t, "cacheIsolation", fmSandboxFail,
+			output+": OMAC_CACHE_MODE not exposed")
+		return
+	}
+	// Each tool cache mapping must be re-injected (not just present as a
+	// name): audit.sh prints "<unset>" when the var is unset, so a
+	// regression that dropped re-injection would still match the name.
+	// Extract the value and assert it is non-empty, not "<unset>", and
+	// points under OMAC_CACHE_DIR — mirroring cache_isolation_test.go's
+	// GOCACHE/CARGO_HOME checks.
+	for _, varName := range []string{
+		"XDG_CACHE_HOME", "GOCACHE", "GOMODCACHE",
+		"NPM_CONFIG_CACHE", "PIP_CACHE_DIR", "CARGO_HOME",
+	} {
+		val := extractEnv(output, varName+"=")
+		if val == "" || val == "<unset>" {
+			failWithClassification(t, "cacheIsolation", fmSandboxFail,
+				output+": "+varName+" mapping missing or unset (trusted re-injection failed)")
+			return
+		}
+		if !strings.HasPrefix(val, cacheDir) {
+			failWithClassification(t, "cacheIsolation", fmSandboxFail,
+				output+": "+varName+"="+val+" does not point under OMAC_CACHE_DIR="+cacheDir)
+			return
+		}
+	}
+	if !strings.Contains(output, "CACHE_MARKER_WROTE:") {
+		failWithClassification(t, "cacheIsolation", fmSandboxFail,
+			output+": cache marker not written")
+		return
+	}
+	if !strings.Contains(output, "CACHE_MARKER_READ_BACK: ok") {
+		failWithClassification(t, "cacheIsolation", fmSandboxFail,
+			output+": cache marker not read back")
+		return
+	}
+	t.Logf("PASS: cache isolation — OMAC_CACHE_DIR injected, tool mappings re-injected, marker round-tripped")
+}
+
+// assertCacheHostRootDenied verifies the host-global cache roots
+// (~/.cache, ~/Library/Caches) are NOT writable from inside the sandbox.
+// This is the negative half of the cache isolation contract: only the
+// scoped OMAC_CACHE_DIR may be writable.
+func assertCacheHostRootDenied(t *testing.T, output string) {
+	t.Helper()
+	if !strings.Contains(output, "=== PROBE: cache ===") {
+		// Cache probe didn't run at all — handled by assertCacheIsolation.
+		t.Logf("SKIP: cache host-root denial — cache probe not in output")
+		return
+	}
+	if strings.Contains(output, "HOST_CACHE_WRITABLE: SECURITY VIOLATION") {
+		failWithClassification(t, "cacheHostRootDenied", fmSandboxFail,
+			output+": host ~/.cache is writable (cache isolation broken)")
+		return
+	}
+	if strings.Contains(output, "HOST_LIBRARY_CACHES_WRITABLE: SECURITY VIOLATION") {
+		failWithClassification(t, "cacheHostRootDenied", fmSandboxFail,
+			output+": host ~/Library/Caches is writable (cache isolation broken)")
+		return
+	}
+	if !strings.Contains(output, "HOST_CACHE_DENIED:") {
+		failWithClassification(t, "cacheHostRootDenied", fmAgentPartial,
+			output+": host ~/.cache denial marker missing")
+		return
+	}
+	t.Logf("PASS: cache host-root denial — ~/.cache and ~/Library/Caches not writable from sandbox")
+}
+
 // logExecProbeResults logs the exec probe results without asserting
 // pass/fail. Whether exec works on read-only mounts is a platform
 // decision (bwrap typically allows exec on read-only binds), not a
@@ -1225,26 +1326,32 @@ func dumpSidecarLogs(t *testing.T, workdir, home string) {
 // writeSandboxProfile writes ~/.config/omac/sandbox-profiles/default.json
 // into the temp HOME.
 //
-// When spec is non-nil, sets environment.allow_vars so FilterEnv strips
-// everything not on the allow-list. This is the security audit path —
-// the allow-list is the single source of truth for what the agent sees.
+// The profile is derived from sandboxprofile.DefaultProfile() — the
+// same compiled-in template omac scaffolds for real users — so the
+// e2e fixture exercises the production grant set, not a manually
+// copied parallel universe that drifts from the real boundary. Only
+// two test-specific fields are overridden:
 //
-// Base profile (applies to all harnesses):
+//   - network.allow_domain: the model provider host (derived at runtime
+//     from SKAINET_INTERNAL / ANTHROPIC_BASE_URL so the sandbox proxy
+//     doesn't deny the agent's API calls) plus the harness's declared
+//     ExtraAllowDomains.
+//   - environment.allow_vars: when spec is non-nil, the allowance
+//     allow-list so FilterEnv strips everything not listed. This is the
+//     security audit path — the allow-list is the single source of
+//     truth for what the agent sees.
 //
-//	workdir        — readwrite
-//	network        — filtered, listen_port 4097 (echo-rest), allow_tcp_connect 22 (SSH)
-//	filesystem.allow — ~/.cache, ~/.local/share, ~/.local/state, ~/.bun,
-//	                     ~/Library/Caches, ~/go, ~/.rustup, ~/.cargo
-//	filesystem.read  — ~/.gitconfig, ~/.gitignore_global, ~/.config
+// Per-harness ExtraReadPaths are appended to Filesystem.Read; everything
+// else (workdir access, listen_port 4097, allow_tcp_connect 22, the
+// compiled-in read paths for toolchain binaries and shared skills bases)
+// comes from DefaultProfile unchanged.
 //
-// Per-harness deviations (h.Sandbox):
-//
-//	ExtraAllowDomains — additional domains beyond the model provider host
-//	ExtraReadPaths    — additional filesystem read paths
-//
-// The model provider host (from SKAINET_INTERNAL / ANTHROPIC_BASE_URL) is
-// always allowed — it is derived at runtime so the sandbox proxy doesn't
-// deny the agent's API calls.
+// Harness-specific runtime dirs (~/.claude, ~/.codex, ~/.config/opencode,
+// the cache scope, etc.) are NOT here — they are granted at launch time
+// via Harness.SandboxDirs and the cache --allow injection (see start.go).
+// The broad ~/.cache grant that used to live here was removed so the
+// cache isolation from Tasks 1-10 holds: the only cache path the agent
+// can write to is OMAC_CACHE_DIR (XDG_CACHE_HOME), injected by omac.
 func writeSandboxProfile(t *testing.T, home string, h harnessConfig, spec *AllowanceSpec) {
 	t.Helper()
 	allowDomains := []string{}
@@ -1257,48 +1364,30 @@ func writeSandboxProfile(t *testing.T, home string, h harnessConfig, spec *Allow
 	}
 	allowDomains = append(allowDomains, h.Sandbox.ExtraAllowDomains...)
 
-	readPaths := []string{
-		"~/.gitconfig",
-		"~/.gitignore_global",
-		"~/.config",
-	}
-	readPaths = append(readPaths, h.Sandbox.ExtraReadPaths...)
-
-	profile := map[string]any{
-		"meta":    map[string]string{"name": "default"},
-		"workdir": map[string]string{"access": "readwrite"},
-		"filesystem": map[string]any{
-			"allow": []string{
-				"~/.cache",
-				"~/.local/share",
-				"~/.local/state",
-				"~/.bun",
-				"~/Library/Caches",
-				"~/go",
-				"~/.rustup",
-				"~/.cargo",
-			},
-			"read": readPaths,
-		},
-		"network": map[string]any{
-			"mode":              "filtered",
-			"listen_port":       []int{4097},
-			"allow_tcp_connect": []int{22},
-			"allow_domain":      allowDomains,
-		},
-	}
-
+	profile := sandboxprofile.DefaultProfile()
+	// Per-harness extra read paths (e.g. opencode's CWD on macOS) are
+	// appended to the compiled-in read set.
+	profile.Filesystem.Read = append(append([]string{}, profile.Filesystem.Read...), h.Sandbox.ExtraReadPaths...)
+	// Test network: replace the empty allow_domain with the resolved
+	// model provider host + harness extras. listen_port / allow_tcp_connect
+	// / network_prompt remain as DefaultProfile set them.
+	profile.Network.AllowDomain = allowDomains
+	// Security audit path: constrain env to the allow-list so FilterEnv
+	// strips everything not listed. Intentionally unaware of non-OMAC_*
+	// cache env names (GOCACHE, XDG_CACHE_HOME, ...) so the test
+	// exercises Task 3's trusted re-injection of the cache env.
 	if spec != nil && len(spec.EnvAllowVars) > 0 {
-		profile["environment"] = map[string]any{
-			"allow_vars": spec.EnvAllowVars,
-		}
+		profile.Environment = sandboxprofile.Environment{AllowVars: spec.EnvAllowVars}
 	}
 
 	profDir := filepath.Join(home, ".config", "omac", "sandbox-profiles")
 	if err := os.MkdirAll(profDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	data, _ := json.MarshalIndent(profile, "", "  ")
+	data, err := sandboxprofile.MarshalPretty(profile)
+	if err != nil {
+		t.Fatalf("marshal sandbox profile: %v", err)
+	}
 	if err := os.WriteFile(filepath.Join(profDir, "default.json"), data, 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -1306,7 +1395,7 @@ func writeSandboxProfile(t *testing.T, home string, h harnessConfig, spec *Allow
 	if spec != nil {
 		allowVarsCount = len(spec.EnvAllowVars)
 	}
-	t.Logf("sandbox profile written with %d allow_domain entries, %d allow_vars",
+	t.Logf("sandbox profile written (derived from DefaultProfile) with %d allow_domain entries, %d allow_vars",
 		len(allowDomains), allowVarsCount)
 }
 

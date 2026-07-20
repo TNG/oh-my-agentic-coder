@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/tngtech/oh-my-agentic-coder/internal/builtinskills"
 	"github.com/tngtech/oh-my-agentic-coder/internal/config"
@@ -13,6 +14,7 @@ import (
 	"github.com/tngtech/oh-my-agentic-coder/internal/netprompt"
 	"github.com/tngtech/oh-my-agentic-coder/internal/osinfo"
 	"github.com/tngtech/oh-my-agentic-coder/internal/registry"
+	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxprofile"
 	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxrun"
 )
 
@@ -39,8 +41,10 @@ func runDoctor(args []string, env *Env) int {
 		fmt.Fprintln(env.Stdout, "[ok] keychain backend: reachable")
 	}
 
-	// Launcher config resolution.
-	_, cfgPath, err := config.LoadLauncher(env.Workdir)
+	// Launcher config resolution. Retain the first successful result
+	// so later sections (sandbox binary, profile warnings) reuse it
+	// instead of re-loading.
+	firstLauncher, cfgPath, err := config.LoadLauncher(env.Workdir)
 	if err != nil {
 		fmt.Fprintln(env.Stdout, "[fail] launcher config:", err)
 		return ExitConfigInvalid
@@ -132,8 +136,9 @@ func runDoctor(args []string, env *Env) int {
 	// Built-in skills provisioned by `omac setup`, per installed harness.
 	doctorBuiltinSkills(env)
 
-	// Sandbox binary.
-	lc, _, _ := config.LoadLauncher(env.Workdir)
+	// Sandbox binary. Reuse the launcher config resolved above so the
+	// first successful LoadLauncher result is authoritative.
+	lc := firstLauncher
 	profName := lc.Sandbox.DefaultProfile
 	if prof, ok := lc.Sandbox.Profiles[profName]; ok && len(prof.Command) > 0 {
 		head := prof.Command[0]
@@ -146,6 +151,11 @@ func runDoctor(args []string, env *Env) int {
 			fmt.Fprintf(env.Stdout, "[ok] sandbox profile %q head %q found\n", profName, head)
 		}
 	}
+
+	// Advisory: warn about broad tool-home / cache-root grants in the
+	// built-in sandbox profile without mutating it. Warnings never
+	// affect the exit code.
+	doctorSandboxProfileWarnings(env, lc)
 
 	if failures > 0 {
 		return ExitConfigInvalid
@@ -222,4 +232,212 @@ func doctorHarnessBinaries(env *Env) {
 			fmt.Fprintf(env.Stdout, "  [warn] %-12s binary=%s not on $PATH\n", h.Name, bin)
 		}
 	}
+}
+
+// toolHomeWarning describes a directory whose broad grant (Allow or
+// Write, and for cache roots also Read) weakens sandbox isolation.
+type toolHomeWarning struct {
+	entry       string // the granted path as written in the profile
+	access      string // Allow / Read / Write
+	impact      string
+	remediation string
+}
+
+// doctorSandboxProfileWarnings inspects every {{self}} sandbox run
+// command in the launcher config, resolves the referenced built-in
+// sandbox profile read-only, and warns about broad grants that
+// isolate tool caches / cargo credentials / rust toolchains. Warnings
+// are advisory: they never increment the failure count and never
+// mutate the on-disk profile.
+func doctorSandboxProfileWarnings(env *Env, lc config.LauncherConfig) {
+	for profName, prof := range lc.Sandbox.Profiles {
+		if len(prof.Command) == 0 {
+			continue
+		}
+		ref, ok := inspectBuiltinProfileRef(prof.Command)
+		if !ok {
+			// Opaque external launcher (nono, no-sandbox-debug, etc.):
+			// doctor can't see into its profile, so skip silently.
+			continue
+		}
+		p, _, err := sandboxprofile.ResolveReadOnly(ref)
+		if err != nil {
+			fmt.Fprintf(env.Stdout, "  [warn] sandbox profile %q: %v\n", profName, err)
+			continue
+		}
+		warns := profileGrantWarnings(p)
+		// Cargo-specific presence warning (mode-000 sentinel files).
+		warns = append(warns, cargoSentinelWarnings()...)
+		for _, w := range warns {
+			fmt.Fprintf(env.Stdout, "  [warn] sandbox profile %q %s %s\n", profName, w.access, w.entry)
+			fmt.Fprintf(env.Stdout, "         impact:      %s\n", w.impact)
+			fmt.Fprintf(env.Stdout, "         remediation: %s\n", w.remediation)
+		}
+	}
+}
+
+// inspectBuiltinProfileRef looks at a sandbox profile Command argv
+// template and, if it is a {{self}} sandbox run invocation, extracts
+// the --profile reference. Recognized run forms:
+//   - "--profile", "default"   (separate args)
+//   - "--profile=default"      (inline)
+//   - omitted --profile        (resolves to "default")
+//
+// Only {{self}} sandbox run commands are inspectable; other sandbox
+// subcommands and external launchers are opaque and return ok=false.
+func inspectBuiltinProfileRef(command []string) (string, bool) {
+	if len(command) < 3 || command[0] != "{{self}}" || command[1] != "sandbox" || command[2] != "run" {
+		return "", false
+	}
+	// Find "--profile" (separate or inline) before "--".
+	for i := 3; i < len(command); i++ {
+		arg := command[i]
+		if arg == "--" {
+			break
+		}
+		if arg == "--profile" && i+1 < len(command) {
+			return command[i+1], true
+		}
+		if strings.HasPrefix(arg, "--profile=") {
+			return strings.TrimPrefix(arg, "--profile="), true
+		}
+	}
+	// Omitted --profile resolves to "default".
+	return "default", true
+}
+
+// profileGrantWarnings returns warnings for broad tool-home and
+// cache-root grants in a resolved sandbox profile. Cache roots
+// (~/.cache, ~/Library/Caches) are warned for Allow, Read, and Write.
+// Tool homes (~/.cargo, ~/.rustup, ~/go) are warned for Allow and
+// Write. Cargo is also warned for Read when the grant covers the whole
+// Cargo home, which exposes host configuration and credentials.
+func profileGrantWarnings(p *sandboxprofile.Profile) []toolHomeWarning {
+	var out []toolHomeWarning
+	type grant struct {
+		access string
+		paths  []string
+	}
+	grantSets := []grant{
+		{"Allow", p.Filesystem.Allow},
+		{"Read", p.Filesystem.Read},
+		{"Write", p.Filesystem.Write},
+	}
+	for _, g := range grantSets {
+		for _, raw := range g.paths {
+			expanded, err := sandboxprofile.ExpandPath(raw)
+			if err != nil {
+				continue
+			}
+			out = append(out, matchToolHome(raw, expanded, g.access)...)
+		}
+	}
+	return out
+}
+
+// matchToolHome checks whether an expanded grant path covers a known
+// tool home or cache root, returning a warning per match.
+func matchToolHome(rawEntry, expanded string, access string) []toolHomeWarning {
+	var out []toolHomeWarning
+	home, _ := os.UserHomeDir()
+
+	// Cache roots: warn for Allow, Read, Write.
+	cacheRoots := []struct {
+		raw, expanded string
+	}{
+		{"~/.cache", filepath.Join(home, ".cache")},
+		{"~/Library/Caches", filepath.Join(home, "Library", "Caches")},
+	}
+	for _, cr := range cacheRoots {
+		if pathsCover(expanded, cr.expanded) {
+			out = append(out, toolHomeWarning{
+				entry:       cr.raw,
+				access:      access,
+				impact:      "cache roots are writable/readable inside the sandbox, which can leak host-derived caches and weaken per-project isolation",
+				remediation: "remove the broad grant; let the sandbox start empty and grant specific cache subpaths only when needed",
+			})
+		}
+	}
+
+	// Tool homes: warn for Allow and Write. Cargo Read warnings require
+	// the grant to cover the whole Cargo home, not only its runtime bin.
+	toolHomes := []struct {
+		raw, expanded string
+		remediation   string
+	}{
+		{"~/.cargo", filepath.Join(home, ".cargo"), "use an isolated CARGO_HOME and project-local .cargo/config.toml; export CARGO_REGISTRIES_<NAME>_TOKEN in the environment that starts omac. If the sandbox profile sets environment.allow_vars, include that exact variable so the sandboxed harness inherits it; sidecar.env_passthrough configures only the sidecar. NAME is the registry key uppercased with '-' replaced by '_'"},
+		{"~/.rustup", filepath.Join(home, ".rustup"), "point RUSTUP_HOME at an isolated location inside the sandbox"},
+		{"~/go", filepath.Join(home, "go"), "use GOPATH inside the sandbox or grant only ~/go/bin read"},
+	}
+	for _, th := range toolHomes {
+		if !pathsCover(expanded, th.expanded) {
+			continue
+		}
+		if access == "Allow" || access == "Write" {
+			out = append(out, toolHomeWarning{
+				entry:       th.raw,
+				access:      access,
+				impact:      "tool home " + th.raw + " is writable inside the sandbox, exposing host-installed toolchains and credentials",
+				remediation: th.remediation,
+			})
+		}
+		if access == "Read" && th.raw == "~/.cargo" && pathsCover(expanded, th.expanded) {
+			out = append(out, toolHomeWarning{
+				entry:       rawEntry,
+				access:      access,
+				impact:      "Read access exposes host Cargo configuration and credentials inside the sandbox",
+				remediation: th.remediation,
+			})
+		}
+	}
+
+	return out
+}
+
+// pathsCover reports whether grantPath covers targetPath (i.e. they
+// are equal or targetPath is a proper subpath of grantPath). Uses
+// filepath.Rel so comparisons are structural, not raw-string prefixes.
+func pathsCover(grantPath, targetPath string) bool {
+	if grantPath == targetPath {
+		return true
+	}
+	rel, err := filepath.Rel(grantPath, targetPath)
+	if err != nil {
+		return false
+	}
+	if rel == "." {
+		return true
+	}
+	// If the relative path starts with ".." the target is outside the
+	// grant; otherwise it is a subpath and covered.
+	return !strings.HasPrefix(rel, "..")
+}
+
+// cargoSentinelWarnings checks for the presence of cargo config /
+// credential files on the host (by Lstat only — never read) and warns
+// that an isolated CARGO_HOME won't pick them up. The warning text
+// never includes file contents.
+func cargoSentinelWarnings() []toolHomeWarning {
+	var out []toolHomeWarning
+	home, _ := os.UserHomeDir()
+	cargoDir := filepath.Join(home, ".cargo")
+	sentinels := []string{
+		"config",
+		"config.toml",
+		"credentials",
+		"credentials.toml",
+	}
+	for _, name := range sentinels {
+		p := filepath.Join(cargoDir, name)
+		if _, err := os.Lstat(p); err != nil {
+			continue
+		}
+		out = append(out, toolHomeWarning{
+			entry:       "~/.cargo/" + name,
+			access:      "presence",
+			impact:      "host cargo " + name + " exists; an isolated CARGO_HOME inside the sandbox will not use it, so registry credentials and configuration must be supplied explicitly",
+			remediation: "add a project-local .cargo/config.toml and export CARGO_REGISTRIES_<NAME>_TOKEN in the environment that starts omac. If the sandbox profile sets environment.allow_vars, include that exact variable so the sandboxed harness inherits it; sidecar.env_passthrough configures only the sidecar. NAME is the registry key uppercased with '-' replaced by '_'; doctor detects presence only and never reads or copies the host file",
+		})
+	}
+	return out
 }

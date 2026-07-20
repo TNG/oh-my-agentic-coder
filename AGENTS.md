@@ -5,7 +5,7 @@
 The omac e2e suite (`internal/e2e/`, build tag `e2e`) verifies every
 harness (opencode, claude-code, codex, copilot) can start under the omac
 sandbox and call a skill through the facade. It runs on Linux (bwrap)
-and macOS (nono). For local iteration on a host without the full
+and macOS (Seatbelt). For local iteration on a host without the full
 toolchain, use the Docker wrapper.
 
 ### Quick start
@@ -21,6 +21,13 @@ SKAINET_TOKEN=... SKAINET_INTERNAL=... \
 # Run the security audit test
 SKAINET_TOKEN=... SKAINET_INTERNAL=... \
   scripts/e2e-docker.sh audit opencode
+
+# Run the cache isolation e2e tests (TestE2ECache* — no model calls;
+# deterministic tool probes for go, npm, pip, cargo). Missing Go,
+# node/npm, Python/pip, Cargo, or bubblewrap are a FAILURE here (not a
+# skip): Dockerfile.e2e installs all five, so their absence means the
+# image is broken.
+scripts/e2e-docker.sh cache
 
 # Run the intent prompt test (stub prompter + intent round-trip)
 SKAINET_TOKEN=... SKAINET_INTERNAL=... \
@@ -43,11 +50,18 @@ scripts/e2e-docker.sh stop
 ### What the script does
 
 - `build` — builds `Dockerfile.e2e` (Ubuntu 24.04 + Go + bun + node +
-  bubblewrap + AppArmor profile), starts a privileged container with
-  the repo bind-mounted at `/repo`.
+  bubblewrap + AppArmor profile; also installs python3-pip + pip and
+  rustup so the cargo cache probe can run), starts a privileged
+  container with the repo bind-mounted at `/repo`.
 - `run` / `audit` / `prompt` — `docker exec` into the running container,
   injects `SKAINET_TOKEN` / `SKAINET_INTERNAL` / `ANTHROPIC_BASE_URL` as
   env vars, runs `go test -tags=e2e -v`.
+- `cache` — `docker exec` into the running container, verifies Go,
+  node/npm, Python/pip, cargo, and bwrap are all present (failure
+  here means the image is broken, not the test), then runs
+  `go test -tags=e2e -timeout=15m -v -run '^TestE2ECache' ./internal/e2e/`.
+  No model credentials are required — the probes are deterministic,
+  network-free tool-cache probes.
 - `logs` / `artifact` / `shell` / `stop` — container management.
 
 ### Platform notes
@@ -60,9 +74,9 @@ scripts/e2e-docker.sh stop
   Apple-Silicon hosts use `linux/amd64` emulation (slower but works);
   set `--platform=linux/amd64` if the build picks the wrong arch.
 - **No macOS containers exist** — Docker only runs Linux containers.
-  macOS-specific code paths (nono/Seatbelt sandbox) are covered by the
-  `e2e.yml` GitHub Actions matrix on `macos-latest`. Local Docker
-  iteration covers the Linux (bwrap) path only.
+  macOS-specific code paths (the macOS Seatbelt sandbox backend) are
+  covered by the `e2e.yml` GitHub Actions matrix on `macos-latest`.
+  Local Docker iteration covers the Linux (bwrap) path only.
 
 ### E2E_PROMPT env var
 

@@ -32,9 +32,17 @@ func TestAllHarnessesReturnsFour(t *testing.T) {
 	}
 }
 
+// TestHarnessByName expects every harness to be resolvable by name on
+// Linux, and every harness except codex on darwin.
 func TestHarnessByName(t *testing.T) {
 	for _, name := range expectedHarnessNames() {
 		h, ok := harnessByName(name)
+		if runtime.GOOS == "darwin" && name == "codex" {
+			if ok {
+				t.Fatalf("harnessByName(%q) should not be found on darwin", name)
+			}
+			continue
+		}
 		if !ok {
 			t.Fatalf("harnessByName(%q) not found", name)
 		}
@@ -59,4 +67,12 @@ func TestRunArgsNonEmpty(t *testing.T) {
 			t.Fatalf("%s: RunArgs returned empty", h.Name)
 		}
 	}
+}
+
+func names(hs []harnessConfig) []string {
+	out := make([]string, 0, len(hs))
+	for _, h := range hs {
+		out = append(out, h.Name)
+	}
+	return out
 }

@@ -56,11 +56,27 @@ nono run \
   -- opencode
 ```
 
-`OMAC_*` env vars are set in nono's parent process and propagate to the
-inner child by default. (Nono no longer accepts a literal `--env KEY=VAL`
-flag; the only `--env-*` flag is `--env-credential`, which is keystore-
-only. If you author a custom nono profile with `environment.allow_vars`
-set, add `OMAC_*` to that list or the variables will be filtered.)
+`OMAC_*` transport variables and supported cache redirects are set in nono's
+parent process and propagate to the inner child by default. Nono no longer
+accepts a literal `--env KEY=VAL` flag; the only `--env-*` flag is
+`--env-credential`, which is keystore-only. If an external nono profile sets
+`environment.allow_vars`, it must include the complete required set:
+
+```yaml
+environment:
+  allow_vars:
+    - OMAC_*
+    - XDG_CACHE_HOME
+    - GOCACHE
+    - GOMODCACHE
+    - NPM_CONFIG_CACHE
+    - PIP_CACHE_DIR
+    - CARGO_HOME
+```
+
+External nono profiles do not receive the built-in sandbox re-exec's trusted
+cache reinjection. Omitting a redirect lets that tool use its default cache
+location; omac does not provide an automatic substitute.
 
 ## Built-in omac profiles
 
@@ -68,9 +84,9 @@ set, add `OMAC_*` to that list or the variables will be filtered.)
 
 | Profile             | nono flags                                                                                 | Use when                                                      |
 | ------------------- | ------------------------------------------------------------------------------------------ | ------------------------------------------------------------- |
-| `nono` *(default)*  | `--allow-cwd --profile tng-sandbox --allow-file <sock> --read <sockdir> --open-port <p>`   | Default. Works under host-default network policy *and* under proxy mode auto-activated by `tng-sandbox.json`'s `custom_credentials`. |
+| `nono`              | `--allow-cwd --profile tng-sandbox --allow-file <sock> --read <sockdir> --open-port <p>`   | The nono profile. Works under host-default network policy *and* under proxy mode auto-activated by `tng-sandbox.json`'s `custom_credentials`. Note: the compiled-in **default** launch profile is `builtin` (the omac native sandbox: Seatbelt on macOS, bubblewrap+Landlock on Linux), not `nono`. Select `nono` explicitly with `--sandbox nono` (or set `default_profile: nono` in `oh-my-agentic-coder.yaml`). |
 | `nono-netprofile`   | As above plus `--network-profile opencode`                                                 | Restrict outbound HTTP to nono's `opencode` profile domains.  |
-| `no-sandbox-debug`  | *(no nono — runs inner command directly)*                                                  | Local debugging only. Not a security boundary.                |
+| `no-sandbox-debug`  | *(no nono — runs inner command directly)*                                                  | Local debugging only. Retains cache-scope creation and cache redirects; only `--no-sandbox` omits them. Normal OMAC transport variables and the per-launch `TMPDIR` remain available. Not a security boundary. |
 
 You can add your own profiles by creating
 `.opencode/oh-my-agentic-coder.yaml` in the workdir (or the user-global
@@ -78,6 +94,39 @@ You can add your own profiles by creating
 launcher-config schema. Available placeholders: `{{socket}}`,
 `{{socket_dir}}`, `{{tcp_port}}`, `{{workdir}}`, `{{skills_csv}}`,
 `{{inner_cmd}}`, `{{inner_args}}`, `{{per_skill_env_flags}}`.
+
+### Tool-cache redirection and external nono-profile limitations
+
+For sandboxed launches, omac prepares a per-scope tool-cache directory
+(`~/.cache/omac/<sha256(identity)>` for persistent mode, a per-launch
+temp dir for `--ephemeral-cache`) and redirects the caches supported by
+`XDG_CACHE_HOME`, `GOCACHE`, `GOMODCACHE`, `NPM_CONFIG_CACHE`,
+`PIP_CACHE_DIR`, and `CARGO_HOME`. It injects `OMAC_CACHE_DIR` /
+`OMAC_CACHE_MODE` plus those six redirects into the sandbox runtime's
+process environment, then grants only that scope leaf read+write in
+the sandbox argv. Unsupported third-party tools that hardcode another
+cache path need explicit profile configuration; omac does not redirect
+them automatically. `~/.rustup` may be read-only runtime-visible for
+toolchain execution, but it is not a writable or cache grant. See the
+design doc §9 for the full mode/trust-domain table.
+
+**External nono-profile limitation.** The filesystem boundary omac
+enforces (only the selected cache scope leaf is writable for caches;
+the broad `~/.cache`, `~/Library/Caches`, `~/go`, and `~/.cargo` trees
+are not writable, while `~/.rustup` may be runtime-visible read-only)
+is a property of the compiled-in `builtin` profile's
+`default.json`, which omac scaffolds and controls. The shipped `nono`
+profiles delegate filesystem grants to nono's external
+`tng-sandbox.json` profile, which omac does not edit. If that
+external profile still broad-grants `~/.cache` or the tool homes, the
+cache env redirects still point inside `OMAC_CACHE_DIR`, but the
+host trees would also be reachable — weakening the isolation. `omac
+doctor` warns only when a `{{self}} sandbox run` profile (the
+`builtin` default, or a custom profile that re-execs omac) is in use
+and its resolved grants re-introduce a broad cache-root or tool-home
+grant; external nono profiles whose command does not re-exec omac
+are opaque to doctor and skipped silently. For the strongest
+cache-isolation guarantee, use the default `builtin` profile.
 
 ## Combining with other nono flags
 

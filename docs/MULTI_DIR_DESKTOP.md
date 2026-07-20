@@ -439,6 +439,22 @@ At cold start, no *directory* is active and `OMAC_SKILLS` lists only the
 global skills (the shared baseline available to every project). Per-dir
 skills are added lazily (§5.2).
 
+> **Tool-cache scope under `serve`.** omac prepares a single
+> persistent tool-cache scope for the whole `omac serve` process,
+> keyed on the launch workdir identity (`v1:serve:<canonical launch
+> workdir>`), and injects `OMAC_CACHE_DIR` / `OMAC_CACHE_MODE` plus the
+> six tool redirects (`XDG_CACHE_HOME`, `GOCACHE`, `GOMODCACHE`,
+> `NPM_CONFIG_CACHE`, `PIP_CACHE_DIR`, `CARGO_HOME`) into the shared
+> sandbox. All served directories therefore **share one cache
+> directory** — this is the Desktop path and is strictly weaker
+> isolation than per-workdir `omac start` (which keys the cache on the
+> workdir identity). It is an explicit, documented consequence of
+> Decision #2 (one shared sandbox). `omac serve --workdir <dir>`
+> pre-activates a single directory and keys the cache on that dir's
+> workdir identity instead; `omac serve --ephemeral-cache` uses a
+> per-launch temp cache removed on exit. `omac start` (TUI, one
+> directory) keeps the per-workdir persistent cache scope unchanged.
+
 ### 5.2 Lazy activation (the core new behavior)
 
 Trigger: a directory `D` is requested for the first time. Two possible

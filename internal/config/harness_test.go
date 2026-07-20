@@ -349,8 +349,8 @@ func TestSandboxDirsCodex(t *testing.T) {
 	if !ok {
 		t.Fatal("codex harness not found")
 	}
-	if !reflect.DeepEqual(h.SandboxDirs, []string{"~/.codex", "~/.cache/codex"}) {
-		t.Errorf("codex SandboxDirs = %v; want [~/.codex ~/.cache/codex]", h.SandboxDirs)
+	if !reflect.DeepEqual(h.SandboxDirs, []string{"~/.codex"}) {
+		t.Errorf("codex SandboxDirs = %v; want [~/.codex]", h.SandboxDirs)
 	}
 }
 
@@ -359,8 +359,8 @@ func TestSandboxDirsCopilot(t *testing.T) {
 	if !ok {
 		t.Fatal("copilot harness not found")
 	}
-	if !reflect.DeepEqual(h.SandboxDirs, []string{"~/.copilot", "~/.cache/copilot"}) {
-		t.Errorf("copilot SandboxDirs = %v; want [~/.copilot ~/.cache/copilot]", h.SandboxDirs)
+	if !reflect.DeepEqual(h.SandboxDirs, []string{"~/.copilot"}) {
+		t.Errorf("copilot SandboxDirs = %v; want [~/.copilot]", h.SandboxDirs)
 	}
 }
 
@@ -369,7 +369,7 @@ func TestSandboxDirsOpenCode(t *testing.T) {
 	if !ok {
 		t.Fatal("opencode harness not found")
 	}
-	want := []string{"~/.local/share/opencode", "~/.local/state/opencode", "~/.config/opencode", "~/.opencode", "~/.cache/opencode"}
+	want := []string{"~/.local/share/opencode", "~/.local/state/opencode", "~/.config/opencode", "~/.opencode"}
 	if !reflect.DeepEqual(h.SandboxDirs, want) {
 		t.Errorf("opencode SandboxDirs = %v; want %v", h.SandboxDirs, want)
 	}
@@ -380,7 +380,7 @@ func TestSandboxDirsClaude(t *testing.T) {
 	if !ok {
 		t.Fatal("claude harness not found")
 	}
-	want := []string{"~/.claude", "~/.local/share/claude", "~/.cache/claude"}
+	want := []string{"~/.claude", "~/.local/share/claude"}
 	if !reflect.DeepEqual(h.SandboxDirs, want) {
 		t.Errorf("claude SandboxDirs = %v; want %v", h.SandboxDirs, want)
 	}

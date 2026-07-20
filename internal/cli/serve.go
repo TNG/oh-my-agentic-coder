@@ -30,6 +30,7 @@ import (
 	"github.com/tngtech/oh-my-agentic-coder/internal/skillconfig"
 	"github.com/tngtech/oh-my-agentic-coder/internal/skillsource"
 	"github.com/tngtech/oh-my-agentic-coder/internal/supervisor"
+	"github.com/tngtech/oh-my-agentic-coder/internal/toolcache"
 )
 
 // runServe implements `omac serve` — the long-lived, multi-directory mode
@@ -53,6 +54,7 @@ func runServe(args []string, env *Env) int {
 		innerCmdOverride = fs.String("inner", "", "Override inner_cmd's executable (default: opencode serve).")
 		noSandbox        = fs.Bool("no-sandbox", false, "Run the inner command directly, without a sandbox (debug only).")
 		noInner          = fs.Bool("no-inner", false, "Do not launch any inner command; run the control plane only (testing/headless).")
+		ephemeralCache   = fs.Bool("ephemeral-cache", false, "Use a per-launch cache instead of the persistent serve cache.")
 		verbose          = fs.Bool("verbose", false, "Verbose lifecycle logging.")
 		forDesktop       = fs.Bool("for-opencode-desktop", false, "Grant every project worktree from the local OpenCode state (Desktop projects) read+write in the sandbox.")
 		learn            = fs.Bool("learn", false, "Learn mode: do not restrict filesystem access; record folders used and offer to add them to the sandbox profile at session end.")
@@ -90,6 +92,10 @@ func runServe(args []string, env *Env) int {
 		return ExitMisuse
 	}
 	if err := fs.Parse(reorderFlagsFirst(ourArgs)); err != nil {
+		return ExitMisuse
+	}
+	if *ephemeralCache && *noSandbox {
+		fmt.Fprintln(env.Stderr, "omac serve: --ephemeral-cache cannot be used with --no-sandbox")
 		return ExitMisuse
 	}
 	innerArgs = append(fs.Args(), innerArgs...)
@@ -187,6 +193,14 @@ func runServe(args []string, env *Env) int {
 		return ExitIOError
 	}
 	defer os.RemoveAll(sandboxTmp)
+	cacheScope, err := prepareServeCache(*noSandbox, *noInner, *ephemeralCache, *workdir, env.Workdir, sandboxTmp)
+	if err != nil {
+		fmt.Fprintln(env.Stderr, "omac serve: cache:", err)
+		return ExitIOError
+	}
+	if cacheScope != nil {
+		defer cacheScope.Close()
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -230,6 +244,12 @@ func runServe(args []string, env *Env) int {
 		dirs:          map[string]*dirState{},
 		byToken:       map[string]*dirState{},
 		global:        map[string]*skillRoute{},
+	}
+	if cacheScope != nil {
+		srv.cacheEnv = map[string]string{
+			"OMAC_CACHE_DIR":  cacheScope.Dir,
+			"OMAC_CACHE_MODE": string(cacheScope.Mode),
+		}
 	}
 
 	// Cold start: global skills are a fixed, known set, so — unlike the lazy
@@ -334,7 +354,7 @@ func runServe(args []string, env *Env) int {
 	// mode leave the inner command unchanged.
 	inner = harness.ApplyServerLaunch(inner, innerArgs)
 	// Inject the sandbox briefing on the same terms as `omac start` (see there).
-	briefingText, injectBriefing := briefingInjection(*noSandbox, inner, harness, lc.Sandbox.Briefing)
+	briefingText, injectBriefing := briefingInjection(*noSandbox, inner, harness, lc.Sandbox.Briefing, cacheScope)
 	if injectBriefing && harness.SystemContextArgs != nil {
 		inner = append(inner, harness.SystemContextArgs(briefingText)...)
 	}
@@ -373,6 +393,9 @@ func runServe(args []string, env *Env) int {
 		if err != nil {
 			fmt.Fprintln(env.Stderr, "omac serve: sandbox argv:", err)
 			return ExitConfigInvalid
+		}
+		if cacheScope != nil {
+			argv = injectSandboxFlag(argv, "--allow", cacheScope.Dir)
 		}
 		// The control-plane port is distinct from the facade TCP port and
 		// is NOT whitelisted by the profile's `--open-port {{tcp_port}}`.
@@ -567,6 +590,7 @@ type serveServer struct {
 	acceptChanges bool
 	verbose       bool
 	roots         []string // §5.4 Option B; empty = allow any directory
+	cacheEnv      map[string]string
 
 	mu      sync.RWMutex
 	dirs    map[string]*dirState   // abs dir -> state
@@ -1173,6 +1197,9 @@ func (s *serveServer) baseEnv() map[string]string {
 		// the nono profile's {{tmpdir}} grant).
 		"TMPDIR": s.sandboxTmp,
 	}
+	for k, v := range s.cacheEnv {
+		extra[k] = v
+	}
 	// Global skills are known at cold start (§4.5/§5.1): inject their base
 	// URLs and list their mounts in OMAC_SKILLS.
 	//
@@ -1200,6 +1227,19 @@ func (s *serveServer) baseEnv() map[string]string {
 	sort.Strings(mounts)
 	extra["OMAC_SKILLS"] = joinCSV(mounts)
 	return extra
+}
+
+func prepareServeCache(noSandbox, noInner, ephemeral bool, explicitWorkdir, launchWorkdir, sandboxTmp string) (*toolcache.Scope, error) {
+	if noSandbox || noInner {
+		return nil, nil
+	}
+	if ephemeral {
+		return toolcache.PrepareEphemeral(sandboxTmp)
+	}
+	if explicitWorkdir != "" {
+		return toolcache.PreparePersistent(toolcache.DomainWorkdir, explicitWorkdir)
+	}
+	return toolcache.PreparePersistent(toolcache.DomainServe, launchWorkdir)
 }
 
 // facadeMounts returns the set of facade mount segments to advertise to the

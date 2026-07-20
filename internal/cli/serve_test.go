@@ -1,14 +1,18 @@
 package cli
 
 import (
+	"fmt"
+	"io"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/tngtech/oh-my-agentic-coder/internal/config"
 	"github.com/tngtech/oh-my-agentic-coder/internal/facade"
+	"github.com/tngtech/oh-my-agentic-coder/internal/toolcache"
 )
 
 // stageSkillWithSecret writes a workdir-local skill whose omac.yaml
@@ -294,6 +298,16 @@ func TestRootsEmptyAllowsAny(t *testing.T) {
 func TestBaseEnvStaticVars(t *testing.T) {
 	s := newServeServerForTest(t)
 	s.controlBase = "http://127.0.0.1:9999"
+	s.cacheEnv = map[string]string{
+		"XDG_CACHE_HOME":   "/cache/xdg",
+		"GOCACHE":          "/cache/go-build",
+		"GOMODCACHE":       "/cache/go-mod",
+		"NPM_CONFIG_CACHE": "/cache/npm",
+		"PIP_CACHE_DIR":    "/cache/pip",
+		"CARGO_HOME":       "/cache/cargo",
+		"OMAC_CACHE_DIR":   "/cache",
+		"OMAC_CACHE_MODE":  "persistent",
+	}
 	env := s.baseEnv()
 	for _, k := range []string{"OMAC_SOCKET", "OMAC_HOST", "OMAC_PORT", "OMAC_BASE", "OMAC_VERSION", "OMAC_CONTROL_BASE", "OMAC_SKILLS"} {
 		if _, ok := env[k]; !ok {
@@ -306,6 +320,233 @@ func TestBaseEnvStaticVars(t *testing.T) {
 	// With no global skills, OMAC_SKILLS is empty.
 	if env["OMAC_SKILLS"] != "" {
 		t.Errorf("OMAC_SKILLS = %q, want empty", env["OMAC_SKILLS"])
+	}
+	for k, want := range s.cacheEnv {
+		if got := env[k]; got != want {
+			t.Errorf("%s = %q, want %q", k, got, want)
+		}
+	}
+}
+
+func TestPrepareServeCache(t *testing.T) {
+	isolateHome(t)
+	launchWorkdir := t.TempDir()
+	explicitWorkdir := t.TempDir()
+	sandboxTmp := t.TempDir()
+	canonicalLaunch, err := filepath.EvalSymlinks(launchWorkdir)
+	if err != nil {
+		t.Fatalf("canonical launch workdir: %v", err)
+	}
+	canonicalExplicit, err := filepath.EvalSymlinks(explicitWorkdir)
+	if err != nil {
+		t.Fatalf("canonical explicit workdir: %v", err)
+	}
+
+	for _, c := range []struct {
+		name                          string
+		noSandbox, noInner, ephemeral bool
+		explicitWorkdir               string
+		wantNil                       bool
+		wantDomain                    toolcache.Domain
+		wantMode                      toolcache.Mode
+		wantPath                      string
+		wantCanonical                 string
+	}{
+		{name: "no inner skips cache", noInner: true, wantNil: true},
+		{name: "no sandbox skips cache", noSandbox: true, wantNil: true},
+		{name: "single workdir", explicitWorkdir: explicitWorkdir, wantDomain: toolcache.DomainWorkdir, wantMode: toolcache.ModePersistent, wantCanonical: canonicalExplicit},
+		{name: "desktop shared serve cache", wantDomain: toolcache.DomainServe, wantMode: toolcache.ModePersistent, wantCanonical: canonicalLaunch},
+		{name: "ephemeral cache", ephemeral: true, explicitWorkdir: explicitWorkdir, wantMode: toolcache.ModeEphemeral, wantPath: filepath.Join(sandboxTmp, "cache")},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			scope, err := prepareServeCache(c.noSandbox, c.noInner, c.ephemeral, c.explicitWorkdir, launchWorkdir, sandboxTmp)
+			if err != nil {
+				t.Fatalf("prepareServeCache: %v", err)
+			}
+			if c.wantNil {
+				if scope != nil {
+					t.Errorf("scope = %#v, want nil", scope)
+				}
+				return
+			}
+			if scope == nil {
+				t.Fatal("scope = nil")
+			}
+			t.Cleanup(func() {
+				if err := scope.Close(); err != nil {
+					t.Errorf("close scope: %v", err)
+				}
+			})
+			if scope.Domain != c.wantDomain {
+				t.Errorf("domain = %q, want %q", scope.Domain, c.wantDomain)
+			}
+			if scope.Mode != c.wantMode {
+				t.Errorf("mode = %q, want %q", scope.Mode, c.wantMode)
+			}
+			if scope.Dir != c.wantPath && c.wantMode == toolcache.ModeEphemeral {
+				t.Errorf("dir = %q, want %q", scope.Dir, c.wantPath)
+			}
+			if scope.CanonicalPath != c.wantCanonical {
+				t.Errorf("canonical path = %q, want %q", scope.CanonicalPath, c.wantCanonical)
+			}
+		})
+	}
+}
+
+func TestRunServeRejectsEphemeralCacheWithoutSandbox(t *testing.T) {
+	stderr, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe stderr: %v", err)
+	}
+	t.Cleanup(func() { stderr.Close() })
+	env := devnullEnv(t)
+	env.Workdir = t.TempDir()
+	env.Stderr = writer
+	if code := runServe([]string{"--ephemeral-cache", "--no-sandbox"}, env); code != ExitMisuse {
+		t.Errorf("exit = %d, want ExitMisuse (%d)", code, ExitMisuse)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close stderr writer: %v", err)
+	}
+	output, err := io.ReadAll(stderr)
+	if err != nil {
+		t.Fatalf("read stderr: %v", err)
+	}
+	if !strings.Contains(string(output), "--ephemeral-cache cannot be used with --no-sandbox") {
+		t.Errorf("stderr = %q, want invalid combination error", output)
+	}
+}
+
+func TestRunServeRetainsCacheLockAndAllowsOnlyScope(t *testing.T) {
+	isolateHome(t)
+	shortTmp, err := os.MkdirTemp("/tmp", "omac-serve-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(shortTmp) })
+	t.Setenv("TMPDIR", shortTmp)
+
+	workdir := t.TempDir()
+	argsPath := filepath.Join(t.TempDir(), "args")
+	envPath := filepath.Join(t.TempDir(), "env")
+	readyPath := filepath.Join(t.TempDir(), "ready")
+	releasePath := filepath.Join(t.TempDir(), "release")
+	t.Setenv("OMAC_SERVE_TEST_ARGS", argsPath)
+	t.Setenv("OMAC_SERVE_TEST_ENV", envPath)
+	t.Setenv("OMAC_SERVE_TEST_READY", readyPath)
+	t.Setenv("OMAC_SERVE_TEST_RELEASE", releasePath)
+
+	capturePath := filepath.Join(t.TempDir(), "capture")
+	script := "#!/bin/sh\n" +
+		"printf '%s\\n' \"$@\" > \"$OMAC_SERVE_TEST_ARGS\"\n" +
+		"env > \"$OMAC_SERVE_TEST_ENV\"\n" +
+		": > \"$OMAC_SERVE_TEST_READY\"\n" +
+		"while [ ! -f \"$OMAC_SERVE_TEST_RELEASE\" ]; do sleep 0.01; done\n"
+	if err := os.WriteFile(capturePath, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(workdir, ".opencode", "oh-my-agentic-coder.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	configText := fmt.Sprintf("sandbox:\n  default_profile: capture\n  profiles:\n    capture:\n      command: [%q, %q, %q, %q]\n", capturePath, "--", "{{inner_cmd}}", "{{inner_args}}")
+	if err := os.WriteFile(configPath, []byte(configText), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	env, stderr := launchTestEnv(t, workdir)
+	done := make(chan int, 1)
+	go func() {
+		done <- runServe([]string{"claude", "--sandbox", "capture", "--inner", "/bin/true"}, env)
+	}()
+	t.Cleanup(func() {
+		if _, err := os.Stat(releasePath); os.IsNotExist(err) {
+			_ = os.WriteFile(releasePath, nil, 0o600)
+		}
+	})
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(readyPath); err == nil {
+			break
+		}
+		select {
+		case code := <-done:
+			t.Fatalf("runServe exited early with %d:\n%s", code, stderr())
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for capture process:\n%s", stderr())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	scope, err := toolcache.DescribePersistent(toolcache.DomainServe, workdir)
+	if err != nil {
+		t.Fatalf("describe serve cache: %v", err)
+	}
+	args, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatalf("read captured args: %v", err)
+	}
+	capturedArgs := strings.Fields(string(args))
+	var cacheAllows []string
+	scopeAllows := 0
+	for i, arg := range capturedArgs {
+		if arg == "--allow" && i+1 < len(capturedArgs) {
+			allowed := capturedArgs[i+1]
+			cacheAllows = append(cacheAllows, allowed)
+			if allowed == scope.Dir {
+				scopeAllows++
+			}
+		}
+	}
+	if scopeAllows != 1 {
+		t.Errorf("cache scope %q appears in --allow %d times, want 1: %v", scope.Dir, scopeAllows, cacheAllows)
+	}
+	for _, allowed := range cacheAllows {
+		if allowed == filepath.Dir(scope.Dir) {
+			t.Errorf("sandbox grants broad cache root %q: %v", allowed, cacheAllows)
+		}
+	}
+
+	envData, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatalf("read captured environment: %v", err)
+	}
+	for _, key := range []string{"OMAC_CACHE_DIR", "OMAC_CACHE_MODE"} {
+		want := toolcache.Environment(scope.Dir, toolcache.ModePersistent)[key]
+		if got := parseEnvironment(string(envData))[key]; got != want {
+			t.Errorf("%s = %q, want %q", key, got, want)
+		}
+	}
+
+	active, err := toolcache.ClearAll()
+	if err != nil {
+		t.Fatalf("clear active cache: %v", err)
+	}
+	if len(active) != 1 || active[0].Path != scope.Dir || active[0].Status != toolcache.ClearActive {
+		t.Errorf("active clear results = %#v, want active %q", active, scope.Dir)
+	}
+
+	if err := os.WriteFile(releasePath, nil, 0o600); err != nil {
+		t.Fatalf("release capture process: %v", err)
+	}
+	select {
+	case code := <-done:
+		if code != ExitOK {
+			t.Errorf("runServe exit = %d, want ExitOK\nstderr:\n%s", code, stderr())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("timed out waiting for runServe to exit:\n%s", stderr())
+	}
+
+	inactive, err := toolcache.ClearAll()
+	if err != nil {
+		t.Fatalf("clear inactive cache: %v", err)
+	}
+	if len(inactive) != 1 || inactive[0].Path != scope.Dir || inactive[0].Status != toolcache.ClearRemoved {
+		t.Errorf("inactive clear results = %#v, want removed %q", inactive, scope.Dir)
 	}
 }
 
