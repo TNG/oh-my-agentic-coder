@@ -49,6 +49,17 @@ type launchOpts struct {
 	acceptSkillChanges bool
 	skipSecretPattern  bool
 	verbose            bool
+	// autoRegisterSkills, when set, silently registers discovered
+	// workdir-local skills that declare no required secrets and no
+	// required config fields, mirroring `omac serve`'s autoRegister
+	// (serve.go). Skills with required secrets/fields are NOT
+	// auto-registered — they still surface in the unregistered list so
+	// the user is prompted for values. Used by launchers (e.g. the `oco`
+	// wrapper) that run `omac start` against a freshly cloned workdir
+	// whose workdir-local skills are committed but whose per-workdir
+	// registry (.opencode/sidecar.json) is gitignored and therefore
+	// empty on every fresh checkout.
+	autoRegisterSkills bool
 	// audit flags (see internal/audit). auditLog overrides the config/default
 	// path; noAudit disables; auditStrict makes an unwritable log fatal.
 	auditLog    string
@@ -79,6 +90,7 @@ func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, bool)
 		acceptSkillChanges = fs.Bool("accept-skill-changes", false, "Tolerate bundle_hash drift in registered skills (proceed even if the on-disk skill differs from what was registered).")
 		skipSecretPattern  = fs.Bool("skip-secret-pattern", false, "Do not enforce a secret's pattern against an env_passthrough-supplied value (escape hatch for an outdated pattern; the raw value is still passed through).")
 		verbose            = fs.Bool("verbose", false, "Verbose lifecycle logging.")
+		autoRegisterSkills = fs.Bool("auto-register-skills", false, "Silently register discovered workdir-local skills that declare no required secrets and no required config fields, instead of refusing to start. Skills with required secrets/fields still prompt via `omac register`.")
 		auditLog           = fs.String("audit-log", "", "Path to the audit log (default: persistent central location). Overrides config.")
 		noAudit            = fs.Bool("no-audit", false, "Disable the security audit trail.")
 		auditStrict        = fs.Bool("audit-strict", false, "Fail-closed: abort if the audit log cannot be written.")
@@ -135,6 +147,7 @@ func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, bool)
 		acceptSkillChanges: *acceptSkillChanges,
 		skipSecretPattern:  *skipSecretPattern,
 		verbose:            *verbose,
+		autoRegisterSkills: *autoRegisterSkills,
 		auditLog:           *auditLog,
 		noAudit:            *noAudit,
 		auditStrict:        *auditStrict,
@@ -178,6 +191,7 @@ func runLaunch(env *Env, opts launchOpts) int {
 	skipSecretPattern := opts.skipSecretPattern
 	verbose := opts.verbose
 	innerArgs := opts.innerArgs
+	autoRegisterSkills := opts.autoRegisterSkills
 
 	// Diagnostics are prefixed with the invoking subcommand so a failure
 	// surfaced through `omac continue`/`omac resume` is not mislabeled.
@@ -303,6 +317,43 @@ func runLaunch(env *Env, opts launchOpts) int {
 	// of start. Workdir entries win over global entries with the same
 	// name.
 	reg := mergeRegistries(globalReg, workdirReg)
+
+	// 2a-bis. Optional auto-registration of workdir-local skills that
+	//         declare no required secrets and no required config fields.
+	//         Mirrors `omac serve`'s autoRegister (serve.go): the
+	//         workdir-local skill source roots are scanned, and every
+	//         discovered skill absent from the registry whose
+	//         omac.yaml sidecar has no required secrets/fields is
+	//         registered silently. Skills WITH required secrets/fields
+	//         are left untouched so the findUnregisteredSkills gate
+	//         below still surfaces them and prompts the user.
+	//
+	//         This is the path launchers like the `oco` wrapper use to
+	//         avoid forcing the user to run `omac register` on every
+	//         fresh workdir whose committed skills ship with a
+	//         gitignored per-workdir registry (the documented default
+	//         for omac's own repo and any repo that ships example
+	//         skills).
+	if autoRegisterSkills {
+		registered, errs := startAutoRegisterWorkdirSkills(env, harness, reg)
+		for _, r := range registered {
+			fmt.Fprintf(env.Stderr, "[ok] auto-registered skill %s (no required secrets/fields)\n", r)
+		}
+		for _, e := range errs {
+			fmt.Fprintln(env.Stderr, prefix+": auto-register:", e)
+		}
+		if len(registered) > 0 {
+			// Reload the workdir registry + re-merge so the gate and
+			// the rest of start see the freshly-registered skills.
+			workdirReg, err = registry.Load(env.Workdir)
+			if err != nil {
+				fmt.Fprintln(env.Stderr, prefix+": registry:", err)
+				return ExitIOError
+			}
+			workdirReg = filterRegistryByHarness(workdirReg, env.Workdir, harness)
+			reg = mergeRegistries(globalReg, workdirReg)
+		}
+	}
 
 	// 2b. Refuse if any unregistered skill exists under any of the
 	//     skill source roots (workdir-local .agents/skills and
@@ -1159,6 +1210,131 @@ func findUnregisteredSkills(workdir string, harness config.Harness, reg *registr
 		}
 	}
 	sort.Strings(out)
+	return out, nil
+}
+
+// startAutoRegisterWorkdirSkills silently registers every discovered
+// workdir-local skill (Kind == "workdir") that is absent from reg AND
+// whose omac.yaml sidecar declares no required secrets and no required
+// config fields. Mirrors `omac serve`'s autoRegister (serve.go), but
+// scoped to "no required values" so a skill that needs a keychain
+// secret or a config value still surfaces through findUnregisteredSkills
+// and prompts the user — auto-registration never silently skips a
+// registration prompt that would otherwise have asked for a value.
+//
+// Returns the names of skills that were registered (sorted) and a slice
+// of per-skill errors (skill name + error) for skills that looked
+// eligible but failed to register (e.g. omac.yaml unreadable). The
+// caller decides whether a per-skill error is fatal; this function
+// registers what it can and reports the rest.
+func startAutoRegisterWorkdirSkills(env *Env, harness config.Harness, reg *registry.Registry) ([]string, []string) {
+	discovered, err := skillsource.Discover(env.Workdir, harness)
+	if err != nil {
+		return nil, []string{fmt.Sprintf("scan skills: %v", err)}
+	}
+	registered := map[string]struct{}{}
+	for _, e := range reg.Registered {
+		registered[e.Name] = struct{}{}
+	}
+	var done []string
+	var errs []string
+	for _, ent := range discovered {
+		if ent.Kind != "workdir" {
+			continue // user-global skills are registered once, globally
+		}
+		if _, ok := registered[ent.Name]; ok {
+			continue
+		}
+		eligible, err := skillEligibleForAutoRegister(ent.Dir)
+		if err != nil {
+			errs = append(errs, fmt.Sprintf("%s: %v", ent.Name, err))
+			continue
+		}
+		if !eligible {
+			// A required secret/field is the user's signal to run
+			// `omac register` themselves; we don't auto-register so
+			// the findUnregisteredSkills gate below still surfaces it.
+			continue
+		}
+		if _, err := startAutoRegisterOne(env.Workdir, ent); err != nil {
+			errs = append(errs, fmt.Sprintf("%s: %v", ent.Name, err))
+			continue
+		}
+		done = append(done, ent.Name)
+	}
+	sort.Strings(done)
+	return done, errs
+}
+
+// skillEligibleForAutoRegister reports whether the skill at absDir is
+// eligible for silent auto-registration: its omac.yaml must parse, must
+// have a sidecar block, and must declare no required secrets and no
+// required config fields. A non-required secret/field is fine (the user
+// can supply it later via `omac register --reprompt-*`).
+func skillEligibleForAutoRegister(absDir string) (eligible bool, err error) {
+	metaPath := filepath.Join(absDir, config.MetaFileName)
+	m, err := config.LoadMeta(metaPath)
+	if err != nil {
+		return false, err
+	}
+	if m.Sidecar == nil {
+		return false, nil
+	}
+	for _, sp := range m.Sidecar.Secrets {
+		if sp.IsRequired() {
+			return false, nil
+		}
+	}
+	for _, fp := range m.Sidecar.Config {
+		if fp.IsRequired() {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+// startAutoRegisterOne writes a registry entry for a discovered
+// workdir-local skill without prompting, mirroring serve.go's autoRegister.
+func startAutoRegisterOne(workdir string, ent skillsource.Entry) (*registry.Entry, error) {
+	bundle, err := config.BundleHash(ent.Dir)
+	if err != nil {
+		return nil, err
+	}
+	m, err := config.LoadMeta(filepath.Join(ent.Dir, config.MetaFileName))
+	if err != nil {
+		return nil, err
+	}
+	declared := make([]string, 0, len(m.Sidecar.Secrets))
+	for _, sp := range m.Sidecar.Secrets {
+		declared = append(declared, sp.Name)
+	}
+	var out *registry.Entry
+	err = registry.WithLock(workdir, func() error {
+		reg, err := registry.Load(workdir)
+		if err != nil {
+			return err
+		}
+		stored := ent.Dir
+		if rel, rerr := filepath.Rel(workdir, ent.Dir); rerr == nil {
+			stored = rel
+		}
+		reg.Upsert(registry.Entry{
+			Name:                ent.Name,
+			SkillDir:            stored,
+			BundleHash:          bundle,
+			RegisteredAt:        time.Now().UTC(),
+			DeclaredSecretNames: declared,
+		})
+		if err := registry.Save(workdir, reg); err != nil {
+			return err
+		}
+		e, _ := reg.Find(ent.Name)
+		out = e
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
 	return out, nil
 }
 
