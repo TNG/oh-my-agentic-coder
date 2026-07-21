@@ -88,13 +88,16 @@ func TestListOpenCodeDBParseAndFilter(t *testing.T) {
 		{ID: "ses_new", Title: "newest", Updated: 2000, Directory: wd},
 		{ID: "ses_old", Title: "oldest", Updated: 1000, Directory: wd},
 		{ID: "ses_other", Title: "elsewhere", Updated: 3000, Directory: "/home/u/other"},
+		// A sub-agent child session in the same workdir, updated most recently:
+		// it must be excluded so it never becomes the "resume this session" id.
+		{ID: "ses_child", Title: "child", Updated: 9000, Directory: wd, ParentID: "ses_new"},
 	})
 	got := listOpenCodeDB(wd, db)
 	if len(got) != 2 {
-		t.Fatalf("got %d sessions, want 2 (filtered to workdir): %+v", len(got), got)
+		t.Fatalf("got %d sessions, want 2 (workdir + top-level only): %+v", len(got), got)
 	}
 	if got[0].ID != "ses_new" || got[1].ID != "ses_old" {
-		t.Errorf("order = [%s,%s], want newest-first [ses_new,ses_old]", got[0].ID, got[1].ID)
+		t.Errorf("order = [%s,%s], want newest-first top-level [ses_new,ses_old]", got[0].ID, got[1].ID)
 	}
 	if !got[0].When.Equal(time.UnixMilli(2000)) {
 		t.Errorf("ses_new When = %v, want epoch-ms 2000", got[0].When)
@@ -105,16 +108,21 @@ type ocDBRow struct {
 	ID, Title string
 	Updated   int64
 	Directory string
+	ParentID  string // empty → stored as NULL (top-level session)
 }
 
 func createSessionTable(t *testing.T, db string, rows []ocDBRow) {
 	t.Helper()
 	args := []string{db,
-		"CREATE TABLE session (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, slug TEXT NOT NULL, directory TEXT NOT NULL, title TEXT NOT NULL, version TEXT NOT NULL, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL);"}
+		"CREATE TABLE session (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, parent_id TEXT, slug TEXT NOT NULL, directory TEXT NOT NULL, title TEXT NOT NULL, version TEXT NOT NULL, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL);"}
 	for _, r := range rows {
+		parent := "NULL"
+		if r.ParentID != "" {
+			parent = "'" + r.ParentID + "'"
+		}
 		args = append(args,
-			"INSERT INTO session (id, project_id, slug, directory, title, version, time_created, time_updated) VALUES ('"+
-				r.ID+"','p','s','"+r.Directory+"','"+r.Title+"','v',0,"+strconv.FormatInt(r.Updated, 10)+");")
+			"INSERT INTO session (id, project_id, parent_id, slug, directory, title, version, time_created, time_updated) VALUES ('"+
+				r.ID+"','p',"+parent+",'s','"+r.Directory+"','"+r.Title+"','v',0,"+strconv.FormatInt(r.Updated, 10)+");")
 	}
 	cmd := exec.Command("sqlite3", args...)
 	if out, err := cmd.CombinedOutput(); err != nil {
