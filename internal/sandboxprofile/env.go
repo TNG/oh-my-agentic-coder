@@ -57,8 +57,9 @@ var dangerousEnvPrefixes = []string{
 // the child through inheritance rather than the injected overlay.
 //
 // USER/LOGNAME (default identity for git/npm/ssh — also forwarded to the
-// facade via FacadeConfig.BaseEnvPassthrough), TZ (date formatting), and
-// EDITOR/VISUAL (harnesses that shell out to an editor) round out the
+// facade via FacadeConfig.BaseEnvPassthrough), TZ (date formatting),
+// EDITOR/VISUAL (harnesses that shell out to an editor), and COLORTERM
+// (truecolor capability hint, paired with TERM) round out the
 // operational minimum; all are non-secret.
 func DefaultAllowVars() []string {
 	return []string{
@@ -70,6 +71,7 @@ func DefaultAllowVars() []string {
 		"LANG",
 		"LC_*",
 		"TERM",
+		"COLORTERM",
 		"SHELL",
 		"USER",
 		"LOGNAME",

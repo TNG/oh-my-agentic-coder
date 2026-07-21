@@ -769,6 +769,7 @@ func TestDefaultAllowVarsGoldenList(t *testing.T) {
 		"LANG",
 		"LC_*",
 		"TERM",
+		"COLORTERM",
 		"SHELL",
 		"USER",
 		"LOGNAME",
