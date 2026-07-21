@@ -32,33 +32,60 @@ var connectTimeout = 30 * time.Second
 // tell a policy denial from a real upstream 403.
 const sandboxDenyHeader = "X-Omac-Sandbox: denied\r\n"
 
-// intentHintHeader is the response-header name carrying the explain-more
-// remedy on a needs_intent denial. An HTTPS/CONNECT client discards the
-// deny body, so the hint rides here too — readable without a follow-up
-// GET /sandbox/intent by any tooling that surfaces proxy headers.
+// intentHintHeader is the response-header name carrying the intent remedy
+// hint on a prompt-driven denial. An HTTPS/CONNECT client discards the deny
+// body, so the hint rides here too — readable without a follow-up
+// GET /sandbox/intent by any tooling that surfaces proxy headers. Only the
+// authoritative, single-line-ASCII hint constants are ever emitted here; the
+// agent-supplied intent reason is body-only (see intentHintFor).
 const intentHintHeader = "X-Omac-Intent-Hint"
 
-// denyHeaders builds the extra response headers for a filtered denial.
-// Every denial is marked as sandbox-originated; a needs_intent denial
-// additionally carries the explain-more hint. The hint is single-line
-// ASCII by contract (see intent.HintExplainMore), so it is a valid
-// header field-value.
-func denyHeaders(reason string) string {
-	if strings.Contains(reason, "needs_intent") {
-		return sandboxDenyHeader + intentHintHeader + ": " + intent.HintExplainMore + "\r\n"
+// intentHintFor returns the authoritative hint for a prompt-driven denial,
+// or "" when the denial is not intent-related. It mirrors the state machine
+// of the GET /sandbox/intent lookup so the two channels agree:
+//   - needs_intent (the user clicked "Explain more") -> explain-more hint,
+//     regardless of whether a reason was already on file;
+//   - a plain deny with a reason on file -> the user reviewed a declared
+//     intent and declined it, so tell the agent not to retry;
+//   - anything else (undeclared deny, policy/allowlist deny) -> no hint,
+//     since inviting a retry there would loop or is irrelevant.
+func intentHintFor(v Verdict) string {
+	switch {
+	case strings.Contains(v.Reason, "needs_intent"):
+		return intent.HintExplainMore
+	case strings.Contains(v.Reason, "prompt:deny") && strings.TrimSpace(v.IntentReason) != "":
+		return intent.HintDeclared
+	default:
+		return ""
+	}
+}
+
+// denyHeaders builds the extra response headers for a filtered denial. Every
+// denial is marked as sandbox-originated; a prompt-driven intent denial also
+// carries the hint. Only the static hint constant is placed here — never the
+// agent-supplied reason, which may contain CR/LF and is delivered in the body.
+func denyHeaders(v Verdict) string {
+	if hint := intentHintFor(v); hint != "" {
+		return sandboxDenyHeader + intentHintHeader + ": " + hint + "\r\n"
 	}
 	return sandboxDenyHeader
 }
 
-// denyBody renders the body for a filtered denial. It explicitly
-// attributes the denial to the sandbox network policy and points at
-// the knobs that change it. When reason indicates the user clicked
-// "Explain more", the body carries the authoritative explain-more hint
-// inline so a plain-HTTP agent gets the full remedy without a second
-// GET /sandbox/intent round-trip.
-func denyBody(host, reason string) string {
-	if strings.Contains(reason, "needs_intent") {
-		return fmt.Sprintf("omac sandbox: access to %q was DENIED — the user asked for more explanation.\n\n%s\n", host, intent.HintExplainMore)
+// denyBody renders the body for a filtered denial. For a prompt-driven intent
+// denial it delivers the state-aware hint inline and echoes the agent's own
+// declared reason, so the agent has the full remedy — including what it
+// previously said — without a second GET /sandbox/intent round-trip. Other
+// denials attribute the block to the sandbox policy and point at the knobs.
+func denyBody(host string, v Verdict) string {
+	prior := ""
+	if r := sanitizeReason(v.IntentReason); r != "" {
+		prior = fmt.Sprintf("\nYour declared intent on file: %q\n", r)
+	}
+	switch {
+	case strings.Contains(v.Reason, "needs_intent"):
+		return fmt.Sprintf("omac sandbox: access to %q was DENIED — the user asked for more explanation.\n\n%s\n%s", host, intent.HintExplainMore, prior)
+	case strings.Contains(v.Reason, "prompt:deny") && prior != "":
+		return fmt.Sprintf("omac sandbox: access to %q was DENIED — the user reviewed your declared intent and declined it.\n\n%s\n%s", host, intent.HintDeclared, prior)
 	}
 	return fmt.Sprintf(`omac sandbox: access to %q was DENIED BY THE SANDBOX network policy (%s).
 
@@ -71,7 +98,14 @@ To allow this host, either:
     (~/.config/omac/sandbox-profiles/<profile>.json),
   - or remove a matching deny entry from network.deny_domain or the
     <profile>.pages.json learned-policy file.
-`, host, reason, host)
+`, host, v.Reason, host)
+}
+
+// sanitizeReason makes an agent-supplied intent reason safe to embed in the
+// deny body: CR/LF collapse to spaces so it cannot forge extra lines, and
+// surrounding whitespace is trimmed.
+func sanitizeReason(s string) string {
+	return strings.TrimSpace(strings.NewReplacer("\r", " ", "\n", " ").Replace(s))
 }
 
 // upstreamErrorBody renders the body for an upstream-proxy error. It
@@ -296,7 +330,7 @@ func (s *Server) handleConnect(conn net.Conn, req *http.Request) {
 	}
 	upstream, verdict, err := s.checkAndDial(host, port)
 	if verdict.Decision != Allow {
-		writeRawResponse(conn, http.StatusForbidden, denyHeaders(verdict.Reason), denyBody(host, verdict.Reason))
+		writeRawResponse(conn, http.StatusForbidden, denyHeaders(verdict), denyBody(host, verdict))
 		return
 	}
 	if err != nil {
@@ -367,7 +401,7 @@ func (s *Server) handleForward(conn net.Conn, br *bufio.Reader, req *http.Reques
 	}
 	upstream, verdict, err := s.checkAndDial(host, port)
 	if verdict.Decision != Allow {
-		writeRawResponse(conn, http.StatusForbidden, denyHeaders(verdict.Reason), denyBody(host, verdict.Reason))
+		writeRawResponse(conn, http.StatusForbidden, denyHeaders(verdict), denyBody(host, verdict))
 		return
 	}
 	if err != nil {
