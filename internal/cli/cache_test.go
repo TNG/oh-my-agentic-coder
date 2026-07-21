@@ -9,6 +9,21 @@ import (
 	"github.com/tngtech/oh-my-agentic-coder/internal/toolcache"
 )
 
+// writeWorkdirScopeConfig writes a launcher config in workdir that selects
+// the per-workdir cache scope, so `omac cache clear` targets the workdir
+// scope rather than the default shared one.
+func writeWorkdirScopeConfig(t *testing.T, workdir string) {
+	t.Helper()
+	dir := filepath.Join(workdir, ".opencode")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir .opencode: %v", err)
+	}
+	cfg := filepath.Join(dir, "oh-my-agentic-coder.yaml")
+	if err := os.WriteFile(cfg, []byte("cache:\n  scope: workdir\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+}
+
 // stageActiveScope prepares a workdir cache scope, leaves it open
 // (so its shared lock is held), and returns the marker file path and
 // a closer the test must defer.
@@ -50,6 +65,7 @@ func stageInactiveScope(t *testing.T, workdir string) (marker, dir string) {
 func TestRunCacheClearCurrent(t *testing.T) {
 	isolateHome(t)
 	wd := t.TempDir()
+	writeWorkdirScopeConfig(t, wd)
 	marker, dir := stageInactiveScope(t, wd)
 
 	env, read := captureEnv(t, wd)
@@ -75,6 +91,7 @@ func TestRunCacheClearCurrent(t *testing.T) {
 func TestRunCacheClearCurrentActive(t *testing.T) {
 	isolateHome(t)
 	wd := t.TempDir()
+	writeWorkdirScopeConfig(t, wd)
 	marker := stageActiveScope(t, wd)
 
 	env, read := captureEnv(t, wd)

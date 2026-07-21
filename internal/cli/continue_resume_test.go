@@ -114,7 +114,7 @@ func TestLaunchCachePersistentAndEphemeral(t *testing.T) {
 	workdir := t.TempDir()
 	sandboxTmp := t.TempDir()
 
-	scope, err := prepareLaunchCache(true, false, workdir, sandboxTmp)
+	scope, err := prepareLaunchCache(true, false, config.CacheScopeGlobal, workdir, "", sandboxTmp)
 	if err != nil {
 		t.Fatalf("no-sandbox cache: %v", err)
 	}
@@ -122,7 +122,7 @@ func TestLaunchCachePersistentAndEphemeral(t *testing.T) {
 		t.Errorf("no-sandbox scope = %#v, want nil", scope)
 	}
 
-	ephemeral, err := prepareLaunchCache(false, true, workdir, sandboxTmp)
+	ephemeral, err := prepareLaunchCache(false, true, config.CacheScopeGlobal, workdir, "", sandboxTmp)
 	if err != nil {
 		t.Fatalf("ephemeral cache: %v", err)
 	}
@@ -136,7 +136,21 @@ func TestLaunchCachePersistentAndEphemeral(t *testing.T) {
 		t.Errorf("persistent cache root exists or stat failed: %v", err)
 	}
 
-	persistent, err := prepareLaunchCache(false, false, workdir, sandboxTmp)
+	// Default global scope resolves to the shared domain.
+	shared, err := prepareLaunchCache(false, false, config.CacheScopeGlobal, workdir, "", sandboxTmp)
+	if err != nil {
+		t.Fatalf("shared cache: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := shared.Close(); err != nil {
+			t.Errorf("close shared cache: %v", err)
+		}
+	})
+	if shared.Domain != toolcache.DomainShared {
+		t.Errorf("shared domain = %q, want %q", shared.Domain, toolcache.DomainShared)
+	}
+
+	persistent, err := prepareLaunchCache(false, false, config.CacheScopeWorkdir, workdir, "", sandboxTmp)
 	if err != nil {
 		t.Fatalf("persistent cache: %v", err)
 	}
@@ -183,9 +197,9 @@ func TestLaunchCacheInjectsSelectedScope(t *testing.T) {
 				}
 				return
 			}
-			cleared, err := toolcache.ClearWorkdir(capture.workdir)
+			cleared, err := toolcache.ClearShared()
 			if err != nil {
-				t.Fatalf("clear workdir cache: %v", err)
+				t.Fatalf("clear shared cache: %v", err)
 			}
 			if cleared.Status != toolcache.ClearRemoved {
 				t.Errorf("clear status = %q, want %q (launch should close the scope)", cleared.Status, toolcache.ClearRemoved)

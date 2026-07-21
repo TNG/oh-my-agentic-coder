@@ -21,6 +21,7 @@ import (
 	"strings"
 	"text/tabwriter"
 
+	"github.com/tngtech/oh-my-agentic-coder/internal/config"
 	"github.com/tngtech/oh-my-agentic-coder/internal/netprompt"
 	"github.com/tngtech/oh-my-agentic-coder/internal/profileaudit"
 	"github.com/tngtech/oh-my-agentic-coder/internal/registry"
@@ -123,8 +124,16 @@ func buildProvenanceView(workdir, profileRef string) (*provenanceView, error) {
 	// --- Skills ---
 	view.Skills = buildSkillsView(workdir)
 
-	// --- Cache (default persistent scope for this workdir) ---
-	cv, err := buildCacheView(workdir)
+	// --- Cache (persistent scope this workdir would resolve to) ---
+	lc, cfgPath, err := config.LoadLauncher(workdir)
+	if err != nil {
+		return nil, fmt.Errorf("cache: %w", err)
+	}
+	cacheScope, err := lc.Cache.Resolve()
+	if err != nil {
+		return nil, fmt.Errorf("cache: %w", err)
+	}
+	cv, err := buildCacheView(cacheScope, workdir, cfgPath)
 	if err != nil {
 		return nil, fmt.Errorf("cache: %w", err)
 	}
@@ -133,13 +142,28 @@ func buildProvenanceView(workdir, profileRef string) (*provenanceView, error) {
 	return view, nil
 }
 
-// buildCacheView describes the default persistent cache scope for the
-// given workdir via toolcache.DescribePersistent — which does NOT create
-// the directory. It always reports the default workdir scope, not a live
-// ephemeral or serve-process scope. An error from DescribePersistent
-// (e.g. HOME unset) is returned to the caller rather than swallowed.
-func buildCacheView(workdir string) (cacheView, error) {
-	scope, err := toolcache.DescribePersistent(toolcache.DomainWorkdir, workdir)
+// buildCacheView describes the persistent cache scope the given workdir
+// resolves to via the Describe* helpers — which do NOT create the directory.
+// It reports the config-resolved scope (global/config/workdir), not a live
+// ephemeral or serve-process scope. An error from the describe call (e.g.
+// HOME unset) is returned to the caller rather than swallowed.
+func buildCacheView(cacheScope config.CacheScope, workdir, cfgPath string) (cacheView, error) {
+	var (
+		scope toolcache.Scope
+		err   error
+	)
+	switch cacheScope {
+	case config.CacheScopeWorkdir:
+		scope, err = toolcache.DescribePersistent(toolcache.DomainWorkdir, workdir)
+	case config.CacheScopeConfig:
+		if cfgPath != "" {
+			scope, err = toolcache.DescribePersistent(toolcache.DomainConfig, cfgPath)
+		} else {
+			scope, err = toolcache.DescribeShared()
+		}
+	default:
+		scope, err = toolcache.DescribeShared()
+	}
 	if err != nil {
 		return cacheView{}, err
 	}

@@ -440,20 +440,21 @@ global skills (the shared baseline available to every project). Per-dir
 skills are added lazily (§5.2).
 
 > **Tool-cache scope under `serve`.** omac prepares a single
-> persistent tool-cache scope for the whole `omac serve` process,
-> keyed on the launch workdir identity (`v1:serve:<canonical launch
-> workdir>`), and injects `OMAC_CACHE_DIR` / `OMAC_CACHE_MODE` plus the
-> six tool redirects (`XDG_CACHE_HOME`, `GOCACHE`, `GOMODCACHE`,
+> persistent tool-cache scope for the whole `omac serve` process and
+> injects `OMAC_CACHE_DIR` / `OMAC_CACHE_MODE` plus the six tool
+> redirects (`XDG_CACHE_HOME`, `GOCACHE`, `GOMODCACHE`,
 > `NPM_CONFIG_CACHE`, `PIP_CACHE_DIR`, `CARGO_HOME`) into the shared
-> sandbox. All served directories therefore **share one cache
-> directory** — this is the Desktop path and is strictly weaker
-> isolation than per-workdir `omac start` (which keys the cache on the
-> workdir identity). It is an explicit, documented consequence of
-> Decision #2 (one shared sandbox). `omac serve --workdir <dir>`
-> pre-activates a single directory and keys the cache on that dir's
-> workdir identity instead; `omac serve --ephemeral-cache` uses a
-> per-launch temp cache removed on exit. `omac start` (TUI, one
-> directory) keeps the per-workdir persistent cache scope unchanged.
+> sandbox. The scope is chosen by `cache.scope` (§9.1), defaulting to
+> `global` — one cache shared by every workdir on the machine, which is
+> also what all served directories share here. Because one serve process
+> runs one shared sandbox, per-workdir isolation only applies to `omac
+> serve --workdir <dir>` (or `--cache-scope workdir` with `--workdir`),
+> which keys the cache on that dir's workdir identity. Without `--workdir`,
+> `--cache-scope workdir` falls back to a per-launch serve-scope cache
+> (`v1:serve:<canonical launch workdir>`). `omac serve --ephemeral-cache`
+> uses a per-launch temp cache removed on exit. This shared default is an
+> explicit consequence of Decision #2 (one shared sandbox); set
+> `cache.scope: workdir` (with `--workdir`) to opt into isolation.
 
 ### 5.2 Lazy activation (the core new behavior)
 
