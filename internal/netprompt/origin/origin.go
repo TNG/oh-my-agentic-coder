@@ -32,7 +32,3 @@ type Resolver interface {
 // NewResolver returns the platform resolver: a /proc-backed resolver on Linux,
 // a noop everywhere else.
 func NewResolver() Resolver { return platformResolver() }
-
-type noopResolver struct{}
-
-func (noopResolver) Resolve(_, _ netip.AddrPort) (Origin, bool) { return Origin{}, false }
