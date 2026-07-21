@@ -621,8 +621,8 @@ sandbox:
 > does **not** inherit every ambient var. It prints a warning, pauses briefly
 > so you can read it, then forwards **only the operational minimum** —
 > `sandboxprofile.DefaultAllowVars()`: `HOME`, `PATH`, `PWD`, `TMPDIR`, `LANG`,
-> `LC_*`, `TERM`, `SHELL`, `USER`, `LOGNAME`, `TZ`, `EDITOR`, `VISUAL`,
-> `XDG_*`, `NPM_CONFIG_PREFIX`, `OMAC_*`.
+> `LC_*`, `TERM`, `COLORTERM`, `SHELL`, `USER`, `LOGNAME`, `TZ`, `EDITOR`,
+> `VISUAL`, `XDG_*`, `NPM_CONFIG_PREFIX`, `OMAC_*`.
 >
 > Everything else is **stripped** — secrets, *and* provider-auth vars.
 > omac deliberately does **not** auto-forward the harness's auth variables for
