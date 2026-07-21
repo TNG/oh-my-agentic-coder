@@ -406,7 +406,12 @@ func zenityArgs(host string, port int, suffix, intent, cause, originLine string)
 }
 
 func (zenityBackend) show(ctx context.Context, host string, port int, suffix, intent, cause, originLine string) (string, error) {
-	out, err := exec.CommandContext(ctx, "zenity", zenityArgs(host, port, suffix, intent, cause, originLine)...).Output()
+	cmd := exec.CommandContext(ctx, "zenity", zenityArgs(host, port, suffix, intent, cause, originLine)...)
+	// GTK3 hides the overlay scrollbar until hover, so an option list that
+	// overflows the window looks complete and the choices below the fold are
+	// undiscoverable. Force a persistent scrollbar so it is always visible.
+	cmd.Env = append(os.Environ(), "GTK_OVERLAY_SCROLLING=0")
+	out, err := cmd.Output()
 	if err != nil {
 		// zenity exits 1 on Cancel; treat as cancel unless ctx expired.
 		if ctx.Err() != nil {
