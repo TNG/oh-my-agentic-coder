@@ -180,7 +180,10 @@ jobs:
               req=$(jq -n --arg m "$model" --arg s "$sys" --arg u "$commits" \
                 '{model:$m,temperature:0.2,max_tokens:1500,messages:[{role:"system",content:$s},{role:"user",content:$u}]}')
               # X-Separate-Reasoning routes GLM reasoning out of message.content.
-              resp=$(curl -sS --max-time 120 "$SKAINET_INTERNAL/chat/completions" \
+              # Generous timeout: release notes aren't latency-sensitive, and
+              # GLM-5.2 reasoning over a full release can take a while. Better a
+              # slow, good summary than falling back to raw dev-facing bullets.
+              resp=$(curl -sS --max-time 300 "$SKAINET_INTERNAL/chat/completions" \
                 -H "Authorization: Bearer $SKAINET_TOKEN" -H 'Content-Type: application/json' \
                 -H 'X-Separate-Reasoning: 1' -H 'X-User-Agent: omac-ci' \
                 --data "$req" || true)
