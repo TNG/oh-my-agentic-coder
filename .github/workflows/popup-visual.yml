@@ -20,10 +20,6 @@ permissions:
 jobs:
   linux:
     runs-on: ubuntu-latest
-    # Advisory only: capture is a human-review aid, never a pass/fail gate. A
-    # flaky headless render (blank window, Xvfb first-paint timing) or a missing
-    # toolkit (kdialog's heavy KDE deps) must not turn the PR check red.
-    continue-on-error: true
     strategy:
       fail-fast: false
       matrix:
@@ -40,6 +36,12 @@ jobs:
           sudo apt-get install -y "${{ matrix.backend }}" \
             || echo "::warning::${{ matrix.backend }} not installable; the render test will skip"
       - name: Render + capture (${{ matrix.backend }})
+        # Advisory only: capture is a human-review aid, never a pass/fail gate. A
+        # flaky headless render (blank window, Xvfb first-paint timing) or a
+        # missing toolkit (kdialog's heavy KDE deps) must leave the check green.
+        # Step-level (not job-level) so the job still concludes success — a
+        # job-level continue-on-error would still report the leg as a red check.
+        continue-on-error: true
         env:
           OMAC_POPUP_SHOT: "1"
           OMAC_POPUP_SHOT_BACKEND: ${{ matrix.backend }}
@@ -58,14 +60,16 @@ jobs:
 
   macos:
     runs-on: macos-latest
-    # osascript GUI dialogs need a WindowServer session headless CI may lack.
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
       - name: Render + capture (osascript, best-effort)
+        # osascript GUI dialogs need a WindowServer session headless CI may lack.
+        # Step-level continue-on-error keeps the check green when the capture
+        # cannot run (a job-level one would still report the job as a red check).
+        continue-on-error: true
         env:
           OMAC_POPUP_SHOT: "1"
           OMAC_POPUP_SHOT_DIR: ${{ github.workspace }}/popup-shots
