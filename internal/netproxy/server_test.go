@@ -771,13 +771,57 @@ func TestDenyHeaders(t *testing.T) {
 	}
 }
 
+// TestServerNeedsIntentDenyCarriesHintHeader proves the hint reaches the
+// wire: a real needs_intent verdict flowing through handleConnect must put
+// X-Omac-Intent-Hint on the 403 an HTTP client parses, so the agent needs
+// no follow-up GET /sandbox/intent.
+func TestServerNeedsIntentDenyCarriesHintHeader(t *testing.T) {
+	s := startProxy(t, FilterConfig{
+		PromptEnabled: true,
+		Prompter:      &fakePrompter{res: PromptResult{NeedsIntent: true}},
+		Resolve:       resolveTo("127.0.0.1"),
+	})
+
+	conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", s.Port()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	fmt.Fprintf(conn, "CONNECT api.example.com:443 HTTP/1.1\r\nHost: api.example.com:443\r\nProxy-Authorization: %s\r\n\r\n",
+		basicAuth("omac", s.Token()))
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("status = %d, want 403", resp.StatusCode)
+	}
+	if got := resp.Header.Get(intentHintHeader); got != intent.HintExplainMore {
+		t.Errorf("%s = %q, want the explain-more hint", intentHintHeader, got)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), intent.HintExplainMore) {
+		t.Errorf("deny body should embed the explain-more hint: %q", body)
+	}
+}
+
 // TestIntentHintHeaderIsValidFieldValue guards the ASCII/single-line
-// contract: the hint is emitted as an HTTP header value, which forbids
-// CR/LF and discourages non-ASCII octets.
+// contract the intent package documents for every hint: they may be
+// emitted as an HTTP header value, which forbids CR/LF and discourages
+// non-ASCII octets. Covering all three (not just the currently
+// header-bound HintExplainMore) keeps a future header use safe.
 func TestIntentHintHeaderIsValidFieldValue(t *testing.T) {
-	for _, r := range intent.HintExplainMore {
-		if r == '\r' || r == '\n' || r > 127 {
-			t.Fatalf("HintExplainMore contains an invalid header-value rune %q", r)
+	hints := map[string]string{
+		"HintUndeclared":  intent.HintUndeclared,
+		"HintDeclared":    intent.HintDeclared,
+		"HintExplainMore": intent.HintExplainMore,
+	}
+	for name, hint := range hints {
+		for _, r := range hint {
+			if r == '\r' || r == '\n' || r > 127 {
+				t.Errorf("%s contains an invalid header-value rune %q", name, r)
+			}
 		}
 	}
 }
