@@ -469,3 +469,31 @@ func TestContinueHintToken(t *testing.T) {
 		t.Errorf("claude token = %q, want \" claude\" (first alias)", got)
 	}
 }
+
+func TestHintSessionID(t *testing.T) {
+	cases := []struct {
+		name     string
+		sessions []session.Session
+		wantID   string
+		wantOK   bool
+	}{
+		{"empty", nil, "", false},
+		{"leading-empty-id", []session.Session{{ID: ""}}, "", false},
+		{
+			// session.List returns newest-first, so the hint must advertise
+			// the first entry — never a later one.
+			name:     "picks-first-newest",
+			sessions: []session.Session{{ID: "ses_new"}, {ID: "ses_old"}},
+			wantID:   "ses_new",
+			wantOK:   true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			id, ok := hintSessionID(tc.sessions)
+			if id != tc.wantID || ok != tc.wantOK {
+				t.Errorf("hintSessionID = (%q, %v), want (%q, %v)", id, ok, tc.wantID, tc.wantOK)
+			}
+		})
+	}
+}
