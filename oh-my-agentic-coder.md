@@ -705,6 +705,7 @@ Common flags:
 - `--ephemeral-cache` — use a per-launch cache directory under the sandbox temp dir instead of the persistent workdir cache scope; removed on exit. Use it for a clean-room build or when persistent-scope setup fails (omac's failure hint names the flag). Cannot be combined with `--no-sandbox` (no sandbox to grant the temp dir).
 - `--keep-running` — do not stop sidecars when the inner command exits (useful when iterating on sidecar development).
 - `--accept-skill-changes` — tolerate `bundle_hash` drift.
+- `--auto-register-skills` — opt in for this start-family launch to silently register only discovered workdir-local skills whose required config and secrets resolve without prompting. Other unregistered skills, including user-global skills and any skill with an unresolved required value, still refuse launch and print their registration command.
 - `--skip-secret-pattern` — do not enforce a secret's `pattern` against an `env_passthrough`-supplied value (escape hatch for an outdated pattern; the raw value is still passed through to the sidecar).
 - `--verbose`, `--log-level <level>`. `--verbose` prints the resolved cache mode/path, the sandbox TMPDIR, the control-plane URL, and the sandbox argv before exec.
 

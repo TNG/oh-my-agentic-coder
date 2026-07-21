@@ -50,15 +50,15 @@ type launchOpts struct {
 	skipSecretPattern  bool
 	verbose            bool
 	// autoRegisterSkills, when set, silently registers discovered
-	// workdir-local skills that declare no required secrets and no
-	// required config fields, mirroring `omac serve`'s autoRegister
-	// (serve.go). Skills with required secrets/fields are NOT
-	// auto-registered — they still surface in the unregistered list so
-	// the user is prompted for values. Used by launchers (e.g. the `oco`
-	// wrapper) that run `omac start` against a freshly cloned workdir
-	// whose workdir-local skills are committed but whose per-workdir
-	// registry (.opencode/sidecar.json) is gitignored and therefore
-	// empty on every fresh checkout.
+	// workdir-local skills whose required values resolve without prompting,
+	// mirroring `omac serve`'s autoRegister (serve.go). Skills with a
+	// required value that cannot resolve are NOT auto-registered — they
+	// still surface in the unregistered list so the user is prompted for
+	// values. Used by launchers (e.g. the `oco` wrapper) that run `omac
+	// start` against a freshly cloned workdir whose workdir-local skills
+	// are committed but whose per-workdir registry
+	// (.opencode/sidecar.json) is gitignored and therefore empty on every
+	// fresh checkout.
 	autoRegisterSkills bool
 	// audit flags (see internal/audit). auditLog overrides the config/default
 	// path; noAudit disables; auditStrict makes an unwritable log fatal.
@@ -90,7 +90,7 @@ func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, bool)
 		acceptSkillChanges = fs.Bool("accept-skill-changes", false, "Tolerate bundle_hash drift in registered skills (proceed even if the on-disk skill differs from what was registered).")
 		skipSecretPattern  = fs.Bool("skip-secret-pattern", false, "Do not enforce a secret's pattern against an env_passthrough-supplied value (escape hatch for an outdated pattern; the raw value is still passed through).")
 		verbose            = fs.Bool("verbose", false, "Verbose lifecycle logging.")
-		autoRegisterSkills = fs.Bool("auto-register-skills", false, "Silently register discovered workdir-local skills that declare no required secrets and no required config fields, instead of refusing to start. Skills with required secrets/fields still prompt via `omac register`.")
+		autoRegisterSkills = fs.Bool("auto-register-skills", false, "Silently register discovered workdir-local skills whose required values resolve without prompting, instead of refusing to start. Skills with unresolved required values still prompt via `omac register`.")
 		auditLog           = fs.String("audit-log", "", "Path to the audit log (default: persistent central location). Overrides config.")
 		noAudit            = fs.Bool("no-audit", false, "Disable the security audit trail.")
 		auditStrict        = fs.Bool("audit-strict", false, "Fail-closed: abort if the audit log cannot be written.")
@@ -318,15 +318,32 @@ func runLaunch(env *Env, opts launchOpts) int {
 	// name.
 	reg := mergeRegistries(globalReg, workdirReg)
 
-	// 2a-bis. Optional auto-registration of workdir-local skills that
-	//         declare no required secrets and no required config fields.
-	//         Mirrors `omac serve`'s autoRegister (serve.go): the
-	//         workdir-local skill source roots are scanned, and every
-	//         discovered skill absent from the registry whose
-	//         omac.yaml sidecar has no required secrets/fields is
-	//         registered silently. Skills WITH required secrets/fields
-	//         are left untouched so the findUnregisteredSkills gate
-	//         below still surfaces them and prompts the user.
+	// Load the config stores once before auto-registration eligibility and
+	// runtime resolution. A broken store is a launch-wide I/O failure, not a
+	// per-skill condition that can be deferred to registration guidance.
+	workdirCfg, err := skillconfig.Load(env.Workdir)
+	if err != nil {
+		fmt.Fprintln(env.Stderr, prefix+": skill-config:", err)
+		return ExitIOError
+	}
+	globalCfg, err := skillconfig.LoadGlobal()
+	if err != nil {
+		fmt.Fprintln(env.Stderr, prefix+": global skill-config:", err)
+		return ExitIOError
+	}
+	// Merge config the same way as the registry: workdir values
+	// override global values per (skill, field).
+	configStore := mergeConfig(globalCfg, workdirCfg)
+
+	// 2a-bis. Optional auto-registration of workdir-local skills whose
+	//         required values resolve without prompting. Mirrors `omac
+	//         serve`'s autoRegister (serve.go): the workdir-local skill
+	//         source roots are scanned, and every discovered skill absent
+	//         from the registry whose omac.yaml sidecar has all required
+	//         values resolved is registered silently. Skills with
+	//         unresolved required values are left untouched so the
+	//         findUnregisteredSkills gate below still surfaces them and
+	//         prompts the user.
 	//
 	//         This is the path launchers like the `oco` wrapper use to
 	//         avoid forcing the user to run `omac register` on every
@@ -335,7 +352,11 @@ func runLaunch(env *Env, opts launchOpts) int {
 	//         for omac's own repo and any repo that ships example
 	//         skills).
 	if autoRegisterSkills {
-		registered, errs := startAutoRegisterWorkdirSkills(env, harness, reg)
+		registered, errs, err := startAutoRegisterWorkdirSkills(env, harness, reg, configStore, skipSecretPattern)
+		if err != nil {
+			fmt.Fprintln(env.Stderr, prefix+": keychain:", err)
+			return ExitKeychainError
+		}
 		for _, r := range registered {
 			fmt.Fprintf(env.Stderr, "[ok] auto-registered skill %s (no prompting required)\n", r)
 		}
@@ -420,20 +441,6 @@ func runLaunch(env *Env, opts launchOpts) int {
 			allSecrets[i].Zero()
 		}
 	}()
-
-	workdirCfg, err := skillconfig.Load(env.Workdir)
-	if err != nil {
-		fmt.Fprintln(env.Stderr, prefix+": skill-config:", err)
-		return ExitIOError
-	}
-	globalCfg, err := skillconfig.LoadGlobal()
-	if err != nil {
-		fmt.Fprintln(env.Stderr, prefix+": global skill-config:", err)
-		return ExitIOError
-	}
-	// Merge config the same way as the registry: workdir values
-	// override global values per (skill, field).
-	configStore := mergeConfig(globalCfg, workdirCfg)
 
 	// Per-class problem accumulators. Each maps a hint template to
 	// the affected skill names so we can render "do X for these N
@@ -1215,22 +1222,22 @@ func findUnregisteredSkills(workdir string, harness config.Harness, reg *registr
 
 // startAutoRegisterWorkdirSkills silently registers every discovered
 // workdir-local skill (Kind == "workdir") that is absent from reg AND
-// whose omac.yaml sidecar declares no required secrets and no required
-// config fields. Mirrors `omac serve`'s autoRegister (serve.go), but
-// scoped to "no required values" so a skill that needs a keychain
-// secret or a config value still surfaces through findUnregisteredSkills
-// and prompts the user — auto-registration never silently skips a
-// registration prompt that would otherwise have asked for a value.
+// whose omac.yaml sidecar has every required value resolved without
+// prompting. Mirrors `omac serve`'s autoRegister (serve.go), but
+// scoped to values that are resolved at launch so a skill with a missing
+// keychain secret or config value still surfaces through
+// findUnregisteredSkills and prompts the user — auto-registration never
+// silently skips a registration prompt that would otherwise have asked
+// for a value.
 //
-// Returns the names of skills that were registered (sorted) and a slice
-// of per-skill errors (skill name + error) for skills that looked
-// eligible but failed to register (e.g. omac.yaml unreadable). The
-// caller decides whether a per-skill error is fatal; this function
-// registers what it can and reports the rest.
-func startAutoRegisterWorkdirSkills(env *Env, harness config.Harness, reg *registry.Registry) ([]string, []string) {
+// Returns the names of skills that were registered (sorted), per-skill
+// diagnostics for metadata/registration failures, and a fatal keychain read
+// error. Metadata errors remain diagnostic so one malformed skill does not
+// hide actionable results for other skills.
+func startAutoRegisterWorkdirSkills(env *Env, harness config.Harness, reg *registry.Registry, configStore *skillconfig.Store, skipSecretPattern bool) ([]string, []string, error) {
 	discovered, err := skillsource.Discover(env.Workdir, harness)
 	if err != nil {
-		return nil, []string{fmt.Sprintf("scan skills: %v", err)}
+		return nil, []string{fmt.Sprintf("scan skills: %v", err)}, nil
 	}
 	registered := map[string]struct{}{}
 	for _, e := range reg.Registered {
@@ -1245,10 +1252,14 @@ func startAutoRegisterWorkdirSkills(env *Env, harness config.Harness, reg *regis
 		if _, ok := registered[ent.Name]; ok {
 			continue
 		}
-		eligible, err := skillEligibleForAutoRegister(ent.Dir)
+		meta, err := config.LoadMeta(filepath.Join(ent.Dir, config.MetaFileName))
 		if err != nil {
 			errs = append(errs, fmt.Sprintf("%s: %v", ent.Name, err))
 			continue
+		}
+		eligible, err := skillEligibleForAutoRegister(env.Workdir, ent.Name, meta, configStore, skipSecretPattern)
+		if err != nil {
+			return done, errs, err
 		}
 		if !eligible {
 			// A required secret/field is the user's signal to run
@@ -1263,33 +1274,28 @@ func startAutoRegisterWorkdirSkills(env *Env, harness config.Harness, reg *regis
 		done = append(done, ent.Name)
 	}
 	sort.Strings(done)
-	return done, errs
+	return done, errs, nil
 }
 
-// skillEligibleForAutoRegister reports whether the skill at absDir is
-// eligible for silent auto-registration: its omac.yaml must parse, must
-// have a sidecar block, and every declared secret/config field must be
-// satisfiable at start time WITHOUT prompting the user.
+// skillEligibleForAutoRegister reports whether parsed metadata is eligible
+// for silent auto-registration: it must have a sidecar block, and every
+// declared secret/config field must be satisfiable at start time WITHOUT
+// prompting the user.
 //
 // "Satisfiable without prompting" mirrors the resolution precedence in
 // runLaunch (start.go):
-//   - a config field is satisfiable if it has a default, a
-//     DefaultFromEnv, or is explicitly required:false (a field with a
-//     default but no explicit required:false is still satisfiable —
-//     IsRequired() returns true for nil Required, but the default fills
-//     the value without user input);
-//   - a secret is satisfiable if it is in env_passthrough (the host env
-//     supplies it at runtime) or is explicitly required:false.
+//   - a required secret is satisfiable when its workdir-scoped or unscoped
+//     keychain value exists; only when both are absent can a non-empty
+//     env_passthrough value satisfy it, subject to its pattern unless
+//     skipSecretPattern is set;
+//   - a required config field is satisfiable from the merged stored
+//     workdir/global config, then a non-empty default, then a non-empty
+//     DefaultFromEnv host environment value.
 //
 // A skill with at least one required-and-unsatisfiable secret/field is
 // NOT eligible — the findUnregisteredSkills gate surfaces it so the
 // user is prompted for the missing value.
-func skillEligibleForAutoRegister(absDir string) (eligible bool, err error) {
-	metaPath := filepath.Join(absDir, config.MetaFileName)
-	m, err := config.LoadMeta(metaPath)
-	if err != nil {
-		return false, err
-	}
+func skillEligibleForAutoRegister(workdir, skillName string, m *config.Meta, configStore *skillconfig.Store, skipSecretPattern bool) (eligible bool, err error) {
 	if m.Sidecar == nil {
 		return false, nil
 	}
@@ -1301,8 +1307,22 @@ func skillEligibleForAutoRegister(absDir string) (eligible bool, err error) {
 		if !sp.IsRequired() {
 			continue
 		}
-		if _, ok := passthrough[sp.Name]; ok {
-			continue // env supplies it at runtime
+		keychainValue, err := keychain.GetWithFallback(keychain.WorkdirID(workdir), skillName, sp.Name)
+		if err == nil {
+			keychainValue.Zero()
+			continue
+		}
+		if !errors.Is(err, keychain.ErrNotFound) {
+			return false, err
+		}
+		envValue, suppliedByEnv := secretFromEnv(sp.Name, passthrough)
+		if suppliedByEnv {
+			if !skipSecretPattern {
+				if err := validatePattern(sp, envValue); err != nil {
+					return false, nil
+				}
+			}
+			continue
 		}
 		return false, nil
 	}
@@ -1310,8 +1330,16 @@ func skillEligibleForAutoRegister(absDir string) (eligible bool, err error) {
 		if !fp.IsRequired() {
 			continue
 		}
-		if fp.Default != "" || fp.DefaultFromEnv != "" {
-			continue // satisfiable without user input
+		if _, ok := configStore.Get(skillName, fp.Name); ok {
+			continue
+		}
+		if fp.Default != "" {
+			continue
+		}
+		if fp.DefaultFromEnv != "" {
+			if value, ok := os.LookupEnv(fp.DefaultFromEnv); ok && value != "" {
+				continue
+			}
 		}
 		return false, nil
 	}
