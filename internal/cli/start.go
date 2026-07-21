@@ -903,13 +903,21 @@ func runLaunch(env *Env, opts launchOpts) int {
 	auditor.Emit(audit.SessionStart(env.Version, harness.Name, profName, sandboxBackend))
 	auditor.Emit(audit.InnerExec(argv, profName, sandboxed))
 
+	// Snapshot the sessions that already exist so the post-exit hint can tell
+	// the session this run creates apart from a sibling session active in the
+	// same workdir (issue #141). Skipped when no hint would be shown anyway.
+	var priorSessions map[string]struct{}
+	if harness.Session != nil && len(harness.Session.ContinueArgs) > 0 {
+		priorSessions = session.KnownIDs(harness, env.Workdir)
+	}
+
 	code, err := sandbox.ExecWithReady(argv, extra, nil)
 	auditor.Emit(audit.SessionStop(code))
 	if err != nil {
 		fmt.Fprintln(env.Stderr, prefix+": exec:", err)
 		return ExitSandboxAbnormal
 	}
-	printContinueHint(env, harness)
+	printContinueHint(env, harness, opts.sessionID, priorSessions)
 	return code
 }
 
@@ -947,7 +955,12 @@ func continueHintToken(h config.Harness) string {
 // session strategy yields no sessions → no hint (never an error, never
 // blocks). Reuses session.List — the same path `omac resume` takes — so the
 // hint only appears when continue would actually find a session.
-func printContinueHint(env *Env, harness config.Harness) {
+//
+// resumedID is the session this run is known to have re-entered (omac continue
+// -s / omac resume), or "" for a fresh session. prior is the set of session
+// ids that existed before launch (see hintSessionID for how both steer the
+// selection).
+func printContinueHint(env *Env, harness config.Harness, resumedID string, prior map[string]struct{}) {
 	if harness.Session == nil || len(harness.Session.ContinueArgs) == 0 {
 		return
 	}
@@ -969,7 +982,7 @@ func printContinueHint(env *Env, harness config.Harness) {
 		if r.err != nil {
 			return
 		}
-		id, ok := hintSessionID(r.sessions)
+		id, ok := hintSessionID(r.sessions, resumedID, prior)
 		if !ok {
 			return
 		}
@@ -980,12 +993,32 @@ func printContinueHint(env *Env, harness config.Harness) {
 	}
 }
 
-// hintSessionID picks the session id to advertise in the continue hint: the
-// most-recently-updated session, which session.List guarantees at index 0.
-// It returns ok=false when there is nothing resumable (empty list, or a
-// leading entry with no id). Kept as a pure function so this selection is
-// unit-testable without printContinueHint's goroutine and timeout.
-func hintSessionID(sessions []session.Session) (string, bool) {
+// hintSessionID picks the session id to advertise in the continue hint.
+//
+// When this run resumed a known session (omac continue -s / omac resume),
+// resumedID is advertised verbatim — it is exactly the session that ran.
+// Otherwise the run created a fresh session: the most-recent session absent
+// from prior (the snapshot of ids taken before launch) is that new session, so
+// a sibling session that stayed active in the same workdir is never advertised
+// (issue #141). When nothing is new — the snapshot was unavailable, or the
+// harness reused an id — it falls back to the most-recent session, preserving
+// the previous best-effort behavior.
+//
+// sessions is newest-first, as session.List guarantees. Returns ok=false only
+// when there is nothing resumable. Kept pure so the selection is unit-testable
+// without printContinueHint's goroutine and timeout.
+func hintSessionID(sessions []session.Session, resumedID string, prior map[string]struct{}) (string, bool) {
+	if resumedID != "" {
+		return resumedID, true
+	}
+	for _, s := range sessions {
+		if s.ID == "" {
+			continue
+		}
+		if _, seen := prior[s.ID]; !seen {
+			return s.ID, true
+		}
+	}
 	if len(sessions) == 0 || sessions[0].ID == "" {
 		return "", false
 	}
