@@ -281,7 +281,7 @@ func runSecurityAudit(t *testing.T, h harnessConfig) {
 		assertFilesystemWriteDenied(t, stdout)
 		assertSymlinkEscapeDenied(t, stdout)
 		assertNetworkDenied(t, stdout, spec.NetDenyDomain)
-		assertCacheHostRootDenied(t, stdout)
+		assertCacheHostRootDenied(t, home, stdout)
 	} else {
 		// A --no-sandbox harness (e.g. codex on macOS) has no sandbox to
 		// enforce the negative properties, so we can't assert they hold.
@@ -1191,33 +1191,37 @@ func assertCacheIsolation(t *testing.T, output string) {
 	t.Logf("PASS: cache isolation — OMAC_CACHE_DIR injected, tool mappings re-injected, marker round-tripped")
 }
 
-// assertCacheHostRootDenied verifies the host-global cache roots
-// (~/.cache, ~/Library/Caches) are NOT writable from inside the sandbox.
-// This is the negative half of the cache isolation contract: only the
-// scoped OMAC_CACHE_DIR may be writable.
-func assertCacheHostRootDenied(t *testing.T, output string) {
+// assertCacheHostRootDenied verifies the host's real cache roots (home's
+// ~/.cache and ~/Library/Caches) did NOT receive the self-audit probe's write.
+//
+// The probe writes the string path "$HOME/.cache/audit-host-marker.txt" from
+// inside the sandbox. A successful write there is NOT a violation by itself:
+// on Linux that path is a throwaway tmpfs mount-point parent bubblewrap
+// auto-creates to host the scoped tool-cache bind (~/.cache/omac/<digest>),
+// isolated from the host. The real security property is that the write never
+// reaches the host cache root — checked authoritatively host-side via
+// hostCacheLeak, not by parsing the probe's in-sandbox write result. See
+// issue #149 (this replaced a write-success check that false-positived on
+// every run).
+func assertCacheHostRootDenied(t *testing.T, home, output string) {
 	t.Helper()
 	if !strings.Contains(output, "=== PROBE: cache ===") {
 		// Cache probe didn't run at all — handled by assertCacheIsolation.
 		t.Logf("SKIP: cache host-root denial — cache probe not in output")
 		return
 	}
-	if strings.Contains(output, "HOST_CACHE_WRITABLE: SECURITY VIOLATION") {
-		failWithClassification(t, "cacheHostRootDenied", fmSandboxFail,
-			output+": host ~/.cache is writable (cache isolation broken)")
-		return
-	}
-	if strings.Contains(output, "HOST_LIBRARY_CACHES_WRITABLE: SECURITY VIOLATION") {
-		failWithClassification(t, "cacheHostRootDenied", fmSandboxFail,
-			output+": host ~/Library/Caches is writable (cache isolation broken)")
-		return
-	}
-	if !strings.Contains(output, "HOST_CACHE_DENIED:") {
+	if !strings.Contains(output, "HOST_CACHE_WRITE_ATTEMPTED") &&
+		!strings.Contains(output, "HOST_CACHE_WRITE_REFUSED") {
 		failWithClassification(t, "cacheHostRootDenied", fmAgentPartial,
-			output+": host ~/.cache denial marker missing")
+			output+": host cache probe line missing (audit output truncated?)")
 		return
 	}
-	t.Logf("PASS: cache host-root denial — ~/.cache and ~/Library/Caches not writable from sandbox")
+	if leaked, ok := hostCacheLeak(home); ok {
+		failWithClassification(t, "cacheHostRootDenied", fmSandboxFail,
+			output+": probe marker leaked to host cache root "+leaked+" (cache isolation broken)")
+		return
+	}
+	t.Logf("PASS: cache host-root denial — probe write did not reach host ~/.cache or ~/Library/Caches")
 }
 
 // logExecProbeResults logs the exec probe results without asserting

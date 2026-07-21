@@ -232,9 +232,9 @@ echo ""
 echo "=== PROBE: cache ==="
 # Cache isolation probe (Tasks 1-10). Verifies the sandbox redirected
 # every tool cache to OMAC_CACHE_DIR (injected by omac via the trusted
-# re-injection path, bypassing the allow_vars filter) and that the
-# host-global cache roots (~/.cache, ~/Library/Caches) are denied so
-# the agent cannot escape the scoped cache.
+# re-injection path, bypassing the allow_vars filter) and that a write
+# aimed at the host-global cache roots (~/.cache, ~/Library/Caches) never
+# reaches the real host filesystem (asserted host-side; see issue #149).
 #
 # The allow_vars fixture intentionally lists only OMAC_* for cache
 # names (see allowance.go), so the non-OMAC_* tool mappings
@@ -266,20 +266,24 @@ else
         echo "CACHE_MARKER_WRITE_FAILED: $(cat /tmp/audit-cache-write.txt)"
     fi
 fi
-echo "--- host-global cache roots must be denied (write) ---"
-# ~/.cache and ~/Library/Caches are NOT granted by DefaultProfile
-# (Tasks 1-10 removed them). A write attempt must fail; a success is a
-# security boundary violation the test asserts on.
+echo "--- host cache root: write attempt (authoritative check is host-side) ---"
+# Drop a marker into the string path $HOME/.cache and $HOME/Library/Caches.
+# A successful write here is NOT itself a breach: inside the sandbox these
+# paths are throwaway tmpfs mount-point parents bubblewrap auto-creates to
+# host the scoped tool-cache bind (~/.cache/omac/<digest>), isolated from the
+# host. The harness verifies host-side (assertCacheHostRootDenied) that this
+# marker never lands in the real host cache root; the write result below is
+# informational only. See issue #149.
 host_cache="$HOME/.cache"
-( echo "pwn" > "$host_cache/audit-host-marker.txt" ) 2>/tmp/audit-host-cache.txt \
-    && echo "HOST_CACHE_WRITABLE: SECURITY VIOLATION ($host_cache)" \
-    || echo "HOST_CACHE_DENIED: $(cat /tmp/audit-host-cache.txt)"
+( echo "omac-host-cache-probe" > "$host_cache/audit-host-marker.txt" ) 2>/tmp/audit-host-cache.txt \
+    && echo "HOST_CACHE_WRITE_ATTEMPTED: $host_cache/audit-host-marker.txt" \
+    || echo "HOST_CACHE_WRITE_REFUSED: $(cat /tmp/audit-host-cache.txt)"
 if [ -d "$HOME/Library/Caches" ]; then
-    ( echo "pwn" > "$HOME/Library/Caches/audit-host-marker.txt" ) 2>/tmp/audit-host-caches.txt \
-        && echo "HOST_LIBRARY_CACHES_WRITABLE: SECURITY VIOLATION" \
-        || echo "HOST_LIBRARY_CACHES_DENIED: $(cat /tmp/audit-host-caches.txt)"
+    ( echo "omac-host-cache-probe" > "$HOME/Library/Caches/audit-host-marker.txt" ) 2>/tmp/audit-host-caches.txt \
+        && echo "HOST_LIBRARY_CACHES_WRITE_ATTEMPTED: $HOME/Library/Caches/audit-host-marker.txt" \
+        || echo "HOST_LIBRARY_CACHES_WRITE_REFUSED: $(cat /tmp/audit-host-caches.txt)"
 else
-    echo "HOST_LIBRARY_CACHES_DENIED: ~/Library/Caches does not exist"
+    echo "HOST_LIBRARY_CACHES_ABSENT: ~/Library/Caches does not exist"
 fi
 # Clean up the scratch files used to capture inner-command stderr so
 # they don't accumulate across runs. The denial messages have already
