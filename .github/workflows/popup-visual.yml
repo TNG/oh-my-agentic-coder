@@ -1,0 +1,79 @@
+name: popup-visual
+
+# Renders the real network-approval dialog headless and uploads a PNG so the
+# rendered widget — label alignment, wrapping, truncation — can be eyeballed
+# per PR. Advisory: it captures screenshots, it does not assert appearance.
+#
+# Note: this is a public repo; uploaded artifacts and job logs are public. The
+# rendered dialog contains only the static sample prompt, no secrets.
+
+on:
+  pull_request:
+    paths:
+      - 'internal/netprompt/**'
+      - '.github/workflows/popup-visual.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    # kdialog pulls heavy KDE deps and may be unavailable; never block on it.
+    continue-on-error: ${{ matrix.backend == 'kdialog' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        backend: [zenity, kdialog]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Install capture tooling + ${{ matrix.backend }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb imagemagick xdotool
+          sudo apt-get install -y "${{ matrix.backend }}" \
+            || echo "::warning::${{ matrix.backend }} not installable; the render test will skip"
+      - name: Render + capture (${{ matrix.backend }})
+        env:
+          OMAC_POPUP_SHOT: "1"
+          OMAC_POPUP_SHOT_BACKEND: ${{ matrix.backend }}
+          OMAC_POPUP_SHOT_DIR: ${{ github.workspace }}/popup-shots
+        run: |
+          mkdir -p "$OMAC_POPUP_SHOT_DIR"
+          xvfb-run -a --server-args="-screen 0 1280x1024x24" \
+            go test ./internal/netprompt/ -run TestRenderPopupScreenshot -count=1 -v
+      - name: Upload screenshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: popup-${{ matrix.backend }}
+          path: popup-shots/*.png
+          if-no-files-found: warn
+
+  macos:
+    runs-on: macos-latest
+    # osascript GUI dialogs need a WindowServer session headless CI may lack.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Render + capture (osascript, best-effort)
+        env:
+          OMAC_POPUP_SHOT: "1"
+          OMAC_POPUP_SHOT_DIR: ${{ github.workspace }}/popup-shots
+        run: |
+          mkdir -p "$OMAC_POPUP_SHOT_DIR"
+          go test ./internal/netprompt/ -run TestRenderPopupScreenshot -count=1 -v
+      - name: Upload screenshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: popup-osascript
+          path: popup-shots/*.png
+          if-no-files-found: warn

@@ -15,6 +15,9 @@
 /coverage.html
 /.ruff_cache/
 
+# Rendered dialog screenshots from the popup-shot test / popup-visual CI job.
+/popup-shots/
+
 # Per-workdir runtime state managed by `omac register` / `omac start`.
 # The registry file (`.opencode/sidecar.json`) is per-environment state:
 # it points at skill_dirs that exist on the user's machine and was written
