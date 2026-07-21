@@ -233,6 +233,74 @@ func TestCheck_LinuxPackageManagerPriority(t *testing.T) {
 	}
 }
 
+func TestCheck_PrefersSelfReplaceWhenBinaryWritable(t *testing.T) {
+	tgzBody := []byte("fake-tar-gz-bytes")
+	sumsURL := "https://example.invalid/checksums.txt"
+	tgzURL := "https://example.invalid/oh-my-agentic-coder_2.0.0_linux_x86_64.tar.gz"
+	debURL := "https://example.invalid/oh-my-agentic-coder_2.0.0_linux_x86_64.deb"
+
+	deps := baseDeps(t)
+	deps.Source = fakeReleaseSource{rel: Release{TagName: "v2.0.0", Assets: []Asset{
+		{Name: "oh-my-agentic-coder_2.0.0_linux_x86_64.deb", BrowserDownloadURL: debURL},
+		{Name: "oh-my-agentic-coder_2.0.0_linux_x86_64.tar.gz", BrowserDownloadURL: tgzURL},
+		{Name: "checksums.txt", BrowserDownloadURL: sumsURL},
+	}}}
+	deps.Fetcher = &fakeFetcher{files: map[string][]byte{
+		sumsURL: checksumsFile("oh-my-agentic-coder_2.0.0_linux_x86_64.tar.gz", tgzBody),
+		tgzURL:  tgzBody,
+	}}
+	deps.GOOS, deps.GOARCH = "linux", "amd64"
+	// A package manager is present, but the running binary is user-writable,
+	// so Check must prefer the no-sudo self-replace over the package manager.
+	deps.PkgManagers = []PackageManager{
+		{Name: "dpkg", AssetSuffix: ".deb", InstallArgs: func(p string) []string { return []string{"-i", p} }},
+	}
+	deps.SelfReplaceable = func(string) bool { return true }
+
+	plan, err := Check(context.Background(), Options{CurrentVersion: "1.0.0"}, deps)
+	if err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+	if plan.Method != MethodTarballSelfReplace {
+		t.Fatalf("Method = %v, want MethodTarballSelfReplace (writable binary → no sudo)", plan.Method)
+	}
+	if !plan.ChecksumVerified {
+		t.Fatalf("expected checksum verified")
+	}
+}
+
+func TestCheck_UsesPackageManagerWhenBinaryNotWritable(t *testing.T) {
+	debBody := []byte("deb-bytes")
+	sumsURL := "https://example.invalid/checksums.txt"
+	debURL := "https://example.invalid/oh-my-agentic-coder_2.0.0_linux_x86_64.deb"
+
+	deps := baseDeps(t)
+	deps.Source = fakeReleaseSource{rel: Release{TagName: "v2.0.0", Assets: []Asset{
+		{Name: "oh-my-agentic-coder_2.0.0_linux_x86_64.deb", BrowserDownloadURL: debURL},
+		{Name: "oh-my-agentic-coder_2.0.0_linux_x86_64.tar.gz", BrowserDownloadURL: "https://example.invalid/x.tar.gz"},
+		{Name: "checksums.txt", BrowserDownloadURL: sumsURL},
+	}}}
+	deps.Fetcher = &fakeFetcher{files: map[string][]byte{
+		sumsURL: checksumsFile("oh-my-agentic-coder_2.0.0_linux_x86_64.deb", debBody),
+		debURL:  debBody,
+	}}
+	deps.GOOS, deps.GOARCH = "linux", "amd64"
+	deps.PkgManagers = []PackageManager{
+		{Name: "dpkg", AssetSuffix: ".deb", InstallArgs: func(p string) []string { return []string{"-i", p} }},
+	}
+	// Root-owned install: self-replace would need elevation, so keep the
+	// package manager even though a tarball asset exists.
+	deps.SelfReplaceable = func(string) bool { return false }
+
+	plan, err := Check(context.Background(), Options{CurrentVersion: "1.0.0"}, deps)
+	if err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+	if plan.Method != MethodLinuxPackage || plan.PackageManager != "dpkg" {
+		t.Fatalf("plan = %+v, want MethodLinuxPackage/dpkg", plan)
+	}
+}
+
 func TestCheck_LinuxNoPackageManagerFallsBackToTarball(t *testing.T) {
 	tgzBody := []byte("fake-tar-gz-bytes")
 	sumsURL := "https://example.invalid/checksums.txt"
@@ -427,6 +495,36 @@ func TestApply_SelfReplace_PermissionDenied(t *testing.T) {
 	err := Apply(context.Background(), plan, deps)
 	if !errors.Is(err, fs.ErrPermission) {
 		t.Fatalf("err = %v, want fs.ErrPermission", err)
+	}
+}
+
+func TestSelfReplaceable(t *testing.T) {
+	dir := t.TempDir()
+	if !selfReplaceable(filepath.Join(dir, "omac")) {
+		t.Fatalf("selfReplaceable = false for a writable temp dir, want true")
+	}
+	if selfReplaceable(filepath.Join(dir, "no-such-subdir", "omac")) {
+		t.Fatalf("selfReplaceable = true for a non-existent directory, want false")
+	}
+}
+
+func TestRunningBinary_FollowsSymlink(t *testing.T) {
+	dir := t.TempDir()
+	real := filepath.Join(dir, "omac-real")
+	if err := os.WriteFile(real, []byte("bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "omac-link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	deps := Deps{Executable: func() (string, error) { return link, nil }}
+	got, err := runningBinary(deps)
+	if err != nil {
+		t.Fatalf("runningBinary: %v", err)
+	}
+	if got != real {
+		t.Fatalf("runningBinary = %q, want resolved %q", got, real)
 	}
 }
 

@@ -101,6 +101,12 @@ type Deps struct {
 	// Used by SelfCheck to detect a stale binary shadowing the update.
 	VersionProbe func(ctx context.Context, path string) (string, error)
 
+	// SelfReplaceable reports whether the running binary can be replaced
+	// without elevation, i.e. its containing directory is writable by the
+	// current user. When true, Check prefers self-replacing the exact binary
+	// in use over a sudo-requiring package-manager install.
+	SelfReplaceable func(path string) bool
+
 	GOOS, GOARCH string
 	TempDir      string
 
@@ -112,21 +118,22 @@ type Deps struct {
 // filesystem replace, real host detection.
 func RealDeps(stdin io.Reader, stdout, stderr io.Writer) Deps {
 	return Deps{
-		Source:        NewGitHubReleaseSource(),
-		Fetcher:       NewHTTPFetcher(),
-		Runner:        execRunner{},
-		Replacer:      fsSelfReplacer{},
-		BrewInstalled: func() bool { return DetectBrewInstalled(os.Executable, exec.LookPath, runCommand) },
-		PkgManagers:   DetectPackageManagers(exec.LookPath),
-		Executable:    os.Executable,
-		PathLookup:    exec.LookPath,
-		VersionProbe:  probeVersion,
-		GOOS:          runtime.GOOS,
-		GOARCH:        runtime.GOARCH,
-		TempDir:       os.TempDir(),
-		Stdin:         stdin,
-		Stdout:        stdout,
-		Stderr:        stderr,
+		Source:          NewGitHubReleaseSource(),
+		Fetcher:         NewHTTPFetcher(),
+		Runner:          execRunner{},
+		Replacer:        fsSelfReplacer{},
+		BrewInstalled:   func() bool { return DetectBrewInstalled(os.Executable, exec.LookPath, runCommand) },
+		PkgManagers:     DetectPackageManagers(exec.LookPath),
+		Executable:      os.Executable,
+		PathLookup:      exec.LookPath,
+		VersionProbe:    probeVersion,
+		SelfReplaceable: selfReplaceable,
+		GOOS:            runtime.GOOS,
+		GOARCH:          runtime.GOARCH,
+		TempDir:         os.TempDir(),
+		Stdin:           stdin,
+		Stdout:          stdout,
+		Stderr:          stderr,
 	}
 }
 
@@ -169,6 +176,23 @@ func Check(ctx context.Context, opts Options, deps Deps) (Plan, error) {
 	if deps.GOOS == "darwin" && deps.BrewInstalled != nil && deps.BrewInstalled() {
 		p.Method = MethodBrew
 		return p, nil
+	}
+
+	// Prefer self-replacing the running binary when that needs no elevation
+	// (its directory is writable) and a tarball asset exists. This updates the
+	// exact binary the user invokes, so it needs no sudo and sidesteps the
+	// shadowed-binary trap where a package install writes a different path than
+	// the omac on PATH. A root-owned install (e.g. /usr/bin from a package)
+	// isn't writable, so it falls through to the package manager below.
+	if exe, err := runningBinary(deps); err == nil && deps.SelfReplaceable != nil && deps.SelfReplaceable(exe) {
+		if asset, ok := matchAsset(rel.Assets, deps.GOOS, deps.GOARCH, ".tar.gz"); ok {
+			p.Method = MethodTarballSelfReplace
+			p.Asset = asset
+			if err := downloadAndVerify(ctx, &p, rel, deps); err != nil {
+				return Plan{}, err
+			}
+			return p, nil
+		}
 	}
 
 	if deps.GOOS == "linux" && len(deps.PkgManagers) > 0 {
@@ -315,13 +339,42 @@ func applySelfReplace(plan Plan, deps Deps) error {
 		return fmt.Errorf("extract omac from %s: %w", plan.Asset.Name, err)
 	}
 
-	target, err := deps.Executable()
+	target, err := runningBinary(deps)
 	if err != nil {
 		return fmt.Errorf("resolve running binary path: %w", err)
 	}
-	if real, err := filepath.EvalSymlinks(target); err == nil {
-		target = real
-	}
 
 	return deps.Replacer.Replace(target, bytes.NewReader(data), mode)
+}
+
+// runningBinary resolves the path of the executable currently running,
+// following symlinks so callers act on the real file that a self-replace
+// would rewrite.
+func runningBinary(deps Deps) (string, error) {
+	if deps.Executable == nil {
+		return "", errors.New("no Executable resolver configured")
+	}
+	p, err := deps.Executable()
+	if err != nil {
+		return "", err
+	}
+	if real, err := filepath.EvalSymlinks(p); err == nil {
+		p = real
+	}
+	return p, nil
+}
+
+// selfReplaceable reports whether path can be atomically replaced without
+// elevation. It probes the containing directory the same way fsSelfReplacer
+// does — create-a-temp-file — so it honors read-only mounts and ACLs rather
+// than guessing from mode bits.
+func selfReplaceable(path string) bool {
+	f, err := os.CreateTemp(filepath.Dir(path), ".omac-wtest-*")
+	if err != nil {
+		return false
+	}
+	name := f.Name()
+	f.Close()
+	os.Remove(name)
+	return true
 }
