@@ -55,7 +55,7 @@ To allow this host, either:
     (~/.config/omac/sandbox-profiles/<profile>.json),
   - or remove a matching deny entry from network.deny_domain or the
     <profile>.pages.json learned-policy file.
-`, host, reason, host)
+%s`, host, reason, host, registryDenyHint(host, reason))
 }
 
 // upstreamErrorBody renders the body for an upstream-proxy error. It
@@ -284,6 +284,9 @@ func (s *Server) handleConnect(conn net.Conn, req *http.Request) {
 		return
 	}
 	if err != nil {
+		if hint := registryUpstreamHint(host); hint != "" {
+			s.logf("%s", hint)
+		}
 		var ue *UpstreamError
 		if errors.As(err, &ue) {
 			s.logf("omac sandbox: upstream error: %v", err)
@@ -355,6 +358,9 @@ func (s *Server) handleForward(conn net.Conn, br *bufio.Reader, req *http.Reques
 		return
 	}
 	if err != nil {
+		if hint := registryUpstreamHint(host); hint != "" {
+			s.logf("%s", hint)
+		}
 		var ue *UpstreamError
 		if errors.As(err, &ue) {
 			s.logf("omac sandbox: upstream error: %v", err)
