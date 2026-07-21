@@ -117,22 +117,16 @@ artifacts before implementation. We keep it simple:
 This avoids a parallel "spec for specs" convention and keeps decisions
 where they are actually read.
 
-## Open question: issue/PR body vs. comment thread
+## Issue/PR body vs. comment thread
 
-When understanding evolves on an issue or PR, do we keep the **body**
-updated as the source of truth, or let the discussion **evolve as a
-thread**? Two options on the table:
+When understanding evolves on an issue or PR, let the discussion
+**evolve as a thread** — the comment thread *is* the record; every
+change is an explicit comment with an author and timestamp. This is
+the default.
 
-- **A — body is the living source of truth.** As understanding
-  evolves, update the body; GitHub preserves the edit history, so
-  nothing is lost. A reader gets the current state in one place but
-  the author must maintain it, and silent edits can hide reasoning.
-- **B — let it evolve as a thread.** The discussion *is* the record;
-  every change is an explicit comment with an author and timestamp.
-  Zero extra work, but the "current truth" is scattered and late
-  readers must read the whole thread to know where things landed.
-
-Decision pending — discuss in #105.
+If a thread becomes too long or confusing, do an **ad-hoc update** of
+the body to re-anchor the current state. This is the exception, not
+the rule.
 
 ---
 
