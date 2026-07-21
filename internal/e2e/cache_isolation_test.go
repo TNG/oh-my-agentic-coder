@@ -275,7 +275,14 @@ func TestToolRuntimeReadPathsUsesNarrowPythonRuntimeRoots(t *testing.T) {
 		}
 	}
 	python := filepath.Join(binDir, "python3")
-	script := "#!/bin/sh\ncase \"$2\" in\n*sysconfig*) printf '%s\\n%s\\n' \"" + stdlib + "\" \"" + purelib + "\" ;;\n*) printf '/usr\\n' ;;\nesac\n"
+	// Both real sysconfig queries contain the substring "sysconfig", so the
+	// case must key off the distinguishing call (get_path vs get_config_var):
+	// the paths query returns the newline-separated stdlib/purelib roots, while
+	// the LIBDIR query returns a single line (here empty, so add() skips it).
+	// Matching *sysconfig* for both fed the two-line blob to the LIBDIR branch,
+	// and toolRuntimeReadPaths lstat'd the whole newline-joined string as one
+	// path.
+	script := "#!/bin/sh\ncase \"$2\" in\n*get_path*) printf '%s\\n%s\\n' \"" + stdlib + "\" \"" + purelib + "\" ;;\n*get_config_var*) printf '' ;;\n*) printf '/usr\\n' ;;\nesac\n"
 	if err := os.WriteFile(python, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
