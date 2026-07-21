@@ -43,8 +43,20 @@ func SelfCheck(ctx context.Context, plan Plan, deps Deps) (SelfCheckResult, erro
 	return SelfCheckResult{
 		ResolvedPath:    path,
 		ResolvedVersion: version,
-		Shadowed:        version != plan.LatestVersion,
+		Shadowed:        isShadowedBy(version, plan.LatestVersion),
 	}, nil
+}
+
+// isShadowedBy reports whether a binary self-reporting resolved is an older
+// binary shadowing the freshly-installed latest. Only a strictly-older semver
+// counts: a newer resolved version (e.g. a local dev build past the last tag)
+// is not a stale shadow and must not be flagged. When the versions are not
+// comparable as semver, fall back to plain inequality.
+func isShadowedBy(resolved, latest string) bool {
+	if cmp, ok := compareVersions(resolved, latest); ok {
+		return cmp < 0
+	}
+	return resolved != latest
 }
 
 // probeVersion runs `<path> version` and extracts the reported version token
