@@ -21,7 +21,7 @@ func claudeHarness(t *testing.T) config.Harness {
 
 func TestBriefingInjectionActiveForAgent(t *testing.T) {
 	h := claudeHarness(t)
-	text, ok := briefingInjection(false, []string{"claude"}, h, "OVERRIDE", nil)
+	text, ok := briefingInjection(false, []string{"claude"}, h, "OVERRIDE", nil, nil)
 	if !ok {
 		t.Fatal("expected injection to be active for the harness's own binary")
 	}
@@ -36,7 +36,7 @@ func TestBriefingInjectionActiveForAgent(t *testing.T) {
 func TestBriefingInjectionAcceptsCacheScope(t *testing.T) {
 	h := claudeHarness(t)
 	scope := &toolcache.Scope{Mode: toolcache.ModeEphemeral, Dir: "/sandbox/cache"}
-	text, ok := briefingInjection(false, []string{"claude"}, h, "OVERRIDE", scope)
+	text, ok := briefingInjection(false, []string{"claude"}, h, "OVERRIDE", scope, nil)
 	if !ok {
 		t.Fatal("expected injection to be active for the harness's own binary")
 	}
@@ -53,7 +53,7 @@ func TestBriefingInjectionAcceptsCacheScope(t *testing.T) {
 
 func TestBriefingInjectionAppendsCacheGuidanceAfterDefault(t *testing.T) {
 	h := claudeHarness(t)
-	text, ok := briefingInjection(false, []string{"claude"}, h, "", nil)
+	text, ok := briefingInjection(false, []string{"claude"}, h, "", nil, nil)
 	if !ok {
 		t.Fatal("expected injection to be active for the harness's own binary")
 	}
@@ -68,7 +68,7 @@ func TestBriefingInjectionAppendsCacheGuidanceAfterDefault(t *testing.T) {
 func TestBriefingInjectionAppendsCacheGuidanceAfterCustom(t *testing.T) {
 	h := claudeHarness(t)
 	const custom = "CUSTOM BRIEFING TEXT"
-	text, ok := briefingInjection(false, []string{"claude"}, h, custom, nil)
+	text, ok := briefingInjection(false, []string{"claude"}, h, custom, nil, nil)
 	if !ok {
 		t.Fatal("expected injection to be active")
 	}
@@ -82,21 +82,21 @@ func TestBriefingInjectionAppendsCacheGuidanceAfterCustom(t *testing.T) {
 
 func TestBriefingInjectionSkippedWhenNoSandbox(t *testing.T) {
 	h := claudeHarness(t)
-	if _, ok := briefingInjection(true, []string{"claude"}, h, "", nil); ok {
+	if _, ok := briefingInjection(true, []string{"claude"}, h, "", nil, nil); ok {
 		t.Error("expected injection skipped when noSandbox is true")
 	}
 }
 
 func TestBriefingInjectionSkippedForNonHarnessBinary(t *testing.T) {
 	h := claudeHarness(t)
-	if _, ok := briefingInjection(false, []string{"bash"}, h, "", nil); ok {
+	if _, ok := briefingInjection(false, []string{"bash"}, h, "", nil, nil); ok {
 		t.Error("expected injection skipped when inner command is not the harness binary")
 	}
 }
 
 func TestBriefingInjectionSkippedForEmptyInner(t *testing.T) {
 	h := claudeHarness(t)
-	if _, ok := briefingInjection(false, nil, h, "", nil); ok {
+	if _, ok := briefingInjection(false, nil, h, "", nil, nil); ok {
 		t.Error("expected injection skipped for empty inner command")
 	}
 }

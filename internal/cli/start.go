@@ -641,7 +641,7 @@ func runLaunch(env *Env, opts launchOpts) int {
 	if verbose {
 		fmt.Fprintf(env.Stderr, "[verbose] sandbox TMPDIR: %s\n", sandboxTmp)
 	}
-	cacheScope, err := prepareLaunchCache(noSandbox, opts.ephemeralCache, env.Workdir, sandboxTmp)
+	cacheScope, xdgScope, err := prepareLaunchCache(noSandbox, opts.ephemeralCache, harness.Name, env.Workdir, sandboxTmp)
 	if err != nil {
 		if opts.ephemeralCache {
 			fmt.Fprintln(env.Stderr, prefix+": cache:", err)
@@ -652,8 +652,11 @@ func runLaunch(env *Env, opts launchOpts) int {
 		return ExitIOError
 	}
 	defer cacheScope.Close()
+	if xdgScope != cacheScope {
+		defer xdgScope.Close()
+	}
 	if verbose && cacheScope != nil {
-		fmt.Fprintf(env.Stderr, "[verbose] cache mode=%s path=%s\n", cacheScope.Mode, cacheScope.Dir)
+		fmt.Fprintf(env.Stderr, "[verbose] cache mode=%s path=%s xdg=%s\n", cacheScope.Mode, cacheScope.Dir, xdgScope.Dir)
 	}
 
 	// 5. Spawn sidecars.
@@ -766,7 +769,7 @@ func runLaunch(env *Env, opts launchOpts) int {
 	inner := harness.ResolveInnerCmd(prof.InnerCmd, innerCmdOverride)
 	// Inject the sandbox briefing: Claude via its --append-system-prompt flag
 	// (SystemContextArgs), OpenCode via OMAC_SANDBOX_BRIEFING set below.
-	briefingText, injectBriefing := briefingInjection(noSandbox, inner, harness, lc.Sandbox.Briefing, cacheScope)
+	briefingText, injectBriefing := briefingInjection(noSandbox, inner, harness, lc.Sandbox.Briefing, cacheScope, xdgScope)
 	if injectBriefing && harness.SystemContextArgs != nil {
 		inner = append(inner, harness.SystemContextArgs(briefingText)...)
 	}
@@ -804,6 +807,9 @@ func runLaunch(env *Env, opts launchOpts) int {
 		argv = injectSandboxDirs(argv, harness.SandboxDirs)
 		if cacheScope != nil {
 			argv = injectSandboxFlag(argv, "--allow", cacheScope.Dir)
+			if xdgScope != nil && xdgScope.Dir != cacheScope.Dir {
+				argv = injectSandboxFlag(argv, "--allow", xdgScope.Dir)
+			}
 		}
 		// Forward the selected harness's auth env vars through the
 		// default profile's restrictive allow_vars filter — only for the
@@ -862,6 +868,9 @@ func runLaunch(env *Env, opts launchOpts) int {
 	if cacheScope != nil {
 		extra["OMAC_CACHE_DIR"] = cacheScope.Dir
 		extra["OMAC_CACHE_MODE"] = string(cacheScope.Mode)
+		if xdgScope != nil {
+			extra["OMAC_XDG_CACHE_DIR"] = xdgScope.Dir
+		}
 	}
 	if controlOK {
 		extra["OMAC_CONTROL_BASE"] = controlURL
@@ -913,14 +922,29 @@ func runLaunch(env *Env, opts launchOpts) int {
 	return code
 }
 
-func prepareLaunchCache(noSandbox, ephemeral bool, workdir, sandboxTmp string) (*toolcache.Scope, error) {
+// prepareLaunchCache resolves the two cache scopes a launch uses: the build
+// scope (per-workdir tool caches, OMAC_CACHE_DIR) and the XDG scope (the
+// harness's own cache, shared across workdirs so plugins install once). In
+// ephemeral mode both are the same per-launch scope; with --no-sandbox neither
+// applies. The returned xdg scope is never nil unless build is nil.
+func prepareLaunchCache(noSandbox, ephemeral bool, harnessName, workdir, sandboxTmp string) (build, xdg *toolcache.Scope, err error) {
 	if noSandbox {
-		return nil, nil
+		return nil, nil, nil
 	}
 	if ephemeral {
-		return toolcache.PrepareEphemeral(sandboxTmp)
+		s, err := toolcache.PrepareEphemeral(sandboxTmp)
+		return s, s, err
 	}
-	return toolcache.PreparePersistent(toolcache.DomainWorkdir, workdir)
+	build, err = toolcache.PreparePersistent(toolcache.DomainWorkdir, workdir)
+	if err != nil {
+		return nil, nil, err
+	}
+	xdg, err = toolcache.PrepareHarness(harnessName)
+	if err != nil {
+		_ = build.Close()
+		return nil, nil, err
+	}
+	return build, xdg, nil
 }
 
 // continueHintToken returns the harness token to embed in the post-exit

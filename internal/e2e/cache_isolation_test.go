@@ -560,8 +560,12 @@ func rustupUpdateHashesDirs(t *testing.T) []string {
 	return []string{filepath.Join(rustupHome, "update-hashes")}
 }
 
-func validateCacheRedirects(cacheDir string, environment map[string]string) error {
-	expected := toolcache.Environment(cacheDir, toolcache.ModePersistent)
+// validateCacheRedirects checks the injected cache env. Build caches
+// (Go/npm/pip/Cargo) live under the per-workdir build scope (cacheDir);
+// XDG_CACHE_HOME lives under the harness scope (xdgDir), which is shared
+// across workdirs. Pass cacheDir==xdgDir for the single-scope (ephemeral) case.
+func validateCacheRedirects(cacheDir, xdgDir string, environment map[string]string) error {
+	expected := toolcache.EnvironmentSplit(cacheDir, xdgDir, toolcache.ModePersistent)
 	for _, name := range []string{"XDG_CACHE_HOME", "GOCACHE", "GOMODCACHE", "NPM_CONFIG_CACHE", "PIP_CACHE_DIR", "CARGO_HOME"} {
 		if environment[name] != expected[name] {
 			return fmt.Errorf("%s = %q; want %q", name, environment[name], expected[name])
@@ -574,7 +578,7 @@ func TestValidateCacheRedirectsRejectsScopePrefixEscape(t *testing.T) {
 	cacheDir := filepath.Join(t.TempDir(), "cache")
 	environment := toolcache.Environment(cacheDir, toolcache.ModePersistent)
 	environment["GOCACHE"] = cacheDir + "-escape/go-build"
-	if err := validateCacheRedirects(cacheDir, environment); err == nil {
+	if err := validateCacheRedirects(cacheDir, cacheDir, environment); err == nil {
 		t.Fatal("cache redirects accepted a sibling prefix escape")
 	}
 }
@@ -583,8 +587,21 @@ func TestValidateCacheRedirectsRequiresXDGCacheHome(t *testing.T) {
 	cacheDir := filepath.Join(t.TempDir(), "cache")
 	environment := toolcache.Environment(cacheDir, toolcache.ModePersistent)
 	delete(environment, "XDG_CACHE_HOME")
-	if err := validateCacheRedirects(cacheDir, environment); err == nil {
+	if err := validateCacheRedirects(cacheDir, cacheDir, environment); err == nil {
 		t.Fatal("cache redirects accepted a missing XDG_CACHE_HOME mapping")
+	}
+}
+
+// TestValidateCacheRedirectsRejectsXDGUnderBuildScope asserts the harness XDG
+// cache is checked against its own (harness) scope, not the build scope — so a
+// stale per-workdir XDG mapping is rejected.
+func TestValidateCacheRedirectsRejectsXDGUnderBuildScope(t *testing.T) {
+	cacheDir := filepath.Join(t.TempDir(), "cache")
+	xdgDir := filepath.Join(t.TempDir(), "harness-cache")
+	environment := toolcache.EnvironmentSplit(cacheDir, xdgDir, toolcache.ModePersistent)
+	environment["XDG_CACHE_HOME"] = filepath.Join(cacheDir, "xdg")
+	if err := validateCacheRedirects(cacheDir, xdgDir, environment); err == nil {
+		t.Fatal("cache redirects accepted XDG_CACHE_HOME under the build scope")
 	}
 }
 
@@ -700,7 +717,7 @@ func TestE2ECacheEnvironmentOverridesAllowlist(t *testing.T) {
 
 	out, code := runOmacShellWithEnv(t, omacBin, home, workdir, nil,
 		[]string{"GOCACHE=" + hostileGOCACHE, "CARGO_HOME=" + hostileCARGO},
-		"/bin/sh", "-c", "echo XDG_CACHE_HOME=$XDG_CACHE_HOME; echo GOCACHE=$GOCACHE; echo GOMODCACHE=$GOMODCACHE; echo NPM_CONFIG_CACHE=$NPM_CONFIG_CACHE; echo PIP_CACHE_DIR=$PIP_CACHE_DIR; echo CARGO_HOME=$CARGO_HOME; echo OMAC_CACHE_DIR=$OMAC_CACHE_DIR")
+		"/bin/sh", "-c", "echo XDG_CACHE_HOME=$XDG_CACHE_HOME; echo GOCACHE=$GOCACHE; echo GOMODCACHE=$GOMODCACHE; echo NPM_CONFIG_CACHE=$NPM_CONFIG_CACHE; echo PIP_CACHE_DIR=$PIP_CACHE_DIR; echo CARGO_HOME=$CARGO_HOME; echo OMAC_CACHE_DIR=$OMAC_CACHE_DIR; echo OMAC_XDG_CACHE_DIR=$OMAC_XDG_CACHE_DIR")
 	if code != 0 {
 		t.Fatalf("launch failed (exit %d): %s", code, out)
 	}
@@ -714,11 +731,15 @@ func TestE2ECacheEnvironmentOverridesAllowlist(t *testing.T) {
 	if cacheDir == "" {
 		t.Fatalf("OMAC_CACHE_DIR not exposed: %s", out)
 	}
+	xdgDir := extractEnv(out, "OMAC_XDG_CACHE_DIR=")
+	if xdgDir == "" {
+		t.Fatalf("OMAC_XDG_CACHE_DIR not exposed: %s", out)
+	}
 	environment := map[string]string{}
 	for _, name := range []string{"XDG_CACHE_HOME", "GOCACHE", "GOMODCACHE", "NPM_CONFIG_CACHE", "PIP_CACHE_DIR", "CARGO_HOME"} {
 		environment[name] = extractEnv(out, name+"=")
 	}
-	if err := validateCacheRedirects(cacheDir, environment); err != nil {
+	if err := validateCacheRedirects(cacheDir, xdgDir, environment); err != nil {
 		t.Error(err)
 	}
 }
@@ -799,6 +820,70 @@ func TestE2ECacheMainAndLinkedWorktreesAreIsolated(t *testing.T) {
 	}
 	if strings.Contains(out, marker) {
 		t.Errorf("SECURITY: linked worktree saw main worktree's cache marker: %s", out)
+	}
+}
+
+// TestE2ECacheHarnessXDGSharedAcrossWorkdirs: the harness's own XDG cache is
+// keyed by harness, not workdir, so a plugin/extension installed under
+// XDG_CACHE_HOME in one project is visible from another project (install once,
+// no per-project registry re-fetch). The per-workdir build cache
+// (OMAC_CACHE_DIR) stays isolated. This is the regression fix: cache isolation
+// must not force a cold harness cache in every directory.
+func TestE2ECacheHarnessXDGSharedAcrossWorkdirs(t *testing.T) {
+	skipIfSandboxUnavailable(t)
+	home := cacheTestHome(t)
+	// Two unrelated projects under HOME (read-only baseline home does not
+	// grant sibling temp dirs).
+	dirA := filepath.Join(home, "project-a")
+	dirB := filepath.Join(home, "project-b")
+	for _, d := range []string{dirA, dirB} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeCacheTestProfile(t, home, nil, nil, 0)
+	omacBin := buildOmac(t)
+
+	marker := "harness-plugin-marker"
+	// Project A installs something into the harness XDG cache.
+	outA, code := runOmacShell(t, omacBin, home, dirA, nil,
+		"/bin/sh", "-c",
+		"echo OMAC_CACHE_DIR=$OMAC_CACHE_DIR; echo OMAC_XDG_CACHE_DIR=$OMAC_XDG_CACHE_DIR; "+
+			"mkdir -p \"$XDG_CACHE_HOME/opencode\" && echo "+marker+" > \"$XDG_CACHE_HOME/opencode/plugin.txt\" && echo WROTE_A")
+	if code != 0 {
+		t.Fatalf("project A launch failed (exit %d): %s", code, outA)
+	}
+	if !strings.Contains(outA, "WROTE_A") {
+		t.Fatalf("project A did not write into XDG cache: %s", outA)
+	}
+
+	// Project B (different workdir) sees the same harness XDG cache.
+	outB, code := runOmacShell(t, omacBin, home, dirB, nil,
+		"/bin/sh", "-c",
+		"echo OMAC_CACHE_DIR=$OMAC_CACHE_DIR; echo OMAC_XDG_CACHE_DIR=$OMAC_XDG_CACHE_DIR; "+
+			"cat \"$XDG_CACHE_HOME/opencode/plugin.txt\" 2>&1 || echo NOT_FOUND")
+	if code != 0 {
+		t.Fatalf("project B launch failed (exit %d): %s", code, outB)
+	}
+	if !strings.Contains(outB, marker) {
+		t.Errorf("harness XDG cache not shared across workdirs: project B could not read project A's marker: %s", outB)
+	}
+
+	xdgA := extractEnv(outA, "OMAC_XDG_CACHE_DIR=")
+	xdgB := extractEnv(outB, "OMAC_XDG_CACHE_DIR=")
+	buildA := extractEnv(outA, "OMAC_CACHE_DIR=")
+	buildB := extractEnv(outB, "OMAC_CACHE_DIR=")
+	if xdgA == "" || xdgB == "" || buildA == "" || buildB == "" {
+		t.Fatalf("cache dirs not exposed: xdgA=%q xdgB=%q buildA=%q buildB=%q", xdgA, xdgB, buildA, buildB)
+	}
+	if xdgA != xdgB {
+		t.Errorf("harness XDG scope should be shared across workdirs: A=%s B=%s", xdgA, xdgB)
+	}
+	if buildA == buildB {
+		t.Errorf("per-workdir build scope should differ across workdirs: A=%s B=%s", buildA, buildB)
+	}
+	if xdgA == buildA {
+		t.Errorf("harness XDG scope and build scope should differ: %s", xdgA)
 	}
 }
 
@@ -1327,7 +1412,9 @@ func TestE2ECacheProvenance(t *testing.T) {
 	})
 
 	// Verify all supported cache redirects match the selected scope exactly.
-	if err := validateCacheRedirects(view.Cache.Path, view.Cache.Environment); err != nil {
+	// Provenance reports the single-scope (workdir) view, so build and XDG
+	// share the reported path here.
+	if err := validateCacheRedirects(view.Cache.Path, view.Cache.Path, view.Cache.Environment); err != nil {
 		t.Error(err)
 	}
 }

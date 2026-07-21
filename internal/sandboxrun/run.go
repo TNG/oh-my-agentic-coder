@@ -198,27 +198,48 @@ func injectedToolCacheEnv(grants *Grants, getenv func(string) string) (map[strin
 		return nil, fmt.Errorf("invalid OMAC_CACHE_MODE %q", getenv("OMAC_CACHE_MODE"))
 	}
 
-	cacheDir, err := canonicalCachePath(dir)
+	cacheDir, err := grantedCacheDir(grants, "OMAC_CACHE_DIR", dir)
 	if err != nil {
-		return nil, fmt.Errorf("resolve OMAC_CACHE_DIR: %w", err)
+		return nil, err
 	}
-	info, err := os.Stat(cacheDir)
+	// The harness XDG cache is a separate writable grant. It is absent for
+	// ephemeral launches (single scope) and for launchers that predate the
+	// split; fall back to the build-cache dir so XDG stays inside a grant.
+	xdgDir := cacheDir
+	if raw := getenv("OMAC_XDG_CACHE_DIR"); raw != "" {
+		xdgDir, err = grantedCacheDir(grants, "OMAC_XDG_CACHE_DIR", raw)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return toolcache.EnvironmentSplit(cacheDir, xdgDir, mode), nil
+}
+
+// grantedCacheDir canonicalizes a launcher-provided cache directory and
+// returns it only when it is an exact writable grant. This prevents inherited
+// cache paths from bypassing the profile's filesystem allowlist.
+func grantedCacheDir(grants *Grants, name, raw string) (string, error) {
+	dir, err := canonicalCachePath(raw)
 	if err != nil {
-		return nil, fmt.Errorf("stat OMAC_CACHE_DIR: %w", err)
+		return "", fmt.Errorf("resolve %s: %w", name, err)
+	}
+	info, err := os.Stat(dir)
+	if err != nil {
+		return "", fmt.Errorf("stat %s: %w", name, err)
 	}
 	if !info.IsDir() {
-		return nil, fmt.Errorf("OMAC_CACHE_DIR %q is not a directory", dir)
+		return "", fmt.Errorf("%s %q is not a directory", name, raw)
 	}
 	for _, allowed := range grants.AllowPaths {
 		allowedDir, err := canonicalCachePath(allowed)
 		if err != nil {
-			return nil, fmt.Errorf("resolve writable grant %q: %w", allowed, err)
+			return "", fmt.Errorf("resolve writable grant %q: %w", allowed, err)
 		}
-		if cacheDir == allowedDir {
-			return toolcache.Environment(cacheDir, mode), nil
+		if dir == allowedDir {
+			return dir, nil
 		}
 	}
-	return nil, fmt.Errorf("OMAC_CACHE_DIR %q does not match an exact writable grant", dir)
+	return "", fmt.Errorf("%s %q does not match an exact writable grant", name, raw)
 }
 
 // canonicalCachePath compares cleaned absolute paths and resolves symlinks for

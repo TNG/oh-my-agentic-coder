@@ -18,7 +18,7 @@ import (
 // The cache guidance paragraph is always appended (default or custom
 // briefing) because hardcoded host caches are denied by the sandbox —
 // an override must not be able to suppress it.
-func briefingInjection(noSandbox bool, inner []string, harness config.Harness, override string, cacheScope *toolcache.Scope) (string, bool) {
+func briefingInjection(noSandbox bool, inner []string, harness config.Harness, override string, cacheScope, xdgScope *toolcache.Scope) (string, bool) {
 	if noSandbox || len(inner) == 0 || len(harness.InnerCmd) == 0 {
 		return "", false
 	}
@@ -26,12 +26,16 @@ func briefingInjection(noSandbox bool, inner []string, harness config.Harness, o
 		return "", false
 	}
 	text := sandboxbrief.Resolve(override)
-	var dir string
+	var dir, xdgDir string
 	var mode toolcache.Mode
 	if cacheScope != nil {
 		dir = cacheScope.Dir
+		xdgDir = dir
 		mode = cacheScope.Mode
 	}
-	text += sandboxbrief.CacheGuidance(dir, mode)
+	if xdgScope != nil {
+		xdgDir = xdgScope.Dir
+	}
+	text += sandboxbrief.CacheGuidance(dir, xdgDir, mode)
 	return text, true
 }

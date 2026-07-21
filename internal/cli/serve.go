@@ -218,13 +218,16 @@ func runServe(args []string, env *Env) int {
 		return ExitIOError
 	}
 	defer os.RemoveAll(sandboxTmp)
-	cacheScope, err := prepareServeCache(*noSandbox, *noInner, *ephemeralCache, *workdir, env.Workdir, sandboxTmp)
+	cacheScope, xdgScope, err := prepareServeCache(*noSandbox, *noInner, *ephemeralCache, harness.Name, *workdir, env.Workdir, sandboxTmp)
 	if err != nil {
 		fmt.Fprintln(env.Stderr, "omac serve: cache:", err)
 		return ExitIOError
 	}
 	if cacheScope != nil {
 		defer cacheScope.Close()
+		if xdgScope != nil && xdgScope != cacheScope {
+			defer xdgScope.Close()
+		}
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -274,6 +277,9 @@ func runServe(args []string, env *Env) int {
 		srv.cacheEnv = map[string]string{
 			"OMAC_CACHE_DIR":  cacheScope.Dir,
 			"OMAC_CACHE_MODE": string(cacheScope.Mode),
+		}
+		if xdgScope != nil {
+			srv.cacheEnv["OMAC_XDG_CACHE_DIR"] = xdgScope.Dir
 		}
 	}
 
@@ -379,7 +385,7 @@ func runServe(args []string, env *Env) int {
 	// mode leave the inner command unchanged.
 	inner = harness.ApplyServerLaunch(inner, innerArgs)
 	// Inject the sandbox briefing on the same terms as `omac start` (see there).
-	briefingText, injectBriefing := briefingInjection(*noSandbox, inner, harness, lc.Sandbox.Briefing, cacheScope)
+	briefingText, injectBriefing := briefingInjection(*noSandbox, inner, harness, lc.Sandbox.Briefing, cacheScope, xdgScope)
 	if injectBriefing && harness.SystemContextArgs != nil {
 		inner = append(inner, harness.SystemContextArgs(briefingText)...)
 	}
@@ -421,6 +427,9 @@ func runServe(args []string, env *Env) int {
 		}
 		if cacheScope != nil {
 			argv = injectSandboxFlag(argv, "--allow", cacheScope.Dir)
+			if xdgScope != nil && xdgScope.Dir != cacheScope.Dir {
+				argv = injectSandboxFlag(argv, "--allow", xdgScope.Dir)
+			}
 		}
 		// Forward the selected harness's auth env vars through the default
 		// profile's restrictive allow_vars filter. (Control-plane port and
@@ -1425,17 +1434,31 @@ func (s *serveServer) baseEnv() map[string]string {
 	return extra
 }
 
-func prepareServeCache(noSandbox, noInner, ephemeral bool, explicitWorkdir, launchWorkdir, sandboxTmp string) (*toolcache.Scope, error) {
+// prepareServeCache resolves the build scope (per-workdir or serve-scoped tool
+// caches, OMAC_CACHE_DIR) and the XDG scope (the harness's own cache, shared
+// across workdirs). See prepareLaunchCache for the split rationale.
+func prepareServeCache(noSandbox, noInner, ephemeral bool, harnessName, explicitWorkdir, launchWorkdir, sandboxTmp string) (build, xdg *toolcache.Scope, err error) {
 	if noSandbox || noInner {
-		return nil, nil
+		return nil, nil, nil
 	}
 	if ephemeral {
-		return toolcache.PrepareEphemeral(sandboxTmp)
+		s, err := toolcache.PrepareEphemeral(sandboxTmp)
+		return s, s, err
 	}
 	if explicitWorkdir != "" {
-		return toolcache.PreparePersistent(toolcache.DomainWorkdir, explicitWorkdir)
+		build, err = toolcache.PreparePersistent(toolcache.DomainWorkdir, explicitWorkdir)
+	} else {
+		build, err = toolcache.PreparePersistent(toolcache.DomainServe, launchWorkdir)
 	}
-	return toolcache.PreparePersistent(toolcache.DomainServe, launchWorkdir)
+	if err != nil {
+		return nil, nil, err
+	}
+	xdg, err = toolcache.PrepareHarness(harnessName)
+	if err != nil {
+		_ = build.Close()
+		return nil, nil, err
+	}
+	return build, xdg, nil
 }
 
 // facadeMounts returns the set of facade mount segments to advertise to the

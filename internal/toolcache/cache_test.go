@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -183,20 +184,62 @@ func TestEnvironment(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			dir := filepath.Join(t.TempDir(), "cache")
 			want := map[string]string{
-				"XDG_CACHE_HOME":   filepath.Join(dir, "xdg"),
-				"GOCACHE":          filepath.Join(dir, "go-build"),
-				"GOMODCACHE":       filepath.Join(dir, "go-mod"),
-				"NPM_CONFIG_CACHE": filepath.Join(dir, "npm"),
-				"PIP_CACHE_DIR":    filepath.Join(dir, "pip"),
-				"CARGO_HOME":       filepath.Join(dir, "cargo"),
-				"OMAC_CACHE_DIR":   dir,
-				"OMAC_CACHE_MODE":  string(test.mode),
+				"XDG_CACHE_HOME":     filepath.Join(dir, "xdg"),
+				"GOCACHE":            filepath.Join(dir, "go-build"),
+				"GOMODCACHE":         filepath.Join(dir, "go-mod"),
+				"NPM_CONFIG_CACHE":   filepath.Join(dir, "npm"),
+				"PIP_CACHE_DIR":      filepath.Join(dir, "pip"),
+				"CARGO_HOME":         filepath.Join(dir, "cargo"),
+				"OMAC_CACHE_DIR":     dir,
+				"OMAC_XDG_CACHE_DIR": dir,
+				"OMAC_CACHE_MODE":    string(test.mode),
 			}
 
 			if got := Environment(dir, test.mode); !maps.Equal(got, want) {
 				t.Errorf("Environment() = %#v, want %#v", got, want)
 			}
 		})
+	}
+}
+
+// TestEnvironmentSplitSeparatesXDGFromBuildCaches asserts that the harness
+// XDG cache and the tool build caches resolve under their own scope
+// directories, so a harness's plugins persist across workdirs while build
+// artifacts stay isolated per workdir.
+func TestEnvironmentSplitSeparatesXDGFromBuildCaches(t *testing.T) {
+	buildDir := filepath.Join(t.TempDir(), "build")
+	xdgDir := filepath.Join(t.TempDir(), "xdg-scope")
+	env := EnvironmentSplit(buildDir, xdgDir, ModePersistent)
+	if got, want := env["XDG_CACHE_HOME"], filepath.Join(xdgDir, "xdg"); got != want {
+		t.Errorf("XDG_CACHE_HOME = %q; want %q", got, want)
+	}
+	if got, want := env["OMAC_XDG_CACHE_DIR"], xdgDir; got != want {
+		t.Errorf("OMAC_XDG_CACHE_DIR = %q; want %q", got, want)
+	}
+	for _, name := range []string{"GOCACHE", "GOMODCACHE", "NPM_CONFIG_CACHE", "PIP_CACHE_DIR", "CARGO_HOME"} {
+		if !strings.HasPrefix(env[name], buildDir) {
+			t.Errorf("%s = %q; want it under build scope %q", name, env[name], buildDir)
+		}
+	}
+	if env["OMAC_CACHE_DIR"] != buildDir {
+		t.Errorf("OMAC_CACHE_DIR = %q; want %q", env["OMAC_CACHE_DIR"], buildDir)
+	}
+}
+
+// TestDescribeHarnessIsWorkdirIndependent asserts a harness scope is keyed by
+// name only (workdir-independent) and distinct from a workdir scope.
+func TestDescribeHarnessIsWorkdirIndependent(t *testing.T) {
+	a, _ := DescribeHarness("opencode")
+	if a.Domain != DomainHarness {
+		t.Errorf("domain = %q, want %q", a.Domain, DomainHarness)
+	}
+	other, _ := DescribeHarness("claude-code")
+	wd, _ := DescribePersistent(DomainWorkdir, t.TempDir())
+	if a.Digest == other.Digest || a.Digest == wd.Digest {
+		t.Errorf("harness digest %q collides with another harness/workdir scope", a.Digest)
+	}
+	if _, err := DescribeHarness(""); err == nil {
+		t.Error("DescribeHarness accepted an empty harness name")
 	}
 }
 

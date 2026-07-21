@@ -9,11 +9,12 @@ import (
 
 func TestCacheGuidanceNamesPathModeAndAllVars(t *testing.T) {
 	const dir = "/sandbox/cache/dir"
-	got := CacheGuidance(dir, toolcache.ModePersistent)
+	got := CacheGuidance(dir, dir, toolcache.ModePersistent)
 	for _, want := range []string{
 		dir,
 		"persistent",
 		"OMAC_CACHE_DIR",
+		"OMAC_XDG_CACHE_DIR",
 		"OMAC_CACHE_MODE",
 		"XDG_CACHE_HOME",
 		"GOCACHE",
@@ -32,7 +33,7 @@ func TestCacheGuidanceNamesPathModeAndAllVars(t *testing.T) {
 }
 
 func TestCacheGuidanceExplainsHardcodedHostCachesDenied(t *testing.T) {
-	got := CacheGuidance("/c", toolcache.ModeEphemeral)
+	got := CacheGuidance("/c", "/c", toolcache.ModeEphemeral)
 	if !strings.Contains(strings.ToLower(got), "denied") {
 		t.Errorf("CacheGuidance should explain hardcoded host caches are denied;\ngot:\n%s", got)
 	}

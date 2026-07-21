@@ -113,15 +113,15 @@ func TestLaunchCachePersistentAndEphemeral(t *testing.T) {
 	workdir := t.TempDir()
 	sandboxTmp := t.TempDir()
 
-	scope, err := prepareLaunchCache(true, false, workdir, sandboxTmp)
+	scope, xdgScope, err := prepareLaunchCache(true, false, "claude-code", workdir, sandboxTmp)
 	if err != nil {
 		t.Fatalf("no-sandbox cache: %v", err)
 	}
-	if scope != nil {
-		t.Errorf("no-sandbox scope = %#v, want nil", scope)
+	if scope != nil || xdgScope != nil {
+		t.Errorf("no-sandbox scopes = %#v/%#v, want nil", scope, xdgScope)
 	}
 
-	ephemeral, err := prepareLaunchCache(false, true, workdir, sandboxTmp)
+	ephemeral, ephemeralXDG, err := prepareLaunchCache(false, true, "claude-code", workdir, sandboxTmp)
 	if err != nil {
 		t.Fatalf("ephemeral cache: %v", err)
 	}
@@ -131,11 +131,14 @@ func TestLaunchCachePersistentAndEphemeral(t *testing.T) {
 	if ephemeral.Dir != filepath.Join(sandboxTmp, "cache") {
 		t.Errorf("ephemeral dir = %q, want %q", ephemeral.Dir, filepath.Join(sandboxTmp, "cache"))
 	}
+	if ephemeralXDG != ephemeral {
+		t.Errorf("ephemeral XDG scope should equal the build scope (single scope), got %#v", ephemeralXDG)
+	}
 	if _, err := os.Stat(filepath.Join(home, ".cache", "omac")); !os.IsNotExist(err) {
 		t.Errorf("persistent cache root exists or stat failed: %v", err)
 	}
 
-	persistent, err := prepareLaunchCache(false, false, workdir, sandboxTmp)
+	persistent, persistentXDG, err := prepareLaunchCache(false, false, "claude-code", workdir, sandboxTmp)
 	if err != nil {
 		t.Fatalf("persistent cache: %v", err)
 	}
@@ -143,12 +146,21 @@ func TestLaunchCachePersistentAndEphemeral(t *testing.T) {
 		if err := persistent.Close(); err != nil {
 			t.Errorf("close persistent cache: %v", err)
 		}
+		if err := persistentXDG.Close(); err != nil {
+			t.Errorf("close persistent XDG cache: %v", err)
+		}
 	})
 	if persistent.Domain != toolcache.DomainWorkdir {
 		t.Errorf("persistent domain = %q, want %q", persistent.Domain, toolcache.DomainWorkdir)
 	}
 	if persistent.Mode != toolcache.ModePersistent {
 		t.Errorf("persistent mode = %q, want %q", persistent.Mode, toolcache.ModePersistent)
+	}
+	if persistentXDG.Domain != toolcache.DomainHarness {
+		t.Errorf("persistent XDG domain = %q, want %q", persistentXDG.Domain, toolcache.DomainHarness)
+	}
+	if persistentXDG.Dir == persistent.Dir {
+		t.Errorf("harness XDG scope should differ from the workdir build scope: %s", persistentXDG.Dir)
 	}
 }
 

@@ -131,13 +131,14 @@ The inner harness receives these injected values, overriding inherited values:
 
 | Variable | Isolated location |
 |---|---|
-| `XDG_CACHE_HOME` | `<cache>/xdg` |
+| `XDG_CACHE_HOME` | `<xdg-cache>/xdg` |
 | `GOCACHE` | `<cache>/go-build` |
 | `GOMODCACHE` | `<cache>/go-mod` |
 | `NPM_CONFIG_CACHE` | `<cache>/npm` |
 | `PIP_CACHE_DIR` | `<cache>/pip` |
 | `CARGO_HOME` | `<cache>/cargo` |
 | `OMAC_CACHE_DIR` | `<cache>` |
+| `OMAC_XDG_CACHE_DIR` | `<xdg-cache>` |
 | `OMAC_CACHE_MODE` | `persistent` or `ephemeral` |
 
 The hybrid redirect is intentional. `XDG_CACHE_HOME` covers OpenCode and other
@@ -145,9 +146,21 @@ XDG-aware software. The tool-specific variables are still required because
 local macOS probes showed that Go, npm, pip, and Cargo did not change their
 cache locations when only `XDG_CACHE_HOME` was set.
 
-XDG-aware tools receive a cold, isolated cache on their first launch in a trust
-domain. They do not inherit data from the host's previous XDG cache; that is the
-intended boundary rather than a compatibility fallback.
+**Scope split (follow-up, #143).** `<cache>` is the per-workdir build scope
+(`OMAC_CACHE_DIR`); `<xdg-cache>` is a per-harness scope (`OMAC_XDG_CACHE_DIR`,
+`toolcache.DomainHarness`) shared across workdirs (same dir as `<cache>` in
+ephemeral mode). Build caches are populated by untrusted project code and stay
+per-workdir. `XDG_CACHE_HOME` is the harness's *own* cache — config-declared
+plugins (e.g. OpenCode under `$XDG_CACHE_HOME/<harness>/packages`), which are
+user- not project-controlled. Per-workdir scoping forced a registry re-fetch in
+every new directory (silently dropped when the sandbox network policy denies
+it), so the harness scope restores install-once reuse — without a global
+`~/.cache` grant, matching the already-shared `~/.config`/`~/.local/share`
+harness dirs.
+
+Build (tool) caches receive a cold, isolated cache on their first launch in a
+trust domain. They do not inherit data from the host's previous cache; that is
+the intended boundary rather than a compatibility fallback.
 
 Injected values use the existing environment overlay path, so they win over
 host values and survive a profile `environment.allow_vars` filter in the same

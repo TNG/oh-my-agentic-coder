@@ -74,6 +74,9 @@ environment:
     - CARGO_HOME
 ```
 
+If an external nono profile sets `environment.allow_vars`, it must also
+include `OMAC_XDG_CACHE_DIR` (covered by the `OMAC_*` glob above).
+
 External nono profiles do not receive the built-in sandbox re-exec's trusted
 cache reinjection. Omitting a redirect lets that tool use its default cache
 location; omac does not provide an automatic substitute.
@@ -97,14 +100,24 @@ launcher-config schema. Available placeholders: `{{socket}}`,
 
 ### Tool-cache redirection and external nono-profile limitations
 
-For sandboxed launches, omac prepares a per-scope tool-cache directory
-(`~/.cache/omac/<sha256(identity)>` for persistent mode, a per-launch
-temp dir for `--ephemeral-cache`) and redirects the caches supported by
-`XDG_CACHE_HOME`, `GOCACHE`, `GOMODCACHE`, `NPM_CONFIG_CACHE`,
-`PIP_CACHE_DIR`, and `CARGO_HOME`. It injects `OMAC_CACHE_DIR` /
-`OMAC_CACHE_MODE` plus those six redirects into the sandbox runtime's
-process environment, then grants only that scope leaf read+write in
-the sandbox argv. Unsupported third-party tools that hardcode another
+For sandboxed launches, omac prepares tool-cache directories under
+`~/.cache/omac/<sha256(identity)>` (persistent mode) or a per-launch temp dir
+(`--ephemeral-cache`) and redirects the caches supported by `XDG_CACHE_HOME`,
+`GOCACHE`, `GOMODCACHE`, `NPM_CONFIG_CACHE`, `PIP_CACHE_DIR`, and `CARGO_HOME`.
+
+Persistent mode uses **two** scopes. The build caches (`GOCACHE`, `GOMODCACHE`,
+`NPM_CONFIG_CACHE`, `PIP_CACHE_DIR`, `CARGO_HOME`) live in a **per-workdir**
+scope (`OMAC_CACHE_DIR`) — untrusted project code writes here, so it stays
+isolated per project. `XDG_CACHE_HOME` lives in a **per-harness** scope
+(`OMAC_XDG_CACHE_DIR`), keyed by harness name and shared across every workdir:
+the harness's own cache holds the plugins/extensions declared in the user's
+harness config, which are user-controlled and installed once rather than
+re-fetched from a registry in every project directory (a per-project re-fetch
+the sandbox network policy may block). In `--ephemeral-cache` mode both scopes
+are the same per-launch directory. omac injects `OMAC_CACHE_DIR`,
+`OMAC_XDG_CACHE_DIR`, and `OMAC_CACHE_MODE` plus the six redirects into the
+sandbox runtime's process environment, then grants only those scope leaves
+read+write in the sandbox argv. Unsupported third-party tools that hardcode another
 cache path need explicit profile configuration; omac does not redirect
 them automatically. `~/.rustup` may be read-only runtime-visible for
 toolchain execution, but it is not a writable or cache grant. See the

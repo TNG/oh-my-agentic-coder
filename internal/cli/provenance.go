@@ -69,9 +69,11 @@ type skillsView struct {
 
 // cacheView describes the default persistent tool-cache scope for the
 // current workdir — not a live ephemeral/serve process's scope. The
-// environment field is the eight-variable map toolcache.Environment
-// produces for this scope; provenance does not re-derive hashing or
-// environment mappings.
+// environment field is the map toolcache.Environment produces for this
+// scope; provenance does not re-derive hashing or environment mappings.
+// It reports the single-scope view (XDG_CACHE_HOME under the workdir
+// scope); at a real launch XDG_CACHE_HOME is redirected to the harness's
+// own cross-workdir scope (see toolcache.DomainHarness / OMAC_XDG_CACHE_DIR).
 type cacheView struct {
 	Scope       string            `json:"scope"`
 	Mode        string            `json:"mode"`

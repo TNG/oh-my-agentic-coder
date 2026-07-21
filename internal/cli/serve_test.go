@@ -612,13 +612,13 @@ func TestPrepareServeCache(t *testing.T) {
 		{name: "ephemeral cache", ephemeral: true, explicitWorkdir: explicitWorkdir, wantMode: toolcache.ModeEphemeral, wantPath: filepath.Join(sandboxTmp, "cache")},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			scope, err := prepareServeCache(c.noSandbox, c.noInner, c.ephemeral, c.explicitWorkdir, launchWorkdir, sandboxTmp)
+			scope, xdgScope, err := prepareServeCache(c.noSandbox, c.noInner, c.ephemeral, "claude-code", c.explicitWorkdir, launchWorkdir, sandboxTmp)
 			if err != nil {
 				t.Fatalf("prepareServeCache: %v", err)
 			}
 			if c.wantNil {
-				if scope != nil {
-					t.Errorf("scope = %#v, want nil", scope)
+				if scope != nil || xdgScope != nil {
+					t.Errorf("scopes = %#v/%#v, want nil", scope, xdgScope)
 				}
 				return
 			}
@@ -629,7 +629,21 @@ func TestPrepareServeCache(t *testing.T) {
 				if err := scope.Close(); err != nil {
 					t.Errorf("close scope: %v", err)
 				}
+				if xdgScope != nil && xdgScope != scope {
+					if err := xdgScope.Close(); err != nil {
+						t.Errorf("close xdg scope: %v", err)
+					}
+				}
 			})
+			// The harness XDG scope is shared across workdirs (persistent) or
+			// the same per-launch scope (ephemeral).
+			if c.wantMode == toolcache.ModeEphemeral {
+				if xdgScope != scope {
+					t.Errorf("ephemeral xdg scope should equal build scope, got %#v", xdgScope)
+				}
+			} else if xdgScope == nil || xdgScope.Domain != toolcache.DomainHarness {
+				t.Errorf("persistent xdg scope domain = %v, want %q", xdgScope, toolcache.DomainHarness)
+			}
 			if scope.Domain != c.wantDomain {
 				t.Errorf("domain = %q, want %q", scope.Domain, c.wantDomain)
 			}
@@ -738,13 +752,19 @@ func TestRunServeRetainsCacheLockAndAllowsOnlyScope(t *testing.T) {
 	if err != nil {
 		t.Fatalf("describe serve cache: %v", err)
 	}
+	// serve locks both the per-workdir build scope and the harness's own
+	// cross-workdir XDG scope (the `claude` alias resolves to "claude-code").
+	harnessScope, err := toolcache.DescribeHarness("claude-code")
+	if err != nil {
+		t.Fatalf("describe harness cache: %v", err)
+	}
 	args, err := os.ReadFile(argsPath)
 	if err != nil {
 		t.Fatalf("read captured args: %v", err)
 	}
 	capturedArgs := strings.Fields(string(args))
 	var cacheAllows []string
-	scopeAllows := 0
+	scopeAllows, harnessAllows := 0, 0
 	for i, arg := range capturedArgs {
 		if arg == "--allow" && i+1 < len(capturedArgs) {
 			allowed := capturedArgs[i+1]
@@ -752,10 +772,16 @@ func TestRunServeRetainsCacheLockAndAllowsOnlyScope(t *testing.T) {
 			if allowed == scope.Dir {
 				scopeAllows++
 			}
+			if allowed == harnessScope.Dir {
+				harnessAllows++
+			}
 		}
 	}
 	if scopeAllows != 1 {
-		t.Errorf("cache scope %q appears in --allow %d times, want 1: %v", scope.Dir, scopeAllows, cacheAllows)
+		t.Errorf("build cache scope %q appears in --allow %d times, want 1: %v", scope.Dir, scopeAllows, cacheAllows)
+	}
+	if harnessAllows != 1 {
+		t.Errorf("harness cache scope %q appears in --allow %d times, want 1: %v", harnessScope.Dir, harnessAllows, cacheAllows)
 	}
 	for _, allowed := range cacheAllows {
 		if allowed == filepath.Dir(scope.Dir) {
@@ -767,10 +793,10 @@ func TestRunServeRetainsCacheLockAndAllowsOnlyScope(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read captured environment: %v", err)
 	}
-	for _, key := range []string{"OMAC_CACHE_DIR", "OMAC_CACHE_MODE"} {
-		want := toolcache.Environment(scope.Dir, toolcache.ModePersistent)[key]
-		if got := parseEnvironment(string(envData))[key]; got != want {
-			t.Errorf("%s = %q, want %q", key, got, want)
+	wantEnv := toolcache.EnvironmentSplit(scope.Dir, harnessScope.Dir, toolcache.ModePersistent)
+	for _, key := range []string{"OMAC_CACHE_DIR", "OMAC_CACHE_MODE", "OMAC_XDG_CACHE_DIR"} {
+		if got := parseEnvironment(string(envData))[key]; got != wantEnv[key] {
+			t.Errorf("%s = %q, want %q", key, got, wantEnv[key])
 		}
 	}
 
@@ -778,9 +804,10 @@ func TestRunServeRetainsCacheLockAndAllowsOnlyScope(t *testing.T) {
 	if err != nil {
 		t.Fatalf("clear active cache: %v", err)
 	}
-	if len(active) != 1 || active[0].Path != scope.Dir || active[0].Status != toolcache.ClearActive {
-		t.Errorf("active clear results = %#v, want active %q", active, scope.Dir)
-	}
+	assertClearStatus(t, "active", active, map[string]toolcache.ClearStatus{
+		scope.Dir:        toolcache.ClearActive,
+		harnessScope.Dir: toolcache.ClearActive,
+	})
 
 	if err := os.WriteFile(releasePath, nil, 0o600); err != nil {
 		t.Fatalf("release capture process: %v", err)
@@ -798,8 +825,28 @@ func TestRunServeRetainsCacheLockAndAllowsOnlyScope(t *testing.T) {
 	if err != nil {
 		t.Fatalf("clear inactive cache: %v", err)
 	}
-	if len(inactive) != 1 || inactive[0].Path != scope.Dir || inactive[0].Status != toolcache.ClearRemoved {
-		t.Errorf("inactive clear results = %#v, want removed %q", inactive, scope.Dir)
+	assertClearStatus(t, "inactive", inactive, map[string]toolcache.ClearStatus{
+		scope.Dir:        toolcache.ClearRemoved,
+		harnessScope.Dir: toolcache.ClearRemoved,
+	})
+}
+
+// assertClearStatus checks that clear results contain exactly the wanted
+// path→status pairs, order-independent.
+func assertClearStatus(t *testing.T, label string, results []toolcache.ClearResult, want map[string]toolcache.ClearStatus) {
+	t.Helper()
+	got := map[string]toolcache.ClearStatus{}
+	for _, r := range results {
+		got[r.Path] = r.Status
+	}
+	if len(got) != len(want) {
+		t.Errorf("%s clear results = %#v, want %d entries %v", label, results, len(want), want)
+		return
+	}
+	for path, status := range want {
+		if got[path] != status {
+			t.Errorf("%s clear status for %q = %q, want %q (all: %#v)", label, path, got[path], status, results)
+		}
 	}
 }
 
