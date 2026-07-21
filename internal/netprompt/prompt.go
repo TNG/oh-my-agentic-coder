@@ -135,15 +135,15 @@ func promptText(host string, port int, intent, cause, originLine string) string 
 	var b strings.Builder
 	fmt.Fprintf(&b, "The sandboxed process is trying to reach:\n\n    %s\n\n", target)
 	if originLine != "" {
-		fmt.Fprintf(&b, "Origin: %s\n", originLine)
+		fmt.Fprintf(&b, "%-13s %s\n", "Origin:", originLine)
 	}
 	if cause != "" {
-		fmt.Fprintf(&b, "Likely cause: %s\n", cause)
+		fmt.Fprintf(&b, "%-13s %s\n", "Likely cause:", cause)
 	}
 	if intent != "" {
-		fmt.Fprintf(&b, "Agent intent: %q", intent)
+		fmt.Fprintf(&b, "%-13s %q", "Agent intent:", intent)
 	} else {
-		b.WriteString("Agent intent: (not declared)")
+		fmt.Fprintf(&b, "%-13s (not declared)", "Agent intent:")
 	}
 	b.WriteString("\n\nHow should omac handle this destination?")
 	return b.String()
@@ -307,7 +307,7 @@ func (p *Prompter) Prompt(ctx context.Context, host string, port int) netproxy.P
 // resolveOrigin attributes the dial to a process for the "Origin" line. It runs
 // only here (the prompt path), never on the allow/deny hot path. Empty string
 // when there is no resolver, no ClientSource on ctx, or resolution fails —
-// which simply omits the line. The PID is the host PID (see origin.Origin).
+// which simply omits the line.
 func (p *Prompter) resolveOrigin(ctx context.Context) string {
 	if p.origin == nil {
 		return ""
@@ -320,7 +320,7 @@ func (p *Prompter) resolveOrigin(ctx context.Context) string {
 	if !ok {
 		return ""
 	}
-	return fmt.Sprintf("%s (host pid %d)", o.Name, o.PID)
+	return o.Name
 }
 
 // --- macOS ---

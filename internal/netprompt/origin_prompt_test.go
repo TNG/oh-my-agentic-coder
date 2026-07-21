@@ -27,7 +27,7 @@ func ctxWithSource(t *testing.T) context.Context {
 func TestResolveOriginRendersLine(t *testing.T) {
 	p := &Prompter{origin: fakeResolver{o: origin.Origin{PID: 4242, Name: "opencode"}, ok: true}}
 	got := p.resolveOrigin(ctxWithSource(t))
-	if got != "opencode (host pid 4242)" {
+	if got != "opencode" {
 		t.Errorf("origin line = %q", got)
 	}
 }
@@ -54,8 +54,8 @@ func TestResolveOriginOmittedWhenResolveFails(t *testing.T) {
 }
 
 func TestPromptTextOriginOrdering(t *testing.T) {
-	got := promptText("raw.githubusercontent.com", 443, "", "grammar", "opencode (host pid 42)")
-	if !strings.Contains(got, "Origin: opencode (host pid 42)\n") {
+	got := promptText("raw.githubusercontent.com", 443, "", "grammar", "opencode")
+	if !strings.Contains(got, "Origin:       opencode\n") {
 		t.Errorf("missing origin line: %q", got)
 	}
 	// Origin precedes cause precedes intent.
