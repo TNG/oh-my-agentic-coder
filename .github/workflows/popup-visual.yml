@@ -20,8 +20,10 @@ permissions:
 jobs:
   linux:
     runs-on: ubuntu-latest
-    # kdialog pulls heavy KDE deps and may be unavailable; never block on it.
-    continue-on-error: ${{ matrix.backend == 'kdialog' }}
+    # Advisory only: capture is a human-review aid, never a pass/fail gate. A
+    # flaky headless render (blank window, Xvfb first-paint timing) or a missing
+    # toolkit (kdialog's heavy KDE deps) must not turn the PR check red.
+    continue-on-error: true
     strategy:
       fail-fast: false
       matrix:
