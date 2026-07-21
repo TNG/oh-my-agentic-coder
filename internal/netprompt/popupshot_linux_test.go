@@ -47,6 +47,15 @@ func TestRenderPopupScreenshot(t *testing.T) {
 
 	win := waitForWindow(t, shotTitle, 15*time.Second)
 	err := captureWindow(win, shot, 6, time.Second)
+	if err == nil {
+		// Best-effort second frame with the pointer over the scrollbar, so the
+		// artifact shows the hover state (GTK/Qt scrollbars are thin at rest and
+		// prelight on hover). A failure here must not fail the test.
+		hover := strings.Replace(shot, ".png", "-hover.png", 1)
+		if herr := captureHover(win, hover); herr != nil {
+			t.Logf("hover capture skipped: %v", herr)
+		}
+	}
 	_ = exec.Command("xdotool", "windowkill", win).Run() // let the backend goroutine return
 	select {
 	case <-errc:
@@ -56,6 +65,43 @@ func TestRenderPopupScreenshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertShot(t, shot)
+}
+
+// captureHover moves the pointer over the list's right edge, where the
+// scrollbar sits, and grabs a second frame so the artifact shows the
+// hover-widened / prelit scrollbar. Best-effort.
+func captureHover(win, out string) error {
+	x, y, w, h, err := windowGeometry(win)
+	if err != nil {
+		return err
+	}
+	px, py := x+w-6, y+h*3/4 // right edge, lower half where the option list sits
+	if o, err := exec.Command("xdotool", "mousemove", "--sync", strconv.Itoa(px), strconv.Itoa(py)).CombinedOutput(); err != nil {
+		return fmt.Errorf("mousemove failed: %v: %s", err, o)
+	}
+	time.Sleep(time.Second) // let the scrollbar react
+	if o, err := exec.Command("import", "-window", win, out).CombinedOutput(); err != nil {
+		return fmt.Errorf("import failed: %v: %s", err, o)
+	}
+	return nil
+}
+
+// windowGeometry returns win's absolute X, Y, width and height (xdotool --shell).
+func windowGeometry(win string) (x, y, w, h int, err error) {
+	out, err := exec.Command("xdotool", "getwindowgeometry", "--shell", win).Output()
+	if err != nil {
+		return 0, 0, 0, 0, fmt.Errorf("getwindowgeometry: %v", err)
+	}
+	m := map[string]int{}
+	for _, line := range strings.Split(string(out), "\n") {
+		k, v, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		n, _ := strconv.Atoi(strings.TrimSpace(v))
+		m[strings.TrimSpace(k)] = n
+	}
+	return m["X"], m["Y"], m["WIDTH"], m["HEIGHT"], nil
 }
 
 // captureWindow grabs window win to out, retrying until the image is painted.
