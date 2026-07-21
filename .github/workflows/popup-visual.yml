@@ -34,7 +34,7 @@ jobs:
       - name: Install capture tooling + ${{ matrix.backend }}
         run: |
           sudo apt-get update
-          sudo apt-get install -y xvfb imagemagick xdotool
+          sudo apt-get install -y xvfb imagemagick xdotool fonts-dejavu-core
           sudo apt-get install -y "${{ matrix.backend }}" \
             || echo "::warning::${{ matrix.backend }} not installable; the render test will skip"
       - name: Render + capture (${{ matrix.backend }})

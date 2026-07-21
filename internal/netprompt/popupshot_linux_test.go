@@ -4,8 +4,10 @@ package netprompt
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -44,15 +46,51 @@ func TestRenderPopupScreenshot(t *testing.T) {
 	}()
 
 	win := waitForWindow(t, shotTitle, 15*time.Second)
-	if out, err := exec.Command("import", "-window", win, shot).CombinedOutput(); err != nil {
-		t.Fatalf("screenshot failed: %v: %s", err, out)
-	}
+	err := captureWindow(win, shot, 6, time.Second)
 	_ = exec.Command("xdotool", "windowkill", win).Run() // let the backend goroutine return
 	select {
 	case <-errc:
 	case <-time.After(3 * time.Second):
 	}
+	if err != nil {
+		t.Fatal(err)
+	}
 	assertShot(t, shot)
+}
+
+// captureWindow grabs window win to out, retrying until the image is painted.
+// xdotool --sync waits for the window to exist, not to draw, so a fresh grab
+// can be a blank rectangle; a painted dialog has many colours, a blank window
+// only one or two. Retries settle GTK/Qt's first paint.
+func captureWindow(win, out string, attempts int, wait time.Duration) error {
+	var colors int
+	for i := 0; i < attempts; i++ {
+		time.Sleep(wait)
+		if o, err := exec.Command("import", "-window", win, out).CombinedOutput(); err != nil {
+			return fmt.Errorf("import failed: %v: %s", err, o)
+		}
+		var err error
+		if colors, err = pngColors(out); err != nil {
+			return err
+		}
+		if colors > 4 {
+			return nil
+		}
+	}
+	return fmt.Errorf("captured a blank window (%d colours) after %d attempts — dialog did not paint", colors, attempts)
+}
+
+// pngColors returns the number of distinct colours in an image (ImageMagick %k).
+func pngColors(path string) (int, error) {
+	out, err := exec.Command("identify", "-format", "%k", path).Output()
+	if err != nil {
+		return 0, fmt.Errorf("identify failed: %v", err)
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(string(out)))
+	if err != nil {
+		return 0, fmt.Errorf("parse colour count %q: %v", out, err)
+	}
+	return n, nil
 }
 
 func linuxShotBackend(name string) dialogBackend {
