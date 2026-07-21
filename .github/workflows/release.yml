@@ -160,8 +160,13 @@ jobs:
             if [ -n "$prev_tag" ] && [ "$prev_tag" != "$VERSION" ]; then
               range="$prev_tag..$VERSION"
             fi
+            # Capture then truncate in-shell. Piping git into `head -c` makes
+            # git die with SIGPIPE (141) once head closes the pipe, which under
+            # the runner's default `-eo pipefail` shell aborts the whole step
+            # for any release whose commit dump exceeds the cap.
             commits=$(git log --no-merges --reverse \
-              --pretty=format:'### %s%n%b' "$range" 2>/dev/null | head -c 6000)
+              --pretty=format:'### %s%n%b' "$range" 2>/dev/null || true)
+            commits=${commits:0:6000}
             if [ -n "$commits" ]; then
               # Single source of truth for the model id: internal/e2e/versions.go.
               model=$(awk '/^var modelIDs = map\[string\]string\{/{f=1;next} /^\}/{f=0} f' internal/e2e/versions.go \
