@@ -241,6 +241,21 @@ func writeCacheTestProfile(t *testing.T, home string, extraRead, extraAllow []st
 	}
 }
 
+// writeLauncherCacheScope writes a minimal launcher config that pins the
+// persistent cache scope for a workdir, so omac subcommands run with
+// cmd.Dir=workdir (provenance, cache clear) resolve that scope.
+func writeLauncherCacheScope(t *testing.T, workdir, scope string) {
+	t.Helper()
+	cfgDir := filepath.Join(workdir, ".opencode")
+	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := "cache:\n  scope: " + scope + "\n"
+	if err := os.WriteFile(filepath.Join(cfgDir, "oh-my-agentic-coder.yaml"), []byte(cfg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func commandOutput(t *testing.T, name string, args ...string) string {
 	t.Helper()
 	out, err := exec.Command(name, args...).Output()
@@ -785,14 +800,17 @@ func TestE2ECacheMainAndLinkedWorktreesAreIsolated(t *testing.T) {
 	writeCacheTestProfile(t, home, nil, nil, 0)
 	omacBin := buildOmac(t)
 
+	// Per-workdir isolation is opt-in since the default scope became
+	// global; --cache-scope workdir keys the cache on each worktree path.
+	workdirScope := []string{"--cache-scope", "workdir"}
 	marker := "main-worktree-cache-marker"
-	out, code := runOmacShell(t, omacBin, home, repoRoot, nil,
+	out, code := runOmacShell(t, omacBin, home, repoRoot, workdirScope,
 		"/bin/sh", "-c", "echo "+marker+" > \"$OMAC_CACHE_DIR/probe.txt\" && echo WROTE_MAIN")
 	if code != 0 {
 		t.Fatalf("main worktree launch failed (exit %d): %s", code, out)
 	}
 
-	out, code = runOmacShell(t, omacBin, home, linkedDir, nil,
+	out, code = runOmacShell(t, omacBin, home, linkedDir, workdirScope,
 		"/bin/sh", "-c", "cat \"$OMAC_CACHE_DIR/probe.txt\" 2>&1 || echo NOT_FOUND")
 	if code != 0 {
 		t.Fatalf("linked worktree launch failed (exit %d): %s", code, out)
@@ -855,7 +873,11 @@ func TestE2ECacheServeScopes(t *testing.T) {
 	writeCacheTestProfile(t, home, nil, nil, 0)
 	omacBin := buildOmac(t)
 
-	out, code := runOmacServeShell(t, omacBin, home, workdir, nil,
+	// Under workdir scope, a multi-dir serve (no --workdir) falls back to a
+	// serve-scoped cache while start keys on the workdir, so the two differ.
+	// The default global scope would collapse both onto the shared cache.
+	workdirScope := []string{"--cache-scope", "workdir"}
+	out, code := runOmacServeShell(t, omacBin, home, workdir, workdirScope,
 		"/bin/sh", "-c", "echo SERVE_CACHE=$OMAC_CACHE_DIR")
 	if code != 0 {
 		t.Fatalf("serve launch failed (exit %d): %s", code, out)
@@ -865,7 +887,7 @@ func TestE2ECacheServeScopes(t *testing.T) {
 	}
 
 	// Start mode uses a workdir-scoped cache; serve uses serve-scoped.
-	startOut, _ := runOmacShell(t, omacBin, home, workdir, nil,
+	startOut, _ := runOmacShell(t, omacBin, home, workdir, workdirScope,
 		"/bin/sh", "-c", "echo START_CACHE=$OMAC_CACHE_DIR")
 	if !strings.Contains(startOut, "START_CACHE=") {
 		t.Errorf("start did not expose OMAC_CACHE_DIR: %s", startOut)
@@ -887,6 +909,10 @@ func TestE2ECacheActiveScopeCannotBeCleared(t *testing.T) {
 	home := cacheTestHome(t)
 	workdir := t.TempDir()
 	writeCacheTestProfile(t, home, nil, nil, 0)
+	// Pin workdir scope so provenance, `cache clear`, and the hold-lock
+	// helper (which uses DomainWorkdir) all resolve the same leaf; the
+	// default global scope would key clear on the shared cache instead.
+	writeLauncherCacheScope(t, workdir, "workdir")
 	omacBin := buildOmac(t)
 
 	// Prepare the persistent scope so the cache root + leaf exist on

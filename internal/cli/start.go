@@ -45,6 +45,7 @@ type launchOpts struct {
 	innerCmdOverride   string
 	noSandbox          bool
 	ephemeralCache     bool
+	cacheScope         string
 	keepRunning        bool
 	acceptSkillChanges bool
 	skipSecretPattern  bool
@@ -74,7 +75,8 @@ func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, bool)
 		profile            = fs.String("sandbox", "", "Name of a sandbox profile from the launcher config.")
 		innerCmdOverride   = fs.String("inner", "", "Override inner_cmd's executable.")
 		noSandbox          = fs.Bool("no-sandbox", false, "Run inner command directly, without a sandbox (debug only).")
-		ephemeralCache     = fs.Bool("ephemeral-cache", false, "Use a per-launch cache instead of the persistent workdir cache.")
+		ephemeralCache     = fs.Bool("ephemeral-cache", false, "Use a per-launch cache instead of the persistent cache.")
+		cacheScope         = fs.String("cache-scope", "", "Persistent cache scope: global, config, or workdir. Overrides config (default: global).")
 		keepRunning        = fs.Bool("keep-running", false, "Do not stop sidecars when the inner command exits.")
 		acceptSkillChanges = fs.Bool("accept-skill-changes", false, "Tolerate bundle_hash drift in registered skills (proceed even if the on-disk skill differs from what was registered).")
 		skipSecretPattern  = fs.Bool("skip-secret-pattern", false, "Do not enforce a secret's pattern against an env_passthrough-supplied value (escape hatch for an outdated pattern; the raw value is still passed through).")
@@ -123,6 +125,12 @@ func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, bool)
 		fmt.Fprintf(env.Stderr, "omac %s: --ephemeral-cache cannot be used with --no-sandbox\n", cmdName)
 		return launchOpts{}, false
 	}
+	if *cacheScope != "" {
+		if _, err := config.ValidateCacheScope(*cacheScope); err != nil {
+			fmt.Fprintf(env.Stderr, "omac %s: %v\n", cmdName, err)
+			return launchOpts{}, false
+		}
+	}
 	innerArgs = append(fs.Args(), innerArgs...)
 	return launchOpts{
 		label:              cmdName,
@@ -131,6 +139,7 @@ func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, bool)
 		innerCmdOverride:   *innerCmdOverride,
 		noSandbox:          *noSandbox,
 		ephemeralCache:     *ephemeralCache,
+		cacheScope:         *cacheScope,
 		keepRunning:        *keepRunning,
 		acceptSkillChanges: *acceptSkillChanges,
 		skipSecretPattern:  *skipSecretPattern,
@@ -641,7 +650,12 @@ func runLaunch(env *Env, opts launchOpts) int {
 	if verbose {
 		fmt.Fprintf(env.Stderr, "[verbose] sandbox TMPDIR: %s\n", sandboxTmp)
 	}
-	cacheScope, err := prepareLaunchCache(noSandbox, opts.ephemeralCache, env.Workdir, sandboxTmp)
+	scope, err := resolveCacheScope(lc.Cache, opts.cacheScope)
+	if err != nil {
+		fmt.Fprintln(env.Stderr, prefix+": cache:", err)
+		return ExitConfigInvalid
+	}
+	cacheScope, err := prepareLaunchCache(noSandbox, opts.ephemeralCache, scope, env.Workdir, cfgPath, sandboxTmp)
 	if err != nil {
 		if opts.ephemeralCache {
 			fmt.Fprintln(env.Stderr, prefix+": cache:", err)
@@ -921,14 +935,33 @@ func runLaunch(env *Env, opts launchOpts) int {
 	return code
 }
 
-func prepareLaunchCache(noSandbox, ephemeral bool, workdir, sandboxTmp string) (*toolcache.Scope, error) {
+func prepareLaunchCache(noSandbox, ephemeral bool, scope config.CacheScope, workdir, cfgPath, sandboxTmp string) (*toolcache.Scope, error) {
 	if noSandbox {
 		return nil, nil
 	}
 	if ephemeral {
 		return toolcache.PrepareEphemeral(sandboxTmp)
 	}
-	return toolcache.PreparePersistent(toolcache.DomainWorkdir, workdir)
+	switch scope {
+	case config.CacheScopeWorkdir:
+		return toolcache.PreparePersistent(toolcache.DomainWorkdir, workdir)
+	case config.CacheScopeConfig:
+		if cfgPath != "" {
+			return toolcache.PreparePersistent(toolcache.DomainConfig, cfgPath)
+		}
+		return toolcache.PrepareShared()
+	default:
+		return toolcache.PrepareShared()
+	}
+}
+
+// resolveCacheScope merges the config's cache scope with an optional
+// --cache-scope flag override (precedence: flag > config > default global).
+func resolveCacheScope(cfg config.CacheConfig, override string) (config.CacheScope, error) {
+	if override != "" {
+		return config.ValidateCacheScope(override)
+	}
+	return cfg.Resolve()
 }
 
 // continueHintToken returns the harness token to embed in the post-exit
