@@ -55,7 +55,7 @@ func TestResolveOriginOmittedWhenResolveFails(t *testing.T) {
 
 func TestPromptTextOriginOrdering(t *testing.T) {
 	got := promptText("raw.githubusercontent.com", 443, "", "grammar", "opencode")
-	if !strings.Contains(got, "Origin:       opencode\n") {
+	if !strings.Contains(got, "Origin: opencode\n") {
 		t.Errorf("missing origin line: %q", got)
 	}
 	// Origin precedes cause precedes intent.

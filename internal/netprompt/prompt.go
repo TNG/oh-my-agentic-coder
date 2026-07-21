@@ -135,15 +135,15 @@ func promptText(host string, port int, intent, cause, originLine string) string 
 	var b strings.Builder
 	fmt.Fprintf(&b, "The sandboxed process is trying to reach:\n\n    %s\n\n", target)
 	if originLine != "" {
-		fmt.Fprintf(&b, "%-13s %s\n", "Origin:", originLine)
+		fmt.Fprintf(&b, "Origin: %s\n", originLine)
 	}
 	if cause != "" {
-		fmt.Fprintf(&b, "%-13s %s\n", "Likely cause:", cause)
+		fmt.Fprintf(&b, "Likely cause: %s\n", cause)
 	}
 	if intent != "" {
-		fmt.Fprintf(&b, "%-13s %q", "Agent intent:", intent)
+		fmt.Fprintf(&b, "Agent intent: %q", intent)
 	} else {
-		fmt.Fprintf(&b, "%-13s (not declared)", "Agent intent:")
+		b.WriteString("Agent intent: (not declared)")
 	}
 	b.WriteString("\n\nHow should omac handle this destination?")
 	return b.String()
