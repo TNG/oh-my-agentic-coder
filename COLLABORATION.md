@@ -46,24 +46,14 @@ apply to **everyone** — please follow them.
 
 Both issues and PRs are written so a human *or* an agent can pick them
 up and act. Keep them **concise** — prefer structured bullets over
-prose walls. See the spec below for the expected structure.
+prose walls. The structure is enforced by the templates in
+`.github/ISSUE_TEMPLATE/` and `.github/pull_request_template.md`;
+the rules below cover what the templates can't enforce.
 
 ---
 
-## Spec: Issue structure
+## Issue rules
 
-A good issue is self-contained and locatable. Use these sections (omit
-a section if it adds nothing):
-
-```
-## Context / Summary      Why this issue exists; origin (prior PR/issue refs)
-## Problem / What         The gap, with file:line references and evidence
-## Suggested fix / Ask    Proposed direction; checklist of sub-items (- [ ])
-## Non-goals              Explicitly out of scope — prevents scope creep
-## Evidence / Environment repro commands, CI links, logs (when relevant)
-```
-
-Rules:
 - **Title:** plain descriptive sentence or noun phrase framing the
   problem (e.g. `WSL: keychain registration fails with unhelpful D-Bus
   error`). No conventional-commit prefix on issues.
@@ -74,20 +64,8 @@ Rules:
 - Labels are helpful and recommended (`bug`, `enhancement`,
   `security`, `documentation`, `agent-created`).
 
-## Spec: Pull Request structure
+## Pull Request rules
 
-PRs mirror the conventions already established in this repo:
-
-```
-## What            1-4 bullets summarizing the change at a glance — do NOT
-                   restate what is clearly readable in the diff
-## Why             Motivation — failing CI run, security gap, related issue
-## How             Implementation approach, per bullet with code refs if useful
-## Verification    Commands run (go build / go test / ...) with pass status
-## Follow-up       Optional next steps or linked issues
-```
-
-Rules:
 - **Title:** Conventional Commits with scope — e.g.
   `fix(sandbox): protect docker.sock by default` or
   `feat(update): add omac self-update`. Types: `feat`, `fix`, `test`,
@@ -96,6 +74,8 @@ Rules:
 - **Always link the issue:** `Closes #NN` (auto-closes on merge) or
   `Refs #NN` (reference only). Prefer `Closes` when the PR fully
   resolves the issue.
+- **"What" summarizes at a glance** — do NOT restate what is clearly
+  readable in the diff.
 - **Verification is the most valued section** — show the actual
   commands you ran and their result. No claim of "done" without it.
 - Signal agent authorship with a `🤖 Generated with ...` footer or
