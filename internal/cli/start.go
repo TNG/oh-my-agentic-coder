@@ -966,14 +966,30 @@ func printContinueHint(env *Env, harness config.Harness) {
 	}()
 	select {
 	case r := <-ch:
-		if r.err != nil || len(r.sessions) == 0 {
+		if r.err != nil {
+			return
+		}
+		id, ok := hintSessionID(r.sessions)
+		if !ok {
 			return
 		}
 		tok := continueHintToken(harness)
-		fmt.Fprintf(env.Stderr, "\nTo resume this session: omac continue%s -s %s\n", tok, r.sessions[0].ID)
+		fmt.Fprintf(env.Stderr, "\nTo resume this session: omac continue%s -s %s\n", tok, id)
 	case <-time.After(hintTimeout):
 		// Timed out — skip the hint rather than blocking exit.
 	}
+}
+
+// hintSessionID picks the session id to advertise in the continue hint: the
+// most-recently-updated session, which session.List guarantees at index 0.
+// It returns ok=false when there is nothing resumable (empty list, or a
+// leading entry with no id). Kept as a pure function so this selection is
+// unit-testable without printContinueHint's goroutine and timeout.
+func hintSessionID(sessions []session.Session) (string, bool) {
+	if len(sessions) == 0 || sessions[0].ID == "" {
+		return "", false
+	}
+	return sessions[0].ID, true
 }
 
 // hintTimeout bounds how long printContinueHint will block exit waiting for

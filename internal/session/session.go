@@ -126,8 +126,9 @@ func opencodeDBPath() string {
 
 // listOpenCodeDB reads sessions directly from opencode.db via the sqlite3 CLI.
 // The db is opened read-only so a live opencode instance is not disturbed.
-// Returns nil when sqlite3 is missing, the db is missing, or the query fails
-// (best-effort — the caller falls back to the opencode CLI).
+// Only top-level sessions are returned (child sub-agent sessions are excluded;
+// see the query below). Returns nil when sqlite3 is missing, the db is missing,
+// or the query fails (best-effort — the caller falls back to the opencode CLI).
 func listOpenCodeDB(workdir, dbPath string) []Session {
 	if dbPath == "" {
 		return nil
@@ -141,10 +142,15 @@ func listOpenCodeDB(workdir, dbPath string) []Session {
 	}
 	// ponytail: workdir is cleaned by the caller; embed it literally. The
 	// session table's directory column holds the absolute path opencode was
-	// launched from, which is what we match against.
+	// launched from, which is what we match against. parent_id IS NULL keeps
+	// only top-level sessions: opencode stores sub-agent/child sessions in the
+	// same table sharing the parent's directory, and a child is frequently the
+	// most-recently-updated row — so without this filter the newest-first
+	// listing can surface a non-resumable child. This mirrors what
+	// `opencode session list` already returns.
 	q := "SELECT id, title, time_updated FROM session WHERE directory = '" +
 		strings.ReplaceAll(workdir, "'", "''") +
-		"' ORDER BY time_updated DESC;"
+		"' AND parent_id IS NULL ORDER BY time_updated DESC;"
 	out, err := exec.Command(sqlite, "file:"+dbPath+"?mode=ro", q).Output()
 	if err != nil {
 		return nil
