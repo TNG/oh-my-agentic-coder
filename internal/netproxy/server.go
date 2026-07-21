@@ -17,6 +17,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/tngtech/oh-my-agentic-coder/internal/intent"
 )
 
 // connectTimeout bounds the upstream dial (and the early DNS resolve).
@@ -30,19 +32,33 @@ var connectTimeout = 30 * time.Second
 // tell a policy denial from a real upstream 403.
 const sandboxDenyHeader = "X-Omac-Sandbox: denied\r\n"
 
+// intentHintHeader is the response-header name carrying the explain-more
+// remedy on a needs_intent denial. An HTTPS/CONNECT client discards the
+// deny body, so the hint rides here too — readable without a follow-up
+// GET /sandbox/intent by any tooling that surfaces proxy headers.
+const intentHintHeader = "X-Omac-Intent-Hint"
+
+// denyHeaders builds the extra response headers for a filtered denial.
+// Every denial is marked as sandbox-originated; a needs_intent denial
+// additionally carries the explain-more hint. The hint is single-line
+// ASCII by contract (see intent.HintExplainMore), so it is a valid
+// header field-value.
+func denyHeaders(reason string) string {
+	if strings.Contains(reason, "needs_intent") {
+		return sandboxDenyHeader + intentHintHeader + ": " + intent.HintExplainMore + "\r\n"
+	}
+	return sandboxDenyHeader
+}
+
 // denyBody renders the body for a filtered denial. It explicitly
 // attributes the denial to the sandbox network policy and points at
 // the knobs that change it. When reason indicates the user clicked
-// "Explain more", the body directs the agent to declare or refine an
-// intent via POST /sandbox/intent and retry.
+// "Explain more", the body carries the authoritative explain-more hint
+// inline so a plain-HTTP agent gets the full remedy without a second
+// GET /sandbox/intent round-trip.
 func denyBody(host, reason string) string {
 	if strings.Contains(reason, "needs_intent") {
-		return fmt.Sprintf(`omac sandbox: access to %q was DENIED — the user asked for more explanation.
-
-Declare or refine your intent via:
-  POST $OMAC_BASE/sandbox/intent  {"target":%q,"reason":"..."}
-then retry the request.
-`, host, host)
+		return fmt.Sprintf("omac sandbox: access to %q was DENIED — the user asked for more explanation.\n\n%s\n", host, intent.HintExplainMore)
 	}
 	return fmt.Sprintf(`omac sandbox: access to %q was DENIED BY THE SANDBOX network policy (%s).
 
@@ -280,7 +296,7 @@ func (s *Server) handleConnect(conn net.Conn, req *http.Request) {
 	}
 	upstream, verdict, err := s.checkAndDial(host, port)
 	if verdict.Decision != Allow {
-		writeRawResponse(conn, http.StatusForbidden, sandboxDenyHeader, denyBody(host, verdict.Reason))
+		writeRawResponse(conn, http.StatusForbidden, denyHeaders(verdict.Reason), denyBody(host, verdict.Reason))
 		return
 	}
 	if err != nil {
@@ -351,7 +367,7 @@ func (s *Server) handleForward(conn net.Conn, br *bufio.Reader, req *http.Reques
 	}
 	upstream, verdict, err := s.checkAndDial(host, port)
 	if verdict.Decision != Allow {
-		writeRawResponse(conn, http.StatusForbidden, sandboxDenyHeader, denyBody(host, verdict.Reason))
+		writeRawResponse(conn, http.StatusForbidden, denyHeaders(verdict.Reason), denyBody(host, verdict.Reason))
 		return
 	}
 	if err != nil {

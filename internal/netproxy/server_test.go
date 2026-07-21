@@ -18,6 +18,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/tngtech/oh-my-agentic-coder/internal/intent"
 )
 
 // blockingPrompter blocks until its channel closes; counts invocations.
@@ -728,11 +730,16 @@ func TestDenyBodyNeedsIntent(t *testing.T) {
 	if !strings.Contains(body, "DENIED") {
 		t.Errorf("missing DENIED: %q", body)
 	}
-	if !strings.Contains(body, "/sandbox/intent") {
-		t.Errorf("missing intent hint: %q", body)
-	}
 	if !strings.Contains(body, "example.com") {
 		t.Errorf("missing host: %q", body)
+	}
+	// The full explain-more hint is embedded inline so a plain-HTTP agent
+	// needs no follow-up GET /sandbox/intent.
+	if !strings.Contains(body, intent.HintExplainMore) {
+		t.Errorf("needs_intent body must embed the explain-more hint: %q", body)
+	}
+	if !strings.Contains(body, "Do not retry without an intent explanation") {
+		t.Errorf("hint must tell the agent not to retry without an intent explanation: %q", body)
 	}
 }
 
@@ -743,5 +750,34 @@ func TestDenyBodyRegularDeny(t *testing.T) {
 	}
 	if strings.Contains(body, "/sandbox/intent") {
 		t.Errorf("regular deny should not mention intent: %q", body)
+	}
+}
+
+func TestDenyHeaders(t *testing.T) {
+	// A needs_intent denial carries the hint on a header too, so an
+	// HTTPS/CONNECT client that discards the deny body can still read it.
+	h := denyHeaders("prompt:needs_intent")
+	if !strings.Contains(h, sandboxDenyHeader) {
+		t.Errorf("needs_intent headers lost the sandbox-deny marker: %q", h)
+	}
+	if !strings.Contains(h, intentHintHeader+": "+intent.HintExplainMore+"\r\n") {
+		t.Errorf("needs_intent headers must carry the explain-more hint: %q", h)
+	}
+
+	// A plain policy deny carries only the marker, no misleading intent hint.
+	reg := denyHeaders("prompt:deny")
+	if reg != sandboxDenyHeader {
+		t.Errorf("regular deny headers = %q; want only the sandbox-deny marker", reg)
+	}
+}
+
+// TestIntentHintHeaderIsValidFieldValue guards the ASCII/single-line
+// contract: the hint is emitted as an HTTP header value, which forbids
+// CR/LF and discourages non-ASCII octets.
+func TestIntentHintHeaderIsValidFieldValue(t *testing.T) {
+	for _, r := range intent.HintExplainMore {
+		if r == '\r' || r == '\n' || r > 127 {
+			t.Fatalf("HintExplainMore contains an invalid header-value rune %q", r)
+		}
 	}
 }
