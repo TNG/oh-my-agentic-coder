@@ -523,8 +523,14 @@ func TestRunningBinary_FollowsSymlink(t *testing.T) {
 	if err != nil {
 		t.Fatalf("runningBinary: %v", err)
 	}
-	if got != real {
-		t.Fatalf("runningBinary = %q, want resolved %q", got, real)
+	// Resolve the expected path too: on macOS the temp dir itself lives under
+	// /var -> /private/var, so EvalSymlinks rewrites the parent as well.
+	want, err := filepath.EvalSymlinks(real)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("runningBinary = %q, want resolved %q", got, want)
 	}
 }
 
