@@ -531,3 +531,53 @@ func TestListPiEmptyRootIsEmpty(t *testing.T) {
 		t.Errorf("empty root should yield nil, got %+v", got)
 	}
 }
+
+func claudeHarness(t *testing.T) config.Harness {
+	t.Helper()
+	h, ok := config.LookupHarness("claude-code")
+	if !ok {
+		t.Fatal("claude-code harness not registered")
+	}
+	return h
+}
+
+func TestKnownIDsClaudeEnumeratesFilenames(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("CLAUDE_HOME", home)
+	root := filepath.Join(home, "projects")
+	const wd = "/home/u/proj"
+
+	writeClaudeFixture(t, root, wd, "aaaa-1111", []string{
+		`{"type":"user","cwd":"/home/u/proj","message":{"content":"x"}}`,
+	})
+	// Encoding collision: cwd differs, so List would exclude it — but KnownIDs
+	// deliberately returns a superset (no per-file parse), so it is included.
+	writeClaudeFixture(t, root, wd, "bbbb-2222", []string{
+		`{"type":"user","cwd":"/home/u/different","message":{"content":"y"}}`,
+	})
+
+	got := KnownIDs(claudeHarness(t), wd)
+	for _, want := range []string{"aaaa-1111", "bbbb-2222"} {
+		if _, ok := got[want]; !ok {
+			t.Errorf("KnownIDs missing %q; got %v", want, got)
+		}
+	}
+	if len(got) != 2 {
+		t.Errorf("KnownIDs size = %d, want 2: %v", len(got), got)
+	}
+}
+
+func TestKnownIDsClaudeMissingDirIsEmpty(t *testing.T) {
+	t.Setenv("CLAUDE_HOME", t.TempDir()) // no projects/ subtree written
+	got := KnownIDs(claudeHarness(t), "/home/u/proj")
+	if got == nil || len(got) != 0 {
+		t.Errorf("missing project dir should yield an empty (non-nil) set, got %v", got)
+	}
+}
+
+func TestKnownIDsUnsupportedHarnessIsEmpty(t *testing.T) {
+	got := KnownIDs(config.Harness{}, "/home/u/proj")
+	if got == nil || len(got) != 0 {
+		t.Errorf("nil-session harness should yield an empty (non-nil) set, got %v", got)
+	}
+}

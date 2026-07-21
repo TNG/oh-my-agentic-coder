@@ -82,6 +82,54 @@ func list(h config.Harness, workdir string, run runner, claudeRoot, ocDBPath, co
 	}
 }
 
+// KnownIDs returns the set of session IDs that already exist for workdir
+// before a run begins. The continue-hint logic snapshots this set just before
+// launching the harness; after the harness exits, any id absent from the
+// snapshot is the session this run created, so a sibling session that stayed
+// active in the same workdir is never mistaken for "this" session (see
+// cli.printContinueHint and issue #141).
+//
+// It is a cheap, best-effort snapshot: identifiers are enumerated without the
+// full parse List performs, and any error yields an empty (never nil) set.
+// Returning a superset is safe for the caller, which only uses the set to
+// exclude pre-existing ids, so per-session cwd verification is skipped where it
+// would otherwise force a parse.
+func KnownIDs(h config.Harness, workdir string) map[string]struct{} {
+	ids := map[string]struct{}{}
+	if h.Session == nil {
+		return ids
+	}
+	workdir = filepath.Clean(workdir)
+	if h.Session.ListKind == config.SessionListClaudeFiles {
+		// Claude session ids ARE the <uuid>.jsonl filenames under the workdir's
+		// encoded project dir, so they enumerate without opening a single file.
+		root := claudeProjectsRoot(h)
+		if root == "" {
+			return ids
+		}
+		entries, err := os.ReadDir(filepath.Join(root, encodeProjectDir(workdir)))
+		if err != nil {
+			return ids
+		}
+		for _, e := range entries {
+			if e.IsDir() || filepath.Ext(e.Name()) != ".jsonl" {
+				continue
+			}
+			ids[strings.TrimSuffix(e.Name(), ".jsonl")] = struct{}{}
+		}
+		return ids
+	}
+	// Other backends' List paths are already cheap (a single DB query, or a
+	// first-line read per file); reuse List and keep only the ids.
+	sessions, _ := List(h, workdir)
+	for _, s := range sessions {
+		if s.ID != "" {
+			ids[s.ID] = struct{}{}
+		}
+	}
+	return ids
+}
+
 // sortNewestFirst orders sessions by When descending (unknown times sink to
 // the end), with ID as a stable tiebreaker.
 func sortNewestFirst(s []Session) {
