@@ -337,7 +337,7 @@ func runLaunch(env *Env, opts launchOpts) int {
 	if autoRegisterSkills {
 		registered, errs := startAutoRegisterWorkdirSkills(env, harness, reg)
 		for _, r := range registered {
-			fmt.Fprintf(env.Stderr, "[ok] auto-registered skill %s (no required secrets/fields)\n", r)
+			fmt.Fprintf(env.Stderr, "[ok] auto-registered skill %s (no prompting required)\n", r)
 		}
 		for _, e := range errs {
 			fmt.Fprintln(env.Stderr, prefix+": auto-register:", e)
