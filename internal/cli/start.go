@@ -1268,9 +1268,22 @@ func startAutoRegisterWorkdirSkills(env *Env, harness config.Harness, reg *regis
 
 // skillEligibleForAutoRegister reports whether the skill at absDir is
 // eligible for silent auto-registration: its omac.yaml must parse, must
-// have a sidecar block, and must declare no required secrets and no
-// required config fields. A non-required secret/field is fine (the user
-// can supply it later via `omac register --reprompt-*`).
+// have a sidecar block, and every declared secret/config field must be
+// satisfiable at start time WITHOUT prompting the user.
+//
+// "Satisfiable without prompting" mirrors the resolution precedence in
+// runLaunch (start.go):
+//   - a config field is satisfiable if it has a default, a
+//     DefaultFromEnv, or is explicitly required:false (a field with a
+//     default but no explicit required:false is still satisfiable —
+//     IsRequired() returns true for nil Required, but the default fills
+//     the value without user input);
+//   - a secret is satisfiable if it is in env_passthrough (the host env
+//     supplies it at runtime) or is explicitly required:false.
+//
+// A skill with at least one required-and-unsatisfiable secret/field is
+// NOT eligible — the findUnregisteredSkills gate surfaces it so the
+// user is prompted for the missing value.
 func skillEligibleForAutoRegister(absDir string) (eligible bool, err error) {
 	metaPath := filepath.Join(absDir, config.MetaFileName)
 	m, err := config.LoadMeta(metaPath)
@@ -1280,15 +1293,27 @@ func skillEligibleForAutoRegister(absDir string) (eligible bool, err error) {
 	if m.Sidecar == nil {
 		return false, nil
 	}
+	passthrough := map[string]struct{}{}
+	for _, name := range m.Sidecar.EnvPassthrough {
+		passthrough[name] = struct{}{}
+	}
 	for _, sp := range m.Sidecar.Secrets {
-		if sp.IsRequired() {
-			return false, nil
+		if !sp.IsRequired() {
+			continue
 		}
+		if _, ok := passthrough[sp.Name]; ok {
+			continue // env supplies it at runtime
+		}
+		return false, nil
 	}
 	for _, fp := range m.Sidecar.Config {
-		if fp.IsRequired() {
-			return false, nil
+		if !fp.IsRequired() {
+			continue
 		}
+		if fp.Default != "" || fp.DefaultFromEnv != "" {
+			continue // satisfiable without user input
+		}
+		return false, nil
 	}
 	return true, nil
 }

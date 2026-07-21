@@ -71,6 +71,46 @@ sidecar:
       required: true
 `
 
+// sidecarWithRequiredFieldButDefault mirrors the echo-rest shape: a
+// config field with NO explicit `required:` (so IsRequired()==true) but
+// a non-empty `default:`. At start time the default fills the value
+// without user input (start.go precedence: stored > spec.Default > …),
+// so this skill IS eligible for auto-registration. This is the case
+// that previously bit the user: echo-rest was refused even though all
+// its fields had defaults.
+const sidecarWithRequiredFieldButDefault = `name: has-default
+type: skill
+sidecar:
+  command: ["python3", "x.py"]
+  mount: has-default
+  config:
+    - name: FIELD_WITH_DEFAULT
+      type: string
+      description: "no explicit required, but has a default"
+      default: "hello"
+    - name: FIELD_WITH_DEFAULT_FROM_ENV
+      type: string
+      description: "no explicit required, but has a default_from_env"
+      default_from_env: "SOME_ENV_VAR"
+`
+
+// sidecarWithSecretInEnvPassthrough: a required secret that is also
+// listed in env_passthrough is satisfiable at runtime from the host
+// env (start.go resolves env_passthrough secrets without keychain),
+// so the skill IS eligible for auto-registration.
+const sidecarWithSecretInEnvPassthrough = `name: passthrough-secret
+type: skill
+sidecar:
+  command: ["python3", "x.py"]
+  mount: passthrough-secret
+  env_passthrough:
+    - MUST_SECRET
+  secrets:
+    - name: MUST_SECRET
+      description: "required but supplied via env_passthrough"
+      required: true
+`
+
 // TestSkillEligibleForAutoRegister_NoSidecarBlock: a directory with a
 // bare omac.yaml (no sidecar) is NOT eligible — it would be a skill
 // omac can't activate, so we don't auto-register it. The
@@ -118,7 +158,7 @@ func TestSkillEligibleForAutoRegister_RequiredSecret(t *testing.T) {
 }
 
 // TestSkillEligibleForAutoRegister_RequiredField: a skill with a
-// required config field is NOT eligible.
+// required config field (no default) is NOT eligible.
 func TestSkillEligibleForAutoRegister_RequiredField(t *testing.T) {
 	wd := t.TempDir()
 	stageSkillWithSidecar(t, wd, "needs-field", sidecarWithRequiredField)
@@ -127,7 +167,39 @@ func TestSkillEligibleForAutoRegister_RequiredField(t *testing.T) {
 		t.Fatalf("skillEligibleForAutoRegister: %v", err)
 	}
 	if got {
-		t.Error("a skill with a required config field must not be auto-registered")
+		t.Error("a skill with a required config field (no default) must not be auto-registered")
+	}
+}
+
+// TestSkillEligibleForAutoRegister_RequiredFieldWithDefault: a skill
+// whose config field is implicitly required (no `required:` key) but
+// has a `default:` (or `default_from_env:`) IS eligible — at start
+// time the default fills the value without user input. This is the
+// echo-rest shape and was the case that previously bit the user.
+func TestSkillEligibleForAutoRegister_RequiredFieldWithDefault(t *testing.T) {
+	wd := t.TempDir()
+	stageSkillWithSidecar(t, wd, "has-default", sidecarWithRequiredFieldButDefault)
+	got, err := skillEligibleForAutoRegister(filepath.Join(wd, ".opencode", "skills", "has-default"))
+	if err != nil {
+		t.Fatalf("skillEligibleForAutoRegister: %v", err)
+	}
+	if !got {
+		t.Error("a skill whose required fields all have defaults should be eligible (echo-rest shape)")
+	}
+}
+
+// TestSkillEligibleForAutoRegister_SecretInEnvPassthrough: a required
+// secret that is in env_passthrough is satisfiable from the host env
+// at runtime, so the skill IS eligible.
+func TestSkillEligibleForAutoRegister_SecretInEnvPassthrough(t *testing.T) {
+	wd := t.TempDir()
+	stageSkillWithSidecar(t, wd, "passthrough-secret", sidecarWithSecretInEnvPassthrough)
+	got, err := skillEligibleForAutoRegister(filepath.Join(wd, ".opencode", "skills", "passthrough-secret"))
+	if err != nil {
+		t.Fatalf("skillEligibleForAutoRegister: %v", err)
+	}
+	if !got {
+		t.Error("a skill whose required secret is in env_passthrough should be eligible")
 	}
 }
 
@@ -226,6 +298,46 @@ func TestStartAutoRegisterWorkdirSkills_SkipsUserGlobal(t *testing.T) {
 	}
 	if len(done) != 0 {
 		t.Errorf("user-global skill must not be auto-registered by `omac start`: %v", done)
+	}
+}
+
+// TestStartAutoRegisterWorkdirSkills_RequiredFieldWithDefault: the
+// echo-rest shape — a config field with no explicit `required:` (so
+// IsRequired()==true) but a `default:` — must be auto-registered,
+// not surfaced by the gate. This is the regression that bit the user
+// (echo-rest was refused even though all its fields had defaults).
+func TestStartAutoRegisterWorkdirSkills_RequiredFieldWithDefault(t *testing.T) {
+	isolateHome(t)
+	wd := t.TempDir()
+	stageSkillWithSidecar(t, wd, "has-default", sidecarWithRequiredFieldButDefault)
+
+	env := makeEnv(wd)
+	reg := &registry.Registry{}
+
+	done, errs := startAutoRegisterWorkdirSkills(env, config.DefaultHarness(), reg)
+	if len(errs) != 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+	want := []string{"has-default"}
+	if !reflect.DeepEqual(done, want) {
+		t.Errorf("auto-registered = %v, want %v", done, want)
+	}
+
+	loaded, err := registry.Load(wd)
+	if err != nil {
+		t.Fatalf("registry.Load: %v", err)
+	}
+	if e, _ := loaded.Find("has-default"); e == nil {
+		t.Error("has-default was not persisted to the registry")
+	}
+
+	// Nothing should be left for the gate to surface.
+	unreg, err := findUnregisteredSkills(wd, config.DefaultHarness(), loaded)
+	if err != nil {
+		t.Fatalf("findUnregisteredSkills: %v", err)
+	}
+	if len(unreg) != 0 {
+		t.Errorf("unregistered after auto-register = %v, want []", unreg)
 	}
 }
 
