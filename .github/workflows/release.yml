@@ -160,13 +160,17 @@ jobs:
             if [ -n "$prev_tag" ] && [ "$prev_tag" != "$VERSION" ]; then
               range="$prev_tag..$VERSION"
             fi
-            # Capture then truncate in-shell. Piping git into `head -c` makes
-            # git die with SIGPIPE (141) once head closes the pipe, which under
-            # the runner's default `-eo pipefail` shell aborts the whole step
-            # for any release whose commit dump exceeds the cap.
+            # Feed the model EVERY commit since the last release (subject +
+            # body). Capture then truncate in-shell: piping git into `head -c`
+            # makes git die with SIGPIPE (141) once head closes the pipe, which
+            # under the runner's default `-eo pipefail` shell aborts the step.
+            # The cap only guards a pathologically huge range; when it trips we
+            # keep the MOST RECENT commits (reverse order puts newest last, so
+            # tail-truncate) rather than dropping the latest work.
             commits=$(git log --no-merges --reverse \
               --pretty=format:'### %s%n%b' "$range" 2>/dev/null || true)
-            commits=${commits:0:6000}
+            max=48000
+            [ "${#commits}" -gt "$max" ] && commits=${commits: -max}
             if [ -n "$commits" ]; then
               # Single source of truth for the model id: internal/e2e/versions.go.
               model=$(awk '/^var modelIDs = map\[string\]string\{/{f=1;next} /^\}/{f=0} f' internal/e2e/versions.go \
@@ -174,9 +178,9 @@ jobs:
               [ -z "$model" ] && model="zai-org/GLM-5.2"
               sys="You are the release-notes editor for oh-my-agentic-coder (omac), a CLI that runs coding agents in a sandbox. Below are the raw git commit messages for one release. Rewrite them into concise, user-facing highlights grouped into features (new capabilities) and fixes (bugs resolved). Write for end users: state what they can now do and why it matters. IGNORE anything only project developers care about: PR/issue numbers like (#123), commit SHAs, author or co-author trailers, internal refactors, and test/ci/build/chore changes. Drop internal module and scope names. Merge related commits into one bullet. Output ONLY minified JSON of the form {\"features\":[\"...\"],\"fixes\":[\"...\"]} with at most 6 items per group, each under 140 characters and starting with a capital letter. Use an empty array for a group with nothing user-facing. No preamble, no explanation, no chain-of-thought, no <think> tags."
               req=$(jq -n --arg m "$model" --arg s "$sys" --arg u "$commits" \
-                '{model:$m,temperature:0.2,max_tokens:700,messages:[{role:"system",content:$s},{role:"user",content:$u}]}')
+                '{model:$m,temperature:0.2,max_tokens:1500,messages:[{role:"system",content:$s},{role:"user",content:$u}]}')
               # X-Separate-Reasoning routes GLM reasoning out of message.content.
-              resp=$(curl -sS --max-time 60 "$SKAINET_INTERNAL/chat/completions" \
+              resp=$(curl -sS --max-time 120 "$SKAINET_INTERNAL/chat/completions" \
                 -H "Authorization: Bearer $SKAINET_TOKEN" -H 'Content-Type: application/json' \
                 -H 'X-Separate-Reasoning: 1' -H 'X-User-Agent: omac-ci' \
                 --data "$req" || true)
@@ -199,7 +203,7 @@ jobs:
           # bullets come from the LLM reply ($LLM) when it parsed; otherwise
           # they fall back to the release body, cleaned (SHAs, author groups
           # and type prefixes stripped). Other commit types -> a footer count.
-          payload=$(BODY="$body" LLM="$llm_json" python3 - "$emoji" "$VERSION" "$kind" "$RELEASE_URL" <<'PY'
+          payload=$(BODY="$body" LLM="$llm_json" MODEL="${model:-}" python3 - "$emoji" "$VERSION" "$kind" "$RELEASE_URL" <<'PY'
           import json, os, re, sys
 
           def strip_trailing_author(s):
@@ -302,7 +306,10 @@ jobs:
 
           other = sum(len(v) for k, v in sections.items()
                       if k.lower() not in ("features", "bug fixes"))
-          footer = (f"+{other} internal changes (tests/ci/docs) · " if other else "") + f"Full notes: {url}"
+          # Credit the summarizing model only when the LLM bullets were used.
+          model = os.environ.get("MODEL", "").strip()
+          model_note = f" · Summarized by {model}" if (llm and model) else ""
+          footer = (f"+{other} internal changes (tests/ci/docs) · " if other else "") + f"Full notes: {url}" + model_note
           print(json.dumps({
               "summary":  f"{emoji} oh-my-agentic-coder {version} released ({kind})\n\n{url}",
               "features": features,
