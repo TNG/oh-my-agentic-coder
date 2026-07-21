@@ -217,6 +217,76 @@ func TestRunUpdate_YesSkipsPromptAndApplies(t *testing.T) {
 	}
 }
 
+// debUpdateDeps builds Deps that install a 2.0.0 .deb via a fake dpkg,
+// letting a test focus on what happens after a successful Apply.
+func debUpdateDeps(t *testing.T) updater.Deps {
+	t.Helper()
+	debURL := "https://example.invalid/x.deb"
+	sumsURL := "https://example.invalid/checksums.txt"
+	deps := baseTestDeps(t)
+	deps.Source = fakeSource{rel: updater.Release{TagName: "v2.0.0", Assets: []updater.Asset{
+		{Name: "oh-my-agentic-coder_2.0.0_linux_x86_64.deb", BrowserDownloadURL: debURL},
+		{Name: "checksums.txt", BrowserDownloadURL: sumsURL},
+	}}}
+	body := []byte("deb-bytes")
+	deps.Fetcher = fakeFetcher{files: map[string][]byte{
+		sumsURL: checksumsFile("oh-my-agentic-coder_2.0.0_linux_x86_64.deb", body),
+		debURL:  body,
+	}}
+	deps.PkgManagers = []updater.PackageManager{
+		{Name: "dpkg", AssetSuffix: ".deb", InstallArgs: func(p string) []string { return []string{"-i", p} }},
+	}
+	deps.Runner = fakeRunner{}
+	return deps
+}
+
+func TestRunUpdate_WarnsWhenShadowedByOlderBinary(t *testing.T) {
+	deps := debUpdateDeps(t)
+	deps.PathLookup = func(string) (string, error) { return "/home/u/.local/bin/omac", nil }
+	deps.VersionProbe = func(context.Context, string) (string, error) { return "1.0.0", nil }
+
+	out, _, code := runUpdateCapture(t, true, deps, "")
+	if code != ExitOK {
+		t.Fatalf("code = %d, want ExitOK; out=%s", code, out)
+	}
+	if !strings.Contains(out, "updated omac 1.0.0 -> 2.0.0") {
+		t.Fatalf("out = %q, want update confirmation", out)
+	}
+	if !strings.Contains(out, "[warn]") || !strings.Contains(out, "/home/u/.local/bin/omac") {
+		t.Fatalf("out = %q, want a shadow warning naming the stale binary", out)
+	}
+	if !strings.Contains(out, "rm /home/u/.local/bin/omac") {
+		t.Fatalf("out = %q, want a removal suggestion", out)
+	}
+}
+
+func TestRunUpdate_NoWarnWhenResolvedIsInstalledVersion(t *testing.T) {
+	deps := debUpdateDeps(t)
+	deps.PathLookup = func(string) (string, error) { return "/usr/bin/omac", nil }
+	deps.VersionProbe = func(context.Context, string) (string, error) { return "2.0.0", nil }
+
+	out, _, code := runUpdateCapture(t, true, deps, "")
+	if code != ExitOK {
+		t.Fatalf("code = %d, want ExitOK; out=%s", code, out)
+	}
+	if strings.Contains(out, "[warn]") {
+		t.Fatalf("out = %q, must not warn when PATH resolves to the installed version", out)
+	}
+}
+
+func TestRunUpdate_SelfCheckProbeFailureIsSilent(t *testing.T) {
+	deps := debUpdateDeps(t)
+	deps.PathLookup = func(string) (string, error) { return "", errors.New("not found") }
+
+	out, _, code := runUpdateCapture(t, true, deps, "")
+	if code != ExitOK {
+		t.Fatalf("code = %d, want ExitOK; out=%s", code, out)
+	}
+	if strings.Contains(out, "[warn]") {
+		t.Fatalf("out = %q, a self-check probe failure must stay silent", out)
+	}
+}
+
 func TestRunUpdate_ChecksumMismatch(t *testing.T) {
 	debURL := "https://example.invalid/x.deb"
 	sumsURL := "https://example.invalid/checksums.txt"
