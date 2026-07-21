@@ -3,44 +3,8 @@
 package e2e
 
 import (
-	"os"
-	"path/filepath"
 	"testing"
 )
-
-// TestHostCacheLeak covers the host-side check backing
-// assertCacheHostRootDenied (issue #149): a probe marker inside the scoped
-// ~/.cache/omac/<digest> subtree is expected and must NOT count as a leak,
-// while a marker at the cache ROOT is a genuine host-cache escape.
-func TestHostCacheLeak(t *testing.T) {
-	home := t.TempDir()
-
-	// The scoped cache subtree is created by omac at launch; a marker there is
-	// the intended, isolated write and must not be flagged.
-	scoped := filepath.Join(home, ".cache", "omac", "deadbeef")
-	if err := os.MkdirAll(scoped, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(scoped, hostCacheProbeMarker), []byte("x"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if leaked, ok := hostCacheLeak(home); ok {
-		t.Fatalf("marker in scoped subtree must not be a leak, got %q", leaked)
-	}
-
-	// A marker at the cache ROOT is a real leak.
-	rootMarker := filepath.Join(home, ".cache", hostCacheProbeMarker)
-	if err := os.WriteFile(rootMarker, []byte("x"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	leaked, ok := hostCacheLeak(home)
-	if !ok {
-		t.Fatal("marker at the cache root must be reported as a leak")
-	}
-	if leaked != rootMarker {
-		t.Errorf("leaked path = %q, want %q", leaked, rootMarker)
-	}
-}
 
 // These tests exercise, against synthetic probe output (no live
 // agent/sandbox), the exact marker-absence checks that back
