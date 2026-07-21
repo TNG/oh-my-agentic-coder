@@ -190,23 +190,23 @@ func TestOptionLabelsExactAndDefault(t *testing.T) {
 }
 
 func TestPromptTextParity(t *testing.T) {
-	got := promptText("api.example.com", 443, "", "", "")
-	want := "The sandboxed process is trying to reach:\n\n    api.example.com:443\n\nAgent intent: (not declared)\n\nHow should omac handle this destination?"
+	got := promptText("api.example.com", 443, "", "", "", 7)
+	want := "The sandboxed process is trying to reach:\n\n    api.example.com:443\n\nAgent intent: (not declared)\n\nHow should omac handle this destination? (7 options)"
 	if got != want {
 		t.Errorf("promptText (no intent) = %q", got)
 	}
 }
 
 func TestPromptTextWithIntent(t *testing.T) {
-	got := promptText("api.example.com", 443, "fetch release notes", "", "")
-	want := "The sandboxed process is trying to reach:\n\n    api.example.com:443\n\nAgent intent: \"fetch release notes\"\n\nHow should omac handle this destination?"
+	got := promptText("api.example.com", 443, "fetch release notes", "", "", 7)
+	want := "The sandboxed process is trying to reach:\n\n    api.example.com:443\n\nAgent intent: \"fetch release notes\"\n\nHow should omac handle this destination? (7 options)"
 	if got != want {
 		t.Errorf("promptText (with intent) = %q", got)
 	}
 }
 
 func TestPromptTextIntentOnly(t *testing.T) {
-	got := promptText("api.example.com", 443, "verify the version", "", "")
+	got := promptText("api.example.com", 443, "verify the version", "", "", 7)
 	if !strings.Contains(got, "api.example.com:443") {
 		t.Errorf("missing host:port: %q", got)
 	}
@@ -216,7 +216,7 @@ func TestPromptTextIntentOnly(t *testing.T) {
 }
 
 func TestPromptTextWithCause(t *testing.T) {
-	got := promptText("raw.githubusercontent.com", 443, "", "syntax-highlighting grammar", "")
+	got := promptText("raw.githubusercontent.com", 443, "", "syntax-highlighting grammar", "", 7)
 	if !strings.Contains(got, "Likely cause: syntax-highlighting grammar\n") {
 		t.Errorf("missing cause line: %q", got)
 	}
@@ -230,7 +230,7 @@ func TestPromptTextWithCause(t *testing.T) {
 }
 
 func TestPromptTextCauseOmittedWhenEmpty(t *testing.T) {
-	if strings.Contains(promptText("api.example.com", 443, "", "", ""), "Likely cause") {
+	if strings.Contains(promptText("api.example.com", 443, "", "", "", 7), "Likely cause") {
 		t.Error("empty cause must omit the line")
 	}
 }

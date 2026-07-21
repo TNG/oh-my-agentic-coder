@@ -130,7 +130,7 @@ func RegisteredSuffixHint(host string) string {
 // host (empty means unknown, line omitted). cause is labelled "Likely" because
 // it is inferred from the hostname alone — the proxy never sees the URL — and
 // may reflect background harness infrastructure rather than the agent.
-func promptText(host string, port int, intent, cause, originLine string) string {
+func promptText(host string, port int, intent, cause, originLine string, numOptions int) string {
 	target := fmt.Sprintf("%s:%d", host, port)
 	var b strings.Builder
 	fmt.Fprintf(&b, "The sandboxed process is trying to reach:\n\n    %s\n\n", target)
@@ -145,7 +145,9 @@ func promptText(host string, port int, intent, cause, originLine string) string 
 	} else {
 		b.WriteString("Agent intent: (not declared)")
 	}
-	b.WriteString("\n\nHow should omac handle this destination?")
+	// State the option count so the user knows how many choices exist even when
+	// the list scrolls and the scrollbar is faint (thin GTK/Qt scrollbars).
+	fmt.Fprintf(&b, "\n\nHow should omac handle this destination? (%d options)", numOptions)
 	return b.String()
 }
 
@@ -343,7 +345,7 @@ func (osascriptBackend) show(ctx context.Context, host string, port int, suffix,
 	script := fmt.Sprintf(
 		`choose from list {%s} with title "omac: network access" with prompt %s default items {%s} OK button name "Select" cancel button name "Cancel"`,
 		strings.Join(quoted, ", "),
-		appleScriptString(promptText(host, port, intent, cause, originLine)),
+		appleScriptString(promptText(host, port, intent, cause, originLine, len(opts))),
 		appleScriptString("Deny once"),
 	)
 	out, err := exec.CommandContext(ctx, "osascript", "-e", script).Output()
@@ -386,16 +388,17 @@ func (zenityBackend) available() bool {
 // window size. Extracted so the sizing can be asserted without launching a
 // dialog.
 func zenityArgs(host string, port int, suffix, intent, cause, originLine string) []string {
+	opts := optionLabels(suffix)
 	width, height := dialogDimensions()
 	args := []string{
 		"--list", "--radiolist",
 		"--title", "omac: network access",
-		"--text", promptText(host, port, intent, cause, originLine),
+		"--text", promptText(host, port, intent, cause, originLine, len(opts)),
 		"--column", "", "--column", "Decision",
 		"--width", strconv.Itoa(width),
 		"--height", strconv.Itoa(height),
 	}
-	for _, o := range optionLabels(suffix) {
+	for _, o := range opts {
 		sel := "FALSE"
 		if o == "Deny once" {
 			sel = "TRUE"
@@ -448,7 +451,7 @@ func kdialogArgs(host string, port int, suffix, intent, cause, originLine string
 	args := []string{
 		"--geometry", fmt.Sprintf("%dx%d", width, height),
 		"--title", "omac: network access",
-		"--radiolist", promptText(host, port, intent, cause, originLine),
+		"--radiolist", promptText(host, port, intent, cause, originLine, len(opts)),
 	}
 	for i, o := range opts {
 		state := "off"

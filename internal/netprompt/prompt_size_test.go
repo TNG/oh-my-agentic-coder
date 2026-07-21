@@ -54,7 +54,7 @@ func TestDialogWidthFitsLongestLabel(t *testing.T) {
 // asserted to sit above the known-bad 320 so the regression cannot creep back.
 func TestDialogHeightFitsAllRowsAndPrompt(t *testing.T) {
 	opts := optionLabels("example.com")
-	lines := strings.Count(promptText("api.github.com", 443, ""), "\n") + 1
+	lines := strings.Count(promptText("api.github.com", 443, "", "", "", len(opts)), "\n") + 1
 	need := len(opts)*perRowPx + lines*perLinePx + heightChrome
 	if need <= knownBadHeight {
 		t.Fatalf("derived height floor %d <= known-bad %d; estimates too low to guard the regression",
@@ -67,7 +67,7 @@ func TestDialogHeightFitsAllRowsAndPrompt(t *testing.T) {
 }
 
 func TestZenityArgsCarrySize(t *testing.T) {
-	args := zenityArgs("api.github.com", 443, "github.com", "")
+	args := zenityArgs("api.github.com", 443, "github.com", "", "", "")
 	if got := flagValue(args, "--width"); got != strconv.Itoa(dialogWidth) {
 		t.Errorf("zenity --width = %q, want %d", got, dialogWidth)
 	}
@@ -84,7 +84,7 @@ func TestZenityArgsCarrySize(t *testing.T) {
 // prompt text as the immediate positional argument, ahead of the option
 // triples.
 func TestKdialogGeometryFormatAndOrdering(t *testing.T) {
-	args := kdialogArgs("api.github.com", 443, "github.com", "")
+	args := kdialogArgs("api.github.com", 443, "github.com", "", "", "")
 
 	geo := flagValue(args, "--geometry")
 	if !regexp.MustCompile(`^\d+x\d+$`).MatchString(geo) {
@@ -98,7 +98,7 @@ func TestKdialogGeometryFormatAndOrdering(t *testing.T) {
 	if gi < 0 || ri < 0 || gi > ri {
 		t.Fatalf("--geometry (idx %d) must appear before --radiolist (idx %d)", gi, ri)
 	}
-	if got := args[ri+1]; got != promptText("api.github.com", 443, "") {
+	if got := args[ri+1]; got != promptText("api.github.com", 443, "", "", "", len(optionLabels("github.com"))) {
 		t.Errorf("arg after --radiolist = %q, want the prompt text", got)
 	}
 }
@@ -111,10 +111,10 @@ func TestDialogDimensionsEnvOverride(t *testing.T) {
 	if w != 800 || h != 900 {
 		t.Fatalf("dialogDimensions() = %dx%d, want 800x900", w, h)
 	}
-	if got := flagValue(zenityArgs("h", 1, "s", ""), "--width"); got != "800" {
+	if got := flagValue(zenityArgs("h", 1, "s", "", "", ""), "--width"); got != "800" {
 		t.Errorf("zenity --width = %q, want 800", got)
 	}
-	if got := flagValue(kdialogArgs("h", 1, "s", ""), "--geometry"); got != "800x900" {
+	if got := flagValue(kdialogArgs("h", 1, "s", "", "", ""), "--geometry"); got != "800x900" {
 		t.Errorf("kdialog --geometry = %q, want 800x900", got)
 	}
 }

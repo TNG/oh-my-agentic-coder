@@ -54,7 +54,7 @@ func TestResolveOriginOmittedWhenResolveFails(t *testing.T) {
 }
 
 func TestPromptTextOriginOrdering(t *testing.T) {
-	got := promptText("raw.githubusercontent.com", 443, "", "grammar", "opencode")
+	got := promptText("raw.githubusercontent.com", 443, "", "grammar", "opencode", 7)
 	if !strings.Contains(got, "Origin: opencode\n") {
 		t.Errorf("missing origin line: %q", got)
 	}
@@ -66,7 +66,7 @@ func TestPromptTextOriginOrdering(t *testing.T) {
 }
 
 func TestPromptTextOriginOmittedWhenEmpty(t *testing.T) {
-	if strings.Contains(promptText("api.example.com", 443, "", "", ""), "Origin:") {
+	if strings.Contains(promptText("api.example.com", 443, "", "", "", 7), "Origin:") {
 		t.Error("empty origin must omit the line")
 	}
 }
