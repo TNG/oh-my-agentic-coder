@@ -120,6 +120,10 @@ jobs:
           REPO: ${{ github.repository }}
           VERSION: ${{ github.ref_name }}
           RELEASE_URL: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ github.ref_name }}
+          # Optional: when present, the thread bullets are rewritten by the LLM
+          # into user-facing highlights. Absent -> deterministic commit bullets.
+          SKAINET_TOKEN: ${{ secrets.SKAINET_TOKEN }}
+          SKAINET_INTERNAL: ${{ secrets.SKAINET_EXTERNAL }}
         run: |
           if [ -z "$SLACK_WEBHOOK_URL" ]; then
             echo "SLACK_RELEASE_WEBHOOK not set — skipping Slack notification"
@@ -145,14 +149,64 @@ jobs:
             patch) emoji="🔧" ;;   # fixes
           esac
           body=$(gh release view "$VERSION" --repo "$REPO" --json body --jq .body 2>/dev/null || true)
+          # LLM thread summary: feed the RAW commit messages (subject + body,
+          # which carry the What/Why here) for this release range to the model
+          # and let it write user-facing highlights, dropping PR refs, SHAs,
+          # author trailers and internal/ci/refactor noise. Any failure leaves
+          # llm_json empty and the deterministic commit bullets take over below.
+          llm_json=""
+          if [ -n "$SKAINET_TOKEN" ] && [ -n "$SKAINET_INTERNAL" ]; then
+            range="$VERSION"
+            if [ -n "$prev_tag" ] && [ "$prev_tag" != "$VERSION" ]; then
+              range="$prev_tag..$VERSION"
+            fi
+            # Feed the model EVERY commit since the last release (subject +
+            # body). Capture then truncate in-shell: piping git into `head -c`
+            # makes git die with SIGPIPE (141) once head closes the pipe, which
+            # under the runner's default `-eo pipefail` shell aborts the step.
+            # The cap only guards a pathologically huge range; when it trips we
+            # keep the MOST RECENT commits (reverse order puts newest last, so
+            # tail-truncate) rather than dropping the latest work.
+            commits=$(git log --no-merges --reverse \
+              --pretty=format:'### %s%n%b' "$range" 2>/dev/null || true)
+            max=48000
+            [ "${#commits}" -gt "$max" ] && commits=${commits: -max}
+            if [ -n "$commits" ]; then
+              # Single source of truth for the model id: internal/e2e/versions.go.
+              model=$(awk '/^var modelIDs = map\[string\]string\{/{f=1;next} /^\}/{f=0} f' internal/e2e/versions.go \
+                | grep '"opencode"' | sed -E 's/.*:\s*"([^"]+)".*/\1/')
+              [ -z "$model" ] && model="zai-org/GLM-5.2"
+              sys="You are the release-notes editor for oh-my-agentic-coder (omac), a CLI that runs coding agents in a sandbox. Below are the raw git commit messages for one release. Rewrite them into concise, user-facing highlights grouped into features (new capabilities) and fixes (bugs resolved). Write for end users: state what they can now do and why it matters. IGNORE anything only project developers care about: PR/issue numbers like (#123), commit SHAs, author or co-author trailers, internal refactors, and test/ci/build/chore changes. Drop internal module and scope names. Merge related commits into one bullet. Output ONLY minified JSON of the form {\"features\":[\"...\"],\"fixes\":[\"...\"]} with at most 6 items per group, each under 140 characters and starting with a capital letter. Use an empty array for a group with nothing user-facing. No preamble, no explanation, no chain-of-thought, no <think> tags."
+              req=$(jq -n --arg m "$model" --arg s "$sys" --arg u "$commits" \
+                '{model:$m,temperature:0.2,max_tokens:1500,messages:[{role:"system",content:$s},{role:"user",content:$u}]}')
+              # X-Separate-Reasoning routes GLM reasoning out of message.content.
+              # Generous timeout: release notes aren't latency-sensitive, and
+              # GLM-5.2 reasoning over a full release can take a while. Better a
+              # slow, good summary than falling back to raw dev-facing bullets.
+              resp=$(curl -sS --max-time 300 "$SKAINET_INTERNAL/chat/completions" \
+                -H "Authorization: Bearer $SKAINET_TOKEN" -H 'Content-Type: application/json' \
+                -H 'X-Separate-Reasoning: 1' -H 'X-User-Agent: omac-ci' \
+                --data "$req" || true)
+              llm_json=$(printf '%s' "$resp" | jq -r '.choices[0].message.content // empty' 2>/dev/null || true)
+              if [ -n "$llm_json" ]; then
+                echo "LLM thread summary received"
+              else
+                echo "LLM returned no content — falling back to commit bullets (resp head: $(printf '%s' "$resp" | head -c 200))"
+              fi
+            fi
+          else
+            echo "SKAINET creds not set — using deterministic commit bullets"
+          fi
           # Workflow Builder variables render as plain text only (no bold or
           # headings). So the changelog is emitted as SEPARATE variables —
           # features, fixes (plain bullet lists) and footer — and the bold
           # "Features"/"Bug fixes" headings are typed statically in the
           # Reply-in-thread step, each variable inserted beneath its heading.
-          # summary is the channel message. Items are cleaned (SHAs, author
-          # groups and type prefixes stripped); other commit types -> a count.
-          payload=$(BODY="$body" python3 - "$emoji" "$VERSION" "$kind" "$RELEASE_URL" <<'PY'
+          # summary is the channel message and stays deterministic. The thread
+          # bullets come from the LLM reply ($LLM) when it parsed; otherwise
+          # they fall back to the release body, cleaned (SHAs, author groups
+          # and type prefixes stripped). Other commit types -> a footer count.
+          payload=$(BODY="$body" LLM="$llm_json" MODEL="${model:-}" python3 - "$emoji" "$VERSION" "$kind" "$RELEASE_URL" <<'PY'
           import json, os, re, sys
 
           def strip_trailing_author(s):
@@ -208,10 +262,11 @@ jobs:
           emoji, version, kind, url = sys.argv[1:5]
           sections = parse_sections(os.environ.get("BODY", ""))
 
-          def section_list(names, cap=1800):
-              items = [it for k in sections if k.lower() in names for it in sections[k]]
+          def cap_bullets(items, cap=1800):
+              items = [re.sub(r"\s+", " ", str(it)).strip().lstrip("•").strip()
+                       for it in items if str(it).strip()]
               if not items:
-                  return "(none)"
+                  return None
               text = "\n".join(f"• {it}" for it in items)
               if len(text) > cap:
                   cut = text[:cap]
@@ -221,13 +276,47 @@ jobs:
                   text = cut.rstrip() + "\n• …"
               return text
 
+          def section_list(names):
+              items = [it for k in sections if k.lower() in names for it in sections[k]]
+              return cap_bullets(items) or "(none)"
+
+          def llm_lists():
+              """Parse the LLM's JSON reply into (features, fixes) bullet blocks.
+              Returns None on any parse failure so the deterministic path wins.
+              When it parses, the LLM reply is authoritative for both groups —
+              an empty group renders as "(none)", not the raw commit bullets."""
+              raw = os.environ.get("LLM", "").strip()
+              if not raw:
+                  return None
+              raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.S).strip()
+              m = re.search(r"\{.*\}", raw, re.S)   # tolerate code fences / prose
+              if not m:
+                  return None
+              try:
+                  d = json.loads(m.group(0))
+              except Exception:
+                  return None
+              if not isinstance(d, dict):
+                  return None
+              return {
+                  "features": cap_bullets(d.get("features") or []) or "(none)",
+                  "fixes":    cap_bullets(d.get("fixes") or []) or "(none)",
+              }
+
+          llm = llm_lists()
+          features = llm["features"] if llm else section_list({"features"})
+          fixes    = llm["fixes"]    if llm else section_list({"bug fixes"})
+
           other = sum(len(v) for k, v in sections.items()
                       if k.lower() not in ("features", "bug fixes"))
-          footer = (f"+{other} internal changes (tests/ci/docs) · " if other else "") + f"Full notes: {url}"
+          # Credit the summarizing model only when the LLM bullets were used.
+          model = os.environ.get("MODEL", "").strip()
+          model_note = f" · Summarized by {model}" if (llm and model) else ""
+          footer = (f"+{other} internal changes (tests/ci/docs) · " if other else "") + f"Full notes: {url}" + model_note
           print(json.dumps({
               "summary":  f"{emoji} oh-my-agentic-coder {version} released ({kind})\n\n{url}",
-              "features": section_list({"features"}),
-              "fixes":    section_list({"bug fixes"}),
+              "features": features,
+              "fixes":    fixes,
               "footer":   footer,
           }))
           PY
