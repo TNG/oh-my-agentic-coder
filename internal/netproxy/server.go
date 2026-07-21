@@ -258,7 +258,7 @@ func (s *Server) authorized(req *http.Request) bool {
 // chained path, where the dialer ignores them).
 func (s *Server) admit(ctx context.Context, host string, port int) (Verdict, []netip.Addr) {
 	if planner, ok := s.dialer.(TunnelPlanner); ok && planner.ChainsHost(host) {
-		return s.filter.CheckHost(host, port), nil
+		return s.filter.CheckHost(ctx, host, port), nil
 	}
 	return s.filter.Check(ctx, host, port)
 }
@@ -278,7 +278,7 @@ func (s *Server) handleConnect(conn net.Conn, req *http.Request) {
 			fmt.Sprintf("omac sandbox: CONNECT to loopback %q refused by the sandbox (loopback traffic must use a granted open_port, not the proxy)\n", host))
 		return
 	}
-	upstream, verdict, err := s.checkAndDial(host, port)
+	upstream, verdict, err := s.checkAndDial(clientSourceCtx(conn), host, port)
 	if verdict.Decision != Allow {
 		writeRawResponse(conn, http.StatusForbidden, sandboxDenyHeader, denyBody(host, verdict.Reason))
 		return
@@ -308,12 +308,13 @@ func (s *Server) handleConnect(conn net.Conn, req *http.Request) {
 // spend the dial budget, or a granted host would fail on an
 // already-expired context. verdict is always meaningful; upstream/err
 // are only set when the verdict is Allow.
-func (s *Server) checkAndDial(host string, port int) (net.Conn, Verdict, error) {
+func (s *Server) checkAndDial(base context.Context, host string, port int) (net.Conn, Verdict, error) {
 	// The check phase runs in its own scope so checkCancel is deferred
 	// (fires even if the filter panics) yet still releases the check
-	// context before the dial phase begins.
+	// context before the dial phase begins. It derives from base so the
+	// per-connection ClientSource reaches the prompt.
 	verdict, addrs := func() (Verdict, []netip.Addr) {
-		checkCtx, checkCancel := context.WithTimeout(context.Background(), connectTimeout)
+		checkCtx, checkCancel := context.WithTimeout(base, connectTimeout)
 		defer checkCancel()
 		return s.admit(checkCtx, host, port)
 	}()
@@ -349,7 +350,7 @@ func (s *Server) handleForward(conn net.Conn, br *bufio.Reader, req *http.Reques
 			fmt.Sprintf("omac sandbox: forward to loopback %q refused by the sandbox (loopback traffic must use a granted open_port, not the proxy)\n", host))
 		return
 	}
-	upstream, verdict, err := s.checkAndDial(host, port)
+	upstream, verdict, err := s.checkAndDial(clientSourceCtx(conn), host, port)
 	if verdict.Decision != Allow {
 		writeRawResponse(conn, http.StatusForbidden, sandboxDenyHeader, denyBody(host, verdict.Reason))
 		return

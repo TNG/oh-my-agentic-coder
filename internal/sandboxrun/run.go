@@ -10,8 +10,11 @@ import (
 	"strings"
 
 	"github.com/tngtech/oh-my-agentic-coder/internal/audit"
+	"github.com/tngtech/oh-my-agentic-coder/internal/config"
 	"github.com/tngtech/oh-my-agentic-coder/internal/intent"
 	"github.com/tngtech/oh-my-agentic-coder/internal/netprompt"
+	"github.com/tngtech/oh-my-agentic-coder/internal/netprompt/hostmap"
+	"github.com/tngtech/oh-my-agentic-coder/internal/netprompt/origin"
 	"github.com/tngtech/oh-my-agentic-coder/internal/netproxy"
 	"github.com/tngtech/oh-my-agentic-coder/internal/sandbox"
 	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxdeny"
@@ -130,7 +133,7 @@ func Run(opts Options) int {
 				"filtering relies on HTTP(S)_PROXY env vars only and is trivially bypassable. "+
 				"No kernel network guarantee is in effect.")
 		}
-		proxy, err = buildProxy(merged, profilePath, diag.Writer(), logf, netAuditor, intentBase)
+		proxy, err = buildProxy(merged, profilePath, diag.Writer(), logf, netAuditor, intentBase, harnessName(opts.Flags.InnerArgv))
 		if err != nil {
 			return fail("%v", err)
 		}
@@ -236,10 +239,28 @@ func canonicalCachePath(path string) (string, error) {
 	return abs, nil
 }
 
+// harnessName resolves the canonical harness identity from the sandboxed
+// command's binary (e.g. ["claude"] -> "claude-code"), so harness-specific
+// behaviour such as the egress host map keys on one source of truth — the
+// config registry — rather than the raw binary basename (which diverges from
+// the canonical name, e.g. "claude" vs "claude-code"). Returns "" when the
+// command is empty or names no known harness.
+func harnessName(innerArgv []string) string {
+	if len(innerArgv) == 0 {
+		return ""
+	}
+	base := filepath.Base(innerArgv[0])
+	base = strings.ToLower(strings.TrimSuffix(base, filepath.Ext(base)))
+	if h, ok := config.LookupHarness(base); ok {
+		return h.Name
+	}
+	return ""
+}
+
 // buildProxy assembles page policy, prompter, filter and server. The
 // page policy (learned website decisions) lives next to the profile:
 // <profile>.pages.json (e.g. default.pages.json).
-func buildProxy(p *sandboxprofile.Profile, profilePath string, stderr io.Writer, logf func(string, ...any), auditor audit.Auditor, intentBase string) (*netproxy.Server, error) {
+func buildProxy(p *sandboxprofile.Profile, profilePath string, stderr io.Writer, logf func(string, ...any), auditor audit.Auditor, intentBase, harness string) (*netproxy.Server, error) {
 	var learned netproxy.LearnedStore
 	pagesPath := sandboxprofile.PagesPath(profilePath)
 	lp, lerr := netprompt.LoadLearnedPolicy(pagesPath)
@@ -256,7 +277,7 @@ func buildProxy(p *sandboxprofile.Profile, profilePath string, stderr io.Writer,
 			return intent.LookupOverHTTP(intentBase, host)
 		}, func(host string) {
 			intent.MarkExplainMoreOverHTTP(intentBase, host)
-		})
+		}, hostmap.For(harness), origin.NewResolver())
 		if available {
 			prompter = np
 		} else {

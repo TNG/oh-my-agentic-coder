@@ -53,8 +53,10 @@ var hardDenyHosts = map[string]bool{
 type Prompter interface {
 	// Prompt blocks until a decision is made (or times out). scopeHost
 	// and scopeSuffix report what was decided for persistence handling;
-	// persist=true means the decision was "permanently".
-	Prompt(host string, port int) PromptResult
+	// persist=true means the decision was "permanently". ctx carries the
+	// per-connection ClientSource (when set) so the prompt can attribute the
+	// dial to a process; it does not gate the decision.
+	Prompt(ctx context.Context, host string, port int) PromptResult
 }
 
 // PromptResult is the parsed outcome of an interactive prompt.
@@ -162,7 +164,7 @@ func (f *Filter) Check(ctx context.Context, host string, port int) (Verdict, []n
 		if v := f.checkRules(h); v != nil {
 			return f.log(h, port, *v), []netip.Addr{ip}
 		}
-		if v, ok := f.defaultDecision(h, port); ok {
+		if v, ok := f.defaultDecision(ctx, h, port); ok {
 			return f.log(h, port, v), []netip.Addr{ip}
 		}
 		return f.log(h, port, Verdict{Decision: Deny, Reason: "default deny"}), nil
@@ -190,7 +192,7 @@ func (f *Filter) Check(ctx context.Context, host string, port int) (Verdict, []n
 	}
 
 	// 5. Default.
-	if v, ok := f.defaultDecision(h, port); ok {
+	if v, ok := f.defaultDecision(ctx, h, port); ok {
 		if v.Decision == Deny {
 			return f.log(h, port, v), nil
 		}
@@ -206,7 +208,7 @@ func (f *Filter) Check(ctx context.Context, host string, port int) (Verdict, []n
 // rebinding IP pinning does not: on the chained path omac never dials the
 // pinned IPs, so the hostname the child requested is the admission
 // boundary (the upstream proxy resolves it).
-func (f *Filter) CheckHost(host string, port int) Verdict {
+func (f *Filter) CheckHost(ctx context.Context, host string, port int) Verdict {
 	h := strings.ToLower(strings.TrimSuffix(host, "."))
 	if hardDenyHosts[h] {
 		return f.log(h, port, Verdict{Decision: Deny, Reason: "hard-deny metadata host"})
@@ -217,7 +219,7 @@ func (f *Filter) CheckHost(host string, port int) Verdict {
 	if v := f.checkRules(h); v != nil {
 		return f.log(h, port, *v)
 	}
-	if v, ok := f.defaultDecision(h, port); ok {
+	if v, ok := f.defaultDecision(ctx, h, port); ok {
 		return f.log(h, port, v)
 	}
 	return f.log(h, port, Verdict{Decision: Deny, Reason: "default deny"})
@@ -247,9 +249,9 @@ func (f *Filter) checkRules(host string) *Verdict {
 
 // defaultDecision handles step 5. ok=false means "no decision" (treat
 // as deny).
-func (f *Filter) defaultDecision(host string, port int) (Verdict, bool) {
+func (f *Filter) defaultDecision(ctx context.Context, host string, port int) (Verdict, bool) {
 	if f.cfg.PromptEnabled {
-		res, prompted := f.promptCoalesced(host, port)
+		res, prompted := f.promptCoalesced(ctx, host, port)
 		if !prompted {
 			if f.cfg.OnUnavailableAllow {
 				return Verdict{Decision: Allow, Reason: "prompt unavailable: on_unavailable=allow"}, true
@@ -286,7 +288,7 @@ func (f *Filter) defaultDecision(host string, port int) (Verdict, bool) {
 
 // promptCoalesced ensures concurrent requests for the same host share
 // one dialog. prompted=false means no prompter is available.
-func (f *Filter) promptCoalesced(host string, port int) (PromptResult, bool) {
+func (f *Filter) promptCoalesced(ctx context.Context, host string, port int) (PromptResult, bool) {
 	if f.cfg.Prompter == nil {
 		return PromptResult{}, false
 	}
@@ -303,7 +305,7 @@ func (f *Filter) promptCoalesced(host string, port int) (PromptResult, bool) {
 	f.inflight[host] = w
 	f.promptMu.Unlock()
 
-	w.res = f.cfg.Prompter.Prompt(host, port)
+	w.res = f.cfg.Prompter.Prompt(ctx, host, port)
 
 	f.promptMu.Lock()
 	delete(f.inflight, host)
