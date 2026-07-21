@@ -58,6 +58,33 @@ func TestRegistryDenyHintTailorsByReason(t *testing.T) {
 	}
 }
 
+// TestRegistryDenyHintDNSFailure guards the reachability case: a private/VPN
+// registry that fails DNS resolution is a Deny verdict, so it flows through the
+// deny body — but the remedy is reachability, not a deny rule. The hint must not
+// misdirect the user to edit deny_domain.
+func TestRegistryDenyHintDNSFailure(t *testing.T) {
+	got := registryDenyHint("registry.corp.example.com", "dns resolution failed")
+	if strings.Contains(got, "deny rule") || strings.Contains(got, "deny_domain") {
+		t.Errorf("hint wrongly blames a deny rule;\ngot:\n%s", got)
+	}
+	if !strings.Contains(got, "VPN") && !strings.Contains(got, "reachable") {
+		t.Errorf("hint should point at reachability/VPN;\ngot:\n%s", got)
+	}
+}
+
+// TestRegistryDenyHintHardDeny guards the SSRF case: a registry host that
+// resolves to a link-local/internal address is hard-denied. That is neither a
+// deny rule nor a reachability problem, so the hint must not blame deny_domain.
+func TestRegistryDenyHintHardDeny(t *testing.T) {
+	got := registryDenyHint("registry.corp.example.com", "hard-deny: resolves to link-local")
+	if strings.Contains(got, "deny rule") || strings.Contains(got, "deny_domain") {
+		t.Errorf("hint wrongly blames a deny rule;\ngot:\n%s", got)
+	}
+	if !strings.Contains(got, "link-local") {
+		t.Errorf("hint should name the link-local/internal-address block;\ngot:\n%s", got)
+	}
+}
+
 func TestRegistryUpstreamHintFiresOnlyForRegistries(t *testing.T) {
 	if got := registryUpstreamHint("github.com"); got != "" {
 		t.Errorf("upstream hint should be empty for a non-registry host; got %q", got)
