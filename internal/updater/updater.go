@@ -92,6 +92,15 @@ type Deps struct {
 	// Executable resolves the path of the running binary (for self-replace).
 	Executable func() (string, error)
 
+	// PathLookup resolves a command name against PATH, as the user's shell
+	// would. Used by the post-install SelfCheck to find which omac a shell
+	// will actually invoke.
+	PathLookup func(name string) (string, error)
+
+	// VersionProbe runs `<path> version` and returns the reported version.
+	// Used by SelfCheck to detect a stale binary shadowing the update.
+	VersionProbe func(ctx context.Context, path string) (string, error)
+
 	GOOS, GOARCH string
 	TempDir      string
 
@@ -110,6 +119,8 @@ func RealDeps(stdin io.Reader, stdout, stderr io.Writer) Deps {
 		BrewInstalled: func() bool { return DetectBrewInstalled(os.Executable, exec.LookPath, runCommand) },
 		PkgManagers:   DetectPackageManagers(exec.LookPath),
 		Executable:    os.Executable,
+		PathLookup:    exec.LookPath,
+		VersionProbe:  probeVersion,
 		GOOS:          runtime.GOOS,
 		GOARCH:        runtime.GOARCH,
 		TempDir:       os.TempDir(),
