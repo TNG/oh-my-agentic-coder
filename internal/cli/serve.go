@@ -660,6 +660,11 @@ var emptyAllowVarsWarnDelay = 2 * time.Second
 // credentials into the sandbox to paper over it. It warns that this differs
 // from the old inherit-everything behavior and pauses so the message is seen.
 func forwardHarnessEnv(env *Env, argv []string, harness config.Harness, prof config.SandboxProfile, profName string) []string {
+	if denied := sandboxProfileDeniedBaseVars(prof); len(denied) > 0 {
+		fmt.Fprintf(env.Stderr, "omac: sandbox profile %q denies operational base var(s): %s.\n", profName, strings.Join(denied, ", "))
+		fmt.Fprintln(env.Stderr, "      deny_vars wins over everything, so these are stripped even though the harness")
+		fmt.Fprintln(env.Stderr, `      needs them to run. Remove them from deny_vars unless intended ("omac doctor").`)
+	}
 	if empty, ok := sandboxProfileAllowVarsEmpty(prof); ok && empty {
 		fmt.Fprintf(env.Stderr, "omac: sandbox profile %q has an empty environment.allow_vars.\n", profName)
 		fmt.Fprintln(env.Stderr, "      Forwarding only the operational minimum (HOME, PATH, TERM, locale, …).")
@@ -688,6 +693,22 @@ func sandboxProfileAllowVarsEmpty(prof config.SandboxProfile) (empty bool, ok bo
 		return false, false
 	}
 	return len(sp.Environment.AllowVars) == 0, true
+}
+
+// sandboxProfileDeniedBaseVars returns the operational base vars that the
+// native sandbox profile's deny_vars would strip (see
+// sandboxprofile.DeniedBaseVars). It returns nil for non-native or
+// unresolvable profiles.
+func sandboxProfileDeniedBaseVars(prof config.SandboxProfile) []string {
+	ref, isNative := inspectBuiltinProfileRef(prof.Command)
+	if !isNative {
+		return nil
+	}
+	sp, _, err := sandboxprofile.ResolveReadOnly(ref)
+	if err != nil {
+		return nil
+	}
+	return sandboxprofile.DeniedBaseVars(sp.Environment.DenyVars)
 }
 
 // injectSandboxEnvAllow splices --allow-env flags for each harness-declared

@@ -276,6 +276,15 @@ func doctorSandboxProfileWarnings(env *Env, lc config.LauncherConfig) {
 			fmt.Fprintln(env.Stdout, `                      sandboxprofile.DefaultAllowVars), or set allow_vars: ["*"] to forward`)
 			fmt.Fprintln(env.Stdout, "                      every ambient var (minus the danger blocklist).")
 		}
+		if denied := sandboxprofile.DeniedBaseVars(p.Environment.DenyVars); len(denied) > 0 {
+			fmt.Fprintf(env.Stdout, "  [warn] sandbox profile %q denies operational base var(s): %s\n", profName, strings.Join(denied, ", "))
+			fmt.Fprintln(env.Stdout, "         impact:      deny_vars wins over everything (allowlist, \"*\", and omac's injected")
+			fmt.Fprintln(env.Stdout, "                      overlay), so these are stripped. They are the operational minimum a")
+			fmt.Fprintln(env.Stdout, "                      sandboxed harness needs (HOME/PATH/TERM/…); removing them will likely")
+			fmt.Fprintln(env.Stdout, "                      break it.")
+			fmt.Fprintln(env.Stdout, "         remediation: drop these entries from environment.deny_vars unless the removal is")
+			fmt.Fprintln(env.Stdout, "                      deliberate.")
+		}
 		warns := profileGrantWarnings(p)
 		// Cargo-specific presence warning (mode-000 sentinel files).
 		warns = append(warns, cargoSentinelWarnings()...)

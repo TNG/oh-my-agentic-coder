@@ -1,6 +1,7 @@
 package plugin
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -78,8 +79,16 @@ func TestInstallRefusesToClobberWithoutForce(t *testing.T) {
 	if err := os.WriteFile(dest, []byte("// local edits\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := InstallMultiDir(wd, bridge, false); err == nil {
+	_, err := InstallMultiDir(wd, bridge, false)
+	if err == nil {
 		t.Fatal("expected refusal to overwrite a differing file without --force")
+	}
+	var conflict *ConflictError
+	if !errors.As(err, &conflict) {
+		t.Fatalf("expected *ConflictError, got %T: %v", err, err)
+	}
+	if conflict.Path != dest {
+		t.Errorf("ConflictError.Path = %q, want %q", conflict.Path, dest)
 	}
 	// With force it overwrites.
 	res, err := InstallMultiDir(wd, bridge, true)

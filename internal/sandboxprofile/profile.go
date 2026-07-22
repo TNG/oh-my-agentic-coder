@@ -231,6 +231,15 @@ type Environment struct {
 	// Empty/absent means every variable passes (minus the always-on
 	// danger blocklist, which wins over any allow entry).
 	AllowVars []string `json:"allow_vars,omitempty"`
+
+	// DenyVars lists env-var patterns to drop, using the same exact/
+	// trailing-* matching as AllowVars. It is applied LAST — after the
+	// allowlist and after omac's injected overlay — so it wins over
+	// allow_vars, over "*", and over injected vars (a profile can drop
+	// e.g. the injected HTTP_PROXY or a tool-cache path). Denying a base
+	// operational var (see BaseAllowVars) is permitted but flagged by the
+	// launch path and `omac doctor`, since it is rarely intended.
+	DenyVars []string `json:"deny_vars,omitempty"`
 }
 
 // Parse decodes and validates a profile, rejecting unknown fields.
@@ -311,6 +320,11 @@ func (p *Profile) Validate() error {
 	for _, v := range p.Environment.AllowVars {
 		if strings.TrimSpace(v) == "" {
 			return fmt.Errorf("sandbox profile: environment.allow_vars contains an empty entry")
+		}
+	}
+	for _, v := range p.Environment.DenyVars {
+		if strings.TrimSpace(v) == "" {
+			return fmt.Errorf("sandbox profile: environment.deny_vars contains an empty entry")
 		}
 	}
 	for _, d := range p.Filesystem.Deny {
