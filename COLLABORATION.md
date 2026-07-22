@@ -1,0 +1,113 @@
+# Collaboration Guide
+
+This repo is worked on by humans and agents together. The rules below
+apply to **everyone** — please follow them.
+
+## 1. Work is tracked via issues
+
+- Every change starts with a GitHub issue. **No issue, no PR.**
+- One issue = one coherent piece of work. Split large efforts into
+  multiple issues / small PRs rather than one big one.
+- Link related work with `Refs #NN`; close it automatically with
+  `Closes #NN` in the PR description.
+
+## 2. Assign yourself before starting
+
+- Assign yourself to the issue the moment you begin work, so nobody
+  else picks up the same thing.
+- If an issue is unassigned and you start on it, assign yourself
+  first — even mid-flight.
+
+## 3. Never push to `main`
+
+- `main` is protected. Never commit or push directly to it.
+- Work on a small **feature/fix branch**:
+  - `feat/<topic>` for new functionality
+  - `fix/<topic>` for bug fixes
+  - `docs/<topic>` for documentation
+- Keep branches short-lived and focused. One concern per branch.
+
+## 4. Reviews
+
+- Open a PR as soon as the work is reviewable; mark it **Draft** if it
+  isn't ready.
+- **Request reviewers by name** when you want specific eyes on it.
+- As a reviewer, finish a review with the **Approve** or **Request
+  changes** button — a bare comment does not signal a decision.
+- After you (the author) implement review feedback, **re-request
+  review** so reviewers know it is ready again.
+- **Never merge without at least one approval.**
+- **Resolve review comments as you address them.** When you resolve a
+  thread, a reply is optional if you implemented the suggestion as
+  discussed; if you deviated from the suggestion, reply with a short
+  note explaining the deviation *before* resolving.
+
+## 5. Issues & MRs are concise and agent-first
+
+Both issues and PRs are written so a human *or* an agent can pick them
+up and act. Keep them **concise** — prefer structured bullets over
+prose walls. The structure is enforced by the templates in
+`.github/ISSUE_TEMPLATE/` and `.github/pull_request_template.md`;
+the rules below cover what the templates can't enforce.
+
+---
+
+## Issue rules
+
+- **Title:** plain descriptive sentence or noun phrase framing the
+  problem (e.g. `WSL: keychain registration fails with unhelpful D-Bus
+  error`). No conventional-commit prefix on issues.
+- Cite code with `path/to/file.go:NN` so it is jumpable.
+- Use `- [ ]` checkboxes for actionable sub-items.
+- Add an `Acceptance criteria` checklist for substantive work.
+- Always include the *why* — an issue without motivation is untriageable.
+- Labels are helpful and recommended (`bug`, `enhancement`,
+  `security`, `documentation`, `agent-created`).
+
+## Pull Request rules
+
+- **Title:** Conventional Commits with scope — e.g.
+  `fix(sandbox): protect docker.sock by default` or
+  `feat(update): add omac self-update`. Types: `feat`, `fix`, `test`,
+  `docs`, `chore`. Scope is a package/area; comma-separate cross-cutting
+  scopes (`fix(sandbox,e2e):`).
+- **Always link the issue:** `Closes #NN` (auto-closes on merge) or
+  `Refs #NN` (reference only). Prefer `Closes` when the PR fully
+  resolves the issue.
+- **"What" summarizes at a glance** — do NOT restate what is clearly
+  readable in the diff.
+- **Verification is the most valued section** — show the actual
+  commands you ran and their result. No claim of "done" without it.
+- Signal agent authorship with a `🤖 Generated with ...` footer or
+  `Co-Authored-By:` line when an agent wrote the change.
+- Keep the body **concise** — structured bullets, not essays.
+
+---
+
+## Specs
+
+Workflows like the superpowers/plans skills produce spec or plan
+artifacts before implementation. We keep it simple:
+
+- **Do not commit spec artifacts.** Keep specs inline in the issue body.
+- When a spec encodes an architecture or pattern decision worth
+  persisting, fold it into the committed docs (`docs/`, `AGENTS.md`,
+  or an ADR/BDR) rather than maintaining a `specs/` tree.
+
+This avoids a parallel "spec for specs" convention and keeps decisions
+where they are actually read.
+
+## Issue/PR body vs. comment thread
+
+When understanding evolves on an issue or PR, let the discussion
+**evolve as a thread** — the comment thread *is* the record; every
+change is an explicit comment with an author and timestamp. This is
+the default.
+
+If a thread becomes too long or confusing, do an **ad-hoc update** of
+the body to re-anchor the current state. This is the exception, not
+the rule.
+
+---
+
+*Tracked in #105.*

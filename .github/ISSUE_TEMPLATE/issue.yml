@@ -1,0 +1,54 @@
+name: Default issue
+description: Describe a gap or a piece of work. Keep it concise.
+labels: []
+assignees: []
+body:
+  - type: checkboxes
+    id: duplicate-check
+    attributes:
+      label: Duplicate check
+      description: Please search existing issues before filing.
+      options:
+        - label: I have searched the existing issues
+          required: true
+  - type: markdown
+    attributes:
+      value: |
+        Keep this issue **concise**. See
+        [`COLLABORATION.md`](../COLLABORATION.md) for the full spec.
+        Assign yourself before starting work.
+  - type: textarea
+    id: context
+    attributes:
+      label: Context / Summary
+      description: Why this issue exists; origin (prior PR/issue refs).
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / What
+      description: The gap, with `file:line` references and evidence.
+    validations:
+      required: true
+  - type: textarea
+    id: ask
+    attributes:
+      label: Suggested fix / Ask
+      description: Proposed direction; checklist of sub-items (`- [ ]`).
+    validations:
+      required: true
+  - type: textarea
+    id: non_goals
+    attributes:
+      label: Non-goals
+      description: Explicitly out of scope — prevents scope creep.
+    validations:
+      required: false
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence / Environment
+      description: Repro commands, CI links, logs (when relevant).
+    validations:
+      required: false
