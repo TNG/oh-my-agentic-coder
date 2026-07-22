@@ -24,9 +24,10 @@ type Decision struct {
 	Host    string
 	Port    int
 	Allowed bool
-	// Source is why the decision was made, as classified by the sandbox:
-	// deny_domain | allowlist | hard-deny | prompt | learned | default |
-	// dns | unavailable. Treated as an opaque contract string.
+	// Source is why the decision was made, as classified by the sandbox
+	// (see netproxy.classifyReason / audit event.go): blocklist | allowlist
+	// | hard-deny | prompt | learned | dns | unavailable | default. Treated
+	// as an opaque contract string.
 	Source string
 }
 

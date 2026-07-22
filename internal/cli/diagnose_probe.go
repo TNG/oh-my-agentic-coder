@@ -1,31 +1,25 @@
 // Package cli diagnose probe: `omac diagnose --probe host[:port]` static
 // reachability checks (proxy allow_domain, raw-TCP allow_tcp_connect, loopback
-// open_port) plus the opt-in --live sandbox connectivity test. Split from
-// diagnose.go so the retrospective audit analysis and the probe machinery can
-// be reviewed independently.
+// open_port). Split from diagnose.go so the retrospective audit analysis and
+// the probe machinery can be reviewed independently.
 package cli
 
 import (
-	"encoding/json"
 	"fmt"
 	"net"
-	"os"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/tngtech/oh-my-agentic-coder/internal/netprompt"
 	"github.com/tngtech/oh-my-agentic-coder/internal/netproxy"
 	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxprofile"
-	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxrun"
 )
 
 // runDiagnoseProbe statically evaluates whether host[:port] would be
 // admitted, reusing the real netproxy filter / profile rules (no DNS, no
 // dialing, no sandbox launch) so the verdict cannot drift from runtime
-// behavior. With --live and a static ALLOW it additionally runs a real
-// sandboxed connection.
-func runDiagnoseProbe(env *Env, profileRef string, profile *sandboxprofile.Profile, profPath, target string, live, asJSON bool) int {
+// behavior.
+func runDiagnoseProbe(env *Env, profile *sandboxprofile.Profile, profPath, target string, asJSON bool) int {
 	host, port, err := splitHostPortDefault(target, 443)
 	if err != nil {
 		fmt.Fprintln(env.Stderr, "omac diagnose: --probe:", err)
@@ -66,23 +60,6 @@ func runDiagnoseProbe(env *Env, profileRef string, profile *sandboxprofile.Profi
 		pv.RawTCP = &rawTCPView{Outcome: string(ro), Reason: rr}
 	}
 
-	if live && loopback {
-		pv.Live = &probeResult{Target: target, Class: "skipped",
-			Detail: "loopback ports are kernel-enforced (network.open_port); the static verdict is authoritative"}
-	} else if live {
-		if outcome != probeAllow {
-			// Only allow-listed hosts are worth a live dial: a DENY is
-			// already definitive, and an unlisted host would pop the
-			// interactive prompt (or is denied by default).
-			pv.Live = &probeResult{Target: target, Class: "skipped",
-				Detail: fmt.Sprintf("static outcome is %s; not attempting a live connection", outcome)}
-		} else if lr, lerr := runLiveProbe(env, profileRef, target); lerr != nil {
-			pv.Live = &probeResult{Target: target, Class: "error", Detail: lerr.Error()}
-		} else {
-			pv.Live = lr
-		}
-	}
-
 	if asJSON {
 		return writeDiagnoseJSON(env, pv)
 	}
@@ -92,9 +69,6 @@ func runDiagnoseProbe(env *Env, profileRef string, profile *sandboxprofile.Profi
 		fmt.Fprintf(env.Stdout, "%s:%d\n", host, port)
 		fmt.Fprintf(env.Stdout, "  HTTP(S) via proxy: %-6s (%s)\n", outcome, reason)
 		fmt.Fprintf(env.Stdout, "  raw TCP (SSH/DB):  %-6s (%s)\n", pv.RawTCP.Outcome, pv.RawTCP.Reason)
-	}
-	if pv.Live != nil {
-		fmt.Fprintf(env.Stdout, "  live:              %s (%s)\n", pv.Live.Class, pv.Live.Detail)
 	}
 	return ExitOK
 }
@@ -109,71 +83,6 @@ func rawTCPProbe(profile *sandboxprofile.Profile, port int) (probeOutcome, strin
 		}
 	}
 	return probeDeny, fmt.Sprintf("port %d is not in network.allow_tcp_connect — add it only if a raw-TCP tool needs this port", port)
-}
-
-// Live-probe timeouts. The child bounds its own HTTP request to
-// liveProbeChildTimeout; liveProbeWallClock is a watchdog on the whole
-// sandbox launch so the diagnose command can never hang, even if sandbox
-// setup or teardown stalls. The child self-terminates on its own timeout
-// regardless, so a watchdog trip abandons the wait rather than leaking a
-// runaway process.
-const (
-	liveProbeChildTimeout = 12 * time.Second
-	liveProbeWallClock    = 30 * time.Second
-)
-
-// runLiveProbe launches the real sandbox (via sandboxrun.Run) running omac's
-// own hidden probe-connect command, which reaches the target through the
-// injected proxy. The child writes its result to a temp file granted into
-// the sandbox; this reads it back. Reusing sandboxrun.Run means the probe
-// traverses the exact proxy + kernel-enforcement + upstream-chaining path a
-// real session would. The caller only reaches here when the static check
-// already returned ALLOW, so the probe can only contact a host the profile's
-// own allowlist permits — it never dials a denied or unlisted host.
-func runLiveProbe(env *Env, profileRef, target string) (*probeResult, error) {
-	self, err := os.Executable()
-	if err != nil {
-		return nil, fmt.Errorf("locate omac binary: %w", err)
-	}
-	tmp, err := os.CreateTemp("", "omac-probe-*.json")
-	if err != nil {
-		return nil, err
-	}
-	tmpPath := tmp.Name()
-	_ = tmp.Close()
-	defer os.Remove(tmpPath)
-
-	flags := &sandboxprofile.Flags{
-		ProfileRef: profileRef,
-		AllowFile:  []string{tmpPath}, // grant the result file read+write inside the sandbox
-		InnerArgv: []string{self, "sandbox", "probe-connect",
-			"--out", tmpPath,
-			"--timeout", strconv.Itoa(int(liveProbeChildTimeout.Seconds())),
-			target},
-	}
-
-	done := make(chan int, 1)
-	go func() {
-		done <- sandboxrun.Run(sandboxrun.Options{Flags: flags, Workdir: env.Workdir, Stderr: env.Stderr})
-	}()
-
-	var code int
-	select {
-	case code = <-done:
-	case <-time.After(liveProbeWallClock):
-		return nil, fmt.Errorf("live probe exceeded %s and was abandoned (the sandboxed check self-terminates on its own %s timeout)",
-			liveProbeWallClock, liveProbeChildTimeout)
-	}
-
-	data, rerr := os.ReadFile(tmpPath)
-	if rerr != nil || len(data) == 0 {
-		return nil, fmt.Errorf("the sandboxed probe produced no result (sandbox exit %d)", code)
-	}
-	var res probeResult
-	if jerr := json.Unmarshal(data, &res); jerr != nil {
-		return nil, fmt.Errorf("parse probe result: %w", jerr)
-	}
-	return &res, nil
 }
 
 // isLoopbackHost reports whether target names the local host, whose
@@ -225,12 +134,11 @@ func classifyProbe(v netproxy.Verdict, promptEnabled bool) (probeOutcome, string
 }
 
 type probeView struct {
-	Host    string       `json:"host"`
-	Port    int          `json:"port"`
-	Outcome string       `json:"outcome"`
-	Reason  string       `json:"reason"`
-	RawTCP  *rawTCPView  `json:"raw_tcp,omitempty"`
-	Live    *probeResult `json:"live,omitempty"`
+	Host    string      `json:"host"`
+	Port    int         `json:"port"`
+	Outcome string      `json:"outcome"`
+	Reason  string      `json:"reason"`
+	RawTCP  *rawTCPView `json:"raw_tcp,omitempty"`
 }
 
 // rawTCPView is the direct-TCP (allow_tcp_connect) verdict for a remote probe,
