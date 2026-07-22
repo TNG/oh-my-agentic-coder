@@ -93,6 +93,9 @@ export const OmacMultiDirPlugin: Plugin = async ({ client, directory, worktree }
   // directories we've already issued an activate for (dedupe; omac itself is
   // idempotent, but this avoids needless round-trips).
   const activated = new Set<string>()
+  // Session ids already reported to omac (see the session.* handler), so the
+  // report fires once per session rather than on every session.updated.
+  const reportedSessions = new Set<string>()
 
   function enabled(): boolean {
     return typeof controlBase === "string" && controlBase.length > 0
@@ -259,6 +262,12 @@ export const OmacMultiDirPlugin: Plugin = async ({ client, directory, worktree }
           if (id && dir) {
             sessionDir.set(id, dir)
             await activate(dir)
+            if (!reportedSessions.has(id)) {
+              reportedSessions.add(id)
+              // Tell omac which session this run created, so its post-exit
+              // "resume" hint is exact — no `opencode session list` needed.
+              void controlPost("/__omac__/session", { session: id })
+            }
           }
           break
         }

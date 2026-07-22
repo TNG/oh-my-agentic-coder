@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -38,8 +39,9 @@ type startReloader struct {
 	tcpPort int
 	verbose bool
 
-	mu      sync.Mutex
-	mounted map[string]string // skill name -> mount, for skills mounted on the facade
+	mu          sync.Mutex
+	mounted     map[string]string // skill name -> mount, for skills mounted on the facade
+	lastSession string            // most-recent session id the harness plugin reported (see handleSession)
 }
 
 // startControlPlane binds a loopback control-plane HTTP server for start and
@@ -62,6 +64,9 @@ func startControlPlane(r *startReloader) (controlURL string, closeFn func(), ok 
 	mux.HandleFunc("/__omac__/activate", r.handleActivate)
 	mux.HandleFunc("/__omac__/deactivate", r.handleActivate) // no-op deactivate, same response
 	mux.HandleFunc("/__omac__/reload-global", r.handleReloadGlobalStart)
+	// The harness plugin reports the id of the session it created here, so the
+	// post-exit "resume" hint is exact without enumerating sessions.
+	mux.HandleFunc("/__omac__/session", r.handleSession)
 	srv := &http.Server{Handler: mux}
 	go func() {
 		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -90,6 +95,35 @@ func (r *startReloader) isMounted(name string) bool {
 	_, ok := r.mounted[name]
 	r.mu.Unlock()
 	return ok
+}
+
+// handleSession records the session id the harness plugin reports for this
+// run (opencode posts it on session.created). Best-effort: a malformed or
+// empty body is ignored. The recorded id feeds the post-exit continue hint,
+// replacing the need to enumerate sessions to guess which one this run created.
+func (r *startReloader) handleSession(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "POST only"})
+		return
+	}
+	var body struct {
+		Session string `json:"session"`
+	}
+	if err := json.NewDecoder(req.Body).Decode(&body); err == nil && body.Session != "" {
+		r.mu.Lock()
+		r.lastSession = body.Session
+		r.mu.Unlock()
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// reportedSession returns the last session id reported via handleSession, or
+// "" if the plugin never reported one (control plane down, or a harness with
+// no such plugin).
+func (r *startReloader) reportedSession() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.lastSession
 }
 
 func (r *startReloader) handleDirs(w http.ResponseWriter, _ *http.Request) {

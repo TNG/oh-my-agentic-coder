@@ -917,11 +917,15 @@ func runLaunch(env *Env, opts launchOpts) int {
 	auditor.Emit(audit.SessionStart(env.Version, harness.Name, profName, sandboxBackend))
 	auditor.Emit(audit.InnerExec(argv, profName, sandboxed))
 
-	// Snapshot the sessions that already exist so the post-exit hint can tell
-	// the session this run creates apart from a sibling session active in the
-	// same workdir (issue #141). Skipped when no hint would be shown anyway.
+	// The post-exit hint needs the id of the session this run created. opencode
+	// self-reports it via the control plane (the omac plugin POSTs
+	// /__omac__/session), so the pre-exec enumeration is skipped for it:
+	// `opencode session list` runs before the inner launches and can block
+	// indefinitely. Other harnesses enumerate here — cheap on-disk reads — to
+	// tell a fresh session apart from a sibling active in the same workdir (#145).
+	selfReportsSession := harness.Session != nil && harness.Session.ListKind == config.SessionListOpenCodeCLI
 	var priorSessions map[string]struct{}
-	if harness.Session != nil && len(harness.Session.ContinueArgs) > 0 {
+	if harness.Session != nil && len(harness.Session.ContinueArgs) > 0 && !selfReportsSession {
 		priorSessions = session.KnownIDs(harness, env.Workdir)
 	}
 
@@ -931,7 +935,11 @@ func runLaunch(env *Env, opts launchOpts) int {
 		fmt.Fprintln(env.Stderr, prefix+": exec:", err)
 		return ExitSandboxAbnormal
 	}
-	printContinueHint(env, harness, opts.sessionID, priorSessions)
+	resumed := opts.sessionID
+	if resumed == "" && selfReportsSession {
+		resumed = reloader.reportedSession()
+	}
+	printContinueHint(env, harness, resumed, priorSessions)
 	return code
 }
 
@@ -995,6 +1003,15 @@ func continueHintToken(h config.Harness) string {
 // selection).
 func printContinueHint(env *Env, harness config.Harness, resumedID string, prior map[string]struct{}) {
 	if harness.Session == nil || len(harness.Session.ContinueArgs) == 0 {
+		return
+	}
+	// When the session that ran is already known — an explicit resume, or a
+	// harness that self-reported its id via the control plane — advertise it
+	// directly. No enumeration needed (and for opencode none is attempted, so a
+	// slow/blocking `session list` never runs).
+	if resumedID != "" {
+		fmt.Fprintf(env.Stderr, "\nTo resume this session: omac continue%s -s %s\n",
+			continueHintToken(harness), resumedID)
 		return
 	}
 	// session.List may shell out to the harness CLI (opencode: ~500ms) or
