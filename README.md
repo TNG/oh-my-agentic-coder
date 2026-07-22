@@ -671,9 +671,10 @@ never rewrites the profile. See
 
 omac redirects the caches supported by `XDG_CACHE_HOME`, `GOCACHE`,
 `GOMODCACHE`, `NPM_CONFIG_CACHE`, `PIP_CACHE_DIR`, and `CARGO_HOME`
-into a per-scope directory it owns. The cache scope is selected at
-launch and exposed to the inner process via two selector variables and
-six tool-specific redirects:
+into a per-scope directory it owns. The cache scope is selected by the
+`cache.scope` config key (see [Modes and trust
+domains](#modes-and-trust-domains)) and exposed to the inner process via
+two selector variables and six tool-specific redirects:
 
 | Variable | Points at | Purpose |
 |---|---|---|
@@ -698,26 +699,47 @@ profile's environment allowlist.
 
 ### Modes and trust domains
 
-omac selects the cache scope from the launch command and the workdir
-identity (the canonical absolute path after symlink resolution):
+omac selects the persistent cache scope from the `cache.scope` config
+key (overridable per launch with `--cache-scope`). It defaults to
+`global` — one cache shared by every workdir, mirroring a normal dev
+box's single `~/.cache`. Two narrower scopes trade sharing for
+isolation:
 
-| Launch | Scope identity | Mode | Path |
-|---|---|---|---|
-| `omac start` (default) | `v1:workdir:<canonical workdir>` | `persistent` | `~/.cache/omac/<sha256(identity)>` |
-| `omac start --ephemeral-cache` | per-launch sandbox temp dir | `ephemeral` | `$TMPDIR/omac-sandbox-tmp-*/cache` (removed on exit) |
-| `omac serve` (no `--workdir`) | `v1:serve:<canonical launch workdir>` | `persistent` | `~/.cache/omac/<sha256(identity)>` — the shared Desktop serve cache |
-| `omac serve --workdir <dir>` | `v1:workdir:<canonical <dir>>` | `persistent` | as `omac start` from that dir |
-| `omac serve --ephemeral-cache` | per-launch sandbox temp dir | `ephemeral` | removed on exit |
-| `omac start --no-sandbox` / `omac serve --no-sandbox` | none | — | no cache scope is prepared (no sandbox to isolate) |
+| `cache.scope` | Scope identity | Shared across |
+|---|---|---|
+| `global` (default) | `v1:shared` | all workdirs and all configs |
+| `config` | `v1:config:<canonical config path>` | all workdirs governed by the same launcher config file |
+| `workdir` | `v1:workdir:<canonical workdir>` | that one workdir only |
 
-- **Persistent (default).** The same workdir reuses the same cache
-  directory across launches, so incremental builds survive. The scope
-  identity is the canonical workdir path, **not** the bare directory
-  name — `~/work/acme` and `~/clients/acme` are two different scopes.
-  Because the identity is the resolved path, the **main worktree** and
-  a **linked worktree** of the same repository have distinct cache
-  scopes (their absolute paths differ), keeping their build artifacts
-  separate.
+All persistent scopes resolve to `~/.cache/omac/<sha256(identity)>`. The
+launch command and flags then map onto the chosen scope:
+
+| Launch | Persistent scope | Mode |
+|---|---|---|
+| `omac start` / `omac serve` (default) | `global` → `v1:shared` | `persistent` |
+| `--cache-scope config` (with a config on disk) | `v1:config:<config path>` | `persistent` |
+| `--cache-scope workdir` (`omac start`, `omac serve --workdir`) | `v1:workdir:<canonical workdir>` | `persistent` |
+| `omac serve --cache-scope workdir` (no `--workdir`) | `v1:serve:<canonical launch workdir>` | `persistent` |
+| `--ephemeral-cache` | per-launch sandbox temp dir (removed on exit) | `ephemeral` |
+| `--no-sandbox` | none — no scope prepared | — |
+
+- **`global` (default).** One cache shared by everything. Cheapest, and
+  what most developers already expect; the redirected tool caches (Go,
+  npm, cargo, pip) are concurrency-safe, so parallel launches sharing
+  one directory is fine. Note the trust trade-off: concurrency-safety is
+  **not** isolation — under `global` a build in one workdir can leave
+  artifacts in the shared cache that a build in another workdir later
+  reads. Choose `workdir` (or `--ephemeral-cache`) when cross-workdir
+  cache poisoning is a concern.
+- **`config`.** All workdirs that load the same launcher config file
+  share a cache, keyed on the config file's canonical path. Falls back
+  to `global` when no config file is on disk (compiled-in defaults).
+  Good for a team config that governs many project directories.
+- **`workdir`.** Each workdir gets its own cache, keyed on the canonical
+  workdir path, **not** the bare directory name — `~/work/acme` and
+  `~/clients/acme` are two different scopes, as are the **main worktree**
+  and a **linked worktree** of the same repository (their absolute paths
+  differ). This is the strongest isolation and was the pre-#158 default.
 - **Accepted same-domain poisoning.** Two paths that resolve to the
   same canonical absolute path share a scope. omac does not try to
   distinguish them; identity follows the directory, not the label.
@@ -734,29 +756,24 @@ identity (the canonical absolute path after symlink resolution):
   transport variables and the per-launch `TMPDIR` remain available to
   the inner command. This is a debug escape hatch, not a security
   boundary.
-- **Single-directory `omac serve`.** `omac serve --workdir <dir>`
-  pre-activates that one directory at cold start. Its cache scope is
-  the workdir-scope identity (same as `omac start` from that dir), not
-  the shared serve scope.
-- **Shared multi-directory `omac serve` cache.** Without `--workdir`,
-  all directories served by one `omac serve` process share the single
-  serve-scope cache directory (`v1:serve:<launch workdir>`). This is
-  the Desktop path: many projects reuse one cache. It is strictly
-  weaker isolation than per-workdir `omac start` and is an explicit,
-  documented consequence of the shared-sandbox decision. Use
-  `--ephemeral-cache` or `omac serve --workdir` per project to opt
-  back into per-directory isolation.
+- **Multi-directory `omac serve`.** Because one serve process shares a
+  single sandbox across every activated directory, per-workdir isolation
+  only applies to `omac serve --workdir <dir>`. Under `--cache-scope
+  workdir` without `--workdir`, the process falls back to a per-launch
+  serve-scope cache (`v1:serve:<canonical launch workdir>`); `global`
+  and `config` behave as above.
 
 ### Cleaning up cache scopes
 
 ```text
-omac cache clear           # Remove the current workdir's cache scope.
+omac cache clear           # Remove the active cache scope (per cache.scope).
 omac cache clear --all     # Remove every inactive cache scope (destructive).
 ```
 
-`omac cache clear` removes the current workdir's persistent cache
-scope. `omac cache clear --all` walks every scope under
-`~/.cache/omac` and removes the inactive ones. Each scope is reported
+`omac cache clear` removes the persistent cache scope the current config
+resolves to (`global`, `config`, or `workdir`). `omac cache clear --all`
+walks every scope under `~/.cache/omac` and removes the inactive ones.
+Each scope is reported
 as:
 
 - `removed` — the scope was inactive and has been deleted;
@@ -935,7 +952,7 @@ omac [--workdir <dir>] <subcommand> [flags] [args]
                credentials files an isolated CARGO_HOME won't pick up.
 
   cache        Manage the persistent tool cache under ~/.cache/omac.
-                 clear           remove the current workdir's cache scope
+                 clear           remove the active cache scope (per cache.scope)
                  clear --all     remove every inactive cache scope
                                  (destructive; active scopes are skipped)
 
