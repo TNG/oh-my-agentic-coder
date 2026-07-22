@@ -90,6 +90,40 @@ func TestStartReloaderActivateNot404(t *testing.T) {
 	}
 }
 
+func TestStartReloaderSessionReport(t *testing.T) {
+	r := newStartReloaderForTest(t)
+	mux := r.startTestMux()
+	if r.reportedSession() != "" {
+		t.Fatal("no session should be reported yet")
+	}
+
+	post := func(body string) int {
+		req := httptest.NewRequest("POST", "/__omac__/session", stringReader(body))
+		req.Header.Set("content-type", "application/json")
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		return rec.Code
+	}
+
+	if code := post(`{"session":"ses_abc"}`); code != 200 {
+		t.Fatalf("session report status=%d, want 200", code)
+	}
+	if got := r.reportedSession(); got != "ses_abc" {
+		t.Errorf("reportedSession=%q, want ses_abc", got)
+	}
+	// Last report wins (a run may touch more than one session).
+	post(`{"session":"ses_def"}`)
+	if got := r.reportedSession(); got != "ses_def" {
+		t.Errorf("reportedSession=%q, want ses_def", got)
+	}
+	// An empty/malformed report must not clobber a known id.
+	post(`{"session":""}`)
+	post(`not json`)
+	if got := r.reportedSession(); got != "ses_def" {
+		t.Errorf("empty/bad report clobbered id: %q", got)
+	}
+}
+
 // startTestMux builds the same routes startControlPlane wires, for testing.
 func (r *startReloader) startTestMux() *http.ServeMux {
 	m := http.NewServeMux()
@@ -98,6 +132,7 @@ func (r *startReloader) startTestMux() *http.ServeMux {
 	m.HandleFunc("/__omac__/activate", r.handleActivate)
 	m.HandleFunc("/__omac__/deactivate", r.handleActivate)
 	m.HandleFunc("/__omac__/reload-global", r.handleReloadGlobalStart)
+	m.HandleFunc("/__omac__/session", r.handleSession)
 	return m
 }
 

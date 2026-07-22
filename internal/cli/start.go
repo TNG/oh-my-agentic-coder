@@ -917,12 +917,20 @@ func runLaunch(env *Env, opts launchOpts) int {
 	auditor.Emit(audit.SessionStart(env.Version, harness.Name, profName, sandboxBackend))
 	auditor.Emit(audit.InnerExec(argv, profName, sandboxed))
 
-	// Snapshot the sessions that already exist so the post-exit hint can tell
-	// the session this run creates apart from a sibling session active in the
-	// same workdir (issue #141). Skipped when no hint would be shown anyway.
+	// The post-exit hint needs the id of the session this run created. opencode
+	// self-reports it via the control plane (the omac plugin POSTs
+	// /__omac__/session), so the pre-exec enumeration is skipped for it:
+	// `opencode session list` runs before the inner launches and can block
+	// indefinitely. Other harnesses enumerate here — cheap on-disk reads — to
+	// tell a fresh session apart from a sibling active in the same workdir (#145).
+	selfReportsSession := harness.Session != nil && harness.Session.ListKind == config.SessionListOpenCodeCLI
 	var priorSessions map[string]struct{}
-	if harness.Session != nil && len(harness.Session.ContinueArgs) > 0 {
-		priorSessions = session.KnownIDs(harness, env.Workdir)
+	if harness.Session != nil && len(harness.Session.ContinueArgs) > 0 && !selfReportsSession {
+		// Bounded: the snapshot only sharpens the resume hint, so it must never
+		// delay the inner launch. `omac start` waits at most hintTimeout for it.
+		priorSessions = boundedKnownIDs(func() map[string]struct{} {
+			return session.KnownIDs(harness, env.Workdir)
+		}, hintTimeout)
 	}
 
 	code, err := sandbox.ExecWithReady(argv, extra, nil)
@@ -931,7 +939,11 @@ func runLaunch(env *Env, opts launchOpts) int {
 		fmt.Fprintln(env.Stderr, prefix+": exec:", err)
 		return ExitSandboxAbnormal
 	}
-	printContinueHint(env, harness, opts.sessionID, priorSessions)
+	resumed := opts.sessionID
+	if resumed == "" && selfReportsSession {
+		resumed = reloader.reportedSession()
+	}
+	printContinueHint(env, harness, resumed, priorSessions)
 	return code
 }
 
@@ -995,6 +1007,15 @@ func continueHintToken(h config.Harness) string {
 // selection).
 func printContinueHint(env *Env, harness config.Harness, resumedID string, prior map[string]struct{}) {
 	if harness.Session == nil || len(harness.Session.ContinueArgs) == 0 {
+		return
+	}
+	// When the session that ran is already known — an explicit resume, or a
+	// harness that self-reported its id via the control plane — advertise it
+	// directly. No enumeration needed (and for opencode none is attempted, so a
+	// slow/blocking `session list` never runs).
+	if resumedID != "" {
+		fmt.Fprintf(env.Stderr, "\nTo resume this session: omac continue%s -s %s\n",
+			continueHintToken(harness), resumedID)
 		return
 	}
 	// session.List may shell out to the harness CLI (opencode: ~500ms) or
@@ -1062,6 +1083,25 @@ func hintSessionID(sessions []session.Session, resumedID string, prior map[strin
 // the harness's session list. opencode shells out to its CLI; 2s is plenty
 // on a warm cache and a sane ceiling for the pathological slow case.
 const hintTimeout = 2 * time.Second
+
+// boundedKnownIDs runs the prior-session enumeration but never waits longer
+// than d for it. The snapshot only sharpens the post-exit resume hint (#145),
+// so a slow or stuck session store must never stall the inner launch: on
+// timeout we return an empty snapshot and carry on (best-effort, matching
+// printContinueHint). This is the structural guarantee that `omac start` never
+// waits indefinitely on session listing — the regression guard for the
+// opencode-session-list hang. enumerate is injected so the bound is testable
+// without real session I/O.
+func boundedKnownIDs(enumerate func() map[string]struct{}, d time.Duration) map[string]struct{} {
+	ch := make(chan map[string]struct{}, 1)
+	go func() { ch <- enumerate() }()
+	select {
+	case ids := <-ch:
+		return ids
+	case <-time.After(d):
+		return nil
+	}
+}
 
 // secretFromEnv returns the host value that will satisfy a keychain-absent
 // secret at runtime, if any. It returns ok=true only when the secret is
