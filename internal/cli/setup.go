@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"os/exec"
@@ -141,6 +142,16 @@ func ensureOpenCodePlugin(env *Env, harness config.Harness) {
 	// overwrite) and Unchanged covers the silent common path.
 	res, err := plugin.InstallMultiDirIn(dir, false)
 	if err != nil {
+		var conflict *plugin.ConflictError
+		if errors.As(err, &conflict) {
+			// The common post-upgrade case: a stale/edited copy differs from
+			// the embedded plugin. A plain re-install hits the same guard, so
+			// point at the actual remedy (overwrite, or delete + relaunch).
+			fmt.Fprintf(env.Stderr, "[warn] an existing, differing %s is at %s; the sandbox briefing won't appear in OpenCode until it is refreshed.\n", plugin.MultiDirFileName, conflict.Path)
+			fmt.Fprintln(env.Stderr, "       Overwrite it:  omac plugin install opencode-desktop --global --force")
+			fmt.Fprintf(env.Stderr, "       Or delete %s and relaunch (omac reprovisions it automatically).\n", conflict.Path)
+			return
+		}
 		fmt.Fprintf(env.Stderr, "[warn] could not provision the omac OpenCode plugin (%v); the sandbox briefing won't appear in OpenCode. Install it with: omac plugin install opencode-desktop --global\n", err)
 		return
 	}
