@@ -909,7 +909,7 @@ omac [--workdir <dir>] <subcommand> [flags] [args]
 
    continue     Like `start`, but continue the most recent session for this
                 workdir (appends the harness's continue flag: opencode/claude
-                `--continue`, codex `resume`, copilot `--continue`, pi `-c`).
+                `--continue`, codex `resume --last`, copilot `--continue`, pi `-c`).
                 Pass `-s`/`--session <id>` to target a specific session
                 (opencode `--session <id>`, claude `--resume <id>`, codex
                 `resume <id>`, copilot `--session-id <id>`, pi `--session <id>`).
@@ -923,9 +923,10 @@ omac [--workdir <dir>] <subcommand> [flags] [args]
                `--resume <id>`, codex `resume <id>`, copilot
                `--session-id <id>`, pi `--session <id>`). Sessions come from
                the harness's own store (opencode `session list`; Claude Code's
-               ~/.claude/projects files; codex `codex session list`; copilot
-               `copilot session list`; pi's ~/.pi/agent/sessions/ JSONL
-               files). Non-interactive stdin prints the list and exits.
+               ~/.claude/projects files; codex's ~/.codex/sessions/ rollout
+               files; copilot's ~/.copilot/session-store.db; pi's
+               ~/.pi/agent/sessions/ JSONL files). Non-interactive stdin
+               prints the list and exits.
                Accepts the same flags as `start` and an optional [harness].
 
   doctor       Sanity checks: config, registry, binaries, secrets, sandbox.
