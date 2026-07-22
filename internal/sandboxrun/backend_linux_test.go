@@ -10,6 +10,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxprofile"
 )
 
 func TestResolveInnerBinaryDirs(t *testing.T) {
@@ -94,6 +96,54 @@ func TestResolveInnerBinaryDirs(t *testing.T) {
 	for _, want := range []string{shimDir, realDir} {
 		if !slices.Contains(got, want) {
 			t.Errorf("env-wrapped dirs = %v, missing wrapped-command dir %q", got, want)
+		}
+	}
+}
+
+// TestBuildChildArgvGrantsEnvWrappedHarnessDir is the end-to-end wiring
+// guard: it proves the env-unwrapped harness directory reaches the actual
+// bwrap --ro-bind mounts, not just resolveInnerBinaryDirs in isolation.
+// Regression target: a profile that wraps the inner command in
+// `env NAME=VALUE ... <harness>` (tng-default) must still mount the
+// harness's own directory, or a bun/npm-installed harness fails to exec.
+func TestBuildChildArgvGrantsEnvWrappedHarnessDir(t *testing.T) {
+	requireBwrap(t)
+
+	// Shim in one dir, symlink target ("harness") in a different subtree,
+	// mirroring bun (~/.bun/bin/opencode -> …/opencode-ai/bin/opencode.exe).
+	root := t.TempDir()
+	realDir := filepath.Join(root, "pkg", "bin")
+	if err := os.MkdirAll(realDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	realBin := filepath.Join(realDir, "harness.real")
+	if err := os.WriteFile(realBin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	shimDir := filepath.Join(root, "bin")
+	if err := os.MkdirAll(shimDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	shim := filepath.Join(shimDir, "harness")
+	if err := os.Symlink(realBin, shim); err != nil {
+		t.Fatal(err)
+	}
+
+	// ModeOpen + env-only enforcement keeps BuildChildArgv off the Landlock
+	// ABI gate so the test runs on any kernel with a functional bwrap.
+	g := &Grants{
+		Workdir:     root,
+		NetworkMode: sandboxprofile.ModeOpen,
+		Enforcement: sandboxprofile.EnforceEnvOnly,
+	}
+	argv, err := BuildChildArgv(g, []string{"env", "FOO=bar", "BAR=baz", shim})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(argv, " ")
+	for _, dir := range []string{shimDir, realDir} {
+		if !strings.Contains(joined, "--ro-bind "+dir+" "+dir) {
+			t.Errorf("bwrap argv missing --ro-bind for env-wrapped harness dir %q\nargv: %s", dir, joined)
 		}
 	}
 }
