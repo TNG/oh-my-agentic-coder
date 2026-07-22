@@ -888,7 +888,12 @@ omac [--workdir <dir>] <subcommand> [flags] [args]
                roots (workdir-local .agents/skills + .opencode/skills,
                plus the user-global layers), or if a registered skill's
                bundle changed since register, or if a required config
-               field is unresolvable. Auto-deregisters
+               field is unresolvable. `--auto-register-skills` is an
+               opt-in for this start-family launch: it silently registers
+               only workdir-local skills whose required config and secrets
+               resolve without prompting. Other unregistered skills still
+               refuse launch and print their registration command.
+               Auto-deregisters
                (silently) skills whose directory has vanished; secrets +
                config persist for safety. Flags:
                  --sandbox <profile>     pick a sandbox profile
@@ -901,6 +906,8 @@ omac [--workdir <dir>] <subcommand> [flags] [args]
                                          scope; removed on exit
                  --keep-running          don't stop sidecars on exit
                  --accept-skill-changes  tolerate bundle_hash drift
+                 --auto-register-skills  silently register eligible
+                                         workdir-local skills only
                  --skip-secret-pattern   don't enforce a secret's pattern
                                          on an env_passthrough value
                  --verbose               lifecycle logging (prints cache
