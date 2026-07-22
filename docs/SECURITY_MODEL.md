@@ -143,6 +143,38 @@ sandbox:
 > arbitrary `OMAC_*` variables in the host env expecting them to stay out of
 > the sandbox.
 >
+> **Defaults on by default; remove with `deny_vars`.** Every profile — empty
+> or restrictive, including custom ones like `tng-default.json` — is granted
+> the full operational default set (`sandboxprofile.DefaultAllowVars()`)
+> *automatically* via `EffectiveAllowVars`, so vars like `COLORTERM` never
+> need to be hand-carried into each profile. `allow_vars` then adds anything
+> extra (e.g. the harness's auth vars); `deny_vars` removes anything the
+> profile does not want:
+> - **`allow_vars`** — extra grants on top of the defaults. `["*"]` grants
+>   every non-blocklisted var.
+> - **`deny_vars`** — patterns to drop (same exact / trailing-`*` matching as
+>   `allow_vars`). It is applied **last** — after the allowlist *and* after
+>   omac's injected overlay — so it wins over `allow_vars`, over `["*"]`, and
+>   over injected vars. A profile can therefore drop even an injected var such
+>   as `HTTP_PROXY` or a tool-cache path. That is deliberately powerful:
+>   denying the proxy or cache injections can break networking or cache
+>   isolation, so it is the profile author's explicit call.
+>
+> Because the defaults are merged in, `allow_vars` is **additive only** — a
+> profile cannot express "narrower than the defaults" by listing fewer
+> entries; use `deny_vars` for that.
+>
+> `sandboxprofile.BaseAllowVars()` (`OMAC_*`, `HOME`, `PATH`, `PWD`, `TMPDIR`,
+> `LANG`, `LC_*`, `TERM`, `COLORTERM`) is the operational minimum. Denying a
+> base var is **allowed** (deny always wins) but is almost never intended, so
+> the launch path prints a warning and `omac doctor` reports it. The remaining
+> defaults (`SHELL`, `USER`, `LOGNAME`, `TZ`, `EDITOR`, `VISUAL`,
+> `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME`, `NPM_CONFIG_PREFIX`)
+> are the removable convenience tier — dropping those is silent.
+>
+> `omac provenance` shows the defaults as `builtin (default)`, the profile's
+> `allow_vars` additions under the profile source, and `deny_vars` as `deny`.
+>
 > **Empty `allow_vars` — fail-closed at launch.** If a sandbox profile has an
 > empty `environment.allow_vars` (e.g. an existing `default.json` with
 > `"environment": {}`, or a hand-authored profile), `omac start` / `omac serve`
@@ -181,10 +213,12 @@ sandbox:
 > every third-party provider key into the sandbox, so a user relying on an
 > env-based provider key lists it in `allow_vars` themselves (opencode's primary
 > `auth.json` login, in its granted dirs, is unaffected). Auto-forwarding is
-> skipped entirely for the empty (misconfigured) case. A direct
-> `omac sandbox run --profile X` invocation — not via `start`/`serve` — still
-> treats an empty `allow_vars` as inherit-all; the fail-closed seeding happens
-> in the `start`/`serve` launch path.
+> skipped entirely for the empty (misconfigured) case.
+>
+> A direct `omac sandbox run --profile X` invocation — not via
+> `start`/`serve` — is fail-closed too: `EffectiveAllowVars` resolves an empty
+> `allow_vars` to the operational defaults at the enforcement point, so no
+> entry point inherits the ambient environment.
 
 For successfully inspectable built-in `{{self}} sandbox run` profiles,
 `omac doctor` warns when a profile re-introduces a broad read/write
