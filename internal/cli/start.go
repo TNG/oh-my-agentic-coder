@@ -926,7 +926,11 @@ func runLaunch(env *Env, opts launchOpts) int {
 	selfReportsSession := harness.Session != nil && harness.Session.ListKind == config.SessionListOpenCodeCLI
 	var priorSessions map[string]struct{}
 	if harness.Session != nil && len(harness.Session.ContinueArgs) > 0 && !selfReportsSession {
-		priorSessions = session.KnownIDs(harness, env.Workdir)
+		// Bounded: the snapshot only sharpens the resume hint, so it must never
+		// delay the inner launch. `omac start` waits at most hintTimeout for it.
+		priorSessions = boundedKnownIDs(func() map[string]struct{} {
+			return session.KnownIDs(harness, env.Workdir)
+		}, hintTimeout)
 	}
 
 	code, err := sandbox.ExecWithReady(argv, extra, nil)
@@ -1079,6 +1083,25 @@ func hintSessionID(sessions []session.Session, resumedID string, prior map[strin
 // the harness's session list. opencode shells out to its CLI; 2s is plenty
 // on a warm cache and a sane ceiling for the pathological slow case.
 const hintTimeout = 2 * time.Second
+
+// boundedKnownIDs runs the prior-session enumeration but never waits longer
+// than d for it. The snapshot only sharpens the post-exit resume hint (#145),
+// so a slow or stuck session store must never stall the inner launch: on
+// timeout we return an empty snapshot and carry on (best-effort, matching
+// printContinueHint). This is the structural guarantee that `omac start` never
+// waits indefinitely on session listing — the regression guard for the
+// opencode-session-list hang. enumerate is injected so the bound is testable
+// without real session I/O.
+func boundedKnownIDs(enumerate func() map[string]struct{}, d time.Duration) map[string]struct{} {
+	ch := make(chan map[string]struct{}, 1)
+	go func() { ch <- enumerate() }()
+	select {
+	case ids := <-ch:
+		return ids
+	case <-time.After(d):
+		return nil
+	}
+}
 
 // secretFromEnv returns the host value that will satisfy a keychain-absent
 // secret at runtime, if any. It returns ok=true only when the secret is
