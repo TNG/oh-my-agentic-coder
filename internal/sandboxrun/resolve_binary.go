@@ -22,12 +22,29 @@ import (
 //     #!/usr/bin/env node), the interpreter's directory too — so the
 //     kernel can exec the script inside the sandbox.
 //
+// When the inner command is wrapped in an `env NAME=VALUE ... <cmd>` prefix
+// (a sandbox profile may do this to set NPM_CONFIG_* etc. before launching
+// the harness), the wrapped <cmd> is resolved and granted in addition to
+// `env` itself — otherwise only `env`'s own directory would be granted and
+// the harness (e.g. a bun/npm-installed opencode) would fail to exec.
+//
 // Returns nil when the command cannot be found or resolved.
 func resolveInnerBinaryDirs(innerArgv []string) []string {
-	if len(innerArgv) == 0 || innerArgv[0] == "" {
+	dirs := resolveCommandBinaryDirs(innerArgv)
+	if cmd := unwrapEnv(innerArgv); len(cmd) > 0 && cmd[0] != innerArgv[0] {
+		dirs = append(dirs, resolveCommandBinaryDirs(cmd)...)
+	}
+	return dirs
+}
+
+// resolveCommandBinaryDirs is the core resolution for a single command argv
+// (no env-wrapper handling): PATH-entry dir, symlink-resolved real dir, and
+// shebang interpreter dirs. Returns nil when argv is empty or unresolvable.
+func resolveCommandBinaryDirs(argv []string) []string {
+	if len(argv) == 0 || argv[0] == "" {
 		return nil
 	}
-	resolved, err := exec.LookPath(innerArgv[0])
+	resolved, err := exec.LookPath(argv[0])
 	if err != nil {
 		return nil
 	}
@@ -46,6 +63,30 @@ func resolveInnerBinaryDirs(innerArgv []string) []string {
 		}
 	}
 	return dirs
+}
+
+// unwrapEnv strips a leading `env NAME=VALUE ...` wrapper and returns the
+// argv that begins with the real command. It skips `env` and any following
+// NAME=VALUE assignment tokens; the first non-assignment token is the
+// command. `env` flags (e.g. -i, -u) are not used by omac's profiles and are
+// left in place, so an argv like `env -i cmd` yields `-i cmd` — which fails
+// to resolve and is safely ignored by the caller. Returns argv unchanged when
+// there is no env wrapper.
+func unwrapEnv(argv []string) []string {
+	for len(argv) >= 2 && filepath.Base(argv[0]) == "env" {
+		i := 1
+		for i < len(argv) && isEnvAssignment(argv[i]) {
+			i++
+		}
+		argv = argv[i:]
+	}
+	return argv
+}
+
+// isEnvAssignment reports whether tok is a NAME=VALUE assignment (not a flag).
+func isEnvAssignment(tok string) bool {
+	eq := strings.IndexByte(tok, '=')
+	return eq > 0 && !strings.HasPrefix(tok, "-")
 }
 
 // resolveInnerBinaryPath resolves the inner command's executable to its
