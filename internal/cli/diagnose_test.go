@@ -181,31 +181,6 @@ func TestDiagnoseProbeRawTCP(t *testing.T) {
 	}
 }
 
-// Safety gate: --live on a non-ALLOW host must NOT launch a sandbox or dial;
-// it reports the static outcome and a "skipped" live result. On the built-in
-// default profile an unlisted host resolves to PROMPT, so no network happens.
-func TestDiagnoseLiveProbeSkipsNonAllowedHost(t *testing.T) {
-	isolateHome(t)
-	env, out, _, drain := newPipeEnv(t, "")
-	env.Workdir = t.TempDir()
-	code := runDiagnose([]string{"--probe", "unlisted.example.org", "--live", "--json"}, env)
-	drain()
-
-	if code != ExitOK {
-		t.Fatalf("code=%d", code)
-	}
-	var got probeView
-	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
-		t.Fatalf("invalid JSON: %v\n%s", err, out.String())
-	}
-	if got.Outcome == "ALLOW" {
-		t.Fatalf("test premise broken: unlisted host should not be ALLOW")
-	}
-	if got.Live == nil || got.Live.Class != "skipped" {
-		t.Fatalf("live probe must be skipped for a non-ALLOW host, got %+v", got.Live)
-	}
-}
-
 // On the default profile an unlisted host has no static rule and the prompt
 // is enabled, so the probe reports the interactive-prompt outcome rather
 // than a misleading allow/deny.

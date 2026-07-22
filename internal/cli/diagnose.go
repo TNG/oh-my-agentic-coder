@@ -35,7 +35,6 @@ func runDiagnose(args []string, env *Env) int {
 	profileRef := fs.String("profile", "", "Sandbox profile ref (path or name); default resolves like `omac start`.")
 	runSel := fs.String("run", "last", "Which run(s) to analyze: last|all.")
 	probe := fs.String("probe", "", "Statically check whether host[:port] would be admitted, then exit.")
-	live := fs.Bool("live", false, "With --probe: if the static check says ALLOW, also attempt a real connection through the sandbox.")
 	verbose := fs.Bool("verbose", false, "Show every hint and the full effective config, not just the focused view.")
 	fs.BoolVar(verbose, "v", false, "Alias for --verbose.")
 	if err := fs.Parse(reorderFlagsFirst(args)); err != nil {
@@ -53,7 +52,7 @@ func runDiagnose(args []string, env *Env) int {
 	}
 
 	if *probe != "" {
-		return runDiagnoseProbe(env, *profileRef, profile, profPath, *probe, *live, *asJSON)
+		return runDiagnoseProbe(env, profile, profPath, *probe, *asJSON)
 	}
 
 	pol := policyFromProfile(profile)
@@ -213,12 +212,11 @@ func writeDiagnoseText(env *Env, v diagnoseView, verbose bool) {
 		scope = "all runs"
 	}
 	status := scope
-	if v.ExitCode != nil {
-		if *v.ExitCode == 0 {
-			status += " exited 0"
-		} else {
-			status += fmt.Sprintf(" exited %d", *v.ExitCode)
-		}
+	// The exit code identifies a single run; under --run all it would be the
+	// latest run's code mislabeled as "all runs", so only show it for a
+	// single-run scope.
+	if v.ExitCode != nil && v.RunScope != "all" {
+		status += fmt.Sprintf(" exited %d", *v.ExitCode)
 	}
 	status += fmt.Sprintf(" · %s mode · %d/%d connection(s) blocked", v.Policy.Mode, v.Report.Denied, v.Report.Total)
 	fmt.Fprintln(w, status)
