@@ -41,6 +41,24 @@ func TestRegistryExplainMore(t *testing.T) {
 	}
 }
 
+func TestRegistryClearExplainMore(t *testing.T) {
+	r := New(time.Minute)
+	t.Cleanup(r.Close)
+
+	// Clear retires the flag so a later Consume sees nothing; case-insensitive
+	// and normalized the same way as Mark/Consume.
+	r.MarkExplainMore("Example.COM")
+	r.ClearExplainMore("https://example.com/x")
+	if r.ConsumeExplainMore("example.com") {
+		t.Error("cleared host should no longer be marked")
+	}
+
+	// Idempotent and nil-safe: clearing an unset host or a nil registry is a no-op.
+	r.ClearExplainMore("never.marked")
+	var nilReg *Registry
+	nilReg.ClearExplainMore("x")
+}
+
 func TestRegistryExplainMoreTTLExpiry(t *testing.T) {
 	r := New(20 * time.Millisecond)
 	t.Cleanup(r.Close)

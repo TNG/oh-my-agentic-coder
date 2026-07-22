@@ -256,35 +256,50 @@ agent's ability to spam or bloat the registry.
 
 - Uses the literal `$OMAC_BASE` token (the brief defines what it resolves
   to; same convention as the existing deny body referencing profile paths).
-- **Limitation:** this body only reaches the agent for plain-HTTP forwards.
-  For HTTPS the denial is the `CONNECT` tunnel-establishment response, whose
-  body virtually every client discards (curl reports only `CONNECT tunnel
-  failed, response 403`). So the "Explain more" re-ask cannot be delivered
-  in-band over HTTPS/CONNECT.
-- **Reliable reactive channel:** the agent recovers out-of-band by querying
-  `GET $OMAC_BASE/sandbox/intent?target=<host>` after any denied/hanging
-  request. The response carries `declared` and a `hint`: when no intent is
-  on file the hint says to declare one and retry (which re-prompts the user,
-  now with the reason); when one is already on file and the request was
-  still denied, the hint says the user declined — do not retry. This reuses
-  the existing registry (the facade holds no network policy, so it cannot
-  compute a network verdict — the agent's own declaration is the memo that
-  makes the loop self-correcting). Pre-declaration remains the primary path;
-  the brief directs the agent to declare before the first request and to
-  consult this endpoint on failure.
-- **"Explain more" delivered on the GET channel (not the deny body).** Because
-  the deny body cannot survive an HTTPS/CONNECT denial, the "Explain more"
-  click is not carried there. Instead, when the user picks "Explain more" the
+- **HTTPS/CONNECT drops the deny body.** For HTTPS the denial is the `CONNECT`
+  tunnel-establishment response, whose body virtually every client discards
+  (curl reports only `CONNECT tunnel failed, response 403`). So a hint carried
+  only in the body cannot survive an HTTPS/CONNECT denial.
+- **Two in-band channels, one authoritative wording.** The remedy hint is now
+  delivered directly on the denial via **both** the deny body **and** an
+  `X-Omac-Intent-Hint` response header — the header being the only in-band
+  channel an HTTPS/CONNECT client can surface once it discards the body. The
+  three hint strings are exported constants in `internal/intent/hints.go`
+  (`HintUndeclared` / `HintDeclared` / `HintExplainMore`, single-line ASCII by
+  the header field-value contract) so the deny path and the GET lookup speak
+  with one voice. The deny channel is **state-aware** (`intentHintFor` mirrors
+  the GET state machine):
+  - `needs_intent` (the user clicked "Explain more") → `HintExplainMore`,
+    regardless of whether a reason is already on file;
+  - a plain `prompt:deny` **with** a declared reason on file → `HintDeclared`
+    ("the user reviewed your reason and declined — do not retry"); the body
+    also echoes the agent's own declared reason;
+  - anything else (undeclared deny, policy/allowlist deny) → no hint, since
+    inviting a retry there would loop or is irrelevant. Only the static hint
+    constants ever reach the header; the agent-supplied reason is body-only
+    (CR/LF-sanitized) so it cannot forge header lines.
+- **GET remains the out-of-band fallback.** The agent can still recover by
+  querying `GET $OMAC_BASE/sandbox/intent?target=<host>` after any
+  denied/hanging request; it returns `declared` plus the same shared `hint`.
+  This reuses the existing registry (the facade holds no network policy — the
+  agent's own declaration is the memo that makes the loop self-correcting).
+  Pre-declaration remains the primary path; the inline hint is the fast path;
+  GET is the reliable fallback for tooling that surfaces neither body nor
+  header.
+- **"Explain more" flag lifecycle.** When the user picks "Explain more" the
   prompter (sandbox child) calls `POST $OMAC_BASE/sandbox/intent/explain?target=<host>`,
-  which sets a TTL-bounded, one-shot per-host flag in the registry. The next
-  `GET /sandbox/intent?target=<host>` then returns a distinct hint —
-  *"the user asked for a fuller reason; POST a better reason and retry"* —
-  that **overrides** both the undeclared and the "user declined — do not
-  retry" hints, since an explicit "Explain more" is a request to re-declare.
-  The flag is consumed on read so it drives exactly one retry, never a loop:
-  a subsequent real denial reverts to the "do not retry" hint. This moves the
-  re-ask signal off the channel HTTPS drops and onto the one the agent can
-  always reach.
+  setting a TTL-bounded, one-shot per-host flag. While live it makes both the
+  GET lookup and (via `needs_intent`) the deny channel return `HintExplainMore`,
+  **overriding** the undeclared and "declined — do not retry" hints, since an
+  explicit "Explain more" is a request to re-declare. The flag is retired the
+  moment its purpose is served, by **either** path: consumed on read by a GET
+  lookup, **or** cleared by a `POST /sandbox/intent` that records a fuller
+  intent (the inline-recovery path, where the agent reads the hint from the
+  body/header and re-declares without ever hitting GET). Retiring it on POST is
+  essential: otherwise a live flag would outlive the re-ask and a later GET
+  fallback would revive "re-declare and retry" after the user had already
+  declined the retry. Either way, a subsequent real denial reverts to the
+  "do not retry" hint — the re-ask drives exactly one retry, never a loop.
 - The three backends (osascript, zenity, kdialog) each gain the seventh
   radio option. No new dependencies; the dialogs already support N
   options.
@@ -367,7 +382,10 @@ in-process threading of an earlier draft does not exist.
 - Registry nil (tests, `--learn` without facade) → all lookups return
   false, no panic. `Record` is a no-op.
 - `NeedsIntent` is never persisted (no permanent "explain more" rule
-  makes sense). It's a one-shot signal from the popup to the deny body.
+  makes sense). It's a one-shot signal from the popup to the deny channel
+  (body + `X-Omac-Intent-Hint` header), retired by whichever recovery path
+  fires first — a GET lookup that consumes it or a `POST /sandbox/intent`
+  that records a fuller intent.
 
 ## Testing
 
