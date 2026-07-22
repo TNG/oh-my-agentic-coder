@@ -263,16 +263,43 @@ func buildEnvironmentView(profile *sandboxprofile.Profile, profPath, workdir str
 	for _, p := range prefixes {
 		ev.Entries = append(ev.Entries, provEntry{Entry: p + "*", Action: "deny", Source: "blocklist"})
 	}
-	if len(profile.Environment.AllowVars) == 0 {
-		ev.Entries = append(ev.Entries, provEntry{
-			Entry:  "(no allowlist — all non-blocklisted vars pass)",
-			Action: "allow",
-			Source: "default",
-		})
-	} else {
-		for _, v := range profile.Environment.AllowVars {
-			ev.Entries = append(ev.Entries, provEntry{Entry: v, Action: "allow", Source: profSrc})
+	wildcard := false
+	for _, v := range profile.Environment.AllowVars {
+		if v == "*" {
+			wildcard = true
+			break
 		}
+	}
+	if wildcard {
+		ev.Entries = append(ev.Entries, provEntry{Entry: "*", Action: "allow", Source: profSrc})
+		return ev
+	}
+	if len(profile.Environment.AllowVars) == 0 {
+		// Empty is NOT inherit-all: it fails closed to the operational
+		// minimum (sandboxprofile.EffectiveAllowVars).
+		for _, v := range sandboxprofile.DefaultAllowVars() {
+			ev.Entries = append(ev.Entries, provEntry{Entry: v, Action: "allow", Source: "builtin (empty→minimum)"})
+		}
+		return ev
+	}
+	// Restrictive list: the full DefaultAllowVars is granted by default
+	// (see sandboxprofile.EffectiveAllowVars), so show those as the
+	// always-on defaults and the profile's own additions separately.
+	def := map[string]bool{}
+	for _, v := range sandboxprofile.DefaultAllowVars() {
+		def[v] = true
+		ev.Entries = append(ev.Entries, provEntry{Entry: v, Action: "allow", Source: "builtin (default)"})
+	}
+	for _, v := range profile.Environment.AllowVars {
+		if def[v] {
+			continue
+		}
+		ev.Entries = append(ev.Entries, provEntry{Entry: v, Action: "allow", Source: profSrc})
+	}
+	// deny_vars is applied last and wins over everything (allowlist, "*",
+	// injected overlay), so render it after the allow entries.
+	for _, v := range profile.Environment.DenyVars {
+		ev.Entries = append(ev.Entries, provEntry{Entry: v, Action: "deny", Source: profSrc})
 	}
 	return ev
 }

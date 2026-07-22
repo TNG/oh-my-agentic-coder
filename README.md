@@ -615,6 +615,34 @@ sandbox:
 > arbitrary `OMAC_*` variables in the host env expecting them to stay out of
 > the sandbox.
 >
+> **Defaults on by default; remove with `deny_vars`.** Every profile — empty
+> or restrictive, including custom ones like `tng-default.json` — is granted
+> the full operational default set (`sandboxprofile.DefaultAllowVars()`)
+> *automatically* via `EffectiveAllowVars`, so vars like `COLORTERM` never
+> need to be hand-carried into each profile. `allow_vars` then adds anything
+> extra (e.g. the harness's auth vars); `deny_vars` removes anything the
+> profile does not want:
+> - **`allow_vars`** — extra grants on top of the defaults. `["*"]` grants
+>   every non-blocklisted var.
+> - **`deny_vars`** — patterns to drop (same exact / trailing-`*` matching as
+>   `allow_vars`). It is applied **last** — after the allowlist *and* after
+>   omac's injected overlay — so it wins over `allow_vars`, over `["*"]`, and
+>   over injected vars. A profile can therefore drop even an injected var such
+>   as `HTTP_PROXY` or a tool-cache path. That is deliberately powerful:
+>   denying the proxy or cache injections can break networking or cache
+>   isolation, so it is the profile author's explicit call.
+>
+> `sandboxprofile.BaseAllowVars()` (`OMAC_*`, `HOME`, `PATH`, `PWD`, `TMPDIR`,
+> `LANG`, `LC_*`, `TERM`, `COLORTERM`) is the operational minimum. Denying a
+> base var is **allowed** (deny always wins) but is almost never intended, so
+> the launch path prints a warning and `omac doctor` reports it. The remaining
+> defaults (`SHELL`, `USER`, `LOGNAME`, `TZ`, `EDITOR`, `VISUAL`, `XDG_*`,
+> `NPM_CONFIG_PREFIX`) are the removable convenience tier — dropping those is
+> silent.
+>
+> `omac provenance` shows the defaults as `builtin (default)`, the profile's
+> `allow_vars` additions under the profile source, and `deny_vars` as `deny`.
+>
 > **Empty `allow_vars` — fail-closed at launch.** If a sandbox profile has an
 > empty `environment.allow_vars` (e.g. an existing `default.json` with
 > `"environment": {}`, or a hand-authored profile), `omac start` / `omac serve`

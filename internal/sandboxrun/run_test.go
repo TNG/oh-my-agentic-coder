@@ -145,7 +145,7 @@ func TestCacheEnvSurvivesAllowVars(t *testing.T) {
 		"HOME=/home/test",
 		"GOCACHE=/hostile/go-build",
 		"CARGO_HOME=/hostile/cargo",
-	}, []string{"HOME"}, injected)
+	}, []string{"HOME"}, nil, injected)
 	gotMap := envMap(got)
 	if len(gotMap) != len(injected)+1 {
 		t.Fatalf("environment = %v, want HOME plus all injected cache values", gotMap)

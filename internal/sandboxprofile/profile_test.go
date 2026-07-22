@@ -95,13 +95,27 @@ func TestParseValidationErrors(t *testing.T) {
 		`{"network": {"listen_port": [70000]}}`,
 		`{"network": {"network_prompt": {"on_unavailable": "ask"}}}`,
 		`{"environment": {"allow_vars": [" "]}}`,
-		`{"filesystem": {"deny": [" "]}}`,   // empty deny entry
-		`{"filesystem": {"deny": ["[a-"]}}`, // malformed basename glob
+		`{"environment": {"deny_vars": [" "]}}`, // empty deny_vars entry
+		`{"filesystem": {"deny": [" "]}}`,       // empty deny entry
+		`{"filesystem": {"deny": ["[a-"]}}`,     // malformed basename glob
 	}
 	for _, c := range cases {
 		if _, err := Parse([]byte(c)); err == nil {
 			t.Errorf("Parse(%s) should fail validation", c)
 		}
+	}
+}
+
+func TestParseDenyVars(t *testing.T) {
+	p, err := Parse([]byte(`{"environment": {"allow_vars": ["SKAINET_TOKEN"], "deny_vars": ["XDG_*", "HTTP_PROXY"]}}`))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(p.Environment.DenyVars) != 2 || p.Environment.DenyVars[0] != "XDG_*" || p.Environment.DenyVars[1] != "HTTP_PROXY" {
+		t.Errorf("deny_vars = %v, want [XDG_* HTTP_PROXY]", p.Environment.DenyVars)
+	}
+	if len(p.Environment.AllowVars) != 1 || p.Environment.AllowVars[0] != "SKAINET_TOKEN" {
+		t.Errorf("allow_vars = %v, want [SKAINET_TOKEN]", p.Environment.AllowVars)
 	}
 }
 
@@ -630,7 +644,7 @@ func TestFilterEnv(t *testing.T) {
 	injected := map[string]string{"HTTP_PROXY": "http://omac:tok@127.0.0.1:9"}
 
 	// With allowlist.
-	got := FilterEnv(environ, []string{"HOME", "PATH", "OMAC_*"}, injected)
+	got := FilterEnv(environ, []string{"HOME", "PATH", "OMAC_*"}, nil, injected)
 	want := map[string]string{
 		"HOME":       "/home/u",
 		"PATH":       "/usr/bin",
@@ -648,7 +662,7 @@ func TestFilterEnv(t *testing.T) {
 	}
 
 	// Without allowlist: everything but the blocklist passes.
-	got = FilterEnv(environ, nil, nil)
+	got = FilterEnv(environ, nil, nil, nil)
 	gotMap = envMap(got)
 	if _, ok := gotMap["AWS_SECRET_ACCESS_KEY"]; !ok {
 		t.Error("no allowlist: AWS var should pass")
@@ -660,7 +674,7 @@ func TestFilterEnv(t *testing.T) {
 	}
 
 	// Blocklist beats allowlist.
-	got = FilterEnv(environ, []string{"NODE_OPTIONS"}, nil)
+	got = FilterEnv(environ, []string{"NODE_OPTIONS"}, nil, nil)
 	if len(got) != 0 {
 		t.Errorf("blocklist must beat allowlist: %v", got)
 	}
@@ -668,7 +682,7 @@ func TestFilterEnv(t *testing.T) {
 	// Inverse of the no-allowlist case: with the default allowlist an
 	// ambient secret that is neither injected nor listed must be stripped
 	// (issue #102 — ambient env leak). HOME/PATH still pass.
-	got = FilterEnv(environ, DefaultAllowVars(), nil)
+	got = FilterEnv(environ, DefaultAllowVars(), nil, nil)
 	gotMap = envMap(got)
 	if _, ok := gotMap["AWS_SECRET_ACCESS_KEY"]; ok {
 		t.Error("default allowlist: ambient secret AWS_SECRET_ACCESS_KEY must be stripped")
@@ -731,7 +745,7 @@ func TestFilterEnvMergedLaunchEnv(t *testing.T) {
 		"OMAC_GATE":  "1",
 	}
 
-	got := envMap(FilterEnv(environ, allow, injected))
+	got := envMap(FilterEnv(environ, allow, nil, injected))
 	want := map[string]string{
 		"HOME":              "/home/u",
 		"PATH":              "/usr/bin",
@@ -789,6 +803,160 @@ func TestDefaultAllowVarsGoldenList(t *testing.T) {
 		if got[i] != want[i] {
 			t.Errorf("DefaultAllowVars()[%d] = %q, want %q", i, got[i], want[i])
 		}
+	}
+}
+
+func TestBaseAllowVarsGoldenList(t *testing.T) {
+	want := []string{
+		"OMAC_*",
+		"HOME",
+		"PATH",
+		"PWD",
+		"TMPDIR",
+		"LANG",
+		"LC_*",
+		"TERM",
+		"COLORTERM",
+	}
+	got := BaseAllowVars()
+	if len(got) != len(want) {
+		t.Fatalf("BaseAllowVars() has %d entries, want %d:\n got  %v\n want %v", len(got), len(want), got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("BaseAllowVars()[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+	// DefaultAllowVars must lead with the full base (the scaffolded
+	// default.json is base + convenience, in that order).
+	def := DefaultAllowVars()
+	for i, v := range want {
+		if def[i] != v {
+			t.Errorf("DefaultAllowVars()[%d] = %q, want base var %q", i, def[i], v)
+		}
+	}
+}
+
+func TestEffectiveAllowVars(t *testing.T) {
+	// Empty fails closed to the operational minimum — NOT inherit-all
+	// (issue #102/#111). It must equal DefaultAllowVars.
+	got0 := EffectiveAllowVars(nil)
+	def := DefaultAllowVars()
+	if len(got0) != len(def) {
+		t.Fatalf("EffectiveAllowVars(nil) = %v, want DefaultAllowVars %v", got0, def)
+	}
+	for i := range def {
+		if got0[i] != def[i] {
+			t.Errorf("EffectiveAllowVars(nil)[%d] = %q, want %q", i, got0[i], def[i])
+		}
+	}
+	// A "*" wildcard is the only inherit-all opt-in; returned unchanged.
+	if got := EffectiveAllowVars([]string{"*"}); len(got) != 1 || got[0] != "*" {
+		t.Errorf("EffectiveAllowVars([*]) = %v, want [*]", got)
+	}
+	// "*" wins even alongside other entries (still inherit-all).
+	if got := EffectiveAllowVars([]string{"FOO", "*"}); len(got) != 2 {
+		t.Errorf("EffectiveAllowVars([FOO,*]) = %v, want the list unchanged", got)
+	}
+	// A restrictive list (the tng-default.json / #139 case) gets the FULL
+	// DefaultAllowVars merged in — base AND convenience — defaults first.
+	got := EffectiveAllowVars([]string{"SKAINET_TOKEN", "TERM"})
+	set := map[string]bool{}
+	for _, v := range got {
+		set[v] = true
+	}
+	for _, v := range DefaultAllowVars() {
+		if !set[v] {
+			t.Errorf("EffectiveAllowVars omitted default var %q: %v", v, got)
+		}
+	}
+	if !set["SKAINET_TOKEN"] {
+		t.Errorf("EffectiveAllowVars dropped the profile's own var: %v", got)
+	}
+	// TERM appears once (dedup) and defaults lead.
+	term := 0
+	for _, v := range got {
+		if v == "TERM" {
+			term++
+		}
+	}
+	if term != 1 {
+		t.Errorf("EffectiveAllowVars duplicated TERM (%d times): %v", term, got)
+	}
+	for i := range def {
+		if got[i] != def[i] {
+			t.Errorf("EffectiveAllowVars[%d] = %q, want default var %q (defaults must lead)", i, got[i], def[i])
+		}
+	}
+	// The input slice is not mutated.
+	in := []string{"FOO"}
+	_ = EffectiveAllowVars(in)
+	if len(in) != 1 || in[0] != "FOO" {
+		t.Errorf("EffectiveAllowVars mutated its input: %v", in)
+	}
+}
+
+func TestFilterEnvDenyVars(t *testing.T) {
+	environ := []string{
+		"HOME=/home/u",
+		"EDITOR=vim",
+		"XDG_CONFIG_HOME=/home/u/.config",
+		"AWS_SECRET_ACCESS_KEY=oops",
+		"HTTP_PROXY=http://stale:1",
+	}
+	injected := map[string]string{
+		"HTTP_PROXY": "http://omac:tok@127.0.0.1:9",
+		"OMAC_BASE":  "http://127.0.0.1:1/x",
+	}
+
+	// deny beats the allowlist: EDITOR/XDG_CONFIG_HOME are granted (via "*")
+	// but denied, so they are stripped.
+	got := envMap(FilterEnv(environ, []string{"*"}, []string{"EDITOR", "XDG_*"}, injected))
+	if _, ok := got["EDITOR"]; ok {
+		t.Error("deny_vars must strip EDITOR even under a '*' allowlist")
+	}
+	if _, ok := got["XDG_CONFIG_HOME"]; ok {
+		t.Error("deny_vars prefix XDG_* must strip XDG_CONFIG_HOME")
+	}
+	if got["HOME"] != "/home/u" {
+		t.Error("HOME should survive: not denied")
+	}
+
+	// deny beats the injected overlay: a profile can drop an injected var.
+	got = envMap(FilterEnv(environ, []string{"HOME"}, []string{"HTTP_PROXY", "OMAC_*"}, injected))
+	if _, ok := got["HTTP_PROXY"]; ok {
+		t.Error("deny_vars must strip the injected HTTP_PROXY (deny is applied last)")
+	}
+	if _, ok := got["OMAC_BASE"]; ok {
+		t.Error("deny_vars prefix OMAC_* must strip the injected OMAC_BASE")
+	}
+
+	// nil deny_vars is a no-op (equivalent to the pre-deny behaviour).
+	got = envMap(FilterEnv(environ, []string{"HOME", "EDITOR"}, nil, nil))
+	if got["EDITOR"] != "vim" {
+		t.Error("nil deny_vars must not strip anything")
+	}
+}
+
+func TestDeniedBaseVars(t *testing.T) {
+	if got := DeniedBaseVars(nil); got != nil {
+		t.Errorf("DeniedBaseVars(nil) = %v, want nil", got)
+	}
+	// Exact base var.
+	if got := DeniedBaseVars([]string{"TERM"}); len(got) != 1 || got[0] != "TERM" {
+		t.Errorf("DeniedBaseVars([TERM]) = %v, want [TERM]", got)
+	}
+	// A convenience var is not a base var — not flagged.
+	if got := DeniedBaseVars([]string{"EDITOR"}); len(got) != 0 {
+		t.Errorf("DeniedBaseVars([EDITOR]) = %v, want none (EDITOR is convenience)", got)
+	}
+	// A prefix deny that overlaps a base prefix entry (LC_*) is flagged.
+	if got := DeniedBaseVars([]string{"LC_ALL"}); len(got) != 1 || got[0] != "LC_*" {
+		t.Errorf("DeniedBaseVars([LC_ALL]) = %v, want [LC_*]", got)
+	}
+	// A bare "*" deny shadows every base var.
+	if got := DeniedBaseVars([]string{"*"}); len(got) != len(BaseAllowVars()) {
+		t.Errorf("DeniedBaseVars([*]) flagged %d base vars, want %d", len(got), len(BaseAllowVars()))
 	}
 }
 
