@@ -26,6 +26,7 @@ The supported fields are:
 - `network.network_prompt.prompt_timeout_secs` (int, default 60)
 - `network.network_prompt.on_unavailable` — `deny` (default) or `allow`
 - `network.enforcement` — `kernel` (default) or `env-only`
+- `network.proxy_injection` (string[]) — families of proxy-unaware toolchains to route through the omac filtering proxy under `filtered` mode. Accepted values: `jvm` (injects a supervisor-controlled `JAVA_TOOL_OPTIONS`) and `node` (injects `NODE_USE_ENV_PROXY=1`; requires Node ≥ 24). Tools that already honor `HTTP(S)_PROXY` (`curl`, `git`, `pip`, `npm`, `go`, …) need no entry. Unknown families are rejected at load time.
 - `environment.allow_vars` (string[]) — exact names or trailing-`*` prefixes; absent or empty means all variables pass (subject to the blocklist)
 
 #### Scenario: Valid profile is parsed

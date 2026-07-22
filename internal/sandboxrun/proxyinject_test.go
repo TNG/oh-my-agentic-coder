@@ -47,6 +47,30 @@ func TestProxyInjectionEnv(t *testing.T) {
 	}
 }
 
+func TestNodeProxyEnvSupported(t *testing.T) {
+	cases := []struct {
+		out  string
+		want bool
+	}{
+		{"v24.14.1\n", true},
+		{"v24.0.0", true},
+		{"v25.1.0\n", true},
+		{"v100.0.0\n", true},
+		{"v23.11.0\n", false},
+		{"v18.20.4\n", false},
+		{"v20.11.0", false},
+		{"", false},
+		{"not a version", false},
+		{"vX.Y.Z", false},
+		{"24.14.1", true}, // tolerate a missing leading v
+	}
+	for _, c := range cases {
+		if got := nodeProxyEnvSupported(c.out); got != c.want {
+			t.Errorf("nodeProxyEnvSupported(%q) = %v, want %v", c.out, got, c.want)
+		}
+	}
+}
+
 func TestProxyInjectionEnv_UnknownFamily(t *testing.T) {
 	if _, err := ProxyInjectionEnv([]string{"python"}, "http://127.0.0.1:8080"); err == nil {
 		t.Error("expected error for unknown family, got nil")
