@@ -444,7 +444,8 @@ skills are added lazily (§5.2).
 > injects `OMAC_CACHE_DIR` / `OMAC_CACHE_MODE` plus the six tool
 > redirects (`XDG_CACHE_HOME`, `GOCACHE`, `GOMODCACHE`,
 > `NPM_CONFIG_CACHE`, `PIP_CACHE_DIR`, `CARGO_HOME`) into the shared
-> sandbox. The scope is chosen by `cache.scope` (§9.1), defaulting to
+> sandbox. The scope is chosen by `cache.scope` (see
+> `oh-my-agentic-coder.md` §9.1), defaulting to
 > `global` — one cache shared by every workdir on the machine, which is
 > also what all served directories share here. Because one serve process
 > runs one shared sandbox, per-workdir isolation only applies to `omac
