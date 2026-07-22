@@ -1,0 +1,86 @@
+# Documentation-drift audit.
+#
+# An agent (headless opencode against the internal SKAINET gateway, same
+# GLM-5.2 as the rest of the harness suite) reads the whole checkout and
+# reports where the documentation makes a concrete factual claim the code
+# contradicts — a removed flag, a changed default, a renamed command, a moved
+# path, a behaviour that no longer holds. Every finding is verified against the
+# actual code (both sides quoted) before it is reported, to keep false
+# positives down.
+#
+# Two jobs share one script (scripts/doc-drift.sh, selected by DRIFT_MODE):
+#   docs-drift     — README/AGENTS/docs prose vs code
+#   comments-drift — inline comments and docstrings vs code
+#
+# Advisory only: manual dispatch + weekly schedule. Never gates a merge — the
+# deliverable is the report (step summary + uploaded artifact).
+name: "Doc drift"
+
+on:
+  workflow_dispatch:
+    inputs:
+      opencode_version:
+        description: 'Pinned opencode package spec for the driving agent (THIS RUN ONLY)'
+        type: string
+        default: 'opencode-ai@1.17.12'
+      timeout_secs:
+        description: 'Wall-clock timeout for the audit agent, in seconds'
+        type: string
+        default: '2400'
+  schedule:
+    # Mondays 06:00 UTC — weekly drift sweep.
+    - cron: '0 6 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  drift:
+    name: ${{ matrix.mode }} drift
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [docs, comments]
+    runs-on: ubuntu-latest
+    concurrency:
+      group: doc-drift-${{ matrix.mode }}
+      cancel-in-progress: false
+    env:
+      DRIFT_MODE: ${{ matrix.mode }}
+      SKAINET_TOKEN: ${{ secrets.SKAINET_TOKEN }}
+      SKAINET_INTERNAL: ${{ secrets.SKAINET_EXTERNAL }}
+      E2E_VERSION_OPENCODE: ${{ github.event.inputs.opencode_version }}
+      DRIFT_TIMEOUT_SECS: ${{ github.event.inputs.timeout_secs }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Run doc-drift audit
+        id: run_drift
+        env:
+          DRIFT_LOG_DIR: ${{ runner.temp }}/doc-drift-logs
+        run: scripts/doc-drift.sh
+
+      - name: Report summary
+        if: always()
+        run: |
+          {
+            echo "## Doc drift — ${{ matrix.mode }}"
+            echo ""
+            echo '```markdown'
+            cat "${{ runner.temp }}/doc-drift-logs/DRIFT_REPORT-${{ matrix.mode }}.md" 2>/dev/null \
+              || echo "(no report file produced)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload session artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: doc-drift-${{ matrix.mode }}
+          path: ${{ runner.temp }}/doc-drift-logs/
+          if-no-files-found: ignore
+          retention-days: 14
