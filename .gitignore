@@ -53,10 +53,11 @@ __pycache__/
 # Local worktrees (isolated workspaces for investigation/feature work)
 /.worktrees/
 
-# Superpowers brainstorming plans: verbose, per-feature planning scratch
-# generated during design. The concise design/verification specs under
-# docs/superpowers/specs/ are kept; the plans are not committed.
+# Superpowers design scratch: both the verbose brainstorming plans and the
+# per-feature design/verification specs are planning artifacts, not shipped
+# source. Keep them out of version control so they don't leak into PRs.
 /docs/superpowers/plans/
+/docs/superpowers/specs/
 
 # Editors
 *.swp

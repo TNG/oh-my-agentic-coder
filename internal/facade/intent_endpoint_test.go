@@ -227,6 +227,52 @@ func TestIntentExplainOverridesDeclinedHint(t *testing.T) {
 	}
 }
 
+// TestIntentPostClearsExplainMore guards the inline-recovery lifecycle: after
+// an "Explain more" click, the agent reads the hint from the deny body/header
+// and POSTs a fuller intent instead of hitting the GET lookup that would
+// consume the one-shot flag. The POST must retire the flag itself — otherwise
+// a later GET fallback (after the user declines the retry) would revive the
+// "re-declare and retry" hint and invite a loop.
+func TestIntentPostClearsExplainMore(t *testing.T) {
+	reg := intent.New(time.Minute)
+	t.Cleanup(reg.Close)
+	f := &Facade{IntentRegistry: reg}
+
+	// User clicked "Explain more"; the flag is live (never consumed by GET).
+	reg.MarkExplainMore("example.com")
+
+	// Inline recovery: the agent POSTs a fuller intent without a GET.
+	body := bytes.NewReader([]byte(`{"target":"example.com","reason":"fetch signed release notes for verification"}`))
+	req := httptest.NewRequest(http.MethodPost, "/sandbox/intent", body)
+	w := httptest.NewRecorder()
+	f.handleSandboxIntent(w, req)
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("POST status = %d; want 204", w.Code)
+	}
+
+	// A later GET fallback must now see the declared hint, not the explain-more
+	// re-ask — the user's subsequent decline must not be overridden.
+	req = httptest.NewRequest(http.MethodGet, "/sandbox/intent?target=example.com", nil)
+	w = httptest.NewRecorder()
+	f.handleSandboxIntent(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET status = %d; want 200", w.Code)
+	}
+	var resp struct {
+		Declared bool   `json:"declared"`
+		Hint     string `json:"hint"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	if !resp.Declared {
+		t.Error("should report declared=true after POST")
+	}
+	if strings.Contains(resp.Hint, "Explain more") {
+		t.Errorf("POST must clear the explain-more flag; GET revived it: %q", resp.Hint)
+	}
+}
+
 func TestIntentExplainEndpointNilRegistry(t *testing.T) {
 	f := &Facade{}
 	req := httptest.NewRequest(http.MethodPost, "/sandbox/intent/explain?target=x", nil)

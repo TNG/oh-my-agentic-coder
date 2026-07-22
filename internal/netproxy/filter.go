@@ -38,6 +38,12 @@ type Verdict struct {
 	Reason    string // e.g. "hard-deny metadata", "deny_domain", "allowlist", "prompt:allow_once"
 	Scope     string // once|host|suffix (prompt decisions only)
 	Persisted bool   // true when the decision was persisted (prompt decisions only)
+	// IntentReason is the agent-declared intent on file for this host at
+	// decision time (empty if none). Carried on prompt-driven denials so the
+	// deny response can echo it, letting the agent expand on its prior reason
+	// without a follow-up GET /sandbox/intent. Body-only: never a header value
+	// (it is agent-supplied and unsanitized).
+	IntentReason string
 }
 
 // hardDenyHosts can never be allowed, even interactively (nono parity).
@@ -69,6 +75,10 @@ type PromptResult struct {
 	// request is denied with a marker pointing the agent at the intent
 	// endpoint. Never persisted.
 	NeedsIntent bool
+	// PriorReason is the agent-declared intent on file for this host at
+	// prompt time (empty if none). The prompter already looks it up to render
+	// the dialog; carrying it here lets a denial echo it back to the agent.
+	PriorReason string
 }
 
 // LearnedStore persists permanent prompt decisions. Implemented by the
@@ -272,12 +282,12 @@ func (f *Filter) defaultDecision(ctx context.Context, host string, port int) (Ve
 			scope = "once"
 		}
 		if res.NeedsIntent {
-			return Verdict{Decision: Deny, Reason: "prompt:needs_intent", Scope: scope, Persisted: res.Persist}, true
+			return Verdict{Decision: Deny, Reason: "prompt:needs_intent", Scope: scope, Persisted: res.Persist, IntentReason: res.PriorReason}, true
 		}
 		if res.Allow {
 			return Verdict{Decision: Allow, Reason: "prompt:allow", Scope: scope, Persisted: res.Persist}, true
 		}
-		return Verdict{Decision: Deny, Reason: "prompt:deny", Scope: scope, Persisted: res.Persist}, true
+		return Verdict{Decision: Deny, Reason: "prompt:deny", Scope: scope, Persisted: res.Persist, IntentReason: res.PriorReason}, true
 	}
 	if len(f.cfg.AllowDomains) > 0 {
 		return Verdict{Decision: Deny, Reason: "not in allowlist"}, true

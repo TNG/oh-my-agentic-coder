@@ -203,6 +203,27 @@ func (r *Registry) ConsumeExplainMore(target string) bool {
 	return !r.expiredTime(t)
 }
 
+// ClearExplainMore drops any explain-more flag for target without reporting
+// whether one was live. It exists for the inline-recovery path: when the agent
+// reads the explain-more hint from the deny body/header and POSTs a fuller
+// intent, that POST — not a GET — satisfies the re-ask, so the one-shot flag
+// must be retired here too. Otherwise it outlives its purpose and a later GET
+// fallback would revive the "re-declare and retry" hint after the user has
+// already declined the retry. Like the other mutators, a no-op on a nil
+// registry or empty target.
+func (r *Registry) ClearExplainMore(target string) {
+	if r == nil {
+		return
+	}
+	target = normalize(target)
+	if target == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.explainMore, target)
+}
+
 // evictOldestExplainMore removes the earliest explain-more flag. Caller
 // holds mu. Bounds a pathological flood even though the flag is user-gated.
 func (r *Registry) evictOldestExplainMore() {

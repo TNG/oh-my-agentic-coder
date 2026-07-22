@@ -18,6 +18,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/tngtech/oh-my-agentic-coder/internal/intent"
 )
 
 // blockingPrompter blocks until its channel closes; counts invocations.
@@ -724,24 +726,157 @@ func TestSlowPromptDoesNotExpireDial(t *testing.T) {
 }
 
 func TestDenyBodyNeedsIntent(t *testing.T) {
-	body := denyBody("example.com", "prompt:needs_intent")
+	body := denyBody("example.com", Verdict{Reason: "prompt:needs_intent"})
 	if !strings.Contains(body, "DENIED") {
 		t.Errorf("missing DENIED: %q", body)
-	}
-	if !strings.Contains(body, "/sandbox/intent") {
-		t.Errorf("missing intent hint: %q", body)
 	}
 	if !strings.Contains(body, "example.com") {
 		t.Errorf("missing host: %q", body)
 	}
+	// The full explain-more hint is embedded inline so a plain-HTTP agent
+	// needs no follow-up GET /sandbox/intent.
+	if !strings.Contains(body, intent.HintExplainMore) {
+		t.Errorf("needs_intent body must embed the explain-more hint: %q", body)
+	}
+	if !strings.Contains(body, "Do not retry without an intent explanation") {
+		t.Errorf("hint must tell the agent not to retry without an intent explanation: %q", body)
+	}
+}
+
+// TestDenyBodyNeedsIntentEchoesPriorReason: on "Explain more", the body echoes
+// the agent's declared reason so it can expand on it instead of starting over.
+func TestDenyBodyNeedsIntentEchoesPriorReason(t *testing.T) {
+	body := denyBody("example.com", Verdict{Reason: "prompt:needs_intent", IntentReason: "fetch the API docs"})
+	if !strings.Contains(body, intent.HintExplainMore) {
+		t.Errorf("missing explain-more hint: %q", body)
+	}
+	if !strings.Contains(body, `"fetch the API docs"`) {
+		t.Errorf("body must echo the prior declared reason: %q", body)
+	}
+}
+
+// TestDenyBodyDeclaredDeclined: a plain deny with a reason on file means the
+// user reviewed the declared intent and said no — tell the agent to stop.
+func TestDenyBodyDeclaredDeclined(t *testing.T) {
+	body := denyBody("example.com", Verdict{Reason: "prompt:deny", IntentReason: "fetch the API docs"})
+	if !strings.Contains(body, intent.HintDeclared) {
+		t.Errorf("declared-declined body must carry the declared hint: %q", body)
+	}
+	if !strings.Contains(body, "do not retry") {
+		t.Errorf("declared-declined body must warn against retrying: %q", body)
+	}
+	if !strings.Contains(body, `"fetch the API docs"`) {
+		t.Errorf("body must echo the declined reason: %q", body)
+	}
 }
 
 func TestDenyBodyRegularDeny(t *testing.T) {
-	body := denyBody("example.com", "prompt:deny")
+	// A plain deny with NO declared intent stays generic (no intent invitation,
+	// which would loop) — the undeclared case.
+	body := denyBody("example.com", Verdict{Reason: "prompt:deny"})
 	if !strings.Contains(body, "DENIED BY THE SANDBOX") {
 		t.Errorf("regular deny lost its wording: %q", body)
 	}
 	if strings.Contains(body, "/sandbox/intent") {
 		t.Errorf("regular deny should not mention intent: %q", body)
+	}
+}
+
+func TestDenyHeaders(t *testing.T) {
+	// A needs_intent denial carries the hint on a header too, so an
+	// HTTPS/CONNECT client that discards the deny body can still read it.
+	h := denyHeaders(Verdict{Reason: "prompt:needs_intent"})
+	if !strings.Contains(h, sandboxDenyHeader) {
+		t.Errorf("needs_intent headers lost the sandbox-deny marker: %q", h)
+	}
+	if !strings.Contains(h, intentHintHeader+": "+intent.HintExplainMore+"\r\n") {
+		t.Errorf("needs_intent headers must carry the explain-more hint: %q", h)
+	}
+
+	// A declared-declined deny carries the declined hint on the header.
+	dh := denyHeaders(Verdict{Reason: "prompt:deny", IntentReason: "fetch the API docs"})
+	if !strings.Contains(dh, intentHintHeader+": "+intent.HintDeclared+"\r\n") {
+		t.Errorf("declared-declined headers must carry the declared hint: %q", dh)
+	}
+
+	// A plain policy deny (no declared intent) carries only the marker.
+	reg := denyHeaders(Verdict{Reason: "prompt:deny"})
+	if reg != sandboxDenyHeader {
+		t.Errorf("regular deny headers = %q; want only the sandbox-deny marker", reg)
+	}
+}
+
+// TestDenyHeadersNeverCarryAgentReason: the agent-supplied reason may contain
+// CR/LF; it must never reach a header (injection guard). Only the static hint
+// constant is emitted; the reason is body-only.
+func TestDenyHeadersNeverCarryAgentReason(t *testing.T) {
+	evil := "ok\r\nX-Injected: pwned"
+	h := denyHeaders(Verdict{Reason: "prompt:needs_intent", IntentReason: evil})
+	if strings.Contains(h, "X-Injected") || strings.Contains(h, "pwned") {
+		t.Errorf("agent reason leaked into headers: %q", h)
+	}
+	// But the body sanitizes CR/LF to spaces rather than forging lines.
+	body := denyBody("example.com", Verdict{Reason: "prompt:needs_intent", IntentReason: evil})
+	if strings.Contains(body, "\r\nX-Injected") {
+		t.Errorf("body must collapse CR/LF in the echoed reason: %q", body)
+	}
+}
+
+// TestServerNeedsIntentDenyCarriesHintHeader proves the hint reaches the
+// wire: a real needs_intent verdict flowing through handleConnect must put
+// X-Omac-Intent-Hint on the 403 an HTTP client parses, so the agent needs
+// no follow-up GET /sandbox/intent.
+func TestServerNeedsIntentDenyCarriesHintHeader(t *testing.T) {
+	s := startProxy(t, FilterConfig{
+		PromptEnabled: true,
+		Prompter:      &fakePrompter{res: PromptResult{NeedsIntent: true, PriorReason: "fetch the API docs"}},
+		Resolve:       resolveTo("127.0.0.1"),
+	})
+
+	conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", s.Port()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	fmt.Fprintf(conn, "CONNECT api.example.com:443 HTTP/1.1\r\nHost: api.example.com:443\r\nProxy-Authorization: %s\r\n\r\n",
+		basicAuth("omac", s.Token()))
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("status = %d, want 403", resp.StatusCode)
+	}
+	if got := resp.Header.Get(intentHintHeader); got != intent.HintExplainMore {
+		t.Errorf("%s = %q, want the explain-more hint", intentHintHeader, got)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), intent.HintExplainMore) {
+		t.Errorf("deny body should embed the explain-more hint: %q", body)
+	}
+	// The prior declared reason flows prompt -> verdict -> body end-to-end.
+	if !strings.Contains(string(body), `"fetch the API docs"`) {
+		t.Errorf("deny body should echo the prior declared reason: %q", body)
+	}
+}
+
+// TestIntentHintHeaderIsValidFieldValue guards the ASCII/single-line
+// contract the intent package documents for every hint: they may be
+// emitted as an HTTP header value, which forbids CR/LF and discourages
+// non-ASCII octets. Covering all three (not just the currently
+// header-bound HintExplainMore) keeps a future header use safe.
+func TestIntentHintHeaderIsValidFieldValue(t *testing.T) {
+	hints := map[string]string{
+		"HintUndeclared":  intent.HintUndeclared,
+		"HintDeclared":    intent.HintDeclared,
+		"HintExplainMore": intent.HintExplainMore,
+	}
+	for name, hint := range hints {
+		for _, r := range hint {
+			if r == '\r' || r == '\n' || r > 127 {
+				t.Errorf("%s contains an invalid header-value rune %q", name, r)
+			}
+		}
 	}
 }

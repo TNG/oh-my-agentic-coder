@@ -603,6 +603,12 @@ func (f *Facade) handleSandboxIntent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	f.IntentRegistry.Record(body.Target, body.Reason)
+	// Posting a fuller intent is the in-band answer to an "Explain more" click,
+	// so retire the one-shot flag here. The inline deny hint (body + header)
+	// lets the agent recover without ever hitting the GET lookup that would
+	// otherwise consume it; leaving it live would let a later GET fallback
+	// revive the "re-declare and retry" hint after the user declined the retry.
+	f.IntentRegistry.ClearExplainMore(body.Target)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -703,10 +709,12 @@ type intentLookupResp struct {
 	Hint     string `json:"hint"`
 }
 
+// The hint strings live in the intent package so the facade's GET lookup and
+// the netproxy deny channel share one authoritative wording.
 const (
-	intentHintUndeclared  = "No intent on file for this target. If a request to it was denied by the sandbox or is waiting on user approval, POST $OMAC_BASE/sandbox/intent {\"target\":\"...\",\"reason\":\"...\"} and retry, so the user sees why you need it. If you already declared an intent earlier and the request was still denied, the user reviewed it and declined — do not retry."
-	intentHintDeclared    = "An intent is on file for this target. If the request was still denied, the user reviewed your reason and declined it — do not retry; choose another approach or ask the user."
-	intentHintExplainMore = "The user clicked \"Explain more\" in the approval dialog: your reason (if any) was not enough to decide. POST a fuller reason to $OMAC_BASE/sandbox/intent {\"target\":\"...\",\"reason\":\"...\"} explaining why you need this host and what you expect to find, then retry the request so the user can reconsider."
+	intentHintUndeclared  = intent.HintUndeclared
+	intentHintDeclared    = intent.HintDeclared
+	intentHintExplainMore = intent.HintExplainMore
 )
 
 // joinReasons renders one or more subtree intents as a single line. A

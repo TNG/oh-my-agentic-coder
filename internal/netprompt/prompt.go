@@ -297,6 +297,9 @@ func (p *Prompter) Prompt(ctx context.Context, host string, port int) netproxy.P
 	}
 	token := labelToToken(label, suffix)
 	result := tokenToResult(token, host, suffix)
+	// The intent was already fetched above to render the dialog; carry it on
+	// the result so a denial can echo it back without another registry read.
+	result.PriorReason = intent
 	if result.NeedsIntent && p.recordExplainMore != nil {
 		// Synchronous: the flag must be on file before the denial reaches the
 		// client, so the agent's follow-up GET lookup sees it. Bounded by the
