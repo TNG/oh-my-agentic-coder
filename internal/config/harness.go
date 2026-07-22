@@ -511,7 +511,7 @@ func (h Harness) WorkdirSkillsDir() string {
 
 // ConfigHome returns the harness's full config home directory, honoring
 // the HomeEnv override. For UserConfigHome harnesses (claude, codex,
-// copilot), this is $HOME/<UserConfigHome> by default. For XDG harnesses
+// copilot, pi), this is $HOME/<UserConfigHome> by default. For XDG harnesses
 // (opencode), this is $XDG_CONFIG_HOME/<base> or ~/.config/<base> by
 // default. When HomeEnv is set and non-empty, its value replaces the
 // default entirely. Returns "" when no home can be resolved.
