@@ -28,9 +28,15 @@ func DefaultProfile() *Profile {
 			Read: []string{
 				"~/.gitconfig",
 				"~/.gitignore_global",
+				// Generic version-manager / toolchain bin dirs, so tools the
+				// agent shells out to (node, cargo, ...) are reachable. The
+				// active harness's OWN binary dir is NOT listed here: it is
+				// resolved and granted per-launch, install-method agnostically,
+				// by sandboxrun.resolveInnerBinaryDirs (handles bun/npm/mise/
+				// asdf shims + their symlink targets). Do not re-add a specific
+				// harness package path here.
 				"~/.nvm",
 				"~/.bun/bin",
-				"~/.bun/install/global/node_modules/opencode-ai",
 				"~/.cargo/bin",
 				"~/.rustup",
 				"~/go/bin",
