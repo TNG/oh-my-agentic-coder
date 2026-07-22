@@ -106,6 +106,16 @@ func GenerateSBPL(g *Grants) string {
 // generateSBPLNetwork emits the network section per NetworkMode.
 func generateSBPLNetwork(g *Grants) string {
 	var b strings.Builder
+	// env-only enforcement (filtered mode) mirrors the Linux escape hatch:
+	// stage2 execs with no --enforce, so the kernel imposes no network
+	// restriction and filtering rides on the injected HTTP(S)_PROXY env
+	// alone. Emitting (deny network*) here would — unlike Linux — still
+	// block raw sockets the proxy env can't cover (e.g. the Gradle daemon's
+	// random loopback port), so relax to (allow network*) instead.
+	if g.NetworkMode == sandboxprofile.ModeFiltered && g.Enforcement == sandboxprofile.EnforceEnvOnly {
+		b.WriteString("(allow network*)\n")
+		return b.String()
+	}
 	switch g.NetworkMode {
 	case sandboxprofile.ModeOpen:
 		b.WriteString("(allow network*)\n")

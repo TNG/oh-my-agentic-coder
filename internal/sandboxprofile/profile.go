@@ -32,6 +32,7 @@ import (
 	"fmt"
 	"net/url"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -147,6 +148,40 @@ type Network struct {
 	// leading-dot forms (".example.com") are not supported. Empty entries
 	// are rejected.
 	NoProxy []string `json:"no_proxy,omitempty"`
+	// ProxyInjection opts proxy-unaware toolchains into the omac proxy by
+	// injecting their native proxy configuration at launch. Most tools
+	// (curl, git, pip, npm, go) already honor HTTP(S)_PROXY and need no
+	// entry here; this list is for the families that ignore it. Values:
+	//   - "jvm":  Gradle/Maven/sbt/Kotlin/java ignore HTTP(S)_PROXY, so
+	//             omac sets a controlled JAVA_TOOL_OPTIONS pointing every
+	//             JVM at the proxy (token included).
+	//   - "node": Node's built-in fetch/http (undici) ignores HTTP(S)_PROXY
+	//             unless opted in, so omac sets NODE_USE_ENV_PROXY=1 (the
+	//             package managers already work via the injected proxy env).
+	ProxyInjection []string `json:"proxy_injection,omitempty"`
+}
+
+// proxy_injection family identifiers.
+const (
+	ProxyInjectJVM  = "jvm"
+	ProxyInjectNode = "node"
+)
+
+// ProxyInjectionTools lists the accepted proxy_injection family
+// identifiers. It is the single source of truth for validation; the
+// sandboxrun injector registry must supply one entry per family here.
+func ProxyInjectionTools() []string {
+	return []string{ProxyInjectJVM, ProxyInjectNode}
+}
+
+// HasProxyInjection reports whether tool is listed in proxy_injection.
+func (n *Network) HasProxyInjection(tool string) bool {
+	for _, t := range n.ProxyInjection {
+		if t == tool {
+			return true
+		}
+	}
+	return false
 }
 
 // NetworkPrompt mirrors nono's network_prompt block.
@@ -287,6 +322,11 @@ func (p *Profile) Validate() error {
 	for _, entry := range p.Network.NoProxy {
 		if strings.TrimSpace(entry) == "" {
 			return fmt.Errorf("sandbox profile: network.no_proxy contains an empty entry")
+		}
+	}
+	for _, tool := range p.Network.ProxyInjection {
+		if !slices.Contains(ProxyInjectionTools(), tool) {
+			return fmt.Errorf("sandbox profile: invalid network.proxy_injection %q (want one of %s)", tool, strings.Join(ProxyInjectionTools(), ", "))
 		}
 	}
 	for _, group := range []struct {

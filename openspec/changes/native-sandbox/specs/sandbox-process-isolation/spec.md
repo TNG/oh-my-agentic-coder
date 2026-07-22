@@ -105,9 +105,9 @@ On Linux the sandbox SHALL be applied by executing the child under `bwrap` with:
 
 ### Requirement: Environment variable filtering
 The child environment SHALL be constructed from scratch in three layers:
-1. A fixed blocklist of injection-dangerous variables is always dropped, including at minimum: `LD_*`, `DYLD_*`, `BASH_ENV`, `ENV`, `CDPATH`, `GLOBIGNORE`, `BASH_FUNC_*`, `PROMPT_COMMAND`, `IFS`, `PYTHONSTARTUP`, `PYTHONPATH`, `NODE_OPTIONS`, `NODE_PATH`, `PERL5OPT`, `PERL5LIB`, `RUBYOPT`, `RUBYLIB`, `GEM_PATH`, `GEM_HOME`, `JAVA_TOOL_OPTIONS`, `_JAVA_OPTIONS`, `DOTNET_STARTUP_HOOKS`, `GOFLAGS`, `OP_SERVICE_ACCOUNT_TOKEN`, `OP_CONNECT_TOKEN`, `OP_CONNECT_HOST`, `OP_SESSION_*`.
+1. A fixed blocklist of injection-dangerous variables is always dropped, including at minimum: `LD_*`, `DYLD_*`, `BASH_ENV`, `ENV`, `CDPATH`, `GLOBIGNORE`, `BASH_FUNC_*`, `PROMPT_COMMAND`, `IFS`, `PYTHONSTARTUP`, `PYTHONPATH`, `NODE_OPTIONS`, `NODE_PATH`, `PERL5OPT`, `PERL5LIB`, `RUBYOPT`, `RUBYLIB`, `GEM_PATH`, `GEM_HOME`, `JAVA_TOOL_OPTIONS`, `_JAVA_OPTIONS`, `DOTNET_STARTUP_HOOKS`, `GOFLAGS`, `OP_SERVICE_ACCOUNT_TOKEN`, `OP_CONNECT_TOKEN`, `OP_CONNECT_HOST`, `OP_SESSION_*`. Dropping these here is unconditional: any ambient value is discarded before layer 3, so a value the supervisor overlays in layer 3 (e.g. `JAVA_TOOL_OPTIONS` under `network.proxy_injection: ["jvm"]`) is always the supervisor's own, never an attacker-supplied one.
 2. If `environment.allow_vars` is non-empty, only variables matching an entry (exact name, or prefix match for entries ending in `*`) pass; sandbox-injected variables bypass this list.
-3. Sandbox-injected variables (proxy variables per the sandbox-network spec) are then set and take precedence over inherited values.
+3. Sandbox-injected variables (proxy variables per the sandbox-network spec, plus any `network.proxy_injection` env such as a supervisor-controlled `JAVA_TOOL_OPTIONS` or `NODE_USE_ENV_PROXY`) are then set and take precedence over inherited values. The layer-1 blocklist still strips the ambient variable first, so only the supervisor-authored value reaches the child.
 
 #### Scenario: Dangerous variable stripped
 - **WHEN** the supervisor environment contains `DYLD_INSERT_LIBRARIES` or `NODE_OPTIONS`

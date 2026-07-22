@@ -291,28 +291,42 @@ func ExecWithReady(argv []string, extraEnv map[string]string, onReady func()) (i
 	if onReady != nil {
 		hook = func(int) { onReady() }
 	}
-	return ExecWithEnv(argv, env, hook)
+	return ExecWithEnv(argv, env, "", hook)
 }
 
-// ExecWithEnv is like ExecWithReady but takes the child environment
-// verbatim (no host-env inheritance) and passes the child pid to the
-// onReady hook (the learn-mode recorder samples the child's process
-// group). Used by `omac sandbox run`, which builds the child env from
-// scratch (env_clear semantics with blocklist/allowlist filtering).
-func ExecWithEnv(argv []string, env []string, onReady func(pid int)) (int, error) {
-	if len(argv) == 0 {
-		return 1, fmt.Errorf("empty argv")
-	}
+// newChildCmd builds the child command with its stdio, environment and
+// working directory wired. workdir sets the child's cwd; when empty the
+// caller's cwd is inherited (ExecWithReady's behavior). On Linux bwrap
+// re-chdirs inside the namespace via --chdir, but Seatbelt has no such
+// flag, so this is the only place the macOS child's cwd is established —
+// without it a relative command like ./gradlew from --workdir won't resolve.
+func newChildCmd(argv []string, env []string, workdir string) *exec.Cmd {
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Env = env
-
+	if workdir != "" {
+		cmd.Dir = workdir
+	}
 	// Place the child in its own process group. We will (a) forward signals
 	// we receive to that group, and (b) when stdin is a tty, hand the
 	// terminal foreground over to it so Ctrl-C is delivered directly.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	return cmd
+}
+
+// ExecWithEnv is like ExecWithReady but takes the child environment
+// verbatim (no host-env inheritance), sets the child's working directory
+// to workdir (empty inherits the caller cwd), and passes the child pid to
+// the onReady hook (the learn-mode recorder samples the child's process
+// group). Used by `omac sandbox run`, which builds the child env from
+// scratch (env_clear semantics with blocklist/allowlist filtering).
+func ExecWithEnv(argv []string, env []string, workdir string, onReady func(pid int)) (int, error) {
+	if len(argv) == 0 {
+		return 1, fmt.Errorf("empty argv")
+	}
+	cmd := newChildCmd(argv, env, workdir)
 
 	// CRITICAL: install our own signal handlers BEFORE we fork+exec the
 	// child. POSIX execve(2) preserves SIG_IGN through exec, but converts

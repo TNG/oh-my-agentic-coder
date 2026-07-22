@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/tngtech/oh-my-agentic-coder/internal/audit"
@@ -142,6 +143,32 @@ func Run(opts Options) int {
 		for k, v := range proxy.EnvVars() {
 			injected[k] = v
 		}
+		if families := merged.Network.ProxyInjection; len(families) > 0 {
+			env, oerr := ProxyInjectionEnv(families, proxy.ProxyURL())
+			if oerr != nil {
+				return fail("%v", oerr)
+			}
+			for k, v := range env {
+				injected[k] = v
+			}
+			routed := families
+			if slices.Contains(families, sandboxprofile.ProxyInjectNode) {
+				// Node < 24 silently ignores NODE_USE_ENV_PROXY, so the var
+				// is injected (harmless no-op) but we must not claim node is
+				// routed — its built-in fetch/http would still bypass the
+				// proxy and fail before the filter/prompt.
+				if supported, detail := detectNodeProxySupport(); !supported {
+					fmt.Fprintf(stderr, "omac sandbox: WARNING: proxy_injection: node needs Node >= %d for NODE_USE_ENV_PROXY (%s); "+
+						"Node's built-in fetch/http will bypass the omac proxy under a filtered network.\n", nodeMinProxyEnvMajor, detail)
+					routed = slices.DeleteFunc(slices.Clone(families), func(f string) bool {
+						return f == sandboxprofile.ProxyInjectNode
+					})
+				}
+			}
+			if len(routed) > 0 {
+				fmt.Fprintf(stderr, "omac sandbox: proxy_injection: %s routed through the omac proxy\n", strings.Join(routed, ", "))
+			}
+		}
 	}
 
 	// Denial markers must outlive argv construction: bwrap reads the
@@ -167,7 +194,7 @@ func Run(opts Options) int {
 	if recorder != nil {
 		onReady = recorder.Start
 	}
-	code, err := sandbox.ExecWithEnv(childArgv, env, onReady)
+	code, err := sandbox.ExecWithEnv(childArgv, env, grants.Workdir, onReady)
 	if err != nil {
 		return fail("%v", err)
 	}

@@ -150,6 +150,23 @@ func TestSBPLNetworkOpen(t *testing.T) {
 	}
 }
 
+func TestSBPLNetworkFilteredEnvOnly(t *testing.T) {
+	g := baseGrants()
+	g.Enforcement = sandboxprofile.EnforceEnvOnly
+	p := GenerateSBPL(g)
+	// env-only mirrors the Linux escape hatch (no --enforce): the kernel
+	// imposes no network restriction and filtering rides on the injected
+	// HTTP(S)_PROXY env alone. A hard (deny network*) here would — unlike
+	// Linux — still block raw sockets such as the Gradle daemon's random
+	// loopback port, defeating the documented fallback.
+	if !strings.Contains(p, "(allow network*)") {
+		t.Error("filtered + env-only must allow network* (no kernel restriction), mirroring Linux")
+	}
+	if strings.Contains(p, "(deny network*)") {
+		t.Error("filtered + env-only must not hard-deny network*")
+	}
+}
+
 func TestSBPLNoBindWithoutPorts(t *testing.T) {
 	g := baseGrants()
 	g.ListenPorts = nil

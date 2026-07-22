@@ -1,10 +1,50 @@
 package sandbox
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 )
+
+// TestNewChildCmdSetsWorkdir verifies the child command is configured to run
+// in the requested workdir (and inherits the caller cwd when empty). This is
+// the seam that fixes the macOS/Seatbelt gap where the child otherwise ran in
+// omac's launch directory instead of --workdir (Linux gets it via bwrap
+// --chdir; Seatbelt has no equivalent, so it must be set on the exec).
+func TestNewChildCmdSetsWorkdir(t *testing.T) {
+	cmd := newChildCmd([]string{"/bin/true"}, []string{"A=1"}, "/some/work")
+	if cmd.Dir != "/some/work" {
+		t.Errorf("cmd.Dir = %q, want /some/work", cmd.Dir)
+	}
+	if empty := newChildCmd([]string{"/bin/true"}, nil, ""); empty.Dir != "" {
+		t.Errorf("empty workdir must leave cmd.Dir unset, got %q", empty.Dir)
+	}
+}
+
+// TestExecWithEnvRunsInWorkdir runs a real child and asserts it executes in
+// the configured workdir rather than the test process cwd.
+func TestExecWithEnvRunsInWorkdir(t *testing.T) {
+	wd := t.TempDir()
+	out := filepath.Join(wd, "cwd.txt")
+	code, err := ExecWithEnv([]string{"/bin/sh", "-c", "pwd -P > " + out}, os.Environ(), wd, nil)
+	if err != nil {
+		t.Fatalf("ExecWithEnv error: %v", err)
+	}
+	if code != 0 {
+		t.Fatalf("child exit code = %d, want 0", code)
+	}
+	got, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatalf("read cwd file: %v", err)
+	}
+	want, _ := filepath.EvalSymlinks(wd)
+	if strings.TrimSpace(string(got)) != want {
+		t.Errorf("child cwd = %q, want %q", strings.TrimSpace(string(got)), want)
+	}
+}
 
 // TestExecWithReadyCallbackAndExitCode verifies that ExecWithReady invokes
 // the onReady hook after the child starts and propagates the child's exit

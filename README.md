@@ -518,9 +518,33 @@ expansion), `filesystem.deny` (mask files inside granted trees — a
 bare name like `.env` or `*.key` is denied in every granted directory,
 the working directory included), `filesystem.override_deny` (punch
 holes in the built-in protected-path list), `network.mode`
-(filtered/blocked/open), `network.network_prompt`, and
-`environment.allow_vars`. See the scaffolded `default.json` for the
-full schema.
+(filtered/blocked/open), `network.network_prompt`,
+`network.proxy_injection`, and `environment.allow_vars`. See the
+scaffolded `default.json` for the full schema.
+
+**`network.proxy_injection`** routes *proxy-unaware* toolchains through
+the omac filtering proxy under `network.mode: filtered`. Most tools
+(`curl`, `git`, `pip`, `npm`/`yarn`/`pnpm`, `go`) already honor
+`HTTP(S)_PROXY` and need nothing here; this option is for families that
+ignore those vars:
+
+```jsonc
+// ~/.config/omac/sandbox-profiles/default.json
+"network": { "mode": "filtered", "proxy_injection": ["jvm", "node"] }
+```
+
+- **`jvm`** — injects a supervisor-controlled `JAVA_TOOL_OPTIONS` so
+  Gradle/Maven/sbt/Kotlin/`java` route through the proxy. Host/port
+  routing applies to every JVM; only Gradle and Maven authenticate the
+  proxy `CONNECT` tunnel (they parse the `proxyUser`/`proxyPassword`
+  sysprops). Tools on the core JDK HTTP client — including Gradle's
+  **Java-toolchain auto-download** (Foojay) — route but do **not**
+  authenticate and get a `407`; provisioning a toolchain over an
+  authenticated proxy is out of scope.
+- **`node`** — injects `NODE_USE_ENV_PROXY=1` for Node's built-in
+  `fetch`/`http`. Requires **Node ≥ 24**; on older runtimes omac emits a
+  warning and does not claim routing (the npm/yarn/pnpm CLIs work
+  without this family).
 
 ### Corporate proxy
 
