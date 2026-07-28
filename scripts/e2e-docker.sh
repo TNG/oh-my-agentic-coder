@@ -125,7 +125,10 @@ cmd_cache() {
     ensure_running
     local missing=()
     for tool in go npm python3 pip3 cargo bwrap; do
-        if ! "$DOCKER" exec "$CONTAINER" command -v "$tool" >/dev/null 2>&1; then
+        # `command` is a shell builtin, so it needs a shell: `docker exec
+        # <container> command -v go` looks for a *binary* named "command" and
+        # always exits 127, which would report every tool as missing.
+        if ! "$DOCKER" exec "$CONTAINER" sh -c "command -v $tool" >/dev/null 2>&1; then
             missing+=("$tool")
         fi
     done
