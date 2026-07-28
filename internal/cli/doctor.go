@@ -176,7 +176,7 @@ func runDoctor(args []string, env *Env) int {
 // the gap where doctor never surfaced the security lint (previously only
 // reachable via `omac provenance --check`).
 func doctorProfileLint(env *Env, profileRef string) {
-	profile, _, err := sandboxprofile.Resolve(profileRef)
+	profile, _, err := sandboxprofile.ResolveReadOnly(profileRef)
 	if err != nil {
 		return // profile problems are already reported by the sandbox section
 	}

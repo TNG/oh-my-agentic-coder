@@ -131,7 +131,7 @@ func TestDiagnoseJSONIsValid(t *testing.T) {
 		Report struct {
 			Denied  int `json:"denied"`
 			Blocked []struct {
-				Host string `json:"Host"`
+				Host string `json:"host"`
 			} `json:"blocked"`
 		} `json:"report"`
 	}
@@ -140,6 +140,9 @@ func TestDiagnoseJSONIsValid(t *testing.T) {
 	}
 	if got.Report.Denied != 1 {
 		t.Fatalf("want denied=1, got %d", got.Report.Denied)
+	}
+	if len(got.Report.Blocked) != 1 || got.Report.Blocked[0].Host != "a.example" {
+		t.Fatalf("want blocked[0].host=a.example, got %+v", got.Report.Blocked)
 	}
 }
 
@@ -196,5 +199,57 @@ func TestDiagnoseProbeUnlistedHostReportsPrompt(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "HTTP(S) via proxy: PROMPT") {
 		t.Fatalf("unlisted host on default profile should report PROMPT on the proxy path:\n%s", out.String())
+	}
+}
+
+// Diagnose is read-only: it must not scaffold default.json in a fresh
+// home that has no profile yet. (Regression guard: an earlier version
+// called the mutating sandboxprofile.Resolve, which wrote the file.)
+func TestDiagnoseDoesNotScaffoldProfileInFreshHome(t *testing.T) {
+	isolateHome(t)
+	env, _, _, drain := newPipeEnv(t, "")
+	env.Workdir = t.TempDir()
+	_ = runDiagnose([]string{}, env)
+	drain()
+
+	defaultPath, err := sandboxprofile.ProfilePath("default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(defaultPath); !os.IsNotExist(err) {
+		t.Errorf("diagnose scaffolded %s in a fresh home; must be read-only", defaultPath)
+	}
+}
+
+// Under --run all, the JSON view must not report a single run's exit
+// code under a scope labeled "all runs" — it would mislead consumers.
+func TestDiagnoseJSONRunAllOmitsExitCode(t *testing.T) {
+	isolateHome(t)
+	writeAuditFixture(t,
+		`{"ts":"2026-07-18T10:00:00Z","run_id":"r1","type":"session.start"}`,
+		`{"ts":"2026-07-18T10:00:01Z","run_id":"r1","type":"session.stop","exit_code":2}`,
+		`{"ts":"2026-07-18T11:00:00Z","run_id":"r2","type":"session.start"}`,
+		`{"ts":"2026-07-18T11:00:01Z","run_id":"r2","type":"session.stop","exit_code":0}`,
+	)
+	env, out, _, drain := newPipeEnv(t, "")
+	env.Workdir = t.TempDir()
+	code := runDiagnose([]string{"--json", "--run", "all"}, env)
+	drain()
+
+	if code != ExitOK {
+		t.Fatalf("code=%d", code)
+	}
+	var got struct {
+		RunScope string `json:"run_scope"`
+		ExitCode *int   `json:"exit_code"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("output is not valid JSON: %v\n%s", err, out.String())
+	}
+	if got.RunScope != "all" {
+		t.Fatalf("want run_scope=all, got %q", got.RunScope)
+	}
+	if got.ExitCode != nil {
+		t.Fatalf("want exit_code omitted under --run all, got %d", *got.ExitCode)
 	}
 }

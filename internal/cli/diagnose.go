@@ -45,7 +45,7 @@ func runDiagnose(args []string, env *Env) int {
 		return ExitMisuse
 	}
 
-	profile, profPath, err := sandboxprofile.Resolve(*profileRef)
+	profile, profPath, err := sandboxprofile.ResolveReadOnly(*profileRef)
 	if err != nil {
 		fmt.Fprintln(env.Stderr, "omac diagnose:", err)
 		return ExitConfigInvalid
@@ -89,6 +89,10 @@ func runDiagnose(args []string, env *Env) int {
 	report := diagnose.Build(pol, decisions, netproxy.MatchDomainList)
 
 	logPath, _ := sandboxrun.DiagLogPath()
+	var exitCode *int
+	if *runSel != "all" {
+		exitCode = runExitCode(events, runID)
+	}
 	view := diagnoseView{
 		Version:     env.Version,
 		OS:          osinfo.Detect().String(),
@@ -98,7 +102,7 @@ func runDiagnose(args []string, env *Env) int {
 		Policy:      pol,
 		RunScope:    *runSel,
 		RunID:       runID,
-		ExitCode:    runExitCode(events, runID),
+		ExitCode:    exitCode,
 		AuditLog:    auditPath,
 		SandboxLog:  logPath,
 		AuditNote:   auditNote,
