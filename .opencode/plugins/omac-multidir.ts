@@ -289,17 +289,37 @@ export const OmacMultiDirPlugin: Plugin = async ({ client, directory, worktree }
       // omac sandbox briefing: always-on, independent of the control plane.
       // Only omac sets OMAC_SANDBOX_BRIEFING (inside the sandbox), so this is
       // inert outside omac and purely additive — never touches user config.
+      //
+      // Both additions are folded into the LAST existing system block rather
+      // than pushed as new entries. OpenCode hands this hook a single joined
+      // string and then maps every entry of `system` to its own
+      // {role:"system"} message (session/llm/request.ts), so a plain push
+      // turns OpenCode's one system message into two. Strict
+      // OpenAI-compatible servers — Qwen chat templates in particular —
+      // reject a system message at index > 0 ("system message must come
+      // first"). Merging keeps the message count at whatever OpenCode and
+      // other plugins produced, so omac stays invisible to the wire format.
+      // Prompt caching is unaffected: OpenCode places its single system
+      // cache breakpoint on the last system part either way
+      // (@opencode-ai/llm cache-policy.ts markLastSystem).
+      const blocks: string[] = []
       const brief = process.env.OMAC_SANDBOX_BRIEFING
-      if (brief && brief.trim().length > 0) output.system.push(brief)
-      if (!enabled()) return
-      const dir = await dirForSession(input.sessionID)
-      if (!dir) return
-      // Refresh the manifest so the prompt reflects the current skill
-      // state (e.g. a pending-credentials skill that has since been
-      // supplied a secret and reloaded).
-      let m = (await activate(dir, true)) ?? manifests.get(dir)
-      if (!m || !m.skills || m.skills.length === 0) return
-      output.system.push(renderManifest(m))
+      if (brief && brief.trim().length > 0) blocks.push(brief)
+      if (enabled()) {
+        const dir = await dirForSession(input.sessionID)
+        if (dir) {
+          // Refresh the manifest so the prompt reflects the current skill
+          // state (e.g. a pending-credentials skill that has since been
+          // supplied a secret and reloaded).
+          const m = (await activate(dir, true)) ?? manifests.get(dir)
+          if (m && m.skills && m.skills.length > 0) blocks.push(renderManifest(m))
+        }
+      }
+      if (blocks.length === 0) return
+      const text = blocks.join("\n\n")
+      const last = output.system.length - 1
+      if (last < 0) output.system.push(text)
+      else output.system[last] = `${output.system[last]}\n\n${text}`
     },
 
     // --- 3: inject per-session skill env so SKILL.md env-var reads resolve (§4.1/§5.5) ---

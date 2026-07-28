@@ -3,6 +3,7 @@ package plugin
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -30,6 +31,34 @@ func TestEmbeddedSourceMatchesCanonical(t *testing.T) {
 	if string(want) != string(MultiDirSource()) {
 		t.Fatalf("embedded %s drifted from %s; re-sync the two files",
 			MultiDirFileName, canonical)
+	}
+}
+
+// TestBriefingMergesIntoExistingSystemBlock guards the invariant that the
+// plugin never increases the number of entries in OpenCode's `system`
+// array. OpenCode maps every entry to its own {role:"system"} message
+// (session/llm/request.ts), and strict OpenAI-compatible servers — Qwen
+// chat templates in particular — reject a system message at index > 0
+// with "system message must come first". The briefing and the skills
+// manifest must therefore be appended to the last existing block.
+//
+// This is a source-level guard because the repo has no TypeScript test
+// runner; if one is ever added, replace it with a real hook test.
+func TestBriefingMergesIntoExistingSystemBlock(t *testing.T) {
+	src := string(MultiDirSource())
+	for _, banned := range []string{
+		"output.system.push(brief",
+		"output.system.push(renderManifest",
+	} {
+		if strings.Contains(src, banned) {
+			t.Errorf("%s must not %s: pushing a new system block adds a second "+
+				"system message and breaks providers that require exactly one "+
+				"at index 0", MultiDirFileName, banned)
+		}
+	}
+	if !strings.Contains(src, "output.system[last] =") {
+		t.Errorf("%s no longer merges into the last system block; the "+
+			"single-system-message invariant is unenforced", MultiDirFileName)
 	}
 }
 
