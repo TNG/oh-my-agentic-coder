@@ -45,10 +45,22 @@ type launchOpts struct {
 	innerCmdOverride   string
 	noSandbox          bool
 	ephemeralCache     bool
+	cacheScope         string
 	keepRunning        bool
 	acceptSkillChanges bool
 	skipSecretPattern  bool
 	verbose            bool
+	// autoRegisterSkills, when set, silently registers discovered
+	// workdir-local skills whose required values resolve without prompting,
+	// mirroring `omac serve`'s autoRegister (serve.go). Skills with a
+	// required value that cannot resolve are NOT auto-registered — they
+	// still surface in the unregistered list so the user is prompted for
+	// values. Used by launchers (e.g. the `oco` wrapper) that run `omac
+	// start` against a freshly cloned workdir whose workdir-local skills
+	// are committed but whose per-workdir registry
+	// (.opencode/sidecar.json) is gitignored and therefore empty on every
+	// fresh checkout.
+	autoRegisterSkills bool
 	// audit flags (see internal/audit). auditLog overrides the config/default
 	// path; noAudit disables; auditStrict makes an unwritable log fatal.
 	auditLog    string
@@ -74,11 +86,13 @@ func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, bool)
 		profile            = fs.String("sandbox", "", "Name of a sandbox profile from the launcher config.")
 		innerCmdOverride   = fs.String("inner", "", "Override inner_cmd's executable.")
 		noSandbox          = fs.Bool("no-sandbox", false, "Run inner command directly, without a sandbox (debug only).")
-		ephemeralCache     = fs.Bool("ephemeral-cache", false, "Use a per-launch cache instead of the persistent workdir cache.")
+		ephemeralCache     = fs.Bool("ephemeral-cache", false, "Use a per-launch cache instead of the persistent cache.")
+		cacheScope         = fs.String("cache-scope", "", "Persistent cache scope: global, config, or workdir. Overrides config (default: global).")
 		keepRunning        = fs.Bool("keep-running", false, "Do not stop sidecars when the inner command exits.")
 		acceptSkillChanges = fs.Bool("accept-skill-changes", false, "Tolerate bundle_hash drift in registered skills (proceed even if the on-disk skill differs from what was registered).")
 		skipSecretPattern  = fs.Bool("skip-secret-pattern", false, "Do not enforce a secret's pattern against an env_passthrough-supplied value (escape hatch for an outdated pattern; the raw value is still passed through).")
 		verbose            = fs.Bool("verbose", false, "Verbose lifecycle logging.")
+		autoRegisterSkills = fs.Bool("auto-register-skills", false, "Silently register discovered workdir-local skills whose required values resolve without prompting, instead of refusing to start. Skills with unresolved required values still prompt via `omac register`.")
 		auditLog           = fs.String("audit-log", "", "Path to the audit log (default: persistent central location). Overrides config.")
 		noAudit            = fs.Bool("no-audit", false, "Disable the security audit trail.")
 		auditStrict        = fs.Bool("audit-strict", false, "Fail-closed: abort if the audit log cannot be written.")
@@ -123,6 +137,12 @@ func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, bool)
 		fmt.Fprintf(env.Stderr, "omac %s: --ephemeral-cache cannot be used with --no-sandbox\n", cmdName)
 		return launchOpts{}, false
 	}
+	if *cacheScope != "" {
+		if _, err := config.ValidateCacheScope(*cacheScope); err != nil {
+			fmt.Fprintf(env.Stderr, "omac %s: %v\n", cmdName, err)
+			return launchOpts{}, false
+		}
+	}
 	innerArgs = append(fs.Args(), innerArgs...)
 	return launchOpts{
 		label:              cmdName,
@@ -131,10 +151,12 @@ func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, bool)
 		innerCmdOverride:   *innerCmdOverride,
 		noSandbox:          *noSandbox,
 		ephemeralCache:     *ephemeralCache,
+		cacheScope:         *cacheScope,
 		keepRunning:        *keepRunning,
 		acceptSkillChanges: *acceptSkillChanges,
 		skipSecretPattern:  *skipSecretPattern,
 		verbose:            *verbose,
+		autoRegisterSkills: *autoRegisterSkills,
 		auditLog:           *auditLog,
 		noAudit:            *noAudit,
 		auditStrict:        *auditStrict,
@@ -178,6 +200,7 @@ func runLaunch(env *Env, opts launchOpts) int {
 	skipSecretPattern := opts.skipSecretPattern
 	verbose := opts.verbose
 	innerArgs := opts.innerArgs
+	autoRegisterSkills := opts.autoRegisterSkills
 
 	// Diagnostics are prefixed with the invoking subcommand so a failure
 	// surfaced through `omac continue`/`omac resume` is not mislabeled.
@@ -304,6 +327,64 @@ func runLaunch(env *Env, opts launchOpts) int {
 	// name.
 	reg := mergeRegistries(globalReg, workdirReg)
 
+	// Load the config stores once before auto-registration eligibility and
+	// runtime resolution. A broken store is a launch-wide I/O failure, not a
+	// per-skill condition that can be deferred to registration guidance.
+	workdirCfg, err := skillconfig.Load(env.Workdir)
+	if err != nil {
+		fmt.Fprintln(env.Stderr, prefix+": skill-config:", err)
+		return ExitIOError
+	}
+	globalCfg, err := skillconfig.LoadGlobal()
+	if err != nil {
+		fmt.Fprintln(env.Stderr, prefix+": global skill-config:", err)
+		return ExitIOError
+	}
+	// Merge config the same way as the registry: workdir values
+	// override global values per (skill, field).
+	configStore := mergeConfig(globalCfg, workdirCfg)
+
+	// 2a-bis. Optional auto-registration of workdir-local skills whose
+	//         required values resolve without prompting. Mirrors `omac
+	//         serve`'s autoRegister (serve.go): the workdir-local skill
+	//         source roots are scanned, and every discovered skill absent
+	//         from the registry whose omac.yaml sidecar has all required
+	//         values resolved is registered silently. Skills with
+	//         unresolved required values are left untouched so the
+	//         findUnregisteredSkills gate below still surfaces them and
+	//         prompts the user.
+	//
+	//         This is the path launchers like the `oco` wrapper use to
+	//         avoid forcing the user to run `omac register` on every
+	//         fresh workdir whose committed skills ship with a
+	//         gitignored per-workdir registry (the documented default
+	//         for omac's own repo and any repo that ships example
+	//         skills).
+	if autoRegisterSkills {
+		registered, errs, err := startAutoRegisterWorkdirSkills(env, harness, reg, configStore, skipSecretPattern)
+		if err != nil {
+			fmt.Fprintln(env.Stderr, prefix+": keychain:", err)
+			return ExitKeychainError
+		}
+		for _, r := range registered {
+			fmt.Fprintf(env.Stderr, "[ok] auto-registered skill %s (no prompting required)\n", r)
+		}
+		for _, e := range errs {
+			fmt.Fprintln(env.Stderr, prefix+": auto-register:", e)
+		}
+		if len(registered) > 0 {
+			// Reload the workdir registry + re-merge so the gate and
+			// the rest of start see the freshly-registered skills.
+			workdirReg, err = registry.Load(env.Workdir)
+			if err != nil {
+				fmt.Fprintln(env.Stderr, prefix+": registry:", err)
+				return ExitIOError
+			}
+			workdirReg = filterRegistryByHarness(workdirReg, env.Workdir, harness)
+			reg = mergeRegistries(globalReg, workdirReg)
+		}
+	}
+
 	// 2b. Refuse if any unregistered skill exists under any of the
 	//     skill source roots (workdir-local .agents/skills and
 	//     .opencode/skills, plus the user-global layers — see the
@@ -369,20 +450,6 @@ func runLaunch(env *Env, opts launchOpts) int {
 			allSecrets[i].Zero()
 		}
 	}()
-
-	workdirCfg, err := skillconfig.Load(env.Workdir)
-	if err != nil {
-		fmt.Fprintln(env.Stderr, prefix+": skill-config:", err)
-		return ExitIOError
-	}
-	globalCfg, err := skillconfig.LoadGlobal()
-	if err != nil {
-		fmt.Fprintln(env.Stderr, prefix+": global skill-config:", err)
-		return ExitIOError
-	}
-	// Merge config the same way as the registry: workdir values
-	// override global values per (skill, field).
-	configStore := mergeConfig(globalCfg, workdirCfg)
 
 	// Per-class problem accumulators. Each maps a hint template to
 	// the affected skill names so we can render "do X for these N
@@ -641,7 +708,12 @@ func runLaunch(env *Env, opts launchOpts) int {
 	if verbose {
 		fmt.Fprintf(env.Stderr, "[verbose] sandbox TMPDIR: %s\n", sandboxTmp)
 	}
-	cacheScope, err := prepareLaunchCache(noSandbox, opts.ephemeralCache, env.Workdir, sandboxTmp)
+	scope, err := resolveCacheScope(lc.Cache, opts.cacheScope)
+	if err != nil {
+		fmt.Fprintln(env.Stderr, prefix+": cache:", err)
+		return ExitConfigInvalid
+	}
+	cacheScope, err := prepareLaunchCache(noSandbox, opts.ephemeralCache, scope, env.Workdir, cfgPath, sandboxTmp)
 	if err != nil {
 		if opts.ephemeralCache {
 			fmt.Fprintln(env.Stderr, prefix+": cache:", err)
@@ -903,24 +975,63 @@ func runLaunch(env *Env, opts launchOpts) int {
 	auditor.Emit(audit.SessionStart(env.Version, harness.Name, profName, sandboxBackend))
 	auditor.Emit(audit.InnerExec(argv, profName, sandboxed))
 
+	// The post-exit hint needs the id of the session this run created. opencode
+	// self-reports it via the control plane (the omac plugin POSTs
+	// /__omac__/session), so the pre-exec enumeration is skipped for it:
+	// `opencode session list` runs before the inner launches and can block
+	// indefinitely. Other harnesses enumerate here — cheap on-disk reads — to
+	// tell a fresh session apart from a sibling active in the same workdir (#145).
+	selfReportsSession := harness.Session != nil && harness.Session.ListKind == config.SessionListOpenCodeCLI
+	var priorSessions map[string]struct{}
+	if harness.Session != nil && len(harness.Session.ContinueArgs) > 0 && !selfReportsSession {
+		// Bounded: the snapshot only sharpens the resume hint, so it must never
+		// delay the inner launch. `omac start` waits at most hintTimeout for it.
+		priorSessions = boundedKnownIDs(func() map[string]struct{} {
+			return session.KnownIDs(harness, env.Workdir)
+		}, hintTimeout)
+	}
+
 	code, err := sandbox.ExecWithReady(argv, extra, nil)
 	auditor.Emit(audit.SessionStop(code))
 	if err != nil {
 		fmt.Fprintln(env.Stderr, prefix+": exec:", err)
 		return ExitSandboxAbnormal
 	}
-	printContinueHint(env, harness)
+	resumed := opts.sessionID
+	if resumed == "" && selfReportsSession {
+		resumed = reloader.reportedSession()
+	}
+	printContinueHint(env, harness, resumed, priorSessions)
 	return code
 }
 
-func prepareLaunchCache(noSandbox, ephemeral bool, workdir, sandboxTmp string) (*toolcache.Scope, error) {
+func prepareLaunchCache(noSandbox, ephemeral bool, scope config.CacheScope, workdir, cfgPath, sandboxTmp string) (*toolcache.Scope, error) {
 	if noSandbox {
 		return nil, nil
 	}
 	if ephemeral {
 		return toolcache.PrepareEphemeral(sandboxTmp)
 	}
-	return toolcache.PreparePersistent(toolcache.DomainWorkdir, workdir)
+	switch scope {
+	case config.CacheScopeWorkdir:
+		return toolcache.PreparePersistent(toolcache.DomainWorkdir, workdir)
+	case config.CacheScopeConfig:
+		if cfgPath != "" {
+			return toolcache.PreparePersistent(toolcache.DomainConfig, cfgPath)
+		}
+		return toolcache.PrepareShared()
+	default:
+		return toolcache.PrepareShared()
+	}
+}
+
+// resolveCacheScope merges the config's cache scope with an optional
+// --cache-scope flag override (precedence: flag > config > default global).
+func resolveCacheScope(cfg config.CacheConfig, override string) (config.CacheScope, error) {
+	if override != "" {
+		return config.ValidateCacheScope(override)
+	}
+	return cfg.Resolve()
 }
 
 // continueHintToken returns the harness token to embed in the post-exit
@@ -947,8 +1058,22 @@ func continueHintToken(h config.Harness) string {
 // session strategy yields no sessions → no hint (never an error, never
 // blocks). Reuses session.List — the same path `omac resume` takes — so the
 // hint only appears when continue would actually find a session.
-func printContinueHint(env *Env, harness config.Harness) {
+//
+// resumedID is the session this run is known to have re-entered (omac continue
+// -s / omac resume), or "" for a fresh session. prior is the set of session
+// ids that existed before launch (see hintSessionID for how both steer the
+// selection).
+func printContinueHint(env *Env, harness config.Harness, resumedID string, prior map[string]struct{}) {
 	if harness.Session == nil || len(harness.Session.ContinueArgs) == 0 {
+		return
+	}
+	// When the session that ran is already known — an explicit resume, or a
+	// harness that self-reported its id via the control plane — advertise it
+	// directly. No enumeration needed (and for opencode none is attempted, so a
+	// slow/blocking `session list` never runs).
+	if resumedID != "" {
+		fmt.Fprintf(env.Stderr, "\nTo resume this session: omac continue%s -s %s\n",
+			continueHintToken(harness), resumedID)
 		return
 	}
 	// session.List may shell out to the harness CLI (opencode: ~500ms) or
@@ -969,7 +1094,7 @@ func printContinueHint(env *Env, harness config.Harness) {
 		if r.err != nil {
 			return
 		}
-		id, ok := hintSessionID(r.sessions)
+		id, ok := hintSessionID(r.sessions, resumedID, prior)
 		if !ok {
 			return
 		}
@@ -980,12 +1105,32 @@ func printContinueHint(env *Env, harness config.Harness) {
 	}
 }
 
-// hintSessionID picks the session id to advertise in the continue hint: the
-// most-recently-updated session, which session.List guarantees at index 0.
-// It returns ok=false when there is nothing resumable (empty list, or a
-// leading entry with no id). Kept as a pure function so this selection is
-// unit-testable without printContinueHint's goroutine and timeout.
-func hintSessionID(sessions []session.Session) (string, bool) {
+// hintSessionID picks the session id to advertise in the continue hint.
+//
+// When this run resumed a known session (omac continue -s / omac resume),
+// resumedID is advertised verbatim — it is exactly the session that ran.
+// Otherwise the run created a fresh session: the most-recent session absent
+// from prior (the snapshot of ids taken before launch) is that new session, so
+// a sibling session that stayed active in the same workdir is never advertised
+// (issue #141). When nothing is new — the snapshot was unavailable, or the
+// harness reused an id — it falls back to the most-recent session, preserving
+// the previous best-effort behavior.
+//
+// sessions is newest-first, as session.List guarantees. Returns ok=false only
+// when there is nothing resumable. Kept pure so the selection is unit-testable
+// without printContinueHint's goroutine and timeout.
+func hintSessionID(sessions []session.Session, resumedID string, prior map[string]struct{}) (string, bool) {
+	if resumedID != "" {
+		return resumedID, true
+	}
+	for _, s := range sessions {
+		if s.ID == "" {
+			continue
+		}
+		if _, seen := prior[s.ID]; !seen {
+			return s.ID, true
+		}
+	}
 	if len(sessions) == 0 || sessions[0].ID == "" {
 		return "", false
 	}
@@ -996,6 +1141,25 @@ func hintSessionID(sessions []session.Session) (string, bool) {
 // the harness's session list. opencode shells out to its CLI; 2s is plenty
 // on a warm cache and a sane ceiling for the pathological slow case.
 const hintTimeout = 2 * time.Second
+
+// boundedKnownIDs runs the prior-session enumeration but never waits longer
+// than d for it. The snapshot only sharpens the post-exit resume hint (#145),
+// so a slow or stuck session store must never stall the inner launch: on
+// timeout we return an empty snapshot and carry on (best-effort, matching
+// printContinueHint). This is the structural guarantee that `omac start` never
+// waits indefinitely on session listing — the regression guard for the
+// opencode-session-list hang. enumerate is injected so the bound is testable
+// without real session I/O.
+func boundedKnownIDs(enumerate func() map[string]struct{}, d time.Duration) map[string]struct{} {
+	ch := make(chan map[string]struct{}, 1)
+	go func() { ch <- enumerate() }()
+	select {
+	case ids := <-ch:
+		return ids
+	case <-time.After(d):
+		return nil
+	}
+}
 
 // secretFromEnv returns the host value that will satisfy a keychain-absent
 // secret at runtime, if any. It returns ok=true only when the secret is
@@ -1175,6 +1339,177 @@ func findUnregisteredSkills(workdir string, harness config.Harness, reg *registr
 		}
 	}
 	sort.Strings(out)
+	return out, nil
+}
+
+// startAutoRegisterWorkdirSkills silently registers every discovered
+// workdir-local skill (Kind == "workdir") that is absent from reg AND
+// whose omac.yaml sidecar has every required value resolved without
+// prompting. Mirrors `omac serve`'s autoRegister (serve.go), but
+// scoped to values that are resolved at launch so a skill with a missing
+// keychain secret or config value still surfaces through
+// findUnregisteredSkills and prompts the user — auto-registration never
+// silently skips a registration prompt that would otherwise have asked
+// for a value.
+//
+// Returns the names of skills that were registered (sorted), per-skill
+// diagnostics for metadata/registration failures, and a fatal keychain read
+// error. Metadata errors remain diagnostic so one malformed skill does not
+// hide actionable results for other skills.
+func startAutoRegisterWorkdirSkills(env *Env, harness config.Harness, reg *registry.Registry, configStore *skillconfig.Store, skipSecretPattern bool) ([]string, []string, error) {
+	discovered, err := skillsource.Discover(env.Workdir, harness)
+	if err != nil {
+		return nil, []string{fmt.Sprintf("scan skills: %v", err)}, nil
+	}
+	registered := map[string]struct{}{}
+	for _, e := range reg.Registered {
+		registered[e.Name] = struct{}{}
+	}
+	var done []string
+	var errs []string
+	for _, ent := range discovered {
+		if ent.Kind != "workdir" {
+			continue // user-global skills are registered once, globally
+		}
+		if _, ok := registered[ent.Name]; ok {
+			continue
+		}
+		meta, err := config.LoadMeta(filepath.Join(ent.Dir, config.MetaFileName))
+		if err != nil {
+			errs = append(errs, fmt.Sprintf("%s: %v", ent.Name, err))
+			continue
+		}
+		eligible, err := skillEligibleForAutoRegister(env.Workdir, ent.Name, meta, configStore, skipSecretPattern)
+		if err != nil {
+			return done, errs, err
+		}
+		if !eligible {
+			// A required secret/field is the user's signal to run
+			// `omac register` themselves; we don't auto-register so
+			// the findUnregisteredSkills gate below still surfaces it.
+			continue
+		}
+		if _, err := startAutoRegisterOne(env.Workdir, ent); err != nil {
+			errs = append(errs, fmt.Sprintf("%s: %v", ent.Name, err))
+			continue
+		}
+		done = append(done, ent.Name)
+	}
+	sort.Strings(done)
+	return done, errs, nil
+}
+
+// skillEligibleForAutoRegister reports whether parsed metadata is eligible
+// for silent auto-registration: it must have a sidecar block, and every
+// declared secret/config field must be satisfiable at start time WITHOUT
+// prompting the user.
+//
+// "Satisfiable without prompting" mirrors the resolution precedence in
+// runLaunch (start.go):
+//   - a required secret is satisfiable when its workdir-scoped or unscoped
+//     keychain value exists; only when both are absent can a non-empty
+//     env_passthrough value satisfy it, subject to its pattern unless
+//     skipSecretPattern is set;
+//   - a required config field is satisfiable from the merged stored
+//     workdir/global config, then a non-empty default, then a non-empty
+//     DefaultFromEnv host environment value.
+//
+// A skill with at least one required-and-unsatisfiable secret/field is
+// NOT eligible — the findUnregisteredSkills gate surfaces it so the
+// user is prompted for the missing value.
+func skillEligibleForAutoRegister(workdir, skillName string, m *config.Meta, configStore *skillconfig.Store, skipSecretPattern bool) (eligible bool, err error) {
+	if m.Sidecar == nil {
+		return false, nil
+	}
+	passthrough := map[string]struct{}{}
+	for _, name := range m.Sidecar.EnvPassthrough {
+		passthrough[name] = struct{}{}
+	}
+	for _, sp := range m.Sidecar.Secrets {
+		if !sp.IsRequired() {
+			continue
+		}
+		keychainValue, err := keychain.GetWithFallback(keychain.WorkdirID(workdir), skillName, sp.Name)
+		if err == nil {
+			keychainValue.Zero()
+			continue
+		}
+		if !errors.Is(err, keychain.ErrNotFound) {
+			return false, err
+		}
+		envValue, suppliedByEnv := secretFromEnv(sp.Name, passthrough)
+		if suppliedByEnv {
+			if !skipSecretPattern {
+				if err := validatePattern(sp, envValue); err != nil {
+					return false, nil
+				}
+			}
+			continue
+		}
+		return false, nil
+	}
+	for _, fp := range m.Sidecar.Config {
+		if !fp.IsRequired() {
+			continue
+		}
+		if _, ok := configStore.Get(skillName, fp.Name); ok {
+			continue
+		}
+		if fp.Default != "" {
+			continue
+		}
+		if fp.DefaultFromEnv != "" {
+			if value, ok := os.LookupEnv(fp.DefaultFromEnv); ok && value != "" {
+				continue
+			}
+		}
+		return false, nil
+	}
+	return true, nil
+}
+
+// startAutoRegisterOne writes a registry entry for a discovered
+// workdir-local skill without prompting, mirroring serve.go's autoRegister.
+func startAutoRegisterOne(workdir string, ent skillsource.Entry) (*registry.Entry, error) {
+	bundle, err := config.BundleHash(ent.Dir)
+	if err != nil {
+		return nil, err
+	}
+	m, err := config.LoadMeta(filepath.Join(ent.Dir, config.MetaFileName))
+	if err != nil {
+		return nil, err
+	}
+	declared := make([]string, 0, len(m.Sidecar.Secrets))
+	for _, sp := range m.Sidecar.Secrets {
+		declared = append(declared, sp.Name)
+	}
+	var out *registry.Entry
+	err = registry.WithLock(workdir, func() error {
+		reg, err := registry.Load(workdir)
+		if err != nil {
+			return err
+		}
+		stored := ent.Dir
+		if rel, rerr := filepath.Rel(workdir, ent.Dir); rerr == nil {
+			stored = rel
+		}
+		reg.Upsert(registry.Entry{
+			Name:                ent.Name,
+			SkillDir:            stored,
+			BundleHash:          bundle,
+			RegisteredAt:        time.Now().UTC(),
+			DeclaredSecretNames: declared,
+		})
+		if err := registry.Save(workdir, reg); err != nil {
+			return err
+		}
+		e, _ := reg.Find(ent.Name)
+		out = e
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
 	return out, nil
 }
 

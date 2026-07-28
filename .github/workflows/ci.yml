@@ -203,3 +203,63 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: go test -count=1 -run '^TestIntegration.*Cache' ./internal/sandboxrun
       - run: go test -tags=e2e -count=1 -timeout=15m -run '^TestE2ECache' ./internal/e2e/
+
+  external-tooling:
+    # Proves proxy-unaware / proxy-aware external toolchains actually reach
+    # the network through the omac filtering proxy under a filtered bwrap
+    # sandbox (build tag `external_tools`): curl (honors HTTP(S)_PROXY),
+    # Node's native fetch via the `node` proxy_injection family
+    # (NODE_USE_ENV_PROXY, Node >= 24), and the JVM via the `jvm`
+    # proxy_injection family (JAVA_TOOL_OPTIONS, any modern JDK). Split out
+    # from the main test job because it needs a real tool matrix (bubblewrap
+    # + Landlock ABI >= 4 + curl + Node 24 + JDK) that the hermetic unit
+    # tests don't; keeping it separate keeps `go test ./...` free of that
+    # runtime dependency. Linux-only: the kernel proxy/Landlock path is
+    # Linux-specific.
+    name: "External tooling (proxy egress)"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install bubblewrap
+        run: |
+          sudo apt-get update && sudo apt-get install -y bubblewrap
+          # Ubuntu 24.04 AppArmor restricts unprivileged user namespaces;
+          # grant bwrap the userns permission (see the test job above) so the
+          # sandbox launches instead of silently skipping via requireBwrap.
+          sudo tee /etc/apparmor.d/bwrap > /dev/null <<'EOF'
+          abi <abi/4.0>,
+          /usr/bin/bwrap flags=(unconfined) {
+            userns,
+          }
+          EOF
+          sudo apparmor_parser -r /etc/apparmor.d/bwrap
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      # The jvm proxy_injection family test compiles a small Java probe with
+      # javac and runs it with java inside the sandbox. Temurin is the default
+      # JDK on ubuntu-latest via setup-java; javac is bundled in the JDK.
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      # The lint job runs staticcheck without build tags, so it never sees
+      # the external_tools files. Vet them here or they go unanalysed.
+      - name: Vet tagged sources
+        run: go vet -tags=external_tools ./internal/sandboxrun/
+
+      - name: Run external-tooling proxy tests
+        run: go test -tags=external_tools -count=1 -timeout=10m ./internal/sandboxrun/

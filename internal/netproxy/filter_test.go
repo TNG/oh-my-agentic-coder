@@ -65,7 +65,7 @@ type fakePrompter struct {
 	res   PromptResult
 }
 
-func (p *fakePrompter) Prompt(host string, port int) PromptResult {
+func (p *fakePrompter) Prompt(ctx context.Context, host string, port int) PromptResult {
 	p.mu.Lock()
 	p.calls++
 	p.mu.Unlock()

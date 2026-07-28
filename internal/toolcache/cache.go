@@ -22,6 +22,12 @@ type Domain string
 const (
 	DomainWorkdir Domain = "workdir"
 	DomainServe   Domain = "serve"
+	// DomainShared is a single persistent cache reused across every workdir.
+	// It backs the default "global" cache scope.
+	DomainShared Domain = "shared"
+	// DomainConfig keys the cache on a launcher config file path, so all
+	// workdirs governed by that config share one cache ("config" scope).
+	DomainConfig Domain = "config"
 )
 
 type Scope struct {
@@ -43,14 +49,21 @@ func DescribePersistent(domain Domain, path string) (Scope, error) {
 	if err != nil {
 		return Scope{}, err
 	}
+	return describe(domain, "v1:"+string(domain)+":"+canonical, canonical)
+}
 
-	identity := "v1:" + string(domain) + ":" + canonical
+// DescribeShared returns the single shared persistent scope, independent of
+// any workdir. Its identity is a constant so all callers resolve to one dir.
+func DescribeShared() (Scope, error) {
+	return describe(DomainShared, "v1:"+string(DomainShared), "")
+}
+
+func describe(domain Domain, identity, canonical string) (Scope, error) {
 	digest := sha256.Sum256([]byte(identity))
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return Scope{}, err
 	}
-
 	return Scope{
 		Domain:        domain,
 		Mode:          ModePersistent,
@@ -66,6 +79,19 @@ func PreparePersistent(domain Domain, path string) (*Scope, error) {
 	if err != nil {
 		return nil, err
 	}
+	return prepare(scope)
+}
+
+// PrepareShared locks and prepares the single shared persistent scope.
+func PrepareShared() (*Scope, error) {
+	scope, err := DescribeShared()
+	if err != nil {
+		return nil, err
+	}
+	return prepare(scope)
+}
+
+func prepare(scope Scope) (*Scope, error) {
 	lock, err := acquireLock(filepath.Dir(scope.Dir), scope.Digest, syscall.LOCK_SH)
 	if err != nil {
 		return nil, err

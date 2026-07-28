@@ -52,6 +52,12 @@ func newDiagSink(stderr io.Writer) *diagSink {
 	return d
 }
 
+// DiagLogPath returns the path of the sandbox runtime diagnostics log
+// (~/.local/state/omac/sandbox.log), where per-connection allow/deny
+// decisions are recorded during TTY sessions. `omac diagnose` uses it to
+// point users at the raw human-readable log.
+func DiagLogPath() (string, error) { return defaultDiagLogPath() }
+
 func defaultDiagLogPath() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {

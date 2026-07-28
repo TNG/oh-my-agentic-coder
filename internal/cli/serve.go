@@ -56,7 +56,8 @@ func runServe(args []string, env *Env) int {
 		innerCmdOverride = fs.String("inner", "", "Override inner_cmd's executable (default: opencode serve).")
 		noSandbox        = fs.Bool("no-sandbox", false, "Run the inner command directly, without a sandbox (debug only).")
 		noInner          = fs.Bool("no-inner", false, "Do not launch any inner command; run the control plane only (testing/headless).")
-		ephemeralCache   = fs.Bool("ephemeral-cache", false, "Use a per-launch cache instead of the persistent serve cache.")
+		ephemeralCache   = fs.Bool("ephemeral-cache", false, "Use a per-launch cache instead of the persistent cache.")
+		cacheScopeFlag   = fs.String("cache-scope", "", "Persistent cache scope: global, config, or workdir. Overrides config (default: global).")
 		verbose          = fs.Bool("verbose", false, "Verbose lifecycle logging.")
 		forDesktop       = fs.Bool("for-opencode-desktop", false, "Grant every project worktree from the local OpenCode state (Desktop projects) read+write in the sandbox.")
 		learn            = fs.Bool("learn", false, "Learn mode: do not restrict filesystem access; record folders used and offer to add them to the sandbox profile at session end.")
@@ -100,9 +101,15 @@ func runServe(args []string, env *Env) int {
 		fmt.Fprintln(env.Stderr, "omac serve: --ephemeral-cache cannot be used with --no-sandbox")
 		return ExitMisuse
 	}
+	if *cacheScopeFlag != "" {
+		if _, err := config.ValidateCacheScope(*cacheScopeFlag); err != nil {
+			fmt.Fprintln(env.Stderr, "omac serve:", err)
+			return ExitMisuse
+		}
+	}
 	innerArgs = append(fs.Args(), innerArgs...)
 
-	lc, _, err := config.LoadLauncher(env.Workdir)
+	lc, cfgPath, err := config.LoadLauncher(env.Workdir)
 	if err != nil {
 		fmt.Fprintln(env.Stderr, "omac serve: launcher config:", err)
 		return ExitConfigInvalid
@@ -218,7 +225,12 @@ func runServe(args []string, env *Env) int {
 		return ExitIOError
 	}
 	defer os.RemoveAll(sandboxTmp)
-	cacheScope, err := prepareServeCache(*noSandbox, *noInner, *ephemeralCache, *workdir, env.Workdir, sandboxTmp)
+	scope, err := resolveCacheScope(lc.Cache, *cacheScopeFlag)
+	if err != nil {
+		fmt.Fprintln(env.Stderr, "omac serve: cache:", err)
+		return ExitConfigInvalid
+	}
+	cacheScope, err := prepareServeCache(*noSandbox, *noInner, *ephemeralCache, scope, *workdir, env.Workdir, cfgPath, sandboxTmp)
 	if err != nil {
 		fmt.Fprintln(env.Stderr, "omac serve: cache:", err)
 		return ExitIOError
@@ -1425,17 +1437,30 @@ func (s *serveServer) baseEnv() map[string]string {
 	return extra
 }
 
-func prepareServeCache(noSandbox, noInner, ephemeral bool, explicitWorkdir, launchWorkdir, sandboxTmp string) (*toolcache.Scope, error) {
+func prepareServeCache(noSandbox, noInner, ephemeral bool, scope config.CacheScope, explicitWorkdir, launchWorkdir, cfgPath, sandboxTmp string) (*toolcache.Scope, error) {
 	if noSandbox || noInner {
 		return nil, nil
 	}
 	if ephemeral {
 		return toolcache.PrepareEphemeral(sandboxTmp)
 	}
-	if explicitWorkdir != "" {
-		return toolcache.PreparePersistent(toolcache.DomainWorkdir, explicitWorkdir)
+	switch scope {
+	case config.CacheScopeWorkdir:
+		// Per-workdir isolation only maps to a single served directory; a
+		// multi-dir serve shares one sandbox, so fall back to the per-launch
+		// serve cache when no --workdir is pinned.
+		if explicitWorkdir != "" {
+			return toolcache.PreparePersistent(toolcache.DomainWorkdir, explicitWorkdir)
+		}
+		return toolcache.PreparePersistent(toolcache.DomainServe, launchWorkdir)
+	case config.CacheScopeConfig:
+		if cfgPath != "" {
+			return toolcache.PreparePersistent(toolcache.DomainConfig, cfgPath)
+		}
+		return toolcache.PrepareShared()
+	default:
+		return toolcache.PrepareShared()
 	}
-	return toolcache.PreparePersistent(toolcache.DomainServe, launchWorkdir)
 }
 
 // facadeMounts returns the set of facade mount segments to advertise to the

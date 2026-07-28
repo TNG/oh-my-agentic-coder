@@ -221,7 +221,7 @@ func TestRegistryDenyHintWrapWidth(t *testing.T) {
 // the registry is exactly the context that makes a useful intent, and the
 // remedy is the intent round-trip — not a deny rule to remove.
 func TestDenyBodyNeedsIntentCarriesRegistryHint(t *testing.T) {
-	body := denyBody("registry.npmjs.org", "prompt:needs_intent")
+	body := denyBody("registry.npmjs.org", Verdict{Reason: "prompt:needs_intent"})
 	if !strings.Contains(body, "package registry") {
 		t.Errorf("needs_intent body should carry the registry note;\ngot:\n%s", body)
 	}
@@ -239,7 +239,7 @@ func TestDenyBodyNeedsIntentCarriesRegistryHint(t *testing.T) {
 // to edit — while the registry hint below it correctly said nothing was denied
 // by policy. Editing allow_domain cannot make a name resolve.
 func TestDenyBodyDNSFailureDoesNotClaimPolicy(t *testing.T) {
-	body := denyBody("registry.corp.example.com", "dns resolution failed")
+	body := denyBody("registry.corp.example.com", Verdict{Reason: "dns resolution failed"})
 	if strings.Contains(body, "DENIED BY THE SANDBOX network policy") {
 		t.Errorf("resolution failure is not a policy denial;\ngot:\n%s", body)
 	}
@@ -261,13 +261,39 @@ func TestDenyBodyHardDenyDoesNotOfferAllowlist(t *testing.T) {
 		"hard-deny link-local address",
 		"hard-deny: resolves to link-local",
 	} {
-		body := denyBody("metadata.google.internal", reason)
+		body := denyBody("metadata.google.internal", Verdict{Reason: reason})
 		if strings.Contains(body, "allow_domain") {
 			t.Errorf("reason %q: allow_domain cannot override a hard-deny;\ngot:\n%s", reason, body)
 		}
 		if !strings.Contains(body, "cannot be overridden") {
 			t.Errorf("reason %q: body should say the guard is not overridable;\ngot:\n%s", reason, body)
 		}
+	}
+}
+
+// TestDenyBodyDeclinedIntentOmitsRegistryHint resolves a conflict between two
+// correct behaviours that met in the merge with #157. When the user has
+// reviewed a declared intent and declined it, the intent hint says: do not
+// retry. The registry hint's prompt:deny remedy says: re-run and choose Allow.
+// On this path the decision has already been made on full information, so the
+// registry note is withheld — offering install guidance would invite the loop
+// the intent hint exists to close. A plain prompt:deny with nothing on file is
+// unaffected and keeps its remedy.
+func TestDenyBodyDeclinedIntentOmitsRegistryHint(t *testing.T) {
+	declined := denyBody("registry.npmjs.org", Verdict{
+		Reason:       "prompt:deny",
+		IntentReason: "install the @tngtech opencode plugin",
+	})
+	if strings.Contains(declined, "package registry") {
+		t.Errorf("declined-intent body must not carry install guidance;\ngot:\n%s", declined)
+	}
+	if !strings.Contains(declined, "declined it") {
+		t.Errorf("declined-intent body should say the user declined;\ngot:\n%s", declined)
+	}
+
+	undeclared := denyBody("registry.npmjs.org", Verdict{Reason: "prompt:deny"})
+	if !strings.Contains(undeclared, "package registry") {
+		t.Errorf("plain prompt:deny should still carry the registry note;\ngot:\n%s", undeclared)
 	}
 }
 
@@ -302,7 +328,7 @@ func TestDenyBodyKeepsPolicyTextForPolicyDenials(t *testing.T) {
 		"deny_domain",
 		"learned permanent deny",
 	} {
-		body := denyBody("registry.npmjs.org", reason)
+		body := denyBody("registry.npmjs.org", Verdict{Reason: reason})
 		if !strings.Contains(body, "DENIED BY THE SANDBOX network policy") {
 			t.Errorf("reason %q: should attribute the denial to the sandbox;\ngot:\n%s", reason, body)
 		}
@@ -352,11 +378,11 @@ func TestRegistryUpstreamHintFiresOnlyForRegistries(t *testing.T) {
 // TestDenyBodyAppendsRegistryHint confirms the hint reaches the body the client
 // receives on a policy denial (the elegant single hook point).
 func TestDenyBodyAppendsRegistryHint(t *testing.T) {
-	body := denyBody("registry.npmjs.org", "prompt unavailable: on_unavailable=deny")
+	body := denyBody("registry.npmjs.org", Verdict{Reason: "prompt unavailable: on_unavailable=deny"})
 	if !strings.Contains(body, "looks like a package registry") {
 		t.Errorf("denyBody should append the registry hint;\ngot:\n%s", body)
 	}
-	plain := denyBody("api.anthropic.com", "prompt unavailable: on_unavailable=deny")
+	plain := denyBody("api.anthropic.com", Verdict{Reason: "prompt unavailable: on_unavailable=deny"})
 	if strings.Contains(plain, "looks like a package registry") {
 		t.Errorf("denyBody should not append the registry hint for a non-registry host;\ngot:\n%s", plain)
 	}

@@ -2,6 +2,7 @@ package intent
 
 import (
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -38,6 +39,146 @@ func TestRegistryExplainMore(t *testing.T) {
 	nilReg.MarkExplainMore("x")
 	if nilReg.ConsumeExplainMore("x") {
 		t.Error("nil registry should return false")
+	}
+}
+
+func TestRegistryClearExplainMore(t *testing.T) {
+	r := New(time.Minute)
+	t.Cleanup(r.Close)
+
+	// Clear retires the flag so a later Consume sees nothing; case-insensitive
+	// and normalized the same way as Mark/Consume.
+	r.MarkExplainMore("Example.COM")
+	r.ClearExplainMore("https://example.com/x")
+	if r.ConsumeExplainMore("example.com") {
+		t.Error("cleared host should no longer be marked")
+	}
+
+	// Idempotent and nil-safe: clearing an unset host or a nil registry is a no-op.
+	r.ClearExplainMore("never.marked")
+	var nilReg *Registry
+	nilReg.ClearExplainMore("x")
+}
+
+// TestRegistryRecordAndClearExplainMore guards the serialized behavior of the
+// composite operation: it records the intent and retires the explain-more
+// flag in one step, so a later GET fallback sees the declared hint, not the
+// explain-more re-ask. Also covers the edge the spec called out: an empty
+// reason still retires a stale flag (mirroring ClearExplainMore), so a no-op
+// POST cannot leave the "re-declare and retry" hint live.
+func TestRegistryRecordAndClearExplainMore(t *testing.T) {
+	r := New(time.Minute)
+	t.Cleanup(r.Close)
+
+	// Mark the host, then retire the flag by posting a fuller intent.
+	r.MarkExplainMore("api.example.com")
+	r.RecordAndClearExplainMore("api.example.com", "fetch signed release notes")
+
+	// The flag is retired: a later consume sees nothing.
+	if r.ConsumeExplainMore("api.example.com") {
+		t.Error("composite op should retire the explain-more flag")
+	}
+	// The intent itself was recorded.
+	if e, ok := r.Lookup("api.example.com"); !ok || e.Reason != "fetch signed release notes" {
+		t.Errorf("intent not recorded: %+v ok=%v", e, ok)
+	}
+
+	// Empty reason does not record an entry but still retires a stale flag.
+	r.MarkExplainMore("empty.example")
+	r.RecordAndClearExplainMore("empty.example", "   ")
+	if r.ConsumeExplainMore("empty.example") {
+		t.Error("empty-reason composite op should still retire the explain-more flag")
+	}
+	if _, ok := r.Lookup("empty.example"); ok {
+		t.Error("empty reason should not record an intent entry")
+	}
+
+	// Nil-safe.
+	var nilReg *Registry
+	nilReg.RecordAndClearExplainMore("x", "y")
+}
+
+// TestRegistryRecordAndClearExplainMoreIsAtomic proves the composite operation
+// holds the registry mutex across both the record and the flag deletion, so a
+// concurrent GET (ConsumeExplainMore) can never observe the half-applied state
+// where the new intent is recorded but the explain-more flag is still live.
+//
+// The race this guards: with separate Record + ClearExplainMore calls, a
+// concurrent ConsumeExplainMore running in the gap between them would consume
+// the still-live flag and return true — reviving the "re-declare and retry"
+// hint after the replacement intent was already posted. Under the composite
+// operation the concurrent consume must block until both mutations are
+// committed, and then see the flag as already gone.
+//
+// The interleaving is forced with a gate: RecordAndClearExplainMore runs in a
+// worker goroutine and signals via recordAndClearEnterHook (fired while it
+// holds the mutex, before it deletes the flag). The main goroutine waits for
+// that signal, then issues ConsumeExplainMore, which must block on the held
+// mutex. It then releases the worker via the released channel and asserts the
+// consume returned false. Run under `go test -race`.
+func TestRegistryRecordAndClearExplainMoreIsAtomic(t *testing.T) {
+	r := New(time.Minute)
+	t.Cleanup(r.Close)
+	// Restore the hook after the test so it can't leak into other tests.
+	t.Cleanup(func() { recordAndClearEnterHook = nil })
+
+	// A live flag for the target the composite op will retire.
+	r.MarkExplainMore("api.example.com")
+
+	// Gates used to force the exact interleaving the race lives in.
+	entered := make(chan struct{})
+	released := make(chan struct{})
+
+	// Wire the in-critical-section hook so the worker signals it has the mutex
+	// and is about to delete the flag. The hook fires under the held lock, so
+	// the main goroutine's ConsumeExplainMore cannot proceed until the worker
+	// returns from the hook and the lock is released.
+	recordAndClearEnterHook = func() {
+		entered <- struct{}{}
+		<-released
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		r.RecordAndClearExplainMore("api.example.com", "fetch signed release notes")
+	}()
+
+	// Wait until the worker is inside the critical section, holding the mutex.
+	<-entered
+
+	// Now attempt to consume the flag concurrently. With separate Record +
+	// ClearExplainMore calls this would race and could return true; under the
+	// single-lock composite it must block until the worker commits and the
+	// flag is already deleted, then return false.
+	consumeDone := make(chan bool, 1)
+	go func() {
+		consumeDone <- r.ConsumeExplainMore("api.example.com")
+	}()
+
+	// Give the consumer a window to (incorrectly) observe the flag. If the
+	// composite op were non-atomic, ConsumeExplainMore could complete here
+	// with true. Under the held mutex it stays blocked.
+	select {
+	case got := <-consumeDone:
+		t.Fatalf("ConsumeExplainMore must block while RecordAndClearExplainMore holds the mutex; got %v", got)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	// Release the worker so it deletes the flag and drops the mutex.
+	close(released)
+
+	// The consumer now runs and must see the flag as already retired.
+	if got := <-consumeDone; got {
+		t.Error("ConsumeExplainMore must return false after the composite op retired the flag, but observed it as live")
+	}
+
+	wg.Wait()
+
+	// And the intent itself was recorded.
+	if e, ok := r.Lookup("api.example.com"); !ok || e.Reason != "fetch signed release notes" {
+		t.Errorf("intent not recorded: %+v ok=%v", e, ok)
 	}
 }
 

@@ -1,5 +1,15 @@
 # AGENTS.md
 
+Before starting any work in this repo, read and adhere to
+[`COLLABORATION.md`](./COLLABORATION.md). It defines the workflow:
+issue-tracked work, self-assignment, small branches, explicit
+reviews, and no merge without approval.
+
+When creating an issue or PR, follow the actual templates — they
+are the source of truth for the expected structure, not this file:
+- Issue: [`.github/ISSUE_TEMPLATE/issue.yml`](./.github/ISSUE_TEMPLATE/issue.yml)
+- PR: [`.github/pull_request_template.md`](./.github/pull_request_template.md)
+
 ## E2E testing via Docker
 
 The omac e2e suite (`internal/e2e/`, build tag `e2e`) verifies every

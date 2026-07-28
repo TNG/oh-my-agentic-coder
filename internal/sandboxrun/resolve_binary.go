@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -21,13 +22,33 @@ import (
 //   - when the resolved file is a script with a shebang (e.g.
 //     #!/usr/bin/env node), the interpreter's directory too — so the
 //     kernel can exec the script inside the sandbox.
+//   - the install-prefix support directories of each of the above, for
+//     tools whose runtime lives beside the bin dir rather than in it
+//     (see prefixSupportDirs).
+//
+// When the inner command is wrapped in an `env NAME=VALUE ... <cmd>` prefix
+// (a sandbox profile may do this to set NPM_CONFIG_* etc. before launching
+// the harness), the wrapped <cmd> is resolved and granted in addition to
+// `env` itself — otherwise only `env`'s own directory would be granted and
+// the harness (e.g. a bun/npm-installed opencode) would fail to exec.
 //
 // Returns nil when the command cannot be found or resolved.
 func resolveInnerBinaryDirs(innerArgv []string) []string {
-	if len(innerArgv) == 0 || innerArgv[0] == "" {
+	dirs := resolveCommandBinaryDirs(innerArgv)
+	if cmd := unwrapEnv(innerArgv); len(cmd) > 0 && cmd[0] != innerArgv[0] {
+		dirs = append(dirs, resolveCommandBinaryDirs(cmd)...)
+	}
+	return dirs
+}
+
+// resolveCommandBinaryDirs is the core resolution for a single command argv
+// (no env-wrapper handling): PATH-entry dir, symlink-resolved real dir, and
+// shebang interpreter dirs. Returns nil when argv is empty or unresolvable.
+func resolveCommandBinaryDirs(argv []string) []string {
+	if len(argv) == 0 || argv[0] == "" {
 		return nil
 	}
-	resolved, err := exec.LookPath(innerArgv[0])
+	resolved, err := exec.LookPath(argv[0])
 	if err != nil {
 		return nil
 	}
@@ -45,7 +66,31 @@ func resolveInnerBinaryDirs(innerArgv []string) []string {
 			}
 		}
 	}
-	return dirs
+	return withPrefixSupportDirs(dirs)
+}
+
+// unwrapEnv strips a leading `env NAME=VALUE ...` wrapper and returns the
+// argv that begins with the real command. It skips `env` and any following
+// NAME=VALUE assignment tokens; the first non-assignment token is the
+// command. `env` flags (e.g. -i, -u) are not used by omac's profiles and are
+// left in place, so an argv like `env -i cmd` yields `-i cmd` — which fails
+// to resolve and is safely ignored by the caller. Returns argv unchanged when
+// there is no env wrapper.
+func unwrapEnv(argv []string) []string {
+	for len(argv) >= 2 && filepath.Base(argv[0]) == "env" {
+		i := 1
+		for i < len(argv) && isEnvAssignment(argv[i]) {
+			i++
+		}
+		argv = argv[i:]
+	}
+	return argv
+}
+
+// isEnvAssignment reports whether tok is a NAME=VALUE assignment (not a flag).
+func isEnvAssignment(tok string) bool {
+	eq := strings.IndexByte(tok, '=')
+	return eq > 0 && !strings.HasPrefix(tok, "-")
 }
 
 // resolveInnerBinaryPath resolves the inner command's executable to its
@@ -116,7 +161,7 @@ func resolveInterpreterDirs(interp string) []string {
 	if err != nil {
 		if filepath.IsAbs(interp) {
 			if _, err := os.Stat(interp); err == nil {
-				return []string{filepath.Dir(interp)}
+				return withPrefixSupportDirs([]string{filepath.Dir(interp)})
 			}
 		}
 		return nil
@@ -130,5 +175,98 @@ func resolveInterpreterDirs(interp string) []string {
 			dirs = append(dirs, d)
 		}
 	}
-	return dirs
+	return withPrefixSupportDirs(dirs)
+}
+
+// prefixBinDirNames are the conventional executable subdirectories of a Unix
+// install prefix: a binary in one of these identifies its parent as a prefix.
+var prefixBinDirNames = []string{"bin", "sbin", "libexec"}
+
+// prefixSupportDirNames are the sibling subdirectories of an install prefix
+// that hold a tool's runtime support files. Deliberately narrow: only trees a
+// binary loads at runtime, never data/config trees like share or etc.
+var prefixSupportDirNames = []string{"lib", "lib64", "libexec", "conf"}
+
+// prefixSupportDirs returns the existing install-prefix support directories
+// for a binary living in binDir.
+//
+// A prefix-layout tool loads its runtime from beside its bin dir, not from
+// inside it, so granting only the bin dir leaves it unable to start. A JDK is
+// the canonical case: bin/java needs lib/libjli.so to exec at all and reads
+// conf/security/java.security before it can open a TLS connection. The same
+// shape covers Python venvs, version-managed toolchains (mise/asdf/sdkman),
+// and relocatable tarball installs — anything whose root is not already
+// covered by a baseline grant such as /usr.
+//
+// The prefix itself is never granted, only the support subdirs, so sibling
+// trees (src, share, a checkout) stay invisible. $HOME and its ancestors are
+// never treated as a prefix: a personal ~/bin is not a self-contained install
+// tree, and deriving one would widen the grant to ~/lib off the back of any
+// binary the user drops there.
+func prefixSupportDirs(binDir string) []string {
+	if !slices.Contains(prefixBinDirNames, filepath.Base(binDir)) {
+		return nil
+	}
+	prefix := filepath.Dir(binDir)
+	if !isInstallPrefix(prefix) {
+		return nil
+	}
+	var out []string
+	for _, name := range prefixSupportDirNames {
+		p := filepath.Join(prefix, name)
+		if fi, err := os.Stat(p); err == nil && fi.IsDir() {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// isInstallPrefix reports whether prefix may be treated as a tool's install
+// root. The filesystem root, the user's home, and any ancestor of it are
+// rejected — see prefixSupportDirs.
+func isInstallPrefix(prefix string) bool {
+	if prefix == "" || prefix == "/" || prefix == filepath.Dir(prefix) {
+		return false
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return true
+	}
+	if abs, aerr := filepath.Abs(home); aerr == nil {
+		home = abs
+	}
+	for d := filepath.Clean(home); ; d = filepath.Dir(d) {
+		if d == prefix {
+			return false
+		}
+		if d == filepath.Dir(d) {
+			return true
+		}
+	}
+}
+
+// withPrefixSupportDirs appends each dir's install-prefix support dirs,
+// preserving order and dropping duplicates. Nil in, nil out — callers
+// distinguish "nothing to grant" from an empty grant list.
+func withPrefixSupportDirs(dirs []string) []string {
+	if len(dirs) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(dirs))
+	seen := map[string]bool{}
+	add := func(p string) {
+		if !seen[p] {
+			seen[p] = true
+			out = append(out, p)
+		}
+	}
+	for _, d := range dirs {
+		add(d)
+	}
+	for _, d := range dirs {
+		for _, s := range prefixSupportDirs(d) {
+			add(s)
+		}
+	}
+	return out
 }

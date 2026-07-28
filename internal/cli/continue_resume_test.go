@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode"
 
 	"github.com/tngtech/oh-my-agentic-coder/internal/config"
 	"github.com/tngtech/oh-my-agentic-coder/internal/session"
@@ -113,7 +114,7 @@ func TestLaunchCachePersistentAndEphemeral(t *testing.T) {
 	workdir := t.TempDir()
 	sandboxTmp := t.TempDir()
 
-	scope, err := prepareLaunchCache(true, false, workdir, sandboxTmp)
+	scope, err := prepareLaunchCache(true, false, config.CacheScopeGlobal, workdir, "", sandboxTmp)
 	if err != nil {
 		t.Fatalf("no-sandbox cache: %v", err)
 	}
@@ -121,7 +122,7 @@ func TestLaunchCachePersistentAndEphemeral(t *testing.T) {
 		t.Errorf("no-sandbox scope = %#v, want nil", scope)
 	}
 
-	ephemeral, err := prepareLaunchCache(false, true, workdir, sandboxTmp)
+	ephemeral, err := prepareLaunchCache(false, true, config.CacheScopeGlobal, workdir, "", sandboxTmp)
 	if err != nil {
 		t.Fatalf("ephemeral cache: %v", err)
 	}
@@ -135,7 +136,21 @@ func TestLaunchCachePersistentAndEphemeral(t *testing.T) {
 		t.Errorf("persistent cache root exists or stat failed: %v", err)
 	}
 
-	persistent, err := prepareLaunchCache(false, false, workdir, sandboxTmp)
+	// Default global scope resolves to the shared domain.
+	shared, err := prepareLaunchCache(false, false, config.CacheScopeGlobal, workdir, "", sandboxTmp)
+	if err != nil {
+		t.Fatalf("shared cache: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := shared.Close(); err != nil {
+			t.Errorf("close shared cache: %v", err)
+		}
+	})
+	if shared.Domain != toolcache.DomainShared {
+		t.Errorf("shared domain = %q, want %q", shared.Domain, toolcache.DomainShared)
+	}
+
+	persistent, err := prepareLaunchCache(false, false, config.CacheScopeWorkdir, workdir, "", sandboxTmp)
 	if err != nil {
 		t.Fatalf("persistent cache: %v", err)
 	}
@@ -182,9 +197,9 @@ func TestLaunchCacheInjectsSelectedScope(t *testing.T) {
 				}
 				return
 			}
-			cleared, err := toolcache.ClearWorkdir(capture.workdir)
+			cleared, err := toolcache.ClearShared()
 			if err != nil {
-				t.Fatalf("clear workdir cache: %v", err)
+				t.Fatalf("clear shared cache: %v", err)
 			}
 			if cleared.Status != toolcache.ClearRemoved {
 				t.Errorf("clear status = %q, want %q (launch should close the scope)", cleared.Status, toolcache.ClearRemoved)
@@ -471,29 +486,125 @@ func TestContinueHintToken(t *testing.T) {
 }
 
 func TestHintSessionID(t *testing.T) {
+	seen := func(ids ...string) map[string]struct{} {
+		m := map[string]struct{}{}
+		for _, id := range ids {
+			m[id] = struct{}{}
+		}
+		return m
+	}
 	cases := []struct {
-		name     string
-		sessions []session.Session
-		wantID   string
-		wantOK   bool
+		name      string
+		sessions  []session.Session
+		resumedID string
+		prior     map[string]struct{}
+		wantID    string
+		wantOK    bool
 	}{
-		{"empty", nil, "", false},
-		{"leading-empty-id", []session.Session{{ID: ""}}, "", false},
+		{name: "empty", wantID: "", wantOK: false},
+		{name: "leading-empty-id", sessions: []session.Session{{ID: ""}}, wantID: "", wantOK: false},
 		{
-			// session.List returns newest-first, so the hint must advertise
-			// the first entry — never a later one.
-			name:     "picks-first-newest",
+			// No prior snapshot and no resume: fall back to newest (index 0).
+			name:     "fresh-no-prior-picks-newest",
 			sessions: []session.Session{{ID: "ses_new"}, {ID: "ses_old"}},
 			wantID:   "ses_new",
 			wantOK:   true,
 		},
+		{
+			// #141: the newest session is a sibling that existed before launch;
+			// advertise the session this run created (absent from prior),
+			// even though it is not index 0.
+			name:     "skips-sibling-picks-new-session",
+			sessions: []session.Session{{ID: "ses_sibling"}, {ID: "ses_ours"}, {ID: "ses_old"}},
+			prior:    seen("ses_sibling", "ses_old"),
+			wantID:   "ses_ours",
+			wantOK:   true,
+		},
+		{
+			// Every session predates launch (bare continue reused a session, or
+			// the harness persisted nothing new): fall back to newest.
+			name:     "all-known-falls-back-to-newest",
+			sessions: []session.Session{{ID: "ses_a"}, {ID: "ses_b"}},
+			prior:    seen("ses_a", "ses_b"),
+			wantID:   "ses_a",
+			wantOK:   true,
+		},
+		{
+			// A known resume id wins outright — the list and snapshot are moot.
+			name:      "resumed-id-wins",
+			sessions:  []session.Session{{ID: "ses_sibling"}},
+			resumedID: "ses_resumed",
+			prior:     seen("ses_sibling"),
+			wantID:    "ses_resumed",
+			wantOK:    true,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			id, ok := hintSessionID(tc.sessions)
+			id, ok := hintSessionID(tc.sessions, tc.resumedID, tc.prior)
 			if id != tc.wantID || ok != tc.wantOK {
 				t.Errorf("hintSessionID = (%q, %v), want (%q, %v)", id, ok, tc.wantID, tc.wantOK)
 			}
 		})
+	}
+}
+
+// encodeClaudeProjectDir mirrors Claude Code's project-dir naming (every
+// non-alphanumeric rune → '-'). Duplicated here as test scaffolding so the
+// integrated hint test can place fixtures where the session package looks.
+func encodeClaudeProjectDir(path string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			return r
+		}
+		return '-'
+	}, path)
+}
+
+func writeClaudeSessionFile(t *testing.T, home, workdir, id, ts string) {
+	t.Helper()
+	dir := filepath.Join(home, "projects", encodeClaudeProjectDir(workdir))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	line := fmt.Sprintf(`{"type":"user","cwd":%q,"timestamp":%q,"message":{"content":"hi"}}`, workdir, ts)
+	if err := os.WriteFile(filepath.Join(dir, id+".jsonl"), []byte(line+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestContinueHintSkipsSiblingSession reproduces #141 end-to-end against a real
+// on-disk Claude session store (the harness-agnostic snapshot path): a sibling
+// session is active in the workdir when our run starts and stays the
+// most-recently-updated row, yet the hint must advertise the session this run
+// created — not the sibling.
+func TestContinueHintSkipsSiblingSession(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("CLAUDE_HOME", home)
+	h, ok := config.LookupHarness("claude-code")
+	if !ok {
+		t.Fatal("claude-code harness not registered")
+	}
+	const wd = "/home/u/proj"
+
+	// A sibling session already exists before our run — captured in the snapshot.
+	writeClaudeSessionFile(t, home, wd, "sibling-0000", "2026-01-01T10:00:00Z")
+	prior := session.KnownIDs(h, wd)
+
+	// Our run creates a new session; the sibling is then touched again, so it
+	// remains the newest row when the hint is computed at exit.
+	writeClaudeSessionFile(t, home, wd, "ours-1111", "2026-01-01T10:01:00Z")
+	writeClaudeSessionFile(t, home, wd, "sibling-0000", "2026-01-01T10:02:00Z")
+
+	sessions, err := session.List(h, wd)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(sessions) == 0 || sessions[0].ID != "sibling-0000" {
+		t.Fatalf("precondition: newest row should be the sibling, got %+v", sessions)
+	}
+	id, ok := hintSessionID(sessions, "", prior)
+	if !ok || id != "ours-1111" {
+		t.Errorf("hint = (%q, %v), want (\"ours-1111\", true) — sibling must be skipped", id, ok)
 	}
 }

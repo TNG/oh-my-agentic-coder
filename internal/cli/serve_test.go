@@ -594,11 +594,21 @@ func TestPrepareServeCache(t *testing.T) {
 	if err != nil {
 		t.Fatalf("canonical explicit workdir: %v", err)
 	}
+	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte("cache:\n  scope: config\n"), 0o600); err != nil {
+		t.Fatalf("write cfg: %v", err)
+	}
+	canonicalCfg, err := filepath.EvalSymlinks(cfgPath)
+	if err != nil {
+		t.Fatalf("canonical cfg: %v", err)
+	}
 
 	for _, c := range []struct {
 		name                          string
 		noSandbox, noInner, ephemeral bool
+		scope                         config.CacheScope
 		explicitWorkdir               string
+		cfgPath                       string
 		wantNil                       bool
 		wantDomain                    toolcache.Domain
 		wantMode                      toolcache.Mode
@@ -607,12 +617,15 @@ func TestPrepareServeCache(t *testing.T) {
 	}{
 		{name: "no inner skips cache", noInner: true, wantNil: true},
 		{name: "no sandbox skips cache", noSandbox: true, wantNil: true},
-		{name: "single workdir", explicitWorkdir: explicitWorkdir, wantDomain: toolcache.DomainWorkdir, wantMode: toolcache.ModePersistent, wantCanonical: canonicalExplicit},
-		{name: "desktop shared serve cache", wantDomain: toolcache.DomainServe, wantMode: toolcache.ModePersistent, wantCanonical: canonicalLaunch},
+		{name: "global default shares one cache", scope: config.CacheScopeGlobal, wantDomain: toolcache.DomainShared, wantMode: toolcache.ModePersistent},
+		{name: "config scope keys on config path", scope: config.CacheScopeConfig, cfgPath: cfgPath, wantDomain: toolcache.DomainConfig, wantMode: toolcache.ModePersistent, wantCanonical: canonicalCfg},
+		{name: "config scope without file falls back to shared", scope: config.CacheScopeConfig, wantDomain: toolcache.DomainShared, wantMode: toolcache.ModePersistent},
+		{name: "workdir scope, single workdir", scope: config.CacheScopeWorkdir, explicitWorkdir: explicitWorkdir, wantDomain: toolcache.DomainWorkdir, wantMode: toolcache.ModePersistent, wantCanonical: canonicalExplicit},
+		{name: "workdir scope, multi-dir serve cache", scope: config.CacheScopeWorkdir, wantDomain: toolcache.DomainServe, wantMode: toolcache.ModePersistent, wantCanonical: canonicalLaunch},
 		{name: "ephemeral cache", ephemeral: true, explicitWorkdir: explicitWorkdir, wantMode: toolcache.ModeEphemeral, wantPath: filepath.Join(sandboxTmp, "cache")},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			scope, err := prepareServeCache(c.noSandbox, c.noInner, c.ephemeral, c.explicitWorkdir, launchWorkdir, sandboxTmp)
+			scope, err := prepareServeCache(c.noSandbox, c.noInner, c.ephemeral, c.scope, c.explicitWorkdir, launchWorkdir, c.cfgPath, sandboxTmp)
 			if err != nil {
 				t.Fatalf("prepareServeCache: %v", err)
 			}
@@ -734,7 +747,7 @@ func TestRunServeRetainsCacheLockAndAllowsOnlyScope(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 
-	scope, err := toolcache.DescribePersistent(toolcache.DomainServe, workdir)
+	scope, err := toolcache.DescribeShared()
 	if err != nil {
 		t.Fatalf("describe serve cache: %v", err)
 	}

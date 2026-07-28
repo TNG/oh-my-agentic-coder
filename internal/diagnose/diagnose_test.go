@@ -1,0 +1,236 @@
+package diagnose
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/tngtech/oh-my-agentic-coder/internal/netproxy"
+)
+
+// realMatch is the production matcher, injected exactly as cli does, so the
+// tests exercise the same semantics the sandbox enforces.
+var realMatch DomainMatcher = netproxy.MatchDomainList
+
+func dec(host string, allowed bool, source string) Decision {
+	return Decision{Host: host, Port: 443, Allowed: allowed, Source: source}
+}
+
+func hintTitles(hs []Hint) string {
+	var b strings.Builder
+	for _, h := range hs {
+		b.WriteString(string(h.Kind))
+		b.WriteString(": ")
+		b.WriteString(h.Title)
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+func findHint(hs []Hint, substr string) *Hint {
+	for i := range hs {
+		if strings.Contains(hs[i].Title, substr) {
+			return &hs[i]
+		}
+	}
+	return nil
+}
+
+func TestBlockedGroupsAndSortsByCount(t *testing.T) {
+	decisions := []Decision{
+		dec("a.example", false, "blocklist"),
+		dec("b.example", false, "allowlist"),
+		dec("b.example", false, "allowlist"),
+		dec("c.example", true, "allowlist"),
+	}
+	got := Blocked(decisions)
+	if len(got) != 2 {
+		t.Fatalf("want 2 blocked hosts, got %d (%v)", len(got), got)
+	}
+	if got[0].Host != "b.example" || got[0].Count != 2 {
+		t.Fatalf("most-blocked-first broken: %+v", got[0])
+	}
+	if got[1].Host != "a.example" {
+		t.Fatalf("want a.example second, got %q", got[1].Host)
+	}
+}
+
+// The headline case: a host the user put in allow_domain is still denied.
+// The analysis must call out the clash, not just say "blocked".
+func TestAllowlistedButDeniedIsFlaggedAsClash(t *testing.T) {
+	pol := Policy{Mode: "filtered", AllowDomains: []string{"repo.corp"}}
+	decisions := []Decision{dec("repo.corp", false, "blocklist")}
+
+	hints := Analyze(pol, decisions, realMatch)
+	h := findHint(hints, "repo.corp is in allow_domain but was still DENIED")
+	if h == nil {
+		t.Fatalf("clash hint missing.\n%s", hintTitles(hints))
+	}
+	if h.Kind != KindProblem {
+		t.Fatalf("clash must be a problem, got %s", h.Kind)
+	}
+}
+
+// A host in BOTH allow_domain and deny_domain is a direct contradiction:
+// the clash warning must win over the plain deny_domain note and name the
+// deny_domain overlap as the cause.
+func TestAllowAndDenyOverlapReportsClashNamingDenyDomain(t *testing.T) {
+	pol := Policy{AllowDomains: []string{"repo.corp"}, DenyDomains: []string{"repo.corp"}}
+	decisions := []Decision{dec("repo.corp", false, "blocklist")}
+
+	hints := Analyze(pol, decisions, realMatch)
+	h := findHint(hints, "repo.corp is in allow_domain but was still DENIED")
+	if h == nil {
+		t.Fatalf("clash must outrank the deny_domain note.\n%s", hintTitles(hints))
+	}
+	if h.Kind != KindProblem {
+		t.Fatalf("want problem, got %s", h.Kind)
+	}
+	if !strings.Contains(strings.Join(h.Detail, " "), "deny_domain") {
+		t.Fatalf("clash should name deny_domain as the shadow: %v", h.Detail)
+	}
+}
+
+func TestBlockedNotInAnyRuleSuggestsAllowlist(t *testing.T) {
+	pol := Policy{Mode: "filtered", PromptEnabled: false}
+	decisions := []Decision{dec("registry.npmjs.org", false, "allowlist")}
+
+	hints := Analyze(pol, decisions, realMatch)
+	h := findHint(hints, "registry.npmjs.org was blocked and is not in any allow rule")
+	if h == nil {
+		t.Fatalf("missing hint.\n%s", hintTitles(hints))
+	}
+	joined := strings.Join(h.Detail, " ")
+	if !strings.Contains(joined, "allow_domain") {
+		t.Fatalf("hint should point at allow_domain, got %q", joined)
+	}
+	// Least privilege: the fix must scope to the exact host and legitimize
+	// leaving it denied — never suggest a broad allow.
+	if !strings.Contains(joined, "exact host") {
+		t.Fatalf("hint should recommend the exact host, got %q", joined)
+	}
+	if !strings.Contains(strings.ToLower(joined), "leave it denied") {
+		t.Fatalf("hint should present denying as a valid outcome, got %q", joined)
+	}
+	if strings.Contains(strings.ToLower(joined), "wildcard") && !strings.Contains(joined, "not a broad wildcard") {
+		t.Fatalf("hint must not steer toward broad wildcards, got %q", joined)
+	}
+}
+
+func TestOverBroadAllowRuleFlagged(t *testing.T) {
+	pol := Policy{AllowDomains: []string{"*.com", "*.example.com"}}
+	hints := Analyze(pol, nil, realMatch)
+	h := findHint(hints, `allow_domain "*.com" is very broad`)
+	if h == nil {
+		t.Fatalf("whole-TLD wildcard not flagged.\n%s", hintTitles(hints))
+	}
+	if h.Kind != KindAdvisory {
+		t.Fatalf("over-broad allow should be an advisory, got %s", h.Kind)
+	}
+	if findHint(hints, `allow_domain "*.example.com" is very broad`) != nil {
+		t.Fatalf("a scoped wildcard must NOT be flagged as over-broad")
+	}
+}
+
+func TestWildcardAllowMatchesSubdomain(t *testing.T) {
+	// A denial on a host covered by a "*.suffix" allow entry must be
+	// treated as a clash, proving the injected matcher's wildcard
+	// semantics are used (not a naive equality check).
+	pol := Policy{AllowDomains: []string{"*.tngtech.com"}}
+	decisions := []Decision{dec("chat.tngtech.com", false, "learned")}
+
+	hints := Analyze(pol, decisions, realMatch)
+	if findHint(hints, "is in allow_domain but was still DENIED") == nil {
+		t.Fatalf("wildcard allow not honored.\n%s", hintTitles(hints))
+	}
+}
+
+func TestDeadAllowRuleDetected(t *testing.T) {
+	pol := Policy{AllowDomains: []string{"used.example", "typo.exmaple"}}
+	decisions := []Decision{dec("used.example", true, "allowlist")}
+
+	hints := Analyze(pol, decisions, realMatch)
+	if findHint(hints, `allow_domain "typo.exmaple" matched no traffic`) == nil {
+		t.Fatalf("dead-rule hint missing.\n%s", hintTitles(hints))
+	}
+	if findHint(hints, `allow_domain "used.example" matched no traffic`) != nil {
+		t.Fatalf("used rule must not be flagged as dead.\n%s", hintTitles(hints))
+	}
+}
+
+func TestNoDeadRuleHintWithoutObservedTraffic(t *testing.T) {
+	// With no decisions we cannot know a rule is unused; stay silent.
+	pol := Policy{AllowDomains: []string{"whatever.example"}}
+	if h := findHint(Analyze(pol, nil, realMatch), "matched no traffic"); h != nil {
+		t.Fatalf("should not flag dead rules with zero observations: %q", h.Title)
+	}
+}
+
+// The blind-spot hint: filtered mode + nothing blocked → explain the failures
+// that leave no trace (proxy-unaware direct connect; filesystem/socket/loopback
+// denials such as docker.sock), and steer to the narrowest fix, not a wider
+// allowlist.
+func TestInvisibleFailureHintFiresWhenNothingBlocked(t *testing.T) {
+	pol := Policy{Mode: "filtered", AllowDomains: []string{"example.com"}}
+	decisions := []Decision{dec("example.com", true, "allowlist")} // all allowed
+	h := findHint(Analyze(pol, decisions, realMatch), "can be invisible to this report")
+	if h == nil {
+		t.Fatalf("invisible-failure hint should fire when nothing was blocked")
+	}
+	joined := strings.Join(h.Detail, " ")
+	if !strings.Contains(joined, "proxy_injection") {
+		t.Fatalf("hint should cover the proxy-unaware case, got %q", joined)
+	}
+	if !strings.Contains(joined, "docker.sock") || !strings.Contains(joined, "provenance") {
+		t.Fatalf("hint should cover the socket/filesystem case and point at provenance, got %q", joined)
+	}
+	if !strings.Contains(joined, "do not widen") {
+		t.Fatalf("hint must not steer toward widening the policy, got %q", joined)
+	}
+}
+
+func TestInvisibleFailureHintSuppressedWhenSomethingBlocked(t *testing.T) {
+	pol := Policy{Mode: "filtered"}
+	decisions := []Decision{dec("blocked.example", false, "allowlist")}
+	if findHint(Analyze(pol, decisions, realMatch), "can be invisible to this report") != nil {
+		t.Fatalf("blind-spot note must stay quiet when a concrete block exists")
+	}
+}
+
+func TestDNSDenialSurfaced(t *testing.T) {
+	pol := Policy{}
+	decisions := []Decision{dec("nope.invalid", false, "dns")}
+	if findHint(Analyze(pol, decisions, realMatch), "failed DNS resolution") == nil {
+		t.Fatal("dns-source denial should surface a hint")
+	}
+}
+
+func TestEnvironmentHintsAreOrderedAfterWarnings(t *testing.T) {
+	pol := Policy{
+		AllowDomains:  nil,
+		UpstreamProxy: "http://proxy:8080",
+		AllowVars:     []string{"HOME"},
+	}
+	decisions := []Decision{dec("blocked.example", false, "allowlist")}
+	hints := Analyze(pol, decisions, realMatch)
+	if len(hints) < 2 {
+		t.Fatalf("expected a problem + advisories, got %d", len(hints))
+	}
+	if hints[0].Kind != KindProblem {
+		t.Fatalf("problems must sort first, got %s first:\n%s", hints[0].Kind, hintTitles(hints))
+	}
+	if findHint(hints, "upstream (corporate) proxy is configured") == nil || findHint(hints, "Environment variables are allow-listed") == nil {
+		t.Fatalf("generic env/proxy hints missing.\n%s", hintTitles(hints))
+	}
+}
+
+func TestBuildCountsDenied(t *testing.T) {
+	decisions := []Decision{
+		dec("a", false, "allowlist"),
+		dec("b", true, "allowlist"),
+		dec("c", false, "blocklist"),
+	}
+	r := Build(Policy{}, decisions, realMatch)
+	if r.Total != 3 || r.Denied != 2 {
+		t.Fatalf("Build counts wrong: total=%d denied=%d", r.Total, r.Denied)
+	}
+}

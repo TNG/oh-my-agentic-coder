@@ -518,9 +518,49 @@ expansion), `filesystem.deny` (mask files inside granted trees — a
 bare name like `.env` or `*.key` is denied in every granted directory,
 the working directory included), `filesystem.override_deny` (punch
 holes in the built-in protected-path list), `network.mode`
-(filtered/blocked/open), `network.network_prompt`, and
-`environment.allow_vars`. See the scaffolded `default.json` for the
-full schema.
+(filtered/blocked/open), `network.network_prompt`,
+`network.proxy_injection`, and `environment.allow_vars`. See the
+scaffolded `default.json` for the full schema.
+
+**`network.proxy_injection`** routes *proxy-unaware* toolchains through
+the omac filtering proxy under `network.mode: filtered`. Most tools
+(`curl`, `git`, `pip`, `npm`/`yarn`/`pnpm`, `go`) already honor
+`HTTP(S)_PROXY` and need nothing here; this option is for families that
+ignore those vars:
+
+```jsonc
+// ~/.config/omac/sandbox-profiles/default.json
+"network": { "mode": "filtered", "proxy_injection": ["jvm", "node"] }
+```
+
+- **`jvm`** — injects a supervisor-controlled `JAVA_TOOL_OPTIONS` so
+  Gradle/Maven/sbt/Kotlin/`java` route through the proxy. Host/port
+  routing applies to every JVM; only Gradle and Maven authenticate the
+  proxy `CONNECT` tunnel (they parse the `proxyUser`/`proxyPassword`
+  sysprops). Tools on the core JDK HTTP client — including Gradle's
+  **Java-toolchain auto-download** (Foojay) — route but do **not**
+  authenticate and get a `407`; provisioning a toolchain over an
+  authenticated proxy is out of scope.
+- **`node`** — injects `NODE_USE_ENV_PROXY=1` for Node's built-in
+  `fetch`/`http`. Requires **Node ≥ 22.21.0 on the 22.x line, or ≥ 24.5.0 on current and later lines**; on older runtimes omac emits a
+  warning and does not claim routing (the npm/yarn/pnpm CLIs work
+  without this family).
+
+**The Gradle daemon needs one extra grant.** The daemon talks to its
+client over a *random loopback port*, which the default
+`network.enforcement: kernel` does not permit. Prefer
+`./gradlew --no-daemon` (or `org.gradle.daemon=false`) — nothing else is
+needed. If you must keep the daemon, the fix is platform-specific:
+
+| Platform | Setting | Egress still kernel-enforced? |
+|---|---|---|
+| macOS | `"network": { "open_port": [0] }` | **yes** — `0` is the "any loopback port" sentinel, which Seatbelt can express as `localhost:*` while still denying external egress |
+| Linux | `"network": { "enforcement": "env-only" }` | no — Landlock rules are address-blind, so "any loopback port" would have to mean any port; the proxy filter and prompt still apply, but the kernel bypass-guarantee is gone |
+
+On macOS prefer `open_port: [0]` over `enforcement: env-only` — it solves
+the same daemon problem without opening general network access. The `0`
+sentinel is **macOS-only**: on Linux it is a silent no-op (there is no
+Landlock rule that can express it), so Linux needs `env-only`.
 
 ### Corporate proxy
 
@@ -671,9 +711,10 @@ never rewrites the profile. See
 
 omac redirects the caches supported by `XDG_CACHE_HOME`, `GOCACHE`,
 `GOMODCACHE`, `NPM_CONFIG_CACHE`, `PIP_CACHE_DIR`, and `CARGO_HOME`
-into a per-scope directory it owns. The cache scope is selected at
-launch and exposed to the inner process via two selector variables and
-six tool-specific redirects:
+into a per-scope directory it owns. The cache scope is selected by the
+`cache.scope` config key (see [Modes and trust
+domains](#modes-and-trust-domains)) and exposed to the inner process via
+two selector variables and six tool-specific redirects:
 
 | Variable | Points at | Purpose |
 |---|---|---|
@@ -698,26 +739,47 @@ profile's environment allowlist.
 
 ### Modes and trust domains
 
-omac selects the cache scope from the launch command and the workdir
-identity (the canonical absolute path after symlink resolution):
+omac selects the persistent cache scope from the `cache.scope` config
+key (overridable per launch with `--cache-scope`). It defaults to
+`global` — one cache shared by every workdir, mirroring a normal dev
+box's single `~/.cache`. Two narrower scopes trade sharing for
+isolation:
 
-| Launch | Scope identity | Mode | Path |
-|---|---|---|---|
-| `omac start` (default) | `v1:workdir:<canonical workdir>` | `persistent` | `~/.cache/omac/<sha256(identity)>` |
-| `omac start --ephemeral-cache` | per-launch sandbox temp dir | `ephemeral` | `$TMPDIR/omac-sandbox-tmp-*/cache` (removed on exit) |
-| `omac serve` (no `--workdir`) | `v1:serve:<canonical launch workdir>` | `persistent` | `~/.cache/omac/<sha256(identity)>` — the shared Desktop serve cache |
-| `omac serve --workdir <dir>` | `v1:workdir:<canonical <dir>>` | `persistent` | as `omac start` from that dir |
-| `omac serve --ephemeral-cache` | per-launch sandbox temp dir | `ephemeral` | removed on exit |
-| `omac start --no-sandbox` / `omac serve --no-sandbox` | none | — | no cache scope is prepared (no sandbox to isolate) |
+| `cache.scope` | Scope identity | Shared across |
+|---|---|---|
+| `global` (default) | `v1:shared` | all workdirs and all configs |
+| `config` | `v1:config:<canonical config path>` | all workdirs governed by the same launcher config file |
+| `workdir` | `v1:workdir:<canonical workdir>` | that one workdir only |
 
-- **Persistent (default).** The same workdir reuses the same cache
-  directory across launches, so incremental builds survive. The scope
-  identity is the canonical workdir path, **not** the bare directory
-  name — `~/work/acme` and `~/clients/acme` are two different scopes.
-  Because the identity is the resolved path, the **main worktree** and
-  a **linked worktree** of the same repository have distinct cache
-  scopes (their absolute paths differ), keeping their build artifacts
-  separate.
+All persistent scopes resolve to `~/.cache/omac/<sha256(identity)>`. The
+launch command and flags then map onto the chosen scope:
+
+| Launch | Persistent scope | Mode |
+|---|---|---|
+| `omac start` / `omac serve` (default) | `global` → `v1:shared` | `persistent` |
+| `--cache-scope config` (with a config on disk) | `v1:config:<config path>` | `persistent` |
+| `--cache-scope workdir` (`omac start`, `omac serve --workdir`) | `v1:workdir:<canonical workdir>` | `persistent` |
+| `omac serve --cache-scope workdir` (no `--workdir`) | `v1:serve:<canonical launch workdir>` | `persistent` |
+| `--ephemeral-cache` | per-launch sandbox temp dir (removed on exit) | `ephemeral` |
+| `--no-sandbox` | none — no scope prepared | — |
+
+- **`global` (default).** One cache shared by everything. Cheapest, and
+  what most developers already expect; the redirected tool caches (Go,
+  npm, cargo, pip) are concurrency-safe, so parallel launches sharing
+  one directory is fine. Note the trust trade-off: concurrency-safety is
+  **not** isolation — under `global` a build in one workdir can leave
+  artifacts in the shared cache that a build in another workdir later
+  reads. Choose `workdir` (or `--ephemeral-cache`) when cross-workdir
+  cache poisoning is a concern.
+- **`config`.** All workdirs that load the same launcher config file
+  share a cache, keyed on the config file's canonical path. Falls back
+  to `global` when no config file is on disk (compiled-in defaults).
+  Good for a team config that governs many project directories.
+- **`workdir`.** Each workdir gets its own cache, keyed on the canonical
+  workdir path, **not** the bare directory name — `~/work/acme` and
+  `~/clients/acme` are two different scopes, as are the **main worktree**
+  and a **linked worktree** of the same repository (their absolute paths
+  differ). This is the strongest isolation and was the pre-#158 default.
 - **Accepted same-domain poisoning.** Two paths that resolve to the
   same canonical absolute path share a scope. omac does not try to
   distinguish them; identity follows the directory, not the label.
@@ -734,29 +796,24 @@ identity (the canonical absolute path after symlink resolution):
   transport variables and the per-launch `TMPDIR` remain available to
   the inner command. This is a debug escape hatch, not a security
   boundary.
-- **Single-directory `omac serve`.** `omac serve --workdir <dir>`
-  pre-activates that one directory at cold start. Its cache scope is
-  the workdir-scope identity (same as `omac start` from that dir), not
-  the shared serve scope.
-- **Shared multi-directory `omac serve` cache.** Without `--workdir`,
-  all directories served by one `omac serve` process share the single
-  serve-scope cache directory (`v1:serve:<launch workdir>`). This is
-  the Desktop path: many projects reuse one cache. It is strictly
-  weaker isolation than per-workdir `omac start` and is an explicit,
-  documented consequence of the shared-sandbox decision. Use
-  `--ephemeral-cache` or `omac serve --workdir` per project to opt
-  back into per-directory isolation.
+- **Multi-directory `omac serve`.** Because one serve process shares a
+  single sandbox across every activated directory, per-workdir isolation
+  only applies to `omac serve --workdir <dir>`. Under `--cache-scope
+  workdir` without `--workdir`, the process falls back to a per-launch
+  serve-scope cache (`v1:serve:<canonical launch workdir>`); `global`
+  and `config` behave as above.
 
 ### Cleaning up cache scopes
 
 ```text
-omac cache clear           # Remove the current workdir's cache scope.
+omac cache clear           # Remove the active cache scope (per cache.scope).
 omac cache clear --all     # Remove every inactive cache scope (destructive).
 ```
 
-`omac cache clear` removes the current workdir's persistent cache
-scope. `omac cache clear --all` walks every scope under
-`~/.cache/omac` and removes the inactive ones. Each scope is reported
+`omac cache clear` removes the persistent cache scope the current config
+resolves to (`global`, `config`, or `workdir`). `omac cache clear --all`
+walks every scope under `~/.cache/omac` and removes the inactive ones.
+Each scope is reported
 as:
 
 - `removed` — the scope was inactive and has been deleted;
@@ -888,7 +945,12 @@ omac [--workdir <dir>] <subcommand> [flags] [args]
                roots (workdir-local .agents/skills + .opencode/skills,
                plus the user-global layers), or if a registered skill's
                bundle changed since register, or if a required config
-               field is unresolvable. Auto-deregisters
+               field is unresolvable. `--auto-register-skills` is an
+               opt-in for this start-family launch: it silently registers
+               only workdir-local skills whose required config and secrets
+               resolve without prompting. Other unregistered skills still
+               refuse launch and print their registration command.
+               Auto-deregisters
                (silently) skills whose directory has vanished; secrets +
                config persist for safety. Flags:
                  --sandbox <profile>     pick a sandbox profile
@@ -901,6 +963,8 @@ omac [--workdir <dir>] <subcommand> [flags] [args]
                                          scope; removed on exit
                  --keep-running          don't stop sidecars on exit
                  --accept-skill-changes  tolerate bundle_hash drift
+                 --auto-register-skills  silently register eligible
+                                         workdir-local skills only
                  --skip-secret-pattern   don't enforce a secret's pattern
                                          on an env_passthrough value
                  --verbose               lifecycle logging (prints cache
@@ -909,7 +973,7 @@ omac [--workdir <dir>] <subcommand> [flags] [args]
 
    continue     Like `start`, but continue the most recent session for this
                 workdir (appends the harness's continue flag: opencode/claude
-                `--continue`, codex `resume`, copilot `--continue`, pi `-c`).
+                `--continue`, codex `resume --last`, copilot `--continue`, pi `-c`).
                 Pass `-s`/`--session <id>` to target a specific session
                 (opencode `--session <id>`, claude `--resume <id>`, codex
                 `resume <id>`, copilot `--session-id <id>`, pi `--session <id>`).
@@ -923,9 +987,10 @@ omac [--workdir <dir>] <subcommand> [flags] [args]
                `--resume <id>`, codex `resume <id>`, copilot
                `--session-id <id>`, pi `--session <id>`). Sessions come from
                the harness's own store (opencode `session list`; Claude Code's
-               ~/.claude/projects files; codex `codex session list`; copilot
-               `copilot session list`; pi's ~/.pi/agent/sessions/ JSONL
-               files). Non-interactive stdin prints the list and exits.
+               ~/.claude/projects files; codex's ~/.codex/sessions/ rollout
+               files; copilot's ~/.copilot/session-store.db; pi's
+               ~/.pi/agent/sessions/ JSONL files). Non-interactive stdin
+               prints the list and exits.
                Accepts the same flags as `start` and an optional [harness].
 
   doctor       Sanity checks: config, registry, binaries, secrets, sandbox.
@@ -934,7 +999,7 @@ omac [--workdir <dir>] <subcommand> [flags] [args]
                credentials files an isolated CARGO_HOME won't pick up.
 
   cache        Manage the persistent tool cache under ~/.cache/omac.
-                 clear           remove the current workdir's cache scope
+                 clear           remove the active cache scope (per cache.scope)
                  clear --all     remove every inactive cache scope
                                  (destructive; active scopes are skipped)
 

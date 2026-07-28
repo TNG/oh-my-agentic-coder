@@ -15,7 +15,7 @@ import (
 // "allow once" (Persist:false, so it is never cached as a learned rule).
 type countingPrompter struct{ n atomic.Int32 }
 
-func (p *countingPrompter) Prompt(host string, port int) PromptResult {
+func (p *countingPrompter) Prompt(ctx context.Context, host string, port int) PromptResult {
 	p.n.Add(1)
 	return PromptResult{Allow: true, Persist: false}
 }

@@ -90,7 +90,27 @@ func runUpdateWithDeps(env *Env, yes bool, deps updater.Deps) int {
 		return ExitIOError
 	}
 	fmt.Fprintf(env.Stdout, "[ok] updated omac %s -> %s\n", plan.CurrentVersion, plan.LatestVersion)
+	reportShadowedBinary(env, ctx, plan, deps)
 	return ExitOK
+}
+
+// reportShadowedBinary runs the post-install self-check and, if an older omac
+// earlier on PATH is shadowing the freshly-installed one, warns the user and
+// suggests removing the stale binary. A probe failure is silent: the update
+// already succeeded, and a missing/unreadable omac on PATH is not worth a
+// scary message.
+func reportShadowedBinary(env *Env, ctx context.Context, plan updater.Plan, deps updater.Deps) {
+	if deps.PathLookup == nil || deps.VersionProbe == nil {
+		return
+	}
+	res, err := updater.SelfCheck(ctx, plan, deps)
+	if err != nil || !res.Shadowed {
+		return
+	}
+	fmt.Fprintf(env.Stdout, "[warn] `omac` on your PATH still resolves to an older binary:\n")
+	fmt.Fprintf(env.Stdout, "         %s (%s)\n", res.ResolvedPath, res.ResolvedVersion)
+	fmt.Fprintf(env.Stdout, "       it shadows the %s you just installed. To use the new version, remove the stale binary:\n", plan.LatestVersion)
+	fmt.Fprintf(env.Stdout, "         rm %s && hash -r\n", res.ResolvedPath)
 }
 
 func printUpdatePlan(env *Env, plan updater.Plan) {

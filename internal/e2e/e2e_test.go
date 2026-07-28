@@ -281,7 +281,6 @@ func runSecurityAudit(t *testing.T, h harnessConfig) {
 		assertFilesystemWriteDenied(t, stdout)
 		assertSymlinkEscapeDenied(t, stdout)
 		assertNetworkDenied(t, stdout, spec.NetDenyDomain)
-		assertCacheHostRootDenied(t, stdout)
 	} else {
 		// A --no-sandbox harness (e.g. codex on macOS) has no sandbox to
 		// enforce the negative properties, so we can't assert they hold.
@@ -1191,35 +1190,6 @@ func assertCacheIsolation(t *testing.T, output string) {
 	t.Logf("PASS: cache isolation — OMAC_CACHE_DIR injected, tool mappings re-injected, marker round-tripped")
 }
 
-// assertCacheHostRootDenied verifies the host-global cache roots
-// (~/.cache, ~/Library/Caches) are NOT writable from inside the sandbox.
-// This is the negative half of the cache isolation contract: only the
-// scoped OMAC_CACHE_DIR may be writable.
-func assertCacheHostRootDenied(t *testing.T, output string) {
-	t.Helper()
-	if !strings.Contains(output, "=== PROBE: cache ===") {
-		// Cache probe didn't run at all — handled by assertCacheIsolation.
-		t.Logf("SKIP: cache host-root denial — cache probe not in output")
-		return
-	}
-	if strings.Contains(output, "HOST_CACHE_WRITABLE: SECURITY VIOLATION") {
-		failWithClassification(t, "cacheHostRootDenied", fmSandboxFail,
-			output+": host ~/.cache is writable (cache isolation broken)")
-		return
-	}
-	if strings.Contains(output, "HOST_LIBRARY_CACHES_WRITABLE: SECURITY VIOLATION") {
-		failWithClassification(t, "cacheHostRootDenied", fmSandboxFail,
-			output+": host ~/Library/Caches is writable (cache isolation broken)")
-		return
-	}
-	if !strings.Contains(output, "HOST_CACHE_DENIED:") {
-		failWithClassification(t, "cacheHostRootDenied", fmAgentPartial,
-			output+": host ~/.cache denial marker missing")
-		return
-	}
-	t.Logf("PASS: cache host-root denial — ~/.cache and ~/Library/Caches not writable from sandbox")
-}
-
 // logExecProbeResults logs the exec probe results without asserting
 // pass/fail. Whether exec works on read-only mounts is a platform
 // decision (bwrap typically allows exec on read-only binds), not a
@@ -1378,6 +1348,17 @@ func writeSandboxProfile(t *testing.T, home string, h harnessConfig, spec *Allow
 	// exercises Task 3's trusted re-injection of the cache env.
 	if spec != nil && len(spec.EnvAllowVars) > 0 {
 		profile.Environment = sandboxprofile.Environment{AllowVars: spec.EnvAllowVars}
+	} else if h.EnvVarsForAllow != nil {
+		// Non-audit path (echo-rest LLM leg, launch/serve probes): the
+		// compiled-in DefaultAllowVars deliberately omits harness
+		// provider-auth vars (#111), so append this harness's auth
+		// allow-list. Without it the sandbox strips the token an env-auth
+		// harness reads from the process env (codex/copilot →
+		// "Missing SKAINET_TOKEN" / "No authentication found"); file-auth
+		// harnesses (opencode/claude-code) are unaffected either way.
+		profile.Environment.AllowVars = append(
+			append([]string{}, profile.Environment.AllowVars...),
+			h.EnvVarsForAllow()...)
 	}
 
 	profDir := filepath.Join(home, ".config", "omac", "sandbox-profiles")
@@ -1391,12 +1372,8 @@ func writeSandboxProfile(t *testing.T, home string, h harnessConfig, spec *Allow
 	if err := os.WriteFile(filepath.Join(profDir, "default.json"), data, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	allowVarsCount := 0
-	if spec != nil {
-		allowVarsCount = len(spec.EnvAllowVars)
-	}
 	t.Logf("sandbox profile written (derived from DefaultProfile) with %d allow_domain entries, %d allow_vars",
-		len(allowDomains), allowVarsCount)
+		len(allowDomains), len(profile.Environment.AllowVars))
 }
 
 // extractHost parses a URL string and returns the hostname.

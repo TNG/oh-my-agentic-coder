@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 
+	"github.com/tngtech/oh-my-agentic-coder/internal/config"
 	"github.com/tngtech/oh-my-agentic-coder/internal/toolcache"
 )
 
@@ -61,13 +62,38 @@ func runCacheClear(args []string, env *Env) int {
 		return ExitOK
 	}
 
-	result, err := toolcache.ClearWorkdir(env.Workdir)
+	result, err := clearActiveScope(env.Workdir)
 	if err != nil {
 		fmt.Fprintln(env.Stderr, "omac cache clear:", err)
 		return ExitIOError
 	}
 	renderClearResult(env, result)
 	return ExitOK
+}
+
+// clearActiveScope removes the persistent cache scope the current config
+// resolves to (global/config/workdir), so `omac cache clear` targets the
+// cache actually in use rather than always the per-workdir one.
+func clearActiveScope(workdir string) (toolcache.ClearResult, error) {
+	lc, cfgPath, err := config.LoadLauncher(workdir)
+	if err != nil {
+		return toolcache.ClearResult{}, err
+	}
+	scope, err := lc.Cache.Resolve()
+	if err != nil {
+		return toolcache.ClearResult{}, err
+	}
+	switch scope {
+	case config.CacheScopeWorkdir:
+		return toolcache.ClearWorkdir(workdir)
+	case config.CacheScopeConfig:
+		if cfgPath != "" {
+			return toolcache.ClearConfig(cfgPath)
+		}
+		return toolcache.ClearShared()
+	default:
+		return toolcache.ClearShared()
+	}
 }
 
 func renderClearResult(env *Env, r toolcache.ClearResult) {
@@ -82,7 +108,8 @@ func printCacheUsage(env *Env) {
 	fmt.Fprintln(env.Stderr, `omac cache — manage the tool cache
 
 Usage:
-  omac cache clear           Remove the current workdir's cache scope.
+  omac cache clear           Remove the active cache scope (global, config, or
+                             workdir, per the launcher config's cache.scope).
   omac cache clear --all     Remove every inactive cache scope (destructive).
 
 A scope is reported as:

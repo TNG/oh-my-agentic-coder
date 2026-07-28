@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/tngtech/oh-my-agentic-coder/internal/config"
 	"github.com/tngtech/oh-my-agentic-coder/internal/toolcache"
 )
 
@@ -469,6 +470,8 @@ func TestBuildProvenanceView_CacheSection(t *testing.T) {
 	os.MkdirAll(profDir, 0o755)
 	profPath := filepath.Join(profDir, "default.json")
 	os.WriteFile(profPath, []byte(`{"meta":{"name":"default"},"workdir":{"access":"readwrite"}}`), 0o644)
+	// Select the per-workdir scope so provenance reports it (default is global).
+	os.WriteFile(filepath.Join(profDir, "oh-my-agentic-coder.yaml"), []byte("cache:\n  scope: workdir\n"), 0o644)
 
 	view, err := buildProvenanceView(wd, profPath)
 	if err != nil {
@@ -567,8 +570,9 @@ func TestWriteProvenanceJSON_CacheSection(t *testing.T) {
 	if !ok {
 		t.Fatalf("JSON missing cache object; got %v", parsed)
 	}
-	if scope, _ := cache["scope"].(string); scope != string(toolcache.DomainWorkdir) {
-		t.Errorf("cache.scope = %q; want %q", scope, toolcache.DomainWorkdir)
+	// No config on disk => default global scope, backed by the shared domain.
+	if scope, _ := cache["scope"].(string); scope != string(toolcache.DomainShared) {
+		t.Errorf("cache.scope = %q; want %q", scope, toolcache.DomainShared)
 	}
 	if mode, _ := cache["mode"].(string); mode != string(toolcache.ModePersistent) {
 		t.Errorf("cache.mode = %q; want %q", mode, toolcache.ModePersistent)
@@ -614,7 +618,7 @@ func TestBuildCacheView_ErrorNotSwallowed(t *testing.T) {
 	wd := t.TempDir()
 	t.Setenv("HOME", "")
 
-	cv, err := buildCacheView(wd)
+	cv, err := buildCacheView(config.CacheScopeGlobal, wd, "")
 	if err == nil {
 		t.Fatalf("expected error from buildCacheView when HOME is unset; got %+v", cv)
 	}

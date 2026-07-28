@@ -2,7 +2,9 @@
 
 package e2e
 
-import "testing"
+import (
+	"testing"
+)
 
 // These tests exercise, against synthetic probe output (no live
 // agent/sandbox), the exact marker-absence checks that back

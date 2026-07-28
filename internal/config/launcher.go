@@ -20,6 +20,49 @@ type LauncherConfig struct {
 	Sandbox SandboxConfig `yaml:"sandbox" json:"sandbox"`
 	Facade  FacadeConfig  `yaml:"facade"  json:"facade"`
 	Audit   AuditConfig   `yaml:"audit"   json:"audit"`
+	Cache   CacheConfig   `yaml:"cache"   json:"cache"`
+}
+
+// CacheScope selects how the persistent tool cache is partitioned.
+type CacheScope string
+
+const (
+	// CacheScopeGlobal shares one cache across every workdir and config.
+	CacheScopeGlobal CacheScope = "global"
+	// CacheScopeConfig shares one cache across all workdirs governed by the
+	// same launcher config file (falls back to global when none is on disk).
+	CacheScopeConfig CacheScope = "config"
+	// CacheScopeWorkdir gives each workdir its own isolated cache.
+	CacheScopeWorkdir CacheScope = "workdir"
+)
+
+// CacheConfig controls the tool cache scope (see internal/toolcache).
+//
+// Scope defaults to "global": every workdir shares one persistent cache. The
+// zero value (unset in YAML) resolves to global via Resolve, so no default
+// backfill is needed.
+type CacheConfig struct {
+	Scope CacheScope `yaml:"scope" json:"scope"`
+}
+
+// Resolve returns the effective scope, treating unset as global, and errors
+// on an unrecognized value.
+func (c CacheConfig) Resolve() (CacheScope, error) {
+	if c.Scope == "" {
+		return CacheScopeGlobal, nil
+	}
+	return ValidateCacheScope(string(c.Scope))
+}
+
+// ValidateCacheScope normalizes and validates a scope string (from config or
+// the --cache-scope flag).
+func ValidateCacheScope(s string) (CacheScope, error) {
+	switch CacheScope(s) {
+	case CacheScopeGlobal, CacheScopeConfig, CacheScopeWorkdir:
+		return CacheScope(s), nil
+	default:
+		return "", fmt.Errorf("invalid cache scope %q (want global, config, or workdir)", s)
+	}
 }
 
 // AuditConfig controls the security audit trail (see internal/audit).
@@ -263,6 +306,7 @@ func defaultLauncherConfigFor(h Harness) LauncherConfig {
 			Syslog:  false,
 			Strict:  false,
 		},
+		Cache: CacheConfig{Scope: CacheScopeGlobal},
 	}
 }
 
@@ -297,6 +341,9 @@ func LoadLauncher(workdir string) (LauncherConfig, string, error) {
 			return LauncherConfig{}, "", fmt.Errorf("parse %s: %w", p, err)
 		}
 		lc = mergeDefaults(lc)
+		if _, err := lc.Cache.Resolve(); err != nil {
+			return LauncherConfig{}, "", fmt.Errorf("parse %s: %w", p, err)
+		}
 		return lc, p, nil
 	}
 	return DefaultLauncherConfig(), "", nil

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -95,13 +96,25 @@ func TestParseValidationErrors(t *testing.T) {
 		`{"network": {"listen_port": [70000]}}`,
 		`{"network": {"network_prompt": {"on_unavailable": "ask"}}}`,
 		`{"environment": {"allow_vars": [" "]}}`,
-		`{"filesystem": {"deny": [" "]}}`,   // empty deny entry
-		`{"filesystem": {"deny": ["[a-"]}}`, // malformed basename glob
+		`{"filesystem": {"deny": [" "]}}`,              // empty deny entry
+		`{"filesystem": {"deny": ["[a-"]}}`,            // malformed basename glob
+		`{"network": {"proxy_injection": ["python"]}}`, // unsupported tool
 	}
 	for _, c := range cases {
 		if _, err := Parse([]byte(c)); err == nil {
 			t.Errorf("Parse(%s) should fail validation", c)
 		}
+	}
+}
+
+func TestProxyInjection(t *testing.T) {
+	p, err := Parse([]byte(`{"network": {"proxy_injection": ["jvm", "node"]}}`))
+	if err != nil {
+		t.Fatalf("valid proxy_injection rejected: %v", err)
+	}
+	want := []string{ProxyInjectJVM, ProxyInjectNode}
+	if !slices.Equal(p.Network.ProxyInjection, want) {
+		t.Errorf("proxy_injection = %v, want %v", p.Network.ProxyInjection, want)
 	}
 }
 

@@ -113,7 +113,7 @@ func (stubBackend) name() string { return "stub" }
 
 func (s stubBackend) available() bool { return s.source != nil }
 
-func (s stubBackend) show(ctx context.Context, host string, port int, suffix, intent string) (string, error) {
+func (s stubBackend) show(ctx context.Context, host string, port int, suffix, intent, cause, originLine string) (string, error) {
 	d, ok := s.source.lookup(host)
 	if !ok {
 		s.logf("omac sandbox: stub prompt: no decision for %s; denying", host)

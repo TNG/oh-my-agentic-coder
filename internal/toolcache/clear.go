@@ -56,6 +56,22 @@ func ClearWorkdir(path string) (ClearResult, error) {
 	return clearScope(filepath.Dir(scope.Dir), scope.Digest, scope.Dir)
 }
 
+func ClearShared() (ClearResult, error) {
+	scope, err := DescribeShared()
+	if err != nil {
+		return ClearResult{}, err
+	}
+	return clearScope(filepath.Dir(scope.Dir), scope.Digest, scope.Dir)
+}
+
+func ClearConfig(cfgPath string) (ClearResult, error) {
+	scope, err := DescribePersistent(DomainConfig, cfgPath)
+	if err != nil {
+		return ClearResult{}, err
+	}
+	return clearScope(filepath.Dir(scope.Dir), scope.Digest, scope.Dir)
+}
+
 func ClearAll() ([]ClearResult, error) {
 	root, err := persistentRoot()
 	if err != nil {

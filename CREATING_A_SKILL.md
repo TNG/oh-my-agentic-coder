@@ -596,9 +596,13 @@ checked:
 2. **Unregistered skill on disk** (a directory with an `omac.yaml` under
    *either* skill source — the workdir-local layer or the user-global
    layer, see §2 — that omac has never seen). Refuses to start;
-   prints the exact register command for each one. Re-registration is
-   mandatory because it's the only point at which secret-prompting and
-   config-prompting happen.
+   prints the exact register command for each one. Standard `omac start`
+   always takes this path. The explicit `--auto-register-skills` start-family
+   opt-in silently registers only workdir-local skills whose required config
+   and secrets resolve without prompting; it never bypasses an unresolved
+   required value. All other unregistered skills remain rejected with their
+   registration command. Explicit registration remains the normal path for
+   config and secret prompting.
 
 3. **Bundle hash drift** (the registered skill's source files changed
    since register). The bundle hash covers `omac.yaml` and every

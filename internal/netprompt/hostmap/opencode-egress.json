@@ -1,0 +1,176 @@
+{
+  "schema_version": 1,
+  "meta": {
+    "harness": "opencode",
+    "source_repo": "anomalyco/opencode",
+    "source_commit": "355a0bcf5",
+    "source_version": "1.17.8",
+    "audited_against_installed": "1.17.12",
+    "method": "manual source audit (call-site attribution); NOT auto-generated. See README.md.",
+    "purpose": "Map an egress hostname to the opencode subsystem that dials it, so the network prompt can render a human-readable 'likely cause' line. The proxy never terminates TLS, so only host+port+source-process are observable; this map resolves the cause from the hostname alone.",
+    "origin_values": {
+      "opencode-core": "Dialed by the opencode server/bun runtime itself (background). Not separable from agent LLM traffic by PID — same process.",
+      "opencode-tool": "Dialed by a subprocess opencode spawns for language tooling (LSP server, ripgrep). May appear as a distinct PID.",
+      "provider": "LLM inference endpoint; only dialed when that provider is configured.",
+      "external": "Observed at runtime but NOT attributable to opencode source (dependency/runtime). Out of scope for this map."
+    }
+  },
+  "entries": [
+    {
+      "host": "raw.githubusercontent.com",
+      "match": "exact",
+      "origin": "opencode-core",
+      "category": "render",
+      "cause": "Syntax-highlighting grammar/query (tree-sitter) for the code you are viewing",
+      "user_initiated": false,
+      "source": "packages/tui/src/parsers-config.ts",
+      "notes": "Also used by the windows scoop self-update check (installation/index.ts). If the source process is an agent tool rather than opencode itself, treat as an agent-initiated fetch instead."
+    },
+    {
+      "host": "github.com",
+      "match": "exact",
+      "origin": "opencode-core",
+      "category": "language-tooling",
+      "cause": "Asset download: tree-sitter grammar (.wasm), an LSP server, the ripgrep binary, or a self-update",
+      "user_initiated": false,
+      "source": "packages/tui/src/parsers-config.ts, packages/opencode/src/lsp/server.ts, packages/core/src/ripgrep/binary.ts, packages/opencode/src/installation/index.ts"
+    },
+    {
+      "host": "objects.githubusercontent.com",
+      "match": "exact",
+      "origin": "opencode-core",
+      "category": "language-tooling",
+      "cause": "GitHub release-asset CDN (redirect target of a github.com release download)",
+      "user_initiated": false,
+      "source": "(redirect target; not a literal in source)"
+    },
+    {
+      "host": "codeload.github.com",
+      "match": "exact",
+      "origin": "opencode-core",
+      "category": "language-tooling",
+      "cause": "GitHub source-archive download for an LSP (e.g. vscode-eslint, elixir-ls)",
+      "user_initiated": false,
+      "source": "packages/opencode/src/lsp/server.ts (archive/refs/heads/*.zip; redirects to codeload)"
+    },
+    {
+      "host": "api.github.com",
+      "match": "exact",
+      "origin": "opencode-core",
+      "category": "language-tooling",
+      "cause": "GitHub API: latest-release lookup for an LSP server (kotlin, lua, texlab, tinymist, zls), opencode self-update, or GitHub app integration",
+      "user_initiated": false,
+      "source": "packages/opencode/src/lsp/server.ts, packages/opencode/src/installation/index.ts, packages/opencode/src/cli/cmd/github.handler.ts"
+    },
+    {
+      "host": "download-cdn.jetbrains.com",
+      "match": "exact",
+      "origin": "opencode-core",
+      "category": "language-tooling",
+      "cause": "Kotlin LSP server download",
+      "user_initiated": false,
+      "source": "packages/opencode/src/lsp/server.ts:1330"
+    },
+    {
+      "host": "api.releases.hashicorp.com",
+      "match": "exact",
+      "origin": "opencode-core",
+      "category": "language-tooling",
+      "cause": "terraform-ls (Terraform LSP) release lookup/download",
+      "user_initiated": false,
+      "source": "packages/opencode/src/lsp/server.ts:1632"
+    },
+    {
+      "host": "www.eclipse.org",
+      "match": "exact",
+      "origin": "opencode-core",
+      "category": "language-tooling",
+      "cause": "Eclipse JDT (Java LSP) download",
+      "user_initiated": false,
+      "source": "packages/opencode/src/lsp/server.ts:1207"
+    },
+    {
+      "host": "registry.npmjs.org",
+      "match": "exact",
+      "origin": "opencode-core",
+      "category": "language-tooling",
+      "cause": "npm registry: installing an LSP server (typescript, pyright, ...) or a plugin",
+      "user_initiated": false,
+      "source": "packages/core/src/npm-config.ts:37",
+      "notes": "Default registry; overridable via .npmrc `registry`. A custom registry host serves the same purpose."
+    },
+    {
+      "host": "models.dev",
+      "match": "exact",
+      "origin": "opencode-core",
+      "category": "catalog",
+      "cause": "Model catalog (provider/model metadata)",
+      "user_initiated": false,
+      "source": "packages/core/src/models-dev.ts:142",
+      "notes": "Overridable via OPENCODE_MODELS_URL."
+    },
+    {
+      "host": "opencode.ai",
+      "match": "exact",
+      "origin": "opencode-core",
+      "category": "config-assets",
+      "cause": "opencode config schema, TUI manifest, install script, docs, changelog, or the Zen LLM gateway (/zen/v1)",
+      "user_initiated": false,
+      "source": "packages/opencode/src/config/config.ts, packages/cli/src/tui.ts"
+    },
+    {
+      "host": "api.opencode.ai",
+      "match": "exact",
+      "origin": "opencode-core",
+      "category": "integration",
+      "cause": "GitHub app installation lookup",
+      "user_initiated": false,
+      "source": "packages/opencode/src/cli/cmd/github.handler.ts"
+    },
+    {
+      "host": "console.opencode.ai",
+      "match": "exact",
+      "origin": "opencode-core",
+      "category": "auth",
+      "cause": "opencode auth (device-code login) and Zen gateway connection setup",
+      "user_initiated": false,
+      "source": "packages/opencode (auth/device flow)"
+    },
+    {
+      "host": "app.opencode.ai",
+      "match": "exact",
+      "origin": "opencode-core",
+      "category": "config-assets",
+      "cause": "Desktop/web app assets",
+      "user_initiated": false,
+      "source": "packages/app"
+    },
+    {
+      "host": "api.anthropic.com",
+      "match": "exact",
+      "origin": "provider",
+      "category": "llm-inference",
+      "cause": "LLM inference (Anthropic provider)",
+      "user_initiated": true,
+      "source": "provider config",
+      "notes": "Representative of the provider class. Any configured provider host (openai, x.ai, openrouter, bedrock, vertex/googleapis, a self-hosted gateway, etc.) is category llm-inference. Cannot be separated from opencode-core background traffic by PID — same process."
+    }
+  ],
+  "opt_in": [
+    {
+      "host_pattern": "OTEL_EXPORTER_OTLP_ENDPOINT (e.g. *.datadoghq.com)",
+      "origin": "opencode-core",
+      "category": "telemetry",
+      "cause": "OpenTelemetry trace/log export",
+      "user_initiated": false,
+      "source": "packages/core/src/observability/otlp.ts:7,51-72",
+      "notes": "OPT-IN ONLY: no export unless OTEL_EXPORTER_OTLP_ENDPOINT is set. A Datadog intake host seen at runtime comes from local/TNG env config, not an opencode default."
+    }
+  ],
+  "not_egress": [
+    {
+      "host": "1.1.1.1",
+      "note": "NOT an opencode egress. Appears only as source text — a webfetch test fixture (packages/core/test/tool-webfetch.test.ts, a dummy 'Unable to fetch' target) and a code comment (packages/opencode/src/permission/arity.ts:96). Never dialed at runtime (absent from the sandbox audit). Documented so it is not re-investigated."
+    }
+  ]
+}

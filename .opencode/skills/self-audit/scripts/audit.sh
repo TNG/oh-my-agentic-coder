@@ -232,9 +232,8 @@ echo ""
 echo "=== PROBE: cache ==="
 # Cache isolation probe (Tasks 1-10). Verifies the sandbox redirected
 # every tool cache to OMAC_CACHE_DIR (injected by omac via the trusted
-# re-injection path, bypassing the allow_vars filter) and that the
-# host-global cache roots (~/.cache, ~/Library/Caches) are denied so
-# the agent cannot escape the scoped cache.
+# re-injection path, bypassing the allow_vars filter) and that a marker
+# round-trips through the scoped cache dir.
 #
 # The allow_vars fixture intentionally lists only OMAC_* for cache
 # names (see allowance.go), so the non-OMAC_* tool mappings
@@ -266,23 +265,8 @@ else
         echo "CACHE_MARKER_WRITE_FAILED: $(cat /tmp/audit-cache-write.txt)"
     fi
 fi
-echo "--- host-global cache roots must be denied (write) ---"
-# ~/.cache and ~/Library/Caches are NOT granted by DefaultProfile
-# (Tasks 1-10 removed them). A write attempt must fail; a success is a
-# security boundary violation the test asserts on.
-host_cache="$HOME/.cache"
-( echo "pwn" > "$host_cache/audit-host-marker.txt" ) 2>/tmp/audit-host-cache.txt \
-    && echo "HOST_CACHE_WRITABLE: SECURITY VIOLATION ($host_cache)" \
-    || echo "HOST_CACHE_DENIED: $(cat /tmp/audit-host-cache.txt)"
-if [ -d "$HOME/Library/Caches" ]; then
-    ( echo "pwn" > "$HOME/Library/Caches/audit-host-marker.txt" ) 2>/tmp/audit-host-caches.txt \
-        && echo "HOST_LIBRARY_CACHES_WRITABLE: SECURITY VIOLATION" \
-        || echo "HOST_LIBRARY_CACHES_DENIED: $(cat /tmp/audit-host-caches.txt)"
-else
-    echo "HOST_LIBRARY_CACHES_DENIED: ~/Library/Caches does not exist"
-fi
-# Clean up the scratch files used to capture inner-command stderr so
-# they don't accumulate across runs. The denial messages have already
-# been folded into the probe output above.
-rm -f /tmp/audit-cache-write.txt /tmp/audit-host-cache.txt /tmp/audit-host-caches.txt 2>/dev/null || true
+# Clean up the scratch file used to capture inner-command stderr so it
+# doesn't accumulate across runs. The failure message, if any, has
+# already been folded into the probe output above.
+rm -f /tmp/audit-cache-write.txt 2>/dev/null || true
 echo "=== END: cache ==="

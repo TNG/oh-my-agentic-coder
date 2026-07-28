@@ -17,6 +17,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/tngtech/oh-my-agentic-coder/internal/intent"
 )
 
 // connectTimeout bounds the upstream dial (and the early DNS resolve).
@@ -30,30 +32,80 @@ var connectTimeout = 30 * time.Second
 // tell a policy denial from a real upstream 403.
 const sandboxDenyHeader = "X-Omac-Sandbox: denied\r\n"
 
-// denyBody renders the body for a Deny verdict. Not every Deny is a
-// policy decision, and the remedy has to match the cause, so the body
-// is chosen per reason class:
-//
-//   - "Explain more" at the prompt: declare or refine an intent via
-//     POST /sandbox/intent and retry.
-//   - resolution failure: the name never resolved, so no policy knob
-//     applies — the fix is DNS/reachability.
-//   - hard deny (metadata hostnames, link-local addresses): checked
-//     before any rule in Filter.Check, so allow_domain cannot override
-//     it and must not be offered.
-//   - everything else: a real policy denial, attributed to the sandbox
-//     and pointing at the knobs that change it.
-func denyBody(host, reason string) string {
+// intentHintHeader is the response-header name carrying the intent remedy
+// hint on a prompt-driven denial. An HTTPS/CONNECT client discards the deny
+// body, so the hint rides here too — readable without a follow-up
+// GET /sandbox/intent by any tooling that surfaces proxy headers. Only the
+// authoritative, single-line-ASCII hint constants are ever emitted here; the
+// agent-supplied intent reason is body-only (see intentHintFor).
+const intentHintHeader = "X-Omac-Intent-Hint"
+
+// intentHintFor returns the authoritative hint for a prompt-driven denial,
+// or "" when the denial is not intent-related. It mirrors the state machine
+// of the GET /sandbox/intent lookup so the two channels agree:
+//   - needs_intent (the user clicked "Explain more") -> explain-more hint,
+//     regardless of whether a reason was already on file;
+//   - a plain deny with a reason on file -> the user reviewed a declared
+//     intent and declined it, so tell the agent not to retry;
+//   - anything else (undeclared deny, policy/allowlist deny) -> no hint,
+//     since inviting a retry there would loop or is irrelevant.
+func intentHintFor(v Verdict) string {
 	switch {
-	case strings.Contains(reason, "needs_intent"):
-		return fmt.Sprintf(`omac sandbox: access to %q was DENIED — the user asked for more explanation.
+	case strings.Contains(v.Reason, "needs_intent"):
+		return intent.HintExplainMore
+	case strings.Contains(v.Reason, "prompt:deny") && strings.TrimSpace(v.IntentReason) != "":
+		return intent.HintDeclared
+	default:
+		return ""
+	}
+}
 
-Declare or refine your intent via:
-  POST $OMAC_BASE/sandbox/intent  {"target":%q,"reason":"..."}
-then retry the request.
-%s`, host, host, registryDenyHint(host, reason))
+// denyHeaders builds the extra response headers for a filtered denial. Every
+// denial is marked as sandbox-originated; a prompt-driven intent denial also
+// carries the hint. Only the static hint constant is placed here — never the
+// agent-supplied reason, which may contain CR/LF and is delivered in the body.
+func denyHeaders(v Verdict) string {
+	if hint := intentHintFor(v); hint != "" {
+		return sandboxDenyHeader + intentHintHeader + ": " + hint + "\r\n"
+	}
+	return sandboxDenyHeader
+}
 
-	case strings.Contains(reason, "dns resolution failed"):
+// denyBody renders the body for a Deny verdict. Not every Deny is a policy
+// decision, and the remedy has to match the cause, so the body is chosen per
+// reason class:
+//
+//   - "Explain more" at the prompt: the state-aware intent hint inline, plus
+//     the agent's own declared reason, so no second GET /sandbox/intent is
+//     needed to assemble the remedy.
+//   - a declined declared intent: the user reviewed the reason and said no.
+//   - resolution failure: the name never resolved, so no policy knob applies —
+//     the fix is DNS/reachability.
+//   - hard deny (metadata hostnames, link-local addresses): checked before any
+//     rule in Filter.Check, so allow_domain cannot override it and must not be
+//     offered.
+//   - everything else: a real policy denial, attributed to the sandbox and
+//     pointing at the knobs that change it.
+//
+// The registry note is appended wherever a retry is the right move. It is
+// deliberately absent from the declined-intent branch: that hint tells the
+// agent not to retry, and install guidance there would invite the very loop
+// the decision closed.
+func denyBody(host string, v Verdict) string {
+	prior := ""
+	if r := sanitizeReason(v.IntentReason); r != "" {
+		prior = fmt.Sprintf("\nYour declared intent on file: %q\n", r)
+	}
+	switch {
+	case strings.Contains(v.Reason, "needs_intent"):
+		return fmt.Sprintf("omac sandbox: access to %q was DENIED — the user asked for more explanation.\n\n%s\n%s%s",
+			host, intent.HintExplainMore, prior, registryDenyHint(host, v.Reason))
+
+	case strings.Contains(v.Reason, "prompt:deny") && prior != "":
+		return fmt.Sprintf("omac sandbox: access to %q was DENIED — the user reviewed your declared intent and declined it.\n\n%s\n%s",
+			host, intent.HintDeclared, prior)
+
+	case strings.Contains(v.Reason, "dns resolution failed"):
 		return fmt.Sprintf(`omac sandbox: access to %q was refused because the name did not resolve.
 
 This response comes from the omac sandbox proxy, not from %s.
@@ -65,9 +117,9 @@ To fix this:
   - check that the name resolves from this machine (private and
     VPN-scoped names need the VPN connected),
   - check the DNS servers reachable from the sandbox.
-%s`, host, host, registryDenyHint(host, reason))
+%s`, host, host, registryDenyHint(host, v.Reason))
 
-	case strings.HasPrefix(reason, "hard-deny"):
+	case strings.HasPrefix(v.Reason, "hard-deny"):
 		return fmt.Sprintf(`omac sandbox: access to %q was DENIED BY THE SANDBOX built-in guard (%s).
 
 This response comes from the omac sandbox proxy, not from %s.
@@ -77,7 +129,7 @@ Cloud-metadata hostnames and link-local addresses are blocked before any
 rule is consulted, so this cannot be overridden by a sandbox profile.
 If the host is not meant to be an internal address, check your DNS and
 /etc/hosts for an entry pointing it at a link-local range.
-%s`, host, reason, host, registryDenyHint(host, reason))
+%s`, host, v.Reason, host, registryDenyHint(host, v.Reason))
 
 	default:
 		return fmt.Sprintf(`omac sandbox: access to %q was DENIED BY THE SANDBOX network policy (%s).
@@ -91,8 +143,15 @@ To allow this host, either:
     (~/.config/omac/sandbox-profiles/<profile>.json),
   - or remove a matching deny entry from network.deny_domain or the
     <profile>.pages.json learned-policy file.
-%s`, host, reason, host, registryDenyHint(host, reason))
+%s`, host, v.Reason, host, registryDenyHint(host, v.Reason))
 	}
+}
+
+// sanitizeReason makes an agent-supplied intent reason safe to embed in the
+// deny body: CR/LF collapse to spaces so it cannot forge extra lines, and
+// surrounding whitespace is trimmed.
+func sanitizeReason(s string) string {
+	return strings.TrimSpace(strings.NewReplacer("\r", " ", "\n", " ").Replace(s))
 }
 
 // upstreamErrorBody renders the body for an upstream-proxy error. It
@@ -315,7 +374,7 @@ func (s *Server) authorized(req *http.Request) bool {
 // chained path, where the dialer ignores them).
 func (s *Server) admit(ctx context.Context, host string, port int) (Verdict, []netip.Addr) {
 	if planner, ok := s.dialer.(TunnelPlanner); ok && planner.ChainsHost(host) {
-		return s.filter.CheckHost(host, port), nil
+		return s.filter.CheckHost(ctx, host, port), nil
 	}
 	return s.filter.Check(ctx, host, port)
 }
@@ -335,9 +394,9 @@ func (s *Server) handleConnect(conn net.Conn, req *http.Request) {
 			fmt.Sprintf("omac sandbox: CONNECT to loopback %q refused by the sandbox (loopback traffic must use a granted open_port, not the proxy)\n", host))
 		return
 	}
-	upstream, verdict, err := s.checkAndDial(host, port)
+	upstream, verdict, err := s.checkAndDial(clientSourceCtx(conn), host, port)
 	if verdict.Decision != Allow {
-		writeRawResponse(conn, http.StatusForbidden, sandboxDenyHeader, denyBody(host, verdict.Reason))
+		writeRawResponse(conn, http.StatusForbidden, denyHeaders(verdict), denyBody(host, verdict))
 		return
 	}
 	if err != nil {
@@ -366,12 +425,13 @@ func (s *Server) handleConnect(conn net.Conn, req *http.Request) {
 // spend the dial budget, or a granted host would fail on an
 // already-expired context. verdict is always meaningful; upstream/err
 // are only set when the verdict is Allow.
-func (s *Server) checkAndDial(host string, port int) (net.Conn, Verdict, error) {
+func (s *Server) checkAndDial(base context.Context, host string, port int) (net.Conn, Verdict, error) {
 	// The check phase runs in its own scope so checkCancel is deferred
 	// (fires even if the filter panics) yet still releases the check
-	// context before the dial phase begins.
+	// context before the dial phase begins. It derives from base so the
+	// per-connection ClientSource reaches the prompt.
 	verdict, addrs := func() (Verdict, []netip.Addr) {
-		checkCtx, checkCancel := context.WithTimeout(context.Background(), connectTimeout)
+		checkCtx, checkCancel := context.WithTimeout(base, connectTimeout)
 		defer checkCancel()
 		return s.admit(checkCtx, host, port)
 	}()
@@ -407,9 +467,9 @@ func (s *Server) handleForward(conn net.Conn, br *bufio.Reader, req *http.Reques
 			fmt.Sprintf("omac sandbox: forward to loopback %q refused by the sandbox (loopback traffic must use a granted open_port, not the proxy)\n", host))
 		return
 	}
-	upstream, verdict, err := s.checkAndDial(host, port)
+	upstream, verdict, err := s.checkAndDial(clientSourceCtx(conn), host, port)
 	if verdict.Decision != Allow {
-		writeRawResponse(conn, http.StatusForbidden, sandboxDenyHeader, denyBody(host, verdict.Reason))
+		writeRawResponse(conn, http.StatusForbidden, denyHeaders(verdict), denyBody(host, verdict))
 		return
 	}
 	if err != nil {
