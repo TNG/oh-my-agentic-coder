@@ -84,6 +84,26 @@ To fix this:
 `, proxyHost)
 }
 
+// upstreamFailureResponse renders the header and body for a dial that
+// failed *after* the host was allowed. A registry hint, when one
+// applies, is appended to the body rather than left to the log:
+// diagnostics go to ~/.local/state/omac/sandbox.log whenever stderr is
+// a terminal, so the response is the only channel the requesting agent
+// can read.
+func upstreamFailureResponse(host string, err error) (header, body string) {
+	var ue *UpstreamError
+	if errors.As(err, &ue) {
+		header = "X-Omac-Sandbox: upstream-error\r\n"
+		body = upstreamErrorBody(ue.ProxyHost, ue.StatusLine)
+	} else {
+		body = fmt.Sprintf("upstream dial failed: %v\n", err)
+	}
+	if hint := registryUpstreamHint(host); hint != "" {
+		body += hint
+	}
+	return header, body
+}
+
 // Server is the filtering proxy. It binds 127.0.0.1:0 and serves
 // CONNECT tunnels (HTTPS) and absolute-URI forwarding (plain HTTP).
 type Server struct {
@@ -285,16 +305,14 @@ func (s *Server) handleConnect(conn net.Conn, req *http.Request) {
 	}
 	if err != nil {
 		if hint := registryUpstreamHint(host); hint != "" {
-			s.logf("%s", hint)
+			s.logf("omac sandbox: %s", flattenForLog(hint))
 		}
 		var ue *UpstreamError
 		if errors.As(err, &ue) {
 			s.logf("omac sandbox: upstream error: %v", err)
-			writeRawResponse(conn, http.StatusBadGateway, "X-Omac-Sandbox: upstream-error\r\n",
-				upstreamErrorBody(ue.ProxyHost, ue.StatusLine))
-		} else {
-			writeRawResponse(conn, http.StatusBadGateway, "", fmt.Sprintf("upstream dial failed: %v\n", err))
 		}
+		header, body := upstreamFailureResponse(host, err)
+		writeRawResponse(conn, http.StatusBadGateway, header, body)
 		return
 	}
 	defer upstream.Close()
@@ -359,16 +377,14 @@ func (s *Server) handleForward(conn net.Conn, br *bufio.Reader, req *http.Reques
 	}
 	if err != nil {
 		if hint := registryUpstreamHint(host); hint != "" {
-			s.logf("%s", hint)
+			s.logf("omac sandbox: %s", flattenForLog(hint))
 		}
 		var ue *UpstreamError
 		if errors.As(err, &ue) {
 			s.logf("omac sandbox: upstream error: %v", err)
-			writeRawResponse(conn, http.StatusBadGateway, "X-Omac-Sandbox: upstream-error\r\n",
-				upstreamErrorBody(ue.ProxyHost, ue.StatusLine))
-		} else {
-			writeRawResponse(conn, http.StatusBadGateway, "", fmt.Sprintf("upstream dial failed: %v\n", err))
 		}
+		header, body := upstreamFailureResponse(host, err)
+		writeRawResponse(conn, http.StatusBadGateway, header, body)
 		return
 	}
 	defer upstream.Close()

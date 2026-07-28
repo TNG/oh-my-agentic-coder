@@ -83,9 +83,18 @@ func registryDenyHint(host, reason string) string {
 	}
 	return fmt.Sprintf(`
 Note: %q looks like a package registry. A tool or harness plugin/provider
-install likely tried to fetch from it into a cold cache. %s
+install likely tried to fetch from it into a cold cache.
+%s
 Once the fetch succeeds, the plugin is cached and reused on later launches.
 `, host, next)
+}
+
+// flattenForLog collapses wrapped prose into one line. Hints are wrapped for
+// the response body, but the diagnostics sink prepends timestamp/level/category
+// columns per line and appends whole lines so concurrent sandboxes interleave
+// cleanly — a multi-line message would break both.
+func flattenForLog(s string) string {
+	return strings.Join(strings.Fields(s), " ")
 }
 
 // registryUpstreamHint returns a note for a *connection* failure (not a policy
@@ -95,7 +104,10 @@ func registryUpstreamHint(host string) string {
 	if !isPackageRegistry(host) {
 		return ""
 	}
-	return fmt.Sprintf("omac sandbox: %q looks like a package registry and was allowed by policy but "+
-		"the connection failed — if it is a private/VPN-scoped registry, check that your VPN is "+
-		"connected and the host is reachable.", host)
+	return fmt.Sprintf(`
+Note: %q looks like a package registry. It was allowed by policy, so
+this is not a sandbox denial — the connection itself failed. If it is a
+private/VPN-scoped registry, check that your VPN is connected and the
+host is reachable.
+`, host)
 }

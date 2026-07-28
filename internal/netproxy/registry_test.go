@@ -1,9 +1,140 @@
 package netproxy
 
 import (
+	"bufio"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
 	"strings"
+	"sync"
 	"testing"
 )
+
+// closedPort returns an address nothing listens on, so a dial to it is
+// refused — the shape of an allowed-but-unreachable (VPN-down) registry.
+func closedPort(t *testing.T) int {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	ln.Close()
+	return port
+}
+
+// TestServer502BodyCarriesRegistryHint pins the connection-failure hint to the
+// *response*, not the log. Diagnostics go to ~/.local/state/omac/sandbox.log
+// whenever stderr is a terminal, so a log-only hint is invisible to the agent
+// that made the request and to the user until they open that file. The client
+// sees the 502 body, so the explanation has to be in it.
+func TestServer502BodyCarriesRegistryHint(t *testing.T) {
+	body := connectToUnreachable(t, "registry.corp.example.com")
+	if !strings.Contains(body, "package registry") {
+		t.Errorf("502 body should name the registry and explain the failure;\ngot:\n%s", body)
+	}
+	if !strings.Contains(body, "VPN") {
+		t.Errorf("502 body should point at VPN/reachability;\ngot:\n%s", body)
+	}
+}
+
+// TestServer502BodyWrapWidth holds the 502 body to the same wrap discipline as
+// the deny body: it is read in a terminal, so the appended hint must not arrive
+// as one runaway line.
+func TestServer502BodyWrapWidth(t *testing.T) {
+	const maxWidth = 100
+	for _, line := range strings.Split(connectToUnreachable(t, "registry.corp.example.com"), "\n") {
+		if len(line) > maxWidth {
+			t.Errorf("502 body line of %d chars exceeds %d:\n%s", len(line), maxWidth, line)
+		}
+	}
+}
+
+// TestRegistryUpstreamHintLogsOneLine guards the diagnostics contract: the diag
+// sink appends one line per entry so concurrent sandboxes interleave whole
+// lines, and it prepends timestamp/level/category columns to each. The hint is
+// wrapped prose for the response body, so the logged form must be flattened.
+func TestRegistryUpstreamHintLogsOneLine(t *testing.T) {
+	var mu sync.Mutex
+	var logged []string
+	filter := NewFilter(FilterConfig{
+		AllowDomains: []string{"registry.corp.example.com"},
+		Resolve:      resolveTo("127.0.0.1"),
+	})
+	s, err := NewServer(filter, NewDirectDialer(), func(format string, args ...any) {
+		mu.Lock()
+		defer mu.Unlock()
+		logged = append(logged, fmt.Sprintf(format, args...))
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(s.Close)
+
+	port := closedPort(t)
+	conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", s.Port()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	target := fmt.Sprintf("registry.corp.example.com:%d", port)
+	fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\nProxy-Authorization: %s\r\n\r\n",
+		target, target, basicAuth("omac", s.Token()))
+	if _, err := http.ReadResponse(bufio.NewReader(conn), nil); err != nil {
+		t.Fatal(err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	var found bool
+	for _, msg := range logged {
+		if !strings.Contains(msg, "package registry") {
+			continue
+		}
+		found = true
+		if strings.Contains(strings.TrimSuffix(msg, "\n"), "\n") {
+			t.Errorf("registry hint must be logged as a single line;\ngot:\n%s", msg)
+		}
+	}
+	if !found {
+		t.Errorf("registry hint should still reach the log; got %q", logged)
+	}
+}
+
+// connectToUnreachable CONNECTs through the proxy to host on a port nothing
+// listens on — host is allowed by policy, so the failure is the dial, not the
+// filter. Returns the body the client receives.
+func connectToUnreachable(t *testing.T, host string) string {
+	t.Helper()
+	port := closedPort(t)
+	s := startProxy(t, FilterConfig{
+		AllowDomains: []string{host},
+		Resolve:      resolveTo("127.0.0.1"),
+	})
+
+	conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", s.Port()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	target := fmt.Sprintf("%s:%d", host, port)
+	fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\nProxy-Authorization: %s\r\n\r\n",
+		target, target, basicAuth("omac", s.Token()))
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Errorf("status = %d, want 502", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	return string(body)
+}
 
 func TestIsPackageRegistry(t *testing.T) {
 	for _, tt := range []struct {
@@ -54,6 +185,31 @@ func TestRegistryDenyHintTailorsByReason(t *testing.T) {
 		got := registryDenyHint("registry.npmjs.org", tt.reason)
 		if !strings.Contains(got, tt.want) {
 			t.Errorf("reason %q: hint missing %q;\ngot:\n%s", tt.reason, tt.want, got)
+		}
+	}
+}
+
+// TestRegistryDenyHintWrapWidth pins the rendered shape: the hint is read as
+// plain text in a terminal alongside a body wrapped at ~80 columns, so no line
+// may run away. Every reason branch is checked, because the remedy text is
+// interpolated into the shared preamble and a bad splice point ruins all of
+// them at once.
+func TestRegistryDenyHintWrapWidth(t *testing.T) {
+	const maxWidth = 100
+	for _, reason := range []string{
+		"prompt unavailable: on_unavailable=deny",
+		"not in allowlist",
+		"prompt:deny",
+		"dns resolution failed",
+		"hard-deny: resolves to link-local",
+		"deny_domain",
+		"learned permanent deny",
+	} {
+		for _, line := range strings.Split(registryDenyHint("registry.npmjs.org", reason), "\n") {
+			if len(line) > maxWidth {
+				t.Errorf("reason %q: line of %d chars exceeds %d:\n%s",
+					reason, len(line), maxWidth, line)
+			}
 		}
 	}
 }
