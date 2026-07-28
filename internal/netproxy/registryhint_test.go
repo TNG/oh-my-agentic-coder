@@ -200,6 +200,7 @@ func TestRegistryDenyHintWrapWidth(t *testing.T) {
 		"prompt unavailable: on_unavailable=deny",
 		"not in allowlist",
 		"prompt:deny",
+		"prompt:needs_intent",
 		"dns resolution failed",
 		"hard-deny: resolves to link-local",
 		"deny_domain",
@@ -210,6 +211,82 @@ func TestRegistryDenyHintWrapWidth(t *testing.T) {
 				t.Errorf("reason %q: line of %d chars exceeds %d:\n%s",
 					reason, len(line), maxWidth, line)
 			}
+		}
+	}
+}
+
+// TestDenyBodyNeedsIntentCarriesRegistryHint covers the "Explain more" path:
+// the user asked why the fetch is needed, and the agent has to answer. Naming
+// the registry is exactly the context that makes a useful intent, and the
+// remedy is the intent round-trip — not a deny rule to remove.
+func TestDenyBodyNeedsIntentCarriesRegistryHint(t *testing.T) {
+	body := denyBody("registry.npmjs.org", "prompt:needs_intent")
+	if !strings.Contains(body, "package registry") {
+		t.Errorf("needs_intent body should carry the registry note;\ngot:\n%s", body)
+	}
+	if strings.Contains(body, "deny rule") || strings.Contains(body, "deny_domain") {
+		t.Errorf("needs_intent body must not blame a deny rule;\ngot:\n%s", body)
+	}
+	if !strings.Contains(body, "/sandbox/intent") {
+		t.Errorf("needs_intent body must keep the intent round-trip;\ngot:\n%s", body)
+	}
+}
+
+// TestDenyBodyDNSFailureDoesNotClaimPolicy fixes a body that contradicted
+// itself: a name that fails to resolve is a Deny verdict, so it took the policy
+// text — "DENIED BY THE SANDBOX network policy", followed by three policy knobs
+// to edit — while the registry hint below it correctly said nothing was denied
+// by policy. Editing allow_domain cannot make a name resolve.
+func TestDenyBodyDNSFailureDoesNotClaimPolicy(t *testing.T) {
+	body := denyBody("registry.corp.example.com", "dns resolution failed")
+	if strings.Contains(body, "DENIED BY THE SANDBOX network policy") {
+		t.Errorf("resolution failure is not a policy denial;\ngot:\n%s", body)
+	}
+	if strings.Contains(body, "allow_domain") || strings.Contains(body, "deny_domain") {
+		t.Errorf("body must not offer policy knobs as the remedy;\ngot:\n%s", body)
+	}
+	if !strings.Contains(body, "resolve") {
+		t.Errorf("body should say the name did not resolve;\ngot:\n%s", body)
+	}
+}
+
+// TestDenyBodyHardDenyDoesNotOfferAllowlist covers the built-in guards: metadata
+// hostnames and link-local addresses are checked before any rule, so
+// allow_domain cannot override them (verified against Filter.Check). Offering it
+// as the remedy sends the user to edit a file that will not change the outcome.
+func TestDenyBodyHardDenyDoesNotOfferAllowlist(t *testing.T) {
+	for _, reason := range []string{
+		"hard-deny metadata host",
+		"hard-deny link-local address",
+		"hard-deny: resolves to link-local",
+	} {
+		body := denyBody("metadata.google.internal", reason)
+		if strings.Contains(body, "allow_domain") {
+			t.Errorf("reason %q: allow_domain cannot override a hard-deny;\ngot:\n%s", reason, body)
+		}
+		if !strings.Contains(body, "cannot be overridden") {
+			t.Errorf("reason %q: body should say the guard is not overridable;\ngot:\n%s", reason, body)
+		}
+	}
+}
+
+// TestDenyBodyKeepsPolicyTextForPolicyDenials is the counterweight to the two
+// tests above: real policy denials must keep attributing the block to the
+// sandbox and naming the knobs that change it.
+func TestDenyBodyKeepsPolicyTextForPolicyDenials(t *testing.T) {
+	for _, reason := range []string{
+		"prompt unavailable: on_unavailable=deny",
+		"not in allowlist",
+		"prompt:deny",
+		"deny_domain",
+		"learned permanent deny",
+	} {
+		body := denyBody("registry.npmjs.org", reason)
+		if !strings.Contains(body, "DENIED BY THE SANDBOX network policy") {
+			t.Errorf("reason %q: should attribute the denial to the sandbox;\ngot:\n%s", reason, body)
+		}
+		if !strings.Contains(body, "allow_domain") {
+			t.Errorf("reason %q: should name allow_domain;\ngot:\n%s", reason, body)
 		}
 	}
 }

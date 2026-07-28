@@ -30,21 +30,57 @@ var connectTimeout = 30 * time.Second
 // tell a policy denial from a real upstream 403.
 const sandboxDenyHeader = "X-Omac-Sandbox: denied\r\n"
 
-// denyBody renders the body for a filtered denial. It explicitly
-// attributes the denial to the sandbox network policy and points at
-// the knobs that change it. When reason indicates the user clicked
-// "Explain more", the body directs the agent to declare or refine an
-// intent via POST /sandbox/intent and retry.
+// denyBody renders the body for a Deny verdict. Not every Deny is a
+// policy decision, and the remedy has to match the cause, so the body
+// is chosen per reason class:
+//
+//   - "Explain more" at the prompt: declare or refine an intent via
+//     POST /sandbox/intent and retry.
+//   - resolution failure: the name never resolved, so no policy knob
+//     applies — the fix is DNS/reachability.
+//   - hard deny (metadata hostnames, link-local addresses): checked
+//     before any rule in Filter.Check, so allow_domain cannot override
+//     it and must not be offered.
+//   - everything else: a real policy denial, attributed to the sandbox
+//     and pointing at the knobs that change it.
 func denyBody(host, reason string) string {
-	if strings.Contains(reason, "needs_intent") {
+	switch {
+	case strings.Contains(reason, "needs_intent"):
 		return fmt.Sprintf(`omac sandbox: access to %q was DENIED — the user asked for more explanation.
 
 Declare or refine your intent via:
   POST $OMAC_BASE/sandbox/intent  {"target":%q,"reason":"..."}
 then retry the request.
-`, host, host)
-	}
-	return fmt.Sprintf(`omac sandbox: access to %q was DENIED BY THE SANDBOX network policy (%s).
+%s`, host, host, registryDenyHint(host, reason))
+
+	case strings.Contains(reason, "dns resolution failed"):
+		return fmt.Sprintf(`omac sandbox: access to %q was refused because the name did not resolve.
+
+This response comes from the omac sandbox proxy, not from %s.
+The sandbox network policy did not reject it — resolution failed before
+any rule was consulted, so no sandbox setting changes this.
+
+To fix this:
+  - check the hostname for typos,
+  - check that the name resolves from this machine (private and
+    VPN-scoped names need the VPN connected),
+  - check the DNS servers reachable from the sandbox.
+%s`, host, host, registryDenyHint(host, reason))
+
+	case strings.HasPrefix(reason, "hard-deny"):
+		return fmt.Sprintf(`omac sandbox: access to %q was DENIED BY THE SANDBOX built-in guard (%s).
+
+This response comes from the omac sandbox proxy, not from %s.
+The destination was never contacted.
+
+Cloud-metadata hostnames and link-local addresses are blocked before any
+rule is consulted, so this cannot be overridden by a sandbox profile.
+If the host is not meant to be an internal address, check your DNS and
+/etc/hosts for an entry pointing it at a link-local range.
+%s`, host, reason, host, registryDenyHint(host, reason))
+
+	default:
+		return fmt.Sprintf(`omac sandbox: access to %q was DENIED BY THE SANDBOX network policy (%s).
 
 This response comes from the omac sandbox proxy, not from %s.
 The destination was never contacted.
@@ -56,6 +92,7 @@ To allow this host, either:
   - or remove a matching deny entry from network.deny_domain or the
     <profile>.pages.json learned-policy file.
 %s`, host, reason, host, registryDenyHint(host, reason))
+	}
 }
 
 // upstreamErrorBody renders the body for an upstream-proxy error. It

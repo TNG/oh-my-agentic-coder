@@ -68,15 +68,18 @@ func registryDenyHint(host, reason string) string {
 	case strings.Contains(reason, "not in allowlist"):
 		next = "The network prompt is disabled for this profile, so unlisted hosts are denied.\n" +
 			"Add it to network.allow_domain."
+	case strings.Contains(reason, "needs_intent"):
+		next = "The user asked what the fetch is for. Name the package or plugin being\n" +
+			"installed in your intent, then retry."
 	case strings.Contains(reason, "prompt:deny"):
 		next = "It was denied at the network prompt. Re-run and choose Allow (optionally persist)\n" +
 			"to let the install proceed."
 	case strings.Contains(reason, "dns resolution failed"):
-		next = "Its DNS lookup failed, so nothing was denied by policy. If it is a private/VPN-scoped\n" +
-			"registry, check that your VPN is connected and the host is reachable."
+		next = "A private registry usually resolves only on the corporate VPN; a public one\n" +
+			"failing to resolve points at the sandbox's DNS instead."
 	case strings.HasPrefix(reason, "hard-deny"):
-		next = "It resolved to a blocked link-local/internal address (SSRF guard), which is unusual\n" +
-			"for a real registry — verify the host and your DNS/hosts configuration."
+		next = "A real registry should not resolve to a link-local address — treat this as a\n" +
+			"stale hosts entry or a hijacked DNS record, not a policy problem."
 	default:
 		next = "It matches a deny rule; remove it from network.deny_domain or the learned\n" +
 			"<profile>.pages.json policy file."
