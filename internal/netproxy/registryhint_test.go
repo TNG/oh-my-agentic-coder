@@ -2,6 +2,7 @@ package netproxy
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"net"
@@ -266,6 +267,26 @@ func TestDenyBodyHardDenyDoesNotOfferAllowlist(t *testing.T) {
 		}
 		if !strings.Contains(body, "cannot be overridden") {
 			t.Errorf("reason %q: body should say the guard is not overridable;\ngot:\n%s", reason, body)
+		}
+	}
+}
+
+// TestHardDenySurvivesAllowlist grounds the claim the hard-deny body makes: the
+// guard is checked before any rule, so listing it in allow_domain changes
+// nothing. Without this, the body's "cannot be overridden" wording rests on
+// reading Filter.Check rather than on its behavior.
+func TestHardDenySurvivesAllowlist(t *testing.T) {
+	for _, host := range []string{"metadata.google.internal", "169.254.169.254"} {
+		f := NewFilter(FilterConfig{
+			AllowDomains: []string{host},
+			Resolve:      resolveTo("127.0.0.1"),
+		})
+		v, _ := f.Check(context.Background(), host, 443)
+		if v.Decision != Deny {
+			t.Errorf("%q in allow_domain: decision = %v, want Deny", host, v.Decision)
+		}
+		if !strings.HasPrefix(v.Reason, "hard-deny") {
+			t.Errorf("%q in allow_domain: reason = %q, want a hard-deny", host, v.Reason)
 		}
 	}
 }
