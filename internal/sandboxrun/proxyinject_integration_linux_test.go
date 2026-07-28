@@ -167,8 +167,9 @@ var ambientPoison = []string{
 // built the way sandboxrun.Run does — sandboxprofile.FilterEnv over the
 // inherited environ with injected overlaid — so the blocklist-then-overlay
 // ordering that makes injection work is part of what is under test, not an
-// assumption. Returns combined output and exit code.
-func runToolThroughProxy(t *testing.T, omac string, proxy *netproxy.Server, injected map[string]string, tool string, args ...string) (string, int) {
+// assumption. extraReads adds read grants beyond the tool's own (e.g. a
+// precompiled class dir). Returns combined output and exit code.
+func runToolThroughProxy(t *testing.T, omac string, proxy *netproxy.Server, injected map[string]string, extraReads []string, tool string, args ...string) (string, int) {
 	t.Helper()
 	wd := t.TempDir()
 	p := &sandboxprofile.Profile{
@@ -179,13 +180,15 @@ func runToolThroughProxy(t *testing.T, omac string, proxy *netproxy.Server, inje
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Landlock allows the proxy port (Stage2Args emits --connect-tcp for it);
-	// grant read access to the omac binary and the tool's install dir.
+	// Landlock allows the proxy port (Stage2Args emits --connect-tcp for it).
+	// The tool's own grants come from resolveInnerBinaryDirs — the same helper
+	// BuildChildArgv uses — so this exercises production's notion of "what does
+	// this binary need to be reachable" rather than a parallel guess that can
+	// drift from it.
 	g.ProxyPort = proxy.Port()
-	g.ReadPaths = append(g.ReadPaths, filepath.Dir(omac), filepath.Dir(tool))
-	if resolved, rerr := filepath.EvalSymlinks(tool); rerr == nil {
-		g.ReadPaths = append(g.ReadPaths, filepath.Dir(resolved))
-	}
+	g.ReadPaths = append(g.ReadPaths, filepath.Dir(omac))
+	g.ReadPaths = append(g.ReadPaths, resolveInnerBinaryDirs([]string{tool})...)
+	g.ReadPaths = append(g.ReadPaths, extraReads...)
 
 	stage2 := append([]string{omac, "sandbox", "stage2"}, Stage2Args(g)...)
 	argvTail := append(append([]string{}, stage2...), "--", tool)
@@ -265,7 +268,7 @@ func TestIntegrationCurlThroughOmacProxy(t *testing.T) {
 	env := injectedEnv(t, proxy)
 
 	get := func(host string) (string, int) {
-		return runToolThroughProxy(t, omac, proxy, env, curl,
+		return runToolThroughProxy(t, omac, proxy, env, nil, curl,
 			"-sS", "-k", "--max-time", "5",
 			"-o", "/dev/null", "-w", "%{http_code}",
 			fmt.Sprintf("https://%s:%d/", host, port))
@@ -328,7 +331,7 @@ func TestIntegrationNodeFetchThroughOmacProxy(t *testing.T) {
 		`.catch(e=>{console.error('ERR',e.message,'|',e.cause&&(e.cause.message||String(e.cause)));process.exit(1)});`
 
 	fetch := func(host string) (string, int) {
-		return runToolThroughProxy(t, omac, proxy, env, node,
+		return runToolThroughProxy(t, omac, proxy, env, nil, node,
 			"-e", script, fmt.Sprintf("https://%s:%d/", host, port))
 	}
 
@@ -429,14 +432,10 @@ func nodeMajor(t *testing.T, node string) int {
 // and the filter records ALLOW for the allowlisted host and DENY for a
 // non-allowlisted one.
 //
-// The bare JDK (HttpURLConnection / java.net.http.HttpClient) ignores the
-// proxyUser/proxyPassword system properties — only Gradle/Maven parse them —
-// so the allowlisted CONNECT is filter-ALLOWed but the proxy returns 407
-// (proxy auth required). This test therefore pins to the filter's verdict
-// (the mechanism: the JVM is routing through the proxy, not dialing direct),
-// not to an HTTP 200. The 407 in the output is corroborating evidence the
-// proxy was reached. See proxyinject.go:JVMProxyToolOptions for the
-// documented limitation.
+// The bare JDK ignores the proxyUser/proxyPassword system properties, so the
+// probe installs the Authenticator that Gradle and Maven install from them —
+// see jvmFetchSource. Without that the proxy answers 407 before the filter
+// ever runs, and there is no verdict to assert.
 func TestIntegrationJVMThroughOmacProxy(t *testing.T) {
 	requireBwrap(t)
 	requireLandlockNet(t)
@@ -465,29 +464,27 @@ func TestIntegrationJVMThroughOmacProxy(t *testing.T) {
 		t.Fatalf("javac: %v\n%s", err, out)
 	}
 
-	// Temporarily extend the read grants for the java classpath. runToolThroughProxy
-	// grants filepath.Dir(tool) already; the class dir is separate, so add it via
-	// a wrapping helper that amends g.ReadPaths.
+	// The class dir is not part of the JDK's own install tree, so it needs an
+	// explicit read grant on top of the tool's resolved dirs.
 	runJava := func(host string) (string, int) {
-		return runToolWithExtraReads(t, omac, proxy, env, []string{classDir}, java,
+		return runToolThroughProxy(t, omac, proxy, env, []string{classDir}, java,
 			"-cp", classDir, "Fetch", fmt.Sprintf("https://%s:%d/", host, port))
 	}
 
-	// Allowlisted host: the JVM routes through the proxy (filter ALLOW). The
-	// bare JDK ignores proxyUser/proxyPassword, so the proxy returns 407
-	// rather than 200 — that's the documented JDK limitation, not a routing
-	// failure. The filter's ALLOW verdict is what proves the mechanism.
+	// Allowlisted host: the JVM tunnels through the proxy and reaches the
+	// upstream. Landlock permits only the proxy's port, so the 200 cannot have
+	// come from a direct dial.
 	out, code := runJava(proxyTestAllowedHost)
-	_ = code // non-zero (407); the verdict is the pin, not the exit status.
+	if code != 0 || !strings.Contains(out, "STATUS 200") {
+		t.Errorf("jvm fetch of allowlisted host: want STATUS 200 via proxy, got code=%d out=%q", code, out)
+	}
 	if v, reason := dec.verdictFor(proxyTestAllowedHost); v != "ALLOW" {
 		t.Errorf("filter verdict for %s = %q (%q), want ALLOW (decisions: %v)", proxyTestAllowedHost, v, reason, dec.all())
 	}
-	if !strings.Contains(out, "407") {
-		t.Errorf("allowlisted host: want the proxy's 407 (bare JDK ignores proxy auth) in output, got: %s", out)
-	}
 
-	// Non-allowlisted host: the filter DENYs the CONNECT. The JVM reports a
-	// generic connection failure; the filter's DENY is the pin.
+	// Non-allowlisted host: the filter DENYs the CONNECT, so the JDK fails to
+	// tunnel. The filter's DENY reason is the pin — a 407 or an unrelated
+	// failure leaves a different reason, or none at all.
 	out, code = runJava(proxyTestDeniedHost)
 	if code == 0 {
 		t.Errorf("jvm fetch of non-allowlisted host succeeded (out=%q); the filter should deny it", out)
@@ -499,13 +496,43 @@ func TestIntegrationJVMThroughOmacProxy(t *testing.T) {
 
 // jvmFetchSource is a minimal Java HTTPS client whose proxy routing is governed
 // entirely by JAVA_TOOL_OPTIONS (https.proxyHost/Port). It prints the HTTP
-// status code or the exception message, so the test can match on either 407
-// (proxy auth required — allowlisted host) or a connection failure (denied host).
+// status code or the exception message.
+//
+// It installs an Authenticator reading the proxyUser/proxyPassword system
+// properties, because the bare JDK does not consult them — that is the
+// documented limitation in proxyinject.go:JVMProxyToolOptions, and Gradle and
+// Maven (the real consumers of the `jvm` family) do exactly this wiring.
+// Without it the omac proxy rejects every CONNECT with 407 at the auth stage,
+// which is *before* the filter runs (netproxy.Server.handle), so no ALLOW/DENY
+// verdict would ever be recorded and the test could not observe the filtering
+// it exists to prove.
+//
+// The trust-all manager accepts the loopback httptest server's self-signed
+// cert, the same concession curl makes with -k and node with
+// NODE_TLS_REJECT_UNAUTHORIZED=0.
 const jvmFetchSource = `import java.net.*;
 import java.io.*;
-import javax.net.ssl.HttpsURLConnection;
+import java.security.cert.X509Certificate;
+import javax.net.ssl.*;
 public class Fetch {
   public static void main(String[] a) throws Exception {
+    final String user = System.getProperty("https.proxyUser", "");
+    final String pass = System.getProperty("https.proxyPassword", "");
+    Authenticator.setDefault(new Authenticator() {
+      protected PasswordAuthentication getPasswordAuthentication() {
+        if (getRequestorType() != RequestorType.PROXY) return null;
+        return new PasswordAuthentication(user, pass.toCharArray());
+      }
+    });
+    TrustManager[] trustAll = new TrustManager[]{ new X509TrustManager() {
+      public X509Certificate[] getAcceptedIssuers() { return new X509Certificate[0]; }
+      public void checkClientTrusted(X509Certificate[] c, String t) {}
+      public void checkServerTrusted(X509Certificate[] c, String t) {}
+    }};
+    SSLContext ctx = SSLContext.getInstance("TLS");
+    ctx.init(null, trustAll, new java.security.SecureRandom());
+    HttpsURLConnection.setDefaultSSLSocketFactory(ctx.getSocketFactory());
+    HttpsURLConnection.setDefaultHostnameVerifier((h, s) -> true);
     try {
       URL u = new URL(a[0]);
       HttpsURLConnection c = (HttpsURLConnection) u.openConnection();
@@ -519,50 +546,3 @@ public class Fetch {
   }
 }
 `
-
-// runToolWithExtraReads is runToolThroughProxy with additional read-grant paths
-// (e.g. a java class dir that is neither the tool's install dir nor the omac
-// binary's). It exists for the JVM test, which precompiles its probe outside
-// the sandbox and needs the class dir readable inside it.
-func runToolWithExtraReads(t *testing.T, omac string, proxy *netproxy.Server, injected map[string]string, extraReads []string, tool string, args ...string) (string, int) {
-	t.Helper()
-	wd := t.TempDir()
-	p := &sandboxprofile.Profile{
-		Workdir: sandboxprofile.Workdir{Access: sandboxprofile.AccessReadWrite},
-		Network: sandboxprofile.Network{Mode: sandboxprofile.ModeFiltered},
-	}
-	g, err := ResolveGrants(p, wd, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	g.ProxyPort = proxy.Port()
-	g.ReadPaths = append(g.ReadPaths, filepath.Dir(omac), filepath.Dir(tool))
-	if resolved, rerr := filepath.EvalSymlinks(tool); rerr == nil {
-		g.ReadPaths = append(g.ReadPaths, filepath.Dir(resolved))
-	}
-	for _, rp := range extraReads {
-		g.ReadPaths = append(g.ReadPaths, rp)
-		if resolved, rerr := filepath.EvalSymlinks(rp); rerr == nil {
-			g.ReadPaths = append(g.ReadPaths, filepath.Dir(resolved))
-		}
-	}
-
-	stage2 := append([]string{omac, "sandbox", "stage2"}, Stage2Args(g)...)
-	argvTail := append(append([]string{}, stage2...), "--", tool)
-	argvTail = append(argvTail, args...)
-	argv, err := BuildBwrapArgv(g, argvTail)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	cmd := exec.Command(argv[0], argv[1:]...)
-	cmd.Env = sandboxprofile.FilterEnv(append(ambientPoison, os.Environ()...), nil, injected)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		if ee, ok := err.(*exec.ExitError); ok {
-			return string(out), ee.ExitCode()
-		}
-		t.Fatalf("exec: %v (%s)", err, out)
-	}
-	return string(out), 0
-}
