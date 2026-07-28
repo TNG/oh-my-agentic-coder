@@ -66,10 +66,13 @@ func (d *proxyDecisions) logf(format string, args ...any) {
 	d.lines = append(d.lines, fmt.Sprintf(format, args...))
 }
 
-// verdictFor returns the recorded verdict word ("ALLOW"/"DENY") for host, or
-// "" when the filter never ruled on it (i.e. the request never reached the
-// proxy at all).
-func (d *proxyDecisions) verdictFor(host string) string {
+// verdictFor returns the recorded verdict word ("ALLOW"/"DENY") and its reason
+// for host, or ("", "") when the filter never ruled on it (i.e. the request
+// never reached the proxy at all). Asserting the reason pins the outcome to a
+// specific filter decision: a policy DENY for a non-allowlisted host is
+// "not in allowlist", so an unrelated denial (auth failure, hard-deny) cannot
+// be mistaken for the policy decision the test means to exercise.
+func (d *proxyDecisions) verdictFor(host string) (string, string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	for _, l := range d.lines {
@@ -77,13 +80,28 @@ func (d *proxyDecisions) verdictFor(host string) string {
 			continue
 		}
 		if strings.Contains(l, "net ALLOW") {
-			return "ALLOW"
+			return "ALLOW", extractReason(l)
 		}
 		if strings.Contains(l, "net DENY") {
-			return "DENY"
+			return "DENY", extractReason(l)
 		}
 	}
-	return ""
+	return "", ""
+}
+
+// extractReason pulls the trailing "(reason)" out of a filter log line of the
+// form "omac sandbox: net <VERDICT> <host>:<port> (<reason>)". Reasons never
+// contain parentheses, so a last-( / last-) slice is sufficient.
+func extractReason(line string) string {
+	i := strings.LastIndex(line, "(")
+	if i < 0 {
+		return ""
+	}
+	j := strings.LastIndex(line, ")")
+	if j < i {
+		return ""
+	}
+	return line[i+1 : j]
 }
 
 func (d *proxyDecisions) all() []string {
@@ -257,8 +275,8 @@ func TestIntegrationCurlThroughOmacProxy(t *testing.T) {
 	if code != 0 || !strings.Contains(out, "200") {
 		t.Errorf("allowlisted host: want HTTP 200 via proxy, got code=%d out=%q", code, out)
 	}
-	if v := dec.verdictFor(proxyTestAllowedHost); v != "ALLOW" {
-		t.Errorf("filter verdict for %s = %q, want ALLOW (decisions: %v)", proxyTestAllowedHost, v, dec.all())
+	if v, reason := dec.verdictFor(proxyTestAllowedHost); v != "ALLOW" {
+		t.Errorf("filter verdict for %s = %q (%q), want ALLOW (decisions: %v)", proxyTestAllowedHost, v, reason, dec.all())
 	}
 
 	// The denial must come from the filter: curl reports the proxy's 403 on
@@ -271,8 +289,8 @@ func TestIntegrationCurlThroughOmacProxy(t *testing.T) {
 	if !strings.Contains(out, "403") {
 		t.Errorf("non-allowlisted host: want the proxy's 403 on CONNECT, got code=%d out=%q", code, out)
 	}
-	if v := dec.verdictFor(proxyTestDeniedHost); v != "DENY" {
-		t.Errorf("filter verdict for %s = %q, want DENY (decisions: %v)", proxyTestDeniedHost, v, dec.all())
+	if v, reason := dec.verdictFor(proxyTestDeniedHost); v != "DENY" || reason != "not in allowlist" {
+		t.Errorf("filter verdict for %s = %q (%q), want DENY (not in allowlist) (decisions: %v)", proxyTestDeniedHost, v, reason, dec.all())
 	}
 }
 
@@ -318,8 +336,8 @@ func TestIntegrationNodeFetchThroughOmacProxy(t *testing.T) {
 	if code != 0 || !strings.Contains(out, "STATUS 200") {
 		t.Errorf("node fetch of allowlisted host: want STATUS 200 via proxy, got code=%d out=%q", code, out)
 	}
-	if v := dec.verdictFor(proxyTestAllowedHost); v != "ALLOW" {
-		t.Errorf("filter verdict for %s = %q, want ALLOW (decisions: %v)", proxyTestAllowedHost, v, dec.all())
+	if v, reason := dec.verdictFor(proxyTestAllowedHost); v != "ALLOW" {
+		t.Errorf("filter verdict for %s = %q (%q), want ALLOW (decisions: %v)", proxyTestAllowedHost, v, reason, dec.all())
 	}
 
 	// undici reports a denied CONNECT generically ("fetch failed / Request
@@ -329,8 +347,8 @@ func TestIntegrationNodeFetchThroughOmacProxy(t *testing.T) {
 	if code == 0 {
 		t.Errorf("node fetch of non-allowlisted host succeeded (out=%q); the filter should deny it", out)
 	}
-	if v := dec.verdictFor(proxyTestDeniedHost); v != "DENY" {
-		t.Errorf("filter verdict for %s = %q, want DENY (decisions: %v)", proxyTestDeniedHost, v, dec.all())
+	if v, reason := dec.verdictFor(proxyTestDeniedHost); v != "DENY" || reason != "not in allowlist" {
+		t.Errorf("filter verdict for %s = %q (%q), want DENY (not in allowlist) (decisions: %v)", proxyTestDeniedHost, v, reason, dec.all())
 	}
 }
 
