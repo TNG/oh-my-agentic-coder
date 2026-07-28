@@ -602,13 +602,7 @@ func (f *Facade) handleSandboxIntent(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "omac: path-form targets must be absolute (start with / or ~)", http.StatusBadRequest)
 		return
 	}
-	f.IntentRegistry.Record(body.Target, body.Reason)
-	// Posting a fuller intent is the in-band answer to an "Explain more" click,
-	// so retire the one-shot flag here. The inline deny hint (body + header)
-	// lets the agent recover without ever hitting the GET lookup that would
-	// otherwise consume it; leaving it live would let a later GET fallback
-	// revive the "re-declare and retry" hint after the user declined the retry.
-	f.IntentRegistry.ClearExplainMore(body.Target)
+	f.IntentRegistry.RecordAndClearExplainMore(body.Target, body.Reason)
 	w.WriteHeader(http.StatusNoContent)
 }
 

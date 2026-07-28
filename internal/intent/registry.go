@@ -32,6 +32,15 @@ const (
 	maxEntries = 512
 )
 
+// recordAndClearEnterHook is a test-only seam fired by
+// RecordAndClearExplainMore while it holds the registry mutex, after the
+// entry is recorded but before the explain-more flag is deleted. It lets the
+// forced-interleaving test assert a concurrent ConsumeExplainMore blocks on
+// the held mutex and cannot observe the half-applied state. nil in production
+// (never set outside tests in this package); set only by tests in this
+// package, which restore it to nil on cleanup.
+var recordAndClearEnterHook func()
+
 // Entry is one recorded intent.
 type Entry struct {
 	Target string // host (lowercased) or absolute path (cleaned)
@@ -111,10 +120,57 @@ func (r *Registry) Record(target, reason string) {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.recordLocked(target, reason)
+}
+
+// recordLocked writes (or overwrites) the intent for target. Caller holds mu
+// and has already normalized target and trimmed/truncated reason. Shared by
+// Record and RecordAndClearExplainMore so the entry-write path (capacity
+// eviction, entry shape, timestamp) is defined once.
+func (r *Registry) recordLocked(target, reason string) {
 	if _, exists := r.entries[target]; !exists && len(r.entries) >= maxEntries {
 		r.evictOldest()
 	}
 	r.entries[target] = Entry{Target: target, Reason: reason, Time: time.Now()}
+}
+
+// RecordAndClearExplainMore records (or overwrites) an intent for target and,
+// in the same critical section, retires any pending explain-more flag for it.
+// It exists for the inline-recovery path: when the agent reads the
+// explain-more hint from the deny body/header and POSTs a fuller intent, that
+// POST — not a GET — satisfies the re-ask, so the one-shot flag must be
+// retired together with the record. Doing both under one mutex hold prevents
+// a concurrent GET lookup from observing the half-applied state (new intent
+// recorded but the explain-more flag still live) and reviving the "re-declare
+// and retry" hint after the replacement intent was already posted.
+//
+// Flag retirement mirrors ClearExplainMore: it runs even when the reason is
+// empty or the target normalizes away, so a no-op POST still retires a stale
+// flag rather than leaving it live. Only the reason/target validation that
+// gates the record is skipped for the flag deletion. The entry-write path
+// (normalization, trimming, truncation, cap eviction) is shared with Record
+// via recordLocked.
+func (r *Registry) RecordAndClearExplainMore(target, reason string) {
+	if r == nil {
+		return
+	}
+	reason = strings.TrimSpace(reason)
+	if len(reason) > maxReasonLen {
+		reason = reason[:maxReasonLen]
+	}
+	target = normalize(target)
+	if target == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if reason != "" {
+		r.recordLocked(target, reason)
+	}
+	if recordAndClearEnterHook != nil {
+		recordAndClearEnterHook()
+	}
+	delete(r.explainMore, target)
 }
 
 // evictOldest removes the entry with the earliest Time. Caller holds mu.
