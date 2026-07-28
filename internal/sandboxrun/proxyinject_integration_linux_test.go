@@ -352,6 +352,47 @@ func TestIntegrationNodeFetchThroughOmacProxy(t *testing.T) {
 	}
 }
 
+// TestEnvLayeringDropsBlocklistAndOverlays asserts what the integration tests
+// only assume: ambientPoison's JAVA_TOOL_OPTIONS is dropped by the blocklist,
+// and the poisoned HTTP(S)_PROXY vars lose to the injected overlay. A
+// regression in dangerousEnvExact or the overlay ordering would pass the
+// tool-based tests silently (no JVM runs in the curl/node cases); this test
+// makes the env-layering claim a real assertion. Needs no bwrap/Landlock.
+func TestEnvLayeringDropsBlocklistAndOverlays(t *testing.T) {
+	proxy, _ := startHermeticProxy(t)
+	injected := injectedEnv(t, proxy)
+
+	env := sandboxprofile.FilterEnv(append(ambientPoison, os.Environ()...), nil, injected)
+
+	// Blocklist: JAVA_TOOL_OPTIONS is on dangerousEnvExact and must be absent.
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "JAVA_TOOL_OPTIONS=") {
+			t.Errorf("JAVA_TOOL_OPTIONS survived FilterEnv (blocklist regression): %q", kv)
+		}
+	}
+	// Overlay: the injected HTTP_PROXY must win over the poison.
+	wantProxy := proxy.ProxyURL()
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "HTTP_PROXY=") && kv != "HTTP_PROXY="+wantProxy {
+			t.Errorf("HTTP_PROXY = %q, want injected %q (overlay regression)", kv, "HTTP_PROXY="+wantProxy)
+		}
+	}
+	// Sanity: the injected value is actually present (not dropped entirely).
+	if !envHas(env, "HTTP_PROXY", wantProxy) {
+		t.Errorf("injected HTTP_PROXY missing from filtered env; got %v", env)
+	}
+}
+
+func envHas(env []string, key, val string) bool {
+	prefix := key + "="
+	for _, kv := range env {
+		if kv == prefix+val {
+			return true
+		}
+	}
+	return false
+}
+
 // upstreamPort extracts the port from an httptest server URL.
 func upstreamPort(t *testing.T, rawURL string) int {
 	t.Helper()
@@ -378,4 +419,150 @@ func nodeMajor(t *testing.T, node string) int {
 		t.Fatalf("parse node major %q: %v", out, err)
 	}
 	return major
+}
+
+// TestIntegrationJVMThroughOmacProxy proves the `jvm` proxy_injection family
+// works end-to-end: the JVM ignores HTTP(S)_PROXY, so under a filtered
+// sandbox it would dial direct and be blocked by Landlock. With the
+// JAVA_TOOL_OPTIONS the `jvm` injector sets (https.proxyHost/Port pointing at
+// the omac proxy), a real `java` routes its HTTPS request through the proxy,
+// and the filter records ALLOW for the allowlisted host and DENY for a
+// non-allowlisted one.
+//
+// The bare JDK (HttpURLConnection / java.net.http.HttpClient) ignores the
+// proxyUser/proxyPassword system properties — only Gradle/Maven parse them —
+// so the allowlisted CONNECT is filter-ALLOWed but the proxy returns 407
+// (proxy auth required). This test therefore pins to the filter's verdict
+// (the mechanism: the JVM is routing through the proxy, not dialing direct),
+// not to an HTTP 200. The 407 in the output is corroborating evidence the
+// proxy was reached. See proxyinject.go:JVMProxyToolOptions for the
+// documented limitation.
+func TestIntegrationJVMThroughOmacProxy(t *testing.T) {
+	requireBwrap(t)
+	requireLandlockNet(t)
+	java := requireTool(t, "java", "the jvm proxy_injection family needs a JDK")
+	javac := requireTool(t, "javac", "compiling the JVM fetch probe needs it")
+
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "allowlisted-ok")
+	}))
+	defer upstream.Close()
+	port := upstreamPort(t, upstream.URL)
+
+	omac := buildOmacBinary(t)
+	proxy, dec := startHermeticProxy(t)
+	env := injectedEnv(t, proxy, sandboxprofile.ProxyInjectJVM)
+
+	// Compile the probe on the host (javac isn't granted inside the sandbox);
+	// grant the sandbox read access to the class dir so `java -cp` can load it.
+	classDir := t.TempDir()
+	src := filepath.Join(classDir, "Fetch.java")
+	if err := os.WriteFile(src, []byte(jvmFetchSource), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	compile := exec.Command(javac, "-d", classDir, src)
+	if out, err := compile.CombinedOutput(); err != nil {
+		t.Fatalf("javac: %v\n%s", err, out)
+	}
+
+	// Temporarily extend the read grants for the java classpath. runToolThroughProxy
+	// grants filepath.Dir(tool) already; the class dir is separate, so add it via
+	// a wrapping helper that amends g.ReadPaths.
+	runJava := func(host string) (string, int) {
+		return runToolWithExtraReads(t, omac, proxy, env, []string{classDir}, java,
+			"-cp", classDir, "Fetch", fmt.Sprintf("https://%s:%d/", host, port))
+	}
+
+	// Allowlisted host: the JVM routes through the proxy (filter ALLOW). The
+	// bare JDK ignores proxyUser/proxyPassword, so the proxy returns 407
+	// rather than 200 — that's the documented JDK limitation, not a routing
+	// failure. The filter's ALLOW verdict is what proves the mechanism.
+	out, code := runJava(proxyTestAllowedHost)
+	_ = code // non-zero (407); the verdict is the pin, not the exit status.
+	if v, reason := dec.verdictFor(proxyTestAllowedHost); v != "ALLOW" {
+		t.Errorf("filter verdict for %s = %q (%q), want ALLOW (decisions: %v)", proxyTestAllowedHost, v, reason, dec.all())
+	}
+	if !strings.Contains(out, "407") {
+		t.Errorf("allowlisted host: want the proxy's 407 (bare JDK ignores proxy auth) in output, got: %s", out)
+	}
+
+	// Non-allowlisted host: the filter DENYs the CONNECT. The JVM reports a
+	// generic connection failure; the filter's DENY is the pin.
+	out, code = runJava(proxyTestDeniedHost)
+	if code == 0 {
+		t.Errorf("jvm fetch of non-allowlisted host succeeded (out=%q); the filter should deny it", out)
+	}
+	if v, reason := dec.verdictFor(proxyTestDeniedHost); v != "DENY" || reason != "not in allowlist" {
+		t.Errorf("filter verdict for %s = %q (%q), want DENY (not in allowlist) (decisions: %v)", proxyTestDeniedHost, v, reason, dec.all())
+	}
+}
+
+// jvmFetchSource is a minimal Java HTTPS client whose proxy routing is governed
+// entirely by JAVA_TOOL_OPTIONS (https.proxyHost/Port). It prints the HTTP
+// status code or the exception message, so the test can match on either 407
+// (proxy auth required — allowlisted host) or a connection failure (denied host).
+const jvmFetchSource = `import java.net.*;
+import java.io.*;
+import javax.net.ssl.HttpsURLConnection;
+public class Fetch {
+  public static void main(String[] a) throws Exception {
+    try {
+      URL u = new URL(a[0]);
+      HttpsURLConnection c = (HttpsURLConnection) u.openConnection();
+      c.setConnectTimeout(5000);
+      c.setReadTimeout(5000);
+      System.out.println("STATUS " + c.getResponseCode());
+    } catch (Exception e) {
+      System.out.println("ERR " + e.getMessage());
+      System.exit(1);
+    }
+  }
+}
+`
+
+// runToolWithExtraReads is runToolThroughProxy with additional read-grant paths
+// (e.g. a java class dir that is neither the tool's install dir nor the omac
+// binary's). It exists for the JVM test, which precompiles its probe outside
+// the sandbox and needs the class dir readable inside it.
+func runToolWithExtraReads(t *testing.T, omac string, proxy *netproxy.Server, injected map[string]string, extraReads []string, tool string, args ...string) (string, int) {
+	t.Helper()
+	wd := t.TempDir()
+	p := &sandboxprofile.Profile{
+		Workdir: sandboxprofile.Workdir{Access: sandboxprofile.AccessReadWrite},
+		Network: sandboxprofile.Network{Mode: sandboxprofile.ModeFiltered},
+	}
+	g, err := ResolveGrants(p, wd, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.ProxyPort = proxy.Port()
+	g.ReadPaths = append(g.ReadPaths, filepath.Dir(omac), filepath.Dir(tool))
+	if resolved, rerr := filepath.EvalSymlinks(tool); rerr == nil {
+		g.ReadPaths = append(g.ReadPaths, filepath.Dir(resolved))
+	}
+	for _, rp := range extraReads {
+		g.ReadPaths = append(g.ReadPaths, rp)
+		if resolved, rerr := filepath.EvalSymlinks(rp); rerr == nil {
+			g.ReadPaths = append(g.ReadPaths, filepath.Dir(resolved))
+		}
+	}
+
+	stage2 := append([]string{omac, "sandbox", "stage2"}, Stage2Args(g)...)
+	argvTail := append(append([]string{}, stage2...), "--", tool)
+	argvTail = append(argvTail, args...)
+	argv, err := BuildBwrapArgv(g, argvTail)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command(argv[0], argv[1:]...)
+	cmd.Env = sandboxprofile.FilterEnv(append(ambientPoison, os.Environ()...), nil, injected)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		if ee, ok := err.(*exec.ExitError); ok {
+			return string(out), ee.ExitCode()
+		}
+		t.Fatalf("exec: %v (%s)", err, out)
+	}
+	return string(out), 0
 }
