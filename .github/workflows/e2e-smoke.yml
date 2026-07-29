@@ -59,8 +59,55 @@ permissions:
   issues: write # report job maintains the tracking issue
 
 jobs:
+  # Front-loads model selection: the gateway serves one name variant at a time
+  # and flips without notice (#184), which reddened every non-opencode llm stage
+  # on 2026-07-29. Probing once here means a renamed model costs seconds instead
+  # of 18 legs, and the -TEE flip self-heals.
+  model:
+    name: Resolve model
+    runs-on: ubuntu-latest
+    outputs:
+      gateway: ${{ steps.probe.outputs.model }}
+      fallback: ${{ steps.probe.outputs.fallback }}
+      candidates: ${{ steps.probe.outputs.candidates }}
+      claude_code: ${{ steps.probe.outputs.claude_code }}
+    env:
+      SKAINET_TOKEN: ${{ secrets.SKAINET_TOKEN }}
+      SKAINET_INTERNAL: ${{ secrets.SKAINET_EXTERNAL }}
+      E2E_MODEL: ${{ github.event.inputs.model }}
+      E2E_MODEL_CLAUDE_CODE: ${{ github.event.inputs.claude_code_model }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Probe the gateway
+        id: probe
+        run: |
+          scripts/probe-model.sh opencode --github-output
+          cc=$(E2E_MODEL= scripts/probe-model.sh claude-code)
+          echo "claude_code=$cc" >> "$GITHUB_OUTPUT"
+
+      - name: Report the selection
+        run: |
+          gateway='${{ steps.probe.outputs.model }}'
+          {
+            echo "## Model selection"
+            echo ""
+            echo "| Harness | Model |"
+            echo "|---|---|"
+            echo "| opencode, codex, copilot, pi | \`$gateway\` |"
+            echo "| claude-code | \`${{ steps.probe.outputs.claude_code }}\` |"
+            echo ""
+            echo "Probed: \`${{ steps.probe.outputs.candidates }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ '${{ steps.probe.outputs.fallback }}' = 'true' ]; then
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "> ⚠️ **Fallback model in use** — \`$gateway\` is not the intended model." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
   smoke:
     name: "${{ matrix.harness }} / ${{ matrix.os }} / omac@${{ matrix.omac }}"
+    needs: model
     strategy:
       fail-fast: false
       matrix:
@@ -88,19 +135,22 @@ jobs:
       E2E_HARNESS: ${{ matrix.harness }}
       # Schedule runs always test latest (drift); dispatch honors the input.
       E2E_USE_LATEST: ${{ (github.event_name == 'schedule' || github.event.inputs.use_latest != 'false') && '1' || '' }}
-      # Model overrides for a manual run. All empty on schedule runs, so that
-      # run always resolves to the pins in internal/e2e/versions.go.
-      E2E_MODEL: ${{ github.event.inputs.model }}
-      E2E_MODEL_CLAUDE_CODE: ${{ github.event.inputs.claude_code_model }}
+      # From the preflight job (input + gateway probe + -TEE flip applied). Set
+      # PER HARNESS, not via cross-harness E2E_MODEL: the probed value is a
+      # gateway model and claude-code is on another provider.
+      E2E_MODEL_OPENCODE: ${{ needs.model.outputs.gateway }}
+      E2E_MODEL_CODEX: ${{ needs.model.outputs.gateway }}
+      E2E_MODEL_COPILOT: ${{ needs.model.outputs.gateway }}
+      E2E_MODEL_PI: ${{ needs.model.outputs.gateway }}
+      E2E_MODEL_CLAUDE_CODE: ${{ needs.model.outputs.claude_code }}
       E2E_CONTEXT_LIMIT: ${{ github.event.inputs.context_limit }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Fails the leg immediately on a model the harness can't launch
-      # (claude-code accepts sonnet/haiku only), rather than after the install.
-      # The row's Model cell comes from the test's own OMAC_COMPAT line, not
-      # from here — see "Build compatibility row".
+      # Selection already happened in the preflight job; this reports what this
+      # leg's harness resolved to. The row's Model cell comes from the test's own
+      # OMAC_COMPAT line, not from here — see "Build compatibility row".
       - name: Resolve model
         run: |
           echo "::notice title=Model::${{ matrix.harness }} runs against $(scripts/resolve-model.sh '${{ matrix.harness }}')"
@@ -312,7 +362,7 @@ jobs:
 
   report:
     name: Record & report
-    needs: smoke
+    needs: [model, smoke]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -377,9 +427,10 @@ jobs:
         env:
           SKAINET_TOKEN: ${{ secrets.SKAINET_TOKEN }}
           SKAINET_INTERNAL: ${{ secrets.SKAINET_EXTERNAL }}
-          # The summariser is an LLM call too, so it follows the same override —
-          # this job has no matrix, so only the cross-harness input applies.
-          E2E_MODEL: ${{ github.event.inputs.model }}
+          # The summariser is an LLM call too, so it uses the model the preflight
+          # proved is served — re-resolving the pin here would 422 in exactly
+          # the situation the summary is most needed.
+          E2E_MODEL: ${{ needs.model.outputs.gateway }}
         run: |
           # Each failing leg already wrote a self-contained .ctx file (header
           # with harness/OS/omac + failing stage, plus its own log excerpts), so
@@ -434,6 +485,8 @@ jobs:
           TOTAL: ${{ steps.rows.outputs.total }}
           INFRA_ONLY: ${{ steps.reason.outputs.infra_only }}
           SUMMARY_MODEL: ${{ steps.summary.outputs.model }}
+          MODEL_FALLBACK: ${{ needs.model.outputs.fallback }}
+          GATEWAY_MODEL: ${{ needs.model.outputs.gateway }}
         run: |
           title="Harness compatibility matrix"
           # One stable issue, any state: reopen if it was closed so it is always
@@ -467,6 +520,10 @@ jobs:
             echo "$status — [run log]($RUN_URL). Updated in place by [\`e2e-smoke.yml\`]($WF_URL); rolling 30-day window (newest first, grouped by omac / OS / harness). Full permanent history is mirrored to a private archive repo."
             echo ""
             echo "\`✅\` pass · \`❌\` fail · \`➖\` not run"
+            if [ "$MODEL_FALLBACK" = "true" ]; then
+              echo ""
+              echo "> ⚠️ **This run used a fallback model** (\`$GATEWAY_MODEL\`): the intended model is not currently served by the gateway. Green rows below certify the fallback, not the intended model."
+            fi
             if [ "$HAS_FAILURES" = "true" ]; then
               echo ""
               echo "## Currently failing"
@@ -580,6 +637,7 @@ jobs:
           TOTAL: ${{ steps.rows.outputs.total }}
           INFRA_ONLY: ${{ steps.reason.outputs.infra_only }}
           SUMMARY_MODEL: ${{ steps.summary.outputs.model }}
+          MODEL_FALLBACK: ${{ needs.model.outputs.fallback }}
         run: |
           if [ -z "$SLACK_WEBHOOK_URL" ]; then
             echo "SLACK_WEBHOOK_URL not set — skipping Slack notification"
@@ -591,6 +649,9 @@ jobs:
           models=$(awk -F'|' '{gsub(/^[ \t]+|[ \t]+$/,"",$11); if ($11!="") print $11}' run.rows \
             | sort -u | paste -sd',' - )
           [ -z "$models" ] && models="unknown"
+          if [ "${MODEL_FALLBACK:-}" = "true" ]; then
+            models="$models (FALLBACK — intended model not served)"
+          fi
           # Posted on every run — green and red alike.
           if [ "$HAS_FAILURES" = "true" ]; then
             hdr=$(printf '🔴 omac harness compatibility: %s of %s combination(s) FAILED.' "$FAIL_COUNT" "$TOTAL")

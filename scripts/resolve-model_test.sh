@@ -59,10 +59,23 @@ assert_rejected() {
 }
 
 # --- the committed pin (no override) ---------------------------------------
-assert_model "zai-org/GLM-5.2" "default harness is opencode"
-assert_model "zai-org/GLM-5.2" "explicit opencode" opencode
-assert_model "claude-sonnet-5" "claude-code pin" claude-code
-assert_model "zai-org/GLM-5.2" "pi pin" pi
+# Read from versions.go, never hardcoded: the pin moves whenever the gateway
+# renames a variant (#184), and this asserts the resolution mechanism, not which
+# model happens to be pinned today.
+pin_for() {
+  awk '/^var modelIDs = map\[string\]string\{/{f=1;next} /^\}/{f=0} f' \
+    "$ROOT/internal/e2e/versions.go" \
+    | grep "\"$1\"" | sed -E 's/.*:[[:space:]]*"([^"]+)".*/\1/' | head -1
+}
+PIN_OPENCODE=$(pin_for opencode)
+PIN_CLAUDE=$(pin_for claude-code)
+PIN_PI=$(pin_for pi)
+[ -n "$PIN_OPENCODE" ] || fail "could not read the opencode pin out of versions.go"
+
+assert_model "$PIN_OPENCODE" "default harness is opencode"
+assert_model "$PIN_OPENCODE" "explicit opencode" opencode
+assert_model "$PIN_CLAUDE" "claude-code pin" claude-code
+assert_model "$PIN_PI" "pi pin" pi
 
 # --- precedence ------------------------------------------------------------
 assert_model "vendor/candidate-1" "cross-harness override" \
@@ -71,7 +84,7 @@ assert_model "claude-haiku-4-5" "per-harness override wins over cross-harness" \
   E2E_MODEL=vendor/candidate-1 E2E_MODEL_CLAUDE_CODE=claude-haiku-4-5 claude-code
 assert_model "vendor/candidate-1" "per-harness override must not leak to others" \
   E2E_MODEL=vendor/candidate-1 E2E_MODEL_CLAUDE_CODE=claude-haiku-4-5 opencode
-assert_model "zai-org/GLM-5.2" "an empty override falls through to the pin" \
+assert_model "$PIN_OPENCODE" "an empty override falls through to the pin" \
   E2E_MODEL= E2E_MODEL_OPENCODE= opencode
 
 # --- claude-code's launchable-model constraint -----------------------------

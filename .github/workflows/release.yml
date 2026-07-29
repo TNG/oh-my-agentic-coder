@@ -17,7 +17,7 @@ on:
         type: boolean
         default: true
       model:
-        description: "Model id for the release-notes summarizer, for THIS RUN ONLY. Leave empty for the opencode pin in internal/e2e/versions.go (zai-org/GLM-5.2)"
+        description: "Model id for the release-notes summarizer, for THIS RUN ONLY. Leave empty for the opencode pin in internal/e2e/versions.go. Whatever is resolved still goes through the gateway probe, so the -TEE variant flip and the fallback chain apply"
         type: string
         default: ''
 
@@ -128,8 +128,8 @@ jobs:
           # into user-facing highlights. Absent -> deterministic commit bullets.
           SKAINET_TOKEN: ${{ secrets.SKAINET_TOKEN }}
           SKAINET_INTERNAL: ${{ secrets.SKAINET_EXTERNAL }}
-          # Read by scripts/resolve-model.sh below. Empty on a tag push (the
-          # normal path), so a real release always summarizes with the pin.
+          # Read by scripts/probe-model.sh below. Empty on a tag push (the
+          # normal path), so a real release starts from the committed pin.
           E2E_MODEL: ${{ github.event.inputs.model }}
         run: |
           if [ -z "$SLACK_WEBHOOK_URL" ]; then
@@ -179,12 +179,15 @@ jobs:
             max=48000
             [ "${#commits}" -gt "$max" ] && commits=${commits: -max}
             if [ -n "$commits" ]; then
-              # Single source of truth for the model id, override included:
-              # the `model` input, else internal/e2e/versions.go's pin.
+              # probe-model.sh, not resolve-model.sh: the gateway serves one
+              # name variant at a time and flips without notice (#184), so the
+              # committed pin alone would 422 and silently drop the release
+              # notes back to raw commit bullets. The probe flips the -TEE
+              # suffix and falls back a family if it must.
               # `|| true` because a release must never fail on its optional
               # summarizer: an empty model leaves llm_json empty below and the
               # deterministic commit bullets take over.
-              model=$(scripts/resolve-model.sh opencode || true)
+              model=$(scripts/probe-model.sh opencode || true)
               sys="You are the release-notes editor for oh-my-agentic-coder (omac), a CLI that runs coding agents in a sandbox. Below are the raw git commit messages for one release. Rewrite them into concise, user-facing highlights grouped into features (new capabilities) and fixes (bugs resolved). Write for end users: state what they can now do and why it matters. IGNORE anything only project developers care about: PR/issue numbers like (#123), commit SHAs, author or co-author trailers, internal refactors, and test/ci/build/chore changes. Drop internal module and scope names. Merge related commits into one bullet. Output ONLY minified JSON of the form {\"features\":[\"...\"],\"fixes\":[\"...\"]} with at most 6 items per group, each under 140 characters and starting with a capital letter. Use an empty array for a group with nothing user-facing. No preamble, no explanation, no chain-of-thought, no <think> tags."
               req=$(jq -n --arg m "$model" --arg s "$sys" --arg u "$commits" \
                 '{model:$m,temperature:0.2,max_tokens:1500,messages:[{role:"system",content:$s},{role:"user",content:$u}]}')

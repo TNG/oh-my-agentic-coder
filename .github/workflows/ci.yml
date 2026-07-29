@@ -142,6 +142,12 @@ jobs:
           version: latest
           install-go: false
 
+      # Workflow `run:` bodies are shell that nothing else parses, so a quoting
+      # mistake ships and only surfaces the next time that job runs — days
+      # later for the weekly LLM workflows.
+      - name: Workflow shell syntax
+        run: python3 scripts/check-workflow-shell.py
+
   e2e-fast:
     # Model-free slice of the e2e suite (build tag `e2e_fast`): the security
     # regression tests that need no live LLM harness, API token, or OS
@@ -176,6 +182,12 @@ jobs:
       # it didn't use.
       - name: Check model resolver parity
         run: scripts/resolve-model_test.sh
+
+      # The gateway-probe paths (variant flip, tier priority, fallback,
+      # exhausted candidates) against a local stub gateway — the states that
+      # can't be produced on demand upstream. No credentials, no real network.
+      - name: Check model probe against a stub gateway
+        run: scripts/probe-model_test.sh
 
   cache-integration:
     name: Cache integration (${{ matrix.os }})

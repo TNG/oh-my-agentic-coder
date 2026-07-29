@@ -131,13 +131,18 @@ func TestCompatLine(t *testing.T) {
 	t.Setenv("E2E_MODEL", "")
 	t.Setenv("E2E_MODEL_CLAUDE_CODE", "")
 
+	// Built from modelIDs rather than the literal pin: this asserts that the
+	// line carries the resolved model, not what that model happens to be
+	// today — the pin moves whenever the gateway renames a variant (#184).
 	got := compatLine("claude-code", "2.1.197", "linux", "contract", "PASS")
-	want := "OMAC_COMPAT harness=claude-code version=2.1.197 os=linux model=claude-sonnet-5 stage=contract result=PASS"
+	want := "OMAC_COMPAT harness=claude-code version=2.1.197 os=linux model=" +
+		modelIDs["claude-code"] + " stage=contract result=PASS"
 	if got != want {
 		t.Fatalf("compatLine = %q, want %q", got, want)
 	}
 	if got, want := compatLine("pi", "", "linux", "llm", "FAIL"),
-		"OMAC_COMPAT harness=pi version=unknown os=linux model=zai-org/GLM-5.2 stage=llm result=FAIL"; got != want {
+		"OMAC_COMPAT harness=pi version=unknown os=linux model="+
+			modelIDs["pi"]+" stage=llm result=FAIL"; got != want {
 		t.Fatalf("empty-version compatLine = %q, want %q", got, want)
 	}
 
