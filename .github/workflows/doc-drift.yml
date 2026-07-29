@@ -27,6 +27,14 @@ on:
         description: 'Wall-clock timeout for the audit agent, in seconds'
         type: string
         default: '2400'
+      model:
+        description: 'Model id for the audit agent, for THIS RUN ONLY. Leave empty for the opencode pin in internal/e2e/versions.go (zai-org/GLM-5.2)'
+        type: string
+        default: ''
+      context_limit:
+        description: 'Context window declared to the agent, in tokens. Leave empty for the 100000 default, which is safely under every pinned model'
+        type: string
+        default: ''
   schedule:
     # Mondays 06:00 UTC — weekly drift sweep.
     - cron: '0 6 * * 1'
@@ -51,9 +59,21 @@ jobs:
       SKAINET_INTERNAL: ${{ secrets.SKAINET_EXTERNAL }}
       E2E_VERSION_OPENCODE: ${{ github.event.inputs.opencode_version }}
       DRIFT_TIMEOUT_SECS: ${{ github.event.inputs.timeout_secs }}
+      # Read by scripts/resolve-model.sh (which doc-drift.sh consults) and by
+      # the provider config it writes. Both empty on schedule runs, so that run
+      # always uses the committed pin and the 100000 default.
+      E2E_MODEL: ${{ github.event.inputs.model }}
+      E2E_CONTEXT_LIMIT: ${{ github.event.inputs.context_limit }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Resolve model
+        id: model
+        run: |
+          model=$(scripts/resolve-model.sh opencode)
+          echo "model=$model" >> "$GITHUB_OUTPUT"
+          echo "::notice title=Model::${{ matrix.mode }} drift audit runs against $model"
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
@@ -69,6 +89,8 @@ jobs:
         run: |
           {
             echo "## Doc drift — ${{ matrix.mode }}"
+            echo ""
+            echo "Model: \`${{ steps.model.outputs.model }}\`"
             echo ""
             echo '```markdown'
             cat "${{ runner.temp }}/doc-drift-logs/DRIFT_REPORT-${{ matrix.mode }}.md" 2>/dev/null \

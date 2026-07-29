@@ -38,6 +38,18 @@ on:
         description: 'Pinned pi package spec. Overrides internal/e2e/versions.go for THIS RUN ONLY (the file itself is untouched); ignored if "use latest" is checked'
         type: string
         default: '@earendil-works/pi-coding-agent@0.80.6'
+      model:
+        description: 'Model id for EVERY harness, for THIS RUN ONLY (e.g. zai-org/GLM-5.2). Leave empty to use each harness''s pin in internal/e2e/versions.go (opencode/codex/copilot/pi: zai-org/GLM-5.2, claude-code: claude-sonnet-5)'
+        type: string
+        default: ''
+      claude_code_model:
+        description: 'Model id for claude-code only — it accepts sonnet or haiku models ONLY, and bills a different provider than the SKAINET gateway the others use. Wins over "model"; leave empty to fall back to it, then to the versions.go pin'
+        type: string
+        default: ''
+      context_limit:
+        description: 'Context window declared to the harness, in tokens. Leave empty for the 100000 default, which is safely under every pinned model; raise it to exercise a larger model''s full window (declaring MORE than the model has overflows mid-run)'
+        type: string
+        default: ''
   schedule:
     - cron: '0 8 * * 6' # Saturdays 10:00 CEST
 
@@ -82,9 +94,33 @@ jobs:
       E2E_VERSION_CODEX: ${{ github.event.inputs.codex_version }}
       E2E_VERSION_COPILOT: ${{ github.event.inputs.copilot_version }}
       E2E_VERSION_PI: ${{ github.event.inputs.pi_version }}
+      # Model overrides for a manual run, so a different model can be tested
+      # without editing internal/e2e/versions.go. Both empty on schedule runs
+      # and whenever the inputs are left blank; modelID() then falls back to
+      # the pinned modelIDs map. E2E_MODEL_CLAUDE_CODE wins over E2E_MODEL for
+      # claude-code, which bills a different provider than the rest.
+      E2E_MODEL: ${{ github.event.inputs.model }}
+      E2E_MODEL_CLAUDE_CODE: ${{ github.event.inputs.claude_code_model }}
+      # Empty (and on schedule runs) → contextLimit()'s 100000 default.
+      E2E_CONTEXT_LIMIT: ${{ github.event.inputs.context_limit }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      # Resolved with the same precedence the Go tests apply (modelID() in
+      # internal/e2e/versions.go), so what the summary reports is what ran.
+      - name: Resolve model
+        id: model
+        run: |
+          # Fails fast on a model the harness can't launch (claude-code accepts
+          # sonnet/haiku only), before the ~15 min of installs below.
+          model=$(scripts/resolve-model.sh '${{ matrix.harness }}')
+          # Reported as the label rather than the number so the default has one
+          # definition (contextLimit() in internal/e2e/versions.go).
+          context="${E2E_CONTEXT_LIMIT:-versions.go default}"
+          echo "model=$model" >> "$GITHUB_OUTPUT"
+          echo "context=$context" >> "$GITHUB_OUTPUT"
+          echo "::notice title=Model::${{ matrix.harness }} runs against $model (context: $context)"
 
       - name: Install bubblewrap (Linux only)
         if: runner.os == 'Linux'
@@ -179,7 +215,7 @@ jobs:
         if: steps.run_e2e.outcome == 'skipped'
         run: |
           echo "## E2E (${{ matrix.harness }} / ${{ matrix.os }}): SKIPPED" >> "$GITHUB_STEP_SUMMARY"
-          echo "skip_claude_code was set on this workflow_dispatch run." >> "$GITHUB_STEP_SUMMARY"
+          echo "skip_claude_code was set on this workflow_dispatch run (model would have been \`${{ steps.model.outputs.model }}\`)." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Failure classification summary
         if: always() && steps.run_e2e.outcome != 'skipped'
@@ -187,6 +223,8 @@ jobs:
           # Render a markdown table on the run-summary page so the failure
           # cause is visible by indicator without opening the full log.
           echo "## E2E failure classification (${{ matrix.harness }} / ${{ matrix.os }})" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Model: \`${{ steps.model.outputs.model }}\` · context: \`${{ steps.model.outputs.context }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "| Assertion | Mode | Reason |" >> "$GITHUB_STEP_SUMMARY"
           echo "|-----------|------|--------|" >> "$GITHUB_STEP_SUMMARY"

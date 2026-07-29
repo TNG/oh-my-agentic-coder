@@ -128,13 +128,36 @@ func TestMissingTokens(t *testing.T) {
 }
 
 func TestCompatLine(t *testing.T) {
+	t.Setenv("E2E_MODEL", "")
+	t.Setenv("E2E_MODEL_CLAUDE_CODE", "")
+
 	got := compatLine("claude-code", "2.1.197", "linux", "contract", "PASS")
-	want := "OMAC_COMPAT harness=claude-code version=2.1.197 os=linux stage=contract result=PASS"
+	want := "OMAC_COMPAT harness=claude-code version=2.1.197 os=linux model=claude-sonnet-5 stage=contract result=PASS"
 	if got != want {
 		t.Fatalf("compatLine = %q, want %q", got, want)
 	}
-	if got := compatLine("pi", "", "linux", "llm", "FAIL"); got != "OMAC_COMPAT harness=pi version=unknown os=linux stage=llm result=FAIL" {
-		t.Fatalf("empty-version compatLine = %q", got)
+	if got, want := compatLine("pi", "", "linux", "llm", "FAIL"),
+		"OMAC_COMPAT harness=pi version=unknown os=linux model=zai-org/GLM-5.2 stage=llm result=FAIL"; got != want {
+		t.Fatalf("empty-version compatLine = %q, want %q", got, want)
+	}
+
+	// The model field must track the override the run actually used, otherwise
+	// the compatibility matrix attributes a result to the wrong model.
+	t.Setenv("E2E_MODEL", "vendor/candidate-1")
+	if got, want := compatLine("pi", "1.0", "linux", "llm", "PASS"),
+		"OMAC_COMPAT harness=pi version=1.0 os=linux model=vendor/candidate-1 stage=llm result=PASS"; got != want {
+		t.Fatalf("overridden-model compatLine = %q, want %q", got, want)
+	}
+
+	// An unknown harness has no pin; the field stays parseable rather than empty.
+	if got, want := compatLine("nope", "1.0", "linux", "llm", "FAIL"),
+		"OMAC_COMPAT harness=nope version=1.0 os=linux model=vendor/candidate-1 stage=llm result=FAIL"; got != want {
+		t.Fatalf("unknown-harness compatLine = %q, want %q", got, want)
+	}
+	t.Setenv("E2E_MODEL", "")
+	if got, want := compatLine("nope", "1.0", "linux", "llm", "FAIL"),
+		"OMAC_COMPAT harness=nope version=1.0 os=linux model=unknown stage=llm result=FAIL"; got != want {
+		t.Fatalf("unpinned-harness compatLine = %q, want %q", got, want)
 	}
 }
 

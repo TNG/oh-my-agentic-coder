@@ -59,6 +59,7 @@ func writeSessionArtifacts(t *testing.T, h harnessConfig, testType string,
 	var meta strings.Builder
 	fmt.Fprintf(&meta, "harness: %s\n", h.Name)
 	fmt.Fprintf(&meta, "binary: %s\n", h.BinaryName)
+	fmt.Fprintf(&meta, "model: %s\n", modelID(h.Name))
 	fmt.Fprintf(&meta, "os: %s/%s\n", runtime.GOOS, runtime.GOARCH)
 	fmt.Fprintf(&meta, "test_type: %s\n", testType)
 	fmt.Fprintf(&meta, "no_sandbox: %v\n", h.Sandbox.NoSandbox)

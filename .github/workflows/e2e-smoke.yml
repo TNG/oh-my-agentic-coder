@@ -38,6 +38,18 @@ on:
         description: 'Install each harness''s latest release (drift detection). Uncheck to test the versions.go pins instead.'
         type: boolean
         default: true
+      model:
+        description: 'Model id for EVERY harness, for THIS RUN ONLY. Leave empty to use each harness''s pin in internal/e2e/versions.go (opencode/codex/copilot/pi: zai-org/GLM-5.2, claude-code: claude-sonnet-5)'
+        type: string
+        default: ''
+      claude_code_model:
+        description: 'Model id for claude-code only — it accepts sonnet or haiku models ONLY. Wins over "model"; leave empty to fall back to it, then to the versions.go pin'
+        type: string
+        default: ''
+      context_limit:
+        description: 'Context window declared to the harness, in tokens. Leave empty for the 100000 default, which is safely under every pinned model'
+        type: string
+        default: ''
   schedule:
     # Same slot as e2e.yml — Saturdays 08:00 UTC (10:00 CEST).
     - cron: '0 8 * * 6'
@@ -76,9 +88,22 @@ jobs:
       E2E_HARNESS: ${{ matrix.harness }}
       # Schedule runs always test latest (drift); dispatch honors the input.
       E2E_USE_LATEST: ${{ (github.event_name == 'schedule' || github.event.inputs.use_latest != 'false') && '1' || '' }}
+      # Model overrides for a manual run. All empty on schedule runs, so that
+      # run always resolves to the pins in internal/e2e/versions.go.
+      E2E_MODEL: ${{ github.event.inputs.model }}
+      E2E_MODEL_CLAUDE_CODE: ${{ github.event.inputs.claude_code_model }}
+      E2E_CONTEXT_LIMIT: ${{ github.event.inputs.context_limit }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      # Fails the leg immediately on a model the harness can't launch
+      # (claude-code accepts sonnet/haiku only), rather than after the install.
+      # The row's Model cell comes from the test's own OMAC_COMPAT line, not
+      # from here — see "Build compatibility row".
+      - name: Resolve model
+        run: |
+          echo "::notice title=Model::${{ matrix.harness }} runs against $(scripts/resolve-model.sh '${{ matrix.harness }}')"
 
       - name: Install bubblewrap (Linux only)
         if: runner.os == 'Linux'
@@ -203,6 +228,13 @@ jobs:
           version=$(grep -oE 'OMAC_COMPAT .*stage=contract .*' modelfree.log 2>/dev/null \
             | sed -E 's/.*version=([^ ]+).*/\1/' | head -1)
           [ -z "$version" ] && version="unknown"
+          # Model the test process actually resolved (compatLine's model= field),
+          # so an overridden run's row is attributable to the model that produced
+          # it. When the leg crashed before emitting any line, fall back to the
+          # resolver — same precedence, so the same answer the test would give.
+          model=$(grep -oE 'OMAC_COMPAT .*stage=contract .*' modelfree.log 2>/dev/null \
+            | sed -E 's/.*model=([^ ]+).*/\1/' | head -1)
+          [ -z "$model" ] && model=$(scripts/resolve-model.sh '${{ matrix.harness }}' || echo unknown)
           contract=$(stage_mark contract)
           launch=$(stage_mark launch)
           serve=$(stage_mark serve ➖)
@@ -212,7 +244,10 @@ jobs:
             *)       llm='➖' ;;  # not run (e.g. leg crashed earlier)
           esac
           date_utc=$(date -u +%Y-%m-%d)
-          row="| $date_utc | ${{ steps.omac.outputs.version }} | ${{ matrix.os }} | ${{ matrix.harness }} | $version | $contract | $launch | $serve | $llm |"
+          # Model is APPENDED, never inserted: the report job and the Slack
+          # fallback address the stage marks positionally ($7..$10), and rows
+          # already archived have no model cell.
+          row="| $date_utc | ${{ steps.omac.outputs.version }} | ${{ matrix.os }} | ${{ matrix.harness }} | $version | $contract | $launch | $serve | $llm | $model |"
           mkdir -p compat
           slug="${{ matrix.os }}-${{ matrix.harness }}-${{ matrix.omac }}"
           printf '%s\n' "$row" > "compat/$slug.row"
@@ -238,8 +273,8 @@ jobs:
           {
             echo "### ${{ matrix.harness }} / ${{ matrix.os }} / omac@${{ matrix.omac }}"
             echo ""
-            echo "| Timestamp (UTC) | omac | OS | Harness | Version | contract | launch | serve | llm |"
-            echo "|---|---|---|---|---|:-:|:-:|:-:|:-:|"
+            echo "| Timestamp (UTC) | omac | OS | Harness | Version | contract | launch | serve | llm | Model |"
+            echo "|---|---|---|---|---|:-:|:-:|:-:|:-:|---|"
             echo "$row"
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -342,6 +377,9 @@ jobs:
         env:
           SKAINET_TOKEN: ${{ secrets.SKAINET_TOKEN }}
           SKAINET_INTERNAL: ${{ secrets.SKAINET_EXTERNAL }}
+          # The summariser is an LLM call too, so it follows the same override —
+          # this job has no matrix, so only the cross-harness input applies.
+          E2E_MODEL: ${{ github.event.inputs.model }}
         run: |
           # Each failing leg already wrote a self-contained .ctx file (header
           # with harness/OS/omac + failing stage, plus its own log excerpts), so
@@ -356,10 +394,8 @@ jobs:
             echo "SKAINET creds missing — skipping AI summary (Slack will fall back to the failing-row list)"
             exit 0
           fi
-          # Single source of truth for the model id: internal/e2e/versions.go.
-          model=$(awk '/^var modelIDs = map\[string\]string\{/{f=1;next} /^\}/{f=0} f' internal/e2e/versions.go \
-            | grep '"opencode"' | sed -E 's/.*:\s*"([^"]+)".*/\1/')
-          [ -z "$model" ] && model="zai-org/GLM-5.2"
+          # Single source of truth for the model id, override included.
+          model=$(scripts/resolve-model.sh opencode)
           ctx=$(head -c 6000 failure-context.txt)
           sys="You are a CI assistant for the omac project. In at most 3 short sentences, state exactly what went wrong in these harness compatibility logs: name the harness, OS, and the specific flag or error message when present. Use the failing stage(s) stated in each '=== ... ===' header verbatim — do NOT infer or rename the stage. Output only the summary: no preamble, no fixes, and no chain-of-thought or <think> tags."
           payload=$(jq -n --arg m "$model" --arg s "$sys" --arg u "$ctx" \
@@ -376,7 +412,10 @@ jobs:
           summary=$(printf '%s' "$summary" | perl -0777 -pe 's{<think>.*?</think>}{}gs; s/\A\s+//' 2>/dev/null || printf '%s' "$summary")
           if [ -n "$(printf '%s' "$summary" | tr -d '[:space:]')" ]; then
             printf '%s\n' "$summary" > failure-summary.txt
-            echo "AI summary:"; cat failure-summary.txt
+            # Credited downstream so a summary is never read as more (or less)
+            # authoritative than the model that wrote it warrants.
+            echo "model=$model" >> "$GITHUB_OUTPUT"
+            echo "AI summary (model: $model):"; cat failure-summary.txt
           else
             echo "no summary returned (resp head: $(printf '%s' "$resp" | head -c 300))"
           fi
@@ -394,6 +433,7 @@ jobs:
           FAIL_COUNT: ${{ steps.rows.outputs.fail_count }}
           TOTAL: ${{ steps.rows.outputs.total }}
           INFRA_ONLY: ${{ steps.reason.outputs.infra_only }}
+          SUMMARY_MODEL: ${{ steps.summary.outputs.model }}
         run: |
           title="Harness compatibility matrix"
           # One stable issue, any state: reopen if it was closed so it is always
@@ -444,13 +484,13 @@ jobs:
                 echo ""
               fi
               if [ -s failure-summary.txt ]; then
-                echo "**What went wrong** (SKAINET summary):"
+                echo "**What went wrong** (SKAINET summary, model \`$SUMMARY_MODEL\`):"
                 echo ""
                 sed 's/^/> /' failure-summary.txt
                 echo ""
               fi
-              echo "| Timestamp (UTC) | omac | OS | Harness | Version | contract | launch | serve | llm |"
-              echo "|---|---|---|---|---|:-:|:-:|:-:|:-:|"
+              echo "| Timestamp (UTC) | omac | OS | Harness | Version | contract | launch | serve | llm | Model |"
+              echo "|---|---|---|---|---|:-:|:-:|:-:|:-:|---|"
               cat failing.rows
               echo ""
               # Footer hint depends on the failing stage: the contract-drift
@@ -464,8 +504,8 @@ jobs:
             echo ""
             echo "## History (rolling 30 days)"
             echo ""
-            echo "| Timestamp (UTC) | omac | OS | Harness | Version | contract | launch | serve | llm |"
-            echo "|---|---|---|---|---|:-:|:-:|:-:|:-:|"
+            echo "| Timestamp (UTC) | omac | OS | Harness | Version | contract | launch | serve | llm | Model |"
+            echo "|---|---|---|---|---|:-:|:-:|:-:|:-:|---|"
             printf '%s\n' "$all"
           } > dashboard.md
           if [ -n "$num" ]; then
@@ -500,10 +540,21 @@ jobs:
               echo ""
               echo "Appended by omac's e2e-smoke workflow. Do not edit by hand."
               echo ""
-              echo "| Timestamp (UTC) | omac | OS | Harness | Version | contract | launch | serve | llm |"
-              echo "|---|---|---|---|---|:-:|:-:|:-:|:-:|"
+              echo "| Timestamp (UTC) | omac | OS | Harness | Version | contract | launch | serve | llm | Model |"
+              echo "|---|---|---|---|---|:-:|:-:|:-:|:-:|---|"
               echo "<!-- COMPAT_TABLE_END -->"
             } > "$file"
+          fi
+          # Widen a pre-existing header to include the Model column, added after
+          # this archive was first written. Without this the appended rows carry
+          # a model cell the narrower header hides, so the permanent history
+          # would silently drop the very field it needs to stay attributable.
+          if grep -q '| llm |$' "$file"; then
+            sed -i.bak \
+              -e 's/| llm |$/| llm | Model |/' \
+              -e 's/^|---|---|---|---|---|:-:|:-:|:-:|:-:|$/|---|---|---|---|---|:-:|:-:|:-:|:-:|---|/' \
+              "$file"
+            rm -f "$file.bak"
           fi
           # Append this run's rows just above the end marker (chronological).
           awk -v rows="$(cat run.rows)" '/<!-- COMPAT_TABLE_END -->/{print rows} {print}' "$file" > "$file.tmp" && mv "$file.tmp" "$file"
@@ -528,11 +579,18 @@ jobs:
           FAIL_COUNT: ${{ steps.rows.outputs.fail_count }}
           TOTAL: ${{ steps.rows.outputs.total }}
           INFRA_ONLY: ${{ steps.reason.outputs.infra_only }}
+          SUMMARY_MODEL: ${{ steps.summary.outputs.model }}
         run: |
           if [ -z "$SLACK_WEBHOOK_URL" ]; then
             echo "SLACK_WEBHOOK_URL not set — skipping Slack notification"
             exit 0
           fi
+          # The run's model(s), from the rows' Model column (field 11). Stated
+          # unconditionally: without it a reader assumes the committed pin, and
+          # a manual run against an override reads as a regression in the default.
+          models=$(awk -F'|' '{gsub(/^[ \t]+|[ \t]+$/,"",$11); if ($11!="") print $11}' run.rows \
+            | sort -u | paste -sd',' - )
+          [ -z "$models" ] && models="unknown"
           # Posted on every run — green and red alike.
           if [ "$HAS_FAILURES" = "true" ]; then
             hdr=$(printf '🔴 omac harness compatibility: %s of %s combination(s) FAILED.' "$FAIL_COUNT" "$TOTAL")
@@ -560,12 +618,12 @@ jobs:
             fi
             # Append the SKAINET summary as extra colour when it produced one.
             if [ -s failure-summary.txt ] && [ -s failure-reason.txt ]; then
-              detail=$(printf '%s\n— summary: %s' "$detail" "$(tr '\n' ' ' < failure-summary.txt)")
+              detail=$(printf '%s\n— summary (%s): %s' "$detail" "${SUMMARY_MODEL:-unknown model}" "$(tr '\n' ' ' < failure-summary.txt)")
             fi
-            text=$(printf '%s\n%s\nDashboard: %s — Run: %s' \
-              "$hdr" "$detail" "$ISSUE_URL" "$RUN_URL")
+            text=$(printf '%s\n%s\nModel(s): %s\nDashboard: %s — Run: %s' \
+              "$hdr" "$detail" "$models" "$ISSUE_URL" "$RUN_URL")
           else
-            text="🟢 omac harness compatibility: all $TOTAL combination(s) green. Dashboard: $ISSUE_URL — Run: $RUN_URL"
+            text="🟢 omac harness compatibility: all $TOTAL combination(s) green. Model(s): $models. Dashboard: $ISSUE_URL — Run: $RUN_URL"
           fi
           # The Slack endpoint is a Workflow Builder webhook: its payload keys
           # must match the workflow's declared variables, which expect "message"

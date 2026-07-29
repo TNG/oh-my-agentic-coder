@@ -16,7 +16,8 @@
 #   comments — inline code comments and docstrings vs. the code they annotate.
 #
 # Same driver as scripts/e2e-readme-onboarding.sh: headless opencode `run`
-# against the internal SKAINET gateway (GLM-5.2), deliberately NOT claude-code
+# against the internal SKAINET gateway (same model as the harness matrix — see
+# scripts/resolve-model.sh), deliberately NOT claude-code
 # (the one harness billed to a real external account). Unlike the onboarding
 # test the agent works INSIDE the real checkout — it needs to read the code to
 # judge the docs — but it is a read-only audit: it reports, it does not edit.
@@ -34,8 +35,11 @@
 #   SKAINET_TOKEN              model API key (required)
 #   SKAINET_INTERNAL          model provider base URL (required)
 #   E2E_VERSION_OPENCODE       override the pinned opencode package spec
-#   DRIFT_MODEL                override the model id (default: zai-org/GLM-5.2)
+#   DRIFT_MODEL                override the model id; else E2E_MODEL, else the
+#                             pin resolved by scripts/resolve-model.sh
 #   DRIFT_LOG_DIR              artifact output dir (default: /tmp/doc-drift-logs)
+#   E2E_CONTEXT_LIMIT          declared context window (default: 100000)
+#   E2E_OUTPUT_LIMIT           declared output window (default: 32000)
 #   DRIFT_TIMEOUT_SECS         agent wall-clock timeout in seconds (default: 2400)
 #   DRIFT_FOCUS                optional: narrow the audit to specific files/areas
 #                             (appended to the prompt; useful for manual runs)
@@ -45,9 +49,8 @@ set -euo pipefail
 # Keep in sync with internal/e2e/versions.go's "opencode" pin (duplicated
 # there too, per the existing e2e convention).
 DEFAULT_OPENCODE_VERSION="opencode-ai@1.17.12"
-DEFAULT_MODEL="zai-org/GLM-5.2"
 # 40 min: the full-repo two-pass audit (read docs, verify each claim against
-# code) is heavy, and GLM-5.2's per-step latency through the gateway adds up.
+# code) is heavy, and the model's per-step latency through the gateway adds up.
 # The agent writes its report incrementally, so a run cut short here still
 # yields a partial report rather than nothing.
 DEFAULT_TIMEOUT_SECS="2400"
@@ -56,7 +59,14 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 MODE="${DRIFT_MODE:-docs}"
 LOG_DIR="${DRIFT_LOG_DIR:-/tmp/doc-drift-logs}"
 OPENCODE_VERSION="${E2E_VERSION_OPENCODE:-$DEFAULT_OPENCODE_VERSION}"
-MODEL="${DRIFT_MODEL:-$DEFAULT_MODEL}"
+MODEL="${DRIFT_MODEL:-$("$(dirname "$0")/resolve-model.sh" opencode)}"
+# Declared context/output window for the provider config below. Defaults match
+# internal/e2e/versions.go's defaultContextLimit/defaultOutputLimit: a declared
+# window LARGER than the model's real one overflows mid-run, a smaller one only
+# compacts earlier, so 100k is the model-independent safe default. Raise via
+# E2E_CONTEXT_LIMIT to exercise a bigger model's full window.
+CONTEXT_LIMIT="${E2E_CONTEXT_LIMIT:-100000}"
+OUTPUT_LIMIT="${E2E_OUTPUT_LIMIT:-32000}"
 # Seconds, not a duration string — see run_with_timeout (BSD sleep on macOS
 # rejects unit suffixes and there is no `timeout` binary there).
 TIMEOUT_SECS="${DRIFT_TIMEOUT_SECS:-$DEFAULT_TIMEOUT_SECS}"
@@ -107,7 +117,7 @@ trap 'chmod -R u+w "$WORK" 2>/dev/null; rm -rf "$WORK"; rm -f "$REPORT_FILE"' EX
 echo "== Installing opencode CLI ($OPENCODE_VERSION) =="
 bun install -g "$OPENCODE_VERSION"
 
-echo "== Writing opencode provider config (SKAINET / GLM-5.2) =="
+echo "== Writing opencode provider config (SKAINET / $MODEL) =="
 mkdir -p "$DRIVER_HOME/.local/share/opencode" "$DRIVER_HOME/.config/opencode"
 cat > "$DRIVER_HOME/.local/share/opencode/auth.json" <<EOF
 {"model": {"type": "api", "key": "$SKAINET_TOKEN"}}
@@ -122,7 +132,7 @@ cat > "$DRIVER_HOME/.config/opencode/opencode.json" <<EOF
       "npm": "@ai-sdk/openai-compatible",
       "options": { "baseURL": "$SKAINET_INTERNAL" },
       "models": {
-        "$MODEL": { "name": "GLM 5.2", "limit": { "context": 131072, "output": 32000 } }
+        "$MODEL": { "name": "$MODEL", "limit": { "context": $CONTEXT_LIMIT, "output": $OUTPUT_LIMIT } }
       }
     }
   }
@@ -232,7 +242,7 @@ fi
 # Read the prompt back from a file (avoids bash 3.2's heredoc-in-\$() apostrophe bug).
 PROMPT="$(cat "$PROMPT_FILE")"
 
-echo "== Running doc-drift agent (mode=$MODE, timeout ${TIMEOUT_SECS}s) =="
+echo "== Running doc-drift agent (mode=$MODE, model=$MODEL, timeout ${TIMEOUT_SECS}s) =="
 cd "$REPO"
 set +e
 # Override HOME + all XDG dirs: GH runners preset XDG_*_HOME at the real
@@ -259,13 +269,18 @@ set -e
 echo "agent exit status: $agent_status"
 
 # Transcript is already written directly into $LOG_DIR. Copy the report out of
-# the checkout before the EXIT trap removes it.
+# the checkout before the EXIT trap removes it, stamping the run's provenance on
+# top. Stamped here rather than asked of the agent: a finding is only meaningful
+# against the model that produced it, and the model is not the agent's to report.
+{
+  echo "_Model: \`$MODEL\` · opencode \`$OPENCODE_VERSION\` · mode \`$MODE\`_"
+  echo ""
+} > "$LOG_DIR/DRIFT_REPORT-$MODE.md"
 if [ -f "$REPORT_FILE" ]; then
-  cp "$REPORT_FILE" "$LOG_DIR/DRIFT_REPORT-$MODE.md"
+  cat "$REPORT_FILE" >> "$LOG_DIR/DRIFT_REPORT-$MODE.md"
   report_present=1
 else
-  echo "agent did not write a report to $REPORT_FILE" \
-    | tee "$LOG_DIR/DRIFT_REPORT-$MODE.md"
+  echo "agent did not write a report to $REPORT_FILE" >> "$LOG_DIR/DRIFT_REPORT-$MODE.md"
   report_present=0
 fi
 

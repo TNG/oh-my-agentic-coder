@@ -229,11 +229,13 @@ func opencodeConfig() harnessConfig {
 							"baseURL": baseURL,
 						},
 						"models": map[string]any{
-							modelIDs["opencode"]: map[string]any{
-								"name": "GLM 5.2",
+							modelID("opencode"): map[string]any{
+								// Display name follows the id so an
+								// overridden model isn't mislabelled.
+								"name": modelID("opencode"),
 								"limit": map[string]any{
-									"context": 131072,
-									"output":  32000,
+									"context": contextLimit(),
+									"output":  outputLimit(),
 								},
 							},
 						},
@@ -259,7 +261,7 @@ func opencodeConfig() harnessConfig {
 			ExtraReadPaths: opencodeCWDReadPaths(),
 		},
 		RunArgs: func(prompt string) []string {
-			return []string{"run", "--print-logs", "-m", "model/" + modelIDs["opencode"], prompt}
+			return []string{"run", "--print-logs", "-m", "model/" + modelID("opencode"), prompt}
 		},
 		SkillsBase: ".opencode",
 		EnvVarsForAllow: func() []string {
@@ -330,6 +332,12 @@ func claudeCodeConfig() harnessConfig {
 			if os.Getenv("ANTHROPIC_BASE_URL") == "" {
 				t.Fatal("ANTHROPIC_BASE_URL not set (CI secret for the Anthropic proxy)")
 			}
+			// Fail here, not on an opaque claude-code startup error, when a
+			// cross-harness model override lands on the one harness that
+			// cannot run it.
+			if err := validateModel("claude-code", modelID("claude-code")); err != nil {
+				t.Fatal(err)
+			}
 			// Claude Code provider is configured via env vars set on the
 			// omac start subprocess (ANTHROPIC_AUTH_TOKEN +
 			// ANTHROPIC_BASE_URL). No file-based config needed.
@@ -351,7 +359,7 @@ func claudeCodeConfig() harnessConfig {
 		},
 		Sandbox: SandboxConfig{}, // no deviations — model host allowed by base profile
 		RunArgs: func(prompt string) []string {
-			return []string{"-p", prompt, "--model", modelIDs["claude-code"], "--dangerously-skip-permissions"}
+			return []string{"-p", prompt, "--model", modelID("claude-code"), "--dangerously-skip-permissions"}
 		},
 		SkillsBase: ".claude",
 		EnvVarsForAllow: func() []string {
@@ -403,7 +411,7 @@ func codexConfig() harnessConfig {
 			}
 			// config.toml: codex requires wire_api=responses (Responses API).
 			// The responses API (SKAINET_INTERNAL) supports /v1/responses with the configured model.
-			configToml := `model = "` + modelIDs["codex"] + `"
+			configToml := `model = "` + modelID("codex") + `"
 model_provider = "model"
 
 [model_providers.model]
@@ -434,7 +442,7 @@ http_headers = { "X-User-Agent" = "Codex", "X-Separate-Reasoning" = "1" }
 			NoSandbox: runtime.GOOS == "darwin",
 		},
 		RunArgs: func(prompt string) []string {
-			return []string{"exec", "--dangerously-bypass-approvals-and-sandbox", "-m", modelIDs["codex"], prompt}
+			return []string{"exec", "--dangerously-bypass-approvals-and-sandbox", "-m", modelID("codex"), prompt}
 		},
 		SkillsBase: ".codex",
 		EnvVarsForAllow: func() []string {
@@ -505,13 +513,13 @@ func copilotConfig() harnessConfig {
 				"COPILOT_PROVIDER_TYPE=openai",
 				"COPILOT_PROVIDER_BASE_URL=" + baseURL,
 				"COPILOT_PROVIDER_API_KEY=" + token,
-				"COPILOT_MODEL=" + modelIDs["copilot"],
+				"COPILOT_MODEL=" + modelID("copilot"),
 				"COPILOT_PROVIDER_WIRE_API=responses",
 			}
 		},
 		Sandbox: SandboxConfig{}, // no deviations — model host allowed by base profile
 		RunArgs: func(prompt string) []string {
-			return []string{"-p", prompt, "--model", modelIDs["copilot"], "--allow-all-tools"}
+			return []string{"-p", prompt, "--model", modelID("copilot"), "--allow-all-tools"}
 		},
 		SkillsBase: ".copilot",
 		EnvVarsForAllow: func() []string {
@@ -592,7 +600,7 @@ func piConfig() harnessConfig {
 							"X-Separate-Reasoning": "1",
 						},
 						"models": []map[string]any{
-							{"id": modelIDs["pi"]},
+							{"id": modelID("pi")},
 						},
 					},
 				},
@@ -615,7 +623,7 @@ func piConfig() harnessConfig {
 			// --dangerously-skip-permissions-equivalent flag is needed.
 			// --provider is required: pi defaults to "google" without it,
 			// which would silently ignore the "model" custom provider above.
-			return []string{"-p", prompt, "--provider", "model", "--model", modelIDs["pi"]}
+			return []string{"-p", prompt, "--provider", "model", "--model", modelID("pi")}
 		},
 		SkillsBase: ".pi",
 		EnvVarsForAllow: func() []string {

@@ -341,7 +341,7 @@ func installHarness(t *testing.T, h harnessConfig, home string) {
 	// bun→npm fallback applied when bun is unavailable under
 	// E2E_RECOVER_INSTALL (the omac sandbox blocks writes to ~/.bun).
 	installCmd := resolveInstallCmd(h)
-	t.Logf("installing %s: %v", h.Name, installCmd)
+	t.Logf("installing %s: %v (model: %s)", h.Name, installCmd, modelID(h.Name))
 	cmd := exec.Command(installCmd[0], installCmd[1:]...)
 	cmd.Env = env
 	installFailed := false

@@ -28,6 +28,10 @@ on:
         type: choice
         options: [quick, standard, deep]
         default: deep
+      model:
+        description: 'Model id for the strix agent, for THIS RUN ONLY. Leave empty for the opencode pin in internal/e2e/versions.go (zai-org/GLM-5.2). The -TEE fallback probe below applies to whatever is resolved here'
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -50,6 +54,9 @@ jobs:
       LLM_API_BASE: ${{ secrets.SKAINET_EXTERNAL }}
       LLM_API_KEY: ${{ secrets.SKAINET_TOKEN }}
       GH_TOKEN: ${{ github.token }}
+      # Read by scripts/resolve-model.sh below; empty on the scheduled run, so
+      # that run always resolves to the committed pin.
+      E2E_MODEL: ${{ inputs.model }}
     steps:
       - name: Checkout target repo
         uses: actions/checkout@v4
@@ -123,15 +130,12 @@ jobs:
         id: model
         run: |
           set -euo pipefail
-          # Base model name: single source of truth is internal/e2e/versions.go's
-          # modelIDs map (opencode's entry -- the plain GLM-5.2 name, which is
-          # what opencode's own resolution uses) rather than duplicating it here.
-          base=$(awk '/^var modelIDs = map\[string\]string\{/{flag=1; next} /^\}/{flag=0} flag' \
-            target/internal/e2e/versions.go | grep '"opencode"' | sed -E 's/.*:\s*"([^"]+)".*/\1/')
-          if [ -z "$base" ]; then
-            echo "::error::could not resolve model from internal/e2e/versions.go"
-            exit 1
-          fi
+          # Base model name: resolved by the checked-out repo's own resolver, so
+          # the same precedence the e2e Go tests apply -- the `model` input, else
+          # internal/e2e/versions.go's modelIDs map (opencode's entry, the plain
+          # GLM-5.2 name that opencode's own resolution uses). The resolver reads
+          # versions.go relative to itself, so the target/ checkout path is fine.
+          base=$(target/scripts/resolve-model.sh opencode)
           # Harden against the gateway's raw /v1/chat/completions path only
           # serving one model-name variant at a time: unlike opencode, strix
           # calls that path directly, and it recently flipped from accepting the
@@ -157,6 +161,11 @@ jobs:
           fi
           echo "selected model: ${chosen}"
           echo "strix_llm=openai/${chosen}" >> "$GITHUB_OUTPUT"
+          echo "model=${chosen}" >> "$GITHUB_OUTPUT"
+          # Model names aren't findings -- safe on this public summary, and the
+          # counts below are only interpretable against the model that produced
+          # them (especially on a manual run against an override).
+          echo "::notice title=Model::strix scan runs against ${chosen}"
 
       - name: Run strix scan
         id: scan
@@ -229,7 +238,10 @@ jobs:
 
       - name: Public summary (counts only, no exploit detail)
         if: steps.scan.outcome == 'success'
-        run: cat step-summary.md >> "$GITHUB_STEP_SUMMARY"
+        run: |
+          cat step-summary.md >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Model: \`${{ steps.model.outputs.model }}\` · scan mode: \`${{ inputs.scan_mode || 'deep' }}\`" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Stop context-compaction proxy
         if: always()

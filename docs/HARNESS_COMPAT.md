@@ -19,6 +19,13 @@ from source) and `release` (the latest published binary, i.e. what users run):
 `harness × os × omac{main,release}` (codex/macOS excluded), and rows are sorted
 newest-first, then grouped by omac version, OS, and harness.
 
+Every row also records the **model** the leg resolved, taken from the test's own
+`OMAC_COMPAT` line. Scheduled runs always show the pin in
+`internal/e2e/versions.go`; a manual run can point the whole matrix at a
+different model via the `model` input, so a row stays attributable to the model
+that produced it — see
+[*Choosing the model for LLM-driven runs*](DEVELOP.md#choosing-the-model-for-llm-driven-runs).
+
 ## Where the record lives
 
 The matrix is **not** committed to this repo (no bot pushes to `main`):

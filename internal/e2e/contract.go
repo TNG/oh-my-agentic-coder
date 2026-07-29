@@ -183,15 +183,23 @@ func harnessHasServerMode(name string) bool {
 // compatLine renders the stable machine-readable line the smoke test prints so
 // the workflow can parse it into the compatibility matrix without re-deriving
 // anything. The date and omac version are stamped by the workflow (they are not
-// known to, or stable within, the test process). Example:
+// known to, or stable within, the test process). model is the run's resolved
+// model id (see modelID) — like version, a property of the run rather than of
+// the stage, so the model-free stages carry it too; it keeps a result
+// attributable to the model that produced it when an override changed it.
+// Example:
 //
-//	OMAC_COMPAT harness=claude-code version=2.1.197 os=linux stage=contract result=PASS
+//	OMAC_COMPAT harness=claude-code version=2.1.197 os=linux model=claude-sonnet-5 stage=contract result=PASS
 func compatLine(harness, version, goos, stage, result string) string {
 	if version == "" {
 		version = "unknown"
 	}
-	return fmt.Sprintf("OMAC_COMPAT harness=%s version=%s os=%s stage=%s result=%s",
-		harness, sanitizeField(version), goos, stage, result)
+	model := modelID(harness)
+	if model == "" {
+		model = "unknown"
+	}
+	return fmt.Sprintf("OMAC_COMPAT harness=%s version=%s os=%s model=%s stage=%s result=%s",
+		harness, sanitizeField(version), goos, sanitizeField(model), stage, result)
 }
 
 // sanitizeField collapses whitespace in a value so it stays on the single

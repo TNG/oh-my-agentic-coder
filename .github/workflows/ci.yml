@@ -170,6 +170,13 @@ jobs:
       - name: Run model-free e2e tests
         run: go test -tags=e2e_fast -race -count=1 -timeout=5m ./internal/e2e/
 
+      # The shell counterpart of the model-resolution invariants the Go tests
+      # above cover: scripts/resolve-model.sh feeds the workflows' shell steps
+      # and must agree with modelID()/validateModel(), or a run reports a model
+      # it didn't use.
+      - name: Check model resolver parity
+        run: scripts/resolve-model_test.sh
+
   cache-integration:
     name: Cache integration (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
