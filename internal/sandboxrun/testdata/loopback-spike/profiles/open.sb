@@ -1,0 +1,66 @@
+;; POSTURE: open  (mirrors sandboxprofile.ModeOpen in internal/sandboxrun/sbpl.go)
+;; Ticket 01 seatbelt spike fixture. Placeholders substituted by run-matrix.sh.
+;; Expected: everything reachable. Upper-bound control. Deliberately identical
+;; network posture to env-only; the distinction is only meaningful in
+;; production (proxy env present in env-only). If posture outcomes differ
+;; between these two, the test rig is wrong, not the sandbox.
+(version 1)
+(deny default)
+
+;; --- baseline copied from GenerateSBPL (internal/sandboxrun/sbpl.go) ---
+(allow process-exec*)
+(allow process-fork)
+(allow process-info* (target self))
+(allow process-info* (target same-sandbox))
+(allow signal (target self))
+(allow signal (target same-sandbox))
+
+(allow mach-lookup)
+(deny mach-lookup (global-name "com.apple.SecurityServer"))
+(deny mach-lookup (global-name "com.apple.securityd"))
+(deny mach-lookup (global-name "com.apple.security.keychaind"))
+(deny mach-lookup (global-name "com.apple.secd"))
+(deny mach-lookup (global-name "com.apple.security.agent"))
+
+(allow sysctl-read)
+(allow ipc-posix-shm)
+(allow system-socket)
+
+(allow file-read* (literal "/"))
+
+(allow file-read* (subpath "/System"))
+(allow file-read* (subpath "/usr"))
+(allow file-read* (subpath "/Library"))
+(allow file-read* (subpath "/private/var/folders"))
+(allow file-read* (subpath "/opt/homebrew"))
+(allow file-read* (subpath "/bin"))
+(allow file-read* (subpath "/sbin"))
+(allow file-read* (subpath "__HOME__"))
+(allow file-read-metadata)
+
+(allow file-map-executable (subpath "/System"))
+(allow file-map-executable (subpath "/usr"))
+(allow file-map-executable (subpath "/Library"))
+(allow file-map-executable (subpath "/opt/homebrew"))
+(allow file-map-executable (subpath "/bin"))
+(allow file-map-executable (subpath "/sbin"))
+;; NOTE: deliberately NO file-map-executable on __HOME__ — mmap-executable
+;; scoped to all of home would reopen the DYLD-injection hole sbpl.go's split
+;; exists to close; running user-owned unsigned binaries does not require it.
+
+(allow file-read* file-write* (subpath "/private/tmp"))
+(allow file-read* file-write* (subpath "/tmp"))
+(allow file-read* file-write* (subpath "/private/var/folders"))
+(allow file-read* file-write* (subpath "__SCRATCH_LOG_DIR__"))
+
+(allow file-read* file-write-data (literal "/dev/null"))
+(allow file-read* file-write-data (literal "/dev/zero"))
+(allow file-read* file-write-data (literal "/dev/random"))
+(allow file-read* file-write-data (literal "/dev/urandom"))
+(allow file-read* file-write-data (literal "/dev/dtracehelper"))
+(allow file-read* file-write-data (regex #"^/dev/tty"))
+(allow file-ioctl (regex #"^/dev/"))
+(allow pseudo-tty)
+
+;; --- network: OPEN ---
+(allow network*)

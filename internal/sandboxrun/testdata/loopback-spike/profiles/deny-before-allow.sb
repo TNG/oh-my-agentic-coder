@@ -1,0 +1,71 @@
+;; POSTURE: deny-before-allow  (order-sensitivity control)
+;; Ticket 01 seatbelt spike fixture. Placeholders substituted by run-matrix.sh.
+;; Same rules as dynamic-port-deny but the specific-port deny is emitted
+;; BEFORE the wildcard allow. Comparison against dynamic-port-deny.sb proves
+;; whether Seatbelt rule order decides the outcome (last-match-wins) or deny
+;; has unconditional precedence over allow regardless of position.
+(version 1)
+(deny default)
+
+;; --- baseline copied from GenerateSBPL (internal/sandboxrun/sbpl.go) ---
+(allow process-exec*)
+(allow process-fork)
+(allow process-info* (target self))
+(allow process-info* (target same-sandbox))
+(allow signal (target self))
+(allow signal (target same-sandbox))
+
+(allow mach-lookup)
+(deny mach-lookup (global-name "com.apple.SecurityServer"))
+(deny mach-lookup (global-name "com.apple.securityd"))
+(deny mach-lookup (global-name "com.apple.security.keychaind"))
+(deny mach-lookup (global-name "com.apple.secd"))
+(deny mach-lookup (global-name "com.apple.security.agent"))
+
+(allow sysctl-read)
+(allow ipc-posix-shm)
+(allow system-socket)
+
+(allow file-read* (literal "/"))
+
+(allow file-read* (subpath "/System"))
+(allow file-read* (subpath "/usr"))
+(allow file-read* (subpath "/Library"))
+(allow file-read* (subpath "/private/var/folders"))
+(allow file-read* (subpath "/opt/homebrew"))
+(allow file-read* (subpath "/bin"))
+(allow file-read* (subpath "/sbin"))
+(allow file-read* (subpath "__HOME__"))
+(allow file-read-metadata)
+
+(allow file-map-executable (subpath "/System"))
+(allow file-map-executable (subpath "/usr"))
+(allow file-map-executable (subpath "/Library"))
+(allow file-map-executable (subpath "/opt/homebrew"))
+(allow file-map-executable (subpath "/bin"))
+(allow file-map-executable (subpath "/sbin"))
+;; NOTE: deliberately NO file-map-executable on __HOME__ — mmap-executable
+;; scoped to all of home would reopen the DYLD-injection hole sbpl.go's split
+;; exists to close; running user-owned unsigned binaries does not require it.
+
+(allow file-read* file-write* (subpath "/private/tmp"))
+(allow file-read* file-write* (subpath "/tmp"))
+(allow file-read* file-write* (subpath "/private/var/folders"))
+(allow file-read* file-write* (subpath "__SCRATCH_LOG_DIR__"))
+
+(allow file-read* file-write-data (literal "/dev/null"))
+(allow file-read* file-write-data (literal "/dev/zero"))
+(allow file-read* file-write-data (literal "/dev/random"))
+(allow file-read* file-write-data (literal "/dev/urandom"))
+(allow file-read* file-write-data (literal "/dev/dtracehelper"))
+(allow file-read* file-write-data (regex #"^/dev/tty"))
+(allow file-ioctl (regex #"^/dev/"))
+(allow pseudo-tty)
+
+;; --- network: DENY BEFORE ALLOW (order control) ---
+(deny network*)
+(deny network-outbound (remote tcp "localhost:__GUARDED_PORT__"))
+(allow network-outbound (remote tcp "localhost:*"))
+(allow network-bind)
+(allow network-inbound)
+(allow network-outbound (literal "/private/var/run/mDNSResponder"))

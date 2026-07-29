@@ -1,0 +1,72 @@
+;; POSTURE: dynamic-port-deny-v6  (IPv6 hole probe, literal IPv6 address form)
+;; Ticket 01 seatbelt spike fixture. Placeholders substituted by run-matrix.sh.
+;; Same intent as dynamic-port-deny.sb but the deny uses the literal IPv6
+;; loopback form. SBPL remote-endpoint syntax examples in the wild use
+;; "localhost:" and dotted-quad strings; whether "::1:PORT" parses and matches
+;; is itself a spike finding (a parse failure aborts this posture's run and
+;; must be recorded as such in the report).
+(version 1)
+(deny default)
+
+;; --- baseline copied from GenerateSBPL (internal/sandboxrun/sbpl.go) ---
+(allow process-exec*)
+(allow process-fork)
+(allow process-info* (target self))
+(allow process-info* (target same-sandbox))
+(allow signal (target self))
+(allow signal (target same-sandbox))
+
+(allow mach-lookup)
+(deny mach-lookup (global-name "com.apple.SecurityServer"))
+(deny mach-lookup (global-name "com.apple.securityd"))
+(deny mach-lookup (global-name "com.apple.security.keychaind"))
+(deny mach-lookup (global-name "com.apple.secd"))
+(deny mach-lookup (global-name "com.apple.security.agent"))
+
+(allow sysctl-read)
+(allow ipc-posix-shm)
+(allow system-socket)
+
+(allow file-read* (literal "/"))
+
+(allow file-read* (subpath "/System"))
+(allow file-read* (subpath "/usr"))
+(allow file-read* (subpath "/Library"))
+(allow file-read* (subpath "/private/var/folders"))
+(allow file-read* (subpath "/opt/homebrew"))
+(allow file-read* (subpath "/bin"))
+(allow file-read* (subpath "/sbin"))
+(allow file-read* (subpath "__HOME__"))
+(allow file-read-metadata)
+
+(allow file-map-executable (subpath "/System"))
+(allow file-map-executable (subpath "/usr"))
+(allow file-map-executable (subpath "/Library"))
+(allow file-map-executable (subpath "/opt/homebrew"))
+(allow file-map-executable (subpath "/bin"))
+(allow file-map-executable (subpath "/sbin"))
+;; NOTE: deliberately NO file-map-executable on __HOME__ — mmap-executable
+;; scoped to all of home would reopen the DYLD-injection hole sbpl.go's split
+;; exists to close; running user-owned unsigned binaries does not require it.
+
+(allow file-read* file-write* (subpath "/private/tmp"))
+(allow file-read* file-write* (subpath "/tmp"))
+(allow file-read* file-write* (subpath "/private/var/folders"))
+(allow file-read* file-write* (subpath "__SCRATCH_LOG_DIR__"))
+
+(allow file-read* file-write-data (literal "/dev/null"))
+(allow file-read* file-write-data (literal "/dev/zero"))
+(allow file-read* file-write-data (literal "/dev/random"))
+(allow file-read* file-write-data (literal "/dev/urandom"))
+(allow file-read* file-write-data (literal "/dev/dtracehelper"))
+(allow file-read* file-write-data (regex #"^/dev/tty"))
+(allow file-ioctl (regex #"^/dev/"))
+(allow pseudo-tty)
+
+;; --- network: wildcard loopback + literal IPv6 deny ---
+(deny network*)
+(allow network-outbound (remote tcp "localhost:*"))
+(deny network-outbound (remote tcp "::1:__GUARDED_PORT__"))
+(allow network-bind)
+(allow network-inbound)
+(allow network-outbound (literal "/private/var/run/mDNSResponder"))
