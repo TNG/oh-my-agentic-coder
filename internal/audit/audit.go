@@ -21,7 +21,8 @@ type Config struct {
 	// Strict makes the file sink fail-closed: a write failure invokes
 	// Fatal instead of degrading to a stderr warning.
 	Strict bool
-	// Mode identifies the entrypoint (start|serve) stamped on every event.
+	// Mode identifies the entrypoint (start|serve|build) stamped on
+	// every event.
 	Mode Mode
 	// Version is stamped on session.start.
 	Version string
