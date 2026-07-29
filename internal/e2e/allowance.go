@@ -79,6 +79,26 @@ type AllowanceSpec struct {
 	// literal path the agent opened. The test asserts denial through the
 	// symlink indirection just as it does for a direct path.
 	SymlinkEscapeDenyPaths []string
+
+	// OpenPorts are loopback TCP ports the sandboxed child must be able to
+	// reach, written to the profile's network.open_port. Unlike the other
+	// fields this is a capability the test GRANTS, not a boundary it
+	// asserts: it exists for tests that stand up a host-side httptest
+	// server the agent itself must call, e.g. the stub model endpoint in
+	// plugin_briefing_test.go.
+	//
+	// The child dials such a port directly rather than through the omac
+	// proxy: netproxy injects NO_PROXY=localhost,127.0.0.1,::1
+	// (netproxy/server.go:205) and refuses loopback destinations itself
+	// (server.go:326), so open_port is the only thing gating it. This is
+	// the same arrangement `omac serve` uses to let the OpenCode plugin
+	// reach OMAC_CONTROL_BASE (cli/serve.go:574-590).
+	//
+	// Must be concrete ports. Never 0: the "any loopback port" sentinel is
+	// implemented only for macOS (sandboxrun/sbpl.go:136-145) and breaks
+	// the Linux launch, where bwrap.go:210 emits `--connect-tcp 0` and
+	// stage2_linux.go:26-29 rejects it.
+	OpenPorts []int
 }
 
 // allowanceSpecFor returns the allowance spec for a harness.

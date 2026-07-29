@@ -145,14 +145,14 @@ jobs:
             echo "version=main@$(git describe --tags --always --dirty)" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Model-free smoke (contract + launch + serve)
+      - name: Model-free smoke (contract + launch + serve + system prompt)
         id: modelfree
         env:
           E2E_CACHE_DIR: ${{ runner.temp }}/e2e-install-cache
         run: |
           set -o pipefail
           go test -tags=e2e -timeout=20m -v \
-            -run 'TestHarnessCLIContract|TestHarnessLaunchProbe|TestHarnessServeProbe' \
+            -run 'TestHarnessCLIContract|TestHarnessLaunchProbe|TestHarnessServeProbe|TestOpenCodeSingleSystemMessage' \
             ./internal/e2e/ 2>&1 | tee modelfree.log || true
 
       - name: LLM turn
