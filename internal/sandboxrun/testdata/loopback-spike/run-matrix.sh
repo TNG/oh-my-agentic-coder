@@ -53,6 +53,42 @@ if [[ -z "$JAVA_BIN" ]]; then
     echo "nonexistent Apple JDK on this machine); install Temurin or export PATH." >&2
     exit 1
 fi
+# env -i later strips PATH down to system dirs + the java dir. If `java` is a
+# jenv SHIM (a bash script that shells out to jenv-* helpers on PATH), the shim
+# breaks under env -i AND under deny-default sandboxing (jenv reads /dev/fd
+# process substitution, which Seatbelt denies). Resolve through the shim chain
+# to the REAL JVM binary instead: shim -> jenv-exec -> <jenv-version>/bin/java.
+resolve_java_bin() {
+    local j="$1" target
+    for _ in 1 2 3 4 5; do
+        if [[ -L "$j" ]]; then
+            target="$(readlink "$j")"
+            [[ "$target" != /* ]] && target="$(cd "$(dirname "$j")" && cd "$(dirname "$target")" && pwd)/$(basename "$target")"
+            j="$target"
+            continue
+        fi
+        if head -1 "$j" 2>/dev/null | grep -qE '^#!'; then
+            # script (jenv shim): the real JVM lives in the active jenv version
+            local ver
+            ver="$(cat "$HOME/.jenv/version" 2>/dev/null || true)"
+            if [[ -n "$ver" && -x "$HOME/.jenv/versions/$ver/bin/java" ]]; then
+                echo "$HOME/.jenv/versions/$ver/bin/java"
+                return 0
+            fi
+        fi
+        break
+    done
+    echo "$j"
+}
+REAL_JAVA_BIN="$(resolve_java_bin "$JAVA_BIN")"
+if [[ ! -x "$REAL_JAVA_BIN" ]]; then
+    echo "FATAL: resolved java binary not executable: $REAL_JAVA_BIN (from $JAVA_BIN)" >&2
+    exit 1
+fi
+if [[ "$REAL_JAVA_BIN" != "$JAVA_BIN" ]]; then
+    echo "[run-matrix] resolved jenv shim $JAVA_BIN -> $REAL_JAVA_BIN"
+fi
+JAVA_BIN="$REAL_JAVA_BIN"
 echo "[run-matrix] java: $JAVA_BIN"
 "$JAVA_BIN" -version 2>&1 | sed 's/^/[run-matrix]   /'
 
