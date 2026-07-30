@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // Exit codes for `omac build`. 0 and any other build exit code pass through
@@ -68,15 +69,26 @@ type Request struct {
 	Root string
 	// Args are the adapter arguments passed through unchanged.
 	Args []string
+	// MaxDuration bounds the total build wall-clock; zero disables the
+	// ceiling. Wired from --max-duration (P4: spec.md:150 — an excessive
+	// request fails before executor startup).
+	MaxDuration time.Duration
 }
 
 // ParseArgs parses `omac build` arguments:
 //
-//	omac build [--root <rel>] -- gradle <args...>
+//	omac build [--root <rel>] [--max-duration <duration>] -- gradle <args...>
 //
 // The adapter token after `--` is required and must be the literal "gradle"
 // (the Maven seam: any other token yields "unsupported adapter"). Everything
 // after the adapter token passes through to the build tool unchanged.
+//
+// --max-duration bounds the total build wall-clock (spec.md:150: an
+// excessive request fails before executor startup). A non-positive
+// duration is a usage error (the flag requires a positive value; use
+// time.ParseDuration syntax, e.g. "30m", "1h30m"). Zero/negative is
+// rejected rather than silently disabling, so a typo does not run an
+// unbounded build.
 func ParseArgs(args []string) (Request, error) {
 	r := Request{Root: "."}
 	// Find the `--` separator: flags must precede it, everything after is
@@ -89,7 +101,7 @@ func ParseArgs(args []string) (Request, error) {
 		}
 	}
 	if sep < 0 {
-		return Request{}, &RequestError{msg: "missing `-- gradle <args...>` separator (usage: omac build [--root <rel>] -- gradle <args...>)"}
+		return Request{}, &RequestError{msg: "missing `-- gradle <args...>` separator (usage: omac build [--root <rel>] [--max-duration <duration>] -- gradle <args...>)"}
 	}
 	flags, rest := args[:sep], args[sep+1:]
 	for i := 0; i < len(flags); i++ {
@@ -103,8 +115,31 @@ func ParseArgs(args []string) (Request, error) {
 			i++
 		case strings.HasPrefix(a, "--root="):
 			r.Root = strings.TrimPrefix(a, "--root=")
+		case a == "--max-duration":
+			if i+1 >= len(flags) {
+				return Request{}, &RequestError{msg: "--max-duration requires a value (e.g. --max-duration 30m)"}
+			}
+			d, err := time.ParseDuration(flags[i+1])
+			if err != nil {
+				return Request{}, &RequestError{msg: fmt.Sprintf("--max-duration %q: %v (use time.ParseDuration syntax, e.g. 30m, 1h30m)", flags[i+1], err)}
+			}
+			if d <= 0 {
+				return Request{}, &RequestError{msg: fmt.Sprintf("--max-duration must be positive, got %v", d)}
+			}
+			r.MaxDuration = d
+			i++
+		case strings.HasPrefix(a, "--max-duration="):
+			v := strings.TrimPrefix(a, "--max-duration=")
+			d, err := time.ParseDuration(v)
+			if err != nil {
+				return Request{}, &RequestError{msg: fmt.Sprintf("--max-duration %q: %v (use time.ParseDuration syntax, e.g. 30m, 1h30m)", v, err)}
+			}
+			if d <= 0 {
+				return Request{}, &RequestError{msg: fmt.Sprintf("--max-duration must be positive, got %v", d)}
+			}
+			r.MaxDuration = d
 		default:
-			return Request{}, &RequestError{msg: fmt.Sprintf("unknown flag %q (usage: omac build [--root <rel>] -- gradle <args...>)", a)}
+			return Request{}, &RequestError{msg: fmt.Sprintf("unknown flag %q (usage: omac build [--root <rel>] [--max-duration <duration>] -- gradle <args...>)", a)}
 		}
 	}
 	if r.Root == "" {
