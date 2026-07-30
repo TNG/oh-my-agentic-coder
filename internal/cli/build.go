@@ -86,19 +86,6 @@ func runBuild(args []string, env *Env) int {
 	}
 	defer closeScope()
 
-	// Proxy: start the omac filtered proxy so public dependency resolution
-	// works without printing a proxy password (GRADLE_OPTS, NEVER
-	// JAVA_TOOL_OPTIONS). Best-effort configurable but ON by default for
-	// the build path on macOS (Shape A). On Linux the kernel-blocked
-	// posture makes the proxy unreachable, so it is not started.
-	proxyURL, proxyPort, stopProxy, proxyErr := startBuildProxy(env)
-	if proxyErr != nil {
-		return failService("build proxy: %v", proxyErr)
-	}
-	if stopProxy != nil {
-		defer stopProxy()
-	}
-
 	// Build manifest (ticket 05): Load `.omac/build.yaml` from the worktree,
 	// validate against the host policy ceiling, run the frozen-for-session
 	// approval gate, and thread the approved capability set into BuildConfig.
@@ -121,10 +108,8 @@ func runBuild(args []string, env *Env) int {
 		// in-code manifest). ExitPolicyDenied before executor startup.
 		return deny(err)
 	}
-	approved := buildrun.BuildConfig{
-		ProxyURL:  proxyURL,
-		ProxyPort: proxyPort,
-	}
+	approved := buildrun.BuildConfig{}
+	var approvedRegistries []string
 	if manifest.HasManifest() {
 		caps := manifest.CapabilitySet(hostPolicy)
 		digest := buildmanifest.Digest(manifest)
@@ -148,7 +133,45 @@ func runBuild(args []string, env *Env) int {
 		approved.MaxHeap = gateRes.Capabilities.Resources.MaxHeap
 		approved.ApprovedImages = gateRes.Capabilities.Images
 		approved.ApprovedRegistries = gateRes.Capabilities.Registries
+		approvedRegistries = gateRes.Capabilities.Registries
 	}
+
+	// Proxy: start the omac filtered proxy so public dependency resolution
+	// works without printing a proxy password (GRADLE_OPTS, NEVER
+	// JAVA_TOOL_OPTIONS). Best-effort configurable but ON by default for
+	// the build path on macOS (Shape A). On Linux the kernel-blocked
+	// posture makes the proxy unreachable, so it is not started.
+	//
+	// Ticket 06 tightens the filter from allow-all to an allowlist of
+	// public Gradle/Maven endpoints ONLY, with build-scan upload hosts
+	// denied. Private-registry upstreams are deliberately NOT allowed
+	// here (they go through the credential-lift proxy below); allowing
+	// them would be a bypass path (spec.md:174).
+	proxyURL, proxyPort, stopProxy, proxyErr := startBuildProxy(env)
+	if proxyErr != nil {
+		return failService("build proxy: %v", proxyErr)
+	}
+	if stopProxy != nil {
+		defer stopProxy()
+	}
+	approved.ProxyURL = proxyURL
+	approved.ProxyPort = proxyPort
+
+	// Credential-lift proxy (ticket 06): for the approved private Maven
+	// registries, start a host-side loopback HTTP proxy that injects the
+	// developer's keychain credential upstream while Gradle sees only a
+	// non-secret local URL per alias. The credential NEVER enters the
+	// executor (env/args/gradle.properties/logs/audit). A missing keychain
+	// credential for an approved registry is a structured denial naming the
+	// alias (criterion 7) — exit 3, never a crash, never the credential.
+	credProxyURLs, stopCredProxy, credErr := startCredentialProxy(env, manifest.Registries, approvedRegistries)
+	if credErr != nil {
+		return deny(credErr)
+	}
+	if stopCredProxy != nil {
+		defer stopCredProxy()
+	}
+	approved.RegistryProxyURLs = credProxyURLs
 
 	grants, err := buildrun.GrantsFor(resolved.Worktree, cacheDir, approved)
 	if err != nil {

@@ -136,6 +136,116 @@ not retry.
 (The mediated-container enforcement that emits this at runtime is tickets
 08/09; ticket 05 only declares and approves the image list.)
 
+## Private Maven registry access (credential lift)
+
+Ticket 06 lets an unchanged Gradle build resolve a real private Maven
+dependency while the long-lived registry credential remains entirely
+outside the JVM build executor. This is the Gradle tracer bullet for
+GitHub issue #92's scoped credential-proxy design (spec §"Dependency
+And Credential Networking").
+
+### Two proxies, one CLI startup
+
+`omac build` starts TWO host-side proxies side by side on macOS (Shape A):
+
+1. **The existing filtered proxy** (`internal/netproxy`) handles PUBLIC
+   dependency resolution — Maven Central, Gradle plugin/distribution
+   hosts, JitPack, common mirrors — over direct CONNECT tunnels. **No
+   TLS interception** (spec non-goal §57). Ticket 06 TIGHTENS this filter
+   from allow-all (ticket 04) to an allowlist of public Gradle/Maven
+   endpoints + the approved private-registry upstream hosts, with
+   build-scan upload hosts (`scans.gradle.com`, `ge.gradle.org`,
+   `scan.gradle.com`) DENIED (spec non-goal §56). Anything outside the
+   allowlist is denied fail-closed (prompting is disabled — the manifest
+   approval IS the prompt replacement).
+
+2. **The credential-lift proxy** (`internal/credproxy`) handles ONLY the
+   declared private registries. It is a forward HTTP server (not a CONNECT
+   tunnel): it receives Gradle's plain-HTTP request for a private-repo
+   path, injects an `Authorization: Basic <user:pass>` header using the
+   developer's OMAC keychain credential, and forwards to the upstream
+   Maven repo over a fresh TLS connection. Gradle sees only a non-secret
+   local loopback URL per alias — `http://127.0.0.1:<port>/<alias>/` —
+   NEVER the credential.
+
+### How Gradle is pointed at the credential proxy
+
+Gradle never sees the upstream private registry directly. OMAC authors a
+read-only init script at `<cache scope>/gradle/init.d/registry-
+credentials.gradle` (control state, read-only to the executor) that
+injects one `maven { url = 'http://127.0.0.1:<port>/<alias>/' }`
+repository per approved alias into every project's `repositories { }`
+block via `allprojects`. No credentials are configured on the injected
+repository — the credential-lift proxy authenticates upstream. The
+developer's `build.gradle` still declares the upstream registry; the
+injected local mirror is additive.
+
+### Where the credential lives
+
+The credential stays in each developer's OMAC keychain, looked up ONCE at
+proxy startup (host-side, unsandboxed) by the registry ALIAS (the
+non-secret manifest entry). Convention:
+
+```
+service = omac/build/registry/<alias>
+account = credential
+value  = <user>:<password>     (HTTP Basic auth credentials)
+```
+
+The manifest carries ONLY the alias + upstream; the credential is the
+developer's keychain entry. Set it with `omac secrets set` (or the OS
+keychain directly).
+
+### What NEVER sees the credential
+
+The credential NEVER appears in: executor env (`ChildEnv`), `GRADLE_OPTS`,
+`gradle.properties`, process args, the cache leaf, stdout/stderr, audit
+events, captured logs, or the init script. It rides ONLY in the
+`Authorization` header sent upstream over TLS from the credential-lift
+proxy. `JAVA_TOOL_OPTIONS` is NEVER used (the JVM prints it — spec
+§180); the proxy URL is a non-secret loopback URL with no userinfo. The
+red-team test `TestCredentialLift_GrantsEnvAndControlStateDoNotLeak`
+asserts this end-to-end.
+
+### Read-only / publish rejection
+
+The credential-lift proxy is READ-ONLY for the dependency workflow:
+only `GET` and `HEAD` (artifact/metadata download + presence check) are
+forwarded. `PUT`/`POST`/`DELETE` (publish, deploy) and any request to an
+unregistered upstream are denied with a structured denial naming the
+registry alias — never the credential.
+
+### Missing-credential denial
+
+A build with an APPROVED private registry alias but NO keychain credential
+for it fails closed with exit 3 (`ExitPolicyDenied`) and a structured
+diagnostic naming the alias and the keychain service/account convention
+— never a crash, never the credential:
+
+```text
+OMAC build denied private registry "internal".
+Add the registry credential to the OMAC keychain:
+  service = omac/build/registry/internal
+  account = credential
+  value  = <user>:<password>
+Run `omac secrets set <alias>` (or set the keychain entry directly), then
+restart OMAC to activate the credential lift.
+The current session policy is frozen; do not retry.
+```
+
+On headless Linux without a Secret Service daemon (keychain backend
+unavailable), the same structured denial points at the OS fix instead.
+The credential cannot be recovered from inside the executor.
+
+### Platform posture (v1)
+
+Both proxies are **macOS-only in v1** (Shape A, env-only network). On
+Linux the build executor is kernel-blocked, so neither the filtered proxy
+nor the credential-lift proxy is started (the loopback HTTP server would
+be unreachable from the executor). Linux private-registry resolution is
+deferred to the kernel-sandbox validation tickets. The credential-lift
+design is platform-agnostic; only the startup gate is macOS-only.
+
 ## Executor process model (warm-daemon reuse + per-worktree queue)
 
 Ticket 04 superseded the v0 "no warm executor, no queue" model. The warm
