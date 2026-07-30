@@ -18,6 +18,124 @@ introducing it. One row per contract dimension; status is current for v0.
 | **Audit** | `internal/audit`: JSONL trail via `audit.New` (best-effort, non-strict — a build never fails because the log is unavailable), `InnerExec` for the build request, `ProcessExit` for the result, `ControlMutation` for request receipt and cancellation. Sanitized metadata only — argv is task names, never credential values (credentials cannot enter the executor by construction: env pass-through is a fixed allowlist) | event types reused rather than new `build.*` types, per "reuse established patterns"; the `build.request`/`build.cancel` ControlMutation actions carry adapter/root/arg-count only |
 | **Errors / diagnostics** | `omac build: <msg>` stderr style (per `omac sandbox:`), structured policy-denial phrases per spec §Diagnostics: denials name the rejected root/wrapper, the containment rule violated (outside-worktree / symlink escape), and that no build code ran; a removed-capability denial would name the manifest path + restart requirement (no runtime capability denials exist in v0 — network is fully blocked and nothing is requestable yet) | exit codes 3 (policy), 4 (cancellation), and 10 (service failure) are command-local reservations chosen to avoid *every* collision, not just with the global table: Gradle's own build-failure code is 1, its CLI misuse is 2, and 126/127/128+n are shell signal conventions. `cli.go`'s global `ExitConfigInvalid=3` / `ExitPrerequisiteMissing=4` are different domains (the global codes were assigned for `start`/`serve`); `build.go` documents its contract in help text |
 
+## Build manifest (`.omac/build.yaml`)
+
+Standard Gradle projects require **no** manifest — `omac build` auto-detects
+the wrapper and proceeds with defaults. An optional committed manifest
+declares non-standard build capabilities that are not discovered
+automatically:
+
+```yaml
+version: 1
+builds:
+  - root: backend
+    tool: gradle
+    containers:
+      images:
+        - pgvector/pgvector:pg16
+        - minio/minio:latest
+registries:
+  - alias: internal
+    upstream: ghcr.io/tng     # non-secret upstream identity only
+resources:
+  maxHeap: 3g                 # narrows the host default (within the ceiling)
+  maxDuration: 45m
+  maxCPU: 4
+  maxProcesses: 512
+```
+
+**The manifest REQUESTS capabilities; it does NOT grant them.** Host policy
+is the ceiling. A resource request above the host ceiling is rejected before
+executor startup with exit 3 (`ExitPolicyDenied`).
+
+**No secrets.** The manifest must never contain credentials. Any field whose
+name matches `password|secret|token|credential|apikey|auth` with a non-empty
+value is rejected at parse time — credentials stay in each developer's OMAC
+keychain (ticket 06 wires the credential lift). A registry `upstream:` with
+embedded userinfo (`user:pass@host`) is likewise rejected.
+
+**No absolute paths.** `root:` is relative to the worktree (e.g. `backend`),
+so a colleague's linked worktree resolves identically without per-worktree
+setup. Absolute roots and `..` traversal are rejected.
+
+**Forbidden capabilities.** Host bind mounts, privileged mode, raw sockets,
+host namespaces, and devices are NOT in the manifest schema — project
+configuration cannot enable them. A manifest that attempts one (e.g.
+`containers.bindMounts:`) is rejected with a `HostForbiddenError`:
+
+```text
+OMAC rejected host bind mount builds[0].containers.bindMounts[0].
+Host bind mounts are forbidden by host policy and cannot be enabled through
+.omac/build.yaml.
+```
+
+### Approval and frozen-for-session policy
+
+OMAC stores an **approval** against the manifest content digest (SHA-256 over
+a canonical re-encoding) and the effective (post-ceiling) capability set.
+The approval record lives **under the cache leaf** at
+`<cache scope>/gradle/.omac-control/manifest-approval.json` — it is
+per-developer-per-machine, NEVER committed to the worktree (the worktree is
+shared/committed; approval is personal). An **active-manifest** record at
+`<cache scope>/gradle/.omac-control/active-manifest.json` freezes the
+in-effect digest + capability set for the session.
+
+Both files are OMAC-owned control state, read-only to the executor (covered
+by the same `WriteDenyPaths` protection as `gradle.properties` and `init.d/`).
+
+The gate runs on every `omac build` after Resolve, before GrantsFor:
+
+- **First use of changed manifest content** (no active record, or a digest
+  differing from the active record): OMAC RECORDS the approval (digest +
+  effective set) AND **fails the build with exit 3** plus one consolidated
+  capability diff (added/removed build roots, images, registries, resource
+  changes) and a restart instruction. The build does NOT start this time —
+  the human reviews the diff first. Example:
+
+  ```text
+  omac build: manifest approval required
+  manifest gate: manifest changed since last approval — review the consolidated diff, then restart OMAC to activate
+  OMAC build manifest changed. Consolidated capability diff:
+    - added images: [postgres:17]
+    - removed images: [postgres:16]
+  Restart OMAC to review and activate the changed capability set.
+  ```
+
+- **Unchanged approved manifest** (active record's digest matches): the build
+  starts UNATTENDED with the frozen capability set. Editing the worktree file
+  mid-session changes the digest and triggers the re-approval gate on the
+  next build — the edit does NOT silently take effect.
+
+- **Host ceiling dropped** below what was previously approved: the gate
+  re-records approval against the new (lower) capability set and fails with
+  the diff + restart instruction (the previously-approved set is no longer
+  valid).
+
+### v1 approval limitation
+
+v1 has **no auto-approve and no `omac build approve` subcommand**. The
+approval flow is: 1st build after a change → fails with the diff (approval
+recorded); 2nd build (same digest) → starts unattended. There is no way to
+skip the review on the first run, and no CLI to approve without running the
+build. The gate failure IS the approval prompt. (A future `omac build
+approve` or auto-approval policy would call the same `buildmanifest.Approve`
+seam.)
+
+### Runtime missing-capability diagnostic
+
+When a build requests a capability (image, registry, build root) NOT in the
+active approved set, OMAC emits a structured diagnostic and exits 3:
+
+```text
+OMAC build denied container image postgres:17.
+Add the container image to .omac/build.yaml, then restart OMAC to review and
+activate the changed capability set. The current session policy is frozen; do
+not retry.
+```
+
+(The mediated-container enforcement that emits this at runtime is tickets
+08/09; ticket 05 only declares and approves the image list.)
+
 ## Executor process model (warm-daemon reuse + per-worktree queue)
 
 Ticket 04 superseded the v0 "no warm executor, no queue" model. The warm

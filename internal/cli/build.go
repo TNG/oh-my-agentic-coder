@@ -6,6 +6,7 @@ import (
 	"io"
 
 	"github.com/tngtech/oh-my-agentic-coder/internal/audit"
+	"github.com/tngtech/oh-my-agentic-coder/internal/buildmanifest"
 	"github.com/tngtech/oh-my-agentic-coder/internal/buildrun"
 	"github.com/tngtech/oh-my-agentic-coder/internal/config"
 )
@@ -98,10 +99,58 @@ func runBuild(args []string, env *Env) int {
 		defer stopProxy()
 	}
 
-	grants, err := buildrun.GrantsFor(resolved.Worktree, cacheDir, buildrun.BuildConfig{
+	// Build manifest (ticket 05): Load `.omac/build.yaml` from the worktree,
+	// validate against the host policy ceiling, run the frozen-for-session
+	// approval gate, and thread the approved capability set into BuildConfig.
+	// A missing manifest is the normal case (standard Gradle project) —
+	// Load returns a zero manifest and the gate is skipped (no capabilities
+	// to freeze). A present manifest that changes since last approval FAILS
+	// here with ExitPolicyDenied + the consolidated diff + restart
+	// instruction; the build never starts (the human reviews first).
+	// The approval + active records live under the cache leaf's
+	// `.omac-control/` (per-developer), NOT in the worktree.
+	hostPolicy := buildrun.HostPolicy(req.MaxDuration)
+	manifest, err := buildmanifest.Load(resolved.Worktree)
+	if err != nil {
+		// Parse / structural validation error (secret, forbidden field,
+		// absolute root, bad version). All map to ExitPolicyDenied.
+		return deny(err)
+	}
+	if err := manifest.Validate(hostPolicy); err != nil {
+		// Host-ceiling violation (or a structural error re-surfaced for an
+		// in-code manifest). ExitPolicyDenied before executor startup.
+		return deny(err)
+	}
+	approved := buildrun.BuildConfig{
 		ProxyURL:  proxyURL,
 		ProxyPort: proxyPort,
-	})
+	}
+	if manifest.HasManifest() {
+		caps := manifest.CapabilitySet(hostPolicy)
+		digest := buildmanifest.Digest(manifest)
+		// The gate checks the active (frozen-for-session) record under the
+		// cache leaf. GradleLeaf resolves <cacheDir>/gradle (the same leaf
+		// GrantsFor uses), so the gate, the grants, and the control-state
+		// protection all share one path source.
+		leaf := buildrun.GradleLeaf(cacheDir)
+		gateRes, gerr := buildmanifest.Gate(leaf, digest, caps)
+		if gerr != nil {
+			// Changed manifest (or first-ever): print the consolidated diff
+			// + restart instruction and deny. The build does not start.
+			fmt.Fprintln(env.Stderr, "omac build: manifest approval required")
+			fmt.Fprintln(env.Stderr, gerr)
+			return ExitBuildPolicyDenied
+		}
+		// Unattended: thread the frozen capability set into BuildConfig.
+		// The manifest's resource request (already validated <= ceiling)
+		// narrows the Gradle daemon heap; images/registries are carried for
+		// tickets 06/08/09.
+		approved.MaxHeap = gateRes.Capabilities.Resources.MaxHeap
+		approved.ApprovedImages = gateRes.Capabilities.Images
+		approved.ApprovedRegistries = gateRes.Capabilities.Registries
+	}
+
+	grants, err := buildrun.GrantsFor(resolved.Worktree, cacheDir, approved)
 	if err != nil {
 		return failService("derive executor grants: %v", err)
 	}
