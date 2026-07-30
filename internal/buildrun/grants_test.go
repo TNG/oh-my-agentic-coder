@@ -25,6 +25,7 @@ func TestGrantsFor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GrantsFor: %v", err)
 	}
+	chmodInitDForCleanup(t, filepath.Join(cacheDir, "gradle"))
 
 	contains := func(list []string, want string) bool {
 		for _, p := range list {
@@ -265,6 +266,7 @@ func TestGrantsForPreparesGradleLeaf(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GrantsFor: %v", err)
 	}
+	chmodInitDForCleanup(t, filepath.Join(cacheDir, "gradle"))
 	leaf := filepath.Join(cacheDir, "gradle")
 	fi, err := os.Stat(leaf)
 	if err != nil {
@@ -303,6 +305,7 @@ func TestGrantsForNeverDeletesInsideCache(t *testing.T) {
 	if _, err := GrantsFor(wt, cacheDir, BuildConfig{}); err != nil {
 		t.Fatalf("GrantsFor: %v", err)
 	}
+	chmodInitDForCleanup(t, filepath.Join(cacheDir, "gradle"))
 	if _, err := os.Stat(lock); err != nil {
 		t.Errorf("daemon lock must not be pruned by GrantsFor: %v", err)
 	}
@@ -324,6 +327,7 @@ func TestGrantsForProxyEnv(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GrantsFor: %v", err)
 	}
+	chmodInitDForCleanup(t, filepath.Join(cacheDir, "gradle"))
 	env := ChildEnv(g)
 	m := map[string]string{}
 	for _, kv := range env {
@@ -387,6 +391,7 @@ func TestGrantsForNoProxyOmitsGradleOpts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	chmodInitDForCleanup(t, filepath.Join(cacheDir, "gradle"))
 	if g.GradleOpts() != "" {
 		t.Errorf("GradleOpts must be empty with no proxy: %q", g.GradleOpts())
 	}
@@ -410,6 +415,7 @@ func TestGrantsForJDKResolution(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GrantsFor: %v", err)
 	}
+	chmodInitDForCleanup(t, filepath.Join(cacheDir, "gradle"))
 	if g.JDK().JavaHome != jdkHome {
 		t.Errorf("JDK JavaHome = %q, want %q", g.JDK().JavaHome, jdkHome)
 	}
@@ -443,6 +449,7 @@ func TestGrantsForResourceCeiling(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	chmodInitDForCleanup(t, filepath.Join(cacheDir, "gradle"))
 	props, err := os.ReadFile(filepath.Join(cacheDir, "gradle", "gradle.properties"))
 	if err != nil {
 		t.Fatal(err)
@@ -547,6 +554,7 @@ func TestGrantsForProxyTokenNotInGradleProperties(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	chmodInitDForCleanup(t, filepath.Join(cacheDir, "gradle"))
 	props, err := os.ReadFile(filepath.Join(cacheDir, "gradle", "gradle.properties"))
 	if err != nil {
 		t.Fatal(err)

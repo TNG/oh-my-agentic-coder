@@ -39,12 +39,19 @@ const controlStateName = ".omac-control"
 // (init.d/registry-credentials.gradle) is likewise existence-filtered: it is
 // written only when private registries are approved, so a fresh leaf or a
 // no-private-registry build reports it absent.
+//
+// The ticket-07 checkstyle-twin retirement init script
+// (init.d/retire-checkstyle-twins.gradle) is UNCONDITIONALLY written by
+// PrepareControlState, so it is always present after PrepareControlState and
+// always appears in the control files list. It is a defensive no-op when no
+// yarp3 checkstyle*Sandbox twin tasks exist in a project.
 var controlFiles = []string{
 	"gradle.properties",                                             // OMAC-generated: proxy + jvmargs + resource ceiling
 	filepath.Join(controlStateName, "README"),                       // explains the read-only contract
 	filepath.Join(controlStateName, buildmanifest.ApprovalFilename), // ticket 05: per-developer approval record
 	filepath.Join(controlStateName, buildmanifest.ActiveFilename),   // ticket 05: frozen-for-session active record
 	filepath.Join("init.d", registryCredentialsInitName),            // ticket 06: credential-lift init script (when private registries approved)
+	filepath.Join("init.d", retireCheckstyleTwinsInitName),          // ticket 07: checkstyle twin retirement (always written)
 }
 
 // controlDirs lists OMAC-owned control directories (relative to the leaf)
@@ -153,6 +160,88 @@ func RenderRegistryCredentialsInitScript(urls map[string]string) string {
 	return b.String()
 }
 
+// retireCheckstyleTwinsInitName is the OMAC-authored init script Gradle
+// loads at daemon startup to neutralize yarp3's machine-local
+// checkstyle*Sandbox twin tasks. It lives in <leaf>/init.d/ (read-only
+// control state) and is written UNCONDITIONALLY by PrepareControlState —
+// the retirement applies to every build (the script is a defensive no-op
+// when no twin tasks exist in a project).
+const retireCheckstyleTwinsInitName = "retire-checkstyle-twins.gradle"
+
+// RenderRetireCheckstyleTwinsInitScript renders the OMAC-authored Gradle
+// init script that retires yarp3's machine-local checkstyle*Sandbox twin
+// tasks (ticket 07). Historically yarp3 needed the twins AND a host init
+// script because guarded loopback was the goal; ADR 0003 Revision killed
+// guarded loopback, so the twins and host init script are no longer
+// needed. The JVM build executor's macOS Shape A (env-only network,
+// filesystem confinement only) and Linux private-loopback (kernel
+// boundary) postures make the canonical checkstyleMain/checkstyleTest
+// tasks — which run their Checkstyle analysis through the Gradle Worker
+// API process isolation — run unchanged on both platforms.
+//
+// The script runs BEFORE project task-graph evaluation (via the Gradle
+// `beforeProject` hook, which fires during project configuration before
+// the task graph is materialized), and for each project neutralizes any
+// task whose name matches the yarp3 `checkstyle*Sandbox` twin convention
+// by overriding its actions to a no-op. The retirement log line fires at
+// configuration time via the init-script `logger` (NOT via `task.doFirst`,
+// which the subsequent `task.actions = []` would clear). It uses Gradle's
+// task configuration avoidance API (tasks.matching { … }.configureEach {
+// … }) so projects without the twins are not configured. The whole hook
+// is wrapped in try/catch so a project that fails to configure for
+// unrelated reasons is unaffected. The canonical checkstyleMain /
+// checkstyleTest tasks are left untouched — they are what actually runs.
+//
+// Pure string — unit-testable. Always returns a non-empty script (the
+// retirement applies to every build; it is a defensive no-op when no
+// twins exist).
+func RenderRetireCheckstyleTwinsInitScript() string {
+	var b strings.Builder
+	b.WriteString("// OMAC-generated checkstyle twin retirement init script (ticket 07).\n")
+	b.WriteString("// yarp3 historically needed machine-local checkstyle*Sandbox twin\n")
+	b.WriteString("// tasks AND a host init script because guarded loopback was the\n")
+	b.WriteString("// goal. ADR 0003 Revision retired guarded loopback: the JVM build\n")
+	b.WriteString("// executor's macOS Shape A (env-only network, filesystem\n")
+	b.WriteString("// confinement only) and Linux private-loopback (kernel boundary)\n")
+	b.WriteString("// postures make the canonical checkstyleMain/checkstyleTest tasks\n")
+	b.WriteString("// run unchanged through the Gradle Worker API process isolation,\n")
+	b.WriteString("// so the twins and host init script are no longer needed. This\n")
+	b.WriteString("// script neutralizes any stale machine-local checkstyle*Sandbox\n")
+	b.WriteString("// twin so the canonical tasks are what actually runs. It is a\n")
+	b.WriteString("// defensive no-op when no twins exist in a project.\n")
+	b.WriteString("// This file is READ-ONLY to the executor (do not edit).\n\n")
+	b.WriteString("allprojects {\n")
+	b.WriteString("  // beforeProject fires during project configuration, BEFORE the\n")
+	b.WriteString("  // task graph is materialized, so the twins are neutralized in\n")
+	b.WriteString("  // time for the canonical checkstyleMain/checkstyleTest to be the\n")
+	b.WriteString("  // only checkstyle tasks that run.\n")
+	b.WriteString("  beforeProject { project ->\n")
+	b.WriteString("    try {\n")
+	b.WriteString("      // Task configuration avoidance: only projects that actually\n")
+	b.WriteString("      // declare a checkstyle*Sandbox twin configure it. Projects\n")
+	b.WriteString("      // without the twins are unaffected (defensive no-op).\n")
+	b.WriteString("      project.tasks.matching { it.name ==~ /checkstyle.*Sandbox/ }.configureEach { task ->\n")
+	b.WriteString("        // Log at configuration time (NOT via task.doFirst): a\n")
+	b.WriteString("        // subsequent task.actions = [] would clear a doFirst action\n")
+	b.WriteString("        // registered here, so the log line must NOT ride on the\n")
+	b.WriteString("        // task's action list. The init-script logger is in scope.\n")
+	b.WriteString("        logger.lifecycle(\"omac: retiring yarp3 checkstyle twin task {} — canonical checkstyleMain/checkstyleTest run unchanged through the Gradle Worker API (ADR 0003 Revision)\", task.path)\n")
+	b.WriteString("        // Replace the twin's actions with a no-op so it cannot run\n")
+	b.WriteString("        // the machine-local Checkstyle it was wired for. Setting\n")
+	b.WriteString("        // actions = [] AFTER the log line above is correct: the\n")
+	b.WriteString("        // log already fired at configuration time, not execution.\n")
+	b.WriteString("        task.actions = []\n")
+	b.WriteString("      }\n")
+	b.WriteString("    } catch (Exception e) {\n")
+	b.WriteString("      // A project that fails to configure for unrelated reasons\n")
+	b.WriteString("      // must not be broken by the retirement hook.\n")
+	b.WriteString("      project.logger.debug(\"omac: checkstyle twin retirement skipped for {}: {}\", project.path, e.message)\n")
+	b.WriteString("    }\n")
+	b.WriteString("  }\n")
+	b.WriteString("}\n")
+	return b.String()
+}
+
 // controlStateReadme is the explanatory text placed at
 // <leaf>/.omac-control/README so a build that tries to overwrite an
 // OMAC control file gets a legible denial rather than an opaque EPERM.
@@ -202,6 +291,16 @@ func PrepareControlState(leaf string, cfg GradlePropertiesConfig) (ControlPaths,
 	if err := ensureDir(ctrlDir, 0o700); err != nil {
 		return ControlPaths{}, fmt.Errorf("prepare control state dir: %w", err)
 	}
+	// init.d must exist (created read-only by the loop below); create it
+	// writable ONCE here so both the conditional registry-credentials
+	// script (ticket 06) and the unconditional retire-checkstyle-twins
+	// script (ticket 07) can be written, then the loop below locks it to
+	// 0o500. Creating it once avoids a redundant idempotent ensureDir on
+	// the retire path (the retire script is always written, so this call
+	// is the sole creator; the registry path no longer re-creates it).
+	if err := ensureDir(filepath.Join(leaf, "init.d"), 0o700); err != nil {
+		return ControlPaths{}, fmt.Errorf("prepare init.d for control scripts: %w", err)
+	}
 	// Ticket 06: write the credential-lift init script BEFORE the init.d
 	// control directory is locked read-only (0o500) below. The script
 	// carries only non-secret local URLs; the credential NEVER appears in
@@ -209,15 +308,21 @@ func PrepareControlState(leaf string, cfg GradlePropertiesConfig) (ControlPaths,
 	// (RegistryProxyURLs non-empty); a no-op otherwise.
 	regInit := RenderRegistryCredentialsInitScript(cfg.RegistryProxyURLs)
 	if regInit != "" {
-		// init.d must exist (created read-only below); create it writable
-		// first so the script can be written, then the loop below locks it.
-		if err := ensureDir(filepath.Join(leaf, "init.d"), 0o700); err != nil {
-			return ControlPaths{}, fmt.Errorf("prepare init.d for registry script: %w", err)
-		}
 		regInitPath := filepath.Join(leaf, "init.d", registryCredentialsInitName)
 		if err := os.WriteFile(regInitPath, []byte(regInit), 0o644); err != nil {
 			return ControlPaths{}, fmt.Errorf("write registry-credentials init script: %w", err)
 		}
+	}
+	// Ticket 07: write the checkstyle-twin retirement init script
+	// UNCONDITIONALLY (the retirement applies to every build — it is a
+	// defensive no-op when no yarp3 checkstyle*Sandbox twins exist).
+	// Written BEFORE the init.d control directory is locked read-only
+	// (0o500) below, same pattern as the registry script. The script is
+	// read-only to the executor: it appears in controlFiles and is
+	// granted read access + a write-deny.
+	retireInitPath := filepath.Join(leaf, "init.d", retireCheckstyleTwinsInitName)
+	if err := os.WriteFile(retireInitPath, []byte(RenderRetireCheckstyleTwinsInitScript()), 0o644); err != nil {
+		return ControlPaths{}, fmt.Errorf("write retire-checkstyle-twins init script: %w", err)
 	}
 	// OMAC-owned control directories (init.d): create them read-only to
 	// the executor so Gradle can read init scripts from them but build

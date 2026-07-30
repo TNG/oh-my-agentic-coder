@@ -189,6 +189,21 @@ func newDevNull(t *testing.T) *os.File {
 	return f
 }
 
+// chmodBuildLeafInitDForCleanup restores init.d writability under the
+// resolved build cache leaf so t.TempDir's RemoveAll can unlink the
+// always-written retire-checkstyle-twins.gradle (and any
+// registry-credentials.gradle) inside it. GrantsFor creates init.d
+// read-only (0o500) to keep build code from planting an init script;
+// that mode blocks RemoveAll, so every cli test that builds a leaf via
+// prepareBuildCache/runBuild/runBuildStop must register this cleanup.
+// cacheDir is the resolved OMAC cache scope dir (prepareBuildCache's
+// first return). Best-effort: a missing init.d is silently skipped.
+func chmodBuildLeafInitDForCleanup(t *testing.T, cacheDir string) {
+	t.Helper()
+	leaf := filepath.Join(cacheDir, "gradle")
+	t.Cleanup(func() { _ = os.Chmod(filepath.Join(leaf, "init.d"), 0o755) })
+}
+
 // TestBuildCacheDirResolution pins the GRADLE_USER_HOME provenance
 // contract: the cache dir handed to buildrun comes from the resolved
 // launcher config scope via internal/toolcache, never a hardcoded path.

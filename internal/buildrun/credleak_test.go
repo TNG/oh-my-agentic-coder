@@ -49,9 +49,7 @@ func TestCredentialLift_GrantsEnvAndControlStateDoNotLeak(t *testing.T) {
 		t.Fatalf("GrantsFor: %v", err)
 	}
 	t.Cleanup(g.CleanupTmp)
-	// GrantsFor creates init.d read-only (0o500) which blocks
-	// t.TempDir's cleanup RemoveAll. Restore writability on cleanup.
-	t.Cleanup(func() { _ = os.Chmod(filepath.Join(g.GradleUserHome(), "init.d"), 0o755) })
+	chmodInitDForCleanup(t, g.GradleUserHome())
 
 	// 1. ChildEnv: the credential must not appear in ANY env var. The
 	//    proxy URL Gradle sees (RegistryProxyURLs) is non-secret loopback;
@@ -183,6 +181,7 @@ func TestCredentialLift_NoRegistriesNoInitScript(t *testing.T) {
 		t.Fatalf("GrantsFor: %v", err)
 	}
 	t.Cleanup(g.CleanupTmp)
+	chmodInitDForCleanup(t, g.GradleUserHome())
 	initPath := filepath.Join(g.GradleUserHome(), "init.d", "registry-credentials.gradle")
 	if _, err := os.Stat(initPath); err == nil {
 		t.Errorf("registry-credentials init script must NOT exist when no registries are approved")
@@ -213,7 +212,7 @@ func TestCredentialLift_AuditCarriesNoCredentialOrProxyURL(t *testing.T) {
 		t.Fatalf("GrantsFor: %v", err)
 	}
 	t.Cleanup(g.CleanupTmp)
-	t.Cleanup(func() { _ = os.Chmod(filepath.Join(g.GradleUserHome(), "init.d"), 0o755) })
+	chmodInitDForCleanup(t, g.GradleUserHome())
 	rec := &recordingAuditor{}
 	res := Resolved{
 		Worktree: g.Workdir, ProjectDir: g.Workdir,
