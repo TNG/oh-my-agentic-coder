@@ -7,6 +7,18 @@ import (
 	"testing"
 )
 
+// chmodInitDForCleanup restores init.d writability so t.TempDir's
+// RemoveAll can unlink the always-written retire-checkstyle-twins.gradle
+// (and any registry-credentials.gradle) inside it. PrepareControlState
+// creates init.d read-only (0o500) to keep build code from planting an
+// init script; that mode blocks RemoveAll, so every test that builds a
+// leaf must register this cleanup. Safe to call with an absent/empty
+// leaf (the chmod is best-effort).
+func chmodInitDForCleanup(t *testing.T, leaf string) {
+	t.Helper()
+	t.Cleanup(func() { _ = os.Chmod(filepath.Join(leaf, "init.d"), 0o755) })
+}
+
 func TestRenderGradleProperties_ProxyAndHeap(t *testing.T) {
 	s := RenderGradleProperties(GradlePropertiesConfig{
 		Proxy: ProxyEndpoint{Host: "127.0.0.1", Port: 8080}, MaxHeap: "1g",
@@ -38,6 +50,7 @@ func TestRenderGradleProperties_NoProxyOmitsProxyLines(t *testing.T) {
 
 func TestPrepareControlState_WritesReadOnlyFiles(t *testing.T) {
 	leaf := t.TempDir()
+	chmodInitDForCleanup(t, leaf)
 	paths, err := PrepareControlState(leaf, GradlePropertiesConfig{
 		Proxy: ProxyEndpoint{Host: "127.0.0.1", Port: 9090}, MaxHeap: "2g",
 	})
@@ -60,9 +73,10 @@ func TestPrepareControlState_WritesReadOnlyFiles(t *testing.T) {
 			t.Errorf("init.d perms = %o, want 500 (read-only to executor)", got)
 		}
 	}
-	// Returned control files: gradle.properties + README (2).
-	if len(paths.Files) != 2 {
-		t.Fatalf("got %d control file paths, want 2: %v", len(paths.Files), paths.Files)
+	// Returned control files: gradle.properties + README + the
+	// ticket-07 retire-checkstyle-twins init script (always written).
+	if len(paths.Files) != 3 {
+		t.Fatalf("got %d control file paths, want 3: %v", len(paths.Files), paths.Files)
 	}
 	// Returned control dirs: init.d (1).
 	if len(paths.Dirs) != 1 || filepath.Base(paths.Dirs[0]) != "init.d" {
@@ -72,6 +86,7 @@ func TestPrepareControlState_WritesReadOnlyFiles(t *testing.T) {
 
 func TestPrepareControlState_InitDReadOnlyToExecutor(t *testing.T) {
 	leaf := t.TempDir()
+	chmodInitDForCleanup(t, leaf)
 	if _, err := PrepareControlState(leaf, GradlePropertiesConfig{}); err != nil {
 		t.Fatal(err)
 	}
@@ -143,7 +158,7 @@ func TestPrepareControlState_WritesRegistryInitScript(t *testing.T) {
 	leaf := t.TempDir()
 	// init.d is created read-only (0o500) by PrepareControlState, which
 	// blocks t.TempDir's cleanup RemoveAll. Restore writability on cleanup.
-	t.Cleanup(func() { _ = os.Chmod(filepath.Join(leaf, "init.d"), 0o755) })
+	chmodInitDForCleanup(t, leaf)
 	const cred = "alice:s3cr3t"
 	urls := map[string]string{
 		"internal": "http://127.0.0.1:12345/internal/",
@@ -179,5 +194,146 @@ func TestPrepareControlState_WritesRegistryInitScript(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("registry-credentials init script not in control files (read-only grant missing): %v", paths.Files)
+	}
+}
+
+// TestRenderRetireCheckstyleTwinsInitScript_NonEmpty asserts the retirement
+// init script is always emitted (the retirement applies to every build — it
+// is a defensive no-op when no yarp3 checkstyle*Sandbox twins exist).
+func TestRenderRetireCheckstyleTwinsInitScript_NonEmpty(t *testing.T) {
+	s := RenderRetireCheckstyleTwinsInitScript()
+	if s == "" {
+		t.Fatal("retire-checkstyle-twins init script must always be non-empty (defensive no-op when no twins)")
+	}
+}
+
+// TestRenderRetireCheckstyleTwinsInitScript_NeutralizesTwins asserts the
+// retirement init script contains the checkstyle-twin neutralization logic:
+// it runs before the project task graph, matches the yarp3
+// checkstyle*Sandbox twin convention, overrides the twin's actions to a
+// no-op, and is wrapped defensively so a project without the twins is
+// unaffected.
+func TestRenderRetireCheckstyleTwinsInitScript_NeutralizesTwins(t *testing.T) {
+	s := RenderRetireCheckstyleTwinsInitScript()
+	for _, want := range []string{
+		// Runs before the task graph is materialized.
+		"beforeProject",
+		// Matches the yarp3 checkstyle*Sandbox twin convention.
+		"checkstyle.*Sandbox",
+		// Task configuration avoidance API (only projects with twins configure).
+		"matching",
+		"configureEach",
+		// Overrides the twin's actions to a no-op so the canonical tasks run.
+		"task.actions = []",
+		// Defensive try/catch so a project without twins is unaffected.
+		"catch (Exception e)",
+		// Header explains WHY (ADR 0003 Revision retired guarded loopback).
+		"ADR 0003 Revision",
+		// Read-only contract.
+		"READ-ONLY to the executor",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("retire-checkstyle-twins init script missing %q:\n%s", want, s)
+		}
+	}
+	// The retirement log line must fire at configuration time via the
+	// init-script logger, NOT via task.doFirst: a subsequent
+	// task.actions = [] clears the action list, so a doFirst closure
+	// registered moments before would be wiped and never log. This
+	// catches the dead-doFirst ordering bug (review finding: the log
+	// line is the operator-visible signal that a twin was retired).
+	// Assert no EXECUTABLE doFirst call exists — the phrase may appear
+	// only inside a `//` comment explaining why it is NOT used.
+	execDoFirst := strings.Contains(s, "task.doFirst {")
+	if execDoFirst {
+		t.Errorf("retire script must not call task.doFirst { } — task.actions = [] would clear it; log at configuration time via the init-script logger instead:\n%s", s)
+	}
+	// The lifecycle log line must be present (configuration-time, not a
+	// doFirst action) and must appear BEFORE the executable
+	// task.actions = [] clear (it fires at configuration time, not after
+	// the clear). Match the executable clear at statement indentation
+	// (the phrase also appears in `//` comments explaining the
+	// ordering, which must NOT be mistaken for the clear itself).
+	logIdx := strings.Index(s, "logger.lifecycle(\"omac: retiring")
+	clearIdx := strings.Index(s, "        task.actions = []")
+	if logIdx < 0 {
+		t.Errorf("retire script missing the configuration-time lifecycle log line:\n%s", s)
+	}
+	if clearIdx < 0 || (logIdx >= 0 && logIdx > clearIdx) {
+		t.Errorf("retire script log line must appear before the executable task.actions = [] (it fires at config time, not after the clear):\n%s", s)
+	}
+	// The matching predicate must be exactly the yarp3 twin regex
+	// /checkstyle.*Sandbox/ — no broader regex that could match the
+	// canonical checkstyleMain/checkstyleTest tasks or unrelated tasks.
+	// This guards against a future widening (e.g. /checkstyle.*/) that
+	// would silently neutralize the canonical tasks the ticket preserves.
+	for _, banned := range []string{
+		"/checkstyle.*/",
+		"/checkstyle/",
+		"it.name == 'checkstyleMain'",
+		"it.name == \"checkstyleMain\"",
+		"it.name == 'checkstyleTest'",
+		"it.name == \"checkstyleTest\"",
+	} {
+		if strings.Contains(s, banned) {
+			t.Errorf("retire script must not contain a predicate that could match canonical/non-twin tasks (%q): %s", banned, s)
+		}
+	}
+	// Determinism: re-rendering yields identical output.
+	if s2 := RenderRetireCheckstyleTwinsInitScript(); s2 != s {
+		t.Errorf("retire-checkstyle-twins init script is not deterministic across renders")
+	}
+}
+
+// TestPrepareControlState_WritesRetireCheckstyleTwinsInitScript asserts the
+// retirement init script is written UNCONDITIONALLY (not gated on private
+// registries) and granted read-only to the executor. It must appear in the
+// returned control files list so WriteDenyPaths protects it.
+func TestPrepareControlState_WritesRetireCheckstyleTwinsInitScript(t *testing.T) {
+	leaf := t.TempDir()
+	// init.d is created read-only (0o500) by PrepareControlState, which
+	// blocks t.TempDir's cleanup RemoveAll. Restore writability on cleanup.
+	chmodInitDForCleanup(t, leaf)
+	// No RegistryProxyURLs: the registry-credentials script is NOT
+	// written, but the retire-checkstyle-twins script MUST be (it is
+	// unconditional, applying to every build).
+	paths, err := PrepareControlState(leaf, GradlePropertiesConfig{})
+	if err != nil {
+		t.Fatalf("PrepareControlState: %v", err)
+	}
+	initScript := filepath.Join(leaf, "init.d", retireCheckstyleTwinsInitName)
+	data, err := os.ReadFile(initScript)
+	if err != nil {
+		t.Fatalf("retire-checkstyle-twins init script not written (it must be unconditional): %v", err)
+	}
+	body := string(data)
+	if !strings.Contains(body, "beforeProject") {
+		t.Errorf("retire-checkstyle-twins init script missing neutralization logic:\n%s", body)
+	}
+	// The retirement script must NOT contain any credential material
+	// (it is unrelated to the credential-lift script).
+	for _, banned := range []string{"alice", "s3cr3t", "password=", "user:pass"} {
+		if strings.Contains(body, banned) {
+			t.Errorf("retire-checkstyle-twins init script must not contain credential material %q:\n%s", banned, body)
+		}
+	}
+	// The init script file is granted read-only: it appears in the
+	// returned control files list (existence-filtered) AND its parent
+	// init.d dir is in control dirs (read-only).
+	found := false
+	for _, p := range paths.Files {
+		if strings.HasSuffix(p, retireCheckstyleTwinsInitName) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("retire-checkstyle-twins init script not in control files (read-only grant missing): %v", paths.Files)
+	}
+	// The registry-credentials script must NOT be present (no private
+	// registries approved), confirming the retire script is written
+	// independently of the registry path.
+	if _, err := os.Stat(filepath.Join(leaf, "init.d", registryCredentialsInitName)); err == nil {
+		t.Errorf("registry-credentials init script must NOT be written when no private registries are approved")
 	}
 }

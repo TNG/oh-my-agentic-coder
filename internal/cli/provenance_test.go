@@ -626,3 +626,202 @@ func TestBuildCacheView_ErrorNotSwallowed(t *testing.T) {
 		t.Errorf("expected empty cacheView on error; got Path=%q", cv.Path)
 	}
 }
+
+// TestBuildBuildExecutorView_PlatformPosture asserts the build-executor
+// network-posture view distinguishes the two supported platforms and
+// carries the platform-appropriate posture/boundary/residual fields
+// (ticket 07). runtime.GOOS cannot be changed in a test, so this asserts
+// the platform-appropriate fields for the CURRENT platform and the
+// platform-independent canonical-checks field.
+func TestBuildBuildExecutorView_PlatformPosture(t *testing.T) {
+	v := buildBuildExecutorView()
+	if v.Platform == "" {
+		t.Fatal("Platform must be set (runtime.GOOS)")
+	}
+	if v.CanonicalChecks == "" {
+		t.Error("CanonicalChecks must be set (same on both platforms)")
+	}
+	// Platform-appropriate posture. The accepted-residual wording must
+	// match the platform; on no platform may a loopback guarantee the
+	// executor does not have be implied (ADR 0003 Revision).
+	switch v.Platform {
+	case "darwin":
+		for _, want := range []string{
+			"env-only filtered",
+			"filesystem confinement only",
+			"filesystem-only",
+			"works (no kernel network filter)",
+			"raw-socket-capable build code can reach host loopback and external egress",
+			"no host-listener monitoring/guarding",
+			"ADR 0003 Revision",
+		} {
+			if !strings.Contains(v.AcceptedResidual, "raw-socket-capable") && want == "raw-socket-capable build code can reach host loopback and external egress" {
+				t.Errorf("darwin accepted residual must state the raw-socket reachability: %q", v.AcceptedResidual)
+			}
+			switch want {
+			case "env-only filtered":
+				if !strings.Contains(v.NetworkPosture, "env-only filtered") {
+					t.Errorf("darwin NetworkPosture = %q; want env-only filtered", v.NetworkPosture)
+				}
+			case "filesystem confinement only":
+				if !strings.Contains(v.NetworkPosture, "filesystem confinement only") {
+					t.Errorf("darwin NetworkPosture = %q; want filesystem confinement only", v.NetworkPosture)
+				}
+			case "filesystem-only":
+				if v.LoopbackBoundary != "filesystem-only" {
+					t.Errorf("darwin LoopbackBoundary = %q; want filesystem-only", v.LoopbackBoundary)
+				}
+			case "works (no kernel network filter)":
+				if v.WorkerLoopback != "works (no kernel network filter)" {
+					t.Errorf("darwin WorkerLoopback = %q; want works (no kernel network filter)", v.WorkerLoopback)
+				}
+			case "raw-socket-capable build code can reach host loopback and external egress":
+				if !strings.Contains(v.AcceptedResidual, "raw-socket-capable") {
+					t.Errorf("darwin AcceptedResidual missing raw-socket reachability: %q", v.AcceptedResidual)
+				}
+			case "no host-listener monitoring/guarding":
+				if !strings.Contains(v.AcceptedResidual, "no host-listener monitoring/guarding") {
+					t.Errorf("darwin AcceptedResidual must disclaim host-listener monitoring/guarding: %q", v.AcceptedResidual)
+				}
+			case "ADR 0003 Revision":
+				if !strings.Contains(v.AcceptedResidual, "ADR 0003 Revision") {
+					t.Errorf("darwin AcceptedResidual must cite ADR 0003 Revision: %q", v.AcceptedResidual)
+				}
+			}
+		}
+	case "linux":
+		for _, want := range []string{
+			"kernel-blocked (private sandbox loopback)",
+			"kernel (network namespace)",
+			"private sandbox loopback",
+			"host-loopback services unreachable from the executor",
+		} {
+			switch want {
+			case "kernel-blocked (private sandbox loopback)":
+				if v.NetworkPosture != want {
+					t.Errorf("linux NetworkPosture = %q; want %q", v.NetworkPosture, want)
+				}
+			case "kernel (network namespace)":
+				if v.LoopbackBoundary != want {
+					t.Errorf("linux LoopbackBoundary = %q; want %q", v.LoopbackBoundary, want)
+				}
+			case "private sandbox loopback":
+				if v.WorkerLoopback != want {
+					t.Errorf("linux WorkerLoopback = %q; want %q", v.WorkerLoopback, want)
+				}
+			case "host-loopback services unreachable from the executor":
+				if v.AcceptedResidual != want {
+					t.Errorf("linux AcceptedResidual = %q; want %q", v.AcceptedResidual, want)
+				}
+			}
+		}
+	default:
+		t.Skipf("unsupported platform %q for build-executor posture assertions", v.Platform)
+	}
+}
+
+// TestBuildBuildExecutorView_CanonicalChecksOnBothPlatforms asserts the
+// canonical-checks field is identical on both platforms and states the
+// twin retirement + canonical Worker-API checks (ticket 07 checkbox 1).
+func TestBuildBuildExecutorView_CanonicalChecksOnBothPlatforms(t *testing.T) {
+	v := buildBuildExecutorView()
+	for _, want := range []string{
+		"yarp3 checkstyle twin tasks retired",
+		"OMAC init.d",
+		"canonical checkstyleMain/checkstyleTest run unchanged",
+		"Gradle Worker API",
+	} {
+		if !strings.Contains(v.CanonicalChecks, want) {
+			t.Errorf("CanonicalChecks missing %q: %q", want, v.CanonicalChecks)
+		}
+	}
+}
+
+// TestBuildProvenanceView_BuildExecutorSection asserts the build-executor
+// network-posture view is populated by buildProvenanceView on the current
+// platform.
+func TestBuildProvenanceView_BuildExecutorSection(t *testing.T) {
+	isolateHome(t)
+	wd := t.TempDir()
+	profDir := filepath.Join(wd, ".opencode")
+	os.MkdirAll(profDir, 0o755)
+	profPath := filepath.Join(profDir, "default.json")
+	os.WriteFile(profPath, []byte(`{"meta":{"name":"default"},"workdir":{"access":"readwrite"}}`), 0o644)
+
+	view, err := buildProvenanceView(wd, profPath)
+	if err != nil {
+		t.Fatalf("buildProvenanceView: %v", err)
+	}
+	if view.BuildExecutor.Platform == "" {
+		t.Error("BuildExecutor.Platform must be populated by buildProvenanceView")
+	}
+	if view.BuildExecutor.NetworkPosture == "" {
+		t.Error("BuildExecutor.NetworkPosture must be populated by buildProvenanceView")
+	}
+	if view.BuildExecutor.AcceptedResidual == "" {
+		t.Error("BuildExecutor.AcceptedResidual must be populated by buildProvenanceView")
+	}
+}
+
+// TestWriteProvenanceText_BuildExecutorSection asserts the text renderer
+// emits a "build executor" section that states the accepted residual
+// (ticket 07 checkbox 5) and the canonical checks.
+func TestWriteProvenanceText_BuildExecutorSection(t *testing.T) {
+	v := &provenanceView{
+		Profile:       profileSource{Name: "default", Source: "global"},
+		BuildExecutor: buildBuildExecutorView(),
+	}
+	var buf strings.Builder
+	if code := writeProvenanceText(&buf, v); code != ExitOK {
+		t.Fatalf("writeProvenanceText: code %d", code)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "build executor") {
+		t.Errorf("text should render a build executor section; got:\n%s", out)
+	}
+	// The accepted residual must be present (the briefing must state it).
+	if !strings.Contains(out, v.BuildExecutor.AcceptedResidual) {
+		t.Errorf("text should state the accepted residual; got:\n%s", out)
+	}
+	// The canonical checks line must be present.
+	if !strings.Contains(out, "canonical checks") {
+		t.Errorf("text should render a canonical checks line; got:\n%s", out)
+	}
+	// On no platform may host-listener monitoring/guarding be claimed
+	// on macOS — the darwin accepted residual explicitly disclaims it.
+	if v.BuildExecutor.Platform == "darwin" {
+		if !strings.Contains(out, "no host-listener monitoring/guarding") {
+			t.Errorf("darwin text must disclaim host-listener monitoring/guarding (ADR 0003 Revision); got:\n%s", out)
+		}
+	}
+}
+
+// TestWriteProvenanceJSON_BuildExecutorSection asserts the JSON renderer
+// includes the build_executor object with the platform-appropriate fields.
+func TestWriteProvenanceJSON_BuildExecutorSection(t *testing.T) {
+	v := &provenanceView{
+		Profile:       profileSource{Name: "default", Path: "/x.json", Source: "global"},
+		BuildExecutor: buildBuildExecutorView(),
+	}
+	var buf strings.Builder
+	if code := writeProvenanceJSON(&buf, v); code != ExitOK {
+		t.Fatalf("writeProvenanceJSON: code %d", code)
+	}
+	out := buf.String()
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	be, ok := parsed["build_executor"].(map[string]any)
+	if !ok {
+		t.Fatalf("JSON missing build_executor object; got %v", parsed)
+	}
+	for _, key := range []string{
+		"platform", "network_posture", "loopback_boundary",
+		"worker_loopback", "accepted_residual", "canonical_checks",
+	} {
+		if _, ok := be[key]; !ok {
+			t.Errorf("build_executor JSON missing %q; got %v", key, be)
+		}
+	}
+}
