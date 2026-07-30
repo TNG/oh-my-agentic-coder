@@ -35,6 +35,11 @@ type BuildGrants struct {
 	// maxHeap is the Gradle daemon JVM -Xmx ceiling written into the
 	// OMAC-generated gradle.properties. Empty omits the line.
 	maxHeap string
+	// approvedImages / approvedRegistries carry the frozen-for-session
+	// manifest-approved capability set. Tickets 08/09 (containers) and 06
+	// (credential lift) consume them; ticket 05 only threads them through.
+	approvedImages     []string
+	approvedRegistries []string
 }
 
 // GradleUserHome is the OMAC cache leaf handed to the Gradle wrapper as
@@ -56,9 +61,30 @@ func (b *BuildGrants) ProxyURL() string { return b.proxyURL }
 // GradleOpts returns the GRADLE_OPTS value injected into ChildEnv, or "".
 func (b *BuildGrants) GradleOpts() string { return b.gradleOpts }
 
-// gradleLeafName is the tool leaf below the resolved OMAC cache scope.
+// ApprovedImages returns the manifest-approved container image references
+// (frozen-for-session capability set). Tickets 08/09 enforce these at the
+// mediated-container proxy; ticket 05 only carries them through.
+func (b *BuildGrants) ApprovedImages() []string {
+	if b == nil {
+		return nil
+	}
+	return b.approvedImages
+}
+
+// ApprovedRegistries returns the manifest-approved registry aliases.
+// Ticket 06 wires the credential lift; ticket 05 only carries them through.
+func (b *BuildGrants) ApprovedRegistries() []string {
+	if b == nil {
+		return nil
+	}
+	return b.approvedRegistries
+}
+
+// GradleLeafName is the tool leaf below the resolved OMAC cache scope.
 // The spec's Gradle State section fixes GRADLE_USER_HOME=$cache/gradle.
-const gradleLeafName = "gradle"
+// Exported so the CLI wiring computes the same leaf GrantsFor uses without
+// re-hardcoding the literal.
+const GradleLeafName = "gradle"
 
 // preLeafLocksDir holds omac's cross-run locks taken BEFORE the Gradle
 // leaf itself is touched: Gradle wrapper downloads and (in later tickets)
@@ -94,6 +120,15 @@ type BuildConfig struct {
 	// MaxHeap overrides the Gradle daemon -Xmx ceiling. Empty uses the
 	// default (defaultMaxHeap).
 	MaxHeap string
+	// ApprovedImages is the manifest-approved container image reference
+	// list (from the frozen-for-session capability set). Ticket 05 only
+	// DECLARES these; tickets 08/09 enforce them at the mediated-container
+	// proxy. GrantsFor does not act on them yet — they are stored on
+	// BuildGrants for the container proxy to consume later.
+	ApprovedImages []string
+	// ApprovedRegistries is the manifest-approved registry alias list.
+	// Ticket 06 wires the credential lift; ticket 05 only declares them.
+	ApprovedRegistries []string
 	// getenv is the JDK discovery seam; production passes os.Getenv, tests
 	// inject a fake parent env. nil selects os.Getenv.
 	getenv func(string) string
@@ -176,7 +211,7 @@ func GrantsFor(worktree, cacheDir string, cfg BuildConfig) (*BuildGrants, error)
 		getenv = os.Getenv
 	}
 
-	leaf := filepath.Join(cacheDir, gradleLeafName)
+	leaf := filepath.Join(cacheDir, GradleLeafName)
 	if err := ensureDir(leaf, 0o700); err != nil {
 		return nil, fmt.Errorf("prepare GRADLE_USER_HOME leaf: %w", err)
 	}
@@ -286,12 +321,14 @@ func GrantsFor(worktree, cacheDir string, cfg BuildConfig) (*BuildGrants, error)
 	}
 
 	bg := &BuildGrants{
-		Grants:         g,
-		gradleUserHome: leaf,
-		tmpDir:         tmp,
-		jdk:            jdk,
-		proxyURL:       cfg.ProxyURL,
-		maxHeap:        maxHeap,
+		Grants:             g,
+		gradleUserHome:     leaf,
+		tmpDir:             tmp,
+		jdk:                jdk,
+		proxyURL:           cfg.ProxyURL,
+		maxHeap:            maxHeap,
+		approvedImages:     cfg.ApprovedImages,
+		approvedRegistries: cfg.ApprovedRegistries,
 	}
 	if proxy.Host != "" && proxy.Port > 0 {
 		bg.gradleOpts = buildGradleOpts(proxy)

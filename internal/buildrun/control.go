@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/tngtech/oh-my-agentic-coder/internal/buildmanifest"
 )
 
 // Control state: OMAC-generated files under the GRADLE_USER_HOME leaf that
@@ -22,9 +24,19 @@ const controlStateName = ".omac-control"
 // controlFiles lists the OMAC-generated control files (relative to the
 // leaf) that GrantsFor makes read-only. Gradle reads them; the executor
 // cannot write them.
+//
+// The manifest-approval + active-manifest records (ticket 05) live under
+// .omac-control/ alongside the README; they are OMAC-owned, read-only to the
+// executor, and store the per-developer approval + frozen-for-session state.
+// They are created on demand by internal/buildmanifest (StoreApproval /
+// StoreActive) and may be ABSENT on a fresh leaf; resolveControlPaths only
+// canonicalizes paths that exist, so their absence does not break the grant
+// set (existence-filtered by sandboxrun).
 var controlFiles = []string{
-	"gradle.properties",                       // OMAC-generated: proxy + jvmargs + resource ceiling
-	filepath.Join(controlStateName, "README"), // explains the read-only contract
+	"gradle.properties",                                             // OMAC-generated: proxy + jvmargs + resource ceiling
+	filepath.Join(controlStateName, "README"),                       // explains the read-only contract
+	filepath.Join(controlStateName, buildmanifest.ApprovalFilename), // ticket 05: per-developer approval record
+	filepath.Join(controlStateName, buildmanifest.ActiveFilename),   // ticket 05: frozen-for-session active record
 }
 
 // controlDirs lists OMAC-owned control directories (relative to the leaf)
@@ -166,6 +178,15 @@ func (c ControlPaths) All() []string {
 // paths for the leaf WITHOUT writing them. Used by PrepareControlState
 // (after writing) and by GrantsFor (via PrepareControlState) so the
 // control files AND the init.d control directory are granted read-only.
+//
+// Manifest approval / active records (ticket 05) live under .omac-control/
+// but are created on demand by internal/buildmanifest (StoreApproval /
+// StoreActive), NOT by PrepareControlState. They are included only when
+// they actually exist on disk — a fresh leaf without a manifest therefore
+// reports only gradle.properties + README (2 files), and a leaf with an
+// approved manifest reports 4. This keeps the grant set honest: paths in
+// ReadPaths / WriteDenyPaths should exist (sandboxrun existence-filters
+// them anyway, and a phantom path in the test-asserted count is noise).
 func resolveControlPaths(leaf string) ControlPaths {
 	canonical := func(rel string) string {
 		p := filepath.Join(leaf, rel)
@@ -174,8 +195,18 @@ func resolveControlPaths(leaf string) ControlPaths {
 		}
 		return p
 	}
+	// exists reports whether the file at rel exists (regular file). The
+	// manifest records may be absent; gradle.properties / README / init.d
+	// are always present after PrepareControlState.
+	exists := func(rel string) bool {
+		_, err := os.Stat(filepath.Join(leaf, rel))
+		return err == nil
+	}
 	var files []string
 	for _, rel := range controlFiles {
+		if !exists(rel) {
+			continue
+		}
 		files = append(files, canonical(rel))
 	}
 	var dirs []string
