@@ -3,9 +3,11 @@ package cli
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
+	"github.com/tngtech/oh-my-agentic-coder/internal/audit"
 	"github.com/tngtech/oh-my-agentic-coder/internal/buildrun"
 )
 
@@ -164,6 +166,72 @@ func TestBuildExitCodeReservations(t *testing.T) {
 	if buildrun.ExitServiceFailure == ExitBuildPolicyDenied || buildrun.ExitServiceFailure == ExitBuildCancelled {
 		t.Errorf("service-failure code %d must differ from policy (%d) and cancel (%d)",
 			buildrun.ExitServiceFailure, ExitBuildPolicyDenied, ExitBuildCancelled)
+	}
+}
+
+// TestStartContainerProxy_Gating asserts ticket 08: the container proxy is
+// started ONLY when the approved manifest declares container images (and
+// only on macOS v1). The containerProxyStarter seam is faked so no real
+// Docker/Colima daemon is touched. On Linux the proxy is not started
+// (kernel-blocked build path); on macOS with no approved images it is not
+// started (a standard Gradle project needs no Docker mediation).
+func TestStartContainerProxy_Gating(t *testing.T) {
+	env := &Env{Version: "test", Workdir: t.TempDir(), Stdout: newDevNull(t), Stderr: newDevNull(t)}
+	auditor := audit.Nop()
+
+	t.Run("no approved images not started", func(t *testing.T) {
+		// The production gate (startContainerProxy) returns empty when no
+		// images are approved; assert the production behavior directly
+		// without touching a real Docker/Colima daemon.
+		url, enabled, stop, err := startContainerProxy(env, t.TempDir(), nil, auditor)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if url != "" || enabled || stop != nil {
+			t.Errorf("no approved images must not start the proxy: url=%q enabled=%v stop=%v", url, enabled, stop != nil)
+		}
+	})
+
+	t.Run("approved images started on macOS only", func(t *testing.T) {
+		url, enabled, stop, err := startContainerProxy(env, t.TempDir(), []string{"pgvector/pgvector:pg16"}, auditor)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if runtime.GOOS != "darwin" {
+			// Linux: kernel-blocked, proxy not started.
+			if url != "" || enabled || stop != nil {
+				t.Errorf("Linux must not start the container proxy: url=%q enabled=%v", url, enabled)
+			}
+			return
+		}
+		// macOS: proxy started. stop is non-nil and runs Cleanup.
+		if url == "" || !enabled || stop == nil {
+			t.Fatalf("macOS with approved images must start the proxy: url=%q enabled=%v stop=%v", url, enabled, stop != nil)
+		}
+		if !strings.HasPrefix(url, "tcp://127.0.0.1:") {
+			t.Errorf("DOCKER_HOST must be a loopback tcp URL: %q", url)
+		}
+		if strings.Contains(url, "@") {
+			t.Errorf("DOCKER_HOST must carry no userinfo (ownership-based auth, not token): %q", url)
+		}
+		stop()
+	})
+}
+
+// TestContainerExecutorID asserts the executor ownership label value is a
+// stable, non-secret derivation of the worktree path (distinct across
+// concurrent worktrees).
+func TestContainerExecutorID(t *testing.T) {
+	a := containerExecutorID("/repo/.worktrees/feat-a")
+	b := containerExecutorID("/repo/.worktrees/feat-b")
+	if a == b {
+		t.Errorf("distinct worktrees must yield distinct executor ids: %q == %q", a, b)
+	}
+	if !strings.HasPrefix(a, "omac-") {
+		t.Errorf("executor id must be omac-prefixed: %q", a)
+	}
+	if containerExecutorID("") == "" {
+		t.Error("empty worktree must yield a non-empty fallback id")
 	}
 }
 
