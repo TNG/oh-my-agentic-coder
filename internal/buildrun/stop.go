@@ -19,7 +19,7 @@ import (
 // constant belongs to buildrun, not cli), so `omac build stop` and the
 // forced-cancel daemon recycle resolve the same leaf GrantsFor does.
 func GradleLeaf(cacheDir string) string {
-	return filepath.Join(cacheDir, gradleLeafName)
+	return filepath.Join(cacheDir, GradleLeafName)
 }
 
 // StopDaemonOptions configures StopGradleDaemon. It reuses the SAME
