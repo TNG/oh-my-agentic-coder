@@ -40,6 +40,12 @@ type BuildGrants struct {
 	// (credential lift) consume them; ticket 05 only threads them through.
 	approvedImages     []string
 	approvedRegistries []string
+	// registryProxyURLs maps each approved private registry alias to the
+	// non-secret local loopback URL Gradle is pointed at via the OMAC-
+	// authored init.d script (ticket 06). The credential NEVER appears
+	// here — the URL is http://127.0.0.1:<port>/<alias>/. Empty when no
+	// private registries are approved (the common case) or on Linux.
+	registryProxyURLs map[string]string
 }
 
 // GradleUserHome is the OMAC cache leaf handed to the Gradle wrapper as
@@ -78,6 +84,18 @@ func (b *BuildGrants) ApprovedRegistries() []string {
 		return nil
 	}
 	return b.approvedRegistries
+}
+
+// RegistryProxyURLs returns the non-secret local loopback URL per
+// approved private registry alias (ticket 06). The URL Gradle is pointed
+// at via the OMAC-authored init.d script — it carries NO credential.
+// Empty map when no private registries are approved (common case) or on
+// Linux (the credential proxy is macOS-only in v1).
+func (b *BuildGrants) RegistryProxyURLs() map[string]string {
+	if b == nil {
+		return nil
+	}
+	return b.registryProxyURLs
 }
 
 // GradleLeafName is the tool leaf below the resolved OMAC cache scope.
@@ -129,6 +147,14 @@ type BuildConfig struct {
 	// ApprovedRegistries is the manifest-approved registry alias list.
 	// Ticket 06 wires the credential lift; ticket 05 only declares them.
 	ApprovedRegistries []string
+	// RegistryProxyURLs maps each approved private registry alias to the
+	// non-secret local loopback URL the credential-lift proxy serves
+	// (ticket 06). The URL carries NO credential; Gradle is pointed at it
+	// via the OMAC-authored init.d script. Empty when no private
+	// registries are approved (common case) or on Linux. GrantsFor
+	// threads this into PrepareControlState so the init.d script is
+	// generated; the credential itself NEVER enters BuildConfig.
+	RegistryProxyURLs map[string]string
 	// getenv is the JDK discovery seam; production passes os.Getenv, tests
 	// inject a fake parent env. nil selects os.Getenv.
 	getenv func(string) string
@@ -256,8 +282,9 @@ func GrantsFor(worktree, cacheDir string, cfg BuildConfig) (*BuildGrants, error)
 	}
 	proxy := splitProxyEndpoint(cfg.ProxyURL)
 	gradleProps := GradlePropertiesConfig{
-		Proxy:   proxy,
-		MaxHeap: maxHeap,
+		Proxy:             proxy,
+		MaxHeap:           maxHeap,
+		RegistryProxyURLs: cfg.RegistryProxyURLs,
 	}
 	controlPaths, err := PrepareControlState(leaf, gradleProps)
 	if err != nil {
@@ -329,6 +356,7 @@ func GrantsFor(worktree, cacheDir string, cfg BuildConfig) (*BuildGrants, error)
 		maxHeap:            maxHeap,
 		approvedImages:     cfg.ApprovedImages,
 		approvedRegistries: cfg.ApprovedRegistries,
+		registryProxyURLs:  cfg.RegistryProxyURLs,
 	}
 	if proxy.Host != "" && proxy.Port > 0 {
 		bg.gradleOpts = buildGradleOpts(proxy)

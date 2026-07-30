@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 
 	"github.com/tngtech/oh-my-agentic-coder/internal/buildmanifest"
 )
@@ -32,11 +34,17 @@ const controlStateName = ".omac-control"
 // StoreActive) and may be ABSENT on a fresh leaf; resolveControlPaths only
 // canonicalizes paths that exist, so their absence does not break the grant
 // set (existence-filtered by sandboxrun).
+//
+// The ticket-06 credential-lift init script
+// (init.d/registry-credentials.gradle) is likewise existence-filtered: it is
+// written only when private registries are approved, so a fresh leaf or a
+// no-private-registry build reports it absent.
 var controlFiles = []string{
 	"gradle.properties",                                             // OMAC-generated: proxy + jvmargs + resource ceiling
 	filepath.Join(controlStateName, "README"),                       // explains the read-only contract
 	filepath.Join(controlStateName, buildmanifest.ApprovalFilename), // ticket 05: per-developer approval record
 	filepath.Join(controlStateName, buildmanifest.ActiveFilename),   // ticket 05: frozen-for-session active record
+	filepath.Join("init.d", registryCredentialsInitName),            // ticket 06: credential-lift init script (when private registries approved)
 }
 
 // controlDirs lists OMAC-owned control directories (relative to the leaf)
@@ -62,6 +70,12 @@ type GradlePropertiesConfig struct {
 	// MaxHeap is the Gradle daemon JVM -Xmx ceiling (e.g. "1g"). Empty
 	// omits the line (host default applies).
 	MaxHeap string
+	// RegistryProxyURLs maps each approved private registry alias to the
+	// non-secret local loopback URL the credential-lift proxy serves
+	// (ticket 06). Empty/nil disables the registry-credentials init.d
+	// script. The credential itself NEVER appears here — the URLs are
+	// http://127.0.0.1:<port>/<alias>/ with no userinfo.
+	RegistryProxyURLs map[string]string
 }
 
 // RenderGradleProperties renders the OMAC-generated gradle.properties
@@ -85,6 +99,58 @@ func RenderGradleProperties(cfg GradlePropertiesConfig) string {
 		b += fmt.Sprintf("org.gradle.jvmargs=-Xmx%s\n", cfg.MaxHeap)
 	}
 	return b
+}
+
+// registryCredentialsInitName is the OMAC-authored init script Gradle
+// loads at daemon startup to point private registries at the credential-
+// lift proxy. It lives in <leaf>/init.d/ (read-only control state).
+const registryCredentialsInitName = "registry-credentials.gradle"
+
+// RenderRegistryCredentialsInitScript renders the OMAC-authored Gradle
+// init script that points each approved private registry alias at its
+// non-secret local loopback URL (the credential-lift proxy, ticket 06).
+// Gradle loads it from <leaf>/init.d/registry-credentials.gradle at
+// daemon startup; the credential NEVER appears in it — the URLs are
+// http://127.0.0.1:<port>/<alias>/ with no userinfo.
+//
+// The script injects one maven repository per alias at the local proxy
+// URL into every project's `repositories { }` block (via `allprojects`),
+// so Gradle resolves private dependencies through the credential-lift
+// proxy. The developer's build.gradle still declares the upstream
+// registry; the injected local mirror is additive (Gradle merges
+// repositories by URL). No credentials are configured on the injected
+// repository — the proxy authenticates upstream.
+//
+// Pure string — unit-testable. Returns "" when urls is empty.
+func RenderRegistryCredentialsInitScript(urls map[string]string) string {
+	if len(urls) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("// OMAC-generated credential-lift init script (ticket 06).\n")
+	b.WriteString("// Points each approved private registry alias at the host-side\n")
+	b.WriteString("// credential-lift proxy. The credential NEVER appears here;\n")
+	b.WriteString("// Gradle sees only the non-secret local loopback URL.\n")
+	b.WriteString("// This file is READ-ONLY to the executor (do not edit).\n\n")
+	b.WriteString("allprojects {\n")
+	b.WriteString("  repositories {\n")
+	// Emit in a deterministic order (alias-sorted) so the digest is stable.
+	aliases := make([]string, 0, len(urls))
+	for a := range urls {
+		aliases = append(aliases, a)
+	}
+	sort.Strings(aliases)
+	for _, a := range aliases {
+		b.WriteString(fmt.Sprintf("    maven {\n"))
+		b.WriteString(fmt.Sprintf("      name = 'omac-credproxy-%s'\n", a))
+		b.WriteString(fmt.Sprintf("      url = '%s'\n", urls[a]))
+		b.WriteString("      // No credentials here: the credential-lift proxy\n")
+		b.WriteString("      // authenticates upstream host-side.\n")
+		b.WriteString("    }\n")
+	}
+	b.WriteString("  }\n")
+	b.WriteString("}\n")
+	return b.String()
 }
 
 // controlStateReadme is the explanatory text placed at
@@ -135,6 +201,23 @@ func PrepareControlState(leaf string, cfg GradlePropertiesConfig) (ControlPaths,
 	ctrlDir := filepath.Join(leaf, controlStateName)
 	if err := ensureDir(ctrlDir, 0o700); err != nil {
 		return ControlPaths{}, fmt.Errorf("prepare control state dir: %w", err)
+	}
+	// Ticket 06: write the credential-lift init script BEFORE the init.d
+	// control directory is locked read-only (0o500) below. The script
+	// carries only non-secret local URLs; the credential NEVER appears in
+	// it. It is written only when private registries are approved
+	// (RegistryProxyURLs non-empty); a no-op otherwise.
+	regInit := RenderRegistryCredentialsInitScript(cfg.RegistryProxyURLs)
+	if regInit != "" {
+		// init.d must exist (created read-only below); create it writable
+		// first so the script can be written, then the loop below locks it.
+		if err := ensureDir(filepath.Join(leaf, "init.d"), 0o700); err != nil {
+			return ControlPaths{}, fmt.Errorf("prepare init.d for registry script: %w", err)
+		}
+		regInitPath := filepath.Join(leaf, "init.d", registryCredentialsInitName)
+		if err := os.WriteFile(regInitPath, []byte(regInit), 0o644); err != nil {
+			return ControlPaths{}, fmt.Errorf("write registry-credentials init script: %w", err)
+		}
 	}
 	// OMAC-owned control directories (init.d): create them read-only to
 	// the executor so Gradle can read init scripts from them but build
