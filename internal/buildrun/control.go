@@ -52,6 +52,7 @@ var controlFiles = []string{
 	filepath.Join(controlStateName, buildmanifest.ActiveFilename),   // ticket 05: frozen-for-session active record
 	filepath.Join("init.d", registryCredentialsInitName),            // ticket 06: credential-lift init script (when private registries approved)
 	filepath.Join("init.d", retireCheckstyleTwinsInitName),          // ticket 07: checkstyle twin retirement (always written)
+	filepath.Join("init.d", mockitoAgentInitName),                   // ticket 08: mockito -javaagent (always written)
 }
 
 // controlDirs lists OMAC-owned control directories (relative to the leaf)
@@ -242,6 +243,61 @@ func RenderRetireCheckstyleTwinsInitScript() string {
 	return b.String()
 }
 
+// mockitoAgentInitName is the OMAC-authored init script Gradle loads at
+// daemon startup to add mockito-core as a -javaagent on test tasks. It
+// lives in <leaf>/init.d/ (read-only control state) and is written
+// UNCONDITIONALLY by PrepareControlState — the agent applies to every
+// build (it is a defensive no-op when no test task uses Mockito).
+const mockitoAgentInitName = "mockito-agent.gradle"
+
+// RenderMockitoAgentInitScript renders the OMAC-authored Gradle init
+// script that loads mockito-core as a -javaagent on test tasks (ticket 08,
+// REPORT.md item 4 / spec.md:168). Mockito's inline mock-maker cannot
+// self-attach its ByteBuddy agent under the JVM build executor's
+// restrictions; the trusted generated config reproduces the host
+// ~/.gradle/init.gradle workaround without importing host Gradle state.
+//
+// The script mirrors the captured reference at
+// .scratch/jvm-build-executor/02-testcontainers-capture/gradle-home/init.d/
+// mockito-agent.gradle: it configures every Test task to enable dynamic
+// agent loading AND to locate the mockito-core jar on the test runtime
+// classpath, adding it as -javaagent. The jar is located via the test
+// task's classpath (a test-runtime entry) at doFirst time, so it resolves
+// after dependency resolution; a missing jar is silently skipped (a
+// project without Mockito is unaffected). The script is read-only control
+// state: build code cannot relax it.
+//
+// Pure string — unit-testable. Always returns a non-empty script (the
+// agent applies to every build; it is a defensive no-op when no test task
+// uses Mockito or the jar is absent).
+func RenderMockitoAgentInitScript() string {
+	var b strings.Builder
+	b.WriteString("// OMAC-generated mockito-agent init script (ticket 08).\n")
+	b.WriteString("// Mockito's inline mock-maker cannot self-attach its ByteBuddy agent\n")
+	b.WriteString("// under the JVM build executor's restrictions; this trusted generated\n")
+	b.WriteString("// config reproduces the host ~/.gradle/init.gradle workaround without\n")
+	b.WriteString("// importing host Gradle state. Loads mockito-core as a -javaagent on\n")
+	b.WriteString("// test tasks. Defensive no-op when no test task uses Mockito or the\n")
+	b.WriteString("// jar is absent from the test runtime classpath.\n")
+	b.WriteString("// This file is READ-ONLY to the executor (do not edit).\n\n")
+	b.WriteString("allprojects {\n")
+	b.WriteString("  tasks.withType(Test).configureEach {\n")
+	b.WriteString("    // Enable dynamic agent loading so the -javaagent attach is permitted.\n")
+	b.WriteString("    jvmArgs '-XX:+EnableDynamicAgentLoading'\n")
+	b.WriteString("    doFirst {\n")
+	b.WriteString("      // Locate the mockito-core jar on the test runtime classpath. The\n")
+	b.WriteString("      // classpath is resolved by doFirst time, so the jar is present\n")
+	b.WriteString("      // here iff the project depends on mockito-core.\n")
+	b.WriteString("      def mockitoJar = classpath.find { it.name ==~ /mockito-core-.*\\.jar/ }\n")
+	b.WriteString("      if (mockitoJar != null) {\n")
+	b.WriteString("        jvmArgs \"-javaagent:${mockitoJar.absolutePath}\"\n")
+	b.WriteString("      }\n")
+	b.WriteString("    }\n")
+	b.WriteString("  }\n")
+	b.WriteString("}\n")
+	return b.String()
+}
+
 // controlStateReadme is the explanatory text placed at
 // <leaf>/.omac-control/README so a build that tries to overwrite an
 // OMAC control file gets a legible denial rather than an opaque EPERM.
@@ -323,6 +379,17 @@ func PrepareControlState(leaf string, cfg GradlePropertiesConfig) (ControlPaths,
 	retireInitPath := filepath.Join(leaf, "init.d", retireCheckstyleTwinsInitName)
 	if err := os.WriteFile(retireInitPath, []byte(RenderRetireCheckstyleTwinsInitScript()), 0o644); err != nil {
 		return ControlPaths{}, fmt.Errorf("write retire-checkstyle-twins init script: %w", err)
+	}
+	// Ticket 08: write the mockito-agent init script UNCONDITIONALLY (the
+	// agent applies to every build — it is a defensive no-op when no test
+	// task uses Mockito or the jar is absent). Written BEFORE the init.d
+	// control directory is locked read-only (0o500) below, same pattern
+	// as the registry/retire scripts. The script is read-only to the
+	// executor: it appears in controlFiles and is granted read access +
+	// a write-deny.
+	mockitoInitPath := filepath.Join(leaf, "init.d", mockitoAgentInitName)
+	if err := os.WriteFile(mockitoInitPath, []byte(RenderMockitoAgentInitScript()), 0o644); err != nil {
+		return ControlPaths{}, fmt.Errorf("write mockito-agent init script: %w", err)
 	}
 	// OMAC-owned control directories (init.d): create them read-only to
 	// the executor so Gradle can read init scripts from them but build

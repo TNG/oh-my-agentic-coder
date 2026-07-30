@@ -2,9 +2,12 @@ package cli
 
 import (
 	"fmt"
+	"path/filepath"
 	"runtime"
 
+	"github.com/tngtech/oh-my-agentic-coder/internal/audit"
 	"github.com/tngtech/oh-my-agentic-coder/internal/buildmanifest"
+	"github.com/tngtech/oh-my-agentic-coder/internal/containerproxy"
 	"github.com/tngtech/oh-my-agentic-coder/internal/credproxy"
 	"github.com/tngtech/oh-my-agentic-coder/internal/netproxy"
 )
@@ -122,4 +125,77 @@ func startCredentialProxy(env *Env, manifestRegistries []buildmanifest.RegistryE
 		urls[r.Alias] = srv.URL(r.Alias)
 	}
 	return urls, func() { srv.Close() }, nil
+}
+
+// containerProxyStarter is the seam for starting the mediated Docker
+// container proxy (ticket 08). Production wires startContainerProxy; tests
+// inject a fake to assert the proxy is started only when images are
+// approved (macOS) and to avoid touching a real Docker/Colima daemon.
+// The seam returns (url, cleanup, error) like startContainerProxy.
+var containerProxyStarter = startContainerProxy
+
+// startContainerProxy starts the mediated Docker-compatible endpoint
+// (ticket 08, ADR 0002) for the approved container images. The proxy
+// runs host-side, unsandboxed, forwards only the ticket-02 measured
+// allowlist to the existing Docker/Colima daemon, and points the executor
+// at it via DOCKER_HOST (NEVER the raw socket). The executor authenticates
+// by ownership (omac.executor=<id> label), not token.
+//
+// Returns the DOCKER_HOST URL, an enabled flag, and a stop func that
+// tears down the listener AND runs Cleanup (best-effort removal of
+// executor-owned containers + the executor-owned internal network).
+// Empty URL + nil stop when no images are approved (the common case — a
+// standard Gradle project needs no Docker mediation) or on Linux (the
+// build executor is kernel-blocked, so the loopback proxy is unreachable).
+//
+// macOS-only in v1 (Shape A, env-only network) — same gate as the filtered
+// /credential proxies. The executor ID is a stable per-worktree value
+// (derived from the canonical worktree path) so one executor's resources
+// are distinct from another's across concurrent worktrees.
+func startContainerProxy(env *Env, worktree string, approvedImages []string, auditor audit.Auditor) (url string, enabled bool, stop func(), err error) {
+	if runtime.GOOS != "darwin" {
+		// Linux kernel-blocked: the loopback proxy is unreachable from
+		// the executor. v1 does not start it on Linux.
+		return "", false, nil, nil
+	}
+	if len(approvedImages) == 0 {
+		// No approved images — common case; nothing to mediate.
+		return "", false, nil, nil
+	}
+	execID := containerExecutorID(worktree)
+	logf := func(format string, args ...any) {
+		fmt.Fprintf(env.Stderr, "omac build: containerproxy: "+format+"\n", args...)
+	}
+	p, err := containerproxy.New(containerproxy.Config{
+		ApprovedImages: approvedImages,
+		ExecutorID:     execID,
+		Auditor:        auditor,
+		Logf:           logf,
+	})
+	if err != nil {
+		return "", false, nil, fmt.Errorf("create container proxy: %w", err)
+	}
+	dockerHost, stopFn, err := p.Start()
+	if err != nil {
+		return "", false, nil, fmt.Errorf("start container proxy: %w", err)
+	}
+	return dockerHost, true, stopFn, nil
+}
+
+// containerExecutorID derives a stable, unforgeable executor ownership
+// label value from the canonical worktree path. One executor's resources
+// (containers, network) are distinct from another's across concurrent
+// worktrees. The value is non-secret (it appears as a Docker label on
+// executor-owned containers) and stable for the worktree across builds.
+// Uses the base name of the resolved worktree path so linked worktrees
+// (which share a repo but have distinct worktree dirs) get distinct IDs.
+func containerExecutorID(worktree string) string {
+	if worktree == "" {
+		return "omac-exec"
+	}
+	base := filepath.Base(worktree)
+	if base == "" || base == "." || base == string(filepath.Separator) {
+		return "omac-exec"
+	}
+	return "omac-" + base
 }
