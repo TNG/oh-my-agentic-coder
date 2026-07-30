@@ -46,18 +46,49 @@ type RunOptions struct {
 	// Cancel, when non-nil and closed, cancels the build: SIGTERM to the
 	// child's process group, then SIGKILL after KillAfter.
 	Cancel <-chan struct{}
+	// ForceCancel, when non-nil and closed, collapses the graceful
+	// KillAfter window to ~0: a second SIGINT/SIGTERM tears down
+	// descendants immediately rather than waiting the full graceful
+	// window. The first signal preserves the warm Gradle daemon (graceful
+	// SIGTERM lets it finish in-flight work and idle-stop on its own); a
+	// forced cancellation SIGKILLs the process group to recycle unsafe
+	// state. Wired from SignalContext's second-signal channel in the CLI.
+	ForceCancel <-chan struct{}
 	// KillAfter bounds the graceful window before SIGKILL. Zero uses the
-	// documented default (5s).
+	// documented default (5s). A closed ForceCancel collapses this to
+	// forcedKillAfter for the remainder of the cancellation.
 	KillAfter time.Duration
+	// MaxDuration bounds the total build wall-clock; when it elapses the
+	// build is cancelled as if the caller signalled (graceful first, then
+	// the staged kill). Zero disables the duration ceiling. This is the
+	// resource ceiling for build duration (issues/04:15).
+	MaxDuration time.Duration
 	// GroupSignal delivers a signal to the child's process group
 	// (negative pid semantics). Nil uses groupSignal (syscall.Kill);
 	// tests inject a recorder to assert the staged graceful-then-kill
 	// sequence without signalling real process groups.
 	GroupSignal func(pid int, sig syscall.Signal) error
+	// OnForcedCancel, when non-nil, is invoked AFTER a forced
+	// cancellation (ForceCancel fired, or a forced teardown from
+	// MaxDuration) has SIGKILLed the gradlew process group. It recycles
+	// the (potentially corrupt) Gradle daemon for the leaf — a forced
+	// kill leaves the daemon (a separate process outside the group)
+	// running with state the killed build may have corrupted, so spec
+	// §144 requires recycling it rather than reusing it. Best-effort:
+	// the error (if any) is logged to Stderr but does not fail the
+	// forced-cancel path. Graceful cancellation (first signal) does NOT
+	// invoke this — the warm daemon is preserved per spec.
+	OnForcedCancel func(stderr io.Writer) error
 }
 
 // DefaultKillAfter is the documented graceful-cancellation deadline.
 const DefaultKillAfter = 5 * time.Second
+
+// forcedKillAfter is the collapsed graceful window when the caller forces
+// cancellation (second signal): ~0 so descendants are SIGKILLed without
+// waiting, recycling unsafe state. Non-zero only so the hard-stage
+// goroutine still arms a timer (0 would block on the timer path).
+const forcedKillAfter = 50 * time.Millisecond
 
 // RunBuild runs one restricted executor process for the build request.
 // stdout/stderr stream straight through (the child writes to the caller's
@@ -127,8 +158,23 @@ func RunBuild(opts RunOptions) (int, error) {
 	// goroutine reads it before resorting to SIGKILL.
 	childReaped := make(chan struct{})
 
+	// maxDurationCh fires when the build-duration ceiling elapses; nil
+	// disables the ceiling. Treating it as a caller-style cancel keeps
+	// the exit-code + marker contract identical to an explicit SIGINT.
+	var maxDurationCh <-chan time.Time
+	if opts.MaxDuration > 0 {
+		maxDurationCh = time.After(opts.MaxDuration)
+	}
+
+	// forceCh collapses the graceful KillAfter window to ~0 when closed.
+	// Wired from SignalContext's second-signal channel: the FIRST cancel
+	// preserves the warm Gradle daemon (graceful SIGTERM); a FORCED
+	// cancel SIGKILLs the process group to recycle unsafe state.
+	forceCh := opts.ForceCancel
+
 	cancelled := false
 	childDone := false
+	forced := false // set when a forced kill (forceCh) actually fired
 	var childErr error
 	takeResult := func(err error) (int, error) {
 		code := mapWaitErr(err)
@@ -143,6 +189,10 @@ func RunBuild(opts RunOptions) (int, error) {
 		emitExit(auditor, code, started)
 		return code, nil
 	}
+	// stageKillCh closes when the staged-kill goroutine actually delivers
+	// a FORCED SIGKILL (forceCh fired). RunBuild consults it after the
+	// child is reaped to decide whether to recycle the daemon (S3).
+	var stageKillCh <-chan struct{}
 	for {
 		if opts.Cancel == nil {
 			err := <-waitErr
@@ -151,6 +201,15 @@ func RunBuild(opts RunOptions) (int, error) {
 			return code, nil
 		}
 		if childDone {
+			// S3: a forced cancel recycled the gradlew group; also
+			// recycle the (potentially corrupt) daemon. Best-effort:
+			// a --stop failure is logged but does not fail the
+			// forced-cancel path. Graceful cancel preserves the daemon.
+			if forced && opts.OnForcedCancel != nil {
+				if err := opts.OnForcedCancel(stderr); err != nil {
+					fmt.Fprintf(stderr, "omac build: warning: daemon recycle after forced cancel failed: %v\n", err)
+				}
+			}
 			return takeResult(childErr)
 		}
 		select {
@@ -164,24 +223,68 @@ func RunBuild(opts RunOptions) (int, error) {
 			}
 			cancelled = true
 			auditor.Emit(audit.ControlMutation("build.cancel", opts.Resolved.Worktree, "sigterm"))
-			// Graceful stage: SIGTERM the whole group...
-			_ = sigGroup(-pgid, syscall.SIGTERM)
-			// ...hard stage after the deadline — but only while the
-			// child is unreaped. Once Wait has returned the child pid is
-			// back in the pool, so kill(-pgid, SIGKILL) could hit an
-			// unrelated process group that recycled the pgid; skipping
-			// it is also correct because a reaped child needs no kill.
-			go func() {
-				timer := time.NewTimer(killAfter)
-				select {
-				case <-childReaped:
-					timer.Stop()
-				case <-timer.C:
-					_ = sigGroup(-pgid, syscall.SIGKILL)
-				}
-			}()
+			// Graceful stage: SIGTERM the whole group, then stage the
+			// hard kill. stageKill honors forceCh: a forced cancel
+			// during the teardown collapses the window and reports via
+			// stageKillCh so RunBuild recycles the daemon (S3).
+			stageKillCh = stageKill(pgid, killAfter, forceCh, sigGroup, childReaped)
+		case <-maxDurationCh:
+			// Build-duration ceiling elapsed: cancel as if the caller
+			// signalled (graceful first, then the staged kill).
+			// maxDurationCh is nil unless MaxDuration > 0. The staged
+			// kill ALSO honors forceCh: a forced cancel during a
+			// max-duration teardown collapses the window (P1).
+			if cancelled {
+				continue
+			}
+			cancelled = true
+			auditor.Emit(audit.ControlMutation("build.cancel", opts.Resolved.Worktree, "max-duration"))
+			stageKillCh = stageKill(pgid, killAfter, forceCh, sigGroup, childReaped)
+		case <-stageKillCh:
+			// The staged-kill goroutine delivered a FORCED SIGKILL
+			// (forceCh fired). Mark forced so the daemon is recycled
+			// after the child is reaped (S3).
+			forced = true
 		}
 	}
+}
+
+// stageKill delivers SIGTERM to the process group, then stages a hard
+// SIGKILL after killAfter — but only while the child is unreaped. Once
+// Wait has returned the child pid is back in the pool, so kill(-pgid,
+// SIGKILL) could hit an unrelated process group that recycled the pgid;
+// skipping it is also correct because a reaped child needs no kill.
+//
+// It honors forceCh: a closed forceCh collapses the graceful window to
+// forcedKillAfter so a second signal tears down descendants immediately,
+// recycling unsafe state (S3). It returns a channel that closes when the
+// FORCED SIGKILL is delivered (forceCh fired), so RunBuild can recycle
+// the daemon afterwards; the channel never closes for a graceful
+// (timer-driven) kill.
+//
+// Extracted (P1) so the Cancel and MaxDuration arms share identical
+// staging instead of duplicating the goroutine.
+func stageKill(pgid int, killAfter time.Duration, forceCh <-chan struct{}, sigGroup func(int, syscall.Signal) error, childReaped <-chan struct{}) <-chan struct{} {
+	forcedCh := make(chan struct{})
+	_ = sigGroup(-pgid, syscall.SIGTERM)
+	go func() {
+		timer := time.NewTimer(killAfter)
+		defer timer.Stop()
+		select {
+		case <-childReaped:
+			return
+		case <-timer.C:
+			// Graceful deadline elapsed: SIGKILL the group. NOT a forced
+			// cancel, so forcedCh stays open (daemon preserved per spec).
+			_ = sigGroup(-pgid, syscall.SIGKILL)
+		case <-forceCh:
+			// Forced cancel: collapse the graceful window and SIGKILL
+			// immediately. Signal RunBuild to recycle the daemon (S3).
+			_ = sigGroup(-pgid, syscall.SIGKILL)
+			close(forcedCh)
+		}
+	}()
+	return forcedCh
 }
 
 // groupSignal is the production GroupSignal: POSIX process-group delivery
@@ -219,23 +322,27 @@ func emitExit(a audit.Auditor, code int, started time.Time) {
 // --- signal-driven cancellation -----------------------------------------
 
 // SignalContext returns a cancel channel closed on the FIRST SIGINT or
-// SIGTERM delivered to this process, a drill-through channel that tests
-// use to inject signals without touching the real disposition, and a
-// release func restoring the default disposition. The CLI wires the cancel
-// channel to RunBuild so a harness interrupting omac cancels the build
-// through the staged graceful-then-kill path rather than orphaning the
-// executor.
+// SIGTERM delivered to this process, a force channel closed on the SECOND
+// signal (collapsing RunBuild's graceful KillAfter window to ~0 so
+// descendants are SIGKILLed immediately — forced cancellation tears down
+// and recycles unsafe state, while the first signal preserves the warm
+// Gradle daemon), a drill-through channel that tests use to inject
+// signals without touching the real disposition, and a release func
+// restoring the default disposition. The CLI wires cancel + force to
+// RunBuild so a harness interrupting omac cancels the build through the
+// staged graceful-then-kill path rather than orphaning the executor.
 //
 // A second received signal is FATAL to the process, but NOT via a raw
 // os.Exit: os.Exit skips deferred functions, so the previous
 // implementation leaked the build's private temp (+ the whole CLI defer
 // chain: audit close, cache-scope lock release). Instead the second
-// signal is only recorded; the caller collapses the graceful window to
-// KillAfter=0 itself, letting RunBuild's normal return path (and every
+// signal closes the force channel; RunBuild collapses the graceful window
+// to forcedKillAfter itself, letting its normal return path (and every
 // deferred cleanup above it) run to completion before returning
 // ExitCancelled.
-func SignalContext() (cancel <-chan struct{}, second chan<- os.Signal, release func()) {
+func SignalContext() (cancel <-chan struct{}, force <-chan struct{}, second chan<- os.Signal, release func()) {
 	cancelCh := make(chan struct{})
+	forceCh := make(chan struct{})
 	// Drill channel: writes delivered to the same goroutine signal.Notify
 	// feeds. Buffered so a test can inject two signals without blocking
 	// before the watcher starts.
@@ -253,15 +360,21 @@ func SignalContext() (cancel <-chan struct{}, second chan<- os.Signal, release f
 			default:
 				close(cancelCh)
 			}
-			// Second signal: do NOT os.Exit — unwind through the normal
-			// cancel path so deferred cleanup (CleanupTmp, audit close)
-			// still runs.
+			// Second signal: do NOT os.Exit — close the force channel so
+			// RunBuild collapses the graceful window, then unwind
+			// through the normal cancel path so deferred cleanup
+			// (CleanupTmp, audit close) still runs.
 			select {
 			case <-sigCh:
 			case <-drill:
 			}
+			select {
+			case <-forceCh:
+			default:
+				close(forceCh)
+			}
 			return
 		}
 	}()
-	return cancelCh, drill, func() { signal.Stop(sigCh) }
+	return cancelCh, forceCh, drill, func() { signal.Stop(sigCh) }
 }

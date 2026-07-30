@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseArgs(t *testing.T) {
@@ -13,6 +14,7 @@ func TestParseArgs(t *testing.T) {
 		args     []string
 		wantRoot string
 		wantArgs []string
+		wantMax  time.Duration
 		wantErr  string // substring; "" means no error
 	}{
 		{
@@ -81,6 +83,35 @@ func TestParseArgs(t *testing.T) {
 			wantRoot: ".",
 			wantArgs: []string{"--root"},
 		},
+		{
+			name:     "max-duration space form parses into Request.MaxDuration",
+			args:     []string{"--max-duration", "30m", "--", "gradle", ":help"},
+			wantRoot: ".",
+			wantArgs: []string{":help"},
+			wantMax:  30 * time.Minute,
+		},
+		{
+			name:     "max-duration equals form parses",
+			args:     []string{"--max-duration=1h30m", "--", "gradle"},
+			wantRoot: ".",
+			wantArgs: nil,
+			wantMax:  90 * time.Minute,
+		},
+		{
+			name:    "max-duration non-positive rejected",
+			args:    []string{"--max-duration", "0", "--", "gradle"},
+			wantErr: "must be positive",
+		},
+		{
+			name:    "max-duration unparseable rejected",
+			args:    []string{"--max-duration", "notaduration", "--", "gradle"},
+			wantErr: "--max-duration",
+		},
+		{
+			name:    "max-duration requires a value",
+			args:    []string{"--max-duration", "--", "gradle"},
+			wantErr: "--max-duration requires a value",
+		},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			r, err := ParseArgs(c.args)
@@ -105,6 +136,9 @@ func TestParseArgs(t *testing.T) {
 			}
 			if r.Root != c.wantRoot {
 				t.Errorf("Root = %q, want %q", r.Root, c.wantRoot)
+			}
+			if r.MaxDuration != c.wantMax {
+				t.Errorf("MaxDuration = %v, want %v", r.MaxDuration, c.wantMax)
 			}
 			if len(r.Args) != 0 || len(c.wantArgs) != 0 {
 				if !reflect.DeepEqual(r.Args, c.wantArgs) {
