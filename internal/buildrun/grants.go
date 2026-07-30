@@ -2,18 +2,39 @@ package buildrun
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strconv"
+	"strings"
 
+	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxprofile"
 	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxrun"
 )
 
 // BuildGrants is the executor grant set: sandboxrun.Grants plus the
-// build-specific derived paths (GRADLE_USER_HOME leaf, private temp).
+// build-specific derived paths (GRADLE_USER_HOME leaf, private temp) and
+// the resolved JDK / proxy posture.
 type BuildGrants struct {
 	*sandboxrun.Grants
 	gradleUserHome string
 	tmpDir         string
+	// jdk is the resolved real JDK (shims bypassed) used to rewrite
+	// JAVA_HOME/PATH in ChildEnv. Zero value when no JDK was resolved
+	// (then the parent env passes through unchanged as a fallback).
+	jdk JDKResolution
+	// proxyURL is the omac filtered proxy URL the Gradle daemon is pointed
+	// at via GRADLE_OPTS / gradle.properties. Empty when no proxy is in
+	// use (Linux kernel-blocked build path).
+	proxyURL string
+	// gradleOpts is the GRADLE_OPTS value (proxy system properties) injected
+	// into ChildEnv. Empty when no proxy. NEVER uses JAVA_TOOL_OPTIONS —
+	// the JVM prints that env var on every launch, leaking any proxy token.
+	gradleOpts string
+	// maxHeap is the Gradle daemon JVM -Xmx ceiling written into the
+	// OMAC-generated gradle.properties. Empty omits the line.
+	maxHeap string
 }
 
 // GradleUserHome is the OMAC cache leaf handed to the Gradle wrapper as
@@ -22,6 +43,18 @@ func (b *BuildGrants) GradleUserHome() string { return b.gradleUserHome }
 
 // TmpDir is the executor's private temporary directory (exported as TMPDIR).
 func (b *BuildGrants) TmpDir() string { return b.tmpDir }
+
+// JDK returns the resolved real JDK (shims bypassed). The zero value's
+// empty JavaHome means resolution failed; the parent env then passes
+// through unchanged as a best-effort fallback.
+func (b *BuildGrants) JDK() JDKResolution { return b.jdk }
+
+// ProxyURL returns the omac filtered proxy URL the Gradle daemon is routed
+// through, or "" when no proxy is in use.
+func (b *BuildGrants) ProxyURL() string { return b.proxyURL }
+
+// GradleOpts returns the GRADLE_OPTS value injected into ChildEnv, or "".
+func (b *BuildGrants) GradleOpts() string { return b.gradleOpts }
 
 // gradleLeafName is the tool leaf below the resolved OMAC cache scope.
 // The spec's Gradle State section fixes GRADLE_USER_HOME=$cache/gradle.
@@ -34,15 +67,50 @@ const gradleLeafName = "gradle"
 // beside the leaf under the cache scope rather than inside it.
 const preLeafLocksDir = ".omac-pre-leaf-locks"
 
+// defaultMaxHeap is the Gradle daemon JVM -Xmx ceiling OMAC imposes by
+// default (written into the read-only gradle.properties). Bounded so a
+// runaway build cannot balloon the daemon beyond a defensible host share;
+// overridable via BuildConfig.MaxHeap.
+const defaultMaxHeap = "2g"
+
+// BuildConfig bundles the per-request build configuration GrantsFor
+// consumes: proxy posture, resource ceilings, JDK discovery seam. A zero
+// value yields a fully kernel-blocked, default-resources build (the Linux
+// posture). The CLI populates ProxyURL/ProxyPort after starting the
+// netproxy server.
+type BuildConfig struct {
+	// ProxyURL is the omac filtered proxy URL
+	// (http://omac:<token>@127.0.0.1:<port> — the token ALWAYS rides in
+	// the userinfo per netproxy.Server.ProxyURL). Empty disables proxy
+	// injection (kernel-blocked posture). On macOS (Shape A) the build
+	// path is env-only filtered so Gradle's daemon loopback works; the
+	// token authenticates the wrapper's distribution download and all
+	// dependency fetches against the omac proxy (Proxy-Authorization:
+	// Basic). Ticket 06 adds private-registry creds on top.
+	ProxyURL string
+	// ProxyPort is grants.ProxyPort (the port the SBPL allows loopback
+	// egress to). 0 when no proxy.
+	ProxyPort int
+	// MaxHeap overrides the Gradle daemon -Xmx ceiling. Empty uses the
+	// default (defaultMaxHeap).
+	MaxHeap string
+	// getenv is the JDK discovery seam; production passes os.Getenv, tests
+	// inject a fake parent env. nil selects os.Getenv.
+	getenv func(string) string
+}
+
 // envPassThrough is the fixed, harness-independent allowlist for the
 // executor's environment. Nothing harness/host-specific may pass: no
 // OMAC_* facade/sidecar vars, no cloud/SSH/git credentials, no HOME
 // (which would expose host gradle.properties and init scripts under
-// ~/.gradle). PATH, JAVA_HOME and locale vars are required so the wrapper
-// can discover a JDK.
+// ~/.gradle). Locale vars are required so the wrapper/JDK print
+// consistently; PATH and JAVA_HOME are rewritten by ResolveJDK (the
+// verbatim parent values are NEVER passed — shims break under Seatbelt).
 var envPassThrough = []string{
-	"PATH",
-	"JAVA_HOME",
+	// NOTE: PATH and JAVA_HOME are intentionally absent here — they are
+	// resolved via ResolveJDK and injected from the JDKResolution, never
+	// copied verbatim from the parent env (jenv shims break under
+	// deny-default Seatbelt; see jdk.go).
 	"ANDROID_HOME",
 	"LANG",
 	"LC_ALL",
@@ -56,33 +124,56 @@ var envPassThrough = []string{
 // GrantsFor derives the executor grant set for one build request:
 //
 //   - worktree (read+write)           — the canonical worktree root
-//   - $cache/gradle (read+write)      — GRADLE_USER_HOME (the ONLY cache
-//     path granted; the leaf is ensured on disk first since sandboxrun
-//     existence-filters profile paths)
+//   - $cache/gradle (read+write)       — GRADLE_USER_HOME (the ONLY cache
+//     path granted writable; the leaf is ensured on disk first since
+//     sandboxrun existence-filters profile paths). OMAC-generated control
+//     state inside the leaf (gradle.properties, .omac-control/) is granted
+//     READ-ONLY via WriteDenyPaths.
 //   - $cache/gradle/.omac-pre-leaf-locks — omac-owned lock staging area
 //   - private temp (read+write)       — per-run TMPDIR
+//   - real JDK bin + lib (read-only)  — resolved via ResolveJDK, so the
+//     executor execs the real java, never a jenv/asdf shim
+//   - platform read baseline (read-only) — sandboxprofile.PlatformBaseline
+//     Read paths (/bin, /usr/bin, /usr/lib, /private/var/select, /etc,
+//     /System, /Library, ... on macOS), the SAME baseline ResolveGrants
+//     merges for `omac sandbox run`. Without these the executor under
+//     deny-default Seatbelt cannot exec /bin/sh, read /usr/bin/uname, or
+//     resolve /private/var/select/sh. Read-only; the WRITE set stays
+//     minimal (worktree+leaf+temp only — the baseline's broad /tmp /
+//     /var/folders write grants are deliberately NOT added).
+//
+// The platform baseline ProtectedPaths (~/.ssh, ~/.gradle, cloud creds,
+// keychains) are merged into Grants.ProtectedPaths so the executor cannot
+// read host secrets even though system dirs are now read-granted.
 //
 // The cache SCOPE dir itself is deliberately NOT granted: sibling tool
 // caches laid down by `omac start`/`serve` (go, npm, pip leaves) must
-// stay unwritable by the build executor. The executor cannot create new
-// leaves at the scope level — Gradle state lives inside its own leaf per
-// GRADLE_USER_HOME.
+// stay unwritable by the build executor.
 //
-// Network is fully blocked (kernel enforcement): direct external egress is
-// denied by default and v0 mediates no proxy endpoints. Host home, host
-// ~/.gradle (covered by the platform baseline's protected paths), SSH/AWS
-// state and OMAC configuration receive no grants; a host secret fixture
-// outside these paths stays unreadable under (deny default).
+// Network posture (Shape A):
+//   - macOS: filtered + env-only. The Gradle daemon talks to its workers
+//     over a random loopback port, which a kernel network boundary blocks;
+//     env-only lets that loopback work while the omac proxy still filters
+//     external egress. The proxy URL is injected via GRADLE_OPTS (NEVER
+//     JAVA_TOOL_OPTIONS — the JVM prints that env var, leaking tokens).
+//   - Linux: blocked + kernel. Per-request private-loopback namespace
+//     means a new client may not reach a prior request's daemon; warm
+//     daemon cohabitation is a Linux-validation item for later tickets.
 //
 // cacheDir must already be the resolved OMAC cache scope dir (from
 // internal/toolcache via the cli wiring); GrantsFor never invents paths.
-func GrantsFor(worktree, cacheDir string) (*BuildGrants, error) {
+func GrantsFor(worktree, cacheDir string, cfg BuildConfig) (*BuildGrants, error) {
 	// The worktree must exist (Resolve already validated it; defensive).
 	if _, err := os.Stat(worktree); err != nil {
 		return nil, fmt.Errorf("worktree: %w", err)
 	}
 	if cacheDir == "" {
 		return nil, fmt.Errorf("empty cache dir: GRADLE_USER_HOME must come from the resolved OMAC cache scope")
+	}
+
+	getenv := cfg.getenv
+	if getenv == nil {
+		getenv = os.Getenv
 	}
 
 	leaf := filepath.Join(cacheDir, gradleLeafName)
@@ -114,26 +205,213 @@ func GrantsFor(worktree, cacheDir string) (*BuildGrants, error) {
 		tmp = canon
 	}
 
-	// Daemon-lock staleness is a non-issue in v0 by construction (one
-	// short-lived executor per request under a scoped GRADLE_USER_HOME);
-	// warm-daemon reuse and any lock hygiene that comes with it is a
-	// later ticket — v0 never deletes files inside the cache.
+	// Resolve the real JDK (bypass jenv/asdf shims) BEFORE building the
+	// grant set: the resolved bin/lib dirs must be read-granted so the
+	// executor can exec and load the JVM under deny-default Seatbelt.
+	jdk, jdkErr := ResolveJDK(getenv)
+
+	// OMAC control state: gradle.properties (proxy + jvmargs), the
+	// .omac-control/ README, AND the init.d/ control directory (Gradle
+	// loads init.d/*.gradle as init scripts — it must be read-only to the
+	// executor so build code cannot plant an init script). All written
+	// read-only to the executor.
+	maxHeap := cfg.MaxHeap
+	if maxHeap == "" {
+		maxHeap = defaultMaxHeap
+	}
+	proxy := splitProxyEndpoint(cfg.ProxyURL)
+	gradleProps := GradlePropertiesConfig{
+		Proxy:   proxy,
+		MaxHeap: maxHeap,
+	}
+	controlPaths, err := PrepareControlState(leaf, gradleProps)
+	if err != nil {
+		return nil, fmt.Errorf("prepare control state: %w", err)
+	}
+
+	// Network posture: macOS env-only filtered (Shape A) so Gradle's
+	// daemon loopback works; Linux kernel-blocked. Use the sandboxprofile
+	// constants, not raw strings.
+	networkMode := sandboxprofile.ModeBlocked
+	enforcement := sandboxprofile.EnforceKernel
+	if runtime.GOOS == "darwin" {
+		networkMode = sandboxprofile.ModeFiltered
+		enforcement = sandboxprofile.EnforceEnvOnly
+	}
+
+	readPaths := []string{}
+	readPaths = append(readPaths, controlPaths.All()...)
+	if jdkErr == nil {
+		readPaths = append(readPaths, jdk.ReadPaths...)
+	}
+	// Platform read baseline (darwinBaseline().Read on macOS: /bin,
+	// /usr/bin, /usr/lib, /private/var/select, /etc, /System, /Library,
+	// ...). The build path constructs sandboxrun.Grants directly and
+	// MUST merge the same baseline ResolveGrants applies to `omac sandbox
+	// run`, otherwise under deny-default Seatbelt the executor cannot
+	// exec /bin/sh, read /usr/bin/uname, or resolve /private/var/select/sh
+	// (the sh symlink) — exactly the ticket-04 host failure
+	// ("uname: command not found", "Error opening /private/var/select/sh").
+	// Read-only grants; the WRITE set stays minimal (worktree+leaf+temp).
+	// ExpandExisting drops absent paths and ~/$VAR entries that don't
+	// resolve (e.g. $TMPDIR on Linux) with a notice.
+	baseline := sandboxprofile.PlatformBaseline()
+	baselineRead, err := sandboxprofile.ExpandExisting(baseline.Read, nil)
+	if err != nil {
+		return nil, fmt.Errorf("expand platform read baseline: %w", err)
+	}
+	readPaths = append(readPaths, baselineRead...)
+
+	// Protected paths: the baseline protected set (~/.ssh, ~/.gradle via
+	// the home-tree entries, cloud creds, keychains) is normally applied
+	// by ResolveGrants; the build path bypasses that, so replicate it
+	// here. EffectiveProtectedPaths expands ~ and drops override_deny
+	// holes (none in the build path — there is no profile). These are
+	// denied even under broader grants, so ~/.gradle/~/.ssh stay
+	// unreadable even though /usr/local/lib etc. are now read-granted.
+	protected := sandboxprofile.EffectiveProtectedPaths(baseline, nil)
 
 	g := &sandboxrun.Grants{
-		Workdir:    worktree,
-		AllowPaths: dedupePaths([]string{worktree, leaf, locksDir, tmp}),
-		// ReadPaths intentionally empty beyond AllowPaths: the platform
-		// backends add the wrapper's directory automatically (the inner
-		// binary resolution in BuildChildArgv) and the toolchain/system
-		// read baseline comes from sbpl.go's device+system rules. v0
-		// grants no host tooling beyond PATH resolution.
-		NetworkMode: "blocked",
-		Enforcement: "kernel",
+		Workdir:        worktree,
+		AllowPaths:     dedupePaths([]string{worktree, leaf, locksDir, tmp}),
+		ReadPaths:      dedupePaths(readPaths),
+		ProtectedPaths: dedupePaths(protected),
+		WriteDenyPaths: dedupePaths(controlPaths.All()), // read-only control state (files + init.d)
+		NetworkMode:    networkMode,
+		Enforcement:    enforcement,
+		ProxyPort:      cfg.ProxyPort,
 	}
 	if err := g.Validate(); err != nil {
 		return nil, err
 	}
-	return &BuildGrants{Grants: g, gradleUserHome: leaf, tmpDir: tmp}, nil
+
+	bg := &BuildGrants{
+		Grants:         g,
+		gradleUserHome: leaf,
+		tmpDir:         tmp,
+		jdk:            jdk,
+		proxyURL:       cfg.ProxyURL,
+		maxHeap:        maxHeap,
+	}
+	if proxy.Host != "" && proxy.Port > 0 {
+		bg.gradleOpts = buildGradleOpts(proxy)
+	}
+	return bg, nil
+}
+
+// splitProxyEndpoint extracts host, port, and userinfo from a proxy URL of
+// the form http://[user:pass@]host:port (scheme, userinfo, and IPv6
+// brackets all handled by net/url.Parse, which the previous hand-rolled
+// splitter did not fully cover). The userinfo carries the omac proxy
+// token (http://omac:<token>@127.0.0.1:<port> per
+// netproxy.Server.ProxyURL); WITHOUT it Gradle connects to the proxy but
+// cannot authenticate, yielding HTTP 407 Proxy Authentication Required.
+// Returns the zero value when the URL is empty, unparseable, or missing a
+// positive port. Used to populate gradle.properties system properties and
+// the GRADLE_OPTS proxyUser/proxyPassword system properties.
+func splitProxyEndpoint(proxyURL string) ProxyEndpoint {
+	if proxyURL == "" {
+		return ProxyEndpoint{}
+	}
+	u, err := url.Parse(proxyURL)
+	if err != nil {
+		return ProxyEndpoint{}
+	}
+	host := u.Hostname()
+	if host == "" {
+		return ProxyEndpoint{}
+	}
+	portStr := u.Port()
+	if portStr == "" {
+		return ProxyEndpoint{}
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil || port <= 0 {
+		return ProxyEndpoint{}
+	}
+	ep := ProxyEndpoint{Host: host, Port: port}
+	// The omac proxy ALWAYS carries a token in the userinfo
+	// (netproxy.Server.ProxyURL → http://omac:<token>@127.0.0.1:<port>).
+	// An empty userinfo is accepted (public/no-auth proxy); ticket-06's
+	// private-registry credential proxy is the only path that omits it.
+	if ui := u.User; ui != nil {
+		ep.User = ui.Username()
+		if pass, ok := ui.Password(); ok {
+			ep.Password = pass
+		}
+	}
+	return ep
+}
+
+// ProxyEndpoint is a resolved proxy host:port pair plus the optional
+// userinfo the omac proxy validates via Proxy-Authorization (Basic
+// user:token; see netproxy.Server.authorized). It replaces the
+// `proxyHost string, proxyPort int` data clump threaded through
+// buildGradleOpts and GradlePropertiesConfig. The zero value (empty Host,
+// 0 Port) means "no proxy".
+//
+// The token rides in User/Password and is emitted into GRADLE_OPTS
+// (https.proxyUser/proxyPassword), NEVER gradle.properties — that file is
+// read-only to the executor but READABLE by build code and persists on
+// disk in the cache leaf, so the token must not be written to it. GRADLE_OPTS
+// is per-process env the JVM does not print (unlike JAVA_TOOL_OPTIONS).
+type ProxyEndpoint struct {
+	Host string
+	Port int
+	// User/Password carry the proxy userinfo (omac:<token>) Gradle's HTTP
+	// client sends as Proxy-Authorization: Basic. Empty for a no-auth proxy.
+	User     string
+	Password string
+}
+
+// Valid reports whether the endpoint carries a usable host:port.
+func (p ProxyEndpoint) Valid() bool { return p.Host != "" && p.Port > 0 }
+
+// buildGradleOpts renders the GRADLE_OPTS value pointing the Gradle daemon
+// (and the JVMs it spawns) at the omac filtered proxy via system
+// properties. NEVER uses JAVA_TOOL_OPTIONS — the JVM prints that env var
+// on every launch, leaking any proxy token to stderr (spec.md:180).
+// Loopback is excluded so the daemon's worker protocol is not proxied.
+//
+// The proxy token rides in https.proxyUser/https.proxyPassword (and the
+// http.* twins for completeness). Gradle's HTTP client sends these as
+// Proxy-Authorization: Basic user:token, exactly what
+// netproxy.Server.authorized validates (internal/netproxy/server.go:276).
+// Without them the wrapper downloads the distribution through the proxy
+// but gets HTTP 407 Proxy Authentication Required (ticket-04 host
+// failure). The token is NOT written to gradle.properties — that file is
+// readable by build code and persists on disk in the cache leaf, so the
+// token must stay in per-process GRADLE_OPTS (which the JVM does not
+// print).
+func buildGradleOpts(p ProxyEndpoint) string {
+	opts := []string{
+		fmt.Sprintf("-Dhttp.proxyHost=%s", p.Host),
+		fmt.Sprintf("-Dhttp.proxyPort=%d", p.Port),
+		fmt.Sprintf("-Dhttps.proxyHost=%s", p.Host),
+		fmt.Sprintf("-Dhttps.proxyPort=%d", p.Port),
+		"-Dhttp.nonProxyHosts=localhost|127.*|[::1]",
+		// Java 8u111+ disables Basic auth on HTTPS CONNECT tunnels by
+		// default; re-enable so the omac proxy token is sent on the
+		// CONNECT (services.gradle.org:443) tunnel, not just plain HTTP.
+		"-Djdk.http.auth.tunneling.disabledSchemes=",
+	}
+	// The omac proxy ALWAYS carries a token (netproxy.Server.ProxyURL).
+	// Emit proxyUser/proxyPassword for BOTH http and https so the wrapper's
+	// distribution download (HTTPS CONNECT to services.gradle.org) AND any
+	// plain-HTTP dependency fetch authenticate. The password is the token.
+	if p.User != "" {
+		opts = append(opts,
+			fmt.Sprintf("-Dhttp.proxyUser=%s", p.User),
+			fmt.Sprintf("-Dhttps.proxyUser=%s", p.User),
+		)
+		if p.Password != "" {
+			opts = append(opts,
+				fmt.Sprintf("-Dhttp.proxyPassword=%s", p.Password),
+				fmt.Sprintf("-Dhttps.proxyPassword=%s", p.Password),
+			)
+		}
+	}
+	return strings.Join(opts, " ")
 }
 
 // CleanupTmp releases the private temp dir (safe to call with a nil receiver
@@ -148,11 +426,43 @@ func (b *BuildGrants) CleanupTmp() {
 // ChildEnv renders the executor environment: nothing inherited from the
 // calling harness except the fixed pass-through list, plus the injected
 // Gradle/cache/redirect vars. It never contains credential values.
+//
+// PATH and JAVA_HOME come from the resolved real JDK (ResolveJDK), never
+// from the parent env verbatim — jenv/asdf shims break under deny-default
+// Seatbelt. When JDK resolution failed, PATH/JAVA_HOME fall back to the
+// parent env verbatim (best-effort; the build will likely fail to exec
+// java, which is the honest outcome).
 func ChildEnv(b *BuildGrants) []string {
 	injected := map[string]string{
 		"GRADLE_USER_HOME": b.gradleUserHome,
 		"TMPDIR":           b.tmpDir,
 	}
+	// JDK: rewrite PATH/JAVA_HOME to the real JDK, bypassing shims.
+	if b.jdk.JavaHome != "" {
+		injected["JAVA_HOME"] = b.jdk.JavaHome
+		injected["PATH"] = b.jdk.Path
+	} else {
+		// Fallback: pass the parent env verbatim (best-effort; the build
+		// will likely fail to exec java under Seatbelt — the honest
+		// outcome of an unresolvable JDK).
+		if v := os.Getenv("PATH"); v != "" {
+			injected["PATH"] = v
+		}
+		if v := os.Getenv("JAVA_HOME"); v != "" {
+			injected["JAVA_HOME"] = v
+		}
+	}
+	// Proxy: GRADLE_OPTS points the Gradle daemon at the omac proxy,
+	// carrying the proxy token in https.proxyUser/proxyPassword system
+	// properties (the JVM does NOT print GRADLE_OPTS, so the token is
+	// safe). NEVER JAVA_TOOL_OPTIONS — the JVM prints it on every launch,
+	// leaking the token (spec.md:180). NO_PROXY keeps the daemon's
+	// loopback worker protocol off the proxy.
+	if b.gradleOpts != "" {
+		injected["GRADLE_OPTS"] = b.gradleOpts
+		injected["NO_PROXY"] = "localhost,127.0.0.1,::1"
+	}
+
 	environ := make([]string, 0, len(envPassThrough)+len(injected))
 	for _, name := range envPassThrough {
 		if v, ok := os.LookupEnv(name); ok && v != "" {

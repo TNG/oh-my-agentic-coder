@@ -15,7 +15,7 @@ import (
 func buildOmacBinary(t *testing.T) string {
 	t.Helper()
 	bin := filepath.Join(t.TempDir(), "omac-test-bin")
-	out, err := exec.Command("go", "build", "-o", bin, "../../cmd/omac").CombinedOutput()
+	out, err := exec.Command("go", "build", "-buildvcs=false", "-o", bin, "../../cmd/omac").CombinedOutput()
 	if err != nil {
 		t.Fatalf("go build omac: %v\n%s", err, out)
 	}
