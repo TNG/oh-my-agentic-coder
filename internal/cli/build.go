@@ -341,8 +341,17 @@ Executor authority (one restricted process per request):
   network:    macOS — env-only filtered via the omac proxy (GRADLE_OPTS,
               NEVER JAVA_TOOL_OPTIONS which the JVM prints, leaking tokens);
               loopback is excluded so the Gradle daemon's worker protocol
-              works. Linux — kernel-blocked (warm-daemon cohabitation is a
-              later Linux-validation item).
+              works — macOS is filesystem-confinement only, NO kernel
+              network mediation (Shape A; raw-socket-capable build code can
+              reach host loopback and external egress — no host-listener
+              monitoring/guarding is claimed, ADR 0003 Revision). Linux —
+              kernel-blocked (private sandbox loopback; warm-daemon
+              cohabitation is a later Linux-validation item).
+  worker checks: canonical checkstyleMain/checkstyleTest run unchanged via
+              the Gradle Worker API on both platforms; yarp3's
+              checkstyle*Sandbox twin tasks are retired by the OMAC-authored
+              read-only init.d/retire-checkstyle-twins.gradle (defensive
+              no-op when no twins exist). No host init script required.
   denied:     host ~/.gradle, host secrets, SSH/AWS state, OMAC config
 
 JDK resolution:

@@ -17,6 +17,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"text/tabwriter"
@@ -80,15 +81,54 @@ type cacheView struct {
 	Environment map[string]string `json:"environment"`
 }
 
+// buildExecutorView reports the JVM build executor's network posture for
+// the current platform, distinguishing the two supported postures
+// (ticket 07). It is the provenance counterpart to the sandbox briefing:
+// provenance and the briefing MUST clearly distinguish Linux private
+// loopback (kernel boundary) from macOS env-only filtering (filesystem-
+// only boundary) and state the accepted macOS residual. On no platform
+// may a build executor be described as having a loopback guarantee it
+// does not have (ADR 0003 Revision retired guarded loopback on macOS;
+// host-listener monitoring/guarding returns only with a future micro-VM
+// "Shape B").
+type buildExecutorView struct {
+	// Platform is runtime.GOOS ("darwin" / "linux").
+	Platform string `json:"platform"`
+	// NetworkPosture is the executor's effective network posture:
+	// darwin = "env-only filtered (filesystem confinement only)";
+	// linux = "kernel-blocked (private sandbox loopback)".
+	NetworkPosture string `json:"network_posture"`
+	// LoopbackBoundary is what enforces the loopback posture:
+	// darwin = "filesystem-only" (no kernel network mediation);
+	// linux = "kernel (network namespace)".
+	LoopbackBoundary string `json:"loopback_boundary"`
+	// WorkerLoopback describes whether the Gradle Worker API's dynamic
+	// loopback works: darwin = "works (no kernel network filter)";
+	// linux = "private sandbox loopback".
+	WorkerLoopback string `json:"worker_loopback"`
+	// AcceptedResidual states the accepted, provenance-reported residual
+	// for this platform. On darwin: raw-socket-capable build code can
+	// reach host loopback and external egress, and NO host-listener
+	// monitoring/guarding is claimed (ADR 0003 Revision). On linux:
+	// host-loopback services are unreachable from the executor.
+	AcceptedResidual string `json:"accepted_residual"`
+	// CanonicalChecks reports that the yarp3 checkstyle twin tasks are
+	// retired (OMAC init.d) and the canonical checkstyleMain /
+	// checkstyleTest run unchanged via the Gradle Worker API. Same on
+	// both platforms.
+	CanonicalChecks string `json:"canonical_checks"`
+}
+
 // provenanceView is the top-level payload. JSON mode marshals this
 // directly; text mode walks each section.
 type provenanceView struct {
-	Profile     profileSource   `json:"profile"`
-	Network     networkView     `json:"network"`
-	Filesystem  filesystemView  `json:"filesystem"`
-	Environment environmentView `json:"environment"`
-	Skills      skillsView      `json:"skills"`
-	Cache       cacheView       `json:"cache"`
+	Profile       profileSource     `json:"profile"`
+	Network       networkView       `json:"network"`
+	Filesystem    filesystemView    `json:"filesystem"`
+	Environment   environmentView   `json:"environment"`
+	Skills        skillsView        `json:"skills"`
+	Cache         cacheView         `json:"cache"`
+	BuildExecutor buildExecutorView `json:"build_executor"`
 }
 
 // hardDenyHosts mirrors netproxy.hardDenyHosts (not exported). Kept here
@@ -139,6 +179,13 @@ func buildProvenanceView(workdir, profileRef string) (*provenanceView, error) {
 	}
 	view.Cache = cv
 
+	// --- Build executor (JVM build executor network posture, ticket 07) ---
+	// Platform-derived only (no profile/config dependency); always
+	// populated. Distinguishes Linux private loopback (kernel boundary)
+	// from macOS env-only filtering (filesystem-only boundary) and states
+	// the accepted macOS residual.
+	view.BuildExecutor = buildBuildExecutorView()
+
 	return view, nil
 }
 
@@ -173,6 +220,53 @@ func buildCacheView(cacheScope config.CacheScope, workdir, cfgPath string) (cach
 		Path:        scope.Dir,
 		Environment: toolcache.Environment(scope.Dir, scope.Mode),
 	}, nil
+}
+
+// buildBuildExecutorView reports the JVM build executor's network posture
+// for the current platform (ticket 07). It switches on runtime.GOOS to
+// distinguish the two supported postures:
+//
+//   - darwin (Shape A): env-only filtered, filesystem confinement only.
+//     The Gradle Worker API's dynamic loopback works because nothing
+//     filters it; the accepted residual is that raw-socket-capable build
+//     code can reach host loopback and external egress, and NO
+//     host-listener monitoring/guarding is claimed (ADR 0003 Revision
+//     retired guarded loopback; it returns only with a future micro-VM
+//     "Shape B").
+//   - linux: kernel-blocked, private sandbox loopback (network namespace).
+//     Host-loopback services are unreachable from the executor while
+//     Gradle workers reach executor-created dynamic ports.
+//
+// On both platforms the yarp3 checkstyle twin tasks are retired (OMAC
+// init.d) and the canonical checkstyleMain/checkstyleTest run unchanged
+// via the Gradle Worker API.
+//
+// This view is platform-derived only (no profile/config dependency), so
+// it is always populated and never errors.
+func buildBuildExecutorView() buildExecutorView {
+	const canonicalChecks = "yarp3 checkstyle twin tasks retired (OMAC init.d); canonical checkstyleMain/checkstyleTest run unchanged via Gradle Worker API"
+	v := buildExecutorView{
+		Platform:        runtime.GOOS,
+		CanonicalChecks: canonicalChecks,
+	}
+	switch runtime.GOOS {
+	case "darwin":
+		v.NetworkPosture = "env-only filtered (filesystem confinement only)"
+		v.LoopbackBoundary = "filesystem-only"
+		v.WorkerLoopback = "works (no kernel network filter)"
+		v.AcceptedResidual = "raw-socket-capable build code can reach host loopback and external egress; no host-listener monitoring/guarding (ADR 0003 Revision)"
+	case "linux":
+		v.NetworkPosture = "kernel-blocked (private sandbox loopback)"
+		v.LoopbackBoundary = "kernel (network namespace)"
+		v.WorkerLoopback = "private sandbox loopback"
+		v.AcceptedResidual = "host-loopback services unreachable from the executor"
+	default:
+		v.NetworkPosture = "unsupported platform"
+		v.LoopbackBoundary = "n/a"
+		v.WorkerLoopback = "n/a"
+		v.AcceptedResidual = "unsupported platform — no build executor posture defined"
+	}
+	return v
 }
 
 // classifyProfilePath attributes a profile path to a config layer.
@@ -383,6 +477,18 @@ func writeProvenanceText(w io.Writer, v *provenanceView) int {
 		}
 		_ = tw.Flush()
 	}
+
+	// Build executor (JVM build executor network posture, ticket 07).
+	// Reports the platform's executor posture, distinguishing Linux
+	// private loopback (kernel boundary) from macOS env-only filtering
+	// (filesystem-only boundary) and stating the accepted macOS residual.
+	be := v.BuildExecutor
+	fmt.Fprintf(w, "\nbuild executor (platform: %s)\n", be.Platform)
+	fmt.Fprintf(w, "  network posture   \t%s\n", be.NetworkPosture)
+	fmt.Fprintf(w, "  loopback boundary \t%s\n", be.LoopbackBoundary)
+	fmt.Fprintf(w, "  worker loopback   \t%s\n", be.WorkerLoopback)
+	fmt.Fprintf(w, "  accepted residual\t%s\n", be.AcceptedResidual)
+	fmt.Fprintf(w, "  canonical checks  \t%s\n", be.CanonicalChecks)
 	return ExitOK
 }
 

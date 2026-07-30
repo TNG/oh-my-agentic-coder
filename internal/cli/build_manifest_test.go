@@ -140,6 +140,21 @@ func TestRunBuildNoManifestProceedsToBuild(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(wt, "backend", "gradlew"), []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// runBuild builds a cache leaf (via prepareBuildCache -> GrantsFor),
+	// which creates init.d read-only (0o500) with the always-written
+	// retire-checkstyle-twins.gradle inside. Restore writability under
+	// the resolved cache scope so t.TempDir's RemoveAll can clean up.
+	t.Cleanup(func() {
+		_ = filepath.WalkDir(filepath.Join(tmpHome, ".cache"), func(path string, d os.DirEntry, err error) error {
+			if err != nil || d == nil {
+				return nil
+			}
+			if d.IsDir() && d.Name() == "init.d" {
+				_ = os.Chmod(path, 0o755)
+			}
+			return nil
+		})
+	})
 	env := &Env{Version: "test", Workdir: wt, Stdout: newDevNull(t)}
 	cap := newCapture(t)
 	env.Stderr = cap

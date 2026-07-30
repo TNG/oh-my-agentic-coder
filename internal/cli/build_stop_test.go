@@ -49,6 +49,7 @@ func TestRunBuildStop_InvokesWrapperStopAndReleasesLock(t *testing.T) {
 		t.Fatal(err)
 	}
 	closeScope()
+	chmodBuildLeafInitDForCleanup(t, cacheDir)
 
 	code := runBuildStop(nil, env)
 	if code != ExitOK {
@@ -139,6 +140,7 @@ func TestRunBuildStop_HonorsRootFlag(t *testing.T) {
 		t.Fatal(err)
 	}
 	closeScope()
+	chmodBuildLeafInitDForCleanup(t, cacheDir)
 
 	code := runBuildStop([]string{"--root", "backend"}, env)
 	if code != ExitOK {
@@ -184,6 +186,7 @@ func TestRunBuildStop_RootEqualsForm(t *testing.T) {
 		t.Fatal(err)
 	}
 	closeScope()
+	chmodBuildLeafInitDForCleanup(t, cacheDir)
 
 	env := &Env{Version: "test", Workdir: wt, Stdout: newDevNull(t), Stderr: newCapture(t)}
 	code := runBuildStop([]string{"--root=backend"}, env)

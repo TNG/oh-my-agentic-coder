@@ -364,11 +364,19 @@ dirs are now read-granted.
 
 ## Network posture (Shape A)
 
-macOS: env-only filtered. The Gradle daemon talks to its workers over a
-random loopback port, which a kernel network boundary blocks; env-only
-lets that loopback work while the omac proxy still filters external
-egress. Proxy config is injected via `GRADLE_OPTS` (proxy system
-properties, plus the proxy credentials in `https.proxyUser` /
+macOS: env-only filtered, **filesystem confinement only — no kernel
+network mediation**. The Gradle daemon talks to its workers over a random
+loopback port, which a kernel network boundary would block; env-only lets
+that loopback work because nothing filters it. The omac proxy filters
+external egress for well-behaved clients, but raw-socket-capable build
+code can reach host loopback services and external egress directly — this
+is the **accepted macOS residual**, reported in provenance, never
+described as loopback protection or guarded loopback (ADR 0003 Revision
+retired guarded loopback; the 2026-07-29 Seatbelt spike proved it
+unimplementable). Host-listener monitoring/guarding is **not** claimed and
+**not** implied; such behavior returns only with a future micro-VM
+executor ("Shape B"). Proxy config is injected via `GRADLE_OPTS` (proxy
+system properties, plus the proxy credentials in `https.proxyUser` /
 `https.proxyPassword`), **NEVER `JAVA_TOOL_OPTIONS`** — the JVM prints
 `JAVA_TOOL_OPTIONS` on every launch, leaking any proxy token
 (spec.md:180). The proxy token itself rides ONLY in `GRADLE_OPTS`:
@@ -379,7 +387,109 @@ the omac proxy (`netproxy.Server`) authenticates every connection via
 written to the OMAC-generated `gradle.properties` (that file is readable
 by build code and persists on disk in the cache leaf). `NO_PROXY` /
 `http.nonProxyHosts` excludes loopback so the daemon's worker protocol
-is not proxied. Linux: kernel-blocked.
+is not proxied. Linux: kernel-blocked (private sandbox loopback via the
+isolated network transport — a kernel boundary; host-loopback services
+are unreachable from the executor while Gradle workers reach
+executor-created dynamic ports). See also [Canonical worker-based checks
+(ticket 07)](#canonical-worker-based-checks-ticket-07) and the
+`omac provenance` build-executor section.
+
+## Canonical worker-based checks (ticket 07)
+
+The canonical `checkstyleMain` / `checkstyleTest` tasks run unchanged on
+**both** platforms — they run their Checkstyle analysis through the
+Gradle Worker API process isolation, exactly as developers and CI run
+them. No OMAC-specific replacement tasks and no host init script are
+required.
+
+### Why canonical tasks work on both postures
+
+- **macOS Shape A (env-only, filesystem confinement only):** the Gradle
+  Worker API's dynamic loopback works because nothing filters it — there
+  is no kernel network boundary to trip. The canonical worker process
+  spawns and the daemon reaches it over a random loopback port, exactly
+  as on a host build.
+- **Linux (private sandbox loopback, kernel boundary):** the executor
+  gets a private loopback via its isolated network transport. Workers
+  reach executor-created dynamic ports; host-loopback services stay
+  unreachable from the executor.
+
+### yarp3 checkstyle twin retirement
+
+yarp3 historically needed machine-local `checkstyle*Sandbox` twin tasks
+AND a host init script because guarded loopback was the goal. ADR 0003
+Revision killed guarded loopback → the twins and host init script are no
+longer needed. Per spec §Gradle State (168): "yarp3's existing Checkstyle
+twin tasks are retired."
+
+OMAC authors a read-only init script at
+`<cache scope>/gradle/init.d/retire-checkstyle-twins.gradle` (control
+state, read-only to the executor) that **neutralizes any stale
+machine-local `checkstyle*Sandbox` twin** so the canonical
+`checkstyleMain`/`checkstyleTest` are the only checkstyle tasks that
+actually run. The script:
+
+- runs BEFORE project task-graph evaluation (via Gradle's `beforeProject`
+  hook), so the twins are neutralized in time;
+- uses task configuration avoidance (`tasks.matching { it.name ==~
+  /checkstyle.*Sandbox/ }.configureEach { … }`) so projects without the
+  twins are not configured — it is a **defensive no-op** when no twins
+  exist;
+- overrides each twin's actions to a no-op (`task.actions = []`) and logs
+  the retirement at **configuration time** via the init-script `logger`
+  (NOT via `task.doFirst` — the subsequent `actions = []` would clear a
+  doFirst closure, so the log line must not ride on the task's action
+  list), so the twin cannot run the machine-local Checkstyle it was wired
+  for;
+- is wrapped in `try/catch` so a project that fails to configure for
+  unrelated reasons is unaffected.
+
+The retirement script is written **unconditionally** by
+`PrepareControlState` (it applies to every build) and granted read-only
+(appears in `controlFiles` + `WriteDenyPaths`, same protection as the
+ticket-06 credential-lift init script and the ticket-05 manifest records).
+
+> The retirement script neutralizes only the `checkstyle*Sandbox` twins.
+> The canonical `checkstyleMain` / `checkstyleTest` tasks are left
+> untouched — they are what actually runs. The required Mockito-agent
+> behavior (spec §168) is a separate, later ticket.
+
+### Accepted macOS residual (stated plainly)
+
+On macOS, raw-socket-capable build code can reach host loopback services
+and external egress directly. **No host-listener monitoring/guarding is
+claimed or implied.** ADR 0003 Revision retired guarded loopback; the
+2026-07-29 Seatbelt spike proved guarded executor loopback unimplementable
+on macOS (IP-literal endpoints inexpressible, deny-beneath-allow inert,
+IPv4/IPv6 asymmetry in `localhost:` rules). Such guarding returns only
+with a future micro-VM executor ("Shape B" — Virtualization.framework
+per-worktree micro-VM). The threat model is explicitly limited to
+accidental harm, and this posture is reported, never described as
+loopback protection.
+
+### Provenance
+
+`omac provenance` reports the build-executor network posture in a
+`build executor` section (and a `build_executor` JSON object) that
+clearly distinguishes:
+
+- **Linux private loopback** (kernel boundary): network posture
+  `kernel-blocked (private sandbox loopback)`, loopback boundary
+  `kernel (network namespace)`, worker loopback `private sandbox
+  loopback`, accepted residual `host-loopback services unreachable from
+  the executor`.
+- **macOS env-only filtering** (filesystem-only boundary): network
+  posture `env-only filtered (filesystem confinement only)`, loopback
+  boundary `filesystem-only`, worker loopback `works (no kernel network
+  filter)`, accepted residual `raw-socket-capable build code can reach
+  host loopback and external egress; no host-listener monitoring/guarding
+  (ADR 0003 Revision)`.
+- **Canonical checks** (same on both platforms): `yarp3 checkstyle twin
+  tasks retired (OMAC init.d); canonical checkstyleMain/checkstyleTest
+  run unchanged via Gradle Worker API`.
+
+On no platform may a build executor be described as having a loopback
+guarantee it does not have (spec §Network, 297).
 
 ## Control-state protection
 

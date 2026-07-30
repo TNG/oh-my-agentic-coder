@@ -29,6 +29,7 @@ func testRunGrants(t *testing.T) *BuildGrants {
 		t.Fatalf("GrantsFor: %v", err)
 	}
 	t.Cleanup(g.CleanupTmp)
+	chmodInitDForCleanup(t, filepath.Join(cacheDir, "gradle"))
 	return g
 }
 
@@ -560,6 +561,7 @@ func TestRunBuildProxyTokenDoesNotLeak(t *testing.T) {
 		t.Fatalf("GrantsFor: %v", err)
 	}
 	t.Cleanup(g.CleanupTmp)
+	chmodInitDForCleanup(t, filepath.Join(cacheDir, "gradle"))
 
 	// Sanity: the token IS in the child env (GRADLE_OPTS), so a leak
 	// assertion is meaningful — if it were absent there'd be nothing to
