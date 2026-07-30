@@ -74,9 +74,10 @@ func TestPrepareControlState_WritesReadOnlyFiles(t *testing.T) {
 		}
 	}
 	// Returned control files: gradle.properties + README + the
-	// ticket-07 retire-checkstyle-twins init script (always written).
-	if len(paths.Files) != 3 {
-		t.Fatalf("got %d control file paths, want 3: %v", len(paths.Files), paths.Files)
+	// ticket-07 retire-checkstyle-twins init script + the ticket-08
+	// mockito-agent init script (both always written).
+	if len(paths.Files) != 4 {
+		t.Fatalf("got %d control file paths, want 4: %v", len(paths.Files), paths.Files)
 	}
 	// Returned control dirs: init.d (1).
 	if len(paths.Dirs) != 1 || filepath.Base(paths.Dirs[0]) != "init.d" {
@@ -335,5 +336,91 @@ func TestPrepareControlState_WritesRetireCheckstyleTwinsInitScript(t *testing.T)
 	// independently of the registry path.
 	if _, err := os.Stat(filepath.Join(leaf, "init.d", registryCredentialsInitName)); err == nil {
 		t.Errorf("registry-credentials init script must NOT be written when no private registries are approved")
+	}
+}
+
+// TestRenderMockitoAgentInitScript_NonEmpty asserts the mockito-agent
+// init script is always emitted (the agent applies to every build — it is
+// a defensive no-op when no test task uses Mockito).
+func TestRenderMockitoAgentInitScript_NonEmpty(t *testing.T) {
+	s := RenderMockitoAgentInitScript()
+	if s == "" {
+		t.Fatal("mockito-agent init script must always be non-empty (defensive no-op when no Mockito)")
+	}
+}
+
+// TestRenderMockitoAgentInitScript_LocatesJarAndAddsJavaagent asserts the
+// script mirrors the captured reference: it enables dynamic agent loading,
+// locates the mockito-core jar on the test classpath at doFirst time, and
+// adds it as a -javaagent. A missing jar is silently skipped.
+func TestRenderMockitoAgentInitScript_LocatesJarAndAddsJavaagent(t *testing.T) {
+	s := RenderMockitoAgentInitScript()
+	for _, want := range []string{
+		// Applies to every project's Test tasks.
+		"allprojects",
+		"tasks.withType(Test).configureEach",
+		// Enables dynamic agent loading (the -javaagent attach is permitted).
+		"-XX:+EnableDynamicAgentLoading",
+		// Locates the mockito-core jar at doFirst time (classpath resolved).
+		"doFirst",
+		"mockito-core-.*\\.jar",
+		// Adds the jar as a -javaagent.
+		"-javaagent:",
+		// Defensive skip when the jar is absent.
+		"if (mockitoJar != null)",
+		// Read-only contract.
+		"READ-ONLY to the executor",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("mockito-agent init script missing %q:\n%s", want, s)
+		}
+	}
+	// Determinism: re-rendering yields identical output.
+	if s2 := RenderMockitoAgentInitScript(); s2 != s {
+		t.Errorf("mockito-agent init script is not deterministic across renders")
+	}
+}
+
+// TestPrepareControlState_WritesMockitoAgentInitScript asserts the
+// mockito-agent init script is written UNCONDITIONALLY (not gated on
+// private registries or approved images) and granted read-only to the
+// executor. It must appear in the returned control files list so
+// WriteDenyPaths protects it.
+func TestPrepareControlState_WritesMockitoAgentInitScript(t *testing.T) {
+	leaf := t.TempDir()
+	chmodInitDForCleanup(t, leaf)
+	// No RegistryProxyURLs: the registry-credentials script is NOT
+	// written, but the mockito-agent script MUST be (it is unconditional).
+	paths, err := PrepareControlState(leaf, GradlePropertiesConfig{})
+	if err != nil {
+		t.Fatalf("PrepareControlState: %v", err)
+	}
+	initScript := filepath.Join(leaf, "init.d", mockitoAgentInitName)
+	data, err := os.ReadFile(initScript)
+	if err != nil {
+		t.Fatalf("mockito-agent init script not written (it must be unconditional): %v", err)
+	}
+	body := string(data)
+	if !strings.Contains(body, "mockito-core") {
+		t.Errorf("mockito-agent init script missing jar-location logic:\n%s", body)
+	}
+	// The script must NOT contain any credential material.
+	for _, banned := range []string{"alice", "s3cr3t", "password=", "user:pass"} {
+		if strings.Contains(body, banned) {
+			t.Errorf("mockito-agent init script must not contain credential material %q:\n%s", banned, body)
+		}
+	}
+	// The init script file is granted read-only: it appears in the
+	// returned control files list AND its parent init.d dir is in
+	// control dirs (read-only).
+	found := false
+	for _, p := range paths.Files {
+		if strings.HasSuffix(p, mockitoAgentInitName) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("mockito-agent init script not in control files (read-only grant missing): %v", paths.Files)
 	}
 }

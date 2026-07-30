@@ -173,6 +173,31 @@ func runBuild(args []string, env *Env) int {
 	}
 	approved.RegistryProxyURLs = credProxyURLs
 
+	// Container proxy (ticket 08, ADR 0002): start the mediated Docker
+	// endpoint ONLY when the approved manifest declares container images
+	// (macOS-only in v1; Linux kernel-blocked → not started). The executor
+	// receives DOCKER_HOST=<loopback proxy URL>, NEVER the raw daemon
+	// socket. The proxy authenticates by ownership (omac.executor=<id>
+	// label); the URL carries no userinfo. The stop func tears down the
+	// listener AND runs Cleanup (removes executor-owned containers + the
+	// executor-owned internal network). Cleanup runs via the defer chain
+	// below, which fires on BOTH normal completion and forced cancel (a
+	// forced cancel returns through RunBuild's normal path after the
+	// OnForcedCancel daemon-recycle hook, so deferred funcs still run).
+	// It is NOT wired into OnForcedCancel itself (that hook recycles the
+	// Gradle daemon); container cleanup relies on the defer, not the hook.
+	auditor := buildAuditor(env)
+	defer auditor.Close()
+	containerProxyURL, containerProxyEnabled, stopContainerProxy, cpErr := containerProxyStarter(env, resolved.Worktree, approved.ApprovedImages, auditor)
+	if cpErr != nil {
+		return failService("container proxy: %v", cpErr)
+	}
+	if stopContainerProxy != nil {
+		defer stopContainerProxy()
+	}
+	approved.ContainerProxyURL = containerProxyURL
+	approved.ContainerProxyEnabled = containerProxyEnabled
+
 	grants, err := buildrun.GrantsFor(resolved.Worktree, cacheDir, approved)
 	if err != nil {
 		return failService("derive executor grants: %v", err)
@@ -208,9 +233,9 @@ func runBuild(args []string, env *Env) int {
 
 	// Audit: open the persistent trail best-effort (a build must never
 	// fail because the audit log is unavailable; config strictness is the
-	// start/serve path's concern).
-	auditor := buildAuditor(env)
-	defer auditor.Close()
+	// start/serve path's concern). The auditor was opened earlier (before
+	// the container proxy, which needs it for container create/denial/
+	// cleanup events); emit the build.request event here.
 	auditor.Emit(audit.ControlMutation("build.request", resolved.Worktree,
 		fmt.Sprintf("adapter=gradle root=%s args=%d", resolved.ProjectDir, len(resolved.Args))))
 
@@ -348,10 +373,22 @@ Executor authority (one restricted process per request):
               kernel-blocked (private sandbox loopback; warm-daemon
               cohabitation is a later Linux-validation item).
   worker checks: canonical checkstyleMain/checkstyleTest run unchanged via
-              the Gradle Worker API on both platforms; yarp3's
-              checkstyle*Sandbox twin tasks are retired by the OMAC-authored
-              read-only init.d/retire-checkstyle-twins.gradle (defensive
-              no-op when no twins exist). No host init script required.
+               the Gradle Worker API on both platforms; yarp3's
+               checkstyle*Sandbox twin tasks are retired by the OMAC-authored
+               read-only init.d/retire-checkstyle-twins.gradle (defensive
+               no-op when no twins exist). No host init script required.
+  containers: the executor gets a FILTERED Docker endpoint (DOCKER_HOST
+               points at a loopback HTTP proxy, NEVER the raw daemon socket)
+               only when the approved manifest declares container images
+               (macOS v1; Linux kernel-blocked → no proxy). Approved images
+               only; host bind mounts, socket nesting, privileged mode, host
+               namespaces, devices, extra capabilities, and unsafe security
+               options are denied with structured OMAC errors. Published ports
+               bind to 127.0.0.1; containers attach to an executor-owned
+               internal network with no outbound route. Testcontainers Ryuk
+               is disabled (TESTCONTAINERS_RYUK_DISABLED=true). Executor-
+               owned containers + network are removed on normal completion
+               and cancellation.
   denied:     host ~/.gradle, host secrets, SSH/AWS state, OMAC config
 
 JDK resolution:

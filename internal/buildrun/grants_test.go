@@ -397,6 +397,70 @@ func TestGrantsForNoProxyOmitsGradleOpts(t *testing.T) {
 	}
 }
 
+// TestGrantsForContainerProxyEnv asserts ticket 08: DOCKER_HOST +
+// TESTCONTAINERS_RYUK_DISABLED=true are injected into ChildEnv ONLY when
+// the container proxy is enabled (macOS with approved images). The
+// DOCKER_HOST URL carries NO userinfo — the proxy authenticates by
+// ownership, not token.
+func TestGrantsForContainerProxyEnv(t *testing.T) {
+	wt, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cacheDir := filepath.Join(t.TempDir(), "cache")
+
+	t.Run("enabled injects DOCKER_HOST and RYUK_DISABLED", func(t *testing.T) {
+		g, err := GrantsFor(wt, cacheDir, BuildConfig{
+			ContainerProxyURL:     "tcp://127.0.0.1:54321",
+			ContainerProxyEnabled: true,
+		})
+		if err != nil {
+			t.Fatalf("GrantsFor: %v", err)
+		}
+		chmodInitDForCleanup(t, filepath.Join(cacheDir, "gradle"))
+		env := ChildEnv(g)
+		m := childEnvMap(env)
+		if m["DOCKER_HOST"] != "tcp://127.0.0.1:54321" {
+			t.Errorf("DOCKER_HOST = %q, want tcp://127.0.0.1:54321", m["DOCKER_HOST"])
+		}
+		if m["TESTCONTAINERS_RYUK_DISABLED"] != "true" {
+			t.Errorf("TESTCONTAINERS_RYUK_DISABLED = %q, want true", m["TESTCONTAINERS_RYUK_DISABLED"])
+		}
+		// The URL carries NO userinfo (no credential; ownership-based auth).
+		if strings.Contains(m["DOCKER_HOST"], "@") {
+			t.Errorf("DOCKER_HOST must not contain userinfo: %q", m["DOCKER_HOST"])
+		}
+	})
+
+	t.Run("disabled omits DOCKER_HOST and RYUK_DISABLED", func(t *testing.T) {
+		g, err := GrantsFor(wt, cacheDir, BuildConfig{})
+		if err != nil {
+			t.Fatalf("GrantsFor: %v", err)
+		}
+		chmodInitDForCleanup(t, filepath.Join(cacheDir, "gradle"))
+		env := ChildEnv(g)
+		m := childEnvMap(env)
+		if _, ok := m["DOCKER_HOST"]; ok {
+			t.Errorf("DOCKER_HOST must be absent when container proxy disabled: %q", m["DOCKER_HOST"])
+		}
+		if _, ok := m["TESTCONTAINERS_RYUK_DISABLED"]; ok {
+			t.Errorf("TESTCONTAINERS_RYUK_DISABLED must be absent when container proxy disabled: %q", m["TESTCONTAINERS_RYUK_DISABLED"])
+		}
+	})
+}
+
+// childEnvMap parses a "key=value" child-env slice into a map. Named
+// distinctly from jdk_test.go's envMap (a getenv-func builder).
+func childEnvMap(env []string) map[string]string {
+	m := map[string]string{}
+	for _, kv := range env {
+		if i := strings.IndexByte(kv, '='); i > 0 {
+			m[kv[:i]] = kv[i+1:]
+		}
+	}
+	return m
+}
+
 // TestGrantsForJDKResolution: the resolved JDK bin/lib are read-granted
 // and the ChildEnv PATH/JAVA_HOME point at the real JDK, not shims.
 func TestGrantsForJDKResolution(t *testing.T) {

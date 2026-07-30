@@ -46,6 +46,16 @@ type BuildGrants struct {
 	// here — the URL is http://127.0.0.1:<port>/<alias>/. Empty when no
 	// private registries are approved (the common case) or on Linux.
 	registryProxyURLs map[string]string
+	// containerProxyURL is the mediated Docker endpoint the executor is
+	// pointed at via DOCKER_HOST (ticket 08). Empty when no container
+	// proxy is in use (no approved images, or Linux kernel-blocked).
+	// The URL carries NO userinfo — the proxy authenticates by ownership
+	// (omac.executor=<id> label), not token.
+	containerProxyURL string
+	// containerProxyEnabled is true when the container proxy was started
+	// (macOS with approved images). ChildEnv injects DOCKER_HOST +
+	// TESTCONTAINERS_RYUK_DISABLED=true only when this is true.
+	containerProxyEnabled bool
 }
 
 // GradleUserHome is the OMAC cache leaf handed to the Gradle wrapper as
@@ -96,6 +106,27 @@ func (b *BuildGrants) RegistryProxyURLs() map[string]string {
 		return nil
 	}
 	return b.registryProxyURLs
+}
+
+// ContainerProxyURL returns the mediated Docker endpoint the executor is
+// pointed at via DOCKER_HOST (ticket 08), or "" when no container proxy is
+// in use. The URL carries NO userinfo — the proxy authenticates by
+// ownership (omac.executor=<id> label), not token.
+func (b *BuildGrants) ContainerProxyURL() string {
+	if b == nil {
+		return ""
+	}
+	return b.containerProxyURL
+}
+
+// ContainerProxyEnabled reports whether the container proxy was started
+// (macOS with approved images). ChildEnv injects DOCKER_HOST +
+// TESTCONTAINERS_RYUK_DISABLED=true only when this is true.
+func (b *BuildGrants) ContainerProxyEnabled() bool {
+	if b == nil {
+		return false
+	}
+	return b.containerProxyEnabled
 }
 
 // GradleLeafName is the tool leaf below the resolved OMAC cache scope.
@@ -155,6 +186,17 @@ type BuildConfig struct {
 	// threads this into PrepareControlState so the init.d script is
 	// generated; the credential itself NEVER enters BuildConfig.
 	RegistryProxyURLs map[string]string
+	// ContainerProxyURL is the mediated Docker endpoint the executor is
+	// pointed at via DOCKER_HOST (ticket 08). Empty disables container
+	// proxy injection (no approved images, or Linux kernel-blocked). The
+	// URL carries NO userinfo — the proxy authenticates by ownership
+	// (omac.executor=<id> label), not token. Set by the CLI after starting
+	// the container proxy.
+	ContainerProxyURL string
+	// ContainerProxyEnabled is true when the container proxy was started
+	// (macOS with approved images). ChildEnv injects DOCKER_HOST +
+	// TESTCONTAINERS_RYUK_DISABLED=true only when this is true.
+	ContainerProxyEnabled bool
 	// getenv is the JDK discovery seam; production passes os.Getenv, tests
 	// inject a fake parent env. nil selects os.Getenv.
 	getenv func(string) string
@@ -348,15 +390,17 @@ func GrantsFor(worktree, cacheDir string, cfg BuildConfig) (*BuildGrants, error)
 	}
 
 	bg := &BuildGrants{
-		Grants:             g,
-		gradleUserHome:     leaf,
-		tmpDir:             tmp,
-		jdk:                jdk,
-		proxyURL:           cfg.ProxyURL,
-		maxHeap:            maxHeap,
-		approvedImages:     cfg.ApprovedImages,
-		approvedRegistries: cfg.ApprovedRegistries,
-		registryProxyURLs:  cfg.RegistryProxyURLs,
+		Grants:                g,
+		gradleUserHome:        leaf,
+		tmpDir:                tmp,
+		jdk:                   jdk,
+		proxyURL:              cfg.ProxyURL,
+		maxHeap:               maxHeap,
+		approvedImages:        cfg.ApprovedImages,
+		approvedRegistries:    cfg.ApprovedRegistries,
+		registryProxyURLs:     cfg.RegistryProxyURLs,
+		containerProxyURL:     cfg.ContainerProxyURL,
+		containerProxyEnabled: cfg.ContainerProxyEnabled,
 	}
 	if proxy.Host != "" && proxy.Port > 0 {
 		bg.gradleOpts = buildGradleOpts(proxy)
@@ -526,6 +570,17 @@ func ChildEnv(b *BuildGrants) []string {
 	if b.gradleOpts != "" {
 		injected["GRADLE_OPTS"] = b.gradleOpts
 		injected["NO_PROXY"] = "localhost,127.0.0.1,::1"
+	}
+	// Container proxy (ticket 08): point the executor at the mediated
+	// Docker endpoint via DOCKER_HOST (NEVER the raw daemon socket). The
+	// URL carries NO userinfo — the proxy authenticates by ownership.
+	// TESTCONTAINERS_RYUK_DISABLED=true disables the Ryuk reaper (ADR 0002
+	// v1 posture); the filter also rejects Ryuk fail-closed (a client
+	// could unset the env). Injected only when the container proxy is
+	// enabled (macOS with approved images).
+	if b.containerProxyEnabled && b.containerProxyURL != "" {
+		injected["DOCKER_HOST"] = b.containerProxyURL
+		injected["TESTCONTAINERS_RYUK_DISABLED"] = "true"
 	}
 
 	environ := make([]string, 0, len(envPassThrough)+len(injected))

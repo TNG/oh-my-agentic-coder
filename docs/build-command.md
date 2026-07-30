@@ -491,6 +491,133 @@ clearly distinguishes:
 On no platform may a build executor be described as having a loopback
 guarantee it does not have (spec §Network, 297).
 
+## Mediated container access (ticket 08)
+
+A cold yarp3 compile and jOOQ generation need a PostgreSQL container
+(ADR 0002). Rather than granting the executor the raw Docker/Colima
+socket — which would let build or test code bypass OMAC's filesystem
+policy through host bind mounts — OMAC exposes a **filtered
+Docker-compatible endpoint**. The executor receives `DOCKER_HOST=tcp://
+127.0.0.1:<port>` pointing at a loopback HTTP proxy
+(`internal/containerproxy/`); the proxy forwards only the measured
+allowlist to the existing host daemon and fails closed on everything else.
+The executor NEVER sees the raw daemon socket.
+
+The allowlist is the ticket-02 Testcontainers capture (see
+`.scratch/jvm-build-executor/02-testcontainers-capture/REPORT.md`
+§"Proposed v1 allowlist (fail-closed)"). It is encoded exactly:
+
+- `GET /_ping`, `GET /v*/version`, `GET /v*/info` — allowed (info-leak
+  residual on `/info` noted in the REPORT; passed through in v1).
+- `GET /v*/images/json` — allowed.
+- `GET /v*/images/{ref}/json` — allowed ONLY for refs in the approved
+  manifest image set; else denied "unapproved image".
+- `POST /v*/containers/create` — allowed with create-body validation
+  (below).
+- `POST /v*/containers/{id}/start`, `/kill`, `/wait`, `GET .../json`,
+  `GET .../logs`, `DELETE .../{id}` — ownership-checked (the container
+  must carry this executor's ownership label).
+- `GET /v*/containers/json` — allowed ONLY with the executor-ownership
+  label filter; the client-supplied label filter is forgeable, so the
+  proxy strips it and injects the ownership label server-side.
+- `POST /v*/images/create` — allowed ONLY when `fromImage` is in the
+  approved set (a cold compile may need to pull the image); any
+  `X-Registry-Auth` header is denied (private registry credential lift is
+  issue #92 territory, not v1).
+
+Explicitly DENIED with a structured OMAC error (not an opaque 404): all
+prune endpoints (`/images/prune`, `/networks/prune`, `/volumes/prune`,
+`/containers/prune`), `/build`, `/commit`, `/exec*`, `/archive`,
+`/attach`, swarm/node/service/secret/config/plugin/daemon endpoints, and
+ANY endpoint not in the allowlist. Denials are rendered as a JSON
+Docker-API-style error response with an `omac` message field AND a typed
+Go error emitted to the audit trail, so Testcontainers/Gradle wrapping
+does not hide the OMAC cause (spec §Diagnostics — "correlate low-level
+network and container denials with the active build request").
+
+### Create-body validation (values, not key presence)
+
+Testcontainers always serializes the full `HostConfig` struct, so the
+filter validates VALUES (REPORT §"Create-body field analysis"):
+
+- `Image` ∈ approved image set — else denied "unapproved image".
+- `HostConfig.Privileged` must be absent/false — else denied "privileged
+  mode forbidden".
+- `HostConfig.Binds`, `.Mounts` must be empty — else denied "host bind
+  mounts forbidden".
+- `HostConfig.NetworkMode`, `.PidMode`, `.IpcMode`, `.UsernsMode`,
+  `.CgroupnsMode`, `.Runtime` must be empty/default — else denied "host
+  namespaces forbidden".
+- `HostConfig.CapAdd`, `.Devices`, `.SecurityOpt`, `.Dns`, `.ExtraHosts`,
+  `.CgroupParent` must be empty — else denied "devices/capabilities/
+  security options forbidden".
+- `HostConfig.PortBindings[*][*].HostIp` is REWRITTEN to `127.0.0.1`
+  (loopback-only publishing); empty `HostPort` is allowed (ephemeral).
+  The mapped port is registered as an executor-owned endpoint.
+- The ownership label `omac.executor=<id>` is injected into `Labels`;
+  any client attempt to set a reserved `omac.*` label is rejected
+  (forgeable labels must not override ownership).
+- The `testcontainers/ryuk` image is rejected fail-closed (a client
+  could unset the env).
+- Resource limits (`Memory`/`NanoCpus`) pass through (the manifest gate
+  already validated the request ≤ ceiling).
+- `Env` may carry ephemeral per-run DB credentials (e.g.
+  `POSTGRES_PASSWORD`); these pass through to the daemon (the container
+  needs them to function) but are NEVER recorded in audit — only the
+  image ref, container id, and port mappings are audited. Env values are
+  absent from audit by construction, not redacted after capture.
+
+### Ownership enforcement
+
+Every follow-up op on a container `{id}` (start/kill/wait/inspect/logs/
+delete) is gated on the container carrying this executor's
+`omac.executor=<id>` label. One executor cannot inspect, modify, or
+remove another executor's resources. The proxy tracks created container
+IDs in session state and verifies ownership via a cached inspect.
+
+### Executor-owned internal network
+
+Containers created by the proxy are attached to an executor-owned
+internal network (`Internal: true`, no outbound route) labeled
+`omac.executor=<id>`. The network endpoints (`/networks/create`,
+`/networks/{id}/connect`, `/networks/{id}/disconnect`, `/networks/{id}`
+DELETE) are host-side proxy operations — they are NOT exposed to the
+executor's allowlist. The proxy owns the network lifecycle. Mapped ports
+bind to `127.0.0.1` and are registered as executor endpoints.
+
+### `TESTCONTAINERS_RYUK_DISABLED=true`
+
+OMAC injects `TESTCONTAINERS_RYUK_DISABLED=true` into the executor env
+(ADR 0002 v1 posture). Ryuk, socket nesting, and reusable containers are
+unsupported. Normal Testcontainers close operations remain available;
+sidecar cleanup is authoritative after failure, cancellation, or
+teardown. The filter also rejects Ryuk fail-closed (a client could unset
+the env).
+
+### Cleanup on teardown
+
+The stop func returned by the container proxy closes the listener AND
+runs `Cleanup()`, which removes executor-owned containers and the
+executor-owned internal network without touching unrelated resources.
+This runs on normal completion (via the `defer stopContainerProxy()` in
+`runBuild`) and on forced cancellation (the defer chain runs after
+`RunBuild` returns). Audit records container create, denial, and cleanup
+outcomes (never credential values or proxy tokens).
+
+### Platform posture (v1)
+
+The container proxy is macOS-only in v1 (Shape A, env-only network) —
+same gate as the filtered/credential proxies. On Linux the build executor
+is kernel-blocked, so the loopback proxy is unreachable and not started.
+The proxy is started ONLY when the approved manifest declares container
+images (`manifest.HasManifest()` AND `len(approvedImages) > 0`); a
+standard Gradle project with no approved images skips the proxy entirely.
+The `DOCKER_HOST` URL carries NO userinfo — the proxy authenticates by
+ownership (the `omac.executor` label), not by token. The executor ID is a
+stable, non-secret derivation of the canonical worktree path so one
+executor's resources are distinct from another's across concurrent
+worktrees.
+
 ## Control-state protection
 
 OMAC-generated control state under the leaf (`gradle.properties`,
