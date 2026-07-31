@@ -30,6 +30,40 @@ type fakeDaemon struct {
 	// the daemon carrying an X-Registry-Auth header (the proxy must strip
 	// it — review critical #2).
 	sawAuthHeader bool
+	// preseededContainers is the list returned by GET /containers/json.
+	// Used by the scavenger tests to simulate abandoned containers from a
+	// previous crashed executor (plus unrelated containers the scavenger
+	// must NOT touch). Reset to nil after the scavenger consumes it so a
+	// second list returns empty (the scavenger removed its matches).
+	preseededContainers []fakeContainer
+	// preseededNetworks is the list returned by GET /networks. Same model
+	// as preseededContainers for the network scavenger.
+	preseededNetworks []fakeNetwork
+	// deletedContainers records ids the daemon received DELETE for, so
+	// scavenger tests can assert exactly which containers were removed.
+	deletedContainers []string
+	// deletedNetworks records network ids the daemon received DELETE for.
+	deletedNetworks []string
+	// createdContainers records containers created via POST /containers/create
+	// (parsed from the create body's Labels so the scavenger's label filter
+	// can find them). Used by the crash-restart test to faithfully simulate
+	// a crashed prior run: the proxy creates a container, the daemon persists
+	// it, the proxy crashes without cleanup, and the next proxy's scavenger
+	// finds it via GET /containers/json. The labels are parsed from the
+	// create body (the proxy injects omac.executor=<id> via validateCreateBody).
+	createdContainers []fakeContainer
+}
+
+// fakeContainer is a minimal /containers/json list entry for scavenger tests.
+type fakeContainer struct {
+	ID     string
+	Labels map[string]string
+}
+
+// fakeNetwork is a minimal /networks list entry for scavenger tests.
+type fakeNetwork struct {
+	ID     string
+	Labels map[string]string
 }
 
 type recordedReq struct {
@@ -48,9 +82,22 @@ func newFakeDaemon(t *testing.T) *fakeDaemon {
 		}
 		b, _ := io.ReadAll(r.Body)
 		d.calls = append(d.calls, recordedReq{r.Method, r.URL.Path, r.URL.RawQuery, string(b)})
+		// Persist the created container so a subsequent GET /containers/json
+		// (e.g. the scavenger) can find it. The id comes from the create
+		// response; the labels are parsed from the create body (the proxy
+		// injects omac.executor=<id> via validateCreateBody). This makes the
+		// crash-restart test faithful: a container created through the proxy
+		// is visible to the scavenger's daemon list without re-seeding.
 		resp := d.createResponse
 		if resp == "" {
 			resp = `{"Id":"abc123","Warnings":[]}`
+		}
+		var created struct {
+			ID string `json:"Id"`
+		}
+		if json.Unmarshal([]byte(resp), &created) == nil && created.ID != "" {
+			labels := parseCreateBodyLabels(string(b))
+			d.createdContainers = append(d.createdContainers, fakeContainer{ID: created.ID, Labels: labels})
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
@@ -67,14 +114,55 @@ func newFakeDaemon(t *testing.T) *fakeDaemon {
 		w.WriteHeader(http.StatusCreated)
 		_, _ = io.WriteString(w, resp)
 	})
+	// GET /networks (no trailing slash) — list networks for the scavenger.
+	// Returns preseededNetworks filtered by the label filter in the query
+	// (the scavenger sends filters={"label":["omac.executor=<id>"]}).
+	d.mux.HandleFunc("/networks", func(w http.ResponseWriter, r *http.Request) {
+		d.calls = append(d.calls, recordedReq{r.Method, r.URL.Path, r.URL.RawQuery, ""})
+		out := filterFakeNetworks(d.preseededNetworks, r.URL.Query().Get("filters"))
+		b, _ := json.Marshal(out)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(b)
+	})
 	d.mux.HandleFunc("/networks/", func(w http.ResponseWriter, r *http.Request) {
 		d.calls = append(d.calls, recordedReq{r.Method, r.URL.Path, r.URL.RawQuery, ""})
+		if r.Method == http.MethodDelete {
+			id := strings.TrimPrefix(r.URL.Path, "/networks/")
+			d.deletedNetworks = append(d.deletedNetworks, id)
+		}
 		w.WriteHeader(http.StatusOK)
 	})
 	// Generic container endpoint: /containers/{id}/...
 	d.mux.HandleFunc("/containers/", func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
 		d.calls = append(d.calls, recordedReq{r.Method, r.URL.Path, r.URL.RawQuery, string(b)})
+		// GET /containers/json (list) — return preseeded containers
+		// filtered by the label filter in the query (the scavenger sends
+		// filters={"label":["omac.executor=<id>"]}).
+		if r.URL.Path == "/containers/json" {
+			// Union of preseeded (orphaned from a previous crash) + created
+			// (persisted by the create handler), filtered by the label
+			// filter. This lets the crash-restart test faithfully simulate
+			// a crashed prior run without re-seeding: the proxy creates a
+			// container, the daemon persists it, the proxy crashes, and the
+			// next proxy's scavenger finds it via the daemon list.
+			all := append([]fakeContainer(nil), d.preseededContainers...)
+			all = append(all, d.createdContainers...)
+			out := filterFakeContainers(all, r.URL.Query().Get("filters"))
+			jb, _ := json.Marshal(out)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(jb)
+			return
+		}
+		if r.Method == http.MethodDelete {
+			id := strings.TrimPrefix(r.URL.Path, "/containers/")
+			if i := strings.IndexByte(id, '?'); i >= 0 {
+				id = id[:i]
+			}
+			d.deletedContainers = append(d.deletedContainers, id)
+		}
 		// Return the create response for /create, the inspect response for
 		// /json, etc. Simplest: return inspectResponse for /json, OK otherwise.
 		if strings.HasSuffix(r.URL.Path, "/json") {
@@ -126,6 +214,87 @@ func stripVersionPrefix(path string) string {
 		return path[1+idx:]
 	}
 	return path
+}
+
+// filterFakeContainers mimics the daemon's label-filter behavior for
+// GET /containers/json: returns only entries whose Labels contain every
+// label in the filters JSON's "label" array. The scavenger sends
+// filters={"label":["omac.executor=<id>"]}, so only this executor's
+// abandoned containers are returned. An empty/unparseable filter returns
+// nothing (fail-safe: the scavenger must not enumerate unrelated hosts).
+func filterFakeContainers(in []fakeContainer, filtersJSON string) []fakeContainer {
+	if filtersJSON == "" {
+		return nil
+	}
+	var filters map[string][]string
+	if err := json.Unmarshal([]byte(filtersJSON), &filters); err != nil {
+		return nil
+	}
+	want := filters["label"]
+	var out []fakeContainer
+	for _, c := range in {
+		ok := true
+		for _, l := range want {
+			if !labelMatches(c.Labels, l) {
+				ok = false
+				break
+			}
+		}
+		if ok {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// filterFakeNetworks is the network analogue of filterFakeContainers.
+func filterFakeNetworks(in []fakeNetwork, filtersJSON string) []fakeNetwork {
+	if filtersJSON == "" {
+		return nil
+	}
+	var filters map[string][]string
+	if err := json.Unmarshal([]byte(filtersJSON), &filters); err != nil {
+		return nil
+	}
+	want := filters["label"]
+	var out []fakeNetwork
+	for _, n := range in {
+		ok := true
+		for _, l := range want {
+			if !labelMatches(n.Labels, l) {
+				ok = false
+				break
+			}
+		}
+		if ok {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// labelMatches reports whether labels contains the label key=value pair.
+// Docker label filters are "key" (present) or "key=value" (exact).
+func labelMatches(labels map[string]string, filter string) bool {
+	if k, v, ok := strings.Cut(filter, "="); ok {
+		return labels[k] == v
+	}
+	_, ok := labels[filter]
+	return ok
+}
+
+// parseCreateBodyLabels extracts the Labels map from a create-container
+// JSON body (the proxy injects omac.executor=<id> via validateCreateBody).
+// Used by the fake daemon to persist created containers with their labels
+// so the scavenger's label filter can find them.
+func parseCreateBodyLabels(body string) map[string]string {
+	var parsed struct {
+		Labels map[string]string `json:"Labels"`
+	}
+	if json.Unmarshal([]byte(body), &parsed) == nil {
+		return parsed.Labels
+	}
+	return nil
 }
 
 // startProxy starts a containerproxy pointed at the fake daemon.
@@ -655,5 +824,355 @@ func TestContainerPolicyError_Render(t *testing.T) {
 				t.Errorf("kind %d render missing %q: %s", c.kind, w, msg)
 			}
 		}
+	}
+}
+
+// --- ticket 09: startup scavenger (checkbox 6) ---------------------------
+
+// TestScavenge_RemovesOnlyOwnedContainers asserts the startup scavenger
+// removes abandoned containers labeled with THIS executor's ownership
+// label and does NOT touch unrelated host containers (checkbox 6). The
+// fake daemon is pre-seeded with two owned containers (from a previous
+// crashed executor) and one unrelated container; only the owned two are
+// DELETEd.
+func TestScavenge_RemovesOnlyOwnedContainers(t *testing.T) {
+	d := newFakeDaemon(t)
+	d.preseededContainers = []fakeContainer{
+		{ID: "owned-aaa", Labels: map[string]string{"omac.executor": "exec-1"}},
+		{ID: "owned-bbb", Labels: map[string]string{"omac.executor": "exec-1"}},
+		{ID: "unrelated-ccc", Labels: map[string]string{"omac.executor": "other-exec"}},
+		{ID: "no-label-ddd", Labels: nil},
+	}
+	// Build the proxy WITHOUT starting it (Start would run the scavenger
+	// automatically); call Scavenge directly to assert the counts.
+	p, err := New(Config{
+		Upstream:       d.server.URL,
+		ApprovedImages: []string{"pgvector/pgvector:pg16"},
+		ExecutorID:     "exec-1",
+		Auditor:        audit.Nop(),
+		Logf:           func(string, ...any) {},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cRemoved, nRemoved := p.Scavenge()
+	if cRemoved != 2 {
+		t.Errorf("containers removed = %d, want 2 (only owned): deleted=%v", cRemoved, d.deletedContainers)
+	}
+	if nRemoved != 0 {
+		t.Errorf("networks removed = %d, want 0", nRemoved)
+	}
+	// Exactly the two owned ids were DELETEd.
+	wantDeleted := map[string]bool{"owned-aaa": true, "owned-bbb": true}
+	if len(d.deletedContainers) != 2 {
+		t.Fatalf("deleted %d containers, want 2: %v", len(d.deletedContainers), d.deletedContainers)
+	}
+	for _, id := range d.deletedContainers {
+		if !wantDeleted[id] {
+			t.Errorf("deleted unexpected container %s (must not touch unrelated)", id)
+		}
+	}
+}
+
+// TestScavenge_RemovesOnlyOwnedNetworks asserts the scavenger removes
+// abandoned networks labeled with this executor's id and leaves unrelated
+// networks alone.
+func TestScavenge_RemovesOnlyOwnedNetworks(t *testing.T) {
+	d := newFakeDaemon(t)
+	d.preseededNetworks = []fakeNetwork{
+		{ID: "net-owned-1", Labels: map[string]string{"omac.executor": "exec-1"}},
+		{ID: "net-other", Labels: map[string]string{"omac.executor": "other"}},
+	}
+	p, err := New(Config{
+		Upstream:       d.server.URL,
+		ApprovedImages: []string{"pgvector/pgvector:pg16"},
+		ExecutorID:     "exec-1",
+		Auditor:        audit.Nop(),
+		Logf:           func(string, ...any) {},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cRemoved, nRemoved := p.Scavenge()
+	if nRemoved != 1 {
+		t.Errorf("networks removed = %d, want 1: deleted=%v", nRemoved, d.deletedNetworks)
+	}
+	if cRemoved != 0 {
+		t.Errorf("containers removed = %d, want 0", cRemoved)
+	}
+	if len(d.deletedNetworks) != 1 || d.deletedNetworks[0] != "net-owned-1" {
+		t.Errorf("deleted networks = %v, want [net-owned-1]", d.deletedNetworks)
+	}
+}
+
+// TestScavenge_EmptyDaemonIsNoOp asserts the scavenger is a no-op on a
+// clean daemon (no owned resources to remove).
+func TestScavenge_EmptyDaemonIsNoOp(t *testing.T) {
+	d := newFakeDaemon(t)
+	p, err := New(Config{
+		Upstream:       d.server.URL,
+		ApprovedImages: []string{"pgvector/pgvector:pg16"},
+		ExecutorID:     "exec-1",
+		Auditor:        audit.Nop(),
+		Logf:           func(string, ...any) {},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cRemoved, nRemoved := p.Scavenge()
+	if cRemoved != 0 || nRemoved != 0 {
+		t.Errorf("clean daemon: removed %d containers, %d networks; want 0/0", cRemoved, nRemoved)
+	}
+	if len(d.deletedContainers) != 0 || len(d.deletedNetworks) != 0 {
+		t.Errorf("clean daemon had deletes: containers=%v networks=%v", d.deletedContainers, d.deletedNetworks)
+	}
+}
+
+// TestScavenge_SpecialCharExecutorID asserts the scavenger's label filter
+// is built with json.Marshal (not fmt.Sprintf into a JSON string), so an
+// executor id containing JSON-special characters (e.g. a worktree base
+// name like feat"a) is correctly encoded and the scavenger still finds
+// the owned resources. The hand-rolled fmt.Sprintf filter would produce
+// malformed JSON and silently no-op for such ids (review major #2).
+func TestScavenge_SpecialCharExecutorID(t *testing.T) {
+	d := newFakeDaemon(t)
+	execID := `omac-feat"a`
+	d.preseededContainers = []fakeContainer{
+		{ID: "owned-special", Labels: map[string]string{"omac.executor": execID}},
+		{ID: "unrelated", Labels: map[string]string{"omac.executor": "exec-1"}},
+	}
+	p, err := New(Config{
+		Upstream:       d.server.URL,
+		ApprovedImages: []string{"pgvector/pgvector:pg16"},
+		ExecutorID:     execID,
+		Auditor:        audit.Nop(),
+		Logf:           func(string, ...any) {},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cRemoved, _ := p.Scavenge()
+	if cRemoved != 1 {
+		t.Errorf("special-char executor id: removed %d containers, want 1 (json.Marshal-encoded filter must match): deleted=%v", cRemoved, d.deletedContainers)
+	}
+	if len(d.deletedContainers) != 1 || d.deletedContainers[0] != "owned-special" {
+		t.Errorf("special-char executor id: deleted=%v, want [owned-special]", d.deletedContainers)
+	}
+}
+
+// TestStart_RunsScavengerAtStartup asserts Start invokes the scavenger
+// before serving the first request, so abandoned resources from a previous
+// crashed executor are removed automatically (checkbox 6). The fake
+// daemon is pre-seeded with an owned abandoned container; after Start the
+// container must be gone (DELETEd).
+func TestStart_RunsScavengerAtStartup(t *testing.T) {
+	d := newFakeDaemon(t)
+	d.preseededContainers = []fakeContainer{
+		{ID: "abandoned-1", Labels: map[string]string{"omac.executor": "exec-1"}},
+	}
+	p, err := New(Config{
+		Upstream:       d.server.URL,
+		ApprovedImages: []string{"pgvector/pgvector:pg16"},
+		ExecutorID:     "exec-1",
+		Auditor:        audit.Nop(),
+		Logf:           func(string, ...any) {},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := p.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer p.shutdown()
+	// The scavenger runs synchronously in Start before returning, so the
+	// DELETE is already recorded.
+	if len(d.deletedContainers) != 1 || d.deletedContainers[0] != "abandoned-1" {
+		t.Errorf("startup scavenger did not remove abandoned container: deleted=%v", d.deletedContainers)
+	}
+}
+
+// --- ticket 09: denial correlation (checkbox 7, spec §254) ---------------
+
+// TestDenial_CorrelatedWithBuildRequest asserts that when a build request
+// id is set on the proxy, a container-policy denial carries the request id
+// in BOTH the omac message (first line) and the audit event. The agent
+// thus receives an actionable OMAC explanation naming the active request
+// rather than only a wrapped Testcontainers failure.
+func TestDenial_CorrelatedWithBuildRequest(t *testing.T) {
+	d := newFakeDaemon(t)
+	p, err := New(Config{
+		Upstream:       d.server.URL,
+		ApprovedImages: []string{"pgvector/pgvector:pg16"},
+		ExecutorID:     "exec-1",
+		Auditor:        audit.Nop(),
+		Logf:           func(string, ...any) {},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.SetBuildRequestID("b-deadbeef")
+	if _, _, err := p.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer p.shutdown()
+	// Trigger a denial: unapproved image.
+	body := strings.ReplaceAll(validCreateBody(), "pgvector/pgvector:pg16", "postgres:17")
+	status, bodyStr, omac := doReq(t, p, http.MethodPost, "/v1.44/containers/create", []byte(body), nil)
+	if status != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", status)
+	}
+	// The omac message MUST start with the correlation prefix naming the
+	// active build request AND the actionable cause on line 1 (spec §254 —
+	// the OMAC cause + request id are the FIRST line so Gradle/Testcontainers
+	// summary-truncation that shows only line 1 still conveys the fix hint).
+	// Line 1 = "OMAC build request <id>: <cause line 1>".
+	if !strings.HasPrefix(omac, "OMAC build request b-deadbeef: OMAC build denied container image postgres:17") {
+		t.Errorf("denial line 1 must carry the request id AND the actionable cause:\n%s", omac)
+	}
+	// The underlying cause's fix hint is still present.
+	if !strings.Contains(omac, "do not retry") {
+		t.Errorf("denial must still contain the cause's fix hint: %q", omac)
+	}
+	// The raw body carries the same message in the `omac` field.
+	if !strings.Contains(bodyStr, "b-deadbeef") {
+		t.Errorf("response body must carry the build request id: %s", bodyStr)
+	}
+}
+
+// TestDenial_NoBuildRequestIDOmitsPrefix asserts that without a build
+// request id (e.g. the startup scavenger's own audit events, or a denial
+// outside a build) the correlation prefix is omitted — no misleading
+// "OMAC build request <empty> was denied" line.
+func TestDenial_NoBuildRequestIDOmitsPrefix(t *testing.T) {
+	d := newFakeDaemon(t)
+	p := startProxy(t, d) // no SetBuildRequestID
+	// Trigger a denial: unapproved image.
+	body := strings.ReplaceAll(validCreateBody(), "pgvector/pgvector:pg16", "postgres:17")
+	status, _, omac := doReq(t, p, http.MethodPost, "/v1.44/containers/create", []byte(body), nil)
+	if status != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", status)
+	}
+	if strings.Contains(omac, "OMAC build request") {
+		t.Errorf("denial without a build request id must NOT include the correlation prefix: %q", omac)
+	}
+	// The underlying cause is still present.
+	if !strings.Contains(omac, "denied container image") {
+		t.Errorf("denial must still name the underlying cause: %q", omac)
+	}
+}
+
+// TestContainerPolicyError_RenderWithBuildRequestID asserts Render prepends
+// the correlation prefix (request id + cause on line 1) when BuildRequestID
+// is set.
+func TestContainerPolicyError_RenderWithBuildRequestID(t *testing.T) {
+	e := &ContainerPolicyError{Kind: KindUnapprovedImage, Image: "evil:1", BuildRequestID: "b-abc"}
+	msg := e.Render()
+	if !strings.HasPrefix(msg, "OMAC build request b-abc: OMAC build denied container image evil:1") {
+		t.Errorf("render line 1 must carry the request id AND the cause: %s", msg)
+	}
+	if !strings.Contains(msg, "do not retry") {
+		t.Errorf("render must still contain the cause's fix hint: %s", msg)
+	}
+}
+
+// --- ticket 09: crash + supervisor restart cleanup (checkbox 5) ----------
+
+// TestCrashRestart_ScavengerRemovesOrphanedContainer simulates a crashed
+// executor: a proxy creates a container, then STOPs WITHOUT cleanup
+// (simulated crash — shutdown is bypassed, the container remains on the
+// daemon). A NEW proxy with the SAME executor id starts; its startup
+// scavenger must remove the orphaned container (checkbox 5: simulated
+// supervisor restart leaves no owned container behind). The fake daemon
+// persists the proxy-created container (via createdContainers), so the
+// scavenger finds it via GET /containers/json — no re-seeding.
+func TestCrashRestart_ScavengerRemovesOrphanedContainer(t *testing.T) {
+	d := newFakeDaemon(t)
+	// First "session": create a proxy, create a container through it, then
+	// simulate a crash by closing the listener WITHOUT running Cleanup (so
+	// the container remains on the daemon). The fake daemon persists the
+	// created container (id abc123, labeled omac.executor=exec-1 by the
+	// proxy's validateCreateBody) into createdContainers.
+	p1, err := New(Config{
+		Upstream:       d.server.URL,
+		ApprovedImages: []string{"pgvector/pgvector:pg16"},
+		ExecutorID:     "exec-1",
+		Auditor:        audit.Nop(),
+		Logf:           func(string, ...any) {},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := p1.Start(); err != nil {
+		t.Fatal(err)
+	}
+	// Create a container through the proxy so it is tracked by p1 AND
+	// persisted by the fake daemon (createdContainers).
+	if status, _, _ := doReq(t, p1, http.MethodPost, "/v1.44/containers/create", []byte(validCreateBody()), nil); status != http.StatusCreated {
+		t.Fatalf("create status = %d", status)
+	}
+	// Wait for the post-create network attach to settle.
+	waitForCall(t, d, func(c recordedReq) bool {
+		return c.Method == http.MethodPost && c.Path == "/networks/create"
+	}, "networks/create")
+	// Simulate crash: close the listener, do NOT run Cleanup. The
+	// container "abc123" is now orphaned on the daemon (the fake daemon
+	// persists it in createdContainers). The accept-loop goroutine exits
+	// on the next Accept() error; the in-flight attach goroutine is
+	// intentionally leaked (crash simulation — no graceful teardown).
+	p1.ln.Close()
+	d.calls = nil
+	d.deletedContainers = nil
+	// Second "session": a new proxy with the SAME executor id. Its startup
+	// scavenger must find the orphaned container via GET /containers/json
+	// (the daemon returns it from createdContainers) and remove it. The
+	// scavenger runs BEFORE the listener is bound (fix for review critical
+	// #1), so no client can race it.
+	p2, err := New(Config{
+		Upstream:       d.server.URL,
+		ApprovedImages: []string{"pgvector/pgvector:pg16"},
+		ExecutorID:     "exec-1",
+		Auditor:        audit.Nop(),
+		Logf:           func(string, ...any) {},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := p2.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer p2.shutdown()
+	// The scavenger ran in Start (before bind): the orphaned container the
+	// fake daemon persisted is DELETEd.
+	if len(d.deletedContainers) != 1 || d.deletedContainers[0] != "abc123" {
+		t.Errorf("scavenger on restart did not remove the orphaned container: deleted=%v", d.deletedContainers)
+	}
+}
+
+// TestCrashRestart_ScavengerRemovesOrphanedNetwork asserts a crashed
+// prior run's executor-owned network is reclaimed by the next startup's
+// scavenger (so ensureNetwork does not silently fail on a name-conflict
+// 409 and leave containers on the default bridge — checkbox 5).
+func TestCrashRestart_ScavengerRemovesOrphanedNetwork(t *testing.T) {
+	d := newFakeDaemon(t)
+	// Simulate the post-crash state: an orphaned executor network.
+	d.preseededNetworks = []fakeNetwork{
+		{ID: "net-orphan", Labels: map[string]string{"omac.executor": "exec-1"}},
+	}
+	p, err := New(Config{
+		Upstream:       d.server.URL,
+		ApprovedImages: []string{"pgvector/pgvector:pg16"},
+		ExecutorID:     "exec-1",
+		Auditor:        audit.Nop(),
+		Logf:           func(string, ...any) {},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := p.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer p.shutdown()
+	if len(d.deletedNetworks) != 1 || d.deletedNetworks[0] != "net-orphan" {
+		t.Errorf("scavenger did not remove the orphaned network: deleted=%v", d.deletedNetworks)
 	}
 }

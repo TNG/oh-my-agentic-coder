@@ -1,9 +1,13 @@
 package cli
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
+	"strconv"
+	"time"
 
 	"github.com/tngtech/oh-my-agentic-coder/internal/audit"
 	"github.com/tngtech/oh-my-agentic-coder/internal/buildmanifest"
@@ -188,7 +192,14 @@ func runBuild(args []string, env *Env) int {
 	// Gradle daemon); container cleanup relies on the defer, not the hook.
 	auditor := buildAuditor(env)
 	defer auditor.Close()
-	containerProxyURL, containerProxyEnabled, stopContainerProxy, cpErr := containerProxyStarter(env, resolved.Worktree, approved.ApprovedImages, auditor)
+	// Build request id (ticket 09, spec §254): a short stable id
+	// correlating this build's container-policy denials with the active
+	// request. Generated once here, threaded into the container proxy
+	// (so denials name the request) and emitted with build.request (so
+	// the audit trail ties the id to the request metadata). Non-secret
+	// (it appears in denial messages the agent reads).
+	buildReqID := newBuildRequestID()
+	containerProxyURL, containerProxyEnabled, stopContainerProxy, cpErr := containerProxyStarter(env, resolved.Worktree, approved.ApprovedImages, buildReqID, auditor)
 	if cpErr != nil {
 		return failService("container proxy: %v", cpErr)
 	}
@@ -237,7 +248,7 @@ func runBuild(args []string, env *Env) int {
 	// the container proxy, which needs it for container create/denial/
 	// cleanup events); emit the build.request event here.
 	auditor.Emit(audit.ControlMutation("build.request", resolved.Worktree,
-		fmt.Sprintf("adapter=gradle root=%s args=%d", resolved.ProjectDir, len(resolved.Args))))
+		fmt.Sprintf("request=%s adapter=gradle root=%s args=%d", buildReqID, resolved.ProjectDir, len(resolved.Args))))
 
 	maxDur := req.MaxDuration
 	// S3: a forced cancel (second signal / MaxDuration expiry) SIGKILLs
@@ -437,4 +448,25 @@ omac build stop:
 
 Cold-cache note: the Gradle distribution must already be resolvable under
 the cache leaf — warm from a previous build or pre-seeded by a host run.`)
+}
+
+// newBuildRequestID generates a short, non-secret, time-ordered id for one
+// `omac build` invocation (ticket 09, spec §254). It correlates the
+// build.request audit event with container-policy denials emitted by the
+// container proxy so the agent receives an actionable OMAC explanation
+// naming the active request rather than only a wrapped Testcontainers
+// failure. Format: b<unix-seconds-hex>-<4 random hex bytes>. Non-secret
+// (it appears in denial messages the agent reads); collisions are
+// negligible (4 random bytes + per-second ordering).
+//
+// A failing crypto/rand.Read means the host entropy source is broken — a
+// host-fatal condition, not a recoverable build error. We panic (the build
+// command cannot proceed without a request id to correlate denials against);
+// this never happens on a healthy Linux/macOS host.
+func newBuildRequestID() string {
+	var buf [4]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		panic(fmt.Sprintf("omac build: generate build request id: crypto/rand.Read failed: %v (host entropy source broken)", err))
+	}
+	return fmt.Sprintf("b%s-%s", strconv.FormatInt(time.Now().Unix(), 16), hex.EncodeToString(buf[:]))
 }
