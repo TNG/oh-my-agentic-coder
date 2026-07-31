@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 )
 
@@ -58,11 +59,18 @@ func decideAllowlist(method, path string) endpointDecision {
 		}
 	}
 
-	// Unversioned /_ping (GET and HEAD).
+	// /_ping (GET and HEAD) — the Docker client sends this BOTH
+	// unversioned (/_ping, for liveness) AND versioned
+	// (/v1.44/_ping, for version negotiation). Accept both forms;
+	// the comment at line 47 ("Unversioned /_ping is the one unversioned
+	// endpoint") described the intent, but the versioned form is real
+	// and was wrongly denied — the test at proxy_test.go:365 only
+	// exercised the unversioned form, so the gap escaped.
+	if (method == http.MethodGet || method == http.MethodHead) && rest == "/_ping" {
+		return endpointDecision{allowed: true, rule: "ping"}
+	}
+	// Other unversioned paths are denied (only /_ping is unversioned).
 	if !versioned {
-		if (method == http.MethodGet || method == http.MethodHead) && rest == "/_ping" {
-			return endpointDecision{allowed: true, rule: "ping"}
-		}
 		return endpointDecision{allowed: false}
 	}
 
@@ -97,6 +105,36 @@ func decideAllowlist(method, path string) endpointDecision {
 		switch {
 		case rest == "/containers/create":
 			return endpointDecision{allowed: true, rule: "containers.create"}
+		case rest == "/networks/prune":
+			// Testcontainers' JVMHookResourceReaper (the in-process
+			// cleanup hook, distinct from the Ryuk *container* reaper
+			// that TESTCONTAINERS_RYUK_DISABLED disables) calls
+			// POST /networks/prune on every JVM shutdown. Allowed
+			// with an injected label filter (see serve) so only THIS
+			// executor's networks are pruned — never unrelated host
+			// networks. Ownership-scoping matches GET /containers/json.
+			return endpointDecision{allowed: true, rule: "networks.prune"}
+		case rest == "/volumes/prune":
+			// Same JVMHookResourceReaper shutdown hook also calls
+			// POST /volumes/prune. Allowed with an injected label
+			// filter (see serve) so only THIS executor's volumes are
+			// pruned — never unrelated host volumes. Testcontainers
+			// labels the volumes it creates (incl. the omac.executor
+			// ownership label injected at create time), so the label
+			// filter scopes the prune to this executor. Mirrors
+			// networks.prune.
+			return endpointDecision{allowed: true, rule: "volumes.prune"}
+		case rest == "/images/prune":
+			// The third prune endpoint the JVMHookResourceReaper
+			// shutdown hook calls. Allowed with the same injected
+			// ownership label filter (see serve). Pulled images do not
+			// carry the omac.executor label (it is injected at
+			// container create, not image pull), so the label filter
+			// scopes the prune to a safe no-op for pulled images; any
+			// build-created images labeled with omac.executor are
+			// still scoped to this executor. Mirrors networks/volumes
+			// prune.
+			return endpointDecision{allowed: true, rule: "images.prune"}
 		case strings.HasPrefix(rest, "/containers/") && strings.HasSuffix(rest, "/start"):
 			id := strings.TrimSuffix(strings.TrimPrefix(rest, "/containers/"), "/start")
 			if id != "" && !strings.ContainsRune(id, '/') {
@@ -236,8 +274,11 @@ func validateCreateBody(raw []byte, approvedImages []string, executorID string) 
 		return nil, &ContainerPolicyError{Kind: KindBindMountForbidden, Image: image}
 	}
 
-	// 4. Host namespaces empty/default.
-	for _, k := range []string{"NetworkMode", "PidMode", "IpcMode", "UsernsMode", "CgroupnsMode", "Runtime"} {
+	// 4. Host namespaces empty/default. Isolation is included because
+	// Testcontainers' docker-java client serializes it on macOS; a
+	// non-default value (e.g. "process" on Linux, "hyperv" on Windows)
+	// is a host-namespace escape vector on platforms that honor it.
+	for _, k := range []string{"NetworkMode", "PidMode", "IpcMode", "UsernsMode", "CgroupnsMode", "Runtime", "Isolation"} {
 		if s, _ := hc[k].(string); s != "" && !isDefaultMode(s) {
 			return nil, &ContainerPolicyError{Kind: KindHostNamespaceForbidden, Image: image, Reason: k + "=" + s}
 		}
@@ -272,6 +313,68 @@ func validateCreateBody(raw []byte, approvedImages []string, executorID string) 
 		return nil, &ContainerPolicyError{Kind: KindDeviceForbidden, Image: image, Reason: "DeviceRequests (GPU) not permitted in v1"}
 	}
 
+	// 5c. Additional security-relevant fields that newer docker-java
+	// versions serialize (absent from the original ticket-02 capture,
+	// which used an older client). Each is validated empty/absent/
+	// default; their PRESENCE with safe values is permitted via the
+	// allowlist below so the fail-closed unknown-field check does not
+	// deny a benign null/empty serialization.
+	//
+	// Links / VolumesFrom: cross-container access (host-namespace
+	// escape + bypass of the ownership/cleanup model). Must be empty.
+	if nonEmptyStrSlice(hc["Links"]) || nonEmptyStrSlice(hc["VolumesFrom"]) {
+		return nil, &ContainerPolicyError{Kind: KindHostNamespaceForbidden, Image: image, Reason: "Links/VolumesFrom cross-container access denied"}
+	}
+	// Sysctls: kernel parameters (e.g. net.ipv4.ip_forward) — host
+	// escape vector. Must be empty/absent.
+	if nonEmptyStrSlice(hc["Sysctls"]) {
+		return nil, &ContainerPolicyError{Kind: KindDeviceForbidden, Image: image, Reason: "Sysctls not permitted in v1"}
+	}
+	// DeviceCgroupRules: cgroup device allowlist — device access. Empty.
+	if nonEmptyStrSlice(hc["DeviceCgroupRules"]) {
+		return nil, &ContainerPolicyError{Kind: KindDeviceForbidden, Image: image, Reason: "DeviceCgroupRules not permitted in v1"}
+	}
+	// PublishAllPorts: bypasses the PortBindings 127.0.0.1 rewrite
+	// (publishes ALL exposed ports to all interfaces). Must be false.
+	if b, _ := hc["PublishAllPorts"].(bool); b {
+		return nil, &ContainerPolicyError{Kind: KindBindMountForbidden, Image: image, Reason: "PublishAllPorts bypasses loopback-only port publishing"}
+	}
+	// RestartPolicy: a container that restarts evades the proxy's
+	// ownership tracking and cleanup. Must be "" or "no" (the Docker
+	// default).
+	if s, _ := hc["RestartPolicy"].(map[string]any); s != nil {
+		if name, _ := s["Name"].(string); name != "" && name != "no" {
+			return nil, &ContainerPolicyError{Kind: KindDeviceForbidden, Image: image, Reason: "RestartPolicy=" + name + " evades cleanup tracking"}
+		}
+	}
+	// GroupAdd: supplementary groups (host group escape). Empty.
+	if nonEmptyStrSlice(hc["GroupAdd"]) {
+		return nil, &ContainerPolicyError{Kind: KindHostNamespaceForbidden, Image: image, Reason: "GroupAdd supplementary groups not permitted in v1"}
+	}
+	// LxcConf: legacy lxc config (arbitrary host escape). Empty.
+	if hc["LxcConf"] != nil {
+		if m, ok := hc["LxcConf"].(map[string]any); ok && len(m) > 0 {
+			return nil, &ContainerPolicyError{Kind: KindDeviceForbidden, Image: image, Reason: "LxcConf not permitted in v1"}
+		}
+	}
+	// StorageOpt: storage driver options (host disk escape). Empty.
+	if m, ok := hc["StorageOpt"].(map[string]any); ok && len(m) > 0 {
+		return nil, &ContainerPolicyError{Kind: KindBindMountForbidden, Image: image, Reason: "StorageOpt not permitted in v1"}
+	}
+	// ContainerIDFile: writes the container ID to a host file. Empty.
+	if s, _ := hc["ContainerIDFile"].(string); s != "" {
+		return nil, &ContainerPolicyError{Kind: KindBindMountForbidden, Image: image, Reason: "ContainerIDFile host file write not permitted"}
+	}
+	// Cgroup: explicit cgroup path (cgroup escape). Empty.
+	if s, _ := hc["Cgroup"].(string); s != "" {
+		return nil, &ContainerPolicyError{Kind: KindHostNamespaceForbidden, Image: image, Reason: "Cgroup=" + s + " cgroup path escape denied"}
+	}
+	// DnsOptions / DnsSearch: like the validated Dns, DNS-related
+	// fields can redirect resolution. Empty.
+	if nonEmptyStrSlice(hc["DnsOptions"]) || nonEmptyStrSlice(hc["DnsSearch"]) {
+		return nil, &ContainerPolicyError{Kind: KindDeviceForbidden, Image: image, Reason: "DnsOptions/DnsSearch not permitted in v1"}
+	}
+
 	// 5b. ALLOWLIST enforcement (spec.md:222 / ADR 0002: "unknown security-
 	// relevant request fields" denied). The checks above validate the
 	// VALUES of the known-empty fields Testcontainers always sends
@@ -283,10 +386,23 @@ func validateCreateBody(raw []byte, approvedImages []string, executorID string) 
 	// the rewritten fields (PortBindings), and the pass-through resource
 	// fields (Memory/NanoCpus, subject to host ceilings validated at the
 	// manifest gate). Everything else is denied fail-closed.
+	//
+	// Collect ALL unknown keys in one pass and report them together. A
+	// first-key-only denial hides subsequent missing fields behind the
+	// first failure, forcing one rebuild+IT cycle per field — the
+	// "measured allowlist" was captured against an older docker-java and
+	// newer client versions serialize additional fields (Isolation,
+	// PidsLimit, VolumeDriver). Reporting all unknowns in a single
+	// structured denial surfaces the complete gap in one IT run.
+	var unknown []string
 	for k := range hc {
 		if !allowedHostConfigKeys[k] {
-			return nil, &ContainerPolicyError{Kind: KindUnknownEndpoint, Image: image, Reason: "unknown HostConfig field denied (fail-closed): " + k}
+			unknown = append(unknown, k)
 		}
+	}
+	if len(unknown) > 0 {
+		sort.Strings(unknown)
+		return nil, &ContainerPolicyError{Kind: KindUnknownEndpoint, Image: image, Reason: "unknown HostConfig field(s) denied (fail-closed): " + strings.Join(unknown, ", ")}
 	}
 
 	// 6. Labels: reject client-set omac.* labels (forgeable); inject the
@@ -334,52 +450,111 @@ func isDefaultMode(s string) bool {
 
 // allowedHostConfigKeys is the v1-permitted set of HostConfig keys on a
 // /containers/create body. Any key NOT in this set is denied fail-closed
-// (spec.md:222 / ADR 0002: unknown security-relevant fields denied). The
-// set is the union of: security-relevant fields validated to be empty/
-// default above (Privileged, Binds, Mounts, the six modes, CapAdd,
-// Devices, SecurityOpt, Dns, ExtraHosts, CgroupParent, UTSMode,
-// AutoRemove, Init, DeviceRequests), the rewritten field (PortBindings),
-// and the pass-through resource fields (Memory, NanoCpus) subject to the
-// manifest gate's host-ceiling validation. REPORT.md §"Create-body field
-// analysis" lists the keys Testcontainers 1.21 always serializes; the
-// ones absent here (ReadonlyRootfs, Tmpfs, ShmSize, OomScoreAdj, LogConfig,
-// Memory, NanoCpus are allowed; the rest are NOT in v1) are deliberately
-// excluded so a future Docker field cannot pass through unexamined.
+// (spec.md:222 / ADR 0002: unknown security-relevant fields denied).
+//
+// The set is the union of:
+//   - security-relevant fields validated to be empty/default above
+//     (Privileged, Binds, Mounts, the seven modes incl. Isolation,
+//     CapAdd/CapDrop, Devices, SecurityOpt, Dns/DnsOptions/DnsSearch,
+//     ExtraHosts, CgroupParent/UTSMode, AutoRemove, Init,
+//     DeviceRequests, Links, VolumesFrom, Sysctls, DeviceCgroupRules,
+//     PublishAllPorts, RestartPolicy, GroupAdd, LxcConf, StorageOpt,
+//     ContainerIDFile, Cgroup)
+//   - the rewritten field (PortBindings)
+//   - pass-through resource fields (Memory, NanoCpus, PidsLimit, the CPU
+//     and blkio limit families, KernelMemory, MemoryReservation,
+//     MemorySwap, MemorySwappiness, OomKillDisable, DiskQuota, IO limits,
+//     Ulimits) — DoS-mitigation limits, not escape vectors; the manifest
+//     gate's host-ceiling validation is the authoritative bound
+//   - benign always-serialized fields (ReadonlyRootfs, Tmpfs, ShmSize,
+//     OomScoreAdj, LogConfig, ConsoleSize, VolumeDriver)
+//
+// REPORT.md §"Create-body field analysis" lists the keys the docker-java
+// version captured in ticket 02 serializes; newer docker-java versions
+// serialize additional fields (the original capture did not include
+// Isolation, PidsLimit, VolumeDriver, or the 36 fields surfaced by the
+// all-unknowns-at-once diagnostic). Fields absent from this map are
+// deliberately excluded so a future Docker field cannot pass through
+// unexamined — the fail-closed unknown-field check surfaces any gap.
 var allowedHostConfigKeys = map[string]bool{
 	// Security-relevant (validated empty/default above; listed so the
 	// allowlist permits their PRESENCE with safe values, not their
 	// arbitrary use).
-	"Privileged":     true,
-	"Binds":          true,
-	"Mounts":         true,
-	"NetworkMode":    true,
-	"PidMode":        true,
-	"IpcMode":        true,
-	"UsernsMode":     true,
-	"CgroupnsMode":   true,
-	"Runtime":        true,
-	"CapAdd":         true,
-	"CapDrop":        true, // harmless; Testcontainers sometimes sends it
-	"Devices":        true,
-	"SecurityOpt":    true,
-	"Dns":            true,
-	"ExtraHosts":     true,
-	"CgroupParent":   true,
-	"UTSMode":        true,
-	"AutoRemove":     true,
-	"Init":           true,
-	"DeviceRequests": true,
+	"Privileged":        true,
+	"Binds":             true,
+	"Mounts":            true,
+	"NetworkMode":       true,
+	"PidMode":           true,
+	"IpcMode":           true,
+	"UsernsMode":        true,
+	"CgroupnsMode":      true,
+	"Runtime":           true,
+	"Isolation":         true, // Testcontainers serializes it on macOS; validated empty/default above
+	"CapAdd":            true,
+	"CapDrop":           true, // harmless; Testcontainers sometimes sends it
+	"Devices":           true,
+	"SecurityOpt":       true,
+	"Dns":               true,
+	"DnsOptions":        true,
+	"DnsSearch":         true,
+	"ExtraHosts":        true,
+	"CgroupParent":      true,
+	"UTSMode":           true,
+	"AutoRemove":        true,
+	"Init":              true,
+	"DeviceRequests":    true,
+	"Links":             true, // validated empty above
+	"VolumesFrom":       true, // validated empty above
+	"Sysctls":           true, // validated empty above
+	"DeviceCgroupRules": true, // validated empty above
+	"PublishAllPorts":   true, // validated false above
+	"RestartPolicy":     true, // validated "" or "no" above
+	"GroupAdd":          true, // validated empty above
+	"LxcConf":           true, // validated empty above
+	"StorageOpt":        true, // validated empty above
+	"ContainerIDFile":   true, // validated empty above
+	"Cgroup":            true, // validated empty above
 	// Rewritten by the proxy.
 	"PortBindings": true,
 	// Pass-through resource fields (manifest gate enforces the ceiling).
-	"Memory":   true,
-	"NanoCpus": true,
+	// DoS-mitigation limits, not escape vectors.
+	"Memory":               true,
+	"NanoCpus":             true,
+	"PidsLimit":            true, // cgroup PID limit
+	"KernelMemory":         true,
+	"MemoryReservation":    true,
+	"MemorySwap":           true,
+	"MemorySwappiness":     true,
+	"OomKillDisable":       true, // bool; benign (disables OOM killer for the container)
+	"DiskQuota":            true,
+	"CpuCount":             true,
+	"CpuPercent":           true,
+	"CpuPeriod":            true,
+	"CpuQuota":             true,
+	"CpuRealtimePeriod":    true,
+	"CpuRealtimeRuntime":   true,
+	"CpuShares":            true,
+	"CpusetCpus":           true,
+	"CpusetMems":           true,
+	"BlkioWeight":          true,
+	"BlkioWeightDevice":    true,
+	"BlkioDeviceReadBps":   true,
+	"BlkioDeviceReadIOps":  true,
+	"BlkioDeviceWriteBps":  true,
+	"BlkioDeviceWriteIOps": true,
+	"IOMaximumBandwidth":   true,
+	"IOMaximumIOps":        true,
+	"Ulimits":              true, // [] of {Name,Soft,Hard}; resource limit, not escape
 	// Testcontainers 1.21 always-serialized, v1-safe, not security-relevant.
 	"ReadonlyRootfs": true,
 	"Tmpfs":          true,
 	"ShmSize":        true,
 	"OomScoreAdj":    true,
 	"LogConfig":      true,
+	// Benign/legacy fields docker-java serializes as null/empty/0 by
+	// default (not in the original ticket-02 capture). Pass-through.
+	"ConsoleSize":  true, // [rows, cols]; terminal size, benign
+	"VolumeDriver": true, // legacy volume plugin field; empty in modern use
 }
 
 func nonEmptyStrSlice(v any) bool {
@@ -498,6 +673,70 @@ func rewriteContainersListFilter(rawQuery, executorID string) string {
 	// Drop ALL client-supplied label filters (they are forgeable) and
 	// inject ONLY the executor ownership label (REPORT.md: the filter must
 	// enforce, not trust, the label scoping).
+	filters["label"] = []any{OwnershipLabelKey + "=" + executorID}
+	encoded, _ := json.Marshal(filters)
+	out := append([]string{}, rest...)
+	out = append(out, "filters="+urlQueryEscape(string(encoded)))
+	return strings.Join(out, "&")
+}
+
+// rewriteNetworksPruneFilter injects the ownership label filter into a
+// POST /networks/prune request so only THIS executor's networks are
+// pruned. The client's filter (if any) is dropped and replaced — client
+// filters are forgeable, the proxy enforces ownership server-side
+// (matching rewriteContainersListFilter). Returns the rewritten query
+// string (without leading '?').
+func rewriteNetworksPruneFilter(rawQuery, executorID string) string {
+	return rewritePruneFilter(rawQuery, executorID)
+}
+
+// rewriteVolumesPruneFilter injects the ownership label filter into a
+// POST /volumes/prune request so only THIS executor's volumes are
+// pruned. Identical mechanism to rewriteNetworksPruneFilter: the
+// JVMHookResourceReaper shutdown hook calls both endpoints, and both
+// accept the same filters=<json url-encoded> query shape.
+func rewriteVolumesPruneFilter(rawQuery, executorID string) string {
+	return rewritePruneFilter(rawQuery, executorID)
+}
+
+// rewriteImagesPruneFilter injects the ownership label filter into a
+// POST /images/prune request. Same shared implementation: the
+// JVMHookResourceReaper shutdown hook calls networks/volumes/images
+// prune, all with the same filters=<json url-encoded> query shape.
+func rewriteImagesPruneFilter(rawQuery, executorID string) string {
+	return rewritePruneFilter(rawQuery, executorID)
+}
+
+// rewritePruneFilter is the shared implementation for /networks/prune
+// and /volumes/prune. Docker prune filters arrive as
+// filters=<json url-encoded>. Parse, drop any label filter, inject
+// omac.executor=<id>, re-encode. Keep any non-label filters the client
+// sent (e.g. "until"). Returns the rewritten query string (without '?').
+func rewritePruneFilter(rawQuery, executorID string) string {
+	var rest []string
+	var filtersVal string
+	for _, kv := range strings.Split(rawQuery, "&") {
+		if kv == "" {
+			continue
+		}
+		if strings.HasPrefix(kv, "filters=") {
+			filtersVal = strings.TrimPrefix(kv, "filters=")
+			continue
+		}
+		rest = append(rest, kv)
+	}
+	var filters map[string]any
+	if filtersVal != "" {
+		decoded, err := urlQueryUnescape(filtersVal)
+		if err == nil {
+			_ = json.Unmarshal([]byte(decoded), &filters)
+		}
+	}
+	if filters == nil {
+		filters = map[string]any{}
+	}
+	// Drop ALL client-supplied label filters (forgeable) and inject
+	// ONLY the executor ownership label.
 	filters["label"] = []any{OwnershipLabelKey + "=" + executorID}
 	encoded, _ := json.Marshal(filters)
 	out := append([]string{}, rest...)

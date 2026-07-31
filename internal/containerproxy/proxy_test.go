@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -362,7 +363,9 @@ func doReq(t *testing.T, p *Proxy, method, path string, body []byte, hdr http.He
 func TestAllowlist_PingVersionInfo(t *testing.T) {
 	d := newFakeDaemon(t)
 	p := startProxy(t, d)
-	for _, path := range []string{"/_ping", "/v1.44/version", "/v1.44/info"} {
+	// /_ping is sent by the Docker client BOTH unversioned (liveness)
+	// AND versioned (version negotiation). Both must be allowed.
+	for _, path := range []string{"/_ping", "/v1.44/_ping", "/v1.32/_ping", "/v1.44/version", "/v1.44/info"} {
 		status, _, _ := doReq(t, p, http.MethodGet, path, nil, nil)
 		if status != http.StatusOK {
 			t.Errorf("%s: status = %d, want 200", path, status)
@@ -383,11 +386,25 @@ func TestAllowlist_UnknownEndpointDenied(t *testing.T) {
 	if !strings.Contains(omac, "unknown Docker API endpoint") {
 		t.Errorf("denial must say unknown endpoint: %q", omac)
 	}
-	// Prune endpoints denied.
-	for _, path := range []string{"/v1.44/images/prune", "/v1.44/networks/prune", "/v1.44/volumes/prune", "/v1.44/containers/prune"} {
+	// Prune endpoints denied, EXCEPT /networks/prune, /volumes/prune,
+	// and /images/prune which are allowed (ownership-label-filtered)
+	// because Testcontainers' JVMHookResourceReaper calls all three on
+	// every JVM shutdown. /containers/prune is the only prune endpoint
+	// no caller needs — it stays denied.
+	for _, path := range []string{"/v1.44/containers/prune"} {
 		s, _, o := doReq(t, p, http.MethodPost, path, nil, nil)
 		if s != http.StatusForbidden || !strings.Contains(o, "unknown") {
 			t.Errorf("%s: expected structured unknown-endpoint denial, got %d %q", path, s, o)
+		}
+	}
+	// /networks/prune, /volumes/prune, /images/prune are ALLOWED — the
+	// proxy forwards them with an injected ownership label filter.
+	// Assert they are not denied here (the filter rewrite is asserted
+	// separately in TestNetworksPrune_RewritesFilter /
+	// TestVolumesPrune_RewritesFilter / TestImagesPrune_RewritesFilter).
+	for _, path := range []string{"/v1.44/networks/prune", "/v1.44/volumes/prune", "/v1.44/images/prune"} {
+		if s, _, _ := doReq(t, p, http.MethodPost, path, nil, nil); s == http.StatusForbidden {
+			t.Errorf("%s: expected allow (ownership-filtered), got 403", path)
 		}
 	}
 	// /exec, /build, /commit, /attach, /archive denied.
@@ -403,6 +420,118 @@ func TestAllowlist_UnknownEndpointDenied(t *testing.T) {
 		if s != http.StatusForbidden {
 			t.Errorf("%s: expected 403, got %d", path, s)
 		}
+	}
+}
+
+// TestNetworksPrune_RewritesFilter asserts POST /networks/prune is
+// ALLOWED and the proxy injects the ownership label filter so only THIS
+// executor's networks are pruned. The client's filter (forgeable) is
+// dropped and replaced, matching the containers.list ownership model.
+// Testcontainers' JVMHookResourceReaper calls this on every JVM shutdown.
+func TestNetworksPrune_RewritesFilter(t *testing.T) {
+	d := newFakeDaemon(t)
+	p := startProxy(t, d)
+	execID := p.cfg.ExecutorID
+
+	// Send a prune with a forgeable client filter (a fake label the
+	// client has no right to set). The proxy must drop it and inject
+	// omac.executor=<execID>.
+	forgeableFilter := url.QueryEscape(`{"label":["client-forged"]}`)
+	path := "/v1.44/networks/prune?filters=" + forgeableFilter
+	status, body, _ := doReq(t, p, http.MethodPost, path, nil, nil)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (prune is allowed, ownership-filtered); body=%q", status, body)
+	}
+
+	// Find the forwarded prune request the daemon recorded.
+	var pruneCall *recordedReq
+	for i := len(d.calls) - 1; i >= 0; i-- {
+		if d.calls[i].Method == http.MethodPost && strings.Contains(d.calls[i].Path, "/networks/prune") {
+			pruneCall = &d.calls[i]
+			break
+		}
+	}
+	if pruneCall == nil {
+		t.Fatal("daemon did not record a POST /networks/prune")
+	}
+	// The forwarded query MUST carry the injected ownership label and
+	// MUST NOT carry the client-forged label.
+	if !strings.Contains(pruneCall.Query, "omac.executor%3D"+execID) &&
+		!strings.Contains(pruneCall.Query, "omac.executor="+execID) {
+		t.Errorf("forwarded prune query missing ownership label filter: %q", pruneCall.Query)
+	}
+	if strings.Contains(pruneCall.Query, "client-forged") {
+		t.Errorf("forwarded prune query retained client-forged label: %q", pruneCall.Query)
+	}
+}
+
+// TestVolumesPrune_RewritesFilter asserts POST /volumes/prune is ALLOWED
+// and the proxy injects the ownership label filter so only THIS
+// executor's volumes are pruned. Same mechanism as /networks/prune —
+// the JVMHookResourceReaper shutdown hook calls both endpoints.
+func TestVolumesPrune_RewritesFilter(t *testing.T) {
+	d := newFakeDaemon(t)
+	p := startProxy(t, d)
+	execID := p.cfg.ExecutorID
+
+	forgeableFilter := url.QueryEscape(`{"label":["client-forged"]}`)
+	path := "/v1.44/volumes/prune?filters=" + forgeableFilter
+	status, body, _ := doReq(t, p, http.MethodPost, path, nil, nil)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (prune is allowed, ownership-filtered); body=%q", status, body)
+	}
+
+	var pruneCall *recordedReq
+	for i := len(d.calls) - 1; i >= 0; i-- {
+		if d.calls[i].Method == http.MethodPost && strings.Contains(d.calls[i].Path, "/volumes/prune") {
+			pruneCall = &d.calls[i]
+			break
+		}
+	}
+	if pruneCall == nil {
+		t.Fatal("daemon did not record a POST /volumes/prune")
+	}
+	if !strings.Contains(pruneCall.Query, "omac.executor%3D"+execID) &&
+		!strings.Contains(pruneCall.Query, "omac.executor="+execID) {
+		t.Errorf("forwarded prune query missing ownership label filter: %q", pruneCall.Query)
+	}
+	if strings.Contains(pruneCall.Query, "client-forged") {
+		t.Errorf("forwarded prune query retained client-forged label: %q", pruneCall.Query)
+	}
+}
+
+// TestImagesPrune_RewritesFilter asserts POST /images/prune is ALLOWED
+// and the proxy injects the ownership label filter. Same mechanism as
+// /networks/prune and /volumes/prune — the JVMHookResourceReaper
+// shutdown hook calls all three prune endpoints.
+func TestImagesPrune_RewritesFilter(t *testing.T) {
+	d := newFakeDaemon(t)
+	p := startProxy(t, d)
+	execID := p.cfg.ExecutorID
+
+	forgeableFilter := url.QueryEscape(`{"label":["client-forged"]}`)
+	path := "/v1.44/images/prune?filters=" + forgeableFilter
+	status, body, _ := doReq(t, p, http.MethodPost, path, nil, nil)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (prune is allowed, ownership-filtered); body=%q", status, body)
+	}
+
+	var pruneCall *recordedReq
+	for i := len(d.calls) - 1; i >= 0; i-- {
+		if d.calls[i].Method == http.MethodPost && strings.Contains(d.calls[i].Path, "/images/prune") {
+			pruneCall = &d.calls[i]
+			break
+		}
+	}
+	if pruneCall == nil {
+		t.Fatal("daemon did not record a POST /images/prune")
+	}
+	if !strings.Contains(pruneCall.Query, "omac.executor%3D"+execID) &&
+		!strings.Contains(pruneCall.Query, "omac.executor="+execID) {
+		t.Errorf("forwarded prune query missing ownership label filter: %q", pruneCall.Query)
+	}
+	if strings.Contains(pruneCall.Query, "client-forged") {
+		t.Errorf("forwarded prune query retained client-forged label: %q", pruneCall.Query)
 	}
 }
 
@@ -633,6 +762,31 @@ func TestCreateBody_UnknownHostConfigFieldDenied(t *testing.T) {
 	}
 }
 
+// TestCreateBody_AllUnknownHostConfigFieldsReportedTogether asserts the
+// allowlist validation collects ALL unknown HostConfig keys in one
+// denial, not just the first. A first-key-only denial would hide
+// subsequent missing fields behind the first failure, forcing one
+// rebuild+IT cycle per field. The "measured allowlist" was captured
+// against an older docker-java; newer client versions serialize
+// additional fields, so one IT run must surface the complete gap.
+func TestCreateBody_AllUnknownHostConfigFieldsReportedTogether(t *testing.T) {
+	d := newFakeDaemon(t)
+	p := startProxy(t, d)
+	// Two fields NOT in the v1 allowedHostConfigKeys set.
+	body := `{"Image":"pgvector/pgvector:pg16","HostConfig":{"FutureFieldA":"x","FutureFieldB":"y"}}`
+	status, _, omac := doReq(t, p, http.MethodPost, "/v1.44/containers/create", []byte(body), nil)
+	if status != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", status)
+	}
+	// Both unknown fields must appear in the single denial (sorted).
+	if !strings.Contains(omac, "FutureFieldA") || !strings.Contains(omac, "FutureFieldB") {
+		t.Errorf("denial must name BOTH unknown fields: %q", omac)
+	}
+	if !strings.Contains(omac, "FutureFieldA, FutureFieldB") {
+		t.Errorf("denial must list both fields comma-joined (sorted): %q", omac)
+	}
+}
+
 // TestCreateBody_AutoRemoveDenied asserts AutoRemove=true is denied: a
 // container that auto-removes on exit evades the proxy's ownership
 // tracking and the cleanup/audit path (review major #3).
@@ -646,6 +800,51 @@ func TestCreateBody_AutoRemoveDenied(t *testing.T) {
 	}
 	if !strings.Contains(omac, "AutoRemove") {
 		t.Errorf("denial must mention AutoRemove: %q", omac)
+	}
+}
+
+// TestCreateBody_IsolationAcceptedAndValidated asserts the Isolation
+// HostConfig field (which Testcontainers' docker-java client serializes on
+// macOS) is ACCEPTED when empty/default and DENIED when non-default. A
+// non-default Isolation is a host-namespace escape vector on platforms
+// that honor it.
+func TestCreateBody_IsolationAcceptedAndValidated(t *testing.T) {
+	d := newFakeDaemon(t)
+	p := startProxy(t, d)
+	// Empty Isolation is accepted (the common Testcontainers form).
+	body := `{"Image":"pgvector/pgvector:pg16","HostConfig":{"Isolation":""}}`
+	status, _, _ := doReq(t, p, http.MethodPost, "/v1.44/containers/create", []byte(body), nil)
+	if status != http.StatusCreated {
+		t.Fatalf("empty Isolation: status = %d, want 201", status)
+	}
+	// Non-default Isolation is denied as a host-namespace escape.
+	body = `{"Image":"pgvector/pgvector:pg16","HostConfig":{"Isolation":"process"}}`
+	status, _, omac := doReq(t, p, http.MethodPost, "/v1.44/containers/create", []byte(body), nil)
+	if status != http.StatusForbidden {
+		t.Fatalf("Isolation=process: status = %d, want 403", status)
+	}
+	if !strings.Contains(omac, "Isolation") {
+		t.Errorf("denial must name Isolation: %q", omac)
+	}
+}
+
+// TestCreateBody_ResourceFieldsAccepted asserts the pass-through resource
+// fields (Memory, NanoCpus, PidsLimit) are accepted with arbitrary values.
+// These are DoS-mitigation limits, not escape vectors; the manifest gate
+// enforces the ceiling. Testcontainers serializes PidsLimit by default.
+func TestCreateBody_ResourceFieldsAccepted(t *testing.T) {
+	d := newFakeDaemon(t)
+	p := startProxy(t, d)
+	for _, body := range []string{
+		`{"Image":"pgvector/pgvector:pg16","HostConfig":{"Memory":0}}`,
+		`{"Image":"pgvector/pgvector:pg16","HostConfig":{"NanoCpus":0}}`,
+		`{"Image":"pgvector/pgvector:pg16","HostConfig":{"PidsLimit":0}}`,
+		`{"Image":"pgvector/pgvector:pg16","HostConfig":{"PidsLimit":256}}`,
+	} {
+		status, _, _ := doReq(t, p, http.MethodPost, "/v1.44/containers/create", []byte(body), nil)
+		if status != http.StatusCreated {
+			t.Errorf("resource field body %q: status = %d, want 201", body, status)
+		}
 	}
 }
 
@@ -669,6 +868,46 @@ func TestImageInspect_UnapprovedRefDenied(t *testing.T) {
 	}
 	if !strings.Contains(omac, "evil:latest") {
 		t.Errorf("denial must name the image: %q", omac)
+	}
+}
+
+// TestImageInspect_DigestResolvesToApprovedTag asserts that when
+// Testcontainers inspects an image by its content digest (sha256:...),
+// the proxy resolves the digest back to its RepoTags via a daemon
+// sub-request and allows the inspect when ANY RepoTag matches the
+// approved set. The pull (/images/create) is the security boundary;
+// the inspect is read-only. Without this resolution, Testcontainers'
+// inspect-by-digest flow fails because the digest never matches the
+// manifest's tag list.
+func TestImageInspect_DigestResolvesToApprovedTag(t *testing.T) {
+	d := newFakeDaemon(t)
+	// Seed the daemon to return RepoTags for the digest lookup.
+	d.mux.HandleFunc("/images/sha256:1d533553fefe4f12e5d80c7b80622ba0c382abb5758856f52983d8789179f0fb/json", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"Id":"sha256:1d533553fefe4f12e5d80c7b80622ba0c382abb5758856f52983d8789179f0fb","RepoTags":["pgvector/pgvector:pg16"]}`)
+	})
+	p := startProxy(t, d)
+	status, _, _ := doReq(t, p, http.MethodGet, "/v1.44/images/sha256:1d533553fefe4f12e5d80c7b80622ba0c382abb5758856f52983d8789179f0fb/json", nil, nil)
+	if status != http.StatusOK {
+		t.Fatalf("digest resolving to approved tag: status = %d, want 200", status)
+	}
+}
+
+// TestImageInspect_DigestResolvesToUnapprovedTag asserts that a digest
+// whose RepoTags do NOT match the approved set is denied fail-closed.
+func TestImageInspect_DigestResolvesToUnapprovedTag(t *testing.T) {
+	d := newFakeDaemon(t)
+	d.mux.HandleFunc("/images/sha256:evil123/json", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"Id":"sha256:evil123","RepoTags":["evil/image:latest"]}`)
+	})
+	p := startProxy(t, d)
+	status, _, omac := doReq(t, p, http.MethodGet, "/v1.44/images/sha256:evil123/json", nil, nil)
+	if status != http.StatusForbidden {
+		t.Fatalf("digest resolving to unapproved tag: status = %d, want 403", status)
+	}
+	if !strings.Contains(omac, "sha256:evil123") {
+		t.Errorf("denial must name the digest: %q", omac)
 	}
 }
 
@@ -746,6 +985,83 @@ func TestContainersList_FilterRewritten(t *testing.T) {
 	// the injected ownership label replaces the label set).
 	if strings.Contains(rec.Query, "org.testcontainers") {
 		t.Errorf("client label filter must be stripped, not trusted: %q", rec.Query)
+	}
+}
+
+// --- streaming response (logs?follow=true) --------------------------------
+
+// TestForward_StreamsChunkedResponse asserts the proxy streams a response
+// with no Content-Length (the shape /containers/{id}/logs?follow=true
+// returns) using HTTP/1.1 chunked transfer encoding to the client, instead
+// of buffering the body. Buffering a live stream blocks forever (io.ReadAll
+// waits for EOF), which caused Testcontainers' LogMessageWaitStrategy to
+// time out even though the container was ready.
+func TestForward_StreamsChunkedResponse(t *testing.T) {
+	d := newFakeDaemon(t)
+	// Seed a streaming handler for /containers/{id}/logs that writes
+	// chunks with delays (simulating a live log stream) and no
+	// Content-Length (chunked transfer encoding).
+	d.mux.HandleFunc("/containers/abc123/logs", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/vnd.docker.raw-stream")
+		// Force chunked streaming by explicitly writing the status
+		// header first (so Go's http.Server can't compute
+		// Content-Length from the total body), then writing chunks
+		// with a delay between them.
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		_, _ = w.Write([]byte("database system is starting\n"))
+		if flusher != nil {
+			flusher.Flush()
+		}
+		time.Sleep(50 * time.Millisecond)
+		_, _ = w.Write([]byte("database system is ready to accept connections\n"))
+		if flusher != nil {
+			flusher.Flush()
+		}
+	})
+	// Create a container through the proxy so it's in the ownership map
+	// (the logs endpoint is ownership-scoped).
+	p := startProxy(t, d)
+	createBody := `{"Image":"pgvector/pgvector:pg16","HostConfig":{"PortBindings":{"5432/tcp":[{"HostIp":"","HostPort":""}]}}}`
+	status, _, _ := doReq(t, p, http.MethodPost, "/v1.44/containers/create", []byte(createBody), nil)
+	if status != http.StatusCreated {
+		t.Fatalf("create: status = %d, want 201", status)
+	}
+	// The create response returns Id=abc123 (the fakeDaemon default).
+	// Now request the logs stream — the proxy must stream, not buffer.
+	conn, err := net.Dial("tcp", p.ln.Addr().String())
+	if err != nil {
+		t.Fatalf("dial proxy: %v", err)
+	}
+	defer conn.Close()
+	req := "GET /v1.44/containers/abc123/logs?follow=true&stdout=true&stderr=true HTTP/1.1\r\nHost: docker\r\n\r\n"
+	if _, err := conn.Write([]byte(req)); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+	// Read the response with a real HTTP client reader. The response
+	// must arrive (not block forever) and contain the log line.
+	br := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(br, nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	// The proxy must use chunked encoding (streaming) not Content-Length.
+	if resp.Header.Get("Content-Length") != "" {
+		t.Errorf("streaming response must NOT have Content-Length, got %q", resp.Header.Get("Content-Length"))
+	}
+	// http.ReadResponse consumes the Transfer-Encoding header and wraps
+	// the body in a chunk reader; the header is removed after parsing.
+	// The body must be readable and contain both log lines (not block).
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read streaming body: %v", err)
+	}
+	if !strings.Contains(string(body), "database system is ready to accept connections") {
+		t.Errorf("streaming body missing the ready log line: %q", body)
 	}
 }
 
