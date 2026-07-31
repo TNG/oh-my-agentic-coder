@@ -291,6 +291,18 @@ const mockitoAgentInitName = "mockito-agent.gradle"
 // Pure string — unit-testable. Always returns a non-empty script (the
 // agent applies to every build; it is a defensive no-op when no test task
 // uses Mockito or the jar is absent).
+//
+// The script also forces java.io.tmpdir to the executor's private temp
+// ($TMPDIR, injected via ChildEnv in grants.go). Without this the JVM
+// resolves java.io.tmpdir to the macOS default /var/folders/.../T/, which
+// the sandbox deliberately does NOT grant writable (the private temp is
+// the only writable temp leaf). Tooling that writes its temp under
+// java.io.tmpdir — e.g. the embedded Kafka broker's
+// TestUtils.tempDirectory() log dir (spring-kafka-test's
+// GlobalEmbeddedKafkaTestExecutionListener) — would otherwise hit EPERM
+// and fail silently, leaving dependent config (spring.embedded.kafka.brokers)
+// unset. Aligning java.io.tmpdir with the sandbox-granted temp fixes this
+// and any other tool that assumes java.io.tmpdir == $TMPDIR.
 func RenderMockitoAgentInitScript() string {
 	var b strings.Builder
 	b.WriteString("// OMAC-generated mockito-agent init script (ticket 08).\n")
@@ -305,6 +317,19 @@ func RenderMockitoAgentInitScript() string {
 	b.WriteString("  tasks.withType(Test).configureEach {\n")
 	b.WriteString("    // Enable dynamic agent loading so the -javaagent attach is permitted.\n")
 	b.WriteString("    jvmArgs '-XX:+EnableDynamicAgentLoading'\n")
+	b.WriteString("    // Force java.io.tmpdir to the executor's private temp ($TMPDIR, set\n")
+	b.WriteString("    // in ChildEnv). The JVM otherwise defaults to the macOS\n")
+	b.WriteString("    // /var/folders/.../T/ leaf, which the sandbox does NOT grant\n")
+	b.WriteString("    // writable — only the private temp is writable. Tooling that\n")
+	b.WriteString("    // writes its temp under java.io.tmpdir (e.g. the embedded Kafka\n")
+	b.WriteString("    // broker log dir via TestUtils.tempDirectory) would otherwise\n")
+	b.WriteString("    // hit EPERM and fail silently. $TMPDIR is non-empty in the\n")
+	b.WriteString("    // executor env; guard anyway so a misconfigured env can't blank\n")
+	b.WriteString("    // the JVM default.\n")
+	b.WriteString("    def omacTmp = System.getenv('TMPDIR')\n")
+	b.WriteString("    if (omacTmp != null && !omacTmp.isEmpty()) {\n")
+	b.WriteString("      jvmArgs \"-Djava.io.tmpdir=${omacTmp}\"\n")
+	b.WriteString("    }\n")
 	b.WriteString("    doFirst {\n")
 	b.WriteString("      // Locate the mockito-core jar on the test runtime classpath. The\n")
 	b.WriteString("      // classpath is resolved by doFirst time, so the jar is present\n")

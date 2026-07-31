@@ -155,6 +155,42 @@ func GetScoped(scope, skillName, name string) (secrets.Secret, error) {
 	return secrets.NewSecretString(v), nil
 }
 
+// GetByService retrieves a secret stored under a RAW service name (no
+// "omac/" skill prefix is applied). This is the seam for callers that
+// carry their own service-name convention — notably the build
+// credential-lift proxy, which stores registry credentials under
+// "omac/build/registry/<alias>" (see credproxy.RegistryKeychainService).
+// Using Get() here would double-prefix to "omac/omac/build/registry/...".
+// Returns ErrNotFound if absent or the backend is unavailable.
+func GetByService(service, account string) (secrets.Secret, error) {
+	v, err := keyring.Get(service, account)
+	if err != nil {
+		if errors.Is(err, keyring.ErrNotFound) || IsUnavailable(err) {
+			return secrets.Secret{}, ErrNotFound
+		}
+		return secrets.Secret{}, fmt.Errorf("keychain get %s/%s: %w", service, account, err)
+	}
+	return secrets.NewSecretString(v), nil
+}
+
+// SetByService stores a secret under a RAW service name (no "omac/" skill
+// prefix). Pairs with GetByService for the credential-lift convention.
+func SetByService(service, account string, value secrets.Secret) error {
+	if err := keyring.Set(service, account, value.ExposeString()); err != nil {
+		return fmt.Errorf("keychain set %s/%s: %w", service, account, err)
+	}
+	return nil
+}
+
+// DeleteByService removes a secret stored under a RAW service name. Missing
+// entries are not an error.
+func DeleteByService(service, account string) error {
+	if err := keyring.Delete(service, account); err != nil && !errors.Is(err, keyring.ErrNotFound) {
+		return fmt.Errorf("keychain delete %s/%s: %w", service, account, err)
+	}
+	return nil
+}
+
 // IsUnavailable reports whether err indicates the OS keychain backend
 // itself is missing (no Secret Service daemon on headless Linux, no
 // keychain daemon on macOS, etc.), as opposed to a per-secret failure. Read

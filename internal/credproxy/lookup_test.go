@@ -23,6 +23,16 @@ func fakeLookup(store map[string]string) CredentialLookup {
 	}
 }
 
+// isSandboxKeychainBlock reports whether err is the macOS-sandbox signal
+// that the keychain subprocess was denied (go-keyring shells out to the
+// `security` CLI on macOS; the omac sandbox denies it with SIGPRIV,
+// surfacing as "exit status 155"). Used only by tests that need to
+// skip when the real keychain is sandbox-blocked.
+func isSandboxKeychainBlock(err error) bool {
+	return strings.Contains(err.Error(), "exit status 155") ||
+		strings.Contains(err.Error(), "exit status 126")
+}
+
 // TestLookupRegistries_JoinsAliasUpstreamCredential asserts criterion 1:
 // the manifest declares (alias, upstream) non-secretly and the credential
 // is looked up by alias — it is NOT present in the manifest.
@@ -151,5 +161,45 @@ func TestKeychainLookup_MissingMapsToErrCredentialMissing(t *testing.T) {
 		if !keychain.IsUnavailable(err) {
 			t.Fatalf("KeychainLookup error = %v, want ErrCredentialMissing/ErrNotFound/unavailable", err)
 		}
+	}
+}
+
+// TestKeychainLookup_RoundTripAtDocumentedService is the regression test
+// for the double-"omac/" prefix bug: KeychainLookup previously called
+// keychain.Get (which treats its first arg as a skill name and prepends
+// "omac/"), so a credential stored at the doc-documented service
+// "omac/build/registry/<alias>" was queried at
+// "omac/omac/build/registry/<alias>" and never found. This test stores
+// the credential at the EXACT service RegistryKeychainService returns
+// (what docs/build-command.md tells the developer to use) and verifies
+// KeychainLookup reads it back. It touches the real OS keychain, so it
+// skips when the backend is unavailable (in-sandbox, headless CI).
+func TestKeychainLookup_RoundTripAtDocumentedService(t *testing.T) {
+	alias := "omac-credproxy-roundtrip-test"
+	svc := RegistryKeychainService(alias)
+	want := "alice:s3cr3t"
+
+	// Store at the documented service (raw, single "omac/" prefix).
+	if err := keychain.SetByService(svc, CredentialAccount, secrets.NewSecretString(want)); err != nil {
+		// Skip when the keychain is unavailable or sandbox-blocked
+		// (in-sandbox macOS returns "exit status 155"; headless Linux
+		// returns a dbus error). The round-trip is only meaningful when
+		// the backend is actually writable.
+		if keychain.IsUnavailable(err) || isSandboxKeychainBlock(err) {
+			t.Skipf("keychain backend unavailable: %v", err)
+		}
+		t.Fatalf("SetByService: %v", err)
+	}
+	t.Cleanup(func() { _ = keychain.DeleteByService(svc, CredentialAccount) })
+
+	// KeychainLookup must find it. Pre-fix this hit ErrCredentialMissing
+	// because the internal keychain.Get query went to omac/omac/... .
+	got, err := KeychainLookup(alias)
+	if err != nil {
+		t.Fatalf("KeychainLookup: %v", err)
+	}
+	if got.ExposeString() != want {
+		t.Errorf("credential = %q, want %q (service convention is %q, account %q)",
+			got.ExposeString(), want, svc, CredentialAccount)
 	}
 }

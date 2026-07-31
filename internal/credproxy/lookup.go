@@ -74,17 +74,22 @@ func LookupRegistries(manifestRegistries []buildmanifest.RegistryEntry, approved
 	return regs, nil
 }
 
-// KeychainLookup adapts keychain.Get to the CredentialLookup seam. The
-// credential value is stored as a single "<user>:<password>" string
+// KeychainLookup adapts keychain.GetByService to the CredentialLookup seam.
+// The credential value is stored as a single "<user>:<password>" string
 // (HTTP Basic auth credentials) under the registry keychain
 // service/account (see RegistryKeychainService / CredentialAccount). A
 // missing/unavailable entry maps to ErrCredentialMissing so
 // LookupRegistries can produce a structured *RegistryCredentialError.
 // The proxy base64-encodes the raw value as the Basic-auth credential
 // (base64("user:password")) — no split is needed in-process.
+//
+// Note: this uses keychain.GetByService (raw service name), NOT
+// keychain.Get — the latter treats its first argument as a skill name and
+// prepends "omac/", which would double-prefix the registry service to
+// "omac/omac/build/registry/<alias>" and never find the entry.
 func KeychainLookup(alias string) (secrets.Secret, error) {
 	svc := RegistryKeychainService(alias)
-	v, err := keychain.Get(svc, CredentialAccount)
+	v, err := keychain.GetByService(svc, CredentialAccount)
 	if err != nil {
 		if errors.Is(err, keychain.ErrNotFound) {
 			return secrets.Secret{}, ErrCredentialMissing
