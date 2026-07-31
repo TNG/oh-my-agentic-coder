@@ -5,7 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
+	"sort"
 	"strings"
 )
 
@@ -160,6 +163,132 @@ func realJava(java string) (string, bool) {
 	return cur, true
 }
 
+// EnumerateHostJDKs discovers ALL real JDK installations on the host so
+// Gradle's toolchain auto-detection can match a pinned toolchain spec
+// (languageVersion + vendor) against an installed JDK WITHOUT relying
+// on /usr/libexec/java_home inside the sandbox. The sandbox breaks
+// java_home's LaunchServices/Spotlight-based enumeration (the binary
+// runs but finds nothing — verified), so the supervisor runs java_home
+// HERE, unsandboxed, and passes the discovered install roots to Gradle
+// via org.gradle.java.installations.paths (read-only control state).
+//
+// Resolution: run `/usr/libexec/java_home -V` (darwin only), parse its
+// stdout (one JDK per line: "<ver> (<arch>) \"<vendor>\" - \"<name>\" <path>").
+// If java_home is unavailable or fails, fall back to a directory scan
+// of the two macOS install locations (/Library/Java/JavaVirtualMachines
+// and ~/Library/Java/JavaVirtualMachines), validating each entry has a
+// real bin/java. Each returned path is the JDK Home (the parent of bin/).
+//
+// The returned roots are symlink-resolved and deduped. The daemon JDK
+// (from ResolveJDK) is always included in the set so Gradle sees it as
+// a toolchain candidate too. Returns nil on non-darwin (no java_home).
+func EnumerateHostJDKs(daemonJDKHome string) []string {
+	if runtime.GOOS != "darwin" {
+		return nil
+	}
+	seen := map[string]bool{}
+	var roots []string
+	add := func(home string) {
+		if home == "" {
+			return
+		}
+		if canon, err := filepath.EvalSymlinks(home); err == nil {
+			home = canon
+		}
+		if seen[home] {
+			return
+		}
+		// Validate: bin/java must exist as a real executable.
+		java := filepath.Join(home, "bin", "java")
+		if _, ok := realJava(java); !ok {
+			return
+		}
+		seen[home] = true
+		roots = append(roots, home)
+	}
+
+	for _, home := range javaHomeListings() {
+		add(home)
+	}
+	// The daemon JDK is always a valid toolchain candidate.
+	add(daemonJDKHome)
+
+	sort.Strings(roots)
+	return roots
+}
+
+// javaHomeListings runs /usr/libexec/java_home -V unsandboxed and parses
+// the stdout, then falls back to a directory scan if that fails. Each
+// returned entry is a JDK Home path (parent of bin/).
+func javaHomeListings() []string {
+	if homes := parseJavaHomeV(); len(homes) > 0 {
+		return homes
+	}
+	return scanJavaVirtualMachines()
+}
+
+// parseJavaHomeV execs /usr/libexec/java_home -V and parses the stdout.
+// Each line looks like:
+//
+//	25.0.3 (arm64) "Eclipse Adoptium" - "OpenJDK 25.0.3" /Library/Java/JavaVirtualMachines/temurin-25.jdk/Contents/Home
+//
+// The path is the last whitespace-separated token on each line.
+func parseJavaHomeV() []string {
+	out, err := exec.Command(javaHomeBin, "-V").CombinedOutput()
+	if err != nil {
+		return nil
+	}
+	var roots []string
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "Matching Java") || strings.HasPrefix(line, "The operation") {
+			continue
+		}
+		// The path is the last token; it starts with "/".
+		idx := strings.LastIndex(line, " /")
+		if idx < 0 {
+			continue
+		}
+		home := strings.TrimSpace(line[idx+1:])
+		if home != "" {
+			roots = append(roots, home)
+		}
+	}
+	return roots
+}
+
+// scanJavaVirtualMachines scans the two macOS JDK install locations for
+// *.jdk bundles with a real bin/java, returning the JDK Home of each.
+// This is the fallback when java_home -V fails (e.g. LaunchServices DB
+// corruption) and also covers JDKs java_home doesn't register.
+func scanJavaVirtualMachines() []string {
+	home, _ := os.UserHomeDir()
+	dirs := []string{
+		"/Library/Java/JavaVirtualMachines",
+		filepath.Join(home, "Library", "Java", "JavaVirtualMachines"),
+	}
+	var roots []string
+	for _, d := range dirs {
+		entries, err := os.ReadDir(d)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			if !strings.HasSuffix(e.Name(), ".jdk") {
+				continue
+			}
+			home := filepath.Join(d, e.Name(), "Contents", "Home")
+			if _, ok := realJava(filepath.Join(home, "bin", "java")); ok {
+				roots = append(roots, home)
+			}
+		}
+	}
+	return roots
+}
+
+// javaHomeBin is the macOS JDK enumeration helper. Overridable for tests.
+var javaHomeBin = "/usr/libexec/java_home"
+
 // isShellScript reports whether path begins with a shebang ("#!"), the
 // signature of a shell/script wrapper used by version-manager shims
 // (jenv/asdf/SDKMAN). A real java binary never starts with `#!`. A read
@@ -177,6 +306,21 @@ func isShellScript(path string) bool {
 		return false
 	}
 	return bytes.Equal(hdr[:], []byte("#!"))
+}
+
+// jdkReadPaths returns the bin + install-prefix support dirs (lib,
+// libexec, lib64) for a JDK home, so Seatbelt can grant read+exec access
+// for the JVM to exec and load native libs. Shared by the daemon JDK
+// resolution (buildJDKResolution) and the toolchain JDK grants.
+func jdkReadPaths(jdkHome string) []string {
+	readPaths := []string{filepath.Join(jdkHome, "bin")}
+	for _, name := range []string{"lib", "libexec", "lib64"} {
+		p := filepath.Join(jdkHome, name)
+		if fi, err := os.Stat(p); err == nil && fi.IsDir() {
+			readPaths = append(readPaths, p)
+		}
+	}
+	return readPaths
 }
 
 // buildJDKResolution assembles the corrected env + read-grants for a real
@@ -198,18 +342,11 @@ func buildJDKResolution(jdkHome, parentPath string) JDKResolution {
 	}
 	correctedPath := binDir + string(filepath.ListSeparator) + strings.Join(kept, string(filepath.ListSeparator))
 
-	readPaths := []string{binDir}
-	for _, name := range []string{"lib", "libexec", "lib64"} {
-		p := filepath.Join(jdkHome, name)
-		if fi, err := os.Stat(p); err == nil && fi.IsDir() {
-			readPaths = append(readPaths, p)
-		}
-	}
 	return JDKResolution{
 		JavaHome:  jdkHome,
 		BinDir:    binDir,
 		Path:      correctedPath,
-		ReadPaths: readPaths,
+		ReadPaths: jdkReadPaths(jdkHome),
 	}
 }
 
