@@ -326,8 +326,11 @@ func validateCreateBody(raw []byte, approvedImages []string, executorID string) 
 		return nil, &ContainerPolicyError{Kind: KindHostNamespaceForbidden, Image: image, Reason: "Links/VolumesFrom cross-container access denied"}
 	}
 	// Sysctls: kernel parameters (e.g. net.ipv4.ip_forward) — host
-	// escape vector. Must be empty/absent.
-	if nonEmptyStrSlice(hc["Sysctls"]) {
+	// escape vector. Must be empty/absent. Docker serializes
+	// HostConfig.Sysctls as a map[string]string (JSON object), so
+	// check it as a map — nonEmptyStrSlice only matches arrays and
+	// would silently let a non-empty map through.
+	if m, ok := hc["Sysctls"].(map[string]any); ok && len(m) > 0 {
 		return nil, &ContainerPolicyError{Kind: KindDeviceForbidden, Image: image, Reason: "Sysctls not permitted in v1"}
 	}
 	// DeviceCgroupRules: cgroup device allowlist — device access. Empty.
@@ -352,10 +355,11 @@ func validateCreateBody(raw []byte, approvedImages []string, executorID string) 
 		return nil, &ContainerPolicyError{Kind: KindHostNamespaceForbidden, Image: image, Reason: "GroupAdd supplementary groups not permitted in v1"}
 	}
 	// LxcConf: legacy lxc config (arbitrary host escape). Empty.
-	if hc["LxcConf"] != nil {
-		if m, ok := hc["LxcConf"].(map[string]any); ok && len(m) > 0 {
-			return nil, &ContainerPolicyError{Kind: KindDeviceForbidden, Image: image, Reason: "LxcConf not permitted in v1"}
-		}
+	// Docker serializes HostConfig.LxcConf as a []string (JSON array
+	// of "key=value"), so check it as an array — a map type
+	// assertion would silently let a non-empty array through.
+	if nonEmptyStrSlice(hc["LxcConf"]) {
+		return nil, &ContainerPolicyError{Kind: KindDeviceForbidden, Image: image, Reason: "LxcConf not permitted in v1"}
 	}
 	// StorageOpt: storage driver options (host disk escape). Empty.
 	if m, ok := hc["StorageOpt"].(map[string]any); ok && len(m) > 0 {
@@ -707,8 +711,8 @@ func rewriteImagesPruneFilter(rawQuery, executorID string) string {
 	return rewritePruneFilter(rawQuery, executorID)
 }
 
-// rewritePruneFilter is the shared implementation for /networks/prune
-// and /volumes/prune. Docker prune filters arrive as
+// rewritePruneFilter is the shared implementation for /networks/prune,
+// /volumes/prune, and /images/prune. Docker prune filters arrive as
 // filters=<json url-encoded>. Parse, drop any label filter, inject
 // omac.executor=<id>, re-encode. Keep any non-label filters the client
 // sent (e.g. "until"). Returns the rewritten query string (without '?').
