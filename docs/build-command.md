@@ -604,6 +604,55 @@ This runs on normal completion (via the `defer stopContainerProxy()` in
 `RunBuild` returns). Audit records container create, denial, and cleanup
 outcomes (never credential values or proxy tokens).
 
+### Startup scavenger (ticket 09)
+
+On `Start`, BEFORE binding the listener, the proxy runs a scavenger that
+removes abandoned resources from a PREVIOUS crashed executor with the
+same executor id (checkbox 6). It queries the daemon for containers and
+networks labeled `omac.executor=<this-executor-id>` and DELETEs the
+matches. Scavenging BEFORE the bind eliminates the race between the
+scavenger and the new session's first request: once `net.Listen` returns
+the kernel queues inbound connections immediately, so a client racing to
+connect could otherwise dispatch a `/containers/create` while the
+scavenger's stale `/networks` snapshot is still being iterated. The
+label filter is built with `json.Marshal` (not string interpolation) so
+worktree base names with JSON-special characters are correctly encoded.
+Unrelated host resources are never listed — the filter is constructed
+server-side and never trusted from the client. Best-effort; audited as
+`container.scavenge.summary` + per-item `container.scavenge` events
+(`force=true` recorded so an operator can distinguish a graceful remove
+from a forced kill of a running orphan).
+
+This is the crash-recovery half of ADR 0002's "sidecar owns cleanup
+after crash recovery": a crashed executor's orphaned containers and
+network are reclaimed by the next startup, so `ensureNetwork` does not
+silently fail on a name-conflict 409 and leave containers on the default
+bridge.
+
+### Denial correlation (ticket 09, spec §254)
+
+Container-policy denials are correlated with the active build request so
+the agent receives an actionable OMAC explanation rather than only a
+wrapped Testcontainers failure. `runBuild` generates a short, non-secret,
+time-ordered build request id (`b<unix-seconds-hex>-<4 random hex bytes>`,
+threaded via `startContainerProxy` → `Proxy.SetBuildRequestID`). When the
+proxy denies a container request, `ContainerPolicyError.Render()` prepends
+a correlation prefix naming the request id AND the actionable cause on
+line 1:
+
+```
+OMAC build request b19a3b2c-deadbeef: OMAC build denied container image postgres:17.
+Add the image to .omac/build.yaml, then restart OMAC to review and activate
+the changed capability set. The current session policy is frozen; do not retry.
+```
+
+Line 1 carries the request id + the fix hint so Gradle/Testcontainers
+summary-truncation that shows only the first line still conveys both. The
+`build.request` audit event carries `request=<id>`; the `container.denied`
+audit event carries `request=<id>` + `kind=<name>` (e.g.
+`kind=unapproved-image`) so an operator can correlate denials to the
+request without substring-parsing the rendered message.
+
 ### Platform posture (v1)
 
 The container proxy is macOS-only in v1 (Shape A, env-only network) —
@@ -657,4 +706,78 @@ in `internal/cli/build_integration_test.go`, which skip when the
 nested `sandbox_apply`, so those tests run on host/CI but not inside an
 omac sandbox. Reading a host secret fixture from within the kernel
 sandbox is therefore a **host-side follow-up**; the fixture path is
-asserted absent from the generated SBPL at unit level.
+asserted absent from the generated SBPL at unit level. The container
+proxy's scavenger + denial correlation are unit-proven by
+`internal/containerproxy/proxy_test.go` against a fake daemon
+(httptest); real-Docker/Gradle validation is host-side.
+
+## Team-ready yarp3 TDD workflow (ticket 10)
+
+The `omac build` command is the supported, harness-independent JVM build
+workflow for a team. It replaces the prior work-around guidance
+(`--no-daemon`, `open_port: [0]`, env-only profile tweaks, Checkstyle
+twin tasks, raw Docker socket access, opaque-retry) with a single
+executor that owns the daemon leaf, queue, loopback posture, container
+mediation, and credential lift.
+
+### What a colleague does
+
+1. Install the same OMAC version.
+2. Clone or create a linked worktree of the repo.
+3. If the project uses non-standard capabilities (containers, private
+   registries), commit `.omac/build.yaml` (non-secret — shareable with
+   the project). On the first `omac build`, OMAC presents one consolidated
+   capability review; approve it. An unchanged manifest starts
+   unattended thereafter.
+4. Provide private registry credentials through their own OMAC keychain
+   (`omac/build/registry/<alias>`). The credential never enters the
+   executor (env/args/gradle.properties/logs/audit).
+5. Run `omac build --root backend -- gradle test --tests '<FQN>'`. No
+   project-specific Gradle or Testcontainers changes are required.
+
+### What OMAC owns
+
+- The Gradle daemon leaf (`GRADLE_USER_HOME` under the resolved cache
+  scope), queue (per-worktree flock), and warm-daemon reuse — no host
+  `~/.gradle` lock contention, no `--no-daemon` needed.
+- The filtered network proxy (public Gradle/Maven endpoints only) and the
+  credential-lift proxy (private registries) on macOS.
+- The mediated container proxy (approved images only, ownership-labeled,
+  internal network with no outbound route, Ryuk disabled) on macOS with
+  approved images.
+- The startup scavenger (crash recovery) + denial correlation (actionable
+  OMAC explanations) + teardown cleanup (normal + forced cancel + crash).
+- Gradle control state (init scripts, `gradle.properties`, `.omac-control/`)
+  is read-only to the executor; the retire-checkstyle-twins +
+  mockito-agent + credential-lift-routing init scripts are OMAC-generated.
+
+### Release notes (v1 scope)
+
+- **Gradle v1; Maven deferred.** The `gradle` adapter is supported; the
+  Maven adapter seam exists but is not v1.
+- **macOS v1 network posture: env-only filtering (filesystem-only kernel
+  boundary).** Raw-socket-capable build code can reach host loopback and
+  external egress; no host-listener monitoring/guarding is claimed or
+  implied (ADR 0003 Revision — guarded loopback was disproven by the
+  2026-07-29 Seatbelt spike). The threat model is explicitly limited to
+  accidental harm. This is reported in `omac provenance`, never described
+  as loopback protection.
+- **Linux private loopback (kernel boundary).** Network posture
+  `kernel-blocked (private sandbox loopback)`; host-loopback services are
+  unreachable from the executor while Gradle workers reach executor-created
+  dynamic ports.
+- **Unsupported Testcontainers features (v1).** Ryuk, socket nesting,
+  reusable containers, host bind mounts, privileged mode, host namespaces,
+  devices, extra capabilities, running-container egress, and unknown
+  security-relevant `HostConfig` fields are denied fail-closed with a
+  structured OMAC policy error (not an opaque 404).
+- **Cache-scope poisoning boundaries.** The configured cache scope
+  (global/config/workdir/ephemeral) defines the poisoning boundary.
+  `global` intentionally permits cross-worktree cache influence;
+  `config`, `workdir`, and ephemeral scopes progressively narrow it. OMAC
+  reports this rather than silently overriding the configured scope.
+- **Cancellation, crash recovery, teardown.** Graceful cancel keeps the
+  warm executor; forced cancel recycles the Gradle daemon. The defer chain
+  removes executor-owned containers + the internal network on normal
+  completion, forced cancel, and executor failure. The startup scavenger
+  reclaims orphaned resources from a crashed prior executor.

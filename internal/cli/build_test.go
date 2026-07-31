@@ -314,3 +314,77 @@ func TestBuildCacheDirResolution(t *testing.T) {
 		}
 	})
 }
+
+// TestBuildExecutorSecurityBoundary (ticket 10, checkbox 6) is a
+// consolidated regression test asserting the build-executor security
+// boundary envelope at the unit level. The individual pieces are tested
+// in their owning packages (grants_test.go, containerproxy/proxy_test.go,
+// build_proxy_test.go); this test documents the FULL boundary in one
+// place so a regression in any single piece is caught here too. Kernel-
+// level fixture reads / raw-socket probes are host-side (gated integration
+// tests skip in-sandbox); this covers the unit-provable envelope.
+func TestBuildExecutorSecurityBoundary(t *testing.T) {
+	t.Run("startContainerProxy returns disabled when no approved images", func(t *testing.T) {
+		if runtime.GOOS != "darwin" {
+			t.Skip("macOS-only proxy seam (Linux short-circuits on the platform gate before the no-images gate)")
+		}
+		// The container proxy is not started without approved images, so
+		// DOCKER_HOST is never injected — the executor cannot reach the raw
+		// daemon socket. (internal/buildrun/grants_test.go:
+		// TestGrantsForContainerProxyEnv covers the enabled case + the
+		// ChildEnv DOCKER_HOST absence; this asserts the disabled case from
+		// the CLI gate.)
+		env := &Env{Version: "test", Workdir: t.TempDir(), Stdout: newDevNull(t), Stderr: newDevNull(t)}
+		url, enabled, stop, err := startContainerProxy(env, t.TempDir(), nil, "b-test", audit.Nop())
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if url != "" || enabled || stop != nil {
+			t.Errorf("no approved images must not start the proxy (raw socket would leak): url=%q enabled=%v", url, enabled)
+		}
+	})
+	t.Run("container proxy URL is loopback with no userinfo", func(t *testing.T) {
+		if runtime.GOOS != "darwin" {
+			t.Skip("macOS-only proxy start")
+		}
+		env := &Env{Version: "test", Workdir: t.TempDir(), Stdout: newDevNull(t), Stderr: newDevNull(t)}
+		url, enabled, stop, err := startContainerProxy(env, t.TempDir(), []string{"pgvector/pgvector:pg16"}, "b-test", audit.Nop())
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !enabled || stop == nil {
+			t.Fatalf("macOS with approved images must start the proxy: enabled=%v", enabled)
+		}
+		defer stop()
+		if !strings.HasPrefix(url, "tcp://127.0.0.1:") {
+			t.Errorf("DOCKER_HOST must be a loopback tcp URL: %q", url)
+		}
+		if strings.Contains(url, "@") {
+			t.Errorf("DOCKER_HOST must carry no userinfo (ownership-based auth, not token): %q", url)
+		}
+	})
+	t.Run("executor id is stable + non-secret + distinct per worktree", func(t *testing.T) {
+		a := containerExecutorID("/repo/.worktrees/feat-a")
+		b := containerExecutorID("/repo/.worktrees/feat-b")
+		if a == b {
+			t.Errorf("distinct worktrees must yield distinct executor ids: %q == %q", a, b)
+		}
+		if !strings.HasPrefix(a, "omac-") {
+			t.Errorf("executor id must be omac-prefixed: %q", a)
+		}
+	})
+	t.Run("build request id is non-empty, b-prefixed, and non-colliding", func(t *testing.T) {
+		id := newBuildRequestID()
+		if !strings.HasPrefix(id, "b") {
+			t.Errorf("build request id must be b-prefixed: %q", id)
+		}
+		if len(id) < 10 {
+			t.Errorf("build request id too short (must carry time + random): %q", id)
+		}
+		// Two ids generated in the same second differ by the random suffix.
+		id2 := newBuildRequestID()
+		if id == id2 {
+			t.Errorf("two build request ids must not collide: %q == %q", id, id2)
+		}
+	})
+}

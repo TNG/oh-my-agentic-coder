@@ -546,11 +546,14 @@ ignore those vars:
   warning and does not claim routing (the npm/yarn/pnpm CLIs work
   without this family).
 
-**The Gradle daemon needs one extra grant.** The daemon talks to its
-client over a *random loopback port*, which the default
-`network.enforcement: kernel` does not permit. Prefer
-`./gradlew --no-daemon` (or `org.gradle.daemon=false`) — nothing else is
-needed. If you must keep the daemon, the fix is platform-specific:
+**Gradle builds use `omac build`, not `--no-daemon`.** The `omac build`
+command runs a dedicated JVM build executor that owns its own Gradle
+daemon leaf (under the resolved cache scope), per-worktree queue, and
+loopback posture — so the daemon's random loopback port is handled
+without `--no-daemon` and without hand-tuning the sandbox profile's
+`open_port` / `enforcement`. See `docs/build-command.md` for the full
+contract. For ad-hoc Gradle invocations outside `omac build`, the daemon
+still needs the grant below.
 
 | Platform | Setting | Egress still kernel-enforced? |
 |---|---|---|
