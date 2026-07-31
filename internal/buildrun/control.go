@@ -84,6 +84,17 @@ type GradlePropertiesConfig struct {
 	// script. The credential itself NEVER appears here — the URLs are
 	// http://127.0.0.1:<port>/<alias>/ with no userinfo.
 	RegistryProxyURLs map[string]string
+	// InstallationsPaths is the list of host JDK install roots (parents
+	// of bin/) Gradle should know about for toolchain auto-detection.
+	// Written to gradle.properties as
+	// org.gradle.java.installations.paths so Gradle matches a pinned
+	// toolchain spec against installed JDKs WITHOUT calling
+	// /usr/libexec/java_home inside the sandbox (which fails — the
+	// sandbox breaks java_home's LaunchServices/Spotlight enumeration
+	// even though the binary runs and the directories are readable).
+	// The supervisor enumerates these unsandboxed (EnumerateHostJDKs).
+	// Empty/nil omits the line (Gradle falls back to its own detection).
+	InstallationsPaths []string
 }
 
 // RenderGradleProperties renders the OMAC-generated gradle.properties
@@ -105,6 +116,16 @@ func RenderGradleProperties(cfg GradlePropertiesConfig) string {
 	}
 	if cfg.MaxHeap != "" {
 		b += fmt.Sprintf("org.gradle.jvmargs=-Xmx%s\n", cfg.MaxHeap)
+	}
+	// Host JDK install roots for toolchain auto-detection. Gradle's
+	// /usr/libexec/java_home -V call fails inside the sandbox (the
+	// binary runs but finds nothing — LaunchServices/Spotlight
+	// enumeration is broken by the sandbox). The supervisor enumerates
+	// these unsandboxed and declares them here so Gradle matches a
+	// pinned toolchain spec against installed JDKs without calling
+	// java_home at all.
+	if len(cfg.InstallationsPaths) > 0 {
+		b += "org.gradle.java.installations.paths=" + strings.Join(cfg.InstallationsPaths, ",") + "\n"
 	}
 	return b
 }

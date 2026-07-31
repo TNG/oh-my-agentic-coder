@@ -313,6 +313,25 @@ func GrantsFor(worktree, cacheDir string, cfg BuildConfig) (*BuildGrants, error)
 	// executor can exec and load the JVM under deny-default Seatbelt.
 	jdk, jdkErr := ResolveJDK(getenv)
 
+	// Enumerate ALL host JDK installations (unsandboxed) so Gradle's
+	// toolchain auto-detection can match a pinned toolchain spec against
+	// an installed JDK. /usr/libexec/java_home fails inside the sandbox
+	// (LaunchServices/Spotlight enumeration broken), so the supervisor
+	// enumerates here and declares the roots via
+	// org.gradle.java.installations.paths (read-only control state).
+	// Each JDK's bin+lib must also be read-granted so the executor can
+	// exec javac from a matched toolchain.
+	var installationsPaths []string
+	var toolchainReadPaths []string
+	if jdkErr == nil {
+		installationsPaths = EnumerateHostJDKs(jdk.JavaHome)
+		for _, home := range installationsPaths {
+			for _, p := range jdkReadPaths(home) {
+				toolchainReadPaths = append(toolchainReadPaths, p)
+			}
+		}
+	}
+
 	// OMAC control state: gradle.properties (proxy + jvmargs), the
 	// .omac-control/ README, AND the init.d/ control directory (Gradle
 	// loads init.d/*.gradle as init scripts — it must be read-only to the
@@ -324,9 +343,10 @@ func GrantsFor(worktree, cacheDir string, cfg BuildConfig) (*BuildGrants, error)
 	}
 	proxy := splitProxyEndpoint(cfg.ProxyURL)
 	gradleProps := GradlePropertiesConfig{
-		Proxy:             proxy,
-		MaxHeap:           maxHeap,
-		RegistryProxyURLs: cfg.RegistryProxyURLs,
+		Proxy:              proxy,
+		MaxHeap:            maxHeap,
+		RegistryProxyURLs:  cfg.RegistryProxyURLs,
+		InstallationsPaths: installationsPaths,
 	}
 	controlPaths, err := PrepareControlState(leaf, gradleProps)
 	if err != nil {
@@ -347,6 +367,11 @@ func GrantsFor(worktree, cacheDir string, cfg BuildConfig) (*BuildGrants, error)
 	readPaths = append(readPaths, controlPaths.All()...)
 	if jdkErr == nil {
 		readPaths = append(readPaths, jdk.ReadPaths...)
+		// Toolchain JDKs: each enumerated host JDK needs bin+lib
+		// read-granted so the executor can exec javac from a matched
+		// toolchain. (The daemon JDK's paths are already in jdk.ReadPaths;
+		// toolchainReadPaths adds the OTHERS — deduped below.)
+		readPaths = append(readPaths, toolchainReadPaths...)
 	}
 	// Platform read baseline (darwinBaseline().Read on macOS: /bin,
 	// /usr/bin, /usr/lib, /private/var/select, /etc, /System, /Library,

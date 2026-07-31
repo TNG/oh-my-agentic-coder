@@ -242,6 +242,39 @@ func TestExpandExistingSkipsMissing(t *testing.T) {
 	}
 }
 
+// TestExpandExistingSkipsUnstatable: a baseline entry that exists but
+// cannot be stat (EPERM/EACCES when the supervisor itself runs under a
+// restrictive sandbox) must be skipped with a notice, not abort the
+// whole grant computation. Regression for the build-path failure where
+// adding /usr/libexec to the darwin baseline hard-failed GrantsFor under
+// a nested sandbox.
+func TestExpandExistingSkipsUnstatable(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("chmod permissions do not restrict root")
+	}
+	root := t.TempDir()
+	// A 0000 dir: searching it (Lstat a child) needs +x → EACCES, not ENOENT.
+	gated := filepath.Join(root, "gated")
+	if err := os.Mkdir(gated, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(gated, 0o755) })
+	unstatable := filepath.Join(gated, "child")
+
+	good := t.TempDir()
+	var buf strings.Builder
+	out, err := ExpandExisting([]string{good, unstatable}, &buf)
+	if err != nil {
+		t.Fatalf("ExpandExisting should skip the unstatable entry, got err: %v", err)
+	}
+	if len(out) != 1 || out[0] != good {
+		t.Errorf("expected only the statable entry, got out = %v", out)
+	}
+	if !strings.Contains(buf.String(), "skipping path") {
+		t.Errorf("expected a skip notice, got %q", buf.String())
+	}
+}
+
 func TestResolveFirstStartScaffoldsDefault(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
