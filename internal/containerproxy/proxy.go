@@ -90,6 +90,12 @@ type Proxy struct {
 	networkName string                   // executor-owned internal network name
 	createdNet  bool
 	stopOnce    sync.Once
+	// buildRequestID is the active build request id threaded from runBuild
+	// (ticket 09, spec §254). Non-empty only during a build; set via
+	// SetBuildRequestID before the first proxied request so denials carry
+	// the correlation prefix naming the active request. The startup
+	// scavenger runs WITHOUT a build request id (no active build).
+	buildRequestID string
 }
 
 // containerMeta is the cached metadata for a container this executor owns.
@@ -145,11 +151,162 @@ func New(cfg Config) (*Proxy, error) {
 	}, nil
 }
 
-// Start binds the loopback listener and serves in a goroutine. Returns the
-// DOCKER_HOST URL the executor is pointed at (tcp://127.0.0.1:<port>) and
-// a stop func that tears down the listener and runs Cleanup (best-effort
-// removal of executor-owned containers + the executor network).
+// SetBuildRequestID threads the active build request id into the proxy so
+// container-policy denials are correlated with the active build request
+// (ticket 09, spec §254). Call before the first proxied request (the
+// build.request event is emitted just before RunBuild). Empty clears it
+// (e.g. between builds); the proxy serves one build at a time per worktree.
+func (p *Proxy) SetBuildRequestID(id string) {
+	p.mu.Lock()
+	p.buildRequestID = id
+	p.mu.Unlock()
+}
+
+// Scavenge removes abandoned executor-owned resources from a PREVIOUS
+// crashed executor (same executor id) WITHOUT touching unrelated or
+// currently-active resources (ticket 09, checkbox 6). It queries the daemon
+// for containers and networks labeled omac.executor=<this-executor-id> and
+// DELETEs the matches. It does NOT list untracked resources, trust client
+// labels, or touch volumes (volumes are sidecar-owned per ADR 0002 and not
+// created by the v1 allowlist).
+//
+// Safety: the label filter scopes every DELETE to this executor's resources
+// only. Start runs Scavenge BEFORE binding the listener, so no client can
+// connect until the daemon state is clean — the scavenger cannot race this
+// proxy's own in-session tracking. A second proxy with the same id is
+// excluded by the per-worktree flock in runBuild (one build at a time per
+// worktree), so a same-id proxy racing a scavenge is not a v1 scenario.
+//
+// Best-effort: daemon errors are logged and audited but do not abort the
+// scan. Returns the counts of containers and networks removed.
+func (p *Proxy) Scavenge() (containersRemoved, networksRemoved int) {
+	containersRemoved = p.scavengeContainers()
+	networksRemoved = p.scavengeNetworks()
+	p.auditor.Emit(audit.ControlMutation("container.scavenge.summary", "",
+		fmt.Sprintf("executor=%s containers=%d networks=%d force=true", p.cfg.ExecutorID, containersRemoved, networksRemoved)))
+	return
+}
+
+// scavengeContainers removes abandoned containers labeled with this
+// executor's ownership label. It uses GET /containers/json with a
+// server-side label filter (the same ownership-label convention as the
+// runtime proxy) so ONLY this executor's abandoned containers are returned;
+// unrelated host containers are never listed and never deleted.
+func (p *Proxy) scavengeContainers() int {
+	filters := map[string][]string{"label": {OwnershipLabelKey + "=" + p.cfg.ExecutorID}}
+	encoded, _ := json.Marshal(filters)
+	q := url.Values{}
+	q.Set("all", "true")
+	q.Set("filters", string(encoded))
+	req, err := http.NewRequest(http.MethodGet, p.upstreamURL("/containers/json?"+q.Encode()), nil)
+	if err != nil {
+		return 0
+	}
+	resp, err := p.transport.RoundTrip(req)
+	if err != nil {
+		p.logf("containerproxy: scavenge containers list: %v", err)
+		return 0
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		p.logf("containerproxy: scavenge containers list status %d", resp.StatusCode)
+		return 0
+	}
+	b, _ := io.ReadAll(resp.Body)
+	var listed []struct {
+		ID string `json:"Id"`
+	}
+	if err := json.Unmarshal(b, &listed); err != nil {
+		p.logf("containerproxy: scavenge containers parse: %v", err)
+		return 0
+	}
+	removed := 0
+	for _, c := range listed {
+		if c.ID == "" {
+			continue
+		}
+		p.deleteContainer(c.ID, true)
+		p.auditor.Emit(audit.ControlMutation("container.scavenge", "",
+			fmt.Sprintf("executor=%s id=%s result=removed force=true", p.cfg.ExecutorID, c.ID)))
+		removed++
+	}
+	return removed
+}
+
+// scavengeNetworks removes abandoned networks labeled with this executor's
+// ownership label (the same label ensureNetwork sets on the executor-owned
+// internal network). A crashed prior run may have left its network behind;
+// this reclaims it so the new run can create a fresh one (ensureNetwork
+// treats a name-conflict 409 as a soft failure and would otherwise leave
+// containers on the default bridge).
+func (p *Proxy) scavengeNetworks() int {
+	filters := map[string][]string{"label": {OwnershipLabelKey + "=" + p.cfg.ExecutorID}}
+	encoded, _ := json.Marshal(filters)
+	q := url.Values{}
+	q.Set("filters", string(encoded))
+	req, err := http.NewRequest(http.MethodGet, p.upstreamURL("/networks?"+q.Encode()), nil)
+	if err != nil {
+		return 0
+	}
+	resp, err := p.transport.RoundTrip(req)
+	if err != nil {
+		p.logf("containerproxy: scavenge networks list: %v", err)
+		return 0
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		p.logf("containerproxy: scavenge networks list status %d", resp.StatusCode)
+		return 0
+	}
+	b, _ := io.ReadAll(resp.Body)
+	var listed []struct {
+		ID string `json:"Id"`
+	}
+	if err := json.Unmarshal(b, &listed); err != nil {
+		p.logf("containerproxy: scavenge networks parse: %v", err)
+		return 0
+	}
+	removed := 0
+	for _, n := range listed {
+		if n.ID == "" {
+			continue
+		}
+		p.removeNetwork(n.ID)
+		p.auditor.Emit(audit.ControlMutation("container.scavenge", "",
+			fmt.Sprintf("executor=%s network=%s result=removed", p.cfg.ExecutorID, n.ID)))
+		removed++
+	}
+	return removed
+}
+
+// Start runs the startup scavenger (ticket 09, checkbox 6 — removes
+// abandoned resources from a PREVIOUS crashed executor with the same id,
+// without touching unrelated resources), THEN binds the loopback listener
+// and serves in a goroutine. Scavenging BEFORE the bind eliminates the
+// race between the scavenger and the new session's first request: once
+// net.Listen returns, the kernel queues inbound connections immediately,
+// so a client (Testcontainers) racing to connect could dispatch a
+// /containers/create → attachToNetwork while the scavenger's stale
+// /networks snapshot is still being iterated — and the network scavenger
+// could removeNetwork a network the just-attached container is on.
+// Scavenging before the bind closes that window entirely: no client can
+// connect until the daemon state is clean. A bind failure is independent
+// of the daemon, so the error path is unaffected.
+//
+// Returns the DOCKER_HOST URL the executor is pointed at
+// (tcp://127.0.0.1:<port>) and a stop func that tears down the listener
+// and runs Cleanup (best-effort removal of this session's owned containers
+// + the executor network). Scavenger errors are best-effort: a daemon
+// that is down at startup is logged and the proxy still starts (the build
+// will fail fast on the first proxied request instead).
 func (p *Proxy) Start() (dockerHost string, stop func(), err error) {
+	// Scavenge BEFORE binding so no client can connect until the daemon
+	// state is clean (eliminates the first-request/scavenger race — see
+	// the doc comment above). Best-effort; logged + audited.
+	cRemoved, nRemoved := p.Scavenge()
+	if cRemoved > 0 || nRemoved > 0 {
+		p.logf("containerproxy: scavenged %d container(s) and %d network(s) from a previous executor", cRemoved, nRemoved)
+	}
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return "", nil, fmt.Errorf("containerproxy: bind listener: %w", err)
@@ -492,11 +649,19 @@ func (p *Proxy) upstreamURL(path string) string {
 // `omac` message field, marks the response X-Omac-Sandbox, AND emits the
 // typed *ContainerPolicyError to the audit trail (spec §254 — correlate
 // low-level denials with the active build request). Never credential values.
+//
+// Ticket 09: the active build request id is stamped onto the error so the
+// rendered diagnostic (and the audit event) names the active request. The
+// correlation prefix is the FIRST line of the rendered message so a
+// Gradle/log reader sees the OMAC cause before any Testcontainers wrapping.
 func (p *Proxy) deny(conn net.Conn, req *http.Request, perr *ContainerPolicyError) {
+	p.mu.Lock()
+	perr.BuildRequestID = p.buildRequestID
+	p.mu.Unlock()
 	p.logf("containerproxy: DENY %s %s: %s", req.Method, req.URL.Path, perr.Render())
 	p.auditor.Emit(audit.ControlMutation("container.denied", "",
-		fmt.Sprintf("executor=%s method=%s path=%s kind=%d image=%s id=%s",
-			p.cfg.ExecutorID, req.Method, req.URL.Path, perr.Kind, redactImage(perr.Image), perr.ContainerID)))
+		fmt.Sprintf("executor=%s request=%s method=%s path=%s kind=%s image=%s id=%s",
+			p.cfg.ExecutorID, perr.BuildRequestID, req.Method, req.URL.Path, perr.Kind, redactImage(perr.Image), perr.ContainerID)))
 	payload := map[string]any{
 		"message": perr.Render(),
 		"omac":    perr.Render(),

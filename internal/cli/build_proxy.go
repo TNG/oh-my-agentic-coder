@@ -130,8 +130,11 @@ func startCredentialProxy(env *Env, manifestRegistries []buildmanifest.RegistryE
 // containerProxyStarter is the seam for starting the mediated Docker
 // container proxy (ticket 08). Production wires startContainerProxy; tests
 // inject a fake to assert the proxy is started only when images are
-// approved (macOS) and to avoid touching a real Docker/Colima daemon.
-// The seam returns (url, cleanup, error) like startContainerProxy.
+// approved (macOS) and to avoid touching a real Docker/Colima daemon. The
+// seam signature matches startContainerProxy:
+// (env, worktree, approvedImages, buildReqID, auditor) -> (url, enabled, stop, error).
+// buildReqID (ticket 09, spec §254) is threaded into the proxy so
+// container-policy denials are correlated with the active build request.
 var containerProxyStarter = startContainerProxy
 
 // startContainerProxy starts the mediated Docker-compatible endpoint
@@ -140,6 +143,10 @@ var containerProxyStarter = startContainerProxy
 // allowlist to the existing Docker/Colima daemon, and points the executor
 // at it via DOCKER_HOST (NEVER the raw socket). The executor authenticates
 // by ownership (omac.executor=<id> label), not token.
+//
+// Ticket 09: at startup the proxy runs a scavenger removing abandoned
+// resources from a PREVIOUS crashed executor with the same id (checkbox 6),
+// and threads buildReqID so denials carry the active request id (spec §254).
 //
 // Returns the DOCKER_HOST URL, an enabled flag, and a stop func that
 // tears down the listener AND runs Cleanup (best-effort removal of
@@ -152,7 +159,7 @@ var containerProxyStarter = startContainerProxy
 // /credential proxies. The executor ID is a stable per-worktree value
 // (derived from the canonical worktree path) so one executor's resources
 // are distinct from another's across concurrent worktrees.
-func startContainerProxy(env *Env, worktree string, approvedImages []string, auditor audit.Auditor) (url string, enabled bool, stop func(), err error) {
+func startContainerProxy(env *Env, worktree string, approvedImages []string, buildReqID string, auditor audit.Auditor) (url string, enabled bool, stop func(), err error) {
 	if runtime.GOOS != "darwin" {
 		// Linux kernel-blocked: the loopback proxy is unreachable from
 		// the executor. v1 does not start it on Linux.
@@ -175,6 +182,7 @@ func startContainerProxy(env *Env, worktree string, approvedImages []string, aud
 	if err != nil {
 		return "", false, nil, fmt.Errorf("create container proxy: %w", err)
 	}
+	p.SetBuildRequestID(buildReqID)
 	dockerHost, stopFn, err := p.Start()
 	if err != nil {
 		return "", false, nil, fmt.Errorf("start container proxy: %w", err)
