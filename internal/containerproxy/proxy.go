@@ -398,15 +398,31 @@ func (p *Proxy) serve(conn net.Conn, req *http.Request, body []byte) {
 		return
 	}
 
-	// /images/{ref}/json: allow only for approved refs.
+	// /images/{ref}/json: allow only for approved refs. When the ref is
+	// a digest (sha256:...), the daemon has already resolved an approved
+	// tag to that digest (the pull via /images/create is the security
+	// boundary, validated above); resolve the digest back to its RepoTags
+	// via a daemon sub-request and allow if ANY RepoTag matches the
+	// approved set. This handles Testcontainers' inspect-by-digest flow.
 	if d.rule == "image.inspect" {
 		if isRyukImage(d.imageRef) {
 			p.deny(conn, req, &ContainerPolicyError{Kind: KindRyukForbidden, Image: d.imageRef})
 			return
 		}
 		if !imageApproved(d.imageRef, p.cfg.ApprovedImages) {
-			p.deny(conn, req, &ContainerPolicyError{Kind: KindUnapprovedImage, Image: d.imageRef})
-			return
+			// Digest ref: resolve via the daemon's image metadata.
+			// The ref is the image's content digest; the daemon knows
+			// which RepoTags point at it. If any approved tag matches,
+			// the inspect is for an approved image.
+			if strings.HasPrefix(d.imageRef, "sha256:") {
+				if !p.digestApprovedByRepoTags(d.imageRef) {
+					p.deny(conn, req, &ContainerPolicyError{Kind: KindUnapprovedImage, Image: d.imageRef})
+					return
+				}
+			} else {
+				p.deny(conn, req, &ContainerPolicyError{Kind: KindUnapprovedImage, Image: d.imageRef})
+				return
+			}
 		}
 		p.forward(conn, req, body, d)
 		return
@@ -415,6 +431,33 @@ func (p *Proxy) serve(conn net.Conn, req *http.Request, body []byte) {
 	// /containers/json: rewrite the label filter server-side.
 	if d.rule == "containers.list" {
 		req.URL.RawQuery = rewriteContainersListFilter(req.URL.RawQuery, p.cfg.ExecutorID)
+		p.forward(conn, req, body, d)
+		return
+	}
+
+	// /networks/prune: inject the ownership label filter so only THIS
+	// executor's networks are pruned. The client's filter (if any) is
+	// dropped and replaced, matching the containers.list ownership model
+	// (client filters are forgeable; the proxy enforces, not trusts).
+	if d.rule == "networks.prune" {
+		req.URL.RawQuery = rewriteNetworksPruneFilter(req.URL.RawQuery, p.cfg.ExecutorID)
+		p.forward(conn, req, body, d)
+		return
+	}
+
+	// /volumes/prune: same JVMHookResourceReaper shutdown hook, same
+	// ownership-label-filter scoping as /networks/prune. Only THIS
+	// executor's volumes are pruned.
+	if d.rule == "volumes.prune" {
+		req.URL.RawQuery = rewriteVolumesPruneFilter(req.URL.RawQuery, p.cfg.ExecutorID)
+		p.forward(conn, req, body, d)
+		return
+	}
+
+	// /images/prune: third prune endpoint the JVMHookResourceReaper
+	// shutdown hook calls. Same ownership-label-filter scoping.
+	if d.rule == "images.prune" {
+		req.URL.RawQuery = rewriteImagesPruneFilter(req.URL.RawQuery, p.cfg.ExecutorID)
 		p.forward(conn, req, body, d)
 		return
 	}
@@ -612,7 +655,14 @@ func (p *Proxy) imageForUnlocked(id string) string {
 }
 
 // forward proxies a request to the upstream daemon verbatim (the body was
-// already validated/rewritten where applicable).
+// already validated/rewritten where applicable). For streaming responses
+// (upstream uses chunked transfer encoding OR no Content-Length, which is
+// what GET /containers/{id}/logs?follow=true returns), the response body
+// is streamed to the client with chunked transfer encoding instead of
+// being buffered. Buffering a live stream (io.ReadAll) blocks forever
+// waiting for EOF, so Testcontainers' log-follow never receives any data
+// and times out. The logs endpoint is the primary streaming case; other
+// endpoints return finite bodies and take the buffered path.
 func (p *Proxy) forward(conn net.Conn, req *http.Request, body []byte, d endpointDecision) {
 	upReq, err := http.NewRequest(req.Method, p.upstreamURL(req.URL.Path), strings.NewReader(string(body)))
 	if err != nil {
@@ -631,8 +681,62 @@ func (p *Proxy) forward(conn net.Conn, req *http.Request, body []byte, d endpoin
 		return
 	}
 	defer resp.Body.Close()
+	// Streaming response: the daemon uses chunked encoding (no
+	// Content-Length) for /logs?follow=true and similar endpoints.
+	// Stream the body to the client with chunked transfer encoding
+	// instead of buffering (which would block forever on a live stream).
+	// A response with a Content-Length header is finite → buffer it.
+	// Go's http.Transport strips Transfer-Encoding from resp.Header and
+	// presents a streaming resp.Body; the signature of a chunked upstream
+	// is the ABSENCE of Content-Length.
+	if resp.Header.Get("Content-Length") == "" {
+		p.streamResponse(conn, resp)
+		return
+	}
 	respBytes, _ := io.ReadAll(resp.Body)
 	writeRawResponse(conn, resp.Status, resp.Header, respBytes)
+}
+
+// streamResponse writes the response status + headers (minus hop-by-hop
+// headers, same as writeRawResponse) and then streams the response body
+// to the client using HTTP/1.1 chunked transfer encoding. Used for
+// streaming endpoints (logs?follow=true) where the upstream body has no
+// Content-Length and may stay open indefinitely. The conn deadline set in
+// handle() bounds the stream; Testcontainers closes the connection when
+// it has seen enough log output, which causes the copy to return.
+func (p *Proxy) streamResponse(conn net.Conn, resp *http.Response) {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "HTTP/1.1 %s\r\n", resp.Status)
+	for k, vs := range resp.Header {
+		switch strings.ToLower(k) {
+		case "connection", "keep-alive", "te", "trailer",
+			"transfer-encoding", "upgrade", "content-length":
+			continue
+		}
+		for _, v := range vs {
+			fmt.Fprintf(&sb, "%s: %s\r\n", k, v)
+		}
+	}
+	sb.WriteString("X-Omac-Sandbox: denied\r\n")
+	sb.WriteString("Transfer-Encoding: chunked\r\n")
+	sb.WriteString("Connection: close\r\n\r\n")
+	_, _ = conn.Write([]byte(sb.String()))
+	// Stream chunks: for each read, write the chunk size (hex) + CRLF +
+	// data + CRLF. An empty read (EOF) writes the terminating 0-length
+	// chunk. Errors are best-effort (the client may have closed first).
+	buf := make([]byte, 4096)
+	for {
+		n, err := resp.Body.Read(buf)
+		if n > 0 {
+			fmt.Fprintf(conn, "%x\r\n", n)
+			_, _ = conn.Write(buf[:n])
+			_, _ = conn.Write([]byte("\r\n"))
+		}
+		if err != nil {
+			_, _ = conn.Write([]byte("0\r\n\r\n"))
+			return
+		}
+	}
 }
 
 // upstreamURL builds the URL for an upstream request. For a unix socket
@@ -643,6 +747,45 @@ func (p *Proxy) upstreamURL(path string) string {
 		return "http://localhost" + path
 	}
 	return p.upstream.String() + path
+}
+
+// digestApprovedByRepoTags resolves an image content digest (sha256:...)
+// back to its RepoTags via a daemon GET /images/{digest}/json sub-request,
+// then reports whether ANY RepoTag matches the approved image set. This
+// backs the image.inspect path: Testcontainers inspects by digest after
+// the daemon resolved an approved tag to that digest. The pull (via
+// /images/create, validated at the security boundary) is what authorized
+// the image; this resolution just maps the digest back to the tag the
+// manifest approved. Best-effort: on a daemon error it returns false
+// (fail-closed — the inspect is denied, which surfaces as a clear
+// Testcontainers failure rather than a silent allow).
+func (p *Proxy) digestApprovedByRepoTags(digest string) bool {
+	req, err := http.NewRequest(http.MethodGet, p.upstreamURL("/images/"+digest+"/json"), nil)
+	if err != nil {
+		return false
+	}
+	resp, err := p.transport.RoundTrip(req)
+	if err != nil {
+		p.logf("containerproxy: digest RepoTags lookup failed for %s: %v", digest, err)
+		return false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		p.logf("containerproxy: digest RepoTags lookup for %s: daemon status %d", digest, resp.StatusCode)
+		return false
+	}
+	var meta struct {
+		RepoTags []string `json:"RepoTags"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&meta); err != nil {
+		return false
+	}
+	for _, tag := range meta.RepoTags {
+		if imageApproved(tag, p.cfg.ApprovedImages) {
+			return true
+		}
+	}
+	return false
 }
 
 // deny writes a JSON Docker-API-style error response to the client with an
