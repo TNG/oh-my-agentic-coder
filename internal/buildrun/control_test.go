@@ -368,9 +368,12 @@ func TestRenderMockitoAgentInitScript_LocatesJarAndAddsJavaagent(t *testing.T) {
 		"-javaagent:",
 		// Defensive skip when the jar is absent.
 		"if (mockitoJar != null)",
-		// Forces java.io.tmpdir to the executor's private temp ($TMPDIR).
+		// Forces java.io.tmpdir to the executor's private temp ($TMPDIR),
+		// guarded so a misconfigured env (empty $TMPDIR) can't blank the
+		// JVM default.
 		"System.getenv('TMPDIR')",
 		"-Djava.io.tmpdir=",
+		"if (omacTmp != null && !omacTmp.isEmpty())",
 		// Read-only contract.
 		"READ-ONLY to the executor",
 	} {

@@ -199,7 +199,7 @@ func runBuild(args []string, env *Env) int {
 	// the audit trail ties the id to the request metadata). Non-secret
 	// (it appears in denial messages the agent reads).
 	buildReqID := newBuildRequestID()
-	containerProxyURL, containerProxyEnabled, stopContainerProxy, cpErr := containerProxyStarter(env, resolved.Worktree, approved.ApprovedImages, buildReqID, auditor)
+	containerProxyURL, containerProxyEnabled, stopContainerProxy, cpErr := containerProxyStarter(env, resolved.Worktree, buildrun.GradleLeaf(cacheDir), approved.ApprovedImages, buildReqID, auditor)
 	if cpErr != nil {
 		return failService("container proxy: %v", cpErr)
 	}

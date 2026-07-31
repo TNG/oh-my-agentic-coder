@@ -132,9 +132,12 @@ func startCredentialProxy(env *Env, manifestRegistries []buildmanifest.RegistryE
 // inject a fake to assert the proxy is started only when images are
 // approved (macOS) and to avoid touching a real Docker/Colima daemon. The
 // seam signature matches startContainerProxy:
-// (env, worktree, approvedImages, buildReqID, auditor) -> (url, enabled, stop, error).
+// (env, worktree, controlLeaf, approvedImages, buildReqID, auditor) -> (url, enabled, stop, error).
 // buildReqID (ticket 09, spec §254) is threaded into the proxy so
 // container-policy denials are correlated with the active build request.
+// controlLeaf is the OMAC cache leaf (GRADLE_USER_HOME) where the proxy
+// records its assigned port at .omac-control/containerproxy-port so the
+// warm Gradle daemon's cached DOCKER_HOST stays valid across runs.
 var containerProxyStarter = startContainerProxy
 
 // startContainerProxy starts the mediated Docker-compatible endpoint
@@ -148,6 +151,18 @@ var containerProxyStarter = startContainerProxy
 // resources from a PREVIOUS crashed executor with the same id (checkbox 6),
 // and threads buildReqID so denials carry the active request id (spec §254).
 //
+// Stable port: the proxy binds a DETERMINISTIC loopback port derived from
+// the canonical worktree path (stablePortFor, range [30000,40000)) instead
+// of a random ephemeral port each run, so the warm Gradle daemon's cached
+// DOCKER_HOST stays valid across runs (the bug being fixed: a new random
+// port each run left the warm daemon pointing at a dead port, surfacing as
+// "Connection refused" until `omac build stop` recycled it). The assigned
+// port is recorded at <controlLeaf>/.omac-control/containerproxy-port and
+// preferred on the next run. On a rare collision (the whole [30000,40000)
+// window occupied) the proxy falls back to a random ephemeral port and logs
+// a warning — correctness over determinism (the warm-daemon bug may resurface
+// in that rare case, but the build still runs).
+//
 // Returns the DOCKER_HOST URL, an enabled flag, and a stop func that
 // tears down the listener AND runs Cleanup (best-effort removal of
 // executor-owned containers + the executor-owned internal network).
@@ -159,7 +174,7 @@ var containerProxyStarter = startContainerProxy
 // /credential proxies. The executor ID is a stable per-worktree value
 // (derived from the canonical worktree path) so one executor's resources
 // are distinct from another's across concurrent worktrees.
-func startContainerProxy(env *Env, worktree string, approvedImages []string, buildReqID string, auditor audit.Auditor) (url string, enabled bool, stop func(), err error) {
+func startContainerProxy(env *Env, worktree, controlLeaf string, approvedImages []string, buildReqID string, auditor audit.Auditor) (url string, enabled bool, stop func(), err error) {
 	if runtime.GOOS != "darwin" {
 		// Linux kernel-blocked: the loopback proxy is unreachable from
 		// the executor. v1 does not start it on Linux.
@@ -176,6 +191,8 @@ func startContainerProxy(env *Env, worktree string, approvedImages []string, bui
 	p, err := containerproxy.New(containerproxy.Config{
 		ApprovedImages: approvedImages,
 		ExecutorID:     execID,
+		WorktreePath:   worktree,
+		ControlLeaf:    controlLeaf,
 		Auditor:        auditor,
 		Logf:           logf,
 	})
