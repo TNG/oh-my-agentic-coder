@@ -273,7 +273,7 @@ func (p *Proxy) scavengeNetworks() int {
 		}
 		p.removeNetwork(n.ID)
 		p.auditor.Emit(audit.ControlMutation("container.scavenge", "",
-			fmt.Sprintf("executor=%s network=%s result=removed", p.cfg.ExecutorID, n.ID)))
+			fmt.Sprintf("executor=%s network=%s result=removed force=true", p.cfg.ExecutorID, n.ID)))
 		removed++
 	}
 	return removed
