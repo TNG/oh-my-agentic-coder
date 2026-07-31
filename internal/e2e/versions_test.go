@@ -58,6 +58,95 @@ func TestModelIDOverride(t *testing.T) {
 	}
 }
 
+// TestFlipTEE covers the gateway's one naming quirk: it serves the plain name
+// or the -TEE name, never both, and flips without notice (#184). The flip must
+// work in both directions so pinning either variant survives the next flip.
+func TestFlipTEE(t *testing.T) {
+	cases := map[string]string{
+		"zai-org/GLM-5.2":     "zai-org/GLM-5.2-TEE",
+		"zai-org/GLM-5.2-TEE": "zai-org/GLM-5.2",
+		"":                    "",
+	}
+	for in, want := range cases {
+		if got := flipTEE(in); got != want {
+			t.Errorf("flipTEE(%q) = %q, want %q", in, got, want)
+		}
+	}
+	// Flipping twice is the identity — otherwise a candidate list could miss
+	// the variant the gateway actually serves.
+	for _, m := range []string{"a/b", "a/b-TEE"} {
+		if got := flipTEE(flipTEE(m)); got != m {
+			t.Errorf("flipTEE(flipTEE(%q)) = %q, want %q", m, got, m)
+		}
+	}
+}
+
+// TestModelCandidates locks the probe order: primary, its variant flip, then
+// each fallback and its flip — deduped, so a fallback equal to the primary
+// doesn't double the probe cost.
+func TestModelCandidates(t *testing.T) {
+	t.Setenv("E2E_MODEL", "")
+	t.Setenv("E2E_MODEL_CLAUDE_CODE", "")
+	t.Setenv("E2E_MODEL_FALLBACK", "")
+
+	got := modelCandidates("pi")
+	want := []string{
+		modelIDs["pi"], flipTEE(modelIDs["pi"]),
+		fallbackModels[0], flipTEE(fallbackModels[0]),
+	}
+	if len(got) != len(want) {
+		t.Fatalf("modelCandidates(pi) = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("modelCandidates(pi) = %v, want %v", got, want)
+		}
+	}
+
+	// claude-code is on a different provider: no gateway flip, no gateway
+	// fallback — exactly one candidate, or a run could silently retarget the
+	// billed Anthropic account at a model it can't launch.
+	if got := modelCandidates("claude-code"); len(got) != 1 || got[0] != modelIDs["claude-code"] {
+		t.Errorf("modelCandidates(claude-code) = %v, want exactly [%s]", got, modelIDs["claude-code"])
+	}
+
+	// A fallback that equals the primary must not produce duplicates.
+	t.Setenv("E2E_MODEL", "solo/model")
+	t.Setenv("E2E_MODEL_FALLBACK", "solo/model")
+	if got, want := modelCandidates("pi"), []string{"solo/model", "solo/model-TEE"}; len(got) != len(want) {
+		t.Errorf("deduped candidates = %v, want %v", got, want)
+	}
+
+	// Multiple fallbacks, comma- and space-separated.
+	t.Setenv("E2E_MODEL", "primary/m")
+	t.Setenv("E2E_MODEL_FALLBACK", "a/one, b/two")
+	got = modelCandidates("pi")
+	want = []string{"primary/m", "primary/m-TEE", "a/one", "a/one-TEE", "b/two", "b/two-TEE"}
+	for i := range want {
+		if i >= len(got) || got[i] != want[i] {
+			t.Fatalf("multi-fallback candidates = %v, want %v", got, want)
+		}
+	}
+}
+
+// TestIsFallbackModel guards the reporting distinction: a variant flip is the
+// same model and may substitute silently, a cross-family fallback may not.
+func TestIsFallbackModel(t *testing.T) {
+	t.Setenv("E2E_MODEL", "")
+	t.Setenv("E2E_MODEL_PI", "")
+	pin := modelIDs["pi"]
+
+	if isFallbackModel("pi", pin) {
+		t.Errorf("the primary itself must not be reported as a fallback")
+	}
+	if isFallbackModel("pi", flipTEE(pin)) {
+		t.Errorf("a variant flip of the primary must not be reported as a fallback")
+	}
+	if !isFallbackModel("pi", "moonshotai/Kimi-K3") {
+		t.Errorf("a different family must be reported as a fallback")
+	}
+}
+
 // TestValidateModel locks the one harness-model constraint that exists: the
 // claude-code CLI launches only sonnet/haiku, so a cross-harness override
 // landing on it must be named as such rather than surfacing as an opaque

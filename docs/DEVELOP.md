@@ -102,6 +102,68 @@ Actions notice, `meta.txt` in the uploaded e2e artifacts, the `model=` field on
 every `OMAC_COMPAT` line, the `Model` column of the compatibility matrix, and
 the header of the drift/onboarding report artifacts.
 
+### The gateway renames models; the probe absorbs it
+
+The SKAINET gateway serves **one name variant at a time** — the plain name or a
+`-TEE` suffixed one — and flips between them without notice. On 2026-07-29 it
+stopped accepting plain `zai-org/GLM-5.2` and every non-opencode `llm` stage
+went red about ten minutes into each leg (issue #184).
+
+So every LLM workflow now starts with a **preflight `Resolve model` job** that
+runs [`scripts/probe-model.sh`](../scripts/probe-model.sh) once and hands the
+result to the jobs that follow. A renamed model costs seconds instead of a whole
+matrix. The probe:
+
+1. asks `GET $base/models` what the gateway advertises, and
+2. settles it with a 1-token `POST $base/chat/completions` — the endpoint that
+   actually 422s, so the endpoint that gets asked. The listing only *orders*
+   candidates; it never excludes one, because a stale listing must not veto a
+   name that works.
+
+Candidates are tried in **priority tiers** — the resolved model and its variant
+flip first, then each fallback and its flip. The listing may reorder within a
+tier but never across tiers, so a backup is only ever reached after the primary
+has genuinely been refused. The flip is bidirectional, so pinning either variant
+survives the next flip in either direction.
+
+A non-200 from the probe means one of two very different things, and the probe
+keeps them apart:
+
+| Gateway says | Meaning | Probe does |
+|---|---|---|
+| `422` / `404` | it refuses this **name** | move to the next candidate — this is what the flip and the fallback are for |
+| `5xx` / `429` / no answer | it is **unwell**; says nothing about the name | retry the same name, then fail as a gateway-health problem — **never** fall back |
+
+That second row matters: on 2026-07-29 the gateway also answered `500 An internal
+error occurred while invoking the model. The model inference should recover
+automatically within a few minutes.` Treating that as "model missing" would
+silently swap model families over a 30-second cluster blip, changing what the run
+tested for no good reason.
+
+| Substitution | Reported how |
+|---|---|
+| variant flip (`X` → `X-TEE`) | quietly — same model, gateway naming quirk |
+| fallback family (`fallbackModels`) | `::warning::`, step summary, dashboard and Slack all say the results are **not** for the intended model |
+
+The fallback chain lives in `fallbackModels` (`internal/e2e/versions.go`) rather
+than a workflow input, because `e2e.yml` is at GitHub's 10-input cap;
+`E2E_MODEL_FALLBACK` overrides it for a one-off (comma- or space-separated).
+
+claude-code is never probed — it talks to `ANTHROPIC_BASE_URL`, not this
+gateway. For the same reason the preflight hands the probed model to the
+**per-harness** vars (`E2E_MODEL_OPENCODE` and friends) rather than to
+cross-harness `E2E_MODEL`: the probed value is a gateway model, and giving it to
+claude-code would fail its legs on every run.
+
+```bash
+scripts/probe-model.sh opencode      # what a gateway job would use, probed
+scripts/probe-model.sh claude-code   # resolved, never probed
+scripts/probe-model_test.sh          # stub-gateway coverage of every path
+```
+
+Without credentials on the env the probe is a pure passthrough, so local runs
+and model-free jobs need no network to name a model.
+
 ### Multi-directory serve mode (`omac serve`)
 
 End-to-end smoke test of the control plane, facade routing, per-workdir

@@ -39,12 +39,107 @@ var versionEnvVar = map[string]string{
 
 // Model identifiers per harness. Read through modelID(), never directly, so
 // a run's workflow_dispatch override is honoured.
+//
+// The gateway serves one name variant at a time and flips between the plain
+// name and a "-TEE" suffixed one without notice — on 2026-07-29 it stopped
+// accepting plain "zai-org/GLM-5.2" and every non-opencode llm stage went red
+// (see issue #184). Pin whichever variant is currently served;
+// scripts/probe-model.sh flips to the other one automatically, so a future flip
+// in either direction self-heals rather than reddening the matrix.
 var modelIDs = map[string]string{
-	"opencode":    "zai-org/GLM-5.2",
+	"opencode":    "zai-org/GLM-5.2-TEE",
 	"claude-code": "claude-sonnet-5",
-	"codex":       "zai-org/GLM-5.2",
-	"copilot":     "zai-org/GLM-5.2",
-	"pi":          "zai-org/GLM-5.2",
+	"codex":       "zai-org/GLM-5.2-TEE",
+	"copilot":     "zai-org/GLM-5.2-TEE",
+	"pi":          "zai-org/GLM-5.2-TEE",
+}
+
+// fallbackModels are tried, in order, when neither name variant of the
+// resolved model is served by the gateway. A different family, deliberately:
+// the point is to keep a run interpretable when the primary model disappears
+// entirely, so it has to be something the gateway is likely to still serve.
+//
+// Not a workflow input — e2e.yml is already at GitHub's 10-input cap for
+// workflow_dispatch — but overridable for a one-off via E2E_MODEL_FALLBACK
+// (space- or comma-separated for several).
+//
+// Substituting one of these is NOT silent: unlike a variant flip (same model,
+// gateway naming quirk), running a different family makes a green matrix mean
+// something weaker, so probe-model.sh annotates it and the reported model shows
+// what actually ran.
+var fallbackModels = []string{"moonshotai/Kimi-K3"}
+
+// fallbackModelEnvVar overrides fallbackModels for a single run. Kept in sync
+// with scripts/probe-model.sh.
+const fallbackModelEnvVar = "E2E_MODEL_FALLBACK"
+
+// teeSuffix is the gateway's confidential-computing name variant. Appending or
+// stripping it is the whole of the "variant flip" — see modelCandidates.
+const teeSuffix = "-TEE"
+
+// modelCandidates returns the model names to try for a harness, in order: the
+// resolved model, its variant flip, then each fallback and its flip. The flip
+// is bidirectional so pinning either variant survives the gateway changing its
+// mind. Duplicates are dropped, so a fallback that equals the primary does not
+// double the probe cost.
+//
+// claude-code gets exactly one candidate: it talks to ANTHROPIC_BASE_URL, not
+// the gateway, so neither the variant flip nor a gateway fallback applies.
+func modelCandidates(harness string) []string {
+	primary := modelID(harness)
+	if harness == "claude-code" {
+		return []string{primary}
+	}
+	var out []string
+	seen := map[string]bool{}
+	add := func(m string) {
+		if m == "" || seen[m] {
+			return
+		}
+		seen[m] = true
+		out = append(out, m)
+	}
+	for _, m := range append([]string{primary}, configuredFallbacks()...) {
+		add(m)
+		add(flipTEE(m))
+	}
+	return out
+}
+
+// flipTEE returns the other name variant of a model: the plain name gains
+// "-TEE", a "-TEE" name loses it.
+func flipTEE(model string) string {
+	if model == "" {
+		return ""
+	}
+	if strings.HasSuffix(model, teeSuffix) {
+		return strings.TrimSuffix(model, teeSuffix)
+	}
+	return model + teeSuffix
+}
+
+// configuredFallbacks returns the fallback chain, honouring
+// E2E_MODEL_FALLBACK (comma- or space-separated).
+func configuredFallbacks() []string {
+	raw := os.Getenv(fallbackModelEnvVar)
+	if strings.TrimSpace(raw) == "" {
+		return fallbackModels
+	}
+	var out []string
+	for _, f := range strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == ' ' || r == '\t' || r == '\n'
+	}) {
+		out = append(out, f)
+	}
+	return out
+}
+
+// isFallbackModel reports whether model is a cross-family substitution rather
+// than the primary or its variant flip — the case that must be reported
+// loudly. Used by the workflows via scripts/probe-model.sh.
+func isFallbackModel(harness, model string) bool {
+	primary := modelID(harness)
+	return model != primary && model != flipTEE(primary)
 }
 
 // modelEnvVar maps a harness name to the env var that overrides its model id
