@@ -51,6 +51,31 @@ const (
 	KindReservedLabel
 )
 
+// kindName maps each PolicyErrKind to a human-readable name for audit
+// (ticket 09: the container.denied audit event emits kind=<name> instead
+// of the opaque int enum value so an audit reader can filter by denial
+// kind without substring-parsing the rendered message).
+var kindName = map[PolicyErrKind]string{
+	KindUnapprovedImage:        "unapproved-image",
+	KindPrivilegedForbidden:    "privileged-forbidden",
+	KindBindMountForbidden:     "bind-mount-forbidden",
+	KindHostNamespaceForbidden: "host-namespace-forbidden",
+	KindDeviceForbidden:        "device-forbidden",
+	KindUnknownEndpoint:        "unknown-endpoint",
+	KindNotOwnedByExecutor:     "not-owned-by-executor",
+	KindRyukForbidden:          "ryuk-forbidden",
+	KindRegistryAuthForbidden:  "registry-auth-forbidden",
+	KindReservedLabel:          "reserved-label",
+}
+
+// String returns the human-readable denial kind name for audit/log output.
+func (k PolicyErrKind) String() string {
+	if name, ok := kindName[k]; ok {
+		return name
+	}
+	return fmt.Sprintf("kind-%d", int(k))
+}
+
 // ContainerPolicyError is a structured diagnostic for a Docker-API request
 // the mediated container proxy denied. It names the kind, a human reason,
 // the container id / image involved (never credential values), and renders
@@ -61,11 +86,22 @@ const (
 // The error is returned to the caller (for audit) AND rendered as a JSON
 // Docker-API-style error response to the client (see proxy.go denyJSON) so
 // Testcontainers/Gradle wrapping does not hide the OMAC cause.
+//
+// BuildRequestID (ticket 09, spec §254) correlates a denial with the active
+// build request. When non-empty, Render prepends a correlation prefix
+// naming the request id on the SAME line as the actionable cause so the
+// agent receives an actionable OMAC explanation rather than only a wrapped
+// Testcontainers failure. The id is set by the proxy via SetBuildRequestID,
+// called from startContainerProxy with the id runBuild generated for this
+// build (the same id is emitted in the build.request audit event). Empty
+// for a denial outside a build (e.g. the startup scavenger's own audit
+// events) — Render omits the correlation prefix in that case.
 type ContainerPolicyError struct {
-	Kind        PolicyErrKind
-	Reason      string
-	ContainerID string
-	Image       string
+	Kind           PolicyErrKind
+	Reason         string
+	ContainerID    string
+	Image          string
+	BuildRequestID string
 }
 
 func (e *ContainerPolicyError) Error() string { return e.Render() }
@@ -73,7 +109,35 @@ func (e *ContainerPolicyError) Error() string { return e.Render() }
 // Render produces the spec-exact diagnostic text. The wording distinguishes
 // a host-forbidden capability (cannot be enabled through the manifest) from
 // a requestable capability (image not approved — add to .omac/build.yaml).
+//
+// When BuildRequestID is set (ticket 09, spec §254), the correlation prefix
+// is prepended so the OMAC cause is the FIRST thing a Gradle/log reader
+// sees, ahead of any Testcontainers wrapping. The prefix names the request
+// id on the SAME line as the actionable cause (not a separate "denied"
+// line) so Gradle/Testcontainers summary-truncation that shows only line 1
+// still conveys both the request id AND the fix hint.
 func (e *ContainerPolicyError) Render() string {
+	cause := e.renderCause()
+	if e.BuildRequestID == "" {
+		return cause
+	}
+	// Correlate: prefix the first line with the request id so the OMAC
+	// cause + request id are on line 1 (spec §254 — the cause must not be
+	// hidden by Gradle/Testcontainers wrapping). The cause's own lines
+	// follow unchanged.
+	lines := strings.SplitN(cause, "\n", 2)
+	var b strings.Builder
+	fmt.Fprintf(&b, "OMAC build request %s: %s", e.BuildRequestID, lines[0])
+	if len(lines) > 1 {
+		b.WriteString("\n")
+		b.WriteString(lines[1])
+	}
+	return b.String()
+}
+
+// renderCause produces the per-kind diagnostic text without the build
+// request correlation prefix.
+func (e *ContainerPolicyError) renderCause() string {
 	var b strings.Builder
 	switch e.Kind {
 	case KindUnapprovedImage:
