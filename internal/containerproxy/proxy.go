@@ -69,6 +69,21 @@ type Config struct {
 	// Logf is the structured log sink (proxy decisions only; never env
 	// values or bodies). nil → discard.
 	Logf func(format string, args ...any)
+	// WorktreePath is the canonical worktree root the proxy serves. When
+	// non-empty, Start derives a STABLE loopback port from it (via
+	// stablePortFor) so the warm Gradle daemon's cached DOCKER_HOST stays
+	// valid across runs — the bug being fixed: a random ephemeral port
+	// each run left the warm daemon pointing at a dead port. Empty
+	// preserves the legacy random-port behavior.
+	WorktreePath string
+	// ControlLeaf is the OMAC cache leaf (GRADLE_USER_HOME) where the
+	// assigned port is recorded at .omac-control/containerproxy-port so
+	// the next run can prefer it. The file is written and read by the
+	// SUPERVISOR (unsandboxed); the executor never sees it. Empty
+	// disables cross-run port persistence (the port is still stable
+	// within a process via the worktree hash, but not across a daemon
+	// recycle that re-runs Start).
+	ControlLeaf string
 }
 
 // Proxy is the mediated Docker endpoint. It binds 127.0.0.1:0, serves the
@@ -83,6 +98,9 @@ type Proxy struct {
 	transport *http.Transport
 	auditor   audit.Auditor
 	logf      func(string, ...any)
+	// boundPort is the loopback port Start bound. Tracked so shutdown /
+	// diagnostics can report it without re-reading the listener.
+	boundPort int
 
 	mu          sync.Mutex
 	containers  map[string]containerMeta // id -> metadata (owned)
@@ -307,15 +325,73 @@ func (p *Proxy) Start() (dockerHost string, stop func(), err error) {
 	if cRemoved > 0 || nRemoved > 0 {
 		p.logf("containerproxy: scavenged %d container(s) and %d network(s) from a previous executor", cRemoved, nRemoved)
 	}
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	port, fallback := p.choosePort()
+	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
 	if err != nil {
-		return "", nil, fmt.Errorf("containerproxy: bind listener: %w", err)
+		// The chosen port (stable or random) was not bindable; retry once
+		// with a kernel-assigned ephemeral port so a transient bind race
+		// or a stale control file pointing at an in-use port never wedges
+		// the build. Correctness over determinism.
+		if port != 0 {
+			p.logf("containerproxy: bind on stable port %d failed (%v); falling back to a random ephemeral port", port, err)
+			ln, err = net.Listen("tcp", "127.0.0.1:0")
+		}
+		if err != nil {
+			return "", nil, fmt.Errorf("containerproxy: bind listener: %w", err)
+		}
+		fallback = true
 	}
 	p.ln = ln
+	p.boundPort = ln.Addr().(*net.TCPAddr).Port
+	if fallback {
+		p.logf("containerproxy: using fallback ephemeral port %d (stable window unavailable; warm-daemon DOCKER_HOST may drift on next run)", p.boundPort)
+	}
+	// Persist the assigned port so the next run can prefer it. Best-effort:
+	// a write failure degrades cross-run stability but does not fail the
+	// build (the port is valid for this run).
+	if p.cfg.ControlLeaf != "" {
+		if werr := writePreferredPort(p.cfg.ControlLeaf, p.boundPort); werr != nil {
+			p.logf("containerproxy: could not persist port file: %v", werr)
+		}
+	}
 	go p.acceptLoop()
-	port := ln.Addr().(*net.TCPAddr).Port
-	dockerHost = fmt.Sprintf("tcp://127.0.0.1:%d", port)
+	dockerHost = fmt.Sprintf("tcp://127.0.0.1:%d", p.boundPort)
 	return dockerHost, p.shutdown, nil
+}
+
+// choosePort resolves the loopback port Start should bind. It prefers, in
+// order: (1) a previously-assigned port read from the control-state file
+// (so the port stays stable even after the listener is torn down between
+// runs); (2) a fresh stable port derived from the worktree path; (3) a
+// fallback random ephemeral port when the whole stable window is occupied.
+// Returns the chosen port and a fallback flag (true when the chosen port
+// is NOT the deterministic stable one — the caller logs a warning so the
+// user understands the warm-daemon bug may resurface in the rare collision
+// case). When WorktreePath is empty the legacy random-port behavior is
+// used (port 0, not flagged as fallback — that is the documented v1 path).
+func (p *Proxy) choosePort() (port int, fallback bool) {
+	if p.cfg.WorktreePath == "" {
+		// Legacy random-port behavior preserved for callers that did not
+		// wire the worktree path.
+		return 0, false
+	}
+	preferred := 0
+	if p.cfg.ControlLeaf != "" {
+		preferred = readPreferredPort(p.cfg.ControlLeaf)
+	}
+	if preferred == 0 {
+		preferred = stablePortFor(p.cfg.WorktreePath)
+	}
+	chosen := selectPort(preferred, portIsFree, randomFreePort)
+	if chosen == 0 {
+		// selectPort exhausted the window AND the random fallback failed.
+		// Let the kernel pick (Start retries on 127.0.0.1:0).
+		return 0, true
+	}
+	// "Fallback" means we are NOT on the deterministic preferred port —
+	// either a scan neighbor or a random ephemeral port. The warm-daemon
+	// bug can resurface in this case, so the caller logs it.
+	return chosen, chosen != preferred
 }
 
 // shutdown is the stop func returned by Start. It closes the listener and

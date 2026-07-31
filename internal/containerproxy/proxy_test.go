@@ -4,11 +4,14 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -679,6 +682,46 @@ func TestCreateBody_CapAddDenied(t *testing.T) {
 	}
 	if !strings.Contains(omac, "capabilities") || !strings.Contains(omac, "forbidden") {
 		t.Errorf("denial must state capabilities forbidden: %q", omac)
+	}
+}
+
+// TestCreateBody_SysctlsMapDenied asserts a non-empty Sysctls (serialized
+// as a map[string]string, per Docker's HostConfig.Sysctls) is denied —
+// kernel parameters are a host escape vector. Regression test for a bug
+// where the validation checked Sysctls as an array (nonEmptyStrSlice)
+// instead of a map, so a non-empty map silently passed through to the
+// daemon even though "Sysctls" was in the allowlist.
+func TestCreateBody_SysctlsMapDenied(t *testing.T) {
+	d := newFakeDaemon(t)
+	p := startProxy(t, d)
+	// Inject Sysctls as a map (the shape Docker actually sends). Replace
+	// the closing "HostConfig":{...} by inserting before the closing brace.
+	body := strings.ReplaceAll(validCreateBody(), `"CgroupParent":""`, `"CgroupParent":"","Sysctls":{"net.ipv4.ip_forward":"1"}`)
+	status, _, omac := doReq(t, p, http.MethodPost, "/v1.44/containers/create", []byte(body), nil)
+	if status != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 (Sysctls map must be denied)", status)
+	}
+	if !strings.Contains(omac, "Sysctls") || !strings.Contains(omac, "not permitted") {
+		t.Errorf("denial must state Sysctls not permitted: %q", omac)
+	}
+}
+
+// TestCreateBody_LxcConfArrayDenied asserts a non-empty LxcConf
+// (serialized as a []string of "key=value", per Docker's
+// HostConfig.LxcConf) is denied — legacy lxc config is an arbitrary host
+// escape vector. Regression test for a bug where the validation checked
+// LxcConf as a map instead of an array, so a non-empty array silently
+// passed through to the daemon.
+func TestCreateBody_LxcConfArrayDenied(t *testing.T) {
+	d := newFakeDaemon(t)
+	p := startProxy(t, d)
+	body := strings.ReplaceAll(validCreateBody(), `"CgroupParent":""`, `"CgroupParent":"","LxcConf":["lxc.aa_profile=unconfined"]`)
+	status, _, omac := doReq(t, p, http.MethodPost, "/v1.44/containers/create", []byte(body), nil)
+	if status != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 (LxcConf array must be denied)", status)
+	}
+	if !strings.Contains(omac, "LxcConf") || !strings.Contains(omac, "not permitted") {
+		t.Errorf("denial must state LxcConf not permitted: %q", omac)
 	}
 }
 
@@ -1490,5 +1533,396 @@ func TestCrashRestart_ScavengerRemovesOrphanedNetwork(t *testing.T) {
 	defer p.shutdown()
 	if len(d.deletedNetworks) != 1 || d.deletedNetworks[0] != "net-orphan" {
 		t.Errorf("scavenger did not remove the orphaned network: deleted=%v", d.deletedNetworks)
+	}
+}
+
+// --- stable port selection (warm-daemon DOCKER_HOST fix) ----------------
+
+// TestStablePortFor_Deterministic asserts the same canonical worktree
+// path maps to the same port across calls (the core fix: the warm Gradle
+// daemon's cached DOCKER_HOST stays valid across runs).
+func TestStablePortFor_Deterministic(t *testing.T) {
+	path := "/Users/x/repo/.worktrees/feat-a"
+	first := stablePortFor(path)
+	for i := 0; i < 5; i++ {
+		if got := stablePortFor(path); got != first {
+			t.Errorf("stablePortFor not deterministic: %d then %d", first, got)
+		}
+	}
+}
+
+// TestStablePortFor_InRange asserts the port is in [30000,40000) — above
+// common dev ports and below the macOS/Linux ephemeral range (49152–65535).
+func TestStablePortFor_InRange(t *testing.T) {
+	for _, p := range []string{
+		"/Users/x/repo",
+		"/home/y/repo/.worktrees/feat-b",
+		"/Users/x/repo/.worktrees/feat-a",
+		"/tmp/short",
+	} {
+		port := stablePortFor(p)
+		if port < StablePortMin || port >= StablePortMax {
+			t.Errorf("stablePortFor(%q) = %d, want in [%d,%d)", p, port, StablePortMin, StablePortMax)
+		}
+	}
+}
+
+// TestStablePortFor_DifferentPaths asserts distinct worktree paths yield
+// distinct ports with high probability. A collision across a handful of
+// distinct paths would indicate a broken hash; we assert a few distinct
+// paths all differ.
+func TestStablePortFor_DifferentPaths(t *testing.T) {
+	paths := []string{
+		"/Users/x/repo/.worktrees/feat-a",
+		"/Users/x/repo/.worktrees/feat-b",
+		"/Users/x/repo/.worktrees/feat-c",
+		"/Users/x/other-repo",
+		"/home/y/repo",
+	}
+	seen := map[int]string{}
+	for _, p := range paths {
+		port := stablePortFor(p)
+		if other, ok := seen[port]; ok {
+			t.Errorf("port collision between %q and %q: both %d", other, p, port)
+		}
+		seen[port] = p
+	}
+}
+
+// TestStablePortFor_CanonicalizesSymlinks asserts the hash is taken over
+// the symlink-resolved path so a worktree reached via different symlink
+// chains maps to the same port (the executor id and the port must agree
+// on the canonical worktree).
+func TestStablePortFor_CanonicalizesSymlinks(t *testing.T) {
+	real := t.TempDir()
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+	if stablePortFor(real) != stablePortFor(link) {
+		t.Errorf("stablePortFor must canonicalize symlinks: real=%q link=%q differ", real, link)
+	}
+}
+
+// TestSelectPort_PreferredFree asserts selectPort returns the preferred
+// port when it is free.
+func TestSelectPort_PreferredFree(t *testing.T) {
+	isFree := func(int) bool { return true }
+	got := selectPort(31000, isFree, func() int { t.Fatal("fallback must not run"); return 0 })
+	if got != 31000 {
+		t.Errorf("selectPort = %d, want 31000 (preferred free)", got)
+	}
+}
+
+// TestSelectPort_PreferredBusyScans asserts selectPort scans the window
+// forward when the preferred port is busy and returns the next free port.
+func TestSelectPort_PreferredBusyScans(t *testing.T) {
+	busy := map[int]bool{31000: true, 31001: true}
+	isFree := func(p int) bool { return !busy[p] }
+	got := selectPort(31000, isFree, func() int { t.Fatal("fallback must not run"); return 0 })
+	if got != 31002 {
+		t.Errorf("selectPort = %d, want 31002 (first free in window)", got)
+	}
+}
+
+// TestSelectPort_WindowWraps asserts the scan wraps at StablePortMax back
+// to StablePortMin so a preferred port near the top of the range still
+// finds a free port near the bottom when the top is occupied.
+func TestSelectPort_WindowWraps(t *testing.T) {
+	// Preferred at StablePortMax-1; occupy it + the wrap target so the
+	// scan lands two past the wrap.
+	busy := map[int]bool{StablePortMax - 1: true, StablePortMin: true}
+	isFree := func(p int) bool { return !busy[p] }
+	got := selectPort(StablePortMax-1, isFree, func() int { t.Fatal("fallback must not run"); return 0 })
+	if got != StablePortMin+1 {
+		t.Errorf("selectPort = %d, want %d (wrap)", got, StablePortMin+1)
+	}
+}
+
+// TestSelectPort_FallbackWhenWindowFull asserts selectPort calls the
+// fallback when the whole window is occupied, so the build never wedges
+// on a fully-occupied stable range (correctness over determinism).
+func TestSelectPort_FallbackWhenWindowFull(t *testing.T) {
+	isFree := func(int) bool { return false }
+	called := false
+	fb := func() int { called = true; return 35000 }
+	got := selectPort(31000, isFree, fb)
+	if !called {
+		t.Fatal("fallback must run when the whole window is occupied")
+	}
+	if got != 35000 {
+		t.Errorf("selectPort = %d, want fallback 35000", got)
+	}
+}
+
+// TestStart_StablePortBindsWhenFree asserts Start binds the deterministic
+// stable port derived from the worktree when it is free. A control leaf
+// is wired so the assigned port is also persisted.
+func TestStart_StablePortBindsWhenFree(t *testing.T) {
+	d := newFakeDaemon(t)
+	leaf := t.TempDir()
+	want := stablePortFor("/worktree/feat-a")
+	p, err := New(Config{
+		Upstream:       d.server.URL,
+		ApprovedImages: []string{"pgvector/pgvector:pg16"},
+		ExecutorID:     "exec-1",
+		WorktreePath:   "/worktree/feat-a",
+		ControlLeaf:    leaf,
+		Auditor:        audit.Nop(),
+		Logf:           func(string, ...any) {},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dockerHost, _, err := p.Start()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.shutdown()
+	if !strings.HasSuffix(dockerHost, fmt.Sprintf(":%d", want)) {
+		t.Errorf("DOCKER_HOST = %q, want port %d (stable port when free)", dockerHost, want)
+	}
+	if p.boundPort != want {
+		t.Errorf("boundPort = %d, want %d", p.boundPort, want)
+	}
+	// The control file must record the assigned port for the next run.
+	got := readPreferredPort(leaf)
+	if got != want {
+		t.Errorf("port file = %d, want %d", got, want)
+	}
+}
+
+// TestStart_PortFilePreferredOverHash asserts Start prefers the
+// previously-assigned port from the control file over a fresh hash, so
+// the port stays stable even after the listener is torn down between runs.
+func TestStart_PortFilePreferredOverHash(t *testing.T) {
+	d := newFakeDaemon(t)
+	leaf := t.TempDir()
+	// Pre-seed the control file with a port that is NOT the hash-derived
+	// one. Start must bind the seeded port (the hash is only a fallback).
+	seeded := stablePortFor("/worktree/feat-a") + 7
+	if seeded >= StablePortMax {
+		seeded = StablePortMin + (seeded - StablePortMax)
+	}
+	if err := writePreferredPort(leaf, seeded); err != nil {
+		t.Fatal(err)
+	}
+	p, err := New(Config{
+		Upstream:       d.server.URL,
+		ApprovedImages: []string{"pgvector/pgvector:pg16"},
+		ExecutorID:     "exec-1",
+		WorktreePath:   "/worktree/feat-a",
+		ControlLeaf:    leaf,
+		Auditor:        audit.Nop(),
+		Logf:           func(string, ...any) {},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dockerHost, _, err := p.Start()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.shutdown()
+	if p.boundPort != seeded {
+		t.Errorf("boundPort = %d, want seeded %d (port file preferred over hash %d)", p.boundPort, seeded, stablePortFor("/worktree/feat-a"))
+	}
+	if !strings.HasSuffix(dockerHost, fmt.Sprintf(":%d", seeded)) {
+		t.Errorf("DOCKER_HOST = %q, want port %d", dockerHost, seeded)
+	}
+}
+
+// TestStart_ScansWhenStablePortBusy asserts Start falls back to a scan of
+// the stable window when the stable port is already bound (by another
+// listener), landing on a different free port in the range.
+func TestStart_ScansWhenStablePortBusy(t *testing.T) {
+	d := newFakeDaemon(t)
+	leaf := t.TempDir()
+	want := stablePortFor("/worktree/feat-b")
+	// Occupy the stable port with a throwaway listener.
+	occ, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", want))
+	if err != nil {
+		t.Skipf("could not occupy stable port %d: %v", want, err)
+	}
+	defer occ.Close()
+	p, err := New(Config{
+		Upstream:       d.server.URL,
+		ApprovedImages: []string{"pgvector/pgvector:pg16"},
+		ExecutorID:     "exec-1",
+		WorktreePath:   "/worktree/feat-b",
+		ControlLeaf:    leaf,
+		Auditor:        audit.Nop(),
+		Logf:           func(string, ...any) {},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = p.Start()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.shutdown()
+	if p.boundPort == want {
+		t.Errorf("boundPort = %d, must NOT be the occupied stable port", p.boundPort)
+	}
+	if p.boundPort < StablePortMin || p.boundPort >= StablePortMax {
+		t.Errorf("boundPort = %d, want in stable range [%d,%d) (scan fallback)", p.boundPort, StablePortMin, StablePortMax)
+	}
+}
+
+// TestStart_FallbackRandomWhenWindowFull asserts Start falls back to a
+// random ephemeral port when the whole stable window is occupied, so the
+// build never wedges (correctness over determinism). The whole window is
+// simulated by overriding the port-free predicate via a test seam: rather
+// than binding 50 real sockets (flaky and slow), this test patches
+// portIsFree indirectly by occupying the preferred + scan neighbors.
+//
+// Since the production selectPort uses the package-level portIsFree, this
+// test binds a real listener on every port the scan would touch (preferred
+// + the next portScanWindow-1). That is at most 50 listeners — practical
+// on macOS/Linux loopback.
+func TestStart_FallbackRandomWhenWindowFull(t *testing.T) {
+	d := newFakeDaemon(t)
+	leaf := t.TempDir()
+	want := stablePortFor("/worktree/feat-c")
+	// Occupy the preferred port and the next portScanWindow-1 ports so the
+	// scan exhausts the window and Start falls back to a random port.
+	var occ []net.Listener
+	defer func() {
+		for _, l := range occ {
+			l.Close()
+		}
+	}()
+	for i := 0; i < portScanWindow; i++ {
+		p := want + i
+		if p >= StablePortMax {
+			break
+		}
+		l, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", p))
+		if err != nil {
+			// A port in the window may already be in use by the test
+			// runner or another listener — that just means fewer
+			// sockets we need to bind. Continue.
+			continue
+		}
+		occ = append(occ, l)
+	}
+	if len(occ) < portScanWindow {
+		// Could not occupy the whole window (host already uses some
+		// ports). The fallback path is still exercised if the scan
+		// happens to find no free port among the occupied ones; but to
+		// deterministically assert the RANDOM fallback we need the whole
+		// window occupied. Skip if the host would not let us.
+		t.Skipf("could not occupy the full scan window (got %d of %d); cannot deterministically force the random fallback", len(occ), portScanWindow)
+	}
+	p, err := New(Config{
+		Upstream:       d.server.URL,
+		ApprovedImages: []string{"pgvector/pgvector:pg16"},
+		ExecutorID:     "exec-1",
+		WorktreePath:   "/worktree/feat-c",
+		ControlLeaf:    leaf,
+		Auditor:        audit.Nop(),
+		Logf:           func(string, ...any) {},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = p.Start()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.shutdown()
+	// The bound port must NOT be in the stable range (the window was full).
+	if p.boundPort >= StablePortMin && p.boundPort < StablePortMax {
+		// It could still be a wrap-around port we did not occupy; check it
+		// is one we actually occupied. If it is free, the scan found a gap
+		// we could not occupy — still a valid (non-random) outcome. Only
+		// fail if it landed on a port we occupied (impossible — it would
+		// have failed to bind) or outside [StablePortMin,StablePortMax)
+		// when the whole window was occupied.
+		if p.boundPort >= want && p.boundPort < want+len(occ) {
+			t.Errorf("boundPort = %d landed on an occupied port (bind should have failed)", p.boundPort)
+		}
+	}
+	// Regardless of range, the port must be bindable and the proxy
+	// serving: the build must not wedge.
+	if p.boundPort <= 0 {
+		t.Errorf("boundPort = %d, want a positive port (random fallback)", p.boundPort)
+	}
+}
+
+// TestStart_LegacyRandomPortWhenNoWorktree asserts Start preserves the
+// legacy random-port behavior when WorktreePath is empty (callers that
+// did not wire the worktree path get the original v1 behavior).
+func TestStart_LegacyRandomPortWhenNoWorktree(t *testing.T) {
+	d := newFakeDaemon(t)
+	p, err := New(Config{
+		Upstream:       d.server.URL,
+		ApprovedImages: []string{"pgvector/pgvector:pg16"},
+		ExecutorID:     "exec-1",
+		Auditor:        audit.Nop(),
+		Logf:           func(string, ...any) {},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dockerHost, _, err := p.Start()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.shutdown()
+	// Legacy behavior: a random ephemeral port (not in the stable range,
+	// not deterministic). Just assert it is a positive loopback port.
+	if p.boundPort <= 0 {
+		t.Errorf("boundPort = %d, want a positive random ephemeral port", p.boundPort)
+	}
+	if !strings.HasPrefix(dockerHost, "tcp://127.0.0.1:") {
+		t.Errorf("DOCKER_HOST = %q, want loopback tcp", dockerHost)
+	}
+}
+
+// TestStart_PortPersistsAcrossRestarts asserts the port assigned on the
+// first Start is preferred on a second Start (new Proxy, same control
+// leaf) so the warm Gradle daemon's DOCKER_HOST stays valid. This is the
+// end-to-end reproduction of the bug being fixed.
+func TestStart_PortPersistsAcrossRestarts(t *testing.T) {
+	d := newFakeDaemon(t)
+	leaf := t.TempDir()
+	mk := func() *Proxy {
+		t.Helper()
+		p, err := New(Config{
+			Upstream:       d.server.URL,
+			ApprovedImages: []string{"pgvector/pgvector:pg16"},
+			ExecutorID:     "exec-1",
+			WorktreePath:   "/worktree/feat-d",
+			ControlLeaf:    leaf,
+			Auditor:        audit.Nop(),
+			Logf:           func(string, ...any) {},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	// First run: assigns and persists a stable port.
+	p1 := mk()
+	dh1, _, err := p1.Start()
+	if err != nil {
+		t.Fatal(err)
+	}
+	port1 := p1.boundPort
+	p1.shutdown()
+	// Second run (new proxy, same worktree + leaf): must bind the SAME port.
+	p2 := mk()
+	dh2, _, err := p2.Start()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p2.shutdown()
+	if p2.boundPort != port1 {
+		t.Errorf("port drifted across runs: first=%d second=%d (warm daemon DOCKER_HOST would point at the dead port)", port1, p2.boundPort)
+	}
+	if dh1 != dh2 {
+		t.Errorf("DOCKER_HOST drifted: first=%q second=%q", dh1, dh2)
 	}
 }

@@ -183,7 +183,7 @@ func TestStartContainerProxy_Gating(t *testing.T) {
 		// The production gate (startContainerProxy) returns empty when no
 		// images are approved; assert the production behavior directly
 		// without touching a real Docker/Colima daemon.
-		url, enabled, stop, err := startContainerProxy(env, t.TempDir(), nil, "b-test", auditor)
+		url, enabled, stop, err := startContainerProxy(env, t.TempDir(), t.TempDir(), nil, "b-test", auditor)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -193,7 +193,7 @@ func TestStartContainerProxy_Gating(t *testing.T) {
 	})
 
 	t.Run("approved images started on macOS only", func(t *testing.T) {
-		url, enabled, stop, err := startContainerProxy(env, t.TempDir(), []string{"pgvector/pgvector:pg16"}, "b-test", auditor)
+		url, enabled, stop, err := startContainerProxy(env, t.TempDir(), t.TempDir(), []string{"pgvector/pgvector:pg16"}, "b-test", auditor)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -335,7 +335,7 @@ func TestBuildExecutorSecurityBoundary(t *testing.T) {
 		// ChildEnv DOCKER_HOST absence; this asserts the disabled case from
 		// the CLI gate.)
 		env := &Env{Version: "test", Workdir: t.TempDir(), Stdout: newDevNull(t), Stderr: newDevNull(t)}
-		url, enabled, stop, err := startContainerProxy(env, t.TempDir(), nil, "b-test", audit.Nop())
+		url, enabled, stop, err := startContainerProxy(env, t.TempDir(), t.TempDir(), nil, "b-test", audit.Nop())
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -348,7 +348,7 @@ func TestBuildExecutorSecurityBoundary(t *testing.T) {
 			t.Skip("macOS-only proxy start")
 		}
 		env := &Env{Version: "test", Workdir: t.TempDir(), Stdout: newDevNull(t), Stderr: newDevNull(t)}
-		url, enabled, stop, err := startContainerProxy(env, t.TempDir(), []string{"pgvector/pgvector:pg16"}, "b-test", audit.Nop())
+		url, enabled, stop, err := startContainerProxy(env, t.TempDir(), t.TempDir(), []string{"pgvector/pgvector:pg16"}, "b-test", audit.Nop())
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
