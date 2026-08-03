@@ -368,9 +368,11 @@ func TestRenderMockitoAgentInitScript_LocatesJarAndAddsJavaagent(t *testing.T) {
 		"-javaagent:",
 		// Defensive skip when the jar is absent.
 		"if (mockitoJar != null)",
-		// Forces java.io.tmpdir to the executor's private temp ($TMPDIR),
-		// guarded so a misconfigured env (empty $TMPDIR) can't blank the
+		// Forces java.io.tmpdir to the executor's private temp, read from
+		// a control-state file (preferred over the stale daemon env), with
+		// a guard so a misconfigured env (empty $TMPDIR) can't blank the
 		// JVM default.
+		"executor-tmpdir",
 		"System.getenv('TMPDIR')",
 		"-Djava.io.tmpdir=",
 		"if (omacTmp != null && !omacTmp.isEmpty())",
@@ -428,5 +430,58 @@ func TestPrepareControlState_WritesMockitoAgentInitScript(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("mockito-agent init script not in control files (read-only grant missing): %v", paths.Files)
+	}
+}
+
+// TestPrepareControlState_WritesExecutorTmpDir asserts the executor-tmpdir
+// control file is written when GradlePropertiesConfig.TmpDir is set, and
+// that it appears in the control files list (so the executor can read it
+// for the java.io.tmpdir init-script logic). This file is the fix for the
+// warm-daemon stale-TMPDIR bug: the init script reads the CURRENT run's
+// temp from the file instead of the daemon's env (which holds a prior,
+// deleted run's TMPDIR).
+func TestPrepareControlState_WritesExecutorTmpDir(t *testing.T) {
+	leaf := t.TempDir()
+	chmodInitDForCleanup(t, leaf)
+	wantTmp := "/tmp/omac-build-tmp/exec-42"
+	paths, err := PrepareControlState(leaf, GradlePropertiesConfig{TmpDir: wantTmp})
+	if err != nil {
+		t.Fatalf("PrepareControlState: %v", err)
+	}
+	tmpFile := filepath.Join(leaf, controlStateName, executorTmpDirName)
+	got, err := os.ReadFile(tmpFile)
+	if err != nil {
+		t.Fatalf("executor-tmpdir control file not written: %v", err)
+	}
+	if strings.TrimSpace(string(got)) != wantTmp {
+		t.Errorf("executor-tmpdir content = %q, want %q", got, wantTmp)
+	}
+	// The file must be in the control files list (read-only grant for the
+	// executor init script to read it).
+	found := false
+	for _, p := range paths.Files {
+		if strings.HasSuffix(p, executorTmpDirName) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("executor-tmpdir not in control files (read-only grant missing): %v", paths.Files)
+	}
+}
+
+// TestPrepareControlState_OmitsExecutorTmpDirWhenEmpty asserts the
+// executor-tmpdir file is NOT written when TmpDir is empty (the
+// cold-daemon/env-fallback path). The control files list still lists it
+// (a missing file is harmless), but no file is written.
+func TestPrepareControlState_OmitsExecutorTmpDirWhenEmpty(t *testing.T) {
+	leaf := t.TempDir()
+	chmodInitDForCleanup(t, leaf)
+	if _, err := PrepareControlState(leaf, GradlePropertiesConfig{}); err != nil {
+		t.Fatalf("PrepareControlState: %v", err)
+	}
+	tmpFile := filepath.Join(leaf, controlStateName, executorTmpDirName)
+	if _, err := os.Stat(tmpFile); !os.IsNotExist(err) {
+		t.Errorf("executor-tmpdir file should not exist when TmpDir is empty: %v", err)
 	}
 }
