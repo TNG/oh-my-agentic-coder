@@ -10,13 +10,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/tngtech/oh-my-agentic-coder/internal/audit"
+	"github.com/tngtech/oh-my-agentic-coder/internal/stableport"
 )
 
 // fakeDaemon is a test Docker daemon recording the requests it receives.
@@ -1537,123 +1536,10 @@ func TestCrashRestart_ScavengerRemovesOrphanedNetwork(t *testing.T) {
 }
 
 // --- stable port selection (warm-daemon DOCKER_HOST fix) ----------------
-
-// TestStablePortFor_Deterministic asserts the same canonical worktree
-// path maps to the same port across calls (the core fix: the warm Gradle
-// daemon's cached DOCKER_HOST stays valid across runs).
-func TestStablePortFor_Deterministic(t *testing.T) {
-	path := "/Users/x/repo/.worktrees/feat-a"
-	first := stablePortFor(path)
-	for i := 0; i < 5; i++ {
-		if got := stablePortFor(path); got != first {
-			t.Errorf("stablePortFor not deterministic: %d then %d", first, got)
-		}
-	}
-}
-
-// TestStablePortFor_InRange asserts the port is in [30000,40000) — above
-// common dev ports and below the macOS/Linux ephemeral range (49152–65535).
-func TestStablePortFor_InRange(t *testing.T) {
-	for _, p := range []string{
-		"/Users/x/repo",
-		"/home/y/repo/.worktrees/feat-b",
-		"/Users/x/repo/.worktrees/feat-a",
-		"/tmp/short",
-	} {
-		port := stablePortFor(p)
-		if port < StablePortMin || port >= StablePortMax {
-			t.Errorf("stablePortFor(%q) = %d, want in [%d,%d)", p, port, StablePortMin, StablePortMax)
-		}
-	}
-}
-
-// TestStablePortFor_DifferentPaths asserts distinct worktree paths yield
-// distinct ports with high probability. A collision across a handful of
-// distinct paths would indicate a broken hash; we assert a few distinct
-// paths all differ.
-func TestStablePortFor_DifferentPaths(t *testing.T) {
-	paths := []string{
-		"/Users/x/repo/.worktrees/feat-a",
-		"/Users/x/repo/.worktrees/feat-b",
-		"/Users/x/repo/.worktrees/feat-c",
-		"/Users/x/other-repo",
-		"/home/y/repo",
-	}
-	seen := map[int]string{}
-	for _, p := range paths {
-		port := stablePortFor(p)
-		if other, ok := seen[port]; ok {
-			t.Errorf("port collision between %q and %q: both %d", other, p, port)
-		}
-		seen[port] = p
-	}
-}
-
-// TestStablePortFor_CanonicalizesSymlinks asserts the hash is taken over
-// the symlink-resolved path so a worktree reached via different symlink
-// chains maps to the same port (the executor id and the port must agree
-// on the canonical worktree).
-func TestStablePortFor_CanonicalizesSymlinks(t *testing.T) {
-	real := t.TempDir()
-	link := filepath.Join(t.TempDir(), "link")
-	if err := os.Symlink(real, link); err != nil {
-		t.Skipf("symlink unsupported: %v", err)
-	}
-	if stablePortFor(real) != stablePortFor(link) {
-		t.Errorf("stablePortFor must canonicalize symlinks: real=%q link=%q differ", real, link)
-	}
-}
-
-// TestSelectPort_PreferredFree asserts selectPort returns the preferred
-// port when it is free.
-func TestSelectPort_PreferredFree(t *testing.T) {
-	isFree := func(int) bool { return true }
-	got := selectPort(31000, isFree, func() int { t.Fatal("fallback must not run"); return 0 })
-	if got != 31000 {
-		t.Errorf("selectPort = %d, want 31000 (preferred free)", got)
-	}
-}
-
-// TestSelectPort_PreferredBusyScans asserts selectPort scans the window
-// forward when the preferred port is busy and returns the next free port.
-func TestSelectPort_PreferredBusyScans(t *testing.T) {
-	busy := map[int]bool{31000: true, 31001: true}
-	isFree := func(p int) bool { return !busy[p] }
-	got := selectPort(31000, isFree, func() int { t.Fatal("fallback must not run"); return 0 })
-	if got != 31002 {
-		t.Errorf("selectPort = %d, want 31002 (first free in window)", got)
-	}
-}
-
-// TestSelectPort_WindowWraps asserts the scan wraps at StablePortMax back
-// to StablePortMin so a preferred port near the top of the range still
-// finds a free port near the bottom when the top is occupied.
-func TestSelectPort_WindowWraps(t *testing.T) {
-	// Preferred at StablePortMax-1; occupy it + the wrap target so the
-	// scan lands two past the wrap.
-	busy := map[int]bool{StablePortMax - 1: true, StablePortMin: true}
-	isFree := func(p int) bool { return !busy[p] }
-	got := selectPort(StablePortMax-1, isFree, func() int { t.Fatal("fallback must not run"); return 0 })
-	if got != StablePortMin+1 {
-		t.Errorf("selectPort = %d, want %d (wrap)", got, StablePortMin+1)
-	}
-}
-
-// TestSelectPort_FallbackWhenWindowFull asserts selectPort calls the
-// fallback when the whole window is occupied, so the build never wedges
-// on a fully-occupied stable range (correctness over determinism).
-func TestSelectPort_FallbackWhenWindowFull(t *testing.T) {
-	isFree := func(int) bool { return false }
-	called := false
-	fb := func() int { called = true; return 35000 }
-	got := selectPort(31000, isFree, fb)
-	if !called {
-		t.Fatal("fallback must run when the whole window is occupied")
-	}
-	if got != 35000 {
-		t.Errorf("selectPort = %d, want fallback 35000", got)
-	}
-}
+//
+// The pure stable-port helper tests (hash determinism/range/symlinks,
+// window scan/wrap/fallback) live in internal/stableport. The tests below
+// exercise the containerproxy wiring of those helpers against a real Proxy.
 
 // TestStart_StablePortBindsWhenFree asserts Start binds the deterministic
 // stable port derived from the worktree when it is free. A control leaf
@@ -1661,7 +1547,7 @@ func TestSelectPort_FallbackWhenWindowFull(t *testing.T) {
 func TestStart_StablePortBindsWhenFree(t *testing.T) {
 	d := newFakeDaemon(t)
 	leaf := t.TempDir()
-	want := stablePortFor("/worktree/feat-a")
+	want := stableport.For("/worktree/feat-a")
 	p, err := New(Config{
 		Upstream:       d.server.URL,
 		ApprovedImages: []string{"pgvector/pgvector:pg16"},
@@ -1686,7 +1572,7 @@ func TestStart_StablePortBindsWhenFree(t *testing.T) {
 		t.Errorf("boundPort = %d, want %d", p.boundPort, want)
 	}
 	// The control file must record the assigned port for the next run.
-	got := readPreferredPort(leaf)
+	got := stableport.ReadPreferred(leaf, portFileName)
 	if got != want {
 		t.Errorf("port file = %d, want %d", got, want)
 	}
@@ -1700,11 +1586,11 @@ func TestStart_PortFilePreferredOverHash(t *testing.T) {
 	leaf := t.TempDir()
 	// Pre-seed the control file with a port that is NOT the hash-derived
 	// one. Start must bind the seeded port (the hash is only a fallback).
-	seeded := stablePortFor("/worktree/feat-a") + 7
-	if seeded >= StablePortMax {
-		seeded = StablePortMin + (seeded - StablePortMax)
+	seeded := stableport.For("/worktree/feat-a") + 7
+	if seeded >= stableport.StablePortMax {
+		seeded = stableport.StablePortMin + (seeded - stableport.StablePortMax)
 	}
-	if err := writePreferredPort(leaf, seeded); err != nil {
+	if err := stableport.WritePreferred(leaf, portFileName, seeded); err != nil {
 		t.Fatal(err)
 	}
 	p, err := New(Config{
@@ -1725,26 +1611,45 @@ func TestStart_PortFilePreferredOverHash(t *testing.T) {
 	}
 	defer p.shutdown()
 	if p.boundPort != seeded {
-		t.Errorf("boundPort = %d, want seeded %d (port file preferred over hash %d)", p.boundPort, seeded, stablePortFor("/worktree/feat-a"))
+		t.Errorf("boundPort = %d, want seeded %d (port file preferred over hash %d)", p.boundPort, seeded, stableport.For("/worktree/feat-a"))
 	}
 	if !strings.HasSuffix(dockerHost, fmt.Sprintf(":%d", seeded)) {
 		t.Errorf("DOCKER_HOST = %q, want port %d", dockerHost, seeded)
 	}
 }
 
-// TestStart_ScansWhenStablePortBusy asserts Start falls back to a scan of
-// the stable window when the stable port is already bound (by another
-// listener), landing on a different free port in the range.
+// TestStart_ScansWhenStablePortBusy asserts Start never stays on a held
+// port: when the stable port AND the whole scan window are occupied, the
+// bound port never equals the occupied stable port NOR any held window
+// port — it is either a momentarily-released window neighbor or a
+// fallback ephemeral port. Occupy the preferred port + PortScanWindow
+// neighbors (wrapping) so every scan candidate is deterministically held;
+// a partial occupation leaves a TOCTOU race at the first unheld neighbor
+// (stableport.IsFree binds→closes→releases, so a checked-free port can be
+// re-taken by the occupier before the proxy binds it).
 func TestStart_ScansWhenStablePortBusy(t *testing.T) {
 	d := newFakeDaemon(t)
 	leaf := t.TempDir()
-	want := stablePortFor("/worktree/feat-b")
-	// Occupy the stable port with a throwaway listener.
-	occ, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", want))
-	if err != nil {
-		t.Skipf("could not occupy stable port %d: %v", want, err)
+	want := stableport.For("/worktree/feat-b")
+	// Occupy the stable port + the full scan window.
+	held := make([]net.Listener, 0, stableport.PortScanWindow+1)
+	for i := 0; i <= stableport.PortScanWindow; i++ {
+		pn := want + i
+		if pn >= stableport.StablePortMax {
+			pn = stableport.StablePortMin + (pn - stableport.StablePortMax)
+		}
+		occ, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", pn))
+		if err != nil {
+			t.Logf("neighbor %d unoccupiable (%v) — treating as free", pn, err)
+			continue
+		}
+		held = append(held, occ)
 	}
-	defer occ.Close()
+	defer func() {
+		for _, occ := range held {
+			_ = occ.Close()
+		}
+	}()
 	p, err := New(Config{
 		Upstream:       d.server.URL,
 		ApprovedImages: []string{"pgvector/pgvector:pg16"},
@@ -1765,8 +1670,11 @@ func TestStart_ScansWhenStablePortBusy(t *testing.T) {
 	if p.boundPort == want {
 		t.Errorf("boundPort = %d, must NOT be the occupied stable port", p.boundPort)
 	}
-	if p.boundPort < StablePortMin || p.boundPort >= StablePortMax {
-		t.Errorf("boundPort = %d, want in stable range [%d,%d) (scan fallback)", p.boundPort, StablePortMin, StablePortMax)
+	for _, occ := range held {
+		hp := occ.Addr().(*net.TCPAddr).Port
+		if p.boundPort == hp {
+			t.Errorf("boundPort = %d collides with held window port %d (scan or bind picked a held port)", p.boundPort, hp)
+		}
 	}
 }
 
@@ -1775,16 +1683,18 @@ func TestStart_ScansWhenStablePortBusy(t *testing.T) {
 // build never wedges (correctness over determinism). The whole window is
 // simulated by overriding the port-free predicate via a test seam: rather
 // than binding 50 real sockets (flaky and slow), this test patches
-// portIsFree indirectly by occupying the preferred + scan neighbors.
+// stableport.IsFree indirectly by occupying the preferred + scan neighbors.
 //
-// Since the production selectPort uses the package-level portIsFree, this
+// Since the production stableport.Select uses the package-level
+// stableport.IsFree, this
 // test binds a real listener on every port the scan would touch (preferred
-// + the next portScanWindow-1). That is at most 50 listeners — practical
+// + the next stableport.PortScanWindow-1). That is at most 50 listeners —
+// practical
 // on macOS/Linux loopback.
 func TestStart_FallbackRandomWhenWindowFull(t *testing.T) {
 	d := newFakeDaemon(t)
 	leaf := t.TempDir()
-	want := stablePortFor("/worktree/feat-c")
+	want := stableport.For("/worktree/feat-c")
 	// Occupy the preferred port and the next portScanWindow-1 ports so the
 	// scan exhausts the window and Start falls back to a random port.
 	var occ []net.Listener
@@ -1793,9 +1703,9 @@ func TestStart_FallbackRandomWhenWindowFull(t *testing.T) {
 			l.Close()
 		}
 	}()
-	for i := 0; i < portScanWindow; i++ {
+	for i := 0; i < stableport.PortScanWindow; i++ {
 		p := want + i
-		if p >= StablePortMax {
+		if p >= stableport.StablePortMax {
 			break
 		}
 		l, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", p))
@@ -1807,13 +1717,13 @@ func TestStart_FallbackRandomWhenWindowFull(t *testing.T) {
 		}
 		occ = append(occ, l)
 	}
-	if len(occ) < portScanWindow {
+	if len(occ) < stableport.PortScanWindow {
 		// Could not occupy the whole window (host already uses some
 		// ports). The fallback path is still exercised if the scan
 		// happens to find no free port among the occupied ones; but to
 		// deterministically assert the RANDOM fallback we need the whole
 		// window occupied. Skip if the host would not let us.
-		t.Skipf("could not occupy the full scan window (got %d of %d); cannot deterministically force the random fallback", len(occ), portScanWindow)
+		t.Skipf("could not occupy the full scan window (got %d of %d); cannot deterministically force the random fallback", len(occ), stableport.PortScanWindow)
 	}
 	p, err := New(Config{
 		Upstream:       d.server.URL,
@@ -1833,7 +1743,7 @@ func TestStart_FallbackRandomWhenWindowFull(t *testing.T) {
 	}
 	defer p.shutdown()
 	// The bound port must NOT be in the stable range (the window was full).
-	if p.boundPort >= StablePortMin && p.boundPort < StablePortMax {
+	if p.boundPort >= stableport.StablePortMin && p.boundPort < stableport.StablePortMax {
 		// It could still be a wrap-around port we did not occupy; check it
 		// is one we actually occupied. If it is free, the scan found a gap
 		// we could not occupy — still a valid (non-random) outcome. Only

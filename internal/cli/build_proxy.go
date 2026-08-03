@@ -96,7 +96,20 @@ var credentialLookup = credproxy.KeychainLookup
 // *credproxy.RegistryCredentialError (criterion 7) — the build fails
 // closed with exit 3 naming the alias, never the credential. The
 // credential never enters executor env/args/gradle.properties/logs/audit.
-func startCredentialProxy(env *Env, manifestRegistries []buildmanifest.RegistryEntry, approvedAliases []string) (map[string]string, func(), error) {
+//
+// Stable port: the proxy binds a DETERMINISTIC loopback port derived from
+// the canonical worktree path (stableport.For, range [30000,40000))
+// instead of a random ephemeral port each run, so the init-script
+// repository URL Gradle is pointed at (rendered by PrepareControlState)
+// stays valid across runs even when a warm Gradle daemon/worker caches it
+// (the bug being fixed: a new random port each run left requests hitting a
+// dead port — it9a's "Read timed out"). The assigned port is recorded at
+// <controlLeaf>/.omac-control/credproxy-port and preferred on the next
+// run. On a rare collision (the whole [30000,40000) window occupied) the
+// proxy falls back to a random ephemeral port and logs a warning —
+// correctness over determinism (the stale-URL bug may resurface in that
+// rare case, but the build still runs).
+func startCredentialProxy(env *Env, worktree, controlLeaf string, manifestRegistries []buildmanifest.RegistryEntry, approvedAliases []string) (map[string]string, func(), error) {
 	if runtime.GOOS != "darwin" {
 		// Linux kernel-blocked: the credential proxy (loopback HTTP) is
 		// unreachable from the executor. v1 does not start it on Linux.
@@ -113,7 +126,12 @@ func startCredentialProxy(env *Env, manifestRegistries []buildmanifest.RegistryE
 	logf := func(format string, args ...any) {
 		fmt.Fprintf(env.Stderr, "omac build: credproxy: "+format+"\n", args...)
 	}
-	srv, err := credproxy.NewServer(regs, logf)
+	srv, err := credproxy.NewServerWithConfig(credproxy.Config{
+		Registries:   regs,
+		WorktreePath: worktree,
+		ControlLeaf:  controlLeaf,
+		Logf:         logf,
+	})
 	if err != nil {
 		return nil, nil, fmt.Errorf("create credential proxy: %w", err)
 	}
@@ -152,7 +170,7 @@ var containerProxyStarter = startContainerProxy
 // and threads buildReqID so denials carry the active request id (spec §254).
 //
 // Stable port: the proxy binds a DETERMINISTIC loopback port derived from
-// the canonical worktree path (stablePortFor, range [30000,40000)) instead
+// the canonical worktree path (stableport.For, range [30000,40000)) instead
 // of a random ephemeral port each run, so the warm Gradle daemon's cached
 // DOCKER_HOST stays valid across runs (the bug being fixed: a new random
 // port each run left the warm daemon pointing at a dead port, surfacing as

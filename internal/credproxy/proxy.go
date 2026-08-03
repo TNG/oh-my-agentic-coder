@@ -50,7 +50,12 @@ import (
 	"time"
 
 	"github.com/tngtech/oh-my-agentic-coder/internal/secrets"
+	"github.com/tngtech/oh-my-agentic-coder/internal/stableport"
 )
+
+// portFileName is the .omac-control control-state file recording the
+// assigned credential-lift proxy port.
+const portFileName = "credproxy-port"
 
 // RegistryKeychainService returns the OMAC keychain service name under
 // which a private registry's credential is stored. The credential is
@@ -175,15 +180,38 @@ type Registry struct {
 	Credential secrets.Secret // host-side only; zero value = none
 }
 
-// Server is the credential-lift proxy. It binds 127.0.0.1:0 and serves
-// plain-HTTP forward requests for the approved private registries,
-// injecting `Authorization: Basic` upstream from the keychain credential
-// held in-process. Gradle points at it through an OMAC-authored init.d
-// script that maps each alias to http://127.0.0.1:<port>/<alias>/.
+// Config configures a credential-lift proxy Server. Registries is the
+// approved private registry set (validated by NewServerWithConfig exactly
+// as NewServer does). WorktreePath and ControlLeaf are OPTIONAL: when
+// WorktreePath is empty the legacy random-port behavior is used (tests,
+// callers without a worktree). When set, the proxy binds the
+// deterministic stableport port for the worktree and records it under
+// ControlLeaf/.omac-control/credproxy-port (when ControlLeaf is set) so
+// the port survives listener teardown between runs (see choosePort).
+type Config struct {
+	Registries   []Registry
+	WorktreePath string // canonical worktree path; empty = legacy random port
+	ControlLeaf  string // GRADLE_USER_HOME cache leaf for the port file; optional
+	Logf         func(string, ...any)
+}
+
+// Server is the credential-lift proxy. By default (Config.WorktreePath
+// set) it binds the deterministic stableport loopback port for the
+// worktree (range [30000,40000), persisted under ControlLeaf so it
+// survives listener teardown between runs — see choosePort), with a
+// fallback to a random ephemeral port when the stable window is occupied.
+// The legacy path (empty WorktreePath) binds a kernel-assigned ephemeral
+// port on 127.0.0.1. It serves plain-HTTP forward requests for the
+// approved private registries, injecting `Authorization: Basic` upstream
+// from the keychain credential held in-process. Gradle points at it
+// through an OMAC-authored init.d script that maps each alias to
+// http://127.0.0.1:<port>/<alias>/.
 type Server struct {
-	registries map[string]Registry // keyed by alias
-	ln         net.Listener
-	logf       func(format string, args ...any)
+	registries   map[string]Registry // keyed by alias
+	worktreePath string
+	controlLeaf  string
+	ln           net.Listener
+	logf         func(format string, args ...any)
 
 	mu     sync.Mutex
 	closed bool
@@ -193,13 +221,23 @@ type Server struct {
 // NewServer validates the registries and builds a Server (does NOT start
 // it — call Start). A zero-length registries slice yields a Server that
 // denies everything (no private registries approved); callers usually
-// skip starting it in that case. Duplicate aliases are rejected.
+// skip starting it in that case. Duplicate aliases are rejected. It is a
+// thin wrapper over NewServerWithConfig with the legacy random-port
+// behavior (no worktree path).
 func NewServer(registries []Registry, logf func(string, ...any)) (*Server, error) {
+	return NewServerWithConfig(Config{Registries: registries, Logf: logf})
+}
+
+// NewServerWithConfig validates the config and builds a Server (does NOT
+// start it — call Start). Registry validation is identical to NewServer
+// (NewServer delegates here).
+func NewServerWithConfig(cfg Config) (*Server, error) {
+	logf := cfg.Logf
 	if logf == nil {
 		logf = func(string, ...any) {}
 	}
 	seen := map[string]bool{}
-	for _, r := range registries {
+	for _, r := range cfg.Registries {
 		if r.Alias == "" {
 			return nil, fmt.Errorf("credproxy: registry with empty alias")
 		}
@@ -219,25 +257,94 @@ func NewServer(registries []Registry, logf func(string, ...any)) (*Server, error
 		seen[r.Alias] = true
 	}
 	rm := map[string]Registry{}
-	for _, r := range registries {
+	for _, r := range cfg.Registries {
 		rm[r.Alias] = r
 	}
 	return &Server{
-		registries: rm,
-		logf:       logf,
-		conns:      map[net.Conn]struct{}{},
+		registries:   rm,
+		worktreePath: cfg.WorktreePath,
+		controlLeaf:  cfg.ControlLeaf,
+		logf:         logf,
+		conns:        map[net.Conn]struct{}{},
 	}, nil
 }
 
-// Start binds the loopback listener and serves in a goroutine.
+// Start binds the loopback listener and serves in a goroutine. When a
+// worktree path is wired the listener binds the deterministic stable port
+// (with scan/ephemeral fallback — see choosePort) and the assigned port
+// is persisted to the control file (best-effort) so the next run can
+// prefer it.
 func (s *Server) Start() error {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	port, fallback := s.choosePort()
+	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
 	if err != nil {
-		return fmt.Errorf("credproxy: bind listener: %w", err)
+		// The chosen port (stable or random) was not bindable; retry once
+		// with a kernel-assigned ephemeral port so a transient bind race
+		// or a stale control file pointing at an in-use port never wedges
+		// the build. Correctness over determinism.
+		if port != 0 {
+			s.logf("credproxy: bind on stable port %d failed (%v); falling back to a random ephemeral port", port, err)
+			ln, err = net.Listen("tcp", "127.0.0.1:0")
+		}
+		if err != nil {
+			return fmt.Errorf("credproxy: bind listener: %w", err)
+		}
+		fallback = true
 	}
 	s.ln = ln
+	if fallback {
+		s.logf("credproxy: using fallback ephemeral port %d (stable window unavailable; init-script repository URL may drift on next run)", s.Port())
+	}
+	// Persist the assigned port so the next run can prefer it. Only a stable
+	// port (chosen == preferred, fallback == false) is persisted: persisting
+	// a fallback ephemeral port would poison the control file — the next run
+	// would prefer a dead-ephemeral or out-of-range value and destabilize
+	// again. A fallback run degrades THIS run only; the next run re-reads
+	// (or recomputes) the stable port and binds it fresh. Best-effort: a
+	// write failure degrades cross-run stability but does not fail the
+	// build (the port is valid for this run).
+	if s.controlLeaf != "" && !fallback {
+		if werr := stableport.WritePreferred(s.controlLeaf, portFileName, s.Port()); werr != nil {
+			s.logf("credproxy: could not persist port file: %v", werr)
+		}
+	}
 	go s.acceptLoop()
 	return nil
+}
+
+// choosePort resolves the loopback port Start should bind. It prefers, in
+// order: (1) a previously-assigned port read from the control-state file
+// (so the port stays stable even after the listener is torn down between
+// runs); (2) a fresh stable port derived from the worktree path; (3) a
+// fallback random ephemeral port when the whole stable window is occupied.
+// Returns the chosen port and a fallback flag (true when the chosen port
+// is NOT the deterministic stable one — the caller logs a warning so the
+// user understands the warm-daemon bug may resurface in the rare collision
+// case). When WorktreePath is empty the legacy random-port behavior is
+// used (port 0, not flagged as fallback — that is the documented v1 path).
+func (s *Server) choosePort() (port int, fallback bool) {
+	if s.worktreePath == "" {
+		// Legacy random-port behavior preserved for callers that did not
+		// wire the worktree path.
+		return 0, false
+	}
+	preferred := 0
+	if s.controlLeaf != "" {
+		preferred = stableport.ReadPreferred(s.controlLeaf, portFileName)
+	}
+	if preferred == 0 {
+		preferred = stableport.For(s.worktreePath)
+	}
+	chosen := stableport.Select(preferred, stableport.IsFree, stableport.RandomFree)
+	if chosen == 0 {
+		// stableport.Select exhausted the window AND the random fallback failed.
+		// Let the kernel pick (Start retries on 127.0.0.1:0).
+		return 0, true
+	}
+	// "Fallback" means we are NOT on the deterministic preferred port —
+	// either a scan neighbor or a random ephemeral port. The warm-daemon
+	// bug can resurface in this case, so the caller logs it.
+	return chosen, chosen != preferred
 }
 
 // Port returns the bound port (after Start), 0 before.
