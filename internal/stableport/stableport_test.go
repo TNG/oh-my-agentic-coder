@@ -110,6 +110,73 @@ func TestSelect_WindowWraps(t *testing.T) {
 // TestSelect_FallbackWhenWindowFull asserts Select calls the
 // fallback when the whole window is occupied, so the build never wedges
 // on a fully-occupied stable range (correctness over determinism).
+// --- ReadPreferred edge cases (ticket 04) --------------------------------
+//
+// ReadPreferred reads the assigned port from a control-state file and
+// returns 0 when the file is absent, unreadable, empty, garbled, or
+// contains an out-of-range port. The existing tests only exercise the
+// happy path (credproxy integration tests writing + reading valid ports).
+// These unit tests lock down every error path.
+
+// writePortFile is a helper that creates .omac-control under leaf and writes
+// the named port file with the given content.
+func writePortFile(t *testing.T, leaf, name, content string) {
+	t.Helper()
+	dir := filepath.Join(leaf, PortFileDir)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(PortFilePath(leaf, name), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestReadPreferred_EmptyFile asserts an empty control file returns 0.
+func TestReadPreferred_EmptyFile(t *testing.T) {
+	leaf := t.TempDir()
+	writePortFile(t, leaf, "test-port", "")
+	if got := ReadPreferred(leaf, "test-port"); got != 0 {
+		t.Errorf("ReadPreferred(empty file) = %d, want 0", got)
+	}
+}
+
+// TestReadPreferred_GarbageFile asserts a non-numeric control file returns 0.
+func TestReadPreferred_GarbageFile(t *testing.T) {
+	leaf := t.TempDir()
+	writePortFile(t, leaf, "test-port", "hello world")
+	if got := ReadPreferred(leaf, "test-port"); got != 0 {
+		t.Errorf("ReadPreferred(garbage) = %d, want 0", got)
+	}
+}
+
+// TestReadPreferred_OutOfRangeLow asserts a port below StablePortMin returns 0.
+func TestReadPreferred_OutOfRangeLow(t *testing.T) {
+	leaf := t.TempDir()
+	writePortFile(t, leaf, "test-port", "0")
+	if got := ReadPreferred(leaf, "test-port"); got != 0 {
+		t.Errorf("ReadPreferred(0) = %d, want 0 (below range)", got)
+	}
+}
+
+// TestReadPreferred_OutOfRangeHigh asserts a port at StablePortMax (exclusive
+// bound) returns 0.
+func TestReadPreferred_OutOfRangeHigh(t *testing.T) {
+	leaf := t.TempDir()
+	writePortFile(t, leaf, "test-port", "40000")
+	if got := ReadPreferred(leaf, "test-port"); got != 0 {
+		t.Errorf("ReadPreferred(40000) = %d, want 0 (at exclusive bound)", got)
+	}
+}
+
+// TestReadPreferred_MissingFile asserts that a non-existent control file
+// returns 0 (the happy-path fallback when no port was previously persisted).
+func TestReadPreferred_MissingFile(t *testing.T) {
+	leaf := t.TempDir()
+	if got := ReadPreferred(leaf, "test-port"); got != 0 {
+		t.Errorf("ReadPreferred(missing) = %d, want 0", got)
+	}
+}
+
 func TestSelect_FallbackWhenWindowFull(t *testing.T) {
 	isFree := func(int) bool { return false }
 	called := false

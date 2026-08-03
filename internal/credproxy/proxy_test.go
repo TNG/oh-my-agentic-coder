@@ -523,6 +523,57 @@ func TestStart_LegacyRandomPortWhenNoWorktree(t *testing.T) {
 	}
 }
 
+// TestStart_ControlFileNotPersistedOnFallback asserts that when the full
+// stable window is occupied (preferred + all PortScanWindow neighbors),
+// the fallback path skips WritePreferred — the port file is NOT written
+// despite a non-nil ControlLeaf. This prevents a fallback ephemeral port
+// from poisoning the control file for the next run (ticket 03).
+func TestStart_ControlFileNotPersistedOnFallback(t *testing.T) {
+	worktree := "/worktree/feat-fallback"
+	busy := stableport.For(worktree)
+	// Occupy the stable port + the full scan window so every neighbour is
+	// held and Select must fall back to RandomFree.
+	held := make([]net.Listener, 0, stableport.PortScanWindow+1)
+	for i := 0; i <= stableport.PortScanWindow; i++ {
+		p := busy + i
+		if p >= stableport.StablePortMax {
+			p = stableport.StablePortMin + (p - stableport.StablePortMax)
+		}
+		occ, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", p))
+		if err != nil {
+			t.Logf("neighbor %d unoccupiable (%v) — window has a free slot, test precondition not met", p, err)
+			continue
+		}
+		held = append(held, occ)
+	}
+	defer func() {
+		for _, occ := range held {
+			_ = occ.Close()
+		}
+	}()
+
+	leaf := t.TempDir()
+	srv, err := NewServerWithConfig(Config{
+		Registries:   []Registry{portTestRegistry()},
+		WorktreePath: worktree,
+		ControlLeaf:  leaf,
+		Logf:         t.Logf,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatal(err)
+	}
+	srv.Close()
+
+	// The port file must NOT exist: WritePreferred was skipped because
+	// fallback was true (the whole window was occupied).
+	if got := stableport.ReadPreferred(leaf, portFileName); got != 0 {
+		t.Errorf("port file was written despite fallback: ReadPreferred = %d, want 0", got)
+	}
+}
+
 // TestStart_PortPersistsAcrossRestarts asserts the assigned port is
 // recorded in the control file and preferred by the NEXT server over the
 // worktree hash: a second server with a DIFFERENT worktree path but the

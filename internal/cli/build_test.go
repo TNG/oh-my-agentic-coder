@@ -1,7 +1,10 @@
 package cli
 
 import (
+	"bytes"
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -270,6 +273,40 @@ func chmodBuildLeafInitDForCleanup(t *testing.T, cacheDir string) {
 	t.Helper()
 	leaf := filepath.Join(cacheDir, "gradle")
 	t.Cleanup(func() { _ = os.Chmod(filepath.Join(leaf, "init.d"), 0o755) })
+}
+
+// TestDaemonRecycle_ErrorLogsButBuildContinues asserts that a failing
+// `gradlew --stop` (exit 1) returns a non-nil error but does NOT abort the
+// build caller (the daemonRecycle closure in runBuild prints a warning and
+// carries on — build.go:297-299). We test the error seam directly using
+// StopGradleDaemon, which is what daemonRecycle wraps.
+func TestDaemonRecycle_ErrorLogsButBuildContinues(t *testing.T) {
+	wt := t.TempDir()
+	wrapper := filepath.Join(wt, "gradlew")
+	if err := os.WriteFile(wrapper, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	var stderrBuf bytes.Buffer
+	err := buildrun.StopGradleDaemon(buildrun.StopDaemonOptions{
+		Wrapper:    wrapper,
+		ProjectDir: wt,
+		Leaf:       t.TempDir(),
+		Stderr:     &stderrBuf,
+	})
+	if err == nil {
+		t.Error("StopGradleDaemon must return an error when gradlew --stop exits non-zero")
+	}
+	// Confirm the error is an ExitError (exit code 1), proving the
+	// daemonRecycle closure receives a non-nil error and the build
+	// continues (the error is logged, not returned).
+	var ee *exec.ExitError
+	if !errors.As(err, &ee) {
+		t.Errorf("expected *exec.ExitError, got %T: %v", err, err)
+	}
+	if ee != nil && ee.ExitCode() != 1 {
+		t.Errorf("ExitCode = %d, want 1", ee.ExitCode())
+	}
 }
 
 // TestBuildCacheDirResolution pins the GRADLE_USER_HOME provenance

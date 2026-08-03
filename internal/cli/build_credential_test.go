@@ -3,6 +3,7 @@ package cli
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -114,5 +115,78 @@ registries:
 	// Must not be a crash (service failure 10) — the denial is structured.
 	if strings.Contains(string(out), "panic") {
 		t.Errorf("denial must not crash:\n%s", out)
+	}
+	// The denial must come from the credential-lookup path (the
+	// RegistryCredentialError), not from a NewServerWithConfig error —
+	// proving the wiring reaches the lookup before NewServerWithConfig.
+	if !strings.Contains(string(out), "denied private registry") {
+		t.Errorf("denial must describe a credential-lookup failure (not a NewServerWithConfig error):\n%s", out)
+	}
+}
+
+// TestStartCredentialProxy_WiresNewServerWithConfig asserts that
+// startCredentialProxy with a valid credential lookup wires
+// NewServerWithConfig correctly: it calls the 5-arg signature and returns
+// a non-empty URL map with loopback URLs per alias (ticket 02).
+func TestStartCredentialProxy_WiresNewServerWithConfig(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("credential proxy is macOS-only in v1")
+	}
+
+	wt := t.TempDir()
+	// Stub wrapper so Resolve passes in the credential-lift path.
+	if err := os.MkdirAll(filepath.Join(wt, "backend"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wt, "backend", "gradlew"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	origLookup := credentialLookup
+	credentialLookup = func(alias string) (secrets.Secret, error) {
+		return secrets.NewSecretString("user:pass"), nil
+	}
+	t.Cleanup(func() { credentialLookup = origLookup })
+
+	env := &Env{
+		Version: "test",
+		Workdir: wt,
+		Stdout:  newDevNull(t),
+		Stderr:  newDevNull(t),
+	}
+	worktree := t.TempDir()
+	controlLeaf := t.TempDir()
+	manifestRegistries := []buildmanifest.RegistryEntry{
+		{Alias: "internal", Upstream: "https://maven.internal.example/repo"},
+	}
+	approvedAliases := []string{"internal"}
+
+	urls, stop, err := startCredentialProxy(env, worktree, controlLeaf, manifestRegistries, approvedAliases)
+	if err != nil {
+		t.Fatalf("startCredentialProxy: %v", err)
+	}
+	if stop == nil {
+		t.Fatal("stop func must be non-nil when credentials are approved")
+	}
+	defer stop()
+
+	// URL map must be non-empty.
+	if len(urls) == 0 {
+		t.Fatal("URL map must be non-empty")
+	}
+	// At least one URL must be present for "internal".
+	u, ok := urls["internal"]
+	if !ok {
+		t.Fatalf("URL map must contain alias 'internal'; got %v", urls)
+	}
+	// The URL must be a loopback URL with port and alias path.
+	if !strings.HasPrefix(u, "http://127.0.0.1:") {
+		t.Errorf("URL must be a loopback http URL: %q", u)
+	}
+	if !strings.HasSuffix(u, "/internal/") {
+		t.Errorf("URL must end with /<alias>/: %q", u)
+	}
+	if strings.Contains(u, "@") {
+		t.Errorf("URL must not contain userinfo: %q", u)
 	}
 }
