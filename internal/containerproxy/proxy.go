@@ -38,6 +38,7 @@ import (
 	"time"
 
 	"github.com/tngtech/oh-my-agentic-coder/internal/audit"
+	"github.com/tngtech/oh-my-agentic-coder/internal/stableport"
 )
 
 // DefaultUpstreamSocket is the default Docker/Colima daemon socket the
@@ -49,6 +50,10 @@ const DefaultUpstreamSocket = "unix://" + defaultSocketPath
 // New resolves HOME at call time (HOME + "/" + defaultSocketPath). It is
 // a const so the path is stable; only HOME is read at call time.
 const defaultSocketPath = ".colima/default/docker.sock"
+
+// portFileName is the .omac-control control-state file recording the
+// assigned container-proxy port.
+const portFileName = "containerproxy-port"
 
 // Config configures a Proxy.
 type Config struct {
@@ -71,7 +76,7 @@ type Config struct {
 	Logf func(format string, args ...any)
 	// WorktreePath is the canonical worktree root the proxy serves. When
 	// non-empty, Start derives a STABLE loopback port from it (via
-	// stablePortFor) so the warm Gradle daemon's cached DOCKER_HOST stays
+	// stableport.For) so the warm Gradle daemon's cached DOCKER_HOST stays
 	// valid across runs — the bug being fixed: a random ephemeral port
 	// each run left the warm daemon pointing at a dead port. Empty
 	// preserves the legacy random-port behavior.
@@ -346,11 +351,16 @@ func (p *Proxy) Start() (dockerHost string, stop func(), err error) {
 	if fallback {
 		p.logf("containerproxy: using fallback ephemeral port %d (stable window unavailable; warm-daemon DOCKER_HOST may drift on next run)", p.boundPort)
 	}
-	// Persist the assigned port so the next run can prefer it. Best-effort:
-	// a write failure degrades cross-run stability but does not fail the
+	// Persist the assigned port so the next run can prefer it. Only a stable
+	// port (chosen == preferred, fallback == false) is persisted: persisting
+	// a fallback ephemeral port would poison the control file — the next run
+	// would prefer a dead-ephemeral or out-of-range value and destabilize
+	// again. A fallback run degrades THIS run only; the next run re-reads
+	// (or recomputes) the stable port and binds it fresh. Best-effort: a
+	// write failure degrades cross-run stability but does not fail the
 	// build (the port is valid for this run).
-	if p.cfg.ControlLeaf != "" {
-		if werr := writePreferredPort(p.cfg.ControlLeaf, p.boundPort); werr != nil {
+	if p.cfg.ControlLeaf != "" && !fallback {
+		if werr := stableport.WritePreferred(p.cfg.ControlLeaf, portFileName, p.boundPort); werr != nil {
 			p.logf("containerproxy: could not persist port file: %v", werr)
 		}
 	}
@@ -377,14 +387,14 @@ func (p *Proxy) choosePort() (port int, fallback bool) {
 	}
 	preferred := 0
 	if p.cfg.ControlLeaf != "" {
-		preferred = readPreferredPort(p.cfg.ControlLeaf)
+		preferred = stableport.ReadPreferred(p.cfg.ControlLeaf, portFileName)
 	}
 	if preferred == 0 {
-		preferred = stablePortFor(p.cfg.WorktreePath)
+		preferred = stableport.For(p.cfg.WorktreePath)
 	}
-	chosen := selectPort(preferred, portIsFree, randomFreePort)
+	chosen := stableport.Select(preferred, stableport.IsFree, stableport.RandomFree)
 	if chosen == 0 {
-		// selectPort exhausted the window AND the random fallback failed.
+		// stableport.Select exhausted the window AND the random fallback failed.
 		// Let the kernel pick (Start retries on 127.0.0.1:0).
 		return 0, true
 	}
