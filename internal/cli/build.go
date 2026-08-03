@@ -168,7 +168,7 @@ func runBuild(args []string, env *Env) int {
 	// executor (env/args/gradle.properties/logs/audit). A missing keychain
 	// credential for an approved registry is a structured denial naming the
 	// alias (criterion 7) — exit 3, never a crash, never the credential.
-	credProxyURLs, stopCredProxy, credErr := startCredentialProxy(env, manifest.Registries, approvedRegistries)
+	credProxyURLs, stopCredProxy, credErr := startCredentialProxy(env, resolved.Worktree, buildrun.GradleLeaf(cacheDir), manifest.Registries, approvedRegistries)
 	if credErr != nil {
 		return deny(credErr)
 	}
