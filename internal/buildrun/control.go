@@ -53,6 +53,7 @@ var controlFiles = []string{
 	filepath.Join("init.d", registryCredentialsInitName),            // ticket 06: credential-lift init script (when private registries approved)
 	filepath.Join("init.d", retireCheckstyleTwinsInitName),          // ticket 07: checkstyle twin retirement (always written)
 	filepath.Join("init.d", mockitoAgentInitName),                   // ticket 08: mockito -javaagent (always written)
+	filepath.Join(controlStateName, executorTmpDirName),             // current run's executor temp (read by the mockito-agent init script)
 }
 
 // controlDirs lists OMAC-owned control directories (relative to the leaf)
@@ -95,6 +96,15 @@ type GradlePropertiesConfig struct {
 	// The supervisor enumerates these unsandboxed (EnumerateHostJDKs).
 	// Empty/nil omits the line (Gradle falls back to its own detection).
 	InstallationsPaths []string
+	// TmpDir is the executor's private temporary directory (the only
+	// writable temp leaf under the sandbox). Written to a control-state
+	// file (<leaf>/.omac-control/executor-tmpdir) so the mockito-agent
+	// init script can read the CURRENT run's temp from the file instead
+	// of the Gradle DAEMON's env (a warm daemon retains a prior run's
+	// TMPDIR, which has been deleted on exit — reading the env would
+	// point the test worker's java.io.tmpdir at a non-existent dir).
+	// Empty omits the file (the init script falls back to the env).
+	TmpDir string
 }
 
 // RenderGradleProperties renders the OMAC-generated gradle.properties
@@ -271,6 +281,12 @@ func RenderRetireCheckstyleTwinsInitScript() string {
 // build (it is a defensive no-op when no test task uses Mockito).
 const mockitoAgentInitName = "mockito-agent.gradle"
 
+// executorTmpDirName is the control-state file holding the CURRENT
+// run's executor private temp path. The mockito-agent init script reads
+// this to set java.io.tmpdir on the test worker, instead of the Gradle
+// daemon's env TMPDIR (stale on a warm daemon — see GradlePropertiesConfig.TmpDir).
+const executorTmpDirName = "executor-tmpdir"
+
 // RenderMockitoAgentInitScript renders the OMAC-authored Gradle init
 // script that loads mockito-core as a -javaagent on test tasks (ticket 08,
 // REPORT.md item 4 / spec.md:168). Mockito's inline mock-maker cannot
@@ -317,20 +333,42 @@ func RenderMockitoAgentInitScript() string {
 	b.WriteString("  tasks.withType(Test).configureEach {\n")
 	b.WriteString("    // Enable dynamic agent loading so the -javaagent attach is permitted.\n")
 	b.WriteString("    jvmArgs '-XX:+EnableDynamicAgentLoading'\n")
-	b.WriteString("    // Force java.io.tmpdir to the executor's private temp ($TMPDIR, set\n")
-	b.WriteString("    // in ChildEnv). The JVM otherwise defaults to the macOS\n")
-	b.WriteString("    // /var/folders/.../T/ leaf, which the sandbox does NOT grant\n")
-	b.WriteString("    // writable — only the private temp is writable. Tooling that\n")
-	b.WriteString("    // writes its temp under java.io.tmpdir (e.g. the embedded Kafka\n")
-	b.WriteString("    // broker log dir via TestUtils.tempDirectory) would otherwise\n")
-	b.WriteString("    // hit EPERM and fail silently. $TMPDIR is non-empty in the\n")
-	b.WriteString("    // executor env; guard anyway so a misconfigured env can't blank\n")
-	b.WriteString("    // the JVM default.\n")
-	b.WriteString("    def omacTmp = System.getenv('TMPDIR')\n")
-	b.WriteString("    if (omacTmp != null && !omacTmp.isEmpty()) {\n")
-	b.WriteString("      jvmArgs \"-Djava.io.tmpdir=${omacTmp}\"\n")
-	b.WriteString("    }\n")
 	b.WriteString("    doFirst {\n")
+	b.WriteString("      // Force java.io.tmpdir to the executor's private temp. The JVM\n")
+	b.WriteString("      // otherwise defaults to the macOS /var/folders/.../T/ leaf,\n")
+	b.WriteString("      // which the sandbox does NOT grant writable — only the private\n")
+	b.WriteString("      // temp is writable. Tooling that writes its temp under\n")
+	b.WriteString("      // java.io.tmpdir (e.g. the embedded Kafka broker log dir via\n")
+	b.WriteString("      // TestUtils.tempDirectory) would otherwise hit EPERM and fail\n")
+	b.WriteString("      // silently.\n")
+	b.WriteString("      //\n")
+	b.WriteString("      // Source priority: a control-state FILE (written fresh each\n")
+	b.WriteString("      // build by the supervisor) is preferred over the daemon env\n")
+	b.WriteString("      // TMPDIR. A warm Gradle daemon retains a PRIOR run's TMPDIR,\n")
+	b.WriteString("      // which has been deleted on exit — reading the env would point\n")
+	b.WriteString("      // the test worker at a non-existent dir. The file is at\n")
+	b.WriteString("      // <gradleUserHomeDir>/.omac-control/executor-tmpdir. Fall back\n")
+	b.WriteString("      // to the env only when the file is absent (cold-daemon path\n")
+	b.WriteString("      // or a non-omac build reusing the init script).\n")
+	b.WriteString("      //\n")
+	b.WriteString("      // This runs in doFirst (execution time) NOT at configuration\n")
+	b.WriteString("      // time: a warm daemon caches the configureEach closure from\n")
+	b.WriteString("      // the first build that evaluated it, so a config-time jvmArgs\n")
+	b.WriteString("      // would bake in the FIRST run's tmpdir. doFirst re-evaluates\n")
+	b.WriteString("      // on every build, reading the file fresh each time.\n")
+	b.WriteString("      def omacTmp = null\n")
+	b.WriteString("      try {\n")
+	b.WriteString("        def tmpFile = new File(gradle.gradleUserHomeDir, '.omac-control/executor-tmpdir')\n")
+	b.WriteString("        if (tmpFile.isFile()) {\n")
+	b.WriteString("          omacTmp = tmpFile.text.trim()\n")
+	b.WriteString("        }\n")
+	b.WriteString("      } catch (Exception ignored) {}\n")
+	b.WriteString("      if (omacTmp == null || omacTmp.isEmpty()) {\n")
+	b.WriteString("        omacTmp = System.getenv('TMPDIR')\n")
+	b.WriteString("      }\n")
+	b.WriteString("      if (omacTmp != null && !omacTmp.isEmpty()) {\n")
+	b.WriteString("        jvmArgs \"-Djava.io.tmpdir=${omacTmp}\"\n")
+	b.WriteString("      }\n")
 	b.WriteString("      // Locate the mockito-core jar on the test runtime classpath. The\n")
 	b.WriteString("      // classpath is resolved by doFirst time, so the jar is present\n")
 	b.WriteString("      // here iff the project depends on mockito-core.\n")
@@ -453,6 +491,19 @@ func PrepareControlState(leaf string, cfg GradlePropertiesConfig) (ControlPaths,
 	propsPath := filepath.Join(leaf, "gradle.properties")
 	if err := os.WriteFile(propsPath, []byte(RenderGradleProperties(cfg)), 0o644); err != nil {
 		return ControlPaths{}, fmt.Errorf("write gradle.properties: %w", err)
+	}
+	// Executor temp file: the mockito-agent init script reads this to
+	// set java.io.tmpdir on the test worker. Reading from a file (not
+	// the daemon env) is REQUIRED because a warm Gradle daemon retains
+	// a prior run's TMPDIR, which has been deleted on exit. The file is
+	// regenerated each build with the current run's temp. Best-effort:
+	// a write failure degrades to the init script's env fallback (the
+	// cold-daemon path still works), so it does not fail the build.
+	if cfg.TmpDir != "" {
+		tmpFile := filepath.Join(ctrlDir, executorTmpDirName)
+		if err := os.WriteFile(tmpFile, []byte(cfg.TmpDir), 0o644); err != nil {
+			return ControlPaths{}, fmt.Errorf("write executor-tmpdir control file: %w", err)
+		}
 	}
 	return resolveControlPaths(leaf), nil
 }

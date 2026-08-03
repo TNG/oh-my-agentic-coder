@@ -282,6 +282,21 @@ func runBuild(args []string, env *Env) int {
 		fmt.Fprintf(env.Stderr, "omac build: %v\n", err)
 		return buildrun.ExitServiceFailure
 	}
+	// Recycle the Gradle daemon after every build. A warm daemon caches
+	// per-run state that doesn't survive across omac builds: the
+	// GlobalEmbeddedKafkaTestExecutionListener (spring-kafka-test) starts
+	// an in-process Kafka broker at testPlanExecutionStarted and stops it
+	// at testPlanExecutionFinished, but the JUnit Platform listener
+	// discovery + the daemon's system properties go stale on a warm
+	// daemon, so the second run's bootstrap.servers comes back empty.
+	// Stopping the daemon after each build (gradlew --stop, which is safe
+	// when no build is running — unlike --no-daemon which deadlocks with
+	// an alive daemon) gives every run a cold daemon with fresh env,
+	// fresh init scripts, and fresh listeners. The ~10s cold-start cost
+	// is the price of correctness with Testcontainers + embedded Kafka.
+	if recycleErr := daemonRecycle(env.Stderr); recycleErr != nil {
+		fmt.Fprintf(env.Stderr, "omac build: warning: post-build daemon recycle failed: %v\n", recycleErr)
+	}
 	return code
 }
 

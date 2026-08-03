@@ -347,6 +347,7 @@ func GrantsFor(worktree, cacheDir string, cfg BuildConfig) (*BuildGrants, error)
 		MaxHeap:            maxHeap,
 		RegistryProxyURLs:  cfg.RegistryProxyURLs,
 		InstallationsPaths: installationsPaths,
+		TmpDir:             tmp,
 	}
 	controlPaths, err := PrepareControlState(leaf, gradleProps)
 	if err != nil {
