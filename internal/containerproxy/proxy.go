@@ -338,7 +338,7 @@ func (p *Proxy) Start() (dockerHost string, stop func(), err error) {
 		// or a stale control file pointing at an in-use port never wedges
 		// the build. Correctness over determinism.
 		if port != 0 {
-			p.logf("containerproxy: bind on stable port %d failed (%v); falling back to a random ephemeral port", port, err)
+			p.logf("containerproxy: bind on chosen port %d failed (%v); falling back to a random ephemeral port", port, err)
 			ln, err = net.Listen("tcp", "127.0.0.1:0")
 		}
 		if err != nil {
@@ -371,6 +371,18 @@ func (p *Proxy) Start() (dockerHost string, stop func(), err error) {
 	return dockerHost, p.shutdown, nil
 }
 
+// logUnbindablePreferred logs why a preferred stable port could not be
+// bound, with the actual listen error (issue #191: EADDRINUSE vs EPERM vs
+// sandbox-blocked) so the user can diagnose instead of guessing.
+// Select consults the preferred port FIRST, so the first onReason
+// callback is always the preferred port's failure; only it is logged here
+// to keep the line actionable.
+func (p *Proxy) logUnbindablePreferred(reasons map[int]error, preferred int) {
+	if err, ok := reasons[preferred]; ok {
+		p.logf("containerproxy: preferred stable port %d unavailable: %v", preferred, err)
+	}
+}
+
 // choosePort resolves the loopback port Start should bind. It prefers, in
 // order: (1) a previously-assigned port read from the control-state file
 // (so the port stays stable even after the listener is torn down between
@@ -381,34 +393,24 @@ func (p *Proxy) Start() (dockerHost string, stop func(), err error) {
 // user understands the stale-DOCKER_HOST issue may resurface in the rare
 // collision case). When WorktreePath is empty the legacy random-port
 // behavior is used (port 0, not flagged as fallback — that is the
-// documented v1 path).
+// documented v1 path). The shared policy lives in stableport.Choose (see
+// its doc comment); this wrapper exists only to wire the bind-failure
+// reason (issue #191) into the log.
 func (p *Proxy) choosePort() (port int, fallback bool) {
-	if p.cfg.WorktreePath == "" {
-		// Legacy random-port behavior preserved for callers that did not
-		// wire the worktree path.
-		return 0, false
-	}
 	preferred := 0
-	if p.cfg.ControlLeaf != "" {
-		preferred = stableport.ReadPreferred(p.cfg.ControlLeaf, portFileName)
+	reasons := map[int]error{}
+	port, fallback = stableport.Choose(p.cfg.WorktreePath, p.cfg.ControlLeaf, portFileName,
+		stableport.IsFree, stableport.RandomFree,
+		func(port int, cause error) {
+			if preferred == 0 {
+				preferred = port
+			}
+			reasons[port] = cause
+		})
+	if preferred != 0 {
+		p.logUnbindablePreferred(reasons, preferred)
 	}
-	if preferred == 0 {
-		preferred = stableport.For(p.cfg.WorktreePath)
-	}
-	chosen := stableport.Select(preferred, stableport.IsFree, stableport.RandomFree)
-	if chosen == 0 {
-		// stableport.Select exhausted the window AND the random fallback failed.
-		// Let the kernel pick (Start retries on 127.0.0.1:0).
-		return 0, true
-	}
-	// "Fallback" means we are outside the stable port window
-	// [StablePortMin, StablePortMax) — i.e. a random kernel-assigned port.
-	// A scanned neighbor inside the window is NOT a fallback: it is
-	// persisted so the next run prefers exactly what this run bound,
-	// breaking the permanent warn-loop (issue #191). A true out-of-window
-	// random port is NOT persisted because it would poison the control
-	// file for the next run.
-	return chosen, chosen < stableport.StablePortMin || chosen >= stableport.StablePortMax
+	return port, fallback
 }
 
 // shutdown is the stop func returned by Start. It closes the listener and

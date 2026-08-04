@@ -216,3 +216,195 @@ func TestSelect_FallbackWhenWindowFull(t *testing.T) {
 		t.Errorf("Select = %d, want fallback 35000", got)
 	}
 }
+
+// --- Choose: the shared stable-port selection policy ----------------------
+//
+// Choose centralizes the (previously duplicated) proxy lifecycle: prefer
+// the persisted control-file port, else the worktree hash port, scan the
+// window when busy, and report WHY the preferred port could not be bound
+// (issue #191) so the caller can log the real bind error (EADDRINUSE vs
+// EPERM) instead of a bare warning. The isFree seam is injectable so the
+// whole window can be simulated without binding real sockets.
+
+// TestChoose_PersistedPreferred asserts Choose prefers the persisted
+// control-file port over the fresh worktree hash (so the port stays stable
+// across runs after the listener is torn down).
+func TestChoose_PersistedPreferred(t *testing.T) {
+	leaf := t.TempDir()
+	if err := WritePreferred(leaf, "choose-port", 31000); err != nil {
+		t.Fatal(err)
+	}
+	port, fallback := Choose("/worktree/feat-a", leaf, "choose-port", IsFree, RandomFree, nil)
+	if port != 31000 {
+		t.Errorf("Choose = %d, want persisted 31000 (file beats hash %d)", port, For("/worktree/feat-a"))
+	}
+	if fallback {
+		t.Error("Choose: persisted preferred port must not be flagged as fallback")
+	}
+}
+
+// TestChoose_HashWhenNoControlFile asserts Choose derives the stable port
+// from the worktree hash when no control file exists (fresh worktree).
+func TestChoose_HashWhenNoControlFile(t *testing.T) {
+	want := For("/worktree/feat-a")
+	port, fallback := Choose("/worktree/feat-a", t.TempDir(), "choose-port", IsFree, RandomFree, nil)
+	if port != want {
+		t.Errorf("Choose = %d, want hash port %d", port, want)
+	}
+	if fallback {
+		t.Error("Choose: hash-derived port must not be flagged as fallback")
+	}
+}
+
+// TestChoose_ScannedNeighborNotFallbackAndPersisted asserts that when the
+// preferred port is busy but a scan neighbor is free, the neighbor is
+// returned with fallback=false (a scanned in-range port is NOT a fallback;
+// the caller persists it — issue #191). The preferred port is forced to
+// 31000 via the control file so the scan deterministically lands on 31002.
+func TestChoose_ScannedNeighborNotFallbackAndPersisted(t *testing.T) {
+	leaf := t.TempDir()
+	if err := WritePreferred(leaf, "choose-port", 31000); err != nil {
+		t.Fatal(err)
+	}
+	busy := map[int]bool{31000: true, 31001: true}
+	isFree := func(p int) error {
+		if busy[p] {
+			return fmt.Errorf("port %d busy", p)
+		}
+		return nil
+	}
+	port, fallback := Choose("/worktree/feat-scan", leaf, "choose-port", isFree, func() int {
+		t.Fatal("fallback must not run when a scan neighbor is free")
+		return 0
+	}, nil)
+	if port != 31002 {
+		t.Errorf("Choose = %d, want scan neighbor 31002", port)
+	}
+	if fallback {
+		t.Error("Choose: scanned in-range neighbor must NOT be flagged as fallback")
+	}
+	// Caller-side outcome: fallback=false is the caller's persistence gate.
+	// With a control leaf wired, the proxy persists the scanned neighbor
+	// (the pure policy above does not write the file; the proxy does).
+	if err := WritePreferred(leaf, "choose-port", port); err != nil {
+		t.Fatal(err)
+	}
+	if got := ReadPreferred(leaf, "choose-port"); got != 31002 {
+		t.Errorf("port file = %d, want scanned neighbor 31002 (scanned neighbor must be persisted)", got)
+	}
+}
+
+// TestChoose_ReportsUnbindablePreferred asserts the reason WHY the
+// preferred port could not be bound is reported through the onReason
+// callback with the actual IsFree error (issue #191: EADDRINUSE vs EPERM
+// vs sandbox-blocked). The preferred port alone being busy must report
+// exactly once, for the preferred port, with the real error.
+func TestChoose_ReportsUnbindablePreferred(t *testing.T) {
+	preferred := For("/worktree/feat-reason")
+	busyErr := fmt.Errorf("listen tcp 127.0.0.1:%d: bind: address already in use", preferred)
+	reported := []int{}
+	var reportedErr error
+	onReason := func(port int, cause error) {
+		reported = append(reported, port)
+		reportedErr = cause
+	}
+	port, fallback := Choose("/worktree/feat-reason", "", "choose-port", func(p int) error {
+		if p == preferred {
+			return busyErr
+		}
+		return nil
+	}, func() int { return 0 }, onReason)
+	if port == 0 || port == preferred {
+		t.Errorf("Choose = %d, want a scanned neighbor (preferred %d busy)", port, preferred)
+	}
+	if fallback {
+		t.Error("Choose: scanned neighbor must not be flagged fallback")
+	}
+	if len(reported) != 1 || reported[0] != preferred {
+		t.Errorf("reason reported for %v, want exactly [%d]", reported, preferred)
+	}
+	if reportedErr != busyErr {
+		t.Errorf("reason error = %v, want the exact IsFree error %v", reportedErr, busyErr)
+	}
+}
+
+// TestChoose_EphemeralFallbackIsFallback asserts a chosen==0 (window full
+// AND random failed) is a TRUE fallback and reports the preferred-port
+// bind failures — the caller must not persist it.
+func TestChoose_EphemeralFallbackIsFallback(t *testing.T) {
+	preferred := For("/worktree/feat-full")
+	cause := fmt.Errorf("simulated EPERM on %d", preferred)
+	port, fallback := Choose("/worktree/feat-full", "", "choose-port",
+		func(int) error { return cause },
+		func() int { return 0 },
+		func(int, error) {})
+	if port != 0 || !fallback {
+		t.Errorf("Choose = %d, fallback %v; want 0,true (window full + random failed)", port, fallback)
+	}
+}
+
+// TestChoose_OutOfRangeRandomIsFallback asserts a random fallback port
+// OUTSIDE [StablePortMin, StablePortMax) is flagged fallback=true so the
+// caller does NOT persist it (an ephemeral fallback must never poison the
+// control file for the next run while a scanned neighbor always does).
+func TestChoose_OutOfRangeRandomIsFallback(t *testing.T) {
+	port, fallback := Choose("/worktree/feat-rand", "", "choose-port",
+		func(int) error { return fmt.Errorf("port busy") },
+		func() int { return 54321 }, nil)
+	if port != 54321 {
+		t.Errorf("Choose = %d, want the injected ephemeral 54321", port)
+	}
+	if !fallback {
+		t.Error("Choose: out-of-range random port must be flagged fallback=true")
+	}
+}
+
+// TestChoose_Wraps asserts the scan wraps at StablePortMax back to
+// StablePortMin when the preferred port sits at the top of the range
+// (identical wrap semantics as Select). The preferred port is forced to
+// the top of the window by pre-seeding the control file: ReadPreferred
+// accepts any in-range port, so the seeded 39999 makes the scan start
+// there and wrap down through the bottom of the range.
+func TestChoose_Wraps(t *testing.T) {
+	leaf := t.TempDir()
+	if err := WritePreferred(leaf, "choose-port", StablePortMax-1); err != nil {
+		t.Fatal(err)
+	}
+	busy := map[int]bool{StablePortMax - 1: true, StablePortMin: true}
+	isFree := func(p int) error {
+		if busy[p] {
+			return fmt.Errorf("port %d busy", p)
+		}
+		return nil
+	}
+	port, fallback := Choose("/worktree/feat-wrap", leaf, "choose-port", isFree, func() int {
+		t.Fatal("fallback must not run")
+		return 0
+	}, nil)
+	if port != StablePortMin+1 {
+		t.Errorf("Choose = %d, want %d (wrap to bottom of range)", port, StablePortMin+1)
+	}
+	if fallback {
+		t.Error("Choose: wrapped scanned neighbor must not be flagged fallback")
+	}
+}
+
+// TestChoose_LegacyEmptyWorktreePath asserts the legacy random-port path:
+// an empty worktree path returns 0, not-fallback, without touching the
+// control file (the documented v1 behavior for callers that did not wire
+// the worktree).
+func TestChoose_LegacyEmptyWorktreePath(t *testing.T) {
+	leaf := t.TempDir()
+	if err := WritePreferred(leaf, "choose-port", 31000); err != nil {
+		t.Fatal(err)
+	}
+	port, fallback := Choose("", leaf, "choose-port",
+		func(int) error { t.Fatal("isFree must not be consulted"); return nil },
+		func() int { t.Fatal("random fallback must not be consulted"); return 0 }, nil)
+	if port != 0 || fallback {
+		t.Errorf("Choose = %d, fallback %v; want 0,false (legacy random-port path)", port, fallback)
+	}
+	if got := ReadPreferred(leaf, "choose-port"); got != 31000 {
+		t.Errorf("legacy path must not touch the control file: ReadPreferred = %d, want 31000", got)
+	}
+}

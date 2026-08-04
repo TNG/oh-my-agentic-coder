@@ -111,6 +111,67 @@ func RandomFree() int {
 	return port
 }
 
+// Choose applies the SHARED stable-port selection policy used by both
+// proxies (credproxy and containerproxy). It prefers, in order: (1) a
+// previously-assigned port persisted at <leaf>/.omac-control/<name> (so
+// the port stays stable even after the listener is torn down between
+// runs); (2) a fresh stable port derived from the worktree path; (3) a
+// scanned in-range neighbor when the preferred port is busy; (4) a
+// fallback random ephemeral port when the whole stable window is
+// occupied.
+//
+// The returned fallback flag is true ONLY for a true out-of-range
+// ephemeral result (chosen == 0 or chosen outside [StablePortMin,
+// StablePortMax)): the caller must NOT persist such a port (it would
+// poison the control file for the next run). A scanned in-range neighbor
+// is NOT a fallback and IS persisted (issue #191).
+//
+// A worktreePath of "" preserves the legacy random-port behavior: the
+// caller binds 127.0.0.1:0 itself and the control file is never touched.
+//
+// onReason reports why a candidate could not be bound, with the actual
+// listen error from isFree (issue #191: EADDRINUSE vs EPERM vs
+// sandbox-blocked). It is called once per failed candidate, first for the
+// preferred port, so the caller can surface the FIRST reason in a single
+// log line. isFree and fallbackRandom are injectable so tests can
+// simulate a fully-occupied window without binding real sockets.
+func Choose(worktreePath, leaf, name string, isFree func(int) error, fallbackRandom func() int, onReason func(int, error)) (port int, fallback bool) {
+	if worktreePath == "" {
+		// Legacy random-port behavior preserved for callers that did not
+		// wire the worktree path.
+		return 0, false
+	}
+	preferred := 0
+	if leaf != "" {
+		preferred = ReadPreferred(leaf, name)
+	}
+	if preferred == 0 {
+		preferred = For(worktreePath)
+	}
+	chosen := Select(preferred, func(p int) error {
+		if err := isFree(p); err != nil {
+			if onReason != nil {
+				onReason(p, err)
+			}
+			return err
+		}
+		return nil
+	}, fallbackRandom)
+	if chosen == 0 {
+		// stableport.Select exhausted the window AND the random fallback
+		// failed. Let the kernel pick (callers retry on 127.0.0.1:0).
+		return 0, true
+	}
+	// "Fallback" means we are outside the stable port window
+	// [StablePortMin, StablePortMax) — i.e. a random kernel-assigned port.
+	// A scanned neighbor inside the window is NOT a fallback: it is
+	// persisted so the next run prefers exactly what this run bound,
+	// breaking the permanent warn-loop (issue #191). A true out-of-window
+	// random port is NOT persisted because it would poison the control
+	// file for the next run.
+	return chosen, chosen < StablePortMin || chosen >= StablePortMax
+}
+
 // --- control-state port file --------------------------------------------
 //
 // The assigned port is recorded at <leaf>/.omac-control/<name> so the next
