@@ -268,11 +268,35 @@ func newDevNull(t *testing.T) *os.File {
 // that mode blocks RemoveAll, so every cli test that builds a leaf via
 // prepareBuildCache/runBuild/runBuildStop must register this cleanup.
 // cacheDir is the resolved OMAC cache scope dir (prepareBuildCache's
-// first return). Best-effort: a missing init.d is silently skipped.
+// first return), OR the HOME dir of a subprocess omac binary (the
+// subprocess resolves the global scope at $HOME/.cache/omac/<digest>, so
+// the caller passes the subprocess HOME when it cannot know the resolved
+// scope dir up front). Best-effort: a missing init.d is silently skipped.
 func chmodBuildLeafInitDForCleanup(t *testing.T, cacheDir string) {
 	t.Helper()
-	leaf := filepath.Join(cacheDir, "gradle")
-	t.Cleanup(func() { _ = os.Chmod(filepath.Join(leaf, "init.d"), 0o755) })
+	t.Cleanup(func() {
+		leaf := filepath.Join(cacheDir, "gradle")
+		// A subprocess omac binary never resolves the scope in the test
+		// process; it uses os.UserHomeDir() of ITS env (the passed HOME), which
+		// puts the leaf at $HOME/.cache/omac/<digest>/gradle. Fall back to
+		// that layout when the direct leaf does not exist.
+		if _, err := os.Stat(leaf); err != nil {
+			home := cacheDir
+			if entries, rerr := os.ReadDir(filepath.Join(home, ".cache", "omac")); rerr == nil {
+				for _, e := range entries {
+					if !e.IsDir() {
+						continue
+					}
+					candidate := filepath.Join(home, ".cache", "omac", e.Name(), "gradle", "init.d")
+					if info, serr := os.Stat(candidate); serr == nil && info.IsDir() {
+						leaf = filepath.Dir(candidate)
+						break
+					}
+				}
+			}
+		}
+		_ = os.Chmod(filepath.Join(leaf, "init.d"), 0o755)
+	})
 }
 
 // TestDaemonRecycle_ErrorLogsButBuildContinues asserts that a failing

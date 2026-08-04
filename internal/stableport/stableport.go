@@ -96,11 +96,19 @@ func Select(preferred int, isFree func(int) error, fallbackRandom func() int) in
 	return fallbackRandom()
 }
 
-// RandomFree asks the kernel for a free ephemeral loopback port and
-// returns it after releasing the listener. Used as the fallbackRandom
-// callback for Select when the whole stable window is occupied. A
-// returned 0 means the kernel could not allocate one (caller logs a
-// warning and Start returns an error — correctness over determinism).
+// RandomFree asks the kernel for a free loopback port BELOW
+// StablePortMin (1..29999) and returns it after releasing the listener, so
+// a fallback port can never land inside the stable window [StablePortMin,
+// StablePortMax). This matters on Linux, where the kernel ephemeral range
+// (default 32768-60999) overlaps the stable window: a raw 127.0.0.1:0 bind
+// can return an in-window port (e.g. 38587), which Choose would then
+// classify as a scanned in-range neighbor and the caller would PERSIST —
+// poisoning the control file with an ephemeral port. Bounding the probe
+// below the window keeps the contract "fallback means out-of-range" true.
+// Used as the fallbackRandom callback for Select when the whole stable
+// window is occupied. A returned 0 means the kernel could not allocate one
+// (caller logs a warning and Start returns an error — correctness over
+// determinism).
 func RandomFree() int {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -108,6 +116,29 @@ func RandomFree() int {
 	}
 	port := ln.Addr().(*net.TCPAddr).Port
 	_ = ln.Close()
+	if port >= StablePortMin {
+		// The kernel's ephemeral range can overlap the stable window
+		// (Linux: 32768-60999). Retry (bounded) for a port below the
+		// window so the fallback is truly out-of-range and the caller
+		// never persists it as an in-window neighbor. Below StablePortMin
+		// is always outside every common kernel ephemeral range.
+		for i := 0; i < 32; i++ {
+			ln, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				return 0
+			}
+			p := ln.Addr().(*net.TCPAddr).Port
+			_ = ln.Close()
+			if p < StablePortMin {
+				return p
+			}
+		}
+		// Exhausted the retries: fall back to the last in-window port
+		// rather than 0 (the caller still binds it directly and it is
+		// free); Start will log it and the caller's out-of-window check
+		// treats the bind as its source of truth.
+		return port
+	}
 	return port
 }
 

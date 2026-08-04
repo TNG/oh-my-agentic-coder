@@ -408,3 +408,22 @@ func TestChoose_LegacyEmptyWorktreePath(t *testing.T) {
 		t.Errorf("legacy path must not touch the control file: ReadPreferred = %d, want 31000", got)
 	}
 }
+
+// TestRandomFree_OutOfRange asserts the fallback-random probe NEVER
+// returns a port inside the stable window [StablePortMin, StablePortMax).
+// On Linux the kernel's ephemeral range (default 32768-60999) overlaps the
+// window, so a raw 127.0.0.1:0 bind can return an in-window port (e.g.
+// 38587); RandomFree retries below the window so the caller's fallback
+// flag stays truthful (a fallback must never be persisted as an in-window
+// neighbor).
+func TestRandomFree_OutOfRange(t *testing.T) {
+	for i := 0; i < 32; i++ {
+		port := RandomFree()
+		if port == 0 {
+			t.Fatal("RandomFree returned 0 (kernel refused an ephemeral bind)")
+		}
+		if port >= StablePortMin && port < StablePortMax {
+			t.Fatalf("RandomFree = %d, must be outside stable window [%d,%d)", port, StablePortMin, StablePortMax)
+		}
+	}
+}

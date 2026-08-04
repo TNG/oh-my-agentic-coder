@@ -227,6 +227,18 @@ func RunBuild(opts RunOptions) (int, error) {
 		}
 		select {
 		case err := <-waitErr:
+			// The child reaped. A FORCED kill may have fired in the same
+			// instant (stageKill delivers SIGKILL, then closes forcedCh);
+			// if both are ready the select may have landed here instead of
+			// the stageKillCh arm, so pick up a pending forced kill
+			// non-blockingly before declaring the build done — otherwise
+			// the daemon would be recycled only when the select happened
+			// to see stageKillCh first (S3 daemon-recycle gap).
+			select {
+			case <-stageKillCh:
+				forced = true
+			default:
+			}
 			childDone = true
 			childErr = err
 			close(childReaped)
