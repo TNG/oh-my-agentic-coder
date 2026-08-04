@@ -528,11 +528,23 @@ func TestStart_LegacyRandomPortWhenNoWorktree(t *testing.T) {
 // the fallback path skips WritePreferred — the port file is NOT written
 // despite a non-nil ControlLeaf. This prevents a fallback ephemeral port
 // from poisoning the control file for the next run (ticket 03).
+//
+// A full window is the test's precondition: any port in it that cannot be
+// bound (a stray listener, e.g. another process on the shared CI host)
+// leaves a hole Select can legitimately land on as an in-window neighbor,
+// which Start then persists — invalidating the "no port file" assertion.
+// The window is therefore occupied until every slot is held; when a stray
+// port makes that impossible (rare), the test skips like
+// TestStart_FallbackRandomWhenWindowFull rather than asserting against a
+// broken precondition.
 func TestStart_ControlFileNotPersistedOnFallback(t *testing.T) {
 	worktree := "/worktree/feat-fallback"
 	busy := stableport.For(worktree)
 	// Occupy the stable port + the full scan window so every neighbour is
-	// held and Select must fall back to RandomFree.
+	// held and Select must fall back to RandomFree. The window must be
+	// COMPLETE: a hole would let Select choose an in-window neighbor,
+	// which Start persists (issue #191 semantics) and the assertion below
+	// would fail against a stray port on the host.
 	held := make([]net.Listener, 0, stableport.PortScanWindow+1)
 	for i := 0; i <= stableport.PortScanWindow; i++ {
 		p := busy + i
@@ -541,8 +553,10 @@ func TestStart_ControlFileNotPersistedOnFallback(t *testing.T) {
 		}
 		occ, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", p))
 		if err != nil {
-			t.Logf("neighbor %d unoccupiable (%v) — window has a free slot, test precondition not met", p, err)
-			continue
+			for _, l := range held {
+				_ = l.Close()
+			}
+			t.Skipf("could not occupy the full scan window (port %d already in use: %v); cannot deterministically force the random fallback", p, err)
 		}
 		held = append(held, occ)
 	}
