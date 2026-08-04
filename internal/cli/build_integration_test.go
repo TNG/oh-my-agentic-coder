@@ -48,6 +48,7 @@ func TestBuildHarnessIndependence(t *testing.T) {
 	// (proves env construction is identical across harness flavors).
 	wt := t.TempDir()
 	cacheHome := t.TempDir()
+	chmodBuildLeafInitDForCleanup(t, cacheHome)
 	wrapper := "#!/bin/sh\necho \"GUH-SET=${GRADLE_USER_HOME:+yes}\"\necho \"HOME-AWARE=${HOME:-unset}\"\nexit 0\n"
 	if err := os.WriteFile(filepath.Join(wt, "gradlew"), []byte(wrapper), 0o755); err != nil {
 		t.Fatal(err)
@@ -185,9 +186,11 @@ func TestBuildStreaming(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(wt, "gradlew"), []byte(wrapper), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	cacheHome := t.TempDir()
+	chmodBuildLeafInitDForCleanup(t, cacheHome)
 	cmd := exec.Command(bin, "build", "--root", ".", "--", "gradle")
 	cmd.Dir = wt
-	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + t.TempDir()}
+	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + cacheHome}
 	pr, err := cmd.StdoutPipe()
 	if err != nil {
 		t.Fatal(err)
@@ -226,9 +229,11 @@ func TestBuildCancellation(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(wt, "gradlew"), []byte(wrapper), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	cacheHome := t.TempDir()
+	chmodBuildLeafInitDForCleanup(t, cacheHome)
 	cmd := exec.Command(bin, "build", "--root", ".", "--", "gradle")
 	cmd.Dir = wt
-	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + t.TempDir()}
+	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + cacheHome}
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 	if err := cmd.Start(); err != nil {
