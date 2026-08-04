@@ -41,7 +41,7 @@ omac register <skill>
 
 # 5. Launch — default sandbox (Seatbelt/bwrap) + default harness (opencode)
 #    (omac's built-in skills are auto-provisioned on launch; no extra step)
-#    Harness options: opencode (oc), claude (cc), codex (cx), copilot (co), pi
+#    Harness options: opencode (oc), claude (cc), codex (cx), copilot (co), pi, codewhale (cw)
 omac start
 ```
 
@@ -62,12 +62,13 @@ omac start claude     # Claude Code
 omac start codex      # OpenAI Codex CLI
 omac start copilot    # GitHub Copilot CLI
 omac start pi         # Pi (pi.dev)
+omac start codewhale  # CodeWhale (bring-your-own-model)
 omac serve claude     # multi-directory server, Claude Code harness
 ```
 
 Supported harnesses (and aliases): `opencode` (`oc`), `claude-code`
-(`claude`, `cc`), `codex` (`cx`), `copilot` (`co`), `pi`. Omitting the
-token defaults to `opencode`. An unknown token is rejected with the list
+(`claude`, `cc`), `codex` (`cx`), `copilot` (`co`), `pi`, `codewhale`
+(`cw`). Omitting the token defaults to `opencode`. An unknown token is rejected with the list
 of supported names. Inner arguments that happen to be barewords go after
 `--` (e.g. `omac start claude -- --model sonnet`).
 
@@ -104,7 +105,7 @@ omac resume claude     # ...with Claude Code
 `omac continue` re-enters the most recent session for this folder. Pass
 `-s`/`--session <id>` to target a specific session non-interactively
 (opencode `--session <id>`, claude `--resume <id>`, codex `resume <id>`,
-copilot `--session-id <id>`, pi `--session <id>`). After the inner command
+copilot `--session-id <id>`, pi `--session <id>`, codewhale `--resume <id>`). After the inner command
 exits, omac prints a one-line hint with the most recent session id:
 
 ```

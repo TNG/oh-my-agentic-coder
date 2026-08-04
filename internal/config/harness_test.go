@@ -135,7 +135,7 @@ func TestServerLaunchListenPort(t *testing.T) {
 	if oc.ServerLaunch.AuthEnvVar != "OPENCODE_SERVER_PASSWORD" {
 		t.Errorf("opencode ServerLaunch.AuthEnvVar = %q, want OPENCODE_SERVER_PASSWORD", oc.ServerLaunch.AuthEnvVar)
 	}
-	for _, name := range []string{"claude-code", "codex", "copilot", "pi"} {
+	for _, name := range []string{"claude-code", "codex", "copilot", "pi", "codewhale"} {
 		h, _ := LookupHarness(name)
 		if h.ServerLaunch != nil {
 			t.Errorf("%s unexpectedly declares a ServerLaunch (%+v)", name, h.ServerLaunch)
@@ -216,7 +216,7 @@ func TestHarnessSandboxEnvAllowIsSafe(t *testing.T) {
 // auth declares the specific key in the profile's allow_vars, so omac does not
 // blindly push every third-party key into the sandbox.
 func TestHarnessAuthForwardPolicy(t *testing.T) {
-	multiProvider := map[string]bool{"opencode": true, "pi": true}
+	multiProvider := map[string]bool{"opencode": true, "pi": true, "codewhale": true}
 	for _, h := range AllHarnesses() {
 		if multiProvider[h.Name] {
 			if len(h.SandboxEnvAllow) != 0 {
@@ -838,5 +838,140 @@ func TestPiSystemContextArgsNil(t *testing.T) {
 	}
 	if h.BriefingEnvFunc != nil {
 		t.Error("pi BriefingEnvFunc should be nil (briefing via OMAC_SANDBOX_BRIEFING + TS extension)")
+	}
+}
+
+// --- CodeWhale harness descriptor --------------------------------------------
+
+func TestLookupCodewhaleHarness(t *testing.T) {
+	cases := []struct {
+		in       string
+		wantName string
+		wantOK   bool
+	}{
+		{"codewhale", "codewhale", true},
+		{"CodeWhale", "codewhale", true},
+		{"cw", "codewhale", true},
+		{"CW", "codewhale", true},
+	}
+	for _, c := range cases {
+		h, ok := LookupHarness(c.in)
+		if ok != c.wantOK {
+			t.Errorf("LookupHarness(%q) ok=%v, want %v", c.in, ok, c.wantOK)
+			continue
+		}
+		if ok && h.Name != c.wantName {
+			t.Errorf("LookupHarness(%q) name=%q, want %q", c.in, h.Name, c.wantName)
+		}
+	}
+}
+
+func TestCodewhaleHarnessDescriptor(t *testing.T) {
+	h, ok := LookupHarness("codewhale")
+	if !ok {
+		t.Fatal("codewhale harness not registered")
+	}
+	if !reflect.DeepEqual(h.InnerCmd, []string{"codewhale"}) {
+		t.Errorf("codewhale InnerCmd = %v, want [codewhale]", h.InnerCmd)
+	}
+	if h.ServerLaunch != nil {
+		t.Errorf("codewhale ServerLaunch = %v, want nil", h.ServerLaunch)
+	}
+	// CodeWhale owns the shared "agents" base, not a "codewhale" base:
+	// CodeWhale reads workspace .agents/skills, not .codewhale/skills.
+	if h.SkillsBase != SharedSkillsBase {
+		t.Errorf("codewhale SkillsBase = %q, want %q", h.SkillsBase, SharedSkillsBase)
+	}
+	if got := h.WorkdirSkillsDir(); got != ".agents/skills" {
+		t.Errorf("codewhale WorkdirSkillsDir = %q, want .agents/skills", got)
+	}
+	if h.UserConfigHome != ".codewhale" {
+		t.Errorf("codewhale UserConfigHome = %q, want .codewhale", h.UserConfigHome)
+	}
+	if h.HomeEnv != "CODEWHALE_HOME" {
+		t.Errorf("codewhale HomeEnv = %q, want CODEWHALE_HOME", h.HomeEnv)
+	}
+	if !reflect.DeepEqual(h.SandboxDirs, []string{"~/.codewhale"}) {
+		t.Errorf("codewhale SandboxDirs = %v, want [~/.codewhale]", h.SandboxDirs)
+	}
+	// Multi-provider: omac auto-forwards no provider keys (see
+	// TestHarnessAuthForwardPolicy).
+	if len(h.SandboxEnvAllow) != 0 {
+		t.Errorf("codewhale SandboxEnvAllow = %v, want empty (multi-provider)", h.SandboxEnvAllow)
+	}
+}
+
+func TestCodewhaleSessionMetadata(t *testing.T) {
+	h, ok := LookupHarness("codewhale")
+	if !ok {
+		t.Fatal("codewhale harness not registered")
+	}
+	if h.Session == nil {
+		t.Fatal("codewhale Session is nil, want session metadata")
+	}
+	if !reflect.DeepEqual(h.Session.ContinueArgs, []string{"--continue"}) {
+		t.Errorf("codewhale ContinueArgs = %v, want [--continue]", h.Session.ContinueArgs)
+	}
+	// resume is a top-level subcommand, not a --resume flag (see descriptor).
+	if got := h.Session.ResumeByIDArgs("abc123"); !reflect.DeepEqual(got, []string{"resume", "abc123"}) {
+		t.Errorf("codewhale ResumeByIDArgs = %v, want [resume abc123]", got)
+	}
+	if h.Session.ListKind != SessionListCodewhale {
+		t.Errorf("codewhale ListKind = %v, want SessionListCodewhale", h.Session.ListKind)
+	}
+}
+
+func TestCodewhaleConfigHome(t *testing.T) {
+	h, _ := LookupHarness("codewhale")
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(home, ".codewhale"); h.ConfigHome() != want {
+		t.Errorf("codewhale ConfigHome() = %q, want %q", h.ConfigHome(), want)
+	}
+}
+
+func TestCodewhaleConfigHomeEnvOverride(t *testing.T) {
+	h, _ := LookupHarness("codewhale")
+	t.Setenv("CODEWHALE_HOME", "/custom/codewhale")
+	if got := h.ConfigHome(); got != "/custom/codewhale" {
+		t.Errorf("codewhale ConfigHome() with CODEWHALE_HOME set = %q, want /custom/codewhale", got)
+	}
+}
+
+// TestCodewhaleBriefingFileFunc verifies the file-based briefing delivery:
+// it writes .codewhale/rules/omac-sandbox-briefing.md (loaded additively and
+// unconditionally by CodeWhale, unlike the shadowable .codewhale/instructions.md)
+// and returns that workdir-relative path so the launcher can clean it up.
+func TestCodewhaleBriefingFileFunc(t *testing.T) {
+	h, ok := LookupHarness("codewhale")
+	if !ok {
+		t.Fatal("codewhale harness not registered")
+	}
+	if h.SystemContextArgs != nil {
+		t.Error("codewhale SystemContextArgs should be nil (no system-prompt flag exists)")
+	}
+	if h.BriefingEnvFunc != nil {
+		t.Error("codewhale BriefingEnvFunc should be nil (briefing via a rules file)")
+	}
+	if h.BriefingFileFunc == nil {
+		t.Fatal("codewhale BriefingFileFunc is nil; want a workdir file writer")
+	}
+	workdir := t.TempDir()
+	rel, err := h.BriefingFileFunc("BRIEF", workdir)
+	if err != nil {
+		t.Fatalf("BriefingFileFunc error: %v", err)
+	}
+	want := filepath.Join(".codewhale", "rules", "omac-sandbox-briefing.md")
+	if rel != want {
+		t.Errorf("BriefingFileFunc rel = %q, want %q", rel, want)
+	}
+	data, err := os.ReadFile(filepath.Join(workdir, rel))
+	if err != nil {
+		t.Fatalf("briefing file not written: %v", err)
+	}
+	if string(data) != "BRIEF" {
+		t.Errorf("briefing file = %q, want %q", string(data), "BRIEF")
 	}
 }

@@ -39,7 +39,7 @@ on:
         type: boolean
         default: true
       model:
-        description: 'Model id for EVERY harness, for THIS RUN ONLY. Leave empty to use each harness''s pin in internal/e2e/versions.go (opencode/codex/copilot/pi: zai-org/GLM-5.2, claude-code: claude-sonnet-5)'
+        description: 'Model id for EVERY harness, for THIS RUN ONLY. Leave empty to use each harness''s pin in internal/e2e/versions.go (opencode/codex/copilot/pi/codewhale: zai-org/GLM-5.2-TEE, claude-code: claude-sonnet-5)'
         type: string
         default: ''
       claude_code_model:
@@ -95,7 +95,7 @@ jobs:
             echo ""
             echo "| Harness | Model |"
             echo "|---|---|"
-            echo "| opencode, codex, copilot, pi | \`$gateway\` |"
+            echo "| opencode, codex, copilot, pi, codewhale | \`$gateway\` |"
             echo "| claude-code | \`${{ steps.probe.outputs.claude_code }}\` |"
             echo ""
             echo "Probed: \`${{ steps.probe.outputs.candidates }}\`"
@@ -112,7 +112,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
-        harness: [opencode, claude-code, codex, copilot, pi]
+        harness: [opencode, claude-code, codex, copilot, pi, codewhale]
         # Two omac versions: main (built from source) and release (the latest
         # published binary — what users actually run). The contract stage is
         # identical across both (it's compiled from source), but launch + llm
@@ -121,9 +121,13 @@ jobs:
         omac: [main, release]
         exclude:
           # codex's Rust HTTP client is incompatible with the macOS Seatbelt
-          # sandbox (see e2e.yml / issue #48).
+          # sandbox (see e2e.yml / issue #48). codewhale is excluded on macOS
+          # by analogy (also a Rust CLI with its own HTTP client) — unverified,
+          # re-test and drop if it works.
           - os: macos-latest
             harness: codex
+          - os: macos-latest
+            harness: codewhale
     runs-on: ${{ matrix.os }}
     concurrency:
       group: e2e-smoke-${{ matrix.os }}-${{ matrix.harness }}-${{ matrix.omac }}
@@ -142,6 +146,7 @@ jobs:
       E2E_MODEL_CODEX: ${{ needs.model.outputs.gateway }}
       E2E_MODEL_COPILOT: ${{ needs.model.outputs.gateway }}
       E2E_MODEL_PI: ${{ needs.model.outputs.gateway }}
+      E2E_MODEL_CODEWHALE: ${{ needs.model.outputs.gateway }}
       E2E_MODEL_CLAUDE_CODE: ${{ needs.model.outputs.claude_code }}
       E2E_CONTEXT_LIMIT: ${{ github.event.inputs.context_limit }}
     steps:

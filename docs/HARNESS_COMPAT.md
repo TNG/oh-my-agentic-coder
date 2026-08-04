@@ -1,6 +1,6 @@
 # Harness compatibility tracking
 
-omac supports several inner harnesses (opencode, claude-code, codex, copilot, pi).
+omac supports several inner harnesses (opencode, claude-code, codex, copilot, pi, codewhale).
 A harness release can silently break omac by renaming a CLI flag, moving a
 subcommand, or changing a config schema. The weekly
 [`E2E: drift` workflow](../.github/workflows/e2e-smoke.yml) (also manually
@@ -16,7 +16,9 @@ from source) and `release` (the latest published binary, i.e. what users run):
 | `llm` | A **single lightweight** agent turn (echo-rest) — confirms the model auth/proxy path and sidecar facade. Run for every harness, claude-code included. The heavy multi-probe security-audit stays in the pinned weekly `E2E: full`. | yes |
 
 `✅` pass · `❌` fail · `➖` not run / not applicable. The matrix is
-`harness × os × omac{main,release}` (codex/macOS excluded), and rows are sorted
+`harness × os × omac{main,release}` (codex and codewhale excluded on macOS —
+both are Rust CLIs with the Seatbelt-incompatible HTTP-client class; codewhale
+by analogy, unverified), and rows are sorted
 newest-first, then grouped by omac version, OS, and harness.
 
 Every row also records the **model** the leg resolved, taken from the test's own

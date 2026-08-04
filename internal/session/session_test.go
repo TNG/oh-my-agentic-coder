@@ -1,6 +1,7 @@
 package session
 
 import (
+	"database/sql"
 	"errors"
 	"os"
 	"os/exec"
@@ -23,12 +24,12 @@ func opencodeHarness(t *testing.T) config.Harness {
 
 func TestListUnsupported(t *testing.T) {
 	// Harness with no Session block.
-	if _, err := list(config.Harness{}, "/w", nil, "", "", "", "", "", ""); !errors.Is(err, ErrUnsupported) {
+	if _, err := list(config.Harness{}, "/w", nil, "", "", "", "", "", "", ""); !errors.Is(err, ErrUnsupported) {
 		t.Errorf("nil Session: err = %v, want ErrUnsupported", err)
 	}
 	// Harness whose Session declares no listing strategy.
 	h := config.Harness{Session: &config.HarnessSession{ListKind: config.SessionListNone}}
-	if _, err := list(h, "/w", nil, "", "", "", "", "", ""); !errors.Is(err, ErrUnsupported) {
+	if _, err := list(h, "/w", nil, "", "", "", "", "", "", ""); !errors.Is(err, ErrUnsupported) {
 		t.Errorf("SessionListNone: err = %v, want ErrUnsupported", err)
 	}
 }
@@ -42,7 +43,7 @@ func TestListOpenCodeParseAndFilter(t *testing.T) {
 			{"id":"ses_other","title":"elsewhere","updated":3000,"directory":"/home/u/other"}
 		]`), nil
 	}
-	got, err := list(opencodeHarness(t), wd, run, "", "", "", "", "", "")
+	got, err := list(opencodeHarness(t), wd, run, "", "", "", "", "", "", "")
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -59,7 +60,7 @@ func TestListOpenCodeParseAndFilter(t *testing.T) {
 
 func TestListOpenCodeCLIFailureIsEmpty(t *testing.T) {
 	run := func(name string, args ...string) ([]byte, error) { return nil, errors.New("not found") }
-	got, err := list(opencodeHarness(t), "/w", run, "", "", "", "", "", "")
+	got, err := list(opencodeHarness(t), "/w", run, "", "", "", "", "", "", "")
 	if err != nil {
 		t.Fatalf("CLI failure should not error, got %v", err)
 	}
@@ -256,14 +257,14 @@ func copilotHarness(t *testing.T) config.Harness {
 func TestListCodexDispatchesNotUnsupported(t *testing.T) {
 	// Even with empty paths, codex listing must NOT return ErrUnsupported —
 	// it dispatches to the codex backend (which returns nil best-effort).
-	_, err := list(codexHarness(t), "/w", nil, "", "", "", "", "", "")
+	_, err := list(codexHarness(t), "/w", nil, "", "", "", "", "", "", "")
 	if errors.Is(err, ErrUnsupported) {
 		t.Errorf("codex listing returned ErrUnsupported, want dispatch (err=%v)", err)
 	}
 }
 
 func TestListCopilotDispatchesNotUnsupported(t *testing.T) {
-	_, err := list(copilotHarness(t), "/w", nil, "", "", "", "", "", "")
+	_, err := list(copilotHarness(t), "/w", nil, "", "", "", "", "", "", "")
 	if errors.Is(err, ErrUnsupported) {
 		t.Errorf("copilot listing returned ErrUnsupported, want dispatch (err=%v)", err)
 	}
@@ -272,7 +273,7 @@ func TestListCopilotDispatchesNotUnsupported(t *testing.T) {
 func TestListCodexMissingStoreIsEmpty(t *testing.T) {
 	// No codex session store at the given root → nil, no error.
 	root := filepath.Join(t.TempDir(), "no-sessions-dir")
-	got, err := list(codexHarness(t), "/w", nil, "", "", root, "", "", "")
+	got, err := list(codexHarness(t), "/w", nil, "", "", root, "", "", "", "")
 	if err != nil {
 		t.Fatalf("codex missing store: err = %v, want nil", err)
 	}
@@ -284,7 +285,7 @@ func TestListCodexMissingStoreIsEmpty(t *testing.T) {
 func TestListCopilotMissingDBIsEmpty(t *testing.T) {
 	// No copilot session-store.db → nil, no error.
 	dbPath := filepath.Join(t.TempDir(), "nope.db")
-	got, err := list(copilotHarness(t), "/w", nil, "", "", "", dbPath, "", "")
+	got, err := list(copilotHarness(t), "/w", nil, "", "", "", dbPath, "", "", "")
 	if err != nil {
 		t.Fatalf("copilot missing db: err = %v, want nil", err)
 	}
@@ -429,7 +430,7 @@ func piHarness(t *testing.T) config.Harness {
 }
 
 func TestListPiDispatchesNotUnsupported(t *testing.T) {
-	_, err := list(piHarness(t), "/w", nil, "", "", "", "", "", "")
+	_, err := list(piHarness(t), "/w", nil, "", "", "", "", "", "", "")
 	if errors.Is(err, ErrUnsupported) {
 		t.Errorf("pi listing returned ErrUnsupported, want dispatch (err=%v)", err)
 	}
@@ -437,7 +438,7 @@ func TestListPiDispatchesNotUnsupported(t *testing.T) {
 
 func TestListPiMissingStoreIsEmpty(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "no-sessions-dir")
-	got, err := list(piHarness(t), "/w", nil, "", "", "", "", "", root)
+	got, err := list(piHarness(t), "/w", nil, "", "", "", "", "", root, "")
 	if err != nil {
 		t.Fatalf("pi missing store: err = %v, want nil", err)
 	}
@@ -504,6 +505,105 @@ func TestListPiMissingCwdIncluded(t *testing.T) {
 	}
 	if got[0].ID != "nocwd" {
 		t.Errorf("ID = %q, want 'nocwd'", got[0].ID)
+	}
+}
+
+// --- CodeWhale session listing ----------------------------------------------
+
+func codewhaleHarness(t *testing.T) config.Harness {
+	t.Helper()
+	h, ok := config.LookupHarness("codewhale")
+	if !ok {
+		t.Fatal("codewhale harness not registered")
+	}
+	return h
+}
+
+func TestListCodewhaleDispatchesNotUnsupported(t *testing.T) {
+	_, err := list(codewhaleHarness(t), "/w", nil, "", "", "", "", "", "", "")
+	if errors.Is(err, ErrUnsupported) {
+		t.Errorf("codewhale listing returned ErrUnsupported, want dispatch (err=%v)", err)
+	}
+}
+
+func TestListCodewhaleMissingDBIsEmpty(t *testing.T) {
+	if got := listCodewhale("/w", filepath.Join(t.TempDir(), "nope.db")); got != nil {
+		t.Errorf("missing db should yield nil, got %+v", got)
+	}
+}
+
+type cwThreadRow struct {
+	ID, Title, Preview string
+	Updated            int64 // epoch seconds
+	CWD                string
+	Archived           int
+}
+
+// createCodewhaleThreads writes a minimal state.db mirroring the subset of
+// CodeWhale's `threads` schema that listCodewhale reads. It uses the in-process
+// modernc.org/sqlite driver (registered by the session package), so the test
+// needs no external sqlite3 binary. A row with an empty Title is stored as SQL
+// NULL, exercising the title→preview label fallback.
+func createCodewhaleThreads(t *testing.T, dbPath string, rows []cwThreadRow) {
+	t.Helper()
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`CREATE TABLE threads (
+		id TEXT PRIMARY KEY,
+		preview TEXT NOT NULL,
+		updated_at INTEGER NOT NULL,
+		cwd TEXT NOT NULL,
+		title TEXT,
+		archived INTEGER NOT NULL DEFAULT 0
+	)`); err != nil {
+		t.Fatalf("create threads: %v", err)
+	}
+	for _, r := range rows {
+		var title any
+		if r.Title != "" {
+			title = r.Title
+		} // else nil -> NULL
+		if _, err := db.Exec(
+			"INSERT INTO threads (id, preview, updated_at, cwd, title, archived) VALUES (?, ?, ?, ?, ?, ?)",
+			r.ID, r.Preview, r.Updated, r.CWD, title, r.Archived,
+		); err != nil {
+			t.Fatalf("insert %s: %v", r.ID, err)
+		}
+	}
+}
+
+func TestListCodewhaleParseAndFilter(t *testing.T) {
+	db := filepath.Join(t.TempDir(), "state.db")
+	const wd = "/home/u/proj"
+	createCodewhaleThreads(t, db, []cwThreadRow{
+		{ID: "t_new", Title: "newest", Preview: "pv", Updated: 2000, CWD: wd},
+		// NULL title -> label falls back to preview.
+		{ID: "t_old", Title: "", Preview: "old preview", Updated: 1000, CWD: wd},
+		// Different workdir -> excluded.
+		{ID: "t_other", Title: "elsewhere", Preview: "pv", Updated: 3000, CWD: "/home/u/other"},
+		// Archived in this workdir, most recent -> must be excluded so it never
+		// becomes the "resume this session" id.
+		{ID: "t_arch", Title: "archived", Preview: "pv", Updated: 9000, CWD: wd, Archived: 1},
+	})
+	got := listCodewhale(wd, db)
+	if len(got) != 2 {
+		t.Fatalf("got %d sessions, want 2 (workdir + non-archived): %+v", len(got), got)
+	}
+	if got[0].ID != "t_new" || got[1].ID != "t_old" {
+		t.Errorf("order = [%s,%s], want newest-first [t_new,t_old]", got[0].ID, got[1].ID)
+	}
+	if got[0].Title != "newest" {
+		t.Errorf("t_new Title = %q, want %q", got[0].Title, "newest")
+	}
+	if got[1].Title != "old preview" {
+		t.Errorf("t_old Title = %q, want preview fallback %q", got[1].Title, "old preview")
+	}
+	// updated_at is epoch SECONDS (Utc::now().timestamp()).
+	if !got[0].When.Equal(time.Unix(2000, 0)) {
+		t.Errorf("t_new When = %v, want epoch-seconds 2000", got[0].When)
 	}
 }
 

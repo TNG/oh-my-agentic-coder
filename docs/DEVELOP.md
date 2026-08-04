@@ -95,7 +95,9 @@ as an opaque harness failure ten minutes into a run:
   run overflows mid-turn. It defaults to 100000 — safely under every pinned
   model, and a smaller declared window only makes the harness compact earlier.
   Raise it via the `context_limit` input / `E2E_CONTEXT_LIMIT` to exercise a
-  larger model's full window.
+  larger model's full window. `E2E: full` has no `context_limit` input — with
+  six pinned harnesses it is at GitHub's cap of 10 `workflow_dispatch` inputs —
+  so set `E2E_CONTEXT_LIMIT` locally or use `E2E: drift` instead.
 
 Each run reports the model it resolved: the run's step summary and an
 Actions notice, `meta.txt` in the uploaded e2e artifacts, the `model=` field on

@@ -36,11 +36,12 @@ func TestDeriveContractKnownTokens(t *testing.T) {
 		"codex":       {"exec", "-m", "--dangerously-bypass-approvals-and-sandbox", "-c", "resume", "--last"},
 		"copilot":     {"-p", "--model", "--allow-all-tools", "--continue", "--session-id"},
 		"pi":          {"-p", "--provider", "--model", "-c", "--session"},
+		"codewhale":   {"exec", "--auto", "--continue", "resume"},
 	}
 	for name, tokens := range want {
 		c, ok := deriveContract(name)
 		if !ok {
-			// codex is excluded on darwin; skip rather than fail host-dependently.
+			// codex/codewhale are excluded on darwin; skip rather than fail host-dependently.
 			t.Logf("%s: not eligible on this host, skipping", name)
 			continue
 		}
@@ -176,6 +177,7 @@ func TestHarnessHasServerMode(t *testing.T) {
 		"codex":       false,
 		"copilot":     false,
 		"pi":          false,
+		"codewhale":   false,
 		"nonexistent": false,
 	}
 	for name, want := range cases {

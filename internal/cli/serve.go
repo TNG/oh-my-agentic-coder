@@ -413,6 +413,16 @@ func runServe(args []string, env *Env) int {
 				extra[k] = v
 			}
 		}
+		// File-based briefing delivery (codewhale) writes into the workdir;
+		// remove it when serve exits. See start.go for the rationale.
+		if harness.BriefingFileFunc != nil {
+			if rel, werr := harness.BriefingFileFunc(briefingText, env.Workdir); werr != nil {
+				fmt.Fprintln(env.Stderr, "omac serve: briefing file:", werr)
+			} else if rel != "" {
+				gitExcludeBriefing(env.Workdir, rel)
+				defer removeBriefingFile(filepath.Join(env.Workdir, rel))
+			}
+		}
 	}
 
 	var argv []string

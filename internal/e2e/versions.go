@@ -22,6 +22,7 @@ var harnessVersions = map[string]string{
 	"codex":       "@openai/codex@0.142.5",
 	"copilot":     "@github/copilot@1.0.68",
 	"pi":          "@earendil-works/pi-coding-agent@0.80.6",
+	"codewhale":   "codewhale@0.9.1",
 }
 
 // versionEnvVar maps a harness name to the env var that can override its
@@ -35,6 +36,7 @@ var versionEnvVar = map[string]string{
 	"codex":       "E2E_VERSION_CODEX",
 	"copilot":     "E2E_VERSION_COPILOT",
 	"pi":          "E2E_VERSION_PI",
+	"codewhale":   "E2E_VERSION_CODEWHALE",
 }
 
 // Model identifiers per harness. Read through modelID(), never directly, so
@@ -52,6 +54,7 @@ var modelIDs = map[string]string{
 	"codex":       "zai-org/GLM-5.2-TEE",
 	"copilot":     "zai-org/GLM-5.2-TEE",
 	"pi":          "zai-org/GLM-5.2-TEE",
+	"codewhale":   "zai-org/GLM-5.2-TEE",
 }
 
 // fallbackModels are tried, in order, when neither name variant of the
@@ -156,6 +159,7 @@ var modelEnvVar = map[string]string{
 	"codex":       "E2E_MODEL_CODEX",
 	"copilot":     "E2E_MODEL_COPILOT",
 	"pi":          "E2E_MODEL_PI",
+	"codewhale":   "E2E_MODEL_CODEWHALE",
 }
 
 // crossHarnessModelEnvVar overrides the model for every harness at once. Kept
