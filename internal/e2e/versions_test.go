@@ -90,9 +90,9 @@ func TestModelCandidates(t *testing.T) {
 	t.Setenv("E2E_MODEL_FALLBACK", "")
 
 	got := modelCandidates("pi")
-	want := []string{
-		modelIDs["pi"], flipTEE(modelIDs["pi"]),
-		fallbackModels[0], flipTEE(fallbackModels[0]),
+	want := []string{modelIDs["pi"], flipTEE(modelIDs["pi"])}
+	for _, fb := range fallbackModels {
+		want = append(want, fb, flipTEE(fb))
 	}
 	if len(got) != len(want) {
 		t.Fatalf("modelCandidates(pi) = %v, want %v", got, want)
@@ -142,7 +142,11 @@ func TestIsFallbackModel(t *testing.T) {
 	if isFallbackModel("pi", flipTEE(pin)) {
 		t.Errorf("a variant flip of the primary must not be reported as a fallback")
 	}
-	if !isFallbackModel("pi", "moonshotai/Kimi-K3") {
+	// A name unrelated to the pin, rather than an entry from fallbackModels:
+	// the distinction under test is primary-vs-other, and coupling it to the
+	// configured chain would make refreshing that chain look like a behaviour
+	// change.
+	if !isFallbackModel("pi", "other-vendor/some-other-model") {
 		t.Errorf("a different family must be reported as a fallback")
 	}
 }

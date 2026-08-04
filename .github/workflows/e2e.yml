@@ -2,7 +2,7 @@
 #
 # Runs on manual trigger and every Saturday at 10:00 CET (08:00 UTC in
 # summer / 09:00 UTC in winter). Tests that each harness can start under
-# the omac sandbox and that an agent running on GLM-5.2-TEE (or
+# the omac sandbox and that an agent running on GLM-5.2 (or
 # claude-sonnet-5 for claude-code) can call the bundled echo-rest skill
 # through the omac facade.
 name: "E2E: full"
@@ -43,7 +43,7 @@ on:
         type: string
         default: 'codewhale@0.9.1'
       model:
-        description: 'Model id for EVERY harness, for THIS RUN ONLY (e.g. zai-org/GLM-5.2). Leave empty to use each harness''s pin in internal/e2e/versions.go (opencode/codex/copilot/pi/codewhale: zai-org/GLM-5.2-TEE, claude-code: claude-sonnet-5)'
+        description: 'Model id for EVERY harness, for THIS RUN ONLY (e.g. zai-org/GLM-5.2). Leave empty to use each harness''s pin in internal/e2e/versions.go (opencode/codex/copilot/pi/codewhale: zai-org/GLM-5.2, claude-code: claude-sonnet-5)'
         type: string
         default: ''
       claude_code_model:

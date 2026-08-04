@@ -39,7 +39,7 @@ on:
         type: boolean
         default: true
       model:
-        description: 'Model id for EVERY harness, for THIS RUN ONLY. Leave empty to use each harness''s pin in internal/e2e/versions.go (opencode/codex/copilot/pi/codewhale: zai-org/GLM-5.2-TEE, claude-code: claude-sonnet-5)'
+        description: 'Model id for EVERY harness, for THIS RUN ONLY. Leave empty to use each harness''s pin in internal/e2e/versions.go (opencode/codex/copilot/pi/codewhale: zai-org/GLM-5.2, claude-code: claude-sonnet-5)'
         type: string
         default: ''
       claude_code_model:

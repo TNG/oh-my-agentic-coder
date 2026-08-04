@@ -253,6 +253,37 @@ start_stub "$PIN" "$PIN" 200 "$PIN_FLIP"
 got=$(probe opencode 2>/dev/null || true)
 [ "$got" = "$PIN" ] || fail "served primary alongside a transient variant: got '$got', want '$PIN'"
 
+# --- 13. a rotted fallback chain is reported on an otherwise-fine run -------
+# The chain is only reached once the primary is gone, so an unserved fallback
+# stays invisible for as long as the primary keeps working — which is how
+# "moonshotai/Kimi-K3" survived in the chain long after the gateway dropped it.
+# A run that resolves normally must still say the backup is missing.
+start_stub "$PIN" "$PIN"
+got=$(probe E2E_MODEL_FALLBACK=gone/model opencode 2>"$TMP/err" || true)
+[ "$got" = "$PIN" ] || fail "rotted chain must not change the resolved model: got '$got', want '$PIN'"
+grep -q "title=Fallback chain unserved" "$TMP/err" || fail "an entirely unadvertised fallback chain was not reported"
+grep -q "gone/model" "$TMP/err" || fail "the rotted-chain warning does not name the chain"
+# It is a warning, not a failure: the run itself is fine.
+probe E2E_MODEL_FALLBACK=gone/model opencode >/dev/null 2>&1 \
+  || fail "a rotted chain must not fail a run whose primary resolved"
+
+# An advertised chain is healthy — no warning.
+start_stub "$PIN alive/model" "$PIN"
+probe E2E_MODEL_FALLBACK=alive/model opencode 2>"$TMP/err" >/dev/null || true
+grep -q "title=Fallback chain unserved" "$TMP/err" && fail "a served fallback chain must not be reported as rotted"
+
+# One live entry is enough; the listing under-advertises, so only a chain with
+# nothing left in it is worth reporting.
+start_stub "$PIN alive/model" "$PIN"
+probe E2E_MODEL_FALLBACK="gone/model alive/model" opencode 2>"$TMP/err" >/dev/null || true
+grep -q "title=Fallback chain unserved" "$TMP/err" && fail "a chain with one advertised entry must not be reported as rotted"
+
+# With the listing down there is no evidence either way, so say nothing rather
+# than cry wolf on every run the listing endpoint is flaky.
+start_stub "$PIN" "$PIN" 500
+probe E2E_MODEL_FALLBACK=gone/model opencode 2>"$TMP/err" >/dev/null || true
+grep -q "title=Fallback chain unserved" "$TMP/err" && fail "the chain must not be judged rotted when the listing is unavailable"
+
 if [ "$failures" -ne 0 ]; then
   printf '\n%d check(s) failed\n' "$failures" >&2
   exit 1

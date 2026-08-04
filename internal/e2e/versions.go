@@ -45,16 +45,18 @@ var versionEnvVar = map[string]string{
 // The gateway serves one name variant at a time and flips between the plain
 // name and a "-TEE" suffixed one without notice — on 2026-07-29 it stopped
 // accepting plain "zai-org/GLM-5.2" and every non-opencode llm stage went red
-// (see issue #184). Pin whichever variant is currently served;
-// scripts/probe-model.sh flips to the other one automatically, so a future flip
-// in either direction self-heals rather than reddening the matrix.
+// (see issue #184), then by 2026-08-04 it had flipped back to the plain name.
+// Pin whichever variant is currently served; scripts/probe-model.sh flips to
+// the other one automatically, so a future flip in either direction self-heals
+// rather than reddening the matrix. Keeping the pin current is therefore not a
+// correctness requirement, only a way to spend one fewer probe round-trip.
 var modelIDs = map[string]string{
-	"opencode":    "zai-org/GLM-5.2-TEE",
+	"opencode":    "zai-org/GLM-5.2",
 	"claude-code": "claude-sonnet-5",
-	"codex":       "zai-org/GLM-5.2-TEE",
-	"copilot":     "zai-org/GLM-5.2-TEE",
-	"pi":          "zai-org/GLM-5.2-TEE",
-	"codewhale":   "zai-org/GLM-5.2-TEE",
+	"codex":       "zai-org/GLM-5.2",
+	"copilot":     "zai-org/GLM-5.2",
+	"pi":          "zai-org/GLM-5.2",
+	"codewhale":   "zai-org/GLM-5.2",
 }
 
 // fallbackModels are tried, in order, when neither name variant of the
@@ -70,7 +72,13 @@ var modelIDs = map[string]string{
 // gateway naming quirk), running a different family makes a green matrix mean
 // something weaker, so probe-model.sh annotates it and the reported model shows
 // what actually ran.
-var fallbackModels = []string{"moonshotai/Kimi-K3"}
+//
+// This list is only ever exercised once the primary is gone, so it rots
+// invisibly: the previous entry ("moonshotai/Kimi-K3") stopped being served
+// some time before 2026-08-04 and nothing went red, because the primary kept
+// resolving. probe-model.sh now warns when no entry here is advertised, so the
+// rot surfaces on the next run instead of at the moment it is needed.
+var fallbackModels = []string{"deepseek-ai/DeepSeek-V4-Flash", "tngtech/DeepSeek-TNG-R1T2-Chimera"}
 
 // fallbackModelEnvVar overrides fallbackModels for a single run. Kept in sync
 // with scripts/probe-model.sh.

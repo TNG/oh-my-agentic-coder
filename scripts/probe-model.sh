@@ -21,6 +21,10 @@
 #   2. A 1-token POST $base/chat/completions is the authority. First HTTP 200
 #      wins. This is what the gateway 422s on, so it is what gets asked.
 #
+# On a run that never needs a fallback, the chain is still checked against the
+# listing and a warning is emitted if none of it is advertised — otherwise a
+# retired fallback stays invisible until the run that depends on it.
+#
 # Usage:
 #   scripts/probe-model.sh [harness]              # default harness: opencode
 #   scripts/probe-model.sh [harness] --github-output
@@ -111,6 +115,27 @@ fallbacks() {
   awk '/^var fallbackModels = \[\]string\{/{ \
          line=$0; sub(/.*\{/,"",line); sub(/\}.*/,"",line); print line; exit }' \
     "$versions_go" | tr -d '"' | tr ',' ' '
+}
+
+# The fallback chain is only reached once the primary is gone, so a retired
+# fallback rots invisibly: "moonshotai/Kimi-K3" sat in the chain unserved for
+# days while every run stayed green on the primary, and the rot would only have
+# surfaced at the moment the backup was actually needed. Report it on the way
+# past instead.
+#
+# Requires ALL of the chain to be unadvertised before saying anything. A single
+# missing name proves nothing — the listing under-advertises, which is why it
+# only orders candidates and never excludes them (see stage 1) — but an entire
+# chain missing means there is no backup left.
+warn_if_chain_rotted() {
+  [ "$listing_ok" = "1" ] || return 0
+  local chain f
+  chain="$(fallbacks)"
+  [ -n "$(printf '%s' "$chain" | tr -d '[:space:]')" ] || return 0
+  for f in $chain; do
+    case " $served " in *" $f "*) return 0 ;; esac
+  done
+  echo "::warning title=Fallback chain unserved::the gateway advertises none of the configured fallback models ($chain). This run is unaffected — '$primary' resolved — but there would be no working backup if it disappeared. Refresh fallbackModels in internal/e2e/versions.go." >&2
 }
 
 # Candidates are grouped into PRIORITY TIERS, one per configured model: tier 0
@@ -247,6 +272,7 @@ EOF
       # Same model, gateway naming quirk — safe to substitute quietly.
       [ "$candidate" != "$primary" ] && \
         echo "probe-model: '$primary' not served; using name variant '$candidate'" >&2
+      warn_if_chain_rotted
       emit "$candidate" false "$tried"
     else
       # A different family. A green run on this means something weaker than a

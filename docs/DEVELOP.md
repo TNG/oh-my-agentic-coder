@@ -109,7 +109,10 @@ the header of the drift/onboarding report artifacts.
 The SKAINET gateway serves **one name variant at a time** — the plain name or a
 `-TEE` suffixed one — and flips between them without notice. On 2026-07-29 it
 stopped accepting plain `zai-org/GLM-5.2` and every non-opencode `llm` stage
-went red about ten minutes into each leg (issue #184).
+went red about ten minutes into each leg (issue #184); by 2026-08-04 it had
+flipped back to the plain name. Keeping the `modelIDs` pin on whichever variant
+is currently served is therefore an optimisation — one fewer probe round-trip —
+not a correctness requirement.
 
 So every LLM workflow now starts with a **preflight `Resolve model` job** that
 runs [`scripts/probe-model.sh`](../scripts/probe-model.sh) once and hands the
@@ -150,6 +153,14 @@ tested for no good reason.
 The fallback chain lives in `fallbackModels` (`internal/e2e/versions.go`) rather
 than a workflow input, because `e2e.yml` is at GitHub's 10-input cap;
 `E2E_MODEL_FALLBACK` overrides it for a one-off (comma- or space-separated).
+
+Because the chain is only reached once the primary is gone, a retired fallback
+rots without reddening anything — the original entry (`moonshotai/Kimi-K3`)
+stopped being served days before anyone noticed. So a run that resolves its
+primary normally still checks the chain against the gateway's listing and warns
+when **none** of it is advertised. One missing name says nothing (the listing
+under-advertises, which is why it only orders candidates), but a whole chain
+missing means there is no backup left to reach for.
 
 claude-code is never probed — it talks to `ANTHROPIC_BASE_URL`, not this
 gateway. For the same reason the preflight hands the probed model to the
