@@ -110,22 +110,22 @@ type GradlePropertiesConfig struct {
 // RenderGradleProperties renders the OMAC-generated gradle.properties
 // content. Pure string — unit-testable.
 func RenderGradleProperties(cfg GradlePropertiesConfig) string {
-	var b string
+	var b strings.Builder
 	if cfg.Proxy.Valid() {
-		b += fmt.Sprintf("systemProp.http.proxyHost=%s\n", cfg.Proxy.Host)
-		b += fmt.Sprintf("systemProp.http.proxyPort=%d\n", cfg.Proxy.Port)
-		b += fmt.Sprintf("systemProp.https.proxyHost=%s\n", cfg.Proxy.Host)
-		b += fmt.Sprintf("systemProp.https.proxyPort=%d\n", cfg.Proxy.Port)
+		fmt.Fprintf(&b, "systemProp.http.proxyHost=%s\n", cfg.Proxy.Host)
+		fmt.Fprintf(&b, "systemProp.http.proxyPort=%d\n", cfg.Proxy.Port)
+		fmt.Fprintf(&b, "systemProp.https.proxyHost=%s\n", cfg.Proxy.Host)
+		fmt.Fprintf(&b, "systemProp.https.proxyPort=%d\n", cfg.Proxy.Port)
 		// Loopback must NOT be proxied: the Gradle daemon talks to its
 		// workers over a random loopback port.
-		b += "systemProp.http.nonProxyHosts=localhost|127.*|[::1]\n"
+		b.WriteString("systemProp.http.nonProxyHosts=localhost|127.*|[::1]\n")
 		// Java 8u111+ disables Basic auth on HTTPS CONNECT tunnels by
 		// default; re-enable so the proxy token is accepted (public
 		// resolution in this ticket carries no token; ticket 06 adds it).
-		b += "systemProp.jdk.http.auth.tunneling.disabledSchemes=\n"
+		b.WriteString("systemProp.jdk.http.auth.tunneling.disabledSchemes=\n")
 	}
 	if cfg.MaxHeap != "" {
-		b += fmt.Sprintf("org.gradle.jvmargs=-Xmx%s\n", cfg.MaxHeap)
+		fmt.Fprintf(&b, "org.gradle.jvmargs=-Xmx%s\n", cfg.MaxHeap)
 	}
 	// Host JDK install roots for toolchain auto-detection. Gradle's
 	// /usr/libexec/java_home -V call fails inside the sandbox (the
@@ -135,9 +135,9 @@ func RenderGradleProperties(cfg GradlePropertiesConfig) string {
 	// pinned toolchain spec against installed JDKs without calling
 	// java_home at all.
 	if len(cfg.InstallationsPaths) > 0 {
-		b += "org.gradle.java.installations.paths=" + strings.Join(cfg.InstallationsPaths, ",") + "\n"
+		b.WriteString("org.gradle.java.installations.paths=" + strings.Join(cfg.InstallationsPaths, ",") + "\n")
 	}
-	return b
+	return b.String()
 }
 
 // registryCredentialsInitName is the OMAC-authored init script Gradle

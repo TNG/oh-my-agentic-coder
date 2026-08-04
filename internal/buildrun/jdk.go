@@ -350,34 +350,62 @@ func buildJDKResolution(jdkHome, parentPath string) JDKResolution {
 	}
 }
 
+// shimMarkers are the path fragments that identify a version-manager tree
+// (jenv, asdf, SDKMAN). A PATH entry whose RESOLVED path contains a marker
+// is a shim-managed dir; stripping these prevents the child from trying to
+// exec a shim that needs /dev/fd process substitution under the kernel
+// sandbox. The bare-shims fallback (isShimDir) reuses the same marker set
+// for its parent check rather than duplicating the manager names.
+var shimMarkers = []string{"/.jenv/", "/.asdf/", "/.sdkman/", "/sdkman/candidates/"}
+
 // isShimDir reports whether a PATH entry is a version-manager shim
 // directory (jenv, asdf, SDKMAN). Symlinks to such dirs are detected by
-// resolving first. Stripping these prevents the child from trying to exec
-// a shim that needs /dev/fd process substitution under the kernel sandbox.
+// resolving first. Any entry passing through a version-manager tree is
+// stripped (over-match is harmless: the real JDK bin is prepended
+// separately after symlink resolution).
 func isShimDir(dir string) bool {
 	resolved := dir
 	if r, err := filepath.EvalSymlinks(dir); err == nil {
 		resolved = r
 	}
 	lower := strings.ToLower(resolved)
-	for _, marker := range []string{"/.jenv/", "/.asdf/", "/.sdkman/", "/sdkman/candidates/"} {
-		if strings.Contains(lower, marker) {
-			return true
-		}
+	if pathMatchesShimMarker(lower) {
+		return true
 	}
-	// Basename match for bare shim dirs (e.g. a PATH entry that is just
-	// the shims dir without the .jenv prefix resolved).
+	// Bare shim-dir fallback: a PATH entry that IS the shims dir (basename
+	// shims/shims-bin) whose resolved path does not itself contain a
+	// marker. Only treat it as a shim dir when its parent matches the same
+	// marker set — /usr/shims is not a thing, ~/.jenv/shims is.
 	base := filepath.Base(lower)
 	if base == "shims" || base == "shims-bin" {
-		// Only treat as a shim dir if its parent looks like a version
-		// manager root; /usr/shims is not a thing, ~/.jenv/shims is.
-		parent := filepath.Dir(lower)
-		if strings.HasSuffix(parent, ".jenv") || strings.HasSuffix(parent, ".asdf") ||
-			strings.Contains(parent, "sdkman") {
+		return parentMatchesShimMarker(lower)
+	}
+	return false
+}
+
+// pathMatchesShimMarker reports whether a lower-cased path contains any
+// shimMarkers fragment.
+func pathMatchesShimMarker(lowerPath string) bool {
+	for _, marker := range shimMarkers {
+		if strings.Contains(lowerPath, marker) {
 			return true
 		}
 	}
 	return false
+}
+
+// parentMatchesShimMarker applies the marker set to a directory's parent.
+// A trailing slash is appended: the markers are written in interior-slash
+// form ("/.jenv/"), and a parent that ENDS at the manager root — the only
+// shape that matters when dir itself is the manager's shims dir — would
+// otherwise never match ("/home/u/.jenv" → "/home/u/.jenv/"). A filesystem
+// root parent ("/") never matches, so a top-level "/shims" is not stripped.
+func parentMatchesShimMarker(lowerDir string) bool {
+	parent := filepath.Dir(lowerDir)
+	if parent == "/" {
+		return false
+	}
+	return pathMatchesShimMarker(parent + "/")
 }
 
 // String is for diagnostics only (never logged with secrets; JDK paths are

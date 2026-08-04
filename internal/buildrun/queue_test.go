@@ -9,11 +9,11 @@ import (
 	"time"
 )
 
-func TestAcquire_NoContention(t *testing.T) {
+func TestAcquireCtx_NoContention(t *testing.T) {
 	dir := t.TempDir()
-	l, err := Acquire(dir, time.Second)
+	l, err := AcquireCtx(dir, time.Second, nil)
 	if err != nil {
-		t.Fatalf("Acquire: %v", err)
+		t.Fatalf("AcquireCtx: %v", err)
 	}
 	defer l.Release()
 	if l.LockPath() != filepath.Join(dir, BuildLockName) {
@@ -21,7 +21,7 @@ func TestAcquire_NoContention(t *testing.T) {
 	}
 }
 
-func TestAcquire_SerializesContended(t *testing.T) {
+func TestAcquireCtx_SerializesContended(t *testing.T) {
 	dir := t.TempDir()
 	var order []int32
 	var mu sync.Mutex
@@ -38,9 +38,9 @@ func TestAcquire_SerializesContended(t *testing.T) {
 		wg.Add(1)
 		go func(n int32) {
 			defer wg.Done()
-			l, err := Acquire(dir, 10*time.Second)
+			l, err := AcquireCtx(dir, 10*time.Second, nil)
 			if err != nil {
-				t.Errorf("Acquire %d: %v", n, err)
+				t.Errorf("AcquireCtx %d: %v", n, err)
 				return
 			}
 			defer l.Release()
@@ -63,17 +63,17 @@ func TestAcquire_SerializesContended(t *testing.T) {
 	}
 }
 
-func TestAcquire_TimeoutDenies(t *testing.T) {
+func TestAcquireCtx_TimeoutDenies(t *testing.T) {
 	dir := t.TempDir()
-	holder, err := Acquire(dir, time.Second)
+	holder, err := AcquireCtx(dir, time.Second, nil)
 	if err != nil {
-		t.Fatalf("first Acquire: %v", err)
+		t.Fatalf("first AcquireCtx: %v", err)
 	}
 	defer holder.Release()
 
 	// A short timeout must deny while the holder keeps the lock.
 	start := time.Now()
-	_, err = Acquire(dir, 200*time.Millisecond)
+	_, err = AcquireCtx(dir, 200*time.Millisecond, nil)
 	d := time.Since(start)
 	if err == nil {
 		t.Fatal("expected busy denial, got lock")
@@ -89,18 +89,18 @@ func TestAcquire_TimeoutDenies(t *testing.T) {
 	}
 }
 
-func TestAcquire_DeadlockNotStale(t *testing.T) {
-	// Release without deleting: the next Acquire must still work (the
+func TestAcquireCtx_DeadlockNotStale(t *testing.T) {
+	// Release without deleting: the next acquire must still work (the
 	// lockfile persists; the kernel released the flock on close).
 	dir := t.TempDir()
-	l1, err := Acquire(dir, time.Second)
+	l1, err := AcquireCtx(dir, time.Second, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	l1.Release()
-	l2, err := Acquire(dir, time.Second)
+	l2, err := AcquireCtx(dir, time.Second, nil)
 	if err != nil {
-		t.Fatalf("second Acquire after Release: %v", err)
+		t.Fatalf("second AcquireCtx after Release: %v", err)
 	}
 	l2.Release()
 }
@@ -119,15 +119,14 @@ func TestRelease_NilSafe(t *testing.T) {
 // the "timed-out-waiting -> ExitServiceFailure (10)" busy path.
 func TestAcquireCtx_CancelledWhileWaiting(t *testing.T) {
 	dir := t.TempDir()
-	holder, err := Acquire(dir, time.Second)
+	holder, err := AcquireCtx(dir, time.Second, nil)
 	if err != nil {
-		t.Fatalf("holder Acquire: %v", err)
+		t.Fatalf("holder AcquireCtx: %v", err)
 	}
 	defer holder.Release()
 
 	cancel := make(chan struct{})
-	start := time.Now()
-	// Long timeout: a non-cancellable Acquire would wait the full 30s.
+	// Long timeout: a nil-cancel AcquireCtx would wait the full 30s.
 	// The cancelled waiter must return well before that. Run the acquire
 	// in a goroutine and cancel it after a beat so the holder keeps the
 	// lock the whole time (the waiter is contended, then cancelled).
@@ -154,7 +153,6 @@ func TestAcquireCtx_CancelledWhileWaiting(t *testing.T) {
 	if r.d > 2*time.Second {
 		t.Errorf("cancelled waiter took %v; must return promptly after cancel, not the full timeout", r.d)
 	}
-	_ = start
 }
 
 // TestAcquireCtx_CancelAfterHolderReleases asserts that if the holder
@@ -162,7 +160,7 @@ func TestAcquireCtx_CancelledWhileWaiting(t *testing.T) {
 // cancel channel is only consulted while contended).
 func TestAcquireCtx_CancelAfterHolderReleases(t *testing.T) {
 	dir := t.TempDir()
-	holder, err := Acquire(dir, time.Second)
+	holder, err := AcquireCtx(dir, time.Second, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -116,34 +116,66 @@ func parseProxyHostPort(proxyURL string) (*url.URL, string, error) {
 // "Picked up JAVA_TOOL_OPTIONS: ..." notice (containing the token) to
 // stderr on every launch; the token is ephemeral and proxy-scoped.
 func JVMProxyToolOptions(proxyURL string) (string, error) {
-	u, port, err := parseProxyHostPort(proxyURL)
+	u, portStr, err := parseProxyHostPort(proxyURL)
 	if err != nil {
 		return "", err
 	}
-	host := u.Hostname()
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		return "", fmt.Errorf("proxy_injection: proxy url %q has non-numeric port: %w", proxyURL, err)
+	}
 	user := u.User.Username()
 	pass, _ := u.User.Password()
+	return JVMProxySystemProperties(u.Hostname(), port, user, pass), nil
+}
 
+// JVMProxySystemProperties renders the JVM system properties that point
+// every JVM — Gradle, Maven, sbt, Kotlin, plain java — at the omac
+// filtering proxy. This is THE single renderer for JVM proxy property
+// strings: JVMProxyToolOptions (JAVA_TOOL_OPTIONS channel, sandboxrun
+// proxy-injection facade) and buildrun's GRADLE_OPTS channel
+// (buildGradleOpts) both call it, so a new property or a bugfix lands in
+// one place and cannot silently diverge between channels.
+//
+// Loopback is excluded (http.nonProxyHosts governs both schemes — the
+// JDK has no https.nonProxyHosts) so a daemon's worker protocol is not
+// proxied. Java 8u111+ disables Basic auth on HTTPS CONNECT tunnels by
+// default; the empty jdk.http.auth.tunneling.disabledSchemes re-enables
+// it so the proxy token is sent on the CONNECT tunnel.
+//
+// The proxyUser/proxyPassword properties carry the proxy's Basic-auth
+// credentials, but only tools that parse them themselves (Gradle, Maven)
+// authenticate with them (see JVMProxyToolOptions). No property is emitted
+// for an empty credential: with a user set and an empty password, only
+// proxyUser is emitted — a "proxyPassword=" property with an empty value
+// would send an empty credential upstream, and the omac proxy ALWAYS
+// carries a token, so an empty password is a wiring bug, not something to
+// forward. (One deliberate divergence from the pre-extraction
+// JVMProxyToolOptions, which emitted proxyPassword even when empty; the
+// buildGradleOpts policy — password only when non-empty — won.)
+func JVMProxySystemProperties(host string, port int, user, pass string) string {
 	var opts []string
 	for _, scheme := range []string{"http", "https"} {
 		opts = append(opts,
 			fmt.Sprintf("-D%s.proxyHost=%s", scheme, host),
-			fmt.Sprintf("-D%s.proxyPort=%s", scheme, port),
+			fmt.Sprintf("-D%s.proxyPort=%d", scheme, port),
 		)
-		if user != "" {
+	}
+	if user != "" {
+		for _, scheme := range []string{"http", "https"} {
 			opts = append(opts,
 				fmt.Sprintf("-D%s.proxyUser=%s", scheme, user),
-				fmt.Sprintf("-D%s.proxyPassword=%s", scheme, pass),
 			)
+			if pass != "" {
+				opts = append(opts,
+					fmt.Sprintf("-D%s.proxyPassword=%s", scheme, pass),
+				)
+			}
 		}
 	}
-	// The JDK has no https.nonProxyHosts; http.nonProxyHosts governs both
-	// schemes, so set it once.
 	opts = append(opts, "-Dhttp.nonProxyHosts=localhost|127.*|[::1]")
-	// Java 8u111+ disables Basic auth on HTTPS CONNECT tunnels by
-	// default; re-enable it so the proxy token is accepted.
 	opts = append(opts, "-Djdk.http.auth.tunneling.disabledSchemes=")
-	return strings.Join(opts, " "), nil
+	return strings.Join(opts, " ")
 }
 
 // nodeProxyEnvSupported reports whether the `node --version` output belongs

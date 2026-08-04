@@ -17,7 +17,7 @@ import (
 // unexported alias (P5 collapsed the redundant `buildLockName`).
 const BuildLockName = ".omac-build.lock"
 
-// DefaultQueueTimeout bounds how long Acquire waits for a contended
+// DefaultQueueTimeout bounds how long AcquireCtx waits for a contended
 // per-worktree lock before denying with ExitServiceFailure. Short enough
 // that a wedged prior build surfaces as a clear denial rather than an
 // indefinite hang, long enough that a quick predecessor finishes and the
@@ -35,7 +35,7 @@ type BuildLock struct {
 // LockPath returns the lockfile path (for diagnostics / `stop` cleanup).
 func (l *BuildLock) LockPath() string { return l.path }
 
-// errLockCancelled is returned when a contended Acquire was cancelled
+// errLockCancelled is returned when a contended AcquireCtx was cancelled
 // while waiting for the lock (the caller's cancel channel closed). The
 // CLI maps this to ExitCancelled (4) + the cancellation marker — a
 // queued request cancelled individually (spec.md:136: "queued requests
@@ -77,7 +77,7 @@ func (e errLockBusy) Is(target error) bool {
 // CLI (the CLI maps it to ExitServiceFailure).
 var ErrLockBusy = errLockBusy{}
 
-// Acquire takes an exclusive flock on the per-worktree queue lockfile,
+// AcquireCtx takes an exclusive flock on the per-worktree queue lockfile,
 // blocking up to timeout for a contended lock. On success the caller MUST
 // defer Release. A zero/negative timeout substitutes
 // DefaultQueueTimeout (NOT an immediate denial — the defensible default
@@ -86,37 +86,24 @@ var ErrLockBusy = errLockBusy{}
 // hard service failure). (P6: the doc previously lied that zero denies
 // immediately; the code has always substituted the default.)
 //
-// Acquire is NOT cancellable while waiting: a contended caller blocks
-// up to `timeout` and then either acquires or gets errLockBusy. For a
-// cancellable acquire (a queued request the caller can unwind without
-// waiting the full timeout — e.g. a second `omac build` Ctrl-C), use
-// AcquireCtx with the build's cancel channel.
+// A nil cancel channel waits the full timeout, non-cancellable. A non-nil
+// cancel channel makes the wait individually cancellable (spec.md:136:
+// "queued requests are individually cancellable" — e.g. a second `omac
+// build` Ctrl-C unwinds the waiter without killing the running build):
+// while waiting for a contended lock AcquireCtx also selects on `cancel`,
+// and if `cancel` closes it releases the partial lock (closes the open
+// lockfile without holding the flock) and returns ErrLockCancelled
+// promptly, rather than waiting the full timeout.
 //
 // lockfileDir is the dir the lockfile lives in (the cache leaf); it must
 // already exist (GrantsFor ensures the leaf). The lockfile itself is
 // created if missing.
 //
 // Two outcomes on contention:
-//   - cancelled-while-waiting (AcquireCtx only) → ErrLockCancelled; the
-//     CLI maps this to ExitCancelled (4) + the cancellation marker.
+//   - cancelled-while-waiting (non-nil cancel only) → ErrLockCancelled;
+//     the CLI maps this to ExitCancelled (4) + the cancellation marker.
 //   - timed-out-waiting → ErrLockBusy ("another build is running"); the
 //     CLI maps this to ExitServiceFailure (10).
-func Acquire(lockfileDir string, timeout time.Duration) (*BuildLock, error) {
-	return AcquireCtx(lockfileDir, timeout, nil)
-}
-
-// AcquireCtx is the cancellable acquire. It behaves like Acquire, but
-// while waiting for a contended lock it also selects on `cancel`: if
-// `cancel` closes, it releases the partial lock (closes the open lockfile
-// without holding the flock) and returns ErrLockCancelled promptly,
-// rather than waiting the full timeout. This lets a queued request be
-// individually cancelled (spec.md:136) — e.g. a second `omac build`
-// Ctrl-C unwinds the waiter without killing the running build.
-//
-// A nil cancel channel disables cancellation (Acquire delegates here
-// with nil). The 30s busy-denial remains the fallback for "another build
-// is running and the waiter gave up after the timeout" — that path
-// returns ErrLockBusy, NOT a cancellation.
 func AcquireCtx(lockfileDir string, timeout time.Duration, cancel <-chan struct{}) (*BuildLock, error) {
 	if timeout <= 0 {
 		timeout = DefaultQueueTimeout
@@ -162,7 +149,7 @@ func AcquireCtx(lockfileDir string, timeout time.Duration, cancel <-chan struct{
 }
 
 // Release drops the lock and closes (does NOT delete) the lockfile. The
-// file stays on disk so a concurrent Acquire can open it; deletion would
+// file stays on disk so a concurrent AcquireCtx can open it; deletion would
 // race a concurrent open and orphan the lock.
 func (l *BuildLock) Release() {
 	if l == nil || l.f == nil {
