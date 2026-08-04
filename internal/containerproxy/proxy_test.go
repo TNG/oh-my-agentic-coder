@@ -1678,6 +1678,63 @@ func TestStart_ScansWhenStablePortBusy(t *testing.T) {
 	}
 }
 
+// TestStart_ScanNeighborPersisted asserts that when the preferred stable
+// port is occupied but a scan neighbor is free, the scan neighbor is
+// persisted to the control file AND the log does NOT emit the "fallback"
+// warning (issue #191: the old code treated chosen != preferred as
+// "fallback" and skipped persistence, causing a permanent warn-loop).
+func TestStart_ScanNeighborPersisted(t *testing.T) {
+	d := newFakeDaemon(t)
+	leaf := t.TempDir()
+	preferred := stableport.For("/worktree/feat-scan")
+	// Occupy ONLY the preferred port so Select scans to preferred+1.
+	occ, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", preferred))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer occ.Close()
+
+	var logBuf strings.Builder
+	logf := func(format string, args ...any) {
+		logBuf.WriteString(fmt.Sprintf(format, args...))
+	}
+	p, err := New(Config{
+		Upstream:       d.server.URL,
+		ApprovedImages: []string{"pgvector/pgvector:pg16"},
+		ExecutorID:     "exec-1",
+		WorktreePath:   "/worktree/feat-scan",
+		ControlLeaf:    leaf,
+		Auditor:        audit.Nop(),
+		Logf:           logf,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = p.Start()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.shutdown()
+	// The bound port must be a scan neighbor (preferred+1 or within window),
+	// NOT outside the stable range (which would be a true fallback).
+	if p.boundPort < stableport.StablePortMin || p.boundPort >= stableport.StablePortMax {
+		t.Errorf("boundPort = %d outside stable window, want a scan neighbor inside [%d,%d)", p.boundPort, stableport.StablePortMin, stableport.StablePortMax)
+	}
+	if p.boundPort == preferred {
+		t.Errorf("boundPort = %d equals occupied preferred port", p.boundPort)
+	}
+	// The scan neighbor MUST be persisted: the core fix (issue #191).
+	got := stableport.ReadPreferred(leaf, portFileName)
+	if got != p.boundPort {
+		t.Errorf("port file = %d, want bound neighbor %d (scanned neighbor was not persisted)", got, p.boundPort)
+	}
+	// The log must NOT contain the "fallback" warning (the new choosePort
+	// return value false for in-window neighbors).
+	if strings.Contains(logBuf.String(), "fallback") {
+		t.Errorf("log contains 'fallback' warning but a scan neighbor is NOT a fallback:\n%s", logBuf.String())
+	}
+}
+
 // TestStart_FallbackRandomWhenWindowFull asserts Start falls back to a
 // random ephemeral port when the whole stable window is occupied, so the
 // build never wedges (correctness over determinism). The whole window is
