@@ -35,6 +35,13 @@ import (
 // parent-owned build-control approval layout is used by the broker
 // path (via the parent's snapshot store). A future gate may migrate
 // the direct-host path to the build-control layout too.
+//
+// ADR 0005: this adapter does NOT consult the opt-in digest-indexed
+// approval-reuse fallback. The direct-host path that needs reuse wires
+// the cli-side newDirectSnapshotProvider (internal/cli/build_reuse.go),
+// which calls buildmanifest.GateAt with the reuse context resolved from
+// the worktree's repo identity; this plain adapter keeps the historical
+// behavior exactly (and stays the default when Options.Snapshot is nil).
 func DirectSnapshotProvider(worktree, leaf string, req buildrun.Request) (PolicySnapshot, error) {
 	// Replicate the exact sequence the current cli/build.go uses:
 	//   hostPolicy := buildrun.HostPolicy(req.MaxDuration)

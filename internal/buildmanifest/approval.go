@@ -52,6 +52,13 @@ const ActiveFilename = "active-manifest.json"
 // timestamp. OMAC reuses this approval while the digest is unchanged and the
 // effective set still matches the current host ceiling; a changed digest OR a
 // host-ceiling drop below what was approved forces a consolidated review.
+//
+// RepoRootCommit is populated ONLY on digest-indexed, repo-namespaced
+// reuse records (ADR 0005) and is omitempty so existing per-worktree
+// approval records (which predate ADR 0005) still marshal/unmarshal
+// unchanged. It carries the repo's root-commit SHA (the recycling guard:
+// a foreign repo created at the same path has a different root commit,
+// so the record cannot be reused).
 type ApprovalRecord struct {
 	// Digest is the SHA-256 digest of the approved manifest content.
 	Digest string `json:"digest"`
@@ -59,6 +66,10 @@ type ApprovalRecord struct {
 	Capabilities CapabilitySet `json:"capabilities"`
 	// ApprovedAt is when the host user accepted this digest + set.
 	ApprovedAt time.Time `json:"approvedAt"`
+	// RepoRootCommit is the first commit's SHA of the approving repo's
+	// history (`git rev-list --max-parents=0 HEAD`), stored ONLY on
+	// digest-indexed reuse records. Empty for the per-worktree layout.
+	RepoRootCommit string `json:"repoRootCommit,omitempty"`
 }
 
 // ActiveRecord is the frozen-for-session manifest record. Once a digest is
@@ -119,6 +130,83 @@ func NewOnLeafLocation() Location { return Location{kind: locationOnLeaf} }
 // grants.
 func NewBuildControlLocation(cacheRoot, canonicalWorktree string) Location {
 	return Location{kind: locationBuildControl, cacheRoot: cacheRoot, worktree: canonicalWorktree}
+}
+
+// RepoDigestLocation selects where digest-indexed, repo-namespaced
+// approval-reuse records are stored (ADR 0005): under the host-only
+// build-control root at
+// `<cacheRoot>/build-control/approvals-by-repo/<sha256(canonicalRepoRoot)>/<digest>.json`.
+// canonicalRepoRoot is the canonical (EvalSymlinks-resolved) `git
+// rev-parse --git-common-dir` output — the namespace under which all
+// linked worktrees of a repo share one set of digest-indexed records.
+// A zero RepoDigestLocation must not be used (no storage).
+type RepoDigestLocation struct {
+	cacheRoot         string // shared cache root (~/.cache/omac)
+	canonicalRepoRoot string // canonical git-common-dir of the repo
+}
+
+// NewRepoDigestLocation returns a RepoDigestLocation storing reuse
+// records under `<cacheRoot>/build-control/approvals-by-repo/`.
+// cacheRoot is the shared cache root (parent of cache-scope dirs);
+// canonicalRepoRoot is the canonical (EvalSymlinks-resolved)
+// `git rev-parse --git-common-dir` output.
+func NewRepoDigestLocation(cacheRoot, canonicalRepoRoot string) RepoDigestLocation {
+	return RepoDigestLocation{cacheRoot: cacheRoot, canonicalRepoRoot: canonicalRepoRoot}
+}
+
+// StoreApprovalForRepoDigest writes a digest-indexed, repo-namespaced
+// approval-reuse record. The record carries the repoRootCommit recycling
+// guard on ApprovalRecord.RepoRootCommit. Same 0o600 host-only
+// permissions as the per-worktree build-control record (ADR 0005).
+func StoreApprovalForRepoDigest(cacheRoot, canonicalRepoRoot, digest string, rec ApprovalRecord) error {
+	return StoreApprovalForRepoDigestAt(NewRepoDigestLocation(cacheRoot, canonicalRepoRoot), digest, rec)
+}
+
+// LookupApprovalForRepoDigest reads the digest-indexed reuse record for
+// (canonicalRepoRoot, digest). A missing record yields a zero record and
+// nil error (no reuse — fall back to per-worktree).
+func LookupApprovalForRepoDigest(cacheRoot, canonicalRepoRoot, digest string) (ApprovalRecord, error) {
+	return LookupApprovalForRepoDigestAt(NewRepoDigestLocation(cacheRoot, canonicalRepoRoot), digest)
+}
+
+// StoreApprovalForRepoDigestAt writes the reuse record at the
+// location-selected path. The approvals-by-repo subdirectory (and
+// parents) are created 0o700 if absent; the file is written 0o600
+// (host-only, never in outer-agent or executor grants).
+func StoreApprovalForRepoDigestAt(loc RepoDigestLocation, digest string, rec ApprovalRecord) error {
+	data, err := json.MarshalIndent(rec, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal manifest approval: %w", err)
+	}
+	path := repoDigestApprovalPath(loc, digest)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Errorf("prepare approvals-by-repo dir: %w", err)
+	}
+	if err := os.Chmod(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Errorf("chmod approvals-by-repo dir: %w", err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		return fmt.Errorf("write manifest approval: %w", err)
+	}
+	return nil
+}
+
+// LookupApprovalForRepoDigestAt reads the reuse record at the
+// location-selected path. A missing file yields a zero record and nil
+// error (no reuse — fall back to per-worktree).
+func LookupApprovalForRepoDigestAt(loc RepoDigestLocation, digest string) (ApprovalRecord, error) {
+	data, err := os.ReadFile(repoDigestApprovalPath(loc, digest))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return ApprovalRecord{}, nil
+		}
+		return ApprovalRecord{}, fmt.Errorf("load manifest approval: %w", err)
+	}
+	var rec ApprovalRecord
+	if err := json.Unmarshal(data, &rec); err != nil {
+		return ApprovalRecord{}, fmt.Errorf("parse manifest approval: %w", err)
+	}
+	return rec, nil
 }
 
 // LoadApproval reads the approval record. A missing file yields a zero
@@ -381,6 +469,16 @@ func activePathAt(leaf string, loc Location) string {
 func buildcontrolApprovalPath(cacheRoot, worktree string) string {
 	d := sha256.Sum256([]byte(worktree))
 	return filepath.Join(cacheRoot, "build-control", "approvals", hex.EncodeToString(d[:])+".json")
+}
+
+// repoDigestApprovalPath mirrors internal/buildcontrol.ApprovalByRepoPath
+// without importing the package (same buildcontrol → buildmanifest
+// dependency constraint). The hashing MUST stay identical to
+// buildcontrol.HashRepo (sha256, lowercase hex):
+// <cacheRoot>/build-control/approvals-by-repo/<sha256(canonicalRepoRoot)>/<digest>.json.
+func repoDigestApprovalPath(loc RepoDigestLocation, digest string) string {
+	d := sha256.Sum256([]byte(loc.canonicalRepoRoot))
+	return filepath.Join(loc.cacheRoot, "build-control", "approvals-by-repo", hex.EncodeToString(d[:]), digest+".json")
 }
 
 // ensureParent creates the parent directory of path with the

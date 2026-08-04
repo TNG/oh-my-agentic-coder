@@ -102,6 +102,7 @@ func runBuild(args []string, env *Env) int {
 		fmt.Fprintf(env.Stderr, "omac build: resolve cache scope: %v\n", err)
 		return buildrun.ExitServiceFailure
 	}
+	cacheRoot := buildControlCacheRoot(cacheDir)
 
 	// Signal handling: the CLI owns the staged graceful-then-forced
 	// cancellation wiring (SignalContext). The engine consumes the
@@ -121,12 +122,18 @@ func runBuild(args []string, env *Env) int {
 		Stdout:      env.Stdout,
 		Stderr:      env.Stderr,
 		CacheDir:    cacheDir,
-		CacheRoot:   buildControlCacheRoot(cacheDir),
+		CacheRoot:   cacheRoot,
 		CloseScope:  closeScope,
 		Auditor:     auditor,
 		Proxies:     cliProxyStarter,
 		Cancel:      cancel,
 		ForceCancel: force,
+		// Snapshot: the direct path's provider resolves the opt-in
+		// digest-indexed approval-reuse fallback (ADR 0005) from the
+		// worktree's repo identity when reuse is enabled. When reuse is
+		// off (default) it behaves identically to the historical
+		// buildmanifest.Gate path.
+		Snapshot: newDirectSnapshotProvider(cacheRoot),
 	})
 
 	// Exit-code translation: the engine assigns the explicit class at

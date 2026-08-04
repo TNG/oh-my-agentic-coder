@@ -1057,10 +1057,15 @@ func (s *serveServer) isActiveDir(canonicalDir string) bool {
 
 // freezeBuildSnapshot freezes the parent-owned capability snapshot
 // for canonicalWorktree at activation, when the canonical identity +
-// current manifest digest match a durable approval (ticket 06). A
-// build request can only compare against this snapshot; it cannot
-// advance or replace it. An unapproved directory (no durable approval
-// OR digest mismatch) is left without a snapshot — the engine
+// current manifest digest match a durable approval (ticket 06). When
+// the per-worktree durable approval misses and the opt-in
+// approval-reuse-by-digest feature is enabled (ADR 0005),
+// freezeSnapshotFromDurableApproval falls back to the digest-indexed,
+// repo-namespaced reuse record (verifying the repo's root commit) —
+// the parent then freezes the reused record's capability set for THIS
+// worktree. A build request can only compare against this snapshot; it
+// cannot advance or replace it. An unapproved directory (no durable
+// approval OR digest mismatch) is left without a snapshot — the engine
 // surfaces a host diagnostic requiring `omac build approve` + parent
 // restart. Agent-callable activation is NOT an approval transition:
 // this method reads the durable approval record; it does not write
