@@ -76,18 +76,18 @@ type Config struct {
 	Logf func(format string, args ...any)
 	// WorktreePath is the canonical worktree root the proxy serves. When
 	// non-empty, Start derives a STABLE loopback port from it (via
-	// stableport.For) so the warm Gradle daemon's cached DOCKER_HOST stays
-	// valid across runs — the bug being fixed: a random ephemeral port
-	// each run left the warm daemon pointing at a dead port. Empty
-	// preserves the legacy random-port behavior.
+	// stableport.For) so the DOCKER_HOST set for a build stays valid across
+	// runs (a random ephemeral port each run left requests pointing at a
+	// dead port after the previous run's proxy closed). Empty preserves
+	// the legacy random-port behavior.
 	WorktreePath string
 	// ControlLeaf is the OMAC cache leaf (GRADLE_USER_HOME) where the
 	// assigned port is recorded at .omac-control/containerproxy-port so
 	// the next run can prefer it. The file is written and read by the
 	// SUPERVISOR (unsandboxed); the executor never sees it. Empty
 	// disables cross-run port persistence (the port is still stable
-	// within a process via the worktree hash, but not across a daemon
-	// recycle that re-runs Start).
+	// within a process via the worktree hash, but not across runs that
+	// re-run Start).
 	ControlLeaf string
 }
 
@@ -349,7 +349,7 @@ func (p *Proxy) Start() (dockerHost string, stop func(), err error) {
 	p.ln = ln
 	p.boundPort = ln.Addr().(*net.TCPAddr).Port
 	if fallback {
-		p.logf("containerproxy: using fallback ephemeral port %d (stable window unavailable; warm-daemon DOCKER_HOST may drift on next run)", p.boundPort)
+		p.logf("containerproxy: using fallback ephemeral port %d (stable window unavailable; the cached DOCKER_HOST may drift on next run)", p.boundPort)
 	}
 	// Persist the assigned port so the next run can prefer it. Any port
 	// inside [StablePortMin, StablePortMax) — preferred OR a scanned
@@ -378,9 +378,10 @@ func (p *Proxy) Start() (dockerHost string, stop func(), err error) {
 // fallback random ephemeral port when the whole stable window is occupied.
 // Returns the chosen port and a fallback flag (true when the chosen port
 // is NOT the deterministic stable one — the caller logs a warning so the
-// user understands the warm-daemon bug may resurface in the rare collision
-// case). When WorktreePath is empty the legacy random-port behavior is
-// used (port 0, not flagged as fallback — that is the documented v1 path).
+// user understands the stale-DOCKER_HOST issue may resurface in the rare
+// collision case). When WorktreePath is empty the legacy random-port
+// behavior is used (port 0, not flagged as fallback — that is the
+// documented v1 path).
 func (p *Proxy) choosePort() (port int, fallback bool) {
 	if p.cfg.WorktreePath == "" {
 		// Legacy random-port behavior preserved for callers that did not

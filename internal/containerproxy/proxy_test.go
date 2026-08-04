@@ -1535,7 +1535,7 @@ func TestCrashRestart_ScavengerRemovesOrphanedNetwork(t *testing.T) {
 	}
 }
 
-// --- stable port selection (warm-daemon DOCKER_HOST fix) ----------------
+// --- stable port selection (stable DOCKER_HOST fix) ----------------------
 //
 // The pure stable-port helper tests (hash determinism/range/symlinks,
 // window scan/wrap/fallback) live in internal/stableport. The tests below
@@ -1850,8 +1850,10 @@ func TestStart_LegacyRandomPortWhenNoWorktree(t *testing.T) {
 
 // TestStart_PortPersistsAcrossRestarts asserts the port assigned on the
 // first Start is preferred on a second Start (new Proxy, same control
-// leaf) so the warm Gradle daemon's DOCKER_HOST stays valid. This is the
-// end-to-end reproduction of the bug being fixed.
+// leaf) so the DOCKER_HOST set for a build stays valid across runs — a
+// random ephemeral port each run would leave a subsequent build pointing
+// at the previous run's dead port. This is the end-to-end reproduction of
+// the bug being fixed.
 func TestStart_PortPersistsAcrossRestarts(t *testing.T) {
 	d := newFakeDaemon(t)
 	leaf := t.TempDir()
@@ -1887,7 +1889,7 @@ func TestStart_PortPersistsAcrossRestarts(t *testing.T) {
 	}
 	defer p2.shutdown()
 	if p2.boundPort != port1 {
-		t.Errorf("port drifted across runs: first=%d second=%d (warm daemon DOCKER_HOST would point at the dead port)", port1, p2.boundPort)
+		t.Errorf("port drifted across runs: first=%d second=%d (a later build's DOCKER_HOST would point at the dead port)", port1, p2.boundPort)
 	}
 	if dh1 != dh2 {
 		t.Errorf("DOCKER_HOST drifted: first=%q second=%q", dh1, dh2)

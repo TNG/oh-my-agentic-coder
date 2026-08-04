@@ -12,14 +12,16 @@ import (
 	"github.com/tngtech/oh-my-agentic-coder/internal/buildrun"
 )
 
-// runBuildStop implements `omac build stop`: tear down the warm Gradle
-// daemon for this worktree and release the per-worktree queue lockfile.
+// runBuildStop implements `omac build stop`: stop any Gradle daemon
+// lingering for this worktree and release the per-worktree queue lockfile.
 //
-// The "warm executor" is Gradle's own daemon persisting under the
-// session-scoped GRADLE_USER_HOME leaf (no long-lived omac supervisor).
-// `stop` runs the repo wrapper with `--stop` under the SAME restricted
-// env as the build (S6: isolated ChildEnv — no host HOME, no host
-// ~/.gradle, no host creds; GRADLE_USER_HOME=<leaf>; JDK-resolved
+// The daemon is Gradle's own process persisting under the session-scoped
+// GRADLE_USER_HOME leaf (no long-lived omac supervisor). A clean build
+// already recycles its daemon post-build; `stop` is the manual fallback
+// for a wedged daemon that ignored --stop, or for teardown after the
+// session ends. It runs the repo wrapper with `--stop` under the SAME
+// restricted env as the build (S6: isolated ChildEnv — no host HOME, no
+// host ~/.gradle, no host creds; GRADLE_USER_HOME=<leaf>; JDK-resolved
 // PATH/JAVA_HOME) so Gradle stops its daemons for this worktree, then
 // force-kills any wedged daemon that ignored the cooperative stop (S7).
 // Finally it removes the lockfile a crashed `omac build` may have left.
@@ -39,7 +41,7 @@ func runBuildStop(args []string, env *Env) int {
 
 	for _, a := range args {
 		if a == "--help" || a == "-h" || a == "help" {
-			fmt.Fprintln(env.Stderr, `omac build stop — stop the warm Gradle daemon for this worktree
+			fmt.Fprintln(env.Stderr, `omac build stop — stop any lingering Gradle daemon for this worktree
 
 Usage:
   omac build stop [--root <rel>]
