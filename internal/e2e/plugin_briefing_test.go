@@ -60,6 +60,7 @@ import (
 	"time"
 
 	"github.com/tngtech/oh-my-agentic-coder/internal/plugin"
+	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxbrief"
 )
 
 // briefingRunTimeout bounds the whole agent run. Generous because
@@ -79,6 +80,14 @@ const stubModelID = "stub"
 // test asserts the briefing ARRIVED, while the system-message count is
 // the actual invariant.
 const briefingAnchor = "omac sandbox"
+
+// manifestAnchor is the skills-manifest heading the plugin renders
+// (renderManifest in the plugin source). The manifest is appended AFTER the
+// briefing, so when both are present their relative order is an invariant.
+// Only checked when the manifest is actually present: it requires at least
+// one activated skill in the workdir, which this fixture does not
+// guarantee.
+const manifestAnchor = "## omac skills available in this workspace"
 
 // TestOpenCodeSingleSystemMessage runs the real OpenCode under the real
 // omac sandbox with the real omac plugin, pointed at a stub model
@@ -234,9 +243,11 @@ func TestOpenCodeSingleSystemMessage(t *testing.T) {
 			continue
 		}
 		for _, s := range systems {
-			if strings.Contains(s, briefingAnchor) {
-				sawBriefing = true
+			if !strings.Contains(s, briefingAnchor) {
+				continue
 			}
+			sawBriefing = true
+			assertBriefingIntact(t, i, s)
 		}
 		if len(systems) != 1 {
 			t.Errorf("request %d: got %d system messages, want exactly 1.\n"+
@@ -256,6 +267,45 @@ func TestOpenCodeSingleSystemMessage(t *testing.T) {
 			"OMAC_SANDBOX_BRIEFING did not survive the sandbox env filter.\n"+
 			"STDERR:\n%s",
 			briefingAnchor, pluginDir, tailLines(stderr.String(), 60))
+	}
+}
+
+// assertBriefingIntact checks that the system block carrying the briefing
+// carries ALL of it, verbatim, and that the skills manifest — when present —
+// follows it rather than being spliced into the middle. Counting system
+// messages proves omac did not add a block; this proves what it merged into
+// the surviving block is the whole briefing and not a truncated,
+// re-ordered, or interleaved version.
+//
+// The expectation is sandboxbrief.Default() itself rather than a list of
+// anchor phrases: briefingInjection appends the cache guidance to the
+// resolved briefing and the plugin concatenates the result unmodified
+// (cli/briefing.go:28-34), so the default text is an exact substring of
+// what lands on the wire. Comparing against the source of truth keeps this
+// from drifting when brief.md is edited, and rejects text injected between
+// its sections — which per-section anchors would allow. It does assume the
+// fixture leaves config.yaml's sandbox.briefing override unset.
+func assertBriefingIntact(t *testing.T, reqIdx int, block string) {
+	t.Helper()
+
+	if want := sandboxbrief.Default(); !strings.Contains(block, want) {
+		t.Errorf("request %d: system block carries the briefing anchor %q but "+
+			"not the briefing verbatim — it arrived truncated, reordered, or "+
+			"with text spliced into it. Want (%d bytes) the exact contents of "+
+			"internal/sandboxbrief/brief.md.\nBlock:\n%s",
+			reqIdx, briefingAnchor, len(want), describeBlocks([]string{block}))
+		return
+	}
+
+	// The plugin appends [briefing, manifest] in that order, so a manifest
+	// ahead of the briefing means the two were spliced, not concatenated.
+	if at := strings.Index(block, manifestAnchor); at >= 0 {
+		if brief := strings.Index(block, briefingAnchor); at < brief {
+			t.Errorf("request %d: skills manifest at offset %d precedes the "+
+				"briefing at offset %d; the plugin appends the briefing first. "+
+				"Block:\n%s",
+				reqIdx, at, brief, describeBlocks([]string{block}))
+		}
 	}
 }
 

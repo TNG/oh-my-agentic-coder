@@ -21,6 +21,16 @@
  * Degradation: if OMAC_CONTROL_BASE is unset (Pi not running under omac),
  * every branch is a no-op. The extension is inert and safe to ship anywhere.
  *
+ * System prompt: the briefing and manifest are injected ONLY via the
+ * systemPrompt returned from before_agent_start, which Pi folds into its
+ * single system prompt string. Never via Pi's other channel, a returned
+ * `message`: that lands at an index > 0, so system content sent through it
+ * becomes a second {role:"system"} message, which strict OpenAI-compatible
+ * servers (Qwen chat templates) reject with "system message must come
+ * first". This is the same single-system-block invariant the OpenCode
+ * plugin maintains (internal/plugin/assets/omac-multidir.ts), guarded by
+ * TestPiBridgeInjectsExactlyOneSystemBlock in internal/bridge.
+ *
  * File layout: this MUST be a single flat file directly under
  * .pi/extensions/ (not a subdirectory with an index.ts). A subdirectory
  * form (.pi/extensions/omac-bridge/index.ts) was tried and reproducibly
@@ -156,16 +166,10 @@ export default function (api: {
         ? `${briefing}\n\n${manifestText}`
         : manifestText
 
-      // Prefer the documented systemPrompt return contract (pi's
-      // before_agent_start docs: "can return modified systemPrompt or
-      // inject a message"). Also unshift a system message when the event
-      // exposes a mutable messages array, for hosts that apply mutations
-      // in place rather than the return value — belt-and-suspenders since
-      // this hook's exact application semantics aren't fully documented.
-      if (event?.messages && Array.isArray(event.messages)) {
-        event.messages.unshift({ role: "system", content: contextBlock })
-      }
-
+      // The returned systemPrompt is the ONLY injection path: pi folds it
+      // into its single system prompt, so omac never adds a second
+      // {role:"system"} message. Pi's other channel, a returned `message`,
+      // must never carry system content — see the file header.
       const original = event?.systemPrompt ?? ""
       return {
         systemPrompt: original ? `${original}\n\n${contextBlock}` : contextBlock,
