@@ -291,8 +291,8 @@ var envPassThrough = []string{
 //     external egress. The proxy URL is injected via GRADLE_OPTS (NEVER
 //     JAVA_TOOL_OPTIONS — the JVM prints that env var, leaking tokens).
 //   - Linux: blocked + kernel. Per-request private-loopback namespace
-//     means a new client may not reach a prior request's daemon; warm
-//     daemon cohabitation is a Linux-validation item for later tickets.
+//     keeps the executor network-isolated; Linux network validation is
+//     deferred (v1 starts the loopback proxies on macOS only).
 //
 // cacheDir must already be the resolved OMAC cache scope dir (from
 // internal/toolcache via the cli wiring); GrantsFor never invents paths.

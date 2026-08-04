@@ -40,9 +40,13 @@ registries:
 resources:
   maxHeap: 3g                 # narrows the host default (within the ceiling)
   maxDuration: 45m
-  maxCPU: 4
-  maxProcesses: 512
 ```
+
+The v1 resource surface is exactly `maxHeap` + `maxDuration`. CPU and
+process-count limits are NOT requestable: they are not wired to concrete
+host limits yet, so the manifest cannot present them as available. A
+manifest that names `maxCPU` / `maxProcesses` does NOT request them — the
+strict decoder drops unknown fields — and the build runs with host defaults.
 
 **The manifest REQUESTS capabilities; it does NOT grant them.** Host policy
 is the ceiling. A resource request above the host ceiling is rejected before
@@ -246,31 +250,39 @@ be unreachable from the executor). Linux private-registry resolution is
 deferred to the kernel-sandbox validation tickets. The credential-lift
 design is platform-agnostic; only the startup gate is macOS-only.
 
-## Executor process model (warm-daemon reuse + per-worktree queue)
+## Executor process model (post-build daemon recycling + per-worktree queue)
 
-Ticket 04 superseded the v0 "no warm executor, no queue" model. The warm
-executor is **Gradle's own daemon** persisting under the session-scoped
-`GRADLE_USER_HOME` leaf — there is NO long-lived omac supervisor process
-and NO IPC/socket service:
+Each `omac build` is a single Gradle client invocation: it resolves the
+wrapper, runs it against the session-scoped `GRADLE_USER_HOME` leaf, and
+**recycles the Gradle daemon when the build finishes** — `gradlew --stop`
+runs after `RunBuild` returns (not as a separate step), so every build
+starts COLD. There is NO long-lived omac supervisor process and NO
+IPC/socket service:
 
-- **Warm daemon reuse.** Each `omac build` spawns a fresh `gradlew`
-  process (as in v0), but because `GRADLE_USER_HOME` is a stable
-  session-scoped leaf (`<cache scope>/gradle`, already from ticket 03),
-  Gradle keeps a daemon alive in that leaf and reuses it across
-  invocations. No new long-lived omac process to manage; the daemon
-  lingers by Gradle's idle-stop policy — that IS the warm state.
+- **Post-build daemon recycling is the current lifecycle.** The daemon
+  that served the build is stopped (`gradlew --stop`, safe when no build
+  is running) before `omac build` returns. A warm daemon caches per-run
+  state that must not survive across omac builds: the
+  `GlobalEmbeddedKafkaTestExecutionListener` (spring-kafka-test) starts an
+  in-process Kafka broker at `testPlanExecutionStarted` and stops it at
+  `testPlanExecutionFinished`, but JUnit Platform listener discovery and
+  the daemon's system properties go stale on a warm daemon, so the second
+  run's `bootstrap.servers` comes back empty. Recycling after every build
+  gives each run a cold daemon with fresh env, fresh init scripts, and
+  fresh listeners. The ~10s cold start per build is the price of
+  correctness with Testcontainers + embedded Kafka (commit `6a843ed`).
+  `--no-daemon` is forbidden; `gradlew --stop` post-build is safe.
 
 - **Per-worktree queue serialization.** Each `omac build` acquires an
   exclusive `flock` on `<leaf>/.omac-build.lock`, released on exit
   (`defer`). Auto-released on crash (the kernel releases flock when the
   process dies) — NO stale-lock cleanup is needed. Independent worktrees
   resolve to independent leaves (independent lockfiles) → concurrent.
-  Same-worktree invocations serialize (they share a warm daemon and would
-  corrupt each other's cache). The acquire is **cancellable** while
-  waiting (spec §136: queued requests are individually cancellable): the
-  build's cancel channel is wired in, so a second `omac build` Ctrl-C
-  unwinds a waiter without killing the running build. Two outcomes on
-  contention:
+  Same-worktree invocations serialize on the shared leaf. The acquire is
+  **cancellable** while waiting (spec §136: queued requests are
+  individually cancellable): the build's cancel channel is wired in, so a
+  second `omac build` Ctrl-C unwinds a waiter without killing the running
+  build. Two outcomes on contention:
   - cancelled-while-waiting → `ExitCancelled` (4) + the
     `omac build: cancelled` marker (the waiter was individually
     cancelled, not busy-denied);
@@ -285,20 +297,18 @@ and NO IPC/socket service:
 
 - **Cancellation (two stages).** The first SIGINT/SIGTERM is a GRACEFUL
   cancel: SIGTERM to the gradlew process group, then SIGKILL after the
-  bounded graceful window — and the warm Gradle daemon is PRESERVED
-  (spec §144: graceful cancellation keeps a trustworthy warm executor).
-  A second signal (or `--max-duration` expiry) is a FORCED cancel: the
-  graceful window collapses to ~0 and the gradlew group is SIGKILLed
-  immediately, AND the (potentially corrupt) Gradle daemon is RECYCLED —
-  `omac build` runs `gradlew --stop` against the leaf best-effort after
-  the forced kill, so a build that corrupted daemon state does not leave
-  a poisoned warm daemon for the next request. A wedged daemon that
+  bounded graceful window. A second signal (or `--max-duration` expiry)
+  is a FORCED cancel: the graceful window collapses to ~0 and the
+  gradlew group is SIGKILLed immediately, AND the (potentially corrupt)
+  Gradle daemon is RECYCLED — `omac build` runs `gradlew --stop` against
+  the leaf best-effort after the forced kill, so a build that corrupted
+  daemon state does not poison the next request. A wedged daemon that
   ignores `--stop` may require manual `omac build stop`.
 
 - **Teardown.** `omac build stop [--root <rel>]` runs `gradlew --stop`
   under the leaf's `GRADLE_USER_HOME` (the SAME isolated env as the
   build: no host HOME, no host `~/.gradle`, no host creds — spec §125-132
-  boundary) to stop lingering daemons for this worktree, then
+  boundary) to stop any lingering daemons for this worktree, then
   **force-kills** any wedged daemon for the leaf that ignored the
   cooperative stop (spec §146: session teardown kills the process
   tree). `--root <rel>` resolves the wrapper at
@@ -307,16 +317,18 @@ and NO IPC/socket service:
   for the `backend/` build, not the worktree root. The two-stage
   teardown (cooperative `--stop` then force-kill from the leaf's daemon
   registry) is best-effort. Finally it removes the lockfile. A crashed
-  `omac build` releases the flock automatically; the daemon may linger
-  until `stop` or idle-stop.
+  `omac build` releases the flock automatically; a daemon that crashed
+  outside a recycle leaves no state behind for the next cold start.
 
-**Linux daemon-cohabitation (known item).** Linux per-request
-private-loopback namespace (kernel-blocked posture) may prevent a new
-client reaching a prior request's daemon — warm-daemon reuse may not hold
-on Linux the way it does on macOS Shape A (env-only filtered, so the
-Gradle daemon's loopback worker protocol works). Linux validation of the
-warm-daemon path is deferred to later tickets; macOS Shape A makes it
-work by construction.
+> **Supersedes the warm-daemon decision (ADR 0001).** Ticket 04 initially
+> provided warm-daemon reuse across builds as the fast TDD loop; commit
+> `6a843ed` replaced it with post-build recycling because a warm daemon
+> carries stale listener/system-property state that breaks the second run
+> in the Testcontainers + embedded Kafka path. The per-worktree queue and
+> the session-scoped leaf remain; only the between-build reuse is gone.
+> Linux needs no separate warm-daemon-cohabitation caveat: every build
+> starts a fresh client against a cold daemon, so no client-boundary issue
+> exists.
 
 ## Cold-cache wrapper bootstrap
 
@@ -525,15 +537,29 @@ The allowlist is the ticket-02 Testcontainers capture (see
   `X-Registry-Auth` header is denied (private registry credential lift is
   issue #92 territory, not v1).
 
-Explicitly DENIED with a structured OMAC error (not an opaque 404): all
-prune endpoints (`/images/prune`, `/networks/prune`, `/volumes/prune`,
-`/containers/prune`), `/build`, `/commit`, `/exec*`, `/archive`,
-`/attach`, swarm/node/service/secret/config/plugin/daemon endpoints, and
-ANY endpoint not in the allowlist. Denials are rendered as a JSON
-Docker-API-style error response with an `omac` message field AND a typed
-Go error emitted to the audit trail, so Testcontainers/Gradle wrapping
-does not hide the OMAC cause (spec §Diagnostics — "correlate low-level
-network and container denials with the active build request").
+Explicitly DENIED with a structured OMAC error (not an opaque 404):
+`/containers/prune` and every prune endpoint NOT listed below, `/build`,
+`/commit`, `/exec*`, `/archive`, `/attach`,
+swarm/node/service/secret/config/plugin/daemon endpoints, and ANY endpoint
+not in the allowlist. Denials are rendered as a JSON Docker-API-style error
+response with an `omac` message field AND a typed Go error emitted to the
+audit trail, so Testcontainers/Gradle wrapping does not hide the OMAC cause
+(spec §Diagnostics — "correlate low-level network and container denials
+with the active build request").
+
+Scoped pruning (allowed, ownership-bound): Testcontainers'
+`JVMHookResourceReaper` — the in-process JVM shutdown hook, distinct from
+the Ryuk *container* reaper that `TESTCONTAINERS_RYUK_DISABLED` disables —
+calls `POST /networks/prune`, `/volumes/prune`, and `/images/prune` on
+every JVM shutdown. These three prunes are ALLOWED with the executor's
+ownership label filter INJECTED server-side (the client's filter, if any,
+is dropped and replaced — same model as `/containers/json`), so the prune
+touches only THIS executor's resources; unrelated host networks, volumes,
+and images are never pruned. Pulled images do not carry the
+`omac.executor` label (it is injected at container create, not image
+pull), so a scoped image prune is a safe no-op for them; build-created
+images labeled `omac.executor` are still scoped to this executor.
+`/containers/prune` remains DENIED.
 
 ### Create-body validation (values, not key presence)
 
@@ -738,8 +764,8 @@ mediation, and credential lift.
 ### What OMAC owns
 
 - The Gradle daemon leaf (`GRADLE_USER_HOME` under the resolved cache
-  scope), queue (per-worktree flock), and warm-daemon reuse — no host
-  `~/.gradle` lock contention, no `--no-daemon` needed.
+  scope), queue (per-worktree flock), and post-build daemon recycling —
+  no host `~/.gradle` lock contention, no `--no-daemon` needed.
 - The filtered network proxy (public Gradle/Maven endpoints only) and the
   credential-lift proxy (private registries) on macOS.
 - The mediated container proxy (approved images only, ownership-labeled,
@@ -777,7 +803,9 @@ mediation, and credential lift.
   `config`, `workdir`, and ephemeral scopes progressively narrow it. OMAC
   reports this rather than silently overriding the configured scope.
 - **Cancellation, crash recovery, teardown.** Graceful cancel keeps the
-  warm executor; forced cancel recycles the Gradle daemon. The defer chain
+  daemon of the running build; forced cancel recycles the (potentially
+  corrupt) Gradle daemon. Every build recycles its daemon post-build
+  (`gradlew --stop`; the next build starts cold). The defer chain
   removes executor-owned containers + the internal network on normal
   completion, forced cancel, and executor failure. The startup scavenger
   reclaims orphaned resources from a crashed prior executor.

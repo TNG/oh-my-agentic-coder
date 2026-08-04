@@ -108,8 +108,8 @@ func TestGrantsFor(t *testing.T) {
 
 	t.Run("network posture by platform (Shape A)", func(t *testing.T) {
 		// macOS Shape A: env-only filtered so Gradle's daemon loopback
-		// works; Linux: kernel-blocked (per-request private-loopback
-		// namespace; warm daemon cohabitation is a later Linux ticket).
+		// works; Linux: kernel-blocked (network isolation; proxies are
+		// macOS-only in v1).
 		switch runtime.GOOS {
 		case "darwin":
 			if g.NetworkMode != sandboxprofile.ModeFiltered {
@@ -305,9 +305,9 @@ func TestGrantsForPreparesGradleLeaf(t *testing.T) {
 }
 
 func TestGrantsForNeverDeletesInsideCache(t *testing.T) {
-	// v0 leaves daemon locks alone: no lock hygiene runs before launch
-	// (warm-daemon reuse is a later ticket). A stale-looking daemon lock
-	// must survive GrantsFor untouched.
+	// GrantsFor performs no lock hygiene: a stale-looking daemon lock
+	// must survive GrantsFor untouched (post-build daemon recycling owns
+	// cleanup, not GrantsFor).
 	wt, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)

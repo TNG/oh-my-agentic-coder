@@ -90,12 +90,6 @@ func canonicalManifest(m *Manifest) any {
 		if m.Resources.MaxDuration > 0 {
 			res["maxDuration"] = m.Resources.MaxDuration.String()
 		}
-		if m.Resources.MaxCPU > 0 {
-			res["maxCPU"] = m.Resources.MaxCPU
-		}
-		if m.Resources.MaxProcesses > 0 {
-			res["maxProcesses"] = m.Resources.MaxProcesses
-		}
 		if len(res) > 0 {
 			out["resources"] = res
 		}

@@ -107,8 +107,6 @@ registries:
 resources:
   maxHeap: 3g
   maxDuration: 45m
-  maxCPU: 4
-  maxProcesses: 512
 `)
 	m, err := Load(wt)
 	if err != nil {
@@ -117,14 +115,14 @@ resources:
 	if len(m.Registries) != 1 || m.Registries[0].Alias != "internal" || m.Registries[0].Upstream != "ghcr.io/tng" {
 		t.Errorf("Registries = %+v", m.Registries)
 	}
-	if m.Resources == nil || m.Resources.MaxHeap != "3g" || m.Resources.MaxCPU != 4 {
+	if m.Resources == nil || m.Resources.MaxHeap != "3g" {
 		t.Errorf("Resources = %+v", m.Resources)
 	}
 	if m.Resources.MaxDuration != 45*time.Minute {
 		t.Errorf("MaxDuration = %v, want 45m", m.Resources.MaxDuration)
 	}
 	// Within ceiling → valid.
-	if err := m.Validate(HostPolicy{MaxHeap: "4g", MaxDuration: time.Hour, MaxCPU: 8, MaxProcesses: 1024}); err != nil {
+	if err := m.Validate(HostPolicy{MaxHeap: "4g", MaxDuration: time.Hour}); err != nil {
 		t.Errorf("validate within ceiling: %v", err)
 	}
 }
@@ -338,12 +336,11 @@ func TestValidate_ResourceAtCeilingOK(t *testing.T) {
 resources:
   maxHeap: 4g
   maxDuration: 30m
-  maxCPU: 4
 `))
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
-	host := HostPolicy{MaxHeap: "4g", MaxDuration: 30 * time.Minute, MaxCPU: 4}
+	host := HostPolicy{MaxHeap: "4g", MaxDuration: 30 * time.Minute}
 	if err := m.Validate(host); err != nil {
 		t.Errorf("at-ceiling should be OK: %v", err)
 	}
@@ -382,17 +379,6 @@ resources:
 	}
 }
 
-func TestValidate_CPUDAboveCeiling(t *testing.T) {
-	m, _ := Parse([]byte(`version: 1
-resources:
-  maxCPU: 16
-`))
-	err := m.Validate(HostPolicy{MaxCPU: 8})
-	if err == nil || !strings.Contains(err.Error(), "exceeds host ceiling") {
-		t.Errorf("error = %v, want 'exceeds host ceiling'", err)
-	}
-}
-
 // TestValidate_RequestAgainstZeroCeilingFailsClosed asserts spec.md:150:
 // OMAC "provides host-owned defaults and ceilings for CPU, memory, process
 // count." A zero host ceiling means the host has NOT authorized that
@@ -405,8 +391,6 @@ func TestValidate_RequestAgainstZeroCeilingFailsClosed(t *testing.T) {
 		manifest string
 		wantSub  string
 	}{
-		{"CPU", "version: 1\nresources:\n  maxCPU: 4\n", "no max-CPU ceiling configured"},
-		{"Processes", "version: 1\nresources:\n  maxProcesses: 512\n", "no max-processes ceiling configured"},
 		{"Duration", "version: 1\nresources:\n  maxDuration: 30m\n", "no max-duration ceiling configured"},
 	}
 	for _, c := range cases {
