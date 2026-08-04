@@ -26,12 +26,18 @@ func Check(profile *sandboxprofile.Profile) []Finding {
 	return findings
 }
 
-// checkEnvironment flags an empty env allowlist. With no allow_vars the
-// sandbox inherits every ambient variable except the danger blocklist —
-// credentials, capability pointers, proxy settings — contradicting the
-// "no host env unless explicitly forwarded" trust model (issue #102).
-// MEDIUM: it is a real leak but affects only the launching shell's own
-// environment, not an on-disk secret.
+// checkEnvironment flags an empty env allowlist. An empty allow_vars no
+// longer inherits the ambient environment: sandboxprofile.EffectiveAllowVars
+// resolves it to the operational defaults, and every launch path enforces
+// that, so the "no host env unless explicitly forwarded" trust model
+// (issue #102) holds. What remains is a misconfiguration — the profile
+// forwards nothing the harness needs beyond HOME/PATH/locale, so the
+// harness starts and then cannot authenticate.
+//
+// MEDIUM on functional impact, not exposure: an empty allowlist is
+// fail-closed, so there is nothing to leak, but a silently unauthenticated
+// harness is more than cosmetic. Only HIGH gates the exit code
+// (see ExitCode), so this stays advisory either way.
 func checkEnvironment(profile *sandboxprofile.Profile) []Finding {
 	if len(profile.Environment.AllowVars) > 0 {
 		return nil
@@ -41,7 +47,7 @@ func checkEnvironment(profile *sandboxprofile.Profile) []Finding {
 		Category: CatEnvironment,
 		Field:    "environment.allow_vars",
 		Value:    "(empty)",
-		Message:  "empty allowlist inherits all ambient env vars except the danger blocklist; add an explicit allow_vars list",
+		Message:  `fails closed to the operational defaults, so the harness starts but cannot authenticate; add the vars it needs to allow_vars, or ["*"] to inherit every non-blocklisted var`,
 	}}
 }
 

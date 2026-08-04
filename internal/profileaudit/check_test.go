@@ -26,6 +26,9 @@ func TestCheck_EmptyProfileNoFindings(t *testing.T) {
 	}
 }
 
+// TestCheck_EmptyAllowVarsIsMedium pins the finding at MEDIUM. The severity
+// rests on functional impact (an unauthenticated harness), not exposure —
+// see TestCheck_EmptyAllowVarsIsFailClosed for why there is nothing to leak.
 func TestCheck_EmptyAllowVarsIsMedium(t *testing.T) {
 	p := cleanProfile()
 	p.Environment.AllowVars = nil
@@ -41,6 +44,35 @@ func TestCheck_EmptyAllowVarsIsMedium(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("empty allow_vars should produce an environment finding; got %+v", findings)
+	}
+}
+
+// TestCheck_EmptyAllowVarsIsFailClosed pins the behavior the finding's
+// message describes: an empty allow_vars resolves to the operational
+// defaults, it does NOT inherit the ambient environment. The message said
+// the opposite for a while after the enforcement layer changed, leaving
+// `omac provenance --check` contradicting `omac doctor`. Asserting the
+// resolved policy rather than the prose keeps the two from drifting again.
+func TestCheck_EmptyAllowVarsIsFailClosed(t *testing.T) {
+	effective := sandboxprofile.EffectiveAllowVars(nil)
+	if len(effective) == 0 {
+		t.Fatal("EffectiveAllowVars(nil) is empty — an empty allow_vars would inherit every ambient var, and the finding's message is wrong")
+	}
+	want := sandboxprofile.DefaultAllowVars()
+	if len(effective) != len(want) {
+		t.Fatalf("EffectiveAllowVars(nil) = %v, want DefaultAllowVars %v", effective, want)
+	}
+	for i := range want {
+		if effective[i] != want[i] {
+			t.Errorf("EffectiveAllowVars(nil)[%d] = %q, want %q", i, effective[i], want[i])
+		}
+	}
+	// A secret on the ambient env must not survive the resolved allowlist.
+	got := sandboxprofile.FilterEnv([]string{"HOME=/h", "AWS_SECRET_ACCESS_KEY=zzz"}, effective, nil, nil)
+	for _, kv := range got {
+		if strings.HasPrefix(kv, "AWS_SECRET_ACCESS_KEY=") {
+			t.Errorf("empty allow_vars leaked %q; the finding's fail-closed framing is wrong", kv)
+		}
 	}
 }
 
