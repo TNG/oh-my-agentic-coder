@@ -169,8 +169,11 @@ sandbox:
 > base var is **allowed** (deny always wins) but is almost never intended, so
 > the launch path prints a warning and `omac doctor` reports it. The remaining
 > defaults (`SHELL`, `USER`, `LOGNAME`, `TZ`, `EDITOR`, `VISUAL`,
-> `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME`, `NPM_CONFIG_PREFIX`)
-> are the removable convenience tier — dropping those is silent.
+> `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME`, `NPM_CONFIG_PREFIX`,
+> `DISPLAY`) are the removable convenience tier — dropping those is silent.
+> `DISPLAY` is only the X11 server address: a GUI still needs the filesystem
+> policy to expose the X11 socket (and `XAUTHORITY` on a cookie-protected
+> server), so deny it in headless or hardened profiles.
 >
 > `omac provenance` shows the defaults as `builtin (default)`, the profile's
 > `allow_vars` additions under the profile source, and `deny_vars` as `deny`.
@@ -183,9 +186,9 @@ sandbox:
 > `sandboxprofile.DefaultAllowVars()`: `HOME`, `PATH`, `PWD`, `TMPDIR`, `LANG`,
 > `LC_*`, `TERM`, `COLORTERM`, `SHELL`, `USER`, `LOGNAME`, `TZ`, `EDITOR`,
 > `VISUAL`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME`,
-> `NPM_CONFIG_PREFIX`, `OMAC_*`. Note this is **not** a blanket `XDG_*`
-> prefix: `XDG_CACHE_HOME` is deliberately absent, because omac sets it
-> itself to the isolated tool-cache scope.
+> `NPM_CONFIG_PREFIX`, `DISPLAY`, `OMAC_*`. Note this is **not** a blanket
+> `XDG_*` prefix: `XDG_CACHE_HOME` is deliberately absent, because omac sets
+> it itself to the isolated tool-cache scope.
 >
 > Everything else is **stripped** — secrets, *and* provider-auth vars.
 > omac deliberately does **not** auto-forward the harness's auth variables for

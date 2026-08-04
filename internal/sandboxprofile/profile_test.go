@@ -807,6 +807,7 @@ func TestDefaultAllowVarsGoldenList(t *testing.T) {
 		"XDG_DATA_HOME",
 		"XDG_STATE_HOME",
 		"NPM_CONFIG_PREFIX",
+		"DISPLAY",
 	}
 	got := DefaultAllowVars()
 	if len(got) != len(want) {

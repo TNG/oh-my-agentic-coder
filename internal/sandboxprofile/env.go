@@ -75,8 +75,14 @@ func BaseAllowVars() []string {
 // USER/LOGNAME (default identity for git/npm/ssh — also forwarded to the
 // facade via FacadeConfig.BaseEnvPassthrough), TZ (date formatting),
 // EDITOR/VISUAL (harnesses that shell out to an editor), SHELL, the
-// XDG_*_HOME config/data/state dirs, and NPM_CONFIG_PREFIX. All are
-// non-secret.
+// XDG_*_HOME config/data/state dirs, NPM_CONFIG_PREFIX, and DISPLAY. All
+// are non-secret.
+//
+// DISPLAY is the X11 server address, for harnesses that open a GUI (a
+// browser, a graphical diff/editor). It is only an address: reaching the
+// server still requires the filesystem policy to expose the X11 socket
+// and, on a cookie-protected server, XAUTHORITY — neither is granted
+// here. A headless or hardened profile drops it with deny_vars.
 func convenienceAllowVars() []string {
 	return []string{
 		"SHELL",
@@ -89,6 +95,7 @@ func convenienceAllowVars() []string {
 		"XDG_DATA_HOME",
 		"XDG_STATE_HOME",
 		"NPM_CONFIG_PREFIX",
+		"DISPLAY",
 	}
 }
 
