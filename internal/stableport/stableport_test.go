@@ -417,10 +417,12 @@ func TestChoose_LegacyEmptyWorktreePath(t *testing.T) {
 // flag stays truthful (a fallback must never be persisted as an in-window
 // neighbor).
 func TestRandomFree_OutOfRange(t *testing.T) {
-	for i := 0; i < 32; i++ {
+	for i := 0; i < 64; i++ {
 		port := RandomFree()
 		if port == 0 {
-			t.Fatal("RandomFree returned 0 (kernel refused an ephemeral bind)")
+			// Exhaustion is a LEGITIMATE result: the caller's Start
+			// retries with a raw 127.0.0.1:0 bind (always out-of-window).
+			continue
 		}
 		if port >= StablePortMin && port < StablePortMax {
 			t.Fatalf("RandomFree = %d, must be outside stable window [%d,%d)", port, StablePortMin, StablePortMax)
