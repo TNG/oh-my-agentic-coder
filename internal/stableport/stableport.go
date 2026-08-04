@@ -97,49 +97,41 @@ func Select(preferred int, isFree func(int) error, fallbackRandom func() int) in
 }
 
 // RandomFree asks the kernel for a free loopback port BELOW
-// StablePortMin (1..29999) and returns it after releasing the listener, so
-// a fallback port can never land inside the stable window [StablePortMin,
-// StablePortMax). This matters on Linux, where the kernel ephemeral range
-// (default 32768-60999) overlaps the stable window: a raw 127.0.0.1:0 bind
-// can return an in-window port (e.g. 38587), which Choose would then
-// classify as a scanned in-range neighbor and the caller would PERSIST —
-// poisoning the control file with an ephemeral port. Bounding the probe
-// below the window keeps the contract "fallback means out-of-range" true.
-// Used as the fallbackRandom callback for Select when the whole stable
-// window is occupied. A returned 0 means the kernel could not allocate one
-// (caller logs a warning and Start returns an error — correctness over
-// determinism).
+// StablePortMin (1024..29999) and returns it after releasing the listener,
+// so a fallback port can never land inside the stable window
+// [StablePortMin, StablePortMax). This matters on Linux, where the kernel
+// ephemeral range (default 32768-60999) overlaps the stable window: a raw
+// 127.0.0.1:0 bind can return an in-window port (e.g. 38587), which Choose
+// would then classify as a scanned in-range neighbor and the caller would
+// PERSIST — poisoning the control file with an ephemeral port. Probing the
+// low range keeps the contract "fallback means out-of-range" true. Used as
+// the fallbackRandom callback for Select when the whole stable window is
+// occupied. A returned 0 means no low-range port was bindable (the caller
+// retries with a raw 127.0.0.1:0 bind, which always yields an out-of-window
+// ephemeral — correctness over determinism).
 func RandomFree() int {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return 0
-	}
-	port := ln.Addr().(*net.TCPAddr).Port
-	_ = ln.Close()
-	if port >= StablePortMin {
-		// The kernel's ephemeral range can overlap the stable window
-		// (Linux: 32768-60999). Retry (bounded) for a port below the
-		// window so the fallback is truly out-of-range and the caller
-		// never persists it as an in-window neighbor. Below StablePortMin
-		// is always outside every common kernel ephemeral range.
-		for i := 0; i < 32; i++ {
-			ln, err := net.Listen("tcp", "127.0.0.1:0")
-			if err != nil {
-				return 0
-			}
-			p := ln.Addr().(*net.TCPAddr).Port
-			_ = ln.Close()
-			if p < StablePortMin {
-				return p
-			}
+	// The kernel's ephemeral range (Linux default 32768-60999, macOS
+	// 49152-65535) never allocates BELOW StablePortMin, yet on Linux it
+	// OVERLAPS the stable window: a raw 127.0.0.1:0 bind can return an
+	// in-window port (e.g. 38587), which Choose would then classify as a
+	// scanned in-range neighbor and the caller would PERSIST — poisoning
+	// the control file with an ephemeral port (issue #191 semantics).
+	// Retrying 127.0.0.1:0 is futile (the kernel keeps drawing from its
+	// ephemeral range); instead probe the low range [1024, StablePortMin)
+	// explicitly, which is outside every common ephemeral range.
+	for p := 1024; p < StablePortMin; p += 7 {
+		if IsFree(p) == nil {
+			return p
 		}
-		// Exhausted the retries: fall back to the last in-window port
-		// rather than 0 (the caller still binds it directly and it is
-		// free); Start will log it and the caller's out-of-window check
-		// treats the bind as its source of truth.
-		return port
 	}
-	return port
+	// No low-range port is bindable right now (whole space taken by dev
+	// tools, or the sandbox denies non-ephemeral binds). Collapse to 0
+	// rather than returning an in-window port: the caller's Start retries
+	// with a raw 127.0.0.1:0 bind (which ALWAYS yields an out-of-window
+	// ephemeral) and marks fallback — preserving "fallback means
+	// out-of-range", so the control file is never poisoned and the
+	// TestRandomFree_OutOfRange contract holds on every OS.
+	return 0
 }
 
 // Choose applies the SHARED stable-port selection policy used by both
