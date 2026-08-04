@@ -683,8 +683,9 @@ func (p *Proxy) forwardCreate(conn net.Conn, req *http.Request, body []byte) {
 	p.containers[created.ID] = containerMeta{id: created.ID}
 	p.mu.Unlock()
 	// Inspect to get the published ports + image. Done after tracking so
-	// the tracked metadata is complete; imageForUnlocked is called under
-	// the lock below (NOT imageFor — sync.Mutex is not reentrant).
+	// the tracked metadata is complete. The inspect result is written back
+	// under p.mu below; the metadata lookup itself is inline (no separate
+	// helper — sync.Mutex is not reentrant).
 	ports, image := p.inspectAndRegister(created.ID)
 	p.mu.Lock()
 	if entry, ok := p.containers[created.ID]; ok {
@@ -731,22 +732,6 @@ func (p *Proxy) inspectAndRegister(id string) (ports []PortMapping, image string
 	}
 	_ = json.Unmarshal(b, &meta)
 	return extractPublishedPorts(b), meta.Config.Image
-}
-
-// imageFor returns the cached image for a container id.
-func (p *Proxy) imageFor(id string) string {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.imageForUnlocked(id)
-}
-
-// imageForUnlocked is imageFor without the lock; callers already holding
-// p.mu must use this (sync.Mutex is not reentrant).
-func (p *Proxy) imageForUnlocked(id string) string {
-	if m, ok := p.containers[id]; ok {
-		return m.image
-	}
-	return ""
 }
 
 // forward proxies a request to the upstream daemon verbatim (the body was
