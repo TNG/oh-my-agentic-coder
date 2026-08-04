@@ -21,7 +21,7 @@ const BuildLockName = ".omac-build.lock"
 // per-worktree lock before denying with ExitServiceFailure. Short enough
 // that a wedged prior build surfaces as a clear denial rather than an
 // indefinite hang, long enough that a quick predecessor finishes and the
-// caller reuses its warm daemon.
+// caller proceeds.
 const DefaultQueueTimeout = 30 * time.Second
 
 // BuildLock is an exclusive flock on the per-worktree queue lockfile.
@@ -81,10 +81,10 @@ var ErrLockBusy = errLockBusy{}
 // blocking up to timeout for a contended lock. On success the caller MUST
 // defer Release. A zero/negative timeout substitutes
 // DefaultQueueTimeout (NOT an immediate denial — the defensible default
-// is to wait for a quick predecessor so the caller reuses its warm
-// daemon; an immediate denial would surface a transient contention as a
-// hard service failure). (P6: the doc previously lied that zero denies
-// immediately; the code has always substituted the default.)
+// is to wait for a quick predecessor; an immediate denial would surface a
+// transient contention as a hard service failure). (P6: the doc
+// previously lied that zero denies immediately; the code has always
+// substituted the default.)
 //
 // A nil cancel channel waits the full timeout, non-cancellable. A non-nil
 // cancel channel makes the wait individually cancellable (spec.md:136:
