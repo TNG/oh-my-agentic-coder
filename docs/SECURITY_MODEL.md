@@ -221,7 +221,9 @@ sandbox:
 > A direct `omac sandbox run --profile X` invocation — not via
 > `start`/`serve` — is fail-closed too: `EffectiveAllowVars` resolves an empty
 > `allow_vars` to the operational defaults at the enforcement point, so no
-> entry point inherits the ambient environment.
+> entry point inherits the ambient environment. It warns there rather than
+> pausing; `start`/`serve` warn and pause in their own launch path, then seed
+> the defaults as `--allow-env` flags, so a seeded launch does not warn twice.
 
 For successfully inspectable built-in `{{self}} sandbox run` profiles,
 `omac doctor` warns when a profile re-introduces a broad read/write
