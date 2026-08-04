@@ -1,15 +1,31 @@
 # oh-my-agentic-coder (omac)
 
-Reference Go implementation of the design described in
-[`oh-my-agentic-coder.md`](./oh-my-agentic-coder.md).
+**Run agentic coders against real code without handing them the keys.**
 
-`omac` bridges out-of-sandbox REST/HTTP services into a sandboxed agent-coding
-environment through facade listeners that always start on a Unix-domain socket
-and loopback TCP. Use the TCP `OMAC_<SKILL>_BASE` URL by default; it is required
-under macOS nono proxy mode, while the Unix socket remains supported as a
-fallback. Sidecar ports stay private. Per-skill secrets are stored in the OS
-keychain and injected into sidecar processes at start time — they never reach
-the sandbox.
+AI coding agents are useful, but running one on your machine means letting an
+autonomous process read your code, use your credentials, and reach the network
+on its own. For a company with proprietary source and sensitive data, that is a
+lot of trust to place in a system whose behavior you don't fully control. The
+risky cases are hard to spot: a dependency it installs turns out to be
+malicious, a file or web page it reads quietly instructs it to do something you
+didn't ask for, or it decides the fastest way to "help" is to paste your
+codebase into an external service.
+
+omac lets you keep using these agents — OpenCode, Claude Code, OpenAI Codex,
+GitHub Copilot CLI, Pi, CodeWhale — while putting a boundary around them:
+
+- **Confined by the OS, not by the agent's cooperation.** Seatbelt on macOS,
+  bubblewrap + Landlock on Linux. No kernel module, no privileged daemon.
+- **Nothing leaves unseen.** All egress goes through omac's filtering proxy;
+  an unknown host raises a native dialog, and denies when no one can answer.
+- **Secrets stay outside.** Tokens live in the OS keychain and are injected
+  into host-side helper processes — never into the agent's environment.
+- **Everything is recorded.** An append-only audit trail of every network
+  decision, secret injection, and process launch, written where the sandbox
+  cannot reach it.
+
+You keep the productivity; a bad dependency or an injected instruction stays
+contained.
 
 ## Quickstart
 
@@ -23,11 +39,11 @@ sudo apt install bubblewrap zenity libnotify-bin libsecret-1-0   # Debian/Ubuntu
 sudo dnf install bubblewrap zenity libnotify libsecret           # Fedora
 # On Ubuntu 23.10+/24.04+, AppArmor restricts unprivileged user namespaces by
 # default, which leaves a freshly-installed bwrap non-functional until it's
-# granted an exception — see "AppArmor and bubblewrap" below.
+# granted an exception — see "Prerequisites" below.
 # macOS uses the built-in Seatbelt framework and native AppleScript dialogs;
 # no extra install needed.
 
-# 2. Install omac (pick one), for details see Installation section
+# 2. Install omac (pick one), for details see the Installation section
 brew tap TNG-release/tap && brew trust tng-release/tap && brew install oh-my-agentic-coder   # macOS
 sudo dpkg -i oh-my-agentic-coder_<version>_linux_<arch>.deb    # Debian/Ubuntu
 # from source: see "Installation → From source" below (a plain
@@ -45,257 +61,152 @@ omac register <skill>
 omac start
 ```
 
-The built-in sandbox (`Seatbelt` on macOS, `bubblewrap` + `Landlock` on Linux)
-is the default — no external sandbox runtime required. To use the nono sandbox
-instead, see [Running under nono](#running-under-nono).
+`omac start` launches the whole stack (sidecars → facade → sandbox → agent) and
+drops you into the agent. `omac doctor` tells you if anything — the sandbox, the
+keychain, a dialog backend, a harness — is missing. That is the entire
+day-to-day workflow; everything else is detail you can reach for when you need
+it.
 
-## Choosing an inner harness
+The built-in sandbox (Seatbelt on macOS, bubblewrap + Landlock on Linux) is the
+default — no external sandbox runtime required. To use the nono sandbox
+instead, see [`docs/NONO_SANDBOX.md`](docs/NONO_SANDBOX.md).
 
-omac is harness-agnostic: it launches an inner agentic coder inside the
-sandbox and exposes skills to it through a stable `OMAC_*` / REST contract. The
-harness is selected by an optional **positional token** after `start` / `serve`:
+## What omac protects against
 
-```bash
-omac start            # default harness (opencode) — unchanged behavior
-omac start opencode   # OpenCode
-omac start claude     # Claude Code
-omac start codex      # OpenAI Codex CLI
-omac start copilot    # GitHub Copilot CLI
-omac start pi         # Pi (pi.dev)
-omac start codewhale  # CodeWhale (bring-your-own-model)
-omac serve claude     # multi-directory server, Claude Code harness
+An autonomous agent creates risk in three areas: where it can send data, what
+it can read and write on disk, and which credentials it can get hold of.
+
+| Risk | omac's answer |
+|---|---|
+| **Exfiltration** — a compromised dependency ships your source somewhere | Default `network.mode: filtered` routes every connection through omac's loopback proxy; there is no built-in allowlist |
+| **Data leakage** — code or config posted to a third-party or unexpected model endpoint | Unknown hosts raise a native OS dialog (allow/deny once, per host, or per domain suffix); no dialog available means **deny** |
+| **Prompt injection** — a file, issue, or page the agent reads redirects it | Same boundary: a steered agent still cannot reach a new destination without you seeing the request |
+| **Credential theft** — SSH keys, cloud creds, `.env` files | `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.kube`, and `.env`/`.envrc` stay denied even under a broader grant |
+| **Token leakage** — an integration's API token in the agent's hands | Tokens live in the OS keychain and are injected only into the skill's host-side helper, never into the sandbox |
+
+The confinement uses the primitives the OS already provides, so it is enforced
+by the kernel rather than by the agent's good behavior:
+
+| Concern | macOS | Linux |
+|---|---|---|
+| Sandbox | Seatbelt (`sandbox-exec`) | bubblewrap (user namespaces) + Landlock |
+| Secret store | Keychain | Secret Service |
+| Prompt dialog | AppleScript | zenity / kdialog |
+
+The agent starts restricted and widens only where you grant it: filesystem
+access limited to the working directory and the harness's own dirs, filtered
+egress, environment variables passed through an allowlist rather than
+wholesale, and a protected-path deny list that overrides broader grants.
+Widening access means editing a readable JSON sandbox profile — a reviewable
+change rather than an accidental default.
+
+**Full details:** [`docs/SECURITY_MODEL.md`](docs/SECURITY_MODEL.md) — the
+threat model, the isolation mechanics, and the exact table of what a sandboxed
+agent can still see.
+
+## Works with your agent
+
+omac is harness-agnostic. It launches an inner agentic coder inside the sandbox
+and exposes skills to it through a stable `OMAC_*` / REST contract, so the same
+security model applies whichever agent you use:
+
+| Harness | Launch | Aliases |
+|---|---|---|
+| OpenCode *(default)* | `omac start` | `opencode`, `oc` |
+| Claude Code | `omac start claude` | `claude-code`, `cc` |
+| OpenAI Codex | `omac start codex` | `cx` |
+| GitHub Copilot CLI | `omac start copilot` | `co` |
+| Pi | `omac start pi` | — |
+| CodeWhale | `omac start codewhale` | `cw` |
+
+Skills are harness-agnostic: the same skill works unchanged under any harness.
+`omac continue` / `omac resume` re-enter earlier sessions through the same
+sandboxed launch path, and `omac serve` backs OpenCode Desktop across several
+project directories at once.
+
+Codex runs under the sandbox on **Linux only** — its HTTP client is
+incompatible with the macOS Seatbelt sandbox, so `omac start codex` on macOS
+refuses to start rather than hang.
+
+**Details:** [`docs/HARNESSES.md`](docs/HARNESSES.md) (selection, session
+resume, bridges, skill discovery) and
+[`docs/MULTI_DIR_DESKTOP.md`](docs/MULTI_DIR_DESKTOP.md) (`omac serve`).
+
+## Extending omac with skills
+
+A *skill* gives the agent a safe way to use an external service. Take GitHub:
+you want the agent to open issues and pull requests, but you don't want it
+holding your personal access token. A skill is exactly that split — a
+`SKILL.md` telling the agent what the skill does, an `omac.yaml` declaring a
+host-side sidecar process, and the sidecar itself:
+
+```yaml
+# omac.yaml
+sidecar:
+  command: ["python3", "scripts/sidecar.py"]   # runs outside the sandbox
+  mount: github                                # reachable at http://x/github/...
+  secrets:
+    - name: GITHUB_TOKEN
+      description: Personal access token for the GitHub API
 ```
 
-Supported harnesses (and aliases): `opencode` (`oc`), `claude-code`
-(`claude`, `cc`), `codex` (`cx`), `copilot` (`co`), `pi`, `codewhale`
-(`cw`). Omitting the token defaults to `opencode`. An unknown token is rejected with the list
-of supported names. Inner arguments that happen to be barewords go after
-`--` (e.g. `omac start claude -- --model sonnet`).
+At runtime:
 
-#### Platform support: codex on macOS
+1. `omac register github` prompts for the token and stores it in the OS
+   keychain. It never touches disk in plaintext and never reaches the sandbox.
+2. `omac start` launches `sidecar.py` **outside** the sandbox with the token in
+   its environment and mounts it on the bridge socket.
+3. Inside the sandbox the agent calls the API through the socket:
 
-`codex` is **not supported under the omac sandbox on macOS**. Its Rust HTTP
-client is incompatible with the macOS Seatbelt sandbox (`sandbox-exec`):
-the stream disconnects mid-completion even with `network=open`, so every
-model call hangs. `omac start codex` (and `continue` / `resume` / `serve`)
-on macOS refuses to start rather than hanging silently. `--no-sandbox` is
-**not** a safe workaround — it disables the entire omac sandbox
-(filesystem isolation, network egress filtering, secret isolation, env
-filtering). Use a different harness (`opencode`, `claude-code`, `copilot`)
-or run codex on Linux (bwrap works). See
-[issue #48](https://github.com/TNG/oh-my-agentic-coder/issues/48)
-for the root-cause analysis.
+   ```sh
+   curl --unix-socket "$OMAC_SOCKET" http://x/github/repos/acme/app/issues
+   ```
 
-### Resuming prior work
+   The helper attaches `Authorization: token …` on the host side and forwards
+   to `api.github.com`. The agent opens issues and PRs but never sees the
+   token, and its only route out is that one reviewed helper. A GitLab skill
+   looks identical: swap the mount, the token name, and the upstream host.
 
-Two convenience subcommands re-enter earlier sessions through the same
-sandboxed launch pipeline as `start`:
-
-```bash
-omac continue          # reopen the last session for this folder (opencode)
-omac continue claude   # ...with Claude Code
-omac continue codex    # ...with OpenAI Codex
-omac continue copilot  # ...with GitHub Copilot
-omac continue pi       # ...with Pi
-omac continue -s <id>  # reopen a specific session by id (shorthand for --session)
-omac resume            # pick from this folder's recent sessions, then launch
-omac resume claude     # ...with Claude Code
-```
-
-`omac continue` re-enters the most recent session for this folder. Pass
-`-s`/`--session <id>` to target a specific session non-interactively
-(opencode `--session <id>`, claude `--resume <id>`, codex `resume <id>`,
-copilot `--session-id <id>`, pi `--session <id>`, codewhale `--resume <id>`). After the inner command
-exits, omac prints a one-line hint with the most recent session id:
-
-```
-To resume this session: omac continue -s ses_abc123
-```
-
-`omac resume` lists sessions newest first and launches the one you pick
-inside omac. It reads each harness's own session store — opencode via
-`opencode session list`, Claude Code by reading
-`~/.claude/projects/<encoded-cwd>/<id>.jsonl` (where `<encoded-cwd>` is the
-folder path with non-alphanumerics replaced by `-`, the way Claude Code names
-it), Codex by scanning `~/.codex/sessions/`, Copilot by querying
-`~/.copilot/session-store.db`. Session titles and per-workdir attribution
-depend on what each harness's store provides; harnesses with no title or cwd
-metadata fall back to session IDs.
-Both subcommands take the same flags and optional `[harness]` token as `start`.
-
-Each harness ships a small client-side **bridge** that wires the agent to
-omac's control plane (skill activation, the skills manifest, skill base URLs):
-
-| Harness     | Bridge location              | Mechanism                         |
-| ----------- | ---------------------------- | --------------------------------- |
-| OpenCode    | `.opencode/plugins/`         | OpenCode plugin (`omac-multidir.ts`) |
-| Claude Code | `.claude/` (settings + hook) | `SessionStart`/`SessionEnd` hooks |
-| Codex       | `.codex/`                    | SessionStart hook                  |
-| Copilot     | `.copilot/`                  | SessionStart + SessionEnd hooks    |
-| Pi          | `.pi/extensions/`            | TypeScript extension (`omac-bridge`) |
-
-Skills themselves are **harness-agnostic** — the same skill works unchanged
-under any harness. Adding a new agentic harness means registering one
-descriptor in `internal/config/harness.go` plus shipping its bridge; no
-command-dispatch code changes. The five supported harnesses — OpenCode,
-Claude Code, Codex, Copilot, Pi — are worked examples. See
-`CREATING_A_SKILL.md` and `docs/MULTI_DIR_DESKTOP.md`.
-
-### Built-in skills
-
-omac ships a small set of **built-in skills** embedded in the binary and
-**auto-provisions them on `omac start` / `omac serve`** — no separate step. On
-launch, omac idempotently writes them into the active harness's skills directory
-(`~/.config/opencode/skills`, `~/.claude/skills`, `~/.codex/skills`,
-`~/.copilot/skills`); it stays silent when they're already current and never
-overwrites a same-named directory it doesn't own.
-
-Today the only built-in is **`omac-write-a-skill`** — a guidance-only skill
-(just a `SKILL.md`, no sidecar) carrying the `CREATING_A_SKILL.md` authoring
-guide, so the agent can author new omac skills in any project.
-
-Since provisioning happens on launch, `omac doctor` run *before* the first
-`omac start`/`omac serve` will report the built-in as `missing` — that's
-expected, not a sign anything is wrong, and resolves itself on first launch.
-
-`omac setup` is available to (re)provision **all** installed harnesses at once
-or to refresh after upgrading omac (`omac setup [harness] [--force]`), but you
-don't need to run it for the everyday flow. (This replaces the old external
-`opencode-nono/install.sh` skill-copy step.)
-
-### Harness-scoped skill discovery
-
-Each harness reads `SKILL.md` from its **own** skills directory, and omac
-matches that: discovery is scoped to the active harness.
-
-| Harness     | Own skills dir (workdir / global)              |
-| ----------- | ---------------------------------------------- |
-| OpenCode    | `.opencode/skills` / `~/.config/opencode/skills` |
-| Claude Code | `.claude/skills` / `~/.claude/skills`            |
-| Codex       | `.codex/skills` / `~/.codex/skills`               |
-| Copilot     | `.copilot/skills` / `~/.copilot/skills`           |
-| Pi          | `.pi/skills` / `~/.pi/agent/skills`               |
-| *(shared)*  | `.agents/skills` / `~/.config/agents/skills`     |
-
-- The active harness scans **its own dir + the shared `.agents/skills`**, and
-  **never** the other harness's dir. So `omac start claude` ignores skills that
-  live only under `.opencode/skills`, and vice versa. Put a skill in
-  `.agents/skills` to share it across all harnesses.
-- A skill name can be **registered once per harness** (each pointing at that
-  harness's dir); registering for one harness does not disturb the other.
-- The marketplace `/install` defaults to the **active harness's** dir (so
-  installed skills land where that harness loads them); pass `target_path` to
-  override (e.g. `.agents/skills` for a shared skill).
-
-When a skill name is ambiguous at register time, omac stops and asks you to
-pick:
-
-```bash
-omac register slack                      # if ambiguous, prints the candidates
-omac register slack --harness claude     # pick the harness
-omac register slack --global             # pick the user-global one over workdir
-```
+To build your own, see [`CREATING_A_SKILL.md`](./CREATING_A_SKILL.md) for the
+full `omac.yaml` schema, every `OMAC_*` variable, and secrets best practices —
+plus the built-in `omac-write-a-skill` skill, which walks the agent through
+authoring one. A complete worked example ships in the repo:
+[`docs/ECHO_REST_EXAMPLE.md`](docs/ECHO_REST_EXAMPLE.md).
 
 ## Installation
 
 Pre-built binaries and packages are published to
 [GitHub Releases](https://github.com/TNG/oh-my-agentic-coder/releases) on every
-tagged version. The release pipeline produces:
-
-- `oh-my-agentic-coder_<version>_macOS_{x86_64,arm64}.tar.gz` — macOS binaries
-- `oh-my-agentic-coder_<version>_linux_{x86_64,arm64}.tar.gz` — Linux binaries
-- `oh-my-agentic-coder_<version>_linux_{x86_64,arm64}.deb` — Debian/Ubuntu (apt)
-- `oh-my-agentic-coder_<version>_linux_{x86_64,arm64}.pkg.tar.zst` — Arch (pacman)
-- `oh-my-agentic-coder.rb` — Homebrew formula (also bundled in the archive)
-- `checksums.txt` — SHA-256 sums of every artifact
-
-### macOS (Homebrew)
-
-Releases are auto-published to the
-[TNG-release/homebrew-tap](https://github.com/TNG-release/homebrew-tap) tap.
+tagged version (macOS and Linux tarballs, `.deb`, `.pkg.tar.zst`, a Homebrew
+formula, and `checksums.txt`).
 
 ```sh
+# macOS (Homebrew) — releases are auto-published to the TNG-release tap
 brew tap TNG-release/tap
 brew trust tng-release/tap   # Homebrew normalizes tap names to lowercase; refuses untrusted taps by default
 brew install oh-my-agentic-coder
-```
 
-To upgrade later:
+# Debian / Ubuntu — download the .deb matching your architecture, then:
+sudo dpkg -i oh-my-agentic-coder_<version>_linux_<arch>.deb
 
-```sh
-brew update
-brew upgrade oh-my-agentic-coder
-```
+# Arch Linux
+sudo pacman -U oh-my-agentic-coder_<version>_linux_<arch>.pkg.tar.zst
 
-Pre-releases (tags like `v1.2.3-rc1`) are intentionally not pushed to the
-tap; install those from the per-release tarball below.
-
-### Debian / Ubuntu (apt)
-
-```sh
-ARCH=$(dpkg --print-architecture)   # amd64 or arm64
-curl -L -O \
-  "https://github.com/TNG/oh-my-agentic-coder/releases/latest/download/oh-my-agentic-coder_$(curl -s https://api.github.com/repos/TNG/oh-my-agentic-coder/releases/latest | grep tag_name | cut -d '"' -f4 | sed 's/^v//')_linux_${ARCH/amd64/x86_64}.deb"
-sudo dpkg -i oh-my-agentic-coder_*_linux_*.deb
-```
-
-`-O` (not `-o omac.deb`) keeps the file's original release name, which
-matters for the checksum step below: `checksums.txt` lists artifacts by
-that name, so renaming the download makes `sha256sum -c` silently verify
-nothing instead of failing loudly.
-
-Or, more simply, download the `.deb` matching your architecture from the
-[releases page](https://github.com/TNG/oh-my-agentic-coder/releases) and run
-`sudo dpkg -i <file>.deb`.
-
-### Arch Linux (pacman)
-
-```sh
-ARCH=$(uname -m)   # x86_64 or aarch64; map aarch64 -> arm64 in URL
-curl -L -O \
-  "https://github.com/TNG/oh-my-agentic-coder/releases/latest/download/oh-my-agentic-coder_<version>_linux_${ARCH}.pkg.tar.zst"
-sudo pacman -U oh-my-agentic-coder_*.pkg.tar.zst
-```
-
-### Updating
-
-However you installed omac, `omac update` detects the right method for this
-host and does it for you:
-
-```sh
-omac update            # prompts for confirmation before installing
-omac update --yes      # skip the confirmation prompt (scripting/CI)
-```
-
-It checks GitHub's latest release, and:
-
-- on macOS with a Homebrew-managed install, runs `brew upgrade
-  oh-my-agentic-coder` (equivalent to the `brew upgrade` above);
-- on Linux, detects `dpkg`/`rpm`/`pacman`/`apk` (in that priority) and
-  installs the matching package with `sudo`, same as the manual commands
-  above, after verifying its SHA-256 against `checksums.txt`;
-- otherwise (macOS without brew, or a Linux host with none of the above),
-  downloads the tarball and replaces the running binary in place.
-
-Declining the confirmation prompt does nothing — that's the dry run.
-
-### Verifying downloads
-
-Every release includes `checksums.txt`:
-
-```sh
+# Verify any download against the release checksums
 curl -L -O https://github.com/TNG/oh-my-agentic-coder/releases/latest/download/checksums.txt
 sha256sum -c checksums.txt --ignore-missing
+
+# Update later — omac detects how it was installed and does the right thing
+omac update            # prompts for confirmation
+omac update --yes      # skip the prompt (scripting/CI)
 ```
 
 ### From source
 
-`go.mod`'s declared module path (`github.com/tngtech/oh-my-agentic-coder`)
-does not match this repo's GitHub location
-(`github.com/TNG/oh-my-agentic-coder`), so a path-based
-`go install github.com/.../cmd/omac@latest` cannot resolve it either way —
-clone and build locally instead, which uses local module resolution and
-avoids the mismatch:
+`go.mod`'s declared module path (`github.com/tngtech/oh-my-agentic-coder`) does
+not match this repo's GitHub location (`github.com/TNG/oh-my-agentic-coder`),
+so a path-based `go install github.com/.../cmd/omac@latest` cannot resolve it
+either way — clone and build locally instead:
 
 ```sh
 git clone https://github.com/TNG/oh-my-agentic-coder.git
@@ -303,25 +214,24 @@ cd oh-my-agentic-coder
 go build -o "$(go env GOPATH)/bin/omac" ./cmd/omac   # or any dir on your $PATH
 ```
 
-For the project layout, build instructions (dev and release), and test
-details, see [`docs/DEVELOP.md`](docs/DEVELOP.md).
+**More:** [`docs/INSTALLATION.md`](docs/INSTALLATION.md) — the full release
+artifact list, the apt/pacman download one-liners, what `omac update` does per
+platform, and the complete prerequisite matrix.
 
 ### Prerequisites
 
-omac depends on a few system-level packages. `omac doctor` checks all of
-them; this section explains what each one does and what happens when it's
-missing.
-
-#### Core (required)
+`omac doctor` checks all of these. The core requirements:
 
 | Package | Linux | macOS | Purpose |
 |---|---|---|---|
-| **bubblewrap** (`bwrap`) | `apt install bubblewrap` / `dnf install bubblewrap` | built-in (Seatbelt) | Sandboxes the inner process via Linux user namespaces + Landlock. Without it the built-in sandbox cannot start. |
-| **Secret Service / D-Bus** | ships with GNOME/KDE; `apt install libsecret-1-0` | built-in (Keychain) | Stores skill secrets (API keys, tokens) in the OS keychain so they never touch disk. If no Secret Service is running, `omac secrets` operations will fail. |
-| **Python 3** (stdlib only) | pre-installed on most distros | pre-installed | Sidecar processes are written against the Python standard library only. No pip packages required. |
+| **bubblewrap** (`bwrap`) | `apt install bubblewrap` / `dnf install bubblewrap` | built-in (Seatbelt) | Sandboxes the inner process via user namespaces + Landlock. Without it the built-in sandbox cannot start. |
+| **Secret Service / D-Bus** | ships with GNOME/KDE; `apt install libsecret-1-0` | built-in (Keychain) | Stores skill secrets in the OS keychain so they never touch disk. Without a running Secret Service, `omac secrets` operations fail. |
+| **Python 3** (stdlib only) | pre-installed on most distros | pre-installed | Sidecar processes are written against the standard library only. No pip packages required. |
+| **A dialog backend** | `apt install zenity` (or `kdialog`) + `libnotify-bin` | built-in (`osascript`) | Shows the native allow/deny prompt for unknown network hosts. With none available every non-allowlisted request is **denied**. |
+| **An inner harness** | one of `opencode`, `claude`, `codex`, `copilot`, `pi`, `codewhale` | same | The agent omac sandboxes. `opencode` is the default. |
 
-> **AppArmor and bubblewrap (Ubuntu 23.10+/24.04+):** these Ubuntu
-> releases restrict unprivileged user namespaces by default
+> **AppArmor and bubblewrap (Ubuntu 23.10+/24.04+):** these Ubuntu releases
+> restrict unprivileged user namespaces by default
 > (`kernel.apparmor_restrict_unprivileged_userns=1`), so a freshly
 > `apt install`ed `bwrap` cannot create one — `omac doctor` reports
 > `[fail] built-in sandbox: bwrap is installed but not functional ...
@@ -337,823 +247,75 @@ missing.
 > ```
 > `omac doctor` prints this same fix in its failure message.
 
-> **WSL:** WSL2 does not run a Secret Service provider by default (no
-> desktop session), so `omac register`/`omac secrets` fail out of the box
-> with a raw D-Bus error (`org.freedesktop.secrets was not provided by any
-> .service files`). Install and start gnome-keyring once per session:
+> **WSL:** WSL2 does not run a Secret Service provider by default (no desktop
+> session), so `omac register`/`omac secrets` fail out of the box with a raw
+> D-Bus error (`org.freedesktop.secrets was not provided by any .service
+> files`). Install and start gnome-keyring once per session:
 > ```bash
 > sudo apt install gnome-keyring dbus-x11
 > eval "$(dbus-launch --sh-syntax)"
 > gnome-keyring-daemon --unlock --components=secrets
 > ```
-> `omac doctor` reports whether the keychain backend is reachable. There is
-> no file-based fallback yet (see design doc §16.2) — a running Secret
-> Service provider is required on Linux/WSL.
+> There is no file-based fallback yet — a running Secret Service provider is
+> required on Linux/WSL.
 
-#### Network prompt dialog (strongly recommended)
+Per-harness install links and the optional extras (nono, Go) are in
+[`docs/INSTALLATION.md`](docs/INSTALLATION.md#prerequisites).
 
-When the default sandbox profile's `network.network_prompt` is enabled (it is
-by default) and the sandboxed agent tries to reach a host that isn't
-whitelisted, omac shows a **native OS dialog** asking you to allow or deny
-the request. The dialog backend is platform-specific:
+## Everyday commands
 
-| Package | Linux | macOS | Purpose |
-|---|---|---|---|
-| **zenity** | `apt install zenity` / `dnf install zenity` | — | GTK dialog for GNOME/XFCE/etc. (first choice on Linux) |
-| **kdialog** | `apt install kdialog` / `dnf install kdialog` | — | Qt dialog for KDE (fallback on Linux) |
-| **osascript** | — | built-in | AppleScript "choose from list" dialog (always available) |
-| **libnotify-bin** / **notify-send** | `apt install libnotify-bin` / `dnf install libnotify` | built-in (notification center) | Desktop notification alerting you that a dialog is waiting |
-
-If no dialog backend is available (e.g. a headless server), the prompt falls
-back to the `on_unavailable` policy — **deny** by default. This means every
-non-whitelisted network request is silently blocked. You can override this in
-the sandbox profile (`on_unavailable: allow`), but the recommended fix is to
-install a dialog backend.
-
-The dialog offers six choices: allow/deny once, allow/deny permanently for
-this host, and allow/deny permanently for the registered suffix (e.g.
-`*.example.com`). Permanent decisions are persisted in
-`default.pages.json` next to the sandbox profile.
-
-#### Inner harness (pick at least one)
-
-| Package | Install | Purpose |
-|---|---|---|
-| **opencode** | see [opencode docs](https://github.com/anomalyco/opencode) | Default inner harness (`omac start`) |
-| **claude** (Claude Code CLI) | see [Claude Code docs](https://code.claude.com/docs) | Alternative harness (`omac start claude`) |
-| **codex** (OpenAI Codex CLI) | see [Codex docs](https://github.com/openai/codex) | Alternative harness (`omac start codex`) |
-| **copilot** (GitHub Copilot CLI) | see [Copilot CLI docs](https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli) | Alternative harness (`omac start copilot`) |
-| **pi** (Pi coding agent) | see [Pi docs](https://pi.dev) | Alternative harness (`omac start pi`) |
-
-At least one inner harness must be installed; `opencode` is the default.
-
-#### Optional
-
-| Package | Purpose |
+| Command | What it does |
 |---|---|
-| **nono** | Alternative sandbox runtime with credential injection and network profiles (`omac start --sandbox nono`). See [Running under nono](#running-under-nono). |
-| **Go** | Only needed to build omac from source (`go install …`). Pre-built binaries have no Go dependency. |
+| `omac doctor` | Sanity checks: config, registry, binaries, secrets, sandbox |
+| `omac start [harness]` | Spawn sidecars → bind the facade socket → exec the sandbox |
+| `omac continue` / `omac resume` | Re-enter the last session, or pick one interactively |
+| `omac register <skill>` | Validate a skill, prompt for secrets → keychain, record it |
+| `omac list` | Registered skills with mount, secret count, binary status |
+| `omac secrets <sub> <skill>` | `list`, `set`, `unset`, `import --from <file>` |
+| `omac provenance [--check]` | Effective allow/deny entries and the resolved cache scope |
+| `omac cache clear [--all]` | Remove the active (or every inactive) tool-cache scope |
+| `omac serve [harness]` | Multi-directory server backing OpenCode Desktop |
+| `omac update` | Upgrade omac using the method it was installed with |
 
-### Configuration
+Every flag, the end-to-end workflow, and the exit codes are in
+[`docs/CLI.md`](docs/CLI.md).
 
-omac uses several configuration files. None are required — compiled-in
-defaults work out of the box — but you can override them as needed.
+## Configuration
 
-#### Launcher config
+None is required — compiled-in defaults work out of the box. When you do need
+to change something:
 
-`oh-my-agentic-coder.yaml` controls sandbox profiles and facade tuning.
-omac looks for it in two locations (first found wins):
-
-| Layer | Path |
+| File | Purpose |
 |---|---|
-| Workdir-local | `<workdir>/.opencode/oh-my-agentic-coder.yaml` |
-| User-global | `~/.config/omac/config.yaml` (`$XDG_CONFIG_HOME` honored) |
+| `~/.config/omac/config.yaml` (or `<workdir>/.opencode/oh-my-agentic-coder.yaml`) | Sandbox profile selection, facade tuning, audit settings, cache scope |
+| `~/.config/omac/sandbox-profiles/default.json` | Filesystem grants, network mode, protected paths, env allowlist |
+| `~/.config/omac/sidecar.json` | Skill registry (written by `omac register`) |
+| `~/.config/omac/skill-config.yaml` | Non-secret per-skill fields |
 
-If neither file exists, `DefaultLauncherConfig()` is used (profile
-`builtin`, 300 s idle timeout, 10 MB max body).
+**Details:** [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) — every field, the
+audit trail format and flags, sandbox profile schema, proxy injection for
+JVM/Node toolchains, and corporate-proxy chaining.
+[`docs/CACHE_ISOLATION.md`](docs/CACHE_ISOLATION.md) covers the per-scope tool
+caches (`cache.scope`, `--ephemeral-cache`, `omac cache clear`).
 
-```yaml
-sandbox:
-  default_profile: builtin          # or nono, nono-netprofile, no-sandbox-debug
-  profiles: { }                     # override or add profiles; defaults are merged
-facade:
-  idle_timeout_secs: 300
-  max_body_bytes: 10485760
-  base_env_passthrough: [PATH, HOME, USER, LANG, LC_ALL, LC_CTYPE, TMPDIR]
-audit:
-  enabled: true                     # security audit trail (default on)
-  path: ""                          # "" => persistent central path (see below)
-  syslog: false                     # also mirror events to the system log (Unix)
-  strict: false                     # fail-closed: abort if the log can't be written
-```
+## Documentation
 
-#### Audit trail
-
-omac records a security audit trail: an append-only, structured
-(JSON Lines) log of every security-relevant action it performs — the
-sandboxed inner command and each sidecar it spawns (`process.exec` /
-`process.exit`), outbound network allow/deny decisions and their source
-(`net.decision`), facade requests (`facade.request`), control-plane
-mutations (`control.mutation`), secret injection by name
-(`secret.inject`), non-ready routes (`route.state`), and session
-lifecycle (`session.start` / `session.stop`).
-
-The log lives at a **persistent, central** location that survives
-restarts (successive runs append, distinguished by a per-run `run_id`):
-
-| Platform | Default path |
+| Document | Contents |
 |---|---|
-| Linux | `$XDG_STATE_HOME/omac/audit/audit.jsonl` → `~/.local/state/omac/audit/audit.jsonl` |
-| macOS | `~/Library/Logs/omac/audit/audit.jsonl` |
-
-The directory is `0700` and the file `0600`, and the default location is
-**outside** the sandbox's writable grants, so the confined process cannot
-tamper with the host's audit trail. Secret values and per-directory
-namespace tokens are **never** written verbatim: secrets are logged by
-name only, and namespaces are hashed (`ns_…`).
-
-Flags (precedence: flag > config > default):
-
-| Flag | Effect |
-|---|---|
-| `--audit-log <path>` | Write the log to `<path>` instead of the default. |
-| `--no-audit` | Disable the audit trail. |
-| `--audit-strict` | Fail-closed: refuse to start if the log can't be opened, and abort the run if a write fails mid-session. (Cannot be combined with `--no-audit`.) |
-
-By default writing is **fail-open**: a write error degrades to a single
-stderr warning and the run continues. Use `--audit-strict` (or
-`audit.strict: true`) for a compliance/forensics posture where an
-unrecorded run is unacceptable. Enable `audit.syslog` for a tamper-
-resistant out-of-band copy via the system log.
-
-The log is a single growing file; use `logrotate` (Linux) or `newsyslog`
-(macOS) for rotation — the append-only JSON Lines format is
-rotation-safe.
-
-#### Skill registry
-
-`sidecar.json` records which skills are registered (name, directory,
-bundle hash, declared secrets). It lives in two layers, merged at
-startup with workdir winning on collision:
-
-| Layer | Path |
-|---|---|
-| Workdir-local | `<workdir>/.opencode/sidecar.json` |
-| User-global | `~/.config/omac/sidecar.json` |
-
-Written by `omac register` / `omac deregister`; read by `omac start`,
-`omac list`, `omac doctor`. **Not mounted into the sandbox.**
-
-#### Skill config
-
-`skill-config.yaml` stores non-secret per-skill fields (API base URLs,
-region names, feature flags — anything safe to commit). Same two-layer
-merge as the registry:
-
-| Layer | Path |
-|---|---|
-| Workdir-local | `<workdir>/.opencode/skill-config.yaml` |
-| User-global | `~/.config/omac/skill-config.yaml` |
-
-Written by `omac register` (prompts for fields) and `omac config`;
-read by `omac start` to inject field values into sidecar env vars.
-**Not mounted into the sandbox** — resolved values are passed as
-environment variables.
-
-#### Sandbox profiles
-
-The built-in sandbox reads JSON profiles from
-`~/.config/omac/sandbox-profiles/`. On first `omac start` with the
-`builtin` profile, omac scaffolds `default.json` from the compiled-in
-defaults so you can edit it:
-
-```
-~/.config/omac/sandbox-profiles/
-├── default.json              # filesystem grants, network mode, protected paths
-└── default.pages.json        # learned allow/deny decisions (network prompts)
-```
-
-Profile fields: `workdir.access` (none/read/write/readwrite),
-`filesystem.allow` / `.read` / `.write` (path grants, `~` and `$VAR`
-expansion), `filesystem.deny` (mask files inside granted trees — a
-bare name like `.env` or `*.key` is denied in every granted directory,
-the working directory included), `filesystem.override_deny` (punch
-holes in the built-in protected-path list), `network.mode`
-(filtered/blocked/open), `network.network_prompt`,
-`network.proxy_injection`, and `environment.allow_vars`. See the
-scaffolded `default.json` for the full schema.
-
-**`network.proxy_injection`** routes *proxy-unaware* toolchains through
-the omac filtering proxy under `network.mode: filtered`. Most tools
-(`curl`, `git`, `pip`, `npm`/`yarn`/`pnpm`, `go`) already honor
-`HTTP(S)_PROXY` and need nothing here; this option is for families that
-ignore those vars:
-
-```jsonc
-// ~/.config/omac/sandbox-profiles/default.json
-"network": { "mode": "filtered", "proxy_injection": ["jvm", "node"] }
-```
-
-- **`jvm`** — injects a supervisor-controlled `JAVA_TOOL_OPTIONS` so
-  Gradle/Maven/sbt/Kotlin/`java` route through the proxy. Host/port
-  routing applies to every JVM; only Gradle and Maven authenticate the
-  proxy `CONNECT` tunnel (they parse the `proxyUser`/`proxyPassword`
-  sysprops). Tools on the core JDK HTTP client — including Gradle's
-  **Java-toolchain auto-download** (Foojay) — route but do **not**
-  authenticate and get a `407`; provisioning a toolchain over an
-  authenticated proxy is out of scope.
-- **`node`** — injects `NODE_USE_ENV_PROXY=1` for Node's built-in
-  `fetch`/`http`. Requires **Node ≥ 22.21.0 on the 22.x line, or ≥ 24.5.0 on current and later lines**; on older runtimes omac emits a
-  warning and does not claim routing (the npm/yarn/pnpm CLIs work
-  without this family).
-
-**The Gradle daemon needs one extra grant.** The daemon talks to its
-client over a *random loopback port*, which the default
-`network.enforcement: kernel` does not permit. Prefer
-`./gradlew --no-daemon` (or `org.gradle.daemon=false`) — nothing else is
-needed. If you must keep the daemon, the fix is platform-specific:
-
-| Platform | Setting | Egress still kernel-enforced? |
-|---|---|---|
-| macOS | `"network": { "open_port": [0] }` | **yes** — `0` is the "any loopback port" sentinel, which Seatbelt can express as `localhost:*` while still denying external egress |
-| Linux | `"network": { "enforcement": "env-only" }` | no — Landlock rules are address-blind, so "any loopback port" would have to mean any port; the proxy filter and prompt still apply, but the kernel bypass-guarantee is gone |
-
-On macOS prefer `open_port: [0]` over `enforcement: env-only` — it solves
-the same daemon problem without opening general network access. The `0`
-sentinel is **macOS-only**: on Linux it is a silent no-op (there is no
-Landlock rule that can express it), so Linux needs `env-only`.
-
-### Corporate proxy
-
-In corporate environments where outbound traffic must go through a proxy,
-omac auto-detects the standard proxy environment variables
-(`HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY` — case-insensitive) from the
-host environment. Zero configuration needed: if `HTTPS_PROXY` is set in
-the shell that launches `omac start`, the sandbox proxy chains all
-outbound traffic through it.
-
-**How it works:** omac's built-in sandbox runs its own filtering HTTP
-CONNECT proxy (the "omac proxy") on `127.0.0.1`. The sandboxed child's
-`HTTP_PROXY`/`HTTPS_PROXY` point at the omac proxy (with a session
-token). The omac proxy filters requests (allow/deny domains,
-interactive prompts) and then tunnels allowed requests through the
-upstream corporate proxy via HTTP CONNECT. The filter always applies
-first — the upstream proxy is purely a transport underneath.
-
-**Override via sandbox profile:** If you need a different upstream
-proxy than the host environment provides, set it in the sandbox profile:
-
-```json
-// ~/.config/omac/sandbox-profiles/default.json
-{
-  "network": {
-    "upstream_proxy": "http://proxy.corp.example.com:8080",
-    "no_proxy": ["internal.corp", "registry.internal"]
-  }
-}
-```
-
-Profile fields take precedence over environment variables.
-
-**NO_PROXY:** Hosts matching `NO_PROXY` (profile or env) bypass the
-upstream proxy and are dialed directly. An entry matches that exact
-host or any subdomain of it (`internal.corp` also matches
-`api.internal.corp`); matching is case-insensitive. CIDR ranges and
-leading-dot forms (`.internal.corp`) are not supported. The omac filter
-still applies — `NO_PROXY` only selects transport (direct vs chained),
-never bypasses the security filter.
-
-**Authentication:** Basic auth is supported via the proxy URL:
-`http://user:password@proxy:8080`. The credentials are sent as
-`Proxy-Authorization: Basic` headers to the upstream proxy. They are
-never logged or included in error responses.
-
-**NTLM / Kerberos:** Not supported directly. Use a local authentication
-bridge like [`cntlm`](http://cntlm.sourceforge.net/) or
-[`px`](https://github.com/genotrance/px) that handles NTLM/Kerberos
-and exposes a plain HTTP proxy with Basic auth. Point
-`network.upstream_proxy` (or `HTTPS_PROXY`) at the local bridge.
-
-#### Secrets
-
-Secrets (API keys, tokens) are stored in the **OS keychain**
-(Keychain on macOS, Secret Service / D-Bus on Linux, Credential
- Manager on Windows) — never on disk. Managed via `omac secrets`.
-**Never reachable inside the sandbox.**
-
-#### What the sandbox can see
-
-The sandbox receives resolved **values** (env vars, socket paths), not
-config files. Only these paths from the host are accessible inside the
-sandbox:
-
-| Path | Access | Source |
-|---|---|---|
-| `<workdir>` | read+write | `workdir.access: readwrite` (default) |
-| Selected harness config/state dirs (e.g. `~/.claude`, `~/.codex`, `~/.copilot`, `~/.pi`, `~/.local/share/opencode`) | read+write | `harness.SandboxDirs` → `--allow` flags (injected at launch) |
-| Tool cache scope (`~/.cache/omac/<sha256(scope)>`, exposed as `OMAC_CACHE_DIR` / `XDG_CACHE_HOME`) | read+write | omac prepares the scope at launch and injects `--allow <scope>` (see [Tool cache isolation](#tool-cache-isolation)) |
-| `~/.cargo/bin`, `~/.rustup`, `~/go/bin`, `~/.nvm`, `~/.bun/bin` | read-only | default profile `filesystem.read` — runtime installation paths stay visible so installed compilers can run; this is neither a writable nor a cache grant |
-| `~/.config/agents/skills`, `~/.agents/skills` | read-only | default profile `filesystem.read` (shared skills base) |
-| `~/.gitconfig`, `~/.gitignore_global` | read-only | default profile `filesystem.read` |
-| `~/.cache`, `~/Library/Caches` | **denied** | hardcoded cache roots are not granted; only the selected cache scope leaf is writable |
-| `~/go`, `~/.cargo` (whole tree) | **denied** (write) | not granted by the default profile — only the toolchain `bin` leaves above are read-only |
-| `/usr`, `/bin`, `/lib`, `/etc`, … | read-only | platform baseline |
-| `/tmp`, `$TMPDIR` | read+write | platform baseline + per-session TMPDIR |
-| Bridge socket (`$TMPDIR/omac-<hash>/bridge.sock`) | read+write | `--allow-file` / `--read` flags |
-| Dynamic socket dir (e.g. Agent View `/tmp/cc-daemon-<uid>`) | read+write + AF_UNIX connect | `--allow-unix-dir` flag / `filesystem.allow_unix_dir` |
-| Paths in `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.kube`, … | **denied** | protected paths (override with `filesystem.override_deny`) |
-| Workdir and granted-tree `.env` / `.envrc` (incl. nested) | **denied** | baseline workdir-protected set (override with `filesystem.override_deny: [".env"]`) |
-| Files matching `filesystem.deny` (e.g. `*.key`) inside granted trees | **denied** | user deny list (`filesystem.deny` / `--deny`) |
-| Environment variables in `environment.allow_vars` (`OMAC_*`, `HOME`, `PATH`, `LANG`, `TERM`, … + the selected harness's auth vars) | passed through | default profile `environment.allow_vars` + `harness.SandboxEnvAllow` (injected at launch) |
-| Any other ambient env var (cloud/CI secrets, `DOCKER_HOST`, `SSH_AUTH_SOCK`, proxy config) | **stripped** | not on the allowlist |
-
-> **Environment allowlist (upgrade note).** The default profile ships an
-> explicit `environment.allow_vars` allowlist, so the sandbox no longer
-> inherits arbitrary ambient variables from the launching shell — only the
-> operational minimum plus the selected harness's provider-auth variables
-> pass through. Entries are exact names or trailing-`*` prefixes (e.g.
-> `OMAC_*`); `OMAC_*` is a **broad prefix**, so skill sidecars must not set
-> arbitrary `OMAC_*` variables in the host env expecting them to stay out of
-> the sandbox.
->
-> **Empty `allow_vars` — fail-closed at launch.** If a sandbox profile has an
-> empty `environment.allow_vars` (e.g. an existing `default.json` with
-> `"environment": {}`, or a hand-authored profile), `omac start` / `omac serve`
-> does **not** inherit every ambient var. It prints a warning, pauses briefly
-> so you can read it, then forwards **only the operational minimum** —
-> `sandboxprofile.DefaultAllowVars()`: `HOME`, `PATH`, `PWD`, `TMPDIR`, `LANG`,
-> `LC_*`, `TERM`, `COLORTERM`, `SHELL`, `USER`, `LOGNAME`, `TZ`, `EDITOR`,
-> `VISUAL`, `XDG_*`, `NPM_CONFIG_PREFIX`, `OMAC_*`.
->
-> Everything else is **stripped** — secrets, *and* provider-auth vars.
-> omac deliberately does **not** auto-forward the harness's auth variables for
-> an empty profile: an empty allowlist is a misconfiguration, and omac will not
-> silently push provider credentials into the sandbox to hide it. The harness
-> process starts (it has `HOME`/`PATH`), but it **cannot authenticate** until
-> you configure the profile. `omac doctor` and `omac provenance --check` both
-> flag an empty allowlist.
->
-> To resolve an empty profile, either:
-> - add an explicit `allow_vars` list (start from `DefaultAllowVars()` in
->   `internal/sandboxprofile/env.go`, then add the provider/token vars the
->   harness reads — e.g. `ANTHROPIC_API_KEY`, or a custom `SKAINET_*`); back up
->   + delete a scaffolded `default.json` to have omac re-scaffold the full list
->   (it is not auto-migrated), or
-> - set `allow_vars: ["*"]` to forward **every** ambient var — the danger
->   blocklist (`LD_*`, `NODE_OPTIONS`, 1Password tokens, …) still wins, so this
->   is not the same as no filtering.
->
-> Note: with a **non-empty** `allow_vars`, omac injects the selected harness's
-> documented auth vars (`harness.SandboxEnvAllow`) on top at launch — but only
-> for **single-provider** harnesses where the key is unambiguous (claude-code
-> → `ANTHROPIC_*`, codex → `OPENAI_*`, copilot → `GITHUB_TOKEN`). **Multi-provider
-> harnesses (opencode, pi) auto-forward nothing**: omac will not blindly push
-> every third-party provider key into the sandbox, so a user relying on an
-> env-based provider key lists it in `allow_vars` themselves (opencode's primary
-> `auth.json` login, in its granted dirs, is unaffected). Auto-forwarding is
-> skipped entirely for the empty (misconfigured) case. A direct
-> `omac sandbox run --profile X` invocation — not via `start`/`serve` — still
-> treats an empty `allow_vars` as inherit-all; the fail-closed seeding happens
-> in the `start`/`serve` launch path.
-
-For successfully inspectable built-in `{{self}} sandbox run` profiles,
-`omac doctor` warns when a profile re-introduces a broad read/write
-grant on the cache roots (`~/.cache`, `~/Library/Caches`) or the tool
-homes (`~/go`, `~/.cargo`, `~/.rustup`), and when a host Cargo sentinel
-(`~/.cargo/config`, `~/.cargo/config.toml`, `~/.cargo/credentials`, or
-`~/.cargo/credentials.toml`) exists but will be invisible to an
-isolated `CARGO_HOME`. It detects sentinels with `Lstat` only: doctor
-never reads or copies their contents. External nono profiles are opaque
-to these diagnostics and skipped. The warnings are advisory — doctor
-never rewrites the profile. See
-[Prerequisites](#prerequisites).
-
-## Tool cache isolation
-
-omac redirects the caches supported by `XDG_CACHE_HOME`, `GOCACHE`,
-`GOMODCACHE`, `NPM_CONFIG_CACHE`, `PIP_CACHE_DIR`, and `CARGO_HOME`
-into a per-scope directory it owns. The cache scope is selected by the
-`cache.scope` config key (see [Modes and trust
-domains](#modes-and-trust-domains)) and exposed to the inner process via
-two selector variables and six tool-specific redirects:
-
-| Variable | Points at | Purpose |
-|---|---|---|
-| `OMAC_CACHE_DIR` | the selected cache scope directory | selector — names this directory |
-| `OMAC_CACHE_MODE` | `persistent` or `ephemeral` | selector — names the mode |
-| `XDG_CACHE_HOME` | `$OMAC_CACHE_DIR/xdg` | generic XDG cache (used by opencode, gh, …) |
-| `GOCACHE` | `$OMAC_CACHE_DIR/go-build` | Go build cache |
-| `GOMODCACHE` | `$OMAC_CACHE_DIR/go-mod` | Go module download cache |
-| `NPM_CONFIG_CACHE` | `$OMAC_CACHE_DIR/npm` | npm cache |
-| `PIP_CACHE_DIR` | `$OMAC_CACHE_DIR/pip` | pip cache |
-| `CARGO_HOME` | `$OMAC_CACHE_DIR/cargo` | cargo home (registry index, git checkouts, …) |
-
-Hardcoded host cache locations (e.g. `~/.cache`, `~/Library/Caches`,
-`~/.cargo`, `~/.npm`) are denied by the default `builtin` profile.
-Unsupported third-party tools that hardcode another cache path need an
-explicit profile configuration; omac does not redirect them
-automatically. Only the selected cache scope leaf is writable for
-caches. `omac sandbox run` re-derives the same map only after it has verified that
-`OMAC_CACHE_DIR` matches an exact writable grant in the active sandbox
-profile, so an inherited tool-specific variable cannot bypass the
-profile's environment allowlist.
-
-### Modes and trust domains
-
-omac selects the persistent cache scope from the `cache.scope` config
-key (overridable per launch with `--cache-scope`). It defaults to
-`global` — one cache shared by every workdir, mirroring a normal dev
-box's single `~/.cache`. Two narrower scopes trade sharing for
-isolation:
-
-| `cache.scope` | Scope identity | Shared across |
-|---|---|---|
-| `global` (default) | `v1:shared` | all workdirs and all configs |
-| `config` | `v1:config:<canonical config path>` | all workdirs governed by the same launcher config file |
-| `workdir` | `v1:workdir:<canonical workdir>` | that one workdir only |
-
-All persistent scopes resolve to `~/.cache/omac/<sha256(identity)>`. The
-launch command and flags then map onto the chosen scope:
-
-| Launch | Persistent scope | Mode |
-|---|---|---|
-| `omac start` / `omac serve` (default) | `global` → `v1:shared` | `persistent` |
-| `--cache-scope config` (with a config on disk) | `v1:config:<config path>` | `persistent` |
-| `--cache-scope workdir` (`omac start`, `omac serve --workdir`) | `v1:workdir:<canonical workdir>` | `persistent` |
-| `omac serve --cache-scope workdir` (no `--workdir`) | `v1:serve:<canonical launch workdir>` | `persistent` |
-| `--ephemeral-cache` | per-launch sandbox temp dir (removed on exit) | `ephemeral` |
-| `--no-sandbox` | none — no scope prepared | — |
-
-- **`global` (default).** One cache shared by everything. Cheapest, and
-  what most developers already expect; the redirected tool caches (Go,
-  npm, cargo, pip) are concurrency-safe, so parallel launches sharing
-  one directory is fine. Note the trust trade-off: concurrency-safety is
-  **not** isolation — under `global` a build in one workdir can leave
-  artifacts in the shared cache that a build in another workdir later
-  reads. Choose `workdir` (or `--ephemeral-cache`) when cross-workdir
-  cache poisoning is a concern.
-- **`config`.** All workdirs that load the same launcher config file
-  share a cache, keyed on the config file's canonical path. Falls back
-  to `global` when no config file is on disk (compiled-in defaults).
-  Good for a team config that governs many project directories.
-- **`workdir`.** Each workdir gets its own cache, keyed on the canonical
-  workdir path, **not** the bare directory name — `~/work/acme` and
-  `~/clients/acme` are two different scopes, as are the **main worktree**
-  and a **linked worktree** of the same repository (their absolute paths
-  differ). This is the strongest isolation and was the pre-#158 default.
-- **Accepted same-domain poisoning.** Two paths that resolve to the
-  same canonical absolute path share a scope. omac does not try to
-  distinguish them; identity follows the directory, not the label.
-- **`--ephemeral-cache`.** A fresh directory under the per-launch
-  sandbox temp dir, removed when the inner command exits. Use it when
-  you want a clean-room build or when persistent-scope setup fails
-  (e.g. an unsafe `~/.cache/omac` symlink) — omac's failure hint
-  names the flag. `--ephemeral-cache` cannot be combined with
-  `--no-sandbox` (there is no sandbox to grant the temp dir).
-- **`--no-sandbox`.** Disables the entire omac sandbox (filesystem
-  isolation, network egress filtering, secret isolation, env
-  filtering). No cache scope is prepared and no `OMAC_CACHE_*` /
-  `XDG_CACHE_HOME` / tool redirects are injected. Normal `OMAC_*`
-  transport variables and the per-launch `TMPDIR` remain available to
-  the inner command. This is a debug escape hatch, not a security
-  boundary.
-- **Multi-directory `omac serve`.** Because one serve process shares a
-  single sandbox across every activated directory, per-workdir isolation
-  only applies to `omac serve --workdir <dir>`. Under `--cache-scope
-  workdir` without `--workdir`, the process falls back to a per-launch
-  serve-scope cache (`v1:serve:<canonical launch workdir>`); `global`
-  and `config` behave as above.
-
-### Cleaning up cache scopes
-
-```text
-omac cache clear           # Remove the active cache scope (per cache.scope).
-omac cache clear --all     # Remove every inactive cache scope (destructive).
-```
-
-`omac cache clear` removes the persistent cache scope the current config
-resolves to (`global`, `config`, or `workdir`). `omac cache clear --all`
-walks every scope under `~/.cache/omac` and removes the inactive ones.
-Each scope is reported
-as:
-
-- `removed` — the scope was inactive and has been deleted;
-- `active` — the scope's lock is currently held by a running launch,
-  so it was left intact;
-- `skipped` — the scope is unsafe, missing, or was replaced between
-  the open and the remove (e.g. a symlink swap, a TOCTOU replacement),
-  so it was not touched.
-
-Active scopes are never removed: omac holds a shared lock on a
-persistent scope for the lifetime of the launch, and
-`omac cache clear --all` takes an exclusive lock per scope, so a
-running launch's cache is always skipped. This is the active-scope
-refusal: a scope in use cannot be deleted from under a running agent.
-
-### Private Cargo registry setup
-
-Because `CARGO_HOME` is redirected to `$OMAC_CACHE_DIR/cargo`, the
-host's `~/.cargo/config` and `~/.cargo/credentials` are not picked up
-inside the sandbox. Supply a private registry token via:
-
-1. A project-local `.cargo/config.toml` that declares the registry
-   (e.g. under the `[registries.<name>]` table).
-2. Export `CARGO_REGISTRIES_<NAME>_TOKEN` in the environment that
-   starts `omac`, where `<NAME>` is the registry key uppercased with
-   `-` changed to `_`. If the sandbox profile sets
-   `environment.allow_vars`, include that exact token variable.
-   Cargo receives it through the sandboxed harness environment;
-   `sidecar.env_passthrough` configures only the sidecar.
-
-`omac doctor` detects the presence of `~/.cargo/config`,
-`~/.cargo/config.toml`, `~/.cargo/credentials`, and
-`~/.cargo/credentials.toml` with `Lstat` only, never reading or
-copying them, and warns that an isolated `CARGO_HOME` will not use
-them.
-
-## Typical workflow
-
-```bash
-# 1. Register a skill in this workdir. Prompts for every declared secret
-#    (masked input, stored in the OS keychain; nothing touches disk under .opencode/).
-#    The skill directory must already exist under .opencode/skills/, .agents/skills/,
-#    or the user-global skills dir.
-omac register slack
-
-# 2. Inspect the install script (omac never runs it for you).
-bash .opencode/skills/slack/install/install.macos.sh
-
-# 3. (Optional) status.
-omac doctor
-omac list
-omac secrets list slack
-
-# 4. Launch the full stack: sidecars → facade (Unix socket) → sandbox → agent.
-omac start            # default harness (opencode)
-# or: omac start claude   # launch Claude Code as the inner harness instead
-# or: omac start codex    # launch OpenAI Codex as the inner harness
-# or: omac start copilot  # launch GitHub Copilot as the inner harness
-
-# Inside the sandbox the skill reaches its sidecar via the socket:
-#   curl --unix-socket "$OMAC_SOCKET" http://x/slack/api/chat.postMessage ...
-
-# 5. Rotate a secret without re-registering.
-omac secrets set slack SLACK_BOT_TOKEN
-```
-
-## CLI summary
-
-```
-omac [--workdir <dir>] <subcommand> [flags] [args]
-
-  register     Locate the skill (workdir-local first, then user-global;
-               within each layer, .agents/skills ranks above the legacy
-               .opencode/skills — see CREATING_A_SKILL.md §2 for the
-               full search order including XDG and legacy fallbacks),
-               validate meta, prompt for secrets → keychain, prompt for
-               config fields → skill-config.yaml, surface the install
-               script path (omac never runs it), add to sidecar.json.
-               Flags:
-                 --force                 replace existing registry entry
-                 --reprompt-secrets      re-prompt even if secrets exist
-                 --no-secrets            skip all secret prompts
-                 --secrets-from <file>   KEY=VALUE file instead of prompting
-                 --reprompt-fields       re-prompt config fields
-                 --no-fields             skip all config-field prompts
-                 --fields-from <file>    KEY=VALUE file for fields
-
-  deregister   Remove a skill. If it is registered, the registry entry is
-               removed (its source files are kept). If it was never
-               registered but still exists on disk (so `omac start` keeps
-               flagging it), its source directory is deleted instead — after
-               a confirmation prompt, or immediately with --yes. Flags:
-                 --global                force removal from the user-global
-                                         registry (~/.config/omac)
-                 --harness <name>        remove only one harness's entry
-                 --yes                   delete an unregistered skill's source
-                                         directory without prompting
-                 --purge-secrets         also delete from keychain
-                 --purge-fields          also delete from skill-config.yaml
-                 --purge-defaults        also delete remembered global defaults
-                 --prune                 remove ALL stale registrations
-                                         (workdir + global) whose skill
-                                         directory no longer exists
-
-  list         Show registered skills with mount, secret count, binary status.
-               Registrations whose skill directory no longer exists are
-               hidden from the live list and reported separately as "stale"
-               with the exact `omac deregister` command to remove them; pass
-               --all to include stale rows in the table.
-
-  secrets <sub> <skill> [name]
-    list, set, unset, import --from <file>
-
-  config <sub> <skill> [args]
-    show <skill> [--json]   resolved config + secret fingerprints
-    get  <skill> <field>    one resolved value, suitable for $(...)
-
-  provenance   Show effective allow/deny entries across network, filesystem,
-               environment, and skills, plus the default persistent
-               tool-cache scope for this workdir (scope, mode, path, and
-               the eight-variable cache environment map). Flags:
-                 --profile <ref>     sandbox profile name/path/builtin
-                 --json             emit JSON instead of tables
-                 --check            emit findings for risky profile grants
-                                    instead of the view
-
-  start        Spawn sidecars → bind socket → exec sandbox runtime. Refuses
-               to start if any skill is unregistered in any of the search
-               roots (workdir-local .agents/skills + .opencode/skills,
-               plus the user-global layers), or if a registered skill's
-               bundle changed since register, or if a required config
-               field is unresolvable. `--auto-register-skills` is an
-               opt-in for this start-family launch: it silently registers
-               only workdir-local skills whose required config and secrets
-               resolve without prompting. Other unregistered skills still
-               refuse launch and print their registration command.
-               Auto-deregisters
-               (silently) skills whose directory has vanished; secrets +
-               config persist for safety. Flags:
-                 --sandbox <profile>     pick a sandbox profile
-                 --inner <cmd>           override inner_cmd
-                 --no-sandbox            debug: run inner cmd directly
-                                         (disables the entire omac sandbox;
-                                         no cache scope is prepared)
-                 --ephemeral-cache       use a per-launch cache dir instead
-                                         of the persistent workdir cache
-                                         scope; removed on exit
-                 --keep-running          don't stop sidecars on exit
-                 --accept-skill-changes  tolerate bundle_hash drift
-                 --auto-register-skills  silently register eligible
-                                         workdir-local skills only
-                 --skip-secret-pattern   don't enforce a secret's pattern
-                                         on an env_passthrough value
-                 --verbose               lifecycle logging (prints cache
-                                         mode/path, sandbox TMPDIR,
-                                         control-plane URL, sandbox argv)
-
-   continue     Like `start`, but continue the most recent session for this
-                workdir (appends the harness's continue flag: opencode/claude
-                `--continue`, codex `resume --last`, copilot `--continue`, pi `-c`).
-                Pass `-s`/`--session <id>` to target a specific session
-                (opencode `--session <id>`, claude `--resume <id>`, codex
-                `resume <id>`, copilot `--session-id <id>`, pi `--session <id>`).
-                Accepts the same flags as `start` and an optional [harness]
-                token. After exit, prints an `omac continue -s <id>` hint
-                when a resumable session exists for this workdir.
-
-  resume       List recent sessions for this workdir, show an interactive
-               numbered picker (title + relative time), and launch the
-               selected one inside omac (opencode `--session <id>`, claude
-               `--resume <id>`, codex `resume <id>`, copilot
-               `--session-id <id>`, pi `--session <id>`). Sessions come from
-               the harness's own store (opencode `session list`; Claude Code's
-               ~/.claude/projects files; codex's ~/.codex/sessions/ rollout
-               files; copilot's ~/.copilot/session-store.db; pi's
-               ~/.pi/agent/sessions/ JSONL files). Non-interactive stdin
-               prints the list and exits.
-               Accepts the same flags as `start` and an optional [harness].
-
-  doctor       Sanity checks: config, registry, binaries, secrets, sandbox.
-               Also warns (advisory, never mutates the profile) about broad
-               cache-root / tool-home grants and about host cargo config /
-               credentials files an isolated CARGO_HOME won't pick up.
-
-  cache        Manage the persistent tool cache under ~/.cache/omac.
-                 clear           remove the active cache scope (per cache.scope)
-                 clear --all     remove every inactive cache scope
-                                 (destructive; active scopes are skipped)
-
-  version
-```
-
-## Exit codes
-
-| Code | Meaning |
-| --- | --- |
-| `0` | success |
-| `1` | generic failure |
-| `2` | misuse / invalid arguments |
-| `3` | configuration or metadata invalid |
-| `4` | prerequisite missing (skill not installed) |
-| `5` | I/O error |
-| `6` | sidecar failed health check |
-| `7` | sandbox exited abnormally |
-| `8` | keychain access failed |
-| `9` | required secret refused by user |
-
-## Dependencies
-
-Minimal by design:
-
-- `github.com/zalando/go-keyring` — macOS Keychain / Secret Service / Windows
-  Credential Manager abstraction.
-- `golang.org/x/term` — masked-input password prompt.
-- `gopkg.in/yaml.v3` — `omac.yaml` parsing.
-
-Everything else is stdlib.
-
-## Authoring a skill
-
-If you want to build a new skill from scratch — or just get a deeper
-walkthrough of the schema, the sidecar contract, and the dev loop — see
-[`CREATING_A_SKILL.md`](./CREATING_A_SKILL.md). It covers the on-disk
-layout, the full `omac.yaml` schema, every env var omac sets in the
-sidecar and inside the sandbox, secrets best practices, and a
-pre-shipping checklist.
-
-## Example skill: `echo-rest`
-
-A working example skill lives under `.opencode/skills/echo-rest/` and is
-the reference for how to write a sidecar-backed skill. omac skills are
-also valid [agentskills.io](https://agentskills.io/) skills — every
-skill ships a `SKILL.md` (the agentskills.io discovery file the agent
-reads via progressive disclosure) **and** an `omac.yaml` (omac's
-runtime contract for the sidecar process). See
-[`CREATING_A_SKILL.md`](./CREATING_A_SKILL.md) §3 for the split:
-
-```
-.opencode/skills/echo-rest/
-├── SKILL.md                     agentskills.io frontmatter + Markdown
-│                                instructions (name, description, when
-│                                to use, endpoints, env vars)
-├── omac.yaml                    sidecar block + declared secrets + health
-├── scripts/
-│   └── sidecar.py               stdlib-only Python HTTP server (the
-│                                sidecar entry-point, referenced from
-│                                omac.yaml's `command:` as
-│                                `["python3", "scripts/sidecar.py"]`)
-└── install/
-    ├── install.macos.sh
-    └── install.linux.sh
-```
-
-Exposes:
-
-- `GET  /status`                 — health probe (facade waits on this)
-- `GET  /whoami`                 — returns a sha256 **fingerprint** of the
-                                   injected secret (proves injection without
-                                   leaking the value)
-- `POST /echo`                   — echoes back the JSON body
-- `GET  /tick?n=N&gap_ms=MS`     — streaming **Server-Sent Events**; proves
-                                   that the facade streams frame-by-frame
-                                   instead of buffering
-
-A companion script, `demo-client.sh`, stands in for the in-sandbox agent and
-uses the supported Unix-socket fallback. Normal clients should prefer the TCP
-`$OMAC_ECHO_BASE` URL, which is required under macOS nono proxy mode:
-
-```bash
-export ECHO_API_KEY="demo-key-42"           # only needed for env_passthrough
-omac register --no-secrets echo-rest        # (or without --no-secrets to use the keychain)
-omac start --no-sandbox --inner bash -- ./demo-client.sh
-```
-
-Expected output (abridged) when run in an environment that permits
-loopback `connect(2)`:
-
-```
-OMAC_SOCKET    = /tmp/omac-<hash>/bridge.sock
-OMAC_ECHO_BASE = http://127.0.0.1:<port>/echo
---- GET /echo/status ---      {"ok":true,"skill":"echo-rest"}
---- GET /echo/whoami ---      {"skill":"echo-rest","secret_present":true,"secret_fingerprint":"sha256:..."}
---- POST /echo/echo ---       {"skill":"echo-rest","secret_fingerprint":"sha256:...","you_sent":{"hello":"from sandbox","n":7}}
-```
-
-### Integration tests
-
-Three test files exercise the same wiring in Go. Each of them skips cleanly
-when the environment denies a capability it needs; together they cover the
-full request matrix in any environment that permits at least one of them.
-
-- `internal/facade/facade_test.go::TestFacadeEchoLikeRest` — in-process
-  upstream reached through the facade over a Unix socket. Covers path
-  rewriting, `X-Forwarded-Prefix` injection, JSON round-trip, unknown-mount
-  404, facade status route, **and a 5-frame SSE stream** with incremental
-  delivery assertion.
-- `internal/facade/integration_test.go::TestEchoRestEndToEnd` — spawns the
-  Python `scripts/sidecar.py` as a real subprocess, routes through the facade's
-  Unix socket, asserts the secret was injected into the sidecar's env and
-  round-trips a POST body, **and consumes the `/tick` SSE stream with the
-  same incremental-delivery check**.
-- `internal/facade/sse_inmemory_test.go::TestFacadeSSE_InMemory` — runs the
-  facade's HTTP handler over `net.Pipe()` so no Unix socket is required;
-  the upstream is a loopback `httptest` server. Exists so that SSE can be
-  verified in environments that permit loopback but not Unix sockets (or
-  vice-versa).
-
-### Why SSE works
-
-SSE is plain HTTP with a long-running response body in chunked transfer
-encoding. The facade supports it without any special case because:
-
-1. The Go reverse proxy in `internal/facade/facade.go` never reads the
-   response body into memory — it streams through `http.ResponseController`
-   / `Flusher` calls.
-2. When the upstream sets `Content-Type: text/event-stream`, the facade
-   additionally sets `X-Accel-Buffering: no` on the response so any
-   downstream client libraries that inspect that header also disable
-   buffering.
-3. No `Content-Length` is set on an SSE response, so Go encodes it as
-   chunked. Each `Flush()` on the upstream causes a chunk to be sent on
-   the client socket.
-
-The 60 ms span assertion in the tests (with a 30 ms upstream gap between
-frames) guards against any future regression that would collapse the
-stream into a single response write.
-
-## Using the nono sandbox
-
-omac uses a built-in sandbox by default (Seatbelt on macOS, bubblewrap +
-Landlock on Linux). You may want the [nono](https://nono.sh) sandbox instead
-if you need nono's credential injection, network profiles with interactive
-domain prompts, or are migrating from an existing nono setup. Select it with
-`omac start --sandbox nono` (or `--sandbox nono-netprofile` for domain-filtered
-outbound HTTP).
-
-See [`docs/NONO_SANDBOX.md`](docs/NONO_SANDBOX.md) for the full setup guide,
-transport details (TCP vs Unix socket under proxy mode), flag combinations,
-and debugging instructions.
+| [`docs/INSTALLATION.md`](docs/INSTALLATION.md) | Every install path, updating, checksum verification, full prerequisites |
+| [`docs/SECURITY_MODEL.md`](docs/SECURITY_MODEL.md) | Threat model, isolation mechanics, what the sandbox can see |
+| [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) | Launcher config, audit trail, sandbox profiles, corporate proxy |
+| [`docs/CACHE_ISOLATION.md`](docs/CACHE_ISOLATION.md) | Tool cache scopes, modes, cleanup, private Cargo registries |
+| [`docs/CLI.md`](docs/CLI.md) | Full subcommand and flag reference, typical workflow, exit codes |
+| [`docs/HARNESSES.md`](docs/HARNESSES.md) | Harness selection, session resume, bridges, skill discovery |
+| [`docs/HARNESS_COMPAT.md`](docs/HARNESS_COMPAT.md) | Upstream CLI drift monitoring per harness |
+| [`docs/MULTI_DIR_DESKTOP.md`](docs/MULTI_DIR_DESKTOP.md) | `omac serve` and OpenCode Desktop across directories |
+| [`docs/NONO_SANDBOX.md`](docs/NONO_SANDBOX.md) | Using the external nono sandbox instead of the built-in one |
+| [`CREATING_A_SKILL.md`](./CREATING_A_SKILL.md) | Authoring guide: `omac.yaml` schema, env vars, secrets, checklist |
+| [`docs/ECHO_REST_EXAMPLE.md`](docs/ECHO_REST_EXAMPLE.md) | The reference `echo-rest` skill, its tests, and streaming (SSE) |
+| [`docs/DEVELOP.md`](docs/DEVELOP.md) | Layout, build, test, dependencies, serve-mode dev loop |
+| [`oh-my-agentic-coder.md`](./oh-my-agentic-coder.md) | The design document this implementation follows |
+| [`COLLABORATION.md`](./COLLABORATION.md) | How work is tracked, branched, reviewed, and merged |
 
 ## Development
 
@@ -1165,9 +327,10 @@ pre-commit hook — it auto-formats staged `.go` files and re-stages them:
 scripts/install-hooks.sh
 ```
 
-Re-run after a fresh clone or after pulling hook changes. The hook only
-runs `gofmt`; vet, staticcheck, build, and tests stay in CI to keep the
-hook fast.
+Re-run after a fresh clone or after pulling hook changes. The hook only runs
+`gofmt`; vet, staticcheck, build, and tests stay in CI to keep the hook fast.
+For the project layout, dev and release builds, and the test matrix, see
+[`docs/DEVELOP.md`](docs/DEVELOP.md).
 
 ## Not yet implemented (v0)
 

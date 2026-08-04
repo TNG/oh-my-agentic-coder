@@ -148,6 +148,11 @@ jobs:
       - name: Workflow shell syntax
         run: python3 scripts/check-workflow-shell.py
 
+      # Keeps README.md an entry point (line cap) and the docs/ split honest
+      # (every relative link + anchor resolves). See issue #190.
+      - name: Doc guardrails
+        run: python3 scripts/check-docs.py
+
   e2e-fast:
     # Model-free slice of the e2e suite (build tag `e2e_fast`): the security
     # regression tests that need no live LLM harness, API token, or OS

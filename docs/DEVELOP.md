@@ -203,3 +203,14 @@ the `claude` CLI instead; the `.claude/` hooks bridge it to the same control
 plane. Claude Code has no `opencode serve`-style daemon convention, so it runs
 as-is (no subcommand is injected). See `MULTI_DIR_DESKTOP.md` for the
 per-harness `serve` notes and limitations.
+
+## Dependencies
+
+Minimal by design:
+
+- `github.com/zalando/go-keyring` — macOS Keychain / Secret Service / Windows
+  Credential Manager abstraction.
+- `golang.org/x/term` — masked-input password prompt.
+- `gopkg.in/yaml.v3` — `omac.yaml` parsing.
+
+Everything else is stdlib.
