@@ -357,9 +357,7 @@ func GrantsFor(worktree, cacheDir string, cfg BuildConfig) (*BuildGrants, error)
 	if jdkErr == nil {
 		installationsPaths = EnumerateHostJDKs(jdk.JavaHome)
 		for _, home := range installationsPaths {
-			for _, p := range jdkReadPaths(home) {
-				toolchainReadPaths = append(toolchainReadPaths, p)
-			}
+			toolchainReadPaths = append(toolchainReadPaths, jdkReadPaths(home)...)
 		}
 	}
 
