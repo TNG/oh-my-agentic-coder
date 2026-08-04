@@ -42,7 +42,7 @@ const buildStopSub = "stop"
 //	10               service failure (sandbox unavailable, exec error, I/O,
 //	                 queue busy; 10 not 1: Gradle's own build-failure code IS 1)
 func runBuild(args []string, env *Env) int {
-	// `omac build stop` tears down the warm daemon for this worktree.
+	// `omac build stop` tears down any lingering daemon for this worktree.
 	if len(args) > 0 && args[0] == buildStopSub {
 		return runBuildStop(args[1:], env)
 	}
@@ -216,7 +216,7 @@ func runBuild(args []string, env *Env) int {
 	defer grants.CleanupTmp()
 
 	// Per-worktree queue: serialize `omac build` invocations in the same
-	// worktree (they share a warm Gradle daemon and would corrupt each
+	// worktree (they contend on the same leaf/cache and would corrupt each
 	// other's cache). Independent worktrees resolve to independent leaves
 	// (independent lockfiles) → concurrent. The flock is auto-released on
 	// crash (kernel releases flock when the process dies); no stale-lock
@@ -355,7 +355,7 @@ func printBuildUsage(env *Env) {
 
 Usage:
   omac build [--root <rel>] [--max-duration <duration>] -- gradle <args...>
-  omac build stop                    stop the warm Gradle daemon for this worktree
+  omac build stop                    stop any lingering Gradle daemon for this worktree
 
 The gradle adapter token is required (literal; Maven: "unsupported adapter").
 OMAC resolves <root>/gradlew under the canonical worktree and runs it with
@@ -363,13 +363,15 @@ the build's real arguments passed through unchanged. Output streams through;
 SIGINT/SIGTERM cancels with a graceful-then-kill staged shutdown (a second
 signal forces the kill immediately AND recycles the Gradle daemon).
 
-Warm executor (Gradle daemon reuse):
-  Each "omac build" spawns a fresh gradlew process, but GRADLE_USER_HOME is
-  a stable session-scoped leaf (<cache scope>/gradle), so Gradle keeps its
-  daemon alive in that leaf and reuses it across invocations — no fresh
-  startup per red-green cycle. No long-lived omac supervisor process; the
-  daemon lingers by Gradle's idle-stop policy until "omac build stop" or
-  idle-stop.
+Daemon lifecycle (cold start per build):
+  Each "omac build" spawns a fresh gradlew client against the session-scoped
+  leaf (<cache scope>/gradle). When the build finishes (or is forced-cancelled),
+  OMAC recycles the daemon via "gradlew --stop" — not as a separate step, and
+  never via --no-daemon (forbidden) — so every build starts COLD with fresh
+  env, fresh init scripts, and fresh JUnit Platform listener discovery. The
+  ~10s cold start per build is the price of correctness with Testcontainers +
+  embedded Kafka. "omac build stop" is still available for a wedged daemon
+  that ignored --stop.
 
 Queue (per-worktree serialization, individually cancellable):
   Each invocation takes an exclusive flock on <leaf>/.omac-build.lock,
@@ -396,8 +398,7 @@ Executor authority (one restricted process per request):
               network mediation (Shape A; raw-socket-capable build code can
               reach host loopback and external egress — no host-listener
               monitoring/guarding is claimed, ADR 0003 Revision). Linux —
-              kernel-blocked (private sandbox loopback; warm-daemon
-              cohabitation is a later Linux-validation item).
+              kernel-blocked (private sandbox loopback).
   worker checks: canonical checkstyleMain/checkstyleTest run unchanged via
                the Gradle Worker API on both platforms; yarp3's
                checkstyle*Sandbox twin tasks are retired by the OMAC-authored
@@ -433,10 +434,12 @@ Resource ceilings:
 
 Cancellation (two stages):
   First SIGINT/SIGTERM  — graceful: SIGTERM the group, SIGKILL after the
-                         window; PRESERVE the warm Gradle daemon (spec §144).
+                         window.
   Second signal /       — forced: collapse the window, SIGKILL the group,
   --max-duration expiry   AND RECYCLE the (possibly corrupt) Gradle daemon
                           (best-effort gradlew --stop against the leaf).
+  In both cases the daemon serving the build is recycled post-build via
+  "gradlew --stop"; the next build starts cold.
 
 Exit codes:
   0            build success
@@ -462,7 +465,8 @@ omac build stop:
   build (the kernel released the flock on crash, so removal is safe).
 
 Cold-cache note: the Gradle distribution must already be resolvable under
-the cache leaf — warm from a previous build or pre-seeded by a host run.`)
+the cache leaf — cached from a previous build in the same scope or
+pre-seeded by a host run.`)
 }
 
 // newBuildRequestID generates a short, non-secret, time-ordered id for one

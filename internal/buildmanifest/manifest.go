@@ -87,6 +87,11 @@ type RegistryEntry struct {
 // ResourceRequests optionally narrows host-default resource requests.
 // Every field is optional; a zero/empty field means "use host default".
 // A request ABOVE the HostPolicy ceiling is rejected before executor startup.
+//
+// ONLY the two v1 resource controls exist: the Gradle daemon heap (-Xmx) and
+// the build wall-clock. CPU/process-count limits are NOT requestable in v1 —
+// they are not wired to concrete host limits yet, so the manifest cannot
+// present them as available (either as a request or as a host ceiling).
 type ResourceRequests struct {
 	// MaxHeap is the Gradle daemon JVM -Xmx request (e.g. "4g"). Empty
 	// uses the host default. Above HostPolicy.MaxHeap → denied.
@@ -94,10 +99,6 @@ type ResourceRequests struct {
 	// MaxDuration bounds the total build wall-clock. Zero uses the host
 	// default. Above HostPolicy.MaxDuration → denied.
 	MaxDuration time.Duration `yaml:"maxDuration"`
-	// MaxCPU is the max CPU cores request (e.g. 4). Zero uses host default.
-	MaxCPU int `yaml:"maxCPU"`
-	// MaxProcesses is the max process count request. Zero uses host default.
-	MaxProcesses int `yaml:"maxProcesses"`
 }
 
 // HostPolicy is the host-controlled authority ceiling. The manifest may
@@ -111,10 +112,6 @@ type HostPolicy struct {
 	// MaxDuration is the maximum build wall-clock the host permits. Zero
 	// disables the duration ceiling check.
 	MaxDuration time.Duration
-	// MaxCPU is the max CPU cores the host permits. Zero disables the check.
-	MaxCPU int
-	// MaxProcesses is the max process count the host permits. Zero disables.
-	MaxProcesses int
 }
 
 // ManifestError is a structured manifest parse/validation error naming the
@@ -297,7 +294,10 @@ func (m *Manifest) Validate(host HostPolicy) error {
 // process count" — a zero ceiling means the host has not authorized that
 // dimension yet (the limit is not wired to a concrete host value in v1),
 // so fail-closed rather than letting any request through. The denial names
-// the dimension so the user knows the host policy must be configured.
+// the dimension so the user knows the host policy must be configured. v1
+// exposes only maxHeap + maxDuration as requestable dimensions; CPU and
+// process-count ceilings are not requestable at all (they are not wired to
+// host limits, so the manifest does not present them).
 func validateResources(r *ResourceRequests, host HostPolicy) error {
 	if r.MaxHeap != "" {
 		if host.MaxHeap == "" {
@@ -313,22 +313,6 @@ func validateResources(r *ResourceRequests, host HostPolicy) error {
 		}
 		if r.MaxDuration > host.MaxDuration {
 			return &ManifestError{Field: "resources.maxDuration", Reason: fmt.Sprintf("request %s exceeds host ceiling %s — reduce the request or raise the host policy", r.MaxDuration, host.MaxDuration)}
-		}
-	}
-	if r.MaxCPU > 0 {
-		if host.MaxCPU == 0 {
-			return &ManifestError{Field: "resources.maxCPU", Reason: "host policy has no max-CPU ceiling configured; a manifest request requires the host to set the ceiling first (spec.md:150)"}
-		}
-		if r.MaxCPU > host.MaxCPU {
-			return &ManifestError{Field: "resources.maxCPU", Reason: fmt.Sprintf("request %d exceeds host ceiling %d", r.MaxCPU, host.MaxCPU)}
-		}
-	}
-	if r.MaxProcesses > 0 {
-		if host.MaxProcesses == 0 {
-			return &ManifestError{Field: "resources.maxProcesses", Reason: "host policy has no max-processes ceiling configured; a manifest request requires the host to set the ceiling first (spec.md:150)"}
-		}
-		if r.MaxProcesses > host.MaxProcesses {
-			return &ManifestError{Field: "resources.maxProcesses", Reason: fmt.Sprintf("request %d exceeds host ceiling %d", r.MaxProcesses, host.MaxProcesses)}
 		}
 	}
 	return nil

@@ -17,12 +17,9 @@ import (
 // resources.maxDuration request is fail-closed denied (the host has not
 // authorized a duration ceiling for the request to be checked against).
 //
-// MaxCPU / MaxProcesses are left zero (not yet wired to concrete host
-// limits). A manifest request for those dimensions is fail-closed denied
-// with an actionable message (see validateResources) until later tickets
-// populate them from real host limits — this is honest: spec.md:150 says
-// OMAC "provides" ceilings, so an unset dimension rejects requests rather
-// than letting any value through.
+// CPU and process-count ceilings are not exposed: they are not wired to
+// concrete host limits in v1, so the manifest cannot request them (only
+// maxHeap and maxDuration are requestable — see ResourceRequests).
 //
 // The returned buildmanifest.HostPolicy is what the CLI passes to
 // buildmanifest.Validate and buildmanifest.Gate.
@@ -30,8 +27,5 @@ func HostPolicy(maxDuration time.Duration) buildmanifest.HostPolicy {
 	return buildmanifest.HostPolicy{
 		MaxHeap:     defaultMaxHeap,
 		MaxDuration: maxDuration,
-		// MaxCPU / MaxProcesses intentionally zero: not wired to real host
-		// limits yet. validateResources fail-closes a manifest request for
-		// these dimensions until a later ticket populates them.
 	}
 }

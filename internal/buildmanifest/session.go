@@ -126,12 +126,6 @@ func ceilingStillValid(prev, cur HostPolicy) bool {
 	if cur.MaxDuration > 0 && prev.MaxDuration > 0 && prev.MaxDuration > cur.MaxDuration {
 		return false
 	}
-	if cur.MaxCPU > 0 && prev.MaxCPU > 0 && prev.MaxCPU > cur.MaxCPU {
-		return false
-	}
-	if cur.MaxProcesses > 0 && prev.MaxProcesses > 0 && prev.MaxProcesses > cur.MaxProcesses {
-		return false
-	}
 	return true
 }
 

@@ -101,9 +101,9 @@ var credentialLookup = credproxy.KeychainLookup
 // the canonical worktree path (stableport.For, range [30000,40000))
 // instead of a random ephemeral port each run, so the init-script
 // repository URL Gradle is pointed at (rendered by PrepareControlState)
-// stays valid across runs even when a warm Gradle daemon/worker caches it
-// (the bug being fixed: a new random port each run left requests hitting a
-// dead port — it9a's "Read timed out"). The assigned port is recorded at
+// stays valid across runs (the bug being fixed: a new random port each run
+// left requests hitting a dead port — it9a's "Read timed out"). The
+// assigned port is recorded at
 // <controlLeaf>/.omac-control/credproxy-port and preferred on the next
 // run. On a rare collision (the whole [30000,40000) window occupied) the
 // proxy falls back to a random ephemeral port and logs a warning —
@@ -155,7 +155,7 @@ func startCredentialProxy(env *Env, worktree, controlLeaf string, manifestRegist
 // container-policy denials are correlated with the active build request.
 // controlLeaf is the OMAC cache leaf (GRADLE_USER_HOME) where the proxy
 // records its assigned port at .omac-control/containerproxy-port so the
-// warm Gradle daemon's cached DOCKER_HOST stays valid across runs.
+// DOCKER_HOST set for a build stays valid across runs.
 var containerProxyStarter = startContainerProxy
 
 // startContainerProxy starts the mediated Docker-compatible endpoint
@@ -171,15 +171,15 @@ var containerProxyStarter = startContainerProxy
 //
 // Stable port: the proxy binds a DETERMINISTIC loopback port derived from
 // the canonical worktree path (stableport.For, range [30000,40000)) instead
-// of a random ephemeral port each run, so the warm Gradle daemon's cached
-// DOCKER_HOST stays valid across runs (the bug being fixed: a new random
-// port each run left the warm daemon pointing at a dead port, surfacing as
-// "Connection refused" until `omac build stop` recycled it). The assigned
+// of a random ephemeral port each run, so the DOCKER_HOST set for a build
+// stays valid across runs (the bug being fixed: a new random port each run
+// pointed a later build at a dead port, surfacing as "Connection refused"
+// until the stale URL was cleared). The assigned
 // port is recorded at <controlLeaf>/.omac-control/containerproxy-port and
 // preferred on the next run. On a rare collision (the whole [30000,40000)
 // window occupied) the proxy falls back to a random ephemeral port and logs
-// a warning — correctness over determinism (the warm-daemon bug may resurface
-// in that rare case, but the build still runs).
+// a warning — correctness over determinism (the stale-URL issue may
+// resurface in that rare case, but the build still runs).
 //
 // Returns the DOCKER_HOST URL, an enabled flag, and a stop func that
 // tears down the listener AND runs Cleanup (best-effort removal of

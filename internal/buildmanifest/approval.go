@@ -44,8 +44,8 @@ type ApprovalRecord struct {
 // approved for this OMAC session, subsequent builds in the same session use
 // the FROZEN capability set even if `.omac/build.yaml` changes on disk
 // mid-session. The session boundary is the cache leaf (per-developer-per-
-// machine), since each `omac build` is a separate process (the warm executor
-// is Gradle's daemon, not an omac supervisor per ADR 0001).
+// machine), since each `omac build` is a separate process (the daemon is
+// Gradle's own process under the leaf, not an omac supervisor per ADR 0001).
 type ActiveRecord struct {
 	// Digest is the SHA-256 digest of the manifest currently frozen for
 	// this session.
