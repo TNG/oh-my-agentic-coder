@@ -155,7 +155,12 @@ func TestRunBuildCancellationKillsChild(t *testing.T) {
 		Worktree:   g.Workdir,
 		ProjectDir: g.Workdir,
 		Wrapper:    "/bin/sh",
-		// Child ignores SIGTERM: exercises the graceful->SIGKILL staging.
+		// Ignores SIGTERM so only the forced SIGKILL ends it. The sleep
+		// child inherits the default TERM disposition, so on a loaded
+		// runner the graceful TERM could reap it (sh exits when its last
+		// child dies) before the force fires — which would legitimately
+		// skip the recycle. A loop keeps the group alive until SIGKILL,
+		// making the forced-cancel assertion deterministic.
 		Args: []string{"-c", "trap '' TERM INT; sleep 30"},
 	}
 	cancel := make(chan struct{})
@@ -402,8 +407,13 @@ func TestRunBuildForcedCancelRecyclesDaemon(t *testing.T) {
 		Worktree:   g.Workdir,
 		ProjectDir: g.Workdir,
 		Wrapper:    "/bin/sh",
-		// Ignores SIGTERM so only the forced SIGKILL ends it.
-		Args: []string{"-c", "trap '' TERM INT; sleep 30"},
+		// Ignores SIGTERM so only the forced SIGKILL ends it. The sleep
+		// child inherits the default TERM disposition, so on a loaded
+		// runner the graceful TERM could reap it (sh exits when its last
+		// child dies) before the force fires — which would legitimately
+		// skip the recycle. A loop keeps the group alive until SIGKILL,
+		// making the forced-cancel assertion deterministic.
+		Args: []string{"-c", "trap '' TERM INT; while true; do sleep 1; done"},
 	}
 	stops := make(chan struct{}, 4)
 	onForce := func(stderr io.Writer) error {
