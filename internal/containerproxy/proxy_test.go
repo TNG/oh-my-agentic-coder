@@ -611,9 +611,12 @@ func validCreateBody() string {
 }
 
 // waitForCall polls the fake daemon's recorded calls until one matches the
-// predicate or the timeout elapses. The container proxy does post-response
-// work (inspect, network attach) AFTER writing the response to the client,
-// so a test that acts on the response must wait for the side effects.
+// predicate or the timeout elapses. The container proxy performs ALL
+// create-side bookkeeping (ownership registration, inspect, network
+// create + attach) synchronously BEFORE writing the create response to the
+// client, so a successful create is fully settled; waitForCall is used for
+// requests that are genuinely asynchronous (background scavenging, starts
+// triggered by other goroutines).
 func waitForCall(t *testing.T, d *fakeDaemon, pred func(recordedReq) bool, what string) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
@@ -1185,9 +1188,10 @@ func TestCleanup_RemovesOwnedContainersAndNetwork(t *testing.T) {
 	if status != http.StatusCreated {
 		t.Fatalf("create status = %d", status)
 	}
-	// Wait for the proxy's post-response work (network create + attach)
-	// to complete before Cleanup runs; otherwise Cleanup races the
-	// attachToNetwork goroutine.
+	// The network create + attach are synchronous with the create response
+	// (forwardCreate settles all side effects before writing 201), so
+	// p.networkID is guaranteed set before Create returns; keep the wait
+	// as a cheap safety net for the fake daemon's recording.
 	waitForCall(t, d, func(c recordedReq) bool {
 		return c.Method == http.MethodPost && c.Path == "/networks/create"
 	}, "networks/create")
@@ -1540,10 +1544,9 @@ func TestCrashRestart_ScavengerRemovesOrphanedContainer(t *testing.T) {
 	if status, _, _ := doReq(t, p1, http.MethodPost, "/v1.44/containers/create", []byte(validCreateBody()), nil); status != http.StatusCreated {
 		t.Fatalf("create status = %d", status)
 	}
-	// Wait for the post-create network attach to settle.
-	waitForCall(t, d, func(c recordedReq) bool {
-		return c.Method == http.MethodPost && c.Path == "/networks/create"
-	}, "networks/create")
+	// The network create + attach are now synchronous with the create
+	// response (forwardCreate settles all side effects before writing
+	// 201), so no wait is needed before simulating the crash.
 	// Simulate crash: close the listener, do NOT run Cleanup. The
 	// container "abc123" is now orphaned on the daemon (the fake daemon
 	// persists it in createdContainers). The accept-loop goroutine exits
