@@ -180,9 +180,9 @@ func RenderRegistryCredentialsInitScript(urls map[string]string) string {
 	}
 	sort.Strings(aliases)
 	for _, a := range aliases {
-		b.WriteString(fmt.Sprintf("    maven {\n"))
-		b.WriteString(fmt.Sprintf("      name = 'omac-credproxy-%s'\n", a))
-		b.WriteString(fmt.Sprintf("      url = '%s'\n", urls[a]))
+		b.WriteString("    maven {\n")
+		b.WriteString("      name = 'omac-credproxy-" + a + "'\n")
+		b.WriteString("      url = '" + urls[a] + "'\n")
 		b.WriteString("      // No credentials here: the credential-lift proxy\n")
 		b.WriteString("      // authenticates upstream host-side.\n")
 		b.WriteString("    }\n")

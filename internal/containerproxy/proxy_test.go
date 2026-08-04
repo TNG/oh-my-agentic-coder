@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -22,7 +23,12 @@ import (
 type fakeDaemon struct {
 	mux    *http.ServeMux
 	server *httptest.Server
-	calls  []recordedReq
+	// mu guards every mutable field below: the daemon's HTTP handler
+	// goroutines append to calls/createdContainers/deletedContainers/
+	// deletedNetworks while the test goroutine reads or resets them from
+	// waitForCall and the assertions (go test -race).
+	mu    sync.Mutex
+	calls []recordedReq
 	// createResponse is the JSON returned for POST /containers/create.
 	createResponse string
 	// inspectResponse is the JSON returned for GET /containers/{id}/json.
@@ -57,6 +63,45 @@ type fakeDaemon struct {
 	createdContainers []fakeContainer
 }
 
+// callsSnapshot returns a copy of the recorded calls, safe for the test
+// goroutine to iterate while the daemon's handlers keep appending.
+func (d *fakeDaemon) callsSnapshot() []recordedReq {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return append([]recordedReq(nil), d.calls...)
+}
+
+// deletedContainersSnapshot returns a copy of the deleted container ids.
+func (d *fakeDaemon) deletedContainersSnapshot() []string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return append([]string(nil), d.deletedContainers...)
+}
+
+// deletedNetworksSnapshot returns a copy of the deleted network ids.
+func (d *fakeDaemon) deletedNetworksSnapshot() []string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return append([]string(nil), d.deletedNetworks...)
+}
+
+// sawAuthSnapshot reports whether an X-Registry-Auth header was seen.
+func (d *fakeDaemon) sawAuthSnapshot() bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.sawAuthHeader
+}
+
+// resetCalls clears the recorded calls and deletions, for tests that
+// simulate a crash boundary and start a fresh recording session.
+func (d *fakeDaemon) resetCalls() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.calls = nil
+	d.deletedContainers = nil
+	d.deletedNetworks = nil
+}
+
 // fakeContainer is a minimal /containers/json list entry for scavenger tests.
 type fakeContainer struct {
 	ID     string
@@ -81,26 +126,32 @@ func newFakeDaemon(t *testing.T) *fakeDaemon {
 	d := &fakeDaemon{mux: http.NewServeMux()}
 	d.mux.HandleFunc("/containers/create", func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("X-Registry-Auth") != "" {
+			d.mu.Lock()
 			d.sawAuthHeader = true
+			d.mu.Unlock()
 		}
 		b, _ := io.ReadAll(r.Body)
+		d.mu.Lock()
 		d.calls = append(d.calls, recordedReq{r.Method, r.URL.Path, r.URL.RawQuery, string(b)})
+		resp := d.createResponse
+		d.mu.Unlock()
+		if resp == "" {
+			resp = `{"Id":"abc123","Warnings":[]}`
+		}
 		// Persist the created container so a subsequent GET /containers/json
 		// (e.g. the scavenger) can find it. The id comes from the create
 		// response; the labels are parsed from the create body (the proxy
 		// injects omac.executor=<id> via validateCreateBody). This makes the
 		// crash-restart test faithful: a container created through the proxy
 		// is visible to the scavenger's daemon list without re-seeding.
-		resp := d.createResponse
-		if resp == "" {
-			resp = `{"Id":"abc123","Warnings":[]}`
-		}
 		var created struct {
 			ID string `json:"Id"`
 		}
 		if json.Unmarshal([]byte(resp), &created) == nil && created.ID != "" {
 			labels := parseCreateBodyLabels(string(b))
+			d.mu.Lock()
 			d.createdContainers = append(d.createdContainers, fakeContainer{ID: created.ID, Labels: labels})
+			d.mu.Unlock()
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
@@ -108,8 +159,10 @@ func newFakeDaemon(t *testing.T) *fakeDaemon {
 	})
 	d.mux.HandleFunc("/networks/create", func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
+		d.mu.Lock()
 		d.calls = append(d.calls, recordedReq{r.Method, r.URL.Path, r.URL.RawQuery, string(b)})
 		resp := d.networkCreateResponse
+		d.mu.Unlock()
 		if resp == "" {
 			resp = `{"Id":"net-1","Warning":""}`
 		}
@@ -121,24 +174,30 @@ func newFakeDaemon(t *testing.T) *fakeDaemon {
 	// Returns preseededNetworks filtered by the label filter in the query
 	// (the scavenger sends filters={"label":["omac.executor=<id>"]}).
 	d.mux.HandleFunc("/networks", func(w http.ResponseWriter, r *http.Request) {
+		d.mu.Lock()
 		d.calls = append(d.calls, recordedReq{r.Method, r.URL.Path, r.URL.RawQuery, ""})
-		out := filterFakeNetworks(d.preseededNetworks, r.URL.Query().Get("filters"))
+		preseeded := append([]fakeNetwork(nil), d.preseededNetworks...)
+		d.mu.Unlock()
+		out := filterFakeNetworks(preseeded, r.URL.Query().Get("filters"))
 		b, _ := json.Marshal(out)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(b)
 	})
 	d.mux.HandleFunc("/networks/", func(w http.ResponseWriter, r *http.Request) {
+		d.mu.Lock()
 		d.calls = append(d.calls, recordedReq{r.Method, r.URL.Path, r.URL.RawQuery, ""})
 		if r.Method == http.MethodDelete {
 			id := strings.TrimPrefix(r.URL.Path, "/networks/")
 			d.deletedNetworks = append(d.deletedNetworks, id)
 		}
+		d.mu.Unlock()
 		w.WriteHeader(http.StatusOK)
 	})
 	// Generic container endpoint: /containers/{id}/...
 	d.mux.HandleFunc("/containers/", func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
+		d.mu.Lock()
 		d.calls = append(d.calls, recordedReq{r.Method, r.URL.Path, r.URL.RawQuery, string(b)})
 		// GET /containers/json (list) — return preseeded containers
 		// filtered by the label filter in the query (the scavenger sends
@@ -152,6 +211,7 @@ func newFakeDaemon(t *testing.T) *fakeDaemon {
 			// next proxy's scavenger finds it via the daemon list.
 			all := append([]fakeContainer(nil), d.preseededContainers...)
 			all = append(all, d.createdContainers...)
+			d.mu.Unlock()
 			out := filterFakeContainers(all, r.URL.Query().Get("filters"))
 			jb, _ := json.Marshal(out)
 			w.Header().Set("Content-Type", "application/json")
@@ -168,8 +228,12 @@ func newFakeDaemon(t *testing.T) *fakeDaemon {
 		}
 		// Return the create response for /create, the inspect response for
 		// /json, etc. Simplest: return inspectResponse for /json, OK otherwise.
+		resp := ""
 		if strings.HasSuffix(r.URL.Path, "/json") {
-			resp := d.inspectResponse
+			resp = d.inspectResponse
+		}
+		d.mu.Unlock()
+		if strings.HasSuffix(r.URL.Path, "/json") {
 			if resp == "" {
 				// Real Docker nests labels at Config.Labels (NOT top-level
 				// Labels). The default fixture uses the real shape so the
@@ -186,7 +250,9 @@ func newFakeDaemon(t *testing.T) *fakeDaemon {
 		w.WriteHeader(http.StatusOK)
 	})
 	d.mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		d.mu.Lock()
 		d.calls = append(d.calls, recordedReq{r.Method, r.URL.Path, r.URL.RawQuery, ""})
+		d.mu.Unlock()
 		w.WriteHeader(http.StatusOK)
 		_, _ = io.WriteString(w, `{"ok":true}`)
 	})
@@ -333,11 +399,9 @@ func doReq(t *testing.T, p *Proxy, method, path string, body []byte, hdr http.He
 	if err != nil {
 		t.Fatal(err)
 	}
-	if hdr != nil {
-		for k, vs := range hdr {
-			for _, v := range vs {
-				req.Header.Set(k, v)
-			}
+	for k, vs := range hdr {
+		for _, v := range vs {
+			req.Header.Set(k, v)
 		}
 	}
 	if err := req.Write(conn); err != nil {
@@ -446,10 +510,11 @@ func TestNetworksPrune_RewritesFilter(t *testing.T) {
 	}
 
 	// Find the forwarded prune request the daemon recorded.
+	calls := d.callsSnapshot()
 	var pruneCall *recordedReq
-	for i := len(d.calls) - 1; i >= 0; i-- {
-		if d.calls[i].Method == http.MethodPost && strings.Contains(d.calls[i].Path, "/networks/prune") {
-			pruneCall = &d.calls[i]
+	for i := len(calls) - 1; i >= 0; i-- {
+		if calls[i].Method == http.MethodPost && strings.Contains(calls[i].Path, "/networks/prune") {
+			pruneCall = &calls[i]
 			break
 		}
 	}
@@ -483,10 +548,11 @@ func TestVolumesPrune_RewritesFilter(t *testing.T) {
 		t.Fatalf("status = %d, want 200 (prune is allowed, ownership-filtered); body=%q", status, body)
 	}
 
+	calls := d.callsSnapshot()
 	var pruneCall *recordedReq
-	for i := len(d.calls) - 1; i >= 0; i-- {
-		if d.calls[i].Method == http.MethodPost && strings.Contains(d.calls[i].Path, "/volumes/prune") {
-			pruneCall = &d.calls[i]
+	for i := len(calls) - 1; i >= 0; i-- {
+		if calls[i].Method == http.MethodPost && strings.Contains(calls[i].Path, "/volumes/prune") {
+			pruneCall = &calls[i]
 			break
 		}
 	}
@@ -518,10 +584,11 @@ func TestImagesPrune_RewritesFilter(t *testing.T) {
 		t.Fatalf("status = %d, want 200 (prune is allowed, ownership-filtered); body=%q", status, body)
 	}
 
+	calls := d.callsSnapshot()
 	var pruneCall *recordedReq
-	for i := len(d.calls) - 1; i >= 0; i-- {
-		if d.calls[i].Method == http.MethodPost && strings.Contains(d.calls[i].Path, "/images/prune") {
-			pruneCall = &d.calls[i]
+	for i := len(calls) - 1; i >= 0; i-- {
+		if calls[i].Method == http.MethodPost && strings.Contains(calls[i].Path, "/images/prune") {
+			pruneCall = &calls[i]
 			break
 		}
 	}
@@ -551,7 +618,7 @@ func waitForCall(t *testing.T, d *fakeDaemon, pred func(recordedReq) bool, what 
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		for _, c := range d.calls {
+		for _, c := range d.callsSnapshot() {
 			if pred(c) {
 				return
 			}
@@ -570,7 +637,7 @@ func TestCreateBody_ApprovedImageForwardsWithRewrite(t *testing.T) {
 	}
 	// Find the recorded create body.
 	var rec recordedReq
-	for _, c := range d.calls {
+	for _, c := range d.callsSnapshot() {
 		if c.Path == "/containers/create" {
 			rec = c
 		}
@@ -780,7 +847,7 @@ func TestCreate_RegistryAuthStripped(t *testing.T) {
 	waitForCall(t, d, func(c recordedReq) bool {
 		return c.Method == http.MethodPost && c.Path == "/containers/create"
 	}, "containers/create")
-	if d.sawAuthHeader {
+	if d.sawAuthSnapshot() {
 		t.Errorf("X-Registry-Auth was forwarded to the daemon on create; it must be stripped by copyForwardHeaders")
 	}
 }
@@ -1012,7 +1079,7 @@ func TestContainersList_FilterRewritten(t *testing.T) {
 	}
 	// Find the recorded request and verify the filter was rewritten.
 	var rec recordedReq
-	for _, c := range d.calls {
+	for _, c := range d.callsSnapshot() {
 		if c.Path == "/containers/json" {
 			rec = c
 		}
@@ -1129,7 +1196,7 @@ func TestCleanup_RemovesOwnedContainersAndNetwork(t *testing.T) {
 	// Assert a DELETE for abc123 reached the daemon.
 	foundDelete := false
 	foundNetRemove := false
-	for _, c := range d.calls {
+	for _, c := range d.callsSnapshot() {
 		if c.Method == http.MethodDelete && strings.Contains(c.Path, "/containers/abc123") {
 			foundDelete = true
 		}
@@ -1214,18 +1281,19 @@ func TestScavenge_RemovesOnlyOwnedContainers(t *testing.T) {
 		t.Fatal(err)
 	}
 	cRemoved, nRemoved := p.Scavenge()
+	deleted := d.deletedContainersSnapshot()
 	if cRemoved != 2 {
-		t.Errorf("containers removed = %d, want 2 (only owned): deleted=%v", cRemoved, d.deletedContainers)
+		t.Errorf("containers removed = %d, want 2 (only owned): deleted=%v", cRemoved, deleted)
 	}
 	if nRemoved != 0 {
 		t.Errorf("networks removed = %d, want 0", nRemoved)
 	}
 	// Exactly the two owned ids were DELETEd.
 	wantDeleted := map[string]bool{"owned-aaa": true, "owned-bbb": true}
-	if len(d.deletedContainers) != 2 {
-		t.Fatalf("deleted %d containers, want 2: %v", len(d.deletedContainers), d.deletedContainers)
+	if len(deleted) != 2 {
+		t.Fatalf("deleted %d containers, want 2: %v", len(deleted), deleted)
 	}
-	for _, id := range d.deletedContainers {
+	for _, id := range deleted {
 		if !wantDeleted[id] {
 			t.Errorf("deleted unexpected container %s (must not touch unrelated)", id)
 		}
@@ -1252,14 +1320,15 @@ func TestScavenge_RemovesOnlyOwnedNetworks(t *testing.T) {
 		t.Fatal(err)
 	}
 	cRemoved, nRemoved := p.Scavenge()
+	deletedNetworks := d.deletedNetworksSnapshot()
 	if nRemoved != 1 {
-		t.Errorf("networks removed = %d, want 1: deleted=%v", nRemoved, d.deletedNetworks)
+		t.Errorf("networks removed = %d, want 1: deleted=%v", nRemoved, deletedNetworks)
 	}
 	if cRemoved != 0 {
 		t.Errorf("containers removed = %d, want 0", cRemoved)
 	}
-	if len(d.deletedNetworks) != 1 || d.deletedNetworks[0] != "net-owned-1" {
-		t.Errorf("deleted networks = %v, want [net-owned-1]", d.deletedNetworks)
+	if len(deletedNetworks) != 1 || deletedNetworks[0] != "net-owned-1" {
+		t.Errorf("deleted networks = %v, want [net-owned-1]", deletedNetworks)
 	}
 }
 
@@ -1278,11 +1347,13 @@ func TestScavenge_EmptyDaemonIsNoOp(t *testing.T) {
 		t.Fatal(err)
 	}
 	cRemoved, nRemoved := p.Scavenge()
+	deleted := d.deletedContainersSnapshot()
+	deletedNetworks := d.deletedNetworksSnapshot()
 	if cRemoved != 0 || nRemoved != 0 {
 		t.Errorf("clean daemon: removed %d containers, %d networks; want 0/0", cRemoved, nRemoved)
 	}
-	if len(d.deletedContainers) != 0 || len(d.deletedNetworks) != 0 {
-		t.Errorf("clean daemon had deletes: containers=%v networks=%v", d.deletedContainers, d.deletedNetworks)
+	if len(deleted) != 0 || len(deletedNetworks) != 0 {
+		t.Errorf("clean daemon had deletes: containers=%v networks=%v", deleted, deletedNetworks)
 	}
 }
 
@@ -1310,11 +1381,12 @@ func TestScavenge_SpecialCharExecutorID(t *testing.T) {
 		t.Fatal(err)
 	}
 	cRemoved, _ := p.Scavenge()
+	deleted := d.deletedContainersSnapshot()
 	if cRemoved != 1 {
-		t.Errorf("special-char executor id: removed %d containers, want 1 (json.Marshal-encoded filter must match): deleted=%v", cRemoved, d.deletedContainers)
+		t.Errorf("special-char executor id: removed %d containers, want 1 (json.Marshal-encoded filter must match): deleted=%v", cRemoved, deleted)
 	}
-	if len(d.deletedContainers) != 1 || d.deletedContainers[0] != "owned-special" {
-		t.Errorf("special-char executor id: deleted=%v, want [owned-special]", d.deletedContainers)
+	if len(deleted) != 1 || deleted[0] != "owned-special" {
+		t.Errorf("special-char executor id: deleted=%v, want [owned-special]", deleted)
 	}
 }
 
@@ -1344,8 +1416,8 @@ func TestStart_RunsScavengerAtStartup(t *testing.T) {
 	defer p.shutdown()
 	// The scavenger runs synchronously in Start before returning, so the
 	// DELETE is already recorded.
-	if len(d.deletedContainers) != 1 || d.deletedContainers[0] != "abandoned-1" {
-		t.Errorf("startup scavenger did not remove abandoned container: deleted=%v", d.deletedContainers)
+	if deleted := d.deletedContainersSnapshot(); len(deleted) != 1 || deleted[0] != "abandoned-1" {
+		t.Errorf("startup scavenger did not remove abandoned container: deleted=%v", deleted)
 	}
 }
 
@@ -1478,8 +1550,7 @@ func TestCrashRestart_ScavengerRemovesOrphanedContainer(t *testing.T) {
 	// on the next Accept() error; the in-flight attach goroutine is
 	// intentionally leaked (crash simulation — no graceful teardown).
 	p1.ln.Close()
-	d.calls = nil
-	d.deletedContainers = nil
+	d.resetCalls()
 	// Second "session": a new proxy with the SAME executor id. Its startup
 	// scavenger must find the orphaned container via GET /containers/json
 	// (the daemon returns it from createdContainers) and remove it. The
@@ -1501,8 +1572,8 @@ func TestCrashRestart_ScavengerRemovesOrphanedContainer(t *testing.T) {
 	defer p2.shutdown()
 	// The scavenger ran in Start (before bind): the orphaned container the
 	// fake daemon persisted is DELETEd.
-	if len(d.deletedContainers) != 1 || d.deletedContainers[0] != "abc123" {
-		t.Errorf("scavenger on restart did not remove the orphaned container: deleted=%v", d.deletedContainers)
+	if dels := d.deletedContainersSnapshot(); len(dels) != 1 || dels[0] != "abc123" {
+		t.Errorf("scavenger on restart did not remove the orphaned container: deleted=%v", dels)
 	}
 }
 
@@ -1530,8 +1601,8 @@ func TestCrashRestart_ScavengerRemovesOrphanedNetwork(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer p.shutdown()
-	if len(d.deletedNetworks) != 1 || d.deletedNetworks[0] != "net-orphan" {
-		t.Errorf("scavenger did not remove the orphaned network: deleted=%v", d.deletedNetworks)
+	if deleted := d.deletedNetworksSnapshot(); len(deleted) != 1 || deleted[0] != "net-orphan" {
+		t.Errorf("scavenger did not remove the orphaned network: deleted=%v", deleted)
 	}
 }
 

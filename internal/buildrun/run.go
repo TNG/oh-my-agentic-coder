@@ -346,31 +346,20 @@ func SignalContext() (cancel <-chan struct{}, force <-chan struct{}, second chan
 	sigCh := make(chan os.Signal, 2)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
-		for {
-			select {
-			case <-sigCh:
-			case <-drill:
-			}
-			select {
-			case <-cancelCh:
-			default:
-				close(cancelCh)
-			}
-			// Second signal: do NOT os.Exit — close the force channel so
-			// RunBuild collapses the graceful window, then unwind
-			// through the normal cancel path so deferred cleanup
-			// (CleanupTmp, audit close) still runs.
-			select {
-			case <-sigCh:
-			case <-drill:
-			}
-			select {
-			case <-forceCh:
-			default:
-				close(forceCh)
-			}
-			return
+		select {
+		case <-sigCh:
+		case <-drill:
 		}
+		close(cancelCh)
+		// Second signal: do NOT os.Exit — close the force channel so
+		// RunBuild collapses the graceful window, then unwind
+		// through the normal cancel path so deferred cleanup
+		// (CleanupTmp, audit close) still runs.
+		select {
+		case <-sigCh:
+		case <-drill:
+		}
+		close(forceCh)
 	}()
 	return cancelCh, forceCh, drill, func() { signal.Stop(sigCh) }
 }

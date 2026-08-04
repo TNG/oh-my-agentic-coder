@@ -94,8 +94,14 @@ var credentialLookup = credproxy.KeychainLookup
 //
 // A missing keychain credential for an approved registry yields a
 // *credproxy.RegistryCredentialError (criterion 7) — the build fails
-// closed with exit 3 naming the alias, never the credential. The
-// credential never enters executor env/args/gradle.properties/logs/audit.
+// closed with exit 3 naming the alias, never the credential. The lookup
+// runs on EVERY platform (including Linux): an approved private registry
+// with no credential is a fail-closed policy denial even where the proxy
+// itself cannot serve it — the build could not resolve the registry's
+// private dependencies either way. Only the proxy SERVER is macOS-only;
+// the credential absence is platform-independent.
+//
+// The credential never enters executor env/args/gradle.properties/logs/audit.
 //
 // Stable port: the proxy binds a DETERMINISTIC loopback port derived from
 // the canonical worktree path (stableport.For, range [30000,40000))
@@ -110,17 +116,21 @@ var credentialLookup = credproxy.KeychainLookup
 // correctness over determinism (the stale-URL bug may resurface in that
 // rare case, but the build still runs).
 func startCredentialProxy(env *Env, worktree, controlLeaf string, manifestRegistries []buildmanifest.RegistryEntry, approvedAliases []string) (map[string]string, func(), error) {
-	if runtime.GOOS != "darwin" {
-		// Linux kernel-blocked: the credential proxy (loopback HTTP) is
-		// unreachable from the executor. v1 does not start it on Linux.
-		return nil, nil, nil
-	}
 	regs, err := credproxy.LookupRegistries(manifestRegistries, approvedAliases, credentialLookup)
 	if err != nil {
 		return nil, nil, err
 	}
 	if len(regs) == 0 {
 		// No private registries approved — common case; nothing to start.
+		return nil, nil, nil
+	}
+	if runtime.GOOS != "darwin" {
+		// Linux kernel-blocked: the credential proxy (loopback HTTP) is
+		// unreachable from the executor. v1 does not start it on Linux —
+		// but the lookup above ALREADY ran: a missing credential was a
+		// fail-closed denial on every platform. Here the credential is
+		// present, yet the proxy cannot serve it on Linux, so there is
+		// nothing to start.
 		return nil, nil, nil
 	}
 	logf := func(format string, args ...any) {

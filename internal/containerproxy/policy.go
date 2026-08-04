@@ -204,50 +204,10 @@ func isOwnershipScopedRule(rule string) bool {
 	return false
 }
 
-// createBody is the subset of the Docker create-container JSON the v1
-// filter validates/rewrites. Decoded with json.Decoder.UseNumber to avoid
-// float coercion; untyped map so unknown fields pass through untouched.
-// REPORT.md §"Create-body field analysis" is the spec.
-type createBody struct {
-	Image      string            `json:"Image"`
-	Labels     map[string]string `json:"Labels"`
-	Env        []string          `json:"Env"`
-	HostConfig hostConfigBody    `json:"HostConfig"`
-}
-
-type hostConfigBody struct {
-	Privileged   bool                     `json:"Privileged"`
-	Binds        []string                 `json:"Binds"`
-	Mounts       []any                    `json:"Mounts"`
-	NetworkMode  string                   `json:"NetworkMode"`
-	PidMode      string                   `json:"PidMode"`
-	IpcMode      string                   `json:"IpcMode"`
-	UsernsMode   string                   `json:"UsernsMode"`
-	CgroupnsMode string                   `json:"CgroupnsMode"`
-	Runtime      string                   `json:"Runtime"`
-	CapAdd       []string                 `json:"CapAdd"`
-	Devices      []any                    `json:"Devices"`
-	SecurityOpt  []string                 `json:"SecurityOpt"`
-	Dns          []string                 `json:"Dns"`
-	ExtraHosts   []string                 `json:"ExtraHosts"`
-	CgroupParent string                   `json:"CgroupParent"`
-	PortBindings map[string][]portBinding `json:"PortBindings"`
-}
-
-type portBinding struct {
-	HostIp   string `json:"HostIp"`
-	HostPort string `json:"HostPort"`
-}
-
-// validateCreateBody parses and validates a create-container request body
-// against the v1 policy (REPORT.md §"Create-body validation"). On success
-// it returns the REWRITTEN body bytes: PortBindings HostIp forced to
-// 127.0.0.1 (loopback-only publishing), the ownership label injected into
-// Labels (rejecting any client-set omac.* label). On denial it returns a
-// *ContainerPolicyError naming the offending field/image.
-//
-// approvedImages is the frozen-for-session manifest capability set;
-// executorID is the unforgeable ownership label value.
+// createBody is parsed as an untyped map (json.Unmarshal into
+// map[string]any) so unknown fields pass through untouched and the
+// fail-closed allowlist owns HostConfig validation (see
+// validateCreateBody).
 func validateCreateBody(raw []byte, approvedImages []string, executorID string) ([]byte, *ContainerPolicyError) {
 	var body map[string]any
 	if err := json.Unmarshal(raw, &body); err != nil {
