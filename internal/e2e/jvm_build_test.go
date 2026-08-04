@@ -74,6 +74,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -425,6 +426,70 @@ func seedGradleDist(t *testing.T, fixtureRoot, cacheScopeDir string) {
 	t.Logf("gradle dist pre-seeded at %s", dists)
 }
 
+// writeJvmBuildProfile writes a sandbox profile for the build canary.
+// Unlike writeCacheTestProfile (network blocked), a brokered JVM build
+// REQUIRES loopback TCP: the sandboxed `omac build` POSTs to the
+// parent's loopback build broker (OMAC_CONTROL_BASE), and the parent
+// whitelists that ephemeral port into the sandbox argv via
+// --open-port. On macOS the Seatbelt generator emits `(deny network*)`
+// under network.mode "blocked" and ignores open-port exceptions there
+// (sbpl.go: the open-port loop only runs in the filtered branch), so a
+// blocked profile makes every brokered build die with `connect:
+// operation not permitted` before the request ever reaches the engine —
+// masking even the approval-gate diagnostic the negative subtest
+// asserts. Filtered mode honors the injected --open-port and additionally
+// whitelists every loopback connection (the Gradle daemon binds
+// ephemeral loopback ports for its worker protocol).
+//
+// proxy_injection ["jvm"] makes the supervisor point every JVM at the
+// omac filtering proxy via JAVA_TOOL_OPTIONS — the sanctioned path for
+// Maven-central resolution under a filtered sandbox (allow_domain reads
+// as a proxy-egress allowlist, and the JVM ignores HTTP(S)_PROXY).
+//
+// The Colima socket the IT leg stages under ~/.colima is not granted
+// here: the parent connects directly (the proxy is a parent-side
+// process), and the sandboxed Gradle reaches it via the proxy's
+// loopback port.
+func writeJvmBuildProfile(t *testing.T, home string) {
+	t.Helper()
+	profDir := filepath.Join(home, ".config", "omac", "sandbox-profiles")
+	if err := os.MkdirAll(profDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	profile := map[string]any{
+		"meta":    map[string]string{"name": "default"},
+		"workdir": map[string]string{"access": "readwrite"},
+		"filesystem": map[string]any{
+			"read":  []string{"~/.colima"},
+			"allow": nil,
+		},
+		// The canary asserts a LOUD regression on daemon-recycle /
+		// image-allowlist / container cleanup — never a skip. The
+		// executor env is hermetic, so proxy_injection only routes the
+		// sandbox-side wrapper JVMs (the gradlew launcher); the build
+		// executor itself runs unsandboxed on the host.
+		"network": map[string]any{
+			"mode":            "filtered",
+			"allow_domain":    []string{"127.0.0.1", "localhost", "repo.maven.apache.org", "services.gradle.org", "plugins.gradle.org"},
+			"proxy_injection": []string{"jvm"},
+		},
+		// Same rationale as writeCacheTestProfile: the dev tools need
+		// their ambient env (JDK paths, GRADLE_USER_HOME redirect, the
+		// broker env the parent injects), so inherit every ambient var
+		// minus the danger blocklist.
+		"environment": map[string]any{
+			"allow_vars": []string{"*"},
+		},
+	}
+	data, err := json.MarshalIndent(profile, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(profDir, "default.json"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // TestE2EJvmBuild is the build brokered canary.
 func TestE2EJvmBuild(t *testing.T) {
 	skipIfSandboxUnavailable(t)
@@ -435,7 +500,7 @@ func TestE2EJvmBuild(t *testing.T) {
 	// with a SHORT /tmp-rooted HOME (never the deep t.TempDir()).
 	home := shortCacheHome(t)
 	workdir := t.TempDir()
-	writeCacheTestProfile(t, home, nil, nil, 0)
+	writeJvmBuildProfile(t, home)
 
 	outerBin := buildOmac(t)
 
