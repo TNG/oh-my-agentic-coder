@@ -14,15 +14,6 @@ import (
 	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxrun"
 )
 
-// defaultLaunch adapts sandboxrun.BuildChildArgv to the RunOptions.Launcher
-// field: the seam between "everything except the kernel sandbox
-// application" and the platform sandbox itself. Tests replace it with
-// NoSandboxLauncher so every behavior except kernel enforcement runs
-// without applying a Seatbelt/bwrap profile.
-func defaultLaunch(g *BuildGrants, innerArgv []string) ([]string, error) {
-	return sandboxrun.BuildChildArgv(g.Grants, innerArgv)
-}
-
 // NoSandboxLauncher is the unsandboxed launch adapter: it runs the inner
 // argv directly. Unit and integration tests inject it via
 // RunOptions.Launcher so everything except kernel enforcement executes
@@ -107,7 +98,15 @@ func RunBuild(opts RunOptions) (int, error) {
 	}
 	launch := opts.Launcher
 	if launch == nil {
-		launch = defaultLaunch
+		// The default launch applies the platform kernel sandbox via
+		// sandboxrun.BuildChildArgv: the seam between "everything except
+		// the kernel sandbox application" and the sandbox itself. Tests
+		// replace it with NoSandboxLauncher so every behavior except
+		// kernel enforcement runs without applying a Seatbelt/bwrap
+		// profile.
+		launch = func(g *BuildGrants, innerArgv []string) ([]string, error) {
+			return sandboxrun.BuildChildArgv(g.Grants, innerArgv)
+		}
 	}
 	auditor := opts.Auditor
 	if auditor == nil {
@@ -193,6 +192,20 @@ func RunBuild(opts RunOptions) (int, error) {
 	// a FORCED SIGKILL (forceCh fired). RunBuild consults it after the
 	// child is reaped to decide whether to recycle the daemon (S3).
 	var stageKillCh <-chan struct{}
+	// dispatchCancel handles both cancel triggers identically (caller
+	// signal OR the build-duration ceiling): once-only, audit the trigger,
+	// then SIGTERM the group and stage the hard kill. The staged kill
+	// honors forceCh: a forced cancel during the teardown collapses the
+	// window and reports via stageKillCh so RunBuild recycles the daemon
+	// (S3, P1). trigger is the audit reason ("sigterm" / "max-duration").
+	dispatchCancel := func(trigger string) {
+		if cancelled {
+			return
+		}
+		cancelled = true
+		auditor.Emit(audit.ControlMutation("build.cancel", opts.Resolved.Worktree, trigger))
+		stageKillCh = stageKill(pgid, killAfter, forceCh, sigGroup, childReaped)
+	}
 	for {
 		if opts.Cancel == nil {
 			err := <-waitErr
@@ -218,28 +231,11 @@ func RunBuild(opts RunOptions) (int, error) {
 			childErr = err
 			close(childReaped)
 		case <-opts.Cancel:
-			if cancelled {
-				continue
-			}
-			cancelled = true
-			auditor.Emit(audit.ControlMutation("build.cancel", opts.Resolved.Worktree, "sigterm"))
-			// Graceful stage: SIGTERM the whole group, then stage the
-			// hard kill. stageKill honors forceCh: a forced cancel
-			// during the teardown collapses the window and reports via
-			// stageKillCh so RunBuild recycles the daemon (S3).
-			stageKillCh = stageKill(pgid, killAfter, forceCh, sigGroup, childReaped)
+			dispatchCancel("sigterm")
 		case <-maxDurationCh:
 			// Build-duration ceiling elapsed: cancel as if the caller
-			// signalled (graceful first, then the staged kill).
-			// maxDurationCh is nil unless MaxDuration > 0. The staged
-			// kill ALSO honors forceCh: a forced cancel during a
-			// max-duration teardown collapses the window (P1).
-			if cancelled {
-				continue
-			}
-			cancelled = true
-			auditor.Emit(audit.ControlMutation("build.cancel", opts.Resolved.Worktree, "max-duration"))
-			stageKillCh = stageKill(pgid, killAfter, forceCh, sigGroup, childReaped)
+			// signalled. maxDurationCh is nil unless MaxDuration > 0.
+			dispatchCancel("max-duration")
 		case <-stageKillCh:
 			// The staged-kill goroutine delivered a FORCED SIGKILL
 			// (forceCh fired). Mark forced so the daemon is recycled

@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
-	"strings"
 
 	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxprofile"
 	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxrun"
@@ -60,22 +59,54 @@ type BuildGrants struct {
 
 // GradleUserHome is the OMAC cache leaf handed to the Gradle wrapper as
 // GRADLE_USER_HOME.
-func (b *BuildGrants) GradleUserHome() string { return b.gradleUserHome }
+//
+// Accessor nil-guard policy: EVERY BuildGrants accessor returns the zero
+// value on a nil receiver instead of panicking — the policy is uniform so
+// callers never need to memorize which accessors guard
+// (TestBuildGrants_NilReceiverAccessors pins this). The embedded
+// *sandboxrun.Grants is NOT guarded: touching it on nil is a caller bug,
+// like any other nil struct deref.
+func (b *BuildGrants) GradleUserHome() string {
+	if b == nil {
+		return ""
+	}
+	return b.gradleUserHome
+}
 
 // TmpDir is the executor's private temporary directory (exported as TMPDIR).
-func (b *BuildGrants) TmpDir() string { return b.tmpDir }
+func (b *BuildGrants) TmpDir() string {
+	if b == nil {
+		return ""
+	}
+	return b.tmpDir
+}
 
 // JDK returns the resolved real JDK (shims bypassed). The zero value's
 // empty JavaHome means resolution failed; the parent env then passes
 // through unchanged as a best-effort fallback.
-func (b *BuildGrants) JDK() JDKResolution { return b.jdk }
+func (b *BuildGrants) JDK() JDKResolution {
+	if b == nil {
+		return JDKResolution{}
+	}
+	return b.jdk
+}
 
 // ProxyURL returns the omac filtered proxy URL the Gradle daemon is routed
 // through, or "" when no proxy is in use.
-func (b *BuildGrants) ProxyURL() string { return b.proxyURL }
+func (b *BuildGrants) ProxyURL() string {
+	if b == nil {
+		return ""
+	}
+	return b.proxyURL
+}
 
 // GradleOpts returns the GRADLE_OPTS value injected into ChildEnv, or "".
-func (b *BuildGrants) GradleOpts() string { return b.gradleOpts }
+func (b *BuildGrants) GradleOpts() string {
+	if b == nil {
+		return ""
+	}
+	return b.gradleOpts
+}
 
 // ApprovedImages returns the manifest-approved container image references
 // (frozen-for-session capability set). Tickets 08/09 enforce these at the
@@ -519,34 +550,13 @@ func (p ProxyEndpoint) Valid() bool { return p.Host != "" && p.Port > 0 }
 // token must stay in per-process GRADLE_OPTS (which the JVM does not
 // print).
 func buildGradleOpts(p ProxyEndpoint) string {
-	opts := []string{
-		fmt.Sprintf("-Dhttp.proxyHost=%s", p.Host),
-		fmt.Sprintf("-Dhttp.proxyPort=%d", p.Port),
-		fmt.Sprintf("-Dhttps.proxyHost=%s", p.Host),
-		fmt.Sprintf("-Dhttps.proxyPort=%d", p.Port),
-		"-Dhttp.nonProxyHosts=localhost|127.*|[::1]",
-		// Java 8u111+ disables Basic auth on HTTPS CONNECT tunnels by
-		// default; re-enable so the omac proxy token is sent on the
-		// CONNECT (services.gradle.org:443) tunnel, not just plain HTTP.
-		"-Djdk.http.auth.tunneling.disabledSchemes=",
-	}
-	// The omac proxy ALWAYS carries a token (netproxy.Server.ProxyURL).
-	// Emit proxyUser/proxyPassword for BOTH http and https so the wrapper's
-	// distribution download (HTTPS CONNECT to services.gradle.org) AND any
-	// plain-HTTP dependency fetch authenticate. The password is the token.
-	if p.User != "" {
-		opts = append(opts,
-			fmt.Sprintf("-Dhttp.proxyUser=%s", p.User),
-			fmt.Sprintf("-Dhttps.proxyUser=%s", p.User),
-		)
-		if p.Password != "" {
-			opts = append(opts,
-				fmt.Sprintf("-Dhttp.proxyPassword=%s", p.Password),
-				fmt.Sprintf("-Dhttps.proxyPassword=%s", p.Password),
-			)
-		}
-	}
-	return strings.Join(opts, " ")
+	// The omac proxy ALWAYS carries a token (netproxy.Server.ProxyURL) —
+	// it rides in p.User/p.Password and is emitted as the http(s).proxyUser/
+	// proxyPassword properties so the wrapper's distribution download (HTTPS
+	// CONNECT to services.gradle.org) AND plain-HTTP fetches authenticate.
+	// The shared renderer keeps the JVM property strings identical to the
+	// JAVA_TOOL_OPTIONS channel (sandboxrun.JVMProxyToolOptions).
+	return sandboxrun.JVMProxySystemProperties(p.Host, p.Port, p.User, p.Password)
 }
 
 // CleanupTmp releases the private temp dir (safe to call with a nil receiver
