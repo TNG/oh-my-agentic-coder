@@ -38,6 +38,14 @@
 #   scripts/e2e-local.sh smoke [harness]       # smoke tier explicitly
 #   scripts/e2e-local.sh echo [harness]         # full echo-rest (needs secrets)
 #   scripts/e2e-local.sh audit [harness]       # security audit (needs secrets)
+#   scripts/e2e-local.sh build [harness]       # JVM-build brokered canary
+#
+# The build tier runs TestE2EJvmBuild — the model-free build brokered
+# canary. Inside an omac sandbox the canary's nested branch exercises
+# the loud-failure path (the loop cannot run nested: --no-sandbox gives
+# an empty cache scope → exit 10); on a host with a reachable Colima
+# daemon, set E2E_JVM_BUILD_IT=1 to run the IT leg (PostgresIT through
+# the container proxy) too.
 #
 # When no subcommand is given, defaults to "smoke". harness defaults to
 # opencode. Pass extra `go test` flags after `--`.
@@ -47,6 +55,8 @@
 #   scripts/e2e-local.sh smoke claude-code
 #   scripts/e2e-local.sh echo opencode
 #   scripts/e2e-local.sh audit opencode -- -run TestE2ESecurityAudit/opencode
+#   scripts/e2e-local.sh build                             # build canary, unit leg
+#   E2E_JVM_BUILD_IT=1 scripts/e2e-local.sh build          # + IT leg (needs Colima/Docker)
 #
 # Outside an omac sandbox this script is a thin passthrough — it sets none
 # of the E2E_NESTED / E2E_RECOVER_INSTALL vars and just runs go test.
@@ -61,7 +71,7 @@ harness="${E2E_HARNESS:-opencode}"
 extra=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        smoke|echo|audit) tier="$1"; shift ;;
+        smoke|echo|audit|build) tier="$1"; shift ;;
         --) shift; extra+=("$@"); break ;;
         -*) extra+=("$1"); shift ;;
         *) harness="$1"; shift ;;
@@ -83,6 +93,14 @@ case "$tier" in
         ;;
     audit)
         go_args+=(-run 'TestE2ESecurityAudit')
+        ;;
+    build)
+        go_args+=(-run '^TestE2EJvmBuild$')
+        # The build canary is intentionally harness-locked to
+        # claude-code (the broker is harness-agnostic; claude-code
+        # provides the --inner seam and its binary is never launched
+        # into a model). E2E_HARNESS is exported below for the other
+        # tiers; leave it at its default.
         ;;
 esac
 
