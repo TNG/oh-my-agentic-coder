@@ -644,7 +644,11 @@ func (p *Proxy) owned(id string, req *http.Request) bool {
 
 // forwardCreate forwards a (rewritten) create body and, on a 2xx response,
 // captures the created container Id, registers its published ports, and
-// attaches it to the executor-owned internal network.
+// attaches it to the executor-owned internal network — all BEFORE the
+// response is written to the client, so a client that sees a successful
+// create is guaranteed the container is tracked and network-attached
+// (Cleanup is race-free, and a failed attach refuses the create instead of
+// briefly returning 201).
 func (p *Proxy) forwardCreate(conn net.Conn, req *http.Request, body []byte) {
 	upReq, err := http.NewRequest(req.Method, p.upstreamURL("/containers/create"), strings.NewReader(string(body)))
 	if err != nil {
@@ -660,32 +664,39 @@ func (p *Proxy) forwardCreate(conn net.Conn, req *http.Request, body []byte) {
 		return
 	}
 	defer resp.Body.Close()
-	// Stream the response back to the client first.
 	respBytes, _ := io.ReadAll(resp.Body)
-	writeRawResponse(conn, resp.Status, resp.Header, respBytes)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		// Forward the failure to the client. The container was NOT
+		// created, so no ownership bookkeeping is needed.
+		writeRawResponse(conn, resp.Status, resp.Header, respBytes)
 		return
 	}
-	// Capture the created Id.
+	// Attach to the executor-owned internal network BEFORE responding to
+	// the client, so once the client sees the create succeed the network
+	// exists and p.networkID is registered synchronously (Cleanup can no
+	// longer race the POST /networks/create response on a slow daemon).
+	// If attach fails the container MUST NOT run on the default bridge
+	// (which has an outbound route) — kill + delete it, audit the denial,
+	// and refuse the create (checkbox 5). Previously the attach ran after
+	// the response was written, so a test/client could observe a
+	// successfully-created container that was not yet network-attached,
+	// and the executor could briefly see a 201 before the async kill.
 	var created struct {
 		ID string `json:"Id"`
 	}
 	if err := json.Unmarshal(respBytes, &created); err != nil || created.ID == "" {
+		// The daemon returned 2xx without an Id (should not happen);
+		// treat the create as failed and refuse the request rather than
+		// handing back an untracked container id.
+		p.logf("containerproxy: create response missing Id: %s", respBytes)
+		p.deny(conn, req, &ContainerPolicyError{Kind: KindUnknownEndpoint, Reason: "create response missing container Id"})
 		return
 	}
-	// Register the id in p.containers SYNCHRONOUSLY (under the lock)
-	// BEFORE the post-response inspect/attach so Cleanup cannot orphan it
-	// and a concurrent follow-up op (start/inspect) sees it. The metadata
-	// is enriched (image, ports) after the inspect below; a "pending"
-	// entry with an empty image is safe — the audit redacts an empty
-	// image and the ownership fast-path only needs the id present.
 	p.mu.Lock()
 	p.containers[created.ID] = containerMeta{id: created.ID}
 	p.mu.Unlock()
-	// Inspect to get the published ports + image. Done after tracking so
-	// the tracked metadata is complete. The inspect result is written back
-	// under p.mu below; the metadata lookup itself is inline (no separate
-	// helper — sync.Mutex is not reentrant).
+	// Inspect to get the published ports + image (best-effort; the
+	// tracked metadata is complete even if the inspect fails).
 	ports, image := p.inspectAndRegister(created.ID)
 	p.mu.Lock()
 	if entry, ok := p.containers[created.ID]; ok {
@@ -694,12 +705,6 @@ func (p *Proxy) forwardCreate(conn net.Conn, req *http.Request, body []byte) {
 		p.containers[created.ID] = entry
 	}
 	p.mu.Unlock()
-	p.auditor.Emit(audit.ControlMutation("container.create", "", fmt.Sprintf(
-		"executor=%s image=%s id=%s ports=%s",
-		p.cfg.ExecutorID, redactImage(image), created.ID, fmtPortMappings(ports))))
-	// Attach to the executor-owned internal network. If attach fails the
-	// container MUST NOT run on the default bridge (which has an outbound
-	// route) — kill + delete it and audit the denial (checkbox 5).
 	if err := p.attachToNetwork(created.ID); err != nil {
 		p.logf("containerproxy: network attach failed for %s, killing+removing: %v", created.ID, err)
 		p.deleteContainer(created.ID, true)
@@ -709,7 +714,16 @@ func (p *Proxy) forwardCreate(conn net.Conn, req *http.Request, body []byte) {
 		p.auditor.Emit(audit.ControlMutation("container.denied", "", fmt.Sprintf(
 			"executor=%s id=%s kind=%v reason=network attach failed: %v",
 			p.cfg.ExecutorID, created.ID, KindHostNamespaceForbidden, err)))
+		p.deny(conn, req, &ContainerPolicyError{Kind: KindHostNamespaceForbidden,
+			Reason: fmt.Sprintf("container %s could not be attached to the executor network: %v", created.ID, err)})
+		return
 	}
+	// Stream the response back to the client now that the container is
+	// created, tracked, and attached.
+	writeRawResponse(conn, resp.Status, resp.Header, respBytes)
+	p.auditor.Emit(audit.ControlMutation("container.create", "", fmt.Sprintf(
+		"executor=%s image=%s id=%s ports=%s",
+		p.cfg.ExecutorID, redactImage(image), created.ID, fmtPortMappings(ports))))
 }
 
 // inspectAndRegister fetches the container's published ports and image
