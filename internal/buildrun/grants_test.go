@@ -11,6 +11,33 @@ import (
 	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxrun"
 )
 
+// TestBuildGrants_NilReceiverAccessors asserts every BuildGrants accessor
+// is nil-receiver safe (returns the zero value instead of panicking). The
+// nil-guard policy is uniform across accessors: any accessor that panicked
+// on a nil receiver would be an inconsistency (review finding).
+func TestBuildGrants_NilReceiverAccessors(t *testing.T) {
+	var b *BuildGrants // nil
+	fail := func(name string, fn func()) {
+		t.Helper()
+		defer func() {
+			if r := recover(); r != nil {
+				t.Errorf("%s panicked on nil receiver: %v", name, r)
+			}
+		}()
+		fn()
+	}
+	fail("GradleUserHome", func() { _ = b.GradleUserHome() })
+	fail("TmpDir", func() { _ = b.TmpDir() })
+	fail("JDK", func() { _ = b.JDK() })
+	fail("ProxyURL", func() { _ = b.ProxyURL() })
+	fail("GradleOpts", func() { _ = b.GradleOpts() })
+	fail("ApprovedImages", func() { _ = b.ApprovedImages() })
+	fail("ApprovedRegistries", func() { _ = b.ApprovedRegistries() })
+	fail("RegistryProxyURLs", func() { _ = b.RegistryProxyURLs() })
+	fail("ContainerProxyURL", func() { _ = b.ContainerProxyURL() })
+	fail("ContainerProxyEnabled", func() { _ = b.ContainerProxyEnabled() })
+}
+
 func TestGrantsFor(t *testing.T) {
 	wt := t.TempDir()
 	canonical, err := filepath.EvalSymlinks(wt)
@@ -26,15 +53,6 @@ func TestGrantsFor(t *testing.T) {
 		t.Fatalf("GrantsFor: %v", err)
 	}
 	chmodInitDForCleanup(t, filepath.Join(cacheDir, "gradle"))
-
-	contains := func(list []string, want string) bool {
-		for _, p := range list {
-			if p == want {
-				return true
-			}
-		}
-		return false
-	}
 
 	t.Run("grant set is worktree + cache leaf + private temp only", func(t *testing.T) {
 		if !contains(g.AllowPaths, canonical) {
