@@ -173,4 +173,5 @@ omac [--workdir <dir>] <subcommand> [flags] [args]
 | `7` | sandbox exited abnormally |
 | `8` | keychain access failed |
 | `9` | required secret refused by user |
+| `10` | downloaded artifact failed its checksum verification |
 

@@ -150,7 +150,10 @@ sandbox:
 > so you can read it, then forwards **only the operational minimum** —
 > `sandboxprofile.DefaultAllowVars()`: `HOME`, `PATH`, `PWD`, `TMPDIR`, `LANG`,
 > `LC_*`, `TERM`, `COLORTERM`, `SHELL`, `USER`, `LOGNAME`, `TZ`, `EDITOR`,
-> `VISUAL`, `XDG_*`, `NPM_CONFIG_PREFIX`, `OMAC_*`.
+> `VISUAL`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME`,
+> `NPM_CONFIG_PREFIX`, `OMAC_*`. Note this is **not** a blanket `XDG_*`
+> prefix: `XDG_CACHE_HOME` is deliberately absent, because omac sets it
+> itself to the isolated tool-cache scope.
 >
 > Everything else is **stripped** — secrets, *and* provider-auth vars.
 > omac deliberately does **not** auto-forward the harness's auth variables for

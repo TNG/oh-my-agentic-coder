@@ -94,12 +94,13 @@ omac's control plane (skill activation, the skills manifest, skill base URLs):
 | Codex       | `.codex/`                    | SessionStart hook                  |
 | Copilot     | `.copilot/`                  | SessionStart + SessionEnd hooks    |
 | Pi          | `.pi/extensions/`            | TypeScript extension (`omac-bridge`) |
+| CodeWhale   | *(none)*                     | Briefing delivered as a rules file |
 
 Skills themselves are **harness-agnostic** — the same skill works unchanged
 under any harness. Adding a new agentic harness means registering one
 descriptor in `internal/config/harness.go` plus shipping its bridge; no
-command-dispatch code changes. The five supported harnesses — OpenCode,
-Claude Code, Codex, Copilot, Pi — are worked examples. See
+command-dispatch code changes. The six supported harnesses — OpenCode,
+Claude Code, Codex, Copilot, Pi, CodeWhale — are worked examples. See
 [`CREATING_A_SKILL.md`](../CREATING_A_SKILL.md) and
 [`MULTI_DIR_DESKTOP.md`](./MULTI_DIR_DESKTOP.md).
 
@@ -109,7 +110,7 @@ omac ships a small set of **built-in skills** embedded in the binary and
 **auto-provisions them on `omac start` / `omac serve`** — no separate step. On
 launch, omac idempotently writes them into the active harness's skills directory
 (`~/.config/opencode/skills`, `~/.claude/skills`, `~/.codex/skills`,
-`~/.copilot/skills`); it stays silent when they're already current and never
+`~/.copilot/skills`, `~/.pi/agent/skills`, `~/.codewhale/skills`); it stays silent when they're already current and never
 overwrites a same-named directory it doesn't own.
 
 Today the only built-in is **`omac-write-a-skill`** — a guidance-only skill
@@ -137,6 +138,7 @@ matches that: discovery is scoped to the active harness.
 | Codex       | `.codex/skills` / `~/.codex/skills`               |
 | Copilot     | `.copilot/skills` / `~/.copilot/skills`           |
 | Pi          | `.pi/skills` / `~/.pi/agent/skills`               |
+| CodeWhale   | `.agents/skills` / `~/.codewhale/skills`         |
 | *(shared)*  | `.agents/skills` / `~/.config/agents/skills`     |
 
 - The active harness scans **its own dir + the shared `.agents/skills`**, and

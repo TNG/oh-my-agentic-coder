@@ -123,41 +123,12 @@ missing.
 
 ### Core (required)
 
-| Package | Linux | macOS | Purpose |
-|---|---|---|---|
-| **bubblewrap** (`bwrap`) | `apt install bubblewrap` / `dnf install bubblewrap` | built-in (Seatbelt) | Sandboxes the inner process via Linux user namespaces + Landlock. Without it the built-in sandbox cannot start. |
-| **Secret Service / D-Bus** | ships with GNOME/KDE; `apt install libsecret-1-0` | built-in (Keychain) | Stores skill secrets (API keys, tokens) in the OS keychain so they never touch disk. If no Secret Service is running, `omac secrets` operations will fail. |
-| **Python 3** (stdlib only) | pre-installed on most distros | pre-installed | Sidecar processes are written against the Python standard library only. No pip packages required. |
-
-> **AppArmor and bubblewrap (Ubuntu 23.10+/24.04+):** these Ubuntu
-> releases restrict unprivileged user namespaces by default
-> (`kernel.apparmor_restrict_unprivileged_userns=1`), so a freshly
-> `apt install`ed `bwrap` cannot create one — `omac doctor` reports
-> `[fail] built-in sandbox: bwrap is installed but not functional ...
-> Permission denied`. Grant bwrap an AppArmor exception once:
-> ```bash
-> sudo tee /etc/apparmor.d/bwrap > /dev/null <<'EOF'
-> abi <abi/4.0>,
-> /usr/bin/bwrap flags=(unconfined) {
->   userns,
-> }
-> EOF
-> sudo apparmor_parser -r /etc/apparmor.d/bwrap
-> ```
-> `omac doctor` prints this same fix in its failure message.
-
-> **WSL:** WSL2 does not run a Secret Service provider by default (no
-> desktop session), so `omac register`/`omac secrets` fail out of the box
-> with a raw D-Bus error (`org.freedesktop.secrets was not provided by any
-> .service files`). Install and start gnome-keyring once per session:
-> ```bash
-> sudo apt install gnome-keyring dbus-x11
-> eval "$(dbus-launch --sh-syntax)"
-> gnome-keyring-daemon --unlock --components=secrets
-> ```
-> `omac doctor` reports whether the keychain backend is reachable. There is
-> no file-based fallback yet (see design doc §16.2) — a running Secret
-> Service provider is required on Linux/WSL.
+bubblewrap, a Secret Service provider, and Python 3 — with the Ubuntu
+AppArmor exception and the WSL gnome-keyring setup — are documented in
+[README → Prerequisites](../README.md#prerequisites). They live there rather
+than here because the README has to stand alone for a first install. The one
+addition: there is no file-based keychain fallback yet (see design doc
+§16.2), so a running Secret Service provider is required on Linux/WSL.
 
 ### Network prompt dialog (strongly recommended)
 
@@ -179,10 +150,12 @@ non-whitelisted network request is silently blocked. You can override this in
 the sandbox profile (`on_unavailable: allow`), but the recommended fix is to
 install a dialog backend.
 
-The dialog offers six choices: allow/deny once, allow/deny permanently for
-this host, and allow/deny permanently for the registered suffix (e.g.
-`*.example.com`). Permanent decisions are persisted in
-`default.pages.json` next to the sandbox profile.
+The dialog offers seven choices: allow/deny once, allow/deny permanently for
+this host, allow/deny permanently for the registered suffix (e.g.
+`*.example.com`), and **Explain more**, which denies the request for now and
+points the agent at the intent endpoint so it declares why it wants the host —
+you decide on the retry. That choice is never persisted; the permanent
+decisions are, in `default.pages.json` next to the sandbox profile.
 
 ### Inner harness (pick at least one)
 
@@ -193,6 +166,7 @@ this host, and allow/deny permanently for the registered suffix (e.g.
 | **codex** (OpenAI Codex CLI) | see [Codex docs](https://github.com/openai/codex) | Alternative harness (`omac start codex`) |
 | **copilot** (GitHub Copilot CLI) | see [Copilot CLI docs](https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli) | Alternative harness (`omac start copilot`) |
 | **pi** (Pi coding agent) | see [Pi docs](https://pi.dev) | Alternative harness (`omac start pi`) |
+| **codewhale** (CodeWhale CLI) | npm package `codewhale` | Alternative harness (`omac start codewhale`), bring-your-own-model |
 
 At least one inner harness must be installed; `opencode` is the default.
 

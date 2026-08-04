@@ -256,8 +256,9 @@ platform, and the complete prerequisite matrix.
 > eval "$(dbus-launch --sh-syntax)"
 > gnome-keyring-daemon --unlock --components=secrets
 > ```
-> There is no file-based fallback yet — a running Secret Service provider is
-> required on Linux/WSL.
+> `omac doctor` reports whether the keychain backend is reachable. There is no
+> file-based fallback yet — a running Secret Service provider is required on
+> Linux/WSL.
 
 Per-harness install links and the optional extras (nono, Go) are in
 [`docs/INSTALLATION.md`](docs/INSTALLATION.md#prerequisites).
