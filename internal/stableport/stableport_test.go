@@ -1,6 +1,8 @@
 package stableport
 
 import (
+	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
@@ -75,7 +77,7 @@ func TestFor_CanonicalizesSymlinks(t *testing.T) {
 // TestSelect_PreferredFree asserts Select returns the preferred
 // port when it is free.
 func TestSelect_PreferredFree(t *testing.T) {
-	isFree := func(int) bool { return true }
+	isFree := func(int) error { return nil }
 	got := Select(31000, isFree, func() int { t.Fatal("fallback must not run"); return 0 })
 	if got != 31000 {
 		t.Errorf("Select = %d, want 31000 (preferred free)", got)
@@ -86,7 +88,12 @@ func TestSelect_PreferredFree(t *testing.T) {
 // forward when the preferred port is busy and returns the next free port.
 func TestSelect_PreferredBusyScans(t *testing.T) {
 	busy := map[int]bool{31000: true, 31001: true}
-	isFree := func(p int) bool { return !busy[p] }
+	isFree := func(p int) error {
+		if busy[p] {
+			return fmt.Errorf("port %d is busy", p)
+		}
+		return nil
+	}
 	got := Select(31000, isFree, func() int { t.Fatal("fallback must not run"); return 0 })
 	if got != 31002 {
 		t.Errorf("Select = %d, want 31002 (first free in window)", got)
@@ -100,7 +107,12 @@ func TestSelect_WindowWraps(t *testing.T) {
 	// Preferred at StablePortMax-1; occupy it + the wrap target so the
 	// scan lands two past the wrap.
 	busy := map[int]bool{StablePortMax - 1: true, StablePortMin: true}
-	isFree := func(p int) bool { return !busy[p] }
+	isFree := func(p int) error {
+		if busy[p] {
+			return fmt.Errorf("port %d busy", p)
+		}
+		return nil
+	}
 	got := Select(StablePortMax-1, isFree, func() int { t.Fatal("fallback must not run"); return 0 })
 	if got != StablePortMin+1 {
 		t.Errorf("Select = %d, want %d (wrap)", got, StablePortMin+1)
@@ -177,8 +189,23 @@ func TestReadPreferred_MissingFile(t *testing.T) {
 	}
 }
 
+// TestIsFree_ReturnsError asserts that IsFree returns a non-nil error
+// when the port is already in use, so callers can log the bind failure
+// reason (issue #191).
+func TestIsFree_ReturnsError(t *testing.T) {
+	occ, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer occ.Close()
+	busyPort := occ.Addr().(*net.TCPAddr).Port
+	if err := IsFree(busyPort); err == nil {
+		t.Errorf("IsFree(%d) = nil, want non-nil error (port held)", busyPort)
+	}
+}
+
 func TestSelect_FallbackWhenWindowFull(t *testing.T) {
-	isFree := func(int) bool { return false }
+	isFree := func(int) error { return fmt.Errorf("port busy") }
 	called := false
 	fb := func() int { called = true; return 35000 }
 	got := Select(31000, isFree, fb)

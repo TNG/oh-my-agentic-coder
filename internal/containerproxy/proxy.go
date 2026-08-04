@@ -351,14 +351,16 @@ func (p *Proxy) Start() (dockerHost string, stop func(), err error) {
 	if fallback {
 		p.logf("containerproxy: using fallback ephemeral port %d (stable window unavailable; warm-daemon DOCKER_HOST may drift on next run)", p.boundPort)
 	}
-	// Persist the assigned port so the next run can prefer it. Only a stable
-	// port (chosen == preferred, fallback == false) is persisted: persisting
-	// a fallback ephemeral port would poison the control file — the next run
-	// would prefer a dead-ephemeral or out-of-range value and destabilize
-	// again. A fallback run degrades THIS run only; the next run re-reads
-	// (or recomputes) the stable port and binds it fresh. Best-effort: a
-	// write failure degrades cross-run stability but does not fail the
-	// build (the port is valid for this run).
+	// Persist the assigned port so the next run can prefer it. Any port
+	// inside [StablePortMin, StablePortMax) — preferred OR a scanned
+	// neighbor — is persisted so the next run prefers exactly what this run
+	// bound, breaking the permanent warn-loop where a scanned neighbor is
+	// treated as "fallback" and never persisted (issue #191). A true
+	// out-of-window random/ephemeral port is NOT persisted because it would
+	// poison the control file — the next run would prefer a dead-ephemeral
+	// or out-of-range value and destabilize again. Best-effort: a write
+	// failure degrades cross-run stability but does not fail the build (the
+	// port is valid for this run).
 	if p.cfg.ControlLeaf != "" && !fallback {
 		if werr := stableport.WritePreferred(p.cfg.ControlLeaf, portFileName, p.boundPort); werr != nil {
 			p.logf("containerproxy: could not persist port file: %v", werr)
@@ -398,10 +400,14 @@ func (p *Proxy) choosePort() (port int, fallback bool) {
 		// Let the kernel pick (Start retries on 127.0.0.1:0).
 		return 0, true
 	}
-	// "Fallback" means we are NOT on the deterministic preferred port —
-	// either a scan neighbor or a random ephemeral port. The warm-daemon
-	// bug can resurface in this case, so the caller logs it.
-	return chosen, chosen != preferred
+	// "Fallback" means we are outside the stable port window
+	// [StablePortMin, StablePortMax) — i.e. a random kernel-assigned port.
+	// A scanned neighbor inside the window is NOT a fallback: it is
+	// persisted so the next run prefers exactly what this run bound,
+	// breaking the permanent warn-loop (issue #191). A true out-of-window
+	// random port is NOT persisted because it would poison the control
+	// file for the next run.
+	return chosen, chosen < stableport.StablePortMin || chosen >= stableport.StablePortMax
 }
 
 // shutdown is the stop func returned by Start. It closes the listener and

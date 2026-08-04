@@ -574,6 +574,55 @@ func TestStart_ControlFileNotPersistedOnFallback(t *testing.T) {
 	}
 }
 
+// TestStart_ScanNeighborPersisted asserts that when the preferred stable
+// port is occupied but a scan neighbor is free, the scan neighbor is
+// persisted to the control file AND the log does NOT emit the "fallback"
+// warning (issue #191: the old code treated chosen != preferred as
+// "fallback" and skipped persistence, causing a permanent warn-loop).
+func TestStart_ScanNeighborPersisted(t *testing.T) {
+	worktree := "/worktree/feat-credproxy-scan"
+	preferred := stableport.For(worktree)
+	// Occupy ONLY the preferred port so Select scans to preferred+1.
+	occ, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", preferred))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer occ.Close()
+
+	leaf := t.TempDir()
+	var logBuf strings.Builder
+	srv, err := NewServerWithConfig(Config{
+		Registries:   []Registry{portTestRegistry()},
+		WorktreePath: worktree,
+		ControlLeaf:  leaf,
+		Logf:         func(format string, args ...any) { logBuf.WriteString(fmt.Sprintf(format, args...)) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Close()
+	// The bound port must be a scan neighbor, NOT outside the stable window.
+	port := srv.Port()
+	if port < stableport.StablePortMin || port >= stableport.StablePortMax {
+		t.Errorf("port = %d outside stable window, want a scan neighbor inside [%d,%d)", port, stableport.StablePortMin, stableport.StablePortMax)
+	}
+	if port == preferred {
+		t.Errorf("port = %d equals occupied preferred port", port)
+	}
+	// The scan neighbor MUST be persisted (core fix, issue #191).
+	got := stableport.ReadPreferred(leaf, portFileName)
+	if got != port {
+		t.Errorf("port file = %d, want bound neighbor %d (scanned neighbor was not persisted)", got, port)
+	}
+	// The log must NOT contain the "fallback" warning.
+	if strings.Contains(logBuf.String(), "fallback") {
+		t.Errorf("log contains 'fallback' warning but a scan neighbor is NOT a fallback:\n%s", logBuf.String())
+	}
+}
+
 // TestStart_PortPersistsAcrossRestarts asserts the assigned port is
 // recorded in the control file and preferred by the NEXT server over the
 // worktree hash: a second server with a DIFFERENT worktree path but the

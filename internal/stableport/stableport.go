@@ -52,15 +52,18 @@ func For(worktreePath string) int {
 }
 
 // IsFree reports whether a loopback TCP port can be bound right now.
-// A true return means a listener opened and was closed immediately. Used
-// by the port-selection helpers and by the control-file reuse check.
-func IsFree(port int) bool {
+// A nil error means a listener opened and was closed immediately. The
+// returned error (when non-nil) carries the listen failure so callers can
+// log why the port was unavailable (e.g. "listen tcp 127.0.0.1:P: bind:
+// address already in use"). Used by the port-selection helpers and by the
+// control-file reuse check.
+func IsFree(port int) error {
 	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
 	if err != nil {
-		return false
+		return err
 	}
 	_ = ln.Close()
-	return true
+	return nil
 }
 
 // Select chooses a bindable port given a preferred port. It tries the
@@ -74,8 +77,8 @@ func IsFree(port int) bool {
 // are occupied, fallbackRandom is called and its result returned (even if
 // 0, which the caller treats as "use a random ephemeral port"). The
 // caller is responsible for logging the fallback.
-func Select(preferred int, isFree func(int) bool, fallbackRandom func() int) int {
-	if preferred > 0 && isFree(preferred) {
+func Select(preferred int, isFree func(int) error, fallbackRandom func() int) int {
+	if preferred > 0 && isFree(preferred) == nil {
 		return preferred
 	}
 	for i := 1; i <= PortScanWindow; i++ {
@@ -86,7 +89,7 @@ func Select(preferred int, isFree func(int) bool, fallbackRandom func() int) int
 		if cand < StablePortMin || cand >= StablePortMax {
 			continue
 		}
-		if isFree(cand) {
+		if isFree(cand) == nil {
 			return cand
 		}
 	}
