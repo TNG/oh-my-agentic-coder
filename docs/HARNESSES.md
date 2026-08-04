@@ -64,8 +64,9 @@ omac resume claude     # ...with Claude Code
 `omac continue` re-enters the most recent session for this folder. Pass
 `-s`/`--session <id>` to target a specific session non-interactively
 (opencode `--session <id>`, claude `--resume <id>`, codex `resume <id>`,
-copilot `--session-id <id>`, pi `--session <id>`, codewhale `--resume <id>`). After the inner command
-exits, omac prints a one-line hint with the most recent session id:
+copilot `--session-id <id>`, pi `--session <id>`, codewhale `resume <id>`).
+After the inner command exits, omac prints a one-line hint with the most
+recent session id:
 
 ```
 To resume this session: omac continue -s ses_abc123

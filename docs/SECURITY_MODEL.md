@@ -186,13 +186,14 @@ sandbox:
 > treats an empty `allow_vars` as inherit-all; the fail-closed seeding happens
 > in the `start`/`serve` launch path.
 
-For successfully inspectable built-in `{{self}} sandbox run` profiles,
-`omac doctor` warns when a profile re-introduces a broad read/write
-grant on the cache roots (`~/.cache`, `~/Library/Caches`) or the tool
-homes (`~/go`, `~/.cargo`, `~/.rustup`), and when a host Cargo sentinel
-(`~/.cargo/config`, `~/.cargo/config.toml`, `~/.cargo/credentials`, or
-`~/.cargo/credentials.toml`) exists but will be invisible to an
-isolated `CARGO_HOME`. It detects sentinels with `Lstat` only: doctor
+For built-in profiles omac can inspect — those whose `inner_cmd` is omac's
+own `{{self}} sandbox run` — `omac doctor` warns when a profile
+re-introduces a broad read/write grant on the cache roots (`~/.cache`,
+`~/Library/Caches`) or the tool homes (`~/go`, `~/.cargo`, `~/.rustup`), and
+when a host Cargo sentinel (`~/.cargo/config`, `~/.cargo/config.toml`,
+`~/.cargo/credentials`, or `~/.cargo/credentials.toml`) exists but will be
+invisible to an isolated `CARGO_HOME`. It detects sentinels with `Lstat`
+only: doctor
 never reads or copies their contents. External nono profiles are opaque
 to these diagnostics and skipped. The warnings are advisory — doctor
 never rewrites the profile. See

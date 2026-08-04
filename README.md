@@ -1,5 +1,13 @@
 # oh-my-agentic-coder (omac)
 
+[![CI](https://github.com/TNG/oh-my-agentic-coder/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/TNG/oh-my-agentic-coder/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/TNG/oh-my-agentic-coder?sort=semver&label=release)](https://github.com/TNG/oh-my-agentic-coder/releases/latest)
+[![License](https://img.shields.io/github/license/TNG/oh-my-agentic-coder)](./LICENSE)
+[![Go](https://img.shields.io/github/go-mod/go-version/TNG/oh-my-agentic-coder)](./go.mod)
+
+[![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20macOS%20%7C%20WSL2-blue)](#prerequisites)
+[![Harnesses](https://img.shields.io/badge/harnesses-opencode%20%7C%20claude--code%20%7C%20codex%20%7C%20copilot%20%7C%20pi%20%7C%20codewhale-blue)](#works-with-your-agent)
+
 **Run agentic coders against real code without handing them the keys.**
 
 AI coding agents are useful, but running one on your machine means letting an
