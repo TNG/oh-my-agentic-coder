@@ -18,6 +18,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import socketserver
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
@@ -62,11 +63,25 @@ class Handler(BaseHTTPRequestHandler):
         self._json(404, {"error": "not found", "path": self.path})
 
 
+class Server(ThreadingHTTPServer):
+    """ThreadingHTTPServer without the reverse-DNS lookup in server_bind().
+
+    The base class resolves the bind address with socket.getfqdn() between
+    bind() and listen(). On macOS that lookup of 127.0.0.1 has no answer and
+    times out after ~35s, delaying every sidecar start by that much before the
+    facade can reach it. server_name only fills in CGI variables, unused here.
+    """
+
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+
+
 def main() -> int:
     if PORT == 0:
         print("self-audit: $SIDECAR_PORT not set", file=sys.stderr)
         return 2
-    srv = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
+    srv = Server(("127.0.0.1", PORT), Handler)
     print(
         f"[self-audit] listening on 127.0.0.1:{PORT} skill={SKILL} "
         f"secret={fingerprint(SECRET)}",

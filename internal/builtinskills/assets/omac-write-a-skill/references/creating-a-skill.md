@@ -427,7 +427,7 @@ Your sidecar is a normal HTTP server. Requirements:
 
 ```python
 #!/usr/bin/env python3
-import json, os, sys
+import json, os, socketserver, sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 SKILL  = os.environ.get("SIDECAR_SKILL", "my-skill")
@@ -451,7 +451,19 @@ class H(BaseHTTPRequestHandler):
 
 if PORT == 0:
     print("SIDECAR_PORT not set", file=sys.stderr); sys.exit(2)
-ThreadingHTTPServer(("127.0.0.1", PORT), H).serve_forever()
+class Server(ThreadingHTTPServer):
+    """Skip the reverse-DNS lookup the base class does in server_bind().
+
+    It resolves the bind address between bind() and listen(); on macOS that
+    lookup of 127.0.0.1 goes unanswered and times out after ~35s, delaying
+    every sidecar start. server_name only fills in CGI variables.
+    """
+
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+
+Server(("127.0.0.1", PORT), H).serve_forever()
 ```
 
 ### Streaming (Server-Sent Events, long polls, WebSockets)
