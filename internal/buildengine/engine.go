@@ -142,11 +142,20 @@ type PolicySnapshot struct {
 //     changed or there is no prior approval — the engine surfaces that
 //     as policy_denial. This preserves the prefactor's
 //     behavior-preserving constraint: the direct-host path keeps its
-//     current gate semantics.
+//     current gate semantics. When the opt-in approval-reuse-by-digest
+//     feature is enabled (ADR 0005), the direct-host path wires a
+//     reuse-aware variant (cli.newDirectSnapshotProvider) that resolves
+//     the worktree's git repo identity and passes it into
+//     buildmanifest.GateAt, so an already-approved repo's unchanged
+//     worktrees reuse the digest-indexed approval instead of requiring
+//     a fresh per-worktree approval.
 //   - Brokered (start/serve parent): reads the parent-owned in-memory
 //     snapshot frozen at activation. Never writes approvals; a digest
 //     mismatch is a policy_denial (the broker routes the human to
-//     `omac build approve` + parent restart).
+//     `omac build approve` + parent restart). The parent's activation
+//     freeze may itself freeze from the digest-indexed reuse record
+//     when reuse is enabled (ADR 0005) — the engine is unchanged: it
+//     consumes whatever immutable snapshot the provider returns.
 //
 // The engine cannot write approvals or replace snapshots: the provider
 // is the only seam that touches approval state, and the engine treats
