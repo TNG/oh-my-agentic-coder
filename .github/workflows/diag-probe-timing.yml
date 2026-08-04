@@ -1,0 +1,54 @@
+# TEMPORARY diagnostic workflow — delete once the macOS cost is localized.
+#
+# `E2E: model-free (macos-latest)` in ci.yml takes ~700s against ~60s on
+# ubuntu, all of it inside the "Check model probe against a stub gateway" step
+# (scripts/probe-model_test.sh). The step emits nothing between start and
+# finish, so the split is invisible in a normal CI log.
+#
+# This workflow runs, on both OSes:
+#   1. scripts/diag-loopback-timing.py — per-layer cost (interpreter spawn,
+#      curl spawn, getfqdn, bind, stub cold start, curl vs urllib request).
+#      Its projection reproduces the Linux wall clock to within a second, so
+#      the macOS rows identify the culprit arithmetically.
+#   2. the traced probe test itself — one TRACE line per case, to confirm the
+#      cost is spread across all cases rather than parked in one.
+#
+# Triggered on push to this branch only; nothing here runs on main.
+name: "Diag: probe-model timing"
+
+on:
+  push:
+    branches: [diag/probe-model-macos-timing]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  timing:
+    name: "timing (${{ matrix.os }})"
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Toolchain fingerprint
+        run: |
+          uname -a
+          echo "bash: $BASH_VERSION ($(command -v bash))"
+          python3 --version; command -v python3
+          curl --version | head -2
+          echo "hostname: $(hostname)"
+
+      - name: Per-layer timing breakdown
+        run: python3 scripts/diag-loopback-timing.py --repeats 20
+
+      - name: Traced probe-model_test.sh
+        run: |
+          start=$(date +%s)
+          bash scripts/probe-model_test.sh
+          echo "wall clock: $(( $(date +%s) - start ))s"
