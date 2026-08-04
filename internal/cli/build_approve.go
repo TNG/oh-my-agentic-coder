@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/tngtech/oh-my-agentic-coder/internal/buildmanifest"
 	"github.com/tngtech/oh-my-agentic-coder/internal/buildrun"
@@ -145,9 +146,37 @@ func runBuildApprove(args []string, env *Env) int {
 
 	// 8. Store the durable approval. This is the ONLY write; it does
 	//    NOT execute build code, start proxies, or launch the executor.
+	//    In addition to the per-worktree record, when the worktree's
+	//    repo identity is resolvable (a git repo with a root commit),
+	//    it writes the digest-indexed, repo-namespaced reuse record
+	//    (with repoRootCommit) under the host-only approvals-by-repo
+	//    tree (ADR 0005). This record is INERT unless the host enables
+	//    approval reuse; writing it at approve time means an
+	//    already-approved repo's unchanged worktrees can reuse the
+	//    approval later without re-running approve.
 	if err := buildmanifest.ApproveAt(leaf, loc, digest, caps); err != nil {
 		fmt.Fprintf(env.Stderr, "omac build approve: write approval: %v\n", err)
 		return buildrun.ExitServiceFailure
+	}
+	// Digest-indexed reuse record (idempotent; best-effort — a
+	// non-resolvable repo identity merely skips it, it is not an
+	// approval error).
+	cacheRoot := buildControlCacheRoot(cacheDir)
+	if cacheRoot != "" {
+		if canonRepoRoot, rootCommit := resolveRepoIdentity(canonWorktree); canonRepoRoot != "" && rootCommit != "" {
+			reuseRec := buildmanifest.ApprovalRecord{
+				Digest:         digest,
+				Capabilities:   caps,
+				ApprovedAt:     time.Now().UTC(),
+				RepoRootCommit: rootCommit,
+			}
+			if err := buildmanifest.StoreApprovalForRepoDigest(cacheRoot, canonRepoRoot, digest, reuseRec); err != nil {
+				// A reuse-record write failure must not fail the already
+				// successful per-worktree approval (the reuse record is a
+				// convenience, never an approval transition).
+				fmt.Fprintf(env.Stderr, "omac build approve: warning: digest-indexed reuse record not written: %v\n", err)
+			}
+		}
 	}
 	fmt.Fprintln(env.Stdout, "omac build approve: durable approval recorded. Restart the omac parent (`omac start`/`serve`) to activate the capability set.")
 	return ExitOK

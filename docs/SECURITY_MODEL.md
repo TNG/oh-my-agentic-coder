@@ -108,6 +108,66 @@ Widening access means editing a readable JSON sandbox profile — a reviewable
 change rather than an accidental default. See
 [Configuration → Sandbox profiles](./CONFIGURATION.md#sandbox-profiles).
 
+### Approval reuse by digest: why the ticket-06 cross-worktree threat stays closed
+
+The build-approval gate (see [`docs/build-command.md` →
+Approval and frozen-for-session policy](./build-command.md)) is
+per-worktree by design: ticket 06 rejected per-repo (path-keyed)
+approval because worktrees can have *different* manifests and
+capabilities, and a single per-repo approval would let one worktree
+borrow another's capabilities. The opt-in approval-reuse-by-digest
+feature (ADR 0005) reopens that design space ONLY in a digest-bound
+form that preserves the per-worktree isolation guarantee:
+
+- **Reuse fires only on bit-identical manifest content (SHA-256 match).**
+  The digest-indexed record is keyed by the manifest digest, so an
+  identical digest implies an identical capability set — identical risk
+  to the already-approved set. A worktree whose manifest requests
+  *different* capabilities has a *different* digest and therefore no
+  reuse record: the changed worktree still requires its own
+  host-ceiling-validated `omac build approve`. This is the exact
+  property ticket 06's path-keyed rejection was protecting: distinct
+  capabilities never borrow one another's approvals.
+- **Repo-namespaced by `sha256(canonicalRepoRoot)`.** The reuse record
+  lives under
+  `<cacheRoot>/build-control/approvals-by-repo/<sha256(canonicalRepoRoot)>/<digest>.json`
+  where `canonicalRepoRoot` is the canonical (`EvalSymlinks`-resolved)
+  `git rev-parse --git-common-dir` output. All linked worktrees of ONE
+  repo collapse to the same namespace; a DIFFERENT repo — even one with
+  a byte-identical manifest — lands in a different namespace, so there
+  is no cross-repo reuse. A separate clone of the same repo has its own
+  `git-common-dir` → a distinct namespace → no cross-clone reuse.
+- **Root-commit recycling guard.** The reuse record stores
+  `repoRootCommit` (the SHA of the repo's first commit,
+  `git rev-list --max-parents=0 HEAD`); at lookup time OMAC recomputes
+  the current root commit and compares. A foreign repo created at the
+  same path after the original was deleted has a different history →
+  different root commit → mismatch → no reuse. This closes the
+  recycling attack without any UUID file or inode/device check.
+- **SHA-256 preimage would be required** to craft a different manifest
+  that collides with an approved digest — not a realistic threat.
+- **All existing defenses stay in place.** Reuse is a *lookup* fallback
+  after the per-worktree path misses — it never weakens the
+  per-worktree approval default, which remains the only path when reuse
+  is off (default). The agent cannot write approval records (host-only,
+  TTY-gated) and cannot enable reuse (host-controlled, default off,
+  `OMAC_APPROVAL_REUSE_BY_DIGEST=1` and/or the host-only
+  `build-control/config.toml`). The host-ceiling drop check invalidates
+  a reused record exactly as it invalidates a per-worktree record. The
+  symlink/path-traversal defenses on the worktree path and the
+  manifest-digest gate on every build remain unchanged.
+- **Revoke is a setting flip with no invalidation gap.** Disabling
+  reuse stops new lookups immediately; already-frozen `ParentSnapshot`s
+  stay valid only for the parent lifetime and expire on parent restart —
+  the same lifecycle that governs every approval change.
+
+Because reuse is (1) bound to the manifest's SHA-256 digest, (2)
+namespaced by the repo's canonical common dir, and (3) guarded by the
+repo's immutable root-commit SHA, the ticket-06 cross-worktree threat
+(distinct manifests → distinct digests → no reuse) remains closed while
+the re-approval friction for an already-approved repo's unchanged
+worktrees is removed.
+
 ## What the sandbox can see
 
 The sandbox receives resolved **values** (env vars, socket paths), not
