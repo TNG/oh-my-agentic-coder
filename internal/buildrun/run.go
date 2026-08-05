@@ -70,6 +70,15 @@ type RunOptions struct {
 	// forced-cancel path. Graceful cancellation (first signal) does NOT
 	// invoke this — the warm daemon is preserved per spec.
 	OnForcedCancel func(stderr io.Writer) error
+	// Cancelled, when non-nil, is set to true by RunBuild if the build
+	// was cancelled (caller cancel signal OR --max-duration expiry). The
+	// pointer lets the caller disambiguate a raw wrapper exit 4 (which
+	// collides with ExitCancelled's numeric code 4) from an OMAC
+	// cancellation — the cancelled flag is the authoritative signal,
+	// not the numeric code. RunBuild sets *Cancelled BEFORE returning
+	// ExitCancelled; a nil pointer (the default for existing callers)
+	// skips the assignment, preserving backward compatibility.
+	Cancelled *bool
 }
 
 // DefaultKillAfter is the documented graceful-cancellation deadline.
@@ -184,6 +193,15 @@ func RunBuild(opts RunOptions) (int, error) {
 			// disambiguate the reserved code from a build-tool
 			// coincidence by stderr contents.
 			fmt.Fprintln(stderr, CancelledMarker)
+			// Record the cancelled flag for the caller so the engine
+			// can assign ClassCancelled without sniffing stderr — the
+			// numeric code 4 alone is ambiguous with a raw wrapper
+			// exit 4. Set BEFORE returning so a caller reading the
+			// pointer after RunBuild returns sees the authoritative
+			// value.
+			if opts.Cancelled != nil {
+				*opts.Cancelled = true
+			}
 		}
 		emitExit(auditor, code, started)
 		return code, nil
