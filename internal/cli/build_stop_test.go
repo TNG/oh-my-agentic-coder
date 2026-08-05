@@ -7,12 +7,14 @@ import (
 	"testing"
 )
 
-// TestRunBuildStop_InvokesWrapperStopAndReleasesLock asserts `omac build stop`
-// runs the repo wrapper with --stop under the leaf's GRADLE_USER_HOME and
-// removes the per-worktree queue lockfile. Uses a stub wrapper that
-// records its args + GRADLE_USER_HOME so the test runs without a real
-// Gradle or kernel sandbox.
-func TestRunBuildStop_InvokesWrapperStopAndReleasesLock(t *testing.T) {
+// TestRunBuildStop_InvokesWrapperStopAndLeavesPersistentLock asserts
+// `omac build stop` runs the repo wrapper with --stop under the leaf's
+// GRADLE_USER_HOME. Ticket 06: the lockfile is PERSISTENT and NEVER
+// unlinked — unlinking a flocked path can create a second inode and
+// defeat serialization — so stop no longer removes it. Uses a stub
+// wrapper that records its args + GRADLE_USER_HOME so the test runs
+// without a real Gradle or kernel sandbox.
+func TestRunBuildStop_InvokesWrapperStopAndLeavesPersistentLock(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
 	wt := t.TempDir()
@@ -36,6 +38,7 @@ func TestRunBuildStop_InvokesWrapperStopAndReleasesLock(t *testing.T) {
 	}
 
 	// Pre-create a lingering lockfile (as a crashed build would leave).
+	// Ticket 06: stop must NOT remove it (persistent lockfile).
 	cacheDir, closeScope, err := prepareBuildCache(wt, "")
 	if err != nil {
 		t.Fatalf("prepareBuildCache: %v", err)
@@ -68,9 +71,11 @@ func TestRunBuildStop_InvokesWrapperStopAndReleasesLock(t *testing.T) {
 	if !strings.Contains(string(data), "GUH="+leaf) {
 		t.Errorf("wrapper GRADLE_USER_HOME = %q, want leaf %q", string(data), leaf)
 	}
-	// The lingering lockfile was removed.
-	if _, err := os.Stat(lockPath); err == nil {
-		t.Errorf("lockfile %s must be removed by build stop", lockPath)
+	// Ticket 06: the lockfile is PERSISTENT and never unlinked. Stop
+	// must NOT remove it (unlinking a flocked path can create a second
+	// inode and defeat serialization).
+	if _, err := os.Stat(lockPath); err != nil {
+		t.Errorf("lockfile %s must NOT be removed by build stop (persistent lockfile): %v", lockPath, err)
 	}
 }
 
