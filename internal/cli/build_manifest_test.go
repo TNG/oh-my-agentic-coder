@@ -16,6 +16,7 @@ import (
 func TestRunBuildManifestDenials(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
+	clearBrokerEnvForDirectTests(t)
 
 	// makeWrapper creates an executable gradlew at <wt>/<root>/gradlew so
 	// Resolve succeeds and the build reaches the manifest gate.

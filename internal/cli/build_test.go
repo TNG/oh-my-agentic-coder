@@ -14,6 +14,19 @@ import (
 	"github.com/tngtech/oh-my-agentic-coder/internal/buildrun"
 )
 
+// clearBrokerEnvForDirectTests clears the broker/OMAC session env vars
+// so the direct-host build path is selected. Inside an omac sandbox
+// (where the test process inherits OMAC_SOCKET/OMAC_BASE/...), the
+// managed-mode discriminator would otherwise fail closed — correct in
+// production, but the direct-path tests need direct mode. Call this
+// at the top of any test that exercises the direct build/stop path.
+func clearBrokerEnvForDirectTests(t *testing.T) {
+	t.Helper()
+	for _, k := range []string{envBuildBrokerRequired, envControlBase, envBuildToken, envOmacSocket, envOmacBase} {
+		t.Setenv(k, "")
+	}
+}
+
 // TestRunBuildDenials verifies the policy-denial side of `omac build`:
 // resolution failures, unsupported adapters and grammar errors exit with
 // ExitBuildPolicyDenied and a structured stderr message, without ever
@@ -23,6 +36,7 @@ func TestRunBuildDenials(t *testing.T) {
 	// Isolated HOME so a host-level omac config can't leak in.
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
+	clearBrokerEnvForDirectTests(t)
 	wt := t.TempDir()
 	env := &Env{
 		Version: "test",

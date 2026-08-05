@@ -59,8 +59,12 @@ func TestBuildHarnessIndependence(t *testing.T) {
 			"PATH=" + os.Getenv("PATH"),
 			"HOME=" + cacheHome,
 			"OPENCODE=1",
-			"OMAC_SOCKET=/tmp/should-not-leak.sock",
-			"OMAC_BASE=http+unix://should/not/leak",
+			// Leak probe: a non-semantic OMAC_* var the build executor
+			// must NOT inherit. OMAC_SOCKET/OMAC_BASE/OMAC_CONTROL_BASE/
+			// OMAC_BUILD_TOKEN are now part of the managed-mode
+			// discriminator (setting them would fail closed), so use a
+			// var that has no semantic meaning to the CLI.
+			"OMAC_LEAK_PROBE=/tmp/should-not-leak",
 		},
 		"claude-flavored": {
 			"PATH=" + os.Getenv("PATH"),
@@ -135,7 +139,7 @@ func TestBuildHarnessIndependence(t *testing.T) {
 		}
 		// HOME is deliberately not forwarded (host gradle control state
 		// must stay out of the executor).
-		if strings.Contains(o.stdout, "sk-ant") || strings.Contains(o.stdout, "OMAC_SOCKET") {
+		if strings.Contains(o.stdout, "sk-ant") || strings.Contains(o.stdout, "OMAC_LEAK_PROBE") {
 			t.Errorf("%s: harness env leaked into executor", name)
 		}
 		marks[name] = o.stdout
