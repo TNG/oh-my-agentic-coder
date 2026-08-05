@@ -67,13 +67,13 @@ func runBuild(args []string, env *Env) int {
 	// so a truncated/partial broker environment is never mistaken for
 	// build success. Managed invocation never falls back to nested
 	// local execution.
-	mode, base, token := decideManagedMode()
+	mode, ep := decideManagedMode()
 	switch mode {
 	case managedModeFailClosed:
 		fmt.Fprintln(env.Stderr, "omac build: managed build required but the broker environment is incomplete (OMAC_BUILD_BROKER_REQUIRED set without OMAC_CONTROL_BASE/OMAC_BUILD_TOKEN, or partial OMAC session env). Restart or upgrade the omac parent.")
 		return buildrun.ExitServiceFailure
 	case managedModeManaged:
-		return runBuildManaged(args, env, base, token)
+		return runBuildManaged(args, env, ep)
 	}
 
 	// Direct host execution: dispatch `omac build stop` here (after the

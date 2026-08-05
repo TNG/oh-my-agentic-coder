@@ -125,8 +125,8 @@ func waitForGraceful(t *testing.T, engine *stubEngine) {
 }
 
 // TestExecute_StopRefused asserts the broker refuses `omac build stop`
-// in this gate (grammar carried, broker declines with a 400 before
-// the engine runs).
+// in this gate (grammar carried, broker declines with a 403 before
+// the engine runs; 403 maps to the CLI's policy-denial exit 3).
 func TestExecute_StopRefused(t *testing.T) {
 	engine := &stubEngine{result: successResult()}
 	tb := newTestBroker(t, allowAllAuthorizer(), engine)
@@ -138,8 +138,8 @@ func TestExecute_StopRefused(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Errorf("stop: status = %d, want 400 (refused in this gate)", resp.StatusCode)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("stop: status = %d, want 403 (refused in this gate)", resp.StatusCode)
 	}
 	resp.Body.Close()
 	engine.mu.Lock()

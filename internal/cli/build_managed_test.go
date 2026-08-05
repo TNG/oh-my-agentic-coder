@@ -19,7 +19,7 @@ import (
 // session variables are absent.
 func TestDecideManagedMode_DirectWhenAllAbsent(t *testing.T) {
 	clearBrokerEnv(t)
-	mode, _, _ := decideManagedMode()
+	mode, _ := decideManagedMode()
 	if mode != managedModeDirect {
 		t.Errorf("mode = %v, want direct", mode)
 	}
@@ -32,15 +32,15 @@ func TestDecideManagedMode_ManagedWhenTupleComplete(t *testing.T) {
 	t.Setenv(envBuildBrokerRequired, "1")
 	t.Setenv(envControlBase, "http://127.0.0.1:12345")
 	t.Setenv(envBuildToken, "abc")
-	mode, base, token := decideManagedMode()
+	mode, ep := decideManagedMode()
 	if mode != managedModeManaged {
 		t.Errorf("mode = %v, want managed", mode)
 	}
-	if base != "http://127.0.0.1:12345" {
-		t.Errorf("base = %q", base)
+	if ep.Base != "http://127.0.0.1:12345" {
+		t.Errorf("base = %q", ep.Base)
 	}
-	if token != "abc" {
-		t.Errorf("token = %q", token)
+	if ep.Token != "abc" {
+		t.Errorf("token = %q", ep.Token)
 	}
 }
 
@@ -51,7 +51,7 @@ func TestDecideManagedMode_FailClosedWhenRequiredButMissingBase(t *testing.T) {
 	t.Setenv(envBuildBrokerRequired, "1")
 	t.Setenv(envBuildToken, "abc")
 	// base missing
-	mode, _, _ := decideManagedMode()
+	mode, _ := decideManagedMode()
 	if mode != managedModeFailClosed {
 		t.Errorf("mode = %v, want failClosed (required set, base missing)", mode)
 	}
@@ -64,7 +64,7 @@ func TestDecideManagedMode_FailClosedWhenRequiredButMissingToken(t *testing.T) {
 	t.Setenv(envBuildBrokerRequired, "1")
 	t.Setenv(envControlBase, "http://127.0.0.1:12345")
 	// token missing
-	mode, _, _ := decideManagedMode()
+	mode, _ := decideManagedMode()
 	if mode != managedModeFailClosed {
 		t.Errorf("mode = %v, want failClosed (required set, token missing)", mode)
 	}
@@ -85,7 +85,7 @@ func TestDecideManagedMode_PartialEnvBlocksDirect(t *testing.T) {
 			clearBrokerEnv(t)
 			t.Setenv(name, val)
 			// No required marker, but partial env present.
-			mode, _, _ := decideManagedMode()
+			mode, _ := decideManagedMode()
 			if mode != managedModeFailClosed {
 				t.Errorf("partial env %q: mode = %v, want failClosed", name, mode)
 			}

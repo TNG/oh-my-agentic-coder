@@ -211,9 +211,11 @@ func (b *Broker) handleExecute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// 8. Stop refusal (this gate carries the stop grammar but
-	//    refuses it before the engine runs).
+	//    refuses it before the engine runs). A 403 surfaces through
+	//    the CLI's existing policy-denial mapping (exit 3), matching
+	//    the spec's result-class table (policy_denial → 3).
 	if b.stopRefuse(body.Args) {
-		writeBrokerError(w, http.StatusBadRequest, "brokered stop is not enabled in this gate")
+		writeBrokerError(w, http.StatusForbidden, "brokered stop is not enabled in this gate")
 		return
 	}
 	// 9. Worktree authorization (canonicalize + authorize). This is
@@ -226,7 +228,7 @@ func (b *Broker) handleExecute(w http.ResponseWriter, r *http.Request) {
 	// 10. Generate request ID and register. The ID is a 128-bit
 	//     random hex string; it is returned in the accepted frame and
 	//     used in the cancel route.
-	reqID, err := newRequestID()
+	reqID, err := mintRequestID()
 	if err != nil {
 		writeBrokerError(w, http.StatusInternalServerError, "request id: "+err.Error())
 		return
@@ -499,10 +501,4 @@ func redactPathsWithSubstring(s, substr string) string {
 
 func isSpaceOrDelim(b byte) bool {
 	return b == ' ' || b == '\t' || b == '\n' || b == '\r' || b == '"' || b == '\''
-}
-
-// newRequestID generates a 128-bit random hex string. It is returned in
-// the accepted frame and used in the cancel route.
-func newRequestID() (string, error) {
-	return mintRequestID()
 }

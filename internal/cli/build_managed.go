@@ -64,9 +64,20 @@ const (
 	managedModeFailClosed
 )
 
+// brokerEndpoint bundles the broker's loopback base URL and the
+// per-parent bearer token. The two travel together through the managed
+// path: decideManagedMode resolves them from the environment, and
+// runBuildManaged / postCancel use them to reach the broker. A
+// token-without-base (or base-without-token) is the fail-closed bug
+// the decision detects.
+type brokerEndpoint struct {
+	Base  string
+	Token string
+}
+
 // decideManagedMode inspects the environment and returns the mode plus
-// the broker base URL and token when managed.
-func decideManagedMode() (managedModeDecision, string, string) {
+// the broker endpoint when managed.
+func decideManagedMode() (managedModeDecision, brokerEndpoint) {
 	required := os.Getenv(envBuildBrokerRequired) == "1"
 	base := os.Getenv(envControlBase)
 	token := os.Getenv(envBuildToken)
@@ -76,7 +87,7 @@ func decideManagedMode() (managedModeDecision, string, string) {
 		base != "" ||
 		token != ""
 	if required && base != "" && token != "" {
-		return managedModeManaged, base, token
+		return managedModeManaged, brokerEndpoint{Base: base, Token: token}
 	}
 	if required || partial {
 		// Required marker set but tuple incomplete, OR a partial
@@ -84,9 +95,9 @@ func decideManagedMode() (managedModeDecision, string, string) {
 		// closed. Direct host execution is forbidden in either case
 		// so a truncated/partial broker environment is never mistaken
 		// for build success.
-		return managedModeFailClosed, "", ""
+		return managedModeFailClosed, brokerEndpoint{}
 	}
-	return managedModeDirect, "", ""
+	return managedModeDirect, brokerEndpoint{}
 }
 
 // runBuildManaged submits the build to the parent's broker over the
@@ -104,12 +115,12 @@ func decideManagedMode() (managedModeDecision, string, string) {
 // result frame, a malformed or unknown frame, or a duplicate result is
 // a service failure (exit 10) — a truncated stream is never treated as
 // build success.
-func runBuildManaged(args []string, env *Env, base, token string) int {
+func runBuildManaged(args []string, env *Env, ep brokerEndpoint) int {
 	// `omac build stop` reuses the execute operation but is refused in
-	// this gate; the broker returns a 400 (pre-accepted) which the CLI
-	// surfaces as a policy denial (exit 3) — matching the existing
-	// direct-path behavior where stop is a separate, broker-disabled
-	// path.
+	// this gate; the broker returns a 403 (pre-accepted) which the CLI
+	// surfaces as a policy denial (exit 3) via the 403 branch below —
+	// matching the existing direct-path behavior where stop is a
+	// separate, broker-disabled path.
 	body := buildbroker.ExecuteBody{
 		Type:     "execute",
 		Worktree: env.Workdir,
@@ -120,7 +131,7 @@ func runBuildManaged(args []string, env *Env, base, token string) int {
 		fmt.Fprintf(env.Stderr, "omac build: encode request: %v\n", err)
 		return buildrun.ExitServiceFailure
 	}
-	url := strings.TrimRight(base, "/") + buildbroker.ExecutePath
+	url := strings.TrimRight(ep.Base, "/") + buildbroker.ExecutePath
 	req, err := http.NewRequest(http.MethodPost, url, strings.NewReader(string(bodyBytes)))
 	if err != nil {
 		fmt.Fprintf(env.Stderr, "omac build: build request: %v\n", err)
@@ -128,7 +139,7 @@ func runBuildManaged(args []string, env *Env, base, token string) int {
 	}
 	req.Header.Set("Content-Type", buildbroker.ContentTypeJSON)
 	req.Header.Set("Accept", buildbroker.AcceptNDJSON)
-	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Authorization", "Bearer "+ep.Token)
 
 	// Cancellation: the first signal POSTs graceful; the second POSTs
 	// force. The execute request's context is also canceled on the
@@ -189,7 +200,7 @@ func runBuildManaged(args []string, env *Env, base, token string) int {
 		// First signal: graceful. POST cancel + cancel the execute
 		// context as a backstop.
 		if requestID != "" {
-			postCancel(base, token, requestID, "graceful")
+			postCancel(ep, requestID, "graceful")
 		}
 		cancel()
 		// Now listen for a second signal.
@@ -197,7 +208,7 @@ func runBuildManaged(args []string, env *Env, base, token string) int {
 		signal.Notify(secondSignal, os.Interrupt, syscall.SIGTERM)
 		<-secondSignal
 		if requestID != "" {
-			postCancel(base, token, requestID, "force")
+			postCancel(ep, requestID, "force")
 		}
 	}()
 
@@ -304,15 +315,15 @@ func managedResultExitCode(class string, exit int) int {
 // postCancel POSTs a cancel request to the broker. Best-effort: errors
 // are swallowed because the cancel is a backstop (the disconnect
 // handler on the broker side also delivers cancellation).
-func postCancel(base, token, requestID, stage string) {
-	url := strings.TrimRight(base, "/") + buildbroker.CancelPathPrefix + requestID + buildbroker.CancelRouteSuffix
+func postCancel(ep brokerEndpoint, requestID, stage string) {
+	url := strings.TrimRight(ep.Base, "/") + buildbroker.CancelPathPrefix + requestID + buildbroker.CancelRouteSuffix
 	body := fmt.Sprintf(`{"stage":%q}`, stage)
 	req, err := http.NewRequest(http.MethodPost, url, strings.NewReader(body))
 	if err != nil {
 		return
 	}
 	req.Header.Set("Content-Type", buildbroker.ContentTypeJSON)
-	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Authorization", "Bearer "+ep.Token)
 	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
