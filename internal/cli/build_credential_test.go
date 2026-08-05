@@ -23,6 +23,7 @@ import (
 func TestRunBuild_MissingRegistryCredentialDenial(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
+	clearBrokerEnvForDirectTests(t)
 
 	wt := t.TempDir()
 	// Wrapper at root backend/ so Resolve passes.

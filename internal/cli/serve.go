@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/tngtech/oh-my-agentic-coder/internal/audit"
+	"github.com/tngtech/oh-my-agentic-coder/internal/buildbroker"
 	"github.com/tngtech/oh-my-agentic-coder/internal/config"
 	"github.com/tngtech/oh-my-agentic-coder/internal/facade"
 	"github.com/tngtech/oh-my-agentic-coder/internal/keychain"
@@ -363,6 +364,7 @@ func runServe(args []string, env *Env) int {
 		global:            map[string]*skillRoute{},
 	}
 	if cacheScope != nil {
+		srv.cacheScopeDir = cacheScope.Dir
 		srv.cacheEnv = map[string]string{
 			"OMAC_CACHE_DIR":  cacheScope.Dir,
 			"OMAC_CACHE_MODE": string(cacheScope.Mode),
@@ -429,13 +431,44 @@ func runServe(args []string, env *Env) int {
 		fmt.Fprintln(env.Stderr, "[verbose] could not write control-info file:", err)
 	}
 	defer removeControlInfo()
-	httpSrv := &http.Server{Handler: srv.controlMux()}
+
+	// Host build broker: one per running parent, mounted on the loopback
+	// control listener. A non-loopback bind disables the broker (managed
+	// build fails closed). The token is crypto-random, in-memory, never
+	// written to control-info / activation / sidecar / executor env. One
+	// serve token authorizes all active directories (not per activation).
+	buildToken := mintToken()
+	srv.buildToken = buildToken
+	var buildBroker *buildbroker.Broker
+	if isLoopbackListener(cln) {
+		bb, bbErr := buildbroker.New(buildbroker.Options{
+			Token:         buildToken,
+			Authorizer:    buildbroker.ServeAuthorizer(absRoots, srv.isActiveDir),
+			EngineInvoker: brokerEngineInvoker(env, srv.cacheScopeDirOrEmpty(), nil, srv.auditor),
+			Auditor:       srv.auditor,
+		})
+		if bbErr != nil {
+			if *verbose {
+				fmt.Fprintf(env.Stderr, "[verbose] build broker: %v\n", bbErr)
+			}
+		} else {
+			buildBroker = bb
+			srv.buildBrokerMounted = true
+		}
+	} else if *verbose {
+		fmt.Fprintf(env.Stderr, "[verbose] build broker disabled: control listener is not loopback\n")
+	}
+	httpSrv := &http.Server{Handler: srv.controlMux(buildBroker)}
 	go func() {
 		if err := httpSrv.Serve(cln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			fmt.Fprintln(env.Stderr, "omac serve: control server:", err)
 		}
 	}()
 	defer httpSrv.Close()
+	// The broker shuts down before the control listener closes.
+	if buildBroker != nil {
+		defer buildBroker.Shutdown()
+	}
 
 	if verbose {
 		fmt.Fprintf(env.Stderr, "[verbose] facade tcp=127.0.0.1:%d socket=%s\n", srv.tcpPort, socketPath)
@@ -956,6 +989,18 @@ type serveServer struct {
 	verbose           bool
 	roots             []string // §5.4 Option B; empty = allow any directory
 	cacheEnv          map[string]string
+	// cacheScopeDir is the resolved OMAC cache scope dir the build
+	// broker's engine invoker reuses. Empty when the cache scope is
+	// not prepared (no-sandbox / no-inner).
+	cacheScopeDir string
+	// buildToken is the per-parent crypto-random build broker token.
+	// Injected into the inner env via baseEnv; never written to
+	// control-info / activation / sidecar / executor env.
+	buildToken string
+	// buildBrokerMounted reports whether the build broker was mounted
+	// on the loopback control listener. The marker is injected
+	// unconditionally; the token only when the broker is mounted.
+	buildBrokerMounted bool
 
 	mu      sync.RWMutex
 	dirs    map[string]*dirState   // abs dir -> state
@@ -982,6 +1027,38 @@ func (s *serveServer) aud() audit.Auditor {
 		return audit.Nop()
 	}
 	return s.auditor
+}
+
+// isActiveDir reports whether a canonical directory is currently active
+// under serve. This is the callback the build broker's ServeAuthorizer
+// uses to authorize a build request's worktree. A request whose
+// canonical worktree is not active is rejected before any build code
+// runs.
+func (s *serveServer) isActiveDir(canonicalDir string) bool {
+	s.mu.RLock()
+	_, ok := s.dirs[canonicalDir]
+	s.mu.RUnlock()
+	return ok
+}
+
+// cacheScopeDirOrEmpty returns the resolved cache scope dir, or empty
+// when the cache scope was not prepared. The build broker's engine
+// invoker reuses this so brokered builds share the same cache scope as
+// direct host invocation.
+func (s *serveServer) cacheScopeDirOrEmpty() string {
+	return s.cacheScopeDir
+}
+
+// isLoopbackListener reports whether the listener is bound to a
+// loopback address. The build broker is mounted only on a loopback
+// control listener; a non-loopback bind disables the broker (managed
+// build fails closed).
+func isLoopbackListener(ln net.Listener) bool {
+	addr, ok := ln.Addr().(*net.TCPAddr)
+	if !ok {
+		return false
+	}
+	return addr.IP.IsLoopback()
 }
 
 // dirAllowed reports whether absDir may be activated under the configured
@@ -1567,6 +1644,17 @@ func (s *serveServer) baseEnv() map[string]string {
 	for k, v := range s.cacheEnv {
 		extra[k] = v
 	}
+	// Managed build mode: inject the required marker unconditionally
+	// (even when the broker or control-plane bind failed) so a
+	// misconfigured parent fails closed instead of falling back to
+	// nested local execution. The token is injected only when the
+	// broker is actually mounted on the loopback listener; a missing
+	// token with the marker present makes the CLI exit 10 with a
+	// restart/upgrade diagnostic (the fail-closed path).
+	extra["OMAC_BUILD_BROKER_REQUIRED"] = "1"
+	if s.buildBrokerMounted && s.buildToken != "" {
+		extra["OMAC_BUILD_TOKEN"] = s.buildToken
+	}
 	// Global skills are known at cold start (§4.5/§5.1): inject their base
 	// URLs and list their mounts in OMAC_SKILLS.
 	//
@@ -1779,7 +1867,7 @@ func (s *serveServer) skillJSON(sr *skillRoute, scope string) map[string]any {
 
 // ---- control plane ----
 
-func (s *serveServer) controlMux() *http.ServeMux {
+func (s *serveServer) controlMux(broker *buildbroker.Broker) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/__omac__/activate", s.handleActivate)
 	mux.HandleFunc("/__omac__/deactivate", s.handleDeactivate)
@@ -1787,6 +1875,9 @@ func (s *serveServer) controlMux() *http.ServeMux {
 	mux.HandleFunc("/__omac__/reload-global", s.handleReloadGlobal)
 	mux.HandleFunc("/__omac__/dirs", s.handleDirs)
 	mux.HandleFunc("/__omac__/global", s.handleGlobal)
+	if broker != nil {
+		broker.Mount(mux)
+	}
 	return mux
 }
 

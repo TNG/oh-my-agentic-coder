@@ -28,13 +28,14 @@ const buildStopSub = "stop"
 //
 // The CLI owns public command dispatch (the `stop` subcommand route, the
 // `--help` short-circuit), local help rendering (printBuildUsage),
-// managed-vs-direct mode selection (a later ticket wires the broker
-// client here), signal handling (SignalContext), and exit-code
-// translation. The build orchestration — manifest gating, cache-leaf
-// preparation, proxy startup, grants derivation, per-leaf locking,
-// restricted-executor launch, staged cancellation, post-build daemon
-// recycle, and cleanup — lives in internal/buildengine, called by both
-// this direct-host path and the future brokered path.
+// managed-vs-direct mode selection (decideManagedMode), signal handling
+// (SignalContext for direct, signal→cancel POST for managed), and
+// exit-code translation. The build orchestration — manifest gating,
+// cache-leaf preparation, proxy startup, grants derivation, per-leaf
+// locking, restricted-executor launch, staged cancellation, post-build
+// daemon recycle, and cleanup — lives in internal/buildengine, called
+// by both this direct-host path and the brokered path (which submits to
+// the parent's buildbroker over the loopback control plane).
 //
 // Exit-code contract (also printed in the help text):
 //
@@ -46,16 +47,39 @@ const buildStopSub = "stop"
 //	10               service failure (sandbox unavailable, exec error, I/O,
 //	                 queue busy; 10 not 1: Gradle's own build-failure code IS 1)
 func runBuild(args []string, env *Env) int {
-	// `omac build stop` tears down any lingering daemon for this worktree.
-	if len(args) > 0 && args[0] == buildStopSub {
-		return runBuildStop(args[1:], env)
-	}
-
+	// `omac build stop --help` renders locally without a broker (the
+	// stop subcommand owns its help). The `stop` subcommand dispatch
+	// happens AFTER the managed-mode check so a managed `omac build
+	// stop` goes through the broker (which refuses stop in this gate).
+	// The direct path dispatches `stop` to runBuildStop below.
 	for _, a := range args {
 		if a == "--help" || a == "-h" || a == "help" {
 			printBuildUsage(env)
 			return ExitOK
 		}
+	}
+
+	// Managed-vs-direct mode selection. In a managed OMAC session
+	// (OMAC_BUILD_BROKER_REQUIRED=1 + OMAC_CONTROL_BASE +
+	// OMAC_BUILD_TOKEN) the CLI submits to the parent's broker; on
+	// the host it runs the build engine in-process. A partial broker
+	// tuple or any partial OMAC session env fails closed with exit 10
+	// so a truncated/partial broker environment is never mistaken for
+	// build success. Managed invocation never falls back to nested
+	// local execution.
+	mode, base, token := decideManagedMode()
+	switch mode {
+	case managedModeFailClosed:
+		fmt.Fprintln(env.Stderr, "omac build: managed build required but the broker environment is incomplete (OMAC_BUILD_BROKER_REQUIRED set without OMAC_CONTROL_BASE/OMAC_BUILD_TOKEN, or partial OMAC session env). Restart or upgrade the omac parent.")
+		return buildrun.ExitServiceFailure
+	case managedModeManaged:
+		return runBuildManaged(args, env, base, token)
+	}
+
+	// Direct host execution: dispatch `omac build stop` here (after the
+	// managed check, so a managed `omac build stop` is brokered).
+	if len(args) > 0 && args[0] == buildStopSub {
+		return runBuildStop(args[1:], env)
 	}
 
 	// Cache scope + auditor: the CLI owns the launcher-config resolution
