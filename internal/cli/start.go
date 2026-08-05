@@ -854,7 +854,7 @@ func runLaunch(env *Env, opts launchOpts) int {
 		}
 		sessionWorktree = env.Workdir
 	}
-	bb, bbErr := newBuildBroker(buildToken, buildbroker.StartAuthorizer(sessionWorktree), env, cacheScopeDirOrEmpty(cacheScope), auditor)
+	bb, bbErr := newBuildBroker(buildToken, buildbroker.StartAuthorizer(sessionWorktree), env, cacheScopeDirOrEmpty(cacheScope), auditor, startSnapshotProvider(sessionWorktree, cacheScopeDirOrEmpty(cacheScope)))
 	if bbErr != nil {
 		if verbose {
 			fmt.Fprintf(env.Stderr, "[verbose] build broker: %v\n", bbErr)

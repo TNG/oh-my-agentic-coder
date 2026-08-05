@@ -68,8 +68,22 @@ type GateResult struct {
 // intersected with it. leaf is the resolved OMAC cache leaf (where
 // `.omac-control/` lives). digest is Digest(manifest). caps is
 // manifest.CapabilitySet(host).
+//
+// Gate uses the legacy OnLeaf location. GateAt accepts a Location so the
+// ticket-06 build-control layout can store approvals under the host-only
+// build-control root, namespaced by canonical worktree.
 func Gate(leaf string, digest string, caps CapabilitySet) (GateResult, error) {
-	active, err := LoadActive(leaf)
+	return GateAt(leaf, NewOnLeafLocation(), digest, caps)
+}
+
+// GateAt is the location-aware variant of Gate. It reads/writes approval
+// records at the location-selected path. Under the BuildControl layout
+// the active record is the durable approval record itself (the parent
+// holds an in-memory snapshot); a digest match against the durable
+// approval starts unattended with the frozen set, and a mismatch
+// records the new approval and fails with the diff + restart instruction.
+func GateAt(leaf string, loc Location, digest string, caps CapabilitySet) (GateResult, error) {
+	active, err := LoadActiveAt(leaf, loc)
 	if err != nil {
 		return GateResult{}, fmt.Errorf("load active manifest: %w", err)
 	}
@@ -79,7 +93,7 @@ func Gate(leaf string, digest string, caps CapabilitySet) (GateResult, error) {
 		if !ceilingStillValid(active.Capabilities.HostPolicy, caps.HostPolicy) {
 			// Ceiling dropped: re-record approval against the new (lower)
 			// capability set and fail with the diff + restart instruction.
-			if err := Approve(leaf, digest, caps); err != nil {
+			if err := ApproveAt(leaf, loc, digest, caps); err != nil {
 				return GateResult{}, fmt.Errorf("re-record approval after ceiling drop: %w", err)
 			}
 			return GateResult{}, &GateError{
@@ -93,7 +107,7 @@ func Gate(leaf string, digest string, caps CapabilitySet) (GateResult, error) {
 	// record approval (so the next run starts unattended) and FAIL with the
 	// consolidated diff + restart instruction. The first use PRESENTS the
 	// diff AND records approval; the build does not start this time.
-	if err := Approve(leaf, digest, caps); err != nil {
+	if err := ApproveAt(leaf, loc, digest, caps); err != nil {
 		return GateResult{}, fmt.Errorf("record approval: %w", err)
 	}
 	if active.Digest == "" {
@@ -142,16 +156,26 @@ func ceilingStillValid(prev, cur HostPolicy) bool {
 //
 // This function is exported for the CLI wiring and for tests; it is the
 // single write path that makes a digest "approved + frozen for session".
+//
+// Approve uses the legacy OnLeaf location. ApproveAt accepts a Location.
 func Approve(leaf string, digest string, caps CapabilitySet) error {
+	return ApproveAt(leaf, NewOnLeafLocation(), digest, caps)
+}
+
+// ApproveAt records the approval at the location-selected path. Under
+// the BuildControl layout the durable approval record IS the active
+// record (the in-memory parent snapshot is derived from it at
+// activation); StoreActiveAt is a no-op there.
+func ApproveAt(leaf string, loc Location, digest string, caps CapabilitySet) error {
 	now := time.Now().UTC()
-	if err := StoreApproval(leaf, ApprovalRecord{
+	if err := StoreApprovalAt(leaf, loc, ApprovalRecord{
 		Digest:       digest,
 		Capabilities: caps,
 		ApprovedAt:   now,
 	}); err != nil {
 		return err
 	}
-	return StoreActive(leaf, ActiveRecord{
+	return StoreActiveAt(leaf, loc, ActiveRecord{
 		Digest:       digest,
 		Capabilities: caps,
 		ActivatedAt:  now,
