@@ -7,7 +7,6 @@ import (
 	"github.com/tngtech/oh-my-agentic-coder/internal/audit"
 	"github.com/tngtech/oh-my-agentic-coder/internal/buildbroker"
 	"github.com/tngtech/oh-my-agentic-coder/internal/buildengine"
-	"github.com/tngtech/oh-my-agentic-coder/internal/buildrun"
 	"github.com/tngtech/oh-my-agentic-coder/internal/toolcache"
 )
 
@@ -53,6 +52,22 @@ func brokerEngineInvoker(env *Env, cacheDir string, closeScope func(), auditor a
 	}
 }
 
+// newBuildBroker constructs the host build broker with the production
+// engine invoker. Both `start` and `serve` share this factory; only the
+// Authorizer differs (StartAuthorizer for a single session worktree,
+// ServeAuthorizer for multiple active directories). cacheDir is the
+// resolved cache scope dir (empty when no scope is prepared). auditor
+// is the parent's auditor. Returns (broker, nil) on success or
+// (nil, err) on construction failure.
+func newBuildBroker(token string, authorizer buildbroker.Authorizer, env *Env, cacheDir string, auditor audit.Auditor) (*buildbroker.Broker, error) {
+	return buildbroker.New(buildbroker.Options{
+		Token:         token,
+		Authorizer:    authorizer,
+		EngineInvoker: brokerEngineInvoker(env, cacheDir, nil, auditor),
+		Auditor:       auditor,
+	})
+}
+
 // canonicalWorktree resolves the canonical path of a worktree
 // (filepath.EvalSymlinks after filepath.Abs). Used by the parent to
 // build the start authorizer's session worktree. The parent
@@ -78,7 +93,17 @@ func cacheScopeDirOrEmpty(scope *toolcache.Scope) string {
 	return scope.Dir
 }
 
-// _ keeps the buildrun import referenced for future wiring (the engine
-// invoker passes through to buildengine.Run which uses buildrun; the cli
-// wiring uses buildrun.ExitServiceFailure for diagnostics).
-var _ = buildrun.ExitServiceFailure
+// injectBuildBrokerEnv injects the managed-build environment into the
+// inner command's env map. The required marker is injected
+// unconditionally (even when the broker is not mounted) so a
+// misconfigured parent fails closed instead of falling back to nested
+// local execution. The token is injected only when the broker is
+// actually mounted on a loopback listener; a missing token with the
+// marker present makes the CLI exit 10 with a restart/upgrade
+// diagnostic (the fail-closed path).
+func injectBuildBrokerEnv(extra map[string]string, mounted bool, token string) {
+	extra["OMAC_BUILD_BROKER_REQUIRED"] = "1"
+	if mounted && token != "" {
+		extra["OMAC_BUILD_TOKEN"] = token
+	}
+}

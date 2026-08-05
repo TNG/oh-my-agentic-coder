@@ -759,12 +759,7 @@ func runLaunch(env *Env, opts launchOpts) int {
 		}
 		sessionWorktree = env.Workdir
 	}
-	bb, bbErr := buildbroker.New(buildbroker.Options{
-		Token:         buildToken,
-		Authorizer:    buildbroker.StartAuthorizer(sessionWorktree),
-		EngineInvoker: brokerEngineInvoker(env, cacheScopeDirOrEmpty(cacheScope), nil, auditor),
-		Auditor:       auditor,
-	})
+	bb, bbErr := newBuildBroker(buildToken, buildbroker.StartAuthorizer(sessionWorktree), env, cacheScopeDirOrEmpty(cacheScope), auditor)
 	if bbErr != nil {
 		if verbose {
 			fmt.Fprintf(env.Stderr, "[verbose] build broker: %v\n", bbErr)
@@ -896,17 +891,14 @@ func runLaunch(env *Env, opts launchOpts) int {
 	if controlOK {
 		extra["OMAC_CONTROL_BASE"] = controlURL
 	}
-	// Managed build mode: inject the required marker unconditionally
-	// (even when the broker or control-plane bind failed) so a
-	// misconfigured parent fails closed instead of falling back to
-	// nested local execution. The token is injected only when the
-	// broker is actually mounted on a loopback listener; a missing
-	// token with the marker present makes the CLI exit 10 with a
-	// restart/upgrade diagnostic (the fail-closed path).
-	extra["OMAC_BUILD_BROKER_REQUIRED"] = "1"
-	if buildBroker != nil && controlOK {
-		extra["OMAC_BUILD_TOKEN"] = buildToken
-	}
+	// Managed build mode: the required marker is injected
+	// unconditionally (even when the broker or control-plane bind
+	// failed) so a misconfigured parent fails closed instead of
+	// falling back to nested local execution. The token is injected
+	// only when the broker is actually mounted on a loopback
+	// listener; a missing token with the marker present makes the
+	// CLI exit 10 with a restart/upgrade diagnostic (fail-closed).
+	injectBuildBrokerEnv(extra, buildBroker != nil && controlOK, buildToken)
 	if injectBriefing {
 		// The OpenCode plugin reads this and pushes it into the system prompt;
 		// Claude ignores it (it gets the briefing via the flag above).

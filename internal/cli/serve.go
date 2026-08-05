@@ -441,12 +441,7 @@ func runServe(args []string, env *Env) int {
 	srv.buildToken = buildToken
 	var buildBroker *buildbroker.Broker
 	if isLoopbackListener(cln) {
-		bb, bbErr := buildbroker.New(buildbroker.Options{
-			Token:         buildToken,
-			Authorizer:    buildbroker.ServeAuthorizer(absRoots, srv.isActiveDir),
-			EngineInvoker: brokerEngineInvoker(env, srv.cacheScopeDirOrEmpty(), nil, srv.auditor),
-			Auditor:       srv.auditor,
-		})
+		bb, bbErr := newBuildBroker(buildToken, buildbroker.ServeAuthorizer(absRoots, srv.isActiveDir), env, srv.cacheScopeDir, srv.auditor)
 		if bbErr != nil {
 			if *verbose {
 				fmt.Fprintf(env.Stderr, "[verbose] build broker: %v\n", bbErr)
@@ -1039,14 +1034,6 @@ func (s *serveServer) isActiveDir(canonicalDir string) bool {
 	_, ok := s.dirs[canonicalDir]
 	s.mu.RUnlock()
 	return ok
-}
-
-// cacheScopeDirOrEmpty returns the resolved cache scope dir, or empty
-// when the cache scope was not prepared. The build broker's engine
-// invoker reuses this so brokered builds share the same cache scope as
-// direct host invocation.
-func (s *serveServer) cacheScopeDirOrEmpty() string {
-	return s.cacheScopeDir
 }
 
 // isLoopbackListener reports whether the listener is bound to a
@@ -1644,17 +1631,14 @@ func (s *serveServer) baseEnv() map[string]string {
 	for k, v := range s.cacheEnv {
 		extra[k] = v
 	}
-	// Managed build mode: inject the required marker unconditionally
-	// (even when the broker or control-plane bind failed) so a
-	// misconfigured parent fails closed instead of falling back to
-	// nested local execution. The token is injected only when the
-	// broker is actually mounted on the loopback listener; a missing
-	// token with the marker present makes the CLI exit 10 with a
-	// restart/upgrade diagnostic (the fail-closed path).
-	extra["OMAC_BUILD_BROKER_REQUIRED"] = "1"
-	if s.buildBrokerMounted && s.buildToken != "" {
-		extra["OMAC_BUILD_TOKEN"] = s.buildToken
-	}
+	// Managed build mode: the required marker is injected
+	// unconditionally (even when the broker or control-plane bind
+	// failed) so a misconfigured parent fails closed instead of
+	// falling back to nested local execution. The token is injected
+	// only when the broker is actually mounted on the loopback
+	// listener; a missing token with the marker present makes the
+	// CLI exit 10 with a restart/upgrade diagnostic (fail-closed).
+	injectBuildBrokerEnv(extra, s.buildBrokerMounted, s.buildToken)
 	// Global skills are known at cold start (§4.5/§5.1): inject their base
 	// URLs and list their mounts in OMAC_SKILLS.
 	//

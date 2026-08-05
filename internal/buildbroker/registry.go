@@ -162,10 +162,8 @@ func (r *registry) tombstoneStatus(id string) int {
 // broker stops accepting new requests before calling this.
 func (r *registry) drainForShutdown(forceDeadline time.Duration) {
 	r.mu.Lock()
-	ids := make([]string, 0, len(r.active))
 	reqs := make([]*activeRequest, 0, len(r.active))
-	for id, req := range r.active {
-		ids = append(ids, id)
+	for _, req := range r.active {
 		reqs = append(reqs, req)
 	}
 	r.mu.Unlock()
@@ -195,7 +193,6 @@ force:
 	for _, req := range reqs {
 		<-req.done
 	}
-	_ = ids
 }
 
 // cancel delivers a cancellation stage to an active request. It is
