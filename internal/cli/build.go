@@ -1,16 +1,10 @@
 package cli
 
 import (
-	"crypto/rand"
-	"encoding/hex"
-	"errors"
 	"fmt"
-	"io"
-	"strconv"
-	"time"
 
 	"github.com/tngtech/oh-my-agentic-coder/internal/audit"
-	"github.com/tngtech/oh-my-agentic-coder/internal/buildmanifest"
+	"github.com/tngtech/oh-my-agentic-coder/internal/buildengine"
 	"github.com/tngtech/oh-my-agentic-coder/internal/buildrun"
 	"github.com/tngtech/oh-my-agentic-coder/internal/config"
 )
@@ -26,11 +20,21 @@ const (
 	ExitBuildCancelled = 4
 )
 
-// buildStopToken is the literal subcommand dispatched to runBuildStop.
+// buildStopSub is the literal subcommand dispatched to runBuildStop.
 const buildStopSub = "stop"
 
 // runBuild implements `omac build [--root <rel>] -- gradle <args...>` and
 // `omac build stop`.
+//
+// The CLI owns public command dispatch (the `stop` subcommand route, the
+// `--help` short-circuit), local help rendering (printBuildUsage),
+// managed-vs-direct mode selection (a later ticket wires the broker
+// client here), signal handling (SignalContext), and exit-code
+// translation. The build orchestration — manifest gating, cache-leaf
+// preparation, proxy startup, grants derivation, per-leaf locking,
+// restricted-executor launch, staged cancellation, post-build daemon
+// recycle, and cleanup — lives in internal/buildengine, called by both
+// this direct-host path and the future brokered path.
 //
 // Exit-code contract (also printed in the help text):
 //
@@ -47,15 +51,6 @@ func runBuild(args []string, env *Env) int {
 		return runBuildStop(args[1:], env)
 	}
 
-	deny := func(err error) int {
-		fmt.Fprintf(env.Stderr, "omac build: %v\n", err)
-		return ExitBuildPolicyDenied
-	}
-	failService := func(format string, args ...any) int {
-		fmt.Fprintf(env.Stderr, "omac build: "+format+"\n", args...)
-		return buildrun.ExitServiceFailure
-	}
-
 	for _, a := range args {
 		if a == "--help" || a == "-h" || a == "help" {
 			printBuildUsage(env)
@@ -63,241 +58,59 @@ func runBuild(args []string, env *Env) int {
 		}
 	}
 
-	req, err := buildrun.ParseArgs(args)
-	if err != nil {
-		var reqErr *buildrun.RequestError
-		if errors.As(err, &reqErr) {
-			return deny(reqErr)
-		}
-		return deny(err)
-	}
-	resolved, err := buildrun.Resolve(env.Workdir, req)
-	if err != nil {
-		var reqErr *buildrun.RequestError
-		if errors.As(err, &reqErr) {
-			return deny(reqErr)
-		}
-		return failService("resolve: %v", err)
-	}
-
-	// GRADLE_USER_HOME derives from the resolved OMAC cache scope
-	// (global/config/workdir per the launcher config), prepared through
-	// toolcache — permissions + shared-lock handled there. Never
-	// hardcoded, never host ~/.gradle.
+	// Cache scope + auditor: the CLI owns the launcher-config resolution
+	// (prepareBuildCache reuses the start path's scope machinery) and the
+	// audit-trail construction (buildAuditor). The engine consumes the
+	// resolved cache dir + auditor as inputs — it does not touch the
+	// launcher config or the audit-sink config directly.
 	cacheDir, closeScope, err := prepareBuildCache(env.Workdir, "")
 	if err != nil {
-		return failService("resolve cache scope: %v", err)
-	}
-	defer closeScope()
-
-	// Build manifest (ticket 05): Load `.omac/build.yaml` from the worktree,
-	// validate against the host policy ceiling, run the frozen-for-session
-	// approval gate, and thread the approved capability set into BuildConfig.
-	// A missing manifest is the normal case (standard Gradle project) —
-	// Load returns a zero manifest and the gate is skipped (no capabilities
-	// to freeze). A present manifest that changes since last approval FAILS
-	// here with ExitPolicyDenied + the consolidated diff + restart
-	// instruction; the build never starts (the human reviews first).
-	// The approval + active records live under the cache leaf's
-	// `.omac-control/` (per-developer), NOT in the worktree.
-	hostPolicy := buildrun.HostPolicy(req.MaxDuration)
-	manifest, err := buildmanifest.Load(resolved.Worktree)
-	if err != nil {
-		// Parse / structural validation error (secret, forbidden field,
-		// absolute root, bad version). All map to ExitPolicyDenied.
-		return deny(err)
-	}
-	if err := manifest.Validate(hostPolicy); err != nil {
-		// Host-ceiling violation (or a structural error re-surfaced for an
-		// in-code manifest). ExitPolicyDenied before executor startup.
-		return deny(err)
-	}
-	approved := buildrun.BuildConfig{}
-	var approvedRegistries []string
-	if manifest.HasManifest() {
-		caps := manifest.CapabilitySet(hostPolicy)
-		digest := buildmanifest.Digest(manifest)
-		// The gate checks the active (frozen-for-session) record under the
-		// cache leaf. GradleLeaf resolves <cacheDir>/gradle (the same leaf
-		// GrantsFor uses), so the gate, the grants, and the control-state
-		// protection all share one path source.
-		leaf := buildrun.GradleLeaf(cacheDir)
-		gateRes, gerr := buildmanifest.Gate(leaf, digest, caps)
-		if gerr != nil {
-			// Changed manifest (or first-ever): print the consolidated diff
-			// + restart instruction and deny. The build does not start.
-			fmt.Fprintln(env.Stderr, "omac build: manifest approval required")
-			fmt.Fprintln(env.Stderr, gerr)
-			return ExitBuildPolicyDenied
-		}
-		// Unattended: thread the frozen capability set into BuildConfig.
-		// The manifest's resource request (already validated <= ceiling)
-		// narrows the Gradle daemon heap; images/registries are carried for
-		// tickets 06/08/09.
-		approved.MaxHeap = gateRes.Capabilities.Resources.MaxHeap
-		approved.ApprovedImages = gateRes.Capabilities.Images
-		approved.ApprovedRegistries = gateRes.Capabilities.Registries
-		approvedRegistries = gateRes.Capabilities.Registries
+		fmt.Fprintf(env.Stderr, "omac build: resolve cache scope: %v\n", err)
+		return buildrun.ExitServiceFailure
 	}
 
-	// Proxy: start the omac filtered proxy so public dependency resolution
-	// works without printing a proxy password (GRADLE_OPTS, NEVER
-	// JAVA_TOOL_OPTIONS). Best-effort configurable but ON by default for
-	// the build path on macOS (Shape A). On Linux the kernel-blocked
-	// posture makes the proxy unreachable, so it is not started.
-	//
-	// Ticket 06 tightens the filter from allow-all to an allowlist of
-	// public Gradle/Maven endpoints ONLY, with build-scan upload hosts
-	// denied. Private-registry upstreams are deliberately NOT allowed
-	// here (they go through the credential-lift proxy below); allowing
-	// them would be a bypass path (spec.md:174).
-	proxyURL, proxyPort, stopProxy, proxyErr := startBuildProxy(env)
-	if proxyErr != nil {
-		return failService("build proxy: %v", proxyErr)
-	}
-	if stopProxy != nil {
-		defer stopProxy()
-	}
-	approved.ProxyURL = proxyURL
-	approved.ProxyPort = proxyPort
-
-	// Credential-lift proxy (ticket 06): for the approved private Maven
-	// registries, start a host-side loopback HTTP proxy that injects the
-	// developer's keychain credential upstream while Gradle sees only a
-	// non-secret local URL per alias. The credential NEVER enters the
-	// executor (env/args/gradle.properties/logs/audit). A missing keychain
-	// credential for an approved registry is a structured denial naming the
-	// alias (criterion 7) — exit 3, never a crash, never the credential.
-	credProxyURLs, stopCredProxy, credErr := startCredentialProxy(env, resolved.Worktree, buildrun.GradleLeaf(cacheDir), manifest.Registries, approvedRegistries)
-	if credErr != nil {
-		return deny(credErr)
-	}
-	if stopCredProxy != nil {
-		defer stopCredProxy()
-	}
-	approved.RegistryProxyURLs = credProxyURLs
-
-	// Container proxy (ticket 08, ADR 0002): start the mediated Docker
-	// endpoint ONLY when the approved manifest declares container images
-	// (macOS-only in v1; Linux kernel-blocked → not started). The executor
-	// receives DOCKER_HOST=<loopback proxy URL>, NEVER the raw daemon
-	// socket. The proxy authenticates by ownership (omac.executor=<id>
-	// label); the URL carries no userinfo. The stop func tears down the
-	// listener AND runs Cleanup (removes executor-owned containers + the
-	// executor-owned internal network). Cleanup runs via the defer chain
-	// below, which fires on BOTH normal completion and forced cancel (a
-	// forced cancel returns through RunBuild's normal path after the
-	// OnForcedCancel daemon-recycle hook, so deferred funcs still run).
-	// It is NOT wired into OnForcedCancel itself (that hook recycles the
-	// Gradle daemon); container cleanup relies on the defer, not the hook.
-	auditor := buildAuditor(env)
-	defer auditor.Close()
-	// Build request id (ticket 09, spec §254): a short stable id
-	// correlating this build's container-policy denials with the active
-	// request. Generated once here, threaded into the container proxy
-	// (so denials name the request) and emitted with build.request (so
-	// the audit trail ties the id to the request metadata). Non-secret
-	// (it appears in denial messages the agent reads).
-	buildReqID := newBuildRequestID()
-	containerProxyURL, containerProxyEnabled, stopContainerProxy, cpErr := containerProxyStarter(env, resolved.Worktree, buildrun.GradleLeaf(cacheDir), approved.ApprovedImages, buildReqID, auditor)
-	if cpErr != nil {
-		return failService("container proxy: %v", cpErr)
-	}
-	if stopContainerProxy != nil {
-		defer stopContainerProxy()
-	}
-	approved.ContainerProxyURL = containerProxyURL
-	approved.ContainerProxyEnabled = containerProxyEnabled
-
-	grants, err := buildrun.GrantsFor(resolved.Worktree, cacheDir, approved)
-	if err != nil {
-		return failService("derive executor grants: %v", err)
-	}
-	defer grants.CleanupTmp()
-
-	// Per-worktree queue: serialize `omac build` invocations in the same
-	// worktree (they contend on the same leaf/cache and would corrupt each
-	// other's cache). Independent worktrees resolve to independent leaves
-	// (independent lockfiles) → concurrent. The flock is auto-released on
-	// crash (kernel releases flock when the process dies); no stale-lock
-	// cleanup is needed.
-	//
-	// The acquire is CANCELLABLE (S2: spec.md:136 — queued requests are
-	// individually cancellable): the build's cancel channel is wired in
-	// so a second `omac build` Ctrl-C unwinds a waiter without killing
-	// the running build. SignalContext is therefore created BEFORE the
-	// acquire so the cancel channel exists while we wait for the lock.
+	// Signal handling: the CLI owns the staged graceful-then-forced
+	// cancellation wiring (SignalContext). The engine consumes the
+	// cancel + force channels as inputs; it does not install signal
+	// handlers (a transport-neutral engine cannot assume it owns the
+	// process's signal disposition — the broker path delivers
+	// cancellation via HTTP, not signals).
 	cancel, force, _, release := buildrun.SignalContext()
 	defer release()
 
-	lock, err := buildrun.AcquireCtx(grants.GradleUserHome(), buildrun.DefaultQueueTimeout, cancel)
-	if err != nil {
-		if errors.Is(err, buildrun.ErrLockCancelled) {
-			// Cancelled while queued: ExitCancelled (4) + marker, not the
-			// ExitServiceFailure (10) a busy-denial produces.
-			fmt.Fprintln(env.Stderr, buildrun.CancelledMarker)
-			return ExitBuildCancelled
-		}
-		return failService("%v", err)
-	}
-	defer lock.Release()
+	auditor := buildAuditor(env)
+	defer auditor.Close()
 
-	// Audit: open the persistent trail best-effort (a build must never
-	// fail because the audit log is unavailable; config strictness is the
-	// start/serve path's concern). The auditor was opened earlier (before
-	// the container proxy, which needs it for container create/denial/
-	// cleanup events); emit the build.request event here.
-	auditor.Emit(audit.ControlMutation("build.request", resolved.Worktree,
-		fmt.Sprintf("request=%s adapter=gradle root=%s args=%d", buildReqID, resolved.ProjectDir, len(resolved.Args))))
-
-	maxDur := req.MaxDuration
-	// S3: a forced cancel (second signal / MaxDuration expiry) SIGKILLs
-	// the gradlew group, but the Gradle daemon (a separate process
-	// outside the group) survives with potentially-corrupt state. Recycle
-	// it by running `gradlew --stop` against the leaf (best-effort — a
-	// wedged daemon may need manual `omac build stop`). Graceful cancel
-	// (first signal) does NOT recycle the daemon, preserving the warm
-	// executor per spec §144.
-	daemonRecycle := func(stderr io.Writer) error {
-		return buildrun.StopGradleDaemon(buildrun.StopDaemonOptions{
-			Wrapper:    resolved.Wrapper,
-			ProjectDir: resolved.ProjectDir,
-			Leaf:       grants.GradleUserHome(),
-			Grants:     grants,
-			Stderr:     stderr,
-		})
-	}
-	code, err := buildrun.RunBuild(buildrun.RunOptions{
-		Resolved:       resolved,
-		Grants:         grants,
-		Stdout:         env.Stdout,
-		Stderr:         env.Stderr,
-		Cancel:         cancel,
-		ForceCancel:    force,
-		MaxDuration:    maxDur,
-		OnForcedCancel: daemonRecycle,
-		Auditor:        auditor,
+	result := buildengine.Run(buildengine.Options{
+		Workdir:     env.Workdir,
+		RawArgs:     args,
+		Stdout:      env.Stdout,
+		Stderr:      env.Stderr,
+		CacheDir:    cacheDir,
+		CloseScope:  closeScope,
+		Auditor:     auditor,
+		Proxies:     cliProxyStarter,
+		Cancel:      cancel,
+		ForceCancel: force,
 	})
-	if err != nil {
-		fmt.Fprintf(env.Stderr, "omac build: %v\n", err)
-		return buildrun.ExitServiceFailure
+
+	// Exit-code translation: the engine assigns the explicit class at
+	// the outcome site; the CLI translates it to the documented exit
+	// code. Policy-denial and service-failure diagnostics are rendered
+	// omac-prefixed here (the engine does not print them — it stays
+	// transport-neutral; the broker frames them as a sanitized
+	// service-failure result instead).
+	switch result.Class {
+	case buildengine.ClassPolicyDenial:
+		if result.Err != nil {
+			fmt.Fprintf(env.Stderr, "omac build: %v\n", result.Err)
+		}
+	case buildengine.ClassServiceFailure:
+		if result.Err != nil {
+			fmt.Fprintf(env.Stderr, "omac build: %v\n", result.Err)
+		}
 	}
-	// Recycle the Gradle daemon after every build. A warm daemon caches
-	// per-run state that doesn't survive across omac builds: the
-	// GlobalEmbeddedKafkaTestExecutionListener (spring-kafka-test) starts
-	// an in-process Kafka broker at testPlanExecutionStarted and stops it
-	// at testPlanExecutionFinished, but the JUnit Platform listener
-	// discovery + the daemon's system properties go stale on a warm
-	// daemon, so the second run's bootstrap.servers comes back empty.
-	// Stopping the daemon after each build (gradlew --stop, which is safe
-	// when no build is running — unlike --no-daemon which deadlocks with
-	// an alive daemon) gives every run a cold daemon with fresh env,
-	// fresh init scripts, and fresh listeners. The ~10s cold-start cost
-	// is the price of correctness with Testcontainers + embedded Kafka.
-	if recycleErr := daemonRecycle(env.Stderr); recycleErr != nil {
-		fmt.Fprintf(env.Stderr, "omac build: warning: post-build daemon recycle failed: %v\n", recycleErr)
-	}
-	return code
+	return result.ExitCode()
 }
 
 // prepareBuildCache resolves the launcher config's cache scope for workdir
@@ -384,21 +197,21 @@ Queue (per-worktree serialization, individually cancellable):
 
 Executor authority (one restricted process per request):
   read+write: current worktree, resolved OMAC cache leaf
-              (GRADLE_USER_HOME = <cache scope>/gradle), private temp
+               (GRADLE_USER_HOME = <cache scope>/gradle), private temp
   read-only:  the real JDK bin+lib (jenv/asdf shims bypassed), OMAC
-              control state (gradle.properties, .omac-control/, init.d/) —
-              readable by Gradle but NOT writable by build/test code, so
-              the OMAC-imposed proxy/JVM guardrails cannot be relaxed
-              (writes surface as EPERM; see .omac-control/README for the
-              supported alternatives)
+               control state (gradle.properties, .omac-control/, init.d/) —
+               readable by Gradle but NOT writable by build/test code, so
+               the OMAC-imposed proxy/JVM guardrails cannot be relaxed
+               (writes surface as EPERM; see .omac-control/README for the
+               supported alternatives)
   network:    macOS — env-only filtered via the omac proxy (GRADLE_OPTS,
-              NEVER JAVA_TOOL_OPTIONS which the JVM prints, leaking tokens);
-              loopback is excluded so the Gradle daemon's worker protocol
-              works — macOS is filesystem-confinement only, NO kernel
-              network mediation (Shape A; raw-socket-capable build code can
-              reach host loopback and external egress — no host-listener
-              monitoring/guarding is claimed, ADR 0003 Revision). Linux —
-              kernel-blocked (private sandbox loopback).
+               NEVER JAVA_TOOL_OPTIONS which the JVM prints, leaking tokens);
+               loopback is excluded so the Gradle daemon's worker protocol
+               works — macOS is filesystem-confinement only, NO kernel
+               network mediation (Shape A; raw-socket-capable build code can
+               reach host loopback and external egress — no host-listener
+               monitoring/guarding is claimed, ADR 0003 Revision). Linux —
+               kernel-blocked (private sandbox loopback).
   worker checks: canonical checkstyleMain/checkstyleTest run unchanged via
                the Gradle Worker API on both platforms; yarp3's
                checkstyle*Sandbox twin tasks are retired by the OMAC-authored
@@ -437,7 +250,7 @@ Cancellation (two stages):
                          window.
   Second signal /       — forced: collapse the window, SIGKILL the group,
   --max-duration expiry   AND RECYCLE the (possibly corrupt) Gradle daemon
-                          (best-effort gradlew --stop against the leaf).
+                           (best-effort gradlew --stop against the leaf).
   In both cases the daemon serving the build is recycled post-build via
   "gradlew --stop"; the next build starts cold.
 
@@ -445,16 +258,16 @@ Exit codes:
   0            build success
   <gradle>     build failure — the wrapper's own exit code (128+n on signal)
   3            policy denial — rejected before any build code ran
-               (grammar/adapter error, root outside the worktree, symlink
-               escape, missing or non-executable gradlew, bad --max-duration)
+                (grammar/adapter error, root outside the worktree, symlink
+                escape, missing or non-executable gradlew, bad --max-duration)
   4            cancellation — SIGINT/SIGTERM honored during the build, OR a
-               queued request cancelled while waiting for the lock; distinct
-               from a raw "gradle exit 4" by the "omac build: cancelled"
-               marker on stderr
+                queued request cancelled while waiting for the lock; distinct
+                from a raw "gradle exit 4" by the "omac build: cancelled"
+                marker on stderr
   10           service failure — OMAC-side error (sandbox unavailable, exec
-               failure, queue busy after 30s); 10 rather than 1 because
-               Gradle's own build-failure code IS 1; diagnostic is
-               omac-prefixed on stderr
+                failure, queue busy after 30s); 10 rather than 1 because
+                Gradle's own build-failure code IS 1; diagnostic is
+                omac-prefixed on stderr
 
 omac build stop:
   Runs the repo wrapper with "gradle --stop" under the SAME isolated env as
@@ -469,23 +282,9 @@ the cache leaf — cached from a previous build in the same scope or
 pre-seeded by a host run.`)
 }
 
-// newBuildRequestID generates a short, non-secret, time-ordered id for one
-// `omac build` invocation (ticket 09, spec §254). It correlates the
-// build.request audit event with container-policy denials emitted by the
-// container proxy so the agent receives an actionable OMAC explanation
-// naming the active request rather than only a wrapped Testcontainers
-// failure. Format: b<unix-seconds-hex>-<4 random hex bytes>. Non-secret
-// (it appears in denial messages the agent reads); collisions are
-// negligible (4 random bytes + per-second ordering).
-//
-// A failing crypto/rand.Read means the host entropy source is broken — a
-// host-fatal condition, not a recoverable build error. We panic (the build
-// command cannot proceed without a request id to correlate denials against);
-// this never happens on a healthy Linux/macOS host.
-func newBuildRequestID() string {
-	var buf [4]byte
-	if _, err := rand.Read(buf[:]); err != nil {
-		panic(fmt.Sprintf("omac build: generate build request id: crypto/rand.Read failed: %v (host entropy source broken)", err))
-	}
-	return fmt.Sprintf("b%s-%s", strconv.FormatInt(time.Now().Unix(), 16), hex.EncodeToString(buf[:]))
-}
+// newBuildRequestID delegates to buildrun.NewBuildRequestID — the single
+// source of truth. Retained as a thin wrapper so existing cli tests
+// (build_test.go's TestBuildExecutorSecurityBoundary) that reference the
+// cli-qualified name keep compiling; the wrapper has no behavior of its
+// own.
+func newBuildRequestID() string { return buildrun.NewBuildRequestID() }
