@@ -59,6 +59,16 @@ func runBuild(args []string, env *Env) int {
 		}
 	}
 
+	// `omac build approve` is a host-only transition (ticket 06). It
+	// is dispatched BEFORE the managed-mode check so a managed
+	// invocation reaches runBuildApprove, which refuses it (an agent
+	// cannot approve its own capability set). The approve handler
+	// checks the environment and the TTY itself; it never reaches the
+	// broker.
+	if len(args) > 0 && args[0] == buildApproveSub {
+		return runBuildApprove(args[1:], env)
+	}
+
 	// Managed-vs-direct mode selection. In a managed OMAC session
 	// (OMAC_BUILD_BROKER_REQUIRED=1 + OMAC_CONTROL_BASE +
 	// OMAC_BUILD_TOKEN) the CLI submits to the parent's broker; on
@@ -111,6 +121,7 @@ func runBuild(args []string, env *Env) int {
 		Stdout:      env.Stdout,
 		Stderr:      env.Stderr,
 		CacheDir:    cacheDir,
+		CacheRoot:   buildControlCacheRoot(cacheDir),
 		CloseScope:  closeScope,
 		Auditor:     auditor,
 		Proxies:     cliProxyStarter,

@@ -6,6 +6,7 @@ import (
 	"io"
 
 	"github.com/tngtech/oh-my-agentic-coder/internal/audit"
+	"github.com/tngtech/oh-my-agentic-coder/internal/buildcontrol"
 	"github.com/tngtech/oh-my-agentic-coder/internal/buildmanifest"
 	"github.com/tngtech/oh-my-agentic-coder/internal/buildrun"
 )
@@ -314,6 +315,18 @@ type Options struct {
 	// as a public capability, only as the existing test seam
 	// buildrun.RunOptions already documents.
 	Launcher func(g *buildrun.BuildGrants, innerArgv []string) ([]string, error)
+	// CacheRoot is the shared cache root (parent of cache-scope dirs,
+	// typically ~/.cache/omac) under which the host-only build-control
+	// root lives. When non-empty, the engine acquires the leaf-keyed
+	// persistent lock at <cacheRoot>/build-control/locks/<sha256(leaf)>.lock
+	// BEFORE any mutable control state, generated control-state writes,
+	// proxy startup, grants derivation, container scavenging, or
+	// execution (spec §Serialization and control state, ticket 06).
+	// When empty, the engine falls back to the legacy in-leaf lock at
+	// <leaf>/.omac-build.lock (behavior-preserving for tests that
+	// don't set CacheRoot and for the no-parent direct-host path that
+	// has not yet been migrated).
+	CacheRoot string
 }
 
 // Run executes one complete build invocation behind a
@@ -434,6 +447,39 @@ func Run(opts Options) Result {
 		}
 	}
 
+	// Per-leaf queue lock (cancellable), acquired BEFORE any mutable
+	// control state, generated control-state writes, proxy startup,
+	// grants derivation, container scavenging, or execution (spec
+	// §Serialization and control state, ticket 06). The lock is keyed
+	// by the resolved Gradle cache leaf, NOT the worktree: requests
+	// sharing a leaf serialize; requests on distinct leaves may run
+	// concurrently. Brokered and direct host invocations derive the
+	// same canonical-leaf key so they serialize across processes.
+	//
+	// When Options.CacheRoot is set (the parent / direct host path
+	// with a resolved shared cache root), the lock lives at
+	// <cacheRoot>/build-control/locks/<sha256(leaf)>.lock — host-only,
+	// persistent, never unlinked, and never included in outer-agent or
+	// executor grants. When CacheRoot is empty (tests and the unmigrated
+	// no-parent direct path), the engine falls back to the legacy
+	// in-leaf lock at <leaf>/.omac-build.lock so existing tests stay
+	// behavior-preserving.
+	cancel := opts.Cancel
+	force := opts.ForceCancel
+	lock, err := acquireLeafLock(opts.CacheRoot, leaf, cancel)
+	if err != nil {
+		if errors.Is(err, buildcontrol.ErrLockCancelled) {
+			fmt.Fprintln(stderr, buildrun.CancelledMarker)
+			return Result{Class: ClassCancelled, Exit: 4}
+		}
+		if errors.Is(err, buildrun.ErrLockCancelled) {
+			fmt.Fprintln(stderr, buildrun.CancelledMarker)
+			return Result{Class: ClassCancelled, Exit: 4}
+		}
+		return failService("%v", err)
+	}
+	defer lock.Release()
+
 	// BuildConfig from the frozen snapshot. The engine threads the
 	// frozen capability set through exactly as the current cli/build.go
 	// does; the manifest's resource request (already validated <=
@@ -497,29 +543,12 @@ func Run(opts Options) Result {
 
 	// Grants: derive the executor grant set (worktree + leaf + temp +
 	// JDK + platform baseline). The engine reuses buildrun.GrantsFor —
-	// the existing seam.
+	// the existing seam. Acquired AFTER the leaf lock per the spec.
 	grants, err := buildrun.GrantsFor(resolved.Worktree, opts.CacheDir, approved)
 	if err != nil {
 		return failService("derive executor grants: %v", err)
 	}
 	defer grants.CleanupTmp()
-
-	// Per-leaf queue lock (cancellable). The engine reuses the existing
-	// buildrun.AcquireCtx — the prefactor does NOT move the lock to a
-	// host-only build-control root (that is ticket 06's gate). A
-	// cancelled-while-waiting returns ClassCancelled + the marker; a
-	// busy-denial returns ClassServiceFailure.
-	cancel := opts.Cancel
-	force := opts.ForceCancel
-	lock, err := buildrun.AcquireCtx(grants.GradleUserHome(), buildrun.DefaultQueueTimeout, cancel)
-	if err != nil {
-		if errors.Is(err, buildrun.ErrLockCancelled) {
-			fmt.Fprintln(stderr, buildrun.CancelledMarker)
-			return Result{Class: ClassCancelled, Exit: 4}
-		}
-		return failService("%v", err)
-	}
-	defer lock.Release()
 
 	// Audit: emit build.request here (after the lock is acquired, as
 	// the current cli/build.go does — the request is now active).
@@ -728,15 +757,17 @@ func Stop(opts StopOptions) Result {
 		return failService("gradle --stop: %v", err)
 	}
 
-	// Release the queue lockfile: a clean build released its flock on
-	// exit, so the file only lingers after a crash. The kernel already
-	// released the flock, so removing the file is safe. The prefactor
-	// preserves the current behavior; ticket 06 removes this (the
-	// persistent, never-unlinked lockfile).
-	if err := removeLockfile(leaf); err != nil {
-		fmt.Fprintf(stderr, "omac build stop: warning: could not remove lockfile: %v\n", err)
-	}
-	fmt.Fprintf(opts.Stdout, "omac build stop: stopped Gradle daemons for %s and released the queue lock\n", resolved.Worktree)
+	// Ticket 06: the lockfile is PERSISTENT and NEVER unlinked. The
+	// build-control lock lives under the host-only build-control root
+	// (never in executor grants); unlinking a flocked path can let
+	// another request create and lock a second inode, defeating
+	// serialization. `omac build stop` therefore no longer removes
+	// the lockfile — the kernel released the flock on the prior
+	// build's exit, and the persistent file is reused by the next
+	// Acquire. The legacy in-leaf lockfile is also left in place for
+	// the same reason (a future gate moves stop to verified trusted
+	// daemon control and acquires the build-control lock itself).
+	fmt.Fprintf(opts.Stdout, "omac build stop: stopped Gradle daemons for %s\n", resolved.Worktree)
 	return Result{Class: ClassSuccess, Exit: 0}
 }
 
