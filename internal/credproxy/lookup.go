@@ -61,7 +61,7 @@ func LookupRegistries(manifestRegistries []buildmanifest.RegistryEntry, approved
 			if errors.Is(err, ErrCredentialMissing) || errors.Is(err, keychain.ErrNotFound) {
 				return nil, &RegistryCredentialError{Alias: a, Kind: CredentialMissing, Reason: "no keychain entry for the approved registry alias"}
 			}
-			if keychain.IsUnavailable(err) {
+			if errors.Is(err, keychain.ErrBackendUnavailable) || keychain.IsUnavailable(err) {
 				return nil, &RegistryCredentialError{Alias: a, Kind: CredentialBackendUnavailable, Reason: "keychain backend unavailable on this host"}
 			}
 			return nil, &RegistryCredentialError{Alias: a, Kind: CredentialReadFailed, Reason: "keychain read failed: " + err.Error()}
@@ -78,8 +78,12 @@ func LookupRegistries(manifestRegistries []buildmanifest.RegistryEntry, approved
 // The credential value is stored as a single "<user>:<password>" string
 // (HTTP Basic auth credentials) under the registry keychain
 // service/account (see RegistryKeychainService / CredentialAccount). A
-// missing/unavailable entry maps to ErrCredentialMissing so
-// LookupRegistries can produce a structured *RegistryCredentialError.
+// missing entry maps to ErrCredentialMissing so LookupRegistries can
+// produce a structured *RegistryCredentialError; an unreachable keychain
+// backend maps to a backend-unavailable error so the diagnostic points at
+// the OS fix (a present entry that cannot be READ — e.g. the sandbox denys
+// the keychain-daemon socket — must not be misreported as 'missing' and
+// sent back to 'omac secrets set', which cannot fix a read denial).
 // The proxy base64-encodes the raw value as the Basic-auth credential
 // (base64("user:password")) — no split is needed in-process.
 //
