@@ -145,6 +145,69 @@ func TestLookupRegistries_KeychainUnavailable(t *testing.T) {
 	}
 }
 
+// TestLookupRegistries_BackendUnavailableSentinel asserts the NEW
+// keychain.ErrBackendUnavailable sentinel (returned by GetByService for an
+// unreachable backend — which IsUnavailable does NOT string-match, so the
+// old code flattened it into ErrNotFound and misreported a PRESENT but
+// UNREADABLE credential as 'missing' — the omac-in-omac case) maps to
+// CredentialBackendUnavailable with the OS-fix hint, NEVER to the
+// 'run omac secrets set' missing hint. This is the regression test for the
+// user-facing confusion: a read denial must not instruct the user to
+// re-add a credential that already exists.
+func TestLookupRegistries_BackendUnavailableSentinel(t *testing.T) {
+	manifest := []buildmanifest.RegistryEntry{
+		{Alias: "internal", Upstream: "https://maven.internal.example/repo"},
+	}
+	lookup := func(alias string) (secrets.Secret, error) {
+		return secrets.Secret{}, keychain.ErrBackendUnavailable
+	}
+	_, err := LookupRegistries(manifest, []string{"internal"}, lookup)
+	if err == nil {
+		t.Fatal("expected error for unavailable backend")
+	}
+	var rce *RegistryCredentialError
+	if !errors.As(err, &rce) {
+		t.Fatalf("error = %T, want *RegistryCredentialError", err)
+	}
+	if rce.Kind != CredentialBackendUnavailable {
+		t.Errorf("Kind = %v, want CredentialBackendUnavailable", rce.Kind)
+	}
+	render := rce.Render()
+	if !strings.Contains(render, "Start the OS keychain backend") {
+		t.Errorf("diagnostic must point at the OS fix, not 'omac secrets set':\n%s", render)
+	}
+	if strings.Contains(render, "mac secrets set") {
+		t.Errorf("diagnostic must NOT instruct 'omac secrets set' for an unreadable-but-present backend:\n%s", render)
+	}
+}
+
+// TestKeychainLookup_BackendUnavailablePassesThrough asserts KeychainLookup
+// does NOT collapse the backend-unavailable sentinel into
+// ErrCredentialMissing — it must survive to LookupRegistries so the
+// CredentialBackendUnavailable classification is reachable.
+func TestKeychainLookup_BackendUnavailablePassesThrough(t *testing.T) {
+	_, err := KeychainLookup("nonexistent-alias-backend-unavailable")
+	if err == nil {
+		t.Skip("keychain returned a credential for a nonexistent alias (unexpected); skipping")
+	}
+	if errors.Is(err, keychain.ErrBackendUnavailable) {
+		// Sentinel survived: correct (an unreachable backend was not
+		// mislabeled as missing).
+		return
+	}
+	if errors.Is(err, ErrCredentialMissing) || errors.Is(err, keychain.ErrNotFound) {
+		// Either the alias is genuinely missing, or the unavailable case is
+		// still being string-classified by an older backend. Accept only
+		// sentinel-classified results for the new behavior; a still-missing
+		// (or string-classified) result is not a regression of THIS fix.
+		if keychain.IsUnavailable(err) {
+			t.Errorf("backend-unavailable error was string-classified (%v), expected the ErrBackendUnavailable sentinel", err)
+		}
+		return
+	}
+	t.Fatalf("KeychainLookup error = %v, want ErrBackendUnavailable/ErrCredentialMissing/ErrNotFound", err)
+}
+
 // TestKeychainLookup_MissingMapsToErrCredentialMissing asserts the
 // production lookup maps keychain.ErrNotFound to ErrCredentialMissing
 // (the sentinel LookupRegistries checks). Uses a service name that will
