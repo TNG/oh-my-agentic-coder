@@ -260,6 +260,15 @@ func runBuildManaged(args []string, env *Env, ep brokerEndpoint) int {
 			gotResult = true
 			resultClass = f.Class
 			resultExit = f.ExitCode
+			// Surface the broker's diagnostic (already sanitized
+			// broker-side). Without this a brokered service_failure /
+			// policy_denial exits with zero output, matching the
+			// direct path's `omac build: %v` print (build.go). An
+			// empty Message (build_success, or a legacy broker) prints
+			// nothing.
+			if f.Message != "" {
+				fmt.Fprintf(env.Stderr, "omac build: %s\n", f.Message)
+			}
 		default:
 			fmt.Fprintf(env.Stderr, "omac build: unknown frame type %q\n", f.Type)
 			return buildrun.ExitServiceFailure

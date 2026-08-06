@@ -103,14 +103,48 @@ func (b *BuildGrants) JDK() JDKResolution {
 // reports for a process running that JDK — a symlinked JAVA_HOME would
 // otherwise make the executable compare false-negative.
 func (b *BuildGrants) JDKExecutable() string {
-	if b == nil || b.jdk.BinDir == "" {
+	if b == nil {
 		return ""
 	}
-	p := filepath.Join(b.jdk.BinDir, "java")
+	return jdkExecutableFromResolution(b.jdk)
+}
+
+// jdkExecutableFromResolution computes the same value
+// BuildGrants.JDKExecutable returns, from a raw JDKResolution. The engine
+// pre-resolves the JDK executable for the ownership prepare step BEFORE
+// GrantsFor (the pending DaemonRecord requires it eagerly); extracting
+// the computation keeps the two call sites in lock-step so the pending
+// record's jdk_executable always equals what grants.JDKExecutable()
+// would later return for the verify closure.
+func jdkExecutableFromResolution(jdk JDKResolution) string {
+	if jdk.BinDir == "" {
+		return ""
+	}
+	p := filepath.Join(jdk.BinDir, "java")
 	if canon, err := filepath.EvalSymlinks(p); err == nil {
 		return canon
 	}
 	return p
+}
+
+// ResolveJDKExecutable resolves the real JDK from the parent environment
+// (the same ResolveJDK GrantsFor uses) and returns its `java` binary path
+// — the value the ownership prepare step needs eagerly (the pending
+// DaemonRecord requires a non-empty jdk_executable; GrantsFor computes
+// the identical value via BuildGrants.JDKExecutable from the same
+// ResolveJDK with the same env, so both sides always agree). An error
+// means no real JDK is discoverable; the caller surfaces it (a build
+// cannot run without a JDK, so GrantsFor would fail with the same
+// resolution error).
+func ResolveJDKExecutable(getenv func(string) string) (string, error) {
+	if getenv == nil {
+		getenv = os.Getenv
+	}
+	jdk, err := ResolveJDK(getenv)
+	if err != nil {
+		return "", err
+	}
+	return jdkExecutableFromResolution(jdk), nil
 }
 
 // ProxyURL returns the omac filtered proxy URL the Gradle daemon is routed
@@ -274,6 +308,16 @@ type BuildConfig struct {
 	// getenv is the JDK discovery seam; production passes os.Getenv, tests
 	// inject a fake parent env. nil selects os.Getenv.
 	getenv func(string) string
+}
+
+// SetGetenv sets the JDK discovery env seam (the engine threads its
+// Options.Getenv through so GrantsFor's ResolveJDK uses the same env
+// the ownership prepare's eager JDK-executable pre-resolution used —
+// both read ResolveJDK(getenv), so the pending DaemonRecord's
+// jdk_executable always equals grants.JDKExecutable()). A nil argument
+// selects os.Getenv.
+func (c *BuildConfig) SetGetenv(f func(string) string) {
+	c.getenv = f
 }
 
 // envPassThrough is the fixed, harness-independent allowlist for the

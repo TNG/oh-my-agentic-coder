@@ -315,6 +315,13 @@ type Options struct {
 	// as a public capability, only as the existing test seam
 	// buildrun.RunOptions already documents.
 	Launcher func(g *buildrun.BuildGrants, innerArgv []string) ([]string, error)
+	// Getenv the engine passes to buildrun for JDK discovery (both the
+	// ownership prepare's eager JDK-executable pre-resolution and
+	// GrantsFor). Tests inject a fake env rooted at a fake JDK install
+	// so the ownership-pending-record JDKExecutable assertion is
+	// independent of the host's JDK layout; production leaves it nil
+	// (os.Getenv).
+	Getenv func(string) string
 	// CacheRoot is the shared cache root (parent of cache-scope dirs,
 	// typically ~/.cache/omac) under which the host-only build-control
 	// root lives. When non-empty, the engine acquires the leaf-keyed
@@ -579,6 +586,31 @@ func Run(opts Options) Result {
 	if own.RequestID == "" {
 		own.RequestID = penv.BuildRequestID
 	}
+	// Resolve the JDK executable BEFORE the prepare step: the pending
+	// DaemonRecord requires a non-empty JDKExecutable (the record pins
+	// the daemon's expected identity — procidentity.Verify re-matches the
+	// process executable against it on every check, and an empty value
+	// would never match, so the record is unverifiable without it).
+	// ResolveJDKExecutable uses the SAME ResolveJDK GrantsFor uses (with
+	// the SAME env), so its result is identical to what
+	// grants.JDKExecutable() later computes for the verify closure. A
+	// resolution failure is a service failure here (GrantsFor would fail
+	// with the same error below — a build cannot run without a JDK).
+	//
+	// The gate mirrors the VerifyReady gate below: it runs only when the
+	// DEFAULT verifier is in use (own.Verify == nil). A custom Verify
+	// closure (tests, or a future non-procidentity verifier) owns its
+	// verification and may not need a real JDK — JDK-less CI runners
+	// wire Enabled()+custom-Verify with no JDK present (b73535b), so
+	// pre-resolving unconditionally would fail those runs for a JDK the
+	// build does not use.
+	if own.Enabled() && own.Verify == nil && own.JDKExecutable == "" {
+		jdkExe, jdkErr := buildrun.ResolveJDKExecutable(opts.Getenv)
+		if jdkErr != nil {
+			return failService("resolve JDK for daemon ownership: %v", jdkErr)
+		}
+		own.JDKExecutable = jdkExe
+	}
 	var (
 		ownerMarker buildrun.DaemonOwnerMarker
 		ownerCh     *buildrun.DaemonHandshakeChannel
@@ -612,6 +644,12 @@ func Run(opts Options) Result {
 	// Grants: derive the executor grant set (worktree + leaf + temp +
 	// JDK + platform baseline). The engine reuses buildrun.GrantsFor —
 	// the existing seam. Acquired AFTER the leaf lock per the spec.
+	// The env seam is threaded through so GrantsFor's JDK resolution
+	// (and the control-state JDK install roots it renders) uses the
+	// same env the ownership prepare's eager JDK pre-resolution used —
+	// both read ResolveJDK(getenv) so the pending record's
+	// jdk_executable always equals grants.JDKExecutable().
+	approved.SetGetenv(opts.Getenv)
 	grants, err := buildrun.GrantsFor(resolved.Worktree, opts.CacheDir, approved)
 	if err != nil {
 		return failService("derive executor grants: %v", err)
@@ -627,18 +665,15 @@ func Run(opts Options) Result {
 	auditor.Emit(audit.ControlMutation("build.request", resolved.Worktree,
 		fmt.Sprintf("request=%s adapter=gradle root=%s args=%d", penv.BuildRequestID, resolved.ProjectDir, len(resolved.Args))))
 
-	// Resolve the JDK executable for the ownership verify closure
-	// AFTER GrantsFor (GrantsFor owns JDK resolution). The default
-	// verifier (DefaultDaemonOwnershipVerifier) calls procidentity.Verify
-	// which requires the resolved JDK executable — an empty
-	// JDKExecutable means procidentity.Verify would never match, so the
-	// build fails closed as a service failure (spec.md §238 — the
-	// executable match is a required identity field). A custom Verify
-	// closure (tests, or a future non-procidentity verifier) owns its
-	// own verification logic and may not need the JDK executable, so
-	// the gate is only enforced when the default verifier is in use.
+	// The ownership prepare step already resolved the JDK executable
+	// (pre-GrantsFor, so the pending record carries it eagerly). The
+	// pre-resolution and GrantsFor's JDKExecutable() both derive from
+	// ResolveJDK with the same env, so they agree; pending record and
+	// verify closure always see the same value. VerifyReady re-asserts
+	// non-empty defensively (a caller that bypassed the pre-resolution
+	// — e.g. a DaemonOwnership with a custom Verify cleared after the
+	// fact — would otherwise proceed with an unverifiable record).
 	if ownerReady && own.Verify == nil {
-		own.JDKExecutable = grants.JDKExecutable()
 		if !own.VerifyReady() {
 			return failService("daemon ownership wired but JDK executable unresolved — cannot verify the daemon")
 		}

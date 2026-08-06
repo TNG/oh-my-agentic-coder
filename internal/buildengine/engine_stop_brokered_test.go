@@ -513,9 +513,72 @@ func TestStopBrokered_PolicyDenialOnBadRoot(t *testing.T) {
 	}
 }
 
+// TestStopBrokered_SubdirWrapperBareStopSucceeds asserts bare `omac
+// build stop` works in a repo whose Gradle wrapper lives in a
+// subdirectory (yarp3's `backend/gradlew`). The brokered stop keys on
+// the leaf + ownership record and never executes the repo wrapper, so
+// a wrapper at `<worktree>/gradlew` is not required — the ownership
+// record is the sole source of truth.
+func TestStopBrokered_SubdirWrapperBareStopSucceeds(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	wt := t.TempDir()
+	// Wrapper lives ONLY under backend/ — none at the worktree root.
+	backend := filepath.Join(wt, "backend")
+	if err := os.MkdirAll(backend, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(backend, "gradlew"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cd, cs, err := prepareTestCacheScope(wt)
+	if err != nil {
+		t.Fatalf("prepare cache scope: %v", err)
+	}
+	defer cs()
+	leafDir := filepath.Join(cd, "gradle")
+	if err := os.MkdirAll(leafDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(filepath.Join(leafDir, "init.d"), 0o755) })
+	cr, err := os.MkdirTemp("/tmp", "omac-eng-stop-subdir")
+	if err != nil {
+		t.Fatalf("create short cache root: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(cr) })
+
+	const pid = 4249
+	writeActiveRecord(t, cr, leafDir, pid, "/path/to/java", "start-id-subdir")
+	killRec := &stopKillRecorder{}
+	withStopBrokeredSeams(t, makeVerifyFake(verifyFakeVerified, killRec, syscall.SIGTERM), killRec)
+
+	// Bare stop: RawArgs=nil (no --root). No wrapper at the worktree
+	// root — the brokered stop must still succeed (it keys on the
+	// cache-scope leaf, which is the same regardless of the wrapper
+	// location).
+	res := StopBrokered(StopBrokeredOptions{
+		Workdir:   wt,
+		RawArgs:   nil,
+		Stdout:    io.Discard,
+		Stderr:    io.Discard,
+		CacheDir:  cd,
+		CacheRoot: cr,
+		Auditor:   audit.Nop(),
+	})
+	if res.Class != ClassSuccess {
+		t.Errorf("class = %q, want %q (bare stop must not require a worktree-root wrapper)", res.Class, ClassSuccess)
+	}
+	if _, err := buildcontrol.LoadDaemonRecord(cr, leafDir); !errors.Is(err, buildcontrol.ErrNoDaemonRecord) {
+		t.Errorf("record should be retired; err = %v", err)
+	}
+}
+
 // TestStopBrokered_HonorsRootFlag asserts `--root backend` resolves
 // the leaf for the backend/ worktree (the ownership record is keyed
-// by the resolved leaf, not the worktree root).
+// by the resolved leaf, not the worktree root). The leaf is keyed by
+// the CACHE SCOPE, not the worktree subdir, so --root is a no-op for
+// the brokered stop — accepted (to match the CLI grammar) but unused
+// beyond worktree containment checks by the broker.
 func TestStopBrokered_HonorsRootFlag(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)

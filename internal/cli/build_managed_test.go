@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -207,6 +208,47 @@ func TestRunBuildManaged_EndToEndWithFakeBroker(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "warn") {
 		t.Errorf("stderr = %q, want warn", stderr.String())
+	}
+}
+
+// TestRunBuildManaged_ServiceFailurePrintsMessage asserts the broker's
+// terminal result-frame Message reaches stderr (the CLI previously
+// dropped it, so a brokered service_failure exited 10 with zero
+// diagnostic — the broker DOES sanitize and send it; the client just
+// never printed it).
+func TestRunBuildManaged_ServiceFailurePrintsMessage(t *testing.T) {
+	engine := &fakeEngine{result: buildengine.Result{
+		Class: buildengine.ClassServiceFailure,
+		Exit:  10,
+		Err:   errors.New("prepare daemon ownership: write pending daemon record"),
+	}}
+	b, _ := buildbroker.New(buildbroker.Options{
+		Token: "tok", Authorizer: func(string) (string, error) { return "/", nil }, EngineInvoker: engine.invoke,
+	})
+	mux := http.NewServeMux()
+	b.Mount(mux)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	clearBrokerEnv(t)
+	t.Setenv(envBuildBrokerRequired, "1")
+	t.Setenv(envControlBase, srv.URL)
+	t.Setenv(envBuildToken, "tok")
+	var stdout, stderr bytes.Buffer
+	stdoutW, releaseStdout := stdoutFile(t, &stdout)
+	stderrW, releaseStderr := stderrFile(t, &stderr)
+	env := &Env{Version: "test", Workdir: t.TempDir(), Stdout: stdoutW, Stderr: stderrW}
+	code := runBuild([]string{"--root", ".", "--", "gradle", "test"}, env)
+	releaseStdout()
+	releaseStderr()
+	if code != 10 {
+		t.Errorf("code = %d, want 10", code)
+	}
+	want := "prepare daemon ownership"
+	if !strings.Contains(stderr.String(), want) {
+		t.Errorf("stderr must carry the broker's result message %q; got %q", want, stderr.String())
+	}
+	if !strings.HasPrefix(strings.TrimSpace(stderr.String()), "omac build:") {
+		t.Errorf("stderr must carry the omac build: prefix; got %q", stderr.String())
 	}
 }
 

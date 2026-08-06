@@ -28,14 +28,19 @@ import (
 // before Phase 3 (behavior-preserving for the existing run_test.go /
 // engine_test.go tests that do not set these). When set, the engine:
 //
-//  1. mints a marker (NewDaemonOwnerMarker),
-//  2. writes the pending DaemonRecord (buildcontrol.WritePendingDaemonRecord),
-//  3. starts the DaemonHandshakeChannel at DaemonHandshakeSockPath(RequestDir),
-//  4. threads marker + sock path into BuildConfig so GrantsFor →
+//  1. resolves the JDKExecutable EAGERLY (engine.go:
+//     ResolveJDKExecutable(Getenv)) so the pending record pins the
+//     daemon's expected identity at write time — the record is
+//     unverifiable without it (procidentity.Verify would never match
+//     an empty executable),
+//  2. mints a marker (NewDaemonOwnerMarker),
+//  3. writes the pending DaemonRecord
+//     (buildcontrol.WritePendingDaemonRecord — requires a non-empty
+//     JDKExecutable),
+//  4. starts the DaemonHandshakeChannel at DaemonHandshakeSockPath(RequestDir),
+//  5. threads marker + sock path into BuildConfig so GrantsFor →
 //     PrepareControlState renders them into gradle.properties + the
 //     daemon-handshake-sock control file,
-//  5. AFTER GrantsFor returns, resolves the JDKExecutable from
-//     grants.JDKExecutable() and builds the verify closure,
 //  6. launches the wrapper (RunBuild, unchanged),
 //  7. concurrently awaits the handshake (AwaitHandshake) with the
 //     verify closure that calls procidentity.Verify and — INSIDE the
@@ -46,10 +51,14 @@ import (
 //  9. after the wrapper exits, runs the in-sandbox `gradlew --stop`
 //     recycle (RunStopInSandbox) and retires the record.
 //
-// JDKExecutable is NOT required at PrepareDaemonOwnership time (it is
-// resolved from grants AFTER GrantsFor, since GrantsFor owns JDK
-// resolution); it is only needed for the verify closure, which runs
-// during AwaitHandshake (after the wrapper launches).
+// JDKExecutable IS required at PrepareDaemonOwnership time:
+// WritePendingDaemonRecord rejects an empty jdk_executable, and the
+// record pins the daemon's expected identity — an empty value would be
+// unverifiable (procidentity.Verify(pid, "", ...) never matches). The
+// engine resolves it via ResolveJDKExecutable BEFORE PrepareDaemonOwnership
+// (and GrantsFor computes the identical value from the same ResolveJDK
+// with the same env, so the pending record always matches what the
+// verify closure would use).
 type DaemonOwnershipConfig struct {
 	// CacheRoot is the shared cache root (parent of cache-scope dirs)
 	// under which the host-only build-control root lives. The pending
@@ -69,13 +78,14 @@ type DaemonOwnershipConfig struct {
 	// JDKExecutable is the EvalSymlinks-resolved path of the resolved
 	// JDK's `java` binary (BuildGrants.JDKExecutable()). The verify
 	// closure compares the daemon's resolved executable against it
-	// (procidentity.Verify). Set AFTER GrantsFor (the engine resolves
-	// it from grants); empty at PrepareDaemonOwnership time is fine
-	// (the verify closure is built later via
-	// DefaultDaemonOwnershipVerifier once grants are known). If still
-	// empty when the verify closure is built, the engine treats it as
-	// a service failure (the daemon cannot be verified without a
-	// resolved JDK executable).
+	// (procidentity.Verify). REQUIRED at PrepareDaemonOwnership time —
+	// WritePendingDaemonRecord rejects an empty value (the record pins
+	// the daemon's expected identity; an empty executable is
+	// unverifiable). The engine pre-resolves it via
+	// ResolveJDKExecutable(opts.Getenv) before prepare; GrantsFor
+	// computes the identical value from the same ResolveJDK with the
+	// same env. If still empty when the verify closure is built, the
+	// engine treats it as a service failure.
 	JDKExecutable string
 	// HandshakeDeadline bounds AwaitHandshake (accept + read + verify).
 	// Zero uses DefaultHandshakeDeadline. The init script's own read
@@ -107,12 +117,13 @@ const DefaultHandshakeDeadline = 45 * time.Second
 
 // Enabled reports whether the ownership path is wired (the three
 // fields PrepareDaemonOwnership needs are set: CacheRoot,
-// CanonicalLeaf, RequestID). JDKExecutable is NOT required at prepare
-// time (it is resolved from grants AFTER GrantsFor). When false, the
-// engine runs the legacy Phase-2 path (RunBuild unchanged, the old
-// unsandboxed daemonRecycle). When true, the engine runs the Phase-3
-// path (pending record + handshake channel + in-sandbox recycle +
-// retire).
+// CanonicalLeaf, RequestID). JDKExecutable IS also required at prepare
+// time (WritePendingDaemonRecord rejects an empty value) but it is
+// checked by the write itself, not Enabled — Enabled gates the
+// ownership/wiring decision. When false, the engine runs the legacy
+// Phase-2 path (RunBuild unchanged, the old unsandboxed daemonRecycle).
+// When true, the engine runs the Phase-3 path (pending record +
+// handshake channel + in-sandbox recycle + retire).
 func (c DaemonOwnershipConfig) Enabled() bool {
 	return c.CacheRoot != "" && c.CanonicalLeaf != "" && c.RequestID != ""
 }
@@ -152,7 +163,9 @@ type OwnershipHandshakeResult struct {
 // cfg.CacheRoot so the promote happens INSIDE the closure (before the
 // ack), per the Phase 2 handoff's critical ordering note. If the
 // promote fails, the closure returns false and no ack is written (the
-// build fails closed).
+// build fails closed). The engine resolves cfg.JDKExecutable EAGERLY
+// (before prepare — WritePendingDaemonRecord requires it); the closure
+// does not compute the JDK.
 func PrepareDaemonOwnership(cfg DaemonOwnershipConfig) (marker DaemonOwnerMarker, ch *DaemonHandshakeChannel, err error) {
 	if !cfg.Enabled() {
 		return "", nil, errors.New("buildrun: PrepareDaemonOwnership called with disabled config")

@@ -141,11 +141,15 @@ var stopBrokeredKill = syscall.Kill
 // released on return; the persistent lockfile is reused by the next
 // Acquire.
 //
-// The brokered stop does NOT execute the repo wrapper, so a malformed
-// worktree (no gradlew, bad --root) is a policy_denial surfaced by
-// the parseStopArgs / Resolve step — same as the direct-host Stop.
-// A worktree-authorization denial is handled by the broker BEFORE the
-// invoker runs, so it never reaches StopBrokered.
+// The brokered stop does NOT execute the repo wrapper, so it does not
+// require a gradlew at all (spec.md §240: "the wrapped build tool is
+// not invoked"). A malformed --root FLAG (--root with no value, or an
+// unknown flag) is a policy_denial via parseStopArgs; the root VALUE
+// is otherwise unused — the ownership record is keyed by the cache-scope
+// leaf, not the worktree subdir, so a wrapper under backend/gradlew is
+// found by bare `stop` with no --root. A worktree-authorization denial
+// is handled by the broker BEFORE the invoker runs, so it never
+// reaches StopBrokered.
 func StopBrokered(opts StopBrokeredOptions) Result {
 	stderr := opts.Stderr
 	if stderr == nil {
@@ -164,37 +168,43 @@ func StopBrokered(opts StopBrokeredOptions) Result {
 
 	// Parse --root from the args after `omac build stop` (the broker
 	// stripped the leading "stop"). Same grammar as the direct-host
-	// Stop: `omac build stop [--root <rel>]`.
-	root, perr := parseStopArgs(opts.RawArgs)
-	if perr != nil {
+	// Stop: `omac build stop [--root <rel>]`. The brokered stop NEVER
+	// executes the repo wrapper (spec.md §240 — it stops the daemon
+	// via the ownership record + procidentity-verified signals), so it
+	// does not resolve a gradlew at all: the value is parsed for
+	// grammar compatibility and then unused beyond the broker's own
+	// worktree-containment authorization. This is why bare `omac
+	// build stop` works in a repo whose wrapper lives in a
+	// subdirectory (e.g. backend/gradlew) — a wrapper at the worktree
+	// root is not required.
+	//
+	// Containment: unlike the direct-host Stop (which Resolve-validates
+	// --root against the worktree because it EXECUTES the wrapper at
+	// that root), the brokered stop uses the parsed value for NOTHING
+	// — the leaf is keyed by the cache scope (opts.CacheDir), the
+	// ownership record is keyed by the leaf, and the PID-to-signal is
+	// gated by procidentity against that record. The broker authorizes
+	// the worktree before invoking, and the value never leaves the
+	// engine. A redundant containment check would reintroduce the
+	// direct-path coupling the brokered stop deliberately drops.
+	if _, perr := parseStopArgs(opts.RawArgs); perr != nil {
 		return deny(perr)
-	}
-
-	// Resolve the worktree + leaf. The brokered stop needs the
-	// canonical leaf to key the ownership record lookup; it does NOT
-	// run the wrapper, but Resolve validates the --root + worktree
-	// shape (a malformed --root or a worktree with no gradlew is a
-	// policy denial, same as the direct path).
-	stopArgs := []string{"--root", root, "--", "gradle", "--stop"}
-	req, err := buildrun.ParseArgs(stopArgs)
-	if err != nil {
-		return deny(err)
-	}
-	resolved, err := buildrun.Resolve(opts.Workdir, req)
-	if err != nil {
-		return deny(err)
 	}
 
 	if opts.CloseScope != nil {
 		defer opts.CloseScope()
 	}
 
+	// The canonical leaf keys the ownership-record lookup. It is
+	// keyed by the cache SCOPE (opts.CacheDir), not the worktree
+	// subdir — so `--root` is irrelevant to the record lookup (see
+	// TestStopBrokered_HonorsRootFlag).
 	leaf := buildrun.GradleLeaf(opts.CacheDir)
 	auditor := opts.Auditor
 	if auditor == nil {
 		auditor = audit.Nop()
 	}
-	auditor.Emit(audit.ControlMutation("build.stop", resolved.Worktree, "brokered verified stop"))
+	auditor.Emit(audit.ControlMutation("build.stop", opts.Workdir, "brokered verified stop"))
 
 	// Acquire the SAME leaf lock the build acquires (spec.md §240:
 	// "It acquires the same leaf lock"). The lock prevents a
