@@ -520,10 +520,16 @@ func dialEngineHandshake(t *testing.T, sockPath string, pid int, marker string) 
 // record; the test dials the handshake socket to drive the ack.
 func TestRun_DaemonOwnership_HappyPath(t *testing.T) {
 	requireEngineUnixSocket(t)
-	// A stub wrapper that exits 0 immediately. The handshake is driven
-	// by the test dialing the socket (the wrapper itself does NOT
-	// dial — that is the Gradle daemon's job, simulated here).
-	wrapper := "#!/bin/sh\nexit 0\n"
+	// A stub wrapper that blocks until the test signals (after dialing
+	// the handshake socket). The daemon-ownership engine tears the
+	// socket down as soon as RunBuild returns, so a wrapper that exits 0
+	// immediately races the test's dial on fast runners (RunBuild
+	// returns + ownerCh.Cancel removes the socket before the 20ms poll
+	// catches it). A real Gradle build blocks on the handshake ack;
+	// blockingWrapper simulates that. The handshake itself is driven by
+	// the test dialing the socket (the wrapper does NOT dial — that is
+	// the Gradle daemon's job, simulated here).
+	wrapper, release := blockingWrapper(t)
 	wt, cacheDir, closeScope := engineTestEnv(t, wrapper)
 	chmodInitDForCleanup(t, filepath.Join(cacheDir, "gradle"))
 	cacheRoot := shortCacheRootForOwnership(t)
@@ -604,6 +610,8 @@ func TestRun_DaemonOwnership_HappyPath(t *testing.T) {
 	if ack != '1' {
 		t.Fatalf("handshake ack = %q, want '1' (engine did not acknowledge)", string(ack))
 	}
+	// Handshake done; let the blocking wrapper exit so RunBuild returns.
+	release()
 
 	res := <-done
 	if res.Class != ClassSuccess {

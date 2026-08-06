@@ -63,19 +63,23 @@ func (r *recordingLauncher) didStop() bool {
 // "pending published before launch / ack before configuration" test
 // uses it: the pending DaemonRecord must exist BEFORE the wrapper's
 // "started" marker appears (the engine writes the pending record in
-// PrepareDaemonOwnership, BEFORE RunBuild launches the wrapper).
+// PrepareDaemonOwnership, BEFORE RunBuild launches the wrapper). The
+// marker is written to a fixed name in the wrapper's cwd (the workdir),
+// NOT derived from $1 (the first gradle arg, which is not the wrapper
+// name).
 const writePendingMarkerWrapper = `#!/bin/sh
-echo started > "$1.started-marker" 2>/dev/null || true
+echo started > gradlew.started-marker 2>/dev/null || true
 exit 0
 `
 
 // dialHandshakeOnce dials the engine's daemon-handshake socket (found
 // by scanning the requests/ dir, since the request id is minted inside
 // the engine), sends the {"pid","marker"} JSON line using the marker
-// from the pending record, and returns the ack byte. Mirrors the
-// happy-path test's dial loop but factored out for reuse across the
-// Phase-5 integration tests.
-func dialHandshakeOnce(t *testing.T, cacheRoot string, verify func(int) (bool, error)) (ack byte, pid int) {
+// from the pending record and the pid the test's verify closure expects,
+// and returns the ack byte. The verify closure itself runs INSIDE the
+// engine's handshake goroutine (promote-before-ack); the dialer only
+// drives the daemon side (send pid+marker, read the ack).
+func dialHandshakeOnce(t *testing.T, cacheRoot string, pid int) (ack byte) {
 	t.Helper()
 	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
@@ -88,7 +92,6 @@ func dialHandshakeOnce(t *testing.T, cacheRoot string, verify func(int) (bool, e
 					// marker the engine minted. The engine writes one
 					// record per leaf; scan daemons/ for the marker.
 					marker := readPendingMarker(t, cacheRoot)
-					pid = 4321
 					conn, derr := net.Dial("unix", sock)
 					if derr != nil {
 						t.Fatalf("dial engine handshake socket: %v", derr)
@@ -101,26 +104,49 @@ func dialHandshakeOnce(t *testing.T, cacheRoot string, verify func(int) (bool, e
 					if _, err := conn.Write(append(payload, '\n')); err != nil {
 						t.Fatalf("write handshake payload: %v", err)
 					}
-					if verify != nil {
-						// The verify closure runs INSIDE the engine's
-						// handshake goroutine (promote-before-ack). We
-						// don't call it here; the engine does. Wait for
-						// the ack.
-					}
 					ackBuf := make([]byte, 1)
 					if _, err := conn.Read(ackBuf); err != nil {
 						// EOF = host closed without ack (verify false
 						// / marker mismatch). ack stays 0.
-						return 0, pid
+						return 0
 					}
-					return ackBuf[0], pid
+					return ackBuf[0]
 				}
 			}
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatal("engine did not create the handshake socket in time")
-	return 0, 0
+	return 0
+}
+
+// blockingWrapper returns a stub gradlew that blocks until the returned
+// release func is called (or a 60s safety bound expires). The daemon-
+// ownership engine tears the handshake socket down as soon as RunBuild
+// returns (the wrapper exited), so a wrapper that exits 0 immediately
+// races the test's dial on fast/Linux runners: RunBuild returns and
+// ownerCh.Cancel removes the socket before the test's 20ms poll catches
+// it. A real Gradle build blocks on the handshake ack inside project
+// configuration; blockingWrapper simulates that by waiting for a
+// continue file the test creates after dialing. The 60s bound prevents
+// a hung test from holding the suite forever if the test never calls
+// release.
+func blockingWrapper(t *testing.T) (wrapper string, release func()) {
+	t.Helper()
+	continueFile := filepath.Join(t.TempDir(), "continue")
+	wrapper = "#!/bin/sh\n" +
+		"# Block until the test signals the handshake completed.\n" +
+		"i=0\n" +
+		"while [ ! -f \"" + continueFile + "\" ]; do\n" +
+		"  i=$((i+1)); [ $i -gt 600 ] && exit 0\n" +
+		"  sleep 0.1\n" +
+		"done\n" +
+		"exit 0\n"
+	return wrapper, func() {
+		if err := os.WriteFile(continueFile, []byte("x"), 0o600); err != nil {
+			t.Fatalf("write continue file: %v", err)
+		}
+	}
 }
 
 // readPendingMarker scans the daemons/ dir under cacheRoot and returns
@@ -161,7 +187,7 @@ func readPendingMarker(t *testing.T, cacheRoot string) string {
 // after the recycle. This is ticket 07's checklist item #1.
 func TestRun_DaemonOwnership_PostBuildRecycleRunsInSandbox(t *testing.T) {
 	requireEngineUnixSocket(t)
-	wrapper := "#!/bin/sh\nexit 0\n"
+	wrapper, release := blockingWrapper(t)
 	wt, cacheDir, closeScope := engineTestEnv(t, wrapper)
 	chmodInitDForCleanup(t, filepath.Join(cacheDir, "gradle"))
 	cacheRoot := shortCacheRootForOwnership(t)
@@ -205,10 +231,13 @@ func TestRun_DaemonOwnership_PostBuildRecycleRunsInSandbox(t *testing.T) {
 		})
 	}()
 
-	ack, _ := dialHandshakeOnce(t, cacheRoot, nil)
+	ack := dialHandshakeOnce(t, cacheRoot, pid)
 	if ack != '1' {
 		t.Fatalf("handshake ack = %q, want '1'", string(ack))
 	}
+	// The handshake completed; let the blocking wrapper exit so RunBuild
+	// returns and the engine proceeds to the post-build recycle.
+	release()
 	res := <-done
 	if res.Class != ClassSuccess {
 		t.Fatalf("class = %q, want %q\nstderr:\n%s", res.Class, ClassSuccess, stderr.String())
@@ -285,7 +314,7 @@ func TestRun_DaemonOwnership_GracefulCancelKeepsSupervisorAlive(t *testing.T) {
 
 	// Dial the handshake so the daemon is acknowledged, then fire a
 	// graceful cancel while the wrapper is still sleeping.
-	ack, _ := dialHandshakeOnce(t, cacheRoot, nil)
+	ack := dialHandshakeOnce(t, cacheRoot, pid)
 	if ack != '1' {
 		t.Fatalf("handshake ack = %q, want '1'", string(ack))
 	}
@@ -362,7 +391,7 @@ func TestRun_DaemonOwnership_ForcedCancelKeepsSupervisorAlive(t *testing.T) {
 		})
 	}()
 
-	ack, _ := dialHandshakeOnce(t, cacheRoot, nil)
+	ack := dialHandshakeOnce(t, cacheRoot, pid)
 	if ack != '1' {
 		t.Fatalf("handshake ack = %q, want '1'", string(ack))
 	}
