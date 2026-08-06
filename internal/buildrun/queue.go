@@ -8,23 +8,32 @@ import (
 	"time"
 )
 
-// BuildLockName is the per-worktree queue lockfile, placed inside the
-// cache leaf (GRADLE_USER_HOME) so independent worktrees resolve to
-// independent lockfiles (their cache leaves differ), while two `omac
-// build` invocations in the SAME worktree serialize on the same file.
+// BuildLockName is the legacy in-leaf queue lockfile, placed inside the
+// cache leaf (GRADLE_USER_HOME) so two `omac build` invocations sharing
+// the SAME cache leaf serialize on the same file. Serialization is keyed
+// by resolved Gradle cache leaf, NOT by worktree: requests sharing a
+// leaf serialize; requests using distinct leaves may run concurrently
+// (spec §Serialization and control state). This legacy in-leaf lock is
+// used only when the engine has no host-only build-control root
+// (buildengine.acquireLeafLock with an empty CacheRoot — the
+// no-parent direct-host path and unmigrated tests). The authoritative
+// lock lives in the host-only build-control root at
+// <cacheRoot>/build-control/locks/<sha256(leaf)>.lock (ticket 06):
+// persistent, never unlinked, never in executor grants. Repository
+// code cannot unlink or replace that lock inode to defeat serialization.
 //
 // This is the single documented contract constant; there is no
 // unexported alias (P5 collapsed the redundant `buildLockName`).
 const BuildLockName = ".omac-build.lock"
 
 // DefaultQueueTimeout bounds how long AcquireCtx waits for a contended
-// per-worktree lock before denying with ExitServiceFailure. Short enough
+// leaf lock before denying with ExitServiceFailure. Short enough
 // that a wedged prior build surfaces as a clear denial rather than an
 // indefinite hang, long enough that a quick predecessor finishes and the
 // caller proceeds.
 const DefaultQueueTimeout = 30 * time.Second
 
-// BuildLock is an exclusive flock on the per-worktree queue lockfile.
+// BuildLock is an exclusive flock on the leaf-keyed queue lockfile.
 // The kernel releases the lock when the holding process exits (crash
 // included), so NO stale-lock cleanup is needed.
 type BuildLock struct {
@@ -77,7 +86,7 @@ func (e errLockBusy) Is(target error) bool {
 // CLI (the CLI maps it to ExitServiceFailure).
 var ErrLockBusy = errLockBusy{}
 
-// AcquireCtx takes an exclusive flock on the per-worktree queue lockfile,
+// AcquireCtx takes an exclusive flock on the leaf-keyed queue lockfile,
 // blocking up to timeout for a contended lock. On success the caller MUST
 // defer Release. A zero/negative timeout substitutes
 // DefaultQueueTimeout (NOT an immediate denial — the defensible default

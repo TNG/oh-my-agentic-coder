@@ -221,14 +221,19 @@ Daemon lifecycle (cold start per build):
   embedded Kafka. "omac build stop" is still available for a wedged daemon
   that ignored --stop.
 
-Queue (per-worktree serialization, individually cancellable):
-  Each invocation takes an exclusive flock on <leaf>/.omac-build.lock,
-  released on exit (auto-released on crash). Same worktree serializes;
-  independent worktrees resolve to independent leaves (independent locks)
-  and run concurrently. A queued request is individually cancellable: a
-  second "omac build" Ctrl-C unwinds a waiter without killing the running
-  build (cancelled-while-waiting -> exit 4 + marker); a 30s timeout
-  waiting for a busy lock -> exit 10 ("another build is running").
+Queue (leaf-keyed serialization, individually cancellable):
+  Each invocation takes an exclusive flock on the leaf-keyed queue lock.
+  When a host-only build-control root is configured (the brokered path
+  and the migrated direct path), the lock lives at
+  <build-control-root>/locks/<sha256(leaf)>.lock — persistent, never
+  unlinked, never in executor grants. When no build-control root is
+  configured (the unmigrated no-parent direct path), the lock falls
+  back to <leaf>/.omac-build.lock. Requests sharing a cache leaf
+  serialize; requests using distinct leaves run concurrently. A queued
+  request is individually cancellable: a second "omac build" Ctrl-C
+  unwinds a waiter without killing the running build
+  (cancelled-while-waiting -> exit 4 + marker); a 30s timeout waiting
+  for a busy lock -> exit 10 ("another build is running").
 
 Executor authority (one restricted process per request):
   read+write: current worktree, resolved OMAC cache leaf
@@ -281,13 +286,17 @@ Resource ceilings:
   rejected before executor startup (excessive request -> exit 3).
 
 Cancellation (two stages):
-  First SIGINT/SIGTERM  — graceful: SIGTERM the group, SIGKILL after the
-                         window.
-  Second signal /       — forced: collapse the window, SIGKILL the group,
-  --max-duration expiry   AND RECYCLE the (possibly corrupt) Gradle daemon
-                           (best-effort gradlew --stop against the leaf).
-  In both cases the daemon serving the build is recycled post-build via
-  "gradlew --stop"; the next build starts cold.
+  First SIGINT/SIGTERM,  — graceful: SIGTERM the group, SIGKILL after the
+  OR --max-duration      window. The daemon serving the build is preserved
+  expiry                 (recycled post-build via "gradlew --stop").
+  Second signal          — forced: collapse the window, SIGKILL the group
+                          immediately AND RECYCLE the (possibly corrupt)
+                          Gradle daemon (best-effort gradlew --stop against
+                          the leaf right after the forced kill). Max-duration
+                          expiry is NOT a forced cancel: it follows the same
+                          graceful-then-staged-kill path as the first signal
+                          (spec §241: documentation describing it as
+                          immediate force is corrected).
 
 Exit codes:
   0            build success
@@ -305,12 +314,17 @@ Exit codes:
                 omac-prefixed on stderr
 
 omac build stop:
-  Runs the repo wrapper with "gradle --stop" under the SAME isolated env as
-  the build (no host HOME, no host ~/.gradle, no host creds) so Gradle stops
-  its daemons for this worktree, then force-kills any wedged daemon that
-  ignored the cooperative stop, then removes the per-worktree queue lockfile.
-  Use after the session ends or to clean up a lockfile left by a crashed
-  build (the kernel released the flock on crash, so removal is safe).
+  Direct host-terminal path: runs the repo wrapper with "gradle --stop"
+  under the SAME isolated env as the build (no host HOME, no host
+  ~/.gradle, no host creds) so Gradle stops its daemons for this
+  worktree, then force-kills any wedged daemon that ignored the
+  cooperative stop. The leaf-keyed queue lock is NOT removed (ticket 06):
+  the lock is persistent and never unlinked. Use after the session ends
+  or to clean up a wedged daemon.
+  Managed (agent) path: dispatched by the parent's broker to
+  buildengine.StopBrokered — verified daemon control via procidentity +
+  host-only ownership records, never executing the repo wrapper with host
+  authority (ticket 07).
 
 Cold-cache note: the Gradle distribution must already be resolvable under
 the cache leaf — cached from a previous build in the same scope or

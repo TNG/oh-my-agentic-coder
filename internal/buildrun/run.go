@@ -60,15 +60,17 @@ type RunOptions struct {
 	// sequence without signalling real process groups.
 	GroupSignal func(pid int, sig syscall.Signal) error
 	// OnForcedCancel, when non-nil, is invoked AFTER a forced
-	// cancellation (ForceCancel fired, or a forced teardown from
-	// MaxDuration) has SIGKILLed the gradlew process group. It recycles
-	// the (potentially corrupt) Gradle daemon for the leaf — a forced
-	// kill leaves the daemon (a separate process outside the group)
-	// running with state the killed build may have corrupted, so spec
-	// §144 requires recycling it rather than reusing it. Best-effort:
-	// the error (if any) is logged to Stderr but does not fail the
-	// forced-cancel path. Graceful cancellation (first signal) does NOT
-	// invoke this — the warm daemon is preserved per spec.
+	// cancellation (ForceCancel fired — a second signal) has SIGKILLed
+	// the gradlew process group. It recycles the (potentially corrupt)
+	// Gradle daemon for the leaf — a forced kill leaves the daemon (a
+	// separate process outside the group) running with state the killed
+	// build may have corrupted, so spec §144 requires recycling it
+	// rather than reusing it. Best-effort: the error (if any) is logged
+	// to Stderr but does not fail the forced-cancel path. Graceful
+	// cancellation (first signal OR --max-duration expiry) does NOT
+	// invoke this — max-duration follows the same graceful-then-staged-
+	// kill path as the first signal and preserves the daemon per spec
+	// (spec §241: max-duration expiry is NOT an immediate forced cancel).
 	OnForcedCancel func(stderr io.Writer) error
 	// Cancelled, when non-nil, is set to true by RunBuild if the build
 	// was cancelled (caller cancel signal OR --max-duration expiry). The
