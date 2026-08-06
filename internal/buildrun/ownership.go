@@ -184,7 +184,6 @@ func PrepareDaemonOwnership(cfg DaemonOwnershipConfig) (marker DaemonOwnerMarker
 		_ = buildcontrol.RetireDaemonRecord(cfg.CacheRoot, cfg.CanonicalLeaf)
 		return "", nil, fmt.Errorf("buildrun: create per-request control dir: %w", err)
 	}
-	sockPath := DaemonHandshakeSockPath(reqDir)
 	// Keep the socket path short on macOS (SUN_LEN 104-byte limit):
 	// the per-request dir under the default ~/.cache/omac/build-control/
 	// requests/<id>/daemon.sock may approach or exceed the limit (the
@@ -197,7 +196,7 @@ func PrepareDaemonOwnership(cfg DaemonOwnershipConfig) (marker DaemonOwnerMarker
 	// darwin platforms the canonical path is always used (Linux's
 	// sockaddr_un.sun_path is 108 bytes, and the tmpdir fallback is not
 	// needed).
-	sockPath = resolveDaemonSockPath(reqDir, cfg.RequestID)
+	sockPath := resolveDaemonSockPath(reqDir, cfg.RequestID)
 	ch = NewDaemonHandshakeChannel(sockPath)
 	// Track whether the socket lives in a private temp dir (the SUN_LEN
 	// fallback) so Close can remove the temp dir parent and not leak

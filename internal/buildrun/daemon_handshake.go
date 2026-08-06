@@ -357,7 +357,7 @@ func (c *DaemonHandshakeChannel) AwaitHandshake(deadline time.Duration, expected
 	// verified=false → no ack; any error → no ack.
 	verified, verr := verify(pid.PID)
 	if verr != nil {
-		return 0, fmt.Errorf("buildrun: %w: %v", ErrHandshakeVerifyFailed, verr)
+		return 0, fmt.Errorf("buildrun: %w: %w", ErrHandshakeVerifyFailed, verr)
 	}
 	if !verified {
 		return 0, ErrHandshakeVerifyFailed
