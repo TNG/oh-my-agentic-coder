@@ -120,6 +120,18 @@ func dialHandshakeOnce(t *testing.T, cacheRoot string, pid int) (ack byte) {
 	return 0
 }
 
+// sleepOnBuildStopOnStopWrapper returns a stub gradlew that sleeps 30s
+// for a normal build (so a cancel arrives before it exits on its own)
+// but exits 0 immediately when invoked with `--stop`. The daemon-
+// ownership engine runs an in-sandbox `gradlew --stop` recycle after
+// the build; a stub that sleeps through `--stop` hits the recycle's 30s
+// bound and turns a successful/cancelled build into a mandatory-cleanup
+// service_failure. Real `gradlew --stop` exits quickly (no daemon to
+// stop in the test); the stub mirrors that.
+func sleepOnBuildStopOnStopWrapper() string {
+	return "#!/bin/sh\nfor a in \"$@\"; do [ \"$a\" = --stop ] && exit 0; done\nsleep 30\n"
+}
+
 // blockingWrapper returns a stub gradlew that blocks until the returned
 // release func is called (or a 60s safety bound expires). The daemon-
 // ownership engine tears the handshake socket down as soon as RunBuild
@@ -268,7 +280,11 @@ func TestRun_DaemonOwnership_PostBuildRecycleRunsInSandbox(t *testing.T) {
 // recycle still ran.
 func TestRun_DaemonOwnership_GracefulCancelKeepsSupervisorAlive(t *testing.T) {
 	requireEngineUnixSocket(t)
-	wrapper := "#!/bin/sh\nsleep 30\n"
+	// A stub wrapper that sleeps so the graceful cancel arrives before
+	// it exits on its own, but exits 0 immediately on `--stop` so the
+	// post-build in-sandbox recycle completes instead of timing out
+	// (the recycle invokes gradlew --stop via the same launcher).
+	wrapper := sleepOnBuildStopOnStopWrapper()
 	wt, cacheDir, closeScope := engineTestEnv(t, wrapper)
 	chmodInitDForCleanup(t, filepath.Join(cacheDir, "gradle"))
 	cacheRoot := shortCacheRootForOwnership(t)
@@ -344,8 +360,12 @@ func TestRun_DaemonOwnership_GracefulCancelKeepsSupervisorAlive(t *testing.T) {
 func TestRun_DaemonOwnership_ForcedCancelKeepsSupervisorAlive(t *testing.T) {
 	requireEngineUnixSocket(t)
 	// Trap SIGTERM so the graceful cancel does not exit the wrapper;
-	// the force (SIGKILL) is what tears it down.
-	wrapper := "#!/bin/sh\ntrap '' TERM\nsleep 30\n"
+	// the force (SIGKILL) is what tears it down. Exit 0 immediately on
+	// `--stop` so the post-build in-sandbox recycle completes instead of
+	// timing out (the recycle invokes gradlew --stop via the same
+	// launcher, and the trapped wrapper would otherwise sleep through
+	// the recycle's 30s bound).
+	wrapper := "#!/bin/sh\ntrap '' TERM\nfor a in \"$@\"; do [ \"$a\" = --stop ] && exit 0; done\nsleep 30\n"
 	wt, cacheDir, closeScope := engineTestEnv(t, wrapper)
 	chmodInitDForCleanup(t, filepath.Join(cacheDir, "gradle"))
 	cacheRoot := shortCacheRootForOwnership(t)
@@ -482,12 +502,18 @@ func TestRun_DaemonOwnership_PendingPublishedBeforeLaunch(t *testing.T) {
 	// Poll: the pending record must appear before the wrapper's
 	// "started" marker. Record the ordering.
 	deadline := time.Now().Add(15 * time.Second)
+pollLoop:
 	for time.Now().Before(deadline) {
 		select {
 		case <-markerSeen:
 			// Marker appeared. The pending record MUST already exist.
 			if atomic.LoadInt32(&pendingBeforeMarker) == 1 {
-				break
+				// Success: the pending record was observed before the
+				// wrapper's marker (the invariant this test pins).
+				// break here would only break the select, not the for
+				// (a Go gotcha) — use a labeled break to exit the poll
+				// and end the test on success.
+				break pollLoop
 			}
 			// The pending record was not seen before the marker —
 			// check it now to give a useful error.
@@ -506,6 +532,14 @@ func TestRun_DaemonOwnership_PendingPublishedBeforeLaunch(t *testing.T) {
 			atomic.StoreInt32(&pendingBeforeMarker, 1)
 		}
 		time.Sleep(1 * time.Millisecond)
+	}
+	// If the loop exited because the marker appeared and the invariant
+	// held (break pollLoop above), the test passes — drain Run and
+	// return. If it exited because the deadline elapsed, the marker
+	// never appeared.
+	if atomic.LoadInt32(&pendingBeforeMarker) == 1 {
+		<-done
+		return
 	}
 	t.Fatal("wrapper 'started' marker never appeared in time")
 }
