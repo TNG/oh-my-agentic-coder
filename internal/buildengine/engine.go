@@ -327,6 +327,23 @@ type Options struct {
 	// don't set CacheRoot and for the no-parent direct-host path that
 	// has not yet been migrated).
 	CacheRoot string
+	// DaemonOwnership wires the pending-to-active daemon ownership
+	// handshake (ticket 07, spec.md §237). When
+	// DaemonOwnership.Enabled() (CacheRoot + CanonicalLeaf + RequestID
+	// set), the engine mints the marker, writes the pending
+	// DaemonRecord, starts the DaemonHandshakeChannel, threads the
+	// marker + socket path into BuildConfig so GrantsFor →
+	// PrepareControlState renders them, runs the handshake concurrently
+	// with RunBuild, cancels the wrapper on handshake failure (fail
+	// closed), and after RunBuild runs the in-sandbox `gradlew --stop`
+	// recycle (RunStopInSandbox) — preserving ADR 0001's
+	// cold-start-per-build behavior without an unsandboxed host wrapper
+	// invocation (the Phase-3 supervisor requirement). When disabled,
+	// the engine runs the legacy Phase-2 path (the unsandboxed
+	// daemonRecycle closure) — behavior-preserving for existing tests.
+	// Phase 4 wires the brokered `omac build stop`; Phase 5 wires
+	// parent-startup reconciliation.
+	DaemonOwnership buildrun.DaemonOwnershipConfig
 }
 
 // Run executes one complete build invocation behind a
@@ -541,6 +558,57 @@ func Run(opts Options) Result {
 	approved.ContainerProxyURL = container.URL
 	approved.ContainerProxyEnabled = container.Enabled
 
+	// Ticket 07 Phase 3: daemon ownership handshake. The engine wires
+	// the pending-to-active handshake BEFORE GrantsFor so the marker +
+	// socket path flow into BuildConfig → GradlePropertiesConfig →
+	// PrepareControlState (which GrantsFor calls internally). The
+	// handshake channel is started host-side (Option B supervisor:
+	// host-side goroutine + in-sandbox `--stop` via a second sandboxed
+	// invocation), the verify closure (procidentity + promote) runs
+	// concurrently with RunBuild, and on failure the engine cancels
+	// the wrapper so the build fails closed without waiting the init
+	// script's 30s read timeout. When DaemonOwnership is disabled
+	// (CacheRoot/CanonicalLeaf/RequestID zero — the existing tests and
+	// the unmigrated no-parent direct path), the engine runs the
+	// legacy Phase-2 path (RunBuild unchanged, the unsandboxed
+	// daemonRecycle) — behavior-preserving.
+	own := opts.DaemonOwnership
+	if own.CanonicalLeaf == "" {
+		own.CanonicalLeaf = leaf
+	}
+	if own.RequestID == "" {
+		own.RequestID = penv.BuildRequestID
+	}
+	var (
+		ownerMarker buildrun.DaemonOwnerMarker
+		ownerCh     *buildrun.DaemonHandshakeChannel
+		ownerReady  bool
+	)
+	if own.Enabled() {
+		marker, ch, perr := buildrun.PrepareDaemonOwnership(own)
+		if perr != nil {
+			// Fail closed: a build that cannot establish ownership
+			// must not start (spec.md §237 — the wrapper cannot
+			// proceed without the acknowledgement, and the host
+			// cannot acknowledge without the channel).
+			return failService("prepare daemon ownership: %v", perr)
+		}
+		ownerMarker = marker
+		ownerCh = ch
+		ownerReady = true
+		// Defer channel close + record retire so every return path
+		// after this point cleans up. The retire is best-effort (a
+		// failure is logged inside RetireDaemonOwnership).
+		defer ownerCh.Close()
+		defer buildrun.RetireDaemonOwnership(own, stderr)
+		// Thread the marker + socket path into BuildConfig so
+		// GrantsFor → PrepareControlState renders them into
+		// gradle.properties (-Domac.daemon.owner) + the
+		// daemon-handshake-sock control file.
+		approved.DaemonOwnerMarker = ownerMarker
+		approved.DaemonHandshakeSock = ownerCh.SockPath()
+	}
+
 	// Grants: derive the executor grant set (worktree + leaf + temp +
 	// JDK + platform baseline). The engine reuses buildrun.GrantsFor —
 	// the existing seam. Acquired AFTER the leaf lock per the spec.
@@ -559,10 +627,27 @@ func Run(opts Options) Result {
 	auditor.Emit(audit.ControlMutation("build.request", resolved.Worktree,
 		fmt.Sprintf("request=%s adapter=gradle root=%s args=%d", penv.BuildRequestID, resolved.ProjectDir, len(resolved.Args))))
 
-	// Daemon recycle hook: the same closure the current cli/build.go
-	// builds, run on a forced cancel (S3) AND after every build (the
-	// cold-start-per-build invariant, ADR 0001).
-	daemonRecycle := func(rstderr io.Writer) error {
+	// Resolve the JDK executable for the ownership verify closure
+	// AFTER GrantsFor (GrantsFor owns JDK resolution). If the ownership
+	// path is wired but no JDK could be resolved, the daemon cannot be
+	// verified → fail closed as a service failure (spec.md §238 — the
+	// executable match is a required identity field; an empty
+	// JDKExecutable means procidentity.Verify would never match).
+	if ownerReady {
+		own.JDKExecutable = grants.JDKExecutable()
+		if !own.VerifyReady() {
+			return failService("daemon ownership wired but JDK executable unresolved — cannot verify the daemon")
+		}
+	}
+
+	// Daemon recycle hook. The legacy Phase-2 closure runs the
+	// UNSANDBOXED `gradlew --stop` (buildrun.StopGradleDaemon) — used
+	// when DaemonOwnership is disabled (existing tests, the unmigrated
+	// direct path). When DaemonOwnership is wired, the engine uses the
+	// in-sandbox RunStopInSandbox instead (the Phase-3 supervisor
+	// recycle: same sandbox grants, same Linux netns, own process
+	// group), wired below after RunBuild returns.
+	legacyDaemonRecycle := func(rstderr io.Writer) error {
 		return buildrun.StopGradleDaemon(buildrun.StopDaemonOptions{
 			Wrapper:    resolved.Wrapper,
 			ProjectDir: resolved.ProjectDir,
@@ -570,6 +655,91 @@ func Run(opts Options) Result {
 			Grants:     grants,
 			Stderr:     rstderr,
 		})
+	}
+
+	// inSandboxRecycle runs the in-sandbox `gradlew --stop` (Phase 3
+	// supervisor recycle). Returns the recycle error so the engine can
+	// override the primary result with service_failure on a mandatory
+	// cleanup failure (spec §Mandatory cleanup failure: a recycle
+	// launch failure means the sandbox is unavailable, which is a
+	// mandatory cleanup failure). A non-zero `--stop` exit (a wedged
+	// daemon) is logged but does NOT override a successful build — the
+	// daemon will be reconciled at the next parent startup. A timeout
+	// or launch/IO error DOES override (the recycle could not complete
+	// inside the sandbox lifecycle).
+	inSandboxRecycle := func(rstderr io.Writer) error {
+		return buildrun.RunStopInSandbox(buildrun.RunStopInSandboxOptions{
+			Resolved: resolved,
+			Grants:   grants,
+			Stderr:   rstderr,
+			Launcher: opts.Launcher,
+			Auditor:  auditor,
+		})
+	}
+
+	// Choose the recycle hook for the forced-cancel path (S3) and the
+	// post-build path. When ownership is wired, both use the in-sandbox
+	// recycle; when disabled, both use the legacy unsandboxed recycle.
+	var recycleHook func(io.Writer) error
+	if ownerReady {
+		recycleHook = inSandboxRecycle
+	} else {
+		recycleHook = legacyDaemonRecycle
+	}
+
+	// Ticket 07: the ownership handshake runs concurrently with
+	// RunBuild. The engine creates an internal cancel channel that
+	// closes on EITHER the caller's opts.Cancel OR a handshake failure
+	// (so a handshake failure cancels the wrapper without waiting the
+	// init script's 30s read timeout — fail closed fast). RunBuild
+	// receives the internal cancel; the engine's handshake goroutine
+	// closes it on error.
+	var internalCancel <-chan struct{}
+	var handshakeErr error
+	handshakeDone := make(chan struct{})
+	if ownerReady {
+		ic := make(chan struct{})
+		internalCancel = ic
+		// Forward the caller's cancel to the internal cancel so
+		// RunBuild still honors opts.Cancel.
+		if cancel != nil {
+			go func() {
+				select {
+				case <-cancel:
+					select {
+					case <-ic:
+					default:
+						close(ic)
+					}
+				case <-handshakeDone:
+					// RunBuild returned; stop forwarding.
+				}
+			}()
+		}
+		// Run the handshake in a goroutine. On error, close the
+		// internal cancel so RunBuild tears down the wrapper (fail
+		// closed). The result is read after RunBuild returns.
+		go func() {
+			res := buildrun.AwaitDaemonOwnership(own, ownerMarker, ownerCh)
+			handshakeErr = res.Err
+			if handshakeErr != nil {
+				// Fail closed: cancel the wrapper. Non-blocking close
+				// (RunBuild may have already returned / already
+				// cancelled).
+				select {
+				case <-ic:
+				default:
+					close(ic)
+				}
+			}
+			close(handshakeDone)
+		}()
+	} else {
+		// Ownership disabled: RunBuild receives opts.Cancel directly
+		// (nil → non-cancellable, matching the legacy contract). No
+		// handshake goroutine runs.
+		internalCancel = cancel
+		close(handshakeDone)
 	}
 
 	// cancelled is the authoritative outcome-site flag RunBuild sets
@@ -586,28 +756,87 @@ func Run(opts Options) Result {
 		Grants:         grants,
 		Stdout:         opts.Stdout,
 		Stderr:         stderr,
-		Cancel:         cancel,
+		Cancel:         internalCancel,
 		ForceCancel:    force,
 		MaxDuration:    req.MaxDuration,
-		OnForcedCancel: daemonRecycle,
+		OnForcedCancel: recycleHook,
 		Auditor:        auditor,
 		Launcher:       opts.Launcher,
 		Cancelled:      &cancelled,
 	})
+	if ownerReady {
+		// RunBuild has returned (the wrapper exited). Cancel the
+		// handshake channel so a blocked AwaitHandshake does NOT wait
+		// the full DefaultHandshakeDeadline (45s) for a daemon that
+		// will never dial — the wrapper already exited. Without this,
+		// every fast-failing brokered build would pay a 45s penalty.
+		// If the handshake already completed (the common case for a
+		// daemon build), Cancel is a no-op (the listener is already
+		// closed by the handshake returning). AwaitHandshake maps the
+		// closed-listener error to ErrHandshakeCancelled, which the
+		// engine treats as "wrapper exited, no daemon" — not a
+		// handshake failure in its own right (the wrapper's own exit
+		// code is the authoritative outcome).
+		ownerCh.Cancel()
+	}
 	if runErr != nil {
 		// Service failure (sandbox unavailable, exec error, I/O). The
 		// current cli/build.go prints "omac build: <err>" and returns
 		// ExitServiceFailure; the engine preserves that but assigns
 		// the explicit class.
+		<-handshakeDone // let the handshake goroutine exit
 		fmt.Fprintf(stderr, "omac build: %v\n", runErr)
 		return Result{Class: ClassServiceFailure, Exit: 10, Err: runErr}
 	}
 
-	// Post-build daemon recycle (cold-start per build). Best-effort:
-	// a failure is logged but does not fail the build. This preserves
-	// the current cli/build.go behavior.
-	if recycleErr := daemonRecycle(stderr); recycleErr != nil {
-		fmt.Fprintf(stderr, "omac build: warning: post-build daemon recycle failed: %v\n", recycleErr)
+	// Wait for the handshake goroutine to finish before deciding the
+	// outcome. A handshake failure fails the build closed: the daemon
+	// was not verified, so the build cannot be trusted. The wrapper
+	// was already cancelled (internalCancel closed by the goroutine),
+	// so RunBuild returned ExitCancelled; the engine overrides the
+	// class to service_failure (the handshake failure is an OMAC
+	// infrastructure failure, not a caller cancellation).
+	//
+	// ErrHandshakeCancelled is NOT a handshake failure: it means the
+	// wrapper exited (and the engine called ownerCh.Cancel) before a
+	// daemon dialed. The wrapper's own exit code is the authoritative
+	// outcome (a build that finished without a daemon — e.g. a fast
+	// wrapper error in init — should not be re-classified as a
+	// service failure just because no daemon registered). Only marker
+	// mismatch, verify failure, and timeout are handshake failures.
+	<-handshakeDone
+	if ownerReady && handshakeErr != nil && !errors.Is(handshakeErr, buildrun.ErrHandshakeCancelled) {
+		fmt.Fprintf(stderr, "omac build: daemon ownership handshake failed: %v\n", handshakeErr)
+		return Result{Class: ClassServiceFailure, Exit: 10, Err: fmt.Errorf("daemon ownership handshake: %w", handshakeErr)}
+	}
+
+	// Post-build daemon recycle (cold-start per build, ADR 0001). When
+	// ownership is wired, the in-sandbox RunStopInSandbox runs — a
+	// launch failure or timeout is a MANDATORY cleanup failure
+	// (spec §Mandatory cleanup failure: the sandbox is unavailable)
+	// and overrides the primary result with service_failure. A
+	// non-zero `--stop` exit (a wedged daemon) is logged but does NOT
+	// override a successful build (the daemon will be reconciled at
+	// the next parent startup). When ownership is disabled, the legacy
+	// unsandboxed recycle runs (best-effort, behavior-preserving).
+	if ownerReady {
+		if recycleErr := inSandboxRecycle(stderr); recycleErr != nil {
+			// Distinguish a non-zero `--stop` exit (a wedged daemon —
+			// log, do not override) from a launch/timeout/IO error
+			// (mandatory cleanup failure — override to
+			// service_failure).
+			var ee interface{ ExitCode() int }
+			if errors.As(recycleErr, &ee) {
+				fmt.Fprintf(stderr, "omac build: warning: in-sandbox daemon recycle exited %d (wedged daemon — will be reconciled at next startup): %v\n", ee.ExitCode(), recycleErr)
+			} else {
+				fmt.Fprintf(stderr, "omac build: mandatory cleanup failure: in-sandbox daemon recycle failed: %v\n", recycleErr)
+				return Result{Class: ClassServiceFailure, Exit: 10, Err: fmt.Errorf("in-sandbox daemon recycle: %w", recycleErr)}
+			}
+		}
+	} else {
+		if recycleErr := legacyDaemonRecycle(stderr); recycleErr != nil {
+			fmt.Fprintf(stderr, "omac build: warning: post-build daemon recycle failed: %v\n", recycleErr)
+		}
 	}
 
 	// Classify the wrapper exit. RunBuild returns:

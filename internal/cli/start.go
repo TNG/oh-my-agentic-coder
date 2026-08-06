@@ -839,6 +839,16 @@ func runLaunch(env *Env, opts launchOpts) int {
 	// so a misconfigured parent fails closed instead of falling back to
 	// nested local execution. When the bind succeeds the broker is
 	// mounted on the loopback listener.
+	// Ticket 07 Phase 5: parent-startup reconciliation of daemon
+	// ownership records. Reconcile BEFORE the broker is mounted / builds
+	// are accepted so a parent that crashed between daemon creation and
+	// ownership registration does not leave stale records for the next
+	// build (spec.md §239). Fail-soft: a reconciliation error is logged
+	// to env.Stderr but does NOT abort startup — the build-time
+	// handshake and the next startup will catch any stale records the
+	// sweep missed (see reconcileDaemonOwnership).
+	reconcileDaemonOwnership(cacheScopeDirOrEmpty(cacheScope), env.Stderr)
+
 	buildToken := mintToken()
 	var buildBroker *buildbroker.Broker
 	sessionWorktree, canonErr := canonicalWorktree(env.Workdir)

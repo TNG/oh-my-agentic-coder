@@ -116,11 +116,13 @@ func decideManagedMode() (managedModeDecision, brokerEndpoint) {
 // a service failure (exit 10) — a truncated stream is never treated as
 // build success.
 func runBuildManaged(args []string, env *Env, ep brokerEndpoint) int {
-	// `omac build stop` reuses the execute operation but is refused in
-	// this gate; the broker returns a 403 (pre-accepted) which the CLI
-	// surfaces as a policy denial (exit 3) via the 403 branch below —
-	// matching the existing direct-path behavior where stop is a
-	// separate, broker-disabled path.
+	// `omac build stop` reuses the execute operation. Ticket 07 Phase
+	// 4: the broker no longer refuses stop; the production
+	// EngineInvoker dispatches `args[0]=="stop"` to
+	// buildengine.StopBrokered (the distinct brokered-stop engine op
+	// that uses verified daemon control, not the repo wrapper). A
+	// genuine 403 here is a worktree-authorization denial (mapped to
+	// exit 3 via the 403 branch below), NOT a stop refusal.
 	body := buildbroker.ExecuteBody{
 		Type:     "execute",
 		Worktree: env.Workdir,

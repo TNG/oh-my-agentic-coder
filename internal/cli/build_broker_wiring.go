@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"errors"
+	"fmt"
 	"io"
 	"path/filepath"
 
@@ -13,12 +15,34 @@ import (
 	"github.com/tngtech/oh-my-agentic-coder/internal/toolcache"
 )
 
+// errBrokeredBuildRequiresCacheRoot is the sentinel returned by
+// brokerEngineInvoker when a brokered build cannot establish the
+// host-only build-control cache root (the enable gate, ticket 07
+// Phase 5). A brokered build MUST run the pending-to-active daemon
+// handshake + in-sandbox recycle, which needs the cache root to write
+// the pending DaemonRecord + the per-request handshake socket. An
+// empty cache root means the parent could not prepare a cache scope —
+// the brokered build fails CLOSED rather than silently falling back to
+// the legacy unsandboxed recycle (a regression of the ticket-07
+// guarantee).
+var errBrokeredBuildRequiresCacheRoot = errors.New("brokered build requires build-control cache root for daemon ownership")
+
 // brokerEngineInvoker returns a buildbroker.EngineInvoker that adapts
-// accepted broker requests to buildengine.Run. The broker has already
-// canonicalized and authorized the worktree; the adapter constructs the
-// engine Options from the parent's resolved cache scope + auditor +
-// proxy starter, wires the broker's graceful/force cancellation
-// signals to the engine, and returns the engine's Result.
+// accepted broker requests to buildengine.Run (for ordinary builds) or
+// buildengine.StopBrokered (for `omac build stop`). The broker has
+// already canonicalized and authorized the worktree; the adapter
+// inspects the raw args, dispatches `args[0]=="stop"` to the distinct
+// brokered-stop engine op (ticket 07, Phase 4 — the broker no longer
+// refuses stop), constructs the engine Options from the parent's
+// resolved cache scope + auditor + proxy starter, wires the broker's
+// graceful/force cancellation signals to the engine, and returns the
+// engine's Result.
+//
+// For `omac build stop` the broker receives args AFTER `omac build`, so
+// `args == ["stop","--root","backend"]`. The adapter strips the leading
+// "stop" token and passes `args[1:]` to StopBrokered's RawArgs
+// (parseStopArgs expects the args AFTER `omac build stop`, matching
+// the direct-host runBuildStop — see cli/build_stop.go).
 //
 // The adapter does NOT own the cache scope or auditor — the parent
 // resolves them once and passes them in, so a brokered build reuses the
@@ -32,13 +56,63 @@ import (
 // by the protocol tests (they use a fake invoker).
 func brokerEngineInvoker(env *Env, cacheDir string, closeScope func(), auditor audit.Auditor, snapshot buildengine.SnapshotProvider) buildbroker.EngineInvoker {
 	return func(worktree string, args []string, stdout, stderr io.Writer, graceful, force <-chan struct{}) buildengine.Result {
+		// Dispatch `omac build stop` (args[0]=="stop") to the distinct
+		// brokered-stop engine op. Strip the leading "stop" token so
+		// StopBrokered's RawArgs matches the direct-host runBuildStop
+		// shape (the args AFTER `omac build stop`).
+		if len(args) > 0 && args[0] == "stop" {
+			return buildengine.StopBrokered(buildengine.StopBrokeredOptions{
+				Workdir:    worktree,
+				RawArgs:    args[1:],
+				Stdout:     stdout,
+				Stderr:     stderr,
+				CacheDir:   cacheDir,
+				CacheRoot:  buildControlCacheRoot(cacheDir),
+				CloseScope: closeScope,
+				Auditor:    auditor,
+				Cancel:     graceful,
+			})
+		}
+		// Ticket 07 Phase 5: the enable gate. A brokered build is
+		// REQUIRED to run the pending-to-active daemon handshake + the
+		// in-sandbox recycle (spec.md §236/§237). The handshake needs
+		// the host-only build-control cache root to write the pending
+		// DaemonRecord + the per-request handshake socket. When the
+		// parent could not establish the cache root (e.g. a no-scope /
+		// no-inner configuration reaches the brokered path), the
+		// ownership path cannot be enabled and the build would silently
+		// fall back to the LEGACY unsandboxed recycle — a regression of
+		// the ticket-07 guarantee. Fail CLOSED instead: a brokered
+		// build that cannot establish ownership must not proceed
+		// (spec.md §237: the wrapper cannot continue without the
+		// acknowledgement, and the host cannot acknowledge without the
+		// channel + record). The direct-host path (cli/build.go) is
+		// unaffected — it is not brokered and is allowed to run the
+		// legacy path when ownership is disabled.
+		cacheRoot := buildControlCacheRoot(cacheDir)
+		if cacheRoot == "" {
+			fmt.Fprintln(stderr, "omac build: brokered build requires a build-control cache root for daemon ownership (got empty cache scope)")
+			return buildengine.Result{Class: buildengine.ClassServiceFailure, Exit: 10, Err: errBrokeredBuildRequiresCacheRoot}
+		}
+		// DaemonOwnership is wired for the brokered build path only.
+		// CanonicalLeaf + RequestID are left empty: the engine fills
+		// CanonicalLeaf from the resolved leaf and RequestID from the
+		// per-build penv.BuildRequestID (engine.go). JDKExecutable is
+		// resolved by the engine from grants AFTER GrantsFor (Phase 3
+		// wiring); an empty JDKExecutable makes the engine fail closed
+		// as a service failure (the daemon cannot be verified without
+		// a resolved JDK). Verify is nil → the production
+		// DefaultDaemonOwnershipVerifier (procidentity.Verify + promote
+		// before ack). The handshake runs concurrently with RunBuild;
+		// on failure the engine cancels the wrapper and overrides the
+		// result to service_failure.
 		return buildengine.Run(buildengine.Options{
 			Workdir:     worktree,
 			RawArgs:     args,
 			Stdout:      stdout,
 			Stderr:      stderr,
 			CacheDir:    cacheDir,
-			CacheRoot:   buildControlCacheRoot(cacheDir),
+			CacheRoot:   cacheRoot,
 			CloseScope:  closeScope,
 			Auditor:     auditor,
 			Proxies:     cliProxyStarter,
@@ -52,6 +126,13 @@ func brokerEngineInvoker(env *Env, cacheDir string, closeScope func(), auditor a
 			// capability set in parent memory; the engine cannot
 			// advance or replace it.
 			Snapshot: snapshot,
+			// DaemonOwnership: the brokered build path enables the
+			// pending-to-active handshake + in-sandbox recycle. Only
+			// CacheRoot is set here; the engine fills the rest (see
+			// the comment above).
+			DaemonOwnership: buildrun.DaemonOwnershipConfig{
+				CacheRoot: cacheRoot,
+			},
 		})
 	}
 }
