@@ -38,9 +38,11 @@
 //	{"type":"execute","worktree":"/canonical/worktree","args":["--root","backend","--","gradle","test"]}
 //
 // `omac build stop` reuses the execute operation with its existing
-// grammar (the broker refuses stop in this gate — see the StopRefuser
-// seam — but the grammar is carried through so a later gate can enable
-// it):
+// grammar (ticket 07, Phase 4: the broker no longer refuses stop; it
+// routes `args[0]=="stop"` to buildengine.StopBrokered, the distinct
+// brokered-stop engine op that uses verified daemon control via
+// procidentity + the host-only ownership records — NOT the repo
+// wrapper):
 //
 //	{"type":"execute","worktree":"/canonical/worktree","args":["stop","--root","backend"]}
 //

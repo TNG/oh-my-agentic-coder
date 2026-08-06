@@ -434,6 +434,16 @@ func runServe(args []string, env *Env) int {
 	}
 	defer removeControlInfo()
 
+	// Ticket 07 Phase 5: parent-startup reconciliation of daemon
+	// ownership records. Reconcile BEFORE the broker is mounted / builds
+	// are accepted so a parent that crashed between daemon creation and
+	// ownership registration does not leave stale records for the next
+	// build (spec.md §239). Fail-soft: a reconciliation error is logged
+	// to env.Stderr but does NOT abort startup — the build-time
+	// handshake and the next startup will catch any stale records the
+	// sweep missed (see reconcileDaemonOwnership).
+	reconcileDaemonOwnership(srv.cacheScopeDir, env.Stderr)
+
 	// Host build broker: one per running parent, mounted on the loopback
 	// control listener. A non-loopback bind disables the broker (managed
 	// build fails closed). The token is crypto-random, in-memory, never

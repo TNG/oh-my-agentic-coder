@@ -75,9 +75,14 @@ func TestPrepareControlState_WritesReadOnlyFiles(t *testing.T) {
 	}
 	// Returned control files: gradle.properties + README + the
 	// ticket-07 retire-checkstyle-twins init script + the ticket-08
-	// mockito-agent init script (both always written).
-	if len(paths.Files) != 4 {
-		t.Fatalf("got %d control file paths, want 4: %v", len(paths.Files), paths.Files)
+	// mockito-agent init script + the ticket-07 daemon-owner-handshake
+	// init script (all three always written). The daemon-handshake-sock
+	// control-state file is NOT written here (DaemonHandshakeSock is
+	// empty in this test); it is written only when the engine wires the
+	// socket path (Phase 3), and its absence is existence-filtered by
+	// resolveControlPaths.
+	if len(paths.Files) != 5 {
+		t.Fatalf("got %d control file paths, want 5: %v", len(paths.Files), paths.Files)
 	}
 	// Returned control dirs: init.d (1).
 	if len(paths.Dirs) != 1 || filepath.Base(paths.Dirs[0]) != "init.d" {

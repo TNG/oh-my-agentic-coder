@@ -124,29 +124,72 @@ func waitForGraceful(t *testing.T, engine *stubEngine) {
 	t.Fatal("graceful not observed in time")
 }
 
-// TestExecute_StopRefused asserts the broker refuses `omac build stop`
-// in this gate (grammar carried, broker declines with a 403 before
-// the engine runs; 403 maps to the CLI's policy-denial exit 3).
-func TestExecute_StopRefused(t *testing.T) {
-	engine := &stubEngine{result: successResult()}
-	tb := newTestBroker(t, allowAllAuthorizer(), engine)
-	body := `{"type":"execute","worktree":".","args":["stop","--root","backend"]}`
-	req, _ := http.NewRequest(http.MethodPost, tb.server.URL+ExecutePath, strings.NewReader(body))
-	req.Header.Set("Content-Type", ContentTypeJSON)
-	req.Header.Set("Authorization", "Bearer "+tb.token)
-	resp, err := tb.server.Client().Do(req)
+// TestExecute_StopDispatchedToInvoker asserts the broker dispatches
+// `omac build stop` to the EngineInvoker (ticket 07 Phase 4: the broker
+// no longer refuses stop; it routes `args[0]=="stop"` to the invoker,
+// which the production wiring dispatches to buildengine.StopBrokered).
+// The test injects a capture invoker that records the args it received
+// and asserts the stop grammar reaches it verbatim. A genuine
+// authorization denial (an unauthorized worktree) still 403s before the
+// invoker runs (TestExecute_UnauthorizedWorktreeRejectedBeforeBuild).
+func TestExecute_StopDispatchedToInvoker(t *testing.T) {
+	var got struct {
+		worktree string
+		args     []string
+		mu       sync.Mutex
+	}
+	captureInvoker := func(worktree string, args []string, stdout, stderr io.Writer, graceful, force <-chan struct{}) buildengine.Result {
+		got.mu.Lock()
+		got.worktree = worktree
+		got.args = append([]string(nil), args...)
+		got.mu.Unlock()
+		return successResult()
+	}
+	b, err := New(Options{Token: "test-token-0123456789abcdef0123456789abcdef", Authorizer: allowAllAuthorizer(), EngineInvoker: captureInvoker})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resp.StatusCode != http.StatusForbidden {
-		t.Errorf("stop: status = %d, want 403 (refused in this gate)", resp.StatusCode)
+	mux := http.NewServeMux()
+	b.Mount(mux)
+	srv := newTestServer(t, mux)
+	tb := &testBroker{server: srv, broker: b, token: "test-token-0123456789abcdef0123456789abcdef"}
+	body := `{"type":"execute","worktree":".","args":["stop","--root","backend"]}`
+	_, data := tb.executePOST(t, body)
+	frames := parseFrames(t, data)
+	var res frame
+	for _, f := range frames {
+		if f.Type == "result" {
+			res = f
+		}
 	}
-	resp.Body.Close()
-	engine.mu.Lock()
-	wt := engine.gotWorktree
-	engine.mu.Unlock()
-	if wt != "" {
-		t.Errorf("stop was not refused before the engine ran (gotWorktree=%q)", wt)
+	if res.Type != "result" {
+		t.Fatalf("no result frame: %s", data)
+	}
+	if res.Class != "success" {
+		t.Errorf("stop result class = %q, want success", res.Class)
+	}
+	got.mu.Lock()
+	wt := got.worktree
+	args := got.args
+	got.mu.Unlock()
+	if wt == "" {
+		t.Fatalf("stop was not dispatched to the invoker (no worktree recorded)")
+	}
+	if len(args) < 1 || args[0] != "stop" {
+		t.Errorf("invoker args = %v, want first arg \"stop\"", args)
+	}
+	// The stop grammar is carried through verbatim so the production
+	// invoker can strip args[0] and dispatch args[1:] to
+	// buildengine.StopBrokered (cli/build_broker_wiring.go).
+	wantArgs := []string{"stop", "--root", "backend"}
+	if len(args) != len(wantArgs) {
+		t.Errorf("invoker args len = %d, want %d (%v)", len(args), len(wantArgs), args)
+	} else {
+		for i := range wantArgs {
+			if args[i] != wantArgs[i] {
+				t.Errorf("invoker args[%d] = %q, want %q", i, args[i], wantArgs[i])
+			}
+		}
 	}
 }
 

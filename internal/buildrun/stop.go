@@ -159,6 +159,17 @@ func stopEnv(opts StopDaemonOptions) []string {
 // if the daemon registry still shows active daemons for the leaf,
 // SIGKILL by pid from the registry"). Full process enumeration by
 // scanning /proc or `ps` is a later hardening item.
+//
+// TODO(ticket-07): the brokered `omac build stop` path
+// (buildengine.StopBrokered) replaced this registry.bin heuristic with
+// procidentity-verified control (procidentity.Verify + the host-only
+// DaemonRecord) — spec.md §238 forbids "heuristic parsing of
+// registry.bin" as NEVER sufficient. This helper is retained ONLY for
+// the legacy direct-host `omac build stop` (buildengine.Stop) and the
+// legacy daemonRecycle closure (engine.go legacyDaemonRecycle, used
+// when DaemonOwnership is disabled). A future gate migrates the
+// direct-host path to the verified control too; until then, the
+// heuristic lives on for the unmigrated direct path only.
 func forceKillLingeringDaemons(leaf string, wait time.Duration, stderr io.Writer, cmdlineProbe func(int) string) {
 	// Give the cooperative stop time to land before scanning.
 	deadline := time.Now().Add(wait)

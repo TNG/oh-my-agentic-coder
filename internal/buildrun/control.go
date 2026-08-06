@@ -53,7 +53,9 @@ var controlFiles = []string{
 	filepath.Join("init.d", registryCredentialsInitName),            // ticket 06: credential-lift init script (when private registries approved)
 	filepath.Join("init.d", retireCheckstyleTwinsInitName),          // ticket 07: checkstyle twin retirement (always written)
 	filepath.Join("init.d", mockitoAgentInitName),                   // ticket 08: mockito -javaagent (always written)
+	filepath.Join("init.d", daemonOwnerHandshakeInitName),           // ticket 07: daemon-owner handshake (always written; no-op when no marker)
 	filepath.Join(controlStateName, executorTmpDirName),             // current run's executor temp (read by the mockito-agent init script)
+	filepath.Join(controlStateName, daemonHandshakeSockName),        // ticket 07: daemon-handshake socket path (read by the daemon-owner-handshake init script; when set)
 }
 
 // controlDirs lists OMAC-owned control directories (relative to the leaf)
@@ -105,6 +107,34 @@ type GradlePropertiesConfig struct {
 	// point the test worker's java.io.tmpdir at a non-existent dir).
 	// Empty omits the file (the init script falls back to the env).
 	TmpDir string
+	// DaemonOwnerMarker is the cryptographically random, unguessable
+	// owner marker the host injects into the Gradle daemon JVM args
+	// (ticket 07, spec.md §237). When non-empty, RenderGradleProperties
+	// appends `-Domac.daemon.owner=<marker>` to the
+	// org.gradle.jvmargs line so the Gradle daemon carries it as a
+	// system property; the daemon-owner-handshake init script reads it
+	// back and echoes it over the executor supervisor's private control
+	// channel (see RenderDaemonOwnerHandshakeInitScript). The marker is
+	// NOT a credential (it is an ownership claim, not a secret) but it
+	// MUST be unguessable so a stale or PID-recycled process cannot
+	// spoof it. Empty omits the system property (a non-omac build
+	// reusing the leaf, or a warm daemon from before omac — the
+	// handshake init script is a no-op then). Minted by
+	// NewDaemonOwnerMarker and written into the pending DaemonRecord
+	// by the engine (Phase 3); Phase 2 only exposes the injection.
+	DaemonOwnerMarker DaemonOwnerMarker
+	// DaemonHandshakeSock is the path of the executor supervisor's
+	// private Unix socket the Gradle daemon writes its handshake to
+	// (ticket 07, spec.md §237). When non-empty, PrepareControlState
+	// writes it to a control-state file
+	// (<leaf>/.omac-control/daemon-handshake-sock) that the
+	// daemon-owner-handshake init script reads at daemon startup, so
+	// the socket path reaches the daemon via a control-state FILE
+	// rather than an additional JVM arg (consistent with the mockito
+	// init script's executor-tmpdir pattern). Empty omits the file
+	// (the init script falls back to no socket → no-op, e.g. a non-omac
+	// build or a Phase-2-only render without the engine wiring).
+	DaemonHandshakeSock string
 }
 
 // RenderGradleProperties renders the OMAC-generated gradle.properties
@@ -125,7 +155,25 @@ func RenderGradleProperties(cfg GradlePropertiesConfig) string {
 		b.WriteString("systemProp.jdk.http.auth.tunneling.disabledSchemes=\n")
 	}
 	if cfg.MaxHeap != "" {
-		fmt.Fprintf(&b, "org.gradle.jvmargs=-Xmx%s\n", cfg.MaxHeap)
+		fmt.Fprintf(&b, "org.gradle.jvmargs=-Xmx%s", cfg.MaxHeap)
+		// Ticket 07: append the daemon-owner marker as a JVM system
+		// property so the Gradle daemon carries it. The
+		// daemon-owner-handshake init script reads it back at daemon
+		// startup and echoes it over the executor supervisor's private
+		// control channel. Deterministic order: MaxHeap first, then the
+		// marker (stable across renders so the file digest is stable).
+		// The marker is NOT a credential — it is an ownership claim
+		// (see DaemonOwnerMarker); it MUST be unguessable so a stale
+		// or PID-recycled process cannot spoof it. Empty marker omits
+		// the property (a non-omac build or a Phase-2-only render).
+		if cfg.DaemonOwnerMarker != "" {
+			fmt.Fprintf(&b, " -Domac.daemon.owner=%s", cfg.DaemonOwnerMarker)
+		}
+		b.WriteString("\n")
+	} else if cfg.DaemonOwnerMarker != "" {
+		// Marker only (no MaxHeap): emit the jvmargs line with just the
+		// -Domac.daemon.owner system property.
+		fmt.Fprintf(&b, "org.gradle.jvmargs=-Domac.daemon.owner=%s\n", cfg.DaemonOwnerMarker)
 	}
 	// Host JDK install roots for toolchain auto-detection. Gradle's
 	// /usr/libexec/java_home -V call fails inside the sandbox (the
@@ -287,6 +335,19 @@ const mockitoAgentInitName = "mockito-agent.gradle"
 // daemon's env TMPDIR (stale on a warm daemon — see GradlePropertiesConfig.TmpDir).
 const executorTmpDirName = "executor-tmpdir"
 
+// daemonHandshakeSockName is the control-state file holding the path
+// of the executor supervisor's private Unix socket the Gradle daemon
+// writes its handshake to (ticket 07, spec.md §237). The
+// daemon-owner-handshake init script reads this at daemon startup to
+// learn where to send its {"pid","marker"} JSON, instead of receiving
+// the socket path via an additional JVM arg — consistent with the
+// mockito init script's executor-tmpdir pattern (control-state FILE
+// preferred over a threaded JVM arg). Written by PrepareControlState
+// when GradlePropertiesConfig.DaemonHandshakeSock is set; the init
+// script is a no-op when the file is absent (a non-omac build reusing
+// the leaf, or a warm daemon from before omac).
+const daemonHandshakeSockName = "daemon-handshake-sock"
+
 // RenderMockitoAgentInitScript renders the OMAC-authored Gradle init
 // script that loads mockito-core as a -javaagent on test tasks (ticket 08,
 // REPORT.md item 4 / spec.md:168). Mockito's inline mock-maker cannot
@@ -378,6 +439,185 @@ func RenderMockitoAgentInitScript() string {
 	b.WriteString("      }\n")
 	b.WriteString("    }\n")
 	b.WriteString("  }\n")
+	b.WriteString("}\n")
+	return b.String()
+}
+
+// daemonOwnerHandshakeInitName is the OMAC-authored init script Gradle
+// loads at daemon startup to send its PID + the owner marker back to
+// the executor supervisor's private control channel BEFORE project
+// configuration proceeds (ticket 07, spec.md §237). It lives in
+// <leaf>/init.d/ (read-only control state) and is written
+// UNCONDITIONALLY by PrepareControlState — the handshake applies to
+// every OMAC-owned daemon, and the script is a defensive no-op when
+// the -Domac.daemon.owner system property is absent (a non-omac build
+// reusing the leaf, or a warm daemon from before omac that predates
+// the marker injection). The host's DaemonHandshakeChannel awaits the
+// handshake and blocks the wrapper from proceeding until the daemon
+// has registered; if the host fails to verify the daemon (marker
+// mismatch or procidentity mismatch) it does NOT acknowledge, the
+// init script throws a GradleException, and the build fails closed.
+const daemonOwnerHandshakeInitName = "daemon-owner-handshake.gradle"
+
+// RenderDaemonOwnerHandshakeInitScript renders the OMAC-authored Gradle
+// init script that performs the pending-to-active daemon ownership
+// handshake (ticket 07, spec.md §237). At daemon startup, BEFORE
+// project configuration proceeds, the script:
+//
+//  1. Reads the -Domac.daemon.owner=<marker> system property set by
+//     the host in gradle.properties org.gradle.jvmargs. If absent, the
+//     daemon is not OMAC-owned → the script is a no-op (a non-omac
+//     build reusing the leaf, or a warm daemon from before omac).
+//  2. Reads the executor supervisor's private control-channel socket
+//     path from the control-state file
+//     <gradleUserHomeDir>/.omac-control/daemon-handshake-sock
+//     (written by PrepareControlState). Reading from a control-state
+//     FILE (rather than a second JVM arg) is consistent with the
+//     mockito init script's executor-tmpdir pattern.
+//  3. Opens the Unix socket, sends a single line
+//     `{"pid":<pid>,"marker":"<marker>"}` (the daemon's PID via the
+//     portable Java 8+ ManagementFactory.getRuntimeMXBean().getName()
+//     split("@")[0] — avoids the Java 9+ ProcessHandle API because
+//     Gradle 8+ requires Java 8+ but daemons run on the configured
+//     toolchain, which may be Java 8), then blocks on a single-byte
+//     ack from the host.
+//  4. Waits for the host's acknowledgement (a single byte "1") before
+//     returning. The ack is a single byte, NOT a line: the host writes
+//     one byte and the script reads one byte, so no line terminator
+//     convention is needed. If the host closes without acking or the
+//     socket breaks, the script throws a GradleException so the
+//     wrapper cannot proceed unverified (fail closed). A bounded
+//     30s timeout prevents a hung host from deadlocking Gradle
+//     forever — the script throws after the timeout.
+//
+// The script is wrapped in try/catch so a project that fails for
+// unrelated reasons is not broken by the handshake; the
+// GradleException is re-thrown ONLY for handshake failures (marker
+// missing after the system property was non-empty, socket connect
+// failure, read timeout, or host close without ack). The script is a
+// defensive no-op when the system property is absent.
+//
+// Pure string — unit-testable. Always returns a non-empty script (the
+// handshake applies to every OMAC-owned build; it is a defensive
+// no-op when no marker property is present, like the
+// retire-checkstyle-twins script is a defensive no-op when no twins
+// exist).
+func RenderDaemonOwnerHandshakeInitScript() string {
+	var b strings.Builder
+	b.WriteString("// OMAC-generated daemon-owner handshake init script (ticket 07).\n")
+	b.WriteString("// Makes a newly-started OMAC-owned Gradle daemon send its PID and\n")
+	b.WriteString("// the owner marker back to the executor supervisor's private control\n")
+	b.WriteString("// channel BEFORE project configuration proceeds. The host verifies\n")
+	b.WriteString("// the process (procidentity) and atomically promotes the pending\n")
+	b.WriteString("// ownership record to active before acknowledging; the wrapper CANNOT\n")
+	b.WriteString("// continue without that acknowledgement. Fail closed: a marker\n")
+	b.WriteString("// mismatch, a procidentity mismatch, or a host close without ack\n")
+	b.WriteString("// throws a GradleException so the build fails rather than proceed\n")
+	b.WriteString("// unverified. Defensive no-op when -Domac.daemon.owner is absent (a\n")
+	b.WriteString("// non-omac build reusing the leaf, or a warm daemon from before\n")
+	b.WriteString("// omac that predates the marker injection).\n")
+	b.WriteString("// This file is READ-ONLY to the executor (do not edit).\n\n")
+	b.WriteString("import groovy.json.JsonOutput\n")
+	b.WriteString("import java.lang.management.ManagementFactory\n")
+	b.WriteString("\n")
+	b.WriteString("// The marker the host injected into org.gradle.jvmargs as\n")
+	b.WriteString("// -Domac.daemon.owner=<marker>. Absent => this daemon is not\n")
+	b.WriteString("// OMAC-owned (a non-omac build reusing the leaf, or a warm daemon\n")
+	b.WriteString("// from before omac). The script is a defensive no-op then.\n")
+	b.WriteString("def omacMarker = System.getProperty('omac.daemon.owner')\n")
+	b.WriteString("if (omacMarker == null || omacMarker.isEmpty()) {\n")
+	b.WriteString("  return\n")
+	b.WriteString("}\n")
+	b.WriteString("\n")
+	b.WriteString("// The executor supervisor's private Unix socket path, written by\n")
+	b.WriteString("// the host to a control-state file so the socket path reaches the\n")
+	b.WriteString("// daemon via a FILE (consistent with the executor-tmpdir pattern)\n")
+	b.WriteString("// rather than a second JVM arg. Absent => no channel wired (a\n")
+	b.WriteString("// Phase-2-only render or a non-omac build); the script is a no-op.\n")
+	b.WriteString("def sockPath = null\n")
+	b.WriteString("try {\n")
+	b.WriteString("  def sockFile = new File(gradle.gradleUserHomeDir, '.omac-control/daemon-handshake-sock')\n")
+	b.WriteString("  if (sockFile.isFile()) {\n")
+	b.WriteString("    sockPath = sockFile.text.trim()\n")
+	b.WriteString("  }\n")
+	b.WriteString("} catch (Exception ignored) {}\n")
+	b.WriteString("if (sockPath == null || sockPath.isEmpty()) {\n")
+	b.WriteString("  return\n")
+	b.WriteString("}\n")
+	b.WriteString("\n")
+	b.WriteString("// The daemon's PID. ManagementFactory.getRuntimeMXBean().getName()\n")
+	b.WriteString("// returns \"<pid>@<hostname>\" on every JVM since Java 1.8 (the\n")
+	b.WriteString("// classic portable PID extraction); avoids the Java 9+\n")
+	b.WriteString("// ProcessHandle API because Gradle 8+ requires Java 8+ but\n")
+	b.WriteString("// daemons run on the configured toolchain, which may be Java 8\n")
+	b.WriteString("// (ProcessHandle is Java 9+).\n")
+	b.WriteString("def pid = ManagementFactory.getRuntimeMXBean().getName().split(\"@\")[0]\n")
+	b.WriteString("\n")
+	b.WriteString("// Send {\"pid\":<pid>,\"marker\":\"<marker>\"} as a single line, then\n")
+	b.WriteString("// block on a one-byte ack. The ack is a single byte \"1\", NOT a\n")
+	b.WriteString("// line — the host writes one byte, the script reads one byte, so\n")
+	b.WriteString("// no line terminator convention is needed. A 30s bounded timeout\n")
+	b.WriteString("// prevents a hung host from deadlocking Gradle forever; the\n")
+	b.WriteString("// script throws a GradleException after the timeout (fail closed).\n")
+	b.WriteString("//\n")
+	b.WriteString("// The read timeout is implemented via a CountDownLatch + a worker\n")
+	b.WriteString("// thread because SocketChannel.socket().setSoTimeout is a NO-OP on a\n")
+	b.WriteString("// blocking channel (the JVM documents this). The worker reads the\n")
+	b.WriteString("// one-byte ack; the main thread awaits the latch with the 30s bound\n")
+	b.WriteString("// and throws a GradleException on timeout so the build fails closed.\n")
+	b.WriteString("try {\n")
+	b.WriteString("  // Open the Unix-domain socket via java.net.UnixDomainSocketAddress\n")
+	b.WriteString("  // (Java 16+). The PID extraction above is portable back to Java 8,\n")
+	b.WriteString("  // but Unix-domain socket client support requires Java 16+. The\n")
+	b.WriteString("  // omac host resolves the daemon JDK and the handshake requires a\n")
+	b.WriteString("  // JDK new enough to support it; a Java 8 daemon fails closed here\n")
+	b.WriteString("  // (the catch maps any Exception to a GradleException so the build\n")
+	b.WriteString("  // fails rather than proceeds unverified).\n")
+	b.WriteString("  def addr = java.net.UnixDomainSocketAddress.of(sockPath)\n")
+	b.WriteString("  def sock = java.nio.channels.SocketChannel.open(addr)\n")
+	b.WriteString("  try {\n")
+	b.WriteString("    def out = new java.io.OutputStreamWriter(java.nio.channels.Channels.newOutputStream(sock), 'UTF-8')\n")
+	b.WriteString("    def payload = JsonOutput.toJson([pid: pid, marker: omacMarker]) + \"\\n\"\n")
+	b.WriteString("    out.write(payload)\n")
+	b.WriteString("    out.flush()\n")
+	b.WriteString("    // Read the one-byte ack on a worker thread so the main thread\n")
+	b.WriteString("    // can bound the wait. read() returns -1 on EOF (host closed\n")
+	b.WriteString("    // without acking) → the worker records -1, the main thread sees\n")
+	b.WriteString("    // it and throws to fail closed. A 30s timeout on the latch also\n")
+	b.WriteString("    // throws, so a hung host cannot deadlock Gradle forever.\n")
+	b.WriteString("    def latch = new java.util.concurrent.CountDownLatch(1)\n")
+	b.WriteString("    def ackHolder = new java.util.concurrent.atomic.AtomicInteger(-1)\n")
+	b.WriteString("    def readErr = new java.util.concurrent.atomic.AtomicReference(null)\n")
+	b.WriteString("    def worker = Thread.start {\n")
+	b.WriteString("      try {\n")
+	b.WriteString("        def inp = java.nio.channels.Channels.newInputStream(sock)\n")
+	b.WriteString("        ackHolder.set(inp.read())\n")
+	b.WriteString("      } catch (Exception e) {\n")
+	b.WriteString("        readErr.set(e)\n")
+	b.WriteString("      } finally {\n")
+	b.WriteString("        latch.countDown()\n")
+	b.WriteString("      }\n")
+	b.WriteString("    }\n")
+	b.WriteString("    if (!latch.await(30000, java.util.concurrent.TimeUnit.MILLISECONDS)) {\n")
+	b.WriteString("      worker.interrupt()\n")
+	b.WriteString("      throw new GradleException(\"omac: daemon handshake timed out waiting for host ack (30s)\")\n")
+	b.WriteString("    }\n")
+	b.WriteString("    if (readErr.get() != null) {\n")
+	b.WriteString("      throw new GradleException(\"omac: daemon handshake read failed: \" + readErr.get().message, readErr.get())\n")
+	b.WriteString("    }\n")
+	b.WriteString("    int ack = ackHolder.get()\n")
+	b.WriteString("    if (ack != ((int) '1')) {\n")
+	b.WriteString("      throw new GradleException(\"omac: daemon handshake failed — host did not acknowledge (ack=\" + ack + \")\")\n")
+	b.WriteString("    }\n")
+	b.WriteString("  } finally {\n")
+	b.WriteString("    sock.close()\n")
+	b.WriteString("  }\n")
+	b.WriteString("} catch (GradleException e) {\n")
+	b.WriteString("  throw e\n")
+	b.WriteString("} catch (Exception e) {\n")
+	b.WriteString("  // Socket connect failure, read failure, or host close without\n")
+	b.WriteString("  // ack → fail closed so the wrapper cannot proceed unverified.\n")
+	b.WriteString("  throw new GradleException(\"omac: daemon handshake failed: \" + e.message, e)\n")
 	b.WriteString("}\n")
 	return b.String()
 }
@@ -475,6 +715,19 @@ func PrepareControlState(leaf string, cfg GradlePropertiesConfig) (ControlPaths,
 	if err := os.WriteFile(mockitoInitPath, []byte(RenderMockitoAgentInitScript()), 0o644); err != nil {
 		return ControlPaths{}, fmt.Errorf("write mockito-agent init script: %w", err)
 	}
+	// Ticket 07: write the daemon-owner handshake init script
+	// UNCONDITIONALLY (the handshake applies to every OMAC-owned build —
+	// it is a defensive no-op when the -Domac.daemon.owner system
+	// property is absent, like the retire-checkstyle-twins script is a
+	// defensive no-op when no twins exist). Written BEFORE the init.d
+	// control directory is locked read-only (0o500) below, same pattern
+	// as the registry/retire/mockito scripts. The script is read-only to
+	// the executor: it appears in controlFiles and is granted read
+	// access + a write-deny.
+	handshakeInitPath := filepath.Join(leaf, "init.d", daemonOwnerHandshakeInitName)
+	if err := os.WriteFile(handshakeInitPath, []byte(RenderDaemonOwnerHandshakeInitScript()), 0o644); err != nil {
+		return ControlPaths{}, fmt.Errorf("write daemon-owner-handshake init script: %w", err)
+	}
 	// OMAC-owned control directories (init.d): create them read-only to
 	// the executor so Gradle can read init scripts from them but build
 	// code cannot plant one. 0o500 = r-x for owner (omac): readable +
@@ -503,6 +756,23 @@ func PrepareControlState(leaf string, cfg GradlePropertiesConfig) (ControlPaths,
 		tmpFile := filepath.Join(ctrlDir, executorTmpDirName)
 		if err := os.WriteFile(tmpFile, []byte(cfg.TmpDir), 0o644); err != nil {
 			return ControlPaths{}, fmt.Errorf("write executor-tmpdir control file: %w", err)
+		}
+	}
+	// Ticket 07: write the daemon-handshake socket-path control file
+	// when the executor supervisor's private Unix socket path is known.
+	// The daemon-owner-handshake init script reads this at daemon
+	// startup to learn where to send its {"pid","marker"} JSON. Best-
+	// effort write failure degrades to the init script's no-op path
+	// (no socket file → the daemon does not register → the host's
+	// AwaitHandshake times out → the build fails closed), but a write
+	// failure here is surfaced because it means the host's trusted
+	// control state could not be written, not just a graceful
+	// degradation. Empty DaemonHandshakeSock omits the file (the init
+	// script falls back to its no-op path).
+	if cfg.DaemonHandshakeSock != "" {
+		sockFile := filepath.Join(ctrlDir, daemonHandshakeSockName)
+		if err := os.WriteFile(sockFile, []byte(cfg.DaemonHandshakeSock), 0o644); err != nil {
+			return ControlPaths{}, fmt.Errorf("write daemon-handshake-sock control file: %w", err)
 		}
 	}
 	return resolveControlPaths(leaf), nil

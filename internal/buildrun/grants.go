@@ -91,6 +91,28 @@ func (b *BuildGrants) JDK() JDKResolution {
 	return b.jdk
 }
 
+// JDKExecutable returns the EvalSymlinks-resolved path of the resolved
+// JDK's `java` binary — the executable procidentity.Verify compares the
+// daemon process's resolved executable against (ticket 07, spec.md
+// §238). Returns "" when no JDK was resolved (the engine treats this as
+// a service failure: the daemon cannot be verified without a resolved
+// JDK executable, so the ownership handshake fails closed).
+//
+// The path is resolved via filepath.EvalSymlinks so it matches the
+// kernel-resolved path /proc/<pid>/exe (Linux) or proc_pidpath (macOS)
+// reports for a process running that JDK — a symlinked JAVA_HOME would
+// otherwise make the executable compare false-negative.
+func (b *BuildGrants) JDKExecutable() string {
+	if b == nil || b.jdk.BinDir == "" {
+		return ""
+	}
+	p := filepath.Join(b.jdk.BinDir, "java")
+	if canon, err := filepath.EvalSymlinks(p); err == nil {
+		return canon
+	}
+	return p
+}
+
 // ProxyURL returns the omac filtered proxy URL the Gradle daemon is routed
 // through, or "" when no proxy is in use.
 func (b *BuildGrants) ProxyURL() string {
@@ -228,6 +250,27 @@ type BuildConfig struct {
 	// (macOS with approved images). ChildEnv injects DOCKER_HOST +
 	// TESTCONTAINERS_RYUK_DISABLED=true only when this is true.
 	ContainerProxyEnabled bool
+	// DaemonOwnerMarker is the cryptographically random, unguessable
+	// owner marker the host injects into the Gradle daemon JVM args
+	// (ticket 07, spec.md §237). When non-empty, GrantsFor threads it
+	// into GradlePropertiesConfig.DaemonOwnerMarker so
+	// PrepareControlState renders -Domac.daemon.owner=<marker> into
+	// org.gradle.jvmargs; the daemon-owner-handshake init script reads
+	// it back and echoes it over the executor supervisor's private
+	// control channel. Empty omits the property (the legacy behavior —
+	// a non-omac build or a Phase-3 path that is not wiring ownership).
+	// The engine (Phase 3) mints this via NewDaemonOwnerMarker BEFORE
+	// calling GrantsFor and writes the pending DaemonRecord first.
+	DaemonOwnerMarker DaemonOwnerMarker
+	// DaemonHandshakeSock is the path of the executor supervisor's
+	// private Unix socket the Gradle daemon writes its handshake to
+	// (ticket 07, spec.md §237). When non-empty, GrantsFor threads it
+	// into GradlePropertiesConfig.DaemonHandshakeSock so
+	// PrepareControlState writes the daemon-handshake-sock control-state
+	// file the init script reads at daemon startup. Empty omits the
+	// file (the init script falls back to its no-op path). The engine
+	// (Phase 3) derives this via DaemonHandshakeSockPath(RequestDir).
+	DaemonHandshakeSock string
 	// getenv is the JDK discovery seam; production passes os.Getenv, tests
 	// inject a fake parent env. nil selects os.Getenv.
 	getenv func(string) string
@@ -377,6 +420,8 @@ func GrantsFor(worktree, cacheDir string, cfg BuildConfig) (*BuildGrants, error)
 		RegistryProxyURLs:  cfg.RegistryProxyURLs,
 		InstallationsPaths: installationsPaths,
 		TmpDir:             tmp,
+		DaemonOwnerMarker:  cfg.DaemonOwnerMarker,
+		DaemonHandshakeSock: cfg.DaemonHandshakeSock,
 	}
 	controlPaths, err := PrepareControlState(leaf, gradleProps)
 	if err != nil {
