@@ -36,11 +36,12 @@ func TestDeriveContractKnownTokens(t *testing.T) {
 		"codex":       {"exec", "-m", "--dangerously-bypass-approvals-and-sandbox", "-c", "resume", "--last"},
 		"copilot":     {"-p", "--model", "--allow-all-tools", "--continue", "--session-id"},
 		"pi":          {"-p", "--provider", "--model", "-c", "--session"},
+		"codewhale":   {"exec", "--auto", "--continue", "resume"},
 	}
 	for name, tokens := range want {
 		c, ok := deriveContract(name)
 		if !ok {
-			// codex is excluded on darwin; skip rather than fail host-dependently.
+			// codex/codewhale are excluded on darwin; skip rather than fail host-dependently.
 			t.Logf("%s: not eligible on this host, skipping", name)
 			continue
 		}
@@ -128,13 +129,41 @@ func TestMissingTokens(t *testing.T) {
 }
 
 func TestCompatLine(t *testing.T) {
+	t.Setenv("E2E_MODEL", "")
+	t.Setenv("E2E_MODEL_CLAUDE_CODE", "")
+
+	// Built from modelIDs rather than the literal pin: this asserts that the
+	// line carries the resolved model, not what that model happens to be
+	// today — the pin moves whenever the gateway renames a variant (#184).
 	got := compatLine("claude-code", "2.1.197", "linux", "contract", "PASS")
-	want := "OMAC_COMPAT harness=claude-code version=2.1.197 os=linux stage=contract result=PASS"
+	want := "OMAC_COMPAT harness=claude-code version=2.1.197 os=linux model=" +
+		modelIDs["claude-code"] + " stage=contract result=PASS"
 	if got != want {
 		t.Fatalf("compatLine = %q, want %q", got, want)
 	}
-	if got := compatLine("pi", "", "linux", "llm", "FAIL"); got != "OMAC_COMPAT harness=pi version=unknown os=linux stage=llm result=FAIL" {
-		t.Fatalf("empty-version compatLine = %q", got)
+	if got, want := compatLine("pi", "", "linux", "llm", "FAIL"),
+		"OMAC_COMPAT harness=pi version=unknown os=linux model="+
+			modelIDs["pi"]+" stage=llm result=FAIL"; got != want {
+		t.Fatalf("empty-version compatLine = %q, want %q", got, want)
+	}
+
+	// The model field must track the override the run actually used, otherwise
+	// the compatibility matrix attributes a result to the wrong model.
+	t.Setenv("E2E_MODEL", "vendor/candidate-1")
+	if got, want := compatLine("pi", "1.0", "linux", "llm", "PASS"),
+		"OMAC_COMPAT harness=pi version=1.0 os=linux model=vendor/candidate-1 stage=llm result=PASS"; got != want {
+		t.Fatalf("overridden-model compatLine = %q, want %q", got, want)
+	}
+
+	// An unknown harness has no pin; the field stays parseable rather than empty.
+	if got, want := compatLine("nope", "1.0", "linux", "llm", "FAIL"),
+		"OMAC_COMPAT harness=nope version=1.0 os=linux model=vendor/candidate-1 stage=llm result=FAIL"; got != want {
+		t.Fatalf("unknown-harness compatLine = %q, want %q", got, want)
+	}
+	t.Setenv("E2E_MODEL", "")
+	if got, want := compatLine("nope", "1.0", "linux", "llm", "FAIL"),
+		"OMAC_COMPAT harness=nope version=1.0 os=linux model=unknown stage=llm result=FAIL"; got != want {
+		t.Fatalf("unpinned-harness compatLine = %q, want %q", got, want)
 	}
 }
 
@@ -148,6 +177,7 @@ func TestHarnessHasServerMode(t *testing.T) {
 		"codex":       false,
 		"copilot":     false,
 		"pi":          false,
+		"codewhale":   false,
 		"nonexistent": false,
 	}
 	for name, want := range cases {

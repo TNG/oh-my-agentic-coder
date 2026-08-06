@@ -74,6 +74,27 @@ def ask_llm_duplicate(finding, issues):
         return {"duplicate_of": None, "confidence": "low", "reasoning": f"LLM triage call failed: {e}"}
 
 
+def load_findings(path):
+    """Read strix's vulnerabilities.json, treating an absent file as zero findings.
+
+    A scan can leave the file unwritten while still having run correctly, which
+    used to abort the job with a FileNotFoundError and report a clean scan as a
+    failure. By the time this runs the scan step has already established that
+    the run itself was sound -- a run directory exists and the log is free of
+    context_length_exceeded -- so an absent findings file is an empty result,
+    not a broken scan.
+
+    A file that exists but does not parse is a different matter and still
+    raises: that means strix wrote something unexpected, and silently reporting
+    zero findings would turn a broken scan into a green one.
+    """
+    if not os.path.exists(path):
+        print(f"{path} not written -- treating as zero findings", file=sys.stderr)
+        return []
+    with open(path) as f:
+        return json.load(f)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--vulns", required=True)
@@ -82,10 +103,9 @@ def main():
     ap.add_argument("--summary-out", required=True, help="redacted, safe for public step summary")
     args = ap.parse_args()
 
-    with open(args.vulns) as f:
-        findings = json.load(f)
+    findings = load_findings(args.vulns)
 
-    issues = fetch_open_issues(args.repo)
+    issues = fetch_open_issues(args.repo) if findings else []
 
     triage_lines = ["# Security scan triage report\n"]
     counts = {}
@@ -112,8 +132,17 @@ def main():
         triage_lines.append(f"**Impact:** {finding.get('impact', '')}\n")
         triage_lines.append("---\n")
 
+    if not findings:
+        triage_lines.append("The scan completed and reported no vulnerabilities.\n")
+
     with open(args.triage_out, "w") as f:
         f.write("\n".join(triage_lines))
+
+    if not findings:
+        with open(args.summary_out, "w") as f:
+            f.write("No vulnerabilities reported by this scan.")
+        print(f"wrote {args.triage_out} (0 findings) and {args.summary_out}", file=sys.stderr)
+        return
 
     summary_lines = ["**Severity counts:**"]
     for sev in ("critical", "high", "medium", "low"):

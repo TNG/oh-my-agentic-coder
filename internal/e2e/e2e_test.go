@@ -341,7 +341,7 @@ func installHarness(t *testing.T, h harnessConfig, home string) {
 	// bun→npm fallback applied when bun is unavailable under
 	// E2E_RECOVER_INSTALL (the omac sandbox blocks writes to ~/.bun).
 	installCmd := resolveInstallCmd(h)
-	t.Logf("installing %s: %v", h.Name, installCmd)
+	t.Logf("installing %s: %v (model: %s)", h.Name, installCmd, modelID(h.Name))
 	cmd := exec.Command(installCmd[0], installCmd[1:]...)
 	cmd.Env = env
 	installFailed := false
@@ -1310,6 +1310,9 @@ func dumpSidecarLogs(t *testing.T, workdir, home string) {
 //     allow-list so FilterEnv strips everything not listed. This is the
 //     security audit path — the allow-list is the single source of
 //     truth for what the agent sees.
+//   - network.open_port: spec.OpenPorts, appended to DefaultProfile's
+//     (empty) set. For tests whose agent must reach a host-side loopback
+//     server, e.g. the stub model endpoint in plugin_briefing_test.go.
 //
 // Per-harness ExtraReadPaths are appended to Filesystem.Read; everything
 // else (workdir access, listen_port 4097, allow_tcp_connect 22, the
@@ -1342,6 +1345,13 @@ func writeSandboxProfile(t *testing.T, home string, h harnessConfig, spec *Allow
 	// model provider host + harness extras. listen_port / allow_tcp_connect
 	// / network_prompt remain as DefaultProfile set them.
 	profile.Network.AllowDomain = allowDomains
+	// Extra loopback ports the sandboxed agent must be able to connect to
+	// (see AllowanceSpec.OpenPorts). Appended rather than assigned so a
+	// future DefaultProfile open_port entry survives.
+	if spec != nil && len(spec.OpenPorts) > 0 {
+		profile.Network.OpenPort = append(
+			append([]int{}, profile.Network.OpenPort...), spec.OpenPorts...)
+	}
 	// Security audit path: constrain env to the allow-list so FilterEnv
 	// strips everything not listed. Intentionally unaware of non-OMAC_*
 	// cache env names (GOCACHE, XDG_CACHE_HOME, ...) so the test
@@ -1372,8 +1382,8 @@ func writeSandboxProfile(t *testing.T, home string, h harnessConfig, spec *Allow
 	if err := os.WriteFile(filepath.Join(profDir, "default.json"), data, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	t.Logf("sandbox profile written (derived from DefaultProfile) with %d allow_domain entries, %d allow_vars",
-		len(allowDomains), len(profile.Environment.AllowVars))
+	t.Logf("sandbox profile written (derived from DefaultProfile) with %d allow_domain entries, %d allow_vars, open_port %v",
+		len(allowDomains), len(profile.Environment.AllowVars), profile.Network.OpenPort)
 }
 
 // extractHost parses a URL string and returns the hostname.

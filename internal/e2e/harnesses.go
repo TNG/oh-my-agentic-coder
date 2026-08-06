@@ -117,11 +117,16 @@ func allHarnesses() []harnessConfig {
 		codexConfig(),
 		copilotConfig(),
 		piConfig(),
+		codewhaleConfig(),
 	}
 	if runtime.GOOS == "darwin" {
+		// codex and codewhale are excluded on darwin — both are Rust CLIs
+		// whose HTTP clients are (codex: confirmed; codewhale: by analogy,
+		// unverified — see codewhaleConfig) incompatible with the macOS
+		// Seatbelt sandbox. See issue #48.
 		out := all[:0]
 		for _, h := range all {
-			if h.Name != "codex" {
+			if h.Name != "codex" && h.Name != "codewhale" {
 				out = append(out, h)
 			}
 		}
@@ -229,11 +234,13 @@ func opencodeConfig() harnessConfig {
 							"baseURL": baseURL,
 						},
 						"models": map[string]any{
-							modelIDs["opencode"]: map[string]any{
-								"name": "GLM 5.2",
+							modelID("opencode"): map[string]any{
+								// Display name follows the id so an
+								// overridden model isn't mislabelled.
+								"name": modelID("opencode"),
 								"limit": map[string]any{
-									"context": 131072,
-									"output":  32000,
+									"context": contextLimit(),
+									"output":  outputLimit(),
 								},
 							},
 						},
@@ -259,7 +266,7 @@ func opencodeConfig() harnessConfig {
 			ExtraReadPaths: opencodeCWDReadPaths(),
 		},
 		RunArgs: func(prompt string) []string {
-			return []string{"run", "--print-logs", "-m", "model/" + modelIDs["opencode"], prompt}
+			return []string{"run", "--print-logs", "-m", "model/" + modelID("opencode"), prompt}
 		},
 		SkillsBase: ".opencode",
 		EnvVarsForAllow: func() []string {
@@ -330,6 +337,12 @@ func claudeCodeConfig() harnessConfig {
 			if os.Getenv("ANTHROPIC_BASE_URL") == "" {
 				t.Fatal("ANTHROPIC_BASE_URL not set (CI secret for the Anthropic proxy)")
 			}
+			// Fail here, not on an opaque claude-code startup error, when a
+			// cross-harness model override lands on the one harness that
+			// cannot run it.
+			if err := validateModel("claude-code", modelID("claude-code")); err != nil {
+				t.Fatal(err)
+			}
 			// Claude Code provider is configured via env vars set on the
 			// omac start subprocess (ANTHROPIC_AUTH_TOKEN +
 			// ANTHROPIC_BASE_URL). No file-based config needed.
@@ -351,7 +364,7 @@ func claudeCodeConfig() harnessConfig {
 		},
 		Sandbox: SandboxConfig{}, // no deviations — model host allowed by base profile
 		RunArgs: func(prompt string) []string {
-			return []string{"-p", prompt, "--model", modelIDs["claude-code"], "--dangerously-skip-permissions"}
+			return []string{"-p", prompt, "--model", modelID("claude-code"), "--dangerously-skip-permissions"}
 		},
 		SkillsBase: ".claude",
 		EnvVarsForAllow: func() []string {
@@ -403,7 +416,7 @@ func codexConfig() harnessConfig {
 			}
 			// config.toml: codex requires wire_api=responses (Responses API).
 			// The responses API (SKAINET_INTERNAL) supports /v1/responses with the configured model.
-			configToml := `model = "` + modelIDs["codex"] + `"
+			configToml := `model = "` + modelID("codex") + `"
 model_provider = "model"
 
 [model_providers.model]
@@ -434,7 +447,7 @@ http_headers = { "X-User-Agent" = "Codex", "X-Separate-Reasoning" = "1" }
 			NoSandbox: runtime.GOOS == "darwin",
 		},
 		RunArgs: func(prompt string) []string {
-			return []string{"exec", "--dangerously-bypass-approvals-and-sandbox", "-m", modelIDs["codex"], prompt}
+			return []string{"exec", "--dangerously-bypass-approvals-and-sandbox", "-m", modelID("codex"), prompt}
 		},
 		SkillsBase: ".codex",
 		EnvVarsForAllow: func() []string {
@@ -505,13 +518,13 @@ func copilotConfig() harnessConfig {
 				"COPILOT_PROVIDER_TYPE=openai",
 				"COPILOT_PROVIDER_BASE_URL=" + baseURL,
 				"COPILOT_PROVIDER_API_KEY=" + token,
-				"COPILOT_MODEL=" + modelIDs["copilot"],
+				"COPILOT_MODEL=" + modelID("copilot"),
 				"COPILOT_PROVIDER_WIRE_API=responses",
 			}
 		},
 		Sandbox: SandboxConfig{}, // no deviations — model host allowed by base profile
 		RunArgs: func(prompt string) []string {
-			return []string{"-p", prompt, "--model", modelIDs["copilot"], "--allow-all-tools"}
+			return []string{"-p", prompt, "--model", modelID("copilot"), "--allow-all-tools"}
 		},
 		SkillsBase: ".copilot",
 		EnvVarsForAllow: func() []string {
@@ -592,7 +605,7 @@ func piConfig() harnessConfig {
 							"X-Separate-Reasoning": "1",
 						},
 						"models": []map[string]any{
-							{"id": modelIDs["pi"]},
+							{"id": modelID("pi")},
 						},
 					},
 				},
@@ -615,7 +628,7 @@ func piConfig() harnessConfig {
 			// --dangerously-skip-permissions-equivalent flag is needed.
 			// --provider is required: pi defaults to "google" without it,
 			// which would silently ignore the "model" custom provider above.
-			return []string{"-p", prompt, "--provider", "model", "--model", modelIDs["pi"]}
+			return []string{"-p", prompt, "--provider", "model", "--model", modelID("pi")}
 		},
 		SkillsBase: ".pi",
 		EnvVarsForAllow: func() []string {
@@ -623,6 +636,130 @@ func piConfig() harnessConfig {
 		},
 		ExpectVisibleEnv: func() []string {
 			return []string{"SKAINET_TOKEN=", "OMAC_"}
+		},
+	}
+}
+
+// ---------------------------------------------------------------------------
+// codewhale
+// ---------------------------------------------------------------------------
+
+// codewhale is a Rust CLI (npm package "codewhale") that is multi-provider.
+// For this test it runs against the internal SKAINET gateway via CodeWhale's
+// generic OpenAI-compatible route: config.example.toml documents
+// `provider = "openai"` + a `[providers.openai]` table for "generic
+// OpenAI-compatible gateways" (config.example.toml:354). We point that
+// provider's base_url at SKAINET_INTERNAL and set path_suffix = "/chat/
+// completions" so requests go to <base>/chat/completions — the same shape
+// opencode's @ai-sdk/openai-compatible client uses against this gateway.
+//
+// Env vars: OPENAI_API_KEY carries the bearer token. CodeWhale's openai
+// provider reads it from the process env (crates/config/src/provider.rs:546),
+// so — like codex's env_key and pi's $ENV_VAR indirection — the raw token is
+// never written to disk. SKAINET_TOKEN also propagates via os.Environ().
+//
+// Headless execution: `codewhale exec` alone is a one-shot model response;
+// `--auto` enables tool-backed agent mode with auto-approvals (crates/cli/
+// src/lib.rs:252,259) — required so the agent can call the echo-rest skill,
+// write files, and git-commit. config.toml pins approval_policy = "never"
+// and sandbox_mode = "external-sandbox" so CodeWhale neither prompts nor
+// applies its OWN inner OS sandbox inside omac's bwrap/Seatbelt sandbox.
+// `[update] check_for_updates = false` suppresses the startup version check
+// so no fixed release host is contacted. The token binds via [providers.openai]
+// api_key_env = "OPENAI_API_KEY": CodeWhale refuses an ambient key on a custom
+// base_url unless it is bound explicitly.
+//
+// Sandbox deviations: none expected — the model host (SKAINET_INTERNAL) is
+// allowed by the base profile and the update check is disabled. This has NOT
+// been verified against a live gateway run (unlike opencode/pi, which were);
+// treat ExtraAllowDomains as provisional if a real run surfaces a startup host.
+//
+// macOS: excluded from allHarnesses() by analogy with codex — CodeWhale is
+// Rust with its own HTTP client, the same class that makes codex's client
+// disconnect mid-stream under macOS Seatbelt (issue #48). This is a
+// precaution, NOT a verified CodeWhale failure; re-test on macOS and drop the
+// exclusion (here, in expectedHarnessNames, and in e2e.yml) if it works.
+//
+// SkillsBase is ".agents", not ".codewhale": CodeWhale loads workspace-local
+// skills from `.agents/skills` or `./skills` (CONFIGURATION.md:1490), and
+// does NOT read a workspace `.codewhale/skills`. The e2e installs the skill
+// into <workdir>/<SkillsBase>/skills, so it must target a dir CodeWhale reads.
+//
+// Files written:
+//   - ~/.codewhale/config.toml — provider, model, approvals, sandbox, update
+func codewhaleConfig() harnessConfig {
+	return harnessConfig{
+		Name:       "codewhale",
+		BinaryName: "codewhale",
+		InstallCmd: []string{"npm", "install", "-g", pinnedPackage("codewhale")},
+		ProviderSetup: func(t *testing.T, home string) {
+			token := os.Getenv("SKAINET_TOKEN")
+			if token == "" {
+				t.Fatal("SKAINET_TOKEN not set")
+			}
+			baseURL := os.Getenv("SKAINET_INTERNAL")
+			if baseURL == "" {
+				t.Fatal("SKAINET_INTERNAL not set (CI secret for the model provider URL)")
+			}
+			t.Logf("codewhale provider: baseURL=%s tokenLen=%d", baseURL, len(token))
+			cwDir := filepath.Join(home, ".codewhale")
+			if err := os.MkdirAll(cwDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			// The API key is NOT written here — api_key_env binds it to the
+			// OPENAI_API_KEY process env var (see EnvVars), keeping the token
+			// off disk. This explicit binding is REQUIRED: CodeWhale refuses to
+			// send an ambient OPENAI_API_KEY to a custom (non-default) base_url
+			// ("Custom endpoint credentials … must be bound explicitly"), so
+			// api_key_env is what lets the auth path reach the gateway.
+			//
+			// sandbox_mode = "external-sandbox": CodeWhale runs inside omac's
+			// bwrap sandbox, so it must not apply its own inner OS isolation;
+			// "external-sandbox" is the semantically exact value for that (an
+			// external sandbox is already in force). approval_policy = "never"
+			// auto-approves tool actions for the non-interactive run.
+			configToml := `provider = "openai"
+default_text_model = "` + modelID("codewhale") + `"
+approval_policy = "never"
+sandbox_mode = "external-sandbox"
+
+[providers.openai]
+base_url = "` + baseURL + `"
+path_suffix = "/chat/completions"
+api_key_env = "OPENAI_API_KEY"
+
+[update]
+check_for_updates = false
+`
+			if err := os.WriteFile(filepath.Join(cwDir, "config.toml"), []byte(configToml), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			t.Logf("config.toml written to %s", cwDir)
+		},
+		EnvVars: func(t *testing.T) []string {
+			token := os.Getenv("SKAINET_TOKEN")
+			if token == "" {
+				t.Fatal("SKAINET_TOKEN not set")
+			}
+			// CodeWhale's openai provider reads OPENAI_API_KEY from the env.
+			return []string{"OPENAI_API_KEY=" + token}
+		},
+		Sandbox: SandboxConfig{}, // no deviations expected — see the doc comment (unverified live)
+		RunArgs: func(prompt string) []string {
+			// `exec` leads so the contract deriver captures it as a subcommand
+			// (flagsAndSub only treats a LEADING positional as the subcommand;
+			// a preceding `--model <val>` would hide `exec` and its --model
+			// value would be misread). The model comes from config.toml's
+			// default_text_model instead. `--auto` = tool-backed agent mode
+			// with auto-approvals (required for the echo-rest tool call).
+			return []string{"exec", "--auto", prompt}
+		},
+		SkillsBase: ".agents",
+		EnvVarsForAllow: func() []string {
+			return []string{"OPENAI_API_KEY"}
+		},
+		ExpectVisibleEnv: func() []string {
+			return []string{"OPENAI_API_KEY=", "OMAC_"}
 		},
 	}
 }

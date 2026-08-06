@@ -26,7 +26,27 @@ In `blocked` mode no proxy SHALL be started and all network access except grante
 - **THEN** the sandbox launches with proxy env vars but no kernel network rules, and a prominent warning states that network filtering is advisory only
 
 ### Requirement: Filtering CONNECT proxy
-The supervisor SHALL run an HTTP proxy on an ephemeral loopback port, outside the sandbox. It SHALL support CONNECT tunnelling (TLS is never terminated) and absolute-URI forwarding for plain HTTP. Filtering SHALL be performed on the requested hostname. The proxy SHALL resolve DNS once per request and connect to the resolved addresses (not re-resolve), to prevent DNS-rebinding. The proxy SHALL refuse CONNECT to loopback addresses. Filtered denials SHALL return `403` with a body that names the blocked host, explicitly attributes the denial to the sandbox network policy (so it cannot be mistaken for an upstream 403; the destination is never contacted), and points at the configuration that changes the policy (prompt, `network.allow_domain`, `network.deny_domain`, the pages file). Deny responses SHALL also carry the machine-readable header `X-Omac-Sandbox: denied`.
+The supervisor SHALL run an HTTP proxy on an ephemeral loopback port, outside the sandbox. It SHALL support CONNECT tunnelling (TLS is never terminated) and absolute-URI forwarding for plain HTTP. Filtering SHALL be performed on the requested hostname. The proxy SHALL resolve DNS once per request and connect to the resolved addresses (not re-resolve), to prevent DNS-rebinding. The proxy SHALL refuse CONNECT to loopback addresses. Filtered denials SHALL return `403` with a body that names the blocked host, explicitly attributes the denial to the sandbox (so it cannot be mistaken for an upstream 403; the destination is never contacted), and points at a remedy that can change the outcome. Deny responses SHALL also carry the machine-readable header `X-Omac-Sandbox: denied`.
+
+Not every deny verdict is a policy decision, and the body SHALL NOT offer a knob that cannot change the outcome. Where the denial is a policy decision the body SHALL name the configuration that changes the policy (prompt, `network.allow_domain`, `network.deny_domain`, the pages file). Where it is not: a built-in guard (cloud-metadata hostname, link-local address) is evaluated before any rule, so the body SHALL describe it as not overridable by a sandbox profile; a hostname that fails to resolve was never filtered, so the body SHALL attribute it to resolution rather than to policy. A failure to *connect* to an allowed host SHALL be attributed to the connection and SHALL NOT be reported as a sandbox denial.
+
+Diagnostic guidance that only the response body can carry SHALL be placed in the body, not only in the supervisor's diagnostics log: the log is written to a file whenever stderr is a terminal, so it is not readable by the child that issued the request.
+
+#### Scenario: Denial by policy
+- **WHEN** `registry.npmjs.org` is denied because the profile's allowlist does not cover it
+- **THEN** the `403` body attributes the block to the sandbox network policy and names `network.allow_domain` as the remedy
+
+#### Scenario: Denial by built-in guard
+- **WHEN** the child requests a cloud-metadata hostname or a name resolving to a link-local address, even with that host in `network.allow_domain`
+- **THEN** the `403` body states the guard is not overridable by a sandbox profile and does not offer the allowlist as a remedy
+
+#### Scenario: Hostname does not resolve
+- **WHEN** resolution of an allowed hostname fails
+- **THEN** the `403` body attributes the failure to resolution, points at DNS and reachability (including VPN-scoped names), and offers no policy knob
+
+#### Scenario: Allowed host unreachable
+- **WHEN** a host allowed by policy cannot be connected to, and it looks like a package registry
+- **THEN** the `502` body states the host was allowed by policy, that the connection itself failed, and that a private registry may need a VPN
 
 The child SHALL receive `HTTP_PROXY`, `HTTPS_PROXY` (and lowercase variants) set to `http://omac:<token>@127.0.0.1:<port>` where `<token>` is a per-session 256-bit random hex token, and `NO_PROXY=localhost,127.0.0.1,::1`. The proxy MUST reject requests lacking the correct token (constant-time comparison).
 

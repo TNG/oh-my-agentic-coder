@@ -28,6 +28,10 @@ on:
         type: choice
         options: [quick, standard, deep]
         default: deep
+      model:
+        description: 'Model id for the strix agent, for THIS RUN ONLY. Leave empty for the opencode pin in internal/e2e/versions.go. Whatever is resolved here still goes through the gateway probe, so the -TEE variant flip and the fallback chain apply'
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -50,6 +54,9 @@ jobs:
       LLM_API_BASE: ${{ secrets.SKAINET_EXTERNAL }}
       LLM_API_KEY: ${{ secrets.SKAINET_TOKEN }}
       GH_TOKEN: ${{ github.token }}
+      # Read by scripts/probe-model.sh below; empty on the scheduled run, so
+      # that run starts from the committed pin.
+      E2E_MODEL: ${{ inputs.model }}
     steps:
       - name: Checkout target repo
         uses: actions/checkout@v4
@@ -123,40 +130,20 @@ jobs:
         id: model
         run: |
           set -euo pipefail
-          # Base model name: single source of truth is internal/e2e/versions.go's
-          # modelIDs map (opencode's entry -- the plain GLM-5.2 name, which is
-          # what opencode's own resolution uses) rather than duplicating it here.
-          base=$(awk '/^var modelIDs = map\[string\]string\{/{flag=1; next} /^\}/{flag=0} flag' \
-            target/internal/e2e/versions.go | grep '"opencode"' | sed -E 's/.*:\s*"([^"]+)".*/\1/')
-          if [ -z "$base" ]; then
-            echo "::error::could not resolve model from internal/e2e/versions.go"
-            exit 1
-          fi
-          # Harden against the gateway's raw /v1/chat/completions path only
-          # serving one model-name variant at a time: unlike opencode, strix
-          # calls that path directly, and it recently flipped from accepting the
-          # plain name to requiring the -TEE variant (422 model_unavailable).
-          # Probe the base name first, fall back to <base>-TEE, and use
-          # whichever the gateway currently accepts -- so a future flip in
-          # either direction self-heals. Model names aren't secret; the bearer
-          # in the header is and is never printed.
-          endpoint="${LLM_API_BASE%/}/chat/completions"
-          chosen=""
-          for candidate in "$base" "${base}-TEE"; do
-            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 \
-              -X POST "$endpoint" \
-              -H "authorization: Bearer ${LLM_API_KEY}" \
-              -H 'content-type: application/json' \
-              -d "{\"model\":\"${candidate}\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}],\"max_tokens\":1}") || true
-            if [ "$code" = "200" ]; then chosen="$candidate"; break; fi
-            echo "model '${candidate}' not accepted (HTTP ${code}); trying next variant"
-          done
-          if [ -z "$chosen" ]; then
-            echo "::error::neither '${base}' nor '${base}-TEE' was accepted by the gateway -- check the model provider and SKAINET_TOKEN validity"
-            exit 1
-          fi
+          # This workflow's own base/-TEE probe used to live here inline. It is
+          # now target/scripts/probe-model.sh, shared with every other LLM
+          # workflow (#184): same bidirectional variant flip, plus a GET /models
+          # listing to order candidates and a configured fallback family. The
+          # resolver reads versions.go relative to itself, so the target/
+          # checkout path needs no extra wiring. Model names aren't secret; the
+          # bearer in the header is and is never printed.
+          chosen=$(target/scripts/probe-model.sh opencode --github-output)
           echo "selected model: ${chosen}"
           echo "strix_llm=openai/${chosen}" >> "$GITHUB_OUTPUT"
+          # Model names aren't findings -- safe on this public summary, and the
+          # counts below are only interpretable against the model that produced
+          # them (especially on a manual run against an override).
+          echo "::notice title=Model::strix scan runs against ${chosen}"
 
       - name: Run strix scan
         id: scan
@@ -229,7 +216,14 @@ jobs:
 
       - name: Public summary (counts only, no exploit detail)
         if: steps.scan.outcome == 'success'
-        run: cat step-summary.md >> "$GITHUB_STEP_SUMMARY"
+        run: |
+          cat step-summary.md >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Model: \`${{ steps.model.outputs.model }}\` · scan mode: \`${{ inputs.scan_mode || 'deep' }}\`" >> "$GITHUB_STEP_SUMMARY"
+          if [ '${{ steps.model.outputs.fallback }}' = 'true' ]; then
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "> ⚠️ **Fallback model** — the intended model is not served by the gateway, so this scan's coverage is not comparable to previous ones." >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Stop context-compaction proxy
         if: always()

@@ -8,23 +8,24 @@ import (
 )
 
 // expectedHarnessNames is allHarnesses' expected content for the current
-// GOOS: codex is excluded on darwin (see allHarnesses; its Rust HTTP client
-// is incompatible with the macOS Seatbelt sandbox — issue #48).
+// GOOS: codex and codewhale are excluded on darwin (see allHarnesses; both
+// are Rust CLIs whose HTTP clients are — codex confirmed, codewhale by
+// analogy — incompatible with the macOS Seatbelt sandbox, issue #48).
 func expectedHarnessNames() []string {
-	names := []string{"opencode", "claude-code", "codex", "copilot", "pi"}
+	names := []string{"opencode", "claude-code", "codex", "copilot", "pi", "codewhale"}
 	if runtime.GOOS != "darwin" {
 		return names
 	}
 	out := names[:0:0]
 	for _, n := range names {
-		if n != "codex" {
+		if n != "codex" && n != "codewhale" {
 			out = append(out, n)
 		}
 	}
 	return out
 }
 
-func TestAllHarnessesReturnsFour(t *testing.T) {
+func TestAllHarnessesMatchesExpectedCount(t *testing.T) {
 	hs := allHarnesses()
 	want := len(expectedHarnessNames())
 	if len(hs) != want {

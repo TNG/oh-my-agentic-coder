@@ -145,7 +145,7 @@ func TestCacheEnvSurvivesAllowVars(t *testing.T) {
 		"HOME=/home/test",
 		"GOCACHE=/hostile/go-build",
 		"CARGO_HOME=/hostile/cargo",
-	}, []string{"HOME"}, injected)
+	}, []string{"HOME"}, nil, injected)
 	gotMap := envMap(got)
 	if len(gotMap) != len(injected)+1 {
 		t.Fatalf("environment = %v, want HOME plus all injected cache values", gotMap)
@@ -166,4 +166,51 @@ func envMap(env []string) map[string]string {
 		}
 	}
 	return result
+}
+
+// TestWarnEmptyAllowVars covers the warning on the `omac sandbox run` path.
+// The empty-allow_vars fail-closed behavior lands only on this entry point
+// (omac start/serve already seed the defaults in their own layer), and it
+// previously had no warning surface here.
+func TestWarnEmptyAllowVars(t *testing.T) {
+	t.Run("empty list warns", func(t *testing.T) {
+		var buf strings.Builder
+		warnEmptyAllowVars(&buf, nil)
+		got := buf.String()
+		if got == "" {
+			t.Fatal("empty allow_vars produced no warning")
+		}
+		for _, want := range []string{"empty environment.allow_vars", "will not", "authenticate", "--allow-env"} {
+			if !strings.Contains(got, want) {
+				t.Errorf("warning lacks %q:\n%s", want, got)
+			}
+		}
+	})
+
+	t.Run("non-empty list is quiet", func(t *testing.T) {
+		var buf strings.Builder
+		warnEmptyAllowVars(&buf, []string{"HOME"})
+		if buf.String() != "" {
+			t.Errorf("non-empty allow_vars warned: %s", buf.String())
+		}
+	})
+
+	// A start/serve-seeded launch reaches Run as --allow-env flags over an
+	// empty profile. Merge folds those into allow_vars, so the inner run
+	// must stay quiet rather than repeat the warning the launcher already
+	// printed. Asserted through Merge (not a literal list) so the two
+	// layers cannot drift apart.
+	t.Run("seeded via --allow-env is quiet", func(t *testing.T) {
+		empty := &sandboxprofile.Profile{Meta: sandboxprofile.Meta{Name: "empty"}}
+		flags := &sandboxprofile.Flags{AllowEnv: sandboxprofile.DefaultAllowVars()}
+		merged, _ := sandboxprofile.Merge(empty, flags)
+		if len(merged.Environment.AllowVars) == 0 {
+			t.Fatal("Merge dropped --allow-env entries; a seeded launch would warn twice")
+		}
+		var buf strings.Builder
+		warnEmptyAllowVars(&buf, merged.Environment.AllowVars)
+		if buf.String() != "" {
+			t.Errorf("seeded launch warned: %s", buf.String())
+		}
+	})
 }

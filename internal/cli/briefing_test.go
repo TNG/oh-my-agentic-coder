@@ -2,6 +2,7 @@ package cli
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -114,4 +115,91 @@ func TestEnsureOpenCodePluginSkipsNonOpenCode(t *testing.T) {
 	defer f.Close()
 	env := &Env{Stderr: f}
 	ensureOpenCodePlugin(env, h) // must simply return for a non-opencode harness
+}
+
+func TestGitExcludeBriefingAppendsAndIsIdempotent(t *testing.T) {
+	wd := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(wd, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rel := filepath.Join(".codewhale", "rules", "omac-sandbox-briefing.md")
+
+	gitExcludeBriefing(wd, rel)
+	gitExcludeBriefing(wd, rel) // second call must not duplicate
+
+	excludePath := filepath.Join(wd, ".git", "info", "exclude")
+	data, err := os.ReadFile(excludePath)
+	if err != nil {
+		t.Fatalf("exclude not written: %v", err)
+	}
+	want := filepath.ToSlash(rel)
+	n := strings.Count(string(data), want)
+	if n != 1 {
+		t.Errorf("exclude contains %d copies of %q, want exactly 1:\n%s", n, want, data)
+	}
+}
+
+func TestGitExcludeBriefingNoOpWithoutGitDir(t *testing.T) {
+	wd := t.TempDir() // no .git
+	gitExcludeBriefing(wd, ".codewhale/rules/omac-sandbox-briefing.md")
+	if _, err := os.Stat(filepath.Join(wd, ".git")); !os.IsNotExist(err) {
+		t.Errorf("gitExcludeBriefing must not create .git when absent (err=%v)", err)
+	}
+}
+
+// TestGitExcludeBriefingPreservesExistingEntries ensures a user's own
+// .git/info/exclude content is not clobbered.
+func TestGitExcludeBriefingPreservesExistingEntries(t *testing.T) {
+	wd := t.TempDir()
+	infoDir := filepath.Join(wd, ".git", "info")
+	if err := os.MkdirAll(infoDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(infoDir, "exclude"), []byte("*.tmp\nbuild/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitExcludeBriefing(wd, ".codewhale/rules/omac-sandbox-briefing.md")
+	data, err := os.ReadFile(filepath.Join(infoDir, "exclude"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(data)
+	for _, want := range []string{"*.tmp", "build/", ".codewhale/rules/omac-sandbox-briefing.md"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("exclude missing %q:\n%s", want, s)
+		}
+	}
+}
+
+func TestRemoveBriefingFilePrunesEmptyDirsOnly(t *testing.T) {
+	wd := t.TempDir()
+	rulesDir := filepath.Join(wd, ".codewhale", "rules")
+	if err := os.MkdirAll(rulesDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(rulesDir, "omac-sandbox-briefing.md")
+	if err := os.WriteFile(path, []byte("BRIEF"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	removeBriefingFile(path)
+	// File and the now-empty .codewhale/rules + .codewhale dirs are gone.
+	if _, err := os.Stat(filepath.Join(wd, ".codewhale")); !os.IsNotExist(err) {
+		t.Errorf(".codewhale should be pruned when empty (err=%v)", err)
+	}
+
+	// A non-empty .codewhale (user content) must survive.
+	if err := os.MkdirAll(rulesDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("BRIEF"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	keep := filepath.Join(wd, ".codewhale", "constitution.json")
+	if err := os.WriteFile(keep, []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	removeBriefingFile(path)
+	if _, err := os.Stat(keep); err != nil {
+		t.Errorf("user file under .codewhale must survive: %v", err)
+	}
 }

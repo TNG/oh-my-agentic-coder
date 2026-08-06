@@ -82,6 +82,18 @@ func isMultiDirInstalledIn(dir string) (bool, error) {
 	return false, err
 }
 
+// ConflictError is returned by the install routines when a differing
+// plugin file already exists and force was not set. It carries the path
+// so callers can tell the user exactly what to overwrite or delete,
+// rather than suggesting a command that would hit the same guard again.
+type ConflictError struct {
+	Path string
+}
+
+func (e *ConflictError) Error() string {
+	return fmt.Sprintf("a different %s already exists at %s; re-run with --force to overwrite", MultiDirFileName, e.Path)
+}
+
 // InstallResult describes what an install call did, for friendly output.
 type InstallResult struct {
 	// Path is the absolute file path the plugin was written to.
@@ -127,9 +139,7 @@ func installMultiDirIn(dir string, force bool) (InstallResult, error) {
 			return InstallResult{Path: dest, Unchanged: true}, nil
 		}
 		if !force {
-			return InstallResult{Path: dest}, fmt.Errorf(
-				"a different %s already exists at %s; re-run with --force to overwrite",
-				MultiDirFileName, dest)
+			return InstallResult{Path: dest}, &ConflictError{Path: dest}
 		}
 		overwrote = true
 	} else if !os.IsNotExist(err) {

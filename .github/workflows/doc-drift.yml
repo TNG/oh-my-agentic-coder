@@ -27,6 +27,14 @@ on:
         description: 'Wall-clock timeout for the audit agent, in seconds'
         type: string
         default: '2400'
+      model:
+        description: 'Model id for the audit agent, for THIS RUN ONLY. Leave empty for the opencode pin in internal/e2e/versions.go (zai-org/GLM-5.2)'
+        type: string
+        default: ''
+      context_limit:
+        description: 'Context window declared to the agent, in tokens. Leave empty for the 100000 default, which is safely under every pinned model'
+        type: string
+        default: ''
   schedule:
     # Mondays 06:00 UTC — weekly drift sweep.
     - cron: '0 6 * * 1'
@@ -35,8 +43,41 @@ permissions:
   contents: read
 
 jobs:
+  # Front-loads model selection: the gateway serves one name variant at a time
+  # and flips without notice (#184). Probing once here means a renamed model
+  # fails in seconds rather than after a 40-minute audit.
+  model:
+    name: Resolve model
+    runs-on: ubuntu-latest
+    outputs:
+      gateway: ${{ steps.probe.outputs.model }}
+      fallback: ${{ steps.probe.outputs.fallback }}
+      candidates: ${{ steps.probe.outputs.candidates }}
+    env:
+      SKAINET_TOKEN: ${{ secrets.SKAINET_TOKEN }}
+      SKAINET_INTERNAL: ${{ secrets.SKAINET_EXTERNAL }}
+      E2E_MODEL: ${{ github.event.inputs.model }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Probe the gateway
+        id: probe
+        run: scripts/probe-model.sh opencode --github-output
+      - name: Report the selection
+        run: |
+          {
+            echo "## Model selection"
+            echo ""
+            echo "Model: \`${{ steps.probe.outputs.model }}\` · probed: \`${{ steps.probe.outputs.candidates }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ '${{ steps.probe.outputs.fallback }}' = 'true' ]; then
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "> ⚠️ **Fallback model in use** — the intended model is not served by the gateway." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
   drift:
     name: ${{ matrix.mode }} drift
+    needs: model
     strategy:
       fail-fast: false
       matrix:
@@ -51,6 +92,11 @@ jobs:
       SKAINET_INTERNAL: ${{ secrets.SKAINET_EXTERNAL }}
       E2E_VERSION_OPENCODE: ${{ github.event.inputs.opencode_version }}
       DRIFT_TIMEOUT_SECS: ${{ github.event.inputs.timeout_secs }}
+      # From the preflight job: the input, the gateway probe and the -TEE flip
+      # already applied. Only opencode is involved here, so the cross-harness
+      # var is the right one to set.
+      E2E_MODEL: ${{ needs.model.outputs.gateway }}
+      E2E_CONTEXT_LIMIT: ${{ github.event.inputs.context_limit }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -69,6 +115,8 @@ jobs:
         run: |
           {
             echo "## Doc drift — ${{ matrix.mode }}"
+            echo ""
+            echo "Model: \`${{ needs.model.outputs.gateway }}\`"
             echo ""
             echo '```markdown'
             cat "${{ runner.temp }}/doc-drift-logs/DRIFT_REPORT-${{ matrix.mode }}.md" 2>/dev/null \

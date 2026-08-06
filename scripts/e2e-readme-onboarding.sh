@@ -16,7 +16,8 @@
 #
 # Driver: opencode (headless `run`, non-interactive by design — no
 # permission-bypass flag needed) against the internal SKAINET gateway,
-# same GLM-5.2 model used by the rest of the harness matrix. Deliberately
+# same model as the rest of the harness matrix (see
+# scripts/resolve-model.sh). Deliberately
 # NOT claude-code: this session is open-ended (real installs, retries) and
 # claude-code is the one harness billed against a real external Anthropic
 # account.
@@ -28,7 +29,10 @@
 #   SKAINET_TOKEN                 model API key (required)
 #   SKAINET_INTERNAL               model provider base URL (required)
 #   E2E_VERSION_OPENCODE           override the pinned opencode package spec
-#   E2E_ONBOARDING_MODEL           override the model id (default: zai-org/GLM-5.2)
+#   E2E_ONBOARDING_MODEL           override the model id; else E2E_MODEL, else
+#                                 the pin resolved by scripts/resolve-model.sh
+#   E2E_CONTEXT_LIMIT              declared context window (default: 100000)
+#   E2E_OUTPUT_LIMIT               declared output window (default: 32000)
 #   E2E_LOG_DIR                    artifact output dir (default: /tmp/e2e-readme-logs)
 #   E2E_README_REF                 git ref to extract README.md from (default: HEAD)
 #   E2E_ONBOARDING_TIMEOUT_SECS    agent wall-clock timeout in seconds (default: 1200)
@@ -43,14 +47,20 @@ set -euo pipefail
 # Keep this in sync with internal/e2e/versions.go's "opencode" pin
 # (duplicated there too, per existing e2e.yml convention).
 DEFAULT_OPENCODE_VERSION="opencode-ai@1.17.12"
-DEFAULT_MODEL="zai-org/GLM-5.2"
 DEFAULT_TIMEOUT_SECS="1200"
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 LOG_DIR="${E2E_LOG_DIR:-/tmp/e2e-readme-logs}"
 README_REF="${E2E_README_REF:-HEAD}"
 OPENCODE_VERSION="${E2E_VERSION_OPENCODE:-$DEFAULT_OPENCODE_VERSION}"
-MODEL="${E2E_ONBOARDING_MODEL:-$DEFAULT_MODEL}"
+MODEL="${E2E_ONBOARDING_MODEL:-$("$(dirname "$0")/resolve-model.sh" opencode)}"
+# Declared context/output window for the provider config below. Defaults match
+# internal/e2e/versions.go's defaultContextLimit/defaultOutputLimit: a declared
+# window LARGER than the model's real one overflows mid-run, a smaller one only
+# compacts earlier, so 100k is the model-independent safe default. Raise via
+# E2E_CONTEXT_LIMIT to exercise a bigger model's full window.
+CONTEXT_LIMIT="${E2E_CONTEXT_LIMIT:-100000}"
+OUTPUT_LIMIT="${E2E_OUTPUT_LIMIT:-32000}"
 # Seconds, not a duration string ("20m") — macOS ships only BSD sleep,
 # which (unlike GNU sleep) rejects unit suffixes, and has no `timeout`
 # binary at all. See run_with_timeout below.
@@ -109,7 +119,7 @@ git -C "$REPO" show "${README_REF}:README.md" > "$ONBOARD_DIR/README.md"
 echo "== Installing opencode CLI ($OPENCODE_VERSION) =="
 bun install -g "$OPENCODE_VERSION"
 
-echo "== Writing opencode provider config (SKAINET / GLM-5.2) =="
+echo "== Writing opencode provider config (SKAINET / $MODEL) =="
 mkdir -p "$DRIVER_HOME/.local/share/opencode" "$DRIVER_HOME/.config/opencode"
 cat > "$DRIVER_HOME/.local/share/opencode/auth.json" <<EOF
 {"model": {"type": "api", "key": "$SKAINET_TOKEN"}}
@@ -124,7 +134,7 @@ cat > "$DRIVER_HOME/.config/opencode/opencode.json" <<EOF
       "npm": "@ai-sdk/openai-compatible",
       "options": { "baseURL": "$SKAINET_INTERNAL" },
       "models": {
-        "$MODEL": { "name": "GLM 5.2", "limit": { "context": 131072, "output": 32000 } }
+        "$MODEL": { "name": "$MODEL", "limit": { "context": $CONTEXT_LIMIT, "output": $OUTPUT_LIMIT } }
       }
     }
   }
@@ -207,7 +217,7 @@ EOF
 # read sidesteps the bug entirely, regardless of body content.
 PROMPT="$(cat "$PROMPT_FILE")"
 
-echo "== Running onboarding agent (timeout ${TIMEOUT_SECS}s) =="
+echo "== Running onboarding agent (model=$MODEL, timeout ${TIMEOUT_SECS}s) =="
 cd "$ONBOARD_DIR"
 set +e
 # GH Actions runners preset XDG_CONFIG_HOME/XDG_DATA_HOME (pointing at the
@@ -258,11 +268,18 @@ fi
 echo "omac doctor exit ok: $doctor_ok"
 
 cp "$TRANSCRIPT_FILE" "$LOG_DIR/" 2>/dev/null || true
+# Stamp the run's provenance on top of the agent's report: a gap report is
+# only meaningful against the model that hit the gap, and the model is not the
+# agent's to report.
+{
+  echo "_Model: \`$MODEL\` · opencode \`$OPENCODE_VERSION\`_"
+  echo ""
+} > "$LOG_DIR/ONBOARDING_REPORT.md"
 if [ -f "$REPORT_FILE" ]; then
-  cp "$REPORT_FILE" "$LOG_DIR/"
+  cat "$REPORT_FILE" >> "$LOG_DIR/ONBOARDING_REPORT.md"
   report_present=1
 else
-  echo "agent did not write a report to $REPORT_FILE" | tee "$LOG_DIR/ONBOARDING_REPORT.md"
+  echo "agent did not write a report to $REPORT_FILE" >> "$LOG_DIR/ONBOARDING_REPORT.md"
   report_present=0
 fi
 

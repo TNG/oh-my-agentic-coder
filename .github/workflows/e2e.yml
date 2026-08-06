@@ -2,7 +2,7 @@
 #
 # Runs on manual trigger and every Saturday at 10:00 CET (08:00 UTC in
 # summer / 09:00 UTC in winter). Tests that each harness can start under
-# the omac sandbox and that an agent running on GLM-5.2-TEE (or
+# the omac sandbox and that an agent running on GLM-5.2 (or
 # claude-sonnet-5 for claude-code) can call the bundled echo-rest skill
 # through the omac facade.
 name: "E2E: full"
@@ -38,6 +38,21 @@ on:
         description: 'Pinned pi package spec. Overrides internal/e2e/versions.go for THIS RUN ONLY (the file itself is untouched); ignored if "use latest" is checked'
         type: string
         default: '@earendil-works/pi-coding-agent@0.80.6'
+      codewhale_version:
+        description: 'Pinned codewhale package spec. Overrides internal/e2e/versions.go for THIS RUN ONLY (the file itself is untouched); ignored if "use latest" is checked'
+        type: string
+        default: 'codewhale@0.9.1'
+      model:
+        description: 'Model id for EVERY harness, for THIS RUN ONLY (e.g. zai-org/GLM-5.2). Leave empty to use each harness''s pin in internal/e2e/versions.go (opencode/codex/copilot/pi/codewhale: zai-org/GLM-5.2, claude-code: claude-sonnet-5)'
+        type: string
+        default: ''
+      claude_code_model:
+        description: 'Model id for claude-code only — it accepts sonnet or haiku models ONLY, and bills a different provider than the SKAINET gateway the others use. Wins over "model"; leave empty to fall back to it, then to the versions.go pin'
+        type: string
+        default: ''
+      # No `context_limit` input here: with six harnesses pinned this workflow
+      # sits at GitHub's 10-input cap. Set E2E_CONTEXT_LIMIT locally instead, or
+      # use the "E2E: drift" workflow, which still exposes the input.
   schedule:
     - cron: '0 8 * * 6' # Saturdays 10:00 CEST
 
@@ -45,21 +60,82 @@ permissions:
   contents: read
 
 jobs:
+  # Front-loads model selection so a renamed or withdrawn model costs seconds
+  # instead of a whole matrix. The gateway serves one name variant at a time and
+  # flips without notice (#184); scripts/probe-model.sh asks GET /models what is
+  # advertised, then settles it with a 1-token chat probe, flipping the -TEE
+  # suffix and finally falling back to another family if it must.
+  model:
+    name: Resolve model
+    runs-on: ubuntu-latest
+    outputs:
+      gateway: ${{ steps.probe.outputs.model }}
+      fallback: ${{ steps.probe.outputs.fallback }}
+      candidates: ${{ steps.probe.outputs.candidates }}
+      claude_code: ${{ steps.probe.outputs.claude_code }}
+    env:
+      SKAINET_TOKEN: ${{ secrets.SKAINET_TOKEN }}
+      SKAINET_INTERNAL: ${{ secrets.SKAINET_EXTERNAL }}
+      E2E_MODEL: ${{ github.event.inputs.model }}
+      E2E_MODEL_CLAUDE_CODE: ${{ github.event.inputs.claude_code_model }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Probe the gateway
+        id: probe
+        run: |
+          # The gateway harnesses (opencode/codex/copilot/pi/codewhale) share
+          # one model, so one probe covers all five.
+          scripts/probe-model.sh opencode --github-output
+          # claude-code is resolved but never probed: it talks to
+          # ANTHROPIC_BASE_URL, not this gateway. Its own input wins; failing
+          # here (rather than in the matrix) keeps an unlaunchable model from
+          # burning an install first.
+          cc=$(E2E_MODEL= scripts/probe-model.sh claude-code)
+          echo "claude_code=$cc" >> "$GITHUB_OUTPUT"
+
+      - name: Report the selection
+        run: |
+          gateway='${{ steps.probe.outputs.model }}'
+          {
+            echo "## Model selection"
+            echo ""
+            echo "| Harness | Model |"
+            echo "|---|---|"
+            echo "| opencode, codex, copilot, pi, codewhale | \`$gateway\` |"
+            echo "| claude-code | \`${{ steps.probe.outputs.claude_code }}\` |"
+            echo ""
+            echo "Probed: \`${{ steps.probe.outputs.candidates }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ '${{ steps.probe.outputs.fallback }}' = 'true' ]; then
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "> ⚠️ **Fallback model in use.** The intended model is not served by the gateway, so these results are for \`$gateway\` and do NOT certify the intended one." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
   e2e:
     name: "${{ matrix.harness }} / ${{ matrix.os }}"
+    needs: model
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
-        harness: [opencode, claude-code, codex, copilot, pi]
+        harness: [opencode, claude-code, codex, copilot, pi, codewhale]
         # codex on macOS is excluded — its Rust HTTP client is incompatible
         # with the macOS Seatbelt sandbox (stream disconnected mid-completion,
         # even with network=open). `omac start codex` on macOS fails loud;
         # --no-sandbox would disable the entire omac sandbox, leaving nothing
         # to assert against. See issue #48.
+        #
+        # codewhale on macOS is excluded by analogy: it too is a Rust CLI with
+        # its own HTTP client (the codex failure class). This is precautionary
+        # and UNVERIFIED for codewhale — re-test on macOS and drop this exclude
+        # (and the matching ones in internal/e2e) if it works.
         exclude:
           - os: macos-latest
             harness: codex
+          - os: macos-latest
+            harness: codewhale
     runs-on: ${{ matrix.os }}
     concurrency:
       group: e2e-${{ matrix.os }}-${{ matrix.harness }}
@@ -82,9 +158,35 @@ jobs:
       E2E_VERSION_CODEX: ${{ github.event.inputs.codex_version }}
       E2E_VERSION_COPILOT: ${{ github.event.inputs.copilot_version }}
       E2E_VERSION_PI: ${{ github.event.inputs.pi_version }}
+      E2E_VERSION_CODEWHALE: ${{ github.event.inputs.codewhale_version }}
+      # Models come from the preflight job, which already applied the `model`
+      # input, the gateway probe, and the -TEE variant flip. Set PER HARNESS
+      # rather than via cross-harness E2E_MODEL: the probed value is a gateway
+      # model, and handing it to claude-code — which is on another provider and
+      # launches sonnet/haiku only — would fail its legs on every run,
+      # scheduled ones included.
+      E2E_MODEL_OPENCODE: ${{ needs.model.outputs.gateway }}
+      E2E_MODEL_CODEX: ${{ needs.model.outputs.gateway }}
+      E2E_MODEL_COPILOT: ${{ needs.model.outputs.gateway }}
+      E2E_MODEL_PI: ${{ needs.model.outputs.gateway }}
+      E2E_MODEL_CODEWHALE: ${{ needs.model.outputs.gateway }}
+      E2E_MODEL_CLAUDE_CODE: ${{ needs.model.outputs.claude_code }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      # Selection happened in the preflight job; this only resolves what this
+      # leg's harness ended up with (per-harness env, set above) and reports it.
+      - name: Resolve model
+        id: model
+        run: |
+          model=$(scripts/resolve-model.sh '${{ matrix.harness }}')
+          # Reported as the label rather than the number so the default has one
+          # definition (contextLimit() in internal/e2e/versions.go).
+          context="${E2E_CONTEXT_LIMIT:-versions.go default}"
+          echo "model=$model" >> "$GITHUB_OUTPUT"
+          echo "context=$context" >> "$GITHUB_OUTPUT"
+          echo "::notice title=Model::${{ matrix.harness }} runs against $model (context: $context)"
 
       - name: Install bubblewrap (Linux only)
         if: runner.os == 'Linux'
@@ -179,7 +281,7 @@ jobs:
         if: steps.run_e2e.outcome == 'skipped'
         run: |
           echo "## E2E (${{ matrix.harness }} / ${{ matrix.os }}): SKIPPED" >> "$GITHUB_STEP_SUMMARY"
-          echo "skip_claude_code was set on this workflow_dispatch run." >> "$GITHUB_STEP_SUMMARY"
+          echo "skip_claude_code was set on this workflow_dispatch run (model would have been \`${{ steps.model.outputs.model }}\`)." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Failure classification summary
         if: always() && steps.run_e2e.outcome != 'skipped'
@@ -187,6 +289,12 @@ jobs:
           # Render a markdown table on the run-summary page so the failure
           # cause is visible by indicator without opening the full log.
           echo "## E2E failure classification (${{ matrix.harness }} / ${{ matrix.os }})" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Model: \`${{ steps.model.outputs.model }}\` · context: \`${{ steps.model.outputs.context }}\`" >> "$GITHUB_STEP_SUMMARY"
+          if [ '${{ needs.model.outputs.fallback }}' = 'true' ] && [ '${{ matrix.harness }}' != 'claude-code' ]; then
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "> ⚠️ Fallback model — the intended model is not served by the gateway, so this result does NOT certify it." >> "$GITHUB_STEP_SUMMARY"
+          fi
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "| Assertion | Mode | Reason |" >> "$GITHUB_STEP_SUMMARY"
           echo "|-----------|------|--------|" >> "$GITHUB_STEP_SUMMARY"

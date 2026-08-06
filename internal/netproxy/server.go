@@ -71,11 +71,26 @@ func denyHeaders(v Verdict) string {
 	return sandboxDenyHeader
 }
 
-// denyBody renders the body for a filtered denial. For a prompt-driven intent
-// denial it delivers the state-aware hint inline and echoes the agent's own
-// declared reason, so the agent has the full remedy — including what it
-// previously said — without a second GET /sandbox/intent round-trip. Other
-// denials attribute the block to the sandbox policy and point at the knobs.
+// denyBody renders the body for a Deny verdict. Not every Deny is a policy
+// decision, and the remedy has to match the cause, so the body is chosen per
+// reason class:
+//
+//   - "Explain more" at the prompt: the state-aware intent hint inline, plus
+//     the agent's own declared reason, so no second GET /sandbox/intent is
+//     needed to assemble the remedy.
+//   - a declined declared intent: the user reviewed the reason and said no.
+//   - resolution failure: the name never resolved, so no policy knob applies —
+//     the fix is DNS/reachability.
+//   - hard deny (metadata hostnames, link-local addresses): checked before any
+//     rule in Filter.Check, so allow_domain cannot override it and must not be
+//     offered.
+//   - everything else: a real policy denial, attributed to the sandbox and
+//     pointing at the knobs that change it.
+//
+// The registry note is appended wherever a retry is the right move. It is
+// deliberately absent from the declined-intent branch: that hint tells the
+// agent not to retry, and install guidance there would invite the very loop
+// the decision closed.
 func denyBody(host string, v Verdict) string {
 	prior := ""
 	if r := sanitizeReason(v.IntentReason); r != "" {
@@ -83,11 +98,41 @@ func denyBody(host string, v Verdict) string {
 	}
 	switch {
 	case strings.Contains(v.Reason, "needs_intent"):
-		return fmt.Sprintf("omac sandbox: access to %q was DENIED — the user asked for more explanation.\n\n%s\n%s", host, intent.HintExplainMore, prior)
+		return fmt.Sprintf("omac sandbox: access to %q was DENIED — the user asked for more explanation.\n\n%s\n%s%s",
+			host, intent.HintExplainMore, prior, registryDenyHint(host, v.Reason))
+
 	case strings.Contains(v.Reason, "prompt:deny") && prior != "":
-		return fmt.Sprintf("omac sandbox: access to %q was DENIED — the user reviewed your declared intent and declined it.\n\n%s\n%s", host, intent.HintDeclared, prior)
-	}
-	return fmt.Sprintf(`omac sandbox: access to %q was DENIED BY THE SANDBOX network policy (%s).
+		return fmt.Sprintf("omac sandbox: access to %q was DENIED — the user reviewed your declared intent and declined it.\n\n%s\n%s",
+			host, intent.HintDeclared, prior)
+
+	case strings.Contains(v.Reason, "dns resolution failed"):
+		return fmt.Sprintf(`omac sandbox: access to %q was refused because the name did not resolve.
+
+This response comes from the omac sandbox proxy, not from %s.
+The sandbox network policy did not reject it — resolution failed before
+any rule was consulted, so no sandbox setting changes this.
+
+To fix this:
+  - check the hostname for typos,
+  - check that the name resolves from this machine (private and
+    VPN-scoped names need the VPN connected),
+  - check the DNS servers reachable from the sandbox.
+%s`, host, host, registryDenyHint(host, v.Reason))
+
+	case strings.HasPrefix(v.Reason, "hard-deny"):
+		return fmt.Sprintf(`omac sandbox: access to %q was DENIED BY THE SANDBOX built-in guard (%s).
+
+This response comes from the omac sandbox proxy, not from %s.
+The destination was never contacted.
+
+Cloud-metadata hostnames and link-local addresses are blocked before any
+rule is consulted, so this cannot be overridden by a sandbox profile.
+If the host is not meant to be an internal address, check your DNS and
+/etc/hosts for an entry pointing it at a link-local range.
+%s`, host, v.Reason, host, registryDenyHint(host, v.Reason))
+
+	default:
+		return fmt.Sprintf(`omac sandbox: access to %q was DENIED BY THE SANDBOX network policy (%s).
 
 This response comes from the omac sandbox proxy, not from %s.
 The destination was never contacted.
@@ -98,7 +143,8 @@ To allow this host, either:
     (~/.config/omac/sandbox-profiles/<profile>.json),
   - or remove a matching deny entry from network.deny_domain or the
     <profile>.pages.json learned-policy file.
-`, host, v.Reason, host)
+%s`, host, v.Reason, host, registryDenyHint(host, v.Reason))
+	}
 }
 
 // sanitizeReason makes an agent-supplied intent reason safe to embed in the
@@ -132,6 +178,26 @@ To fix this:
   - verify the upstream proxy URL in your sandbox profile or HTTPS_PROXY env var
   - check that the upstream proxy host is reachable from this machine
 `, proxyHost)
+}
+
+// upstreamFailureResponse renders the header and body for a dial that
+// failed *after* the host was allowed. A registry hint, when one
+// applies, is appended to the body rather than left to the log:
+// diagnostics go to ~/.local/state/omac/sandbox.log whenever stderr is
+// a terminal, so the response is the only channel the requesting agent
+// can read.
+func upstreamFailureResponse(host string, err error) (header, body string) {
+	var ue *UpstreamError
+	if errors.As(err, &ue) {
+		header = "X-Omac-Sandbox: upstream-error\r\n"
+		body = upstreamErrorBody(ue.ProxyHost, ue.StatusLine)
+	} else {
+		body = fmt.Sprintf("upstream dial failed: %v\n", err)
+	}
+	if hint := registryUpstreamHint(host); hint != "" {
+		body += hint
+	}
+	return header, body
 }
 
 // Server is the filtering proxy. It binds 127.0.0.1:0 and serves
@@ -334,14 +400,15 @@ func (s *Server) handleConnect(conn net.Conn, req *http.Request) {
 		return
 	}
 	if err != nil {
+		if hint := registryUpstreamHint(host); hint != "" {
+			s.logf("omac sandbox: %s", flattenForLog(hint))
+		}
 		var ue *UpstreamError
 		if errors.As(err, &ue) {
 			s.logf("omac sandbox: upstream error: %v", err)
-			writeRawResponse(conn, http.StatusBadGateway, "X-Omac-Sandbox: upstream-error\r\n",
-				upstreamErrorBody(ue.ProxyHost, ue.StatusLine))
-		} else {
-			writeRawResponse(conn, http.StatusBadGateway, "", fmt.Sprintf("upstream dial failed: %v\n", err))
 		}
+		header, body := upstreamFailureResponse(host, err)
+		writeRawResponse(conn, http.StatusBadGateway, header, body)
 		return
 	}
 	defer upstream.Close()
@@ -406,14 +473,15 @@ func (s *Server) handleForward(conn net.Conn, br *bufio.Reader, req *http.Reques
 		return
 	}
 	if err != nil {
+		if hint := registryUpstreamHint(host); hint != "" {
+			s.logf("omac sandbox: %s", flattenForLog(hint))
+		}
 		var ue *UpstreamError
 		if errors.As(err, &ue) {
 			s.logf("omac sandbox: upstream error: %v", err)
-			writeRawResponse(conn, http.StatusBadGateway, "X-Omac-Sandbox: upstream-error\r\n",
-				upstreamErrorBody(ue.ProxyHost, ue.StatusLine))
-		} else {
-			writeRawResponse(conn, http.StatusBadGateway, "", fmt.Sprintf("upstream dial failed: %v\n", err))
 		}
+		header, body := upstreamFailureResponse(host, err)
+		writeRawResponse(conn, http.StatusBadGateway, header, body)
 		return
 	}
 	defer upstream.Close()

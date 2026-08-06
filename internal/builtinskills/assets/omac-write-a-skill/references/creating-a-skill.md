@@ -48,6 +48,8 @@ which harness is chosen:
   - Codex → `.codex/skills` (+ `~/.codex/skills`)
   - Copilot → `.copilot/skills` (+ `~/.copilot/skills`)
   - Pi → `.pi/skills` (+ `~/.pi/agent/skills`)
+  - CodeWhale → `.agents/skills` (+ `~/.codewhale/skills`) — CodeWhale reads the
+    shared workspace dir, not a `.codewhale/skills`, so it owns the shared base
   - **Shared** → `.agents/skills` (+ `~/.config/agents/skills`), in scope for
     every harness.
 

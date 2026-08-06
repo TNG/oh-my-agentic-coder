@@ -30,6 +30,31 @@ type Options struct {
 	Stderr  io.Writer
 }
 
+// warnEmptyAllowVars warns when the merged profile carries no env
+// allowlist. An empty allow_vars is a misconfiguration rather than an
+// inherit-all request: EffectiveAllowVars resolves it to the operational
+// defaults, so ambient secrets and provider-auth vars are stripped and a
+// harness launched this way cannot authenticate.
+//
+// allowVars must be the profile list AFTER flag merge. `omac start` and
+// `omac serve` warn in their own layer and seed the defaults via
+// --allow-env, which lands here as a non-empty list — so a seeded launch
+// stays quiet and does not warn twice. What this covers is a direct
+// `omac sandbox run` against an empty profile, whose fail-closed behavior
+// otherwise has no warning surface at all. Sitting at the enforcement
+// point also covers profiles the launcher layer cannot inspect (its
+// warnings are gated on the `{{self}} sandbox run` command shape).
+func warnEmptyAllowVars(stderr io.Writer, allowVars []string) {
+	if len(allowVars) > 0 {
+		return
+	}
+	fmt.Fprintln(stderr, "omac sandbox: warning: empty environment.allow_vars — forwarding only the")
+	fmt.Fprintln(stderr, "  operational defaults (HOME, PATH, TERM, locale, …). Every other ambient var,")
+	fmt.Fprintln(stderr, "  including provider tokens, is stripped: a harness started this way will not")
+	fmt.Fprintln(stderr, "  authenticate. Add what it needs to allow_vars, pass --allow-env <name>, or set")
+	fmt.Fprintln(stderr, `  allow_vars: ["*"] to inherit every non-blocklisted var.`)
+}
+
 // Run is the `omac sandbox run` supervisor: resolve profile + flags,
 // start the filtering proxy, launch the sandboxed child, forward
 // signals, propagate the exit code, tear everything down. Returns the
@@ -62,6 +87,7 @@ func Run(opts Options) int {
 	if err := merged.Validate(); err != nil {
 		return fail("%v", err)
 	}
+	warnEmptyAllowVars(stderr, merged.Environment.AllowVars)
 
 	grants, err := ResolveGrants(merged, opts.Workdir, diag.Writer())
 	if err != nil {
@@ -200,7 +226,7 @@ func Run(opts Options) int {
 	// user where runtime diagnostics will land.
 	diag.AnnouncePath()
 
-	env := sandboxprofile.FilterEnv(os.Environ(), merged.Environment.AllowVars, injected)
+	env := sandboxprofile.FilterEnv(os.Environ(), sandboxprofile.EffectiveAllowVars(merged.Environment.AllowVars), merged.Environment.DenyVars, injected)
 	var onReady func(int)
 	if recorder != nil {
 		onReady = recorder.Start

@@ -199,7 +199,7 @@ func runToolThroughProxy(t *testing.T, omac string, proxy *netproxy.Server, inje
 	}
 
 	cmd := exec.Command(argv[0], argv[1:]...)
-	cmd.Env = sandboxprofile.FilterEnv(append(ambientPoison, os.Environ()...), nil, injected)
+	cmd.Env = sandboxprofile.FilterEnv(append(ambientPoison, os.Environ()...), nil, nil, injected)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		if ee, ok := err.(*exec.ExitError); ok {
@@ -365,7 +365,7 @@ func TestEnvLayeringDropsBlocklistAndOverlays(t *testing.T) {
 	proxy, _ := startHermeticProxy(t)
 	injected := injectedEnv(t, proxy)
 
-	env := sandboxprofile.FilterEnv(append(ambientPoison, os.Environ()...), nil, injected)
+	env := sandboxprofile.FilterEnv(append(ambientPoison, os.Environ()...), nil, nil, injected)
 
 	// Blocklist: JAVA_TOOL_OPTIONS is on dangerousEnvExact and must be absent.
 	for _, kv := range env {

@@ -5,6 +5,12 @@ the built-in sandbox. This section explains exactly what needs to be
 configured so the facade is reachable from inside a nono sandbox, with
 references to the relevant nono documentation pages.
 
+omac uses its built-in sandbox by default (Seatbelt on macOS, bubblewrap +
+Landlock on Linux). You may want nono instead if you need nono's credential
+injection, network profiles with interactive domain prompts, or are migrating
+from an existing nono setup. Select it with `omac start --sandbox nono`, or
+`--sandbox nono-netprofile` for domain-filtered outbound HTTP.
+
 ## Two transports, by design
 
 The facade binds **both** a Unix domain socket *and* a 127.0.0.1 TCP

@@ -54,14 +54,14 @@ func execRunner(name string, args ...string) ([]byte, error) {
 // List returns harness's prior sessions for workdir, most-recent first.
 // workdir SHOULD be absolute; it is cleaned before comparison.
 func List(h config.Harness, workdir string) ([]Session, error) {
-	return list(h, workdir, execRunner, claudeProjectsRoot(h), opencodeDBPath(), codexSessionsRoot(h), copilotDBPath(h), copilotStateDir(h), piSessionsRoot(h))
+	return list(h, workdir, execRunner, claudeProjectsRoot(h), opencodeDBPath(), codexSessionsRoot(h), copilotDBPath(h), copilotStateDir(h), piSessionsRoot(h), codewhaleDBPath(h))
 }
 
 // list is the testable core: callers inject the command runner, the Claude
 // projects root, the opencode SQLite db path, the codex sessions root, the
 // copilot SQLite db path, the copilot session-state dir (yaml fallback),
 // and the pi sessions root.
-func list(h config.Harness, workdir string, run runner, claudeRoot, ocDBPath, codexRoot, copilotDB, copilotState, piRoot string) ([]Session, error) {
+func list(h config.Harness, workdir string, run runner, claudeRoot, ocDBPath, codexRoot, copilotDB, copilotState, piRoot, codewhaleDB string) ([]Session, error) {
 	if h.Session == nil {
 		return nil, ErrUnsupported
 	}
@@ -77,6 +77,8 @@ func list(h config.Harness, workdir string, run runner, claudeRoot, ocDBPath, co
 		return listCopilot(workdir, copilotDB, copilotState), nil
 	case config.SessionListPi:
 		return listPi(workdir, piRoot), nil
+	case config.SessionListCodewhale:
+		return listCodewhale(workdir, codewhaleDB), nil
 	default:
 		return nil, ErrUnsupported
 	}
@@ -588,44 +590,19 @@ func listCopilotDB(workdir, dbPath string) []Session {
 	}
 	defer db.Close()
 	// Schema-gate: verify the sessions table has the expected columns.
-	cols, err := db.Query("PRAGMA table_info(sessions)")
-	if err != nil {
-		return nil
-	}
-	hasID, hasCWD, hasSummary, hasUpdated := false, false, false, false
-	for cols.Next() {
-		var cid int
-		var name, ctype string
-		var notnull, pk int
-		var dflt sql.NullString
-		if err := cols.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
-			cols.Close()
-			return nil
-		}
-		switch name {
-		case "id":
-			hasID = true
-		case "cwd":
-			hasCWD = true
-		case "summary":
-			hasSummary = true
-		case "updated_at":
-			hasUpdated = true
-		}
-	}
-	cols.Close()
-	if !hasID || !hasCWD {
+	cols := tableColumns(db, "sessions")
+	if !cols["id"] || !cols["cwd"] {
 		return nil
 	}
 	// Build query based on available columns.
 	idCol := "id"
 	cwdCol := "cwd"
 	summaryCol := "id"
-	if hasSummary {
+	if cols["summary"] {
 		summaryCol = "summary"
 	}
 	updatedCol := ""
-	if hasUpdated {
+	if cols["updated_at"] {
 		updatedCol = "updated_at"
 	}
 	q := "SELECT " + idCol + ", " + summaryCol + ", COALESCE(" + cwdCol + ", '') AS cwd"
@@ -838,4 +815,122 @@ func listPi(workdir, piRoot string) []Session {
 // import encoding/json directly for one-off parsing.
 func jsonUnmarshal(data []byte, v any) error {
 	return json.Unmarshal(data, v)
+}
+
+// --- CodeWhale backend ------------------------------------------------------
+
+// codewhaleDBPath returns CodeWhale's SQLite session store
+// (~/.codewhale/state.db), honoring CODEWHALE_HOME via ConfigHome(). Returns
+// "" when no config home resolves.
+func codewhaleDBPath(h config.Harness) string {
+	home := h.ConfigHome()
+	if home == "" {
+		return ""
+	}
+	return filepath.Join(home, "state.db")
+}
+
+// listCodewhale reads CodeWhale sessions for workdir from state.db. CodeWhale
+// stores one row per conversation in the `threads` table, with the workspace
+// path in `cwd`, a picker label in `title` (nullable) / `preview` (NOT NULL),
+// an `archived` flag, and `updated_at` in epoch SECONDS (Utc::now().timestamp()
+// — see CodeWhale crates/state/src/lib.rs). We open the db read-only so a live
+// CodeWhale session is never blocked, schema-gate the optional columns so a
+// future schema drift degrades instead of breaking, filter to this workdir,
+// drop archived threads, and order newest-first. Best-effort: any error
+// (missing db, locked, unrecognized schema) yields nil, never a hard failure.
+func listCodewhale(workdir, dbPath string) []Session {
+	if dbPath == "" {
+		return nil
+	}
+	if _, err := os.Stat(dbPath); err != nil {
+		return nil
+	}
+	dsn := "file:" + dbPath + "?mode=ro&_pragma=busy_timeout=500"
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return nil
+	}
+	defer db.Close()
+	cols := tableColumns(db, "threads")
+	if !cols["id"] {
+		return nil
+	}
+	// Picker label: first non-empty of title, preview, id.
+	label := "id"
+	switch {
+	case cols["title"] && cols["preview"]:
+		label = "COALESCE(NULLIF(title, ''), NULLIF(preview, ''), id)"
+	case cols["title"]:
+		label = "COALESCE(NULLIF(title, ''), id)"
+	case cols["preview"]:
+		label = "COALESCE(NULLIF(preview, ''), id)"
+	}
+	cwdSel := "''"
+	if cols["cwd"] {
+		cwdSel = "COALESCE(cwd, '')"
+	}
+	updatedSel, orderBy := "0", "rowid DESC"
+	if cols["updated_at"] {
+		updatedSel, orderBy = "updated_at", "updated_at DESC"
+	}
+	where := ""
+	if cols["archived"] {
+		where = "WHERE archived = 0 "
+	}
+	q := "SELECT id, " + label + " AS label, " + cwdSel + " AS cwd, " + updatedSel + " AS updated_at " +
+		"FROM threads " + where + "ORDER BY " + orderBy + " LIMIT 100"
+	rows, err := db.Query(q)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var sessions []Session
+	for rows.Next() {
+		var id, title, cwd string
+		var updated sql.NullInt64
+		if err := rows.Scan(&id, &title, &cwd, &updated); err != nil {
+			continue
+		}
+		if id == "" {
+			continue
+		}
+		if cwd != "" && filepath.Clean(cwd) != workdir {
+			continue
+		}
+		var when time.Time
+		if updated.Valid && updated.Int64 > 0 {
+			when = time.Unix(updated.Int64, 0)
+		}
+		if title == "" {
+			title = id
+		}
+		sessions = append(sessions, Session{ID: id, Title: title, When: when})
+	}
+	if len(sessions) == 0 {
+		return nil
+	}
+	return sessions
+}
+
+// tableColumns returns the set of column names on the given table, read via
+// PRAGMA table_info. The table name is a trusted literal (never user input),
+// so string interpolation here is safe. Returns an empty set on any error.
+func tableColumns(db *sql.DB, table string) map[string]bool {
+	set := map[string]bool{}
+	rows, err := db.Query("PRAGMA table_info(" + table + ")")
+	if err != nil {
+		return set
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid, notnull, pk int
+		var name, ctype string
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return set
+		}
+		set[name] = true
+	}
+	return set
 }
