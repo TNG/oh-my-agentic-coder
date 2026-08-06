@@ -224,6 +224,11 @@ func fakeTestGetenv(t *testing.T, home string) func(string) string {
 // field with a DaemonOwnership config that leaves JDKExecutable unset
 // (the brokered-wiring shape). The engine pre-resolves the JDK via
 // ResolveJDK BEFORE the prepare step; the pending record must carry it.
+//
+// The assertion runs INSIDE the verify closure: the engine writes the
+// pending record before launching the wrapper, so by the time the
+// handshake's verify runs the record is guaranteed present — no
+// sleep-based poll race.
 func TestRun_DaemonOwnership_JDKExecutableInPendingRecord(t *testing.T) {
 	requireEngineUnixSocket(t)
 	wrapper, release := blockingWrapper(t)
@@ -238,10 +243,12 @@ func TestRun_DaemonOwnership_JDKExecutableInPendingRecord(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve fake JDK: %v", err)
 	}
+	leaf := buildrun.GradleLeaf(cacheDir)
 
 	const pid = 5551
+	var checked int32
 	own := buildrun.DaemonOwnershipConfig{
-		CacheRoot:         cacheRoot,
+		CacheRoot: cacheRoot,
 		// JDKExecutable intentionally UNSET — the brokered-wiring shape
 		// (build_broker_wiring.go sets only CacheRoot). The engine must
 		// resolve it before writing the pending record.
@@ -250,6 +257,17 @@ func TestRun_DaemonOwnership_JDKExecutableInPendingRecord(t *testing.T) {
 			if receivedPID != pid {
 				return false, fmt.Errorf("pid mismatch: %d", receivedPID)
 			}
+			// The pending record is guaranteed to exist here (the engine
+			// wrote it before launching the wrapper). Assert it carries
+			// the resolved JDK executable — the Bug-1 invariant.
+			rec, err := buildcontrol.LoadDaemonRecord(cacheRoot, leaf)
+			if err != nil {
+				return false, fmt.Errorf("load pending record: %w", err)
+			}
+			if rec.JDKExecutable != wantJDK {
+				return false, fmt.Errorf("pending record JDKExecutable = %q, want %q (engine must pre-resolve the JDK before the prepare step)", rec.JDKExecutable, wantJDK)
+			}
+			atomic.StoreInt32(&checked, 1)
 			return true, nil
 		},
 	}
@@ -275,36 +293,18 @@ func TestRun_DaemonOwnership_JDKExecutableInPendingRecord(t *testing.T) {
 		})
 	}()
 
-	// Poll the pending record while the wrapper blocks (before release).
-	// The engine must have written it with the resolved JDK executable.
-	leaf := buildrun.GradleLeaf(cacheDir)
-	deadline := time.Now().Add(10 * time.Second)
-	var rec buildcontrol.DaemonRecord
-	for {
-		var lerr error
-		rec, lerr = buildcontrol.LoadDaemonRecord(cacheRoot, leaf)
-		if lerr == nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			release()
-			t.Fatalf("pending record never appeared within 10s (the empty-JDK bug would fail the prepare step first): %v\nstderr:\n%s", lerr, stderr.String())
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if rec.JDKExecutable != wantJDK {
-		release()
-		t.Errorf("pending record JDKExecutable = %q, want %q (engine must pre-resolve the JDK before the prepare step)", rec.JDKExecutable, wantJDK)
-	}
 	ack := dialHandshakeOnce(t, cacheRoot, pid)
 	if ack != '1' {
 		release()
-		t.Fatalf("handshake ack = %q, want '1'", string(ack))
+		t.Fatalf("handshake ack = %q, want '1' (a Bug-1 regression would make the prepare step fail → no channel → no ack)\nstderr:\n%s", string(ack), stderr.String())
 	}
 	release()
 	res := <-done
 	if res.Class != ClassSuccess {
 		t.Fatalf("class = %q, want %q\nstderr:\n%s", res.Class, ClassSuccess, stderr.String())
+	}
+	if atomic.LoadInt32(&checked) != 1 {
+		t.Error("pending-record JDKExecutable assertion did not run (the verify closure saw no record) — Bug 1 would manifest as an unverifiable build")
 	}
 }
 
