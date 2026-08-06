@@ -322,10 +322,10 @@ func TestBuildControlRoot_NotAncestorOfCacheScope(t *testing.T) {
 	reqID := "req-123"
 	trustedPaths := map[string]string{
 		"approval": ApprovalPath(cacheRoot, wt),
-		"portDir":   PortDir(cacheRoot, wt),
-		"lock":      LockPath(cacheRoot, leaf),
-		"daemon":    DaemonPath(cacheRoot, leaf),
-		"request":   RequestDir(cacheRoot, reqID),
+		"portDir":  PortDir(cacheRoot, wt),
+		"lock":     LockPath(cacheRoot, leaf),
+		"daemon":   DaemonPath(cacheRoot, leaf),
+		"request":  RequestDir(cacheRoot, reqID),
 	}
 	for name, p := range trustedPaths {
 		if !strings.HasPrefix(p, buildControlRoot+string(filepath.Separator)) {

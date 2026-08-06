@@ -59,7 +59,7 @@ type DaemonHandshakeChannel struct {
 	sockDirIsTemp bool
 	// cancelMu guards cancel + cancelClosed so Cancel is idempotent
 	// and safe to call concurrently with AwaitHandshake and Close.
-	cancelMu      sync.Mutex
+	cancelMu       sync.Mutex
 	cancelClosed   bool
 	cancelNotifyCh chan struct{}
 }

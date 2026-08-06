@@ -51,7 +51,7 @@ func TestReconcileDaemonOwnership_PendingRecordRetired(t *testing.T) {
 		Marker:        "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
 		LeafDigest:    buildcontrol.HashLeaf(leaf),
 		JDKExecutable: "/path/to/java",
-		RequestID:      "req-pending-1234",
+		RequestID:     "req-pending-1234",
 	}); err != nil {
 		t.Fatalf("WritePendingDaemonRecord: %v", err)
 	}
@@ -98,7 +98,7 @@ func TestReconcileDaemonOwnership_ActiveDeadPIDRetired(t *testing.T) {
 		Marker:        "cafebabecafebabecafebabecafebabecafebabecafebabecafebabecafebabe",
 		LeafDigest:    buildcontrol.HashLeaf(leaf),
 		JDKExecutable: "/path/to/java",
-		RequestID:      "req-active-dead-1234",
+		RequestID:     "req-active-dead-1234",
 	}); err != nil {
 		t.Fatalf("WritePendingDaemonRecord: %v", err)
 	}

@@ -195,7 +195,7 @@ func TestNewDaemonOwnerMarker_Unguessable(t *testing.T) {
 func TestRenderGradleProperties_DaemonOwnerMarker(t *testing.T) {
 	// Marker + MaxHeap: deterministic order (heap first, then marker).
 	s := RenderGradleProperties(GradlePropertiesConfig{
-		MaxHeap:            "1g",
+		MaxHeap:           "1g",
 		DaemonOwnerMarker: "abc123",
 	})
 	want := "org.gradle.jvmargs=-Xmx1g -Domac.daemon.owner=abc123\n"

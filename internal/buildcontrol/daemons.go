@@ -113,17 +113,17 @@ var ErrNoDaemonRecord = errors.New("buildcontrol: no daemon record for leaf")
 //     a retired record that has been deleted, since deletion removes
 //     the file).
 type DaemonRecord struct {
-	LeafHash       string    `json:"leaf_hash"`
-	State          string    `json:"state"`
-	Marker         string    `json:"marker"`
-	LeafDigest     string    `json:"leaf_digest"`
-	JDKExecutable  string    `json:"jdk_executable"`
-	RequestID      string    `json:"request_id"`
-	PID            int       `json:"pid"`
-	StartIdentity  string    `json:"start_identity"`
-	CreatedAt      time.Time `json:"created_at"`
-	PromotedAt     *time.Time `json:"promoted_at,omitempty"`
-	RetiredAt      *time.Time `json:"retired_at,omitempty"`
+	LeafHash      string     `json:"leaf_hash"`
+	State         string     `json:"state"`
+	Marker        string     `json:"marker"`
+	LeafDigest    string     `json:"leaf_digest"`
+	JDKExecutable string     `json:"jdk_executable"`
+	RequestID     string     `json:"request_id"`
+	PID           int        `json:"pid"`
+	StartIdentity string     `json:"start_identity"`
+	CreatedAt     time.Time  `json:"created_at"`
+	PromotedAt    *time.Time `json:"promoted_at,omitempty"`
+	RetiredAt     *time.Time `json:"retired_at,omitempty"`
 }
 
 // WritePendingDaemonRecord atomically writes a pending record for the

@@ -119,9 +119,9 @@ func dialHandshake(t *testing.T, sockPath string, pid int, marker string) byte {
 func TestPrepareDaemonOwnership_WritesPendingAndStartsChannel(t *testing.T) {
 	cacheRoot, leaf := ownershipTestEnv(t)
 	cfg := DaemonOwnershipConfig{
-		CacheRoot:      cacheRoot,
-		CanonicalLeaf:  leaf,
-		RequestID:       "req-test-1",
+		CacheRoot:     cacheRoot,
+		CanonicalLeaf: leaf,
+		RequestID:     "req-test-1",
 		JDKExecutable: "/path/to/java",
 	}
 	marker, ch, err := PrepareDaemonOwnership(cfg)
@@ -187,10 +187,10 @@ func TestAwaitDaemonOwnership_HappyPath_PromoteBeforeAck(t *testing.T) {
 	const pid = 4242
 	var promoted int32
 	cfg := DaemonOwnershipConfig{
-		CacheRoot:       cacheRoot,
-		CanonicalLeaf:   leaf,
-		RequestID:       "req-happy",
-		JDKExecutable:   "/path/to/java",
+		CacheRoot:         cacheRoot,
+		CanonicalLeaf:     leaf,
+		RequestID:         "req-happy",
+		JDKExecutable:     "/path/to/java",
 		HandshakeDeadline: 5 * time.Second,
 		Verify: func(receivedPID int) (bool, error) {
 			if receivedPID != pid {
@@ -340,7 +340,7 @@ func TestAwaitDaemonOwnership_VerifyFalse_NoAck_FailsClosed(t *testing.T) {
 		RequestID:         "req-verifyfalse",
 		JDKExecutable:     "/path/to/java",
 		HandshakeDeadline: 5 * time.Second,
-		Verify: func(int) (bool, error) { return false, nil },
+		Verify:            func(int) (bool, error) { return false, nil },
 	}
 	marker, ch, err := PrepareDaemonOwnership(cfg)
 	if err != nil {

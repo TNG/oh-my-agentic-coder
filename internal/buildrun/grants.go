@@ -415,12 +415,12 @@ func GrantsFor(worktree, cacheDir string, cfg BuildConfig) (*BuildGrants, error)
 	}
 	proxy := splitProxyEndpoint(cfg.ProxyURL)
 	gradleProps := GradlePropertiesConfig{
-		Proxy:              proxy,
-		MaxHeap:            maxHeap,
-		RegistryProxyURLs:  cfg.RegistryProxyURLs,
-		InstallationsPaths: installationsPaths,
-		TmpDir:             tmp,
-		DaemonOwnerMarker:  cfg.DaemonOwnerMarker,
+		Proxy:               proxy,
+		MaxHeap:             maxHeap,
+		RegistryProxyURLs:   cfg.RegistryProxyURLs,
+		InstallationsPaths:  installationsPaths,
+		TmpDir:              tmp,
+		DaemonOwnerMarker:   cfg.DaemonOwnerMarker,
 		DaemonHandshakeSock: cfg.DaemonHandshakeSock,
 	}
 	controlPaths, err := PrepareControlState(leaf, gradleProps)
