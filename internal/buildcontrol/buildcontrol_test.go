@@ -22,11 +22,13 @@ func TestHash_StableAndDistinct(t *testing.T) {
 	if HashWorktree(wt1) == HashWorktree(wt2) {
 		t.Error("distinct worktrees hashed the same")
 	}
-	if HashLeaf(leaf1) != HashLeaf(leaf1) {
+	leafHash1 := HashLeaf(leaf1)
+	leafHash2 := HashLeaf(leaf1)
+	if leafHash1 != leafHash2 {
 		t.Error("hash not stable")
 	}
 	// Shared leaf but distinct worktrees: leaf hash equal, worktree hash distinct.
-	if HashLeaf(leaf1) != HashLeaf(leaf1) {
+	if leafHash1 != HashLeaf(leaf1) {
 		t.Error("leaf hash not stable")
 	}
 	if HashWorktree(wt1) == HashWorktree(wt2) {
@@ -58,7 +60,9 @@ func TestPaths_UnderRoot(t *testing.T) {
 	}
 	// Shared leaf, distinct worktrees: same lock path, distinct approval/port paths.
 	wt2 := "/repo/other-worktree"
-	if LockPath(root, leaf) != LockPath(root, leaf) {
+	lockPath1 := LockPath(root, leaf)
+	lockPath2 := LockPath(root, leaf)
+	if lockPath1 != lockPath2 {
 		t.Error("leaf lock path not stable")
 	}
 	if ApprovalPath(root, wt) == ApprovalPath(root, wt2) {

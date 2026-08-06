@@ -510,14 +510,6 @@ func dialEngineHandshake(t *testing.T, sockPath string, pid int, marker string) 
 	return ack[0]
 }
 
-// sockPathForRequest returns the daemon-handshake socket path the
-// engine's PrepareDaemonOwnership creates for the given cacheRoot +
-// requestID, so the test can dial it (the engine does not expose the
-// channel's SockPath to the caller).
-func sockPathForRequest(cacheRoot, requestID string) string {
-	return filepath.Join(buildcontrol.RequestDir(cacheRoot, requestID), "daemon.sock")
-}
-
 // TestRun_DaemonOwnership_HappyPath asserts the full Phase-3 engine
 // wiring: the engine mints the marker, writes the pending record,
 // starts the handshake channel, threads marker + sock into BuildConfig
@@ -589,7 +581,7 @@ func TestRun_DaemonOwnership_HappyPath(t *testing.T) {
 		entries, err := os.ReadDir(filepath.Join(cacheRoot, "build-control", "requests"))
 		if err == nil {
 			for _, e := range entries {
-				sock := filepath.Join(cacheRoot, "build-control", "requests", e.Name(), "daemon.sock")
+				sock := buildrun.DaemonHandshakeSockPath(buildcontrol.RequestDir(cacheRoot, e.Name()))
 				if _, serr := os.Stat(sock); serr == nil {
 					// Read the marker from the pending record to echo
 					// it back (the engine minted it; the test does not
@@ -675,7 +667,7 @@ func TestRun_DaemonOwnership_HandshakeFailureFailsClosed(t *testing.T) {
 		entries, err := os.ReadDir(filepath.Join(cacheRoot, "build-control", "requests"))
 		if err == nil {
 			for _, e := range entries {
-				sock := filepath.Join(cacheRoot, "build-control", "requests", e.Name(), "daemon.sock")
+				sock := buildrun.DaemonHandshakeSockPath(buildcontrol.RequestDir(cacheRoot, e.Name()))
 				if _, serr := os.Stat(sock); serr == nil {
 					leaf := buildrun.GradleLeaf(cacheDir)
 					rec, _ := buildcontrol.LoadDaemonRecord(cacheRoot, leaf)
