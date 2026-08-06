@@ -176,6 +176,9 @@ func DeleteByService(service, account string) error {
 // callers (register, secrets set) use it instead to attach an actionable,
 // OS-specific hint rather than surfacing the raw backend error verbatim.
 func IsUnavailable(err error) bool {
+	if errors.Is(err, ErrBackendUnavailable) {
+		return true
+	}
 	msg := err.Error()
 	// Linux: org.freedesktop.secrets not provided by any .service files
 	// (dbus.ServiceUnknown when no Secret Service implementation is running).

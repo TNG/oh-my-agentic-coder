@@ -628,12 +628,16 @@ func Run(opts Options) Result {
 		fmt.Sprintf("request=%s adapter=gradle root=%s args=%d", penv.BuildRequestID, resolved.ProjectDir, len(resolved.Args))))
 
 	// Resolve the JDK executable for the ownership verify closure
-	// AFTER GrantsFor (GrantsFor owns JDK resolution). If the ownership
-	// path is wired but no JDK could be resolved, the daemon cannot be
-	// verified → fail closed as a service failure (spec.md §238 — the
-	// executable match is a required identity field; an empty
-	// JDKExecutable means procidentity.Verify would never match).
-	if ownerReady {
+	// AFTER GrantsFor (GrantsFor owns JDK resolution). The default
+	// verifier (DefaultDaemonOwnershipVerifier) calls procidentity.Verify
+	// which requires the resolved JDK executable — an empty
+	// JDKExecutable means procidentity.Verify would never match, so the
+	// build fails closed as a service failure (spec.md §238 — the
+	// executable match is a required identity field). A custom Verify
+	// closure (tests, or a future non-procidentity verifier) owns its
+	// own verification logic and may not need the JDK executable, so
+	// the gate is only enforced when the default verifier is in use.
+	if ownerReady && own.Verify == nil {
 		own.JDKExecutable = grants.JDKExecutable()
 		if !own.VerifyReady() {
 			return failService("daemon ownership wired but JDK executable unresolved — cannot verify the daemon")

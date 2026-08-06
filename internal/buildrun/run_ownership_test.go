@@ -105,7 +105,10 @@ func dialHandshake(t *testing.T, sockPath string, pid int, marker string) byte {
 	}
 	ack := make([]byte, 1)
 	if _, err := conn.Read(ack); err != nil {
-		t.Fatalf("read handshake ack: %v", err)
+		// EOF = host closed without ack (verify false / marker
+		// mismatch / verify error). Return 0 so callers can
+		// distinguish "no ack" from a real ack byte.
+		return 0
 	}
 	return ack[0]
 }
@@ -354,7 +357,7 @@ func TestAwaitDaemonOwnership_VerifyFalse_NoAck_FailsClosed(t *testing.T) {
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		if _, statErr := os.Stat(ch.SockPath()); statErr == nil {
-			dialHandshake(t, ch.SockPath(), pid, marker) // verify=false → no ack → EOF read returns 0; dialHandshake fatals on read err
+			dialHandshake(t, ch.SockPath(), pid, marker) // verify=false → no ack → EOF read returns 0
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
