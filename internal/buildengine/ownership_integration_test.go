@@ -190,18 +190,18 @@ func TestRun_DaemonOwnership_PostBuildRecycleRunsInSandbox(t *testing.T) {
 	done := make(chan Result, 1)
 	go func() {
 		done <- Run(Options{
-			Workdir:          wt,
-			RawArgs:          []string{"--root", ".", "--", "gradle", ":help"},
-			Stdout:           io.Discard,
-			Stderr:           &stderr,
-			CacheDir:         cacheDir,
-			CacheRoot:        cacheRoot,
-			CloseScope:       closeScope,
-			Auditor:          audit.Nop(),
-			Snapshot:         fakeSnapshotProvider,
-			Proxies:          fakeProxyStarter,
-			Launcher:         rl.launch,
-			DaemonOwnership:  own,
+			Workdir:         wt,
+			RawArgs:         []string{"--root", ".", "--", "gradle", ":help"},
+			Stdout:          io.Discard,
+			Stderr:          &stderr,
+			CacheDir:        cacheDir,
+			CacheRoot:       cacheRoot,
+			CloseScope:      closeScope,
+			Auditor:         audit.Nop(),
+			Snapshot:        fakeSnapshotProvider,
+			Proxies:         fakeProxyStarter,
+			Launcher:        rl.launch,
+			DaemonOwnership: own,
 		})
 	}()
 
@@ -267,19 +267,19 @@ func TestRun_DaemonOwnership_GracefulCancelKeepsSupervisorAlive(t *testing.T) {
 	done := make(chan Result, 1)
 	go func() {
 		done <- Run(Options{
-			Workdir:          wt,
-			RawArgs:          []string{"--root", ".", "--", "gradle", ":help"},
-			Stdout:           io.Discard,
-			Stderr:           &stderr,
-			CacheDir:         cacheDir,
-			CacheRoot:        cacheRoot,
-			CloseScope:       closeScope,
-			Auditor:          audit.Nop(),
-			Snapshot:         fakeSnapshotProvider,
-			Proxies:          fakeProxyStarter,
-			Launcher:         rl.launch,
-			Cancel:           cancel,
-			DaemonOwnership:  own,
+			Workdir:         wt,
+			RawArgs:         []string{"--root", ".", "--", "gradle", ":help"},
+			Stdout:          io.Discard,
+			Stderr:          &stderr,
+			CacheDir:        cacheDir,
+			CacheRoot:       cacheRoot,
+			CloseScope:      closeScope,
+			Auditor:         audit.Nop(),
+			Snapshot:        fakeSnapshotProvider,
+			Proxies:         fakeProxyStarter,
+			Launcher:        rl.launch,
+			Cancel:          cancel,
+			DaemonOwnership: own,
 		})
 	}()
 
@@ -345,20 +345,20 @@ func TestRun_DaemonOwnership_ForcedCancelKeepsSupervisorAlive(t *testing.T) {
 	done := make(chan Result, 1)
 	go func() {
 		done <- Run(Options{
-			Workdir:          wt,
-			RawArgs:          []string{"--root", ".", "--", "gradle", ":help"},
-			Stdout:           io.Discard,
-			Stderr:           &stderr,
-			CacheDir:         cacheDir,
-			CacheRoot:        cacheRoot,
-			CloseScope:       closeScope,
-			Auditor:          audit.Nop(),
-			Snapshot:         fakeSnapshotProvider,
-			Proxies:          fakeProxyStarter,
-			Launcher:         rl.launch,
-			Cancel:           graceful,
-			ForceCancel:      force,
-			DaemonOwnership:  own,
+			Workdir:         wt,
+			RawArgs:         []string{"--root", ".", "--", "gradle", ":help"},
+			Stdout:          io.Discard,
+			Stderr:          &stderr,
+			CacheDir:        cacheDir,
+			CacheRoot:       cacheRoot,
+			CloseScope:      closeScope,
+			Auditor:         audit.Nop(),
+			Snapshot:        fakeSnapshotProvider,
+			Proxies:         fakeProxyStarter,
+			Launcher:        rl.launch,
+			Cancel:          graceful,
+			ForceCancel:     force,
+			DaemonOwnership: own,
 		})
 	}()
 
@@ -435,18 +435,18 @@ func TestRun_DaemonOwnership_PendingPublishedBeforeLaunch(t *testing.T) {
 	pendingBeforeMarker := int32(0)
 	go func() {
 		done <- Run(Options{
-			Workdir:          wt,
-			RawArgs:          []string{"--root", ".", "--", "gradle", ":help"},
-			Stdout:           io.Discard,
-			Stderr:           &stderr,
-			CacheDir:         cacheDir,
-			CacheRoot:        cacheRoot,
-			CloseScope:       closeScope,
-			Auditor:          audit.Nop(),
-			Snapshot:         fakeSnapshotProvider,
-			Proxies:          fakeProxyStarter,
-			Launcher:         buildrun.NoSandboxLauncher,
-			DaemonOwnership:  own,
+			Workdir:         wt,
+			RawArgs:         []string{"--root", ".", "--", "gradle", ":help"},
+			Stdout:          io.Discard,
+			Stderr:          &stderr,
+			CacheDir:        cacheDir,
+			CacheRoot:       cacheRoot,
+			CloseScope:      closeScope,
+			Auditor:         audit.Nop(),
+			Snapshot:        fakeSnapshotProvider,
+			Proxies:         fakeProxyStarter,
+			Launcher:        buildrun.NoSandboxLauncher,
+			DaemonOwnership: own,
 		})
 	}()
 
@@ -503,25 +503,25 @@ func TestRun_DaemonOwnership_SupervisorLossInvokesVerifiedCleanup(t *testing.T) 
 		CacheRoot:         cacheRoot,
 		JDKExecutable:     "/path/to/java",
 		HandshakeDeadline: 10 * time.Second,
-		Verify: func(int) (bool, error) { return false, verifyErr },
+		Verify:            func(int) (bool, error) { return false, verifyErr },
 	}
 
 	var stderr bytes.Buffer
 	done := make(chan Result, 1)
 	go func() {
 		done <- Run(Options{
-			Workdir:          wt,
-			RawArgs:          []string{"--root", ".", "--", "gradle", ":help"},
-			Stdout:           io.Discard,
-			Stderr:           &stderr,
-			CacheDir:         cacheDir,
-			CacheRoot:        cacheRoot,
-			CloseScope:       closeScope,
-			Auditor:          audit.Nop(),
-			Snapshot:         fakeSnapshotProvider,
-			Proxies:          fakeProxyStarter,
-			Launcher:         buildrun.NoSandboxLauncher,
-			DaemonOwnership:  own,
+			Workdir:         wt,
+			RawArgs:         []string{"--root", ".", "--", "gradle", ":help"},
+			Stdout:          io.Discard,
+			Stderr:          &stderr,
+			CacheDir:        cacheDir,
+			CacheRoot:       cacheRoot,
+			CloseScope:      closeScope,
+			Auditor:         audit.Nop(),
+			Snapshot:        fakeSnapshotProvider,
+			Proxies:         fakeProxyStarter,
+			Launcher:        buildrun.NoSandboxLauncher,
+			DaemonOwnership: own,
 		})
 	}()
 

@@ -565,17 +565,17 @@ func TestRun_DaemonOwnership_HappyPath(t *testing.T) {
 	done := make(chan Result, 1)
 	go func() {
 		done <- Run(Options{
-			Workdir:    wt,
-			RawArgs:    []string{"--root", ".", "--", "gradle", ":help"},
-			Stdout:     io.Discard,
-			Stderr:     &stderr,
-			CacheDir:   cacheDir,
-			CacheRoot:  cacheRoot,
-			CloseScope: closeScope,
-			Auditor:    audit.Nop(),
-			Snapshot:   fakeSnapshotProvider,
-			Proxies:    fakeProxyStarter,
-			Launcher:   buildrun.NoSandboxLauncher,
+			Workdir:         wt,
+			RawArgs:         []string{"--root", ".", "--", "gradle", ":help"},
+			Stdout:          io.Discard,
+			Stderr:          &stderr,
+			CacheDir:        cacheDir,
+			CacheRoot:       cacheRoot,
+			CloseScope:      closeScope,
+			Auditor:         audit.Nop(),
+			Snapshot:        fakeSnapshotProvider,
+			Proxies:         fakeProxyStarter,
+			Launcher:        buildrun.NoSandboxLauncher,
 			DaemonOwnership: own,
 		})
 	}()
@@ -645,24 +645,24 @@ func TestRun_DaemonOwnership_HandshakeFailureFailsClosed(t *testing.T) {
 		CacheRoot:         cacheRoot,
 		JDKExecutable:     "/path/to/java",
 		HandshakeDeadline: 10 * time.Second,
-		Verify: func(int) (bool, error) { return false, nil },
+		Verify:            func(int) (bool, error) { return false, nil },
 	}
 
 	var stderr bytes.Buffer
 	done := make(chan Result, 1)
 	go func() {
 		done <- Run(Options{
-			Workdir:    wt,
-			RawArgs:    []string{"--root", ".", "--", "gradle", ":help"},
-			Stdout:     io.Discard,
-			Stderr:     &stderr,
-			CacheDir:   cacheDir,
-			CacheRoot:  cacheRoot,
-			CloseScope: closeScope,
-			Auditor:    audit.Nop(),
-			Snapshot:   fakeSnapshotProvider,
-			Proxies:    fakeProxyStarter,
-			Launcher:   buildrun.NoSandboxLauncher,
+			Workdir:         wt,
+			RawArgs:         []string{"--root", ".", "--", "gradle", ":help"},
+			Stdout:          io.Discard,
+			Stderr:          &stderr,
+			CacheDir:        cacheDir,
+			CacheRoot:       cacheRoot,
+			CloseScope:      closeScope,
+			Auditor:         audit.Nop(),
+			Snapshot:        fakeSnapshotProvider,
+			Proxies:         fakeProxyStarter,
+			Launcher:        buildrun.NoSandboxLauncher,
 			DaemonOwnership: own,
 		})
 	}()

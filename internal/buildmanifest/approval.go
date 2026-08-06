@@ -91,9 +91,9 @@ type ActiveRecord struct {
 // behavior-preserving. Production wires BuildControl via
 // NewBuildControlLocation.
 type Location struct {
-	kind          locationKind
-	cacheRoot     string // BuildControl: shared cache root (~/.cache/omac)
-	worktree      string // BuildControl: canonical worktree
+	kind      locationKind
+	cacheRoot string // BuildControl: shared cache root (~/.cache/omac)
+	worktree  string // BuildControl: canonical worktree
 }
 
 type locationKind int
@@ -348,8 +348,8 @@ func sliceMinus(a, b []string) []string {
 	return out
 }
 
-func approvalPath(leaf string) string   { return filepath.Join(leaf, ControlDir, ApprovalFilename) }
-func activePath(leaf string) string     { return filepath.Join(leaf, ControlDir, ActiveFilename) }
+func approvalPath(leaf string) string { return filepath.Join(leaf, ControlDir, ApprovalFilename) }
+func activePath(leaf string) string   { return filepath.Join(leaf, ControlDir, ActiveFilename) }
 
 // approvalPathAt returns the approval record path for the given
 // location. OnLeaf → `<leaf>/.omac-control/manifest-approval.json`;

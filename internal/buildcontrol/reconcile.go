@@ -42,22 +42,22 @@ import (
 //
 // The contract mirrors procidentity.Verify:
 //
-//	Verify(pid, expectedJDKExecutable, expectedStart) (verified bool, id Identity, err error)
+//		Verify(pid, expectedJDKExecutable, expectedStart) (verified bool, id Identity, err error)
 //
-//   - verified=true  → process is live and matches (executable,
-//     main class, and — when expectedStart is non-empty — start
-//     identity).
-//   - verified=false → process is live but does NOT match (executable
-//     mismatch, main class missing, or start-identity changed / PID
-//     reused). Reconcile retires the record.
-//   - err == procidentity.ErrNoSuchProcess → the pid is not alive.
-//     Reconcile retires the record.
-//   - err == procidentity.ErrUnverifiable → the platform cannot
-//     determine the identity (e.g. a sandbox blocks /proc or libproc).
-//     Reconcile leaves the record; the leaf is blocked (fail closed)
-//     at build time.
-//   - any other err → treated like ErrUnverifiable (leave the record,
-//     block the leaf).
+//	  - verified=true  → process is live and matches (executable,
+//	    main class, and — when expectedStart is non-empty — start
+//	    identity).
+//	  - verified=false → process is live but does NOT match (executable
+//	    mismatch, main class missing, or start-identity changed / PID
+//	    reused). Reconcile retires the record.
+//	  - err == procidentity.ErrNoSuchProcess → the pid is not alive.
+//	    Reconcile retires the record.
+//	  - err == procidentity.ErrUnverifiable → the platform cannot
+//	    determine the identity (e.g. a sandbox blocks /proc or libproc).
+//	    Reconcile leaves the record; the leaf is blocked (fail closed)
+//	    at build time.
+//	  - any other err → treated like ErrUnverifiable (leave the record,
+//	    block the leaf).
 type DaemonVerifier func(pid int, expectedJDKExecutable, expectedStart string) (bool, procidentity.Identity, error)
 
 // defaultDaemonVerifier is procidentity.Verify, captured at package
