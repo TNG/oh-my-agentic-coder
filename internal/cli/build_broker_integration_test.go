@@ -24,7 +24,7 @@ func TestStartWiring_BrokerExposedOnLoopbackAndAuthorizesSessionWorktree(t *test
 	// Build a broker with the start authorizer the way runLaunch does.
 	// A stub engine records the authorized worktree.
 	var (
-		mu         sync.Mutex
+		mu          sync.Mutex
 		gotWorktree string
 	)
 	stub := func(worktree string, args []string, stdout, stderr io.Writer, graceful, force <-chan struct{}) buildengine.Result {

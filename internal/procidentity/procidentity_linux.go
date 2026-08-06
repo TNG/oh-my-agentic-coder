@@ -66,8 +66,8 @@ func identifyNative(pid int) (Identity, error) {
 	}
 
 	return Identity{
-		Executable:   exe,
-		MainClass:    mainClass,
+		Executable:    exe,
+		MainClass:     mainClass,
 		StartIdentity: startTime,
 	}, nil
 }
