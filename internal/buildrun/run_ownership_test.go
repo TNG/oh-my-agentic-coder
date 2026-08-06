@@ -162,6 +162,31 @@ func TestPrepareDaemonOwnership_WritesPendingAndStartsChannel(t *testing.T) {
 	}
 }
 
+// TestPrepareDaemonOwnership_RequiresJDKExecutable pins the contract
+// that the pending record carries the resolved JDK executable at write
+// time (brokered-build fix: the engine pre-resolves the JDK BEFORE the
+// prepare step so WritePendingDaemonRecord never receives an empty
+// field). An empty JDKExecutable must fail the prepare step with the
+// missing-field error.
+func TestPrepareDaemonOwnership_RequiresJDKExecutable(t *testing.T) {
+	cacheRoot, leaf := ownershipTestEnv(t)
+	cfg := DaemonOwnershipConfig{
+		CacheRoot:     cacheRoot,
+		CanonicalLeaf: leaf,
+		RequestID:     "req-empty-jdk",
+		// JDKExecutable intentionally empty: the record cannot be
+		// written without it (procidentity.Verify would never match,
+		// so a pending record without it is unverifiable).
+	}
+	_, _, err := PrepareDaemonOwnership(cfg)
+	if err == nil {
+		t.Fatal("PrepareDaemonOwnership with empty JDKExecutable: expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "missing required field") {
+		t.Errorf("error = %v, want the missing-required-field diagnostic", err)
+	}
+}
+
 // TestPrepareDaemonOwnership_DisabledWhenFieldsZero asserts the
 // behavior-preserving contract: when ANY of CacheRoot/CanonicalLeaf/
 // RequestID is zero, PrepareDaemonOwnership returns an error (the

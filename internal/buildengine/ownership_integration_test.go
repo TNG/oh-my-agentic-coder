@@ -189,6 +189,125 @@ func readPendingMarker(t *testing.T, cacheRoot string) string {
 	return ""
 }
 
+// fakeTestGetenv returns a BuildConfig getenv seam rooted at a fake JDK
+// install: JAVA_HOME=<home> (with <home>/bin/java executable on disk).
+// The engine's ownership prepare pre-resolves the JDK executable via
+// ResolveJDK; the fake install pins the expected value deterministically
+// without depending on the host's JDK layout.
+func fakeTestGetenv(t *testing.T, home string) func(string) string {
+	t.Helper()
+	binDir := filepath.Join(home, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// A regular executable file (not a shim script). ResolveJDK accepts
+	// an executable regular file or a symlink chain to one; an empty
+	// executable file satisfies its realJava check without executing it.
+	if err := os.WriteFile(filepath.Join(binDir, "java"), []byte{}, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return func(key string) string {
+		if key == "JAVA_HOME" {
+			return home
+		}
+		if key == "PATH" {
+			return "/usr/bin"
+		}
+		return ""
+	}
+}
+
+// TestRun_DaemonOwnership_JDKExecutableInPendingRecord asserts the
+// brokered-build invariant (the user-reported failure): the pending
+// DaemonRecord the prepare step writes carries the resolved JDK
+// executable, so WritePendingDaemonRecord never receives an empty
+// field with a DaemonOwnership config that leaves JDKExecutable unset
+// (the brokered-wiring shape). The engine pre-resolves the JDK via
+// ResolveJDK BEFORE the prepare step; the pending record must carry it.
+func TestRun_DaemonOwnership_JDKExecutableInPendingRecord(t *testing.T) {
+	requireEngineUnixSocket(t)
+	wrapper, release := blockingWrapper(t)
+	wt, cacheDir, closeScope := engineTestEnv(t, wrapper)
+	chmodInitDForCleanup(t, filepath.Join(cacheDir, "gradle"))
+	cacheRoot := shortCacheRootForOwnership(t)
+	fakeHome := filepath.Join(t.TempDir(), "fake-jdk")
+	getenv := fakeTestGetenv(t, fakeHome)
+	// ResolveJDK resolves <home>/bin/java through EvalSymlinks; the
+	// pending record must carry exactly that value.
+	wantJDK, err := filepath.EvalSymlinks(filepath.Join(fakeHome, "bin", "java"))
+	if err != nil {
+		t.Fatalf("resolve fake JDK: %v", err)
+	}
+
+	const pid = 5551
+	own := buildrun.DaemonOwnershipConfig{
+		CacheRoot:         cacheRoot,
+		// JDKExecutable intentionally UNSET — the brokered-wiring shape
+		// (build_broker_wiring.go sets only CacheRoot). The engine must
+		// resolve it before writing the pending record.
+		HandshakeDeadline: 10 * time.Second,
+		Verify: func(receivedPID int) (bool, error) {
+			if receivedPID != pid {
+				return false, fmt.Errorf("pid mismatch: %d", receivedPID)
+			}
+			return true, nil
+		},
+	}
+
+	rl := &recordingLauncher{}
+	var stderr bytes.Buffer
+	done := make(chan Result, 1)
+	go func() {
+		done <- Run(Options{
+			Workdir:         wt,
+			RawArgs:         []string{"--root", ".", "--", "gradle", ":help"},
+			Stdout:          io.Discard,
+			Stderr:          &stderr,
+			CacheDir:        cacheDir,
+			CacheRoot:       cacheRoot,
+			CloseScope:      closeScope,
+			Auditor:         audit.Nop(),
+			Snapshot:        fakeSnapshotProvider,
+			Proxies:         fakeProxyStarter,
+			Launcher:        rl.launch,
+			DaemonOwnership: own,
+			Getenv:          getenv,
+		})
+	}()
+
+	// Poll the pending record while the wrapper blocks (before release).
+	// The engine must have written it with the resolved JDK executable.
+	leaf := buildrun.GradleLeaf(cacheDir)
+	deadline := time.Now().Add(10 * time.Second)
+	var rec buildcontrol.DaemonRecord
+	for {
+		var lerr error
+		rec, lerr = buildcontrol.LoadDaemonRecord(cacheRoot, leaf)
+		if lerr == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			release()
+			t.Fatalf("pending record never appeared within 10s (the empty-JDK bug would fail the prepare step first): %v\nstderr:\n%s", lerr, stderr.String())
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if rec.JDKExecutable != wantJDK {
+		release()
+		t.Errorf("pending record JDKExecutable = %q, want %q (engine must pre-resolve the JDK before the prepare step)", rec.JDKExecutable, wantJDK)
+	}
+	ack := dialHandshakeOnce(t, cacheRoot, pid)
+	if ack != '1' {
+		release()
+		t.Fatalf("handshake ack = %q, want '1'", string(ack))
+	}
+	release()
+	res := <-done
+	if res.Class != ClassSuccess {
+		t.Fatalf("class = %q, want %q\nstderr:\n%s", res.Class, ClassSuccess, stderr.String())
+	}
+}
+
 // TestRun_DaemonOwnership_PostBuildRecycleRunsInSandbox asserts the
 // Phase-3 supervisor requirement (spec.md §236): "post-build recycle
 // stays inside one restricted executor lifecycle." The engine must run
