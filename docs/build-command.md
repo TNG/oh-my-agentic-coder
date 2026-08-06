@@ -1,9 +1,31 @@
 # `omac build` — established OMAC contract mapping
 
-Ticket: `03-run-safe-gradle-build-request` (JVM build executor v0).
-Spec requirement: the implementation must reuse existing OMAC types and
-lifecycle conventions where they fit and document any deviation before
-introducing it. One row per contract dimension; status is current for v0.
+Tickets: `03-run-safe-gradle-build-request` (JVM build executor v0) and the
+host build broker follow-ups (`04-extract-buildengine-prefactor`,
+`05-host-build-broker-managed-build`, `06-lock-control-state-approval-hardening`,
+`07-daemon-ownership-safe-stop`). Spec: `.scratch/jvm-build-executor-follow-ups/spec.md`.
+
+`omac build` has two execution paths, both routed through the same
+transport-independent `internal/buildengine`:
+
+- **Direct host-terminal path** — when the CLI runs outside a managed OMAC
+  session (no `OMAC_BUILD_BROKER_REQUIRED` marker), `omac build` runs the
+  build engine in-process. This is the original v0 path; it is unchanged
+  for host workflows (spec §52).
+- **Managed (agent) path** — when the CLI runs inside an `omac start` /
+  `omac serve` parent session, the parent injects `OMAC_BUILD_BROKER_REQUIRED=1`
+  plus `OMAC_CONTROL_BASE` and `OMAC_BUILD_TOKEN`. The CLI is a thin
+  client that submits a build request to the parent's host build broker
+  (`internal/buildbroker`) over the loopback control plane. The broker
+  performs host-only orchestration (manifest/policy evaluation, keychain
+  access, proxy lifecycle, leaf-keyed serialization, restricted executor
+  launch, cancellation, cleanup) while repository-controlled build code
+  still runs only inside the restricted JVM build executor (ADRs 0001,
+  0002, 0004). The broker is session-scoped and in-process in the parent
+  (per ADR 0004 — a managed sidecar is deferred).
+
+The contract mapping table below is current for v0; the brokered path
+reuses the same engine, so the per-dimension deviations are unchanged.
 
 | Dimension | Reused component | Deviation / reason |
 |---|---|---|
@@ -14,9 +36,79 @@ introducing it. One row per contract dimension; status is current for v0.
 | **Grant derivation** | `sandboxrun.Grants` shape + platform baseline protected paths (`~/.gradle`, `~/.ssh`, cloud dirs stay denied even under broad grants) | the grant *profile* is constructed programmatically in `buildrun.GrantsFor` rather than loaded from a named YAML profile, because the executor grant set is fixed by architecture (worktree + resolved cache leaf + private temp), not user-configured |
 | **GRADLE_USER_HOME / cache scope** | `internal/toolcache`: `config.LoadLauncher` → `Cache.Resolve`, then the SAME `start.go:prepareLaunchCache` the launch path uses (no duplicate switch in build.go); `$cache/gradle` leaf per spec §Gradle State. Only the gradle leaf itself (plus private temp + worktree) is granted rw — never the cache scope dir, so sibling tool caches (go/npm/pip) stay unwritable by the executor | none — no hardcoded paths; the shared LOCK_SH lock re-acquired by `omac build` inside a parent session is compatible (flock shared locks compose) |
 | **Cancellation** | process-group staged shutdown (`Setpgid` + `kill(-pgid, …)`), the same staged graceful-then-kill model as `internal/sandbox/launcher.go` (graceful deadline → SIGKILL). The hard stage fires only while the child is unreaped — a reaped child's pgid could already be recycled by an unrelated process group, so the SIGKILL is skipped once `Wait` has returned | SIGINT/SIGTERM are consumed by omac and mapped to a **distinct exit code 4** preceded by the `omac build: cancelled` stderr marker, instead of being forwarded as the child's 128+n; the ticket's exit-code contract requires cancellation to be distinguishable from a build killed by a stray signal, which pure forwarding cannot express, and exit code 4 alone would collide with a raw `gradle exit 4` |
-| **Health / authentication** | — | **deferred**: both belong to the supervisor/sidecar layer (facade), which v0 deliberately does not introduce. There is no long-lived build service to health-check and no ambient caller to authenticate: the invoking process *is* the authority boundary (anyone who can run `omac` can run `omac build`, same as `omac sandbox run`). Lands with the executor-service ticket |
+| **Health / authentication** | the host build broker (`internal/buildbroker`) authenticates managed build requests with a per-parent cryptographically random bearer token (constant-time compare); the broker is session-scoped and in-process in the `start`/`serve` parent (ADR 0004 — a managed sidecar is deferred) | the direct host-terminal path has no long-lived build service to health-check and no ambient caller to authenticate: the invoking process *is* the authority boundary (anyone who can run `omac` can run `omac build`, same as `omac sandbox run`). The brokered path added the dedicated token + loopback-only endpoint registration (tickets 05–07) |
 | **Audit** | `internal/audit`: JSONL trail via `audit.New` (best-effort, non-strict — a build never fails because the log is unavailable), `InnerExec` for the build request, `ProcessExit` for the result, `ControlMutation` for request receipt and cancellation. Sanitized metadata only — argv is task names, never credential values (credentials cannot enter the executor by construction: env pass-through is a fixed allowlist) | event types reused rather than new `build.*` types, per "reuse established patterns"; the `build.request`/`build.cancel` ControlMutation actions carry adapter/root/arg-count only |
 | **Errors / diagnostics** | `omac build: <msg>` stderr style (per `omac sandbox:`), structured policy-denial phrases per spec §Diagnostics: denials name the rejected root/wrapper, the containment rule violated (outside-worktree / symlink escape), and that no build code ran; a removed-capability denial would name the manifest path + restart requirement (no runtime capability denials exist in v0 — network is fully blocked and nothing is requestable yet) | exit codes 3 (policy), 4 (cancellation), and 10 (service failure) are command-local reservations chosen to avoid *every* collision, not just with the global table: Gradle's own build-failure code is 1, its CLI misuse is 2, and 126/127/128+n are shell signal conventions. `cli.go`'s global `ExitConfigInvalid=3` / `ExitPrerequisiteMissing=4` are different domains (the global codes were assigned for `start`/`serve`); `build.go` documents its contract in help text |
+
+## Managed build path (brokered execution via the `start`/`serve` parent)
+
+When an agent invokes `omac build` from inside a managed `omac start` or
+`omac serve` session, the CLI does NOT run the build engine in-process.
+The unsandboxed parent owns a constrained host build broker mounted on
+its existing loopback control plane; the sandboxed `omac build` command
+is a thin client that submits a build request to that broker.
+
+### Managed-mode marker and fail-closed behavior
+
+- The parent injects `OMAC_BUILD_BROKER_REQUIRED=1` into the inner
+  process **even when control-listener or broker setup failed**, so a
+  misconfigured parent fails closed instead of falling back to nested
+  local execution.
+- Managed build execution requires ALL of: `OMAC_BUILD_BROKER_REQUIRED=1`,
+  `OMAC_CONTROL_BASE`, `OMAC_BUILD_TOKEN`. If the required marker is
+  present but either broker value is absent, the CLI fails closed with
+  exit 10 and a restart/upgrade diagnostic.
+- To fail safely with older parents, any apparent OMAC session
+  environment (`OMAC_SOCKET`, `OMAC_BASE`, `OMAC_CONTROL_BASE`, or
+  `OMAC_BUILD_TOKEN`) also prevents direct execution when the complete
+  broker tuple is absent. Direct host execution is allowed only when the
+  required marker AND all managed session variables are absent. Managed
+  invocation never falls back to nested local execution.
+- Each running `start`/`serve` parent generates one cryptographically
+  random token in memory. It is inserted once into the inner-process
+  environment overlay; it is never written to control-info files,
+  returned by activation, or copied to sidecar or executor environments.
+  One `serve` token authorizes requests for every currently active
+  directory in that parent (not per activation).
+- Build endpoints are registered only on the loopback control listener.
+  A non-loopback configuration disables managed build entirely (fail
+  closed).
+
+### `omac build approve` and the parent-restart requirement
+
+A changed or new build manifest (`.omac/build.yaml`) cannot widen
+authority without an explicit host review. The approval flow:
+
+1. **`omac build approve` is a host-only transition** (ticket 06). It is
+   refused inside any managed session (when `OMAC_BUILD_BROKER_REQUIRED=1`
+   or any partial OMAC session env is present) and requires an interactive
+   host terminal (stdin must be a TTY). An agent cannot approve its own
+   capability set.
+2. It renders the consolidated capability diff for the worktree's build
+   manifest, stores a durable approval ONLY after explicit interactive
+   confirmation, and NEVER executes build code.
+3. The approval takes effect in `omac start`/`serve` ONLY after the
+   parent restarts. The parent freezes the in-memory capability snapshot
+   at activation (or before launch); ordinary agent-callable
+   activate/reload routes can never grant or refresh build capabilities.
+   A build request only compares against the frozen snapshot; it cannot
+   advance or replace it.
+4. While a manifest's current digest does not match a durable approval,
+   build is unavailable for that directory and the host surfaces a
+   diagnostic requiring `omac build approve` plus parent restart.
+
+### What the broker owns (host-only orchestration)
+
+The broker performs host-only orchestration that the sandboxed CLI
+cannot: manifest and policy evaluation, keychain access, proxy lifecycle
+(filtered/credential/container proxies), leaf-keyed serialization,
+restricted executor launch, cancellation, and cleanup. Repository-
+controlled build code still runs only inside the restricted JVM build
+executor — the broker never executes repository code with host authority.
+The public syntax, diagnostics, audit correlation, and build-tool
+exit-code pass-through are unchanged between the two paths; agent-invoked
+`omac build` simply becomes functional on macOS and Linux without
+widening the agent sandbox's authority.
 
 ## Build manifest (`.omac/build.yaml`)
 
@@ -115,15 +207,28 @@ The gate runs on every `omac build` after Resolve, before GrantsFor:
   the diff + restart instruction (the previously-approved set is no longer
   valid).
 
-### v1 approval limitation
+### v1 approval flow
 
-v1 has **no auto-approve and no `omac build approve` subcommand**. The
-approval flow is: 1st build after a change → fails with the diff (approval
-recorded); 2nd build (same digest) → starts unattended. There is no way to
-skip the review on the first run, and no CLI to approve without running the
-build. The gate failure IS the approval prompt. (A future `omac build
-approve` or auto-approval policy would call the same `buildmanifest.Approve`
-seam.)
+Ticket 06 added the `omac build approve` subcommand (host-only,
+interactive-terminal-only, refused in any managed session). The
+approval flow is:
+
+1. Run `omac build approve [--root <rel>]` from an interactive host
+   terminal after stopping the `omac start`/`serve` parent. It renders
+   the consolidated capability diff and stores a durable approval record
+   under the host-only build-control root only after explicit
+   confirmation.
+2. Restart the `omac start`/`serve` parent. The parent freezes the
+   in-memory capability snapshot at activation; the approval takes effect
+   only after the restart.
+3. An unchanged approved manifest then starts unattended. Editing the
+   worktree manifest mid-session changes the digest and triggers
+   re-approval on the next build — the edit does NOT silently take
+   effect.
+
+There is no auto-approve: an agent or script cannot confirm the diff.
+The `buildmanifest.Approve` seam is the single approval writer; `omac
+build approve` is its CLI front-end.
 
 ### Runtime missing-capability diagnostic
 
@@ -250,7 +355,7 @@ be unreachable from the executor). Linux private-registry resolution is
 deferred to the kernel-sandbox validation tickets. The credential-lift
 design is platform-agnostic; only the startup gate is macOS-only.
 
-## Executor process model (post-build daemon recycling + per-worktree queue)
+## Executor process model (post-build daemon recycling + leaf-keyed queue)
 
 Each `omac build` is a single Gradle client invocation: it resolves the
 wrapper, runs it against the session-scoped `GRADLE_USER_HOME` leaf, and
@@ -273,12 +378,21 @@ IPC/socket service:
   correctness with Testcontainers + embedded Kafka (commit `6a843ed`).
   `--no-daemon` is forbidden; `gradlew --stop` post-build is safe.
 
-- **Per-worktree queue serialization.** Each `omac build` acquires an
-  exclusive `flock` on `<leaf>/.omac-build.lock`, released on exit
-  (`defer`). Auto-released on crash (the kernel releases flock when the
-  process dies) — NO stale-lock cleanup is needed. Independent worktrees
-  resolve to independent leaves (independent lockfiles) → concurrent.
-  Same-worktree invocations serialize on the shared leaf. The acquire is
+- **Leaf-keyed queue serialization.** The authoritative filesystem lock
+  is keyed by the resolved Gradle cache leaf, NOT by worktree (spec
+  §Serialization and control state). Requests sharing a leaf serialize;
+  requests using distinct leaves run concurrently. When a host-only
+  build-control root is configured (the brokered path and the migrated
+  direct path), the lock lives at
+  `<build-control-root>/locks/<sha256(leaf)>.lock` — host-only, persistent,
+  never unlinked, never in executor grants (ticket 06). When no
+  build-control root is configured (the unmigrated no-parent direct path),
+  the lock falls back to `<leaf>/.omac-build.lock` (legacy in-leaf
+  location). The lock is auto-released on crash (the kernel releases flock
+  when the holding process dies) — NO stale-lock cleanup is needed.
+  Unlinking a flocked path is forbidden because it can let another request
+  create and lock a second inode, defeating serialization; `omac build
+  stop` therefore does NOT remove the lockfile. The acquire is
   **cancellable** while waiting (spec §136: queued requests are
   individually cancellable): the build's cancel channel is wired in, so a
   second `omac build` Ctrl-C unwinds a waiter without killing the running
@@ -287,7 +401,7 @@ IPC/socket service:
     `omac build: cancelled` marker (the waiter was individually
     cancelled, not busy-denied);
   - timed-out-waiting (30s `DefaultQueueTimeout`) → `ExitServiceFailure`
-    (10) + "another build is running in this worktree" (the busy path).
+    (10) + "another build is running in this cache leaf" (the busy path).
 
 - **Resource ceilings.** `--max-duration <duration>` (before `--`)
   bounds the total build wall-clock; an over-budget run is cancelled as
@@ -297,7 +411,10 @@ IPC/socket service:
 
 - **Cancellation (two stages).** The first SIGINT/SIGTERM is a GRACEFUL
   cancel: SIGTERM to the gradlew process group, then SIGKILL after the
-  bounded graceful window. A second signal (or `--max-duration` expiry)
+  bounded graceful window. `--max-duration` expiry follows the SAME
+  graceful-then-staged-kill path as the first signal (spec §241: it is
+  NOT an immediate forced cancel — documentation that previously
+  described it as immediate force is corrected here). A second signal
   is a FORCED cancel: the graceful window collapses to ~0 and the
   gradlew group is SIGKILLed immediately, AND the (potentially corrupt)
   Gradle daemon is RECYCLED — `omac build` runs `gradlew --stop` against
@@ -305,10 +422,11 @@ IPC/socket service:
   daemon state does not poison the next request. A wedged daemon that
   ignores `--stop` may require manual `omac build stop`.
 
-- **Teardown.** `omac build stop [--root <rel>]` runs `gradlew --stop`
-  under the leaf's `GRADLE_USER_HOME` (the SAME isolated env as the
-  build: no host HOME, no host `~/.gradle`, no host creds — spec §125-132
-  boundary) to stop any lingering daemons for this worktree, then
+- **Teardown (direct host-terminal path).** `omac build stop [--root
+  <rel>]` runs `gradlew --stop` under the leaf's `GRADLE_USER_HOME`
+  (the SAME isolated env as the build: no host HOME, no host
+  `~/.gradle`, no host creds — spec §125-132 boundary) to stop any
+  lingering daemons for this worktree's cache leaf, then
   **force-kills** any wedged daemon for the leaf that ignored the
   cooperative stop (spec §146: session teardown kills the process
   tree). `--root <rel>` resolves the wrapper at
@@ -316,15 +434,30 @@ IPC/socket service:
   path uses, so `omac build stop --root backend` tears down the daemon
   for the `backend/` build, not the worktree root. The two-stage
   teardown (cooperative `--stop` then force-kill from the leaf's daemon
-  registry) is best-effort. Finally it removes the lockfile. A crashed
-  `omac build` releases the flock automatically; a daemon that crashed
-  outside a recycle leaves no state behind for the next cold start.
+  registry) is best-effort. The leaf-keyed queue lock is NOT removed
+  (ticket 06): the lock is persistent and never unlinked — unlinking a
+  flocked path can let another request create and lock a second inode,
+  defeating serialization. A crashed `omac build` releases the flock
+  automatically; a daemon that crashed outside a recycle leaves no
+  state behind for the next cold start.
+- **Teardown (managed/agent path).** A managed `omac build stop` is
+  dispatched by the parent's broker to `buildengine.StopBrokered`
+  (ticket 07): a distinct engine op that acquires the same leaf-keyed
+  lock, uses trusted host daemon-control code (`procidentity.Verify`)
+  and the host-only ownership records to identify leaf-associated
+  daemons, requests SIGTERM, waits a bounded interval, and SIGKILLs
+  ONLY still-verified identities. It never executes the repository
+  wrapper, never applies a speculative relaxed profile, and never
+  removes the lockfile. If a leaf indicates a possible daemon but no
+  process can be verified, it returns a sanitized `service_failure` and
+  signals nothing; if neither ownership state nor a live daemon is
+  present, it succeeds idempotently.
 
 > **Supersedes the warm-daemon decision (ADR 0001).** Ticket 04 initially
 > provided warm-daemon reuse across builds as the fast TDD loop; commit
 > `6a843ed` replaced it with post-build recycling because a warm daemon
 > carries stale listener/system-property state that breaks the second run
-> in the Testcontainers + embedded Kafka path. The per-worktree queue and
+> in the Testcontainers + embedded Kafka path. The leaf-keyed queue and
 > the session-scoped leaf remain; only the between-build reuse is gone.
 > Linux needs no separate warm-daemon-cohabitation caveat: every build
 > starts a fresh client against a cold daemon, so no client-boundary issue
@@ -752,9 +885,10 @@ mediation, and credential lift.
 2. Clone or create a linked worktree of the repo.
 3. If the project uses non-standard capabilities (containers, private
    registries), commit `.omac/build.yaml` (non-secret — shareable with
-   the project). On the first `omac build`, OMAC presents one consolidated
-   capability review; approve it. An unchanged manifest starts
-   unattended thereafter.
+   the project). Run `omac build approve` from an interactive host
+   terminal to review the consolidated capability diff and record the
+   durable approval, then (re)start the `omac start`/`serve` parent. An
+   unchanged approved manifest starts unattended thereafter.
 4. Provide private registry credentials through their own OMAC keychain
    (`omac/build/registry/<alias>`). The credential never enters the
    executor (env/args/gradle.properties/logs/audit).
@@ -764,8 +898,10 @@ mediation, and credential lift.
 ### What OMAC owns
 
 - The Gradle daemon leaf (`GRADLE_USER_HOME` under the resolved cache
-  scope), queue (per-worktree flock), and post-build daemon recycling —
-  no host `~/.gradle` lock contention, no `--no-daemon` needed.
+  scope), leaf-keyed queue (lock in the host-only build-control root
+  when a broker/cache root is configured, else the legacy in-leaf lock),
+  and post-build daemon recycling — no host `~/.gradle` lock contention,
+  no `--no-daemon` needed.
 - The filtered network proxy (public Gradle/Maven endpoints only) and the
   credential-lift proxy (private registries) on macOS.
 - The mediated container proxy (approved images only, ownership-labeled,
