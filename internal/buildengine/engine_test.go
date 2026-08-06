@@ -2,14 +2,21 @@ package buildengine
 
 import (
 	"bytes"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/tngtech/oh-my-agentic-coder/internal/audit"
+	"github.com/tngtech/oh-my-agentic-coder/internal/buildcontrol"
 	"github.com/tngtech/oh-my-agentic-coder/internal/buildmanifest"
 	"github.com/tngtech/oh-my-agentic-coder/internal/buildrun"
 )
@@ -425,4 +432,313 @@ func chmodInitDForCleanup(t *testing.T, leaf string) {
 	t.Cleanup(func() {
 		_ = os.Chmod(filepath.Join(leaf, "init.d"), 0o755)
 	})
+}
+
+// --- Ticket 07 Phase 3: daemon ownership handshake engine wiring -----
+
+// requireEngineUnixSocket skips the test when AF_UNIX connect is
+// blocked (the omac sandbox blocks it). Mirrors the buildrun helper.
+func requireEngineUnixSocket(t *testing.T) {
+	t.Helper()
+	dir, err := os.MkdirTemp("/tmp", "omac-eng-own")
+	if err != nil {
+		if os.Getenv("GITHUB_ACTIONS") == "true" {
+			t.Fatalf("create unix-socket probe dir: %v", err)
+		}
+		t.Skipf("create unix-socket probe dir: %v (AF_UNIX unavailable under sandbox)", err)
+		return
+	}
+	defer os.RemoveAll(dir)
+	sock := filepath.Join(dir, "probe.sock")
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		if os.Getenv("GITHUB_ACTIONS") == "true" {
+			t.Fatalf("listen unix probe: %v", err)
+		}
+		t.Skipf("listen unix probe: %v (AF_UNIX unavailable under sandbox)", err)
+		return
+	}
+	defer ln.Close()
+	conn, err := net.Dial("unix", sock)
+	if err != nil {
+		if os.Getenv("GITHUB_ACTIONS") == "true" {
+			t.Fatalf("dial unix probe: %v", err)
+		}
+		t.Skipf("dial unix probe: %v (AF_UNIX connect blocked under sandbox)", err)
+		return
+	}
+	conn.Close()
+}
+
+// shortCacheRootForOwnership creates a fresh short temp dir under /tmp
+// for the host-only build-control root so the per-request daemon.sock
+// path stays under macOS's 104-byte SUN_LEN limit. The engine's
+// opts.CacheRoot points here; opts.CacheDir (the cache SCOPE) stays
+// HOME-rooted via engineTestEnv, but the handshake socket lives under
+// the short cacheRoot. Returns the cacheRoot path.
+func shortCacheRootForOwnership(t *testing.T) string {
+	t.Helper()
+	root, err := os.MkdirTemp("/tmp", "omac-eng-own")
+	if err != nil {
+		t.Fatalf("create short cache root: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(root) })
+	return root
+}
+
+// dialEngineHandshake simulates the Gradle daemon dialing the
+// handshake socket: sends the {"pid","marker"} JSON line and reads the
+// one-byte ack. Returns the ack byte.
+func dialEngineHandshake(t *testing.T, sockPath string, pid int, marker string) byte {
+	t.Helper()
+	conn, err := net.Dial("unix", sockPath)
+	if err != nil {
+		t.Fatalf("dial engine handshake socket: %v", err)
+	}
+	defer conn.Close()
+	payload, _ := json.Marshal(struct {
+		PID    int    `json:"pid"`
+		Marker string `json:"marker"`
+	}{PID: pid, Marker: marker})
+	if _, err := conn.Write(append(payload, '\n')); err != nil {
+		t.Fatalf("write engine handshake payload: %v", err)
+	}
+	ack := make([]byte, 1)
+	if _, err := conn.Read(ack); err != nil {
+		t.Fatalf("read engine handshake ack: %v", err)
+	}
+	return ack[0]
+}
+
+// sockPathForRequest returns the daemon-handshake socket path the
+// engine's PrepareDaemonOwnership creates for the given cacheRoot +
+// requestID, so the test can dial it (the engine does not expose the
+// channel's SockPath to the caller).
+func sockPathForRequest(cacheRoot, requestID string) string {
+	return filepath.Join(buildcontrol.RequestDir(cacheRoot, requestID), "daemon.sock")
+}
+
+// TestRun_DaemonOwnership_HappyPath asserts the full Phase-3 engine
+// wiring: the engine mints the marker, writes the pending record,
+// starts the handshake channel, threads marker + sock into BuildConfig
+// (so PrepareControlState renders them), runs RunBuild, concurrently
+// awaits the handshake (verify+promote before ack), runs the in-sandbox
+// `gradlew --stop` recycle after the wrapper exits, and retires the
+// record. The stub wrapper exits 0; a fake verify closure promotes the
+// record; the test dials the handshake socket to drive the ack.
+func TestRun_DaemonOwnership_HappyPath(t *testing.T) {
+	requireEngineUnixSocket(t)
+	// A stub wrapper that exits 0 immediately. The handshake is driven
+	// by the test dialing the socket (the wrapper itself does NOT
+	// dial — that is the Gradle daemon's job, simulated here).
+	wrapper := "#!/bin/sh\nexit 0\n"
+	wt, cacheDir, closeScope := engineTestEnv(t, wrapper)
+	chmodInitDForCleanup(t, filepath.Join(cacheDir, "gradle"))
+	cacheRoot := shortCacheRootForOwnership(t)
+
+	const pid = 5555
+	var promoted int32
+	own := buildrun.DaemonOwnershipConfig{
+		CacheRoot:         cacheRoot,
+		JDKExecutable:     "/path/to/java", // placeholder; the fake verify ignores it
+		HandshakeDeadline: 10 * time.Second,
+		Verify: func(receivedPID int) (bool, error) {
+			if receivedPID != pid {
+				return false, fmt.Errorf("pid mismatch: %d", receivedPID)
+			}
+			// Resolve the canonical leaf the way the engine does
+			// (the engine fills CanonicalLeaf from leaf if unset; the
+			// fake verify must use the SAME leaf).
+			leaf := buildrun.GradleLeaf(cacheDir)
+			if err := buildcontrol.PromoteDaemonRecord(cacheRoot, leaf, receivedPID, "start-id-engine"); err != nil {
+				return false, err
+			}
+			atomic.StoreInt32(&promoted, 1)
+			return true, nil
+		},
+	}
+
+	var stderr bytes.Buffer
+	// Run the engine in a goroutine so the test can dial the handshake
+	// socket concurrently (the engine blocks on the handshake until
+	// the daemon dials in).
+	done := make(chan Result, 1)
+	go func() {
+		done <- Run(Options{
+			Workdir:    wt,
+			RawArgs:    []string{"--root", ".", "--", "gradle", ":help"},
+			Stdout:     io.Discard,
+			Stderr:     &stderr,
+			CacheDir:   cacheDir,
+			CacheRoot:  cacheRoot,
+			CloseScope: closeScope,
+			Auditor:    audit.Nop(),
+			Snapshot:   fakeSnapshotProvider,
+			Proxies:    fakeProxyStarter,
+			Launcher:   buildrun.NoSandboxLauncher,
+			DaemonOwnership: own,
+		})
+	}()
+
+	// Dial the handshake socket once the engine creates it. The
+	// requestID is minted inside the engine; we don't know it ahead
+	// of time, so poll the requests/ dir for a daemon.sock.
+	deadline := time.Now().Add(15 * time.Second)
+	var ack byte
+	for time.Now().Before(deadline) {
+		entries, err := os.ReadDir(filepath.Join(cacheRoot, "build-control", "requests"))
+		if err == nil {
+			for _, e := range entries {
+				sock := filepath.Join(cacheRoot, "build-control", "requests", e.Name(), "daemon.sock")
+				if _, serr := os.Stat(sock); serr == nil {
+					// Read the marker from the pending record to echo
+					// it back (the engine minted it; the test does not
+					// know it).
+					leaf := buildrun.GradleLeaf(cacheDir)
+					rec, rerr := buildcontrol.LoadDaemonRecord(cacheRoot, leaf)
+					if rerr != nil {
+						t.Fatalf("LoadDaemonRecord after socket appeared: %v", rerr)
+					}
+					ack = dialEngineHandshake(t, sock, pid, rec.Marker)
+					break
+				}
+			}
+		}
+		if ack != 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if ack != '1' {
+		t.Fatalf("handshake ack = %q, want '1' (engine did not acknowledge)", string(ack))
+	}
+
+	res := <-done
+	if res.Class != ClassSuccess {
+		t.Errorf("class = %q, want %q\nstderr:\n%s", res.Class, ClassSuccess, stderr.String())
+	}
+	if atomic.LoadInt32(&promoted) != 1 {
+		t.Error("verify closure (promote) was not invoked before the ack")
+	}
+	// Record was retired after the in-sandbox recycle.
+	leaf := buildrun.GradleLeaf(cacheDir)
+	if _, err := buildcontrol.LoadDaemonRecord(cacheRoot, leaf); !errors.Is(err, buildcontrol.ErrNoDaemonRecord) {
+		t.Errorf("after build: LoadDaemonRecord err = %v, want ErrNoDaemonRecord (retired)", err)
+	}
+}
+
+// TestRun_DaemonOwnership_HandshakeFailureFailsClosed asserts a
+// handshake failure (verify returns false) fails the build closed:
+// the engine cancels the wrapper, overrides the class to
+// service_failure, and the record is retired. The stub wrapper sleeps
+// briefly so the handshake failure can cancel it before it exits on
+// its own.
+func TestRun_DaemonOwnership_HandshakeFailureFailsClosed(t *testing.T) {
+	requireEngineUnixSocket(t)
+	// A stub wrapper that sleeps; the handshake failure cancels it.
+	wrapper := "#!/bin/sh\nsleep 30\n"
+	wt, cacheDir, closeScope := engineTestEnv(t, wrapper)
+	chmodInitDForCleanup(t, filepath.Join(cacheDir, "gradle"))
+	cacheRoot := shortCacheRootForOwnership(t)
+
+	own := buildrun.DaemonOwnershipConfig{
+		CacheRoot:         cacheRoot,
+		JDKExecutable:     "/path/to/java",
+		HandshakeDeadline: 10 * time.Second,
+		Verify: func(int) (bool, error) { return false, nil },
+	}
+
+	var stderr bytes.Buffer
+	done := make(chan Result, 1)
+	go func() {
+		done <- Run(Options{
+			Workdir:    wt,
+			RawArgs:    []string{"--root", ".", "--", "gradle", ":help"},
+			Stdout:     io.Discard,
+			Stderr:     &stderr,
+			CacheDir:   cacheDir,
+			CacheRoot:  cacheRoot,
+			CloseScope: closeScope,
+			Auditor:    audit.Nop(),
+			Snapshot:   fakeSnapshotProvider,
+			Proxies:    fakeProxyStarter,
+			Launcher:   buildrun.NoSandboxLauncher,
+			DaemonOwnership: own,
+		})
+	}()
+
+	// Dial the handshake socket with the marker from the pending
+	// record; the fake verify returns false → no ack → the engine
+	// cancels the wrapper + fails closed.
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		entries, err := os.ReadDir(filepath.Join(cacheRoot, "build-control", "requests"))
+		if err == nil {
+			for _, e := range entries {
+				sock := filepath.Join(cacheRoot, "build-control", "requests", e.Name(), "daemon.sock")
+				if _, serr := os.Stat(sock); serr == nil {
+					leaf := buildrun.GradleLeaf(cacheDir)
+					rec, _ := buildcontrol.LoadDaemonRecord(cacheRoot, leaf)
+					conn, derr := net.Dial("unix", sock)
+					if derr != nil {
+						t.Fatalf("dial: %v", derr)
+					}
+					payload, _ := json.Marshal(struct {
+						PID    int    `json:"pid"`
+						Marker string `json:"marker"`
+					}{PID: 1, Marker: rec.Marker})
+					conn.Write(append(payload, '\n'))
+					conn.Close() // verify=false → host closes without ack
+					break
+				}
+			}
+		}
+		// Check if the engine already returned.
+		select {
+		case res := <-done:
+			if res.Class != ClassServiceFailure {
+				t.Errorf("class = %q, want %q (handshake failure must fail closed)\nstderr:\n%s", res.Class, ClassServiceFailure, stderr.String())
+			}
+			// Record was retired.
+			leaf := buildrun.GradleLeaf(cacheDir)
+			if _, err := buildcontrol.LoadDaemonRecord(cacheRoot, leaf); !errors.Is(err, buildcontrol.ErrNoDaemonRecord) {
+				t.Errorf("after fail-closed: LoadDaemonRecord err = %v, want ErrNoDaemonRecord (retired)", err)
+			}
+			return
+		default:
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("engine did not return after handshake failure")
+}
+
+// TestRun_DaemonOwnership_DisabledRunsLegacyPath asserts that when
+// DaemonOwnership is NOT wired (the zero value — the existing tests
+// and the unmigrated direct path), the engine runs the legacy
+// Phase-2 path (the unsandboxed daemonRecycle) — behavior-preserving.
+// This is the same as TestRun_SuccessClassifiesAsSuccess but with an
+// explicit zero DaemonOwnership to pin the additive contract.
+func TestRun_DaemonOwnership_DisabledRunsLegacyPath(t *testing.T) {
+	wrapper := "#!/bin/sh\necho hi\nexit 0\n"
+	wt, cacheDir, closeScope := engineTestEnv(t, wrapper)
+	var stdout bytes.Buffer
+	res := Run(Options{
+		Workdir:    wt,
+		RawArgs:    []string{"--root", ".", "--", "gradle", ":help"},
+		Stdout:     &stdout,
+		Stderr:     io.Discard,
+		CacheDir:   cacheDir,
+		CloseScope: closeScope,
+		Auditor:    audit.Nop(),
+		Snapshot:   fakeSnapshotProvider,
+		Proxies:    fakeProxyStarter,
+		Launcher:   buildrun.NoSandboxLauncher,
+		// DaemonOwnership is the zero value — disabled.
+	})
+	if res.Class != ClassSuccess {
+		t.Errorf("class = %q, want %q (legacy path, ownership disabled)", res.Class, ClassSuccess)
+	}
+	if !strings.Contains(stdout.String(), "hi") {
+		t.Errorf("stdout = %q, want it to contain the wrapper's output", stdout.String())
+	}
 }
