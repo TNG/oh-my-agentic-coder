@@ -197,8 +197,10 @@ func (p *Proxy) SetBuildRequestID(id string) {
 // only. Start runs Scavenge BEFORE binding the listener, so no client can
 // connect until the daemon state is clean — the scavenger cannot race this
 // proxy's own in-session tracking. A second proxy with the same id is
-// excluded by the per-worktree flock in runBuild (one build at a time per
-// worktree), so a same-id proxy racing a scavenge is not a v1 scenario.
+// excluded by the leaf-keyed queue lock in runBuild (one build at a time
+// per cache leaf; the lock lives under the host-only build-control root
+// when a build-control cache root is configured — ticket 06), so a
+// same-id proxy racing a scavenge is not a v1 scenario.
 //
 // Best-effort: daemon errors are logged and audited but do not abort the
 // scan. Returns the counts of containers and networks removed.

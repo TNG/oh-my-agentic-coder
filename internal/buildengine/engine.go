@@ -874,9 +874,11 @@ func Run(opts Options) Result {
 // `omac build stop` is a distinct engine operation: it does NOT execute
 // the wrapper for an ordinary build, it runs `gradlew --stop` under the
 // same isolated env as the build, then force-kills lingering wedged
-// daemons, then removes the per-worktree queue lockfile (the prefactor
-// preserves the current behavior; ticket 06 removes the lockfile
-// deletion).
+// daemons. The leaf-keyed queue lock is NOT removed (ticket 06): the
+// lock is persistent and never unlinked. This is the direct-host
+// (non-brokered) Stop; the brokered stop is buildengine.StopBrokered
+// (ticket 07), which uses verified daemon control via procidentity +
+// host-only ownership records and never executes the repo wrapper.
 type StopOptions struct {
 	// Workdir is the canonical worktree root.
 	Workdir string
@@ -898,17 +900,23 @@ type StopOptions struct {
 	Auditor audit.Auditor
 }
 
-// Stop executes one complete `omac build stop` invocation. It is the
-// prefactor extraction of the orchestration currently in
+// Stop executes one complete direct-host `omac build stop` invocation.
+// It is the prefactor extraction of the orchestration currently in
 // internal/cli/build_stop.go's runBuildStop: parse --root, resolve the
-// wrapper, run `gradlew --stop` under the same isolated env as the
-// build (no host HOME, no host ~/.gradle, no host creds), force-kill
-// lingering wedged daemons, and remove the per-worktree queue lockfile.
+// wrapper, run `gradlew --stop` under the same isolated env as the build
+// (no host HOME, no host ~/.gradle, no host creds), force-kill lingering
+// wedged daemons. The leaf-keyed queue lock is NOT removed (ticket 06):
+// the lock is persistent and never unlinked — unlinking a flocked path
+// can let another request create and lock a second inode, defeating
+// serialization. The brokered stop (ticket 07) is buildengine.StopBrokered,
+// which uses verified daemon control via procidentity + the host-only
+// ownership records and never executes the repo wrapper.
 //
-// Behavior-preserving prefactor (ticket 04): the lockfile removal stays
-// (ticket 06 removes it); the wrapper-based stop stays (ticket 06
-// replaces it with verified trusted daemon control). The engine returns
-// a Result with an explicit class assigned at the outcome site.
+// Behavior-preserving prefactor (ticket 04): the wrapper-based stop stays
+// (ticket 07 replaces the brokered path with verified trusted daemon
+// control; the direct-host path retains the wrapper-based stop). The
+// engine returns a Result with an explicit class assigned at the outcome
+// site.
 func Stop(opts StopOptions) Result {
 	stderr := opts.Stderr
 	if stderr == nil {

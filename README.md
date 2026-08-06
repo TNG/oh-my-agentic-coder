@@ -548,12 +548,14 @@ ignore those vars:
 
 **Gradle builds use `omac build`, not `--no-daemon`.** The `omac build`
 command runs a dedicated JVM build executor that owns its own Gradle
-daemon leaf (under the resolved cache scope), per-worktree queue, and
+daemon leaf (under the resolved cache scope), leaf-keyed queue, and
 loopback posture — so the daemon's random loopback port is handled
 without `--no-daemon` and without hand-tuning the sandbox profile's
 `open_port` / `enforcement`. See `docs/build-command.md` for the full
-contract. For ad-hoc Gradle invocations outside `omac build`, the daemon
-still needs the grant below.
+contract (the managed/agent path brokers execution through the
+unsandboxed `omac start`/`serve` parent; the direct host-terminal path
+runs the same engine in-process). For ad-hoc Gradle invocations outside
+`omac build`, the daemon still needs the grant below.
 
 | Platform | Setting | Egress still kernel-enforced? |
 |---|---|---|
