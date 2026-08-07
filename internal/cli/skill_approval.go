@@ -16,13 +16,28 @@ import (
 // cannot write. See internal/skilltrust and docs/SECURITY_MODEL.md.
 
 // skillSpawnAuthorizer is the supervisor spawn-gate backstop: every spawn
-// funnels through it even if a caller forgets its own pre-flight check.
+// funnels through it even if a caller forgets its own pre-flight check. A
+// sidecar may run only from the host-only approval snapshot, which the sandbox
+// cannot write; anything else is refused.
+//
+// Checking the LOCATION is stronger than re-hashing the dir, which is why it is
+// the backstop: a hash check accepts ANY path whose content matches an approval,
+// including the agent-writable workdir itself, and re-opens the check-then-exec
+// TOCTOU that snapshotting exists to close. The pre-flight approvedSpawnDir is
+// what maps an approved skill to its snapshot dir.
 func skillSpawnAuthorizer(spec supervisor.SidecarSpec) error {
+	if skilltrust.IsSnapshotPath(spec.SkillDir) {
+		return nil
+	}
 	name := spec.SkillName
 	if name == "" {
 		name = spec.Name
 	}
-	return approvalRefusal(name, spec.SkillDir, "")
+	// Refuse outright — deliberately NOT falling back to a content re-hash of
+	// spec.SkillDir. Re-hashing would accept any path whose bytes match an
+	// approval, including the agent-writable workdir, which is exactly the
+	// weaker check this backstop exists to avoid.
+	return errSkillNotApproved(name)
 }
 
 // skillBundleHash returns bundleHash when the caller already computed one for

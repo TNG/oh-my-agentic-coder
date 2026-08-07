@@ -183,6 +183,18 @@ Two paths to be aware of:
   not the bare filename. Compiled-language skills typically have the
   install script drop a binary at `scripts/sidecar` and reference
   `["./scripts/sidecar"]`.
+
+  > **The cwd is an immutable snapshot, not your workdir.** After a skill is
+  > approved (`omac register` on the host), omac freezes its tree into a
+  > host-only snapshot and spawns the sidecar from *that* copy — so the cwd is
+  > read-only-in-spirit and is NOT the project directory. Do not write files
+  > relative to cwd expecting the agent (or the project) to see them: those
+  > writes land in the snapshot, are invisible to the sandboxed agent, and do
+  > not persist across a re-approval. Exchange data through your HTTP endpoints
+  > (the facade) and write to `OMAC_WORKDIR` when you need the project dir.
+  > For the same reason, vendor/install dependencies BEFORE `omac register`
+  > (or install them system-wide) — deps added after approval are not in the
+  > snapshot. See [`docs/SECURITY_MODEL.md`](./docs/SECURITY_MODEL.md#self-authored-skills).
 - **`scripts/` is shared between two consumers**: the *omac supervisor*
   spawns the sidecar entry-point as a long-running HTTP service outside
   the sandbox; the *agent* may also invoke other helper scripts in this

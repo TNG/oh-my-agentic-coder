@@ -297,12 +297,15 @@ func runServe(args []string, env *Env) int {
 	if firstApprovalUpgrade() {
 		gReg, _ := registry.LoadGlobal()
 		wReg, _ := registry.Load(env.Workdir)
-		if _, merr := grandfatherOnce(
+		n, merr := grandfatherOnce(
 			grandfatherScope{reg: gReg},
 			grandfatherScope{workdir: env.Workdir, reg: wReg},
-		); merr != nil {
+		)
+		if merr != nil {
 			fmt.Fprintln(env.Stderr, "omac serve: approval store (non-fatal):", merr)
 		}
+		fmt.Fprintf(env.Stderr, "omac serve: approval-gated spawning is now active "+
+			"(migrated %d existing skill(s)); new skills need `omac register` on the host to spawn\n", n)
 	}
 
 	// Cold start: global skills are a fixed, known set, so — unlike the lazy

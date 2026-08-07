@@ -41,6 +41,26 @@ func SnapshotPath(name, bundleHash string) (string, bool) {
 	return p, false
 }
 
+// IsSnapshotPath reports whether dir is an existing directory under the
+// host-only snapshot root (<store>/skills). It is the spawn backstop: a
+// sidecar may run only from the snapshot area, which the sandbox cannot
+// write — so a path here is, by construction, host-frozen content. This is
+// stronger and simpler than re-hashing dir (the snapshot legitimately differs
+// from the workdir hash when symlinks are involved).
+func IsSnapshotPath(spawnDir string) bool {
+	d := dir()
+	if d == "" || spawnDir == "" {
+		return false
+	}
+	root := filepath.Join(d, "skills")
+	rel, err := filepath.Rel(root, spawnDir)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return false
+	}
+	fi, err := os.Stat(spawnDir)
+	return err == nil && fi.IsDir()
+}
+
 // Snapshot freezes srcDir into the snapshot location for (name, hash) and
 // returns the snapshot directory. It is idempotent and content-addressed: an
 // existing snapshot for the same (name, hash) is returned unchanged (the
@@ -93,11 +113,19 @@ func removeSnapshot(name, bundleHash string) {
 // captures a self-contained, immutable image of a skill:
 //   - directories are recreated (VCS metadata under .git is skipped),
 //   - regular files are copied with their mode bits (execute bits preserved),
-//   - symlinks are flattened to a copy of their target's CONTENT when the
-//     target resolves to a regular file (so a later repoint of the link cannot
-//     change what runs); links to directories or unresolvable targets are
-//     skipped.
+//   - symlinks are NEVER dereferenced into content. A symlink whose target
+//     resolves INSIDE the skill tree and whose link text is relative is
+//     recreated verbatim (self-contained; e.g. node_modules/.bin entries).
+//     Any symlink that escapes the tree, is absolute, or is unresolvable is
+//     dropped. This mirrors config.BundleHash (which skips symlinks) so the
+//     snapshot hashes identically to the workdir, and — crucially — prevents
+//     baking a host file the link points at (e.g. ~/.ssh/id_rsa) into the
+//     snapshot or letting it be read back through the skill.
 func copyTree(src, dst string) error {
+	srcReal, err := filepath.EvalSymlinks(src)
+	if err != nil {
+		srcReal = filepath.Clean(src)
+	}
 	return filepath.WalkDir(src, func(p string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -123,22 +151,36 @@ func copyTree(src, dst string) error {
 			return ierr
 		}
 		if info.Mode()&os.ModeSymlink != 0 {
-			// Flatten to the target's content if it is a regular file.
-			resolved, rerr := filepath.EvalSymlinks(p)
-			if rerr != nil {
-				return nil // dangling / unresolvable: drop it
-			}
-			ri, rierr := os.Stat(resolved)
-			if rierr != nil || !ri.Mode().IsRegular() {
-				return nil // non-regular target: drop it
-			}
-			return copyFile(resolved, target, ri.Mode().Perm())
+			return copyInTreeSymlink(p, target, srcReal)
 		}
 		if !info.Mode().IsRegular() {
 			return nil // sockets, devices, fifos: nothing to run
 		}
 		return copyFile(p, target, info.Mode().Perm())
 	})
+}
+
+// copyInTreeSymlink recreates a symlink at target ONLY when it is a relative
+// link resolving inside the skill tree (srcReal); otherwise it is dropped. It
+// never reads the target's content, so an escaping link cannot smuggle a host
+// file into the snapshot.
+func copyInTreeSymlink(p, target, srcReal string) error {
+	link, err := os.Readlink(p)
+	if err != nil || filepath.IsAbs(link) {
+		return nil // unreadable or absolute: drop
+	}
+	resolved, err := filepath.EvalSymlinks(p)
+	if err != nil {
+		return nil // dangling / unresolvable: drop
+	}
+	rel, err := filepath.Rel(srcReal, resolved)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return nil // escapes the skill tree: drop
+	}
+	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+		return err
+	}
+	return os.Symlink(link, target)
 }
 
 // copyFile copies a single regular file, creating parent dirs as needed and
