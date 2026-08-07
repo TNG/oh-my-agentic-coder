@@ -126,13 +126,17 @@ the sandbox:
   symlinks, so the hash alone does not cover everything a skill executes.
   omac closes this by **executing from an approval snapshot**: at approval
   time the whole skill tree is frozen into a host-only directory the sandbox
-  cannot write (`~/.config/omac/skills/<name>/<hash>`), with in-tree symlinks
-  flattened to their target's content, and the sidecar is spawned from that
-  snapshot rather than the agent-writable workdir. So the executed bytes are
-  exactly the approved bytes, and rewriting an excluded-dir file (or
-  repointing a symlink) in the workdir after approval has no effect on what
-  runs. (The bundle-hash *drift* check still only covers the hashed subset —
-  that is a detection nicety, not the enforcement boundary.)
+  cannot write (`~/.config/omac/skills/<name>/<hash>`), and the sidecar is
+  spawned from that snapshot rather than the agent-writable workdir. So the
+  executed bytes are exactly the approved bytes, and rewriting an excluded-dir
+  file in the workdir after approval has no effect on what runs. Symlinks are
+  never dereferenced into the snapshot: an in-tree relative link is recreated
+  as a link (so `node_modules/.bin`-style layouts work), while a link that
+  escapes the skill tree is dropped — so a planted `dist/x -> ~/.ssh/id_rsa`
+  can neither bake a host file into the snapshot nor be read back through the
+  skill. (The bundle-hash *drift* check still only covers the hashed subset —
+  a detection nicety, not the enforcement boundary; the snapshot is the
+  boundary.)
 - Approvals are additive per name and never auto-retired, so an agent that
   can reproduce a previously-approved build's bytes (and forge its registry
   hash) could roll a skill back to an older approved version. Only

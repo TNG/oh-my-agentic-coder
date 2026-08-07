@@ -297,13 +297,18 @@ func runServe(args []string, env *Env) int {
 	// need an out-of-sandbox `omac register`, which is what keeps a long-lived
 	// serve daemon from blessing agent-authored skills mid-session.
 	if firstApprovalUpgrade() {
+		n := 0
 		if gReg, gerr := registry.LoadGlobal(); gerr == nil {
-			_, _ = grandfatherApprovals("", gReg)
+			c, _ := grandfatherApprovals("", gReg)
+			n += c
 		}
 		if wReg, werr := registry.Load(env.Workdir); werr == nil {
-			_, _ = grandfatherApprovals(env.Workdir, wReg)
+			c, _ := grandfatherApprovals(env.Workdir, wReg)
+			n += c
 		}
 		_ = skilltrust.EnsureInitialized()
+		fmt.Fprintf(env.Stderr, "omac serve: approval-gated spawning is now active "+
+			"(migrated %d existing skill(s)); new skills need `omac register` on the host to spawn\n", n)
 	}
 
 	// Cold start: global skills are a fixed, known set, so — unlike the lazy

@@ -39,9 +39,10 @@ type startReloader struct {
 	tcpPort int
 	verbose bool
 
-	mu          sync.Mutex
-	mounted     map[string]string // skill name -> mount, for skills mounted on the facade
-	lastSession string            // most-recent session id the harness plugin reported (see handleSession)
+	mu               sync.Mutex
+	mounted          map[string]string   // skill name -> mount, for skills mounted on the facade
+	warnedUnapproved map[string]struct{} // skills we've already reported as unapproved (dedupe reload spam)
+	lastSession      string              // most-recent session id the harness plugin reported (see handleSession)
 }
 
 // startControlPlane binds a loopback control-plane HTTP server for start and
@@ -88,6 +89,22 @@ func (r *startReloader) markMounted(name, mount string) {
 	}
 	r.mounted[name] = mount
 	r.mu.Unlock()
+}
+
+// warnUnapprovedOnce reports true the first time it is called for name, so a
+// repeated reload of the same unapproved skill does not spam the human's
+// stderr. Reset implicitly when the process restarts.
+func (r *startReloader) warnUnapprovedOnce(name string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, seen := r.warnedUnapproved[name]; seen {
+		return false
+	}
+	if r.warnedUnapproved == nil {
+		r.warnedUnapproved = map[string]struct{}{}
+	}
+	r.warnedUnapproved[name] = struct{}{}
+	return true
 }
 
 func (r *startReloader) isMounted(name string) bool {
@@ -250,8 +267,9 @@ func (r *startReloader) reload() []string {
 		snapDir, ok, aerr := approvedSpawnDir(e.Name, absDir)
 		if aerr != nil || !ok {
 			r.facade.AddRoute(brokenApprovalRoute(mount, e.Name, absDir))
-			if r.verbose {
-				fmt.Fprintf(r.env.Stderr, "[verbose] reload: %s not host-approved; refused\n", e.Name)
+			if r.warnUnapprovedOnce(e.Name) {
+				fmt.Fprintf(r.env.Stderr, "omac start: skill %q is not host-approved; left unavailable "+
+					"(run `omac register %s` on the host to approve)\n", e.Name, e.Name)
 			}
 			continue
 		}
