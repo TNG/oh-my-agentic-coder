@@ -310,6 +310,14 @@ func TestRenderDaemonOwnerHandshakeInitScript_UnixDomainSocket(t *testing.T) {
 	if !strings.Contains(s, `JsonOutput.toJson([pid: pid, marker: omacMarker]) + "\n"`) {
 		t.Errorf("handshake init script must emit a single-line JSON payload:\n%s", s)
 	}
+	// The pid must be emitted as a bare JSON NUMBER, not a quoted string:
+	// the Go side unmarshals into DaemonHandshakePID.PID (an int), so a
+	// Groovy String pid (the default — split() returns String[]) would
+	// serialize as "pid":"12345" and fail json.Unmarshal. toInteger()
+	// pins the type end-to-end.
+	if !strings.Contains(s, `.split("@")[0].toInteger()`) {
+		t.Errorf("handshake init script must coerce the pid to Integer so it serializes unquoted:\n%s", s)
+	}
 }
 
 func TestPrepareControlState_WritesDaemonOwnerHandshakeInitScript(t *testing.T) {
@@ -384,6 +392,32 @@ func TestPrepareControlState_OmitsDaemonHandshakeSockWhenEmpty(t *testing.T) {
 	sockFile := filepath.Join(leaf, controlStateName, daemonHandshakeSockName)
 	if _, err := os.Stat(sockFile); !os.IsNotExist(err) {
 		t.Errorf("daemon-handshake-sock file should not exist when DaemonHandshakeSock is empty: %v", err)
+	}
+}
+
+func TestPrepareControlState_RemovesStaleDaemonHandshakeSockWhenEmpty(t *testing.T) {
+	// A prior owner build wrote daemon-handshake-sock into .omac-control,
+	// then the host exited (the socket died with it). A later build with no
+	// socket wired must remove the stale file — otherwise a daemon that
+	// inherits -Domac.daemon.owner from gradle.properties reads a dead sock
+	// path and fails closed instead of taking the designed no-op path.
+	leaf := t.TempDir()
+	if _, err := PrepareControlState(leaf, GradlePropertiesConfig{
+		DaemonHandshakeSock: "/tmp/omac-build/dead-req/daemon.sock",
+	}); err != nil {
+		t.Fatalf("PrepareControlState (seed): %v", err)
+	}
+	sockFile := filepath.Join(leaf, controlStateName, daemonHandshakeSockName)
+	if _, err := os.Stat(sockFile); err != nil {
+		t.Fatalf("seed sock file not written: %v", err)
+	}
+	chmodInitDForCleanup(t, leaf)
+	// Second render with no socket wired must delete the stale file.
+	if _, err := PrepareControlState(leaf, GradlePropertiesConfig{}); err != nil {
+		t.Fatalf("PrepareControlState (empty sock): %v", err)
+	}
+	if _, err := os.Stat(sockFile); !os.IsNotExist(err) {
+		t.Errorf("stale daemon-handshake-sock must be removed when DaemonHandshakeSock is empty: %v", err)
 	}
 }
 
