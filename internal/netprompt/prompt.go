@@ -39,11 +39,11 @@ const (
 // text plus all seven rows plus the buttons without scrolling.
 //
 // These are defaults: OMAC_PROMPT_WIDTH / OMAC_PROMPT_HEIGHT override them for
-// users on unusual displays (small/720p laptops where 560 px crowds the
+// users on unusual displays (small/720p laptops where the dialog crowds the
 // viewport, tiling WMs, HiDPI) — see dialogDimensions.
 const (
 	dialogWidth  = 520
-	dialogHeight = 560
+	dialogHeight = 592
 )
 
 // dialogDimensions returns the popup width and height in pixels, honouring the

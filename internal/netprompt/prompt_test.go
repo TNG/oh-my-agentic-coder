@@ -172,9 +172,13 @@ func TestOptionLabelsExactAndDefault(t *testing.T) {
 	opts := optionLabels("example.com")
 	want := []string{
 		"Allow once",
+		"Allow for this session (this host)",
+		"Allow for this session (*.example.com)",
 		"Allow permanently (this host)",
 		"Allow permanently (*.example.com)",
 		"Deny once",
+		"Deny for this session (this host)",
+		"Deny for this session (*.example.com)",
 		"Deny permanently (this host)",
 		"Deny permanently (*.example.com)",
 		"Explain more",

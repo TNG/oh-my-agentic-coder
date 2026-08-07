@@ -4,25 +4,6 @@ package e2e
 
 import "testing"
 
-// clearModelEnv neutralizes every model override so a test can assert against
-// the pinned modelIDs map.
-//
-// The e2e workflow exports E2E_MODEL_<HARNESS> for every harness, carrying the
-// name the gateway actually serves — which flips between the plain and -TEE
-// variant without notice (#184). A per-harness override outranks the
-// cross-harness one, so clearing only E2E_MODEL leaves a pinned-map assertion
-// at the mercy of whichever variant the gateway served that day. Derived from
-// modelEnvVar rather than a literal list so a new harness is covered by
-// registering it, not by remembering this helper.
-func clearModelEnv(t *testing.T) {
-	t.Helper()
-	t.Setenv(crossHarnessModelEnvVar, "")
-	t.Setenv(fallbackModelEnvVar, "")
-	for _, ev := range modelEnvVar {
-		t.Setenv(ev, "")
-	}
-}
-
 // TestPinnedPackageOverride covers the precedence between the hardcoded
 // harnessVersions map, a per-harness E2E_VERSION_* override (wired from the
 // e2e workflow's workflow_dispatch *_version inputs), and E2E_USE_LATEST.
@@ -50,7 +31,9 @@ func TestPinnedPackageOverride(t *testing.T) {
 // the cross-harness E2E_MODEL override (the workflows' single `model` input),
 // and a per-harness E2E_MODEL_<HARNESS> override.
 func TestModelIDOverride(t *testing.T) {
-	clearModelEnv(t)
+	t.Setenv("E2E_MODEL", "")
+	t.Setenv("E2E_MODEL_OPENCODE", "")
+	t.Setenv("E2E_MODEL_CLAUDE_CODE", "")
 
 	if got, want := modelID("opencode"), modelIDs["opencode"]; got != want {
 		t.Errorf("with no override: modelID(opencode) = %q, want %q (pinned map)", got, want)
@@ -102,7 +85,9 @@ func TestFlipTEE(t *testing.T) {
 // each fallback and its flip — deduped, so a fallback equal to the primary
 // doesn't double the probe cost.
 func TestModelCandidates(t *testing.T) {
-	clearModelEnv(t)
+	t.Setenv("E2E_MODEL", "")
+	t.Setenv("E2E_MODEL_CLAUDE_CODE", "")
+	t.Setenv("E2E_MODEL_FALLBACK", "")
 
 	got := modelCandidates("pi")
 	want := []string{modelIDs["pi"], flipTEE(modelIDs["pi"])}
@@ -147,7 +132,8 @@ func TestModelCandidates(t *testing.T) {
 // TestIsFallbackModel guards the reporting distinction: a variant flip is the
 // same model and may substitute silently, a cross-family fallback may not.
 func TestIsFallbackModel(t *testing.T) {
-	clearModelEnv(t)
+	t.Setenv("E2E_MODEL", "")
+	t.Setenv("E2E_MODEL_PI", "")
 	pin := modelIDs["pi"]
 
 	if isFallbackModel("pi", pin) {

@@ -104,6 +104,8 @@ type FilterConfig struct {
 	OnUnavailableAllow bool
 	Prompter           Prompter
 	Learned            LearnedStore
+	// Session references the session store for session-scoped state (e.g. per-session prompts).
+	Session *SessionStore
 	// Resolve overrides DNS resolution in tests. Defaults to net.DefaultResolver.
 	Resolve func(ctx context.Context, host string) ([]netip.Addr, error)
 	// Logf receives one line per decision; nil discards.

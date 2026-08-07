@@ -1,4 +1,4 @@
-package netprompt
+package netproxy
 
 import (
 	"fmt"
