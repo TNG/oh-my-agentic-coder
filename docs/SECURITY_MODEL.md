@@ -134,6 +134,16 @@ sandbox:
 | Environment variables in `environment.allow_vars` (`OMAC_*`, `HOME`, `PATH`, `LANG`, `TERM`, … + the selected harness's auth vars) | passed through | default profile `environment.allow_vars` + `harness.SandboxEnvAllow` (injected at launch) |
 | Any other ambient env var (cloud/CI secrets, `DOCKER_HOST`, `SSH_AUTH_SOCK`, proxy config) | **stripped** | not on the allowlist |
 
+> **Denial markers are inert.** On Linux a denied *file* inside a granted
+> tree is masked with a marker explaining the denial, not just hidden. The
+> protected set includes shell configs (`~/.profile`, `~/.bashrc`, …), which
+> exist to be executed, so every line of that marker is comment-prefixed
+> (`# X-Omac-Sandbox: denied`): a masked shell config sources as a silent
+> no-op while still telling the agent why the path is restricted. This also
+> applies to a profile's own `denial.marker_file` — the sandbox never binds
+> executable content over a file the confined process runs. Use
+> `filesystem.override_deny` when the agent genuinely needs the real file.
+
 > **Environment allowlist (upgrade note).** The default profile ships an
 > explicit `environment.allow_vars` allowlist, so the sandbox no longer
 > inherits arbitrary ambient variables from the launching shell — only the
