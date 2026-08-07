@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/tngtech/oh-my-agentic-coder/internal/audit"
+	"github.com/tngtech/oh-my-agentic-coder/internal/buildbroker"
 	"github.com/tngtech/oh-my-agentic-coder/internal/config"
 	"github.com/tngtech/oh-my-agentic-coder/internal/facade"
 	"github.com/tngtech/oh-my-agentic-coder/internal/keychain"
@@ -824,8 +825,62 @@ func runLaunch(env *Env, opts launchOpts) int {
 	for i, a := range armed {
 		reloader.markMounted(a.entry.Name, a.meta.Sidecar.MountOrDefault(running[i].Name))
 	}
-	controlURL, closeControl, controlOK := startControlPlane(reloader)
+
+	// Host build broker: the unsandboxed parent owns a constrained
+	// build broker mounted on the loopback control plane. A sandboxed
+	// `omac build` submits to it. The broker is constructed here with
+	// a crypto-random in-memory token (never written to control-info,
+	// activation responses, sidecar, or executor env) and a start
+	// authorizer that authorizes exactly this session's canonical
+	// worktree. The token is injected into the inner env below.
+	//
+	// The broker is constructed even when the control-plane bind later
+	// fails: OMAC_BUILD_BROKER_REQUIRED=1 is injected unconditionally
+	// so a misconfigured parent fails closed instead of falling back to
+	// nested local execution. When the bind succeeds the broker is
+	// mounted on the loopback listener.
+	// Ticket 07 Phase 5: parent-startup reconciliation of daemon
+	// ownership records. Reconcile BEFORE the broker is mounted / builds
+	// are accepted so a parent that crashed between daemon creation and
+	// ownership registration does not leave stale records for the next
+	// build (spec.md §239). Fail-soft: a reconciliation error is logged
+	// to env.Stderr but does NOT abort startup — the build-time
+	// handshake and the next startup will catch any stale records the
+	// sweep missed (see reconcileDaemonOwnership).
+	reconcileDaemonOwnership(cacheScopeDirOrEmpty(cacheScope), env.Stderr)
+
+	buildToken := mintToken()
+	var buildBroker *buildbroker.Broker
+	sessionWorktree, canonErr := canonicalWorktree(env.Workdir)
+	if canonErr != nil {
+		// Best-effort: fall back to the un-canonicalized workdir.
+		// The authorizer will reject requests whose canonical form
+		// does not match, so a non-canonical session worktree simply
+		// means no brokered build until the parent is restarted from
+		// a canonical path. Log and continue (the marker is still
+		// injected so managed mode fails closed).
+		if verbose {
+			fmt.Fprintf(env.Stderr, "[verbose] could not canonicalize session worktree: %v\n", canonErr)
+		}
+		sessionWorktree = env.Workdir
+	}
+	bb, bbErr := newBuildBroker(buildToken, buildbroker.StartAuthorizer(sessionWorktree), env, cacheScopeDirOrEmpty(cacheScope), auditor, startSnapshotProvider(sessionWorktree, cacheScopeDirOrEmpty(cacheScope)))
+	if bbErr != nil {
+		if verbose {
+			fmt.Fprintf(env.Stderr, "[verbose] build broker: %v\n", bbErr)
+		}
+	} else {
+		buildBroker = bb
+	}
+	controlURL, closeControl, controlOK := startControlPlane(reloader, buildBroker)
 	defer closeControl()
+	// The broker shuts down before the control listener closes:
+	// gracefully cancel queued+active, force after the deadline, wait
+	// for engine cleanup. fatal strict-audit paths call the same
+	// shutdown before os.Exit (see fatalTeardown below).
+	if buildBroker != nil {
+		defer buildBroker.Shutdown()
+	}
 	if controlOK && verbose {
 		fmt.Fprintf(env.Stderr, "[verbose] control plane: %s\n", controlURL)
 	}
@@ -938,6 +993,14 @@ func runLaunch(env *Env, opts launchOpts) int {
 	if controlOK {
 		extra["OMAC_CONTROL_BASE"] = controlURL
 	}
+	// Managed build mode: the required marker is injected
+	// unconditionally (even when the broker or control-plane bind
+	// failed) so a misconfigured parent fails closed instead of
+	// falling back to nested local execution. The token is injected
+	// only when the broker is actually mounted on a loopback
+	// listener; a missing token with the marker present makes the
+	// CLI exit 10 with a restart/upgrade diagnostic (fail-closed).
+	injectBuildBrokerEnv(extra, buildBroker != nil && controlOK, buildToken)
 	if injectBriefing {
 		// The OpenCode plugin reads this and pushes it into the system prompt;
 		// Claude ignores it (it gets the briefing via the flag above).
@@ -970,6 +1033,11 @@ func runLaunch(env *Env, opts launchOpts) int {
 	// failure mid-run lands here.
 	fatalTeardown = func(ferr error) {
 		fmt.Fprintln(env.Stderr, prefix+": audit (strict) write failed, aborting:", ferr)
+		// Fatal strict-audit paths call the broker shutdown before
+		// os.Exit so active builds are gracefully canceled + drained.
+		if buildBroker != nil {
+			buildBroker.Shutdown()
+		}
 		if !keepRunning {
 			sup.ShutdownAll(5 * time.Second)
 		}

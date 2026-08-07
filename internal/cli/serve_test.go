@@ -469,7 +469,7 @@ func TestReloadGlobalsEmptyIsNoop(t *testing.T) {
 
 func TestReloadGlobalEndpointExists(t *testing.T) {
 	s := newServeServerForTest(t)
-	mux := s.controlMux()
+	mux := s.controlMux(nil)
 	req := httptest.NewRequest("POST", "/__omac__/reload-global", nil)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
@@ -497,7 +497,7 @@ func TestDirsEndpointDoesNotLeakTokens(t *testing.T) {
 
 	req := httptest.NewRequest("GET", "/__omac__/dirs", nil)
 	rec := httptest.NewRecorder()
-	s.controlMux().ServeHTTP(rec, req)
+	s.controlMux(nil).ServeHTTP(rec, req)
 	if rec.Code != 200 {
 		t.Fatalf("dirs status = %d, want 200 (body=%s)", rec.Code, rec.Body.String())
 	}

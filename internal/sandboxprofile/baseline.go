@@ -94,6 +94,15 @@ func darwinBaseline() Baseline {
 		Read: []string{
 			"/bin", "/sbin", "/usr/bin", "/usr/sbin",
 			"/usr/local/bin", "/usr/lib", "/usr/local/lib", "/usr/share",
+			// /usr/libexec is a sibling of /usr/lib (NOT nested under it),
+			// so it needs its own grant. macOS ships /usr/libexec/java_home
+			// here; Gradle's OsXInstallationSupplier execs it (`java_home -V`)
+			// to enumerate installed JDKs for toolchain auto-detection.
+			// Without this grant, java_home EPERMs under deny-default
+			// Seatbelt, Gradle sees only the JAVA_HOME JDK (wrong vendor for
+			// builds pinning a specific toolchain vendor), and falls back to
+			// foojay auto-download — which the build proxy network-denies.
+			"/usr/libexec",
 			"/System", "/Library",
 			"/dev",
 			"/private/var/db/dyld", "/var/db",

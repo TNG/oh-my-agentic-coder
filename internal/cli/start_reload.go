@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sync"
 
+	"github.com/tngtech/oh-my-agentic-coder/internal/buildbroker"
 	"github.com/tngtech/oh-my-agentic-coder/internal/config"
 	"github.com/tngtech/oh-my-agentic-coder/internal/facade"
 	"github.com/tngtech/oh-my-agentic-coder/internal/keychain"
@@ -48,7 +49,15 @@ type startReloader struct {
 // publishes its URL via the shared control-info file. Returns the listener,
 // the control URL, and a close func. On bind failure it returns ok=false and
 // start proceeds without live reload (non-fatal).
-func startControlPlane(r *startReloader) (controlURL string, closeFn func(), ok bool) {
+//
+// When broker is non-nil, the broker's routes are mounted on the same
+// loopback listener so a sandboxed `omac build` can submit to it. The
+// broker is constructed by the caller (runLaunch) with the parent's
+// crypto-random token and start authorizer; startControlPlane only
+// mounts it. A non-loopback bind is not possible here (we always bind
+// 127.0.0.1:0), so the broker is always mounted on a loopback
+// listener.
+func startControlPlane(r *startReloader, broker *buildbroker.Broker) (controlURL string, closeFn func(), ok bool) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return "", func() {}, false
@@ -67,6 +76,9 @@ func startControlPlane(r *startReloader) (controlURL string, closeFn func(), ok 
 	// The harness plugin reports the id of the session it created here, so the
 	// post-exit "resume" hint is exact without enumerating sessions.
 	mux.HandleFunc("/__omac__/session", r.handleSession)
+	if broker != nil {
+		broker.Mount(mux)
+	}
 	srv := &http.Server{Handler: mux}
 	go func() {
 		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {

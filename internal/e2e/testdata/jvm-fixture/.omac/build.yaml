@@ -1,0 +1,7 @@
+version: 1
+builds:
+  - root: jvm-fixture
+    tool: gradle
+    containers:
+      images:
+        - postgres:16-alpine
