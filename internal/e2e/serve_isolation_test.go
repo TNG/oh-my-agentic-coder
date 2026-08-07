@@ -76,18 +76,22 @@ func TestE2EServeDirTokenIsolation(t *testing.T) {
 	stageServeSkill(t, wdA, "slack")
 	stageServeSkill(t, wdB, "slack")
 
-	// Pre-approve the staged skills in the subprocess's host-only store so the
-	// spawn-approval gate lets activation reach its pending-credentials path
-	// (both copies are identical, so they share one bundle hash). This test is
-	// about dir-token isolation, not the approval gate.
-	slackHash, err := config.BundleHash(filepath.Join(wdA, ".opencode", "skills", "slack"))
+	// Pre-approve the staged skills in the subprocess's host-only store (both
+	// copies are identical, so they share one bundle hash and one snapshot) so
+	// the spawn-approval gate lets activation reach its pending-credentials
+	// path. Point HOME/XDG at the subprocess's `home` so Approve writes the
+	// approval + snapshot where serve resolves them. This test is about
+	// dir-token isolation, not the approval gate.
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	slackDir := filepath.Join(wdA, ".opencode", "skills", "slack")
+	slackHash, err := config.BundleHash(slackDir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	writeApprovalStore(t, home, skilltrust.Store{
-		Version:  skilltrust.SchemaVersion,
-		Approved: []skilltrust.Approval{{Name: "slack", BundleHash: slackHash, ApprovedAt: time.Unix(0, 0).UTC()}},
-	})
+	if err := skilltrust.Approve("slack", slackHash, slackDir); err != nil {
+		t.Fatal(err)
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

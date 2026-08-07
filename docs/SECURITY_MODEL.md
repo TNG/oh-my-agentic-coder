@@ -123,16 +123,20 @@ the sandbox:
 
 - `config.BundleHash` deliberately excludes dependency/artifact subtrees
   (`node_modules`, `.venv`, `build`, `dist`, `target`, …) and does not follow
-  symlinks — so an install can populate those after registration without
-  invalidating the approval. A skill that executes mutable code from an
-  excluded tree (e.g. `node dist/index.js`, a vendored `.venv`) or via a
-  symlink into agent-writable space can therefore be tampered with after
-  approval without changing its hash. This bound applies equally to the
-  existing bundle-hash drift check. The complete fix is to execute the
-  sidecar from an immutable, host-side snapshot taken at approval time
-  (so the executed bytes are exactly the approved bytes); that is tracked as
-  follow-up hardening. Until then, the approval binds only the hashed subset
-  of a skill's tree.
+  symlinks, so the hash alone does not cover everything a skill executes.
+  omac closes this by **executing from an approval snapshot**: at approval
+  time the whole skill tree is frozen into a host-only directory the sandbox
+  cannot write (`~/.config/omac/skills/<name>/<hash>`), and the sidecar is
+  spawned from that snapshot rather than the agent-writable workdir. So the
+  executed bytes are exactly the approved bytes, and rewriting an excluded-dir
+  file in the workdir after approval has no effect on what runs. Symlinks are
+  never dereferenced into the snapshot: an in-tree relative link is recreated
+  as a link (so `node_modules/.bin`-style layouts work), while a link that
+  escapes the skill tree is dropped — so a planted `dist/x -> ~/.ssh/id_rsa`
+  can neither bake a host file into the snapshot nor be read back through the
+  skill. (The bundle-hash *drift* check still only covers the hashed subset —
+  a detection nicety, not the enforcement boundary; the snapshot is the
+  boundary.)
 - Approvals are additive per name and never auto-retired, so an agent that
   can reproduce a previously-approved build's bytes (and forge its registry
   hash) could roll a skill back to an older approved version. Only

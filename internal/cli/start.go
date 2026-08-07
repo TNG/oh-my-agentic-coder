@@ -760,15 +760,16 @@ func runLaunch(env *Env, opts launchOpts) int {
 
 	// 5a. Spawn-approval gate. A sidecar runs UNSANDBOXED, so only skills
 	//     whose current on-disk code is host-approved (see
-	//     internal/skilltrust) may start. Unapproved skills are mounted as
-	//     broken routes with the remedy — never spawned — so a workdir the
-	//     agent can write cannot launch host code.
+	//     internal/skilltrust) may start — and they run from the immutable
+	//     approval snapshot, not the agent-writable workdir. Unapproved
+	//     skills are mounted as broken routes with the remedy, never spawned.
 	type refusedSkill struct{ name, mount, abs string }
 	var approvalRefused []refusedSkill
 	armedApproved := armed[:0:0]
 	for _, a := range armed {
-		ok, aerr := approvalStatus(a.entry.Name, a.abs)
+		snap, ok, aerr := approvedSpawnDir(a.entry.Name, a.abs)
 		if ok && aerr == nil {
+			a.abs = snap // spawn (and serve SKILL.md) from the frozen snapshot
 			armedApproved = append(armedApproved, a)
 			continue
 		}

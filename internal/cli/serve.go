@@ -297,13 +297,18 @@ func runServe(args []string, env *Env) int {
 	// need an out-of-sandbox `omac register`, which is what keeps a long-lived
 	// serve daemon from blessing agent-authored skills mid-session.
 	if firstApprovalUpgrade() {
+		n := 0
 		if gReg, gerr := registry.LoadGlobal(); gerr == nil {
-			_, _ = grandfatherApprovals("", gReg)
+			c, _ := grandfatherApprovals("", gReg)
+			n += c
 		}
 		if wReg, werr := registry.Load(env.Workdir); werr == nil {
-			_, _ = grandfatherApprovals(env.Workdir, wReg)
+			c, _ := grandfatherApprovals(env.Workdir, wReg)
+			n += c
 		}
 		_ = skilltrust.EnsureInitialized()
+		fmt.Fprintf(env.Stderr, "omac serve: approval-gated spawning is now active "+
+			"(migrated %d existing skill(s)); new skills need `omac register` on the host to spawn\n", n)
 	}
 
 	// Cold start: global skills are a fixed, known set, so — unlike the lazy
@@ -1342,10 +1347,12 @@ func (s *serveServer) bringUp(e registry.Entry, absDir, workdir, namespace, secr
 	}
 
 	// Spawn-approval gate: refuse unless the current on-disk code is
-	// host-approved — a workdir the agent can write must not launch host code.
-	// Grandfathering happens once at cold start (see runServe), NOT here: a
-	// long-lived serve daemon must not keep blessing skills authored mid-session.
-	if ok, aerr := approvalStatus(e.Name, absDir); aerr != nil || !ok {
+	// host-approved, and run from the immutable approval snapshot rather than
+	// the agent-writable workdir. Grandfathering happens once at cold start
+	// (see runServe), NOT here: a long-lived serve daemon must not keep
+	// blessing skills authored mid-session.
+	snapDir, ok, aerr := approvedSpawnDir(e.Name, absDir)
+	if aerr != nil || !ok {
 		sr := &skillRoute{Name: e.Name, Mount: mount, Namespace: namespace, SkillDir: absDir,
 			State: facade.RouteBroken, Detail: errSkillNotApproved(e.Name).Error()}
 		s.installRoute(sr, 0)
@@ -1413,7 +1420,7 @@ func (s *serveServer) bringUp(e registry.Entry, absDir, workdir, namespace, secr
 		Name:             namespace + "/" + e.Name, // unique tracking key across dirs
 		SkillName:        e.Name,                   // plain name -> SIDECAR_SKILL (no slash)
 		Namespace:        namespace,                // audit only (hashed)
-		SkillDir:         absDir,
+		SkillDir:         snapDir,                  // run the frozen snapshot, not the workdir
 		Command:          m.Sidecar.Command,
 		EnvPassthrough:   m.Sidecar.EnvPassthrough,
 		Secrets:          secMap,

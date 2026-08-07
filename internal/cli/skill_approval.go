@@ -16,21 +16,23 @@ import (
 // cannot write. See internal/skilltrust and docs/SECURITY_MODEL.md.
 
 // skillSpawnAuthorizer is the supervisor spawn-gate backstop: every spawn
-// funnels through it even if a caller forgets its own pre-flight check.
+// funnels through it even if a caller forgets its own pre-flight check. A
+// sidecar may run only from the host-only approval snapshot (which the
+// sandbox cannot write); anything else is refused. This is unforgeable by
+// construction and, unlike re-hashing, does not spuriously reject a skill
+// whose snapshot legitimately differs from the workdir hash (recreated
+// symlinks). The pre-flight approvedSpawnDir is what actually maps an
+// approved skill to its snapshot dir.
 func skillSpawnAuthorizer() func(supervisor.SidecarSpec) error {
 	return func(spec supervisor.SidecarSpec) error {
+		if skilltrust.IsSnapshotPath(spec.SkillDir) {
+			return nil
+		}
 		name := spec.SkillName
 		if name == "" {
 			name = spec.Name
 		}
-		ok, err := approvalStatus(name, spec.SkillDir)
-		if err != nil {
-			return err
-		}
-		if !ok {
-			return errSkillNotApproved(name)
-		}
-		return nil
+		return errSkillNotApproved(name)
 	}
 }
 
@@ -47,6 +49,33 @@ func approvalStatus(name, skillDir string) (bool, error) {
 		return false, fmt.Errorf("approval check: %w", err)
 	}
 	return ok, nil
+}
+
+// approvedSpawnDir resolves the directory a skill's sidecar must be spawned
+// FROM: the immutable, host-only snapshot frozen at approval time (see
+// internal/skilltrust snapshot.go). workdirSkillDir is the agent-writable
+// source; its current content is hashed and matched against the approval,
+// then the corresponding snapshot is returned. ok=false means refuse — either
+// the content is not approved, or it is approved but has no snapshot yet
+// (re-register to create one). Spawning from the snapshot, not the workdir,
+// is what makes the executed bytes exactly the approved bytes.
+func approvedSpawnDir(name, workdirSkillDir string) (snapshotDir string, ok bool, err error) {
+	hash, herr := config.BundleHash(workdirSkillDir)
+	if herr != nil {
+		return "", false, fmt.Errorf("bundle hash: %w", herr)
+	}
+	approved, aerr := skilltrust.IsApproved(name, hash)
+	if aerr != nil {
+		return "", false, aerr
+	}
+	if !approved {
+		return "", false, nil
+	}
+	snap, present := skilltrust.SnapshotPath(name, hash)
+	if !present {
+		return "", false, nil
+	}
+	return snap, true, nil
 }
 
 // errSkillNotApproved is the uniform refusal error/detail; it names the

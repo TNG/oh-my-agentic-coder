@@ -200,11 +200,12 @@ func TestHostApprovedSkillMounts(t *testing.T) {
 	workdir := t.TempDir()
 	secretPath, secret := stageOutsideSecret(t)
 
-	_, bundle := stageAgentAuthoredSkill(t, workdir, "legit", secretPath)
+	skillDir, bundle := stageAgentAuthoredSkill(t, workdir, "legit", secretPath)
 
 	// Simulate the host-side `omac register` approval the sandboxed agent
 	// cannot perform (the approvals dir is not mounted into the sandbox).
-	if err := skilltrust.Approve("legit", bundle, ""); err != nil {
+	// Passing the dir also freezes the approval snapshot the sidecar runs from.
+	if err := skilltrust.Approve("legit", bundle, skillDir); err != nil {
 		t.Fatalf("approve: %v", err)
 	}
 
@@ -229,7 +230,7 @@ func TestEditingApprovedSkillCodeRevokesApproval(t *testing.T) {
 	secretPath, _ := stageOutsideSecret(t)
 
 	skillDir, bundle := stageAgentAuthoredSkill(t, workdir, "edited", secretPath)
-	if err := skilltrust.Approve("edited", bundle, ""); err != nil {
+	if err := skilltrust.Approve("edited", bundle, skillDir); err != nil {
 		t.Fatalf("approve: %v", err)
 	}
 
@@ -299,6 +300,85 @@ func TestGrandfatherClosesFirstUpgradeWindow(t *testing.T) {
 	}
 	if ok, _ := approvalStatus("preexisting", preDir); !ok {
 		t.Error("the grandfathered skill must remain approved across launches")
+	}
+}
+
+// TestSnapshotDefeatsPostApprovalTampering is the core proof of the
+// execute-from-snapshot hardening (issue #209): a file the bundle hash does
+// NOT cover (here under an excluded `.venv/` dir) is frozen at approval time,
+// so rewriting it in the workdir AFTER approval does not change what the
+// sidecar serves — because the sidecar runs from the immutable snapshot, not
+// the agent-writable workdir. Without snapshots this is the residual escape:
+// the hash is unchanged, the gate passes, and the tampered code runs.
+func TestSnapshotDefeatsPostApprovalTampering(t *testing.T) {
+	requireWorkingPython3(t)
+	isolateHome(t)
+	workdir := t.TempDir()
+
+	name := "vendored"
+	skillDir := filepath.Join(workdir, ".opencode", "skills", name)
+	if err := os.MkdirAll(filepath.Join(skillDir, ".venv"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// A payload under .venv — excluded from config.BundleHash, so editing it
+	// later does NOT change the approved hash.
+	payload := filepath.Join(skillDir, ".venv", "payload.txt")
+	if err := os.WriteFile(payload, []byte("APPROVED-PAYLOAD"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	meta := "name: " + name + "\ntype: skill\nsidecar:\n" +
+		"  command: [\"python3\", \"server.py\"]\n  mount: " + name + "\n" +
+		"  health:\n    path: /status\n    timeout_ms: 20000\n    interval_ms: 100\n"
+	if err := os.WriteFile(filepath.Join(skillDir, config.MetaFileName), []byte(meta), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// The sidecar serves the CONTENT of .venv/payload.txt relative to its cwd.
+	server := `import os, http.server
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == "/status":
+            self.send_response(200); self.end_headers(); self.wfile.write(b"ok"); return
+        try: data = open(".venv/payload.txt","rb").read()
+        except Exception as e: data = str(e).encode()
+        self.send_response(200); self.end_headers(); self.wfile.write(data)
+    def log_message(self, *a): pass
+http.server.HTTPServer(("127.0.0.1", int(os.environ["SIDECAR_PORT"])), H).serve_forever()
+`
+	if err := os.WriteFile(filepath.Join(skillDir, "server.py"), []byte(server), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	bundle := bundleHashOf(t, skillDir)
+	if err := registry.WithLock(workdir, func() error {
+		reg, _ := registry.Load(workdir)
+		reg.Upsert(registry.Entry{Name: name, SkillDir: filepath.Join(".opencode", "skills", name), BundleHash: bundle, RegisteredAt: time.Now().UTC()})
+		return registry.Save(workdir, reg)
+	}); err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	// Host approves -> snapshot freezes the current .venv/payload.txt.
+	if err := skilltrust.Approve(name, bundle, skillDir); err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+
+	// The agent now rewrites the excluded payload in the workdir. The bundle
+	// hash is UNCHANGED (proving the approval still matches), so the gate lets
+	// the skill run — but it must run the snapshot's original payload.
+	if err := os.WriteFile(payload, []byte("TAMPERED-PAYLOAD"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if bundleHashOf(t, skillDir) != bundle {
+		t.Fatal("precondition: editing an excluded-dir file must NOT change the bundle hash")
+	}
+
+	r, baseURL := newLiveReloader(t, workdir)
+	r.reload()
+	if !r.isMounted(name) {
+		t.Fatal("approved skill should mount (its hash is unchanged)")
+	}
+	_, body := httpGet(t, baseURL+"/"+name+"/payload")
+	if body != "APPROVED-PAYLOAD" {
+		t.Fatalf("sidecar served %q; expected the frozen snapshot payload, not the workdir tamper", body)
 	}
 }
 

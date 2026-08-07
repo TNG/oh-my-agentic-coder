@@ -2,6 +2,7 @@ package skilltrust
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -30,7 +31,7 @@ func TestUnapprovedByDefault(t *testing.T) {
 
 func TestApproveThenIsApproved(t *testing.T) {
 	isolate(t)
-	if err := Approve("skill", "sha256:abc", "/skills/skill"); err != nil {
+	if err := Approve("skill", "sha256:abc", ""); err != nil {
 		t.Fatalf("Approve: %v", err)
 	}
 	if !Exists() {
@@ -121,7 +122,7 @@ func TestEnsureInitializedClosesFirstUpgradeWindow(t *testing.T) {
 
 func TestApprovalsSurviveReload(t *testing.T) {
 	isolate(t)
-	if err := Approve("skill", "sha256:abc", "/d"); err != nil {
+	if err := Approve("skill", "sha256:abc", ""); err != nil {
 		t.Fatalf("Approve: %v", err)
 	}
 	// A fresh Load (new process would do the same) sees the persisted state.
@@ -146,5 +147,83 @@ func TestFailClosedWithoutHome(t *testing.T) {
 	}
 	if ok, _ := IsApproved("x", "h"); ok {
 		t.Error("must fail closed when no store location is resolvable")
+	}
+}
+
+func TestSnapshotFreezesContentAndRevokeRemovesIt(t *testing.T) {
+	isolate(t)
+	src := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "code.txt"), []byte("ORIGINAL"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Approve with a real dir -> a snapshot is created and resolvable.
+	if err := Approve("s", "sha256:h", src); err != nil {
+		t.Fatalf("Approve: %v", err)
+	}
+	snap, ok := SnapshotPath("s", "sha256:h")
+	if !ok {
+		t.Fatal("snapshot should exist after Approve with a dir")
+	}
+	got, err := os.ReadFile(filepath.Join(snap, "code.txt"))
+	if err != nil || string(got) != "ORIGINAL" {
+		t.Fatalf("snapshot content = %q, err=%v; want ORIGINAL", got, err)
+	}
+
+	// Editing the SOURCE after approval must not change the snapshot.
+	if err := os.WriteFile(filepath.Join(src, "code.txt"), []byte("TAMPERED"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = os.ReadFile(filepath.Join(snap, "code.txt"))
+	if string(got) != "ORIGINAL" {
+		t.Errorf("snapshot changed with the source: %q (must be immutable)", got)
+	}
+
+	// Revoke removes the snapshot.
+	if _, err := Revoke("s", "sha256:h"); err != nil {
+		t.Fatalf("Revoke: %v", err)
+	}
+	if _, ok := SnapshotPath("s", "sha256:h"); ok {
+		t.Error("snapshot should be gone after Revoke")
+	}
+}
+
+func TestSnapshotDoesNotBakeEscapingSymlink(t *testing.T) {
+	isolate(t)
+	// A host secret OUTSIDE the skill tree.
+	outside := t.TempDir()
+	secret := filepath.Join(outside, "id_rsa")
+	if err := os.WriteFile(secret, []byte("PRIVATE-KEY"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	src := t.TempDir()
+	// (1) an escaping symlink an agent might plant; (2) a legit in-tree
+	// relative symlink (e.g. node_modules/.bin style).
+	if err := os.Symlink(secret, filepath.Join(src, "evil")); err != nil {
+		t.Skipf("symlinks unsupported here: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "real.txt"), []byte("ok"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("real.txt", filepath.Join(src, "alias")); err != nil {
+		t.Fatal(err)
+	}
+
+	snap, err := Snapshot("s", "sha256:h", src)
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+
+	// The escaping link must NOT appear as baked content (no secret in snapshot).
+	if b, err := os.ReadFile(filepath.Join(snap, "evil")); err == nil {
+		t.Fatalf("escaping symlink was materialized into the snapshot: %q", b)
+	}
+	if _, err := os.Lstat(filepath.Join(snap, "evil")); err == nil {
+		t.Error("escaping symlink should be dropped entirely, not recreated")
+	}
+	// The in-tree relative link is preserved and resolves within the snapshot.
+	if b, err := os.ReadFile(filepath.Join(snap, "alias")); err != nil || string(b) != "ok" {
+		t.Errorf("in-tree symlink not preserved: body=%q err=%v", b, err)
 	}
 }
