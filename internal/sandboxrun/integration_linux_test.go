@@ -3,6 +3,8 @@
 package sandboxrun
 
 import (
+	"bytes"
+	"context"
 	"fmt"
 	"net"
 	"net/http"
@@ -12,7 +14,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxdeny"
 	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxprofile"
 )
 
@@ -60,6 +64,42 @@ func runBwrapped(t *testing.T, g *Grants, innerArgv ...string) (string, int) {
 		}
 	}
 	return string(out), code
+}
+
+// runBwrappedShell runs a shell command inside the sandbox with stdin
+// held open (as a harness holds its Bash tool's) and a deadline, so a
+// hang inside the namespace fails the test instead of the package.
+// finished=false means the deadline killed it.
+func runBwrappedShell(t *testing.T, g *Grants, timeout time.Duration, script string) (out string, code int, finished bool) {
+	t.Helper()
+	argv, err := BuildBwrapArgv(g, []string{"/bin/sh", "-c", script})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	defer w.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	cmd.Stdin = r
+	var buf bytes.Buffer
+	cmd.Stdout = &buf
+	cmd.Stderr = &buf
+	// A process blocking on stdin outlives the kill and holds the output
+	// pipe open; WaitDelay stops Wait from blocking on it.
+	cmd.WaitDelay = 2 * time.Second
+	err = cmd.Run()
+	if ee, ok := err.(*exec.ExitError); ok {
+		code = ee.ExitCode()
+	} else if err != nil && ctx.Err() == nil {
+		t.Fatalf("exec: %v (%s)", err, buf.String())
+	}
+	return buf.String(), code, ctx.Err() == nil
 }
 
 func linuxTestGrants(t *testing.T) *Grants {
@@ -208,6 +248,58 @@ func TestIntegrationProtectedMarkerLaunchAndContent(t *testing.T) {
 	}
 	if _, code := runBwrapped(t, g, "/bin/cat", filepath.Join(secretDir, "key")); code == 0 {
 		t.Error("masked directory still exposes its original contents")
+	}
+}
+
+// TestIntegrationMaskedShellConfigSourcesCleanly is the end-to-end form
+// of #213: with $HOME as the workdir, ~/.profile is mounted and masked,
+// so every login shell inside the sandbox sources the marker. A marker
+// of plain prose hung there forever (its "POST ..." line runs
+// libwww-perl's lwp-request, which blocks on stdin) and spewed
+// command-not-found. The masked file must still hide its real contents.
+func TestIntegrationMaskedShellConfigSourcesCleanly(t *testing.T) {
+	requireBwrap(t)
+	if _, err := exec.LookPath("bash"); err != nil {
+		skipOrFailCI(t, "bash not installed: %v", err)
+	}
+	home := t.TempDir() // stands in for $HOME as the workdir
+	profile := filepath.Join(home, ".profile")
+	if err := os.WriteFile(profile, []byte("export TOPSECRET=1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	p := &sandboxprofile.Profile{
+		Workdir: sandboxprofile.Workdir{Access: sandboxprofile.AccessReadWrite},
+		Network: sandboxprofile.Network{Mode: sandboxprofile.ModeBlocked},
+	}
+	g, err := ResolveGrants(p, home, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.DenialText = sandboxdeny.Default().MarkerFile
+	g.ProtectedPaths = append(g.ProtectedPaths, profile)
+	cleanup, err := g.prepareMarkers()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+
+	// The stub POST stands in for libwww-perl's lwp-request so the hang
+	// reproduces on hosts without it installed.
+	stub := postStubDir(t)
+	script := "export HOME=" + home + "; export OMAC_BASE=http://127.0.0.1:9; " +
+		"export PATH=" + stub + ":$PATH; bash -lc 'echo REACHED'"
+	out, code, finished := runBwrappedShell(t, g, 30*time.Second, script)
+	if !finished {
+		t.Fatalf("login shell hung on the masked ~/.profile: %s", out)
+	}
+	if code != 0 || !strings.Contains(out, "REACHED") {
+		t.Errorf("login shell exit %d, output %q; want 0 and REACHED", code, out)
+	}
+	if strings.Contains(out, "command not found") {
+		t.Errorf("marker executed as shell commands: %q", out)
+	}
+	if strings.Contains(out, "TOPSECRET") {
+		t.Errorf("masked ~/.profile leaked its real contents: %q", out)
 	}
 }
 
