@@ -189,6 +189,73 @@ func TestOptionLabelsExactAndDefault(t *testing.T) {
 	}
 }
 
+func TestLabelTokenRoundTripSession(t *testing.T) {
+	host, suffix := "api.example.com", "example.com"
+	cases := []struct {
+		label      string
+		token      string
+		allow      bool
+		scope      string
+		wantSuffix bool
+	}{
+		{"Allow for this session (this host)", tokenAllowSessionHost, true, "host", false},
+		{"Allow for this session (*.example.com)", tokenAllowSessionSuffix, true, "suffix", true},
+		{"Deny for this session (this host)", tokenDenySessionHost, false, "host", false},
+		{"Deny for this session (*.example.com)", tokenDenySessionSuffix, false, "suffix", true},
+	}
+	for _, c := range cases {
+		t.Run(c.label, func(t *testing.T) {
+			if got := labelToToken(c.label, suffix); got != c.token {
+				t.Fatalf("labelToToken(%q) = %q, want %q", c.label, got, c.token)
+			}
+			r := tokenToResult(c.token, host, suffix)
+			if r.Allow != c.allow {
+				t.Errorf("Allow = %v, want %v (%+v)", r.Allow, c.allow, r)
+			}
+			if !r.Session {
+				t.Errorf("Session = false, want true (%+v)", r)
+			}
+			if r.Persist {
+				t.Errorf("Persist = true, want false for a session option (%+v)", r)
+			}
+			if r.Scope != c.scope {
+				t.Errorf("Scope = %q, want %q (%+v)", r.Scope, c.scope, r)
+			}
+			if c.wantSuffix && r.Suffix != suffix {
+				t.Errorf("Suffix = %q, want %q (%+v)", r.Suffix, suffix, r)
+			}
+		})
+	}
+}
+
+func TestOptionLabelsHas11Entries(t *testing.T) {
+	opts := optionLabels("example.com")
+	want := []string{
+		"Allow once",
+		"Allow for this session (this host)",
+		"Allow for this session (*.example.com)",
+		"Allow permanently (this host)",
+		"Allow permanently (*.example.com)",
+		"Deny once",
+		"Deny for this session (this host)",
+		"Deny for this session (*.example.com)",
+		"Deny permanently (this host)",
+		"Deny permanently (*.example.com)",
+		"Explain more",
+	}
+	if len(opts) != 11 {
+		t.Fatalf("optionLabels returned %d entries, want 11", len(opts))
+	}
+	if len(opts) != len(want) {
+		t.Fatalf("optionLabels = %v, want %v", opts, want)
+	}
+	for i := range want {
+		if opts[i] != want[i] {
+			t.Errorf("option[%d] = %q, want %q", i, opts[i], want[i])
+		}
+	}
+}
+
 func TestPromptTextParity(t *testing.T) {
 	got := promptText("api.example.com", 443, "", "", "", 7)
 	want := "The sandboxed process is trying to reach:\n\n    api.example.com:443\n\nAgent intent: (not declared)\n\nHow should omac handle this destination? (7 options)"

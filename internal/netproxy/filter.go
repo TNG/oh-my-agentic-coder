@@ -69,7 +69,8 @@ type Prompter interface {
 type PromptResult struct {
 	Allow   bool
 	Persist bool   // permanent (host or suffix scope) vs once
-	Scope   string // "host" or "suffix" when Persist
+	Session bool   // session-scoped (host or suffix scope) vs once
+	Scope   string // "host" or "suffix" when Persist or Session
 	Suffix  string // populated when Scope == "suffix"
 	// NeedsIntent signals that the user clicked "Explain more" — the
 	// request is denied with a marker pointing the agent at the intent
