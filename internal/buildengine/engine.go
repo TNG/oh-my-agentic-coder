@@ -597,14 +597,15 @@ func Run(opts Options) Result {
 	// resolution failure is a service failure here (GrantsFor would fail
 	// with the same error below — a build cannot run without a JDK).
 	//
-	// The gate mirrors the VerifyReady gate below: it runs only when the
-	// DEFAULT verifier is in use (own.Verify == nil). A custom Verify
-	// closure (tests, or a future non-procidentity verifier) owns its
-	// verification and may not need a real JDK — JDK-less CI runners
-	// wire Enabled()+custom-Verify with no JDK present (b73535b), so
-	// pre-resolving unconditionally would fail those runs for a JDK the
-	// build does not use.
-	if own.Enabled() && own.Verify == nil && own.JDKExecutable == "" {
+	// The gate runs whenever JDKExecutable is unset — the pending
+	// record requires it non-empty REGARDLESS of which verifier is in
+	// use (WritePendingDaemonRecord rejects an empty value; the record
+	// pins the daemon's expected identity). A caller that set
+	// JDKExecutable explicitly (JDK-less CI runners that wire
+	// Enabled()+custom-Verify with no JDK present, b73535b) keeps its
+	// value and skips resolution — no real JDK is needed when the
+	// caller supplies the executable itself.
+	if own.Enabled() && own.JDKExecutable == "" {
 		jdkExe, jdkErr := buildrun.ResolveJDKExecutable(opts.Getenv)
 		if jdkErr != nil {
 			return failService("resolve JDK for daemon ownership: %v", jdkErr)
@@ -670,9 +671,10 @@ func Run(opts Options) Result {
 	// pre-resolution and GrantsFor's JDKExecutable() both derive from
 	// ResolveJDK with the same env, so they agree; pending record and
 	// verify closure always see the same value. VerifyReady re-asserts
-	// non-empty defensively (a caller that bypassed the pre-resolution
-	// — e.g. a DaemonOwnership with a custom Verify cleared after the
-	// fact — would otherwise proceed with an unverifiable record).
+	// non-empty defensively — with the eager gate above it always
+	// holds when ownership is wired (an empty value was either
+	// resolved or refused pre-launch), so this is a final guard, not
+	// the enforcement point.
 	if ownerReady && own.Verify == nil {
 		if !own.VerifyReady() {
 			return failService("daemon ownership wired but JDK executable unresolved — cannot verify the daemon")
