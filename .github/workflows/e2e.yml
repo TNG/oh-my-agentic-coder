@@ -231,6 +231,31 @@ jobs:
           restore-keys: |
             e2e-install-${{ runner.os }}-${{ matrix.harness }}-
 
+      # The e2e_fast subset is network-free and agent-free, so every failure in
+      # it is deterministic and no amount of retrying can clear one. Gate on it
+      # here — under this job's resolved E2E_MODEL_*/E2E_VERSION_* env, which
+      # the PR-level e2e_fast run does not set — so an assertion that only
+      # breaks against the probed model fails in seconds and is named as a test
+      # defect, instead of burning three attempts and reporting as infra.
+      - name: Deterministic test gate
+        if: matrix.harness != 'claude-code' || github.event.inputs.skip_claude_code != 'true'
+        run: |
+          set -o pipefail
+          if ! go test -tags=e2e_fast -count=1 ./internal/e2e/ 2>&1 | tee /tmp/e2e-fast.txt; then
+            echo "::error::deterministic (e2e_fast) test failure — a test defect, not infra; retries cannot clear it"
+            {
+              echo "## E2E deterministic gate FAILED (${{ matrix.harness }} / ${{ matrix.os }})"
+              echo ""
+              echo "Network-free tests failed against the resolved model/version env."
+              echo "This is a test defect, not infra — the agent legs were not run."
+              echo ""
+              echo '```'
+              grep -E '^( *--- FAIL|.*_test\.go:)' /tmp/e2e-fast.txt | head -20
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
       - name: Run e2e test
         id: run_e2e
         # claude-code is the only harness billed against a real external

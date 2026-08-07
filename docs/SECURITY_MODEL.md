@@ -28,7 +28,8 @@ quietly lets traffic through.
 
 - Hosts you list as allowed or denied in the profile are honored silently.
 - Any other host raises a native OS dialog asking you to allow or deny it:
-  once, permanently for that host, or permanently for a domain suffix
+  once, for this session (per host or per domain suffix — cleared when the
+  session ends), or permanently for that host or a domain suffix
   (`*.example.com`). A tricked or compromised agent cannot reach a new
   destination without you seeing the request first.
 - With no dialog available (CI, a headless server) the request is denied.

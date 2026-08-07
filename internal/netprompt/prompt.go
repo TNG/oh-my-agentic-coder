@@ -43,7 +43,7 @@ const (
 // viewport, tiling WMs, HiDPI) — see dialogDimensions.
 const (
 	dialogWidth  = 520
-	dialogHeight = 592
+	dialogHeight = 640
 )
 
 // dialogDimensions returns the popup width and height in pixels, honouring the
