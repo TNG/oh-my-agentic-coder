@@ -13,6 +13,7 @@ import (
 	"github.com/tngtech/oh-my-agentic-coder/internal/keychain"
 	"github.com/tngtech/oh-my-agentic-coder/internal/registry"
 	"github.com/tngtech/oh-my-agentic-coder/internal/skillsource"
+	"github.com/tngtech/oh-my-agentic-coder/internal/skilltrust"
 )
 
 func runDeregister(args []string, env *Env) int {
@@ -66,6 +67,7 @@ func runDeregister(args []string, env *Env) int {
 	var declared []string
 	var existed bool
 	var removedFields int
+	var revokeHash string
 	var global bool
 
 	// A skill is registered in exactly one layer: the workdir registry
@@ -91,8 +93,20 @@ func runDeregister(args []string, env *Env) int {
 		if err != nil {
 			return err
 		}
-		if e, _ := reg.FindForHarness(name, harnessKey); e != nil {
-			declared = e.DeclaredSecretNames
+		// Capture the entry to be removed with the SAME predicate used to
+		// remove it, so revokeHash matches the deleted entry (a name-only
+		// Remove deletes any-harness, so we must capture via Find, not the
+		// legacy-only FindForHarness). Read its fields BEFORE removal, which
+		// reslices reg.Registered and would invalidate the pointer.
+		var removing *registry.Entry
+		if harnessKey != "" {
+			removing, _ = reg.FindForHarness(name, harnessKey)
+		} else {
+			removing, _ = reg.Find(name)
+		}
+		if removing != nil {
+			declared = removing.DeclaredSecretNames
+			revokeHash = removing.BundleHash
 		}
 		if harnessKey != "" {
 			existed = reg.RemoveForHarness(name, harnessKey)
@@ -120,6 +134,16 @@ func runDeregister(args []string, env *Env) int {
 	}); err != nil {
 		fmt.Fprintln(env.Stderr, "omac deregister:", err)
 		return ExitIOError
+	}
+
+	// Revoke the host-only spawn approval (see internal/skilltrust) for this
+	// entry's exact hash, so a copy still registered under another harness or
+	// workdir keeps its own approval. Best-effort: a stale approval is inert
+	// on its own (nothing spawns a skill absent from the registry).
+	if existed && revokeHash != "" {
+		if _, rerr := skilltrust.Revoke(name, revokeHash); rerr != nil {
+			fmt.Fprintf(env.Stderr, "omac deregister: could not revoke host approval (%v)\n", rerr)
+		}
 	}
 
 	if *purge {

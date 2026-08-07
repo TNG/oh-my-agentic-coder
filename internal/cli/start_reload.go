@@ -239,6 +239,21 @@ func (r *startReloader) reload() []string {
 		}
 		mount := m.Sidecar.MountOrDefault(e.Name)
 
+		// Spawn-approval gate. A live reload is exactly the path a
+		// confined agent would use to bring up a skill it authored in the
+		// workdir (author code -> forge .opencode/sidecar.json -> POST
+		// /__omac__/reload). A sidecar runs UNSANDBOXED, so refuse unless
+		// the current on-disk code is host-approved (see
+		// internal/skilltrust). Mount a broken route (no markMounted, so a
+		// later reload after `omac register` can still bring it up).
+		if ok, aerr := approvalStatus(e.Name, absDir); aerr != nil || !ok {
+			r.facade.AddRoute(brokenApprovalRoute(mount, e.Name, absDir))
+			if r.verbose {
+				fmt.Fprintf(r.env.Stderr, "[verbose] reload: %s not host-approved; refused\n", e.Name)
+			}
+			continue
+		}
+
 		// Resolve secrets (workdir-scoped, unscoped fallback) + config.
 		secMap := map[string]secrets.Secret{}
 		missing := false

@@ -26,6 +26,7 @@ import (
 	"github.com/tngtech/oh-my-agentic-coder/internal/session"
 	"github.com/tngtech/oh-my-agentic-coder/internal/skillconfig"
 	"github.com/tngtech/oh-my-agentic-coder/internal/skillsource"
+	"github.com/tngtech/oh-my-agentic-coder/internal/skilltrust"
 	"github.com/tngtech/oh-my-agentic-coder/internal/supervisor"
 	"github.com/tngtech/oh-my-agentic-coder/internal/toolcache"
 )
@@ -385,6 +386,26 @@ func runLaunch(env *Env, opts launchOpts) int {
 		}
 	}
 
+	// 2a-ter. One-time grandfathering of the already-registered skills
+	//         into the host-only approval store (see internal/skilltrust
+	//         and skill_approval.go). Only fires the first time (before
+	//         the store exists) so upgrading omac never newly breaks a
+	//         working setup; thereafter a skill must be approved
+	//         explicitly by an out-of-sandbox `omac register`.
+	if firstApprovalUpgrade() {
+		if n, merr := grandfatherApprovals(env.Workdir, reg); merr != nil {
+			fmt.Fprintln(env.Stderr, prefix+": approval store (non-fatal):", merr)
+		} else if n > 0 {
+			fmt.Fprintf(env.Stderr, "%s: migrated %d registered skill(s) to the host-only approval store; "+
+				"new skills now require `omac register` on the host to spawn\n", prefix, n)
+		}
+		// Persist the store even if nothing was grandfathered, so this
+		// first-upgrade window closes and does not re-open next launch.
+		if ierr := skilltrust.EnsureInitialized(); ierr != nil {
+			fmt.Fprintln(env.Stderr, prefix+": approval store (non-fatal):", ierr)
+		}
+	}
+
 	// 2b. Refuse if any unregistered skill exists under any of the
 	//     skill source roots (workdir-local .agents/skills and
 	//     .opencode/skills, plus the user-global layers — see the
@@ -730,11 +751,37 @@ func runLaunch(env *Env, opts launchOpts) int {
 
 	// 5. Spawn sidecars.
 	sup := supervisor.New(lc.Facade.BaseEnvPassthrough, auditor)
+	sup.SetAuthorizer(skillSpawnAuthorizer())
 	defer func() {
 		if !keepRunning {
 			sup.ShutdownAll(5 * time.Second)
 		}
 	}()
+
+	// 5a. Spawn-approval gate. A sidecar runs UNSANDBOXED, so only skills
+	//     whose current on-disk code is host-approved (see
+	//     internal/skilltrust) may start. Unapproved skills are mounted as
+	//     broken routes with the remedy — never spawned — so a workdir the
+	//     agent can write cannot launch host code.
+	type refusedSkill struct{ name, mount, abs string }
+	var approvalRefused []refusedSkill
+	armedApproved := armed[:0:0]
+	for _, a := range armed {
+		ok, aerr := approvalStatus(a.entry.Name, a.abs)
+		if ok && aerr == nil {
+			armedApproved = append(armedApproved, a)
+			continue
+		}
+		approvalRefused = append(approvalRefused, refusedSkill{
+			name:  a.entry.Name,
+			mount: a.meta.Sidecar.MountOrDefault(a.entry.Name),
+			abs:   a.abs,
+		})
+		fmt.Fprintf(env.Stderr, "%s: skill %q is not host-approved; mounting as unavailable "+
+			"(run `omac register %s` on the host to approve)\n", prefix, a.entry.Name, a.entry.Name)
+	}
+	armed = armedApproved
+
 	specs := make([]supervisor.SidecarSpec, 0, len(armed))
 	for _, s := range armed {
 		health := config.HealthSpec{}
@@ -782,6 +829,11 @@ func runLaunch(env *Env, opts launchOpts) int {
 			SkillDir:     armed[i].abs,
 		})
 		mounts = append(mounts, mount)
+	}
+	// Mount unapproved skills as broken routes so a probe gets an
+	// actionable 502 instead of a silent 404 (and they never spawn).
+	for _, rf := range approvalRefused {
+		routes = append(routes, brokenApprovalRoute(rf.mount, rf.name, rf.abs))
 	}
 
 	// 7. Open both listeners (Unix socket + ephemeral 127.0.0.1 TCP) and

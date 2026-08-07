@@ -13,6 +13,7 @@ import (
 	"github.com/tngtech/oh-my-agentic-coder/internal/config"
 	"github.com/tngtech/oh-my-agentic-coder/internal/facade"
 	"github.com/tngtech/oh-my-agentic-coder/internal/sandbox"
+	"github.com/tngtech/oh-my-agentic-coder/internal/skilltrust"
 	"github.com/tngtech/oh-my-agentic-coder/internal/toolcache"
 )
 
@@ -33,6 +34,16 @@ func stageSkillWithSecret(t *testing.T, workdir, name string) {
 		"      required: true\n"
 	if err := os.WriteFile(filepath.Join(skillDir, "omac.yaml"), []byte(meta), 0o644); err != nil {
 		t.Fatalf("write omac.yaml: %v", err)
+	}
+	// Record a host approval so the spawn-approval gate lets activation reach
+	// its pending-credentials/route logic (these tests exercise the activation
+	// engine, not the gate; the caller has already isolated HOME/XDG).
+	hash, err := config.BundleHash(skillDir)
+	if err != nil {
+		t.Fatalf("bundle hash: %v", err)
+	}
+	if err := skilltrust.Approve(name, hash, skillDir); err != nil {
+		t.Fatalf("approve: %v", err)
 	}
 }
 
