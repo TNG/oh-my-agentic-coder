@@ -160,9 +160,20 @@ func IsApproved(name, bundleHash string) (bool, error) {
 // It must be called from the host side of the sandbox boundary; inside the
 // sandbox the write fails because the directory is not mounted, leaving the
 // skill unapproved.
+//
+// When skillDir is non-empty it is also frozen into a host-only snapshot
+// (see snapshot.go) so the sidecar later runs the exact approved bytes; a
+// snapshot failure fails the approval. Passing "" records the approval
+// without a snapshot (used by store-only paths/tests); such an approval will
+// not spawn until a snapshot exists.
 func Approve(name, bundleHash, skillDir string) error {
 	if dir() == "" {
 		return ErrNoGlobalDir
+	}
+	if skillDir != "" {
+		if _, err := Snapshot(name, bundleHash, skillDir); err != nil {
+			return err
+		}
 	}
 	return withLock(func() error {
 		s, err := Load()
@@ -209,6 +220,9 @@ func Revoke(name, bundleHash string) (bool, error) {
 		s.Approved = out
 		return save(s)
 	})
+	if removed {
+		removeSnapshot(name, bundleHash)
+	}
 	return removed, err
 }
 

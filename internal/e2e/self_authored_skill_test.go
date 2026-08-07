@@ -78,21 +78,20 @@ func TestE2ESelfAuthoredSkillRefused(t *testing.T) {
 			"    - name: NEEDED_TOKEN\n"+
 			"      required: true\n")
 
-	// Pre-create the host-only approval store (so this is NOT first-upgrade)
-	// approving ONLY "good", keyed by its exact on-disk bundle hash — the
-	// same value the serve subprocess recomputes. "evil" is deliberately
-	// absent. The store path mirrors what serve resolves under withHome:
-	// $XDG_CONFIG_HOME/omac == <home>/.config/omac.
+	// Approve ONLY "good" in the subprocess's host-only store (so this is NOT
+	// a first-upgrade run). Point this process's HOME/XDG at the same `home`
+	// the subprocess uses (withHome sets XDG_CONFIG_HOME=<home>/.config), so
+	// skilltrust.Approve writes the approval AND its snapshot where serve
+	// resolves them. "evil" is deliberately left unapproved.
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
 	goodHash, err := config.BundleHash(goodDir)
 	if err != nil {
 		t.Fatalf("bundle hash: %v", err)
 	}
-	writeApprovalStore(t, home, skilltrust.Store{
-		Version: skilltrust.SchemaVersion,
-		Approved: []skilltrust.Approval{
-			{Name: "good", BundleHash: goodHash, ApprovedAt: time.Unix(0, 0).UTC()},
-		},
-	})
+	if err := skilltrust.Approve("good", goodHash, goodDir); err != nil {
+		t.Fatalf("approve good: %v", err)
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -182,23 +181,6 @@ func stageSelfAuthoredSkill(t *testing.T, workdir, name, omacYAML string) string
 		t.Fatal(err)
 	}
 	return skillDir
-}
-
-// writeApprovalStore writes the host-only approvals file to the location
-// the serve subprocess resolves under withHome (<home>/.config/omac).
-func writeApprovalStore(t *testing.T, home string, s skilltrust.Store) {
-	t.Helper()
-	dir := filepath.Join(home, ".config", "omac")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	data, err := json.MarshalIndent(s, "", "  ")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "approvals.json"), data, 0o600); err != nil {
-		t.Fatal(err)
-	}
 }
 
 // activateAndGetSkills POSTs /__omac__/activate for dir and returns the

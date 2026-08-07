@@ -49,6 +49,33 @@ func approvalStatus(name, skillDir string) (bool, error) {
 	return ok, nil
 }
 
+// approvedSpawnDir resolves the directory a skill's sidecar must be spawned
+// FROM: the immutable, host-only snapshot frozen at approval time (see
+// internal/skilltrust snapshot.go). workdirSkillDir is the agent-writable
+// source; its current content is hashed and matched against the approval,
+// then the corresponding snapshot is returned. ok=false means refuse — either
+// the content is not approved, or it is approved but has no snapshot yet
+// (re-register to create one). Spawning from the snapshot, not the workdir,
+// is what makes the executed bytes exactly the approved bytes.
+func approvedSpawnDir(name, workdirSkillDir string) (snapshotDir string, ok bool, err error) {
+	hash, herr := config.BundleHash(workdirSkillDir)
+	if herr != nil {
+		return "", false, fmt.Errorf("bundle hash: %w", herr)
+	}
+	approved, aerr := skilltrust.IsApproved(name, hash)
+	if aerr != nil {
+		return "", false, aerr
+	}
+	if !approved {
+		return "", false, nil
+	}
+	snap, present := skilltrust.SnapshotPath(name, hash)
+	if !present {
+		return "", false, nil
+	}
+	return snap, true, nil
+}
+
 // errSkillNotApproved is the uniform refusal error/detail; it names the
 // host-side remedy the sandboxed agent cannot perform itself.
 func errSkillNotApproved(name string) error {
