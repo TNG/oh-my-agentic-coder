@@ -17,6 +17,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/tngtech/oh-my-agentic-coder/internal/config"
+	"github.com/tngtech/oh-my-agentic-coder/internal/skilltrust"
 )
 
 // stageServeSkill writes a minimal workdir-local skill whose omac.yaml
@@ -72,6 +75,19 @@ func TestE2EServeDirTokenIsolation(t *testing.T) {
 	wdB := t.TempDir()
 	stageServeSkill(t, wdA, "slack")
 	stageServeSkill(t, wdB, "slack")
+
+	// Pre-approve the staged skills in the subprocess's host-only store so the
+	// spawn-approval gate lets activation reach its pending-credentials path
+	// (both copies are identical, so they share one bundle hash). This test is
+	// about dir-token isolation, not the approval gate.
+	slackHash, err := config.BundleHash(filepath.Join(wdA, ".opencode", "skills", "slack"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeApprovalStore(t, home, skilltrust.Store{
+		Version:  skilltrust.SchemaVersion,
+		Approved: []skilltrust.Approval{{Name: "slack", BundleHash: slackHash, ApprovedAt: time.Unix(0, 0).UTC()}},
+	})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

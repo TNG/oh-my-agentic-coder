@@ -31,6 +31,7 @@ import (
 	"github.com/tngtech/oh-my-agentic-coder/internal/secrets"
 	"github.com/tngtech/oh-my-agentic-coder/internal/skillconfig"
 	"github.com/tngtech/oh-my-agentic-coder/internal/skillsource"
+	"github.com/tngtech/oh-my-agentic-coder/internal/skilltrust"
 	"github.com/tngtech/oh-my-agentic-coder/internal/supervisor"
 	"github.com/tngtech/oh-my-agentic-coder/internal/toolcache"
 )
@@ -243,6 +244,7 @@ func runServe(args []string, env *Env) int {
 	defer cancel()
 
 	sup := supervisor.New(lc.Facade.BaseEnvPassthrough, auditor)
+	sup.SetAuthorizer(skillSpawnAuthorizer())
 	defer sup.ShutdownAll(5 * time.Second)
 
 	f := facade.New(
@@ -287,6 +289,21 @@ func runServe(args []string, env *Env) int {
 			"OMAC_CACHE_DIR":  cacheScope.Dir,
 			"OMAC_CACHE_MODE": string(cacheScope.Mode),
 		}
+	}
+	// Trust-on-first-upgrade (see skill_approval.go): grandfather the skills
+	// KNOWN at cold start — the user-global registry plus the launch workdir —
+	// so a pre-existing setup keeps working, then close the window. Skills
+	// authored or registered LATER in this session are NOT grandfathered; they
+	// need an out-of-sandbox `omac register`, which is what keeps a long-lived
+	// serve daemon from blessing agent-authored skills mid-session.
+	if firstApprovalUpgrade() {
+		if gReg, gerr := registry.LoadGlobal(); gerr == nil {
+			_, _ = grandfatherApprovals("", gReg)
+		}
+		if wReg, werr := registry.Load(env.Workdir); werr == nil {
+			_, _ = grandfatherApprovals(env.Workdir, wReg)
+		}
+		_ = skilltrust.EnsureInitialized()
 	}
 
 	// Cold start: global skills are a fixed, known set, so — unlike the lazy
@@ -1322,6 +1339,17 @@ func (s *serveServer) bringUp(e registry.Entry, absDir, workdir, namespace, secr
 			s.installRoute(sr, 0)
 			return sr
 		}
+	}
+
+	// Spawn-approval gate: refuse unless the current on-disk code is
+	// host-approved — a workdir the agent can write must not launch host code.
+	// Grandfathering happens once at cold start (see runServe), NOT here: a
+	// long-lived serve daemon must not keep blessing skills authored mid-session.
+	if ok, aerr := approvalStatus(e.Name, absDir); aerr != nil || !ok {
+		sr := &skillRoute{Name: e.Name, Mount: mount, Namespace: namespace, SkillDir: absDir,
+			State: facade.RouteBroken, Detail: errSkillNotApproved(e.Name).Error()}
+		s.installRoute(sr, 0)
+		return sr
 	}
 
 	// Resolve secrets.
