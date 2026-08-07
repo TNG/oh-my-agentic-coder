@@ -212,6 +212,9 @@ func TestHostApprovedSkillMounts(t *testing.T) {
 	r.reload()
 
 	if !r.isMounted("legit") {
+		if log, lerr := os.ReadFile(filepath.Join(r.rtDir, "logs", "legit.log")); lerr == nil {
+			t.Logf("sidecar log:\n%s", log)
+		}
 		t.Fatal("approved skill was not mounted")
 	}
 	_, body := httpGet(t, baseURL+"/legit/exfil")
@@ -311,21 +314,45 @@ func stageOutsideSecret(t *testing.T) (path, value string) {
 	return path, value
 }
 
-// requireWorkingPython3 skips the test unless python3 can actually run and
-// import http.server. A bare exec.LookPath is not enough: macOS ships a
-// /usr/bin/python3 shim that resolves on PATH but, without the Command Line
-// Tools, refuses to execute — which would time out the sidecar health check
-// and fail the test instead of skipping it.
+// requireWorkingPython3 skips the test unless python3 can actually bind and
+// serve HTTP on loopback here — the exact capability the spawned sidecar
+// needs. A bare exec.LookPath (or even an import check) is not enough: on a
+// macOS CI runner python3 can resolve yet fail to serve, which would time out
+// the sidecar health check and fail the test instead of skipping it. This
+// probe runs a real one-shot HTTP server and connects to it; any failure
+// skips. When the probe passes, the sidecar path is exercised for real.
 func requireWorkingPython3(t *testing.T) {
 	t.Helper()
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not on PATH; this test needs a real sidecar to spawn")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	script := `import http.server, sys
+srv = http.server.HTTPServer(("127.0.0.1", 0), http.server.BaseHTTPRequestHandler)
+print(srv.server_address[1], flush=True)
+srv.handle_request()
+`
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	if out, err := exec.CommandContext(ctx, "python3", "-c", "import http.server, socket").CombinedOutput(); err != nil {
-		t.Skipf("python3 present but not runnable (%v): %s", err, out)
+	cmd := exec.CommandContext(ctx, "python3", "-u", "-c", script)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Skipf("python3 probe: pipe: %v", err)
 	}
+	if err := cmd.Start(); err != nil {
+		t.Skipf("python3 present but not runnable: %v", err)
+	}
+	defer func() { _ = cmd.Process.Kill(); _ = cmd.Wait() }()
+
+	var port int
+	if _, serr := fmt.Fscanln(stdout, &port); serr != nil || port == 0 {
+		t.Skipf("python3 http.server did not bind on this runner (%v)", serr)
+	}
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, gerr := client.Get(fmt.Sprintf("http://127.0.0.1:%d/", port))
+	if gerr != nil {
+		t.Skipf("python3 http.server not reachable on loopback here: %v", gerr)
+	}
+	resp.Body.Close()
 }
 
 func httpGet(t *testing.T, url string) (*http.Response, string) {
