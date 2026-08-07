@@ -551,7 +551,11 @@ func RenderDaemonOwnerHandshakeInitScript() string {
 	b.WriteString("// ProcessHandle API because Gradle 8+ requires Java 8+ but\n")
 	b.WriteString("// daemons run on the configured toolchain, which may be Java 8\n")
 	b.WriteString("// (ProcessHandle is Java 9+).\n")
-	b.WriteString("def pid = ManagementFactory.getRuntimeMXBean().getName().split(\"@\")[0]\n")
+	// toInteger() coerces the split's String to an Integer so
+	// JsonOutput.toJson emits {"pid":12345,...} — UNQUOTED. The Go side
+	// (DaemonHandshakePID.PID) is an int; a quoted pid would make
+	// json.Unmarshal fail the handshake (string → int mismatch).
+	b.WriteString("def pid = ManagementFactory.getRuntimeMXBean().getName().split(\"@\")[0].toInteger()\n")
 	b.WriteString("\n")
 	b.WriteString("// Send {\"pid\":<pid>,\"marker\":\"<marker>\"} as a single line, then\n")
 	b.WriteString("// block on a one-byte ack. The ack is a single byte \"1\", NOT a\n")
@@ -773,6 +777,16 @@ func PrepareControlState(leaf string, cfg GradlePropertiesConfig) (ControlPaths,
 		sockFile := filepath.Join(ctrlDir, daemonHandshakeSockName)
 		if err := os.WriteFile(sockFile, []byte(cfg.DaemonHandshakeSock), 0o644); err != nil {
 			return ControlPaths{}, fmt.Errorf("write daemon-handshake-sock control file: %w", err)
+		}
+	} else {
+		// No socket wired (non-owner-wrapped build / Phase-2-only render).
+		// Remove a stale daemon-handshake-sock file from a previous owner
+		// build: the host socket died with that build, so a daemon that
+		// inherits -Domac.daemon.owner from gradle.properties but reads a
+		// dead sock path would fail closed against it. Removing the file
+		// restores the init script's designed no-op path (issue #206).
+		if err := os.Remove(filepath.Join(ctrlDir, daemonHandshakeSockName)); err != nil && !os.IsNotExist(err) {
+			return ControlPaths{}, fmt.Errorf("remove stale daemon-handshake-sock control file: %w", err)
 		}
 	}
 	return resolveControlPaths(leaf), nil
