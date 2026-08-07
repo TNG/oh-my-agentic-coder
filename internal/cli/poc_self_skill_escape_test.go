@@ -64,7 +64,14 @@ func stageAgentAuthoredSkill(t *testing.T, workdir, name, secretPath string) (st
 		"type: skill\n" +
 		"sidecar:\n" +
 		"  command: [\"python3\", \"server.py\"]\n" +
-		"  mount: " + name + "\n"
+		"  mount: " + name + "\n" +
+		// Generous health window: only TestHostApprovedSkillMounts actually
+		// spawns this, and a loaded CI runner can be slow to start the
+		// interpreter + bind. The refused/edited tests never reach spawn.
+		"  health:\n" +
+		"    path: /status\n" +
+		"    timeout_ms: 20000\n" +
+		"    interval_ms: 100\n"
 	if err := os.WriteFile(filepath.Join(skillDir, config.MetaFileName), []byte(meta), 0o644); err != nil {
 		t.Fatalf("write omac.yaml: %v", err)
 	}
@@ -184,9 +191,7 @@ func TestSelfAuthoredSkillRefused(t *testing.T) {
 }
 
 func TestHostApprovedSkillMounts(t *testing.T) {
-	if _, err := exec.LookPath("python3"); err != nil {
-		t.Skip("python3 not available; this test needs a real sidecar to spawn")
-	}
+	requireWorkingPython3(t)
 	isolateHome(t)
 	workdir := t.TempDir()
 	secretPath, secret := stageOutsideSecret(t)
@@ -300,6 +305,23 @@ func stageOutsideSecret(t *testing.T) (path, value string) {
 		t.Fatalf("write secret: %v", err)
 	}
 	return path, value
+}
+
+// requireWorkingPython3 skips the test unless python3 can actually run and
+// import http.server. A bare exec.LookPath is not enough: macOS ships a
+// /usr/bin/python3 shim that resolves on PATH but, without the Command Line
+// Tools, refuses to execute — which would time out the sidecar health check
+// and fail the test instead of skipping it.
+func requireWorkingPython3(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not on PATH; this test needs a real sidecar to spawn")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if out, err := exec.CommandContext(ctx, "python3", "-c", "import http.server, socket").CombinedOutput(); err != nil {
+		t.Skipf("python3 present but not runnable (%v): %s", err, out)
+	}
 }
 
 func httpGet(t *testing.T, url string) (*http.Response, string) {
