@@ -24,6 +24,10 @@ const (
 	tokenDenyOnce             = "deny_once"
 	tokenDenyPermanentHost    = "deny_permanent_host"
 	tokenDenyPermanentSuffix  = "deny_permanent_suffix"
+	tokenAllowSessionHost     = "allow_session_host"
+	tokenAllowSessionSuffix   = "allow_session_suffix"
+	tokenDenySessionHost      = "deny_session_host"
+	tokenDenySessionSuffix    = "deny_session_suffix"
 	tokenNeedsIntent          = "needs_intent"
 )
 
@@ -35,11 +39,11 @@ const (
 // text plus all seven rows plus the buttons without scrolling.
 //
 // These are defaults: OMAC_PROMPT_WIDTH / OMAC_PROMPT_HEIGHT override them for
-// users on unusual displays (small/720p laptops where 560 px crowds the
+// users on unusual displays (small/720p laptops where the dialog crowds the
 // viewport, tiling WMs, HiDPI) — see dialogDimensions.
 const (
 	dialogWidth  = 520
-	dialogHeight = 560
+	dialogHeight = 640
 )
 
 // dialogDimensions returns the popup width and height in pixels, honouring the
@@ -57,14 +61,18 @@ func envDimension(key string, def int) int {
 	return def
 }
 
-// optionLabels are the exact seven dialog choices (nono parity, product
+// optionLabels are the exact eleven dialog choices (nono parity, product
 // name swapped). Order matters: Deny once is the default.
 func optionLabels(suffix string) []string {
 	return []string{
 		"Allow once",
+		"Allow for this session (this host)",
+		fmt.Sprintf("Allow for this session (*.%s)", suffix),
 		"Allow permanently (this host)",
 		fmt.Sprintf("Allow permanently (*.%s)", suffix),
 		"Deny once",
+		"Deny for this session (this host)",
+		fmt.Sprintf("Deny for this session (*.%s)", suffix),
 		"Deny permanently (this host)",
 		fmt.Sprintf("Deny permanently (*.%s)", suffix),
 		"Explain more",
@@ -76,10 +84,18 @@ func labelToToken(label, suffix string) string {
 	switch label {
 	case "Allow once":
 		return tokenAllowOnce
+	case "Allow for this session (this host)":
+		return tokenAllowSessionHost
+	case fmt.Sprintf("Allow for this session (*.%s)", suffix):
+		return tokenAllowSessionSuffix
 	case "Allow permanently (this host)":
 		return tokenAllowPermanentHost
 	case fmt.Sprintf("Allow permanently (*.%s)", suffix):
 		return tokenAllowPermanentSuffix
+	case "Deny for this session (this host)":
+		return tokenDenySessionHost
+	case fmt.Sprintf("Deny for this session (*.%s)", suffix):
+		return tokenDenySessionSuffix
 	case "Deny permanently (this host)":
 		return tokenDenyPermanentHost
 	case fmt.Sprintf("Deny permanently (*.%s)", suffix):
@@ -96,6 +112,14 @@ func tokenToResult(token, host, suffix string) netproxy.PromptResult {
 	switch token {
 	case tokenAllowOnce:
 		return netproxy.PromptResult{Allow: true}
+	case tokenAllowSessionHost:
+		return netproxy.PromptResult{Allow: true, Session: true, Scope: "host"}
+	case tokenAllowSessionSuffix:
+		return netproxy.PromptResult{Allow: true, Session: true, Scope: "suffix", Suffix: suffix}
+	case tokenDenySessionHost:
+		return netproxy.PromptResult{Allow: false, Session: true, Scope: "host"}
+	case tokenDenySessionSuffix:
+		return netproxy.PromptResult{Allow: false, Session: true, Scope: "suffix", Suffix: suffix}
 	case tokenAllowPermanentHost:
 		return netproxy.PromptResult{Allow: true, Persist: true, Scope: "host"}
 	case tokenAllowPermanentSuffix:

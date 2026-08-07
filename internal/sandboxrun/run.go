@@ -334,6 +334,8 @@ func buildProxy(p *sandboxprofile.Profile, profilePath string, stderr io.Writer,
 	}
 	learned = lp
 
+	session := netproxy.NewSessionStore()
+
 	var prompter netproxy.Prompter
 	onUnavailableAllow := p.Network.OnUnavailable() == sandboxprofile.OnUnavailableAllow
 	if p.Network.PromptEnabled() {
@@ -357,6 +359,7 @@ func buildProxy(p *sandboxprofile.Profile, profilePath string, stderr io.Writer,
 		OnUnavailableAllow: onUnavailableAllow,
 		Prompter:           prompter,
 		Learned:            learned,
+		Session:            session,
 		Logf:               logf,
 		Auditor:            auditor,
 	})

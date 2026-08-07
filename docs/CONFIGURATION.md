@@ -127,6 +127,17 @@ holes in the built-in protected-path list), `network.mode`
 `network.proxy_injection`, and `environment.allow_vars`. See the
 scaffolded `default.json` for the full schema.
 
+When a host is neither allowed nor denied by the profile, the network
+prompt dialog offers eleven choices ("Deny once" is the default):
+*Allow once*, *Allow for this session (this host)*, *Allow for this
+session (*.example.com)*, *Allow permanently (this host)*, *Allow
+permanently (*.example.com)*, *Deny once*, *Deny for this session
+(this host)*, *Deny for this session (*.example.com)*, *Deny
+permanently (this host)*, *Deny permanently (*.example.com)*, and
+*Explain more*. The four session-scoped choices apply only until the
+session ends; the permanent choices are written to
+`default.pages.json`.
+
 **`network.proxy_injection`** routes *proxy-unaware* toolchains through
 the omac filtering proxy under `network.mode: filtered`. Most tools
 (`curl`, `git`, `pip`, `npm`/`yarn`/`pnpm`, `go`) already honor

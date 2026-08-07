@@ -69,7 +69,8 @@ type Prompter interface {
 type PromptResult struct {
 	Allow   bool
 	Persist bool   // permanent (host or suffix scope) vs once
-	Scope   string // "host" or "suffix" when Persist
+	Session bool   // session-scoped (host or suffix scope) vs once
+	Scope   string // "host" or "suffix" when Persist or Session
 	Suffix  string // populated when Scope == "suffix"
 	// NeedsIntent signals that the user clicked "Explain more" — the
 	// request is denied with a marker pointing the agent at the intent
@@ -103,6 +104,8 @@ type FilterConfig struct {
 	OnUnavailableAllow bool
 	Prompter           Prompter
 	Learned            LearnedStore
+	// Session references the session store for session-scoped state (e.g. per-session prompts).
+	Session *SessionStore
 	// Resolve overrides DNS resolution in tests. Defaults to net.DefaultResolver.
 	Resolve func(ctx context.Context, host string) ([]netip.Addr, error)
 	// Logf receives one line per decision; nil discards.
@@ -243,11 +246,21 @@ func (f *Filter) checkRules(host string) *Verdict {
 			return &Verdict{Decision: Deny, Reason: "learned permanent deny", Persisted: true}
 		}
 	}
+	if f.cfg.Session != nil {
+		if allow, found := f.cfg.Session.Lookup(host); found && !allow {
+			return &Verdict{Decision: Deny, Reason: "session deny", Scope: "session"}
+		}
+	}
 	if MatchDomainList(host, f.cfg.DenyDomains) {
 		return &Verdict{Decision: Deny, Reason: "deny_domain"}
 	}
 	if MatchDomainList(host, f.cfg.AllowDomains) {
 		return &Verdict{Decision: Allow, Reason: "allow_domain"}
+	}
+	if f.cfg.Session != nil {
+		if allow, found := f.cfg.Session.Lookup(host); found && allow {
+			return &Verdict{Decision: Allow, Reason: "session allow", Scope: "session"}
+		}
 	}
 	if f.cfg.Learned != nil {
 		if allow, found := f.cfg.Learned.Lookup(host); found && allow {
@@ -277,8 +290,17 @@ func (f *Filter) defaultDecision(ctx context.Context, host string, port int) (Ve
 				f.cfg.Logf("omac sandbox: warning: persist learned decision: %v", err)
 			}
 		}
+		if res.Session && f.cfg.Session != nil {
+			target := host
+			if res.Scope == "suffix" && res.Suffix != "" {
+				target = res.Suffix
+			}
+			if err := f.cfg.Session.Record(target, res.Scope, res.Allow); err != nil {
+				f.cfg.Logf("omac sandbox: warning: record session decision: %v", err)
+			}
+		}
 		scope := res.Scope
-		if !res.Persist {
+		if !res.Persist && !res.Session {
 			scope = "once"
 		}
 		if res.NeedsIntent {
@@ -359,6 +381,8 @@ func classifyReason(reason string) (source string) {
 		return "allowlist"
 	case strings.HasPrefix(reason, "dns"):
 		return "dns"
+	case strings.HasPrefix(reason, "session"):
+		return "session"
 	default:
 		return "default"
 	}
