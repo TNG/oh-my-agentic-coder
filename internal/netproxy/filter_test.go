@@ -399,6 +399,7 @@ var validNetDecisionSources = map[string]bool{
 	"hard-deny":   true,
 	"dns":         true,
 	"default":     true,
+	"session":     true,
 }
 
 // TestClassifyReasonEmitsOnlySpecSources drives every Verdict.Reason
@@ -424,6 +425,8 @@ func TestClassifyReasonEmitsOnlySpecSources(t *testing.T) {
 		"dns resolution failed",
 		"default deny",
 		"default allow (blocklist mode)",
+		"session deny",
+		"session allow",
 		"some-unknown-reason",
 	}
 	for _, r := range reasons {
@@ -431,6 +434,212 @@ func TestClassifyReasonEmitsOnlySpecSources(t *testing.T) {
 		if !validNetDecisionSources[src] {
 			t.Errorf("reason %q -> source %q not in spec enum %v", r, src, validNetDecisionSources)
 		}
+	}
+}
+
+// TestSessionAllowInPipeline: a host not on the allowlist but
+// session-allowed is allowed without a prompt, even though the
+// (empty) session store lookup would otherwise fall through.
+// Exercises the session-allow step explicitly via a prominent
+// AllowDomains entry that the host does not match.
+func TestSessionAllowInPipeline(t *testing.T) {
+	s := NewSessionStore()
+	if err := s.Record("api.example.com", "host", true); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	p := &fakePrompter{res: PromptResult{Allow: false}}
+	f := NewFilter(FilterConfig{
+		PromptEnabled: true,
+		Prompter:      p,
+		Session:       s,
+		Resolve:       staticResolver("93.184.216.34"),
+	})
+	v := check(t, f, "api.example.com", Allow)
+	if v.Reason != "session allow" {
+		t.Errorf("reason = %q; want session allow", v.Reason)
+	}
+	if p.calls != 0 {
+		t.Errorf("session-allowed host must not prompt, calls = %d", p.calls)
+	}
+}
+
+// TestSessionDenyInPipeline: a session-denied host is denied.
+func TestSessionDenyInPipeline(t *testing.T) {
+	s := NewSessionStore()
+	if err := s.Record("evil.example.com", "host", false); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	f := NewFilter(FilterConfig{
+		Session: s,
+		Resolve: staticResolver("93.184.216.34"),
+	})
+	v := check(t, f, "evil.example.com", Deny)
+	if v.Reason != "session deny" {
+		t.Errorf("reason = %q; want session deny", v.Reason)
+	}
+}
+
+// TestSessionDenyDoesNotOverrideDenyDomain: deny_domain is reached
+// before the session-allow step but after the session-deny step — the
+// session-deny step runs first, so it wins for a session-denied host.
+// This test pins the ordering: deny_domain is checked after
+// session-deny, and a plain deny_domain entry still decides when the
+// session has no matching deny.
+func TestSessionDenyDoesNotOverrideDenyDomain(t *testing.T) {
+	s := NewSessionStore()
+	if err := s.Record("unrelated.example.com", "host", false); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	f := NewFilter(FilterConfig{
+		Session:     s,
+		DenyDomains: []string{"blocked.example"},
+		Resolve:     staticResolver("93.184.216.34"),
+	})
+	v := check(t, f, "blocked.example", Deny)
+	if v.Reason != "deny_domain" {
+		t.Errorf("reason = %q; want deny_domain", v.Reason)
+	}
+}
+
+// TestSessionAllowDoesNotOverrideDenyDomain: deny_domain is consulted
+// before the session-allow step, so a deny_domain match wins over a
+// session allow.
+func TestSessionAllowDoesNotOverrideDenyDomain(t *testing.T) {
+	s := NewSessionStore()
+	if err := s.Record("blocked.example", "host", true); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	f := NewFilter(FilterConfig{
+		Session:     s,
+		DenyDomains: []string{"blocked.example"},
+		Resolve:     staticResolver("93.184.216.34"),
+	})
+	v := check(t, f, "blocked.example", Deny)
+	if v.Reason != "deny_domain" {
+		t.Errorf("reason = %q; want deny_domain", v.Reason)
+	}
+}
+
+// TestSessionAllowPrecedesPrompt: with prompting enabled, a
+// session-allowed host returns Allow without ever calling the
+// Prompter.
+func TestSessionAllowPrecedesPrompt(t *testing.T) {
+	s := NewSessionStore()
+	if err := s.Record("api.example.com", "host", true); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	p := &fakePrompter{res: PromptResult{Allow: false}}
+	f := NewFilter(FilterConfig{
+		PromptEnabled: true,
+		Prompter:      p,
+		Session:       s,
+		Resolve:       staticResolver("93.184.216.34"),
+	})
+	check(t, f, "api.example.com", Allow)
+	if p.calls != 0 {
+		t.Errorf("prompt calls = %d; want 0", p.calls)
+	}
+}
+
+// TestSessionDenyPreventsRePrompt: a session-deny resulting from a
+// session-scoped prompt answer short-circuits subsequent Checks of
+// the same host — no re-prompt.
+func TestSessionDenyPreventsRePrompt(t *testing.T) {
+	s := NewSessionStore()
+	p := &fakePrompter{res: PromptResult{Allow: false, Session: true, Scope: "host"}}
+	f := NewFilter(FilterConfig{
+		PromptEnabled: true,
+		Prompter:      p,
+		Session:       s,
+		Resolve:       staticResolver("93.184.216.34"),
+	})
+	check(t, f, "api.example.com", Deny)
+	check(t, f, "api.example.com", Deny)
+	if p.calls != 1 {
+		t.Errorf("prompt calls = %d; want 1 (second check served by session deny)", p.calls)
+	}
+}
+
+// TestDefaultDecisionRecordsSession: a prompt answer with
+// Session=true is recorded into the SessionStore (scope=host).
+func TestDefaultDecisionRecordsSession(t *testing.T) {
+	s := NewSessionStore()
+	p := &fakePrompter{res: PromptResult{Allow: true, Session: true, Scope: "host"}}
+	f := NewFilter(FilterConfig{
+		PromptEnabled: true,
+		Prompter:      p,
+		Session:       s,
+		Resolve:       staticResolver("93.184.216.34"),
+	})
+	check(t, f, "api.example.com", Allow)
+	allow, found := s.Lookup("api.example.com")
+	if !found || !allow {
+		t.Errorf("session Lookup(api.example.com) = (%v, %v); want (true, true)", allow, found)
+	}
+}
+
+// TestDefaultDecisionRecordsSessionSuffix: a session-scoped suffix
+// prompt answer records the suffix, so sibling hosts match on later
+// checks without re-prompting.
+func TestDefaultDecisionRecordsSessionSuffix(t *testing.T) {
+	s := NewSessionStore()
+	p := &fakePrompter{res: PromptResult{Allow: true, Session: true, Scope: "suffix", Suffix: "npmjs.org"}}
+	f := NewFilter(FilterConfig{
+		PromptEnabled: true,
+		Prompter:      p,
+		Session:       s,
+		Resolve:       staticResolver("93.184.216.34"),
+	})
+	check(t, f, "registry.npmjs.org", Allow)
+	if p.calls != 1 {
+		t.Fatalf("prompt calls = %d; want 1", p.calls)
+	}
+	// Sibling host matched by the recorded suffix — no second prompt.
+	v := check(t, f, "other.npmjs.org", Allow)
+	if v.Reason != "session allow" {
+		t.Errorf("reason = %q; want session allow", v.Reason)
+	}
+	if p.calls != 1 {
+		t.Errorf("prompt calls = %d; want 1 (suffix session allow covers sibling)", p.calls)
+	}
+}
+
+// TestSessionDecisionScopeNotCollapsedToOnce: the first prompt-driven
+// session decision keeps its real scope (host/suffix) in the audit
+// event instead of being collapsed to "once".
+func TestSessionDecisionScopeNotCollapsedToOnce(t *testing.T) {
+	cases := []struct {
+		name      string
+		res       PromptResult
+		host      string
+		wantScope string
+		wantAllow Decision
+	}{
+		{"host allow", PromptResult{Allow: true, Session: true, Scope: "host"}, "s1.example.com", "host", Allow},
+		{"host deny", PromptResult{Allow: false, Session: true, Scope: "host"}, "s2.example.com", "host", Deny},
+		{"suffix allow", PromptResult{Allow: true, Session: true, Scope: "suffix", Suffix: "npmjs.org"}, "registry.npmjs.org", "suffix", Allow},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			aud := &capturingAuditor{}
+			s := NewSessionStore()
+			p := &fakePrompter{res: tc.res}
+			f := NewFilter(FilterConfig{
+				PromptEnabled: true,
+				Prompter:      p,
+				Session:       s,
+				Resolve:       staticResolver("93.184.216.34"),
+				Auditor:       aud,
+			})
+			check(t, f, tc.host, tc.wantAllow)
+			ev := aud.first()
+			if ev.Scope != tc.wantScope {
+				t.Errorf("audit scope = %q; want %q (session scope collapsed to once?)", ev.Scope, tc.wantScope)
+			}
+			if ev.Persisted != nil && *ev.Persisted {
+				t.Errorf("session decisions must not be marked persisted")
+			}
+		})
 	}
 }
 
