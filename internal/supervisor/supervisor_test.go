@@ -1,6 +1,7 @@
 package supervisor
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/tngtech/oh-my-agentic-coder/internal/audit"
+	"github.com/tngtech/oh-my-agentic-coder/internal/config"
 )
 
 // envMap turns buildEnv's []string ("K=V") into a map for assertions.
@@ -262,5 +264,54 @@ func TestShutdownAllReapsLongRunningChildWithoutHanging(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("ShutdownAll did not return within 5s — terminate() likely deadlocked racing watchChild's Cmd.Wait()")
+	}
+}
+
+// TestAuthorizerBlocksSpawnBeforeExec verifies the spawn-gate backstop
+// (SetAuthorizer): a refused spec must return the authorizer's error AND the
+// child command must never execute — the security guarantee that no spawn
+// path can reach exec without approval, even if a caller skips its own
+// pre-flight check. See internal/skilltrust.
+func TestAuthorizerBlocksSpawnBeforeExec(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "spawned")
+	spec := SidecarSpec{
+		Name:     "denied",
+		SkillDir: dir,
+		// If this ever runs, it leaves proof.
+		Command: []string{"sh", "-c", "touch '" + marker + "'; sleep 30"},
+		Health:  config.HealthSpec{},
+		LogPath: filepath.Join(dir, "log"),
+	}
+
+	s := New(nil, nil)
+	denied := errors.New("nope")
+	s.SetAuthorizer(func(SidecarSpec) error { return denied })
+
+	// AddSidecar must refuse.
+	if _, err := s.AddSidecar(t.Context(), spec); err == nil {
+		t.Fatal("AddSidecar spawned a denied skill")
+	} else if !strings.Contains(err.Error(), "nope") {
+		t.Errorf("error should carry the authorizer's message, got %v", err)
+	}
+	// StartAll must refuse too (the other funnel into startOne).
+	if _, err := s.StartAll(t.Context(), []SidecarSpec{spec}); err == nil {
+		t.Fatal("StartAll spawned a denied skill")
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("denied command executed (marker present): stat err=%v", err)
+	}
+
+	// A permitting authorizer still allows the spawn (control): the command
+	// exits immediately, so health fails — but the marker proves it ran.
+	okMarker := filepath.Join(dir, "ran")
+	spec2 := spec
+	spec2.Name = "allowed"
+	spec2.Command = []string{"sh", "-c", "touch '" + okMarker + "'"}
+	spec2.Health = config.HealthSpec{InitialDelayMS: 10, IntervalMS: 10, TimeoutMS: 300}
+	s.SetAuthorizer(func(SidecarSpec) error { return nil })
+	_, _ = s.AddSidecar(t.Context(), spec2) // health will fail; we only assert it ran
+	if _, err := os.Stat(okMarker); err != nil {
+		t.Errorf("permitted command did not run: %v", err)
 	}
 }

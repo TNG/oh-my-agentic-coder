@@ -21,6 +21,7 @@ import (
 	"github.com/tngtech/oh-my-agentic-coder/internal/secrets"
 	"github.com/tngtech/oh-my-agentic-coder/internal/skillconfig"
 	"github.com/tngtech/oh-my-agentic-coder/internal/skillsource"
+	"github.com/tngtech/oh-my-agentic-coder/internal/skilltrust"
 )
 
 func runRegister(args []string, env *Env) int {
@@ -311,6 +312,16 @@ func runRegister(args []string, env *Env) int {
 	}); err != nil {
 		fmt.Fprintln(env.Stderr, "omac register: registry:", err)
 		return ExitIOError
+	}
+
+	// Record the host-only spawn approval (see internal/skilltrust): this is
+	// what authorizes omac to run the skill's UNSANDBOXED sidecar. It lands
+	// under ~/.config/omac (not mounted into the sandbox), so it succeeds
+	// from a host terminal and FAILS from inside the sandbox — leaving an
+	// agent-driven registration unapproved.
+	if aerr := skilltrust.Approve(skillName, bundleHash, skillDir); aerr != nil {
+		fmt.Fprintf(env.Stderr, "omac register: could not record host approval (%v);\n"+
+			"  the skill stays unapproved and will not spawn until `omac register` is run from a host terminal\n", aerr)
 	}
 
 	sOut := newStyler(env.Stdout)
