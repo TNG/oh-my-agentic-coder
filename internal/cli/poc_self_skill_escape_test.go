@@ -144,7 +144,11 @@ func newLiveReloader(t *testing.T, workdir string) (*startReloader, string) {
 		cancel()
 		t.Fatalf("facade start: %v", err)
 	}
-	sup := supervisor.New(nil, audit.Nop())
+	// Pass PATH/HOME/LANG through to the sidecar: macOS's python3 is a shim
+	// that re-execs the real interpreter via PATH, so a PATH-less child (the
+	// zero-value passthrough) fails to start there. Production start/serve
+	// pass the facade's base_env_passthrough for the same reason.
+	sup := supervisor.New([]string{"PATH", "HOME", "LANG", "LC_ALL"}, audit.Nop())
 	sup.SetAuthorizer(skillSpawnAuthorizer())
 	r := &startReloader{
 		env:     makeEnv(workdir),
