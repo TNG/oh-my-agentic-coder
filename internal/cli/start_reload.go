@@ -244,9 +244,11 @@ func (r *startReloader) reload() []string {
 		// workdir (author code -> forge .opencode/sidecar.json -> POST
 		// /__omac__/reload). A sidecar runs UNSANDBOXED, so refuse unless
 		// the current on-disk code is host-approved (see
-		// internal/skilltrust). Mount a broken route (no markMounted, so a
-		// later reload after `omac register` can still bring it up).
-		if refusal := approvalRefusal(e.Name, absDir, ""); refusal != nil {
+		// internal/skilltrust) and runs from the immutable approval snapshot,
+		// not the workdir. Mount a broken route (no markMounted, so a later
+		// reload after `omac register` can still bring it up).
+		snapDir, refusal := approvedSpawnDir(e.Name, absDir, "")
+		if refusal != nil {
 			r.facade.AddRoute(brokenApprovalRoute(mount, e.Name, absDir, refusal))
 			if r.verbose {
 				fmt.Fprintf(r.env.Stderr, "[verbose] reload: %s\n", refusalNotice(refusal))
@@ -292,7 +294,7 @@ func (r *startReloader) reload() []string {
 		spec := supervisor.SidecarSpec{
 			Name:           e.Name,
 			SkillName:      e.Name,
-			SkillDir:       absDir,
+			SkillDir:       snapDir, // run the frozen snapshot, not the workdir
 			Command:        m.Sidecar.Command,
 			EnvPassthrough: m.Sidecar.EnvPassthrough,
 			Secrets:        secMap,

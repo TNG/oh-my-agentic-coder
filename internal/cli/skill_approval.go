@@ -25,11 +25,22 @@ func skillSpawnAuthorizer(spec supervisor.SidecarSpec) error {
 	return approvalRefusal(name, spec.SkillDir, "")
 }
 
-// approvalRefusal reports whether skill `name` may spawn from the content
+// skillBundleHash returns bundleHash when the caller already computed one for
+// skillDir, otherwise hashes the directory. Keeping it in one place means a
+// skill tree is walked at most once per launch path.
+func skillBundleHash(name, skillDir, bundleHash string) (string, error) {
+	if bundleHash != "" {
+		return bundleHash, nil
+	}
+	h, err := config.BundleHash(skillDir)
+	if err != nil {
+		return "", fmt.Errorf("skill %q: cannot hash %s: %w", name, skillDir, err)
+	}
+	return h, nil
+}
+
+// approvalRefusal reports whether skill `name` may spawn given the content
 // currently on disk at skillDir. A nil error means approved.
-//
-// bundleHash may be a hash the caller already computed for skillDir (the
-// launch paths run a drift check first); pass "" to hash it here.
 //
 // A non-nil error is the refusal reason, suitable verbatim as a broken-route
 // Detail — errSkillNotApproved when there is simply no approval, or the
@@ -37,14 +48,11 @@ func skillSpawnAuthorizer(spec supervisor.SidecarSpec) error {
 // operator is not told to re-register when that cannot help. Any error fails
 // closed: the skill does not spawn.
 func approvalRefusal(name, skillDir, bundleHash string) error {
-	if bundleHash == "" {
-		h, err := config.BundleHash(skillDir)
-		if err != nil {
-			return fmt.Errorf("skill %q: cannot hash %s: %w", name, skillDir, err)
-		}
-		bundleHash = h
+	h, err := skillBundleHash(name, skillDir, bundleHash)
+	if err != nil {
+		return err
 	}
-	approved, err := skilltrust.IsApproved(name, bundleHash)
+	approved, err := skilltrust.IsApproved(name, h)
 	if err != nil {
 		return fmt.Errorf("skill %q: cannot read the host approval store: %w", name, err)
 	}
@@ -52,6 +60,34 @@ func approvalRefusal(name, skillDir, bundleHash string) error {
 		return errSkillNotApproved(name)
 	}
 	return nil
+}
+
+// approvedSpawnDir resolves the directory a skill's sidecar must be spawned
+// FROM: the immutable, host-only snapshot frozen at approval time (see
+// internal/skilltrust snapshot.go). workdirSkillDir is the agent-writable
+// source; its content is matched against the approval, then the corresponding
+// snapshot is returned. Spawning from the snapshot, not the workdir, is what
+// makes the executed bytes exactly the approved bytes.
+//
+// bundleHash may be a hash the caller already computed for workdirSkillDir;
+// pass "" to hash it here. A nil error means approved; a non-nil error is the
+// refusal detail (see approvalRefusal).
+func approvedSpawnDir(name, workdirSkillDir, bundleHash string) (snapshotDir string, refusal error) {
+	h, err := skillBundleHash(name, workdirSkillDir, bundleHash)
+	if err != nil {
+		return "", err
+	}
+	if refusal := approvalRefusal(name, workdirSkillDir, h); refusal != nil {
+		return "", refusal
+	}
+	// An approval whose snapshot is missing (a hand-deleted ~/.config/omac
+	// tree) is recoverable by re-registering, so refuse this one skill here
+	// rather than letting the supervisor backstop fail the whole launch.
+	snap, present := skilltrust.SnapshotPath(name, h)
+	if !present {
+		return "", errSkillNotApproved(name)
+	}
+	return snap, nil
 }
 
 // errSkillNotApproved is the uniform refusal error/detail; it names the

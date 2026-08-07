@@ -1344,10 +1344,12 @@ func (s *serveServer) bringUp(e registry.Entry, absDir, workdir, namespace, secr
 	}
 
 	// Spawn-approval gate: refuse unless the current on-disk code is
-	// host-approved — a workdir the agent can write must not launch host code.
-	// Grandfathering happens once at cold start (see runServe), NOT here: a
-	// long-lived serve daemon must not keep blessing skills authored mid-session.
-	if refusal := approvalRefusal(e.Name, absDir, bundle); refusal != nil {
+	// host-approved, and run from the immutable approval snapshot rather than
+	// the agent-writable workdir. Grandfathering happens once at cold start
+	// (see runServe), NOT here: a long-lived serve daemon must not keep
+	// blessing skills authored mid-session.
+	snapDir, refusal := approvedSpawnDir(e.Name, absDir, bundle)
+	if refusal != nil {
 		sr := &skillRoute{Name: e.Name, Mount: mount, Namespace: namespace, SkillDir: absDir,
 			State: facade.RouteBroken, Detail: refusal.Error()}
 		s.installRoute(sr, 0)
@@ -1415,7 +1417,7 @@ func (s *serveServer) bringUp(e registry.Entry, absDir, workdir, namespace, secr
 		Name:             namespace + "/" + e.Name, // unique tracking key across dirs
 		SkillName:        e.Name,                   // plain name -> SIDECAR_SKILL (no slash)
 		Namespace:        namespace,                // audit only (hashed)
-		SkillDir:         absDir,
+		SkillDir:         snapDir,                  // run the frozen snapshot, not the workdir
 		Command:          m.Sidecar.Command,
 		EnvPassthrough:   m.Sidecar.EnvPassthrough,
 		Secrets:          secMap,
