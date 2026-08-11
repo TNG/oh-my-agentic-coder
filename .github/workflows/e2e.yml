@@ -279,6 +279,23 @@ jobs:
               exit 0
             fi
             echo "::endgroup::"
+            # A go-test deadline is a test/product defect (a deadlocked or
+            # runaway test), never infra: the model provider cannot make a test
+            # hang for 30 minutes, and retrying costs another full deadline per
+            # attempt. Bail immediately and name the test that was still
+            # running, so the signal is not buried under "infra-only". See #222.
+            if grep -q '^panic: test timed out after' /tmp/e2e-out.txt; then
+              echo "::error::go test hit its deadline — a hung test, not infra; retries cannot clear it"
+              echo "test(s) still running at the deadline:"
+              sed -n '/^panic: test timed out after/,/^$/p' /tmp/e2e-out.txt | head -20
+              {
+                echo "## E2E deadline exceeded (${{ matrix.harness }} / ${{ matrix.os }})"
+                echo '```'
+                sed -n '/^panic: test timed out after/,/^$/p' /tmp/e2e-out.txt | head -20
+                echo '```'
+              } >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
             # Only retry when no failure this attempt was classified as a real
             # regression: SANDBOX_FAIL (a security property went unenforced)
             # or AGENT_REFUSED/AGENT_PARTIAL (a model-behavior signal, not
