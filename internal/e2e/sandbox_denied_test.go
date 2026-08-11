@@ -4,7 +4,6 @@ package e2e
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -12,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -56,8 +56,10 @@ func TestE2ESandboxDeniedAnswersOnDefaultLaunch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var stderrBuf bytes.Buffer
-	cmd.Stderr = &stderrBuf
+	// Goroutine-safe: the assertions below read this while os/exec is still
+	// copying the daemon's stderr into it (CI runs this slice under -race).
+	stderrBuf := &syncBuffer{}
+	cmd.Stderr = stderrBuf
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start omac serve: %v", err)
 	}
@@ -133,7 +135,7 @@ func TestE2ESandboxDeniedAnswersOnDefaultLaunch(t *testing.T) {
 	}
 
 	// The bogus resolve warning fired on every default launch before the fix.
-	if bytes.Contains(stderrBuf.Bytes(), []byte("could not be resolved")) {
+	if strings.Contains(stderrBuf.String(), "could not be resolved") {
 		t.Errorf("default launch warned about an unresolvable sandbox profile:\n%s", stderrBuf.String())
 	}
 }

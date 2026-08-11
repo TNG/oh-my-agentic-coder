@@ -49,7 +49,6 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 )
@@ -376,26 +375,6 @@ func runServeProbe(t *testing.T, h harnessConfig, omacBin, home, workdir, cwd st
 	default:
 	}
 	return nil
-}
-
-// syncBuffer is a goroutine-safe bytes.Buffer. The serve probe reads captured
-// stderr for diagnostics while the subprocess may still be writing to it (the
-// daemon runs until teardown), so plain bytes.Buffer would race.
-type syncBuffer struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
-}
-
-func (b *syncBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.Write(p)
-}
-
-func (b *syncBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.String()
 }
 
 // waitForControlBase polls the captured stdout for the control-plane URL

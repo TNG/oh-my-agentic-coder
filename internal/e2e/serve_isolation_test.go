@@ -90,8 +90,8 @@ func TestE2EServeDirTokenIsolation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var stderrBuf bytes.Buffer
-	cmd.Stderr = &stderrBuf
+	stderrBuf := &syncBuffer{}
+	cmd.Stderr = stderrBuf
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start omac serve: %v", err)
 	}
