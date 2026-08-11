@@ -3,6 +3,7 @@
 package e2e
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -116,6 +117,69 @@ func TestFsAllowDeniedCatchesSingleDenial(t *testing.T) {
 		"=== END: fs_allow ===\n"
 	if denied := fsAllowDenied(oneDenied, labels); denied == "" {
 		t.Error("expected a denial to be detected when one of several legitimate paths was blocked")
+	}
+}
+
+// TestFsAllowDeniedIgnoresShellTraceLines pins the fix for #224 against the
+// output that produced it. The fixture is the fs_allow section captured
+// verbatim from run 31528427272 (claude-code / ubuntu-latest), where the agent
+// invoked audit.sh under `sh -x`: xtrace echoed every command, audit.sh
+// redirected stderr into the same file, and the trace of the probe CALL — which
+// carries no READABLE marker — preceded the probe's actual result line. Every
+// path here was in fact accessible, so the only correct answer is "no denial".
+func TestFsAllowDeniedIgnoresShellTraceLines(t *testing.T) {
+	labels := []string{
+		"--- write workdir file ---",
+		"--- read workdir file ---",
+		"--- write $HOME/.cache file ---",
+		"--- write ${TMPDIR:-/tmp} file ---",
+	}
+
+	xtraced := "+ echo === PROBE: fs_allow ===\n" +
+		"=== PROBE: fs_allow ===\n" +
+		"+ echo test\n" +
+		"+ echo --- write workdir file ---: WRITABLE (sandbox did not block)\n" +
+		"--- write workdir file ---: WRITABLE (sandbox did not block)\n" +
+		"+ probe_read --- read workdir file --- ./omac-audit-allow-test\n" +
+		"+ label=--- read workdir file ---\n" +
+		"+ path=./omac-audit-allow-test\n" +
+		"+ [ -r ./omac-audit-allow-test ]\n" +
+		"+ echo --- read workdir file ---: READABLE (sandbox did not block)\n" +
+		"--- read workdir file ---: READABLE (sandbox did not block)\n" +
+		"+ rm -f ./omac-audit-allow-test\n" +
+		"+ probe_write --- write $HOME/.cache file --- /tmp/x/.cache/omac-audit-allow-test\n" +
+		"+ label=--- write $HOME/.cache file ---\n" +
+		"+ echo --- write $HOME/.cache file ---: WRITABLE (sandbox did not block)\n" +
+		"--- write $HOME/.cache file ---: WRITABLE (sandbox did not block)\n" +
+		"+ probe_write --- write ${TMPDIR:-/tmp} file --- /tmp/omac-sandbox-tmp-1/omac-audit-allow-test\n" +
+		"+ label=--- write ${TMPDIR:-/tmp} file ---\n" +
+		"+ echo --- write ${TMPDIR:-/tmp} file ---: WRITABLE (sandbox did not block)\n" +
+		"--- write ${TMPDIR:-/tmp} file ---: WRITABLE (sandbox did not block)\n" +
+		"+ echo === END: fs_allow ===\n" +
+		"=== END: fs_allow ===\n"
+	if denied := fsAllowDenied(xtraced, labels); denied != "" {
+		t.Errorf("xtrace of the probe call must not read as a denial, got %q", denied)
+	}
+
+	// The trace must not mask a real denial either: same shape, but the read
+	// probe genuinely failed. Anchoring on the result line has to keep finding
+	// it when it reports an error instead of a marker.
+	xtracedDenied := "=== PROBE: fs_allow ===\n" +
+		"+ echo --- write workdir file ---: WRITABLE (sandbox did not block)\n" +
+		"--- write workdir file ---: WRITABLE (sandbox did not block)\n" +
+		"+ probe_read --- read workdir file --- ./omac-audit-allow-test\n" +
+		"+ [ -r ./omac-audit-allow-test ]\n" +
+		"+ cat ./omac-audit-allow-test\n" +
+		"--- read workdir file ---: cat: ./omac-audit-allow-test: Permission denied\n" +
+		"--- write $HOME/.cache file ---: WRITABLE (sandbox did not block)\n" +
+		"--- write ${TMPDIR:-/tmp} file ---: WRITABLE (sandbox did not block)\n" +
+		"=== END: fs_allow ===\n"
+	denied := fsAllowDenied(xtracedDenied, labels)
+	if denied == "" {
+		t.Fatal("a genuine denial must still be detected under xtrace")
+	}
+	if !strings.Contains(denied, "Permission denied") {
+		t.Errorf("expected the reported line to be the probe RESULT, got %q", denied)
 	}
 }
 

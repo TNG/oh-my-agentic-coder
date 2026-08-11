@@ -46,19 +46,38 @@ func symlinkEscapeLeaked(output string) (readLeaked, writeLeaked bool) {
 func fsAllowDenied(output string, labels []string) string {
 	section := extractProbe(output, "fs_allow")
 	for _, label := range labels {
-		idx := strings.Index(section, label)
-		if idx < 0 {
+		line, ok := probeResultLine(section, label)
+		if !ok {
 			return label + ": probe label not found in fs_allow output"
-		}
-		line := section[idx:]
-		if nl := strings.IndexByte(line, '\n'); nl >= 0 {
-			line = line[:nl]
 		}
 		if !strings.Contains(line, "WRITABLE") && !strings.Contains(line, "READABLE") {
 			return line
 		}
 	}
 	return ""
+}
+
+// probeResultLine returns audit.sh's RESULT line for label: the line beginning
+// "<label>:", which is exactly what probe_read/probe_write emit via
+// `echo "$label: ..."`.
+//
+// Anchoring on that shape matters. Matching the label anywhere instead picks
+// its FIRST mention in the section, which need not be the result. When the
+// agent runs the script under `sh -x`, xtrace echoes every command, and
+// audit.sh redirects stderr into the same output file, so the trace of the
+// probe CALL — "probe_read <label> ./omac-audit-allow-test", carrying no
+// marker — lands in the section ahead of the probe's own
+// "<label>: READABLE (sandbox did not block)". Matching the call reported a
+// working sandbox as an over-restriction, and fsAllowed classifies as
+// SANDBOX_FAIL, which is never retried (#224).
+func probeResultLine(section, label string) (string, bool) {
+	for _, line := range strings.Split(section, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, label+":") {
+			return line, true
+		}
+	}
+	return "", false
 }
 
 // secretLeaked reports whether the plaintext secret value appears anywhere

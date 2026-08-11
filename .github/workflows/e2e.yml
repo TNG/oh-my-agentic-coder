@@ -285,13 +285,16 @@ jobs:
             # attempt. Bail immediately and name the test that was still
             # running, so the signal is not buried under "infra-only". See #222.
             if grep -q '^panic: test timed out after' /tmp/e2e-out.txt; then
+              # The panic header through the blank line = the "running tests:"
+              # list, i.e. exactly what hung, without the goroutine dump.
+              hung=$(sed -n '/^panic: test timed out after/,/^$/p' /tmp/e2e-out.txt | head -20)
               echo "::error::go test hit its deadline — a hung test, not infra; retries cannot clear it"
               echo "test(s) still running at the deadline:"
-              sed -n '/^panic: test timed out after/,/^$/p' /tmp/e2e-out.txt | head -20
+              echo "$hung"
               {
                 echo "## E2E deadline exceeded (${{ matrix.harness }} / ${{ matrix.os }})"
                 echo '```'
-                sed -n '/^panic: test timed out after/,/^$/p' /tmp/e2e-out.txt | head -20
+                echo "$hung"
                 echo '```'
               } >> "$GITHUB_STEP_SUMMARY"
               exit 1
