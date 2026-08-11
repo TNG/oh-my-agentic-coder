@@ -66,7 +66,9 @@ func runServe(args []string, env *Env) int {
 		auditStrict      = fs.Bool("audit-strict", false, "Fail-closed: abort if the audit log cannot be written.")
 	)
 	var roots multiFlag
+	var openPorts intMultiFlag
 	fs.Var(&roots, "root", "Pre-declared root directory under which projects may be activated (§5.4 Option B). Repeatable. Empty = allow any directory.")
+	fs.Var(&openPorts, "open-port", "Allow the sandboxed process to bind and connect on this TCP port (repeatable). Useful for a local app/dev server the agent or its tools talk to — e.g. Playwright/Vite/Next on :3000. On Linux, Landlock cannot limit that to loopback: outbound TCP to any host on the same port is also allowed.")
 	fs.Usage = func() {
 		fmt.Fprintln(env.Stderr, "Usage: omac serve [harness] [flags] [-- inner args...]")
 		fmt.Fprintf(env.Stderr, "\nharness: one of %s (default: %s)\n\n",
@@ -469,6 +471,7 @@ func runServe(args []string, env *Env) int {
 		// profile's restrictive allow_vars filter. (Control-plane port and
 		// harness runtime dirs are granted inside sandboxServeArgv.)
 		argv = forwardHarnessEnv(env, argv, harness, plan)
+		argv = injectUserOpenPorts(env, argv, openPorts, prof)
 		// Pass the resolved audit path to `omac sandbox run` so its
 		// network-filter subprocess appends net.decision events to the
 		// same persistent log. Inherit the parent's run_id + mode so the
@@ -754,6 +757,28 @@ func injectSandboxEnvAllow(argv []string, names []string, plan sandboxPlan) []st
 	return argv
 }
 
+// injectUserOpenPorts splices user --open-port values into a native-sandbox
+// argv. On non-native backends it leaves argv untouched and warns once when
+// any port was requested (nono does not understand these flags).
+func injectUserOpenPorts(env *Env, argv []string, ports []int, prof config.SandboxProfile) []string {
+	if len(ports) == 0 {
+		return argv
+	}
+	if !profileRunsNativeSandbox(prof) {
+		if env != nil {
+			fmt.Fprintln(env.Stderr, "omac: --open-port applies only to the native sandbox backend; ignoring on this profile.")
+		}
+		return argv
+	}
+	for _, port := range ports {
+		if port < 1 || port > 65535 {
+			continue
+		}
+		argv = injectOpenPort(argv, strconv.Itoa(port))
+	}
+	return argv
+}
+
 // injectSandboxFlag splices a sandbox flag (with optional value; pass
 // "" for boolean flags) into a sandbox argv. It inserts right before
 // the `--` argument separator (the conventional boundary between
@@ -790,6 +815,22 @@ type multiFlag []string
 func (m *multiFlag) String() string { return fmt.Sprint([]string(*m)) }
 func (m *multiFlag) Set(v string) error {
 	*m = append(*m, v)
+	return nil
+}
+
+// intMultiFlag collects a repeatable integer flag (e.g. --open-port 3000).
+type intMultiFlag []int
+
+func (m *intMultiFlag) String() string { return fmt.Sprint([]int(*m)) }
+func (m *intMultiFlag) Set(v string) error {
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return fmt.Errorf("invalid port %q: not an integer", v)
+	}
+	if n < 1 || n > 65535 {
+		return fmt.Errorf("invalid port %d: want 1..65535", n)
+	}
+	*m = append(*m, n)
 	return nil
 }
 

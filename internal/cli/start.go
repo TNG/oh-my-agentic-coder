@@ -69,6 +69,9 @@ type launchOpts struct {
 	// sessionID, when non-empty, selects a specific session to continue by id
 	// (`omac continue -s <id>`). Empty means "most recent" (the default).
 	sessionID string
+	// openPorts are extra loopback ports from --open-port (repeatable),
+	// typically a local webServer port for browser tests.
+	openPorts []int
 	// innerArgs are appended to the resolved inner command (user-supplied
 	// trailing `-- args` plus any command-specific flags like --continue).
 	innerArgs []string
@@ -98,6 +101,8 @@ func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, bool)
 		auditStrict        = fs.Bool("audit-strict", false, "Fail-closed: abort if the audit log cannot be written.")
 		sessionID          = fs.String("session", "", "Continue a specific session by id instead of the most recent one. (shorthand: -s)")
 	)
+	var openPorts intMultiFlag
+	fs.Var(&openPorts, "open-port", "Allow the sandboxed process to bind and connect on this TCP port (repeatable). Useful for a local app/dev server the agent or its tools talk to — e.g. Playwright/Vite/Next on :3000. On Linux, Landlock cannot limit that to loopback: outbound TCP to any host on the same port is also allowed.")
 	// -s is the documented shorthand for --session (opencode mirrors this
 	// with `opencode -s <id>`; claude uses --resume, so its shorthand is
 	// different, but `omac -s` is harness-agnostic).
@@ -161,6 +166,7 @@ func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, bool)
 		noAudit:            *noAudit,
 		auditStrict:        *auditStrict,
 		sessionID:          *sessionID,
+		openPorts:          append([]int(nil), openPorts...),
 		innerArgs:          innerArgs,
 	}, true
 }
@@ -931,6 +937,9 @@ func runLaunch(env *Env, opts launchOpts) int {
 		// default profile's restrictive allow_vars filter — only for the
 		// selected harness.
 		argv = forwardHarnessEnv(env, argv, harness, plan)
+		// User --open-port grants (e.g. local Playwright webServer). Additive
+		// on top of the profile; no-op on non-native backends (with a warning).
+		argv = injectUserOpenPorts(env, argv, opts.openPorts, prof)
 		// Pass the resolved audit path down to `omac sandbox run` so the
 		// network-filter subprocess appends net.decision events to the
 		// same persistent log. Inherit the parent's run_id + mode so the

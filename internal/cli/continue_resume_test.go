@@ -82,6 +82,28 @@ func TestParseLaunchArgsEphemeralCache(t *testing.T) {
 	}
 }
 
+func TestParseLaunchArgsOpenPort(t *testing.T) {
+	opts, ok := parseLaunchArgs("start", []string{
+		"--open-port", "3000",
+		"--open-port", "4173",
+	}, devnullEnv(t))
+	if !ok {
+		t.Fatal("parseLaunchArgs() returned false")
+	}
+	if len(opts.openPorts) != 2 || opts.openPorts[0] != 3000 || opts.openPorts[1] != 4173 {
+		t.Errorf("openPorts = %v", opts.openPorts)
+	}
+}
+
+func TestParseLaunchArgsRejectsBadOpenPort(t *testing.T) {
+	if _, ok := parseLaunchArgs("start", []string{"--open-port", "0"}, devnullEnv(t)); ok {
+		t.Error("port 0 should be rejected")
+	}
+	if _, ok := parseLaunchArgs("start", []string{"--open-port", "nope"}, devnullEnv(t)); ok {
+		t.Error("non-integer port should be rejected")
+	}
+}
+
 func TestParseLaunchArgsRejectsEphemeralWithoutSandbox(t *testing.T) {
 	if _, ok := parseLaunchArgs("start", []string{"--ephemeral-cache", "--no-sandbox"}, devnullEnv(t)); ok {
 		t.Error("parseLaunchArgs() succeeded with --ephemeral-cache and --no-sandbox")
