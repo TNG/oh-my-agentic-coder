@@ -102,6 +102,27 @@ func TestSessionStoreRecordUpsert(t *testing.T) {
 	}
 }
 
+// TestSessionStoreNormalizesHost: Check lowercases and strips a trailing
+// dot before consulting the store, so an entry recorded from a
+// fully-qualified or mixed-case answer must still match the normalized
+// lookup key. Without this the entry is dead — recorded, never hit.
+func TestSessionStoreNormalizesHost(t *testing.T) {
+	for _, tc := range []struct{ recorded, lookup string }{
+		{"Example.COM", "example.com"},
+		{"example.com.", "example.com"},
+		{"API.Example.com.", "api.example.com"},
+	} {
+		s := NewSessionStore()
+		if err := s.Record(tc.recorded, "host", true); err != nil {
+			t.Fatalf("Record(%q): %v", tc.recorded, err)
+		}
+		allow, found := s.Lookup(tc.lookup)
+		if !found || !allow {
+			t.Errorf("Record(%q) then Lookup(%q) = (%v, %v); want (true, true)", tc.recorded, tc.lookup, allow, found)
+		}
+	}
+}
+
 func TestSessionStoreConcurrent(t *testing.T) {
 	s := NewSessionStore()
 	const workers = 32

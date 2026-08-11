@@ -115,6 +115,19 @@ func TestFileDecisionSourceRejectsPersistAndSession(t *testing.T) {
 	}
 }
 
+// TestStubBackendNeedsIntentOutranksSession: converting a
+// needs_intent+session fixture into a session deny would suppress every
+// later prompt for that host, making the e2e fixture test something it
+// never declared.
+func TestStubBackendNeedsIntentOutranksSession(t *testing.T) {
+	for _, scope := range []string{"host", "suffix"} {
+		d := stubDecision{NeedsIntent: true, Session: true, Scope: scope}
+		if got := decisionToLabel(d, "example.com"); got != "Explain more" {
+			t.Errorf("scope %q: decisionToLabel = %q, want %q", scope, got, "Explain more")
+		}
+	}
+}
+
 func TestStubBackendShow(t *testing.T) {
 	src := &fileDecisionSource{
 		loaded: true,

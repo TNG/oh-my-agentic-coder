@@ -26,12 +26,16 @@ In the default `filtered` mode every outbound connection is routed through
 omac's own HTTP proxy on loopback, and there is no built-in allowlist that
 quietly lets traffic through.
 
-- Hosts you list as allowed or denied in the profile are honored silently.
+- Hosts you list as allowed in the profile are honored silently, unless you
+  denied them at the prompt — a deny always outranks an allow, whichever way
+  round it was decided.
 - Any other host raises a native OS dialog asking you to allow or deny it:
-  once, for this session (per host or per domain suffix — cleared when the
-  session ends), or permanently for that host or a domain suffix
-  (`*.example.com`). A tricked or compromised agent cannot reach a new
-  destination without you seeing the request first.
+  once, for this session (per host or per domain suffix), or permanently for
+  that host or a domain suffix (`*.example.com`). A tricked or compromised
+  agent cannot reach a new destination without you seeing the request first.
+- Session decisions live in the supervisor's memory for one `omac start` run
+  and are never written to disk. They cannot outlive the run that made them,
+  and equally cannot be lifted by editing a file — restart to clear one.
 - With no dialog available (CI, a headless server) the request is denied.
   The default fails closed.
 - In corporate environments omac detects `HTTPS_PROXY` / `HTTP_PROXY` /

@@ -150,12 +150,16 @@ non-whitelisted network request is silently blocked. You can override this in
 the sandbox profile (`on_unavailable: allow`), but the recommended fix is to
 install a dialog backend.
 
-The dialog offers seven choices: allow/deny once, allow/deny permanently for
-this host, allow/deny permanently for the registered suffix (e.g.
-`*.example.com`), and **Explain more**, which denies the request for now and
-points the agent at the intent endpoint so it declares why it wants the host —
-you decide on the retry. That choice is never persisted; the permanent
-decisions are, in `default.pages.json` next to the sandbox profile.
+The dialog offers a decision once, for this session, or permanently — each of
+the latter two for the host or its registered suffix (e.g. `*.example.com`) —
+plus **Explain more**, which denies the request for now and points the agent at
+the intent endpoint so it declares why it wants the host. Only the permanent
+choices are written to disk. See
+[Configuration → sandbox profiles](./CONFIGURATION.md#sandbox-profiles) for the full list
+and what each one stores.
+
+If the dialog is cut off or crowds the screen, `OMAC_PROMPT_WIDTH` and
+`OMAC_PROMPT_HEIGHT` override its size in pixels.
 
 ### Inner harness (pick at least one)
 
