@@ -184,6 +184,10 @@ The agent starts restricted and gains access only where you grant it:
 Widening access means editing a readable JSON sandbox profile — a reviewable
 change rather than an accidental default. See
 [Configuration → Sandbox profiles](./CONFIGURATION.md#sandbox-profiles).
+For browser tests (Playwright/Puppeteer), put the binary-path and env grants
+in that profile and open the local webServer port with `--open-port` or
+`network.open_port` — see
+[Configuration → Browser tests](./CONFIGURATION.md#browser-tests-playwright--puppeteer).
 
 ## What the sandbox can see
 
@@ -210,6 +214,7 @@ sandbox:
 | Workdir and granted-tree `.env` / `.envrc` (incl. nested) | **denied** | baseline workdir-protected set (override with `filesystem.override_deny: [".env"]`) |
 | Files matching `filesystem.deny` (e.g. `*.key`) inside granted trees | **denied** | user deny list (`filesystem.deny` / `--deny`) |
 | Environment variables in `environment.allow_vars` (`OMAC_*`, `HOME`, `PATH`, `LANG`, `TERM`, … + the selected harness's auth vars) | passed through | default profile `environment.allow_vars` + `harness.SandboxEnvAllow` (injected at launch) |
+| Browser binary caches (`~/.cache/ms-playwright`, …) + `PLAYWRIGHT_*` / `PUPPETEER_*` | read / passed through | sandbox profile `filesystem.read` / `environment.allow_vars` (org profiles may grant a broader `~/.cache`) |
 | Any other ambient env var (cloud/CI secrets, `DOCKER_HOST`, `SSH_AUTH_SOCK`, proxy config) | **stripped** | not on the allowlist |
 
 > **Environment allowlist (upgrade note).** The default profile ships an
