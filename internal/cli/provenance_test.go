@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/tngtech/oh-my-agentic-coder/internal/config"
+	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxprofile"
 	"github.com/tngtech/oh-my-agentic-coder/internal/toolcache"
 )
 
@@ -624,5 +625,33 @@ func TestBuildCacheView_ErrorNotSwallowed(t *testing.T) {
 	}
 	if cv.Path != "" {
 		t.Errorf("expected empty cacheView on error; got Path=%q", cv.Path)
+	}
+}
+
+// Provenance is an inspection command: like `omac diagnose` it must not
+// scaffold default.json in a fresh home. (Regression guard for #173: it
+// used the mutating resolver, so merely viewing the effective policy —
+// or running --check — wrote a file into the user's config dir.)
+func TestProvenanceDoesNotScaffoldProfileInFreshHome(t *testing.T) {
+	for _, args := range [][]string{{}, {"--check"}} {
+		name := "view"
+		if len(args) > 0 {
+			name = args[0]
+		}
+		t.Run(name, func(t *testing.T) {
+			isolateHome(t)
+			env, _, _, drain := newPipeEnv(t, "")
+			env.Workdir = t.TempDir()
+			_ = runProvenance(args, env)
+			drain()
+
+			defaultPath, err := sandboxprofile.ProfilePath("default")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(defaultPath); !os.IsNotExist(err) {
+				t.Errorf("provenance %v scaffolded %s; must be read-only", args, defaultPath)
+			}
+		})
 	}
 }

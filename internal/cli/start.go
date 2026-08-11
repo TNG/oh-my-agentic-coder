@@ -225,15 +225,17 @@ func runLaunch(env *Env, opts launchOpts) int {
 	if verbose && cfgPath != "" {
 		fmt.Fprintf(env.Stderr, "[verbose] loaded launcher config: %s\n", cfgPath)
 	}
-	profName := profile
-	if profName == "" {
-		profName = lc.Sandbox.DefaultProfile
-	}
-	prof, ok := lc.Sandbox.Profiles[profName]
-	if !ok && !noSandbox {
-		fmt.Fprintf(env.Stderr, prefix+": unknown sandbox profile %q\n", profName)
+	// One resolved sandbox plan for the whole launch: the launcher profile
+	// (templated argv) plus, for omac's native backend, its policy profile
+	// (grant JSON). Everything downstream reads the plan instead of
+	// re-resolving a bare name — see internal/cli/sandboxplan.go.
+	plan, planErr := resolveSandboxPlan(lc, profile)
+	if planErr != nil && !noSandbox {
+		fmt.Fprintln(env.Stderr, prefix+":", planErr)
 		return ExitConfigInvalid
 	}
+	profName := plan.Name
+	prof := plan.Launcher
 
 	// 1b. Pre-flight: inner harness binary must be on $PATH.
 	if innerCmdOverride == "" {
@@ -799,7 +801,7 @@ func runLaunch(env *Env, opts launchOpts) int {
 		env.Version,
 	)
 	f.SetAuditor(auditor)
-	wireFacadeSandbox(f, noSandbox, profName, func(format string, args ...any) {
+	wireFacadeSandbox(f, noSandbox, plan, func(format string, args ...any) {
 		fmt.Fprintf(env.Stderr, prefix+": "+format+"\n", args...)
 	})
 	if err := f.Start(ctx); err != nil {
@@ -880,7 +882,7 @@ func runLaunch(env *Env, opts launchOpts) int {
 		// Forward the selected harness's auth env vars through the
 		// default profile's restrictive allow_vars filter — only for the
 		// selected harness.
-		argv = forwardHarnessEnv(env, argv, harness, prof, profName)
+		argv = forwardHarnessEnv(env, argv, harness, plan)
 		// Pass the resolved audit path down to `omac sandbox run` so the
 		// network-filter subprocess appends net.decision events to the
 		// same persistent log. Inherit the parent's run_id + mode so the

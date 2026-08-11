@@ -91,59 +91,38 @@ func PagesPath(profilePath string) string {
 	return strings.TrimSuffix(profilePath, ".json") + ".pages.json"
 }
 
-// ResolveReadOnly is the inspection variant of Resolve: it loads the
-// referenced profile exactly like Resolve, but never scaffolds a
-// default.json when "default" is missing. Instead it returns the
-// compiled-in DefaultProfile() with an empty path, so callers (doctor,
-// provenance) can reason about the effective policy without mutating
-// the user's filesystem.
-//
-// Resolution rules mirror Resolve:
-//   - a ref containing a path separator or ending in .json is loaded
-//     from that exact path (returned path is the ref itself);
-//   - otherwise the profile is looked up under
-//     ~/.config/omac/sandbox-profiles/<ref>.json;
-//   - an empty ref means "default";
-//   - a missing named (non-default) profile is an error;
-//   - a missing "default" returns DefaultProfile() with path "".
-func ResolveReadOnly(ref string) (*Profile, string, error) {
-	if ref == "" {
-		ref = "default"
-	}
-	if strings.ContainsRune(ref, os.PathSeparator) || strings.HasSuffix(ref, ".json") {
-		p, err := loadFile(ref)
-		return p, ref, err
-	}
-	path, err := ProfilePath(ref)
-	if err != nil {
-		return nil, "", fmt.Errorf("resolve sandbox profile dir: %w", err)
-	}
-	if _, statErr := os.Stat(path); statErr != nil {
-		if !os.IsNotExist(statErr) {
-			return nil, "", fmt.Errorf("stat sandbox profile %s: %w", path, statErr)
-		}
-		if ref != "default" {
-			return nil, "", fmt.Errorf("sandbox profile %q not found (expected %s)", ref, path)
-		}
-		// Missing default: return compiled-in defaults without
-		// scaffolding the file. Path is "" so callers know no file
-		// was consulted.
-		return DefaultProfile(), "", nil
-	}
-	p, err := loadFile(path)
-	return p, path, err
+// resolveOpts holds the (currently single) Resolve knob.
+type resolveOpts struct {
+	scaffold bool
+}
+
+// ResolveOption tunes Resolve. The zero set is read-only.
+type ResolveOption func(*resolveOpts)
+
+// WithScaffold lets Resolve create ~/.config/omac/sandbox-profiles/default.json
+// from DefaultProfile when it is missing, then load it back. Reserved for
+// first-run setup on the launch path (`omac sandbox run`) — inspection
+// callers (doctor, diagnose, provenance, facade wiring) must not mutate
+// the user's filesystem as a side effect of reading.
+func WithScaffold() ResolveOption {
+	return func(o *resolveOpts) { o.scaffold = true }
 }
 
 // Resolve loads a profile reference:
-//   - a path (contains a separator or ends in .json): load that file;
+//   - a path (contains a separator or ends in .json): load that file
+//     (the returned path is the ref itself);
 //   - otherwise ~/.config/omac/sandbox-profiles/<ref>.json.
 //
-// An empty ref means "default". On first use the default profile file
-// is scaffolded from DefaultProfile (pretty-printed) and then loaded.
-// Returns the profile and the path it was loaded from (the path is ""
-// for explicit-path refs whose pages file should sit next to them —
-// in that case the returned path is the explicit path itself).
-func Resolve(ref string) (*Profile, string, error) {
+// An empty ref means "default". A missing named (non-default) profile is
+// an error. Resolve is READ-ONLY by default: a missing "default" yields
+// the compiled-in DefaultProfile() with path "" so callers know no file
+// was consulted. Pass WithScaffold() to write default.json instead —
+// only the launch path does.
+func Resolve(ref string, opts ...ResolveOption) (*Profile, string, error) {
+	var o resolveOpts
+	for _, apply := range opts {
+		apply(&o)
+	}
 	if ref == "" {
 		ref = "default"
 	}
@@ -161,6 +140,9 @@ func Resolve(ref string) (*Profile, string, error) {
 		}
 		if ref != "default" {
 			return nil, "", fmt.Errorf("sandbox profile %q not found (expected %s)", ref, path)
+		}
+		if !o.scaffold {
+			return DefaultProfile(), "", nil
 		}
 		// First start: scaffold default.json so the user has an
 		// editable copy, then load it back (round-trip keeps the file

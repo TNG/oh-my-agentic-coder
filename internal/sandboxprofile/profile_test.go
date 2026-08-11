@@ -224,7 +224,7 @@ func TestExpandExistingSkipsMissing(t *testing.T) {
 func TestResolveFirstStartScaffoldsDefault(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	p, path, err := Resolve("")
+	p, path, err := Resolve("", WithScaffold())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -357,13 +357,16 @@ func TestResolveUnknownProfileNamesExpectedPath(t *testing.T) {
 	}
 }
 
-// TestResolveReadOnly verifies the read-only resolver mirrors Resolve
-// for existing/explicit-path profiles but never scaffolds a default.json
-// when "default" is missing.
-func TestResolveReadOnly(t *testing.T) {
+// TestResolveIsReadOnlyByDefault verifies that Resolve without
+// WithScaffold loads existing/explicit-path profiles exactly like the
+// scaffolding variant but never writes default.json when "default" is
+// missing — inspection callers (doctor, diagnose, provenance, facade
+// wiring) must not mutate the user's filesystem as a side effect of
+// reading (#173).
+func TestResolveIsReadOnlyByDefault(t *testing.T) {
 	t.Run("missing named profile errors", func(t *testing.T) {
 		t.Setenv("HOME", t.TempDir())
-		_, _, err := ResolveReadOnly("nosuch")
+		_, _, err := Resolve("nosuch")
 		if err == nil {
 			t.Fatal("expected error for missing named profile")
 		}
@@ -383,7 +386,7 @@ func TestResolveReadOnly(t *testing.T) {
 			[]byte(`{"meta": {"name": "custom"}}`), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		p, path, err := ResolveReadOnly("custom")
+		p, path, err := Resolve("custom")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -399,7 +402,7 @@ func TestResolveReadOnly(t *testing.T) {
 	t.Run("missing default returns DefaultProfile without scaffolding", func(t *testing.T) {
 		home := t.TempDir()
 		t.Setenv("HOME", home)
-		p, path, err := ResolveReadOnly("default")
+		p, path, err := Resolve("default")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -412,7 +415,7 @@ func TestResolveReadOnly(t *testing.T) {
 		// No file must have been created.
 		defaultPath := filepath.Join(home, ".config", "omac", "sandbox-profiles", "default.json")
 		if _, err := os.Stat(defaultPath); !os.IsNotExist(err) {
-			t.Errorf("ResolveReadOnly scaffolded default.json (err=%v); must not mutate filesystem", err)
+			t.Errorf("Resolve scaffolded default.json (err=%v); must not mutate filesystem", err)
 		}
 	})
 
@@ -422,7 +425,7 @@ func TestResolveReadOnly(t *testing.T) {
 		if err := os.WriteFile(path, []byte(`{"meta": {"name": "x"}}`), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		p, gotPath, err := ResolveReadOnly(path)
+		p, gotPath, err := Resolve(path)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -437,7 +440,7 @@ func TestResolveReadOnly(t *testing.T) {
 	t.Run("empty ref resolves default without scaffolding", func(t *testing.T) {
 		home := t.TempDir()
 		t.Setenv("HOME", home)
-		p, _, err := ResolveReadOnly("")
+		p, _, err := Resolve("")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -446,7 +449,7 @@ func TestResolveReadOnly(t *testing.T) {
 		}
 		defaultPath := filepath.Join(home, ".config", "omac", "sandbox-profiles", "default.json")
 		if _, err := os.Stat(defaultPath); !os.IsNotExist(err) {
-			t.Errorf("ResolveReadOnly(\"\") scaffolded default.json; must not mutate filesystem")
+			t.Errorf("Resolve(\"\") scaffolded default.json; must not mutate filesystem")
 		}
 	})
 }

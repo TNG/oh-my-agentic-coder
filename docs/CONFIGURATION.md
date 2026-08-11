@@ -109,7 +109,9 @@ environment variables.
 The built-in sandbox reads JSON profiles from
 `~/.config/omac/sandbox-profiles/`. On first `omac start` with the
 `builtin` profile, omac scaffolds `default.json` from the compiled-in
-defaults so you can edit it:
+defaults so you can edit it (only the launch itself writes it — the
+inspection commands `omac doctor`, `omac diagnose` and `omac provenance`
+read the compiled-in defaults instead of creating files):
 
 ```
 ~/.config/omac/sandbox-profiles/

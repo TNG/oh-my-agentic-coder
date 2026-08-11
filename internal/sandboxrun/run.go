@@ -76,7 +76,12 @@ func Run(opts Options) int {
 		return 1
 	}
 
-	profile, profilePath, err := sandboxprofile.Resolve(opts.Flags.ProfileRef)
+	// WithScaffold: this is the launch path — the child the default
+	// launcher template invokes — so first run creates the user's editable
+	// ~/.config/omac/sandbox-profiles/default.json. Every inspection
+	// caller (doctor, diagnose, provenance, facade wiring) resolves
+	// read-only instead.
+	profile, profilePath, err := sandboxprofile.Resolve(opts.Flags.ProfileRef, sandboxprofile.WithScaffold())
 	if err != nil {
 		return fail("%v", err)
 	}

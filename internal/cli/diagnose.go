@@ -45,7 +45,7 @@ func runDiagnose(args []string, env *Env) int {
 		return ExitMisuse
 	}
 
-	profile, profPath, err := sandboxprofile.ResolveReadOnly(*profileRef)
+	profile, profPath, err := sandboxprofile.Resolve(*profileRef)
 	if err != nil {
 		fmt.Fprintln(env.Stderr, "omac diagnose:", err)
 		return ExitConfigInvalid
