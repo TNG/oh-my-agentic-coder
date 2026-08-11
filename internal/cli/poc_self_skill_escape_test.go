@@ -380,6 +380,80 @@ http.server.HTTPServer(("127.0.0.1", int(os.environ["SIDECAR_PORT"])), H).serve_
 
 // stageOutsideSecret writes a secret file OUTSIDE the workdir — standing
 // in for any host resource the sandbox denies the agent.
+// TestSpawnBackstopRequiresSnapshotLocation pins the supervisor backstop's
+// defining property: a sidecar may run ONLY from the host-only snapshot
+// location — never from a path whose CONTENT merely matches an approval.
+//
+// This needs its own test because no other one can catch a regression here.
+// The pre-flight (approvedSpawnDir) always hands the supervisor a snapshot
+// dir, so every production path satisfies the backstop and nothing else ever
+// invokes it with a workdir path. A weakened backstop therefore leaves the
+// whole suite green — which is exactly what happened once during review: the
+// check fell through to a content re-hash, silently re-admitting the
+// agent-writable workdir as a spawn source and re-opening both the
+// excluded-subtree tamper vector (see TestSnapshotDefeatsPostApprovalTampering)
+// and the check-then-exec TOCTOU that snapshotting exists to close.
+//
+// rehashAuthorizer below is that tempting weaker check. It is asserted to
+// ACCEPT the workdir, which is the point: the location/content distinction is
+// load-bearing, not stylistic.
+func TestSpawnBackstopRequiresSnapshotLocation(t *testing.T) {
+	isolateHome(t)
+	workdir := t.TempDir()
+	skillDir := filepath.Join(workdir, ".opencode", "skills", "loc")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, config.MetaFileName),
+		[]byte("name: loc\ntype: skill\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "run.sh"), []byte("echo hi\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	hash := bundleHashOf(t, skillDir)
+	if err := skilltrust.Approve("loc", hash, skillDir); err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+	snapDir, present := skilltrust.SnapshotPath("loc", hash)
+	if !present {
+		t.Fatal("Approve must leave a snapshot behind")
+	}
+
+	// Same skill, same approved content — the only difference is WHERE it
+	// would execute from.
+	fromWorkdir := supervisor.SidecarSpec{Name: "loc", SkillName: "loc", SkillDir: skillDir}
+	fromSnapshot := supervisor.SidecarSpec{Name: "loc", SkillName: "loc", SkillDir: snapDir}
+
+	if err := skillSpawnAuthorizer(fromWorkdir); err == nil {
+		t.Error("backstop accepted a spawn from the agent-writable workdir; it must require the snapshot location")
+	}
+	if err := skillSpawnAuthorizer(fromSnapshot); err != nil {
+		t.Errorf("backstop refused the legitimate snapshot path: %v", err)
+	}
+
+	// A content re-hash cannot tell the two apart. If this ever stops holding,
+	// the premise above changed and the comment needs revisiting.
+	rehashAuthorizer := func(spec supervisor.SidecarSpec) error {
+		h, err := config.BundleHash(spec.SkillDir)
+		if err != nil {
+			return err
+		}
+		ok, err := skilltrust.IsApproved(spec.SkillName, h)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return errSkillNotApproved(spec.SkillName)
+		}
+		return nil
+	}
+	if err := rehashAuthorizer(fromWorkdir); err != nil {
+		t.Errorf("premise no longer holds: a content re-hash was expected to accept the workdir, got %v", err)
+	}
+}
+
 func stageOutsideSecret(t *testing.T) (path, value string) {
 	t.Helper()
 	value = "TOP-SECRET-HOST-DATA-9f3a"
