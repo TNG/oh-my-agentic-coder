@@ -27,7 +27,7 @@ func envMap(kv []string) map[string]string {
 }
 
 func TestBuildEnvSidecarSkillIsPlainName(t *testing.T) {
-	s := New(nil, nil)
+	s := New(nil, nil, nil)
 
 	// SkillName set (serve mode): SIDECAR_SKILL must be the plain name,
 	// never the namespaced tracking Name (which contains a slash that
@@ -58,7 +58,7 @@ func TestBuildEnvSidecarSkillIsPlainName(t *testing.T) {
 // spawning real processes: a Running with a nil Cmd.Process terminates as a
 // no-op (terminate handles nil), so we can assert set membership directly.
 func TestStopSidecarTracking(t *testing.T) {
-	s := New(nil, nil)
+	s := New(nil, nil, nil)
 	s.children = []*Running{
 		{Name: "a"},
 		{Name: "b"},
@@ -156,7 +156,7 @@ func (c *capturingAuditor) countType(typ string) int {
 // the supervisor's shutdown.
 func TestSelfTerminatingSidecarEmitsProcessExit(t *testing.T) {
 	aud := &capturingAuditor{}
-	s := New(nil, aud)
+	s := New(nil, aud, nil)
 
 	// Spawn a process that exits immediately.
 	cmd := exec.Command("true")
@@ -195,7 +195,7 @@ func TestSelfTerminatingSidecarEmitsProcessExit(t *testing.T) {
 // audited by the reaper, a second process.exit event is NOT emitted.
 func TestStopSidecarDoesNotDoubleEmitProcessExit(t *testing.T) {
 	aud := &capturingAuditor{}
-	s := New(nil, aud)
+	s := New(nil, aud, nil)
 
 	cmd := exec.Command("true")
 	if err := cmd.Start(); err != nil {
@@ -238,7 +238,7 @@ func TestStopSidecarDoesNotDoubleEmitProcessExit(t *testing.T) {
 // Uses a long-running child (sleep) plus a hard test-level timeout so a
 // regression fails fast instead of hanging the whole test binary.
 func TestShutdownAllReapsLongRunningChildWithoutHanging(t *testing.T) {
-	s := New(nil, nil)
+	s := New(nil, nil, nil)
 
 	cmd := exec.Command("sleep", "30")
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -267,8 +267,8 @@ func TestShutdownAllReapsLongRunningChildWithoutHanging(t *testing.T) {
 	}
 }
 
-// TestAuthorizerBlocksSpawnBeforeExec verifies the spawn-gate backstop
-// (SetAuthorizer): a refused spec must return the authorizer's error AND the
+// TestAuthorizerBlocksSpawnBeforeExec verifies the spawn-gate backstop (the
+// authorizer passed to New): a refused spec must return the authorizer's error AND the
 // child command must never execute — the security guarantee that no spawn
 // path can reach exec without approval, even if a caller skips its own
 // pre-flight check. See internal/skilltrust.
@@ -284,9 +284,8 @@ func TestAuthorizerBlocksSpawnBeforeExec(t *testing.T) {
 		LogPath: filepath.Join(dir, "log"),
 	}
 
-	s := New(nil, nil)
 	denied := errors.New("nope")
-	s.SetAuthorizer(func(SidecarSpec) error { return denied })
+	s := New(nil, nil, func(SidecarSpec) error { return denied })
 
 	// AddSidecar must refuse.
 	if _, err := s.AddSidecar(t.Context(), spec); err == nil {
@@ -309,8 +308,8 @@ func TestAuthorizerBlocksSpawnBeforeExec(t *testing.T) {
 	spec2.Name = "allowed"
 	spec2.Command = []string{"sh", "-c", "touch '" + okMarker + "'"}
 	spec2.Health = config.HealthSpec{InitialDelayMS: 10, IntervalMS: 10, TimeoutMS: 300}
-	s.SetAuthorizer(func(SidecarSpec) error { return nil })
-	_, _ = s.AddSidecar(t.Context(), spec2) // health will fail; we only assert it ran
+	permitting := New(nil, nil, func(SidecarSpec) error { return nil })
+	_, _ = permitting.AddSidecar(t.Context(), spec2) // health will fail; we only assert it ran
 	if _, err := os.Stat(okMarker); err != nil {
 		t.Errorf("permitted command did not run: %v", err)
 	}

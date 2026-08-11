@@ -148,8 +148,7 @@ func newLiveReloader(t *testing.T, workdir string) (*startReloader, string) {
 	// that re-execs the real interpreter via PATH, so a PATH-less child (the
 	// zero-value passthrough) fails to start there. Production start/serve
 	// pass the facade's base_env_passthrough for the same reason.
-	sup := supervisor.New([]string{"PATH", "HOME", "LANG", "LC_ALL"}, audit.Nop())
-	sup.SetAuthorizer(skillSpawnAuthorizer())
+	sup := supervisor.New([]string{"PATH", "HOME", "LANG", "LC_ALL"}, audit.Nop(), skillSpawnAuthorizer)
 	r := &startReloader{
 		env:     makeEnv(workdir),
 		facade:  f,
@@ -267,11 +266,8 @@ func TestGrandfatherClosesFirstUpgradeWindow(t *testing.T) {
 			if err != nil {
 				t.Fatalf("load registry: %v", err)
 			}
-			if _, err := grandfatherApprovals(workdir, reg); err != nil {
+			if _, err := grandfatherOnce(grandfatherScope{workdir: workdir, reg: reg}); err != nil {
 				t.Fatalf("grandfather: %v", err)
-			}
-			if err := skilltrust.EnsureInitialized(); err != nil {
-				t.Fatalf("EnsureInitialized: %v", err)
 			}
 		}
 	}
@@ -282,8 +278,8 @@ func TestGrandfatherClosesFirstUpgradeWindow(t *testing.T) {
 		t.Fatal("precondition: approval store should not exist yet")
 	}
 	launch() // first upgraded run: grandfathers what is registered now.
-	if ok, _ := approvalStatus("preexisting", preDir); !ok {
-		t.Error("pre-existing skill should be grandfathered/approved")
+	if refusal := approvalRefusal("preexisting", preDir, ""); refusal != nil {
+		t.Errorf("pre-existing skill should be grandfathered/approved: %v", refusal)
 	}
 
 	// The agent now plants a NEW skill and forges its registry entry — so it
@@ -294,11 +290,11 @@ func TestGrandfatherClosesFirstUpgradeWindow(t *testing.T) {
 		t.Fatal("first-upgrade window must be closed after the first launch")
 	}
 	launch() // second run: guard is false, grandfathering must not fire.
-	if ok, _ := approvalStatus("authored-later", laterDir); ok {
+	if refusal := approvalRefusal("authored-later", laterDir, ""); refusal == nil {
 		t.Error("a skill planted AFTER the first upgrade must not be grandfathered on a later launch")
 	}
-	if ok, _ := approvalStatus("preexisting", preDir); !ok {
-		t.Error("the grandfathered skill must remain approved across launches")
+	if refusal := approvalRefusal("preexisting", preDir, ""); refusal != nil {
+		t.Errorf("the grandfathered skill must remain approved across launches: %v", refusal)
 	}
 }
 

@@ -246,10 +246,10 @@ func (r *startReloader) reload() []string {
 		// the current on-disk code is host-approved (see
 		// internal/skilltrust). Mount a broken route (no markMounted, so a
 		// later reload after `omac register` can still bring it up).
-		if ok, aerr := approvalStatus(e.Name, absDir); aerr != nil || !ok {
-			r.facade.AddRoute(brokenApprovalRoute(mount, e.Name, absDir))
+		if refusal := approvalRefusal(e.Name, absDir, ""); refusal != nil {
+			r.facade.AddRoute(brokenApprovalRoute(mount, e.Name, absDir, refusal))
 			if r.verbose {
-				fmt.Fprintf(r.env.Stderr, "[verbose] reload: %s not host-approved; refused\n", e.Name)
+				fmt.Fprintf(r.env.Stderr, "[verbose] reload: %s\n", refusalNotice(refusal))
 			}
 			continue
 		}

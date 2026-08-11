@@ -31,7 +31,6 @@ import (
 	"github.com/tngtech/oh-my-agentic-coder/internal/secrets"
 	"github.com/tngtech/oh-my-agentic-coder/internal/skillconfig"
 	"github.com/tngtech/oh-my-agentic-coder/internal/skillsource"
-	"github.com/tngtech/oh-my-agentic-coder/internal/skilltrust"
 	"github.com/tngtech/oh-my-agentic-coder/internal/supervisor"
 	"github.com/tngtech/oh-my-agentic-coder/internal/toolcache"
 )
@@ -243,8 +242,7 @@ func runServe(args []string, env *Env) int {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	sup := supervisor.New(lc.Facade.BaseEnvPassthrough, auditor)
-	sup.SetAuthorizer(skillSpawnAuthorizer())
+	sup := supervisor.New(lc.Facade.BaseEnvPassthrough, auditor, skillSpawnAuthorizer)
 	defer sup.ShutdownAll(5 * time.Second)
 
 	f := facade.New(
@@ -297,13 +295,14 @@ func runServe(args []string, env *Env) int {
 	// need an out-of-sandbox `omac register`, which is what keeps a long-lived
 	// serve daemon from blessing agent-authored skills mid-session.
 	if firstApprovalUpgrade() {
-		if gReg, gerr := registry.LoadGlobal(); gerr == nil {
-			_, _ = grandfatherApprovals("", gReg)
+		gReg, _ := registry.LoadGlobal()
+		wReg, _ := registry.Load(env.Workdir)
+		if _, merr := grandfatherOnce(
+			grandfatherScope{reg: gReg},
+			grandfatherScope{workdir: env.Workdir, reg: wReg},
+		); merr != nil {
+			fmt.Fprintln(env.Stderr, "omac serve: approval store (non-fatal):", merr)
 		}
-		if wReg, werr := registry.Load(env.Workdir); werr == nil {
-			_, _ = grandfatherApprovals(env.Workdir, wReg)
-		}
-		_ = skilltrust.EnsureInitialized()
 	}
 
 	// Cold start: global skills are a fixed, known set, so — unlike the lazy
@@ -1332,8 +1331,11 @@ func (s *serveServer) bringUp(e registry.Entry, absDir, workdir, namespace, secr
 	}
 	mount := m.Sidecar.MountOrDefault(e.Name)
 
+	// Hash once and reuse for both the drift check and the approval gate below;
+	// an error leaves it empty for approvalRefusal to re-derive and report.
+	bundle, herr := config.BundleHash(absDir)
 	if !s.acceptChanges {
-		if bundle, herr := config.BundleHash(absDir); herr == nil && bundle != e.BundleHash {
+		if herr == nil && bundle != e.BundleHash {
 			sr := &skillRoute{Name: e.Name, Mount: mount, Namespace: namespace, SkillDir: absDir, State: facade.RouteBroken,
 				Detail: "bundle changed since register; re-register or pass --accept-skill-changes"}
 			s.installRoute(sr, 0)
@@ -1345,9 +1347,9 @@ func (s *serveServer) bringUp(e registry.Entry, absDir, workdir, namespace, secr
 	// host-approved — a workdir the agent can write must not launch host code.
 	// Grandfathering happens once at cold start (see runServe), NOT here: a
 	// long-lived serve daemon must not keep blessing skills authored mid-session.
-	if ok, aerr := approvalStatus(e.Name, absDir); aerr != nil || !ok {
+	if refusal := approvalRefusal(e.Name, absDir, bundle); refusal != nil {
 		sr := &skillRoute{Name: e.Name, Mount: mount, Namespace: namespace, SkillDir: absDir,
-			State: facade.RouteBroken, Detail: errSkillNotApproved(e.Name).Error()}
+			State: facade.RouteBroken, Detail: refusal.Error()}
 		s.installRoute(sr, 0)
 		return sr
 	}

@@ -103,24 +103,21 @@ type Supervisor struct {
 
 // New returns a fresh Supervisor. auditor may be nil (a no-op auditor is
 // substituted) so existing callers/tests keep working.
-func New(baseEnvPassthrough []string, auditor audit.Auditor) *Supervisor {
+//
+// authorizer is the spawn gate, consulted at the start of every spawn (StartAll
+// and AddSidecar both funnel through startOne); a non-nil error from it means
+// the sidecar is NOT started and that error is returned to the caller. It is a
+// constructor parameter rather than a setter precisely because it is a security
+// control: the choke-point backstop for the host-only approval model (see
+// internal/skilltrust), which holds even if a caller forgets its own pre-flight
+// approval check. Requiring it here means a new production call site cannot
+// silently get an ungated supervisor — it has to say so by passing nil, which
+// allows every spawn and is what tests use.
+func New(baseEnvPassthrough []string, auditor audit.Auditor, authorizer func(SidecarSpec) error) *Supervisor {
 	if auditor == nil {
 		auditor = audit.Nop()
 	}
-	return &Supervisor{baseEnvPassthrough: baseEnvPassthrough, auditor: auditor}
-}
-
-// SetAuthorizer installs a spawn gate consulted at the start of every
-// spawn (StartAll and AddSidecar both funnel through startOne). When set
-// and it returns a non-nil error, the sidecar is NOT started and that
-// error is returned to the caller. A nil authorizer (the default, and
-// what tests get) allows every spawn.
-//
-// This is the choke-point backstop for the host-only approval model (see
-// internal/skilltrust): even if a caller forgets its own pre-flight
-// approval check, an unapproved skill still cannot reach exec here.
-func (s *Supervisor) SetAuthorizer(fn func(SidecarSpec) error) {
-	s.authorizer = fn
+	return &Supervisor{baseEnvPassthrough: baseEnvPassthrough, auditor: auditor, authorizer: authorizer}
 }
 
 // StartAll starts every sidecar in specs. On any failure it terminates the

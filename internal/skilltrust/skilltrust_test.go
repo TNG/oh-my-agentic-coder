@@ -6,7 +6,7 @@ import (
 )
 
 // isolate points HOME and XDG_CONFIG_HOME at temp dirs so the approvals
-// store resolves under a throwaway location (registry.GlobalDir honors
+// Store resolves under a throwaway location (registry.GlobalDir honors
 // XDG_CONFIG_HOME).
 func isolate(t *testing.T) {
 	t.Helper()
@@ -17,14 +17,14 @@ func isolate(t *testing.T) {
 func TestUnapprovedByDefault(t *testing.T) {
 	isolate(t)
 	if Exists() {
-		t.Fatal("store should not exist before any approval")
+		t.Fatal("Store should not exist before any Approval")
 	}
 	ok, err := IsApproved("skill", "sha256:abc")
 	if err != nil {
 		t.Fatalf("IsApproved: %v", err)
 	}
 	if ok {
-		t.Error("nothing should be approved on a fresh store (fail closed)")
+		t.Error("nothing should be approved on a fresh Store (fail closed)")
 	}
 }
 
@@ -34,7 +34,7 @@ func TestApproveThenIsApproved(t *testing.T) {
 		t.Fatalf("Approve: %v", err)
 	}
 	if !Exists() {
-		t.Error("store should exist after Approve")
+		t.Error("Store should exist after Approve")
 	}
 	ok, _ := IsApproved("skill", "sha256:abc")
 	if !ok {
@@ -64,7 +64,7 @@ func TestApproveIsAdditivePerName(t *testing.T) {
 	}
 	// Re-approving an identical (name, hash) is idempotent (no duplicate).
 	_ = Approve("skill", "sha256:v1", "")
-	s, _ := Load()
+	s, _ := load()
 	if len(s.Approved) != 2 {
 		t.Errorf("expected 2 approvals, got %d", len(s.Approved))
 	}
@@ -86,7 +86,7 @@ func TestRevokeIsScopedToHash(t *testing.T) {
 	if ok, _ := IsApproved("foo", "sha256:opencode"); ok {
 		t.Error("the revoked (name, hash) should no longer be approved")
 	}
-	// A same-name copy under a different hash keeps its approval.
+	// A same-name copy under a different hash keeps its Approval.
 	if ok, _ := IsApproved("foo", "sha256:claude"); !ok {
 		t.Error("Revoke must not touch a same-name copy with a different hash")
 	}
@@ -101,13 +101,13 @@ func TestRevokeIsScopedToHash(t *testing.T) {
 func TestEnsureInitializedClosesFirstUpgradeWindow(t *testing.T) {
 	isolate(t)
 	if Exists() {
-		t.Fatal("store should be absent initially")
+		t.Fatal("Store should be absent initially")
 	}
 	if err := EnsureInitialized(); err != nil {
 		t.Fatalf("EnsureInitialized: %v", err)
 	}
 	if !Exists() {
-		t.Error("store must exist after EnsureInitialized, so the first-upgrade window closes")
+		t.Error("Store must exist after EnsureInitialized, so the first-upgrade window closes")
 	}
 	// Idempotent and non-destructive: approve, then EnsureInitialized again.
 	_ = Approve("s", "h", "")
@@ -125,12 +125,12 @@ func TestApprovalsSurviveReload(t *testing.T) {
 		t.Fatalf("Approve: %v", err)
 	}
 	// A fresh Load (new process would do the same) sees the persisted state.
-	s, err := Load()
+	s, err := load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
 	if len(s.Approved) != 1 || s.Approved[0].Name != "skill" {
-		t.Fatalf("persisted store = %+v", s.Approved)
+		t.Fatalf("persisted Store = %+v", s.Approved)
 	}
 }
 
@@ -141,10 +141,10 @@ func TestFailClosedWithoutHome(t *testing.T) {
 	if os.Getenv("HOME") != "" {
 		t.Skip("HOME could not be cleared on this platform")
 	}
-	if err := Approve("x", "h", ""); err != ErrNoGlobalDir {
-		t.Errorf("Approve without a config dir = %v, want ErrNoGlobalDir", err)
+	if err := Approve("x", "h", ""); err != errNoGlobalDir {
+		t.Errorf("Approve without a config dir = %v, want errNoGlobalDir", err)
 	}
 	if ok, _ := IsApproved("x", "h"); ok {
-		t.Error("must fail closed when no store location is resolvable")
+		t.Error("must fail closed when no Store location is resolvable")
 	}
 }

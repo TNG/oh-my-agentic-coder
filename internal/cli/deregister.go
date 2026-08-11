@@ -93,24 +93,23 @@ func runDeregister(args []string, env *Env) int {
 		if err != nil {
 			return err
 		}
-		// Capture the entry to be removed with the SAME predicate used to
-		// remove it, so revokeHash matches the deleted entry (a name-only
-		// Remove deletes any-harness, so we must capture via Find, not the
-		// legacy-only FindForHarness). Read its fields BEFORE removal, which
-		// reslices reg.Registered and would invalidate the pointer.
+		// Capture the entry in the same branch that removes it, so revokeHash
+		// always belongs to the entry actually deleted: a name-only Remove
+		// deletes any-harness, so it must pair with Find, not the legacy-only
+		// FindForHarness. Fields are read BEFORE removal, which reslices
+		// reg.Registered and would invalidate the pointer.
 		var removing *registry.Entry
 		if harnessKey != "" {
 			removing, _ = reg.FindForHarness(name, harnessKey)
-		} else {
-			removing, _ = reg.Find(name)
-		}
-		if removing != nil {
-			declared = removing.DeclaredSecretNames
-			revokeHash = removing.BundleHash
-		}
-		if harnessKey != "" {
+			if removing != nil {
+				declared, revokeHash = removing.DeclaredSecretNames, removing.BundleHash
+			}
 			existed = reg.RemoveForHarness(name, harnessKey)
 		} else {
+			removing, _ = reg.Find(name)
+			if removing != nil {
+				declared, revokeHash = removing.DeclaredSecretNames, removing.BundleHash
+			}
 			existed = reg.Remove(name)
 		}
 		if err := saveRegistry(env.Workdir, global, reg); err != nil {

@@ -26,7 +26,6 @@ import (
 	"github.com/tngtech/oh-my-agentic-coder/internal/session"
 	"github.com/tngtech/oh-my-agentic-coder/internal/skillconfig"
 	"github.com/tngtech/oh-my-agentic-coder/internal/skillsource"
-	"github.com/tngtech/oh-my-agentic-coder/internal/skilltrust"
 	"github.com/tngtech/oh-my-agentic-coder/internal/supervisor"
 	"github.com/tngtech/oh-my-agentic-coder/internal/toolcache"
 )
@@ -393,16 +392,13 @@ func runLaunch(env *Env, opts launchOpts) int {
 	//         working setup; thereafter a skill must be approved
 	//         explicitly by an out-of-sandbox `omac register`.
 	if firstApprovalUpgrade() {
-		if n, merr := grandfatherApprovals(env.Workdir, reg); merr != nil {
+		n, merr := grandfatherOnce(grandfatherScope{workdir: env.Workdir, reg: reg})
+		if merr != nil {
 			fmt.Fprintln(env.Stderr, prefix+": approval store (non-fatal):", merr)
-		} else if n > 0 {
+		}
+		if n > 0 {
 			fmt.Fprintf(env.Stderr, "%s: migrated %d registered skill(s) to the host-only approval store; "+
 				"new skills now require `omac register` on the host to spawn\n", prefix, n)
-		}
-		// Persist the store even if nothing was grandfathered, so this
-		// first-upgrade window closes and does not re-open next launch.
-		if ierr := skilltrust.EnsureInitialized(); ierr != nil {
-			fmt.Fprintln(env.Stderr, prefix+": approval store (non-fatal):", ierr)
 		}
 	}
 
@@ -459,9 +455,12 @@ func runLaunch(env *Env, opts launchOpts) int {
 	// we may not end up using them; they're zeroed by the deferred
 	// cleanup below regardless of which path we take.
 	type withSecrets struct {
-		entry   registry.Entry
-		meta    *config.Meta
-		abs     string
+		entry registry.Entry
+		meta  *config.Meta
+		abs   string
+		// bundle is abs's content hash, computed once here and reused by the
+		// spawn-approval gate in step 5a so the tree is not walked twice.
+		bundle  string
 		secrets map[string]secrets.Secret
 		config  map[string]string
 	}
@@ -508,23 +507,25 @@ func runLaunch(env *Env, opts launchOpts) int {
 			continue
 		}
 
-		// Bundle hash. Excluded from scanning when the user has
-		// explicitly opted in to drift via --accept-skill-changes.
-		if !acceptSkillChanges {
-			bundle, err := config.BundleHash(absDir)
-			if err != nil {
-				// I/O errors during hashing are class-level (we can't
-				// produce useful per-skill diagnostics if the directory
-				// is unreadable). Abort immediately.
-				fmt.Fprintln(env.Stderr, prefix+": bundle hash:", err)
-				return ExitIOError
-			}
-			if bundle != e.BundleHash {
-				bundleDrifts = append(bundleDrifts, bundleDriftProblem{skill: e.Name})
-				// Don't `continue`: continue collecting problems for
-				// THIS skill (missing secret + missing field) so the
-				// user sees everything needed in one shot.
-			}
+		// Bundle hash. Drift is only *reported* when the user has not opted in
+		// via --accept-skill-changes, but the hash is computed either way:
+		// step 5a's approval gate needs it, and computing it here keeps it to
+		// one walk of the tree per skill. A hash that fails under
+		// --accept-skill-changes is left empty for 5a to re-derive and refuse,
+		// since that flag's whole point is not to abort on skill-dir state.
+		bundle, herr := config.BundleHash(absDir)
+		if herr != nil && !acceptSkillChanges {
+			// I/O errors during hashing are class-level (we can't
+			// produce useful per-skill diagnostics if the directory
+			// is unreadable). Abort immediately.
+			fmt.Fprintln(env.Stderr, prefix+": bundle hash:", herr)
+			return ExitIOError
+		}
+		if !acceptSkillChanges && bundle != e.BundleHash {
+			bundleDrifts = append(bundleDrifts, bundleDriftProblem{skill: e.Name})
+			// Don't `continue`: continue collecting problems for
+			// THIS skill (missing secret + missing field) so the
+			// user sees everything needed in one shot.
 		}
 
 		// Secrets. Read with the workdir-scoped key first, falling back to
@@ -611,7 +612,7 @@ func runLaunch(env *Env, opts launchOpts) int {
 		}
 
 		armed = append(armed, withSecrets{
-			entry: e, meta: m, abs: absDir,
+			entry: e, meta: m, abs: absDir, bundle: bundle,
 			secrets: secMap, config: cfgMap,
 		})
 	}
@@ -750,8 +751,7 @@ func runLaunch(env *Env, opts launchOpts) int {
 	}
 
 	// 5. Spawn sidecars.
-	sup := supervisor.New(lc.Facade.BaseEnvPassthrough, auditor)
-	sup.SetAuthorizer(skillSpawnAuthorizer())
+	sup := supervisor.New(lc.Facade.BaseEnvPassthrough, auditor, skillSpawnAuthorizer)
 	defer func() {
 		if !keepRunning {
 			sup.ShutdownAll(5 * time.Second)
@@ -763,24 +763,18 @@ func runLaunch(env *Env, opts launchOpts) int {
 	//     internal/skilltrust) may start. Unapproved skills are mounted as
 	//     broken routes with the remedy — never spawned — so a workdir the
 	//     agent can write cannot launch host code.
-	type refusedSkill struct{ name, mount, abs string }
-	var approvalRefused []refusedSkill
-	armedApproved := armed[:0:0]
+	var refusedRoutes []facade.Route
+	approved := make([]withSecrets, 0, len(armed))
 	for _, a := range armed {
-		ok, aerr := approvalStatus(a.entry.Name, a.abs)
-		if ok && aerr == nil {
-			armedApproved = append(armedApproved, a)
+		if refusal := approvalRefusal(a.entry.Name, a.abs, a.bundle); refusal != nil {
+			refusedRoutes = append(refusedRoutes, brokenApprovalRoute(
+				a.meta.Sidecar.MountOrDefault(a.entry.Name), a.entry.Name, a.abs, refusal))
+			fmt.Fprintf(env.Stderr, "%s: %s\n", prefix, refusalNotice(refusal))
 			continue
 		}
-		approvalRefused = append(approvalRefused, refusedSkill{
-			name:  a.entry.Name,
-			mount: a.meta.Sidecar.MountOrDefault(a.entry.Name),
-			abs:   a.abs,
-		})
-		fmt.Fprintf(env.Stderr, "%s: skill %q is not host-approved; mounting as unavailable "+
-			"(run `omac register %s` on the host to approve)\n", prefix, a.entry.Name, a.entry.Name)
+		approved = append(approved, a)
 	}
-	armed = armedApproved
+	armed = approved
 
 	specs := make([]supervisor.SidecarSpec, 0, len(armed))
 	for _, s := range armed {
@@ -832,9 +826,7 @@ func runLaunch(env *Env, opts launchOpts) int {
 	}
 	// Mount unapproved skills as broken routes so a probe gets an
 	// actionable 502 instead of a silent 404 (and they never spawn).
-	for _, rf := range approvalRefused {
-		routes = append(routes, brokenApprovalRoute(rf.mount, rf.name, rf.abs))
-	}
+	routes = append(routes, refusedRoutes...)
 
 	// 7. Open both listeners (Unix socket + ephemeral 127.0.0.1 TCP) and
 	//    mount routes. We always bind both so clients can pick whichever
