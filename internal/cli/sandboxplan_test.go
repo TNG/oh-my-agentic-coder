@@ -161,3 +161,30 @@ func TestResolveSandboxPlanMissingPolicyIsRecordedNotFatal(t *testing.T) {
 		t.Error("the launcher is still omac's native sandbox")
 	}
 }
+
+func TestDefaultPolicyRef(t *testing.T) {
+	if got := defaultPolicyRef(config.DefaultLauncherConfig()); got != "default" {
+		t.Errorf("defaultPolicyRef(default config) = %q, want default", got)
+	}
+
+	custom := config.LauncherConfig{Sandbox: config.SandboxConfig{
+		DefaultProfile: "builtin",
+		Profiles: map[string]config.SandboxProfile{
+			"builtin": {Command: []string{"{{self}}", "sandbox", "run", "--profile", "strict", "--", "{{inner_cmd}}"}},
+			"nono":    {Command: []string{"nono", "--", "{{inner_cmd}}"}},
+		},
+	}}
+	if got := defaultPolicyRef(custom); got != "strict" {
+		t.Errorf("defaultPolicyRef = %q; must follow the launcher template, want strict", got)
+	}
+
+	// Opaque or unconfigured default launcher: "" means the default policy.
+	custom.Sandbox.DefaultProfile = "nono"
+	if got := defaultPolicyRef(custom); got != "" {
+		t.Errorf("opaque launcher: defaultPolicyRef = %q, want empty", got)
+	}
+	custom.Sandbox.DefaultProfile = "nosuch"
+	if got := defaultPolicyRef(custom); got != "" {
+		t.Errorf("unknown launcher: defaultPolicyRef = %q, want empty", got)
+	}
+}

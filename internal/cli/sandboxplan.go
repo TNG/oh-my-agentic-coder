@@ -88,3 +88,21 @@ func resolveSandboxPlan(lc config.LauncherConfig, flagProfile string) (sandboxPl
 	plan.PolicyPath = path
 	return plan, nil
 }
+
+// defaultPolicyRef returns the policy ref the configured DEFAULT launcher
+// profile points at — the policy a plain `omac start` would enforce. Empty
+// means "the default policy": either the launcher profile is opaque (an
+// external launcher has no omac policy) or it is not configured at all.
+// Callers that inspect "the" policy must go through here rather than
+// hard-coding "default", which is a launcher-name/policy-ref conflation
+// waiting to happen (see sandboxPlan).
+func defaultPolicyRef(lc config.LauncherConfig) string {
+	prof, ok := lc.Sandbox.Profiles[lc.Sandbox.DefaultProfile]
+	if !ok {
+		return ""
+	}
+	if ref, native := prof.PolicyRef(); native {
+		return ref
+	}
+	return ""
+}

@@ -87,7 +87,16 @@ func ProfilePath(name string) (string, error) {
 
 // PagesPath returns the sibling pages file for a profile path or name:
 // <dir>/<name>.pages.json.
+//
+// An empty profilePath means no file was consulted (Resolve fell back to
+// the compiled-in defaults), so there is no sibling pages file either. It
+// must NOT become the relative ".pages.json", which would read — or write —
+// a stray file in the current working directory. Callers treat "" as the
+// empty learned store (netprompt.LoadLearnedPolicy("")).
 func PagesPath(profilePath string) string {
+	if profilePath == "" {
+		return ""
+	}
 	return strings.TrimSuffix(profilePath, ".json") + ".pages.json"
 }
 

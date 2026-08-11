@@ -160,8 +160,10 @@ func runDoctor(args []string, env *Env) int {
 
 	// Static security lint of the resolved profile (advisory). Reuses the
 	// same engine as `omac provenance --check` — findings are warnings
-	// here, never a doctor failure.
-	doctorProfileLint(env, "")
+	// here, never a doctor failure. The ref follows the default launcher
+	// profile's template, so a config pointing at a non-default policy gets
+	// that policy linted rather than an unused "default".
+	doctorProfileLint(env, defaultPolicyRef(lc))
 
 	fmt.Fprintln(env.Stdout, "\nWhen a run fails, `omac diagnose` shows what the sandbox blocked and why.")
 

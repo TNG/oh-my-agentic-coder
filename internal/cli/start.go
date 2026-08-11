@@ -801,7 +801,9 @@ func runLaunch(env *Env, opts launchOpts) int {
 		env.Version,
 	)
 	f.SetAuditor(auditor)
-	wireFacadeSandbox(f, noSandbox, plan, func(format string, args ...any) {
+	// `omac start` has no --learn (serve-only), so the protected set is
+	// always the profile's.
+	wireFacadeSandbox(f, noSandbox, false, plan, func(format string, args ...any) {
 		fmt.Fprintf(env.Stderr, prefix+": "+format+"\n", args...)
 	})
 	if err := f.Start(ctx); err != nil {

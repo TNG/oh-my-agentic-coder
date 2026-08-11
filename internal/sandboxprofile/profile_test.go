@@ -454,6 +454,16 @@ func TestResolveIsReadOnlyByDefault(t *testing.T) {
 	})
 }
 
+// An empty profile path (Resolve fell back to the compiled-in defaults,
+// consulting no file) has no sibling pages file. Returning the relative
+// ".pages.json" would make callers read — or write — a stray file in the
+// current working directory.
+func TestPagesPathEmptyProfilePath(t *testing.T) {
+	if got := PagesPath(""); got != "" {
+		t.Errorf("PagesPath(\"\") = %q, want empty", got)
+	}
+}
+
 func TestPagesPath(t *testing.T) {
 	if got := PagesPath("/x/sandbox-profiles/default.json"); got != "/x/sandbox-profiles/default.pages.json" {
 		t.Errorf("PagesPath = %q", got)

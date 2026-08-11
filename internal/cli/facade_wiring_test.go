@@ -14,13 +14,18 @@ import (
 // ("" = the config default) and returns the facade plus any warnings.
 func wireForTest(t *testing.T, launcherProfile string, noSandbox bool) (*facade.Facade, []string) {
 	t.Helper()
+	return wireModeForTest(t, launcherProfile, noSandbox, false)
+}
+
+func wireModeForTest(t *testing.T, launcherProfile string, noSandbox, learnMode bool) (*facade.Facade, []string) {
+	t.Helper()
 	plan, err := resolveSandboxPlan(config.DefaultLauncherConfig(), launcherProfile)
 	if err != nil {
 		t.Fatalf("resolveSandboxPlan(%q): %v", launcherProfile, err)
 	}
 	f := facade.New("", "", nil, 0, 0, "", "test")
 	var warnings []string
-	wireFacadeSandbox(f, noSandbox, plan, func(format string, args ...any) {
+	wireFacadeSandbox(f, noSandbox, learnMode, plan, func(format string, args ...any) {
 		warnings = append(warnings, fmt.Sprintf(format, args...))
 	})
 	return f, warnings
@@ -117,5 +122,29 @@ func TestWireFacadeSandboxNoSandboxIsSilent(t *testing.T) {
 	}
 	if f.IntentRegistry == nil {
 		t.Error("IntentRegistry must be wired even without a sandbox")
+	}
+}
+
+// TestWireFacadeSandboxLearnModeProtectsNothing: `omac serve --learn` lifts
+// every filesystem restriction in the child (Grants.withUnrestrictedFilesystem
+// drops ProtectedPaths and grants "/"), so the endpoint must not report the
+// profile's static set — that would tell the agent a genuinely missing file
+// was blocked by the sandbox, inverting the very confusion the endpoint
+// exists to remove.
+func TestWireFacadeSandboxLearnModeProtectsNothing(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	f, warnings := wireModeForTest(t, "", false, true)
+
+	if len(warnings) != 0 {
+		t.Errorf("learn mode must not warn; got %v", warnings)
+	}
+	if f.ProtectedPathChecker == nil {
+		t.Fatal("learn mode should still answer the endpoint (with denied:false), not 404")
+	}
+	creds := filepath.Join(home, ".aws", "credentials")
+	if rule, ok := f.ProtectedPathChecker.IsProtected(creds); ok {
+		t.Errorf("IsProtected(%q) = (%q, true) under --learn; nothing is protected in a learn session", creds, rule)
 	}
 }

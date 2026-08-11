@@ -21,9 +21,17 @@ import (
 // disabling the endpoint. The intent registry is always wired: in-memory,
 // session-scoped, written by the agent via POST /sandbox/intent and read
 // by the popup via GET.
-func wireFacadeSandbox(f *facade.Facade, noSandbox bool, plan sandboxPlan, warn func(format string, args ...any)) {
+//
+// learnMode (`omac serve --learn`) is a launch fact the policy file cannot
+// carry: it lifts every filesystem restriction in the child, so the static
+// protected set must not be reported for that session.
+func wireFacadeSandbox(f *facade.Facade, noSandbox, learnMode bool, plan sandboxPlan, warn func(format string, args ...any)) {
 	if !noSandbox {
 		switch {
+		case learnMode:
+			// Nothing is protected in a learn session; say so rather than
+			// claiming the profile's static set is in force.
+			f.ProtectedPathChecker = sandboxrun.UnrestrictedProtectedPathSet()
 		case plan.Policy != nil:
 			f.ProtectedPathChecker = sandboxrun.NewProtectedPathSet(plan.Policy)
 			if d := plan.Policy.Denial; d != nil && d.FacadeNote != "" {
