@@ -41,32 +41,42 @@ func SnapshotPath(name, bundleHash string) (string, bool) {
 	return p, false
 }
 
-// IsSnapshotPath reports whether dir is an existing directory under the
+// IsSnapshotPath reports whether spawnDir is an existing directory under the
 // host-only snapshot root (<store>/skills). It is the spawn backstop: a
 // sidecar may run only from the snapshot area, which the sandbox cannot
-// write — so a path here is, by construction, host-frozen content. This is
-// stronger and simpler than re-hashing dir (the snapshot legitimately differs
-// from the workdir hash when symlinks are involved).
+// write — so a path here is, by construction, host-frozen content.
+//
+// This is stronger than re-hashing spawnDir, which is why it is the backstop:
+// a hash check accepts ANY path whose content matches an approval, including
+// the agent-writable workdir itself (and re-opens the check-then-exec TOCTOU
+// that snapshotting exists to close). Location, not content, is the property
+// the sandbox boundary actually guarantees.
 func IsSnapshotPath(spawnDir string) bool {
 	d := dir()
 	if d == "" || spawnDir == "" {
 		return false
 	}
-	root := filepath.Join(d, "skills")
-	rel, err := filepath.Rel(root, spawnDir)
-	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+	if !containedIn(filepath.Join(d, "skills"), spawnDir) {
 		return false
 	}
 	fi, err := os.Stat(spawnDir)
 	return err == nil && fi.IsDir()
 }
 
-// Snapshot freezes srcDir into the snapshot location for (name, hash) and
+// containedIn reports whether path lies strictly inside root. Used both to
+// confine the spawn backstop to the snapshot area and to keep snapshotted
+// symlinks from escaping the skill tree.
+func containedIn(root, path string) bool {
+	rel, err := filepath.Rel(root, path)
+	return err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// snapshot freezes srcDir into the snapshot location for (name, hash) and
 // returns the snapshot directory. It is idempotent and content-addressed: an
 // existing snapshot for the same (name, hash) is returned unchanged (the
 // content is identical by construction). The copy is staged in a temp dir and
 // atomically renamed into place, so a snapshot directory is never partial.
-func Snapshot(name, bundleHash, srcDir string) (string, error) {
+func snapshot(name, bundleHash, srcDir string) (string, error) {
 	d := dir()
 	if d == "" {
 		return "", errNoGlobalDir
@@ -173,8 +183,7 @@ func copyInTreeSymlink(p, target, srcReal string) error {
 	if err != nil {
 		return nil // dangling / unresolvable: drop
 	}
-	rel, err := filepath.Rel(srcReal, resolved)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+	if !containedIn(srcReal, resolved) {
 		return nil // escapes the skill tree: drop
 	}
 	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {

@@ -17,12 +17,12 @@
 // (~/.config/omac, honoring $XDG_CONFIG_HOME) — a directory the default
 // sandbox profile never mounts into the sandbox, so the confined agent
 // cannot create or edit it. The kernel sandbox, not omac's own trust in
-// a file, is what makes an Approval unforgeable.
+// a file, is what makes an approval unforgeable.
 //
-// An Approval is keyed by (skill name, bundle hash). The bundle hash
+// An approval is keyed by (skill name, bundle hash). The bundle hash
 // covers every meaningful file in the skill directory (see
 // config.BundleHash), so editing a skill's sidecar code changes its hash
-// and silently invalidates the Approval — closing the "edit a trusted
+// and silently invalidates the approval — closing the "edit a trusted
 // skill's code" vector as well as the "author a new skill" one.
 //
 // Only actors on the host side of the sandbox boundary can approve: a
@@ -44,26 +44,26 @@ import (
 	"github.com/tngtech/oh-my-agentic-coder/internal/registry"
 )
 
-// SchemaVersion is the current on-disk format version.
-const SchemaVersion = 1
+// schemaVersion is the current on-disk format version.
+const schemaVersion = 1
 
 // fileName is the approvals file's basename inside registry.GlobalDir().
 const fileName = "approvals.json"
 
-// Approval authorizes spawning a specific skill build. Name plus
+// approval authorizes spawning a specific skill build. Name plus
 // BundleHash together identify the exact approved content; SkillDir and
 // ApprovedAt are informational (diagnostics / audit).
-type Approval struct {
+type approval struct {
 	Name       string    `json:"name"`
 	BundleHash string    `json:"bundle_hash"`
 	SkillDir   string    `json:"skill_dir,omitempty"`
 	ApprovedAt time.Time `json:"approved_at"`
 }
 
-// Store is the root object of approvals.json.
-type Store struct {
+// store is the root object of approvals.json.
+type store struct {
 	Version  int        `json:"version"`
-	Approved []Approval `json:"approved"`
+	Approved []approval `json:"approved"`
 }
 
 // errNoGlobalDir is returned when no host-only config directory can be
@@ -98,7 +98,7 @@ func lockPath() string {
 
 // Exists reports whether the approvals file has been created yet. It is
 // the signal used by one-time migration (see caller): a missing file
-// means this host has not yet been migrated to Approval-gated spawning.
+// means this host has not yet been migrated to approval-gated spawning.
 func Exists() bool {
 	p := path()
 	if p == "" {
@@ -108,32 +108,32 @@ func Exists() bool {
 	return err == nil
 }
 
-// load reads the approvals Store. A missing file (or unresolvable
-// directory) returns an empty Store, so callers can always check
-// membership; an empty Store approves nothing (fail closed).
-func load() (*Store, error) {
+// load reads the approvals store. A missing file (or unresolvable
+// directory) returns an empty store, so callers can always check
+// membership; an empty store approves nothing (fail closed).
+func load() (*store, error) {
 	p := path()
 	if p == "" {
-		return &Store{Version: SchemaVersion}, nil
+		return &store{Version: schemaVersion}, nil
 	}
 	raw, err := os.ReadFile(p)
 	if errors.Is(err, os.ErrNotExist) {
-		return &Store{Version: SchemaVersion}, nil
+		return &store{Version: schemaVersion}, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("read approvals: %w", err)
 	}
-	var s Store
+	var s store
 	if err := json.Unmarshal(raw, &s); err != nil {
 		return nil, fmt.Errorf("parse approvals: %w", err)
 	}
 	if s.Version == 0 {
-		s.Version = SchemaVersion
+		s.Version = schemaVersion
 	}
 	return &s, nil
 }
 
-// IsApproved reports whether (name, bundleHash) has a recorded Approval.
+// IsApproved reports whether (name, bundleHash) has a recorded approval.
 // A read error fails closed (returns false, err) so a caller that
 // ignores the error still denies the spawn.
 func IsApproved(name, bundleHash string) (bool, error) {
@@ -149,7 +149,7 @@ func IsApproved(name, bundleHash string) (bool, error) {
 	return false, nil
 }
 
-// Approve records an Approval for (name, bundleHash). Approvals are
+// Approve records an approval for (name, bundleHash). Approvals are
 // additive and keyed by (name, bundle hash): the same skill name may hold
 // several approved hashes at once, because a name can be registered under
 // more than one harness (each with its own content) and workdir-local
@@ -160,19 +160,19 @@ func IsApproved(name, bundleHash string) (bool, error) {
 // sandbox the write fails because the directory is not mounted, leaving the
 // skill unapproved.
 //
-// When skillDir is non-empty it is also frozen into a host-only snapshot
-// (see snapshot.go) so the sidecar later runs the exact approved bytes; a
-// snapshot failure fails the approval. Passing "" records the approval
-// without a snapshot (used by store-only paths/tests); such an approval will
-// not spawn until a snapshot exists.
+// skillDir is frozen into the matching host-only snapshot (see snapshot.go) so
+// the sidecar later runs the exact approved bytes; a snapshot failure fails the
+// whole approval. It is required: an approval without a snapshot could never
+// spawn, so it is rejected rather than recorded as a half-approved state.
 func Approve(name, bundleHash, skillDir string) error {
 	if dir() == "" {
 		return errNoGlobalDir
 	}
-	if skillDir != "" {
-		if _, err := Snapshot(name, bundleHash, skillDir); err != nil {
-			return err
-		}
+	if skillDir == "" {
+		return fmt.Errorf("skilltrust: approve %q: skillDir is required (an approval without a snapshot cannot spawn)", name)
+	}
+	if _, err := snapshot(name, bundleHash, skillDir); err != nil {
+		return err
 	}
 	return withLock(func() error {
 		s, err := load()
@@ -184,7 +184,7 @@ func Approve(name, bundleHash, skillDir string) error {
 				return nil // already approved; nothing to change
 			}
 		}
-		s.Approved = append(s.Approved, Approval{
+		s.Approved = append(s.Approved, approval{
 			Name:       name,
 			BundleHash: bundleHash,
 			SkillDir:   skillDir,
@@ -194,10 +194,10 @@ func Approve(name, bundleHash, skillDir string) error {
 	})
 }
 
-// Revoke removes the Approval for exactly (name, bundleHash). Returns true
+// Revoke removes the approval for exactly (name, bundleHash). Returns true
 // when something was removed. Used by `omac deregister`, which passes the
 // deregistered entry's own hash so a copy of the same skill still
-// registered under another harness or workdir keeps its Approval.
+// registered under another harness or workdir keeps its approval.
 func Revoke(name, bundleHash string) (bool, error) {
 	if dir() == "" {
 		return false, errNoGlobalDir
@@ -225,12 +225,12 @@ func Revoke(name, bundleHash string) (bool, error) {
 	return removed, err
 }
 
-// EnsureInitialized creates an empty approvals Store if none exists yet,
+// EnsureInitialized creates an empty approvals store if none exists yet,
 // so the "first upgraded run" is a single event: once this has run, Exists
 // reports true even when nothing was approved. Without it a host that has
 // never registered a skill would keep looking like a first upgrade on
 // every launch, re-opening the one-time grandfathering window. No-op when
-// the Store already exists or no host-only dir is resolvable.
+// the store already exists or no host-only dir is resolvable.
 func EnsureInitialized() error {
 	if dir() == "" || Exists() {
 		return nil
@@ -239,19 +239,19 @@ func EnsureInitialized() error {
 		if Exists() {
 			return nil
 		}
-		return save(&Store{Version: SchemaVersion})
+		return save(&store{Version: schemaVersion})
 	})
 }
 
 // save atomically writes s (write-temp + rename). The caller holds the
 // lock (see withLock).
-func save(s *Store) error {
+func save(s *store) error {
 	d := dir()
 	if d == "" {
 		return errNoGlobalDir
 	}
 	if s.Version == 0 {
-		s.Version = SchemaVersion
+		s.Version = schemaVersion
 	}
 	if err := os.MkdirAll(d, 0o700); err != nil {
 		return fmt.Errorf("ensure approvals dir: %w", err)
@@ -293,7 +293,7 @@ func save(s *Store) error {
 }
 
 // withLock acquires an exclusive flock for the duration of fn, using the
-// same primitive as the sibling registry Store under GlobalDir so there is
+// same primitive as the sibling registry store under GlobalDir so there is
 // one flock implementation to audit rather than two.
 func withLock(fn func() error) error {
 	d := dir()
