@@ -64,29 +64,39 @@ func TestIntegrationPlaywrightSmoke(t *testing.T) {
 	// open_port is the grant under test: without it the in-sandbox webServer
 	// cannot bind/connect on `port`. Browser binaries are granted read-only.
 	chromeDir := filepath.Dir(chrome)
-	msPlaywright := filepath.Dir(filepath.Dir(chromeDir)) // …/chromium-N/chrome-linux → …/ms-playwright (usually)
-	// Prefer the real cache root when present.
+	// The Playwright cache root is only meaningful when chrome actually lives
+	// under it (…/ms-playwright/chromium-N/chrome-linux/chrome). A distro
+	// package resolves to something like /opt/google/chrome/chrome, where
+	// walking up two levels would grant an unrelated parent such as /opt;
+	// executablePath in the generated config makes the cache root optional.
+	msPlaywright := ""
 	if home, err := os.UserHomeDir(); err == nil {
-		if _, err := os.Stat(filepath.Join(home, ".cache", "ms-playwright")); err == nil {
-			msPlaywright = filepath.Join(home, ".cache", "ms-playwright")
+		cache := filepath.Join(home, ".cache", "ms-playwright")
+		if strings.HasPrefix(chrome, cache+string(filepath.Separator)) {
+			msPlaywright = cache
 		}
 	}
 
-	cmd := exec.Command(omac, "sandbox", "run",
+	args := []string{"sandbox", "run",
 		"--profile", "default",
 		"--open-port", strconv.Itoa(port),
 		"--read", chromeDir,
-		"--read", msPlaywright,
+	}
+	if msPlaywright != "" {
+		args = append(args, "--read", msPlaywright)
+	}
+	args = append(args,
 		"--allow-env", "PLAYWRIGHT_*",
 		"--allow-env", "PORT",
 		"--",
 		"npx", "playwright", "test", "--reporter=line",
 	)
+	cmd := exec.Command(omac, args...)
 	cmd.Dir = wd
-	cmd.Env = append(os.Environ(),
-		"PORT="+strconv.Itoa(port),
-		"PLAYWRIGHT_BROWSERS_PATH="+msPlaywright,
-	)
+	cmd.Env = append(os.Environ(), "PORT="+strconv.Itoa(port))
+	if msPlaywright != "" {
+		cmd.Env = append(cmd.Env, "PLAYWRIGHT_BROWSERS_PATH="+msPlaywright)
+	}
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("playwright inside omac sandbox failed: %v\n%s", err, out)

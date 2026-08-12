@@ -20,6 +20,13 @@ import (
 // browser tests. Prefers a Playwright cache install (a real ELF binary)
 // over PATH names, because distro "chromium" is often a snap wrapper that
 // cannot run inside bwrap. Returns "" when nothing usable is found.
+//
+// The result is always symlink-resolved: callers grant filepath.Dir() of it,
+// and a distro package typically leaves only a /usr/bin symlink pointing at
+// the real tree elsewhere (Google's .deb: /usr/bin/google-chrome-stable ->
+// /opt/google/chrome/...). Granting the symlink's own dir would grant /usr,
+// which the baseline already covers, while the target tree stays unmounted
+// and the symlink dangles inside the sandbox.
 func findChromiumForTest() string {
 	home, err := os.UserHomeDir()
 	if err == nil {
@@ -31,6 +38,9 @@ func findChromiumForTest() string {
 					best = m
 				}
 			}
+			if real, rerr := filepath.EvalSymlinks(best); rerr == nil {
+				return real
+			}
 			return best
 		}
 	}
@@ -39,12 +49,18 @@ func findChromiumForTest() string {
 		if err != nil {
 			continue
 		}
-		// Snap wrappers fail inside bwrap ("timeout waiting for snap system
-		// profiles"); skip them so the test skips cleanly instead of failing.
-		if strings.Contains(p, "/snap/") {
+		real, err := filepath.EvalSymlinks(p)
+		if err != nil {
 			continue
 		}
-		return p
+		// Snap wrappers fail inside bwrap ("timeout waiting for snap system
+		// profiles"); skip them so the test skips cleanly instead of failing.
+		// Checked after resolution too: on Ubuntu /usr/bin/chromium is a
+		// symlink into /snap/bin.
+		if strings.Contains(p, "/snap/") || strings.Contains(real, "/snap/") {
+			continue
+		}
+		return real
 	}
 	return ""
 }
