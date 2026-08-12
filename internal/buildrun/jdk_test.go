@@ -10,11 +10,13 @@ import (
 )
 
 // makeFakeJDK creates a JDK-shaped tree at <root>/bin/java (an executable
-// regular file) and <root>/lib/ (a dir), returning the JDK home (root).
-// The java binary is a STUB with a Mach-O magic header (0xfeedface) so
-// realJava's isShellScript check does not reject it as a `#!` shim — a
-// real java starts with ELF/Mach-O magic, never `#!`. Only its existence
-// + exec bit + non-shebang header matter for resolution.
+// regular file), <root>/lib/ (a dir), and <root>/conf/security/java.security
+// (the JDK 9+ layout the JVM's Security.initialize() reads; the JDK 8
+// flat layout keeps it at lib/security/java.security). Returning the JDK
+// home (root). The java binary is a STUB with a Mach-O magic header
+// (0xfeedface) so realJava's isShellScript check does not reject it as a
+// `#!` shim — a real java starts with ELF/Mach-O magic, never `#!`. Only
+// its existence + exec bit + non-shebang header matter for resolution.
 func makeFakeJDK(t *testing.T, root string) string {
 	t.Helper()
 	bin := filepath.Join(root, "bin")
@@ -22,6 +24,17 @@ func makeFakeJDK(t *testing.T, root string) string {
 		t.Fatal(err)
 	}
 	if err := os.MkdirAll(filepath.Join(root, "lib"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// JDK 9+ layout: conf/security/java.security is the security config
+	// file the JVM reads at startup. Without a read grant on conf/, a
+	// sandboxed JVM dies with java.lang.InternalError "Error loading
+	// java.security file" (the canary's CI failure).
+	if err := os.MkdirAll(filepath.Join(root, "conf", "security"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	javaSecurity := []byte("security.provider.1=com.example.Provider\n")
+	if err := os.WriteFile(filepath.Join(root, "conf", "security", "java.security"), javaSecurity, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	java := filepath.Join(bin, "java")
@@ -245,6 +258,9 @@ func TestResolveJDK_ReadPathsIncludeLib(t *testing.T) {
 	}
 	if !contains(r.ReadPaths, filepath.Join(jdk, "lib")) {
 		t.Errorf("ReadPaths missing JDK lib dir: %v", r.ReadPaths)
+	}
+	if !contains(r.ReadPaths, filepath.Join(jdk, "conf")) {
+		t.Errorf("ReadPaths missing JDK conf dir (java.security): %v", r.ReadPaths)
 	}
 }
 

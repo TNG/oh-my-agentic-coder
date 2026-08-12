@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"github.com/tngtech/oh-my-agentic-coder/internal/config"
 	"github.com/tngtech/oh-my-agentic-coder/internal/facade"
 	"github.com/tngtech/oh-my-agentic-coder/internal/intent"
 	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxprofile"
@@ -20,15 +21,31 @@ import (
 // endpoint. The intent registry is always wired: in-memory,
 // session-scoped, written by the agent via POST /sandbox/intent and read
 // by the popup via GET.
-func wireFacadeSandbox(f *facade.Facade, noSandbox bool, profName string, warn func(format string, args ...any)) {
+//
+// prof is the EFFECTIVE launcher profile (lc.Sandbox.Profiles[profName]
+// with the compiled-in default when absent). For a native `{{self}}
+// sandbox run` profile (builtin), the filesystem profile the child
+// resolves is the referenced `--profile` (e.g. "default") — NOT the
+// launcher-profile name ("builtin" has no file). Resolving the child
+// ref keeps the checker in lock-step with the enforcement the agent
+// actually runs under; a non-native profile (nono) is opaque, so the
+// name-based filesystem resolve is tried as a best effort.
+func wireFacadeSandbox(f *facade.Facade, noSandbox bool, profName string, prof config.SandboxProfile, warn func(format string, args ...any)) {
 	if !noSandbox {
-		if prof, _, err := sandboxprofile.Resolve(profName); err == nil {
-			f.ProtectedPathChecker = sandboxrun.NewProtectedPathSet(prof)
-			if prof.Denial != nil && prof.Denial.FacadeNote != "" {
-				f.DenialNote = prof.Denial.FacadeNote
+		ref := profName
+		if profileRunsNativeSandbox(prof) {
+			ref = "default"
+			if r, ok := inspectBuiltinProfileRef(prof.Command); ok {
+				ref = r
+			}
+		}
+		if p, _, err := sandboxprofile.ResolveReadOnly(ref); err == nil {
+			f.ProtectedPathChecker = sandboxrun.NewProtectedPathSet(p)
+			if p.Denial != nil && p.Denial.FacadeNote != "" {
+				f.DenialNote = p.Denial.FacadeNote
 			}
 		} else {
-			warn("omac: sandbox profile %q could not be resolved: %v; GET /sandbox/denied disabled", profName, err)
+			warn("omac: sandbox profile %q could not be resolved: %v; GET /sandbox/denied disabled", ref, err)
 		}
 	}
 	f.IntentRegistry = intent.New(intent.DefaultTTL)

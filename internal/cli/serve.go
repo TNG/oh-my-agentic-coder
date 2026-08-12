@@ -257,7 +257,7 @@ func runServe(args []string, env *Env) int {
 		env.Version,
 	)
 	f.SetAuditor(auditor)
-	wireFacadeSandbox(f, *noSandbox, profName, func(format string, args ...any) {
+	wireFacadeSandbox(f, *noSandbox, profName, prof, func(format string, args ...any) {
 		fmt.Fprintf(env.Stderr, format+"\n", args...)
 	})
 	if err := f.Start(ctx); err != nil {
