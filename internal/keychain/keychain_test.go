@@ -2,6 +2,7 @@ package keychain
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 )
 
@@ -41,7 +42,7 @@ func TestWorkdirIDDeterministicAndDistinct(t *testing.T) {
 }
 
 // TestIsUnavailable locks the classification used to attach a WSL/headless
-// hint on the write path (see cli.wrapKeychainErr) vs. leaving genuine
+// hint on the write path (see WrapUnavailable) vs. leaving genuine
 // per-secret errors (permission denied, corrupt entry, ...) untouched.
 func TestIsUnavailable(t *testing.T) {
 	cases := []struct {
@@ -66,5 +67,30 @@ func TestIsUnavailable(t *testing.T) {
 		if got := IsUnavailable(c.err); got != c.want {
 			t.Errorf("IsUnavailable(%q) = %v, want %v", c.err, got, c.want)
 		}
+	}
+}
+
+// TestBackendCauseStripsClassificationMarkers: the sentinels exist for
+// errors.Is, not for humans. A message that opens with "secret not found" and
+// then says "backend unavailable" contradicts itself, so callers rendering the
+// problem show the cause alone.
+func TestBackendCauseStripsClassificationMarkers(t *testing.T) {
+	root := errors.New("dial unix /run/user/1000/bus: connect: no such file or directory")
+	classified := fmt.Errorf("%w: %w: %w", ErrNotFound, ErrUnavailable, root)
+
+	if got := BackendCause(classified); got.Error() != root.Error() {
+		t.Errorf("BackendCause = %q, want %q", got, root)
+	}
+	// Both sentinels must survive on the original error.
+	if !errors.Is(classified, ErrNotFound) || !errors.Is(classified, ErrUnavailable) {
+		t.Error("wrapping lost a sentinel")
+	}
+	// Nothing to strip: returned unchanged.
+	plain := errors.New("authorization denied")
+	if got := BackendCause(plain); got != plain {
+		t.Errorf("BackendCause(plain) = %v, want it unchanged", got)
+	}
+	if got := BackendCause(ErrNotFound); got != ErrNotFound {
+		t.Errorf("BackendCause(ErrNotFound) = %v, want it unchanged", got)
 	}
 }

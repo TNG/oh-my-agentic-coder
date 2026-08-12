@@ -28,9 +28,9 @@ import (
 	"github.com/tngtech/oh-my-agentic-coder/internal/registry"
 	"github.com/tngtech/oh-my-agentic-coder/internal/sandbox"
 	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxprofile"
-	"github.com/tngtech/oh-my-agentic-coder/internal/secrets"
 	"github.com/tngtech/oh-my-agentic-coder/internal/skillconfig"
 	"github.com/tngtech/oh-my-agentic-coder/internal/skillsource"
+	"github.com/tngtech/oh-my-agentic-coder/internal/skillstate"
 	"github.com/tngtech/oh-my-agentic-coder/internal/supervisor"
 	"github.com/tngtech/oh-my-agentic-coder/internal/toolcache"
 )
@@ -1325,25 +1325,36 @@ func (s *serveServer) autoRegister(absDir string, ent skillsource.Entry) (*regis
 //     skill this is the activated project; for a global skill there is no
 //     single project, so the server's launch workdir is used as a default.
 func (s *serveServer) bringUp(e registry.Entry, absDir, workdir, namespace, secretScope string, cfg *skillconfig.Store) *skillRoute {
-	metaPath := filepath.Join(absDir, config.MetaFileName)
-	m, err := config.LoadMeta(metaPath)
-	if err != nil || m.Sidecar == nil {
+	// The readiness rule is shared with start, live reload, doctor and `config
+	// show` (internal/skillstate); serve's job is only to turn its problems
+	// into a route state. Before #174 this was serve's own copy, which had
+	// drifted: it never honoured the env_passthrough fallback, so a skill whose
+	// required secret came from the shell was reported pending-credentials even
+	// though the supervisor would have injected the value at spawn.
+	armed, problems := skillstate.New(skillstate.Options{
+		Scope:             secretScope,
+		AcceptBundleDrift: s.acceptChanges,
+	}).Load(e, absDir, cfg)
+	// armed holds live secret material on every path out of this function,
+	// including the ones that return a stub route without spawning.
+	defer armed.Zero()
+
+	if skillstate.Has(problems, skillstate.MetaBroken) {
 		sr := &skillRoute{Name: e.Name, Mount: e.Name, Namespace: namespace, SkillDir: absDir, State: facade.RouteBroken, Detail: "omac.yaml invalid or missing sidecar"}
 		s.installRoute(sr, 0)
 		return sr
 	}
-	mount := m.Sidecar.MountOrDefault(e.Name)
+	mount := armed.Mount
 
-	// Hash once and reuse for both the drift check and the approval gate below;
-	// an error leaves it empty for approvalRefusal to re-derive and report.
-	bundle, herr := config.BundleHash(absDir)
-	if !s.acceptChanges {
-		if herr == nil && bundle != e.BundleHash {
-			sr := &skillRoute{Name: e.Name, Mount: mount, Namespace: namespace, SkillDir: absDir, State: facade.RouteBroken,
-				Detail: "bundle changed since register; re-register or pass --accept-skill-changes"}
-			s.installRoute(sr, 0)
-			return sr
-		}
+	broken := func(detail string) *skillRoute {
+		sr := &skillRoute{Name: e.Name, Mount: mount, Namespace: namespace, SkillDir: absDir,
+			State: facade.RouteBroken, Detail: detail}
+		s.installRoute(sr, 0)
+		return sr
+	}
+
+	if skillstate.Has(problems, skillstate.BundleDrift) {
+		return broken("bundle changed since register; re-register or pass --accept-skill-changes")
 	}
 
 	// Spawn-approval gate: refuse unless the current on-disk code is
@@ -1351,59 +1362,35 @@ func (s *serveServer) bringUp(e registry.Entry, absDir, workdir, namespace, secr
 	// the agent-writable workdir. Grandfathering happens once at cold start
 	// (see runServe), NOT here: a long-lived serve daemon must not keep
 	// blessing skills authored mid-session.
-	snapDir, refusal := approvedSpawnDir(e.Name, absDir, bundle)
+	//
+	// It is reported ahead of any credential problem — as it was before #174,
+	// when the gate ran before resolution — so an unapproved skill's route
+	// always names the security refusal rather than an incidental keychain
+	// error found on the way. armed.Bundle was hashed once above and is reused
+	// here; it is empty when hashing failed, which leaves approvalRefusal to
+	// re-derive and report.
+	snapDir, refusal := approvedSpawnDir(e.Name, absDir, armed.Bundle)
 	if refusal != nil {
-		sr := &skillRoute{Name: e.Name, Mount: mount, Namespace: namespace, SkillDir: absDir,
-			State: facade.RouteBroken, Detail: refusal.Error()}
-		s.installRoute(sr, 0)
-		return sr
+		return broken(refusal.Error())
 	}
 
-	// Resolve secrets.
-	secMap := map[string]secrets.Secret{}
-	var missing []string
-	for _, spec := range m.Sidecar.Secrets {
-		val, gerr := keychain.GetWithFallback(secretScope, e.Name, spec.Name)
-		if gerr == nil {
-			secMap[spec.Name] = val
-			continue
+	// A dead or unreadable keychain is not a missing credential: routing it to
+	// pending-credentials would tell the agent to run `omac secrets set`, which
+	// cannot work until the backend does. Problem.Fix carries the real remedy.
+	if p := skillstate.First(problems, skillstate.KeychainUnavailable); p != nil {
+		detail := p.Detail
+		if p.Fix != "" {
+			detail += " — " + p.Fix
 		}
-		if errors.Is(gerr, keychain.ErrNotFound) {
-			if spec.IsRequired() {
-				missing = append(missing, spec.Name)
-			}
-			continue
-		}
-		// keychain I/O error -> broken
-		sr := &skillRoute{Name: e.Name, Mount: mount, Namespace: namespace, SkillDir: absDir, State: facade.RouteBroken, Detail: gerr.Error()}
-		s.installRoute(sr, 0)
-		return sr
+		return broken(detail)
+	}
+	// A malformed env-supplied secret is likewise not "missing" — supplying it
+	// again won't help; the exported value or the pattern has to change.
+	if p := skillstate.First(problems, skillstate.InvalidSecret); p != nil {
+		return broken(p.Detail + " — " + p.Fix)
 	}
 
-	// Resolve config.
-	cfgMap := map[string]string{}
-	for _, spec := range m.Sidecar.Config {
-		if v, ok := cfg.Get(e.Name, spec.Name); ok {
-			cfgMap[spec.Name] = v
-			continue
-		}
-		if spec.Default != "" {
-			cfgMap[spec.Name] = spec.Default
-			continue
-		}
-		if spec.DefaultFromEnv != "" {
-			if ev, ok := os.LookupEnv(spec.DefaultFromEnv); ok && ev != "" {
-				cfgMap[spec.Name] = ev
-				continue
-			}
-		}
-		if spec.IsRequired() {
-			missing = append(missing, spec.Name)
-		}
-	}
-
-	if len(missing) > 0 {
-		sort.Strings(missing)
+	if missing := skillstate.MissingFields(problems); len(missing) > 0 {
 		sr := &skillRoute{Name: e.Name, Mount: mount, Namespace: namespace, SkillDir: absDir,
 			State: facade.RoutePendingCredentials, Missing: missing,
 			Detail: fmt.Sprintf("missing required values: %v", missing)}
@@ -1412,6 +1399,7 @@ func (s *serveServer) bringUp(e registry.Entry, absDir, workdir, namespace, secr
 	}
 
 	// Spawn.
+	m := armed.Meta
 	health := config.HealthSpec{}
 	if m.Sidecar.Health != nil {
 		health = *m.Sidecar.Health
@@ -1423,22 +1411,18 @@ func (s *serveServer) bringUp(e registry.Entry, absDir, workdir, namespace, secr
 		SkillDir:         snapDir,                  // run the frozen snapshot, not the workdir
 		Command:          m.Sidecar.Command,
 		EnvPassthrough:   m.Sidecar.EnvPassthrough,
-		Secrets:          secMap,
-		Config:           cfgMap,
+		Secrets:          armed.Secrets,
+		Config:           armed.Config,
 		Health:           health.Defaults(),
 		LogPath:          filepath.Join(s.rtDir, "logs", namespace+"-"+e.Name+".log"),
 		Workdir:          workdir, // -> OMAC_WORKDIR (the project, not the skill dir)
 		HarnessSkillsDir: s.harness.WorkdirSkillsDir(),
 	}
 	running, serr := s.sup.AddSidecar(s.ctx, spec)
-	// Wipe secret material now that the sidecar has been spawned (its env
-	// was built synchronously inside AddSidecar). Secret holds a []byte, so
-	// zeroing the map's stored value wipes the shared backing array.
-	for name := range spec.Secrets {
-		sec := spec.Secrets[name]
-		sec.Zero()
-		spec.Secrets[name] = sec
-	}
+	// Wipe secret material now that the sidecar has been spawned (its env was
+	// built synchronously inside AddSidecar) rather than waiting for the
+	// deferred Zero. spec.Secrets is armed.Secrets, and Zero is idempotent.
+	armed.Zero()
 	if serr != nil {
 		sr := &skillRoute{Name: e.Name, Mount: mount, Namespace: namespace, SkillDir: absDir, State: facade.RouteBroken, Detail: serr.Error()}
 		s.installRoute(sr, 0)

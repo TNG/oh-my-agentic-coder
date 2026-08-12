@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"path/filepath"
+	"sort"
 	"sync"
 
 	"github.com/tngtech/oh-my-agentic-coder/internal/config"
@@ -15,8 +16,8 @@ import (
 	"github.com/tngtech/oh-my-agentic-coder/internal/keychain"
 	"github.com/tngtech/oh-my-agentic-coder/internal/registry"
 	"github.com/tngtech/oh-my-agentic-coder/internal/sandbox"
-	"github.com/tngtech/oh-my-agentic-coder/internal/secrets"
 	"github.com/tngtech/oh-my-agentic-coder/internal/skillconfig"
+	"github.com/tngtech/oh-my-agentic-coder/internal/skillstate"
 	"github.com/tngtech/oh-my-agentic-coder/internal/supervisor"
 )
 
@@ -39,10 +40,64 @@ type startReloader struct {
 	tcpPort int
 	verbose bool
 
-	mu               sync.Mutex
-	mounted          map[string]string   // skill name -> mount, for skills mounted on the facade
-	warnedUnapproved map[string]struct{} // skills we've already reported as unapproved (dedupe reload spam)
-	lastSession      string              // most-recent session id the harness plugin reported (see handleSession)
+	mu      sync.Mutex
+	mounted map[string]string // skill name -> mount, for skills mounted on the facade
+	// notReady holds the skills a reload could not bring up, keyed by skill
+	// name, so /__omac__/reload's manifest reports them instead of omitting
+	// them. Before #174 an unready skill was silently `continue`d: no message,
+	// no route, no diagnostic, and no way for the agent to learn why the skill
+	// it just registered never appeared.
+	notReady map[string]*notReadySkill
+	// warned records the last reason reported to stderr per skill, so a
+	// repeated reload of the same unready skill does not spam the human's
+	// terminal while a CHANGED reason still gets through. Reset implicitly when
+	// the process restarts.
+	warned      map[string]string
+	lastSession string // most-recent session id the harness plugin reported (see handleSession)
+}
+
+// notReadySkill is a skill that resolved to a stub route rather than a live
+// sidecar, mirroring the fields serve reports for the same states.
+type notReadySkill struct {
+	Mount   string
+	State   facade.RouteState
+	Missing []string
+	Detail  string
+}
+
+// reloadStubRoute maps skillstate problems to the stub route reload should
+// install, or nil when the skill is ready to spawn. It is reload's
+// presentation of the shared readiness rule, and mirrors serve's bringUp: a
+// supplyable credential is pending-credentials, anything the agent cannot fix
+// by supplying a value is broken.
+func reloadStubRoute(mount string, problems []skillstate.Problem) *notReadySkill {
+	if len(problems) == 0 {
+		return nil
+	}
+	// A dead keychain or a malformed env-supplied value is not "missing": the
+	// remedy is not `omac secrets set`, so don't route it as if it were.
+	if p := skillstate.First(problems, skillstate.KeychainUnavailable, skillstate.InvalidSecret); p != nil {
+		detail := p.Detail
+		if p.Fix != "" {
+			detail += " — " + p.Fix
+		}
+		return &notReadySkill{Mount: mount, State: facade.RouteBroken, Detail: detail}
+	}
+	if missing := skillstate.MissingFields(problems); len(missing) > 0 {
+		return &notReadySkill{
+			Mount:   mount,
+			State:   facade.RoutePendingCredentials,
+			Missing: missing,
+			Detail:  fmt.Sprintf("missing required values: %v", missing),
+		}
+	}
+	// Anything left (bundle drift) is a re-register, not a credential.
+	p := problems[0]
+	detail := p.Detail
+	if p.Fix != "" {
+		detail += " — " + p.Fix
+	}
+	return &notReadySkill{Mount: mount, State: facade.RouteBroken, Detail: detail}
 }
 
 // startControlPlane binds a loopback control-plane HTTP server for start and
@@ -81,29 +136,42 @@ func startControlPlane(r *startReloader) (controlURL string, closeFn func(), ok 
 	}, true
 }
 
-// markMounted records a skill (name -> facade mount) as mounted.
+// markMounted records a skill (name -> facade mount) as mounted, clearing any
+// not-ready state it had from an earlier reload (it has just been promoted).
 func (r *startReloader) markMounted(name, mount string) {
 	r.mu.Lock()
 	if r.mounted == nil {
 		r.mounted = map[string]string{}
 	}
 	r.mounted[name] = mount
+	delete(r.notReady, name)
 	r.mu.Unlock()
 }
 
-// warnUnapprovedOnce reports true the first time it is called for name, so a
-// repeated reload of the same unapproved skill does not spam the human's
-// stderr. Reset implicitly when the process restarts.
-func (r *startReloader) warnUnapprovedOnce(name string) bool {
+// markNotReady records why a skill could not be brought up, for the manifest.
+func (r *startReloader) markNotReady(name string, st *notReadySkill) {
+	r.mu.Lock()
+	if r.notReady == nil {
+		r.notReady = map[string]*notReadySkill{}
+	}
+	r.notReady[name] = st
+	r.mu.Unlock()
+}
+
+// warnOnce reports true the first time it is called for (name, reason), so a
+// repeated reload of the same unready skill does not spam the human's stderr
+// while a skill whose reason CHANGED (an approval refusal that became a missing
+// secret) still reports the new one.
+func (r *startReloader) warnOnce(name, reason string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if _, seen := r.warnedUnapproved[name]; seen {
+	if last, seen := r.warned[name]; seen && last == reason {
 		return false
 	}
-	if r.warnedUnapproved == nil {
-		r.warnedUnapproved = map[string]struct{}{}
+	if r.warned == nil {
+		r.warned = map[string]string{}
 	}
-	r.warnedUnapproved[name] = struct{}{}
+	r.warned[name] = reason
 	return true
 }
 
@@ -201,9 +269,13 @@ func (r *startReloader) manifest() map[string]any {
 	for name, mount := range r.mounted {
 		pairs = append(pairs, [2]string{name, mount})
 	}
+	stuck := make(map[string]notReadySkill, len(r.notReady))
+	for name, st := range r.notReady {
+		stuck[name] = *st
+	}
 	r.mu.Unlock()
 
-	skills := make([]map[string]any, 0, len(pairs))
+	skills := make([]map[string]any, 0, len(pairs)+len(stuck))
 	for _, p := range pairs {
 		name, mount := p[0], p[1]
 		skills = append(skills, map[string]any{
@@ -214,6 +286,29 @@ func (r *startReloader) manifest() map[string]any {
 			"base":  sandbox.OmacTCPEnvValue(mount, r.tcpPort),
 		})
 	}
+	// Report unready skills too, in serve's shape (see serve.skillJSON): no
+	// base, plus missing/detail. internal/manifest already renders
+	// pending-credentials with the `omac secrets set` hint, so the agent's
+	// briefing explains a skill it cannot reach instead of pretending it
+	// doesn't exist.
+	for name, st := range stuck {
+		entry := map[string]any{
+			"name":  name,
+			"scope": "workdir",
+			"mount": st.Mount,
+			"state": string(st.State),
+		}
+		if len(st.Missing) > 0 {
+			entry["missing"] = st.Missing
+		}
+		if st.Detail != "" {
+			entry["detail"] = st.Detail
+		}
+		skills = append(skills, entry)
+	}
+	sort.Slice(skills, func(i, j int) bool {
+		return skills[i]["name"].(string) < skills[j]["name"].(string)
+	})
 	return map[string]any{
 		"dir":       r.env.Workdir,
 		"dir_token": "",
@@ -237,9 +332,20 @@ func (r *startReloader) reload() []string {
 
 	wCfg, _ := skillconfig.Load(r.env.Workdir)
 	gCfg, _ := skillconfig.LoadGlobal()
-	cfgStore := mergeConfig(gCfg, wCfg)
+	cfgStore := skillstate.MergeConfig(gCfg, wCfg)
 
-	secScope := keychain.WorkdirID(r.env.Workdir)
+	// Same readiness rule as start's preflight and serve's bringUp
+	// (internal/skillstate). Reload's own copy used to omit the
+	// $default_from_env rung and the env_passthrough fallback entirely and to
+	// read any keychain error as "absent", so a skill that started fine under
+	// `omac start` could never be brought up live — silently (issue #174,
+	// Failure 1). SkipBundleHash: reload has always mounted the current
+	// on-disk code and left drift to the approval gate below, which re-derives
+	// the hash itself.
+	resolver := skillstate.New(skillstate.Options{
+		Scope:          keychain.WorkdirID(r.env.Workdir),
+		SkipBundleHash: true,
+	})
 	var added []string
 
 	for _, e := range reg.Registered {
@@ -250,11 +356,13 @@ func (r *startReloader) reload() []string {
 		if !filepath.IsAbs(absDir) {
 			absDir = filepath.Join(r.env.Workdir, absDir)
 		}
-		m, err := config.LoadMeta(filepath.Join(absDir, config.MetaFileName))
-		if err != nil || m.Sidecar == nil {
+
+		armed, problems := resolver.Load(e, absDir, cfgStore)
+		if skillstate.Has(problems, skillstate.MetaBroken) {
+			armed.Zero()
 			continue
 		}
-		mount := m.Sidecar.MountOrDefault(e.Name)
+		mount := armed.Mount
 
 		// Spawn-approval gate. A live reload is exactly the path a
 		// confined agent would use to bring up a skill it authored in the
@@ -266,44 +374,35 @@ func (r *startReloader) reload() []string {
 		// reload after `omac register` can still bring it up).
 		snapDir, refusal := approvedSpawnDir(e.Name, absDir, "")
 		if refusal != nil {
+			armed.Zero()
 			r.facade.AddRoute(brokenApprovalRoute(mount, e.Name, absDir, refusal))
-			if r.warnUnapprovedOnce(e.Name) {
+			r.markNotReady(e.Name, &notReadySkill{
+				Mount: mount, State: facade.RouteBroken, Detail: refusal.Error(),
+			})
+			if r.warnOnce(e.Name, refusal.Error()) {
 				fmt.Fprintf(r.env.Stderr, "omac start: %s\n", refusalNotice(refusal))
 			}
 			continue
 		}
 
-		// Resolve secrets (workdir-scoped, unscoped fallback) + config.
-		secMap := map[string]secrets.Secret{}
-		missing := false
-		for _, spec := range m.Sidecar.Secrets {
-			val, gerr := keychain.GetWithFallback(secScope, e.Name, spec.Name)
-			if gerr == nil {
-				secMap[spec.Name] = val
-				continue
+		// Not ready: install a stub route and say so, rather than skipping in
+		// silence. markNotReady deliberately does NOT markMounted, so a later
+		// reload (after `omac secrets set`) promotes it — facade.AddRoute
+		// overwrites by mount, so promotion needs no teardown.
+		if st := reloadStubRoute(mount, problems); st != nil {
+			armed.Zero()
+			r.facade.AddRoute(facade.Route{
+				Mount: mount, Skill: e.Name, SkillDir: absDir,
+				State: st.State, Detail: st.Detail,
+			})
+			r.markNotReady(e.Name, st)
+			if r.warnOnce(e.Name, st.Detail) {
+				fmt.Fprintf(r.env.Stderr, "omac start: skill %s not mounted — %s\n", e.Name, st.Detail)
 			}
-			if spec.IsRequired() {
-				missing = true
-			}
-		}
-		if missing {
-			continue // not ready yet; a later reload (after secrets set) gets it
-		}
-		cfgMap := map[string]string{}
-		cfgMissing := false
-		for _, spec := range m.Sidecar.Config {
-			if v, ok := cfgStore.Get(e.Name, spec.Name); ok {
-				cfgMap[spec.Name] = v
-			} else if spec.Default != "" {
-				cfgMap[spec.Name] = spec.Default
-			} else if spec.IsRequired() {
-				cfgMissing = true
-			}
-		}
-		if cfgMissing {
 			continue
 		}
 
+		m := armed.Meta
 		health := config.HealthSpec{}
 		if m.Sidecar.Health != nil {
 			health = *m.Sidecar.Health
@@ -314,18 +413,14 @@ func (r *startReloader) reload() []string {
 			SkillDir:       snapDir, // run the frozen snapshot, not the workdir
 			Command:        m.Sidecar.Command,
 			EnvPassthrough: m.Sidecar.EnvPassthrough,
-			Secrets:        secMap,
-			Config:         cfgMap,
+			Secrets:        armed.Secrets,
+			Config:         armed.Config,
 			Health:         health.Defaults(),
 			LogPath:        filepath.Join(r.rtDir, "logs", e.Name+".log"),
 			Workdir:        r.env.Workdir,
 		}
 		running, serr := r.sup.AddSidecar(r.ctx, spec)
-		for name := range spec.Secrets {
-			sec := spec.Secrets[name]
-			sec.Zero()
-			spec.Secrets[name] = sec
-		}
+		armed.Zero() // the sidecar's env was built synchronously inside AddSidecar
 		if serr != nil {
 			if r.verbose {
 				fmt.Fprintf(r.env.Stderr, "[verbose] reload: %s failed: %v\n", e.Name, serr)

@@ -1,95 +1,155 @@
 package cli
 
-// Tests for the pure pieces of omac config: resolveFieldView (the
-// precedence ladder) and secretFingerprint (the on-the-wire format).
-// The end-to-end runConfig path is exercised in the smoke test in the
-// commit message; trying to test it here would require building a
-// working keychain mock and is more value than this trivial command
-// merits.
+// Tests for omac config's own presentation: the placeholder markers, the type
+// projection, the source columns, and secretFingerprint (the on-the-wire
+// format). The precedence ladder itself now lives in internal/skillstate and is
+// tested there — this command only renders its result, which is the point of
+// issue #174: what `config show` DISPLAYS is by construction what start USES.
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/tngtech/oh-my-agentic-coder/internal/config"
-	"github.com/tngtech/oh-my-agentic-coder/internal/skillconfig"
+	"github.com/tngtech/oh-my-agentic-coder/internal/keychain"
+	"github.com/tngtech/oh-my-agentic-coder/internal/secrets"
+	"github.com/tngtech/oh-my-agentic-coder/internal/skillstate"
 )
 
-func TestResolveFieldView_StoredWins(t *testing.T) {
-	store := &skillconfig.Store{}
-	store.Set("s", "F", "from-store")
-
-	v := resolveFieldView(
-		config.ConfigSpec{
-			Name: "F", Default: "from-default", DefaultFromEnv: "DOES_NOT_MATTER",
-		},
-		store, "s",
-	)
-	if v.Value != "from-store" || v.Source != "stored" {
-		t.Errorf("got value=%q source=%q; want from-store/stored", v.Value, v.Source)
+// stageSkillForConfigShow writes a skill declaring one config field sourced
+// from $default_from_env and one required secret that is ALSO listed under
+// env_passthrough — the two shapes issue #174 found mishandled — then registers
+// it workdir-local.
+func stageSkillForConfigShow(t *testing.T, env *Env, name string) {
+	t.Helper()
+	dir := filepath.Join(env.Workdir, ".opencode", "skills", name)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	meta := "name: " + name + "\n" +
+		"sidecar:\n" +
+		"  command: [\"true\"]\n" +
+		"  env_passthrough:\n" +
+		"    - API_TOKEN\n" +
+		"  secrets:\n" +
+		"    - name: API_TOKEN\n" +
+		"      required: true\n" +
+		"  config:\n" +
+		"    - name: API_BASE\n" +
+		"      default_from_env: OMAC_TEST_API_BASE\n" +
+		"    - name: OPTIONAL_F\n" +
+		"      required: false\n"
+	if err := os.WriteFile(filepath.Join(dir, "omac.yaml"), []byte(meta), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code := runRegister([]string{name, "--no-secrets", "--no-fields"}, env); code != ExitOK {
+		t.Fatalf("register exit=%d", code)
 	}
 }
 
-func TestResolveFieldView_DefaultBeatsEnv(t *testing.T) {
-	t.Setenv("OMAC_TEST_VAR", "from-env")
-	v := resolveFieldView(
-		config.ConfigSpec{
-			Name: "F", Default: "from-default", DefaultFromEnv: "OMAC_TEST_VAR",
-		},
-		&skillconfig.Store{}, "s",
-	)
-	// Spec.Default is checked BEFORE default_from_env, even when both
-	// are set. Authors who want env-only behavior should leave Default
-	// empty.
-	if v.Value != "from-default" || v.Source != "default" {
-		t.Errorf("got value=%q source=%q; want from-default/default", v.Value, v.Source)
+// TestConfigShowSourcesFromEnvPassthroughAndDefaultFromEnv covers both
+// divergences this command had: a secret satisfied from the host env was shown
+// as "<missing>" even though start accepts it and the sidecar receives it, and
+// a $default_from_env field's origin is now named in the source column.
+func TestConfigShowSourcesFromEnvPassthroughAndDefaultFromEnv(t *testing.T) {
+	isolateHome(t)
+	env := makeEnv(t.TempDir())
+	stageSkillForConfigShow(t, env, "probe")
+	t.Setenv("OMAC_TEST_API_BASE", "https://api.example")
+	t.Setenv("API_TOKEN", "shell-supplied")
+
+	view, code := buildSkillView(env, "probe")
+	if code != ExitOK {
+		t.Fatalf("buildSkillView exit=%d", code)
+	}
+	defer view.zero()
+
+	cfg := map[string]fieldView{}
+	for _, f := range view.Config {
+		cfg[f.Name] = f
+	}
+	if got := cfg["API_BASE"]; got.Value != "https://api.example" ||
+		got.Source != "default_from_env:OMAC_TEST_API_BASE" {
+		t.Errorf("API_BASE = %q/%q, want the env value and its source", got.Value, got.Source)
+	}
+	// Type projects the EffectiveType, so an unspecified type reads "string".
+	if got := cfg["API_BASE"].Type; got != "string" {
+		t.Errorf("Type = %q, want string", got)
+	}
+	if got := cfg["OPTIONAL_F"]; got.Value != "<missing-optional>" || got.Source != "missing-optional" ||
+		got.Required {
+		t.Errorf("OPTIONAL_F = %+v, want the optional marker", got)
+	}
+
+	if len(view.Secrets) != 1 {
+		t.Fatalf("secrets = %v, want one", view.Secrets)
+	}
+	s := view.Secrets[0]
+	if s.Source != string(skillstate.SourceEnvPassthrough) {
+		t.Errorf("source = %q, want env_passthrough", s.Source)
+	}
+	if s.Fingerprint != secretFingerprint("shell-supplied") {
+		t.Errorf("fingerprint = %q, want the env-supplied value's fingerprint (not <missing>)", s.Fingerprint)
 	}
 }
 
-func TestResolveFieldView_DefaultFromEnv(t *testing.T) {
-	t.Setenv("OMAC_TEST_VAR", "from-env")
-	v := resolveFieldView(
-		config.ConfigSpec{Name: "F", DefaultFromEnv: "OMAC_TEST_VAR"},
-		&skillconfig.Store{}, "s",
-	)
-	if v.Value != "from-env" || v.Source != "default_from_env:OMAC_TEST_VAR" {
-		t.Errorf("got value=%q source=%q; want from-env/default_from_env:OMAC_TEST_VAR", v.Value, v.Source)
+// TestConfigShowFindsWorkdirScopedSecret is issue #174's Failure 3 for this
+// command: it read secrets UNSCOPED while start reads them workdir-scoped, so a
+// secret stored per-workdir showed as missing here while start launched fine.
+func TestConfigShowFindsWorkdirScopedSecret(t *testing.T) {
+	isolateHome(t)
+	env := makeEnv(t.TempDir())
+	stageSkillForConfigShow(t, env, "probe")
+	t.Setenv("OMAC_TEST_API_BASE", "https://api.example")
+
+	scope := keychain.WorkdirID(env.Workdir)
+	if err := keychain.SetScoped(scope, "probe", "API_TOKEN", secrets.NewSecretString("scoped-value")); err != nil {
+		t.Fatalf("SetScoped: %v", err)
+	}
+
+	view, code := buildSkillView(env, "probe")
+	if code != ExitOK {
+		t.Fatalf("buildSkillView exit=%d", code)
+	}
+	defer view.zero()
+
+	s := view.Secrets[0]
+	if s.Source != string(skillstate.SourceKeychain) {
+		t.Errorf("source = %q, want keychain", s.Source)
+	}
+	if s.Fingerprint != secretFingerprint("scoped-value") {
+		t.Errorf("fingerprint = %q, want the workdir-scoped value's", s.Fingerprint)
 	}
 }
 
-func TestResolveFieldView_DefaultFromEnv_Unset(t *testing.T) {
-	// DefaultFromEnv set, but the env var doesn't exist in this process.
-	// Required field with no other source falls through to missing-required.
-	v := resolveFieldView(
-		config.ConfigSpec{Name: "F", DefaultFromEnv: "OMAC_DEFINITELY_NOT_SET_42"},
-		&skillconfig.Store{}, "s",
-	)
-	if v.Value != "<missing-required>" || v.Source != "missing-required" {
-		t.Errorf("got value=%q source=%q; want <missing-required>/missing-required", v.Value, v.Source)
-	}
-}
+// TestConfigShowMarksMissingRequired: with neither a keychain entry nor the
+// env var, the markers appear and `omac config get` refuses (so a $(...)
+// substitution never captures a placeholder).
+func TestConfigShowMarksMissingRequired(t *testing.T) {
+	isolateHome(t)
+	env := makeEnv(t.TempDir())
+	stageSkillForConfigShow(t, env, "probe")
 
-func TestResolveFieldView_OptionalMissing(t *testing.T) {
-	notRequired := false
-	v := resolveFieldView(
-		config.ConfigSpec{Name: "F", Required: &notRequired},
-		&skillconfig.Store{}, "s",
-	)
-	if v.Value != "<missing-optional>" || v.Source != "missing-optional" {
-		t.Errorf("got value=%q source=%q; want <missing-optional>/missing-optional", v.Value, v.Source)
+	view, code := buildSkillView(env, "probe")
+	if code != ExitOK {
+		t.Fatalf("buildSkillView exit=%d", code)
 	}
-	if v.Required {
-		t.Error("Required should be false")
-	}
-}
+	defer view.zero()
 
-func TestResolveFieldView_TypeProjected(t *testing.T) {
-	// fieldView.Type carries the EffectiveType, so an unspecified type
-	// surfaces as "string" (the default), not the empty string.
-	v := resolveFieldView(config.ConfigSpec{Name: "F"}, &skillconfig.Store{}, "s")
-	if v.Type != "string" {
-		t.Errorf("default Type should project as 'string', got %q", v.Type)
+	for _, f := range view.Config {
+		if f.Name != "API_BASE" {
+			continue
+		}
+		if f.Value != "<missing-required>" || f.Source != "missing-required" {
+			t.Errorf("API_BASE = %q/%q, want the required marker", f.Value, f.Source)
+		}
+	}
+	if view.Secrets[0].Fingerprint != "<missing>" {
+		t.Errorf("fingerprint = %q, want <missing>", view.Secrets[0].Fingerprint)
+	}
+	if code := runConfigGet([]string{"probe", "API_BASE"}, env); code != ExitConfigInvalid {
+		t.Errorf("config get on a missing field: code=%d, want %d", code, ExitConfigInvalid)
 	}
 }
 

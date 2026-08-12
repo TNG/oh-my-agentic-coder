@@ -5,13 +5,24 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/tngtech/oh-my-agentic-coder/internal/facade"
+	"github.com/tngtech/oh-my-agentic-coder/internal/skillstate"
 )
 
 func newStartReloaderForTest(t *testing.T) *startReloader {
 	t.Helper()
 	isolateHome(t)
+	// A real facade: reload installs stub routes for skills it cannot bring up,
+	// so the facade is no longer optional (see reloadStubRoute). Start may fail
+	// if loopback listen is forbidden; that's tolerable — AddRoute doesn't need
+	// a live listener.
+	f := facade.New("", "127.0.0.1:0", nil, 1<<20, 0, "", "test")
+	_ = f.Start(t.Context())
+	t.Cleanup(func() { f.Close() })
 	return &startReloader{
 		env:     makeEnv(t.TempDir()),
+		facade:  f,
 		mounted: map[string]string{},
 	}
 }
@@ -31,12 +42,16 @@ func TestStartReloaderMountedTracking(t *testing.T) {
 	}
 }
 
-func TestStartReloaderReloadSkipsMissingSecret(t *testing.T) {
+// TestStartReloaderReloadReportsMissingSecret: a skill missing a required
+// secret must not be spawned — and must not be dropped in silence either.
+// Before #174 reload just `continue`d: no message, no route, no diagnostic, so
+// an agent that had installed and registered a skill had no way to learn why it
+// never appeared. It now gets a pending-credentials route, a manifest entry,
+// and one line on stderr.
+func TestStartReloaderReloadReportsMissingSecret(t *testing.T) {
 	r := newStartReloaderForTest(t)
 	wd := r.env.Workdir
 
-	// Stage + register a skill that requires a secret (none stored) so
-	// reload must classify it not-ready and NOT mount it.
 	stageSkillWithSecret(t, wd, "slack")
 	// Register it workdir-local so reload's registry scan finds it.
 	if code := runRegister([]string{"slack", "--no-secrets"}, r.env); code != ExitOK {
@@ -47,8 +62,140 @@ func TestStartReloaderReloadSkipsMissingSecret(t *testing.T) {
 	if len(added) != 0 {
 		t.Errorf("expected no skills mounted (missing secret), got %v", added)
 	}
+	// NOT mounted: a later reload, after `omac secrets set`, must still be able
+	// to promote it.
 	if r.isMounted("slack") {
 		t.Error("slack should not be mounted with a missing required secret")
+	}
+
+	// A stub route exists, so a probe gets an actionable 409 rather than a 404.
+	if !r.facade.HasRoute("", "slack") {
+		t.Error("want a stub route for the unready skill, got none")
+	}
+
+	// The manifest reports it, in serve's shape, so the agent's briefing can
+	// explain it (internal/manifest renders pending-credentials + missing).
+	m := r.manifest()
+	skills, _ := m["skills"].([]map[string]any)
+	var found map[string]any
+	for _, sk := range skills {
+		if sk["name"] == "slack" {
+			found = sk
+		}
+	}
+	if found == nil {
+		t.Fatalf("manifest omitted the unready skill: %v", skills)
+	}
+	if got := found["state"]; got != "pending-credentials" {
+		t.Errorf("state = %v, want pending-credentials", got)
+	}
+	if got, _ := found["missing"].([]string); len(got) != 1 || got[0] != "API_TOKEN" {
+		t.Errorf("missing = %v, want [API_TOKEN]", found["missing"])
+	}
+	if _, ok := found["base"]; ok {
+		t.Error("an unready skill must not advertise a base URL")
+	}
+
+	// One warning per reason, not one per reload.
+	if !r.warnOnce("x", "reason") || r.warnOnce("x", "reason") {
+		t.Error("warnOnce should report only the first occurrence of a reason")
+	}
+	if !r.warnOnce("x", "different reason") {
+		t.Error("warnOnce should report a CHANGED reason for the same skill")
+	}
+}
+
+// TestStartReloaderPromotionClearsNotReady: once the missing value is supplied
+// and a later reload mounts the skill, the stale pending-credentials entry must
+// disappear from the manifest rather than shadowing the live route.
+func TestStartReloaderPromotionClearsNotReady(t *testing.T) {
+	r := newStartReloaderForTest(t)
+	r.markNotReady("slack", &notReadySkill{
+		Mount: "slack", State: facade.RoutePendingCredentials, Missing: []string{"API_TOKEN"},
+	})
+	if got := r.manifest()["skills"].([]map[string]any); len(got) != 1 || got[0]["state"] != "pending-credentials" {
+		t.Fatalf("manifest = %v, want one pending-credentials entry", got)
+	}
+
+	r.markMounted("slack", "slack")
+	skills := r.manifest()["skills"].([]map[string]any)
+	if len(skills) != 1 {
+		t.Fatalf("manifest = %v, want exactly one entry (no stale duplicate)", skills)
+	}
+	if skills[0]["state"] != "ready" {
+		t.Errorf("state = %v, want ready after promotion", skills[0]["state"])
+	}
+}
+
+// TestReloadStubRouteMapping locks reload's presentation of the shared
+// readiness problems: only a value the user can supply is
+// pending-credentials, because that state's rendered hint is `omac secrets set`.
+func TestReloadStubRouteMapping(t *testing.T) {
+	cases := []struct {
+		name      string
+		problems  []skillstate.Problem
+		wantState facade.RouteState
+		wantNil   bool
+	}{
+		{name: "ready", problems: nil, wantNil: true},
+		{
+			name:      "missing secret is supplyable",
+			problems:  []skillstate.Problem{{Kind: skillstate.MissingSecret, Field: "TOKEN"}},
+			wantState: facade.RoutePendingCredentials,
+		},
+		{
+			name:      "missing field is supplyable",
+			problems:  []skillstate.Problem{{Kind: skillstate.MissingField, Field: "BASE"}},
+			wantState: facade.RoutePendingCredentials,
+		},
+		{
+			// Supplying the secret again cannot help: there is no keychain.
+			name:      "dead keychain is broken, not pending",
+			problems:  []skillstate.Problem{{Kind: skillstate.KeychainUnavailable, Field: "TOKEN", Detail: "no bus", Fix: "install gnome-keyring"}},
+			wantState: facade.RouteBroken,
+		},
+		{
+			name:      "malformed env secret is broken, not pending",
+			problems:  []skillstate.Problem{{Kind: skillstate.InvalidSecret, Field: "TOKEN", Detail: "bad shape", Fix: "fix it"}},
+			wantState: facade.RouteBroken,
+		},
+		{
+			name:      "bundle drift is broken",
+			problems:  []skillstate.Problem{{Kind: skillstate.BundleDrift, Detail: "changed", Fix: "omac register --force x"}},
+			wantState: facade.RouteBroken,
+		},
+		{
+			// A skill hitting both must not be reported as merely pending.
+			name: "keychain outranks missing",
+			problems: []skillstate.Problem{
+				{Kind: skillstate.MissingField, Field: "BASE"},
+				{Kind: skillstate.KeychainUnavailable, Field: "TOKEN", Detail: "no bus"},
+			},
+			wantState: facade.RouteBroken,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := reloadStubRoute("mnt", c.problems)
+			if c.wantNil {
+				if got != nil {
+					t.Fatalf("want nil (ready), got %+v", got)
+				}
+				return
+			}
+			if got == nil {
+				t.Fatal("want a stub route, got nil")
+			}
+			if got.State != c.wantState {
+				t.Errorf("state = %q, want %q", got.State, c.wantState)
+			}
+			if got.Detail == "" {
+				t.Error("a stub route must carry a diagnostic")
+			}
+			if got.Mount != "mnt" {
+				t.Errorf("mount = %q, want mnt", got.Mount)
+			}
+		})
 	}
 }
 

@@ -37,6 +37,17 @@ import (
 // ErrNotFound is returned when a secret is not present in the keychain.
 var ErrNotFound = errors.New("keychain: secret not found")
 
+// ErrUnavailable reports that the keychain BACKEND itself is missing (no
+// Secret Service daemon on headless Linux/WSL, no keychain daemon on macOS),
+// as opposed to the secret being absent from a working keychain.
+//
+// Read-path errors wrap ErrNotFound AND ErrUnavailable together, so a caller
+// that only checks errors.Is(err, ErrNotFound) keeps behaving exactly as
+// before, while one that wants to tell a broken environment from an unset
+// secret checks ErrUnavailable first. Callers that report the difference to a
+// human should attach UnavailableHint.
+var ErrUnavailable = errors.New("keychain: backend unavailable")
+
 // DefaultsScope is the reserved workdir-id under which "last-known-good"
 // default secret values are mirrored (docs/MULTI_DIR_DESKTOP.md §4.4). It
 // is never a real workdir.
@@ -105,12 +116,26 @@ func SetScoped(scope, skillName, name string, value secrets.Secret) error {
 // with no Secret Service daemon). The latter is treated as "not found"
 // because the secret cannot exist in a keychain that doesn't run; callers
 // relying on env_passthrough or optional secrets still work.
+//
+// An unavailable backend additionally wraps ErrUnavailable, so a caller that
+// has exhausted its fallbacks can report "no Secret Service provider" instead
+// of the misleading "required secret missing — run omac secrets set". Check
+// ErrNotFound first if you only care whether a value is usable; check
+// ErrUnavailable only once no fallback satisfied the secret.
 func GetScoped(scope, skillName, name string) (secrets.Secret, error) {
 	svc := ScopedService(scope, skillName)
 	v, err := keyring.Get(svc, name)
 	if err != nil {
-		if errors.Is(err, keyring.ErrNotFound) || IsUnavailable(err) {
+		if errors.Is(err, keyring.ErrNotFound) {
 			return secrets.Secret{}, ErrNotFound
+		}
+		if IsUnavailable(err) {
+			// Both sentinels: ErrNotFound preserves every pre-existing caller,
+			// ErrUnavailable lets new ones diagnose the backend. The raw error
+			// is wrapped rather than formatted so BackendCause can recover it
+			// for a message that leads with the actual condition instead of
+			// "secret not found: backend unavailable".
+			return secrets.Secret{}, fmt.Errorf("%w: %w: %w", ErrNotFound, ErrUnavailable, err)
 		}
 		return secrets.Secret{}, fmt.Errorf("keychain get %s/%s: %w", svc, name, err)
 	}
@@ -151,6 +176,32 @@ func IsUnavailable(err error) bool {
 	return false
 }
 
+// BackendCause returns the raw backend error underneath a classified read
+// error, stripping the ErrNotFound/ErrUnavailable markers GetScoped attaches.
+// Returns err unchanged when there is nothing to strip.
+//
+// Callers use it for the human-facing text: the full chain reads "keychain:
+// secret not found: keychain: backend unavailable: dial unix …", whose first
+// clause contradicts its second, while the cause alone ("dial unix
+// /run/user/1000/bus: connect: no such file or directory") names the actual
+// problem — and, usefully, which socket.
+func BackendCause(err error) error {
+	if multi, ok := err.(interface{ Unwrap() []error }); ok {
+		if errs := multi.Unwrap(); len(errs) > 0 {
+			return BackendCause(errs[len(errs)-1])
+		}
+	}
+	return err
+}
+
+// isUnavailableErr reports backend unavailability however it is expressed:
+// already classified as ErrUnavailable (read path, see GetScoped) or still a
+// raw backend error that only string-sniffing recognizes (write path, where
+// keyring.Set/Delete errors reach the caller verbatim).
+func isUnavailableErr(err error) bool {
+	return errors.Is(err, ErrUnavailable) || IsUnavailable(err)
+}
+
 // Ping probes whether the OS keychain backend itself is reachable, for
 // diagnostics (`omac doctor`). It looks up a secret that will never exist:
 // a not-found result means the backend answered (available), while a
@@ -169,7 +220,8 @@ func Ping() error {
 // readers (start, serve) find secrets whether they were stored scoped
 // (per-workdir, written by serve-aware register) or unscoped (legacy /
 // global). An empty scope is just the unscoped lookup. Returns ErrNotFound
-// only when neither key exists.
+// only when neither key exists — additionally wrapping ErrUnavailable when
+// the reason neither key could be read is a missing backend.
 func GetWithFallback(scope, skillName, name string) (secrets.Secret, error) {
 	if scope != "" {
 		v, err := GetScoped(scope, skillName, name)

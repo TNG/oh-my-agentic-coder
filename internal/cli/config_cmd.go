@@ -29,7 +29,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -38,8 +37,10 @@ import (
 
 	"github.com/tngtech/oh-my-agentic-coder/internal/config"
 	"github.com/tngtech/oh-my-agentic-coder/internal/keychain"
+	"github.com/tngtech/oh-my-agentic-coder/internal/registry"
 	"github.com/tngtech/oh-my-agentic-coder/internal/secrets"
 	"github.com/tngtech/oh-my-agentic-coder/internal/skillconfig"
+	"github.com/tngtech/oh-my-agentic-coder/internal/skillstate"
 )
 
 // runConfig dispatches "omac config <subcommand>".
@@ -146,6 +147,12 @@ type fieldView struct {
 type secretView struct {
 	Name        string `json:"name"`
 	Fingerprint string `json:"fingerprint"`
+	// Source names where the value came from — "keychain",
+	// "env_passthrough", or a missing-* marker — mirroring the config
+	// table's column. Without it a secret satisfied from the host env is
+	// indistinguishable from one stored in the keychain, and `omac start`
+	// accepts both.
+	Source      string `json:"source"`
 	Required    bool   `json:"required"`
 	Description string `json:"description,omitempty"`
 }
@@ -198,26 +205,68 @@ func buildSkillView(env *Env, skill string) (*skillView, int) {
 	}
 	// Merge so a globally-registered skill's stored values surface
 	// here exactly as `omac start` would resolve them (workdir wins).
-	store := mergeConfig(globalStore, workdirStore)
+	store := skillstate.MergeConfig(globalStore, workdirStore)
 
+	// Resolve through the shared rule so what this command SHOWS is by
+	// construction what start/serve would USE. Two divergences disappear with
+	// it: secrets were read unscoped here while start reads them workdir-scoped
+	// with an unscoped fallback, and a secret satisfied via env_passthrough was
+	// displayed as "<missing>" even though the sidecar receives it.
+	//
+	// SkipBundleHash: this command reports values, not drift.
+	//
+	// Scope: workdir-scoped with the unscoped fallback inside GetWithFallback,
+	// matching start — which uses the same scope for globally-registered skills
+	// too, since their secrets live under the unscoped key the fallback finds.
+	armed, problems := skillstate.New(skillstate.Options{
+		Scope:          keychain.WorkdirID(env.Workdir),
+		SkipBundleHash: true,
+	}).Resolve(meta, registry.Entry{Name: skill}, "", store)
+	// The fingerprints below need the plaintext briefly; hand ownership to the
+	// view so its zero() wipes it alongside everything else.
 	out := &skillView{
 		Skill:   skill,
-		Mount:   meta.Sidecar.MountOrDefault(skill),
+		Mount:   armed.Mount,
 		Workdir: env.Workdir,
+		owned:   []secrets.Secret{},
+	}
+	for name := range armed.Secrets {
+		out.owned = append(out.owned, armed.Secrets[name])
+	}
+
+	// A keychain that cannot answer is not "this secret is unset": say so
+	// rather than printing <missing> next to every declared secret.
+	if p := skillstate.First(problems, skillstate.KeychainUnavailable); p != nil {
+		out.zero()
+		detail := p.Detail
+		if p.Fix != "" {
+			detail += " — " + p.Fix
+		}
+		fmt.Fprintln(env.Stderr, "omac config: keychain:", detail)
+		return nil, ExitKeychainError
 	}
 
 	for _, spec := range meta.Sidecar.Config {
-		out.Config = append(out.Config, resolveFieldView(spec, store, skill))
+		out.Config = append(out.Config, fieldView{
+			Name:        spec.Name,
+			Type:        string(spec.EffectiveType()),
+			Required:    spec.IsRequired(),
+			Description: spec.Description,
+			Value:       displayedConfigValue(armed, spec.Name),
+			Source:      string(armed.ConfigSources[spec.Name]),
+		})
 	}
 
 	for _, spec := range meta.Sidecar.Secrets {
-		view, owned, code := resolveSecretView(spec, skill, env)
-		if code != ExitOK {
-			out.zero() // wipe anything we accumulated so far
-			return nil, code
+		view := secretView{
+			Name:        spec.Name,
+			Required:    spec.IsRequired(),
+			Description: spec.Description,
+			Source:      string(armed.SecretSources[spec.Name]),
+			Fingerprint: "<missing>",
 		}
-		if owned != nil {
-			out.owned = append(out.owned, *owned)
+		if val, ok := armed.Secrets[spec.Name]; ok {
+			view.Fingerprint = secretFingerprint(val.ExposeString())
 		}
 		out.Secrets = append(out.Secrets, view)
 	}
@@ -225,64 +274,17 @@ func buildSkillView(env *Env, skill string) (*skillView, int) {
 	return out, ExitOK
 }
 
-// resolveFieldView mirrors the precedence in start.go and the prompt
-// flow in register.go. The Source column tells the user WHICH rung
-// of the ladder produced the displayed value.
-func resolveFieldView(spec config.ConfigSpec, store *skillconfig.Store, skill string) fieldView {
-	view := fieldView{
-		Name:        spec.Name,
-		Type:        string(spec.EffectiveType()),
-		Required:    spec.IsRequired(),
-		Description: spec.Description,
+// displayedConfigValue renders a config field for display, substituting the
+// placeholder markers for an unresolved one. `omac config get` switches on the
+// matching Source so a $(...) substitution never captures a marker.
+func displayedConfigValue(armed skillstate.Armed, field string) string {
+	if v, ok := armed.Config[field]; ok {
+		return v
 	}
-	if v, ok := store.Get(skill, spec.Name); ok {
-		view.Value = v
-		view.Source = "stored"
-		return view
+	if armed.ConfigSources[field] == skillstate.SourceMissingOpt {
+		return "<missing-optional>"
 	}
-	if spec.Default != "" {
-		view.Value = spec.Default
-		view.Source = "default"
-		return view
-	}
-	if spec.DefaultFromEnv != "" {
-		if v, ok := os.LookupEnv(spec.DefaultFromEnv); ok && v != "" {
-			view.Value = v
-			view.Source = "default_from_env:" + spec.DefaultFromEnv
-			return view
-		}
-	}
-	if spec.IsRequired() {
-		view.Value = "<missing-required>"
-		view.Source = "missing-required"
-	} else {
-		view.Value = "<missing-optional>"
-		view.Source = "missing-optional"
-	}
-	return view
-}
-
-// resolveSecretView fetches a secret from the keychain (if present)
-// and returns a fingerprint. The Secret value the keychain returns
-// is handed back to the caller via `owned` so it can be zeroed
-// alongside the rest of the view.
-func resolveSecretView(spec config.SecretSpec, skill string, env *Env) (secretView, *secrets.Secret, int) {
-	view := secretView{
-		Name:        spec.Name,
-		Required:    spec.IsRequired(),
-		Description: spec.Description,
-	}
-	val, err := keychain.Get(skill, spec.Name)
-	if err != nil {
-		if errors.Is(err, keychain.ErrNotFound) {
-			view.Fingerprint = "<missing>"
-			return view, nil, ExitOK
-		}
-		fmt.Fprintln(env.Stderr, "omac config: keychain:", err)
-		return view, nil, ExitKeychainError
-	}
-	view.Fingerprint = secretFingerprint(val.ExposeString())
-	return view, &val, ExitOK
+	return "<missing-required>"
 }
 
 // secretFingerprint returns sha256(s)[:12] in hex, with a "sha256:"
@@ -325,13 +327,13 @@ func writeShowText(w io.Writer, v *skillView) int {
 	if len(v.Secrets) > 0 {
 		fmt.Fprintln(w, "\nsecrets:")
 		tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(tw, "  NAME\tREQ\tFINGERPRINT")
+		fmt.Fprintln(tw, "  NAME\tREQ\tSOURCE\tFINGERPRINT")
 		for _, s := range v.Secrets {
 			req := "no"
 			if s.Required {
 				req = "yes"
 			}
-			fmt.Fprintf(tw, "  %s\t%s\t%s\n", s.Name, req, s.Fingerprint)
+			fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\n", s.Name, req, s.Source, s.Fingerprint)
 		}
 		_ = tw.Flush()
 	} else {

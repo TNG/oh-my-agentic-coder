@@ -17,6 +17,8 @@ import (
 	"github.com/tngtech/oh-my-agentic-coder/internal/registry"
 	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxprofile"
 	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxrun"
+	"github.com/tngtech/oh-my-agentic-coder/internal/skillconfig"
+	"github.com/tngtech/oh-my-agentic-coder/internal/skillstate"
 )
 
 func runDoctor(args []string, env *Env) int {
@@ -34,7 +36,7 @@ func runDoctor(args []string, env *Env) int {
 
 	if err := keychain.Ping(); err != nil {
 		if keychain.IsUnavailable(err) {
-			fmt.Fprintf(env.Stdout, "[warn] keychain backend: unavailable — %s\n", keychainUnavailableHint(host))
+			fmt.Fprintf(env.Stdout, "[warn] keychain backend: unavailable — %s\n", keychain.UnavailableHint(host))
 		} else {
 			fmt.Fprintln(env.Stdout, "[warn] keychain backend:", err)
 		}
@@ -73,29 +75,58 @@ func runDoctor(args []string, env *Env) int {
 	fmt.Fprintf(env.Stdout, "[ok] registry: %d skill(s) registered (%d workdir, %d global)\n",
 		len(reg.Registered), len(workdirReg.Registered), len(globalReg.Registered))
 
+	// Config stores, merged the same way as the registry, so a stored config
+	// value counts as present here exactly as it would at launch. A broken
+	// store is reported and treated as empty rather than aborting: doctor's job
+	// is to enumerate problems, not to stop at the first one.
+	workdirCfg, err := skillconfig.Load(env.Workdir)
+	if err != nil {
+		fmt.Fprintln(env.Stdout, "[warn] skill-config:", err)
+		workdirCfg = &skillconfig.Store{}
+	}
+	globalCfg, err := skillconfig.LoadGlobal()
+	if err != nil {
+		fmt.Fprintln(env.Stdout, "[warn] global skill-config:", err)
+		globalCfg = &skillconfig.Store{}
+	}
+	cfgStore := skillstate.MergeConfig(globalCfg, workdirCfg)
+
 	// Per-skill checks.
+	//
+	// Readiness is resolved through internal/skillstate — the same rule `omac
+	// start` applies — so doctor cannot disagree with the launch path about
+	// whether a value is present. It used to probe the keychain UNSCOPED while
+	// start probed it workdir-scoped with an unscoped fallback, so a secret
+	// stored per-workdir made doctor report a missing required secret while
+	// start launched happily (issue #174, Failure 3).
+	//
+	// SkipBundleHash: doctor reports on values, not on drift (that is
+	// `omac provenance --check` and start's own gate), so it should not pay a
+	// tree walk per skill.
+	resolver := skillstate.New(skillstate.Options{
+		Scope:          keychain.WorkdirID(env.Workdir),
+		SkipBundleHash: true,
+	})
 	failures := 0
 	for _, e := range reg.Registered {
 		absDir := e.SkillDir
 		if !filepath.IsAbs(absDir) {
 			absDir = filepath.Join(env.Workdir, absDir)
 		}
-		metaPath := filepath.Join(absDir, config.MetaFileName)
-		m, err := config.LoadMeta(metaPath)
-		if err != nil {
-			fmt.Fprintf(env.Stdout, "  [fail] %s: %v\n", e.Name, err)
-			failures++
-			continue
-		}
-		if m.Sidecar == nil {
-			fmt.Fprintf(env.Stdout, "  [fail] %s: meta no longer declares a sidecar\n", e.Name)
+		armed, problems := resolver.Load(e, absDir, cfgStore)
+		// Resolution reads secret plaintext (it is the same code path start
+		// uses, which is the point); wipe it as soon as we have counted.
+		armed.Zero()
+
+		if p := skillstate.First(problems, skillstate.MetaBroken); p != nil {
+			fmt.Fprintf(env.Stdout, "  [fail] %s: %s\n", e.Name, p.Detail)
 			failures++
 			continue
 		}
 		// Binary presence (looks for the script/binary the skill actually ships,
 		// not e.g. python3 itself).
 		binOK := "yes"
-		if cand := skillArtifactCandidate(m.Sidecar.Command); cand != "" {
+		if cand := skillArtifactCandidate(armed.Meta.Sidecar.Command); cand != "" {
 			abs := cand
 			if !filepath.IsAbs(abs) {
 				abs = filepath.Join(absDir, abs)
@@ -110,25 +141,39 @@ func runDoctor(args []string, env *Env) int {
 		} else {
 			binOK = "n/a"
 		}
-		// Secrets status.
-		missingReq := 0
-		for _, s := range m.Sidecar.Secrets {
-			present, err := keychain.Has(e.Name, s.Name)
-			if err != nil {
-				fmt.Fprintf(env.Stdout, "  [fail] %s: keychain probe: %v\n", e.Name, err)
-				failures++
-				continue
+		// A keychain that cannot answer is a failure, not a missing secret: the
+		// count would read as "set these" when the remedy is to fix the backend.
+		if p := skillstate.First(problems, skillstate.KeychainUnavailable); p != nil {
+			detail := p.Detail
+			if p.Fix != "" {
+				detail += " — " + p.Fix
 			}
-			if !present && s.IsRequired() {
-				missingReq++
+			fmt.Fprintf(env.Stdout, "  [fail] %s: keychain probe: %s\n", e.Name, detail)
+			failures++
+			continue
+		}
+		missingSecrets, missingFields, invalid := 0, 0, 0
+		for _, p := range problems {
+			switch p.Kind {
+			case skillstate.MissingSecret:
+				missingSecrets++
+			case skillstate.MissingField:
+				missingFields++
+			case skillstate.InvalidSecret:
+				invalid++
 			}
 		}
 		status := "ok"
-		if binOK == "no" || missingReq > 0 {
+		if binOK == "no" || missingSecrets > 0 || missingFields > 0 || invalid > 0 {
 			status = "warn"
 		}
-		fmt.Fprintf(env.Stdout, "  [%s] %-20s binary=%s missing_required_secrets=%d\n",
-			status, e.Name, binOK, missingReq)
+		fmt.Fprintf(env.Stdout, "  [%s] %-20s binary=%s missing_required_secrets=%d missing_required_fields=%d\n",
+			status, e.Name, binOK, missingSecrets, missingFields)
+		for _, p := range problems {
+			if p.Kind == skillstate.InvalidSecret {
+				fmt.Fprintf(env.Stdout, "         %s/%s: %s — %s\n", p.Skill, p.Field, p.Detail, p.Fix)
+			}
+		}
 	}
 
 	// Inner harness binary status.

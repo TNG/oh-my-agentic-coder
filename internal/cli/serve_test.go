@@ -10,10 +10,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tngtech/oh-my-agentic-coder/internal/audit"
 	"github.com/tngtech/oh-my-agentic-coder/internal/config"
 	"github.com/tngtech/oh-my-agentic-coder/internal/facade"
 	"github.com/tngtech/oh-my-agentic-coder/internal/sandbox"
 	"github.com/tngtech/oh-my-agentic-coder/internal/skilltrust"
+	"github.com/tngtech/oh-my-agentic-coder/internal/supervisor"
 	"github.com/tngtech/oh-my-agentic-coder/internal/toolcache"
 )
 
@@ -917,5 +919,98 @@ func TestCheckGlobalDriftCleanWhenNoGlobals(t *testing.T) {
 	// Isolated HOME/XDG => no global skills at all.
 	if code := s.checkGlobalDrift(); code != ExitOK {
 		t.Errorf("expected ExitOK with no global skills, got %d", code)
+	}
+}
+
+// stageSkillWithPassthroughSecret writes a skill whose required secret is
+// declared in BOTH secrets: and env_passthrough: — the shape internal/config's
+// SidecarMeta docs bless as "the fallback for environments where the keychain
+// is unavailable (sandboxed CI runners, headless servers)", and which
+// supervisor.buildEnv honours at spawn time.
+func stageSkillWithPassthroughSecret(t *testing.T, workdir, name string) {
+	t.Helper()
+	skillDir := filepath.Join(workdir, ".opencode", "skills", name)
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("mkdir skill: %v", err)
+	}
+	// `true` exits immediately, so the health probe fails fast and the route
+	// ends up broken-on-spawn. That is fine and is the point: this test asserts
+	// resolution got PAST the credential gate, not that a sidecar came up. The
+	// tiny timeouts keep that failure at ~100ms rather than the 5s default.
+	meta := "name: " + name + "\n" +
+		"sidecar:\n" +
+		"  command: [\"true\"]\n" +
+		"  env_passthrough:\n" +
+		"    - API_TOKEN\n" +
+		"  secrets:\n" +
+		"    - name: API_TOKEN\n" +
+		"      required: true\n" +
+		"  health:\n" +
+		"    path: /status\n" +
+		"    initial_delay_ms: 10\n" +
+		"    timeout_ms: 100\n" +
+		"    interval_ms: 10\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "omac.yaml"), []byte(meta), 0o644); err != nil {
+		t.Fatalf("write omac.yaml: %v", err)
+	}
+	hash, err := config.BundleHash(skillDir)
+	if err != nil {
+		t.Fatalf("bundle hash: %v", err)
+	}
+	if err := skilltrust.Approve(name, hash, skillDir); err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+}
+
+// TestActivateEnvPassthroughSecretIsNotPending is issue #174's Failure 2:
+// serve's own copy of the resolution rule never consulted env_passthrough, so
+// on a headless runner a skill whose required secret came from the shell was
+// reported pending-credentials with a "missing credentials" hint — even though
+// the supervisor would have injected the value and the sidecar would have
+// started fine. `omac start` honoured the fallback; serve did not.
+func TestActivateEnvPassthroughSecretIsNotPending(t *testing.T) {
+	s := newServeServerForTest(t)
+	// Resolution now SUCCEEDS, so bringUp reaches the spawn path — which the
+	// default test server leaves nil because it only ever exercised
+	// pending-credentials skills.
+	s.sup = supervisor.New(nil, audit.Nop(), skillSpawnAuthorizer)
+	t.Cleanup(func() { s.sup.ShutdownAll(time.Second) })
+	wd := t.TempDir()
+	stageSkillWithPassthroughSecret(t, wd, "slack")
+	t.Setenv("API_TOKEN", "shell-supplied")
+
+	manifest, err := s.activate(wd)
+	if err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+	skills := manifest["skills"].([]map[string]any)
+	if len(skills) != 1 {
+		t.Fatalf("skills count = %d, want 1", len(skills))
+	}
+	sk := skills[0]
+	if sk["state"] == string(facade.RoutePendingCredentials) {
+		t.Errorf("state = pending-credentials, but the secret is supplied via env_passthrough: %v", sk)
+	}
+	if missing, _ := sk["missing"].([]string); len(missing) != 0 {
+		t.Errorf("missing = %v, want none — the sidecar receives API_TOKEN from the host env", missing)
+	}
+}
+
+// TestActivateEmptyPassthroughSecretIsStillPending is the other side of the
+// fallback: env_passthrough forwards a variable even when it is empty, and an
+// empty token is no token, so this must NOT be treated as satisfied.
+func TestActivateEmptyPassthroughSecretIsStillPending(t *testing.T) {
+	s := newServeServerForTest(t)
+	wd := t.TempDir()
+	stageSkillWithPassthroughSecret(t, wd, "slack")
+	t.Setenv("API_TOKEN", "")
+
+	manifest, err := s.activate(wd)
+	if err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+	sk := manifest["skills"].([]map[string]any)[0]
+	if sk["state"] != string(facade.RoutePendingCredentials) {
+		t.Errorf("state = %v, want pending-credentials for an empty exported value", sk["state"])
 	}
 }

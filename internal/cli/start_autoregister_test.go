@@ -19,6 +19,7 @@ import (
 	"github.com/tngtech/oh-my-agentic-coder/internal/registry"
 	"github.com/tngtech/oh-my-agentic-coder/internal/secrets"
 	"github.com/tngtech/oh-my-agentic-coder/internal/skillconfig"
+	"github.com/tngtech/oh-my-agentic-coder/internal/skillstate"
 )
 
 // stageSkillWithSidecar creates .opencode/skills/<name>/omac.yaml with
@@ -46,7 +47,7 @@ func autoRegisterConfig(t *testing.T, workdir string) *skillconfig.Store {
 	if err != nil {
 		t.Fatalf("skillconfig.LoadGlobal: %v", err)
 	}
-	return mergeConfig(globalStore, workdirStore)
+	return skillstate.MergeConfig(globalStore, workdirStore)
 }
 
 func autoRegisterEligible(t *testing.T, workdir, skillName, skillDir string, skipSecretPattern bool) (bool, error) {

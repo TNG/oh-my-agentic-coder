@@ -192,3 +192,30 @@ func TestConfigSpec_IsRequired_Default(t *testing.T) {
 		t.Error("Required=&false should yield IsRequired()==false")
 	}
 }
+
+// TestSecretSpecValidateValue covers the check that gates an env-supplied
+// secret's shape: a keychain value was vetted at register time, but an
+// env_passthrough value reaches the sidecar unvalidated unless the preflight
+// checks it (see internal/skillstate). Cases mirror the skainet
+// SKAINET_TOKEN pattern.
+func TestSecretSpecValidateValue(t *testing.T) {
+	spec := SecretSpec{Name: "SKAINET_TOKEN", Pattern: `^tngai_[A-Za-z0-9_-]{8,}$`}
+
+	if err := spec.ValidateValue("tngai_abcdefgh"); err != nil {
+		t.Errorf("well-formed token should pass, got %v", err)
+	}
+	if err := spec.ValidateValue("not-a-token"); err == nil {
+		t.Error("malformed token should fail the pattern")
+	}
+	// A secret with no pattern accepts anything (can't validate shape).
+	noPattern := SecretSpec{Name: "X"}
+	if err := noPattern.ValidateValue("anything"); err != nil {
+		t.Errorf("empty pattern should accept any value, got %v", err)
+	}
+	// An uncompilable pattern is a skill-authoring error, reported as such
+	// rather than silently accepting the value.
+	bad := SecretSpec{Name: "Y", Pattern: "([unclosed"}
+	if err := bad.ValidateValue("whatever"); err == nil {
+		t.Error("invalid pattern should error, not silently accept")
+	}
+}
