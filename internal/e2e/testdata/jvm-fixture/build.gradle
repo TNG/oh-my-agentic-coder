@@ -23,10 +23,12 @@ dependencies {
 
 test {
     useJUnitPlatform()
-    // The IT class is excluded from the default `test` task by filename
-    // convention (Gradle's default scan does not include *IT). It runs
-    // under the dedicated `integrationTest` task instead, so the unit
-    // leg (no Colima) never touches Testcontainers.
+    // The IT class must be excluded explicitly: modern Gradle includes
+    // **/*IT.class in the default `test` scan, so import-only wiring
+    // would otherwise run PostgresIT here and fail when no Docker
+    // daemon is reachable (the unit leg). The IT leg runs via the
+    // dedicated `integrationTest` task below.
+    exclude '**/*IT.class'
     testLogging {
         events 'passed', 'failed', 'skipped'
         exceptionFormat 'full'
