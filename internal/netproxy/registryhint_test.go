@@ -317,6 +317,24 @@ func TestHardDenySurvivesAllowlist(t *testing.T) {
 	}
 }
 
+// TestDenyBodySessionDenyNamesTheRealRemedy: a session deny lives only
+// in memory, so the generic policy body — which points at
+// network.deny_domain and <profile>.pages.json — sends the agent hunting
+// through files that cannot contain the entry. checkRules also
+// short-circuits before the prompt, so the retry is denied with no
+// dialog: the body must say the decision holds until the session ends.
+func TestDenyBodySessionDenyNamesTheRealRemedy(t *testing.T) {
+	body := denyBody("registry.npmjs.org", Verdict{Decision: Deny, Reason: "session deny"})
+	if !strings.Contains(body, "session") {
+		t.Errorf("body never mentions the session scope;\ngot:\n%s", body)
+	}
+	for _, wrong := range []string{"deny_domain", "pages.json"} {
+		if strings.Contains(body, wrong) {
+			t.Errorf("body points at %q, which never holds a session decision;\ngot:\n%s", wrong, body)
+		}
+	}
+}
+
 // TestDenyBodyKeepsPolicyTextForPolicyDenials is the counterweight to the two
 // tests above: real policy denials must keep attributing the block to the
 // sandbox and naming the knobs that change it.

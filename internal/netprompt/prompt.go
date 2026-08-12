@@ -33,10 +33,11 @@ const (
 
 // Default dialog dimensions in pixels. The GTK/Qt auto-size makes the popup
 // unreadable on Ubuntu: too narrow to show the longest option label ("Allow
-// permanently (this host)") and too short to show all seven options — the
-// multi-line prompt text consumes the height and the radiolist collapses to a
-// two-row scroll box. The width fits the labels; the height fits the prompt
-// text plus all seven rows plus the buttons without scrolling.
+// for this session (*.<suffix>)") and too short to show all eleven options —
+// the multi-line prompt text consumes the height and the radiolist collapses
+// to a two-row scroll box. The width fits the labels; the height fits the
+// prompt text plus all eleven rows plus the buttons without scrolling. Both
+// floors are asserted against the real content in prompt_size_test.go.
 //
 // These are defaults: OMAC_PROMPT_WIDTH / OMAC_PROMPT_HEIGHT override them for
 // users on unusual displays (small/720p laptops where the dialog crowds the

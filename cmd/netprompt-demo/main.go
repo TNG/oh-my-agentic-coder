@@ -44,6 +44,6 @@ func main() {
 
 	fmt.Fprintf(os.Stderr, "showing network-access dialog for %s:%d ...\n", *host, *port)
 	res := p.Prompt(context.Background(), *host, *port)
-	fmt.Printf("decision: allow=%v persist=%v scope=%q suffix=%q needs_intent=%v\n",
-		res.Allow, res.Persist, res.Scope, res.Suffix, res.NeedsIntent)
+	fmt.Printf("decision: allow=%v persist=%v session=%v scope=%q suffix=%q needs_intent=%v\n",
+		res.Allow, res.Persist, res.Session, res.Scope, res.Suffix, res.NeedsIntent)
 }

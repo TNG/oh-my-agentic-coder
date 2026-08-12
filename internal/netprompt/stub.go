@@ -139,6 +139,11 @@ func (s stubBackend) show(ctx context.Context, host string, port int, suffix, in
 // expects (mirrors optionLabels / labelToToken).
 func decisionToLabel(d stubDecision, suffix string) string {
 	switch {
+	// "Explain more" is its own outcome, not a deny variant: it must
+	// outrank the scope cases so a fixture setting both flags is not
+	// silently turned into a session deny.
+	case d.NeedsIntent:
+		return "Explain more"
 	case d.Allow && d.Session && d.Scope == "host":
 		return "Allow for this session (this host)"
 	case d.Allow && d.Session && d.Scope == "suffix":
@@ -153,8 +158,6 @@ func decisionToLabel(d stubDecision, suffix string) string {
 		return fmt.Sprintf("Allow permanently (*.%s)", suffix)
 	case d.Allow:
 		return "Allow once"
-	case d.NeedsIntent:
-		return "Explain more"
 	case !d.Allow && d.Persist && d.Scope == "host":
 		return "Deny permanently (this host)"
 	case !d.Allow && d.Persist && d.Scope == "suffix":
