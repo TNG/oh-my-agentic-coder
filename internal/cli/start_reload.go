@@ -72,38 +72,20 @@ type notReadySkill struct {
 }
 
 // reloadStubRoute maps skillstate problems to the stub route reload should
-// install, or nil when the skill is ready to spawn. It is reload's
-// presentation of the shared readiness rule, and mirrors serve's bringUp: a
-// supplyable credential is pending-credentials, anything the agent cannot fix
-// by supplying a value is broken.
+// install, or nil when the skill is ready to spawn. The classification itself
+// is skillstate.StallFor, shared with serve's bringUp: both install a stub
+// route rather than refusing a process, and a divergence between them is
+// exactly what issue #174 was about.
 func reloadStubRoute(mount string, problems []skillstate.Problem) *notReadySkill {
-	if len(problems) == 0 {
+	st := skillstate.StallFor(problems)
+	if st == nil {
 		return nil
 	}
-	// A dead keychain or a malformed env-supplied value is not "missing": the
-	// remedy is not `omac secrets set`, so don't route it as if it were.
-	if p := skillstate.First(problems, skillstate.KeychainUnavailable, skillstate.InvalidSecret); p != nil {
-		detail := p.Detail
-		if p.Fix != "" {
-			detail += " — " + p.Fix
-		}
-		return &notReadySkill{Mount: mount, State: facade.RouteBroken, Detail: detail}
+	state := facade.RoutePendingCredentials
+	if st.Terminal {
+		state = facade.RouteBroken
 	}
-	if missing := skillstate.MissingFields(problems); len(missing) > 0 {
-		return &notReadySkill{
-			Mount:   mount,
-			State:   facade.RoutePendingCredentials,
-			Missing: missing,
-			Detail:  fmt.Sprintf("missing required values: %v", missing),
-		}
-	}
-	// Anything left (bundle drift) is a re-register, not a credential.
-	p := problems[0]
-	detail := p.Detail
-	if p.Fix != "" {
-		detail += " — " + p.Fix
-	}
-	return &notReadySkill{Mount: mount, State: facade.RouteBroken, Detail: detail}
+	return &notReadySkill{Mount: mount, State: state, Missing: st.Missing, Detail: st.Detail}
 }
 
 // startControlPlane binds a loopback control-plane HTTP server for start and

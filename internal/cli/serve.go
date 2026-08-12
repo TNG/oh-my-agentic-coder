@@ -1390,26 +1390,16 @@ func (s *serveServer) bringUp(e registry.Entry, absDir, workdir, namespace, secr
 
 	problems = append(problems, resolver.Fill(&armed, cfg)...)
 
-	// A dead or unreadable keychain is not a missing credential: routing it to
-	// pending-credentials would tell the agent to run `omac secrets set`, which
-	// cannot work until the backend does. Problem.Fix carries the real remedy.
-	if p := skillstate.First(problems, skillstate.KeychainUnavailable); p != nil {
-		detail := p.Detail
-		if p.Fix != "" {
-			detail += " — " + p.Fix
+	// Credential problems keep the route promotable (pending-credentials, 409)
+	// rather than breaking it, so reactivateDir can bring the skill up once the
+	// value appears. skillstate.StallFor makes that call, shared with live
+	// reload so the two cannot drift apart again.
+	if st := skillstate.StallFor(problems); st != nil {
+		if st.Terminal {
+			return broken(st.Detail)
 		}
-		return broken(detail)
-	}
-	// A malformed env-supplied secret is likewise not "missing" — supplying it
-	// again won't help; the exported value or the pattern has to change.
-	if p := skillstate.First(problems, skillstate.InvalidSecret); p != nil {
-		return broken(p.Detail + " — " + p.Fix)
-	}
-
-	if missing := skillstate.MissingFields(problems); len(missing) > 0 {
 		sr := &skillRoute{Name: e.Name, Mount: mount, Namespace: namespace, SkillDir: absDir,
-			State: facade.RoutePendingCredentials, Missing: missing,
-			Detail: fmt.Sprintf("missing required values: %v", missing)}
+			State: facade.RoutePendingCredentials, Missing: st.Missing, Detail: st.Detail}
 		s.installRoute(sr, 0)
 		return sr
 	}

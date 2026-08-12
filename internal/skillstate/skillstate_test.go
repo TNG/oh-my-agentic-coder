@@ -870,3 +870,120 @@ func TestMergeConfigTreatsNilLayerAsEmpty(t *testing.T) {
 		})
 	}
 }
+
+// TestStallForSplitsOnRecoverability is the rule serve and live reload share.
+// CI caught the earlier version of it: on a headless runner (no Secret Service)
+// every skill with a required secret was routed `broken` instead of
+// `pending-credentials`, so the e2e suite's 409 became a 502 and the route was
+// no longer promotable — on the primary `omac serve` deployment target.
+func TestStallForSplitsOnRecoverability(t *testing.T) {
+	cases := []struct {
+		name         string
+		problems     []Problem
+		wantNil      bool
+		wantTerminal bool
+		wantMissing  []string
+	}{
+		{name: "ready", wantNil: true},
+
+		// Recoverable: a value can still clear it, so the route stays promotable.
+		{
+			name:        "missing secret",
+			problems:    []Problem{{Kind: MissingSecret, Field: "TOKEN"}},
+			wantMissing: []string{"TOKEN"},
+		},
+		{
+			name:        "missing field",
+			problems:    []Problem{{Kind: MissingField, Field: "BASE"}},
+			wantMissing: []string{"BASE"},
+		},
+		{
+			name:        "dead keychain — start a keyring or export the var",
+			problems:    []Problem{{Kind: KeychainUnavailable, Field: "TOKEN", Detail: "no bus", Fix: "install gnome-keyring"}},
+			wantMissing: []string{"TOKEN"},
+		},
+		{
+			name:        "malformed env value — fix the export or store a valid one",
+			problems:    []Problem{{Kind: InvalidSecret, Field: "TOKEN", Detail: "bad shape", Fix: "fix it"}},
+			wantMissing: []string{"TOKEN"},
+		},
+
+		// Terminal: needs a re-register, so no credential list is offered.
+		{
+			name:         "broken meta",
+			problems:     []Problem{{Kind: MetaBroken, Detail: "bad yaml", Fix: "omac register --force x"}},
+			wantTerminal: true,
+		},
+		{
+			name:         "bundle drift",
+			problems:     []Problem{{Kind: BundleDrift, Detail: "changed", Fix: "omac register --force x"}},
+			wantTerminal: true,
+		},
+		{
+			name: "terminal outranks recoverable",
+			problems: []Problem{
+				{Kind: MissingSecret, Field: "TOKEN"},
+				{Kind: BundleDrift, Detail: "changed", Fix: "omac register --force x"},
+			},
+			wantTerminal: true,
+		},
+
+		// Every unresolved value is listed once, sorted, whatever its cause.
+		{
+			name: "mixed recoverable causes are merged and deduped",
+			problems: []Problem{
+				{Kind: MissingField, Field: "BASE"},
+				{Kind: KeychainUnavailable, Field: "TOKEN", Detail: "no bus", Fix: "hint"},
+				{Kind: InvalidSecret, Field: "TOKEN", Detail: "bad", Fix: "fix"},
+			},
+			wantMissing: []string{"BASE", "TOKEN"},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := StallFor(c.problems)
+			if c.wantNil {
+				if got != nil {
+					t.Fatalf("StallFor = %+v, want nil", got)
+				}
+				return
+			}
+			if got == nil {
+				t.Fatal("StallFor = nil, want a stall")
+			}
+			if got.Terminal != c.wantTerminal {
+				t.Errorf("Terminal = %v, want %v", got.Terminal, c.wantTerminal)
+			}
+			if got.Detail == "" {
+				t.Error("a stall must carry a diagnostic")
+			}
+			if len(got.Missing) != len(c.wantMissing) {
+				t.Fatalf("Missing = %v, want %v", got.Missing, c.wantMissing)
+			}
+			for i := range c.wantMissing {
+				if got.Missing[i] != c.wantMissing[i] {
+					t.Errorf("Missing = %v, want %v", got.Missing, c.wantMissing)
+				}
+			}
+		})
+	}
+}
+
+// TestStallForCarriesTheRealRemedy: a cause with its own remedy must set the
+// detail, so an agent staring at a pending route is not left with only "run omac
+// secrets set" when the keychain is what's broken.
+func TestStallForCarriesTheRealRemedy(t *testing.T) {
+	st := StallFor([]Problem{
+		{Kind: MissingField, Field: "BASE"},
+		{Kind: KeychainUnavailable, Field: "TOKEN", Detail: "dbus: no session bus", Fix: "no Secret Service provider found"},
+	})
+	if !strings.Contains(st.Detail, "dbus: no session bus") || !strings.Contains(st.Detail, "Secret Service") {
+		t.Errorf("Detail = %q, want the cause and its remedy", st.Detail)
+	}
+
+	// With only plain missing values, the generic list is the detail.
+	st = StallFor([]Problem{{Kind: MissingSecret, Field: "TOKEN"}})
+	if !strings.Contains(st.Detail, "missing required values") {
+		t.Errorf("Detail = %q, want the generic missing-values summary", st.Detail)
+	}
+}

@@ -129,51 +129,79 @@ func TestStartReloaderPromotionClearsNotReady(t *testing.T) {
 	}
 }
 
-// TestReloadStubRouteMapping locks reload's presentation of the shared
-// readiness problems: only a value the user can supply is
-// pending-credentials, because that state's rendered hint is `omac secrets set`.
+// TestReloadStubRouteMapping locks reload's presentation of the shared readiness
+// problems. The split is RECOVERABILITY: anything a value can still clear stays
+// pending-credentials, because a pending route is promotable on the next reload
+// while a broken one is not. Only a cause needing a re-register is broken.
 func TestReloadStubRouteMapping(t *testing.T) {
 	cases := []struct {
 		name      string
 		problems  []skillstate.Problem
 		wantState facade.RouteState
 		wantNil   bool
+		wantMiss  []string
 	}{
 		{name: "ready", problems: nil, wantNil: true},
 		{
 			name:      "missing secret is supplyable",
 			problems:  []skillstate.Problem{{Kind: skillstate.MissingSecret, Field: "TOKEN"}},
 			wantState: facade.RoutePendingCredentials,
+			wantMiss:  []string{"TOKEN"},
 		},
 		{
 			name:      "missing field is supplyable",
 			problems:  []skillstate.Problem{{Kind: skillstate.MissingField, Field: "BASE"}},
 			wantState: facade.RoutePendingCredentials,
+			wantMiss:  []string{"BASE"},
 		},
 		{
-			// Supplying the secret again cannot help: there is no keychain.
-			name:      "dead keychain is broken, not pending",
+			// Starting a Secret Service or exporting the variable clears this,
+			// so the route must stay promotable. Breaking it would strand every
+			// skill with a required secret on a headless host behind a 502 that
+			// never recovers — the CI failure that caught the earlier mapping.
+			name:      "dead keychain stays pending",
 			problems:  []skillstate.Problem{{Kind: skillstate.KeychainUnavailable, Field: "TOKEN", Detail: "no bus", Fix: "install gnome-keyring"}},
-			wantState: facade.RouteBroken,
+			wantState: facade.RoutePendingCredentials,
+			wantMiss:  []string{"TOKEN"},
 		},
 		{
-			name:      "malformed env secret is broken, not pending",
+			// Fixing the export, or storing a valid value (the keychain wins
+			// over env_passthrough), clears this too.
+			name:      "malformed env secret stays pending",
 			problems:  []skillstate.Problem{{Kind: skillstate.InvalidSecret, Field: "TOKEN", Detail: "bad shape", Fix: "fix it"}},
-			wantState: facade.RouteBroken,
+			wantState: facade.RoutePendingCredentials,
+			wantMiss:  []string{"TOKEN"},
 		},
 		{
-			name:      "bundle drift is broken",
+			name:      "bundle drift needs a re-register",
 			problems:  []skillstate.Problem{{Kind: skillstate.BundleDrift, Detail: "changed", Fix: "omac register --force x"}},
 			wantState: facade.RouteBroken,
 		},
 		{
-			// A skill hitting both must not be reported as merely pending.
-			name: "keychain outranks missing",
+			name:      "broken meta needs a re-register",
+			problems:  []skillstate.Problem{{Kind: skillstate.MetaBroken, Detail: "bad yaml", Fix: "omac register --force x"}},
+			wantState: facade.RouteBroken,
+		},
+		{
+			// A terminal cause outranks a credential one: telling the user to
+			// supply a value is pointless while the bundle has drifted.
+			name: "terminal outranks pending",
 			problems: []skillstate.Problem{
 				{Kind: skillstate.MissingField, Field: "BASE"},
-				{Kind: skillstate.KeychainUnavailable, Field: "TOKEN", Detail: "no bus"},
+				{Kind: skillstate.BundleDrift, Detail: "changed", Fix: "omac register --force x"},
 			},
 			wantState: facade.RouteBroken,
+		},
+		{
+			// Both are recoverable; the one with its own remedy sets the detail,
+			// and both fields are listed.
+			name: "keychain detail wins, both fields listed",
+			problems: []skillstate.Problem{
+				{Kind: skillstate.MissingField, Field: "BASE"},
+				{Kind: skillstate.KeychainUnavailable, Field: "TOKEN", Detail: "no bus", Fix: "install gnome-keyring"},
+			},
+			wantState: facade.RoutePendingCredentials,
+			wantMiss:  []string{"BASE", "TOKEN"},
 		},
 	}
 	for _, c := range cases {
@@ -196,6 +224,14 @@ func TestReloadStubRouteMapping(t *testing.T) {
 			}
 			if got.Mount != "mnt" {
 				t.Errorf("mount = %q, want mnt", got.Mount)
+			}
+			if len(got.Missing) != len(c.wantMiss) {
+				t.Fatalf("missing = %v, want %v", got.Missing, c.wantMiss)
+			}
+			for i := range c.wantMiss {
+				if got.Missing[i] != c.wantMiss[i] {
+					t.Errorf("missing = %v, want %v", got.Missing, c.wantMiss)
+				}
 			}
 		})
 	}

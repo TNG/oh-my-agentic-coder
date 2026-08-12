@@ -527,6 +527,84 @@ func MissingFields(problems []Problem) []string {
 	return out
 }
 
+// Stall is why a skill cannot arm yet, in the shape the two callers that keep
+// serving (serve, live reload) need: they install a stub route rather than
+// refusing a whole process, and both must classify identically — a divergence
+// between them is what issue #174 was about.
+type Stall struct {
+	// Terminal distinguishes the two route states. A stall is terminal when no
+	// value the user could supply clears it: the skill must be re-registered
+	// (a broken omac.yaml, bundle drift). Otherwise it is pending — the route
+	// stays promotable, and serve re-activates to pick it up once the value
+	// appears.
+	Terminal bool
+	// Missing names the values to supply or fix. Empty when Terminal.
+	Missing []string
+	// Detail is the human/agent-facing reason, including the remedy when the
+	// cause has one that `omac secrets set` does not cover (a dead keychain
+	// backend, a malformed exported value).
+	Detail string
+}
+
+// StallFor summarizes problems as a Stall, or nil when the skill can arm.
+//
+// The split is RECOVERABILITY, not severity. An unreadable keychain and a
+// malformed env-supplied secret are both "pending": starting a Secret Service,
+// exporting the variable, or storing a valid value all clear them, and a
+// pending route is promotable while a broken one is not. Marking them terminal
+// would strand every skill with a required secret on a headless server — the
+// primary `omac serve` deployment target — behind a 502 that never recovers.
+func StallFor(problems []Problem) *Stall {
+	if len(problems) == 0 {
+		return nil
+	}
+	// Terminal causes win: a skill whose bundle drifted has nothing to gain
+	// from being told to supply a credential.
+	if p := First(problems, MetaBroken, BundleDrift); p != nil {
+		return &Stall{Terminal: true, Detail: withFix(*p)}
+	}
+
+	st := &Stall{Missing: MissingFields(problems)}
+	// Unreadable and malformed values are also things to supply/fix, so they
+	// belong in the list the agent is shown.
+	for _, p := range problems {
+		if p.Kind == KeychainUnavailable || p.Kind == InvalidSecret {
+			st.Missing = append(st.Missing, p.Field)
+		}
+	}
+	sort.Strings(st.Missing)
+	st.Missing = dedupe(st.Missing)
+
+	// A cause with a remedy of its own outranks the generic list: "run omac
+	// secrets set" is useless advice for a keychain that isn't running.
+	if p := First(problems, KeychainUnavailable, InvalidSecret); p != nil {
+		st.Detail = withFix(*p)
+		return st
+	}
+	st.Detail = fmt.Sprintf("missing required values: %v", st.Missing)
+	return st
+}
+
+// withFix renders a problem's cause plus its remedy, if it has one.
+func withFix(p Problem) string {
+	if p.Fix == "" {
+		return p.Detail
+	}
+	return p.Detail + " — " + p.Fix
+}
+
+func dedupe(sorted []string) []string {
+	out := sorted[:0]
+	var prev string
+	for i, s := range sorted {
+		if i == 0 || s != prev {
+			out = append(out, s)
+		}
+		prev = s
+	}
+	return out
+}
+
 // Has reports whether problems contains any of kinds.
 func Has(problems []Problem, kinds ...ProblemKind) bool {
 	for _, p := range problems {
