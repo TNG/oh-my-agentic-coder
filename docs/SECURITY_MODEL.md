@@ -26,11 +26,16 @@ In the default `filtered` mode every outbound connection is routed through
 omac's own HTTP proxy on loopback, and there is no built-in allowlist that
 quietly lets traffic through.
 
-- Hosts you list as allowed or denied in the profile are honored silently.
+- Hosts you list as allowed in the profile are honored silently, unless you
+  denied them at the prompt — a deny always outranks an allow, whichever way
+  round it was decided.
 - Any other host raises a native OS dialog asking you to allow or deny it:
-  once, permanently for that host, or permanently for a domain suffix
-  (`*.example.com`). A tricked or compromised agent cannot reach a new
-  destination without you seeing the request first.
+  once, for this session (per host or per domain suffix), or permanently for
+  that host or a domain suffix (`*.example.com`). A tricked or compromised
+  agent cannot reach a new destination without you seeing the request first.
+- Session decisions live in the supervisor's memory for one `omac start` run
+  and are never written to disk. They cannot outlive the run that made them,
+  and equally cannot be lifted by editing a file — restart to clear one.
 - With no dialog available (CI, a headless server) the request is denied.
   The default fails closed.
 - In corporate environments omac detects `HTTPS_PROXY` / `HTTP_PROXY` /
@@ -75,6 +80,78 @@ Every one of these decisions — each network allow/deny, each secret
 injection logged by name only, each process omac spawns — is written to an
 append-only audit trail stored outside the sandbox's reach (see
 [Configuration → Audit trail](./CONFIGURATION.md#audit-trail)).
+
+### Self-authored skills
+
+**Risk:** a skill *sidecar* runs as an ordinary host process **outside** the
+sandbox — that is deliberate, because legitimate skills (e.g. the
+marketplace) need host network and secrets the agent must never hold. But
+the workdir is agent-writable, including the skill source dirs
+(`.claude`/`.opencode`/`.agents/skills/*`) and the workdir registry
+(`.opencode/sidecar.json`). If the decision to spawn a skill were anchored
+only there, a confined agent could author a skill, forge its registration,
+trigger a live reload, and run that code unconfined — reading files the
+sandbox denies it and relaying them back through the facade. Editing a
+*trusted* skill's on-disk sidecar code is the same escape by another route.
+
+omac anchors that decision **outside** the agent-writable filesystem. A
+skill may spawn only when its current content is recorded in a host-only
+approval store (`~/.config/omac/approvals.json`) — a directory the default
+sandbox never mounts, so the confined agent cannot create or edit it. The
+kernel sandbox, not omac trusting a workdir file, is what makes an approval
+unforgeable.
+
+- An approval is keyed by **skill name + bundle hash** (the hash covers
+  every meaningful file in the skill dir). Editing a skill's code changes
+  its hash and silently invalidates the approval, so tampering with trusted
+  code is refused just like an unknown skill.
+- Only actors on the host side of the boundary can approve: a human running
+  `omac register` in a real terminal, or the marketplace sidecar (itself a
+  host process) after an install. Running `omac register` *inside* the
+  sandbox fails to write the store, so the skill stays unapproved.
+- Every spawn path is gated — cold start, the live-reload control plane, and
+  serve activation — with a supervisor-level backstop so no path can bypass
+  the check. An unapproved skill is mounted as a broken (502) route that
+  names the remedy, never spawned.
+- Upgrading omac grandfathers whatever is already registered **once**
+  (so working setups keep running); everything registered afterwards
+  requires an explicit host-side approval.
+
+Two related manipulations are already closed by the sandbox itself: the
+agent cannot reach a sidecar's loopback port directly (only omac's own
+ports are open — arbitrary loopback bind/connect is denied), and it runs in
+a separate PID namespace, so it cannot signal or kill sidecar processes.
+
+**Known limits of the approval.** The approval is only as tight as the
+bundle hash it is keyed on, and it assumes the store location is outside
+the sandbox:
+
+- `config.BundleHash` deliberately excludes dependency/artifact subtrees
+  (`node_modules`, `.venv`, `build`, `dist`, `target`, …) and does not follow
+  symlinks, so the hash alone does not cover everything a skill executes.
+  omac closes this by **executing from an approval snapshot**: at approval
+  time the whole skill tree is frozen into a host-only directory the sandbox
+  cannot write (`~/.config/omac/skills/<name>/<hash>`), and the sidecar is
+  spawned from that snapshot rather than the agent-writable workdir. So the
+  executed bytes are exactly the approved bytes, and rewriting an excluded-dir
+  file in the workdir after approval has no effect on what runs. Symlinks are
+  never dereferenced into the snapshot: an in-tree relative link is recreated
+  as a link (so `node_modules/.bin`-style layouts work), while a link that
+  escapes the skill tree is dropped — so a planted `dist/x -> ~/.ssh/id_rsa`
+  can neither bake a host file into the snapshot nor be read back through the
+  skill. (The bundle-hash *drift* check still only covers the hashed subset —
+  a detection nicety, not the enforcement boundary; the snapshot is the
+  boundary.)
+- Approvals are additive per name and never auto-retired, so an agent that
+  can reproduce a previously-approved build's bytes (and forge its registry
+  hash) could roll a skill back to an older approved version. Only
+  previously host-approved code can be resurrected this way (not arbitrary
+  code); `omac deregister` clears an approval outright.
+- The store resolves under `$XDG_CONFIG_HOME/omac` (else `~/.config/omac`).
+  Keep that path outside every sandbox-granted tree — the default profile
+  does. Pointing the host's `XDG_CONFIG_HOME` into a directory that is also
+  granted read-write to the sandbox would let the agent write approvals; do
+  not do that.
 
 ## How the isolation works
 
@@ -129,6 +206,7 @@ sandbox:
 | Bridge socket (`$TMPDIR/omac-<hash>/bridge.sock`) | read+write | `--allow-file` / `--read` flags |
 | Dynamic socket dir (e.g. Agent View `/tmp/cc-daemon-<uid>`) | read+write + AF_UNIX connect | `--allow-unix-dir` flag / `filesystem.allow_unix_dir` |
 | Paths in `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.kube`, … | **denied** | protected paths (override with `filesystem.override_deny`) |
+| `~/.config/omac` (skill approval store, sandbox profiles, global registry) | **not mounted** | never granted — the host-only anchor for [skill spawn approval](#self-authored-skills) |
 | Workdir and granted-tree `.env` / `.envrc` (incl. nested) | **denied** | baseline workdir-protected set (override with `filesystem.override_deny: [".env"]`) |
 | Files matching `filesystem.deny` (e.g. `*.key`) inside granted trees | **denied** | user deny list (`filesystem.deny` / `--deny`) |
 | Environment variables in `environment.allow_vars` (`OMAC_*`, `HOME`, `PATH`, `LANG`, `TERM`, … + the selected harness's auth vars) | passed through | default profile `environment.allow_vars` + `harness.SandboxEnvAllow` (injected at launch) |

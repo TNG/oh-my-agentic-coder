@@ -129,6 +129,34 @@ holes in the built-in protected-path list), `network.mode`
 `network.proxy_injection`, and `environment.allow_vars`. See the
 scaffolded `default.json` for the full schema.
 
+When a host is neither allowed nor denied by the profile, the network
+prompt dialog offers eleven choices (`Deny once` is preselected):
+
+| Choice | Applies to | Lifetime |
+|---|---|---|
+| `Allow once` / `Deny once` | this request | the request |
+| `Allow for this session (this host)` / `Deny …` | that exact host | this `omac start` run |
+| `Allow for this session (*.example.com)` / `Deny …` | the suffix and its subdomains | this `omac start` run |
+| `Allow permanently (this host)` / `Deny …` | that exact host | until you edit the file |
+| `Allow permanently (*.example.com)` / `Deny …` | the suffix and its subdomains | until you edit the file |
+| `Explain more` | this request | never stored |
+
+Only the permanent choices are written to disk, in `<profile>.pages.json`
+next to the sandbox profile. Session choices are held in memory by the
+sandbox supervisor and vanish when the run exits — nothing on disk holds
+them, so they cannot be edited or undone from a file; restart the sandbox
+to clear one.
+
+Session choices sit between the profile lists in precedence: a session
+**deny** outranks `allow_domain`, while a session **allow** never
+overrides `deny_domain` or a permanent deny. `omac diagnose` names a
+session decision as the cause when one shadows an `allow_domain` entry.
+
+The dialog is sized to fit all eleven rows without scrolling. On unusual
+displays (720p laptops, tiling window managers, HiDPI) set
+`OMAC_PROMPT_WIDTH` / `OMAC_PROMPT_HEIGHT` in pixels to override the
+defaults; a missing or non-numeric value falls back to them.
+
 **`network.proxy_injection`** routes *proxy-unaware* toolchains through
 the omac filtering proxy under `network.mode: filtered`. Most tools
 (`curl`, `git`, `pip`, `npm`/`yarn`/`pnpm`, `go`) already honor

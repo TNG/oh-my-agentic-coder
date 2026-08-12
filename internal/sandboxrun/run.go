@@ -330,7 +330,7 @@ func harnessName(innerArgv []string) string {
 // page policy (learned website decisions) lives next to the profile:
 // <profile>.pages.json (e.g. default.pages.json).
 func buildProxy(p *sandboxprofile.Profile, profilePath string, stderr io.Writer, logf func(string, ...any), auditor audit.Auditor, intentBase, harness string) (*netproxy.Server, error) {
-	var learned netproxy.LearnedStore
+	var learned netproxy.DecisionStore
 	pagesPath := sandboxprofile.PagesPath(profilePath)
 	lp, lerr := netprompt.LoadLearnedPolicy(pagesPath)
 	if lerr != nil {
@@ -338,6 +338,8 @@ func buildProxy(p *sandboxprofile.Profile, profilePath string, stderr io.Writer,
 		lp, _ = netprompt.LoadLearnedPolicy("")
 	}
 	learned = lp
+
+	session := netproxy.NewSessionStore()
 
 	var prompter netproxy.Prompter
 	onUnavailableAllow := p.Network.OnUnavailable() == sandboxprofile.OnUnavailableAllow
@@ -362,6 +364,7 @@ func buildProxy(p *sandboxprofile.Profile, profilePath string, stderr io.Writer,
 		OnUnavailableAllow: onUnavailableAllow,
 		Prompter:           prompter,
 		Learned:            learned,
+		Session:            session,
 		Logf:               logf,
 		Auditor:            auditor,
 	})

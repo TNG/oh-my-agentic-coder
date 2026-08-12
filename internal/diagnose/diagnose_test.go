@@ -116,6 +116,32 @@ func TestBlockedNotInAnyRuleSuggestsAllowlist(t *testing.T) {
 	}
 }
 
+// TestSessionDenyShadowingAllowIsNamed: a session deny outranks
+// allow_domain in the filter pipeline, so an allow-listed host can be
+// denied with source=session. The generic shadow explanation sends the
+// user to deny_domain, the pages.json learned deny and the hard-deny —
+// all three empty in this case. Name the session decision and its only
+// remedy instead.
+func TestSessionDenyShadowingAllowIsNamed(t *testing.T) {
+	pol := Policy{Mode: "filtered", PromptEnabled: true, AllowDomains: []string{"api.github.com"}}
+	decisions := []Decision{dec("api.github.com", false, "session")}
+
+	hints := Analyze(pol, decisions, realMatch)
+	h := findHint(hints, "api.github.com is in allow_domain but was still DENIED")
+	if h == nil {
+		t.Fatalf("missing hint.\n%s", hintTitles(hints))
+	}
+	joined := strings.Join(h.Detail, " ")
+	if !strings.Contains(joined, "session") {
+		t.Fatalf("explanation never names the session decision, got %q", joined)
+	}
+	for _, wrong := range []string{"deny_domain", "pages.json"} {
+		if strings.Contains(joined, wrong) {
+			t.Fatalf("explanation points at %q, which holds no session decision, got %q", wrong, joined)
+		}
+	}
+}
+
 func TestOverBroadAllowRuleFlagged(t *testing.T) {
 	pol := Policy{AllowDomains: []string{"*.com", "*.example.com"}}
 	hints := Analyze(pol, nil, realMatch)

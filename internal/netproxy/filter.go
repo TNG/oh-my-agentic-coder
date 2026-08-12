@@ -69,7 +69,8 @@ type Prompter interface {
 type PromptResult struct {
 	Allow   bool
 	Persist bool   // permanent (host or suffix scope) vs once
-	Scope   string // "host" or "suffix" when Persist
+	Session bool   // session-scoped (host or suffix scope) vs once
+	Scope   string // "host" or "suffix" when Persist or Session
 	Suffix  string // populated when Scope == "suffix"
 	// NeedsIntent signals that the user clicked "Explain more" — the
 	// request is denied with a marker pointing the agent at the intent
@@ -81,13 +82,15 @@ type PromptResult struct {
 	PriorReason string
 }
 
-// LearnedStore persists permanent prompt decisions. Implemented by the
-// prompt package's policy file store.
-type LearnedStore interface {
+// DecisionStore keeps prompt decisions so later requests for the same
+// host are answered without asking again. The two implementations differ
+// only in how long a decision lives: the prompt package's policy file
+// store keeps it across runs, SessionStore only until the sandbox exits.
+type DecisionStore interface {
 	// Lookup returns (verdict, found). Suffix entries match the host
 	// itself and any subdomain.
 	Lookup(host string) (allow bool, found bool)
-	// Record persists a permanent decision.
+	// Record stores a decision, or reports why it could not be kept.
 	Record(host, scope string, allow bool) error
 }
 
@@ -102,7 +105,14 @@ type FilterConfig struct {
 	// prompter/dialog is available or it times out. False = deny.
 	OnUnavailableAllow bool
 	Prompter           Prompter
-	Learned            LearnedStore
+	// Learned holds decisions the user made permanent; the prompt
+	// package's policy file store keeps them across runs. nil disables
+	// permanent decisions.
+	Learned DecisionStore
+	// Session holds decisions the user scoped to this sandbox session and
+	// that are never written to disk. nil disables them. See checkRules
+	// for how the two stores rank against the profile lists.
+	Session DecisionStore
 	// Resolve overrides DNS resolution in tests. Defaults to net.DefaultResolver.
 	Resolve func(ctx context.Context, host string) ([]netip.Addr, error)
 	// Logf receives one line per decision; nil discards.
@@ -161,7 +171,7 @@ func NewFilter(cfg FilterConfig) *Filter {
 //  5. default: prompt if enabled; else deny when allowlist non-empty;
 //     else allow (pure blocklist mode)
 func (f *Filter) Check(ctx context.Context, host string, port int) (Verdict, []netip.Addr) {
-	h := strings.ToLower(strings.TrimSuffix(host, "."))
+	h := NormalizeHost(host)
 
 	// 1. Hard denies. Never promptable.
 	if hardDenyHosts[h] {
@@ -219,7 +229,7 @@ func (f *Filter) Check(ctx context.Context, host string, port int) (Verdict, []n
 // pinned IPs, so the hostname the child requested is the admission
 // boundary (the upstream proxy resolves it).
 func (f *Filter) CheckHost(ctx context.Context, host string, port int) Verdict {
-	h := strings.ToLower(strings.TrimSuffix(host, "."))
+	h := NormalizeHost(host)
 	if hardDenyHosts[h] {
 		return f.log(h, port, Verdict{Decision: Deny, Reason: "hard-deny metadata host"})
 	}
@@ -235,26 +245,56 @@ func (f *Filter) CheckHost(ctx context.Context, host string, port int) Verdict {
 	return f.log(h, port, Verdict{Decision: Deny, Reason: "default deny"})
 }
 
-// checkRules evaluates learned-deny, deny_domain, allow_domain and
-// learned-allow. Returns nil when no rule matches.
+// checkRules evaluates the stored and static rules. A remembered deny is
+// checked before the profile lists and a remembered allow after, so a
+// deny the user gave at the prompt outranks allow_domain while an allow
+// never overrides an explicit profile rule. Returns nil when no rule
+// matches.
 func (f *Filter) checkRules(host string) *Verdict {
-	if f.cfg.Learned != nil {
-		if allow, found := f.cfg.Learned.Lookup(host); found && !allow {
-			return &Verdict{Decision: Deny, Reason: "learned permanent deny", Persisted: true}
-		}
-	}
-	if MatchDomainList(host, f.cfg.DenyDomains) {
+	learnedAllow, learnedFound := lookupDecision(f.cfg.Learned, host)
+	sessionAllow, sessionFound := lookupDecision(f.cfg.Session, host)
+
+	switch {
+	case learnedFound && !learnedAllow:
+		return &Verdict{Decision: Deny, Reason: "learned permanent deny", Persisted: true}
+	case sessionFound && !sessionAllow:
+		return &Verdict{Decision: Deny, Reason: "session deny"}
+	case MatchDomainList(host, f.cfg.DenyDomains):
 		return &Verdict{Decision: Deny, Reason: "deny_domain"}
-	}
-	if MatchDomainList(host, f.cfg.AllowDomains) {
+	case MatchDomainList(host, f.cfg.AllowDomains):
 		return &Verdict{Decision: Allow, Reason: "allow_domain"}
-	}
-	if f.cfg.Learned != nil {
-		if allow, found := f.cfg.Learned.Lookup(host); found && allow {
-			return &Verdict{Decision: Allow, Reason: "learned permanent allow", Persisted: true}
-		}
+	case sessionFound && sessionAllow:
+		return &Verdict{Decision: Allow, Reason: "session allow"}
+	case learnedFound && learnedAllow:
+		return &Verdict{Decision: Allow, Reason: "learned permanent allow", Persisted: true}
 	}
 	return nil
+}
+
+// lookupDecision treats a nil store as "no decision".
+func lookupDecision(s DecisionStore, host string) (allow, found bool) {
+	if s == nil {
+		return false, false
+	}
+	return s.Lookup(host)
+}
+
+// recordDecision stores a prompt result in s and reports whether it will
+// actually be replayed. A nil store and a failed upsert are the same
+// outcome for the caller: the decision applies to this request only.
+func (f *Filter) recordDecision(s DecisionStore, host string, res PromptResult, what string) bool {
+	if s == nil {
+		return false
+	}
+	target := host
+	if res.Scope == "suffix" && res.Suffix != "" {
+		target = res.Suffix
+	}
+	if err := s.Record(target, res.Scope, res.Allow); err != nil {
+		f.cfg.Logf("omac sandbox: warning: %s: %v", what, err)
+		return false
+	}
+	return true
 }
 
 // defaultDecision handles step 5. ok=false means "no decision" (treat
@@ -268,17 +308,16 @@ func (f *Filter) defaultDecision(ctx context.Context, host string, port int) (Ve
 			}
 			return Verdict{Decision: Deny, Reason: "prompt unavailable: on_unavailable=deny"}, true
 		}
-		if res.Persist && f.cfg.Learned != nil {
-			target := host
-			if res.Scope == "suffix" && res.Suffix != "" {
-				target = res.Suffix
-			}
-			if err := f.cfg.Learned.Record(target, res.Scope, res.Allow); err != nil {
-				f.cfg.Logf("omac sandbox: warning: persist learned decision: %v", err)
-			}
+		if res.Persist {
+			f.recordDecision(f.cfg.Learned, host, res, "persist learned decision")
 		}
+		// A session decision that was not stored applies once only; the
+		// audit event must not claim a scope the filter will not honour.
+		// (The learned path reports res.Persist regardless — see
+		// TestPromptDecisionRecordsScopeAndPersisted.)
+		kept := res.Session && f.recordDecision(f.cfg.Session, host, res, "record session decision")
 		scope := res.Scope
-		if !res.Persist {
+		if !res.Persist && !kept {
 			scope = "once"
 		}
 		if res.NeedsIntent {
@@ -359,6 +398,8 @@ func classifyReason(reason string) (source string) {
 		return "allowlist"
 	case strings.HasPrefix(reason, "dns"):
 		return "dns"
+	case strings.HasPrefix(reason, "session"):
+		return "session"
 	default:
 		return "default"
 	}
@@ -373,13 +414,8 @@ func MatchDomainList(host string, list []string) bool {
 		if entry == "" {
 			continue
 		}
-		if suffix, ok := strings.CutPrefix(entry, "*."); ok {
-			if host == suffix || strings.HasSuffix(host, "."+suffix) {
-				return true
-			}
-			continue
-		}
-		if host == entry {
+		suffix, wildcard := strings.CutPrefix(entry, "*.")
+		if matchHostOrSuffix(host, suffix, wildcard) {
 			return true
 		}
 	}

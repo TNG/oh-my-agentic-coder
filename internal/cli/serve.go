@@ -244,7 +244,7 @@ func runServe(args []string, env *Env) int {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	sup := supervisor.New(lc.Facade.BaseEnvPassthrough, auditor)
+	sup := supervisor.New(lc.Facade.BaseEnvPassthrough, auditor, skillSpawnAuthorizer)
 	defer sup.ShutdownAll(5 * time.Second)
 
 	f := facade.New(
@@ -289,6 +289,25 @@ func runServe(args []string, env *Env) int {
 			"OMAC_CACHE_DIR":  cacheScope.Dir,
 			"OMAC_CACHE_MODE": string(cacheScope.Mode),
 		}
+	}
+	// Trust-on-first-upgrade (see skill_approval.go): grandfather the skills
+	// KNOWN at cold start — the user-global registry plus the launch workdir —
+	// so a pre-existing setup keeps working, then close the window. Skills
+	// authored or registered LATER in this session are NOT grandfathered; they
+	// need an out-of-sandbox `omac register`, which is what keeps a long-lived
+	// serve daemon from blessing agent-authored skills mid-session.
+	if firstApprovalUpgrade() {
+		gReg, _ := registry.LoadGlobal()
+		wReg, _ := registry.Load(env.Workdir)
+		n, merr := grandfatherOnce(
+			grandfatherScope{reg: gReg},
+			grandfatherScope{workdir: env.Workdir, reg: wReg},
+		)
+		if merr != nil {
+			fmt.Fprintln(env.Stderr, "omac serve: approval store (non-fatal):", merr)
+		}
+		fmt.Fprintf(env.Stderr, "omac serve: approval-gated spawning is now active "+
+			"(migrated %d existing skill(s)); new skills need `omac register` on the host to spawn\n", n)
 	}
 
 	// Cold start: global skills are a fixed, known set, so — unlike the lazy
@@ -1295,13 +1314,29 @@ func (s *serveServer) bringUp(e registry.Entry, absDir, workdir, namespace, secr
 	}
 	mount := m.Sidecar.MountOrDefault(e.Name)
 
+	// Hash once and reuse for both the drift check and the approval gate below;
+	// an error leaves it empty for approvalRefusal to re-derive and report.
+	bundle, herr := config.BundleHash(absDir)
 	if !s.acceptChanges {
-		if bundle, herr := config.BundleHash(absDir); herr == nil && bundle != e.BundleHash {
+		if herr == nil && bundle != e.BundleHash {
 			sr := &skillRoute{Name: e.Name, Mount: mount, Namespace: namespace, SkillDir: absDir, State: facade.RouteBroken,
 				Detail: "bundle changed since register; re-register or pass --accept-skill-changes"}
 			s.installRoute(sr, 0)
 			return sr
 		}
+	}
+
+	// Spawn-approval gate: refuse unless the current on-disk code is
+	// host-approved, and run from the immutable approval snapshot rather than
+	// the agent-writable workdir. Grandfathering happens once at cold start
+	// (see runServe), NOT here: a long-lived serve daemon must not keep
+	// blessing skills authored mid-session.
+	snapDir, refusal := approvedSpawnDir(e.Name, absDir, bundle)
+	if refusal != nil {
+		sr := &skillRoute{Name: e.Name, Mount: mount, Namespace: namespace, SkillDir: absDir,
+			State: facade.RouteBroken, Detail: refusal.Error()}
+		s.installRoute(sr, 0)
+		return sr
 	}
 
 	// Resolve secrets.
@@ -1365,7 +1400,7 @@ func (s *serveServer) bringUp(e registry.Entry, absDir, workdir, namespace, secr
 		Name:             namespace + "/" + e.Name, // unique tracking key across dirs
 		SkillName:        e.Name,                   // plain name -> SIDECAR_SKILL (no slash)
 		Namespace:        namespace,                // audit only (hashed)
-		SkillDir:         absDir,
+		SkillDir:         snapDir,                  // run the frozen snapshot, not the workdir
 		Command:          m.Sidecar.Command,
 		EnvPassthrough:   m.Sidecar.EnvPassthrough,
 		Secrets:          secMap,

@@ -53,6 +53,81 @@ func TestStubBackendDecisionToLabel(t *testing.T) {
 	}
 }
 
+func TestStubBackendSessionAllowHost(t *testing.T) {
+	got := decisionToLabel(stubDecision{Allow: true, Session: true, Scope: "host"}, "example.com")
+	if got != "Allow for this session (this host)" {
+		t.Errorf("got %q; want %q", got, "Allow for this session (this host)")
+	}
+}
+
+func TestStubBackendSessionAllowSuffix(t *testing.T) {
+	got := decisionToLabel(stubDecision{Allow: true, Session: true, Scope: "suffix"}, "example.com")
+	want := "Allow for this session (*.example.com)"
+	if got != want {
+		t.Errorf("got %q; want %q", got, want)
+	}
+}
+
+func TestStubBackendSessionDenyHost(t *testing.T) {
+	got := decisionToLabel(stubDecision{Allow: false, Session: true, Scope: "host"}, "example.com")
+	if got != "Deny for this session (this host)" {
+		t.Errorf("got %q; want %q", got, "Deny for this session (this host)")
+	}
+}
+
+func TestStubBackendSessionDenySuffix(t *testing.T) {
+	got := decisionToLabel(stubDecision{Allow: false, Session: true, Scope: "suffix"}, "example.com")
+	want := "Deny for this session (*.example.com)"
+	if got != want {
+		t.Errorf("got %q; want %q", got, want)
+	}
+}
+
+func TestFileDecisionSourceRejectsPersistAndSession(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "decisions.json")
+	raw := []byte(`{"bad.example":{"allow":true,"persist":true,"session":true,"scope":"host"},"good.example":{"allow":true,"session":true,"scope":"host"}}`)
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var logged []string
+	src := newFileDecisionSource(path,
+		func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) })
+
+	if _, ok := src.lookup("bad.example"); ok {
+		t.Error("persist&&session entry must be rejected, lookup should return not found")
+	}
+	found := false
+	for _, line := range logged {
+		if strings.Contains(line, "invalid combo persist&&session") && strings.Contains(line, "bad.example") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected a warning about the invalid persist&&session combo, got: %v", logged)
+	}
+
+	// Sibling entries without the invalid combo still load.
+	d, ok := src.lookup("good.example")
+	if !ok || !d.Allow || !d.Session {
+		t.Errorf("valid session entry should load: %+v ok=%v", d, ok)
+	}
+}
+
+// TestStubBackendNeedsIntentOutranksSession: converting a
+// needs_intent+session fixture into a session deny would suppress every
+// later prompt for that host, making the e2e fixture test something it
+// never declared.
+func TestStubBackendNeedsIntentOutranksSession(t *testing.T) {
+	for _, scope := range []string{"host", "suffix"} {
+		d := stubDecision{NeedsIntent: true, Session: true, Scope: scope}
+		if got := decisionToLabel(d, "example.com"); got != "Explain more" {
+			t.Errorf("scope %q: decisionToLabel = %q, want %q", scope, got, "Explain more")
+		}
+	}
+}
+
 func TestStubBackendShow(t *testing.T) {
 	src := &fileDecisionSource{
 		loaded: true,
