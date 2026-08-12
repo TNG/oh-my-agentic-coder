@@ -3,6 +3,8 @@ package cli
 import (
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -285,3 +287,71 @@ func (r *startReloader) startTestMux() *http.ServeMux {
 
 func stringReader(s string) *strings.Reader { return strings.NewReader(s) }
 func contains(s, sub string) bool           { return strings.Contains(s, sub) }
+
+// TestStartReloaderPrunesDeregisteredNotReady: a skill deregistered mid-session
+// must stop being advertised. Otherwise the manifest keeps telling the agent to
+// run `omac secrets set <skill>` (internal/manifest renders exactly that for a
+// pending-credentials entry) for a skill that no longer exists.
+func TestStartReloaderPrunesDeregisteredNotReady(t *testing.T) {
+	r := newStartReloaderForTest(t)
+	wd := r.env.Workdir
+
+	stageSkillWithSecret(t, wd, "slack")
+	if code := runRegister([]string{"slack", "--no-secrets"}, r.env); code != ExitOK {
+		t.Fatalf("register exit=%d", code)
+	}
+	r.reload()
+	if len(r.notReady) != 1 || !r.facade.HasRoute("", "slack") {
+		t.Fatalf("expected slack tracked as not-ready with a stub route, got %v", r.notReady)
+	}
+
+	if code := runDeregister([]string{"slack"}, r.env); code != ExitOK {
+		t.Fatalf("deregister exit=%d", code)
+	}
+	r.reload()
+
+	if len(r.notReady) != 0 {
+		t.Errorf("notReady = %v, want empty after deregister", r.notReady)
+	}
+	if skills := r.manifest()["skills"].([]map[string]any); len(skills) != 0 {
+		t.Errorf("manifest = %v, want no phantom skill", skills)
+	}
+	if r.facade.HasRoute("", "slack") {
+		t.Error("stub route should be removed with the registration")
+	}
+}
+
+// TestStartReloaderReportsBrokenMeta: an unparseable omac.yaml is a not-ready
+// cause like any other. Dropping it silently was the very bug the notReady
+// tracking exists to fix — an agent that had just edited the file would watch it
+// vanish from the manifest with no explanation.
+func TestStartReloaderReportsBrokenMeta(t *testing.T) {
+	r := newStartReloaderForTest(t)
+	wd := r.env.Workdir
+
+	stageSkillWithSecret(t, wd, "slack")
+	if code := runRegister([]string{"slack", "--no-secrets"}, r.env); code != ExitOK {
+		t.Fatalf("register exit=%d", code)
+	}
+	// Break the meta AFTER registering, the way an agent editing the workdir would.
+	metaPath := filepath.Join(wd, ".opencode", "skills", "slack", "omac.yaml")
+	if err := os.WriteFile(metaPath, []byte("name: slack\nsidecar: [this is not a mapping\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	r.reload()
+
+	if r.isMounted("slack") {
+		t.Error("a skill with a broken omac.yaml must not mount")
+	}
+	skills := r.manifest()["skills"].([]map[string]any)
+	if len(skills) != 1 {
+		t.Fatalf("manifest = %v, want the broken skill reported, not dropped", skills)
+	}
+	if got := skills[0]["state"]; got != string(facade.RouteBroken) {
+		t.Errorf("state = %v, want broken", got)
+	}
+	if detail, _ := skills[0]["detail"].(string); !strings.Contains(detail, "omac.yaml") {
+		t.Errorf("detail = %q, want it to name the file", detail)
+	}
+}

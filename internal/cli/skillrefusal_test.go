@@ -229,3 +229,35 @@ func TestRenderSkillRefusalUsesPrefix(t *testing.T) {
 		t.Errorf("want the caller's prefix:\n%s", buf.String())
 	}
 }
+
+// TestRenderSkillRefusalPrintsKeychainHintOnce: the keychain remedy is
+// OS-derived, identical for every affected secret, and long. Repeating it per
+// row would bury the list of affected secrets under a dozen copies of the same
+// gnome-keyring instructions — and would break the grouping this renderer's doc
+// comment promises.
+func TestRenderSkillRefusalPrintsKeychainHintOnce(t *testing.T) {
+	hint := "no Secret Service provider found — install and start one (e.g. gnome-keyring or kwalletd)"
+	var problems []skillstate.Problem
+	for _, skill := range []string{"alpha", "bravo", "charlie"} {
+		for _, field := range []string{"TOKEN", "SECRET"} {
+			problems = append(problems, skillstate.Problem{
+				Kind: skillstate.KeychainUnavailable, Skill: skill, Field: field,
+				Detail: "dbus: no session bus", Fix: hint,
+			})
+		}
+	}
+	out, code := render(problems)
+
+	if n := strings.Count(out, hint); n != 1 {
+		t.Errorf("hint printed %d times, want exactly 1:\n%s", n, out)
+	}
+	// Every affected secret is still named.
+	for _, want := range []string{"alpha/TOKEN", "alpha/SECRET", "bravo/TOKEN", "charlie/SECRET"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
+	}
+	if code != ExitKeychainError {
+		t.Errorf("code = %d, want ExitKeychainError", code)
+	}
+}

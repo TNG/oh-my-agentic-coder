@@ -693,7 +693,8 @@ func runLaunch(env *Env, opts launchOpts) int {
 	reloader := &startReloader{
 		env: env, facade: f, sup: sup, ctx: ctx,
 		rtDir: rtDir, socket: socketPath, tcpPort: tcpPort, verbose: verbose,
-		mounted: map[string]string{},
+		skipSecretPattern: skipSecretPattern,
+		mounted:           map[string]string{},
 	}
 	for _, a := range approved {
 		reloader.markMounted(a.Entry.Name, a.Mount)
@@ -1286,7 +1287,30 @@ func skillEligibleForAutoRegister(workdir, skillName string, m *config.Meta, con
 		}
 		return false, nil
 	}
-	return len(problems) == 0, nil
+	for _, p := range problems {
+		// An OPTIONAL secret whose exported value fails its pattern must not
+		// block registration: eligibility asks whether the skill's REQUIRED
+		// values resolve without prompting, and registering anyway lets start's
+		// preflight report the malformed value with its --skip-secret-pattern
+		// hint — a better outcome than the findUnregisteredSkills gate's
+		// "run omac register", which would not fix it either.
+		if p.Kind == skillstate.InvalidSecret && !secretRequired(m, p.Field) {
+			continue
+		}
+		return false, nil
+	}
+	return true, nil
+}
+
+// secretRequired reports whether m declares the named secret as required.
+// Unknown names are treated as required (fail closed).
+func secretRequired(m *config.Meta, name string) bool {
+	for _, sp := range m.Sidecar.Secrets {
+		if sp.Name == name {
+			return sp.IsRequired()
+		}
+	}
+	return true
 }
 
 // startAutoRegisterOne writes a registry entry for a discovered

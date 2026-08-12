@@ -234,16 +234,19 @@ func buildSkillView(env *Env, skill string) (*skillView, int) {
 		out.owned = append(out.owned, armed.Secrets[name])
 	}
 
-	// A keychain that cannot answer is not "this secret is unset": say so
-	// rather than printing <missing> next to every declared secret.
+	// A keychain that cannot answer is not "this secret is unset", so say so on
+	// stderr — but keep going and print the table. This command's whole job is
+	// to show what start WOULD inject, and every config field plus every
+	// env_passthrough-supplied secret is still knowable without a keychain.
+	// Aborting would also break `omac config get <skill> <field>` for plain
+	// non-secret fields — the documented shell-substitution use case — on every
+	// headless host.
 	if p := skillstate.First(problems, skillstate.KeychainUnavailable); p != nil {
-		out.zero()
 		detail := p.Detail
 		if p.Fix != "" {
 			detail += " — " + p.Fix
 		}
-		fmt.Fprintln(env.Stderr, "omac config: keychain:", detail)
-		return nil, ExitKeychainError
+		fmt.Fprintln(env.Stderr, "omac config: warning: keychain:", detail)
 	}
 
 	for _, spec := range meta.Sidecar.Config {

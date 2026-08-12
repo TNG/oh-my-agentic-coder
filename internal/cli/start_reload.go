@@ -39,6 +39,12 @@ type startReloader struct {
 	socket  string
 	tcpPort int
 	verbose bool
+	// skipSecretPattern carries `omac start --skip-secret-pattern` into the
+	// reload loop. Reload began pattern-checking env-supplied secrets when it
+	// adopted the shared readiness rule, so without this a session started
+	// explicitly to tolerate an outdated pattern would still refuse to mount a
+	// skill registered mid-session.
+	skipSecretPattern bool
 
 	mu      sync.Mutex
 	mounted map[string]string // skill name -> mount, for skills mounted on the facade
@@ -156,6 +162,45 @@ func (r *startReloader) markNotReady(name string, st *notReadySkill) {
 	}
 	r.notReady[name] = st
 	r.mu.Unlock()
+}
+
+// reportNotReady is the whole not-ready treatment for one skill: a stub route
+// so a probe gets an actionable status instead of a 404, a manifest entry so the
+// agent can see it, and one stderr line per distinct reason for the human.
+// Deliberately does NOT markMounted, so a later reload promotes the skill once
+// the cause is fixed.
+func (r *startReloader) reportNotReady(name, absDir string, st *notReadySkill) {
+	r.facade.AddRoute(facade.Route{
+		Mount: st.Mount, Skill: name, SkillDir: absDir,
+		State: st.State, Detail: st.Detail,
+	})
+	r.markNotReady(name, st)
+	if r.warnOnce(name, st.Detail) {
+		fmt.Fprintf(r.env.Stderr, "omac start: skill %s not mounted — %s\n", name, st.Detail)
+	}
+}
+
+// pruneNotReady drops not-ready state (and its stub route) for skills that have
+// left the registry, so a `omac deregister` mid-session doesn't leave the
+// manifest advertising a skill that no longer exists.
+func (r *startReloader) pruneNotReady(reg *registry.Registry) {
+	registered := make(map[string]struct{}, len(reg.Registered))
+	for _, e := range reg.Registered {
+		registered[e.Name] = struct{}{}
+	}
+	r.mu.Lock()
+	var dropped []*notReadySkill
+	for name, st := range r.notReady {
+		if _, ok := registered[name]; !ok {
+			dropped = append(dropped, st)
+			delete(r.notReady, name)
+			delete(r.warned, name)
+		}
+	}
+	r.mu.Unlock()
+	for _, st := range dropped {
+		r.facade.RemoveRoute("", st.Mount)
+	}
 }
 
 // warnOnce reports true the first time it is called for (name, reason), so a
@@ -330,6 +375,14 @@ func (r *startReloader) reload() []string {
 	}
 	reg := mergeRegistries(gReg, wReg)
 
+	// Drop not-ready state for skills that are no longer registered, so
+	// `omac deregister` while a session runs doesn't leave the manifest
+	// advertising a phantom skill (and internal/manifest telling the agent to
+	// run `omac secrets set` for something that no longer exists).
+	r.pruneNotReady(reg)
+
+	// MergeConfig tolerates a nil layer, which matters here: the load errors
+	// are discarded, and skill-config.yaml is agent-writable.
 	wCfg, _ := skillconfig.Load(r.env.Workdir)
 	gCfg, _ := skillconfig.LoadGlobal()
 	cfgStore := skillstate.MergeConfig(gCfg, wCfg)
@@ -343,8 +396,9 @@ func (r *startReloader) reload() []string {
 	// on-disk code and left drift to the approval gate below, which re-derives
 	// the hash itself.
 	resolver := skillstate.New(skillstate.Options{
-		Scope:          keychain.WorkdirID(r.env.Workdir),
-		SkipBundleHash: true,
+		Scope:             keychain.WorkdirID(r.env.Workdir),
+		SkipBundleHash:    true,
+		SkipSecretPattern: r.skipSecretPattern,
 	})
 	var added []string
 
@@ -357,12 +411,24 @@ func (r *startReloader) reload() []string {
 			absDir = filepath.Join(r.env.Workdir, absDir)
 		}
 
-		armed, problems := resolver.Load(e, absDir, cfgStore)
-		if skillstate.Has(problems, skillstate.MetaBroken) {
-			armed.Zero()
+		// Inspect first, Fill after the approval gate: a sidecar that is about
+		// to be refused must not cost a keychain read (one blocking
+		// authorization prompt per refused skill, on macOS) or have its
+		// credentials materialized for nothing.
+		armed, problems := resolver.Inspect(e, absDir)
+		mount := armed.Mount
+
+		// A broken omac.yaml gets a route and a message like every other
+		// not-ready cause. Dropping it silently is the exact bug notReady
+		// exists to fix — an agent that had just edited the file would see it
+		// vanish from the manifest with no explanation.
+		if p := skillstate.First(problems, skillstate.MetaBroken); p != nil {
+			r.reportNotReady(e.Name, absDir, &notReadySkill{
+				Mount: mount, State: facade.RouteBroken,
+				Detail: config.MetaFileName + ": " + p.Detail,
+			})
 			continue
 		}
-		mount := armed.Mount
 
 		// Spawn-approval gate. A live reload is exactly the path a
 		// confined agent would use to bring up a skill it authored in the
@@ -374,7 +440,6 @@ func (r *startReloader) reload() []string {
 		// reload after `omac register` can still bring it up).
 		snapDir, refusal := approvedSpawnDir(e.Name, absDir, "")
 		if refusal != nil {
-			armed.Zero()
 			r.facade.AddRoute(brokenApprovalRoute(mount, e.Name, absDir, refusal))
 			r.markNotReady(e.Name, &notReadySkill{
 				Mount: mount, State: facade.RouteBroken, Detail: refusal.Error(),
@@ -385,20 +450,15 @@ func (r *startReloader) reload() []string {
 			continue
 		}
 
+		problems = append(problems, resolver.Fill(&armed, cfgStore)...)
+
 		// Not ready: install a stub route and say so, rather than skipping in
 		// silence. markNotReady deliberately does NOT markMounted, so a later
 		// reload (after `omac secrets set`) promotes it — facade.AddRoute
 		// overwrites by mount, so promotion needs no teardown.
 		if st := reloadStubRoute(mount, problems); st != nil {
 			armed.Zero()
-			r.facade.AddRoute(facade.Route{
-				Mount: mount, Skill: e.Name, SkillDir: absDir,
-				State: st.State, Detail: st.Detail,
-			})
-			r.markNotReady(e.Name, st)
-			if r.warnOnce(e.Name, st.Detail) {
-				fmt.Fprintf(r.env.Stderr, "omac start: skill %s not mounted — %s\n", e.Name, st.Detail)
-			}
+			r.reportNotReady(e.Name, absDir, st)
 			continue
 		}
 

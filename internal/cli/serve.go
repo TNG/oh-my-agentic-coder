@@ -49,21 +49,22 @@ func runServe(args []string, env *Env) int {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	fs.SetOutput(env.Stderr)
 	var (
-		workdir          = fs.String("workdir", "", "Auto-activate this one directory at cold start (single-dir convenience, §5.5).")
-		controlAddr      = fs.String("control-addr", "127.0.0.1:0", "Bind address for the control-plane HTTP server.")
-		acceptChanges    = fs.Bool("accept-skill-changes", false, "Tolerate bundle_hash drift in registered skills.")
-		profile          = fs.String("sandbox", "", "Name of a sandbox profile from the launcher config.")
-		innerCmdOverride = fs.String("inner", "", "Override inner_cmd's executable (default: opencode serve).")
-		noSandbox        = fs.Bool("no-sandbox", false, "Run the inner command directly, without a sandbox (debug only).")
-		noInner          = fs.Bool("no-inner", false, "Do not launch any inner command; run the control plane only (testing/headless).")
-		ephemeralCache   = fs.Bool("ephemeral-cache", false, "Use a per-launch cache instead of the persistent cache.")
-		cacheScopeFlag   = fs.String("cache-scope", "", "Persistent cache scope: global, config, or workdir. Overrides config (default: global).")
-		verbose          = fs.Bool("verbose", false, "Verbose lifecycle logging.")
-		forDesktop       = fs.Bool("for-opencode-desktop", false, "Grant every project worktree from the local OpenCode state (Desktop projects) read+write in the sandbox.")
-		learn            = fs.Bool("learn", false, "Learn mode: do not restrict filesystem access; record folders used and offer to add them to the sandbox profile at session end.")
-		auditLog         = fs.String("audit-log", "", "Path to the audit log (default: persistent central location). Overrides config.")
-		noAudit          = fs.Bool("no-audit", false, "Disable the security audit trail.")
-		auditStrict      = fs.Bool("audit-strict", false, "Fail-closed: abort if the audit log cannot be written.")
+		workdir           = fs.String("workdir", "", "Auto-activate this one directory at cold start (single-dir convenience, §5.5).")
+		controlAddr       = fs.String("control-addr", "127.0.0.1:0", "Bind address for the control-plane HTTP server.")
+		acceptChanges     = fs.Bool("accept-skill-changes", false, "Tolerate bundle_hash drift in registered skills.")
+		skipSecretPattern = fs.Bool("skip-secret-pattern", false, "Do not enforce a secret's pattern against an env_passthrough-supplied value (escape hatch for an outdated pattern; the raw value is still passed through). Mirrors the flag on `omac start`.")
+		profile           = fs.String("sandbox", "", "Name of a sandbox profile from the launcher config.")
+		innerCmdOverride  = fs.String("inner", "", "Override inner_cmd's executable (default: opencode serve).")
+		noSandbox         = fs.Bool("no-sandbox", false, "Run the inner command directly, without a sandbox (debug only).")
+		noInner           = fs.Bool("no-inner", false, "Do not launch any inner command; run the control plane only (testing/headless).")
+		ephemeralCache    = fs.Bool("ephemeral-cache", false, "Use a per-launch cache instead of the persistent cache.")
+		cacheScopeFlag    = fs.String("cache-scope", "", "Persistent cache scope: global, config, or workdir. Overrides config (default: global).")
+		verbose           = fs.Bool("verbose", false, "Verbose lifecycle logging.")
+		forDesktop        = fs.Bool("for-opencode-desktop", false, "Grant every project worktree from the local OpenCode state (Desktop projects) read+write in the sandbox.")
+		learn             = fs.Bool("learn", false, "Learn mode: do not restrict filesystem access; record folders used and offer to add them to the sandbox profile at session end.")
+		auditLog          = fs.String("audit-log", "", "Path to the audit log (default: persistent central location). Overrides config.")
+		noAudit           = fs.Bool("no-audit", false, "Disable the security audit trail.")
+		auditStrict       = fs.Bool("audit-strict", false, "Fail-closed: abort if the audit log cannot be written.")
 	)
 	var roots multiFlag
 	fs.Var(&roots, "root", "Pre-declared root directory under which projects may be activated (§5.4 Option B). Repeatable. Empty = allow any directory.")
@@ -265,22 +266,23 @@ func runServe(args []string, env *Env) int {
 	defer f.Close()
 
 	srv := &serveServer{
-		env:           env,
-		harness:       harness,
-		facade:        f,
-		sup:           sup,
-		auditor:       auditor,
-		ctx:           ctx,
-		rtDir:         rtDir,
-		sandboxTmp:    sandboxTmp,
-		socketPath:    socketPath,
-		tcpPort:       f.TCPPort(),
-		acceptChanges: *acceptChanges,
-		verbose:       *verbose,
-		roots:         absRoots,
-		dirs:          map[string]*dirState{},
-		byToken:       map[string]*dirState{},
-		global:        map[string]*skillRoute{},
+		env:               env,
+		harness:           harness,
+		facade:            f,
+		sup:               sup,
+		auditor:           auditor,
+		ctx:               ctx,
+		rtDir:             rtDir,
+		sandboxTmp:        sandboxTmp,
+		socketPath:        socketPath,
+		tcpPort:           f.TCPPort(),
+		acceptChanges:     *acceptChanges,
+		skipSecretPattern: *skipSecretPattern,
+		verbose:           *verbose,
+		roots:             absRoots,
+		dirs:              map[string]*dirState{},
+		byToken:           map[string]*dirState{},
+		global:            map[string]*skillRoute{},
 	}
 	if cacheScope != nil {
 		srv.cacheEnv = map[string]string{
@@ -846,9 +848,14 @@ type serveServer struct {
 	tcpPort       int
 	controlBase   string
 	acceptChanges bool
-	verbose       bool
-	roots         []string // §5.4 Option B; empty = allow any directory
-	cacheEnv      map[string]string
+	// skipSecretPattern mirrors start's flag. serve began pattern-checking
+	// env_passthrough-supplied secrets when it adopted the shared readiness
+	// rule; without an escape hatch a skill whose omac.yaml carries an outdated
+	// pattern would have no way back to a live route short of editing the skill.
+	skipSecretPattern bool
+	verbose           bool
+	roots             []string // §5.4 Option B; empty = allow any directory
+	cacheEnv          map[string]string
 
 	mu      sync.RWMutex
 	dirs    map[string]*dirState   // abs dir -> state
@@ -1331,12 +1338,19 @@ func (s *serveServer) bringUp(e registry.Entry, absDir, workdir, namespace, secr
 	// drifted: it never honoured the env_passthrough fallback, so a skill whose
 	// required secret came from the shell was reported pending-credentials even
 	// though the supervisor would have injected the value at spawn.
-	armed, problems := skillstate.New(skillstate.Options{
+	resolver := skillstate.New(skillstate.Options{
 		Scope:             secretScope,
 		AcceptBundleDrift: s.acceptChanges,
-	}).Load(e, absDir, cfg)
-	// armed holds live secret material on every path out of this function,
-	// including the ones that return a stub route without spawning.
+		SkipSecretPattern: s.skipSecretPattern,
+	})
+	// Inspect (meta + bundle hash) first and Fill (secrets + config) only after
+	// the spawn-approval gate below: a skill that is about to be refused must
+	// not cost a keychain read, which on macOS is one blocking authorization
+	// prompt per refused skill, nor have its credentials materialized here for
+	// nothing.
+	armed, problems := resolver.Inspect(e, absDir)
+	// Once filled, armed holds live secret material on every path out of this
+	// function, including the ones that return a stub route without spawning.
 	defer armed.Zero()
 
 	if skillstate.Has(problems, skillstate.MetaBroken) {
@@ -1373,6 +1387,8 @@ func (s *serveServer) bringUp(e registry.Entry, absDir, workdir, namespace, secr
 	if refusal != nil {
 		return broken(refusal.Error())
 	}
+
+	problems = append(problems, resolver.Fill(&armed, cfg)...)
 
 	// A dead or unreadable keychain is not a missing credential: routing it to
 	// pending-credentials would tell the agent to run `omac secrets set`, which

@@ -61,14 +61,18 @@ func keychainWith(kv map[string]string) func(string, string, string) (secrets.Se
 	}
 }
 
-// deadKeychain mimics keychain.GetScoped on a host with no Secret Service:
-// ErrNotFound (so every fallback still runs) AND ErrUnavailable (so an
-// exhausted caller can diagnose the environment). See keychain.GetScoped.
+// deadBusError is the text keyring surfaces on a host with no Secret Service.
+const deadBusError = "dbus: couldn't determine address of session bus"
+
+// deadKeychain mimics keychain.GetScoped on such a host: ErrNotFound (so every
+// fallback still runs) AND ErrUnavailable (so an exhausted caller can diagnose
+// the environment), with the raw cause WRAPPED — matching GetScoped's three-%w
+// chain exactly, so keychain.BackendCause can recover it. Using %v here would
+// truncate the chain and silently stop exercising the Detail text.
 func deadKeychain() func(string, string, string) (secrets.Secret, error) {
 	return func(scope, skill, name string) (secrets.Secret, error) {
-		return secrets.Secret{}, fmt.Errorf("%w: %w: %v",
-			keychain.ErrNotFound, keychain.ErrUnavailable,
-			errors.New("dbus: couldn't determine address of session bus"))
+		return secrets.Secret{}, fmt.Errorf("%w: %w: %w",
+			keychain.ErrNotFound, keychain.ErrUnavailable, errors.New(deadBusError))
 	}
 }
 
@@ -195,6 +199,15 @@ func TestDeadBackendReportsUnavailableNotMissing(t *testing.T) {
 	}
 	if !strings.Contains(problems[0].Fix, "Secret Service") {
 		t.Errorf("Fix = %q, want the OS-specific backend hint", problems[0].Fix)
+	}
+	// Detail must be the backend's own words — which socket failed — not the
+	// self-contradicting "secret not found: backend unavailable" chain. This
+	// pins keychain.BackendCause's traversal from this side too.
+	if problems[0].Detail != deadBusError {
+		t.Errorf("Detail = %q, want the raw cause %q", problems[0].Detail, deadBusError)
+	}
+	if problems[0].Cause == nil || !errors.Is(problems[0].Cause, keychain.ErrUnavailable) {
+		t.Errorf("Cause = %v, want the classified error for callers that switch on it", problems[0].Cause)
 	}
 }
 
@@ -569,18 +582,19 @@ func TestLoadReportsBrokenMeta(t *testing.T) {
 
 // ---- pass-level behaviour ----
 
-// TestKeychainFailureIsStickyAcrossThePass: start used to abort the launch on
-// the first keychain error. Collecting every skill's problems instead must not
-// mean re-hitting a broken backend once per skill — on macOS that is one
-// blocking authorization prompt each.
-func TestKeychainFailureIsStickyAcrossThePass(t *testing.T) {
+// TestDeadBackendIsStickyAcrossThePass: start used to abort the launch on the
+// first keychain error. Collecting every skill's problems instead must not mean
+// re-dialing a bus that is provably not there once per skill — on macOS that is
+// one blocking authorization prompt each.
+func TestDeadBackendIsStickyAcrossThePass(t *testing.T) {
 	dir := skillDir(t)
 	m := meta(nil, []config.SecretSpec{{Name: "TOKEN"}}, nil)
 
 	calls := 0
+	dead := deadKeychain()
 	r := New(Options{Keychain: func(scope, skill, name string) (secrets.Secret, error) {
 		calls++
-		return secrets.Secret{}, errors.New("keychain get omac/x/TOKEN: authorization denied")
+		return dead(scope, skill, name)
 	}})
 
 	for _, skill := range []string{"a", "b", "c"} {
@@ -589,7 +603,40 @@ func TestKeychainFailureIsStickyAcrossThePass(t *testing.T) {
 		armed.Zero()
 	}
 	if calls != 1 {
-		t.Errorf("keychain called %d times, want 1: a proven-broken backend must not be re-probed per skill", calls)
+		t.Errorf("keychain called %d times, want 1: a provably dead backend must not be re-probed per skill", calls)
+	}
+}
+
+// TestOpaqueFailureIsNotSticky is the counterpart, and the reason the sticky
+// flag is scoped to ErrUnavailable. A corrupt entry or a single denied item says
+// nothing about the next secret's readability, so short-circuiting on it would
+// report one skill's error against skills whose secrets are perfectly fine —
+// `omac doctor` would print "[fail] b: authorization denied" for a b it never
+// asked about.
+func TestOpaqueFailureIsNotSticky(t *testing.T) {
+	dir := skillDir(t)
+	m := meta(nil, []config.SecretSpec{{Name: "TOKEN"}}, nil)
+
+	calls := 0
+	r := New(Options{Keychain: func(scope, skill, name string) (secrets.Secret, error) {
+		calls++
+		if skill == "a" {
+			return secrets.Secret{}, errors.New("keychain get omac/a/TOKEN: authorization denied")
+		}
+		return secrets.NewSecretString("fine"), nil
+	}})
+
+	_, aProblems := r.Resolve(m, entry(t, "a", dir), dir, nil)
+	wantKinds(t, aProblems, KeychainUnavailable)
+
+	bArmed, bProblems := r.Resolve(m, entry(t, "b", dir), dir, nil)
+	defer bArmed.Zero()
+	wantKinds(t, bProblems)
+	if got := bArmed.Secrets["TOKEN"].ExposeString(); got != "fine" {
+		t.Errorf("b's secret = %q, want it resolved: a's per-item failure must not condemn b", got)
+	}
+	if calls != 2 {
+		t.Errorf("keychain called %d times, want 2", calls)
 	}
 }
 
@@ -742,5 +789,84 @@ func TestMergeConfigWorkdirOverridesGlobalPerField(t *testing.T) {
 	// Inputs are not mutated.
 	if got, _ := global.Get("probe", "B"); got != "global-b" {
 		t.Errorf("global layer was mutated: %q", got)
+	}
+}
+
+// TestInspectReadsNoSecrets is the property serve and live reload depend on:
+// the spawn-approval gate is a security decision and must be settled before any
+// keychain read, so a skill about to be refused costs neither an authorization
+// prompt nor materialized plaintext.
+func TestInspectReadsNoSecrets(t *testing.T) {
+	dir := skillDir(t)
+	if err := os.WriteFile(filepath.Join(dir, config.MetaFileName),
+		[]byte("name: probe\nsidecar:\n  command: [\"true\"]\n  secrets:\n    - name: TOKEN\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	e := entry(t, "probe", dir)
+
+	calls := 0
+	r := New(Options{Keychain: func(scope, skill, name string) (secrets.Secret, error) {
+		calls++
+		return secrets.NewSecretString("v"), nil
+	}})
+
+	armed, problems := r.Inspect(e, dir)
+	defer armed.Zero()
+	wantKinds(t, problems)
+	if calls != 0 {
+		t.Errorf("Inspect made %d keychain calls, want 0", calls)
+	}
+	if armed.Bundle == "" {
+		t.Error("Inspect should still produce the bundle hash the approval gate needs")
+	}
+	if len(armed.Secrets) != 0 {
+		t.Errorf("Inspect resolved %d secrets, want none", len(armed.Secrets))
+	}
+
+	// Fill is the second half, and only then is the keychain touched.
+	if probs := r.Fill(&armed, nil); len(probs) != 0 {
+		t.Errorf("Fill problems = %v, want none", probs)
+	}
+	if calls != 1 {
+		t.Errorf("Fill made %d keychain calls, want 1", calls)
+	}
+	if got := armed.Secrets["TOKEN"].ExposeString(); got != "v" {
+		t.Errorf("secret = %q, want it resolved by Fill", got)
+	}
+}
+
+// TestFillOnBrokenMetaIsNoOp: a caller that ignores Inspect's problems and calls
+// Fill anyway must not panic on the nil meta.
+func TestFillOnBrokenMetaIsNoOp(t *testing.T) {
+	armed, problems := New(Options{}).Inspect(registry.Entry{Name: "probe"}, t.TempDir())
+	wantKinds(t, problems, MetaBroken)
+	if got := New(Options{}).Fill(&armed, nil); got != nil {
+		t.Errorf("Fill = %v, want nil on a broken meta", got)
+	}
+}
+
+// TestMergeConfigTreatsNilLayerAsEmpty: skillconfig.Load returns (nil, err) for
+// an unparseable store and callers discard the error, so a nil layer must not
+// panic. <workdir>/.opencode/skill-config.yaml is agent-writable and feeds the
+// live-reload handler.
+func TestMergeConfigTreatsNilLayerAsEmpty(t *testing.T) {
+	populated := &skillconfig.Store{Version: skillconfig.SchemaVersion}
+	populated.Set("probe", "F", "v")
+
+	for _, c := range []struct {
+		name            string
+		global, workdir *skillconfig.Store
+		wantValue       string
+	}{
+		{"nil workdir", populated, nil, "v"},
+		{"nil global", nil, populated, "v"},
+		{"both nil", nil, nil, ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			merged := MergeConfig(c.global, c.workdir) // must not panic
+			if got, _ := merged.Get("probe", "F"); got != c.wantValue {
+				t.Errorf("Get = %q, want %q", got, c.wantValue)
+			}
+		})
 	}
 }

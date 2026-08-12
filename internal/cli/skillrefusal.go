@@ -35,8 +35,7 @@ func renderSkillRefusal(w io.Writer, prefix string, problems []skillstate.Proble
 	// the next section's remedy (`omac secrets set`) cannot work until it is
 	// fixed — telling a headless user to store a secret in a keychain that
 	// isn't running is issue #174's Failure 4.
-	perField(w, problems, skillstate.KeychainUnavailable,
-		"keychain unavailable — a required secret could not be read:")
+	keychainSection(w, problems)
 
 	perSkill(w, problems, skillstate.MetaBroken,
 		config.MetaFileName+" broken:")
@@ -70,6 +69,37 @@ func renderSkillRefusal(w io.Writer, prefix string, problems []skillstate.Proble
 		return ExitSecretRefused
 	}
 	return ExitConfigInvalid
+}
+
+// keychainSection renders the keychain-unavailable class. Unlike every other
+// class its remedy is OS-derived rather than per-skill, so it is printed ONCE
+// under the header instead of once per row — a dead backend on a host with a few
+// skills would otherwise repeat the same ~250-character gnome-keyring/dbus
+// instructions a dozen times and bury the list of affected secrets.
+func keychainSection(w io.Writer, problems []skillstate.Problem) {
+	var rows []skillstate.Problem
+	var fixes []string
+	seenFix := map[string]bool{}
+	for _, p := range problems {
+		if p.Kind != skillstate.KeychainUnavailable {
+			continue
+		}
+		rows = append(rows, p)
+		if p.Fix != "" && !seenFix[p.Fix] {
+			seenFix[p.Fix] = true
+			fixes = append(fixes, p.Fix)
+		}
+	}
+	if len(rows) == 0 {
+		return
+	}
+	fmt.Fprintln(w, "\n  keychain unavailable — a required secret could not be read:")
+	for _, p := range rows {
+		fmt.Fprintf(w, "    %s/%s — %s\n", p.Skill, p.Field, p.Detail)
+	}
+	for _, fix := range fixes {
+		fmt.Fprintf(w, "    → %s\n", fix)
+	}
 }
 
 // perSkill renders a skill-level class: "<skill> — <detail/fix>".

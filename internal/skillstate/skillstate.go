@@ -105,6 +105,9 @@ const (
 	SourceEnvPassthrough Source = "env_passthrough"  // host env, because the secret is listed in env_passthrough
 	SourceMissingReq     Source = "missing-required" // required and unresolved
 	SourceMissingOpt     Source = "missing-optional" // optional and unresolved
+	// SourceUnreadable marks a secret the keychain could not answer for, as
+	// opposed to one that is simply unset. Secrets only.
+	SourceUnreadable Source = "keychain-unavailable"
 )
 
 // SourceDefaultFromEnv renders the `default_from_env` rung, which names the
@@ -195,59 +198,58 @@ func (a *Armed) Zero() {
 // resolveSecrets.
 type Resolver struct {
 	opts Options
-	// keychainDown records that the backend answered with a hard failure or
-	// reported itself unavailable while a required secret still needed it.
-	// Once set, later skills in this pass skip the backend entirely: without
-	// it, a macOS run that lost keychain authorization would raise one
-	// blocking auth prompt per skill, and start's pre-#174 behaviour of
-	// aborting on the first keychain error would be replaced by N failures.
+	// keychainDown records that the BACKEND reported itself unavailable. Once
+	// set, later skills in this pass skip it entirely rather than re-dialing a
+	// bus that is provably not there — start's pre-#174 behaviour was to abort
+	// the launch on the first keychain error, and collecting every skill's
+	// problems instead must not turn that into N failed dials (on macOS, N
+	// blocking authorization prompts).
+	//
+	// Deliberately narrow: only ErrUnavailable, which is a property of the
+	// environment and therefore affects every read. A per-ITEM failure (a
+	// corrupt entry, one denied item) says nothing about the next secret, so
+	// short-circuiting on it would attribute one skill's error to skills whose
+	// secrets are perfectly readable.
 	keychainDown error
 }
 
 // New returns a Resolver applying o.
 func New(o Options) *Resolver { return &Resolver{opts: o} }
 
-// Resolve applies the readiness rule to a skill whose meta is already loaded.
+// Resolve applies the readiness rule to a skill whose meta is already loaded:
+// structural checks (bundle drift) followed by credential resolution.
 //
 // absDir is the skill's own directory, already absolute. cfg is the merged
 // (global + workdir) config store — see MergeConfig.
 func (r *Resolver) Resolve(m *config.Meta, e registry.Entry, absDir string, cfg *skillconfig.Store) (Armed, []Problem) {
-	armed := Armed{
-		Entry:         e,
-		Meta:          m,
-		AbsDir:        absDir,
-		Mount:         m.Sidecar.MountOrDefault(e.Name),
-		Secrets:       map[string]secrets.Secret{},
-		Config:        map[string]string{},
-		SecretSources: map[string]Source{},
-		ConfigSources: map[string]Source{},
-	}
-	var problems []Problem
-
-	if !r.opts.SkipBundleHash {
-		bundle, err := config.BundleHash(absDir)
-		armed.Bundle, armed.BundleErr = bundle, err
-		// Report drift only when the hash is trustworthy; a hashing failure
-		// is the caller's to interpret via BundleErr.
-		if err == nil && !r.opts.AcceptBundleDrift && bundle != e.BundleHash {
-			problems = append(problems, Problem{
-				Kind:   BundleDrift,
-				Skill:  e.Name,
-				Detail: "bundle changed since register",
-				Fix:    "omac register --force " + e.Name,
-			})
-		}
-	}
-
-	problems = append(problems, r.resolveSecrets(&armed)...)
-	problems = append(problems, r.resolveConfig(&armed, cfg)...)
-	return armed, problems
+	armed, problems := r.inspectMeta(m, e, absDir)
+	return armed, append(problems, r.Fill(&armed, cfg)...)
 }
 
-// Load is Resolve preceded by reading omac.yaml. A meta that is missing,
-// unparseable, or sidecar-less yields a single MetaBroken problem and a
-// zero-value Armed, since nothing further can be resolved.
+// Load is Resolve preceded by reading omac.yaml.
 func (r *Resolver) Load(e registry.Entry, absDir string, cfg *skillconfig.Store) (Armed, []Problem) {
+	armed, problems := r.Inspect(e, absDir)
+	if Has(problems, MetaBroken) {
+		return armed, problems
+	}
+	return armed, append(problems, r.Fill(&armed, cfg)...)
+}
+
+// Inspect performs the STRUCTURAL half of the rule — read omac.yaml, hash the
+// bundle, report a broken meta or drift — and reads no secret at all.
+//
+// Callers with a gate between structural validation and credential resolution
+// use it: serve and live reload must clear the spawn-approval gate (a security
+// decision, see internal/skilltrust) BEFORE touching the keychain, otherwise a
+// skill that is about to be refused still costs a keychain read each — one
+// blocking authorization prompt per refused skill on macOS — and its plaintext
+// credentials are materialized for nothing. Follow with Fill once the gate
+// passes. Callers with no such gate (start's preflight, doctor) use Load.
+//
+// A meta that is missing, unparseable, or sidecar-less yields a single
+// MetaBroken problem; nothing further can be resolved, and Fill on that Armed
+// is a no-op.
+func (r *Resolver) Inspect(e registry.Entry, absDir string) (Armed, []Problem) {
 	m, err := config.LoadMeta(filepath.Join(absDir, config.MetaFileName))
 	if err != nil {
 		return Armed{Entry: e, AbsDir: absDir, Mount: e.Name}, []Problem{{
@@ -266,7 +268,48 @@ func (r *Resolver) Load(e registry.Entry, absDir string, cfg *skillconfig.Store)
 			Fix:    "omac register --force " + e.Name,
 		}}
 	}
-	return r.Resolve(m, e, absDir, cfg)
+	return r.inspectMeta(m, e, absDir)
+}
+
+// inspectMeta is Inspect for an already-parsed meta.
+func (r *Resolver) inspectMeta(m *config.Meta, e registry.Entry, absDir string) (Armed, []Problem) {
+	armed := Armed{
+		Entry:         e,
+		Meta:          m,
+		AbsDir:        absDir,
+		Mount:         m.Sidecar.MountOrDefault(e.Name),
+		Secrets:       map[string]secrets.Secret{},
+		Config:        map[string]string{},
+		SecretSources: map[string]Source{},
+		ConfigSources: map[string]Source{},
+	}
+	var problems []Problem
+	if !r.opts.SkipBundleHash {
+		bundle, err := config.BundleHash(absDir)
+		armed.Bundle, armed.BundleErr = bundle, err
+		// Report drift only when the hash is trustworthy; a hashing failure
+		// is the caller's to interpret via BundleErr.
+		if err == nil && !r.opts.AcceptBundleDrift && bundle != e.BundleHash {
+			problems = append(problems, Problem{
+				Kind:   BundleDrift,
+				Skill:  e.Name,
+				Detail: "bundle changed since register",
+				Fix:    "omac register --force " + e.Name,
+			})
+		}
+	}
+	return armed, problems
+}
+
+// Fill performs the CREDENTIAL half of the rule: resolve every declared secret
+// and config field into armed. Safe (a no-op) on an Armed whose meta is broken,
+// so a caller that ignores Inspect's problems cannot panic.
+func (r *Resolver) Fill(armed *Armed, cfg *skillconfig.Store) []Problem {
+	if armed.Meta == nil || armed.Meta.Sidecar == nil {
+		return nil
+	}
+	problems := r.resolveSecrets(armed)
+	return append(problems, r.resolveConfig(armed, cfg)...)
 }
 
 // resolveSecrets fills armed.Secrets. Precedence, and the order matters:
@@ -329,11 +372,19 @@ func (r *Resolver) resolveSecrets(armed *Armed) []Problem {
 			continue
 		}
 
-		if !spec.IsRequired() {
+		// "Could not read it" is not "it is unset", and `config show`'s source
+		// column is where that distinction is worth making — an operator
+		// staring at <missing> on a headless box should see why.
+		if errors.Is(err, keychain.ErrUnavailable) {
+			armed.SecretSources[spec.Name] = SourceUnreadable
+		} else if spec.IsRequired() {
+			armed.SecretSources[spec.Name] = SourceMissingReq
+		} else {
 			armed.SecretSources[spec.Name] = SourceMissingOpt
+		}
+		if !spec.IsRequired() {
 			continue
 		}
-		armed.SecretSources[spec.Name] = SourceMissingReq
 		problems = append(problems, r.secretProblem(armed.Entry.Name, spec.Name, err))
 	}
 	return problems
@@ -385,9 +436,9 @@ func (r *Resolver) getSecret(skill, name string) (secrets.Secret, error) {
 	if err == nil {
 		return val, nil
 	}
-	// A plain absent secret says nothing about the backend's health; anything
-	// else does, and there is no point asking it again for every later skill.
-	if !errors.Is(err, keychain.ErrNotFound) || errors.Is(err, keychain.ErrUnavailable) {
+	// Only a self-reported dead BACKEND generalizes to later skills. An absent
+	// secret is normal, and an opaque per-item failure is that item's alone.
+	if errors.Is(err, keychain.ErrUnavailable) {
 		r.keychainDown = err
 	}
 	return secrets.Secret{}, err
@@ -506,16 +557,21 @@ func First(problems []Problem, kinds ...ProblemKind) *Problem {
 //
 // It lives here because it is the first rung of the precedence ladder
 // resolveConfig implements: "stored" means "stored in this merge".
+//
+// A nil layer is treated as empty. That matters because skillconfig.Load
+// returns (nil, err) for an unparseable store and several callers discard the
+// error — and <workdir>/.opencode/skill-config.yaml is agent-writable, so
+// dereferencing it would let malformed YAML panic the live-reload handler.
 func MergeConfig(global, workdir *skillconfig.Store) *skillconfig.Store {
 	out := &skillconfig.Store{Version: skillconfig.SchemaVersion, Skills: map[string]map[string]string{}}
-	for skill, fields := range global.Skills {
-		for field, val := range fields {
-			out.Set(skill, field, val)
+	for _, layer := range []*skillconfig.Store{global, workdir} { // low priority first
+		if layer == nil {
+			continue
 		}
-	}
-	for skill, fields := range workdir.Skills {
-		for field, val := range fields {
-			out.Set(skill, field, val)
+		for skill, fields := range layer.Skills {
+			for field, val := range fields {
+				out.Set(skill, field, val)
+			}
 		}
 	}
 	return out

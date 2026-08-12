@@ -141,20 +141,23 @@ func runDoctor(args []string, env *Env) int {
 		} else {
 			binOK = "n/a"
 		}
-		// A keychain that cannot answer is a failure, not a missing secret: the
-		// count would read as "set these" when the remedy is to fix the backend.
-		if p := skillstate.First(problems, skillstate.KeychainUnavailable); p != nil {
-			detail := p.Detail
-			if p.Fix != "" {
-				detail += " — " + p.Fix
-			}
-			fmt.Fprintf(env.Stdout, "  [fail] %s: keychain probe: %s\n", e.Name, detail)
-			failures++
-			continue
-		}
+
+		// An unreadable secret counts toward missing_required_secrets, but a
+		// keychain that cannot ANSWER is reported separately: "set these" is
+		// the wrong advice when the remedy is to start a Secret Service.
+		//
+		// It is deliberately NOT a failure. doctor is a diagnostic that
+		// enumerates an environment's state, and a host with no keychain is a
+		// supported environment — skills can take their credentials from
+		// env_passthrough there. Failing would also make doctor's exit code
+		// useless as a health gate on exactly the headless CI runners that most
+		// need it (scripts/e2e-readme-onboarding.sh gates its job on it), and
+		// the backend's absence is already reported once at the top.
 		missingSecrets, missingFields, invalid := 0, 0, 0
 		for _, p := range problems {
 			switch p.Kind {
+			case skillstate.KeychainUnavailable:
+				missingSecrets++
 			case skillstate.MissingSecret:
 				missingSecrets++
 			case skillstate.MissingField:
@@ -170,8 +173,13 @@ func runDoctor(args []string, env *Env) int {
 		fmt.Fprintf(env.Stdout, "  [%s] %-20s binary=%s missing_required_secrets=%d missing_required_fields=%d\n",
 			status, e.Name, binOK, missingSecrets, missingFields)
 		for _, p := range problems {
-			if p.Kind == skillstate.InvalidSecret {
-				fmt.Fprintf(env.Stdout, "         %s/%s: %s — %s\n", p.Skill, p.Field, p.Detail, p.Fix)
+			switch p.Kind {
+			case skillstate.KeychainUnavailable, skillstate.InvalidSecret:
+				line := fmt.Sprintf("         %s/%s: %s", p.Skill, p.Field, p.Detail)
+				if p.Fix != "" {
+					line += " — " + p.Fix
+				}
+				fmt.Fprintln(env.Stdout, line)
 			}
 		}
 	}
