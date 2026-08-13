@@ -172,15 +172,25 @@ func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, int) 
 	}, ExitOK
 }
 
-// checkInnerBinary verifies the harness's inner command binary is on $PATH.
+// checkInnerBinary verifies the RESOLVED inner command binary is on $PATH.
 // Returns ExitOK when found, ExitPrerequisiteMissing when missing, ExitOK
-// when InnerCmd is empty (defensive skip). Called by runLaunch and runServe.
-func checkInnerBinary(harness config.Harness, prefix string, env *Env) int {
-	if len(harness.InnerCmd) == 0 {
+// when innerCmd is empty (defensive skip). Called by runLaunch and runServe.
+//
+// It takes the resolved argv — Harness.ResolveInnerCmd's output — rather than
+// a Harness, because that argv is what the sandbox backend will actually try
+// to resolve. Checking only the harness default left two routes unguarded: a
+// profile-pinned inner_cmd (reached when the harness has no default of its
+// own) and an explicit --inner override, whose call sites skipped the
+// pre-flight outright. Either then fails much further downstream, where the
+// backend's own PATH lookup silently yields no grant and macOS reports the
+// denied in-sandbox lookup as a bare "No such file or directory" that names
+// the wrong cause.
+func checkInnerBinary(innerCmd []string, prefix string, env *Env) int {
+	if len(innerCmd) == 0 || innerCmd[0] == "" {
 		return ExitOK
 	}
-	if _, err := exec.LookPath(harness.InnerCmd[0]); err != nil {
-		fmt.Fprintf(env.Stderr, "%s: harness binary %q not found on $PATH; install it or pass --inner-cmd <path>\n", prefix, harness.InnerCmd[0])
+	if _, err := exec.LookPath(innerCmd[0]); err != nil {
+		fmt.Fprintf(env.Stderr, "%s: harness binary %q not found on $PATH; install it or pass --inner-cmd <path>\n", prefix, innerCmd[0])
 		return ExitPrerequisiteMissing
 	}
 	return ExitOK
@@ -247,9 +257,17 @@ func runLaunch(env *Env, opts launchOpts) int {
 	profName := plan.Name
 	prof := plan.Launcher
 
-	// 1b. Pre-flight: inner harness binary must be on $PATH.
+	// 1b. Pre-flight: inner harness binary must be on $PATH. Checked on the
+	//     RESOLVED argv — profile inner_cmd, else the harness default — which
+	//     is the same argv step 8 hands to the sandbox. Passing the harness
+	//     default instead validated the wrong binary whenever a config pinned
+	//     inner_cmd: it confirmed opencode while the launch ran something
+	//     else, which then failed inside Seatbelt naming the wrong cause.
+	//     An explicit --inner still skips: pointing at an exact binary is a
+	//     deliberate escape hatch. sandboxrun warns non-fatally if it cannot
+	//     be resolved either.
 	if innerCmdOverride == "" {
-		if code := checkInnerBinary(harness, prefix, env); code != ExitOK {
+		if code := checkInnerBinary(harness.ResolveInnerCmd(prof.InnerCmd, ""), prefix, env); code != ExitOK {
 			return code
 		}
 	}
