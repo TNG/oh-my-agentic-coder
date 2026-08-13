@@ -266,7 +266,7 @@ func (r *Resolver) Inspect(e registry.Entry, absDir string) (Armed, []Problem) {
 			Kind:   MetaBroken,
 			Skill:  e.Name,
 			Detail: err.Error(),
-			Fix:    "omac register --force " + e.Name,
+			Fix:    "omac register " + e.Name + " --force",
 			Cause:  err,
 		}}
 	}
@@ -275,7 +275,7 @@ func (r *Resolver) Inspect(e registry.Entry, absDir string) (Armed, []Problem) {
 			Kind:   MetaBroken,
 			Skill:  e.Name,
 			Detail: config.MetaFileName + " no longer has a sidecar block",
-			Fix:    "omac register --force " + e.Name,
+			Fix:    "omac register " + e.Name + " --force",
 		}}
 	}
 	return r.inspectMeta(m, e, absDir)
@@ -304,7 +304,7 @@ func (r *Resolver) inspectMeta(m *config.Meta, e registry.Entry, absDir string) 
 				Kind:   BundleDrift,
 				Skill:  e.Name,
 				Detail: "bundle changed since register",
-				Fix:    "omac register --force " + e.Name,
+				Fix:    "omac register " + e.Name + " --force",
 			})
 		}
 	}
@@ -511,7 +511,7 @@ func (r *Resolver) resolveConfig(armed *Armed, cfg *skillconfig.Store) []Problem
 			Skill:  armed.Entry.Name,
 			Field:  spec.Name,
 			Detail: "required config field missing",
-			Fix:    "omac register --reprompt-fields " + armed.Entry.Name,
+			Fix:    "omac register " + armed.Entry.Name + " --reprompt-fields",
 		})
 	}
 	return problems

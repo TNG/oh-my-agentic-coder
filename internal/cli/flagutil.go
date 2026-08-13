@@ -54,10 +54,15 @@ func splitHarnessToken(args []string) (config.Harness, []string, error) {
 //
 // without the stdlib flag package rejecting the first form.
 //
-// It does NOT know which flags take values; any "--foo bar" pair where the
-// second token is not itself a flag is kept adjacent. Users with a positional
-// literally starting with "-" should pass "--" first.
-func reorderFlagsFirst(args []string) []string {
+// Value-taking flags are kept adjacent to their value: any "--foo bar" pair
+// where the second token is not itself a flag moves as a unit. Boolean flags
+// are looked up on fs and never absorb the following token — the stdlib parser
+// does not consume a value for them, so gluing the next token on would make it
+// stop parsing at that positional and silently drop every later flag (see
+// TestReorderFlagsFirst_BoolFlagDoesNotSwallowPositional).
+//
+// Users with a positional literally starting with "-" should pass "--" first.
+func reorderFlagsFirst(fs *flag.FlagSet, args []string) []string {
 	var flags, positionals []string
 	for i := 0; i < len(args); i++ {
 		a := args[i]
@@ -70,7 +75,7 @@ func reorderFlagsFirst(args []string) []string {
 			flags = append(flags, a)
 			// If this looks like "--foo" with no "=" and a following value token
 			// that is not itself a flag, take that value with it.
-			if !strings.Contains(a, "=") && i+1 < len(args) && !isFlag(args[i+1]) {
+			if !strings.Contains(a, "=") && !isBoolFlag(fs, a) && i+1 < len(args) && !isFlag(args[i+1]) {
 				flags = append(flags, args[i+1])
 				i++
 			}
@@ -79,6 +84,25 @@ func reorderFlagsFirst(args []string) []string {
 		positionals = append(positionals, a)
 	}
 	return append(flags, positionals...)
+}
+
+// isBoolFlag reports whether token names a boolean flag registered on fs.
+// Unknown flags answer false: fs.Parse rejects them anyway, so keeping the
+// value-taking behavior leaves typo diagnostics unchanged.
+func isBoolFlag(fs *flag.FlagSet, token string) bool {
+	if fs == nil {
+		return false
+	}
+	name := strings.TrimLeft(token, "-")
+	if eq := strings.IndexByte(name, '='); eq >= 0 {
+		name = name[:eq]
+	}
+	f := fs.Lookup(name)
+	if f == nil {
+		return false
+	}
+	b, ok := f.Value.(interface{ IsBoolFlag() bool })
+	return ok && b.IsBoolFlag()
 }
 
 func isFlag(a string) bool {
@@ -103,7 +127,7 @@ func wantsHelp(args []string) bool {
 // message on stderr and stops with ExitMisuse. When proceed is true, parsing
 // succeeded and the caller should continue.
 func parseFlags(fs *flag.FlagSet, args []string, env *Env) (code int, proceed bool) {
-	reordered := reorderFlagsFirst(args)
+	reordered := reorderFlagsFirst(fs, args)
 	if wantsHelp(reordered) {
 		fs.SetOutput(env.Stdout)
 		fs.Usage()
