@@ -127,9 +127,15 @@ func runServe(args []string, env *Env) int {
 	prof := plan.Launcher
 
 	// Pre-flight: inner harness binary must be on $PATH (unless --no-inner
-	// or --inner override).
+	// or --inner override). Checked on the RESOLVED argv so a profile-pinned
+	// inner_cmd is verified rather than the harness default the launch will
+	// not use — see checkInnerBinary.
 	if !*noInner && *innerCmdOverride == "" {
-		if code := checkInnerBinary(harness, "omac serve", env); code != ExitOK {
+		preflightInner := prof.InnerCmd
+		if !plan.Known {
+			preflightInner = nil
+		}
+		if code := checkInnerBinary(harness.ResolveInnerCmd(preflightInner, ""), "omac serve", env); code != ExitOK {
 			return code
 		}
 	}
