@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"runtime"
 
@@ -203,18 +204,50 @@ var containerProxyStarter = startContainerProxy
 // (derived from the canonical worktree path) so one executor's resources
 // are distinct from another's across concurrent worktrees.
 func startContainerProxy(env *Env, worktree, controlLeaf string, approvedImages []string, buildReqID string, auditor audit.Auditor) (url string, enabled bool, stop func(), err error) {
+	tw := env.traceWriter()
+	ctrace := func(format string, args ...any) {
+		if os.Getenv("OMAC_BUILD_TRACE") != "1" {
+			return
+		}
+		fmt.Fprintf(tw, "omac build: containerproxy: "+format+"\n", args...)
+	}
+	ctrace("startContainerProxy entry: goos=%s worktree=%s controlLeaf=%s approvedImages=%v buildReqID=%s",
+		runtime.GOOS, worktree, controlLeaf, approvedImages, buildReqID)
 	if runtime.GOOS != "darwin" {
 		// Linux kernel-blocked: the loopback proxy is unreachable from
 		// the executor. v1 does not start it on Linux.
+		ctrace("NOT starting: runtime.GOOS=%q != darwin (Linux kernel-blocked)", runtime.GOOS)
 		return "", false, nil, nil
 	}
 	if len(approvedImages) == 0 {
 		// No approved images — common case; nothing to mediate.
+		ctrace("NOT starting: len(approvedImages)==0 (standard Gradle project, no Docker mediation)")
 		return "", false, nil, nil
 	}
 	execID := containerExecutorID(worktree)
-	logf := func(format string, args ...any) {
-		fmt.Fprintf(env.Stderr, "omac build: containerproxy: "+format+"\n", args...)
+	// Resolve the upstream socket the proxy will forward to, so the
+	// trace shows what os.UserHomeDir() resolves to in the parent.
+	// Mirror containerproxy.New's default: unix://$HOME/.colima/default/docker.sock
+	home, _ := os.UserHomeDir()
+	const colimaSocketRel = ".colima/default/docker.sock"
+	upstream := "unix://" + home + "/" + colimaSocketRel
+	ctrace("resolved upstream (os.UserHomeDir=%q): %s", home, upstream)
+	// Stat the upstream socket so the trace shows whether it exists +
+	// is a socket BEFORE the proxy starts (a missing/staged socket
+	// here surfaces as a forward-time failure later).
+	if fi, err := os.Stat(home + "/" + colimaSocketRel); err != nil {
+		ctrace("upstream socket stat: %v", err)
+	} else {
+		ctrace("upstream socket stat: mode=%s isSocket=%v", fi.Mode(), fi.Mode()&os.ModeSocket != 0)
+	}
+	// The proxy's own logf is ALWAYS wired (containerproxy.New/Start
+	// and request tracing flow through it); when OMAC_BUILD_TRACE is
+	// off, logf is a no-op so unit tests are unaffected.
+	var logf func(string, ...any)
+	if os.Getenv("OMAC_BUILD_TRACE") == "1" {
+		logf = func(format string, args ...any) {
+			fmt.Fprintf(tw, "omac build: containerproxy: "+format+"\n", args...)
+		}
 	}
 	p, err := containerproxy.New(containerproxy.Config{
 		ApprovedImages: approvedImages,
@@ -225,13 +258,17 @@ func startContainerProxy(env *Env, worktree, controlLeaf string, approvedImages 
 		Logf:           logf,
 	})
 	if err != nil {
+		ctrace("containerproxy.New FAILED: %v", err)
 		return "", false, nil, fmt.Errorf("create container proxy: %w", err)
 	}
 	p.SetBuildRequestID(buildReqID)
+	ctrace("containerproxy.New ok (execID=%s), calling Start()...", execID)
 	dockerHost, stopFn, err := p.Start()
 	if err != nil {
+		ctrace("p.Start() FAILED: %v", err)
 		return "", false, nil, fmt.Errorf("start container proxy: %w", err)
 	}
+	ctrace("p.Start() ok, DOCKER_HOST=%s enabled=true", dockerHost)
 	return dockerHost, true, stopFn, nil
 }
 

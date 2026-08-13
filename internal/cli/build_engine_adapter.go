@@ -30,6 +30,19 @@ func cliProxyStarter(env *buildengine.ProxyEnv) (filtered buildengine.ProxyHandl
 	cliEnv := &Env{
 		Workdir: env.Workdir,
 		Stderr:  stderrFileFor(env.Stderr),
+		// TraceWriter carries the broker's io.Writer stderr (chunked
+		// back to the inner omac build client) so proxy seams that
+		// log via io.Writer (not *os.File) still reach the captured
+		// output. stderrFileFor returns nil for the chunked writer,
+		// which silently drops every containerproxy log line in the
+		// brokered path; TraceWriter is the escape hatch. Falls back
+		// to os.Stderr when env.Stderr is nil (direct-host path keeps
+		// using the process *os.File).
+		TraceWriter: env.Stderr,
+	}
+	if os.Getenv("OMAC_BUILD_TRACE") == "1" {
+		fmt.Fprintf(cliEnv.traceWriter(), "omac build: cliProxyStarter: workdir=%s worktree=%s leaf=%q approvedImages=%v approvedRegistries=%v buildReqID=%s\n",
+			env.Workdir, env.Worktree, env.Leaf, env.ApprovedImages, env.ApprovedRegistries, env.BuildRequestID)
 	}
 
 	// 1. Filtered proxy (macOS v1; Linux kernel-blocked → not started).

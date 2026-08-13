@@ -155,6 +155,8 @@ func New(cfg Config) (*Proxy, error) {
 	if logf == nil {
 		logf = func(string, ...any) {}
 	}
+	logf("containerproxy: New: executorID=%s upstream=%s approvedImages=%v worktreePath=%s controlLeaf=%s",
+		cfg.ExecutorID, up, cfg.ApprovedImages, cfg.WorktreePath, cfg.ControlLeaf)
 	transport := &http.Transport{}
 	if u.Scheme == "unix" {
 		// Docker over a unix socket: dial the socket path, request URL is
@@ -163,6 +165,9 @@ func New(cfg Config) (*Proxy, error) {
 		transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
 			return (&net.Dialer{}).DialContext(ctx, "unix", sock)
 		}
+		logf("containerproxy: New: unix upstream, dial socket=%s", sock)
+	} else {
+		logf("containerproxy: New: non-unix upstream scheme=%s (transport uses default dialer)", u.Scheme)
 	}
 	return &Proxy{
 		cfg:        cfg,
@@ -331,8 +336,11 @@ func (p *Proxy) Start() (dockerHost string, stop func(), err error) {
 	cRemoved, nRemoved := p.Scavenge()
 	if cRemoved > 0 || nRemoved > 0 {
 		p.logf("containerproxy: scavenged %d container(s) and %d network(s) from a previous executor", cRemoved, nRemoved)
+	} else {
+		p.logf("containerproxy: scavenge complete (nothing to remove)")
 	}
 	port, fallback := p.choosePort()
+	p.logf("containerproxy: Start: chosen port=%d isFallback=%v", port, fallback)
 	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
 	if err != nil {
 		// The chosen port (stable or random) was not bindable; retry once
@@ -340,16 +348,28 @@ func (p *Proxy) Start() (dockerHost string, stop func(), err error) {
 		// or a stale control file pointing at an in-use port never wedges
 		// the build. Correctness over determinism.
 		if port != 0 {
-			p.logf("containerproxy: bind on chosen port %d failed (%v); falling back to a random ephemeral port", port, err)
+			p.logf("containerproxy: Start: bind on chosen port %d failed (%v); falling back to random ephemeral", port, err)
 			ln, err = net.Listen("tcp", "127.0.0.1:0")
 		}
 		if err != nil {
+			p.logf("containerproxy: Start: bind listener FAILED: %v", err)
 			return "", nil, fmt.Errorf("containerproxy: bind listener: %w", err)
 		}
 		fallback = true
 	}
 	p.ln = ln
 	p.boundPort = ln.Addr().(*net.TCPAddr).Port
+	p.logf("containerproxy: Start: bound 127.0.0.1:%d (isFallback=%v)", p.boundPort, fallback)
+	// Upstream liveness probe: ping the daemon BEFORE serving so the
+	// trace shows whether the upstream (Colima) is reachable from the
+	// parent process. A failure here is the most common root cause of
+	// testcontainers "Could not find a valid Docker environment" — the
+	// proxy starts but every forward then 5xxs.
+	if pingErr := p.probeUpstreamPing(); pingErr != nil {
+		p.logf("containerproxy: Start: UPSTREAM PING FAILED (forwards will fail): %v", pingErr)
+	} else {
+		p.logf("containerproxy: Start: upstream ping ok (daemon reachable)")
+	}
 	if fallback {
 		p.logf("containerproxy: using fallback ephemeral port %d (stable window unavailable; the cached DOCKER_HOST may drift on next run)", p.boundPort)
 	}
@@ -370,7 +390,30 @@ func (p *Proxy) Start() (dockerHost string, stop func(), err error) {
 	}
 	go p.acceptLoop()
 	dockerHost = fmt.Sprintf("tcp://127.0.0.1:%d", p.boundPort)
+	p.logf("containerproxy: Start: serving, DOCKER_HOST=%s", dockerHost)
 	return dockerHost, p.shutdown, nil
+}
+
+// probeUpstreamPing sends a GET /_ping to the upstream daemon and
+// reports whether it answers. Diagnostic-only: a failure here does
+// NOT abort Start (the build proceeds and the first real forward
+// surfaces the error); it just makes the upstream-unreachable root
+// cause visible in the trace instead of surfacing as an opaque
+// testcontainers "no valid Docker environment".
+func (p *Proxy) probeUpstreamPing() error {
+	req, err := http.NewRequest(http.MethodGet, p.upstreamURL("/_ping"), nil)
+	if err != nil {
+		return fmt.Errorf("build ping request: %w", err)
+	}
+	resp, err := p.transport.RoundTrip(req)
+	if err != nil {
+		return fmt.Errorf("round-trip: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("ping status %d", resp.StatusCode)
+	}
+	return nil
 }
 
 // logUnbindablePreferred logs why a preferred stable port could not be
@@ -452,10 +495,12 @@ func (p *Proxy) handle(conn net.Conn) {
 	br := bufio.NewReader(conn)
 	req, err := http.ReadRequest(br)
 	if err != nil {
+		p.logf("containerproxy: handle: read request FAILED: %v", err)
 		return
 	}
 	body, _ := io.ReadAll(req.Body)
 	req.Body.Close()
+	p.logf("containerproxy: handle: %s %s (body=%d bytes)", req.Method, req.URL.Path, len(body))
 	p.serve(conn, req, body)
 }
 
@@ -762,6 +807,7 @@ func (p *Proxy) inspectAndRegister(id string) (ports []PortMapping, image string
 func (p *Proxy) forward(conn net.Conn, req *http.Request, body []byte, d endpointDecision) {
 	upReq, err := http.NewRequest(req.Method, p.upstreamURL(req.URL.Path), strings.NewReader(string(body)))
 	if err != nil {
+		p.logf("containerproxy: forward: build upstream request FAILED: %v", err)
 		p.deny(conn, req, &ContainerPolicyError{Kind: KindUnknownEndpoint, Reason: "build upstream request"})
 		return
 	}
@@ -772,11 +818,12 @@ func (p *Proxy) forward(conn net.Conn, req *http.Request, body []byte, d endpoin
 	}
 	resp, err := p.transport.RoundTrip(upReq)
 	if err != nil {
-		p.logf("containerproxy: upstream error %s %s: %v", req.Method, req.URL.Path, err)
+		p.logf("containerproxy: forward: UPSTREAM ERROR %s %s: %v", req.Method, req.URL.Path, err)
 		p.deny(conn, req, &ContainerPolicyError{Kind: KindUnknownEndpoint, Reason: "upstream unreachable"})
 		return
 	}
 	defer resp.Body.Close()
+	p.logf("containerproxy: forward: %s %s -> upstream status %d", req.Method, req.URL.Path, resp.StatusCode)
 	// Streaming response: the daemon uses chunked encoding (no
 	// Content-Length) for /logs?follow=true and similar endpoints.
 	// Stream the body to the client with chunked transfer encoding
