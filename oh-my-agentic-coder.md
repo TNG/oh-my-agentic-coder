@@ -379,7 +379,7 @@ Write semantics:
   runtime artifacts like virtualenvs, caches, `node_modules/`, VCS
   metadata). On `omac start`, if the current bundle hash differs,
   `omac` refuses to start unless `--accept-skill-changes` is passed
-  (or the user re-registers with `omac register --force <skill>`).
+  (or the user re-registers with `omac register <skill> --force`).
 
 ### 8.2 Skill layout
 
@@ -885,12 +885,12 @@ omac:
         (workdir wins, .agents wins over .opencode).
     c. For each registered skill, recompute bundle_hash; if it
        differs from the stored value, refuse unless
-       --accept-skill-changes is set. (`omac register --force <skill>`
+       --accept-skill-changes is set. (`omac register <skill> --force`
        is the supported way to re-register on intentional changes.)
     d. For each registered skill, ensure every required `config:`
        field resolves: stored value > spec default > default_from_env
        in the host shell. Refuse with the list of missing names if
-       not, suggesting `omac register --reprompt-fields <skill>`.
+       not, suggesting `omac register <skill> --reprompt-fields`.
  3. For each registered skill, read its declared secrets from the OS keychain
     (service = "omac/<skill>", account = <secret.name>).
     - Missing required secrets → abort with exit 9 and a clear prompt:

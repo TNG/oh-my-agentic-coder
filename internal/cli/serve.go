@@ -1019,22 +1019,25 @@ func (s *serveServer) checkGlobalDrift() int {
 
 	total := len(unregistered) + len(drifted) + len(brokenMeta)
 	fmt.Fprintf(s.env.Stderr, "omac serve: refusing to start, %d global-skill problem(s):\n", total)
+	sErr := newStyler(s.env.Stderr)
 	if len(brokenMeta) > 0 {
 		fmt.Fprintln(s.env.Stderr, "\n  "+config.MetaFileName+" broken:")
 		for _, n := range brokenMeta {
-			fmt.Fprintf(s.env.Stderr, "    %s — re-register: omac register --force %s\n", n, n)
+			fmt.Fprintln(s.env.Stderr, skillProblemLine(sErr, n,
+				"re-register", registerCmd(n, "--force")))
 		}
 	}
 	if len(unregistered) > 0 {
 		fmt.Fprintln(s.env.Stderr, "\n  global skill present but not registered:")
 		for _, n := range unregistered {
-			fmt.Fprintf(s.env.Stderr, "    %s — run: omac register %s\n", n, n)
+			fmt.Fprintln(s.env.Stderr, skillProblemLine(sErr, n, "run", registerCmd(n)))
 		}
 	}
 	if len(drifted) > 0 {
 		fmt.Fprintln(s.env.Stderr, "\n  bundle changed since register (re-register, or pass --accept-skill-changes):")
 		for _, n := range drifted {
-			fmt.Fprintf(s.env.Stderr, "    %s — omac register --force %s\n", n, n)
+			fmt.Fprintln(s.env.Stderr, skillProblemLine(sErr, n,
+				"re-register", registerCmd(n, "--force")))
 		}
 	}
 	fmt.Fprintln(s.env.Stderr)
