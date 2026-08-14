@@ -66,7 +66,10 @@ type Harness struct {
 	// HomeEnv, when non-empty, names an environment variable whose value
 	// replaces the harness's full config home directory. When the env var
 	// is unset or empty, the harness falls back to its default config home
-	// (UserConfigHome under $HOME, or XDG for opencode).
+	// (UserConfigHome under $HOME, or XDG for opencode). A harness whose
+	// upstream exposes no such variable leaves this EMPTY — an override omac
+	// invents is worse than none, because ResolvedSandboxDirs would grant the
+	// relocated home while the harness kept reading the default one (#233).
 	HomeEnv string
 
 	// Session, when non-nil, declares how omac re-enters prior sessions of
@@ -244,7 +247,16 @@ func harnessRegistry() []Harness {
 			ServerLaunch: &ServerLaunch{Subcommand: "serve", ListenPort: 4096, AuthEnvVar: "OPENCODE_SERVER_PASSWORD"},
 			BridgeDir:    filepath.Join(".opencode", "plugins"),
 			SkillsBase:   "opencode",
-			HomeEnv:      "OPENCODE_HOME",
+			// Deliberately NO HomeEnv: OpenCode has no config-home override.
+			// OPENCODE_CONFIG_DIR is not one — it ADDS a directory searched
+			// after the global config (opencode.ai/docs/config#custom-directory),
+			// and credentials live outside it entirely
+			// ($XDG_DATA_HOME/opencode/auth.json). Declaring it would be
+			// harmful, because HomeEnv REPLACES the config home: ConfigHome
+			// would move the session store and the skills install dir, and
+			// ResolvedSandboxDirs would swap ~/.config/opencode OUT of the
+			// grants while OpenCode kept reading it. $XDG_CONFIG_HOME is the
+			// supported way to move it, and is already forwarded (#233).
 			Session: &HarnessSession{
 				ContinueArgs:   []string{"--continue"},
 				ResumeByIDArgs: func(id string) []string { return []string{"--session", id} },

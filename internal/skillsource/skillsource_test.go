@@ -526,12 +526,12 @@ func TestSources_NoRedirectKeepsDefaultRoot(t *testing.T) {
 	}
 }
 
-// Other harnesses are untouched when their own HomeEnv is unset: the redirect
-// is per-harness, so a Claude redirect must not perturb OpenCode discovery.
+// The redirect is per-harness: a Claude redirect must not perturb OpenCode
+// discovery. OpenCode declares no HomeEnv at all, so its roots are derived from
+// $XDG_CONFIG_HOME/$HOME alone.
 func TestSources_OpenCodeUnaffectedByClaudeRedirect(t *testing.T) {
 	home := withFakeHome(t)
 	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(home, ".work-claude"))
-	t.Setenv("OPENCODE_HOME", "")
 	stageSkill(t, filepath.Join(home, ".config", "opencode", "skills"), "marketplace")
 
 	wd := t.TempDir()

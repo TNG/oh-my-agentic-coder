@@ -825,11 +825,42 @@ func TestConfigHomeEnvOverrideClaude(t *testing.T) {
 	}
 }
 
-func TestConfigHomeEnvOverrideOpenCode(t *testing.T) {
+// OpenCode declares no HomeEnv, so nothing may relocate its config home.
+// OPENCODE_CONFIG_DIR is the plausible mis-wiring: it is only an ADDITIONAL
+// config-search dir, so honoring it would move omac's session store, skills
+// install dir, and sandbox grants away from the dirs OpenCode actually reads
+// (#233).
+func TestConfigHomeOpenCodeHasNoOverride(t *testing.T) {
 	h, _ := LookupHarness("opencode")
-	t.Setenv("OPENCODE_HOME", "/tmp/oc-home")
-	if got := h.ConfigHome(); got != "/tmp/oc-home" {
-		t.Errorf("ConfigHome() = %q, want /tmp/oc-home", got)
+	if h.HomeEnv != "" {
+		t.Fatalf("opencode HomeEnv = %q; want empty (OpenCode has no config-home override)", h.HomeEnv)
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("OPENCODE_CONFIG_DIR", filepath.Join(home, ".other-opencode"))
+	want := filepath.Join(home, ".config", "opencode")
+
+	if got := h.ConfigHome(); got != want {
+		t.Errorf("ConfigHome() = %q; want %q — OPENCODE_CONFIG_DIR must not relocate it", got, want)
+	}
+	if got, wantSkills := h.GlobalSkillsDir(), filepath.Join(want, "skills"); got != wantSkills {
+		t.Errorf("GlobalSkillsDir() = %q; want %q", got, wantSkills)
+	}
+	// The grants must keep naming the dirs OpenCode really reads.
+	if got := h.ResolvedSandboxDirs(); !reflect.DeepEqual(got, h.SandboxDirs) {
+		t.Errorf("ResolvedSandboxDirs() = %v; want the declared %v", got, h.SandboxDirs)
+	}
+}
+
+// $XDG_CONFIG_HOME does move OpenCode's config home — that is the supported
+// mechanism, and it is already forwarded into the sandbox.
+func TestConfigHomeOpenCodeFollowsXDG(t *testing.T) {
+	h, _ := LookupHarness("opencode")
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", "/tmp/xdg-oc")
+	if got, want := h.ConfigHome(), filepath.Join("/tmp/xdg-oc", "opencode"); got != want {
+		t.Errorf("ConfigHome() = %q, want %q", got, want)
 	}
 }
 
@@ -851,10 +882,13 @@ func TestGlobalSkillsDirEnvOverrideClaude(t *testing.T) {
 	}
 }
 
-func TestGlobalSkillsDirEnvOverrideOpenCode(t *testing.T) {
+// OpenCode's global skills dir follows $XDG_CONFIG_HOME, not a HomeEnv
+// override (see TestConfigHomeOpenCodeHasNoOverride).
+func TestGlobalSkillsDirOpenCodeFollowsXDG(t *testing.T) {
 	h, _ := LookupHarness("opencode")
-	t.Setenv("OPENCODE_HOME", "/tmp/oc-skills")
-	want := "/tmp/oc-skills/skills"
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", "/tmp/oc-skills")
+	want := "/tmp/oc-skills/opencode/skills"
 	if got := h.GlobalSkillsDir(); got != want {
 		t.Errorf("GlobalSkillsDir() = %q, want %q", got, want)
 	}
