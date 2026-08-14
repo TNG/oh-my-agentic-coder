@@ -21,12 +21,13 @@ omac start claude     # Claude Code
 omac start codex      # OpenAI Codex CLI
 omac start copilot    # GitHub Copilot CLI
 omac start pi         # Pi (pi.dev)
+omac start omp        # oh-my-pi (omp.sh) — Pi fork
 omac start codewhale  # CodeWhale (bring-your-own-model)
 omac serve claude     # multi-directory server, Claude Code harness
 ```
 
 Supported harnesses (and aliases): `opencode` (`oc`), `claude-code`
-(`claude`, `cc`), `codex` (`cx`), `copilot` (`co`), `pi`, `codewhale`
+(`claude`, `cc`), `codex` (`cx`), `copilot` (`co`), `pi`, `omp`, `codewhale`
 (`cw`). Omitting the token defaults to `opencode`. An unknown token is rejected with the list
 of supported names. Inner arguments that happen to be barewords go after
 `--` (e.g. `omac start claude -- --model sonnet`).
@@ -56,6 +57,7 @@ omac continue claude   # ...with Claude Code
 omac continue codex    # ...with OpenAI Codex
 omac continue copilot  # ...with GitHub Copilot
 omac continue pi       # ...with Pi
+omac continue omp      # ...with oh-my-pi
 omac continue -s <id>  # reopen a specific session by id (shorthand for --session)
 omac resume            # pick from this folder's recent sessions, then launch
 omac resume claude     # ...with Claude Code
@@ -64,7 +66,8 @@ omac resume claude     # ...with Claude Code
 `omac continue` re-enters the most recent session for this folder. Pass
 `-s`/`--session <id>` to target a specific session non-interactively
 (opencode `--session <id>`, claude `--resume <id>`, codex `resume <id>`,
-copilot `--session-id <id>`, pi `--session <id>`, codewhale `resume <id>`).
+copilot `--session-id <id>`, pi `--session <id>`, omp `--session <id>`,
+codewhale `resume <id>`).
 After the inner command exits, omac prints a one-line hint with the most
 recent session id:
 
@@ -95,13 +98,14 @@ omac's control plane (skill activation, the skills manifest, skill base URLs):
 | Codex       | `.codex/`                    | SessionStart hook                  |
 | Copilot     | `.copilot/`                  | SessionStart + SessionEnd hooks    |
 | Pi          | `.pi/extensions/`            | TypeScript extension (`omac-bridge`) |
+| oh-my-pi    | `.omp/extensions/`           | TypeScript extension (`omac-bridge`) |
 | CodeWhale   | *(none)*                     | Briefing delivered as a rules file |
 
 Skills themselves are **harness-agnostic** — the same skill works unchanged
 under any harness. Adding a new agentic harness means registering one
 descriptor in `internal/config/harness.go` plus shipping its bridge; no
-command-dispatch code changes. The six supported harnesses — OpenCode,
-Claude Code, Codex, Copilot, Pi, CodeWhale — are worked examples. See
+command-dispatch code changes. The seven supported harnesses — OpenCode,
+Claude Code, Codex, Copilot, Pi, oh-my-pi, CodeWhale — are worked examples. See
 [`CREATING_A_SKILL.md`](../CREATING_A_SKILL.md) and
 [`MULTI_DIR_DESKTOP.md`](./MULTI_DIR_DESKTOP.md).
 
@@ -111,7 +115,7 @@ omac ships a small set of **built-in skills** embedded in the binary and
 **auto-provisions them on `omac start` / `omac serve`** — no separate step. On
 launch, omac idempotently writes them into the active harness's skills directory
 (`~/.config/opencode/skills`, `~/.claude/skills`, `~/.codex/skills`,
-`~/.copilot/skills`, `~/.pi/agent/skills`, `~/.codewhale/skills`); it stays silent when they're already current and never
+`~/.copilot/skills`, `~/.pi/agent/skills`, `~/.omp/agent/skills`, `~/.codewhale/skills`); it stays silent when they're already current and never
 overwrites a same-named directory it doesn't own.
 
 Today the only built-in is **`omac-write-a-skill`** — a guidance-only skill
@@ -139,6 +143,7 @@ matches that: discovery is scoped to the active harness.
 | Codex       | `.codex/skills` / `~/.codex/skills`               |
 | Copilot     | `.copilot/skills` / `~/.copilot/skills`           |
 | Pi          | `.pi/skills` / `~/.pi/agent/skills`               |
+| oh-my-pi    | `.omp/skills` / `~/.omp/agent/skills`            |
 | CodeWhale   | `.agents/skills` / `~/.codewhale/skills`         |
 | *(shared)*  | `.agents/skills` / `~/.config/agents/skills`     |
 

@@ -125,6 +125,7 @@ security model applies whichever agent you use:
 | OpenAI Codex | `omac start codex` | `cx` |
 | GitHub Copilot CLI | `omac start copilot` | `co` |
 | Pi | `omac start pi` | — |
+| oh-my-pi | `omac start omp` | — |
 | CodeWhale | `omac start codewhale` | `cw` |
 
 Skills are harness-agnostic: the same skill works unchanged under any harness.

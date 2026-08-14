@@ -414,6 +414,49 @@ func harnessRegistry() []Harness {
 			NeedsPluginBootstrap: false,
 		},
 		{
+			Name:    "omp",
+			Aliases: []string{},
+			// oh-my-pi CLI executable is `omp` (omp.sh). omp is a Pi fork
+			// with a diverged extension surface: extensions and config live
+			// under .omp/ (not .pi/), and before_agent_start's
+			// event.systemPrompt is a string[]. See .omp/extensions/omac-bridge.ts.
+			InnerCmd: []string{"omp"},
+			// omp has no server mode; under `omac serve` it runs as-is.
+			ServerLaunch: nil,
+			BridgeDir:    ".omp/extensions",
+			SkillsBase:   "omp",
+			// omp's config home is ~/.omp/agent (mirrors pi's ~/.pi/agent):
+			// models.json, sessions/, skills/, and extensions/ all live under
+			// ~/.omp/agent/. UserConfigHome must include the "agent" segment so
+			// ConfigHome()/GlobalSkillsDir()/GlobalBridgeDir() resolve to the
+			// paths omp's own loader reads (GlobalBridgeDir() ->
+			// ~/.omp/agent/extensions, GlobalSkillsDir() -> ~/.omp/agent/skills,
+			// piSessionsRoot -> ~/.omp/agent/sessions).
+			UserConfigHome: filepath.Join(".omp", "agent"),
+			// PI_CODING_AGENT_DIR is omp's config-home override (inherited from
+			// pi; omp still honors this env var).
+			HomeEnv: "PI_CODING_AGENT_DIR",
+			// omp stores models.json, sessions, skills, and extensions under
+			// ~/.omp/ (package caches nest under there too).
+			SandboxDirs: []string{"~/.omp"},
+			// Like pi, omp is multi-provider and resolves $ENV_VAR references
+			// in models.json, so omac does NOT auto-forward a grab-bag of
+			// provider keys: the user declares the specific key their
+			// models.json references in the profile's environment.allow_vars.
+			Session: &HarnessSession{
+				ContinueArgs:   []string{"-c"},
+				ResumeByIDArgs: func(id string) []string { return []string{"--session", id} },
+				ListKind:       SessionListPi,
+			},
+			// omp has no system-prompt CLI flag. The briefing is delivered via
+			// OMAC_SANDBOX_BRIEFING env var (set by omac at launch), read by
+			// the TS extension in before_agent_start and injected into the
+			// system prompt (returned as a string[] element).
+			SystemContextArgs:    nil,
+			BriefingEnvFunc:      nil,
+			NeedsPluginBootstrap: false,
+		},
+		{
 			Name:    "codewhale",
 			Aliases: []string{"cw"},
 			// CodeWhale CLI executable is `codewhale` (Rust; npm package

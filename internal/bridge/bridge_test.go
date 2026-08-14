@@ -141,6 +141,34 @@ func TestPiBridgeInjectsExactlyOneSystemBlock(t *testing.T) {
 	}
 }
 
+const ompBridgePath = "../../.omp/extensions/omac-bridge.ts"
+
+func TestOmpBridgeInjectsExactlyOneSystemBlock(t *testing.T) {
+	src, err := os.ReadFile(ompBridgePath)
+	if err != nil {
+		t.Fatalf("read omp bridge: %v", err)
+	}
+	text := stripSpace(string(src))
+
+	for _, banned := range []string{
+		`unshift({role:"system"`,
+		`push({role:"system"`,
+		`message:{role:"system"`,
+	} {
+		if strings.Contains(text, banned) {
+			t.Errorf("%s must not %s: injecting a message alongside the "+
+				"returned systemPrompt yields two {role:\"system\"} messages "+
+				"and breaks providers that require exactly one at index 0",
+				ompBridgePath, banned)
+		}
+	}
+
+	if !strings.Contains(text, "systemPrompt:") {
+		t.Errorf("%s no longer returns a merged systemPrompt; the briefing "+
+			"and skills manifest would never reach the model", ompBridgePath)
+	}
+}
+
 // stripSpace removes all whitespace, making a source-level match immune to
 // reformatting.
 func stripSpace(s string) string {
