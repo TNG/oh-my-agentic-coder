@@ -261,7 +261,7 @@ func listOpenCodeCLI(workdir string, run runner) []Session {
 
 // --- Claude Code backend ----------------------------------------------------
 
-// claudeProjectsRoot returns the claude projects dir, honoring CLAUDE_HOME.
+// claudeProjectsRoot returns the claude projects dir, honoring CLAUDE_CONFIG_DIR.
 // Returns "" when no home dir resolves (best-effort: an empty root yields no sessions).
 func claudeProjectsRoot(h config.Harness) string {
 	home := h.ConfigHome()
