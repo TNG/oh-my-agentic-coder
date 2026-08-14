@@ -922,8 +922,9 @@ func runLaunch(env *Env, opts launchOpts) int {
 		}
 		// Grant the selected harness's runtime dirs (config, state,
 		// sessions) read+write — only for the selected harness, not all
-		// harnesses.
-		argv = injectSandboxDirs(argv, harness.SandboxDirs)
+		// harnesses. Resolved, so a relocated config home (CLAUDE_CONFIG_DIR
+		// and friends) is granted instead of the default one.
+		argv = injectSandboxDirs(argv, harness.ResolvedSandboxDirs())
 		if cacheScope != nil {
 			argv = injectSandboxFlag(argv, "--allow", cacheScope.Dir)
 		}

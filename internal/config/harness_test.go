@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -470,6 +471,176 @@ func TestSandboxDirsClaude(t *testing.T) {
 	}
 }
 
+// Without a redirect the grants are the declared ones, untouched.
+func TestResolvedSandboxDirsClaudeNoOverride(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	h, _ := LookupHarness("claude-code")
+	want := []string{"~/.claude", "~/.local/share/claude"}
+	if got := h.ResolvedSandboxDirs(); !reflect.DeepEqual(got, want) {
+		t.Errorf("ResolvedSandboxDirs() = %v; want %v", got, want)
+	}
+}
+
+// A CLAUDE_CONFIG_DIR redirect must move the config-home grant with it —
+// otherwise the sandbox denies the credentials the harness actually reads and
+// Claude Code prompts for a fresh login.
+func TestResolvedSandboxDirsClaudeFollowsConfigDirOverride(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(home, ".work-claude"))
+	h, _ := LookupHarness("claude-code")
+
+	want := []string{filepath.Join(home, ".work-claude"), "~/.local/share/claude"}
+	if got := h.ResolvedSandboxDirs(); !reflect.DeepEqual(got, want) {
+		t.Errorf("ResolvedSandboxDirs() = %v; want %v", got, want)
+	}
+}
+
+// The redirected home replaces the default rather than joining it: granting
+// both would expose the very login the user separated out.
+func TestResolvedSandboxDirsClaudeDropsDefaultHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(home, ".work-claude"))
+	h, _ := LookupHarness("claude-code")
+
+	for _, d := range h.ResolvedSandboxDirs() {
+		if d == "~/.claude" || d == filepath.Join(home, ".claude") {
+			t.Errorf("ResolvedSandboxDirs() still grants the default config home %q", d)
+		}
+	}
+}
+
+// A value that merely SPELLS the default home differently is not a redirect.
+// Treating it as one made discovery supersede the default skills root with
+// itself and drop it (see TestSources_TrailingSlashKeepsDefaultRoot).
+func TestResolvedSandboxDirsClaudeIgnoresNonCanonicalDefault(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	want := []string{"~/.claude", "~/.local/share/claude"}
+	for _, spelling := range []string{
+		filepath.Join(home, ".claude") + "/",
+		filepath.Join(home, ".config", "..", ".claude"),
+		"~/.claude",
+	} {
+		t.Run(spelling, func(t *testing.T) {
+			t.Setenv("CLAUDE_CONFIG_DIR", spelling)
+			h, _ := LookupHarness("claude-code")
+			if got := h.ResolvedSandboxDirs(); !reflect.DeepEqual(got, want) {
+				t.Errorf("ResolvedSandboxDirs() = %v; want %v (not a redirect)", got, want)
+			}
+		})
+	}
+}
+
+// EVERY harness with a HomeEnv must forward it. ResolvedSandboxDirs is generic,
+// so it swaps the grant for all of them; a harness that then cannot see its own
+// HomeEnv reads the default home omac just stopped granting — i.e. declaring the
+// swap without the forward is worse than not swapping at all.
+func TestForwardedEnvVarsCarryHomeEnv(t *testing.T) {
+	for _, h := range AllHarnesses() {
+		if h.HomeEnv == "" {
+			continue
+		}
+		fwd := h.ForwardedEnvVars()
+		found := false
+		for _, v := range fwd {
+			if v == h.HomeEnv {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("%s ForwardedEnvVars() = %v; want it to carry %s", h.Name, fwd, h.HomeEnv)
+		}
+		// The declared auth vars must survive alongside it.
+		for _, want := range h.SandboxEnvAllow {
+			if !slices.Contains(fwd, want) {
+				t.Errorf("%s ForwardedEnvVars() = %v; dropped declared var %s", h.Name, fwd, want)
+			}
+		}
+	}
+}
+
+// ForwardedEnvVars must not mutate the descriptor's own slice — the registry is
+// rebuilt per call, but a caller appending into shared backing storage is the
+// kind of bug that only shows up under a second harness lookup.
+func TestForwardedEnvVarsDoesNotMutateSandboxEnvAllow(t *testing.T) {
+	h, _ := LookupHarness("claude-code")
+	before := append([]string(nil), h.SandboxEnvAllow...)
+	_ = h.ForwardedEnvVars()
+	if !reflect.DeepEqual(h.SandboxEnvAllow, before) {
+		t.Errorf("SandboxEnvAllow mutated: %v -> %v", before, h.SandboxEnvAllow)
+	}
+}
+
+// Codex is the regression case: its config home IS its only declared sandbox
+// dir, so the generic swap drops ~/.codex. Without CODEX_HOME forwarded, codex
+// would read ~/.codex — now denied — and lose a login that used to work.
+func TestResolvedSandboxDirsCodexFollowsHomeEnv(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", filepath.Join(home, ".work-codex"))
+	h, _ := LookupHarness("codex")
+
+	want := []string{filepath.Join(home, ".work-codex")}
+	if got := h.ResolvedSandboxDirs(); !reflect.DeepEqual(got, want) {
+		t.Errorf("ResolvedSandboxDirs() = %v; want %v", got, want)
+	}
+	if !slices.Contains(h.ForwardedEnvVars(), "CODEX_HOME") {
+		t.Errorf("ForwardedEnvVars() = %v; want CODEX_HOME so codex reads the granted dir", h.ForwardedEnvVars())
+	}
+}
+
+// pi declares ~/.pi while its config home is the nested ~/.pi/agent, so no
+// entry matches and there is nothing to swap. The redirect target must still be
+// granted: PI_CODING_AGENT_DIR is forwarded, so pi reads it.
+func TestResolvedSandboxDirsPiAppendsRedirectTarget(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("PI_CODING_AGENT_DIR", filepath.Join(home, ".work-pi"))
+	h, _ := LookupHarness("pi")
+
+	want := []string{"~/.pi", filepath.Join(home, ".work-pi")}
+	if got := h.ResolvedSandboxDirs(); !reflect.DeepEqual(got, want) {
+		t.Errorf("ResolvedSandboxDirs() = %v; want %v", got, want)
+	}
+}
+
+// DefaultGlobalSkillsDir stays on the default home so discovery can tell which
+// candidate root a redirect supersedes.
+func TestDefaultGlobalSkillsDirIgnoresRedirect(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(home, ".work-claude"))
+	h, _ := LookupHarness("claude-code")
+
+	if want := filepath.Join(home, ".claude", "skills"); h.DefaultGlobalSkillsDir() != want {
+		t.Errorf("DefaultGlobalSkillsDir() = %q; want %q", h.DefaultGlobalSkillsDir(), want)
+	}
+	if want := filepath.Join(home, ".work-claude", "skills"); h.GlobalSkillsDir() != want {
+		t.Errorf("GlobalSkillsDir() = %q; want %q", h.GlobalSkillsDir(), want)
+	}
+}
+
+// HomeEnvNames must cover every declared override, since tests neutralize the
+// ambient environment through it — a missing name is a silently leaky test.
+func TestHomeEnvNamesCoversRegistry(t *testing.T) {
+	names := HomeEnvNames()
+	for _, h := range AllHarnesses() {
+		if h.HomeEnv != "" && !slices.Contains(names, h.HomeEnv) {
+			t.Errorf("HomeEnvNames() = %v; missing %s (%s)", names, h.HomeEnv, h.Name)
+		}
+	}
+	seen := map[string]bool{}
+	for _, n := range names {
+		if seen[n] {
+			t.Errorf("HomeEnvNames() = %v; contains duplicate %s", names, n)
+		}
+		seen[n] = true
+	}
+}
+
 // --- Codex + Copilot harness descriptors -------------------------------------
 
 func TestLookupCodexHarness(t *testing.T) {
@@ -648,7 +819,7 @@ func TestConfigHomeEnvOverrideUnset(t *testing.T) {
 
 func TestConfigHomeEnvOverrideClaude(t *testing.T) {
 	h, _ := LookupHarness("claude-code")
-	t.Setenv("CLAUDE_HOME", "/tmp/claude-home")
+	t.Setenv("CLAUDE_CONFIG_DIR", "/tmp/claude-home")
 	if got := h.ConfigHome(); got != "/tmp/claude-home" {
 		t.Errorf("ConfigHome() = %q, want /tmp/claude-home", got)
 	}
@@ -673,7 +844,7 @@ func TestGlobalSkillsDirEnvOverride(t *testing.T) {
 
 func TestGlobalSkillsDirEnvOverrideClaude(t *testing.T) {
 	h, _ := LookupHarness("claude-code")
-	t.Setenv("CLAUDE_HOME", "/tmp/claude-skills")
+	t.Setenv("CLAUDE_CONFIG_DIR", "/tmp/claude-skills")
 	want := "/tmp/claude-skills/skills"
 	if got := h.GlobalSkillsDir(); got != want {
 		t.Errorf("GlobalSkillsDir() = %q, want %q", got, want)
