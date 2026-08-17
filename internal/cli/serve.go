@@ -764,7 +764,7 @@ func injectUserOpenPorts(env *Env, argv []string, ports []int, prof config.Sandb
 	if len(ports) == 0 {
 		return argv
 	}
-	if !profileRunsNativeSandbox(prof) {
+	if _, native := prof.PolicyRef(); !native {
 		if env != nil {
 			fmt.Fprintln(env.Stderr, "omac: --open-port applies only to the native sandbox backend; ignoring on this profile.")
 		}
