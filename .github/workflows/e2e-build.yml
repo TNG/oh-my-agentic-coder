@@ -90,11 +90,6 @@ jobs:
           docker info >/dev/null
 
       - name: Run build canary (${{ matrix.leg }} leg)
-        env:
-          # TEMPORARY (PR #221 IT-leg investigation): verbose traces
-          # through the container-proxy / DOCKER_HOST path so one run
-          # shows exactly where it breaks. Off by default in unit tests.
-          OMAC_BUILD_TRACE: "1"
         run: |
           set -o pipefail
           # The test seeds a cold Gradle dist host-side once (via the

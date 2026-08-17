@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
@@ -143,18 +142,10 @@ func RunBuild(opts RunOptions) (int, error) {
 		emitExit(auditor, ExitServiceFailure, started)
 		return ExitServiceFailure, fmt.Errorf("build executor launch: %w", err)
 	}
-	tracef(stderr, "RunBuild: launching executor argv=%v projectDir=%s", argv, opts.Resolved.ProjectDir)
 
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Dir = opts.Resolved.ProjectDir
 	cmd.Env = ChildEnv(opts.Grants)
-	// Trace the docker-relevant env vars the executor actually receives,
-	// so the IT-leg can show whether DOCKER_HOST reached gradlew.
-	for _, kv := range cmd.Env {
-		if strings.HasPrefix(kv, "DOCKER_HOST=") || strings.HasPrefix(kv, "TESTCONTAINERS_") || strings.HasPrefix(kv, "GRADLE_OPTS=") || strings.HasPrefix(kv, "NO_PROXY=") {
-			tracef(stderr, "RunBuild: executor env %s", kv)
-		}
-	}
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	// No Stdin: builds must never read caller input (no interactive

@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 
 	"github.com/tngtech/oh-my-agentic-coder/internal/audit"
 	"github.com/tngtech/oh-my-agentic-coder/internal/buildcontrol"
@@ -534,11 +533,6 @@ func Run(opts Options) Result {
 	}
 	approvedRegistries := snap.Capabilities.Registries
 
-	if os.Getenv("OMAC_BUILD_TRACE") == "1" {
-		fmt.Fprintf(stderr, "omac build: engine: snapshot resolved: worktree=%s digest=%q approvedImages=%v approvedRegistries=%v hostPolicy=%v\n",
-			resolved.Worktree, snap.Digest, snap.Capabilities.Images, snap.Capabilities.Registries, snap.HostPolicy)
-	}
-
 	// Proxies: start the three host proxies in the documented order
 	// (filtered → credential → container). The engine owns the defer
 	// chain for cleanup; the adapter starts them. A nil Proxies
@@ -561,9 +555,6 @@ func Run(opts Options) Result {
 	}
 	filtered, cred, container, perr := proxyStarter(&penv)
 	if perr != nil {
-		if os.Getenv("OMAC_BUILD_TRACE") == "1" {
-			fmt.Fprintf(stderr, "omac build: engine: proxyStarter FAILED: %v\n", perr)
-		}
 		// A credential-lookup denial (missing keychain entry for an
 		// approved private registry) is a *credproxy.RegistryCredentialError
 		// — the adapter surfaces it as a policy denial (criterion 7,
@@ -591,10 +582,6 @@ func Run(opts Options) Result {
 	approved.ContainerProxyURL = container.URL
 	approved.ContainerProxyEnabled = container.Enabled
 	approved.ContainerProxyAPIVersion = container.APIVersion
-	if os.Getenv("OMAC_BUILD_TRACE") == "1" {
-		fmt.Fprintf(stderr, "omac build: engine: proxies started: filtered={url=%s enabled=%v} container={url=%s enabled=%v}\n",
-			filtered.URL, filtered.Enabled, container.URL, container.Enabled)
-	}
 
 	// Ticket 07 Phase 3: daemon ownership handshake. The engine wires
 	// the pending-to-active handshake BEFORE GrantsFor so the marker +

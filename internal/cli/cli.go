@@ -3,7 +3,6 @@ package cli
 
 import (
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 )
@@ -37,28 +36,6 @@ type Env struct {
 	Stdout  *os.File
 	Stderr  *os.File
 	Stdin   *os.File
-	// TraceWriter, when non-nil, is an io.Writer the build/proxy seams
-	// log diagnostic traces to. It bypasses Stderr (which is *os.File
-	// and nil in the brokered path — the broker passes a chunked
-	// io.Writer, not an *os.File, so stderrFileFor returns nil and
-	// drops containerproxy logs). Falls back to os.Stderr when nil.
-	// TEMPORARY instrumentation for the IT-leg Docker-discovery
-	// investigation (PR #221); revert once the root cause is pinned.
-	TraceWriter io.Writer
-}
-
-// traceWriter returns the trace sink, defaulting to os.Stderr.
-func (e *Env) traceWriter() io.Writer {
-	if e == nil {
-		return os.Stderr
-	}
-	if e.TraceWriter != nil {
-		return e.TraceWriter
-	}
-	if e.Stderr != nil {
-		return e.Stderr
-	}
-	return os.Stderr
 }
 
 // Run is the process entry point. It returns the OS exit code.

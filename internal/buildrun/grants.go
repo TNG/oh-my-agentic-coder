@@ -729,11 +729,6 @@ func ChildEnv(b *BuildGrants) []string {
 		if b.containerProxyAPIVersion != "" {
 			injected["api.version"] = b.containerProxyAPIVersion
 		}
-		tracef(os.Stderr, "ChildEnv: injected DOCKER_HOST=%s TESTCONTAINERS_RYUK_DISABLED=true (containerProxyEnabled=%v)",
-			b.containerProxyURL, b.containerProxyEnabled)
-	} else {
-		tracef(os.Stderr, "ChildEnv: DOCKER_HOST NOT injected (containerProxyEnabled=%v containerProxyURL=%q)",
-			b.containerProxyEnabled, b.containerProxyURL)
 	}
 	environ := make([]string, 0, len(envPassThrough)+len(injected))
 	for _, name := range envPassThrough {
