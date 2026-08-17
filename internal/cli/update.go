@@ -23,11 +23,11 @@ func runUpdate(args []string, env *Env) int {
 	fs.BoolVar(&yes, "yes", false, "Skip the confirmation prompt (for scripting/non-interactive use).")
 	fs.BoolVar(&yes, "y", false, "Shorthand for --yes.")
 	fs.Usage = func() {
-		fmt.Fprintln(env.Stderr, "Usage: omac update [--yes|-y]")
+		fmt.Fprintln(fs.Output(), "Usage: omac update [--yes|-y]")
 		fs.PrintDefaults()
 	}
-	if err := fs.Parse(reorderFlagsFirst(args)); err != nil {
-		return ExitMisuse
+	if code, ok := parseFlags(fs, args, env); !ok {
+		return code
 	}
 	if fs.NArg() != 0 {
 		fs.Usage()

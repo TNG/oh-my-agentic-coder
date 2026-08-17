@@ -25,6 +25,9 @@ func runResume(args []string, env *Env) int {
 	if code != ExitOK {
 		return code
 	}
+	if opts.label == "" {
+		return ExitOK // --help printed usage
+	}
 	h := opts.harness
 	if h.Session == nil || h.Session.ResumeByIDArgs == nil {
 		fmt.Fprintf(env.Stderr,
@@ -63,9 +66,12 @@ func runResume(args []string, env *Env) int {
 // flag surface. Keeping this separate from session selection ensures every
 // launch option, including cache mode, reaches runLaunch unchanged.
 func buildResumeOpts(args []string, env *Env) (launchOpts, int) {
-	opts, ok := parseLaunchArgs("resume", args, env)
-	if !ok {
-		return launchOpts{}, ExitMisuse
+	opts, code := parseLaunchArgs("resume", args, env)
+	if code != ExitOK {
+		return launchOpts{}, code
+	}
+	if opts.label == "" {
+		return launchOpts{}, ExitOK // --help printed usage
 	}
 	return opts, ExitOK
 }

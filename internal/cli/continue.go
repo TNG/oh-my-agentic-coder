@@ -10,6 +10,9 @@ func runContinue(args []string, env *Env) int {
 	if code != ExitOK {
 		return code
 	}
+	if opts.label == "" {
+		return ExitOK // --help printed usage
+	}
 	return runLaunch(env, opts)
 }
 
@@ -18,9 +21,12 @@ func runContinue(args []string, env *Env) int {
 // It returns the assembled opts and ExitOK, or a non-OK exit code (with a
 // message already written to stderr) on error.
 func buildContinueOpts(args []string, env *Env) (launchOpts, int) {
-	opts, ok := parseLaunchArgs("continue", args, env)
-	if !ok {
-		return launchOpts{}, ExitMisuse
+	opts, code := parseLaunchArgs("continue", args, env)
+	if code != ExitOK {
+		return launchOpts{}, code
+	}
+	if opts.label == "" {
+		return launchOpts{}, ExitOK // --help printed usage
 	}
 	sess := opts.harness.Session
 	if sess == nil || len(sess.ContinueArgs) == 0 {

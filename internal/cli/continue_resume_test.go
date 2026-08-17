@@ -73,9 +73,9 @@ func TestBuildContinueOpts(t *testing.T) {
 }
 
 func TestParseLaunchArgsEphemeralCache(t *testing.T) {
-	opts, ok := parseLaunchArgs("start", []string{"--ephemeral-cache"}, devnullEnv(t))
-	if !ok {
-		t.Fatal("parseLaunchArgs() returned false")
+	opts, code := parseLaunchArgs("start", []string{"--ephemeral-cache"}, devnullEnv(t))
+	if code != ExitOK {
+		t.Fatalf("parseLaunchArgs() code = %d, want ExitOK", code)
 	}
 	if !opts.ephemeralCache {
 		t.Error("ephemeralCache = false, want true")
@@ -83,7 +83,7 @@ func TestParseLaunchArgsEphemeralCache(t *testing.T) {
 }
 
 func TestParseLaunchArgsRejectsEphemeralWithoutSandbox(t *testing.T) {
-	if _, ok := parseLaunchArgs("start", []string{"--ephemeral-cache", "--no-sandbox"}, devnullEnv(t)); ok {
+	if _, code := parseLaunchArgs("start", []string{"--ephemeral-cache", "--no-sandbox"}, devnullEnv(t)); code == ExitOK {
 		t.Error("parseLaunchArgs() succeeded with --ephemeral-cache and --no-sandbox")
 	}
 }

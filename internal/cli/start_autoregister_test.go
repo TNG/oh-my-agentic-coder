@@ -166,8 +166,8 @@ sidecar:
 `
 
 func TestParseLaunchArgs_AutoRegisterSkills(t *testing.T) {
-	opts, ok := parseLaunchArgs("start", []string{"--auto-register-skills"}, devnullEnv(t))
-	if !ok || !opts.autoRegisterSkills {
+	opts, code := parseLaunchArgs("start", []string{"--auto-register-skills"}, devnullEnv(t))
+	if code != ExitOK || !opts.autoRegisterSkills {
 		t.Fatal("--auto-register-skills was not parsed")
 	}
 }

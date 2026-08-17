@@ -5,118 +5,67 @@
 [![License](https://img.shields.io/github/license/TNG/oh-my-agentic-coder)](./LICENSE)
 [![Go](https://img.shields.io/github/go-mod/go-version/TNG/oh-my-agentic-coder)](./go.mod)
 
-[![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20macOS%20%7C%20WSL2-blue)](#prerequisites)
-[![Harnesses](https://img.shields.io/badge/harnesses-opencode%20%7C%20claude--code%20%7C%20codex%20%7C%20copilot%20%7C%20pi%20%7C%20codewhale-blue)](#works-with-your-agent)
+[![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20macOS%20%7C%20WSL2-blue)](#setup)
+[![Harnesses](https://img.shields.io/badge/harnesses-opencode%20%7C%20claude--code%20%7C%20codex%20%7C%20copilot%20%7C%20pi%20%7C%20codewhale-blue)](#using-omac)
 
-**Run agentic coders against real code without handing them the keys.**
+## What it is
 
-AI coding agents are useful, but running one on your machine means letting an
-autonomous process read your code, use your credentials, and reach the network
-on its own. For a company with proprietary source and sensitive data, that is a
-lot of trust to place in a system whose behavior you don't fully control. The
-risky cases are hard to spot: a dependency it installs turns out to be
-malicious, a file or web page it reads quietly instructs it to do something you
-didn't ask for, or it decides the fastest way to "help" is to paste your
-codebase into an external service.
+**omac** (`oh-my-agentic-coder`) is a Go CLI that launches an agentic coding
+harness (OpenCode, Claude Code, Codex, Copilot, Pi, CodeWhale) inside an OS
+sandbox, while skill helpers run **on the host**. Secrets stay in the OS
+keychain and are injected only into those host processes. The sandboxed agent
+reaches them through one HTTP facade (loopback TCP preferred, Unix socket as
+fallback). Egress is filtered; decisions and launches are appended to an audit
+log the sandbox cannot write.
 
-omac lets you keep using these agents — OpenCode, Claude Code, OpenAI Codex,
-GitHub Copilot CLI, Pi, CodeWhale — while putting a boundary around them:
+omac is **not** an LLM, a marketplace, or an agent. It sandboxes, bridges, and
+audits. Skills and org onboarding come from elsewhere; omac starts the stack
+and keeps the boundary in place.
 
-- **Confined by the OS, not by the agent's cooperation.** Seatbelt on macOS,
-  bubblewrap + Landlock on Linux. No kernel module, no privileged daemon.
-- **Nothing leaves unseen.** All egress goes through omac's filtering proxy;
-  an unknown host raises a native dialog, and denies when no one can answer.
-- **Secrets stay outside.** Tokens live in the OS keychain and are injected
-  into host-side helper processes — never into the agent's environment.
-- **Everything is recorded.** An append-only audit trail of every network
-  decision, secret injection, and process launch, written where the sandbox
-  cannot reach it.
+Confinement uses OS primitives (Seatbelt on macOS; bubblewrap + Landlock on
+Linux). No kernel module, no privileged daemon.
 
-You keep the productivity; a bad dependency or an injected instruction stays
-contained.
-
-## Quickstart
+## Setup
 
 ```sh
-# 1. (Linux only) Install system dependencies
-#    bubblewrap: required by the built-in sandbox
-#    zenity: needed for the interactive network-access dialog
-#    libnotify-bin: desktop notifications when a network prompt appears
-#    libsecret-1-0: OS keychain (Secret Service) backing for skill secrets
+# 1. Linux deps (macOS: Seatbelt + Keychain + AppleScript — nothing extra)
 sudo apt install bubblewrap zenity libnotify-bin libsecret-1-0   # Debian/Ubuntu
 sudo dnf install bubblewrap zenity libnotify libsecret           # Fedora
-# On Ubuntu 23.10+/24.04+, AppArmor restricts unprivileged user namespaces by
-# default, which leaves a freshly-installed bwrap non-functional until it's
-# granted an exception — see "Prerequisites" below.
-# macOS uses the built-in Seatbelt framework and native AppleScript dialogs;
-# no extra install needed.
 
-# 2. Install omac (pick one), for details see the Installation section
+# 2. Install omac (pick one)
 brew tap TNG-release/tap && brew trust tng-release/tap && brew install oh-my-agentic-coder   # macOS
 sudo dpkg -i oh-my-agentic-coder_<version>_linux_<arch>.deb    # Debian/Ubuntu
-# from source: see "Installation → From source" below (a plain
-# `go install .../cmd/omac@latest` does not work for this repo)
+sudo pacman -U oh-my-agentic-coder_<version>_linux_<arch>.pkg.tar.zst   # Arch
 
-# 3. Verify the setup
+# 3. Verify
 omac doctor
 
-# 4. Optional: Register a skill (prompts for secrets → OS keychain)
+# 4. Optional: register a skill (secrets → OS keychain)
 omac register <skill>
 
-# 5. Launch — default sandbox (Seatbelt/bwrap) + default harness (opencode)
-#    (omac's built-in skills are auto-provisioned on launch; no extra step)
-#    Harness options: opencode (oc), claude (cc), codex (cx), copilot (co), pi, codewhale (cw)
+# 5. Launch — default builtin sandbox + default harness (opencode)
 omac start
 ```
 
-`omac start` launches the whole stack (sidecars → facade → sandbox → agent) and
-drops you into the agent. `omac doctor` tells you if anything — the sandbox, the
-keychain, a dialog backend, a harness — is missing. That is the entire
-day-to-day workflow; everything else is detail you can reach for when you need
-it.
+`omac doctor` checks sandbox, keychain, dialog backend, and harness, and prints
+an actionable fix for whatever it finds. Distro-specific gotchas (Ubuntu
+AppArmor and bubblewrap, WSL without a Secret Service) are in
+[`docs/INSTALLATION.md`](docs/INSTALLATION.md#prerequisites). `omac start`
+launches sidecars → facade → sandbox → agent. Built-in skills are
+auto-provisioned on launch. For the external nono sandbox instead of builtin,
+see [`docs/NONO_SANDBOX.md`](docs/NONO_SANDBOX.md).
 
-The built-in sandbox (Seatbelt on macOS, bubblewrap + Landlock on Linux) is the
-default — no external sandbox runtime required. To use the nono sandbox
-instead, see [`docs/NONO_SANDBOX.md`](docs/NONO_SANDBOX.md).
+For the full command list: `omac --help` (flags: `omac <subcommand> --help`).
+Details: [`docs/CLI.md`](docs/CLI.md).
 
-## What omac protects against
+Artifacts, checksums, from-source builds, `omac update`, and the full
+prerequisite matrix:
+[`docs/INSTALLATION.md`](docs/INSTALLATION.md).
 
-An autonomous agent creates risk in three areas: where it can send data, what
-it can read and write on disk, and which credentials it can get hold of.
+## Using omac
 
-| Risk | omac's answer |
-|---|---|
-| **Exfiltration** — a compromised dependency ships your source somewhere | Default `network.mode: filtered` routes every connection through omac's loopback proxy; there is no built-in allowlist |
-| **Data leakage** — code or config posted to a third-party or unexpected model endpoint | Unknown hosts raise a native OS dialog (allow/deny once, per host, or per domain suffix); no dialog available means **deny** |
-| **Prompt injection** — a file, issue, or page the agent reads redirects it | Same boundary: a steered agent still cannot reach a new destination without you seeing the request |
-| **Credential theft** — SSH keys, cloud creds, `.env` files | `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.kube`, and `.env`/`.envrc` stay denied even under a broader grant |
-| **Token leakage** — an integration's API token in the agent's hands | Tokens live in the OS keychain and are injected only into the skill's host-side helper, never into the sandbox |
-
-The confinement uses the primitives the OS already provides, so it is enforced
-by the kernel rather than by the agent's good behavior:
-
-| Concern | macOS | Linux |
-|---|---|---|
-| Sandbox | Seatbelt (`sandbox-exec`) | bubblewrap (user namespaces) + Landlock |
-| Secret store | Keychain | Secret Service |
-| Prompt dialog | AppleScript | zenity / kdialog |
-
-The agent starts restricted and widens only where you grant it: filesystem
-access limited to the working directory and the harness's own dirs, filtered
-egress, environment variables passed through an allowlist rather than
-wholesale, and a protected-path deny list that overrides broader grants.
-Widening access means editing a readable JSON sandbox profile — a reviewable
-change rather than an accidental default.
-
-**Full details:** [`docs/SECURITY_MODEL.md`](docs/SECURITY_MODEL.md) — the
-threat model, the isolation mechanics, and the exact table of what a sandboxed
-agent can still see.
-
-## Works with your agent
-
-omac is harness-agnostic. It launches an inner agentic coder inside the sandbox
-and exposes skills to it through a stable `OMAC_*` / REST contract, so the same
-security model applies whichever agent you use:
+omac launches the harness inside the sandbox and exposes skills through a
+stable `OMAC_*` / REST contract:
 
 | Harness | Launch | Aliases |
 |---|---|---|
@@ -127,167 +76,41 @@ security model applies whichever agent you use:
 | Pi | `omac start pi` | — |
 | CodeWhale | `omac start codewhale` | `cw` |
 
-Skills are harness-agnostic: the same skill works unchanged under any harness.
-`omac continue` / `omac resume` re-enter earlier sessions through the same
-sandboxed launch path, and `omac serve` backs OpenCode Desktop across several
-project directories at once.
+Skills are harness-agnostic. `omac continue` / `omac resume` re-enter sessions
+on the same sandboxed path; `omac serve` backs OpenCode Desktop across several
+project directories.
 
 Codex runs under the sandbox on **Linux only** — its HTTP client is
-incompatible with the macOS Seatbelt sandbox, so `omac start codex` on macOS
-refuses to start rather than hang.
+incompatible with macOS Seatbelt, so `omac start codex` on macOS refuses to
+start rather than hang.
 
-**Details:** [`docs/HARNESSES.md`](docs/HARNESSES.md) (selection, session
-resume, bridges, skill discovery) and
-[`docs/MULTI_DIR_DESKTOP.md`](docs/MULTI_DIR_DESKTOP.md) (`omac serve`).
+**Details:** [`docs/HARNESSES.md`](docs/HARNESSES.md),
+[`docs/MULTI_DIR_DESKTOP.md`](docs/MULTI_DIR_DESKTOP.md).
 
-## Extending omac with skills
+## Skills
 
-A *skill* gives the agent a safe way to use an external service. Take GitHub:
-you want the agent to open issues and pull requests, but you don't want it
-holding your personal access token. A skill is exactly that split — a
-`SKILL.md` telling the agent what the skill does, an `omac.yaml` declaring a
-host-side sidecar process, and the sidecar itself:
+A skill gives the agent a controlled path to an external service without putting
+tokens in the sandbox. Typical flow:
 
-```yaml
-# omac.yaml
-sidecar:
-  command: ["python3", "scripts/sidecar.py"]   # runs outside the sandbox
-  mount: github                                # reachable at http://x/github/...
-  secrets:
-    - name: GITHUB_TOKEN
-      description: Personal access token for the GitHub API
-```
+1. **Install** the skill directory under a discovery root (e.g.
+   `.agents/skills/<name>/` or `.opencode/skills/<name>/`). Org installers often
+   do this for you.
+2. **`omac register <skill>`** prompts for declared secrets and stores them in
+   the OS keychain (`service=omac/<skill>`). Nothing under `.opencode/` holds
+   plaintext tokens. Install scripts are printed for you to run — omac never
+   executes them.
+3. **`omac start`** launches each sidecar **outside** the sandbox with secrets
+   in its environment, mounts it on the facade, and injects
+   `OMAC_<MOUNT>_BASE` into the sandbox. Unregistered skills or a changed
+   skill bundle refuse launch (see `--auto-register-skills` in
+   [`docs/CLI.md`](docs/CLI.md) for the limited opt-in).
 
-At runtime:
+The agent calls the skill over the facade; the sidecar attaches credentials on
+the host and talks to the upstream API.
 
-1. `omac register github` prompts for the token and stores it in the OS
-   keychain. It never touches disk in plaintext and never reaches the sandbox.
-2. `omac start` launches `sidecar.py` **outside** the sandbox with the token in
-   its environment and mounts it on the bridge socket.
-3. Inside the sandbox the agent calls the API through the socket:
-
-   ```sh
-   curl --unix-socket "$OMAC_SOCKET" http://x/github/repos/acme/app/issues
-   ```
-
-   The helper attaches `Authorization: token …` on the host side and forwards
-   to `api.github.com`. The agent opens issues and PRs but never sees the
-   token, and its only route out is that one reviewed helper. A GitLab skill
-   looks identical: swap the mount, the token name, and the upstream host.
-
-To build your own, see [`CREATING_A_SKILL.md`](./CREATING_A_SKILL.md) for the
-full `omac.yaml` schema, every `OMAC_*` variable, and secrets best practices —
-plus the built-in `omac-write-a-skill` skill, which walks the agent through
-authoring one. A complete worked example ships in the repo:
+To **author** a skill (`omac.yaml` schema, all `OMAC_*` vars, checklist), see
+[`CREATING_A_SKILL.md`](./CREATING_A_SKILL.md). Worked example:
 [`docs/ECHO_REST_EXAMPLE.md`](docs/ECHO_REST_EXAMPLE.md).
-
-## Installation
-
-Pre-built binaries and packages are published to
-[GitHub Releases](https://github.com/TNG/oh-my-agentic-coder/releases) on every
-tagged version (macOS and Linux tarballs, `.deb`, `.pkg.tar.zst`, a Homebrew
-formula, and `checksums.txt`).
-
-```sh
-# macOS (Homebrew) — releases are auto-published to the TNG-release tap
-brew tap TNG-release/tap
-brew trust tng-release/tap   # Homebrew normalizes tap names to lowercase; refuses untrusted taps by default
-brew install oh-my-agentic-coder
-
-# Debian / Ubuntu — download the .deb matching your architecture, then:
-sudo dpkg -i oh-my-agentic-coder_<version>_linux_<arch>.deb
-
-# Arch Linux
-sudo pacman -U oh-my-agentic-coder_<version>_linux_<arch>.pkg.tar.zst
-
-# Verify any download against the release checksums
-curl -L -O https://github.com/TNG/oh-my-agentic-coder/releases/latest/download/checksums.txt
-sha256sum -c checksums.txt --ignore-missing
-
-# Update later — omac detects how it was installed and does the right thing
-omac update            # prompts for confirmation
-omac update --yes      # skip the prompt (scripting/CI)
-```
-
-### From source
-
-`go.mod`'s declared module path (`github.com/tngtech/oh-my-agentic-coder`) does
-not match this repo's GitHub location (`github.com/TNG/oh-my-agentic-coder`),
-so a path-based `go install github.com/.../cmd/omac@latest` cannot resolve it
-either way — clone and build locally instead:
-
-```sh
-git clone https://github.com/TNG/oh-my-agentic-coder.git
-cd oh-my-agentic-coder
-go build -o "$(go env GOPATH)/bin/omac" ./cmd/omac   # or any dir on your $PATH
-```
-
-**More:** [`docs/INSTALLATION.md`](docs/INSTALLATION.md) — the full release
-artifact list, the apt/pacman download one-liners, what `omac update` does per
-platform, and the complete prerequisite matrix.
-
-### Prerequisites
-
-`omac doctor` checks all of these. The core requirements:
-
-| Package | Linux | macOS | Purpose |
-|---|---|---|---|
-| **bubblewrap** (`bwrap`) | `apt install bubblewrap` / `dnf install bubblewrap` | built-in (Seatbelt) | Sandboxes the inner process via user namespaces + Landlock. Without it the built-in sandbox cannot start. |
-| **Secret Service / D-Bus** | ships with GNOME/KDE; `apt install libsecret-1-0` | built-in (Keychain) | Stores skill secrets in the OS keychain so they never touch disk. Without a running Secret Service, `omac secrets` operations fail. |
-| **Python 3** (stdlib only) | pre-installed on most distros | pre-installed | Sidecar processes are written against the standard library only. No pip packages required. |
-| **A dialog backend** | `apt install zenity` (or `kdialog`) + `libnotify-bin` | built-in (`osascript`) | Shows the native allow/deny prompt for unknown network hosts. With none available every non-allowlisted request is **denied**. |
-| **An inner harness** | one of `opencode`, `claude`, `codex`, `copilot`, `pi`, `codewhale` | same | The agent omac sandboxes. `opencode` is the default. |
-
-> **AppArmor and bubblewrap (Ubuntu 23.10+/24.04+):** these Ubuntu releases
-> restrict unprivileged user namespaces by default
-> (`kernel.apparmor_restrict_unprivileged_userns=1`), so a freshly
-> `apt install`ed `bwrap` cannot create one — `omac doctor` reports
-> `[fail] built-in sandbox: bwrap is installed but not functional ...
-> Permission denied`. Grant bwrap an AppArmor exception once:
-> ```bash
-> sudo tee /etc/apparmor.d/bwrap > /dev/null <<'EOF'
-> abi <abi/4.0>,
-> /usr/bin/bwrap flags=(unconfined) {
->   userns,
-> }
-> EOF
-> sudo apparmor_parser -r /etc/apparmor.d/bwrap
-> ```
-> `omac doctor` prints this same fix in its failure message.
-
-> **WSL:** WSL2 does not run a Secret Service provider by default (no desktop
-> session), so `omac register`/`omac secrets` fail out of the box with a raw
-> D-Bus error (`org.freedesktop.secrets was not provided by any .service
-> files`). Install and start gnome-keyring once per session:
-> ```bash
-> sudo apt install gnome-keyring dbus-x11
-> eval "$(dbus-launch --sh-syntax)"
-> gnome-keyring-daemon --unlock --components=secrets
-> ```
-> `omac doctor` reports whether the keychain backend is reachable. There is no
-> file-based fallback yet — a running Secret Service provider is required on
-> Linux/WSL.
-
-Per-harness install links and the optional extras (nono, Go) are in
-[`docs/INSTALLATION.md`](docs/INSTALLATION.md#prerequisites).
-
-## Everyday commands
-
-| Command | What it does |
-|---|---|
-| `omac doctor` | Sanity checks: config, registry, binaries, secrets, sandbox |
-| `omac start [harness]` | Spawn sidecars → bind the facade socket → exec the sandbox |
-| `omac continue` / `omac resume` | Re-enter the last session, or pick one interactively |
-| `omac register <skill>` | Validate a skill, prompt for secrets → keychain, record it |
-| `omac list` | Registered skills with mount, secret count, binary status |
-| `omac secrets <sub> <skill>` | `list`, `set`, `unset`, `import --from <file>` |
-| `omac provenance [--check]` | Effective allow/deny entries and the resolved cache scope |
-| `omac cache clear [--all]` | Remove the active (or every inactive) tool-cache scope |
-| `omac serve [harness]` | Multi-directory server backing OpenCode Desktop |
-| `omac update` | Upgrade omac using the method it was installed with |
-
-Every flag, the end-to-end workflow, and the exit codes are in
-[`docs/CLI.md`](docs/CLI.md).
 
 ## Configuration
 
@@ -296,16 +119,68 @@ to change something:
 
 | File | Purpose |
 |---|---|
-| `~/.config/omac/config.yaml` (or `<workdir>/.opencode/oh-my-agentic-coder.yaml`) | Sandbox profile selection, facade tuning, audit settings, cache scope |
-| `~/.config/omac/sandbox-profiles/default.json` | Filesystem grants, network mode, protected paths, env allowlist |
-| `~/.config/omac/sidecar.json` | Skill registry (written by `omac register`) |
+| `~/.config/omac/config.yaml` (or `<workdir>/.opencode/oh-my-agentic-coder.yaml`) | Launcher: which sandbox **runtime** profile (`builtin` / `nono` / …), facade, audit, cache scope |
+| `~/.config/omac/sandbox-profiles/default.json` | Grant JSON: filesystem, network mode, protected paths, env allowlist (scaffolded on first builtin start) |
+| `~/.config/omac/sidecar.json` (and workdir `.opencode/sidecar.json`) | Skill registry (written by `omac register`) |
 | `~/.config/omac/skill-config.yaml` | Non-secret per-skill fields |
+
+Do not confuse the two “profile” names: launcher YAML picks **how** to sandbox;
+the JSON file defines **what** the sandbox may touch.
 
 **Details:** [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) — every field, the
 audit trail format and flags, sandbox profile schema, proxy injection for
 JVM/Node toolchains, and corporate-proxy chaining.
 [`docs/CACHE_ISOLATION.md`](docs/CACHE_ISOLATION.md) covers the per-scope tool
 caches (`cache.scope`, `--ephemeral-cache`, `omac cache clear`).
+
+## How it works
+
+On the host, omac loads secrets from the OS keychain into skill sidecars, then
+exposes those sidecars through one HTTP facade (loopback TCP and a Unix socket).
+Inside the sandbox the harness reaches skills via `OMAC_<MOUNT>_BASE`; all other
+egress goes through omac's filtering proxy. Network decisions and launches are
+appended to an audit log outside the sandbox.
+
+| Term | Meaning |
+|---|---|
+| **Harness** | The inner agent CLI that runs inside the sandbox (`opencode`, `claude`, …). |
+| **Sidecar** | A host-side HTTP process declared in a skill's `omac.yaml`. Owns secrets; never runs in the sandbox. |
+| **Facade** | omac's reverse proxy. Each skill is mounted under `/{mount}/…` on loopback TCP and a Unix socket. |
+| **Skill** | A package with `SKILL.md` plus an optional sidecar. Must be registered (or auto-provisioned) before `omac start` will launch. |
+| **Sandbox profile** | Two namespaces: which **runtime** to use (`builtin`, `nono`, … in launcher config) vs. which **grants** apply (`~/.config/omac/sandbox-profiles/default.json`). |
+
+**`omac start` pipeline:** load config + skill registry → refuse launch on
+unregistered skills or bundle drift → load secrets from the OS keychain → spawn
+sidecars and wait for health → bind the facade → exec the sandbox with `OMAC_*`
+env → on exit, tear down sidecars and zeroize secrets.
+
+Inside the sandbox, prefer TCP:
+
+```sh
+curl "$OMAC_GITHUB_BASE/repos/acme/app/issues"
+```
+
+`OMAC_<MOUNT>_BASE` is the loopback HTTP URL. `OMAC_<MOUNT>_SOCKET_BASE` /
+`$OMAC_SOCKET` are the Unix-socket forms (lower overhead when available; often
+blocked under Seatbelt / nono proxy mode on macOS).
+
+## What omac protects against
+
+| Risk | omac's answer |
+|---|---|
+| **Exfiltration** | Default `network.mode: filtered` — every connection through omac's loopback proxy; unknown hosts prompt (deny if no dialog) |
+| **Credential theft** | `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.kube`, `.env` / `.envrc` stay denied even under broader grants |
+| **Token leakage** | Tokens in the OS keychain → host sidecars only, never the sandbox env |
+
+| Concern | macOS | Linux |
+|---|---|---|
+| Sandbox | Seatbelt (`sandbox-exec`) | bubblewrap + Landlock |
+| Secret store | Keychain | Secret Service |
+| Prompt dialog | AppleScript | zenity / kdialog |
+
+Widening access means editing the grant JSON — a reviewable change. Full threat
+model and “what the sandbox can still see”:
+[`docs/SECURITY_MODEL.md`](docs/SECURITY_MODEL.md).
 
 ## Documentation
 
@@ -330,15 +205,13 @@ caches (`cache.scope`, `--ephemeral-cache`, `omac cache clear`).
 
 CI (`.github/workflows/ci.yml`) gates on `gofmt`, `go vet`, `staticcheck`,
 build, and `go test -race`. To avoid pushing gofmt drift, install the local
-pre-commit hook — it auto-formats staged `.go` files and re-stages them:
+pre-commit hook:
 
 ```sh
 scripts/install-hooks.sh
 ```
 
-Re-run after a fresh clone or after pulling hook changes. The hook only runs
-`gofmt`; vet, staticcheck, build, and tests stay in CI to keep the hook fast.
-For the project layout, dev and release builds, and the test matrix, see
+The hook only runs `gofmt`. Layout, builds, and the test matrix:
 [`docs/DEVELOP.md`](docs/DEVELOP.md).
 
 ## Not yet implemented (v0)

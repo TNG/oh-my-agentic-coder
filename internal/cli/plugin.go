@@ -82,16 +82,17 @@ func runPluginInstall(args []string, env *Env) int {
 	force := fs.Bool("force", false, "Overwrite an existing plugin file even if it differs from the bundled version.")
 	global := fs.Bool("global", false, "Install into the harness's user-global plugin directory (e.g. ~/.config/opencode/plugins) instead of this workdir.")
 	fs.Usage = func() {
-		fmt.Fprintln(env.Stderr, "Usage: omac plugin install <target> [--global] [--force]")
-		fmt.Fprintln(env.Stderr, "\nTargets:")
+		out := fs.Output()
+		fmt.Fprintln(out, "Usage: omac plugin install <target> [--global] [--force]")
+		fmt.Fprintln(out, "\nTargets:")
 		for _, t := range pluginTargets() {
-			fmt.Fprintf(env.Stderr, "  %-18s %s\n", t.name, t.summary)
+			fmt.Fprintf(out, "  %-18s %s\n", t.name, t.summary)
 		}
-		fmt.Fprintln(env.Stderr)
+		fmt.Fprintln(out)
 		fs.PrintDefaults()
 	}
-	if err := fs.Parse(reorderFlagsFirst(args)); err != nil {
-		return ExitMisuse
+	if code, ok := parseFlags(fs, args, env); !ok {
+		return code
 	}
 	rest := fs.Args()
 	if len(rest) == 0 {

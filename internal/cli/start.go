@@ -76,10 +76,10 @@ type launchOpts struct {
 
 // parseLaunchArgs parses the shared start-family command line: an optional
 // leading positional harness token, the start flags, and trailing `-- inner
-// args`. cmdName is used in usage/error text (e.g. "start", "continue"). It
-// returns the assembled opts and true on success; on a parse/usage error it
-// prints to stderr and returns false (callers map that to ExitMisuse).
-func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, bool) {
+// args`. cmdName is used in usage/error text (e.g. "start", "continue").
+// On success it returns ExitOK; on help, ExitOK with empty opts after printing
+// usage; on a parse/usage error it prints to stderr and returns ExitMisuse.
+func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, int) {
 	fs := flag.NewFlagSet(cmdName, flag.ContinueOnError)
 	fs.SetOutput(env.Stderr)
 	var (
@@ -103,8 +103,9 @@ func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, bool)
 	// different, but `omac -s` is harness-agnostic).
 	fs.StringVar(sessionID, "s", "", "Shorthand for --session.")
 	fs.Usage = func() {
-		fmt.Fprintf(env.Stderr, "Usage: omac %s [harness] [flags] [-- inner args...]\n", cmdName)
-		fmt.Fprintf(env.Stderr, "\nharness: one of %s (default: %s)\n\n",
+		out := fs.Output()
+		fmt.Fprintf(out, "Usage: omac %s [harness] [flags] [-- inner args...]\n", cmdName)
+		fmt.Fprintf(out, "\nharness: one of %s (default: %s)\n\n",
 			strings.Join(config.HarnessNames(), ", "), config.DefaultHarness().Name)
 		fs.PrintDefaults()
 	}
@@ -128,19 +129,19 @@ func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, bool)
 	harness, ourArgs, err := splitHarnessToken(ourArgs)
 	if err != nil {
 		fmt.Fprintf(env.Stderr, "omac %s: %v\n", cmdName, err)
-		return launchOpts{}, false
+		return launchOpts{}, ExitMisuse
 	}
-	if err := fs.Parse(reorderFlagsFirst(ourArgs)); err != nil {
-		return launchOpts{}, false
+	if code, ok := parseFlags(fs, ourArgs, env); !ok {
+		return launchOpts{}, code
 	}
 	if *ephemeralCache && *noSandbox {
 		fmt.Fprintf(env.Stderr, "omac %s: --ephemeral-cache cannot be used with --no-sandbox\n", cmdName)
-		return launchOpts{}, false
+		return launchOpts{}, ExitMisuse
 	}
 	if *cacheScope != "" {
 		if _, err := config.ValidateCacheScope(*cacheScope); err != nil {
 			fmt.Fprintf(env.Stderr, "omac %s: %v\n", cmdName, err)
-			return launchOpts{}, false
+			return launchOpts{}, ExitMisuse
 		}
 	}
 	innerArgs = append(fs.Args(), innerArgs...)
@@ -162,7 +163,7 @@ func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, bool)
 		auditStrict:        *auditStrict,
 		sessionID:          *sessionID,
 		innerArgs:          innerArgs,
-	}, true
+	}, ExitOK
 }
 
 // checkInnerBinary verifies the harness's inner command binary is on $PATH.
@@ -180,9 +181,12 @@ func checkInnerBinary(harness config.Harness, prefix string, env *Env) int {
 }
 
 func runStart(args []string, env *Env) int {
-	opts, ok := parseLaunchArgs("start", args, env)
-	if !ok {
-		return ExitMisuse
+	opts, code := parseLaunchArgs("start", args, env)
+	if code != ExitOK {
+		return code
+	}
+	if opts.label == "" {
+		return ExitOK // --help printed usage
 	}
 	return runLaunch(env, opts)
 }

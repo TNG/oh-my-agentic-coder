@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"errors"
+	"flag"
 	"strings"
 
 	"github.com/tngtech/oh-my-agentic-coder/internal/config"
@@ -81,4 +83,41 @@ func reorderFlagsFirst(args []string) []string {
 
 func isFlag(a string) bool {
 	return len(a) >= 2 && a[0] == '-' && a != "-"
+}
+
+// wantsHelp reports whether an explicit -h/--help appears before a "--" stop.
+func wantsHelp(args []string) bool {
+	for _, a := range args {
+		if a == "--" {
+			return false
+		}
+		if a == "-h" || a == "--help" {
+			return true
+		}
+	}
+	return false
+}
+
+// parseFlags applies the shared help contract: an explicit -h/--help prints
+// usage on stdout and stops with ExitOK; a real parse error leaves flag's own
+// message on stderr and stops with ExitMisuse. When proceed is true, parsing
+// succeeded and the caller should continue.
+func parseFlags(fs *flag.FlagSet, args []string, env *Env) (code int, proceed bool) {
+	reordered := reorderFlagsFirst(args)
+	if wantsHelp(reordered) {
+		fs.SetOutput(env.Stdout)
+		fs.Usage()
+		return ExitOK, false
+	}
+	fs.SetOutput(env.Stderr)
+	if err := fs.Parse(reordered); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			// Defensive: ContinueOnError + PrintDefaults already ran on
+			// stderr via the default Usage; treat as misuse only if
+			// wantsHelp somehow missed it (should not happen).
+			return ExitMisuse, false
+		}
+		return ExitMisuse, false
+	}
+	return ExitOK, true
 }

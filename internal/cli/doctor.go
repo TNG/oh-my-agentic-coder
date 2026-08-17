@@ -22,9 +22,15 @@ import (
 func runDoctor(args []string, env *Env) int {
 	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
 	fs.SetOutput(env.Stderr)
-	_ = fs.Bool("fix", false, "Reserved for future automatic fixes.")
-	if err := fs.Parse(reorderFlagsFirst(args)); err != nil {
-		return ExitMisuse
+	_ = fs.Bool("fix", false, "Reserved; not implemented yet (no-op).")
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), "Usage: omac doctor [--fix]")
+		fmt.Fprintln(fs.Output(), "")
+		fmt.Fprintln(fs.Output(), "Run sanity checks: keychain, launcher config, registry, sandbox, dialog backend, harness.")
+		fs.PrintDefaults()
+	}
+	if code, ok := parseFlags(fs, args, env); !ok {
+		return code
 	}
 
 	fmt.Fprintf(env.Stdout, "omac %s\n", env.Version)
