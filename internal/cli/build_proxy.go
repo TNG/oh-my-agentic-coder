@@ -192,18 +192,21 @@ var containerProxyStarter = startContainerProxy
 // a warning — correctness over determinism (the stale-URL issue may
 // resurface in that rare case, but the build still runs).
 //
-// Returns the DOCKER_HOST URL, an enabled flag, and a stop func that
-// tears down the listener AND runs Cleanup (best-effort removal of
-// executor-owned containers + the executor-owned internal network).
-// Empty URL + nil stop when no images are approved (the common case — a
-// standard Gradle project needs no Docker mediation) or on Linux (the
-// build executor is kernel-blocked, so the loopback proxy is unreachable).
+// Returns the DOCKER_HOST URL, an enabled flag, the daemon's maximum
+// supported Engine API version (empty when the startup /version probe
+// failed — the executor then omits api.version and the proxy's
+// clampAPIVersion handles version mismatches), a stop func that tears down
+// the listener AND runs Cleanup (best-effort removal of executor-owned
+// containers + the executor-owned internal network), and an error. Empty
+// URL + nil stop when no images are approved (the common case — a standard
+// Gradle project needs no Docker mediation) or on Linux (the build
+// executor is kernel-blocked, so the loopback proxy is unreachable).
 //
 // macOS-only in v1 (Shape A, env-only network) — same gate as the filtered
 // /credential proxies. The executor ID is a stable per-worktree value
 // (derived from the canonical worktree path) so one executor's resources
 // are distinct from another's across concurrent worktrees.
-func startContainerProxy(env *Env, worktree, controlLeaf string, approvedImages []string, buildReqID string, auditor audit.Auditor) (url string, enabled bool, stop func(), err error) {
+func startContainerProxy(env *Env, worktree, controlLeaf string, approvedImages []string, buildReqID string, auditor audit.Auditor) (url string, enabled bool, apiVersion string, stop func(), err error) {
 	tw := env.traceWriter()
 	ctrace := func(format string, args ...any) {
 		if os.Getenv("OMAC_BUILD_TRACE") != "1" {
@@ -217,12 +220,12 @@ func startContainerProxy(env *Env, worktree, controlLeaf string, approvedImages 
 		// Linux kernel-blocked: the loopback proxy is unreachable from
 		// the executor. v1 does not start it on Linux.
 		ctrace("NOT starting: runtime.GOOS=%q != darwin (Linux kernel-blocked)", runtime.GOOS)
-		return "", false, nil, nil
+		return "", false, "", nil, nil
 	}
 	if len(approvedImages) == 0 {
 		// No approved images — common case; nothing to mediate.
 		ctrace("NOT starting: len(approvedImages)==0 (standard Gradle project, no Docker mediation)")
-		return "", false, nil, nil
+		return "", false, "", nil, nil
 	}
 	execID := containerExecutorID(worktree)
 	// Resolve the upstream socket the proxy will forward to, so the
@@ -259,17 +262,18 @@ func startContainerProxy(env *Env, worktree, controlLeaf string, approvedImages 
 	})
 	if err != nil {
 		ctrace("containerproxy.New FAILED: %v", err)
-		return "", false, nil, fmt.Errorf("create container proxy: %w", err)
+		return "", false, "", nil, fmt.Errorf("create container proxy: %w", err)
 	}
 	p.SetBuildRequestID(buildReqID)
 	ctrace("containerproxy.New ok (execID=%s), calling Start()...", execID)
 	dockerHost, stopFn, err := p.Start()
 	if err != nil {
 		ctrace("p.Start() FAILED: %v", err)
-		return "", false, nil, fmt.Errorf("start container proxy: %w", err)
+		return "", false, "", nil, fmt.Errorf("start container proxy: %w", err)
 	}
-	ctrace("p.Start() ok, DOCKER_HOST=%s enabled=true", dockerHost)
-	return dockerHost, true, stopFn, nil
+	apiVer := p.APIVersion()
+	ctrace("p.Start() ok, DOCKER_HOST=%s enabled=true apiVersion=%s", dockerHost, apiVer)
+	return dockerHost, true, apiVer, stopFn, nil
 }
 
 // containerExecutorID derives a stable, unforgeable executor ownership

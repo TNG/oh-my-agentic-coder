@@ -55,6 +55,11 @@ type BuildGrants struct {
 	// (macOS with approved images). ChildEnv injects DOCKER_HOST +
 	// TESTCONTAINERS_RYUK_DISABLED=true only when this is true.
 	containerProxyEnabled bool
+	// containerProxyAPIVersion is the daemon's max Engine API version
+	// (from the proxy's startup /version probe). ChildEnv injects
+	// `api.version=<containerProxyAPIVersion>` so docker-java pins a
+	// version the daemon accepts. Empty when the probe failed.
+	containerProxyAPIVersion string
 }
 
 // GradleUserHome is the OMAC cache leaf handed to the Gradle wrapper as
@@ -284,6 +289,15 @@ type BuildConfig struct {
 	// (macOS with approved images). ChildEnv injects DOCKER_HOST +
 	// TESTCONTAINERS_RYUK_DISABLED=true only when this is true.
 	ContainerProxyEnabled bool
+	// ContainerProxyAPIVersion is the daemon's maximum supported Engine
+	// API version, discovered at proxy startup via GET /version. ChildEnv
+	// injects `api.version=<ContainerProxyAPIVersion>` so docker-java pins
+	// a version the daemon accepts (testcontainers 1.20.4 pins v1.32;
+	// Docker 29.x MinAPIVersion=1.40 rejects it with 400 "client version
+	// is too old"). Empty (probe failed / old daemon) omits the env var;
+	// the proxy's clampAPIVersion then handles version mismatches as
+	// defense-in-depth.
+	ContainerProxyAPIVersion string
 	// DaemonOwnerMarker is the cryptographically random, unguessable
 	// owner marker the host injects into the Gradle daemon JVM args
 	// (ticket 07, spec.md §237). When non-empty, GrantsFor threads it
@@ -534,17 +548,18 @@ func GrantsFor(worktree, cacheDir string, cfg BuildConfig) (*BuildGrants, error)
 	}
 
 	bg := &BuildGrants{
-		Grants:                g,
-		gradleUserHome:        leaf,
-		tmpDir:                tmp,
-		jdk:                   jdk,
-		proxyURL:              cfg.ProxyURL,
-		maxHeap:               maxHeap,
-		approvedImages:        cfg.ApprovedImages,
-		approvedRegistries:    cfg.ApprovedRegistries,
-		registryProxyURLs:     cfg.RegistryProxyURLs,
-		containerProxyURL:     cfg.ContainerProxyURL,
-		containerProxyEnabled: cfg.ContainerProxyEnabled,
+		Grants:                   g,
+		gradleUserHome:           leaf,
+		tmpDir:                   tmp,
+		jdk:                      jdk,
+		proxyURL:                 cfg.ProxyURL,
+		maxHeap:                  maxHeap,
+		approvedImages:           cfg.ApprovedImages,
+		approvedRegistries:       cfg.ApprovedRegistries,
+		registryProxyURLs:        cfg.RegistryProxyURLs,
+		containerProxyURL:        cfg.ContainerProxyURL,
+		containerProxyEnabled:    cfg.ContainerProxyEnabled,
+		containerProxyAPIVersion: cfg.ContainerProxyAPIVersion,
 	}
 	if proxy.Host != "" && proxy.Port > 0 {
 		bg.gradleOpts = buildGradleOpts(proxy)
@@ -704,6 +719,16 @@ func ChildEnv(b *BuildGrants) []string {
 	if b.containerProxyEnabled && b.containerProxyURL != "" {
 		injected["DOCKER_HOST"] = b.containerProxyURL
 		injected["TESTCONTAINERS_RYUK_DISABLED"] = "true"
+		// Pin docker-java's API version to the daemon's max so it stops
+		// sending /v1.32/... (testcontainers 1.20.4's hardcoded default),
+		// which Docker 29.x rejects (MinAPIVersion=1.40 → 400 "client
+		// version is too old"). docker-java reads the env var named
+		// `api.version` (DefaultDockerClientConfig.API_VERSION) — not the
+		// standard DOCKER_API_VERSION. Empty (probe failed) omits the var;
+		// the proxy's clampAPIVersion then handles mismatches.
+		if b.containerProxyAPIVersion != "" {
+			injected["api.version"] = b.containerProxyAPIVersion
+		}
 		tracef(os.Stderr, "ChildEnv: injected DOCKER_HOST=%s TESTCONTAINERS_RYUK_DISABLED=true (containerProxyEnabled=%v)",
 			b.containerProxyURL, b.containerProxyEnabled)
 	} else {

@@ -261,10 +261,18 @@ type CredentialProxyHandle struct {
 // tears down the listener AND runs Cleanup (best-effort removal of
 // executor-owned containers + the executor-owned internal network). Nil
 // stop means nothing to tear down.
+//
+// APIVersion is the daemon's maximum supported Engine API version
+// (discovered at proxy startup via GET /version); the executor env injects
+// `api.version=<APIVersion>` so docker-java pins a version the daemon
+// accepts (testcontainers 1.20.4 pins v1.32; Docker 29.x MinAPIVersion=1.40
+// rejects it). Empty when the probe failed — the env var is omitted and
+// the proxy's clampAPIVersion remains as defense-in-depth.
 type ContainerProxyHandle struct {
-	URL     string
-	Enabled bool
-	Stop    func()
+	URL        string
+	Enabled    bool
+	APIVersion string
+	Stop       func()
 }
 
 // Options bundles the engine inputs for one Run invocation.
@@ -582,6 +590,7 @@ func Run(opts Options) Result {
 	approved.RegistryProxyURLs = cred.URLs
 	approved.ContainerProxyURL = container.URL
 	approved.ContainerProxyEnabled = container.Enabled
+	approved.ContainerProxyAPIVersion = container.APIVersion
 	if os.Getenv("OMAC_BUILD_TRACE") == "1" {
 		fmt.Fprintf(stderr, "omac build: engine: proxies started: filtered={url=%s enabled=%v} container={url=%s enabled=%v}\n",
 			filtered.URL, filtered.Enabled, container.URL, container.Enabled)
