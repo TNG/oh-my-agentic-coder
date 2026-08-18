@@ -107,6 +107,17 @@ type Proxy struct {
 	// diagnostics can report it without re-reading the listener.
 	boundPort int
 
+	// apiMinVersion / apiMaxVersion are the daemon's supported Engine API
+	// version range, discovered at startup via GET /version. forward()
+	// clamps a client request's /vX.Y/ version prefix into this range so
+	// a client that pins an API version the daemon rejects (too old OR
+	// too new) still gets a 2xx instead of a 400 "client version is too
+	// old/new". Empty (probe failed / old daemon without MinAPIVersion)
+	// disables clamping — forward forwards the client path verbatim,
+	// preserving the pre-negotiation behavior.
+	apiMinVersion string
+	apiMaxVersion string
+
 	mu          sync.Mutex
 	containers  map[string]containerMeta // id -> metadata (owned)
 	networkID   string                   // executor-owned internal network id
@@ -183,6 +194,20 @@ func (p *Proxy) SetBuildRequestID(id string) {
 	p.mu.Lock()
 	p.buildRequestID = id
 	p.mu.Unlock()
+}
+
+// APIVersion returns the daemon's maximum supported Engine API version,
+// discovered at startup via GET /version. Empty when the probe failed or
+// the daemon did not advertise a version (old daemons). Callers thread
+// this into the executor env as `api.version=<APIVersion>` so docker-java
+// pins a version the daemon accepts, instead of its library default
+// (testcontainers 1.20.4 pins v1.32, which Docker 29.x rejects: MinAPIVersion
+// was raised to 1.40). This is the source-side complement to the proxy's
+// clampAPIVersion defense-in-depth.
+func (p *Proxy) APIVersion() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.apiMaxVersion
 }
 
 // Scavenge removes abandoned executor-owned resources from a PREVIOUS
@@ -350,6 +375,14 @@ func (p *Proxy) Start() (dockerHost string, stop func(), err error) {
 	}
 	p.ln = ln
 	p.boundPort = ln.Addr().(*net.TCPAddr).Port
+	// Discover the daemon's API version range so forward() can clamp a
+	// client's /vX.Y/ prefix into [min, max]. Without this, a client that
+	// pins a version below the daemon's MinAPIVersion (testcontainers
+	// 1.20.4 pins v1.32; Docker 29.x raised MinAPIVersion to 1.40) gets a
+	// 400 "client version is too old" on every versioned request, which
+	// testcontainers surfaces as "Could not find a valid Docker
+	// environment". Best-effort: clamping is disabled if the probe fails.
+	p.probeUpstreamVersion()
 	if fallback {
 		p.logf("containerproxy: using fallback ephemeral port %d (stable window unavailable; the cached DOCKER_HOST may drift on next run)", p.boundPort)
 	}
@@ -371,6 +404,50 @@ func (p *Proxy) Start() (dockerHost string, stop func(), err error) {
 	go p.acceptLoop()
 	dockerHost = fmt.Sprintf("tcp://127.0.0.1:%d", p.boundPort)
 	return dockerHost, p.shutdown, nil
+}
+
+// probeUpstreamVersion queries GET /version (unversioned — the daemon
+// always accepts it) to discover the daemon's supported Engine API
+// version range ([MinAPIVersion, APIVersion]). forward() clamps a
+// client request's /vX.Y/ version prefix into this range so a client
+// that pins a version the daemon rejects (e.g. testcontainers 1.20.4
+// pins v1.32, but Docker 29.x raised MinAPIVersion to 1.40) still
+// gets a 2xx instead of a 400 "client version is too old". The probe
+// is best-effort: on failure (unreachable daemon, parse error, old
+// daemon without MinAPIVersion) clamping is disabled and forward
+// forwards the client path verbatim (the pre-negotiation behavior).
+// Storing the range on the proxy (not per-request) is safe because
+// the proxy serves one build against one daemon at a time.
+func (p *Proxy) probeUpstreamVersion() {
+	req, err := http.NewRequest(http.MethodGet, p.upstreamURL("/version"), nil)
+	if err != nil {
+		return
+	}
+	resp, err := p.transport.RoundTrip(req)
+	if err != nil {
+		p.logf("containerproxy: version probe: upstream unreachable: %v", err)
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		p.logf("containerproxy: version probe: upstream status %d", resp.StatusCode)
+		return
+	}
+	b, _ := io.ReadAll(resp.Body)
+	var v struct {
+		APIVersion    string `json:"ApiVersion"`
+		MinAPIVersion string `json:"MinAPIVersion"`
+	}
+	if err := json.Unmarshal(b, &v); err != nil {
+		p.logf("containerproxy: version probe: parse: %v", err)
+		return
+	}
+	if v.APIVersion == "" {
+		return
+	}
+	p.apiMinVersion = v.MinAPIVersion
+	p.apiMaxVersion = v.APIVersion
+	p.logf("containerproxy: version probe: apiMinVersion=%s apiMaxVersion=%s", p.apiMinVersion, p.apiMaxVersion)
 }
 
 // logUnbindablePreferred logs why a preferred stable port could not be
@@ -760,7 +837,8 @@ func (p *Proxy) inspectAndRegister(id string) (ports []PortMapping, image string
 // and times out. The logs endpoint is the primary streaming case; other
 // endpoints return finite bodies and take the buffered path.
 func (p *Proxy) forward(conn net.Conn, req *http.Request, body []byte, d endpointDecision) {
-	upReq, err := http.NewRequest(req.Method, p.upstreamURL(req.URL.Path), strings.NewReader(string(body)))
+	upPath := p.clampAPIVersion(req.URL.Path)
+	upReq, err := http.NewRequest(req.Method, p.upstreamURL(upPath), strings.NewReader(string(body)))
 	if err != nil {
 		p.deny(conn, req, &ContainerPolicyError{Kind: KindUnknownEndpoint, Reason: "build upstream request"})
 		return
@@ -843,6 +921,109 @@ func (p *Proxy) upstreamURL(path string) string {
 		return "http://localhost" + path
 	}
 	return p.upstream.String() + path
+}
+
+// clampAPIVersion rewrites a client request path's /vX.Y/ version prefix
+// into the daemon's supported API version range discovered by
+// probeUpstreamVersion, so a client that pins a version the daemon rejects
+// (too old OR too new) still gets a 2xx instead of a 400. Docker's Engine
+// API version middleware (moby daemon/server/middleware/version.go) returns
+// 400 "client version X is too old/new" when the requested version is
+// outside [MinAPIVersion, APIVersion]. The proxy transparently clamps the
+// client's version into that range:
+//
+//   - /v1.32/info with min=1.40,max=1.55 → /v1.40/info (too old, raise to min)
+//   - /v1.99/info with min=1.40,max=1.55 → /v1.55/info (too new, lower to max)
+//   - /v1.44/info with min=1.40,max=1.55 → /v1.44/info (in range, unchanged)
+//   - /info (unversioned)                  → /info (unchanged; daemon uses its default)
+//
+// When the version range is unknown (probe failed, old daemon without
+// MinAPIVersion) the path is returned verbatim, preserving the
+// pre-negotiation behavior. The clamp is in forward() only — the proxy's
+// own sub-requests (scavenge, inspect, create, network) use unversioned
+// paths already, so they bypass the daemon's version check regardless.
+func (p *Proxy) clampAPIVersion(path string) string {
+	if p.apiMinVersion == "" && p.apiMaxVersion == "" {
+		return path
+	}
+	rest, ok := splitVersionPrefix(path)
+	if !ok {
+		return path
+	}
+	// rest == path with the leading /vX.Y/ removed; the version seg is
+	// path[1:splitIdx] (without the leading slash).
+	slashIdx := strings.IndexByte(path[1:], '/')
+	seg := path[1 : 1+slashIdx]
+	v := seg[1:] // strip the "v"
+	clamped := v
+	if p.apiMinVersion != "" && apiVersionLess(v, p.apiMinVersion) {
+		clamped = p.apiMinVersion
+	} else if p.apiMaxVersion != "" && apiVersionLess(p.apiMaxVersion, v) {
+		clamped = p.apiMaxVersion
+	}
+	if clamped == v {
+		return path
+	}
+	return "/v" + clamped + rest
+}
+
+// splitVersionPrefix reports whether path begins with a /vX[.Y]/ version
+// segment and returns the remainder (the path AFTER the version segment,
+// including its leading slash). e.g. "/v1.32/info" → ("/info", true),
+// "/v1/_ping" → ("/_ping", true), "/info" → ("", false).
+func splitVersionPrefix(path string) (string, bool) {
+	if !strings.HasPrefix(path, "/v") {
+		return "", false
+	}
+	slashIdx := strings.IndexByte(path[1:], '/')
+	if slashIdx < 0 {
+		return "", false
+	}
+	seg := path[1 : 1+slashIdx]
+	if !isVersionSeg(seg) {
+		return "", false
+	}
+	return path[1+slashIdx:], true
+}
+
+// apiVersionLess reports whether version string a is less than b, compared
+// as "major.minor" numeric pairs. e.g. "1.32" < "1.40", "1.4" < "1.40"
+// (1.4 == 1.04 < 1.40). Handles the X.Y shape Docker uses; a missing
+// minor is treated as .0.
+func apiVersionLess(a, b string) bool {
+	amaj, amin := parseAPIVersion(a)
+	bmaj, bmin := parseAPIVersion(b)
+	if amaj != bmaj {
+		return amaj < bmaj
+	}
+	return amin < bmin
+}
+
+// parseAPIVersion splits "1.40" → (1, 40). Missing minor → 0. Non-numeric
+// segments → 0 (so a garbage version compares as 0.0, below any real one).
+func parseAPIVersion(s string) (int, int) {
+	maj, min := 0, 0
+	dot := strings.IndexByte(s, '.')
+	if dot < 0 {
+		maj = atoi(s)
+		return maj, 0
+	}
+	maj = atoi(s[:dot])
+	min = atoi(s[dot+1:])
+	return maj, min
+}
+
+// atoi is a small non-negative integer parser (Docker API versions are
+// always small non-negative integers). Returns 0 on any non-numeric input.
+func atoi(s string) int {
+	n := 0
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return 0
+		}
+		n = n*10 + int(r-'0')
+	}
+	return n
 }
 
 // digestApprovedByRepoTags resolves an image content digest (sha256:...)

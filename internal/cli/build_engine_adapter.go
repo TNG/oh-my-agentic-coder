@@ -71,15 +71,16 @@ func cliProxyStarter(env *buildengine.ProxyEnv) (filtered buildengine.ProxyHandl
 	// kernel-blocked → not started). The build request id is threaded
 	// in so container-policy denials are correlated with the active
 	// request (spec §254).
-	containerURL, containerEnabled, stopContainerProxy, cpErr := containerProxyStarter(cliEnv, env.Worktree, env.Leaf, env.ApprovedImages, env.BuildRequestID, env.Auditor)
+	containerURL, containerEnabled, containerAPIVersion, stopContainerProxy, cpErr := containerProxyStarter(cliEnv, env.Worktree, env.Leaf, env.ApprovedImages, env.BuildRequestID, env.Auditor)
 	if cpErr != nil {
 		return filtered, credential, buildengine.ContainerProxyHandle{},
 			fmt.Errorf("container proxy: %w", cpErr)
 	}
 	container = buildengine.ContainerProxyHandle{
-		URL:     containerURL,
-		Enabled: containerEnabled,
-		Stop:    stopContainerProxy,
+		URL:        containerURL,
+		Enabled:    containerEnabled,
+		APIVersion: containerAPIVersion,
+		Stop:       stopContainerProxy,
 	}
 	return filtered, credential, container, nil
 }
