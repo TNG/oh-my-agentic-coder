@@ -142,11 +142,20 @@ type PolicySnapshot struct {
 //     changed or there is no prior approval — the engine surfaces that
 //     as policy_denial. This preserves the prefactor's
 //     behavior-preserving constraint: the direct-host path keeps its
-//     current gate semantics.
+//     current gate semantics. When the opt-in approval-reuse-by-digest
+//     feature is enabled (ADR 0005), the direct-host path wires a
+//     reuse-aware variant (cli.newDirectSnapshotProvider) that resolves
+//     the worktree's git repo identity and passes it into
+//     buildmanifest.GateAt, so an already-approved repo's unchanged
+//     worktrees reuse the digest-indexed approval instead of requiring
+//     a fresh per-worktree approval.
 //   - Brokered (start/serve parent): reads the parent-owned in-memory
 //     snapshot frozen at activation. Never writes approvals; a digest
 //     mismatch is a policy_denial (the broker routes the human to
-//     `omac build approve` + parent restart).
+//     `omac build approve` + parent restart). The parent's activation
+//     freeze may itself freeze from the digest-indexed reuse record
+//     when reuse is enabled (ADR 0005) — the engine is unchanged: it
+//     consumes whatever immutable snapshot the provider returns.
 //
 // The engine cannot write approvals or replace snapshots: the provider
 // is the only seam that touches approval state, and the engine treats
@@ -251,10 +260,18 @@ type CredentialProxyHandle struct {
 // tears down the listener AND runs Cleanup (best-effort removal of
 // executor-owned containers + the executor-owned internal network). Nil
 // stop means nothing to tear down.
+//
+// APIVersion is the daemon's maximum supported Engine API version
+// (discovered at proxy startup via GET /version); the executor env injects
+// `api.version=<APIVersion>` so docker-java pins a version the daemon
+// accepts (testcontainers 1.20.4 pins v1.32; Docker 29.x MinAPIVersion=1.40
+// rejects it). Empty when the probe failed — the env var is omitted and
+// the proxy's clampAPIVersion remains as defense-in-depth.
 type ContainerProxyHandle struct {
-	URL     string
-	Enabled bool
-	Stop    func()
+	URL        string
+	Enabled    bool
+	APIVersion string
+	Stop       func()
 }
 
 // Options bundles the engine inputs for one Run invocation.
@@ -564,6 +581,7 @@ func Run(opts Options) Result {
 	approved.RegistryProxyURLs = cred.URLs
 	approved.ContainerProxyURL = container.URL
 	approved.ContainerProxyEnabled = container.Enabled
+	approved.ContainerProxyAPIVersion = container.APIVersion
 
 	// Ticket 07 Phase 3: daemon ownership handshake. The engine wires
 	// the pending-to-active handshake BEFORE GrantsFor so the marker +

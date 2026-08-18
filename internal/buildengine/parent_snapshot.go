@@ -113,6 +113,15 @@ func (s *ParentSnapshotStore) ParentSnapshotProvider() SnapshotProvider {
 // current digest match the durable approval. host is the host policy
 // ceiling to freeze into the snapshot.
 //
+// The "durable approval record" is either the per-worktree record or —
+// when the opt-in reuse-by-digest feature is enabled (ADR 0005) and the
+// per-worktree record misses — the digest-indexed, repo-namespaced
+// reuse record (whose RepoRootCommit was verified against the current
+// repo's root commit before freezing). The snapshot is still keyed by
+// canonical worktree exactly as today: a reused record freezes THIS
+// worktree's immutable snapshot; it never shares mutable state between
+// worktrees.
+//
 // This is the helper a host-only `omac build approve` command (and
 // the parent's activation logic) calls after writing the durable
 // approval record; the snapshot takes effect for build requests only
