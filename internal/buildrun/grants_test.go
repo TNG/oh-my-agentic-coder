@@ -504,6 +504,13 @@ func TestGrantsForJDKResolution(t *testing.T) {
 	if !contains(g.ReadPaths, filepath.Join(jdkHome, "bin")) {
 		t.Errorf("ReadPaths must grant the real JDK bin: %v", g.ReadPaths)
 	}
+	// The JVM's Security.initialize() reads <jdk>/conf/security/java.security
+	// (JDK 9+ layout). Without the conf/ grant the executor dies with
+	// java.lang.InternalError "Error loading java.security file" — the
+	// TestE2EJvmBuild unit/IT leg CI failure this test pins.
+	if !contains(g.ReadPaths, filepath.Join(jdkHome, "conf")) {
+		t.Errorf("ReadPaths must grant the real JDK conf dir (java.security): %v", g.ReadPaths)
+	}
 	env := ChildEnv(g)
 	m := map[string]string{}
 	for _, kv := range env {
