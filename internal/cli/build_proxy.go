@@ -160,7 +160,7 @@ func startCredentialProxy(env *Env, worktree, controlLeaf string, manifestRegist
 // inject a fake to assert the proxy is started only when images are
 // approved (macOS) and to avoid touching a real Docker/Colima daemon. The
 // seam signature matches startContainerProxy:
-// (env, worktree, controlLeaf, approvedImages, buildReqID, auditor) -> (url, enabled, stop, error).
+// (env, worktree, controlLeaf, approvedImages, buildReqID, auditor) -> (url, enabled, apiVersion, stop, error).
 // buildReqID (ticket 09, spec §254) is threaded into the proxy so
 // container-policy denials are correlated with the active build request.
 // controlLeaf is the OMAC cache leaf (GRADLE_USER_HOME) where the proxy
@@ -191,26 +191,29 @@ var containerProxyStarter = startContainerProxy
 // a warning — correctness over determinism (the stale-URL issue may
 // resurface in that rare case, but the build still runs).
 //
-// Returns the DOCKER_HOST URL, an enabled flag, and a stop func that
-// tears down the listener AND runs Cleanup (best-effort removal of
-// executor-owned containers + the executor-owned internal network).
-// Empty URL + nil stop when no images are approved (the common case — a
-// standard Gradle project needs no Docker mediation) or on Linux (the
-// build executor is kernel-blocked, so the loopback proxy is unreachable).
+// Returns the DOCKER_HOST URL, an enabled flag, the daemon's maximum
+// supported Engine API version (empty when the startup /version probe
+// failed — the executor then omits api.version and the proxy's
+// clampAPIVersion handles version mismatches), a stop func that tears down
+// the listener AND runs Cleanup (best-effort removal of executor-owned
+// containers + the executor-owned internal network), and an error. Empty
+// URL + nil stop when no images are approved (the common case — a standard
+// Gradle project needs no Docker mediation) or on Linux (the build
+// executor is kernel-blocked, so the loopback proxy is unreachable).
 //
 // macOS-only in v1 (Shape A, env-only network) — same gate as the filtered
 // /credential proxies. The executor ID is a stable per-worktree value
 // (derived from the canonical worktree path) so one executor's resources
 // are distinct from another's across concurrent worktrees.
-func startContainerProxy(env *Env, worktree, controlLeaf string, approvedImages []string, buildReqID string, auditor audit.Auditor) (url string, enabled bool, stop func(), err error) {
+func startContainerProxy(env *Env, worktree, controlLeaf string, approvedImages []string, buildReqID string, auditor audit.Auditor) (url string, enabled bool, apiVersion string, stop func(), err error) {
 	if runtime.GOOS != "darwin" {
 		// Linux kernel-blocked: the loopback proxy is unreachable from
 		// the executor. v1 does not start it on Linux.
-		return "", false, nil, nil
+		return "", false, "", nil, nil
 	}
 	if len(approvedImages) == 0 {
 		// No approved images — common case; nothing to mediate.
-		return "", false, nil, nil
+		return "", false, "", nil, nil
 	}
 	execID := containerExecutorID(worktree)
 	logf := func(format string, args ...any) {
@@ -225,14 +228,14 @@ func startContainerProxy(env *Env, worktree, controlLeaf string, approvedImages 
 		Logf:           logf,
 	})
 	if err != nil {
-		return "", false, nil, fmt.Errorf("create container proxy: %w", err)
+		return "", false, "", nil, fmt.Errorf("create container proxy: %w", err)
 	}
 	p.SetBuildRequestID(buildReqID)
 	dockerHost, stopFn, err := p.Start()
 	if err != nil {
-		return "", false, nil, fmt.Errorf("start container proxy: %w", err)
+		return "", false, "", nil, fmt.Errorf("start container proxy: %w", err)
 	}
-	return dockerHost, true, stopFn, nil
+	return dockerHost, true, p.APIVersion(), stopFn, nil
 }
 
 // containerExecutorID derives a stable, unforgeable executor ownership

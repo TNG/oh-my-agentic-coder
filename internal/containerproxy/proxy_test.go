@@ -1969,3 +1969,188 @@ func TestStart_PortPersistsAcrossRestarts(t *testing.T) {
 		t.Errorf("DOCKER_HOST drifted: first=%q second=%q", dh1, dh2)
 	}
 }
+
+// --- API version negotiation (Docker 29.x MinAPIVersion bump) -----------
+
+// TestClampAPIVersion_None checks the no-op cases: no version range
+// discovered (probe failed / old daemon), and an unversioned path.
+func TestClampAPIVersion_None(t *testing.T) {
+	p := &Proxy{} // no apiMin/apiMax → clamping disabled
+	for _, path := range []string{"/v1.32/info", "/info", "/v1.44/_ping"} {
+		if got := p.clampAPIVersion(path); got != path {
+			t.Errorf("clampAPIVersion(%q) = %q, want unchanged (no range)", path, got)
+		}
+	}
+}
+
+// TestClampAPIVersion_TooOld checks a client version below the daemon's
+// MinAPIVersion is raised to MinAPIVersion. This is the Docker 29.x bug:
+// testcontainers 1.20.4 pins v1.32, Docker 29.x MinAPIVersion=1.40.
+func TestClampAPIVersion_TooOld(t *testing.T) {
+	p := &Proxy{apiMinVersion: "1.40", apiMaxVersion: "1.55"}
+	cases := []struct{ in, want string }{
+		{"/v1.32/info", "/v1.40/info"},
+		{"/v1.32/_ping", "/v1.40/_ping"},
+		{"/v1.32/containers/json", "/v1.40/containers/json"},
+		{"/v1.0/version", "/v1.40/version"},
+	}
+	for _, c := range cases {
+		if got := p.clampAPIVersion(c.in); got != c.want {
+			t.Errorf("clampAPIVersion(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// TestClampAPIVersion_TooNew checks a client version above APIVersion is
+// lowered to APIVersion.
+func TestClampAPIVersion_TooNew(t *testing.T) {
+	p := &Proxy{apiMinVersion: "1.40", apiMaxVersion: "1.55"}
+	cases := []struct{ in, want string }{
+		{"/v1.99/info", "/v1.55/info"},
+		{"/v2.0/version", "/v1.55/version"},
+	}
+	for _, c := range cases {
+		if got := p.clampAPIVersion(c.in); got != c.want {
+			t.Errorf("clampAPIVersion(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// TestClampAPIVersion_InRange checks an in-range version is unchanged.
+func TestClampAPIVersion_InRange(t *testing.T) {
+	p := &Proxy{apiMinVersion: "1.40", apiMaxVersion: "1.55"}
+	for _, path := range []string{"/v1.40/info", "/v1.44/info", "/v1.55/info"} {
+		if got := p.clampAPIVersion(path); got != path {
+			t.Errorf("clampAPIVersion(%q) = %q, want unchanged (in range)", path, got)
+		}
+	}
+}
+
+// TestClampAPIVersion_OnlyMax checks clamping works with only APIVersion
+// (MinAPIVersion absent — old daemon that doesn't advertise a minimum).
+func TestClampAPIVersion_OnlyMax(t *testing.T) {
+	p := &Proxy{apiMaxVersion: "1.55"}
+	if got := p.clampAPIVersion("/v1.32/info"); got != "/v1.32/info" {
+		t.Errorf("clampAPIVersion(/v1.32/info) = %q, want unchanged (no min)", got)
+	}
+	if got := p.clampAPIVersion("/v1.99/info"); got != "/v1.55/info" {
+		t.Errorf("clampAPIVersion(/v1.99/info) = %q, want /v1.55/info", got)
+	}
+}
+
+// TestClampAPIVersion_Unversioned checks unversioned paths pass through
+// even when a range is known (the daemon uses its default version).
+func TestClampAPIVersion_Unversioned(t *testing.T) {
+	p := &Proxy{apiMinVersion: "1.40", apiMaxVersion: "1.55"}
+	for _, path := range []string{"/info", "/_ping", "/version", "/containers/json"} {
+		if got := p.clampAPIVersion(path); got != path {
+			t.Errorf("clampAPIVersion(%q) = %q, want unchanged (unversioned)", path, got)
+		}
+	}
+}
+
+// TestClampAPIVersion_QueryPreserved checks the clamp does not touch the
+// query string (forward sets RawQuery separately; clamp only rewrites the
+// path). The clamp operates on the path only.
+func TestClampAPIVersion_QueryPreserved(t *testing.T) {
+	p := &Proxy{apiMinVersion: "1.40", apiMaxVersion: "1.55"}
+	// clampAPIVersion takes the path only; forward handles RawQuery.
+	got := p.clampAPIVersion("/v1.32/containers/json")
+	if got != "/v1.40/containers/json" {
+		t.Errorf("clampAPIVersion(/v1.32/containers/json) = %q, want /v1.40/containers/json", got)
+	}
+}
+
+// TestAPIVersionLess checks the version comparison helper.
+func TestAPIVersionLess(t *testing.T) {
+	cases := []struct {
+		a, b string
+		want bool
+	}{
+		{"1.32", "1.40", true},
+		{"1.40", "1.32", false},
+		{"1.40", "1.40", false},
+		{"1.44", "1.55", true},
+		{"1.55", "1.44", false},
+		{"1.4", "1.40", true},  // 1.4 == 1.04 < 1.40
+		{"1.40", "1.4", false}, // 1.40 > 1.04
+		{"0.0", "1.0", true},
+		{"2.0", "1.99", false},
+	}
+	for _, c := range cases {
+		if got := apiVersionLess(c.a, c.b); got != c.want {
+			t.Errorf("apiVersionLess(%q, %q) = %v, want %v", c.a, c.b, got, c.want)
+		}
+	}
+}
+
+// newVersionedFakeDaemon is a fakeDaemon whose /version returns a real
+// Docker 29.x version response (ApiVersion=1.55, MinAPIVersion=1.40) so
+// probeUpstreamVersion populates the range. The catch-all /version handler
+// in newFakeDaemon returns {"ok":true} (no ApiVersion), which leaves
+// clamping disabled — this helper overrides /version.
+func newVersionedFakeDaemon(t *testing.T, minVer, maxVer string) *fakeDaemon {
+	d := newFakeDaemon(t)
+	d.mux.HandleFunc("/version", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, fmt.Sprintf(
+			`{"Version":"29.6.2","ApiVersion":%q,"MinAPIVersion":%q,"Os":"linux","Arch":"amd64"}`,
+			maxVer, minVer))
+	})
+	return d
+}
+
+// TestForward_ClampsClientVersion asserts the proxy forwards a client's
+// too-old versioned path to the daemon with the version clamped up to
+// MinAPIVersion. This is the end-to-end reproduction of the Docker 29.x
+// failure: testcontainers sends /v1.32/info, the proxy clamps to /v1.40/info.
+// The clamp itself is unit-tested above; this test confirms the startup
+// /version probe populates the range and a too-old request succeeds.
+func TestForward_ClampsClientVersion(t *testing.T) {
+	d := newVersionedFakeDaemon(t, "1.40", "1.55")
+	p := startProxy(t, d)
+	// The proxy probed /version at Start; assert the range was stored.
+	p.mu.Lock()
+	minV, maxV := p.apiMinVersion, p.apiMaxVersion
+	p.mu.Unlock()
+	if minV != "1.40" || maxV != "1.55" {
+		t.Fatalf("version probe: apiMin=%q apiMax=%q, want 1.40/1.55", minV, maxV)
+	}
+	// Send /v1.32/info (testcontainers 1.20.4's pinned version). The proxy
+	// must clamp it to /v1.40/info before forwarding; the fake daemon
+	// returns 200 for /info (stripped), proving the request flowed through.
+	// Without the clamp, the REAL daemon would return 400 (1.32 < 1.40);
+	// here the fake daemon accepts any version, so the clamp is verified
+	// by the unit tests above and the probe-range assertion here.
+	status, _, _ := doReq(t, p, http.MethodGet, "/v1.32/info", nil, nil)
+	if status != http.StatusOK {
+		t.Errorf("GET /v1.32/info: status=%d, want 200 (clamped to daemon min)", status)
+	}
+	// Cross-check: clampAPIVersion on the live proxy produces the clamped
+	// path (this is the assertion that proves the clamp, since the fake
+	// daemon strips versions and can't distinguish them).
+	if got := p.clampAPIVersion("/v1.32/info"); got != "/v1.40/info" {
+		t.Errorf("clampAPIVersion(/v1.32/info) = %q, want /v1.40/info", got)
+	}
+}
+
+// TestForward_ClampDisabledWhenProbeFails asserts that when the upstream
+// /version does not advertise an API version range (old daemon, or the
+// probe fails), forward forwards the client path verbatim (no clamping).
+// This preserves backward compatibility — the pre-negotiation behavior.
+func TestForward_ClampDisabledWhenProbeFails(t *testing.T) {
+	d := newFakeDaemon(t) // /version returns {"ok":true} — no ApiVersion
+	p := startProxy(t, d)
+	p.mu.Lock()
+	minV, maxV := p.apiMinVersion, p.apiMaxVersion
+	p.mu.Unlock()
+	if minV != "" || maxV != "" {
+		t.Fatalf("version probe should be disabled, got apiMin=%q apiMax=%q", minV, maxV)
+	}
+	// /v1.32/info forwarded verbatim (fake daemon strips version → /info → 200).
+	status, _, _ := doReq(t, p, http.MethodGet, "/v1.32/info", nil, nil)
+	if status != http.StatusOK {
+		t.Errorf("GET /v1.32/info: status=%d, want 200 (verbatim, no clamp)", status)
+	}
+}

@@ -448,6 +448,32 @@ func TestGrantsForContainerProxyEnv(t *testing.T) {
 		if strings.Contains(m["DOCKER_HOST"], "@") {
 			t.Errorf("DOCKER_HOST must not contain userinfo: %q", m["DOCKER_HOST"])
 		}
+		// No API version advertised (probe failed / old daemon) → api.version
+		// is omitted; the proxy's clampAPIVersion handles mismatches.
+		if _, ok := m["api.version"]; ok {
+			t.Errorf("api.version must be absent when ContainerProxyAPIVersion is empty: %q", m["api.version"])
+		}
+	})
+
+	t.Run("enabled injects api.version when the proxy advertised one", func(t *testing.T) {
+		g, err := GrantsFor(wt, cacheDir, BuildConfig{
+			ContainerProxyURL:        "tcp://127.0.0.1:54321",
+			ContainerProxyEnabled:    true,
+			ContainerProxyAPIVersion: "1.40",
+		})
+		if err != nil {
+			t.Fatalf("GrantsFor: %v", err)
+		}
+		chmodInitDForCleanup(t, filepath.Join(cacheDir, "gradle"))
+		env := ChildEnv(g)
+		m := childEnvMap(env)
+		// docker-java reads the env var named `api.version` (literally,
+		// with a dot — DefaultDockerClientConfig.API_VERSION), pinning
+		// its API version so testcontainers does not fall back to v1.32
+		// (which Docker 29.x rejects: MinAPIVersion=1.40).
+		if m["api.version"] != "1.40" {
+			t.Errorf("api.version = %q, want 1.40 (pins docker-java to the daemon's max)", m["api.version"])
+		}
 	})
 
 	t.Run("disabled omits DOCKER_HOST and RYUK_DISABLED", func(t *testing.T) {
