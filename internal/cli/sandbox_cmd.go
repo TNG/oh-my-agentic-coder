@@ -68,7 +68,11 @@ Flags (list flags are repeatable; they merge additively onto the profile):
                              directory (the cwd included)
   --allow-file <path>        grant read+write on a single file (e.g. a unix socket)
   --allow-unix-dir <dir>     allow AF_UNIX connect to any socket under <dir> (dynamic sockets)
-  --open-port <port>         localhost TCP, connect+bind (e.g. the omac bridge port)
+  --open-port <port>         allow bind+connect on this TCP port (local
+                             app/dev server the agent or tools use, e.g.
+                             Playwright/Vite on :3000; also used for the
+                             omac bridge). On Linux, outbound to any host
+                             on the same port is also allowed
   --listen-port <port>       allow binding/listening on a TCP port
   --allow-tcp-connect <port> direct outbound TCP to any host on this port (e.g. 22)
   --allow-domain <domain>    add to the proxy allowlist (exact or *.suffix)

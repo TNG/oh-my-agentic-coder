@@ -328,7 +328,19 @@ func checkNetwork(profile *sandboxprofile.Profile) []Finding {
 				Value:    "0",
 				Message:  "any loopback port",
 			})
+			continue
 		}
+		// Landlock (Linux) net-port rules have no host dimension: an
+		// open_port grant permits bind+connect on that port to ANY host,
+		// not only loopback. Surface as LOW so doctor / provenance --check
+		// make the egress implication visible without failing closed.
+		findings = append(findings, Finding{
+			Severity: SeverityLow,
+			Category: CatNetwork,
+			Field:    "network.open_port",
+			Value:    strconv.Itoa(port),
+			Message:  "Linux Landlock is address-blind: also allows outbound TCP to any host on this port",
+		})
 	}
 	for _, port := range profile.Network.AllowTCPConnect {
 		switch port {

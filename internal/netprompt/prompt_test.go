@@ -172,9 +172,13 @@ func TestOptionLabelsExactAndDefault(t *testing.T) {
 	opts := optionLabels("example.com")
 	want := []string{
 		"Allow once",
+		"Allow for this session (this host)",
+		"Allow for this session (*.example.com)",
 		"Allow permanently (this host)",
 		"Allow permanently (*.example.com)",
 		"Deny once",
+		"Deny for this session (this host)",
+		"Deny for this session (*.example.com)",
 		"Deny permanently (this host)",
 		"Deny permanently (*.example.com)",
 		"Explain more",
@@ -185,6 +189,71 @@ func TestOptionLabelsExactAndDefault(t *testing.T) {
 	for i := range want {
 		if opts[i] != want[i] {
 			t.Errorf("option[%d] = %q, want %q", i, opts[i], want[i])
+		}
+	}
+}
+
+func TestLabelTokenRoundTripSession(t *testing.T) {
+	host, suffix := "api.example.com", "example.com"
+	cases := []struct {
+		label      string
+		token      string
+		allow      bool
+		scope      string
+		wantSuffix bool
+	}{
+		{"Allow for this session (this host)", tokenAllowSessionHost, true, "host", false},
+		{"Allow for this session (*.example.com)", tokenAllowSessionSuffix, true, "suffix", true},
+		{"Deny for this session (this host)", tokenDenySessionHost, false, "host", false},
+		{"Deny for this session (*.example.com)", tokenDenySessionSuffix, false, "suffix", true},
+	}
+	for _, c := range cases {
+		t.Run(c.label, func(t *testing.T) {
+			if got := labelToToken(c.label, suffix); got != c.token {
+				t.Fatalf("labelToToken(%q) = %q, want %q", c.label, got, c.token)
+			}
+			r := tokenToResult(c.token, host, suffix)
+			if r.Allow != c.allow {
+				t.Errorf("Allow = %v, want %v (%+v)", r.Allow, c.allow, r)
+			}
+			if !r.Session {
+				t.Errorf("Session = false, want true (%+v)", r)
+			}
+			if r.Persist {
+				t.Errorf("Persist = true, want false for a session option (%+v)", r)
+			}
+			if r.Scope != c.scope {
+				t.Errorf("Scope = %q, want %q (%+v)", r.Scope, c.scope, r)
+			}
+			if c.wantSuffix && r.Suffix != suffix {
+				t.Errorf("Suffix = %q, want %q (%+v)", r.Suffix, suffix, r)
+			}
+		})
+	}
+}
+
+// TestDenyOnceIsTheOnlyPreselectedRow: "Deny once" is the safe default
+// and it now sits mid-list (6 of 11) rather than near the top, so a
+// backend that lost or duplicated the preselect would not be obvious on
+// screen. Both backends must mark it, and nothing else.
+func TestDenyOnceIsTheOnlyPreselectedRow(t *testing.T) {
+	for _, tc := range []struct {
+		backend string
+		args    []string
+		marker  string
+		offset  int // where the label sits relative to the marker
+	}{
+		{"zenity", zenityArgs("api.example.com", 443, "example.com", "", "", ""), "TRUE", +1},
+		{"kdialog", kdialogArgs("api.example.com", 443, "example.com", "", "", ""), "on", -1},
+	} {
+		var got []string
+		for i, a := range tc.args {
+			if j := i + tc.offset; a == tc.marker && j >= 0 && j < len(tc.args) {
+				got = append(got, tc.args[j])
+			}
+		}
+		if len(got) != 1 || got[0] != "Deny once" {
+			t.Errorf("%s preselected %v; want exactly [\"Deny once\"]", tc.backend, got)
 		}
 	}
 }

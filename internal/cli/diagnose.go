@@ -45,7 +45,7 @@ func runDiagnose(args []string, env *Env) int {
 		return ExitMisuse
 	}
 
-	profile, profPath, err := sandboxprofile.ResolveReadOnly(*profileRef)
+	profile, profPath, err := sandboxprofile.Resolve(*profileRef)
 	if err != nil {
 		fmt.Fprintln(env.Stderr, "omac diagnose:", err)
 		return ExitConfigInvalid
@@ -321,6 +321,8 @@ func reasonWord(sources []string) string {
 			return "hard-deny"
 		case "learned":
 			return "learned deny"
+		case "session":
+			return "session deny"
 		case "dns":
 			return "DNS failed"
 		case "unavailable":

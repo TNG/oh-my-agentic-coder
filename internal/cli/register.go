@@ -21,6 +21,7 @@ import (
 	"github.com/tngtech/oh-my-agentic-coder/internal/secrets"
 	"github.com/tngtech/oh-my-agentic-coder/internal/skillconfig"
 	"github.com/tngtech/oh-my-agentic-coder/internal/skillsource"
+	"github.com/tngtech/oh-my-agentic-coder/internal/skilltrust"
 )
 
 func runRegister(args []string, env *Env) int {
@@ -313,8 +314,24 @@ func runRegister(args []string, env *Env) int {
 		return ExitIOError
 	}
 
+	// Record the host-only spawn approval + snapshot (see internal/skilltrust):
+	// this is what authorizes omac to run the skill's UNSANDBOXED sidecar. It
+	// lands under ~/.config/omac (not mounted into the sandbox), so it succeeds
+	// from a host terminal and FAILS from inside the sandbox. The approval
+	// outcome is authoritative for how we report success below: a registered-
+	// but-unapproved skill will NOT spawn, so we must not print a clean [ok].
+	approvalErr := skilltrust.Approve(skillName, bundleHash, skillDir)
+
 	sOut := newStyler(env.Stdout)
 	okTag := sOut.paint("[ok]", ansiBold, ansiGreen)
+	if approvalErr != nil {
+		warn := sOut.paint("[warn]", ansiBold, ansiYellow)
+		fmt.Fprintf(env.Stdout, "\n%s registered %s but could NOT approve it for spawning (%v)\n",
+			warn, sOut.bold(skillName), approvalErr)
+		fmt.Fprintf(env.Stdout, "  the skill will not start until `omac register %s` is run from a HOST terminal "+
+			"(outside the omac sandbox, where ~/.config/omac is writable)\n", skillName)
+		return ExitOK
+	}
 	if global {
 		fmt.Fprintf(env.Stdout, "\n%s registered %s %s\n",
 			okTag, sOut.bold(skillName), sOut.gray("(global; available in every workdir)"))

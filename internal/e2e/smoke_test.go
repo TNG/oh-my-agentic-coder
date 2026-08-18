@@ -40,6 +40,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -49,7 +50,7 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
-	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -68,6 +69,12 @@ const serveProbeTimeout = 3 * time.Minute
 // serveReadyTimeout bounds how long the probe waits for the control plane to
 // announce itself on stdout after `omac serve` starts.
 const serveReadyTimeout = 90 * time.Second
+
+// serveTeardownGrace bounds each step of the serve probe's teardown: first
+// waiting for a graceful exit after the context is cancelled, then waiting for
+// the process to be reaped after SIGKILL. Teardown must never be unbounded —
+// an unbounded wait here cost the suite the full 30-minute test deadline (#222).
+const serveTeardownGrace = 10 * time.Second
 
 // serveControlBaseRe extracts the control-plane base URL from the line
 // `omac serve` prints on startup: "control plane on http://127.0.0.1:PORT; ...".
@@ -294,14 +301,19 @@ func runServeProbe(t *testing.T, h harnessConfig, omacBin, home, workdir, cwd st
 	cmd.Env = append(withHome(os.Environ(), home), "PWD="+cwd)
 	cmd.Stdin = strings.NewReader("")
 
-	// Capture stdout/stderr into goroutine-safe buffers rather than an
-	// os/exec pipe: the probe polls stdout for the control-plane line while a
-	// background goroutine calls cmd.Wait(), and reading a StdoutPipe
-	// concurrently with Wait is a documented footgun. Buffers we own sidestep
-	// it entirely.
-	var stdout, stderr syncBuffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	// Capture stdout/stderr into files, NOT an os/exec pipe or an io.Writer
+	// (which os/exec turns into a pipe). See captureFile: a pipe makes
+	// cmd.Wait() outlive the direct child, which deadlocked teardown.
+	stdout := newCaptureFile(t, "serve-stdout.log")
+	stderr := newCaptureFile(t, "serve-stderr.log")
+	cmd.Stdout = stdout.file
+	cmd.Stderr = stderr.file
+
+	// Own process group, so teardown can signal the whole tree rather than
+	// just the leader. Both the context's cancel and the explicit kill below
+	// go to -pgid; killing the leader alone leaves omac's descendants running.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return killProcessGroup(cmd) }
 
 	t.Logf("serve probe: omac %s", strings.Join(args, " "))
 	if err := cmd.Start(); err != nil {
@@ -312,19 +324,31 @@ func runServeProbe(t *testing.T, h harnessConfig, omacBin, home, workdir, cwd st
 	// running" (healthy daemon) from "exited early" (inner launch failed).
 	waitCh := make(chan error, 1)
 	go func() { waitCh <- cmd.Wait() }()
+	// Teardown is bounded at every step. An unbounded wait here is what turned
+	// a passing probe into a 30-minute go-test timeout (#222): if Wait is still
+	// blocked after a SIGKILL to the whole group, report it and move on rather
+	// than hanging the suite.
 	t.Cleanup(func() {
 		cancel()
 		select {
 		case <-waitCh:
-		case <-time.After(10 * time.Second):
-			_ = cmd.Process.Kill()
-			<-waitCh
+			return
+		case <-time.After(serveTeardownGrace):
+		}
+		if err := killProcessGroup(cmd); err != nil {
+			t.Logf("serve probe: killing process group: %v", err)
+		}
+		select {
+		case <-waitCh:
+		case <-time.After(serveTeardownGrace):
+			t.Errorf("omac serve (pid %d) did not exit within %v of SIGKILL to its process group",
+				cmd.Process.Pid, serveTeardownGrace)
 		}
 	})
 
 	// Poll stdout for the control-plane URL the server prints on startup,
 	// bailing early if the process exits before announcing it.
-	controlBase, err := waitForControlBase(&stdout, waitCh, serveReadyTimeout)
+	controlBase, err := waitForControlBase(stdout, waitCh, serveReadyTimeout)
 	if err != nil {
 		return fmt.Errorf("%w\nSTDERR:\n%s", err, tailLines(stderr.String(), 60))
 	}
@@ -333,7 +357,7 @@ func runServeProbe(t *testing.T, h harnessConfig, omacBin, home, workdir, cwd st
 	// is announced BEFORE the child launches, so wait for the onReady marker
 	// (`--verbose`) rather than checking once — otherwise a slow runner could
 	// finish the API round-trip before the child has even spawned.
-	if err := waitForStderr(&stderr, "inner command started", waitCh, serveReadyTimeout); err != nil {
+	if err := waitForStderr(stderr, "inner command started", waitCh, serveReadyTimeout); err != nil {
 		return fmt.Errorf("inner daemon never started under the sandbox: %w\nSTDERR:\n%s",
 			err, tailLines(stderr.String(), 60))
 	}
@@ -378,30 +402,73 @@ func runServeProbe(t *testing.T, h harnessConfig, omacBin, home, workdir, cwd st
 	return nil
 }
 
-// syncBuffer is a goroutine-safe bytes.Buffer. The serve probe reads captured
-// stderr for diagnostics while the subprocess may still be writing to it (the
-// daemon runs until teardown), so plain bytes.Buffer would race.
-type syncBuffer struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
+// captureFile captures a subprocess's stdout or stderr in a real file.
+//
+// Assigning any plain io.Writer to cmd.Stdout makes os/exec allocate a pipe
+// and a copy goroutine, and cmd.Wait() then blocks until EVERY process holding
+// the inherited write end exits — not just the direct child. omac passes its
+// own stdout down to the sandboxed inner daemon
+// (internal/sandbox/launcher.go), and that daemon survives a SIGKILLed parent
+// wherever bwrap's --die-with-parent does not apply (notably macOS Seatbelt).
+// Wait then never returns. An *os.File is dup'd straight into the child, so
+// Wait depends on the direct child alone.
+type captureFile struct {
+	file *os.File
+	path string
 }
 
-func (b *syncBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.Write(p)
+func newCaptureFile(t *testing.T, name string) *captureFile {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), name)
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("create %s: %v", name, err)
+	}
+	t.Cleanup(func() { _ = f.Close() })
+	return &captureFile{file: f, path: path}
 }
 
-func (b *syncBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.String()
+// String returns everything written so far. It reads via the path rather than
+// the write handle so polling never disturbs the child's file offset, and
+// returns "" on a read error — callers poll it in a loop and treat an empty
+// capture as "not yet".
+func (c *captureFile) String() string {
+	b, err := os.ReadFile(c.path)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+// killProcessGroup SIGKILLs the process group cmd leads. Killing cmd.Process
+// alone is not enough: omac forwards only catchable signals to its sandboxed
+// child (internal/sandbox/launcher.go), and SIGKILL is not catchable, so the
+// leader dies without tearing anything else down.
+//
+// An already-gone group reports os.ErrProcessDone, which is what cmd.Cancel
+// must return so os/exec does not turn a normal exit into a Wait error.
+func killProcessGroup(cmd *exec.Cmd) error {
+	if cmd.Process == nil {
+		return os.ErrProcessDone
+	}
+	pgid, err := syscall.Getpgid(cmd.Process.Pid)
+	if err != nil {
+		// Setpgid can race with Start; fall back to the leader alone.
+		return cmd.Process.Kill()
+	}
+	if err := syscall.Kill(-pgid, syscall.SIGKILL); err != nil {
+		if errors.Is(err, syscall.ESRCH) {
+			return os.ErrProcessDone
+		}
+		return err
+	}
+	return nil
 }
 
 // waitForControlBase polls the captured stdout for the control-plane URL
 // `omac serve` prints on startup, returning it once seen. It fails fast if the
 // process exits first (waitCh fires) or the timeout elapses.
-func waitForControlBase(stdout *syncBuffer, waitCh <-chan error, timeout time.Duration) (string, error) {
+func waitForControlBase(stdout fmt.Stringer, waitCh <-chan error, timeout time.Duration) (string, error) {
 	deadline := time.After(timeout)
 	tick := time.NewTicker(100 * time.Millisecond)
 	defer tick.Stop()
@@ -427,7 +494,7 @@ func waitForControlBase(stdout *syncBuffer, waitCh <-chan error, timeout time.Du
 // waitForStderr polls the captured stderr until it contains substr, returning
 // nil once seen. It fails fast if the process exits first or the timeout
 // elapses (the final drain-check covers a marker flushed just before exit).
-func waitForStderr(stderr *syncBuffer, substr string, waitCh <-chan error, timeout time.Duration) error {
+func waitForStderr(stderr fmt.Stringer, substr string, waitCh <-chan error, timeout time.Duration) error {
 	deadline := time.After(timeout)
 	tick := time.NewTicker(100 * time.Millisecond)
 	defer tick.Stop()

@@ -40,9 +40,10 @@ type startReloader struct {
 	tcpPort int
 	verbose bool
 
-	mu          sync.Mutex
-	mounted     map[string]string // skill name -> mount, for skills mounted on the facade
-	lastSession string            // most-recent session id the harness plugin reported (see handleSession)
+	mu               sync.Mutex
+	mounted          map[string]string   // skill name -> mount, for skills mounted on the facade
+	warnedUnapproved map[string]struct{} // skills we've already reported as unapproved (dedupe reload spam)
+	lastSession      string              // most-recent session id the harness plugin reported (see handleSession)
 }
 
 // startControlPlane binds a loopback control-plane HTTP server for start and
@@ -100,6 +101,22 @@ func (r *startReloader) markMounted(name, mount string) {
 	}
 	r.mounted[name] = mount
 	r.mu.Unlock()
+}
+
+// warnUnapprovedOnce reports true the first time it is called for name, so a
+// repeated reload of the same unapproved skill does not spam the human's
+// stderr. Reset implicitly when the process restarts.
+func (r *startReloader) warnUnapprovedOnce(name string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, seen := r.warnedUnapproved[name]; seen {
+		return false
+	}
+	if r.warnedUnapproved == nil {
+		r.warnedUnapproved = map[string]struct{}{}
+	}
+	r.warnedUnapproved[name] = struct{}{}
+	return true
 }
 
 func (r *startReloader) isMounted(name string) bool {
@@ -251,6 +268,23 @@ func (r *startReloader) reload() []string {
 		}
 		mount := m.Sidecar.MountOrDefault(e.Name)
 
+		// Spawn-approval gate. A live reload is exactly the path a
+		// confined agent would use to bring up a skill it authored in the
+		// workdir (author code -> forge .opencode/sidecar.json -> POST
+		// /__omac__/reload). A sidecar runs UNSANDBOXED, so refuse unless
+		// the current on-disk code is host-approved (see
+		// internal/skilltrust) and runs from the immutable approval snapshot,
+		// not the workdir. Mount a broken route (no markMounted, so a later
+		// reload after `omac register` can still bring it up).
+		snapDir, refusal := approvedSpawnDir(e.Name, absDir, "")
+		if refusal != nil {
+			r.facade.AddRoute(brokenApprovalRoute(mount, e.Name, absDir, refusal))
+			if r.warnUnapprovedOnce(e.Name) {
+				fmt.Fprintf(r.env.Stderr, "omac start: %s\n", refusalNotice(refusal))
+			}
+			continue
+		}
+
 		// Resolve secrets (workdir-scoped, unscoped fallback) + config.
 		secMap := map[string]secrets.Secret{}
 		missing := false
@@ -289,7 +323,7 @@ func (r *startReloader) reload() []string {
 		spec := supervisor.SidecarSpec{
 			Name:           e.Name,
 			SkillName:      e.Name,
-			SkillDir:       absDir,
+			SkillDir:       snapDir, // run the frozen snapshot, not the workdir
 			Command:        m.Sidecar.Command,
 			EnvPassthrough: m.Sidecar.EnvPassthrough,
 			Secrets:        secMap,
