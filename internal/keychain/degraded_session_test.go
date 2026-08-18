@@ -3,6 +3,7 @@
 package keychain
 
 import (
+	"errors"
 	"path/filepath"
 	"testing"
 )
@@ -19,8 +20,16 @@ func TestReadsDegradeWhenSessionBusSocketIsDead(t *testing.T) {
 	deadSocket := filepath.Join(t.TempDir(), "bus")
 	t.Setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path="+deadSocket)
 
-	if _, err := Get("wsl2-probe-skill", "token"); err != ErrNotFound {
+	// errors.Is, not ==: the error also carries ErrUnavailable so a caller
+	// that has exhausted its fallbacks can say "no Secret Service provider"
+	// instead of "run omac secrets set" (issue #174, Failure 4). Every
+	// fallback-relying caller still sees ErrNotFound, which is the point.
+	_, err := Get("wsl2-probe-skill", "token")
+	if !errors.Is(err, ErrNotFound) {
 		t.Errorf("Get on dead session bus = %v, want ErrNotFound", err)
+	}
+	if !errors.Is(err, ErrUnavailable) {
+		t.Errorf("Get on dead session bus = %v, want it to also carry ErrUnavailable", err)
 	}
 
 	has, err := Has("wsl2-probe-skill", "token")

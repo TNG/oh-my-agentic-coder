@@ -72,6 +72,29 @@ type SecretSpec struct {
 // IsRequired returns true unless the spec explicitly opts out.
 func (s SecretSpec) IsRequired() bool { return s.Required == nil || *s.Required }
 
+// ValidateValue checks v against the spec's Pattern, if any. A spec without a
+// pattern accepts anything.
+//
+// It lives on the spec rather than in the CLI because three unrelated callers
+// need the identical check: `omac register`/`omac secrets` when prompting, and
+// internal/skillstate when re-validating a secret supplied from the host
+// environment via env_passthrough (keychain values were vetted at register
+// time, so that is the only chance to catch a malformed env-supplied one
+// before the sidecar receives it).
+func (s SecretSpec) ValidateValue(v string) error {
+	if s.Pattern == "" {
+		return nil
+	}
+	re, err := regexp.Compile(s.Pattern)
+	if err != nil {
+		return fmt.Errorf("invalid pattern for %s: %w", s.Name, err)
+	}
+	if !re.MatchString(v) {
+		return fmt.Errorf("value for %s does not match /%s/", s.Name, s.Pattern)
+	}
+	return nil
+}
+
 // ConfigFieldType enumerates the supported value types for non-secret
 // skill configuration. Unknown values cause Validate to fail.
 type ConfigFieldType string
