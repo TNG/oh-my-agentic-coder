@@ -309,12 +309,16 @@ func isShellScript(path string) bool {
 }
 
 // jdkReadPaths returns the bin + install-prefix support dirs (lib,
-// libexec, lib64) for a JDK home, so Seatbelt can grant read+exec access
-// for the JVM to exec and load native libs. Shared by the daemon JDK
-// resolution (buildJDKResolution) and the toolchain JDK grants.
+// libexec, lib64, conf) for a JDK home, so Seatbelt can grant read+exec
+// access for the JVM to exec and load native libs. conf is REQUIRED since
+// JDK 9: the JVM's Security.initialize() reads
+// <home>/conf/security/java.security (the JDK 8 flat layout keeps it at
+// <home>/lib/security/java.security — both dirs are granted, existing
+// ones only). Shared by the daemon JDK resolution (buildJDKResolution)
+// and the toolchain JDK grants.
 func jdkReadPaths(jdkHome string) []string {
 	readPaths := []string{filepath.Join(jdkHome, "bin")}
-	for _, name := range []string{"lib", "libexec", "lib64"} {
+	for _, name := range []string{"lib", "libexec", "lib64", "conf"} {
 		p := filepath.Join(jdkHome, name)
 		if fi, err := os.Stat(p); err == nil && fi.IsDir() {
 			readPaths = append(readPaths, p)
