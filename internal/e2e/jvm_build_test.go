@@ -74,6 +74,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -425,6 +426,121 @@ func seedGradleDist(t *testing.T, fixtureRoot, cacheScopeDir string) {
 	t.Logf("gradle dist pre-seeded at %s", dists)
 }
 
+// writeJvmBuildProfile writes a sandbox profile for the build canary.
+// Unlike writeCacheTestProfile (network blocked), a brokered JVM build
+// REQUIRES loopback TCP: the sandboxed `omac build` POSTs to the
+// parent's loopback build broker (OMAC_CONTROL_BASE), and the parent
+// whitelists that ephemeral port into the sandbox argv via
+// --open-port. On macOS the Seatbelt generator emits `(deny network*)`
+// under network.mode "blocked" and ignores open-port exceptions there
+// (sbpl.go: the open-port loop only runs in the filtered branch), so a
+// blocked profile makes every brokered build die with `connect:
+// operation not permitted` before the request ever reaches the engine —
+// masking even the approval-gate diagnostic the negative subtest
+// asserts. Filtered mode honors the injected --open-port and additionally
+// whitelists every loopback connection (the Gradle daemon binds
+// ephemeral loopback ports for its worker protocol).
+//
+// proxy_injection ["jvm"] makes the supervisor point every JVM at the
+// omac filtering proxy via JAVA_TOOL_OPTIONS — the sanctioned path for
+// Maven-central resolution under a filtered sandbox (allow_domain reads
+// as a proxy-egress allowlist, and the JVM ignores HTTP(S)_PROXY).
+//
+// The Colima socket the IT leg stages under ~/.colima is granted here
+// (the parent's container proxy reads it); the parent connects to the
+// daemon directly (the proxy is a parent-side process), and the
+// sandboxed Gradle reaches it via the proxy's loopback port.
+//
+// jvmReadPaths MUST include the real JDK home: under the default
+// Seatbelt deny-policy the sandboxed /bin/sh runs `gradlew`, whose
+// launcher JVM immediately reads <jdk>/lib/security/java.security —
+// without a grant the wrapper dies with java.lang.InternalError
+// "Error loading java.security file" before it can do anything
+// (enzyme-cold flats, dist not yet installed). The production buildrun
+// engine's JDK read-grants apply only to the SEPARATE style executor
+// sandbox (its own buildrun.BuildGrants), not to this outer shell's
+// Seatbelt profile, so the canary must grant the JDK here (mirroring
+// how toolRuntimeReadPaths grants go/python/node for the cache tests).
+func writeJvmBuildProfile(t *testing.T, home string) {
+	t.Helper()
+	profDir := filepath.Join(home, ".config", "omac", "sandbox-profiles")
+	if err := os.MkdirAll(profDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	read := []string{"~/.colima"}
+	read = append(read, jvmReadPaths(t)...)
+	profile := map[string]any{
+		"meta":    map[string]string{"name": "default"},
+		"workdir": map[string]string{"access": "readwrite"},
+		"filesystem": map[string]any{
+			"read":  read,
+			"allow": nil,
+		},
+		// The canary asserts a LOUD regression on daemon-recycle /
+		// image-allowlist / container cleanup — never a skip. The
+		// executor env is hermetic, so proxy_injection only routes the
+		// sandbox-side wrapper JVMs (the gradlew launcher); the build
+		// executor itself runs unsandboxed on the host.
+		"network": map[string]any{
+			"mode":            "filtered",
+			"allow_domain":    []string{"127.0.0.1", "localhost", "repo.maven.apache.org", "services.gradle.org", "plugins.gradle.org"},
+			"proxy_injection": []string{"jvm"},
+		},
+		// Same rationale as writeCacheTestProfile: the dev tools need
+		// their ambient env (JDK paths, GRADLE_USER_HOME redirect, the
+		// broker env the parent injects), so inherit every ambient var
+		// minus the danger blocklist.
+		"environment": map[string]any{
+			"allow_vars": []string{"*"},
+		},
+	}
+	data, err := json.MarshalIndent(profile, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(profDir, "default.json"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// jvmReadPaths resolves the test-runner's JDK home (JAVA_HOME, else the
+// java on PATH) and returns the read-only grant dirs the sandboxed
+// /bin/sh needs for gradlew to start the wrapper JVM. Mirrors
+// buildrun.jdkReadPaths (bin + the existing lib/libexec/lib64 install
+// dirs) but computed by the test from the host env, because the
+// profile is written before `omac start` runs and exists outside the
+// build engine's own executor-scoped grant set. Fails loudly when no
+// JDK is discoverable — on CI setup-java always sets JAVA_HOME; a
+// missing JDK is a broken image, not a skip.
+func jvmReadPaths(t *testing.T) []string {
+	t.Helper()
+	home := os.Getenv("JAVA_HOME")
+	if home == "" {
+		javaBin, err := exec.LookPath("java")
+		if err != nil {
+			t.Fatalf("no JDK discoverable: JAVA_HOME unset and java not on PATH")
+		}
+		resolved, err := filepath.EvalSymlinks(javaBin)
+		if err != nil {
+			t.Fatalf("resolve java %q: %v", javaBin, err)
+		}
+		// Strip /bin/java to the install home.
+		home = filepath.Dir(filepath.Dir(resolved))
+	}
+	if fi, err := os.Stat(filepath.Join(home, "bin", "java")); err != nil || fi.IsDir() {
+		t.Fatalf("resolved JDK home %q lacks bin/java (stat: %v)", home, err)
+	}
+	// Grant the install home itself: JDKs differ in layout (Java 8 keeps
+	// java.security + lib/ at the root; Java 9+ splits into conf/,
+	// jmods/, lib/; Homebrew nests the real home under libexec/). Granting
+	// each subdir separately fragments across vendors; every entry in a
+	// JDK home is a read-only runtime asset, and the home is a leaf
+	// install tree (never a broad root like /usr), so the read grant
+	// stays bounded to this one JDK.
+	t.Logf("granting sandbox JDK read home: %s", home)
+	return []string{home}
+}
+
 // TestE2EJvmBuild is the build brokered canary.
 func TestE2EJvmBuild(t *testing.T) {
 	skipIfSandboxUnavailable(t)
@@ -435,7 +551,7 @@ func TestE2EJvmBuild(t *testing.T) {
 	// with a SHORT /tmp-rooted HOME (never the deep t.TempDir()).
 	home := shortCacheHome(t)
 	workdir := t.TempDir()
-	writeCacheTestProfile(t, home, nil, nil, 0)
+	writeJvmBuildProfile(t, home)
 
 	outerBin := buildOmac(t)
 
