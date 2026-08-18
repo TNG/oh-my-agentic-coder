@@ -70,6 +70,9 @@ type launchOpts struct {
 	// sessionID, when non-empty, selects a specific session to continue by id
 	// (`omac continue -s <id>`). Empty means "most recent" (the default).
 	sessionID string
+	// openPorts are extra loopback ports from --open-port (repeatable),
+	// typically a local webServer port for browser tests.
+	openPorts []int
 	// innerArgs are appended to the resolved inner command (user-supplied
 	// trailing `-- args` plus any command-specific flags like --continue).
 	innerArgs []string
@@ -99,6 +102,8 @@ func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, bool)
 		auditStrict        = fs.Bool("audit-strict", false, "Fail-closed: abort if the audit log cannot be written.")
 		sessionID          = fs.String("session", "", "Continue a specific session by id instead of the most recent one. (shorthand: -s)")
 	)
+	var openPorts intMultiFlag
+	fs.Var(&openPorts, "open-port", "Allow the sandboxed process to bind and connect on this TCP port (repeatable). Useful for a local app/dev server the agent or its tools talk to — e.g. Playwright/Vite/Next on :3000. On Linux, Landlock cannot limit that to loopback: outbound TCP to any host on the same port is also allowed.")
 	// -s is the documented shorthand for --session (opencode mirrors this
 	// with `opencode -s <id>`; claude uses --resume, so its shorthand is
 	// different, but `omac -s` is harness-agnostic).
@@ -162,6 +167,7 @@ func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, bool)
 		noAudit:            *noAudit,
 		auditStrict:        *auditStrict,
 		sessionID:          *sessionID,
+		openPorts:          append([]int(nil), openPorts...),
 		innerArgs:          innerArgs,
 	}, true
 }
@@ -226,15 +232,17 @@ func runLaunch(env *Env, opts launchOpts) int {
 	if verbose && cfgPath != "" {
 		fmt.Fprintf(env.Stderr, "[verbose] loaded launcher config: %s\n", cfgPath)
 	}
-	profName := profile
-	if profName == "" {
-		profName = lc.Sandbox.DefaultProfile
-	}
-	prof, ok := lc.Sandbox.Profiles[profName]
-	if !ok && !noSandbox {
-		fmt.Fprintf(env.Stderr, prefix+": unknown sandbox profile %q\n", profName)
+	// One resolved sandbox plan for the whole launch: the launcher profile
+	// (templated argv) plus, for omac's native backend, its policy profile
+	// (grant JSON). Everything downstream reads the plan instead of
+	// re-resolving a bare name — see internal/cli/sandboxplan.go.
+	plan, planErr := resolveSandboxPlan(lc, profile)
+	if planErr != nil && !noSandbox {
+		fmt.Fprintln(env.Stderr, prefix+":", planErr)
 		return ExitConfigInvalid
 	}
+	profName := plan.Name
+	prof := plan.Launcher
 
 	// 1b. Pre-flight: inner harness binary must be on $PATH.
 	if innerCmdOverride == "" {
@@ -386,6 +394,23 @@ func runLaunch(env *Env, opts launchOpts) int {
 		}
 	}
 
+	// 2a-ter. One-time grandfathering of the already-registered skills
+	//         into the host-only approval store (see internal/skilltrust
+	//         and skill_approval.go). Only fires the first time (before
+	//         the store exists) so upgrading omac never newly breaks a
+	//         working setup; thereafter a skill must be approved
+	//         explicitly by an out-of-sandbox `omac register`.
+	if firstApprovalUpgrade() {
+		n, merr := grandfatherOnce(grandfatherScope{workdir: env.Workdir, reg: reg})
+		if merr != nil {
+			fmt.Fprintln(env.Stderr, prefix+": approval store (non-fatal):", merr)
+		}
+		if n > 0 {
+			fmt.Fprintf(env.Stderr, "%s: migrated %d registered skill(s) to the host-only approval store; "+
+				"new skills now require `omac register` on the host to spawn\n", prefix, n)
+		}
+	}
+
 	// 2b. Refuse if any unregistered skill exists under any of the
 	//     skill source roots (workdir-local .agents/skills and
 	//     .opencode/skills, plus the user-global layers — see the
@@ -439,9 +464,12 @@ func runLaunch(env *Env, opts launchOpts) int {
 	// we may not end up using them; they're zeroed by the deferred
 	// cleanup below regardless of which path we take.
 	type withSecrets struct {
-		entry   registry.Entry
-		meta    *config.Meta
-		abs     string
+		entry registry.Entry
+		meta  *config.Meta
+		abs   string
+		// bundle is abs's content hash, computed once here and reused by the
+		// spawn-approval gate in step 5a so the tree is not walked twice.
+		bundle  string
 		secrets map[string]secrets.Secret
 		config  map[string]string
 	}
@@ -488,23 +516,25 @@ func runLaunch(env *Env, opts launchOpts) int {
 			continue
 		}
 
-		// Bundle hash. Excluded from scanning when the user has
-		// explicitly opted in to drift via --accept-skill-changes.
-		if !acceptSkillChanges {
-			bundle, err := config.BundleHash(absDir)
-			if err != nil {
-				// I/O errors during hashing are class-level (we can't
-				// produce useful per-skill diagnostics if the directory
-				// is unreadable). Abort immediately.
-				fmt.Fprintln(env.Stderr, prefix+": bundle hash:", err)
-				return ExitIOError
-			}
-			if bundle != e.BundleHash {
-				bundleDrifts = append(bundleDrifts, bundleDriftProblem{skill: e.Name})
-				// Don't `continue`: continue collecting problems for
-				// THIS skill (missing secret + missing field) so the
-				// user sees everything needed in one shot.
-			}
+		// Bundle hash. Drift is only *reported* when the user has not opted in
+		// via --accept-skill-changes, but the hash is computed either way:
+		// step 5a's approval gate needs it, and computing it here keeps it to
+		// one walk of the tree per skill. A hash that fails under
+		// --accept-skill-changes is left empty for 5a to re-derive and refuse,
+		// since that flag's whole point is not to abort on skill-dir state.
+		bundle, herr := config.BundleHash(absDir)
+		if herr != nil && !acceptSkillChanges {
+			// I/O errors during hashing are class-level (we can't
+			// produce useful per-skill diagnostics if the directory
+			// is unreadable). Abort immediately.
+			fmt.Fprintln(env.Stderr, prefix+": bundle hash:", herr)
+			return ExitIOError
+		}
+		if !acceptSkillChanges && bundle != e.BundleHash {
+			bundleDrifts = append(bundleDrifts, bundleDriftProblem{skill: e.Name})
+			// Don't `continue`: continue collecting problems for
+			// THIS skill (missing secret + missing field) so the
+			// user sees everything needed in one shot.
 		}
 
 		// Secrets. Read with the workdir-scoped key first, falling back to
@@ -591,7 +621,7 @@ func runLaunch(env *Env, opts launchOpts) int {
 		}
 
 		armed = append(armed, withSecrets{
-			entry: e, meta: m, abs: absDir,
+			entry: e, meta: m, abs: absDir, bundle: bundle,
 			secrets: secMap, config: cfgMap,
 		})
 	}
@@ -730,12 +760,33 @@ func runLaunch(env *Env, opts launchOpts) int {
 	}
 
 	// 5. Spawn sidecars.
-	sup := supervisor.New(lc.Facade.BaseEnvPassthrough, auditor)
+	sup := supervisor.New(lc.Facade.BaseEnvPassthrough, auditor, skillSpawnAuthorizer)
 	defer func() {
 		if !keepRunning {
 			sup.ShutdownAll(5 * time.Second)
 		}
 	}()
+
+	// 5a. Spawn-approval gate. A sidecar runs UNSANDBOXED, so only skills
+	//     whose current on-disk code is host-approved (see
+	//     internal/skilltrust) may start — and they run from the immutable
+	//     approval snapshot, not the agent-writable workdir. Unapproved
+	//     skills are mounted as broken routes with the remedy, never spawned.
+	var refusedRoutes []facade.Route
+	approved := make([]withSecrets, 0, len(armed))
+	for _, a := range armed {
+		snap, refusal := approvedSpawnDir(a.entry.Name, a.abs, a.bundle)
+		if refusal != nil {
+			refusedRoutes = append(refusedRoutes, brokenApprovalRoute(
+				a.meta.Sidecar.MountOrDefault(a.entry.Name), a.entry.Name, a.abs, refusal))
+			fmt.Fprintf(env.Stderr, "%s: %s\n", prefix, refusalNotice(refusal))
+			continue
+		}
+		a.abs = snap // spawn (and serve SKILL.md) from the frozen snapshot
+		approved = append(approved, a)
+	}
+	armed = approved
+
 	specs := make([]supervisor.SidecarSpec, 0, len(armed))
 	for _, s := range armed {
 		health := config.HealthSpec{}
@@ -784,6 +835,9 @@ func runLaunch(env *Env, opts launchOpts) int {
 		})
 		mounts = append(mounts, mount)
 	}
+	// Mount unapproved skills as broken routes so a probe gets an
+	// actionable 502 instead of a silent 404 (and they never spawn).
+	routes = append(routes, refusedRoutes...)
 
 	// 7. Open both listeners (Unix socket + ephemeral 127.0.0.1 TCP) and
 	//    mount routes. We always bind both so clients can pick whichever
@@ -800,7 +854,9 @@ func runLaunch(env *Env, opts launchOpts) int {
 		env.Version,
 	)
 	f.SetAuditor(auditor)
-	wireFacadeSandbox(f, noSandbox, profName, prof, func(format string, args ...any) {
+	// `omac start` has no --learn (serve-only), so the protected set is
+	// always the profile's.
+	wireFacadeSandbox(f, noSandbox, false, plan, func(format string, args ...any) {
 		fmt.Fprintf(env.Stderr, prefix+": "+format+"\n", args...)
 	})
 	if err := f.Start(ctx); err != nil {
@@ -935,7 +991,10 @@ func runLaunch(env *Env, opts launchOpts) int {
 		// Forward the selected harness's auth env vars through the
 		// default profile's restrictive allow_vars filter — only for the
 		// selected harness.
-		argv = forwardHarnessEnv(env, argv, harness, prof, profName)
+		argv = forwardHarnessEnv(env, argv, harness, plan)
+		// User --open-port grants (e.g. local Playwright webServer). Additive
+		// on top of the profile; no-op on non-native backends (with a warning).
+		argv = injectUserOpenPorts(env, argv, opts.openPorts, prof)
 		// Pass the resolved audit path down to `omac sandbox run` so the
 		// network-filter subprocess appends net.decision events to the
 		// same persistent log. Inherit the parent's run_id + mode so the

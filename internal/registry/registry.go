@@ -296,7 +296,7 @@ func (r *Registry) RemoveForHarness(name, harness string) bool {
 // WithLock acquires an exclusive flock on sidecar.json.lock for the
 // duration of fn. The lock file is created 0600.
 func WithLock(workdir string, fn func() error) error {
-	return withLockAt(filepath.Join(workdir, ".opencode"), LockPath(workdir), fn)
+	return WithLockAt(filepath.Join(workdir, ".opencode"), LockPath(workdir), fn)
 }
 
 // WithGlobalLock acquires an exclusive flock on the user-global
@@ -307,14 +307,16 @@ func WithGlobalLock(fn func() error) error {
 	if dir == "" {
 		return fmt.Errorf("registry: no global config directory available (set $HOME or $XDG_CONFIG_HOME)")
 	}
-	return withLockAt(dir, filepath.Join(dir, "sidecar.json.lock"), fn)
+	return WithLockAt(dir, filepath.Join(dir, "sidecar.json.lock"), fn)
 }
 
-// withLockAt is the shared flock primitive: it ensures dir exists,
-// acquires an exclusive lock on lockPath, and runs fn while held.
-func withLockAt(dir, lockPath string, fn func() error) error {
+// WithLockAt is the shared flock primitive: it ensures dir exists,
+// acquires an exclusive lock on lockPath, and runs fn while held. It is
+// exported so sibling stores under GlobalDir (see internal/skilltrust) guard
+// their own files with the same implementation instead of cloning it.
+func WithLockAt(dir, lockPath string, fn func() error) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return fmt.Errorf("ensure registry dir: %w", err)
+		return fmt.Errorf("ensure dir: %w", err)
 	}
 	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {

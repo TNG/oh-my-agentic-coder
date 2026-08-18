@@ -28,7 +28,7 @@ cat > "$TMP/stub.py" <<'PY'
 STUB_LIST_STATUS != 200 makes the listing endpoint fail, so the test can prove
 the listing never vetoes a model the chat endpoint accepts.
 """
-import json, os
+import json, os, socketserver
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 LISTED = os.environ.get("STUB_LISTED", "").split()
@@ -80,7 +80,22 @@ class H(BaseHTTPRequestHandler):
             "Supported model names are: {%s}" % (model, ", ".join(repr(m) for m in LISTED))}})
 
 
-HTTPServer(("127.0.0.1", int(os.environ["STUB_PORT"])), H).serve_forever()
+class Stub(HTTPServer):
+    """HTTPServer without the reverse-DNS lookup in server_bind().
+
+    The base class resolves the bind address with socket.getfqdn() between
+    bind() and listen(). On a macOS CI runner that lookup of 127.0.0.1 has no
+    answer and times out after ~35s, once per stub process — 17 restarts turned
+    this file into an 11-minute step. server_name is only used to fill in CGI
+    variables, which no stub here serves.
+    """
+
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+
+
+Stub(("127.0.0.1", int(os.environ["STUB_PORT"])), H).serve_forever()
 PY
 
 PORT=8931

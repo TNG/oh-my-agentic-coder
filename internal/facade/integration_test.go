@@ -26,7 +26,7 @@ import (
 )
 
 const sidecarPython = `
-import os, json, hashlib, sys, time
+import os, json, hashlib, socketserver, sys, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 # Bind an ephemeral loopback port chosen by the kernel, then print it
@@ -82,7 +82,16 @@ class H(BaseHTTPRequestHandler):
         body = json.loads(raw.decode() or "{}")
         self._j(200, {"echoed": body, "secret_fingerprint": fp(SECRET)})
 
-srv = ThreadingHTTPServer(("127.0.0.1", PORT), H)
+class Server(ThreadingHTTPServer):
+    # ThreadingHTTPServer.server_bind() reverse-resolves the bind address
+    # between bind() and listen(). On macOS that lookup of 127.0.0.1 has no
+    # answer and times out after ~35s, so every spawn of this sidecar paid
+    # 35s before the parent could reach it. server_name is CGI-only.
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+
+srv = Server(("127.0.0.1", PORT), H)
 # Report the kernel-assigned port to the parent. Flush so the parent
 # can read it before we enter serve_forever().
 sys.stdout.write("PORT=%d\n" % srv.server_address[1])

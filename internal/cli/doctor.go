@@ -160,8 +160,10 @@ func runDoctor(args []string, env *Env) int {
 
 	// Static security lint of the resolved profile (advisory). Reuses the
 	// same engine as `omac provenance --check` — findings are warnings
-	// here, never a doctor failure.
-	doctorProfileLint(env, "")
+	// here, never a doctor failure. The ref follows the default launcher
+	// profile's template, so a config pointing at a non-default policy gets
+	// that policy linted rather than an unused "default".
+	doctorProfileLint(env, defaultPolicyRef(lc))
 
 	fmt.Fprintln(env.Stdout, "\nWhen a run fails, `omac diagnose` shows what the sandbox blocked and why.")
 
@@ -176,7 +178,7 @@ func runDoctor(args []string, env *Env) int {
 // the gap where doctor never surfaced the security lint (previously only
 // reachable via `omac provenance --check`).
 func doctorProfileLint(env *Env, profileRef string) {
-	profile, _, err := sandboxprofile.ResolveReadOnly(profileRef)
+	profile, _, err := sandboxprofile.Resolve(profileRef)
 	if err != nil {
 		return // profile problems are already reported by the sandbox section
 	}
@@ -282,13 +284,13 @@ func doctorSandboxProfileWarnings(env *Env, lc config.LauncherConfig) {
 		if len(prof.Command) == 0 {
 			continue
 		}
-		ref, ok := inspectBuiltinProfileRef(prof.Command)
-		if !ok {
+		ref, native := prof.PolicyRef()
+		if !native {
 			// Opaque external launcher (nono, no-sandbox-debug, etc.):
 			// doctor can't see into its profile, so skip silently.
 			continue
 		}
-		p, _, err := sandboxprofile.ResolveReadOnly(ref)
+		p, _, err := sandboxprofile.Resolve(ref)
 		if err != nil {
 			fmt.Fprintf(env.Stdout, "  [warn] sandbox profile %q: %v\n", profName, err)
 			continue
@@ -322,36 +324,6 @@ func doctorSandboxProfileWarnings(env *Env, lc config.LauncherConfig) {
 			fmt.Fprintf(env.Stdout, "         remediation: %s\n", w.remediation)
 		}
 	}
-}
-
-// inspectBuiltinProfileRef looks at a sandbox profile Command argv
-// template and, if it is a {{self}} sandbox run invocation, extracts
-// the --profile reference. Recognized run forms:
-//   - "--profile", "default"   (separate args)
-//   - "--profile=default"      (inline)
-//   - omitted --profile        (resolves to "default")
-//
-// Only {{self}} sandbox run commands are inspectable; other sandbox
-// subcommands and external launchers are opaque and return ok=false.
-func inspectBuiltinProfileRef(command []string) (string, bool) {
-	if len(command) < 3 || command[0] != "{{self}}" || command[1] != "sandbox" || command[2] != "run" {
-		return "", false
-	}
-	// Find "--profile" (separate or inline) before "--".
-	for i := 3; i < len(command); i++ {
-		arg := command[i]
-		if arg == "--" {
-			break
-		}
-		if arg == "--profile" && i+1 < len(command) {
-			return command[i+1], true
-		}
-		if strings.HasPrefix(arg, "--profile=") {
-			return strings.TrimPrefix(arg, "--profile="), true
-		}
-	}
-	// Omitted --profile resolves to "default".
-	return "default", true
 }
 
 // profileGrantWarnings returns warnings for broad tool-home and

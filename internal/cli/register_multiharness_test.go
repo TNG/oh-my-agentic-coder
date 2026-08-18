@@ -5,7 +5,9 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/tngtech/oh-my-agentic-coder/internal/config"
 	"github.com/tngtech/oh-my-agentic-coder/internal/registry"
+	"github.com/tngtech/oh-my-agentic-coder/internal/skilltrust"
 )
 
 // stageHarnessSkillBody drops an omac.yaml with a caller-supplied body
@@ -95,5 +97,65 @@ func TestRegister_SameHarnessChangedBundleStillGuarded(t *testing.T) {
 	// With --force it goes through.
 	if code := runRegister([]string{"slack", "--harness", "opencode", "--force"}, env); code != ExitOK {
 		t.Fatalf("re-register changed bundle with --force: code = %d, want ExitOK", code)
+	}
+}
+
+// TestRegisterDeregisterApprovalWiring proves the host-approval round-trip
+// end-to-end AND that it respects multi-harness scoping (the round-2
+// additive-keying / scoped-revoke fixes): `omac register` records an
+// approval for the exact content it registered; a second harness's copy is
+// approved additively without clobbering the first; and `omac deregister
+// --harness X` revokes ONLY that copy's hash, leaving the other harness's
+// still-registered copy approved.
+func TestRegisterDeregisterApprovalWiring(t *testing.T) {
+	isolateHome(t)
+	wd := t.TempDir()
+	stageHarnessSkillBody(t, wd, "opencode", "slack", "# opencode copy\n")
+	stageHarnessSkillBody(t, wd, "claude", "slack", "# claude copy, different bytes\n")
+	env := makeEnv(wd)
+
+	ocHash, err := config.BundleHash(filepath.Join(wd, ".opencode", "skills", "slack"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ccHash, err := config.BundleHash(filepath.Join(wd, ".claude", "skills", "slack"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ocHash == ccHash {
+		t.Fatal("precondition: the two copies must have distinct hashes")
+	}
+
+	// register opencode → approves ocHash only.
+	if code := runRegister([]string{"slack", "--harness", "opencode"}, env); code != ExitOK {
+		t.Fatalf("register opencode: %d", code)
+	}
+	if ok, _ := skilltrust.IsApproved("slack", ocHash); !ok {
+		t.Error("register must record a host approval for the registered content")
+	}
+	if ok, _ := skilltrust.IsApproved("slack", ccHash); ok {
+		t.Error("the not-yet-registered claude copy must not be approved")
+	}
+
+	// register claude → approves ccHash additively; opencode approval stays.
+	if code := runRegister([]string{"slack", "--harness", "claude"}, env); code != ExitOK {
+		t.Fatalf("register claude: %d", code)
+	}
+	if ok, _ := skilltrust.IsApproved("slack", ocHash); !ok {
+		t.Error("second register clobbered the first harness's approval (must be additive)")
+	}
+	if ok, _ := skilltrust.IsApproved("slack", ccHash); !ok {
+		t.Error("register claude must approve the claude copy")
+	}
+
+	// deregister claude → revokes ONLY ccHash; opencode copy stays approved.
+	if code := runDeregister([]string{"slack", "--harness", "claude"}, env); code != ExitOK {
+		t.Fatalf("deregister claude: %d", code)
+	}
+	if ok, _ := skilltrust.IsApproved("slack", ccHash); ok {
+		t.Error("deregister must revoke the deregistered copy's approval")
+	}
+	if ok, _ := skilltrust.IsApproved("slack", ocHash); !ok {
+		t.Error("deregister of one harness must not revoke the other harness's approval")
 	}
 }

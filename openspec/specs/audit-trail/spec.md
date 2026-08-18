@@ -70,6 +70,13 @@ omac SHALL record a `net.decision` event for every outbound network access decis
 - **WHEN** a network access is decided by the learned-policy store, an allowlist, or a blocklist without prompting
 - **THEN** a `net.decision` event records the host, port, `allow` boolean, and `source` (`learned`, `allowlist`, or `blocklist`)
 
+#### Scenario: Session-scoped decision is logged
+
+- **WHEN** the network prompt returns a decision the user scoped to this sandbox session
+- **THEN** the `net.decision` event for that prompt records its `scope` (`host` or `suffix`) with `persisted` false, so a session grant is distinguishable from both a once-decision and a permanent one
+- **WHEN** a later access is decided by replaying that stored session decision
+- **THEN** a `net.decision` event records the host, port, `allow` boolean, and `source` (`session`), leaving `scope` empty as the learned-policy replay does
+
 #### Scenario: Hard-deny and DNS failure decisions are logged
 
 - **WHEN** a network access is hard-denied (metadata host, link-local address) or DNS resolution fails

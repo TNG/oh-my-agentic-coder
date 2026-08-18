@@ -109,7 +109,9 @@ environment variables.
 The built-in sandbox reads JSON profiles from
 `~/.config/omac/sandbox-profiles/`. On first `omac start` with the
 `builtin` profile, omac scaffolds `default.json` from the compiled-in
-defaults so you can edit it:
+defaults so you can edit it (only the launch itself writes it — the
+inspection commands `omac doctor`, `omac diagnose` and `omac provenance`
+read the compiled-in defaults instead of creating files):
 
 ```
 ~/.config/omac/sandbox-profiles/
@@ -126,6 +128,34 @@ holes in the built-in protected-path list), `network.mode`
 (filtered/blocked/open), `network.network_prompt`,
 `network.proxy_injection`, and `environment.allow_vars`. See the
 scaffolded `default.json` for the full schema.
+
+When a host is neither allowed nor denied by the profile, the network
+prompt dialog offers eleven choices (`Deny once` is preselected):
+
+| Choice | Applies to | Lifetime |
+|---|---|---|
+| `Allow once` / `Deny once` | this request | the request |
+| `Allow for this session (this host)` / `Deny …` | that exact host | this `omac start` run |
+| `Allow for this session (*.example.com)` / `Deny …` | the suffix and its subdomains | this `omac start` run |
+| `Allow permanently (this host)` / `Deny …` | that exact host | until you edit the file |
+| `Allow permanently (*.example.com)` / `Deny …` | the suffix and its subdomains | until you edit the file |
+| `Explain more` | this request | never stored |
+
+Only the permanent choices are written to disk, in `<profile>.pages.json`
+next to the sandbox profile. Session choices are held in memory by the
+sandbox supervisor and vanish when the run exits — nothing on disk holds
+them, so they cannot be edited or undone from a file; restart the sandbox
+to clear one.
+
+Session choices sit between the profile lists in precedence: a session
+**deny** outranks `allow_domain`, while a session **allow** never
+overrides `deny_domain` or a permanent deny. `omac diagnose` names a
+session decision as the cause when one shadows an `allow_domain` entry.
+
+The dialog is sized to fit all eleven rows without scrolling. On unusual
+displays (720p laptops, tiling window managers, HiDPI) set
+`OMAC_PROMPT_WIDTH` / `OMAC_PROMPT_HEIGHT` in pixels to override the
+defaults; a missing or non-numeric value falls back to them.
 
 **`network.proxy_injection`** routes *proxy-unaware* toolchains through
 the omac filtering proxy under `network.mode: filtered`. Most tools
@@ -171,6 +201,99 @@ On macOS prefer `open_port: [0]` over `enforcement: env-only` — it solves
 the same daemon problem without opening general network access. The `0`
 sentinel is **macOS-only**: on Linux it is a silent no-op (there is no
 Landlock rule that can express it), so Linux needs `env-only`.
+
+**Numeric `open_port` on Linux is also address-blind.** Landlock's
+net-port rules have no host dimension: granting `"open_port": [3000]`
+(or `omac start --open-port 3000`) allows bind **and** connect on port
+3000 to *any* host, not only loopback. Prefer pinning a single known
+dev-server port and keep the list short. `omac doctor` / `omac provenance
+--check` flag every numeric `open_port` as a low-severity finding for
+this reason.
+
+## Browser tests (Playwright / Puppeteer)
+
+Headless Playwright or Puppeteer suites can run **inside** the omac
+sandbox when the sandbox profile grants the browser binary paths and the
+local webServer port is opened.
+
+**Profile grants** (add to `~/.config/omac/sandbox-profiles/<name>.json`):
+
+```json
+"filesystem": {
+  "read": [
+    "$PLAYWRIGHT_BROWSERS_PATH",
+    "~/.cache/ms-playwright",
+    "~/.cache/puppeteer",
+    "~/Library/Caches/ms-playwright"
+  ]
+},
+"environment": {
+  "allow_vars": ["PLAYWRIGHT_*", "PUPPETEER_*"]
+}
+```
+
+A broader `~/.cache` / `~/Library/Caches` allow (as in some org profiles)
+already covers the default Playwright/Puppeteer install locations; the
+entries above are the minimal set. Org installers that ship a custom
+profile should put these grants there — there is no separate CLI overlay.
+
+A Linux integration test exercises the full runner path:
+
+`go test ./internal/sandboxrun/ -run TestIntegrationPlaywrightSmoke -v`
+
+(fixture under `internal/sandboxrun/testdata/playwright-smoke/`; skips when
+node/Chromium are missing).
+
+**Port.** Pin the webServer port and grant it at launch or in the profile:
+
+```bash
+omac start --open-port 3000
+```
+
+```ts
+// playwright.config.ts
+export default defineConfig({
+  webServer: {
+    command: 'npm run start',
+    port: 3000,          // must match --open-port / profile open_port
+    reuseExistingServer: !process.env.CI,
+  },
+});
+```
+
+Or permanently in the profile: `"network": { "open_port": [3000] }`
+(see the Landlock address-blind caveat above).
+
+**Chromium launch flags.** Inside omac you do **not** need
+`--no-sandbox` or `--disable-dev-shm-usage`. Modern Chromium uses its
+user-namespace sandbox inside bwrap, and bwrap's `--dev /dev` already
+provides a writable `/dev/shm`. (Playwright already defaults
+`chromiumSandbox: false` for its own reasons — that is independent of
+omac.)
+
+**Supported target: local loopback only.** Chromium ignores credentials
+embedded in `HTTP_PROXY`/`HTTPS_PROXY` URLs, so it cannot authenticate to
+omac's filtering proxy. Requests to external hosts from the browser are
+denied (`net DENY … missing/invalid proxy token`). Tests that only hit
+`127.0.0.1` / `localhost` are unaffected (`NO_PROXY` covers loopback).
+If a suite must reach the public internet from the browser, configure
+Playwright's own proxy auth from the injected `HTTP_PROXY` URL:
+
+```ts
+// optional escape hatch — not required for local webServer tests
+const u = new URL(process.env.HTTP_PROXY!);
+use: {
+  proxy: {
+    server: `http://${u.hostname}:${u.port}`,
+    username: u.username,
+    password: u.password,
+  },
+}
+```
+
+`--open-port` also works on `omac continue`, `omac resume`, and
+`omac serve`. It applies only to the native (`builtin`) sandbox backend;
+nono profiles ignore it with a warning.
 
 ## Corporate proxy
 

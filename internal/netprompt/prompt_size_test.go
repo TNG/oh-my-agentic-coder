@@ -50,11 +50,20 @@ func TestDialogWidthFitsLongestLabel(t *testing.T) {
 }
 
 // TestDialogHeightFitsAllRowsAndPrompt is the T1 guard: the floor is derived
-// from the seven option rows plus the wrapped prompt lines plus chrome, and is
+// from the option rows plus the wrapped prompt lines plus chrome, and is
 // asserted to sit above the known-bad 320 so the regression cannot creep back.
+//
+// The prompt is measured at its worst case, not its shortest: the Origin and
+// Likely-cause lines are both populated on the production path, so sizing
+// against the bare prompt leaves the real dialog scrolling — the very bug the
+// constant exists to prevent. It cannot cover a wrapped intent line, which is
+// unbounded; OMAC_PROMPT_HEIGHT is the escape hatch until that is capped.
 func TestDialogHeightFitsAllRowsAndPrompt(t *testing.T) {
 	opts := optionLabels("example.com")
-	lines := strings.Count(promptText("api.github.com", 443, "", "", "", len(opts)), "\n") + 1
+	worst := promptText("api.github.com", 443,
+		"fetch the pinned plugin tarball", "harness plugin install into a cold cache",
+		"opencode (pid 4711)", len(opts))
+	lines := strings.Count(worst, "\n") + 1
 	need := len(opts)*perRowPx + lines*perLinePx + heightChrome
 	if need <= knownBadHeight {
 		t.Fatalf("derived height floor %d <= known-bad %d; estimates too low to guard the regression",
@@ -88,7 +97,7 @@ func TestKdialogGeometryFormatAndOrdering(t *testing.T) {
 
 	geo := flagValue(args, "--geometry")
 	if !regexp.MustCompile(`^\d+x\d+$`).MatchString(geo) {
-		t.Errorf("kdialog --geometry = %q, want WxH (e.g. 520x560)", geo)
+		t.Errorf("kdialog --geometry = %q, want WxH (e.g. 520x640)", geo)
 	}
 	if want := strconv.Itoa(dialogWidth) + "x" + strconv.Itoa(dialogHeight); geo != want {
 		t.Errorf("kdialog --geometry = %q, want %q", geo, want)

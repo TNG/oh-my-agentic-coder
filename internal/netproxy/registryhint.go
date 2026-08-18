@@ -27,9 +27,9 @@ var knownRegistrySuffixes = []string{
 // also recognizes common private-registry shapes (a "registry"/"npm" label, or
 // an ecosystem name in the host), so a VPN-scoped `registry.<corp>` still hits.
 func isPackageRegistry(host string) bool {
-	host = strings.ToLower(strings.TrimSuffix(host, "."))
+	host = NormalizeHost(host)
 	for _, s := range knownRegistrySuffixes {
-		if host == s || strings.HasSuffix(host, "."+s) {
+		if matchHostOrSuffix(host, s, true) {
 			return true
 		}
 	}
@@ -80,6 +80,11 @@ func registryDenyHint(host, reason string) string {
 	case strings.HasPrefix(reason, "hard-deny"):
 		next = "A real registry should not resolve to a link-local address — treat this as a\n" +
 			"stale hosts entry or a hijacked DNS record, not a policy problem."
+	case strings.HasPrefix(reason, "session"):
+		// The deny body already states the remedy in full, and the
+		// cold-cache "retry after allowing" advice contradicts it: a
+		// session deny suppresses the prompt, so retrying cannot help.
+		return ""
 	default:
 		next = "It matches a deny rule; remove it from network.deny_domain or the learned\n" +
 			"<profile>.pages.json policy file."

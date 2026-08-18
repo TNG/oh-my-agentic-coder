@@ -1,10 +1,8 @@
 package cli
 
 import (
-	"github.com/tngtech/oh-my-agentic-coder/internal/config"
 	"github.com/tngtech/oh-my-agentic-coder/internal/facade"
 	"github.com/tngtech/oh-my-agentic-coder/internal/intent"
-	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxprofile"
 	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxrun"
 )
 
@@ -12,40 +10,42 @@ import (
 // (/sandbox/denied and /sandbox/intent) to f. Shared by `start` and
 // `serve` so the two entry points cannot drift.
 //
-// When the sandbox is active it re-resolves the profile — cheap (path
-// expansion only, no existence walks) since the full grant resolution
-// happens inside the `omac sandbox run` child — to build the
-// protected-path checker the agent queries via GET /sandbox/denied?path=X
-// to tell a sandbox denial from a genuinely missing file. A resolve
-// failure is reported via warn rather than silently disabling the
-// endpoint. The intent registry is always wired: in-memory,
+// When the sandbox is active it builds the protected-path checker from the
+// plan's already-resolved policy profile — the set the agent queries via
+// GET /sandbox/denied?path=X to tell a sandbox denial from a genuinely
+// missing file. Taking the plan rather than a profile name is the fix for
+// #173: the callers hold a LAUNCHER profile name ("builtin"), which is not
+// a POLICY reference ("default"), and resolving the former as the latter
+// always failed — leaving the endpoint 404 on every default launch. A plan
+// without a usable policy is reported via warn rather than silently
+// disabling the endpoint. The intent registry is always wired: in-memory,
 // session-scoped, written by the agent via POST /sandbox/intent and read
 // by the popup via GET.
 //
-// prof is the EFFECTIVE launcher profile (lc.Sandbox.Profiles[profName]
-// with the compiled-in default when absent). For a native `{{self}}
-// sandbox run` profile (builtin), the filesystem profile the child
-// resolves is the referenced `--profile` (e.g. "default") — NOT the
-// launcher-profile name ("builtin" has no file). Resolving the child
-// ref keeps the checker in lock-step with the enforcement the agent
-// actually runs under; a non-native profile (nono) is opaque, so the
-// name-based filesystem resolve is tried as a best effort.
-func wireFacadeSandbox(f *facade.Facade, noSandbox bool, profName string, prof config.SandboxProfile, warn func(format string, args ...any)) {
+// learnMode (`omac serve --learn`) is a launch fact the policy file cannot
+// carry: it lifts every filesystem restriction in the child, so the static
+// protected set must not be reported for that session.
+func wireFacadeSandbox(f *facade.Facade, noSandbox, learnMode bool, plan sandboxPlan, warn func(format string, args ...any)) {
 	if !noSandbox {
-		ref := profName
-		if profileRunsNativeSandbox(prof) {
-			ref = "default"
-			if r, ok := inspectBuiltinProfileRef(prof.Command); ok {
-				ref = r
+		switch {
+		case learnMode:
+			// Nothing is protected in a learn session; say so rather than
+			// claiming the profile's static set is in force.
+			f.ProtectedPathChecker = sandboxrun.UnrestrictedProtectedPathSet()
+		case plan.Policy != nil:
+			f.ProtectedPathChecker = sandboxrun.NewProtectedPathSet(plan.Policy)
+			if d := plan.Policy.Denial; d != nil && d.FacadeNote != "" {
+				f.DenialNote = d.FacadeNote
 			}
-		}
-		if p, _, err := sandboxprofile.ResolveReadOnly(ref); err == nil {
-			f.ProtectedPathChecker = sandboxrun.NewProtectedPathSet(p)
-			if p.Denial != nil && p.Denial.FacadeNote != "" {
-				f.DenialNote = p.Denial.FacadeNote
-			}
-		} else {
-			warn("omac: sandbox profile %q could not be resolved: %v; GET /sandbox/denied disabled", ref, err)
+		case plan.PolicyErr != nil:
+			warn("omac: sandbox profile %q could not be resolved: %v; GET /sandbox/denied disabled",
+				plan.PolicyRef, plan.PolicyErr)
+		default:
+			// An external launcher (nono), the no-sandbox debug shell, or
+			// an unknown profile name: omac cannot see the policy, so it
+			// cannot say which paths that sandbox protects.
+			warn("omac: sandbox profile %q does not run omac's native sandbox; GET /sandbox/denied disabled",
+				plan.Name)
 		}
 	}
 	f.IntentRegistry = intent.New(intent.DefaultTTL)
