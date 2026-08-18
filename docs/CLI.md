@@ -107,6 +107,14 @@ omac [--workdir <dir>] <subcommand> [flags] [args]
                (silently) skills whose directory has vanished; secrets +
                config persist for safety. Flags:
                  --sandbox <profile>     pick a sandbox profile
+                 --open-port <port>      let the sandbox bind+connect on
+                                         <port> (repeatable). For a local
+                                         app/dev server the agent or tools
+                                         use (Playwright, Vite, Next, …).
+                                         On Linux Landlock cannot limit
+                                         that to loopback: outbound TCP to
+                                         any host on the same port is also
+                                         allowed
                  --inner <cmd>           override inner_cmd
                  --no-sandbox            debug: run inner cmd directly
                                          (disables the entire omac sandbox;

@@ -197,6 +197,99 @@ the same daemon problem without opening general network access. The `0`
 sentinel is **macOS-only**: on Linux it is a silent no-op (there is no
 Landlock rule that can express it), so Linux needs `env-only`.
 
+**Numeric `open_port` on Linux is also address-blind.** Landlock's
+net-port rules have no host dimension: granting `"open_port": [3000]`
+(or `omac start --open-port 3000`) allows bind **and** connect on port
+3000 to *any* host, not only loopback. Prefer pinning a single known
+dev-server port and keep the list short. `omac doctor` / `omac provenance
+--check` flag every numeric `open_port` as a low-severity finding for
+this reason.
+
+## Browser tests (Playwright / Puppeteer)
+
+Headless Playwright or Puppeteer suites can run **inside** the omac
+sandbox when the sandbox profile grants the browser binary paths and the
+local webServer port is opened.
+
+**Profile grants** (add to `~/.config/omac/sandbox-profiles/<name>.json`):
+
+```json
+"filesystem": {
+  "read": [
+    "$PLAYWRIGHT_BROWSERS_PATH",
+    "~/.cache/ms-playwright",
+    "~/.cache/puppeteer",
+    "~/Library/Caches/ms-playwright"
+  ]
+},
+"environment": {
+  "allow_vars": ["PLAYWRIGHT_*", "PUPPETEER_*"]
+}
+```
+
+A broader `~/.cache` / `~/Library/Caches` allow (as in some org profiles)
+already covers the default Playwright/Puppeteer install locations; the
+entries above are the minimal set. Org installers that ship a custom
+profile should put these grants there — there is no separate CLI overlay.
+
+A Linux integration test exercises the full runner path:
+
+`go test ./internal/sandboxrun/ -run TestIntegrationPlaywrightSmoke -v`
+
+(fixture under `internal/sandboxrun/testdata/playwright-smoke/`; skips when
+node/Chromium are missing).
+
+**Port.** Pin the webServer port and grant it at launch or in the profile:
+
+```bash
+omac start --open-port 3000
+```
+
+```ts
+// playwright.config.ts
+export default defineConfig({
+  webServer: {
+    command: 'npm run start',
+    port: 3000,          // must match --open-port / profile open_port
+    reuseExistingServer: !process.env.CI,
+  },
+});
+```
+
+Or permanently in the profile: `"network": { "open_port": [3000] }`
+(see the Landlock address-blind caveat above).
+
+**Chromium launch flags.** Inside omac you do **not** need
+`--no-sandbox` or `--disable-dev-shm-usage`. Modern Chromium uses its
+user-namespace sandbox inside bwrap, and bwrap's `--dev /dev` already
+provides a writable `/dev/shm`. (Playwright already defaults
+`chromiumSandbox: false` for its own reasons — that is independent of
+omac.)
+
+**Supported target: local loopback only.** Chromium ignores credentials
+embedded in `HTTP_PROXY`/`HTTPS_PROXY` URLs, so it cannot authenticate to
+omac's filtering proxy. Requests to external hosts from the browser are
+denied (`net DENY … missing/invalid proxy token`). Tests that only hit
+`127.0.0.1` / `localhost` are unaffected (`NO_PROXY` covers loopback).
+If a suite must reach the public internet from the browser, configure
+Playwright's own proxy auth from the injected `HTTP_PROXY` URL:
+
+```ts
+// optional escape hatch — not required for local webServer tests
+const u = new URL(process.env.HTTP_PROXY!);
+use: {
+  proxy: {
+    server: `http://${u.hostname}:${u.port}`,
+    username: u.username,
+    password: u.password,
+  },
+}
+```
+
+`--open-port` also works on `omac continue`, `omac resume`, and
+`omac serve`. It applies only to the native (`builtin`) sandbox backend;
+nono profiles ignore it with a warning.
+
 ## Corporate proxy
 
 In corporate environments where outbound traffic must go through a proxy,

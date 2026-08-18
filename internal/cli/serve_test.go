@@ -406,6 +406,67 @@ func TestInjectSandboxEnvAllow(t *testing.T) {
 	}
 }
 
+func TestInjectUserOpenPorts(t *testing.T) {
+	profiles := config.DefaultLauncherConfig().Sandbox.Profiles
+	builtinProf := profiles["builtin"]
+	argv, err := sandbox.Expand(builtinProf, sandbox.Inputs{
+		Workdir:  "/w",
+		Socket:   "/w/bridge.sock",
+		TCPPort:  6000,
+		InnerCmd: []string{"claude"},
+		TmpDir:   "/w/tmp",
+	})
+	if err != nil {
+		t.Fatalf("Expand: %v", err)
+	}
+
+	got := injectUserOpenPorts(nil, argv, []int{3000, 4173}, builtinProf)
+	joined := strings.Join(got, " ")
+	if !strings.Contains(joined, "--open-port 3000") || !strings.Contains(joined, "--open-port 4173") {
+		t.Errorf("missing open-port flags: %s", joined)
+	}
+
+	if g := injectUserOpenPorts(nil, argv, nil, builtinProf); !equalStrings(g, argv) {
+		t.Errorf("empty inject should be no-op: %v", g)
+	}
+
+	nonoProf := profiles["nono"]
+	nono, err := sandbox.Expand(nonoProf, sandbox.Inputs{
+		Workdir:  "/w",
+		Socket:   "/w/bridge.sock",
+		TCPPort:  6000,
+		InnerCmd: []string{"claude"},
+		TmpDir:   "/w/tmp",
+	})
+	if err != nil {
+		t.Fatalf("Expand nono: %v", err)
+	}
+	env2, _, errBuf2, drain2 := newPipeEnv(t, "")
+	if g := injectUserOpenPorts(env2, nono, []int{3000}, nonoProf); !equalStrings(g, nono) {
+		t.Errorf("nono argv must be untouched: %v", g)
+	}
+	drain2()
+	if !strings.Contains(errBuf2.String(), "ignoring") {
+		t.Errorf("expected non-native warning, got %q", errBuf2.String())
+	}
+}
+
+func TestIntMultiFlag(t *testing.T) {
+	var m intMultiFlag
+	if err := m.Set("3000"); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Set("0"); err == nil {
+		t.Error("port 0 should be rejected")
+	}
+	if err := m.Set("abc"); err == nil {
+		t.Error("non-integer should be rejected")
+	}
+	if len(m) != 1 || m[0] != 3000 {
+		t.Errorf("got %v", m)
+	}
+}
+
 // TestForwardHarnessEnvEmptyProfileForwardsOperationalMinimum: with an
 // empty-allow_vars profile, omac fails closed — it seeds ONLY the operational
 // minimum (so HOME/PATH keep the harness runnable), does NOT auto-forward the
