@@ -3,6 +3,8 @@ package cli
 import (
 	"errors"
 	"flag"
+	"fmt"
+	"io"
 	"strings"
 
 	"github.com/tngtech/oh-my-agentic-coder/internal/config"
@@ -144,4 +146,53 @@ func parseFlags(fs *flag.FlagSet, args []string, env *Env) (code int, proceed bo
 		return ExitMisuse, false
 	}
 	return ExitOK, true
+}
+
+// writeLaunchUsage prints the start-family / serve usage: omac flags, then
+// `--` plus whatever the inner harness should see.
+func writeLaunchUsage(cmd string, fs *flag.FlagSet) {
+	w := fs.Output()
+	fmt.Fprintf(w, "Usage: omac %s [harness] [flags] [-- <harness args>]\n", cmd)
+	fmt.Fprintf(w, "  Args after -- go to the harness, e.g. omac %s --verbose -- run --model x\n", cmd)
+	fmt.Fprintf(w, "\nharness: one of %s (default: %s)\n\n",
+		strings.Join(config.HarnessNames(), ", "), config.DefaultHarness().Name)
+	fs.PrintDefaults()
+}
+
+// parseWithHarnessArgsHint parses fs after reorderFlagsFirst. On failure it
+// prints the stdlib error, a `--` reminder, then usage — in that order, so
+// the reminder is not buried under PrintDefaults. An explicit -h/--help
+// prints usage on stdout and returns ExitOK, matching parseFlags. Parse's
+// own error/usage write is discarded because FlagSet always emits those
+// before returning.
+func parseWithHarnessArgsHint(fs *flag.FlagSet, cmd string, args []string, env *Env) (code int, proceed bool) {
+	reordered := reorderFlagsFirst(fs, args)
+	if wantsHelp(reordered) {
+		fs.SetOutput(env.Stdout)
+		fs.Usage()
+		return ExitOK, false
+	}
+	fs.SetOutput(io.Discard)
+	err := fs.Parse(reordered)
+	fs.SetOutput(env.Stderr)
+	if err != nil {
+		if !errors.Is(err, flag.ErrHelp) {
+			fmt.Fprintln(env.Stderr, err)
+			writeInnerArgsParseHint(cmd, err, env.Stderr)
+		}
+		fs.Usage()
+		return ExitMisuse, false
+	}
+	return ExitOK, true
+}
+
+// writeInnerArgsParseHint reminds the user that harness flags go after --.
+// Boolean-aware reorderFlagsFirst no longer hides later harness flags behind
+// a glued positional, so mixed forms like `omac start --verbose run --model x`
+// now fail as unknown omac flags. Help requests already print Usage.
+func writeInnerArgsParseHint(cmd string, err error, w io.Writer) {
+	if err == nil || errors.Is(err, flag.ErrHelp) || w == nil {
+		return
+	}
+	fmt.Fprintf(w, "omac %s: pass harness flags after -- (e.g. omac %s --verbose -- run --model x)\n", cmd, cmd)
 }
