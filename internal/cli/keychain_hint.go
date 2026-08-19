@@ -25,9 +25,9 @@ func keychainUnavailableHint(host osinfo.OS) string {
 // wrapKeychainErr appends keychainUnavailableHint to errors caused by a
 // missing keychain backend (keychain.IsUnavailable), leaving per-secret
 // errors (deleted item, permission denied, etc.) untouched.
-func wrapKeychainErr(err error) error {
+func wrapKeychainErr(err error, host osinfo.OS) error {
 	if err == nil || !keychain.IsUnavailable(err) {
 		return err
 	}
-	return fmt.Errorf("%w — %s", err, keychainUnavailableHint(osinfo.Detect()))
+	return fmt.Errorf("%w — %s", err, keychainUnavailableHint(host))
 }
