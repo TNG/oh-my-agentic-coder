@@ -128,7 +128,17 @@ the sandbox:
 
 - `config.BundleHash` deliberately excludes dependency/artifact subtrees
   (`node_modules`, `.venv`, `build`, `dist`, `target`, …) and does not follow
-  symlinks, so the hash alone does not cover everything a skill executes.
+  in-tree symlinks, so the hash alone does not cover everything a skill executes.
+
+  The skill root itself may be a symlink — either the skills directory
+  (~/.config/opencode/skills -> /repo/opencode/skills/) or an individual
+  skill within it (skills/foo -> ../../library/skills/foo/), common for
+  git-versioned skill libraries. Both `config.BundleHash` and the approval
+  snapshot (`skilltrust.copyTree`) resolve the root via
+  `filepath.EvalSymlinks` before walking, so they agree on what they
+  cover, while in-tree symlinks remain dropped/recreated per the rules
+  below.
+
   omac closes this by **executing from an approval snapshot**: at approval
   time the whole skill tree is frozen into a host-only directory the sandbox
   cannot write (`~/.config/omac/skills/<name>/<hash>`), and the sidecar is
