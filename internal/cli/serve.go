@@ -70,8 +70,9 @@ func runServe(args []string, env *Env) int {
 	fs.Var(&roots, "root", "Pre-declared root directory under which projects may be activated (§5.4 Option B). Repeatable. Empty = allow any directory.")
 	fs.Var(&openPorts, "open-port", "Allow the sandboxed process to bind and connect on this TCP port (repeatable). Useful for a local app/dev server the agent or its tools talk to — e.g. Playwright/Vite/Next on :3000. On Linux, Landlock cannot limit that to loopback: outbound TCP to any host on the same port is also allowed.")
 	fs.Usage = func() {
-		fmt.Fprintln(env.Stderr, "Usage: omac serve [harness] [flags] [-- inner args...]")
-		fmt.Fprintf(env.Stderr, "\nharness: one of %s (default: %s)\n\n",
+		out := fs.Output()
+		fmt.Fprintln(out, "Usage: omac serve [harness] [flags] [-- inner args...]")
+		fmt.Fprintf(out, "\nharness: one of %s (default: %s)\n\n",
 			strings.Join(config.HarnessNames(), ", "), config.DefaultHarness().Name)
 		fs.PrintDefaults()
 	}
@@ -96,8 +97,8 @@ func runServe(args []string, env *Env) int {
 		fmt.Fprintln(env.Stderr, "omac serve:", err)
 		return ExitMisuse
 	}
-	if err := fs.Parse(reorderFlagsFirst(ourArgs)); err != nil {
-		return ExitMisuse
+	if code, ok := parseFlags(fs, ourArgs, env); !ok {
+		return code
 	}
 	if *ephemeralCache && *noSandbox {
 		fmt.Fprintln(env.Stderr, "omac serve: --ephemeral-cache cannot be used with --no-sandbox")

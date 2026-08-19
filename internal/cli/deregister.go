@@ -29,15 +29,16 @@ func runDeregister(args []string, env *Env) int {
 		assumeYes     = fs.Bool("yes", false, "Do not prompt before deleting an unregistered skill's source directory.")
 	)
 	fs.Usage = func() {
-		fmt.Fprintln(env.Stderr, "Usage: omac deregister <skill> [--global] [--harness <name>] [--yes] [--purge-secrets] [--purge-fields] [--purge-defaults]")
-		fmt.Fprintln(env.Stderr, "       omac deregister --prune   # remove all stale registrations")
-		fmt.Fprintln(env.Stderr, "\nRemoves the skill from the registry. If the skill was never registered but")
-		fmt.Fprintln(env.Stderr, "still exists on disk (so `omac start` keeps flagging it), its source directory")
-		fmt.Fprintln(env.Stderr, "is deleted instead (after confirmation, or immediately with --yes).")
+		out := fs.Output()
+		fmt.Fprintln(out, "Usage: omac deregister <skill> [--global] [--harness <name>] [--yes] [--purge-secrets] [--purge-fields] [--purge-defaults]")
+		fmt.Fprintln(out, "       omac deregister --prune   # remove all stale registrations")
+		fmt.Fprintln(out, "\nRemoves the skill from the registry. If the skill was never registered but")
+		fmt.Fprintln(out, "still exists on disk (so `omac start` keeps flagging it), its source directory")
+		fmt.Fprintln(out, "is deleted instead (after confirmation, or immediately with --yes).")
 		fs.PrintDefaults()
 	}
-	if err := fs.Parse(reorderFlagsFirst(args)); err != nil {
-		return ExitMisuse
+	if code, ok := parseFlags(fs, args, env); !ok {
+		return code
 	}
 	if *prune {
 		if fs.NArg() != 0 {

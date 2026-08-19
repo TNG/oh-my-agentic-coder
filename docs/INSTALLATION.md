@@ -2,8 +2,8 @@
 
 This document covers every install path, the update mechanism, checksum
 verification, and the full prerequisite matrix. The
-[README quickstart](../README.md#quickstart) is enough for the common case;
-come here for the details.
+[README setup](../README.md#setup) is enough for the common case; come here
+for the details.
 
 ## Release artifacts
 
@@ -123,12 +123,41 @@ missing.
 
 ### Core (required)
 
-bubblewrap, a Secret Service provider, and Python 3 — with the Ubuntu
-AppArmor exception and the WSL gnome-keyring setup — are documented in
-[README → Prerequisites](../README.md#prerequisites). They live there rather
-than here because the README has to stand alone for a first install. The one
-addition: there is no file-based keychain fallback yet (see design doc
-§16.2), so a running Secret Service provider is required on Linux/WSL.
+| Package | Linux | macOS | Purpose |
+|---|---|---|---|
+| **bubblewrap** (`bwrap`) | `apt` / `dnf` install `bubblewrap` | built-in (Seatbelt) | Builtin sandbox via user namespaces + Landlock |
+| **Secret Service / D-Bus** | `libsecret-1-0` (+ running provider) | Keychain | Skill secrets; no file fallback yet (design doc §16.2) |
+| **Python 3** (stdlib) | usually present | usually present | Typical sidecar runtime |
+| **Inner harness** | one of the supported CLIs on `PATH` | same | Default: `opencode` |
+
+This is the canonical place for those fixes; `omac doctor` (and keychain
+errors) print the same guidance at runtime. The
+[README setup](../README.md#setup) only links here.
+
+> **AppArmor and bubblewrap (Ubuntu 23.10+/24.04+):** unprivileged user
+> namespaces are restricted by default
+> (`kernel.apparmor_restrict_unprivileged_userns=1`), so a freshly installed
+> `bwrap` may fail with Permission denied. Grant an AppArmor exception once:
+> ```bash
+> sudo tee /etc/apparmor.d/bwrap > /dev/null <<'EOF'
+> abi <abi/4.0>,
+> /usr/bin/bwrap flags=(unconfined) {
+>   userns,
+> }
+> EOF
+> sudo apparmor_parser -r /etc/apparmor.d/bwrap
+> ```
+> `omac doctor` prints this same fix when the sandbox check fails.
+
+> **WSL:** WSL2 has no Secret Service by default. Start gnome-keyring once per
+> session:
+> ```bash
+> sudo apt install gnome-keyring dbus-x11
+> eval "$(dbus-launch --sh-syntax)"
+> gnome-keyring-daemon --unlock --components=secrets
+> ```
+> Without a running provider, `omac register` / `omac secrets` fail. There is
+> no file-based keychain fallback yet.
 
 ### Network prompt dialog (strongly recommended)
 

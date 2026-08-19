@@ -67,11 +67,11 @@ func runConfigShow(args []string, env *Env) int {
 	fs.SetOutput(env.Stderr)
 	jsonOut := fs.Bool("json", false, "Emit a single JSON object instead of tabular text.")
 	fs.Usage = func() {
-		fmt.Fprintln(env.Stderr, "Usage: omac config show <skill> [--json]")
+		fmt.Fprintln(fs.Output(), "Usage: omac config show <skill> [--json]")
 		fs.PrintDefaults()
 	}
-	if err := fs.Parse(reorderFlagsFirst(args)); err != nil {
-		return ExitMisuse
+	if code, ok := parseFlags(fs, args, env); !ok {
+		return code
 	}
 	if fs.NArg() != 1 {
 		fs.Usage()

@@ -10,16 +10,16 @@ import (
 // keychainUnavailableHint returns an actionable, OS-specific tip for a
 // missing Secret Service backend, appended to the raw D-Bus/keyring error
 // so a user isn't left with just "org.freedesktop.secrets was not provided
-// by any .service files". See README.md#prerequisites.
+// by any .service files". See docs/INSTALLATION.md#prerequisites.
 func keychainUnavailableHint(host osinfo.OS) string {
 	if host == osinfo.WSL {
 		return "no Secret Service provider found — WSL doesn't ship one by default; " +
 			"install and start gnome-keyring once per session: " +
 			`sudo apt install gnome-keyring dbus-x11 && eval "$(dbus-launch --sh-syntax)" && ` +
-			"gnome-keyring-daemon --unlock --components=secrets (see README.md#prerequisites)"
+			"gnome-keyring-daemon --unlock --components=secrets (see docs/INSTALLATION.md#prerequisites)"
 	}
 	return "no Secret Service provider found — install and start one (e.g. gnome-keyring or kwalletd), " +
-		"or set DBUS_SESSION_BUS_ADDRESS if one is already running (see README.md#prerequisites)"
+		"or set DBUS_SESSION_BUS_ADDRESS if one is already running (see docs/INSTALLATION.md#prerequisites)"
 }
 
 // wrapKeychainErr appends keychainUnavailableHint to errors caused by a

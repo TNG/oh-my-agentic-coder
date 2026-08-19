@@ -20,14 +20,15 @@ func runSetup(args []string, env *Env) int {
 	fs.SetOutput(env.Stderr)
 	force := fs.Bool("force", false, "Overwrite a same-named skills directory even if it is not omac-owned.")
 	fs.Usage = func() {
-		fmt.Fprintln(env.Stderr, "Usage: omac setup [harness] [--force]")
-		fmt.Fprintln(env.Stderr, "")
-		fmt.Fprintln(env.Stderr, "Provision omac's built-in skills into each installed harness's skills dir.")
-		fmt.Fprintln(env.Stderr, "Optional [harness] (opencode|claude) narrows to one; default: all installed.")
+		out := fs.Output()
+		fmt.Fprintln(out, "Usage: omac setup [harness] [--force]")
+		fmt.Fprintln(out, "")
+		fmt.Fprintln(out, "Provision omac's built-in skills into each installed harness's skills dir.")
+		fmt.Fprintln(out, "Optional [harness] (opencode|claude) narrows to one; default: all installed.")
 		fs.PrintDefaults()
 	}
-	if err := fs.Parse(reorderFlagsFirst(args)); err != nil {
-		return ExitMisuse
+	if code, ok := parseFlags(fs, args, env); !ok {
+		return code
 	}
 
 	var targets []config.Harness
