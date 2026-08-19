@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -244,6 +245,25 @@ func TestHarnessAuthForwardPolicy(t *testing.T) {
 		}
 		if !found {
 			t.Errorf("single-provider harness %q should forward %q; got %v", name, want, h.SandboxEnvAllow)
+		}
+	}
+}
+
+func TestCopilotForwardsBYOKProviderEnvironment(t *testing.T) {
+	h, ok := LookupHarness("copilot")
+	if !ok {
+		t.Fatal("copilot harness not found")
+	}
+
+	for _, want := range []string{
+		"COPILOT_PROVIDER_TYPE",
+		"COPILOT_PROVIDER_BASE_URL",
+		"COPILOT_PROVIDER_API_KEY",
+		"COPILOT_MODEL",
+		"COPILOT_PROVIDER_WIRE_API",
+	} {
+		if !slices.Contains(h.SandboxEnvAllow, want) {
+			t.Errorf("copilot SandboxEnvAllow missing %q; got %v", want, h.SandboxEnvAllow)
 		}
 	}
 }

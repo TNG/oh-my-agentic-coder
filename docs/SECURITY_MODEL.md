@@ -292,12 +292,13 @@ sandbox:
 >   is not the same as no filtering.
 >
 > Note: with a **non-empty** `allow_vars`, omac injects the selected harness's
-> documented auth vars (`harness.SandboxEnvAllow`) on top at launch — but only
-> for **single-provider** harnesses where the key is unambiguous (claude-code
-> → `ANTHROPIC_*`, codex → `OPENAI_*`, copilot → `GITHUB_TOKEN`). **Multi-provider
-> harnesses (opencode, pi) auto-forward nothing**: omac will not blindly push
-> every third-party provider key into the sandbox, so a user relying on an
-> env-based provider key lists it in `allow_vars` themselves (opencode's primary
+> documented auth/config vars (`harness.SandboxEnvAllow`) on top at launch —
+> but only where the key is unambiguously scoped to that harness (claude-code
+> → `ANTHROPIC_*`, codex → `OPENAI_*`, copilot → `GITHUB_TOKEN` and its native
+> `COPILOT_PROVIDER_*`/`COPILOT_MODEL` BYOK configuration). **Multi-provider
+> harnesses (opencode, pi) auto-forward nothing**: omac will not blindly push every
+> third-party provider key into the sandbox, so a user relying on an env-based
+> provider key lists it in `allow_vars` themselves (opencode's primary
 > `auth.json` login, in its granted dirs, is unaffected). Auto-forwarding is
 > skipped entirely for the empty (misconfigured) case.
 >
@@ -320,4 +321,3 @@ never reads or copies their contents. External nono profiles are opaque
 to these diagnostics and skipped. The warnings are advisory — doctor
 never rewrites the profile. See
 [Installation → Prerequisites](./INSTALLATION.md#prerequisites).
-
