@@ -35,7 +35,7 @@ import (
 // Returns nil when the command cannot be found or resolved.
 func resolveInnerBinaryDirs(innerArgv []string) []string {
 	dirs := resolveCommandBinaryDirs(innerArgv)
-	if cmd := unwrapEnv(innerArgv); len(cmd) > 0 && cmd[0] != innerArgv[0] {
+	if cmd := UnwrapEnv(innerArgv); len(cmd) > 0 && cmd[0] != innerArgv[0] {
 		dirs = append(dirs, resolveCommandBinaryDirs(cmd)...)
 	}
 	return dirs
@@ -217,20 +217,18 @@ func absoluteInnerArgv(innerArgv []string) []string {
 	return out
 }
 
-// unwrapEnv strips a leading `env NAME=VALUE ...` wrapper and returns the
-// argv that begins with the real command. It skips `env` and any following
-// NAME=VALUE assignment tokens; the first non-assignment token is the
-// command. `env` flags (e.g. -i, -u) are not used by omac's profiles and are
-// left in place, so an argv like `env -i cmd` yields `-i cmd` — which fails
-// to resolve and is safely ignored by the caller. Returns argv unchanged when
-// there is no env wrapper.
-func unwrapEnv(argv []string) []string {
+// UnwrapEnv strips a leading `env NAME=VALUE ...` wrapper and returns the
+// argv that begins with the real command: it skips `env` and any following
+// NAME=VALUE assignment tokens. `env` flags (e.g. -i, -u) are left in place,
+// so `env -i cmd` yields `-i cmd`. Returns argv unchanged when there is no
+// wrapper.
+func UnwrapEnv(argv []string) []string {
 	return argv[envWrapperEnd(argv):]
 }
 
 // envWrapperEnd returns the index at which the real command begins after any
 // leading `env NAME=VALUE ...` wrapper — 0 when there is none. Split out of
-// unwrapEnv so callers that must REWRITE the wrapped command token (rather
+// UnwrapEnv so callers that must REWRITE the wrapped command token (rather
 // than just read it) know where it sits; see absoluteInnerArgv.
 func envWrapperEnd(argv []string) int {
 	i := 0
@@ -260,7 +258,7 @@ func isEnvAssignment(tok string) bool {
 // the host lookup happened, is the difference between a one-line fix and
 // a Seatbelt investigation.
 func unresolvedInnerCommandWarning(innerArgv []string) string {
-	cmd := unwrapEnv(innerArgv)
+	cmd := UnwrapEnv(innerArgv)
 	if len(cmd) == 0 || cmd[0] == "" {
 		return ""
 	}

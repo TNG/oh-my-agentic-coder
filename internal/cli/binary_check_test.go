@@ -55,6 +55,48 @@ func TestCheckInnerBinaryChecksProfileInnerCmdNotTheHarnessDefault(t *testing.T)
 	}
 }
 
+// A profile-pinned inner_cmd may wrap the harness in an `env NAME=VALUE ...`
+// prefix. Without unwrapping, the pre-flight validates `env` (always present)
+// and silently passes while the real harness binary is missing.
+func TestCheckInnerBinaryUnwrapsEnvPrefix(t *testing.T) {
+	h := testHarnessWithInnerCmd("echo")
+
+	env, _, errBuf, drain := newPipeEnv(t, "")
+	code := checkInnerBinary(h.ResolveInnerCmd([]string{"env", "NPM_CONFIG_CACHE=/x", "nonexistent-binary-xyz-12345"}, ""), "test", env)
+	drain()
+
+	if code != ExitPrerequisiteMissing {
+		t.Errorf("env-wrapped missing harness unchecked: got %d, want ExitPrerequisiteMissing(%d)", code, ExitPrerequisiteMissing)
+	}
+	if !bytes.Contains(errBuf.Bytes(), []byte("nonexistent-binary-xyz-12345")) {
+		t.Errorf("stderr names wrapper instead of real binary; got:\n%s", errBuf.String())
+	}
+	if bytes.Contains(errBuf.Bytes(), []byte("harness binary \"env\"")) {
+		t.Errorf("stderr names `env` as missing, should name the real binary; got:\n%s", errBuf.String())
+	}
+}
+
+// An env wrapper may carry flags (e.g. `env -i cmd`). UnwrapEnv leaves them
+// in place; the pre-flight skips them so "-i" is not reported as the missing
+// binary.
+func TestCheckInnerBinarySkipsEnvFlags(t *testing.T) {
+	h := testHarnessWithInnerCmd("echo")
+
+	env, _, errBuf, drain := newPipeEnv(t, "")
+	code := checkInnerBinary(h.ResolveInnerCmd([]string{"env", "-i", "nonexistent-binary-xyz-12345"}, ""), "test", env)
+	drain()
+
+	if code != ExitPrerequisiteMissing {
+		t.Errorf("env -i wrapped missing harness unchecked: got %d, want ExitPrerequisiteMissing(%d)", code, ExitPrerequisiteMissing)
+	}
+	if !bytes.Contains(errBuf.Bytes(), []byte("nonexistent-binary-xyz-12345")) {
+		t.Errorf("stderr does not name the real binary after flag skip; got:\n%s", errBuf.String())
+	}
+	if bytes.Contains(errBuf.Bytes(), []byte("harness binary \"-i\"")) {
+		t.Errorf("stderr names the env flag as missing; got:\n%s", errBuf.String())
+	}
+}
+
 func testHarnessWithInnerCmd(bin string) config.Harness {
 	cmd := []string{}
 	if bin != "" {

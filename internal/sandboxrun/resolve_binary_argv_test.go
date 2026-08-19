@@ -111,7 +111,7 @@ func TestAbsoluteInnerArgvLeavesEnvFlagFormAlone(t *testing.T) {
 	}
 }
 
-// envWrapperEnd is the index unwrapEnv slices at; the two must not drift.
+// envWrapperEnd is the index UnwrapEnv slices at; the two must not drift.
 func TestEnvWrapperEndMatchesUnwrapEnv(t *testing.T) {
 	for _, argv := range [][]string{
 		nil,
@@ -122,10 +122,10 @@ func TestEnvWrapperEndMatchesUnwrapEnv(t *testing.T) {
 		{"env"},
 		{"env", "A=1"},
 	} {
-		want := unwrapEnv(argv)
+		want := UnwrapEnv(argv)
 		got := argv[envWrapperEnd(argv):]
 		if !reflect.DeepEqual(got, want) {
-			t.Errorf("argv %v: envWrapperEnd slice = %v, unwrapEnv = %v", argv, got, want)
+			t.Errorf("argv %v: envWrapperEnd slice = %v, UnwrapEnv = %v", argv, got, want)
 		}
 	}
 }
