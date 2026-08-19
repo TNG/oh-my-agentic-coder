@@ -222,6 +222,13 @@ func Run(opts Options) int {
 	}
 	defer markerCleanup()
 
+	if warn := unresolvedInnerCommandWarning(opts.Flags.InnerArgv); warn != "" {
+		fmt.Fprintln(stderr, warn)
+	}
+	if warn := protectedInnerBinaryWarning(opts.Flags.InnerArgv, grants.ProtectedPaths); warn != "" {
+		fmt.Fprintln(stderr, warn)
+	}
+
 	childArgv, err := BuildChildArgv(grants, opts.Flags.InnerArgv)
 	if err != nil {
 		return fail("%v", err)

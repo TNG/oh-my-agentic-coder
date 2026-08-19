@@ -28,6 +28,12 @@ func CheckPlatform() error {
 // as readable — (deny default) blocks exec otherwise. We resolve the
 // binary on the host PATH and add its dir (and symlink-resolved dir)
 // to ReadPaths before generating the SBPL, mirroring backend_linux.go.
+//
+// argv[0] is handed to sandbox-exec as an absolute path (see
+// absoluteInnerArgv). A bare name would make sandbox-exec's execvp redo
+// the PATH lookup inside the sandbox, where a denied lookup is reported
+// as ENOENT — a second resolution that can disagree with the host-side
+// one this function just used to build the grants.
 func BuildChildArgv(g *Grants, innerArgv []string) ([]string, error) {
 	if err := CheckPlatform(); err != nil {
 		return nil, err
@@ -36,6 +42,6 @@ func BuildChildArgv(g *Grants, innerArgv []string) ([]string, error) {
 	gz.ReadPaths = append(append([]string{}, g.ReadPaths...), resolveInnerBinaryDirs(innerArgv)...)
 	profile := GenerateSBPL(&gz)
 	argv := []string{sandboxExecPath, "-p", profile, "--"}
-	argv = append(argv, innerArgv...)
+	argv = append(argv, absoluteInnerArgv(innerArgv)...)
 	return argv, nil
 }

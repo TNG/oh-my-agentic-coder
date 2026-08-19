@@ -22,6 +22,7 @@ import (
 	"github.com/tngtech/oh-my-agentic-coder/internal/keychain"
 	"github.com/tngtech/oh-my-agentic-coder/internal/registry"
 	"github.com/tngtech/oh-my-agentic-coder/internal/sandbox"
+	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxrun"
 	"github.com/tngtech/oh-my-agentic-coder/internal/secrets"
 	"github.com/tngtech/oh-my-agentic-coder/internal/session"
 	"github.com/tngtech/oh-my-agentic-coder/internal/skillconfig"
@@ -172,15 +173,32 @@ func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, int) 
 	}, ExitOK
 }
 
-// checkInnerBinary verifies the harness's inner command binary is on $PATH.
+// checkInnerBinary verifies the resolved inner command binary is on $PATH.
 // Returns ExitOK when found, ExitPrerequisiteMissing when missing, ExitOK
-// when InnerCmd is empty (defensive skip). Called by runLaunch and runServe.
-func checkInnerBinary(harness config.Harness, prefix string, env *Env) int {
-	if len(harness.InnerCmd) == 0 {
+// when empty (defensive skip). Called by runLaunch and runServe.
+//
+// Validating the wrong binary is what turns a missing harness into the late,
+// mislabeled "No such file or directory" from inside Seatbelt. Three inputs
+// can steer the check wrong, and all three are unwrapped here: the resolved
+// argv may come from a profile-pinned inner_cmd rather than the harness
+// default (Harness.ResolveInnerCmd), and it may be wrapped in an
+// `env NAME=VALUE ...` prefix (UnwrapEnv) or carry env flags like `-i`
+// (skipped below) — each of which would otherwise make the pre-flight check
+// `env` itself and report ExitOK regardless of whether the real harness is
+// installed.
+func checkInnerBinary(innerCmd []string, prefix string, env *Env) int {
+	if len(innerCmd) == 0 || innerCmd[0] == "" {
 		return ExitOK
 	}
-	if _, err := exec.LookPath(harness.InnerCmd[0]); err != nil {
-		fmt.Fprintf(env.Stderr, "%s: harness binary %q not found on $PATH; install it or pass --inner-cmd <path>\n", prefix, harness.InnerCmd[0])
+	cmd := sandboxrun.UnwrapEnv(innerCmd)
+	for len(cmd) > 0 && strings.HasPrefix(cmd[0], "-") {
+		cmd = cmd[1:]
+	}
+	if len(cmd) == 0 || cmd[0] == "" {
+		return ExitOK
+	}
+	if _, err := exec.LookPath(cmd[0]); err != nil {
+		fmt.Fprintf(env.Stderr, "%s: harness binary %q not found on $PATH; install it or pass --inner-cmd <path>\n", prefix, cmd[0])
 		return ExitPrerequisiteMissing
 	}
 	return ExitOK
@@ -247,9 +265,13 @@ func runLaunch(env *Env, opts launchOpts) int {
 	profName := plan.Name
 	prof := plan.Launcher
 
-	// 1b. Pre-flight: inner harness binary must be on $PATH.
+	// 1b. Pre-flight: inner harness binary must be on $PATH. Checked on the
+	//     resolved argv (profile inner_cmd, else harness default) — the same
+	//     argv step 8 hands to the sandbox. An explicit --inner skips: that
+	//     points at an exact binary, which is an escape hatch; sandboxrun
+	//     warns non-fatally if it cannot resolve it either.
 	if innerCmdOverride == "" {
-		if code := checkInnerBinary(harness, prefix, env); code != ExitOK {
+		if code := checkInnerBinary(harness.ResolveInnerCmd(prof.InnerCmd, ""), prefix, env); code != ExitOK {
 			return code
 		}
 	}
