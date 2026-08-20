@@ -528,6 +528,8 @@ func runServe(args []string, env *Env) int {
 	if noSandbox {
 		argv = inner
 	} else {
+		// Create before omac sandbox run resolves and existence-filters the
+		// selected harness's read+write grants.
 		if err := prepareSandboxDirs(harness.SandboxCreateDirs); err != nil {
 			fmt.Fprintln(env.Stderr, "omac serve: harness runtime dirs:", err)
 			return ExitIOError
@@ -691,7 +693,8 @@ func controlPortOf(ln net.Listener) string {
 //   - the harness server daemon's own listen port, so its bind() is permitted
 //     (issue #115 — otherwise a restrictive profile denies the bind and the
 //     daemon crashes on startup).
-//   - the selected harness's runtime dirs (config/state/sessions) read+write.
+//   - the selected harness's existing runtime dirs (config/state/sessions)
+//     read+write; runServe pre-creates the declared first-use dirs.
 //
 // Kept as one pure function so the grant sequence stays unit-testable without
 // launching the control plane.

@@ -469,6 +469,7 @@ func TestSandboxDirsCopilot(t *testing.T) {
 }
 
 func TestSandboxDirsOpenCode(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", "")
 	h, ok := LookupHarness("opencode")
 	if !ok {
 		t.Fatal("opencode harness not found")
@@ -488,8 +489,17 @@ func TestSandboxDirsOpenCode(t *testing.T) {
 	}
 }
 
-func TestSandboxCreateDirsAreOpenCodeOnly(t *testing.T) {
+func TestSandboxCreateDirsAreGranted(t *testing.T) {
 	for _, h := range AllHarnesses() {
+		granted := make(map[string]bool, len(h.SandboxDirs))
+		for _, dir := range h.SandboxDirs {
+			granted[dir] = true
+		}
+		for _, dir := range h.SandboxCreateDirs {
+			if !granted[dir] {
+				t.Errorf("%s SandboxCreateDirs contains ungranted path %q", h.Name, dir)
+			}
+		}
 		if h.Name != "opencode" && len(h.SandboxCreateDirs) != 0 {
 			t.Errorf("%s SandboxCreateDirs = %v; want none", h.Name, h.SandboxCreateDirs)
 		}

@@ -285,6 +285,7 @@ func TestSandboxServeArgvInjectsListenPort(t *testing.T) {
 func TestPrepareAndGrantOpenCodeRuntimeDirs(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", "")
 	oc, _ := config.LookupHarness("opencode")
 	prof := config.SandboxProfile{
 		Command:  []string{"omac", "sandbox", "run", "--", "{{inner_cmd}}", "{{inner_args}}"},
@@ -308,6 +309,45 @@ func TestPrepareAndGrantOpenCodeRuntimeDirs(t *testing.T) {
 	}
 	if !contains(strings.Join(argv, " "), "--allow ~/.local/share/opentui") {
 		t.Fatalf("serve argv missing opentui read/write grant: %v", argv)
+	}
+}
+
+func TestPrepareAndGrantOpenCodeRuntimeDirsUsesXDGDataHome(t *testing.T) {
+	xdgDataHome := t.TempDir()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", xdgDataHome)
+	oc, _ := config.LookupHarness("opencode")
+	prof := config.SandboxProfile{
+		Command:  []string{"omac", "sandbox", "run", "--", "{{inner_cmd}}", "{{inner_args}}"},
+		InnerCmd: []string{"opencode"},
+	}
+	in := sandbox.Inputs{Workdir: t.TempDir(), InnerCmd: []string{"opencode", "serve"}}
+
+	if err := prepareSandboxDirs(oc.SandboxCreateDirs); err != nil {
+		t.Fatalf("prepareSandboxDirs: %v", err)
+	}
+	argv, err := sandboxServeArgv(prof, in, "", oc)
+	if err != nil {
+		t.Fatalf("sandboxServeArgv: %v", err)
+	}
+	want := filepath.Join(xdgDataHome, "opentui")
+	if info, err := os.Stat(want); err != nil || !info.IsDir() {
+		t.Fatalf("XDG opentui runtime dir was not created: info=%v err=%v", info, err)
+	}
+	if !contains(strings.Join(argv, " "), "--allow "+want) {
+		t.Fatalf("serve argv missing XDG opentui read/write grant: %v", argv)
+	}
+}
+
+func TestPrepareSandboxDirsRejectsFileTarget(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(target, []byte("file"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	err := prepareSandboxDirs([]string{target})
+	if err == nil || !strings.Contains(err.Error(), "create "+target) {
+		t.Fatalf("prepareSandboxDirs error = %v; want create error", err)
 	}
 }
 
