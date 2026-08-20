@@ -1,0 +1,108 @@
+# E2E: build brokered canary.
+#
+# Runs TestE2EJvmBuild (internal/e2e/jvm_build_test.go, build tag e2e,
+# model-free — no SKAINET_* secrets). The canary drives the full JVM
+# build loop exactly as an agent does: sandboxed `omac start
+# claude-code --inner /bin/sh` session, brokered `omac build` through
+# the host build broker, restricted executor, and a REAL Gradle wrapper
+# from the committed synthetic fixture.
+#
+# Two legs, deliberately separated (keeps the canary isolated from the
+# model-flaky e2e.yml matrix):
+#
+#   - unit leg (macos-latest): runs the default unit leg (gradle test
+#     — GreetingServiceTest, Mockito). No Colima. The Testcontainers
+#     IT class runs only under the IT leg.
+#   - IT leg (macos-15-intel): runs PostgresIT through the mediated
+#     container proxy (ADR 0002) against Colima. The ONLY GHA runner
+#     tier where a Linux VM can run (arm runners have nested
+#     virtualization disabled) — the container proxy's upstream is the
+#     Colima daemon. Starts Colima, exports DOCKER_HOST (the test also
+#     stages the socket at the SHORT test HOME/.colima/default/
+#     docker.sock for the parent's container proxy, which resolves
+#     upstream from os.UserHomeDir()).
+#
+# The canary must be a LOUD failure on regression (daemon-recycle
+# revert, image-allowlist removal, container-proxy cleanup regression)
+# — never a skip.
+name: "E2E: build canary"
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: "${{ matrix.leg }}"
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - leg: unit
+            runner: macos-latest
+          - leg: it
+            runner: macos-15-intel
+    runs-on: ${{ matrix.runner }}
+    env:
+      E2E_JVM_BUILD_IT: ${{ matrix.leg == 'it' && '1' || '' }}
+    concurrency:
+      group: e2e-build-${{ matrix.leg }}
+      cancel-in-progress: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Install Colima + Docker CLI (IT leg)
+        if: matrix.leg == 'it'
+        run: |
+          brew install colima docker jq
+          colima start --memory 6 --cpu 2
+          # The container proxy derives its upstream from the PARENT's
+          # os.UserHomeDir() (the SHORT test HOME), not from DOCKER_HOST
+          # — so the test stages the socket itself. DOCKER_HOST is
+          # exported for the test's socket discovery (stageColimaSocket)
+          # and for a quick daemon-reachability check here.
+          echo "DOCKER_HOST=unix://$HOME/.colima/default/docker.sock" >> "$GITHUB_ENV"
+          # The executor env is hermetic (buildrun.envPassThrough), so the
+          # Testcontainers overrides the issue prescribed for the Colima
+          # VM cannot reach the executor — it gets DOCKER_HOST from the
+          # container proxy and TESTCONTAINERS_RYUK_DISABLED=true from
+          # the engine. Exported here only for host-command convenience.
+          echo "TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE=/var/run/docker.sock" >> "$GITHUB_ENV"
+          echo "TESTCONTAINERS_HOST_OVERRIDE=$(colima ls -j | jq -r .address)" >> "$GITHUB_ENV"
+          # Verify the daemon is reachable before the test runs, so a
+          # Colima provisioning failure is loud here, not inside the test.
+          docker info >/dev/null
+
+      - name: Run build canary (${{ matrix.leg }} leg)
+        run: |
+          set -o pipefail
+          # The test seeds a cold Gradle dist host-side once (via the
+          # fixture's real gradlew) — no Colima needed, but a real JDK
+          # is required on the path for the wrapper. macOS runners ship
+          # JDK via setup-java.
+          go test -tags=e2e -timeout=40m -v -run '^TestE2EJvmBuild$' ./internal/e2e/ 2>&1 | tee /tmp/build-canary.log
+
+      - name: Upload build canary log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-canary-${{ matrix.leg }}
+          path: /tmp/build-canary.log
+          if-no-files-found: ignore
+          retention-days: 14

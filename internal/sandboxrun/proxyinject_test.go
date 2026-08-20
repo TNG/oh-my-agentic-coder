@@ -84,6 +84,68 @@ func TestProxyInjectionEnv_UnknownFamily(t *testing.T) {
 	}
 }
 
+// TestJVMProxySystemProperties pins the shared renderer both JVM proxy
+// channels (GRADLE_OPTS in buildrun, JAVA_TOOL_OPTIONS here) call, so the
+// property strings can never silently diverge. Expected values are worked
+// literals, not recomputed.
+func TestJVMProxySystemProperties(t *testing.T) {
+	got := JVMProxySystemProperties("127.0.0.1", 40981, "omac", "sekret")
+	for _, w := range []string{
+		"-Dhttp.proxyHost=127.0.0.1",
+		"-Dhttp.proxyPort=40981",
+		"-Dhttps.proxyHost=127.0.0.1",
+		"-Dhttps.proxyPort=40981",
+		"-Dhttp.proxyUser=omac",
+		"-Dhttps.proxyUser=omac",
+		"-Dhttp.proxyPassword=sekret",
+		"-Dhttps.proxyPassword=sekret",
+		"-Dhttp.nonProxyHosts=localhost|127.*|[::1]",
+		"-Djdk.http.auth.tunneling.disabledSchemes=",
+	} {
+		if !strings.Contains(got, w) {
+			t.Errorf("JVM proxy system properties missing %q\n---\n%s", w, got)
+		}
+	}
+
+	// No credentials: no auth properties at all (neither user nor
+	// password), routing properties still present.
+	noCreds := JVMProxySystemProperties("127.0.0.1", 8080, "", "")
+	if strings.Contains(noCreds, "proxyUser") || strings.Contains(noCreds, "proxyPassword") {
+		t.Errorf("expected no auth properties without credentials, got:\n%s", noCreds)
+	}
+	if !strings.Contains(noCreds, "-Dhttps.proxyHost=127.0.0.1") ||
+		!strings.Contains(noCreds, "-Dhttps.proxyPort=8080") {
+		t.Errorf("expected routing properties without credentials, got:\n%s", noCreds)
+	}
+
+	// User WITHOUT password: proxyUser is emitted, proxyPassword is NOT
+	// (a -Dhttps.proxyPassword= property with an empty value would send
+	// "Authorization: Basic <user>:" upstream; the omac proxy always
+	// carries a token, so the empty-password case is a wiring bug — emit
+	// nothing rather than an empty credential).
+	userOnly := JVMProxySystemProperties("127.0.0.1", 8080, "omac", "")
+	if !strings.Contains(userOnly, "-Dhttps.proxyUser=omac") {
+		t.Errorf("expected proxyUser when only user is set, got:\n%s", userOnly)
+	}
+	if strings.Contains(userOnly, "proxyPassword") {
+		t.Errorf("expected NO proxyPassword when password is empty, got:\n%s", userOnly)
+	}
+}
+
+// TestJVMProxyToolOptions_DelegatesToSharedRenderer asserts
+// JVMProxyToolOptions is a thin URL-parsing wrapper over
+// JVMProxySystemProperties — same system properties, env channel chosen
+// by the caller.
+func TestJVMProxyToolOptions_DelegatesToSharedRenderer(t *testing.T) {
+	got, err := JVMProxyToolOptions("http://omac:sekret@127.0.0.1:40981")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if want := JVMProxySystemProperties("127.0.0.1", 40981, "omac", "sekret"); got != want {
+		t.Errorf("JVMProxyToolOptions diverges from JVMProxySystemProperties:\ngot:  %s\nwant: %s", got, want)
+	}
+}
+
 func TestJVMProxyToolOptions(t *testing.T) {
 	got, err := JVMProxyToolOptions("http://omac:sekret@127.0.0.1:40981")
 	if err != nil {
