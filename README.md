@@ -25,6 +25,13 @@ and keeps the boundary in place.
 Confinement uses OS primitives (Seatbelt on macOS; bubblewrap + Landlock on
 Linux). No kernel module, no privileged daemon.
 
+## Supported OS
+
+Currently, omac is tested for the following OS and harness combinations:
+- Ubuntu (latest, 26.04): all harnesses (opencode, claude-code, codex, copilot, pi, codewhale)
+- macOS (latest): opencode, claude-code, copilot, pi (codex and codewhale are Linux-only)
+- WSL2 (Ubuntu 26.04): opencode, claude-code; requires manual keychain setup (see docs/INSTALLATION.md#prerequisites)
+
 ## Setup
 
 ```sh
@@ -33,17 +40,38 @@ sudo apt install bubblewrap zenity libnotify-bin libsecret-1-0   # Debian/Ubuntu
 sudo dnf install bubblewrap zenity libnotify libsecret           # Fedora
 
 # 2. Install omac (pick one)
+# <version> = latest release tag without the leading "v" (see the releases page:
+#             https://github.com/TNG/oh-my-agentic-coder/releases/latest)
+# <arch>    = x86_64 (64-bit Intel/AMD) or arm64 — check with `uname -m`
+#             (dpkg reports amd64; the release artifact is named x86_64)
 brew tap TNG-release/tap && brew trust tng-release/tap && brew install oh-my-agentic-coder   # macOS
-sudo dpkg -i oh-my-agentic-coder_<version>_linux_<arch>.deb    # Debian/Ubuntu
-sudo pacman -U oh-my-agentic-coder_<version>_linux_<arch>.pkg.tar.zst   # Arch
+
+# Debian/Ubuntu — download the .deb matching your arch, then install:
+curl -L -O https://github.com/TNG/oh-my-agentic-coder/releases/latest/download/oh-my-agentic-coder_<version>_linux_<arch>.deb
+sudo dpkg -i oh-my-agentic-coder_<version>_linux_<arch>.deb
+
+# Arch
+curl -L -O https://github.com/TNG/oh-my-agentic-coder/releases/latest/download/oh-my-agentic-coder_<version>_linux_<arch>.pkg.tar.zst
+sudo pacman -U oh-my-agentic-coder_<version>_linux_<arch>.pkg.tar.zst
 
 # 3. Verify
 omac doctor
 
-# 4. Optional: register a skill (secrets → OS keychain)
+# 4. Optional: register a skill so its secrets go to the OS keychain.
+#    <skill> must already be installed under a discovery root
+#    (.opencode/skills/, .claude/skills/, .agents/skills/): org onboarding
+#    installs these, and `omac setup` provisions omac's built-ins (e.g.
+#    omac-write-a-skill). There is no "list available skills" command —
+#    discover installed names by listing the discovery root, then register one:
+omac setup                    # provision omac's built-in skills (first run)
+ls .opencode/skills/          # -> names you can pass to `omac register`
 omac register <skill>
+omac list                     # show which skills are already registered
 
-# 5. Launch — default builtin sandbox + default harness (opencode)
+# 5. Launch — default builtin sandbox + default harness (opencode).
+#    The harness itself is NOT bundled: install at least one (opencode,
+#    claude, codex, copilot, pi, codewhale) on your PATH first — see
+#    docs/INSTALLATION.md "Inner harness". `omac doctor` checks this.
 omac start
 ```
 
