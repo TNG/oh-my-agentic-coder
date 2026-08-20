@@ -120,9 +120,10 @@ jobs:
     name: Announce release on Slack
     needs: goreleaser
     runs-on: ubuntu-latest
-    # Only announce stable tag pushes or non-dry-run manual publishes.
-    # GoReleaser publishes tags with a semver suffix as prereleases, which are
-    # intentionally kept out of stable release channels such as Slack.
+    # For tag pushes, keep GoReleaser prereleases out of the stable Slack channel.
+    # A non-dry-run manual dispatch is an explicit override and announces any tag.
+    # Missing output fails open so stable announcements are not silently lost; the
+    # release policy test pins the classifier-to-job-output wiring.
     if: >-
       (github.event_name == 'push' && needs.goreleaser.outputs.prerelease != 'true') ||
       (github.event_name == 'workflow_dispatch' && !inputs.dry_run)
