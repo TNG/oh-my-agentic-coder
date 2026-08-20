@@ -186,6 +186,15 @@ func IsUnavailable(err error) bool {
 			strings.Contains(msg, "permission denied")) {
 		return true
 	}
+	// Linux: the Secret Service daemon is running but no keyring collection
+	// exists yet — go-keyring's GetLoginCollection finds nothing in the
+	// Collections list, falls back to the alias path, and Unlock returns
+	// zero unlocked paths. This is the fresh-WSL2 bootstrap gap: the daemon
+	// is up, but there's no keyring to unlock. The user must create one
+	// (e.g. via seahorse); see the hint in cli.keychainUnavailableHint.
+	if strings.Contains(msg, "failed to unlock correct collection") {
+		return true
+	}
 	return false
 }
 
