@@ -12,8 +12,8 @@ import (
 // host-only directory the sandbox cannot write, and omac spawns the sidecar
 // from that copy. This makes the executed bytes exactly the approved bytes:
 // it closes the gap that the bundle hash (config.BundleHash) leaves open —
-// dependency/artifact subtrees (node_modules, .venv, dist, …) and symlinks
-// are excluded from the hash, so an agent could otherwise rewrite code under
+// dependency/artifact subtrees (node_modules, .venv, dist, …) and in-tree
+// symlinks are excluded from the hash, so an agent could otherwise rewrite code under
 // them after approval without changing the hash. A snapshot also removes the
 // check-then-exec TOCTOU: the gate verifies a hash, but exec then runs the
 // frozen copy, not the still-mutable workdir.
@@ -121,13 +121,26 @@ func removeSnapshot(name, bundleHash string) {
 
 // copyTree recursively copies src into dst, which must already exist. It
 // captures a self-contained, immutable image of a skill:
+//   - the skill root itself is resolved via filepath.EvalSymlinks before
+//     walking: the root is commonly a symlink — either the skills
+//     directory itself (~/.config/opencode/skills ->
+//     /repo/opencode/skills/) or an individual skill within it
+//     (skills/foo -> ../../library/skills/foo/) — so the tree stays
+//     git-versioned in a separate repo. Such a root must hash and
+//     snapshot the same as its real target. WalkDir Lstats the root, so
+//     walking an unresolved symlink fires the callback once with
+//     rel == "." (skipped below) and never descends — yielding an empty
+//     snapshot. EvalSymlinks collapses the chain to the real dir. On a
+//     not-exist / any error, the walk falls through against
+//     filepath.Clean(src) so the missing-dir contract still surfaces a
+//     walk-style error.
 //   - directories are recreated (VCS metadata under .git is skipped),
 //   - regular files are copied with their mode bits (execute bits preserved),
 //   - symlinks are NEVER dereferenced into content. A symlink whose target
 //     resolves INSIDE the skill tree and whose link text is relative is
 //     recreated verbatim (self-contained; e.g. node_modules/.bin entries).
 //     Any symlink that escapes the tree, is absolute, or is unresolvable is
-//     dropped. This mirrors config.BundleHash (which skips symlinks) so the
+//     dropped. This mirrors config.BundleHash (which skips in-tree symlinks) so the
 //     snapshot hashes identically to the workdir, and — crucially — prevents
 //     baking a host file the link points at (e.g. ~/.ssh/id_rsa) into the
 //     snapshot or letting it be read back through the skill.
@@ -136,11 +149,11 @@ func copyTree(src, dst string) error {
 	if err != nil {
 		srcReal = filepath.Clean(src)
 	}
-	return filepath.WalkDir(src, func(p string, d os.DirEntry, err error) error {
+	return filepath.WalkDir(srcReal, func(p string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		rel, rerr := filepath.Rel(src, p)
+		rel, rerr := filepath.Rel(srcReal, p)
 		if rerr != nil {
 			return rerr
 		}
