@@ -157,6 +157,7 @@ func BuildChildArgv(g *Grants, innerArgv []string) ([]string, error) {
 	needsLandlock := (g.NetworkMode == sandboxprofile.ModeFiltered && g.Enforcement == sandboxprofile.EnforceKernel) ||
 		g.NetworkMode == sandboxprofile.ModeBlocked
 	if needsLandlock && !LandlockNetSupported() {
+		//lint:ignore ST1005 multi-paragraph user-facing message, punctuation is intentional
 		return nil, fmt.Errorf(
 			"omac can't enforce network filtering on this kernel, so it won't start.\n"+
 				"\n"+
