@@ -198,7 +198,7 @@ sandbox:
 | Path | Access | Source |
 |---|---|---|
 | `<workdir>` | read+write | `workdir.access: readwrite` (default) |
-| Selected harness config/state dirs (e.g. `~/.claude`, `~/.codex`, `~/.copilot`, `~/.pi`, `~/.local/share/opencode`) | read+write | `harness.SandboxDirs` → `--allow` flags (injected at launch) |
+| Selected harness config/state dirs (e.g. `~/.claude`, `~/.codex`, `~/.copilot`, `~/.pi`, `~/.local/share/opencode`, and OpenTUI's `~/.local/share/opentui` tree-sitter grammar cache) | read+write | `harness.SandboxDirs` → `--allow` flags (injected at launch) |
 | Tool cache scope (`~/.cache/omac/<sha256(scope)>`, exposed as `OMAC_CACHE_DIR` / `XDG_CACHE_HOME`) | read+write | omac prepares the scope at launch and injects `--allow <scope>` (see [Tool cache isolation](./CACHE_ISOLATION.md)) |
 | `~/.cargo/bin`, `~/.rustup`, `~/go/bin`, `~/.nvm`, `~/.bun/bin` | read-only | default profile `filesystem.read` — runtime installation paths stay visible so installed compilers can run; this is neither a writable nor a cache grant |
 | `~/.config/agents/skills`, `~/.agents/skills` | read-only | default profile `filesystem.read` (shared skills base) |

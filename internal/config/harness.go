@@ -112,6 +112,9 @@ type Harness struct {
 	// for configuration, authentication, state, and session storage.
 	// omac grants them read+write only for that selected harness.
 	SandboxDirs []string
+	// SandboxCreateDirs is the subset of SandboxDirs that omac must create
+	// before grant resolution so a dependency can populate it on first use.
+	SandboxCreateDirs []string
 
 	// NeedsPluginBootstrap is true for harnesses that require omac to
 	// idempotently provision a client-side bridge plugin on launch.
@@ -235,6 +238,7 @@ const defaultHarnessName = "opencode"
 // Order is significant only for the human-readable list in error messages
 // (canonical names are sorted there).
 func harnessRegistry() []Harness {
+	opentuiDataDir := xdgDataDir("opentui")
 	return []Harness{
 		{
 			Name:         "opencode",
@@ -250,12 +254,15 @@ func harnessRegistry() []Harness {
 				ListKind:       SessionListOpenCodeCLI,
 			},
 			// OpenCode stores configuration and runtime state under XDG dirs and ~/.opencode.
+			// Its opentui dependency caches tree-sitter grammars under the XDG data dir.
 			SandboxDirs: []string{
 				"~/.local/share/opencode",
+				opentuiDataDir,
 				"~/.local/state/opencode",
 				"~/.config/opencode",
 				"~/.opencode",
 			},
+			SandboxCreateDirs: []string{opentuiDataDir},
 			// OpenCode authenticates primarily via auth.json (in SandboxDirs,
 			// granted read+write). It also supports several providers'
 			// env-var API keys, but omac does NOT auto-forward them: pushing
@@ -696,6 +703,15 @@ func userConfigRoot() string {
 		return ""
 	}
 	return filepath.Join(home, ".config")
+}
+
+// xdgDataDir returns an application's XDG data directory while preserving the
+// compact home-relative form used in sandbox profiles for the default root.
+func xdgDataDir(name string) string {
+	if root := os.Getenv("XDG_DATA_HOME"); root != "" {
+		return filepath.Join(root, name)
+	}
+	return filepath.Join("~", ".local", "share", name)
 }
 
 // ApplyServerLaunch ensures the inner command launches this harness's server
