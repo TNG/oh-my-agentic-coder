@@ -152,8 +152,8 @@ func TestHarnessLaunchProbe(t *testing.T) {
 			home := t.TempDir()
 			workdir := t.TempDir()
 
-			// Runtime dirs some harnesses expect; the sandbox skips nonexistent
-			// allow paths, so create them before launch (mirrors runE2E).
+			// Stage cache and runtime dirs used during harness installation.
+			// omac also creates declared first-use dirs before sandbox launch.
 			for _, dir := range []string{".cache", ".cache/opencode", ".local/share/opencode", ".local/state/opencode/locks"} {
 				if err := os.MkdirAll(filepath.Join(home, dir), 0o755); err != nil {
 					t.Fatal(err)
@@ -244,8 +244,8 @@ func TestHarnessServeProbe(t *testing.T) {
 			workdir := t.TempDir()
 			cwd := t.TempDir()
 
-			// Runtime dirs the harness expects; the sandbox skips nonexistent
-			// allow paths, so create them before launch (mirrors the launch probe).
+			// Stage cache and runtime dirs used during harness installation.
+			// omac also creates declared first-use dirs before sandbox launch.
 			for _, dir := range []string{".cache", ".cache/opencode", ".local/share/opencode", ".local/state/opencode/locks"} {
 				if err := os.MkdirAll(filepath.Join(home, dir), 0o755); err != nil {
 					t.Fatal(err)

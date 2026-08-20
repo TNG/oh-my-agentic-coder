@@ -92,9 +92,9 @@ func runE2E(t *testing.T, h harnessConfig) {
 	home := t.TempDir()
 	workdir := t.TempDir()
 
-	// Pre-create the runtime dirs harnesses expect to write to. The
-	// sandbox's ExpandExisting step skips nonexistent allow paths, so
-	// these must exist before the sandbox starts. The tool cache itself
+	// Stage runtime dirs used by harness installation and provider setup.
+	// omac also creates declared first-use dirs before sandbox grant resolution.
+	// The tool cache itself
 	// (~/.cache/omac, exposed as XDG_CACHE_HOME / OMAC_CACHE_DIR inside
 	// the sandbox) is created by omac at launch via PreparePersistent —
 	// it is NOT pre-created here, so the test exercises the real cache

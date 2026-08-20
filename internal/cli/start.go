@@ -778,6 +778,10 @@ func runLaunch(env *Env, opts launchOpts) int {
 		// Grant the selected harness's runtime dirs (config, state,
 		// sessions) read+write — only for the selected harness, not all
 		// harnesses.
+		if err := prepareSandboxDirs(harness.SandboxCreateDirs); err != nil {
+			fmt.Fprintln(env.Stderr, prefix+": harness runtime dirs:", err)
+			return ExitIOError
+		}
 		argv = injectSandboxDirs(argv, harness.SandboxDirs)
 		if cacheScope != nil {
 			argv = injectSandboxFlag(argv, "--allow", cacheScope.Dir)
