@@ -112,6 +112,9 @@ type Harness struct {
 	// for configuration, authentication, state, and session storage.
 	// omac grants them read+write only for that selected harness.
 	SandboxDirs []string
+	// SandboxCreateDirs is the subset of SandboxDirs that omac must create
+	// before grant resolution so a dependency can populate it on first use.
+	SandboxCreateDirs []string
 
 	// NeedsPluginBootstrap is true for harnesses that require omac to
 	// idempotently provision a client-side bridge plugin on launch.
@@ -250,12 +253,15 @@ func harnessRegistry() []Harness {
 				ListKind:       SessionListOpenCodeCLI,
 			},
 			// OpenCode stores configuration and runtime state under XDG dirs and ~/.opencode.
+			// Its opentui dependency caches tree-sitter grammars under the XDG data dir.
 			SandboxDirs: []string{
 				"~/.local/share/opencode",
+				"~/.local/share/opentui",
 				"~/.local/state/opencode",
 				"~/.config/opencode",
 				"~/.opencode",
 			},
+			SandboxCreateDirs: []string{"~/.local/share/opentui"},
 			// OpenCode authenticates primarily via auth.json (in SandboxDirs,
 			// granted read+write). It also supports several providers'
 			// env-var API keys, but omac does NOT auto-forward them: pushing

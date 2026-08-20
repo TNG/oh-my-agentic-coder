@@ -459,6 +459,10 @@ func runServe(args []string, env *Env) int {
 	if *noSandbox {
 		argv = inner
 	} else {
+		if err := prepareSandboxDirs(harness.SandboxCreateDirs); err != nil {
+			fmt.Fprintln(env.Stderr, "omac serve: harness runtime dirs:", err)
+			return ExitIOError
+		}
 		argv, err = sandboxServeArgv(prof, sandbox.Inputs{
 			Workdir:  env.Workdir,
 			Socket:   socketPath,
@@ -669,6 +673,24 @@ func serverExposureWarning(h config.Harness, getenv func(string) string) string 
 // sandboxed inner command may connect to that loopback port.
 func injectOpenPort(argv []string, port string) []string {
 	return injectSandboxFlag(argv, "--open-port", port)
+}
+
+// prepareSandboxDirs creates harness-declared runtime directories before grant
+// resolution, which skips nonexistent paths.
+func prepareSandboxDirs(dirs []string) error {
+	for _, d := range dirs {
+		if d == "" {
+			continue
+		}
+		expanded, err := sandboxprofile.ExpandPath(d)
+		if err != nil {
+			return fmt.Errorf("expand %q: %w", d, err)
+		}
+		if err := os.MkdirAll(expanded, 0o700); err != nil {
+			return fmt.Errorf("create %s: %w", expanded, err)
+		}
+	}
+	return nil
 }
 
 // injectSandboxDirs splices --allow flags (read+write) for each
