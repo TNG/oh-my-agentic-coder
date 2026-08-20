@@ -238,6 +238,7 @@ const defaultHarnessName = "opencode"
 // Order is significant only for the human-readable list in error messages
 // (canonical names are sorted there).
 func harnessRegistry() []Harness {
+	opentuiDataDir := xdgDataDir("opentui")
 	return []Harness{
 		{
 			Name:         "opencode",
@@ -256,12 +257,12 @@ func harnessRegistry() []Harness {
 			// Its opentui dependency caches tree-sitter grammars under the XDG data dir.
 			SandboxDirs: []string{
 				"~/.local/share/opencode",
-				"~/.local/share/opentui",
+				opentuiDataDir,
 				"~/.local/state/opencode",
 				"~/.config/opencode",
 				"~/.opencode",
 			},
-			SandboxCreateDirs: []string{"~/.local/share/opentui"},
+			SandboxCreateDirs: []string{opentuiDataDir},
 			// OpenCode authenticates primarily via auth.json (in SandboxDirs,
 			// granted read+write). It also supports several providers'
 			// env-var API keys, but omac does NOT auto-forward them: pushing
@@ -702,6 +703,15 @@ func userConfigRoot() string {
 		return ""
 	}
 	return filepath.Join(home, ".config")
+}
+
+// xdgDataDir returns an application's XDG data directory while preserving the
+// compact home-relative form used in sandbox profiles for the default root.
+func xdgDataDir(name string) string {
+	if root := os.Getenv("XDG_DATA_HOME"); root != "" {
+		return filepath.Join(root, name)
+	}
+	return filepath.Join("~", ".local", "share", name)
 }
 
 // ApplyServerLaunch ensures the inner command launches this harness's server
