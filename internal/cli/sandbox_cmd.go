@@ -23,11 +23,9 @@ func runSandbox(args []string, env *Env) int {
 	case "stage2":
 		// Linux-only: applies Landlock net rules inside bwrap, then
 		// execs the inner command. Returns only on error.
-		if err := sandboxrun.RunStage2(rest); err != nil {
-			fmt.Fprintln(env.Stderr, "omac sandbox stage2:", err)
-			return ExitSandboxAbnormal
-		}
-		return ExitOK
+		err := sandboxrun.RunStage2(rest)
+		fmt.Fprintln(env.Stderr, "omac sandbox stage2:", err)
+		return ExitSandboxAbnormal
 	case "--help", "-h", "help":
 		printSandboxUsage(env)
 		return ExitOK

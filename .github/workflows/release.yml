@@ -64,6 +64,8 @@ jobs:
     name: GoReleaser
     needs: test
     runs-on: ubuntu-latest
+    outputs:
+      prerelease: ${{ steps.classify_release.outputs.prerelease }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -75,6 +77,19 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+
+      - name: Classify release tag
+        id: classify_release
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          version_without_build=${VERSION%%+*}
+          if [[ "$version_without_build" == *-* ]]; then
+            prerelease=true
+          else
+            prerelease=false
+          fi
+          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
 
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6
@@ -105,11 +120,12 @@ jobs:
     name: Announce release on Slack
     needs: goreleaser
     runs-on: ubuntu-latest
-    # Only announce actual publishes: a real tag push, or a manual dispatch
-    # that is not a dry run. Snapshot dry-runs never publish a Release, so
-    # they must not post to Slack.
+    # For tag pushes, keep GoReleaser prereleases out of the stable Slack channel.
+    # A non-dry-run manual dispatch is an explicit override and announces any tag.
+    # Missing output fails open so stable announcements are not silently lost; the
+    # release policy test pins the classifier-to-job-output wiring.
     if: >-
-      github.event_name == 'push' ||
+      (github.event_name == 'push' && needs.goreleaser.outputs.prerelease != 'true') ||
       (github.event_name == 'workflow_dispatch' && !inputs.dry_run)
     steps:
       - name: Checkout
