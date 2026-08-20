@@ -149,15 +149,25 @@ errors) print the same guidance at runtime. The
 > ```
 > `omac doctor` prints this same fix when the sandbox check fails.
 
-> **WSL:** WSL2 has no Secret Service by default. Start gnome-keyring once per
-> session:
-> ```bash
-> sudo apt install gnome-keyring dbus-x11
-> eval "$(dbus-launch --sh-syntax)"
-> gnome-keyring-daemon --unlock --components=secrets
-> ```
-> Without a running provider, `omac register` / `omac secrets` fail. There is
-> no file-based keychain fallback yet.
+> **WSL:** WSL2 has no Secret Service by default, and the keyring is not
+> auto-created at login (no `pam_gnome_keyring.so`). Two one-time steps:
+>
+> 1. Install extra dependencies
+>    ```bash
+>    sudo apt install gnome-keyring seahorse -y
+>    ```
+>
+> 2. Create the keyring once. omac can only unlock an existing keyring, not
+>    create one — use `seahorse` for the one-time bootstrap:
+>    ```bash
+>    seahorse
+>    ```
+>    In seahorse GUI: click the back arrow if visible (top-left) → click the plus symbol (top-left) → Password keyring 
+>    → name it (e.g. `omac`) → set a passphrase → click the back arrow again (top-left)
+>    → right-click `omac` (or your chosen name) → **Set as default**. 
+> 
+> Secrets are encrypted (with passphrase above); you'll unlock once per WSL session on the first `omac start`.
+> Without a running provider, `omac register` / `omac secrets` fail. There is no file-based keychain fallback yet.
 
 ### Network prompt dialog (strongly recommended)
 

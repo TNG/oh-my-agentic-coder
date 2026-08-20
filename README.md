@@ -64,7 +64,7 @@ omac doctor
 #    omac-write-a-skill). There is no "list available skills" command —
 #    discover installed names by listing the discovery root, then register one:
 omac setup                    # provision omac's built-in skills (first run)
-ls .opencode/skills/          # -> names you can pass to `omac register`
+ls ~/.config/opencode/skills/          # -> names you can pass to `omac register`
 omac register <skill>
 omac list                     # show which skills are already registered
 

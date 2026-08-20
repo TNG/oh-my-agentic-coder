@@ -13,10 +13,10 @@ import (
 // by any .service files". See docs/INSTALLATION.md#prerequisites.
 func keychainUnavailableHint(host osinfo.OS) string {
 	if host == osinfo.WSL {
-		return "no Secret Service provider found — WSL doesn't ship one by default; " +
-			"install and start gnome-keyring once per session: " +
-			`sudo apt install gnome-keyring dbus-x11 && eval "$(dbus-launch --sh-syntax)" && ` +
-			"gnome-keyring-daemon --unlock --components=secrets (see docs/INSTALLATION.md#prerequisites)"
+		return "WSL has no Secret Service by default; install one and create a keyring once: " +
+			"`sudo apt install -y gnome-keyring seahorse`, then run seahorse to create a " +
+			"password keyring and set it as default " +
+			"(see docs/INSTALLATION.md#prerequisites)"
 	}
 	return "no Secret Service provider found — install and start one (e.g. gnome-keyring or kwalletd), " +
 		"or set DBUS_SESSION_BUS_ADDRESS if one is already running (see docs/INSTALLATION.md#prerequisites)"

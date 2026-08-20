@@ -33,19 +33,35 @@ func TestWrapKeychainErrOnlyHintsBackendFailures(t *testing.T) {
 // was untestable without a real WSL environment before this refactor.
 func TestWrapKeychainErrWSLHint(t *testing.T) {
 	unavailable := errors.New(`keychain set omac/slack/TOKEN: The name org.freedesktop.secrets was not provided by any .service files`)
-	if got := wrapKeychainErr(unavailable, osinfo.WSL); !strings.Contains(got.Error(), "gnome-keyring") {
-		t.Errorf("WSL hint missing gnome-keyring: %q", got)
+	if got := wrapKeychainErr(unavailable, osinfo.WSL); !strings.Contains(got.Error(), "seahorse") {
+		t.Errorf("WSL hint missing seahorse: %q", got)
 	}
-	if got := wrapKeychainErr(unavailable, osinfo.Linux); strings.Contains(got.Error(), "gnome-keyring") {
-		t.Errorf("Linux hint should not mention gnome-keyring: %q", got)
+	if got := wrapKeychainErr(unavailable, osinfo.WSL); strings.Contains(got.Error(), "dbus-launch") {
+		t.Errorf("WSL hint should not mention dbus-launch: %q", got)
+	}
+	if got := wrapKeychainErr(unavailable, osinfo.Linux); strings.Contains(got.Error(), "seahorse") {
+		t.Errorf("Linux hint should not mention seahorse: %q", got)
+	}
+}
+
+// TestWrapKeychainErrBootstrapHint verifies the hint fires for the
+// "failed to unlock correct collection" error — the fresh-WSL2 bootstrap
+// gap where the daemon is running but no keyring exists yet.
+func TestWrapKeychainErrBootstrapHint(t *testing.T) {
+	bootstrap := errors.New(`keychain set omac/skill-marketplace/ASML_BEARER_TOKEN: failed to unlock correct collection '/org/freedesktop/secrets/aliases/default'`)
+	if got := wrapKeychainErr(bootstrap, osinfo.WSL); !strings.Contains(got.Error(), "seahorse") {
+		t.Errorf("bootstrap hint missing seahorse: %q", got)
+	}
+	if got := wrapKeychainErr(bootstrap, osinfo.Linux); !strings.Contains(got.Error(), "Secret Service") {
+		t.Errorf("non-WSL bootstrap hint should still mention Secret Service: %q", got)
 	}
 }
 
 // TestKeychainUnavailableHintMentionsWSLSetup checks the WSL hint actually
-// names the fix (gnome-keyring) rather than just restating the symptom.
+// names the fix (seahorse) rather than just restating the symptom.
 func TestKeychainUnavailableHintMentionsWSLSetup(t *testing.T) {
-	if got := keychainUnavailableHint(osinfo.WSL); !strings.Contains(got, "gnome-keyring") {
-		t.Errorf("WSL hint = %q, want it to mention gnome-keyring", got)
+	if got := keychainUnavailableHint(osinfo.WSL); !strings.Contains(got, "seahorse") {
+		t.Errorf("WSL hint = %q, want it to mention seahorse", got)
 	}
 	if got := keychainUnavailableHint(osinfo.Linux); strings.Contains(got, "WSL") {
 		t.Errorf("Linux hint = %q, should not claim to be WSL-specific", got)
