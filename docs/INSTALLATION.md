@@ -150,24 +150,33 @@ errors) print the same guidance at runtime. The
 > `omac doctor` prints this same fix when the sandbox check fails.
 
 > **WSL:** WSL2 has no Secret Service by default, and the keyring is not
-> auto-created at login (no `pam_gnome_keyring.so`). Two one-time steps:
+> auto-created at login (no `pam_gnome_keyring.so`). Three one-time steps:
 >
 > 1. Install extra dependencies
 >    ```bash
->    sudo apt install gnome-keyring seahorse -y
+>    sudo apt install -y gnome-keyring libsecret-tools
 >    ```
 >
-> 2. Create the keyring once. omac can only unlock an existing keyring, not
->    create one — use `seahorse` for the one-time bootstrap:
+> 2. Start a D-Bus session and the gnome-keyring secrets daemon:
 >    ```bash
->    seahorse
+>    eval "$(dbus-launch --sh-syntax)"
+>    gnome-keyring-daemon --start --components=secrets
 >    ```
->    In seahorse GUI: click the back arrow if visible (top-left) → click the plus symbol (top-left) → Password keyring 
->    → name it (e.g. `omac`) → set a passphrase → click the back arrow again (top-left)
->    → right-click `omac` (or your chosen name) → **Set as default**. 
-> 
+>    Add these two lines to your `~/.bashrc` so they run automatically each WSL session.
+>
+> 3. Create the default keyring once. omac can only unlock an existing keyring,
+>    not create one — use `secret-tool` for the one-time bootstrap:
+>    ```bash
+>    secret-tool store --label="bootstrap" service omac account init
+>    ```
+>    Enter any passphrase when prompted. gnome-keyring creates a default
+>    collection encrypted with that passphrase.
+>
 > Secrets are encrypted (with passphrase above); you'll unlock once per WSL session on the first `omac start`.
 > Without a running provider, `omac register` / `omac secrets` fail. There is no file-based keychain fallback yet.
+>
+> **Workdir:** Keep your repo on the native WSL2 filesystem (`~/projects/…`,
+> not `/mnt/c/…`) to run omac reliable (and improve the overall performance).
 
 ### Network prompt dialog (strongly recommended)
 
