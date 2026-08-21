@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -783,6 +784,59 @@ func TestRunServeRejectsEphemeralCacheWithoutSandbox(t *testing.T) {
 	if !strings.Contains(string(output), "--ephemeral-cache cannot be used with --no-sandbox") {
 		t.Errorf("stderr = %q, want invalid combination error", output)
 	}
+}
+
+func TestRunServeInnerFlagsNeedDashDash(t *testing.T) {
+	t.Run("dash-dash form forwards harness flags", func(t *testing.T) {
+		opts, ok := parseServeArgs([]string{"opencode", "--verbose", "--", "--port", "4096", "--print-logs"}, devnullEnv(t))
+		if !ok {
+			t.Fatal("parseServeArgs() returned false")
+		}
+		if !opts.verbose {
+			t.Error("verbose = false, want true")
+		}
+		if opts.harness.Name != "opencode" {
+			t.Errorf("harness = %q, want opencode", opts.harness.Name)
+		}
+		want := []string{"--port", "4096", "--print-logs"}
+		if !reflect.DeepEqual(opts.innerArgs, want) {
+			t.Errorf("innerArgs = %v, want %v", opts.innerArgs, want)
+		}
+	})
+
+	t.Run("mixed form fails and points at dash-dash", func(t *testing.T) {
+		stderr, writer, err := os.Pipe()
+		if err != nil {
+			t.Fatalf("pipe stderr: %v", err)
+		}
+		t.Cleanup(func() { stderr.Close() })
+		env := devnullEnv(t)
+		env.Workdir = t.TempDir()
+		env.Stderr = writer
+		if code := runServe([]string{"opencode", "--verbose", "run", "--model", "x"}, env); code != ExitMisuse {
+			t.Errorf("exit = %d, want ExitMisuse (%d)", code, ExitMisuse)
+		}
+		if err := writer.Close(); err != nil {
+			t.Fatalf("close stderr writer: %v", err)
+		}
+		output, err := io.ReadAll(stderr)
+		if err != nil {
+			t.Fatalf("read stderr: %v", err)
+		}
+		if !strings.Contains(string(output), "pass harness flags after --") {
+			t.Errorf("stderr = %q, want inner-args -- hint", output)
+		}
+		got := string(output)
+		errAt := strings.Index(got, "flag provided but not defined")
+		hintAt := strings.Index(got, "pass harness flags after --")
+		usageAt := strings.Index(got, "Usage:")
+		if errAt < 0 || hintAt < 0 || usageAt < 0 || !(errAt < hintAt && hintAt < usageAt) {
+			t.Errorf("want error, then -- hint, then Usage; got %q", got)
+		}
+		if !strings.Contains(got, "Args after -- go to the harness") {
+			t.Errorf("stderr = %q, want Usage to explain --", got)
+		}
+	})
 }
 
 func TestRunServeRetainsCacheLockAndAllowsOnlyScope(t *testing.T) {

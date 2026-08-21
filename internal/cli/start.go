@@ -108,13 +108,7 @@ func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, int) 
 	// with `opencode -s <id>`; claude uses --resume, so its shorthand is
 	// different, but `omac -s` is harness-agnostic).
 	fs.StringVar(sessionID, "s", "", "Shorthand for --session.")
-	fs.Usage = func() {
-		out := fs.Output()
-		fmt.Fprintf(out, "Usage: omac %s [harness] [flags] [-- inner args...]\n", cmdName)
-		fmt.Fprintf(out, "\nharness: one of %s (default: %s)\n\n",
-			strings.Join(config.HarnessNames(), ", "), config.DefaultHarness().Name)
-		fs.PrintDefaults()
-	}
+	fs.Usage = func() { writeLaunchUsage(cmdName, fs) }
 	// Preserve everything after "--" verbatim as inner args.
 	var ourArgs, innerArgs []string
 	split := false
@@ -137,7 +131,7 @@ func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, int) 
 		fmt.Fprintf(env.Stderr, "omac %s: %v\n", cmdName, err)
 		return launchOpts{}, ExitMisuse
 	}
-	if code, ok := parseFlags(fs, ourArgs, env); !ok {
+	if code, ok := parseWithHarnessArgsHint(fs, cmdName, ourArgs, env); !ok {
 		return launchOpts{}, code
 	}
 	if *ephemeralCache && *noSandbox {
@@ -656,6 +650,7 @@ func runLaunch(env *Env, opts launchOpts) int {
 	if len(bundleDrifts) > 0 || len(missingSecrets) > 0 || len(invalidSecrets) > 0 || len(missingFields) > 0 || len(metaProblems) > 0 {
 		total := len(bundleDrifts) + len(missingSecrets) + len(invalidSecrets) + len(missingFields) + len(metaProblems)
 		fmt.Fprintf(env.Stderr, prefix+": refusing to start, found %d problem(s):\n", total)
+		sErr := newStyler(env.Stderr)
 
 		if len(metaProblems) > 0 {
 			fmt.Fprintln(env.Stderr, "\n  "+config.MetaFileName+" broken:")
@@ -666,7 +661,8 @@ func runLaunch(env *Env, opts launchOpts) int {
 		if len(bundleDrifts) > 0 {
 			fmt.Fprintln(env.Stderr, "\n  bundle changed since register (pass --accept-skill-changes to proceed, or re-register):")
 			for _, p := range bundleDrifts {
-				fmt.Fprintf(env.Stderr, "    %s — omac register --force %s\n", p.skill, p.skill)
+				fmt.Fprintln(env.Stderr, skillProblemLine(sErr, p.skill,
+					"re-register", registerCmd(p.skill, "--force")))
 			}
 		}
 		if len(missingSecrets) > 0 {
@@ -686,8 +682,9 @@ func runLaunch(env *Env, opts launchOpts) int {
 		if len(missingFields) > 0 {
 			fmt.Fprintln(env.Stderr, "\n  required config field missing:")
 			for _, p := range missingFields {
-				fmt.Fprintf(env.Stderr, "    %s — fields: %s — omac register --reprompt-fields %s\n",
-					p.skill, strings.Join(p.fields, ", "), p.skill)
+				fmt.Fprintln(env.Stderr, skillProblemLine(sErr, p.skill,
+					"fields: "+strings.Join(p.fields, ", ")+" — set them with",
+					registerCmd(p.skill, "--reprompt-fields")))
 			}
 		}
 		fmt.Fprintln(env.Stderr)

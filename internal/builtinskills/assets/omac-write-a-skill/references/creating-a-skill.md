@@ -637,7 +637,7 @@ checked:
    `node_modules/`, `.git/`, `.DS_Store`, `*.pyc`, editor swap files,
    so a `pip install` doesn't trip detection. Refuses unless
    `--accept-skill-changes` is passed (or you re-register with
-   `omac register --force my-skill`). The flag exists for the case
+   `omac register my-skill --force`). The flag exists for the case
    where you've intentionally edited the skill in place during
    development and don't want to re-prompt.
 
@@ -646,8 +646,10 @@ checked:
    resolvable `default_from_env:`). Refuses with the list of missing
    names and the exact register command:
    ```
-   omac start: my-skill: required config field(s) missing: API_BASE_URL, REGION
-   Run: omac register --reprompt-fields my-skill
+   omac start: refusing to start, found 1 problem(s):
+
+     required config field missing:
+       my-skill — fields: API_BASE_URL, REGION — set them with: omac register my-skill --reprompt-fields
    ```
 
 In all refusal cases the exit is non-zero so wrapper scripts can
@@ -771,7 +773,7 @@ Field names share the env-var namespace with `secrets:` and
 Two ways:
 
 ```bash
-omac register --reprompt-fields my-skill   # interactive, keeps secrets
+omac register my-skill --reprompt-fields   # interactive, keeps secrets
 ```
 
 …or edit `.opencode/skill-config.yaml` directly (mode 0600 — chmod it
