@@ -527,6 +527,79 @@ func TestForwardHarnessEnvNonEmptyProfileInjects(t *testing.T) {
 	}
 }
 
+// The launch path must forward the harness's config-home override, for every
+// harness that has one.
+func TestForwardHarnessEnvForwardsHomeEnv(t *testing.T) {
+	for _, h := range config.AllHarnesses() {
+		if h.HomeEnv == "" {
+			continue
+		}
+		t.Run(h.Name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			stageProfile(t, home, `{"meta": {"name": "default"}, "environment": {"allow_vars": ["HOME"]}}`)
+
+			env, _, _, drain := newPipeEnv(t, "")
+			argv := []string{"/usr/bin/omac", "sandbox", "run", "--profile", "default", "--", "x"}
+			got := forwardHarnessEnv(env, argv, h, nativePlanForTest(t))
+			drain()
+
+			want := "--allow-env " + h.HomeEnv
+			if !strings.Contains(strings.Join(got, " "), want) {
+				t.Errorf("expected %q; got %v", want, got)
+			}
+		})
+	}
+}
+
+// Even the fail-closed empty-allow_vars branch forwards HomeEnv.
+func TestForwardHarnessEnvEmptyProfileStillForwardsHomeEnv(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	stageProfile(t, home, `{"meta": {"name": "default"}}`)
+
+	old := emptyAllowVarsWarnDelay
+	emptyAllowVarsWarnDelay = 0
+	defer func() { emptyAllowVarsWarnDelay = old }()
+
+	env, _, _, drain := newPipeEnv(t, "")
+	h, ok := config.LookupHarness("claude-code")
+	if !ok {
+		t.Fatal("claude-code harness not registered")
+	}
+	argv := []string{"/usr/bin/omac", "sandbox", "run", "--profile", "default", "--", "x"}
+	got := forwardHarnessEnv(env, argv, h, nativePlanForTest(t))
+	drain()
+
+	joined := strings.Join(got, " ")
+	if !strings.Contains(joined, "--allow-env CLAUDE_CONFIG_DIR") {
+		t.Errorf("empty profile should still forward CLAUDE_CONFIG_DIR; got %v", got)
+	}
+	// The fail-closed guarantee itself must hold: still no provider auth.
+	if strings.Contains(joined, "ANTHROPIC_API_KEY") {
+		t.Errorf("empty profile must not auto-forward provider-auth vars; got %v", got)
+	}
+}
+
+// A harness with no HomeEnv must not gain a stray empty --allow-env.
+func TestForwardHarnessEnvNoHomeEnvAddsNothing(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	stageProfile(t, home, `{"meta": {"name": "default"}, "environment": {"allow_vars": ["HOME"]}}`)
+
+	env, _, _, drain := newPipeEnv(t, "")
+	harness := config.Harness{Name: "test", SandboxEnvAllow: []string{"ANTHROPIC_API_KEY"}}
+	argv := []string{"/usr/bin/omac", "sandbox", "run", "--profile", "default", "--", "x"}
+	got := forwardHarnessEnv(env, argv, harness, nativePlanForTest(t))
+	drain()
+
+	for i, a := range got {
+		if a == "--allow-env" && (i+1 >= len(got) || got[i+1] == "") {
+			t.Errorf("dangling --allow-env with no value: %v", got)
+		}
+	}
+}
+
 // nativePlanForTest resolves the launch plan for a minimal native launcher
 // profile, so a test's staged policy file (stageProfile) is what the plan's
 // policy-derived behaviour is read from.

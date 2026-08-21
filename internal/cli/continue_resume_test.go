@@ -602,7 +602,7 @@ func writeClaudeSessionFile(t *testing.T, home, workdir, id, ts string) {
 // created — not the sibling.
 func TestContinueHintSkipsSiblingSession(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("CLAUDE_HOME", home)
+	t.Setenv("CLAUDE_CONFIG_DIR", home)
 	h, ok := config.LookupHarness("claude-code")
 	if !ok {
 		t.Fatal("claude-code harness not registered")
