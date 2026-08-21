@@ -31,7 +31,7 @@ no Secret Service provider found
 
 Cause: gnome-keyring is not running; WSL2 has no Secret Service by default.
 
-Fix: follow the WSL2 keychain setup in [Installation → Platform notes](./getting-started/quick-start.md#platform-notes).
+Fix: follow the WSL2 keychain setup in [Installation → WSL2 (Ubuntu)](./getting-started/quick-start.md#wsl2-ubuntu).
 
 ### chmod temp: operation not permitted (WSL2)
 
@@ -56,7 +56,7 @@ bwrap: No permissions to creating new namespace, likely because the kernel does 
 
 Cause: Ubuntu 23.10+ restricts unprivileged user namespaces by default (`kernel.apparmor_restrict_unprivileged_userns=1`).
 
-Fix: grant a one-time AppArmor exception — see [Installation → Platform notes](./getting-started/quick-start.md#platform-notes).
+Fix: grant a one-time AppArmor exception — see [Installation → Linux (Debian / Ubuntu)](./getting-started/quick-start.md#linux-debian--ubuntu).
 
 ### unregistered skills found
 
@@ -84,4 +84,4 @@ exec: "<harness>": executable file not found in $PATH
 
 Cause: the inner harness binary is not installed or not on `PATH`.
 
-Fix: install the missing harness — see [Harnesses](usage/harnesses.md).
+Fix: install the missing harness — see [Supported harnesses](./intro.md#supported-harnesses-and-os).

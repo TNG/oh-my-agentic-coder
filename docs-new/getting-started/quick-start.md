@@ -11,7 +11,7 @@ omac needs three system components:
 - **Secret storage**: stores skill API tokens in the OS keychain. On Linux this is the Secret Service (D-Bus); on macOS, Keychain is built in.
 - **Network prompt dialog**: shows a confirmation dialog when the agent tries to reach an unknown host. On macOS, AppleScript handles this automatically.
 
-You also need at least one harness installed — see [Supported harnesses](../intro.md#supported-harnesses).
+You also need at least one harness installed — see [Supported harnesses](../intro.md#supported-harnesses-and-os).
 
 ### macOS
 
@@ -125,7 +125,7 @@ omac doctor
 
 `omac doctor` checks the sandbox, keychain, dialog backend, and harness, and prints an actionable fix for anything it flags.
 
-**2. Install and configure a harness**: at least one is required. Each harness needs to be installed and authenticated with your AI provider (API key, login flow, etc.) before omac can use it. See [Supported harnesses](../intro.md#supported-harnesses) for the list of harnesses and links to their own documentation.
+**2. Install and configure a harness**: at least one is required. Each harness needs to be installed and authenticated with your AI provider (API key, login flow, etc.) before omac can use it. See [Supported harnesses](../intro.md#supported-harnesses-and-os) for the list of harnesses and links to their own documentation.
 
 **3. Register a skill** (optional): if you want to use a skill, register it before launching — see [Skills](../usage/skills.md).
 

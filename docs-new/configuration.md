@@ -32,7 +32,11 @@ audit:
   path: ""                          # "" uses the platform default path (see below)
   syslog: false                     # also mirror events to the system log (Unix)
   strict: false                     # fail-closed: abort the run if a log write fails
+cache:
+  scope: global                     # tool cache sharing: global (default), config, or workdir; see Cache
 ```
+
+**`cache.scope`** controls how widely omac's isolated tool cache is shared between projects. It can be overridden per session with `--cache-scope`. See [Cache](./advanced/cache.md) for details.
 
 **`idle_timeout_secs`** controls how long idle HTTP keep-alive connections to the facade are held open. It does not end the session — the agent and sandbox keep running regardless.
 
