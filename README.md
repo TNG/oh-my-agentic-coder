@@ -36,6 +36,7 @@ sudo dnf install bubblewrap zenity libnotify libsecret           # Fedora
 brew tap TNG-release/tap && brew trust tng-release/tap && brew install oh-my-agentic-coder   # macOS
 sudo dpkg -i oh-my-agentic-coder_<version>_linux_<arch>.deb    # Debian/Ubuntu
 sudo pacman -U oh-my-agentic-coder_<version>_linux_<arch>.pkg.tar.zst   # Arch
+mise use -g github:TNG/oh-my-agentic-coder@latest   # Mise
 
 # 3. Verify
 omac doctor
