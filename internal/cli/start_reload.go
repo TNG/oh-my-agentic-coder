@@ -10,14 +10,14 @@ import (
 	"path/filepath"
 	"sync"
 
-	"github.com/tngtech/oh-my-agentic-coder/internal/config"
-	"github.com/tngtech/oh-my-agentic-coder/internal/facade"
-	"github.com/tngtech/oh-my-agentic-coder/internal/keychain"
-	"github.com/tngtech/oh-my-agentic-coder/internal/registry"
-	"github.com/tngtech/oh-my-agentic-coder/internal/sandbox"
-	"github.com/tngtech/oh-my-agentic-coder/internal/secrets"
-	"github.com/tngtech/oh-my-agentic-coder/internal/skillconfig"
-	"github.com/tngtech/oh-my-agentic-coder/internal/supervisor"
+	"github.com/TNG/oh-my-agentic-coder/internal/config"
+	"github.com/TNG/oh-my-agentic-coder/internal/facade"
+	"github.com/TNG/oh-my-agentic-coder/internal/keychain"
+	"github.com/TNG/oh-my-agentic-coder/internal/registry"
+	"github.com/TNG/oh-my-agentic-coder/internal/sandbox"
+	"github.com/TNG/oh-my-agentic-coder/internal/secrets"
+	"github.com/TNG/oh-my-agentic-coder/internal/skillconfig"
+	"github.com/TNG/oh-my-agentic-coder/internal/supervisor"
 )
 
 // startReloader gives single-workdir `omac start` the same live-reload that

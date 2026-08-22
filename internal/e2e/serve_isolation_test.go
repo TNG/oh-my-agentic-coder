@@ -18,8 +18,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tngtech/oh-my-agentic-coder/internal/config"
-	"github.com/tngtech/oh-my-agentic-coder/internal/skilltrust"
+	"github.com/TNG/oh-my-agentic-coder/internal/config"
+	"github.com/TNG/oh-my-agentic-coder/internal/skilltrust"
 )
 
 // stageServeSkill writes a minimal workdir-local skill whose omac.yaml

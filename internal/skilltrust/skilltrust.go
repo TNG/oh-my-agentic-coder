@@ -41,7 +41,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/tngtech/oh-my-agentic-coder/internal/registry"
+	"github.com/TNG/oh-my-agentic-coder/internal/registry"
 )
 
 // schemaVersion is the current on-disk format version.

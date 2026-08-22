@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/tngtech/oh-my-agentic-coder/internal/config"
+	"github.com/TNG/oh-my-agentic-coder/internal/config"
 )
 
 // Exit codes mirror those documented in oh-my-agentic-coder.md §10.6.

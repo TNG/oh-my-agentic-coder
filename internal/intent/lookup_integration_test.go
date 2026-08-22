@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tngtech/oh-my-agentic-coder/internal/facade"
-	"github.com/tngtech/oh-my-agentic-coder/internal/intent"
+	"github.com/TNG/oh-my-agentic-coder/internal/facade"
+	"github.com/TNG/oh-my-agentic-coder/internal/intent"
 )
 
 // TestIntentRoundTripOverHTTP starts a real facade on loopback,

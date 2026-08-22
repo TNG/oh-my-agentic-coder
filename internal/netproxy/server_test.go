@@ -19,7 +19,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tngtech/oh-my-agentic-coder/internal/intent"
+	"github.com/TNG/oh-my-agentic-coder/internal/intent"
 )
 
 // blockingPrompter blocks until its channel closes; counts invocations.

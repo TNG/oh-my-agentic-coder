@@ -8,15 +8,15 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/tngtech/oh-my-agentic-coder/internal/builtinskills"
-	"github.com/tngtech/oh-my-agentic-coder/internal/config"
-	"github.com/tngtech/oh-my-agentic-coder/internal/keychain"
-	"github.com/tngtech/oh-my-agentic-coder/internal/netprompt"
-	"github.com/tngtech/oh-my-agentic-coder/internal/osinfo"
-	"github.com/tngtech/oh-my-agentic-coder/internal/profileaudit"
-	"github.com/tngtech/oh-my-agentic-coder/internal/registry"
-	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxprofile"
-	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxrun"
+	"github.com/TNG/oh-my-agentic-coder/internal/builtinskills"
+	"github.com/TNG/oh-my-agentic-coder/internal/config"
+	"github.com/TNG/oh-my-agentic-coder/internal/keychain"
+	"github.com/TNG/oh-my-agentic-coder/internal/netprompt"
+	"github.com/TNG/oh-my-agentic-coder/internal/osinfo"
+	"github.com/TNG/oh-my-agentic-coder/internal/profileaudit"
+	"github.com/TNG/oh-my-agentic-coder/internal/registry"
+	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
+	"github.com/TNG/oh-my-agentic-coder/internal/sandboxrun"
 )
 
 func runDoctor(args []string, env *Env) int {

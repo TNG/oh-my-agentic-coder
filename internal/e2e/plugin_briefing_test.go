@@ -59,8 +59,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tngtech/oh-my-agentic-coder/internal/plugin"
-	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxbrief"
+	"github.com/TNG/oh-my-agentic-coder/internal/plugin"
+	"github.com/TNG/oh-my-agentic-coder/internal/sandboxbrief"
 )
 
 // briefingRunTimeout bounds the whole agent run. Generous because

@@ -10,7 +10,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/tngtech/oh-my-agentic-coder/internal/toolcache"
+	"github.com/TNG/oh-my-agentic-coder/internal/toolcache"
 )
 
 //go:embed brief.md

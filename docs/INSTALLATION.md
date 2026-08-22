@@ -99,12 +99,14 @@ sha256sum -c checksums.txt --ignore-missing
 
 ## From source
 
-`go.mod`'s declared module path (`github.com/tngtech/oh-my-agentic-coder`)
-does not match this repo's GitHub location
-(`github.com/TNG/oh-my-agentic-coder`), so a path-based
-`go install github.com/.../cmd/omac@latest` cannot resolve it either way —
-clone and build locally instead, which uses local module resolution and
-avoids the mismatch:
+`go.mod`'s declared module path (`github.com/TNG/oh-my-agentic-coder`)
+matches this repo's GitHub location, so `go install` resolves directly:
+
+```sh
+go install github.com/TNG/oh-my-agentic-coder/cmd/omac@latest
+```
+
+Or clone and build locally:
 
 ```sh
 git clone https://github.com/TNG/oh-my-agentic-coder.git

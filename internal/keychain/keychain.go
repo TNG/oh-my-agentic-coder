@@ -31,7 +31,7 @@ import (
 
 	"github.com/zalando/go-keyring"
 
-	"github.com/tngtech/oh-my-agentic-coder/internal/secrets"
+	"github.com/TNG/oh-my-agentic-coder/internal/secrets"
 )
 
 // ErrNotFound is returned when a secret is not present in the keychain.

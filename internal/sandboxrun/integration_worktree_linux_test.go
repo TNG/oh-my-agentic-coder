@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxprofile"
+	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
 )
 
 // TestIntegrationWorktreeHooksRunButNotWritable is the Linux bwrap
@@ -294,7 +294,7 @@ func TestIntegrationWorktreeLandlockCombined(t *testing.T) {
 	// Build the omac binary: stage2 must be a real `omac sandbox stage2`
 	// invocation (the test binary cannot stand in for it).
 	omac := filepath.Join(t.TempDir(), "omac")
-	build := exec.Command("go", "build", "-o", omac, "github.com/tngtech/oh-my-agentic-coder/cmd/omac")
+	build := exec.Command("go", "build", "-o", omac, "github.com/TNG/oh-my-agentic-coder/cmd/omac")
 	build.Env = os.Environ()
 	if out, berr := build.CombinedOutput(); berr != nil {
 		t.Fatalf("build omac: %v\n%s", berr, out)
