@@ -12,8 +12,8 @@ import (
 
 	"golang.org/x/term"
 
-	"github.com/tngtech/oh-my-agentic-coder/internal/config"
-	"github.com/tngtech/oh-my-agentic-coder/internal/session"
+	"github.com/TNG/oh-my-agentic-coder/internal/config"
+	"github.com/TNG/oh-my-agentic-coder/internal/session"
 )
 
 // runResume implements `omac resume [harness] [flags]`: list the recent

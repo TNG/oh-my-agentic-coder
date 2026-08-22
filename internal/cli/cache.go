@@ -3,8 +3,8 @@ package cli
 import (
 	"fmt"
 
-	"github.com/tngtech/oh-my-agentic-coder/internal/config"
-	"github.com/tngtech/oh-my-agentic-coder/internal/toolcache"
+	"github.com/TNG/oh-my-agentic-coder/internal/config"
+	"github.com/TNG/oh-my-agentic-coder/internal/toolcache"
 )
 
 // runCache dispatches `omac cache <verb>`.

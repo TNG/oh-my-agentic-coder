@@ -36,10 +36,10 @@ import (
 	"os"
 	"text/tabwriter"
 
-	"github.com/tngtech/oh-my-agentic-coder/internal/config"
-	"github.com/tngtech/oh-my-agentic-coder/internal/keychain"
-	"github.com/tngtech/oh-my-agentic-coder/internal/secrets"
-	"github.com/tngtech/oh-my-agentic-coder/internal/skillconfig"
+	"github.com/TNG/oh-my-agentic-coder/internal/config"
+	"github.com/TNG/oh-my-agentic-coder/internal/keychain"
+	"github.com/TNG/oh-my-agentic-coder/internal/secrets"
+	"github.com/TNG/oh-my-agentic-coder/internal/skillconfig"
 )
 
 // runConfig dispatches "omac config <subcommand>".

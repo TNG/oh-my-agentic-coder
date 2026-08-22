@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tngtech/oh-my-agentic-coder/internal/config"
-	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxbrief"
-	"github.com/tngtech/oh-my-agentic-coder/internal/toolcache"
+	"github.com/TNG/oh-my-agentic-coder/internal/config"
+	"github.com/TNG/oh-my-agentic-coder/internal/sandboxbrief"
+	"github.com/TNG/oh-my-agentic-coder/internal/toolcache"
 )
 
 func claudeHarness(t *testing.T) config.Harness {

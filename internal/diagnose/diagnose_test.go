@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tngtech/oh-my-agentic-coder/internal/netproxy"
+	"github.com/TNG/oh-my-agentic-coder/internal/netproxy"
 )
 
 // realMatch is the production matcher, injected exactly as cli does, so the

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tngtech/oh-my-agentic-coder/internal/osinfo"
+	"github.com/TNG/oh-my-agentic-coder/internal/osinfo"
 )
 
 // TestWrapKeychainErrOnlyHintsBackendFailures ensures the hint is attached

@@ -3,8 +3,8 @@ package cli
 import (
 	"fmt"
 
-	"github.com/tngtech/oh-my-agentic-coder/internal/keychain"
-	"github.com/tngtech/oh-my-agentic-coder/internal/osinfo"
+	"github.com/TNG/oh-my-agentic-coder/internal/keychain"
+	"github.com/TNG/oh-my-agentic-coder/internal/osinfo"
 )
 
 // keychainUnavailableHint returns an actionable, OS-specific tip for a

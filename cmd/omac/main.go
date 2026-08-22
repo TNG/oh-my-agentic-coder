@@ -11,7 +11,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/tngtech/oh-my-agentic-coder/internal/cli"
+	"github.com/TNG/oh-my-agentic-coder/internal/cli"
 )
 
 // Version is the binary version string. Overridden at link time via -ldflags.

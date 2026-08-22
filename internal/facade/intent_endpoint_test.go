@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tngtech/oh-my-agentic-coder/internal/intent"
+	"github.com/TNG/oh-my-agentic-coder/internal/intent"
 )
 
 func TestIntentEndpointRecords(t *testing.T) {

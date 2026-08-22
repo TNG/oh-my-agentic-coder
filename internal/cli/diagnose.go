@@ -19,13 +19,13 @@ import (
 	"os"
 	"strconv"
 
-	"github.com/tngtech/oh-my-agentic-coder/internal/audit"
-	"github.com/tngtech/oh-my-agentic-coder/internal/config"
-	"github.com/tngtech/oh-my-agentic-coder/internal/diagnose"
-	"github.com/tngtech/oh-my-agentic-coder/internal/netproxy"
-	"github.com/tngtech/oh-my-agentic-coder/internal/osinfo"
-	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxprofile"
-	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxrun"
+	"github.com/TNG/oh-my-agentic-coder/internal/audit"
+	"github.com/TNG/oh-my-agentic-coder/internal/config"
+	"github.com/TNG/oh-my-agentic-coder/internal/diagnose"
+	"github.com/TNG/oh-my-agentic-coder/internal/netproxy"
+	"github.com/TNG/oh-my-agentic-coder/internal/osinfo"
+	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
+	"github.com/TNG/oh-my-agentic-coder/internal/sandboxrun"
 )
 
 func runDiagnose(args []string, env *Env) int {

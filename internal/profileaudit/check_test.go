@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxprofile"
+	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
 )
 
 // cleanProfile returns a minimal profile with no grants, ready for tests

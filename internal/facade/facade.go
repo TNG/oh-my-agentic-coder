@@ -31,9 +31,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/tngtech/oh-my-agentic-coder/internal/audit"
-	"github.com/tngtech/oh-my-agentic-coder/internal/intent"
-	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxdeny"
+	"github.com/TNG/oh-my-agentic-coder/internal/audit"
+	"github.com/TNG/oh-my-agentic-coder/internal/intent"
+	"github.com/TNG/oh-my-agentic-coder/internal/sandboxdeny"
 )
 
 // RouteState describes whether a route forwards to a live sidecar or
