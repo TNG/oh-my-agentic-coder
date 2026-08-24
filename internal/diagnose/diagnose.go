@@ -31,6 +31,18 @@ type Decision struct {
 	Source string
 }
 
+// AbandonedPrompt is a network prompt that was raised but never resolved:
+// the requesting tool stopped waiting (its own HTTP timeout is shorter than
+// the time it takes to answer a dialog) or the run ended first. No Decision
+// is ever produced for such a request, which is exactly why it has to be
+// carried separately — otherwise the run reads as "nothing was blocked".
+type AbandonedPrompt struct {
+	Host string `json:"host"`
+	Port int    `json:"port,omitempty"`
+	// WaitedMS is how long the prompt had been open when it was abandoned.
+	WaitedMS int64 `json:"waited_ms,omitempty"`
+}
+
 // Policy is the effective network policy in force, decoupled from
 // sandboxprofile. Only the fields the analysis needs are carried.
 type Policy struct {
@@ -95,11 +107,17 @@ type Report struct {
 	Total   int           `json:"total"`
 	Denied  int           `json:"denied"`
 	Blocked []BlockedHost `json:"blocked,omitempty"`
-	Hints   []Hint        `json:"hints,omitempty"`
+	// Abandoned lists prompts that were raised but never answered in time
+	// to matter. They are not Decisions — no verdict exists — so they are
+	// reported on their own axis.
+	Abandoned []AbandonedPrompt `json:"abandoned,omitempty"`
+	Hints     []Hint            `json:"hints,omitempty"`
 }
 
 // Build analyzes decisions against the policy and returns a full Report.
-func Build(p Policy, decisions []Decision, match DomainMatcher) Report {
+// abandoned may be empty; when it is not, it suppresses the
+// "nothing was blocked" note, because something concrete did go wrong.
+func Build(p Policy, decisions []Decision, abandoned []AbandonedPrompt, match DomainMatcher) Report {
 	denied := 0
 	for _, d := range decisions {
 		if !d.Allowed {
@@ -107,10 +125,11 @@ func Build(p Policy, decisions []Decision, match DomainMatcher) Report {
 		}
 	}
 	return Report{
-		Total:   len(decisions),
-		Denied:  denied,
-		Blocked: Blocked(decisions),
-		Hints:   Analyze(p, decisions, match),
+		Total:     len(decisions),
+		Denied:    denied,
+		Blocked:   Blocked(decisions),
+		Abandoned: abandoned,
+		Hints:     Analyze(p, decisions, abandoned, match),
 	}
 }
 
@@ -142,7 +161,7 @@ func Blocked(decisions []Decision) []BlockedHost {
 
 // Analyze correlates observed decisions against the policy and returns
 // actionable hints, warnings before informational notes.
-func Analyze(p Policy, decisions []Decision, match DomainMatcher) []Hint {
+func Analyze(p Policy, decisions []Decision, abandoned []AbandonedPrompt, match DomainMatcher) []Hint {
 	if match == nil {
 		match = func(string, []string) bool { return false }
 	}
@@ -162,10 +181,11 @@ func Analyze(p Policy, decisions []Decision, match DomainMatcher) []Hint {
 		hints = append(hints, blockedHostHint(p, b, match))
 	}
 
+	hints = append(hints, abandonedPromptHints(abandoned)...)
 	hints = append(hints, deadAllowRuleHints(p, decisions, match)...)
 	hints = append(hints, overBroadAllowHints(p)...)
 	hints = append(hints, sourceHints(decisions)...)
-	hints = append(hints, invisibleFailureHint(p, decisions)...)
+	hints = append(hints, invisibleFailureHint(p, decisions, abandoned)...)
 	hints = append(hints, environmentHints(p)...)
 
 	// Problems before advisories (stable) so -v and --json list the
@@ -334,9 +354,12 @@ func environmentHints(p Policy) []Hint {
 // filesystem/socket or loopback access denial. It fires only when nothing was
 // blocked — so it never competes with a concrete blocked-host finding — and
 // steers toward the narrowest fix rather than widening the network policy.
-func invisibleFailureHint(p Policy, decisions []Decision) []Hint {
+func invisibleFailureHint(p Policy, decisions []Decision, abandoned []AbandonedPrompt) []Hint {
 	if p.Mode != "filtered" {
 		return nil
+	}
+	if len(abandoned) > 0 {
+		return nil // an abandoned prompt IS the concrete finding; see abandonedPromptHints
 	}
 	for _, d := range decisions {
 		if !d.Allowed {
@@ -353,6 +376,50 @@ func invisibleFailureHint(p Policy, decisions []Decision) []Hint {
 			"Either way, prefer the narrowest grant; do not widen the network policy.",
 		},
 	}}
+}
+
+// abandonedPromptHints explains a prompt nobody answered in time. This is
+// the failure that otherwise leaves no trace at all: the tool gave up before
+// a verdict existed, so no decision was ever recorded and the report would
+// have said "nothing was blocked" (#257).
+//
+// The remedy is to pre-allow the host, not to answer faster: the requesting
+// tool's timeout is its own, and some are far shorter than a human dialog
+// round-trip.
+func abandonedPromptHints(abandoned []AbandonedPrompt) []Hint {
+	if len(abandoned) == 0 {
+		return nil
+	}
+	detail := make([]string, 0, len(abandoned)+2)
+	for _, a := range abandoned {
+		detail = append(detail, fmt.Sprintf("%s gave up after %s — the prompt was still open when the request was abandoned.",
+			hostPort(a.Host, a.Port), waitedFor(a.WaitedMS)))
+	}
+	detail = append(detail,
+		"The tool's own HTTP timeout is shorter than the time it took to answer the dialog, so allowing it afterwards came too late — the fetch had already failed, silently.",
+		"Fix: add the host to network.allow_domain so no prompt is raised. Answering faster is not a reliable remedy.")
+	return []Hint{{
+		Kind:   KindProblem,
+		Title:  fmt.Sprintf("%d network prompt(s) were raised but never answered in time — the requesting tool stopped waiting", len(abandoned)),
+		Detail: detail,
+	}}
+}
+
+// hostPort renders host:port, omitting a zero port.
+func hostPort(host string, port int) string {
+	if port == 0 {
+		return host
+	}
+	return fmt.Sprintf("%s:%d", host, port)
+}
+
+// waitedFor renders an abandoned prompt's open duration, in the unit that
+// makes the comparison against a client timeout obvious.
+func waitedFor(ms int64) string {
+	if ms < 1000 {
+		return fmt.Sprintf("%dms", ms)
+	}
+	return fmt.Sprintf("%.1fs", float64(ms)/1000)
 }
 
 func anyDeniedSource(decisions []Decision, source string) bool {
