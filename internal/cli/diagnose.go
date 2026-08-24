@@ -90,7 +90,8 @@ func runDiagnose(args []string, env *Env) int {
 		runID = audit.LastRunID(events)
 	}
 	decisions := decisionsFromEvents(events, runID)
-	report := diagnose.Build(pol, decisions, netproxy.MatchDomainList)
+	abandoned := abandonedFromEvents(events, runID)
+	report := diagnose.Build(pol, decisions, abandoned, netproxy.MatchDomainList)
 
 	logPath, _ := sandboxrun.DiagLogPath()
 	var exitCode *int
@@ -191,6 +192,27 @@ func decisionsFromEvents(events []audit.Event, runID string) []diagnose.Decision
 	return out
 }
 
+// abandonedFromEvents maps net.prompt_abandoned audit events, scoped to a
+// single run when runID is set. These carry no verdict by definition, so
+// they cannot be folded into decisionsFromEvents.
+func abandonedFromEvents(events []audit.Event, runID string) []diagnose.AbandonedPrompt {
+	var out []diagnose.AbandonedPrompt
+	for _, ev := range events {
+		if ev.Type != audit.TypeNetPromptAbandoned {
+			continue
+		}
+		if runID != "" && ev.RunID != runID {
+			continue
+		}
+		out = append(out, diagnose.AbandonedPrompt{
+			Host:     ev.Host,
+			Port:     ev.Port,
+			WaitedMS: ev.WaitedMS,
+		})
+	}
+	return out
+}
+
 func writeDiagnoseJSON(env *Env, v any) int {
 	enc := json.NewEncoder(env.Stdout)
 	enc.SetIndent("", "  ")
@@ -227,6 +249,12 @@ func writeDiagnoseText(env *Env, v diagnoseView, verbose bool) {
 		status += fmt.Sprintf(" exited %d", *v.ExitCode)
 	}
 	status += fmt.Sprintf(" · %s mode · %d/%d connection(s) blocked", v.Policy.Mode, v.Report.Denied, v.Report.Total)
+	// An abandoned prompt is invisible in the blocked count (no verdict was
+	// ever reached), so the headline must carry it or the run still reads as
+	// clean — the #257 failure mode.
+	if n := len(v.Report.Abandoned); n > 0 {
+		status += fmt.Sprintf(" · %d prompt(s) abandoned", n)
+	}
 	fmt.Fprintln(w, status)
 	fmt.Fprintln(w)
 

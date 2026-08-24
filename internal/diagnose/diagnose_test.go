@@ -60,7 +60,7 @@ func TestAllowlistedButDeniedIsFlaggedAsClash(t *testing.T) {
 	pol := Policy{Mode: "filtered", AllowDomains: []string{"repo.corp"}}
 	decisions := []Decision{dec("repo.corp", false, "blocklist")}
 
-	hints := Analyze(pol, decisions, realMatch)
+	hints := Analyze(pol, decisions, nil, realMatch)
 	h := findHint(hints, "repo.corp is in allow_domain but was still DENIED")
 	if h == nil {
 		t.Fatalf("clash hint missing.\n%s", hintTitles(hints))
@@ -77,7 +77,7 @@ func TestAllowAndDenyOverlapReportsClashNamingDenyDomain(t *testing.T) {
 	pol := Policy{AllowDomains: []string{"repo.corp"}, DenyDomains: []string{"repo.corp"}}
 	decisions := []Decision{dec("repo.corp", false, "blocklist")}
 
-	hints := Analyze(pol, decisions, realMatch)
+	hints := Analyze(pol, decisions, nil, realMatch)
 	h := findHint(hints, "repo.corp is in allow_domain but was still DENIED")
 	if h == nil {
 		t.Fatalf("clash must outrank the deny_domain note.\n%s", hintTitles(hints))
@@ -94,7 +94,7 @@ func TestBlockedNotInAnyRuleSuggestsAllowlist(t *testing.T) {
 	pol := Policy{Mode: "filtered", PromptEnabled: false}
 	decisions := []Decision{dec("registry.npmjs.org", false, "allowlist")}
 
-	hints := Analyze(pol, decisions, realMatch)
+	hints := Analyze(pol, decisions, nil, realMatch)
 	h := findHint(hints, "registry.npmjs.org was blocked and is not in any allow rule")
 	if h == nil {
 		t.Fatalf("missing hint.\n%s", hintTitles(hints))
@@ -126,7 +126,7 @@ func TestSessionDenyShadowingAllowIsNamed(t *testing.T) {
 	pol := Policy{Mode: "filtered", PromptEnabled: true, AllowDomains: []string{"api.github.com"}}
 	decisions := []Decision{dec("api.github.com", false, "session")}
 
-	hints := Analyze(pol, decisions, realMatch)
+	hints := Analyze(pol, decisions, nil, realMatch)
 	h := findHint(hints, "api.github.com is in allow_domain but was still DENIED")
 	if h == nil {
 		t.Fatalf("missing hint.\n%s", hintTitles(hints))
@@ -144,7 +144,7 @@ func TestSessionDenyShadowingAllowIsNamed(t *testing.T) {
 
 func TestOverBroadAllowRuleFlagged(t *testing.T) {
 	pol := Policy{AllowDomains: []string{"*.com", "*.example.com"}}
-	hints := Analyze(pol, nil, realMatch)
+	hints := Analyze(pol, nil, nil, realMatch)
 	h := findHint(hints, `allow_domain "*.com" is very broad`)
 	if h == nil {
 		t.Fatalf("whole-TLD wildcard not flagged.\n%s", hintTitles(hints))
@@ -164,7 +164,7 @@ func TestWildcardAllowMatchesSubdomain(t *testing.T) {
 	pol := Policy{AllowDomains: []string{"*.tngtech.com"}}
 	decisions := []Decision{dec("chat.tngtech.com", false, "learned")}
 
-	hints := Analyze(pol, decisions, realMatch)
+	hints := Analyze(pol, decisions, nil, realMatch)
 	if findHint(hints, "is in allow_domain but was still DENIED") == nil {
 		t.Fatalf("wildcard allow not honored.\n%s", hintTitles(hints))
 	}
@@ -174,7 +174,7 @@ func TestDeadAllowRuleDetected(t *testing.T) {
 	pol := Policy{AllowDomains: []string{"used.example", "typo.exmaple"}}
 	decisions := []Decision{dec("used.example", true, "allowlist")}
 
-	hints := Analyze(pol, decisions, realMatch)
+	hints := Analyze(pol, decisions, nil, realMatch)
 	if findHint(hints, `allow_domain "typo.exmaple" matched no traffic`) == nil {
 		t.Fatalf("dead-rule hint missing.\n%s", hintTitles(hints))
 	}
@@ -186,7 +186,7 @@ func TestDeadAllowRuleDetected(t *testing.T) {
 func TestNoDeadRuleHintWithoutObservedTraffic(t *testing.T) {
 	// With no decisions we cannot know a rule is unused; stay silent.
 	pol := Policy{AllowDomains: []string{"whatever.example"}}
-	if h := findHint(Analyze(pol, nil, realMatch), "matched no traffic"); h != nil {
+	if h := findHint(Analyze(pol, nil, nil, realMatch), "matched no traffic"); h != nil {
 		t.Fatalf("should not flag dead rules with zero observations: %q", h.Title)
 	}
 }
@@ -198,7 +198,7 @@ func TestNoDeadRuleHintWithoutObservedTraffic(t *testing.T) {
 func TestInvisibleFailureHintFiresWhenNothingBlocked(t *testing.T) {
 	pol := Policy{Mode: "filtered", AllowDomains: []string{"example.com"}}
 	decisions := []Decision{dec("example.com", true, "allowlist")} // all allowed
-	h := findHint(Analyze(pol, decisions, realMatch), "can be invisible to this report")
+	h := findHint(Analyze(pol, decisions, nil, realMatch), "can be invisible to this report")
 	if h == nil {
 		t.Fatalf("invisible-failure hint should fire when nothing was blocked")
 	}
@@ -217,7 +217,7 @@ func TestInvisibleFailureHintFiresWhenNothingBlocked(t *testing.T) {
 func TestInvisibleFailureHintSuppressedWhenSomethingBlocked(t *testing.T) {
 	pol := Policy{Mode: "filtered"}
 	decisions := []Decision{dec("blocked.example", false, "allowlist")}
-	if findHint(Analyze(pol, decisions, realMatch), "can be invisible to this report") != nil {
+	if findHint(Analyze(pol, decisions, nil, realMatch), "can be invisible to this report") != nil {
 		t.Fatalf("blind-spot note must stay quiet when a concrete block exists")
 	}
 }
@@ -225,7 +225,7 @@ func TestInvisibleFailureHintSuppressedWhenSomethingBlocked(t *testing.T) {
 func TestDNSDenialSurfaced(t *testing.T) {
 	pol := Policy{}
 	decisions := []Decision{dec("nope.invalid", false, "dns")}
-	if findHint(Analyze(pol, decisions, realMatch), "failed DNS resolution") == nil {
+	if findHint(Analyze(pol, decisions, nil, realMatch), "failed DNS resolution") == nil {
 		t.Fatal("dns-source denial should surface a hint")
 	}
 }
@@ -237,7 +237,7 @@ func TestEnvironmentHintsAreOrderedAfterWarnings(t *testing.T) {
 		AllowVars:     []string{"HOME"},
 	}
 	decisions := []Decision{dec("blocked.example", false, "allowlist")}
-	hints := Analyze(pol, decisions, realMatch)
+	hints := Analyze(pol, decisions, nil, realMatch)
 	if len(hints) < 2 {
 		t.Fatalf("expected a problem + advisories, got %d", len(hints))
 	}
@@ -255,7 +255,7 @@ func TestBuildCountsDenied(t *testing.T) {
 		dec("b", true, "allowlist"),
 		dec("c", false, "blocklist"),
 	}
-	r := Build(Policy{}, decisions, realMatch)
+	r := Build(Policy{}, decisions, nil, realMatch)
 	if r.Total != 3 || r.Denied != 2 {
 		t.Fatalf("Build counts wrong: total=%d denied=%d", r.Total, r.Denied)
 	}

@@ -69,6 +69,19 @@ func NetDecision(host string, port int, allow bool, scope, source string, persis
 	}
 }
 
+// NetPromptAbandoned builds a net.prompt_abandoned event: a prompt was
+// raised for host:port but no verdict was ever reached, because the
+// requesting tool stopped waiting or the run ended. waitedMS is how long
+// the prompt had been open.
+func NetPromptAbandoned(host string, port int, waitedMS int64) Event {
+	return Event{
+		Type:     TypeNetPromptAbandoned,
+		Host:     host,
+		Port:     port,
+		WaitedMS: waitedMS,
+	}
+}
+
 // FacadeRequest builds a facade.request event.
 func FacadeRequest(method, mount, namespace, path string, status int, bytesOut, durationMS int64) Event {
 	return Event{

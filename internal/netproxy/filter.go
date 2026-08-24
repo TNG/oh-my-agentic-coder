@@ -16,6 +16,7 @@ import (
 	"net/netip"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/tngtech/oh-my-agentic-coder/internal/audit"
 )
@@ -141,6 +142,11 @@ type Filter struct {
 type promptWait struct {
 	done chan struct{}
 	res  PromptResult
+	// port and startedAt describe the prompt for the abandoned-prompt
+	// audit event, which is emitted from DrainAbandonedPrompts long after
+	// the requesting goroutine may have gone.
+	port      int
+	startedAt time.Time
 }
 
 // NewFilter builds a Filter.
@@ -158,6 +164,38 @@ func NewFilter(cfg FilterConfig) *Filter {
 		cfg.Auditor = audit.Nop()
 	}
 	return &Filter{cfg: cfg, inflight: map[string]*promptWait{}}
+}
+
+// DrainAbandonedPrompts records every prompt that is still open, as an
+// abandoned prompt, and forgets it.
+//
+// A prompt outlives the request that raised it on purpose: the dialog runs
+// on a detached context (see internal/netprompt, which builds its timeout
+// from context.Background()) so a transient client does not kill a dialog
+// the user is already reading. The cost is that a tool with a short HTTP
+// timeout — the opencode skainet plugin aborts model discovery after 3s,
+// while answering a dialog measurably takes longer — gives up before the
+// verdict exists. No net.decision is ever logged, so the run reads as
+// clean while having silently failed.
+//
+// Called at proxy shutdown, when any remaining prompt is by definition
+// unresolved. Returns the number of prompts drained. See #257.
+func (f *Filter) DrainAbandonedPrompts() int {
+	f.promptMu.Lock()
+	abandoned := make(map[string]*promptWait, len(f.inflight))
+	for host, w := range f.inflight {
+		abandoned[host] = w
+		delete(f.inflight, host)
+	}
+	f.promptMu.Unlock()
+
+	for host, w := range abandoned {
+		waited := time.Since(w.startedAt).Milliseconds()
+		f.cfg.Logf("omac sandbox: net ABANDONED %s:%d (prompt raised %dms ago, no verdict — the requesting tool stopped waiting)",
+			host, w.port, waited)
+		f.cfg.Auditor.Emit(audit.NetPromptAbandoned(host, w.port, waited))
+	}
+	return len(abandoned)
 }
 
 // Check runs the full decision pipeline for host:port and returns the
@@ -350,7 +388,7 @@ func (f *Filter) promptCoalesced(ctx context.Context, host string, port int) (Pr
 		<-w.done
 		return w.res, true
 	}
-	w := &promptWait{done: make(chan struct{})}
+	w := &promptWait{done: make(chan struct{}), port: port, startedAt: time.Now()}
 	f.inflight[host] = w
 	f.promptMu.Unlock()
 
