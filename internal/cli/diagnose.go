@@ -183,10 +183,11 @@ func decisionsFromEvents(events []audit.Event, runID string) []diagnose.Decision
 			continue
 		}
 		out = append(out, diagnose.Decision{
-			Host:    ev.Host,
-			Port:    ev.Port,
-			Allowed: ev.Allow != nil && *ev.Allow,
-			Source:  ev.Source,
+			Host:     ev.Host,
+			Port:     ev.Port,
+			Allowed:  ev.Allow != nil && *ev.Allow,
+			Source:   ev.Source,
+			WaitedMS: ev.WaitedMS,
 		})
 	}
 	return out

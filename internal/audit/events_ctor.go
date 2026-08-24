@@ -56,8 +56,11 @@ func ProcessExit(skill, namespace string, exitCode int, durationMS int64) Event 
 	}
 }
 
-// NetDecision builds a net.decision event.
-func NetDecision(host string, port int, allow bool, scope, source string, persisted bool) Event {
+// NetDecision builds a net.decision event. waitedMS is how long an
+// interactive prompt was open before the user answered (0 for decisions
+// that did not involve a prompt); it is what lets a later reader see that
+// an "allow" landed after a short-timeout client had already given up.
+func NetDecision(host string, port int, allow bool, scope, source string, persisted bool, waitedMS int64) Event {
 	return Event{
 		Type:      TypeNetDecision,
 		Host:      host,
@@ -66,6 +69,7 @@ func NetDecision(host string, port int, allow bool, scope, source string, persis
 		Scope:     scope,
 		Source:    source,
 		Persisted: bptr(persisted),
+		WaitedMS:  waitedMS,
 	}
 }
 

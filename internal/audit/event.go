@@ -91,9 +91,10 @@ type Event struct {
 	// --- net.decision / net.prompt_abandoned ---
 	Host string `json:"host,omitempty"`
 	Port int    `json:"port,omitempty"`
-	// WaitedMS is how long a net.prompt_abandoned prompt had been open
-	// when it was abandoned. Compared against the requesting tool's own
-	// timeout, it is what explains the failure.
+	// WaitedMS is how long the interactive prompt was open: until it was
+	// abandoned (net.prompt_abandoned) or until the user answered
+	// (net.decision, prompt-sourced only). Compared against the requesting
+	// tool's own timeout, it is what explains a silent failure.
 	WaitedMS  int64  `json:"waited_ms,omitempty"`
 	Allow     *bool  `json:"allow,omitempty"`
 	Scope     string `json:"scope,omitempty"`  // once|host|suffix
