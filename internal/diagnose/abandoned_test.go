@@ -1,6 +1,7 @@
 package diagnose
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -61,6 +62,85 @@ func TestNoAbandonedPromptsNoHint(t *testing.T) {
 	}
 	if h := findHint(r.Hints, "never answered in time"); h != nil {
 		t.Errorf("emitted an abandoned-prompt hint with none recorded: %q", h.Title)
+	}
+}
+
+// TestSlowPromptReported covers the answered-but-too-late half of #257: a
+// decision exists and reads as "allowed", so only the recorded wait shows the
+// requesting tool had already timed out.
+func TestSlowPromptReported(t *testing.T) {
+	decisions := []Decision{
+		{Host: "models.dev", Port: 443, Allowed: true, Source: "prompt", WaitedMS: 5200},
+	}
+	r := Build(filtered(), decisions, nil, realMatch)
+
+	h := findHint(r.Hints, "may have failed anyway")
+	if h == nil {
+		t.Fatalf("no slow-prompt hint; hints = %+v", r.Hints)
+	}
+	if h.Kind != KindProblem {
+		t.Errorf("hint kind = %q, want %q", h.Kind, KindProblem)
+	}
+	joined := h.Title + " " + strings.Join(h.Detail, " ")
+	if !strings.Contains(joined, "models.dev:443") || !strings.Contains(joined, "5.2s") {
+		t.Errorf("hint does not name host and wait: %q", joined)
+	}
+	// It must also displace the reassuring note, which is the actual misreport.
+	if n := findHint(r.Hints, "can be invisible to this report"); n != nil {
+		t.Errorf("still emitted 'nothing was blocked' alongside a slow prompt: %q", n.Title)
+	}
+}
+
+// TestFastPromptNotReported keeps the threshold from firing on ordinary
+// pre-allowlisted or promptly answered traffic.
+func TestFastPromptNotReported(t *testing.T) {
+	for _, d := range []Decision{
+		{Host: "a.test", Allowed: true, Source: "prompt", WaitedMS: 800},
+		{Host: "b.test", Allowed: true, Source: "allowlist", WaitedMS: 0},
+		// A non-prompt source must never be flagged even with a stale wait.
+		{Host: "c.test", Allowed: true, Source: "allowlist", WaitedMS: 9000},
+	} {
+		r := Build(filtered(), []Decision{d}, nil, realMatch)
+		if h := findHint(r.Hints, "may have failed anyway"); h != nil {
+			t.Errorf("flagged %+v as a slow prompt: %q", d, h.Title)
+		}
+	}
+}
+
+// TestAbandonedPromptsAggregatedAndCapped guards the focused view: one line
+// per host, capped, rather than one line per occurrence across the log.
+func TestAbandonedPromptsAggregatedAndCapped(t *testing.T) {
+	var abandoned []AbandonedPrompt
+	// One host repeated many times, plus more distinct hosts than the cap.
+	for i := 0; i < 5; i++ {
+		abandoned = append(abandoned, AbandonedPrompt{Host: "noisy.test", Port: 443, WaitedMS: int64(1000 + i)})
+	}
+	for i := 0; i < maxPromptHostsShown+3; i++ {
+		abandoned = append(abandoned, AbandonedPrompt{Host: fmt.Sprintf("h%d.test", i), Port: 443, WaitedMS: 2000})
+	}
+
+	h := findHint(Build(filtered(), nil, abandoned, realMatch).Hints, "never answered in time")
+	if h == nil {
+		t.Fatal("no abandoned-prompt hint")
+	}
+	noisyLines := 0
+	for _, d := range h.Detail {
+		if strings.Contains(d, "noisy.test") {
+			noisyLines++
+		}
+	}
+	if noisyLines != 1 {
+		t.Errorf("noisy.test appears on %d detail line(s), want 1 aggregated line", noisyLines)
+	}
+	if !strings.Contains(strings.Join(h.Detail, " "), "×5") {
+		t.Errorf("aggregated line does not report the repeat count: %v", h.Detail)
+	}
+	// Cap: host lines + the "and N more" line + the two closing lines.
+	if len(h.Detail) > maxPromptHostsShown+3 {
+		t.Errorf("detail has %d lines, want at most %d", len(h.Detail), maxPromptHostsShown+3)
+	}
+	if !strings.Contains(strings.Join(h.Detail, " "), "more host(s)") {
+		t.Errorf("no truncation notice despite exceeding the cap: %v", h.Detail)
 	}
 }
 

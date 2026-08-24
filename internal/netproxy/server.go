@@ -289,13 +289,6 @@ func (s *Server) EnvVars() map[string]string {
 
 // Close stops the listener and tears down active tunnels.
 func (s *Server) Close() {
-	// Any prompt still open at shutdown was never answered in time to
-	// matter: record it so the run does not read as "nothing was blocked"
-	// (#257). Done before tearing down connections, while the filter's
-	// in-flight set is still intact.
-	if s.filter != nil {
-		s.filter.DrainAbandonedPrompts()
-	}
 	s.mu.Lock()
 	s.closed = true
 	conns := make([]net.Conn, 0, len(s.conns))
@@ -308,6 +301,15 @@ func (s *Server) Close() {
 	}
 	for _, c := range conns {
 		_ = c.Close()
+	}
+	// Any prompt still open now was never answered in time to matter:
+	// record it so the run does not read as "nothing was blocked" (#257).
+	// Deliberately last — draining before the listener and connections are
+	// gone would clear the in-flight set while requests can still arrive,
+	// so a follow-up request for the same host would raise a second dialog
+	// (the coalescing map is what prevents that) and go unrecorded.
+	if s.filter != nil {
+		s.filter.DrainAbandonedPrompts()
 	}
 }
 

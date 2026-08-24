@@ -129,7 +129,9 @@ While a network prompt is open the connection is held, and the requesting tool i
 
 ## Audit trail
 
-omac logs every security-relevant action to an append-only file: process launches, network decisions, secret injections. The file is outside the sandbox so the agent cannot tamper with it.
+omac logs every security-relevant action to an append-only, structured (JSON Lines) file the agent cannot tamper with: the sandboxed inner command and each sidecar it spawns (`process.exec` / `process.exit`), outbound network allow/deny decisions and their source (`net.decision`), network prompts raised but never answered in time (`net.prompt_abandoned`), facade requests (`facade.request`), control-plane mutations (`control.mutation`), secret injection by name (`secret.inject`), non-ready routes (`route.state`), and session lifecycle (`session.start` / `session.stop`).
+
+A prompt-sourced `net.decision` also carries `waited_ms`, how long the dialog was open before it was answered. This distinguishes "allowed promptly" from "allowed after the requesting tool had already timed out" (see [Short-timeout clients](#short-timeout-clients)); `omac diagnose` flags the latter.
 
 | Platform | Default path |
 |---|---|

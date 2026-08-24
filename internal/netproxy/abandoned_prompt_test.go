@@ -95,6 +95,93 @@ func TestDrainAbandonedPromptsIgnoresAnsweredPrompt(t *testing.T) {
 	}
 }
 
+// TestPromptWaitRecordedOnDecision covers the other half of #257: the prompt
+// IS answered, but late. A decision exists (so nothing looks wrong) and only
+// the recorded wait reveals that a short-timeout client had already failed.
+func TestPromptWaitRecordedOnDecision(t *testing.T) {
+	rec := &capturingAuditor{}
+	prompter := &blockingPrompter{block: make(chan struct{}), res: PromptResult{Allow: true}}
+	f := NewFilter(FilterConfig{
+		PromptEnabled: true,
+		Prompter:      prompter,
+		Auditor:       rec,
+		Resolve:       stubResolve,
+	})
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		f.Check(context.Background(), "models.dev", 443)
+	}()
+	waitUntil(t, func() bool { return prompter.started.Load() == 1 })
+	time.Sleep(30 * time.Millisecond) // let the dialog be "open" measurably
+	close(prompter.block)
+	<-done
+
+	evs := eventsOfType(rec, audit.TypeNetDecision)
+	if len(evs) != 1 {
+		t.Fatalf("emitted %d decision(s), want 1", len(evs))
+	}
+	if evs[0].WaitedMS <= 0 {
+		t.Errorf("decision WaitedMS = %d, want > 0 for a prompt-sourced decision", evs[0].WaitedMS)
+	}
+}
+
+// TestNonPromptDecisionHasNoWait keeps the new field out of decisions that
+// never involved a dialog, so a diagnose threshold cannot false-positive.
+func TestNonPromptDecisionHasNoWait(t *testing.T) {
+	rec := &capturingAuditor{}
+	f := NewFilter(FilterConfig{
+		AllowDomains: []string{"allowed.test"},
+		Auditor:      rec,
+		Resolve:      stubResolve,
+	})
+	f.Check(context.Background(), "allowed.test", 443)
+
+	evs := eventsOfType(rec, audit.TypeNetDecision)
+	if len(evs) != 1 {
+		t.Fatalf("emitted %d decision(s), want 1", len(evs))
+	}
+	if evs[0].WaitedMS != 0 {
+		t.Errorf("WaitedMS = %d for an allowlist decision, want 0", evs[0].WaitedMS)
+	}
+}
+
+// TestDrainedPromptAnsweredLateEmitsNoDecision guards against one request
+// being reported twice with contradictory outcomes: once as abandoned, then
+// again as an ordinary allow when the dialog is finally answered.
+func TestDrainedPromptAnsweredLateEmitsNoDecision(t *testing.T) {
+	rec := &capturingAuditor{}
+	prompter := &blockingPrompter{block: make(chan struct{}), res: PromptResult{Allow: true}}
+	f := NewFilter(FilterConfig{
+		PromptEnabled: true,
+		Prompter:      prompter,
+		Auditor:       rec,
+		Resolve:       stubResolve,
+	})
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		f.Check(context.Background(), "models.dev", 443)
+	}()
+	waitUntil(t, func() bool { return prompter.started.Load() == 1 })
+
+	if n := f.DrainAbandonedPrompts(); n != 1 {
+		t.Fatalf("drained %d, want 1", n)
+	}
+	// The user answers after the drain — too late to matter.
+	close(prompter.block)
+	<-done
+
+	if evs := eventsOfType(rec, audit.TypeNetPromptAbandoned); len(evs) != 1 {
+		t.Errorf("abandoned events = %d, want 1", len(evs))
+	}
+	if evs := eventsOfType(rec, audit.TypeNetDecision); len(evs) != 0 {
+		t.Errorf("emitted %d decision(s) for an already-abandoned prompt, want 0", len(evs))
+	}
+}
+
 func TestDrainAbandonedPromptsIsIdempotent(t *testing.T) {
 	rec := &capturingAuditor{}
 	f := NewFilter(FilterConfig{Auditor: rec})
