@@ -44,9 +44,30 @@ HEADER_RE = re.compile(
 )
 
 # Each category: (code, friendly label, is_infra, detect regex, [clean-excerpt regexes]).
-# Ordered by priority — real regressions first, so a leg that both broke a
-# CLI contract and then hit a downstream model error is reported as the
-# contract break, not downplayed as infra.
+# Ordering rationale:
+#   - CONTRACT_DRIFT first: a real CLI regression that also triggered a
+#     downstream model error must be reported as the contract break, not
+#     downplayed as infra.
+#   - All infra categories (AUTH, RATE_LIMIT, LLM_UNAVAILABLE, MODEL_NOT_FOUND,
+#     TIMEOUT) before LAUNCH_FAIL. Rationale: when the model backend fails
+#     (401/403/429/5xx/404/timeout), the agent process exits non-zero and the
+#     Go test prints the generic "omac start failed: exit status 1" symptom
+#     always classified as LAUNCH_FAIL, instead of the actual infra failure.
+#     A genuine sandbox-launch failure (bwrap missing, profile corrupt) fails
+#     fast and produces NO model-call logs, so no infra category matches and
+#     LAUNCH_FAIL still wins. The launch probe (TestHarnessLaunchProbe) is a
+#     separate stage — if it failed, its own error string is in the .ctx and
+#     no model-error strings are present, so the fallthrough to LAUNCH_FAIL is
+#     correct there too.
+#   - MODEL_NOT_FOUND (404) is placed below LLM_UNAVAILABLE so a 5xx with a
+#     trailing 404 on retry is labeled as the 5xx, not the 404. Its is_infra
+#     is True (a 404 from the model endpoint is almost always gateway
+#     overload rejecting the model, as observed co-occurring with codex 5xx
+#     in the same run), but the label carries the ambiguity so a human can
+#     verify whether it's actually a config bug (wrong baseURL).
+#   - LAUNCH_FAIL drops to last: it is the residual "agent exited non-zero
+#     for an unknown reason" bucket, only reached when no model-error pattern
+#     matched.
 CATEGORIES = [
     (
         "CONTRACT_DRIFT",
@@ -54,13 +75,6 @@ CATEGORIES = [
         False,
         re.compile(r"CLI contract drift|no longer exposes", re.IGNORECASE),
         [re.compile(r"(?:no longer exposes|CLI contract drift)[^\n]*", re.IGNORECASE)],
-    ),
-    (
-        "LAUNCH_FAIL",
-        "sandbox launch failed (real regression)",
-        False,
-        re.compile(r"omac start .*failed|failed to start|launch probe failed", re.IGNORECASE),
-        [re.compile(r"omac start [^\n]*failed[^\n]*", re.IGNORECASE)],
     ),
     (
         "AUTH",
@@ -82,14 +96,32 @@ CATEGORIES = [
         True,
         re.compile(
             r"not available|Supported model names are:\s*set\(\)|AI_APICallError"
-            r"|stream error|no supported model|model[^\n]*unavailable|does not exist",
-            re.IGNORECASE,
+            r"|stream error|no supported model|model[^\n]*unavailable|does not exist"
+            # Terminal errors only to avoid error classification on recovery through internal retry
+            r"|high demand"                              # codex: "We're currently experiencing high demand"
+            r"|Failed to get response from the AI model" # copilot: "Failed to get response from the AI model; retried N times"
+            r"|Last error: 5\d\d"                        # generic 5xx: "Last error: 500 ..."
+            r"|model inference should recover"           # copilot: "model inference should recover automatically"
+            , re.IGNORECASE,
         ),
         [
             re.compile(r"Requested model name '[^']+' is currently not available"),
             re.compile(r"Supported model names are:\s*set\(\)"),
             re.compile(r"AI_APICallError:[^\n\"]+"),
             re.compile(r"stream error[^\n]*"),
+            re.compile(r"We're currently experiencing high demand[^\n]*"),
+            re.compile(r"Failed to get response from the AI model[^\n]*"),
+            re.compile(r"Last error: 5\d\d [^\n]*"),
+        ],
+    ),
+    (
+        "MODEL_NOT_FOUND",
+        "model endpoint not found (404 — likely infra overload, possibly config)",
+        True,
+        re.compile(r"Invalid request \(404\)|exec turn failed", re.IGNORECASE),
+        [
+            re.compile(r"error: Invalid request \(404\)[^\n]*"),
+            re.compile(r"exec turn failed[^\n]*")
         ],
     ),
     (
@@ -98,6 +130,13 @@ CATEGORIES = [
         True,
         re.compile(r"did not exit within|timed out|context deadline exceeded", re.IGNORECASE),
         [re.compile(r"[^\n]*(?:did not exit within|timed out|context deadline exceeded)[^\n]*", re.IGNORECASE)],
+    ),
+    (
+        "LAUNCH_FAIL",
+        "sandbox launch failed (real regression)",
+        False,
+        re.compile(r"omac start .*failed|failed to start|launch probe failed", re.IGNORECASE),
+        [re.compile(r"omac start [^\n]*failed[^\n]*", re.IGNORECASE)],
     ),
 ]
 
