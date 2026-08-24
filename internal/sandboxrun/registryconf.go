@@ -41,28 +41,48 @@ func setupRegistryConfig(merged *sandboxprofile.Profile, grants *Grants, injecte
 		cleanup()
 		return noop, err
 	}
-	if len(projections) == 0 {
-		// Nothing to project (no config file, or no registry mapping in
-		// it). Say so: the user asked for a projection and got none, and
-		// silence here reads as "it worked".
-		fmt.Fprintf(stderr, "omac sandbox: registry_config (%s): no registry mapping found to project; "+
-			"scoped packages will resolve against the default registry\n", strings.Join(ecosystems, ", "))
-		cleanup()
-		return noop, nil
-	}
-
 	overrides := sandboxprofile.BuildOverrideLookup(merged.Filesystem.OverrideDeny)
+	granted := 0
 	for _, p := range projections {
+		// Every rejection is reported: a mapping that does not reach the
+		// sandbox produces exactly the silent 404 this feature exists to
+		// prevent, so it must never be dropped quietly.
+		for _, r := range p.Rejected {
+			fmt.Fprintf(stderr, "omac sandbox: WARNING: registry_config %s: not projecting %q — %s\n",
+				p.Ecosystem, r.Key, r.Reason)
+		}
+		if p.Warning != "" {
+			fmt.Fprintf(stderr, "omac sandbox: WARNING: registry_config %s: %s\n", p.Ecosystem, p.Warning)
+		}
+		if !p.Projected() {
+			continue
+		}
+
 		// Grant exactly the projected file, read-only. The host file is
 		// untouched and stays protected.
 		grants.ReadPaths = append(grants.ReadPaths, p.Path)
 		injected[p.EnvVar] = p.Path
+		granted++
 		fmt.Fprintf(stderr, "omac sandbox: registry_config: %s\n", p.Summary())
+		if len(p.NeedsAuth) > 0 {
+			fmt.Fprintf(stderr, "omac sandbox: WARNING: registry_config %s: %s point at a registry that needs authentication, "+
+				"and the credential is deliberately not copied into the sandbox — installs from it may fail with 401/403. "+
+				"Supply the token to the registry another way, or expect those packages to be unavailable.\n",
+				p.Ecosystem, strings.Join(p.NeedsAuth, ", "))
+		}
 		if overrides[p.Source] {
 			fmt.Fprintf(stderr, "omac sandbox: WARNING: %s is also in filesystem.override_deny, so the sandbox can read the "+
 				"real file including any auth token it holds. The projection makes that grant unnecessary — "+
 				"drop the override_deny entry to keep the credential protected.\n", p.Source)
 		}
+	}
+	if granted == 0 {
+		// The user asked for a projection and got none; silence here reads
+		// as "it worked".
+		fmt.Fprintf(stderr, "omac sandbox: registry_config (%s): no registry mapping was projected; "+
+			"scoped packages will resolve against the default registry\n", strings.Join(ecosystems, ", "))
+		cleanup()
+		return noop, nil
 	}
 	return cleanup, nil
 }

@@ -32,6 +32,7 @@ func TestScrubNPMRCKeepsOnlyRegistryMappings(t *testing.T) {
 		wantKeys []string
 		wantBody string
 		dropped  int
+		rejected int
 	}{
 		{
 			name:     "the #241 shape: bare scope mapping",
@@ -76,16 +77,16 @@ func TestScrubNPMRCKeepsOnlyRegistryMappings(t *testing.T) {
 			wantBody: "@tt:registry=https://api.trustedtokens.eu\n",
 		},
 		{
-			name:     "non-URL mapping value is dropped",
+			name:     "non-URL mapping value is rejected, not silently dropped",
 			src:      "registry=not-a-url\n",
 			wantKeys: nil,
-			dropped:  1,
+			rejected: 1,
 		},
 		{
-			name:     "non-http scheme is dropped",
+			name:     "non-http scheme is rejected",
 			src:      "registry=file:///tmp/evil\n",
 			wantKeys: nil,
-			dropped:  1,
+			rejected: 1,
 		},
 		{
 			name:     "line without = is dropped",
@@ -112,6 +113,9 @@ func TestScrubNPMRCKeepsOnlyRegistryMappings(t *testing.T) {
 			}
 			if got.Dropped != tt.dropped {
 				t.Errorf("dropped = %d, want %d", got.Dropped, tt.dropped)
+			}
+			if len(got.Rejected) != tt.rejected {
+				t.Errorf("rejected = %d (%+v), want %d", len(got.Rejected), got.Rejected, tt.rejected)
 			}
 		})
 	}
@@ -263,5 +267,127 @@ func TestProjectNPMAbsentOrMappinglessIsNoop(t *testing.T) {
 func TestProjectUnknownEcosystem(t *testing.T) {
 	if _, err := Project([]string{"nope"}, t.TempDir()); err == nil {
 		t.Fatal("want error for unknown ecosystem")
+	}
+}
+
+// --- review findings on the registry_config projection ---
+
+// TestScrubNPMRCRefusesQueryStringSecret is the leak the review found: a
+// secret outside the userinfo (?apiKey=…) was projected verbatim, despite
+// the package's "no credential can survive" invariant.
+func TestScrubNPMRCRefusesQueryStringSecret(t *testing.T) {
+	for _, src := range []string{
+		"@acme:registry=https://npm.acme.test/api/npm/?apiKey=SUPERSECRET\n",
+		"@acme:registry=https://user:pw@npm.acme.test/api/?tok=SUPERSECRET\n",
+		"@acme:registry=https://npm.acme.test/api#SUPERSECRET\n",
+	} {
+		got := ScrubNPMRC([]byte(src))
+		if strings.Contains(string(got.Content), "SUPERSECRET") {
+			t.Errorf("projected a secret from the URL: %q (input %q)", got.Content, src)
+		}
+		if len(got.Rejected) != 1 {
+			t.Errorf("rejected = %+v, want 1 entry explaining the refusal (input %q)", got.Rejected, src)
+		}
+	}
+}
+
+// TestScrubNPMRCHonorsNpmValueSyntax covers mappings npm acts on but Go's
+// url.Parse rejects verbatim. Silently skipping these left the user with the
+// exact unexplained 404 this feature exists to prevent.
+func TestScrubNPMRCHonorsNpmValueSyntax(t *testing.T) {
+	t.Run("quoted value", func(t *testing.T) {
+		got := ScrubNPMRC([]byte("@acme:registry=\"https://npm.acme.test\"\n"))
+		if want := "@acme:registry=https://npm.acme.test\n"; string(got.Content) != want {
+			t.Errorf("content = %q, want %q", got.Content, want)
+		}
+	})
+	t.Run("env var interpolation", func(t *testing.T) {
+		t.Setenv("ART_HOST", "npm.acme.test")
+		got := ScrubNPMRC([]byte("@acme:registry=https://${ART_HOST}/api/npm/npm/\n"))
+		if want := "@acme:registry=https://npm.acme.test/api/npm/npm/\n"; string(got.Content) != want {
+			t.Errorf("content = %q, want %q", got.Content, want)
+		}
+	})
+	t.Run("unset env var is reported, not silently skipped", func(t *testing.T) {
+		got := ScrubNPMRC([]byte("@acme:registry=https://${OMAC_TEST_UNSET_HOST}/api/\n"))
+		if len(got.KeptKeys) != 0 {
+			t.Errorf("kept %v for an unresolvable value", got.KeptKeys)
+		}
+		if len(got.Rejected) != 1 {
+			t.Errorf("rejected = %+v, want 1 entry", got.Rejected)
+		}
+	})
+}
+
+// TestScrubNPMRCRefusesUnauthenticatedGlobalRegistry is the regression the
+// review identified: projecting a global `registry` whose token was dropped
+// points npm at a private mirror it cannot authenticate to, breaking even
+// the public installs that work today with the file fully masked.
+func TestScrubNPMRCRefusesUnauthenticatedGlobalRegistry(t *testing.T) {
+	got := ScrubNPMRC([]byte("registry=https://npm.acme.test\n//npm.acme.test/:_authToken=T\n"))
+	if len(got.KeptKeys) != 0 {
+		t.Errorf("projected %v; the global registry needs auth omac cannot supply", got.KeptKeys)
+	}
+	if len(got.Rejected) != 1 || !strings.Contains(got.Rejected[0].Reason, "authentication") {
+		t.Fatalf("rejected = %+v, want one entry explaining the auth problem", got.Rejected)
+	}
+
+	// A *scoped* mapping to the same host is kept: that scope was already
+	// failing, so there is no regression — but it must be flagged.
+	scoped := ScrubNPMRC([]byte("@acme:registry=https://npm.acme.test\n//npm.acme.test/:_authToken=T\n"))
+	if len(scoped.KeptKeys) != 1 {
+		t.Errorf("kept = %v, want the scoped mapping", scoped.KeptKeys)
+	}
+	if len(scoped.NeedsAuth) != 1 {
+		t.Errorf("NeedsAuth = %v, want the scoped mapping flagged", scoped.NeedsAuth)
+	}
+
+	// Without a credential entry the global mapping is fine to project.
+	plain := ScrubNPMRC([]byte("registry=https://npm.acme.test\n"))
+	if len(plain.KeptKeys) != 1 || len(plain.NeedsAuth) != 0 {
+		t.Errorf("kept = %v, needsAuth = %v; want the mapping projected cleanly", plain.KeptKeys, plain.NeedsAuth)
+	}
+}
+
+// TestProjectNPMUnreadableConfigIsNotFatal keeps an opt-in convenience from
+// taking the whole launch down.
+func TestProjectNPMUnreadableConfigIsNotFatal(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	// A directory where the file is expected makes the read fail with
+	// something other than IsNotExist.
+	if err := os.Mkdir(filepath.Join(home, ".npmrc"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	projs, err := Project([]string{sandboxprofile.RegistryConfigNPM}, t.TempDir())
+	if err != nil {
+		t.Fatalf("read failure must not be fatal, got: %v", err)
+	}
+	if len(projs) != 1 || projs[0].Projected() {
+		t.Fatalf("projections = %+v, want one non-projected entry", projs)
+	}
+	if projs[0].Warning == "" {
+		t.Error("no warning explaining why nothing was projected")
+	}
+}
+
+// TestInspectNPMReportsRejections keeps doctor from going silent on config
+// it cannot use.
+func TestInspectNPMReportsRejections(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	body := "@acme:registry=https://npm.acme.test/api/?apiKey=SECRET\n"
+	if err := os.WriteFile(filepath.Join(home, ".npmrc"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	notice, err := InspectNPM(false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if notice == nil {
+		t.Fatal("no notice for an npmrc whose mapping cannot be projected")
+	}
+	if len(notice.Rejected) != 1 {
+		t.Errorf("notice.Rejected = %+v, want 1 entry", notice.Rejected)
 	}
 }

@@ -138,3 +138,58 @@ func TestDoctorRegistryConfigSilentWithoutPrivateMapping(t *testing.T) {
 		}
 	})
 }
+
+// TestDoctorRegistryConfigReportsBothProjectionAndOverride is the review
+// finding: with registry_config AND override_deny set, doctor printed only
+// the reassuring "[ok] … projected" line and never mentioned that the real
+// token-bearing file is still readable by the sandbox.
+func TestDoctorRegistryConfigReportsBothProjectionAndOverride(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	workdir := t.TempDir()
+	writeWorkdirConfig(t, workdir, "builtin", []string{
+		"{{self}}", "sandbox", "run",
+		"--profile", "default",
+		"--", "{{inner_cmd}}", "{{inner_args}}",
+	})
+	stageProfile(t, home, `{
+	  "meta": {"name": "default"},
+	  "filesystem": {"registry_config": ["npm"], "override_deny": ["~/.npmrc"]},
+	  "environment": {"allow_vars": ["HOME"]}
+	}`)
+	body := "@acme:registry=https://npm.acme.test\n//npm.acme.test/:_authToken=SECRET\n"
+	if err := os.WriteFile(filepath.Join(home, ".npmrc"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	env, outBuf, _, drain := newPipeEnv(t, "")
+	env.Workdir = workdir
+	runDoctor([]string{}, env)
+	drain()
+	out := outBuf.String()
+
+	if !strings.Contains(out, "[ok] registry config") {
+		t.Errorf("did not confirm the projection; got:\n%s", out)
+	}
+	if !strings.Contains(out, "override_deny") || !strings.Contains(out, "redundant") {
+		t.Errorf("did not flag the redundant, token-exposing override; got:\n%s", out)
+	}
+	if strings.Contains(out, "SECRET") {
+		t.Fatalf("doctor echoed secret material; got:\n%s", out)
+	}
+}
+
+// TestDoctorRegistryConfigReportsUnusableMapping keeps doctor from staying
+// silent when the npmrc has private-registry config omac cannot project.
+func TestDoctorRegistryConfigReportsUnusableMapping(t *testing.T) {
+	out := stageDoctorNpmrc(t,
+		"@acme:registry=https://npm.acme.test/api/?apiKey=SECRET\n",
+		`{"meta": {"name": "default"}, "environment": {"allow_vars": ["HOME"]}}`)
+
+	if !strings.Contains(out, "cannot be projected") {
+		t.Errorf("did not report the unusable mapping; got:\n%s", out)
+	}
+	if strings.Contains(out, "SECRET") {
+		t.Fatalf("doctor echoed the secret; got:\n%s", out)
+	}
+}

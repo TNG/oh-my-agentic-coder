@@ -148,9 +148,27 @@ Opting in projects a credential-free copy instead:
 
 At launch omac derives a copy of `~/.npmrc` holding **only** registry
 mappings, grants read access to that copy alone, and points npm at it via
-`NPM_CONFIG_USERCONFIG`. Every other entry is dropped, and inline URL
-credentials (`https://user:pass@host`) are stripped, so no secret can
-reach the sandbox. The host file stays masked.
+`NPM_CONFIG_USERCONFIG`. The host file stays masked. No secret can reach
+the sandbox: every non-mapping entry is dropped, inline URL credentials
+(`https://user:pass@host`) are stripped, and a mapping whose URL carries a
+query string or fragment is **refused** rather than copied — that is where
+an API key usually hides (`?apiKey=…`), and omac cannot tell a secret
+parameter from a load-bearing one.
+
+npm's own value syntax is honored first, so a mapping npm would act on is
+not lost: surrounding quotes are removed and `${VAR}` is expanded from the
+environment.
+
+Two cases are deliberately **not** projected, and both are reported at
+launch and by `omac doctor` rather than skipped quietly:
+
+- A mapping omac cannot turn into a credential-free `http(s)` URL.
+- The **global** `registry` key when the file also holds a credential for
+  that host. omac cannot supply the token, and redirecting all resolution
+  to a registry it cannot authenticate to would break even the public
+  installs that work today. A *scoped* mapping to such a host is still
+  projected — that scope was already failing — with a warning that installs
+  may return 401/403.
 
 Private registries usually also need their host in
 `network.allow_domain` (or an allow at the network prompt).

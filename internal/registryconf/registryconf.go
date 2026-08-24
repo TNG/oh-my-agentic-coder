@@ -44,7 +44,21 @@ type Projection struct {
 	// StrippedUserinfo counts kept mappings whose URL carried inline
 	// credentials (https://user:pass@host) that were removed.
 	StrippedUserinfo int
+	// Rejected lists mappings omac recognized but refused to project.
+	Rejected []Rejected
+	// NeedsAuth lists projected mapping keys whose host has a credential
+	// entry omac deliberately did not copy.
+	NeedsAuth []string
+	// Warning explains why no projection was produced, when the reason is
+	// worth telling the user about (an unreadable config rather than an
+	// absent one). Path is empty in that case.
+	Warning string
 }
+
+// Projected reports whether a usable projection was written. A Projection
+// with Projected()==false may still carry a Warning or Rejected entries the
+// caller should surface.
+func (p Projection) Projected() bool { return p.Path != "" }
 
 // Summary renders a one-line, secret-free description for the launch log.
 func (p Projection) Summary() string {
@@ -57,7 +71,9 @@ func (p Projection) Summary() string {
 }
 
 // projector derives one ecosystem's projection into dir. A missing host
-// config is not an error: it returns ok=false and no projection.
+// config is not an error: it returns present=false. A returned Projection
+// may still carry a Warning or Rejected entries when present=false, so the
+// caller can explain why nothing was projected.
 type projector func(dir string) (Projection, bool, error)
 
 // projectors maps each registry_config ecosystem to its implementation.
@@ -72,6 +88,11 @@ var projectors = map[string]projector{
 // and returns what it produced. Ecosystems are pre-validated by
 // sandboxprofile.Profile.Validate, so an unknown one is a programming
 // error rather than user input.
+//
+// Entries with Projected()==false are still returned when they carry a
+// Warning or Rejected mappings: the caller must be able to say why a
+// requested projection produced nothing, since silence there reproduces
+// the very 404 this package prevents.
 func Project(ecosystems []string, dir string) ([]Projection, error) {
 	var out []Projection
 	for _, eco := range ecosystems {
@@ -83,8 +104,11 @@ func Project(ecosystems []string, dir string) ([]Projection, error) {
 		if err != nil {
 			return nil, err
 		}
-		if !present {
+		if !present && p.Warning == "" && len(p.Rejected) == 0 {
 			continue
+		}
+		if p.Ecosystem == "" {
+			p.Ecosystem = eco
 		}
 		out = append(out, p)
 	}
@@ -105,20 +129,27 @@ func NPMUserConfig() (string, error) {
 func projectNPM(dir string) (Projection, bool, error) {
 	src, err := NPMUserConfig()
 	if err != nil {
-		return Projection{}, false, fmt.Errorf("registry_config npm: %w", err)
+		// Nothing to project and nothing omac can do about it. This is an
+		// opt-in convenience that only ever ADDS a mapping, so it must not
+		// take the whole launch down (a systemd unit or minimal container
+		// with no resolvable home would otherwise never start).
+		return Projection{Warning: fmt.Sprintf("cannot locate the npm user config: %v", err)}, false, nil
 	}
 	raw, err := os.ReadFile(src)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return Projection{}, false, nil
 		}
-		return Projection{}, false, fmt.Errorf("registry_config npm: read %s: %w", src, err)
+		// Same reasoning as above: EACCES on ~/.npmrc (e.g. root-owned
+		// after a sudo npm config set) is a warning, not a fatal error.
+		return Projection{Warning: fmt.Sprintf("cannot read %s: %v", src, err)}, false, nil
 	}
 	res := ScrubNPMRC(raw)
 	if len(res.KeptKeys) == 0 {
 		// No mapping means npm's default resolution is already correct;
-		// writing an empty file would add a grant for no reason.
-		return Projection{}, false, nil
+		// writing an empty file would add a grant for no reason. Rejections
+		// still travel back so the caller can explain the silence.
+		return Projection{Source: src, Rejected: res.Rejected}, false, nil
 	}
 	dest := filepath.Join(dir, "npmrc")
 	if err := os.WriteFile(dest, res.Content, 0o600); err != nil {
@@ -132,6 +163,8 @@ func projectNPM(dir string) (Projection, bool, error) {
 		KeptKeys:         res.KeptKeys,
 		Dropped:          res.Dropped,
 		StrippedUserinfo: res.StrippedUserinfo,
+		Rejected:         res.Rejected,
+		NeedsAuth:        res.NeedsAuth,
 	}, true, nil
 }
 
@@ -156,6 +189,10 @@ type Notice struct {
 	Enabled bool
 	// Overridden reflects whether override_deny already exposes Source.
 	Overridden bool
+	// Rejected lists mappings that exist in the file but cannot be
+	// projected. Carried so doctor reports them instead of staying silent
+	// while scoped installs keep 404ing.
+	Rejected []Rejected
 }
 
 // InspectNPM reports whether ~/.npmrc maps any scope to a non-default
@@ -195,7 +232,10 @@ func InspectNPM(enabled, overridden bool) (*Notice, error) {
 			hosts = append(hosts, u.Hostname())
 		}
 	}
-	if len(hosts) == 0 {
+	// A rejected mapping is exactly the case that must not be silent: the
+	// file has private-registry config, the sandbox cannot use it, and the
+	// user would otherwise get an unexplained 404.
+	if len(hosts) == 0 && len(res.Rejected) == 0 {
 		return nil, nil
 	}
 	return &Notice{
@@ -205,7 +245,17 @@ func InspectNPM(enabled, overridden bool) (*Notice, error) {
 		Credentialed: res.DroppedCredentials > 0,
 		Enabled:      enabled,
 		Overridden:   overridden,
+		Rejected:     res.Rejected,
 	}, nil
+}
+
+// Rejected is a registry mapping omac recognized but refused to project,
+// with the reason. These are reported rather than silently skipped: a
+// mapping that does not reach the sandbox leaves the exact 404 this package
+// exists to prevent, so silence would recreate the original bug.
+type Rejected struct {
+	Key    string
+	Reason string
 }
 
 // ScrubResult is the outcome of scrubbing one config file.
@@ -224,6 +274,13 @@ type ScrubResult struct {
 	DroppedCredentials int
 	// StrippedUserinfo counts kept URLs that carried inline credentials.
 	StrippedUserinfo int
+	// Rejected lists recognized mappings that could not be projected.
+	Rejected []Rejected
+	// NeedsAuth lists kept mapping keys whose registry host has a
+	// credential entry in the source file. omac cannot supply that
+	// credential (it is exactly what the projection drops), so installs
+	// against those hosts may fail authentication.
+	NeedsAuth []string
 }
 
 // scopedRegistryKey matches npm's scoped-registry form, e.g.
@@ -236,9 +293,22 @@ var credentialKey = regexp.MustCompile(`(?i)(_auth|_authtoken|_password|username
 
 // ScrubNPMRC keeps only registry mappings from an npmrc body. Everything
 // else — credentials, comments, unrelated knobs — is dropped.
+//
+// A mapping is kept only if its value resolves to a credential-free
+// http(s) URL. npm's own value syntax is honored first (surrounding quotes
+// are stripped, ${VAR} is expanded from the environment), so a mapping npm
+// would act on is not silently lost. Anything still unusable — or carrying
+// a secret outside the userinfo, e.g. ?apiKey= — is recorded in Rejected
+// rather than dropped quietly.
 func ScrubNPMRC(src []byte) ScrubResult {
 	var res ScrubResult
 	var lines []string
+	// keptHosts maps a kept mapping key to its registry host, so the
+	// credential correlation below can run after the whole file is read
+	// (auth lines may appear before or after the mapping they apply to).
+	keptHosts := map[string]string{}
+	authHosts := map[string]bool{}
+
 	for _, raw := range strings.Split(string(src), "\n") {
 		line := strings.TrimSpace(raw)
 		if line == "" || strings.HasPrefix(line, ";") || strings.HasPrefix(line, "#") {
@@ -254,14 +324,15 @@ func ScrubNPMRC(src []byte) ScrubResult {
 			res.Dropped++
 			if credentialKey.MatchString(key) {
 				res.DroppedCredentials++
+				if h := credentialHost(key); h != "" {
+					authHosts[h] = true
+				}
 			}
 			continue
 		}
-		clean, stripped, ok := registryURL(value)
-		if !ok {
-			// A mapping whose value is not an http(s) URL is not something
-			// we can vouch for; dropping is the safe direction.
-			res.Dropped++
+		clean, host, stripped, reason := registryURL(npmValue(value))
+		if reason != "" {
+			res.Rejected = append(res.Rejected, Rejected{Key: key, Reason: reason})
 			continue
 		}
 		if stripped {
@@ -269,11 +340,66 @@ func ScrubNPMRC(src []byte) ScrubResult {
 		}
 		lines = append(lines, key+"="+clean)
 		res.KeptKeys = append(res.KeptKeys, key)
+		keptHosts[key] = host
 	}
-	if len(lines) > 0 {
-		res.Content = []byte(strings.Join(lines, "\n") + "\n")
+
+	// Correlate kept mappings with the credentials that were dropped. The
+	// global `registry` key is special: pointing npm at a private mirror it
+	// cannot authenticate to breaks *every* install, including the public
+	// dependencies that work today with the file masked. That is a
+	// regression, so it is refused rather than projected. A scoped mapping
+	// only affects its own scope, which was already failing, so it is kept
+	// with a warning.
+	var keptLines []string
+	var keptKeys []string
+	for i, key := range res.KeptKeys {
+		host := keptHosts[key]
+		if authHosts[host] {
+			if strings.EqualFold(key, "registry") {
+				res.Rejected = append(res.Rejected, Rejected{
+					Key: key,
+					Reason: fmt.Sprintf("%s requires authentication that omac cannot supply; projecting the global registry "+
+						"would redirect every install there and break the public ones that work today", host),
+				})
+				continue
+			}
+			res.NeedsAuth = append(res.NeedsAuth, key)
+		}
+		keptKeys = append(keptKeys, key)
+		keptLines = append(keptLines, lines[i])
+	}
+	res.KeptKeys = keptKeys
+	if len(keptLines) > 0 {
+		res.Content = []byte(strings.Join(keptLines, "\n") + "\n")
 	}
 	return res
+}
+
+// npmValue applies npm's ini value syntax before the URL is validated:
+// surrounding quotes are removed and ${VAR}/$VAR are expanded from the
+// environment, both of which npm does itself. Without this a perfectly
+// good mapping (`@acme:registry="https://npm.acme.test"`) would look
+// unparseable and be silently skipped.
+func npmValue(value string) string {
+	v := strings.TrimSpace(value)
+	if len(v) >= 2 {
+		if (v[0] == '"' && v[len(v)-1] == '"') || (v[0] == '\'' && v[len(v)-1] == '\'') {
+			v = v[1 : len(v)-1]
+		}
+	}
+	return os.ExpandEnv(v)
+}
+
+// credentialHost extracts the registry host from a per-registry auth key
+// such as "//npm.acme.test/:_authToken" or "//npm.acme.test/api/:_password".
+// Returns "" for keys that are not host-scoped (e.g. a bare "_auth").
+func credentialHost(key string) string {
+	rest, ok := strings.CutPrefix(strings.ToLower(strings.TrimSpace(key)), "//")
+	if !ok {
+		return ""
+	}
+	host, _, _ := strings.Cut(rest, "/")
+	return host
 }
 
 // isRegistryMapping reports whether key is a registry mapping: the global
@@ -284,22 +410,37 @@ func isRegistryMapping(key string) bool {
 	return k == "registry" || scopedRegistryKey.MatchString(k)
 }
 
-// registryURL validates a mapping value and removes any credentials
-// embedded in it. ok=false means the value is not an absolute http(s) URL
-// and must not be projected. Note that a hostname merely *containing*
-// "token" (api.trustedtokens.eu) is a legitimate registry and is kept —
-// the credential check is structural (userinfo), not textual.
-func registryURL(value string) (clean string, stripped bool, ok bool) {
+// registryURL validates a mapping value and removes credentials embedded in
+// it. A non-empty reason means the value must not be projected. Note that a
+// hostname merely *containing* "token" (api.trustedtokens.eu) is a
+// legitimate registry and is kept — the credential checks are structural,
+// not textual.
+//
+// A query string or fragment is refused outright rather than stripped: it
+// is a common place to carry an API key (`?apiKey=…`), and omac cannot tell
+// a secret query parameter from a load-bearing one. Stripping it might
+// silently change resolution; keeping it would leak the secret into a
+// sandbox-readable file. Refusing says so instead.
+func registryURL(value string) (clean, host string, stripped bool, reason string) {
 	u, err := url.Parse(value)
-	if err != nil || u.Host == "" {
-		return "", false, false
+	if err != nil {
+		return "", "", false, fmt.Sprintf("value %q is not a URL", value)
+	}
+	if u.Host == "" {
+		return "", "", false, fmt.Sprintf("value %q has no host", value)
 	}
 	if u.Scheme != "http" && u.Scheme != "https" {
-		return "", false, false
+		return "", "", false, fmt.Sprintf("scheme %q is not http(s)", u.Scheme)
+	}
+	if u.RawQuery != "" || u.ForceQuery {
+		return "", "", false, "URL carries a query string, which commonly holds an API key omac must not copy into the sandbox"
+	}
+	if u.Fragment != "" {
+		return "", "", false, "URL carries a fragment"
 	}
 	if u.User != nil {
 		u.User = nil
-		return u.String(), true, true
+		stripped = true
 	}
-	return u.String(), false, true
+	return u.String(), u.Hostname(), stripped, ""
 }

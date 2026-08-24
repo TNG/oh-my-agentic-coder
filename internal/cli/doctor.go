@@ -230,22 +230,42 @@ func doctorRegistryConfig(env *Env, profileRef string) {
 		return
 	}
 	hosts := strings.Join(notice.Hosts, ", ")
+	// Each condition is reported on its own: a profile can have BOTH
+	// registry_config and override_deny, and reporting only the former
+	// ("[ok] … projected") would reassure the user while the real
+	// token-bearing file stays readable by the sandbox.
 	switch {
+	case len(notice.Hosts) == 0:
+		// Only rejections to report; the mapping list is empty.
 	case notice.Enabled:
 		fmt.Fprintf(env.Stdout, "[ok] registry config: %s mappings (%s) are projected into the sandbox\n",
 			notice.Ecosystem, hosts)
-	case notice.Overridden:
-		fmt.Fprintf(env.Stdout, "[warn] registry config: %s is exposed to the sandbox via filesystem.override_deny\n",
-			notice.Source)
-		fmt.Fprintf(env.Stdout, "       That grants the whole file%s. Prefer filesystem.registry_config: [%q],\n",
-			credentialSuffix(notice.Credentialed), notice.Ecosystem)
-		fmt.Fprintf(env.Stdout, "       which projects only the registry mappings (%s) and drops every credential.\n", hosts)
 	default:
 		fmt.Fprintf(env.Stdout, "[warn] registry config: %s maps a scope to %s, but the sandbox cannot read it\n",
 			notice.Source, hosts)
 		fmt.Fprintf(env.Stdout, "       Scoped installs will fail with a 404 against the public registry. Fix:\n")
 		fmt.Fprintf(env.Stdout, "       add filesystem.registry_config: [%q] to the sandbox profile%s.\n",
 			notice.Ecosystem, credentialNote(notice.Credentialed))
+	}
+
+	if notice.Overridden {
+		fmt.Fprintf(env.Stdout, "[warn] registry config: %s is exposed to the sandbox via filesystem.override_deny\n",
+			notice.Source)
+		fmt.Fprintf(env.Stdout, "       That grants the whole file%s.\n", credentialSuffix(notice.Credentialed))
+		if notice.Enabled {
+			fmt.Fprintf(env.Stdout, "       filesystem.registry_config is already projecting the mappings, so this grant\n")
+			fmt.Fprintf(env.Stdout, "       is redundant — drop it to keep the credential protected.\n")
+		} else {
+			fmt.Fprintf(env.Stdout, "       Prefer filesystem.registry_config: [%q], which projects only the registry\n", notice.Ecosystem)
+			fmt.Fprintf(env.Stdout, "       mappings and drops every credential.\n")
+		}
+	}
+
+	// Rejections are the silent-failure case: config exists, omac will not
+	// use it, and nothing else would say so.
+	for _, r := range notice.Rejected {
+		fmt.Fprintf(env.Stdout, "[warn] registry config: %s cannot be projected from %s\n", r.Key, notice.Source)
+		fmt.Fprintf(env.Stdout, "       %s\n", r.Reason)
 	}
 }
 
