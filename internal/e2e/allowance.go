@@ -68,9 +68,10 @@ type AllowanceSpec struct {
 	// the sidecar's /whoami endpoint and see the secret fingerprint.
 	SidecarReachable bool
 
-	// CrossSkillIsolated: if true, the test asserts the agent CANNOT
-	// reach another registered skill's sidecar (e.g. echo-rest from
-	// self-audit). Each skill's sidecar should be isolated.
+	// CrossSkillIsolated is a change detector, not an enforced contract:
+	// cross-skill sidecar isolation is a documented non-goal
+	// (oh-my-agentic-coder.md §3.2; docs/MULTI_DIR_DESKTOP.md §8.2), so
+	// when true the test only logs reachability via logCrossSkillIsolation.
 	CrossSkillIsolated bool
 
 	// SymlinkEscapeDenyPaths are denied paths the agent targets via a
@@ -202,7 +203,8 @@ func allowanceSpecFor(h harnessConfig) AllowanceSpec {
 		},
 		NetDenyDomain:      "blocked.example.com",
 		SidecarReachable:   true,
-		CrossSkillIsolated: true, // echo-rest sidecar must NOT be reachable from self-audit
+		// Logged change detector only; see CrossSkillIsolated field comment.
+		CrossSkillIsolated: true,
 		// Mirrors the symlink targets hardcoded in audit.sh's "symlink"
 		// probe (~/.ssh/id_rsa for read, /etc/omac-audit-test for write).
 		SymlinkEscapeDenyPaths: []string{

@@ -1105,10 +1105,11 @@ func logHardlinkProbeResults(t *testing.T, output string) {
 }
 
 // logCrossSkillIsolation logs whether the agent could reach another
-// skill's sidecar. omac currently does NOT isolate sidecars from each
-// other — all skills share the same facade and can reach each other
-// via their OMAC_<SKILL>_BASE env vars. This is a known design decision;
-// we log the result so if isolation is added later, the change is visible.
+// skill's sidecar; it does NOT assert, because cross-skill isolation
+// is a documented non-goal (oh-my-agentic-coder.md §3.2;
+// docs/MULTI_DIR_DESKTOP.md §8.2). It is a change detector — flip to
+// failWithClassification gated on AllowanceSpec.CrossSkillIsolated
+// once isolation is implemented.
 func logCrossSkillIsolation(t *testing.T, output string) {
 	t.Helper()
 	if !strings.Contains(output, "=== PROBE: xskill ===") {
