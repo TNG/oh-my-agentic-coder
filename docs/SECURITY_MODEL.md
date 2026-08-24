@@ -210,6 +210,7 @@ sandbox:
 | Bridge socket (`$TMPDIR/omac-<hash>/bridge.sock`) | read+write | `--allow-file` / `--read` flags |
 | Dynamic socket dir (e.g. Agent View `/tmp/cc-daemon-<uid>`) | read+write + AF_UNIX connect | `--allow-unix-dir` flag / `filesystem.allow_unix_dir` |
 | Paths in `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.kube`, … | **denied** | protected paths (override with `filesystem.override_deny`) |
+| `~/.npmrc` | **denied**; registry mappings available as a scrubbed copy | protected path; opt in with `filesystem.registry_config: ["npm"]` — projects mappings only, drops every credential, so `override_deny` is not needed ([configuration](CONFIGURATION.md#private-package-registries-filesystemregistry_config)) |
 | `~/.config/omac` (skill approval store, sandbox profiles, global registry) | **not mounted** | never granted — the host-only anchor for [skill spawn approval](#self-authored-skills) |
 | Workdir and granted-tree `.env` / `.envrc` (incl. nested) | **denied** | baseline workdir-protected set (override with `filesystem.override_deny: [".env"]`) |
 | Files matching `filesystem.deny` (e.g. `*.key`) inside granted trees | **denied** | user deny list (`filesystem.deny` / `--deny`) |

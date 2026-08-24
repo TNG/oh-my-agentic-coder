@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/tngtech/oh-my-agentic-coder/internal/builtinskills"
@@ -15,6 +16,7 @@ import (
 	"github.com/tngtech/oh-my-agentic-coder/internal/osinfo"
 	"github.com/tngtech/oh-my-agentic-coder/internal/profileaudit"
 	"github.com/tngtech/oh-my-agentic-coder/internal/registry"
+	"github.com/tngtech/oh-my-agentic-coder/internal/registryconf"
 	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxprofile"
 	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxrun"
 )
@@ -171,6 +173,11 @@ func runDoctor(args []string, env *Env) int {
 	// that policy linted rather than an unused "default".
 	doctorProfileLint(env, defaultPolicyRef(lc))
 
+	// Advisory: a private-registry mapping the sandbox cannot see makes
+	// scoped installs 404 with no denial anywhere to point at, so nothing
+	// else in doctor or diagnose would mention it.
+	doctorRegistryConfig(env, defaultPolicyRef(lc))
+
 	fmt.Fprintln(env.Stdout, "\nWhen a run fails, `omac diagnose` shows what the sandbox blocked and why.")
 
 	if failures > 0 {
@@ -197,6 +204,65 @@ func doctorProfileLint(env *Env, profileRef string) {
 	for _, f := range findings {
 		fmt.Fprintf(env.Stdout, "  [%s] %s: %s (%s)\n", f.Severity, f.Field, f.Message, f.Value)
 	}
+}
+
+// doctorRegistryConfig reports whether ~/.npmrc maps a scope to a private
+// registry that the sandbox cannot see. That combination fails in a way no
+// other check catches: the masked file yields no denial event, and npm's
+// fallback to the public registry returns a plain 404 that reads like "no
+// such package" (see #150, #241).
+//
+// Advisory only — it never affects doctor's exit code.
+func doctorRegistryConfig(env *Env, profileRef string) {
+	profile, _, err := sandboxprofile.Resolve(profileRef)
+	if err != nil {
+		return // profile problems are already reported by the sandbox section
+	}
+	enabled := slices.Contains(profile.Filesystem.RegistryConfig, sandboxprofile.RegistryConfigNPM)
+	src, err := registryconf.NPMUserConfig()
+	if err != nil {
+		return
+	}
+	overridden := sandboxprofile.BuildOverrideLookup(profile.Filesystem.OverrideDeny)[src]
+
+	notice, err := registryconf.InspectNPM(enabled, overridden)
+	if err != nil || notice == nil {
+		return
+	}
+	hosts := strings.Join(notice.Hosts, ", ")
+	switch {
+	case notice.Enabled:
+		fmt.Fprintf(env.Stdout, "[ok] registry config: %s mappings (%s) are projected into the sandbox\n",
+			notice.Ecosystem, hosts)
+	case notice.Overridden:
+		fmt.Fprintf(env.Stdout, "[warn] registry config: %s is exposed to the sandbox via filesystem.override_deny\n",
+			notice.Source)
+		fmt.Fprintf(env.Stdout, "       That grants the whole file%s. Prefer filesystem.registry_config: [%q],\n",
+			credentialSuffix(notice.Credentialed), notice.Ecosystem)
+		fmt.Fprintf(env.Stdout, "       which projects only the registry mappings (%s) and drops every credential.\n", hosts)
+	default:
+		fmt.Fprintf(env.Stdout, "[warn] registry config: %s maps a scope to %s, but the sandbox cannot read it\n",
+			notice.Source, hosts)
+		fmt.Fprintf(env.Stdout, "       Scoped installs will fail with a 404 against the public registry. Fix:\n")
+		fmt.Fprintf(env.Stdout, "       add filesystem.registry_config: [%q] to the sandbox profile%s.\n",
+			notice.Ecosystem, credentialNote(notice.Credentialed))
+	}
+}
+
+// credentialSuffix describes what an override_deny grant exposes.
+func credentialSuffix(credentialed bool) string {
+	if credentialed {
+		return ", including the auth token it holds"
+	}
+	return ""
+}
+
+// credentialNote explains why the projection beats the blunt alternative.
+func credentialNote(credentialed bool) string {
+	if credentialed {
+		return " (the file also holds an auth token, so override_deny would expose it)"
+	}
+	return ""
 }
 
 // doctorBuiltinSkills reports whether omac's built-in skills (provisioned by

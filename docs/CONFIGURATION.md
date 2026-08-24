@@ -124,10 +124,41 @@ Profile fields: `workdir.access` (none/read/write/readwrite),
 expansion), `filesystem.deny` (mask files inside granted trees — a
 bare name like `.env` or `*.key` is denied in every granted directory,
 the working directory included), `filesystem.override_deny` (punch
-holes in the built-in protected-path list), `network.mode`
+holes in the built-in protected-path list),
+`filesystem.registry_config` (see below), `network.mode`
 (filtered/blocked/open), `network.network_prompt`,
 `network.proxy_injection`, and `environment.allow_vars`. See the
 scaffolded `default.json` for the full schema.
+
+### Private package registries (`filesystem.registry_config`)
+
+A scoped package resolves through a mapping in your package manager's
+user config — `@acme:registry=https://npm.acme.test` in `~/.npmrc`. That
+file is a protected path, because it also commonly holds an auth token.
+Masked, it makes npm fall back to the public registry, where the package
+does not exist: the install fails with a **404 that reads like "no such
+package"** rather than "your registry configuration is invisible".
+Allowlisting the registry host does not help — the tool never asks it.
+
+Opting in projects a credential-free copy instead:
+
+```json
+{ "filesystem": { "registry_config": ["npm"] } }
+```
+
+At launch omac derives a copy of `~/.npmrc` holding **only** registry
+mappings, grants read access to that copy alone, and points npm at it via
+`NPM_CONFIG_USERCONFIG`. Every other entry is dropped, and inline URL
+credentials (`https://user:pass@host`) are stripped, so no secret can
+reach the sandbox. The host file stays masked.
+
+Private registries usually also need their host in
+`network.allow_domain` (or an allow at the network prompt).
+
+The blunt alternative — `override_deny: ["~/.npmrc"]` — also works, but
+grants the whole file including any token. `omac doctor` flags a private
+mapping the sandbox cannot see, and warns when `override_deny` is doing
+a job the projection would do without the exposure.
 
 When a host is neither allowed nor denied by the profile, the network
 prompt dialog offers eleven choices (`Deny once` is preselected):

@@ -213,6 +213,16 @@ func Run(opts Options) int {
 		}
 	}
 
+	// registry_config: derive credential-free package-manager configs and
+	// grant read access to the copies. Must run before BuildChildArgv, which
+	// freezes grants into backend rules, and the projection dir must outlive
+	// the child (bwrap binds it at launch), so cleanup is deferred.
+	registryCleanup, err := setupRegistryConfig(merged, grants, injected, stderr)
+	if err != nil {
+		return fail("%v", err)
+	}
+	defer registryCleanup()
+
 	// Denial markers must outlive argv construction: bwrap reads the
 	// bind sources at launch, so cleanup is deferred until after the
 	// child exits (below), not when BuildChildArgv returns.

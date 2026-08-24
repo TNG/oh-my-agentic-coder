@@ -96,10 +96,12 @@ func TestParseValidationErrors(t *testing.T) {
 		`{"network": {"listen_port": [70000]}}`,
 		`{"network": {"network_prompt": {"on_unavailable": "ask"}}}`,
 		`{"environment": {"allow_vars": [" "]}}`,
-		`{"environment": {"deny_vars": [" "]}}`,        // empty deny_vars entry
-		`{"filesystem": {"deny": [" "]}}`,              // empty deny entry
-		`{"filesystem": {"deny": ["[a-"]}}`,            // malformed basename glob
-		`{"network": {"proxy_injection": ["python"]}}`, // unsupported tool
+		`{"environment": {"deny_vars": [" "]}}`,          // empty deny_vars entry
+		`{"filesystem": {"deny": [" "]}}`,                // empty deny entry
+		`{"filesystem": {"deny": ["[a-"]}}`,              // malformed basename glob
+		`{"network": {"proxy_injection": ["python"]}}`,   // unsupported tool
+		`{"filesystem": {"registry_config": ["pypi"]}}`,  // unsupported ecosystem
+		`{"filesystem": {"registry_config": ["npmrc"]}}`, // near-miss name
 	}
 	for _, c := range cases {
 		if _, err := Parse([]byte(c)); err == nil {
@@ -116,6 +118,25 @@ func TestProxyInjection(t *testing.T) {
 	want := []string{ProxyInjectJVM, ProxyInjectNode}
 	if !slices.Equal(p.Network.ProxyInjection, want) {
 		t.Errorf("proxy_injection = %v, want %v", p.Network.ProxyInjection, want)
+	}
+}
+
+func TestRegistryConfig(t *testing.T) {
+	p, err := Parse([]byte(`{"filesystem": {"registry_config": ["npm"]}}`))
+	if err != nil {
+		t.Fatalf("valid registry_config rejected: %v", err)
+	}
+	if want := []string{RegistryConfigNPM}; !slices.Equal(p.Filesystem.RegistryConfig, want) {
+		t.Errorf("registry_config = %v, want %v", p.Filesystem.RegistryConfig, want)
+	}
+	// Unset is the historical behavior and must stay the zero value, so
+	// nothing is projected unless the profile opts in.
+	bare, err := Parse([]byte(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bare.Filesystem.RegistryConfig) != 0 {
+		t.Errorf("registry_config defaulted to %v, want empty", bare.Filesystem.RegistryConfig)
 	}
 }
 
