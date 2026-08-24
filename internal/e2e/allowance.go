@@ -205,8 +205,8 @@ func allowanceSpecFor(h harnessConfig) AllowanceSpec {
 			"/usr/bin/python3",
 			"/bin/sh",
 		},
-		NetDenyDomain:      "blocked.example.com",
-		SidecarReachable:   true,
+		NetDenyDomain:    "blocked.example.com",
+		SidecarReachable: true,
 		// Logged change detector only; see CrossSkillIsolated field comment.
 		CrossSkillIsolated: true,
 		ExpectedCacheMode:  "persistent",
