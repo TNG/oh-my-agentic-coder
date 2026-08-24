@@ -259,6 +259,13 @@ func runSecurityAudit(t *testing.T, h harnessConfig) {
 	// which may only appear in agent's summary of the sidecar probe).
 	stdout := string(auditOutput) + "\n" + agentOutput
 
+	// Scan session artifacts for the plaintext secret — catches sidecar-logging
+	// regressions that stdout/audit-output.txt wouldn't surface. No-op without E2E_LOG_DIR.
+	if path, leaked := artifactSecretLeaked(artifactDirFor(h, "security-audit"), auditSecretValue); leaked {
+		failWithClassification(t, "secretNotLeaked", fmSandboxFail,
+			"plaintext secret found in session artifact "+path)
+	}
+
 	// sandboxActive must match the --no-sandbox decision made in
 	// runAuditAgent: if we launched with --no-sandbox (either because the
 	// harness declares NoSandbox, or because we're nested inside an omac
@@ -298,7 +305,7 @@ func runSecurityAudit(t *testing.T, h harnessConfig) {
 	if sandboxActive {
 		assertEnvVarsVisible(t, stdout, spec.EnvExpectVisible)
 		assertFilesystemAllowed(t, stdout, spec.FsAllowLabels)
-		assertCacheIsolation(t, stdout)
+		assertCacheIsolation(t, stdout, spec.ExpectedCacheMode)
 	} else {
 		t.Logf("skipping positive env/fs-allow assertions: %s runs with --no-sandbox", h.Name)
 	}
@@ -1139,7 +1146,9 @@ func logCrossSkillIsolation(t *testing.T, output string) {
 // names, so the non-OMAC_* tool mappings appearing here proves Task 3's
 // trusted re-injection re-added them after FilterEnv stripped the
 // inherited host values.
-func assertCacheIsolation(t *testing.T, output string) {
+//
+// expectedMode, when non-empty, must equal OMAC_CACHE_MODE exactly.
+func assertCacheIsolation(t *testing.T, output, expectedMode string) {
 	t.Helper()
 	if !strings.Contains(output, "=== PROBE: cache ===") {
 		failWithClassification(t, "cacheIsolation", fmAgentNeverRan, output)
@@ -1151,9 +1160,15 @@ func assertCacheIsolation(t *testing.T, output string) {
 			output+": OMAC_CACHE_DIR not exposed")
 		return
 	}
-	if mode := extractEnv(output, "OMAC_CACHE_MODE="); mode == "" || mode == "<unset>" {
+	mode := extractEnv(output, "OMAC_CACHE_MODE=")
+	if mode == "" || mode == "<unset>" {
 		failWithClassification(t, "cacheIsolation", fmSandboxFail,
 			output+": OMAC_CACHE_MODE not exposed")
+		return
+	}
+	if expectedMode != "" && mode != expectedMode {
+		failWithClassification(t, "cacheIsolation", fmSandboxFail,
+			output+": OMAC_CACHE_MODE="+mode+" does not match expected "+expectedMode)
 		return
 	}
 	// Each tool cache mapping must be re-injected (not just present as a

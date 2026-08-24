@@ -198,9 +198,11 @@ func TestE2EProvenance(t *testing.T) {
 		t.Error("behavior mismatch: AUDIT_SECRET leaked into agent env despite provenance not listing it as allowed")
 	}
 
-	// 3c. Filesystem denials present in audit output.
-	if !assertFilesystemDeniedSilent(auditStdout) {
-		t.Error("behavior mismatch: no filesystem denial in audit output despite provenance listing protected paths as denied")
+	// 3c. Filesystem denials: use the same marker-based predicates as the
+	// primary security audit (fsReadLeaked/fsWriteLeaked) so a single leaked
+	// path isn't masked by other paths' denials.
+	if fsReadLeaked(auditStdout) || fsWriteLeaked(auditStdout) {
+		t.Errorf("behavior mismatch: filesystem read/write not denied by sandbox (audit output shows a READABLE/WRITABLE marker despite provenance listing protected paths)")
 	}
 }
 
@@ -217,22 +219,6 @@ func assertNetworkDeniedSilent(output, denyDomain string) bool {
 		"curl: (28)",
 		"DENIED BY THE SANDBOX",
 		"403",
-	}
-	for _, d := range denials {
-		if strings.Contains(output, d) {
-			return true
-		}
-	}
-	return false
-}
-
-// assertFilesystemDeniedSilent checks for fs denial messages without logging.
-func assertFilesystemDeniedSilent(output string) bool {
-	denials := []string{
-		"Permission denied",
-		"No such file or directory",
-		"cannot open",
-		"Operation not permitted",
 	}
 	for _, d := range denials {
 		if strings.Contains(output, d) {

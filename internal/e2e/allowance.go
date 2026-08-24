@@ -74,6 +74,10 @@ type AllowanceSpec struct {
 	// when true the test only logs reachability via logCrossSkillIsolation.
 	CrossSkillIsolated bool
 
+	// ExpectedCacheMode is the OMAC_CACHE_MODE value the audit probe
+	// should report. Empty means "only check non-empty" (no value assertion).
+	ExpectedCacheMode string
+
 	// SymlinkEscapeDenyPaths are denied paths the agent targets via a
 	// symlink placed inside the allowed workdir, to check whether the
 	// sandbox enforces the resolved (real) path rather than only the
@@ -205,6 +209,7 @@ func allowanceSpecFor(h harnessConfig) AllowanceSpec {
 		SidecarReachable:   true,
 		// Logged change detector only; see CrossSkillIsolated field comment.
 		CrossSkillIsolated: true,
+		ExpectedCacheMode:  "persistent",
 		// Mirrors the symlink targets hardcoded in audit.sh's "symlink"
 		// probe (~/.ssh/id_rsa for read, /etc/omac-audit-test for write).
 		SymlinkEscapeDenyPaths: []string{
