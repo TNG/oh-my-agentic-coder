@@ -177,6 +177,16 @@ nono why --self --path "$OMAC_SOCKET" --op read --json
 See [Policy Introspection](https://nono.sh/docs/cli/features/policy-introspection)
 and [Troubleshooting](https://nono.sh/docs/cli/usage/troubleshooting) for
 more. If a skill's request returns HTTP 503 with `X-Omac-Reason: sidecar-down`,
-check the per-skill log under `$TMPDIR/omac-<hash>/logs/<skill>.log`. Resolve
-`<hash>` for the current workdir with `omac diagnose --hash=runtime` (see
-[CLI.md](CLI.md#workdir-hashes-omac-diagnose---hash)).
+check the per-skill log under `<runtime-dir>/logs/<skill>.log`. Note that
+`$TMPDIR` inside the sandbox is *not* the one that dir was created under — it
+is remapped to the per-launch sandbox temp dir — so resolve the runtime dir
+from the socket instead:
+
+```bash
+ls "$(dirname "$OMAC_SOCKET")/logs"
+# or, equivalently (omac reads $OMAC_SOCKET when it is set):
+omac diagnose --hash=runtime
+```
+
+See [CLI.md](CLI.md#workdir-hashes-omac-diagnose---hash) for the other
+identifiers omac derives from a workdir.

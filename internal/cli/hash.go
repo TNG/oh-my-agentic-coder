@@ -15,6 +15,7 @@ package cli
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/tngtech/oh-my-agentic-coder/internal/config"
@@ -152,20 +153,22 @@ func buildHashView(workdir, kind string) hashView {
 func buildHashEntry(workdir, kind string) hashEntry {
 	switch kind {
 	case hashKindRuntime:
+		path, live := resolveRuntimePath(runtimeDirPath(workdir))
 		return hashEntry{
 			Kind:   kind,
 			Input:  workdir,
 			Digest: runtimeDirDigest(workdir),
-			Path:   runtimeDirPath(workdir),
-			Note:   "omac start runtime dir (logs, pids, bridge.sock)",
+			Path:   path,
+			Note:   annotateLive("omac start runtime dir (logs, pids, bridge.sock)", live),
 		}
 	case hashKindServe:
+		path, live := resolveRuntimePath(serveRuntimeDirPath(workdir))
 		return hashEntry{
 			Kind:   kind,
 			Input:  "serve:" + workdir,
 			Digest: serveRuntimeDirDigest(workdir),
-			Path:   serveRuntimeDirPath(workdir),
-			Note:   "omac serve runtime dir, keyed on the server root",
+			Path:   path,
+			Note:   annotateLive("omac serve runtime dir, keyed on the server root", live),
 		}
 	case hashKindKeychain:
 		return hashEntry{
@@ -178,6 +181,45 @@ func buildHashEntry(workdir, kind string) hashEntry {
 		return buildCacheHashEntry(workdir)
 	}
 	return hashEntry{Kind: kind, Error: "unknown kind"}
+}
+
+// liveRuntimeDir returns the runtime dir of the omac session this process is
+// running inside, or "" when it is not inside one.
+//
+// This exists because os.TempDir() is the wrong answer in the one place the
+// answer matters most. Inside the sandbox, TMPDIR is remapped to the
+// per-launch sandbox temp dir (start.go, serve.go both export it), so joining
+// os.TempDir() with the derived name yields a directory that does not exist —
+// exactly what an agent debugging a sidecar from inside the sandbox would be
+// handed. $OMAC_SOCKET is unaffected: start and serve both set it to
+// <runtimeDir>/bridge.sock on the HOST, so its parent is the live runtime dir,
+// read rather than re-derived.
+func liveRuntimeDir() string {
+	sock := os.Getenv("OMAC_SOCKET")
+	if sock == "" {
+		return ""
+	}
+	return filepath.Dir(sock)
+}
+
+// resolveRuntimePath prefers the live runtime dir over the $TMPDIR-derived
+// one, but only when the two carry the same directory NAME — that is, when the
+// ambient session belongs to the workdir being reported. A --workdir pointing
+// at some other directory, or a serve session while asking for the start kind,
+// keeps the derived path.
+func resolveRuntimePath(derived string) (path string, fromSocket bool) {
+	live := liveRuntimeDir()
+	if live == "" || live == derived || filepath.Base(live) != filepath.Base(derived) {
+		return derived, false
+	}
+	return live, true
+}
+
+func annotateLive(note string, fromSocket bool) string {
+	if !fromSocket {
+		return note
+	}
+	return note + "; path read from $OMAC_SOCKET ($TMPDIR is remapped inside the sandbox)"
 }
 
 // buildCacheHashEntry resolves the cache scope the way the launcher does —
@@ -226,11 +268,15 @@ func cacheScopeOrigin(cfgPath string) string {
 func writeHashText(env *Env, view hashView) int {
 	fmt.Fprintf(env.Stdout, "workdir  %s\nTMPDIR   %s\n", view.Workdir, view.TmpDir)
 	for _, e := range view.Entries {
-		fmt.Fprintln(env.Stdout)
+		// A kind that could not be derived goes to stderr, so a caller
+		// scraping stdout for paths never picks up an error stanza as if it
+		// were one. (In --json the failure is a structured `error` field and
+		// stays in the payload.)
 		if e.Error != "" {
-			fmt.Fprintf(env.Stdout, "%s\n  error  %s\n", e.Kind, e.Error)
+			fmt.Fprintf(env.Stderr, "omac diagnose --hash: %s: %s\n", e.Kind, e.Error)
 			continue
 		}
+		fmt.Fprintln(env.Stdout)
 		fmt.Fprintf(env.Stdout, "%s\n  digest %s\n", e.Kind, e.Digest)
 		if e.Path != "" {
 			fmt.Fprintf(env.Stdout, "  path   %s\n", e.Path)

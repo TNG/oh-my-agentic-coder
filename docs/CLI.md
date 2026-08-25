@@ -190,7 +190,16 @@ reverse-engineer a log path or a cache directory:
 | `runtime` | absolute workdir | `sha256[:6]` | `$TMPDIR/omac-<hash>/` — `omac start`'s `logs/`, `pids/`, `bridge.sock` |
 | `serve` | `"serve:"` + absolute workdir | `sha256[:6]` | `$TMPDIR/omac-serve-<hash>/` — `omac serve`'s `logs/` |
 | `keychain` | absolute workdir | full `sha256` | the secret scope a workdir's keychain entries live under (not a path) |
-| `cache` | `"v1:<domain>:<canonical>"` | full `sha256` | `~/.cache/omac/<hash>/` — the persistent tool-cache scope |
+| `cache` | depends on the scope (below) | full `sha256` | `~/.cache/omac/<hash>/` — the persistent tool-cache scope |
+
+The `cache` input depends on the configured `cache.scope`, so it is **not**
+always workdir-derived:
+
+| `cache.scope` | Hashed input |
+| --- | --- |
+| `global` (default) | the constant `v1:shared` — identical for every workdir |
+| `workdir` | `v1:workdir:<symlink-resolved workdir>` |
+| `config` | `v1:config:<symlink-resolved launcher config path>`, or `v1:shared` when no config file is on disk |
 
 ```sh
 omac diagnose --hash                 # all four kinds
@@ -201,20 +210,29 @@ omac --workdir /path/to/proj diagnose --hash=cache
 ls "$(omac diagnose --hash=runtime --json | jq -r '.entries[0].path')/logs"
 ```
 
-Two things the output makes explicit, because both are easy to get wrong:
+Three things the output makes explicit, because all three are easy to get
+wrong:
 
-- The `runtime` and `serve` paths are relative to `$TMPDIR`, so a shell with
-  a different `TMPDIR` than the running agent resolves a different (equally
-  correct) path. The reported `tmpdir` is the one that produced the output.
+- The `runtime` and `serve` paths are joined onto `$TMPDIR`, so a shell with a
+  different `TMPDIR` than the run resolves a different path. The reported
+  `tmpdir` is the one that produced the output. **Inside the sandbox `TMPDIR`
+  is deliberately remapped** to the per-launch sandbox temp dir, which would
+  make a naively joined path point at nothing; when `$OMAC_SOCKET` is set and
+  belongs to the workdir being reported, the command reads the live runtime
+  dir from it instead and says so in the entry's `note`.
 - `runtime`, `serve` and `keychain` hash the **absolute** workdir, while
-  `cache` hashes the **symlink-resolved** path. On macOS, where `/tmp` is a
-  symlink to `/private/tmp`, those are different strings — the per-kind
-  `input` field shows exactly what was hashed.
+  `cache` hashes a **symlink-resolved** path (when it hashes a path at all).
+  On macOS, where `/tmp` is a symlink to `/private/tmp`, those are different
+  strings — the per-kind `input` field shows exactly what was hashed.
+- Digests are always derivable; paths may not exist yet. The command only
+  *describes* directories — it never creates them, and never removes them.
 
-The `cache` kind honors the configured `cache.scope` (`global`, `config`, or
-`workdir` — see [CONFIGURATION.md](CONFIGURATION.md)), so it reports the cache
-this workdir actually gets. It always agrees with `omac provenance`'s
-`cache.path`.
+The `cache` kind reports the scope resolved from `cache.scope` in the launcher
+config (see [CONFIGURATION.md](CONFIGURATION.md)), and always agrees with
+`omac provenance`'s `cache.path`. Like `provenance`, it reports the
+**config-resolved** scope: it does not know about a specific launch's
+`--cache-scope` override, `--ephemeral-cache` (a per-launch dir under the
+sandbox temp dir), or `--no-sandbox` (no persistent scope is prepared at all).
 
 ## Exit codes
 
