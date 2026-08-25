@@ -159,6 +159,18 @@ omac [--workdir <dir>] <subcommand> [flags] [args]
                cache-root / tool-home grants and about host cargo config /
                credentials files an isolated CARGO_HOME won't pick up.
 
+  diagnose     Why did my run fail? Reads the audit trail back and correlates
+               the network decisions the sandbox made against the effective
+               policy. Flags:
+                 --run last|all      which run(s) to analyze (default: last)
+                 --profile <ref>     sandbox profile name/path/builtin
+                 --probe host[:port] statically check whether the host would
+                                     be admitted, then exit
+                 --hash[=<kind>]     print the identifiers omac derives from
+                                     the workdir, then exit (see below)
+                 --json              emit JSON instead of text
+                 -v, --verbose       every hint + the full effective config
+
   cache        Manage the persistent tool cache under ~/.cache/omac.
                  clear           remove the active cache scope (per cache.scope)
                  clear --all     remove every inactive cache scope
@@ -166,6 +178,43 @@ omac [--workdir <dir>] <subcommand> [flags] [args]
 
   version
 ```
+
+## Workdir hashes (`omac diagnose --hash`)
+
+omac derives four different identifiers from a workdir, each hashed
+differently. `omac diagnose --hash` prints them so you don't have to
+reverse-engineer a log path or a cache directory:
+
+| Kind | Hashed input | Digest | Names |
+| --- | --- | --- | --- |
+| `runtime` | absolute workdir | `sha256[:6]` | `$TMPDIR/omac-<hash>/` — `omac start`'s `logs/`, `pids/`, `bridge.sock` |
+| `serve` | `"serve:"` + absolute workdir | `sha256[:6]` | `$TMPDIR/omac-serve-<hash>/` — `omac serve`'s `logs/` |
+| `keychain` | absolute workdir | full `sha256` | the secret scope a workdir's keychain entries live under (not a path) |
+| `cache` | `"v1:<domain>:<canonical>"` | full `sha256` | `~/.cache/omac/<hash>/` — the persistent tool-cache scope |
+
+```sh
+omac diagnose --hash                 # all four kinds
+omac diagnose --hash=runtime         # one kind (attached '=', not a space)
+omac --workdir /path/to/proj diagnose --hash=cache
+
+# Find a run's logs:
+ls "$(omac diagnose --hash=runtime --json | jq -r '.entries[0].path')/logs"
+```
+
+Two things the output makes explicit, because both are easy to get wrong:
+
+- The `runtime` and `serve` paths are relative to `$TMPDIR`, so a shell with
+  a different `TMPDIR` than the running agent resolves a different (equally
+  correct) path. The reported `tmpdir` is the one that produced the output.
+- `runtime`, `serve` and `keychain` hash the **absolute** workdir, while
+  `cache` hashes the **symlink-resolved** path. On macOS, where `/tmp` is a
+  symlink to `/private/tmp`, those are different strings — the per-kind
+  `input` field shows exactly what was hashed.
+
+The `cache` kind honors the configured `cache.scope` (`global`, `config`, or
+`workdir` — see [CONFIGURATION.md](CONFIGURATION.md)), so it reports the cache
+this workdir actually gets. It always agrees with `omac provenance`'s
+`cache.path`.
 
 ## Exit codes
 
