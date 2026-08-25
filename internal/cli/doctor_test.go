@@ -509,6 +509,17 @@ func TestDoctorEmptyAllowVarsWarned(t *testing.T) {
 		!strings.Contains(strings.ToLower(output), "remediation") {
 		t.Errorf("doctor output missing impact/remediation; got:\n%s", output)
 	}
+	profilePath := filepath.Join(home, ".config", "omac", "sandbox-profiles", "default.json")
+	for _, want := range []string{
+		profilePath,
+		"not updated by omac upgrades",
+		"installer or original source",
+		`["*"] is not recommended`,
+	} {
+		if !strings.Contains(output, want) {
+			t.Errorf("doctor output missing %q; got:\n%s", want, output)
+		}
+	}
 }
 
 // TestDoctorNonEmptyAllowVarsNotWarned asserts the empty-allow_vars warning

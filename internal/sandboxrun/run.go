@@ -51,8 +51,10 @@ func warnEmptyAllowVars(stderr io.Writer, allowVars []string) {
 	fmt.Fprintln(stderr, "omac sandbox: warning: empty environment.allow_vars — forwarding only the")
 	fmt.Fprintln(stderr, "  operational defaults (HOME, PATH, TERM, locale, …). Every other ambient var,")
 	fmt.Fprintln(stderr, "  including provider tokens, is stripped: a harness started this way will not")
-	fmt.Fprintln(stderr, "  authenticate. Add what it needs to allow_vars, pass --allow-env <name>, or set")
-	fmt.Fprintln(stderr, `  allow_vars: ["*"] to inherit every non-blocklisted var.`)
+	fmt.Fprintln(stderr, "  authenticate. Custom profiles are not updated by omac upgrades; refresh this")
+	fmt.Fprintln(stderr, "  profile from its installer or original source. If you maintain it manually, add")
+	fmt.Fprintln(stderr, "  what it needs to allow_vars or pass --allow-env <name>.")
+	fmt.Fprintln(stderr, `  allow_vars: ["*"] is not recommended because it inherits every non-blocklisted var.`)
 }
 
 // Run is the `omac sandbox run` supervisor: resolve profile + flags,

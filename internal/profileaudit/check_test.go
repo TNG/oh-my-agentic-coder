@@ -40,6 +40,11 @@ func TestCheck_EmptyAllowVarsIsMedium(t *testing.T) {
 			if f.Severity != SeverityMedium {
 				t.Errorf("empty allow_vars severity = %q, want medium", f.Severity)
 			}
+			for _, want := range []string{"installer or original source", `["*"] is not recommended`} {
+				if !strings.Contains(f.Message, want) {
+					t.Errorf("empty allow_vars finding missing %q: %s", want, f.Message)
+				}
+			}
 		}
 	}
 	if !found {

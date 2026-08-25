@@ -499,8 +499,17 @@ func TestForwardHarnessEnvEmptyProfileForwardsOperationalMinimum(t *testing.T) {
 	if strings.Contains(joined, "ANTHROPIC_API_KEY") {
 		t.Errorf("empty profile must not auto-forward provider-auth vars; got %v", got)
 	}
-	if !strings.Contains(errBuf.String(), "allow_vars") {
-		t.Errorf("expected empty-allow_vars warning on stderr; got:\n%s", errBuf.String())
+	warning := errBuf.String()
+	for _, want := range []string{
+		"allow_vars",
+		plan.PolicyPath,
+		"not updated by omac upgrades",
+		"installer or original source",
+		`["*"] is not recommended`,
+	} {
+		if !strings.Contains(warning, want) {
+			t.Errorf("empty-allow-vars warning missing %q; got:\n%s", want, warning)
+		}
 	}
 }
 
