@@ -36,7 +36,7 @@ def _basename(path):
 
 # Env vars that are legitimately WSL2-only — present in the WSL2 job but not
 # the main job, and exempt from the env-key parity check.
-WSL2_ONLY_ENV = {"WSLENV"}
+WSL2_ONLY_ENV = {"WSLENV", "SMOKE_LOG_DIR"}
 
 
 def _is_windows(job):

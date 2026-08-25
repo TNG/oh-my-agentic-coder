@@ -409,11 +409,12 @@ jobs:
       E2E_MODEL_CODEWHALE: ${{ needs.model.outputs.gateway }}
       E2E_MODEL_CLAUDE_CODE: ${{ needs.model.outputs.claude_code }}
       E2E_CONTEXT_LIMIT: ${{ github.event.inputs.context_limit }}
+      SMOKE_LOG_DIR: ${{ runner.temp }}/e2e-smoke-logs
       # WSL only forwards vars listed in WSLENV — include every job/step env
       # var the Go tests read via os.Getenv(). Without it, SKAINET_TOKEN,
       # E2E_MODEL_*, etc. are unbound inside wsl-bash. OMAC_BIN is set via
       # GITHUB_ENV by the "Provision released omac" step.
-      WSLENV: GITHUB_OUTPUT:GITHUB_STEP_SUMMARY:OMAC_BIN:SKAINET_TOKEN:SKAINET_INTERNAL:ANTHROPIC_BASE_URL:E2E_HARNESS:E2E_USE_LATEST:E2E_MODEL_OPENCODE:E2E_MODEL_CODEX:E2E_MODEL_COPILOT:E2E_MODEL_PI:E2E_MODEL_CODEWHALE:E2E_MODEL_CLAUDE_CODE:E2E_CONTEXT_LIMIT:E2E_CACHE_DIR
+      WSLENV: GITHUB_OUTPUT:GITHUB_STEP_SUMMARY:OMAC_BIN:SKAINET_TOKEN:SKAINET_INTERNAL:ANTHROPIC_BASE_URL:E2E_HARNESS:E2E_USE_LATEST:E2E_MODEL_OPENCODE:E2E_MODEL_CODEX:E2E_MODEL_COPILOT:E2E_MODEL_PI:E2E_MODEL_CODEWHALE:E2E_MODEL_CLAUDE_CODE:E2E_CONTEXT_LIMIT:E2E_CACHE_DIR:SMOKE_LOG_DIR
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -460,6 +461,13 @@ jobs:
           if [ -n "${OMAC_BIN:-}" ]; then
             export OMAC_BIN=$(wslpath -u "$OMAC_BIN" 2>/dev/null || echo "$OMAC_BIN")
           fi
+          if [ -n "${E2E_CACHE_DIR:-}" ]; then
+            export E2E_CACHE_DIR=$(wslpath -u "$E2E_CACHE_DIR" 2>/dev/null || echo "$E2E_CACHE_DIR")
+          fi
+          if [ -n "${SMOKE_LOG_DIR:-}" ]; then
+            export SMOKE_LOG_DIR=$(wslpath -u "$SMOKE_LOG_DIR" 2>/dev/null || echo "$SMOKE_LOG_DIR")
+            mkdir -p "$SMOKE_LOG_DIR"
+          fi
           WEOF
 
       - name: Resolve model
@@ -471,7 +479,7 @@ jobs:
       - name: Cache harness install packages
         uses: actions/cache@v4
         with:
-          path: e2e-install-cache
+          path: ${{ runner.temp }}/e2e-install-cache
           key: e2e-smoke-install-Windows-${{ matrix.harness }}-${{ matrix.omac }}-${{ github.run_id }}
           restore-keys: |
             e2e-smoke-install-Windows-${{ matrix.harness }}-${{ matrix.omac }}-
@@ -508,26 +516,26 @@ jobs:
         id: modelfree
         shell: wsl-bash {0}
         env:
-          E2E_CACHE_DIR: ./e2e-install-cache
+          E2E_CACHE_DIR: ${{ runner.temp }}/e2e-install-cache
         run: |
           source /tmp/wsl-env.sh
           set -o pipefail
           go test -tags=e2e -timeout=20m -v \
             -run 'TestHarnessCLIContract|TestHarnessLaunchProbe|TestHarnessServeProbe|TestOpenCodeSingleSystemMessage' \
-            ./internal/e2e/ 2>&1 | tee modelfree.log || true
+            ./internal/e2e/ 2>&1 | tee "$SMOKE_LOG_DIR/modelfree.log" || true
 
       - name: LLM turn
         id: llm
         continue-on-error: true
         shell: wsl-bash {0}
         env:
-          E2E_CACHE_DIR: ./e2e-install-cache
+          E2E_CACHE_DIR: ${{ runner.temp }}/e2e-install-cache
         run: |
           source /tmp/wsl-env.sh
           set -o pipefail
           attempt=1; max=2
           while :; do
-            if go test -tags=e2e -timeout=12m -v -run TestE2EEchoRest ./internal/e2e/ 2>&1 | tee llm.log; then
+            if go test -tags=e2e -timeout=12m -v -run TestE2EEchoRest ./internal/e2e/ 2>&1 | tee "$SMOKE_LOG_DIR/llm.log"; then
               break
             fi
             if [ "$attempt" -ge "$max" ]; then exit 1; fi
@@ -543,7 +551,7 @@ jobs:
           stage_mark() {
             local stage="$1" absent="${2:-❌}"
             local line
-            line=$(grep -oE "OMAC_COMPAT .*stage=$stage .*result=[A-Z]+" modelfree.log 2>/dev/null | head -1 || true)
+            line=$(grep -oE "OMAC_COMPAT .*stage=$stage .*result=[A-Z]+" "$SMOKE_LOG_DIR/modelfree.log" 2>/dev/null | head -1 || true)
             case "$line" in
               *result=PASS) echo '✅' ;;
               *result=SKIP) echo '➖' ;;
@@ -551,10 +559,10 @@ jobs:
               *) echo '❌' ;;
             esac
           }
-          version=$(grep -oE 'OMAC_COMPAT .*stage=contract .*' modelfree.log 2>/dev/null \
+          version=$(grep -oE 'OMAC_COMPAT .*stage=contract .*' "$SMOKE_LOG_DIR/modelfree.log" 2>/dev/null \
             | sed -E 's/.*version=([^ ]+).*/\1/' | head -1)
           [ -z "$version" ] && version="unknown"
-          model=$(grep -oE 'OMAC_COMPAT .*stage=contract .*' modelfree.log 2>/dev/null \
+          model=$(grep -oE 'OMAC_COMPAT .*stage=contract .*' "$SMOKE_LOG_DIR/modelfree.log" 2>/dev/null \
             | sed -E 's/.*model=([^ ]+).*/\1/' | head -1)
           [ -z "$model" ] && model=$(scripts/resolve-model.sh '${{ matrix.harness }}' || echo unknown)
           contract=$(stage_mark contract)
@@ -567,9 +575,9 @@ jobs:
           esac
           date_utc=$(date -u +%Y-%m-%d)
           row="| $date_utc | ${{ steps.omac.outputs.version }} | WSL2 | ${{ matrix.harness }} | $version | $contract | $launch | $serve | $llm | $model |"
-          mkdir -p compat
+          mkdir -p "$SMOKE_LOG_DIR/compat"
           slug="wsl2-${{ matrix.harness }}-${{ matrix.omac }}"
-          printf '%s\n' "$row" > "compat/$slug.row"
+          printf '%s\n' "$row" > "$SMOKE_LOG_DIR/compat/$slug.row"
           echo "$row"
           echo "row<<EOF" >> "$GITHUB_OUTPUT"; echo "$row" >> "$GITHUB_OUTPUT"; echo "EOF" >> "$GITHUB_OUTPUT"
           if printf '%s' "$row" | grep -q '❌'; then
@@ -581,10 +589,10 @@ jobs:
             {
               echo "=== ${{ matrix.harness }} / WSL2 / omac@${{ matrix.omac }} — failing stage(s):$stages ==="
               grep -hE 'CLI contract drift|no longer exposes|--- FAIL|omac start .* failed|serve probe failed|omac serve exited|FAIL \[|Error|panic:' \
-                modelfree.log llm.log 2>/dev/null | head -40 || true
-              tail -n 30 llm.log 2>/dev/null || true
+                "$SMOKE_LOG_DIR/modelfree.log" "$SMOKE_LOG_DIR/llm.log" 2>/dev/null | head -40 || true
+              tail -n 30 "$SMOKE_LOG_DIR/llm.log" 2>/dev/null || true
               echo
-            } > "compat/$slug.ctx"
+            } > "$SMOKE_LOG_DIR/compat/$slug.ctx"
           fi
           {
             echo "### ${{ matrix.harness }} / WSL2 / omac@${{ matrix.omac }}"
@@ -600,8 +608,8 @@ jobs:
         with:
           name: compat-wsl2-${{ matrix.harness }}-${{ matrix.omac }}
           path: |
-            compat/*.row
-            compat/*.ctx
+            ${{ runner.temp }}/e2e-smoke-logs/compat/*.row
+            ${{ runner.temp }}/e2e-smoke-logs/compat/*.ctx
           if-no-files-found: warn
           retention-days: 30
 
@@ -611,8 +619,8 @@ jobs:
         with:
           name: smoke-logs-wsl2-${{ matrix.harness }}-${{ matrix.omac }}
           path: |
-            modelfree.log
-            llm.log
+            ${{ runner.temp }}/e2e-smoke-logs/modelfree.log
+            ${{ runner.temp }}/e2e-smoke-logs/llm.log
           if-no-files-found: ignore
           retention-days: 14
 
