@@ -7,6 +7,7 @@ import (
 	"github.com/tngtech/oh-my-agentic-coder/internal/config"
 	"github.com/tngtech/oh-my-agentic-coder/internal/registry"
 	"github.com/tngtech/oh-my-agentic-coder/internal/skillconfig"
+	"github.com/tngtech/oh-my-agentic-coder/internal/skillstate"
 )
 
 // TestMergeRegistries_WorkdirWins proves the union semantics: every
@@ -68,7 +69,7 @@ func TestMergeConfig_WorkdirWins(t *testing.T) {
 	workdir := &skillconfig.Store{Skills: map[string]map[string]string{}}
 	workdir.Set("email", "host", "workdir.example.com")
 
-	merged := mergeConfig(global, workdir)
+	merged := skillstate.MergeConfig(global, workdir)
 
 	if v, _ := merged.Get("email", "host"); v != "workdir.example.com" {
 		t.Errorf("email/host = %q, want workdir override", v)

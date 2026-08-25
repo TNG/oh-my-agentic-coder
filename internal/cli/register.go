@@ -520,10 +520,10 @@ func handleOneSecret(env *Env, scope, skill string, spec config.SecretSpec, repr
 	//     things I've already answered", not "skip required values".
 	if useDefaults {
 		if def, err := keychain.GetDefault(skill, spec.Name); err == nil {
-			if verr := validatePattern(spec, def.ExposeString()); verr == nil {
+			if verr := spec.ValidateValue(def.ExposeString()); verr == nil {
 				if serr := keychain.SetWithDefault(scope, skill, spec.Name, def); serr != nil {
 					def.Zero()
-					return false, fmt.Errorf("keychain: %w", wrapKeychainErr(serr))
+					return false, fmt.Errorf("keychain: %w", keychain.WrapUnavailable(serr))
 				}
 				def.Zero()
 				st.status(env.Stderr, "stored", spec.Name+st.gray(" (from remembered default)"), ansiGreen)
@@ -535,13 +535,13 @@ func handleOneSecret(env *Env, scope, skill string, spec config.SecretSpec, repr
 
 	// 2. --secrets-from file takes precedence over prompting.
 	if v, ok := fromFile[spec.Name]; ok {
-		if err := validatePattern(spec, v); err != nil {
+		if err := spec.ValidateValue(v); err != nil {
 			return false, err
 		}
 		s := secrets.NewSecretString(v)
 		defer s.Zero()
 		if err := keychain.SetWithDefault(scope, skill, spec.Name, s); err != nil {
-			return false, fmt.Errorf("keychain: %w", wrapKeychainErr(err))
+			return false, fmt.Errorf("keychain: %w", keychain.WrapUnavailable(err))
 		}
 		st.status(env.Stderr, "stored", spec.Name+st.gray(" (from file)"), ansiGreen)
 		return false, nil
@@ -549,13 +549,13 @@ func handleOneSecret(env *Env, scope, skill string, spec config.SecretSpec, repr
 
 	// 3. Env-based non-interactive supply: OMAC_SECRET_<NAME>.
 	if v, ok := os.LookupEnv("OMAC_SECRET_" + spec.Name); ok {
-		if err := validatePattern(spec, v); err != nil {
+		if err := spec.ValidateValue(v); err != nil {
 			return false, err
 		}
 		s := secrets.NewSecretString(v)
 		defer s.Zero()
 		if err := keychain.SetWithDefault(scope, skill, spec.Name, s); err != nil {
-			return false, fmt.Errorf("keychain: %w", wrapKeychainErr(err))
+			return false, fmt.Errorf("keychain: %w", keychain.WrapUnavailable(err))
 		}
 		st.status(env.Stderr, "stored", spec.Name+st.gray(fmt.Sprintf(" (from OMAC_SECRET_%s)", spec.Name)), ansiGreen)
 		return false, nil
@@ -566,7 +566,7 @@ func handleOneSecret(env *Env, scope, skill string, spec config.SecretSpec, repr
 	if spec.DefaultFromEnv != "" {
 		if v, ok := os.LookupEnv(spec.DefaultFromEnv); ok && v != "" {
 			// Accept on empty input.
-			if err := validatePattern(spec, v); err == nil {
+			if err := spec.ValidateValue(v); err == nil {
 				defaultHint = fmt.Sprintf(" (press Enter to accept value from $%s)", spec.DefaultFromEnv)
 			}
 		}
@@ -592,7 +592,7 @@ func handleOneSecret(env *Env, scope, skill string, spec config.SecretSpec, repr
 					s := secrets.NewSecretString(v)
 					if err := keychain.SetWithDefault(scope, skill, spec.Name, s); err != nil {
 						s.Zero()
-						return false, fmt.Errorf("keychain: %w", wrapKeychainErr(err))
+						return false, fmt.Errorf("keychain: %w", keychain.WrapUnavailable(err))
 					}
 					s.Zero()
 					st.status(env.Stderr, "stored", spec.Name+st.gray(fmt.Sprintf(" (from $%s)", spec.DefaultFromEnv)), ansiGreen)
@@ -609,7 +609,7 @@ func handleOneSecret(env *Env, scope, skill string, spec config.SecretSpec, repr
 			st.status(env.Stderr, "[retry]", "required; please enter a value", ansiRed)
 			continue
 		}
-		if err := validatePattern(spec, value.ExposeString()); err != nil {
+		if err := spec.ValidateValue(value.ExposeString()); err != nil {
 			value.Zero()
 			if attempts >= 3 {
 				return false, fmt.Errorf("refused: %s does not match pattern after %d attempts", spec.Name, attempts)
@@ -619,26 +619,12 @@ func handleOneSecret(env *Env, scope, skill string, spec config.SecretSpec, repr
 		}
 		if err := keychain.SetWithDefault(scope, skill, spec.Name, value); err != nil {
 			value.Zero()
-			return false, fmt.Errorf("keychain: %w", wrapKeychainErr(err))
+			return false, fmt.Errorf("keychain: %w", keychain.WrapUnavailable(err))
 		}
 		value.Zero()
 		st.status(env.Stderr, "stored", spec.Name, ansiGreen)
 		return false, nil
 	}
-}
-
-func validatePattern(spec config.SecretSpec, v string) error {
-	if spec.Pattern == "" {
-		return nil
-	}
-	re, err := regexp.Compile(spec.Pattern)
-	if err != nil {
-		return fmt.Errorf("invalid pattern for %s: %w", spec.Name, err)
-	}
-	if !re.MatchString(v) {
-		return fmt.Errorf("value for %s does not match /%s/", spec.Name, spec.Pattern)
-	}
-	return nil
 }
 
 // handleOneField implements the per-field prompting flow. Mirrors

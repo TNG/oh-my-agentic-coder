@@ -28,9 +28,9 @@ import (
 	"github.com/tngtech/oh-my-agentic-coder/internal/registry"
 	"github.com/tngtech/oh-my-agentic-coder/internal/sandbox"
 	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxprofile"
-	"github.com/tngtech/oh-my-agentic-coder/internal/secrets"
 	"github.com/tngtech/oh-my-agentic-coder/internal/skillconfig"
 	"github.com/tngtech/oh-my-agentic-coder/internal/skillsource"
+	"github.com/tngtech/oh-my-agentic-coder/internal/skillstate"
 	"github.com/tngtech/oh-my-agentic-coder/internal/supervisor"
 	"github.com/tngtech/oh-my-agentic-coder/internal/toolcache"
 )
@@ -49,21 +49,22 @@ func runServe(args []string, env *Env) int {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	fs.SetOutput(env.Stderr)
 	var (
-		workdir          = fs.String("workdir", "", "Auto-activate this one directory at cold start (single-dir convenience, §5.5).")
-		controlAddr      = fs.String("control-addr", "127.0.0.1:0", "Bind address for the control-plane HTTP server.")
-		acceptChanges    = fs.Bool("accept-skill-changes", false, "Tolerate bundle_hash drift in registered skills.")
-		profile          = fs.String("sandbox", "", "Name of a sandbox profile from the launcher config.")
-		innerCmdOverride = fs.String("inner", "", "Override inner_cmd's executable (default: opencode serve).")
-		noSandbox        = fs.Bool("no-sandbox", false, "Run the inner command directly, without a sandbox (debug only).")
-		noInner          = fs.Bool("no-inner", false, "Do not launch any inner command; run the control plane only (testing/headless).")
-		ephemeralCache   = fs.Bool("ephemeral-cache", false, "Use a per-launch cache instead of the persistent cache.")
-		cacheScopeFlag   = fs.String("cache-scope", "", "Persistent cache scope: global, config, or workdir. Overrides config (default: global).")
-		verbose          = fs.Bool("verbose", false, "Verbose lifecycle logging.")
-		forDesktop       = fs.Bool("for-opencode-desktop", false, "Grant every project worktree from the local OpenCode state (Desktop projects) read+write in the sandbox.")
-		learn            = fs.Bool("learn", false, "Learn mode: do not restrict filesystem access; record folders used and offer to add them to the sandbox profile at session end.")
-		auditLog         = fs.String("audit-log", "", "Path to the audit log (default: persistent central location). Overrides config.")
-		noAudit          = fs.Bool("no-audit", false, "Disable the security audit trail.")
-		auditStrict      = fs.Bool("audit-strict", false, "Fail-closed: abort if the audit log cannot be written.")
+		workdir           = fs.String("workdir", "", "Auto-activate this one directory at cold start (single-dir convenience, §5.5).")
+		controlAddr       = fs.String("control-addr", "127.0.0.1:0", "Bind address for the control-plane HTTP server.")
+		acceptChanges     = fs.Bool("accept-skill-changes", false, "Tolerate bundle_hash drift in registered skills.")
+		skipSecretPattern = fs.Bool("skip-secret-pattern", false, "Do not enforce a secret's pattern against an env_passthrough-supplied value (escape hatch for an outdated pattern; the raw value is still passed through). Mirrors the flag on `omac start`.")
+		profile           = fs.String("sandbox", "", "Name of a sandbox profile from the launcher config.")
+		innerCmdOverride  = fs.String("inner", "", "Override inner_cmd's executable (default: opencode serve).")
+		noSandbox         = fs.Bool("no-sandbox", false, "Run the inner command directly, without a sandbox (debug only).")
+		noInner           = fs.Bool("no-inner", false, "Do not launch any inner command; run the control plane only (testing/headless).")
+		ephemeralCache    = fs.Bool("ephemeral-cache", false, "Use a per-launch cache instead of the persistent cache.")
+		cacheScopeFlag    = fs.String("cache-scope", "", "Persistent cache scope: global, config, or workdir. Overrides config (default: global).")
+		verbose           = fs.Bool("verbose", false, "Verbose lifecycle logging.")
+		forDesktop        = fs.Bool("for-opencode-desktop", false, "Grant every project worktree from the local OpenCode state (Desktop projects) read+write in the sandbox.")
+		learn             = fs.Bool("learn", false, "Learn mode: do not restrict filesystem access; record folders used and offer to add them to the sandbox profile at session end.")
+		auditLog          = fs.String("audit-log", "", "Path to the audit log (default: persistent central location). Overrides config.")
+		noAudit           = fs.Bool("no-audit", false, "Disable the security audit trail.")
+		auditStrict       = fs.Bool("audit-strict", false, "Fail-closed: abort if the audit log cannot be written.")
 	)
 	var roots multiFlag
 	var openPorts intMultiFlag
@@ -276,22 +277,23 @@ func runServe(args []string, env *Env) int {
 	defer f.Close()
 
 	srv := &serveServer{
-		env:           env,
-		harness:       harness,
-		facade:        f,
-		sup:           sup,
-		auditor:       auditor,
-		ctx:           ctx,
-		rtDir:         rtDir,
-		sandboxTmp:    sandboxTmp,
-		socketPath:    socketPath,
-		tcpPort:       f.TCPPort(),
-		acceptChanges: *acceptChanges,
-		verbose:       *verbose,
-		roots:         absRoots,
-		dirs:          map[string]*dirState{},
-		byToken:       map[string]*dirState{},
-		global:        map[string]*skillRoute{},
+		env:               env,
+		harness:           harness,
+		facade:            f,
+		sup:               sup,
+		auditor:           auditor,
+		ctx:               ctx,
+		rtDir:             rtDir,
+		sandboxTmp:        sandboxTmp,
+		socketPath:        socketPath,
+		tcpPort:           f.TCPPort(),
+		acceptChanges:     *acceptChanges,
+		skipSecretPattern: *skipSecretPattern,
+		verbose:           *verbose,
+		roots:             absRoots,
+		dirs:              map[string]*dirState{},
+		byToken:           map[string]*dirState{},
+		global:            map[string]*skillRoute{},
 	}
 	if cacheScope != nil {
 		srv.cacheEnv = map[string]string{
@@ -874,9 +876,14 @@ type serveServer struct {
 	tcpPort       int
 	controlBase   string
 	acceptChanges bool
-	verbose       bool
-	roots         []string // §5.4 Option B; empty = allow any directory
-	cacheEnv      map[string]string
+	// skipSecretPattern mirrors start's flag. serve began pattern-checking
+	// env_passthrough-supplied secrets when it adopted the shared readiness
+	// rule; without an escape hatch a skill whose omac.yaml carries an outdated
+	// pattern would have no way back to a live route short of editing the skill.
+	skipSecretPattern bool
+	verbose           bool
+	roots             []string // §5.4 Option B; empty = allow any directory
+	cacheEnv          map[string]string
 
 	mu      sync.RWMutex
 	dirs    map[string]*dirState   // abs dir -> state
@@ -1353,25 +1360,43 @@ func (s *serveServer) autoRegister(absDir string, ent skillsource.Entry) (*regis
 //     skill this is the activated project; for a global skill there is no
 //     single project, so the server's launch workdir is used as a default.
 func (s *serveServer) bringUp(e registry.Entry, absDir, workdir, namespace, secretScope string, cfg *skillconfig.Store) *skillRoute {
-	metaPath := filepath.Join(absDir, config.MetaFileName)
-	m, err := config.LoadMeta(metaPath)
-	if err != nil || m.Sidecar == nil {
+	// The readiness rule is shared with start, live reload, doctor and `config
+	// show` (internal/skillstate); serve's job is only to turn its problems
+	// into a route state. Before #174 this was serve's own copy, which had
+	// drifted: it never honoured the env_passthrough fallback, so a skill whose
+	// required secret came from the shell was reported pending-credentials even
+	// though the supervisor would have injected the value at spawn.
+	resolver := skillstate.New(skillstate.Options{
+		Scope:             secretScope,
+		AcceptBundleDrift: s.acceptChanges,
+		SkipSecretPattern: s.skipSecretPattern,
+	})
+	// Inspect (meta + bundle hash) first and Fill (secrets + config) only after
+	// the spawn-approval gate below: a skill that is about to be refused must
+	// not cost a keychain read, which on macOS is one blocking authorization
+	// prompt per refused skill, nor have its credentials materialized here for
+	// nothing.
+	armed, problems := resolver.Inspect(e, absDir)
+	// Once filled, armed holds live secret material on every path out of this
+	// function, including the ones that return a stub route without spawning.
+	defer armed.Zero()
+
+	if skillstate.Has(problems, skillstate.MetaBroken) {
 		sr := &skillRoute{Name: e.Name, Mount: e.Name, Namespace: namespace, SkillDir: absDir, State: facade.RouteBroken, Detail: "omac.yaml invalid or missing sidecar"}
 		s.installRoute(sr, 0)
 		return sr
 	}
-	mount := m.Sidecar.MountOrDefault(e.Name)
+	mount := armed.Mount
 
-	// Hash once and reuse for both the drift check and the approval gate below;
-	// an error leaves it empty for approvalRefusal to re-derive and report.
-	bundle, herr := config.BundleHash(absDir)
-	if !s.acceptChanges {
-		if herr == nil && bundle != e.BundleHash {
-			sr := &skillRoute{Name: e.Name, Mount: mount, Namespace: namespace, SkillDir: absDir, State: facade.RouteBroken,
-				Detail: "bundle changed since register; re-register or pass --accept-skill-changes"}
-			s.installRoute(sr, 0)
-			return sr
-		}
+	broken := func(detail string) *skillRoute {
+		sr := &skillRoute{Name: e.Name, Mount: mount, Namespace: namespace, SkillDir: absDir,
+			State: facade.RouteBroken, Detail: detail}
+		s.installRoute(sr, 0)
+		return sr
+	}
+
+	if skillstate.Has(problems, skillstate.BundleDrift) {
+		return broken("bundle changed since register; re-register or pass --accept-skill-changes")
 	}
 
 	// Spawn-approval gate: refuse unless the current on-disk code is
@@ -1379,67 +1404,36 @@ func (s *serveServer) bringUp(e registry.Entry, absDir, workdir, namespace, secr
 	// the agent-writable workdir. Grandfathering happens once at cold start
 	// (see runServe), NOT here: a long-lived serve daemon must not keep
 	// blessing skills authored mid-session.
-	snapDir, refusal := approvedSpawnDir(e.Name, absDir, bundle)
+	//
+	// It is reported ahead of any credential problem — as it was before #174,
+	// when the gate ran before resolution — so an unapproved skill's route
+	// always names the security refusal rather than an incidental keychain
+	// error found on the way. armed.Bundle was hashed once above and is reused
+	// here; it is empty when hashing failed, which leaves approvalRefusal to
+	// re-derive and report.
+	snapDir, refusal := approvedSpawnDir(e.Name, absDir, armed.Bundle)
 	if refusal != nil {
+		return broken(refusal.Error())
+	}
+
+	problems = append(problems, resolver.Fill(&armed, cfg)...)
+
+	// Credential problems keep the route promotable (pending-credentials, 409)
+	// rather than breaking it, so reactivateDir can bring the skill up once the
+	// value appears. skillstate.StallFor makes that call, shared with live
+	// reload so the two cannot drift apart again.
+	if st := skillstate.StallFor(problems); st != nil {
+		if st.Terminal {
+			return broken(st.Detail)
+		}
 		sr := &skillRoute{Name: e.Name, Mount: mount, Namespace: namespace, SkillDir: absDir,
-			State: facade.RouteBroken, Detail: refusal.Error()}
-		s.installRoute(sr, 0)
-		return sr
-	}
-
-	// Resolve secrets.
-	secMap := map[string]secrets.Secret{}
-	var missing []string
-	for _, spec := range m.Sidecar.Secrets {
-		val, gerr := keychain.GetWithFallback(secretScope, e.Name, spec.Name)
-		if gerr == nil {
-			secMap[spec.Name] = val
-			continue
-		}
-		if errors.Is(gerr, keychain.ErrNotFound) {
-			if spec.IsRequired() {
-				missing = append(missing, spec.Name)
-			}
-			continue
-		}
-		// keychain I/O error -> broken
-		sr := &skillRoute{Name: e.Name, Mount: mount, Namespace: namespace, SkillDir: absDir, State: facade.RouteBroken, Detail: gerr.Error()}
-		s.installRoute(sr, 0)
-		return sr
-	}
-
-	// Resolve config.
-	cfgMap := map[string]string{}
-	for _, spec := range m.Sidecar.Config {
-		if v, ok := cfg.Get(e.Name, spec.Name); ok {
-			cfgMap[spec.Name] = v
-			continue
-		}
-		if spec.Default != "" {
-			cfgMap[spec.Name] = spec.Default
-			continue
-		}
-		if spec.DefaultFromEnv != "" {
-			if ev, ok := os.LookupEnv(spec.DefaultFromEnv); ok && ev != "" {
-				cfgMap[spec.Name] = ev
-				continue
-			}
-		}
-		if spec.IsRequired() {
-			missing = append(missing, spec.Name)
-		}
-	}
-
-	if len(missing) > 0 {
-		sort.Strings(missing)
-		sr := &skillRoute{Name: e.Name, Mount: mount, Namespace: namespace, SkillDir: absDir,
-			State: facade.RoutePendingCredentials, Missing: missing,
-			Detail: fmt.Sprintf("missing required values: %v", missing)}
+			State: facade.RoutePendingCredentials, Missing: st.Missing, Detail: st.Detail}
 		s.installRoute(sr, 0)
 		return sr
 	}
 
 	// Spawn.
+	m := armed.Meta
 	health := config.HealthSpec{}
 	if m.Sidecar.Health != nil {
 		health = *m.Sidecar.Health
@@ -1451,22 +1445,18 @@ func (s *serveServer) bringUp(e registry.Entry, absDir, workdir, namespace, secr
 		SkillDir:         snapDir,                  // run the frozen snapshot, not the workdir
 		Command:          m.Sidecar.Command,
 		EnvPassthrough:   m.Sidecar.EnvPassthrough,
-		Secrets:          secMap,
-		Config:           cfgMap,
+		Secrets:          armed.Secrets,
+		Config:           armed.Config,
 		Health:           health.Defaults(),
 		LogPath:          filepath.Join(s.rtDir, "logs", namespace+"-"+e.Name+".log"),
 		Workdir:          workdir, // -> OMAC_WORKDIR (the project, not the skill dir)
 		HarnessSkillsDir: s.harness.WorkdirSkillsDir(),
 	}
 	running, serr := s.sup.AddSidecar(s.ctx, spec)
-	// Wipe secret material now that the sidecar has been spawned (its env
-	// was built synchronously inside AddSidecar). Secret holds a []byte, so
-	// zeroing the map's stored value wipes the shared backing array.
-	for name := range spec.Secrets {
-		sec := spec.Secrets[name]
-		sec.Zero()
-		spec.Secrets[name] = sec
-	}
+	// Wipe secret material now that the sidecar has been spawned (its env was
+	// built synchronously inside AddSidecar) rather than waiting for the
+	// deferred Zero. spec.Secrets is armed.Secrets, and Zero is idempotent.
+	armed.Zero()
 	if serr != nil {
 		sr := &skillRoute{Name: e.Name, Mount: mount, Namespace: namespace, SkillDir: absDir, State: facade.RouteBroken, Detail: serr.Error()}
 		s.installRoute(sr, 0)

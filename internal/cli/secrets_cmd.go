@@ -168,14 +168,14 @@ func runSecretsImport(args []string, env *Env) int {
 			fmt.Fprintf(env.Stderr, "omac secrets import: %q not declared in sidecar.secrets\n", k)
 			return ExitConfigInvalid
 		}
-		if err := validatePattern(spec, v); err != nil {
+		if err := spec.ValidateValue(v); err != nil {
 			fmt.Fprintln(env.Stderr, "omac secrets import:", err)
 			return ExitConfigInvalid
 		}
 		s := secrets.NewSecretString(v)
 		if err := keychain.SetScoped(scope, skill, k, s); err != nil {
 			s.Zero()
-			fmt.Fprintln(env.Stderr, "omac secrets import: keychain:", wrapKeychainErr(err))
+			fmt.Fprintln(env.Stderr, "omac secrets import: keychain:", keychain.WrapUnavailable(err))
 			return ExitKeychainError
 		}
 		s.Zero()

@@ -816,14 +816,19 @@ config:
   TNG_GPG_REQUIRED        bool    no   stored                     false
 
 secrets:
-  NAME                REQ  FINGERPRINT
-  TNG_EMAIL_PASSWORD  yes  sha256:e3b0c44298fc
-  TNG_GPG_PASSPHRASE  no   <missing>
+  NAME                REQ  SOURCE           FINGERPRINT
+  TNG_EMAIL_PASSWORD  yes  keychain         sha256:e3b0c44298fc
+  TNG_GPG_PASSPHRASE  no   missing-optional <missing>
 ```
 
 The `SOURCE` column tells you *which* of the resolution rungs in §10.3
-produced the displayed value. `--json` emits the same data as a single
-JSON object so it's pipeable into `jq`.
+produced the displayed value. For secrets it distinguishes `keychain`
+from `env_passthrough` — both satisfy `omac start`, so a secret you
+never stored can still be present because your shell exports it — and
+`keychain-unavailable`, which means the value could not be *read* rather
+than that it is unset (a headless host with no Secret Service; see
+docs/INSTALLATION.md#prerequisites). `--json` emits the same data as a single JSON
+object so it's pipeable into `jq`.
 
 `omac config get <skill> <field>` prints just the resolved value,
 suitable for shell-script substitution:
