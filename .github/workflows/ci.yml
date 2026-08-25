@@ -197,6 +197,9 @@ jobs:
       - name: Workflow shell syntax
         run: python3 scripts/check-workflow-shell.py
 
+      - name: WSL2 coverage
+        run: python3 scripts/check-wsl2-coverage.py
+
       - name: Release notification policy
         run: python3 scripts/release-workflow_test.py
 
