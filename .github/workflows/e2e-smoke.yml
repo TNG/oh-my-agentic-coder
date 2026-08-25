@@ -409,15 +409,24 @@ jobs:
       E2E_MODEL_CODEWHALE: ${{ needs.model.outputs.gateway }}
       E2E_MODEL_CLAUDE_CODE: ${{ needs.model.outputs.claude_code }}
       E2E_CONTEXT_LIMIT: ${{ github.event.inputs.context_limit }}
-      SMOKE_LOG_DIR: ${{ runner.temp }}/e2e-smoke-logs
       # WSL only forwards vars listed in WSLENV — include every job/step env
       # var the Go tests read via os.Getenv(). Without it, SKAINET_TOKEN,
       # E2E_MODEL_*, etc. are unbound inside wsl-bash. OMAC_BIN is set via
-      # GITHUB_ENV by the "Provision released omac" step.
-      WSLENV: GITHUB_OUTPUT:GITHUB_STEP_SUMMARY:OMAC_BIN:SKAINET_TOKEN:SKAINET_INTERNAL:ANTHROPIC_BASE_URL:E2E_HARNESS:E2E_USE_LATEST:E2E_MODEL_OPENCODE:E2E_MODEL_CODEX:E2E_MODEL_COPILOT:E2E_MODEL_PI:E2E_MODEL_CODEWHALE:E2E_MODEL_CLAUDE_CODE:E2E_CONTEXT_LIMIT:E2E_CACHE_DIR:SMOKE_LOG_DIR
+      # GITHUB_ENV by the "Provision released omac" step. SMOKE_LOG_DIR is
+      # set via GITHUB_ENV by the "Set log dir" step (runner.temp is not
+      # available in job-level env — only github/needs/strategy/matrix/
+      # vars/secrets/inputs are).
+      WSLENV: GITHUB_ENV:GITHUB_OUTPUT:GITHUB_STEP_SUMMARY:OMAC_BIN:OMAC_RELEASE_TAG:SKAINET_TOKEN:SKAINET_INTERNAL:ANTHROPIC_BASE_URL:E2E_HARNESS:E2E_USE_LATEST:E2E_MODEL_OPENCODE:E2E_MODEL_CODEX:E2E_MODEL_COPILOT:E2E_MODEL_PI:E2E_MODEL_CODEWHALE:E2E_MODEL_CLAUDE_CODE:E2E_CONTEXT_LIMIT:E2E_CACHE_DIR:SMOKE_LOG_DIR
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      # runner.temp is not available in job-level env, so set SMOKE_LOG_DIR
+      # here via GITHUB_ENV for all subsequent steps (and WSLENV forwards it
+      # into WSL). RUNNER_TEMP is always available in run steps.
+      - name: Set log dir
+        shell: bash
+        run: echo "SMOKE_LOG_DIR=${RUNNER_TEMP}/e2e-smoke-logs" >> "$GITHUB_ENV"
 
       - name: Strip CRLF from shell and TypeScript files
         # actions/checkout defaults to core.autocrlf=true on Windows, which
@@ -450,10 +459,13 @@ jobs:
         run: |
           curl -fsSL https://bun.sh/install | bash
           curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
-          cat > /tmp/wsl-env.sh <<'WEOF'
+          cat > "$HOME"/wsl-env.sh <<'WEOF'
           export PATH="/usr/local/go/bin:$HOME/.bun/bin:$HOME/.cargo/bin:$PATH"
           if [ -n "${GITHUB_OUTPUT:-}" ]; then
             export GITHUB_OUTPUT=$(wslpath -u "$GITHUB_OUTPUT" 2>/dev/null || echo "$GITHUB_OUTPUT")
+          fi
+          if [ -n "${GITHUB_ENV:-}" ]; then
+            export GITHUB_ENV=$(wslpath -u "$GITHUB_ENV" 2>/dev/null || echo "$GITHUB_ENV")
           fi
           if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
             export GITHUB_STEP_SUMMARY=$(wslpath -u "$GITHUB_STEP_SUMMARY" 2>/dev/null || echo "$GITHUB_STEP_SUMMARY")
@@ -473,7 +485,7 @@ jobs:
       - name: Resolve model
         shell: wsl-bash {0}
         run: |
-          source /tmp/wsl-env.sh
+          source "$HOME"/wsl-env.sh
           echo "::notice title=Model::${{ matrix.harness }} runs against $(scripts/resolve-model.sh '${{ matrix.harness }}')"
 
       - name: Cache harness install packages
@@ -485,6 +497,9 @@ jobs:
             e2e-smoke-install-Windows-${{ matrix.harness }}-${{ matrix.omac }}-
 
       - name: Provision released omac (omac@release)
+        # gh CLI lives on the Windows side, not in WSL. Download the Linux
+        # tarball to a workspace-relative path (avoids D:\ drive-letter issues
+        # with tar in Git Bash). Extraction happens in WSL in the next step.
         if: matrix.omac == 'release'
         shell: bash
         env:
@@ -492,20 +507,34 @@ jobs:
         run: |
           tag=$(gh release view --json tagName --jq .tagName)
           echo "OMAC_RELEASE_TAG=$tag" >> "$GITHUB_ENV"
-          dir="$RUNNER_TEMP/omac-release"; mkdir -p "$dir"
-          gh release download "$tag" --dir "$dir" --pattern "oh-my-agentic-coder_*_linux_x86_64.tar.gz"
-          f=$(ls "$dir"/*.tar.gz | head -1)
+          mkdir -p .omac-release
+          gh release download "$tag" --dir .omac-release --pattern "oh-my-agentic-coder_*_linux_x86_64.tar.gz"
+          ls -la .omac-release/
+
+      - name: Extract and provision released omac in WSL
+        # Extract the Linux ELF binary inside WSL (not Git Bash). Write
+        # OMAC_BIN directly to "$HOME"/wsl-env.sh (sourced by every wsl-bash
+        # step) instead of GITHUB_ENV: GITHUB_ENV roundtrips through a
+        # Windows env var, and wsl-env.sh's wslpath -u corrupts the WSL
+        # path (/tmp/... → /mnt/d/tmp/...).
+        if: matrix.omac == 'release'
+        shell: wsl-bash {0}
+        run: |
+          source "$HOME"/wsl-env.sh
+          f=$(ls .omac-release/*.tar.gz 2>/dev/null | head -1)
+          [ -z "$f" ] && { echo "no release tarball found"; ls -R .omac-release; exit 1; }
+          dir=/tmp/omac-release; rm -rf "$dir"; mkdir -p "$dir"
           tar -xzf "$f" -C "$dir"
           bin=$(find "$dir" -type f -name omac | head -1)
           [ -x "$bin" ] || { echo "omac binary missing in release asset"; ls -R "$dir"; exit 1; }
-          echo "OMAC_BIN=$bin" >> "$GITHUB_ENV"
-          echo "provisioned omac@release $tag -> $bin"; "$bin" version || true
+          echo "export OMAC_BIN=$bin" >> "$HOME"/wsl-env.sh
+          echo "provisioned omac@release ${OMAC_RELEASE_TAG:-release} -> $bin"; "$bin" version || true
 
       - name: Resolve omac version label
         id: omac
         shell: wsl-bash {0}
         run: |
-          source /tmp/wsl-env.sh
+          source "$HOME"/wsl-env.sh
           if [ "${{ matrix.omac }}" = "release" ]; then
             echo "version=${OMAC_RELEASE_TAG:-release}" >> "$GITHUB_OUTPUT"
           else
@@ -518,7 +547,7 @@ jobs:
         env:
           E2E_CACHE_DIR: ${{ runner.temp }}/e2e-install-cache
         run: |
-          source /tmp/wsl-env.sh
+          source "$HOME"/wsl-env.sh
           set -o pipefail
           go test -tags=e2e -timeout=20m -v \
             -run 'TestHarnessCLIContract|TestHarnessLaunchProbe|TestHarnessServeProbe|TestOpenCodeSingleSystemMessage' \
@@ -531,7 +560,7 @@ jobs:
         env:
           E2E_CACHE_DIR: ${{ runner.temp }}/e2e-install-cache
         run: |
-          source /tmp/wsl-env.sh
+          source "$HOME"/wsl-env.sh
           set -o pipefail
           attempt=1; max=2
           while :; do
@@ -547,7 +576,18 @@ jobs:
         if: always()
         shell: wsl-bash {0}
         run: |
-          source /tmp/wsl-env.sh
+          # wsl-env.sh may not exist if an earlier setup step failed —
+          # fall back to a minimal env so the row still reports ❌.
+          if [ -f "$HOME"/wsl-env.sh ]; then
+            source "$HOME"/wsl-env.sh
+          else
+            export PATH="/usr/local/go/bin:$HOME/.bun/bin:$HOME/.cargo/bin:$PATH"
+            for v in GITHUB_OUTPUT GITHUB_STEP_SUMMARY SMOKE_LOG_DIR; do
+              eval "val=\${${v}:-}"
+              [ -n "$val" ] && eval "export $v=\$(wslpath -u \"\$val\" 2>/dev/null || echo \"\$val\")"
+            done
+          fi
+          mkdir -p "${SMOKE_LOG_DIR:-/tmp}/compat"
           stage_mark() {
             local stage="$1" absent="${2:-❌}"
             local line
@@ -626,6 +666,7 @@ jobs:
 
       - name: Fail this leg on drift
         if: always()
+        shell: bash
         run: |
           row='${{ steps.row.outputs.row }}'
           echo "$row"

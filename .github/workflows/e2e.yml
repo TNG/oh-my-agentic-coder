@@ -368,7 +368,7 @@ jobs:
     # so codex/codewhale are NOT excluded). Go/bun/node are installed manually
     # inside WSL — the setup-* actions install on the Windows side, not in
     # WSL. The wsl-bash shell uses --noprofile --norc, so PATH and GITHUB_*
-    # path translation are set up in /tmp/wsl-env.sh and sourced per step.
+    # path translation are set up in "$HOME"/wsl-env.sh and sourced per step.
     # Cache and logs use relative paths (relative to the checkout) so they
     # work from both the Windows runner (actions/cache, upload-artifact) and
     # inside WSL (Go test code) via the automount. continue-on-error during
@@ -444,7 +444,7 @@ jobs:
           # wsl-bash uses --noprofile --norc, so /etc/profile.d is not sourced.
           # Make Go, bun, and cargo available to subsequent steps, and translate
           # GitHub Actions file paths (Windows backslash paths) to WSL paths.
-          cat > /tmp/wsl-env.sh <<'WEOF'
+          cat > "$HOME"/wsl-env.sh <<'WEOF'
           export PATH="/usr/local/go/bin:$HOME/.bun/bin:$HOME/.cargo/bin:$PATH"
           if [ -n "${GITHUB_OUTPUT:-}" ]; then
             export GITHUB_OUTPUT=$(wslpath -u "$GITHUB_OUTPUT" 2>/dev/null || echo "$GITHUB_OUTPUT")
@@ -463,14 +463,14 @@ jobs:
       - name: Verify module tidy
         shell: wsl-bash {0}
         run: |
-          source /tmp/wsl-env.sh
+          source "$HOME"/wsl-env.sh
           go mod download && go mod verify
 
       - name: Resolve model
         id: model
         shell: wsl-bash {0}
         run: |
-          source /tmp/wsl-env.sh
+          source "$HOME"/wsl-env.sh
           model=$(scripts/resolve-model.sh '${{ matrix.harness }}')
           context="${E2E_CONTEXT_LIMIT:-versions.go default}"
           echo "model=$model" >> "$GITHUB_OUTPUT"
@@ -489,7 +489,7 @@ jobs:
         if: matrix.harness != 'claude-code' || github.event.inputs.skip_claude_code != 'true'
         shell: wsl-bash {0}
         run: |
-          source /tmp/wsl-env.sh
+          source "$HOME"/wsl-env.sh
           set -o pipefail
           if ! go test -tags=e2e_fast -count=1 ./internal/e2e/ 2>&1 | tee /tmp/e2e-fast.txt; then
             echo "::error::deterministic (e2e_fast) test failure — a test defect, not infra; retries cannot clear it"
@@ -514,7 +514,7 @@ jobs:
           E2E_LOG_DIR: ${{ runner.temp }}/e2e-logs
           E2E_CACHE_DIR: ${{ runner.temp }}/e2e-install-cache
         run: |
-          source /tmp/wsl-env.sh
+          source "$HOME"/wsl-env.sh
           set -o pipefail
           max_attempts=3
           attempt=1
@@ -557,7 +557,7 @@ jobs:
         if: steps.run_e2e.outcome == 'skipped'
         shell: wsl-bash {0}
         run: |
-          source /tmp/wsl-env.sh
+          source "$HOME"/wsl-env.sh
           echo "## E2E (${{ matrix.harness }} / WSL2): SKIPPED" >> "$GITHUB_STEP_SUMMARY"
           echo "skip_claude_code was set on this workflow_dispatch run (model would have been \`${{ steps.model.outputs.model }}\`)." >> "$GITHUB_STEP_SUMMARY"
 
@@ -565,7 +565,7 @@ jobs:
         if: always() && steps.run_e2e.outcome != 'skipped'
         shell: wsl-bash {0}
         run: |
-          source /tmp/wsl-env.sh
+          source "$HOME"/wsl-env.sh
           echo "## E2E failure classification (${{ matrix.harness }} / WSL2)" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "Model: \`${{ steps.model.outputs.model }}\` · context: \`${{ steps.model.outputs.context }}\`" >> "$GITHUB_STEP_SUMMARY"
