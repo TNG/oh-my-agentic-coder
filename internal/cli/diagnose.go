@@ -62,7 +62,13 @@ func runDiagnose(args []string, env *Env) int {
 		// the stdlib cannot tell `--hash runtime` from `--hash` plus a
 		// positional. Reject it rather than silently printing every kind.
 		if fs.NArg() > 0 {
-			fmt.Fprintf(env.Stderr, "omac diagnose: use --hash=%s (attached), not --hash %s\n", fs.Arg(0), fs.Arg(0))
+			// Only suggest the attached form when the stray token really is a
+			// kind — otherwise "use --hash=bogus" is advice that fails again.
+			if hashSel.kind == hashKindAll && validHashKind(fs.Arg(0)) {
+				fmt.Fprintf(env.Stderr, "omac diagnose: use --hash=%s (attached), not --hash %s\n", fs.Arg(0), fs.Arg(0))
+			} else {
+				fmt.Fprintf(env.Stderr, "omac diagnose: unexpected argument %q (--hash takes no positional; use --hash=%s)\n", fs.Arg(0), hashKindList())
+			}
 			return ExitMisuse
 		}
 		if !validHashKind(hashSel.kind) {

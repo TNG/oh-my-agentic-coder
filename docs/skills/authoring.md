@@ -242,14 +242,18 @@ curl "$OMAC_MY_SKILL_BASE/status"
 
 `--no-sandbox` skips the OS sandbox and runs your command directly. `--inner bash` replaces the agent with a shell, so you can call the skill by hand. Your sidecar and the facade still start normally.
 
-If a call returns HTTP `503` with the header `X-Omac-Reason: sidecar-down`, your sidecar failed to start or crashed. Its output (stdout and stderr) is captured in a per-project runtime directory under `$TMPDIR`:
+If a call returns HTTP `503` with the header `X-Omac-Reason: sidecar-down`, your sidecar failed to start or crashed. Its output (stdout and stderr) is captured in a per-project runtime directory:
 
 ```bash
-# omac creates one omac-<hash> directory per project; if only one is running:
+# On the host — omac creates one omac-<hash> directory per project; if only one is running:
 cat $TMPDIR/omac-*/logs/<skill>.log
+
+# Inside the sandbox, $TMPDIR is remapped to the per-launch sandbox temp dir,
+# so resolve the runtime dir from the socket instead:
+ls "$(dirname "$OMAC_SOCKET")/logs"
 ```
 
-Resolve `<hash>` for the current workdir exactly with `omac diagnose --hash=runtime` (see [CLI reference](../usage/cli.md#workdir-hashes-omac-diagnose---hash)).
+`omac diagnose --hash=runtime` resolves the runtime dir for the current workdir from either side — omac reads `$OMAC_SOCKET` when it is set (see [CLI reference](../usage/cli.md#workdir-hashes-omac-diagnose---hash)).
 
 Because omac runs the skill from the copy made at register time (see above), re-run `omac register` after editing the skill so your changes take effect.
 

@@ -245,6 +245,112 @@ func TestDiagnoseHashTextMode(t *testing.T) {
 	}
 }
 
+// TestDiagnoseHashRuntimeInsideSandbox: inside the sandbox TMPDIR is remapped
+// to the per-launch sandbox temp dir, so joining it with the derived name
+// names a directory that does not exist. $OMAC_SOCKET still points at the
+// host runtime dir, and must win.
+func TestDiagnoseHashRuntimeInsideSandbox(t *testing.T) {
+	wd := hashSandbox(t)
+
+	// The host runtime dir, created before TMPDIR is remapped.
+	hostDir, err := createRuntimeDir(wd)
+	if err != nil {
+		t.Fatalf("createRuntimeDir: %v", err)
+	}
+	// Now stand where the inner agent stands: TMPDIR points at the sandbox
+	// temp dir, OMAC_SOCKET still carries the host path.
+	t.Setenv("TMPDIR", t.TempDir())
+	t.Setenv("OMAC_SOCKET", filepath.Join(hostDir, "bridge.sock"))
+
+	view, code, errOut := runHash(t, wd, "--hash=runtime")
+	if code != ExitOK {
+		t.Fatalf("code = %d; stderr=%q", code, errOut)
+	}
+	got := onlyEntry(t, view, "runtime")
+	if got.Path != hostDir {
+		t.Errorf("path = %q, want the live runtime dir %q", got.Path, hostDir)
+	}
+	if _, err := os.Stat(got.Path); err != nil {
+		t.Errorf("reported path does not exist: %v", err)
+	}
+	if !strings.Contains(got.Note, "OMAC_SOCKET") {
+		t.Errorf("note does not disclose the path source: %q", got.Note)
+	}
+}
+
+// TestDiagnoseHashIgnoresForeignSocket: an ambient session belonging to a
+// DIFFERENT workdir must not hijack the reported path — only a same-named
+// runtime dir is trusted.
+func TestDiagnoseHashIgnoresForeignSocket(t *testing.T) {
+	wd := hashSandbox(t)
+	other := t.TempDir()
+
+	t.Setenv("OMAC_SOCKET", filepath.Join(t.TempDir(), filepath.Base(runtimeDirPath(other)), "bridge.sock"))
+
+	view, code, errOut := runHash(t, wd, "--hash=runtime")
+	if code != ExitOK {
+		t.Fatalf("code = %d; stderr=%q", code, errOut)
+	}
+	got := onlyEntry(t, view, "runtime")
+	if want := runtimeDirPath(wd); got.Path != want {
+		t.Errorf("path = %q, want the derived path %q (foreign session hijacked it)", got.Path, want)
+	}
+	if strings.Contains(got.Note, "OMAC_SOCKET") {
+		t.Errorf("note claims a socket source it did not use: %q", got.Note)
+	}
+}
+
+// TestDiagnoseHashServeIgnoresStartSocket: a live `omac start` session must
+// not be reported as the serve runtime dir — the two names differ by prefix.
+func TestDiagnoseHashServeIgnoresStartSocket(t *testing.T) {
+	wd := hashSandbox(t)
+
+	t.Setenv("OMAC_SOCKET", filepath.Join(runtimeDirPath(wd), "bridge.sock"))
+
+	view, code, errOut := runHash(t, wd, "--hash=serve")
+	if code != ExitOK {
+		t.Fatalf("code = %d; stderr=%q", code, errOut)
+	}
+	if got, want := onlyEntry(t, view, "serve").Path, serveRuntimeDirPath(wd); got != want {
+		t.Errorf("path = %q, want %q (a start session was mistaken for serve)", got, want)
+	}
+}
+
+// TestDiagnoseHashFailedKindGoesToStderr: in --hash=all a kind that cannot be
+// derived must not write into the stream a caller scrapes paths from.
+func TestDiagnoseHashFailedKindGoesToStderr(t *testing.T) {
+	isolateHome(t)
+	t.Setenv("TMPDIR", t.TempDir())
+	// Force the workdir cache scope against a workdir that does not exist, so
+	// DescribePersistent's EvalSymlinks fails.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	cfgDir := filepath.Join(home, ".config", "omac")
+	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfgDir, "config.yaml"), []byte("cache:\n  scope: workdir\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	missing := filepath.Join(t.TempDir(), "gone")
+
+	env, read := captureEnv(t, missing)
+	code := runDiagnose([]string{"--hash"}, env)
+	out, errOut := read()
+	if code != ExitOK {
+		t.Fatalf("code = %d, want ExitOK (other kinds still derive); stderr=%q", code, errOut)
+	}
+	if !strings.Contains(errOut, "cache") {
+		t.Errorf("cache failure not reported on stderr: %q", errOut)
+	}
+	if strings.Contains(out, "error") {
+		t.Errorf("error text leaked into stdout: %q", out)
+	}
+	if !strings.Contains(out, "runtime") {
+		t.Errorf("a failing kind suppressed the others: %q", out)
+	}
+}
+
 // TestDiagnoseHashUnknownKind: a typo is rejected loudly, with the valid
 // kinds listed, rather than silently printing everything.
 func TestDiagnoseHashUnknownKind(t *testing.T) {
@@ -279,6 +385,25 @@ func TestDiagnoseHashRejectsSpaceForm(t *testing.T) {
 	_, errOut := read()
 	if !strings.Contains(errOut, "--hash=runtime") {
 		t.Errorf("stderr does not suggest the attached form: %q", errOut)
+	}
+}
+
+// TestDiagnoseHashStrayNonKindArg: a stray token that is NOT a kind must not
+// be echoed back as "use --hash=<that token>" — following that advice would
+// just fail again with "unknown kind".
+func TestDiagnoseHashStrayNonKindArg(t *testing.T) {
+	wd := hashSandbox(t)
+
+	env, read := captureEnv(t, wd)
+	if code := runDiagnose([]string{"--hash", "wat"}, env); code != ExitMisuse {
+		t.Fatalf("code = %d, want ExitMisuse", code)
+	}
+	_, errOut := read()
+	if strings.Contains(errOut, "--hash=wat") {
+		t.Errorf("stderr suggests advice that would fail again: %q", errOut)
+	}
+	if !strings.Contains(errOut, "unexpected argument") {
+		t.Errorf("stderr does not name the problem: %q", errOut)
 	}
 }
 
