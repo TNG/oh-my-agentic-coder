@@ -88,6 +88,16 @@ type Problem struct {
 	// silently on a missing backend (errors.Is ErrNotFound) but propagates an
 	// opaque keychain failure. Nil for problems derived from absent values.
 	Cause error
+	// Optional marks a problem that came from a spec the skill declared
+	// optional. It is stated negatively so the zero value stays blocking:
+	// secrets are required by default (config.SecretSpec.IsRequired), and a
+	// Problem built without this field must not silently become skippable.
+	// An optional secret that is present but malformed is worth reporting,
+	// yet it must not keep a route from arming: the supervisor injects the
+	// value either way, so refusing to mount is strictly worse than mounting
+	// with it. StallFor honors this; the launch-path refusal deliberately
+	// does not, so `omac start` keeps failing loudly.
+	Optional bool
 }
 
 // Source names the rung of the precedence ladder a resolved value came from,
@@ -360,10 +370,11 @@ func (r *Resolver) resolveSecrets(armed *Armed) []Problem {
 			if !r.opts.SkipSecretPattern {
 				if perr := spec.ValidateValue(envVal); perr != nil {
 					problems = append(problems, Problem{
-						Kind:   InvalidSecret,
-						Skill:  armed.Entry.Name,
-						Field:  spec.Name,
-						Detail: perr.Error(),
+						Kind:     InvalidSecret,
+						Skill:    armed.Entry.Name,
+						Field:    spec.Name,
+						Detail:   perr.Error(),
+						Optional: !spec.IsRequired(),
 						Fix: fmt.Sprintf("fix the exported value, or run omac secrets set %s %s",
 							armed.Entry.Name, spec.Name),
 					})
@@ -555,6 +566,7 @@ type Stall struct {
 // would strand every skill with a required secret on a headless server — the
 // primary `omac serve` deployment target — behind a 502 that never recovers.
 func StallFor(problems []Problem) *Stall {
+	problems = blocking(problems)
 	if len(problems) == 0 {
 		return nil
 	}
@@ -583,6 +595,23 @@ func StallFor(problems []Problem) *Stall {
 	}
 	st.Detail = fmt.Sprintf("missing required values: %v", st.Missing)
 	return st
+}
+
+// blocking drops problems that are worth reporting but must not keep a route
+// from arming. An OPTIONAL secret whose exported value fails its pattern is
+// the only such case today: the supervisor injects the value regardless, so
+// stalling the route denies the skill entirely over a value the sidecar would
+// have received anyway. `omac start` applies no such filter — it renders every
+// problem and refuses — which is why this lives here and not at the source.
+func blocking(problems []Problem) []Problem {
+	out := make([]Problem, 0, len(problems))
+	for _, p := range problems {
+		if p.Kind == InvalidSecret && p.Optional {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
 }
 
 // withFix renders a problem's cause plus its remedy, if it has one.

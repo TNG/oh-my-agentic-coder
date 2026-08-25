@@ -827,7 +827,7 @@ from `env_passthrough` — both satisfy `omac start`, so a secret you
 never stored can still be present because your shell exports it — and
 `keychain-unavailable`, which means the value could not be *read* rather
 than that it is unset (a headless host with no Secret Service; see
-README.md#prerequisites). `--json` emits the same data as a single JSON
+docs/INSTALLATION.md#prerequisites). `--json` emits the same data as a single JSON
 object so it's pipeable into `jq`.
 
 `omac config get <skill> <field>` prints just the resolved value,

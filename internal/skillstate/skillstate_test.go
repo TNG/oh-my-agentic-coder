@@ -987,3 +987,51 @@ func TestStallForCarriesTheRealRemedy(t *testing.T) {
 		t.Errorf("Detail = %q, want the generic missing-values summary", st.Detail)
 	}
 }
+
+// An OPTIONAL secret whose exported value fails its pattern must not stall a
+// route: the supervisor injects the value either way, so refusing to mount
+// denies the skill over a value the sidecar would have received anyway. The
+// launch path keeps refusing — only StallFor (serve + live reload) filters.
+func TestStallForIgnoresOptionalInvalidSecret(t *testing.T) {
+	optional := Problem{
+		Kind:     InvalidSecret,
+		Skill:    "echo-rest",
+		Field:    "ECHO_API_KEY",
+		Detail:   `value for ECHO_API_KEY does not match /^[A-Za-z0-9_-]{3,}$/`,
+		Optional: true,
+	}
+
+	if st := StallFor([]Problem{optional}); st != nil {
+		t.Errorf("StallFor(optional invalid secret) = %+v, want nil (route must arm)", st)
+	}
+
+	required := optional
+	required.Optional = false
+	st := StallFor([]Problem{required})
+	if st == nil {
+		t.Fatal("StallFor(required invalid secret) = nil, want a stall")
+	}
+	if st.Terminal {
+		t.Error("a malformed required secret is recoverable, want Terminal=false")
+	}
+	if !strings.Contains(st.Detail, "does not match") {
+		t.Errorf("Detail = %q, want the pattern failure", st.Detail)
+	}
+
+	// A Problem built without the field is required, so it still stalls.
+	if st := StallFor([]Problem{{Kind: InvalidSecret, Field: "TOKEN"}}); st == nil {
+		t.Error("StallFor(zero-value InvalidSecret) = nil, want a stall (zero value must stay blocking)")
+	}
+
+	// An optional invalid secret alongside a real blocker neither hides the
+	// blocker nor adds itself to the list the agent is shown.
+	st = StallFor([]Problem{optional, {Kind: MissingSecret, Field: "TOKEN"}})
+	if st == nil {
+		t.Fatal("StallFor(optional + missing required) = nil, want a stall")
+	}
+	for _, f := range st.Missing {
+		if f == "ECHO_API_KEY" {
+			t.Errorf("Missing = %v, want the optional secret excluded", st.Missing)
+		}
+	}
+}
