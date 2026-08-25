@@ -39,9 +39,9 @@ on:
         type: boolean
         default: true
       model:
-        description: 'Model id for EVERY harness, for THIS RUN ONLY. Leave empty to use each harness''s pin in internal/e2e/versions.go (opencode/codex/copilot/pi/codewhale: zai-org/GLM-5.2, claude-code: claude-sonnet-5)'
+        description: 'Model id for EVERY harness, for THIS RUN ONLY. Set empty to use each harness''s pin in internal/e2e/versions.go (opencode/codex/copilot/pi/codewhale: zai-org/GLM-5.2, claude-code: claude-sonnet-5). As of 2026-08-25 the SKAINET-EXTERNAL is phased out, so defaults to a small internal model.'
         type: string
-        default: ''
+        default: 'deepseek-ai/DeepSeek-V4-Flash'
       claude_code_model:
         description: 'Model id for claude-code only — it accepts sonnet or haiku models ONLY. Wins over "model"; leave empty to fall back to it, then to the versions.go pin'
         type: string
@@ -73,7 +73,7 @@ jobs:
       claude_code: ${{ steps.probe.outputs.claude_code }}
     env:
       SKAINET_TOKEN: ${{ secrets.SKAINET_TOKEN }}
-      SKAINET_INTERNAL: ${{ secrets.SKAINET_EXTERNAL }}
+      SKAINET_INTERNAL: ${{ secrets.SKAINET_INTERNAL }}
       E2E_MODEL: ${{ github.event.inputs.model }}
       E2E_MODEL_CLAUDE_CODE: ${{ github.event.inputs.claude_code_model }}
     steps:
@@ -134,7 +134,7 @@ jobs:
       cancel-in-progress: false
     env:
       SKAINET_TOKEN: ${{ secrets.SKAINET_TOKEN }}
-      SKAINET_INTERNAL: ${{ secrets.SKAINET_EXTERNAL }}
+      SKAINET_INTERNAL: ${{ secrets.SKAINET_INTERNAL }}
       ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
       E2E_HARNESS: ${{ matrix.harness }}
       # Schedule runs always test latest (drift); dispatch honors the input.
@@ -398,7 +398,7 @@ jobs:
       cancel-in-progress: false
     env:
       SKAINET_TOKEN: ${{ secrets.SKAINET_TOKEN }}
-      SKAINET_INTERNAL: ${{ secrets.SKAINET_EXTERNAL }}
+      SKAINET_INTERNAL: ${{ secrets.SKAINET_INTERNAL }}
       ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
       E2E_HARNESS: ${{ matrix.harness }}
       E2E_USE_LATEST: ${{ (github.event_name == 'schedule' || github.event.inputs.use_latest != 'false') && '1' || '' }}
@@ -409,6 +409,11 @@ jobs:
       E2E_MODEL_CODEWHALE: ${{ needs.model.outputs.gateway }}
       E2E_MODEL_CLAUDE_CODE: ${{ needs.model.outputs.claude_code }}
       E2E_CONTEXT_LIMIT: ${{ github.event.inputs.context_limit }}
+      # WSL only forwards vars listed in WSLENV — include every job/step env
+      # var the Go tests read via os.Getenv(). Without it, SKAINET_TOKEN,
+      # E2E_MODEL_*, etc. are unbound inside wsl-bash. OMAC_BIN is set via
+      # GITHUB_ENV by the "Provision released omac" step.
+      WSLENV: GITHUB_OUTPUT:GITHUB_STEP_SUMMARY:OMAC_BIN:SKAINET_TOKEN:SKAINET_INTERNAL:ANTHROPIC_BASE_URL:E2E_HARNESS:E2E_USE_LATEST:E2E_MODEL_OPENCODE:E2E_MODEL_CODEX:E2E_MODEL_COPILOT:E2E_MODEL_PI:E2E_MODEL_CODEWHALE:E2E_MODEL_CLAUDE_CODE:E2E_CONTEXT_LIMIT:E2E_CACHE_DIR
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -425,26 +430,34 @@ jobs:
         uses: Vampire/setup-wsl@v7
         with:
           distribution: Ubuntu-24.04
-          additional-packages: bubblewrap gcc libc6-dev
+          additional-packages: bubblewrap gcc libc6-dev unzip python3-pip
+          # Run wsl-bash steps as a non-root user so DAC protects root-owned
+          # paths (/etc/shadow, /root/.bashrc) — matches Linux CI behavior.
+          wsl-shell-user: runner
           # update: 'true'  # makes it very slow
 
-      - name: Set up Go, Bun, and Node in WSL2
-        shell: wsl-bash {0}
+      - name: Set up Go and Node in WSL2 (as root)
+        shell: wsl-bash -u root {0}
         run: |
           GO_VERSION=$(grep '^go ' go.mod | tr -d '\r' | awk '{print $2}')
-          curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" | sudo tar -C /usr/local -xz
+          curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" | tar -C /usr/local -xz
+          curl -fsSL https://deb.nodesource.com/setup_24.x | bash -
+          apt-get install -y nodejs
+
+      - name: Set up Bun and Rust in WSL2
+        shell: wsl-bash {0}
+        run: |
           curl -fsSL https://bun.sh/install | bash
-          curl -fsSL https://deb.nodesource.com/setup_24.x | sudo -E bash -
-          sudo apt-get install -y nodejs
+          curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
           cat > /tmp/wsl-env.sh <<'WEOF'
-          export PATH="/usr/local/go/bin:$HOME/.bun/bin:$PATH"
-          if [ -n "$GITHUB_OUTPUT" ]; then
+          export PATH="/usr/local/go/bin:$HOME/.bun/bin:$HOME/.cargo/bin:$PATH"
+          if [ -n "${GITHUB_OUTPUT:-}" ]; then
             export GITHUB_OUTPUT=$(wslpath -u "$GITHUB_OUTPUT" 2>/dev/null || echo "$GITHUB_OUTPUT")
           fi
-          if [ -n "$GITHUB_STEP_SUMMARY" ]; then
+          if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
             export GITHUB_STEP_SUMMARY=$(wslpath -u "$GITHUB_STEP_SUMMARY" 2>/dev/null || echo "$GITHUB_STEP_SUMMARY")
           fi
-          if [ -n "$OMAC_BIN" ]; then
+          if [ -n "${OMAC_BIN:-}" ]; then
             export OMAC_BIN=$(wslpath -u "$OMAC_BIN" 2>/dev/null || echo "$OMAC_BIN")
           fi
           WEOF
@@ -465,6 +478,7 @@ jobs:
 
       - name: Provision released omac (omac@release)
         if: matrix.omac == 'release'
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -678,7 +692,7 @@ jobs:
         continue-on-error: true # a summariser hiccup must never mask the failure
         env:
           SKAINET_TOKEN: ${{ secrets.SKAINET_TOKEN }}
-          SKAINET_INTERNAL: ${{ secrets.SKAINET_EXTERNAL }}
+          SKAINET_INTERNAL: ${{ secrets.SKAINET_INTERNAL }}
           # The summariser is an LLM call too, so it uses the model the preflight
           # proved is served — re-resolving the pin here would 422 in exactly
           # the situation the summary is most needed.

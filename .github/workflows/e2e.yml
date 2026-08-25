@@ -2,7 +2,7 @@
 #
 # Runs on manual trigger and every Saturday at 10:00 CET (08:00 UTC in
 # summer / 09:00 UTC in winter). Tests that each harness can start under
-# the omac sandbox and that an agent running on GLM-5.2 (or
+# the omac sandbox and that an agent running on the selected model (or
 # claude-sonnet-5 for claude-code) can call the bundled echo-rest skill
 # through the omac facade.
 name: "E2E: full"
@@ -43,9 +43,9 @@ on:
         type: string
         default: 'codewhale@0.9.1'
       model:
-        description: 'Model id for EVERY harness, for THIS RUN ONLY (e.g. zai-org/GLM-5.2). Leave empty to use each harness''s pin in internal/e2e/versions.go (opencode/codex/copilot/pi/codewhale: zai-org/GLM-5.2, claude-code: claude-sonnet-5)'
+        description: 'Model id for EVERY harness, for THIS RUN ONLY. Set empty to use each harness''s pin in internal/e2e/versions.go (opencode/codex/copilot/pi/codewhale: zai-org/GLM-5.2, claude-code: claude-sonnet-5). As of 2026-08-25 the SKAINET-EXTERNAL is phased out, so defaults to a small internal model.'
         type: string
-        default: ''
+        default: 'deepseek-ai/DeepSeek-V4-Flash'
       claude_code_model:
         description: 'Model id for claude-code only — it accepts sonnet or haiku models ONLY, and bills a different provider than the SKAINET gateway the others use. Wins over "model"; leave empty to fall back to it, then to the versions.go pin'
         type: string
@@ -75,7 +75,7 @@ jobs:
       claude_code: ${{ steps.probe.outputs.claude_code }}
     env:
       SKAINET_TOKEN: ${{ secrets.SKAINET_TOKEN }}
-      SKAINET_INTERNAL: ${{ secrets.SKAINET_EXTERNAL }}
+      SKAINET_INTERNAL: ${{ secrets.SKAINET_INTERNAL }}
       E2E_MODEL: ${{ github.event.inputs.model }}
       E2E_MODEL_CLAUDE_CODE: ${{ github.event.inputs.claude_code_model }}
     steps:
@@ -142,7 +142,7 @@ jobs:
       cancel-in-progress: false
     env:
       SKAINET_TOKEN: ${{ secrets.SKAINET_TOKEN }}
-      SKAINET_INTERNAL: ${{ secrets.SKAINET_EXTERNAL }}
+      SKAINET_INTERNAL: ${{ secrets.SKAINET_INTERNAL }}
       ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
       E2E_HARNESS: ${{ matrix.harness }}
       # Drift-detection: install latest instead of the pinned versions below.
@@ -386,7 +386,7 @@ jobs:
       cancel-in-progress: false
     env:
       SKAINET_TOKEN: ${{ secrets.SKAINET_TOKEN }}
-      SKAINET_INTERNAL: ${{ secrets.SKAINET_EXTERNAL }}
+      SKAINET_INTERNAL: ${{ secrets.SKAINET_INTERNAL }}
       ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
       E2E_HARNESS: ${{ matrix.harness }}
       E2E_USE_LATEST: ${{ github.event.inputs.use_latest == 'true' && '1' || '' }}
@@ -402,6 +402,10 @@ jobs:
       E2E_MODEL_PI: ${{ needs.model.outputs.gateway }}
       E2E_MODEL_CODEWHALE: ${{ needs.model.outputs.gateway }}
       E2E_MODEL_CLAUDE_CODE: ${{ needs.model.outputs.claude_code }}
+      # WSL only forwards vars listed in WSLENV — include every job/step env
+      # var the Go tests read via os.Getenv(). Without it, SKAINET_TOKEN,
+      # E2E_MODEL_*, etc. are unbound inside wsl-bash.
+      WSLENV: GITHUB_OUTPUT:GITHUB_STEP_SUMMARY:SKAINET_TOKEN:SKAINET_INTERNAL:ANTHROPIC_BASE_URL:E2E_HARNESS:E2E_USE_LATEST:E2E_VERSION_OPENCODE:E2E_VERSION_CLAUDE_CODE:E2E_VERSION_CODEX:E2E_VERSION_COPILOT:E2E_VERSION_PI:E2E_VERSION_CODEWHALE:E2E_MODEL_OPENCODE:E2E_MODEL_CODEX:E2E_MODEL_COPILOT:E2E_MODEL_PI:E2E_MODEL_CODEWHALE:E2E_MODEL_CLAUDE_CODE:E2E_LOG_DIR:E2E_CACHE_DIR
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -418,26 +422,34 @@ jobs:
         uses: Vampire/setup-wsl@v7
         with:
           distribution: Ubuntu-24.04
-          additional-packages: bubblewrap gcc libc6-dev
+          additional-packages: bubblewrap gcc libc6-dev unzip python3-pip
+          # Run wsl-bash steps as a non-root user so DAC protects root-owned
+          # paths (/etc/shadow, /root/.bashrc) — matches Linux CI behavior.
+          wsl-shell-user: runner
           # update: 'true'  # makes it very slow
 
-      - name: Set up Go, Bun, and Node in WSL2
-        shell: wsl-bash {0}
+      - name: Set up Go and Node in WSL2 (as root)
+        shell: wsl-bash -u root {0}
         run: |
           GO_VERSION=$(grep '^go ' go.mod | tr -d '\r' | awk '{print $2}')
-          curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" | sudo tar -C /usr/local -xz
+          curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" | tar -C /usr/local -xz
+          curl -fsSL https://deb.nodesource.com/setup_24.x | bash -
+          apt-get install -y nodejs
+
+      - name: Set up Bun and Rust in WSL2
+        shell: wsl-bash {0}
+        run: |
           curl -fsSL https://bun.sh/install | bash
-          curl -fsSL https://deb.nodesource.com/setup_24.x | sudo -E bash -
-          sudo apt-get install -y nodejs
+          curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
           # wsl-bash uses --noprofile --norc, so /etc/profile.d is not sourced.
-          # Make Go and bun available to subsequent steps, and translate
+          # Make Go, bun, and cargo available to subsequent steps, and translate
           # GitHub Actions file paths (Windows backslash paths) to WSL paths.
           cat > /tmp/wsl-env.sh <<'WEOF'
-          export PATH="/usr/local/go/bin:$HOME/.bun/bin:$PATH"
-          if [ -n "$GITHUB_OUTPUT" ]; then
+          export PATH="/usr/local/go/bin:$HOME/.bun/bin:$HOME/.cargo/bin:$PATH"
+          if [ -n "${GITHUB_OUTPUT:-}" ]; then
             export GITHUB_OUTPUT=$(wslpath -u "$GITHUB_OUTPUT" 2>/dev/null || echo "$GITHUB_OUTPUT")
           fi
-          if [ -n "$GITHUB_STEP_SUMMARY" ]; then
+          if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
             export GITHUB_STEP_SUMMARY=$(wslpath -u "$GITHUB_STEP_SUMMARY" 2>/dev/null || echo "$GITHUB_STEP_SUMMARY")
           fi
           WEOF

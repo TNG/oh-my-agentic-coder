@@ -9,7 +9,9 @@ must have a name-matched `run:` step in the WSL2 job. `uses:` steps are
 not checked (actions run on the host; setup-* is replaced by a manual
 install step in the WSL2 job). Job-level `env:` keys must also match — a
 new E2E_* var on the main job without a WSL2 counterpart silently uses
-the default/unset behavior.
+the default/unset behavior. Additionally, every env var in the WSL2 job
+(job-level + step-level) must appear in the job's WSLENV value — WSL only
+forwards vars listed there, so a missing entry is silently unbound.
 
 Exit 0 when clean, 1 with a per-file/per-step report otherwise.
 """
@@ -32,6 +34,11 @@ def _basename(path):
     return path.rsplit("/", 1)[-1]
 
 
+# Env vars that are legitimately WSL2-only — present in the WSL2 job but not
+# the main job, and exempt from the env-key parity check.
+WSL2_ONLY_ENV = {"WSLENV"}
+
+
 def _is_windows(job):
     runs_on = job.get("runs-on", "")
     return isinstance(runs_on, str) and "windows" in runs_on.lower()
@@ -49,6 +56,29 @@ def _run_steps(job):
         if "runner.os == 'Linux'" in str(step.get("if", "")):
             continue
         yield index, step.get("name", "<unnamed>")
+
+
+def _step_env_keys(job):
+    """Collect env var names from step-level `env:` blocks.
+
+    Only steps using `wsl-bash` as their shell need WSLENV forwarding —
+    other shells (bash, pwsh) run on the Windows side with native env access.
+    """
+    keys = set()
+    for step in job.get("steps") or []:
+        if not isinstance(step, dict) or not step.get("run"):
+            continue
+        shell = step.get("shell", "")
+        if "wsl-bash" not in str(shell):
+            continue
+        keys.update((step.get("env") or {}).keys())
+    return keys
+
+
+# Env vars set by GitHub Actions itself, not the workflow — always present
+# inside wsl-bash without a WSLENV entry (the runner injects them), so
+# they don't need to be listed.
+GITHUB_INJECTED_ENV = {"HOME", "PATH", "PWD", "TMPDIR", "LANG", "TERM"}
 
 
 def check_file(path):
@@ -113,9 +143,30 @@ def check_file(path):
                 f"missing in WSL2 job"
             )
         for key in sorted(only_wsl):
+            if key in WSL2_ONLY_ENV:
+                continue
             yield (
                 f"{path}: WSL2 job env '{key}': "
                 f"missing in main job '{mname}'"
+            )
+
+    # WSLENV coverage: every env var in the WSL2 job (job-level + step-level)
+    # must appear in the WSLENV value. WSL only forwards listed vars, so a
+    # missing entry is silently unbound inside wsl-bash (set -u aborts).
+    for wname, wjob in sorted(wsl2_jobs.items()):
+        wslenv_val = (wjob.get("env") or {}).get("WSLENV", "")
+        if not wslenv_val:
+            yield f"{path}: WSL2 job '{wname}' has no WSLENV env var"
+            continue
+        forwarded = set(wslenv_val.split(":"))
+        all_env = set((wjob.get("env") or {}).keys()) | _step_env_keys(wjob)
+        all_env.discard("WSLENV")
+        all_env -= GITHUB_INJECTED_ENV
+        missing = all_env - forwarded
+        for key in sorted(missing):
+            yield (
+                f"{path}: WSL2 job '{wname}' env '{key}': "
+                f"missing in WSLENV"
             )
 
 

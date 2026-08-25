@@ -255,9 +255,9 @@ func TestE2EIntentExplainRecovery(t *testing.T) {
 			tailLines(stderr, 100))
 	}
 
-	// The explain-more hint (distinctive phrase "fuller reason") must reach
+	// The explain-more hint (distinctive phrase "fuller, specific reason") must reach
 	// the agent via the GET channel — the whole point of the fix.
-	if !strings.Contains(stdout, "fuller reason") {
+	if !strings.Contains(stdout, "fuller, specific reason") {
 		t.Errorf("agent output missing explain-more hint from GET /sandbox/intent "+
 			"(the HTTPS re-ask did not survive)\nSTDOUT (last 200 lines):\n%s",
 			tailLines(stdout, 200))

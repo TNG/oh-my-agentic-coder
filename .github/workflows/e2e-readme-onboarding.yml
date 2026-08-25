@@ -24,9 +24,9 @@ on:
         type: string
         default: '1200'
       model:
-        description: 'Model id for the onboarding agent, for THIS RUN ONLY. Leave empty for the opencode pin in internal/e2e/versions.go (zai-org/GLM-5.2)'
+        description: 'Model id for the onboarding agent, for THIS RUN ONLY. Set empty to use each harness''s pin in internal/e2e/versions.go (opencode/codex/copilot/pi/codewhale: zai-org/GLM-5.2, claude-code: claude-sonnet-5). As of 2026-08-25 the SKAINET-EXTERNAL is phased out, so defaults to a small internal model.'
         type: string
-        default: ''
+        default: 'deepseek-ai/DeepSeek-V4-Flash'
       context_limit:
         description: 'Context window declared to the agent, in tokens. Leave empty for the 100000 default, which is safely under every pinned model'
         type: string
@@ -48,7 +48,7 @@ jobs:
       candidates: ${{ steps.probe.outputs.candidates }}
     env:
       SKAINET_TOKEN: ${{ secrets.SKAINET_TOKEN }}
-      SKAINET_INTERNAL: ${{ secrets.SKAINET_EXTERNAL }}
+      SKAINET_INTERNAL: ${{ secrets.SKAINET_INTERNAL }}
       E2E_MODEL: ${{ github.event.inputs.model }}
     steps:
       - name: Checkout
@@ -81,7 +81,7 @@ jobs:
       cancel-in-progress: false
     env:
       SKAINET_TOKEN: ${{ secrets.SKAINET_TOKEN }}
-      SKAINET_INTERNAL: ${{ secrets.SKAINET_EXTERNAL }}
+      SKAINET_INTERNAL: ${{ secrets.SKAINET_INTERNAL }}
       E2E_VERSION_OPENCODE: ${{ github.event.inputs.opencode_version }}
       E2E_ONBOARDING_TIMEOUT_SECS: ${{ github.event.inputs.timeout_secs }}
       # From the preflight job: the input, the gateway probe and the -TEE flip
