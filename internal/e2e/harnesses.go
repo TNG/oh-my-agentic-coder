@@ -649,9 +649,12 @@ func piConfig() harnessConfig {
 // generic OpenAI-compatible route: config.example.toml documents
 // `provider = "openai"` + a `[providers.openai]` table for "generic
 // OpenAI-compatible gateways" (config.example.toml:354). We point that
-// provider's base_url at SKAINET_INTERNAL and set path_suffix = "/chat/
-// completions" so requests go to <base>/chat/completions — the same shape
-// opencode's @ai-sdk/openai-compatible client uses against this gateway.
+// provider's base_url at SKAINET_INTERNAL (which already includes /v1) and
+// rely on the default chat-completions path: codewhale appends
+// /chat/completions to a versioned base_url, yielding <base>/chat/completions
+// — the same shape opencode's @ai-sdk/openai-compatible client uses.
+// path_suffix is deliberately NOT set: that field strips the version segment
+// (e.g. /v1) from base_url before appending, which would drop /v1 and result in 404.
 //
 // Env vars: OPENAI_API_KEY carries the bearer token. CodeWhale's openai
 // provider reads it from the process env (crates/config/src/provider.rs:546),
@@ -668,6 +671,16 @@ func piConfig() harnessConfig {
 // so no fixed release host is contacted. The token binds via [providers.openai]
 // api_key_env = "OPENAI_API_KEY": CodeWhale refuses an ambient key on a custom
 // base_url unless it is bound explicitly.
+//
+// shell_env hook: CodeWhale's child_env module (crates/tui/src/child_env.rs)
+// calls cmd.env_clear() and rebuilds from a fixed allowlist that excludes
+// OMAC_* and secret-shaped keys, so bash tool subprocesses can't see
+// OMAC_ECHO_BASE, OMAC_CACHE_DIR, etc. — skills silently don't work. The
+// [hooks] shell_env entry re-injects OMAC_* and tool cache mappings from
+// CodeWhale's own process env (which has them from omac) before every
+// exec_shell. OPENAI_API_KEY is deliberately NOT re-injected: it belongs to
+// CodeWhale's own Rust process, not bash subprocesses. Real users must add
+// this hook to ~/.codewhale/config.toml — see docs/HARNESSES.md.
 //
 // Sandbox deviations: none expected — the model host (SKAINET_INTERNAL) is
 // allowed by the base profile and the update check is disabled. This has NOT
@@ -725,11 +738,19 @@ sandbox_mode = "external-sandbox"
 
 [providers.openai]
 base_url = "` + baseURL + `"
-path_suffix = "/chat/completions"
 api_key_env = "OPENAI_API_KEY"
 
 [update]
 check_for_updates = false
+
+# shell_env hook: re-inject OMAC_* and tool cache mappings that CodeWhale's
+# child_env sanitization strips from bash subprocesses. See docs/HARNESSES.md.
+[hooks]
+enabled = true
+
+[[hooks.hooks]]
+event = "shell_env"
+command = "env | grep -E '^(OMAC_|GOCACHE=|GOMODCACHE=|NPM_CONFIG_CACHE=|NPM_CONFIG_PREFIX=|PIP_CACHE_DIR=|XDG_CACHE_HOME=|XDG_CONFIG_HOME=|XDG_DATA_HOME=|XDG_STATE_HOME=|PWD=|BUN_INSTALL_CACHE_DIR=)' || true"
 `
 			if err := os.WriteFile(filepath.Join(cwDir, "config.toml"), []byte(configToml), 0o644); err != nil {
 				t.Fatal(err)
@@ -759,7 +780,10 @@ check_for_updates = false
 			return []string{"OPENAI_API_KEY"}
 		},
 		ExpectVisibleEnv: func() []string {
-			return []string{"OPENAI_API_KEY=", "OMAC_"}
+			// OPENAI_API_KEY is NOT expected in bash tool output: CodeWhale's
+			// child_env strips secret-shaped keys from exec_shell subprocesses,
+			// and the shell_env hook does NOT re-inject it.
+			return []string{"OMAC_"}
 		},
 	}
 }
