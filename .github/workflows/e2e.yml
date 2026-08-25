@@ -362,3 +362,217 @@ jobs:
           path: ${{ runner.temp }}/e2e-logs/
           if-no-files-found: ignore
           retention-days: 14
+
+  e2e-wsl2:
+    # Full e2e suite on real WSL2. All 6 harnesses run (WSL2 is GOOS=linux,
+    # so codex/codewhale are NOT excluded). Go/bun/node are installed manually
+    # inside WSL — the setup-* actions install on the Windows side, not in
+    # WSL. The wsl-bash shell uses --noprofile --norc, so PATH and GITHUB_*
+    # path translation are set up in /tmp/wsl-env.sh and sourced per step.
+    # Cache and logs use relative paths (relative to the checkout) so they
+    # work from both the Windows runner (actions/cache, upload-artifact) and
+    # inside WSL (Go test code) via the automount. continue-on-error during
+    # rollout.
+    name: "${{ matrix.harness }} / WSL2"
+    needs: model
+    strategy:
+      fail-fast: false
+      matrix:
+        harness: [opencode, claude-code, codex, copilot, pi, codewhale]
+    runs-on: windows-latest
+    continue-on-error: true
+    concurrency:
+      group: e2e-wsl2-${{ matrix.harness }}
+      cancel-in-progress: false
+    env:
+      SKAINET_TOKEN: ${{ secrets.SKAINET_TOKEN }}
+      SKAINET_INTERNAL: ${{ secrets.SKAINET_EXTERNAL }}
+      ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
+      E2E_HARNESS: ${{ matrix.harness }}
+      E2E_USE_LATEST: ${{ github.event.inputs.use_latest == 'true' && '1' || '' }}
+      E2E_VERSION_OPENCODE: ${{ github.event.inputs.opencode_version }}
+      E2E_VERSION_CLAUDE_CODE: ${{ github.event.inputs.claude_code_version }}
+      E2E_VERSION_CODEX: ${{ github.event.inputs.codex_version }}
+      E2E_VERSION_COPILOT: ${{ github.event.inputs.copilot_version }}
+      E2E_VERSION_PI: ${{ github.event.inputs.pi_version }}
+      E2E_VERSION_CODEWHALE: ${{ github.event.inputs.codewhale_version }}
+      E2E_MODEL_OPENCODE: ${{ needs.model.outputs.gateway }}
+      E2E_MODEL_CODEX: ${{ needs.model.outputs.gateway }}
+      E2E_MODEL_COPILOT: ${{ needs.model.outputs.gateway }}
+      E2E_MODEL_PI: ${{ needs.model.outputs.gateway }}
+      E2E_MODEL_CODEWHALE: ${{ needs.model.outputs.gateway }}
+      E2E_MODEL_CLAUDE_CODE: ${{ needs.model.outputs.claude_code }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Strip CRLF from shell and TypeScript files
+        # actions/checkout defaults to core.autocrlf=true on Windows, which
+        # converts LF->CRLF. CRLF breaks bash scripts inside WSL (e.g.
+        # `set -euo pipefail\r` → exit 2) and can cause issues with TypeScript
+        # tooling. Strip \r from .sh and .ts files so WSL sees clean LF.
+        shell: bash
+        run: find . \( -name '*.sh' -o -name '*.ts' \) -not -path './.git/*' -exec sed -i 's/\r$//' {} +
+
+      - name: Set up WSL2 (Ubuntu 24.04)
+        uses: Vampire/setup-wsl@v7
+        with:
+          distribution: Ubuntu-24.04
+          additional-packages: bubblewrap gcc libc6-dev
+          # update: 'true'  # makes it very slow
+
+      - name: Set up Go, Bun, and Node in WSL2
+        shell: wsl-bash {0}
+        run: |
+          GO_VERSION=$(grep '^go ' go.mod | tr -d '\r' | awk '{print $2}')
+          curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" | sudo tar -C /usr/local -xz
+          curl -fsSL https://bun.sh/install | bash
+          curl -fsSL https://deb.nodesource.com/setup_24.x | sudo -E bash -
+          sudo apt-get install -y nodejs
+          # wsl-bash uses --noprofile --norc, so /etc/profile.d is not sourced.
+          # Make Go and bun available to subsequent steps, and translate
+          # GitHub Actions file paths (Windows backslash paths) to WSL paths.
+          cat > /tmp/wsl-env.sh <<'WEOF'
+          export PATH="/usr/local/go/bin:$HOME/.bun/bin:$PATH"
+          if [ -n "$GITHUB_OUTPUT" ]; then
+            export GITHUB_OUTPUT=$(wslpath -u "$GITHUB_OUTPUT" 2>/dev/null || echo "$GITHUB_OUTPUT")
+          fi
+          if [ -n "$GITHUB_STEP_SUMMARY" ]; then
+            export GITHUB_STEP_SUMMARY=$(wslpath -u "$GITHUB_STEP_SUMMARY" 2>/dev/null || echo "$GITHUB_STEP_SUMMARY")
+          fi
+          WEOF
+
+      - name: Verify module tidy
+        shell: wsl-bash {0}
+        run: |
+          source /tmp/wsl-env.sh
+          go mod download && go mod verify
+
+      - name: Resolve model
+        id: model
+        shell: wsl-bash {0}
+        run: |
+          source /tmp/wsl-env.sh
+          model=$(scripts/resolve-model.sh '${{ matrix.harness }}')
+          context="${E2E_CONTEXT_LIMIT:-versions.go default}"
+          echo "model=$model" >> "$GITHUB_OUTPUT"
+          echo "context=$context" >> "$GITHUB_OUTPUT"
+          echo "::notice title=Model::${{ matrix.harness }} runs against $model (context: $context)"
+
+      - name: Cache harness install packages
+        uses: actions/cache@v4
+        with:
+          path: e2e-install-cache
+          key: e2e-install-Windows-${{ matrix.harness }}-${{ hashFiles('internal/e2e/versions.go') }}-${{ github.event.inputs.use_latest }}-${{ github.event.inputs.opencode_version }}-${{ github.event.inputs.claude_code_version }}-${{ github.event.inputs.codex_version }}-${{ github.event.inputs.copilot_version }}-${{ github.event.inputs.pi_version }}
+          restore-keys: |
+            e2e-install-Windows-${{ matrix.harness }}-
+
+      - name: Deterministic test gate
+        if: matrix.harness != 'claude-code' || github.event.inputs.skip_claude_code != 'true'
+        shell: wsl-bash {0}
+        run: |
+          source /tmp/wsl-env.sh
+          set -o pipefail
+          if ! go test -tags=e2e_fast -count=1 ./internal/e2e/ 2>&1 | tee /tmp/e2e-fast.txt; then
+            echo "::error::deterministic (e2e_fast) test failure — a test defect, not infra; retries cannot clear it"
+            {
+              echo "## E2E deterministic gate FAILED (${{ matrix.harness }} / WSL2)"
+              echo ""
+              echo "Network-free tests failed against the resolved model/version env."
+              echo "This is a test defect, not infra — the agent legs were not run."
+              echo ""
+              echo '```'
+              grep -E '^( *--- FAIL|.*_test\.go:)' /tmp/e2e-fast.txt | head -20
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+      - name: Run e2e test
+        id: run_e2e
+        if: matrix.harness != 'claude-code' || github.event.inputs.skip_claude_code != 'true'
+        shell: wsl-bash {0}
+        env:
+          E2E_LOG_DIR: ./e2e-logs
+          E2E_CACHE_DIR: ./e2e-install-cache
+        run: |
+          source /tmp/wsl-env.sh
+          set -o pipefail
+          max_attempts=3
+          attempt=1
+          while :; do
+            echo "::group::e2e attempt $attempt/$max_attempts"
+            if go test -tags=e2e -timeout=30m -v ./internal/e2e/ 2>&1 | tee /tmp/e2e-out.txt; then
+              echo "::endgroup::"
+              exit 0
+            fi
+            echo "::endgroup::"
+            if grep -q '^panic: test timed out after' /tmp/e2e-out.txt; then
+              hung=$(sed -n '/^panic: test timed out after/,/^$/p' /tmp/e2e-out.txt | head -20)
+              echo "::error::go test hit its deadline — a hung test, not infra; retries cannot clear it"
+              echo "test(s) still running at the deadline:"
+              echo "$hung"
+              {
+                echo "## E2E deadline exceeded (${{ matrix.harness }} / WSL2)"
+                echo '```'
+                echo "$hung"
+                echo '```'
+              } >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
+            bad=$(grep -oE 'FAIL \[[^]]+\]: (SANDBOX_FAIL|AGENT_REFUSED|AGENT_PARTIAL)' /tmp/e2e-out.txt | sort -u || true)
+            if [ -n "$bad" ]; then
+              echo "non-infra failure — not retrying:"
+              echo "$bad"
+              exit 1
+            fi
+            if [ "$attempt" -ge "$max_attempts" ]; then
+              echo "max attempts ($max_attempts) reached — giving up"
+              exit 1
+            fi
+            attempt=$((attempt + 1))
+            echo "infra-only failure — retrying in 15s (attempt $attempt/$max_attempts)"
+            sleep 15
+          done
+
+      - name: Skipped notice
+        if: steps.run_e2e.outcome == 'skipped'
+        shell: wsl-bash {0}
+        run: |
+          source /tmp/wsl-env.sh
+          echo "## E2E (${{ matrix.harness }} / WSL2): SKIPPED" >> "$GITHUB_STEP_SUMMARY"
+          echo "skip_claude_code was set on this workflow_dispatch run (model would have been \`${{ steps.model.outputs.model }}\`)." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Failure classification summary
+        if: always() && steps.run_e2e.outcome != 'skipped'
+        shell: wsl-bash {0}
+        run: |
+          source /tmp/wsl-env.sh
+          echo "## E2E failure classification (${{ matrix.harness }} / WSL2)" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Model: \`${{ steps.model.outputs.model }}\` · context: \`${{ steps.model.outputs.context }}\`" >> "$GITHUB_STEP_SUMMARY"
+          if [ '${{ needs.model.outputs.fallback }}' = 'true' ] && [ '${{ matrix.harness }}' != 'claude-code' ]; then
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "> ⚠️ Fallback model — the intended model is not served by the gateway, so this result does NOT certify it." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Assertion | Mode | Reason |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|-----------|------|--------|" >> "$GITHUB_STEP_SUMMARY"
+          if grep -qE 'FAIL \[[^]]+\]: [A-Z_]+ — ' /tmp/e2e-out.txt; then
+            grep -oE 'FAIL \[[^]]+\]: [A-Z_]+ — [^\\]*' /tmp/e2e-out.txt \
+              | sort -u \
+              | sed -E 's/FAIL \[([^]]+)\]: ([A-Z_]+) — (.*)/| `\1` | `\2` | \3 |/' \
+              >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "| _all passed_ | PASS | no failures |" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          cat "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload session artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-logs-${{ matrix.harness }}-wsl2
+          path: e2e-logs/
+          if-no-files-found: ignore
+          retention-days: 14

@@ -379,9 +379,242 @@ jobs:
             exit 1
           fi
 
+  smoke-wsl2:
+    # Drift detection on real WSL2. All 6 harnesses run (GOOS=linux). Both
+    # omac variants (main + release) via matrix. continue-on-error during
+    # rollout. See the smoke job above for the stage definitions; see
+    # e2e.yml's e2e-wsl2 job for the WSL2 setup pattern.
+    name: "${{ matrix.harness }} / WSL2 / omac@${{ matrix.omac }}"
+    needs: model
+    strategy:
+      fail-fast: false
+      matrix:
+        harness: [opencode, claude-code, codex, copilot, pi, codewhale]
+        omac: [main, release]
+    runs-on: windows-latest
+    continue-on-error: true
+    concurrency:
+      group: e2e-smoke-wsl2-${{ matrix.harness }}-${{ matrix.omac }}
+      cancel-in-progress: false
+    env:
+      SKAINET_TOKEN: ${{ secrets.SKAINET_TOKEN }}
+      SKAINET_INTERNAL: ${{ secrets.SKAINET_EXTERNAL }}
+      ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
+      E2E_HARNESS: ${{ matrix.harness }}
+      E2E_USE_LATEST: ${{ (github.event_name == 'schedule' || github.event.inputs.use_latest != 'false') && '1' || '' }}
+      E2E_MODEL_OPENCODE: ${{ needs.model.outputs.gateway }}
+      E2E_MODEL_CODEX: ${{ needs.model.outputs.gateway }}
+      E2E_MODEL_COPILOT: ${{ needs.model.outputs.gateway }}
+      E2E_MODEL_PI: ${{ needs.model.outputs.gateway }}
+      E2E_MODEL_CODEWHALE: ${{ needs.model.outputs.gateway }}
+      E2E_MODEL_CLAUDE_CODE: ${{ needs.model.outputs.claude_code }}
+      E2E_CONTEXT_LIMIT: ${{ github.event.inputs.context_limit }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Strip CRLF from shell and TypeScript files
+        # actions/checkout defaults to core.autocrlf=true on Windows, which
+        # converts LF->CRLF. CRLF breaks bash scripts inside WSL (e.g.
+        # `set -euo pipefail\r` → exit 2) and can cause issues with TypeScript
+        # tooling. Strip \r from .sh and .ts files so WSL sees clean LF.
+        shell: bash
+        run: find . \( -name '*.sh' -o -name '*.ts' \) -not -path './.git/*' -exec sed -i 's/\r$//' {} +
+
+      - name: Set up WSL2 (Ubuntu 24.04)
+        uses: Vampire/setup-wsl@v7
+        with:
+          distribution: Ubuntu-24.04
+          additional-packages: bubblewrap gcc libc6-dev
+          # update: 'true'  # makes it very slow
+
+      - name: Set up Go, Bun, and Node in WSL2
+        shell: wsl-bash {0}
+        run: |
+          GO_VERSION=$(grep '^go ' go.mod | tr -d '\r' | awk '{print $2}')
+          curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" | sudo tar -C /usr/local -xz
+          curl -fsSL https://bun.sh/install | bash
+          curl -fsSL https://deb.nodesource.com/setup_24.x | sudo -E bash -
+          sudo apt-get install -y nodejs
+          cat > /tmp/wsl-env.sh <<'WEOF'
+          export PATH="/usr/local/go/bin:$HOME/.bun/bin:$PATH"
+          if [ -n "$GITHUB_OUTPUT" ]; then
+            export GITHUB_OUTPUT=$(wslpath -u "$GITHUB_OUTPUT" 2>/dev/null || echo "$GITHUB_OUTPUT")
+          fi
+          if [ -n "$GITHUB_STEP_SUMMARY" ]; then
+            export GITHUB_STEP_SUMMARY=$(wslpath -u "$GITHUB_STEP_SUMMARY" 2>/dev/null || echo "$GITHUB_STEP_SUMMARY")
+          fi
+          if [ -n "$OMAC_BIN" ]; then
+            export OMAC_BIN=$(wslpath -u "$OMAC_BIN" 2>/dev/null || echo "$OMAC_BIN")
+          fi
+          WEOF
+
+      - name: Resolve model
+        shell: wsl-bash {0}
+        run: |
+          source /tmp/wsl-env.sh
+          echo "::notice title=Model::${{ matrix.harness }} runs against $(scripts/resolve-model.sh '${{ matrix.harness }}')"
+
+      - name: Cache harness install packages
+        uses: actions/cache@v4
+        with:
+          path: e2e-install-cache
+          key: e2e-smoke-install-Windows-${{ matrix.harness }}-${{ matrix.omac }}-${{ github.run_id }}
+          restore-keys: |
+            e2e-smoke-install-Windows-${{ matrix.harness }}-${{ matrix.omac }}-
+
+      - name: Provision released omac (omac@release)
+        if: matrix.omac == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag=$(gh release view --json tagName --jq .tagName)
+          echo "OMAC_RELEASE_TAG=$tag" >> "$GITHUB_ENV"
+          dir="$RUNNER_TEMP/omac-release"; mkdir -p "$dir"
+          gh release download "$tag" --dir "$dir" --pattern "oh-my-agentic-coder_*_linux_x86_64.tar.gz"
+          f=$(ls "$dir"/*.tar.gz | head -1)
+          tar -xzf "$f" -C "$dir"
+          bin=$(find "$dir" -type f -name omac | head -1)
+          [ -x "$bin" ] || { echo "omac binary missing in release asset"; ls -R "$dir"; exit 1; }
+          echo "OMAC_BIN=$bin" >> "$GITHUB_ENV"
+          echo "provisioned omac@release $tag -> $bin"; "$bin" version || true
+
+      - name: Resolve omac version label
+        id: omac
+        shell: wsl-bash {0}
+        run: |
+          source /tmp/wsl-env.sh
+          if [ "${{ matrix.omac }}" = "release" ]; then
+            echo "version=${OMAC_RELEASE_TAG:-release}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=main@$(git describe --tags --always --dirty)" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Model-free smoke (contract + launch + serve + system prompt)
+        id: modelfree
+        shell: wsl-bash {0}
+        env:
+          E2E_CACHE_DIR: ./e2e-install-cache
+        run: |
+          source /tmp/wsl-env.sh
+          set -o pipefail
+          go test -tags=e2e -timeout=20m -v \
+            -run 'TestHarnessCLIContract|TestHarnessLaunchProbe|TestHarnessServeProbe|TestOpenCodeSingleSystemMessage' \
+            ./internal/e2e/ 2>&1 | tee modelfree.log || true
+
+      - name: LLM turn
+        id: llm
+        continue-on-error: true
+        shell: wsl-bash {0}
+        env:
+          E2E_CACHE_DIR: ./e2e-install-cache
+        run: |
+          source /tmp/wsl-env.sh
+          set -o pipefail
+          attempt=1; max=2
+          while :; do
+            if go test -tags=e2e -timeout=12m -v -run TestE2EEchoRest ./internal/e2e/ 2>&1 | tee llm.log; then
+              break
+            fi
+            if [ "$attempt" -ge "$max" ]; then exit 1; fi
+            attempt=$((attempt + 1)); echo "llm turn flaked — retrying ($attempt/$max)"; sleep 5
+          done
+
+      - name: Build compatibility row
+        id: row
+        if: always()
+        shell: wsl-bash {0}
+        run: |
+          source /tmp/wsl-env.sh
+          stage_mark() {
+            local stage="$1" absent="${2:-❌}"
+            local line
+            line=$(grep -oE "OMAC_COMPAT .*stage=$stage .*result=[A-Z]+" modelfree.log 2>/dev/null | head -1 || true)
+            case "$line" in
+              *result=PASS) echo '✅' ;;
+              *result=SKIP) echo '➖' ;;
+              '') echo "$absent" ;;
+              *) echo '❌' ;;
+            esac
+          }
+          version=$(grep -oE 'OMAC_COMPAT .*stage=contract .*' modelfree.log 2>/dev/null \
+            | sed -E 's/.*version=([^ ]+).*/\1/' | head -1)
+          [ -z "$version" ] && version="unknown"
+          model=$(grep -oE 'OMAC_COMPAT .*stage=contract .*' modelfree.log 2>/dev/null \
+            | sed -E 's/.*model=([^ ]+).*/\1/' | head -1)
+          [ -z "$model" ] && model=$(scripts/resolve-model.sh '${{ matrix.harness }}' || echo unknown)
+          contract=$(stage_mark contract)
+          launch=$(stage_mark launch)
+          serve=$(stage_mark serve ➖)
+          case "${{ steps.llm.outcome }}" in
+            success) llm='✅' ;;
+            failure) llm='❌' ;;
+            *)       llm='➖' ;;
+          esac
+          date_utc=$(date -u +%Y-%m-%d)
+          row="| $date_utc | ${{ steps.omac.outputs.version }} | WSL2 | ${{ matrix.harness }} | $version | $contract | $launch | $serve | $llm | $model |"
+          mkdir -p compat
+          slug="wsl2-${{ matrix.harness }}-${{ matrix.omac }}"
+          printf '%s\n' "$row" > "compat/$slug.row"
+          echo "$row"
+          echo "row<<EOF" >> "$GITHUB_OUTPUT"; echo "$row" >> "$GITHUB_OUTPUT"; echo "EOF" >> "$GITHUB_OUTPUT"
+          if printf '%s' "$row" | grep -q '❌'; then
+            stages=""
+            [ "$contract" = "❌" ] && stages="$stages contract"
+            [ "$launch" = "❌" ] && stages="$stages launch"
+            [ "$serve" = "❌" ] && stages="$stages serve"
+            [ "$llm" = "❌" ] && stages="$stages llm"
+            {
+              echo "=== ${{ matrix.harness }} / WSL2 / omac@${{ matrix.omac }} — failing stage(s):$stages ==="
+              grep -hE 'CLI contract drift|no longer exposes|--- FAIL|omac start .* failed|serve probe failed|omac serve exited|FAIL \[|Error|panic:' \
+                modelfree.log llm.log 2>/dev/null | head -40 || true
+              tail -n 30 llm.log 2>/dev/null || true
+              echo
+            } > "compat/$slug.ctx"
+          fi
+          {
+            echo "### ${{ matrix.harness }} / WSL2 / omac@${{ matrix.omac }}"
+            echo ""
+            echo "| Timestamp (UTC) | omac | OS | Harness | Version | contract | launch | serve | llm | Model |"
+            echo "|---|---|---|---|---|:-:|:-:|:-:|:-:|---|"
+            echo "$row"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload compatibility row
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compat-wsl2-${{ matrix.harness }}-${{ matrix.omac }}
+          path: |
+            compat/*.row
+            compat/*.ctx
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-logs-wsl2-${{ matrix.harness }}-${{ matrix.omac }}
+          path: |
+            modelfree.log
+            llm.log
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Fail this leg on drift
+        if: always()
+        run: |
+          row='${{ steps.row.outputs.row }}'
+          echo "$row"
+          if printf '%s' "$row" | grep -q '❌'; then
+            echo "::error::compatibility drift detected for ${{ matrix.harness }} / WSL2"
+            exit 1
+          fi
+
   report:
     name: Record & report
-    needs: [model, smoke]
+    needs: [model, smoke, smoke-wsl2]
     if: always()
     runs-on: ubuntu-latest
     steps:
