@@ -169,6 +169,33 @@ omac diagnose
 
 Requires the audit trail from a previous `omac start` or `omac serve` run. The audit trail is written automatically unless `--no-audit` was passed.
 
+#### Workdir hashes (`omac diagnose --hash`)
+
+omac derives four different identifiers from a workdir, each hashed differently. `omac diagnose --hash` prints them so you don't have to reverse-engineer a log path or a cache directory:
+
+| Kind | Hashed input | Digest | Names |
+|---|---|---|---|
+| `runtime` | absolute workdir | `sha256[:6]` | `$TMPDIR/omac-<hash>/` — `omac start`'s `logs/`, `pids/`, `bridge.sock` |
+| `serve` | `"serve:"` + absolute workdir | `sha256[:6]` | `$TMPDIR/omac-serve-<hash>/` — `omac serve`'s `logs/` |
+| `keychain` | absolute workdir | full `sha256` | the secret scope a workdir's keychain entries live under (not a path) |
+| `cache` | `"v1:<domain>:<canonical>"` | full `sha256` | `~/.cache/omac/<hash>/` — the persistent tool-cache scope |
+
+```bash
+omac diagnose --hash                 # all four kinds
+omac diagnose --hash=runtime         # one kind (attached '=', not a space)
+omac --workdir /path/to/proj diagnose --hash=cache
+
+# Find a run's logs:
+ls "$(omac diagnose --hash=runtime --json | jq -r '.entries[0].path')/logs"
+```
+
+Two things the output makes explicit, because both are easy to get wrong:
+
+- The `runtime` and `serve` paths are relative to `$TMPDIR`, so a shell with a different `TMPDIR` than the running agent resolves a different (equally correct) path. The reported `tmpdir` is the one that produced the output.
+- `runtime`, `serve` and `keychain` hash the **absolute** workdir, while `cache` hashes the **symlink-resolved** path. On macOS, where `/tmp` is a symlink to `/private/tmp`, those are different strings — the per-kind `input` field shows exactly what was hashed.
+
+The `cache` kind honors the configured `cache.scope` (`global`, `config`, or `workdir` — see [Cache](../advanced/cache.md)), so it reports the cache this workdir actually gets. It always agrees with `omac provenance`'s `cache.path`.
+
 ### omac update
 
 ```bash

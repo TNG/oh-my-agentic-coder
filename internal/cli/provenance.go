@@ -148,22 +148,7 @@ func buildProvenanceView(workdir, profileRef string) (*provenanceView, error) {
 // ephemeral or serve-process scope. An error from the describe call (e.g.
 // HOME unset) is returned to the caller rather than swallowed.
 func buildCacheView(cacheScope config.CacheScope, workdir, cfgPath string) (cacheView, error) {
-	var (
-		scope toolcache.Scope
-		err   error
-	)
-	switch cacheScope {
-	case config.CacheScopeWorkdir:
-		scope, err = toolcache.DescribePersistent(toolcache.DomainWorkdir, workdir)
-	case config.CacheScopeConfig:
-		if cfgPath != "" {
-			scope, err = toolcache.DescribePersistent(toolcache.DomainConfig, cfgPath)
-		} else {
-			scope, err = toolcache.DescribeShared()
-		}
-	default:
-		scope, err = toolcache.DescribeShared()
-	}
+	scope, err := describeCacheScope(cacheScope, workdir, cfgPath)
 	if err != nil {
 		return cacheView{}, err
 	}
@@ -173,6 +158,31 @@ func buildCacheView(cacheScope config.CacheScope, workdir, cfgPath string) (cach
 		Path:        scope.Dir,
 		Environment: toolcache.Environment(scope.Dir, scope.Mode),
 	}, nil
+}
+
+// describeCacheScope maps a config-resolved cache scope onto the toolcache
+// scope it names, without creating or locking the directory. It is the single
+// source of truth for the scope→domain mapping: both buildCacheView
+// (`omac provenance`) and buildHashView (`omac diagnose --hash`) call it, so
+// the two surfaces cannot disagree about which cache a workdir resolves to.
+//
+// Note `config` falls back to the shared scope when no launcher config file is
+// on disk, matching what start/serve do.
+//
+// (`omac cache clear` has a structurally similar switch in cache.go, but it
+// dispatches to toolcache.Clear*, not Describe*, so it is not folded in here.)
+func describeCacheScope(cacheScope config.CacheScope, workdir, cfgPath string) (toolcache.Scope, error) {
+	switch cacheScope {
+	case config.CacheScopeWorkdir:
+		return toolcache.DescribePersistent(toolcache.DomainWorkdir, workdir)
+	case config.CacheScopeConfig:
+		if cfgPath != "" {
+			return toolcache.DescribePersistent(toolcache.DomainConfig, cfgPath)
+		}
+		return toolcache.DescribeShared()
+	default:
+		return toolcache.DescribeShared()
+	}
 }
 
 // classifyProfilePath attributes a profile path to a config layer.

@@ -249,6 +249,8 @@ If a call returns HTTP `503` with the header `X-Omac-Reason: sidecar-down`, your
 cat $TMPDIR/omac-*/logs/<skill>.log
 ```
 
+Resolve `<hash>` for the current workdir exactly with `omac diagnose --hash=runtime` (see [CLI reference](../usage/cli.md#workdir-hashes-omac-diagnose---hash)).
+
 Because omac runs the skill from the copy made at register time (see above), re-run `omac register` after editing the skill so your changes take effect.
 
 ## Pre-shipping checklist
