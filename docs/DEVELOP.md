@@ -44,6 +44,22 @@ goreleaser release --clean --snapshot --skip=publish   # output in dist/
 goreleaser build --clean --snapshot --single-target
 ```
 
+### Release tags & pre-releases
+
+Pushing a release tag starts the release workflow. Tags use
+`vX.Y.Z[-prerelease][+build]`, for example `v1.2.3`, `v1.2.3-rc.1`, or
+`v1.2.3-rc.1+build.42`. A hyphenated prerelease component makes the tag a
+pre-release; build metadata alone does not (`v1.2.3+build.42` is stable).
+
+| Tag type | GitHub Release | Homebrew tap | Slack |
+| --- | --- | --- | --- |
+| Stable (`v1.2.3`) | Published as a stable release | Formula updated | Announcement posted |
+| Pre-release (`v1.2.3-rc.1`) | Published as a pre-release | Not updated | No announcement |
+
+GoReleaser derives the GitHub pre-release state and skips Homebrew uploads
+automatically. A non-dry-run manual workflow dispatch explicitly announces the
+selected tag on Slack, including a pre-release.
+
 ## Test
 
 ```bash

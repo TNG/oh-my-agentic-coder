@@ -37,15 +37,19 @@ func runDiagnose(args []string, env *Env) int {
 	probe := fs.String("probe", "", "Statically check whether host[:port] would be admitted, then exit.")
 	verbose := fs.Bool("verbose", false, "Show every hint and the full effective config, not just the focused view.")
 	fs.BoolVar(verbose, "v", false, "Alias for --verbose.")
-	if err := fs.Parse(reorderFlagsFirst(args)); err != nil {
-		return ExitMisuse
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), "Usage: omac diagnose [--json] [--profile <ref>] [--run last|all] [--probe host[:port]] [-v]")
+		fs.PrintDefaults()
+	}
+	if code, ok := parseFlags(fs, args, env); !ok {
+		return code
 	}
 	if *runSel != "last" && *runSel != "all" {
 		fmt.Fprintln(env.Stderr, "omac diagnose: --run must be last|all")
 		return ExitMisuse
 	}
 
-	profile, profPath, err := sandboxprofile.ResolveReadOnly(*profileRef)
+	profile, profPath, err := sandboxprofile.Resolve(*profileRef)
 	if err != nil {
 		fmt.Fprintln(env.Stderr, "omac diagnose:", err)
 		return ExitConfigInvalid
@@ -321,6 +325,8 @@ func reasonWord(sources []string) string {
 			return "hard-deny"
 		case "learned":
 			return "learned deny"
+		case "session":
+			return "session deny"
 		case "dns":
 			return "DNS failed"
 		case "unavailable":

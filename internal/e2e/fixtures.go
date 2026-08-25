@@ -3,11 +3,13 @@
 package e2e
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -141,4 +143,27 @@ func withEnv(env []string, key, value string) []string {
 		out = append(out, prefix+value)
 	}
 	return out
+}
+
+// syncBuffer is a goroutine-safe bytes.Buffer. Tests that drive `omac serve`
+// as a long-lived subprocess read its captured output for diagnostics while
+// os/exec's copier goroutine is still writing to it (the daemon runs until
+// teardown), so a plain bytes.Buffer races — and CI runs the model-free slice
+// under -race, where that race fails the test instead of reporting the real
+// assertion. Lives in the e2e_fast build set so both slices can use it.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }

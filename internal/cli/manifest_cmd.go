@@ -19,11 +19,11 @@ func runManifest(args []string, env *Env) int {
 	skillsDir := fs.String("skills-dir", "", "active harness skills dir (required)")
 	input := fs.String("input", "", "activate-response JSON file (default: stdin)")
 	fs.Usage = func() {
-		fmt.Fprintln(env.Stderr, "Usage: omac manifest --skills-dir <dir> [--input <file>]")
+		fmt.Fprintln(fs.Output(), "Usage: omac manifest --skills-dir <dir> [--input <file>]")
 		fs.PrintDefaults()
 	}
-	if err := fs.Parse(reorderFlagsFirst(args)); err != nil {
-		return ExitMisuse
+	if code, ok := parseFlags(fs, args, env); !ok {
+		return code
 	}
 	if *skillsDir == "" {
 		fmt.Fprintln(env.Stderr, "omac manifest: --skills-dir is required")

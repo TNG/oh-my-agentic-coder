@@ -19,7 +19,7 @@
 // headless Linux (age-encrypted secrets.age, oh-my-agentic-coder.md §16.2)
 // is not implemented; on WSL / headless Linux without a running Secret
 // Service provider, keychain operations fail — see IsUnavailable and
-// README.md#prerequisites for the actionable fix.
+// docs/INSTALLATION.md#prerequisites for the actionable fix.
 package keychain
 
 import (

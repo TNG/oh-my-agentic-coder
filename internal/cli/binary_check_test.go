@@ -10,7 +10,7 @@ import (
 func TestCheckInnerBinaryFound(t *testing.T) {
 	env, _, _, _ := newPipeEnv(t, "")
 	h := testHarnessWithInnerCmd("echo")
-	if code := checkInnerBinary(h, "test", env); code != ExitOK {
+	if code := checkInnerBinary(h.ResolveInnerCmd(nil, ""), "test", env); code != ExitOK {
 		t.Errorf("checkInnerBinary(echo) = %d, want ExitOK(%d)", code, ExitOK)
 	}
 }
@@ -18,7 +18,7 @@ func TestCheckInnerBinaryFound(t *testing.T) {
 func TestCheckInnerBinaryMissing(t *testing.T) {
 	env, _, errBuf, drain := newPipeEnv(t, "")
 	h := testHarnessWithInnerCmd("nonexistent-binary-xyz-12345")
-	code := checkInnerBinary(h, "test", env)
+	code := checkInnerBinary(h.ResolveInnerCmd(nil, ""), "test", env)
 	drain()
 	if code != ExitPrerequisiteMissing {
 		t.Errorf("checkInnerBinary(nonexistent) = %d, want ExitPrerequisiteMissing(%d)", code, ExitPrerequisiteMissing)
@@ -31,8 +31,69 @@ func TestCheckInnerBinaryMissing(t *testing.T) {
 func TestCheckInnerBinaryEmptyCmd(t *testing.T) {
 	env, _, _, _ := newPipeEnv(t, "")
 	h := testHarnessWithInnerCmd("")
-	if code := checkInnerBinary(h, "test", env); code != ExitOK {
+	if code := checkInnerBinary(h.ResolveInnerCmd(nil, ""), "test", env); code != ExitOK {
 		t.Errorf("checkInnerBinary(empty) = %d, want ExitOK (skip)", code)
+	}
+}
+
+// A profile-pinned inner_cmd takes precedence over the harness default
+// (Harness.ResolveInnerCmd), so checking the default validated a binary the
+// launch would never run — reporting OK for opencode while starting something
+// else, which then failed inside the sandbox naming the wrong cause.
+func TestCheckInnerBinaryChecksProfileInnerCmdNotTheHarnessDefault(t *testing.T) {
+	h := testHarnessWithInnerCmd("echo") // installed; the pinned one is not
+
+	env, _, errBuf, drain := newPipeEnv(t, "")
+	code := checkInnerBinary(h.ResolveInnerCmd([]string{"nonexistent-binary-xyz-12345"}, ""), "test", env)
+	drain()
+
+	if code != ExitPrerequisiteMissing {
+		t.Errorf("profile inner_cmd unchecked: got %d, want ExitPrerequisiteMissing(%d)", code, ExitPrerequisiteMissing)
+	}
+	if !bytes.Contains(errBuf.Bytes(), []byte("nonexistent-binary-xyz-12345")) {
+		t.Errorf("stderr does not name the pinned binary; got:\n%s", errBuf.String())
+	}
+}
+
+// A profile-pinned inner_cmd may wrap the harness in an `env NAME=VALUE ...`
+// prefix. Without unwrapping, the pre-flight validates `env` (always present)
+// and silently passes while the real harness binary is missing.
+func TestCheckInnerBinaryUnwrapsEnvPrefix(t *testing.T) {
+	h := testHarnessWithInnerCmd("echo")
+
+	env, _, errBuf, drain := newPipeEnv(t, "")
+	code := checkInnerBinary(h.ResolveInnerCmd([]string{"env", "NPM_CONFIG_CACHE=/x", "nonexistent-binary-xyz-12345"}, ""), "test", env)
+	drain()
+
+	if code != ExitPrerequisiteMissing {
+		t.Errorf("env-wrapped missing harness unchecked: got %d, want ExitPrerequisiteMissing(%d)", code, ExitPrerequisiteMissing)
+	}
+	if !bytes.Contains(errBuf.Bytes(), []byte("nonexistent-binary-xyz-12345")) {
+		t.Errorf("stderr names wrapper instead of real binary; got:\n%s", errBuf.String())
+	}
+	if bytes.Contains(errBuf.Bytes(), []byte("harness binary \"env\"")) {
+		t.Errorf("stderr names `env` as missing, should name the real binary; got:\n%s", errBuf.String())
+	}
+}
+
+// An env wrapper may carry flags (e.g. `env -i cmd`). UnwrapEnv leaves them
+// in place; the pre-flight skips them so "-i" is not reported as the missing
+// binary.
+func TestCheckInnerBinarySkipsEnvFlags(t *testing.T) {
+	h := testHarnessWithInnerCmd("echo")
+
+	env, _, errBuf, drain := newPipeEnv(t, "")
+	code := checkInnerBinary(h.ResolveInnerCmd([]string{"env", "-i", "nonexistent-binary-xyz-12345"}, ""), "test", env)
+	drain()
+
+	if code != ExitPrerequisiteMissing {
+		t.Errorf("env -i wrapped missing harness unchecked: got %d, want ExitPrerequisiteMissing(%d)", code, ExitPrerequisiteMissing)
+	}
+	if !bytes.Contains(errBuf.Bytes(), []byte("nonexistent-binary-xyz-12345")) {
+		t.Errorf("stderr does not name the real binary after flag skip; got:\n%s", errBuf.String())
+	}
+	if bytes.Contains(errBuf.Bytes(), []byte("harness binary \"-i\"")) {
+		t.Errorf("stderr names the env flag as missing; got:\n%s", errBuf.String())
 	}
 }
 

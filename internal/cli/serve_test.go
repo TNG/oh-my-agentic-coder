@@ -332,7 +332,17 @@ func TestInjectOpenPort(t *testing.T) {
 }
 
 func TestInjectSandboxEnvAllow(t *testing.T) {
-	profiles := config.DefaultLauncherConfig().Sandbox.Profiles
+	isolateHome(t)
+	lc := config.DefaultLauncherConfig()
+	profiles := lc.Sandbox.Profiles
+	planFor := func(t *testing.T, name string) sandboxPlan {
+		t.Helper()
+		plan, err := resolveSandboxPlan(lc, name)
+		if err != nil {
+			t.Fatalf("resolveSandboxPlan(%q): %v", name, err)
+		}
+		return plan
+	}
 	expand := func(t *testing.T, prof config.SandboxProfile) []string {
 		t.Helper()
 		argv, err := sandbox.Expand(prof, sandbox.Inputs{
@@ -352,8 +362,9 @@ func TestInjectSandboxEnvAllow(t *testing.T) {
 	// an absolute path — NOT the literal "omac"), so the detector cannot rely
 	// on argv[0] matching a hand-rolled name.
 	builtinProf := profiles["builtin"]
+	builtinPlan := planFor(t, "builtin")
 	builtin := expand(t, builtinProf)
-	got := injectSandboxEnvAllow(builtin, []string{"ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"}, builtinProf)
+	got := injectSandboxEnvAllow(builtin, []string{"ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"}, builtinPlan)
 	joined := strings.Join(got, " ")
 	if !strings.Contains(joined, "--allow-env ANTHROPIC_API_KEY") ||
 		!strings.Contains(joined, "--allow-env ANTHROPIC_BASE_URL") {
@@ -361,18 +372,19 @@ func TestInjectSandboxEnvAllow(t *testing.T) {
 	}
 
 	// Empty names is a no-op; empty entries are skipped.
-	if g := injectSandboxEnvAllow(builtin, nil, builtinProf); !equalStrings(g, builtin) {
+	if g := injectSandboxEnvAllow(builtin, nil, builtinPlan); !equalStrings(g, builtin) {
 		t.Errorf("nil names should be a no-op: %v", g)
 	}
-	if g := injectSandboxEnvAllow(builtin, []string{""}, builtinProf); !equalStrings(g, builtin) {
+	if g := injectSandboxEnvAllow(builtin, []string{""}, builtinPlan); !equalStrings(g, builtin) {
 		t.Errorf("empty entry should be skipped: %v", g)
 	}
 
 	// Non-native backend (nono) does not understand --allow-env: the argv
 	// must be left untouched (env filtering is nono's own concern).
 	nonoProf := profiles["nono"]
+	nonoPlan := planFor(t, "nono")
 	nono := expand(t, nonoProf)
-	if g := injectSandboxEnvAllow(nono, []string{"ANTHROPIC_API_KEY"}, nonoProf); !equalStrings(g, nono) {
+	if g := injectSandboxEnvAllow(nono, []string{"ANTHROPIC_API_KEY"}, nonoPlan); !equalStrings(g, nono) {
 		t.Errorf("nono argv must be untouched: %v", g)
 	}
 
@@ -391,8 +403,69 @@ func TestInjectSandboxEnvAllow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Expand nono-inner: %v", err)
 	}
-	if g := injectSandboxEnvAllow(nonoArgv, []string{"ANTHROPIC_API_KEY"}, nonoInnerProf); !equalStrings(g, nonoArgv) {
+	if g := injectSandboxEnvAllow(nonoArgv, []string{"ANTHROPIC_API_KEY"}, nonoPlan); !equalStrings(g, nonoArgv) {
 		t.Errorf("nono argv with inner sandbox/run tokens must be untouched: %v", g)
+	}
+}
+
+func TestInjectUserOpenPorts(t *testing.T) {
+	profiles := config.DefaultLauncherConfig().Sandbox.Profiles
+	builtinProf := profiles["builtin"]
+	argv, err := sandbox.Expand(builtinProf, sandbox.Inputs{
+		Workdir:  "/w",
+		Socket:   "/w/bridge.sock",
+		TCPPort:  6000,
+		InnerCmd: []string{"claude"},
+		TmpDir:   "/w/tmp",
+	})
+	if err != nil {
+		t.Fatalf("Expand: %v", err)
+	}
+
+	got := injectUserOpenPorts(nil, argv, []int{3000, 4173}, builtinProf)
+	joined := strings.Join(got, " ")
+	if !strings.Contains(joined, "--open-port 3000") || !strings.Contains(joined, "--open-port 4173") {
+		t.Errorf("missing open-port flags: %s", joined)
+	}
+
+	if g := injectUserOpenPorts(nil, argv, nil, builtinProf); !equalStrings(g, argv) {
+		t.Errorf("empty inject should be no-op: %v", g)
+	}
+
+	nonoProf := profiles["nono"]
+	nono, err := sandbox.Expand(nonoProf, sandbox.Inputs{
+		Workdir:  "/w",
+		Socket:   "/w/bridge.sock",
+		TCPPort:  6000,
+		InnerCmd: []string{"claude"},
+		TmpDir:   "/w/tmp",
+	})
+	if err != nil {
+		t.Fatalf("Expand nono: %v", err)
+	}
+	env2, _, errBuf2, drain2 := newPipeEnv(t, "")
+	if g := injectUserOpenPorts(env2, nono, []int{3000}, nonoProf); !equalStrings(g, nono) {
+		t.Errorf("nono argv must be untouched: %v", g)
+	}
+	drain2()
+	if !strings.Contains(errBuf2.String(), "ignoring") {
+		t.Errorf("expected non-native warning, got %q", errBuf2.String())
+	}
+}
+
+func TestIntMultiFlag(t *testing.T) {
+	var m intMultiFlag
+	if err := m.Set("3000"); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Set("0"); err == nil {
+		t.Error("port 0 should be rejected")
+	}
+	if err := m.Set("abc"); err == nil {
+		t.Error("non-integer should be rejected")
+	}
+	if len(m) != 1 || m[0] != 3000 {
+		t.Errorf("got %v", m)
 	}
 }
 
@@ -410,11 +483,11 @@ func TestForwardHarnessEnvEmptyProfileForwardsOperationalMinimum(t *testing.T) {
 	defer func() { emptyAllowVarsWarnDelay = old }()
 
 	env, _, errBuf, drain := newPipeEnv(t, "")
-	prof := config.SandboxProfile{Command: []string{"{{self}}", "sandbox", "run", "--profile", "default", "--", "x"}}
+	plan := nativePlanForTest(t)
 	harness := config.Harness{Name: "test", SandboxEnvAllow: []string{"ANTHROPIC_API_KEY"}}
 	argv := []string{"/usr/bin/omac", "sandbox", "run", "--profile", "default", "--", "x"}
 
-	got := forwardHarnessEnv(env, argv, harness, prof, "default")
+	got := forwardHarnessEnv(env, argv, harness, plan)
 	drain()
 
 	joined := strings.Join(got, " ")
@@ -441,11 +514,11 @@ func TestForwardHarnessEnvNonEmptyProfileInjects(t *testing.T) {
 	stageProfile(t, home, `{"meta": {"name": "default"}, "environment": {"allow_vars": ["HOME"]}}`)
 
 	env, _, errBuf, drain := newPipeEnv(t, "")
-	prof := config.SandboxProfile{Command: []string{"{{self}}", "sandbox", "run", "--profile", "default", "--", "x"}}
+	plan := nativePlanForTest(t)
 	harness := config.Harness{Name: "test", SandboxEnvAllow: []string{"ANTHROPIC_API_KEY"}}
 	argv := []string{"/usr/bin/omac", "sandbox", "run", "--profile", "default", "--", "x"}
 
-	got := forwardHarnessEnv(env, argv, harness, prof, "default")
+	got := forwardHarnessEnv(env, argv, harness, plan)
 	drain()
 
 	if !strings.Contains(strings.Join(got, " "), "--allow-env ANTHROPIC_API_KEY") {
@@ -454,6 +527,24 @@ func TestForwardHarnessEnvNonEmptyProfileInjects(t *testing.T) {
 	if strings.Contains(errBuf.String(), "allow_vars") {
 		t.Errorf("non-empty profile must not warn; got:\n%s", errBuf.String())
 	}
+}
+
+// nativePlanForTest resolves the launch plan for a minimal native launcher
+// profile, so a test's staged policy file (stageProfile) is what the plan's
+// policy-derived behaviour is read from.
+func nativePlanForTest(t *testing.T) sandboxPlan {
+	t.Helper()
+	lc := config.LauncherConfig{Sandbox: config.SandboxConfig{
+		DefaultProfile: "builtin",
+		Profiles: map[string]config.SandboxProfile{"builtin": {
+			Command: []string{"{{self}}", "sandbox", "run", "--profile", "default", "--", "x"},
+		}},
+	}}
+	plan, err := resolveSandboxPlan(lc, "")
+	if err != nil {
+		t.Fatalf("resolveSandboxPlan: %v", err)
+	}
+	return plan
 }
 
 func equalStrings(a, b []string) bool {

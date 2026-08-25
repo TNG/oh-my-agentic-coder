@@ -26,11 +26,16 @@ In the default `filtered` mode every outbound connection is routed through
 omac's own HTTP proxy on loopback, and there is no built-in allowlist that
 quietly lets traffic through.
 
-- Hosts you list as allowed or denied in the profile are honored silently.
+- Hosts you list as allowed in the profile are honored silently, unless you
+  denied them at the prompt — a deny always outranks an allow, whichever way
+  round it was decided.
 - Any other host raises a native OS dialog asking you to allow or deny it:
-  once, permanently for that host, or permanently for a domain suffix
-  (`*.example.com`). A tricked or compromised agent cannot reach a new
-  destination without you seeing the request first.
+  once, for this session (per host or per domain suffix), or permanently for
+  that host or a domain suffix (`*.example.com`). A tricked or compromised
+  agent cannot reach a new destination without you seeing the request first.
+- Session decisions live in the supervisor's memory for one `omac start` run
+  and are never written to disk. They cannot outlive the run that made them,
+  and equally cannot be lifted by editing a file — restart to clear one.
 - With no dialog available (CI, a headless server) the request is denied.
   The default fails closed.
 - In corporate environments omac detects `HTTPS_PROXY` / `HTTP_PROXY` /
@@ -179,6 +184,10 @@ The agent starts restricted and gains access only where you grant it:
 Widening access means editing a readable JSON sandbox profile — a reviewable
 change rather than an accidental default. See
 [Configuration → Sandbox profiles](./CONFIGURATION.md#sandbox-profiles).
+For browser tests (Playwright/Puppeteer), put the binary-path and env grants
+in that profile and open the local webServer port with `--open-port` or
+`network.open_port` — see
+[Configuration → Browser tests](./CONFIGURATION.md#browser-tests-playwright--puppeteer).
 
 ## What the sandbox can see
 
@@ -205,7 +214,18 @@ sandbox:
 | Workdir and granted-tree `.env` / `.envrc` (incl. nested) | **denied** | baseline workdir-protected set (override with `filesystem.override_deny: [".env"]`) |
 | Files matching `filesystem.deny` (e.g. `*.key`) inside granted trees | **denied** | user deny list (`filesystem.deny` / `--deny`) |
 | Environment variables in `environment.allow_vars` (`OMAC_*`, `HOME`, `PATH`, `LANG`, `TERM`, … + the selected harness's auth vars) | passed through | default profile `environment.allow_vars` + `harness.SandboxEnvAllow` (injected at launch) |
+| Browser binary caches (`~/.cache/ms-playwright`, …) + `PLAYWRIGHT_*` / `PUPPETEER_*` | read / passed through | sandbox profile `filesystem.read` / `environment.allow_vars` (org profiles may grant a broader `~/.cache`) |
 | Any other ambient env var (cloud/CI secrets, `DOCKER_HOST`, `SSH_AUTH_SOCK`, proxy config) | **stripped** | not on the allowlist |
+
+> **Denial markers are inert.** On Linux a denied *file* inside a granted
+> tree is masked with a marker explaining the denial, not just hidden. The
+> protected set includes shell configs (`~/.profile`, `~/.bashrc`, …), which
+> exist to be executed, so every line of that marker is comment-prefixed
+> (`# X-Omac-Sandbox: denied`): a masked shell config sources as a silent
+> no-op while still telling the agent why the path is restricted. This also
+> applies to a profile's own `denial.marker_file` — the sandbox never binds
+> executable content over a file the confined process runs. Use
+> `filesystem.override_deny` when the agent genuinely needs the real file.
 
 > **Environment allowlist (upgrade note).** The default profile ships an
 > explicit `environment.allow_vars` allowlist, so the sandbox no longer
@@ -282,12 +302,13 @@ sandbox:
 >   is not the same as no filtering.
 >
 > Note: with a **non-empty** `allow_vars`, omac injects the selected harness's
-> documented auth vars (`harness.SandboxEnvAllow`) on top at launch — but only
-> for **single-provider** harnesses where the key is unambiguous (claude-code
-> → `ANTHROPIC_*`, codex → `OPENAI_*`, copilot → `GITHUB_TOKEN`). **Multi-provider
-> harnesses (opencode, pi) auto-forward nothing**: omac will not blindly push
-> every third-party provider key into the sandbox, so a user relying on an
-> env-based provider key lists it in `allow_vars` themselves (opencode's primary
+> documented auth/config vars (`harness.SandboxEnvAllow`) on top at launch —
+> but only where the key is unambiguously scoped to that harness (claude-code
+> → `ANTHROPIC_*`, codex → `OPENAI_*`, copilot → `GITHUB_TOKEN` and its native
+> `COPILOT_PROVIDER_*`/`COPILOT_MODEL` BYOK configuration). **Multi-provider
+> harnesses (opencode, pi) auto-forward nothing**: omac will not blindly push every
+> third-party provider key into the sandbox, so a user relying on an env-based
+> provider key lists it in `allow_vars` themselves (opencode's primary
 > `auth.json` login, in its granted dirs, is unaffected). Auto-forwarding is
 > skipped entirely for the empty (misconfigured) case.
 >
@@ -310,4 +331,3 @@ never reads or copies their contents. External nono profiles are opaque
 to these diagnostics and skipped. The warnings are advisory — doctor
 never rewrites the profile. See
 [Installation → Prerequisites](./INSTALLATION.md#prerequisites).
-

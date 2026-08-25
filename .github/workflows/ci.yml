@@ -148,6 +148,9 @@ jobs:
       - name: Workflow shell syntax
         run: python3 scripts/check-workflow-shell.py
 
+      - name: Release notification policy
+        run: python3 scripts/release-workflow_test.py
+
       # Keeps README.md an entry point (line cap) and the docs/ split honest
       # (every relative link + anchor resolves). See issue #190.
       - name: Doc guardrails

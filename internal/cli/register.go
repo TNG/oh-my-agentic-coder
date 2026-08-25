@@ -40,11 +40,11 @@ func runRegister(args []string, env *Env) int {
 		globalOnly      = fs.Bool("global", false, "When a skill name exists both workdir-local and user-global, register the user-global one.")
 	)
 	fs.Usage = func() {
-		fmt.Fprintln(env.Stderr, "Usage: omac register <skill> [flags]")
+		fmt.Fprintln(fs.Output(), "Usage: omac register <skill> [flags]")
 		fs.PrintDefaults()
 	}
-	if err := fs.Parse(reorderFlagsFirst(args)); err != nil {
-		return ExitMisuse
+	if code, ok := parseFlags(fs, args, env); !ok {
+		return code
 	}
 	if fs.NArg() != 1 {
 		fs.Usage()

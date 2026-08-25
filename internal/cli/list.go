@@ -55,11 +55,11 @@ func runList(args []string, env *Env) int {
 	fs.SetOutput(env.Stderr)
 	showAll := fs.Bool("all", false, "Also list stale registrations whose skill directory no longer exists on disk.")
 	fs.Usage = func() {
-		fmt.Fprintln(env.Stderr, "Usage: omac list [--all]")
+		fmt.Fprintln(fs.Output(), "Usage: omac list [--all]")
 		fs.PrintDefaults()
 	}
-	if err := fs.Parse(reorderFlagsFirst(args)); err != nil {
-		return ExitMisuse
+	if code, ok := parseFlags(fs, args, env); !ok {
+		return code
 	}
 
 	workdirReg, err := registry.Load(env.Workdir)

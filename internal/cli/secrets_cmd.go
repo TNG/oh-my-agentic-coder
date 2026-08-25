@@ -134,11 +134,11 @@ func runSecretsImport(args []string, env *Env) int {
 	fs.SetOutput(env.Stderr)
 	var file = fs.String("from", "", "KEY=VALUE file to import.")
 	fs.Usage = func() {
-		fmt.Fprintln(env.Stderr, "Usage: omac secrets import <skill> --from <file>")
+		fmt.Fprintln(fs.Output(), "Usage: omac secrets import <skill> --from <file>")
 		fs.PrintDefaults()
 	}
-	if err := fs.Parse(reorderFlagsFirst(args)); err != nil {
-		return ExitMisuse
+	if code, ok := parseFlags(fs, args, env); !ok {
+		return code
 	}
 	if fs.NArg() != 1 || *file == "" {
 		fs.Usage()

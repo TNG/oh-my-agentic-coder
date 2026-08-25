@@ -86,7 +86,7 @@ type Event struct {
 	Port      int    `json:"port,omitempty"`
 	Allow     *bool  `json:"allow,omitempty"`
 	Scope     string `json:"scope,omitempty"`  // once|host|suffix
-	Source    string `json:"source,omitempty"` // prompt|learned|allowlist|blocklist|timeout|unavailable|hard-deny|dns|default
+	Source    string `json:"source,omitempty"` // prompt|learned|allowlist|blocklist|timeout|unavailable|hard-deny|dns|default|session
 	Persisted *bool  `json:"persisted,omitempty"`
 
 	// --- facade.request ---

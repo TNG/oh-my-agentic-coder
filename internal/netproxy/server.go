@@ -119,6 +119,20 @@ To fix this:
   - check the DNS servers reachable from the sandbox.
 %s`, host, host, registryDenyHint(host, v.Reason))
 
+	case strings.HasPrefix(v.Reason, "session"):
+		return fmt.Sprintf(`omac sandbox: access to %q was DENIED BY THE SANDBOX network policy (%s).
+
+This response comes from the omac sandbox proxy, not from %s.
+The destination was never contacted.
+
+The user denied this destination for the rest of this session at the
+network prompt. The choice is held in memory only — no profile or
+policy file contains it, and editing one will not lift it. It also
+suppresses further prompts for this host, so retrying is pointless.
+
+To lift it, restart the sandbox and choose Allow at the prompt.
+%s`, host, v.Reason, host, registryDenyHint(host, v.Reason))
+
 	case strings.HasPrefix(v.Reason, "hard-deny"):
 		return fmt.Sprintf(`omac sandbox: access to %q was DENIED BY THE SANDBOX built-in guard (%s).
 

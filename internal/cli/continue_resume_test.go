@@ -73,17 +73,39 @@ func TestBuildContinueOpts(t *testing.T) {
 }
 
 func TestParseLaunchArgsEphemeralCache(t *testing.T) {
-	opts, ok := parseLaunchArgs("start", []string{"--ephemeral-cache"}, devnullEnv(t))
-	if !ok {
-		t.Fatal("parseLaunchArgs() returned false")
+	opts, code := parseLaunchArgs("start", []string{"--ephemeral-cache"}, devnullEnv(t))
+	if code != ExitOK {
+		t.Fatalf("parseLaunchArgs() code = %d, want ExitOK", code)
 	}
 	if !opts.ephemeralCache {
 		t.Error("ephemeralCache = false, want true")
 	}
 }
 
+func TestParseLaunchArgsOpenPort(t *testing.T) {
+	opts, code := parseLaunchArgs("start", []string{
+		"--open-port", "3000",
+		"--open-port", "4173",
+	}, devnullEnv(t))
+	if code != ExitOK {
+		t.Fatalf("parseLaunchArgs() code = %d, want ExitOK", code)
+	}
+	if len(opts.openPorts) != 2 || opts.openPorts[0] != 3000 || opts.openPorts[1] != 4173 {
+		t.Errorf("openPorts = %v", opts.openPorts)
+	}
+}
+
+func TestParseLaunchArgsRejectsBadOpenPort(t *testing.T) {
+	if _, code := parseLaunchArgs("start", []string{"--open-port", "0"}, devnullEnv(t)); code == ExitOK {
+		t.Error("port 0 should be rejected")
+	}
+	if _, code := parseLaunchArgs("start", []string{"--open-port", "nope"}, devnullEnv(t)); code == ExitOK {
+		t.Error("non-integer port should be rejected")
+	}
+}
+
 func TestParseLaunchArgsRejectsEphemeralWithoutSandbox(t *testing.T) {
-	if _, ok := parseLaunchArgs("start", []string{"--ephemeral-cache", "--no-sandbox"}, devnullEnv(t)); ok {
+	if _, code := parseLaunchArgs("start", []string{"--ephemeral-cache", "--no-sandbox"}, devnullEnv(t)); code == ExitOK {
 		t.Error("parseLaunchArgs() succeeded with --ephemeral-cache and --no-sandbox")
 	}
 }

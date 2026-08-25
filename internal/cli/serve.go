@@ -67,10 +67,13 @@ func runServe(args []string, env *Env) int {
 		auditStrict       = fs.Bool("audit-strict", false, "Fail-closed: abort if the audit log cannot be written.")
 	)
 	var roots multiFlag
+	var openPorts intMultiFlag
 	fs.Var(&roots, "root", "Pre-declared root directory under which projects may be activated (§5.4 Option B). Repeatable. Empty = allow any directory.")
+	fs.Var(&openPorts, "open-port", "Allow the sandboxed process to bind and connect on this TCP port (repeatable). Useful for a local app/dev server the agent or its tools talk to — e.g. Playwright/Vite/Next on :3000. On Linux, Landlock cannot limit that to loopback: outbound TCP to any host on the same port is also allowed.")
 	fs.Usage = func() {
-		fmt.Fprintln(env.Stderr, "Usage: omac serve [harness] [flags] [-- inner args...]")
-		fmt.Fprintf(env.Stderr, "\nharness: one of %s (default: %s)\n\n",
+		out := fs.Output()
+		fmt.Fprintln(out, "Usage: omac serve [harness] [flags] [-- inner args...]")
+		fmt.Fprintf(out, "\nharness: one of %s (default: %s)\n\n",
 			strings.Join(config.HarnessNames(), ", "), config.DefaultHarness().Name)
 		fs.PrintDefaults()
 	}
@@ -95,8 +98,8 @@ func runServe(args []string, env *Env) int {
 		fmt.Fprintln(env.Stderr, "omac serve:", err)
 		return ExitMisuse
 	}
-	if err := fs.Parse(reorderFlagsFirst(ourArgs)); err != nil {
-		return ExitMisuse
+	if code, ok := parseFlags(fs, ourArgs, env); !ok {
+		return code
 	}
 	if *ephemeralCache && *noSandbox {
 		fmt.Fprintln(env.Stderr, "omac serve: --ephemeral-cache cannot be used with --no-sandbox")
@@ -115,20 +118,28 @@ func runServe(args []string, env *Env) int {
 		fmt.Fprintln(env.Stderr, "omac serve: launcher config:", err)
 		return ExitConfigInvalid
 	}
-	profName := *profile
-	if profName == "" {
-		profName = lc.Sandbox.DefaultProfile
-	}
-	prof, profOK := lc.Sandbox.Profiles[profName]
-	if !profOK && !*noSandbox && !*noInner {
-		fmt.Fprintf(env.Stderr, "omac serve: unknown sandbox profile %q\n", profName)
+	// One resolved sandbox plan for the whole run: the launcher profile
+	// (templated argv) plus, for omac's native backend, its policy profile
+	// (grant JSON). Everything downstream reads the plan instead of
+	// re-resolving a bare name — see internal/cli/sandboxplan.go.
+	plan, planErr := resolveSandboxPlan(lc, *profile)
+	if planErr != nil && !*noSandbox && !*noInner {
+		fmt.Fprintln(env.Stderr, "omac serve:", planErr)
 		return ExitConfigInvalid
 	}
+	profName := plan.Name
+	prof := plan.Launcher
 
 	// Pre-flight: inner harness binary must be on $PATH (unless --no-inner
-	// or --inner override).
+	// or --inner override). Checked on the RESOLVED argv so a profile-pinned
+	// inner_cmd is verified rather than the harness default the launch will
+	// not use — see checkInnerBinary.
 	if !*noInner && *innerCmdOverride == "" {
-		if code := checkInnerBinary(harness, "omac serve", env); code != ExitOK {
+		preflightInner := prof.InnerCmd
+		if !plan.Known {
+			preflightInner = nil
+		}
+		if code := checkInnerBinary(harness.ResolveInnerCmd(preflightInner, ""), "omac serve", env); code != ExitOK {
 			return code
 		}
 	}
@@ -256,7 +267,7 @@ func runServe(args []string, env *Env) int {
 		env.Version,
 	)
 	f.SetAuditor(auditor)
-	wireFacadeSandbox(f, *noSandbox, profName, func(format string, args ...any) {
+	wireFacadeSandbox(f, *noSandbox, *learn, plan, func(format string, args ...any) {
 		fmt.Fprintf(env.Stderr, format+"\n", args...)
 	})
 	if err := f.Start(ctx); err != nil {
@@ -401,7 +412,7 @@ func runServe(args []string, env *Env) int {
 	// applied — e.g. OpenCode gets `serve` inserted unless a subcommand is
 	// already present, while Claude Code (no server convention) runs as-is.
 	profileInner := prof.InnerCmd
-	if !profOK {
+	if !plan.Known {
 		profileInner = nil
 	}
 	// Resolve the inner command for the selected harness: --inner override
@@ -468,7 +479,8 @@ func runServe(args []string, env *Env) int {
 		// Forward the selected harness's auth env vars through the default
 		// profile's restrictive allow_vars filter. (Control-plane port and
 		// harness runtime dirs are granted inside sandboxServeArgv.)
-		argv = forwardHarnessEnv(env, argv, harness, prof, profName)
+		argv = forwardHarnessEnv(env, argv, harness, plan)
+		argv = injectUserOpenPorts(env, argv, openPorts, prof)
 		// Pass the resolved audit path to `omac sandbox run` so its
 		// network-filter subprocess appends net.decision events to the
 		// same persistent log. Inherit the parent's run_id + mode so the
@@ -690,14 +702,17 @@ var emptyAllowVarsWarnDelay = 2 * time.Second
 // profile is a misconfiguration, and omac does not silently push provider
 // credentials into the sandbox to paper over it. It warns that this differs
 // from the old inherit-everything behavior and pauses so the message is seen.
-func forwardHarnessEnv(env *Env, argv []string, harness config.Harness, prof config.SandboxProfile, profName string) []string {
-	if denied := sandboxProfileDeniedBaseVars(prof); len(denied) > 0 {
-		fmt.Fprintf(env.Stderr, "omac: sandbox profile %q denies operational base var(s): %s.\n", profName, strings.Join(denied, ", "))
+// The two warnings below name plan.PolicyRef, not the launcher profile
+// name: they describe the contents of the policy JSON (its allow_vars /
+// deny_vars), which is the file the user has to edit.
+func forwardHarnessEnv(env *Env, argv []string, harness config.Harness, plan sandboxPlan) []string {
+	if denied := planDeniedBaseVars(plan); len(denied) > 0 {
+		fmt.Fprintf(env.Stderr, "omac: sandbox profile %q denies operational base var(s): %s.\n", plan.PolicyRef, strings.Join(denied, ", "))
 		fmt.Fprintln(env.Stderr, "      deny_vars wins over everything, so these are stripped even though the harness")
 		fmt.Fprintln(env.Stderr, `      needs them to run. Remove them from deny_vars unless intended ("omac doctor").`)
 	}
-	if empty, ok := sandboxProfileAllowVarsEmpty(prof); ok && empty {
-		fmt.Fprintf(env.Stderr, "omac: sandbox profile %q has an empty environment.allow_vars.\n", profName)
+	if planAllowVarsEmpty(plan) {
+		fmt.Fprintf(env.Stderr, "omac: sandbox profile %q has an empty environment.allow_vars.\n", plan.PolicyRef)
 		fmt.Fprintln(env.Stderr, "      Forwarding only the operational minimum (HOME, PATH, TERM, locale, …).")
 		fmt.Fprintln(env.Stderr, "      No provider-auth or other ambient env vars are passed through (previously every")
 		fmt.Fprintln(env.Stderr, "      var was inherited). The harness starts but will not authenticate until you add")
@@ -705,41 +720,26 @@ func forwardHarnessEnv(env *Env, argv []string, harness config.Harness, prof con
 		fmt.Fprintln(env.Stderr, "      Continuing shortly…")
 		time.Sleep(emptyAllowVarsWarnDelay)
 		// Seed only the operational minimum; do NOT auto-forward auth vars.
-		return injectSandboxEnvAllow(argv, sandboxprofile.DefaultAllowVars(), prof)
+		return injectSandboxEnvAllow(argv, sandboxprofile.DefaultAllowVars(), plan)
 	}
-	return injectSandboxEnvAllow(argv, harness.SandboxEnvAllow, prof)
+	return injectSandboxEnvAllow(argv, harness.SandboxEnvAllow, plan)
 }
 
-// sandboxProfileAllowVarsEmpty reports whether the native sandbox profile
-// referenced by prof resolves to an empty environment.allow_vars. ok is false
-// when prof is not an inspectable native ({{self}} sandbox run) profile or the
-// referenced profile cannot be resolved read-only.
-func sandboxProfileAllowVarsEmpty(prof config.SandboxProfile) (empty bool, ok bool) {
-	ref, isNative := inspectBuiltinProfileRef(prof.Command)
-	if !isNative {
-		return false, false
-	}
-	sp, _, err := sandboxprofile.ResolveReadOnly(ref)
-	if err != nil {
-		return false, false
-	}
-	return len(sp.Environment.AllowVars) == 0, true
+// planAllowVarsEmpty reports whether the launch's resolved policy profile
+// has an empty environment.allow_vars. False for an opaque launcher or an
+// unresolvable policy — omac cannot know, so it changes nothing.
+func planAllowVarsEmpty(plan sandboxPlan) bool {
+	return plan.Policy != nil && len(plan.Policy.Environment.AllowVars) == 0
 }
 
-// sandboxProfileDeniedBaseVars returns the operational base vars that the
-// native sandbox profile's deny_vars would strip (see
-// sandboxprofile.DeniedBaseVars). It returns nil for non-native or
-// unresolvable profiles.
-func sandboxProfileDeniedBaseVars(prof config.SandboxProfile) []string {
-	ref, isNative := inspectBuiltinProfileRef(prof.Command)
-	if !isNative {
+// planDeniedBaseVars returns the operational base vars the resolved
+// policy's deny_vars would strip (see sandboxprofile.DeniedBaseVars). nil
+// for an opaque launcher or an unresolvable policy.
+func planDeniedBaseVars(plan sandboxPlan) []string {
+	if plan.Policy == nil {
 		return nil
 	}
-	sp, _, err := sandboxprofile.ResolveReadOnly(ref)
-	if err != nil {
-		return nil
-	}
-	return sandboxprofile.DeniedBaseVars(sp.Environment.DenyVars)
+	return sandboxprofile.DeniedBaseVars(plan.Policy.Environment.DenyVars)
 }
 
 // injectSandboxEnvAllow splices --allow-env flags for each harness-declared
@@ -750,9 +750,11 @@ func sandboxProfileDeniedBaseVars(prof config.SandboxProfile) []string {
 // (where FilterEnv applies the allowlist); other backends (nono) do their
 // own env filtering via their own profile, so injecting the flag there
 // would be meaningless and could fail on an unknown flag. Guarded by
-// profileRunsNativeSandbox. Empty/nil is a no-op.
-func injectSandboxEnvAllow(argv []string, names []string, prof config.SandboxProfile) []string {
-	if !profileRunsNativeSandbox(prof) {
+// plan.Native (config.SandboxProfile.PolicyRef anchors on the leading
+// template tokens, so a nono profile whose INNER command merely contains
+// "sandbox"/"run" is not misclassified). Empty/nil is a no-op.
+func injectSandboxEnvAllow(argv []string, names []string, plan sandboxPlan) []string {
+	if !plan.Native {
 		return argv
 	}
 	for _, n := range names {
@@ -764,16 +766,26 @@ func injectSandboxEnvAllow(argv []string, names []string, prof config.SandboxPro
 	return argv
 }
 
-// profileRunsNativeSandbox reports whether prof's command template invokes
-// omac's native sandbox supervisor ({{self}} sandbox run …) — the only
-// backend that parses the launch-injected sandbox flags omac defines (e.g.
-// --allow-env). Anchored on the leading template tokens rather than a bare
-// token scan of the expanded argv: {{self}} resolves to os.Executable() (an
-// absolute path, not "omac"), and a nono profile whose inner command merely
-// contains "sandbox"/"run" tokens must not be misclassified.
-func profileRunsNativeSandbox(prof config.SandboxProfile) bool {
-	c := prof.Command
-	return len(c) >= 3 && c[0] == "{{self}}" && c[1] == "sandbox" && c[2] == "run"
+// injectUserOpenPorts splices user --open-port values into a native-sandbox
+// argv. On non-native backends it leaves argv untouched and warns once when
+// any port was requested (nono does not understand these flags).
+func injectUserOpenPorts(env *Env, argv []string, ports []int, prof config.SandboxProfile) []string {
+	if len(ports) == 0 {
+		return argv
+	}
+	if _, native := prof.PolicyRef(); !native {
+		if env != nil {
+			fmt.Fprintln(env.Stderr, "omac: --open-port applies only to the native sandbox backend; ignoring on this profile.")
+		}
+		return argv
+	}
+	for _, port := range ports {
+		if port < 1 || port > 65535 {
+			continue
+		}
+		argv = injectOpenPort(argv, strconv.Itoa(port))
+	}
+	return argv
 }
 
 // injectSandboxFlag splices a sandbox flag (with optional value; pass
@@ -812,6 +824,22 @@ type multiFlag []string
 func (m *multiFlag) String() string { return fmt.Sprint([]string(*m)) }
 func (m *multiFlag) Set(v string) error {
 	*m = append(*m, v)
+	return nil
+}
+
+// intMultiFlag collects a repeatable integer flag (e.g. --open-port 3000).
+type intMultiFlag []int
+
+func (m *intMultiFlag) String() string { return fmt.Sprint([]int(*m)) }
+func (m *intMultiFlag) Set(v string) error {
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return fmt.Errorf("invalid port %q: not an integer", v)
+	}
+	if n < 1 || n > 65535 {
+		return fmt.Errorf("invalid port %d: want 1..65535", n)
+	}
+	*m = append(*m, n)
 	return nil
 }
 

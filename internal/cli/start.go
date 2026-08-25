@@ -22,6 +22,7 @@ import (
 	"github.com/tngtech/oh-my-agentic-coder/internal/keychain"
 	"github.com/tngtech/oh-my-agentic-coder/internal/registry"
 	"github.com/tngtech/oh-my-agentic-coder/internal/sandbox"
+	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxrun"
 	"github.com/tngtech/oh-my-agentic-coder/internal/session"
 	"github.com/tngtech/oh-my-agentic-coder/internal/skillconfig"
 	"github.com/tngtech/oh-my-agentic-coder/internal/skillsource"
@@ -69,6 +70,9 @@ type launchOpts struct {
 	// sessionID, when non-empty, selects a specific session to continue by id
 	// (`omac continue -s <id>`). Empty means "most recent" (the default).
 	sessionID string
+	// openPorts are extra loopback ports from --open-port (repeatable),
+	// typically a local webServer port for browser tests.
+	openPorts []int
 	// innerArgs are appended to the resolved inner command (user-supplied
 	// trailing `-- args` plus any command-specific flags like --continue).
 	innerArgs []string
@@ -76,10 +80,10 @@ type launchOpts struct {
 
 // parseLaunchArgs parses the shared start-family command line: an optional
 // leading positional harness token, the start flags, and trailing `-- inner
-// args`. cmdName is used in usage/error text (e.g. "start", "continue"). It
-// returns the assembled opts and true on success; on a parse/usage error it
-// prints to stderr and returns false (callers map that to ExitMisuse).
-func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, bool) {
+// args`. cmdName is used in usage/error text (e.g. "start", "continue").
+// On success it returns ExitOK; on help, ExitOK with empty opts after printing
+// usage; on a parse/usage error it prints to stderr and returns ExitMisuse.
+func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, int) {
 	fs := flag.NewFlagSet(cmdName, flag.ContinueOnError)
 	fs.SetOutput(env.Stderr)
 	var (
@@ -98,13 +102,16 @@ func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, bool)
 		auditStrict        = fs.Bool("audit-strict", false, "Fail-closed: abort if the audit log cannot be written.")
 		sessionID          = fs.String("session", "", "Continue a specific session by id instead of the most recent one. (shorthand: -s)")
 	)
+	var openPorts intMultiFlag
+	fs.Var(&openPorts, "open-port", "Allow the sandboxed process to bind and connect on this TCP port (repeatable). Useful for a local app/dev server the agent or its tools talk to — e.g. Playwright/Vite/Next on :3000. On Linux, Landlock cannot limit that to loopback: outbound TCP to any host on the same port is also allowed.")
 	// -s is the documented shorthand for --session (opencode mirrors this
 	// with `opencode -s <id>`; claude uses --resume, so its shorthand is
 	// different, but `omac -s` is harness-agnostic).
 	fs.StringVar(sessionID, "s", "", "Shorthand for --session.")
 	fs.Usage = func() {
-		fmt.Fprintf(env.Stderr, "Usage: omac %s [harness] [flags] [-- inner args...]\n", cmdName)
-		fmt.Fprintf(env.Stderr, "\nharness: one of %s (default: %s)\n\n",
+		out := fs.Output()
+		fmt.Fprintf(out, "Usage: omac %s [harness] [flags] [-- inner args...]\n", cmdName)
+		fmt.Fprintf(out, "\nharness: one of %s (default: %s)\n\n",
 			strings.Join(config.HarnessNames(), ", "), config.DefaultHarness().Name)
 		fs.PrintDefaults()
 	}
@@ -128,19 +135,19 @@ func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, bool)
 	harness, ourArgs, err := splitHarnessToken(ourArgs)
 	if err != nil {
 		fmt.Fprintf(env.Stderr, "omac %s: %v\n", cmdName, err)
-		return launchOpts{}, false
+		return launchOpts{}, ExitMisuse
 	}
-	if err := fs.Parse(reorderFlagsFirst(ourArgs)); err != nil {
-		return launchOpts{}, false
+	if code, ok := parseFlags(fs, ourArgs, env); !ok {
+		return launchOpts{}, code
 	}
 	if *ephemeralCache && *noSandbox {
 		fmt.Fprintf(env.Stderr, "omac %s: --ephemeral-cache cannot be used with --no-sandbox\n", cmdName)
-		return launchOpts{}, false
+		return launchOpts{}, ExitMisuse
 	}
 	if *cacheScope != "" {
 		if _, err := config.ValidateCacheScope(*cacheScope); err != nil {
 			fmt.Fprintf(env.Stderr, "omac %s: %v\n", cmdName, err)
-			return launchOpts{}, false
+			return launchOpts{}, ExitMisuse
 		}
 	}
 	innerArgs = append(fs.Args(), innerArgs...)
@@ -161,28 +168,49 @@ func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, bool)
 		noAudit:            *noAudit,
 		auditStrict:        *auditStrict,
 		sessionID:          *sessionID,
+		openPorts:          append([]int(nil), openPorts...),
 		innerArgs:          innerArgs,
-	}, true
+	}, ExitOK
 }
 
-// checkInnerBinary verifies the harness's inner command binary is on $PATH.
+// checkInnerBinary verifies the resolved inner command binary is on $PATH.
 // Returns ExitOK when found, ExitPrerequisiteMissing when missing, ExitOK
-// when InnerCmd is empty (defensive skip). Called by runLaunch and runServe.
-func checkInnerBinary(harness config.Harness, prefix string, env *Env) int {
-	if len(harness.InnerCmd) == 0 {
+// when empty (defensive skip). Called by runLaunch and runServe.
+//
+// Validating the wrong binary is what turns a missing harness into the late,
+// mislabeled "No such file or directory" from inside Seatbelt. Three inputs
+// can steer the check wrong, and all three are unwrapped here: the resolved
+// argv may come from a profile-pinned inner_cmd rather than the harness
+// default (Harness.ResolveInnerCmd), and it may be wrapped in an
+// `env NAME=VALUE ...` prefix (UnwrapEnv) or carry env flags like `-i`
+// (skipped below) — each of which would otherwise make the pre-flight check
+// `env` itself and report ExitOK regardless of whether the real harness is
+// installed.
+func checkInnerBinary(innerCmd []string, prefix string, env *Env) int {
+	if len(innerCmd) == 0 || innerCmd[0] == "" {
 		return ExitOK
 	}
-	if _, err := exec.LookPath(harness.InnerCmd[0]); err != nil {
-		fmt.Fprintf(env.Stderr, "%s: harness binary %q not found on $PATH; install it or pass --inner-cmd <path>\n", prefix, harness.InnerCmd[0])
+	cmd := sandboxrun.UnwrapEnv(innerCmd)
+	for len(cmd) > 0 && strings.HasPrefix(cmd[0], "-") {
+		cmd = cmd[1:]
+	}
+	if len(cmd) == 0 || cmd[0] == "" {
+		return ExitOK
+	}
+	if _, err := exec.LookPath(cmd[0]); err != nil {
+		fmt.Fprintf(env.Stderr, "%s: harness binary %q not found on $PATH; install it or pass --inner-cmd <path>\n", prefix, cmd[0])
 		return ExitPrerequisiteMissing
 	}
 	return ExitOK
 }
 
 func runStart(args []string, env *Env) int {
-	opts, ok := parseLaunchArgs("start", args, env)
-	if !ok {
-		return ExitMisuse
+	opts, code := parseLaunchArgs("start", args, env)
+	if code != ExitOK {
+		return code
+	}
+	if opts.label == "" {
+		return ExitOK // --help printed usage
 	}
 	return runLaunch(env, opts)
 }
@@ -225,19 +253,25 @@ func runLaunch(env *Env, opts launchOpts) int {
 	if verbose && cfgPath != "" {
 		fmt.Fprintf(env.Stderr, "[verbose] loaded launcher config: %s\n", cfgPath)
 	}
-	profName := profile
-	if profName == "" {
-		profName = lc.Sandbox.DefaultProfile
-	}
-	prof, ok := lc.Sandbox.Profiles[profName]
-	if !ok && !noSandbox {
-		fmt.Fprintf(env.Stderr, prefix+": unknown sandbox profile %q\n", profName)
+	// One resolved sandbox plan for the whole launch: the launcher profile
+	// (templated argv) plus, for omac's native backend, its policy profile
+	// (grant JSON). Everything downstream reads the plan instead of
+	// re-resolving a bare name — see internal/cli/sandboxplan.go.
+	plan, planErr := resolveSandboxPlan(lc, profile)
+	if planErr != nil && !noSandbox {
+		fmt.Fprintln(env.Stderr, prefix+":", planErr)
 		return ExitConfigInvalid
 	}
+	profName := plan.Name
+	prof := plan.Launcher
 
-	// 1b. Pre-flight: inner harness binary must be on $PATH.
+	// 1b. Pre-flight: inner harness binary must be on $PATH. Checked on the
+	//     resolved argv (profile inner_cmd, else harness default) — the same
+	//     argv step 8 hands to the sandbox. An explicit --inner skips: that
+	//     points at an exact binary, which is an escape hatch; sandboxrun
+	//     warns non-fatally if it cannot resolve it either.
 	if innerCmdOverride == "" {
-		if code := checkInnerBinary(harness, prefix, env); code != ExitOK {
+		if code := checkInnerBinary(harness.ResolveInnerCmd(prof.InnerCmd, ""), prefix, env); code != ExitOK {
 			return code
 		}
 	}
@@ -673,7 +707,9 @@ func runLaunch(env *Env, opts launchOpts) int {
 		env.Version,
 	)
 	f.SetAuditor(auditor)
-	wireFacadeSandbox(f, noSandbox, profName, func(format string, args ...any) {
+	// `omac start` has no --learn (serve-only), so the protected set is
+	// always the profile's.
+	wireFacadeSandbox(f, noSandbox, false, plan, func(format string, args ...any) {
 		fmt.Fprintf(env.Stderr, prefix+": "+format+"\n", args...)
 	})
 	if err := f.Start(ctx); err != nil {
@@ -755,7 +791,10 @@ func runLaunch(env *Env, opts launchOpts) int {
 		// Forward the selected harness's auth env vars through the
 		// default profile's restrictive allow_vars filter — only for the
 		// selected harness.
-		argv = forwardHarnessEnv(env, argv, harness, prof, profName)
+		argv = forwardHarnessEnv(env, argv, harness, plan)
+		// User --open-port grants (e.g. local Playwright webServer). Additive
+		// on top of the profile; no-op on non-native backends (with a warning).
+		argv = injectUserOpenPorts(env, argv, opts.openPorts, prof)
 		// Pass the resolved audit path down to `omac sandbox run` so the
 		// network-filter subprocess appends net.decision events to the
 		// same persistent log. Inherit the parent's run_id + mode so the
