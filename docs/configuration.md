@@ -55,6 +55,22 @@ omac scaffolds this file on first `omac start`. Key fields:
 
 See [Security model → Sandbox access reference](./security.md#sandbox-access-reference) for the full list of what the agent can and cannot access.
 
+### Opening a port
+
+To let the agent reach a local service, add the port to `network.open_port` in the sandbox grants file (`~/.config/omac/sandbox-profiles/default.json`):
+
+```json
+"network": { "open_port": [3000] }
+```
+
+On Linux this also permits outbound connections to that port on any host — Landlock cannot scope a port to localhost — so keep the list short. `omac doctor` and `omac provenance --check` flag every numeric `open_port`.
+
+### Java and Node dependency downloads
+
+Java (Maven/Gradle) and Node/npm do not reliably route their package downloads through a proxy on their own, so their downloads can fail inside the sandbox. To fix this, add `jvm`, `node`, or both to `network.proxy_injection` in the sandbox grants file, and omac configures those toolchains to use its proxy.
+
+Node injection requires Node ≥ 22.21.0 (22.x line) or ≥ 24.5.0; on older versions it is skipped and downloads may still fail.
+
 ## Audit trail
 
 omac logs every security-relevant action to an append-only file: process launches, network decisions, secret injections. The file is outside the sandbox so the agent cannot tamper with it.
