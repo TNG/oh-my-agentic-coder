@@ -102,7 +102,7 @@ func runRegister(args []string, env *Env) int {
 	// workdir-scoped key (omac/<workdir-id>/<skill>) so two projects'
 	// same-named skills don't share a credential. This MUST match the
 	// scope serve reads with (serve.go bringUp), or the secret is invisible
-	// to the running sidecar. See docs/MULTI_DIR_DESKTOP.md §4.3.
+	// to the running sidecar. See docs/contributing/serve-spec.md.
 	secretScope := ""
 	if !global {
 		secretScope = keychain.WorkdirID(env.Workdir)
@@ -484,7 +484,7 @@ func dedupSorted(names []string) []string {
 // "" for global skills (unscoped omac/<skill>) and the workdir-id for
 // workdir-local skills (omac/<workdir-id>/<skill>) — it MUST match the scope
 // serve reads with (see serve.go bringUp), or the skill will never see the
-// value. See docs/MULTI_DIR_DESKTOP.md §4.3.
+// value. See docs/contributing/serve-spec.md.
 func handleOneSecret(env *Env, scope, skill string, spec config.SecretSpec, reprompt bool, prevSkipped map[string]bool, fromFile map[string]string, useDefaults bool, host osinfo.OS) (bool, error) {
 	st := newStyler(env.Stderr)
 	// 1. Already in keychain?
@@ -515,7 +515,7 @@ func handleOneSecret(env *Env, scope, skill string, spec config.SecretSpec, repr
 	}
 
 	// 1c. --defaults: adopt the remembered global default silently if one
-	//     exists (docs/MULTI_DIR_DESKTOP.md §4.4). If none exists we fall
+	//     exists (docs/contributing/serve-spec.md). If none exists we fall
 	//     through and still prompt — --defaults means "don't re-ask for
 	//     things I've already answered", not "skip required values".
 	if useDefaults {
@@ -673,7 +673,7 @@ func handleOneField(env *Env, store *skillconfig.Store, skill string, spec confi
 	}
 
 	// 1c. --defaults: adopt the remembered global default silently if one
-	//     exists and is valid (docs/MULTI_DIR_DESKTOP.md §4.4). Otherwise
+	//     exists and is valid (docs/contributing/serve-spec.md). Otherwise
 	//     fall through and prompt.
 	if useDefaults && defStore != nil {
 		if def, ok := defStore.GetDefault(skill, spec.Name); ok {

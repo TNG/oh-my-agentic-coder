@@ -1212,7 +1212,7 @@ Rules:
 | --- | --- |
 | macOS | Keychain Services (`security` framework). |
 | Linux (GNOME/KDE) | Secret Service API (`libsecret`, D-Bus). |
-| WSL / headless Linux | Pass-through to the native backend if present. A file-based fallback (age-encrypted file under `~/.local/share/omac/secrets.age`, passphrase unlocked once per session via keyring if available) was proposed here but is **not implemented in v0** — see `internal/keychain`. Without a running Secret Service provider, keychain operations fail; `omac doctor` reports backend reachability and `docs/INSTALLATION.md#prerequisites` has the gnome-keyring setup snippet. |
+| WSL / headless Linux | Pass-through to the native backend if present. A file-based fallback (age-encrypted file under `~/.local/share/omac/secrets.age`, passphrase unlocked once per session via keyring if available) was proposed here but is **not implemented in v0** — see `internal/keychain`. Without a running Secret Service provider, keychain operations fail; `omac doctor` reports backend reachability and `docs/getting-started/quick-start.md#prerequisites` has the gnome-keyring setup snippet. |
 | Windows (native, future) | Windows Credential Manager. |
 
 `omac doctor` reports whether the keychain backend is reachable. `OMAC_KEYRING_BACKEND=secret-service|keychain|file` pinning described in earlier drafts of this doc is likewise **not implemented**.

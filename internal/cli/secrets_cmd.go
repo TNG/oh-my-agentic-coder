@@ -188,7 +188,7 @@ func runSecretsImport(args []string, env *Env) int {
 // secretScopeFor returns the keychain scope for a skill's secrets: "" for a
 // global skill (unscoped omac/<skill>), or the workdir-id for a workdir-local
 // skill (omac/<workdir-id>/<skill>). This MUST match the scope serve reads
-// with (serve.go bringUp). See docs/MULTI_DIR_DESKTOP.md §4.3.
+// with (serve.go bringUp). See docs/contributing/serve-spec.md.
 func secretScopeFor(env *Env, global bool) string {
 	if global {
 		return ""

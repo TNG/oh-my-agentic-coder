@@ -433,7 +433,7 @@ func harnessRegistry() []Harness {
 			// as a rules file (BriefingFileFunc), not a plugin.
 			BridgeDir: "",
 			// CodeWhale loads workspace-local skills only from `.agents/skills`
-			// or `./skills` (docs/CONFIGURATION.md) — NOT a workspace
+			// or `./skills` (docs/configuration.md) — NOT a workspace
 			// `.codewhale/skills`. Owning the shared "agents" base is therefore
 			// correct: WorkdirSkillsDir() becomes `.agents/skills` (where
 			// CodeWhale actually looks), while ConfigHome()/GlobalSkillsDir()

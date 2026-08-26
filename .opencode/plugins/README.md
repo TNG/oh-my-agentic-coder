@@ -1,7 +1,7 @@
 # omac multi-directory plugin
 
 `omac-multidir.ts` is the OpenCode-side counterpart to `omac serve`
-(see `docs/MULTI_DIR_DESKTOP.md`). It lives in `.opencode/plugins/`, the
+(see `docs/contributing/serve-spec.md`). It lives in `.opencode/plugins/`, the
 project-level plugin directory OpenCode auto-loads at startup (per
 https://opencode.ai/docs/plugins — note the directory is `plugins/`, plural;
 the `opencode.json` `"plugin"` array is for **npm packages only**, not local

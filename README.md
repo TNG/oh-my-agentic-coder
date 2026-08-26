@@ -30,7 +30,7 @@ Linux). No kernel module, no privileged daemon.
 Currently, omac is tested for the following OS and harness combinations:
 - Ubuntu (latest, 26.04): all harnesses (opencode, claude-code, codex, copilot, pi, codewhale)
 - macOS (latest): opencode, claude-code, copilot, pi (codex and codewhale are Linux-only)
-- WSL2 (Ubuntu 26.04): opencode, claude-code; requires manual keychain setup (see docs/INSTALLATION.md#prerequisites)
+- WSL2 (Ubuntu 26.04): opencode, claude-code; requires manual keychain setup (see docs/getting-started/quick-start.md#prerequisites)
 
 ## Setup
 
@@ -71,24 +71,24 @@ omac list                     # show which skills are already registered
 # 5. Launch — default builtin sandbox + default harness (opencode).
 #    The harness itself is NOT bundled: install at least one (opencode,
 #    claude, codex, copilot, pi, codewhale) on your PATH first — see
-#    docs/INSTALLATION.md "Inner harness". `omac doctor` checks this.
+#    docs/getting-started/quick-start.md "Inner harness". `omac doctor` checks this.
 omac start
 ```
 
 `omac doctor` checks sandbox, keychain, dialog backend, and harness, and prints
 an actionable fix for whatever it finds. Distro-specific gotchas (Ubuntu
 AppArmor and bubblewrap, WSL without a Secret Service) are in
-[`docs/INSTALLATION.md`](docs/INSTALLATION.md#prerequisites). `omac start`
+[`docs/getting-started/quick-start.md`](docs/getting-started/quick-start.md#prerequisites). `omac start`
 launches sidecars → facade → sandbox → agent. Built-in skills are
 auto-provisioned on launch. For the external nono sandbox instead of builtin,
-see [`docs/NONO_SANDBOX.md`](docs/NONO_SANDBOX.md).
+see [`docs/advanced/nono.md`](docs/advanced/nono.md).
 
 For the full command list: `omac --help` (flags: `omac <subcommand> --help`).
-Details: [`docs/CLI.md`](docs/CLI.md).
+Details: [`docs/usage/cli.md`](docs/usage/cli.md).
 
 Artifacts, checksums, from-source builds, `omac update`, and the full
 prerequisite matrix:
-[`docs/INSTALLATION.md`](docs/INSTALLATION.md).
+[`docs/getting-started/quick-start.md`](docs/getting-started/quick-start.md).
 
 ## Using omac
 
@@ -112,8 +112,8 @@ Codex runs under the sandbox on **Linux only** — its HTTP client is
 incompatible with macOS Seatbelt, so `omac start codex` on macOS refuses to
 start rather than hang.
 
-**Details:** [`docs/HARNESSES.md`](docs/HARNESSES.md),
-[`docs/MULTI_DIR_DESKTOP.md`](docs/MULTI_DIR_DESKTOP.md).
+**Details:** [`docs/intro.md`](docs/intro.md),
+[`docs/advanced/serve-mode.md`](docs/advanced/serve-mode.md).
 
 ## Skills
 
@@ -131,14 +131,14 @@ tokens in the sandbox. Typical flow:
    in its environment, mounts it on the facade, and injects
    `OMAC_<MOUNT>_BASE` into the sandbox. Unregistered skills or a changed
    skill bundle refuse launch (see `--auto-register-skills` in
-   [`docs/CLI.md`](docs/CLI.md) for the limited opt-in).
+   [`docs/usage/cli.md`](docs/usage/cli.md) for the limited opt-in).
 
 The agent calls the skill over the facade; the sidecar attaches credentials on
 the host and talks to the upstream API.
 
 To **author** a skill (`omac.yaml` schema, all `OMAC_*` vars, checklist), see
 [`CREATING_A_SKILL.md`](./CREATING_A_SKILL.md). Worked example:
-[`docs/ECHO_REST_EXAMPLE.md`](docs/ECHO_REST_EXAMPLE.md).
+[`docs/contributing/echo-rest.md`](docs/contributing/echo-rest.md).
 
 ## Configuration
 
@@ -155,10 +155,10 @@ to change something:
 Do not confuse the two “profile” names: launcher YAML picks **how** to sandbox;
 the JSON file defines **what** the sandbox may touch.
 
-**Details:** [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) — every field, the
+**Details:** [`docs/configuration.md`](docs/configuration.md) — every field, the
 audit trail format and flags, sandbox profile schema, proxy injection for
 JVM/Node toolchains, and corporate-proxy chaining.
-[`docs/CACHE_ISOLATION.md`](docs/CACHE_ISOLATION.md) covers the per-scope tool
+[`docs/advanced/cache.md`](docs/advanced/cache.md) covers the per-scope tool
 caches (`cache.scope`, `--ephemeral-cache`, `omac cache clear`).
 
 ## How it works
@@ -208,24 +208,24 @@ blocked under Seatbelt / nono proxy mode on macOS).
 
 Widening access means editing the grant JSON — a reviewable change. Full threat
 model and “what the sandbox can still see”:
-[`docs/SECURITY_MODEL.md`](docs/SECURITY_MODEL.md).
+[`docs/security.md`](docs/security.md).
 
 ## Documentation
 
 | Document | Contents |
 |---|---|
-| [`docs/INSTALLATION.md`](docs/INSTALLATION.md) | Every install path, updating, checksum verification, full prerequisites |
-| [`docs/SECURITY_MODEL.md`](docs/SECURITY_MODEL.md) | Threat model, isolation mechanics, what the sandbox can see |
-| [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) | Launcher config, audit trail, sandbox profiles, corporate proxy |
-| [`docs/CACHE_ISOLATION.md`](docs/CACHE_ISOLATION.md) | Tool cache scopes, modes, cleanup, private Cargo registries |
-| [`docs/CLI.md`](docs/CLI.md) | Full subcommand and flag reference, typical workflow, exit codes |
-| [`docs/HARNESSES.md`](docs/HARNESSES.md) | Harness selection, session resume, bridges, skill discovery |
-| [`docs/HARNESS_COMPAT.md`](docs/HARNESS_COMPAT.md) | Upstream CLI drift monitoring per harness |
-| [`docs/MULTI_DIR_DESKTOP.md`](docs/MULTI_DIR_DESKTOP.md) | `omac serve` and OpenCode Desktop across directories |
-| [`docs/NONO_SANDBOX.md`](docs/NONO_SANDBOX.md) | Using the external nono sandbox instead of the built-in one |
+| [`docs/getting-started/quick-start.md`](docs/getting-started/quick-start.md) | Every install path, updating, checksum verification, full prerequisites |
+| [`docs/security.md`](docs/security.md) | Threat model, isolation mechanics, what the sandbox can see |
+| [`docs/configuration.md`](docs/configuration.md) | Launcher config, audit trail, sandbox profiles, corporate proxy |
+| [`docs/advanced/cache.md`](docs/advanced/cache.md) | Tool cache scopes, modes, cleanup, private Cargo registries |
+| [`docs/usage/cli.md`](docs/usage/cli.md) | Full subcommand and flag reference, typical workflow, exit codes |
+| [`docs/intro.md`](docs/intro.md) | Harness selection, session resume, bridges, skill discovery |
+| [`docs/contributing/testing.md`](docs/contributing/testing.md) | Upstream CLI drift monitoring per harness |
+| [`docs/advanced/serve-mode.md`](docs/advanced/serve-mode.md) | `omac serve` and OpenCode Desktop across directories |
+| [`docs/advanced/nono.md`](docs/advanced/nono.md) | Using the external nono sandbox instead of the built-in one |
 | [`CREATING_A_SKILL.md`](./CREATING_A_SKILL.md) | Authoring guide: `omac.yaml` schema, env vars, secrets, checklist |
-| [`docs/ECHO_REST_EXAMPLE.md`](docs/ECHO_REST_EXAMPLE.md) | The reference `echo-rest` skill, its tests, and streaming (SSE) |
-| [`docs/DEVELOP.md`](docs/DEVELOP.md) | Layout, build, test, dependencies, serve-mode dev loop |
+| [`docs/contributing/echo-rest.md`](docs/contributing/echo-rest.md) | The reference `echo-rest` skill, its tests, and streaming (SSE) |
+| [`docs/contributing/development.md`](docs/contributing/development.md) | Layout, build, test, dependencies, serve-mode dev loop |
 | [`oh-my-agentic-coder.md`](./oh-my-agentic-coder.md) | The design document this implementation follows |
 | [`COLLABORATION.md`](./COLLABORATION.md) | How work is tracked, branched, reviewed, and merged |
 
@@ -240,7 +240,7 @@ scripts/install-hooks.sh
 ```
 
 The hook only runs `gofmt`. Layout, builds, and the test matrix:
-[`docs/DEVELOP.md`](docs/DEVELOP.md).
+[`docs/contributing/development.md`](docs/contributing/development.md).
 
 ## Not yet implemented (v0)
 

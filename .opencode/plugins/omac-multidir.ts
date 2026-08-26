@@ -6,7 +6,7 @@
  * the omac control plane so that each directory a session opens gets its
  * skills brought online lazily, isolated per workdir.
  *
- * See docs/MULTI_DIR_DESKTOP.md. The omac side is implemented in
+ * See docs/contributing/serve-spec.md. The omac side is implemented in
  * internal/cli/serve.go; this plugin is the OpenCode-side counterpart that
  * closes milestone M4.
  *

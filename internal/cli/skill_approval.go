@@ -13,7 +13,7 @@ import (
 
 // A skill sidecar runs UNSANDBOXED, so it may spawn only when its current
 // on-disk content is recorded in the host-only approval store the sandbox
-// cannot write. See internal/skilltrust and docs/SECURITY_MODEL.md.
+// cannot write. See internal/skilltrust and docs/security.md.
 
 // skillSpawnAuthorizer is the supervisor spawn-gate backstop: every spawn
 // funnels through it even if a caller forgets its own pre-flight check. A

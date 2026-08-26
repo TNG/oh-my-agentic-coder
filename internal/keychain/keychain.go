@@ -12,14 +12,14 @@
 // isolates workdir-local skills by keying on a persistent workdir-id
 // (sha256 of the absolute workdir) so two directories holding a same-named
 // skill — or two versions of it — don't share a credential. See
-// docs/MULTI_DIR_DESKTOP.md §4.3/§8.2.
+// docs/contributing/serve-spec.md.
 //
 // The backend (macOS Keychain, Secret Service, Windows Credential Manager)
 // is selected by go-keyring based on the host OS. A file-based fallback for
 // headless Linux (age-encrypted secrets.age, oh-my-agentic-coder.md §16.2)
 // is not implemented; on WSL / headless Linux without a running Secret
 // Service provider, keychain operations fail — see IsUnavailable and
-// docs/INSTALLATION.md#prerequisites for the actionable fix.
+// docs/getting-started/quick-start.md#prerequisites for the actionable fix.
 package keychain
 
 import (
@@ -52,7 +52,7 @@ var ErrNotFound = errors.New("keychain: secret not found")
 var ErrUnavailable = errors.New("keychain: backend unavailable")
 
 // DefaultsScope is the reserved workdir-id under which "last-known-good"
-// default secret values are mirrored (docs/MULTI_DIR_DESKTOP.md §4.4). It
+// default secret values are mirrored (docs/contributing/serve-spec.md). It
 // is never a real workdir.
 const DefaultsScope = "__defaults__"
 
@@ -290,7 +290,7 @@ func DeleteScoped(scope, skillName, name string) error {
 
 // SetWithDefault stores a secret under (scope, skill) AND mirrors it into
 // the DefaultsScope so a future registration elsewhere can reuse it as a
-// suggested value (docs/MULTI_DIR_DESKTOP.md §4.4). A failure to mirror is
+// suggested value (docs/contributing/serve-spec.md). A failure to mirror is
 // not fatal to the primary write — defaults are best-effort convenience.
 func SetWithDefault(scope, skillName, name string, value secrets.Secret) error {
 	if err := SetScoped(scope, skillName, name, value); err != nil {

@@ -37,7 +37,7 @@ import (
 )
 
 // RouteState describes whether a route forwards to a live sidecar or
-// serves a stub response. See the serve-mode design (docs/MULTI_DIR_DESKTOP.md
+// serves a stub response. See the serve-mode design (docs/contributing/serve-spec.md
 // §5.2): a registered skill whose required secrets/config are missing is
 // mounted anyway, but as a stub that returns a structured 409 until the
 // values are supplied; a skill that is broken (bad omac.yaml / bundle drift)
@@ -762,7 +762,7 @@ func (f *Facade) writeStatus(w http.ResponseWriter, _ *http.Request) {
 		// SECURITY: do NOT enumerate per-directory routes here. In serve
 		// mode every active directory's skills share this one facade port,
 		// and a per-dir route's namespace is a random, secret bearer token
-		// (see docs/MULTI_DIR_DESKTOP.md §4.1/§8.1). Listing those tokens on
+		// (see docs/contributing/serve-spec.md). Listing those tokens on
 		// the unauthenticated GET / index would let any session harvest them
 		// and reach another directory's skills — a cross-workdir isolation
 		// breach. Only expose routes that are not gated by a secret dir
