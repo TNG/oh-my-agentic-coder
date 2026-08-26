@@ -713,10 +713,15 @@ func forwardHarnessEnv(env *Env, argv []string, harness config.Harness, plan san
 	}
 	if planAllowVarsEmpty(plan) {
 		fmt.Fprintf(env.Stderr, "omac: sandbox profile %q has an empty environment.allow_vars.\n", plan.PolicyRef)
+		if plan.PolicyPath != "" {
+			fmt.Fprintf(env.Stderr, "      Profile source: %s\n", plan.PolicyPath)
+		}
 		fmt.Fprintln(env.Stderr, "      Forwarding only the operational minimum (HOME, PATH, TERM, locale, …).")
 		fmt.Fprintln(env.Stderr, "      No provider-auth or other ambient env vars are passed through (previously every")
-		fmt.Fprintln(env.Stderr, "      var was inherited). The harness starts but will not authenticate until you add")
-		fmt.Fprintln(env.Stderr, `      the vars it needs to allow_vars (see "omac doctor"), or set allow_vars: ["*"].`)
+		fmt.Fprintln(env.Stderr, "      var was inherited). Custom profiles are not updated by omac upgrades. Refresh")
+		fmt.Fprintln(env.Stderr, `      this profile from its installer or original source, then run "omac doctor".`)
+		fmt.Fprintln(env.Stderr, "      If you maintain it manually, add the vars the harness needs to allow_vars.")
+		fmt.Fprintln(env.Stderr, `      allow_vars: ["*"] is not recommended because it forwards almost every ambient var.`)
 		fmt.Fprintln(env.Stderr, "      Continuing shortly…")
 		time.Sleep(emptyAllowVarsWarnDelay)
 		// Seed only the operational minimum; do NOT auto-forward auth vars.

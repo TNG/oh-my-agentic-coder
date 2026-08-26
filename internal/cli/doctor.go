@@ -349,20 +349,26 @@ func doctorSandboxProfileWarnings(env *Env, lc config.LauncherConfig) {
 			// doctor can't see into its profile, so skip silently.
 			continue
 		}
-		p, _, err := sandboxprofile.Resolve(ref)
+		p, path, err := sandboxprofile.Resolve(ref)
 		if err != nil {
 			fmt.Fprintf(env.Stdout, "  [warn] sandbox profile %q: %v\n", profName, err)
 			continue
 		}
 		if len(p.Environment.AllowVars) == 0 {
 			fmt.Fprintf(env.Stdout, "  [warn] sandbox profile %q has an empty environment.allow_vars\n", profName)
+			if path != "" {
+				fmt.Fprintf(env.Stdout, "         source:      %s\n", path)
+			}
 			fmt.Fprintln(env.Stdout, "         impact:      at launch omac forwards only the operational minimum (HOME, PATH,")
 			fmt.Fprintln(env.Stdout, "                      TERM, locale, …); all other ambient env vars — including provider")
 			fmt.Fprintln(env.Stdout, "                      tokens and secrets — are NOT passed through, and omac does not")
 			fmt.Fprintln(env.Stdout, "                      auto-forward auth vars. This differs from the pre-#102 inherit-")
 			fmt.Fprintln(env.Stdout, "                      everything behavior; the harness starts but will not authenticate.")
-			fmt.Fprintln(env.Stdout, `         remediation: add the vars the harness needs to allow_vars (see`)
-			fmt.Fprintln(env.Stdout, `                      sandboxprofile.DefaultAllowVars), or set allow_vars: ["*"] to forward`)
+			fmt.Fprintln(env.Stdout, "         remediation: custom profiles are not updated by omac upgrades; refresh this profile")
+			fmt.Fprintln(env.Stdout, "                      from its installer or original source. If you maintain it manually,")
+			fmt.Fprintln(env.Stdout, "                      add the vars the harness needs to allow_vars (see")
+			fmt.Fprintln(env.Stdout, "                      sandboxprofile.DefaultAllowVars).")
+			fmt.Fprintln(env.Stdout, `                      allow_vars: ["*"] is not recommended because it forwards almost`)
 			fmt.Fprintln(env.Stdout, "                      every ambient var (minus the danger blocklist).")
 		}
 		if denied := sandboxprofile.DeniedBaseVars(p.Environment.DenyVars); len(denied) > 0 {

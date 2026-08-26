@@ -47,7 +47,7 @@ func checkEnvironment(profile *sandboxprofile.Profile) []Finding {
 		Category: CatEnvironment,
 		Field:    "environment.allow_vars",
 		Value:    "(empty)",
-		Message:  `fails closed to the operational defaults, so the harness starts but cannot authenticate; add the vars it needs to allow_vars, or ["*"] to inherit every non-blocklisted var`,
+		Message:  `fails closed to the operational defaults, so the harness starts but cannot authenticate; custom profiles are not updated by omac upgrades, so refresh the profile from its installer or original source, or add explicit allow_vars manually; ["*"] is not recommended because it inherits every non-blocklisted var`,
 	}}
 }
 

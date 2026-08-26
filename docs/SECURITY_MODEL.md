@@ -292,12 +292,17 @@ sandbox:
 > flag an empty allowlist.
 >
 > To resolve an empty profile, either:
-> - add an explicit `allow_vars` list (start from `DefaultAllowVars()` in
->   `internal/sandboxprofile/env.go`, then add the provider/token vars the
+> - for a profile supplied by an installer or another repository, refresh it
+>   from that original source. omac upgrades do not update custom profiles in
+>   `~/.config/omac/sandbox-profiles/`, or
+> - for a manually maintained profile, add an explicit `allow_vars` list
+>   (start from `DefaultAllowVars()` in `internal/sandboxprofile/env.go`, then
+>   add the provider/token vars the
 >   harness reads — e.g. `ANTHROPIC_API_KEY`, or a custom `SKAINET_*`); back up
 >   + delete a scaffolded `default.json` to have omac re-scaffold the full list
 >   (it is not auto-migrated), or
-> - set `allow_vars: ["*"]` to forward **every** ambient var — the danger
+> - as a deliberately broad fallback, set `allow_vars: ["*"]` to forward
+>   **every** ambient var — the danger
 >   blocklist (`LD_*`, `NODE_OPTIONS`, 1Password tokens, …) still wins, so this
 >   is not the same as no filtering.
 >
