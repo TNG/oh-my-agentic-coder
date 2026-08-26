@@ -194,7 +194,7 @@ Two paths to be aware of:
   > (the facade) and write to `OMAC_WORKDIR` when you need the project dir.
   > For the same reason, vendor/install dependencies BEFORE `omac register`
   > (or install them system-wide) — deps added after approval are not in the
-  > snapshot. See [`docs/SECURITY_MODEL.md`](./docs/SECURITY_MODEL.md#self-authored-skills).
+  > snapshot. See [`docs/security.md`](./docs/security.md#self-authored-skills).
 - **`scripts/` is shared between two consumers**: the *omac supervisor*
   spawns the sidecar entry-point as a long-running HTTP service outside
   the sandbox; the *agent* may also invoke other helper scripts in this
