@@ -108,6 +108,10 @@ hash. If the skill's files change after approval, the hash no longer matches
 and the spawn is refused. The agent cannot sneak in modified code by editing a
 skill after it was approved.
 
+If you change an approved skill yourself, omac refuses to run it until you
+review the change and re-register it with `omac register --force`. Upgrading
+omac does not make you re-approve skills you already registered.
+
 ## Environment filtering
 
 The sandbox does not inherit all environment variables from the shell that

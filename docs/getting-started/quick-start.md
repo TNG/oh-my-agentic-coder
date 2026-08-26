@@ -135,6 +135,8 @@ omac doctor
 omac start
 ```
 
+By default, this launches OpenCode. To use a different harness, pass its name or a short alias after the subcommand (also works with `serve`, `continue`, `resume`) — e.g. `omac start claude`. Aliases: `oc` (opencode), `claude` / `cc` (claude-code), `cx` (codex), `co` (copilot), `cw` (codewhale); `pi` has no alias.
+
 Run `omac setup` after your first start to provision the built-in `omac-write-a-skill` skill, which lets the agent create new skills.
 
 ## Update
@@ -152,3 +154,5 @@ omac update --yes  # skip confirmation (CI/scripting)
 curl -L -O https://github.com/TNG/oh-my-agentic-coder/releases/latest/download/checksums.txt
 sha256sum -c checksums.txt --ignore-missing
 ```
+
+Keep each downloaded file under its original release name. `sha256sum -c` matches entries by filename and `--ignore-missing` silently skips any file whose name is not in the list — so a renamed download would verify nothing.

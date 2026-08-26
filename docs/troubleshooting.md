@@ -85,3 +85,29 @@ exec: "<harness>": executable file not found in $PATH
 Cause: the inner harness binary is not installed or not on `PATH`.
 
 Fix: install the missing harness — see [Supported harnesses](./intro.md#supported-harnesses-and-os).
+
+### Agent cannot authenticate with its AI provider
+
+The harness starts but every model call fails with an authentication or missing-API-key error.
+
+Cause: the sandbox only receives environment variables on the `allow_vars` list. Two common misconfigurations:
+
+- `allow_vars` is empty — this fails **closed** (nothing passes through), not open.
+- The harness reads its API key from an environment variable that is not allow-listed. claude-code, codex, and copilot auto-forward their provider keys automatically; the multi-provider harnesses — opencode, pi, and codewhale — do not, so you must add the variable yourself.
+
+Fix: add the variable to `allow_vars` in `~/.config/omac/sandbox-profiles/default.json`. See [Configuration](./configuration.md).
+
+### Gradle build hangs or cannot reach its daemon
+
+Cause: the Gradle daemon talks to its client over a random loopback port, which the sandbox's default kernel network enforcement blocks.
+
+Fix: run Gradle without the daemon — `./gradlew --no-daemon` (or set `org.gradle.daemon=false`). This is the recommended fix.
+
+On macOS only, if you must keep the daemon, you can grant loopback with `"network": { "open_port": [0] }` in the sandbox grants file (`~/.config/omac/sandbox-profiles/default.json`) — `0` means "any loopback port" and external egress stays kernel-blocked. On Linux there is no equivalent that keeps kernel enforcement, so use `--no-daemon`.
+
+### Undo a network allow/deny decision
+
+When you answer the network prompt, "session" decisions are held in memory only, while "permanent" decisions are written to `sandbox-profiles/default.pages.json`.
+
+- Session decision: restart `omac start` — session decisions never persist and cannot be edited from a file, so a restart clears them.
+- Permanent decision: remove the entry from `~/.config/omac/sandbox-profiles/default.pages.json`.
