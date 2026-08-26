@@ -389,6 +389,7 @@ func launchCacheCaptureForHarness(t *testing.T, harnessName string, noSandbox, e
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("XDG_DATA_HOME", "")
 	for key := range toolcache.Environment("ignored", toolcache.ModePersistent) {
 		value := "host-" + key
 		if harnessName == "opencode" {
