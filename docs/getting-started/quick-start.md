@@ -15,12 +15,12 @@ You also need at least one harness installed — see [Supported harnesses](../in
 
 ### macOS
 
-All three components are built into macOS. No additional install needed — proceed to [Install](#install).
+All three components are built into macOS. No additional installation needed — proceed to [Install](#install).
 
 ### Linux (Debian / Ubuntu)
 
 ```bash
-sudo apt install bubblewrap libsecret-1-0 zenity
+sudo apt-get install -y bubblewrap zenity libnotify-bin libsecret-1-0
 ```
 
 Replace `zenity` with `kdialog` if you use KDE.
@@ -42,33 +42,33 @@ sudo apparmor_parser -r /etc/apparmor.d/bwrap
 ### Linux (Fedora)
 
 ```bash
-sudo dnf install bubblewrap libsecret zenity
+sudo dnf install bubblewrap zenity libnotify libsecret
 ```
 
 ### WSL2 (Ubuntu)
 
+Update your WSL2 if you encounter kernel problems from a Windows PowerShell via `wsl --update` (create a backup before).
+Afterward, you should run `sudo apt-get update && sudo apt-get upgrade -y` from your WSL terminal.
+
 WSL2 does not run a keychain daemon by default, so the secret storage setup needs extra steps compared to native Linux.
 
 ```bash
-sudo apt install -y bubblewrap gnome-keyring libsecret-tools zenity
+sudo apt-get install -y bubblewrap zenity libnotify-bin libsecret-1-0 gnome-keyring libsecret-tools
 ```
 
-The keychain daemon must be running before omac can store or read secrets. Add these two lines to your `~/.bashrc` so they start automatically each time you open a WSL2 terminal:
+Then create the default keyring once (`omac` can only unlock an existing keyring — it cannot create one). Run this command once and enter a passphrase when prompted:
 
 ```bash
-eval "$(dbus-launch --sh-syntax)"
-gnome-keyring-daemon --start --components=secrets
+printf 'placeholder' | secret-tool store --label="can-be-deleted" service omac-init && secret-tool clear service omac-init
 ```
+(This will create a placeholder secret and remove it immediately to create an empty keyring that `omac` can use.)
 
-After editing `~/.bashrc`, either restart your terminal or run those two lines now to start the daemon for the current session.
+You will need that passphrase to unlock the keyring once per WSL session on `omac start` and only if registered skills require secrets.
 
-Then create the default keyring once. omac can only unlock an existing keyring — it cannot create one. Run this command once and enter a passphrase when prompted:
+**Optional:** Install `seahorse` to manage (omac-created) keyring secrets via a GUI (`sudo apt-get install -y seahorse`).
 
-```bash
-secret-tool store --label="bootstrap" service omac account init
-```
-
-**Workdir:** Keep your repo on the native WSL2 filesystem (`~/projects/…`, not `/mnt/c/…`). The Windows NTFS mount can cause permission errors and is significantly slower.
+> **IMPORTANT:** Keep your repos on the native WSL2 filesystem (`~/projects/…`, not `/mnt/c/…`). 
+> The Windows NTFS mount can cause permission errors and is significantly slower.
 
 ## Install
 
@@ -105,7 +105,7 @@ sudo pacman -U oh-my-agentic-coder_*.pkg.tar.zst
 
 Building from source is intended for contributors developing omac, or users who need an unreleased commit. For all other cases, use a pre-built package above.
 
-Requires Go. Go's standard install shortcut (`go install`) requires the module path in the code to exactly match the repository URL. This repo follows Go's lowercase module path convention (`github.com/tngtech/...`) while the GitHub organisation uses uppercase (`TNG`), so the shortcut does not work. Clone and build locally instead:
+Requires Go. Go's standard installation shortcut (`go install`) requires the module path in the code to exactly match the repository URL. This repo follows Go's lowercase module path convention (`github.com/tngtech/...`) while the GitHub organisation uses uppercase (`TNG`), so the shortcut does not work. Clone and build locally instead:
 
 ```bash
 git clone https://github.com/TNG/oh-my-agentic-coder.git

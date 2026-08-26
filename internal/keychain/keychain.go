@@ -191,7 +191,7 @@ func IsUnavailable(err error) bool {
 	// Collections list, falls back to the alias path, and Unlock returns
 	// zero unlocked paths. This is the fresh-WSL2 bootstrap gap: the daemon
 	// is up, but there's no keyring to unlock. The user must create one
-	// (e.g. via seahorse); see the hint in cli.keychainUnavailableHint.
+	// (e.g. via secret-tool); see the hint in cli.keychainUnavailableHint.
 	if strings.Contains(msg, "failed to unlock correct collection") {
 		return true
 	}
