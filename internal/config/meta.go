@@ -379,10 +379,27 @@ func (s *SidecarMeta) InstallScriptFor(o osinfo.OS) string {
 //
 // Returns an error only if a directory entry can't be stat'd or read;
 // missing dir is reported as a regular fs.PathError.
+//
+// The skill root is resolved via filepath.EvalSymlinks before walking.
+// The root is commonly a symlink — either the skills directory itself
+// (~/.config/opencode/skills -> /repo/opencode/skills/) or an individual
+// skill within it (skills/foo -> ../../library/skills/foo/) — so the tree
+// stays git-versioned in a separate repo. Without resolution, WalkDir
+// Lstats the root, sees ModeSymlink, fires the callback once with
+// rel == "." (skipped below), and never descends — yielding the empty
+// sha256:e3b0c44… digest. On any error (including a not-exist target),
+// the walk proceeds against the unresolved abs so the missing-dir
+// contract still gets its fs.PathError from the walk, not from
+// EvalSymlinks. In-tree symlinks remain skipped per the per-entry rule
+// below.
 func BundleHash(skillDir string) (string, error) {
 	abs, err := filepath.Abs(skillDir)
 	if err != nil {
 		return "", fmt.Errorf("bundle hash: abs: %w", err)
+	}
+	root := abs
+	if resolved, evalErr := filepath.EvalSymlinks(abs); evalErr == nil {
+		root = resolved
 	}
 	type item struct {
 		rel string
@@ -390,11 +407,11 @@ func BundleHash(skillDir string) (string, error) {
 	}
 	var items []item
 
-	err = filepath.WalkDir(abs, func(p string, d fs.DirEntry, err error) error {
+	err = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		rel, relErr := filepath.Rel(abs, p)
+		rel, relErr := filepath.Rel(root, p)
 		if relErr != nil {
 			return relErr
 		}
@@ -413,7 +430,7 @@ func BundleHash(skillDir string) (string, error) {
 			return nil
 		}
 		if !d.Type().IsRegular() {
-			// Skip symlinks, sockets, devices. Hashing through symlinks
+			// Skip in-tree symlinks, sockets, devices. Hashing through symlinks
 			// would let a target replacement silently change the bundle
 			// without tripping detection.
 			return nil
