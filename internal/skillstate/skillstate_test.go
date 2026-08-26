@@ -492,7 +492,7 @@ func TestBundleDrift(t *testing.T) {
 	armed, problems := New(Options{}).Resolve(m, e, dir, nil)
 	defer armed.Zero()
 	wantKinds(t, problems, BundleDrift)
-	if want := "omac register --force probe"; problems[0].Fix != want {
+	if want := "omac register probe --force"; problems[0].Fix != want {
 		t.Errorf("Fix = %q, want %q", problems[0].Fix, want)
 	}
 	if armed.Bundle == "" {

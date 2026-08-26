@@ -44,14 +44,15 @@ func TestRenderSkillRefusalEveryKind(t *testing.T) {
 		{
 			name: "meta broken",
 			problem: skillstate.Problem{Kind: skillstate.MetaBroken, Skill: "alpha",
-				Detail: "yaml: line 3: bad", Fix: "omac register --force alpha"},
-			want: []string{"omac.yaml broken", "alpha", "yaml: line 3: bad", "omac register --force alpha"},
+				Detail: "yaml: line 3: bad", Fix: "omac register alpha --force"},
+			want: []string{"omac.yaml broken", "alpha", "yaml: line 3: bad", "omac register alpha --force"},
 		},
 		{
 			name: "bundle drift",
 			problem: skillstate.Problem{Kind: skillstate.BundleDrift, Skill: "bravo",
-				Detail: "bundle changed since register", Fix: "omac register --force bravo"},
-			want: []string{"bundle changed since register", "--accept-skill-changes", "bravo", "omac register --force bravo"},
+				Detail: "bundle changed since register", Fix: "omac register bravo --force"},
+			want: []string{"bundle changed since register", "--accept-skill-changes", "bravo",
+				"re-register", "omac register bravo --force"},
 		},
 		{
 			name: "missing secret",
@@ -69,8 +70,9 @@ func TestRenderSkillRefusalEveryKind(t *testing.T) {
 		{
 			name: "missing field",
 			problem: skillstate.Problem{Kind: skillstate.MissingField, Skill: "echo", Field: "API_BASE",
-				Detail: "required config field missing", Fix: "omac register --reprompt-fields echo"},
-			want: []string{"required config field missing", "echo", "fields: API_BASE", "omac register --reprompt-fields echo"},
+				Detail: "required config field missing", Fix: "omac register echo --reprompt-fields"},
+			want: []string{"required config field missing", "echo", "fields: API_BASE",
+				"set them with", "omac register echo --reprompt-fields"},
 		},
 		{
 			name: "keychain unavailable",
@@ -101,8 +103,8 @@ func TestRenderSkillRefusalExitCodePriority(t *testing.T) {
 	keychainDown := skillstate.Problem{Kind: skillstate.KeychainUnavailable, Skill: "a", Field: "T", Detail: "no bus"}
 	missingSecret := skillstate.Problem{Kind: skillstate.MissingSecret, Skill: "b", Field: "T", Fix: "omac secrets set b T"}
 	invalidSecret := skillstate.Problem{Kind: skillstate.InvalidSecret, Skill: "c", Field: "T", Detail: "bad", Fix: "fix"}
-	missingField := skillstate.Problem{Kind: skillstate.MissingField, Skill: "d", Field: "F", Fix: "omac register --reprompt-fields d"}
-	drift := skillstate.Problem{Kind: skillstate.BundleDrift, Skill: "e", Fix: "omac register --force e"}
+	missingField := skillstate.Problem{Kind: skillstate.MissingField, Skill: "d", Field: "F", Fix: "omac register d --reprompt-fields"}
+	drift := skillstate.Problem{Kind: skillstate.BundleDrift, Skill: "e", Fix: "omac register e --force"}
 	metaBroken := skillstate.Problem{Kind: skillstate.MetaBroken, Skill: "f", Detail: "bad yaml"}
 
 	cases := []struct {
@@ -134,9 +136,9 @@ func TestRenderSkillRefusalExitCodePriority(t *testing.T) {
 // appear in every relevant section, not just the first.
 func TestRenderSkillRefusalReportsEveryClassForOneSkill(t *testing.T) {
 	problems := []skillstate.Problem{
-		{Kind: skillstate.BundleDrift, Skill: "alpha", Fix: "omac register --force alpha"},
+		{Kind: skillstate.BundleDrift, Skill: "alpha", Fix: "omac register alpha --force"},
 		{Kind: skillstate.MissingSecret, Skill: "alpha", Field: "TOKEN", Fix: "omac secrets set alpha TOKEN"},
-		{Kind: skillstate.MissingField, Skill: "alpha", Field: "API_BASE", Fix: "omac register --reprompt-fields alpha"},
+		{Kind: skillstate.MissingField, Skill: "alpha", Field: "API_BASE", Fix: "omac register alpha --reprompt-fields"},
 	}
 	out, code := render(problems)
 
@@ -144,9 +146,9 @@ func TestRenderSkillRefusalReportsEveryClassForOneSkill(t *testing.T) {
 		t.Errorf("want all three counted:\n%s", out)
 	}
 	for _, want := range []string{
-		"omac register --force alpha",
+		"omac register alpha --force",
 		"omac secrets set alpha TOKEN",
-		"omac register --reprompt-fields alpha",
+		"omac register alpha --reprompt-fields",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output missing %q — the user would need another round trip:\n%s", want, out)
@@ -157,21 +159,21 @@ func TestRenderSkillRefusalReportsEveryClassForOneSkill(t *testing.T) {
 	}
 }
 
-// TestRenderSkillRefusalGroupsFieldsPerSkill: one `omac register
+// TestRenderSkillRefusalGroupsFieldsPerSkill: one `omac register <skill>
 // --reprompt-fields` run re-prompts ALL of a skill's fields, so printing the
 // command once per field would imply it must be run repeatedly.
 func TestRenderSkillRefusalGroupsFieldsPerSkill(t *testing.T) {
 	problems := []skillstate.Problem{
-		{Kind: skillstate.MissingField, Skill: "alpha", Field: "A", Fix: "omac register --reprompt-fields alpha"},
-		{Kind: skillstate.MissingField, Skill: "alpha", Field: "B", Fix: "omac register --reprompt-fields alpha"},
-		{Kind: skillstate.MissingField, Skill: "bravo", Field: "C", Fix: "omac register --reprompt-fields bravo"},
+		{Kind: skillstate.MissingField, Skill: "alpha", Field: "A", Fix: "omac register alpha --reprompt-fields"},
+		{Kind: skillstate.MissingField, Skill: "alpha", Field: "B", Fix: "omac register alpha --reprompt-fields"},
+		{Kind: skillstate.MissingField, Skill: "bravo", Field: "C", Fix: "omac register bravo --reprompt-fields"},
 	}
 	out, _ := render(problems)
 
 	if !strings.Contains(out, "fields: A, B") {
 		t.Errorf("want alpha's fields on one line:\n%s", out)
 	}
-	if n := strings.Count(out, "omac register --reprompt-fields alpha"); n != 1 {
+	if n := strings.Count(out, "omac register alpha --reprompt-fields"); n != 1 {
 		t.Errorf("alpha's fix printed %d times, want once:\n%s", n, out)
 	}
 	if !strings.Contains(out, "fields: C") {
@@ -223,7 +225,7 @@ func TestRenderSkillRefusalNoFixNoInvention(t *testing.T) {
 func TestRenderSkillRefusalUsesPrefix(t *testing.T) {
 	var buf bytes.Buffer
 	renderSkillRefusal(&buf, "omac continue", []skillstate.Problem{
-		{Kind: skillstate.BundleDrift, Skill: "alpha", Fix: "omac register --force alpha"},
+		{Kind: skillstate.BundleDrift, Skill: "alpha", Fix: "omac register alpha --force"},
 	})
 	if !strings.HasPrefix(buf.String(), "omac continue: refusing to start") {
 		t.Errorf("want the caller's prefix:\n%s", buf.String())
