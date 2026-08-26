@@ -30,6 +30,8 @@ Runtime skipping is a separate mechanism: some facade and serve tests are compil
 
 E2E tests run against real installed harnesses and are **not** run on every PR. Running them requires real model credentials and takes several minutes; the full suite runs weekly on `main` instead (and can be triggered manually on any branch). Run them locally when your change touches the sandbox, harness integration, or the Facade.
 
+### With `go test`
+
 ```bash
 go test -tags=e2e -v ./internal/e2e/
 ```
@@ -46,6 +48,8 @@ go test -tags=e2e -run TestE2ESandboxDenied -v ./internal/e2e/
 
 E2E tests use temporary home directories and do not modify your real keychain or global omac config.
 
+### Stages
+
 | Stage | What it tests | Needs credentials? | Harnesses             |
 |---|---|---|-----------------------|
 | `contract` | Every CLI flag omac depends on is still present in the harness's `--help` | no | all                   |
@@ -61,9 +65,52 @@ E2E tests use temporary home directories and do not modify your real keychain or
 All harnesses except claude-code use a shared model gateway (`zai-org/GLM-5.2`) because it is cost-effective.
 claude-code is the exception because it communicates directly with the Anthropic API — it cannot route through a third-party gateway — so it uses `claude-sonnet-5` with an Anthropic key.
 
+### With the wrapper scripts
+
+The bare `go test -tags=e2e` above needs the full toolchain (harness installs,
+bwrap/Seatbelt) on your host. Two wrappers cover the cases where that's awkward.
+
+**In a container — `scripts/e2e-docker.sh`** runs the Linux (bwrap) path on any
+host. The container is `--privileged` so
+bwrap can create user namespaces; on Linux, Podman works too (`DOCKER_CMD=podman`).
+macOS Seatbelt paths are not covered — the `e2e.yml` CI matrix handles those on
+`macos-latest`.
+
+```sh
+scripts/e2e-docker.sh build                # one-time (~3 min): Ubuntu + Go + bun/node + bubblewrap + rust/pip
+SKAINET_TOKEN=... SKAINET_INTERNAL=... scripts/e2e-docker.sh run opencode     # echo-rest lifecycle (llm stage)
+SKAINET_TOKEN=... SKAINET_INTERNAL=... scripts/e2e-docker.sh audit opencode   # security_assertions stage
+scripts/e2e-docker.sh cache                # cache_isolation stage — no secrets
+scripts/e2e-docker.sh prompt "..."         # run echo-rest with a custom prompt
+scripts/e2e-docker.sh artifact opencode-linux-echo-rest | tar -x   # fetch a run's output
+scripts/e2e-docker.sh shell                # open a shell in the container
+scripts/e2e-docker.sh logs                 # tail the container logs
+scripts/e2e-docker.sh stop                 # stop the container
+```
+
+**Inside an omac sandbox — `scripts/e2e-local.sh`** lets an agent already in a
+sandbox (`OMAC_SOCKET` set) run E2E without a host shell. With `OMAC_SOCKET`
+unset it is a thin passthrough to `go test`, so it works on a plain host shell too.
+
+```sh
+scripts/e2e-local.sh smoke opencode         # no secrets, ~10s: contract + launch stages
+SKAINET_TOKEN=... SKAINET_INTERNAL=... scripts/e2e-local.sh echo opencode     # echo-rest lifecycle / llm stage (needs secrets)
+SKAINET_TOKEN=... SKAINET_INTERNAL=... scripts/e2e-local.sh audit opencode    # security_assertions stage (needs secrets)
+```
+
+When `OMAC_SOCKET` is set, the wrapper sets three vars the tests read, to work
+around running a sandbox inside a sandbox (CI never sets `OMAC_SOCKET`, so it is
+unaffected):
+
+- `E2E_NESTED=1` — forces `--no-sandbox`; a sandbox can't be applied inside an existing one (macOS rejects nested Seatbelt).
+- `E2E_RECOVER_INSTALL=1` — retries harness install with `--ignore-scripts` + a manual postinstall, since the sandbox blocks the package manager's spawned postinstall (and falls back from bun to npm when `~/.bun` isn't writable).
+- `TMPDIR=/tmp/omac-e2e…` — a short path so the facade's `bridge.sock` stays under macOS's 104-byte socket-path limit.
+
 ---
 
 ## Harness compatibility drift detection
+
+*Mostly maintainer-facing — a contributor running tests can skip this section.*
 
 The weekly `E2E: drift` workflow installs the **latest released version** of every harness (not a pinned version) and runs the model-free stages (those needing no credentials — see the `Needs credentials?` column above) against both `main` and the latest published omac binary.
 

@@ -137,9 +137,14 @@ Your sidecar must:
 - **Implement the health endpoint** at `health.path` (default `/status`; configure in `omac.yaml`). Return any 2xx (e.g. `{"ok": true}`). omac will not serve traffic until this succeeds.
 - **Never expose secrets** in response bodies or log lines.
 
+**Defining routes.** Your sidecar is an ordinary HTTP server, so define a handler for each path your skill needs (for example `GET /status`). The agent reaches it through omac at `$OMAC_MY_SKILL_BASE/status`, where `$OMAC_MY_SKILL_BASE` is the base URL the agent uses to reach your skill (see [How the agent reaches your skill](#how-the-agent-reaches-your-skill) below). 
+Before forwarding the request, omac strips your skill's mount prefix (`/my-skill`, the `mount` value from your `omac.yaml`), so your sidecar receives the bare path `/status`. Register your handlers for those bare paths: a handler for `/my-skill/status` would never be reached.
+
+**Streaming responses.** If a route streams results instead of returning them all at once (for example Server-Sent Events), set these in your sidecar's handler yourself: `Content-Type: text/event-stream`, no `Content-Length`, and a flush after each event. What omac does automatically is forward a `text/event-stream` response to the agent without buffering, so each event arrives as you send it. See the `/tick` route in [echo-rest](../contributing/echo-rest.md) for a working example.
+
 ## Environment variables injected into the sidecar
 
-omac sets these in the sidecar process before spawning it. Your sidecar code uses them like any other env var — they are how omac tells the sidecar where to bind, what credentials it has, and how to reach the facade. You do not set them yourself.
+omac sets these in the sidecar process before spawning it. Your sidecar code reads them like any other env var; they tell it where to bind and what credentials and config it has. You do not set them yourself.
 
 For example, if your `omac.yaml` declares a secret `MY_API_TOKEN` and a config field `API_BASE_URL`, they arrive in your sidecar as plain env vars:
 
@@ -156,13 +161,20 @@ api_url = os.environ["API_BASE_URL"]   # from skill-config.yaml
 |---|---|
 | `SIDECAR_PORT` | Bind your HTTP server on `127.0.0.1:<SIDECAR_PORT>`. |
 | `SIDECAR_SKILL` | Your skill's name — prefix log lines with it for easier debugging. |
-| `OMAC_<MOUNT>_BASE` | Base URL for your skill's routes through the facade (TCP). `<MOUNT>` is your skill's URL prefix — the `name` field uppercased with dashes replaced by underscores (e.g. skill `my-skill` → `OMAC_MY_SKILL_BASE`). Use this to construct URLs pointing back to your own routes. |
-| `OMAC_<MOUNT>_SOCKET_BASE` | Same, via Unix socket — lower latency, use when available. |
-| `OMAC_SOCKET` | Path to the omac facade Unix socket — use directly if you need facade access outside the sandbox. |
-| `OMAC_BASE` | Facade root URL in TCP form — fallback when the Unix socket is not available. |
 | `OMAC_WORKDIR` | Absolute path of the project directory omac was invoked in — use when your sidecar needs to read or write project files. |
 | Each declared secret name | The credential value (from the OS keychain) — pass to your upstream API client, as in the example above. |
 | Each declared config field name | The config value — use for non-secret settings like base URLs, regions, or feature flags. |
+
+## How the agent reaches your skill
+
+The agent runs inside the sandbox, not in your sidecar's process, so it receives a different set of variables. It uses them to reach your skill through the facade:
+
+| Variable | Value |
+|---|---|
+| `OMAC_<MOUNT>_BASE` | TCP base URL for your skill, e.g. `http://127.0.0.1:<port>/my-skill`. `<MOUNT>` is your `mount` value uppercased with dashes turned into underscores (`my-skill` → `OMAC_MY_SKILL_BASE`). **Prefer this form.** |
+| `OMAC_<MOUNT>_SOCKET_BASE` | The same route over omac's Unix socket. It has lower overhead, but the socket is blocked under the macOS sandbox, so use it only where you know it is reachable, not as the default. |
+
+Write your endpoint examples in `SKILL.md` using `$OMAC_<MOUNT>_BASE` so the agent calls your skill over the preferred transport.
 
 ## Discovery roots
 
@@ -187,6 +199,35 @@ Place the skill directory under one of these roots. Priority rules: workdir-loca
 6. `~/.agents/skills/<name>/` (legacy flat layout)
 
 `$XDG_CONFIG_HOME` replaces `~/.config` when set. Use `.agents/skills/` if you want the skill available regardless of which harness is active.
+
+## Registering: the skill snapshot
+
+When you run `omac register`, omac copies your skill directory. It always runs the sidecar from that copy, never from your project directory. Two practical rules follow:
+
+- **Install dependencies before you register.** Anything added afterwards (a `pip install`, `npm install`, or vendored library) is not in the copy, so the sidecar won't find it. Run `omac register` again after changing dependencies.
+- **Don't write files relative to the current directory.** They land in omac's private copy, which is invisible to the agent and discarded on the next register. To read or write files in the project, use the absolute path in `$OMAC_WORKDIR`.
+
+## Develop and test
+
+To iterate quickly, run everything outside the sandbox with a shell in place of the agent:
+
+```bash
+omac register my-skill                 # register first, and again after each change
+omac start --no-sandbox --inner bash
+# then, in the shell it drops you into:
+curl "$OMAC_MY_SKILL_BASE/status"
+```
+
+`--no-sandbox` skips the OS sandbox and runs your command directly. `--inner bash` replaces the agent with a shell, so you can call the skill by hand. Your sidecar and the facade still start normally.
+
+If a call returns HTTP `503` with the header `X-Omac-Reason: sidecar-down`, your sidecar failed to start or crashed. Its output (stdout and stderr) is captured in a per-project runtime directory under `$TMPDIR`:
+
+```bash
+# omac creates one omac-<hash> directory per project; if only one is running:
+cat $TMPDIR/omac-*/logs/<skill>.log
+```
+
+Because omac runs the skill from the copy made at register time (see above), re-run `omac register` after editing the skill so your changes take effect.
 
 ## Pre-shipping checklist
 
