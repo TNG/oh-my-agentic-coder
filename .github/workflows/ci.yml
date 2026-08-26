@@ -71,11 +71,12 @@ jobs:
     # (needs systemd=true in wsl.conf), and even with it, `Linger=no` makes
     # systemd tear down /run/user/<uid> — including the session-bus socket —
     # when the login session ends, while DBUS_SESSION_BUS_ADDRESS still points
-    # at the now-dead socket. This job reproduces that failure mode
-    # deterministically on a plain Ubuntu runner: point the bus address at a
-    # socket that doesn't exist and confirm omac's keychain/Secret Service reads
-    # degrade gracefully (keychain.IsUnavailable) instead of surfacing raw dial
-    # errors. For a full WSL2 run see the wsl2 job below.
+    # at the now-dead socket. Real WSL2 isn't worth running on CI (hosted
+    # windows runners only give WSL1; WSL2 needs nested virtualization), but
+    # the failure mode reproduces deterministically here: point the bus address
+    # at a socket that doesn't exist and confirm omac's keychain/Secret Service
+    # reads degrade gracefully (keychain.IsUnavailable) instead of surfacing
+    # raw dial errors.
     name: WSL2-style session (dead bus)
     runs-on: ubuntu-latest
     steps:
@@ -112,38 +113,6 @@ jobs:
           # systemd --user instance to populate it.
           XDG_RUNTIME_DIR: ${{ runner.temp }}/nonexistent-run-user
         run: go test -race -count=1 -timeout=5m ./...
-
-  wsl2:
-    # Full test suite on a real WSL2 environment to catch WSL2-specific
-    # behaviour: osinfo.Detect() returning WSL (via /proc/version containing
-    # "microsoft"), sandbox under the Microsoft-built kernel, and the keychain
-    # degraded-session path. Ubuntu 22.04 is pinned — 24.04 is known not to
-    # work on WSL2.
-    name: WSL2 (Ubuntu 22.04)
-    runs-on: windows-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up WSL2 (Ubuntu 22.04)
-        uses: Vampire/setup-wsl@v3
-        with:
-          distribution: Ubuntu-22.04
-          additional-packages: bubblewrap
-
-      - name: Set up Go in WSL2
-        shell: wsl-bash {0}
-        run: |
-          GO_VERSION=$(grep '^go ' go.mod | awk '{print $2}')
-          curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" | sudo tar -C /usr/local -xz
-
-      - name: go vet
-        shell: wsl-bash {0}
-        run: /usr/local/go/bin/go vet ./...
-
-      - name: Test
-        shell: wsl-bash {0}
-        run: /usr/local/go/bin/go test -count=1 -timeout=5m ./...
 
   lint:
     name: Lint
