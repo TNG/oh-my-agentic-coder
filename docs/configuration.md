@@ -65,6 +65,42 @@ To let the agent reach a local service, add the port to `network.open_port` in t
 
 On Linux this also permits outbound connections to that port on any host — Landlock cannot scope a port to localhost — so keep the list short. `omac doctor` and `omac provenance --check` flag every numeric `open_port`.
 
+You can also open a port for a single session with `omac start --open-port 3000`, which is handy for a quick test before changing the grants file.
+
+### Passing an environment variable into the sandbox
+
+The sandbox passes through only the variables named in `environment.allow_vars`, plus a small set of operational defaults (such as `PATH` and `HOME`). Everything else, including any token, is stripped unless configured otherwise.
+
+If a tool inside the sandbox needs a variable from your shell, for example an API token, add its name to the list:
+
+```json
+"environment": { "allow_vars": ["MY_API_TOKEN"] }
+```
+
+Only the *name* goes here. The value still comes from your shell at start time. There is no CLI flag for this on `omac start`.
+
+Note that this is separate from a skill's secrets: skill credentials are injected on the host and never enter the sandbox (see [Security model](./security.md)). `allow_vars` is for variables that a program *inside* the sandbox reads directly. Those variables can then also be accessed by the agent.
+
+### Running an MCP server the harness launches
+
+An MCP server is configured in the harness, not in omac.
+The harness (opencode, claude-code, …) launches MCP servers **inside the sandbox**, so the MCP server is limited by the sandbox restrictions. Two things commonly need granting:
+
+- **A token**, if the server authenticates with an API key: add the variable to `environment.allow_vars` (see above) and export it before `omac start`.
+- **A local port**, if the server uses the HTTP transport and opens one for the harness to connect to: add it to `network.open_port` (see above). Servers that use the stdio transport talk over the process's input and output instead and need no port.
+
+For example, an MCP server that reads `KAGGLE_KEY` and listens on port 3334:
+
+```json
+"environment": { "allow_vars": ["KAGGLE_KEY"] },
+"network": { "open_port": [3334] }
+```
+
+**The token can be accessed by the agent in this setting.** So:
+
+- For anything holding a real secret, prefer an omac skill if one exists or can be written (see [Authoring skills](./skills/authoring.md)).
+- If you do use an MCP server with a token, use a scoped, least-privilege token.
+
 ### Java and Node dependency downloads
 
 Java (Maven/Gradle) and Node/npm do not reliably route their package downloads through a proxy on their own, so their downloads can fail inside the sandbox. To fix this, add `jvm`, `node`, or both to `network.proxy_injection` in the sandbox grants file, and omac configures those toolchains to use its proxy.

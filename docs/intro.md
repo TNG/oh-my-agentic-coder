@@ -53,12 +53,13 @@ This is handled by `omac serve` instead of `omac start`. Desktop integration is 
 
 ## Glossary
 
-| Term | Definition |
-|---|---|
-| **Harness** | The AI coding agent that omac runs inside the sandbox (`opencode`, `claude`, …). |
+| Term | Definition                                                                                                                                                                                              |
+|---|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| **Harness** | The AI coding agent that omac runs inside the sandbox (`opencode`, `claude`, …).                                                                                                                        |
 | **Skill** | A self-contained package that extends what the agent can do. It provides instructions to the agent and optionally a helper program that can call external services and securely hold their credentials. |
-| **Sidecar** | A helper program that runs on your machine, outside the sandbox, and implements a skill's API. If the skill needs credentials, the sidecar holds them — the agent never sees them directly. |
-| **Facade** | The component inside omac that connects the sandbox to the skill sidecars. The agent sends requests to the facade; the facade forwards them to the right sidecar. |
+| **Sidecar** | A helper program that runs on your machine, outside the sandbox, and implements a skill's API. If the skill needs credentials, the sidecar holds them — the agent never sees them directly.             |
+| **Facade** | The component inside omac that connects the sandbox to the skill sidecars. The agent sends requests to the facade; the facade forwards them to the right sidecar.                                       |
+| **MCP server** | A tool server that a harness connects to over the Model Context Protocol to gain extra capabilities (example: an MCP server can provide information on demand).                                         |
 
 ## Security model
 

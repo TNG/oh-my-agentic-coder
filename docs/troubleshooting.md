@@ -109,6 +109,15 @@ Cause: the sandbox only receives environment variables on the `allow_vars` list.
 
 Fix: add the variable to `allow_vars` in `~/.config/omac/sandbox-profiles/default.json`. See [Configuration](./configuration.md).
 
+### An MCP server or other harness-launched tool cannot reach its token or open its port
+
+The harness (opencode, claude-code, …) launches MCP servers **inside the sandbox**, so the MCP server is limited by the sandbox restrictions. Two things commonly need granting:
+
+- **A missing token.** The tool reads an API token from an environment variable that is not allow-listed. Fix: add the variable name to `environment.allow_vars` and export it before `omac start`. **This means that the agent can also access your token!** Alternatively, you can define a skill for MCP access.
+- **A blocked local port.** The tool opens a local port that the sandbox blocks by default. Fix: add the port to `network.open_port`, or pass `omac start --open-port <port>` (if you want to open the port only for the current session). A blocked loopback port is enforced by the kernel and leaves no entry in the audit trail, so it does not show up as a denied connection in `omac diagnose`. To check a specific port, run `omac diagnose --probe 127.0.0.1:<port>`, which reports whether `open_port` currently allows it.
+
+See [Running an MCP server the harness launches](./configuration.md#running-an-mcp-server-the-harness-launches) for a combined example.
+
 ### Gradle build hangs or cannot reach its daemon
 
 Cause: the Gradle daemon talks to its client over a random loopback port, which the sandbox's default kernel network enforcement blocks.
