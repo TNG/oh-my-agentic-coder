@@ -120,22 +120,20 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
-        harness: [opencode, claude-code, codex, copilot, pi, codewhale]
+        harness: [opencode, claude-code, codex, copilot, pi]
         # codex on macOS is excluded — its Rust HTTP client is incompatible
         # with the macOS Seatbelt sandbox (stream disconnected mid-completion,
         # even with network=open). `omac start codex` on macOS fails loud;
         # --no-sandbox would disable the entire omac sandbox, leaving nothing
         # to assert against. See issue #48.
         #
-        # codewhale on macOS is excluded by analogy: it too is a Rust CLI with
-        # its own HTTP client (the codex failure class). This is precautionary
-        # and UNVERIFIED for codewhale — re-test on macOS and drop this exclude
-        # (and the matching ones in internal/e2e) if it works.
+        # codewhale is NOT in the main matrix — it runs in a separate
+        # non-blocking drift job (e2e-codewhale) so its failures don't block
+        # releases. To fully remove codewhale, delete that job + the
+        # codewhale_version input + the Go harness config.
         exclude:
           - os: macos-latest
             harness: codex
-          - os: macos-latest
-            harness: codewhale
     runs-on: ${{ matrix.os }}
     concurrency:
       group: e2e-${{ matrix.os }}-${{ matrix.harness }}
@@ -158,7 +156,6 @@ jobs:
       E2E_VERSION_CODEX: ${{ github.event.inputs.codex_version }}
       E2E_VERSION_COPILOT: ${{ github.event.inputs.copilot_version }}
       E2E_VERSION_PI: ${{ github.event.inputs.pi_version }}
-      E2E_VERSION_CODEWHALE: ${{ github.event.inputs.codewhale_version }}
       # Models come from the preflight job, which already applied the `model`
       # input, the gateway probe, and the -TEE variant flip. Set PER HARNESS
       # rather than via cross-harness E2E_MODEL: the probed value is a gateway
@@ -169,7 +166,6 @@ jobs:
       E2E_MODEL_CODEX: ${{ needs.model.outputs.gateway }}
       E2E_MODEL_COPILOT: ${{ needs.model.outputs.gateway }}
       E2E_MODEL_PI: ${{ needs.model.outputs.gateway }}
-      E2E_MODEL_CODEWHALE: ${{ needs.model.outputs.gateway }}
       E2E_MODEL_CLAUDE_CODE: ${{ needs.model.outputs.claude_code }}
     steps:
       - name: Checkout
@@ -364,8 +360,8 @@ jobs:
           retention-days: 14
 
   e2e-wsl2:
-    # Full e2e suite on real WSL2. All 6 harnesses run (WSL2 is GOOS=linux,
-    # so codex/codewhale are NOT excluded). Go/bun/node are installed manually
+    # Full e2e suite on real WSL2. All 5 harnesses run (WSL2 is GOOS=linux,
+    # so codex is NOT excluded). Go/bun/node are installed manually
     # inside WSL — the setup-* actions install on the Windows side, not in
     # WSL. The wsl-bash shell uses --noprofile --norc, so PATH and GITHUB_*
     # path translation are set up in "$HOME"/wsl-env.sh and sourced per step.
@@ -378,7 +374,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        harness: [opencode, claude-code, codex, copilot, pi, codewhale]
+        harness: [opencode, claude-code, codex, copilot, pi]
     runs-on: windows-latest
     continue-on-error: true
     concurrency:
@@ -395,17 +391,15 @@ jobs:
       E2E_VERSION_CODEX: ${{ github.event.inputs.codex_version }}
       E2E_VERSION_COPILOT: ${{ github.event.inputs.copilot_version }}
       E2E_VERSION_PI: ${{ github.event.inputs.pi_version }}
-      E2E_VERSION_CODEWHALE: ${{ github.event.inputs.codewhale_version }}
       E2E_MODEL_OPENCODE: ${{ needs.model.outputs.gateway }}
       E2E_MODEL_CODEX: ${{ needs.model.outputs.gateway }}
       E2E_MODEL_COPILOT: ${{ needs.model.outputs.gateway }}
       E2E_MODEL_PI: ${{ needs.model.outputs.gateway }}
-      E2E_MODEL_CODEWHALE: ${{ needs.model.outputs.gateway }}
       E2E_MODEL_CLAUDE_CODE: ${{ needs.model.outputs.claude_code }}
       # WSL only forwards vars listed in WSLENV — include every job/step env
       # var the Go tests read via os.Getenv(). Without it, SKAINET_TOKEN,
       # E2E_MODEL_*, etc. are unbound inside wsl-bash.
-      WSLENV: GITHUB_OUTPUT:GITHUB_STEP_SUMMARY:SKAINET_TOKEN:SKAINET_INTERNAL:ANTHROPIC_BASE_URL:E2E_HARNESS:E2E_USE_LATEST:E2E_VERSION_OPENCODE:E2E_VERSION_CLAUDE_CODE:E2E_VERSION_CODEX:E2E_VERSION_COPILOT:E2E_VERSION_PI:E2E_VERSION_CODEWHALE:E2E_MODEL_OPENCODE:E2E_MODEL_CODEX:E2E_MODEL_COPILOT:E2E_MODEL_PI:E2E_MODEL_CODEWHALE:E2E_MODEL_CLAUDE_CODE:E2E_LOG_DIR:E2E_CACHE_DIR
+      WSLENV: GITHUB_OUTPUT:GITHUB_STEP_SUMMARY:SKAINET_TOKEN:SKAINET_INTERNAL:ANTHROPIC_BASE_URL:E2E_HARNESS:E2E_USE_LATEST:E2E_VERSION_OPENCODE:E2E_VERSION_CLAUDE_CODE:E2E_VERSION_CODEX:E2E_VERSION_COPILOT:E2E_VERSION_PI:E2E_MODEL_OPENCODE:E2E_MODEL_CODEX:E2E_MODEL_COPILOT:E2E_MODEL_PI:E2E_MODEL_CLAUDE_CODE:E2E_LOG_DIR:E2E_CACHE_DIR
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -591,6 +585,168 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: e2e-logs-${{ matrix.harness }}-wsl2
+          path: ${{ runner.temp }}/e2e-logs/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # ── codewhale drift ────────────────────────────────────────────────
+  # Non-blocking: runs the full e2e suite for codewhale only, on Linux.
+  # Failures are reported but never block releases or the main matrix.
+  # To fully remove codewhale: delete this job + the codewhale_version
+  # input + the Go harness config (harnesses.go, versions.go, etc.).
+  e2e-codewhale:
+    name: "codewhale / ubuntu-latest (drift)"
+    needs: model
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    concurrency:
+      group: e2e-codewhale
+      cancel-in-progress: false
+    env:
+      SKAINET_TOKEN: ${{ secrets.SKAINET_TOKEN }}
+      SKAINET_INTERNAL: ${{ secrets.SKAINET_INTERNAL }}
+      ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
+      E2E_HARNESS: codewhale
+      E2E_USE_LATEST: ${{ github.event.inputs.use_latest == 'true' && '1' || '' }}
+      E2E_VERSION_CODEWHALE: ${{ github.event.inputs.codewhale_version }}
+      E2E_MODEL_CODEWHALE: ${{ needs.model.outputs.gateway }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve model
+        id: model
+        run: |
+          model=$(scripts/resolve-model.sh 'codewhale')
+          context="${E2E_CONTEXT_LIMIT:-versions.go default}"
+          echo "model=$model" >> "$GITHUB_OUTPUT"
+          echo "context=$context" >> "$GITHUB_OUTPUT"
+          echo "::notice title=Model::codewhale runs against $model (context: $context)"
+
+      - name: Install bubblewrap (Linux only)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update && sudo apt-get install -y bubblewrap
+          sudo tee /etc/apparmor.d/bwrap > /dev/null <<'EOF'
+          abi <abi/4.0>,
+          /usr/bin/bwrap flags=(unconfined) {
+            userns,
+          }
+          EOF
+          sudo apparmor_parser -r /etc/apparmor.d/bwrap
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Cache harness install packages
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/e2e-install-cache
+          key: e2e-install-${{ runner.os }}-codewhale-${{ hashFiles('internal/e2e/versions.go') }}-${{ github.event.inputs.use_latest }}-${{ github.event.inputs.codewhale_version }}
+          restore-keys: |
+            e2e-install-${{ runner.os }}-codewhale-
+
+      - name: Deterministic test gate
+        run: |
+          set -o pipefail
+          if ! go test -tags=e2e_fast -count=1 ./internal/e2e/ 2>&1 | tee /tmp/e2e-fast.txt; then
+            echo "::error::deterministic (e2e_fast) test failure — a test defect, not infra; retries cannot clear it"
+            {
+              echo "## E2E deterministic gate FAILED (codewhale / ubuntu-latest)"
+              echo ""
+              echo "Network-free tests failed against the resolved model/version env."
+              echo "This is a test defect, not infra — the agent legs were not run."
+              echo ""
+              echo '```'
+              grep -E '^( *--- FAIL|.*_test\.go:)' /tmp/e2e-fast.txt | head -20
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+      - name: Run e2e test
+        id: run_e2e
+        env:
+          E2E_LOG_DIR: ${{ runner.temp }}/e2e-logs
+          E2E_CACHE_DIR: ${{ runner.temp }}/e2e-install-cache
+        run: |
+          set -o pipefail
+          max_attempts=3
+          attempt=1
+          while :; do
+            echo "::group::e2e attempt $attempt/$max_attempts"
+            if go test -tags=e2e -timeout=30m -v ./internal/e2e/ 2>&1 | tee /tmp/e2e-out.txt; then
+              echo "::endgroup::"
+              exit 0
+            fi
+            echo "::endgroup::"
+            if grep -q '^panic: test timed out after' /tmp/e2e-out.txt; then
+              hung=$(sed -n '/^panic: test timed out after/,/^$/p' /tmp/e2e-out.txt | head -20)
+              echo "::error::go test hit its deadline — a hung test, not infra; retries cannot clear it"
+              echo "test(s) still running at the deadline:"
+              echo "$hung"
+              {
+                echo "## E2E deadline exceeded (codewhale / ubuntu-latest)"
+                echo '```'
+                echo "$hung"
+                echo '```'
+              } >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
+            bad=$(grep -oE 'FAIL \[[^]]+\]: (SANDBOX_FAIL|AGENT_REFUSED|AGENT_PARTIAL)' /tmp/e2e-out.txt | sort -u || true)
+            if [ -n "$bad" ]; then
+              echo "non-infra failure — not retrying:"
+              echo "$bad"
+              exit 1
+            fi
+            if [ "$attempt" -ge "$max_attempts" ]; then
+              echo "max attempts ($max_attempts) reached — giving up"
+              exit 1
+            fi
+            attempt=$((attempt + 1))
+            echo "infra-only failure — retrying in 15s (attempt $attempt/$max_attempts)"
+            sleep 15
+          done
+
+      - name: Failure classification summary
+        if: always() && steps.run_e2e.outcome != 'skipped'
+        run: |
+          echo "## E2E failure classification (codewhale / ubuntu-latest)" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Model: \`${{ steps.model.outputs.model }}\` · context: \`${{ steps.model.outputs.context }}\`" >> "$GITHUB_STEP_SUMMARY"
+          if [ '${{ needs.model.outputs.fallback }}' = 'true' ]; then
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "> ⚠️ Fallback model — the intended model is not served by the gateway, so this result does NOT certify it." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Assertion | Mode | Reason |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|-----------|------|--------|" >> "$GITHUB_STEP_SUMMARY"
+          if grep -qE 'FAIL \[[^]]+\]: [A-Z_]+ — ' /tmp/e2e-out.txt; then
+            grep -oE 'FAIL \[[^]]+\]: [A-Z_]+ — [^\\]*' /tmp/e2e-out.txt \
+              | sort -u \
+              | sed -E 's/FAIL \[([^]]+)\]: ([A-Z_]+) — (.*)/| `\1` | `\2` | \3 |/' \
+              >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "| _all passed_ | PASS | no failures |" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          cat "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload session artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-logs-codewhale-ubuntu-latest
           path: ${{ runner.temp }}/e2e-logs/
           if-no-files-found: ignore
           retention-days: 14

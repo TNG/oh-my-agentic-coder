@@ -112,22 +112,23 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
-        harness: [opencode, claude-code, codex, copilot, pi, codewhale]
+        harness: [opencode, claude-code, codex, copilot, pi]
         # Two omac versions: main (built from source) and release (the latest
         # published binary — what users actually run). The contract stage is
         # identical across both (it's compiled from source), but launch + llm
         # exercise the selected omac binary, catching a released omac that can't
         # drive a current harness.
+        #
+        # codewhale is NOT in the main matrix — it runs in a separate
+        # non-blocking drift job (smoke-codewhale) so its failures don't
+        # block releases. To fully remove codewhale, delete that job +
+        # the Go harness config (harnesses.go, versions.go, etc.).
         omac: [main, release]
         exclude:
           # codex's Rust HTTP client is incompatible with the macOS Seatbelt
-          # sandbox (see e2e.yml / issue #48). codewhale is excluded on macOS
-          # by analogy (also a Rust CLI with its own HTTP client) — unverified,
-          # re-test and drop if it works.
+          # sandbox (see e2e.yml / issue #48).
           - os: macos-latest
             harness: codex
-          - os: macos-latest
-            harness: codewhale
     runs-on: ${{ matrix.os }}
     concurrency:
       group: e2e-smoke-${{ matrix.os }}-${{ matrix.harness }}-${{ matrix.omac }}
@@ -146,7 +147,6 @@ jobs:
       E2E_MODEL_CODEX: ${{ needs.model.outputs.gateway }}
       E2E_MODEL_COPILOT: ${{ needs.model.outputs.gateway }}
       E2E_MODEL_PI: ${{ needs.model.outputs.gateway }}
-      E2E_MODEL_CODEWHALE: ${{ needs.model.outputs.gateway }}
       E2E_MODEL_CLAUDE_CODE: ${{ needs.model.outputs.claude_code }}
       E2E_CONTEXT_LIMIT: ${{ github.event.inputs.context_limit }}
     steps:
@@ -380,7 +380,7 @@ jobs:
           fi
 
   smoke-wsl2:
-    # Drift detection on real WSL2. All 6 harnesses run (GOOS=linux). Both
+    # Drift detection on real WSL2. All 5 harnesses run (GOOS=linux). Both
     # omac variants (main + release) via matrix. continue-on-error during
     # rollout. See the smoke job above for the stage definitions; see
     # e2e.yml's e2e-wsl2 job for the WSL2 setup pattern.
@@ -389,7 +389,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        harness: [opencode, claude-code, codex, copilot, pi, codewhale]
+        harness: [opencode, claude-code, codex, copilot, pi]
         omac: [main, release]
     runs-on: windows-latest
     continue-on-error: true
@@ -406,7 +406,6 @@ jobs:
       E2E_MODEL_CODEX: ${{ needs.model.outputs.gateway }}
       E2E_MODEL_COPILOT: ${{ needs.model.outputs.gateway }}
       E2E_MODEL_PI: ${{ needs.model.outputs.gateway }}
-      E2E_MODEL_CODEWHALE: ${{ needs.model.outputs.gateway }}
       E2E_MODEL_CLAUDE_CODE: ${{ needs.model.outputs.claude_code }}
       E2E_CONTEXT_LIMIT: ${{ github.event.inputs.context_limit }}
       # WSL only forwards vars listed in WSLENV — include every job/step env
@@ -416,7 +415,7 @@ jobs:
       # set via GITHUB_ENV by the "Set log dir" step (runner.temp is not
       # available in job-level env — only github/needs/strategy/matrix/
       # vars/secrets/inputs are).
-      WSLENV: GITHUB_ENV:GITHUB_OUTPUT:GITHUB_STEP_SUMMARY:OMAC_BIN:OMAC_RELEASE_TAG:SKAINET_TOKEN:SKAINET_INTERNAL:ANTHROPIC_BASE_URL:E2E_HARNESS:E2E_USE_LATEST:E2E_MODEL_OPENCODE:E2E_MODEL_CODEX:E2E_MODEL_COPILOT:E2E_MODEL_PI:E2E_MODEL_CODEWHALE:E2E_MODEL_CLAUDE_CODE:E2E_CONTEXT_LIMIT:E2E_CACHE_DIR:SMOKE_LOG_DIR
+      WSLENV: GITHUB_ENV:GITHUB_OUTPUT:GITHUB_STEP_SUMMARY:OMAC_BIN:OMAC_RELEASE_TAG:SKAINET_TOKEN:SKAINET_INTERNAL:ANTHROPIC_BASE_URL:E2E_HARNESS:E2E_USE_LATEST:E2E_MODEL_OPENCODE:E2E_MODEL_CODEX:E2E_MODEL_COPILOT:E2E_MODEL_PI:E2E_MODEL_CLAUDE_CODE:E2E_CONTEXT_LIMIT:E2E_CACHE_DIR:SMOKE_LOG_DIR
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -675,9 +674,220 @@ jobs:
             exit 1
           fi
 
+  # ── codewhale drift ────────────────────────────────────────────────
+  # Non-blocking: runs the smoke suite for codewhale only, on Linux, for
+  # both omac variants (main + release). Failures are reported in the
+  # compatibility table but never block releases or the main matrix.
+  # To fully remove codewhale: delete this job + the report job's
+  # smoke-codewhale entry + the Go harness config (harnesses.go, etc.).
+  smoke-codewhale:
+    name: "codewhale / ubuntu-latest / omac@${{ matrix.omac }} (drift)"
+    needs: model
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        omac: [main, release]
+    concurrency:
+      group: e2e-smoke-codewhale-${{ matrix.omac }}
+      cancel-in-progress: false
+    env:
+      SKAINET_TOKEN: ${{ secrets.SKAINET_TOKEN }}
+      SKAINET_INTERNAL: ${{ secrets.SKAINET_INTERNAL }}
+      ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
+      E2E_HARNESS: codewhale
+      E2E_USE_LATEST: ${{ (github.event_name == 'schedule' || github.event.inputs.use_latest != 'false') && '1' || '' }}
+      E2E_MODEL_CODEWHALE: ${{ needs.model.outputs.gateway }}
+      E2E_CONTEXT_LIMIT: ${{ github.event.inputs.context_limit }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve model
+        run: |
+          echo "::notice title=Model::codewhale runs against $(scripts/resolve-model.sh 'codewhale')"
+
+      - name: Install bubblewrap (Linux only)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update && sudo apt-get install -y bubblewrap
+          sudo tee /etc/apparmor.d/bwrap > /dev/null <<'EOF'
+          abi <abi/4.0>,
+          /usr/bin/bwrap flags=(unconfined) {
+            userns,
+          }
+          EOF
+          sudo apparmor_parser -r /etc/apparmor.d/bwrap
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Cache harness install packages
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/e2e-install-cache
+          key: e2e-smoke-install-${{ runner.os }}-codewhale-${{ matrix.omac }}-${{ github.run_id }}
+          restore-keys: |
+            e2e-smoke-install-${{ runner.os }}-codewhale-${{ matrix.omac }}-
+
+      - name: Provision released omac (omac@release)
+        if: matrix.omac == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag=$(gh release view --json tagName --jq .tagName)
+          echo "OMAC_RELEASE_TAG=$tag" >> "$GITHUB_ENV"
+          case "$(uname -s)" in Linux) os=linux;; Darwin) os=macOS;; *) echo "unknown os"; exit 1;; esac
+          case "$(uname -m)" in x86_64|amd64) arch=x86_64;; arm64|aarch64) arch=arm64;; *) echo "unknown arch"; exit 1;; esac
+          dir="$RUNNER_TEMP/omac-release"; mkdir -p "$dir"
+          gh release download "$tag" --dir "$dir" --pattern "oh-my-agentic-coder_*_${os}_${arch}.tar.gz"
+          f=$(ls "$dir"/*.tar.gz | head -1)
+          tar -xzf "$f" -C "$dir"
+          bin=$(find "$dir" -type f -name omac | head -1)
+          [ -x "$bin" ] || { echo "omac binary missing in release asset"; ls -R "$dir"; exit 1; }
+          echo "OMAC_BIN=$bin" >> "$GITHUB_ENV"
+          echo "provisioned omac@release $tag -> $bin"; "$bin" version || true
+
+      - name: Resolve omac version label
+        id: omac
+        run: |
+          if [ "${{ matrix.omac }}" = "release" ]; then
+            echo "version=${OMAC_RELEASE_TAG:-release}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=main@$(git describe --tags --always --dirty)" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Model-free smoke (contract + launch + serve + system prompt)
+        id: modelfree
+        env:
+          E2E_CACHE_DIR: ${{ runner.temp }}/e2e-install-cache
+        run: |
+          set -o pipefail
+          go test -tags=e2e -timeout=20m -v \
+            -run 'TestHarnessCLIContract|TestHarnessLaunchProbe|TestHarnessServeProbe|TestOpenCodeSingleSystemMessage' \
+            ./internal/e2e/ 2>&1 | tee modelfree.log || true
+
+      - name: LLM turn
+        id: llm
+        continue-on-error: true
+        env:
+          E2E_CACHE_DIR: ${{ runner.temp }}/e2e-install-cache
+        run: |
+          set -o pipefail
+          attempt=1; max=2
+          while :; do
+            if go test -tags=e2e -timeout=12m -v -run TestE2EEchoRest ./internal/e2e/ 2>&1 | tee llm.log; then
+              break
+            fi
+            if [ "$attempt" -ge "$max" ]; then exit 1; fi
+            attempt=$((attempt + 1)); echo "llm turn flaked — retrying ($attempt/$max)"; sleep 5
+          done
+
+      - name: Build compatibility row
+        id: row
+        if: always()
+        run: |
+          stage_mark() {
+            local stage="$1" absent="${2:-❌}"
+            local line
+            line=$(grep -oE "OMAC_COMPAT .*stage=$stage .*result=[A-Z]+" modelfree.log 2>/dev/null | head -1 || true)
+            case "$line" in
+              *result=PASS) echo '✅' ;;
+              *result=SKIP) echo '➖' ;;
+              '') echo "$absent" ;;
+              *) echo '❌' ;;
+            esac
+          }
+          version=$(grep -oE 'OMAC_COMPAT .*stage=contract .*' modelfree.log 2>/dev/null \
+            | sed -E 's/.*version=([^ ]+).*/\1/' | head -1)
+          [ -z "$version" ] && version="unknown"
+          model=$(grep -oE 'OMAC_COMPAT .*stage=contract .*' modelfree.log 2>/dev/null \
+            | sed -E 's/.*model=([^ ]+).*/\1/' | head -1)
+          [ -z "$model" ] && model=$(scripts/resolve-model.sh 'codewhale' || echo unknown)
+          contract=$(stage_mark contract)
+          launch=$(stage_mark launch)
+          serve=$(stage_mark serve ➖)
+          case "${{ steps.llm.outcome }}" in
+            success) llm='✅' ;;
+            failure) llm='❌' ;;
+            *)       llm='➖' ;;
+          esac
+          date_utc=$(date -u +%Y-%m-%d)
+          row="| $date_utc | ${{ steps.omac.outputs.version }} | ubuntu-latest | codewhale | $version | $contract | $launch | $serve | $llm | $model |"
+          mkdir -p compat
+          slug="ubuntu-latest-codewhale-${{ matrix.omac }}"
+          printf '%s\n' "$row" > "compat/$slug.row"
+          echo "$row"
+          echo "row<<EOF" >> "$GITHUB_OUTPUT"; echo "$row" >> "$GITHUB_OUTPUT"; echo "EOF" >> "$GITHUB_OUTPUT"
+          if printf '%s' "$row" | grep -q '❌'; then
+            stages=""
+            [ "$contract" = "❌" ] && stages="$stages contract"
+            [ "$launch" = "❌" ] && stages="$stages launch"
+            [ "$serve" = "❌" ] && stages="$stages serve"
+            [ "$llm" = "❌" ] && stages="$stages llm"
+            {
+              echo "=== codewhale / ubuntu-latest / omac@${{ matrix.omac }} — failing stage(s):$stages ==="
+              grep -hE 'CLI contract drift|no longer exposes|--- FAIL|omac start .* failed|serve probe failed|omac serve exited|FAIL \[|Error|panic:' \
+                modelfree.log llm.log 2>/dev/null | head -40 || true
+              tail -n 30 llm.log 2>/dev/null || true
+              echo
+            } > "compat/$slug.ctx"
+          fi
+          {
+            echo "### codewhale / ubuntu-latest / omac@${{ matrix.omac }}"
+            echo ""
+            echo "| Timestamp (UTC) | omac | OS | Harness | Version | contract | launch | serve | llm | Model |"
+            echo "|---|---|---|---|---|:-:|:-:|:-:|:-:|---|"
+            echo "$row"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload compatibility row
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compat-ubuntu-latest-codewhale-${{ matrix.omac }}
+          path: |
+            compat/*.row
+            compat/*.ctx
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-logs-ubuntu-latest-codewhale-${{ matrix.omac }}
+          path: |
+            modelfree.log
+            llm.log
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Fail this leg on drift
+        if: always()
+        run: |
+          row='${{ steps.row.outputs.row }}'
+          echo "$row"
+          if printf '%s' "$row" | grep -q '❌'; then
+            echo "::error::compatibility drift detected for codewhale / ubuntu-latest"
+            exit 1
+          fi
+
   report:
     name: Record & report
-    needs: [model, smoke, smoke-wsl2]
+    needs: [model, smoke, smoke-wsl2, smoke-codewhale]
     if: always()
     runs-on: ubuntu-latest
     steps:

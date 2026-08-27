@@ -48,6 +48,17 @@ def _has_matrix(job):
     return bool(job.get("strategy", {}).get("matrix"))
 
 
+def _has_harness_matrix(job):
+    """True when the job's matrix has a `harness` dimension.
+
+    Jobs without a harness dimension (e.g. codewhale drift jobs that only
+    vary `omac`) are exempt from WSL2 coverage — they're not part of the
+    main harness matrix and are explicitly Linux-only by design.
+    """
+    matrix = job.get("strategy", {}).get("matrix") or {}
+    return "harness" in matrix
+
+
 def _run_steps(job):
     """Yield (index, name) for each `run:` step, skipping Linux-only steps."""
     for index, step in enumerate(job.get("steps") or []):
@@ -97,6 +108,8 @@ def check_file(path):
     main_jobs, wsl2_jobs = {}, {}
     for name, job in jobs.items():
         if not isinstance(job, dict) or not _has_matrix(job):
+            continue
+        if not _has_harness_matrix(job):
             continue
         (wsl2_jobs if _is_windows(job) else main_jobs)[name] = job
 
