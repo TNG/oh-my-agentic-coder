@@ -1196,8 +1196,8 @@ func logHardlinkProbeResults(t *testing.T, output string) {
 
 // logCrossSkillIsolation logs whether the agent could reach another
 // skill's sidecar; it does NOT assert, because cross-skill isolation
-// is a documented non-goal (oh-my-agentic-coder.md §3.2;
-// docs/MULTI_DIR_DESKTOP.md §8.2). It is a change detector — flip to
+// is a documented non-goal (docs/contributing/design.md;
+// docs/contributing/serve-spec.md). It is a change detector — flip to
 // failWithClassification gated on AllowanceSpec.CrossSkillIsolated
 // once isolation is implemented.
 func logCrossSkillIsolation(t *testing.T, output string) {

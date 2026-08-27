@@ -70,7 +70,7 @@ type AllowanceSpec struct {
 
 	// CrossSkillIsolated is a change detector, not an enforced contract:
 	// cross-skill sidecar isolation is a documented non-goal
-	// (oh-my-agentic-coder.md §3.2; docs/MULTI_DIR_DESKTOP.md §8.2), so
+	// (docs/contributing/design.md; docs/contributing/serve-spec.md), so
 	// when true the test only logs reachability via logCrossSkillIsolation.
 	CrossSkillIsolated bool
 
