@@ -367,8 +367,7 @@ jobs:
     # path translation are set up in "$HOME"/wsl-env.sh and sourced per step.
     # Cache and logs use relative paths (relative to the checkout) so they
     # work from both the Windows runner (actions/cache, upload-artifact) and
-    # inside WSL (Go test code) via the automount. continue-on-error during
-    # rollout.
+    # inside WSL (Go test code) via the automount.
     name: "${{ matrix.harness }} / WSL2"
     needs: model
     strategy:
@@ -376,7 +375,6 @@ jobs:
       matrix:
         harness: [opencode, claude-code, codex, copilot, pi]
     runs-on: windows-latest
-    continue-on-error: true
     concurrency:
       group: e2e-wsl2-${{ matrix.harness }}
       cancel-in-progress: false

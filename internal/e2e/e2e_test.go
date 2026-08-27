@@ -401,7 +401,7 @@ func runSecurityAudit(t *testing.T, h harnessConfig) {
 
 		if sandboxActive {
 			assertEnvVarsVisible(t, stdout, spec.EnvExpectVisible)
-			assertCacheIsolation(t, stdout)
+			assertCacheIsolation(t, stdout, spec.ExpectedCacheMode)
 		}
 	}
 

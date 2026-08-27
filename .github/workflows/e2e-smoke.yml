@@ -381,9 +381,9 @@ jobs:
 
   smoke-wsl2:
     # Drift detection on real WSL2. All 5 harnesses run (GOOS=linux). Both
-    # omac variants (main + release) via matrix. continue-on-error during
-    # rollout. See the smoke job above for the stage definitions; see
-    # e2e.yml's e2e-wsl2 job for the WSL2 setup pattern.
+    # omac variants (main + release) via matrix. See the smoke job above for
+    # the stage definitions; see e2e.yml's e2e-wsl2 job for the WSL2 setup
+    # pattern.
     name: "${{ matrix.harness }} / WSL2 / omac@${{ matrix.omac }}"
     needs: model
     strategy:
@@ -392,7 +392,6 @@ jobs:
         harness: [opencode, claude-code, codex, copilot, pi]
         omac: [main, release]
     runs-on: windows-latest
-    continue-on-error: true
     concurrency:
       group: e2e-smoke-wsl2-${{ matrix.harness }}-${{ matrix.omac }}
       cancel-in-progress: false
@@ -683,6 +682,10 @@ jobs:
   smoke-codewhale:
     name: "codewhale / ubuntu-latest / omac@${{ matrix.omac }} (drift)"
     needs: model
+    # Non-blocking: the report job's ADVISORY_HARNESS_RE env var (report job,
+    # top-level env) treats codewhale rows as advisory. To make codewhale block
+    # the run: set continue-on-error to false here AND drop "codewhale" from
+    # ADVISORY_HARNESS_RE (or empty it) in the report job.
     continue-on-error: true
     runs-on: ubuntu-latest
     strategy:
@@ -890,6 +893,14 @@ jobs:
     needs: [model, smoke, smoke-wsl2, smoke-codewhale]
     if: always()
     runs-on: ubuntu-latest
+    env:
+      # Advisory harnesses: legs whose rows match this regex should run with
+      # continue-on-error in their source job and will be reported in the
+      # dashboard's non-blocking section, never setting has_failures.
+      #   empty  → everything is blocking (split disabled)
+      #   regex  → matching harnesses are advisory
+      # Manually keep this in sync with the continue-on-error flags on the source jobs.
+      ADVISORY_HARNESS_RE: '^codewhale$'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -918,15 +929,45 @@ jobs:
           fi
           printf '%s\n' "$rows" > run.rows
           echo "has_rows=true" >> "$GITHUB_OUTPUT"
-          echo "total=$(wc -l < run.rows | tr -d ' ')" >> "$GITHUB_OUTPUT"
+          # Split rows into blocking (gate the run) and advisory
+          awk -F'|' -v re="$ADVISORY_HARNESS_RE" 'NF{
+            h=$5; gsub(/^[ \t]+|[ \t]+$/,"",h)
+            if (re!="" && h~re) print > "advisory.rows"; else print > "blocking.rows"
+          }' run.rows
+          [ -f blocking.rows ] || cp run.rows blocking.rows
+          [ -f advisory.rows ] || : > advisory.rows
+          echo "total=$(wc -l < blocking.rows | tr -d ' ')" >> "$GITHUB_OUTPUT"
           # Failing rows, in the canonical order (date desc, omac, os, harness).
-          grep '❌' run.rows | sort -t'|' -k2,2r -k3,3 -k4,4 -k5,5 > failing.rows || true
+          grep '❌' blocking.rows | sort -t'|' -k2,2r -k3,3 -k4,4 -k5,5 > failing.rows || true
           fail_count=$(wc -l < failing.rows | tr -d ' ')
           echo "fail_count=$fail_count" >> "$GITHUB_OUTPUT"
           if [ "$fail_count" -gt 0 ]; then
             echo "has_failures=true" >> "$GITHUB_OUTPUT"
           else
             echo "has_failures=false" >> "$GITHUB_OUTPUT"
+          fi
+          # Advisory failures: reported, but never set has_failures.
+          grep '❌' advisory.rows | sort -t'|' -k2,2r -k3,3 -k4,4 -k5,5 > advisory-failing.rows || true
+          adv_fail=$(wc -l < advisory-failing.rows | tr -d ' ')
+          echo "advisory_total=$(wc -l < advisory.rows | tr -d ' ')" >> "$GITHUB_OUTPUT"
+          echo "advisory_fail_count=$adv_fail" >> "$GITHUB_OUTPUT"
+          if [ "$adv_fail" -gt 0 ]; then
+            echo "has_advisory_failures=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_advisory_failures=false" >> "$GITHUB_OUTPUT"
+          fi
+          # Move advisory .ctx aside so the failure classifiers (which read
+          # --ctx-dir compat) only see authoritative failures; harness is extracted from
+          # each .ctx's "=== <harness> / ... ===" header line.
+          if [ -n "$ADVISORY_HARNESS_RE" ]; then
+            mkdir -p compat-advisory
+            for f in compat/*.ctx; do
+              [ -e "$f" ] || continue
+              h=$(sed -n 's/^=== \([^ ]*\) \/.*/\1/p' "$f" | head -1)
+              if printf '%s' "$h" | grep -Eq "$ADVISORY_HARNESS_RE"; then
+                mv "$f" compat-advisory/ 2>/dev/null || true
+              fi
+            done
           fi
 
       - name: Classify failure reasons (log-based)
@@ -1008,6 +1049,8 @@ jobs:
           HAS_FAILURES: ${{ steps.rows.outputs.has_failures }}
           FAIL_COUNT: ${{ steps.rows.outputs.fail_count }}
           TOTAL: ${{ steps.rows.outputs.total }}
+          HAS_ADVISORY_FAILURES: ${{ steps.rows.outputs.has_advisory_failures }}
+          ADVISORY_FAIL_COUNT: ${{ steps.rows.outputs.advisory_fail_count }}
           INFRA_ONLY: ${{ steps.reason.outputs.infra_only }}
           SUMMARY_MODEL: ${{ steps.summary.outputs.model }}
           MODEL_FALLBACK: ${{ needs.model.outputs.fallback }}
@@ -1082,6 +1125,19 @@ jobs:
               else
                 echo "See the summary above and the [run log]($RUN_URL) for the failing stage; a **launch**/**serve**/**llm** ❌ is a sandbox-launch, Desktop serve-mode, or model/agent-turn failure, not a CLI-contract break."
               fi
+            fi
+            # Non-blocking failures: reported for visibility
+            # but never counted in $FAIL_COUNT / $TOTAL above.
+            if [ "$HAS_ADVISORY_FAILURES" = "true" ]; then
+              echo ""
+              echo "## ⚠️ Non-blocking failures"
+              echo ""
+              echo "These legs run with \`continue-on-error\` and never fail the run; listed for visibility only."
+              echo ""
+              echo "| Timestamp (UTC) | omac | OS | Harness | Version | contract | launch | serve | llm | Model |"
+              echo "|---|---|---|---|---|:-:|:-:|:-:|:-:|---|"
+              cat advisory-failing.rows
+              echo ""
             fi
             echo ""
             echo "## History (rolling 30 days)"
@@ -1160,6 +1216,8 @@ jobs:
           HAS_FAILURES: ${{ steps.rows.outputs.has_failures }}
           FAIL_COUNT: ${{ steps.rows.outputs.fail_count }}
           TOTAL: ${{ steps.rows.outputs.total }}
+          HAS_ADVISORY_FAILURES: ${{ steps.rows.outputs.has_advisory_failures }}
+          ADVISORY_FAIL_COUNT: ${{ steps.rows.outputs.advisory_fail_count }}
           INFRA_ONLY: ${{ steps.reason.outputs.infra_only }}
           SUMMARY_MODEL: ${{ steps.summary.outputs.model }}
           MODEL_FALLBACK: ${{ needs.model.outputs.fallback }}
@@ -1210,6 +1268,9 @@ jobs:
               "$hdr" "$detail" "$models" "$ISSUE_URL" "$RUN_URL")
           else
             text="🟢 omac harness compatibility: all $TOTAL combination(s) green. Model(s): $models. Dashboard: $ISSUE_URL — Run: $RUN_URL"
+            if [ "$HAS_ADVISORY_FAILURES" = "true" ]; then
+              text="$text — ($ADVISORY_FAIL_COUNT non-blocking leg(s) failing, see dashboard)"
+            fi
           fi
           # The Slack endpoint is a Workflow Builder webhook: its payload keys
           # must match the workflow's declared variables, which expect "message"
