@@ -86,6 +86,18 @@ Cause: the inner harness binary is not installed or not on `PATH`.
 
 Fix: install the missing harness — see [Supported harnesses](./intro.md#supported-harnesses-and-os).
 
+### Harness hangs or BunInstallFailedError on WSL2
+
+```
+omac start: BunInstallFailedError
+```
+
+Symptoms on WSL2: `omac start` fails with `BunInstallFailedError`, or the harness hangs on start or during its login flow. `omac doctor` reports the harness as found, so the binary looks fine.
+
+Cause: WSL2 is running a Windows-installed harness instead of a Linux one. If you also develop on Windows, your Windows `PATH` is visible inside WSL, so a harness installed on Windows (for example under `/mnt/c/Users/.../AppData/Roaming/npm/`) can be picked up by mistake. `omac doctor` cannot detect this — it only checks that the binary is on `PATH`, not which platform it was built for.
+
+Fix: check where the harness resolves, and reinstall it natively inside WSL if it points into `/mnt/c/`.
+
 ### Agent cannot authenticate with its AI provider
 
 The harness starts but every model call fails with an authentication or missing-API-key error.

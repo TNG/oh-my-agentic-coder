@@ -70,6 +70,10 @@ You will need that passphrase to unlock the keyring once per WSL session on `oma
 > **IMPORTANT:** Keep your repos on the native WSL2 filesystem (`~/projects/…`, not `/mnt/c/…`). 
 > The Windows NTFS mount can cause permission errors and is significantly slower.
 
+**Important: Install your harness inside WSL, not on Windows.** 
+If you also develop on Windows, your Windows `PATH` is visible inside WSL, so a harness you installed on Windows can be picked up by WSL by mistake. That runs a Windows build under Linux and fails in confusing ways: `omac start` erroring with `BunInstallFailedError`, or the harness hanging on start or during its login flow.
+`omac doctor` does not catch this — it reports the binary as found because it is on `PATH`, but it cannot tell the binary is built for the wrong platform.
+
 ## Install
 
 ### macOS (Homebrew)
