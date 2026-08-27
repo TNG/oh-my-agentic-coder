@@ -226,7 +226,16 @@ func doctorRegistryConfig(env *Env, profileRef string) {
 	overridden := sandboxprofile.BuildOverrideLookup(profile.Filesystem.OverrideDeny)[src]
 
 	notice, err := registryconf.InspectNPM(enabled, overridden)
-	if err != nil || notice == nil {
+	if err != nil {
+		// The launch path turns the same failure into a projection warning
+		// (registryconf.projectNPM), so staying silent here would mean the
+		// only place that can warn *before* a run does not.
+		fmt.Fprintf(env.Stdout, "[warn] registry config: cannot inspect %s: %v\n", src, err)
+		fmt.Fprintf(env.Stdout, "       A private-registry mapping in that file cannot be projected, so scoped\n")
+		fmt.Fprintf(env.Stdout, "       installs may fail with a 404 against the public registry.\n")
+		return
+	}
+	if notice == nil {
 		return
 	}
 	hosts := strings.Join(notice.Hosts, ", ")

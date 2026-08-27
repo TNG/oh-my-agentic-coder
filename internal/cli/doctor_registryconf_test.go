@@ -193,3 +193,38 @@ func TestDoctorRegistryConfigReportsUnusableMapping(t *testing.T) {
 		t.Fatalf("doctor echoed the secret; got:\n%s", out)
 	}
 }
+
+// TestDoctorRegistryConfigReportsUnreadableConfig covers the review finding
+// that the launch path warns about an unreadable ~/.npmrc while doctor — the
+// one place that can warn *before* a run — printed nothing.
+func TestDoctorRegistryConfigReportsUnreadableConfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	workdir := t.TempDir()
+	writeWorkdirConfig(t, workdir, "builtin", []string{
+		"{{self}}", "sandbox", "run",
+		"--profile", "default",
+		"--", "{{inner_cmd}}", "{{inner_args}}",
+	})
+	stageProfile(t, home, `{"meta": {"name": "default"}, "environment": {"allow_vars": ["HOME"]}}`)
+	// A directory where the file belongs makes the read fail with something
+	// other than IsNotExist.
+	if err := os.Mkdir(filepath.Join(home, ".npmrc"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	env, outBuf, _, drain := newPipeEnv(t, "")
+	env.Workdir = workdir
+	if code := runDoctor([]string{}, env); code != ExitOK {
+		t.Errorf("doctor exit = %d, want ExitOK (advisory)", code)
+	}
+	drain()
+	out := outBuf.String()
+
+	if !strings.Contains(out, "cannot inspect") {
+		t.Errorf("doctor stayed silent on an unreadable npmrc; got:\n%s", out)
+	}
+	if !strings.Contains(out, "404") {
+		t.Errorf("doctor did not explain the consequence; got:\n%s", out)
+	}
+}

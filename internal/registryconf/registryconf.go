@@ -10,9 +10,12 @@
 // fails with a 404 that reads like "no such package" rather than "your
 // registry configuration is invisible". See #150 / #241.
 //
-// No credential can survive by construction: only registry-mapping keys
-// are kept, a kept value must parse as an http(s) URL, and any userinfo
-// in that URL is removed.
+// No credential can survive by construction. Only registry-mapping keys are
+// kept; a kept value must parse as an http(s) URL; userinfo in that URL is
+// removed; and every remaining position where a secret could hide is refused
+// rather than copied — a query string or fragment (`?apiKey=…`), and a
+// ${VAR} interpolated anywhere but the URL's authority. What omac cannot
+// distinguish from a load-bearing value, it declines to project and reports.
 package registryconf
 
 import (
@@ -287,29 +290,69 @@ type ScrubResult struct {
 // "@acme:registry" or "@acme/sub:registry".
 var scopedRegistryKey = regexp.MustCompile(`^@[^:\s]+:registry$`)
 
-// credentialKey matches npmrc keys that carry authentication material,
-// including the per-registry form "//host/path/:_authToken".
-var credentialKey = regexp.MustCompile(`(?i)(_auth|_authtoken|_password|username|email|^//)`)
+// credentialLeafKey matches the npmrc keys that actually carry
+// authentication material. It is applied to the key's *leaf* — the part
+// after the last ":" — so the per-registry form "//host/path/:_authToken"
+// matches while "//host/:always-auth" (a boolean) does not. Matching the
+// whole key on a bare "^//" would classify every host-scoped setting as a
+// credential and make doctor claim the file "holds an auth token" for a
+// flag.
+var credentialLeafKey = regexp.MustCompile(`(?i)^(_auth|_authtoken|_password)$`)
+
+// isCredentialKey reports whether an npmrc key carries authentication
+// material. Note that `username`/`email` are deliberately excluded: they are
+// dropped like every other non-mapping key, but they are not tokens, and
+// counting them would overstate what a projection protects.
+func isCredentialKey(key string) bool {
+	k := strings.ToLower(strings.TrimSpace(key))
+	leaf := k
+	if i := strings.LastIndex(k, ":"); i >= 0 {
+		leaf = k[i+1:]
+	}
+	return credentialLeafKey.MatchString(leaf)
+}
+
+// bom is the UTF-8 byte-order mark. A Windows-authored npmrc can start with
+// one, which would otherwise glue itself to the first key and make that
+// mapping unrecognizable — landing it in Dropped, where nothing reports it.
+const bom = "\uFEFF"
+
+// mapping is one projected registry line, carried as a unit so the key, its
+// correlation host and its rendered line cannot drift apart. The previous
+// shape kept these in parallel slices paired by index across a re-filtering
+// pass, which any future `continue` would have desynced silently.
+type mapping struct {
+	key  string
+	host string // normalized host[:port], for credential correlation
+	line string // "key=value" as projected
+}
 
 // ScrubNPMRC keeps only registry mappings from an npmrc body. Everything
 // else — credentials, comments, unrelated knobs — is dropped.
 //
 // A mapping is kept only if its value resolves to a credential-free
 // http(s) URL. npm's own value syntax is honored first (surrounding quotes
-// are stripped, ${VAR} is expanded from the environment), so a mapping npm
-// would act on is not silently lost. Anything still unusable — or carrying
-// a secret outside the userinfo, e.g. ?apiKey= — is recorded in Rejected
-// rather than dropped quietly.
+// are stripped, ${VAR} is expanded in the URL's authority), so a mapping npm
+// would act on is not silently lost. Anything still unusable — or carrying a
+// secret anywhere but the userinfo, e.g. `?apiKey=` or an interpolated path
+// segment — is recorded in Rejected rather than dropped quietly.
+//
+// Duplicate keys follow npm's ini semantics: last one wins, and only that
+// one is projected.
 func ScrubNPMRC(src []byte) ScrubResult {
 	var res ScrubResult
-	var lines []string
-	// keptHosts maps a kept mapping key to its registry host, so the
-	// credential correlation below can run after the whole file is read
-	// (auth lines may appear before or after the mapping they apply to).
-	keptHosts := map[string]string{}
+	var mappings []mapping
+	// authHosts holds the normalized hosts that have a credential entry.
+	// Correlation runs after the whole file is read because an auth line may
+	// appear before or after the mapping it applies to.
 	authHosts := map[string]bool{}
+	// defaultRegistryCredential records a host-less legacy credential
+	// (`_auth`, `_password`). npm applies those to the *default* registry, so
+	// they bear on the global `registry` mapping even though they name no host.
+	defaultRegistryCredential := false
 
-	for _, raw := range strings.Split(string(src), "\n") {
+	body := strings.TrimPrefix(string(src), bom)
+	for _, raw := range strings.Split(body, "\n") {
 		line := strings.TrimSpace(raw)
 		if line == "" || strings.HasPrefix(line, ";") || strings.HasPrefix(line, "#") {
 			continue
@@ -322,15 +365,22 @@ func ScrubNPMRC(src []byte) ScrubResult {
 		key, value = strings.TrimSpace(key), strings.TrimSpace(value)
 		if !isRegistryMapping(key) {
 			res.Dropped++
-			if credentialKey.MatchString(key) {
+			if isCredentialKey(key) {
 				res.DroppedCredentials++
 				if h := credentialHost(key); h != "" {
 					authHosts[h] = true
+				} else {
+					defaultRegistryCredential = true
 				}
 			}
 			continue
 		}
-		clean, host, stripped, reason := registryURL(npmValue(value))
+		expanded, reason := npmValue(value)
+		if reason != "" {
+			res.Rejected = append(res.Rejected, Rejected{Key: key, Reason: reason})
+			continue
+		}
+		clean, host, stripped, reason := registryURL(expanded)
 		if reason != "" {
 			res.Rejected = append(res.Rejected, Rejected{Key: key, Reason: reason})
 			continue
@@ -338,9 +388,14 @@ func ScrubNPMRC(src []byte) ScrubResult {
 		if stripped {
 			res.StrippedUserinfo++
 		}
-		lines = append(lines, key+"="+clean)
-		res.KeptKeys = append(res.KeptKeys, key)
-		keptHosts[key] = host
+		m := mapping{key: key, host: host, line: key + "=" + clean}
+		// Last one wins, matching npm's ini parser, so a duplicated key is
+		// projected once with the effective value.
+		if i := indexOfKey(mappings, key); i >= 0 {
+			mappings[i] = m
+			continue
+		}
+		mappings = append(mappings, m)
 	}
 
 	// Correlate kept mappings with the credentials that were dropped. The
@@ -350,56 +405,126 @@ func ScrubNPMRC(src []byte) ScrubResult {
 	// regression, so it is refused rather than projected. A scoped mapping
 	// only affects its own scope, which was already failing, so it is kept
 	// with a warning.
-	var keptLines []string
-	var keptKeys []string
-	for i, key := range res.KeptKeys {
-		host := keptHosts[key]
-		if authHosts[host] {
-			if strings.EqualFold(key, "registry") {
+	var lines []string
+	for _, m := range mappings {
+		isGlobal := strings.EqualFold(m.key, "registry")
+		needsAuth := authHosts[m.host] || (isGlobal && defaultRegistryCredential)
+		if needsAuth {
+			if isGlobal {
 				res.Rejected = append(res.Rejected, Rejected{
-					Key: key,
+					Key: m.key,
 					Reason: fmt.Sprintf("%s requires authentication that omac cannot supply; projecting the global registry "+
-						"would redirect every install there and break the public ones that work today", host),
+						"would redirect every install there and break the public ones that work today", m.host),
 				})
 				continue
 			}
-			res.NeedsAuth = append(res.NeedsAuth, key)
+			res.NeedsAuth = append(res.NeedsAuth, m.key)
 		}
-		keptKeys = append(keptKeys, key)
-		keptLines = append(keptLines, lines[i])
+		res.KeptKeys = append(res.KeptKeys, m.key)
+		lines = append(lines, m.line)
 	}
-	res.KeptKeys = keptKeys
-	if len(keptLines) > 0 {
-		res.Content = []byte(strings.Join(keptLines, "\n") + "\n")
+	if len(lines) > 0 {
+		res.Content = []byte(strings.Join(lines, "\n") + "\n")
 	}
 	return res
 }
 
+// indexOfKey finds a mapping by key, case-insensitively (npm lowercases
+// config keys, so `Registry` and `registry` are the same setting).
+func indexOfKey(mappings []mapping, key string) int {
+	for i, m := range mappings {
+		if strings.EqualFold(m.key, key) {
+			return i
+		}
+	}
+	return -1
+}
+
 // npmValue applies npm's ini value syntax before the URL is validated:
-// surrounding quotes are removed and ${VAR}/$VAR are expanded from the
-// environment, both of which npm does itself. Without this a perfectly
-// good mapping (`@acme:registry="https://npm.acme.test"`) would look
-// unparseable and be silently skipped.
-func npmValue(value string) string {
+// surrounding quotes are removed, and ${VAR}/$VAR is expanded — but only
+// inside the URL's authority.
+//
+// The restriction is what keeps "no credential can survive" true. Expansion
+// exists for the corporate `https://${ART_HOST}/api/npm/` shape, but
+// os.ExpandEnv applied to the whole value would happily interpolate a secret
+// into a path segment (`https://host/api/${SECRET}/npm/`), which — unlike
+// userinfo — is not stripped and unlike a query string was not refused. So
+// the value is split at the authority boundary: the authority is expanded
+// normally, and if the remainder consumes any placeholder the mapping is
+// refused with the variable named.
+//
+// The split is structural (find "://", then the first "/", "?" or "#") rather
+// than a URL parse, because an unexpanded template frequently does not parse.
+// The remainder's refusal decision is made by os.Expand itself, so the
+// placeholder syntax it recognizes — ${NAME}, $NAME, $$ escaping — cannot
+// drift from the syntax the authority expansion uses.
+func npmValue(value string) (string, string) {
 	v := strings.TrimSpace(value)
 	if len(v) >= 2 {
 		if (v[0] == '"' && v[len(v)-1] == '"') || (v[0] == '\'' && v[len(v)-1] == '\'') {
 			v = v[1 : len(v)-1]
 		}
 	}
-	return os.ExpandEnv(v)
+	authority, remainder := splitAuthority(v)
+
+	var interpolated []string
+	remainder = os.Expand(remainder, func(name string) string {
+		interpolated = append(interpolated, name)
+		return os.Getenv(name)
+	})
+	if len(interpolated) > 0 {
+		return "", fmt.Sprintf("${%s} is interpolated into the URL path, where omac cannot tell a secret from a "+
+			"path segment; only host-position ${VAR} is projected", interpolated[0])
+	}
+	return os.ExpandEnv(authority) + remainder, ""
+}
+
+// splitAuthority divides a URL template into its authority (scheme plus
+// "://" plus host[:port], including any userinfo) and everything after it.
+// A value with no "://" has no authority to expand; it is returned entirely
+// as the remainder, and the http(s) validation in registryURL rejects it.
+func splitAuthority(v string) (authority, remainder string) {
+	i := strings.Index(v, "://")
+	if i < 0 {
+		return "", v
+	}
+	rest := v[i+len("://"):]
+	if j := strings.IndexAny(rest, "/?#"); j >= 0 {
+		return v[:i+len("://")+j], rest[j:]
+	}
+	return v, ""
 }
 
 // credentialHost extracts the registry host from a per-registry auth key
-// such as "//npm.acme.test/:_authToken" or "//npm.acme.test/api/:_password".
-// Returns "" for keys that are not host-scoped (e.g. a bare "_auth").
+// such as "//npm.acme.test/:_authToken" or "//npm.acme.test:8443/api/:_password",
+// normalized the same way registryURL normalizes a mapping's host so the two
+// correlate. Returns "" for keys that are not host-scoped (e.g. a bare
+// "_auth"), which npm applies to the default registry instead.
 func credentialHost(key string) string {
-	rest, ok := strings.CutPrefix(strings.ToLower(strings.TrimSpace(key)), "//")
+	rest, ok := strings.CutPrefix(strings.TrimSpace(key), "//")
 	if !ok {
 		return ""
 	}
 	host, _, _ := strings.Cut(rest, "/")
-	return host
+	return normalizeHost(host)
+}
+
+// normalizeHost lowercases a host[:port] and strips an explicit default port,
+// so `https://host:443` and `//host/:_authToken` describe the same registry.
+// npm's own credential keying (nerfDart) normalizes the same way; without it a
+// port-scoped or mixed-case credential would silently fail to correlate with
+// its mapping, and the global-registry refusal this feature relies on would
+// not fire.
+//
+// Both ports are stripped regardless of scheme, deliberately. A credential key
+// carries no scheme (`//host:port/:_authToken`), so a scheme-aware rule could
+// only be applied to one side, and any asymmetry there risks *under*-
+// correlating — which silently reopens the regression this guards. The one
+// inaccuracy this accepts, `http://host:443` matching a `//host/` credential,
+// fails in the safe direction: it refuses a mapping and says why.
+func normalizeHost(hostPort string) string {
+	h := strings.ToLower(strings.TrimSpace(hostPort))
+	return strings.TrimSuffix(strings.TrimSuffix(h, ":443"), ":80")
 }
 
 // isRegistryMapping reports whether key is a registry mapping: the global
@@ -442,5 +567,9 @@ func registryURL(value string) (clean, host string, stripped bool, reason string
 		u.User = nil
 		stripped = true
 	}
-	return u.String(), u.Hostname(), stripped, ""
+	// The returned host keeps its port and is normalized, so a port-scoped
+	// credential (`//host:8443/:_authToken`) correlates with the mapping it
+	// applies to. Returning u.Hostname() here dropped the port and silently
+	// defeated that correlation.
+	return u.String(), normalizeHost(u.Host), stripped, ""
 }

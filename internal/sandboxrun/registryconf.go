@@ -58,6 +58,16 @@ func setupRegistryConfig(merged *sandboxprofile.Profile, grants *Grants, injecte
 			continue
 		}
 
+		// An injected var wins over the profile's env allowlist (see
+		// FilterEnv), so a user who both forwards the var and opts into the
+		// projection silently loses their own config. Say so rather than
+		// swapping it out quietly.
+		if prev := os.Getenv(p.EnvVar); prev != "" && prev != p.Path {
+			fmt.Fprintf(stderr, "omac sandbox: WARNING: registry_config %s: %s was already set to %s; "+
+				"the projection takes precedence, so settings in that file are not visible to the sandbox\n",
+				p.Ecosystem, p.EnvVar, prev)
+		}
+
 		// Grant exactly the projected file, read-only. The host file is
 		// untouched and stays protected.
 		grants.ReadPaths = append(grants.ReadPaths, p.Path)

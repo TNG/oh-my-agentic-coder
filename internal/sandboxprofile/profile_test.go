@@ -1147,3 +1147,29 @@ func containsPath(paths []string, want string) bool {
 	}
 	return false
 }
+
+// TestUnknownFieldErrorHintsAtVersionSkew covers the review finding that a
+// profile written for a newer omac is rejected by an older binary with a bare
+// "unknown field", giving no clue which direction to look. Strictness is kept
+// (a typo must not silently weaken the sandbox); only the message improves.
+func TestUnknownFieldErrorHintsAtVersionSkew(t *testing.T) {
+	_, err := Parse([]byte(`{"filesystem": {"some_future_field": ["x"]}}`))
+	if err == nil {
+		t.Fatal("unknown field must still be rejected")
+	}
+	if !strings.Contains(err.Error(), "some_future_field") {
+		t.Errorf("error no longer names the field: %v", err)
+	}
+	if !strings.Contains(err.Error(), "newer omac") {
+		t.Errorf("error gives no version-skew hint: %v", err)
+	}
+	// A malformed profile that is not an unknown-field problem keeps the
+	// plain message.
+	_, err = Parse([]byte(`{"workdir": {"access": 5}}`))
+	if err == nil {
+		t.Fatal("type error must still be rejected")
+	}
+	if strings.Contains(err.Error(), "newer omac") {
+		t.Errorf("version hint leaked onto an unrelated parse error: %v", err)
+	}
+}

@@ -301,6 +301,15 @@ func Parse(data []byte) (*Profile, error) {
 	dec.DisallowUnknownFields()
 	var p Profile
 	if err := dec.Decode(&p); err != nil {
+		// Strict decoding is what makes a typo fail loudly instead of
+		// silently weakening the sandbox, but it also means an OLDER omac
+		// rejects a profile that a newer one has added a field to. That is
+		// easy to hit with a shared or checked-in profile, so the unknown-field
+		// case says which direction to look rather than just naming the field.
+		if strings.Contains(err.Error(), "unknown field") {
+			return nil, fmt.Errorf("parse sandbox profile: %w "+
+				"(if this profile was written for a newer omac, upgrade omac; otherwise remove the field)", err)
+		}
 		return nil, fmt.Errorf("parse sandbox profile: %w", err)
 	}
 	// A second JSON value in the stream is a malformed profile.

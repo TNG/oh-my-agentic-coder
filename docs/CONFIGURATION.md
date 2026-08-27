@@ -156,8 +156,12 @@ an API key usually hides (`?apiKey=…`), and omac cannot tell a secret
 parameter from a load-bearing one.
 
 npm's own value syntax is honored first, so a mapping npm would act on is
-not lost: surrounding quotes are removed and `${VAR}` is expanded from the
-environment.
+not lost: surrounding quotes are removed, and `${VAR}` is expanded — but
+**only inside the URL's authority**, so the corporate
+`https://${ART_HOST}/api/npm/` shape works while
+`https://host/api/${SECRET}/npm/` is refused. A path segment is not
+strippable the way userinfo is, and omac cannot tell an interpolated secret
+from an interpolated path.
 
 Two cases are deliberately **not** projected, and both are reported at
 launch and by `omac doctor` rather than skipped quietly:
@@ -172,6 +176,12 @@ launch and by `omac doctor` rather than skipped quietly:
 
 Private registries usually also need their host in
 `network.allow_domain` (or an allow at the network prompt).
+
+> **Sharing a profile across machines.** Profiles are parsed strictly —
+> an unknown field is an error, so a typo cannot silently weaken the
+> sandbox. The trade-off is that a profile using `registry_config` is
+> rejected by an omac older than the release that added it. If you share or
+> check in a profile, upgrade omac everywhere before adding the field.
 
 The blunt alternative — `override_deny: ["~/.npmrc"]` — also works, but
 grants the whole file including any token. `omac doctor` flags a private

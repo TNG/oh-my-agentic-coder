@@ -156,3 +156,53 @@ func TestSetupRegistryConfigMissingHostFileIsQuietNoop(t *testing.T) {
 		t.Errorf("granted %v / injected %v for a missing npmrc", grants.ReadPaths, injected)
 	}
 }
+
+// TestSetupRegistryConfigWarnsWhenEnvVarAlreadySet covers the review finding
+// that an injected var silently wins over a value the user forwarded
+// themselves, dropping their own config with no notice.
+func TestSetupRegistryConfigWarnsWhenEnvVarAlreadySet(t *testing.T) {
+	writeNpmrc(t, "@acme:registry=https://npm.acme.test\n")
+	t.Setenv("NPM_CONFIG_USERCONFIG", "/home/dev/custom-npmrc")
+
+	grants := &Grants{}
+	injected := map[string]string{}
+	var stderr bytes.Buffer
+	profile := &sandboxprofile.Profile{
+		Filesystem: sandboxprofile.Filesystem{RegistryConfig: []string{sandboxprofile.RegistryConfigNPM}},
+	}
+	cleanup, err := setupRegistryConfig(profile, grants, injected, &stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+
+	out := stderr.String()
+	if !strings.Contains(out, "already set") || !strings.Contains(out, "/home/dev/custom-npmrc") {
+		t.Errorf("no warning naming the overridden path; got:\n%s", out)
+	}
+	// The projection still wins — the warning explains, it does not defer.
+	if injected["NPM_CONFIG_USERCONFIG"] == "/home/dev/custom-npmrc" {
+		t.Error("projection did not take precedence")
+	}
+}
+
+// TestSetupRegistryConfigQuietWhenEnvVarUnset keeps the warning from firing on
+// the ordinary path.
+func TestSetupRegistryConfigQuietWhenEnvVarUnset(t *testing.T) {
+	writeNpmrc(t, "@acme:registry=https://npm.acme.test\n")
+	t.Setenv("NPM_CONFIG_USERCONFIG", "")
+
+	var stderr bytes.Buffer
+	profile := &sandboxprofile.Profile{
+		Filesystem: sandboxprofile.Filesystem{RegistryConfig: []string{sandboxprofile.RegistryConfigNPM}},
+	}
+	cleanup, err := setupRegistryConfig(profile, &Grants{}, map[string]string{}, &stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+
+	if strings.Contains(stderr.String(), "already set") {
+		t.Errorf("spurious override warning; got:\n%s", stderr.String())
+	}
+}

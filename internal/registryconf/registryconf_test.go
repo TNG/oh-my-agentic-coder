@@ -183,7 +183,7 @@ func TestScrubNPMRCNeverLeaksSecretMaterial(t *testing.T) {
 
 func TestProjectNPMWritesScrubbedFile(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setHome(t, home)
 	npmrc := filepath.Join(home, ".npmrc")
 	body := "@acme:registry=https://npm.acme.test\n//npm.acme.test/:_authToken=SECRET\n"
 	if err := os.WriteFile(npmrc, []byte(body), 0o600); err != nil {
@@ -230,7 +230,7 @@ func TestProjectNPMWritesScrubbedFile(t *testing.T) {
 
 func TestProjectNPMAbsentOrMappinglessIsNoop(t *testing.T) {
 	t.Run("missing npmrc", func(t *testing.T) {
-		t.Setenv("HOME", t.TempDir())
+		setHome(t, t.TempDir())
 		projs, err := Project([]string{sandboxprofile.RegistryConfigNPM}, t.TempDir())
 		if err != nil {
 			t.Fatal(err)
@@ -242,7 +242,7 @@ func TestProjectNPMAbsentOrMappinglessIsNoop(t *testing.T) {
 
 	t.Run("npmrc with no mapping", func(t *testing.T) {
 		home := t.TempDir()
-		t.Setenv("HOME", home)
+		setHome(t, home)
 		if err := os.WriteFile(filepath.Join(home, ".npmrc"), []byte("_auth=x\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -353,7 +353,7 @@ func TestScrubNPMRCRefusesUnauthenticatedGlobalRegistry(t *testing.T) {
 // taking the whole launch down.
 func TestProjectNPMUnreadableConfigIsNotFatal(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setHome(t, home)
 	// A directory where the file is expected makes the read fail with
 	// something other than IsNotExist.
 	if err := os.Mkdir(filepath.Join(home, ".npmrc"), 0o755); err != nil {
@@ -375,7 +375,7 @@ func TestProjectNPMUnreadableConfigIsNotFatal(t *testing.T) {
 // it cannot use.
 func TestInspectNPMReportsRejections(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setHome(t, home)
 	body := "@acme:registry=https://npm.acme.test/api/?apiKey=SECRET\n"
 	if err := os.WriteFile(filepath.Join(home, ".npmrc"), []byte(body), 0o600); err != nil {
 		t.Fatal(err)
