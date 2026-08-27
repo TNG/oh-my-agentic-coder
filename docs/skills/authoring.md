@@ -32,7 +32,7 @@ These two files are all omac needs. A skill published through the marketplace al
 | `health.initial_delay_ms` | no | `200` | Milliseconds before the first health poll. |
 | `health.timeout_ms` | no | `5000` | Milliseconds before a single health request times out. |
 | `health.interval_ms` | no | `500` | Milliseconds between health polls. |
-| `install_scripts` | no | — | Map of OS key → relative script path (e.g. `{linux: install/install.linux.sh, macos: install/install.macos.sh}`). Run by `omac install`. |
+| `install_scripts` | no | — | Map of OS key → relative script path (e.g. `{linux: install/install.linux.sh, macos: install/install.macos.sh}`). omac prints these paths at `omac register` time for you to run yourself; it never executes them. |
 | `limits.max_body_bytes` | no | — | Maximum request/response body the proxy will forward, in bytes. |
 | `limits.idle_timeout_secs` | no | — | Seconds of inactivity before the proxy closes a sidecar connection. |
 | `secrets` | no | `[]` | List of credential declarations (see below). |
@@ -111,6 +111,8 @@ Keep the body under 500 lines. Move detailed reference material into `references
 
 **Config fields** (`sidecar.config`) are non-secret operational values. Prompted with echoing input, stored in `<workdir>/.opencode/skill-config.yaml` (mode 0600), and injected identically to secrets.
 
+Config values are converted to string before injection: a `bool` arrives as the string `"true"` or `"false"`, an `int` as its plain decimal string, and an `enum` as the exact chosen value.
+
 To update stored values after registration:
 
 | Command | What it does |
@@ -120,6 +122,10 @@ To update stored values after registration:
 | `omac secrets unset <skill> <NAME>` | Removes a secret from the keychain. |
 | `omac secrets list <skill>` | Lists all declared secrets and whether each is present in the keychain. |
 | `omac secrets import <skill> --from <file>` | Bulk-imports secrets from a `KEY=VALUE` file into the keychain. |
+
+To inspect what omac would inject for a skill, run `omac config show <skill>` (add `--json` for machine-readable output). It prints each config value with its source. Secrets are never shown in full — you get a short fingerprint (a truncated hash like `sha256:a1b2c3…`) that confirms a value is set and lets you check two setups share the same one. `omac config get <skill> <field>` prints one resolved config value.
+
+For non-interactive setup (CI), skip the prompts: pass `--no-fields` / `--no-secrets`, and supply values with `--fields-from <file>` / `--secrets-from <file>`, or `OMAC_CONFIG_<NAME>` environment variables.
 
 ## Sidecar
 
@@ -141,6 +147,8 @@ Your sidecar must:
 Before forwarding the request, omac strips your skill's mount prefix (`/my-skill`, the `mount` value from your `omac.yaml`), so your sidecar receives the bare path `/status`. Register your handlers for those bare paths: a handler for `/my-skill/status` would never be reached.
 
 **Streaming responses.** If a route streams results instead of returning them all at once (for example Server-Sent Events), set these in your sidecar's handler yourself: `Content-Type: text/event-stream`, no `Content-Length`, and a flush after each event. What omac does automatically is forward a `text/event-stream` response to the agent without buffering, so each event arrives as you send it. See the `/tick` route in [echo-rest](../contributing/echo-rest.md) for a working example.
+
+**Python sidecars.** `http.server`'s `ThreadingHTTPServer` does a reverse-DNS lookup when it binds, which can stall startup by about 35 seconds on macOS. echo-rest's `sidecar.py` shows the one-line `server_bind` override that avoids it.
 
 ## Environment variables injected into the sidecar
 
@@ -176,6 +184,8 @@ The agent runs inside the sandbox, not in your sidecar's process, so it receives
 
 Write your endpoint examples in `SKILL.md` using `$OMAC_<MOUNT>_BASE` so the agent calls your skill over the preferred transport.
 
+Skills are harness-agnostic.
+
 ## Discovery roots
 
 Place the skill directory under one of these roots. Priority rules: workdir-local beats user-global; within each layer, the harness's own base beats the shared `.agents` base.
@@ -198,6 +208,8 @@ Place the skill directory under one of these roots. Priority rules: workdir-loca
 5. `~/.claude/skills/<name>/` (legacy flat layout)
 6. `~/.agents/skills/<name>/` (legacy flat layout)
 
+The other harnesses follow the same pattern with their own base directory (plus a user-global equivalent): **Copilot** `.copilot/skills`, **Codex** `.codex/skills`, **Pi** `.pi/skills`, **CodeWhale** `.agents/skills`. The shared `.agents/skills` is in scope for every harness.
+
 `$XDG_CONFIG_HOME` replaces `~/.config` when set. Use `.agents/skills/` if you want the skill available regardless of which harness is active.
 
 ## Registering: the skill snapshot
@@ -206,6 +218,16 @@ When you run `omac register`, omac copies your skill directory. It always runs t
 
 - **Install dependencies before you register.** Anything added afterwards (a `pip install`, `npm install`, or vendored library) is not in the copy, so the sidecar won't find it. Run `omac register` again after changing dependencies.
 - **Don't write files relative to the current directory.** They land in omac's private copy, which is invisible to the agent and discarded on the next register. To read or write files in the project, use the absolute path in `$OMAC_WORKDIR`.
+
+## What `omac start` checks
+
+Before launching, `omac start` compares the skills on disk against what you registered. It refuses to start, and prints the exact fix, if it finds any of:
+
+- An **unregistered** skill directory. Run `omac register <skill>`.
+- A registered skill whose files **changed since you registered it** (bundle drift). Re-register with `omac register --force`, or pass `omac start --accept-skill-changes` to run the edited files as they are.
+- A **required config field** with no value. Run `omac register --reprompt-fields <skill>`.
+
+If a registered skill's directory has been deleted, omac auto-deregisters it and continues.
 
 ## Develop and test
 
@@ -239,4 +261,4 @@ Because omac runs the skill from the copy made at register time (see above), re-
 - All credentials declared under `secrets:`, not `env_passthrough`.
 - No secret value appears in any response body or log line.
 - Install scripts (`install/install.macos.sh`, `install/install.linux.sh`) are executable (`chmod +x`), idempotent (run twice, same result), and exit non-zero on missing prerequisites. For a platform you cannot run: `ls -la install/` shows whether the scripts are executable (look for `x` in the permissions column) and `bash -n <script>` checks syntax.
-- Smoke-tested end-to-end with `omac start` (sandboxed) and the agent reaching the sidecar via `$OMAC_SOCKET`.
+- Smoke-tested end-to-end with `omac start` (sandboxed) and the agent reaching the sidecar via `$OMAC_<MOUNT>_BASE`.
