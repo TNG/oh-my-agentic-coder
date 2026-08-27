@@ -13,6 +13,10 @@ omac delegates all filesystem, network, and process isolation to a sandbox backe
 
 Sidecars need resources the sandbox must not touch: the OS keychain, credentials, filesystem paths outside the workdir. Running them inside would mean granting the sandbox those resources or building a second inner sandbox. On the host they inherit the user context they need, and the trust boundary stays clean: the sandbox sees only the facade's loopback TCP port and Unix socket, never a sidecar port, credential, or host env var.
 
+### omac routes to a skill only after it passes a health check
+
+A freshly spawned sidecar needs a moment to bind its port and initialize before it can serve. So omac starts the sidecar, polls the skill's `health.path` until it returns 2xx, and only then lets the facade route requests to it. If a sidecar later crashes, requests to it return `503` (`X-Omac-Reason: sidecar-down`); omac does not currently restart it.
+
 ### Secrets stay in the OS keychain, never in files or sandbox env
 
 Credentials in env vars, `.opencode/` files, or shell configs are readable by any process that can reach them — including agent-generated code running inside the sandbox. The OS keychain (macOS Keychain Services, Linux Secret Service) is protected by the login session. omac collects secrets once at `omac register`, stores them under `service = omac/<skill>`, and injects them at `omac start` into the sidecar process env only — held in memory for the run, zeroed on exit, never forwarded into the sandbox.
@@ -41,7 +45,7 @@ An omac skill needs two files: `SKILL.md`, read by the agent, and `omac.yaml`, r
 
 ### The facade is the single trust boundary
 
-Sidecar ports are ephemeral and bound to `127.0.0.1`, never exposed to the sandbox. Every sandbox request goes through the facade, which strips the `/<skill>/` mount prefix, enforces per-skill body-size and timeout limits, and routes to the right sidecar. A compromised sandbox can at most send HTTP to the facade — it cannot reach a sidecar port, host env var, or the keychain. The facade also gives skills a stable, mount-rooted URL regardless of which ephemeral port a sidecar lands on.
+Sidecar ports are ephemeral and bound to `127.0.0.1`. They are never exposed to the sandbox. Every sandbox request goes through the facade, which strips the `/<skill>/` mount prefix, enforces per-skill body-size and timeout limits, and routes to the right sidecar. A compromised sandbox can at most send HTTP to the facade — it cannot reach a sidecar port, host env var, or the keychain. The facade also gives skills a stable, mount-rooted URL regardless of which ephemeral port a sidecar lands on. Because it proxies rather than buffers, streaming responses such as Server-Sent Events and WebSocket upgrades reach the agent in real time.
 
 ## Architecture diagram
 
