@@ -37,14 +37,14 @@ The default sandbox uses security features built into the OS: Seatbelt on macOS 
 omac is tested for Ubuntu 26.04 (native and WSL2), as well as for macOS 15.
 Currently, the following harnesses are supported.
 
-| Harness                        | OS           | Install |
-|--------------------------------|--------------|---|
-| **OpenCode CLI** and **Desktop** | Linux, macOS | `sudo npm install -g opencode-ai` ([docs](https://github.com/anomalyco/opencode)) |
-| **Claude Code**                | Linux, macOS | [Claude Code docs](https://code.claude.com/docs) |
-| **Copilot**                    | Linux, macOS | [Copilot CLI docs](https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli) |
-| **Codex** (experimental)       | Linux only   | [Codex docs](https://github.com/openai/codex) |
-| **Pi** (experimental)          | Linux, macOS | [Pi docs](https://pi.dev) |
-| **CodeWhale** (experimental)   | Linux, macOS | `npm install -g codewhale` |
+| Harness                        | OS                           | Install |
+|--------------------------------|------------------------------|---|
+| **OpenCode CLI** and **Desktop** | Linux Ubuntu 24.04, macOS 15 | `sudo npm install -g opencode-ai` ([docs](https://github.com/anomalyco/opencode)) |
+| **Claude Code**                | Linux Ubuntu 24.04, macOS 15 | [Claude Code docs](https://code.claude.com/docs) |
+| **Copilot**                    | Linux Ubuntu 24.04, macOS 15 | [Copilot CLI docs](https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli) |
+| **Codex** (experimental)       | Linux Ubuntu 24.04           | [Codex docs](https://github.com/openai/codex) |
+| **Pi** (experimental)          | Linux Ubuntu 24.04, macOS 15 | [Pi docs](https://pi.dev) |
+| **CodeWhale** (experimental)   | Linux Ubuntu 24.04, macOS 15 | `npm install -g codewhale` |
 
 codex is not supported on macOS — its HTTP client is incompatible with the macOS sandbox and every model call hangs.
 
