@@ -153,13 +153,22 @@ func runE2E(t *testing.T, h harnessConfig) {
 	// it's immune to the agent paraphrasing/summarizing the JSON instead
 	// of reproducing it verbatim. Fall back to agent stdout if the agent
 	// didn't create the file (e.g. it refused or went off-script).
+	//
+	// Skip for harnesses that strip OMAC_* from exec_shell subprocesses
+	// (codewhale exec mode): the curl command can't reach the sidecar
+	// without OMAC_ECHO_BASE. The workdir write/read and git commit
+	// assertions below still run — they don't depend on OMAC_*.
 	fileContent, err := os.ReadFile(echoOutputFile)
 	if err != nil {
 		t.Logf("echo-status.txt not found (%v) — falling back to agent stdout", err)
 	} else {
 		t.Logf("echo-status.txt read: %d bytes", len(fileContent))
 	}
-	assertEchoOK(t, string(fileContent)+"\n"+stdout)
+	if h.Sandbox.StripsEnvVars {
+		t.Logf("SKIP: echoOK — %s strips OMAC_* from exec_shell subprocesses (child_env env_clear in exec mode; hooks only fire in the TUI)", h.Name)
+	} else {
+		assertEchoOK(t, string(fileContent)+"\n"+stdout)
+	}
 
 	// 9. Assert the workdir write/read and git commit actually happened —
 	// read the files directly rather than trusting the agent's prose,
@@ -378,20 +387,33 @@ func runSecurityAudit(t *testing.T, h harnessConfig) {
 
 	// --- POSITIVE assertions (things that MUST happen) ---
 
-	// Sidecar should be reachable regardless of sandbox state.
-	assertSecretFingerprintPresent(t, stdout)
+	// Sidecar, env-visibility, and cache-isolation assertions all depend
+	// on OMAC_* vars reaching the bash subprocess. Harnesses that strip
+	// OMAC_* in exec mode (codewhale: child_env env_clear, shell_env hook
+	// doesn't fire in exec) skip these — they'd fail on the harness's env
+	// stripping, not on a sandbox defect. Filesystem-allow assertions
+	// don't depend on OMAC_* and still run.
+	if h.Sandbox.StripsEnvVars {
+		t.Logf("SKIP: sidecarReachable, envVarsVisible, cacheIsolation — %s strips OMAC_* from exec_shell subprocesses (child_env env_clear in exec mode; hooks only fire in the TUI)", h.Name)
+	} else {
+		// Sidecar should be reachable regardless of sandbox state.
+		assertSecretFingerprintPresent(t, stdout)
+
+		if sandboxActive {
+			assertEnvVarsVisible(t, stdout, spec.EnvExpectVisible)
+			assertCacheIsolation(t, stdout, spec.ExpectedCacheMode)
+		}
+	}
+
+	if sandboxActive {
+		assertFilesystemAllowed(t, stdout, spec.FsAllowLabels)
+	} else {
+		t.Logf("skipping positive fs-allow assertions: %s runs with --no-sandbox", h.Name)
+	}
 
 	// Positive network: the loopback server must be reachable, so a
 	// deny-all-egress regression is caught. Runs unconditionally.
 	assertNetworkReachable(t, stdout, netOkMarker)
-
-	if sandboxActive {
-		assertEnvVarsVisible(t, stdout, spec.EnvExpectVisible)
-		assertFilesystemAllowed(t, stdout, spec.FsAllowLabels)
-		assertCacheIsolation(t, stdout, spec.ExpectedCacheMode)
-	} else {
-		t.Logf("skipping positive env/fs-allow assertions: %s runs with --no-sandbox", h.Name)
-	}
 
 	// --- DOCUMENTATION probes (log current behavior, no pass/fail) ---
 
