@@ -105,6 +105,12 @@ Download the `.pkg.tar.zst` for your architecture from the [releases page](https
 sudo pacman -U oh-my-agentic-coder_*.pkg.tar.zst
 ```
 
+### Installation via Mise
+
+```bash
+mise use -g github:TNG/oh-my-agentic-coder@latest
+```
+
 ### From source
 
 Building from source is intended for contributors developing omac, or users who need an unreleased commit. For all other cases, use a pre-built package above.
