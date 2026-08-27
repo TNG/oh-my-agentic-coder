@@ -39,7 +39,7 @@ on:
         type: boolean
         default: true
       model:
-        description: 'Model id for EVERY harness, for THIS RUN ONLY. Set empty to use each harness''s pin in internal/e2e/versions.go (opencode/codex/copilot/pi/codewhale: zai-org/GLM-5.2, claude-code: claude-sonnet-5). As of 2026-08-25 the SKAINET-EXTERNAL is phased out, so defaults to a small internal model.'
+        description: 'Model id for EVERY harness, for THIS RUN ONLY. Set empty to use each harness''s pin in internal/e2e/versions.go (opencode/codex/copilot/pi/codewhale: zai-org/GLM-5.2, claude-code: claude-sonnet-5).'
         type: string
         default: 'deepseek-ai/DeepSeek-V4-Flash'
       claude_code_model:

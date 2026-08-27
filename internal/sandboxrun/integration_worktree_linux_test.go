@@ -259,7 +259,7 @@ func TestIntegrationWorktreeKnownLimitations(t *testing.T) {
 		wslEBUSY := osinfo.Detect() == osinfo.WSL &&
 			allFatalLinesAreEBUSYPackedRefs(out)
 		if wslEBUSY {
-			t.Logf("gc only emitted EBUSY fatal on WSL2 (known kernel quirk with bind-mount rename); treating as non-fatal:\n%s", out)
+			t.Logf("gc only emitted EBUSY fatal errors on WSL2 (known kernel quirk with bind-mount rename); treating as non-fatal:\n%s", out)
 		} else {
 			t.Errorf("gc produced fatal output (warnings OK, fatals not):\n%s", out)
 		}

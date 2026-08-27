@@ -29,7 +29,7 @@ on:
         options: [quick, standard, deep]
         default: deep
       model:
-        description: 'Model id for the strix agent, for THIS RUN ONLY. Set empty to use each harness''s pin in internal/e2e/versions.go. Whatever is resolved here still goes through the gateway probe, so the -TEE variant flip and the fallback chain apply. As of 2026-08-25 the SKAINET-EXTERNAL is phased out, so defaults to a small internal model.'
+        description: 'Model id for the strix agent, for THIS RUN ONLY. Set empty to use each harness''s pin in internal/e2e/versions.go. Whatever is resolved here still goes through the gateway probe, so the -TEE variant flip and the fallback chain apply.'
         type: string
         default: 'deepseek-ai/DeepSeek-V4-Flash'
 

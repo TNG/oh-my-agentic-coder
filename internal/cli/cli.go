@@ -78,6 +78,9 @@ func Run(args []string, version string) int {
 		fmt.Fprintln(env.Stderr, "omac: cannot absolutize workdir:", err)
 		return ExitIOError
 	}
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		abs = resolved
+	}
 	env.Workdir = abs
 
 	if len(subArgs) == 0 {
