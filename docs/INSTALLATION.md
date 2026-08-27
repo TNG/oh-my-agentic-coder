@@ -199,6 +199,7 @@ If the dialog is cut off or crowds the screen, `OMAC_PROMPT_WIDTH` and
 | **codex** (OpenAI Codex CLI) | see [Codex docs](https://github.com/openai/codex) | Alternative harness (`omac start codex`) |
 | **copilot** (GitHub Copilot CLI) | see [Copilot CLI docs](https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli) | Alternative harness (`omac start copilot`) |
 | **pi** (Pi coding agent) | see [Pi docs](https://pi.dev) | Alternative harness (`omac start pi`) |
+| **omp** (oh-my-pi) | see [oh-my-pi docs](https://omp.sh) | Alternative harness (`omac start omp`), a Pi fork |
 | **codewhale** (CodeWhale CLI) | npm package `codewhale` | Alternative harness (`omac start codewhale`), bring-your-own-model |
 
 At least one inner harness must be installed; `opencode` is the default.

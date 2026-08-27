@@ -74,6 +74,7 @@ stable `OMAC_*` / REST contract:
 | OpenAI Codex | `omac start codex` | `cx` |
 | GitHub Copilot CLI | `omac start copilot` | `co` |
 | Pi | `omac start pi` | — |
+| oh-my-pi | `omac start omp` | — |
 | CodeWhale | `omac start codewhale` | `cw` |
 
 Skills are harness-agnostic. `omac continue` / `omac resume` re-enter sessions

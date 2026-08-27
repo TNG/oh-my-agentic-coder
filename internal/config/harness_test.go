@@ -861,6 +861,131 @@ func TestPiSystemContextArgsNil(t *testing.T) {
 	}
 }
 
+// --- omp harness descriptor ------------------------------------------------
+
+func TestOmpHarnessDescriptor(t *testing.T) {
+	h, ok := LookupHarness("omp")
+	if !ok {
+		t.Fatal("omp harness not registered")
+	}
+	if !reflect.DeepEqual(h.InnerCmd, []string{"omp"}) {
+		t.Errorf("omp InnerCmd = %v, want [omp]", h.InnerCmd)
+	}
+	if h.ServerLaunch != nil {
+		t.Errorf("omp ServerLaunch = %v, want nil", h.ServerLaunch)
+	}
+	if h.BridgeDir != ".omp/extensions" {
+		t.Errorf("omp BridgeDir = %q, want .omp/extensions", h.BridgeDir)
+	}
+	if h.SkillsBase != "omp" {
+		t.Errorf("omp SkillsBase = %q, want omp", h.SkillsBase)
+	}
+	if want := filepath.Join(".omp", "agent"); h.UserConfigHome != want {
+		t.Errorf("omp UserConfigHome = %q, want %q", h.UserConfigHome, want)
+	}
+	if h.HomeEnv != "PI_CODING_AGENT_DIR" {
+		t.Errorf("omp HomeEnv = %q, want PI_CODING_AGENT_DIR", h.HomeEnv)
+	}
+}
+
+// TestOmpConfigHome guards the ~/.omp/agent (not ~/.omp) config home
+func TestOmpConfigHome(t *testing.T) {
+	h, _ := LookupHarness("omp")
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(home, ".omp", "agent"); h.ConfigHome() != want {
+		t.Errorf("omp ConfigHome() = %q, want %q", h.ConfigHome(), want)
+	}
+}
+
+func TestOmpConfigHomeEnvOverride(t *testing.T) {
+	h, _ := LookupHarness("omp")
+	t.Setenv("PI_CODING_AGENT_DIR", "/custom/omp/agent")
+	if got := h.ConfigHome(); got != "/custom/omp/agent" {
+		t.Errorf("omp ConfigHome() with PI_CODING_AGENT_DIR set = %q, want /custom/omp/agent", got)
+	}
+}
+
+func TestOmpGlobalSkillsDir(t *testing.T) {
+	h, _ := LookupHarness("omp")
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(home, ".omp", "agent", "skills"); h.GlobalSkillsDir() != want {
+		t.Errorf("omp GlobalSkillsDir() = %q, want %q", h.GlobalSkillsDir(), want)
+	}
+}
+
+func TestOmpGlobalBridgeDir(t *testing.T) {
+	h, _ := LookupHarness("omp")
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(home, ".omp", "agent", "extensions"); h.GlobalBridgeDir() != want {
+		t.Errorf("omp GlobalBridgeDir() = %q, want %q", h.GlobalBridgeDir(), want)
+	}
+}
+
+func TestOmpSessionMetadata(t *testing.T) {
+	h, ok := LookupHarness("omp")
+	if !ok {
+		t.Fatal("omp harness not registered")
+	}
+	if h.Session == nil {
+		t.Fatal("omp Session is nil, want session metadata")
+	}
+	if !reflect.DeepEqual(h.Session.ContinueArgs, []string{"-c"}) {
+		t.Errorf("omp ContinueArgs = %v, want [-c]", h.Session.ContinueArgs)
+	}
+	if got := h.Session.ResumeByIDArgs("abc123"); !reflect.DeepEqual(got, []string{"--session", "abc123"}) {
+		t.Errorf("omp ResumeByIDArgs = %v, want [--session abc123]", got)
+	}
+	if h.Session.ListKind != SessionListPi {
+		t.Errorf("omp ListKind = %v, want SessionListPi", h.Session.ListKind)
+	}
+}
+
+func TestOmpWorkdirSkillsDir(t *testing.T) {
+	h, _ := LookupHarness("omp")
+	if got := h.WorkdirSkillsDir(); got != ".omp/skills" {
+		t.Errorf("omp WorkdirSkillsDir = %q, want .omp/skills", got)
+	}
+}
+
+func TestOmpInScopeSkillsBases(t *testing.T) {
+	h, _ := LookupHarness("omp")
+	if got := h.InScopeSkillsBases(); !reflect.DeepEqual(got, []string{"omp", SharedSkillsBase}) {
+		t.Errorf("omp bases = %v, want [omp agents]", got)
+	}
+}
+
+func TestOmpSandboxDirs(t *testing.T) {
+	h, ok := LookupHarness("omp")
+	if !ok {
+		t.Fatal("omp harness not found")
+	}
+	if !reflect.DeepEqual(h.SandboxDirs, []string{"~/.omp"}) {
+		t.Errorf("omp SandboxDirs = %v, want [~/.omp]", h.SandboxDirs)
+	}
+}
+
+func TestOmpSystemContextArgsNil(t *testing.T) {
+	h, ok := LookupHarness("omp")
+	if !ok {
+		t.Fatal("omp harness not found")
+	}
+	if h.SystemContextArgs != nil {
+		t.Error("omp SystemContextArgs should be nil (no system-prompt flag exists)")
+	}
+	if h.BriefingEnvFunc != nil {
+		t.Error("omp BriefingEnvFunc should be nil (briefing via OMAC_SANDBOX_BRIEFING + TS extension)")
+	}
+}
+
 // --- CodeWhale harness descriptor --------------------------------------------
 
 func TestLookupCodewhaleHarness(t *testing.T) {
