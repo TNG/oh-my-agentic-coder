@@ -198,8 +198,8 @@ have non-overlapping responsibilities:
   `secrets:`, `config:`, `health`, `install_scripts:`.
 - `meta.yaml` — marketplace publishing pipeline (out of scope here).
 
-See [`CREATING_A_SKILL.md`](./CREATING_A_SKILL.md) §3 for the
-SKILL.md ↔ omac.yaml split in full detail.
+See [`docs/skills/authoring.md`](./docs/skills/authoring.md) for the
+SKILL.md and omac.yaml fields.
 
 The omac.yaml has the same top-level surface as the marketplace
 `meta.yaml` (`name, type, version, description, author, dependencies`)
