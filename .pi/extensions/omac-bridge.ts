@@ -9,7 +9,7 @@
  *
  * This is the Pi-side counterpart to the OpenCode plugin
  * (.opencode/plugins/omac-multidir.ts). It implements the common omac
- * bridge interface (see docs/MULTI_DIR_DESKTOP.md and the agent-bridge
+ * bridge interface (see docs/contributing/serve-spec.md and the agent-bridge
  * spec):
  *
  *   1. Activate on session start — POST /__omac__/activate {dir}

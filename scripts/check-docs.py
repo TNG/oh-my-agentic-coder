@@ -21,7 +21,7 @@ from pathlib import Path
 MAX_README_LINES = 400
 
 REPO = Path(__file__).resolve().parent.parent
-DOCS = [REPO / "README.md", REPO / "CREATING_A_SKILL.md", REPO / "COLLABORATION.md"]
+DOCS = [REPO / "README.md", REPO / "COLLABORATION.md"]
 DOCS += sorted((REPO / "docs").glob("*.md"))
 
 LINK = re.compile(r"\[(?:[^\]]*)\]\(([^)\s]+)\)")

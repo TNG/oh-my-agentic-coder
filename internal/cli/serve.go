@@ -148,7 +148,7 @@ func parseServeArgs(args []string, env *Env) (serveParse, bool) {
 // behind OpenCode Desktop. It wraps `opencode serve` (the inner command),
 // keeps the facade + supervisor mutable for the process lifetime, and
 // activates a directory's skills lazily on request. See
-// docs/MULTI_DIR_DESKTOP.md.
+// docs/contributing/serve-spec.md.
 //
 // This implementation focuses on the omac-side control/data plane and is
 // directly drivable over the control-plane HTTP API (so it can be tested
@@ -915,7 +915,7 @@ func (m *intMultiFlag) Set(v string) error {
 	return nil
 }
 
-// ---- server state (docs/MULTI_DIR_DESKTOP.md §7) ----
+// ---- server state (docs/contributing/serve-spec.md) ----
 
 type skillRoute struct {
 	Name      string

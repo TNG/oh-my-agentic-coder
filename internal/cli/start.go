@@ -484,7 +484,7 @@ func runLaunch(env *Env, opts launchOpts) int {
 		// Workdir-scoped, with an unscoped fallback inside GetWithFallback, so
 		// secrets stored by a serve-aware register (scoped per workdir) and
 		// legacy/global ones (unscoped) both resolve. See
-		// docs/MULTI_DIR_DESKTOP.md §4.3.
+		// docs/contributing/serve-spec.md.
 		Scope:             keychain.WorkdirID(env.Workdir),
 		AcceptBundleDrift: acceptSkillChanges,
 		SkipSecretPattern: skipSecretPattern,
