@@ -35,10 +35,14 @@ func runDiagnose(args []string, env *Env) int {
 	profileRef := fs.String("profile", "", "Sandbox profile ref (path or name); default resolves like `omac start`.")
 	runSel := fs.String("run", "last", "Which run(s) to analyze: last|all.")
 	probe := fs.String("probe", "", "Statically check whether host[:port] would be admitted, then exit.")
+	var hashSel hashKindFlag
+	// No backquoted word in the usage text: flag.PrintDefaults would take it
+	// as this flag's value placeholder and render "-hash --hash".
+	fs.Var(&hashSel, "hash", "Print the identifiers derived from the workdir, then exit. Bare --hash prints all; --hash="+hashKindList()+" selects one.")
 	verbose := fs.Bool("verbose", false, "Show every hint and the full effective config, not just the focused view.")
 	fs.BoolVar(verbose, "v", false, "Alias for --verbose.")
 	fs.Usage = func() {
-		fmt.Fprintln(fs.Output(), "Usage: omac diagnose [--json] [--profile <ref>] [--run last|all] [--probe host[:port]] [-v]")
+		fmt.Fprintln(fs.Output(), "Usage: omac diagnose [--json] [--profile <ref>] [--run last|all] [--probe host[:port]] [--hash[=kind]] [-v]")
 		fs.PrintDefaults()
 	}
 	if code, ok := parseFlags(fs, args, env); !ok {
@@ -47,6 +51,31 @@ func runDiagnose(args []string, env *Env) int {
 	if *runSel != "last" && *runSel != "all" {
 		fmt.Fprintln(env.Stderr, "omac diagnose: --run must be last|all")
 		return ExitMisuse
+	}
+
+	// --hash runs before the profile resolves and before the audit trail is
+	// read: the derivations depend on nothing but the workdir, the launcher
+	// config, and $TMPDIR, so they must stay answerable in a workdir that has
+	// never been started and has no profile on disk.
+	if hashSel.set {
+		// --hash is a bool-style flag (so bare `--hash` works), which means
+		// the stdlib cannot tell `--hash runtime` from `--hash` plus a
+		// positional. Reject it rather than silently printing every kind.
+		if fs.NArg() > 0 {
+			// Only suggest the attached form when the stray token really is a
+			// kind — otherwise "use --hash=bogus" is advice that fails again.
+			if hashSel.kind == hashKindAll && validHashKind(fs.Arg(0)) {
+				fmt.Fprintf(env.Stderr, "omac diagnose: use --hash=%s (attached), not --hash %s\n", fs.Arg(0), fs.Arg(0))
+			} else {
+				fmt.Fprintf(env.Stderr, "omac diagnose: unexpected argument %q (--hash takes no positional; use --hash=%s)\n", fs.Arg(0), hashKindList())
+			}
+			return ExitMisuse
+		}
+		if !validHashKind(hashSel.kind) {
+			fmt.Fprintf(env.Stderr, "omac diagnose: unknown --hash kind %q (want %s)\n", hashSel.kind, hashKindList())
+			return ExitMisuse
+		}
+		return runDiagnoseHash(env, hashSel.kind, *asJSON)
 	}
 
 	profile, profPath, err := sandboxprofile.Resolve(*profileRef)

@@ -2,8 +2,6 @@ package cli
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
@@ -1392,11 +1390,10 @@ func startAutoRegisterOne(workdir string, ent skillsource.Entry) (*registry.Entr
 }
 
 // createRuntimeDir creates ${TMPDIR}/omac-<workdir-hash>/{logs,pids}.
+// The name comes from runtimeDirPath (runtimedir.go) so `omac diagnose --hash`
+// reports exactly the directory this creates.
 func createRuntimeDir(workdir string) (string, error) {
-	tmp := os.TempDir()
-	sum := sha256.Sum256([]byte(workdir))
-	name := "omac-" + hex.EncodeToString(sum[:6])
-	dir := filepath.Join(tmp, name)
+	dir := runtimeDirPath(workdir)
 	// Clean stale directory if present.
 	if _, err := os.Stat(dir); err == nil {
 		_ = os.RemoveAll(dir)

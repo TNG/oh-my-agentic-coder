@@ -3,7 +3,6 @@ package cli
 import (
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -1946,11 +1945,10 @@ func mintToken() string {
 }
 
 // createRuntimeDirServe creates ${TMPDIR}/omac-serve-<hash>/{logs}.
+// The name comes from serveRuntimeDirPath (runtimedir.go) so
+// `omac diagnose --hash` reports exactly the directory this creates.
 func createRuntimeDirServe(serverRoot string) (string, error) {
-	tmp := os.TempDir()
-	sum := sha256.Sum256([]byte("serve:" + serverRoot))
-	name := "omac-serve-" + hex.EncodeToString(sum[:6])
-	dir := filepath.Join(tmp, name)
+	dir := serveRuntimeDirPath(serverRoot)
 	if _, err := os.Stat(dir); err == nil {
 		_ = os.RemoveAll(dir)
 	}

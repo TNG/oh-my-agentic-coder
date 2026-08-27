@@ -159,6 +159,18 @@ omac [--workdir <dir>] <subcommand> [flags] [args]
                cache-root / tool-home grants and about host cargo config /
                credentials files an isolated CARGO_HOME won't pick up.
 
+  diagnose     Why did my run fail? Reads the audit trail back and correlates
+               the network decisions the sandbox made against the effective
+               policy. Flags:
+                 --run last|all      which run(s) to analyze (default: last)
+                 --profile <ref>     sandbox profile name/path/builtin
+                 --probe host[:port] statically check whether the host would
+                                     be admitted, then exit
+                 --hash[=<kind>]     print the identifiers omac derives from
+                                     the workdir, then exit (see below)
+                 --json              emit JSON instead of text
+                 -v, --verbose       every hint + the full effective config
+
   cache        Manage the persistent tool cache under ~/.cache/omac.
                  clear           remove the active cache scope (per cache.scope)
                  clear --all     remove every inactive cache scope
@@ -166,6 +178,61 @@ omac [--workdir <dir>] <subcommand> [flags] [args]
 
   version
 ```
+
+## Workdir hashes (`omac diagnose --hash`)
+
+omac derives four different identifiers from a workdir, each hashed
+differently. `omac diagnose --hash` prints them so you don't have to
+reverse-engineer a log path or a cache directory:
+
+| Kind | Hashed input | Digest | Names |
+| --- | --- | --- | --- |
+| `runtime` | absolute workdir | `sha256[:6]` | `$TMPDIR/omac-<hash>/` — `omac start`'s `logs/`, `pids/`, `bridge.sock` |
+| `serve` | `"serve:"` + absolute workdir | `sha256[:6]` | `$TMPDIR/omac-serve-<hash>/` — `omac serve`'s `logs/` |
+| `keychain` | absolute workdir | full `sha256` | the secret scope a workdir's keychain entries live under (not a path) |
+| `cache` | depends on the scope (below) | full `sha256` | `~/.cache/omac/<hash>/` — the persistent tool-cache scope |
+
+The `cache` input depends on the configured `cache.scope`, so it is **not**
+always workdir-derived:
+
+| `cache.scope` | Hashed input |
+| --- | --- |
+| `global` (default) | the constant `v1:shared` — identical for every workdir |
+| `workdir` | `v1:workdir:<symlink-resolved workdir>` |
+| `config` | `v1:config:<symlink-resolved launcher config path>`, or `v1:shared` when no config file is on disk |
+
+```sh
+omac diagnose --hash                 # all four kinds
+omac diagnose --hash=runtime         # one kind (attached '=', not a space)
+omac --workdir /path/to/proj diagnose --hash=cache
+
+# Find a run's logs:
+ls "$(omac diagnose --hash=runtime --json | jq -r '.entries[0].path')/logs"
+```
+
+Three things the output makes explicit, because all three are easy to get
+wrong:
+
+- The `runtime` and `serve` paths are joined onto `$TMPDIR`, so a shell with a
+  different `TMPDIR` than the run resolves a different path. The reported
+  `tmpdir` is the one that produced the output. **Inside the sandbox `TMPDIR`
+  is deliberately remapped** to the per-launch sandbox temp dir, which would
+  make a naively joined path point at nothing; when `$OMAC_SOCKET` is set and
+  belongs to the workdir being reported, the command reads the live runtime
+  dir from it instead and says so in the entry's `note`.
+- `runtime`, `serve` and `keychain` hash the **absolute** workdir, while
+  `cache` hashes a **symlink-resolved** path (when it hashes a path at all).
+  On macOS, where `/tmp` is a symlink to `/private/tmp`, those are different
+  strings — the per-kind `input` field shows exactly what was hashed.
+- Digests are always derivable; paths may not exist yet. The command only
+  *describes* directories — it never creates them, and never removes them.
+
+The `cache` kind reports the scope resolved from `cache.scope` in the launcher
+config (see [CONFIGURATION.md](CONFIGURATION.md)), and always agrees with
+`omac provenance`'s `cache.path`. Like `provenance`, it reports the
+**config-resolved** scope: it does not know about a specific launch's
+`--cache-scope` override, `--ephemeral-cache` (a per-launch dir under the
+sandbox temp dir), or `--no-sandbox` (no persistent scope is prepared at all).
 
 ## Exit codes
 
