@@ -111,3 +111,23 @@ When you answer the network prompt, "session" decisions are held in memory only,
 
 - Session decision: restart `omac start` — session decisions never persist and cannot be edited from a file, so a restart clears them.
 - Permanent decision: remove the entry from `~/.config/omac/sandbox-profiles/default.pages.json`.
+
+## Reporting a bug
+
+If `omac doctor` and the fixes above don't resolve your problem, please report it
+as a GitHub issue at
+<https://github.com/TNG/oh-my-agentic-coder/issues>.
+
+Before opening one:
+
+1. **Search first.** Look through the [existing issues](https://github.com/TNG/oh-my-agentic-coder/issues?q=is%3Aissue)
+   for your problem. If you find a match, add your details there instead of
+   opening a duplicate.
+2. **Use the issue template.** The "New issue" form guides you through the fields
+   we need — a short summary, what went wrong, and how to reproduce it.
+3. **Include your environment.** Paste the output of `omac doctor`, your OS and
+   version, and the harness you were running (for example `claude-code` on
+   Ubuntu 24.04).
+
+Keep it concise. The [collaboration guide](../COLLABORATION.md#issue-rules) has
+the full set of expectations for issue formatting.

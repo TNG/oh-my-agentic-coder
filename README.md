@@ -38,6 +38,12 @@ Windows is supported only via WSL2 (Ubuntu 24.04).
 
 Further information on the tool, as well as usage instructions, can be found in the [docs directory](https://github.com/TNG/oh-my-agentic-coder/tree/main/docs).
 
+## Reporting bugs
+
+Found a bug? Please open a GitHub issue at
+<https://github.com/TNG/oh-my-agentic-coder/issues>. See
+[Reporting a bug](./docs/troubleshooting.md#reporting-a-bug) for the full guide.
+
 ## Contributing
 
 Information on the development workflow, the testing framework, etc., can be found at [`contributing`](./docs/contributing).
