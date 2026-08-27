@@ -121,9 +121,17 @@ Java (Maven/Gradle) and Node/npm do not reliably route their package downloads t
 
 Node injection requires Node ≥ 22.21.0 (22.x line) or ≥ 24.5.0; on older versions it is skipped and downloads may still fail.
 
+### Short-timeout clients
+
+While a network prompt is open the connection is held, and the requesting tool is subject to *its own* timeout — some are only a few seconds (the opencode Skainet plugin aborts model discovery after 3s). Answering a dialog reliably takes longer than that, so the tool can give up before your click lands: the fetch fails silently, and the allow you then grant applies to a request nobody is waiting for any more. Put hosts that short-timeout tools depend on in `network.allow_domain` so no prompt is raised. Under `omac serve` or any non-TTY launch there is no dialog at all and `on_unavailable: deny` (the default) makes this deterministic.
+
+`omac diagnose` reports these as abandoned prompts — a run whose prompt was never answered in time no longer reads as "nothing was blocked".
+
 ## Audit trail
 
-omac logs every security-relevant action to an append-only file: process launches, network decisions, secret injections. The file is outside the sandbox so the agent cannot tamper with it.
+omac logs every security-relevant action to an append-only, structured (JSON Lines) file the agent cannot tamper with: the sandboxed inner command and each sidecar it spawns (`process.exec` / `process.exit`), outbound network allow/deny decisions and their source (`net.decision`), network prompts raised but never answered in time (`net.prompt_abandoned`), facade requests (`facade.request`), control-plane mutations (`control.mutation`), secret injection by name (`secret.inject`), non-ready routes (`route.state`), and session lifecycle (`session.start` / `session.stop`).
+
+A prompt-sourced `net.decision` also carries `waited_ms`, how long the dialog was open before it was answered. This distinguishes "allowed promptly" from "allowed after the requesting tool had already timed out" (see [Short-timeout clients](#short-timeout-clients)); `omac diagnose` flags the latter.
 
 | Platform | Default path |
 |---|---|

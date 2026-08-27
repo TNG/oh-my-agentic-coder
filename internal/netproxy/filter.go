@@ -16,6 +16,7 @@ import (
 	"net/netip"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/tngtech/oh-my-agentic-coder/internal/audit"
 )
@@ -44,6 +45,17 @@ type Verdict struct {
 	// without a follow-up GET /sandbox/intent. Body-only: never a header value
 	// (it is agent-supplied and unsanitized).
 	IntentReason string
+	// PromptWaitMS is how long the dialog was open before the user answered
+	// (prompt decisions only; 0 otherwise). It is what makes a *silent*
+	// failure visible after the fact: the connection is held while the
+	// dialog is up, so any client whose own timeout is shorter than this
+	// had already given up by the time the allow was granted. See #257.
+	PromptWaitMS int64
+	// PromptAbandoned marks a verdict whose prompt had already been recorded
+	// as abandoned (the proxy shut down while it was open). The answer
+	// arrived too late to be acted on, so emitting it as an ordinary
+	// decision would contradict the abandoned record for the same request.
+	PromptAbandoned bool
 }
 
 // hardDenyHosts can never be allowed, even interactively (nono parity).
@@ -141,6 +153,15 @@ type Filter struct {
 type promptWait struct {
 	done chan struct{}
 	res  PromptResult
+	// port and startedAt describe the prompt for the abandoned-prompt
+	// audit event, which is emitted from DrainAbandonedPrompts long after
+	// the requesting goroutine may have gone.
+	port      int
+	startedAt time.Time
+	// drained is set by DrainAbandonedPrompts when this prompt was still
+	// open at shutdown. Read by the resolution path so a late answer is
+	// not also emitted as an ordinary decision. Guarded by promptMu.
+	drained bool
 }
 
 // NewFilter builds a Filter.
@@ -158,6 +179,42 @@ func NewFilter(cfg FilterConfig) *Filter {
 		cfg.Auditor = audit.Nop()
 	}
 	return &Filter{cfg: cfg, inflight: map[string]*promptWait{}}
+}
+
+// DrainAbandonedPrompts records every prompt that is still open, as an
+// abandoned prompt, and forgets it.
+//
+// A prompt outlives the request that raised it on purpose: the dialog runs
+// on a detached context (see internal/netprompt, which builds its timeout
+// from context.Background()) so a transient client does not kill a dialog
+// the user is already reading. The cost is that a tool with a short HTTP
+// timeout — the opencode skainet plugin aborts model discovery after 3s,
+// while answering a dialog measurably takes longer — gives up before the
+// verdict exists. No net.decision is ever logged, so the run reads as
+// clean while having silently failed.
+//
+// Called at proxy shutdown, when any remaining prompt is by definition
+// unresolved. Returns the number of prompts drained. See #257.
+func (f *Filter) DrainAbandonedPrompts() int {
+	f.promptMu.Lock()
+	abandoned := make(map[string]*promptWait, len(f.inflight))
+	for host, w := range f.inflight {
+		// Mark before releasing the lock: the dialog may still be up, and
+		// its resolution path checks this to avoid emitting a decision
+		// that would contradict the abandoned record.
+		w.drained = true
+		abandoned[host] = w
+		delete(f.inflight, host)
+	}
+	f.promptMu.Unlock()
+
+	for host, w := range abandoned {
+		waited := time.Since(w.startedAt).Milliseconds()
+		f.cfg.Logf("omac sandbox: net ABANDONED %s:%d (prompt raised %dms ago, no verdict — the requesting tool stopped waiting)",
+			host, w.port, waited)
+		f.cfg.Auditor.Emit(audit.NetPromptAbandoned(host, w.port, waited))
+	}
+	return len(abandoned)
 }
 
 // Check runs the full decision pipeline for host:port and returns the
@@ -301,7 +358,7 @@ func (f *Filter) recordDecision(s DecisionStore, host string, res PromptResult, 
 // as deny).
 func (f *Filter) defaultDecision(ctx context.Context, host string, port int) (Verdict, bool) {
 	if f.cfg.PromptEnabled {
-		res, prompted := f.promptCoalesced(ctx, host, port)
+		res, waited, drained, prompted := f.promptCoalesced(ctx, host, port)
 		if !prompted {
 			if f.cfg.OnUnavailableAllow {
 				return Verdict{Decision: Allow, Reason: "prompt unavailable: on_unavailable=allow"}, true
@@ -321,12 +378,12 @@ func (f *Filter) defaultDecision(ctx context.Context, host string, port int) (Ve
 			scope = "once"
 		}
 		if res.NeedsIntent {
-			return Verdict{Decision: Deny, Reason: "prompt:needs_intent", Scope: scope, Persisted: res.Persist, IntentReason: res.PriorReason}, true
+			return Verdict{Decision: Deny, Reason: "prompt:needs_intent", Scope: scope, Persisted: res.Persist, IntentReason: res.PriorReason, PromptWaitMS: waited, PromptAbandoned: drained}, true
 		}
 		if res.Allow {
-			return Verdict{Decision: Allow, Reason: "prompt:allow", Scope: scope, Persisted: res.Persist}, true
+			return Verdict{Decision: Allow, Reason: "prompt:allow", Scope: scope, Persisted: res.Persist, PromptWaitMS: waited, PromptAbandoned: drained}, true
 		}
-		return Verdict{Decision: Deny, Reason: "prompt:deny", Scope: scope, Persisted: res.Persist, IntentReason: res.PriorReason}, true
+		return Verdict{Decision: Deny, Reason: "prompt:deny", Scope: scope, Persisted: res.Persist, IntentReason: res.PriorReason, PromptWaitMS: waited, PromptAbandoned: drained}, true
 	}
 	if len(f.cfg.AllowDomains) > 0 {
 		return Verdict{Decision: Deny, Reason: "not in allowlist"}, true
@@ -337,9 +394,15 @@ func (f *Filter) defaultDecision(ctx context.Context, host string, port int) (Ve
 
 // promptCoalesced ensures concurrent requests for the same host share
 // one dialog. prompted=false means no prompter is available.
-func (f *Filter) promptCoalesced(ctx context.Context, host string, port int) (PromptResult, bool) {
+//
+// waitedMS is how long the dialog was open, and drained reports whether it
+// had already been recorded as abandoned (see DrainAbandonedPrompts) by the
+// time it was answered. Both travel onto the Verdict so the audit trail can
+// distinguish "allowed promptly" from "allowed long after the requesting
+// tool gave up".
+func (f *Filter) promptCoalesced(ctx context.Context, host string, port int) (res PromptResult, waitedMS int64, drained bool, prompted bool) {
 	if f.cfg.Prompter == nil {
-		return PromptResult{}, false
+		return PromptResult{}, 0, false, false
 	}
 	f.promptMu.Lock()
 	if w, ok := f.inflight[host]; ok {
@@ -348,19 +411,23 @@ func (f *Filter) promptCoalesced(ctx context.Context, host string, port int) (Pr
 			f.cfg.onCoalesceWait()
 		}
 		<-w.done
-		return w.res, true
+		f.promptMu.Lock()
+		wasDrained := w.drained
+		f.promptMu.Unlock()
+		return w.res, time.Since(w.startedAt).Milliseconds(), wasDrained, true
 	}
-	w := &promptWait{done: make(chan struct{})}
+	w := &promptWait{done: make(chan struct{}), port: port, startedAt: time.Now()}
 	f.inflight[host] = w
 	f.promptMu.Unlock()
 
 	w.res = f.cfg.Prompter.Prompt(ctx, host, port)
 
 	f.promptMu.Lock()
+	wasDrained := w.drained
 	delete(f.inflight, host)
 	f.promptMu.Unlock()
 	close(w.done)
-	return w.res, true
+	return w.res, time.Since(w.startedAt).Milliseconds(), wasDrained, true
 }
 
 func (f *Filter) log(host string, port int, v Verdict) Verdict {
@@ -369,10 +436,19 @@ func (f *Filter) log(host string, port int, v Verdict) Verdict {
 		word = "ALLOW"
 	}
 	f.cfg.Logf("omac sandbox: net %s %s:%d (%s)", word, host, port, v.Reason)
+	if v.PromptAbandoned {
+		// Already recorded as abandoned at shutdown. Emitting a decision now
+		// would put two contradictory records in the trail for one request,
+		// and the abandoned one is the accurate account: the requester was
+		// gone before this answer existed.
+		f.cfg.Logf("omac sandbox: net %s %s:%d answered %dms after the prompt was abandoned — not recorded as a decision",
+			word, host, port, v.PromptWaitMS)
+		return v
+	}
 	source := classifyReason(v.Reason)
 	scope := v.Scope
 	persisted := v.Persisted
-	f.cfg.Auditor.Emit(audit.NetDecision(host, port, v.Decision == Allow, scope, source, persisted))
+	f.cfg.Auditor.Emit(audit.NetDecision(host, port, v.Decision == Allow, scope, source, persisted, v.PromptWaitMS))
 	return v
 }
 
