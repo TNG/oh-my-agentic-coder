@@ -1,6 +1,6 @@
 // Package keychain is a thin wrapper over github.com/zalando/go-keyring.
 //
-// Naming convention (matches oh-my-agentic-coder.md §16.3):
+// Naming convention:
 //
 //	service = "omac/<skill-name>"                       (legacy / global skill)
 //	service = "omac/<workdir-id>/<skill-name>"          (serve-mode, per-workdir)
@@ -16,7 +16,7 @@
 //
 // The backend (macOS Keychain, Secret Service, Windows Credential Manager)
 // is selected by go-keyring based on the host OS. A file-based fallback for
-// headless Linux (age-encrypted secrets.age, oh-my-agentic-coder.md §16.2)
+// headless Linux (age-encrypted secrets.age)
 // is not implemented; on WSL / headless Linux without a running Secret
 // Service provider, keychain operations fail — see IsUnavailable and
 // docs/getting-started/quick-start.md#prerequisites for the actionable fix.

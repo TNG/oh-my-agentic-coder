@@ -15,8 +15,7 @@ import (
 // Harness descriptor to the registry (plus shipping its client-side bridge
 // assets); no command-dispatch or launch call site needs to change.
 //
-// See openspec/changes/support-claude-code-harness and oh-my-agentic-coder.md
-// §4/§17.
+// See openspec/changes/support-claude-code-harness.
 type Harness struct {
 	// Name is the canonical, lowercase harness identifier (e.g. "opencode",
 	// "claude-code"). It is what `omac start <name>` matches after alias

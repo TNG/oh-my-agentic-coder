@@ -10,7 +10,7 @@ import (
 	"github.com/tngtech/oh-my-agentic-coder/internal/config"
 )
 
-// Exit codes mirror those documented in oh-my-agentic-coder.md §10.6.
+// Exit codes are a stable contract for scripts and CI.
 const (
 	ExitOK                     = 0
 	ExitGeneric                = 1

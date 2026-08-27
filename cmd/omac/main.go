@@ -4,7 +4,7 @@
 // environment through a single Unix-domain-socket facade, storing per-skill
 // secrets in the OS keychain.
 //
-// See oh-my-agentic-coder.md in this repository for the full design.
+// See docs/contributing/design.md for the design rationale.
 package main
 
 import (

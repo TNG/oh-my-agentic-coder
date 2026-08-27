@@ -2,7 +2,7 @@
 # Install script for echo-rest (macOS).
 #
 # omac never runs this for you; it only prints the contents at register time
-# so you can inspect + run it yourself. See oh-my-agentic-coder.md §15.
+# so you can inspect + run it yourself.
 set -euo pipefail
 
 if ! command -v python3 >/dev/null 2>&1; then

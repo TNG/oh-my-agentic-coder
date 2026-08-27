@@ -1,7 +1,7 @@
 // Package sandbox expands the argv template in a SandboxProfile into a
 // concrete argv ready for exec.
 //
-// Placeholders (see oh-my-agentic-coder.md §14.2):
+// Placeholders:
 //
 //	{{socket}}              absolute socket path
 //	{{socket_dir}}          directory containing the socket

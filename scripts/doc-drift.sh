@@ -142,7 +142,7 @@ EOF
 # --- Mode-specific scan targets and reporting nouns ------------------------
 if [ "$MODE" = "docs" ]; then
   SCAN_WHAT="the project's prose documentation: README.md, AGENTS.md, CLAUDE.md,
-COLLABORATION.md, oh-my-agentic-coder.md, and everything
+COLLABORATION.md, and everything
 under docs/. Treat every concrete claim in that prose — commands, CLI flags,
 env-var names, file paths, config keys, default values, described behaviours,
 step counts, supported platforms — as something to check against the code."

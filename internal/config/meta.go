@@ -45,7 +45,7 @@ type Meta struct {
 }
 
 // SidecarMeta is the optional sidecar block in omac.yaml. See
-// oh-my-agentic-coder.md §7 for the full schema.
+// docs/skills/authoring.md for the full schema.
 type SidecarMeta struct {
 	Command        []string          `yaml:"command"`
 	Mount          string            `yaml:"mount,omitempty"`
