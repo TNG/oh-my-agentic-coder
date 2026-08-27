@@ -34,6 +34,8 @@ cache:
 
 The flag takes precedence over the config file, which takes precedence over the default (`global`).
 
+To set the scope for one project only, put this in a project-local config file; see [Per-project configuration](../configuration.md#per-project-configuration).
+
 ## Ephemeral cache
 
 `--ephemeral-cache` creates a temporary cache directory that is removed when the session ends. Use it for clean-room builds, or when the normal (persistent) cache cannot be set up safely.

@@ -13,7 +13,7 @@ description: omac configuration files and options
 | `sidecar.json` | Skill registry: names, directories, bundle hashes, declared secrets | `omac register` / `omac deregister`   |
 | `skill-config.yaml` | Non-secret per-skill fields: API base URLs, region names, feature flags | `omac register` / `omac config`       |
 
-All files live under `~/.config/omac/` (user-global) or `<workdir>/.opencode/` (workdir-local). Where both exist, workdir wins.
+These files live under `~/.config/omac/` (user-global) or `<workdir>/.opencode/` (workdir-local). Only the launcher config is read from both: a project-local `oh-my-agentic-coder.yaml` overrides the user-global copy (named `config.yaml`). See [Per-project configuration](#per-project-configuration).
 
 ## Launcher config
 
@@ -39,6 +39,18 @@ cache:
 **`cache.scope`** controls how widely omac's isolated tool cache is shared between projects. It can be overridden per session with `--cache-scope`. See [Cache](./advanced/cache.md) for details.
 
 **`idle_timeout_secs`** controls how long idle HTTP keep-alive connections to the facade are held open. It does not end the session — the agent and sandbox keep running regardless.
+
+### Per-project configuration
+
+To use different launcher settings for different projects, add a project-local launcher config at `<project>/.opencode/oh-my-agentic-coder.yaml`. When you run `omac start` from that project, omac uses this file instead of your user-global one (`~/.config/omac/config.yaml`).
+
+This works the same for every supported harness, despite the OpenCode-specific naming. (This applies only to omac's launcher config. Each harness's own skills and settings still live in the harness's own directory.)
+
+The project file **replaces** the global one; omac does not merge the two. Any option you leave out falls back to omac's built-in defaults, not to your global settings.
+
+**Warning:** In `omac serve`, the launcher config is read once, from the `--workdir` you started the server with, so switching projects within a running server does not load a different project's file!
+
+The launcher config changes only *how omac launches* in the project: the sandbox runtime it selects, the cache scope, and the facade and audit settings. It does **not** change what the agent is allowed to access. Those grants (filesystem paths, network hosts, open ports) come from the user-global sandbox grants file described below and **currently have no per-project equivalent**.
 
 ## Sandbox grants
 
