@@ -117,7 +117,7 @@ To update stored values after registration:
 
 | Command | What it does |
 |---|---|
-| `omac register --reprompt-fields <skill>` | Re-prompts for all config fields of a skill. |
+| `omac register <skill> --reprompt-fields` | Re-prompts for all config fields of a skill. |
 | `omac secrets set <skill> <NAME>` | Prompts (masked) for a new value for the named secret and stores it in the keychain. `<NAME>` is the env var name declared under `sidecar.secrets` (e.g. `MY_API_TOKEN`). |
 | `omac secrets unset <skill> <NAME>` | Removes a secret from the keychain. |
 | `omac secrets list <skill>` | Lists all declared secrets and whether each is present in the keychain. |
@@ -224,8 +224,8 @@ When you run `omac register`, omac copies your skill directory. It always runs t
 Before launching, `omac start` compares the skills on disk against what you registered. It refuses to start, and prints the exact fix, if it finds any of:
 
 - An **unregistered** skill directory. Run `omac register <skill>`.
-- A registered skill whose files **changed since you registered it** (bundle drift). Re-register with `omac register --force`, or pass `omac start --accept-skill-changes` to run the edited files as they are.
-- A **required config field** with no value. Run `omac register --reprompt-fields <skill>`.
+- A registered skill whose files **changed since you registered it** (bundle drift). Re-register with `omac register <skill> --force`, or pass `omac start --accept-skill-changes` to run the edited files as they are.
+- A **required config field** with no value. Run `omac register <skill> --reprompt-fields`.
 
 If a registered skill's directory has been deleted, omac auto-deregisters it and continues.
 
