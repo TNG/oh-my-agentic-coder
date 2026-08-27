@@ -356,9 +356,9 @@ func runServe(args []string, env *Env) int {
 		sandboxTmp:        sandboxTmp,
 		socketPath:        socketPath,
 		tcpPort:           f.TCPPort(),
-		acceptChanges:     *acceptChanges,
+		acceptChanges:     acceptChanges,
 		skipSecretPattern: skipSecretPattern,
-		verbose:           *verbose,
+		verbose:           verbose,
 		roots:             absRoots,
 		dirs:              map[string]*dirState{},
 		byToken:           map[string]*dirState{},
@@ -455,14 +455,14 @@ func runServe(args []string, env *Env) int {
 	if isLoopbackListener(cln) {
 		bb, bbErr := newBuildBroker(buildToken, buildbroker.ServeAuthorizer(absRoots, srv.isActiveDir), env, srv.cacheScopeDir, srv.auditor, srv.buildSnapshots.ParentSnapshotProvider())
 		if bbErr != nil {
-			if *verbose {
+			if verbose {
 				fmt.Fprintf(env.Stderr, "[verbose] build broker: %v\n", bbErr)
 			}
 		} else {
 			buildBroker = bb
 			srv.buildBrokerMounted = true
 		}
-	} else if *verbose {
+	} else if verbose {
 		fmt.Fprintf(env.Stderr, "[verbose] build broker disabled: control listener is not loopback\n")
 	}
 	httpSrv := &http.Server{Handler: srv.controlMux(buildBroker)}
