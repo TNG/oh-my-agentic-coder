@@ -13,10 +13,12 @@ are the source of truth for the expected structure, not this file:
 ## E2E testing via Docker
 
 The omac e2e suite (`internal/e2e/`, build tag `e2e`) verifies every
-harness (opencode, claude-code, codex, copilot) can start under the omac
-sandbox and call a skill through the facade. It runs on Linux (bwrap)
-and macOS (Seatbelt). For local iteration on a host without the full
-toolchain, use the Docker wrapper.
+harness can start under the omac sandbox and call a skill through the
+facade. It runs on Linux (bwrap) and macOS (Seatbelt). For local
+iteration on a host without the full toolchain, use the Docker wrapper.
+The current harness set is enumerated in `internal/e2e/harnesses.go`
+(`allHarnesses`); see [Adding a harness to the e2e matrix](#adding-a-harness-to-the-e2e-matrix)
+below when extending it.
 
 ### Quick start
 
@@ -187,3 +189,55 @@ claude-code, which the wrapper passes through).
 it sets none of the `E2E_NESTED`/`E2E_RECOVER_INSTALL` vars and just runs
 `go test`. Use it on a host shell too; the bare `go test -tags=e2e ...`
 recipe in `internal/e2e/e2e_test.go`'s doc comment also works.
+
+## Adding a harness to the e2e matrix
+
+Adding a new harness is a multi-file change. Open an issue first
+(COLLABORATION.md §1); model the OpenSpec change on
+`openspec/changes/support-codewhale-harness/`.
+
+To find every file that needs an entry, an agent should grep the
+codebase for the existing harness names (e.g. `codewhale`, `copilot`)
+across these areas:
+
+- **Production registry:** `internal/config/harness.go`
+  (`harnessRegistry()`), `internal/session/session.go` (session
+  listing), `internal/cli/start.go` + `internal/cli/serve.go` (macOS
+  hard-fail for Rust/Seatbelt-incompatible harnesses only).
+- **E2E registry:** `internal/e2e/harnesses.go` (`allHarnesses()` +
+  per-harness `*Config()` function), `internal/e2e/harnesses_test.go`
+  (`expectedHarnessNames()`).
+- **Version + model pinning:** `internal/e2e/versions.go`
+  (`harnessVersions`, `versionEnvVar`, `modelIDs`, `modelEnvVar`).
+- **CLI contract tests:** `internal/e2e/contract_test.go`
+  (`TestDeriveContractKnownTokens` want map,
+  `TestHarnessHasServerMode` cases).
+- **GitHub Actions workflows:** `.github/workflows/e2e.yml` and
+  `.github/workflows/e2e-smoke.yml` (matrix `harness:` list,
+  `exclude:` for macOS, per-harness `E2E_VERSION_*`/`E2E_MODEL_*` env
+  wiring, `workflow_dispatch` version inputs).
+- **Docs:** `README.md`, `docs/HARNESSES.md`, `docs/HARNESS_COMPAT.md`,
+  `docs/INSTALLATION.md`, `CREATING_A_SKILL.md`.
+
+Most omissions are caught automatically by completeness tripwires
+(`TestAllHarnessesMatchesExpectedCount`, `TestVersionEnvVarCompleteness`,
+`TestModelEnvVarCompleteness` in `internal/e2e/*_test.go`). Two
+categories are **manual and unguarded** — no test fails if you forget:
+
+1. **Failure classifier** — `scripts/classify-compat-failure.py`: each
+   harness emits its own terminal error string when the model backend
+   fails (codex: "high demand"; copilot: "Failed to get response from
+   the AI model"; codewhale: "Invalid request (404)"). If the new
+   harness has a distinct terminal error, add it to the
+   `LLM_UNAVAILABLE` detect regex (or a new category). Without this,
+   the classifier misreports the failure as "compatibility drift"
+   instead of "infra error."
+2. **macOS exclusion** — if the harness is a Rust CLI incompatible with
+   Seatbelt, exclude it at the e2e layer (`allHarnesses()` darwin
+   filter + workflow `exclude:` entries). Decide whether to also add
+   a `start.go`/`serve.go` hard-fail (codex pattern) or e2e-only
+   exclusion (codewhale pattern) — not both.
+
+Test contracts (`deriveContract` in `internal/e2e/contract.go`),
+echo-rest/security-audit tests, smoke probes, and `omac doctor` pick
+up the new harness automatically once the registries are updated.

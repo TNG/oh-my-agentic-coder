@@ -25,9 +25,12 @@ package keychain
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
+	"sync"
 
 	"github.com/zalando/go-keyring"
 
@@ -104,6 +107,9 @@ func Delete(skillName, name string) error {
 // (legacy/global) form; a workdir-id isolates per-workdir; DefaultsScope
 // mirrors the remembered default.
 func SetScoped(scope, skillName, name string, value secrets.Secret) error {
+	if mock := mockBackend(); mock != nil {
+		return mock.set(scope, skillName, name, value.ExposeString())
+	}
 	svc := ScopedService(scope, skillName)
 	if err := keyring.Set(svc, name, value.ExposeString()); err != nil {
 		return fmt.Errorf("keychain set %s/%s: %w", svc, name, err)
@@ -123,6 +129,13 @@ func SetScoped(scope, skillName, name string, value secrets.Secret) error {
 // ErrNotFound first if you only care whether a value is usable; check
 // ErrUnavailable only once no fallback satisfied the secret.
 func GetScoped(scope, skillName, name string) (secrets.Secret, error) {
+	if mock := mockBackend(); mock != nil {
+		v, err := mock.get(scope, skillName, name)
+		if err != nil {
+			return secrets.Secret{}, err
+		}
+		return secrets.NewSecretString(v), nil
+	}
 	svc := ScopedService(scope, skillName)
 	v, err := keyring.Get(svc, name)
 	if err != nil {
@@ -238,6 +251,9 @@ func GetWithFallback(scope, skillName, name string) (secrets.Secret, error) {
 // HasScoped reports whether a secret is present under (scope, skill).
 // Returns false (not an error) when the keychain backend is unavailable.
 func HasScoped(scope, skillName, name string) (bool, error) {
+	if mock := mockBackend(); mock != nil {
+		return mock.has(scope, skillName, name)
+	}
 	svc := ScopedService(scope, skillName)
 	_, err := keyring.Get(svc, name)
 	if err == nil {
@@ -252,6 +268,9 @@ func HasScoped(scope, skillName, name string) (bool, error) {
 // DeleteScoped removes a secret under (scope, skill). Missing entries are
 // not an error.
 func DeleteScoped(scope, skillName, name string) error {
+	if mock := mockBackend(); mock != nil {
+		return mock.delete(scope, skillName, name)
+	}
 	svc := ScopedService(scope, skillName)
 	err := keyring.Delete(svc, name)
 	if err == nil || errors.Is(err, keyring.ErrNotFound) {
@@ -299,6 +318,121 @@ func DeleteAllScoped(scope, skillName string, names []string) error {
 	for _, n := range names {
 		if err := DeleteScoped(scope, skillName, n); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+// --- File-backed mock (OMAC_KEYCHAIN_MOCK) -------------------------------
+//
+// When OMAC_KEYCHAIN_MOCK points to a file path, all keychain operations
+// read/write a JSON file there instead of calling the OS keychain. This
+// lets e2e tests exercise the real keychain code path without a Secret
+// Service daemon, and persists across the register/start subprocesses that
+// share the same file. Test-only; never set in production.
+
+type fileMock struct {
+	path string
+	mu   sync.Mutex
+}
+
+type mockEntry struct {
+	Service string `json:"service"`
+	Name    string `json:"name"`
+	Value   string `json:"value"`
+}
+
+func mockBackend() *fileMock {
+	p := os.Getenv("OMAC_KEYCHAIN_MOCK")
+	if p == "" {
+		return nil
+	}
+	return &fileMock{path: p}
+}
+
+func (m *fileMock) load() ([]mockEntry, error) {
+	data, err := os.ReadFile(m.path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if len(data) == 0 {
+		return nil, nil
+	}
+	var entries []mockEntry
+	if err := json.Unmarshal(data, &entries); err != nil {
+		return nil, err
+	}
+	return entries, nil
+}
+
+func (m *fileMock) save(entries []mockEntry) error {
+	data, err := json.Marshal(entries)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(m.path, data, 0o600)
+}
+
+func (m *fileMock) set(scope, skill, name, value string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	entries, err := m.load()
+	if err != nil {
+		return err
+	}
+	svc := ScopedService(scope, skill)
+	for i, e := range entries {
+		if e.Service == svc && e.Name == name {
+			entries[i].Value = value
+			return m.save(entries)
+		}
+	}
+	entries = append(entries, mockEntry{Service: svc, Name: name, Value: value})
+	return m.save(entries)
+}
+
+func (m *fileMock) get(scope, skill, name string) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	entries, err := m.load()
+	if err != nil {
+		return "", err
+	}
+	svc := ScopedService(scope, skill)
+	for _, e := range entries {
+		if e.Service == svc && e.Name == name {
+			return e.Value, nil
+		}
+	}
+	return "", ErrNotFound
+}
+
+func (m *fileMock) has(scope, skill, name string) (bool, error) {
+	_, err := m.get(scope, skill, name)
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, ErrNotFound) {
+		return false, nil
+	}
+	return false, err
+}
+
+func (m *fileMock) delete(scope, skill, name string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	entries, err := m.load()
+	if err != nil {
+		return err
+	}
+	svc := ScopedService(scope, skill)
+	for i, e := range entries {
+		if e.Service == svc && e.Name == name {
+			entries = append(entries[:i], entries[i+1:]...)
+			return m.save(entries)
 		}
 	}
 	return nil

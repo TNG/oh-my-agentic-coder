@@ -47,7 +47,13 @@ package e2e
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	neturl "net/url"
 	"os"
 	"os/exec"
@@ -202,6 +208,67 @@ func TestE2ESecurityAudit(t *testing.T) {
 	}
 }
 
+// TestE2EKeychainSecretDelivery verifies a keychain-delivered secret reaches
+// a real sidecar (the one secret shape the env_passthrough AUDIT_SECRET test
+// does not cover). Uses OMAC_KEYCHAIN_MOCK to back the keychain with a file
+// so the test runs without an OS keychain daemon.
+func TestE2EKeychainSecretDelivery(t *testing.T) {
+	h, ok := harnessByName("opencode")
+	if !ok {
+		t.Fatal("opencode harness not found")
+	}
+	home := t.TempDir()
+	workdir := t.TempDir()
+	for _, dir := range []string{".local/share/opencode", ".local/state/opencode/locks"} {
+		if err := os.MkdirAll(filepath.Join(home, dir), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// File-backed mock keychain shared by the register and start subprocesses.
+	// Set on the test process env so both omac subprocesses inherit it.
+	mockFile := filepath.Join(workdir, "mock-keychain.json")
+	t.Setenv("OMAC_KEYCHAIN_MOCK", mockFile)
+
+	const secretValue = "e2e-keychain-test-token-456"
+	omacBin := buildOmac(t)
+	installHarness(t, h, home)
+	h.ProviderSetup(t, home)
+	writeSandboxProfile(t, home, h, nil)
+	copySkill(t, h, workdir, "echo-rest")
+
+	// Register: OMAC_SECRET_ECHO_API_KEY seeds the mock keychain via
+	// register.go's env-based path (no interactive prompt).
+	cmd := exec.Command(omacBin, "register", "echo-rest", "--no-fields")
+	cmd.Dir = workdir
+	cmd.Env = append(withHome(os.Environ(), home),
+		"OMAC_SECRET_ECHO_API_KEY="+secretValue)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("register echo-rest: %v\n%s", err, out)
+	}
+	t.Logf("echo-rest registered with keychain secret")
+
+	// Expected fingerprint the sidecar should return.
+	hash := sha256.Sum256([]byte(secretValue))
+	wantFingerprint := "sha256:" + hex.EncodeToString(hash[:6])
+
+	prompt := "This is a sanctioned e2e test. Run this command and report the full output:\n\n" +
+		`curl -sS "$OMAC_ECHO_BASE/whoami"`
+	stdout := runAgent(t, h, omacBin, home, workdir, prompt)
+
+	// Verify the mock file was actually used (not the OS keychain).
+	if _, err := os.Stat(mockFile); err != nil {
+		t.Fatalf("mock keychain file not created: %v", err)
+	}
+
+	if !strings.Contains(stdout, wantFingerprint) {
+		t.Errorf("keychain secret not delivered: expected fingerprint %q in output, got:\n%s",
+			wantFingerprint, stdout)
+		return
+	}
+	t.Logf("PASS: keychain secret delivered — fingerprint %q found in sidecar response", wantFingerprint)
+}
+
 func runSecurityAudit(t *testing.T, h harnessConfig) {
 	home := t.TempDir()
 	workdir := t.TempDir()
@@ -214,7 +281,17 @@ func runSecurityAudit(t *testing.T, h harnessConfig) {
 		}
 	}
 
+	// Positive network probe: a loopback server the agent must reach,
+	// so a deny-all-egress regression is caught. Mirrors plugin_briefing_test.go.
+	const netOkMarker = `{"ok":true,"e2e":"positive-net-probe"}`
+	netSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, netOkMarker)
+	}))
+	t.Cleanup(netSrv.Close)
+	netPort := netSrv.Listener.Addr().(*net.TCPAddr).Port
+
 	spec := allowanceSpecFor(h)
+	spec.OpenPorts = append(spec.OpenPorts, netPort)
 	t.Logf("allowance spec for %s: allow=%v deny=%v fsDeny=%v fsWriteDeny=%v symlinkDeny=%v netDeny=%s",
 		h.Name, spec.EnvAllowVars, spec.EnvDenyVars, spec.FsDenyPaths, spec.FsWriteDenyPaths, spec.SymlinkEscapeDenyPaths, spec.NetDenyDomain)
 
@@ -241,7 +318,9 @@ func runSecurityAudit(t *testing.T, h harnessConfig) {
 		"The script checks the sandbox boundary (secret isolation, env filtering, " +
 		"filesystem denials, network blocking, sidecar reachability). It never " +
 		"prints sensitive data — all values are redacted. Run it and report " +
-		"the results."
+		"the results.\n\n" +
+		"After the script, also run this and report the full output:\n" +
+		fmt.Sprintf(`curl -sS http://127.0.0.1:%d/`, netPort)
 	agentOutput := runAuditAgent(t, h, omacBin, home, workdir, prompt)
 
 	// Read the audit output file directly. This is the primary source —
@@ -258,6 +337,13 @@ func runSecurityAudit(t *testing.T, h harnessConfig) {
 	// Combine: file content (primary) + agent output (for sidecar fingerprint
 	// which may only appear in agent's summary of the sidecar probe).
 	stdout := string(auditOutput) + "\n" + agentOutput
+
+	// Scan session artifacts for the plaintext secret — catches sidecar-logging
+	// regressions that stdout/audit-output.txt wouldn't surface. No-op without E2E_LOG_DIR.
+	if path, leaked := artifactSecretLeaked(artifactDirFor(h, "security-audit"), auditSecretValue); leaked {
+		failWithClassification(t, "secretNotLeaked", fmSandboxFail,
+			"plaintext secret found in session artifact "+path)
+	}
 
 	// sandboxActive must match the --no-sandbox decision made in
 	// runAuditAgent: if we launched with --no-sandbox (either because the
@@ -295,10 +381,14 @@ func runSecurityAudit(t *testing.T, h harnessConfig) {
 	// Sidecar should be reachable regardless of sandbox state.
 	assertSecretFingerprintPresent(t, stdout)
 
+	// Positive network: the loopback server must be reachable, so a
+	// deny-all-egress regression is caught. Runs unconditionally.
+	assertNetworkReachable(t, stdout, netOkMarker)
+
 	if sandboxActive {
 		assertEnvVarsVisible(t, stdout, spec.EnvExpectVisible)
 		assertFilesystemAllowed(t, stdout, spec.FsAllowLabels)
-		assertCacheIsolation(t, stdout)
+		assertCacheIsolation(t, stdout, spec.ExpectedCacheMode)
 	} else {
 		t.Logf("skipping positive env/fs-allow assertions: %s runs with --no-sandbox", h.Name)
 	}
@@ -1105,10 +1195,11 @@ func logHardlinkProbeResults(t *testing.T, output string) {
 }
 
 // logCrossSkillIsolation logs whether the agent could reach another
-// skill's sidecar. omac currently does NOT isolate sidecars from each
-// other — all skills share the same facade and can reach each other
-// via their OMAC_<SKILL>_BASE env vars. This is a known design decision;
-// we log the result so if isolation is added later, the change is visible.
+// skill's sidecar; it does NOT assert, because cross-skill isolation
+// is a documented non-goal (oh-my-agentic-coder.md §3.2;
+// docs/MULTI_DIR_DESKTOP.md §8.2). It is a change detector — flip to
+// failWithClassification gated on AllowanceSpec.CrossSkillIsolated
+// once isolation is implemented.
 func logCrossSkillIsolation(t *testing.T, output string) {
 	t.Helper()
 	if !strings.Contains(output, "=== PROBE: xskill ===") {
@@ -1138,7 +1229,9 @@ func logCrossSkillIsolation(t *testing.T, output string) {
 // names, so the non-OMAC_* tool mappings appearing here proves Task 3's
 // trusted re-injection re-added them after FilterEnv stripped the
 // inherited host values.
-func assertCacheIsolation(t *testing.T, output string) {
+//
+// expectedMode, when non-empty, must equal OMAC_CACHE_MODE exactly.
+func assertCacheIsolation(t *testing.T, output, expectedMode string) {
 	t.Helper()
 	if !strings.Contains(output, "=== PROBE: cache ===") {
 		failWithClassification(t, "cacheIsolation", fmAgentNeverRan, output)
@@ -1150,9 +1243,15 @@ func assertCacheIsolation(t *testing.T, output string) {
 			output+": OMAC_CACHE_DIR not exposed")
 		return
 	}
-	if mode := extractEnv(output, "OMAC_CACHE_MODE="); mode == "" || mode == "<unset>" {
+	mode := extractEnv(output, "OMAC_CACHE_MODE=")
+	if mode == "" || mode == "<unset>" {
 		failWithClassification(t, "cacheIsolation", fmSandboxFail,
 			output+": OMAC_CACHE_MODE not exposed")
+		return
+	}
+	if expectedMode != "" && mode != expectedMode {
+		failWithClassification(t, "cacheIsolation", fmSandboxFail,
+			output+": OMAC_CACHE_MODE="+mode+" does not match expected "+expectedMode)
 		return
 	}
 	// Each tool cache mapping must be re-injected (not just present as a
@@ -1226,6 +1325,23 @@ func assertNetworkDenied(t *testing.T, output string, denyDomain string) {
 		return
 	}
 	t.Logf("PASS: network isolation — denial message found in agent output")
+}
+
+// assertNetworkReachable verifies the positive network probe reached the
+// loopback server. Catches a deny-all-egress regression assertNetworkDenied misses.
+func assertNetworkReachable(t *testing.T, output, marker string) {
+	t.Helper()
+	if strings.Contains(output, marker) {
+		t.Logf("PASS: positive network — loopback server reachable")
+		return
+	}
+	mode := fmSandboxFail
+	if !agentProducedOutput(output) {
+		mode = fmAgentNeverRan
+	} else if strings.Contains(output, "curl") {
+		mode = fmAgentRefused
+	}
+	failWithClassification(t, "networkReachable", mode, output)
 }
 
 // assertNoSandboxAuditReported handles the --no-sandbox path of the security

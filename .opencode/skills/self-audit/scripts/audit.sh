@@ -30,9 +30,10 @@
 #   8. sidecar   — verify own sidecar is reachable (fingerprint only)
 #   9. xskill    — try to reach another skill's sidecar
 #  10. cache     — verify OMAC_CACHE_DIR / OMAC_CACHE_MODE / tool mappings,
-#                 write a marker to the selected cache, and prove the
-#                 host-global cache root (~/.cache, ~/Library/Caches) is
-#                 denied so cache isolation (Tasks 1-10) holds.
+#                 write a marker to the selected cache, and read it back.
+#                 Does NOT assert host-cache (~/.cache, ~/Library/Caches)
+#                 denial here — that is covered by
+#                 internal/e2e/cache_isolation_test.go.
 
 set -u
 

@@ -361,7 +361,21 @@ jobs:
           row='${{ steps.row.outputs.row }}'
           echo "$row"
           if printf '%s' "$row" | grep -q '❌'; then
-            echo "::error::compatibility drift detected for ${{ matrix.harness }} / ${{ matrix.os }}"
+            # The leg always fails, but the ::error label is honest about whether it's a 
+            # real harness regression or an infra-only failure. Reuse the same 
+            # deterministic log-based classifier the report job uses
+            python3 scripts/classify-compat-failure.py --ctx-dir compat --out /tmp/reason.txt > /tmp/classify.out || true
+            infra_only=$(grep -oE 'infra_only=(true|false)' /tmp/classify.out | cut -d= -f2 || echo false)
+            reason=""
+            [ -s /tmp/reason.txt ] && reason=$(head -1 /tmp/reason.txt)
+            if [ "$infra_only" = "true" ]; then
+              msg="infra error detected for ${{ matrix.harness }} / ${{ matrix.os }} (not drift)"
+              [ -n "$reason" ] && msg="$msg — ${reason#• }"
+            else
+              msg="compatibility drift detected for ${{ matrix.harness }} / ${{ matrix.os }}"
+              [ -n "$reason" ] && msg="$msg — ${reason#• }"
+            fi
+            echo "::error::$msg"
             exit 1
           fi
 
