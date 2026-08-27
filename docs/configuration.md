@@ -8,7 +8,7 @@ description: omac configuration files and options
 | File | Purpose | Written by                            |
 |---|---|---------------------------------------|
 | `oh-my-agentic-coder.yaml` | Launcher config: sandbox runtime selection, facade tuning, audit settings | User                                  |
-| `sandbox-profiles/default.json` | Sandbox grants: which filesystem paths, network hosts, and env vars the agent can access | `omac start` (first run scaffolds it) |
+| `sandbox-profiles/default.json` | Sandbox grants: which filesystem paths, network hosts, and env vars the agent can access | `omac start` (first run creates it) |
 | `sandbox-profiles/default.pages.json` | Permanent allow/deny network decisions made via the prompt dialog | Network prompt dialog (user answers)  |
 | `sidecar.json` | Skill registry: names, directories, bundle hashes, declared secrets | `omac register` / `omac deregister`   |
 | `skill-config.yaml` | Non-secret per-skill fields: API base URLs, region names, feature flags | `omac register` / `omac config`       |
@@ -56,16 +56,18 @@ The launcher config changes only *how omac launches* in the project: the sandbox
 
 The sandbox grants file (`~/.config/omac/sandbox-profiles/default.json`) controls what the agent is actually allowed to access — filesystem paths, network mode, and environment variables. This is separate from the launcher config above, which only selects which sandboxing technology to use.
 
-omac scaffolds this file on first `omac start`. Key fields:
+omac creates this file the first time you run `omac start`. Key fields:
 
 | Field | Type | Default | What it controls |
 |---|---|---|---|
 | `filesystem.deny` | `string[]` | `[".env", "*.key", "*.pem"]` | Blocks files inside granted directories by name or glob |
 | `network.mode` | `string` | `"filtered"` | `filtered` (prompt for unknown hosts), `blocked` (no outbound at all), `open` (unrestricted) |
-| `environment.allow_vars` | `string[]` | see scaffolded file | Env vars passed into the sandbox; everything else is stripped |
+| `environment.allow_vars` | `string[]` | see created file | Env vars passed into the sandbox; everything else is stripped |
 | `filesystem.protected_paths` | `string[]` | `["~/.ssh", "~/.gnupg", ...]` | Paths that remain blocked even if a broader grant would cover them |
 
 See [Security model → Sandbox access reference](./security.md#sandbox-access-reference) for the full list of what the agent can and cannot access.
+
+omac never rewrites this file once it exists, so upgrading omac does not add newer default grants to a profile you already have. To pick up the newer defaults, make a copy of your current file, delete the original, and run `omac start` to write a fresh one. Then copy any changes you had made back from your saved copy into the new file.
 
 ### Opening a port
 
