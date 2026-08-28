@@ -15,8 +15,7 @@ import (
 // Harness descriptor to the registry (plus shipping its client-side bridge
 // assets); no command-dispatch or launch call site needs to change.
 //
-// See openspec/changes/support-claude-code-harness and oh-my-agentic-coder.md
-// §4/§17.
+// See openspec/changes/support-claude-code-harness.
 type Harness struct {
 	// Name is the canonical, lowercase harness identifier (e.g. "opencode",
 	// "claude-code"). It is what `omac start <name>` matches after alias
@@ -433,7 +432,7 @@ func harnessRegistry() []Harness {
 			// as a rules file (BriefingFileFunc), not a plugin.
 			BridgeDir: "",
 			// CodeWhale loads workspace-local skills only from `.agents/skills`
-			// or `./skills` (docs/CONFIGURATION.md) — NOT a workspace
+			// or `./skills` (docs/configuration.md) — NOT a workspace
 			// `.codewhale/skills`. Owning the shared "agents" base is therefore
 			// correct: WorkdirSkillsDir() becomes `.agents/skills` (where
 			// CodeWhale actually looks), while ConfigHome()/GlobalSkillsDir()

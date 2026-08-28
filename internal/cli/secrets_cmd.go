@@ -7,6 +7,7 @@ import (
 
 	"github.com/tngtech/oh-my-agentic-coder/internal/config"
 	"github.com/tngtech/oh-my-agentic-coder/internal/keychain"
+	"github.com/tngtech/oh-my-agentic-coder/internal/osinfo"
 	"github.com/tngtech/oh-my-agentic-coder/internal/registry"
 	"github.com/tngtech/oh-my-agentic-coder/internal/secrets"
 )
@@ -90,7 +91,7 @@ func runSecretsSet(args []string, env *Env) int {
 	// return value is also irrelevant: `omac secrets set` is a
 	// pinpoint operation on a single secret and does not touch the
 	// registry's skip list — that is solely owned by `omac register`.
-	if _, err := handleOneSecret(env, scope, skill, spec, true, nil, nil, false); err != nil {
+	if _, err := handleOneSecret(env, scope, skill, spec, true, nil, nil, false, osinfo.Detect()); err != nil {
 		fmt.Fprintln(env.Stderr, "omac secrets set:", err)
 		return ExitKeychainError
 	}
@@ -168,14 +169,14 @@ func runSecretsImport(args []string, env *Env) int {
 			fmt.Fprintf(env.Stderr, "omac secrets import: %q not declared in sidecar.secrets\n", k)
 			return ExitConfigInvalid
 		}
-		if err := validatePattern(spec, v); err != nil {
+		if err := spec.ValidateValue(v); err != nil {
 			fmt.Fprintln(env.Stderr, "omac secrets import:", err)
 			return ExitConfigInvalid
 		}
 		s := secrets.NewSecretString(v)
 		if err := keychain.SetScoped(scope, skill, k, s); err != nil {
 			s.Zero()
-			fmt.Fprintln(env.Stderr, "omac secrets import: keychain:", wrapKeychainErr(err))
+			fmt.Fprintln(env.Stderr, "omac secrets import: keychain:", keychain.WrapUnavailable(err, osinfo.Detect()))
 			return ExitKeychainError
 		}
 		s.Zero()
@@ -187,7 +188,7 @@ func runSecretsImport(args []string, env *Env) int {
 // secretScopeFor returns the keychain scope for a skill's secrets: "" for a
 // global skill (unscoped omac/<skill>), or the workdir-id for a workdir-local
 // skill (omac/<workdir-id>/<skill>). This MUST match the scope serve reads
-// with (serve.go bringUp). See docs/MULTI_DIR_DESKTOP.md §4.3.
+// with (serve.go bringUp). See docs/contributing/serve-spec.md.
 func secretScopeFor(env *Env, global bool) string {
 	if global {
 		return ""

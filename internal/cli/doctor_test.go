@@ -5,6 +5,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/tngtech/oh-my-agentic-coder/internal/keychain"
+	"github.com/tngtech/oh-my-agentic-coder/internal/secrets"
+	"github.com/tngtech/oh-my-agentic-coder/internal/skillconfig"
+	"github.com/tngtech/oh-my-agentic-coder/internal/skillstate"
 )
 
 // writeWorkdirConfig writes an oh-my-agentic-coder.yaml into the workdir
@@ -509,6 +514,17 @@ func TestDoctorEmptyAllowVarsWarned(t *testing.T) {
 		!strings.Contains(strings.ToLower(output), "remediation") {
 		t.Errorf("doctor output missing impact/remediation; got:\n%s", output)
 	}
+	profilePath := filepath.Join(home, ".config", "omac", "sandbox-profiles", "default.json")
+	for _, want := range []string{
+		profilePath,
+		"not updated by omac upgrades",
+		"installer or original source",
+		`["*"] is not recommended`,
+	} {
+		if !strings.Contains(output, want) {
+			t.Errorf("doctor output missing %q; got:\n%s", want, output)
+		}
+	}
 }
 
 // TestDoctorNonEmptyAllowVarsNotWarned asserts the empty-allow_vars warning
@@ -653,5 +669,84 @@ func stageProfile(t *testing.T, home, jsonContent string) {
 	}
 	if err := os.WriteFile(filepath.Join(dir, "default.json"), []byte(jsonContent), 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestDoctorAgreesWithStartOnWorkdirScopedSecret is issue #174's Failure 3.
+// doctor probed the keychain UNSCOPED (keychain.Has) while `omac start` probes
+// it workdir-scoped with an unscoped fallback (keychain.GetWithFallback), so a
+// secret stored only under the workdir scope made doctor report a missing
+// required secret while start launched happily. Both now resolve through
+// internal/skillstate, so they cannot disagree.
+func TestDoctorAgreesWithStartOnWorkdirScopedSecret(t *testing.T) {
+	isolateHome(t)
+	env, outBuf, _, drain := newPipeEnv(t, "")
+	env.Workdir = t.TempDir()
+
+	stageSkillWithSecret(t, env.Workdir, "slack")
+	if code := runRegister([]string{"slack", "--no-secrets"}, env); code != ExitOK {
+		t.Fatalf("register exit=%d", code)
+	}
+
+	// Stored ONLY under the workdir scope — the case doctor used to miss.
+	scope := keychain.WorkdirID(env.Workdir)
+	if err := keychain.SetScoped(scope, "slack", "API_TOKEN", secrets.NewSecretString("v")); err != nil {
+		t.Fatalf("SetScoped: %v", err)
+	}
+
+	runDoctor(nil, env)
+	drain()
+	if out := outBuf.String(); !strings.Contains(out, "missing_required_secrets=0") {
+		t.Errorf("doctor should see the workdir-scoped secret start would use:\n%s", out)
+	}
+
+	// And the launch path agrees: eligibility is resolved by the same rule.
+	cfg := skillstate.MergeConfig(&skillconfig.Store{}, &skillconfig.Store{})
+	meta, _, err := loadRegisteredMeta(env, "slack")
+	if err != nil {
+		t.Fatalf("loadRegisteredMeta: %v", err)
+	}
+	eligible, err := skillEligibleForAutoRegister(env.Workdir, "slack", meta, cfg, false)
+	if err != nil {
+		t.Fatalf("skillEligibleForAutoRegister: %v", err)
+	}
+	if !eligible {
+		t.Error("start's resolution should also find the workdir-scoped secret")
+	}
+}
+
+// TestDoctorReportsMissingRequiredField: doctor said nothing about config
+// fields at all, so a skill that `omac start` would refuse over a missing
+// required field got a clean bill of health.
+func TestDoctorReportsMissingRequiredField(t *testing.T) {
+	isolateHome(t)
+	env, outBuf, _, drain := newPipeEnv(t, "")
+	env.Workdir = t.TempDir()
+
+	dir := filepath.Join(env.Workdir, ".opencode", "skills", "probe")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	meta := "name: probe\n" +
+		"sidecar:\n" +
+		"  command: [\"true\"]\n" +
+		"  config:\n" +
+		"    - name: API_BASE\n" +
+		"      required: true\n"
+	if err := os.WriteFile(filepath.Join(dir, "omac.yaml"), []byte(meta), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code := runRegister([]string{"probe", "--no-secrets", "--no-fields"}, env); code != ExitOK {
+		t.Fatalf("register exit=%d", code)
+	}
+
+	runDoctor(nil, env)
+	drain()
+	out := outBuf.String()
+	if !strings.Contains(out, "missing_required_fields=1") {
+		t.Errorf("doctor should count the missing required field:\n%s", out)
+	}
+	if !strings.Contains(out, "[warn]") {
+		t.Errorf("a skill start would refuse must not read as ok:\n%s", out)
 	}
 }

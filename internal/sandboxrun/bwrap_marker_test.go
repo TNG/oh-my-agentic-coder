@@ -11,6 +11,33 @@ import (
 
 const testDenialText = "X-Omac-Sandbox: denied\nprotected\n"
 
+// wantInertMarker asserts the bytes bwrap binds into the sandbox carry
+// the denial text but cannot execute: every content line is commented
+// (#213 — the marker is bound over shell configs, which get sourced).
+func wantInertMarker(t *testing.T, path, wantText string) {
+	t.Helper()
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("marker unreadable: %v", err)
+	}
+	for i, line := range strings.Split(string(got), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		if !strings.HasPrefix(strings.TrimLeft(line, " \t"), "#") {
+			t.Errorf("%s line %d is executable content: %q", path, i+1, line)
+		}
+	}
+	for _, want := range strings.Split(strings.TrimSpace(wantText), "\n") {
+		if want == "" {
+			continue
+		}
+		if !strings.Contains(string(got), strings.TrimSpace(want)) {
+			t.Errorf("%s lost denial text %q, got:\n%s", path, want, got)
+		}
+	}
+}
+
 func TestBwrapMarkerFileUsedWhenDenialTextSet(t *testing.T) {
 	home := t.TempDir()
 	netrc := filepath.Join(home, ".netrc")
@@ -42,13 +69,40 @@ func TestBwrapMarkerFileUsedWhenDenialTextSet(t *testing.T) {
 		t.Errorf("no marker-file bind found: %s", joined)
 	}
 	// The bind source must exist (bwrap reads it at launch) and carry the
-	// denial text verbatim.
+	// denial text — in its inert form, since the same marker masks shell
+	// configs.
+	wantInertMarker(t, g.markerFile, testDenialText)
+}
+
+// TestBwrapMarkerNeutralizesHostileDenialText pins the scope note in
+// #213: denial.marker_file is profile-configurable, so a profile must
+// not be able to bind a command over a file the sandboxed process
+// sources.
+func TestBwrapMarkerNeutralizesHostileDenialText(t *testing.T) {
+	home := t.TempDir()
+	profile := filepath.Join(home, ".profile")
+	if err := os.WriteFile(profile, []byte("export SECRET=1"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	g := &Grants{
+		Workdir:        home,
+		AllowPaths:     []string{home},
+		ProtectedPaths: []string{profile},
+		NetworkMode:    sandboxprofile.ModeBlocked,
+		DenialText:     "touch " + filepath.Join(home, "pwned") + "\n",
+	}
+	cleanup, err := g.prepareMarkers()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+
 	got, err := os.ReadFile(g.markerFile)
 	if err != nil {
-		t.Fatalf("marker file unreadable: %v", err)
+		t.Fatal(err)
 	}
-	if string(got) != testDenialText {
-		t.Errorf("marker file content = %q, want %q", got, testDenialText)
+	if want := "# touch " + filepath.Join(home, "pwned") + "\n"; string(got) != want {
+		t.Errorf("marker file = %q; want neutralized %q", got, want)
 	}
 }
 
@@ -84,13 +138,7 @@ func TestBwrapMarkerDirUsedWhenDenialTextSet(t *testing.T) {
 	}
 	// The .omac-denied file inside the marker dir must exist and carry the
 	// denial text (not, e.g., a temp-file path — regression guard).
-	got, err := os.ReadFile(filepath.Join(g.markerDir, markerDirFileName))
-	if err != nil {
-		t.Fatalf("marker-dir notice unreadable: %v", err)
-	}
-	if string(got) != testDenialText {
-		t.Errorf("marker-dir notice content = %q, want %q", got, testDenialText)
-	}
+	wantInertMarker(t, filepath.Join(g.markerDir, markerDirFileName), testDenialText)
 }
 
 func TestBwrapMarkerDirHonorsCustomName(t *testing.T) {

@@ -1,0 +1,685 @@
+// Package skillstate answers one question — "is this skill ready to mount?" —
+// and answers it exactly once for the whole codebase.
+//
+// Resolving a registered skill's declared secrets and config fields, then
+// deciding whether it can be armed, used to be implemented independently in
+// six places (`omac start`'s preflight and its auto-register eligibility
+// check, `omac serve`'s bringUp, start's live-reload loop, `omac doctor`, and
+// `omac config show`). The copies drifted, and the drift was silent: a skill
+// whose only required field came from $default_from_env started fine under
+// start and serve but was skipped forever by live reload; a secret listed in
+// both `secrets:` and `env_passthrough:` — the documented fallback for
+// keychain-less CI runners — was rejected by serve even though the supervisor
+// would have injected it at spawn; doctor probed the keychain unscoped while
+// start probed it workdir-scoped, so the two disagreed about the same secret.
+// See issue #174.
+//
+// The split of responsibility is: this package owns the RULE and emits
+// []Problem; every caller owns only the PRESENTATION of those problems —
+// start renders a consolidated refusal and picks an exit code, serve installs
+// a pending-credentials or broken route, reload does the same on the live
+// facade, doctor prints warnings, `config show` renders a source column.
+// Adding a resolution rung (a new fallback, a new precedence step) is a change
+// here and nowhere else.
+package skillstate
+
+import (
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+
+	"github.com/tngtech/oh-my-agentic-coder/internal/config"
+	"github.com/tngtech/oh-my-agentic-coder/internal/keychain"
+	"github.com/tngtech/oh-my-agentic-coder/internal/osinfo"
+	"github.com/tngtech/oh-my-agentic-coder/internal/registry"
+	"github.com/tngtech/oh-my-agentic-coder/internal/secrets"
+	"github.com/tngtech/oh-my-agentic-coder/internal/skillconfig"
+)
+
+// ProblemKind classifies why a skill is not ready. Callers switch on it to
+// choose a presentation (refusal section, route state, warning line) and, for
+// start, an exit code.
+type ProblemKind string
+
+const (
+	// MetaBroken means omac.yaml is missing, unparseable, or no longer
+	// declares a sidecar block. Not fixable by supplying a value.
+	MetaBroken ProblemKind = "meta-broken"
+	// BundleDrift means the skill directory's content hash no longer matches
+	// what was recorded at register time, and the caller did not opt into
+	// accepting that.
+	BundleDrift ProblemKind = "bundle-drift"
+	// MissingSecret means a required secret is in neither the keychain nor
+	// (via env_passthrough) the host environment.
+	MissingSecret ProblemKind = "missing-secret"
+	// InvalidSecret means a secret supplied from the host environment failed
+	// its declared pattern. Keychain values were vetted at register time, so
+	// this only ever arises for env_passthrough-supplied values.
+	InvalidSecret ProblemKind = "invalid-secret"
+	// KeychainUnavailable means the keychain could not answer for a required
+	// secret: the backend is missing (headless Linux/WSL with no Secret
+	// Service), or it failed opaquely (a macOS authorization denial, a corrupt
+	// entry). Distinct from MissingSecret because "run omac secrets set" is
+	// useless advice when there is no working keychain to set it in. Problem.Fix
+	// carries the OS-specific remedy when the backend is provably missing.
+	KeychainUnavailable ProblemKind = "keychain-unavailable"
+	// MissingField means a required config field resolved to no value through
+	// any rung of the precedence ladder.
+	MissingField ProblemKind = "missing-field"
+)
+
+// Problem is one reason a skill is not ready.
+type Problem struct {
+	Kind  ProblemKind
+	Skill string
+	// Field is the secret or config field name; empty for skill-level
+	// problems (MetaBroken, BundleDrift).
+	Field string
+	// Detail is the human-readable cause.
+	Detail string
+	// Fix is the `omac …` command (or other concrete remedy) that resolves
+	// it. Written once here so every caller renders the same remediation.
+	// Empty when there is no known remedy (an opaque keychain failure).
+	Fix string
+	// Cause is the underlying error, when one exists, for callers that need to
+	// classify it rather than print it — auto-register eligibility declines
+	// silently on a missing backend (errors.Is ErrNotFound) but propagates an
+	// opaque keychain failure. Nil for problems derived from absent values.
+	Cause error
+	// Optional marks a problem that came from a spec the skill declared
+	// optional. It is stated negatively so the zero value stays blocking:
+	// secrets are required by default (config.SecretSpec.IsRequired), and a
+	// Problem built without this field must not silently become skippable.
+	// An optional secret that is present but malformed is worth reporting,
+	// yet it must not keep a route from arming: the supervisor injects the
+	// value either way, so refusing to mount is strictly worse than mounting
+	// with it. StallFor honors this; the launch-path refusal deliberately
+	// does not, so `omac start` keeps failing loudly.
+	Optional bool
+}
+
+// Source names the rung of the precedence ladder a resolved value came from,
+// or why it is absent.
+//
+// These strings are part of `omac config show`'s output contract: they appear
+// in the --json payload and `omac config get` switches on the two missing-*
+// values, so they must not be renamed casually.
+type Source string
+
+const (
+	SourceStored         Source = "stored"           // skill-config.yaml (workdir or global layer)
+	SourceDefault        Source = "default"          // omac.yaml `default:`
+	SourceKeychain       Source = "keychain"         // OS keychain, scoped or unscoped
+	SourceEnvPassthrough Source = "env_passthrough"  // host env, because the secret is listed in env_passthrough
+	SourceMissingReq     Source = "missing-required" // required and unresolved
+	SourceMissingOpt     Source = "missing-optional" // optional and unresolved
+	// SourceUnreadable marks a secret the keychain could not answer for, as
+	// opposed to one that is simply unset. Secrets only.
+	SourceUnreadable Source = "keychain-unavailable"
+)
+
+// SourceDefaultFromEnv renders the `default_from_env` rung, which names the
+// variable it read so `config show` can display which one won.
+func SourceDefaultFromEnv(envVar string) Source { return Source("default_from_env:" + envVar) }
+
+// Options configures a Resolver. The zero value resolves unscoped secrets
+// against the real keychain and the real process environment.
+type Options struct {
+	// Scope is the keychain scope: a workdir-id for workdir-local skills, or
+	// "" for user-global skills and legacy single-workdir start. Lookups
+	// always fall back to the unscoped key (see keychain.GetWithFallback), so
+	// a secret stored either way resolves.
+	Scope string
+
+	// Env reads the host environment. nil means os.LookupEnv. Injected by
+	// tests so an env_passthrough or default_from_env case does not have to
+	// mutate the process.
+	Env func(string) (string, bool)
+
+	// AcceptBundleDrift suppresses BundleDrift problems (`--accept-skill-changes`).
+	AcceptBundleDrift bool
+
+	// SkipSecretPattern suppresses InvalidSecret problems
+	// (`--skip-secret-pattern`), the escape hatch for a stale pattern in a
+	// skill's omac.yaml. The raw value is still passed through to the sidecar.
+	SkipSecretPattern bool
+
+	// SkipBundleHash skips hashing the skill directory entirely. Set by
+	// callers that only report on values (doctor, `config show`) or for which
+	// no recorded hash exists yet (auto-register eligibility), so they don't
+	// pay a tree walk they have no use for.
+	SkipBundleHash bool
+
+	// Keychain reads a secret. nil means keychain.GetWithFallback. Injected by
+	// tests to simulate a dead backend without a process-global mock.
+	Keychain func(scope, skill, name string) (secrets.Secret, error)
+}
+
+// Armed is everything a caller needs to spawn a sidecar for one skill. It is
+// returned even when there are problems (partially populated) so a caller can
+// still report on what DID resolve — `config show` renders exactly that.
+//
+// Armed owns live secret material. Every path that obtains one, including
+// early returns on the problem paths, must Zero it.
+type Armed struct {
+	Entry  registry.Entry
+	Meta   *config.Meta
+	AbsDir string
+	// Mount is the facade mount point (sidecar.mount, defaulting to the
+	// skill name).
+	Mount string
+	// Bundle is AbsDir's content hash, computed once here so callers that
+	// need it for both the drift check and the spawn-approval gate don't walk
+	// the tree twice. Empty when SkipBundleHash or when hashing failed.
+	Bundle string
+	// BundleErr is a hashing I/O failure, kept distinct from BundleDrift
+	// because callers treat them differently: start aborts the whole launch
+	// (it cannot produce useful per-skill diagnostics for an unreadable
+	// directory), while serve leaves the hash empty for the approval gate to
+	// re-derive and refuse.
+	BundleErr error
+
+	Secrets map[string]secrets.Secret
+	Config  map[string]string
+
+	// SecretSources / ConfigSources record which rung produced each value,
+	// including the missing-* markers for unresolved ones. Presentation-only;
+	// the spawn path needs just Secrets and Config.
+	SecretSources map[string]Source
+	ConfigSources map[string]Source
+}
+
+// Zero wipes every resolved secret's plaintext. Safe on a zero-value Armed and
+// safe to call twice, so `defer armed.Zero()` immediately after resolving is
+// always correct.
+func (a *Armed) Zero() {
+	for name := range a.Secrets {
+		s := a.Secrets[name]
+		s.Zero()
+		a.Secrets[name] = s
+	}
+}
+
+// Resolver applies the readiness rule to one or more skills. Construct one per
+// pass (a launch preflight, a reload sweep, a doctor run) so a dead keychain is
+// discovered once rather than per skill — see the sticky behaviour in
+// resolveSecrets.
+type Resolver struct {
+	opts Options
+	// keychainDown records that the BACKEND reported itself unavailable. Once
+	// set, later skills in this pass skip it entirely rather than re-dialing a
+	// bus that is provably not there — start's pre-#174 behaviour was to abort
+	// the launch on the first keychain error, and collecting every skill's
+	// problems instead must not turn that into N failed dials (on macOS, N
+	// blocking authorization prompts).
+	//
+	// Deliberately narrow: only ErrUnavailable, which is a property of the
+	// environment and therefore affects every read. A per-ITEM failure (a
+	// corrupt entry, one denied item) says nothing about the next secret, so
+	// short-circuiting on it would attribute one skill's error to skills whose
+	// secrets are perfectly readable.
+	keychainDown error
+}
+
+// New returns a Resolver applying o.
+func New(o Options) *Resolver { return &Resolver{opts: o} }
+
+// Resolve applies the readiness rule to a skill whose meta is already loaded:
+// structural checks (bundle drift) followed by credential resolution.
+//
+// absDir is the skill's own directory, already absolute. cfg is the merged
+// (global + workdir) config store — see MergeConfig.
+func (r *Resolver) Resolve(m *config.Meta, e registry.Entry, absDir string, cfg *skillconfig.Store) (Armed, []Problem) {
+	armed, problems := r.inspectMeta(m, e, absDir)
+	return armed, append(problems, r.Fill(&armed, cfg)...)
+}
+
+// Load is Resolve preceded by reading omac.yaml.
+func (r *Resolver) Load(e registry.Entry, absDir string, cfg *skillconfig.Store) (Armed, []Problem) {
+	armed, problems := r.Inspect(e, absDir)
+	if Has(problems, MetaBroken) {
+		return armed, problems
+	}
+	return armed, append(problems, r.Fill(&armed, cfg)...)
+}
+
+// Inspect performs the STRUCTURAL half of the rule — read omac.yaml, hash the
+// bundle, report a broken meta or drift — and reads no secret at all.
+//
+// Callers with a gate between structural validation and credential resolution
+// use it: serve and live reload must clear the spawn-approval gate (a security
+// decision, see internal/skilltrust) BEFORE touching the keychain, otherwise a
+// skill that is about to be refused still costs a keychain read each — one
+// blocking authorization prompt per refused skill on macOS — and its plaintext
+// credentials are materialized for nothing. Follow with Fill once the gate
+// passes. Callers with no such gate (start's preflight, doctor) use Load.
+//
+// A meta that is missing, unparseable, or sidecar-less yields a single
+// MetaBroken problem; nothing further can be resolved, and Fill on that Armed
+// is a no-op.
+func (r *Resolver) Inspect(e registry.Entry, absDir string) (Armed, []Problem) {
+	m, err := config.LoadMeta(filepath.Join(absDir, config.MetaFileName))
+	if err != nil {
+		return Armed{Entry: e, AbsDir: absDir, Mount: e.Name}, []Problem{{
+			Kind:   MetaBroken,
+			Skill:  e.Name,
+			Detail: err.Error(),
+			Fix:    "omac register " + e.Name + " --force",
+			Cause:  err,
+		}}
+	}
+	if m.Sidecar == nil {
+		return Armed{Entry: e, Meta: m, AbsDir: absDir, Mount: e.Name}, []Problem{{
+			Kind:   MetaBroken,
+			Skill:  e.Name,
+			Detail: config.MetaFileName + " no longer has a sidecar block",
+			Fix:    "omac register " + e.Name + " --force",
+		}}
+	}
+	return r.inspectMeta(m, e, absDir)
+}
+
+// inspectMeta is Inspect for an already-parsed meta.
+func (r *Resolver) inspectMeta(m *config.Meta, e registry.Entry, absDir string) (Armed, []Problem) {
+	armed := Armed{
+		Entry:         e,
+		Meta:          m,
+		AbsDir:        absDir,
+		Mount:         m.Sidecar.MountOrDefault(e.Name),
+		Secrets:       map[string]secrets.Secret{},
+		Config:        map[string]string{},
+		SecretSources: map[string]Source{},
+		ConfigSources: map[string]Source{},
+	}
+	var problems []Problem
+	if !r.opts.SkipBundleHash {
+		bundle, err := config.BundleHash(absDir)
+		armed.Bundle, armed.BundleErr = bundle, err
+		// Report drift only when the hash is trustworthy; a hashing failure
+		// is the caller's to interpret via BundleErr.
+		if err == nil && !r.opts.AcceptBundleDrift && bundle != e.BundleHash {
+			problems = append(problems, Problem{
+				Kind:   BundleDrift,
+				Skill:  e.Name,
+				Detail: "bundle changed since register",
+				Fix:    "omac register " + e.Name + " --force",
+			})
+		}
+	}
+	return armed, problems
+}
+
+// Fill performs the CREDENTIAL half of the rule: resolve every declared secret
+// and config field into armed. Safe (a no-op) on an Armed whose meta is broken,
+// so a caller that ignores Inspect's problems cannot panic.
+func (r *Resolver) Fill(armed *Armed, cfg *skillconfig.Store) []Problem {
+	if armed.Meta == nil || armed.Meta.Sidecar == nil {
+		return nil
+	}
+	problems := r.resolveSecrets(armed)
+	return append(problems, r.resolveConfig(armed, cfg)...)
+}
+
+// resolveSecrets fills armed.Secrets. Precedence, and the order matters:
+//
+//  1. the keychain (scoped, falling back to unscoped);
+//  2. else the host environment, but ONLY for a secret listed in
+//     env_passthrough — the documented fallback for keychain-less
+//     environments (config/meta.go's SidecarMeta docs; the supervisor injects
+//     these at spawn, see supervisor.buildEnv). An env-supplied value is
+//     re-validated against the spec's pattern, because unlike a keychain value
+//     it was never vetted at register time;
+//  3. else a problem, if the secret is required.
+//
+// Step 2 runs even when the keychain backend is DOWN, and that is deliberate:
+// keychain.GetScoped reports an unavailable backend as ErrNotFound (plus
+// ErrUnavailable), so a headless CI runner exporting its credentials in the
+// shell resolves them here exactly as before. Only once no fallback has
+// satisfied a required secret does the ErrUnavailable classification matter —
+// at which point reporting "no Secret Service provider" instead of "run omac
+// secrets set" is the whole point of issue #174's Failure 4.
+//
+// spec.DefaultFromEnv is deliberately NOT consulted for secrets. register.go
+// honours it when prompting, but the supervisor only injects variables named
+// in env_passthrough, so accepting it here would arm a skill whose sidecar
+// then starts without the value.
+func (r *Resolver) resolveSecrets(armed *Armed) []Problem {
+	specs := armed.Meta.Sidecar.Secrets
+	if len(specs) == 0 {
+		return nil
+	}
+	passthrough := map[string]struct{}{}
+	for _, name := range armed.Meta.Sidecar.EnvPassthrough {
+		passthrough[name] = struct{}{}
+	}
+
+	var problems []Problem
+	for _, spec := range specs {
+		val, err := r.getSecret(armed.Entry.Name, spec.Name)
+		if err == nil {
+			armed.Secrets[spec.Name] = val
+			armed.SecretSources[spec.Name] = SourceKeychain
+			continue
+		}
+
+		if envVal, ok := r.secretFromEnv(spec.Name, passthrough); ok {
+			armed.Secrets[spec.Name] = secrets.NewSecretString(envVal)
+			armed.SecretSources[spec.Name] = SourceEnvPassthrough
+			if !r.opts.SkipSecretPattern {
+				if perr := spec.ValidateValue(envVal); perr != nil {
+					problems = append(problems, Problem{
+						Kind:     InvalidSecret,
+						Skill:    armed.Entry.Name,
+						Field:    spec.Name,
+						Detail:   perr.Error(),
+						Optional: !spec.IsRequired(),
+						Fix: fmt.Sprintf("fix the exported value, or run omac secrets set %s %s",
+							armed.Entry.Name, spec.Name),
+					})
+				}
+			}
+			continue
+		}
+
+		// "Could not read it" is not "it is unset", and `config show`'s source
+		// column is where that distinction is worth making — an operator
+		// staring at <missing> on a headless box should see why.
+		if errors.Is(err, keychain.ErrUnavailable) {
+			armed.SecretSources[spec.Name] = SourceUnreadable
+		} else if spec.IsRequired() {
+			armed.SecretSources[spec.Name] = SourceMissingReq
+		} else {
+			armed.SecretSources[spec.Name] = SourceMissingOpt
+		}
+		if !spec.IsRequired() {
+			continue
+		}
+		problems = append(problems, r.secretProblem(armed.Entry.Name, spec.Name, err))
+	}
+	return problems
+}
+
+// secretProblem classifies why a required secret could not be resolved.
+func (r *Resolver) secretProblem(skill, name string, err error) Problem {
+	unavailable := errors.Is(err, keychain.ErrUnavailable) || keychain.IsUnavailable(err)
+	if unavailable || !errors.Is(err, keychain.ErrNotFound) {
+		// Either the backend reported itself missing, or it failed in a way we
+		// cannot interpret. Both are environment problems, not "you forgot to
+		// set it". Only the former has an actionable OS-specific remedy — an
+		// opaque failure gets no Fix rather than a misleading "install
+		// gnome-keyring" on a Mac.
+		p := Problem{
+			Kind:  KeychainUnavailable,
+			Skill: skill,
+			Field: name,
+			// BackendCause, not err: the full chain leads with "secret not
+			// found", which contradicts the section this problem renders under.
+			Detail: keychain.BackendCause(err).Error(),
+			Cause:  err,
+		}
+		if unavailable {
+			p.Fix = keychain.UnavailableHint(osinfo.Detect())
+		}
+		return p
+	}
+	return Problem{
+		Kind:   MissingSecret,
+		Skill:  skill,
+		Field:  name,
+		Detail: "required secret missing",
+		Fix:    fmt.Sprintf("omac secrets set %s %s", skill, name),
+	}
+}
+
+// getSecret reads one secret, short-circuiting once the backend has proven
+// itself broken for this pass.
+func (r *Resolver) getSecret(skill, name string) (secrets.Secret, error) {
+	if r.keychainDown != nil {
+		return secrets.Secret{}, r.keychainDown
+	}
+	get := r.opts.Keychain
+	if get == nil {
+		get = keychain.GetWithFallback
+	}
+	val, err := get(r.opts.Scope, skill, name)
+	if err == nil {
+		return val, nil
+	}
+	// Only a self-reported dead BACKEND generalizes to later skills. An absent
+	// secret is normal, and an opaque per-item failure is that item's alone.
+	if errors.Is(err, keychain.ErrUnavailable) {
+		r.keychainDown = err
+	}
+	return secrets.Secret{}, err
+}
+
+// secretFromEnv returns the host value that will satisfy a keychain-absent
+// secret at runtime, if any. ok is true only when the secret is listed under
+// sidecar.env_passthrough AND the host exports a non-empty value for it.
+//
+// The supervisor passes env_passthrough vars through whenever they are present
+// even if empty; an empty token is no token, so an empty value deliberately
+// does not satisfy a required secret here.
+func (r *Resolver) secretFromEnv(name string, passthrough map[string]struct{}) (string, bool) {
+	if _, ok := passthrough[name]; !ok {
+		return "", false
+	}
+	v, ok := r.lookupEnv(name)
+	if !ok || v == "" {
+		return "", false
+	}
+	return v, true
+}
+
+// resolveConfig fills armed.Config with precedence
+// stored > spec.Default > $spec.DefaultFromEnv > missing.
+//
+// Config VALUES are not re-validated against spec.Pattern/Choices: that is
+// register-time prompting behaviour and moving it here would newly refuse
+// skills that start fine today.
+func (r *Resolver) resolveConfig(armed *Armed, cfg *skillconfig.Store) []Problem {
+	var problems []Problem
+	for _, spec := range armed.Meta.Sidecar.Config {
+		if cfg != nil {
+			if v, ok := cfg.Get(armed.Entry.Name, spec.Name); ok {
+				armed.Config[spec.Name] = v
+				armed.ConfigSources[spec.Name] = SourceStored
+				continue
+			}
+		}
+		if spec.Default != "" {
+			armed.Config[spec.Name] = spec.Default
+			armed.ConfigSources[spec.Name] = SourceDefault
+			continue
+		}
+		if spec.DefaultFromEnv != "" {
+			if v, ok := r.lookupEnv(spec.DefaultFromEnv); ok && v != "" {
+				armed.Config[spec.Name] = v
+				armed.ConfigSources[spec.Name] = SourceDefaultFromEnv(spec.DefaultFromEnv)
+				continue
+			}
+		}
+		if !spec.IsRequired() {
+			armed.ConfigSources[spec.Name] = SourceMissingOpt
+			continue
+		}
+		armed.ConfigSources[spec.Name] = SourceMissingReq
+		problems = append(problems, Problem{
+			Kind:   MissingField,
+			Skill:  armed.Entry.Name,
+			Field:  spec.Name,
+			Detail: "required config field missing",
+			Fix:    "omac register " + armed.Entry.Name + " --reprompt-fields",
+		})
+	}
+	return problems
+}
+
+func (r *Resolver) lookupEnv(name string) (string, bool) {
+	if r.opts.Env != nil {
+		return r.opts.Env(name)
+	}
+	return os.LookupEnv(name)
+}
+
+// MissingFields returns the sorted names of the secrets and config fields that
+// are required but unresolved, for callers that report "missing credentials"
+// as a list (serve's and reload's pending-credentials routes).
+func MissingFields(problems []Problem) []string {
+	var out []string
+	for _, p := range problems {
+		if p.Kind == MissingSecret || p.Kind == MissingField {
+			out = append(out, p.Field)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// Stall is why a skill cannot arm yet, in the shape the two callers that keep
+// serving (serve, live reload) need: they install a stub route rather than
+// refusing a whole process, and both must classify identically — a divergence
+// between them is what issue #174 was about.
+type Stall struct {
+	// Terminal distinguishes the two route states. A stall is terminal when no
+	// value the user could supply clears it: the skill must be re-registered
+	// (a broken omac.yaml, bundle drift). Otherwise it is pending — the route
+	// stays promotable, and serve re-activates to pick it up once the value
+	// appears.
+	Terminal bool
+	// Missing names the values to supply or fix. Empty when Terminal.
+	Missing []string
+	// Detail is the human/agent-facing reason, including the remedy when the
+	// cause has one that `omac secrets set` does not cover (a dead keychain
+	// backend, a malformed exported value).
+	Detail string
+}
+
+// StallFor summarizes problems as a Stall, or nil when the skill can arm.
+//
+// The split is RECOVERABILITY, not severity. An unreadable keychain and a
+// malformed env-supplied secret are both "pending": starting a Secret Service,
+// exporting the variable, or storing a valid value all clear them, and a
+// pending route is promotable while a broken one is not. Marking them terminal
+// would strand every skill with a required secret on a headless server — the
+// primary `omac serve` deployment target — behind a 502 that never recovers.
+func StallFor(problems []Problem) *Stall {
+	problems = blocking(problems)
+	if len(problems) == 0 {
+		return nil
+	}
+	// Terminal causes win: a skill whose bundle drifted has nothing to gain
+	// from being told to supply a credential.
+	if p := First(problems, MetaBroken, BundleDrift); p != nil {
+		return &Stall{Terminal: true, Detail: withFix(*p)}
+	}
+
+	st := &Stall{Missing: MissingFields(problems)}
+	// Unreadable and malformed values are also things to supply/fix, so they
+	// belong in the list the agent is shown.
+	for _, p := range problems {
+		if p.Kind == KeychainUnavailable || p.Kind == InvalidSecret {
+			st.Missing = append(st.Missing, p.Field)
+		}
+	}
+	sort.Strings(st.Missing)
+	st.Missing = dedupe(st.Missing)
+
+	// A cause with a remedy of its own outranks the generic list: "run omac
+	// secrets set" is useless advice for a keychain that isn't running.
+	if p := First(problems, KeychainUnavailable, InvalidSecret); p != nil {
+		st.Detail = withFix(*p)
+		return st
+	}
+	st.Detail = fmt.Sprintf("missing required values: %v", st.Missing)
+	return st
+}
+
+// blocking drops problems that are worth reporting but must not keep a route
+// from arming. An OPTIONAL secret whose exported value fails its pattern is
+// the only such case today: the supervisor injects the value regardless, so
+// stalling the route denies the skill entirely over a value the sidecar would
+// have received anyway. `omac start` applies no such filter — it renders every
+// problem and refuses — which is why this lives here and not at the source.
+func blocking(problems []Problem) []Problem {
+	out := make([]Problem, 0, len(problems))
+	for _, p := range problems {
+		if p.Kind == InvalidSecret && p.Optional {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
+// withFix renders a problem's cause plus its remedy, if it has one.
+func withFix(p Problem) string {
+	if p.Fix == "" {
+		return p.Detail
+	}
+	return p.Detail + " — " + p.Fix
+}
+
+func dedupe(sorted []string) []string {
+	out := sorted[:0]
+	var prev string
+	for i, s := range sorted {
+		if i == 0 || s != prev {
+			out = append(out, s)
+		}
+		prev = s
+	}
+	return out
+}
+
+// Has reports whether problems contains any of kinds.
+func Has(problems []Problem, kinds ...ProblemKind) bool {
+	for _, p := range problems {
+		for _, k := range kinds {
+			if p.Kind == k {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// First returns the first problem of any of kinds, or nil.
+func First(problems []Problem, kinds ...ProblemKind) *Problem {
+	for i, p := range problems {
+		for _, k := range kinds {
+			if p.Kind == k {
+				return &problems[i]
+			}
+		}
+	}
+	return nil
+}
+
+// MergeConfig returns a store whose (skill, field) values are the union of the
+// global and workdir layers, with workdir values overriding global ones
+// field-by-field. Neither input is mutated.
+//
+// It lives here because it is the first rung of the precedence ladder
+// resolveConfig implements: "stored" means "stored in this merge".
+//
+// A nil layer is treated as empty. That matters because skillconfig.Load
+// returns (nil, err) for an unparseable store and several callers discard the
+// error — and <workdir>/.opencode/skill-config.yaml is agent-writable, so
+// dereferencing it would let malformed YAML panic the live-reload handler.
+func MergeConfig(global, workdir *skillconfig.Store) *skillconfig.Store {
+	out := &skillconfig.Store{Version: skillconfig.SchemaVersion, Skills: map[string]map[string]string{}}
+	for _, layer := range []*skillconfig.Store{global, workdir} { // low priority first
+		if layer == nil {
+			continue
+		}
+		for skill, fields := range layer.Skills {
+			for field, val := range fields {
+				out.Set(skill, field, val)
+			}
+		}
+	}
+	return out
+}

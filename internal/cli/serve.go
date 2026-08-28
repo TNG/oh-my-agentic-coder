@@ -28,54 +28,66 @@ import (
 	"github.com/tngtech/oh-my-agentic-coder/internal/registry"
 	"github.com/tngtech/oh-my-agentic-coder/internal/sandbox"
 	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxprofile"
-	"github.com/tngtech/oh-my-agentic-coder/internal/secrets"
 	"github.com/tngtech/oh-my-agentic-coder/internal/skillconfig"
 	"github.com/tngtech/oh-my-agentic-coder/internal/skillsource"
+	"github.com/tngtech/oh-my-agentic-coder/internal/skillstate"
 	"github.com/tngtech/oh-my-agentic-coder/internal/supervisor"
 	"github.com/tngtech/oh-my-agentic-coder/internal/toolcache"
 )
 
-// runServe implements `omac serve` — the long-lived, multi-directory mode
-// behind OpenCode Desktop. It wraps `opencode serve` (the inner command),
-// keeps the facade + supervisor mutable for the process lifetime, and
-// activates a directory's skills lazily on request. See
-// docs/MULTI_DIR_DESKTOP.md.
-//
-// This implementation focuses on the omac-side control/data plane and is
-// directly drivable over the control-plane HTTP API (so it can be tested
-// without OpenCode). When --workdir is given, that one directory is
-// auto-activated at cold start (§5.5).
-func runServe(args []string, env *Env) int {
+// serveParse is the parsed `omac serve` command line. Extracted so tests can
+// pin inner-arg routing without launching the control plane.
+type serveParse struct {
+	harness           config.Harness
+	innerArgs         []string
+	workdir           string
+	controlAddr       string
+	acceptChanges     bool
+	skipSecretPattern bool
+	profile           string
+	innerCmdOverride  string
+	noSandbox         bool
+	noInner           bool
+	ephemeralCache    bool
+	cacheScopeFlag    string
+	verbose           bool
+	forDesktop        bool
+	learn             bool
+	auditLog          string
+	noAudit           bool
+	auditStrict       bool
+	roots             multiFlag
+	openPorts         []int
+}
+
+// parseServeArgs parses serve's harness token, flags, and trailing `--`
+// harness args. On a parse/usage error it prints to stderr and returns false.
+func parseServeArgs(args []string, env *Env) (serveParse, bool) {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	fs.SetOutput(env.Stderr)
 	var (
-		workdir          = fs.String("workdir", "", "Auto-activate this one directory at cold start (single-dir convenience, §5.5).")
-		controlAddr      = fs.String("control-addr", "127.0.0.1:0", "Bind address for the control-plane HTTP server.")
-		acceptChanges    = fs.Bool("accept-skill-changes", false, "Tolerate bundle_hash drift in registered skills.")
-		profile          = fs.String("sandbox", "", "Name of a sandbox profile from the launcher config.")
-		innerCmdOverride = fs.String("inner", "", "Override inner_cmd's executable (default: opencode serve).")
-		noSandbox        = fs.Bool("no-sandbox", false, "Run the inner command directly, without a sandbox (debug only).")
-		noInner          = fs.Bool("no-inner", false, "Do not launch any inner command; run the control plane only (testing/headless).")
-		ephemeralCache   = fs.Bool("ephemeral-cache", false, "Use a per-launch cache instead of the persistent cache.")
-		cacheScopeFlag   = fs.String("cache-scope", "", "Persistent cache scope: global, config, or workdir. Overrides config (default: global).")
-		verbose          = fs.Bool("verbose", false, "Verbose lifecycle logging.")
-		forDesktop       = fs.Bool("for-opencode-desktop", false, "Grant every project worktree from the local OpenCode state (Desktop projects) read+write in the sandbox.")
-		learn            = fs.Bool("learn", false, "Learn mode: do not restrict filesystem access; record folders used and offer to add them to the sandbox profile at session end.")
-		auditLog         = fs.String("audit-log", "", "Path to the audit log (default: persistent central location). Overrides config.")
-		noAudit          = fs.Bool("no-audit", false, "Disable the security audit trail.")
-		auditStrict      = fs.Bool("audit-strict", false, "Fail-closed: abort if the audit log cannot be written.")
+		workdir           = fs.String("workdir", "", "Auto-activate this one directory at cold start (single-dir convenience, §5.5).")
+		controlAddr       = fs.String("control-addr", "127.0.0.1:0", "Bind address for the control-plane HTTP server.")
+		acceptChanges     = fs.Bool("accept-skill-changes", false, "Tolerate bundle_hash drift in registered skills.")
+		skipSecretPattern = fs.Bool("skip-secret-pattern", false, "Do not enforce a secret's pattern against an env_passthrough-supplied value (escape hatch for an outdated pattern; the raw value is still passed through). Mirrors the flag on `omac start`.")
+		profile           = fs.String("sandbox", "", "Name of a sandbox profile from the launcher config.")
+		innerCmdOverride  = fs.String("inner", "", "Override inner_cmd's executable (default: opencode serve).")
+		noSandbox         = fs.Bool("no-sandbox", false, "Run the inner command directly, without a sandbox (debug only).")
+		noInner           = fs.Bool("no-inner", false, "Do not launch any inner command; run the control plane only (testing/headless).")
+		ephemeralCache    = fs.Bool("ephemeral-cache", false, "Use a per-launch cache instead of the persistent cache.")
+		cacheScopeFlag    = fs.String("cache-scope", "", "Persistent cache scope: global, config, or workdir. Overrides config (default: global).")
+		verbose           = fs.Bool("verbose", false, "Verbose lifecycle logging.")
+		forDesktop        = fs.Bool("for-opencode-desktop", false, "Grant every project worktree from the local OpenCode state (Desktop projects) read+write in the sandbox.")
+		learn             = fs.Bool("learn", false, "Learn mode: do not restrict filesystem access; record folders used and offer to add them to the sandbox profile at session end.")
+		auditLog          = fs.String("audit-log", "", "Path to the audit log (default: persistent central location). Overrides config.")
+		noAudit           = fs.Bool("no-audit", false, "Disable the security audit trail.")
+		auditStrict       = fs.Bool("audit-strict", false, "Fail-closed: abort if the audit log cannot be written.")
 	)
 	var roots multiFlag
 	var openPorts intMultiFlag
 	fs.Var(&roots, "root", "Pre-declared root directory under which projects may be activated (§5.4 Option B). Repeatable. Empty = allow any directory.")
 	fs.Var(&openPorts, "open-port", "Allow the sandboxed process to bind and connect on this TCP port (repeatable). Useful for a local app/dev server the agent or its tools talk to — e.g. Playwright/Vite/Next on :3000. On Linux, Landlock cannot limit that to loopback: outbound TCP to any host on the same port is also allowed.")
-	fs.Usage = func() {
-		out := fs.Output()
-		fmt.Fprintln(out, "Usage: omac serve [harness] [flags] [-- inner args...]")
-		fmt.Fprintf(out, "\nharness: one of %s (default: %s)\n\n",
-			strings.Join(config.HarnessNames(), ", "), config.DefaultHarness().Name)
-		fs.PrintDefaults()
-	}
+	fs.Usage = func() { writeLaunchUsage("serve", fs) }
 	// Preserve everything after "--" verbatim as inner args.
 	var ourArgs, innerArgs []string
 	split := false
@@ -90,27 +102,83 @@ func runServe(args []string, env *Env) int {
 			ourArgs = append(ourArgs, a)
 		}
 	}
-	// Consume the optional leading positional harness token (e.g.
-	// `omac serve claude`) before flag parsing.
 	harness, ourArgs, err := splitHarnessToken(ourArgs)
 	if err != nil {
 		fmt.Fprintln(env.Stderr, "omac serve:", err)
-		return ExitMisuse
+		return serveParse{}, false
 	}
-	if code, ok := parseFlags(fs, ourArgs, env); !ok {
-		return code
+	if _, ok := parseWithHarnessArgsHint(fs, "serve", ourArgs, env); !ok {
+		return serveParse{}, false
 	}
 	if *ephemeralCache && *noSandbox {
 		fmt.Fprintln(env.Stderr, "omac serve: --ephemeral-cache cannot be used with --no-sandbox")
-		return ExitMisuse
+		return serveParse{}, false
 	}
 	if *cacheScopeFlag != "" {
 		if _, err := config.ValidateCacheScope(*cacheScopeFlag); err != nil {
 			fmt.Fprintln(env.Stderr, "omac serve:", err)
-			return ExitMisuse
+			return serveParse{}, false
 		}
 	}
-	innerArgs = append(fs.Args(), innerArgs...)
+	return serveParse{
+		harness:           harness,
+		innerArgs:         append(fs.Args(), innerArgs...),
+		workdir:           *workdir,
+		controlAddr:       *controlAddr,
+		acceptChanges:     *acceptChanges,
+		skipSecretPattern: *skipSecretPattern,
+		profile:           *profile,
+		innerCmdOverride:  *innerCmdOverride,
+		noSandbox:         *noSandbox,
+		noInner:           *noInner,
+		ephemeralCache:    *ephemeralCache,
+		cacheScopeFlag:    *cacheScopeFlag,
+		verbose:           *verbose,
+		forDesktop:        *forDesktop,
+		learn:             *learn,
+		auditLog:          *auditLog,
+		noAudit:           *noAudit,
+		auditStrict:       *auditStrict,
+		roots:             roots,
+		openPorts:         append([]int(nil), openPorts...),
+	}, true
+}
+
+// runServe implements `omac serve` — the long-lived, multi-directory mode
+// behind OpenCode Desktop. It wraps `opencode serve` (the inner command),
+// keeps the facade + supervisor mutable for the process lifetime, and
+// activates a directory's skills lazily on request. See
+// docs/contributing/serve-spec.md.
+//
+// This implementation focuses on the omac-side control/data plane and is
+// directly drivable over the control-plane HTTP API (so it can be tested
+// without OpenCode). When --workdir is given, that one directory is
+// auto-activated at cold start (§5.5).
+func runServe(args []string, env *Env) int {
+	parsed, ok := parseServeArgs(args, env)
+	if !ok {
+		return ExitMisuse
+	}
+	harness := parsed.harness
+	innerArgs := parsed.innerArgs
+	workdir := parsed.workdir
+	controlAddr := parsed.controlAddr
+	acceptChanges := parsed.acceptChanges
+	skipSecretPattern := parsed.skipSecretPattern
+	profile := parsed.profile
+	innerCmdOverride := parsed.innerCmdOverride
+	noSandbox := parsed.noSandbox
+	noInner := parsed.noInner
+	ephemeralCache := parsed.ephemeralCache
+	cacheScopeFlag := parsed.cacheScopeFlag
+	verbose := parsed.verbose
+	forDesktop := parsed.forDesktop
+	learn := parsed.learn
+	auditLog := parsed.auditLog
+	noAudit := parsed.noAudit
+	auditStrict := parsed.auditStrict
+	roots := parsed.roots
+	openPorts := parsed.openPorts
 
 	lc, cfgPath, err := config.LoadLauncher(env.Workdir)
 	if err != nil {
@@ -121,8 +189,8 @@ func runServe(args []string, env *Env) int {
 	// (templated argv) plus, for omac's native backend, its policy profile
 	// (grant JSON). Everything downstream reads the plan instead of
 	// re-resolving a bare name — see internal/cli/sandboxplan.go.
-	plan, planErr := resolveSandboxPlan(lc, *profile)
-	if planErr != nil && !*noSandbox && !*noInner {
+	plan, planErr := resolveSandboxPlan(lc, profile)
+	if planErr != nil && !noSandbox && !noInner {
 		fmt.Fprintln(env.Stderr, "omac serve:", planErr)
 		return ExitConfigInvalid
 	}
@@ -133,7 +201,7 @@ func runServe(args []string, env *Env) int {
 	// or --inner override). Checked on the RESOLVED argv so a profile-pinned
 	// inner_cmd is verified rather than the harness default the launch will
 	// not use — see checkInnerBinary.
-	if !*noInner && *innerCmdOverride == "" {
+	if !noInner && innerCmdOverride == "" {
 		preflightInner := prof.InnerCmd
 		if !plan.Known {
 			preflightInner = nil
@@ -145,7 +213,7 @@ func runServe(args []string, env *Env) int {
 
 	// Pre-flight: codex on macOS is incompatible with the omac Seatbelt
 	// sandbox (see start.go for the rationale).
-	if runtime.GOOS == "darwin" && harness.Name == "codex" && !*noSandbox {
+	if runtime.GOOS == "darwin" && harness.Name == "codex" && !noSandbox {
 		fmt.Fprintf(env.Stderr,
 			"omac serve: codex is incompatible with the macOS Seatbelt sandbox "+
 				"(its HTTP client disconnects mid-stream even with network=open). "+
@@ -168,7 +236,7 @@ func runServe(args []string, env *Env) int {
 		absRoots = append(absRoots, ar)
 	}
 
-	if *noAudit && *auditStrict {
+	if noAudit && auditStrict {
 		fmt.Fprintln(env.Stderr, "omac serve: --no-audit cannot be combined with --audit-strict")
 		return ExitMisuse
 	}
@@ -186,12 +254,12 @@ func runServe(args []string, env *Env) int {
 	// drives our provisioning and is inherited by the sandboxed child;
 	// an explicit value is respected. The dir is granted read+write in
 	// the sandbox in the --for-opencode-desktop block below.
-	if dir, set := resolveDesktopStateDir(*forDesktop); set {
+	if dir, set := resolveDesktopStateDir(forDesktop); set {
 		if err := os.Setenv("XDG_STATE_HOME", dir); err != nil {
 			fmt.Fprintln(env.Stderr, "omac serve: --for-opencode-desktop: set XDG_STATE_HOME:", err)
 			return ExitIOError
 		}
-		if *verbose {
+		if verbose {
 			fmt.Fprintf(env.Stderr, "[verbose] --for-opencode-desktop: XDG_STATE_HOME=%s\n", dir)
 		}
 	}
@@ -210,7 +278,7 @@ func runServe(args []string, env *Env) int {
 	// always logged and never values, and namespaces are always hashed.
 	var auditFatal func(error) // assigned once sup/facade exist
 	auditCfg, auditMisuse := resolveAuditConfig(lc.Audit, auditFlags{
-		logPath: *auditLog, disable: *noAudit, strict: *auditStrict,
+		logPath: auditLog, disable: noAudit, strict: auditStrict,
 	}, audit.ModeServe, env.Version, nil, func(err error) {
 		if auditFatal != nil {
 			auditFatal(err)
@@ -236,12 +304,12 @@ func runServe(args []string, env *Env) int {
 		return ExitIOError
 	}
 	defer os.RemoveAll(sandboxTmp)
-	scope, err := resolveCacheScope(lc.Cache, *cacheScopeFlag)
+	scope, err := resolveCacheScope(lc.Cache, cacheScopeFlag)
 	if err != nil {
 		fmt.Fprintln(env.Stderr, "omac serve: cache:", err)
 		return ExitConfigInvalid
 	}
-	cacheScope, err := prepareServeCache(*noSandbox, *noInner, *ephemeralCache, scope, *workdir, env.Workdir, cfgPath, sandboxTmp)
+	cacheScope, err := prepareServeCache(noSandbox, noInner, ephemeralCache, scope, workdir, env.Workdir, cfgPath, sandboxTmp)
 	if err != nil {
 		fmt.Fprintln(env.Stderr, "omac serve: cache:", err)
 		return ExitIOError
@@ -266,7 +334,7 @@ func runServe(args []string, env *Env) int {
 		env.Version,
 	)
 	f.SetAuditor(auditor)
-	wireFacadeSandbox(f, *noSandbox, *learn, plan, func(format string, args ...any) {
+	wireFacadeSandbox(f, noSandbox, learn, plan, func(format string, args ...any) {
 		fmt.Fprintf(env.Stderr, format+"\n", args...)
 	})
 	if err := f.Start(ctx); err != nil {
@@ -276,22 +344,23 @@ func runServe(args []string, env *Env) int {
 	defer f.Close()
 
 	srv := &serveServer{
-		env:           env,
-		harness:       harness,
-		facade:        f,
-		sup:           sup,
-		auditor:       auditor,
-		ctx:           ctx,
-		rtDir:         rtDir,
-		sandboxTmp:    sandboxTmp,
-		socketPath:    socketPath,
-		tcpPort:       f.TCPPort(),
-		acceptChanges: *acceptChanges,
-		verbose:       *verbose,
-		roots:         absRoots,
-		dirs:          map[string]*dirState{},
-		byToken:       map[string]*dirState{},
-		global:        map[string]*skillRoute{},
+		env:               env,
+		harness:           harness,
+		facade:            f,
+		sup:               sup,
+		auditor:           auditor,
+		ctx:               ctx,
+		rtDir:             rtDir,
+		sandboxTmp:        sandboxTmp,
+		socketPath:        socketPath,
+		tcpPort:           f.TCPPort(),
+		acceptChanges:     acceptChanges,
+		skipSecretPattern: skipSecretPattern,
+		verbose:           verbose,
+		roots:             absRoots,
+		dirs:              map[string]*dirState{},
+		byToken:           map[string]*dirState{},
+		global:            map[string]*skillRoute{},
 	}
 	if cacheScope != nil {
 		srv.cacheEnv = map[string]string{
@@ -333,8 +402,8 @@ func runServe(args []string, env *Env) int {
 	}
 
 	// --workdir convenience: pre-activate exactly one directory (§5.5).
-	if *workdir != "" {
-		abs, err := filepath.Abs(*workdir)
+	if workdir != "" {
+		abs, err := filepath.Abs(workdir)
 		if err != nil {
 			fmt.Fprintln(env.Stderr, "omac serve: --workdir:", err)
 			return ExitMisuse
@@ -346,7 +415,7 @@ func runServe(args []string, env *Env) int {
 	}
 
 	// Control-plane HTTP server (host-side; distinct from the facade).
-	cln, err := net.Listen("tcp", *controlAddr)
+	cln, err := net.Listen("tcp", controlAddr)
 	if err != nil {
 		fmt.Fprintln(env.Stderr, "omac serve: control listen:", err)
 		return ExitIOError
@@ -356,7 +425,7 @@ func runServe(args []string, env *Env) int {
 	// Publish the control URL so other omac CLI invocations (register,
 	// deregister, secrets, config) can notify this running serve to reload a
 	// directory after they change on-disk state. Best-effort.
-	if err := writeControlInfo(controlURL); err != nil && *verbose {
+	if err := writeControlInfo(controlURL); err != nil && verbose {
 		fmt.Fprintln(env.Stderr, "[verbose] could not write control-info file:", err)
 	}
 	defer removeControlInfo()
@@ -368,7 +437,7 @@ func runServe(args []string, env *Env) int {
 	}()
 	defer httpSrv.Close()
 
-	if *verbose {
+	if verbose {
 		fmt.Fprintf(env.Stderr, "[verbose] facade tcp=127.0.0.1:%d socket=%s\n", srv.tcpPort, socketPath)
 		fmt.Fprintf(env.Stderr, "[verbose] control plane: %s\n", controlURL)
 		if len(absRoots) > 0 {
@@ -378,7 +447,7 @@ func runServe(args []string, env *Env) int {
 	fmt.Fprintf(env.Stdout, "omac serve: control plane on %s; facade on 127.0.0.1:%d\n", controlURL, srv.tcpPort)
 
 	// --no-inner: run the control plane only (testing / headless drivers).
-	if *noInner {
+	if noInner {
 		auditor.Emit(audit.SessionStart(env.Version, harness.Name, profName, ""))
 		fmt.Fprintf(env.Stdout, "OMAC_CONTROL_BASE=%s\n", controlURL)
 		<-ctx.Done()
@@ -415,13 +484,13 @@ func runServe(args []string, env *Env) int {
 	}
 	// Resolve the inner command for the selected harness: --inner override
 	// wins, else the profile's inner_cmd, else the harness default.
-	inner := harness.ResolveInnerCmd(profileInner, *innerCmdOverride)
+	inner := harness.ResolveInnerCmd(profileInner, innerCmdOverride)
 	// Apply the harness's server-launch convention (e.g. OpenCode injects
 	// `serve` when no subcommand is present). Harnesses without a server
 	// mode leave the inner command unchanged.
 	inner = harness.ApplyServerLaunch(inner, innerArgs)
 	// Inject the sandbox briefing on the same terms as `omac start` (see there).
-	briefingText, injectBriefing := briefingInjection(*noSandbox, inner, harness, lc.Sandbox.Briefing, cacheScope)
+	briefingText, injectBriefing := briefingInjection(noSandbox, inner, harness, lc.Sandbox.Briefing, cacheScope)
 	if injectBriefing && harness.SystemContextArgs != nil {
 		inner = append(inner, harness.SystemContextArgs(briefingText)...)
 	}
@@ -456,7 +525,7 @@ func runServe(args []string, env *Env) int {
 	}
 
 	var argv []string
-	if *noSandbox {
+	if noSandbox {
 		argv = inner
 	} else {
 		argv, err = sandboxServeArgv(prof, sandbox.Inputs{
@@ -492,7 +561,7 @@ func runServe(args []string, env *Env) int {
 		// knows about. The kernel sandbox cannot grow after launch, so
 		// folders opened for the first time during this session still
 		// need a restart (or --learn).
-		if *forDesktop {
+		if forDesktop {
 			worktrees, skipped, derr := opencodestate.Worktrees()
 			if derr != nil {
 				fmt.Fprintln(env.Stderr, "omac serve: --for-opencode-desktop:", derr)
@@ -522,11 +591,11 @@ func runServe(args []string, env *Env) int {
 		}
 		// --learn: pass through to the built-in sandbox, which lifts
 		// filesystem restrictions and records folder usage.
-		if *learn {
+		if learn {
 			argv = injectSandboxFlag(argv, "--learn", "")
 		}
 	}
-	if *verbose {
+	if verbose {
 		fmt.Fprintf(env.Stderr, "[verbose] inner argv: %v\n", argv)
 	}
 
@@ -549,7 +618,7 @@ func runServe(args []string, env *Env) int {
 		httpSrv.Close()
 		os.Exit(ExitIOError)
 	}
-	sandboxed := !*noSandbox && !*noInner
+	sandboxed := !noSandbox && !noInner
 	backend := ""
 	if sandboxed {
 		backend = profName
@@ -558,7 +627,7 @@ func runServe(args []string, env *Env) int {
 	auditor.Emit(audit.InnerExec(argv, profName, sandboxed))
 
 	code, err := sandbox.ExecWithReady(argv, extra, func() {
-		if *verbose {
+		if verbose {
 			fmt.Fprintln(env.Stderr, "[verbose] inner command started; control plane live")
 		}
 	})
@@ -711,10 +780,15 @@ func forwardHarnessEnv(env *Env, argv []string, harness config.Harness, plan san
 	}
 	if planAllowVarsEmpty(plan) {
 		fmt.Fprintf(env.Stderr, "omac: sandbox profile %q has an empty environment.allow_vars.\n", plan.PolicyRef)
+		if plan.PolicyPath != "" {
+			fmt.Fprintf(env.Stderr, "      Profile source: %s\n", plan.PolicyPath)
+		}
 		fmt.Fprintln(env.Stderr, "      Forwarding only the operational minimum (HOME, PATH, TERM, locale, …).")
 		fmt.Fprintln(env.Stderr, "      No provider-auth or other ambient env vars are passed through (previously every")
-		fmt.Fprintln(env.Stderr, "      var was inherited). The harness starts but will not authenticate until you add")
-		fmt.Fprintln(env.Stderr, `      the vars it needs to allow_vars (see "omac doctor"), or set allow_vars: ["*"].`)
+		fmt.Fprintln(env.Stderr, "      var was inherited). Custom profiles are not updated by omac upgrades. Refresh")
+		fmt.Fprintln(env.Stderr, `      this profile from its installer or original source, then run "omac doctor".`)
+		fmt.Fprintln(env.Stderr, "      If you maintain it manually, add the vars the harness needs to allow_vars.")
+		fmt.Fprintln(env.Stderr, `      allow_vars: ["*"] is not recommended because it forwards almost every ambient var.`)
 		fmt.Fprintln(env.Stderr, "      Continuing shortly…")
 		time.Sleep(emptyAllowVarsWarnDelay)
 		// Seed only the operational minimum; do NOT auto-forward auth vars.
@@ -841,7 +915,7 @@ func (m *intMultiFlag) Set(v string) error {
 	return nil
 }
 
-// ---- server state (docs/MULTI_DIR_DESKTOP.md §7) ----
+// ---- server state (docs/contributing/serve-spec.md) ----
 
 type skillRoute struct {
 	Name      string
@@ -874,9 +948,14 @@ type serveServer struct {
 	tcpPort       int
 	controlBase   string
 	acceptChanges bool
-	verbose       bool
-	roots         []string // §5.4 Option B; empty = allow any directory
-	cacheEnv      map[string]string
+	// skipSecretPattern mirrors start's flag. serve began pattern-checking
+	// env_passthrough-supplied secrets when it adopted the shared readiness
+	// rule; without an escape hatch a skill whose omac.yaml carries an outdated
+	// pattern would have no way back to a live route short of editing the skill.
+	skipSecretPattern bool
+	verbose           bool
+	roots             []string // §5.4 Option B; empty = allow any directory
+	cacheEnv          map[string]string
 
 	mu      sync.RWMutex
 	dirs    map[string]*dirState   // abs dir -> state
@@ -1019,22 +1098,25 @@ func (s *serveServer) checkGlobalDrift() int {
 
 	total := len(unregistered) + len(drifted) + len(brokenMeta)
 	fmt.Fprintf(s.env.Stderr, "omac serve: refusing to start, %d global-skill problem(s):\n", total)
+	sErr := newStyler(s.env.Stderr)
 	if len(brokenMeta) > 0 {
 		fmt.Fprintln(s.env.Stderr, "\n  "+config.MetaFileName+" broken:")
 		for _, n := range brokenMeta {
-			fmt.Fprintf(s.env.Stderr, "    %s — re-register: omac register --force %s\n", n, n)
+			fmt.Fprintln(s.env.Stderr, skillProblemLine(sErr, n,
+				"re-register", registerCmd(n, "--force")))
 		}
 	}
 	if len(unregistered) > 0 {
 		fmt.Fprintln(s.env.Stderr, "\n  global skill present but not registered:")
 		for _, n := range unregistered {
-			fmt.Fprintf(s.env.Stderr, "    %s — run: omac register %s\n", n, n)
+			fmt.Fprintln(s.env.Stderr, skillProblemLine(sErr, n, "run", registerCmd(n)))
 		}
 	}
 	if len(drifted) > 0 {
 		fmt.Fprintln(s.env.Stderr, "\n  bundle changed since register (re-register, or pass --accept-skill-changes):")
 		for _, n := range drifted {
-			fmt.Fprintf(s.env.Stderr, "    %s — omac register --force %s\n", n, n)
+			fmt.Fprintln(s.env.Stderr, skillProblemLine(sErr, n,
+				"re-register", registerCmd(n, "--force")))
 		}
 	}
 	fmt.Fprintln(s.env.Stderr)
@@ -1353,25 +1435,43 @@ func (s *serveServer) autoRegister(absDir string, ent skillsource.Entry) (*regis
 //     skill this is the activated project; for a global skill there is no
 //     single project, so the server's launch workdir is used as a default.
 func (s *serveServer) bringUp(e registry.Entry, absDir, workdir, namespace, secretScope string, cfg *skillconfig.Store) *skillRoute {
-	metaPath := filepath.Join(absDir, config.MetaFileName)
-	m, err := config.LoadMeta(metaPath)
-	if err != nil || m.Sidecar == nil {
+	// The readiness rule is shared with start, live reload, doctor and `config
+	// show` (internal/skillstate); serve's job is only to turn its problems
+	// into a route state. Before #174 this was serve's own copy, which had
+	// drifted: it never honoured the env_passthrough fallback, so a skill whose
+	// required secret came from the shell was reported pending-credentials even
+	// though the supervisor would have injected the value at spawn.
+	resolver := skillstate.New(skillstate.Options{
+		Scope:             secretScope,
+		AcceptBundleDrift: s.acceptChanges,
+		SkipSecretPattern: s.skipSecretPattern,
+	})
+	// Inspect (meta + bundle hash) first and Fill (secrets + config) only after
+	// the spawn-approval gate below: a skill that is about to be refused must
+	// not cost a keychain read, which on macOS is one blocking authorization
+	// prompt per refused skill, nor have its credentials materialized here for
+	// nothing.
+	armed, problems := resolver.Inspect(e, absDir)
+	// Once filled, armed holds live secret material on every path out of this
+	// function, including the ones that return a stub route without spawning.
+	defer armed.Zero()
+
+	if skillstate.Has(problems, skillstate.MetaBroken) {
 		sr := &skillRoute{Name: e.Name, Mount: e.Name, Namespace: namespace, SkillDir: absDir, State: facade.RouteBroken, Detail: "omac.yaml invalid or missing sidecar"}
 		s.installRoute(sr, 0)
 		return sr
 	}
-	mount := m.Sidecar.MountOrDefault(e.Name)
+	mount := armed.Mount
 
-	// Hash once and reuse for both the drift check and the approval gate below;
-	// an error leaves it empty for approvalRefusal to re-derive and report.
-	bundle, herr := config.BundleHash(absDir)
-	if !s.acceptChanges {
-		if herr == nil && bundle != e.BundleHash {
-			sr := &skillRoute{Name: e.Name, Mount: mount, Namespace: namespace, SkillDir: absDir, State: facade.RouteBroken,
-				Detail: "bundle changed since register; re-register or pass --accept-skill-changes"}
-			s.installRoute(sr, 0)
-			return sr
-		}
+	broken := func(detail string) *skillRoute {
+		sr := &skillRoute{Name: e.Name, Mount: mount, Namespace: namespace, SkillDir: absDir,
+			State: facade.RouteBroken, Detail: detail}
+		s.installRoute(sr, 0)
+		return sr
+	}
+
+	if skillstate.Has(problems, skillstate.BundleDrift) {
+		return broken("bundle changed since register; re-register or pass --accept-skill-changes")
 	}
 
 	// Spawn-approval gate: refuse unless the current on-disk code is
@@ -1379,67 +1479,36 @@ func (s *serveServer) bringUp(e registry.Entry, absDir, workdir, namespace, secr
 	// the agent-writable workdir. Grandfathering happens once at cold start
 	// (see runServe), NOT here: a long-lived serve daemon must not keep
 	// blessing skills authored mid-session.
-	snapDir, refusal := approvedSpawnDir(e.Name, absDir, bundle)
+	//
+	// It is reported ahead of any credential problem — as it was before #174,
+	// when the gate ran before resolution — so an unapproved skill's route
+	// always names the security refusal rather than an incidental keychain
+	// error found on the way. armed.Bundle was hashed once above and is reused
+	// here; it is empty when hashing failed, which leaves approvalRefusal to
+	// re-derive and report.
+	snapDir, refusal := approvedSpawnDir(e.Name, absDir, armed.Bundle)
 	if refusal != nil {
+		return broken(refusal.Error())
+	}
+
+	problems = append(problems, resolver.Fill(&armed, cfg)...)
+
+	// Credential problems keep the route promotable (pending-credentials, 409)
+	// rather than breaking it, so reactivateDir can bring the skill up once the
+	// value appears. skillstate.StallFor makes that call, shared with live
+	// reload so the two cannot drift apart again.
+	if st := skillstate.StallFor(problems); st != nil {
+		if st.Terminal {
+			return broken(st.Detail)
+		}
 		sr := &skillRoute{Name: e.Name, Mount: mount, Namespace: namespace, SkillDir: absDir,
-			State: facade.RouteBroken, Detail: refusal.Error()}
-		s.installRoute(sr, 0)
-		return sr
-	}
-
-	// Resolve secrets.
-	secMap := map[string]secrets.Secret{}
-	var missing []string
-	for _, spec := range m.Sidecar.Secrets {
-		val, gerr := keychain.GetWithFallback(secretScope, e.Name, spec.Name)
-		if gerr == nil {
-			secMap[spec.Name] = val
-			continue
-		}
-		if errors.Is(gerr, keychain.ErrNotFound) {
-			if spec.IsRequired() {
-				missing = append(missing, spec.Name)
-			}
-			continue
-		}
-		// keychain I/O error -> broken
-		sr := &skillRoute{Name: e.Name, Mount: mount, Namespace: namespace, SkillDir: absDir, State: facade.RouteBroken, Detail: gerr.Error()}
-		s.installRoute(sr, 0)
-		return sr
-	}
-
-	// Resolve config.
-	cfgMap := map[string]string{}
-	for _, spec := range m.Sidecar.Config {
-		if v, ok := cfg.Get(e.Name, spec.Name); ok {
-			cfgMap[spec.Name] = v
-			continue
-		}
-		if spec.Default != "" {
-			cfgMap[spec.Name] = spec.Default
-			continue
-		}
-		if spec.DefaultFromEnv != "" {
-			if ev, ok := os.LookupEnv(spec.DefaultFromEnv); ok && ev != "" {
-				cfgMap[spec.Name] = ev
-				continue
-			}
-		}
-		if spec.IsRequired() {
-			missing = append(missing, spec.Name)
-		}
-	}
-
-	if len(missing) > 0 {
-		sort.Strings(missing)
-		sr := &skillRoute{Name: e.Name, Mount: mount, Namespace: namespace, SkillDir: absDir,
-			State: facade.RoutePendingCredentials, Missing: missing,
-			Detail: fmt.Sprintf("missing required values: %v", missing)}
+			State: facade.RoutePendingCredentials, Missing: st.Missing, Detail: st.Detail}
 		s.installRoute(sr, 0)
 		return sr
 	}
 
 	// Spawn.
+	m := armed.Meta
 	health := config.HealthSpec{}
 	if m.Sidecar.Health != nil {
 		health = *m.Sidecar.Health
@@ -1451,22 +1520,18 @@ func (s *serveServer) bringUp(e registry.Entry, absDir, workdir, namespace, secr
 		SkillDir:         snapDir,                  // run the frozen snapshot, not the workdir
 		Command:          m.Sidecar.Command,
 		EnvPassthrough:   m.Sidecar.EnvPassthrough,
-		Secrets:          secMap,
-		Config:           cfgMap,
+		Secrets:          armed.Secrets,
+		Config:           armed.Config,
 		Health:           health.Defaults(),
 		LogPath:          filepath.Join(s.rtDir, "logs", namespace+"-"+e.Name+".log"),
 		Workdir:          workdir, // -> OMAC_WORKDIR (the project, not the skill dir)
 		HarnessSkillsDir: s.harness.WorkdirSkillsDir(),
 	}
 	running, serr := s.sup.AddSidecar(s.ctx, spec)
-	// Wipe secret material now that the sidecar has been spawned (its env
-	// was built synchronously inside AddSidecar). Secret holds a []byte, so
-	// zeroing the map's stored value wipes the shared backing array.
-	for name := range spec.Secrets {
-		sec := spec.Secrets[name]
-		sec.Zero()
-		spec.Secrets[name] = sec
-	}
+	// Wipe secret material now that the sidecar has been spawned (its env was
+	// built synchronously inside AddSidecar) rather than waiting for the
+	// deferred Zero. spec.Secrets is armed.Secrets, and Zero is idempotent.
+	armed.Zero()
 	if serr != nil {
 		sr := &skillRoute{Name: e.Name, Mount: mount, Namespace: namespace, SkillDir: absDir, State: facade.RouteBroken, Detail: serr.Error()}
 		s.installRoute(sr, 0)

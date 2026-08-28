@@ -24,7 +24,7 @@ import (
 // sandbox, can write a skill directory into the (agent-writable) workdir,
 // get it registered, and — absent this control — have omac spawn its
 // sidecar OUTSIDE the sandbox, giving the agent arbitrary host code
-// execution. See docs/SECURITY_MODEL.md#self-authored-skills.
+// execution. See docs/security.md#self-authored-skills.
 //
 // It drives the real compiled `omac serve --no-inner` binary and its
 // control plane over loopback (same topology as TestE2EServeDirTokenIsolation),

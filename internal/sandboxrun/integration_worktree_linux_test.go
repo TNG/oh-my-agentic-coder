@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/tngtech/oh-my-agentic-coder/internal/osinfo"
 	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxprofile"
 )
 
@@ -169,6 +170,26 @@ func TestIntegrationWorktreeSymlinkEscape(t *testing.T) {
 	}
 }
 
+// allFatalLinesAreEBUSYPackedRefs reports whether every "fatal:" line in out
+// is the WSL2 packed-refs EBUSY quirk (the EBUSY replace + its "failed to run
+// pack-refs" consequence). A genuine corruption fatal alongside still fails.
+func allFatalLinesAreEBUSYPackedRefs(out string) bool {
+	any := false
+	for _, line := range strings.Split(out, "\n") {
+		if !strings.Contains(strings.ToLower(line), "fatal") {
+			continue
+		}
+		any = true
+		isEBUSY := strings.Contains(line, "Device or resource busy") &&
+			strings.Contains(line, "packed-refs")
+		isPackRefsFail := strings.Contains(line, "failed to run pack-refs")
+		if !isEBUSY && !isPackRefsFail {
+			return false
+		}
+	}
+	return any
+}
+
 // TestIntegrationWorktreeKnownLimitations verifies the PR body's "Known
 // limitation" claims under real bwrap: branch -d fails cleanly, the
 // packed-refs.lock EPERM is non-fatal (commit succeeds), gc no-ops, and
@@ -232,7 +253,16 @@ func TestIntegrationWorktreeKnownLimitations(t *testing.T) {
 	// fatal failures — a non-zero exit with mere warnings is acceptable.
 	out, code = sandboxGit("gc", "--quiet")
 	if code != 0 && strings.Contains(strings.ToLower(out), "fatal") {
-		t.Errorf("gc produced fatal output (warnings OK, fatals not):\n%s", out)
+		// WSL2 returns EBUSY (not EPERM) on read-only-bind rename, so gc's
+		// atomic replace of packed-refs fails loudly. Tolerate only if every
+		// fatal line is that quirk; a real corruption fatal still fails.
+		wslEBUSY := osinfo.Detect() == osinfo.WSL &&
+			allFatalLinesAreEBUSYPackedRefs(out)
+		if wslEBUSY {
+			t.Logf("gc only emitted EBUSY fatal errors on WSL2 (known kernel quirk with bind-mount rename); treating as non-fatal:\n%s", out)
+		} else {
+			t.Errorf("gc produced fatal output (warnings OK, fatals not):\n%s", out)
+		}
 	}
 
 	// 3. branch -d should fail cleanly (exit non-zero), ref preserved.

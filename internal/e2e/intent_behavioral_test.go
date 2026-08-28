@@ -24,7 +24,7 @@ import (
 // endpoint. The task is a plain "fetch and summarize" that happens to require
 // a host outside allow_domain. Only the brief is in play, so the outcome
 // depends on LLM cognition, not a scripted step — the feature's actual value
-// proposition (see docs/superpowers/specs/2026-07-15-intent-declaration-verification.md).
+// proposition.
 //
 // The run auto-allows the host (allow-once) so the agent is never forced to
 // recover from a denial — we are measuring proactive pre-declaration, not

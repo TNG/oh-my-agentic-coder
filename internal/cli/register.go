@@ -102,7 +102,7 @@ func runRegister(args []string, env *Env) int {
 	// workdir-scoped key (omac/<workdir-id>/<skill>) so two projects'
 	// same-named skills don't share a credential. This MUST match the
 	// scope serve reads with (serve.go bringUp), or the secret is invisible
-	// to the running sidecar. See docs/MULTI_DIR_DESKTOP.md §4.3.
+	// to the running sidecar. See docs/contributing/serve-spec.md.
 	secretScope := ""
 	if !global {
 		secretScope = keychain.WorkdirID(env.Workdir)
@@ -112,6 +112,7 @@ func runRegister(args []string, env *Env) int {
 	// re-register doesn't re-prompt for optional values the user
 	// already explicitly declined. This must happen before the prompt
 	// loop runs.
+	host := osinfo.Detect()
 	prevSkippedSecrets, prevSkippedFields := loadPrevSkipped(env.Workdir, skillName, global)
 
 	// We rebuild these on every register run so the registry reflects
@@ -134,7 +135,7 @@ func runRegister(args []string, env *Env) int {
 			return ExitConfigInvalid
 		}
 		for _, spec := range meta.Sidecar.Secrets {
-			skipped, err := handleOneSecret(env, secretScope, skillName, spec, *reprompt, prevSkippedSecrets, fromFile, *useDefaults)
+			skipped, err := handleOneSecret(env, secretScope, skillName, spec, *reprompt, prevSkippedSecrets, fromFile, *useDefaults, host)
 			if err != nil {
 				// Determine exit code from err message tag.
 				if strings.HasPrefix(err.Error(), "keychain:") {
@@ -245,7 +246,6 @@ func runRegister(args []string, env *Env) int {
 	//    most common "what next?" after a register, so it shouldn't be
 	//    buried mid-output. We never print the body of the script, and
 	//    omac never runs it for you; that's entirely the user's call.
-	host := osinfo.Detect()
 	var installScriptAbs string
 	if scriptRel := meta.Sidecar.InstallScriptFor(host); scriptRel != "" {
 		scriptAbs := filepath.Join(skillDir, scriptRel)
@@ -484,8 +484,8 @@ func dedupSorted(names []string) []string {
 // "" for global skills (unscoped omac/<skill>) and the workdir-id for
 // workdir-local skills (omac/<workdir-id>/<skill>) — it MUST match the scope
 // serve reads with (see serve.go bringUp), or the skill will never see the
-// value. See docs/MULTI_DIR_DESKTOP.md §4.3.
-func handleOneSecret(env *Env, scope, skill string, spec config.SecretSpec, reprompt bool, prevSkipped map[string]bool, fromFile map[string]string, useDefaults bool) (bool, error) {
+// value. See docs/contributing/serve-spec.md.
+func handleOneSecret(env *Env, scope, skill string, spec config.SecretSpec, reprompt bool, prevSkipped map[string]bool, fromFile map[string]string, useDefaults bool, host osinfo.OS) (bool, error) {
 	st := newStyler(env.Stderr)
 	// 1. Already in keychain?
 	if !reprompt {
@@ -515,15 +515,15 @@ func handleOneSecret(env *Env, scope, skill string, spec config.SecretSpec, repr
 	}
 
 	// 1c. --defaults: adopt the remembered global default silently if one
-	//     exists (docs/MULTI_DIR_DESKTOP.md §4.4). If none exists we fall
+	//     exists (docs/contributing/serve-spec.md). If none exists we fall
 	//     through and still prompt — --defaults means "don't re-ask for
 	//     things I've already answered", not "skip required values".
 	if useDefaults {
 		if def, err := keychain.GetDefault(skill, spec.Name); err == nil {
-			if verr := validatePattern(spec, def.ExposeString()); verr == nil {
+			if verr := spec.ValidateValue(def.ExposeString()); verr == nil {
 				if serr := keychain.SetWithDefault(scope, skill, spec.Name, def); serr != nil {
 					def.Zero()
-					return false, fmt.Errorf("keychain: %w", wrapKeychainErr(serr))
+					return false, fmt.Errorf("keychain: %w", keychain.WrapUnavailable(serr, host))
 				}
 				def.Zero()
 				st.status(env.Stderr, "stored", spec.Name+st.gray(" (from remembered default)"), ansiGreen)
@@ -535,13 +535,13 @@ func handleOneSecret(env *Env, scope, skill string, spec config.SecretSpec, repr
 
 	// 2. --secrets-from file takes precedence over prompting.
 	if v, ok := fromFile[spec.Name]; ok {
-		if err := validatePattern(spec, v); err != nil {
+		if err := spec.ValidateValue(v); err != nil {
 			return false, err
 		}
 		s := secrets.NewSecretString(v)
 		defer s.Zero()
 		if err := keychain.SetWithDefault(scope, skill, spec.Name, s); err != nil {
-			return false, fmt.Errorf("keychain: %w", wrapKeychainErr(err))
+			return false, fmt.Errorf("keychain: %w", keychain.WrapUnavailable(err, host))
 		}
 		st.status(env.Stderr, "stored", spec.Name+st.gray(" (from file)"), ansiGreen)
 		return false, nil
@@ -549,13 +549,13 @@ func handleOneSecret(env *Env, scope, skill string, spec config.SecretSpec, repr
 
 	// 3. Env-based non-interactive supply: OMAC_SECRET_<NAME>.
 	if v, ok := os.LookupEnv("OMAC_SECRET_" + spec.Name); ok {
-		if err := validatePattern(spec, v); err != nil {
+		if err := spec.ValidateValue(v); err != nil {
 			return false, err
 		}
 		s := secrets.NewSecretString(v)
 		defer s.Zero()
 		if err := keychain.SetWithDefault(scope, skill, spec.Name, s); err != nil {
-			return false, fmt.Errorf("keychain: %w", wrapKeychainErr(err))
+			return false, fmt.Errorf("keychain: %w", keychain.WrapUnavailable(err, host))
 		}
 		st.status(env.Stderr, "stored", spec.Name+st.gray(fmt.Sprintf(" (from OMAC_SECRET_%s)", spec.Name)), ansiGreen)
 		return false, nil
@@ -566,7 +566,7 @@ func handleOneSecret(env *Env, scope, skill string, spec config.SecretSpec, repr
 	if spec.DefaultFromEnv != "" {
 		if v, ok := os.LookupEnv(spec.DefaultFromEnv); ok && v != "" {
 			// Accept on empty input.
-			if err := validatePattern(spec, v); err == nil {
+			if err := spec.ValidateValue(v); err == nil {
 				defaultHint = fmt.Sprintf(" (press Enter to accept value from $%s)", spec.DefaultFromEnv)
 			}
 		}
@@ -592,7 +592,7 @@ func handleOneSecret(env *Env, scope, skill string, spec config.SecretSpec, repr
 					s := secrets.NewSecretString(v)
 					if err := keychain.SetWithDefault(scope, skill, spec.Name, s); err != nil {
 						s.Zero()
-						return false, fmt.Errorf("keychain: %w", wrapKeychainErr(err))
+						return false, fmt.Errorf("keychain: %w", keychain.WrapUnavailable(err, host))
 					}
 					s.Zero()
 					st.status(env.Stderr, "stored", spec.Name+st.gray(fmt.Sprintf(" (from $%s)", spec.DefaultFromEnv)), ansiGreen)
@@ -609,7 +609,7 @@ func handleOneSecret(env *Env, scope, skill string, spec config.SecretSpec, repr
 			st.status(env.Stderr, "[retry]", "required; please enter a value", ansiRed)
 			continue
 		}
-		if err := validatePattern(spec, value.ExposeString()); err != nil {
+		if err := spec.ValidateValue(value.ExposeString()); err != nil {
 			value.Zero()
 			if attempts >= 3 {
 				return false, fmt.Errorf("refused: %s does not match pattern after %d attempts", spec.Name, attempts)
@@ -619,26 +619,12 @@ func handleOneSecret(env *Env, scope, skill string, spec config.SecretSpec, repr
 		}
 		if err := keychain.SetWithDefault(scope, skill, spec.Name, value); err != nil {
 			value.Zero()
-			return false, fmt.Errorf("keychain: %w", wrapKeychainErr(err))
+			return false, fmt.Errorf("keychain: %w", keychain.WrapUnavailable(err, host))
 		}
 		value.Zero()
 		st.status(env.Stderr, "stored", spec.Name, ansiGreen)
 		return false, nil
 	}
-}
-
-func validatePattern(spec config.SecretSpec, v string) error {
-	if spec.Pattern == "" {
-		return nil
-	}
-	re, err := regexp.Compile(spec.Pattern)
-	if err != nil {
-		return fmt.Errorf("invalid pattern for %s: %w", spec.Name, err)
-	}
-	if !re.MatchString(v) {
-		return fmt.Errorf("value for %s does not match /%s/", spec.Name, spec.Pattern)
-	}
-	return nil
 }
 
 // handleOneField implements the per-field prompting flow. Mirrors
@@ -687,7 +673,7 @@ func handleOneField(env *Env, store *skillconfig.Store, skill string, spec confi
 	}
 
 	// 1c. --defaults: adopt the remembered global default silently if one
-	//     exists and is valid (docs/MULTI_DIR_DESKTOP.md §4.4). Otherwise
+	//     exists and is valid (docs/contributing/serve-spec.md). Otherwise
 	//     fall through and prompt.
 	if useDefaults && defStore != nil {
 		if def, ok := defStore.GetDefault(skill, spec.Name); ok {

@@ -180,7 +180,15 @@ func TestWarnEmptyAllowVars(t *testing.T) {
 		if got == "" {
 			t.Fatal("empty allow_vars produced no warning")
 		}
-		for _, want := range []string{"empty environment.allow_vars", "will not", "authenticate", "--allow-env"} {
+		for _, want := range []string{
+			"empty environment.allow_vars",
+			"will not",
+			"authenticate",
+			"--allow-env",
+			"not updated by omac upgrades",
+			"installer or original source",
+			`["*"] is not recommended`,
+		} {
 			if !strings.Contains(got, want) {
 				t.Errorf("warning lacks %q:\n%s", want, got)
 			}

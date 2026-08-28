@@ -179,7 +179,7 @@ func runDeregister(args []string, env *Env) int {
 		fmt.Fprintf(env.Stdout, " (use --purge-fields to also drop config fields)")
 	}
 
-	// Purge remembered global defaults (docs/MULTI_DIR_DESKTOP.md §4.4):
+	// Purge remembered global defaults (docs/contributing/serve-spec.md):
 	// the secret defaults under omac/__defaults__/<skill> and the config
 	// defaults block in the global skill-config.yaml.
 	if *purgeDefaults {

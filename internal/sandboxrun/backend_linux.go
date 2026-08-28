@@ -157,14 +157,35 @@ func BuildChildArgv(g *Grants, innerArgv []string) ([]string, error) {
 	needsLandlock := (g.NetworkMode == sandboxprofile.ModeFiltered && g.Enforcement == sandboxprofile.EnforceKernel) ||
 		g.NetworkMode == sandboxprofile.ModeBlocked
 	if needsLandlock && !LandlockNetSupported() {
+		//lint:ignore ST1005 multi-paragraph user-facing message, punctuation is intentional
 		return nil, fmt.Errorf(
-			"kernel-enforced network filtering needs Landlock ABI >= 4 (Linux >= 6.7, e.g. Ubuntu 24.04 LTS, Fedora 40+);\n"+
-				"this kernel has ABI %d (%s).\n"+
-				"Fix A: upgrade to a kernel >= 6.7.\n"+
-				"Fix B: set enforcement to env-only in ~/.config/omac/sandbox-profiles/default.json:\n"+
-				"  {\"network\": {\"enforcement\": \"env-only\"}}\n"+
-				"(env-only: filtering via the omac proxy, not the kernel — advisory only)",
-			LandlockABI(), kernelVersionString())
+			"omac can't enforce network filtering on this kernel, so it won't start.\n"+
+				"\n"+
+				"To control the agent's internet access, omac runs a small\n"+
+				"HTTP/HTTPS proxy on your machine and normally uses a Linux kernel feature\n"+
+				"(Landlock ABI 4, needs Linux 6.7+) to force ALL of the agent's traffic\n"+
+				"through that proxy. This kernel is %s (ABI %d), which is too old for it.\n"+
+				"\n"+
+				"You have two options:\n"+
+				"\n"+
+				"Fix A: upgrade to a kernel >= 6.7 (e.g. Ubuntu 24.04 LTS, Fedora 40+) to\n"+
+				"  keep full, kernel-enforced filtering. (On WSL, whether a newer kernel is\n"+
+				"  available depends on your setup. Try `wsl --update` from Windows.\n"+
+				"  You can also try a different distribution.)\n"+
+				"\n"+
+				"Fix B: switch to \"env-only\" mode (advisory filtering). omac still runs the\n"+
+				"  proxy and sets the standard HTTP_PROXY/HTTPS_PROXY environment variables\n"+
+				"  inside the sandbox. Programs that read those variables (curl, most HTTP\n"+
+				"  libraries, many package managers) keep going through the proxy and stay\n"+
+				"  filtered. But those variables are just a convention: the agent (or any\n"+
+				"  program it runs) can ignore them and open a direct network connection,\n"+
+				"  and nothing at the kernel level stops it. So filtering becomes advisory,\n"+
+				"  not enforced. To use it, set network.enforcement to \"env-only\" in your\n"+
+				"  sandbox profile at ~/.config/omac/sandbox-profiles/default.json (create\n"+
+				"  the file if it does not exist), e.g.:\n"+
+				"      {\"network\": {\"enforcement\": \"env-only\"}}\n"+
+				"  then re-run your command.",
+			kernelVersionString(), LandlockABI())
 	}
 	self, err := os.Executable()
 	if err != nil {

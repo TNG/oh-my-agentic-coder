@@ -1,7 +1,7 @@
 // Package sandbox expands the argv template in a SandboxProfile into a
 // concrete argv ready for exec.
 //
-// Placeholders (see oh-my-agentic-coder.md §14.2):
+// Placeholders:
 //
 //	{{socket}}              absolute socket path
 //	{{socket_dir}}          directory containing the socket
@@ -176,13 +176,13 @@ func OmacEnvName(mount string) string {
 }
 
 // OmacDirEnvName maps a (dir-token, mount) to the serve-mode workdir-local
-// form "OMAC_D_<TOKEN>_<MOUNT>_BASE" (docs/MULTI_DIR_DESKTOP.md §4.1).
+// form "OMAC_D_<TOKEN>_<MOUNT>_BASE" (docs/contributing/serve-spec.md).
 func OmacDirEnvName(dirToken, mount string) string {
 	return "OMAC_D_" + envIdent(dirToken) + "_" + envIdent(mount) + "_BASE"
 }
 
 // OmacGlobalEnvName maps a mount to the serve-mode global (shared) form
-// "OMAC_G_<MOUNT>_BASE" (docs/MULTI_DIR_DESKTOP.md §4.5).
+// "OMAC_G_<MOUNT>_BASE" (docs/contributing/serve-spec.md).
 func OmacGlobalEnvName(mount string) string {
 	return "OMAC_G_" + envIdent(mount) + "_BASE"
 }
@@ -275,7 +275,7 @@ func Exec(argv []string, extraEnv map[string]string) (int, error) {
 // the terminal handed over), then blocks waiting for the child exactly as
 // Exec does. This lets serve mode run its control plane / activation loop
 // concurrently with `opencode serve` while preserving the signal- and
-// terminal-handling contract of Exec (docs/MULTI_DIR_DESKTOP.md §5.3).
+// terminal-handling contract of Exec (docs/contributing/serve-spec.md).
 //
 // onReady must not block indefinitely on its own; it should spin up its
 // goroutines and return. Any teardown it needs to do on child exit should

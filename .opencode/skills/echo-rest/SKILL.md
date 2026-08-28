@@ -73,8 +73,7 @@ this workdir — run `omac register echo-rest` and re-launch.
 The sidecar reads its configuration from environment variables at start
 time. omac populates them from `omac.yaml`'s `secrets:` and `config:`
 blocks (see [`omac.yaml`](omac.yaml)). The full lifecycle and the typed
-field schema are documented in [`CREATING_A_SKILL.md`](../../../CREATING_A_SKILL.md)
-§9. In short:
+field schema are documented in [`docs/skills/authoring.md`](../../../docs/skills/authoring.md). In short:
 
 - `ECHO_API_KEY` — declared as both a `secret` and an `env_passthrough`
   entry (the keychain wins when both are set; falling back to the
@@ -131,5 +130,5 @@ skill. Copy the directory, rename it, then in order:
    [`install/install.linux.sh`](install/install.linux.sh) so they leave
    behind a working interpreter / binary. omac surfaces the path at
    register time but never executes them.
-5. Read [`CREATING_A_SKILL.md`](../../../CREATING_A_SKILL.md) for the full
+5. Read [`docs/skills/authoring.md`](../../../docs/skills/authoring.md) for the full
    schema, secrets best practices, and the pre-shipping checklist.

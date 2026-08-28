@@ -22,7 +22,6 @@ func TestNamesIncludesWriteASkill(t *testing.T) {
 func TestMaterializeCreateUnchangedUpdate(t *testing.T) {
 	parent := t.TempDir()
 	skillMd := filepath.Join(parent, "omac-write-a-skill", "SKILL.md")
-	ref := filepath.Join(parent, "omac-write-a-skill", "references", "creating-a-skill.md")
 
 	// create
 	res, err := Materialize("omac-write-a-skill", parent, false)
@@ -32,7 +31,7 @@ func TestMaterializeCreateUnchangedUpdate(t *testing.T) {
 	if res.Status != StatusCreated {
 		t.Fatalf("status = %s, want created", res.Status)
 	}
-	for _, p := range []string{skillMd, ref} {
+	for _, p := range []string{skillMd} {
 		if _, err := os.Stat(p); err != nil {
 			t.Fatalf("expected file written: %s: %v", p, err)
 		}
@@ -105,22 +104,5 @@ func TestMaterializeForeignGuard(t *testing.T) {
 	}
 	if res.Status != StatusUpdated {
 		t.Fatalf("status = %s, want updated under force", res.Status)
-	}
-}
-
-// TestBundleGuideMatchesRepoRoot is the single-source-of-truth guard: the
-// embedded reference copy must stay byte-identical to the repo-root
-// CREATING_A_SKILL.md. If this fails, re-copy the guide into the bundle.
-func TestBundleGuideMatchesRepoRoot(t *testing.T) {
-	root, err := os.ReadFile(filepath.Join("..", "..", "CREATING_A_SKILL.md"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	bundled, err := os.ReadFile(filepath.Join("assets", "omac-write-a-skill", "references", "creating-a-skill.md"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(root, bundled) {
-		t.Fatal("bundle references/creating-a-skill.md drifted from repo-root CREATING_A_SKILL.md; re-copy it")
 	}
 }

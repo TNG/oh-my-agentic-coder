@@ -8,7 +8,7 @@
 # session's skills come online and are surfaced to the agent.
 #
 # It implements the common omac bridge interface (see
-# docs/MULTI_DIR_DESKTOP.md and openspec specs/agent-bridge):
+# docs/contributing/serve-spec.md and openspec specs/agent-bridge):
 #
 #   1. Activate / reload on session start — POST /__omac__/activate {dir}
 #   2. Surface skills to the agent        — emit the skills manifest as the
