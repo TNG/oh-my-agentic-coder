@@ -40,6 +40,11 @@ func TestCheck_EmptyAllowVarsIsMedium(t *testing.T) {
 			if f.Severity != SeverityMedium {
 				t.Errorf("empty allow_vars severity = %q, want medium", f.Severity)
 			}
+			for _, want := range []string{"installer or original source", `["*"] is not recommended`} {
+				if !strings.Contains(f.Message, want) {
+					t.Errorf("empty allow_vars finding missing %q: %s", want, f.Message)
+				}
+			}
 		}
 	}
 	if !found {
@@ -352,6 +357,28 @@ func TestCheck_NetworkOpenPortZeroIsLow(t *testing.T) {
 	}
 	if got.Severity != SeverityLow {
 		t.Errorf("severity = %q; want low", got.Severity)
+	}
+}
+
+func TestCheck_NetworkOpenPortNumericIsLow(t *testing.T) {
+	p := cleanProfile()
+	p.Network.OpenPort = []int{3000}
+	findings := Check(p)
+	var got *Finding
+	for i := range findings {
+		if findings[i].Category == CatNetwork && findings[i].Field == "network.open_port" && findings[i].Value == "3000" {
+			got = &findings[i]
+			break
+		}
+	}
+	if got == nil {
+		t.Fatalf("no finding for open_port 3000; got %+v", findings)
+	}
+	if got.Severity != SeverityLow {
+		t.Errorf("severity = %q; want low", got.Severity)
+	}
+	if !strings.Contains(got.Message, "address-blind") {
+		t.Errorf("message should mention address-blind Landlock: %q", got.Message)
 	}
 }
 

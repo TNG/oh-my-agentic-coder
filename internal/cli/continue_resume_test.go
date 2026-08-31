@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -73,19 +74,107 @@ func TestBuildContinueOpts(t *testing.T) {
 }
 
 func TestParseLaunchArgsEphemeralCache(t *testing.T) {
-	opts, ok := parseLaunchArgs("start", []string{"--ephemeral-cache"}, devnullEnv(t))
-	if !ok {
-		t.Fatal("parseLaunchArgs() returned false")
+	opts, code := parseLaunchArgs("start", []string{"--ephemeral-cache"}, devnullEnv(t))
+	if code != ExitOK {
+		t.Fatalf("parseLaunchArgs() code = %d, want ExitOK", code)
 	}
 	if !opts.ephemeralCache {
 		t.Error("ephemeralCache = false, want true")
 	}
 }
 
+func TestParseLaunchArgsOpenPort(t *testing.T) {
+	opts, code := parseLaunchArgs("start", []string{
+		"--open-port", "3000",
+		"--open-port", "4173",
+	}, devnullEnv(t))
+	if code != ExitOK {
+		t.Fatalf("parseLaunchArgs() code = %d, want ExitOK", code)
+	}
+	if len(opts.openPorts) != 2 || opts.openPorts[0] != 3000 || opts.openPorts[1] != 4173 {
+		t.Errorf("openPorts = %v", opts.openPorts)
+	}
+}
+
+func TestParseLaunchArgsRejectsBadOpenPort(t *testing.T) {
+	if _, code := parseLaunchArgs("start", []string{"--open-port", "0"}, devnullEnv(t)); code == ExitOK {
+		t.Error("port 0 should be rejected")
+	}
+	if _, code := parseLaunchArgs("start", []string{"--open-port", "nope"}, devnullEnv(t)); code == ExitOK {
+		t.Error("non-integer port should be rejected")
+	}
+}
+
 func TestParseLaunchArgsRejectsEphemeralWithoutSandbox(t *testing.T) {
-	if _, ok := parseLaunchArgs("start", []string{"--ephemeral-cache", "--no-sandbox"}, devnullEnv(t)); ok {
+	if _, code := parseLaunchArgs("start", []string{"--ephemeral-cache", "--no-sandbox"}, devnullEnv(t)); code == ExitOK {
 		t.Error("parseLaunchArgs() succeeded with --ephemeral-cache and --no-sandbox")
 	}
+}
+
+// TestParseLaunchArgsInnerFlagsNeedDashDash pins the start/serve contract after
+// boolean-aware reorder: flags after a positional are omac flags, not silently
+// forwarded to the harness. `--` is the documented pass-through.
+func TestParseLaunchArgsInnerFlagsNeedDashDash(t *testing.T) {
+	t.Run("dash-dash form forwards harness flags", func(t *testing.T) {
+		opts, code := parseLaunchArgs("start", []string{"opencode", "--verbose", "--", "run", "fix it", "--model", "x"}, devnullEnv(t))
+		if code != ExitOK {
+			t.Fatalf("parseLaunchArgs() code = %d, want ExitOK", code)
+		}
+		if !opts.verbose {
+			t.Error("verbose = false, want true")
+		}
+		want := []string{"run", "fix it", "--model", "x"}
+		if !reflect.DeepEqual(opts.innerArgs, want) {
+			t.Errorf("innerArgs = %v, want %v", opts.innerArgs, want)
+		}
+	})
+
+	t.Run("mixed form fails and points at dash-dash", func(t *testing.T) {
+		stderr, writer, err := os.Pipe()
+		if err != nil {
+			t.Fatalf("pipe stderr: %v", err)
+		}
+		t.Cleanup(func() { stderr.Close() })
+		env := devnullEnv(t)
+		env.Stderr = writer
+		if _, code := parseLaunchArgs("start", []string{"opencode", "--verbose", "run", "fix it", "--model", "x"}, env); code == ExitOK {
+			t.Fatal("parseLaunchArgs() succeeded; want unknown-flag failure")
+		}
+		if err := writer.Close(); err != nil {
+			t.Fatalf("close stderr writer: %v", err)
+		}
+		output, err := io.ReadAll(stderr)
+		if err != nil {
+			t.Fatalf("read stderr: %v", err)
+		}
+		if !strings.Contains(string(output), "pass harness flags after --") {
+			t.Errorf("stderr = %q, want inner-args -- hint", output)
+		}
+		got := string(output)
+		errAt := strings.Index(got, "flag provided but not defined")
+		hintAt := strings.Index(got, "pass harness flags after --")
+		usageAt := strings.Index(got, "Usage:")
+		if errAt < 0 || hintAt < 0 || usageAt < 0 || !(errAt < hintAt && hintAt < usageAt) {
+			t.Errorf("want error, then -- hint, then Usage; got %q", got)
+		}
+		if !strings.Contains(got, "Args after -- go to the harness") {
+			t.Errorf("stderr = %q, want Usage to explain --", got)
+		}
+	})
+
+	t.Run("bool plus positionals still forward", func(t *testing.T) {
+		opts, code := parseLaunchArgs("start", []string{"opencode", "--verbose", "run", "fix it"}, devnullEnv(t))
+		if code != ExitOK {
+			t.Fatalf("parseLaunchArgs() code = %d, want ExitOK", code)
+		}
+		if !opts.verbose {
+			t.Error("verbose = false, want true")
+		}
+		want := []string{"run", "fix it"}
+		if !reflect.DeepEqual(opts.innerArgs, want) {
+			t.Errorf("innerArgs = %v, want %v", opts.innerArgs, want)
+		}
+	})
 }
 
 func TestBuildContinueOptsPreservesEphemeralCache(t *testing.T) {

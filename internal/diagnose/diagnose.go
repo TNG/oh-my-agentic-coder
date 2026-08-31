@@ -230,6 +230,8 @@ func shadowExplanation(inDeny bool, sources []string) string {
 			return "A learned \"deny\" in the <profile>.pages.json file shadows it. Remove that entry to re-enable the allow."
 		case "hard-deny":
 			return "A built-in metadata/link-local hard-deny blocks it; this cannot be overridden by allow_domain."
+		case "session":
+			return "You denied it for this session at the network prompt, which outranks allow_domain. Nothing on disk holds that choice — restart the sandbox to lift it."
 		}
 	}
 	return "A deny rule shadows the allow. Check network.deny_domain, a learned \"deny\" in the <profile>.pages.json file, or the built-in hard-deny."

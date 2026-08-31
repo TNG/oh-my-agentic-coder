@@ -23,10 +23,11 @@ import (
 	"github.com/tngtech/oh-my-agentic-coder/internal/keychain"
 	"github.com/tngtech/oh-my-agentic-coder/internal/registry"
 	"github.com/tngtech/oh-my-agentic-coder/internal/sandbox"
-	"github.com/tngtech/oh-my-agentic-coder/internal/secrets"
+	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxrun"
 	"github.com/tngtech/oh-my-agentic-coder/internal/session"
 	"github.com/tngtech/oh-my-agentic-coder/internal/skillconfig"
 	"github.com/tngtech/oh-my-agentic-coder/internal/skillsource"
+	"github.com/tngtech/oh-my-agentic-coder/internal/skillstate"
 	"github.com/tngtech/oh-my-agentic-coder/internal/supervisor"
 	"github.com/tngtech/oh-my-agentic-coder/internal/toolcache"
 )
@@ -70,6 +71,9 @@ type launchOpts struct {
 	// sessionID, when non-empty, selects a specific session to continue by id
 	// (`omac continue -s <id>`). Empty means "most recent" (the default).
 	sessionID string
+	// openPorts are extra loopback ports from --open-port (repeatable),
+	// typically a local webServer port for browser tests.
+	openPorts []int
 	// innerArgs are appended to the resolved inner command (user-supplied
 	// trailing `-- args` plus any command-specific flags like --continue).
 	innerArgs []string
@@ -77,10 +81,10 @@ type launchOpts struct {
 
 // parseLaunchArgs parses the shared start-family command line: an optional
 // leading positional harness token, the start flags, and trailing `-- inner
-// args`. cmdName is used in usage/error text (e.g. "start", "continue"). It
-// returns the assembled opts and true on success; on a parse/usage error it
-// prints to stderr and returns false (callers map that to ExitMisuse).
-func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, bool) {
+// args`. cmdName is used in usage/error text (e.g. "start", "continue").
+// On success it returns ExitOK; on help, ExitOK with empty opts after printing
+// usage; on a parse/usage error it prints to stderr and returns ExitMisuse.
+func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, int) {
 	fs := flag.NewFlagSet(cmdName, flag.ContinueOnError)
 	fs.SetOutput(env.Stderr)
 	var (
@@ -99,16 +103,13 @@ func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, bool)
 		auditStrict        = fs.Bool("audit-strict", false, "Fail-closed: abort if the audit log cannot be written.")
 		sessionID          = fs.String("session", "", "Continue a specific session by id instead of the most recent one. (shorthand: -s)")
 	)
+	var openPorts intMultiFlag
+	fs.Var(&openPorts, "open-port", "Allow the sandboxed process to bind and connect on this TCP port (repeatable). Useful for a local app/dev server the agent or its tools talk to — e.g. Playwright/Vite/Next on :3000. On Linux, Landlock cannot limit that to loopback: outbound TCP to any host on the same port is also allowed.")
 	// -s is the documented shorthand for --session (opencode mirrors this
 	// with `opencode -s <id>`; claude uses --resume, so its shorthand is
 	// different, but `omac -s` is harness-agnostic).
 	fs.StringVar(sessionID, "s", "", "Shorthand for --session.")
-	fs.Usage = func() {
-		fmt.Fprintf(env.Stderr, "Usage: omac %s [harness] [flags] [-- inner args...]\n", cmdName)
-		fmt.Fprintf(env.Stderr, "\nharness: one of %s (default: %s)\n\n",
-			strings.Join(config.HarnessNames(), ", "), config.DefaultHarness().Name)
-		fs.PrintDefaults()
-	}
+	fs.Usage = func() { writeLaunchUsage(cmdName, fs) }
 	// Preserve everything after "--" verbatim as inner args.
 	var ourArgs, innerArgs []string
 	split := false
@@ -129,19 +130,19 @@ func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, bool)
 	harness, ourArgs, err := splitHarnessToken(ourArgs)
 	if err != nil {
 		fmt.Fprintf(env.Stderr, "omac %s: %v\n", cmdName, err)
-		return launchOpts{}, false
+		return launchOpts{}, ExitMisuse
 	}
-	if err := fs.Parse(reorderFlagsFirst(ourArgs)); err != nil {
-		return launchOpts{}, false
+	if code, ok := parseWithHarnessArgsHint(fs, cmdName, ourArgs, env); !ok {
+		return launchOpts{}, code
 	}
 	if *ephemeralCache && *noSandbox {
 		fmt.Fprintf(env.Stderr, "omac %s: --ephemeral-cache cannot be used with --no-sandbox\n", cmdName)
-		return launchOpts{}, false
+		return launchOpts{}, ExitMisuse
 	}
 	if *cacheScope != "" {
 		if _, err := config.ValidateCacheScope(*cacheScope); err != nil {
 			fmt.Fprintf(env.Stderr, "omac %s: %v\n", cmdName, err)
-			return launchOpts{}, false
+			return launchOpts{}, ExitMisuse
 		}
 	}
 	innerArgs = append(fs.Args(), innerArgs...)
@@ -162,28 +163,49 @@ func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, bool)
 		noAudit:            *noAudit,
 		auditStrict:        *auditStrict,
 		sessionID:          *sessionID,
+		openPorts:          append([]int(nil), openPorts...),
 		innerArgs:          innerArgs,
-	}, true
+	}, ExitOK
 }
 
-// checkInnerBinary verifies the harness's inner command binary is on $PATH.
+// checkInnerBinary verifies the resolved inner command binary is on $PATH.
 // Returns ExitOK when found, ExitPrerequisiteMissing when missing, ExitOK
-// when InnerCmd is empty (defensive skip). Called by runLaunch and runServe.
-func checkInnerBinary(harness config.Harness, prefix string, env *Env) int {
-	if len(harness.InnerCmd) == 0 {
+// when empty (defensive skip). Called by runLaunch and runServe.
+//
+// Validating the wrong binary is what turns a missing harness into the late,
+// mislabeled "No such file or directory" from inside Seatbelt. Three inputs
+// can steer the check wrong, and all three are unwrapped here: the resolved
+// argv may come from a profile-pinned inner_cmd rather than the harness
+// default (Harness.ResolveInnerCmd), and it may be wrapped in an
+// `env NAME=VALUE ...` prefix (UnwrapEnv) or carry env flags like `-i`
+// (skipped below) — each of which would otherwise make the pre-flight check
+// `env` itself and report ExitOK regardless of whether the real harness is
+// installed.
+func checkInnerBinary(innerCmd []string, prefix string, env *Env) int {
+	if len(innerCmd) == 0 || innerCmd[0] == "" {
 		return ExitOK
 	}
-	if _, err := exec.LookPath(harness.InnerCmd[0]); err != nil {
-		fmt.Fprintf(env.Stderr, "%s: harness binary %q not found on $PATH; install it or pass --inner-cmd <path>\n", prefix, harness.InnerCmd[0])
+	cmd := sandboxrun.UnwrapEnv(innerCmd)
+	for len(cmd) > 0 && strings.HasPrefix(cmd[0], "-") {
+		cmd = cmd[1:]
+	}
+	if len(cmd) == 0 || cmd[0] == "" {
+		return ExitOK
+	}
+	if _, err := exec.LookPath(cmd[0]); err != nil {
+		fmt.Fprintf(env.Stderr, "%s: harness binary %q not found on $PATH; install it or pass --inner-cmd <path>\n", prefix, cmd[0])
 		return ExitPrerequisiteMissing
 	}
 	return ExitOK
 }
 
 func runStart(args []string, env *Env) int {
-	opts, ok := parseLaunchArgs("start", args, env)
-	if !ok {
-		return ExitMisuse
+	opts, code := parseLaunchArgs("start", args, env)
+	if code != ExitOK {
+		return code
+	}
+	if opts.label == "" {
+		return ExitOK // --help printed usage
 	}
 	return runLaunch(env, opts)
 }
@@ -226,19 +248,25 @@ func runLaunch(env *Env, opts launchOpts) int {
 	if verbose && cfgPath != "" {
 		fmt.Fprintf(env.Stderr, "[verbose] loaded launcher config: %s\n", cfgPath)
 	}
-	profName := profile
-	if profName == "" {
-		profName = lc.Sandbox.DefaultProfile
-	}
-	prof, ok := lc.Sandbox.Profiles[profName]
-	if !ok && !noSandbox {
-		fmt.Fprintf(env.Stderr, prefix+": unknown sandbox profile %q\n", profName)
+	// One resolved sandbox plan for the whole launch: the launcher profile
+	// (templated argv) plus, for omac's native backend, its policy profile
+	// (grant JSON). Everything downstream reads the plan instead of
+	// re-resolving a bare name — see internal/cli/sandboxplan.go.
+	plan, planErr := resolveSandboxPlan(lc, profile)
+	if planErr != nil && !noSandbox {
+		fmt.Fprintln(env.Stderr, prefix+":", planErr)
 		return ExitConfigInvalid
 	}
+	profName := plan.Name
+	prof := plan.Launcher
 
-	// 1b. Pre-flight: inner harness binary must be on $PATH.
+	// 1b. Pre-flight: inner harness binary must be on $PATH. Checked on the
+	//     resolved argv (profile inner_cmd, else harness default) — the same
+	//     argv step 8 hands to the sandbox. An explicit --inner skips: that
+	//     points at an exact binary, which is an escape hatch; sandboxrun
+	//     warns non-fatally if it cannot resolve it either.
 	if innerCmdOverride == "" {
-		if code := checkInnerBinary(harness, prefix, env); code != ExitOK {
+		if code := checkInnerBinary(harness.ResolveInnerCmd(prof.InnerCmd, ""), prefix, env); code != ExitOK {
 			return code
 		}
 	}
@@ -343,7 +371,7 @@ func runLaunch(env *Env, opts launchOpts) int {
 	}
 	// Merge config the same way as the registry: workdir values
 	// override global values per (skill, field).
-	configStore := mergeConfig(globalCfg, workdirCfg)
+	configStore := skillstate.MergeConfig(globalCfg, workdirCfg)
 
 	// 2a-bis. Optional auto-registration of workdir-local skills whose
 	//         required values resolve without prompting. Mirrors `omac
@@ -386,6 +414,23 @@ func runLaunch(env *Env, opts launchOpts) int {
 		}
 	}
 
+	// 2a-ter. One-time grandfathering of the already-registered skills
+	//         into the host-only approval store (see internal/skilltrust
+	//         and skill_approval.go). Only fires the first time (before
+	//         the store exists) so upgrading omac never newly breaks a
+	//         working setup; thereafter a skill must be approved
+	//         explicitly by an out-of-sandbox `omac register`.
+	if firstApprovalUpgrade() {
+		n, merr := grandfatherOnce(grandfatherScope{workdir: env.Workdir, reg: reg})
+		if merr != nil {
+			fmt.Fprintln(env.Stderr, prefix+": approval store (non-fatal):", merr)
+		}
+		if n > 0 {
+			fmt.Fprintf(env.Stderr, "%s: migrated %d registered skill(s) to the host-only approval store; "+
+				"new skills now require `omac register` on the host to spawn\n", prefix, n)
+		}
+	}
+
 	// 2b. Refuse if any unregistered skill exists under any of the
 	//     skill source roots (workdir-local .agents/skills and
 	//     .opencode/skills, plus the user-global layers — see the
@@ -423,229 +468,63 @@ func runLaunch(env *Env, opts launchOpts) int {
 
 	// 2c-d / 3. Per-skill validation + secret/config resolution.
 	//
-	// We do this in a single pass that accumulates every per-skill
-	// problem rather than returning on the first one. The user's
-	// complaint when this returned early was that fixing skill A
-	// revealed skill B revealed skill C, etc. — N invocations to fix
-	// N problems. With accumulation, the user sees every
-	// re-registration command they need at once.
+	// The rule — which rungs of the precedence ladder satisfy a declared
+	// secret or config field, and what counts as unready — lives in
+	// internal/skillstate, shared with serve, live reload, doctor and `config
+	// show`. It used to be reimplemented on each of those paths and the copies
+	// drifted silently (issue #174). start's only job here is presentation:
+	// accumulate problems, then render one consolidated refusal.
 	//
-	// Problems are bucketed by class so the consolidated error block
-	// has a section header per class with an actionable hint. A skill
-	// that hits multiple classes appears in every relevant section
-	// (we don't short-circuit to "first failing class").
+	// We accumulate rather than returning on the first problem. The user's
+	// complaint when this returned early was that fixing skill A revealed
+	// skill B revealed skill C, etc. — N invocations to fix N problems.
 	//
-	// Secret values are eagerly fetched from the keychain even when
-	// we may not end up using them; they're zeroed by the deferred
-	// cleanup below regardless of which path we take.
-	type withSecrets struct {
-		entry   registry.Entry
-		meta    *config.Meta
-		abs     string
-		secrets map[string]secrets.Secret
-		config  map[string]string
-	}
-	var allSecrets []secrets.Secret
+	// Secret values are eagerly fetched from the keychain even when we may not
+	// end up using them; the deferred Zero wipes them on every path out.
+	resolver := skillstate.New(skillstate.Options{
+		// Workdir-scoped, with an unscoped fallback inside GetWithFallback, so
+		// secrets stored by a serve-aware register (scoped per workdir) and
+		// legacy/global ones (unscoped) both resolve. See
+		// docs/contributing/serve-spec.md.
+		Scope:             keychain.WorkdirID(env.Workdir),
+		AcceptBundleDrift: acceptSkillChanges,
+		SkipSecretPattern: skipSecretPattern,
+	})
+	// resolved holds every Armed we obtained, including skills later refused
+	// by the approval gate, purely so the deferred Zero wipes all of it. Never
+	// reassign it — the approval gate below filters into a separate slice.
+	resolved := make([]skillstate.Armed, 0, len(reg.Registered))
 	defer func() {
-		for i := range allSecrets {
-			allSecrets[i].Zero()
+		for i := range resolved {
+			resolved[i].Zero()
 		}
 	}()
 
-	// Per-class problem accumulators. Each maps a hint template to
-	// the affected skill names so we can render "do X for these N
-	// skills" rather than N copies of the same hint. Order is
-	// preserved by also tracking which classes saw any input.
-	type bundleDriftProblem struct{ skill string }
-	type missingSecretProblem struct{ skill, secret string }
-	type invalidSecretProblem struct{ skill, secret, reason string }
-	type missingFieldProblem struct {
-		skill  string
-		fields []string
-	}
-	type metaProblem struct{ skill, msg string }
-
-	var bundleDrifts []bundleDriftProblem
-	var missingSecrets []missingSecretProblem
-	var invalidSecrets []invalidSecretProblem
-	var missingFields []missingFieldProblem
-	var metaProblems []metaProblem
-
-	armed := make([]withSecrets, 0, len(reg.Registered))
+	var problems []skillstate.Problem
 	for _, e := range reg.Registered {
 		absDir := e.SkillDir
 		if !filepath.IsAbs(absDir) {
 			absDir = filepath.Join(env.Workdir, absDir)
 		}
-		metaPath := filepath.Join(absDir, config.MetaFileName)
-		m, err := config.LoadMeta(metaPath)
-		if err != nil {
-			metaProblems = append(metaProblems, metaProblem{skill: e.Name, msg: err.Error()})
-			continue
-		}
-		if m.Sidecar == nil {
-			metaProblems = append(metaProblems, metaProblem{skill: e.Name, msg: "meta no longer has a sidecar block"})
-			continue
-		}
+		a, probs := resolver.Load(e, absDir, configStore)
+		resolved = append(resolved, a)
+		problems = append(problems, probs...)
 
-		// Bundle hash. Excluded from scanning when the user has
-		// explicitly opted in to drift via --accept-skill-changes.
-		if !acceptSkillChanges {
-			bundle, err := config.BundleHash(absDir)
-			if err != nil {
-				// I/O errors during hashing are class-level (we can't
-				// produce useful per-skill diagnostics if the directory
-				// is unreadable). Abort immediately.
-				fmt.Fprintln(env.Stderr, prefix+": bundle hash:", err)
-				return ExitIOError
-			}
-			if bundle != e.BundleHash {
-				bundleDrifts = append(bundleDrifts, bundleDriftProblem{skill: e.Name})
-				// Don't `continue`: continue collecting problems for
-				// THIS skill (missing secret + missing field) so the
-				// user sees everything needed in one shot.
-			}
+		// A bundle-hash I/O failure is launch-wide rather than a per-skill
+		// diagnostic: nothing useful can be said about an unreadable skill
+		// directory. Under --accept-skill-changes the hash is allowed to fail
+		// (step 5a re-derives it and refuses), since that flag's whole point
+		// is not to abort on skill-dir state.
+		if a.BundleErr != nil && !acceptSkillChanges {
+			fmt.Fprintln(env.Stderr, prefix+": bundle hash:", a.BundleErr)
+			return ExitIOError
 		}
-
-		// Secrets. Read with the workdir-scoped key first, falling back to
-		// the unscoped key — so secrets stored by a serve-aware register
-		// (scoped per workdir) and legacy/global secrets (unscoped) both
-		// resolve. See docs/MULTI_DIR_DESKTOP.md §4.3.
-		secScope := keychain.WorkdirID(env.Workdir)
-		// A secret listed under env_passthrough is allowed to come from the
-		// host environment instead of the keychain — the documented fallback
-		// for keychain-less environments (CI runners, headless servers). The
-		// supervisor injects these at spawn time (see supervisor.buildEnv),
-		// so a required secret absent from the keychain is NOT missing when
-		// the shell already exports it. Without this check the preflight
-		// would refuse to start before runtime injection ever happens.
-		envPassthrough := map[string]struct{}{}
-		for _, k := range m.Sidecar.EnvPassthrough {
-			envPassthrough[k] = struct{}{}
-		}
-		secMap := map[string]secrets.Secret{}
-		for _, spec := range m.Sidecar.Secrets {
-			val, err := keychain.GetWithFallback(secScope, e.Name, spec.Name)
-			if err != nil {
-				if errors.Is(err, keychain.ErrNotFound) {
-					// Not in the keychain — see whether env_passthrough
-					// supplies it from the host at runtime. A value found
-					// there must still match the secret's pattern: keychain
-					// values were validated at register time, so this is the
-					// only chance to vet an env-supplied one before the
-					// sidecar gets a malformed token. --skip-secret-pattern
-					// is the escape hatch for a stale pattern: the raw value
-					// is still passed through, just not vetted here.
-					if envVal, ok := secretFromEnv(spec.Name, envPassthrough); ok {
-						if !skipSecretPattern {
-							if perr := validatePattern(spec, envVal); perr != nil {
-								invalidSecrets = append(invalidSecrets,
-									invalidSecretProblem{skill: e.Name, secret: spec.Name, reason: perr.Error()})
-							}
-						}
-						continue
-					}
-					if spec.IsRequired() {
-						missingSecrets = append(missingSecrets,
-							missingSecretProblem{skill: e.Name, secret: spec.Name})
-					}
-					continue
-				}
-				// Keychain I/O failure is class-level (likely auth
-				// rejection on macOS); the user fixes it once and
-				// retries. No point continuing.
-				fmt.Fprintln(env.Stderr, prefix+": keychain:", err)
-				return ExitKeychainError
-			}
-			secMap[spec.Name] = val
-			allSecrets = append(allSecrets, val)
-		}
-
-		// Config fields. Same precedence as `omac config show`:
-		// stored > spec.Default > $spec.DefaultFromEnv > missing.
-		cfgMap := map[string]string{}
-		var missingForSkill []string
-		for _, spec := range m.Sidecar.Config {
-			v, ok := configStore.Get(e.Name, spec.Name)
-			if ok {
-				cfgMap[spec.Name] = v
-				continue
-			}
-			if spec.Default != "" {
-				cfgMap[spec.Name] = spec.Default
-				continue
-			}
-			if spec.DefaultFromEnv != "" {
-				if envVal, ok := os.LookupEnv(spec.DefaultFromEnv); ok && envVal != "" {
-					cfgMap[spec.Name] = envVal
-					continue
-				}
-			}
-			if spec.IsRequired() {
-				missingForSkill = append(missingForSkill, spec.Name)
-			}
-		}
-		if len(missingForSkill) > 0 {
-			missingFields = append(missingFields,
-				missingFieldProblem{skill: e.Name, fields: missingForSkill})
-		}
-
-		armed = append(armed, withSecrets{
-			entry: e, meta: m, abs: absDir,
-			secrets: secMap, config: cfgMap,
-		})
 	}
 
 	// If anything went wrong above, render one consolidated report
 	// (grouped by problem class) and abort.
-	if len(bundleDrifts) > 0 || len(missingSecrets) > 0 || len(invalidSecrets) > 0 || len(missingFields) > 0 || len(metaProblems) > 0 {
-		total := len(bundleDrifts) + len(missingSecrets) + len(invalidSecrets) + len(missingFields) + len(metaProblems)
-		fmt.Fprintf(env.Stderr, prefix+": refusing to start, found %d problem(s):\n", total)
-
-		if len(metaProblems) > 0 {
-			fmt.Fprintln(env.Stderr, "\n  "+config.MetaFileName+" broken:")
-			for _, p := range metaProblems {
-				fmt.Fprintf(env.Stderr, "    %s — %s\n", p.skill, p.msg)
-			}
-		}
-		if len(bundleDrifts) > 0 {
-			fmt.Fprintln(env.Stderr, "\n  bundle changed since register (pass --accept-skill-changes to proceed, or re-register):")
-			for _, p := range bundleDrifts {
-				fmt.Fprintf(env.Stderr, "    %s — omac register --force %s\n", p.skill, p.skill)
-			}
-		}
-		if len(missingSecrets) > 0 {
-			fmt.Fprintln(env.Stderr, "\n  required secret missing:")
-			for _, p := range missingSecrets {
-				fmt.Fprintf(env.Stderr, "    %s/%s — omac secrets set %s %s\n",
-					p.skill, p.secret, p.skill, p.secret)
-			}
-		}
-		if len(invalidSecrets) > 0 {
-			fmt.Fprintln(env.Stderr, "\n  secret from environment failed pattern validation (pass --skip-secret-pattern if the pattern is outdated):")
-			for _, p := range invalidSecrets {
-				fmt.Fprintf(env.Stderr, "    %s/%s — %s (fix the exported value, or run omac secrets set %s %s)\n",
-					p.skill, p.secret, p.reason, p.skill, p.secret)
-			}
-		}
-		if len(missingFields) > 0 {
-			fmt.Fprintln(env.Stderr, "\n  required config field missing:")
-			for _, p := range missingFields {
-				fmt.Fprintf(env.Stderr, "    %s — fields: %s — omac register --reprompt-fields %s\n",
-					p.skill, strings.Join(p.fields, ", "), p.skill)
-			}
-		}
-		fmt.Fprintln(env.Stderr)
-
-		// Pick the most actionable exit code: secrets/fields refused
-		// outweighs config-invalid (the latter is a build/dev problem,
-		// the former usually a one-command fix). Bundle drift is
-		// strictly config-invalid because the user hasn't explicitly
-		// accepted the change yet. Meta problems are config-invalid.
-		if len(missingSecrets) > 0 || len(invalidSecrets) > 0 || len(missingFields) > 0 {
-			return ExitSecretRefused
-		}
-		return ExitConfigInvalid
+	if len(problems) > 0 {
+		return renderSkillRefusal(env.Stderr, prefix, problems)
 	}
 
 	// 4. Create runtime directory.
@@ -668,8 +547,8 @@ func runLaunch(env *Env, opts launchOpts) int {
 	// secret VALUES to seed the redactor (belt-and-suspenders; secret names
 	// are always logged, values never).
 	var secretValues []string
-	for _, s := range armed {
-		for _, sec := range s.secrets {
+	for _, s := range resolved {
+		for _, sec := range s.Secrets {
 			secretValues = append(secretValues, sec.ExposeString())
 		}
 	}
@@ -730,27 +609,47 @@ func runLaunch(env *Env, opts launchOpts) int {
 	}
 
 	// 5. Spawn sidecars.
-	sup := supervisor.New(lc.Facade.BaseEnvPassthrough, auditor)
+	sup := supervisor.New(lc.Facade.BaseEnvPassthrough, auditor, skillSpawnAuthorizer)
 	defer func() {
 		if !keepRunning {
 			sup.ShutdownAll(5 * time.Second)
 		}
 	}()
-	specs := make([]supervisor.SidecarSpec, 0, len(armed))
-	for _, s := range armed {
+
+	// 5a. Spawn-approval gate. A sidecar runs UNSANDBOXED, so only skills
+	//     whose current on-disk code is host-approved (see
+	//     internal/skilltrust) may start — and they run from the immutable
+	//     approval snapshot, not the agent-writable workdir. Unapproved
+	//     skills are mounted as broken routes with the remedy, never spawned.
+	var refusedRoutes []facade.Route
+	approved := make([]skillstate.Armed, 0, len(resolved))
+	for _, a := range resolved {
+		snap, refusal := approvedSpawnDir(a.Entry.Name, a.AbsDir, a.Bundle)
+		if refusal != nil {
+			refusedRoutes = append(refusedRoutes, brokenApprovalRoute(
+				a.Mount, a.Entry.Name, a.AbsDir, refusal))
+			fmt.Fprintf(env.Stderr, "%s: %s\n", prefix, refusalNotice(refusal))
+			continue
+		}
+		a.AbsDir = snap // spawn (and serve SKILL.md) from the frozen snapshot
+		approved = append(approved, a)
+	}
+
+	specs := make([]supervisor.SidecarSpec, 0, len(approved))
+	for _, s := range approved {
 		health := config.HealthSpec{}
-		if s.meta.Sidecar.Health != nil {
-			health = *s.meta.Sidecar.Health
+		if s.Meta.Sidecar.Health != nil {
+			health = *s.Meta.Sidecar.Health
 		}
 		specs = append(specs, supervisor.SidecarSpec{
-			Name:             s.entry.Name,
-			SkillDir:         s.abs,
-			Command:          s.meta.Sidecar.Command,
-			EnvPassthrough:   s.meta.Sidecar.EnvPassthrough,
-			Secrets:          s.secrets,
-			Config:           s.config,
+			Name:             s.Entry.Name,
+			SkillDir:         s.AbsDir,
+			Command:          s.Meta.Sidecar.Command,
+			EnvPassthrough:   s.Meta.Sidecar.EnvPassthrough,
+			Secrets:          s.Secrets,
+			Config:           s.Config,
 			Health:           health.Defaults(),
-			LogPath:          filepath.Join(rtDir, "logs", s.entry.Name+".log"),
+			LogPath:          filepath.Join(rtDir, "logs", s.Entry.Name+".log"),
 			Workdir:          env.Workdir,
 			HarnessSkillsDir: harness.WorkdirSkillsDir(),
 		})
@@ -767,10 +666,10 @@ func runLaunch(env *Env, opts launchOpts) int {
 	routes := make([]facade.Route, 0, len(running))
 	mounts := make([]string, 0, len(running))
 	for i, r := range running {
-		mount := armed[i].meta.Sidecar.MountOrDefault(r.Name)
+		mount := approved[i].Mount
 		var maxBody int64
 		var idle time.Duration
-		if lim := armed[i].meta.Sidecar.Limits; lim != nil {
+		if lim := approved[i].Meta.Sidecar.Limits; lim != nil {
 			maxBody = lim.MaxBodyBytes
 			idle = time.Duration(lim.IdleTimeoutSecs) * time.Second
 		}
@@ -780,10 +679,13 @@ func runLaunch(env *Env, opts launchOpts) int {
 			MaxBodyBytes: maxBody,
 			IdleTimeout:  idle,
 			Skill:        r.Name,
-			SkillDir:     armed[i].abs,
+			SkillDir:     approved[i].AbsDir,
 		})
 		mounts = append(mounts, mount)
 	}
+	// Mount unapproved skills as broken routes so a probe gets an
+	// actionable 502 instead of a silent 404 (and they never spawn).
+	routes = append(routes, refusedRoutes...)
 
 	// 7. Open both listeners (Unix socket + ephemeral 127.0.0.1 TCP) and
 	//    mount routes. We always bind both so clients can pick whichever
@@ -800,7 +702,9 @@ func runLaunch(env *Env, opts launchOpts) int {
 		env.Version,
 	)
 	f.SetAuditor(auditor)
-	wireFacadeSandbox(f, noSandbox, profName, func(format string, args ...any) {
+	// `omac start` has no --learn (serve-only), so the protected set is
+	// always the profile's.
+	wireFacadeSandbox(f, noSandbox, false, plan, func(format string, args ...any) {
 		fmt.Fprintf(env.Stderr, prefix+": "+format+"\n", args...)
 	})
 	if err := f.Start(ctx); err != nil {
@@ -820,10 +724,11 @@ func runLaunch(env *Env, opts launchOpts) int {
 	reloader := &startReloader{
 		env: env, facade: f, sup: sup, ctx: ctx,
 		rtDir: rtDir, socket: socketPath, tcpPort: tcpPort, verbose: verbose,
-		mounted: map[string]string{},
+		skipSecretPattern: skipSecretPattern,
+		mounted:           map[string]string{},
 	}
-	for i, a := range armed {
-		reloader.markMounted(a.entry.Name, a.meta.Sidecar.MountOrDefault(running[i].Name))
+	for _, a := range approved {
+		reloader.markMounted(a.Entry.Name, a.Mount)
 	}
 
 	// Host build broker: the unsandboxed parent owns a constrained
@@ -935,7 +840,10 @@ func runLaunch(env *Env, opts launchOpts) int {
 		// Forward the selected harness's auth env vars through the
 		// default profile's restrictive allow_vars filter — only for the
 		// selected harness.
-		argv = forwardHarnessEnv(env, argv, harness, prof, profName)
+		argv = forwardHarnessEnv(env, argv, harness, plan)
+		// User --open-port grants (e.g. local Playwright webServer). Additive
+		// on top of the profile; no-op on non-native backends (with a warning).
+		argv = injectUserOpenPorts(env, argv, opts.openPorts, prof)
 		// Pass the resolved audit path down to `omac sandbox run` so the
 		// network-filter subprocess appends net.decision events to the
 		// same persistent log. Inherit the parent's run_id + mode so the
@@ -1242,27 +1150,6 @@ func boundedKnownIDs(enumerate func() map[string]struct{}, d time.Duration) map[
 	}
 }
 
-// secretFromEnv returns the host value that will satisfy a keychain-absent
-// secret at runtime, if any. It returns ok=true only when the secret is
-// listed under sidecar.env_passthrough AND the shell exports a non-empty
-// value for it. The supervisor passes env_passthrough vars to the sidecar
-// at spawn time (see supervisor.buildEnv) whenever the var is present, even
-// if empty; here we deliberately treat an empty value as not satisfying a
-// required secret, since an empty token is no token. In that case the
-// secret is genuinely usable at runtime and the preflight must not refuse
-// to start. See the skainet skills' omac.yaml for the canonical "keychain
-// or env_passthrough" fallback contract.
-func secretFromEnv(name string, envPassthrough map[string]struct{}) (string, bool) {
-	if _, ok := envPassthrough[name]; !ok {
-		return "", false
-	}
-	v, ok := os.LookupEnv(name)
-	if !ok || v == "" {
-		return "", false
-	}
-	return v, true
-}
-
 // autoDeregisterMissing prunes registry entries whose skill directory
 // no longer exists on disk. Returns the names of skills that were
 // pruned, in the order they appeared in the registry. Secrets and
@@ -1349,24 +1236,6 @@ func mergeRegistries(global, workdir *registry.Registry) *registry.Registry {
 		}
 		out.Registered = append(out.Registered, e)
 		seen[e.Name] = struct{}{}
-	}
-	return out
-}
-
-// mergeConfig returns a store whose (skill, field) values are the union
-// of the global and workdir layers, with workdir values overriding
-// global ones field-by-field. Neither input is mutated.
-func mergeConfig(global, workdir *skillconfig.Store) *skillconfig.Store {
-	out := &skillconfig.Store{Version: skillconfig.SchemaVersion, Skills: map[string]map[string]string{}}
-	for skill, fields := range global.Skills {
-		for field, val := range fields {
-			out.Set(skill, field, val)
-		}
-	}
-	for skill, fields := range workdir.Skills {
-		for field, val := range fields {
-			out.Set(skill, field, val)
-		}
 	}
 	return out
 }
@@ -1485,15 +1354,10 @@ func startAutoRegisterWorkdirSkills(env *Env, harness config.Harness, reg *regis
 // declared secret/config field must be satisfiable at start time WITHOUT
 // prompting the user.
 //
-// "Satisfiable without prompting" mirrors the resolution precedence in
-// runLaunch (start.go):
-//   - a required secret is satisfiable when its workdir-scoped or unscoped
-//     keychain value exists; only when both are absent can a non-empty
-//     env_passthrough value satisfy it, subject to its pattern unless
-//     skipSecretPattern is set;
-//   - a required config field is satisfiable from the merged stored
-//     workdir/global config, then a non-empty default, then a non-empty
-//     DefaultFromEnv host environment value.
+// "Satisfiable without prompting" is by definition whatever runLaunch's
+// preflight would accept, so this asks internal/skillstate rather than
+// restating the precedence ladder — before #174 it was a sixth hand-rolled
+// copy of it, in the same file as the first.
 //
 // A skill with at least one required-and-unsatisfiable secret/field is
 // NOT eligible — the findUnregisteredSkills gate surfaces it so the
@@ -1502,51 +1366,52 @@ func skillEligibleForAutoRegister(workdir, skillName string, m *config.Meta, con
 	if m.Sidecar == nil {
 		return false, nil
 	}
-	passthrough := map[string]struct{}{}
-	for _, name := range m.Sidecar.EnvPassthrough {
-		passthrough[name] = struct{}{}
-	}
-	for _, sp := range m.Sidecar.Secrets {
-		if !sp.IsRequired() {
-			continue
-		}
-		keychainValue, err := keychain.GetWithFallback(keychain.WorkdirID(workdir), skillName, sp.Name)
-		if err == nil {
-			keychainValue.Zero()
-			continue
-		}
-		if !errors.Is(err, keychain.ErrNotFound) {
-			return false, err
-		}
-		envValue, suppliedByEnv := secretFromEnv(sp.Name, passthrough)
-		if suppliedByEnv {
-			if !skipSecretPattern {
-				if err := validatePattern(sp, envValue); err != nil {
-					return false, nil
-				}
-			}
-			continue
+	// SkipBundleHash: the skill is by definition not registered yet, so there
+	// is no recorded hash for drift to be measured against.
+	r := skillstate.New(skillstate.Options{
+		Scope:             keychain.WorkdirID(workdir),
+		SkipSecretPattern: skipSecretPattern,
+		SkipBundleHash:    true,
+	})
+	armed, problems := r.Resolve(m, registry.Entry{Name: skillName}, "", configStore)
+	armed.Zero()
+
+	// A dead keychain is deliberately "not eligible" rather than an error:
+	// --auto-register-skills on a headless box has always just declined to
+	// auto-register (GetWithFallback reported the missing backend as
+	// ErrNotFound), and turning that into a hard ExitKeychainError would break
+	// launches that work today. Only an opaque keychain failure — the case that
+	// was already fatal here — still propagates.
+	if p := skillstate.First(problems, skillstate.KeychainUnavailable); p != nil {
+		if !errors.Is(p.Cause, keychain.ErrNotFound) {
+			return false, p.Cause
 		}
 		return false, nil
 	}
-	for _, fp := range m.Sidecar.Config {
-		if !fp.IsRequired() {
+	for _, p := range problems {
+		// An OPTIONAL secret whose exported value fails its pattern must not
+		// block registration: eligibility asks whether the skill's REQUIRED
+		// values resolve without prompting, and registering anyway lets start's
+		// preflight report the malformed value with its --skip-secret-pattern
+		// hint — a better outcome than the findUnregisteredSkills gate's
+		// "run omac register", which would not fix it either.
+		if p.Kind == skillstate.InvalidSecret && !secretRequired(m, p.Field) {
 			continue
-		}
-		if _, ok := configStore.Get(skillName, fp.Name); ok {
-			continue
-		}
-		if fp.Default != "" {
-			continue
-		}
-		if fp.DefaultFromEnv != "" {
-			if value, ok := os.LookupEnv(fp.DefaultFromEnv); ok && value != "" {
-				continue
-			}
 		}
 		return false, nil
 	}
 	return true, nil
+}
+
+// secretRequired reports whether m declares the named secret as required.
+// Unknown names are treated as required (fail closed).
+func secretRequired(m *config.Meta, name string) bool {
+	for _, sp := range m.Sidecar.Secrets {
+		if sp.Name == name {
+			return sp.IsRequired()
+		}
+	}
+	return true
 }
 
 // startAutoRegisterOne writes a registry entry for a discovered

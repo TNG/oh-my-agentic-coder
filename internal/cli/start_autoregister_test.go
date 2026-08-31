@@ -19,6 +19,7 @@ import (
 	"github.com/tngtech/oh-my-agentic-coder/internal/registry"
 	"github.com/tngtech/oh-my-agentic-coder/internal/secrets"
 	"github.com/tngtech/oh-my-agentic-coder/internal/skillconfig"
+	"github.com/tngtech/oh-my-agentic-coder/internal/skillstate"
 )
 
 // stageSkillWithSidecar creates .opencode/skills/<name>/omac.yaml with
@@ -46,7 +47,7 @@ func autoRegisterConfig(t *testing.T, workdir string) *skillconfig.Store {
 	if err != nil {
 		t.Fatalf("skillconfig.LoadGlobal: %v", err)
 	}
-	return mergeConfig(globalStore, workdirStore)
+	return skillstate.MergeConfig(globalStore, workdirStore)
 }
 
 func autoRegisterEligible(t *testing.T, workdir, skillName, skillDir string, skipSecretPattern bool) (bool, error) {
@@ -166,8 +167,8 @@ sidecar:
 `
 
 func TestParseLaunchArgs_AutoRegisterSkills(t *testing.T) {
-	opts, ok := parseLaunchArgs("start", []string{"--auto-register-skills"}, devnullEnv(t))
-	if !ok || !opts.autoRegisterSkills {
+	opts, code := parseLaunchArgs("start", []string{"--auto-register-skills"}, devnullEnv(t))
+	if code != ExitOK || !opts.autoRegisterSkills {
 		t.Fatal("--auto-register-skills was not parsed")
 	}
 }
@@ -751,4 +752,58 @@ func mustBundleHash(t *testing.T, dir string) string {
 		t.Fatalf("BundleHash: %v", err)
 	}
 	return h
+}
+
+// sidecarOptionalPatternedSecret declares an OPTIONAL secret with a pattern,
+// listed under env_passthrough so a host value is consulted for it.
+const sidecarOptionalPatternedSecret = `name: opt-secret
+sidecar:
+  command: ["true"]
+  env_passthrough:
+    - OPT_TOKEN
+  secrets:
+    - name: OPT_TOKEN
+      required: false
+      pattern: "^tok_[A-Za-z0-9]{4,}$"
+`
+
+// TestSkillEligibleForAutoRegister_OptionalSecretPatternDoesNotBlock: eligibility
+// asks whether the skill's REQUIRED values resolve without prompting. A stale
+// placeholder in the developer's shell that fails an OPTIONAL secret's pattern
+// must not veto registration — the pre-#174 check skipped optional secrets
+// entirely, and declining here would send the user to `omac register`, which
+// cannot fix an exported value either. Registering lets start's preflight report
+// it with the --skip-secret-pattern hint instead.
+func TestSkillEligibleForAutoRegister_OptionalSecretPatternDoesNotBlock(t *testing.T) {
+	isolateHome(t)
+	wd := t.TempDir()
+	stageSkillWithSidecar(t, wd, "opt-secret", sidecarOptionalPatternedSecret)
+	t.Setenv("OPT_TOKEN", "placeholder-not-matching-the-pattern")
+
+	got, err := autoRegisterEligible(t, wd, "opt-secret", filepath.Join(wd, ".opencode", "skills", "opt-secret"), false)
+	if err != nil {
+		t.Fatalf("skillEligibleForAutoRegister: %v", err)
+	}
+	if !got {
+		t.Error("an optional secret's malformed host value must not block auto-registration")
+	}
+}
+
+// TestSkillEligibleForAutoRegister_RequiredSecretPatternBlocks is the other
+// half: for a REQUIRED secret, a host value that fails the pattern is exactly
+// the case the pre-#174 check refused, and it still refuses.
+func TestSkillEligibleForAutoRegister_RequiredSecretPatternBlocks(t *testing.T) {
+	isolateHome(t)
+	wd := t.TempDir()
+	body := strings.Replace(sidecarOptionalPatternedSecret, "required: false", "required: true", 1)
+	stageSkillWithSidecar(t, wd, "opt-secret", body)
+	t.Setenv("OPT_TOKEN", "placeholder-not-matching-the-pattern")
+
+	got, err := autoRegisterEligible(t, wd, "opt-secret", filepath.Join(wd, ".opencode", "skills", "opt-secret"), false)
+	if err != nil {
+		t.Fatalf("skillEligibleForAutoRegister: %v", err)
+	}
+	if got {
+		t.Error("a required secret whose host value fails its pattern must not be auto-registered")
+	}
 }

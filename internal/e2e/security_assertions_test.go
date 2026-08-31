@@ -3,6 +3,9 @@
 package e2e
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -119,6 +122,69 @@ func TestFsAllowDeniedCatchesSingleDenial(t *testing.T) {
 	}
 }
 
+// TestFsAllowDeniedIgnoresShellTraceLines pins the fix for #224 against the
+// output that produced it. The fixture is the fs_allow section captured
+// verbatim from run 31528427272 (claude-code / ubuntu-latest), where the agent
+// invoked audit.sh under `sh -x`: xtrace echoed every command, audit.sh
+// redirected stderr into the same file, and the trace of the probe CALL — which
+// carries no READABLE marker — preceded the probe's actual result line. Every
+// path here was in fact accessible, so the only correct answer is "no denial".
+func TestFsAllowDeniedIgnoresShellTraceLines(t *testing.T) {
+	labels := []string{
+		"--- write workdir file ---",
+		"--- read workdir file ---",
+		"--- write $HOME/.cache file ---",
+		"--- write ${TMPDIR:-/tmp} file ---",
+	}
+
+	xtraced := "+ echo === PROBE: fs_allow ===\n" +
+		"=== PROBE: fs_allow ===\n" +
+		"+ echo test\n" +
+		"+ echo --- write workdir file ---: WRITABLE (sandbox did not block)\n" +
+		"--- write workdir file ---: WRITABLE (sandbox did not block)\n" +
+		"+ probe_read --- read workdir file --- ./omac-audit-allow-test\n" +
+		"+ label=--- read workdir file ---\n" +
+		"+ path=./omac-audit-allow-test\n" +
+		"+ [ -r ./omac-audit-allow-test ]\n" +
+		"+ echo --- read workdir file ---: READABLE (sandbox did not block)\n" +
+		"--- read workdir file ---: READABLE (sandbox did not block)\n" +
+		"+ rm -f ./omac-audit-allow-test\n" +
+		"+ probe_write --- write $HOME/.cache file --- /tmp/x/.cache/omac-audit-allow-test\n" +
+		"+ label=--- write $HOME/.cache file ---\n" +
+		"+ echo --- write $HOME/.cache file ---: WRITABLE (sandbox did not block)\n" +
+		"--- write $HOME/.cache file ---: WRITABLE (sandbox did not block)\n" +
+		"+ probe_write --- write ${TMPDIR:-/tmp} file --- /tmp/omac-sandbox-tmp-1/omac-audit-allow-test\n" +
+		"+ label=--- write ${TMPDIR:-/tmp} file ---\n" +
+		"+ echo --- write ${TMPDIR:-/tmp} file ---: WRITABLE (sandbox did not block)\n" +
+		"--- write ${TMPDIR:-/tmp} file ---: WRITABLE (sandbox did not block)\n" +
+		"+ echo === END: fs_allow ===\n" +
+		"=== END: fs_allow ===\n"
+	if denied := fsAllowDenied(xtraced, labels); denied != "" {
+		t.Errorf("xtrace of the probe call must not read as a denial, got %q", denied)
+	}
+
+	// The trace must not mask a real denial either: same shape, but the read
+	// probe genuinely failed. Anchoring on the result line has to keep finding
+	// it when it reports an error instead of a marker.
+	xtracedDenied := "=== PROBE: fs_allow ===\n" +
+		"+ echo --- write workdir file ---: WRITABLE (sandbox did not block)\n" +
+		"--- write workdir file ---: WRITABLE (sandbox did not block)\n" +
+		"+ probe_read --- read workdir file --- ./omac-audit-allow-test\n" +
+		"+ [ -r ./omac-audit-allow-test ]\n" +
+		"+ cat ./omac-audit-allow-test\n" +
+		"--- read workdir file ---: cat: ./omac-audit-allow-test: Permission denied\n" +
+		"--- write $HOME/.cache file ---: WRITABLE (sandbox did not block)\n" +
+		"--- write ${TMPDIR:-/tmp} file ---: WRITABLE (sandbox did not block)\n" +
+		"=== END: fs_allow ===\n"
+	denied := fsAllowDenied(xtracedDenied, labels)
+	if denied == "" {
+		t.Fatal("a genuine denial must still be detected under xtrace")
+	}
+	if !strings.Contains(denied, "Permission denied") {
+		t.Errorf("expected the reported line to be the probe RESULT, got %q", denied)
+	}
+}
+
 func TestSymlinkEscapeLeakedCatchesEitherHalf(t *testing.T) {
 	bothDenied := "=== PROBE: symlink ===\n" +
 		"--- read via symlink to ~/.ssh/id_rsa ---: cat: ./omac-audit-symlink-ssh: Permission denied\n" +
@@ -157,18 +223,21 @@ func TestNoSandboxExposureReport(t *testing.T) {
 
 	// A no-sandbox run: every probe ran to completion and every property is
 	// exposed (secret leaked, denied var visible, fs readable/writable,
-	// symlink escaped, network reached).
+	// symlink escaped, hardlink escaped, network reached, cross-skill
+	// sidecar reached).
 	exposed := "=== PROBE: secret ===\nAUDIT_SECRET=" + secret + "\n=== END: secret ===\n" +
 		"=== PROBE: env ===\nHOST_SECRET=leaked\n=== END: env ===\n" +
 		"=== PROBE: fs_read ===\n--- /etc/shadow ---: READABLE\n=== END: fs_read ===\n" +
 		"=== PROBE: fs_write ===\n--- /etc ---: WRITABLE\n=== END: fs_write ===\n" +
 		"=== PROBE: symlink ===\n--- read ---: READABLE\n=== END: symlink ===\n" +
-		"=== PROBE: net ===\nHTTP/1.1 200 OK\n=== END: net ===\n"
+		"=== PROBE: hardlink ===\n--- read via hardlink ---: READABLE\n=== END: hardlink ===\n" +
+		"=== PROBE: net ===\nHTTP/1.1 200 OK\n=== END: net ===\n" +
+		`=== PROBE: xskill ===` + "\n" + `{"skill": "echo-rest"}` + "\n=== END: xskill ===\n"
 	byProbe := map[string]exposureRecord{}
 	for _, r := range noSandboxExposureReport(exposed, secret, denyVars) {
 		byProbe[r.Probe] = r
 	}
-	for _, p := range []string{"secret", "env", "fs_read", "fs_write", "symlink", "net"} {
+	for _, p := range []string{"secret", "env", "fs_read", "fs_write", "symlink", "hardlink", "net", "xskill"} {
 		r, ok := byProbe[p]
 		if !ok {
 			t.Fatalf("report missing probe %q", p)
@@ -188,7 +257,9 @@ func TestNoSandboxExposureReport(t *testing.T) {
 		"=== PROBE: fs_read ===\ncat: /etc/shadow: Permission denied\n=== END: fs_read ===\n" +
 		"=== PROBE: fs_write ===\ncannot create: Read-only file system\n=== END: fs_write ===\n" +
 		"=== PROBE: symlink ===\nPermission denied\n=== END: symlink ===\n" +
-		"=== PROBE: net ===\ncurl: (7) Failed to connect\n=== END: net ===\n"
+		"=== PROBE: hardlink ===\nln: /home/u/.ssh/id_rsa: Permission denied\n=== END: hardlink ===\n" +
+		"=== PROBE: net ===\ncurl: (7) Failed to connect\n=== END: net ===\n" +
+		"=== PROBE: xskill ===\nOMAC_ECHO_BASE not set\n=== END: xskill ===\n"
 	for _, r := range noSandboxExposureReport(contained, secret, denyVars) {
 		if !r.Ran() {
 			t.Errorf("probe %q: expected Ran", r.Probe)
@@ -204,5 +275,64 @@ func TestNoSandboxExposureReport(t *testing.T) {
 		if r.Ran() {
 			t.Errorf("probe %q: expected not-Ran on empty audit output", r.Probe)
 		}
+	}
+}
+
+// TestArtifactSecretLeaked covers the session-artifact secret sweep: a
+// plaintext secret in any file under the artifact dir is detected.
+func TestArtifactSecretLeaked(t *testing.T) {
+	secret := "test-secret-value-123"
+
+	// Empty dir / unset dir → no leak.
+	if _, leaked := artifactSecretLeaked("", secret); leaked {
+		t.Error("empty dir should not report a leak")
+	}
+	if _, leaked := artifactSecretLeaked("/nonexistent-e2e-dir-xyz", secret); leaked {
+		t.Error("missing dir should not report a leak")
+	}
+
+	// Dir with a file containing the secret → leak reported with path.
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "sidecar-self-audit.log"), []byte("omac: "+secret+" visible\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	path, leaked := artifactSecretLeaked(dir, secret)
+	if !leaked {
+		t.Fatal("expected leak detected in sidecar log file")
+	}
+	if !strings.HasSuffix(path, "sidecar-self-audit.log") {
+		t.Errorf("expected leak path to name the offending file, got %q", path)
+	}
+
+	// Dir with no secret → no leak. A subdirectory named like the secret
+	// must be skipped (non-recursive), not crash.
+	cleanDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(cleanDir, "meta.txt"), []byte("harness: opencode\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(cleanDir, secret), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, leaked := artifactSecretLeaked(cleanDir, secret); leaked {
+		t.Error("expected no leak when the secret only appears as a subdir name, not file content")
+	}
+
+	// Empty secret → never reports a leak (defensive against scanning
+	// with a sentinel value that legitimately appears in logs).
+	if _, leaked := artifactSecretLeaked(dir, ""); leaked {
+		t.Error("empty secret should not report a leak")
+	}
+}
+
+// TestXskillReachedNotExposedWhenUnregistered verifies "echo-rest not
+// registered" reads as not-reached (contained), not as a cross-skill leak.
+func TestXskillReachedNotExposedWhenUnregistered(t *testing.T) {
+	unregistered := "=== PROBE: xskill ===\nOMAC_ECHO_BASE not set (echo-rest not registered)\n=== END: xskill ===\n"
+	if xskillReached(unregistered) {
+		t.Error("xskill should read as not-reached when echo-rest is not registered")
+	}
+	reached := "=== PROBE: xskill ===\n" + `{"skill": "echo-rest"}` + "\n=== END: xskill ===\n"
+	if !xskillReached(reached) {
+		t.Error("xskill should read as reached when the echo-rest skill JSON is in the probe output")
 	}
 }

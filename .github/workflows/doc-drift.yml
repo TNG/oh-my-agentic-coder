@@ -1,7 +1,7 @@
 # Documentation-drift audit.
 #
 # An agent (headless opencode against the internal SKAINET gateway, same
-# GLM-5.2 as the rest of the harness suite) reads the whole checkout and
+# default model as the rest of the harness suite) reads the whole checkout and
 # reports where the documentation makes a concrete factual claim the code
 # contradicts — a removed flag, a changed default, a renamed command, a moved
 # path, a behaviour that no longer holds. Every finding is verified against the
@@ -28,9 +28,9 @@ on:
         type: string
         default: '2400'
       model:
-        description: 'Model id for the audit agent, for THIS RUN ONLY. Leave empty for the opencode pin in internal/e2e/versions.go (zai-org/GLM-5.2)'
+        description: 'Model id for the audit agent, for THIS RUN ONLY. Set empty to use each harness''s pin in internal/e2e/versions.go (opencode/codex/copilot/pi/codewhale: zai-org/GLM-5.2, claude-code: claude-sonnet-5).'
         type: string
-        default: ''
+        default: 'deepseek-ai/DeepSeek-V4-Flash'
       context_limit:
         description: 'Context window declared to the agent, in tokens. Leave empty for the 100000 default, which is safely under every pinned model'
         type: string
@@ -55,7 +55,7 @@ jobs:
       candidates: ${{ steps.probe.outputs.candidates }}
     env:
       SKAINET_TOKEN: ${{ secrets.SKAINET_TOKEN }}
-      SKAINET_INTERNAL: ${{ secrets.SKAINET_EXTERNAL }}
+      SKAINET_INTERNAL: ${{ secrets.SKAINET_INTERNAL }}
       E2E_MODEL: ${{ github.event.inputs.model }}
     steps:
       - name: Checkout
@@ -89,7 +89,7 @@ jobs:
     env:
       DRIFT_MODE: ${{ matrix.mode }}
       SKAINET_TOKEN: ${{ secrets.SKAINET_TOKEN }}
-      SKAINET_INTERNAL: ${{ secrets.SKAINET_EXTERNAL }}
+      SKAINET_INTERNAL: ${{ secrets.SKAINET_INTERNAL }}
       E2E_VERSION_OPENCODE: ${{ github.event.inputs.opencode_version }}
       DRIFT_TIMEOUT_SECS: ${{ github.event.inputs.timeout_secs }}
       # From the preflight job: the input, the gateway probe and the -TEE flip

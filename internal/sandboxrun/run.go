@@ -51,8 +51,10 @@ func warnEmptyAllowVars(stderr io.Writer, allowVars []string) {
 	fmt.Fprintln(stderr, "omac sandbox: warning: empty environment.allow_vars — forwarding only the")
 	fmt.Fprintln(stderr, "  operational defaults (HOME, PATH, TERM, locale, …). Every other ambient var,")
 	fmt.Fprintln(stderr, "  including provider tokens, is stripped: a harness started this way will not")
-	fmt.Fprintln(stderr, "  authenticate. Add what it needs to allow_vars, pass --allow-env <name>, or set")
-	fmt.Fprintln(stderr, `  allow_vars: ["*"] to inherit every non-blocklisted var.`)
+	fmt.Fprintln(stderr, "  authenticate. Custom profiles are not updated by omac upgrades; refresh this")
+	fmt.Fprintln(stderr, "  profile from its installer or original source. If you maintain it manually, add")
+	fmt.Fprintln(stderr, "  what it needs to allow_vars or pass --allow-env <name>.")
+	fmt.Fprintln(stderr, `  allow_vars: ["*"] is not recommended because it inherits every non-blocklisted var.`)
 }
 
 // Run is the `omac sandbox run` supervisor: resolve profile + flags,
@@ -76,7 +78,12 @@ func Run(opts Options) int {
 		return 1
 	}
 
-	profile, profilePath, err := sandboxprofile.Resolve(opts.Flags.ProfileRef)
+	// WithScaffold: this is the launch path — the child the default
+	// launcher template invokes — so first run creates the user's editable
+	// ~/.config/omac/sandbox-profiles/default.json. Every inspection
+	// caller (doctor, diagnose, provenance, facade wiring) resolves
+	// read-only instead.
+	profile, profilePath, err := sandboxprofile.Resolve(opts.Flags.ProfileRef, sandboxprofile.WithScaffold())
 	if err != nil {
 		return fail("%v", err)
 	}
@@ -217,6 +224,13 @@ func Run(opts Options) int {
 	}
 	defer markerCleanup()
 
+	if warn := unresolvedInnerCommandWarning(opts.Flags.InnerArgv); warn != "" {
+		fmt.Fprintln(stderr, warn)
+	}
+	if warn := protectedInnerBinaryWarning(opts.Flags.InnerArgv, grants.ProtectedPaths); warn != "" {
+		fmt.Fprintln(stderr, warn)
+	}
+
 	childArgv, err := BuildChildArgv(grants, opts.Flags.InnerArgv)
 	if err != nil {
 		return fail("%v", err)
@@ -325,7 +339,7 @@ func harnessName(innerArgv []string) string {
 // page policy (learned website decisions) lives next to the profile:
 // <profile>.pages.json (e.g. default.pages.json).
 func buildProxy(p *sandboxprofile.Profile, profilePath string, stderr io.Writer, logf func(string, ...any), auditor audit.Auditor, intentBase, harness string) (*netproxy.Server, error) {
-	var learned netproxy.LearnedStore
+	var learned netproxy.DecisionStore
 	pagesPath := sandboxprofile.PagesPath(profilePath)
 	lp, lerr := netprompt.LoadLearnedPolicy(pagesPath)
 	if lerr != nil {
@@ -333,6 +347,8 @@ func buildProxy(p *sandboxprofile.Profile, profilePath string, stderr io.Writer,
 		lp, _ = netprompt.LoadLearnedPolicy("")
 	}
 	learned = lp
+
+	session := netproxy.NewSessionStore()
 
 	var prompter netproxy.Prompter
 	onUnavailableAllow := p.Network.OnUnavailable() == sandboxprofile.OnUnavailableAllow
@@ -357,6 +373,7 @@ func buildProxy(p *sandboxprofile.Profile, profilePath string, stderr io.Writer,
 		OnUnavailableAllow: onUnavailableAllow,
 		Prompter:           prompter,
 		Learned:            learned,
+		Session:            session,
 		Logf:               logf,
 		Auditor:            auditor,
 	})

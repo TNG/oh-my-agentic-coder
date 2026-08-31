@@ -17,14 +17,22 @@ import (
 	"github.com/tngtech/oh-my-agentic-coder/internal/registry"
 	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxprofile"
 	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxrun"
+	"github.com/tngtech/oh-my-agentic-coder/internal/skillconfig"
+	"github.com/tngtech/oh-my-agentic-coder/internal/skillstate"
 )
 
 func runDoctor(args []string, env *Env) int {
 	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
 	fs.SetOutput(env.Stderr)
-	_ = fs.Bool("fix", false, "Reserved for future automatic fixes.")
-	if err := fs.Parse(reorderFlagsFirst(args)); err != nil {
-		return ExitMisuse
+	_ = fs.Bool("fix", false, "Reserved; not implemented yet (no-op).")
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), "Usage: omac doctor [--fix]")
+		fmt.Fprintln(fs.Output(), "")
+		fmt.Fprintln(fs.Output(), "Run sanity checks: keychain, launcher config, registry, sandbox, dialog backend, harness.")
+		fs.PrintDefaults()
+	}
+	if code, ok := parseFlags(fs, args, env); !ok {
+		return code
 	}
 
 	fmt.Fprintf(env.Stdout, "omac %s\n", env.Version)
@@ -34,7 +42,7 @@ func runDoctor(args []string, env *Env) int {
 
 	if err := keychain.Ping(); err != nil {
 		if keychain.IsUnavailable(err) {
-			fmt.Fprintf(env.Stdout, "[warn] keychain backend: unavailable — %s\n", keychainUnavailableHint(host))
+			fmt.Fprintf(env.Stdout, "[warn] keychain backend: unavailable — %s\n", keychain.UnavailableHint(host))
 		} else {
 			fmt.Fprintln(env.Stdout, "[warn] keychain backend:", err)
 		}
@@ -73,29 +81,58 @@ func runDoctor(args []string, env *Env) int {
 	fmt.Fprintf(env.Stdout, "[ok] registry: %d skill(s) registered (%d workdir, %d global)\n",
 		len(reg.Registered), len(workdirReg.Registered), len(globalReg.Registered))
 
+	// Config stores, merged the same way as the registry, so a stored config
+	// value counts as present here exactly as it would at launch. A broken
+	// store is reported and treated as empty rather than aborting: doctor's job
+	// is to enumerate problems, not to stop at the first one.
+	workdirCfg, err := skillconfig.Load(env.Workdir)
+	if err != nil {
+		fmt.Fprintln(env.Stdout, "[warn] skill-config:", err)
+		workdirCfg = &skillconfig.Store{}
+	}
+	globalCfg, err := skillconfig.LoadGlobal()
+	if err != nil {
+		fmt.Fprintln(env.Stdout, "[warn] global skill-config:", err)
+		globalCfg = &skillconfig.Store{}
+	}
+	cfgStore := skillstate.MergeConfig(globalCfg, workdirCfg)
+
 	// Per-skill checks.
+	//
+	// Readiness is resolved through internal/skillstate — the same rule `omac
+	// start` applies — so doctor cannot disagree with the launch path about
+	// whether a value is present. It used to probe the keychain UNSCOPED while
+	// start probed it workdir-scoped with an unscoped fallback, so a secret
+	// stored per-workdir made doctor report a missing required secret while
+	// start launched happily (issue #174, Failure 3).
+	//
+	// SkipBundleHash: doctor reports on values, not on drift (that is
+	// `omac provenance --check` and start's own gate), so it should not pay a
+	// tree walk per skill.
+	resolver := skillstate.New(skillstate.Options{
+		Scope:          keychain.WorkdirID(env.Workdir),
+		SkipBundleHash: true,
+	})
 	failures := 0
 	for _, e := range reg.Registered {
 		absDir := e.SkillDir
 		if !filepath.IsAbs(absDir) {
 			absDir = filepath.Join(env.Workdir, absDir)
 		}
-		metaPath := filepath.Join(absDir, config.MetaFileName)
-		m, err := config.LoadMeta(metaPath)
-		if err != nil {
-			fmt.Fprintf(env.Stdout, "  [fail] %s: %v\n", e.Name, err)
-			failures++
-			continue
-		}
-		if m.Sidecar == nil {
-			fmt.Fprintf(env.Stdout, "  [fail] %s: meta no longer declares a sidecar\n", e.Name)
+		armed, problems := resolver.Load(e, absDir, cfgStore)
+		// Resolution reads secret plaintext (it is the same code path start
+		// uses, which is the point); wipe it as soon as we have counted.
+		armed.Zero()
+
+		if p := skillstate.First(problems, skillstate.MetaBroken); p != nil {
+			fmt.Fprintf(env.Stdout, "  [fail] %s: %s\n", e.Name, p.Detail)
 			failures++
 			continue
 		}
 		// Binary presence (looks for the script/binary the skill actually ships,
 		// not e.g. python3 itself).
 		binOK := "yes"
-		if cand := skillArtifactCandidate(m.Sidecar.Command); cand != "" {
+		if cand := skillArtifactCandidate(armed.Meta.Sidecar.Command); cand != "" {
 			abs := cand
 			if !filepath.IsAbs(abs) {
 				abs = filepath.Join(absDir, abs)
@@ -110,25 +147,47 @@ func runDoctor(args []string, env *Env) int {
 		} else {
 			binOK = "n/a"
 		}
-		// Secrets status.
-		missingReq := 0
-		for _, s := range m.Sidecar.Secrets {
-			present, err := keychain.Has(e.Name, s.Name)
-			if err != nil {
-				fmt.Fprintf(env.Stdout, "  [fail] %s: keychain probe: %v\n", e.Name, err)
-				failures++
-				continue
-			}
-			if !present && s.IsRequired() {
-				missingReq++
+
+		// An unreadable secret counts toward missing_required_secrets, but a
+		// keychain that cannot ANSWER is reported separately: "set these" is
+		// the wrong advice when the remedy is to start a Secret Service.
+		//
+		// It is deliberately NOT a failure. doctor is a diagnostic that
+		// enumerates an environment's state, and a host with no keychain is a
+		// supported environment — skills can take their credentials from
+		// env_passthrough there. Failing would also make doctor's exit code
+		// useless as a health gate on exactly the headless CI runners that most
+		// need it (scripts/e2e-readme-onboarding.sh gates its job on it), and
+		// the backend's absence is already reported once at the top.
+		missingSecrets, missingFields, invalid := 0, 0, 0
+		for _, p := range problems {
+			switch p.Kind {
+			case skillstate.KeychainUnavailable:
+				missingSecrets++
+			case skillstate.MissingSecret:
+				missingSecrets++
+			case skillstate.MissingField:
+				missingFields++
+			case skillstate.InvalidSecret:
+				invalid++
 			}
 		}
 		status := "ok"
-		if binOK == "no" || missingReq > 0 {
+		if binOK == "no" || missingSecrets > 0 || missingFields > 0 || invalid > 0 {
 			status = "warn"
 		}
-		fmt.Fprintf(env.Stdout, "  [%s] %-20s binary=%s missing_required_secrets=%d\n",
-			status, e.Name, binOK, missingReq)
+		fmt.Fprintf(env.Stdout, "  [%s] %-20s binary=%s missing_required_secrets=%d missing_required_fields=%d\n",
+			status, e.Name, binOK, missingSecrets, missingFields)
+		for _, p := range problems {
+			switch p.Kind {
+			case skillstate.KeychainUnavailable, skillstate.InvalidSecret:
+				line := fmt.Sprintf("         %s/%s: %s", p.Skill, p.Field, p.Detail)
+				if p.Fix != "" {
+					line += " — " + p.Fix
+				}
+				fmt.Fprintln(env.Stdout, line)
+			}
+		}
 	}
 
 	// Inner harness binary status.
@@ -160,8 +219,10 @@ func runDoctor(args []string, env *Env) int {
 
 	// Static security lint of the resolved profile (advisory). Reuses the
 	// same engine as `omac provenance --check` — findings are warnings
-	// here, never a doctor failure.
-	doctorProfileLint(env, "")
+	// here, never a doctor failure. The ref follows the default launcher
+	// profile's template, so a config pointing at a non-default policy gets
+	// that policy linted rather than an unused "default".
+	doctorProfileLint(env, defaultPolicyRef(lc))
 
 	fmt.Fprintln(env.Stdout, "\nWhen a run fails, `omac diagnose` shows what the sandbox blocked and why.")
 
@@ -176,7 +237,7 @@ func runDoctor(args []string, env *Env) int {
 // the gap where doctor never surfaced the security lint (previously only
 // reachable via `omac provenance --check`).
 func doctorProfileLint(env *Env, profileRef string) {
-	profile, _, err := sandboxprofile.ResolveReadOnly(profileRef)
+	profile, _, err := sandboxprofile.Resolve(profileRef)
 	if err != nil {
 		return // profile problems are already reported by the sandbox section
 	}
@@ -282,26 +343,32 @@ func doctorSandboxProfileWarnings(env *Env, lc config.LauncherConfig) {
 		if len(prof.Command) == 0 {
 			continue
 		}
-		ref, ok := inspectBuiltinProfileRef(prof.Command)
-		if !ok {
+		ref, native := prof.PolicyRef()
+		if !native {
 			// Opaque external launcher (nono, no-sandbox-debug, etc.):
 			// doctor can't see into its profile, so skip silently.
 			continue
 		}
-		p, _, err := sandboxprofile.ResolveReadOnly(ref)
+		p, path, err := sandboxprofile.Resolve(ref)
 		if err != nil {
 			fmt.Fprintf(env.Stdout, "  [warn] sandbox profile %q: %v\n", profName, err)
 			continue
 		}
 		if len(p.Environment.AllowVars) == 0 {
 			fmt.Fprintf(env.Stdout, "  [warn] sandbox profile %q has an empty environment.allow_vars\n", profName)
+			if path != "" {
+				fmt.Fprintf(env.Stdout, "         source:      %s\n", path)
+			}
 			fmt.Fprintln(env.Stdout, "         impact:      at launch omac forwards only the operational minimum (HOME, PATH,")
 			fmt.Fprintln(env.Stdout, "                      TERM, locale, …); all other ambient env vars — including provider")
 			fmt.Fprintln(env.Stdout, "                      tokens and secrets — are NOT passed through, and omac does not")
 			fmt.Fprintln(env.Stdout, "                      auto-forward auth vars. This differs from the pre-#102 inherit-")
 			fmt.Fprintln(env.Stdout, "                      everything behavior; the harness starts but will not authenticate.")
-			fmt.Fprintln(env.Stdout, `         remediation: add the vars the harness needs to allow_vars (see`)
-			fmt.Fprintln(env.Stdout, `                      sandboxprofile.DefaultAllowVars), or set allow_vars: ["*"] to forward`)
+			fmt.Fprintln(env.Stdout, "         remediation: custom profiles are not updated by omac upgrades; refresh this profile")
+			fmt.Fprintln(env.Stdout, "                      from its installer or original source. If you maintain it manually,")
+			fmt.Fprintln(env.Stdout, "                      add the vars the harness needs to allow_vars (see")
+			fmt.Fprintln(env.Stdout, "                      sandboxprofile.DefaultAllowVars).")
+			fmt.Fprintln(env.Stdout, `                      allow_vars: ["*"] is not recommended because it forwards almost`)
 			fmt.Fprintln(env.Stdout, "                      every ambient var (minus the danger blocklist).")
 		}
 		if denied := sandboxprofile.DeniedBaseVars(p.Environment.DenyVars); len(denied) > 0 {
@@ -322,36 +389,6 @@ func doctorSandboxProfileWarnings(env *Env, lc config.LauncherConfig) {
 			fmt.Fprintf(env.Stdout, "         remediation: %s\n", w.remediation)
 		}
 	}
-}
-
-// inspectBuiltinProfileRef looks at a sandbox profile Command argv
-// template and, if it is a {{self}} sandbox run invocation, extracts
-// the --profile reference. Recognized run forms:
-//   - "--profile", "default"   (separate args)
-//   - "--profile=default"      (inline)
-//   - omitted --profile        (resolves to "default")
-//
-// Only {{self}} sandbox run commands are inspectable; other sandbox
-// subcommands and external launchers are opaque and return ok=false.
-func inspectBuiltinProfileRef(command []string) (string, bool) {
-	if len(command) < 3 || command[0] != "{{self}}" || command[1] != "sandbox" || command[2] != "run" {
-		return "", false
-	}
-	// Find "--profile" (separate or inline) before "--".
-	for i := 3; i < len(command); i++ {
-		arg := command[i]
-		if arg == "--" {
-			break
-		}
-		if arg == "--profile" && i+1 < len(command) {
-			return command[i+1], true
-		}
-		if strings.HasPrefix(arg, "--profile=") {
-			return strings.TrimPrefix(arg, "--profile="), true
-		}
-	}
-	// Omitted --profile resolves to "default".
-	return "default", true
 }
 
 // profileGrantWarnings returns warnings for broad tool-home and

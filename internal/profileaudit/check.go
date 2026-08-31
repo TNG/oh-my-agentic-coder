@@ -47,7 +47,7 @@ func checkEnvironment(profile *sandboxprofile.Profile) []Finding {
 		Category: CatEnvironment,
 		Field:    "environment.allow_vars",
 		Value:    "(empty)",
-		Message:  `fails closed to the operational defaults, so the harness starts but cannot authenticate; add the vars it needs to allow_vars, or ["*"] to inherit every non-blocklisted var`,
+		Message:  `fails closed to the operational defaults, so the harness starts but cannot authenticate; custom profiles are not updated by omac upgrades, so refresh the profile from its installer or original source, or add explicit allow_vars manually; ["*"] is not recommended because it inherits every non-blocklisted var`,
 	}}
 }
 
@@ -328,7 +328,19 @@ func checkNetwork(profile *sandboxprofile.Profile) []Finding {
 				Value:    "0",
 				Message:  "any loopback port",
 			})
+			continue
 		}
+		// Landlock (Linux) net-port rules have no host dimension: an
+		// open_port grant permits bind+connect on that port to ANY host,
+		// not only loopback. Surface as LOW so doctor / provenance --check
+		// make the egress implication visible without failing closed.
+		findings = append(findings, Finding{
+			Severity: SeverityLow,
+			Category: CatNetwork,
+			Field:    "network.open_port",
+			Value:    strconv.Itoa(port),
+			Message:  "Linux Landlock is address-blind: also allows outbound TCP to any host on this port",
+		})
 	}
 	for _, port := range profile.Network.AllowTCPConnect {
 		switch port {

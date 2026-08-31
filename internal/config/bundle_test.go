@@ -134,6 +134,42 @@ func TestBundleHash_MissingDir(t *testing.T) {
 	}
 }
 
+// TestBundleHash_SymlinkRoot guards that a skill root that is itself a
+// symlink (common for git-versioned skill libraries installed as
+// ~/.config/opencode/skills-> ../../library/skills/) hashes
+// the same as its real target. Without resolving the root, WalkDir
+// Lstats the root, sees ModeSymlink, fires the callback once with
+// rel == "." (skipped), and never descends — yielding the empty
+// sha256:e3b0c44… digest.
+func TestBundleHash_SymlinkRoot(t *testing.T) {
+	realDir := stageSkill(t, t.TempDir(), map[string]string{
+		"omac.yaml":  "name: x\n",
+		"sidecar.py": "# server\n",
+	})
+	symlink := filepath.Join(t.TempDir(), "linked-skill")
+	if err := os.Symlink(realDir, symlink); err != nil {
+		// On platforms without symlink permission, just skip.
+		t.Skipf("symlink: %v", err)
+	}
+
+	realHash, err := BundleHash(realDir)
+	if err != nil {
+		t.Fatalf("BundleHash(realDir): %v", err)
+	}
+	symHash, err := BundleHash(symlink)
+	if err != nil {
+		t.Fatalf("BundleHash(symlink): %v", err)
+	}
+
+	const emptyHash = "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+	if symHash == emptyHash {
+		t.Errorf("BundleHash(symlink) is the empty digest %s; symlink root was not resolved/walked", symHash)
+	}
+	if symHash != realHash {
+		t.Errorf("BundleHash must match for symlink root vs real target; got symlink=%s real=%s", symHash, realHash)
+	}
+}
+
 func TestBundleHash_SkipsSymlinks(t *testing.T) {
 	dir := stageSkill(t, t.TempDir(), map[string]string{
 		"omac.yaml":  "name: x\n",

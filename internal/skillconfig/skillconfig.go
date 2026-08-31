@@ -38,7 +38,7 @@ type Store struct {
 	// Defaults holds "last-known-good" config values keyed by
 	// skill→field, mirrored on every write so a future `register
 	// --defaults` elsewhere can reuse them as suggestions
-	// (docs/MULTI_DIR_DESKTOP.md §4.4). Only meaningful in the global
+	// (docs/contributing/serve-spec.md). Only meaningful in the global
 	// store; never consulted at runtime (runtime uses Skills only).
 	Defaults map[string]map[string]string `yaml:"defaults,omitempty"`
 }
@@ -233,7 +233,7 @@ func (s *Store) RemoveSkill(skill string) bool {
 }
 
 // GetDefault returns the remembered default for a (skill, field), plus
-// whether present (docs/MULTI_DIR_DESKTOP.md §4.4).
+// whether present (docs/contributing/serve-spec.md).
 func (s *Store) GetDefault(skill, field string) (string, bool) {
 	if m, ok := s.Defaults[skill]; ok {
 		v, present := m[field]

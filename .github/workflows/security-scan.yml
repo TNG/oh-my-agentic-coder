@@ -29,9 +29,9 @@ on:
         options: [quick, standard, deep]
         default: deep
       model:
-        description: 'Model id for the strix agent, for THIS RUN ONLY. Leave empty for the opencode pin in internal/e2e/versions.go. Whatever is resolved here still goes through the gateway probe, so the -TEE variant flip and the fallback chain apply'
+        description: 'Model id for the strix agent, for THIS RUN ONLY. Set empty to use each harness''s pin in internal/e2e/versions.go. Whatever is resolved here still goes through the gateway probe, so the -TEE variant flip and the fallback chain apply.'
         type: string
-        default: ''
+        default: 'deepseek-ai/DeepSeek-V4-Flash'
 
 permissions:
   contents: read
@@ -47,11 +47,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 180
     env:
-      # SKAINET_EXTERNAL is the same secret e2e.yml uses for the model
-      # provider base URL (named for "reachable from GitHub-hosted CI",
-      # as opposed to a TNG-internal-only address) -- reused here rather
-      # than duplicating the URL.
-      LLM_API_BASE: ${{ secrets.SKAINET_EXTERNAL }}
+      # SKAINET_INTERNAL is the same secret e2e.yml uses for the model
+      # provider base URL — reused here rather than duplicating the URL.
+      LLM_API_BASE: ${{ secrets.SKAINET_INTERNAL }}
       LLM_API_KEY: ${{ secrets.SKAINET_TOKEN }}
       GH_TOKEN: ${{ github.token }}
       # Read by scripts/probe-model.sh below; empty on the scheduled run, so
@@ -90,7 +88,7 @@ jobs:
         id: proxy
         # strix resends the whole conversation on every request and has no
         # context compaction, so a long scan overflows the model window
-        # (GLM-5.2: 202752 tokens) and every request then 422s with
+        # and every request then 422s with
         # context_length_exceeded -- silently truncating results (a partial run
         # dir survives, so the scan can look finished). This local proxy
         # compacts requests in flight (summarising the oldest exchanges); strix

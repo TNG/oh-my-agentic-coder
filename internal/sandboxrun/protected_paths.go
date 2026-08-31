@@ -57,6 +57,14 @@ func NewProtectedPathSet(p *sandboxprofile.Profile) *ProtectedPathSet {
 	return set
 }
 
+// UnrestrictedProtectedPathSet returns a set that protects nothing — the
+// facade-side counterpart to Grants.withUnrestrictedFilesystem, which learn
+// mode (`omac serve --learn`) uses to drop every protected path and grant
+// "/". Reporting the profile's static set during a learn session would tell
+// the agent that a genuinely missing file was blocked by the sandbox, which
+// is the confusion GET /sandbox/denied exists to remove.
+func UnrestrictedProtectedPathSet() *ProtectedPathSet { return &ProtectedPathSet{} }
+
 // IsProtected reports whether absPath lies under (or equals) any
 // protected entry. Returns the rule tag of the first match.
 func (s *ProtectedPathSet) IsProtected(absPath string) (rule string, ok bool) {

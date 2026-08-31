@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxdeny"
 	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxprofile"
 )
 
@@ -63,6 +64,9 @@ type Grants struct {
 	// DenialText holds the configurable marker-file content written over
 	// protected files (Linux bwrap fast path). When empty, bwrap falls
 	// back to /dev/null (opaque ENOENT/EACCES, the historical behavior).
+	// Held as plain prose: prepareMarkers runs it through
+	// sandboxdeny.Inert before it becomes a bind source, so a masked
+	// shell config cannot execute it.
 	DenialText string
 
 	// DenialDirName is the filename of the notice placed inside a masked
@@ -88,6 +92,14 @@ const markerDirFileName = ".omac-denied"
 // files, and a directory holding a single .omac-denied file bound over
 // protected directories. Both carry DenialText.
 //
+// The text is written in its inert (comment-prefixed) form: the baseline
+// protected set includes shell configs, which exist to be executed, so a
+// marker of plain prose bound over ~/.profile is sourced by every login
+// shell inside the sandbox (#213). Neutralizing here — at the boundary
+// where bytes enter the sandbox — covers profile-supplied
+// denial.marker_file text too, so no profile can inject commands into
+// the process omac is confining.
+//
 // It sets g.markerFile and g.markerDir and returns a cleanup that removes
 // the backing temp dir. The caller MUST defer cleanup until after the
 // sandbox process has exited: bwrap reads bind sources at launch, not at
@@ -106,8 +118,9 @@ func (g *Grants) prepareMarkers() (func(), error) {
 		return noop, err
 	}
 	cleanup := func() { _ = os.RemoveAll(dir) }
+	text := []byte(sandboxdeny.Inert(g.DenialText))
 	markerFile := filepath.Join(dir, "file")
-	if err := os.WriteFile(markerFile, []byte(g.DenialText), 0o444); err != nil {
+	if err := os.WriteFile(markerFile, text, 0o444); err != nil {
 		cleanup()
 		return noop, err
 	}
@@ -120,7 +133,7 @@ func (g *Grants) prepareMarkers() (func(), error) {
 	if dirFileName == "" {
 		dirFileName = markerDirFileName
 	}
-	if err := os.WriteFile(filepath.Join(markerDir, dirFileName), []byte(g.DenialText), 0o444); err != nil {
+	if err := os.WriteFile(filepath.Join(markerDir, dirFileName), text, 0o444); err != nil {
 		cleanup()
 		return noop, err
 	}

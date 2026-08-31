@@ -530,11 +530,11 @@ func runProvenance(args []string, env *Env) int {
 	checkMode := fs.Bool("check", false, "Static security lint of the resolved profile.")
 	jsonOut := fs.Bool("json", false, "Emit a JSON object instead of tabular text.")
 	fs.Usage = func() {
-		fmt.Fprintln(env.Stderr, "Usage: omac provenance [--profile <ref>] [--check] [--json]")
+		fmt.Fprintln(fs.Output(), "Usage: omac provenance [--profile <ref>] [--check] [--json]")
 		fs.PrintDefaults()
 	}
-	if err := fs.Parse(reorderFlagsFirst(args)); err != nil {
-		return ExitMisuse
+	if code, ok := parseFlags(fs, args, env); !ok {
+		return code
 	}
 
 	// --check resolves the profile itself and runs the lint; it does

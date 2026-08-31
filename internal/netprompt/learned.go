@@ -12,8 +12,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
+
+	"github.com/tngtech/oh-my-agentic-coder/internal/netproxy"
 )
 
 // learnedSchema is the only supported schema version.
@@ -33,9 +34,13 @@ type learnedFile struct {
 
 // LearnedPolicy is a thread-safe learned-decision store backed by a
 // JSON file written atomically on every change. It implements
-// netproxy.LearnedStore.
+// netproxy.DecisionStore.
+//
+// Entry hosts are normalized on the way in — at load and on Record — so
+// a lookup, which runs per request under concurrent proxy load, only
+// compares.
 type LearnedPolicy struct {
-	mu      sync.Mutex
+	mu      sync.RWMutex
 	path    string
 	entries []LearnedEntry
 }
@@ -58,48 +63,39 @@ func LoadLearnedPolicy(path string) (*LearnedPolicy, error) {
 		return nil, fmt.Errorf("learned policy %s: unsupported schema %d", path, f.Schema)
 	}
 	lp.entries = f.Entries
+	for i := range lp.entries {
+		lp.entries[i].Host = netproxy.NormalizeHost(lp.entries[i].Host)
+	}
 	return lp, nil
 }
 
-// Lookup implements netproxy.LearnedStore. Deny entries win over allow
+// Lookup implements netproxy.DecisionStore. Deny entries win over allow
 // entries; suffix entries match the host itself and any subdomain.
 func (lp *LearnedPolicy) Lookup(host string) (allow bool, found bool) {
-	lp.mu.Lock()
-	defer lp.mu.Unlock()
-	h := strings.ToLower(host)
-	var match *LearnedEntry
+	h := netproxy.NormalizeHost(host)
+	lp.mu.RLock()
+	defer lp.mu.RUnlock()
 	for i := range lp.entries {
 		e := &lp.entries[i]
-		if !entryMatches(e, h) {
+		if !netproxy.MatchHostRule(h, e.Host, e.Scope) {
 			continue
 		}
 		if e.Decision == "deny" {
 			return false, true // deny wins immediately
 		}
-		match = e
+		found = true
 	}
-	if match != nil {
-		return match.Decision == "allow", true
-	}
-	return false, false
+	return found, found
 }
 
 // Entries returns a copy of the learned decisions for display.
 func (lp *LearnedPolicy) Entries() []LearnedEntry {
-	lp.mu.Lock()
-	defer lp.mu.Unlock()
+	lp.mu.RLock()
+	defer lp.mu.RUnlock()
 	return append([]LearnedEntry(nil), lp.entries...)
 }
 
-func entryMatches(e *LearnedEntry, host string) bool {
-	target := strings.ToLower(e.Host)
-	if e.Scope == "suffix" {
-		return host == target || strings.HasSuffix(host, "."+target)
-	}
-	return host == target
-}
-
-// Record implements netproxy.LearnedStore: upserts and persists
+// Record implements netproxy.DecisionStore: upserts and persists
 // atomically (temp file + rename).
 func (lp *LearnedPolicy) Record(host, scope string, allow bool) error {
 	if scope != "host" && scope != "suffix" {
@@ -111,10 +107,10 @@ func (lp *LearnedPolicy) Record(host, scope string, allow bool) error {
 	}
 	lp.mu.Lock()
 	defer lp.mu.Unlock()
-	h := strings.ToLower(host)
+	h := netproxy.NormalizeHost(host)
 	replaced := false
 	for i := range lp.entries {
-		if strings.ToLower(lp.entries[i].Host) == h && lp.entries[i].Scope == scope {
+		if lp.entries[i].Host == h && lp.entries[i].Scope == scope {
 			lp.entries[i].Decision = decision
 			replaced = true
 			break

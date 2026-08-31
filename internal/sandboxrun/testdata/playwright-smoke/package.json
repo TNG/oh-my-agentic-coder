@@ -1,0 +1,7 @@
+{
+  "name": "omac-playwright-smoke",
+  "private": true,
+  "devDependencies": {
+    "@playwright/test": "1.40.1"
+  }
+}

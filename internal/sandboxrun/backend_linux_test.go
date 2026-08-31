@@ -165,8 +165,8 @@ func TestUnwrapEnv(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := unwrapEnv(tc.in); !reflect.DeepEqual(got, tc.want) {
-				t.Errorf("unwrapEnv(%v) = %v, want %v", tc.in, got, tc.want)
+			if got := UnwrapEnv(tc.in); !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("UnwrapEnv(%v) = %v, want %v", tc.in, got, tc.want)
 			}
 		})
 	}

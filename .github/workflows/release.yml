@@ -64,6 +64,8 @@ jobs:
     name: GoReleaser
     needs: test
     runs-on: ubuntu-latest
+    outputs:
+      prerelease: ${{ steps.classify_release.outputs.prerelease }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -75,6 +77,19 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+
+      - name: Classify release tag
+        id: classify_release
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          version_without_build=${VERSION%%+*}
+          if [[ "$version_without_build" == *-* ]]; then
+            prerelease=true
+          else
+            prerelease=false
+          fi
+          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
 
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6
@@ -105,11 +120,12 @@ jobs:
     name: Announce release on Slack
     needs: goreleaser
     runs-on: ubuntu-latest
-    # Only announce actual publishes: a real tag push, or a manual dispatch
-    # that is not a dry run. Snapshot dry-runs never publish a Release, so
-    # they must not post to Slack.
+    # For tag pushes, keep GoReleaser prereleases out of the stable Slack channel.
+    # A non-dry-run manual dispatch is an explicit override and announces any tag.
+    # Missing output fails open so stable announcements are not silently lost; the
+    # release policy test pins the classifier-to-job-output wiring.
     if: >-
-      github.event_name == 'push' ||
+      (github.event_name == 'push' && needs.goreleaser.outputs.prerelease != 'true') ||
       (github.event_name == 'workflow_dispatch' && !inputs.dry_run)
     steps:
       - name: Checkout
@@ -127,7 +143,7 @@ jobs:
           # Optional: when present, the thread bullets are rewritten by the LLM
           # into user-facing highlights. Absent -> deterministic commit bullets.
           SKAINET_TOKEN: ${{ secrets.SKAINET_TOKEN }}
-          SKAINET_INTERNAL: ${{ secrets.SKAINET_EXTERNAL }}
+          SKAINET_INTERNAL: ${{ secrets.SKAINET_INTERNAL }}
           # Read by scripts/probe-model.sh below. Empty on a tag push (the
           # normal path), so a real release starts from the committed pin.
           E2E_MODEL: ${{ github.event.inputs.model }}
@@ -191,9 +207,9 @@ jobs:
               sys="You are the release-notes editor for oh-my-agentic-coder (omac), a CLI that runs coding agents in a sandbox. Below are the raw git commit messages for one release. Rewrite them into concise, user-facing highlights grouped into features (new capabilities) and fixes (bugs resolved). Write for end users: state what they can now do and why it matters. IGNORE anything only project developers care about: PR/issue numbers like (#123), commit SHAs, author or co-author trailers, internal refactors, and test/ci/build/chore changes. Drop internal module and scope names. Merge related commits into one bullet. Output ONLY minified JSON of the form {\"features\":[\"...\"],\"fixes\":[\"...\"]} with at most 6 items per group, each under 140 characters and starting with a capital letter. Use an empty array for a group with nothing user-facing. No preamble, no explanation, no chain-of-thought, no <think> tags."
               req=$(jq -n --arg m "$model" --arg s "$sys" --arg u "$commits" \
                 '{model:$m,temperature:0.2,max_tokens:1500,messages:[{role:"system",content:$s},{role:"user",content:$u}]}')
-              # X-Separate-Reasoning routes GLM reasoning out of message.content.
+              # X-Separate-Reasoning routes model reasoning out of message.content.
               # Generous timeout: release notes aren't latency-sensitive, and
-              # GLM-5.2 reasoning over a full release can take a while. Better a
+              # the selected model reasoning over a full release can take a while. Better a
               # slow, good summary than falling back to raw dev-facing bullets.
               resp=$(curl -sS --max-time 300 "$SKAINET_INTERNAL/chat/completions" \
                 -H "Authorization: Bearer $SKAINET_TOKEN" -H 'Content-Type: application/json' \

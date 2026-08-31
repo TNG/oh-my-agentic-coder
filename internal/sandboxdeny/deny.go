@@ -7,6 +7,8 @@
 // All user-facing strings live here so they form a single tunable knob.
 package sandboxdeny
 
+import "strings"
+
 // Text holds the configurable denial messages. It is a programmatic value
 // type built by sandboxrun.resolvedDenial from sandboxprofile.Denial; it is
 // never (un)marshalled itself, so it carries no struct tags — the config
@@ -14,6 +16,8 @@ package sandboxdeny
 type Text struct {
 	// MarkerFile is written into the sandbox over a protected file (Linux
 	// bwrap fast path). The first line is a machine-parseable sentinel.
+	// Stored as plain prose; Inert comment-prefixes it on the way into
+	// the sandbox (see prepareMarkers).
 	MarkerFile string
 
 	// MarkerDirName is the name of the placeholder file placed inside a
@@ -62,6 +66,38 @@ The user will see your reason when reviewing access.
 			"not grant access and raises no dialog. So tell the user which path you need and why, and ask " +
 			"them to add it and relaunch — do not tell them to approve a popup.",
 	}
+}
+
+// Inert returns text safe to bind over a file the confined process may
+// execute — a shell config, .envrc, .env. Every content line is
+// comment-prefixed, so sourcing the marker is a silent no-op while the
+// text stays readable and greppable (the sentinel survives as
+// "# X-Omac-Sandbox: denied").
+//
+// The sandbox must never inject executable content into the process it
+// confines — not its own denial text, and not text a profile author
+// supplied via denial.marker_file. Before this, the default marker's
+// "  POST $OMAC_BASE/sandbox/intent ..." line hung every login shell on
+// hosts where /usr/bin/POST is libwww-perl's lwp-request, which blocks
+// reading its body from stdin (#213).
+//
+// "#" comments every format the protected set covers: sh, bash, zsh,
+// fish, .envrc, .env, .npmrc, ini. Lines already commented are left
+// alone (no "# #" doubling) and blank lines are preserved, so Inert is
+// idempotent.
+func Inert(text string) string {
+	if text == "" {
+		return ""
+	}
+	lines := strings.Split(text, "\n")
+	for i, line := range lines {
+		trimmed := strings.TrimLeft(line, " \t")
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		lines[i] = "# " + line
+	}
+	return strings.Join(lines, "\n")
 }
 
 // Resolve returns override when it has non-empty MarkerFile content,

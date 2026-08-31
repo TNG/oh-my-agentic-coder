@@ -2,7 +2,11 @@
 
 package e2e
 
-import "strings"
+import (
+	"os"
+	"path/filepath"
+	"strings"
+)
 
 // This file holds the pure decision predicates behind the security-audit
 // assertions. They take probe output (a string) and return a bool/string —
@@ -46,19 +50,38 @@ func symlinkEscapeLeaked(output string) (readLeaked, writeLeaked bool) {
 func fsAllowDenied(output string, labels []string) string {
 	section := extractProbe(output, "fs_allow")
 	for _, label := range labels {
-		idx := strings.Index(section, label)
-		if idx < 0 {
+		line, ok := probeResultLine(section, label)
+		if !ok {
 			return label + ": probe label not found in fs_allow output"
-		}
-		line := section[idx:]
-		if nl := strings.IndexByte(line, '\n'); nl >= 0 {
-			line = line[:nl]
 		}
 		if !strings.Contains(line, "WRITABLE") && !strings.Contains(line, "READABLE") {
 			return line
 		}
 	}
 	return ""
+}
+
+// probeResultLine returns audit.sh's RESULT line for label: the line beginning
+// "<label>:", which is exactly what probe_read/probe_write emit via
+// `echo "$label: ..."`.
+//
+// Anchoring on that shape matters. Matching the label anywhere instead picks
+// its FIRST mention in the section, which need not be the result. When the
+// agent runs the script under `sh -x`, xtrace echoes every command, and
+// audit.sh redirects stderr into the same output file, so the trace of the
+// probe CALL — "probe_read <label> ./omac-audit-allow-test", carrying no
+// marker — lands in the section ahead of the probe's own
+// "<label>: READABLE (sandbox did not block)". Matching the call reported a
+// working sandbox as an over-restriction, and fsAllowed classifies as
+// SANDBOX_FAIL, which is never retried (#224).
+func probeResultLine(section, label string) (string, bool) {
+	for _, line := range strings.Split(section, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, label+":") {
+			return line, true
+		}
+	}
+	return "", false
 }
 
 // secretLeaked reports whether the plaintext secret value appears anywhere
@@ -133,7 +156,9 @@ func noSandboxExposureReport(output, secret string, denyVars []string) []exposur
 		{"filesystem read isolation", "fs_read", classifyProbe(output, "fs_read"), fsReadLeaked(output)},
 		{"filesystem write protection", "fs_write", classifyProbe(output, "fs_write"), fsWriteLeaked(output)},
 		{"symlink escape", "symlink", classifyProbe(output, "symlink"), symlinkEscapeReadOrWrite(output)},
+		{"hardlink escape", "hardlink", classifyProbe(output, "hardlink"), hardlinkEscapeLeaked(output)},
 		{"network isolation", "net", classifyProbe(output, "net"), !netProbeDenied(output)},
+		{"cross-skill sidecar isolation", "xskill", classifyProbe(output, "xskill"), xskillReached(output)},
 	}
 }
 
@@ -142,4 +167,49 @@ func noSandboxExposureReport(output, secret string, denyVars []string) []exposur
 func symlinkEscapeReadOrWrite(output string) bool {
 	r, w := symlinkEscapeLeaked(output)
 	return r || w
+}
+
+// hardlinkEscapeLeaked reports whether the hardlink probe's read half
+// leaked. The hardlink probe is best-effort (EXDEV can fail unrelated to
+// the sandbox), so this is logged, not hard-asserted.
+func hardlinkEscapeLeaked(output string) bool {
+	return strings.Contains(extractProbe(output, "hardlink"), "READABLE")
+}
+
+// xskillReached reports whether the agent reached another skill's sidecar.
+// Cross-skill isolation is a documented non-goal (AllowanceSpec.CrossSkillIsolated).
+func xskillReached(output string) bool {
+	probeOut := extractProbe(output, "xskill")
+	if strings.Contains(probeOut, "OMAC_ECHO_BASE not set") {
+		return false // echo-rest not registered — inconclusive, not "reached"
+	}
+	return strings.Contains(probeOut, `"skill": "echo-rest"`)
+}
+
+// artifactSecretLeaked reports whether the plaintext secret appears in any
+// file under the artifact dir (non-recursive scan). Catches sidecar-logging
+// regressions not visible in stdout/audit-output.txt. Returns ("", false)
+// when the dir is unset or empty.
+func artifactSecretLeaked(artifactDir, secret string) (string, bool) {
+	if secret == "" || artifactDir == "" {
+		return "", false
+	}
+	entries, err := os.ReadDir(artifactDir)
+	if err != nil {
+		return "", false
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		path := filepath.Join(artifactDir, e.Name())
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		if strings.Contains(string(data), secret) {
+			return path, true
+		}
+	}
+	return "", false
 }

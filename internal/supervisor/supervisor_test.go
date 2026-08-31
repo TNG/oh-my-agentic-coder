@@ -1,6 +1,7 @@
 package supervisor
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/tngtech/oh-my-agentic-coder/internal/audit"
+	"github.com/tngtech/oh-my-agentic-coder/internal/config"
 )
 
 // envMap turns buildEnv's []string ("K=V") into a map for assertions.
@@ -25,7 +27,7 @@ func envMap(kv []string) map[string]string {
 }
 
 func TestBuildEnvSidecarSkillIsPlainName(t *testing.T) {
-	s := New(nil, nil)
+	s := New(nil, nil, nil)
 
 	// SkillName set (serve mode): SIDECAR_SKILL must be the plain name,
 	// never the namespaced tracking Name (which contains a slash that
@@ -56,7 +58,7 @@ func TestBuildEnvSidecarSkillIsPlainName(t *testing.T) {
 // spawning real processes: a Running with a nil Cmd.Process terminates as a
 // no-op (terminate handles nil), so we can assert set membership directly.
 func TestStopSidecarTracking(t *testing.T) {
-	s := New(nil, nil)
+	s := New(nil, nil, nil)
 	s.children = []*Running{
 		{Name: "a"},
 		{Name: "b"},
@@ -154,7 +156,7 @@ func (c *capturingAuditor) countType(typ string) int {
 // the supervisor's shutdown.
 func TestSelfTerminatingSidecarEmitsProcessExit(t *testing.T) {
 	aud := &capturingAuditor{}
-	s := New(nil, aud)
+	s := New(nil, aud, nil)
 
 	// Spawn a process that exits immediately.
 	cmd := exec.Command("true")
@@ -193,7 +195,7 @@ func TestSelfTerminatingSidecarEmitsProcessExit(t *testing.T) {
 // audited by the reaper, a second process.exit event is NOT emitted.
 func TestStopSidecarDoesNotDoubleEmitProcessExit(t *testing.T) {
 	aud := &capturingAuditor{}
-	s := New(nil, aud)
+	s := New(nil, aud, nil)
 
 	cmd := exec.Command("true")
 	if err := cmd.Start(); err != nil {
@@ -236,7 +238,7 @@ func TestStopSidecarDoesNotDoubleEmitProcessExit(t *testing.T) {
 // Uses a long-running child (sleep) plus a hard test-level timeout so a
 // regression fails fast instead of hanging the whole test binary.
 func TestShutdownAllReapsLongRunningChildWithoutHanging(t *testing.T) {
-	s := New(nil, nil)
+	s := New(nil, nil, nil)
 
 	cmd := exec.Command("sleep", "30")
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -262,5 +264,53 @@ func TestShutdownAllReapsLongRunningChildWithoutHanging(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("ShutdownAll did not return within 5s — terminate() likely deadlocked racing watchChild's Cmd.Wait()")
+	}
+}
+
+// TestAuthorizerBlocksSpawnBeforeExec verifies the spawn-gate backstop (the
+// authorizer passed to New): a refused spec must return the authorizer's error AND the
+// child command must never execute — the security guarantee that no spawn
+// path can reach exec without approval, even if a caller skips its own
+// pre-flight check. See internal/skilltrust.
+func TestAuthorizerBlocksSpawnBeforeExec(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "spawned")
+	spec := SidecarSpec{
+		Name:     "denied",
+		SkillDir: dir,
+		// If this ever runs, it leaves proof.
+		Command: []string{"sh", "-c", "touch '" + marker + "'; sleep 30"},
+		Health:  config.HealthSpec{},
+		LogPath: filepath.Join(dir, "log"),
+	}
+
+	denied := errors.New("nope")
+	s := New(nil, nil, func(SidecarSpec) error { return denied })
+
+	// AddSidecar must refuse.
+	if _, err := s.AddSidecar(t.Context(), spec); err == nil {
+		t.Fatal("AddSidecar spawned a denied skill")
+	} else if !strings.Contains(err.Error(), "nope") {
+		t.Errorf("error should carry the authorizer's message, got %v", err)
+	}
+	// StartAll must refuse too (the other funnel into startOne).
+	if _, err := s.StartAll(t.Context(), []SidecarSpec{spec}); err == nil {
+		t.Fatal("StartAll spawned a denied skill")
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("denied command executed (marker present): stat err=%v", err)
+	}
+
+	// A permitting authorizer still allows the spawn (control): the command
+	// exits immediately, so health fails — but the marker proves it ran.
+	okMarker := filepath.Join(dir, "ran")
+	spec2 := spec
+	spec2.Name = "allowed"
+	spec2.Command = []string{"sh", "-c", "touch '" + okMarker + "'"}
+	spec2.Health = config.HealthSpec{InitialDelayMS: 10, IntervalMS: 10, TimeoutMS: 300}
+	permitting := New(nil, nil, func(SidecarSpec) error { return nil })
+	_, _ = permitting.AddSidecar(t.Context(), spec2) // health will fail; we only assert it ran
+	if _, err := os.Stat(okMarker); err != nil {
+		t.Errorf("permitted command did not run: %v", err)
 	}
 }

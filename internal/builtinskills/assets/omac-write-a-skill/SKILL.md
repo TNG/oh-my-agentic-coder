@@ -11,9 +11,10 @@ description: >-
   Not for authoring non-omac skills.
 license: Same as the omac repository
 compatibility: >-
-  Pure guidance skill — no sidecar, no omac.yaml, no network. Works unchanged
-  under any omac inner harness (OpenCode, Claude Code, …). Shipped with the omac
-  binary and provisioned by `omac setup`.
+  Pure guidance skill: no sidecar and no omac.yaml. It links to the authoring
+  guide on GitHub, so reading that guide needs network access to github.com.
+  Works under any omac inner harness. Shipped with the omac binary and
+  provisioned by `omac setup`.
 metadata:
   author: tngtech
   version: "0.1.0"
@@ -34,25 +35,15 @@ Claude-skill authoring.
 
 ## How to use it
 
-The complete, authoritative guide is bundled alongside this file:
+The complete, authoritative guide is the omac skill-authoring doc:
 
-**→ `references/creating-a-skill.md`** — read it before authoring.
+**→ https://raw.githubusercontent.com/TNG/oh-my-agentic-coder/main/docs/skills/authoring.md**
 
-It walks through, in order:
-
-1. Why sidecars exist and how the sandbox boundary works.
-2. On-disk skill layout and naming rules.
-3. The `SKILL.md` format (agentskills.io discovery file).
-4. The `omac.yaml` schema (omac's runtime contract).
-5. Writing the HTTP sidecar (stdlib-only Python reference).
-6. Install scripts, route URL rewriting, and `OMAC_*` env wiring.
-7. Secrets vs. non-secret config, and best practices.
-8. Local development, testing, and the pre-shipping checklist.
+Fetch and read it before authoring.
 
 ## Workflow
 
-1. Read `references/creating-a-skill.md` end to end (or jump to the section the
-   task needs — the headings map to the list above).
+1. Fetch and read the guide above.
 2. Scaffold the skill directory with `SKILL.md` + `omac.yaml` (+ `scripts/`,
    `install/` as needed), following the layout and schema in the guide.
 3. Implement the sidecar against the omac facade contract; keep it

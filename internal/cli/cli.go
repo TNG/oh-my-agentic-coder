@@ -5,9 +5,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+
+	"github.com/tngtech/oh-my-agentic-coder/internal/config"
 )
 
-// Exit codes mirror those documented in oh-my-agentic-coder.md §10.6.
+// Exit codes are a stable contract for scripts and CI.
 const (
 	ExitOK                     = 0
 	ExitGeneric                = 1
@@ -21,6 +24,10 @@ const (
 	ExitSecretRefused          = 9
 	ExitChecksumMismatch       = 10
 )
+
+// errHelpRequested is returned by splitTopLevelFlags when the user asked for
+// top-level help. Run prints usage on stdout and exits 0.
+var errHelpRequested = fmt.Errorf("help requested")
 
 // Command is a runnable omac subcommand.
 type Command struct {
@@ -49,6 +56,10 @@ func Run(args []string, version string) int {
 	// Resolve workdir. --workdir <dir> may appear anywhere before the
 	// subcommand. We parse a small top-level flag set greedily.
 	subArgs, wd, err := splitTopLevelFlags(args)
+	if err == errHelpRequested {
+		printUsage(env.Stdout)
+		return ExitOK
+	}
 	if err != nil {
 		fmt.Fprintln(env.Stderr, "omac:", err)
 		printUsage(env.Stderr)
@@ -66,6 +77,9 @@ func Run(args []string, version string) int {
 	if err != nil {
 		fmt.Fprintln(env.Stderr, "omac: cannot absolutize workdir:", err)
 		return ExitIOError
+	}
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		abs = resolved
 	}
 	env.Workdir = abs
 
@@ -85,6 +99,8 @@ func Run(args []string, version string) int {
 
 // splitTopLevelFlags pulls --workdir <dir> (and --workdir=<dir>) out of args
 // before the first positional. Returns the remaining args and the workdir (or "").
+// An explicit -h/--help returns errHelpRequested so Run can print usage on
+// stdout and exit 0 without os.Exit from this helper.
 func splitTopLevelFlags(args []string) ([]string, string, error) {
 	var (
 		out []string
@@ -104,8 +120,7 @@ func splitTopLevelFlags(args []string) ([]string, string, error) {
 			wd = a[len("--workdir="):]
 			i++
 		case a == "--help" || a == "-h":
-			printUsage(os.Stderr)
-			os.Exit(ExitOK)
+			return nil, "", errHelpRequested
 		default:
 			out = append(out, args[i:]...)
 			return out, wd, nil
@@ -115,6 +130,7 @@ func splitTopLevelFlags(args []string) ([]string, string, error) {
 }
 
 func commands() map[string]Command {
+	harnessHint := "Optional [harness]: " + strings.Join(config.HarnessNames(), "|") + "."
 	return map[string]Command{
 		"register":   {Name: "register", Short: "Register a skill's sidecar in this workdir.", Run: runRegister},
 		"deregister": {Name: "deregister", Short: "Deregister a skill's sidecar.", Run: runDeregister},
@@ -122,10 +138,10 @@ func commands() map[string]Command {
 		"secrets":    {Name: "secrets", Short: "Manage skill secrets in the OS keychain.", Run: runSecrets},
 		"config":     {Name: "config", Short: "Show resolved config + secret fingerprints for a skill.", Run: runConfig},
 		"provenance": {Name: "provenance", Short: "Show effective allow/deny entries across all subsystems.", Run: runProvenance},
-		"start":      {Name: "start", Short: "Start sidecars + facade + sandbox. Optional [harness]: opencode|claude.", Run: runStart},
-		"continue":   {Name: "continue", Short: "Continue the last session for this workdir. Optional [harness].", Run: runContinue},
-		"resume":     {Name: "resume", Short: "Pick a recent session for this workdir and launch it. Optional [harness].", Run: runResume},
-		"serve":      {Name: "serve", Short: "Long-lived multi-directory server. Optional [harness]: opencode|claude.", Run: runServe},
+		"start":      {Name: "start", Short: "Start sidecars + facade + sandbox. " + harnessHint, Run: runStart},
+		"continue":   {Name: "continue", Short: "Continue the last session for this workdir. " + harnessHint, Run: runContinue},
+		"resume":     {Name: "resume", Short: "Pick a recent session for this workdir and launch it. " + harnessHint, Run: runResume},
+		"serve":      {Name: "serve", Short: "Long-lived multi-directory server. " + harnessHint, Run: runServe},
 		"setup":      {Name: "setup", Short: "Provision omac's built-in skills into installed harnesses' skills dirs.", Run: runSetup},
 		"plugin":     {Name: "plugin", Short: "Install client-side harness bridge plugins (e.g. opencode-desktop).", Run: runPlugin},
 		"sandbox":    {Name: "sandbox", Short: "Built-in kernel sandbox (run|stage2).", Run: runSandbox},
@@ -145,7 +161,9 @@ func runVersion(_ []string, env *Env) int {
 }
 
 func printUsage(w *os.File) {
-	fmt.Fprintln(w, `omac — oh-my-agentic-coder
+	harnessList := strings.Join(config.HarnessNames(), "|")
+	defaultName := config.DefaultHarness().Name
+	fmt.Fprintf(w, `omac — oh-my-agentic-coder
 
 Usage:
   omac [--workdir <dir>] <subcommand> [flags] [args]
@@ -158,24 +176,24 @@ Subcommands:
   config       Show resolved config + secret fingerprints for a skill.
   provenance   Show effective allow/deny entries (network, filesystem, env, skills).
   setup        Provision omac's built-in skills into installed harnesses.
-  start        Start sidecars + facade + sandbox.       [harness]: opencode|claude
-  continue     Continue the last session for this workdir.   [harness]: opencode|claude
-  resume       Pick a recent session for this workdir, launch it. [harness]: opencode|claude
-  serve        Long-lived multi-directory server.        [harness]: opencode|claude
+  start        Start sidecars + facade + sandbox.       [harness]: %s
+  continue     Continue the last session for this workdir.   [harness]: %s
+  resume       Pick a recent session for this workdir, launch it. [harness]: %s
+  serve        Long-lived multi-directory server.        [harness]: %s
   plugin       Install client-side bridge plugins (e.g. opencode-desktop).
   sandbox      Built-in kernel sandbox: omac sandbox run [flags] -- <cmd>.
   build        Run a repo Gradle wrapper in the restricted build executor.
   doctor       Run sanity checks (is my setup correct?).
   diagnose     Explain why a run failed: blocked connections + config clashes.
   update       Check GitHub for a newer release and install it.
-  manifest    Render the skills manifest from activate-response JSON.
-  cache       Manage the tool cache: omac cache clear [--all].
+  manifest     Render the skills manifest from activate-response JSON.
+  cache        Manage the tool cache: omac cache clear [--all].
   version      Print version.
 
 Harness selection (start/serve):
-  omac start            # default harness (opencode)
-  omac start opencode   # OpenCode
-  omac start claude     # Claude Code
+  omac start            # default harness (%s)
+  omac start <harness>  # one of: %s
 
-Run 'omac <subcommand> --help' for subcommand-specific flags.`)
+Run 'omac <subcommand> --help' for subcommand-specific flags.
+`, harnessList, harnessList, harnessList, harnessList, defaultName, strings.Join(config.HarnessNames(), ", "))
 }

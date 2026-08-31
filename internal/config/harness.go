@@ -15,8 +15,7 @@ import (
 // Harness descriptor to the registry (plus shipping its client-side bridge
 // assets); no command-dispatch or launch call site needs to change.
 //
-// See openspec/changes/support-claude-code-harness and oh-my-agentic-coder.md
-// §4/§17.
+// See openspec/changes/support-claude-code-harness.
 type Harness struct {
 	// Name is the canonical, lowercase harness identifier (e.g. "opencode",
 	// "claude-code"). It is what `omac start <name>` matches after alias
@@ -130,10 +129,11 @@ type Harness struct {
 	// environment.allow_vars at launch (via --allow-env) so they survive
 	// the filter — for the selected harness only.
 	//
-	// Only unambiguous, single-provider auth vars belong here (e.g.
-	// claude-code → ANTHROPIC_*, codex → OPENAI_*). Multi-provider harnesses
-	// (opencode, pi) leave this empty: omac must not blindly forward a
-	// grab-bag of third-party keys regardless of which provider is
+	// Only unambiguous, harness-scoped auth vars belong here (e.g.
+	// claude-code → ANTHROPIC_*, codex → OPENAI_*, Copilot's native BYOK
+	// provider key). Multi-provider harnesses that consume arbitrary
+	// third-party key names (opencode, pi) leave this empty: omac must not
+	// blindly forward a grab-bag of keys regardless of which provider is
 	// configured — the user declares the specific key their setup uses in the
 	// profile's environment.allow_vars. Entries are exact names or trailing-*
 	// prefixes (sandboxprofile.envVarAllowed).
@@ -344,14 +344,19 @@ func harnessRegistry() []Harness {
 			HomeEnv:        "COPILOT_HOME",
 			// Copilot stores configuration, session state, and authentication in ~/.copilot.
 			SandboxDirs: []string{"~/.copilot"},
-			// Copilot authenticates with a GitHub token (both spellings are
-			// accepted by the GitHub toolchain). COPILOT_CUSTOM_INSTRUCTIONS_DIRS
-			// is set by omac's BriefingEnvFunc to point copilot at the
-			// per-launch briefing dir; it must survive the env filter.
+			// Copilot authenticates with a GitHub token or its native BYOK
+			// provider configuration. COPILOT_CUSTOM_INSTRUCTIONS_DIRS is set by
+			// omac's BriefingEnvFunc to point copilot at the per-launch briefing
+			// dir; all of these must survive the env filter.
 			SandboxEnvAllow: []string{
 				"GITHUB_TOKEN",
 				"GH_TOKEN",
 				"COPILOT_CUSTOM_INSTRUCTIONS_DIRS",
+				"COPILOT_PROVIDER_TYPE",
+				"COPILOT_PROVIDER_BASE_URL",
+				"COPILOT_PROVIDER_API_KEY",
+				"COPILOT_MODEL",
+				"COPILOT_PROVIDER_WIRE_API",
 			},
 			Session: &HarnessSession{
 				ContinueArgs:   []string{"--continue"},
@@ -427,7 +432,7 @@ func harnessRegistry() []Harness {
 			// as a rules file (BriefingFileFunc), not a plugin.
 			BridgeDir: "",
 			// CodeWhale loads workspace-local skills only from `.agents/skills`
-			// or `./skills` (docs/CONFIGURATION.md) — NOT a workspace
+			// or `./skills` (docs/configuration.md) — NOT a workspace
 			// `.codewhale/skills`. Owning the shared "agents" base is therefore
 			// correct: WorkdirSkillsDir() becomes `.agents/skills` (where
 			// CodeWhale actually looks), while ConfigHome()/GlobalSkillsDir()

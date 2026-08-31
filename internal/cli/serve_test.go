@@ -6,13 +6,17 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/tngtech/oh-my-agentic-coder/internal/audit"
 	"github.com/tngtech/oh-my-agentic-coder/internal/config"
 	"github.com/tngtech/oh-my-agentic-coder/internal/facade"
 	"github.com/tngtech/oh-my-agentic-coder/internal/sandbox"
+	"github.com/tngtech/oh-my-agentic-coder/internal/skilltrust"
+	"github.com/tngtech/oh-my-agentic-coder/internal/supervisor"
 	"github.com/tngtech/oh-my-agentic-coder/internal/toolcache"
 )
 
@@ -33,6 +37,16 @@ func stageSkillWithSecret(t *testing.T, workdir, name string) {
 		"      required: true\n"
 	if err := os.WriteFile(filepath.Join(skillDir, "omac.yaml"), []byte(meta), 0o644); err != nil {
 		t.Fatalf("write omac.yaml: %v", err)
+	}
+	// Record a host approval so the spawn-approval gate lets activation reach
+	// its pending-credentials/route logic (these tests exercise the activation
+	// engine, not the gate; the caller has already isolated HOME/XDG).
+	hash, err := config.BundleHash(skillDir)
+	if err != nil {
+		t.Fatalf("bundle hash: %v", err)
+	}
+	if err := skilltrust.Approve(name, hash, skillDir); err != nil {
+		t.Fatalf("approve: %v", err)
 	}
 }
 
@@ -319,7 +333,17 @@ func TestInjectOpenPort(t *testing.T) {
 }
 
 func TestInjectSandboxEnvAllow(t *testing.T) {
-	profiles := config.DefaultLauncherConfig().Sandbox.Profiles
+	isolateHome(t)
+	lc := config.DefaultLauncherConfig()
+	profiles := lc.Sandbox.Profiles
+	planFor := func(t *testing.T, name string) sandboxPlan {
+		t.Helper()
+		plan, err := resolveSandboxPlan(lc, name)
+		if err != nil {
+			t.Fatalf("resolveSandboxPlan(%q): %v", name, err)
+		}
+		return plan
+	}
 	expand := func(t *testing.T, prof config.SandboxProfile) []string {
 		t.Helper()
 		argv, err := sandbox.Expand(prof, sandbox.Inputs{
@@ -339,8 +363,9 @@ func TestInjectSandboxEnvAllow(t *testing.T) {
 	// an absolute path — NOT the literal "omac"), so the detector cannot rely
 	// on argv[0] matching a hand-rolled name.
 	builtinProf := profiles["builtin"]
+	builtinPlan := planFor(t, "builtin")
 	builtin := expand(t, builtinProf)
-	got := injectSandboxEnvAllow(builtin, []string{"ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"}, builtinProf)
+	got := injectSandboxEnvAllow(builtin, []string{"ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"}, builtinPlan)
 	joined := strings.Join(got, " ")
 	if !strings.Contains(joined, "--allow-env ANTHROPIC_API_KEY") ||
 		!strings.Contains(joined, "--allow-env ANTHROPIC_BASE_URL") {
@@ -348,18 +373,19 @@ func TestInjectSandboxEnvAllow(t *testing.T) {
 	}
 
 	// Empty names is a no-op; empty entries are skipped.
-	if g := injectSandboxEnvAllow(builtin, nil, builtinProf); !equalStrings(g, builtin) {
+	if g := injectSandboxEnvAllow(builtin, nil, builtinPlan); !equalStrings(g, builtin) {
 		t.Errorf("nil names should be a no-op: %v", g)
 	}
-	if g := injectSandboxEnvAllow(builtin, []string{""}, builtinProf); !equalStrings(g, builtin) {
+	if g := injectSandboxEnvAllow(builtin, []string{""}, builtinPlan); !equalStrings(g, builtin) {
 		t.Errorf("empty entry should be skipped: %v", g)
 	}
 
 	// Non-native backend (nono) does not understand --allow-env: the argv
 	// must be left untouched (env filtering is nono's own concern).
 	nonoProf := profiles["nono"]
+	nonoPlan := planFor(t, "nono")
 	nono := expand(t, nonoProf)
-	if g := injectSandboxEnvAllow(nono, []string{"ANTHROPIC_API_KEY"}, nonoProf); !equalStrings(g, nono) {
+	if g := injectSandboxEnvAllow(nono, []string{"ANTHROPIC_API_KEY"}, nonoPlan); !equalStrings(g, nono) {
 		t.Errorf("nono argv must be untouched: %v", g)
 	}
 
@@ -378,8 +404,69 @@ func TestInjectSandboxEnvAllow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Expand nono-inner: %v", err)
 	}
-	if g := injectSandboxEnvAllow(nonoArgv, []string{"ANTHROPIC_API_KEY"}, nonoInnerProf); !equalStrings(g, nonoArgv) {
+	if g := injectSandboxEnvAllow(nonoArgv, []string{"ANTHROPIC_API_KEY"}, nonoPlan); !equalStrings(g, nonoArgv) {
 		t.Errorf("nono argv with inner sandbox/run tokens must be untouched: %v", g)
+	}
+}
+
+func TestInjectUserOpenPorts(t *testing.T) {
+	profiles := config.DefaultLauncherConfig().Sandbox.Profiles
+	builtinProf := profiles["builtin"]
+	argv, err := sandbox.Expand(builtinProf, sandbox.Inputs{
+		Workdir:  "/w",
+		Socket:   "/w/bridge.sock",
+		TCPPort:  6000,
+		InnerCmd: []string{"claude"},
+		TmpDir:   "/w/tmp",
+	})
+	if err != nil {
+		t.Fatalf("Expand: %v", err)
+	}
+
+	got := injectUserOpenPorts(nil, argv, []int{3000, 4173}, builtinProf)
+	joined := strings.Join(got, " ")
+	if !strings.Contains(joined, "--open-port 3000") || !strings.Contains(joined, "--open-port 4173") {
+		t.Errorf("missing open-port flags: %s", joined)
+	}
+
+	if g := injectUserOpenPorts(nil, argv, nil, builtinProf); !equalStrings(g, argv) {
+		t.Errorf("empty inject should be no-op: %v", g)
+	}
+
+	nonoProf := profiles["nono"]
+	nono, err := sandbox.Expand(nonoProf, sandbox.Inputs{
+		Workdir:  "/w",
+		Socket:   "/w/bridge.sock",
+		TCPPort:  6000,
+		InnerCmd: []string{"claude"},
+		TmpDir:   "/w/tmp",
+	})
+	if err != nil {
+		t.Fatalf("Expand nono: %v", err)
+	}
+	env2, _, errBuf2, drain2 := newPipeEnv(t, "")
+	if g := injectUserOpenPorts(env2, nono, []int{3000}, nonoProf); !equalStrings(g, nono) {
+		t.Errorf("nono argv must be untouched: %v", g)
+	}
+	drain2()
+	if !strings.Contains(errBuf2.String(), "ignoring") {
+		t.Errorf("expected non-native warning, got %q", errBuf2.String())
+	}
+}
+
+func TestIntMultiFlag(t *testing.T) {
+	var m intMultiFlag
+	if err := m.Set("3000"); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Set("0"); err == nil {
+		t.Error("port 0 should be rejected")
+	}
+	if err := m.Set("abc"); err == nil {
+		t.Error("non-integer should be rejected")
+	}
+	if len(m) != 1 || m[0] != 3000 {
+		t.Errorf("got %v", m)
 	}
 }
 
@@ -397,11 +484,11 @@ func TestForwardHarnessEnvEmptyProfileForwardsOperationalMinimum(t *testing.T) {
 	defer func() { emptyAllowVarsWarnDelay = old }()
 
 	env, _, errBuf, drain := newPipeEnv(t, "")
-	prof := config.SandboxProfile{Command: []string{"{{self}}", "sandbox", "run", "--profile", "default", "--", "x"}}
+	plan := nativePlanForTest(t)
 	harness := config.Harness{Name: "test", SandboxEnvAllow: []string{"ANTHROPIC_API_KEY"}}
 	argv := []string{"/usr/bin/omac", "sandbox", "run", "--profile", "default", "--", "x"}
 
-	got := forwardHarnessEnv(env, argv, harness, prof, "default")
+	got := forwardHarnessEnv(env, argv, harness, plan)
 	drain()
 
 	joined := strings.Join(got, " ")
@@ -415,8 +502,17 @@ func TestForwardHarnessEnvEmptyProfileForwardsOperationalMinimum(t *testing.T) {
 	if strings.Contains(joined, "ANTHROPIC_API_KEY") {
 		t.Errorf("empty profile must not auto-forward provider-auth vars; got %v", got)
 	}
-	if !strings.Contains(errBuf.String(), "allow_vars") {
-		t.Errorf("expected empty-allow_vars warning on stderr; got:\n%s", errBuf.String())
+	warning := errBuf.String()
+	for _, want := range []string{
+		"allow_vars",
+		plan.PolicyPath,
+		"not updated by omac upgrades",
+		"installer or original source",
+		`["*"] is not recommended`,
+	} {
+		if !strings.Contains(warning, want) {
+			t.Errorf("empty-allow-vars warning missing %q; got:\n%s", want, warning)
+		}
 	}
 }
 
@@ -428,11 +524,11 @@ func TestForwardHarnessEnvNonEmptyProfileInjects(t *testing.T) {
 	stageProfile(t, home, `{"meta": {"name": "default"}, "environment": {"allow_vars": ["HOME"]}}`)
 
 	env, _, errBuf, drain := newPipeEnv(t, "")
-	prof := config.SandboxProfile{Command: []string{"{{self}}", "sandbox", "run", "--profile", "default", "--", "x"}}
+	plan := nativePlanForTest(t)
 	harness := config.Harness{Name: "test", SandboxEnvAllow: []string{"ANTHROPIC_API_KEY"}}
 	argv := []string{"/usr/bin/omac", "sandbox", "run", "--profile", "default", "--", "x"}
 
-	got := forwardHarnessEnv(env, argv, harness, prof, "default")
+	got := forwardHarnessEnv(env, argv, harness, plan)
 	drain()
 
 	if !strings.Contains(strings.Join(got, " "), "--allow-env ANTHROPIC_API_KEY") {
@@ -441,6 +537,24 @@ func TestForwardHarnessEnvNonEmptyProfileInjects(t *testing.T) {
 	if strings.Contains(errBuf.String(), "allow_vars") {
 		t.Errorf("non-empty profile must not warn; got:\n%s", errBuf.String())
 	}
+}
+
+// nativePlanForTest resolves the launch plan for a minimal native launcher
+// profile, so a test's staged policy file (stageProfile) is what the plan's
+// policy-derived behaviour is read from.
+func nativePlanForTest(t *testing.T) sandboxPlan {
+	t.Helper()
+	lc := config.LauncherConfig{Sandbox: config.SandboxConfig{
+		DefaultProfile: "builtin",
+		Profiles: map[string]config.SandboxProfile{"builtin": {
+			Command: []string{"{{self}}", "sandbox", "run", "--profile", "default", "--", "x"},
+		}},
+	}}
+	plan, err := resolveSandboxPlan(lc, "")
+	if err != nil {
+		t.Fatalf("resolveSandboxPlan: %v", err)
+	}
+	return plan
 }
 
 func equalStrings(a, b []string) bool {
@@ -683,6 +797,59 @@ func TestRunServeRejectsEphemeralCacheWithoutSandbox(t *testing.T) {
 	}
 }
 
+func TestRunServeInnerFlagsNeedDashDash(t *testing.T) {
+	t.Run("dash-dash form forwards harness flags", func(t *testing.T) {
+		opts, ok := parseServeArgs([]string{"opencode", "--verbose", "--", "--port", "4096", "--print-logs"}, devnullEnv(t))
+		if !ok {
+			t.Fatal("parseServeArgs() returned false")
+		}
+		if !opts.verbose {
+			t.Error("verbose = false, want true")
+		}
+		if opts.harness.Name != "opencode" {
+			t.Errorf("harness = %q, want opencode", opts.harness.Name)
+		}
+		want := []string{"--port", "4096", "--print-logs"}
+		if !reflect.DeepEqual(opts.innerArgs, want) {
+			t.Errorf("innerArgs = %v, want %v", opts.innerArgs, want)
+		}
+	})
+
+	t.Run("mixed form fails and points at dash-dash", func(t *testing.T) {
+		stderr, writer, err := os.Pipe()
+		if err != nil {
+			t.Fatalf("pipe stderr: %v", err)
+		}
+		t.Cleanup(func() { stderr.Close() })
+		env := devnullEnv(t)
+		env.Workdir = t.TempDir()
+		env.Stderr = writer
+		if code := runServe([]string{"opencode", "--verbose", "run", "--model", "x"}, env); code != ExitMisuse {
+			t.Errorf("exit = %d, want ExitMisuse (%d)", code, ExitMisuse)
+		}
+		if err := writer.Close(); err != nil {
+			t.Fatalf("close stderr writer: %v", err)
+		}
+		output, err := io.ReadAll(stderr)
+		if err != nil {
+			t.Fatalf("read stderr: %v", err)
+		}
+		if !strings.Contains(string(output), "pass harness flags after --") {
+			t.Errorf("stderr = %q, want inner-args -- hint", output)
+		}
+		got := string(output)
+		errAt := strings.Index(got, "flag provided but not defined")
+		hintAt := strings.Index(got, "pass harness flags after --")
+		usageAt := strings.Index(got, "Usage:")
+		if errAt < 0 || hintAt < 0 || usageAt < 0 || !(errAt < hintAt && hintAt < usageAt) {
+			t.Errorf("want error, then -- hint, then Usage; got %q", got)
+		}
+		if !strings.Contains(got, "Args after -- go to the harness") {
+			t.Errorf("stderr = %q, want Usage to explain --", got)
+		}
+	})
+}
+
 func TestRunServeRetainsCacheLockAndAllowsOnlyScope(t *testing.T) {
 	isolateHome(t)
 	shortTmp, err := os.MkdirTemp("/tmp", "omac-serve-")
@@ -906,5 +1073,98 @@ func TestCheckGlobalDriftCleanWhenNoGlobals(t *testing.T) {
 	// Isolated HOME/XDG => no global skills at all.
 	if code := s.checkGlobalDrift(); code != ExitOK {
 		t.Errorf("expected ExitOK with no global skills, got %d", code)
+	}
+}
+
+// stageSkillWithPassthroughSecret writes a skill whose required secret is
+// declared in BOTH secrets: and env_passthrough: — the shape internal/config's
+// SidecarMeta docs bless as "the fallback for environments where the keychain
+// is unavailable (sandboxed CI runners, headless servers)", and which
+// supervisor.buildEnv honours at spawn time.
+func stageSkillWithPassthroughSecret(t *testing.T, workdir, name string) {
+	t.Helper()
+	skillDir := filepath.Join(workdir, ".opencode", "skills", name)
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("mkdir skill: %v", err)
+	}
+	// `true` exits immediately, so the health probe fails fast and the route
+	// ends up broken-on-spawn. That is fine and is the point: this test asserts
+	// resolution got PAST the credential gate, not that a sidecar came up. The
+	// tiny timeouts keep that failure at ~100ms rather than the 5s default.
+	meta := "name: " + name + "\n" +
+		"sidecar:\n" +
+		"  command: [\"true\"]\n" +
+		"  env_passthrough:\n" +
+		"    - API_TOKEN\n" +
+		"  secrets:\n" +
+		"    - name: API_TOKEN\n" +
+		"      required: true\n" +
+		"  health:\n" +
+		"    path: /status\n" +
+		"    initial_delay_ms: 10\n" +
+		"    timeout_ms: 100\n" +
+		"    interval_ms: 10\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "omac.yaml"), []byte(meta), 0o644); err != nil {
+		t.Fatalf("write omac.yaml: %v", err)
+	}
+	hash, err := config.BundleHash(skillDir)
+	if err != nil {
+		t.Fatalf("bundle hash: %v", err)
+	}
+	if err := skilltrust.Approve(name, hash, skillDir); err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+}
+
+// TestActivateEnvPassthroughSecretIsNotPending is issue #174's Failure 2:
+// serve's own copy of the resolution rule never consulted env_passthrough, so
+// on a headless runner a skill whose required secret came from the shell was
+// reported pending-credentials with a "missing credentials" hint — even though
+// the supervisor would have injected the value and the sidecar would have
+// started fine. `omac start` honoured the fallback; serve did not.
+func TestActivateEnvPassthroughSecretIsNotPending(t *testing.T) {
+	s := newServeServerForTest(t)
+	// Resolution now SUCCEEDS, so bringUp reaches the spawn path — which the
+	// default test server leaves nil because it only ever exercised
+	// pending-credentials skills.
+	s.sup = supervisor.New(nil, audit.Nop(), skillSpawnAuthorizer)
+	t.Cleanup(func() { s.sup.ShutdownAll(time.Second) })
+	wd := t.TempDir()
+	stageSkillWithPassthroughSecret(t, wd, "slack")
+	t.Setenv("API_TOKEN", "shell-supplied")
+
+	manifest, err := s.activate(wd)
+	if err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+	skills := manifest["skills"].([]map[string]any)
+	if len(skills) != 1 {
+		t.Fatalf("skills count = %d, want 1", len(skills))
+	}
+	sk := skills[0]
+	if sk["state"] == string(facade.RoutePendingCredentials) {
+		t.Errorf("state = pending-credentials, but the secret is supplied via env_passthrough: %v", sk)
+	}
+	if missing, _ := sk["missing"].([]string); len(missing) != 0 {
+		t.Errorf("missing = %v, want none — the sidecar receives API_TOKEN from the host env", missing)
+	}
+}
+
+// TestActivateEmptyPassthroughSecretIsStillPending is the other side of the
+// fallback: env_passthrough forwards a variable even when it is empty, and an
+// empty token is no token, so this must NOT be treated as satisfied.
+func TestActivateEmptyPassthroughSecretIsStillPending(t *testing.T) {
+	s := newServeServerForTest(t)
+	wd := t.TempDir()
+	stageSkillWithPassthroughSecret(t, wd, "slack")
+	t.Setenv("API_TOKEN", "")
+
+	manifest, err := s.activate(wd)
+	if err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+	sk := manifest["skills"].([]map[string]any)[0]
+	if sk["state"] != string(facade.RoutePendingCredentials) {
+		t.Errorf("state = %v, want pending-credentials for an empty exported value", sk["state"])
 	}
 }

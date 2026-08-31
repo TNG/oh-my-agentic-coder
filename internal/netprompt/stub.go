@@ -15,7 +15,8 @@ import (
 type stubDecision struct {
 	Allow       bool   // true = allow, false = deny
 	Persist     bool   // permanent vs once
-	Scope       string // "host" or "suffix" when Persist
+	Session     bool   // valid for the current session only (mutually exclusive with Persist)
+	Scope       string // "host" or "suffix" when Persist or Session
 	NeedsIntent bool   // deny with "explain more" marker
 }
 
@@ -81,6 +82,12 @@ func (f *fileDecisionSource) load() {
 	if err := json.Unmarshal(data, &f.decisions); err != nil {
 		f.logf("omac sandbox: stub prompt: malformed decisions file %q: %v; denying every host", f.path, err)
 	}
+	for host, d := range f.decisions {
+		if d.Persist && d.Session {
+			f.logf("omac sandbox: stub prompt: invalid combo persist&&session for %s; skipping", host)
+			delete(f.decisions, host)
+		}
+	}
 	f.loaded = true
 }
 
@@ -95,9 +102,13 @@ func (f *fileDecisionSource) load() {
 // backends use (labelToToken / tokenToResult handle the rest):
 //
 //	allow + !persist  → "Allow once"
+//	allow + session + scope=host   → "Allow for this session (this host)"
+//	allow + session + scope=suffix → "Allow for this session (*.suffix)"
 //	allow + persist + scope=host   → "Allow permanently (this host)"
 //	allow + persist + scope=suffix → "Allow permanently (*.suffix)"
 //	deny + !persist + !needsIntent → "Deny once"
+//	deny + session + scope=host    → "Deny for this session (this host)"
+//	deny + session + scope=suffix  → "Deny for this session (*.suffix)"
 //	deny + persist + scope=host    → "Deny permanently (this host)"
 //	deny + persist + scope=suffix  → "Deny permanently (*.suffix)"
 //	deny + needsIntent              → "Explain more"
@@ -128,14 +139,25 @@ func (s stubBackend) show(ctx context.Context, host string, port int, suffix, in
 // expects (mirrors optionLabels / labelToToken).
 func decisionToLabel(d stubDecision, suffix string) string {
 	switch {
+	// "Explain more" is its own outcome, not a deny variant: it must
+	// outrank the scope cases so a fixture setting both flags is not
+	// silently turned into a session deny.
+	case d.NeedsIntent:
+		return "Explain more"
+	case d.Allow && d.Session && d.Scope == "host":
+		return "Allow for this session (this host)"
+	case d.Allow && d.Session && d.Scope == "suffix":
+		return fmt.Sprintf("Allow for this session (*.%s)", suffix)
+	case !d.Allow && d.Session && d.Scope == "host":
+		return "Deny for this session (this host)"
+	case !d.Allow && d.Session && d.Scope == "suffix":
+		return fmt.Sprintf("Deny for this session (*.%s)", suffix)
 	case d.Allow && d.Persist && d.Scope == "host":
 		return "Allow permanently (this host)"
 	case d.Allow && d.Persist && d.Scope == "suffix":
 		return fmt.Sprintf("Allow permanently (*.%s)", suffix)
 	case d.Allow:
 		return "Allow once"
-	case d.NeedsIntent:
-		return "Explain more"
 	case !d.Allow && d.Persist && d.Scope == "host":
 		return "Deny permanently (this host)"
 	case !d.Allow && d.Persist && d.Scope == "suffix":

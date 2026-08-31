@@ -129,8 +129,7 @@ func TestMissingTokens(t *testing.T) {
 }
 
 func TestCompatLine(t *testing.T) {
-	t.Setenv("E2E_MODEL", "")
-	t.Setenv("E2E_MODEL_CLAUDE_CODE", "")
+	clearModelEnv(t)
 
 	// Built from modelIDs rather than the literal pin: this asserts that the
 	// line carries the resolved model, not what that model happens to be

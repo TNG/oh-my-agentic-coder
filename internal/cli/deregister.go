@@ -13,6 +13,7 @@ import (
 	"github.com/tngtech/oh-my-agentic-coder/internal/keychain"
 	"github.com/tngtech/oh-my-agentic-coder/internal/registry"
 	"github.com/tngtech/oh-my-agentic-coder/internal/skillsource"
+	"github.com/tngtech/oh-my-agentic-coder/internal/skilltrust"
 )
 
 func runDeregister(args []string, env *Env) int {
@@ -28,15 +29,16 @@ func runDeregister(args []string, env *Env) int {
 		assumeYes     = fs.Bool("yes", false, "Do not prompt before deleting an unregistered skill's source directory.")
 	)
 	fs.Usage = func() {
-		fmt.Fprintln(env.Stderr, "Usage: omac deregister <skill> [--global] [--harness <name>] [--yes] [--purge-secrets] [--purge-fields] [--purge-defaults]")
-		fmt.Fprintln(env.Stderr, "       omac deregister --prune   # remove all stale registrations")
-		fmt.Fprintln(env.Stderr, "\nRemoves the skill from the registry. If the skill was never registered but")
-		fmt.Fprintln(env.Stderr, "still exists on disk (so `omac start` keeps flagging it), its source directory")
-		fmt.Fprintln(env.Stderr, "is deleted instead (after confirmation, or immediately with --yes).")
+		out := fs.Output()
+		fmt.Fprintln(out, "Usage: omac deregister <skill> [--global] [--harness <name>] [--yes] [--purge-secrets] [--purge-fields] [--purge-defaults]")
+		fmt.Fprintln(out, "       omac deregister --prune   # remove all stale registrations")
+		fmt.Fprintln(out, "\nRemoves the skill from the registry. If the skill was never registered but")
+		fmt.Fprintln(out, "still exists on disk (so `omac start` keeps flagging it), its source directory")
+		fmt.Fprintln(out, "is deleted instead (after confirmation, or immediately with --yes).")
 		fs.PrintDefaults()
 	}
-	if err := fs.Parse(reorderFlagsFirst(args)); err != nil {
-		return ExitMisuse
+	if code, ok := parseFlags(fs, args, env); !ok {
+		return code
 	}
 	if *prune {
 		if fs.NArg() != 0 {
@@ -66,6 +68,7 @@ func runDeregister(args []string, env *Env) int {
 	var declared []string
 	var existed bool
 	var removedFields int
+	var revokeHash string
 	var global bool
 
 	// A skill is registered in exactly one layer: the workdir registry
@@ -91,12 +94,23 @@ func runDeregister(args []string, env *Env) int {
 		if err != nil {
 			return err
 		}
-		if e, _ := reg.FindForHarness(name, harnessKey); e != nil {
-			declared = e.DeclaredSecretNames
-		}
+		// Capture the entry in the same branch that removes it, so revokeHash
+		// always belongs to the entry actually deleted: a name-only Remove
+		// deletes any-harness, so it must pair with Find, not the legacy-only
+		// FindForHarness. Fields are read BEFORE removal, which reslices
+		// reg.Registered and would invalidate the pointer.
+		var removing *registry.Entry
 		if harnessKey != "" {
+			removing, _ = reg.FindForHarness(name, harnessKey)
+			if removing != nil {
+				declared, revokeHash = removing.DeclaredSecretNames, removing.BundleHash
+			}
 			existed = reg.RemoveForHarness(name, harnessKey)
 		} else {
+			removing, _ = reg.Find(name)
+			if removing != nil {
+				declared, revokeHash = removing.DeclaredSecretNames, removing.BundleHash
+			}
 			existed = reg.Remove(name)
 		}
 		if err := saveRegistry(env.Workdir, global, reg); err != nil {
@@ -120,6 +134,16 @@ func runDeregister(args []string, env *Env) int {
 	}); err != nil {
 		fmt.Fprintln(env.Stderr, "omac deregister:", err)
 		return ExitIOError
+	}
+
+	// Revoke the host-only spawn approval (see internal/skilltrust) for this
+	// entry's exact hash, so a copy still registered under another harness or
+	// workdir keeps its own approval. Best-effort: a stale approval is inert
+	// on its own (nothing spawns a skill absent from the registry).
+	if existed && revokeHash != "" {
+		if _, rerr := skilltrust.Revoke(name, revokeHash); rerr != nil {
+			fmt.Fprintf(env.Stderr, "omac deregister: could not revoke host approval (%v)\n", rerr)
+		}
 	}
 
 	if *purge {
@@ -155,7 +179,7 @@ func runDeregister(args []string, env *Env) int {
 		fmt.Fprintf(env.Stdout, " (use --purge-fields to also drop config fields)")
 	}
 
-	// Purge remembered global defaults (docs/MULTI_DIR_DESKTOP.md §4.4):
+	// Purge remembered global defaults (docs/contributing/serve-spec.md):
 	// the secret defaults under omac/__defaults__/<skill> and the config
 	// defaults block in the global skill-config.yaml.
 	if *purgeDefaults {

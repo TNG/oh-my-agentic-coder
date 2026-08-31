@@ -25,7 +25,7 @@ control-plane URL) into the environment. The hook uses it to:
    `/__omac__/deactivate {dir}`.
 
 This is the same bridge interface the OpenCode plugin implements (see
-`docs/MULTI_DIR_DESKTOP.md` and the `agent-bridge` spec). The control plane,
+`docs/contributing/serve-spec.md` and the `agent-bridge` spec). The control plane,
 token minting, route namespacing, sidecar spawning/health-checks, and secret
 resolution are all owned by omac, identically for every harness.
 

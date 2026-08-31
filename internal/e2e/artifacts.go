@@ -27,6 +27,15 @@ import (
 //	  sandbox-profile.json — the sandbox profile used
 var sessionLogDir = os.Getenv("E2E_LOG_DIR")
 
+// artifactDirFor returns the session artifact directory for h+testType,
+// matching writeSessionArtifacts' layout; empty when E2E_LOG_DIR is unset.
+func artifactDirFor(h harnessConfig, testType string) string {
+	if sessionLogDir == "" {
+		return ""
+	}
+	return filepath.Join(sessionLogDir, fmt.Sprintf("%s-%s-%s", h.Name, runtime.GOOS, testType))
+}
+
 // writeSessionArtifacts writes captured test output to the session log
 // directory. Called after the agent run completes (success or failure).
 // When E2E_LOG_DIR is unset, this is a no-op.

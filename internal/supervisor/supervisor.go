@@ -95,6 +95,7 @@ type Running struct {
 type Supervisor struct {
 	baseEnvPassthrough []string
 	auditor            audit.Auditor
+	authorizer         func(SidecarSpec) error
 
 	mu       sync.Mutex
 	children []*Running
@@ -102,11 +103,21 @@ type Supervisor struct {
 
 // New returns a fresh Supervisor. auditor may be nil (a no-op auditor is
 // substituted) so existing callers/tests keep working.
-func New(baseEnvPassthrough []string, auditor audit.Auditor) *Supervisor {
+//
+// authorizer is the spawn gate, consulted at the start of every spawn (StartAll
+// and AddSidecar both funnel through startOne); a non-nil error from it means
+// the sidecar is NOT started and that error is returned to the caller. It is a
+// constructor parameter rather than a setter precisely because it is a security
+// control: the choke-point backstop for the host-only approval model (see
+// internal/skilltrust), which holds even if a caller forgets its own pre-flight
+// approval check. Requiring it here means a new production call site cannot
+// silently get an ungated supervisor — it has to say so by passing nil, which
+// allows every spawn and is what tests use.
+func New(baseEnvPassthrough []string, auditor audit.Auditor, authorizer func(SidecarSpec) error) *Supervisor {
 	if auditor == nil {
 		auditor = audit.Nop()
 	}
-	return &Supervisor{baseEnvPassthrough: baseEnvPassthrough, auditor: auditor}
+	return &Supervisor{baseEnvPassthrough: baseEnvPassthrough, auditor: auditor, authorizer: authorizer}
 }
 
 // StartAll starts every sidecar in specs. On any failure it terminates the
@@ -223,6 +234,13 @@ func (s *Supervisor) watchChild(r *Running) {
 
 // startOne allocates a port, spawns the child, and waits on health.
 func (s *Supervisor) startOne(ctx context.Context, spec SidecarSpec) (*Running, error) {
+	// Spawn gate (host-only approval backstop). Consulted before any
+	// resource is allocated so an unapproved skill never reaches exec.
+	if s.authorizer != nil {
+		if err := s.authorizer(spec); err != nil {
+			return nil, fmt.Errorf("%s: %w", spec.Name, err)
+		}
+	}
 	port, err := allocEphemeralPort()
 	if err != nil {
 		return nil, fmt.Errorf("%s: port alloc: %w", spec.Name, err)
