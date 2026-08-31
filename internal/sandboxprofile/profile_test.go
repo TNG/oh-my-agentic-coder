@@ -96,10 +96,12 @@ func TestParseValidationErrors(t *testing.T) {
 		`{"network": {"listen_port": [70000]}}`,
 		`{"network": {"network_prompt": {"on_unavailable": "ask"}}}`,
 		`{"environment": {"allow_vars": [" "]}}`,
-		`{"environment": {"deny_vars": [" "]}}`,        // empty deny_vars entry
-		`{"filesystem": {"deny": [" "]}}`,              // empty deny entry
-		`{"filesystem": {"deny": ["[a-"]}}`,            // malformed basename glob
-		`{"network": {"proxy_injection": ["python"]}}`, // unsupported tool
+		`{"environment": {"deny_vars": [" "]}}`,          // empty deny_vars entry
+		`{"filesystem": {"deny": [" "]}}`,                // empty deny entry
+		`{"filesystem": {"deny": ["[a-"]}}`,              // malformed basename glob
+		`{"network": {"proxy_injection": ["python"]}}`,   // unsupported tool
+		`{"filesystem": {"registry_config": ["pypi"]}}`,  // unsupported ecosystem
+		`{"filesystem": {"registry_config": ["npmrc"]}}`, // near-miss name
 	}
 	for _, c := range cases {
 		if _, err := Parse([]byte(c)); err == nil {
@@ -116,6 +118,25 @@ func TestProxyInjection(t *testing.T) {
 	want := []string{ProxyInjectJVM, ProxyInjectNode}
 	if !slices.Equal(p.Network.ProxyInjection, want) {
 		t.Errorf("proxy_injection = %v, want %v", p.Network.ProxyInjection, want)
+	}
+}
+
+func TestRegistryConfig(t *testing.T) {
+	p, err := Parse([]byte(`{"filesystem": {"registry_config": ["npm"]}}`))
+	if err != nil {
+		t.Fatalf("valid registry_config rejected: %v", err)
+	}
+	if want := []string{RegistryConfigNPM}; !slices.Equal(p.Filesystem.RegistryConfig, want) {
+		t.Errorf("registry_config = %v, want %v", p.Filesystem.RegistryConfig, want)
+	}
+	// Unset is the historical behavior and must stay the zero value, so
+	// nothing is projected unless the profile opts in.
+	bare, err := Parse([]byte(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bare.Filesystem.RegistryConfig) != 0 {
+		t.Errorf("registry_config defaulted to %v, want empty", bare.Filesystem.RegistryConfig)
 	}
 }
 
@@ -1158,4 +1179,30 @@ func containsPath(paths []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// TestUnknownFieldErrorHintsAtVersionSkew covers the review finding that a
+// profile written for a newer omac is rejected by an older binary with a bare
+// "unknown field", giving no clue which direction to look. Strictness is kept
+// (a typo must not silently weaken the sandbox); only the message improves.
+func TestUnknownFieldErrorHintsAtVersionSkew(t *testing.T) {
+	_, err := Parse([]byte(`{"filesystem": {"some_future_field": ["x"]}}`))
+	if err == nil {
+		t.Fatal("unknown field must still be rejected")
+	}
+	if !strings.Contains(err.Error(), "some_future_field") {
+		t.Errorf("error no longer names the field: %v", err)
+	}
+	if !strings.Contains(err.Error(), "newer omac") {
+		t.Errorf("error gives no version-skew hint: %v", err)
+	}
+	// A malformed profile that is not an unknown-field problem keeps the
+	// plain message.
+	_, err = Parse([]byte(`{"workdir": {"access": 5}}`))
+	if err == nil {
+		t.Fatal("type error must still be rejected")
+	}
+	if strings.Contains(err.Error(), "newer omac") {
+		t.Errorf("version hint leaked onto an unrelated parse error: %v", err)
+	}
 }

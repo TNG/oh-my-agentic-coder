@@ -64,10 +64,13 @@ omac creates this file the first time you run `omac start`. Key fields:
 | `network.mode` | `string` | `"filtered"` | `filtered` (prompt for unknown hosts), `blocked` (no outbound at all), `open` (unrestricted) |
 | `environment.allow_vars` | `string[]` | see created file | Env vars passed into the sandbox; everything else is stripped |
 | `filesystem.protected_paths` | `string[]` | `["~/.ssh", "~/.gnupg", ...]` | Paths that remain blocked even if a broader grant would cover them |
+| `filesystem.registry_config` | `string[]` | `[]` | Ecosystems whose package-registry settings are copied into the sandbox without their credentials. Currently `"npm"`. See [Private package registries](#private-package-registries) |
 
 See [Security model → Sandbox access reference](./security.md#sandbox-access-reference) for the full list of what the agent can and cannot access.
 
 omac never rewrites this file once it exists, so upgrading omac does not add newer default grants to a profile you already have. To pick up the newer defaults, make a copy of your current file, delete the original, and run `omac start` to write a fresh one. Then copy any changes you had made back from your saved copy into the new file.
+
+The reverse also applies. An unknown field is an error, so that a typo cannot quietly weaken the sandbox. A file using a newer field, such as `filesystem.registry_config`, is therefore rejected by an older omac. If you share this file between machines, upgrade omac on all of them before adding a new field.
 
 ### Opening a port
 
@@ -78,6 +81,9 @@ To let the agent reach a local service, add the port to `network.open_port` in t
 ```
 
 On Linux this also permits outbound connections to that port on any host — Landlock cannot scope a port to localhost — so keep the list short. `omac doctor` and `omac provenance --check` flag every numeric `open_port`.
+
+**macOS only:** the sentinel `"open_port": [0]` allows any loopback port (`localhost:*`) while external egress stays blocked. This is useful for tools that pick a random loopback port at runtime, such as the Gradle daemon (see [troubleshooting](./troubleshooting.md#gradle-build-hangs-or-cannot-reach-its-daemon)).
+Linux has no equivalent, because Landlock cannot scope a port to localhost.
 
 You can also open a port for a single session with `omac start --open-port 3000`, which is handy for a quick test before changing the grants file.
 
@@ -120,6 +126,24 @@ For example, an MCP server that reads `KAGGLE_KEY` and listens on port 3334:
 Java (Maven/Gradle) and Node/npm do not reliably route their package downloads through a proxy on their own, so their downloads can fail inside the sandbox. To fix this, add `jvm`, `node`, or both to `network.proxy_injection` in the sandbox grants file, and omac configures those toolchains to use its proxy.
 
 Node injection requires Node ≥ 22.21.0 (22.x line) or ≥ 24.5.0; on older versions it is skipped and downloads may still fail.
+
+### Private package registries
+
+If your company hosts its own npm packages, `~/.npmrc` says where to find them. A line like `@acme:registry=https://npm.acme.test` means "packages starting with `@acme/` come from that server".
+
+The sandbox blocks `~/.npmrc`, because the same file usually holds an access token. Without it, npm looks for `@acme/` packages on the public registry instead, does not find them, and reports a 404. The error looks like the package does not exist, so this is easy to misread. Allowing the registry's host does not help, because npm never asks it.
+
+To fix this, add `npm` to `filesystem.registry_config`:
+
+```json
+{ "filesystem": { "registry_config": ["npm"] } }
+```
+
+omac then writes a copy of `~/.npmrc` that contains only the registry addresses, lets the sandbox read that copy, and points npm at it. The real file stays blocked, so no token is copied. If a line cannot be copied without also copying a secret, omac skips that line and tells you which one, both at startup and in `omac doctor`.
+
+Private registries usually also need their host added to `network.allow_domain`, or allowed once at the network prompt.
+
+omac cannot pass on your access token, so packages that require login still fail to install. Only the address is shared, never the credential.
 
 ## Audit trail
 

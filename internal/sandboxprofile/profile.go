@@ -114,6 +114,22 @@ type Filesystem struct {
 	// deny set (Baseline.ProtectedPaths). It does not grant access by
 	// itself; a matching allow/read/write grant is still required.
 	OverrideDeny []string `json:"override_deny,omitempty"`
+	// RegistryConfig opts a package-manager ecosystem into a scrubbed
+	// projection of its user config file. The host file stays protected
+	// and unreadable; omac derives a copy holding only the registry
+	// mappings (no credentials), grants read access to that copy alone,
+	// and points the tool at it through its native config env var.
+	//
+	// This exists because a scope→registry mapping is load-bearing
+	// *configuration* that happens to live in the same file as a
+	// credential. Without it, a scoped package resolves against the
+	// public registry and 404s (see #150, #241). Values:
+	//   - "npm": derive from ~/.npmrc, inject NPM_CONFIG_USERCONFIG.
+	//
+	// Unset means the historical behavior: the file stays fully masked.
+	// The blunt alternative — override_deny on ~/.npmrc — grants the
+	// whole file including any auth token; this does not.
+	RegistryConfig []string `json:"registry_config,omitempty"`
 }
 
 // Network configures isolation, filtering and port openings.
@@ -172,6 +188,18 @@ const (
 // sandboxrun injector registry must supply one entry per family here.
 func ProxyInjectionTools() []string {
 	return []string{ProxyInjectJVM, ProxyInjectNode}
+}
+
+// registry_config ecosystem identifiers.
+const (
+	RegistryConfigNPM = "npm"
+)
+
+// RegistryConfigTools lists the accepted filesystem.registry_config
+// ecosystem identifiers. Single source of truth for validation; the
+// registryconf projector registry must supply one entry per name here.
+func RegistryConfigTools() []string {
+	return []string{RegistryConfigNPM}
 }
 
 // NetworkPrompt mirrors nono's network_prompt block.
@@ -273,6 +301,15 @@ func Parse(data []byte) (*Profile, error) {
 	dec.DisallowUnknownFields()
 	var p Profile
 	if err := dec.Decode(&p); err != nil {
+		// Strict decoding is what makes a typo fail loudly instead of
+		// silently weakening the sandbox, but it also means an OLDER omac
+		// rejects a profile that a newer one has added a field to. That is
+		// easy to hit with a shared or checked-in profile, so the unknown-field
+		// case says which direction to look rather than just naming the field.
+		if strings.Contains(err.Error(), "unknown field") {
+			return nil, fmt.Errorf("parse sandbox profile: %w "+
+				"(if this profile was written for a newer omac, upgrade omac; otherwise remove the field)", err)
+		}
 		return nil, fmt.Errorf("parse sandbox profile: %w", err)
 	}
 	// A second JSON value in the stream is a malformed profile.
@@ -326,6 +363,11 @@ func (p *Profile) Validate() error {
 	for _, tool := range p.Network.ProxyInjection {
 		if !slices.Contains(ProxyInjectionTools(), tool) {
 			return fmt.Errorf("sandbox profile: invalid network.proxy_injection %q (want one of %s)", tool, strings.Join(ProxyInjectionTools(), ", "))
+		}
+	}
+	for _, eco := range p.Filesystem.RegistryConfig {
+		if !slices.Contains(RegistryConfigTools(), eco) {
+			return fmt.Errorf("sandbox profile: invalid filesystem.registry_config %q (want one of %s)", eco, strings.Join(RegistryConfigTools(), ", "))
 		}
 	}
 	for _, group := range []struct {

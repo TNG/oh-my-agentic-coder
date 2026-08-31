@@ -79,6 +79,7 @@ cannot access.
 | `/tmp`, `$TMPDIR` | read + write | Temporary files during the agent's work |
 | Facade socket (`$TMPDIR/omac-<hash>/bridge.sock`) | connect | The socket the agent uses to reach skill sidecars; created by the facade, not the agent |
 | `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.kube`, … | **blocked** | Sensitive credentials |
+| `~/.npmrc` | **blocked**; registry addresses can be shared as a stripped copy | Usually holds an access token. See [Private package registries](./configuration.md#private-package-registries) |
 | `~/.config/omac` (approval store, sandbox profiles, global registry) | **not mounted** | The agent must not be able to forge skill approvals |
 | `.env` / `.envrc` files (including nested ones inside the project) | **blocked** | Often contain secrets |
 | `~/.cache`, `~/Library/Caches` (host cache roots) | **blocked** | Prevents cross-project cache poisoning; omac provides its own isolated cache |
