@@ -82,6 +82,9 @@ To let the agent reach a local service, add the port to `network.open_port` in t
 
 On Linux this also permits outbound connections to that port on any host — Landlock cannot scope a port to localhost — so keep the list short. `omac doctor` and `omac provenance --check` flag every numeric `open_port`.
 
+**macOS only:** the sentinel `"open_port": [0]` allows any loopback port (`localhost:*`) while external egress stays blocked. This is useful for tools that pick a random loopback port at runtime, such as the Gradle daemon (see [troubleshooting](./troubleshooting.md#gradle-build-hangs-or-cannot-reach-its-daemon)).
+Linux has no equivalent, because Landlock cannot scope a port to localhost.
+
 You can also open a port for a single session with `omac start --open-port 3000`, which is handy for a quick test before changing the grants file.
 
 ### Passing an environment variable into the sandbox
