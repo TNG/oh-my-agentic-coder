@@ -61,6 +61,17 @@ This is handled by `omac serve` instead of `omac start`. Desktop integration is 
 | **Facade** | The component inside omac that connects the sandbox to the skill sidecars. The agent sends requests to the facade; the facade forwards them to the right sidecar.                                       |
 | **MCP server** | A tool server that a harness connects to over the Model Context Protocol to gain extra capabilities (example: an MCP server can provide information on demand).                                         |
 
+## Known limitations
+
+- **Gradle needs `--no-daemon`.** Gradle's daemon communicates over a random
+  loopback port that the sandbox blocks, so the default `gradle build` /
+  `gradle test` hangs. Run `./gradlew --no-daemon` (or set
+  `org.gradle.daemon=false`); see
+  [troubleshooting](./troubleshooting.md#gradle-build-hangs-or-cannot-reach-its-daemon).
+- **Docker is not available inside the sandbox.** The sandbox does not expose the
+  Docker daemon, so anything that needs it — `docker` commands, Testcontainers-based
+  tests, etc. — fails, regardless of language.
+
 ## Security model
 
 For the full threat model, isolation mechanics, and what the sandbox can still access, have a look at [security.md](security.md).
