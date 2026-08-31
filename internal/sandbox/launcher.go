@@ -75,7 +75,7 @@ func Expand(profile config.SandboxProfile, in Inputs) ([]string, error) {
 	// tmpdir_flags grants the sandbox read+write on the host temp dir that
 	// omac exports as TMPDIR. We splat it as a list so the flags vanish
 	// entirely when no temp dir is configured (rather than emitting
-	// `--read "" --write ""`, which would hand nono empty paths).
+	// `--read "" --write ""`, which would hand the launcher empty paths).
 	var tmpdirFlags []string
 	if in.TmpDir != "" {
 		tmpdirFlags = []string{"--read", in.TmpDir, "--write", in.TmpDir}
@@ -209,8 +209,8 @@ func envIdent(s string) string {
 // OmacSocketEnvName maps a mount like "himalaya-email" to
 // "OMAC_HIMALAYA_EMAIL_SOCKET_BASE" — the env var carrying the
 // http+unix:// URL form. The TCP form lives under OmacEnvName, which
-// is the default (because TCP is the transport that works under
-// nono proxy mode on macOS).
+// is the default (because TCP is the transport that works under every
+// sandbox backend, including those that block AF_UNIX connect).
 func OmacSocketEnvName(mount string) string {
 	// Strip the trailing "_BASE" we'd get from OmacEnvName and append
 	// "_SOCKET_BASE" instead, so the two forms have parallel suffixes.
@@ -223,8 +223,8 @@ func OmacEnvValue(mount, socket string) string {
 }
 
 // OmacTCPEnvValue returns the http://127.0.0.1:<port>/<mount> URL.
-// This is the form sandboxed clients should use when nono proxy mode
-// is active (or any other environment that blocks AF_UNIX connect).
+// This is the form sandboxed clients should use in any environment that
+// blocks AF_UNIX connect.
 func OmacTCPEnvValue(mount string, port int) string {
 	return fmt.Sprintf("http://127.0.0.1:%d/%s", port, mount)
 }

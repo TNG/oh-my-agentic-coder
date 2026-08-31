@@ -41,8 +41,8 @@ func wireFacadeSandbox(f *facade.Facade, noSandbox, learnMode bool, plan sandbox
 			warn("omac: sandbox profile %q could not be resolved: %v; GET /sandbox/denied disabled",
 				plan.PolicyRef, plan.PolicyErr)
 		default:
-			// An external launcher (nono), the no-sandbox debug shell, or
-			// an unknown profile name: omac cannot see the policy, so it
+			// An external launcher, the no-sandbox debug shell, or an
+			// unknown profile name: omac cannot see the policy, so it
 			// cannot say which paths that sandbox protects.
 			warn("omac: sandbox profile %q does not run omac's native sandbox; GET /sandbox/denied disabled",
 				plan.Name)

@@ -14,7 +14,7 @@
 #      dir lives under $TMPDIR, which inside the sandbox is a deep path
 #      ($TMPDIR/omac-<hash>/bridge.sock) that exceeds macOS's 104-byte
 #      SUN_LEN limit, yielding `bind: invalid argument`.
-#   3. The inner sandbox (sandbox-exec / nono / bwrap) can't be applied —
+#   3. The inner sandbox (sandbox-exec / bwrap) can't be applied —
 #      macOS denies nested Seatbelt profile application with
 #      `sandbox_apply: Operation not permitted`.
 #

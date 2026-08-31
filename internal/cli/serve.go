@@ -295,9 +295,9 @@ func runServe(args []string, env *Env) int {
 	}
 	defer auditor.Close()
 
-	// Per-session sandbox temp dir exported as TMPDIR; the nono profile
-	// grants RW on it via {{tmpdir}} so Bun-built harnesses (opencode) can
-	// extract their embedded runtime. Removed on exit. See start.go.
+	// Per-session sandbox temp dir exported as TMPDIR; the sandbox profile
+	// grants RW on it via {{tmpdir_flags}} so Bun-built harnesses (opencode)
+	// can extract their embedded runtime. Removed on exit. See start.go.
 	sandboxTmp, err := os.MkdirTemp("", "omac-sandbox-tmp-")
 	if err != nil {
 		fmt.Fprintln(env.Stderr, "omac serve: sandbox temp dir:", err)
@@ -844,12 +844,12 @@ func planDeniedBaseVars(plan sandboxPlan) []string {
 // restrictive allow_vars filter. Only the selected harness's vars are added.
 //
 // --allow-env is understood only by omac's native `sandbox run` backend
-// (where FilterEnv applies the allowlist); other backends (nono) do their
-// own env filtering via their own profile, so injecting the flag there
-// would be meaningless and could fail on an unknown flag. Guarded by
-// plan.Native (config.SandboxProfile.PolicyRef anchors on the leading
-// template tokens, so a nono profile whose INNER command merely contains
-// "sandbox"/"run" is not misclassified). Empty/nil is a no-op.
+// (where FilterEnv applies the allowlist); external backends do their own
+// env filtering via their own profile, so injecting the flag there would be
+// meaningless and could fail on an unknown flag. Guarded by plan.Native
+// (config.SandboxProfile.PolicyRef anchors on the leading template tokens,
+// so an external profile whose INNER command merely contains "sandbox"/"run"
+// is not misclassified). Empty/nil is a no-op.
 func injectSandboxEnvAllow(argv []string, names []string, plan sandboxPlan) []string {
 	if !plan.Native {
 		return argv
@@ -865,7 +865,7 @@ func injectSandboxEnvAllow(argv []string, names []string, plan sandboxPlan) []st
 
 // injectUserOpenPorts splices user --open-port values into a native-sandbox
 // argv. On non-native backends it leaves argv untouched and warns once when
-// any port was requested (nono does not understand these flags).
+// any port was requested (external launchers may not understand these flags).
 func injectUserOpenPorts(env *Env, argv []string, ports []int, prof config.SandboxProfile) []string {
 	if len(ports) == 0 {
 		return argv
@@ -1586,7 +1586,7 @@ func (s *serveServer) baseEnv() map[string]string {
 		"OMAC_HARNESS":            s.harness.Name,
 		"OMAC_HARNESS_SKILLS_DIR": s.harness.WorkdirSkillsDir(),
 		// Sandbox-granted temp dir exported as TMPDIR (see start.go and
-		// the nono profile's {{tmpdir}} grant).
+		// the sandbox profile's {{tmpdir_flags}} grant).
 		"TMPDIR": s.sandboxTmp,
 	}
 	for k, v := range s.cacheEnv {
