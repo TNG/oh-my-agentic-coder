@@ -89,17 +89,19 @@ You can also open a port for a single session with `omac start --open-port 3000`
 
 ### Passing an environment variable into the sandbox
 
-The sandbox passes through only the variables named in `environment.allow_vars`, plus a small set of operational defaults (such as `PATH` and `HOME`). Everything else, including any token, is stripped unless configured otherwise.
+By default, the sandbox strips every variable from your shell except a small set of operational defaults (`PATH`, `HOME`, `LANG`, …). Ambient secrets like cloud tokens never reach the agent.
 
-If a tool inside the sandbox needs a variable from your shell, for example an API token, add its name to the list:
+If a program running inside the sandbox needs one of your shell's variables — for example an API token a build tool or MCP server reads — add its name to `environment.allow_vars`:
 
 ```json
 "environment": { "allow_vars": ["MY_API_TOKEN"] }
 ```
 
-Only the *name* goes here. The value still comes from your shell at start time. There is no CLI flag for this on `omac start`.
+Only the *name* goes here; the value comes from your shell when you run `omac start`, so export it first.
 
-Note that this is separate from a skill's secrets: skill credentials are injected on the host and never enter the sandbox (see [Security model](./security.md)). `allow_vars` is for variables that a program *inside* the sandbox reads directly. Those variables can then also be accessed by the agent.
+A few things to know:
+- For safety, a few variables that let a program load extra code (LD_*, NODE_OPTIONS, PYTHONPATH, …) are always stripped, even if you add them to `allow_vars`.
+- An empty `allow_vars` means "operational defaults only", not "pass everything through".
 
 ### Running an MCP server the harness launches
 
