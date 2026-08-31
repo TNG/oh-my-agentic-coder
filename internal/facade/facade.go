@@ -112,15 +112,13 @@ func routeKey(namespace, mount string) string {
 //
 // Why both:
 //
-//   - Unix socket: lower overhead, file-permission-gated; works in
-//     unsandboxed runs and in nono on Linux (where AF_UNIX is purely
-//     filesystem-governed).
-//   - TCP loopback: required on macOS when nono runs in proxy mode
-//     (auto-activated by `custom_credentials`, `--network-profile`,
-//     etc.). Proxy mode installs `(deny network*)` in Seatbelt, which
-//     classifies AF_UNIX `connect(2)` as `network-outbound` and blocks
-//     it. There is no documented way to override that for a single
-//     Unix-socket path. `--open-port` whitelists a TCP port instead.
+//   - Unix socket: lower overhead, file-permission-gated; works wherever
+//     the sandbox governs AF_UNIX purely by the filesystem (e.g. Linux).
+//   - TCP loopback: required whenever the sandbox installs a
+//     `(deny network*)` rule that classifies AF_UNIX `connect(2)` as
+//     `network-outbound` and blocks it (e.g. macOS Seatbelt under a
+//     network deny). There is no documented way to override that for a
+//     single Unix-socket path. `--open-port` whitelists a TCP port instead.
 type Facade struct {
 	SocketPath    string // Unix socket path; "" disables Unix listener.
 	TCPAddr       string // bind addr for TCP listener (e.g. "127.0.0.1:0"); "" disables TCP.

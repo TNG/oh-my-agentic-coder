@@ -573,11 +573,11 @@ func runLaunch(env *Env, opts launchOpts) int {
 	}
 	defer auditor.Close()
 
-	// Per-session sandbox temp dir. Bun-built harnesses (opencode) extract
+	// Per-session sandbox temp dir. Bun-built harnesses (e.g., opencode) extract
 	// an embedded runtime into TMPDIR at startup; the sandbox must grant
-	// read+write on it (the nono profile does, via {{tmpdir}}) AND the inner
-	// command must see it as TMPDIR (set in `extra` below). We create a
-	// fresh, isolated dir per launch and remove it on exit.
+	// read+write on it (the sandbox profile does, via {{tmpdir_flags}}) AND
+	// the inner command must see it as TMPDIR (set in `extra` below). We
+	// create a fresh, isolated dir per launch and remove it on exit.
 	sandboxTmp, err := os.MkdirTemp("", "omac-sandbox-tmp-")
 	if err != nil {
 		fmt.Fprintln(env.Stderr, prefix+": sandbox temp dir:", err)
@@ -816,13 +816,13 @@ func runLaunch(env *Env, opts launchOpts) int {
 
 	// Extra env passed into the sandbox runtime's own process environment.
 	// The runtime is expected to propagate parent env to the inner process
-	// (nono's default behavior; controllable via the profile's
-	// `environment.allow_vars` field — if set, OMAC_* must be in it).
+	// (external launchers may gate this via their own profile's env
+	// allowlist — if so, OMAC_* must be included).
 	//
 	// Both transports are advertised to the sandbox. Clients should
-	// prefer OMAC_<SKILL>_BASE (TCP-based by default; that is what works
-	// under nono proxy mode), and fall back to OMAC_<SKILL>_SOCKET_BASE
-	// for environments that prefer Unix sockets.
+	// prefer OMAC_<SKILL>_BASE (TCP-based by default; the transport that
+	// works under every sandbox backend), and fall back to
+	// OMAC_<SKILL>_SOCKET_BASE for environments that prefer Unix sockets.
 	extra := map[string]string{
 		"OMAC_SOCKET":             socketPath,
 		"OMAC_HOST":               "127.0.0.1",
@@ -833,9 +833,9 @@ func runLaunch(env *Env, opts launchOpts) int {
 		"OMAC_HARNESS":            harness.Name,
 		"OMAC_HARNESS_SKILLS_DIR": harness.WorkdirSkillsDir(),
 		// Point the inner command at the sandbox-granted temp dir. The
-		// nono profile grants RW on this path via {{tmpdir}}; exporting it
-		// as TMPDIR is what makes Bun-built harnesses (opencode) extract
-		// their runtime into a writable, allowed location.
+		// sandbox profile grants RW on this path via {{tmpdir_flags}};
+		// exporting it as TMPDIR is what makes Bun-built harnesses
+		// (opencode) extract their runtime into a writable, allowed location.
 		"TMPDIR": sandboxTmp,
 	}
 	for _, m := range mounts {
