@@ -229,7 +229,7 @@ func TestInjectServerListenPort(t *testing.T) {
 	}
 
 	// A harness with no server mode is a no-op (nothing to allowlist).
-	in2 := []string{"nono", "run", "--", "claude"}
+	in2 := []string{"external-sbx", "run", "--", "claude"}
 	if got2 := injectServerListenPort(in2, cc); !equalStrings(got2, in2) {
 		t.Errorf("claude-code should be a no-op: got %v, want %v", got2, in2)
 	}
@@ -381,17 +381,17 @@ func TestServerExposureWarning(t *testing.T) {
 
 func TestInjectOpenPort(t *testing.T) {
 	// With a `--` separator, the flag goes right before it.
-	in := []string{"nono", "run", "--open-port", "5000", "--", "opencode", "serve"}
+	in := []string{"external-sbx", "run", "--open-port", "5000", "--", "opencode", "serve"}
 	got := injectOpenPort(in, "6000")
-	want := []string{"nono", "run", "--open-port", "5000", "--open-port", "6000", "--", "opencode", "serve"}
+	want := []string{"external-sbx", "run", "--open-port", "5000", "--open-port", "6000", "--", "opencode", "serve"}
 	if !equalStrings(got, want) {
 		t.Errorf("with --: got %v, want %v", got, want)
 	}
 
 	// Without a `--`, it goes right after argv[0].
-	in2 := []string{"nono", "run", "--allow-cwd"}
+	in2 := []string{"external-sbx", "run", "--allow-cwd"}
 	got2 := injectOpenPort(in2, "6000")
-	want2 := []string{"nono", "--open-port", "6000", "run", "--allow-cwd"}
+	want2 := []string{"external-sbx", "--open-port", "6000", "run", "--allow-cwd"}
 	if !equalStrings(got2, want2) {
 		t.Errorf("without --: got %v, want %v", got2, want2)
 	}
@@ -406,6 +406,18 @@ func TestInjectSandboxEnvAllow(t *testing.T) {
 	isolateHome(t)
 	lc := config.DefaultLauncherConfig()
 	profiles := lc.Sandbox.Profiles
+	// A synthetic non-native external launcher: its argv template does NOT
+	// start with `{{self}} sandbox run`, so PolicyRef reports native=false —
+	// the same class as any external sandbox binary a user might configure.
+	profiles["external"] = config.SandboxProfile{
+		Command: []string{
+			"external-sbx", "run",
+			"--open-port", "{{tcp_port}}",
+			"{{tmpdir_flags}}",
+			"--",
+			"{{inner_cmd}}", "{{inner_args}}",
+		},
+	}
 	planFor := func(t *testing.T, name string) sandboxPlan {
 		t.Helper()
 		plan, err := resolveSandboxPlan(lc, name)
@@ -450,21 +462,20 @@ func TestInjectSandboxEnvAllow(t *testing.T) {
 		t.Errorf("empty entry should be skipped: %v", g)
 	}
 
-	// Non-native backend (nono) does not understand --allow-env: the argv
-	// must be left untouched (env filtering is nono's own concern).
-	nonoProf := profiles["nono"]
-	nonoPlan := planFor(t, "nono")
-	nono := expand(t, nonoProf)
-	if g := injectSandboxEnvAllow(nono, []string{"ANTHROPIC_API_KEY"}, nonoPlan); !equalStrings(g, nono) {
-		t.Errorf("nono argv must be untouched: %v", g)
+	// Non-native backend does not understand --allow-env: the argv must be
+	// left untouched (env filtering is the external launcher's own concern).
+	extProf := profiles["external"]
+	extPlan := planFor(t, "external")
+	ext := expand(t, extProf)
+	if g := injectSandboxEnvAllow(ext, []string{"ANTHROPIC_API_KEY"}, extPlan); !equalStrings(g, ext) {
+		t.Errorf("external argv must be untouched: %v", g)
 	}
 
-	// Regression (issue #111 review): a nono profile whose inner command
+	// Regression (issue #111 review): a non-native profile whose inner command
 	// itself contains "sandbox" "run" tokens must NOT be misclassified as the
 	// native backend. Detection anchors on the profile template, not on a
 	// bare token scan of the expanded argv.
-	nonoInnerProf := nonoProf
-	nonoArgv, err := sandbox.Expand(nonoInnerProf, sandbox.Inputs{
+	extInnerArgv, err := sandbox.Expand(extProf, sandbox.Inputs{
 		Workdir:  "/w",
 		Socket:   "/w/bridge.sock",
 		TCPPort:  6000,
@@ -472,10 +483,10 @@ func TestInjectSandboxEnvAllow(t *testing.T) {
 		TmpDir:   "/w/tmp",
 	})
 	if err != nil {
-		t.Fatalf("Expand nono-inner: %v", err)
+		t.Fatalf("Expand external-inner: %v", err)
 	}
-	if g := injectSandboxEnvAllow(nonoArgv, []string{"ANTHROPIC_API_KEY"}, nonoPlan); !equalStrings(g, nonoArgv) {
-		t.Errorf("nono argv with inner sandbox/run tokens must be untouched: %v", g)
+	if g := injectSandboxEnvAllow(extInnerArgv, []string{"ANTHROPIC_API_KEY"}, extPlan); !equalStrings(g, extInnerArgv) {
+		t.Errorf("external argv with inner sandbox/run tokens must be untouched: %v", g)
 	}
 }
 
@@ -503,8 +514,17 @@ func TestInjectUserOpenPorts(t *testing.T) {
 		t.Errorf("empty inject should be no-op: %v", g)
 	}
 
-	nonoProf := profiles["nono"]
-	nono, err := sandbox.Expand(nonoProf, sandbox.Inputs{
+	// A non-native external launcher: injectUserOpenPorts must leave its argv
+	// untouched (the external sandbox handles its own port grants) and warn.
+	extProf := config.SandboxProfile{
+		Command: []string{
+			"external-sbx", "run",
+			"--open-port", "{{tcp_port}}",
+			"--",
+			"{{inner_cmd}}", "{{inner_args}}",
+		},
+	}
+	ext, err := sandbox.Expand(extProf, sandbox.Inputs{
 		Workdir:  "/w",
 		Socket:   "/w/bridge.sock",
 		TCPPort:  6000,
@@ -512,11 +532,11 @@ func TestInjectUserOpenPorts(t *testing.T) {
 		TmpDir:   "/w/tmp",
 	})
 	if err != nil {
-		t.Fatalf("Expand nono: %v", err)
+		t.Fatalf("Expand external: %v", err)
 	}
 	env2, _, errBuf2, drain2 := newPipeEnv(t, "")
-	if g := injectUserOpenPorts(env2, nono, []int{3000}, nonoProf); !equalStrings(g, nono) {
-		t.Errorf("nono argv must be untouched: %v", g)
+	if g := injectUserOpenPorts(env2, ext, []int{3000}, extProf); !equalStrings(g, ext) {
+		t.Errorf("external argv must be untouched: %v", g)
 	}
 	drain2()
 	if !strings.Contains(errBuf2.String(), "ignoring") {

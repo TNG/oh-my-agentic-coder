@@ -7,44 +7,30 @@ import (
 	"github.com/tngtech/oh-my-agentic-coder/internal/config"
 )
 
-func TestExpand_Nono(t *testing.T) {
-	lc := config.DefaultLauncherConfig()
-	prof := lc.Sandbox.Profiles["nono"]
-	got, err := Expand(prof, Inputs{
-		Workdir:  "/work",
-		Socket:   "/tmp/omac-abc/bridge.sock",
-		TCPPort:  41017,
-		Mounts:   []string{"slack", "himalaya-email"},
-		InnerCmd: []string{"opencode", "--model", "opus"},
-		TmpDir:   "/tmp/omac-sandbox-tmp-xyz",
-	})
-	if err != nil {
-		t.Fatalf("Expand: %v", err)
-	}
-	want := []string{
-		"nono", "run",
-		"--allow-cwd",
-		"--profile", "tng-sandbox",
-		"--allow-file", "/tmp/omac-abc/bridge.sock",
-		"--read", "/tmp/omac-abc",
-		"--read", "/tmp/omac-sandbox-tmp-xyz",
-		"--write", "/tmp/omac-sandbox-tmp-xyz",
-		"--open-port", "41017",
-		"--",
-		"opencode", "--model", "opus",
-	}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("Expand mismatch\n got: %#v\nwant: %#v", got, want)
+// externalProfile is a synthetic non-native launcher template used to
+// exercise the profile-agnostic parts of Expand (the {{tmpdir_flags}} and
+// {{per_skill_env_flags}} splats in particular) without depending on any
+// shipped profile.
+func externalProfile() config.SandboxProfile {
+	return config.SandboxProfile{
+		Command: []string{
+			"external-sbx", "run",
+			"--allow-file", "{{socket}}",
+			"--read", "{{socket_dir}}",
+			"{{per_skill_env_flags}}",
+			"{{tmpdir_flags}}",
+			"--open-port", "{{tcp_port}}",
+			"--",
+			"{{inner_cmd}}", "{{inner_args}}",
+		},
 	}
 }
 
 // TestExpand_NoTmpDir asserts that when no TmpDir is configured, the
 // {{tmpdir_flags}} splat vanishes entirely (no `--read ""`/`--write ""`
-// with empty paths, which would hand nono unusable arguments).
+// with empty paths, which would hand the launcher unusable arguments).
 func TestExpand_NoTmpDir(t *testing.T) {
-	lc := config.DefaultLauncherConfig()
-	prof := lc.Sandbox.Profiles["nono"]
-	got, err := Expand(prof, Inputs{
+	got, err := Expand(externalProfile(), Inputs{
 		Workdir:  "/work",
 		Socket:   "/tmp/omac-abc/bridge.sock",
 		TCPPort:  41017,
@@ -60,9 +46,7 @@ func TestExpand_NoTmpDir(t *testing.T) {
 		}
 	}
 	want := []string{
-		"nono", "run",
-		"--allow-cwd",
-		"--profile", "tng-sandbox",
+		"external-sbx", "run",
 		"--allow-file", "/tmp/omac-abc/bridge.sock",
 		"--read", "/tmp/omac-abc",
 		"--open-port", "41017",
@@ -74,38 +58,28 @@ func TestExpand_NoTmpDir(t *testing.T) {
 	}
 }
 
-// TestExpand_NonoNetprofile asserts the --network-profile variant.
-// Both profiles use --open-port on the facade's TCP port, because both
-// custom_credentials (in tng-sandbox.json) and --network-profile
-// activate nono's proxy mode, which installs `(deny network*)` on
-// macOS — including Unix-socket connects. --open-port emits a more-
-// specific allow rule for that loopback port that takes precedence.
-func TestExpand_NonoNetprofile(t *testing.T) {
-	lc := config.DefaultLauncherConfig()
-	prof := lc.Sandbox.Profiles["nono-netprofile"]
-	got, err := Expand(prof, Inputs{
+// TestExpand_TmpDir asserts that a configured TmpDir expands to the
+// read+write grant pair via the {{tmpdir_flags}} splat.
+func TestExpand_TmpDir(t *testing.T) {
+	got, err := Expand(externalProfile(), Inputs{
 		Workdir:  "/work",
 		Socket:   "/tmp/omac-abc/bridge.sock",
 		TCPPort:  41017,
-		Mounts:   []string{"slack"},
-		InnerCmd: []string{"opencode"},
+		InnerCmd: []string{"opencode", "--model", "opus"},
 		TmpDir:   "/tmp/omac-sandbox-tmp-xyz",
 	})
 	if err != nil {
 		t.Fatalf("Expand: %v", err)
 	}
 	want := []string{
-		"nono", "run",
-		"--allow-cwd",
-		"--profile", "tng-sandbox",
-		"--network-profile", "opencode",
+		"external-sbx", "run",
 		"--allow-file", "/tmp/omac-abc/bridge.sock",
 		"--read", "/tmp/omac-abc",
 		"--read", "/tmp/omac-sandbox-tmp-xyz",
 		"--write", "/tmp/omac-sandbox-tmp-xyz",
 		"--open-port", "41017",
 		"--",
-		"opencode",
+		"opencode", "--model", "opus",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("Expand mismatch\n got: %#v\nwant: %#v", got, want)
@@ -119,12 +93,9 @@ func TestExpand_NonoNetprofile(t *testing.T) {
 // before they decide which skills to register.
 //
 // Specifically, the {{per_skill_env_flags}} splat must expand to nothing
-// (rather than e.g. erroring or leaving a literal token in the argv) and
-// {{skills_csv}} must yield "".
+// (rather than e.g. erroring or leaving a literal token in the argv).
 func TestExpand_NoMounts(t *testing.T) {
-	lc := config.DefaultLauncherConfig()
-	prof := lc.Sandbox.Profiles["nono"]
-	got, err := Expand(prof, Inputs{
+	got, err := Expand(externalProfile(), Inputs{
 		Workdir:  "/work",
 		Socket:   "/tmp/omac-abc/bridge.sock",
 		TCPPort:  41017,
@@ -134,10 +105,13 @@ func TestExpand_NoMounts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Expand: %v", err)
 	}
+	for i, a := range got {
+		if a == "" {
+			t.Fatalf("argv[%d] is an empty string; per-skill flags leaked: %#v", i, got)
+		}
+	}
 	want := []string{
-		"nono", "run",
-		"--allow-cwd",
-		"--profile", "tng-sandbox",
+		"external-sbx", "run",
 		"--allow-file", "/tmp/omac-abc/bridge.sock",
 		"--read", "/tmp/omac-abc",
 		"--open-port", "41017",

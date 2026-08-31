@@ -117,7 +117,7 @@ type SandboxProfile struct {
 //   - omitted --profile        (resolves to "default")
 //
 // native is false for launchers whose policy omac cannot see: external
-// launchers (nono), the no-sandbox debug shell, and any non-`sandbox run`
+// launchers (not implemented at the moment), the no-sandbox debug shell, and any non-`sandbox run`
 // subcommand. Only `{{self}} sandbox run` templates are inspectable.
 func (p SandboxProfile) PolicyRef() (ref string, native bool) {
 	c := p.Command
@@ -150,23 +150,22 @@ type FacadeConfig struct {
 
 // DefaultLauncherConfig returns a config that ships as the compiled-in default.
 //
-// The sandboxed profiles (nono, nono-netprofile) deliberately ship with an
-// EMPTY inner_cmd: the inner command is supplied by the selected harness (the
-// positional `omac start <harness>` token; default opencode) via
-// Harness.ResolveInnerCmd. This is what lets `omac start claude` actually run
-// Claude Code without editing config. A user who pins a profile's inner_cmd in
-// their own oh-my-agentic-coder.yaml still wins (that explicit value takes
-// precedence over the harness default — see ResolveInnerCmd). The
-// no-sandbox-debug profile keeps its explicit `bash` because it is a debug
-// shell, not an agent harness.
+// The builtin sandbox profile deliberately ships with an EMPTY inner_cmd: the
+// inner command is supplied by the selected harness (the positional
+// `omac start <harness>` token; default opencode) via Harness.ResolveInnerCmd.
+// This is what lets `omac start claude` actually run Claude Code without editing
+// config. A user who pins a profile's inner_cmd in their own
+// oh-my-agentic-coder.yaml still wins (that explicit value takes precedence over
+// the harness default — see ResolveInnerCmd). The no-sandbox-debug profile keeps
+// its explicit `bash` because it is a debug shell, not an agent harness.
 func DefaultLauncherConfig() LauncherConfig {
 	return defaultLauncherConfigFor(DefaultHarness())
 }
 
 // defaultLauncherConfigFor builds the default launcher config. The harness
 // argument is currently only used to keep the signature future-proof and to
-// let tests assert harness-independence; the sandboxed profiles intentionally
-// leave inner_cmd empty so the harness fills it at launch. The sandbox
+// let tests assert harness-independence; the builtin profile intentionally
+// leaves inner_cmd empty so the harness fills it at launch. The sandbox
 // *command* templates are harness-independent (they only reference
 // {{inner_cmd}} / {{inner_args}} placeholders).
 func defaultLauncherConfigFor(h Harness) LauncherConfig {
@@ -176,17 +175,15 @@ func defaultLauncherConfigFor(h Harness) LauncherConfig {
 			DefaultProfile: "builtin",
 			Profiles: map[string]SandboxProfile{
 				// builtin re-execs the running omac binary as
-				// `omac sandbox run` — the native replacement for nono
+				// `omac sandbox run` — omac's native OS sandbox
 				// (Seatbelt on macOS, bubblewrap+Landlock on Linux).
-				// Flag semantics intentionally mirror the nono profile
-				// below so the two stay drop-in interchangeable:
+				// Flag semantics:
 				//
 				//   --allow-file <socket>   AF_UNIX bridge socket (the
 				//                           generated Seatbelt profile
 				//                           allows connect explicitly,
-				//                           so unlike nono this works
-				//                           on macOS even under the
-				//                           network deny)
+				//                           so this works on macOS even
+				//                           under the network deny)
 				//   --read <socket-dir>     path-component lookup
 				//   {{tmpdir_flags}}        rw on the TMPDIR temp dir
 				//   --open-port <tcp-port>  loopback facade transport
@@ -195,14 +192,12 @@ func defaultLauncherConfigFor(h Harness) LauncherConfig {
 				// allow_tcp_connect, network prompt) is resolved by
 				// `omac sandbox run --profile default`: user override at
 				// ~/.config/omac/profiles/default.json, else compiled-in
-				// defaults. The compiled-in default profile is NOT a
-				// byte-for-byte equivalent of nono's external
-				// tng-sandbox.json: it intentionally does NOT broad-grant
-				// the host cache roots (~/.cache, ~/Library/Caches) or
-				// the whole tool homes (~/go, ~/.cargo, ~/.rustup). Only
-				// the toolchain bin leaves (~/.cargo/bin, ~/.rustup,
-				// ~/go/bin, ~/.nvm, ~/.bun/bin) are read-only; the
-				// selected tool-cache scope leaf
+				// defaults. The compiled-in default profile intentionally
+				// does NOT broad-grant the host cache roots (~/.cache,
+				// ~/Library/Caches) or the whole tool homes (~/go,
+				// ~/.cargo, ~/.rustup). Only the toolchain bin leaves
+				// (~/.cargo/bin, ~/.rustup, ~/go/bin, ~/.nvm, ~/.bun/bin)
+				// are read-only; the selected tool-cache scope leaf
 				// (~/.cache/omac/<sha256(scope)>) is granted rw at launch
 				// via --allow (see internal/toolcache and
 				// internal/cli/start.go's prepareLaunchCache).
@@ -212,114 +207,6 @@ func defaultLauncherConfigFor(h Harness) LauncherConfig {
 						"--profile", "default",
 						"--allow-file", "{{socket}}",
 						"--read", "{{socket_dir}}",
-						"{{tmpdir_flags}}",
-						"--open-port", "{{tcp_port}}",
-						"--",
-						"{{inner_cmd}}", "{{inner_args}}",
-					},
-					// Empty: filled by the selected harness at launch.
-					InnerCmd: nil,
-				},
-				// Retained for transition: select with
-				// `omac start --sandbox-profile nono` or via config.
-				"nono": {
-					// Reference invocation for nono (https://nono.sh).
-					//
-					// Transport: omac binds the facade on BOTH a Unix
-					// socket and a 127.0.0.1 TCP port. We tell nono to:
-					//
-					//   - --allow-file <socket>      grant open(2) on the
-					//                                Unix socket inode
-					//                                (Linux: this is enough;
-					//                                macOS: necessary but
-					//                                not sufficient under
-					//                                proxy mode).
-					//
-					//   - --read <socket-dir>        path-component lookup
-					//                                during connect(2).
-					//
-					//   - --open-port <tcp-port>     allow bidirectional
-					//                                127.0.0.1:<port> from
-					//                                inside the sandbox.
-					//                                THIS is the transport
-					//                                that works on macOS
-					//                                under proxy mode (auto-
-					//                                activated by any nono
-					//                                profile with
-					//                                custom_credentials,
-					//                                network_profile,
-					//                                --allow-domain,
-					//                                --credential, or
-					//                                --upstream-proxy).
-					//                                Per the nono
-					//                                "Networking" docs,
-					//                                --open-port emits a
-					//                                Seatbelt allow rule
-					//                                that takes precedence
-					//                                over the proxy-mode
-					//                                `(deny network*)`.
-					//
-					// Inside the sandbox the agent reads OMAC_<SKILL>_BASE
-					// (a TCP URL) by default, falling back to
-					// OMAC_<SKILL>_SOCKET_BASE for the http+unix:// form.
-					//
-					// Env-var injection: nono no longer accepts a literal
-					// `--env KEY=VAL` flag. Instead sandbox.Exec sets
-					// OMAC_* in nono's own process environment, and nono
-					// propagates the parent env to the inner process by
-					// default. If you author a custom nono profile with
-					// environment.allow_vars set, add `OMAC_*` to the
-					// list.
-					//
-					// IMPORTANT: this profile does NOT use --block-net.
-					// On macOS that installs `(deny network*)` plus a
-					// `--open-port` allowance — but the interaction with
-					// --network-profile and Seatbelt rule ordering is
-					// untested for our use case. Use --network-profile
-					// instead (see nono-netprofile below).
-					//
-					//   - --read <tmpdir> --write <tmpdir>
-					//                                grant the inner command
-					//                                read+write on a host temp
-					//                                dir that omac also exports
-					//                                as TMPDIR. Bun-built
-					//                                harnesses (opencode)
-					//                                extract their embedded
-					//                                runtime into TMPDIR at
-					//                                startup; without a
-					//                                writable, sandbox-granted
-					//                                temp dir that extraction
-					//                                fails and the agent never
-					//                                starts.
-					Command: []string{
-						"nono", "run",
-						"--allow-cwd",
-						"--profile", "tng-sandbox",
-						"--allow-file", "{{socket}}",
-						"--read", "{{socket_dir}}",
-						"{{tmpdir_flags}}",
-						"--open-port", "{{tcp_port}}",
-						"--",
-						"{{inner_cmd}}", "{{inner_args}}",
-					},
-					// Empty: filled by the selected harness at launch.
-					InnerCmd: nil,
-				},
-				// Same as above but adds --network-profile opencode so
-				// outbound HTTP goes through nono's credential-injection
-				// proxy. --open-port keeps the facade reachable; per the
-				// nono docs it works alongside domain filtering.
-				"nono-netprofile": {
-					Command: []string{
-						"nono", "run",
-						"--allow-cwd",
-						"--profile", "tng-sandbox",
-						"--network-profile", "opencode",
-						"--allow-file", "{{socket}}",
-						"--read", "{{socket_dir}}",
-						// See the nono profile above: grant RW on the
-						// host temp dir exported as TMPDIR so Bun-built
-						// harnesses can extract their runtime.
 						"{{tmpdir_flags}}",
 						"--open-port", "{{tcp_port}}",
 						"--",
