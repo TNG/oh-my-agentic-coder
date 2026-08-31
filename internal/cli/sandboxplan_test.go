@@ -61,11 +61,11 @@ func TestResolveSandboxPlanLoadsPolicyFile(t *testing.T) {
 	}
 }
 
-// Opaque launchers (external nono, the no-sandbox debug shell) have no
-// inspectable omac policy: Native is false and no policy is resolved.
+// Opaque launchers (external sandbox binaries, the no-sandbox debug shell)
+// have no inspectable omac policy: Native is false and no policy is resolved.
 func TestResolveSandboxPlanOpaqueLaunchersHaveNoPolicy(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	for _, name := range []string{"nono", "no-sandbox-debug"} {
+	for _, name := range []string{"no-sandbox-debug"} {
 		t.Run(name, func(t *testing.T) {
 			plan, err := resolveSandboxPlan(config.DefaultLauncherConfig(), name)
 			if err != nil {
@@ -170,8 +170,8 @@ func TestDefaultPolicyRef(t *testing.T) {
 	custom := config.LauncherConfig{Sandbox: config.SandboxConfig{
 		DefaultProfile: "builtin",
 		Profiles: map[string]config.SandboxProfile{
-			"builtin": {Command: []string{"{{self}}", "sandbox", "run", "--profile", "strict", "--", "{{inner_cmd}}"}},
-			"nono":    {Command: []string{"nono", "--", "{{inner_cmd}}"}},
+			"builtin":  {Command: []string{"{{self}}", "sandbox", "run", "--profile", "strict", "--", "{{inner_cmd}}"}},
+			"external": {Command: []string{"external-sbx", "--", "{{inner_cmd}}"}},
 		},
 	}}
 	if got := defaultPolicyRef(custom); got != "strict" {
@@ -179,7 +179,7 @@ func TestDefaultPolicyRef(t *testing.T) {
 	}
 
 	// Opaque or unconfigured default launcher: "" means the default policy.
-	custom.Sandbox.DefaultProfile = "nono"
+	custom.Sandbox.DefaultProfile = "external"
 	if got := defaultPolicyRef(custom); got != "" {
 		t.Errorf("opaque launcher: defaultPolicyRef = %q, want empty", got)
 	}

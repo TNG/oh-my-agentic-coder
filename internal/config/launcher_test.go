@@ -73,7 +73,7 @@ func TestSandboxProfilePolicyRef(t *testing.T) {
 		},
 		{
 			name:       "external launcher is opaque",
-			command:    []string{"nono", "--profile", "tng-sandbox.json", "--", "{{inner_cmd}}"},
+			command:    []string{"external-sbx", "--profile", "external.json", "--", "{{inner_cmd}}"},
 			wantRef:    "",
 			wantNative: false,
 		},

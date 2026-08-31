@@ -383,16 +383,16 @@ func TestDoctorOpaqueExternalCommandSkipped(t *testing.T) {
 
 	// A non-{{self}} sandbox run command is opaque — doctor can't
 	// inspect it, so no warnings should be produced (and no crash).
-	writeWorkdirConfig(t, workdir, "nono", []string{
-		"nono", "run",
-		"--profile", "tng-sandbox",
+	writeWorkdirConfig(t, workdir, "external", []string{
+		"external-sbx", "run",
+		"--profile", "external-profile",
 		"--allow-file", "{{socket}}",
 		"--read", "{{socket_dir}}",
 		"--", "{{inner_cmd}}", "{{inner_args}}",
 	})
 
-	// Even with a default profile that has broad grants, doctor must
-	// not warn because it can't see into the nono profile's tng-sandbox.
+	// Even with a default profile that has broad grants, doctor must not
+	// warn because it can't see into the external launcher's own profile.
 	stageProfile(t, home, `{
 	  "meta": {"name": "default"},
 	  "filesystem": {
