@@ -3,7 +3,7 @@ title: Skills
 description: Registering and using skills with omac.
 ---
 
-A skill gives the agent a controlled path to an external service without exposing credentials inside the sandbox (see the [glossary](../intro.md#glossary)).
+A skill gives the agent a controlled path to an external service without exposing credentials inside the sandbox (see the [glossary](../README.md#glossary)).
 
 ## Getting a skill running
 

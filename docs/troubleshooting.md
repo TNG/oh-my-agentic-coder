@@ -84,7 +84,7 @@ exec: "<harness>": executable file not found in $PATH
 
 Cause: the inner harness binary is not installed or not on `PATH`.
 
-Fix: install the missing harness — see [Supported harnesses](./intro.md#supported-harnesses-and-os).
+Fix: install the missing harness — see [Supported harnesses](README.md#supported-harnesses-and-os).
 
 ### Harness hangs or BunInstallFailedError on WSL2
 
