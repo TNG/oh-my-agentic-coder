@@ -30,7 +30,7 @@ flowchart LR
   AG --filtered egress--> Internet
 ```
 
-The default sandbox uses security features built into the OS: Seatbelt on macOS and bubblewrap + Landlock on Linux. Alternatively, the nono sandbox can be used; see [advanced/nono.md](advanced/nono.md).
+The default sandbox uses security features built into the OS: Seatbelt on macOS and bubblewrap + Landlock on Linux.
 
 ## Supported harnesses and OS
 

@@ -41,7 +41,7 @@ GitHub, …), you want a different skill — not this one.
 
 The sidecar is reached through the omac facade. omac exports two transports
 into the sandbox; **prefer the TCP loopback form** because it is the only one
-that survives `nono` proxy-mode on macOS:
+that survives sandbox configurations that block AF_UNIX connect(2):
 
 ```bash
 # TCP loopback (recommended)

@@ -21,7 +21,7 @@ The launcher config selects which sandbox runtime to use and tunes a few operati
 
 ```yaml
 sandbox:
-  default_profile: builtin          # which sandbox runtime: builtin (default), nono (deprecated), nono-netprofile (deprecated), no-sandbox-debug (debugging)
+  default_profile: builtin          # which sandbox runtime: builtin (default), no-sandbox-debug (debugging)
   profiles: { }                     # custom runtime definitions (deprecated); leave empty unless you need a non-standard sandbox command
 facade:
   idle_timeout_secs: 300            # close idle HTTP keep-alive connections after N seconds; does not end the session
