@@ -700,7 +700,7 @@ func sandboxServeArgv(prof config.SandboxProfile, in sandbox.Inputs, controlPort
 		argv = injectOpenPort(argv, controlPort)
 	}
 	argv = injectServerListenPort(argv, h)
-	argv = injectSandboxDirs(argv, h.SandboxDirs)
+	argv = injectSandboxDirs(argv, h.ResolvedSandboxDirs())
 	return argv, nil
 }
 
@@ -792,9 +792,13 @@ func forwardHarnessEnv(env *Env, argv []string, harness config.Harness, plan san
 		fmt.Fprintln(env.Stderr, "      Continuing shortly…")
 		time.Sleep(emptyAllowVarsWarnDelay)
 		// Seed only the operational minimum; do NOT auto-forward auth vars.
-		return injectSandboxEnvAllow(argv, sandboxprofile.DefaultAllowVars(), plan)
+		// HomeEnv goes through: it
+		// is a path rather than a credential, and omac has already granted the
+		// config home it names (harness.ResolvedSandboxDirs), so withholding it
+		// would point the harness at a directory the sandbox denies.
+		return injectSandboxEnvAllow(argv, append(sandboxprofile.DefaultAllowVars(), harness.HomeEnv), plan)
 	}
-	return injectSandboxEnvAllow(argv, harness.SandboxEnvAllow, plan)
+	return injectSandboxEnvAllow(argv, harness.ForwardedEnvVars(), plan)
 }
 
 // planAllowVarsEmpty reports whether the launch's resolved policy profile
