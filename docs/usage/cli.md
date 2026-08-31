@@ -28,7 +28,7 @@ omac start claude       # specific harness
 
 | Flag | Default | Description |
 |---|---|---|
-| `--sandbox <profile>` | builtin | Sandbox profile: `builtin` (recommended), `nono` (deprecated), `nono-netprofile` (deprecated), `no-sandbox-debug` (removes all isolation, debug only). |
+| `--sandbox <profile>` | builtin | Sandbox profile: `builtin` (recommended), `no-sandbox-debug` (removes all isolation, debug only). |
 | `--no-sandbox` | false | Run the harness without sandboxing. Removes all isolation — debug use only. |
 | `--ephemeral-cache` | false | Use a temporary cache deleted when the session ends. Use this for a clean build environment or when you do not want the agent's package downloads to persist. |
 | `--cache-scope <scope>` | global | Which cache to use for the agent's package downloads (npm, pip, cargo, etc.). `global` shares one cache across all your projects, `config` shares it across projects using the same config file, `workdir` gives each project its own isolated cache. See [Cache](../advanced/cache.md). |
