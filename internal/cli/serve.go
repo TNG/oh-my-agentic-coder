@@ -528,17 +528,15 @@ func runServe(args []string, env *Env) int {
 	if noSandbox {
 		argv = inner
 	} else {
-		// Create before omac sandbox run resolves and existence-filters the
-		// selected harness's read+write grants.
+		// Create declared runtime dirs before omac sandbox run resolves and
+		// existence-filters the selected harness's read+write grants.
 		if err := prepareSandboxDirs(harness.SandboxCreateDirs); err != nil {
 			fmt.Fprintln(env.Stderr, "omac serve: harness runtime dirs:", err)
 			return ExitIOError
 		}
-		argv, err = sandboxServeArgv(prof, sandbox.Inputs{
-			Workdir:  env.Workdir,
+		argv, err = sandboxServeArgv(sandbox.Inputs{
 			Socket:   socketPath,
 			TCPPort:  srv.tcpPort,
-			Mounts:   srv.facadeMounts(),
 			InnerCmd: inner,
 			TmpDir:   srv.sandboxTmp,
 		}, controlPortOf(cln), harness)
@@ -698,8 +696,8 @@ func controlPortOf(ln net.Listener) string {
 //
 // Kept as one pure function so the grant sequence stays unit-testable without
 // launching the control plane.
-func sandboxServeArgv(prof config.SandboxProfile, in sandbox.Inputs, controlPort string, h config.Harness) ([]string, error) {
-	argv, err := sandbox.Expand(prof, in)
+func sandboxServeArgv(in sandbox.Inputs, controlPort string, h config.Harness) ([]string, error) {
+	argv, err := sandbox.BuildBuiltinArgv(in)
 	if err != nil {
 		return nil, err
 	}
@@ -1627,23 +1625,6 @@ func prepareServeCache(noSandbox, noInner, ephemeral bool, scope config.CacheSco
 	default:
 		return toolcache.PrepareShared()
 	}
-}
-
-// facadeMounts returns the set of facade mount segments to advertise to the
-// sandbox profile's {{skills_csv}} / {{per_skill_env_flags}} template. At
-// cold start this is the global skills' namespaced keys; per-dir mounts are
-// added lazily and not known here.
-func (s *serveServer) facadeMounts() []string {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	out := make([]string, 0, len(s.global))
-	for mount, sr := range s.global {
-		if sr.State == facade.RouteReady {
-			out = append(out, facade.GlobalNamespace+"/"+mount)
-		}
-	}
-	sort.Strings(out)
-	return out
 }
 
 func joinCSV(parts []string) string {

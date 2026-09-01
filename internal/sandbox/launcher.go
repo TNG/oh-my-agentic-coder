@@ -124,6 +124,33 @@ func Expand(profile config.SandboxProfile, in Inputs) ([]string, error) {
 	return out, nil
 }
 
+// BuildBuiltinArgv builds the argv that launches the builtin sandbox: it
+// re-execs the running omac binary as `omac sandbox run --profile default`
+// wrapping the inner command. It replaces template expansion for the only
+// remaining backend; a parity test keeps its output byte-for-byte identical
+// to the old builtin profile template.
+func BuildBuiltinArgv(in Inputs) ([]string, error) {
+	if len(in.InnerCmd) == 0 {
+		return nil, fmt.Errorf("no inner_cmd provided")
+	}
+	self, err := os.Executable()
+	if err != nil {
+		self = "omac" // PATH fallback; better than failing the launch
+	}
+	argv := []string{
+		self, "sandbox", "run",
+		"--profile", "default",
+		"--allow-file", in.Socket,
+		"--read", filepath.Dir(in.Socket),
+	}
+	if in.TmpDir != "" {
+		argv = append(argv, "--read", in.TmpDir, "--write", in.TmpDir)
+	}
+	argv = append(argv, "--open-port", fmt.Sprintf("%d", in.TCPPort), "--")
+	argv = append(argv, in.InnerCmd...)
+	return argv, nil
+}
+
 // splatToken returns the inner name if token is exactly "{{name}}".
 func splatToken(tok string) (string, bool) {
 	if len(tok) < 5 || !strings.HasPrefix(tok, "{{") || !strings.HasSuffix(tok, "}}") {
