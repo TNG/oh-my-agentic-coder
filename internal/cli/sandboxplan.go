@@ -31,18 +31,15 @@ type sandboxPlan struct {
 	PolicyErr error
 }
 
-// resolveSandboxPlan resolves the launcher profile selected by flagProfile
-// (empty means sandbox.default_profile) and the "default" policy profile the
-// run enforces — read-only, so inspecting a profile never scaffolds files.
+// resolveSandboxPlan resolves the configured launcher profile
+// (sandbox.default_profile) and the "default" policy profile the run enforces
+// — read-only, so inspecting a profile never scaffolds files.
 //
 // An unknown launcher name is returned as an error alongside a plan with
 // Name set and Known false: callers decide whether that is fatal (it is
 // not under --no-sandbox / --no-inner, where no sandbox is launched).
-func resolveSandboxPlan(lc config.LauncherConfig, flagProfile string) (sandboxPlan, error) {
-	name := flagProfile
-	if name == "" {
-		name = lc.Sandbox.DefaultProfile
-	}
+func resolveSandboxPlan(lc config.LauncherConfig) (sandboxPlan, error) {
+	name := lc.Sandbox.DefaultProfile
 	plan := sandboxPlan{Name: name}
 	prof, ok := lc.Sandbox.Profiles[name]
 	if !ok {

@@ -221,6 +221,12 @@ func LoadLauncher(workdir string) (LauncherConfig, string, error) {
 		if err := yaml.Unmarshal(raw, &lc); err != nil {
 			return LauncherConfig{}, "", fmt.Errorf("parse %s: %w", p, err)
 		}
+		// Validate the raw sandbox block (before defaults are merged, so it
+		// sees exactly what the user wrote). Fires for every command, so a
+		// removed backend can't be masked by e.g. --no-sandbox.
+		if err := validateSandbox(lc.Sandbox, p); err != nil {
+			return LauncherConfig{}, "", err
+		}
 		lc = mergeDefaults(lc)
 		if _, err := lc.Cache.Resolve(); err != nil {
 			return LauncherConfig{}, "", fmt.Errorf("parse %s: %w", p, err)
@@ -253,4 +259,33 @@ func mergeDefaults(lc LauncherConfig) LauncherConfig {
 		lc.Audit.Enabled = def.Audit.Enabled
 	}
 	return lc
+}
+
+// validateSandbox rejects a launcher config that selects a removed or unknown
+// sandbox backend, with a migration hint. omac ships only the built-in
+// sandbox, so `default_profile` must be "builtin" (or unset).
+func validateSandbox(sb SandboxConfig, path string) error {
+	switch sb.DefaultProfile {
+	case "", "builtin":
+		// The built-in sandbox: the only supported backend.
+	case "nono", "nono-netprofile":
+		return fmt.Errorf("%s: the %q sandbox has been removed; only the built-in sandbox remains.\n"+
+			"  Set 'default_profile: builtin' (or delete the line — builtin is the default).\n"+
+			"  See docs/configuration.md.", path, sb.DefaultProfile)
+	case "no-sandbox-debug":
+		return fmt.Errorf("%s: the 'no-sandbox-debug' profile has been removed.\n"+
+			"  For an unsandboxed shell, run: omac start --no-sandbox --inner bash\n"+
+			"  Remove 'default_profile: no-sandbox-debug' from your config.\n"+
+			"  See docs/configuration.md.", path)
+	default:
+		return fmt.Errorf("%s: unknown sandbox profile %q; only \"builtin\" is supported.\n"+
+			"  Set 'default_profile: builtin' (or delete the line).\n"+
+			"  See docs/configuration.md.", path, sb.DefaultProfile)
+	}
+	if len(sb.Profiles) > 0 {
+		return fmt.Errorf("%s: custom sandbox launcher profiles are no longer supported; only the built-in sandbox is available.\n"+
+			"  Remove the 'sandbox.profiles' block from your config.\n"+
+			"  See docs/configuration.md.", path)
+	}
+	return nil
 }
