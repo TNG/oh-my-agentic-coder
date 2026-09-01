@@ -115,10 +115,6 @@ func Sources(workdir string, harness config.Harness) []Source {
 //	  $HOME/.opencode/skills,           $HOME/.agents/skills
 //
 // dedupe() drops duplicates that arise when $XDG_CONFIG_HOME == $HOME/.config.
-//
-// withConfigHomeRoot then reconciles the list with the harness's actual config
-// home, which is what makes a relocated config home (CLAUDE_CONFIG_DIR and
-// friends) discoverable.
 func userGlobalRoots(bases []string, h config.Harness) []string {
 	var out []string
 	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
@@ -139,23 +135,13 @@ func userGlobalRoots(bases []string, h config.Harness) []string {
 	return withConfigHomeRoot(dedupe(out), h)
 }
 
-// withConfigHomeRoot guarantees the harness's own config-home skills dir —
-// GlobalSkillsDir(), which is where `omac setup` and launch-time provisioning
-// install built-in skills, and where the harness's own loader reads them — is
-// among the candidate roots, and that a HomeEnv redirect MOVES it rather than
-// adding a second one.
-//
-// The redirected root is substituted for the default one IN PLACE, so a
-// redirect changes which config home is scanned without reordering the rest of
-// the ladder. The default root drops out: a user who points a harness at a
-// second config home is separating two setups, and omac grants only the
-// redirected one into the sandbox (config.Harness.ResolvedSandboxDirs).
-//
-// When the config home is not itself one of the "<base>/skills" roots there is
-// nothing to substitute, so it is appended: pi keeps its skills in
-// ~/.pi/agent/skills, and codewhale in ~/.codewhale/skills while owning the
-// shared "agents" base, so neither dir was reachable from the bases above —
-// even though `omac setup` installs into exactly those dirs.
+// withConfigHomeRoot ensures the harness's config-home skills dir
+// (GlobalSkillsDir, where `omac setup` installs built-in skills) is among the
+// candidate roots. A HomeEnv redirect substitutes its root for the default
+// one in place — omac grants only the redirected home (see
+// config.Harness.ResolvedSandboxDirs) — and a config home that no
+// "<base>/skills" root matches (pi's ~/.pi/agent/skills, codewhale's
+// ~/.codewhale/skills) is appended instead.
 func withConfigHomeRoot(in []string, h config.Harness) []string {
 	cur := h.GlobalSkillsDir()
 	if cur == "" {
@@ -166,8 +152,7 @@ func withConfigHomeRoot(in []string, h config.Harness) []string {
 	substituted := false
 	for _, p := range in {
 		if p == def {
-			// A no-op when unredirected (cur == def), which keeps the default
-			// candidate list byte-identical.
+			// No-op when unredirected (cur == def).
 			out = append(out, cur)
 			substituted = true
 			continue

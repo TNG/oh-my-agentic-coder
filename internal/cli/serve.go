@@ -817,10 +817,8 @@ func forwardHarnessEnv(env *Env, argv []string, harness config.Harness, plan san
 		fmt.Fprintln(env.Stderr, "      Continuing shortly…")
 		time.Sleep(emptyAllowVarsWarnDelay)
 		// Seed only the operational minimum; do NOT auto-forward auth vars.
-		// HomeEnv goes through: it
-		// is a path rather than a credential, and omac has already granted the
-		// config home it names (harness.ResolvedSandboxDirs), so withholding it
-		// would point the harness at a directory the sandbox denies.
+		// HomeEnv goes through: it is a path, not a credential, and
+		// ResolvedSandboxDirs already granted the config home it names.
 		return injectSandboxEnvAllow(argv, append(sandboxprofile.DefaultAllowVars(), harness.HomeEnv), plan)
 	}
 	return injectSandboxEnvAllow(argv, harness.ForwardedEnvVars(), plan)

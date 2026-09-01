@@ -517,7 +517,6 @@ func TestSandboxDirsClaude(t *testing.T) {
 	}
 }
 
-// Without a redirect the grants are the declared ones, untouched.
 func TestResolvedSandboxDirsClaudeNoOverride(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	h, _ := LookupHarness("claude-code")
@@ -527,9 +526,6 @@ func TestResolvedSandboxDirsClaudeNoOverride(t *testing.T) {
 	}
 }
 
-// A CLAUDE_CONFIG_DIR redirect must move the config-home grant with it —
-// otherwise the sandbox denies the credentials the harness actually reads and
-// Claude Code prompts for a fresh login.
 func TestResolvedSandboxDirsClaudeFollowsConfigDirOverride(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -543,7 +539,7 @@ func TestResolvedSandboxDirsClaudeFollowsConfigDirOverride(t *testing.T) {
 }
 
 // The redirected home replaces the default rather than joining it: granting
-// both would expose the very login the user separated out.
+// both would expose the login the user deliberately separated out.
 func TestResolvedSandboxDirsClaudeDropsDefaultHome(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -557,9 +553,7 @@ func TestResolvedSandboxDirsClaudeDropsDefaultHome(t *testing.T) {
 	}
 }
 
-// A value that merely SPELLS the default home differently is not a redirect.
-// Treating it as one made discovery supersede the default skills root with
-// itself and drop it (see TestSources_TrailingSlashKeepsDefaultRoot).
+// A value that merely spells the default home differently is not a redirect.
 func TestResolvedSandboxDirsClaudeIgnoresNonCanonicalDefault(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -579,10 +573,9 @@ func TestResolvedSandboxDirsClaudeIgnoresNonCanonicalDefault(t *testing.T) {
 	}
 }
 
-// EVERY harness with a HomeEnv must forward it. ResolvedSandboxDirs is generic,
-// so it swaps the grant for all of them; a harness that then cannot see its own
-// HomeEnv reads the default home omac just stopped granting — i.e. declaring the
-// swap without the forward is worse than not swapping at all.
+// Every harness with a HomeEnv must forward it: ResolvedSandboxDirs swaps its
+// grant, so a harness that cannot see its own HomeEnv reads a home omac no
+// longer grants.
 func TestForwardedEnvVarsCarryHomeEnv(t *testing.T) {
 	for _, h := range AllHarnesses() {
 		if h.HomeEnv == "" {
@@ -599,7 +592,6 @@ func TestForwardedEnvVarsCarryHomeEnv(t *testing.T) {
 		if !found {
 			t.Errorf("%s ForwardedEnvVars() = %v; want it to carry %s", h.Name, fwd, h.HomeEnv)
 		}
-		// The declared auth vars must survive alongside it.
 		for _, want := range h.SandboxEnvAllow {
 			if !slices.Contains(fwd, want) {
 				t.Errorf("%s ForwardedEnvVars() = %v; dropped declared var %s", h.Name, fwd, want)
@@ -608,9 +600,7 @@ func TestForwardedEnvVarsCarryHomeEnv(t *testing.T) {
 	}
 }
 
-// ForwardedEnvVars must not mutate the descriptor's own slice — the registry is
-// rebuilt per call, but a caller appending into shared backing storage is the
-// kind of bug that only shows up under a second harness lookup.
+// ForwardedEnvVars must not mutate the descriptor's own slice.
 func TestForwardedEnvVarsDoesNotMutateSandboxEnvAllow(t *testing.T) {
 	h, _ := LookupHarness("claude-code")
 	before := append([]string(nil), h.SandboxEnvAllow...)
@@ -620,9 +610,8 @@ func TestForwardedEnvVarsDoesNotMutateSandboxEnvAllow(t *testing.T) {
 	}
 }
 
-// Codex is the regression case: its config home IS its only declared sandbox
-// dir, so the generic swap drops ~/.codex. Without CODEX_HOME forwarded, codex
-// would read ~/.codex — now denied — and lose a login that used to work.
+// Codex's config home is its only declared sandbox dir — the minimal case
+// for the swap.
 func TestResolvedSandboxDirsCodexFollowsHomeEnv(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -638,9 +627,8 @@ func TestResolvedSandboxDirsCodexFollowsHomeEnv(t *testing.T) {
 	}
 }
 
-// pi declares ~/.pi while its config home is the nested ~/.pi/agent, so no
-// entry matches and there is nothing to swap. The redirect target must still be
-// granted: PI_CODING_AGENT_DIR is forwarded, so pi reads it.
+// pi declares ~/.pi while its config home is the nested ~/.pi/agent, so the
+// redirect target is appended rather than swapped in.
 func TestResolvedSandboxDirsPiAppendsRedirectTarget(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -653,8 +641,6 @@ func TestResolvedSandboxDirsPiAppendsRedirectTarget(t *testing.T) {
 	}
 }
 
-// DefaultGlobalSkillsDir stays on the default home so discovery can tell which
-// candidate root a redirect supersedes.
 func TestDefaultGlobalSkillsDirIgnoresRedirect(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -669,8 +655,6 @@ func TestDefaultGlobalSkillsDirIgnoresRedirect(t *testing.T) {
 	}
 }
 
-// HomeEnvNames must cover every declared override, since tests neutralize the
-// ambient environment through it — a missing name is a silently leaky test.
 func TestHomeEnvNamesCoversRegistry(t *testing.T) {
 	names := HomeEnvNames()
 	for _, h := range AllHarnesses() {
@@ -871,11 +855,8 @@ func TestConfigHomeEnvOverrideClaude(t *testing.T) {
 	}
 }
 
-// OpenCode declares no HomeEnv, so nothing may relocate its config home.
-// OPENCODE_CONFIG_DIR is the plausible mis-wiring: it is only an ADDITIONAL
-// config-search dir, so honoring it would move omac's session store, skills
-// install dir, and sandbox grants away from the dirs OpenCode actually reads
-// (#233).
+// OpenCode declares no HomeEnv; OPENCODE_CONFIG_DIR is only an additional
+// config-search dir and must not relocate the config home (#233).
 func TestConfigHomeOpenCodeHasNoOverride(t *testing.T) {
 	h, _ := LookupHarness("opencode")
 	if h.HomeEnv != "" {
@@ -899,8 +880,7 @@ func TestConfigHomeOpenCodeHasNoOverride(t *testing.T) {
 	}
 }
 
-// $XDG_CONFIG_HOME does move OpenCode's config home — that is the supported
-// mechanism, and it is already forwarded into the sandbox.
+// $XDG_CONFIG_HOME is the supported way to move OpenCode's config home.
 func TestConfigHomeOpenCodeFollowsXDG(t *testing.T) {
 	h, _ := LookupHarness("opencode")
 	t.Setenv("HOME", t.TempDir())
@@ -928,8 +908,6 @@ func TestGlobalSkillsDirEnvOverrideClaude(t *testing.T) {
 	}
 }
 
-// OpenCode's global skills dir follows $XDG_CONFIG_HOME, not a HomeEnv
-// override (see TestConfigHomeOpenCodeHasNoOverride).
 func TestGlobalSkillsDirOpenCodeFollowsXDG(t *testing.T) {
 	h, _ := LookupHarness("opencode")
 	t.Setenv("HOME", t.TempDir())

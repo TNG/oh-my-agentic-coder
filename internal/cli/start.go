@@ -777,13 +777,11 @@ func runLaunch(env *Env, opts launchOpts) int {
 		}
 		// Create declared runtime dirs before omac sandbox run resolves and
 		// existence-filters the selected harness's read+write grants.
-		// Resolved, so a relocated config home (CLAUDE_CONFIG_DIR
-		// and friends) is granted instead of the default one.
 		if err := prepareSandboxDirs(harness.SandboxCreateDirs); err != nil {
 			fmt.Fprintln(env.Stderr, prefix+": harness runtime dirs:", err)
 			return ExitIOError
 		}
-		argv = injectSandboxDirs(argv, harness.ResolvedSandboxDirs()
+		argv = injectSandboxDirs(argv, harness.ResolvedSandboxDirs())
 		if cacheScope != nil {
 			argv = injectSandboxFlag(argv, "--allow", cacheScope.Dir)
 		}

@@ -21,16 +21,14 @@ import (
 // memory, which is exactly the deterministic behavior these tests assume.
 //
 // It also clears every harness config-home override (CLAUDE_CONFIG_DIR and
-// friends). Tests here fake $HOME but cannot fake a variable that names an
-// absolute path, so an ambient override kept pointing at the developer's real
-// config home.
+// friends): tests fake $HOME, but an ambient override names an absolute
+// path and would survive the fake.
 func TestMain(m *testing.M) {
 	keyring.MockInit()
 	clearHarnessHomeEnvs()
 	os.Exit(m.Run())
 }
 
-// clearHarnessHomeEnvs unsets every harness HomeEnv for the whole test binary.
 func clearHarnessHomeEnvs() {
 	for _, name := range config.HomeEnvNames() {
 		os.Unsetenv(name)

@@ -8,10 +8,9 @@ import (
 )
 
 // TestMain clears every harness config-home override (CLAUDE_CONFIG_DIR and
-// friends) for the whole package test binary. withFakeHome fakes $HOME, but a
-// config-home override names an absolute path and so survived it: with an
-// ambient CLAUDE_CONFIG_DIR, Discover in claude scope scanned the developer's
-// real skills dir and returned host skills the test never staged.
+// friends) for the whole test binary: withFakeHome fakes $HOME, but an
+// ambient override names an absolute path and survives it, so discovery
+// would scan the developer's real skills dirs.
 func TestMain(m *testing.M) {
 	for _, name := range config.HomeEnvNames() {
 		os.Unsetenv(name)

@@ -384,9 +384,8 @@ func names(es []Entry) []string {
 
 // ---- Sources: redirected config home ----
 
-// A CLAUDE_CONFIG_DIR redirect must move skill discovery with it. `omac setup`
-// already installs into ConfigHome()/skills, so a discovery layer still keyed
-// on $HOME/.claude/skills resolves skills omac cannot grant into the sandbox.
+// `omac setup` installs and the sandbox grants only the redirected skills dir,
+// so discovery must follow the redirect.
 func TestSources_ClaudeFollowsRedirectedConfigHome(t *testing.T) {
 	home := withFakeHome(t)
 	redirected := filepath.Join(home, ".work-claude")
@@ -406,9 +405,9 @@ func TestSources_ClaudeFollowsRedirectedConfigHome(t *testing.T) {
 	}
 }
 
-// The superseded default root drops out entirely: resolving from ~/.claude
-// would register a path ResolvedSandboxDirs no longer grants, so the sidecar
-// could not be executed from it later.
+// The superseded default root drops out entirely: resolving from it would
+// register a path ResolvedSandboxDirs no longer grants, so the sidecar could
+// not be executed from it later.
 func TestSources_RedirectDropsDefaultRoot(t *testing.T) {
 	home := withFakeHome(t)
 	redirected := filepath.Join(home, ".work-claude")
@@ -424,9 +423,8 @@ func TestSources_RedirectDropsDefaultRoot(t *testing.T) {
 	}
 }
 
-// A redirect SUBSTITUTES its root for the default one in place; it must not
-// reorder the rest of the ladder. Prepending instead put the redirected root
-// above $XDG_CONFIG_HOME/claude/skills, which the root it replaced ranked below.
+// A redirect substitutes its root for the default one in place; it must not
+// reorder the rest of the ladder.
 func TestSources_RedirectPreservesRootPriority(t *testing.T) {
 	home := withFakeHome(t)
 	redirected := filepath.Join(home, ".work-claude")
@@ -442,17 +440,15 @@ func TestSources_RedirectPreservesRootPriority(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	// ~/.claude/skills ranked BELOW ~/.config/claude/skills, so the root that
+	// ~/.claude/skills ranks below ~/.config/claude/skills, so the root that
 	// replaces it must too.
 	if want := filepath.Join(xdgRoot, "marketplace"); dir != want {
 		t.Errorf("Resolve dir = %q, want %q — the redirect must not outrank XDG roots", dir, want)
 	}
 }
 
-// A CLAUDE_CONFIG_DIR that merely SPELLS the default home differently is not a
-// redirect. Comparing raw strings made it one, and since the "redirected" root
-// then equalled the root it superseded, the default skills root was dropped
-// outright: every user-global claude skill became unresolvable.
+// A CLAUDE_CONFIG_DIR that merely spells the default home differently is not
+// a redirect.
 func TestSources_TrailingSlashKeepsDefaultRoot(t *testing.T) {
 	home := withFakeHome(t)
 	stageSkill(t, filepath.Join(home, ".claude", "skills"), "marketplace")
@@ -475,10 +471,9 @@ func TestSources_TrailingSlashKeepsDefaultRoot(t *testing.T) {
 	}
 }
 
-// pi's config home is the nested ~/.pi/agent and codewhale owns the shared
-// "agents" base, so neither harness's config-home skills dir was derivable from
-// the skills bases — yet `omac setup` and launch-time provisioning install built-in
-// skills into exactly those dirs, where discovery never looked.
+// pi's and codewhale's config-home skills dirs are not derivable from the
+// skills bases, yet `omac setup` installs built-in skills into exactly those
+// dirs.
 func TestSources_ConfigHomeRootScannedForNestedHomes(t *testing.T) {
 	for _, tc := range []struct {
 		harness string
@@ -510,8 +505,6 @@ func TestSources_ConfigHomeRootScannedForNestedHomes(t *testing.T) {
 	}
 }
 
-// Without a redirect the candidate roots are unchanged — the default install
-// keeps resolving out of ~/.claude/skills.
 func TestSources_NoRedirectKeepsDefaultRoot(t *testing.T) {
 	home := withFakeHome(t)
 	stageSkill(t, filepath.Join(home, ".claude", "skills"), "marketplace")
@@ -526,9 +519,8 @@ func TestSources_NoRedirectKeepsDefaultRoot(t *testing.T) {
 	}
 }
 
-// The redirect is per-harness: a Claude redirect must not perturb OpenCode
-// discovery. OpenCode declares no HomeEnv at all, so its roots are derived from
-// $XDG_CONFIG_HOME/$HOME alone.
+// The redirect is per-harness: OpenCode declares no HomeEnv, so a Claude
+// redirect must not perturb its discovery.
 func TestSources_OpenCodeUnaffectedByClaudeRedirect(t *testing.T) {
 	home := withFakeHome(t)
 	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(home, ".work-claude"))

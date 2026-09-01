@@ -609,8 +609,6 @@ func TestForwardHarnessEnvNonEmptyProfileInjects(t *testing.T) {
 	}
 }
 
-// The launch path must forward the harness's config-home override, for every
-// harness that has one.
 func TestForwardHarnessEnvForwardsHomeEnv(t *testing.T) {
 	for _, h := range config.AllHarnesses() {
 		if h.HomeEnv == "" {
@@ -634,7 +632,6 @@ func TestForwardHarnessEnvForwardsHomeEnv(t *testing.T) {
 	}
 }
 
-// Even the fail-closed empty-allow_vars branch forwards HomeEnv.
 func TestForwardHarnessEnvEmptyProfileStillForwardsHomeEnv(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -657,13 +654,12 @@ func TestForwardHarnessEnvEmptyProfileStillForwardsHomeEnv(t *testing.T) {
 	if !strings.Contains(joined, "--allow-env CLAUDE_CONFIG_DIR") {
 		t.Errorf("empty profile should still forward CLAUDE_CONFIG_DIR; got %v", got)
 	}
-	// The fail-closed guarantee itself must hold: still no provider auth.
+	// The fail-closed guarantee still holds: no provider auth.
 	if strings.Contains(joined, "ANTHROPIC_API_KEY") {
 		t.Errorf("empty profile must not auto-forward provider-auth vars; got %v", got)
 	}
 }
 
-// A harness with no HomeEnv must not gain a stray empty --allow-env.
 func TestForwardHarnessEnvNoHomeEnvAddsNothing(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
