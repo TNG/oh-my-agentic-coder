@@ -403,90 +403,31 @@ func TestInjectOpenPort(t *testing.T) {
 }
 
 func TestInjectSandboxEnvAllow(t *testing.T) {
-	isolateHome(t)
-	lc := config.DefaultLauncherConfig()
-	profiles := lc.Sandbox.Profiles
-	// A synthetic non-native external launcher: its argv template does NOT
-	// start with `{{self}} sandbox run`, so PolicyRef reports native=false —
-	// the same class as any external sandbox binary a user might configure.
-	profiles["external"] = config.SandboxProfile{
-		Command: []string{
-			"external-sbx", "run",
-			"--open-port", "{{tcp_port}}",
-			"{{tmpdir_flags}}",
-			"--",
-			"{{inner_cmd}}", "{{inner_args}}",
-		},
-	}
-	planFor := func(t *testing.T, name string) sandboxPlan {
-		t.Helper()
-		plan, err := resolveSandboxPlan(lc, name)
-		if err != nil {
-			t.Fatalf("resolveSandboxPlan(%q): %v", name, err)
-		}
-		return plan
-	}
-	expand := func(t *testing.T, prof config.SandboxProfile) []string {
-		t.Helper()
-		argv, err := sandbox.Expand(prof, sandbox.Inputs{
-			Workdir:  "/w",
-			Socket:   "/w/bridge.sock",
-			TCPPort:  6000,
-			InnerCmd: []string{"claude"},
-			TmpDir:   "/w/tmp",
-		})
-		if err != nil {
-			t.Fatalf("Expand: %v", err)
-		}
-		return argv
-	}
-
-	// Native backend: use the real Expand output (argv[0] is os.Executable(),
-	// an absolute path — NOT the literal "omac"), so the detector cannot rely
-	// on argv[0] matching a hand-rolled name.
-	builtinProf := profiles["builtin"]
-	builtinPlan := planFor(t, "builtin")
-	builtin := expand(t, builtinProf)
-	got := injectSandboxEnvAllow(builtin, []string{"ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"}, builtinPlan)
-	joined := strings.Join(got, " ")
-	if !strings.Contains(joined, "--allow-env ANTHROPIC_API_KEY") ||
-		!strings.Contains(joined, "--allow-env ANTHROPIC_BASE_URL") {
-		t.Errorf("native backend must gain --allow-env flags: %v", got)
-	}
-
-	// Empty names is a no-op; empty entries are skipped.
-	if g := injectSandboxEnvAllow(builtin, nil, builtinPlan); !equalStrings(g, builtin) {
-		t.Errorf("nil names should be a no-op: %v", g)
-	}
-	if g := injectSandboxEnvAllow(builtin, []string{""}, builtinPlan); !equalStrings(g, builtin) {
-		t.Errorf("empty entry should be skipped: %v", g)
-	}
-
-	// Non-native backend does not understand --allow-env: the argv must be
-	// left untouched (env filtering is the external launcher's own concern).
-	extProf := profiles["external"]
-	extPlan := planFor(t, "external")
-	ext := expand(t, extProf)
-	if g := injectSandboxEnvAllow(ext, []string{"ANTHROPIC_API_KEY"}, extPlan); !equalStrings(g, ext) {
-		t.Errorf("external argv must be untouched: %v", g)
-	}
-
-	// Regression (issue #111 review): a non-native profile whose inner command
-	// itself contains "sandbox" "run" tokens must NOT be misclassified as the
-	// native backend. Detection anchors on the profile template, not on a
-	// bare token scan of the expanded argv.
-	extInnerArgv, err := sandbox.Expand(extProf, sandbox.Inputs{
+	builtinProf := config.DefaultLauncherConfig().Sandbox.Profiles["builtin"]
+	argv, err := sandbox.Expand(builtinProf, sandbox.Inputs{
 		Workdir:  "/w",
 		Socket:   "/w/bridge.sock",
 		TCPPort:  6000,
-		InnerCmd: []string{"sandbox", "run", "--weird"},
+		InnerCmd: []string{"claude"},
 		TmpDir:   "/w/tmp",
 	})
 	if err != nil {
-		t.Fatalf("Expand external-inner: %v", err)
+		t.Fatalf("Expand: %v", err)
 	}
-	if g := injectSandboxEnvAllow(extInnerArgv, []string{"ANTHROPIC_API_KEY"}, extPlan); !equalStrings(g, extInnerArgv) {
-		t.Errorf("external argv with inner sandbox/run tokens must be untouched: %v", g)
+
+	got := injectSandboxEnvAllow(argv, []string{"ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"})
+	joined := strings.Join(got, " ")
+	if !strings.Contains(joined, "--allow-env ANTHROPIC_API_KEY") ||
+		!strings.Contains(joined, "--allow-env ANTHROPIC_BASE_URL") {
+		t.Errorf("must gain --allow-env flags: %v", got)
+	}
+
+	// Empty names is a no-op; empty entries are skipped.
+	if g := injectSandboxEnvAllow(argv, nil); !equalStrings(g, argv) {
+		t.Errorf("nil names should be a no-op: %v", g)
+	}
+	if g := injectSandboxEnvAllow(argv, []string{""}); !equalStrings(g, argv) {
+		t.Errorf("empty entry should be skipped: %v", g)
 	}
 }
 
@@ -504,43 +445,14 @@ func TestInjectUserOpenPorts(t *testing.T) {
 		t.Fatalf("Expand: %v", err)
 	}
 
-	got := injectUserOpenPorts(nil, argv, []int{3000, 4173}, builtinProf)
+	got := injectUserOpenPorts(argv, []int{3000, 4173})
 	joined := strings.Join(got, " ")
 	if !strings.Contains(joined, "--open-port 3000") || !strings.Contains(joined, "--open-port 4173") {
 		t.Errorf("missing open-port flags: %s", joined)
 	}
 
-	if g := injectUserOpenPorts(nil, argv, nil, builtinProf); !equalStrings(g, argv) {
+	if g := injectUserOpenPorts(argv, nil); !equalStrings(g, argv) {
 		t.Errorf("empty inject should be no-op: %v", g)
-	}
-
-	// A non-native external launcher: injectUserOpenPorts must leave its argv
-	// untouched (the external sandbox handles its own port grants) and warn.
-	extProf := config.SandboxProfile{
-		Command: []string{
-			"external-sbx", "run",
-			"--open-port", "{{tcp_port}}",
-			"--",
-			"{{inner_cmd}}", "{{inner_args}}",
-		},
-	}
-	ext, err := sandbox.Expand(extProf, sandbox.Inputs{
-		Workdir:  "/w",
-		Socket:   "/w/bridge.sock",
-		TCPPort:  6000,
-		InnerCmd: []string{"claude"},
-		TmpDir:   "/w/tmp",
-	})
-	if err != nil {
-		t.Fatalf("Expand external: %v", err)
-	}
-	env2, _, errBuf2, drain2 := newPipeEnv(t, "")
-	if g := injectUserOpenPorts(env2, ext, []int{3000}, extProf); !equalStrings(g, ext) {
-		t.Errorf("external argv must be untouched: %v", g)
-	}
-	drain2()
-	if !strings.Contains(errBuf2.String(), "ignoring") {
-		t.Errorf("expected non-native warning, got %q", errBuf2.String())
 	}
 }
 
