@@ -42,8 +42,9 @@ func TestValidateSandbox(t *testing.T) {
 		}
 	}
 
-	// Removed or unknown backends are rejected with a migration hint.
-	for _, p := range []string{"nono", "nono-netprofile", "no-sandbox-debug", "custom"} {
+	// Removed external backends and unknown names are rejected, pointing the
+	// user at the built-in sandbox.
+	for _, p := range []string{"nono", "nono-netprofile", "custom"} {
 		err := validateSandbox(SandboxConfig{DefaultProfile: p}, "cfg")
 		if err == nil {
 			t.Errorf("default_profile %q should be rejected", p)
@@ -54,8 +55,16 @@ func TestValidateSandbox(t *testing.T) {
 		}
 	}
 
+	// no-sandbox-debug is rejected too, but its fix is the CLI flag, not builtin.
+	err := validateSandbox(SandboxConfig{DefaultProfile: "no-sandbox-debug"}, "cfg")
+	if err == nil {
+		t.Error("default_profile \"no-sandbox-debug\" should be rejected")
+	} else if !strings.Contains(err.Error(), "--no-sandbox") {
+		t.Errorf("error for no-sandbox-debug should point at --no-sandbox: %v", err)
+	}
+
 	// Custom launcher profiles are no longer supported.
-	err := validateSandbox(SandboxConfig{
+	err = validateSandbox(SandboxConfig{
 		Profiles: map[string]SandboxProfile{"x": {}},
 	}, "cfg")
 	if err == nil {
