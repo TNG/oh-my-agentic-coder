@@ -760,11 +760,9 @@ func runLaunch(env *Env, opts launchOpts) int {
 	if noSandbox {
 		argv = inner
 	} else {
-		argv, err = sandbox.Expand(prof, sandbox.Inputs{
-			Workdir:  env.Workdir,
+		argv, err = sandbox.BuildBuiltinArgv(sandbox.Inputs{
 			Socket:   socketPath,
 			TCPPort:  tcpPort,
-			Mounts:   mounts,
 			InnerCmd: inner,
 			TmpDir:   sandboxTmp,
 		})

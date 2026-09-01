@@ -241,13 +241,13 @@ func TestInjectServerListenPort(t *testing.T) {
 func TestSandboxServeArgvInjectsListenPort(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	oc, _ := config.LookupHarness("opencode")
-	prof := config.SandboxProfile{
-		Command:  []string{"omac", "sandbox", "run", "--", "{{inner_cmd}}", "{{inner_args}}"},
-		InnerCmd: []string{"opencode"},
+	in := sandbox.Inputs{
+		Socket:   "/w/bridge.sock",
+		TCPPort:  6000,
+		InnerCmd: []string{"opencode", "serve"},
 	}
-	in := sandbox.Inputs{Workdir: "/w", InnerCmd: []string{"opencode", "serve"}}
 
-	argv, err := sandboxServeArgv(prof, in, "51234", oc)
+	argv, err := sandboxServeArgv(in, "51234", oc)
 	if err != nil {
 		t.Fatalf("sandboxServeArgv: %v", err)
 	}
@@ -267,14 +267,14 @@ func TestSandboxServeArgvInjectsListenPort(t *testing.T) {
 	}
 
 	// Empty control port skips only the control-plane grant; the #115 bind
-	// grant still applies.
-	noCP, err := sandboxServeArgv(prof, in, "", oc)
+	// grant still applies. (The builtin facade --open-port is always present.)
+	noCP, err := sandboxServeArgv(in, "", oc)
 	if err != nil {
 		t.Fatalf("sandboxServeArgv (no control port): %v", err)
 	}
 	nj := strings.Join(noCP, " ")
-	if contains(nj, "--open-port") {
-		t.Errorf("empty control port should add no --open-port: %s", nj)
+	if contains(nj, "--open-port 51234") {
+		t.Errorf("empty control port should not add the control-plane --open-port: %s", nj)
 	}
 	if !contains(nj, "--listen-port 4096") {
 		t.Errorf("listen-port grant must still apply without a control port: %s", nj)
