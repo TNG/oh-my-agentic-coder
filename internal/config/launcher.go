@@ -116,9 +116,9 @@ type SandboxProfile struct {
 //   - "--profile=default"      (inline)
 //   - omitted --profile        (resolves to "default")
 //
-// native is false for launchers whose policy omac cannot see: external
-// launchers (not implemented at the moment), the no-sandbox debug shell, and any non-`sandbox run`
-// subcommand. Only `{{self}} sandbox run` templates are inspectable.
+// native is false for launchers whose policy omac cannot see: a
+// user-configured external command or any non-`sandbox run` subcommand.
+// Only `{{self}} sandbox run` templates are inspectable.
 func (p SandboxProfile) PolicyRef() (ref string, native bool) {
 	c := p.Command
 	if len(c) < 3 || c[0] != "{{self}}" || c[1] != "sandbox" || c[2] != "run" {
@@ -156,8 +156,7 @@ type FacadeConfig struct {
 // This is what lets `omac start claude` actually run Claude Code without editing
 // config. A user who pins a profile's inner_cmd in their own
 // oh-my-agentic-coder.yaml still wins (that explicit value takes precedence over
-// the harness default — see ResolveInnerCmd). The no-sandbox-debug profile keeps
-// its explicit `bash` because it is a debug shell, not an agent harness.
+// the harness default — see ResolveInnerCmd).
 func DefaultLauncherConfig() LauncherConfig {
 	return defaultLauncherConfigFor(DefaultHarness())
 }
@@ -214,10 +213,6 @@ func defaultLauncherConfigFor(h Harness) LauncherConfig {
 					},
 					// Empty: filled by the selected harness at launch.
 					InnerCmd: nil,
-				},
-				"no-sandbox-debug": {
-					Command:  []string{"{{inner_cmd}}", "{{inner_args}}"},
-					InnerCmd: []string{"bash"},
 				},
 			},
 		},

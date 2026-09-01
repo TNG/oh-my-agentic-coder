@@ -12,9 +12,8 @@ import (
 // "sandbox profile" namespaces side by side, resolved once:
 //
 //	launcher profile  a templated argv, keyed by the names in
-//	                  config.SandboxConfig.Profiles ("builtin",
-//	                  "no-sandbox-debug"), selected by --sandbox /
-//	                  sandbox.default_profile;
+//	                  config.SandboxConfig.Profiles ("builtin"), selected
+//	                  by --sandbox / sandbox.default_profile;
 //	policy profile    the grant JSON at ~/.config/omac/sandbox-profiles/
 //	                  <ref>.json ("default"), spelled INSIDE the launcher
 //	                  profile's command template.

@@ -61,27 +61,30 @@ func TestResolveSandboxPlanLoadsPolicyFile(t *testing.T) {
 	}
 }
 
-// Opaque launchers (external sandbox binaries, the no-sandbox debug shell)
-// have no inspectable omac policy: Native is false and no policy is resolved.
-func TestResolveSandboxPlanOpaqueLaunchersHaveNoPolicy(t *testing.T) {
+// An opaque launcher (a user-configured external command that is not
+// `{{self}} sandbox run`) has no inspectable omac policy: Native is false and
+// no policy is resolved.
+func TestResolveSandboxPlanOpaqueLauncherHasNoPolicy(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	for _, name := range []string{"no-sandbox-debug"} {
-		t.Run(name, func(t *testing.T) {
-			plan, err := resolveSandboxPlan(config.DefaultLauncherConfig(), name)
-			if err != nil {
-				t.Fatalf("resolveSandboxPlan(%q): %v", name, err)
-			}
-			if !plan.Known {
-				t.Errorf("%q is a configured launcher profile; Known should be true", name)
-			}
-			if plan.Native {
-				t.Errorf("%q must not be classified as omac's native sandbox", name)
-			}
-			if plan.Policy != nil || plan.PolicyRef != "" || plan.PolicyErr != nil {
-				t.Errorf("%q must resolve no policy; got ref=%q policy=%v err=%v",
-					name, plan.PolicyRef, plan.Policy, plan.PolicyErr)
-			}
-		})
+	lc := config.LauncherConfig{Sandbox: config.SandboxConfig{
+		DefaultProfile: "external",
+		Profiles: map[string]config.SandboxProfile{
+			"external": {Command: []string{"external-sbx", "run", "--", "{{inner_cmd}}"}},
+		},
+	}}
+	plan, err := resolveSandboxPlan(lc, "external")
+	if err != nil {
+		t.Fatalf("resolveSandboxPlan: %v", err)
+	}
+	if !plan.Known {
+		t.Error("external is a configured launcher profile; Known should be true")
+	}
+	if plan.Native {
+		t.Error("external must not be classified as omac's native sandbox")
+	}
+	if plan.Policy != nil || plan.PolicyRef != "" || plan.PolicyErr != nil {
+		t.Errorf("external must resolve no policy; got ref=%q policy=%v err=%v",
+			plan.PolicyRef, plan.Policy, plan.PolicyErr)
 	}
 }
 

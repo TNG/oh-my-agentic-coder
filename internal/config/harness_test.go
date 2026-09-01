@@ -186,10 +186,6 @@ func TestDefaultSandboxProfilesHaveEmptyInnerCmd(t *testing.T) {
 			t.Errorf("%s command lost {{inner_cmd}} placeholder: %v", name, prof.Command)
 		}
 	}
-	// no-sandbox-debug is a debug shell, not an agent harness: it keeps bash.
-	if got := lc.Sandbox.Profiles["no-sandbox-debug"].InnerCmd; !reflect.DeepEqual(got, []string{"bash"}) {
-		t.Errorf("no-sandbox-debug inner_cmd = %v, want [bash]", got)
-	}
 }
 
 func TestHarnessSandboxEnvAllowIsSafe(t *testing.T) {
