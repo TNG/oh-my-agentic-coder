@@ -402,16 +402,14 @@ func TestInjectOpenPort(t *testing.T) {
 }
 
 func TestInjectSandboxEnvAllow(t *testing.T) {
-	builtinProf := config.DefaultLauncherConfig().Sandbox.Profiles["builtin"]
-	argv, err := sandbox.Expand(builtinProf, sandbox.Inputs{
-		Workdir:  "/w",
+	argv, err := sandbox.BuildBuiltinArgv(sandbox.Inputs{
 		Socket:   "/w/bridge.sock",
 		TCPPort:  6000,
 		InnerCmd: []string{"claude"},
 		TmpDir:   "/w/tmp",
 	})
 	if err != nil {
-		t.Fatalf("Expand: %v", err)
+		t.Fatalf("BuildBuiltinArgv: %v", err)
 	}
 
 	got := injectSandboxEnvAllow(argv, []string{"ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"})
@@ -431,17 +429,14 @@ func TestInjectSandboxEnvAllow(t *testing.T) {
 }
 
 func TestInjectUserOpenPorts(t *testing.T) {
-	profiles := config.DefaultLauncherConfig().Sandbox.Profiles
-	builtinProf := profiles["builtin"]
-	argv, err := sandbox.Expand(builtinProf, sandbox.Inputs{
-		Workdir:  "/w",
+	argv, err := sandbox.BuildBuiltinArgv(sandbox.Inputs{
 		Socket:   "/w/bridge.sock",
 		TCPPort:  6000,
 		InnerCmd: []string{"claude"},
 		TmpDir:   "/w/tmp",
 	})
 	if err != nil {
-		t.Fatalf("Expand: %v", err)
+		t.Fatalf("BuildBuiltinArgv: %v", err)
 	}
 
 	got := injectUserOpenPorts(argv, []int{3000, 4173})
