@@ -33,12 +33,33 @@ go build -trimpath -ldflags "-s -w -X main.Version=0.1.0-local" -o omac ./cmd/om
 ./omac version   # -> omac 0.1.0-local
 ```
 
-For full multi-platform artifacts (`.deb`, `.pkg.tar.zst`, checksums), use GoReleaser (`goreleaser release --clean --snapshot --skip=publish`). See [`.goreleaser.yaml`](../../.goreleaser.yaml).
+For full multi-platform artifacts (`.deb`, `.pkg.tar.zst`, checksums), use GoReleaser (`goreleaser release --clean --snapshot --skip=publish`). See [`.goreleaser.yaml`](https://github.com/TNG/oh-my-agentic-coder/blob/main/.goreleaser.yaml).
+
+## Documentation site
+
+The `docs/` directory is published at
+[tng.github.io/oh-my-agentic-coder](https://tng.github.io/oh-my-agentic-coder/) by
+the Docusaurus project in `website/`. The markdown is read from `docs/` in place —
+there is no copy step, so every page stays readable as a plain file on GitHub.
+
+```bash
+cd website
+npm ci
+npm start          # live preview on http://localhost:3000
+npm run build      # what CI runs; fails on a dead internal link
+```
+
+Two things to know when editing `docs/`:
+
+- Pages are compiled as MDX, so a bare autolink (`<https://example.com>`) is a
+  parse error. Write `[example.com](https://example.com)` instead.
+- A relative link to a file outside `docs/` (say `../COLLABORATION.md`) cannot be
+  resolved to a page and fails the build. Link such files by full GitHub URL.
 
 ## Releases
 
 Pushing a git tag such as `v1.2.3` starts the release workflow
-([`.github/workflows/release.yml`](../../.github/workflows/release.yml)), which
+([`.github/workflows/release.yml`](https://github.com/TNG/oh-my-agentic-coder/blob/main/.github/workflows/release.yml)), which
 builds the binaries and publishes them.
 
 ### Tag format
