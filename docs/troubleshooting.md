@@ -137,7 +137,7 @@ When you answer the network prompt, "session" decisions are held in memory only,
 
 If `omac doctor` and the fixes above don't resolve your problem, please report it
 as a GitHub issue at
-<https://github.com/TNG/oh-my-agentic-coder/issues>.
+[github.com/TNG/oh-my-agentic-coder/issues](https://github.com/TNG/oh-my-agentic-coder/issues).
 
 Before opening one:
 
@@ -150,5 +150,5 @@ Before opening one:
    version, and the harness you were running (for example `claude-code` on
    Ubuntu 24.04).
 
-Keep it concise. The [collaboration guide](../COLLABORATION.md#issue-rules) has
+Keep it concise. The [collaboration guide](https://github.com/TNG/oh-my-agentic-coder/blob/main/COLLABORATION.md#issue-rules) has
 the full set of expectations for issue formatting.

@@ -1,0 +1,80 @@
+# Documentation site (Docusaurus over the repo's docs/ directory) → GitHub Pages.
+#
+# Three triggers, on purpose:
+#   pull_request      — build only. A dead link or an MDX parse error fails the
+#                       PR instead of reaching the published site.
+#   push to main      — build and deploy. This is the live site.
+#   workflow_dispatch — build and deploy from any branch, so a docs change can be
+#                       seen at the real URL before it is merged. Requires the
+#                       branch to be allowed in the `github-pages` environment
+#                       (Settings → Environments → github-pages → deployment branches).
+name: docs-pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/**'
+      - 'website/**'
+      - '.github/workflows/docs-pages.yml'
+  pull_request:
+    paths:
+      - 'docs/**'
+      - 'website/**'
+      - '.github/workflows/docs-pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build site
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # showLastUpdateTime reads git history for each page.
+          fetch-depth: 0
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+
+      - name: Install dependencies
+        working-directory: website
+        run: npm ci
+
+      - name: Build
+        working-directory: website
+        run: npm run build
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: website/build
+
+  deploy:
+    name: Deploy to Pages
+    # Never on pull_request: a PR from a fork must not be able to publish.
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4
