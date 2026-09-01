@@ -31,10 +31,8 @@ type Inputs struct {
 }
 
 // BuildBuiltinArgv builds the argv that launches the builtin sandbox: it
-// re-execs the running omac binary as `omac sandbox run --profile default`
-// wrapping the inner command. It replaces template expansion for the only
-// remaining backend; a parity test keeps its output byte-for-byte identical
-// to the old builtin profile template.
+// re-execs the running omac binary as `omac sandbox run` wrapping the inner
+// command.
 func BuildBuiltinArgv(in Inputs) ([]string, error) {
 	if len(in.InnerCmd) == 0 {
 		return nil, fmt.Errorf("no inner_cmd provided")
@@ -45,7 +43,6 @@ func BuildBuiltinArgv(in Inputs) ([]string, error) {
 	}
 	argv := []string{
 		self, "sandbox", "run",
-		"--profile", "default",
 		"--allow-file", in.Socket,
 		"--read", filepath.Dir(in.Socket),
 	}

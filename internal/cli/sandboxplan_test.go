@@ -24,8 +24,8 @@ func TestResolveSandboxPlanDefaultProfileResolvesPolicy(t *testing.T) {
 	if plan.PolicyRef != "default" {
 		t.Errorf("PolicyRef = %q, want default (the policy profile)", plan.PolicyRef)
 	}
-	if !plan.Known || !plan.Native {
-		t.Errorf("Known = %v, Native = %v; want both true", plan.Known, plan.Native)
+	if !plan.Known {
+		t.Errorf("Known = %v; want true", plan.Known)
 	}
 	if plan.PolicyErr != nil {
 		t.Errorf("PolicyErr = %v; the default policy must resolve", plan.PolicyErr)
@@ -61,33 +61,6 @@ func TestResolveSandboxPlanLoadsPolicyFile(t *testing.T) {
 	}
 }
 
-// An opaque launcher (a user-configured external command that is not
-// `{{self}} sandbox run`) has no inspectable omac policy: Native is false and
-// no policy is resolved.
-func TestResolveSandboxPlanOpaqueLauncherHasNoPolicy(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	lc := config.LauncherConfig{Sandbox: config.SandboxConfig{
-		DefaultProfile: "external",
-		Profiles: map[string]config.SandboxProfile{
-			"external": {Command: []string{"external-sbx", "run", "--", "{{inner_cmd}}"}},
-		},
-	}}
-	plan, err := resolveSandboxPlan(lc, "external")
-	if err != nil {
-		t.Fatalf("resolveSandboxPlan: %v", err)
-	}
-	if !plan.Known {
-		t.Error("external is a configured launcher profile; Known should be true")
-	}
-	if plan.Native {
-		t.Error("external must not be classified as omac's native sandbox")
-	}
-	if plan.Policy != nil || plan.PolicyRef != "" || plan.PolicyErr != nil {
-		t.Errorf("external must resolve no policy; got ref=%q policy=%v err=%v",
-			plan.PolicyRef, plan.Policy, plan.PolicyErr)
-	}
-}
-
 func TestResolveSandboxPlanUnknownProfileErrors(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
@@ -100,94 +73,28 @@ func TestResolveSandboxPlanUnknownProfileErrors(t *testing.T) {
 	}
 	// The name is still reported so callers can mention it, but nothing
 	// downstream may treat the profile as usable.
-	if plan.Name != "nosuch" || plan.Known || plan.Native {
-		t.Errorf("plan = %+v; want Name=nosuch, Known=false, Native=false", plan)
+	if plan.Name != "nosuch" || plan.Known {
+		t.Errorf("plan = %+v; want Name=nosuch, Known=false", plan)
 	}
 }
 
-// A launcher profile that spells its policy ref differently (inline form,
-// or a non-default name) must be followed, not assumed.
-func TestResolveSandboxPlanFollowsPolicyRefInTemplate(t *testing.T) {
+// A broken default policy file is NOT fatal: the launch proceeds (the
+// `omac sandbox run` child resolves the policy itself and reports), but the
+// error is recorded so policy-derived facade features can be disabled with
+// an accurate message.
+func TestResolveSandboxPlanBrokenPolicyIsRecordedNotFatal(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	dir := filepath.Join(home, ".config", "omac", "sandbox-profiles")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "strict.json"),
-		[]byte(`{"meta": {"name": "strict"}, "workdir": {"access": "none"}}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	lc := config.LauncherConfig{Sandbox: config.SandboxConfig{
-		DefaultProfile: "inline",
-		Profiles: map[string]config.SandboxProfile{"inline": {
-			Command: []string{"{{self}}", "sandbox", "run", "--profile=strict", "--", "{{inner_cmd}}"},
-		}},
-	}}
+	stageProfile(t, home, `{ not valid json`)
 
-	plan, err := resolveSandboxPlan(lc, "")
+	plan, err := resolveSandboxPlan(config.DefaultLauncherConfig(), "")
 	if err != nil {
-		t.Fatalf("resolveSandboxPlan: %v", err)
-	}
-	if plan.PolicyRef != "strict" {
-		t.Errorf("PolicyRef = %q, want strict", plan.PolicyRef)
-	}
-	if plan.Policy == nil || plan.Policy.Meta.Name != "strict" {
-		t.Fatalf("expected the strict policy to be loaded; got %+v", plan.Policy)
-	}
-}
-
-// A native launcher pointing at a policy that does not exist is NOT fatal:
-// the launch proceeds (the `omac sandbox run` child resolves the policy
-// itself and reports), but the error is recorded so policy-derived facade
-// features can be disabled with an accurate message.
-func TestResolveSandboxPlanMissingPolicyIsRecordedNotFatal(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	lc := config.LauncherConfig{Sandbox: config.SandboxConfig{
-		DefaultProfile: "builtin",
-		Profiles: map[string]config.SandboxProfile{"builtin": {
-			Command: []string{"{{self}}", "sandbox", "run", "--profile", "nosuch", "--", "{{inner_cmd}}"},
-		}},
-	}}
-
-	plan, err := resolveSandboxPlan(lc, "")
-	if err != nil {
-		t.Fatalf("a missing policy must not fail the plan: %v", err)
+		t.Fatalf("a broken policy must not fail the plan: %v", err)
 	}
 	if plan.PolicyErr == nil {
 		t.Error("PolicyErr should record the failed policy resolution")
 	}
 	if plan.Policy != nil {
 		t.Error("Policy must be nil when resolution failed")
-	}
-	if !plan.Native {
-		t.Error("the launcher is still omac's native sandbox")
-	}
-}
-
-func TestDefaultPolicyRef(t *testing.T) {
-	if got := defaultPolicyRef(config.DefaultLauncherConfig()); got != "default" {
-		t.Errorf("defaultPolicyRef(default config) = %q, want default", got)
-	}
-
-	custom := config.LauncherConfig{Sandbox: config.SandboxConfig{
-		DefaultProfile: "builtin",
-		Profiles: map[string]config.SandboxProfile{
-			"builtin":  {Command: []string{"{{self}}", "sandbox", "run", "--profile", "strict", "--", "{{inner_cmd}}"}},
-			"external": {Command: []string{"external-sbx", "--", "{{inner_cmd}}"}},
-		},
-	}}
-	if got := defaultPolicyRef(custom); got != "strict" {
-		t.Errorf("defaultPolicyRef = %q; must follow the launcher template, want strict", got)
-	}
-
-	// Opaque or unconfigured default launcher: "" means the default policy.
-	custom.Sandbox.DefaultProfile = "external"
-	if got := defaultPolicyRef(custom); got != "" {
-		t.Errorf("opaque launcher: defaultPolicyRef = %q, want empty", got)
-	}
-	custom.Sandbox.DefaultProfile = "nosuch"
-	if got := defaultPolicyRef(custom); got != "" {
-		t.Errorf("unknown launcher: defaultPolicyRef = %q, want empty", got)
 	}
 }

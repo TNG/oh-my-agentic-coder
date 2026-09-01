@@ -24,7 +24,6 @@ func TestBuildBuiltinArgv(t *testing.T) {
 	}
 	want := []string{
 		self, "sandbox", "run",
-		"--profile", "default",
 		"--allow-file", "/tmp/omac-abc/bridge.sock",
 		"--read", "/tmp/omac-abc",
 		"--read", "/tmp/omac-sandbox-tmp-xyz",
@@ -48,7 +47,6 @@ func TestBuildBuiltinArgv(t *testing.T) {
 	}
 	want = []string{
 		self, "sandbox", "run",
-		"--profile", "default",
 		"--allow-file", "/tmp/omac-abc/bridge.sock",
 		"--read", "/tmp/omac-abc",
 		"--open-port", "41017",

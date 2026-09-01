@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -92,53 +91,14 @@ type SandboxConfig struct {
 	Briefing string `yaml:"briefing"        json:"briefing"`
 }
 
-// SandboxProfile describes how to launch the sandbox for a given runtime.
+// SandboxProfile is one entry under `sandbox.profiles` in the launcher
+// config. omac launches only the built-in sandbox, and its command is
+// assembled in Go by sandbox.BuildBuiltinArgv rather than from these fields.
+// They are kept so existing config files still parse and so `omac doctor`
+// can recognize the built-in profile.
 type SandboxProfile struct {
-	// Command is a templated argv. Supported placeholders:
-	//   {{socket}}, {{socket_dir}}, {{inner_cmd}}, {{inner_args}},
-	//   {{skills_csv}}, {{per_skill_env_flags}}, {{workdir}}
-	// Tokens that expand to multiple argv entries (inner_args,
-	// per_skill_env_flags) must stand alone in their slot.
 	Command  []string `yaml:"command"   json:"command"`
 	InnerCmd []string `yaml:"inner_cmd" json:"inner_cmd"`
-}
-
-// PolicyRef reports the sandbox-*policy* reference this launcher profile's
-// argv template hands to `omac sandbox run --profile` — the second,
-// unrelated "sandbox profile" namespace (a grant JSON under
-// ~/.config/omac/sandbox-profiles), keyed differently from the launcher
-// profile names in SandboxConfig.Profiles. The default launcher profile
-// is named "builtin" and its policy ref is "default"; the two must never
-// be interchanged.
-//
-// Recognized run forms:
-//   - "--profile", "default"   (separate args)
-//   - "--profile=default"      (inline)
-//   - omitted --profile        (resolves to "default")
-//
-// native is false for launchers whose policy omac cannot see: a
-// user-configured external command or any non-`sandbox run` subcommand.
-// Only `{{self}} sandbox run` templates are inspectable.
-func (p SandboxProfile) PolicyRef() (ref string, native bool) {
-	c := p.Command
-	if len(c) < 3 || c[0] != "{{self}}" || c[1] != "sandbox" || c[2] != "run" {
-		return "", false
-	}
-	// Find "--profile" (separate or inline) before "--".
-	for i := 3; i < len(c); i++ {
-		arg := c[i]
-		if arg == "--" {
-			break
-		}
-		if arg == "--profile" && i+1 < len(c) {
-			return c[i+1], true
-		}
-		if strings.HasPrefix(arg, "--profile=") {
-			return strings.TrimPrefix(arg, "--profile="), true
-		}
-	}
-	// Omitted --profile resolves to "default".
-	return "default", true
 }
 
 // FacadeConfig tunes the reverse proxy.

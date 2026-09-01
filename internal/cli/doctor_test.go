@@ -376,73 +376,6 @@ func TestDoctorNoFalseMatchForCargo2(t *testing.T) {
 	}
 }
 
-func TestDoctorOpaqueExternalCommandSkipped(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	workdir := t.TempDir()
-
-	// A non-{{self}} sandbox run command is opaque — doctor can't
-	// inspect it, so no warnings should be produced (and no crash).
-	writeWorkdirConfig(t, workdir, "external", []string{
-		"external-sbx", "run",
-		"--profile", "external-profile",
-		"--allow-file", "{{socket}}",
-		"--read", "{{socket_dir}}",
-		"--", "{{inner_cmd}}", "{{inner_args}}",
-	})
-
-	// Even with a default profile that has broad grants, doctor must not
-	// warn because it can't see into the external launcher's own profile.
-	stageProfile(t, home, `{
-	  "meta": {"name": "default"},
-	  "filesystem": {
-	    "allow": ["~/.cargo", "~/.rustup", "~/go"]
-	  }
-	}`)
-
-	env, outBuf, _, drain := newPipeEnv(t, "")
-	env.Workdir = workdir
-	code := runDoctor([]string{}, env)
-	drain()
-	output := outBuf.String()
-
-	if code != ExitOK {
-		t.Errorf("doctor exit = %d, want ExitOK", code)
-	}
-	if strings.Contains(output, "~/.cargo") && strings.Contains(strings.ToLower(output), "tool home") {
-		t.Errorf("doctor warned for opaque external command; got:\n%s", output)
-	}
-}
-
-func TestDoctorNonRunBuiltinCommandSkipped(t *testing.T) {
-	home := stageHomeWithCargoSentinels(t)
-	workdir := t.TempDir()
-
-	writeWorkdirConfig(t, workdir, "builtin", []string{
-		"{{self}}", "sandbox", "stage2",
-	})
-
-	stageProfile(t, home, `{
-	  "meta": {"name": "default"},
-	  "filesystem": {
-	    "allow": ["~/.cargo"]
-	  }
-	}`)
-
-	env, outBuf, _, drain := newPipeEnv(t, "")
-	env.Workdir = workdir
-	code := runDoctor([]string{}, env)
-	drain()
-	output := outBuf.String()
-
-	if code != ExitOK {
-		t.Errorf("doctor exit = %d, want ExitOK", code)
-	}
-	if strings.Contains(output, `[warn] sandbox profile "builtin"`) {
-		t.Errorf("doctor warned for non-run built-in command; got:\n%s", output)
-	}
-}
-
 func TestDoctorOmittedProfileInspectsDefault(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -553,39 +486,6 @@ func TestDoctorNonEmptyAllowVarsNotWarned(t *testing.T) {
 
 	if strings.Contains(output, "empty environment.allow_vars") {
 		t.Errorf("doctor warned on a profile with an explicit allowlist; got:\n%s", output)
-	}
-}
-
-func TestDoctorExplicitProfilePathInspected(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	workdir := t.TempDir()
-
-	profilePath := filepath.Join(workdir, "my-profile.json")
-	if err := os.WriteFile(profilePath, []byte(`{
-	  "meta": {"name": "custom"},
-	  "filesystem": {"allow": ["~/go"]}
-	}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	writeWorkdirConfig(t, workdir, "builtin", []string{
-		"{{self}}", "sandbox", "run",
-		"--profile", profilePath,
-		"--", "{{inner_cmd}}", "{{inner_args}}",
-	})
-
-	env, outBuf, _, drain := newPipeEnv(t, "")
-	env.Workdir = workdir
-	code := runDoctor([]string{}, env)
-	drain()
-	output := outBuf.String()
-
-	if code != ExitOK {
-		t.Errorf("doctor exit = %d, want ExitOK", code)
-	}
-	if !strings.Contains(output, "~/go") {
-		t.Errorf("doctor should inspect explicit profile path; got:\n%s", output)
 	}
 }
 

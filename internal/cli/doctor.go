@@ -217,19 +217,17 @@ func runDoctor(args []string, env *Env) int {
 	// Advisory: warn about broad tool-home / cache-root grants in the
 	// built-in sandbox profile without mutating it. Warnings never
 	// affect the exit code.
-	doctorSandboxProfileWarnings(env, lc)
+	doctorSandboxProfileWarnings(env)
 
-	// Static security lint of the resolved profile (advisory). Reuses the
+	// Static security lint of the resolved policy (advisory). Reuses the
 	// same engine as `omac provenance --check` — findings are warnings
-	// here, never a doctor failure. The ref follows the default launcher
-	// profile's template, so a config pointing at a non-default policy gets
-	// that policy linted rather than an unused "default".
-	doctorProfileLint(env, defaultPolicyRef(lc))
+	// here, never a doctor failure.
+	doctorProfileLint(env, "default")
 
 	// Advisory: a private-registry mapping the sandbox cannot see makes
 	// scoped installs 404 with no denial anywhere to point at, so nothing
 	// else in doctor or diagnose would mention it.
-	doctorRegistryConfig(env, defaultPolicyRef(lc))
+	doctorRegistryConfig(env, "default")
 
 	fmt.Fprintln(env.Stdout, "\nWhen a run fails, `omac diagnose` shows what the sandbox blocked and why.")
 
@@ -427,62 +425,50 @@ type toolHomeWarning struct {
 	remediation string
 }
 
-// doctorSandboxProfileWarnings inspects every {{self}} sandbox run
-// command in the launcher config, resolves the referenced built-in
-// sandbox profile read-only, and warns about broad grants that
-// isolate tool caches / cargo credentials / rust toolchains. Warnings
-// are advisory: they never increment the failure count and never
-// mutate the on-disk profile.
-func doctorSandboxProfileWarnings(env *Env, lc config.LauncherConfig) {
-	for profName, prof := range lc.Sandbox.Profiles {
-		if len(prof.Command) == 0 {
-			continue
+// doctorSandboxProfileWarnings resolves the built-in sandbox's policy
+// profile ("default") read-only and warns about broad grants that fail to
+// isolate tool caches / cargo credentials / rust toolchains, or an env
+// allow/deny list that would break the harness. Warnings are advisory: they
+// never increment the failure count and never mutate the on-disk profile.
+func doctorSandboxProfileWarnings(env *Env) {
+	p, path, err := sandboxprofile.Resolve("default")
+	if err != nil {
+		fmt.Fprintf(env.Stdout, "  [warn] sandbox profile %q: %v\n", "default", err)
+		return
+	}
+	if len(p.Environment.AllowVars) == 0 {
+		fmt.Fprintf(env.Stdout, "  [warn] sandbox profile %q has an empty environment.allow_vars\n", "default")
+		if path != "" {
+			fmt.Fprintf(env.Stdout, "         source:      %s\n", path)
 		}
-		ref, native := prof.PolicyRef()
-		if !native {
-			// Opaque launcher (a user-configured external command):
-			// doctor can't see into its profile, so skip silently.
-			continue
-		}
-		p, path, err := sandboxprofile.Resolve(ref)
-		if err != nil {
-			fmt.Fprintf(env.Stdout, "  [warn] sandbox profile %q: %v\n", profName, err)
-			continue
-		}
-		if len(p.Environment.AllowVars) == 0 {
-			fmt.Fprintf(env.Stdout, "  [warn] sandbox profile %q has an empty environment.allow_vars\n", profName)
-			if path != "" {
-				fmt.Fprintf(env.Stdout, "         source:      %s\n", path)
-			}
-			fmt.Fprintln(env.Stdout, "         impact:      at launch omac forwards only the operational minimum (HOME, PATH,")
-			fmt.Fprintln(env.Stdout, "                      TERM, locale, …); all other ambient env vars — including provider")
-			fmt.Fprintln(env.Stdout, "                      tokens and secrets — are NOT passed through, and omac does not")
-			fmt.Fprintln(env.Stdout, "                      auto-forward auth vars. This differs from the pre-#102 inherit-")
-			fmt.Fprintln(env.Stdout, "                      everything behavior; the harness starts but will not authenticate.")
-			fmt.Fprintln(env.Stdout, "         remediation: custom profiles are not updated by omac upgrades; refresh this profile")
-			fmt.Fprintln(env.Stdout, "                      from its installer or original source. If you maintain it manually,")
-			fmt.Fprintln(env.Stdout, "                      add the vars the harness needs to allow_vars (see")
-			fmt.Fprintln(env.Stdout, "                      sandboxprofile.DefaultAllowVars).")
-			fmt.Fprintln(env.Stdout, `                      allow_vars: ["*"] is not recommended because it forwards almost`)
-			fmt.Fprintln(env.Stdout, "                      every ambient var (minus the danger blocklist).")
-		}
-		if denied := sandboxprofile.DeniedBaseVars(p.Environment.DenyVars); len(denied) > 0 {
-			fmt.Fprintf(env.Stdout, "  [warn] sandbox profile %q denies operational base var(s): %s\n", profName, strings.Join(denied, ", "))
-			fmt.Fprintln(env.Stdout, "         impact:      deny_vars wins over everything (allowlist, \"*\", and omac's injected")
-			fmt.Fprintln(env.Stdout, "                      overlay), so these are stripped. They are the operational minimum a")
-			fmt.Fprintln(env.Stdout, "                      sandboxed harness needs (HOME/PATH/TERM/…); removing them will likely")
-			fmt.Fprintln(env.Stdout, "                      break it.")
-			fmt.Fprintln(env.Stdout, "         remediation: drop these entries from environment.deny_vars unless the removal is")
-			fmt.Fprintln(env.Stdout, "                      deliberate.")
-		}
-		warns := profileGrantWarnings(p)
-		// Cargo-specific presence warning (mode-000 sentinel files).
-		warns = append(warns, cargoSentinelWarnings()...)
-		for _, w := range warns {
-			fmt.Fprintf(env.Stdout, "  [warn] sandbox profile %q %s %s\n", profName, w.access, w.entry)
-			fmt.Fprintf(env.Stdout, "         impact:      %s\n", w.impact)
-			fmt.Fprintf(env.Stdout, "         remediation: %s\n", w.remediation)
-		}
+		fmt.Fprintln(env.Stdout, "         impact:      at launch omac forwards only the operational minimum (HOME, PATH,")
+		fmt.Fprintln(env.Stdout, "                      TERM, locale, …); all other ambient env vars — including provider")
+		fmt.Fprintln(env.Stdout, "                      tokens and secrets — are NOT passed through, and omac does not")
+		fmt.Fprintln(env.Stdout, "                      auto-forward auth vars. This differs from the pre-#102 inherit-")
+		fmt.Fprintln(env.Stdout, "                      everything behavior; the harness starts but will not authenticate.")
+		fmt.Fprintln(env.Stdout, "         remediation: custom profiles are not updated by omac upgrades; refresh this profile")
+		fmt.Fprintln(env.Stdout, "                      from its installer or original source. If you maintain it manually,")
+		fmt.Fprintln(env.Stdout, "                      add the vars the harness needs to allow_vars (see")
+		fmt.Fprintln(env.Stdout, "                      sandboxprofile.DefaultAllowVars).")
+		fmt.Fprintln(env.Stdout, `                      allow_vars: ["*"] is not recommended because it forwards almost`)
+		fmt.Fprintln(env.Stdout, "                      every ambient var (minus the danger blocklist).")
+	}
+	if denied := sandboxprofile.DeniedBaseVars(p.Environment.DenyVars); len(denied) > 0 {
+		fmt.Fprintf(env.Stdout, "  [warn] sandbox profile %q denies operational base var(s): %s\n", "default", strings.Join(denied, ", "))
+		fmt.Fprintln(env.Stdout, "         impact:      deny_vars wins over everything (allowlist, \"*\", and omac's injected")
+		fmt.Fprintln(env.Stdout, "                      overlay), so these are stripped. They are the operational minimum a")
+		fmt.Fprintln(env.Stdout, "                      sandboxed harness needs (HOME/PATH/TERM/…); removing them will likely")
+		fmt.Fprintln(env.Stdout, "                      break it.")
+		fmt.Fprintln(env.Stdout, "         remediation: drop these entries from environment.deny_vars unless the removal is")
+		fmt.Fprintln(env.Stdout, "                      deliberate.")
+	}
+	warns := profileGrantWarnings(p)
+	// Cargo-specific presence warning (mode-000 sentinel files).
+	warns = append(warns, cargoSentinelWarnings()...)
+	for _, w := range warns {
+		fmt.Fprintf(env.Stdout, "  [warn] sandbox profile %q %s %s\n", "default", w.access, w.entry)
+		fmt.Fprintf(env.Stdout, "         impact:      %s\n", w.impact)
+		fmt.Fprintf(env.Stdout, "         remediation: %s\n", w.remediation)
 	}
 }
 
