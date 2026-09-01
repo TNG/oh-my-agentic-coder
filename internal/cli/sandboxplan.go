@@ -7,22 +7,9 @@ import (
 	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxprofile"
 )
 
-// sandboxPlan is the launch's single resolved answer to "which sandbox is
-// this run using?" — it carries BOTH of omac's confusingly similar
-// "sandbox profile" namespaces side by side, resolved once:
-//
-//	launcher profile  a templated argv, keyed by the names in
-//	                  config.SandboxConfig.Profiles ("builtin"), selected
-//	                  by --sandbox / sandbox.default_profile;
-//	policy profile    the grant JSON at ~/.config/omac/sandbox-profiles/
-//	                  <ref>.json ("default"), spelled INSIDE the launcher
-//	                  profile's command template.
-//
-// Both are plain strings, so before #173 nothing stopped a launcher name
-// from being handed to the policy resolver — which is exactly what the
-// facade wiring did, silently disabling GET /sandbox/denied on every
-// default launch. Consumers now take the plan, so the mix-up cannot be
-// expressed.
+// sandboxPlan is the launch's resolved sandbox state: the launcher profile
+// name plus the resolved policy profile (the grant JSON under
+// ~/.config/omac/sandbox-profiles/<ref>.json).
 type sandboxPlan struct {
 	// Name is the launcher profile key (e.g. "builtin").
 	Name string
@@ -31,15 +18,9 @@ type sandboxPlan struct {
 	Launcher config.SandboxProfile
 	// Known reports whether Name existed in the launcher config.
 	Known bool
-	// Native reports whether the launcher execs omac's own supervisor
-	// (`{{self}} sandbox run …`) — the only backend whose policy omac can
-	// inspect and whose launch-injected flags (--allow-env, …) it defines.
-	Native bool
-	// PolicyRef is the policy reference the launcher template passes to
-	// `omac sandbox run --profile`; "" when !Native.
+	// PolicyRef is the policy profile the run enforces (always "default").
 	PolicyRef string
-	// Policy is the resolved policy profile; nil when !Native or when
-	// PolicyErr is set.
+	// Policy is the resolved policy profile; nil when PolicyErr is set.
 	Policy *sandboxprofile.Profile
 	// PolicyPath is the file Policy was loaded from; "" means the
 	// compiled-in defaults were used and no file was consulted.
@@ -51,11 +32,8 @@ type sandboxPlan struct {
 }
 
 // resolveSandboxPlan resolves the launcher profile selected by flagProfile
-// (empty means sandbox.default_profile) and, when that launcher is omac's
-// native sandbox, its policy profile — read-only, so inspecting a profile
-// never scaffolds files. Resolution is cheap (one file read plus path
-// expansion; the full grant resolution happens inside the `omac sandbox
-// run` child), so it is done once per launch and shared.
+// (empty means sandbox.default_profile) and the "default" policy profile the
+// run enforces — read-only, so inspecting a profile never scaffolds files.
 //
 // An unknown launcher name is returned as an error alongside a plan with
 // Name set and Known false: callers decide whether that is fatal (it is
@@ -72,13 +50,8 @@ func resolveSandboxPlan(lc config.LauncherConfig, flagProfile string) (sandboxPl
 	}
 	plan.Launcher = prof
 	plan.Known = true
-	ref, native := prof.PolicyRef()
-	plan.Native = native
-	plan.PolicyRef = ref
-	if !native {
-		return plan, nil
-	}
-	policy, path, err := sandboxprofile.Resolve(ref)
+	plan.PolicyRef = "default"
+	policy, path, err := sandboxprofile.Resolve("default")
 	if err != nil {
 		plan.PolicyErr = err
 		return plan, nil
@@ -86,22 +59,4 @@ func resolveSandboxPlan(lc config.LauncherConfig, flagProfile string) (sandboxPl
 	plan.Policy = policy
 	plan.PolicyPath = path
 	return plan, nil
-}
-
-// defaultPolicyRef returns the policy ref the configured DEFAULT launcher
-// profile points at — the policy a plain `omac start` would enforce. Empty
-// means "the default policy": either the launcher profile is opaque (an
-// external launcher has no omac policy) or it is not configured at all.
-// Callers that inspect "the" policy must go through here rather than
-// hard-coding "default", which is a launcher-name/policy-ref conflation
-// waiting to happen (see sandboxPlan).
-func defaultPolicyRef(lc config.LauncherConfig) string {
-	prof, ok := lc.Sandbox.Profiles[lc.Sandbox.DefaultProfile]
-	if !ok {
-		return ""
-	}
-	if ref, native := prof.PolicyRef(); native {
-		return ref
-	}
-	return ""
 }
