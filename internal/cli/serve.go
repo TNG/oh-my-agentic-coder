@@ -553,7 +553,7 @@ func runServe(args []string, env *Env) int {
 		// profile's restrictive allow_vars filter. (Control-plane port and
 		// harness runtime dirs are granted inside sandboxServeArgv.)
 		argv = forwardHarnessEnv(env, argv, harness, plan)
-		argv = injectUserOpenPorts(env, argv, openPorts, prof)
+		argv = injectUserOpenPorts(argv, openPorts)
 		// Pass the resolved audit path to `omac sandbox run` so its
 		// network-filter subprocess appends net.decision events to the
 		// same persistent log. Inherit the parent's run_id + mode so the
@@ -817,9 +817,9 @@ func forwardHarnessEnv(env *Env, argv []string, harness config.Harness, plan san
 		fmt.Fprintln(env.Stderr, "      Continuing shortly…")
 		time.Sleep(emptyAllowVarsWarnDelay)
 		// Seed only the operational minimum; do NOT auto-forward auth vars.
-		return injectSandboxEnvAllow(argv, sandboxprofile.DefaultAllowVars(), plan)
+		return injectSandboxEnvAllow(argv, sandboxprofile.DefaultAllowVars())
 	}
-	return injectSandboxEnvAllow(argv, harness.SandboxEnvAllow, plan)
+	return injectSandboxEnvAllow(argv, harness.SandboxEnvAllow)
 }
 
 // planAllowVarsEmpty reports whether the launch's resolved policy profile
@@ -842,18 +842,8 @@ func planDeniedBaseVars(plan sandboxPlan) []string {
 // injectSandboxEnvAllow splices --allow-env flags for each harness-declared
 // auth env var into the sandbox argv, so they survive the default profile's
 // restrictive allow_vars filter. Only the selected harness's vars are added.
-//
-// --allow-env is understood only by omac's native `sandbox run` backend
-// (where FilterEnv applies the allowlist); external backends do their own
-// env filtering via their own profile, so injecting the flag there would be
-// meaningless and could fail on an unknown flag. Guarded by plan.Native
-// (config.SandboxProfile.PolicyRef anchors on the leading template tokens,
-// so an external profile whose INNER command merely contains "sandbox"/"run"
-// is not misclassified). Empty/nil is a no-op.
-func injectSandboxEnvAllow(argv []string, names []string, plan sandboxPlan) []string {
-	if !plan.Native {
-		return argv
-	}
+// `omac sandbox run` applies the allowlist via FilterEnv. Empty/nil is a no-op.
+func injectSandboxEnvAllow(argv []string, names []string) []string {
 	for _, n := range names {
 		if n == "" {
 			continue
@@ -863,17 +853,9 @@ func injectSandboxEnvAllow(argv []string, names []string, plan sandboxPlan) []st
 	return argv
 }
 
-// injectUserOpenPorts splices user --open-port values into a native-sandbox
-// argv. On non-native backends it leaves argv untouched and warns once when
-// any port was requested (external launchers may not understand these flags).
-func injectUserOpenPorts(env *Env, argv []string, ports []int, prof config.SandboxProfile) []string {
+// injectUserOpenPorts splices user --open-port values into the sandbox argv.
+func injectUserOpenPorts(argv []string, ports []int) []string {
 	if len(ports) == 0 {
-		return argv
-	}
-	if _, native := prof.PolicyRef(); !native {
-		if env != nil {
-			fmt.Fprintln(env.Stderr, "omac: --open-port applies only to the native sandbox backend; ignoring on this profile.")
-		}
 		return argv
 	}
 	for _, port := range ports {

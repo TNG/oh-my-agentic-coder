@@ -3,7 +3,6 @@ package cli
 import (
 	"fmt"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/tngtech/oh-my-agentic-coder/internal/config"
@@ -84,26 +83,6 @@ func TestWireFacadeSandboxAppliesDenialFacadeNote(t *testing.T) {
 	}
 	if f.DenialNote != note {
 		t.Errorf("DenialNote = %q, want %q", f.DenialNote, note)
-	}
-}
-
-// TestWireFacadeSandboxOpaqueLauncherDisablesEndpoint: an opaque launcher
-// (the no-sandbox debug shell) has no omac policy to read, so the endpoint
-// stays off — but the warning now says why, instead of reporting a bogus
-// resolve failure for a policy file that was never meant to exist.
-func TestWireFacadeSandboxOpaqueLauncherDisablesEndpoint(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-
-	f, warnings := wireForTest(t, "no-sandbox-debug", false)
-
-	if f.ProtectedPathChecker != nil {
-		t.Error("an opaque launcher must not get a protected-path checker")
-	}
-	if len(warnings) != 1 || !strings.Contains(warnings[0], "no-sandbox-debug") {
-		t.Errorf("expected one warning naming the launcher profile; got %v", warnings)
-	}
-	if f.IntentRegistry == nil {
-		t.Error("IntentRegistry must be wired regardless of the sandbox backend")
 	}
 }
 

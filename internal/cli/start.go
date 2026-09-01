@@ -790,8 +790,8 @@ func runLaunch(env *Env, opts launchOpts) int {
 		// selected harness.
 		argv = forwardHarnessEnv(env, argv, harness, plan)
 		// User --open-port grants (e.g. local Playwright webServer). Additive
-		// on top of the profile; no-op on non-native backends (with a warning).
-		argv = injectUserOpenPorts(env, argv, opts.openPorts, prof)
+		// on top of the profile.
+		argv = injectUserOpenPorts(argv, opts.openPorts)
 		// Pass the resolved audit path down to `omac sandbox run` so the
 		// network-filter subprocess appends net.decision events to the
 		// same persistent log. Inherit the parent's run_id + mode so the
