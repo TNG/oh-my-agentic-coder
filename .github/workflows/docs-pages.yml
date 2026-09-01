@@ -8,7 +8,7 @@
 #                       seen at the real URL before it is merged. Requires the
 #                       branch to be allowed in the `github-pages` environment
 #                       (Settings → Environments → github-pages → deployment branches).
-name: Docs
+name: docs-pages
 
 on:
   push:
@@ -16,12 +16,12 @@ on:
     paths:
       - 'docs/**'
       - 'website/**'
-      - '.github/workflows/docs.yml'
+      - '.github/workflows/docs-pages.yml'
   pull_request:
     paths:
       - 'docs/**'
       - 'website/**'
-      - '.github/workflows/docs.yml'
+      - '.github/workflows/docs-pages.yml'
   workflow_dispatch:
 
 permissions:
