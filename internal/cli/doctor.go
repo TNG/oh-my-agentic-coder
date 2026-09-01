@@ -440,7 +440,7 @@ func doctorSandboxProfileWarnings(env *Env, lc config.LauncherConfig) {
 		}
 		ref, native := prof.PolicyRef()
 		if !native {
-			// Opaque launcher (no-sandbox-debug, external launchers, etc.):
+			// Opaque launcher (a user-configured external command):
 			// doctor can't see into its profile, so skip silently.
 			continue
 		}
