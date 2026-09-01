@@ -632,7 +632,7 @@ func runServe(args []string, env *Env) int {
 	auditor.Emit(audit.SessionStart(env.Version, harness.Name, profName, backend))
 	auditor.Emit(audit.InnerExec(argv, profName, sandboxed))
 
-	code, err := sandbox.ExecWithReady(argv, extra, func() {
+	code, err := execWithReady(argv, extra, func() {
 		if verbose {
 			fmt.Fprintln(env.Stderr, "[verbose] inner command started; control plane live")
 		}

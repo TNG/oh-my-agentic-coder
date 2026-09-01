@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"fmt"
 	"io"
 	"net/http/httptest"
 	"os"
@@ -862,74 +861,66 @@ func TestRunServeRetainsCacheLockAndAllowsOnlyScope(t *testing.T) {
 	t.Setenv("TMPDIR", shortTmp)
 
 	workdir := t.TempDir()
-	argsPath := filepath.Join(t.TempDir(), "args")
-	envPath := filepath.Join(t.TempDir(), "env")
-	readyPath := filepath.Join(t.TempDir(), "ready")
-	releasePath := filepath.Join(t.TempDir(), "release")
-	t.Setenv("OMAC_SERVE_TEST_ARGS", argsPath)
-	t.Setenv("OMAC_SERVE_TEST_ENV", envPath)
-	t.Setenv("OMAC_SERVE_TEST_READY", readyPath)
-	t.Setenv("OMAC_SERVE_TEST_RELEASE", releasePath)
 
-	capturePath := filepath.Join(t.TempDir(), "capture")
-	script := "#!/bin/sh\n" +
-		"printf '%s\\n' \"$@\" > \"$OMAC_SERVE_TEST_ARGS\"\n" +
-		"env > \"$OMAC_SERVE_TEST_ENV\"\n" +
-		": > \"$OMAC_SERVE_TEST_READY\"\n" +
-		"while [ ! -f \"$OMAC_SERVE_TEST_RELEASE\" ]; do sleep 0.01; done\n"
-	if err := os.WriteFile(capturePath, []byte(script), 0o700); err != nil {
-		t.Fatal(err)
+	// Capture the assembled serve argv/env via the exec seam and block the
+	// "child" (as the real sandbox would) until the test releases it, so we
+	// can assert the cache scope is held active during the session and
+	// cleared afterwards — without launching a real subprocess.
+	orig := execWithReady
+	t.Cleanup(func() { execWithReady = orig })
+	ready := make(chan struct{})
+	release := make(chan struct{})
+	var gotArgv []string
+	gotEnv := map[string]string{}
+	execWithReady = func(argv []string, extraEnv map[string]string, onReady func()) (int, error) {
+		gotArgv = append([]string(nil), argv...)
+		for _, kv := range os.Environ() {
+			if i := strings.IndexByte(kv, '='); i >= 0 {
+				gotEnv[kv[:i]] = kv[i+1:]
+			}
+		}
+		for k, v := range extraEnv {
+			gotEnv[k] = v
+		}
+		if onReady != nil {
+			onReady()
+		}
+		close(ready)
+		<-release
+		return ExitOK, nil
 	}
-	configPath := filepath.Join(workdir, ".opencode", "oh-my-agentic-coder.yaml")
-	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
-		t.Fatal(err)
+	releaseOnce := func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
 	}
-	configText := fmt.Sprintf("sandbox:\n  default_profile: capture\n  profiles:\n    capture:\n      command: [%q, %q, %q, %q]\n", capturePath, "--", "{{inner_cmd}}", "{{inner_args}}")
-	if err := os.WriteFile(configPath, []byte(configText), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	t.Cleanup(releaseOnce)
 
 	env, stderr := launchTestEnv(t, workdir)
 	done := make(chan int, 1)
 	go func() {
-		done <- runServe([]string{"claude", "--sandbox", "capture", "--inner", "/bin/true"}, env)
+		done <- runServe([]string{"claude", "--inner", "/bin/true"}, env)
 	}()
-	t.Cleanup(func() {
-		if _, err := os.Stat(releasePath); os.IsNotExist(err) {
-			_ = os.WriteFile(releasePath, nil, 0o600)
-		}
-	})
 
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		if _, err := os.Stat(readyPath); err == nil {
-			break
-		}
-		select {
-		case code := <-done:
-			t.Fatalf("runServe exited early with %d:\n%s", code, stderr())
-		default:
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for capture process:\n%s", stderr())
-		}
-		time.Sleep(10 * time.Millisecond)
+	select {
+	case <-ready:
+	case code := <-done:
+		t.Fatalf("runServe exited early with %d:\n%s", code, stderr())
+	case <-time.After(5 * time.Second):
+		t.Fatalf("timed out waiting for exec:\n%s", stderr())
 	}
 
 	scope, err := toolcache.DescribeShared()
 	if err != nil {
 		t.Fatalf("describe serve cache: %v", err)
 	}
-	args, err := os.ReadFile(argsPath)
-	if err != nil {
-		t.Fatalf("read captured args: %v", err)
-	}
-	capturedArgs := strings.Fields(string(args))
 	var cacheAllows []string
 	scopeAllows := 0
-	for i, arg := range capturedArgs {
-		if arg == "--allow" && i+1 < len(capturedArgs) {
-			allowed := capturedArgs[i+1]
+	for i, arg := range gotArgv {
+		if arg == "--allow" && i+1 < len(gotArgv) {
+			allowed := gotArgv[i+1]
 			cacheAllows = append(cacheAllows, allowed)
 			if allowed == scope.Dir {
 				scopeAllows++
@@ -945,13 +936,9 @@ func TestRunServeRetainsCacheLockAndAllowsOnlyScope(t *testing.T) {
 		}
 	}
 
-	envData, err := os.ReadFile(envPath)
-	if err != nil {
-		t.Fatalf("read captured environment: %v", err)
-	}
 	for _, key := range []string{"OMAC_CACHE_DIR", "OMAC_CACHE_MODE"} {
 		want := toolcache.Environment(scope.Dir, toolcache.ModePersistent)[key]
-		if got := parseEnvironment(string(envData))[key]; got != want {
+		if got := gotEnv[key]; got != want {
 			t.Errorf("%s = %q, want %q", key, got, want)
 		}
 	}
@@ -964,9 +951,7 @@ func TestRunServeRetainsCacheLockAndAllowsOnlyScope(t *testing.T) {
 		t.Errorf("active clear results = %#v, want active %q", active, scope.Dir)
 	}
 
-	if err := os.WriteFile(releasePath, nil, 0o600); err != nil {
-		t.Fatalf("release capture process: %v", err)
-	}
+	releaseOnce()
 	select {
 	case code := <-done:
 		if code != ExitOK {

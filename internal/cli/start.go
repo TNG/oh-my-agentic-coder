@@ -31,6 +31,11 @@ import (
 	"github.com/tngtech/oh-my-agentic-coder/internal/toolcache"
 )
 
+// execWithReady runs the fully-assembled sandbox argv. It is indirected as a
+// package var so tests can capture the final argv and env (after all flag
+// injection) without spawning a real subprocess.
+var execWithReady = sandbox.ExecWithReady
+
 // launchOpts carries everything runLaunch needs: the resolved harness, the
 // parsed start-family flags, and the inner args to append to the resolved
 // inner command. `omac start`, `omac continue`, and `omac resume` all build
@@ -915,7 +920,7 @@ func runLaunch(env *Env, opts launchOpts) int {
 		}, hintTimeout)
 	}
 
-	code, err := sandbox.ExecWithReady(argv, extra, nil)
+	code, err := execWithReady(argv, extra, nil)
 	auditor.Emit(audit.SessionStop(code))
 	if err != nil {
 		fmt.Fprintln(env.Stderr, prefix+": exec:", err)
