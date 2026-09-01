@@ -7,7 +7,7 @@ description: omac configuration files and options
 
 | File | Purpose | Written by                            |
 |---|---|---------------------------------------|
-| `oh-my-agentic-coder.yaml` | Launcher config: sandbox runtime selection, facade tuning, audit settings | User                                  |
+| `oh-my-agentic-coder.yaml` | Launcher config: facade tuning, cache scope, audit settings | User                                  |
 | `sandbox-profiles/default.json` | Sandbox grants: which filesystem paths, network hosts, and env vars the agent can access | `omac start` (first run creates it) |
 | `sandbox-profiles/default.pages.json` | Permanent allow/deny network decisions made via the prompt dialog | Network prompt dialog (user answers)  |
 | `sidecar.json` | Skill registry: names, directories, bundle hashes, declared secrets | `omac register` / `omac deregister`   |
@@ -17,12 +17,9 @@ These files live under `~/.config/omac/` (user-global) or `<workdir>/.opencode/`
 
 ## Launcher config
 
-The launcher config selects which sandbox runtime to use and tunes a few operational settings. None of this controls what the agent is allowed to access — that is the sandbox profile (see below).
+The launcher config tunes a few operational settings. None of this controls what the agent is allowed to access — that is the sandbox profile (see below).
 
 ```yaml
-sandbox:
-  default_profile: builtin          # which sandbox runtime: builtin (default), no-sandbox-debug (debugging)
-  profiles: { }                     # custom runtime definitions (deprecated); leave empty unless you need a non-standard sandbox command
 facade:
   idle_timeout_secs: 300            # close idle HTTP keep-alive connections after N seconds; does not end the session
   max_body_bytes: 10485760          # 10 MB request body cap
@@ -50,11 +47,11 @@ The project file **replaces** the global one; omac does not merge the two. Any o
 
 **Warning:** In `omac serve`, the launcher config is read once, from the `--workdir` you started the server with, so switching projects within a running server does not load a different project's file!
 
-The launcher config changes only *how omac launches* in the project: the sandbox runtime it selects, the cache scope, and the facade and audit settings. It does **not** change what the agent is allowed to access. Those grants (filesystem paths, network hosts, open ports) come from the user-global sandbox grants file described below and **currently have no per-project equivalent**.
+The launcher config changes only *how omac launches* in the project: the cache scope, and the facade and audit settings. It does **not** change what the agent is allowed to access. Those grants (filesystem paths, network hosts, open ports) come from the user-global sandbox grants file described below and **currently have no per-project equivalent**.
 
 ## Sandbox grants
 
-The sandbox grants file (`~/.config/omac/sandbox-profiles/default.json`) controls what the agent is actually allowed to access — filesystem paths, network mode, and environment variables. This is separate from the launcher config above, which only selects which sandboxing technology to use.
+The sandbox grants file (`~/.config/omac/sandbox-profiles/default.json`) controls what the agent is actually allowed to access — filesystem paths, network mode, and environment variables. This is separate from the launcher config above, which only tunes operational settings (facade, cache, audit).
 
 omac creates this file the first time you run `omac start`. Key fields:
 

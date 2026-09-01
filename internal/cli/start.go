@@ -47,7 +47,6 @@ type launchOpts struct {
 	// `omac continue`/`omac resume` is not mislabeled as `omac start:`.
 	label              string
 	harness            config.Harness
-	profile            string
 	innerCmdOverride   string
 	noSandbox          bool
 	ephemeralCache     bool
@@ -92,7 +91,6 @@ func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, int) 
 	fs := flag.NewFlagSet(cmdName, flag.ContinueOnError)
 	fs.SetOutput(env.Stderr)
 	var (
-		profile            = fs.String("sandbox", "", "Name of a sandbox profile from the launcher config.")
 		innerCmdOverride   = fs.String("inner", "", "Override inner_cmd's executable.")
 		noSandbox          = fs.Bool("no-sandbox", false, "Run inner command directly, without a sandbox (debug only).")
 		ephemeralCache     = fs.Bool("ephemeral-cache", false, "Use a per-launch cache instead of the persistent cache.")
@@ -153,7 +151,6 @@ func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, int) 
 	return launchOpts{
 		label:              cmdName,
 		harness:            harness,
-		profile:            *profile,
 		innerCmdOverride:   *innerCmdOverride,
 		noSandbox:          *noSandbox,
 		ephemeralCache:     *ephemeralCache,
@@ -219,7 +216,6 @@ func runStart(args []string, env *Env) int {
 // the inner command. It is invoked by `start`, `continue`, and `resume`.
 func runLaunch(env *Env, opts launchOpts) int {
 	harness := opts.harness
-	profile := opts.profile
 	innerCmdOverride := opts.innerCmdOverride
 	noSandbox := opts.noSandbox
 	keepRunning := opts.keepRunning
@@ -256,7 +252,7 @@ func runLaunch(env *Env, opts launchOpts) int {
 	// (templated argv) plus, for omac's native backend, its policy profile
 	// (grant JSON). Everything downstream reads the plan instead of
 	// re-resolving a bare name — see internal/cli/sandboxplan.go.
-	plan, planErr := resolveSandboxPlan(lc, profile)
+	plan, planErr := resolveSandboxPlan(lc)
 	if planErr != nil && !noSandbox {
 		fmt.Fprintln(env.Stderr, prefix+":", planErr)
 		return ExitConfigInvalid

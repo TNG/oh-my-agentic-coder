@@ -44,7 +44,6 @@ type serveParse struct {
 	controlAddr       string
 	acceptChanges     bool
 	skipSecretPattern bool
-	profile           string
 	innerCmdOverride  string
 	noSandbox         bool
 	noInner           bool
@@ -70,7 +69,6 @@ func parseServeArgs(args []string, env *Env) (serveParse, bool) {
 		controlAddr       = fs.String("control-addr", "127.0.0.1:0", "Bind address for the control-plane HTTP server.")
 		acceptChanges     = fs.Bool("accept-skill-changes", false, "Tolerate bundle_hash drift in registered skills.")
 		skipSecretPattern = fs.Bool("skip-secret-pattern", false, "Do not enforce a secret's pattern against an env_passthrough-supplied value (escape hatch for an outdated pattern; the raw value is still passed through). Mirrors the flag on `omac start`.")
-		profile           = fs.String("sandbox", "", "Name of a sandbox profile from the launcher config.")
 		innerCmdOverride  = fs.String("inner", "", "Override inner_cmd's executable (default: opencode serve).")
 		noSandbox         = fs.Bool("no-sandbox", false, "Run the inner command directly, without a sandbox (debug only).")
 		noInner           = fs.Bool("no-inner", false, "Do not launch any inner command; run the control plane only (testing/headless).")
@@ -127,7 +125,6 @@ func parseServeArgs(args []string, env *Env) (serveParse, bool) {
 		controlAddr:       *controlAddr,
 		acceptChanges:     *acceptChanges,
 		skipSecretPattern: *skipSecretPattern,
-		profile:           *profile,
 		innerCmdOverride:  *innerCmdOverride,
 		noSandbox:         *noSandbox,
 		noInner:           *noInner,
@@ -165,7 +162,6 @@ func runServe(args []string, env *Env) int {
 	controlAddr := parsed.controlAddr
 	acceptChanges := parsed.acceptChanges
 	skipSecretPattern := parsed.skipSecretPattern
-	profile := parsed.profile
 	innerCmdOverride := parsed.innerCmdOverride
 	noSandbox := parsed.noSandbox
 	noInner := parsed.noInner
@@ -189,7 +185,7 @@ func runServe(args []string, env *Env) int {
 	// (templated argv) plus, for omac's native backend, its policy profile
 	// (grant JSON). Everything downstream reads the plan instead of
 	// re-resolving a bare name — see internal/cli/sandboxplan.go.
-	plan, planErr := resolveSandboxPlan(lc, profile)
+	plan, planErr := resolveSandboxPlan(lc)
 	if planErr != nil && !noSandbox && !noInner {
 		fmt.Fprintln(env.Stderr, "omac serve:", planErr)
 		return ExitConfigInvalid

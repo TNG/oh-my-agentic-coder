@@ -3,7 +3,6 @@ package cli
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/tngtech/oh-my-agentic-coder/internal/config"
@@ -13,7 +12,7 @@ func TestResolveSandboxPlanDefaultProfileResolvesPolicy(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
-	plan, err := resolveSandboxPlan(config.DefaultLauncherConfig(), "")
+	plan, err := resolveSandboxPlan(config.DefaultLauncherConfig())
 	if err != nil {
 		t.Fatalf("resolveSandboxPlan: %v", err)
 	}
@@ -48,7 +47,7 @@ func TestResolveSandboxPlanLoadsPolicyFile(t *testing.T) {
 	t.Setenv("HOME", home)
 	stageProfile(t, home, `{"meta": {"name": "default"}, "workdir": {"access": "read"}}`)
 
-	plan, err := resolveSandboxPlan(config.DefaultLauncherConfig(), "")
+	plan, err := resolveSandboxPlan(config.DefaultLauncherConfig())
 	if err != nil {
 		t.Fatalf("resolveSandboxPlan: %v", err)
 	}
@@ -61,23 +60,6 @@ func TestResolveSandboxPlanLoadsPolicyFile(t *testing.T) {
 	}
 }
 
-func TestResolveSandboxPlanUnknownProfileErrors(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-
-	plan, err := resolveSandboxPlan(config.DefaultLauncherConfig(), "nosuch")
-	if err == nil {
-		t.Fatal("expected an error for an unknown launcher profile")
-	}
-	if !strings.Contains(err.Error(), "nosuch") {
-		t.Errorf("error should name the profile: %v", err)
-	}
-	// The name is still reported so callers can mention it, but nothing
-	// downstream may treat the profile as usable.
-	if plan.Name != "nosuch" || plan.Known {
-		t.Errorf("plan = %+v; want Name=nosuch, Known=false", plan)
-	}
-}
-
 // A broken default policy file is NOT fatal: the launch proceeds (the
 // `omac sandbox run` child resolves the policy itself and reports), but the
 // error is recorded so policy-derived facade features can be disabled with
@@ -87,7 +69,7 @@ func TestResolveSandboxPlanBrokenPolicyIsRecordedNotFatal(t *testing.T) {
 	t.Setenv("HOME", home)
 	stageProfile(t, home, `{ not valid json`)
 
-	plan, err := resolveSandboxPlan(config.DefaultLauncherConfig(), "")
+	plan, err := resolveSandboxPlan(config.DefaultLauncherConfig())
 	if err != nil {
 		t.Fatalf("a broken policy must not fail the plan: %v", err)
 	}
