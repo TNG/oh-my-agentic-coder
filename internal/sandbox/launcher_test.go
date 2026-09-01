@@ -1,78 +1,30 @@
 package sandbox
 
 import (
+	"os"
 	"reflect"
 	"testing"
-
-	"github.com/tngtech/oh-my-agentic-coder/internal/config"
 )
 
-// externalProfile is a synthetic non-native launcher template used to
-// exercise the profile-agnostic parts of Expand (the {{tmpdir_flags}} and
-// {{per_skill_env_flags}} splats in particular) without depending on any
-// shipped profile.
-func externalProfile() config.SandboxProfile {
-	return config.SandboxProfile{
-		Command: []string{
-			"external-sbx", "run",
-			"--allow-file", "{{socket}}",
-			"--read", "{{socket_dir}}",
-			"{{per_skill_env_flags}}",
-			"{{tmpdir_flags}}",
-			"--open-port", "{{tcp_port}}",
-			"--",
-			"{{inner_cmd}}", "{{inner_args}}",
-		},
-	}
-}
+// TestBuildBuiltinArgv checks the exact command produced for the builtin
+// sandbox: the {{tmpdir}} grant pair is present when a temp dir is set and
+// absent otherwise, and a missing inner command is an error.
+func TestBuildBuiltinArgv(t *testing.T) {
+	self, _ := os.Executable()
 
-// TestExpand_NoTmpDir asserts that when no TmpDir is configured, the
-// {{tmpdir_flags}} splat vanishes entirely (no `--read ""`/`--write ""`
-// with empty paths, which would hand the launcher unusable arguments).
-func TestExpand_NoTmpDir(t *testing.T) {
-	got, err := Expand(externalProfile(), Inputs{
-		Workdir:  "/work",
-		Socket:   "/tmp/omac-abc/bridge.sock",
-		TCPPort:  41017,
-		InnerCmd: []string{"opencode"},
-		// TmpDir intentionally empty.
-	})
-	if err != nil {
-		t.Fatalf("Expand: %v", err)
-	}
-	for i, a := range got {
-		if a == "" {
-			t.Fatalf("argv[%d] is an empty string; tmpdir flags leaked: %#v", i, got)
-		}
-	}
-	want := []string{
-		"external-sbx", "run",
-		"--allow-file", "/tmp/omac-abc/bridge.sock",
-		"--read", "/tmp/omac-abc",
-		"--open-port", "41017",
-		"--",
-		"opencode",
-	}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("Expand mismatch\n got: %#v\nwant: %#v", got, want)
-	}
-}
-
-// TestExpand_TmpDir asserts that a configured TmpDir expands to the
-// read+write grant pair via the {{tmpdir_flags}} splat.
-func TestExpand_TmpDir(t *testing.T) {
-	got, err := Expand(externalProfile(), Inputs{
-		Workdir:  "/work",
+	// With a temp dir: the read+write grant pair is present.
+	got, err := BuildBuiltinArgv(Inputs{
 		Socket:   "/tmp/omac-abc/bridge.sock",
 		TCPPort:  41017,
 		InnerCmd: []string{"opencode", "--model", "opus"},
 		TmpDir:   "/tmp/omac-sandbox-tmp-xyz",
 	})
 	if err != nil {
-		t.Fatalf("Expand: %v", err)
+		t.Fatalf("BuildBuiltinArgv: %v", err)
 	}
 	want := []string{
-		"external-sbx", "run",
+		self, "sandbox", "run",
+		"--profile", "default",
 		"--allow-file", "/tmp/omac-abc/bridge.sock",
 		"--read", "/tmp/omac-abc",
 		"--read", "/tmp/omac-sandbox-tmp-xyz",
@@ -82,44 +34,34 @@ func TestExpand_TmpDir(t *testing.T) {
 		"opencode", "--model", "opus",
 	}
 	if !reflect.DeepEqual(got, want) {
-		t.Errorf("Expand mismatch\n got: %#v\nwant: %#v", got, want)
+		t.Errorf("with tmpdir mismatch\n got: %#v\nwant: %#v", got, want)
 	}
-}
 
-// TestExpand_NoMounts asserts that the launcher template substitution
-// produces a valid argv when no skills are registered (Mounts is empty).
-// This is the common case immediately after install: `omac start` should
-// still bring up a sandbox so the user can iterate on inner commands
-// before they decide which skills to register.
-//
-// Specifically, the {{per_skill_env_flags}} splat must expand to nothing
-// (rather than e.g. erroring or leaving a literal token in the argv).
-func TestExpand_NoMounts(t *testing.T) {
-	got, err := Expand(externalProfile(), Inputs{
-		Workdir:  "/work",
+	// Without a temp dir: the grant pair (read+write) is absent (no empty-path flags).
+	got, err = BuildBuiltinArgv(Inputs{
 		Socket:   "/tmp/omac-abc/bridge.sock",
 		TCPPort:  41017,
-		Mounts:   nil,
-		InnerCmd: []string{"opencode"},
+		InnerCmd: []string{"claude"},
 	})
 	if err != nil {
-		t.Fatalf("Expand: %v", err)
+		t.Fatalf("BuildBuiltinArgv: %v", err)
 	}
-	for i, a := range got {
-		if a == "" {
-			t.Fatalf("argv[%d] is an empty string; per-skill flags leaked: %#v", i, got)
-		}
-	}
-	want := []string{
-		"external-sbx", "run",
+	want = []string{
+		self, "sandbox", "run",
+		"--profile", "default",
 		"--allow-file", "/tmp/omac-abc/bridge.sock",
 		"--read", "/tmp/omac-abc",
 		"--open-port", "41017",
 		"--",
-		"opencode",
+		"claude",
 	}
 	if !reflect.DeepEqual(got, want) {
-		t.Errorf("Expand mismatch\n got: %#v\nwant: %#v", got, want)
+		t.Errorf("no-tmpdir mismatch\n got: %#v\nwant: %#v", got, want)
+	}
+
+	// No inner command is an error.
+	if _, err := BuildBuiltinArgv(Inputs{Socket: "/s/bridge.sock"}); err == nil {
+		t.Error("BuildBuiltinArgv with no inner_cmd should error")
 	}
 }
 
