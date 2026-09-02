@@ -21,6 +21,8 @@ import (
 	"time"
 
 	"github.com/tngtech/oh-my-agentic-coder/internal/audit"
+	"github.com/tngtech/oh-my-agentic-coder/internal/buildbroker"
+	"github.com/tngtech/oh-my-agentic-coder/internal/buildengine"
 	"github.com/tngtech/oh-my-agentic-coder/internal/config"
 	"github.com/tngtech/oh-my-agentic-coder/internal/facade"
 	"github.com/tngtech/oh-my-agentic-coder/internal/keychain"
@@ -361,8 +363,10 @@ func runServe(args []string, env *Env) int {
 		dirs:              map[string]*dirState{},
 		byToken:           map[string]*dirState{},
 		global:            map[string]*skillRoute{},
+		buildSnapshots:    buildengine.NewParentSnapshotStore(),
 	}
 	if cacheScope != nil {
+		srv.cacheScopeDir = cacheScope.Dir
 		srv.cacheEnv = map[string]string{
 			"OMAC_CACHE_DIR":  cacheScope.Dir,
 			"OMAC_CACHE_MODE": string(cacheScope.Mode),
@@ -429,13 +433,49 @@ func runServe(args []string, env *Env) int {
 		fmt.Fprintln(env.Stderr, "[verbose] could not write control-info file:", err)
 	}
 	defer removeControlInfo()
-	httpSrv := &http.Server{Handler: srv.controlMux()}
+
+	// Ticket 07 Phase 5: parent-startup reconciliation of daemon
+	// ownership records. Reconcile BEFORE the broker is mounted / builds
+	// are accepted so a parent that crashed between daemon creation and
+	// ownership registration does not leave stale records for the next
+	// build (spec.md §239). Fail-soft: a reconciliation error is logged
+	// to env.Stderr but does NOT abort startup — the build-time
+	// handshake and the next startup will catch any stale records the
+	// sweep missed (see reconcileDaemonOwnership).
+	reconcileDaemonOwnership(srv.cacheScopeDir, env.Stderr)
+
+	// Host build broker: one per running parent, mounted on the loopback
+	// control listener. A non-loopback bind disables the broker (managed
+	// build fails closed). The token is crypto-random, in-memory, never
+	// written to control-info / activation / sidecar / executor env. One
+	// serve token authorizes all active directories (not per activation).
+	buildToken := mintToken()
+	srv.buildToken = buildToken
+	var buildBroker *buildbroker.Broker
+	if isLoopbackListener(cln) {
+		bb, bbErr := newBuildBroker(buildToken, buildbroker.ServeAuthorizer(absRoots, srv.isActiveDir), env, srv.cacheScopeDir, srv.auditor, srv.buildSnapshots.ParentSnapshotProvider())
+		if bbErr != nil {
+			if verbose {
+				fmt.Fprintf(env.Stderr, "[verbose] build broker: %v\n", bbErr)
+			}
+		} else {
+			buildBroker = bb
+			srv.buildBrokerMounted = true
+		}
+	} else if verbose {
+		fmt.Fprintf(env.Stderr, "[verbose] build broker disabled: control listener is not loopback\n")
+	}
+	httpSrv := &http.Server{Handler: srv.controlMux(buildBroker)}
 	go func() {
 		if err := httpSrv.Serve(cln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			fmt.Fprintln(env.Stderr, "omac serve: control server:", err)
 		}
 	}()
 	defer httpSrv.Close()
+	// The broker shuts down before the control listener closes.
+	if buildBroker != nil {
+		defer buildBroker.Shutdown()
+	}
 
 	if verbose {
 		fmt.Fprintf(env.Stderr, "[verbose] facade tcp=127.0.0.1:%d socket=%s\n", srv.tcpPort, socketPath)
@@ -981,6 +1021,25 @@ type serveServer struct {
 	verbose           bool
 	roots             []string // §5.4 Option B; empty = allow any directory
 	cacheEnv          map[string]string
+	// cacheScopeDir is the resolved OMAC cache scope dir the build
+	// broker's engine invoker reuses. Empty when the cache scope is
+	// not prepared (no-sandbox / no-inner).
+	cacheScopeDir string
+	// buildToken is the per-parent crypto-random build broker token.
+	// Injected into the inner env via baseEnv; never written to
+	// control-info / activation / sidecar / executor env.
+	buildToken string
+	// buildBrokerMounted reports whether the build broker was mounted
+	// on the loopback control listener. The marker is injected
+	// unconditionally; the token only when the broker is mounted.
+	buildBrokerMounted bool
+	// buildSnapshots is the parent-owned, in-memory capability snapshot
+	// store keyed by canonical worktree. The broker's engine invoker
+	// reads from it via a ParentSnapshotProvider; a build request can
+	// only compare against the frozen snapshot, never advance or
+	// replace it (ticket 06). Snapshots are frozen at activation when
+	// the canonical identity + current digest match a durable approval.
+	buildSnapshots *buildengine.ParentSnapshotStore
 
 	mu      sync.RWMutex
 	dirs    map[string]*dirState   // abs dir -> state
@@ -1007,6 +1066,70 @@ func (s *serveServer) aud() audit.Auditor {
 		return audit.Nop()
 	}
 	return s.auditor
+}
+
+// isActiveDir reports whether a canonical directory is currently active
+// under serve. This is the callback the build broker's ServeAuthorizer
+// uses to authorize a build request's worktree. A request whose
+// canonical worktree is not active is rejected before any build code
+// runs.
+func (s *serveServer) isActiveDir(canonicalDir string) bool {
+	s.mu.RLock()
+	_, ok := s.dirs[canonicalDir]
+	s.mu.RUnlock()
+	return ok
+}
+
+// freezeBuildSnapshot freezes the parent-owned capability snapshot
+// for canonicalWorktree at activation, when the canonical identity +
+// current manifest digest match a durable approval (ticket 06). A
+// build request can only compare against this snapshot; it cannot
+// advance or replace it. An unapproved directory (no durable approval
+// OR digest mismatch) is left without a snapshot — the engine
+// surfaces a host diagnostic requiring `omac build approve` + parent
+// restart. Agent-callable activation is NOT an approval transition:
+// this method reads the durable approval record; it does not write
+// one.
+//
+// FREEZE-ONCE: the snapshot is frozen only the FIRST time a worktree
+// is activated in this parent's lifetime. Re-activation (already-active
+// short-circuit at the top of `activate`) and agent-callable reload
+// (deactivate → activate) do NOT re-freeze — a snapshot already
+// exists for the worktree and is left untouched. This enforces the
+// spec rule (§Authorization and security, ticket 06): "changed
+// approval takes effect only after parent restart; agent-callable
+// activate/reload cannot grant or refresh build capabilities." A
+// changed durable approval on disk is picked up only by the next
+// parent restart (omac serve re-run).
+func (s *serveServer) freezeBuildSnapshot(absDir string) {
+	if s.buildSnapshots == nil || s.cacheScopeDir == "" {
+		return
+	}
+	canon, err := canonicalWorktree(absDir)
+	if err != nil {
+		return
+	}
+	// Freeze-once: if a snapshot already exists for this worktree,
+	// leave it. A re-activation or agent-callable reload must NOT
+	// refresh the snapshot from a changed durable approval on disk —
+	// that would let an agent-callable route grant/refresh build
+	// capabilities without a parent restart (spec violation).
+	if _, err := s.buildSnapshots.Lookup(canon); err == nil {
+		return // already frozen this parent lifetime; do not refresh
+	}
+	freezeSnapshotFromDurableApproval(s.buildSnapshots, canon, s.cacheScopeDir)
+}
+
+// isLoopbackListener reports whether the listener is bound to a
+// loopback address. The build broker is mounted only on a loopback
+// control listener; a non-loopback bind disables the broker (managed
+// build fails closed).
+func isLoopbackListener(ln net.Listener) bool {
+	addr, ok := ln.Addr().(*net.TCPAddr)
+	if !ok {
+		return false
+	}
+	return addr.IP.IsLoopback()
 }
 
 // dirAllowed reports whether absDir may be activated under the configured
@@ -1308,6 +1431,16 @@ func (s *serveServer) activate(absDir string) (map[string]any, error) {
 	}
 	d.mu.Unlock()
 
+	// Ticket 06: freeze the parent-owned capability snapshot for this
+	// canonical worktree at activation, when the canonical identity +
+	// current manifest digest match a durable approval. A build request
+	// can only compare against this snapshot; it cannot advance or
+	// replace it. An unapproved directory has build unavailable with a
+	// host diagnostic requiring `omac build approve` + parent restart.
+	// Agent-callable activation is NOT an approval transition: it
+	// reads the durable approval record; it does not write one.
+	s.freezeBuildSnapshot(absDir)
+
 	s.refreshSingleDirAliases()
 	return s.manifestFor(d), nil
 }
@@ -1592,6 +1725,14 @@ func (s *serveServer) baseEnv() map[string]string {
 	for k, v := range s.cacheEnv {
 		extra[k] = v
 	}
+	// Managed build mode: the required marker is injected
+	// unconditionally (even when the broker or control-plane bind
+	// failed) so a misconfigured parent fails closed instead of
+	// falling back to nested local execution. The token is injected
+	// only when the broker is actually mounted on the loopback
+	// listener; a missing token with the marker present makes the
+	// CLI exit 10 with a restart/upgrade diagnostic (fail-closed).
+	injectBuildBrokerEnv(extra, s.buildBrokerMounted, s.buildToken)
 	// Global skills are known at cold start (§4.5/§5.1): inject their base
 	// URLs and list their mounts in OMAC_SKILLS.
 	//
@@ -1804,7 +1945,7 @@ func (s *serveServer) skillJSON(sr *skillRoute, scope string) map[string]any {
 
 // ---- control plane ----
 
-func (s *serveServer) controlMux() *http.ServeMux {
+func (s *serveServer) controlMux(broker *buildbroker.Broker) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/__omac__/activate", s.handleActivate)
 	mux.HandleFunc("/__omac__/deactivate", s.handleDeactivate)
@@ -1812,6 +1953,9 @@ func (s *serveServer) controlMux() *http.ServeMux {
 	mux.HandleFunc("/__omac__/reload-global", s.handleReloadGlobal)
 	mux.HandleFunc("/__omac__/dirs", s.handleDirs)
 	mux.HandleFunc("/__omac__/global", s.handleGlobal)
+	if broker != nil {
+		broker.Mount(mux)
+	}
 	return mux
 }
 

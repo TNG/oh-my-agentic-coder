@@ -88,6 +88,17 @@ func GenerateSBPL(g *Grants) string {
 			fmt.Fprintf(&b, "(allow file-write* (subpath %s))\n", sbplQuote(fp))
 		}
 	}
+
+	// --- Write-deny overrides (read-only control state) ---
+	// Emitted AFTER the write allows so a later write-deny overrides any
+	// broader write grant covering the path (e.g. an OMAC control file
+	// inside the writable cache leaf). Read stays allowed via the
+	// read-allow rules above; only writes are denied.
+	for _, p := range g.WriteDenyPaths {
+		for _, fp := range pathForms(p) {
+			fmt.Fprintf(&b, "(deny file-write* (subpath %s))\n", sbplQuote(fp))
+		}
+	}
 	b.WriteString("\n")
 
 	// --- Devices every process needs ---
