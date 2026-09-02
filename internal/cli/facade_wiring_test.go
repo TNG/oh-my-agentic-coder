@@ -18,7 +18,7 @@ func wireForTest(t *testing.T, noSandbox bool) (*facade.Facade, []string) {
 
 func wireModeForTest(t *testing.T, noSandbox, learnMode bool) (*facade.Facade, []string) {
 	t.Helper()
-	plan, err := resolveSandboxPlan(config.DefaultLauncherConfig())
+	plan, err := resolveSandboxPlan(config.DefaultLauncherConfig(), "")
 	if err != nil {
 		t.Fatalf("resolveSandboxPlan: %v", err)
 	}

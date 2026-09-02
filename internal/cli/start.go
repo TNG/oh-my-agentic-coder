@@ -248,11 +248,26 @@ func runLaunch(env *Env, opts launchOpts) int {
 	if verbose && cfgPath != "" {
 		fmt.Fprintf(env.Stderr, "[verbose] loaded launcher config: %s\n", cfgPath)
 	}
+	// Resolve sandbox.profile_path (if set) to the policy profile the run
+	// enforces. A bad path is fatal under a real sandbox; under --no-sandbox no
+	// profile is applied, so a resolution error is ignored.
+	profileRef, profErr := lc.ResolveSandboxProfileRef(cfgPath, env.Workdir)
+	if profErr != nil && !noSandbox {
+		fmt.Fprintln(env.Stderr, prefix+": sandbox profile:", profErr)
+		return ExitConfigInvalid
+	}
+	if verbose {
+		if profileRef != "" {
+			fmt.Fprintf(env.Stderr, "[verbose] sandbox profile: %s (from sandbox.profile_path)\n", profileRef)
+		} else {
+			fmt.Fprintln(env.Stderr, "[verbose] sandbox profile: default")
+		}
+	}
 	// One resolved sandbox plan for the whole launch: the launcher profile
 	// (templated argv) plus, for omac's native backend, its policy profile
 	// (grant JSON). Everything downstream reads the plan instead of
 	// re-resolving a bare name — see internal/cli/sandboxplan.go.
-	plan, planErr := resolveSandboxPlan(lc)
+	plan, planErr := resolveSandboxPlan(lc, profileRef)
 	if planErr != nil && !noSandbox {
 		fmt.Fprintln(env.Stderr, prefix+":", planErr)
 		return ExitConfigInvalid
@@ -757,10 +772,11 @@ func runLaunch(env *Env, opts launchOpts) int {
 		argv = inner
 	} else {
 		argv, err = sandbox.BuildBuiltinArgv(sandbox.Inputs{
-			Socket:   socketPath,
-			TCPPort:  tcpPort,
-			InnerCmd: inner,
-			TmpDir:   sandboxTmp,
+			Socket:     socketPath,
+			TCPPort:    tcpPort,
+			InnerCmd:   inner,
+			TmpDir:     sandboxTmp,
+			ProfileRef: profileRef,
 		})
 		if err != nil {
 			fmt.Fprintln(env.Stderr, prefix+": sandbox argv:", err)

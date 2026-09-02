@@ -181,11 +181,26 @@ func runServe(args []string, env *Env) int {
 		fmt.Fprintln(env.Stderr, "omac serve: launcher config:", err)
 		return ExitConfigInvalid
 	}
+	// Resolve sandbox.profile_path (if set) to the policy profile the run
+	// enforces. A bad path is fatal under a real sandbox; ignored when no
+	// sandboxed inner is launched (--no-sandbox / --no-inner).
+	profileRef, profErr := lc.ResolveSandboxProfileRef(cfgPath, env.Workdir)
+	if profErr != nil && !noSandbox && !noInner {
+		fmt.Fprintln(env.Stderr, "omac serve: sandbox profile:", profErr)
+		return ExitConfigInvalid
+	}
+	if verbose {
+		if profileRef != "" {
+			fmt.Fprintf(env.Stderr, "[verbose] sandbox profile: %s (from sandbox.profile_path)\n", profileRef)
+		} else {
+			fmt.Fprintln(env.Stderr, "[verbose] sandbox profile: default")
+		}
+	}
 	// One resolved sandbox plan for the whole run: the launcher profile
 	// (templated argv) plus, for omac's native backend, its policy profile
 	// (grant JSON). Everything downstream reads the plan instead of
 	// re-resolving a bare name — see internal/cli/sandboxplan.go.
-	plan, planErr := resolveSandboxPlan(lc)
+	plan, planErr := resolveSandboxPlan(lc, profileRef)
 	if planErr != nil && !noSandbox && !noInner {
 		fmt.Fprintln(env.Stderr, "omac serve:", planErr)
 		return ExitConfigInvalid
@@ -531,10 +546,11 @@ func runServe(args []string, env *Env) int {
 			return ExitIOError
 		}
 		argv, err = sandboxServeArgv(sandbox.Inputs{
-			Socket:   socketPath,
-			TCPPort:  srv.tcpPort,
-			InnerCmd: inner,
-			TmpDir:   srv.sandboxTmp,
+			Socket:     socketPath,
+			TCPPort:    srv.tcpPort,
+			InnerCmd:   inner,
+			TmpDir:     srv.sandboxTmp,
+			ProfileRef: profileRef,
 		}, controlPortOf(cln), harness)
 		if err != nil {
 			fmt.Fprintln(env.Stderr, "omac serve: sandbox argv:", err)
