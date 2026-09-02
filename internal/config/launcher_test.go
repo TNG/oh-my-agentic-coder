@@ -67,7 +67,7 @@ func TestValidateSandbox(t *testing.T) {
 
 	// Custom launcher profiles are no longer supported.
 	err = validateSandbox(SandboxConfig{
-		Profiles: map[string]SandboxProfile{"x": {}},
+		Profiles: map[string]any{"x": nil},
 	}, "cfg")
 	if err == nil {
 		t.Error("a non-empty profiles block should be rejected")

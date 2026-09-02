@@ -52,10 +52,8 @@ func runDoctor(args []string, env *Env) int {
 		fmt.Fprintln(env.Stdout, "[ok] keychain backend: reachable")
 	}
 
-	// Launcher config resolution. Retain the first successful result
-	// so later sections (sandbox binary, profile warnings) reuse it
-	// instead of re-loading.
-	firstLauncher, cfgPath, err := config.LoadLauncher(env.Workdir)
+	// Launcher config resolution: report which config file (if any) applies.
+	_, cfgPath, err := config.LoadLauncher(env.Workdir)
 	if err != nil {
 		fmt.Fprintln(env.Stdout, "[fail] launcher config:", err)
 		return ExitConfigInvalid
@@ -198,21 +196,8 @@ func runDoctor(args []string, env *Env) int {
 	// Built-in skills provisioned by `omac setup`, per installed harness.
 	doctorBuiltinSkills(env)
 
-	// Sandbox binary. Reuse the launcher config resolved above so the
-	// first successful LoadLauncher result is authoritative.
-	lc := firstLauncher
-	profName := lc.Sandbox.DefaultProfile
-	if prof, ok := lc.Sandbox.Profiles[profName]; ok && len(prof.Command) > 0 {
-		head := prof.Command[0]
-		if head == "{{self}}" {
-			fmt.Fprintf(env.Stdout, "[ok] sandbox profile %q uses the built-in sandbox\n", profName)
-			doctorBuiltinSandbox(env)
-		} else if _, err := exec.LookPath(head); err != nil {
-			fmt.Fprintf(env.Stdout, "[warn] sandbox profile %q head %q not on $PATH\n", profName, head)
-		} else {
-			fmt.Fprintf(env.Stdout, "[ok] sandbox profile %q head %q found\n", profName, head)
-		}
-	}
+	// omac always launches its built-in OS sandbox.
+	doctorBuiltinSandbox(env)
 
 	// Advisory: warn about broad tool-home / cache-root grants in the
 	// built-in sandbox profile without mutating it. Warnings never
