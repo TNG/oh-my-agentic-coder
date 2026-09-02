@@ -196,23 +196,27 @@ func runDoctor(args []string, env *Env) int {
 	// Built-in skills provisioned by `omac setup`, per installed harness.
 	doctorBuiltinSkills(env)
 
+	// Inspect the same policy profile a launch would use (sandbox.profile_path,
+	// else the built-in "default"), so doctor reflects the real config.
+	profileRef := inspectProfileRef(env.Workdir, "")
+
 	// omac always launches its built-in OS sandbox.
-	doctorBuiltinSandbox(env)
+	doctorBuiltinSandbox(env, profileRef)
 
 	// Advisory: warn about broad tool-home / cache-root grants in the
-	// built-in sandbox profile without mutating it. Warnings never
+	// resolved sandbox profile without mutating it. Warnings never
 	// affect the exit code.
-	doctorSandboxProfileWarnings(env)
+	doctorSandboxProfileWarnings(env, profileRef)
 
 	// Static security lint of the resolved policy (advisory). Reuses the
 	// same engine as `omac provenance --check` — findings are warnings
 	// here, never a doctor failure.
-	doctorProfileLint(env, "default")
+	doctorProfileLint(env, profileRef)
 
 	// Advisory: a private-registry mapping the sandbox cannot see makes
 	// scoped installs 404 with no denial anywhere to point at, so nothing
 	// else in doctor or diagnose would mention it.
-	doctorRegistryConfig(env, "default")
+	doctorRegistryConfig(env, profileRef)
 
 	fmt.Fprintln(env.Stdout, "\nWhen a run fails, `omac diagnose` shows what the sandbox blocked and why.")
 
@@ -368,13 +372,13 @@ func doctorBuiltinSkills(env *Env) {
 // doctorBuiltinSandbox reports the platform prerequisites of the
 // built-in sandbox: kernel backend availability (hard requirement) and
 // dialog backend availability for the network prompt (warning only).
-func doctorBuiltinSandbox(env *Env) {
+func doctorBuiltinSandbox(env *Env, profileRef string) {
 	if err := sandboxrun.CheckPlatform(); err != nil {
 		fmt.Fprintf(env.Stdout, "[fail] built-in sandbox: %v\n", err)
 	} else {
 		fmt.Fprintln(env.Stdout, "[ok] built-in sandbox: kernel backend available")
 	}
-	for _, line := range sandboxrun.DoctorNotes() {
+	for _, line := range sandboxrun.DoctorNotes(profileRef) {
 		fmt.Fprintln(env.Stdout, line)
 	}
 	if _, available := netprompt.NewPrompter(1, nil, nil, nil, nil, nil); available {
@@ -410,15 +414,15 @@ type toolHomeWarning struct {
 	remediation string
 }
 
-// doctorSandboxProfileWarnings resolves the built-in sandbox's policy
-// profile ("default") read-only and warns about broad grants that fail to
-// isolate tool caches / cargo credentials / rust toolchains, or an env
-// allow/deny list that would break the harness. Warnings are advisory: they
-// never increment the failure count and never mutate the on-disk profile.
-func doctorSandboxProfileWarnings(env *Env) {
-	p, path, err := sandboxprofile.Resolve("default")
+// doctorSandboxProfileWarnings resolves the sandbox policy profile read-only
+// and warns about broad grants that fail to isolate tool caches / cargo
+// credentials / rust toolchains, or an env allow/deny list that would break the
+// harness. Warnings are advisory: they never increment the failure count and
+// never mutate the on-disk profile.
+func doctorSandboxProfileWarnings(env *Env, profileRef string) {
+	p, path, err := sandboxprofile.Resolve(profileRef)
 	if err != nil {
-		fmt.Fprintf(env.Stdout, "  [warn] sandbox profile %q: %v\n", "default", err)
+		fmt.Fprintf(env.Stdout, "  [warn] sandbox profile: %v\n", err)
 		return
 	}
 	if len(p.Environment.AllowVars) == 0 {
