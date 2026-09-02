@@ -286,16 +286,12 @@ func TestPrepareAndGrantOpenCodeRuntimeDirs(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_DATA_HOME", "")
 	oc, _ := config.LookupHarness("opencode")
-	prof := config.SandboxProfile{
-		Command:  []string{"omac", "sandbox", "run", "--", "{{inner_cmd}}", "{{inner_args}}"},
-		InnerCmd: []string{"opencode"},
-	}
-	in := sandbox.Inputs{Workdir: t.TempDir(), InnerCmd: []string{"opencode", "serve"}}
+	in := sandbox.Inputs{InnerCmd: []string{"opencode", "serve"}}
 
 	if err := prepareSandboxDirs(oc.SandboxCreateDirs); err != nil {
 		t.Fatalf("prepareSandboxDirs: %v", err)
 	}
-	argv, err := sandboxServeArgv(prof, in, "", oc)
+	argv, err := sandboxServeArgv(in, "", oc)
 	if err != nil {
 		t.Fatalf("sandboxServeArgv: %v", err)
 	}
@@ -316,16 +312,12 @@ func TestPrepareAndGrantOpenCodeRuntimeDirsUsesXDGDataHome(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("XDG_DATA_HOME", xdgDataHome)
 	oc, _ := config.LookupHarness("opencode")
-	prof := config.SandboxProfile{
-		Command:  []string{"omac", "sandbox", "run", "--", "{{inner_cmd}}", "{{inner_args}}"},
-		InnerCmd: []string{"opencode"},
-	}
-	in := sandbox.Inputs{Workdir: t.TempDir(), InnerCmd: []string{"opencode", "serve"}}
+	in := sandbox.Inputs{InnerCmd: []string{"opencode", "serve"}}
 
 	if err := prepareSandboxDirs(oc.SandboxCreateDirs); err != nil {
 		t.Fatalf("prepareSandboxDirs: %v", err)
 	}
-	argv, err := sandboxServeArgv(prof, in, "", oc)
+	argv, err := sandboxServeArgv(in, "", oc)
 	if err != nil {
 		t.Fatalf("sandboxServeArgv: %v", err)
 	}
