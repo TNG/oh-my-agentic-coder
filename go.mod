@@ -1,4 +1,4 @@
-module github.com/tngtech/oh-my-agentic-coder
+module github.com/TNG/oh-my-agentic-coder
 
 go 1.25.0
 

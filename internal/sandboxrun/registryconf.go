@@ -6,8 +6,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/tngtech/oh-my-agentic-coder/internal/registryconf"
-	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxprofile"
+	"github.com/TNG/oh-my-agentic-coder/internal/registryconf"
+	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
 )
 
 // setupRegistryConfig honors filesystem.registry_config: it derives a

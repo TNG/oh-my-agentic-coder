@@ -11,9 +11,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tngtech/oh-my-agentic-coder/internal/netprompt/hostmap"
-	"github.com/tngtech/oh-my-agentic-coder/internal/netprompt/origin"
-	"github.com/tngtech/oh-my-agentic-coder/internal/netproxy"
+	"github.com/TNG/oh-my-agentic-coder/internal/netprompt/hostmap"
+	"github.com/TNG/oh-my-agentic-coder/internal/netprompt/origin"
+	"github.com/TNG/oh-my-agentic-coder/internal/netproxy"
 )
 
 // Decision tokens, mirroring nono's parse_decision_token.

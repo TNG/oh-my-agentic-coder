@@ -12,9 +12,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tngtech/oh-my-agentic-coder/internal/keychain"
-	"github.com/tngtech/oh-my-agentic-coder/internal/secrets"
-	"github.com/tngtech/oh-my-agentic-coder/internal/skillstate"
+	"github.com/TNG/oh-my-agentic-coder/internal/keychain"
+	"github.com/TNG/oh-my-agentic-coder/internal/secrets"
+	"github.com/TNG/oh-my-agentic-coder/internal/skillstate"
 )
 
 // stageSkillForConfigShow writes a skill declaring one config field sourced

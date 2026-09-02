@@ -17,7 +17,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/tngtech/oh-my-agentic-coder/internal/audit"
+	"github.com/TNG/oh-my-agentic-coder/internal/audit"
 )
 
 // Decision is the outcome of a filter check.

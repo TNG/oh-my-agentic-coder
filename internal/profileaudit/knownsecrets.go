@@ -1,6 +1,6 @@
 package profileaudit
 
-import "github.com/tngtech/oh-my-agentic-coder/internal/sandboxprofile"
+import "github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
 
 // BaselineSecretPaths returns the paths omac already denies by default
 // (PlatformBaseline().ProtectedPaths). Exported so the check can

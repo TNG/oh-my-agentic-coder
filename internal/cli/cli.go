@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/tngtech/oh-my-agentic-coder/internal/config"
+	"github.com/TNG/oh-my-agentic-coder/internal/config"
 )
 
 // Exit codes are a stable contract for scripts and CI.

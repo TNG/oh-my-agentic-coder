@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tngtech/oh-my-agentic-coder/internal/config"
+	"github.com/TNG/oh-my-agentic-coder/internal/config"
 )
 
 func runSetupCapture(t *testing.T, workdir string, args []string) (stdout, stderr string, code int) {

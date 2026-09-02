@@ -5,9 +5,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/tngtech/oh-my-agentic-coder/internal/config"
-	"github.com/tngtech/oh-my-agentic-coder/internal/plugin"
-	"github.com/tngtech/oh-my-agentic-coder/internal/prefs"
+	"github.com/TNG/oh-my-agentic-coder/internal/config"
+	"github.com/TNG/oh-my-agentic-coder/internal/plugin"
+	"github.com/TNG/oh-my-agentic-coder/internal/prefs"
 )
 
 func TestPluginInstallCommand(t *testing.T) {

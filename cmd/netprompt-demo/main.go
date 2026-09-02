@@ -17,7 +17,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/tngtech/oh-my-agentic-coder/internal/netprompt"
+	"github.com/TNG/oh-my-agentic-coder/internal/netprompt"
 )
 
 func main() {

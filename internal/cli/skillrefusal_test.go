@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tngtech/oh-my-agentic-coder/internal/skillstate"
+	"github.com/TNG/oh-my-agentic-coder/internal/skillstate"
 )
 
 func render(problems []skillstate.Problem) (string, int) {

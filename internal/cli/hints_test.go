@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tngtech/oh-my-agentic-coder/internal/registry"
+	"github.com/TNG/oh-my-agentic-coder/internal/registry"
 )
 
 func TestRegisterCmd(t *testing.T) {

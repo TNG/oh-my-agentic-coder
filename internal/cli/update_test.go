@@ -17,7 +17,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tngtech/oh-my-agentic-coder/internal/updater"
+	"github.com/TNG/oh-my-agentic-coder/internal/updater"
 )
 
 // --- fakes implementing updater's exported interfaces -----------------

@@ -4,11 +4,11 @@ import (
 	"fmt"
 	"path/filepath"
 
-	"github.com/tngtech/oh-my-agentic-coder/internal/config"
-	"github.com/tngtech/oh-my-agentic-coder/internal/facade"
-	"github.com/tngtech/oh-my-agentic-coder/internal/registry"
-	"github.com/tngtech/oh-my-agentic-coder/internal/skilltrust"
-	"github.com/tngtech/oh-my-agentic-coder/internal/supervisor"
+	"github.com/TNG/oh-my-agentic-coder/internal/config"
+	"github.com/TNG/oh-my-agentic-coder/internal/facade"
+	"github.com/TNG/oh-my-agentic-coder/internal/registry"
+	"github.com/TNG/oh-my-agentic-coder/internal/skilltrust"
+	"github.com/TNG/oh-my-agentic-coder/internal/supervisor"
 )
 
 // A skill sidecar runs UNSANDBOXED, so it may spawn only when its current

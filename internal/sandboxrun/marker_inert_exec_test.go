@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxdeny"
-	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxprofile"
+	"github.com/TNG/oh-my-agentic-coder/internal/sandboxdeny"
+	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
 )
 
 // The marker written over a protected file also lands over the shell

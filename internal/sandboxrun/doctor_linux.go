@@ -5,7 +5,7 @@ package sandboxrun
 import (
 	"fmt"
 
-	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxprofile"
+	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
 )
 
 // DoctorNotes returns extra platform diagnostics for `omac doctor`.
