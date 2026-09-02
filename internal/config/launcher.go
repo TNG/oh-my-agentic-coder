@@ -268,22 +268,22 @@ func validateSandbox(sb SandboxConfig, path string) error {
 	case "nono", "nono-netprofile":
 		return fmt.Errorf("%s: the %q sandbox has been removed; only the built-in sandbox remains.\n"+
 			"  Set 'default_profile: builtin' (or delete the line — builtin is the default).\n"+
-			"  See docs/configuration.md.", path, sb.DefaultProfile)
+			"  See docs/configuration.md", path, sb.DefaultProfile)
 	case "no-sandbox-debug":
 		return fmt.Errorf("%s: the 'no-sandbox-debug' profile has been removed.\n"+
 			"  For an unsandboxed shell, run: omac start --no-sandbox --inner bash\n"+
 			"  Remove 'default_profile: no-sandbox-debug' from your config.\n"+
-			"  See docs/configuration.md.", path)
+			"  See docs/configuration.md", path)
 	default:
 		return fmt.Errorf("%s: unknown sandbox profile %q; only \"builtin\" is supported.\n"+
 			"  Set 'default_profile: builtin' (or delete the line).\n"+
-			"  See docs/configuration.md.", path, sb.DefaultProfile)
+			"  See docs/configuration.md", path, sb.DefaultProfile)
 	}
 	if len(sb.Profiles) > 0 {
 		return fmt.Errorf("%s: custom sandbox launcher profiles are no longer supported.\n"+
 			"  Remove the 'sandbox.profiles' block. For a custom sandbox policy set\n"+
 			"  'sandbox.profile_path: <file>'; to run a non-native harness add '--inner <binary>'.\n"+
-			"  See docs/configuration.md.", path)
+			"  See docs/configuration.md", path)
 	}
 	return nil
 }
