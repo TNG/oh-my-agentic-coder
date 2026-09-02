@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -80,10 +81,15 @@ type AuditConfig struct {
 // AuditEnabled reports whether auditing is on, treating unset as true.
 func (a AuditConfig) AuditEnabled() bool { return a.Enabled == nil || *a.Enabled }
 
-// SandboxConfig declares named sandbox profiles.
+// SandboxConfig is the `sandbox` block of the launcher config.
 type SandboxConfig struct {
 	DefaultProfile string                    `yaml:"default_profile" json:"default_profile"`
 	Profiles       map[string]SandboxProfile `yaml:"profiles"        json:"profiles"`
+
+	// ProfilePath overrides the built-in default policy profile. It is an
+	// absolute path, or relative to the config layer that declared it (see
+	// ResolveSandboxProfileRef). Empty uses the default.
+	ProfilePath string `yaml:"profile_path" json:"profile_path"`
 
 	// Briefing optionally overrides the embedded sandbox briefing text.
 	// Empty/unset uses the compiled-in default (sandboxbrief.Default);
@@ -193,6 +199,13 @@ func defaultLauncherConfigFor(h Harness) LauncherConfig {
 
 func boolPtr(b bool) *bool { return &b }
 
+// ProjectLauncherConfigPath returns the per-workdir launcher config path.
+// LoadLauncher and ResolveSandboxProfileRef both use it so their notion of the
+// project config stays identical.
+func ProjectLauncherConfigPath(workdir string) string {
+	return filepath.Join(workdir, ".opencode", "oh-my-agentic-coder.yaml")
+}
+
 // LoadLauncher loads the launcher config from
 // <workdir>/.opencode/oh-my-agentic-coder.yaml or, failing that,
 // $XDG_CONFIG_HOME/omac/config.yaml (~/.config/omac/config.yaml).
@@ -204,7 +217,7 @@ func boolPtr(b bool) *bool { return &b }
 // they want to paste in. The .yaml extension is the canonical name.
 func LoadLauncher(workdir string) (LauncherConfig, string, error) {
 	candidates := []string{
-		filepath.Join(workdir, ".opencode", "oh-my-agentic-coder.yaml"),
+		ProjectLauncherConfigPath(workdir),
 	}
 	if home, err := os.UserHomeDir(); err == nil {
 		candidates = append(candidates, filepath.Join(home, ".config", "omac", "config.yaml"))
@@ -259,6 +272,66 @@ func mergeDefaults(lc LauncherConfig) LauncherConfig {
 		lc.Audit.Enabled = def.Audit.Enabled
 	}
 	return lc
+}
+
+// ResolveSandboxProfileRef resolves sandbox.profile_path to an absolute path,
+// or "" when unset (use the built-in default profile).
+//
+// cfgPath and workdir must be LoadLauncher's returned path and its workdir. A
+// relative profile_path is anchored by config layer: the project root for a
+// project config, the config directory for a global config. An absolute path
+// is used verbatim. A missing file or a directory is an error, not a fall back
+// to the default.
+func (lc LauncherConfig) ResolveSandboxProfileRef(cfgPath, workdir string) (string, error) {
+	raw := strings.TrimSpace(lc.Sandbox.ProfilePath)
+	if raw == "" {
+		return "", nil
+	}
+	abs := raw
+	if !filepath.IsAbs(abs) {
+		base, err := sandboxProfileRelBase(cfgPath, workdir)
+		if err != nil {
+			return "", err
+		}
+		abs = filepath.Join(base, abs)
+	}
+	abs = filepath.Clean(abs)
+	info, err := os.Stat(abs)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "", fmt.Errorf("sandbox.profile_path %q does not exist (resolved to %s)", raw, abs)
+		}
+		return "", fmt.Errorf("sandbox.profile_path %q (resolved to %s): %w", raw, abs, err)
+	}
+	if info.IsDir() {
+		return "", fmt.Errorf("sandbox.profile_path %q is a directory, not a profile file (resolved to %s)", raw, abs)
+	}
+	return abs, nil
+}
+
+// sandboxProfileRelBase returns the directory a relative profile_path anchors
+// on, chosen by config layer (see ResolveSandboxProfileRef). An empty cfgPath
+// is a caller bug — a relative path has no anchor — so it errors rather than
+// defaulting to cwd.
+func sandboxProfileRelBase(cfgPath, workdir string) (string, error) {
+	if cfgPath == "" {
+		return "", fmt.Errorf("cannot resolve a relative sandbox.profile_path without a config file path")
+	}
+	if workdir != "" && cfgPath == ProjectLauncherConfigPath(workdir) {
+		return workdir, nil
+	}
+	return filepath.Dir(cfgPath), nil
+}
+
+// DeprecationWarnings returns non-fatal notices for legacy sandbox settings
+// that still parse but do nothing. Callers print them after a successful load.
+func (sb SandboxConfig) DeprecationWarnings() []string {
+	var warns []string
+	if strings.TrimSpace(sb.DefaultProfile) != "" {
+		warns = append(warns, "sandbox.default_profile is deprecated and ignored; "+
+			"the built-in sandbox is always used — you can remove this line.")
+	}
+	return warns
 }
 
 // validateSandbox rejects a launcher config that selects a removed or unknown
