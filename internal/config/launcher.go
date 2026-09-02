@@ -83,8 +83,11 @@ func (a AuditConfig) AuditEnabled() bool { return a.Enabled == nil || *a.Enabled
 
 // SandboxConfig is the `sandbox` block of the launcher config.
 type SandboxConfig struct {
-	DefaultProfile string                    `yaml:"default_profile" json:"default_profile"`
-	Profiles       map[string]SandboxProfile `yaml:"profiles"        json:"profiles"`
+	// DefaultProfile and Profiles are deprecated. omac always launches its
+	// built-in sandbox, so neither does anything; they are parsed only so
+	// validateSandbox can detect a legacy config and reject or warn on it.
+	DefaultProfile string         `yaml:"default_profile" json:"default_profile"`
+	Profiles       map[string]any `yaml:"profiles"        json:"profiles"`
 
 	// ProfilePath overrides the built-in default policy profile. It is an
 	// absolute path, or relative to the config layer that declared it (see
@@ -97,16 +100,6 @@ type SandboxConfig struct {
 	Briefing string `yaml:"briefing"        json:"briefing"`
 }
 
-// SandboxProfile is one entry under `sandbox.profiles` in the launcher
-// config. omac launches only the built-in sandbox, and its command is
-// assembled in Go by sandbox.BuildBuiltinArgv rather than from these fields.
-// They are kept so existing config files still parse and so `omac doctor`
-// can recognize the built-in profile.
-type SandboxProfile struct {
-	Command  []string `yaml:"command"   json:"command"`
-	InnerCmd []string `yaml:"inner_cmd" json:"inner_cmd"`
-}
-
 // FacadeConfig tunes the reverse proxy.
 type FacadeConfig struct {
 	IdleTimeoutSecs    int      `yaml:"idle_timeout_secs"    json:"idle_timeout_secs"`
@@ -114,74 +107,11 @@ type FacadeConfig struct {
 	BaseEnvPassthrough []string `yaml:"base_env_passthrough" json:"base_env_passthrough"`
 }
 
-// DefaultLauncherConfig returns a config that ships as the compiled-in default.
-//
-// The builtin sandbox profile deliberately ships with an EMPTY inner_cmd: the
-// inner command is supplied by the selected harness (the positional
-// `omac start <harness>` token; default opencode) via Harness.ResolveInnerCmd.
-// This is what lets `omac start claude` actually run Claude Code without editing
-// config. A user who pins a profile's inner_cmd in their own
-// oh-my-agentic-coder.yaml still wins (that explicit value takes precedence over
-// the harness default — see ResolveInnerCmd).
+// DefaultLauncherConfig returns the config that ships as the compiled-in
+// default. It sets no sandbox block: omac always launches its built-in sandbox,
+// and the inner command comes from the selected harness at launch.
 func DefaultLauncherConfig() LauncherConfig {
-	return defaultLauncherConfigFor(DefaultHarness())
-}
-
-// defaultLauncherConfigFor builds the default launcher config. The harness
-// argument is currently only used to keep the signature future-proof and to
-// let tests assert harness-independence; the builtin profile intentionally
-// leaves inner_cmd empty so the harness fills it at launch. The sandbox
-// *command* templates are harness-independent (they only reference
-// {{inner_cmd}} / {{inner_args}} placeholders).
-func defaultLauncherConfigFor(h Harness) LauncherConfig {
-	_ = h // inner_cmd is supplied by the harness at resolve time, not baked here
 	return LauncherConfig{
-		Sandbox: SandboxConfig{
-			DefaultProfile: "builtin",
-			Profiles: map[string]SandboxProfile{
-				// builtin re-execs the running omac binary as
-				// `omac sandbox run` — omac's native OS sandbox
-				// (Seatbelt on macOS, bubblewrap+Landlock on Linux).
-				// Flag semantics:
-				//
-				//   --allow-file <socket>   AF_UNIX bridge socket (the
-				//                           generated Seatbelt profile
-				//                           allows connect explicitly,
-				//                           so this works on macOS even
-				//                           under the network deny)
-				//   --read <socket-dir>     path-component lookup
-				//   {{tmpdir_flags}}        rw on the TMPDIR temp dir
-				//   --open-port <tcp-port>  loopback facade transport
-				//
-				// The sandbox profile itself (fs grants, listen_port,
-				// allow_tcp_connect, network prompt) is resolved by
-				// `omac sandbox run --profile default`: user override at
-				// ~/.config/omac/profiles/default.json, else compiled-in
-				// defaults. The compiled-in default profile intentionally
-				// does NOT broad-grant the host cache roots (~/.cache,
-				// ~/Library/Caches) or the whole tool homes (~/go,
-				// ~/.cargo, ~/.rustup). Only the toolchain bin leaves
-				// (~/.cargo/bin, ~/.rustup, ~/go/bin, ~/.nvm, ~/.bun/bin)
-				// are read-only; the selected tool-cache scope leaf
-				// (~/.cache/omac/<sha256(scope)>) is granted rw at launch
-				// via --allow (see internal/toolcache and
-				// internal/cli/start.go's prepareLaunchCache).
-				"builtin": {
-					Command: []string{
-						"{{self}}", "sandbox", "run",
-						"--profile", "default",
-						"--allow-file", "{{socket}}",
-						"--read", "{{socket_dir}}",
-						"{{tmpdir_flags}}",
-						"--open-port", "{{tcp_port}}",
-						"--",
-						"{{inner_cmd}}", "{{inner_args}}",
-					},
-					// Empty: filled by the selected harness at launch.
-					InnerCmd: nil,
-				},
-			},
-		},
 		Facade: FacadeConfig{
 			IdleTimeoutSecs:    300,
 			MaxBodyBytes:       10 * 1024 * 1024,
@@ -251,12 +181,6 @@ func LoadLauncher(workdir string) (LauncherConfig, string, error) {
 
 func mergeDefaults(lc LauncherConfig) LauncherConfig {
 	def := DefaultLauncherConfig()
-	if lc.Sandbox.DefaultProfile == "" {
-		lc.Sandbox.DefaultProfile = def.Sandbox.DefaultProfile
-	}
-	if lc.Sandbox.Profiles == nil {
-		lc.Sandbox.Profiles = def.Sandbox.Profiles
-	}
 	if lc.Facade.IdleTimeoutSecs == 0 {
 		lc.Facade.IdleTimeoutSecs = def.Facade.IdleTimeoutSecs
 	}
