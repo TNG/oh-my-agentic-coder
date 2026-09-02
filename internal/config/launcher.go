@@ -280,8 +280,9 @@ func validateSandbox(sb SandboxConfig, path string) error {
 			"  See docs/configuration.md.", path, sb.DefaultProfile)
 	}
 	if len(sb.Profiles) > 0 {
-		return fmt.Errorf("%s: custom sandbox launcher profiles are no longer supported; only the built-in sandbox is available.\n"+
-			"  Remove the 'sandbox.profiles' block from your config.\n"+
+		return fmt.Errorf("%s: custom sandbox launcher profiles are no longer supported.\n"+
+			"  Remove the 'sandbox.profiles' block. For a custom sandbox policy set\n"+
+			"  'sandbox.profile_path: <file>'; to run a non-native harness add '--inner <binary>'.\n"+
 			"  See docs/configuration.md.", path)
 	}
 	return nil

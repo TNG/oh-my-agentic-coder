@@ -248,6 +248,9 @@ func runLaunch(env *Env, opts launchOpts) int {
 	if verbose && cfgPath != "" {
 		fmt.Fprintf(env.Stderr, "[verbose] loaded launcher config: %s\n", cfgPath)
 	}
+	for _, w := range lc.Sandbox.DeprecationWarnings() {
+		fmt.Fprintln(env.Stderr, prefix+": [warn] "+w)
+	}
 	// Resolve sandbox.profile_path (if set) to the policy profile the run
 	// enforces. A bad path is fatal under a real sandbox; under --no-sandbox no
 	// profile is applied, so a resolution error is ignored.
