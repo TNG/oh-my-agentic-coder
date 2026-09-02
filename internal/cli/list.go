@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 	"text/tabwriter"
 
-	"github.com/tngtech/oh-my-agentic-coder/internal/config"
-	"github.com/tngtech/oh-my-agentic-coder/internal/registry"
+	"github.com/TNG/oh-my-agentic-coder/internal/config"
+	"github.com/TNG/oh-my-agentic-coder/internal/registry"
 )
 
 // wellKnownInterpreters is the set of command[0] values that indicate the

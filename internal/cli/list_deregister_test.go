@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tngtech/oh-my-agentic-coder/internal/registry"
+	"github.com/TNG/oh-my-agentic-coder/internal/registry"
 )
 
 // captureEnv returns an Env whose Stdout/Stderr are temp files plus a

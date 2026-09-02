@@ -13,7 +13,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxprofile"
+	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
 )
 
 // workflowTestHome builds a throwaway HOME populated with the dirs/files

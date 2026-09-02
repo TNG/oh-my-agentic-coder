@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tngtech/oh-my-agentic-coder/internal/toolcache"
+	"github.com/TNG/oh-my-agentic-coder/internal/toolcache"
 )
 
 func TestCacheGuidanceNamesPathModeAndAllVars(t *testing.T) {

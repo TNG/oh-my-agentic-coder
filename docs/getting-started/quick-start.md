@@ -115,7 +115,13 @@ mise use -g github:TNG/oh-my-agentic-coder@latest
 
 Building from source is intended for contributors developing omac, or users who need an unreleased commit. For all other cases, use a pre-built package above.
 
-Requires Go. Go's standard installation shortcut (`go install`) requires the module path in the code to exactly match the repository URL. This repo follows Go's lowercase module path convention (`github.com/tngtech/...`) while the GitHub organisation uses uppercase (`TNG`), so the shortcut does not work. Clone and build locally instead:
+Requires Go. To install the latest release directly:
+
+```bash
+go install github.com/TNG/oh-my-agentic-coder/cmd/omac@latest
+```
+
+Or clone and build locally — useful when working from an unreleased commit:
 
 ```bash
 git clone https://github.com/TNG/oh-my-agentic-coder.git

@@ -3,8 +3,8 @@ package cli
 import (
 	"fmt"
 
-	"github.com/tngtech/oh-my-agentic-coder/internal/config"
-	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxprofile"
+	"github.com/TNG/oh-my-agentic-coder/internal/config"
+	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
 )
 
 // sandboxPlan is the launch's single resolved answer to "which sandbox is

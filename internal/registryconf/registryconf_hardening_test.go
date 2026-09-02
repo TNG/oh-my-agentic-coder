@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxprofile"
+	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
 )
 
 // Tests for the PR #259 review findings. Each case is a shape that slipped

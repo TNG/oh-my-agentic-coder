@@ -6,8 +6,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/tngtech/oh-my-agentic-coder/internal/config"
-	"github.com/tngtech/oh-my-agentic-coder/internal/skillstate"
+	"github.com/TNG/oh-my-agentic-coder/internal/config"
+	"github.com/TNG/oh-my-agentic-coder/internal/skillstate"
 )
 
 // renderSkillRefusal prints one consolidated report of why a launch cannot

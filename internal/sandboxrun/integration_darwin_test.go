@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxprofile"
+	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
 )
 
 // runSandboxed executes argv under sandbox-exec with the grants and

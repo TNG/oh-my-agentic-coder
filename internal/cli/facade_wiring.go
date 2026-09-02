@@ -1,9 +1,9 @@
 package cli
 
 import (
-	"github.com/tngtech/oh-my-agentic-coder/internal/facade"
-	"github.com/tngtech/oh-my-agentic-coder/internal/intent"
-	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxrun"
+	"github.com/TNG/oh-my-agentic-coder/internal/facade"
+	"github.com/TNG/oh-my-agentic-coder/internal/intent"
+	"github.com/TNG/oh-my-agentic-coder/internal/sandboxrun"
 )
 
 // wireFacadeSandbox attaches the sandbox-aware facade endpoints

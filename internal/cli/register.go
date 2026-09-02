@@ -14,14 +14,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tngtech/oh-my-agentic-coder/internal/config"
-	"github.com/tngtech/oh-my-agentic-coder/internal/keychain"
-	"github.com/tngtech/oh-my-agentic-coder/internal/osinfo"
-	"github.com/tngtech/oh-my-agentic-coder/internal/registry"
-	"github.com/tngtech/oh-my-agentic-coder/internal/secrets"
-	"github.com/tngtech/oh-my-agentic-coder/internal/skillconfig"
-	"github.com/tngtech/oh-my-agentic-coder/internal/skillsource"
-	"github.com/tngtech/oh-my-agentic-coder/internal/skilltrust"
+	"github.com/TNG/oh-my-agentic-coder/internal/config"
+	"github.com/TNG/oh-my-agentic-coder/internal/keychain"
+	"github.com/TNG/oh-my-agentic-coder/internal/osinfo"
+	"github.com/TNG/oh-my-agentic-coder/internal/registry"
+	"github.com/TNG/oh-my-agentic-coder/internal/secrets"
+	"github.com/TNG/oh-my-agentic-coder/internal/skillconfig"
+	"github.com/TNG/oh-my-agentic-coder/internal/skillsource"
+	"github.com/TNG/oh-my-agentic-coder/internal/skilltrust"
 )
 
 func runRegister(args []string, env *Env) int {
