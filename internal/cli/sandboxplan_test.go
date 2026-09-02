@@ -126,6 +126,38 @@ func TestExcludeProfilePagesFile(t *testing.T) {
 	}
 }
 
+func TestInspectProfileRef(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	// An explicit --profile flag value wins.
+	if got := inspectProfileRef(t.TempDir(), "/x/custom.json"); got != "/x/custom.json" {
+		t.Errorf("flag ref should win, got %q", got)
+	}
+
+	// No config on disk resolves to the built-in default ("").
+	if got := inspectProfileRef(t.TempDir(), ""); got != "" {
+		t.Errorf("no config should resolve to default (empty), got %q", got)
+	}
+
+	// A project config with profile_path resolves to that absolute path.
+	workdir := t.TempDir()
+	prof := filepath.Join(workdir, "sandbox.json")
+	if err := os.WriteFile(prof, []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ocDir := filepath.Join(workdir, ".opencode")
+	if err := os.MkdirAll(ocDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ocDir, "oh-my-agentic-coder.yaml"),
+		[]byte("sandbox:\n  profile_path: ./sandbox.json\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := inspectProfileRef(workdir, ""); got != prof {
+		t.Errorf("inspectProfileRef = %q, want %q", got, prof)
+	}
+}
+
 // A broken default policy file is NOT fatal: the launch proceeds (the
 // `omac sandbox run` child resolves the policy itself and reports), but the
 // error is recorded so policy-derived facade features can be disabled with

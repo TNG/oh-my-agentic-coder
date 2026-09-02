@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/tngtech/oh-my-agentic-coder/internal/config"
 	"github.com/tngtech/oh-my-agentic-coder/internal/profileaudit"
 	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxprofile"
 )
@@ -84,4 +85,22 @@ func excludeProfilePagesFile(workdir, profileRef string) {
 		return // the pages file is outside the workdir
 	}
 	gitExcludePath(workdir, rel)
+}
+
+// inspectProfileRef returns the profile a read-only inspection should examine,
+// matching a launch: the explicit --profile value, else sandbox.profile_path,
+// else "" (the built-in "default"). Best-effort — errors fall back to default.
+func inspectProfileRef(workdir, flagRef string) string {
+	if flagRef != "" {
+		return flagRef
+	}
+	lc, cfgPath, err := config.LoadLauncher(workdir)
+	if err != nil {
+		return ""
+	}
+	ref, err := lc.ResolveSandboxProfileRef(cfgPath, workdir)
+	if err != nil {
+		return ""
+	}
+	return ref
 }
