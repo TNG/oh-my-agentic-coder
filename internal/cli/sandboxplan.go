@@ -18,7 +18,8 @@ type sandboxPlan struct {
 	Launcher config.SandboxProfile
 	// Known reports whether Name existed in the launcher config.
 	Known bool
-	// PolicyRef is the policy profile the run enforces (always "default").
+	// PolicyRef is the policy profile the run enforces: "default", or the
+	// resolved sandbox.profile_path when one is set.
 	PolicyRef string
 	// Policy is the resolved policy profile; nil when PolicyErr is set.
 	Policy *sandboxprofile.Profile
@@ -32,13 +33,16 @@ type sandboxPlan struct {
 }
 
 // resolveSandboxPlan resolves the configured launcher profile
-// (sandbox.default_profile) and the "default" policy profile the run enforces
-// — read-only, so inspecting a profile never scaffolds files.
+// (sandbox.default_profile) and the policy profile the run enforces —
+// read-only, so inspecting a profile never scaffolds files.
+//
+// profileRef is the resolved sandbox.profile_path (absolute) or "" for the
+// built-in "default" profile — see LauncherConfig.ResolveSandboxProfileRef.
 //
 // An unknown launcher name is returned as an error alongside a plan with
 // Name set and Known false: callers decide whether that is fatal (it is
 // not under --no-sandbox / --no-inner, where no sandbox is launched).
-func resolveSandboxPlan(lc config.LauncherConfig) (sandboxPlan, error) {
+func resolveSandboxPlan(lc config.LauncherConfig, profileRef string) (sandboxPlan, error) {
 	name := lc.Sandbox.DefaultProfile
 	plan := sandboxPlan{Name: name}
 	prof, ok := lc.Sandbox.Profiles[name]
@@ -47,8 +51,12 @@ func resolveSandboxPlan(lc config.LauncherConfig) (sandboxPlan, error) {
 	}
 	plan.Launcher = prof
 	plan.Known = true
-	plan.PolicyRef = "default"
-	policy, path, err := sandboxprofile.Resolve("default")
+	ref := profileRef
+	if ref == "" {
+		ref = "default"
+	}
+	plan.PolicyRef = ref
+	policy, path, err := sandboxprofile.Resolve(ref)
 	if err != nil {
 		plan.PolicyErr = err
 		return plan, nil

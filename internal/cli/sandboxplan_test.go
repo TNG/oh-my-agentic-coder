@@ -12,7 +12,7 @@ func TestResolveSandboxPlanDefaultProfileResolvesPolicy(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
-	plan, err := resolveSandboxPlan(config.DefaultLauncherConfig())
+	plan, err := resolveSandboxPlan(config.DefaultLauncherConfig(), "")
 	if err != nil {
 		t.Fatalf("resolveSandboxPlan: %v", err)
 	}
@@ -47,7 +47,7 @@ func TestResolveSandboxPlanLoadsPolicyFile(t *testing.T) {
 	t.Setenv("HOME", home)
 	stageProfile(t, home, `{"meta": {"name": "default"}, "workdir": {"access": "read"}}`)
 
-	plan, err := resolveSandboxPlan(config.DefaultLauncherConfig())
+	plan, err := resolveSandboxPlan(config.DefaultLauncherConfig(), "")
 	if err != nil {
 		t.Fatalf("resolveSandboxPlan: %v", err)
 	}
@@ -60,6 +60,35 @@ func TestResolveSandboxPlanLoadsPolicyFile(t *testing.T) {
 	}
 }
 
+// A non-empty profileRef (the resolved sandbox.profile_path) is the policy the
+// plan enforces, loaded from that exact path rather than the default.
+func TestResolveSandboxPlanUsesProfileRef(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	custom := filepath.Join(t.TempDir(), "custom.json")
+	if err := os.WriteFile(custom, []byte(`{"meta": {"name": "custom"}, "workdir": {"access": "read"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := resolveSandboxPlan(config.DefaultLauncherConfig(), custom)
+	if err != nil {
+		t.Fatalf("resolveSandboxPlan: %v", err)
+	}
+	if plan.PolicyRef != custom {
+		t.Errorf("PolicyRef = %q, want %q", plan.PolicyRef, custom)
+	}
+	if plan.PolicyPath != custom {
+		t.Errorf("PolicyPath = %q, want %q", plan.PolicyPath, custom)
+	}
+	if plan.Policy == nil || plan.Policy.Workdir.Access != "read" {
+		t.Fatalf("custom policy must load; got %+v", plan.Policy)
+	}
+	// The parent seeds env forwarding from plan.Policy (forwardHarnessEnv), so
+	// it must reflect the custom file — not the default's non-empty allow_vars.
+	if len(plan.Policy.Environment.AllowVars) != 0 {
+		t.Errorf("AllowVars = %v; the custom profile declares none, so the plan must not show the default's", plan.Policy.Environment.AllowVars)
+	}
+}
+
 // A broken default policy file is NOT fatal: the launch proceeds (the
 // `omac sandbox run` child resolves the policy itself and reports), but the
 // error is recorded so policy-derived facade features can be disabled with
@@ -69,7 +98,7 @@ func TestResolveSandboxPlanBrokenPolicyIsRecordedNotFatal(t *testing.T) {
 	t.Setenv("HOME", home)
 	stageProfile(t, home, `{ not valid json`)
 
-	plan, err := resolveSandboxPlan(config.DefaultLauncherConfig())
+	plan, err := resolveSandboxPlan(config.DefaultLauncherConfig(), "")
 	if err != nil {
 		t.Fatalf("a broken policy must not fail the plan: %v", err)
 	}
