@@ -71,4 +71,3 @@ func TestValidateSandbox(t *testing.T) {
 		t.Error("a non-empty profiles block should be rejected")
 	}
 }
-
