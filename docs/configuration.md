@@ -20,6 +20,8 @@ These files live under `~/.config/omac/` (user-global) or `<workdir>/.opencode/`
 The launcher config tunes a few operational settings. None of this controls what the agent is allowed to access — that is the sandbox profile (see below).
 
 ```yaml
+sandbox:
+  profile_path: ""                  # path to a custom sandbox grants file; "" uses the built-in default.json
 facade:
   idle_timeout_secs: 300            # close idle HTTP keep-alive connections after N seconds; does not end the session
   max_body_bytes: 10485760          # 10 MB request body cap
@@ -32,6 +34,10 @@ audit:
 cache:
   scope: global                     # tool cache sharing: global (default), config, or workdir; see Cache
 ```
+
+**`sandbox.profile_path`** points at a custom sandbox grants file that replaces the built-in `default.json`.
+It is an absolute path, or a path relative to the config file's project (for `<project>/.opencode/oh-my-agentic-coder.yaml`, relative to the project root; for the global `config.yaml`, relative to `~/.config/omac`).
+A missing file is a hard error. See [Sharing a profile across a team](#sharing-a-profile-across-a-team).
 
 **`cache.scope`** controls how widely omac's isolated tool cache is shared between projects. It can be overridden per session with `--cache-scope`. See [Cache](./advanced/cache.md) for details.
 
@@ -47,11 +53,11 @@ The project file **replaces** the global one; omac does not merge the two. Any o
 
 **Warning:** In `omac serve`, the launcher config is read once, from the `--workdir` you started the server with, so switching projects within a running server does not load a different project's file!
 
-The launcher config changes only *how omac launches* in the project: the cache scope, and the facade and audit settings. It does **not** change what the agent is allowed to access. Those grants (filesystem paths, network hosts, open ports) come from the user-global sandbox grants file described below and **currently have no per-project equivalent**.
+The launcher config only tunes *how omac launches* (cache, facade, audit). The agent's grants (filesystem, network, ports) come from the sandbox grants file below — per-project via `sandbox.profile_path`.
 
 ## Sandbox grants
 
-The sandbox grants file (`~/.config/omac/sandbox-profiles/default.json`) controls what the agent is actually allowed to access — filesystem paths, network mode, and environment variables. This is separate from the launcher config above, which only tunes operational settings (facade, cache, audit).
+The sandbox grants file (`~/.config/omac/sandbox-profiles/default.json`) controls what the agent is actually allowed to access — filesystem paths, network mode, and environment variables. This is separate from the launcher config above, which only tunes operational settings (facade, cache, audit). To use a different file (e.g. a profile committed to a project), set `sandbox.profile_path` in the launcher config.
 
 omac creates this file the first time you run `omac start`. Key fields:
 
@@ -68,6 +74,23 @@ See [Security model → Sandbox access reference](./security.md#sandbox-access-r
 omac never rewrites this file once it exists, so upgrading omac does not add newer default grants to a profile you already have. To pick up the newer defaults, make a copy of your current file, delete the original, and run `omac start` to write a fresh one. Then copy any changes you had made back from your saved copy into the new file.
 
 The reverse also applies. An unknown field is an error, so that a typo cannot quietly weaken the sandbox. A file using a newer field, such as `filesystem.registry_config`, is therefore rejected by an older omac. If you share this file between machines, upgrade omac on all of them before adding a new field.
+
+### Sharing a profile across a team
+
+Commit a profile when a project needs different grants and everyone should get the same ones (reviewed in git).
+
+1. Scaffold a starting file: `omac start` writes `~/.config/omac/sandbox-profiles/default.json`.
+2. Copy it into the repo (e.g. `.opencode/sandbox.json`), edit the grants.
+3. Point at it:
+
+```yaml
+# <project>/.opencode/oh-my-agentic-coder.yaml
+sandbox:
+  profile_path: ./sandbox.json
+```
+
+- **Shared:** the profile (commit it). Team allowlist → `network.allow_domain`.
+- **Local:** `<profile>.pages.json` (per-user "allow permanently" clicks) — git-ignored automatically, never shared.
 
 ### Opening a port
 

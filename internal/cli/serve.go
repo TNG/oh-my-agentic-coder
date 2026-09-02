@@ -181,6 +181,9 @@ func runServe(args []string, env *Env) int {
 		fmt.Fprintln(env.Stderr, "omac serve: launcher config:", err)
 		return ExitConfigInvalid
 	}
+	for _, w := range lc.Sandbox.DeprecationWarnings() {
+		fmt.Fprintln(env.Stderr, "omac serve: [warn] "+w)
+	}
 	// Resolve sandbox.profile_path (if set) to the policy profile the run
 	// enforces. A bad path is fatal under a real sandbox; ignored when no
 	// sandboxed inner is launched (--no-sandbox / --no-inner).
