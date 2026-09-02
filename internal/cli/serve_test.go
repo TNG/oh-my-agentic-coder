@@ -535,22 +535,12 @@ func TestForwardHarnessEnvNonEmptyProfileInjects(t *testing.T) {
 	}
 }
 
-// nativePlanForTest resolves the launch plan for a minimal native launcher
-// profile, so a test's staged policy file (stageProfile) is what the plan's
-// policy-derived behaviour is read from.
+// nativePlanForTest resolves the launch plan for the default policy, so a
+// test's staged policy file (stageProfile) is what the plan's policy-derived
+// behaviour is read from.
 func nativePlanForTest(t *testing.T) sandboxPlan {
 	t.Helper()
-	lc := config.LauncherConfig{Sandbox: config.SandboxConfig{
-		DefaultProfile: "builtin",
-		Profiles: map[string]config.SandboxProfile{"builtin": {
-			Command: []string{"{{self}}", "sandbox", "run", "--profile", "default", "--", "x"},
-		}},
-	}}
-	plan, err := resolveSandboxPlan(lc, "")
-	if err != nil {
-		t.Fatalf("resolveSandboxPlan: %v", err)
-	}
-	return plan
+	return resolveSandboxPlan("")
 }
 
 func equalStrings(a, b []string) bool {

@@ -267,11 +267,7 @@ func runLaunch(env *Env, opts launchOpts) int {
 	// (templated argv) plus, for omac's native backend, its policy profile
 	// (grant JSON). Everything downstream reads the plan instead of
 	// re-resolving a bare name — see internal/cli/sandboxplan.go.
-	plan, planErr := resolveSandboxPlan(lc, profileRef)
-	if planErr != nil && !noSandbox {
-		fmt.Fprintln(env.Stderr, prefix+":", planErr)
-		return ExitConfigInvalid
-	}
+	plan := resolveSandboxPlan(profileRef)
 	if !noSandbox {
 		// A custom profile is user-authored (and may be committed by a teammate),
 		// so surface anything that weakens the sandbox and keep its learned
@@ -279,16 +275,15 @@ func runLaunch(env *Env, opts launchOpts) int {
 		warnPermissiveProfile(env.Stderr, profileRef, plan.Policy)
 		excludeProfilePagesFile(env.Workdir, profileRef)
 	}
-	profName := plan.Name
-	prof := plan.Launcher
+	policyRef := plan.PolicyRef
 
 	// 1b. Pre-flight: inner harness binary must be on $PATH. Checked on the
-	//     resolved argv (profile inner_cmd, else harness default) — the same
-	//     argv step 8 hands to the sandbox. An explicit --inner skips: that
-	//     points at an exact binary, which is an escape hatch; sandboxrun
-	//     warns non-fatally if it cannot resolve it either.
+	//     resolved argv (the harness default) — the same argv step 8 hands to
+	//     the sandbox. An explicit --inner skips: that points at an exact
+	//     binary, which is an escape hatch; sandboxrun warns non-fatally if it
+	//     cannot resolve it either.
 	if innerCmdOverride == "" {
-		if code := checkInnerBinary(harness.ResolveInnerCmd(prof.InnerCmd, ""), prefix, env); code != ExitOK {
+		if code := checkInnerBinary(harness.ResolveInnerCmd(nil, ""), prefix, env); code != ExitOK {
 			return code
 		}
 	}
@@ -760,10 +755,10 @@ func runLaunch(env *Env, opts launchOpts) int {
 
 	// 8. Build sandbox argv and exec.
 	//
-	// Resolve the inner command for the selected harness: an explicit
-	// --inner override wins, else the profile's inner_cmd, else the
-	// harness's default InnerCmd (config.Harness.ResolveInnerCmd).
-	inner := harness.ResolveInnerCmd(prof.InnerCmd, innerCmdOverride)
+	// Resolve the inner command for the selected harness: an explicit --inner
+	// override wins, else the harness's default InnerCmd
+	// (config.Harness.ResolveInnerCmd).
+	inner := harness.ResolveInnerCmd(nil, innerCmdOverride)
 	// Inject the sandbox briefing: Claude via its --append-system-prompt flag
 	// (SystemContextArgs), OpenCode via OMAC_SANDBOX_BRIEFING set below.
 	briefingText, injectBriefing := briefingInjection(noSandbox, inner, harness, lc.Sandbox.Briefing, cacheScope)
@@ -916,10 +911,10 @@ func runLaunch(env *Env, opts launchOpts) int {
 	sandboxed := !noSandbox
 	sandboxBackend := ""
 	if sandboxed {
-		sandboxBackend = profName
+		sandboxBackend = "builtin"
 	}
-	auditor.Emit(audit.SessionStart(env.Version, harness.Name, profName, sandboxBackend))
-	auditor.Emit(audit.InnerExec(argv, profName, sandboxed))
+	auditor.Emit(audit.SessionStart(env.Version, harness.Name, policyRef, sandboxBackend))
+	auditor.Emit(audit.InnerExec(argv, policyRef, sandboxed))
 
 	// The post-exit hint needs the id of the session this run created. opencode
 	// self-reports it via the control plane (the omac plugin POSTs
