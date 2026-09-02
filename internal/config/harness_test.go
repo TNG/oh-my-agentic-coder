@@ -469,13 +469,40 @@ func TestSandboxDirsCopilot(t *testing.T) {
 }
 
 func TestSandboxDirsOpenCode(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", "")
 	h, ok := LookupHarness("opencode")
 	if !ok {
 		t.Fatal("opencode harness not found")
 	}
-	want := []string{"~/.local/share/opencode", "~/.local/state/opencode", "~/.config/opencode", "~/.opencode"}
+	want := []string{
+		"~/.local/share/opencode",
+		"~/.local/share/opentui",
+		"~/.local/state/opencode",
+		"~/.config/opencode",
+		"~/.opencode",
+	}
 	if !reflect.DeepEqual(h.SandboxDirs, want) {
 		t.Errorf("opencode SandboxDirs = %v; want %v", h.SandboxDirs, want)
+	}
+	if !reflect.DeepEqual(h.SandboxCreateDirs, []string{"~/.local/share/opentui"}) {
+		t.Errorf("opencode SandboxCreateDirs = %v; want [~/.local/share/opentui]", h.SandboxCreateDirs)
+	}
+}
+
+func TestSandboxCreateDirsAreGranted(t *testing.T) {
+	for _, h := range AllHarnesses() {
+		granted := make(map[string]bool, len(h.SandboxDirs))
+		for _, dir := range h.SandboxDirs {
+			granted[dir] = true
+		}
+		for _, dir := range h.SandboxCreateDirs {
+			if !granted[dir] {
+				t.Errorf("%s SandboxCreateDirs contains ungranted path %q", h.Name, dir)
+			}
+		}
+		if h.Name != "opencode" && len(h.SandboxCreateDirs) != 0 {
+			t.Errorf("%s SandboxCreateDirs = %v; want none", h.Name, h.SandboxCreateDirs)
+		}
 	}
 }
 

@@ -240,6 +240,7 @@ func TestInjectServerListenPort(t *testing.T) {
 // injectServerListenPort helper in isolation. It guards against the #115 bind
 // grant being dropped from the pipeline during a refactor.
 func TestSandboxServeArgvInjectsListenPort(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	oc, _ := config.LookupHarness("opencode")
 	prof := config.SandboxProfile{
 		Command:  []string{"omac", "sandbox", "run", "--", "{{inner_cmd}}", "{{inner_args}}"},
@@ -278,6 +279,75 @@ func TestSandboxServeArgvInjectsListenPort(t *testing.T) {
 	}
 	if !contains(nj, "--listen-port 4096") {
 		t.Errorf("listen-port grant must still apply without a control port: %s", nj)
+	}
+}
+
+func TestPrepareAndGrantOpenCodeRuntimeDirs(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", "")
+	oc, _ := config.LookupHarness("opencode")
+	prof := config.SandboxProfile{
+		Command:  []string{"omac", "sandbox", "run", "--", "{{inner_cmd}}", "{{inner_args}}"},
+		InnerCmd: []string{"opencode"},
+	}
+	in := sandbox.Inputs{Workdir: t.TempDir(), InnerCmd: []string{"opencode", "serve"}}
+
+	if err := prepareSandboxDirs(oc.SandboxCreateDirs); err != nil {
+		t.Fatalf("prepareSandboxDirs: %v", err)
+	}
+	argv, err := sandboxServeArgv(prof, in, "", oc)
+	if err != nil {
+		t.Fatalf("sandboxServeArgv: %v", err)
+	}
+	info, err := os.Stat(filepath.Join(home, ".local", "share", "opentui"))
+	if err != nil {
+		t.Fatalf("opentui runtime dir was not created before sandbox launch: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o700 {
+		t.Errorf("opentui runtime dir mode = %o; want 700", got)
+	}
+	if !contains(strings.Join(argv, " "), "--allow ~/.local/share/opentui") {
+		t.Fatalf("serve argv missing opentui read/write grant: %v", argv)
+	}
+}
+
+func TestPrepareAndGrantOpenCodeRuntimeDirsUsesXDGDataHome(t *testing.T) {
+	xdgDataHome := t.TempDir()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", xdgDataHome)
+	oc, _ := config.LookupHarness("opencode")
+	prof := config.SandboxProfile{
+		Command:  []string{"omac", "sandbox", "run", "--", "{{inner_cmd}}", "{{inner_args}}"},
+		InnerCmd: []string{"opencode"},
+	}
+	in := sandbox.Inputs{Workdir: t.TempDir(), InnerCmd: []string{"opencode", "serve"}}
+
+	if err := prepareSandboxDirs(oc.SandboxCreateDirs); err != nil {
+		t.Fatalf("prepareSandboxDirs: %v", err)
+	}
+	argv, err := sandboxServeArgv(prof, in, "", oc)
+	if err != nil {
+		t.Fatalf("sandboxServeArgv: %v", err)
+	}
+	want := filepath.Join(xdgDataHome, "opentui")
+	if info, err := os.Stat(want); err != nil || !info.IsDir() {
+		t.Fatalf("XDG opentui runtime dir was not created: info=%v err=%v", info, err)
+	}
+	if !contains(strings.Join(argv, " "), "--allow "+want) {
+		t.Fatalf("serve argv missing XDG opentui read/write grant: %v", argv)
+	}
+}
+
+func TestPrepareSandboxDirsRejectsFileTarget(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(target, []byte("file"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	err := prepareSandboxDirs([]string{target})
+	if err == nil || !strings.Contains(err.Error(), "create "+target) {
+		t.Fatalf("prepareSandboxDirs error = %v; want create error", err)
 	}
 }
 

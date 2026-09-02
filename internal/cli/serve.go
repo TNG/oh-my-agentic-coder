@@ -528,6 +528,12 @@ func runServe(args []string, env *Env) int {
 	if noSandbox {
 		argv = inner
 	} else {
+		// Create before omac sandbox run resolves and existence-filters the
+		// selected harness's read+write grants.
+		if err := prepareSandboxDirs(harness.SandboxCreateDirs); err != nil {
+			fmt.Fprintln(env.Stderr, "omac serve: harness runtime dirs:", err)
+			return ExitIOError
+		}
 		argv, err = sandboxServeArgv(prof, sandbox.Inputs{
 			Workdir:  env.Workdir,
 			Socket:   socketPath,
@@ -687,7 +693,8 @@ func controlPortOf(ln net.Listener) string {
 //   - the harness server daemon's own listen port, so its bind() is permitted
 //     (issue #115 — otherwise a restrictive profile denies the bind and the
 //     daemon crashes on startup).
-//   - the selected harness's runtime dirs (config/state/sessions) read+write.
+//   - the selected harness's existing runtime dirs (config/state/sessions)
+//     read+write; runServe pre-creates the declared first-use dirs.
 //
 // Kept as one pure function so the grant sequence stays unit-testable without
 // launching the control plane.
@@ -738,6 +745,24 @@ func serverExposureWarning(h config.Harness, getenv func(string) string) string 
 // sandboxed inner command may connect to that loopback port.
 func injectOpenPort(argv []string, port string) []string {
 	return injectSandboxFlag(argv, "--open-port", port)
+}
+
+// prepareSandboxDirs creates harness-declared runtime directories before grant
+// resolution, which skips nonexistent paths.
+func prepareSandboxDirs(dirs []string) error {
+	for _, d := range dirs {
+		if d == "" {
+			continue
+		}
+		expanded, err := sandboxprofile.ExpandPath(d)
+		if err != nil {
+			return fmt.Errorf("expand %q: %w", d, err)
+		}
+		if err := os.MkdirAll(expanded, 0o700); err != nil {
+			return fmt.Errorf("create %s: %w", expanded, err)
+		}
+	}
+	return nil
 }
 
 // injectSandboxDirs splices --allow flags (read+write) for each

@@ -330,6 +330,21 @@ func TestLaunchCacheOmitsVerboseOutputWithoutVerbose(t *testing.T) {
 	}
 }
 
+func TestLaunchOpenCodeCreatesAndGrantsRuntimeDirs(t *testing.T) {
+	capture := launchCacheCaptureForHarness(t, "opencode", false, false, false)
+	opentuiDir := filepath.Join(capture.home, ".local", "share", "opentui")
+	if info, err := os.Stat(opentuiDir); err != nil || !info.IsDir() {
+		t.Fatalf("opentui runtime dir was not created before start: info=%v err=%v", info, err)
+	}
+
+	for i := 0; i+1 < len(capture.args); i++ {
+		if capture.args[i] == "--allow" && capture.args[i+1] == "~/.local/share/opentui" {
+			return
+		}
+	}
+	t.Fatalf("start argv missing opentui read/write grant: %v", capture.args)
+}
+
 func TestLaunchCacheNoSandboxPreservesHostEnvironment(t *testing.T) {
 	capture := launchCacheCapture(t, true, false, false)
 	for key := range toolcache.Environment("ignored", toolcache.ModePersistent) {
@@ -360,6 +375,10 @@ type cacheCapture struct {
 }
 
 func launchCacheCapture(t *testing.T, noSandbox, ephemeral, verbose bool) cacheCapture {
+	return launchCacheCaptureForHarness(t, "claude", noSandbox, ephemeral, verbose)
+}
+
+func launchCacheCaptureForHarness(t *testing.T, harnessName string, noSandbox, ephemeral, verbose bool) cacheCapture {
 	t.Helper()
 	shortTmp, err := os.MkdirTemp("/tmp", "omac-cli-")
 	if err != nil {
@@ -370,8 +389,13 @@ func launchCacheCapture(t *testing.T, noSandbox, ephemeral, verbose bool) cacheC
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("XDG_DATA_HOME", "")
 	for key := range toolcache.Environment("ignored", toolcache.ModePersistent) {
-		t.Setenv(key, "host-"+key)
+		value := "host-" + key
+		if harnessName == "opencode" {
+			value = filepath.Join(shortTmp, key)
+		}
+		t.Setenv(key, value)
 	}
 
 	workdir := t.TempDir()
@@ -395,9 +419,9 @@ func launchCacheCapture(t *testing.T, noSandbox, ephemeral, verbose bool) cacheC
 	}
 
 	env, stderr := launchTestEnv(t, workdir)
-	harness, ok := config.LookupHarness("claude")
+	harness, ok := config.LookupHarness(harnessName)
 	if !ok {
-		t.Fatal("claude harness missing")
+		t.Fatalf("%s harness missing", harnessName)
 	}
 	inner := "/bin/true"
 	if noSandbox {

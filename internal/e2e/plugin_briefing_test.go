@@ -112,9 +112,8 @@ func TestOpenCodeSingleSystemMessage(t *testing.T) {
 
 	home := t.TempDir()
 	workdir := t.TempDir()
-	// Runtime dirs OpenCode expects to exist; the sandbox skips
-	// nonexistent allow paths, so create them before launch (mirrors
-	// smoke_test.go).
+	// Stage cache and runtime dirs used during OpenCode installation.
+	// omac also creates declared first-use dirs before sandbox launch.
 	for _, dir := range []string{
 		".cache", ".cache/opencode",
 		".local/share/opencode", ".local/state/opencode/locks",
