@@ -420,7 +420,7 @@ func truncateEntry(s string) string {
 func runProvenance(args []string, env *Env) int {
 	fs := flag.NewFlagSet("provenance", flag.ContinueOnError)
 	fs.SetOutput(env.Stderr)
-	profileRef := fs.String("profile", "", "sandbox profile name, path, or builtin (default: default)")
+	profileRef := fs.String("profile", "", "sandbox profile name or path; default resolves like `omac start`")
 	checkMode := fs.Bool("check", false, "Static security lint of the resolved profile.")
 	jsonOut := fs.Bool("json", false, "Emit a JSON object instead of tabular text.")
 	fs.Usage = func() {
@@ -435,7 +435,7 @@ func runProvenance(args []string, env *Env) int {
 	// not build the provenance view. Keeps --check independent of the
 	// view-build path and its (registry, learned-policy) dependencies.
 	if *checkMode {
-		profile, _, err := sandboxprofile.Resolve(*profileRef)
+		profile, _, err := sandboxprofile.Resolve(inspectProfileRef(env.Workdir, *profileRef))
 		if err != nil {
 			fmt.Fprintln(env.Stderr, "omac provenance --check:", err)
 			return ExitConfigInvalid
@@ -447,7 +447,7 @@ func runProvenance(args []string, env *Env) int {
 		return writeCheckText(env.Stdout, findings)
 	}
 
-	view, err := buildProvenanceView(env.Workdir, *profileRef)
+	view, err := buildProvenanceView(env.Workdir, inspectProfileRef(env.Workdir, *profileRef))
 	if err != nil {
 		fmt.Fprintln(env.Stderr, "omac provenance:", err)
 		return ExitConfigInvalid

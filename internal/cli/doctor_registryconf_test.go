@@ -16,11 +16,7 @@ func stageDoctorNpmrc(t *testing.T, npmrc, profileJSON string) string {
 	t.Setenv("HOME", home)
 	workdir := t.TempDir()
 
-	writeWorkdirConfig(t, workdir, "builtin", []string{
-		"{{self}}", "sandbox", "run",
-		"--profile", "default",
-		"--", "{{inner_cmd}}", "{{inner_args}}",
-	})
+	writeWorkdirConfig(t, workdir)
 	stageProfile(t, home, profileJSON)
 
 	if npmrc != "" {
@@ -77,11 +73,7 @@ func TestDoctorRegistryConfigFlagsOverrideDenyExposure(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	workdir := t.TempDir()
-	writeWorkdirConfig(t, workdir, "builtin", []string{
-		"{{self}}", "sandbox", "run",
-		"--profile", "default",
-		"--", "{{inner_cmd}}", "{{inner_args}}",
-	})
+	writeWorkdirConfig(t, workdir)
 	// override_deny is matched on the expanded path, so "~/.npmrc" resolves
 	// to the staged HOME.
 	stageProfile(t, home, `{
@@ -147,11 +139,7 @@ func TestDoctorRegistryConfigReportsBothProjectionAndOverride(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	workdir := t.TempDir()
-	writeWorkdirConfig(t, workdir, "builtin", []string{
-		"{{self}}", "sandbox", "run",
-		"--profile", "default",
-		"--", "{{inner_cmd}}", "{{inner_args}}",
-	})
+	writeWorkdirConfig(t, workdir)
 	stageProfile(t, home, `{
 	  "meta": {"name": "default"},
 	  "filesystem": {"registry_config": ["npm"], "override_deny": ["~/.npmrc"]},
@@ -201,11 +189,7 @@ func TestDoctorRegistryConfigReportsUnreadableConfig(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	workdir := t.TempDir()
-	writeWorkdirConfig(t, workdir, "builtin", []string{
-		"{{self}}", "sandbox", "run",
-		"--profile", "default",
-		"--", "{{inner_cmd}}", "{{inner_args}}",
-	})
+	writeWorkdirConfig(t, workdir)
 	stageProfile(t, home, `{"meta": {"name": "default"}, "environment": {"allow_vars": ["HOME"]}}`)
 	// A directory where the file belongs makes the read fail with something
 	// other than IsNotExist.

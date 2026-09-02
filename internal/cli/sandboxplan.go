@@ -2,45 +2,22 @@ package cli
 
 import (
 	"fmt"
+	"io"
+	"path/filepath"
+	"strings"
 
 	"github.com/tngtech/oh-my-agentic-coder/internal/config"
+	"github.com/tngtech/oh-my-agentic-coder/internal/profileaudit"
 	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxprofile"
 )
 
-// sandboxPlan is the launch's single resolved answer to "which sandbox is
-// this run using?" — it carries BOTH of omac's confusingly similar
-// "sandbox profile" namespaces side by side, resolved once:
-//
-//	launcher profile  a templated argv, keyed by the names in
-//	                  config.SandboxConfig.Profiles ("builtin", "nono",
-//	                  "no-sandbox-debug"), selected by --sandbox /
-//	                  sandbox.default_profile;
-//	policy profile    the grant JSON at ~/.config/omac/sandbox-profiles/
-//	                  <ref>.json ("default"), spelled INSIDE the launcher
-//	                  profile's command template.
-//
-// Both are plain strings, so before #173 nothing stopped a launcher name
-// from being handed to the policy resolver — which is exactly what the
-// facade wiring did, silently disabling GET /sandbox/denied on every
-// default launch. Consumers now take the plan, so the mix-up cannot be
-// expressed.
+// sandboxPlan is the launch's resolved sandbox policy: the grant JSON the run
+// enforces, resolved from sandbox.profile_path or the built-in "default".
 type sandboxPlan struct {
-	// Name is the launcher profile key (e.g. "builtin").
-	Name string
-	// Launcher is the launcher profile itself; the zero value when Name
-	// is not configured (see Known).
-	Launcher config.SandboxProfile
-	// Known reports whether Name existed in the launcher config.
-	Known bool
-	// Native reports whether the launcher execs omac's own supervisor
-	// (`{{self}} sandbox run …`) — the only backend whose policy omac can
-	// inspect and whose launch-injected flags (--allow-env, …) it defines.
-	Native bool
-	// PolicyRef is the policy reference the launcher template passes to
-	// `omac sandbox run --profile`; "" when !Native.
+	// PolicyRef is the policy profile the run enforces: "default", or the
+	// resolved sandbox.profile_path when one is set.
 	PolicyRef string
-	// Policy is the resolved policy profile; nil when !Native or when
-	// PolicyErr is set.
+	// Policy is the resolved policy profile; nil when PolicyErr is set.
 	Policy *sandboxprofile.Profile
 	// PolicyPath is the file Policy was loaded from; "" means the
 	// compiled-in defaults were used and no file was consulted.
@@ -51,58 +28,79 @@ type sandboxPlan struct {
 	PolicyErr error
 }
 
-// resolveSandboxPlan resolves the launcher profile selected by flagProfile
-// (empty means sandbox.default_profile) and, when that launcher is omac's
-// native sandbox, its policy profile — read-only, so inspecting a profile
-// never scaffolds files. Resolution is cheap (one file read plus path
-// expansion; the full grant resolution happens inside the `omac sandbox
-// run` child), so it is done once per launch and shared.
+// resolveSandboxPlan resolves the policy profile the run enforces — read-only,
+// so inspecting a profile never scaffolds files.
 //
-// An unknown launcher name is returned as an error alongside a plan with
-// Name set and Known false: callers decide whether that is fatal (it is
-// not under --no-sandbox / --no-inner, where no sandbox is launched).
-func resolveSandboxPlan(lc config.LauncherConfig, flagProfile string) (sandboxPlan, error) {
-	name := flagProfile
-	if name == "" {
-		name = lc.Sandbox.DefaultProfile
+// profileRef is the resolved sandbox.profile_path (absolute) or "" for the
+// built-in "default" profile — see LauncherConfig.ResolveSandboxProfileRef.
+func resolveSandboxPlan(profileRef string) sandboxPlan {
+	ref := profileRef
+	if ref == "" {
+		ref = "default"
 	}
-	plan := sandboxPlan{Name: name}
-	prof, ok := lc.Sandbox.Profiles[name]
-	if !ok {
-		return plan, fmt.Errorf("unknown sandbox profile %q", name)
-	}
-	plan.Launcher = prof
-	plan.Known = true
-	ref, native := prof.PolicyRef()
-	plan.Native = native
-	plan.PolicyRef = ref
-	if !native {
-		return plan, nil
-	}
+	plan := sandboxPlan{PolicyRef: ref}
 	policy, path, err := sandboxprofile.Resolve(ref)
 	if err != nil {
 		plan.PolicyErr = err
-		return plan, nil
+		return plan
 	}
 	plan.Policy = policy
 	plan.PolicyPath = path
-	return plan, nil
+	return plan
 }
 
-// defaultPolicyRef returns the policy ref the configured DEFAULT launcher
-// profile points at — the policy a plain `omac start` would enforce. Empty
-// means "the default policy": either the launcher profile is opaque (an
-// external launcher has no omac policy) or it is not configured at all.
-// Callers that inspect "the" policy must go through here rather than
-// hard-coding "default", which is a launcher-name/policy-ref conflation
-// waiting to happen (see sandboxPlan).
-func defaultPolicyRef(lc config.LauncherConfig) string {
-	prof, ok := lc.Sandbox.Profiles[lc.Sandbox.DefaultProfile]
-	if !ok {
+// warnPermissiveProfile prints advisory findings for a custom sandbox profile
+// that weakens the sandbox (secret-path grants, open network, empty allow_vars,
+// ...). It is warn-and-continue: findings never block the launch, they only
+// make a permissive profile visible — a committed profile_path may be authored
+// by someone other than the person launching. The default profile is not linted
+// here (doctor covers it), so ref == "" or a nil policy is a no-op.
+func warnPermissiveProfile(w io.Writer, ref string, policy *sandboxprofile.Profile) {
+	if ref == "" || policy == nil {
+		return
+	}
+	findings := profileaudit.Check(policy)
+	if len(findings) == 0 {
+		return
+	}
+	fmt.Fprintf(w, "[warn] sandbox profile %s has %d advisory finding(s):\n", ref, len(findings))
+	for _, f := range findings {
+		fmt.Fprintf(w, "  [%s] %s: %s (%s)\n", f.Severity, f.Field, f.Message, f.Value)
+	}
+}
+
+// excludeProfilePagesFile keeps a custom profile's learned-decisions sibling
+// (<profile>.pages.json) out of git when the profile lives inside the workdir.
+// The sandbox child writes that file lazily on the first permanent network
+// decision; excluding it up front stops a per-user file from being committed.
+// No-op for the default profile, a profile outside the workdir, or a non-git
+// workdir.
+func excludeProfilePagesFile(workdir, profileRef string) {
+	if profileRef == "" {
+		return
+	}
+	pages := sandboxprofile.PagesPath(profileRef)
+	rel, err := filepath.Rel(workdir, pages)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return // the pages file is outside the workdir
+	}
+	gitExcludePath(workdir, rel)
+}
+
+// inspectProfileRef returns the profile a read-only inspection should examine,
+// matching a launch: the explicit --profile value, else sandbox.profile_path,
+// else "" (the built-in "default"). Best-effort — errors fall back to default.
+func inspectProfileRef(workdir, flagRef string) string {
+	if flagRef != "" {
+		return flagRef
+	}
+	lc, cfgPath, err := config.LoadLauncher(workdir)
+	if err != nil {
 		return ""
 	}
-	if ref, native := prof.PolicyRef(); native {
-		return ref
+	ref, err := lc.ResolveSandboxProfileRef(cfgPath, workdir)
+	if err != nil {
+		return ""
 	}
-	return ""
+	return ref
 }

@@ -1,21 +1,7 @@
-// Package sandbox expands the argv template in a SandboxProfile into a
-// concrete argv ready for exec.
-//
-// Placeholders:
-//
-//	{{socket}}              absolute socket path
-//	{{socket_dir}}          directory containing the socket
-//	{{workdir}}             absolute workdir
-//	{{skills_csv}}          comma-separated list of registered skill mounts
-//	{{tmpdir}}              host temp dir exported as TMPDIR (scalar)
-//	{{tmpdir_flags}}        --read <tmpdir> --write <tmpdir>, or nothing
-//	                        when no temp dir is set (splats in place)
-//	{{inner_cmd}}           first element of inner argv
-//	{{inner_args}}          remaining inner argv (splats in place)
-//	{{per_skill_env_flags}} --env OMAC_<SKILL>_BASE=... flags (splats)
-//	{{self}}                absolute path of the running omac binary
-//	                        (lets the builtin profile re-exec omac as
-//	                        `omac sandbox run ...`)
+// Package sandbox assembles the command that launches omac's built-in OS
+// sandbox (BuildBuiltinArgv), execs the inner command inside it
+// (Exec/ExecWithReady), and derives the OMAC_<SKILL> environment variables
+// that skills are reached through.
 package sandbox
 
 import (
@@ -28,145 +14,51 @@ import (
 	"strings"
 	"syscall"
 	"time"
-
-	"github.com/tngtech/oh-my-agentic-coder/internal/config"
 )
 
-// Inputs captures everything needed to expand a sandbox profile.
+// Inputs captures everything BuildBuiltinArgv needs to assemble the sandbox
+// launch command.
 type Inputs struct {
-	Workdir  string
 	Socket   string   // bridge.sock path (Unix transport)
-	TCPPort  int      // bound 127.0.0.1 port (TCP transport); 0 disables {{tcp_port}}
-	Mounts   []string // skill mount names
-	InnerCmd []string // [cmd, args...] — InnerCmd[0] is {{inner_cmd}}; rest is {{inner_args}}
+	TCPPort  int      // bound 127.0.0.1 port (TCP transport)
+	InnerCmd []string // [cmd, args...] run inside the sandbox
 	// TmpDir is a host directory that omac grants the sandbox read+write
 	// access to and exports as TMPDIR for the inner command. Bun-built
 	// harnesses (opencode) extract an embedded runtime into TMPDIR at
 	// startup; without a writable, sandbox-granted temp dir the extraction
-	// fails. Expanded as the {{tmpdir}} placeholder. Empty leaves the
-	// placeholder resolving to "".
+	// fails. Empty omits the grant.
 	TmpDir string
+	// ProfileRef, when set, is passed as `--profile <ref>` so the child
+	// resolves the same policy profile the parent did. Empty lets the child
+	// use its own default ("default").
+	ProfileRef string
 }
 
-// Expand applies the profile template to Inputs and returns the resulting argv.
-func Expand(profile config.SandboxProfile, in Inputs) ([]string, error) {
-	if len(profile.Command) == 0 {
-		return nil, fmt.Errorf("sandbox profile has no command")
-	}
-	innerCmd := ""
-	var innerArgs []string
-	switch {
-	case len(in.InnerCmd) == 0 && len(profile.InnerCmd) == 0:
+// BuildBuiltinArgv builds the argv that launches the builtin sandbox: it
+// re-execs the running omac binary as `omac sandbox run` wrapping the inner
+// command.
+func BuildBuiltinArgv(in Inputs) ([]string, error) {
+	if len(in.InnerCmd) == 0 {
 		return nil, fmt.Errorf("no inner_cmd provided")
-	case len(in.InnerCmd) == 0:
-		innerCmd = profile.InnerCmd[0]
-		innerArgs = profile.InnerCmd[1:]
-	default:
-		innerCmd = in.InnerCmd[0]
-		innerArgs = in.InnerCmd[1:]
 	}
-	skillsCSV := strings.Join(in.Mounts, ",")
-
-	perSkillFlags := make([]string, 0, 2*len(in.Mounts))
-	for _, m := range in.Mounts {
-		perSkillFlags = append(perSkillFlags, "--env", perSkillEnv(m, in.Socket))
-	}
-
-	// tmpdir_flags grants the sandbox read+write on the host temp dir that
-	// omac exports as TMPDIR. We splat it as a list so the flags vanish
-	// entirely when no temp dir is configured (rather than emitting
-	// `--read "" --write ""`, which would hand nono empty paths).
-	var tmpdirFlags []string
-	if in.TmpDir != "" {
-		tmpdirFlags = []string{"--read", in.TmpDir, "--write", in.TmpDir}
-	}
-
 	self, err := os.Executable()
 	if err != nil {
 		self = "omac" // PATH fallback; better than failing the launch
 	}
-	scalar := map[string]string{
-		"socket":     in.Socket,
-		"socket_dir": filepath.Dir(in.Socket),
-		"workdir":    in.Workdir,
-		"skills_csv": skillsCSV,
-		"inner_cmd":  innerCmd,
-		"tcp_port":   fmt.Sprintf("%d", in.TCPPort),
-		"tmpdir":     in.TmpDir,
-		"self":       self,
+	argv := []string{self, "sandbox", "run"}
+	if in.ProfileRef != "" {
+		argv = append(argv, "--profile", in.ProfileRef)
 	}
-	list := map[string][]string{
-		"inner_args":          innerArgs,
-		"per_skill_env_flags": perSkillFlags,
-		"tmpdir_flags":        tmpdirFlags,
+	argv = append(argv,
+		"--allow-file", in.Socket,
+		"--read", filepath.Dir(in.Socket),
+	)
+	if in.TmpDir != "" {
+		argv = append(argv, "--read", in.TmpDir, "--write", in.TmpDir)
 	}
-
-	out := make([]string, 0, len(profile.Command))
-	for _, token := range profile.Command {
-		if name, ok := splatToken(token); ok {
-			if v, isList := list[name]; isList {
-				out = append(out, v...)
-				continue
-			}
-			if v, isScalar := scalar[name]; isScalar {
-				out = append(out, v)
-				continue
-			}
-			return nil, fmt.Errorf("unknown placeholder {{%s}}", name)
-		}
-		// Embedded scalar placeholders (partial substitution).
-		expanded, err := substituteScalars(token, scalar, list)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, expanded)
-	}
-	return out, nil
-}
-
-// splatToken returns the inner name if token is exactly "{{name}}".
-func splatToken(tok string) (string, bool) {
-	if len(tok) < 5 || !strings.HasPrefix(tok, "{{") || !strings.HasSuffix(tok, "}}") {
-		return "", false
-	}
-	name := tok[2 : len(tok)-2]
-	name = strings.TrimSpace(name)
-	if name == "" {
-		return "", false
-	}
-	return name, true
-}
-
-// substituteScalars replaces {{name}} occurrences inside a larger string.
-// List placeholders are not allowed in this mode.
-func substituteScalars(tok string, scalar map[string]string, list map[string][]string) (string, error) {
-	var b strings.Builder
-	for i := 0; i < len(tok); {
-		if i+1 < len(tok) && tok[i] == '{' && tok[i+1] == '{' {
-			end := strings.Index(tok[i+2:], "}}")
-			if end >= 0 {
-				name := strings.TrimSpace(tok[i+2 : i+2+end])
-				if _, isList := list[name]; isList {
-					return "", fmt.Errorf("list placeholder {{%s}} must stand alone", name)
-				}
-				v, ok := scalar[name]
-				if !ok {
-					return "", fmt.Errorf("unknown placeholder {{%s}}", name)
-				}
-				b.WriteString(v)
-				i += 2 + end + 2
-				continue
-			}
-		}
-		b.WriteByte(tok[i])
-		i++
-	}
-	return b.String(), nil
-}
-
-// perSkillEnv returns "OMAC_<SKILL>_BASE=http+unix://.../<mount>".
-func perSkillEnv(mount, socket string) string {
-	return OmacEnvName(mount) + "=" + OmacEnvValue(mount, socket)
+	argv = append(argv, "--open-port", fmt.Sprintf("%d", in.TCPPort), "--")
+	argv = append(argv, in.InnerCmd...)
+	return argv, nil
 }
 
 // OmacEnvName maps a mount like "himalaya-email" to "OMAC_HIMALAYA_EMAIL_BASE".
@@ -209,8 +101,8 @@ func envIdent(s string) string {
 // OmacSocketEnvName maps a mount like "himalaya-email" to
 // "OMAC_HIMALAYA_EMAIL_SOCKET_BASE" — the env var carrying the
 // http+unix:// URL form. The TCP form lives under OmacEnvName, which
-// is the default (because TCP is the transport that works under
-// nono proxy mode on macOS).
+// is the default (because TCP is the transport that works under every
+// sandbox backend, including those that block AF_UNIX connect).
 func OmacSocketEnvName(mount string) string {
 	// Strip the trailing "_BASE" we'd get from OmacEnvName and append
 	// "_SOCKET_BASE" instead, so the two forms have parallel suffixes.
@@ -223,8 +115,8 @@ func OmacEnvValue(mount, socket string) string {
 }
 
 // OmacTCPEnvValue returns the http://127.0.0.1:<port>/<mount> URL.
-// This is the form sandboxed clients should use when nono proxy mode
-// is active (or any other environment that blocks AF_UNIX connect).
+// This is the form sandboxed clients should use in any environment that
+// blocks AF_UNIX connect.
 func OmacTCPEnvValue(mount string, port int) string {
 	return fmt.Sprintf("http://127.0.0.1:%d/%s", port, mount)
 }
