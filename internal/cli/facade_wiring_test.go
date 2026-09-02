@@ -5,11 +5,10 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/tngtech/oh-my-agentic-coder/internal/config"
 	"github.com/tngtech/oh-my-agentic-coder/internal/facade"
 )
 
-// wireForTest runs the real launch wiring for the default launcher profile
+// wireForTest runs the real launch wiring for the default policy profile
 // and returns the facade plus any warnings.
 func wireForTest(t *testing.T, noSandbox bool) (*facade.Facade, []string) {
 	t.Helper()
@@ -18,10 +17,7 @@ func wireForTest(t *testing.T, noSandbox bool) (*facade.Facade, []string) {
 
 func wireModeForTest(t *testing.T, noSandbox, learnMode bool) (*facade.Facade, []string) {
 	t.Helper()
-	plan, err := resolveSandboxPlan(config.DefaultLauncherConfig(), "")
-	if err != nil {
-		t.Fatalf("resolveSandboxPlan: %v", err)
-	}
+	plan := resolveSandboxPlan("")
 	f := facade.New("", "", nil, 0, 0, "", "test")
 	var warnings []string
 	wireFacadeSandbox(f, noSandbox, learnMode, plan, func(format string, args ...any) {
@@ -30,13 +26,9 @@ func wireModeForTest(t *testing.T, noSandbox, learnMode bool) (*facade.Facade, [
 	return f, warnings
 }
 
-// TestWireFacadeSandboxDefaultProfileWiresChecker is the regression guard
-// for #173: the default launch resolves the LAUNCHER profile "builtin",
-// whose POLICY ref is "default". Feeding the launcher name to the policy
-// resolver (what wireFacadeSandbox used to do) always failed, leaving
-// ProtectedPathChecker nil and GET /sandbox/denied answering 404 on every
-// default `omac start` / `omac serve` — the endpoint's whole purpose is to
-// distinguish a sandbox denial from a missing file.
+// TestWireFacadeSandboxDefaultProfileWiresChecker: a default launch resolves
+// the "default" policy profile and wires ProtectedPathChecker, so
+// GET /sandbox/denied can distinguish a sandbox denial from a missing file (#173).
 func TestWireFacadeSandboxDefaultProfileWiresChecker(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

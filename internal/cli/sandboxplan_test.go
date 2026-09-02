@@ -7,7 +7,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tngtech/oh-my-agentic-coder/internal/config"
 	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxprofile"
 )
 
@@ -15,19 +14,9 @@ func TestResolveSandboxPlanDefaultProfileResolvesPolicy(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
-	plan, err := resolveSandboxPlan(config.DefaultLauncherConfig(), "")
-	if err != nil {
-		t.Fatalf("resolveSandboxPlan: %v", err)
-	}
-	// The two namespaces: launcher name "builtin", policy ref "default".
-	if plan.Name != "builtin" {
-		t.Errorf("Name = %q, want builtin (the launcher profile)", plan.Name)
-	}
+	plan := resolveSandboxPlan("")
 	if plan.PolicyRef != "default" {
-		t.Errorf("PolicyRef = %q, want default (the policy profile)", plan.PolicyRef)
-	}
-	if !plan.Known {
-		t.Errorf("Known = %v; want true", plan.Known)
+		t.Errorf("PolicyRef = %q, want default", plan.PolicyRef)
 	}
 	if plan.PolicyErr != nil {
 		t.Errorf("PolicyErr = %v; the default policy must resolve", plan.PolicyErr)
@@ -50,10 +39,7 @@ func TestResolveSandboxPlanLoadsPolicyFile(t *testing.T) {
 	t.Setenv("HOME", home)
 	stageProfile(t, home, `{"meta": {"name": "default"}, "workdir": {"access": "read"}}`)
 
-	plan, err := resolveSandboxPlan(config.DefaultLauncherConfig(), "")
-	if err != nil {
-		t.Fatalf("resolveSandboxPlan: %v", err)
-	}
+	plan := resolveSandboxPlan("")
 	if plan.Policy == nil || plan.Policy.Workdir.Access != "read" {
 		t.Fatalf("staged policy file must win; got %+v", plan.Policy)
 	}
@@ -72,10 +58,7 @@ func TestResolveSandboxPlanUsesProfileRef(t *testing.T) {
 	if err := os.WriteFile(custom, []byte(`{"meta": {"name": "custom"}, "workdir": {"access": "read"}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	plan, err := resolveSandboxPlan(config.DefaultLauncherConfig(), custom)
-	if err != nil {
-		t.Fatalf("resolveSandboxPlan: %v", err)
-	}
+	plan := resolveSandboxPlan(custom)
 	if plan.PolicyRef != custom {
 		t.Errorf("PolicyRef = %q, want %q", plan.PolicyRef, custom)
 	}
@@ -152,10 +135,7 @@ func TestResolveSandboxPlanBrokenPolicyIsRecordedNotFatal(t *testing.T) {
 	t.Setenv("HOME", home)
 	stageProfile(t, home, `{ not valid json`)
 
-	plan, err := resolveSandboxPlan(config.DefaultLauncherConfig(), "")
-	if err != nil {
-		t.Fatalf("a broken policy must not fail the plan: %v", err)
-	}
+	plan := resolveSandboxPlan("")
 	if plan.PolicyErr == nil {
 		t.Error("PolicyErr should record the failed policy resolution")
 	}
