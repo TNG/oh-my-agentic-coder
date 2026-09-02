@@ -28,6 +28,10 @@ type Inputs struct {
 	// startup; without a writable, sandbox-granted temp dir the extraction
 	// fails. Empty omits the grant.
 	TmpDir string
+	// ProfileRef, when set, is passed as `--profile <ref>` so the child
+	// resolves the same policy profile the parent did. Empty lets the child
+	// use its own default ("default").
+	ProfileRef string
 }
 
 // BuildBuiltinArgv builds the argv that launches the builtin sandbox: it
@@ -41,11 +45,14 @@ func BuildBuiltinArgv(in Inputs) ([]string, error) {
 	if err != nil {
 		self = "omac" // PATH fallback; better than failing the launch
 	}
-	argv := []string{
-		self, "sandbox", "run",
+	argv := []string{self, "sandbox", "run"}
+	if in.ProfileRef != "" {
+		argv = append(argv, "--profile", in.ProfileRef)
+	}
+	argv = append(argv,
 		"--allow-file", in.Socket,
 		"--read", filepath.Dir(in.Socket),
-	}
+	)
 	if in.TmpDir != "" {
 		argv = append(argv, "--read", in.TmpDir, "--write", in.TmpDir)
 	}

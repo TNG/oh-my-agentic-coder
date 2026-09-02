@@ -3,6 +3,7 @@ package sandbox
 import (
 	"os"
 	"reflect"
+	"slices"
 	"testing"
 )
 
@@ -60,6 +61,53 @@ func TestBuildBuiltinArgv(t *testing.T) {
 	// No inner command is an error.
 	if _, err := BuildBuiltinArgv(Inputs{Socket: "/s/bridge.sock"}); err == nil {
 		t.Error("BuildBuiltinArgv with no inner_cmd should error")
+	}
+}
+
+// TestBuildBuiltinArgvProfileRef checks that a set ProfileRef becomes a
+// `--profile <ref>` flag after `sandbox run` and before the `--` inner-command
+// separator, and that an empty ProfileRef omits it.
+func TestBuildBuiltinArgvProfileRef(t *testing.T) {
+	self, _ := os.Executable()
+
+	got, err := BuildBuiltinArgv(Inputs{
+		Socket:     "/tmp/omac-abc/bridge.sock",
+		TCPPort:    41017,
+		InnerCmd:   []string{"claude"},
+		ProfileRef: "/home/user/repo/sandbox.json",
+	})
+	if err != nil {
+		t.Fatalf("BuildBuiltinArgv: %v", err)
+	}
+	want := []string{
+		self, "sandbox", "run",
+		"--profile", "/home/user/repo/sandbox.json",
+		"--allow-file", "/tmp/omac-abc/bridge.sock",
+		"--read", "/tmp/omac-abc",
+		"--open-port", "41017",
+		"--",
+		"claude",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("profile-ref mismatch\n got: %#v\nwant: %#v", got, want)
+	}
+
+	// The flag must precede the inner-command separator.
+	if pi, si := slices.Index(got, "--profile"), slices.Index(got, "--"); pi < 0 || pi > si {
+		t.Errorf("--profile (%d) must appear before -- (%d)", pi, si)
+	}
+
+	// Empty ProfileRef omits the flag entirely.
+	got, err = BuildBuiltinArgv(Inputs{
+		Socket:   "/tmp/omac-abc/bridge.sock",
+		TCPPort:  41017,
+		InnerCmd: []string{"claude"},
+	})
+	if err != nil {
+		t.Fatalf("BuildBuiltinArgv: %v", err)
+	}
+	if slices.Index(got, "--profile") >= 0 {
+		t.Errorf("empty ProfileRef should omit --profile, got %#v", got)
 	}
 }
 
