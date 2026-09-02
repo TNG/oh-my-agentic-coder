@@ -205,6 +205,13 @@ func runServe(args []string, env *Env) int {
 		fmt.Fprintln(env.Stderr, "omac serve:", planErr)
 		return ExitConfigInvalid
 	}
+	if !noSandbox && !noInner {
+		// A custom profile is user-authored (and may be committed by a teammate),
+		// so surface anything that weakens the sandbox and keep its learned
+		// network decisions out of git.
+		warnPermissiveProfile(env.Stderr, profileRef, plan.Policy)
+		excludeProfilePagesFile(env.Workdir, profileRef)
+	}
 	profName := plan.Name
 	prof := plan.Launcher
 
@@ -529,7 +536,7 @@ func runServe(args []string, env *Env) int {
 			if rel, werr := harness.BriefingFileFunc(briefingText, env.Workdir); werr != nil {
 				fmt.Fprintln(env.Stderr, "omac serve: briefing file:", werr)
 			} else if rel != "" {
-				gitExcludeBriefing(env.Workdir, rel)
+				gitExcludePath(env.Workdir, rel)
 				defer removeBriefingFile(filepath.Join(env.Workdir, rel))
 			}
 		}

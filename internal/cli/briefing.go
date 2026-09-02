@@ -57,19 +57,19 @@ func removeBriefingFile(path string) {
 	_ = os.Remove(filepath.Dir(dir))
 }
 
-// gitExcludeBriefing makes git ignore a workdir briefing file written by a
-// harness's BriefingFileFunc, by appending its workdir-relative path to
-// <workdir>/.git/info/exclude. Without this, an agent whose own workflow runs
-// `git add -A && git commit` would stage and commit the briefing (and a later
-// removeBriefingFile then leaves a staged deletion of a now-tracked file).
+// gitExcludePath makes git ignore a workdir-relative file by appending its path
+// to <workdir>/.git/info/exclude. Used for files omac writes inside the workdir
+// that must not be committed — a harness briefing file, or a custom sandbox
+// profile's learned-decisions sibling (<profile>.pages.json). Without this, an
+// agent whose own workflow runs `git add -A && git commit` would stage and
+// commit the file.
 //
 // .git/info/exclude is the repo-local, never-committed ignore list — this
 // touches neither the user's .gitignore nor the index. It is written BEFORE
-// the agent launches, so the entry persists even if omac is SIGKILLed (which
-// the deferred removeBriefingFile would miss): the leftover file stays
-// git-ignored until the next run overwrites and cleans it. Idempotent and
-// best-effort — a no-op when workdir is not a standard git worktree.
-func gitExcludeBriefing(workdir, relPath string) {
+// the agent launches, so the entry persists even if omac is SIGKILLed.
+// Idempotent and best-effort — a no-op when workdir is not a standard git
+// worktree.
+func gitExcludePath(workdir, relPath string) {
 	if workdir == "" || relPath == "" {
 		return
 	}

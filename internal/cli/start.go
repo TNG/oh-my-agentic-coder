@@ -272,6 +272,13 @@ func runLaunch(env *Env, opts launchOpts) int {
 		fmt.Fprintln(env.Stderr, prefix+":", planErr)
 		return ExitConfigInvalid
 	}
+	if !noSandbox {
+		// A custom profile is user-authored (and may be committed by a teammate),
+		// so surface anything that weakens the sandbox and keep its learned
+		// network decisions out of git.
+		warnPermissiveProfile(env.Stderr, profileRef, plan.Policy)
+		excludeProfilePagesFile(env.Workdir, profileRef)
+	}
 	profName := plan.Name
 	prof := plan.Launcher
 
@@ -884,7 +891,7 @@ func runLaunch(env *Env, opts launchOpts) int {
 			} else if rel != "" {
 				// Keep git from committing the briefing (persists across a
 				// SIGKILL); remove the file itself on a clean exit.
-				gitExcludeBriefing(env.Workdir, rel)
+				gitExcludePath(env.Workdir, rel)
 				defer removeBriefingFile(filepath.Join(env.Workdir, rel))
 			}
 		}
