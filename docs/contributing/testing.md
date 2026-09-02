@@ -24,6 +24,10 @@ Platform-specific behaviour lives in separate files gated by a `//go:build` cons
 
 Runtime skipping is a separate mechanism: some facade and serve tests are compiled everywhere but skip themselves at runtime when they cannot open a loopback TCP port or Unix socket (e.g. on locked-down CI runners), and these do show up as skipped in the test output.
 
+Two Linux sandbox integration tests (`TestIntegrationProtectedMaskedUnderGrant`, `TestIntegrationOverrideDenyGrantsAccess` in `internal/sandboxrun/`) let the sandbox read your whole home folder, then check that sensitive folders (`~/.ssh`, `~/.aws`, `~/.azure`, …) are still hidden inside the sandbox.
+To hide one, the sandbox covers it with an empty folder — which only works if the real path exists as a normal folder. If any of those paths is instead a dangling symlink (common on WSL), bwrap can't cover it and the test fails at launch.
+This can be avoided by moving broken links aside (`mv ~/.azure ~/.old-azure` etc.) or by relying on the CI, which runs the tests for any PR.
+
 ---
 
 ## E2E tests
@@ -69,6 +73,10 @@ claude-code is the exception because it communicates directly with the Anthropic
 
 The bare `go test -tags=e2e` above needs the full toolchain (harness installs,
 bwrap/Seatbelt) on your host. Two wrappers cover the cases where that's awkward.
+
+Run the wrapper subcommand for the stage you want (each runs just that one
+stage's test); don't run the full suite in the container by hand — it's only
+provisioned for those specific tests. CI runs everything.
 
 **In a container — `scripts/e2e-docker.sh`** runs the Linux (bwrap) path on any
 host. The container is `--privileged` so
