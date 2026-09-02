@@ -3,8 +3,8 @@ package cli
 import (
 	"fmt"
 
-	"github.com/tngtech/oh-my-agentic-coder/internal/audit"
-	"github.com/tngtech/oh-my-agentic-coder/internal/config"
+	"github.com/TNG/oh-my-agentic-coder/internal/audit"
+	"github.com/TNG/oh-my-agentic-coder/internal/config"
 )
 
 // auditFlags carries the CLI-level audit switches shared by start and serve.

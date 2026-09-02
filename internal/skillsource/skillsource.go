@@ -49,7 +49,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/tngtech/oh-my-agentic-coder/internal/config"
+	"github.com/TNG/oh-my-agentic-coder/internal/config"
 )
 
 // Source describes one location omac looks in for skill source dirs.

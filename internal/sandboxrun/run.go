@@ -10,17 +10,17 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/tngtech/oh-my-agentic-coder/internal/audit"
-	"github.com/tngtech/oh-my-agentic-coder/internal/config"
-	"github.com/tngtech/oh-my-agentic-coder/internal/intent"
-	"github.com/tngtech/oh-my-agentic-coder/internal/netprompt"
-	"github.com/tngtech/oh-my-agentic-coder/internal/netprompt/hostmap"
-	"github.com/tngtech/oh-my-agentic-coder/internal/netprompt/origin"
-	"github.com/tngtech/oh-my-agentic-coder/internal/netproxy"
-	"github.com/tngtech/oh-my-agentic-coder/internal/sandbox"
-	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxdeny"
-	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxprofile"
-	"github.com/tngtech/oh-my-agentic-coder/internal/toolcache"
+	"github.com/TNG/oh-my-agentic-coder/internal/audit"
+	"github.com/TNG/oh-my-agentic-coder/internal/config"
+	"github.com/TNG/oh-my-agentic-coder/internal/intent"
+	"github.com/TNG/oh-my-agentic-coder/internal/netprompt"
+	"github.com/TNG/oh-my-agentic-coder/internal/netprompt/hostmap"
+	"github.com/TNG/oh-my-agentic-coder/internal/netprompt/origin"
+	"github.com/TNG/oh-my-agentic-coder/internal/netproxy"
+	"github.com/TNG/oh-my-agentic-coder/internal/sandbox"
+	"github.com/TNG/oh-my-agentic-coder/internal/sandboxdeny"
+	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
+	"github.com/TNG/oh-my-agentic-coder/internal/toolcache"
 )
 
 // Options bundles the inputs for Run.

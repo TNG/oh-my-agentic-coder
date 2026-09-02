@@ -13,7 +13,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxprofile"
+	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
 )
 
 // findChromiumForTest locates a Chromium/Chrome binary for hermetic sandbox
@@ -95,7 +95,7 @@ func TestIntegrationBrowserHeadlessLocalPage(t *testing.T) {
 
 	// Build omac with the real host env before any HOME override.
 	omac := filepath.Join(t.TempDir(), "omac")
-	build := exec.Command("go", "build", "-o", omac, "github.com/tngtech/oh-my-agentic-coder/cmd/omac")
+	build := exec.Command("go", "build", "-o", omac, "github.com/TNG/oh-my-agentic-coder/cmd/omac")
 	build.Env = os.Environ()
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build omac: %v\n%s", err, out)

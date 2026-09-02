@@ -3,7 +3,7 @@ package keychain
 import (
 	"fmt"
 
-	"github.com/tngtech/oh-my-agentic-coder/internal/osinfo"
+	"github.com/TNG/oh-my-agentic-coder/internal/osinfo"
 )
 
 // UnavailableHint returns an actionable, OS-specific tip for a missing Secret

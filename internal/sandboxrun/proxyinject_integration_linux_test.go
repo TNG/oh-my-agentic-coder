@@ -17,8 +17,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/tngtech/oh-my-agentic-coder/internal/netproxy"
-	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxprofile"
+	"github.com/TNG/oh-my-agentic-coder/internal/netproxy"
+	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
 )
 
 // These integration tests prove that a *real tool* run inside a filtered
@@ -139,7 +139,7 @@ func startHermeticProxy(t *testing.T) (*netproxy.Server, *proxyDecisions) {
 func buildOmacBinary(t *testing.T) string {
 	t.Helper()
 	omac := filepath.Join(t.TempDir(), "omac")
-	build := exec.Command("go", "build", "-o", omac, "github.com/tngtech/oh-my-agentic-coder/cmd/omac")
+	build := exec.Command("go", "build", "-o", omac, "github.com/TNG/oh-my-agentic-coder/cmd/omac")
 	build.Env = os.Environ()
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build omac: %v\n%s", err, out)

@@ -29,7 +29,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/tngtech/oh-my-agentic-coder/internal/config"
+	"github.com/TNG/oh-my-agentic-coder/internal/config"
 )
 
 // Inputs captures everything needed to expand a sandbox profile.

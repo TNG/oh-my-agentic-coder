@@ -9,9 +9,9 @@ import (
 
 	"golang.org/x/term"
 
-	"github.com/tngtech/oh-my-agentic-coder/internal/config"
-	"github.com/tngtech/oh-my-agentic-coder/internal/plugin"
-	"github.com/tngtech/oh-my-agentic-coder/internal/prefs"
+	"github.com/TNG/oh-my-agentic-coder/internal/config"
+	"github.com/TNG/oh-my-agentic-coder/internal/plugin"
+	"github.com/TNG/oh-my-agentic-coder/internal/prefs"
 )
 
 // pluginTarget names an installable client-side bridge plugin and maps it

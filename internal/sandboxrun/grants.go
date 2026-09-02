@@ -16,8 +16,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxdeny"
-	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxprofile"
+	"github.com/TNG/oh-my-agentic-coder/internal/sandboxdeny"
+	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
 )
 
 // Grants is the fully resolved, expanded, existence-filtered input to

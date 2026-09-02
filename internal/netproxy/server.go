@@ -18,7 +18,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/tngtech/oh-my-agentic-coder/internal/intent"
+	"github.com/TNG/oh-my-agentic-coder/internal/intent"
 )
 
 // connectTimeout bounds the upstream dial (and the early DNS resolve).

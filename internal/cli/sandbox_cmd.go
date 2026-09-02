@@ -3,8 +3,8 @@ package cli
 import (
 	"fmt"
 
-	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxprofile"
-	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxrun"
+	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
+	"github.com/TNG/oh-my-agentic-coder/internal/sandboxrun"
 )
 
 // runSandbox dispatches `omac sandbox <verb>`.

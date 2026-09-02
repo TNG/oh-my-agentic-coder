@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tngtech/oh-my-agentic-coder/internal/toolcache"
+	"github.com/TNG/oh-my-agentic-coder/internal/toolcache"
 )
 
 // writeWorkdirScopeConfig writes a launcher config in workdir that selects
