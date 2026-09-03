@@ -152,7 +152,7 @@ Before forwarding the request, omac strips your skill's mount prefix (`/my-skill
 
 ## Environment variables injected into the sidecar
 
-omac sets these in the sidecar process before spawning it. Your sidecar code reads them like any other env var; they tell it where to bind and what credentials and config it has. You do not set them yourself.
+omac sets the injected variables in the sidecar process before spawning it.
 
 For example, if your `omac.yaml` declares a secret `MY_API_TOKEN` and a config field `API_BASE_URL`, they arrive in your sidecar as plain env vars:
 
@@ -175,7 +175,7 @@ api_url = os.environ["API_BASE_URL"]   # from skill-config.yaml
 
 ## How the agent reaches your skill
 
-The agent runs inside the sandbox, not in your sidecar's process, so it receives a different set of variables. It uses them to reach your skill through the facade:
+The agent uses the variables it receives to reach your skill through the facade:
 
 | Variable | Value |
 |---|---|

@@ -116,20 +116,15 @@ omac does not make you re-approve skills you already registered.
 ## Environment filtering
 
 The sandbox does not inherit all environment variables from the shell that
-launched omac. Only variables on an explicit allow list pass through: the
-`OMAC_*` prefix, basic system variables (`HOME`, `PATH`, `LANG`, …), and the
-API key the selected harness needs to call its AI provider. Everything else is
-stripped before the agent starts.
+launched omac. It starts from an explicit allow list — the `OMAC_*` prefix,
+basic system variables (`HOME`, `PATH`, `LANG`, …), and the key the selected
+harness needs to call its AI provider — and strips everything else, including
+any ambient cloud tokens, before the agent starts.
 
-**Note:** the harness's AI provider credentials are always accessible inside
-the sandbox — this is unavoidable, since the harness needs them to function.
-For harnesses like claude-code, the key arrives as an environment variable
-(`ANTHROPIC_API_KEY`). For harnesses like opencode, credentials are stored in
-the harness config directory (`~/.local/share/opencode`), which is mounted
-inside the sandbox. Either way, a sufficiently capable agent could read them.
-This is a known limitation; skill secrets are fully isolated, but harness
-credentials are not.
-
-You can add more variables with `allow_vars` or block specific ones with
-`deny_vars` in the sandbox profile. See [Configuration](./configuration.md)
-for the schema.
+**Known limitation — the harness's AI provider credentials are reachable
+inside the sandbox.** This is unavoidable, since the harness needs them to
+function. For harnesses like claude-code, the key arrives as an environment
+variable (`ANTHROPIC_API_KEY`). For harnesses like opencode, credentials are
+stored in the harness config directory (`~/.local/share/opencode`), which is
+mounted inside the sandbox. Either way, a sufficiently capable agent could read
+them. Skill secrets are fully isolated; harness credentials are not.

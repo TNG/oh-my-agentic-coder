@@ -166,3 +166,11 @@ sha256sum -c checksums.txt --ignore-missing
 ```
 
 Keep each downloaded file under its original release name. `sha256sum -c` matches entries by filename and `--ignore-missing` silently skips any file whose name is not in the list — so a renamed download would verify nothing.
+
+## Further reading
+
+- [CLI](../usage/cli.md): Details on how to use the command line interface.
+- [Configuration](../configuration.md): How to customize configuration regarding environment variables, ports, package registries, etc.
+- [Security model](../security.md): What is and what is not available to your agent inside the sandbox.
+- Skills — [usage](../usage/skills.md) and [authoring](../skills/authoring.md): How to use and create skills that require secrets without exposing them to the agent.
+- [Troubleshooting](../troubleshooting.md): Tips for common problems and instructions on how to report a bug.
