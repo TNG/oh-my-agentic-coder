@@ -91,7 +91,7 @@ You can also open a port for a single session with `omac start --open-port 3000`
 
 By default, the sandbox strips every variable from your shell except a small set of operational defaults (`PATH`, `HOME`, `LANG`, …). Ambient secrets like cloud tokens never reach the agent.
 
-If a program running inside the sandbox needs one of your shell's variables — for example an API token a build tool or MCP server reads — add its name to `environment.allow_vars`:
+If a program running inside the sandbox needs one of your shell's variables — for example an API token a build tool or MCP server reads — add its name to `environment.allow_vars` in the sandbox grants file (`~/.config/omac/sandbox-profiles/default.json`):
 
 ```json
 "environment": { "allow_vars": ["MY_API_TOKEN"] }
@@ -100,8 +100,9 @@ If a program running inside the sandbox needs one of your shell's variables — 
 Only the *name* goes here; the value comes from your shell when you run `omac start`, so export it first.
 
 A few things to know:
-- For safety, a few variables that let a program load extra code (LD_*, NODE_OPTIONS, PYTHONPATH, …) are always stripped, even if you add them to `allow_vars`.
+- For safety, a few variables that let a program load extra code (`LD_*`, `NODE_OPTIONS`, `PYTHONPATH`, …) are always stripped, even if you add them to `allow_vars`. Run `omac provenance` and look at the `environment` section: the always-stripped variables are the rows with action `deny` and source `blocklist`. To list just those, run `omac provenance | grep blocklist`.
 - An empty `allow_vars` means "operational defaults only", not "pass everything through".
+- Do not use this to pass through secrets (e.g. for skills). See the next section and [Security model](./security.md) for secure ways to do so.
 
 ### Running an MCP server the harness launches
 
