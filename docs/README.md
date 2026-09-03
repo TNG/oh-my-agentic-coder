@@ -13,6 +13,8 @@ omac runs the agent inside an OS sandbox that enforces three boundaries:
 
 The result: a capable coding agent with a clear boundary.
 
+Want to try it? See the [Quick start](./getting-started/quick-start.md) to install omac, set up prerequisites, and launch your first session.
+
 ## Architecture
 
 ```mermaid
