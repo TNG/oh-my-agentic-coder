@@ -76,13 +76,54 @@ func Gate(leaf string, digest string, caps CapabilitySet) (GateResult, error) {
 	return GateAt(leaf, NewOnLeafLocation(), digest, caps)
 }
 
+// GateOptions carries the opt-in approval-reuse context (ADR 0005). A
+// zero value (the default) leaves approval reuse disabled: the gate
+// behaves exactly as before, consulting only the per-worktree approval.
+type GateOptions struct {
+	// EnableReuse enables the digest-indexed repo-namespaced fallback:
+	// when the per-worktree path misses AND the repo identity is
+	// resolvable, the gate looks up a reuse record by
+	// (canonicalRepoRoot, manifestDigest) and, if its repoRootCommit
+	// matches the current repo's root commit, freezes THAT record's
+	// capability set for this worktree.
+	EnableReuse bool
+	// CanonicalRepoRoot is the canonical (EvalSymlinks-resolved)
+	// `git rev-parse --git-common-dir` output — the namespace under
+	// which the digest-indexed reuse records are stored. Empty disables
+	// the reuse lookup (identity not ermittelbar → fall back to
+	// per-worktree, no error, per spec §Edge cases).
+	CanonicalRepoRoot string
+	// RepoRootCommit is the current root-commit SHA of the repo
+	// (`git rev-list --max-parents=0 HEAD`). The stored reuse record's
+	// RepoRootCommit must match it, or the record is not reused (the
+	// recycling guard: a foreign repo at the same path has a different
+	// root commit). Empty disables the reuse lookup.
+	RepoRootCommit string
+	// RepoDigestLocation resolves where the digest-indexed reuse records
+	// live. A zero value disables the reuse lookup.
+	RepoDigestLocation RepoDigestLocation
+}
+
 // GateAt is the location-aware variant of Gate. It reads/writes approval
 // records at the location-selected path. Under the BuildControl layout
 // the active record is the durable approval record itself (the parent
 // holds an in-memory snapshot); a digest match against the durable
 // approval starts unattended with the frozen set, and a mismatch
 // records the new approval and fails with the diff + restart instruction.
-func GateAt(leaf string, loc Location, digest string, caps CapabilitySet) (GateResult, error) {
+//
+// When opts enables approval reuse (ADR 0005), a per-worktree miss falls
+// back to the digest-indexed, repo-namespaced reuse record BEFORE
+// recording a fresh approval: on a hit with a matching repoRootCommit,
+// the reused record freezes THIS worktree's capability set and the build
+// proceeds unattended — an already-approved repo's unchanged worktrees
+// build without a fresh per-worktree approval. A miss/mismatch falls
+// back to the existing per-worktree behavior (record approval + fail
+// with the diff + restart instruction).
+func GateAt(leaf string, loc Location, digest string, caps CapabilitySet, opts ...GateOptions) (GateResult, error) {
+	var o GateOptions
+	if len(opts) > 0 {
+		o = opts[0]
+	}
 	active, err := LoadActiveAt(leaf, loc)
 	if err != nil {
 		return GateResult{}, fmt.Errorf("load active manifest: %w", err)
@@ -102,6 +143,36 @@ func GateAt(leaf string, loc Location, digest string, caps CapabilitySet) (GateR
 			}
 		}
 		return GateResult{Capabilities: active.Capabilities, Digest: digest}, nil
+	}
+	// Step 1 missed: no per-worktree approval matches the current digest.
+	//
+	// Step 2 (opt-in approval reuse, ADR 0005): when reuse is enabled
+	// AND the repo identity is derivable, consult the digest-indexed,
+	// repo-namespaced reuse record for this (repo, digest). A hit whose
+	// RepoRootCommit matches the current repo's root commit freezes the
+	// reused record's capability set for this worktree — unchanged
+	// worktrees of an already-approved repo build without a fresh
+	// per-worktree approval. A miss / mismatch / identity-not-ermittelbar
+	// falls through to the existing per-worktree behavior (record
+	// approval + fail with the diff + restart instruction).
+	if o.EnableReuse && o.CanonicalRepoRoot != "" && o.RepoRootCommit != "" && o.RepoDigestLocation.cacheRoot != "" {
+		reuseRec, rerr := LookupApprovalForRepoDigestAt(o.RepoDigestLocation, digest)
+		if rerr != nil {
+			return GateResult{}, fmt.Errorf("lookup repo approval reuse: %w", rerr)
+		}
+		if reuseRec.Digest == digest && reuseRec.RepoRootCommit == o.RepoRootCommit {
+			// The reused record is digest-bound AND the repo's root
+			// commit still matches (the recycling guard). The host
+			// ceiling must still cover the reused set, exactly as for a
+			// per-worktree record.
+			if !ceilingStillValid(reuseRec.Capabilities.HostPolicy, caps.HostPolicy) {
+				return GateResult{}, &GateError{
+					Diff:   Diff(reuseRec.Capabilities, caps),
+					Reason: "host policy ceiling dropped below the previously approved set — re-approval required",
+				}
+			}
+			return GateResult{Capabilities: reuseRec.Capabilities, Digest: digest}, nil
+		}
 	}
 	// No active record, OR digest changed since the session was frozen:
 	// record approval (so the next run starts unattended) and FAIL with the

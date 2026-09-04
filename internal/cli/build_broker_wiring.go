@@ -279,7 +279,43 @@ func freezeSnapshotFromDurableApproval(store *buildengine.ParentSnapshotStore, c
 	// + restart).
 	rec, err := buildmanifest.LoadApprovalAt(leaf, loc)
 	if err != nil || rec.Digest == "" || rec.Digest != digest {
+		// Per-worktree approval missed. When the opt-in digest-indexed
+		// approval-reuse feature is enabled (ADR 0005), fall back to the
+		// reusable digest-indexed record for this repo before giving up:
+		// an already-approved repo's unchanged worktrees freeze a
+		// snapshot from the reuse record instead of requiring a fresh
+		// per-worktree approval.
+		if freezeFromRepoApproval(store, cacheDir, canonicalWorktree, digest, host) {
+			return
+		}
 		return
 	}
 	store.FreezeFromApproval(canonicalWorktree, digest, rec.Capabilities, host)
+}
+
+// freezeFromRepoApproval is the digest-indexed approval-reuse fallback
+// (ADR 0005) for the parent's activation snapshot. cacheDir is the
+// resolved cache scope dir (its parent is the build-control cache root);
+// canonicalWorktree is the canonical worktree; digest is the current
+// manifest digest; host is the ceiling to freeze. It resolves the
+// worktree's repo identity, looks up the digest-indexed reuse record
+// under the host-only approvals-by-repo tree, and — when the record's
+// digest AND repoRootCommit both match — freezes the snapshot from it.
+// Returns true when a snapshot was frozen from the reuse record.
+func freezeFromRepoApproval(store *buildengine.ParentSnapshotStore, cacheDir, canonicalWorktree, digest string, host buildmanifest.HostPolicy) bool {
+	cacheRoot := buildControlCacheRoot(cacheDir)
+	if cacheRoot == "" || !approvalReuseEnabled(cacheRoot) {
+		return false
+	}
+	canonRepoRoot, rootCommit := resolveRepoIdentity(canonicalWorktree)
+	if canonRepoRoot == "" || rootCommit == "" {
+		return false
+	}
+	reuseLoc := buildmanifest.NewRepoDigestLocation(cacheRoot, canonRepoRoot)
+	rec, err := buildmanifest.LookupApprovalForRepoDigestAt(reuseLoc, digest)
+	if err != nil || rec.Digest == "" || rec.Digest != digest || rec.RepoRootCommit != rootCommit {
+		return false
+	}
+	store.FreezeFromApproval(canonicalWorktree, digest, rec.Capabilities, host)
+	return true
 }
