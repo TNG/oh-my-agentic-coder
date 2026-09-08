@@ -435,7 +435,11 @@ func runProvenance(args []string, env *Env) int {
 	// not build the provenance view. Keeps --check independent of the
 	// view-build path and its (registry, learned-policy) dependencies.
 	if *checkMode {
-		profile, _, err := sandboxprofile.Resolve(inspectProfileRef(env.Workdir, *profileRef))
+		ref, refErr := inspectProfileRef(env.Workdir, *profileRef)
+		if refErr != nil {
+			fmt.Fprintf(env.Stderr, "omac provenance --check: %v — linting the built-in default profile instead.\n", refErr)
+		}
+		profile, _, err := sandboxprofile.Resolve(ref)
 		if err != nil {
 			fmt.Fprintln(env.Stderr, "omac provenance --check:", err)
 			return ExitConfigInvalid
@@ -447,7 +451,11 @@ func runProvenance(args []string, env *Env) int {
 		return writeCheckText(env.Stdout, findings)
 	}
 
-	view, err := buildProvenanceView(env.Workdir, inspectProfileRef(env.Workdir, *profileRef))
+	ref, refErr := inspectProfileRef(env.Workdir, *profileRef)
+	if refErr != nil {
+		fmt.Fprintf(env.Stderr, "omac provenance: %v — showing the built-in default profile instead.\n", refErr)
+	}
+	view, err := buildProvenanceView(env.Workdir, ref)
 	if err != nil {
 		fmt.Fprintln(env.Stderr, "omac provenance:", err)
 		return ExitConfigInvalid

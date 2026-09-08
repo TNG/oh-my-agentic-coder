@@ -71,8 +71,8 @@ func warnPermissiveProfile(w io.Writer, ref string, policy *sandboxprofile.Profi
 
 // excludeProfilePagesFile keeps a custom profile's learned-decisions sibling
 // (<profile>.pages.json) out of git when the profile lives inside the workdir.
-// The sandbox child writes that file lazily on the first permanent network
-// decision; excluding it up front stops a per-user file from being committed.
+// omac creates the file at launch (see sandboxrun.writeProtectProfilePaths),
+// so excluding it up front stops a per-user file from being committed.
 // No-op for the default profile, a profile outside the workdir, or a non-git
 // workdir.
 func excludeProfilePagesFile(workdir, profileRef string) {
@@ -89,18 +89,37 @@ func excludeProfilePagesFile(workdir, profileRef string) {
 
 // inspectProfileRef returns the profile a read-only inspection should examine,
 // matching a launch: the explicit --profile value, else sandbox.profile_path,
-// else "" (the built-in "default"). Best-effort — errors fall back to default.
-func inspectProfileRef(workdir, flagRef string) string {
+// else "" (the built-in "default"). Best-effort: on a config or profile_path
+// error it returns "" plus the error, so callers can warn before falling back
+// to the default — a silently swapped profile would hide the very problem
+// the inspection is meant to reveal.
+func inspectProfileRef(workdir, flagRef string) (string, error) {
 	if flagRef != "" {
-		return flagRef
+		return flagRef, nil
 	}
 	lc, cfgPath, err := config.LoadLauncher(workdir)
 	if err != nil {
-		return ""
+		return "", err
 	}
-	ref, err := lc.ResolveSandboxProfileRef(cfgPath, workdir)
-	if err != nil {
-		return ""
+	return profileRefFromConfig(lc, cfgPath, workdir, "")
+}
+
+// profileRefFromConfig resolves the configured sandbox.profile_path from an
+// already-loaded launcher config, so a caller that loaded the config once
+// (doctor) does not load it again. flagRef is a non-empty explicit --profile
+// reference, passed through verbatim.
+func profileRefFromConfig(lc config.LauncherConfig, cfgPath, workdir, flagRef string) (string, error) {
+	if flagRef != "" {
+		return flagRef, nil
+	}
+	return lc.ResolveSandboxProfileRef(cfgPath, workdir)
+}
+
+// profileDisplayName returns the label inspection output should use for a
+// profile ref: the ref itself, or "default" for the built-in profile ("").
+func profileDisplayName(ref string) string {
+	if ref == "" {
+		return "default"
 	}
 	return ref
 }

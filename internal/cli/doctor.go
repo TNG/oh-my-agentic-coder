@@ -53,7 +53,9 @@ func runDoctor(args []string, env *Env) int {
 	}
 
 	// Launcher config resolution: report which config file (if any) applies.
-	_, cfgPath, err := config.LoadLauncher(env.Workdir)
+	// Retained for later sections (sandbox profile warnings, lint) so the
+	// config is loaded once.
+	launcherCfg, cfgPath, err := config.LoadLauncher(env.Workdir)
 	if err != nil {
 		fmt.Fprintln(env.Stdout, "[fail] launcher config:", err)
 		return ExitConfigInvalid
@@ -198,7 +200,10 @@ func runDoctor(args []string, env *Env) int {
 
 	// Inspect the same policy profile a launch would use (sandbox.profile_path,
 	// else the built-in "default"), so doctor reflects the real config.
-	profileRef := inspectProfileRef(env.Workdir, "")
+	profileRef, refErr := profileRefFromConfig(launcherCfg, cfgPath, env.Workdir, "")
+	if refErr != nil {
+		fmt.Fprintf(env.Stdout, "[warn] sandbox profile: %v — inspecting the built-in default instead.\n", refErr)
+	}
 
 	// omac always launches its built-in OS sandbox.
 	doctorBuiltinSandbox(env, profileRef)
@@ -420,13 +425,14 @@ type toolHomeWarning struct {
 // harness. Warnings are advisory: they never increment the failure count and
 // never mutate the on-disk profile.
 func doctorSandboxProfileWarnings(env *Env, profileRef string) {
+	name := profileDisplayName(profileRef)
 	p, path, err := sandboxprofile.Resolve(profileRef)
 	if err != nil {
 		fmt.Fprintf(env.Stdout, "  [warn] sandbox profile: %v\n", err)
 		return
 	}
 	if len(p.Environment.AllowVars) == 0 {
-		fmt.Fprintf(env.Stdout, "  [warn] sandbox profile %q has an empty environment.allow_vars\n", "default")
+		fmt.Fprintf(env.Stdout, "  [warn] sandbox profile %q has an empty environment.allow_vars\n", name)
 		if path != "" {
 			fmt.Fprintf(env.Stdout, "         source:      %s\n", path)
 		}
@@ -443,7 +449,7 @@ func doctorSandboxProfileWarnings(env *Env, profileRef string) {
 		fmt.Fprintln(env.Stdout, "                      every ambient var (minus the danger blocklist).")
 	}
 	if denied := sandboxprofile.DeniedBaseVars(p.Environment.DenyVars); len(denied) > 0 {
-		fmt.Fprintf(env.Stdout, "  [warn] sandbox profile %q denies operational base var(s): %s\n", "default", strings.Join(denied, ", "))
+		fmt.Fprintf(env.Stdout, "  [warn] sandbox profile %q denies operational base var(s): %s\n", name, strings.Join(denied, ", "))
 		fmt.Fprintln(env.Stdout, "         impact:      deny_vars wins over everything (allowlist, \"*\", and omac's injected")
 		fmt.Fprintln(env.Stdout, "                      overlay), so these are stripped. They are the operational minimum a")
 		fmt.Fprintln(env.Stdout, "                      sandboxed harness needs (HOME/PATH/TERM/…); removing them will likely")
@@ -455,7 +461,7 @@ func doctorSandboxProfileWarnings(env *Env, profileRef string) {
 	// Cargo-specific presence warning (mode-000 sentinel files).
 	warns = append(warns, cargoSentinelWarnings()...)
 	for _, w := range warns {
-		fmt.Fprintf(env.Stdout, "  [warn] sandbox profile %q %s %s\n", "default", w.access, w.entry)
+		fmt.Fprintf(env.Stdout, "  [warn] sandbox profile %q %s %s\n", name, w.access, w.entry)
 		fmt.Fprintf(env.Stdout, "         impact:      %s\n", w.impact)
 		fmt.Fprintf(env.Stdout, "         remediation: %s\n", w.remediation)
 	}

@@ -49,7 +49,13 @@ func runDiagnose(args []string, env *Env) int {
 		return ExitMisuse
 	}
 
-	profile, profPath, err := sandboxprofile.Resolve(inspectProfileRef(env.Workdir, *profileRef))
+	ref, refErr := inspectProfileRef(env.Workdir, *profileRef)
+	if refErr != nil {
+		// A broken profile_path makes a real launch fail; diagnose is the
+		// tool that should say so rather than silently show the default.
+		fmt.Fprintf(env.Stderr, "omac diagnose: %v — showing the built-in default profile instead.\n", refErr)
+	}
+	profile, profPath, err := sandboxprofile.Resolve(ref)
 	if err != nil {
 		fmt.Fprintln(env.Stderr, "omac diagnose:", err)
 		return ExitConfigInvalid

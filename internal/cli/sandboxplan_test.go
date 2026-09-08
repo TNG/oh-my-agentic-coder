@@ -130,13 +130,14 @@ func TestInspectProfileRef(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
 	// An explicit --profile flag value wins.
-	if got := inspectProfileRef(t.TempDir(), "/x/custom.json"); got != "/x/custom.json" {
-		t.Errorf("flag ref should win, got %q", got)
+	got, err := inspectProfileRef(t.TempDir(), "/x/custom.json")
+	if err != nil || got != "/x/custom.json" {
+		t.Errorf("flag ref should win, got (%q, %v)", got, err)
 	}
 
 	// No config on disk resolves to the built-in default ("").
-	if got := inspectProfileRef(t.TempDir(), ""); got != "" {
-		t.Errorf("no config should resolve to default (empty), got %q", got)
+	if got, err = inspectProfileRef(t.TempDir(), ""); err != nil || got != "" {
+		t.Errorf("no config should resolve to default (empty), got (%q, %v)", got, err)
 	}
 
 	// A project config with profile_path resolves to that absolute path.
@@ -153,8 +154,18 @@ func TestInspectProfileRef(t *testing.T) {
 		[]byte("sandbox:\n  profile_path: ./sandbox.json\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if got := inspectProfileRef(workdir, ""); got != prof {
-		t.Errorf("inspectProfileRef = %q, want %q", got, prof)
+	if got, err = inspectProfileRef(workdir, ""); err != nil || got != prof {
+		t.Errorf("inspectProfileRef = (%q, %v), want (%q, nil)", got, err, prof)
+	}
+
+	// A broken profile_path surfaces its error instead of silently
+	// falling back to the default.
+	if err := os.WriteFile(filepath.Join(ocDir, "oh-my-agentic-coder.yaml"),
+		[]byte("sandbox:\n  profile_path: ./missing.json\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = inspectProfileRef(workdir, ""); err == nil {
+		t.Error("a missing profile_path should return an error, got nil")
 	}
 }
 
