@@ -95,6 +95,72 @@ func TestBwrapAllowWinsOverRead(t *testing.T) {
 	}
 }
 
+func TestBwrapWriteProtectedPathsShadowRwBind(t *testing.T) {
+	// The --ro-bind must come AFTER the workdir's --bind so the later
+	// mount shadows it for that exact path.
+	workdir := t.TempDir()
+	profile := filepath.Join(workdir, "sandbox.json")
+	if err := os.WriteFile(profile, []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	g := bwrapGrants()
+	g.Workdir = workdir
+	g.AllowPaths = []string{workdir}
+	g.WriteProtectedPaths = []string{profile}
+	argv, err := BuildBwrapArgv(g, []string{"x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(argv, " ")
+	ro := "--ro-bind " + profile + " " + profile
+	rw := "--bind " + workdir + " " + workdir
+	if !strings.Contains(joined, ro) {
+		t.Errorf("write-protected path must be re-bound read-only, got: %s", joined)
+	}
+	if strings.Index(joined, rw) > strings.Index(joined, ro) {
+		t.Errorf("read-only re-bind must follow the rw workdir bind: %s", joined)
+	}
+}
+
+func TestBwrapWriteProtectedPathMissingIsSkipped(t *testing.T) {
+	g := bwrapGrants()
+	g.WriteProtectedPaths = []string{"/does/not/exist/sandbox.json"}
+	argv, err := BuildBwrapArgv(g, []string{"x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(strings.Join(argv, " "), "/does/not/exist") {
+		t.Error("a missing write-protected path must not be bound (bwrap aborts on missing sources)")
+	}
+}
+
+func TestBwrapWriteProtectedPathBeforeProtectedMask(t *testing.T) {
+	// Denied AND write-protected: the deny mask wins, so the --ro-bind
+	// must come first.
+	dir := t.TempDir()
+	target := filepath.Join(dir, "sandbox.json")
+	if err := os.WriteFile(target, []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	g := bwrapGrants()
+	g.AllowPaths = []string{dir}
+	g.WriteProtectedPaths = []string{target}
+	g.ProtectedPaths = []string{target}
+	argv, err := BuildBwrapArgv(g, []string{"x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(argv, " ")
+	roPos := strings.Index(joined, "--ro-bind "+target)
+	maskPos := strings.LastIndex(joined, target) // the mask is the later bind
+	if roPos < 0 || maskPos < 0 {
+		t.Fatalf("expected both binds, got: %s", joined)
+	}
+	if roPos > maskPos {
+		t.Errorf("deny mask must shadow the read-only bind: %s", joined)
+	}
+}
+
 func TestBwrapProtectedPathMasking(t *testing.T) {
 	// Protected dir inside a granted tree -> tmpfs mask. Use real
 	// paths so Lstat works.

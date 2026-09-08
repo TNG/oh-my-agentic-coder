@@ -45,6 +45,32 @@ type LearnedPolicy struct {
 	entries []LearnedEntry
 }
 
+// EnsureLearnedPolicyFile creates an empty learned-policy store at path if
+// it is missing, so callers can bind or grant it before any decision has
+// been recorded. An existing file is left untouched.
+func EnsureLearnedPolicyFile(path string) error {
+	if path == "" {
+		return nil
+	}
+	if _, err := os.Stat(path); err == nil {
+		return nil
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("stat learned policy %s: %w", path, err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("create learned policy dir: %w", err)
+	}
+	data, err := json.MarshalIndent(learnedFile{Schema: learnedSchema, Entries: []LearnedEntry{}}, "", "  ")
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		return fmt.Errorf("create learned policy %s: %w", path, err)
+	}
+	return nil
+}
+
 // LoadLearnedPolicy reads the file at path (missing file = empty store).
 func LoadLearnedPolicy(path string) (*LearnedPolicy, error) {
 	lp := &LearnedPolicy{path: path}

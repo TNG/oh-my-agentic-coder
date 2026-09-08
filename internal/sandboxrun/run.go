@@ -107,6 +107,18 @@ func Run(opts Options) int {
 	grants.DenialText = den.MarkerFile
 	grants.DenialDirName = den.MarkerDirName
 
+	// Write-protect the profile and its pages sibling (#267): both sit in
+	// the read-write workdir grant, and a session must not rewrite the
+	// grants a next launch enforces. Learned decisions are written by this
+	// supervisor, outside the sandbox.
+	if profilePath != "" {
+		wp, wpErr := writeProtectProfilePaths(profilePath, grants.ProtectedPaths)
+		if wpErr != nil {
+			return fail("%v", wpErr)
+		}
+		grants.WriteProtectedPaths = wp
+	}
+
 	// Intent lookup: the agent declares intents via POST $OMAC_BASE/
 	// /sandbox/intent (the facade, in the parent process). The popup
 	// and learn-mode review look them up over HTTP — the facade owns
@@ -267,6 +279,34 @@ func Run(opts Options) int {
 		}
 	}
 	return code
+}
+
+// writeProtectProfilePaths returns the profile and its pages sibling for
+// WriteProtectedPaths, creating the pages file if missing (bwrap needs an
+// existing source to bind). Paths covered by a deny are dropped: a deny
+// is stricter than read-only.
+func writeProtectProfilePaths(profilePath string, protected []string) ([]string, error) {
+	denied := make(map[string]bool, len(protected))
+	for _, p := range protected {
+		denied[filepath.Clean(p)] = true
+	}
+	pages := sandboxprofile.PagesPath(profilePath)
+	if pages != "" {
+		if err := netprompt.EnsureLearnedPolicyFile(pages); err != nil {
+			return nil, err
+		}
+	}
+	candidates := []string{filepath.Clean(profilePath)}
+	if pages != "" {
+		candidates = append(candidates, filepath.Clean(pages))
+	}
+	var out []string
+	for _, p := range candidates {
+		if !denied[p] {
+			out = append(out, p)
+		}
+	}
+	return out, nil
 }
 
 // injectedToolCacheEnv recreates the cache redirects for a sandbox re-exec

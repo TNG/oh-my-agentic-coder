@@ -90,7 +90,19 @@ sandbox:
 ```
 
 - **Shared:** the profile (commit it). Team allowlist → `network.allow_domain`.
-- **Local:** `<profile>.pages.json` (per-user "allow permanently" clicks) — git-ignored automatically, never shared.
+- **Local:** `<profile>.pages.json` (per-user "allow permanently" clicks) — created empty on the first launch, git-ignored automatically, never shared.
+
+**Tamper protection.** Inside the sandbox, the agent can *read* the profile and its `<profile>.pages.json` sibling, but never *write* them — even though the workdir (where a committed profile lives) is read-write. So a session cannot rewrite the grants a later launch enforces, nor pre-allow network hosts by editing the pages file. omac itself writes learned decisions from outside the sandbox, so nothing changes for you.
+
+**Hiding the profile entirely.** If the agent should not even be able to *read* the profile (or the pages file), deny it from inside the profile itself:
+
+```json
+"filesystem": {
+  "deny": [".opencode/sandbox.json", ".opencode/sandbox.pages.json"]
+}
+```
+
+A denied path is masked read+write inside the sandbox — the agent sees a short explanation instead of the file. Use the path form (as above), not a bare filename like `"sandbox.json"`: a bare name would be denied in *every* granted directory. Only the sandboxed session is affected; omac itself keeps reading the profile normally.
 
 ### Opening a port
 

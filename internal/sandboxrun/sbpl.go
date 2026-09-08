@@ -13,8 +13,10 @@ import (
 // path is darwin-specific.
 //
 // Rule order matters and mirrors nono (crates/nono/src/sandbox/macos.rs):
-// read allows -> protected-path denies -> write allows, so a granted
-// write path wins over a global deny while protected reads stay denied.
+// read allows -> protected-path denies -> write allows -> write-protected
+// denies. Seatbelt is last-match-wins, so a granted write path wins over
+// the global deny while protected reads stay denied and write-protected
+// paths stay unwritable under a covering write grant.
 func GenerateSBPL(g *Grants) string {
 	var b strings.Builder
 	b.WriteString("(version 1)\n")
@@ -86,6 +88,15 @@ func GenerateSBPL(g *Grants) string {
 	for _, p := range writable {
 		for _, fp := range pathForms(p) {
 			fmt.Fprintf(&b, "(allow file-write* (subpath %s))\n", sbplQuote(fp))
+		}
+	}
+	b.WriteString("\n")
+
+	// --- Write-protected paths: after the write allows, since Seatbelt
+	// is last-match-wins. Readable via the rules above, never writable.
+	for _, p := range g.WriteProtectedPaths {
+		for _, fp := range pathForms(p) {
+			fmt.Fprintf(&b, "(deny file-write* (subpath %s))\n", sbplQuote(fp))
 		}
 	}
 	b.WriteString("\n")

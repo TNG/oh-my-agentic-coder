@@ -362,6 +362,39 @@ func TestLearnedPolicyPersistsAtomically(t *testing.T) {
 	}
 }
 
+func TestLearnedPolicyEnsureFile(t *testing.T) {
+	// Missing file: created with a loadable empty store (creating parent
+	// dirs like Record does).
+	path := filepath.Join(t.TempDir(), "sub", "p.json")
+	if err := EnsureLearnedPolicyFile(path); err != nil {
+		t.Fatal(err)
+	}
+	lp, err := LoadLearnedPolicy(path)
+	if err != nil {
+		t.Fatalf("ensured file must load: %v", err)
+	}
+	if entries := lp.Entries(); len(entries) != 0 {
+		t.Errorf("ensured file must be empty, got %v", entries)
+	}
+
+	// Existing file: left untouched, whatever its content.
+	if err := os.WriteFile(path, []byte("{\"schema\":99}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnsureLearnedPolicyFile(path); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := os.ReadFile(path)
+	if string(raw) != "{\"schema\":99}" {
+		t.Errorf("existing file must not be rewritten, got %q", raw)
+	}
+
+	// Empty path: no-op, no error.
+	if err := EnsureLearnedPolicyFile(""); err != nil {
+		t.Errorf("empty path must be a no-op, got %v", err)
+	}
+}
+
 func TestLearnedPolicyDenyWins(t *testing.T) {
 	lp := &LearnedPolicy{}
 	_ = lp.Record("example.com", "suffix", true)
