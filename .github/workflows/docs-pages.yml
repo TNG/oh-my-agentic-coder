@@ -1,13 +1,19 @@
 # Documentation site (Docusaurus over the repo's docs/ directory) → GitHub Pages.
 #
-# Three triggers, on purpose:
-#   pull_request      — build only. A dead link or an MDX parse error fails the
-#                       PR instead of reaching the published site.
-#   push to main      — build and deploy. This is the live site.
-#   workflow_dispatch — build and deploy from any branch, so a docs change can be
-#                       seen at the real URL before it is merged. Requires the
-#                       branch to be allowed in the `github-pages` environment
-#                       (Settings → Environments → github-pages → deployment branches).
+# The site updates by itself. Merging a PR that touches docs/ or website/ is a
+# push to main, and that push builds and deploys — there is nothing to run by
+# hand and no separate release step. Give it the couple of minutes the workflow
+# takes and the change is live at https://tng.github.io/oh-my-agentic-coder/.
+#
+# The other two triggers do not change that:
+#   pull_request      — builds, never deploys. A dead link or an MDX parse error
+#                       fails the PR instead of reaching the published site.
+#   workflow_dispatch — manual fallback for the rare case where main is correct
+#                       but the site is not (a deploy that failed, say). Run it
+#                       on main to redeploy. Running it on another branch
+#                       publishes that branch to the live URL, so it also needs
+#                       the branch allowed under Settings → Environments →
+#                       github-pages → deployment branches.
 name: docs-pages
 
 on:
@@ -73,6 +79,9 @@ jobs:
       id-token: write
     environment:
       name: github-pages
+      # page_url is an output of the actions/deploy-pages step below (id:
+      # deployment) — the action reports the URL it published to, and naming it
+      # here is what makes GitHub show that link on the run and in Environments.
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - name: Deploy

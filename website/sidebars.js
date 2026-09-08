@@ -17,8 +17,6 @@ const sidebars = {
       collapsed: false,
       items: ['usage/cli', 'usage/skills', 'configuration'],
     },
-    'security',
-    'troubleshooting',
     {
       type: 'category',
       label: 'Skills',
@@ -29,6 +27,10 @@ const sidebars = {
       label: 'Advanced',
       items: ['advanced/cache', 'advanced/serve-mode', 'advanced/nono'],
     },
+    // Reference material you reach for when something is wrong or when you need
+    // to know what omac guarantees — after the how-to pages, before contributing.
+    'security',
+    'troubleshooting',
     {
       type: 'category',
       label: 'Contributing',

@@ -37,24 +37,16 @@ For full multi-platform artifacts (`.deb`, `.pkg.tar.zst`, checksums), use GoRel
 
 ## Documentation site
 
-The `docs/` directory is published at
+This directory is published at
 [tng.github.io/oh-my-agentic-coder](https://tng.github.io/oh-my-agentic-coder/) by
-the Docusaurus project in `website/`. The markdown is read from `docs/` in place —
-there is no copy step, so every page stays readable as a plain file on GitHub.
+the Docusaurus project in `website/`, which reads the markdown from `docs/` in
+place — nothing is copied, so every page stays readable as a plain file on GitHub.
 
-```bash
-cd website
-npm ci
-npm start          # live preview on http://localhost:3000
-npm run build      # what CI runs; fails on a dead internal link
-```
-
-Two things to know when editing `docs/`:
-
-- Pages are compiled as MDX, so a bare autolink (`<https://example.com>`) is a
-  parse error. Write `[example.com](https://example.com)` instead.
-- A relative link to a file outside `docs/` (say `../COLLABORATION.md`) cannot be
-  resolved to a page and fails the build. Link such files by full GitHub URL.
+Deployment is automatic: merging a PR that touches `docs/` or `website/` pushes
+to `main`, and that push builds and deploys the site. There is no manual step.
+The same workflow builds (but never deploys) on every PR, so a dead link or an
+MDX parse error fails your PR rather than the live site — run `npm ci && npm run
+build` in `website/` to see it before pushing.
 
 ## Releases
 

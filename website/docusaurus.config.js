@@ -47,10 +47,13 @@ const config = {
   ],
 
   themeConfig: {
+    // Deliberately thin: the whole site is one docs sidebar, so a "Docs" navbar
+    // entry would just point at the page you are already on. What stays is the
+    // title (links home), the GitHub link, and the bits Docusaurus puts here
+    // itself — the sidebar toggle on narrow screens and the dark-mode switch.
     navbar: {
       title: 'omac',
       items: [
-        { type: 'docSidebar', sidebarId: 'docs', position: 'left', label: 'Docs' },
         {
           href: 'https://github.com/TNG/oh-my-agentic-coder',
           label: 'GitHub',
