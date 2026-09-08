@@ -8,6 +8,7 @@
 //
 //	<omac-cache-root>/build-control/
 //	  approvals/<sha256(canonical-worktree)>.json
+//	  approvals-by-repo/<sha256(canonical-repo-root)>/<manifest-digest>.json
 //	  ports/<sha256(canonical-worktree)>/{credproxy,containerproxy}.port
 //	  locks/<sha256(canonical-leaf)>.lock
 //	  daemons/<sha256(canonical-leaf)>.json
@@ -55,12 +56,20 @@ const RootName = "build-control"
 // trusted-state subdirectories under the build-control root. Exported
 // only within the package's own path helpers; callers use ApprovalPath,
 // PortDir, LockPath, etc.
+//
+// approvalsByRepoDirName is the digest-indexed, repo-namespaced
+// approval-reuse subdirectory (ADR 0005): it stores one record per
+// (canonicalRepoRoot, manifestDigest) so an already-approved repo's
+// unchanged worktrees can build without a fresh per-worktree approval.
+// Exported so buildmanifest (which mirrors the path helpers without
+// importing this package) and diagnostics can reference the literal.
 const (
-	approvalsDir = "approvals"
-	portsDir     = "ports"
-	locksDir     = "locks"
-	daemonsDir   = "daemons"
-	requestsDir  = "requests"
+	approvalsDir           = "approvals"
+	approvalsByRepoDirName = "approvals-by-repo"
+	portsDir               = "ports"
+	locksDir               = "locks"
+	daemonsDir             = "daemons"
+	requestsDir            = "requests"
 )
 
 // LockFileMode is the required mode for a build-control lockfile
@@ -134,6 +143,17 @@ func HashWorktree(canonicalWorktree string) string {
 	return hash(canonicalWorktree)
 }
 
+// HashRepo returns sha256(canonicalRepoRoot) as a lowercase hex string
+// — the key under which digest-indexed approval-reuse records are
+// namespaced (ADR 0005). canonicalRepoRoot is the canonical
+// (EvalSymlinks-resolved) `git rev-parse --git-common-dir` output.
+// All linked worktrees of a repo share the same common dir, so they
+// collapse to the same namespace; a separate clone has its own common
+// dir and lands in a distinct namespace (no cross-clone reuse).
+func HashRepo(canonicalRepoRoot string) string {
+	return hash(canonicalRepoRoot)
+}
+
 func hash(s string) string {
 	d := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(d[:])
@@ -151,6 +171,25 @@ func Root(cacheRoot string) string {
 // worktree: <root>/approvals/<sha256(worktree)>.json.
 func ApprovalPath(cacheRoot, canonicalWorktree string) string {
 	return filepath.Join(Root(cacheRoot), approvalsDir, HashWorktree(canonicalWorktree)+".json")
+}
+
+// ApprovalsByRepoDir returns the repository-namespaced directory for
+// digest-indexed approval-reuse records:
+// <root>/approvals-by-repo/<sha256(canonicalRepoRoot)>/. canonicalRepoRoot
+// is the canonical (EvalSymlinks-resolved) `git rev-parse
+// --git-common-dir` output; all linked worktrees of a repo collapse to
+// the same namespace (ADR 0005).
+func ApprovalsByRepoDir(cacheRoot, canonicalRepoRoot string) string {
+	return filepath.Join(Root(cacheRoot), approvalsByRepoDirName, HashRepo(canonicalRepoRoot))
+}
+
+// ApprovalByRepoPath returns the digest-indexed, repo-namespaced
+// approval-reuse record path:
+// <root>/approvals-by-repo/<sha256(canonicalRepoRoot)>/<manifestDigest>.json.
+// A changed manifest has a different digest and therefore a different
+// record — distinct capabilities never reuse one another's approval.
+func ApprovalByRepoPath(cacheRoot, canonicalRepoRoot, manifestDigest string) string {
+	return filepath.Join(ApprovalsByRepoDir(cacheRoot, canonicalRepoRoot), manifestDigest+".json")
 }
 
 // PortDir returns the stable-proxy-port directory for a canonical
@@ -202,6 +241,7 @@ func EnsureRoot(cacheRoot string) (string, error) {
 	for _, sub := range []string{
 		root,
 		filepath.Join(root, approvalsDir),
+		filepath.Join(root, approvalsByRepoDirName),
 		filepath.Join(root, portsDir),
 		filepath.Join(root, locksDir),
 		filepath.Join(root, daemonsDir),

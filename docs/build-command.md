@@ -230,6 +230,88 @@ There is no auto-approve: an agent or script cannot confirm the diff.
 The `buildmanifest.Approve` seam is the single approval writer; `omac
 build approve` is its CLI front-end.
 
+### Approval reuse by digest (opt-in, default off)
+
+Every new git worktree used to require a fresh host-side `omac build
+approve`, even when the base repo was already approved and the
+worktree's `.omac/build.yaml` is byte-identical to the approved
+manifest. The digest-bound approval-reuse-by-digest feature (ADR 0005)
+removes that friction WITHOUT weakening the per-worktree isolation that
+ticket 06 established: an already-approved repo's **unchanged**
+worktrees build without a fresh per-worktree approval.
+
+**How it works:**
+
+1. When `omac build approve` runs, it writes the existing per-worktree
+   record AND a digest-indexed, repo-namespaced record under the
+   host-only build-control root:
+
+   ```
+   <cacheRoot>/build-control/approvals-by-repo/<sha256(canonicalRepoRoot)>/<manifestDigest>.json
+   ```
+
+   The reuse record is the same `ApprovalRecord` schema (digest +
+   effective capability set + approvedAt) plus a `repoRootCommit` field
+   — the SHA of the first commit in the repo's history
+   (`git rev-list --max-parents=0 HEAD`). The record is written once at
+   approve time and is **inert** unless the host enables reuse.
+
+2. `GateAt` order (per-worktree first, repo-digest fallback):
+
+   - Per-worktree approval lookup (existing path). Hit + digest match →
+     build.
+   - If reuse is enabled AND step 1 missed → repo-digest lookup by
+     `(canonicalRepoRoot, manifestDigest)`. On a hit, verify the stored
+     `repoRootCommit` matches the current repo's root commit. Hit +
+     match → freeze the reused capability set for THIS worktree, then
+     build.
+   - Miss / mismatch / identity not derivable → exit 3
+     (`ExitBuildPolicyDenied`) as today.
+
+**Repo identity is two git-native parts** (no extra state files):
+
+- **`canonicalRepoRoot`** (namespace) — derived from the worktree via
+  `git rev-parse --git-common-dir` + `filepath.EvalSymlinks`. All linked
+  worktrees of a repo share the same common dir, so they collapse to the
+  same `sha256(canonicalRepoRoot)` regardless of where a worktree
+  physically lives. A separate clone has its own common dir → a distinct
+  namespace → no cross-clone reuse.
+- **`repoRootCommit`** (recycling guard) — the root-commit SHA stored in
+  the digest-indexed record and re-compared at lookup time. A foreign
+  repo created at the same path after the original was deleted has a
+  different root commit → mismatch → no reuse. Git-native; no UUID file,
+  no inode/device check.
+
+**Opt-in, host-controlled, default off.** Enabled via BOTH:
+
+- env `OMAC_APPROVAL_REUSE_BY_DIGEST=1` (ad-hoc override), and/or
+- a host config entry in `<cacheRoot>/build-control/config.toml` (durable
+  default):
+
+  ```toml
+  approval_reuse_by_digest = true
+  ```
+
+  Host-only. The agent in a managed session cannot enable reuse and
+  cannot write approval records — the TTY / host-session gate in
+  `omac build approve` is unchanged.
+
+**Fallback (spec §Edge cases — no error, just no reuse):** non-git path,
+empty repo (no commits), or a missing/resolvable-failing common dir
+makes the repo identity not derivable → the reuse lookup is skipped and
+the build falls back to per-worktree approval exactly as before. Bare
+repos, worktree-of-worktree, submodules, shallow clones, and detached
+HEAD all keep working: reuse is scoped by the repo's own common dir and
+root commit.
+
+**Revoke: setting off, snapshots run out (KISS).** There is no `revoke`
+subcommand. Disabling reuse (env unset / config entry removed) means new
+lookups no longer consult the reuse path; already-frozen `ParentSnapshot`s
+remain valid for the parent lifetime and expire on parent restart — the
+same mechanism that already governs approval changes ("restart OMAC to
+activate"). The host-ceiling drop check invalidates a reused record the
+same way it invalidates any per-worktree record.
+
 ### Runtime missing-capability diagnostic
 
 When a build requests a capability (image, registry, build root) NOT in the
