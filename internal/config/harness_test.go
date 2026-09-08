@@ -641,6 +641,49 @@ func TestResolvedSandboxDirsPiAppendsRedirectTarget(t *testing.T) {
 	}
 }
 
+// A redirected config home must be created before grant resolution, which
+// drops missing paths.
+func TestResolvedCreateDirsFollowsRedirect(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(home, ".work-claude"))
+	h, _ := LookupHarness("claude-code")
+
+	want := []string{filepath.Join(home, ".work-claude")}
+	if got := h.ResolvedCreateDirs(); !reflect.DeepEqual(got, want) {
+		t.Errorf("ResolvedCreateDirs() = %v; want %v", got, want)
+	}
+}
+
+// Without an active redirect, create-dirs are just the declared ones.
+func TestResolvedCreateDirsNoRedirectKeepsDeclared(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	for _, h := range AllHarnesses() {
+		if got, want := h.ResolvedCreateDirs(), h.SandboxCreateDirs; !reflect.DeepEqual(got, want) {
+			t.Errorf("%s ResolvedCreateDirs() = %v; want %v", h.Name, got, want)
+		}
+	}
+}
+
+// A different spelling of the default home is not a redirect.
+func TestResolvedCreateDirsIgnoresNonCanonicalDefault(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	for _, spelling := range []string{
+		filepath.Join(home, ".claude") + "/",
+		filepath.Join(home, ".config", "..", ".claude"),
+		"~/.claude",
+	} {
+		t.Run(spelling, func(t *testing.T) {
+			t.Setenv("CLAUDE_CONFIG_DIR", spelling)
+			h, _ := LookupHarness("claude-code")
+			if got, want := h.ResolvedCreateDirs(), h.SandboxCreateDirs; !reflect.DeepEqual(got, want) {
+				t.Errorf("ResolvedCreateDirs() = %v; want %v (not a redirect)", got, want)
+			}
+		})
+	}
+}
+
 func TestDefaultGlobalSkillsDirIgnoresRedirect(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

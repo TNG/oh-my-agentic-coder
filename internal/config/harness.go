@@ -660,10 +660,11 @@ func (h Harness) defaultConfigHome() string {
 // ForwardedEnvVars, which forwards HomeEnv into the sandbox so the harness
 // agrees with omac on where its config home is.
 func (h Harness) ResolvedSandboxDirs() []string {
-	def, cur := h.defaultConfigHome(), h.ConfigHome()
-	if def == "" || cur == "" || def == cur {
+	cur := h.redirectedConfigHome()
+	if cur == "" {
 		return h.SandboxDirs
 	}
+	def := h.defaultConfigHome()
 	out := make([]string, 0, len(h.SandboxDirs)+1)
 	swapped := false
 	for _, d := range h.SandboxDirs {
@@ -679,6 +680,31 @@ func (h Harness) ResolvedSandboxDirs() []string {
 		// config home is the nested ~/.pi/agent), so grant the redirect
 		// target in addition.
 		out = append(out, cur)
+	}
+	return out
+}
+
+// redirectedConfigHome returns the config home a HomeEnv redirect points
+// at, or "" when no redirect is active (HomeEnv unset or a different
+// spelling of the default home).
+func (h Harness) redirectedConfigHome() string {
+	if h.HomeEnv == "" {
+		return ""
+	}
+	def, cur := h.defaultConfigHome(), h.ConfigHome()
+	if def == "" || cur == "" || def == cur {
+		return ""
+	}
+	return cur
+}
+
+// ResolvedCreateDirs returns the directories omac must create before grant
+// resolution, which drops missing paths: the declared SandboxCreateDirs plus,
+// under an active HomeEnv redirect, the redirected config home.
+func (h Harness) ResolvedCreateDirs() []string {
+	out := append([]string(nil), h.SandboxCreateDirs...)
+	if dir := h.redirectedConfigHome(); dir != "" {
+		out = append(out, dir)
 	}
 	return out
 }

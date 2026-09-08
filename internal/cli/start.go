@@ -775,9 +775,9 @@ func runLaunch(env *Env, opts launchOpts) int {
 				argv = injectOpenPort(argv, port)
 			}
 		}
-		// Create declared runtime dirs before omac sandbox run resolves and
-		// existence-filters the selected harness's read+write grants.
-		if err := prepareSandboxDirs(harness.SandboxCreateDirs); err != nil {
+		// Create the harness's runtime dirs (plus a redirected config home)
+		// before grant resolution existence-filters them.
+		if err := prepareSandboxDirs(harness.ResolvedCreateDirs()); err != nil {
 			fmt.Fprintln(env.Stderr, prefix+": harness runtime dirs:", err)
 			return ExitIOError
 		}

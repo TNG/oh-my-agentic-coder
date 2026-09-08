@@ -6,7 +6,7 @@ import (
 
 	"github.com/zalando/go-keyring"
 
-	"github.com/tngtech/oh-my-agentic-coder/internal/config"
+	"github.com/TNG/oh-my-agentic-coder/internal/config"
 )
 
 // TestMain installs go-keyring's in-memory mock provider for the whole

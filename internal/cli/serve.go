@@ -528,9 +528,9 @@ func runServe(args []string, env *Env) int {
 	if noSandbox {
 		argv = inner
 	} else {
-		// Create before omac sandbox run resolves and existence-filters the
-		// selected harness's read+write grants.
-		if err := prepareSandboxDirs(harness.SandboxCreateDirs); err != nil {
+		// Create the harness's runtime dirs (plus a redirected config home)
+		// before grant resolution existence-filters them.
+		if err := prepareSandboxDirs(harness.ResolvedCreateDirs()); err != nil {
 			fmt.Fprintln(env.Stderr, "omac serve: harness runtime dirs:", err)
 			return ExitIOError
 		}

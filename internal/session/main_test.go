@@ -4,7 +4,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/tngtech/oh-my-agentic-coder/internal/config"
+	"github.com/TNG/oh-my-agentic-coder/internal/config"
 )
 
 // TestMain clears every harness config-home override (CLAUDE_CONFIG_DIR and
