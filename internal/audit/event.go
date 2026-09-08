@@ -30,6 +30,7 @@ type Mode string
 const (
 	ModeStart Mode = "start"
 	ModeServe Mode = "serve"
+	ModeBuild Mode = "build"
 )
 
 // Event types. Dotted namespaces group related actions.

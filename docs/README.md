@@ -63,9 +63,11 @@ This is handled by `omac serve` instead of `omac start`. Desktop integration is 
 
 ## Known limitations
 
-- **Gradle needs `--no-daemon`.** Gradle's daemon communicates over a random
-  loopback port that the sandbox blocks, so the default `gradle build` /
-  `gradle test` hangs. Run `./gradlew --no-daemon` (or set
+- **Ad-hoc Gradle needs `--no-daemon`.** Gradle's daemon communicates over a
+  random loopback port that the sandbox blocks, so a plain `gradle build` /
+  `gradle test` hangs. Prefer `omac build`, which handles the daemon's port
+  itself (see [build-command.md](./build-command.md)). For ad-hoc Gradle
+  invocations outside `omac build`, run `./gradlew --no-daemon` (or set
   `org.gradle.daemon=false`); see
   [troubleshooting](./troubleshooting.md#gradle-build-hangs-or-cannot-reach-its-daemon).
 - **Docker is not available inside the sandbox.** The sandbox does not expose the

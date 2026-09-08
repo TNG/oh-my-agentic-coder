@@ -1,0 +1,55 @@
+plugins {
+    id 'java'
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    testImplementation platform('org.junit:junit-bom:5.11.4')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testImplementation 'org.mockito:mockito-core:5.14.2'
+    testImplementation 'org.mockito:mockito-junit-jupiter:5.14.2'
+    testImplementation 'org.testcontainers:testcontainers:1.20.4'
+    testImplementation 'org.testcontainers:junit-jupiter:1.20.4'
+    // PostgreSQLContainer moved out of the core artifact into the
+    // per-database module (testcontainers >= 1.15); without it the IT
+    // class's `org.testcontainers.containers.PostgreSQLContainer`
+    // import does not resolve and compileTestJava fails.
+    testImplementation 'org.testcontainers:postgresql:1.20.4'
+    testImplementation 'org.postgresql:postgresql:42.7.4'
+}
+
+test {
+    useJUnitPlatform()
+    // The IT class must be excluded explicitly: modern Gradle includes
+    // **/*IT.class in the default `test` scan, so import-only wiring
+    // would otherwise run PostgresIT here and fail when no Docker
+    // daemon is reachable (the unit leg). The IT leg runs via the
+    // dedicated `integrationTest` task below.
+    exclude '**/*IT.class'
+    testLogging {
+        events 'passed', 'failed', 'skipped'
+        exceptionFormat 'full'
+    }
+}
+
+// The IT leg: runs PostgresIT through the mediated container proxy.
+// Exercised when the canary's IT leg is enabled (host/CI with Colima).
+tasks.register('integrationTest', Test) {
+    description = 'Runs integration tests requiring the container proxy.'
+    group = 'verification'
+    useJUnitPlatform()
+    include '**/*IT.class'
+    testLogging {
+        events 'passed', 'failed', 'skipped'
+        exceptionFormat 'full'
+    }
+    // Standard Gradle results layout: build/test-results/integrationTest/.
+    // The canary asserts the XML files there.
+}
+
+tasks.named('check') {
+    dependsOn 'integrationTest'
+}

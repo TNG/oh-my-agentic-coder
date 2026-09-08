@@ -35,6 +35,15 @@ type Grants struct {
 	// a missing ~/.ssh today may exist tomorrow.
 	ProtectedPaths []string
 
+	// WriteDenyPaths are readable but NOT writable: they appear in a
+	// read-allow rule but a write-deny rule emitted after the
+	// write-allows overrides any broader write grant covering them. Used
+	// by the build executor to make OMAC-generated control state
+	// (init scripts, gradle.properties, omac config) read-only to the
+	// sandboxed Gradle process while keeping the surrounding cache leaf
+	// writable for normal Gradle state (wrapper dists, daemon, caches).
+	WriteDenyPaths []string
+
 	// Network.
 	NetworkMode     string // filtered|blocked|open
 	ProxyPort       int    // 0 when no proxy is running

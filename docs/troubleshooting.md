@@ -122,7 +122,9 @@ See [Running an MCP server the harness launches](./configuration.md#running-an-m
 
 Cause: the Gradle daemon talks to its client over a random loopback port, which the sandbox's default kernel network enforcement blocks.
 
-Fix: run Gradle without the daemon — `./gradlew --no-daemon` (or set `org.gradle.daemon=false`). This is the recommended fix.
+Fix: run the build with `omac build`. It uses a dedicated JVM build executor that owns its own Gradle daemon (under the resolved cache scope), a per-worktree queue, and the loopback posture, so the daemon's random port is handled without `--no-daemon` and without hand-tuning the sandbox profile. See [build-command.md](./build-command.md) for the full contract.
+
+For ad-hoc Gradle invocations outside `omac build`, run Gradle without the daemon: `./gradlew --no-daemon` (or set `org.gradle.daemon=false`).
 
 On macOS only, if you must keep the daemon, you can grant loopback with `"network": { "open_port": [0] }` in the sandbox grants file (`~/.config/omac/sandbox-profiles/default.json`) — `0` means "any loopback port" and external egress stays kernel-blocked. On Linux there is no equivalent that keeps kernel enforcement, so use `--no-daemon`.
 

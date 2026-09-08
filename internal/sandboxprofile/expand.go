@@ -73,7 +73,17 @@ func ExpandExisting(paths []string, w io.Writer) ([]string, error) {
 				}
 				continue
 			}
-			return nil, fmt.Errorf("filesystem path %q: %w", raw, statErr)
+			// A path that exists but cannot be stat (e.g. EPERM when
+			// the supervisor itself runs under a restrictive sandbox)
+			// is unavailable for granting just as much as a missing one.
+			// Treat it as a skip-with-notice rather than a hard error:
+			// hard-failing would let any single restricted baseline
+			// entry abort the whole grant computation, and a path the
+			// supervisor cannot stat cannot be granted usefully anyway.
+			if w != nil {
+				fmt.Fprintf(w, "omac sandbox: notice: skipping path %s (%v)\n", p, statErr)
+			}
+			continue
 		}
 		out = append(out, p)
 	}
