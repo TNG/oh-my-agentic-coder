@@ -345,6 +345,28 @@ func TestLaunchOpenCodeCreatesAndGrantsRuntimeDirs(t *testing.T) {
 	t.Fatalf("start argv missing opentui read/write grant: %v", capture.args)
 }
 
+// A redirect at a not-yet-existing home must be created before grant
+// resolution, or its read+write grant is dropped.
+func TestLaunchCreatesRedirectedConfigHome(t *testing.T) {
+	// The target deliberately does not exist yet; it sits outside the
+	// helper's faked $HOME, whose path the helper picks itself.
+	base := t.TempDir()
+	redirected := filepath.Join(base, ".work-claude")
+	t.Setenv("CLAUDE_CONFIG_DIR", redirected)
+
+	capture := launchCacheCaptureForHarness(t, "claude", false, false, false)
+	if info, err := os.Stat(redirected); err != nil || !info.IsDir() {
+		t.Fatalf("redirected config home was not created before start: info=%v err=%v", info, err)
+	}
+
+	for i := 0; i+1 < len(capture.args); i++ {
+		if capture.args[i] == "--allow" && capture.args[i+1] == redirected {
+			return
+		}
+	}
+	t.Fatalf("start argv missing redirected config home grant: %v", capture.args)
+}
+
 func TestLaunchCacheNoSandboxPreservesHostEnvironment(t *testing.T) {
 	capture := launchCacheCapture(t, true, false, false)
 	for key := range toolcache.Environment("ignored", toolcache.ModePersistent) {
@@ -693,7 +715,7 @@ func writeClaudeSessionFile(t *testing.T, home, workdir, id, ts string) {
 // created — not the sibling.
 func TestContinueHintSkipsSiblingSession(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("CLAUDE_HOME", home)
+	t.Setenv("CLAUDE_CONFIG_DIR", home)
 	h, ok := config.LookupHarness("claude-code")
 	if !ok {
 		t.Fatal("claude-code harness not registered")

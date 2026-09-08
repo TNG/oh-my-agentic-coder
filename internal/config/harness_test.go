@@ -517,6 +517,203 @@ func TestSandboxDirsClaude(t *testing.T) {
 	}
 }
 
+func TestResolvedSandboxDirsClaudeNoOverride(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	h, _ := LookupHarness("claude-code")
+	want := []string{"~/.claude", "~/.local/share/claude"}
+	if got := h.ResolvedSandboxDirs(); !reflect.DeepEqual(got, want) {
+		t.Errorf("ResolvedSandboxDirs() = %v; want %v", got, want)
+	}
+}
+
+func TestResolvedSandboxDirsClaudeFollowsConfigDirOverride(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(home, ".work-claude"))
+	h, _ := LookupHarness("claude-code")
+
+	want := []string{filepath.Join(home, ".work-claude"), "~/.local/share/claude"}
+	if got := h.ResolvedSandboxDirs(); !reflect.DeepEqual(got, want) {
+		t.Errorf("ResolvedSandboxDirs() = %v; want %v", got, want)
+	}
+}
+
+// The redirected home replaces the default rather than joining it: granting
+// both would expose the login the user deliberately separated out.
+func TestResolvedSandboxDirsClaudeDropsDefaultHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(home, ".work-claude"))
+	h, _ := LookupHarness("claude-code")
+
+	for _, d := range h.ResolvedSandboxDirs() {
+		if d == "~/.claude" || d == filepath.Join(home, ".claude") {
+			t.Errorf("ResolvedSandboxDirs() still grants the default config home %q", d)
+		}
+	}
+}
+
+// A value that merely spells the default home differently is not a redirect.
+func TestResolvedSandboxDirsClaudeIgnoresNonCanonicalDefault(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	want := []string{"~/.claude", "~/.local/share/claude"}
+	for _, spelling := range []string{
+		filepath.Join(home, ".claude") + "/",
+		filepath.Join(home, ".config", "..", ".claude"),
+		"~/.claude",
+	} {
+		t.Run(spelling, func(t *testing.T) {
+			t.Setenv("CLAUDE_CONFIG_DIR", spelling)
+			h, _ := LookupHarness("claude-code")
+			if got := h.ResolvedSandboxDirs(); !reflect.DeepEqual(got, want) {
+				t.Errorf("ResolvedSandboxDirs() = %v; want %v (not a redirect)", got, want)
+			}
+		})
+	}
+}
+
+// Every harness with a HomeEnv must forward it: ResolvedSandboxDirs swaps its
+// grant, so a harness that cannot see its own HomeEnv reads a home omac no
+// longer grants.
+func TestForwardedEnvVarsCarryHomeEnv(t *testing.T) {
+	for _, h := range AllHarnesses() {
+		if h.HomeEnv == "" {
+			continue
+		}
+		fwd := h.ForwardedEnvVars()
+		found := false
+		for _, v := range fwd {
+			if v == h.HomeEnv {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("%s ForwardedEnvVars() = %v; want it to carry %s", h.Name, fwd, h.HomeEnv)
+		}
+		for _, want := range h.SandboxEnvAllow {
+			if !slices.Contains(fwd, want) {
+				t.Errorf("%s ForwardedEnvVars() = %v; dropped declared var %s", h.Name, fwd, want)
+			}
+		}
+	}
+}
+
+// ForwardedEnvVars must not mutate the descriptor's own slice.
+func TestForwardedEnvVarsDoesNotMutateSandboxEnvAllow(t *testing.T) {
+	h, _ := LookupHarness("claude-code")
+	before := append([]string(nil), h.SandboxEnvAllow...)
+	_ = h.ForwardedEnvVars()
+	if !reflect.DeepEqual(h.SandboxEnvAllow, before) {
+		t.Errorf("SandboxEnvAllow mutated: %v -> %v", before, h.SandboxEnvAllow)
+	}
+}
+
+// Codex's config home is its only declared sandbox dir — the minimal case
+// for the swap.
+func TestResolvedSandboxDirsCodexFollowsHomeEnv(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", filepath.Join(home, ".work-codex"))
+	h, _ := LookupHarness("codex")
+
+	want := []string{filepath.Join(home, ".work-codex")}
+	if got := h.ResolvedSandboxDirs(); !reflect.DeepEqual(got, want) {
+		t.Errorf("ResolvedSandboxDirs() = %v; want %v", got, want)
+	}
+	if !slices.Contains(h.ForwardedEnvVars(), "CODEX_HOME") {
+		t.Errorf("ForwardedEnvVars() = %v; want CODEX_HOME so codex reads the granted dir", h.ForwardedEnvVars())
+	}
+}
+
+// pi declares ~/.pi while its config home is the nested ~/.pi/agent, so the
+// redirect target is appended rather than swapped in.
+func TestResolvedSandboxDirsPiAppendsRedirectTarget(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("PI_CODING_AGENT_DIR", filepath.Join(home, ".work-pi"))
+	h, _ := LookupHarness("pi")
+
+	want := []string{"~/.pi", filepath.Join(home, ".work-pi")}
+	if got := h.ResolvedSandboxDirs(); !reflect.DeepEqual(got, want) {
+		t.Errorf("ResolvedSandboxDirs() = %v; want %v", got, want)
+	}
+}
+
+// A redirected config home must be created before grant resolution, which
+// drops missing paths.
+func TestResolvedCreateDirsFollowsRedirect(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(home, ".work-claude"))
+	h, _ := LookupHarness("claude-code")
+
+	want := []string{filepath.Join(home, ".work-claude")}
+	if got := h.ResolvedCreateDirs(); !reflect.DeepEqual(got, want) {
+		t.Errorf("ResolvedCreateDirs() = %v; want %v", got, want)
+	}
+}
+
+// Without an active redirect, create-dirs are just the declared ones.
+func TestResolvedCreateDirsNoRedirectKeepsDeclared(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	for _, h := range AllHarnesses() {
+		if got, want := h.ResolvedCreateDirs(), h.SandboxCreateDirs; !reflect.DeepEqual(got, want) {
+			t.Errorf("%s ResolvedCreateDirs() = %v; want %v", h.Name, got, want)
+		}
+	}
+}
+
+// A different spelling of the default home is not a redirect.
+func TestResolvedCreateDirsIgnoresNonCanonicalDefault(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	for _, spelling := range []string{
+		filepath.Join(home, ".claude") + "/",
+		filepath.Join(home, ".config", "..", ".claude"),
+		"~/.claude",
+	} {
+		t.Run(spelling, func(t *testing.T) {
+			t.Setenv("CLAUDE_CONFIG_DIR", spelling)
+			h, _ := LookupHarness("claude-code")
+			if got, want := h.ResolvedCreateDirs(), h.SandboxCreateDirs; !reflect.DeepEqual(got, want) {
+				t.Errorf("ResolvedCreateDirs() = %v; want %v (not a redirect)", got, want)
+			}
+		})
+	}
+}
+
+func TestDefaultGlobalSkillsDirIgnoresRedirect(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(home, ".work-claude"))
+	h, _ := LookupHarness("claude-code")
+
+	if want := filepath.Join(home, ".claude", "skills"); h.DefaultGlobalSkillsDir() != want {
+		t.Errorf("DefaultGlobalSkillsDir() = %q; want %q", h.DefaultGlobalSkillsDir(), want)
+	}
+	if want := filepath.Join(home, ".work-claude", "skills"); h.GlobalSkillsDir() != want {
+		t.Errorf("GlobalSkillsDir() = %q; want %q", h.GlobalSkillsDir(), want)
+	}
+}
+
+func TestHomeEnvNamesCoversRegistry(t *testing.T) {
+	names := HomeEnvNames()
+	for _, h := range AllHarnesses() {
+		if h.HomeEnv != "" && !slices.Contains(names, h.HomeEnv) {
+			t.Errorf("HomeEnvNames() = %v; missing %s (%s)", names, h.HomeEnv, h.Name)
+		}
+	}
+	seen := map[string]bool{}
+	for _, n := range names {
+		if seen[n] {
+			t.Errorf("HomeEnvNames() = %v; contains duplicate %s", names, n)
+		}
+		seen[n] = true
+	}
+}
+
 // --- Codex + Copilot harness descriptors -------------------------------------
 
 func TestLookupCodexHarness(t *testing.T) {
@@ -695,17 +892,44 @@ func TestConfigHomeEnvOverrideUnset(t *testing.T) {
 
 func TestConfigHomeEnvOverrideClaude(t *testing.T) {
 	h, _ := LookupHarness("claude-code")
-	t.Setenv("CLAUDE_HOME", "/tmp/claude-home")
+	t.Setenv("CLAUDE_CONFIG_DIR", "/tmp/claude-home")
 	if got := h.ConfigHome(); got != "/tmp/claude-home" {
 		t.Errorf("ConfigHome() = %q, want /tmp/claude-home", got)
 	}
 }
 
-func TestConfigHomeEnvOverrideOpenCode(t *testing.T) {
+// OpenCode declares no HomeEnv; OPENCODE_CONFIG_DIR is only an additional
+// config-search dir and must not relocate the config home (#233).
+func TestConfigHomeOpenCodeHasNoOverride(t *testing.T) {
 	h, _ := LookupHarness("opencode")
-	t.Setenv("OPENCODE_HOME", "/tmp/oc-home")
-	if got := h.ConfigHome(); got != "/tmp/oc-home" {
-		t.Errorf("ConfigHome() = %q, want /tmp/oc-home", got)
+	if h.HomeEnv != "" {
+		t.Fatalf("opencode HomeEnv = %q; want empty (OpenCode has no config-home override)", h.HomeEnv)
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("OPENCODE_CONFIG_DIR", filepath.Join(home, ".other-opencode"))
+	want := filepath.Join(home, ".config", "opencode")
+
+	if got := h.ConfigHome(); got != want {
+		t.Errorf("ConfigHome() = %q; want %q — OPENCODE_CONFIG_DIR must not relocate it", got, want)
+	}
+	if got, wantSkills := h.GlobalSkillsDir(), filepath.Join(want, "skills"); got != wantSkills {
+		t.Errorf("GlobalSkillsDir() = %q; want %q", got, wantSkills)
+	}
+	// The grants must keep naming the dirs OpenCode really reads.
+	if got := h.ResolvedSandboxDirs(); !reflect.DeepEqual(got, h.SandboxDirs) {
+		t.Errorf("ResolvedSandboxDirs() = %v; want the declared %v", got, h.SandboxDirs)
+	}
+}
+
+// $XDG_CONFIG_HOME is the supported way to move OpenCode's config home.
+func TestConfigHomeOpenCodeFollowsXDG(t *testing.T) {
+	h, _ := LookupHarness("opencode")
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", "/tmp/xdg-oc")
+	if got, want := h.ConfigHome(), filepath.Join("/tmp/xdg-oc", "opencode"); got != want {
+		t.Errorf("ConfigHome() = %q, want %q", got, want)
 	}
 }
 
@@ -720,17 +944,18 @@ func TestGlobalSkillsDirEnvOverride(t *testing.T) {
 
 func TestGlobalSkillsDirEnvOverrideClaude(t *testing.T) {
 	h, _ := LookupHarness("claude-code")
-	t.Setenv("CLAUDE_HOME", "/tmp/claude-skills")
+	t.Setenv("CLAUDE_CONFIG_DIR", "/tmp/claude-skills")
 	want := "/tmp/claude-skills/skills"
 	if got := h.GlobalSkillsDir(); got != want {
 		t.Errorf("GlobalSkillsDir() = %q, want %q", got, want)
 	}
 }
 
-func TestGlobalSkillsDirEnvOverrideOpenCode(t *testing.T) {
+func TestGlobalSkillsDirOpenCodeFollowsXDG(t *testing.T) {
 	h, _ := LookupHarness("opencode")
-	t.Setenv("OPENCODE_HOME", "/tmp/oc-skills")
-	want := "/tmp/oc-skills/skills"
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", "/tmp/oc-skills")
+	want := "/tmp/oc-skills/opencode/skills"
 	if got := h.GlobalSkillsDir(); got != want {
 		t.Errorf("GlobalSkillsDir() = %q, want %q", got, want)
 	}

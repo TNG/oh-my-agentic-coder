@@ -90,7 +90,7 @@ func Sources(workdir string, harness config.Harness) []Source {
 		})
 	}
 	// User-global layer, in base priority order; only existing dirs.
-	for _, root := range userGlobalRoots(bases) {
+	for _, root := range userGlobalRoots(bases, harness) {
 		if info, err := os.Stat(root); err == nil && info.IsDir() {
 			out = append(out, Source{Root: root, Kind: "user-global"})
 		}
@@ -115,7 +115,7 @@ func Sources(workdir string, harness config.Harness) []Source {
 //	  $HOME/.opencode/skills,           $HOME/.agents/skills
 //
 // dedupe() drops duplicates that arise when $XDG_CONFIG_HOME == $HOME/.config.
-func userGlobalRoots(bases []string) []string {
+func userGlobalRoots(bases []string, h config.Harness) []string {
 	var out []string
 	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
 		for _, base := range bases {
@@ -124,13 +124,43 @@ func userGlobalRoots(bases []string) []string {
 	}
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
-		return dedupe(out)
+		return withConfigHomeRoot(dedupe(out), h)
 	}
 	for _, base := range bases {
 		out = append(out, filepath.Join(home, ".config", base, "skills"))
 	}
 	for _, base := range bases {
 		out = append(out, filepath.Join(home, "."+base, "skills"))
+	}
+	return withConfigHomeRoot(dedupe(out), h)
+}
+
+// withConfigHomeRoot ensures the harness's config-home skills dir
+// (GlobalSkillsDir, where `omac setup` installs built-in skills) is among the
+// candidate roots. A HomeEnv redirect substitutes its root for the default
+// one in place — omac grants only the redirected home (see
+// config.Harness.ResolvedSandboxDirs) — and a config home that no
+// "<base>/skills" root matches (pi's ~/.pi/agent/skills, codewhale's
+// ~/.codewhale/skills) is appended instead.
+func withConfigHomeRoot(in []string, h config.Harness) []string {
+	cur := h.GlobalSkillsDir()
+	if cur == "" {
+		return in
+	}
+	def := h.DefaultGlobalSkillsDir()
+	out := make([]string, 0, len(in)+1)
+	substituted := false
+	for _, p := range in {
+		if p == def {
+			// No-op when unredirected (cur == def).
+			out = append(out, cur)
+			substituted = true
+			continue
+		}
+		out = append(out, p)
+	}
+	if !substituted {
+		out = append(out, cur)
 	}
 	return dedupe(out)
 }

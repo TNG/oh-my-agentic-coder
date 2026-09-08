@@ -528,9 +528,9 @@ func runServe(args []string, env *Env) int {
 	if noSandbox {
 		argv = inner
 	} else {
-		// Create before omac sandbox run resolves and existence-filters the
-		// selected harness's read+write grants.
-		if err := prepareSandboxDirs(harness.SandboxCreateDirs); err != nil {
+		// Create the harness's runtime dirs (plus a redirected config home)
+		// before grant resolution existence-filters them.
+		if err := prepareSandboxDirs(harness.ResolvedCreateDirs()); err != nil {
 			fmt.Fprintln(env.Stderr, "omac serve: harness runtime dirs:", err)
 			return ExitIOError
 		}
@@ -707,7 +707,7 @@ func sandboxServeArgv(prof config.SandboxProfile, in sandbox.Inputs, controlPort
 		argv = injectOpenPort(argv, controlPort)
 	}
 	argv = injectServerListenPort(argv, h)
-	argv = injectSandboxDirs(argv, h.SandboxDirs)
+	argv = injectSandboxDirs(argv, h.ResolvedSandboxDirs())
 	return argv, nil
 }
 
@@ -817,9 +817,11 @@ func forwardHarnessEnv(env *Env, argv []string, harness config.Harness, plan san
 		fmt.Fprintln(env.Stderr, "      Continuing shortly…")
 		time.Sleep(emptyAllowVarsWarnDelay)
 		// Seed only the operational minimum; do NOT auto-forward auth vars.
-		return injectSandboxEnvAllow(argv, sandboxprofile.DefaultAllowVars(), plan)
+		// HomeEnv goes through: it is a path, not a credential, and
+		// ResolvedSandboxDirs already granted the config home it names.
+		return injectSandboxEnvAllow(argv, append(sandboxprofile.DefaultAllowVars(), harness.HomeEnv), plan)
 	}
-	return injectSandboxEnvAllow(argv, harness.SandboxEnvAllow, plan)
+	return injectSandboxEnvAllow(argv, harness.ForwardedEnvVars(), plan)
 }
 
 // planAllowVarsEmpty reports whether the launch's resolved policy profile

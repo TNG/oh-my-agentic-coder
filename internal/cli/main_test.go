@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	"github.com/zalando/go-keyring"
+
+	"github.com/TNG/oh-my-agentic-coder/internal/config"
 )
 
 // TestMain installs go-keyring's in-memory mock provider for the whole
@@ -17,7 +19,18 @@ import (
 //
 // The mock returns ErrNotFound for absent keys and stores Set values in
 // memory, which is exactly the deterministic behavior these tests assume.
+//
+// It also clears every harness config-home override (CLAUDE_CONFIG_DIR and
+// friends): tests fake $HOME, but an ambient override names an absolute
+// path and would survive the fake.
 func TestMain(m *testing.M) {
 	keyring.MockInit()
+	clearHarnessHomeEnvs()
 	os.Exit(m.Run())
+}
+
+func clearHarnessHomeEnvs() {
+	for _, name := range config.HomeEnvNames() {
+		os.Unsetenv(name)
+	}
 }

@@ -643,7 +643,7 @@ func claudeHarness(t *testing.T) config.Harness {
 
 func TestKnownIDsClaudeEnumeratesFilenames(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("CLAUDE_HOME", home)
+	t.Setenv("CLAUDE_CONFIG_DIR", home)
 	root := filepath.Join(home, "projects")
 	const wd = "/home/u/proj"
 
@@ -668,7 +668,7 @@ func TestKnownIDsClaudeEnumeratesFilenames(t *testing.T) {
 }
 
 func TestKnownIDsClaudeMissingDirIsEmpty(t *testing.T) {
-	t.Setenv("CLAUDE_HOME", t.TempDir()) // no projects/ subtree written
+	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir()) // no projects/ subtree written
 	got := KnownIDs(claudeHarness(t), "/home/u/proj")
 	if got == nil || len(got) != 0 {
 		t.Errorf("missing project dir should yield an empty (non-nil) set, got %v", got)

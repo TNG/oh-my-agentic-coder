@@ -381,3 +381,157 @@ func names(es []Entry) []string {
 	}
 	return out
 }
+
+// ---- Sources: redirected config home ----
+
+// `omac setup` installs and the sandbox grants only the redirected skills dir,
+// so discovery must follow the redirect.
+func TestSources_ClaudeFollowsRedirectedConfigHome(t *testing.T) {
+	home := withFakeHome(t)
+	redirected := filepath.Join(home, ".work-claude")
+	t.Setenv("CLAUDE_CONFIG_DIR", redirected)
+	stageSkill(t, filepath.Join(redirected, "skills"), "marketplace")
+
+	wd := t.TempDir()
+	dir, src, err := Resolve(wd, ccHarness(t), "marketplace")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if want := filepath.Join(redirected, "skills", "marketplace"); dir != want {
+		t.Errorf("Resolve dir = %q, want %q", dir, want)
+	}
+	if src.Kind != "user-global" {
+		t.Errorf("Resolve kind = %q, want user-global", src.Kind)
+	}
+}
+
+// The superseded default root drops out entirely: resolving from it would
+// register a path ResolvedSandboxDirs no longer grants, so the sidecar could
+// not be executed from it later.
+func TestSources_RedirectDropsDefaultRoot(t *testing.T) {
+	home := withFakeHome(t)
+	redirected := filepath.Join(home, ".work-claude")
+	t.Setenv("CLAUDE_CONFIG_DIR", redirected)
+	stageSkill(t, filepath.Join(redirected, "skills"), "marketplace")
+	stageSkill(t, filepath.Join(home, ".claude", "skills"), "marketplace")
+
+	wd := t.TempDir()
+	for _, s := range Sources(wd, ccHarness(t)) {
+		if s.Root == filepath.Join(home, ".claude", "skills") {
+			t.Errorf("redirected claude scope must not include the default root; got %+v", s)
+		}
+	}
+}
+
+// A redirect substitutes its root for the default one in place; it must not
+// reorder the rest of the ladder.
+func TestSources_RedirectPreservesRootPriority(t *testing.T) {
+	home := withFakeHome(t)
+	redirected := filepath.Join(home, ".work-claude")
+	t.Setenv("CLAUDE_CONFIG_DIR", redirected)
+
+	// One skill of the same name in every user-global root, so Resolve's answer
+	// is decided purely by candidate order.
+	xdgRoot := filepath.Join(home, ".config", "claude", "skills")
+	stageSkill(t, xdgRoot, "marketplace")
+	stageSkill(t, filepath.Join(redirected, "skills"), "marketplace")
+
+	dir, _, err := Resolve(t.TempDir(), ccHarness(t), "marketplace")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	// ~/.claude/skills ranks below ~/.config/claude/skills, so the root that
+	// replaces it must too.
+	if want := filepath.Join(xdgRoot, "marketplace"); dir != want {
+		t.Errorf("Resolve dir = %q, want %q — the redirect must not outrank XDG roots", dir, want)
+	}
+}
+
+// A CLAUDE_CONFIG_DIR that merely spells the default home differently is not
+// a redirect.
+func TestSources_TrailingSlashKeepsDefaultRoot(t *testing.T) {
+	home := withFakeHome(t)
+	stageSkill(t, filepath.Join(home, ".claude", "skills"), "marketplace")
+
+	for _, spelling := range []string{
+		filepath.Join(home, ".claude") + "/",
+		filepath.Join(home, ".config", "..", ".claude"),
+		"~/.claude",
+	} {
+		t.Run(spelling, func(t *testing.T) {
+			t.Setenv("CLAUDE_CONFIG_DIR", spelling)
+			dir, _, err := Resolve(t.TempDir(), ccHarness(t), "marketplace")
+			if err != nil {
+				t.Fatalf("skill in the default home became unresolvable: %v", err)
+			}
+			if want := filepath.Join(home, ".claude", "skills", "marketplace"); dir != want {
+				t.Errorf("Resolve dir = %q, want %q", dir, want)
+			}
+		})
+	}
+}
+
+// pi's and codewhale's config-home skills dirs are not derivable from the
+// skills bases, yet `omac setup` installs built-in skills into exactly those
+// dirs.
+func TestSources_ConfigHomeRootScannedForNestedHomes(t *testing.T) {
+	for _, tc := range []struct {
+		harness string
+		rel     []string
+	}{
+		{"pi", []string{".pi", "agent", "skills"}},
+		{"codewhale", []string{".codewhale", "skills"}},
+	} {
+		t.Run(tc.harness, func(t *testing.T) {
+			home := withFakeHome(t)
+			h, ok := config.LookupHarness(tc.harness)
+			if !ok {
+				t.Fatalf("%s harness not registered", tc.harness)
+			}
+			root := filepath.Join(append([]string{home}, tc.rel...)...)
+			if root != h.GlobalSkillsDir() {
+				t.Fatalf("test stages %q but GlobalSkillsDir() is %q", root, h.GlobalSkillsDir())
+			}
+			stageSkill(t, root, "marketplace")
+
+			dir, _, err := Resolve(t.TempDir(), h, "marketplace")
+			if err != nil {
+				t.Fatalf("skill in the harness's own global skills dir not found: %v", err)
+			}
+			if want := filepath.Join(root, "marketplace"); dir != want {
+				t.Errorf("Resolve dir = %q, want %q", dir, want)
+			}
+		})
+	}
+}
+
+func TestSources_NoRedirectKeepsDefaultRoot(t *testing.T) {
+	home := withFakeHome(t)
+	stageSkill(t, filepath.Join(home, ".claude", "skills"), "marketplace")
+
+	wd := t.TempDir()
+	dir, _, err := Resolve(wd, ccHarness(t), "marketplace")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if want := filepath.Join(home, ".claude", "skills", "marketplace"); dir != want {
+		t.Errorf("Resolve dir = %q, want %q", dir, want)
+	}
+}
+
+// The redirect is per-harness: OpenCode declares no HomeEnv, so a Claude
+// redirect must not perturb its discovery.
+func TestSources_OpenCodeUnaffectedByClaudeRedirect(t *testing.T) {
+	home := withFakeHome(t)
+	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(home, ".work-claude"))
+	stageSkill(t, filepath.Join(home, ".config", "opencode", "skills"), "marketplace")
+
+	wd := t.TempDir()
+	dir, _, err := Resolve(wd, ocHarness(t), "marketplace")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if want := filepath.Join(home, ".config", "opencode", "skills", "marketplace"); dir != want {
+		t.Errorf("Resolve dir = %q, want %q", dir, want)
+	}
+}

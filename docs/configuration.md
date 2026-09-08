@@ -52,6 +52,23 @@ The project file **replaces** the global one; omac does not merge the two. Any o
 
 The launcher config changes only *how omac launches* in the project: the sandbox runtime it selects, the cache scope, and the facade and audit settings. It does **not** change what the agent is allowed to access. Those grants (filesystem paths, network hosts, open ports) come from the user-global sandbox grants file described below and **currently have no per-project equivalent**.
 
+## Harness config home
+
+Each harness can relocate its configuration directory (its "config home") via an environment variable — typically to keep two logins side by side, for example a personal and a work `~/.claude`. omac follows the redirect: the redirected directory is granted to the sandbox instead of the default one and created if it does not exist yet, the variable is passed through to the harness, and global skills and resumable sessions are read from the redirected directory.
+
+| Harness | Variable | Default |
+|---|---|---|
+| claude-code | `CLAUDE_CONFIG_DIR` | `~/.claude` |
+| codex | `CODEX_HOME` | `~/.codex` |
+| copilot | `COPILOT_HOME` | `~/.copilot` |
+| pi | `PI_CODING_AGENT_DIR` | `~/.pi/agent` |
+| codewhale | `CODEWHALE_HOME` | `~/.codewhale` |
+| opencode | *(none)* — relocate with `$XDG_CONFIG_HOME` | `~/.config/opencode` |
+
+Example: `CLAUDE_CONFIG_DIR=~/.work-claude omac start claude` runs Claude Code with the work login instead of prompting for a fresh one.
+
+A redirect also **hides** the skills installed under the default home: omac scans only the redirected directory for global skills. After switching homes, run `omac setup` to provision the built-in skills there too.
+
 ## Sandbox grants
 
 The sandbox grants file (`~/.config/omac/sandbox-profiles/default.json`) controls what the agent is actually allowed to access — filesystem paths, network mode, and environment variables. This is separate from the launcher config above, which only selects which sandboxing technology to use.

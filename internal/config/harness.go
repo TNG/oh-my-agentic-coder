@@ -65,7 +65,9 @@ type Harness struct {
 	// HomeEnv, when non-empty, names an environment variable whose value
 	// replaces the harness's full config home directory. When the env var
 	// is unset or empty, the harness falls back to its default config home
-	// (UserConfigHome under $HOME, or XDG for opencode).
+	// (UserConfigHome under $HOME, or XDG for opencode). Leave it empty when
+	// upstream exposes no such variable: an invented override would make
+	// ResolvedSandboxDirs grant a directory the harness never reads (#233).
 	HomeEnv string
 
 	// Session, when non-nil, declares how omac re-enters prior sessions of
@@ -109,7 +111,9 @@ type Harness struct {
 
 	// SandboxDirs are directories the selected harness needs at runtime
 	// for configuration, authentication, state, and session storage.
-	// omac grants them read+write only for that selected harness.
+	// omac grants them read+write only for that selected harness. They are
+	// declared against the default config home; launch call sites grant
+	// ResolvedSandboxDirs so a HomeEnv redirect is honored.
 	SandboxDirs []string
 	// SandboxCreateDirs is the subset of SandboxDirs that omac must create
 	// before grant resolution so a dependency can populate it on first use.
@@ -246,7 +250,10 @@ func harnessRegistry() []Harness {
 			ServerLaunch: &ServerLaunch{Subcommand: "serve", ListenPort: 4096, AuthEnvVar: "OPENCODE_SERVER_PASSWORD"},
 			BridgeDir:    filepath.Join(".opencode", "plugins"),
 			SkillsBase:   "opencode",
-			HomeEnv:      "OPENCODE_HOME",
+			// No HomeEnv: OpenCode has no config-home override. OPENCODE_CONFIG_DIR
+			// only adds a config-search dir (credentials live elsewhere), so wiring
+			// it here would move omac's grants away from the dirs OpenCode reads.
+			// $XDG_CONFIG_HOME is the supported redirect (#233).
 			Session: &HarnessSession{
 				ContinueArgs:   []string{"--continue"},
 				ResumeByIDArgs: func(id string) []string { return []string{"--session", id} },
@@ -285,12 +292,12 @@ func harnessRegistry() []Harness {
 			// Claude Code's config home is ~/.claude, not ~/.config/claude,
 			// so its global skills live in ~/.claude/skills.
 			UserConfigHome: ".claude",
-			HomeEnv:        "CLAUDE_HOME",
+			HomeEnv:        "CLAUDE_CONFIG_DIR",
 			// Claude stores configuration, authentication, and sessions in ~/.claude; runtime state is in ~/.local/share/claude.
 			SandboxDirs: []string{"~/.claude", "~/.local/share/claude"},
-			// Interactive login credentials live in ~/.claude (SandboxDirs);
-			// these are the documented env vars for API-key / custom-endpoint
-			// auth (Anthropic-compatible gateway).
+			// Interactive login credentials live in the config home
+			// (SandboxDirs); these are the documented env vars for API-key /
+			// custom-endpoint auth (Anthropic-compatible gateway).
 			SandboxEnvAllow: []string{
 				"ANTHROPIC_API_KEY",
 				"ANTHROPIC_AUTH_TOKEN",
@@ -616,14 +623,19 @@ func (h Harness) WorkdirSkillsDir() string {
 // the HomeEnv override. For UserConfigHome harnesses (claude, codex,
 // copilot, pi), this is $HOME/<UserConfigHome> by default. For XDG harnesses
 // (opencode), this is $XDG_CONFIG_HOME/<base> or ~/.config/<base> by
-// default. When HomeEnv is set and non-empty, its value replaces the
-// default entirely. Returns "" when no home can be resolved.
+// default. When HomeEnv is set and non-empty, its normalized value (see
+// normalizeHomePath) replaces the default entirely. Returns "" when no
+// home can be resolved.
 func (h Harness) ConfigHome() string {
 	if h.HomeEnv != "" {
 		if dir := os.Getenv(h.HomeEnv); dir != "" {
-			return dir
+			return normalizeHomePath(dir)
 		}
 	}
+	return h.defaultConfigHome()
+}
+
+func (h Harness) defaultConfigHome() string {
 	base := h.SkillsBase
 	if base == "" {
 		base = SharedSkillsBase
@@ -640,6 +652,126 @@ func (h Harness) ConfigHome() string {
 		return ""
 	}
 	return filepath.Join(root, base)
+}
+
+// ResolvedSandboxDirs returns SandboxDirs with the entry naming the harness's
+// default config home swapped for ConfigHome(), so a HomeEnv redirect grants
+// the directory the harness actually reads. Sound only together with
+// ForwardedEnvVars, which forwards HomeEnv into the sandbox so the harness
+// agrees with omac on where its config home is.
+func (h Harness) ResolvedSandboxDirs() []string {
+	cur := h.redirectedConfigHome()
+	if cur == "" {
+		return h.SandboxDirs
+	}
+	def := h.defaultConfigHome()
+	out := make([]string, 0, len(h.SandboxDirs)+1)
+	swapped := false
+	for _, d := range h.SandboxDirs {
+		if normalizeHomePath(d) == def {
+			out = append(out, cur)
+			swapped = true
+			continue
+		}
+		out = append(out, d)
+	}
+	if !swapped {
+		// No entry names the config home (pi declares ~/.pi while its
+		// config home is the nested ~/.pi/agent), so grant the redirect
+		// target in addition.
+		out = append(out, cur)
+	}
+	return out
+}
+
+// redirectedConfigHome returns the config home a HomeEnv redirect points
+// at, or "" when no redirect is active (HomeEnv unset or a different
+// spelling of the default home).
+func (h Harness) redirectedConfigHome() string {
+	if h.HomeEnv == "" {
+		return ""
+	}
+	def, cur := h.defaultConfigHome(), h.ConfigHome()
+	if def == "" || cur == "" || def == cur {
+		return ""
+	}
+	return cur
+}
+
+// ResolvedCreateDirs returns the directories omac must create before grant
+// resolution, which drops missing paths: the declared SandboxCreateDirs plus,
+// under an active HomeEnv redirect, the redirected config home.
+func (h Harness) ResolvedCreateDirs() []string {
+	out := append([]string(nil), h.SandboxCreateDirs...)
+	if dir := h.redirectedConfigHome(); dir != "" {
+		out = append(out, dir)
+	}
+	return out
+}
+
+// DefaultGlobalSkillsDir returns GlobalSkillsDir for the default config home,
+// ignoring any HomeEnv redirect. Discovery uses it to tell which candidate
+// root a redirect supersedes.
+func (h Harness) DefaultGlobalSkillsDir() string {
+	home := h.defaultConfigHome()
+	if home == "" {
+		return ""
+	}
+	return filepath.Join(home, "skills")
+}
+
+// ForwardedEnvVars returns the env vars omac forwards into the sandbox for
+// this harness: the declared SandboxEnvAllow plus HomeEnv, if it has one.
+func (h Harness) ForwardedEnvVars() []string {
+	if h.HomeEnv == "" {
+		return h.SandboxEnvAllow
+	}
+	for _, v := range h.SandboxEnvAllow {
+		if v == h.HomeEnv {
+			return h.SandboxEnvAllow
+		}
+	}
+	return append(append(make([]string, 0, len(h.SandboxEnvAllow)+1), h.SandboxEnvAllow...), h.HomeEnv)
+}
+
+// HomeEnvNames returns every harness's HomeEnv — the variables that relocate a
+// harness's config home (CLAUDE_CONFIG_DIR, CODEX_HOME, …) — deduplicated, in
+// registry order.
+func HomeEnvNames() []string {
+	reg := harnessRegistry()
+	seen := make(map[string]bool, len(reg))
+	out := make([]string, 0, len(reg))
+	for _, h := range reg {
+		if h.HomeEnv == "" || seen[h.HomeEnv] {
+			continue
+		}
+		seen[h.HomeEnv] = true
+		out = append(out, h.HomeEnv)
+	}
+	return out
+}
+
+// normalizeHomePath expands a leading ~ against $HOME and absolutizes the
+// result, so config-home values are comparable and usable as grants: a value
+// that merely spells the default home differently is not a redirect.
+func normalizeHomePath(p string) string {
+	if p == "" {
+		return ""
+	}
+	if p == "~" || strings.HasPrefix(p, "~/") {
+		if home, err := os.UserHomeDir(); err == nil && home != "" {
+			if p == "~" {
+				p = home
+			} else {
+				p = filepath.Join(home, p[2:])
+			}
+		}
+	}
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return filepath.Clean(p)
+	}
+	return abs
 }
 
 // GlobalBridgeDir returns the absolute, user-global directory where this
