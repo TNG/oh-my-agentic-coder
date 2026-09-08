@@ -214,6 +214,56 @@ jobs:
           set -o pipefail
           run_label="$(date -u +%Y%m%d-%H%M%S)"
           echo "run_label=$run_label" >> "$GITHUB_OUTPUT"
+
+          # Stage a symlink-free copy of the checkout, and scan THAT.
+          #
+          # strix's --target copy walks the tree with O_NOFOLLOW and aborts on
+          # the first symlink it meets -- "symlink_not_supported", raised in
+          # openai-agents' agents/sandbox/entries/artifacts.py. The exception's
+          # message carries only the target path, not the reason or the offending
+          # file, so it surfaces as a bare "failed to read local dir artifact".
+          #
+          # This repo has had exactly one symlink, CLAUDE.md -> AGENTS.md, since
+          # 2026-07-16 -- two days after this workflow was added. Every scan
+          # since has died here, before its first agent turn, having spent zero
+          # tokens.
+          #
+          # Dereferencing rather than deleting the symlink: CLAUDE.md exists so
+          # that tools looking for either name find the same file, the scanner
+          # should see the content those tools actually read, and this way the
+          # next symlink somebody commits does not silently kill the scan again.
+          #
+          # Staged at staging/target, keeping the basename, because strix names
+          # its run directory after it (strix_runs/<basename>_<id>) and the
+          # archive history is easier to read if that stays "target".
+          #
+          # Unresolvable links are checked for first, because cp -L fails on one
+          # with a message about the copy rather than about the repo.
+          #
+          # `find -type l` lists symlinks without stat'ing their targets, then
+          # readlink -e resolves each. Deliberately NOT `find -xtype l`: that
+          # stats the target, so a symlink LOOP makes find exit non-zero having
+          # printed nothing to stdout, and the guard would abort the job with no
+          # message at all. readlink -e reports broken links and loops alike.
+          links=""
+          unresolvable=""
+          while IFS= read -r -d '' link; do
+            links="${links:+$links }${link#target/}"
+            readlink -e "$link" >/dev/null 2>&1 \
+              || unresolvable="${unresolvable:+$unresolvable }${link#target/}"
+          done < <(find target -type l -print0)
+          if [ -n "$unresolvable" ]; then
+            echo "::error title=Unresolvable symlink in the checkout::Cannot stage a symlink-free copy to scan, because these links do not resolve (broken, or a loop): $unresolvable. Fix or remove them."
+            exit 1
+          fi
+          rm -rf staging
+          mkdir -p staging
+          # -L dereferences. A symlink pointing outside the repo would pull that
+          # content into the scan; none does today, which is what the list of
+          # flattened links printed below is for.
+          cp -rL target staging/target
+          echo "staged a symlink-free copy of the checkout; flattened: ${links:-none}"
+
           # --target, not --mount: the PyPI release (strix-agent, pinned
           # below) doesn't have --mount or --max-budget-usd -- those only
           # exist in unreleased commits ahead of the 1.0.4 tag. --target
@@ -228,22 +278,23 @@ jobs:
           # thrown away with `|| true`, which meant a strix that died on
           # startup was indistinguishable from one that ran for hours and found
           # nothing -- every scheduled run from 2026-08-15 to 2026-09-05
-          # "succeeded" after ~105 seconds without writing a findings file. It
-          # is not asserted on here on its own, because a non-zero exit from an
+          # "succeeded" after ~105 seconds without writing a findings file (the
+          # symlink abort above; the ~105 seconds were the docker image pull).
+          # It is not asserted on here on its own, because a non-zero exit from an
           # otherwise complete scan should not discard the findings; the check
           # below combines it with whether a result was actually produced.
           started=$SECONDS
           rc=0
-          strix -n --target "$PWD/target" \
+          strix -n --target "$PWD/staging/target" \
             --scan-mode "${{ inputs.scan_mode || 'deep' }}" \
             > strix_scan.log 2>&1 || rc=$?
           elapsed=$(( SECONDS - started ))
 
           # strix_runs/ lands relative to strix's OWN invocation cwd (this
-          # job's default workspace root), as a sibling of target/ -- NOT
-          # nested inside target/strix_runs/, regardless of --target vs.
-          # --mount. Confirmed against a real run's own reported Output
-          # path: .../oh-my-agentic-coder/strix_runs/target_<id>.
+          # job's default workspace root), as a sibling of target/ and
+          # staging/ -- NOT nested inside the scanned tree, regardless of
+          # --target vs. --mount. Confirmed against a real run's own reported
+          # Output path: .../oh-my-agentic-coder/strix_runs/target_<id>.
           #
           # nullglob + array, not `ls glob | head`: under bash -e + pipefail
           # (this shell's default), a non-matching glob inside `$(...)`
