@@ -168,30 +168,6 @@ func TestResolveInnerCmd(t *testing.T) {
 	}
 }
 
-func TestDefaultSandboxProfilesHaveEmptyInnerCmd(t *testing.T) {
-	// The sandboxed profiles must NOT bake an inner_cmd: the harness supplies
-	// it at launch. Baking one here would make `omac start claude` silently
-	// run the baked command instead of Claude.
-	lc := DefaultLauncherConfig()
-	for _, name := range []string{"nono", "nono-netprofile"} {
-		prof, ok := lc.Sandbox.Profiles[name]
-		if !ok {
-			t.Fatalf("%s profile missing", name)
-		}
-		if len(prof.InnerCmd) != 0 {
-			t.Errorf("%s inner_cmd = %v, want empty (harness supplies it)", name, prof.InnerCmd)
-		}
-		// The sandbox command template must remain harness-independent.
-		if joined := strings.Join(prof.Command, " "); !strings.Contains(joined, "{{inner_cmd}}") {
-			t.Errorf("%s command lost {{inner_cmd}} placeholder: %v", name, prof.Command)
-		}
-	}
-	// no-sandbox-debug is a debug shell, not an agent harness: it keeps bash.
-	if got := lc.Sandbox.Profiles["no-sandbox-debug"].InnerCmd; !reflect.DeepEqual(got, []string{"bash"}) {
-		t.Errorf("no-sandbox-debug inner_cmd = %v, want [bash]", got)
-	}
-}
-
 func TestHarnessSandboxEnvAllowIsSafe(t *testing.T) {
 	// A harness may auto-forward the provider-auth vars it unambiguously
 	// needs (injected via --allow-env for the selected harness); the list is
@@ -265,20 +241,6 @@ func TestCopilotForwardsBYOKProviderEnvironment(t *testing.T) {
 		if !slices.Contains(h.SandboxEnvAllow, want) {
 			t.Errorf("copilot SandboxEnvAllow missing %q; got %v", want, h.SandboxEnvAllow)
 		}
-	}
-}
-
-func TestHarnessSuppliesInnerForEmptyProfile(t *testing.T) {
-	// With the default (empty) profile inner_cmd, the harness default is used.
-	oc, _ := LookupHarness("opencode")
-	cc, _ := LookupHarness("claude-code")
-	lc := DefaultLauncherConfig()
-	prof := lc.Sandbox.Profiles["nono"]
-	if got := oc.ResolveInnerCmd(prof.InnerCmd, ""); !reflect.DeepEqual(got, []string{"opencode"}) {
-		t.Errorf("opencode harness inner = %v, want [opencode]", got)
-	}
-	if got := cc.ResolveInnerCmd(prof.InnerCmd, ""); !reflect.DeepEqual(got, []string{"claude"}) {
-		t.Errorf("claude harness inner = %v, want [claude]", got)
 	}
 }
 

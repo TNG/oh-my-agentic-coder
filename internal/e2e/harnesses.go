@@ -454,7 +454,8 @@ http_headers = { "X-User-Agent" = "Codex", "X-Separate-Reasoning" = "1" }
 			},
 			// codex's Rust HTTP client is incompatible with macOS Seatbelt
 			// (stream disconnected before completion). The builtin profile
-			// uses sandbox-exec → same problem as nono. Linux (bwrap) works.
+			// uses sandbox-exec, which hits that incompatibility. Linux
+			// (bwrap) works.
 			NoSandbox: runtime.GOOS == "darwin",
 		},
 		RunArgs: func(prompt string) []string {
