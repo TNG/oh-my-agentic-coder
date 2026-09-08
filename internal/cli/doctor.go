@@ -65,6 +65,9 @@ func runDoctor(args []string, env *Env) int {
 	} else {
 		fmt.Fprintln(env.Stdout, "[ok] launcher config:", cfgPath)
 	}
+	for _, warn := range launcherCfg.Sandbox.DeprecationWarnings() {
+		fmt.Fprintln(env.Stdout, "[warn] launcher config:", warn)
+	}
 
 	// Registry. Merge the workdir layer with the user-global layer
 	// (workdir wins on name collision), matching what `omac start`

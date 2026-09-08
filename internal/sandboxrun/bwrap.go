@@ -129,8 +129,14 @@ func BuildBwrapArgv(g *Grants, stage2Argv []string) ([]string, error) {
 
 	// Write-protected paths: re-bound read-only after the mounts they
 	// shadow (e.g. the workdir's rw bind), but before the protected-path
-	// masks below so a deny on the same path still wins.
+	// masks below so a deny on the same path still wins. Ungranted paths
+	// stay unbound: a bind would materialize them read-only inside the
+	// sandbox, and invisible is stronger. A learn-mode root grant covers
+	// everything, so the protection survives learn mode.
 	for _, p := range g.WriteProtectedPaths {
+		if !rootGranted && !coveredByAny(p, ordered) {
+			continue
+		}
 		if !exists(p) {
 			continue // nothing on disk to bind; the rule would dangle
 		}

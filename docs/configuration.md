@@ -9,7 +9,7 @@ description: omac configuration files and options
 |---|---|---------------------------------------|
 | `oh-my-agentic-coder.yaml` | Launcher config: facade tuning, cache scope, audit settings | User                                  |
 | `sandbox-profiles/default.json` | Sandbox grants: which filesystem paths, network hosts, and env vars the agent can access | `omac start` (first run creates it) |
-| `sandbox-profiles/default.pages.json` | Permanent allow/deny network decisions made via the prompt dialog | Network prompt dialog (user answers)  |
+| `sandbox-profiles/default.pages.json` | Permanent allow/deny network decisions made via the prompt dialog | `omac start` (creates it empty at launch); network prompt dialog (user answers) |
 | `sidecar.json` | Skill registry: names, directories, bundle hashes, declared secrets | `omac register` / `omac deregister`   |
 | `skill-config.yaml` | Non-secret per-skill fields: API base URLs, region names, feature flags | `omac register` / `omac config`       |
 
@@ -86,19 +86,19 @@ Commit a profile when a project needs different grants and everyone should get t
 ```yaml
 # <project>/.opencode/oh-my-agentic-coder.yaml
 sandbox:
-  profile_path: ./sandbox.json
+  profile_path: .opencode/sandbox.json
 ```
 
 - **Shared:** the profile (commit it). Team allowlist → `network.allow_domain`.
 - **Local:** `<profile>.pages.json` (per-user "allow permanently" clicks) — created empty on the first launch, git-ignored automatically, never shared.
 
-**Tamper protection.** Inside the sandbox, the agent can *read* the profile and its `<profile>.pages.json` sibling, but never *write* them — even though the workdir (where a committed profile lives) is read-write. So a session cannot rewrite the grants a later launch enforces, nor pre-allow network hosts by editing the pages file. omac itself writes learned decisions from outside the sandbox, so nothing changes for you.
+**Tamper protection.** Inside the sandbox, the agent can *read* the profile, its `<profile>.pages.json` sibling, and the project launcher config — but never *write* them — even though the workdir (where all of them live) is read-write. So a session cannot rewrite the grants a later launch enforces, nor pre-allow network hosts by editing the pages file, nor repoint `profile_path` at a different file. omac itself writes learned decisions from outside the sandbox, so nothing changes for you. A profile outside every granted path (e.g. one in `~/.config`) is stronger still: the sandboxed session cannot see it at all, on both platforms.
 
 **Hiding the profile entirely.** If the agent should not even be able to *read* the profile (or the pages file), deny it from inside the profile itself:
 
 ```json
 "filesystem": {
-  "deny": [".opencode/sandbox.json", ".opencode/sandbox.pages.json"]
+  "deny": [".opencode/sandbox.json", ".opencode/sandbox.pages.json", ".opencode/oh-my-agentic-coder.yaml"]
 }
 ```
 

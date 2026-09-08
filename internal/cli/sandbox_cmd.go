@@ -57,7 +57,10 @@ Usage:
   omac sandbox run [flags] -- <cmd> [args...]
 
 Flags (list flags are repeatable; they merge additively onto the profile):
-  --profile <ref>            profile name, path, or builtin (default: "default")
+  --profile <ref>            profile name, path, or builtin (default: "default").
+                             Direct "omac sandbox run" reads only this flag, not
+                             sandbox.profile_path from the launcher config;
+                             "omac start" applies that config setting
   --allow <path>             grant read+write on a directory or file
   --read <path>              grant read-only
   --write <path>             grant write-only

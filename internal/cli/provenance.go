@@ -101,8 +101,9 @@ var provenanceHardDenyHosts = []string{
 
 // buildProvenanceView loads the profile, learned decisions, baseline,
 // and registry, then assembles a provenanceView. profileRef is a path,
-// name, or "" for the default profile.
-func buildProvenanceView(workdir, profileRef string) (*provenanceView, error) {
+// name, or "" for the default profile. lc/cfgPath is the launcher config
+// runProvenance already loaded (it resolves the ref from the same load).
+func buildProvenanceView(workdir, profileRef string, lc config.LauncherConfig, cfgPath string) (*provenanceView, error) {
 	profile, profPath, err := sandboxprofile.Resolve(profileRef)
 	if err != nil {
 		return nil, err
@@ -125,10 +126,6 @@ func buildProvenanceView(workdir, profileRef string) (*provenanceView, error) {
 	view.Skills = buildSkillsView(workdir)
 
 	// --- Cache (persistent scope this workdir would resolve to) ---
-	lc, cfgPath, err := config.LoadLauncher(workdir)
-	if err != nil {
-		return nil, fmt.Errorf("cache: %w", err)
-	}
 	cacheScope, err := lc.Cache.Resolve()
 	if err != nil {
 		return nil, fmt.Errorf("cache: %w", err)
@@ -431,11 +428,19 @@ func runProvenance(args []string, env *Env) int {
 		return code
 	}
 
+	// One load serves the profile ref and the cache section; on error it
+	// warns and continues with the built-in defaults (provenance is an
+	// inspection tool).
+	lc, cfgPath, cfgErr := config.LoadLauncher(env.Workdir)
+	if cfgErr != nil {
+		fmt.Fprintf(env.Stderr, "omac provenance: %v — showing the built-in defaults instead.\n", cfgErr)
+	}
+	ref, refErr := profileRefFromConfig(lc, cfgPath, env.Workdir, *profileRef)
+
 	// --check resolves the profile itself and runs the lint; it does
 	// not build the provenance view. Keeps --check independent of the
 	// view-build path and its (registry, learned-policy) dependencies.
 	if *checkMode {
-		ref, refErr := inspectProfileRef(env.Workdir, *profileRef)
 		if refErr != nil {
 			fmt.Fprintf(env.Stderr, "omac provenance --check: %v — linting the built-in default profile instead.\n", refErr)
 		}
@@ -451,11 +456,10 @@ func runProvenance(args []string, env *Env) int {
 		return writeCheckText(env.Stdout, findings)
 	}
 
-	ref, refErr := inspectProfileRef(env.Workdir, *profileRef)
 	if refErr != nil {
 		fmt.Fprintf(env.Stderr, "omac provenance: %v — showing the built-in default profile instead.\n", refErr)
 	}
-	view, err := buildProvenanceView(env.Workdir, ref)
+	view, err := buildProvenanceView(env.Workdir, ref, lc, cfgPath)
 	if err != nil {
 		fmt.Fprintln(env.Stderr, "omac provenance:", err)
 		return ExitConfigInvalid

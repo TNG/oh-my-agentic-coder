@@ -305,9 +305,10 @@ func runServe(args []string, env *Env) int {
 	}
 	defer auditor.Close()
 
-	// Per-session sandbox temp dir exported as TMPDIR; the sandbox profile
-	// grants RW on it via {{tmpdir_flags}} so Bun-built harnesses (opencode)
-	// can extract their embedded runtime. Removed on exit. See start.go.
+	// Per-session sandbox temp dir exported as TMPDIR; the launch grants
+	// the sandbox RW on it (--read/--write flags on the sandbox argv) so
+	// Bun-built harnesses (opencode) can extract their embedded runtime.
+	// Removed on exit. See start.go.
 	sandboxTmp, err := os.MkdirTemp("", "omac-sandbox-tmp-")
 	if err != nil {
 		fmt.Fprintln(env.Stderr, "omac serve: sandbox temp dir:", err)
@@ -1570,8 +1571,8 @@ func (s *serveServer) baseEnv() map[string]string {
 		"OMAC_CONTROL_BASE":       s.controlBase,
 		"OMAC_HARNESS":            s.harness.Name,
 		"OMAC_HARNESS_SKILLS_DIR": s.harness.WorkdirSkillsDir(),
-		// Sandbox-granted temp dir exported as TMPDIR (see start.go and
-		// the sandbox profile's {{tmpdir_flags}} grant).
+		// Sandbox-granted temp dir exported as TMPDIR (see start.go;
+		// the launch grants RW on it via --read/--write flags).
 		"TMPDIR": s.sandboxTmp,
 	}
 	for k, v := range s.cacheEnv {

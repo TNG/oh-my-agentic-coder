@@ -12,6 +12,13 @@ import (
 	"github.com/TNG/oh-my-agentic-coder/internal/toolcache"
 )
 
+// buildTestView loads the config the way runProvenance does (load errors
+// swallowed, mirroring its warn-and-continue path) and builds the view.
+func buildTestView(wd, profPath string) (*provenanceView, error) {
+	lc, cfgPath, _ := config.LoadLauncher(wd)
+	return buildProvenanceView(wd, profPath, lc, cfgPath)
+}
+
 func TestProvenanceViewJSONRoundTrip(t *testing.T) {
 	v := provenanceView{
 		Profile: profileSource{Name: "default", Path: "/x/default.json", Source: "global"},
@@ -73,7 +80,7 @@ func TestBuildProvenanceView_NetworkEntries(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	view, err := buildProvenanceView(wd, profPath)
+	view, err := buildTestView(wd, profPath)
 	if err != nil {
 		t.Fatalf("buildProvenanceView: %v", err)
 	}
@@ -130,7 +137,7 @@ func TestBuildProvenanceView_LearnedDecisions(t *testing.T) {
 	pagesPath := filepath.Join(profDir, "p.pages.json")
 	os.WriteFile(pagesPath, []byte(`{"schema":1,"entries":[{"host":"learned.example.com","scope":"host","decision":"allow"}]}`), 0o644)
 
-	view, err := buildProvenanceView(wd, profPath)
+	view, err := buildTestView(wd, profPath)
 	if err != nil {
 		t.Fatalf("buildProvenanceView: %v", err)
 	}
@@ -153,7 +160,7 @@ func TestBuildProvenanceView_FilesystemBaseline(t *testing.T) {
 	profPath := filepath.Join(profDir, "p.json")
 	os.WriteFile(profPath, []byte(`{"meta":{"name":"p"},"workdir":{"access":"readwrite"}}`), 0o644)
 
-	view, err := buildProvenanceView(wd, profPath)
+	view, err := buildTestView(wd, profPath)
 	if err != nil {
 		t.Fatalf("buildProvenanceView: %v", err)
 	}
@@ -180,7 +187,7 @@ func TestBuildProvenanceView_EnvironmentBlocklist(t *testing.T) {
 	profPath := filepath.Join(profDir, "p.json")
 	os.WriteFile(profPath, []byte(`{"meta":{"name":"p"},"workdir":{"access":"readwrite"}}`), 0o644)
 
-	view, err := buildProvenanceView(wd, profPath)
+	view, err := buildTestView(wd, profPath)
 	if err != nil {
 		t.Fatalf("buildProvenanceView: %v", err)
 	}
@@ -337,6 +344,38 @@ func TestRunProvenance_BadProfile(t *testing.T) {
 	}
 }
 
+// A broken launcher config must not kill `omac provenance`: both --check
+// and the view warn on stderr and fall back to the built-in defaults.
+func brokenConfigWorkdir(t *testing.T) string {
+	t.Helper()
+	wd := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(wd, ".opencode"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.ProjectLauncherConfigPath(wd)
+	if err := os.WriteFile(cfg, []byte("sandbox: [broken"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return wd
+}
+
+func TestRunProvenance_BrokenConfigWarns(t *testing.T) {
+	isolateHome(t)
+	for _, args := range [][]string{{"--check"}, {}} {
+		wd := brokenConfigWorkdir(t)
+		env, read := captureEnv(t, wd)
+		code := runProvenance(args, env)
+		if code != ExitOK {
+			out, errOut := read()
+			t.Fatalf("provenance %v with a broken config: code=%d stdout=%q stderr=%q", args, code, out, errOut)
+		}
+		_, errOut := read()
+		if !strings.Contains(errOut, "showing the built-in default") {
+			t.Errorf("provenance %v must warn about the broken config, stderr=%q", args, errOut)
+		}
+	}
+}
+
 func TestRunProvenance_TextMode(t *testing.T) {
 	isolateHome(t)
 	wd := t.TempDir()
@@ -474,7 +513,7 @@ func TestBuildProvenanceView_CacheSection(t *testing.T) {
 	// Select the per-workdir scope so provenance reports it (default is global).
 	os.WriteFile(filepath.Join(profDir, "oh-my-agentic-coder.yaml"), []byte("cache:\n  scope: workdir\n"), 0o644)
 
-	view, err := buildProvenanceView(wd, profPath)
+	view, err := buildTestView(wd, profPath)
 	if err != nil {
 		t.Fatalf("buildProvenanceView: %v", err)
 	}
@@ -526,7 +565,7 @@ func TestWriteProvenanceText_CacheSection(t *testing.T) {
 	profPath := filepath.Join(profDir, "default.json")
 	os.WriteFile(profPath, []byte(`{"meta":{"name":"default"},"workdir":{"access":"readwrite"}}`), 0o644)
 
-	view, err := buildProvenanceView(wd, profPath)
+	view, err := buildTestView(wd, profPath)
 	if err != nil {
 		t.Fatalf("buildProvenanceView: %v", err)
 	}
@@ -554,7 +593,7 @@ func TestWriteProvenanceJSON_CacheSection(t *testing.T) {
 	profPath := filepath.Join(profDir, "default.json")
 	os.WriteFile(profPath, []byte(`{"meta":{"name":"default"},"workdir":{"access":"readwrite"}}`), 0o644)
 
-	view, err := buildProvenanceView(wd, profPath)
+	view, err := buildTestView(wd, profPath)
 	if err != nil {
 		t.Fatalf("buildProvenanceView: %v", err)
 	}
@@ -605,7 +644,7 @@ func TestBuildProvenanceView_CacheErrorSurfaced(t *testing.T) {
 	// it and render an empty "no cache" section.
 	t.Setenv("HOME", "")
 
-	view, err := buildProvenanceView(wd, profPath)
+	view, err := buildTestView(wd, profPath)
 	if err == nil {
 		t.Fatalf("expected error from buildProvenanceView when HOME is unset; got view=%+v", view)
 	}

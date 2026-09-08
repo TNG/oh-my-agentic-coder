@@ -220,6 +220,11 @@ func (lc LauncherConfig) ResolveSandboxProfileRef(cfgPath, workdir string) (stri
 		abs = filepath.Join(base, abs)
 	}
 	abs = filepath.Clean(abs)
+	if li, err := os.Lstat(abs); err == nil && li.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("sandbox.profile_path %q is a symlink (resolved to %s); "+
+			"a symlinked profile cannot be write-protected inside the sandbox — a session "+
+			"could replace it and steer the next launch. Point profile_path at the real file", raw, abs)
+	}
 	info, err := os.Stat(abs)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {

@@ -36,11 +36,13 @@ type Grants struct {
 	ProtectedPaths []string
 
 	// WriteProtectedPaths are readable but never writable, even when a
-	// broader grant (e.g. the read-write workdir) covers them. Run fills
-	// this with the sandbox profile and its pages sibling so a session
+	// broader grant (e.g. the read-write workdir) covers them: the sandbox
+	// profile, its pages sibling, and the launcher config, so a session
 	// cannot rewrite the grants the next launch enforces (#267). Unlike
-	// ProtectedPaths they survive learn mode, and paths already denied
-	// are omitted (a deny is stricter).
+	// ProtectedPaths they survive learn mode; paths already denied are
+	// omitted. Path-based: a writable hardlink alias could bypass it
+	// (cross-mount links are EXDEV, same-mount writes hit the read-only
+	// bind).
 	WriteProtectedPaths []string
 
 	// Network.

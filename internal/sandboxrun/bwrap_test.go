@@ -134,6 +134,46 @@ func TestBwrapWriteProtectedPathMissingIsSkipped(t *testing.T) {
 	}
 }
 
+func TestBwrapWriteProtectedPathUngrantedIsNotBound(t *testing.T) {
+	// The bind would materialize the file read-only inside the sandbox;
+	// ungranted paths are already invisible.
+	dir := t.TempDir()
+	profile := filepath.Join(dir, "sandbox.json")
+	if err := os.WriteFile(profile, []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	g := bwrapGrants()
+	g.WriteProtectedPaths = []string{profile}
+	argv, err := BuildBwrapArgv(g, []string{"x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(strings.Join(argv, " "), profile) {
+		t.Errorf("ungranted write-protected path must not be bound: %v", argv)
+	}
+}
+
+func TestBwrapWriteProtectedPathBoundUnderRootGrant(t *testing.T) {
+	// Learn mode's root grant covers everything, so the protection must
+	// survive (learn mode writes its decisions outside the sandbox).
+	dir := t.TempDir()
+	profile := filepath.Join(dir, "sandbox.json")
+	if err := os.WriteFile(profile, []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	g := bwrapGrants()
+	g.AllowPaths = []string{"/"}
+	g.WriteProtectedPaths = []string{profile}
+	argv, err := BuildBwrapArgv(g, []string{"x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(argv, " ")
+	if !strings.Contains(joined, "--ro-bind "+profile+" "+profile) {
+		t.Errorf("under a root grant the write-protected path must be re-bound read-only: %s", joined)
+	}
+}
+
 func TestBwrapWriteProtectedPathBeforeProtectedMask(t *testing.T) {
 	// Denied AND write-protected: the deny mask wins, so the --ro-bind
 	// must come first.

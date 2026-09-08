@@ -595,10 +595,10 @@ func runLaunch(env *Env, opts launchOpts) int {
 	defer auditor.Close()
 
 	// Per-session sandbox temp dir. Bun-built harnesses (e.g., opencode) extract
-	// an embedded runtime into TMPDIR at startup; the sandbox must grant
-	// read+write on it (the sandbox profile does, via {{tmpdir_flags}}) AND
-	// the inner command must see it as TMPDIR (set in `extra` below). We
-	// create a fresh, isolated dir per launch and remove it on exit.
+	// an embedded runtime into TMPDIR at startup; the launch grants the
+	// sandbox read+write on it (--read/--write flags on the sandbox argv)
+	// AND the inner command must see it as TMPDIR (set in `extra` below).
+	// We create a fresh, isolated dir per launch and remove it on exit.
 	sandboxTmp, err := os.MkdirTemp("", "omac-sandbox-tmp-")
 	if err != nil {
 		fmt.Fprintln(env.Stderr, prefix+": sandbox temp dir:", err)
@@ -853,9 +853,10 @@ func runLaunch(env *Env, opts launchOpts) int {
 		"OMAC_HARNESS":            harness.Name,
 		"OMAC_HARNESS_SKILLS_DIR": harness.WorkdirSkillsDir(),
 		// Point the inner command at the sandbox-granted temp dir. The
-		// sandbox profile grants RW on this path via {{tmpdir_flags}};
-		// exporting it as TMPDIR is what makes Bun-built harnesses
-		// (opencode) extract their runtime into a writable, allowed location.
+		// launch grants the sandbox RW on this path (--read/--write
+		// flags); exporting it as TMPDIR is what makes Bun-built
+		// harnesses (opencode) extract their runtime into a writable,
+		// allowed location.
 		"TMPDIR": sandboxTmp,
 	}
 	for _, m := range mounts {

@@ -52,11 +52,6 @@ func EnsureLearnedPolicyFile(path string) error {
 	if path == "" {
 		return nil
 	}
-	if _, err := os.Stat(path); err == nil {
-		return nil
-	} else if !os.IsNotExist(err) {
-		return fmt.Errorf("stat learned policy %s: %w", path, err)
-	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("create learned policy dir: %w", err)
 	}
@@ -65,10 +60,20 @@ func EnsureLearnedPolicyFile(path string) error {
 		return err
 	}
 	data = append(data, '\n')
-	if err := os.WriteFile(path, data, 0o600); err != nil {
+	// O_EXCL so a concurrent launch's first permanent decision can't be
+	// clobbered by this empty store.
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		if os.IsExist(err) {
+			return nil
+		}
 		return fmt.Errorf("create learned policy %s: %w", path, err)
 	}
-	return nil
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return fmt.Errorf("create learned policy %s: %w", path, err)
+	}
+	return f.Close()
 }
 
 // LoadLearnedPolicy reads the file at path (missing file = empty store).
