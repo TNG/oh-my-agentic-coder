@@ -34,7 +34,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tngtech/oh-my-agentic-coder/internal/toolcache"
+	"github.com/TNG/oh-my-agentic-coder/internal/toolcache"
 )
 
 // cacheRunTimeout bounds the omac start/serve subprocess.
@@ -957,7 +957,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/tngtech/oh-my-agentic-coder/internal/toolcache"
+	"github.com/TNG/oh-my-agentic-coder/internal/toolcache"
 )
 
 func main() {

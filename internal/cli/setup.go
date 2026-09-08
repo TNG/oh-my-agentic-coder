@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"os/exec"
 
-	"github.com/tngtech/oh-my-agentic-coder/internal/builtinskills"
-	"github.com/tngtech/oh-my-agentic-coder/internal/config"
-	"github.com/tngtech/oh-my-agentic-coder/internal/plugin"
+	"github.com/TNG/oh-my-agentic-coder/internal/builtinskills"
+	"github.com/TNG/oh-my-agentic-coder/internal/config"
+	"github.com/TNG/oh-my-agentic-coder/internal/plugin"
 )
 
 // runSetup provisions omac's built-in skill bundles into the native skills

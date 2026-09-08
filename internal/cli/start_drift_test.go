@@ -12,8 +12,8 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/tngtech/oh-my-agentic-coder/internal/config"
-	"github.com/tngtech/oh-my-agentic-coder/internal/registry"
+	"github.com/TNG/oh-my-agentic-coder/internal/config"
+	"github.com/TNG/oh-my-agentic-coder/internal/registry"
 )
 
 // isolateHome points HOME and XDG_CONFIG_HOME at empty temp dirs so

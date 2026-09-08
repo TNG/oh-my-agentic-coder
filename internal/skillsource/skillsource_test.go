@@ -8,7 +8,7 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/tngtech/oh-my-agentic-coder/internal/config"
+	"github.com/TNG/oh-my-agentic-coder/internal/config"
 )
 
 func ocHarness(t *testing.T) config.Harness {

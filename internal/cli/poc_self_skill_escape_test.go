@@ -41,12 +41,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tngtech/oh-my-agentic-coder/internal/audit"
-	"github.com/tngtech/oh-my-agentic-coder/internal/config"
-	"github.com/tngtech/oh-my-agentic-coder/internal/facade"
-	"github.com/tngtech/oh-my-agentic-coder/internal/registry"
-	"github.com/tngtech/oh-my-agentic-coder/internal/skilltrust"
-	"github.com/tngtech/oh-my-agentic-coder/internal/supervisor"
+	"github.com/TNG/oh-my-agentic-coder/internal/audit"
+	"github.com/TNG/oh-my-agentic-coder/internal/config"
+	"github.com/TNG/oh-my-agentic-coder/internal/facade"
+	"github.com/TNG/oh-my-agentic-coder/internal/registry"
+	"github.com/TNG/oh-my-agentic-coder/internal/skilltrust"
+	"github.com/TNG/oh-my-agentic-coder/internal/supervisor"
 )
 
 // stageAgentAuthoredSkill writes a workdir-local skill whose sidecar, on

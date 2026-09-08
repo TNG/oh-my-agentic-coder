@@ -16,8 +16,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxdeny"
-	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxprofile"
+	"github.com/TNG/oh-my-agentic-coder/internal/sandboxdeny"
+	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
 )
 
 // skipOrFailCI skips locally but fails in CI (GITHUB_ACTIONS=true), so a
@@ -356,7 +356,7 @@ func TestIntegrationStage2LandlockPorts(t *testing.T) {
 	// Build the omac binary: stage2 must be a real `omac sandbox stage2`
 	// invocation (the test binary cannot stand in for it).
 	omac := filepath.Join(t.TempDir(), "omac")
-	build := exec.Command("go", "build", "-o", omac, "github.com/tngtech/oh-my-agentic-coder/cmd/omac")
+	build := exec.Command("go", "build", "-o", omac, "github.com/TNG/oh-my-agentic-coder/cmd/omac")
 	build.Env = os.Environ()
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build omac: %v\n%s", err, out)

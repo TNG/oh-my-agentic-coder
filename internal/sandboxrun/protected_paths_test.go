@@ -3,7 +3,7 @@ package sandboxrun
 import (
 	"testing"
 
-	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxprofile"
+	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
 )
 
 func TestProtectedPathSetBaselineMatch(t *testing.T) {

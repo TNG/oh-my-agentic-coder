@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tngtech/oh-my-agentic-coder/internal/netprompt/origin"
-	"github.com/tngtech/oh-my-agentic-coder/internal/netproxy"
+	"github.com/TNG/oh-my-agentic-coder/internal/netprompt/origin"
+	"github.com/TNG/oh-my-agentic-coder/internal/netproxy"
 )
 
 type fakeResolver struct {

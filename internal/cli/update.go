@@ -13,7 +13,7 @@ import (
 
 	"golang.org/x/term"
 
-	"github.com/tngtech/oh-my-agentic-coder/internal/updater"
+	"github.com/TNG/oh-my-agentic-coder/internal/updater"
 )
 
 func runUpdate(args []string, env *Env) int {

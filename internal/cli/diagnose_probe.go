@@ -11,9 +11,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/tngtech/oh-my-agentic-coder/internal/netprompt"
-	"github.com/tngtech/oh-my-agentic-coder/internal/netproxy"
-	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxprofile"
+	"github.com/TNG/oh-my-agentic-coder/internal/netprompt"
+	"github.com/TNG/oh-my-agentic-coder/internal/netproxy"
+	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
 )
 
 // runDiagnoseProbe statically evaluates whether host[:port] would be

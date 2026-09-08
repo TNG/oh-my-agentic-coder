@@ -11,8 +11,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/tngtech/oh-my-agentic-coder/internal/intent"
-	"github.com/tngtech/oh-my-agentic-coder/internal/sandboxprofile"
+	"github.com/TNG/oh-my-agentic-coder/internal/intent"
+	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
 )
 
 // learnSampleInterval is how often the recorder samples open fds.

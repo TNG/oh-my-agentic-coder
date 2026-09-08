@@ -11,9 +11,9 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/tngtech/oh-my-agentic-coder/internal/config"
-	"github.com/tngtech/oh-my-agentic-coder/internal/session"
-	"github.com/tngtech/oh-my-agentic-coder/internal/toolcache"
+	"github.com/TNG/oh-my-agentic-coder/internal/config"
+	"github.com/TNG/oh-my-agentic-coder/internal/session"
+	"github.com/TNG/oh-my-agentic-coder/internal/toolcache"
 )
 
 // devnullEnv builds an Env whose streams all point at /dev/null. Suitable for

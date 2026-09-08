@@ -6,7 +6,7 @@ import (
 	"io"
 	"os"
 
-	"github.com/tngtech/oh-my-agentic-coder/internal/manifest"
+	"github.com/TNG/oh-my-agentic-coder/internal/manifest"
 )
 
 // runManifest renders the skills manifest from activate-response JSON.
