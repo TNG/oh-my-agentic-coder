@@ -7,11 +7,13 @@
 # redirected straight to a file and never printed to the console, because
 # this is a public repo and both the job log and (if used) upload-artifact
 # would be publicly downloadable. Full reports are pushed to a private
-# companion repo instead, and only aggregate severity/dedupe counts reach
-# the public step summary. A human reviews the private repo and decides
-# what -- if anything -- becomes a public GitHub issue. The private artifact
-# repo is named by the SECURITY_ARCHIVE_REPO secret (kept out of public
-# source); see it for the artifact history.
+# companion repo instead, and only aggregate severity/dedupe counts -- plus
+# the scan's exit code, duration and log size, which are numbers about the
+# run rather than anything it found -- reach the public step summary. A human
+# reviews the private repo and decides what -- if anything -- becomes a public
+# GitHub issue. The private artifact repo is named by the
+# SECURITY_ARCHIVE_REPO secret (kept out of public source); see it for the
+# artifact history.
 name: Security Scan
 
 on:
@@ -60,6 +62,56 @@ jobs:
         uses: actions/checkout@v4
         with:
           path: target
+
+      - name: Preflight archive credential
+        id: archive
+        # The whole point of this job is the report it pushes to the private
+        # archive repo, so a credential that cannot write there makes the scan
+        # below wasted compute -- and until 2026-09 it failed exactly that way
+        # every week, three hours in, with nothing but "exit code 128" against a
+        # redacted URL to explain it. Check first, and say what to fix.
+        #
+        # GitHub authorizes the ref advertisement, so asking for the
+        # git-receive-pack advertisement is a read-only probe of *write* access:
+        # 200 means the push will be allowed, 403 means the token is valid but
+        # read-only on that repo, 401 means it is expired or malformed, and 404
+        # means it cannot see the repo at all. `git ls-remote` cannot tell these
+        # apart -- it only ever exercises upload-pack.
+        env:
+          SECURITY_SCAN_PAT: ${{ secrets.SECURITY_SCAN_PAT }}
+          ARCHIVE_REPO: ${{ secrets.SECURITY_ARCHIVE_REPO }}
+        run: |
+          set -euo pipefail
+          if [ -z "${ARCHIVE_REPO:-}" ] || [ -z "${SECURITY_SCAN_PAT:-}" ]; then
+            echo "::warning::SECURITY_ARCHIVE_REPO or SECURITY_SCAN_PAT secret missing — the scan will run but its report cannot be archived"
+            exit 0
+          fi
+          # -u keeps the token out of the URL, so it stays out of any error curl
+          # prints. Only the status code is captured.
+          code=$(curl -sS -o /dev/null -w '%{http_code}' \
+            -u "x-access-token:${SECURITY_SCAN_PAT}" \
+            "https://github.com/${ARCHIVE_REPO}.git/info/refs?service=git-receive-pack" || echo 000)
+          case "$code" in
+            200)
+              echo "archive repo is writable"
+              ;;
+            403)
+              echo "::error title=Archive repo is read-only::SECURITY_SCAN_PAT can read the private archive repo but not write it, so this scan's report has nowhere to go. Grant the token Contents: read and write on the archive repo (a fine-grained PAT also has to list that repo explicitly), then re-run. Same secret, same symptom in e2e-smoke.yml's Record & report job."
+              exit 1
+              ;;
+            401)
+              echo "::error title=Archive credential rejected::SECURITY_SCAN_PAT was refused by GitHub (401) -- it is expired or malformed. Rotate it and re-run."
+              exit 1
+              ;;
+            404)
+              echo "::error title=Archive repo not reachable::SECURITY_SCAN_PAT cannot see the repo named by SECURITY_ARCHIVE_REPO (404). Either the repo name is wrong or the token has no access to it at all."
+              exit 1
+              ;;
+            *)
+              echo "::error title=Archive preflight inconclusive::Probing the archive repo returned HTTP ${code}. Not starting a three-hour scan whose report may be undeliverable."
+              exit 1
+              ;;
+          esac
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -166,9 +218,21 @@ jobs:
           # Redirected to a file, NEVER printed to this (public) job log --
           # strix's console output includes full vulnerability detail and
           # working PoCs once findings surface.
+          #
+          # The exit code is recorded rather than discarded. It used to be
+          # thrown away with `|| true`, which meant a strix that died on
+          # startup was indistinguishable from one that ran for hours and found
+          # nothing -- every scheduled run from 2026-08-15 to 2026-09-05
+          # "succeeded" after ~105 seconds without writing a findings file. It
+          # is not asserted on here on its own, because a non-zero exit from an
+          # otherwise complete scan should not discard the findings; the check
+          # below combines it with whether a result was actually produced.
+          started=$SECONDS
+          rc=0
           strix -n --target "$PWD/target" \
             --scan-mode "${{ inputs.scan_mode || 'deep' }}" \
-            > strix_scan.log 2>&1 || true
+            > strix_scan.log 2>&1 || rc=$?
+          elapsed=$(( SECONDS - started ))
 
           # strix_runs/ lands relative to strix's OWN invocation cwd (this
           # job's default workspace root), as a sibling of target/ -- NOT
@@ -201,6 +265,28 @@ jobs:
             exit 1
           fi
 
+          # How long the scan ran and how much it wrote. Both are counts, not
+          # content, so they are safe on this public summary -- and they are the
+          # cheapest way to spot a scan that did not really happen: a `deep`
+          # scan of this repo takes hours and writes megabytes, so two minutes
+          # and a few kilobytes means something went wrong even when every
+          # guard above is satisfied. Published here because the log that would
+          # explain it only ever reaches the private archive repo.
+          log_bytes=$(wc -c < strix_scan.log)
+          echo "exit_code=$rc" >> "$GITHUB_OUTPUT"
+          echo "elapsed=$elapsed" >> "$GITHUB_OUTPUT"
+          echo "log_bytes=$log_bytes" >> "$GITHUB_OUTPUT"
+          echo "strix exited $rc after ${elapsed}s, wrote ${log_bytes} bytes of log"
+
+          # A non-zero exit AND no findings file means there is no evidence the
+          # scan produced a result at all -- fail, rather than triaging an empty
+          # run as a clean bill of health. A findings-free scan that exits 0 is
+          # still allowed through (#194): that is a real result.
+          if [ "$rc" -ne 0 ] && [ ! -f "${run_dirs[-1]}vulnerabilities.json" ]; then
+            echo "::error::strix exited $rc after ${elapsed}s and wrote no vulnerabilities.json -- no evidence the scan produced a result, so it is not reported as a clean scan. strix_scan.log in the private artifact repo has the reason; it is never printed here because it can contain scan content."
+            exit 1
+          fi
+
       - name: Dedupe against open issues + build triage report
         if: steps.scan.outcome == 'success'
         env:
@@ -218,6 +304,8 @@ jobs:
           cat step-summary.md >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "Model: \`${{ steps.model.outputs.model }}\` · scan mode: \`${{ inputs.scan_mode || 'deep' }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "strix exit code \`${{ steps.scan.outputs.exit_code }}\` · ran for ${{ steps.scan.outputs.elapsed }}s · wrote ${{ steps.scan.outputs.log_bytes }} bytes of log. A \`deep\` scan that finishes in a couple of minutes did not really run, whatever it reports." >> "$GITHUB_STEP_SUMMARY"
           if [ '${{ steps.model.outputs.fallback }}' = 'true' ]; then
             echo "" >> "$GITHUB_STEP_SUMMARY"
             echo "> ⚠️ **Fallback model** — the intended model is not served by the gateway, so this scan's coverage is not comparable to previous ones." >> "$GITHUB_STEP_SUMMARY"
@@ -232,7 +320,12 @@ jobs:
         # way to debug a startup failure, and it must never be printed to
         # this (public) job log -- the private repo is the one place it's
         # safe to look, whether or not the scan actually produced findings.
-        if: always()
+        #
+        # Skipped only when the preflight itself failed. There is nothing to
+        # push in that case -- the scan never started -- and attempting it would
+        # stack a second, misleading error on top of the one that already said
+        # exactly what to fix.
+        if: always() && steps.archive.outcome == 'success'
         env:
           SECURITY_SCAN_PAT: ${{ secrets.SECURITY_SCAN_PAT }}
           # Repo name lives in a secret, not in this public source.
@@ -244,6 +337,16 @@ jobs:
             echo "## Security scan: report push SKIPPED (SECURITY_ARCHIVE_REPO unset)" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
+          # The preflight at the top of the job already established that this
+          # credential can write the archive repo, so anything failing here is
+          # something else -- a protected default branch, a mid-run token
+          # revocation. Name that, instead of leaving a bare "exit code 128"
+          # against a redacted URL for someone to guess at.
+          archive_failed() {
+            echo "::error title=Report archiving failed::The scan itself is not what failed here -- pushing its report to the private archive repo did, after the preflight had confirmed write access. Check the archive repo for a protected default branch, or a token revoked mid-run. The report for this run was NOT stored."
+            exit 1
+          }
+          trap archive_failed ERR
           dest=$(mktemp -d)
           git clone --quiet --depth 1 \
             "https://x-access-token:${SECURITY_SCAN_PAT}@github.com/${ARCHIVE_REPO}.git" \
@@ -266,5 +369,11 @@ jobs:
           git config user.name "strix-ci-bot"
           git config user.email "actions@users.noreply.github.com"
           git add .
+          # Nothing staged means nothing ran -- don't let `git commit`'s "nothing
+          # to commit" exit code surface as an archiving failure.
+          if git diff --cached --quiet; then
+            echo "::warning::nothing to archive for this run"
+            exit 0
+          fi
           git commit --quiet -m "scan: ${{ inputs.reason || 'scheduled' }} [$status] ($(date -u +%F))"
           git push --quiet
