@@ -8,8 +8,11 @@
 # this is a public repo and both the job log and (if used) upload-artifact
 # would be publicly downloadable. Full reports are pushed to a private
 # companion repo instead, and only aggregate severity/dedupe counts -- plus
-# the scan's exit code, duration and log size, which are numbers about the
-# run rather than anything it found -- reach the public step summary. A human
+# the scan's exit code, duration, log size and finding count, which are numbers
+# about the run rather than anything it found -- reach the public step summary.
+# The finding count is published because it is the one thing that distinguishes
+# a partial scan worth reading from a run that achieved nothing, and the log
+# that would say so is deliberately never printed here. A human
 # reviews the private repo and decides what -- if anything -- becomes a public
 # GitHub issue. The private artifact repo is named by the
 # SECURITY_ARCHIVE_REPO secret (kept out of public source); see it for the
@@ -30,6 +33,10 @@ on:
         type: choice
         options: [quick, standard, deep]
         default: deep
+      scan_budget_minutes:
+        description: 'Minutes strix itself may run before it is stopped. Must stay below the job''s timeout-minutes, so the run still has time to triage and archive what it found. Raise it for a scan you want to reach the end; lower it to cap spend.'
+        type: string
+        default: '300'
       model:
         description: 'Model id for the strix agent, for THIS RUN ONLY. Leave it as it comes to use the scan''s own pin (the E2E_MODEL default below — keep the two in step). Whatever is resolved here still goes through the gateway probe, so the -TEE variant flip and the fallback chain apply.'
         type: string
@@ -47,7 +54,14 @@ jobs:
   scan:
     name: Strix security scan
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    # Sized against the scan budget below, not the other way round: strix is
+    # stopped by its own `timeout` with time to spare, so this ceiling should
+    # never be the thing that ends the job. It used to be 180, which cut the
+    # 2026-09-08 run off mid-scan at exactly 3h -- and a job GitHub cancels
+    # skips straight past the archive step's inputs, so three hours of findings
+    # were left on the runner's disk and thrown away with it. 350 is just under
+    # the 360-minute hosted-runner ceiling.
+    timeout-minutes: 350
     env:
       # SKAINET_INTERNAL is the same secret e2e.yml uses for the model
       # provider base URL — reused here rather than duplicating the URL.
@@ -283,12 +297,39 @@ jobs:
           # It is not asserted on here on its own, because a non-zero exit from an
           # otherwise complete scan should not discard the findings; the check
           # below combines it with whether a result was actually produced.
+          #
+          # Run strix under its OWN deadline, comfortably inside the job's
+          # timeout-minutes, so that a scan which does not finish is stopped by
+          # this step rather than by GitHub. The difference matters: when the
+          # job hits timeout-minutes the runner cancels it, every later step is
+          # skipped or runs with the outputs this one never got to write, and
+          # the run directory is destroyed with the runner. That is exactly how
+          # the 2026-09-08 run lost a scan that had already reported 22
+          # findings. Under `timeout` the same overrun is an ordinary exit code:
+          # the guards, the triage and the archive below all still run.
+          #
+          # -s INT rather than the default TERM: SIGINT is the signal an
+          # interactive strix already handles, so it gets the chance to flush
+          # its run directory. -k gives it two minutes to do that before SIGKILL.
+          # 124 = killed at the deadline, 130 = exited on the SIGINT itself;
+          # both mean "ran out of time", which is a partial scan, not a failure.
+          budget="${{ inputs.scan_budget_minutes || '300' }}"
+          case "$budget" in
+            ''|*[!0-9]*) echo "::error::scan_budget_minutes must be a whole number of minutes, got '$budget'"; exit 1 ;;
+          esac
           started=$SECONDS
           rc=0
-          strix -n --target "$PWD/staging/target" \
+          timeout -s INT -k 120s "${budget}m" \
+            strix -n --target "$PWD/staging/target" \
             --scan-mode "${{ inputs.scan_mode || 'deep' }}" \
             > strix_scan.log 2>&1 || rc=$?
           elapsed=$(( SECONDS - started ))
+          partial=false
+          if [ "$rc" -eq 124 ] || [ "$rc" -eq 130 ]; then
+            partial=true
+            echo "::warning title=Scan stopped at its budget::strix was still working when its ${budget}-minute budget ran out, so this scan is PARTIAL -- it covers only what it had reached. Whatever it did find is archived and triaged as usual. Raise scan_budget_minutes (and timeout-minutes with it) for a run that reaches the end."
+          fi
+          echo "partial=$partial" >> "$GITHUB_OUTPUT"
 
           # strix_runs/ lands relative to strix's OWN invocation cwd (this
           # job's default workspace root), as a sibling of target/ and
@@ -329,22 +370,50 @@ jobs:
           # guard above is satisfied. Published here because the log that would
           # explain it only ever reaches the private archive repo.
           log_bytes=$(wc -c < strix_scan.log)
+
+          # How many findings strix actually reported, counted off the log's own
+          # report banners rather than the findings file. A scan stopped at its
+          # budget often has no vulnerabilities.json -- strix writes that at the
+          # end -- while the log already holds every finding it reported in
+          # full. Publishing the COUNT (a number, not a finding) is what tells a
+          # human whether a partial run is worth reading: "PARTIAL, 22 findings
+          # in the log" is a very different message from "FAILED".
+          vuln_count=$(grep -cE '^╭─ VULN-[0-9]+' strix_scan.log || true)
+          have_vulns=false
+          [ -f "${run_dirs[-1]}vulnerabilities.json" ] && have_vulns=true
+          echo "vuln_count=$vuln_count" >> "$GITHUB_OUTPUT"
+          echo "have_vulns=$have_vulns" >> "$GITHUB_OUTPUT"
           echo "exit_code=$rc" >> "$GITHUB_OUTPUT"
           echo "elapsed=$elapsed" >> "$GITHUB_OUTPUT"
           echo "log_bytes=$log_bytes" >> "$GITHUB_OUTPUT"
-          echo "strix exited $rc after ${elapsed}s, wrote ${log_bytes} bytes of log"
+          echo "strix exited $rc after ${elapsed}s, wrote ${log_bytes} bytes of log, reported ${vuln_count} findings"
 
           # A non-zero exit AND no findings file means there is no evidence the
           # scan produced a result at all -- fail, rather than triaging an empty
           # run as a clean bill of health. A findings-free scan that exits 0 is
           # still allowed through (#194): that is a real result.
-          if [ "$rc" -ne 0 ] && [ ! -f "${run_dirs[-1]}vulnerabilities.json" ]; then
-            echo "::error::strix exited $rc after ${elapsed}s and wrote no vulnerabilities.json -- no evidence the scan produced a result, so it is not reported as a clean scan. strix_scan.log in the private artifact repo has the reason; it is never printed here because it can contain scan content."
-            exit 1
+          #
+          # A scan stopped at its budget is exempt when it reported findings:
+          # those are a real (incomplete) result, and failing the step here
+          # would be the old bug in a new place -- discarding hours of work
+          # because the last file was never written. It still fails when it
+          # reported nothing at all, which is indistinguishable from a scan that
+          # never got going.
+          if [ "$rc" -ne 0 ] && [ "$have_vulns" != true ]; then
+            if [ "$partial" = true ] && [ "$vuln_count" -gt 0 ]; then
+              echo "::notice title=Partial scan kept::stopped at its budget with no vulnerabilities.json, but ${vuln_count} findings are in the log -- archiving as PARTIAL rather than discarding them."
+            else
+              echo "::error::strix exited $rc after ${elapsed}s and wrote no vulnerabilities.json -- no evidence the scan produced a result, so it is not reported as a clean scan. strix_scan.log in the private artifact repo has the reason; it is never printed here because it can contain scan content."
+              exit 1
+            fi
           fi
 
       - name: Dedupe against open issues + build triage report
-        if: steps.scan.outcome == 'success'
+        # Gated on a findings file existing, not on the scan step succeeding.
+        # A scan stopped at its budget still deserves a triage report for what
+        # it did find, and a scan that failed a completeness guard may have
+        # written one too.
+        if: always() && steps.scan.outputs.have_vulns == 'true'
         env:
           STRIX_LLM: ${{ steps.model.outputs.strix_llm }}
         run: |
@@ -355,13 +424,26 @@ jobs:
             --summary-out step-summary.md
 
       - name: Public summary (counts only, no exploit detail)
-        if: steps.scan.outcome == 'success'
+        # Runs whenever the scan step got far enough to publish its numbers, so
+        # a partial or failed run says so here instead of leaving a blank
+        # summary for someone to interpret from a red X.
+        if: always() && steps.scan.outputs.exit_code != ''
         run: |
-          cat step-summary.md >> "$GITHUB_STEP_SUMMARY"
+          if [ -f step-summary.md ]; then
+            cat step-summary.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "## Security scan: no findings file" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "strix wrote no \`vulnerabilities.json\`, so there is nothing to dedupe against open issues. It reported **${{ steps.scan.outputs.vuln_count }}** findings in its log, which is archived to the private repo." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ '${{ steps.scan.outputs.partial }}' = 'true' ]; then
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "> ⚠️ **Partial scan** — strix was stopped at its \`scan_budget_minutes\` budget while still working, so this covers only what it had reached. Findings below are real; their absence is not evidence." >> "$GITHUB_STEP_SUMMARY"
+          fi
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "Model: \`${{ steps.model.outputs.model }}\` · scan mode: \`${{ inputs.scan_mode || 'deep' }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "strix exit code \`${{ steps.scan.outputs.exit_code }}\` · ran for ${{ steps.scan.outputs.elapsed }}s · wrote ${{ steps.scan.outputs.log_bytes }} bytes of log. A \`deep\` scan that finishes in a couple of minutes did not really run, whatever it reports." >> "$GITHUB_STEP_SUMMARY"
+          echo "strix exit code \`${{ steps.scan.outputs.exit_code }}\` · ran for ${{ steps.scan.outputs.elapsed }}s · wrote ${{ steps.scan.outputs.log_bytes }} bytes of log · reported ${{ steps.scan.outputs.vuln_count }} findings. A \`deep\` scan that finishes in a couple of minutes did not really run, whatever it reports." >> "$GITHUB_STEP_SUMMARY"
           if [ '${{ steps.model.outputs.fallback }}' = 'true' ]; then
             echo "" >> "$GITHUB_STEP_SUMMARY"
             echo "> ⚠️ **Fallback model** — the intended model is not served by the gateway, so this scan's coverage is not comparable to previous ones." >> "$GITHUB_STEP_SUMMARY"
@@ -407,10 +489,41 @@ jobs:
           git clone --quiet --depth 1 \
             "https://x-access-token:${SECURITY_SCAN_PAT}@github.com/${ARCHIVE_REPO}.git" \
             "$dest"
-          status="${{ steps.scan.outcome == 'success' && 'ok' || 'FAILED' }}"
-          scan_dir="$dest/scans/${{ steps.scan.outputs.run_label }}-${{ inputs.reason || 'scheduled' }}-${status}"
+          if [ "${{ steps.scan.outcome }}" = success ]; then
+            status="${{ steps.scan.outputs.partial == 'true' && 'PARTIAL' || 'ok' }}"
+          else
+            status=FAILED
+          fi
+          # Fall back to a timestamp: run_label is written at the very top of
+          # the scan step, so it survives almost anything, but an unnamed
+          # directory is still better than a path beginning "-manual-FAILED".
+          run_label="${{ steps.scan.outputs.run_label }}"
+          scan_dir="$dest/scans/${run_label:-$(date -u +%Y%m%d-%H%M%S)}-${{ inputs.reason || 'scheduled' }}-${status}"
           mkdir -p "$scan_dir"
+
+          # Find the run directory on disk rather than trusting the scan step's
+          # output for it.
+          #
+          # This is the fix for the 2026-09-08 loss. run_dir is written to
+          # $GITHUB_OUTPUT only AFTER strix returns, so every way the scan step
+          # can end early -- job timeout, cancellation, a guard's exit 1, the
+          # runner going away -- leaves it empty, and this step then silently
+          # copied nothing while reporting success. The directory was there the
+          # whole time. Anything this step can rediscover for itself, it should:
+          # it is the last thing standing between hours of scanning and an empty
+          # commit.
           run_dir="${{ steps.scan.outputs.run_dir }}"
+          if [ -z "$run_dir" ] || [ ! -d "$run_dir" ]; then
+            shopt -s nullglob
+            found=(strix_runs/*/)
+            shopt -u nullglob
+            if [ ${#found[@]} -gt 0 ]; then
+              run_dir="${found[-1]}"
+              echo "::warning title=Recovered the run directory::The scan step never published its run directory (it ended before it could), so this step found ${run_dir} on disk. Its contents are archived below; without this fallback they would have been discarded."
+            else
+              run_dir=""
+            fi
+          fi
           if [ -n "$run_dir" ] && [ -d "$run_dir" ]; then
             cp -r "$run_dir"/* "$scan_dir"/
           fi
