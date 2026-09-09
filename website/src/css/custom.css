@@ -1,0 +1,30 @@
+/* Minimal theming: keep Docusaurus defaults, just set the accent colour and
+   make code blocks a little denser. */
+:root {
+  --ifm-color-primary: #1d6fa5;
+  --ifm-color-primary-dark: #1a648e;
+  --ifm-color-primary-darker: #175a82;
+  --ifm-color-primary-darkest: #124a6b;
+  --ifm-color-primary-light: #2a82bd;
+  --ifm-color-primary-lighter: #3690cc;
+  --ifm-color-primary-lightest: #55a5d9;
+  --ifm-code-font-size: 92%;
+}
+
+[data-theme='dark'] {
+  --ifm-color-primary: #6bb8e6;
+  --ifm-color-primary-dark: #4aa8e0;
+  --ifm-color-primary-darker: #3aa0dd;
+  --ifm-color-primary-darkest: #1f87c6;
+  --ifm-color-primary-light: #8cc8ec;
+  --ifm-color-primary-lighter: #9dd0ef;
+  --ifm-color-primary-lightest: #c0e0f6;
+}
+
+/* Wide tables (the harness/OS matrix, the env-var reference) scroll instead of
+   overflowing the page. */
+.markdown table {
+  display: block;
+  overflow-x: auto;
+  max-width: 100%;
+}

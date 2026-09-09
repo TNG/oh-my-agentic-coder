@@ -33,12 +33,25 @@ go build -trimpath -ldflags "-s -w -X main.Version=0.1.0-local" -o omac ./cmd/om
 ./omac version   # -> omac 0.1.0-local
 ```
 
-For full multi-platform artifacts (`.deb`, `.pkg.tar.zst`, checksums), use GoReleaser (`goreleaser release --clean --snapshot --skip=publish`). See [`.goreleaser.yaml`](../../.goreleaser.yaml).
+For full multi-platform artifacts (`.deb`, `.pkg.tar.zst`, checksums), use GoReleaser (`goreleaser release --clean --snapshot --skip=publish`). See [`.goreleaser.yaml`](https://github.com/TNG/oh-my-agentic-coder/blob/main/.goreleaser.yaml).
+
+## Documentation site
+
+This directory is published at
+[tng.github.io/oh-my-agentic-coder](https://tng.github.io/oh-my-agentic-coder/) by
+the Docusaurus project in `website/`, which reads the markdown from `docs/` in
+place — nothing is copied, so every page stays readable as a plain file on GitHub.
+
+Deployment is automatic: merging a PR that touches `docs/` or `website/` pushes
+to `main`, and that push builds and deploys the site. There is no manual step.
+The same workflow builds (but never deploys) on every PR, so a dead link or an
+MDX parse error fails your PR rather than the live site — run `npm ci && npm run
+build` in `website/` to see it before pushing.
 
 ## Releases
 
 Pushing a git tag such as `v1.2.3` starts the release workflow
-([`.github/workflows/release.yml`](../../.github/workflows/release.yml)), which
+([`.github/workflows/release.yml`](https://github.com/TNG/oh-my-agentic-coder/blob/main/.github/workflows/release.yml)), which
 builds the binaries and publishes them.
 
 ### Tag format

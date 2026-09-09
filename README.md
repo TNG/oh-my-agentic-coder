@@ -36,10 +36,12 @@ Windows is supported only via WSL2 (Ubuntu 24.04).
 
 ## Documentation
 
-To get started, read the 
-[quick-start.md](https://github.com/TNG/oh-my-agentic-coder/tree/main/docs/getting-started/quick-start.md).
-Further information on the tool and usage instructions can be found in the 
-[docs directory](https://github.com/TNG/oh-my-agentic-coder/tree/main/docs).
+The full documentation is published at
+[tng.github.io/oh-my-agentic-coder](https://tng.github.io/oh-my-agentic-coder/).
+To get started, read the
+[quick start](https://tng.github.io/oh-my-agentic-coder/getting-started/quick-start).
+The same pages are also readable as plain markdown in the
+[docs directory](./docs).
 
 ## Reporting bugs
 

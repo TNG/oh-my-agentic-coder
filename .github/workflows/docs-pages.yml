@@ -1,0 +1,89 @@
+# Documentation site (Docusaurus over the repo's docs/ directory) → GitHub Pages.
+#
+# The site updates by itself. Merging a PR that touches docs/ or website/ is a
+# push to main, and that push builds and deploys — there is nothing to run by
+# hand and no separate release step. Give it the couple of minutes the workflow
+# takes and the change is live at https://tng.github.io/oh-my-agentic-coder/.
+#
+# The other two triggers do not change that:
+#   pull_request      — builds, never deploys. A dead link or an MDX parse error
+#                       fails the PR instead of reaching the published site.
+#   workflow_dispatch — manual fallback for the rare case where main is correct
+#                       but the site is not (a deploy that failed, say). Run it
+#                       on main to redeploy. Running it on another branch
+#                       publishes that branch to the live URL, so it also needs
+#                       the branch allowed under Settings → Environments →
+#                       github-pages → deployment branches.
+name: docs-pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/**'
+      - 'website/**'
+      - '.github/workflows/docs-pages.yml'
+  pull_request:
+    paths:
+      - 'docs/**'
+      - 'website/**'
+      - '.github/workflows/docs-pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build site
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # showLastUpdateTime reads git history for each page.
+          fetch-depth: 0
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+
+      - name: Install dependencies
+        working-directory: website
+        run: npm ci
+
+      - name: Build
+        working-directory: website
+        run: npm run build
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: website/build
+
+  deploy:
+    name: Deploy to Pages
+    # Never on pull_request: a PR from a fork must not be able to publish.
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      # page_url is an output of the actions/deploy-pages step below (id:
+      # deployment) — the action reports the URL it published to, and naming it
+      # here is what makes GitHub show that link on the run and in Environments.
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4
