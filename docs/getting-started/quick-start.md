@@ -47,7 +47,7 @@ sudo dnf install bubblewrap zenity libnotify libsecret
 
 ### WSL2 (Ubuntu)
 
-Update your WSL2 if you encounter kernel problems from a Windows PowerShell via `wsl --update` (create a backup before).
+Update your WSL2 if you encounter kernel problems (omac needs Landlock ABI >= 4, i.e. a Linux kernel 6.7 or newer, for kernel-enforced network filtering) from a Windows PowerShell via `wsl --update` (create a backup before).
 Afterward, you should run `sudo apt-get update && sudo apt-get upgrade -y` from your WSL terminal.
 
 WSL2 does not run a keychain daemon by default, so the secret storage setup needs extra steps compared to native Linux.
