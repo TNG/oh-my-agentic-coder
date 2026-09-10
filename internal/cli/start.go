@@ -1274,7 +1274,7 @@ func startAutoRegisterWorkdirSkills(env *Env, harness config.Harness, reg *regis
 			// the findUnregisteredSkills gate below still surfaces it.
 			continue
 		}
-		if _, err := startAutoRegisterOne(env.Workdir, ent); err != nil {
+		if _, err := startAutoRegisterOne(env.Workdir, harness, ent); err != nil {
 			errs = append(errs, fmt.Sprintf("%s: %v", ent.Name, err))
 			continue
 		}
@@ -1351,7 +1351,7 @@ func secretRequired(m *config.Meta, name string) bool {
 
 // startAutoRegisterOne writes a registry entry for a discovered
 // workdir-local skill without prompting, mirroring serve.go's autoRegister.
-func startAutoRegisterOne(workdir string, ent skillsource.Entry) (*registry.Entry, error) {
+func startAutoRegisterOne(workdir string, harness config.Harness, ent skillsource.Entry) (*registry.Entry, error) {
 	bundle, err := config.BundleHash(ent.Dir)
 	if err != nil {
 		return nil, err
@@ -1374,8 +1374,11 @@ func startAutoRegisterOne(workdir string, ent skillsource.Entry) (*registry.Entr
 		if rel, rerr := filepath.Rel(workdir, ent.Dir); rerr == nil {
 			stored = rel
 		}
+		// Harness-keyed: a legacy (Harness "") Upsert keys by name only
+		// and would clobber another harness's entry of the same name.
 		reg.Upsert(registry.Entry{
 			Name:                ent.Name,
+			Harness:             harness.Name,
 			SkillDir:            stored,
 			BundleHash:          bundle,
 			RegisteredAt:        time.Now().UTC(),
@@ -1384,7 +1387,7 @@ func startAutoRegisterOne(workdir string, ent skillsource.Entry) (*registry.Entr
 		if err := registry.Save(workdir, reg); err != nil {
 			return err
 		}
-		e, _ := reg.Find(ent.Name)
+		e, _ := reg.FindForHarness(ent.Name, harness.Name)
 		out = e
 		return nil
 	})
