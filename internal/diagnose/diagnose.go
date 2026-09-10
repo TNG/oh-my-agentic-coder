@@ -29,6 +29,24 @@ type Decision struct {
 	// | hard-deny | prompt | learned | dns | unavailable | default. Treated
 	// as an opaque contract string.
 	Source string
+	// WaitedMS is how long an interactive prompt was open before the user
+	// answered (prompt-sourced decisions only). A large value on an allowed
+	// decision means the connection was held that long, so any client with
+	// a shorter timeout had already failed — the decision says "allowed",
+	// the tool saw a timeout. See #257.
+	WaitedMS int64
+}
+
+// AbandonedPrompt is a network prompt that was raised but never resolved:
+// the requesting tool stopped waiting (its own HTTP timeout is shorter than
+// the time it takes to answer a dialog) or the run ended first. No Decision
+// is ever produced for such a request, which is exactly why it has to be
+// carried separately — otherwise the run reads as "nothing was blocked".
+type AbandonedPrompt struct {
+	Host string `json:"host"`
+	Port int    `json:"port,omitempty"`
+	// WaitedMS is how long the prompt had been open when it was abandoned.
+	WaitedMS int64 `json:"waited_ms,omitempty"`
 }
 
 // Policy is the effective network policy in force, decoupled from
@@ -95,11 +113,17 @@ type Report struct {
 	Total   int           `json:"total"`
 	Denied  int           `json:"denied"`
 	Blocked []BlockedHost `json:"blocked,omitempty"`
-	Hints   []Hint        `json:"hints,omitempty"`
+	// Abandoned lists prompts that were raised but never answered in time
+	// to matter. They are not Decisions — no verdict exists — so they are
+	// reported on their own axis.
+	Abandoned []AbandonedPrompt `json:"abandoned,omitempty"`
+	Hints     []Hint            `json:"hints,omitempty"`
 }
 
 // Build analyzes decisions against the policy and returns a full Report.
-func Build(p Policy, decisions []Decision, match DomainMatcher) Report {
+// abandoned may be empty; when it is not, it suppresses the
+// "nothing was blocked" note, because something concrete did go wrong.
+func Build(p Policy, decisions []Decision, abandoned []AbandonedPrompt, match DomainMatcher) Report {
 	denied := 0
 	for _, d := range decisions {
 		if !d.Allowed {
@@ -107,10 +131,11 @@ func Build(p Policy, decisions []Decision, match DomainMatcher) Report {
 		}
 	}
 	return Report{
-		Total:   len(decisions),
-		Denied:  denied,
-		Blocked: Blocked(decisions),
-		Hints:   Analyze(p, decisions, match),
+		Total:     len(decisions),
+		Denied:    denied,
+		Blocked:   Blocked(decisions),
+		Abandoned: abandoned,
+		Hints:     Analyze(p, decisions, abandoned, match),
 	}
 }
 
@@ -142,7 +167,7 @@ func Blocked(decisions []Decision) []BlockedHost {
 
 // Analyze correlates observed decisions against the policy and returns
 // actionable hints, warnings before informational notes.
-func Analyze(p Policy, decisions []Decision, match DomainMatcher) []Hint {
+func Analyze(p Policy, decisions []Decision, abandoned []AbandonedPrompt, match DomainMatcher) []Hint {
 	if match == nil {
 		match = func(string, []string) bool { return false }
 	}
@@ -162,10 +187,12 @@ func Analyze(p Policy, decisions []Decision, match DomainMatcher) []Hint {
 		hints = append(hints, blockedHostHint(p, b, match))
 	}
 
+	hints = append(hints, abandonedPromptHints(abandoned)...)
+	hints = append(hints, slowPromptHints(decisions)...)
 	hints = append(hints, deadAllowRuleHints(p, decisions, match)...)
 	hints = append(hints, overBroadAllowHints(p)...)
 	hints = append(hints, sourceHints(decisions)...)
-	hints = append(hints, invisibleFailureHint(p, decisions)...)
+	hints = append(hints, invisibleFailureHint(p, decisions, abandoned)...)
 	hints = append(hints, environmentHints(p)...)
 
 	// Problems before advisories (stable) so -v and --json list the
@@ -334,8 +361,14 @@ func environmentHints(p Policy) []Hint {
 // filesystem/socket or loopback access denial. It fires only when nothing was
 // blocked — so it never competes with a concrete blocked-host finding — and
 // steers toward the narrowest fix rather than widening the network policy.
-func invisibleFailureHint(p Policy, decisions []Decision) []Hint {
+func invisibleFailureHint(p Policy, decisions []Decision, abandoned []AbandonedPrompt) []Hint {
 	if p.Mode != "filtered" {
+		return nil
+	}
+	if len(abandoned) > 0 || len(slowPrompts(decisions)) > 0 {
+		// An abandoned or late-answered prompt IS the concrete finding, and
+		// claiming "nothing was blocked" alongside it is the misreport #257
+		// is about.
 		return nil
 	}
 	for _, d := range decisions {
@@ -353,6 +386,164 @@ func invisibleFailureHint(p Policy, decisions []Decision) []Hint {
 			"Either way, prefer the narrowest grant; do not widen the network policy.",
 		},
 	}}
+}
+
+// maxPromptHostsShown caps how many hosts an abandoned/late-prompt hint
+// enumerates, mirroring maxBlockedShown in the renderer. Under --run all the
+// raw entry count spans the whole persistent log, so without aggregation a
+// single noisy host could fill the focused view.
+const maxPromptHostsShown = 8
+
+// abandonedPromptHints explains a prompt nobody answered in time. This is
+// the failure that otherwise leaves no trace at all: the tool gave up before
+// a verdict existed, so no decision was ever recorded and the report would
+// have said "nothing was blocked" (#257).
+//
+// The remedy is to pre-allow the host, not to answer faster: the requesting
+// tool's timeout is its own, and some are far shorter than a human dialog
+// round-trip.
+func abandonedPromptHints(abandoned []AbandonedPrompt) []Hint {
+	if len(abandoned) == 0 {
+		return nil
+	}
+	// Aggregate per host:port — one line per host, not per occurrence.
+	type agg struct {
+		key    string
+		count  int
+		maxWMS int64
+	}
+	idx := map[string]*agg{}
+	var order []string
+	for _, a := range abandoned {
+		k := hostPort(a.Host, a.Port)
+		e := idx[k]
+		if e == nil {
+			e = &agg{key: k}
+			idx[k] = e
+			order = append(order, k)
+		}
+		e.count++
+		if a.WaitedMS > e.maxWMS {
+			e.maxWMS = a.WaitedMS
+		}
+	}
+	sort.SliceStable(order, func(i, j int) bool { return idx[order[i]].count > idx[order[j]].count })
+
+	shown := order
+	if len(shown) > maxPromptHostsShown {
+		shown = shown[:maxPromptHostsShown]
+	}
+	detail := make([]string, 0, len(shown)+3)
+	for _, k := range shown {
+		e := idx[k]
+		times := ""
+		if e.count > 1 {
+			times = fmt.Sprintf(" ×%d", e.count)
+		}
+		detail = append(detail, fmt.Sprintf("%s%s gave up after %s — the prompt was still open when the request was abandoned.",
+			e.key, times, waitedFor(e.maxWMS)))
+	}
+	if n := len(order) - len(shown); n > 0 {
+		detail = append(detail, fmt.Sprintf("… and %d more host(s).", n))
+	}
+	detail = append(detail,
+		"The tool's own HTTP timeout is shorter than the time it took to answer the dialog, so allowing it afterwards came too late — the fetch had already failed, silently.",
+		"Fix: add the host to network.allow_domain so no prompt is raised. Answering faster is not a reliable remedy.")
+	return []Hint{{
+		Kind: KindProblem,
+		Title: fmt.Sprintf("%d network prompt(s) across %d host(s) were raised but never answered in time — the requesting tool stopped waiting",
+			len(abandoned), len(order)),
+		Detail: detail,
+	}}
+}
+
+// promptLatencyThresholdMS is the dialog-open time above which an allowed
+// prompt decision is reported as a likely silent failure. 3s is the shortest
+// client budget observed in the wild (the opencode Skainet plugin's model
+// discovery), so an answer slower than this can already have missed it.
+const promptLatencyThresholdMS = 3000
+
+// slowPrompts returns prompt-sourced decisions the user answered so slowly
+// that a short-timeout client had probably already given up.
+func slowPrompts(decisions []Decision) []Decision {
+	var out []Decision
+	for _, d := range decisions {
+		if d.Source == "prompt" && d.WaitedMS >= promptLatencyThresholdMS {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
+// slowPromptHints covers the other half of #257: the prompt WAS answered, so
+// a decision exists and nothing looks wrong, but the answer landed after the
+// requesting tool's own timeout had expired. The tool saw a failure; the
+// audit trail says "allowed". Only the wait time reveals it.
+func slowPromptHints(decisions []Decision) []Hint {
+	slow := slowPrompts(decisions)
+	if len(slow) == 0 {
+		return nil
+	}
+	type agg struct {
+		key    string
+		count  int
+		maxWMS int64
+	}
+	idx := map[string]*agg{}
+	var order []string
+	for _, d := range slow {
+		k := hostPort(d.Host, d.Port)
+		e := idx[k]
+		if e == nil {
+			e = &agg{key: k}
+			idx[k] = e
+			order = append(order, k)
+		}
+		e.count++
+		if d.WaitedMS > e.maxWMS {
+			e.maxWMS = d.WaitedMS
+		}
+	}
+	sort.SliceStable(order, func(i, j int) bool { return idx[order[i]].maxWMS > idx[order[j]].maxWMS })
+
+	shown := order
+	if len(shown) > maxPromptHostsShown {
+		shown = shown[:maxPromptHostsShown]
+	}
+	detail := make([]string, 0, len(shown)+3)
+	for _, k := range shown {
+		e := idx[k]
+		detail = append(detail, fmt.Sprintf("%s was held for %s before the prompt was answered.", e.key, waitedFor(e.maxWMS)))
+	}
+	if n := len(order) - len(shown); n > 0 {
+		detail = append(detail, fmt.Sprintf("… and %d more host(s).", n))
+	}
+	detail = append(detail,
+		"The connection is held while the dialog is open, so a tool whose own timeout is shorter than that already failed — the decision reads as allowed, the tool saw a timeout.",
+		"Fix: add these hosts to network.allow_domain so no prompt is raised.")
+	return []Hint{{
+		Kind: KindProblem,
+		Title: fmt.Sprintf("%d prompt(s) were answered after %s or more — a short-timeout tool may have failed anyway",
+			len(slow), waitedFor(promptLatencyThresholdMS)),
+		Detail: detail,
+	}}
+}
+
+// hostPort renders host:port, omitting a zero port.
+func hostPort(host string, port int) string {
+	if port == 0 {
+		return host
+	}
+	return fmt.Sprintf("%s:%d", host, port)
+}
+
+// waitedFor renders an abandoned prompt's open duration, in the unit that
+// makes the comparison against a client timeout obvious.
+func waitedFor(ms int64) string {
+	if ms < 1000 {
+		return fmt.Sprintf("%dms", ms)
+	}
+	return fmt.Sprintf("%.1fs", float64(ms)/1000)
 }
 
 func anyDeniedSource(decisions []Decision, source string) bool {

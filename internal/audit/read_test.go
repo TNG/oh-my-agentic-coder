@@ -62,7 +62,7 @@ func TestReadLogRoundTripsWrittenTrail(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	a.Emit(NetDecision("a.example", 443, false, "", "blocklist", false))
+	a.Emit(NetDecision("a.example", 443, false, "", "blocklist", false, 0))
 	if err := a.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
