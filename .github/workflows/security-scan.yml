@@ -1,17 +1,13 @@
 # Security scan: runs `strix` (an LLM-driven pentest agent) against this
-# repo. Scheduled weekly and available on demand (including as a manual
-# pre-release check before cutting a release tag).
+# repo. Scheduled weekly, and available on demand as a pre-release check.
 #
-# Disclosure model: this workflow's own job log and step summary NEVER
-# contain finding titles, descriptions, or PoCs -- strix's full output is
-# redirected straight to a file and never printed to the console, because
-# this is a public repo and both the job log and (if used) upload-artifact
-# would be publicly downloadable. Full reports are pushed to a private
-# companion repo instead, and only aggregate severity/dedupe counts reach
-# the public step summary. A human reviews the private repo and decides
-# what -- if anything -- becomes a public GitHub issue. The private artifact
-# repo is named by the SECURITY_ARCHIVE_REPO secret (kept out of public
-# source); see it for the artifact history.
+# Disclosure model: this is a public repo, so the job log and the step summary
+# never carry finding titles, descriptions or PoCs. strix's output goes
+# straight to a file and is pushed to a private companion repo, named by the
+# SECURITY_ARCHIVE_REPO secret so the name stays out of public source. Only
+# numbers about the run -- exit code, duration, log size, finding count -- and
+# aggregate severity/dedupe counts reach the public summary. A human reads the
+# private repo and decides what, if anything, becomes a public GitHub issue.
 name: Security Scan
 
 on:
@@ -28,10 +24,14 @@ on:
         type: choice
         options: [quick, standard, deep]
         default: deep
-      model:
-        description: 'Model id for the strix agent, for THIS RUN ONLY. Set empty to use each harness''s pin in internal/e2e/versions.go. Whatever is resolved here still goes through the gateway probe, so the -TEE variant flip and the fallback chain apply.'
+      scan_budget_minutes:
+        description: 'Minutes strix itself may run before it is stopped. Must stay below the job''s timeout-minutes, so the run still has time to triage and archive what it found. Raise it for a scan you want to reach the end; lower it to cap spend.'
         type: string
-        default: 'deepseek-ai/DeepSeek-V4-Flash'
+        default: '300'
+      model:
+        description: 'Model id for the strix agent, for THIS RUN ONLY. Leave it as it comes to use the scan''s own pin (the E2E_MODEL default below — keep the two in step). Whatever is resolved here still goes through the gateway probe, so the -TEE variant flip and the fallback chain apply.'
+        type: string
+        default: 'zai-org/GLM-5.3'
 
 permissions:
   contents: read
@@ -45,21 +45,78 @@ jobs:
   scan:
     name: Strix security scan
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    # Sized above the scan budget below, not the other way round: strix is
+    # stopped by its own `timeout` with time to spare, so this ceiling should
+    # never be what ends the job. When it is, GitHub cancels the job mid-step
+    # and everything after it either skips or reads outputs that were never
+    # written. 350 is just under the 360-minute hosted-runner ceiling.
+    timeout-minutes: 350
     env:
       # SKAINET_INTERNAL is the same secret e2e.yml uses for the model
       # provider base URL — reused here rather than duplicating the URL.
       LLM_API_BASE: ${{ secrets.SKAINET_INTERNAL }}
       LLM_API_KEY: ${{ secrets.SKAINET_TOKEN }}
       GH_TOKEN: ${{ github.token }}
-      # Read by scripts/probe-model.sh below; empty on the scheduled run, so
-      # that run starts from the committed pin.
-      E2E_MODEL: ${{ inputs.model }}
+      # Read by scripts/probe-model.sh below. The scan pins its own model
+      # rather than following opencode's harness pin in
+      # internal/e2e/versions.go, which tracks what the *harnesses* are tested
+      # against: the model doing the scanning is chosen here. The same literal
+      # is the `model` input's default above, so the dispatch form shows what
+      # is about to run -- change both together.
+      E2E_MODEL: ${{ inputs.model || 'zai-org/GLM-5.3' }}
     steps:
       - name: Checkout target repo
         uses: actions/checkout@v4
         with:
           path: target
+
+      - name: Preflight archive credential
+        id: archive
+        # The point of this job is the report it pushes to the private archive
+        # repo, so a credential that cannot write there makes hours of scanning
+        # wasted compute. Check that in the first ten seconds, and say what to
+        # grant.
+        #
+        # GitHub authorizes the ref advertisement, so asking for the
+        # git-receive-pack one is a read-only probe of *write* access: 200
+        # writable, 403 valid but read-only, 401 expired or malformed, 404 not
+        # visible to this token. `git ls-remote` cannot tell those apart, since
+        # it only ever exercises upload-pack.
+        env:
+          SECURITY_SCAN_PAT: ${{ secrets.SECURITY_SCAN_PAT }}
+          ARCHIVE_REPO: ${{ secrets.SECURITY_ARCHIVE_REPO }}
+        run: |
+          set -euo pipefail
+          if [ -z "${ARCHIVE_REPO:-}" ] || [ -z "${SECURITY_SCAN_PAT:-}" ]; then
+            echo "::warning::SECURITY_ARCHIVE_REPO or SECURITY_SCAN_PAT secret missing — the scan will run but its report cannot be archived"
+            exit 0
+          fi
+          # -u keeps the token out of the URL, and so out of anything curl
+          # prints. Only the status code is captured.
+          code=$(curl -sS -o /dev/null -w '%{http_code}' \
+            -u "x-access-token:${SECURITY_SCAN_PAT}" \
+            "https://github.com/${ARCHIVE_REPO}.git/info/refs?service=git-receive-pack" || echo 000)
+          case "$code" in
+            200)
+              echo "archive repo is writable"
+              ;;
+            403)
+              echo "::error title=Archive repo is read-only::SECURITY_SCAN_PAT can read the private archive repo but not write it, so this scan's report has nowhere to go. Grant the token Contents: read and write on the archive repo (a fine-grained PAT also has to list that repo explicitly), then re-run. Same secret, same symptom in e2e-smoke.yml's Record & report job."
+              exit 1
+              ;;
+            401)
+              echo "::error title=Archive credential rejected::SECURITY_SCAN_PAT was refused by GitHub (401) -- it is expired or malformed. Rotate it and re-run."
+              exit 1
+              ;;
+            404)
+              echo "::error title=Archive repo not reachable::SECURITY_SCAN_PAT cannot see the repo named by SECURITY_ARCHIVE_REPO (404). Either the repo name is wrong or the token has no access to it at all."
+              exit 1
+              ;;
+            *)
+              echo "::error title=Archive preflight inconclusive::Probing the archive repo returned HTTP ${code}. Not starting a multi-hour scan whose report may be undeliverable."
+              exit 1
+              ;;
+          esac
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -68,41 +125,34 @@ jobs:
 
       - name: Install strix
         run: |
-          # No --user: actions/setup-python's toolcached interpreter is
-          # already user-writable and its bin/ is on PATH, so --user risks
-          # installing the console script somewhere PATH doesn't cover.
+          # No --user: actions/setup-python's interpreter is already
+          # user-writable and its bin/ is on PATH, so --user risks installing
+          # the console script somewhere PATH doesn't cover.
           #
-          # openai==2.44.0 pinned deliberately: strix-agent==1.0.4's own
-          # constraints let pip resolve openai==2.45.0, which changes the
-          # response shape openai-agents==0.14.6 parses just enough that
-          # `Usage(input_tokens_details=...)` fails pydantic validation
-          # (missing `cache_write_tokens`) against Skainet/litellm's
-          # translated response -- confirmed by reproducing locally and
-          # bisecting to this one package. Revisit this pin whenever
-          # strix-agent/openai-agents get bumped upstream.
+          # openai is pinned because strix-agent==1.0.4's own constraints also
+          # allow openai==2.45.0, whose response shape fails pydantic
+          # validation in openai-agents==0.14.6 (`Usage.input_tokens_details`
+          # without `cache_write_tokens`) against Skainet/litellm's translated
+          # response. Revisit when either package is bumped.
           pip install strix-agent==1.0.4 openai==2.44.0
           # Safe to print -- version string only, no scan content.
           strix --version
 
       - name: Start context-compaction proxy
         id: proxy
-        # strix resends the whole conversation on every request and has no
-        # context compaction, so a long scan overflows the model window
-        # and every request then 422s with
-        # context_length_exceeded -- silently truncating results (a partial run
-        # dir survives, so the scan can look finished). This local proxy
-        # compacts requests in flight (summarising the oldest exchanges); strix
-        # is repointed at it below. See
+        # strix resends the whole conversation on every request and does not
+        # compact context, so a long scan overflows the model window and every
+        # later request 422s with context_length_exceeded -- leaving a partial
+        # run directory that still looks finished. This local proxy summarises
+        # the oldest exchanges in flight; strix is pointed at it below. See
         # target/.github/scripts/security_scan/skainet_proxy.py.
         env:
           SKAINET_PROXY_PORT: '8899'
         run: |
           set -euo pipefail
-          # Split the gateway base into host + path suffix so the proxy forwards
-          # to the host and preserves whatever chat path strix used (with or
-          # without a /v1 prefix). LLM_API_BASE here is still the job-level
-          # gateway URL; the scan step below points strix at the proxy instead.
-          # Values are secret-derived -- never echoed.
+          # Split the gateway base into host + path suffix so the proxy
+          # forwards to the host and keeps whatever chat path strix uses (with
+          # or without a /v1 prefix). Secret-derived, so never echoed.
           host=$(printf '%s' "$LLM_API_BASE" | sed -E 's#(https?://[^/]+).*#\1#')
           suffix=$(printf '%s' "$LLM_API_BASE" | sed -E 's#https?://[^/]+##; s#/$##')
           nohup env \
@@ -128,13 +178,12 @@ jobs:
         id: model
         run: |
           set -euo pipefail
-          # This workflow's own base/-TEE probe used to live here inline. It is
-          # now target/scripts/probe-model.sh, shared with every other LLM
-          # workflow (#184): same bidirectional variant flip, plus a GET /models
-          # listing to order candidates and a configured fallback family. The
-          # resolver reads versions.go relative to itself, so the target/
-          # checkout path needs no extra wiring. Model names aren't secret; the
-          # bearer in the header is and is never printed.
+          # probe-model.sh is shared with the other LLM workflows (#184): it
+          # flips the -TEE variant either way, orders candidates against a GET
+          # /models listing, and falls back to a configured family. It reads
+          # versions.go relative to itself, so the target/ checkout needs no
+          # extra wiring. Model names aren't secret; the bearer in the header
+          # is, and is never printed.
           chosen=$(target/scripts/probe-model.sh opencode --github-output)
           echo "selected model: ${chosen}"
           echo "strix_llm=openai/${chosen}" >> "$GITHUB_OUTPUT"
@@ -157,29 +206,99 @@ jobs:
           set -o pipefail
           run_label="$(date -u +%Y%m%d-%H%M%S)"
           echo "run_label=$run_label" >> "$GITHUB_OUTPUT"
-          # --target, not --mount: the PyPI release (strix-agent, pinned
-          # below) doesn't have --mount or --max-budget-usd -- those only
-          # exist in unreleased commits ahead of the 1.0.4 tag. --target
-          # copies the checkout into the sandbox rather than a read-only
-          # bind-mount; no cost cap beyond this job's timeout-minutes.
-          #
-          # Redirected to a file, NEVER printed to this (public) job log --
-          # strix's console output includes full vulnerability detail and
-          # working PoCs once findings surface.
-          strix -n --target "$PWD/target" \
-            --scan-mode "${{ inputs.scan_mode || 'deep' }}" \
-            > strix_scan.log 2>&1 || true
 
-          # strix_runs/ lands relative to strix's OWN invocation cwd (this
-          # job's default workspace root), as a sibling of target/ -- NOT
-          # nested inside target/strix_runs/, regardless of --target vs.
-          # --mount. Confirmed against a real run's own reported Output
-          # path: .../oh-my-agentic-coder/strix_runs/target_<id>.
+          # Stage a symlink-free copy of the checkout, and scan THAT: strix's
+          # --target copy walks the tree with O_NOFOLLOW and aborts on the
+          # first symlink it meets (openai-agents,
+          # agents/sandbox/entries/artifacts.py). Its exception carries only
+          # the target path, not the reason or the file, so it surfaces as a
+          # bare "failed to read local dir artifact" -- one symlink anywhere in
+          # the repo kills the scan before its first agent turn.
           #
-          # nullglob + array, not `ls glob | head`: under bash -e + pipefail
-          # (this shell's default), a non-matching glob inside `$(...)`
-          # aborts the script with ls's own exit code, skipping the
-          # friendly ::error:: below entirely.
+          # Dereference rather than delete: CLAUDE.md is a symlink to AGENTS.md
+          # so that tools looking for either name find the same file, the
+          # scanner should see the content those tools read, and the next
+          # symlink somebody commits will not silently kill the scan either.
+          #
+          # staging/target keeps the basename, because strix names its run
+          # directory after it (strix_runs/<basename>_<id>).
+          #
+          # Unresolvable links are rejected before the copy, because cp -L
+          # fails on one with a message about the copy rather than the repo.
+          # `find -type l` deliberately, not `-xtype l`: -xtype stats the
+          # target, so a symlink loop makes find exit non-zero having printed
+          # nothing, aborting the job with no message at all. readlink -e
+          # reports broken links and loops alike.
+          links=""
+          unresolvable=""
+          while IFS= read -r -d '' link; do
+            links="${links:+$links }${link#target/}"
+            readlink -e "$link" >/dev/null 2>&1 \
+              || unresolvable="${unresolvable:+$unresolvable }${link#target/}"
+          done < <(find target -type l -print0)
+          if [ -n "$unresolvable" ]; then
+            echo "::error title=Unresolvable symlink in the checkout::Cannot stage a symlink-free copy to scan, because these links do not resolve (broken, or a loop): $unresolvable. Fix or remove them."
+            exit 1
+          fi
+          rm -rf staging
+          mkdir -p staging
+          # -L dereferences. A symlink pointing outside the repo would pull
+          # that content into the scan, which is what the list of flattened
+          # links printed below makes visible.
+          cp -rL target staging/target
+          echo "staged a symlink-free copy of the checkout; flattened: ${links:-none}"
+
+          # --target, not --mount: the pinned PyPI release (strix-agent 1.0.4)
+          # has neither --mount nor --max-budget-usd -- both exist only in
+          # unreleased commits. --target copies the tree into the sandbox
+          # instead of bind-mounting it read-only.
+          #
+          # Output goes to a file and is NEVER printed to this (public) job
+          # log: strix's console output carries full vulnerability detail and
+          # working PoCs once findings surface.
+          #
+          # `|| rc=$?` keeps the exit code. It is not asserted on by itself --
+          # a non-zero exit from an otherwise complete scan should not discard
+          # the findings -- so the check further down combines it with whether
+          # a result was actually produced.
+          #
+          # `timeout` gives strix its own deadline, comfortably inside the
+          # job's timeout-minutes, so an overrun is an ordinary exit code and
+          # the guards, the triage and the archive below all still run. Hitting
+          # timeout-minutes instead means GitHub cancels the job: later steps
+          # are skipped or read outputs this step never wrote, and the run
+          # directory is destroyed with the runner.
+          #
+          # -s INT rather than the default TERM: SIGINT is the signal an
+          # interactive strix already handles, so it gets a chance to flush its
+          # run directory, and -k gives it two minutes before SIGKILL. 124
+          # (killed at the deadline) and 130 (exited on the SIGINT) both mean a
+          # partial scan, not a failure.
+          budget="${{ inputs.scan_budget_minutes || '300' }}"
+          case "$budget" in
+            ''|*[!0-9]*) echo "::error::scan_budget_minutes must be a whole number of minutes, got '$budget'"; exit 1 ;;
+          esac
+          started=$SECONDS
+          rc=0
+          timeout -s INT -k 120s "${budget}m" \
+            strix -n --target "$PWD/staging/target" \
+            --scan-mode "${{ inputs.scan_mode || 'deep' }}" \
+            > strix_scan.log 2>&1 || rc=$?
+          elapsed=$(( SECONDS - started ))
+          partial=false
+          if [ "$rc" -eq 124 ] || [ "$rc" -eq 130 ]; then
+            partial=true
+            echo "::warning title=Scan stopped at its budget::strix was still working when its ${budget}-minute budget ran out, so this scan is PARTIAL -- it covers only what it had reached. Whatever it did find is archived and triaged as usual. Raise scan_budget_minutes (and timeout-minutes with it) for a run that reaches the end."
+          fi
+          echo "partial=$partial" >> "$GITHUB_OUTPUT"
+
+          # strix_runs/ lands relative to strix's own cwd (this job's
+          # workspace root), as a sibling of target/ and staging/, not inside
+          # the scanned tree.
+          #
+          # nullglob + array, not `ls glob | head`: the step's shell is
+          # `bash -e`, so a non-matching glob inside `$(...)` aborts the script
+          # with ls's own exit code, skipping the friendly ::error:: below.
           shopt -s nullglob
           run_dirs=(strix_runs/*/)
           shopt -u nullglob
@@ -189,20 +308,64 @@ jobs:
           fi
           echo "run_dir=${run_dirs[-1]}" >> "$GITHUB_OUTPUT"
 
-          # The proxy in front should keep every request under the model window.
-          # If it ever fails to, the scan overflows and every subsequent request
-          # 422s with context_length_exceeded -- but a partial run dir still
-          # exists, so WITHOUT this guard the truncated scan would be reported as
-          # successful and triaged as if complete. Fail loudly instead. grep -q:
-          # never print the log, it can contain scan content on this public
-          # runner (the full log is in the private artifact repo).
+          # The proxy should keep every request under the model window. If it
+          # ever fails to, the scan overflows and leaves a partial run
+          # directory that would otherwise be triaged as a complete scan, so
+          # fail loudly. grep -q because the log is never printed here -- it
+          # can contain scan content.
           if grep -q "context_length_exceeded" strix_scan.log; then
             echo "::error::strix hit context_length_exceeded -- scan truncated despite compaction; inspect proxy.log / strix_scan.log in the private artifact repo. Failing so a partial scan is not reported as complete."
             exit 1
           fi
 
+          # Duration and log size are counts, not content, so they are safe on
+          # the public summary -- and they are the cheapest way to spot a scan
+          # that did not really happen: a `deep` scan of this repo takes hours
+          # and writes megabytes, so two minutes and a few kilobytes means
+          # something went wrong even with every guard above satisfied.
+          log_bytes=$(wc -c < strix_scan.log)
+
+          # Count findings off the log's own report banners rather than the
+          # findings file: a scan stopped at its budget often has no
+          # vulnerabilities.json, which strix writes at the end, while the log
+          # already holds every finding it reported. The count is a number, not
+          # a finding, and it is what tells a human whether a partial run is
+          # worth reading -- "PARTIAL, 22 findings in the log" says something
+          # very different from "FAILED".
+          vuln_count=$(grep -cE '^╭─ VULN-[0-9]+' strix_scan.log || true)
+          have_vulns=false
+          [ -f "${run_dirs[-1]}vulnerabilities.json" ] && have_vulns=true
+          echo "vuln_count=$vuln_count" >> "$GITHUB_OUTPUT"
+          echo "have_vulns=$have_vulns" >> "$GITHUB_OUTPUT"
+          echo "exit_code=$rc" >> "$GITHUB_OUTPUT"
+          echo "elapsed=$elapsed" >> "$GITHUB_OUTPUT"
+          echo "log_bytes=$log_bytes" >> "$GITHUB_OUTPUT"
+          echo "strix exited $rc after ${elapsed}s, wrote ${log_bytes} bytes of log, reported ${vuln_count} findings"
+
+          # A non-zero exit AND no findings file means there is no evidence
+          # the scan produced a result at all -- fail, rather than triaging an
+          # empty run as a clean bill of health. A findings-free scan that
+          # exits 0 still passes (#194): that is a real result.
+          #
+          # A scan stopped at its budget is exempt when it reported findings in
+          # the log, since those are a real if incomplete result and failing
+          # here would discard hours of work over the one file strix never got
+          # to write. It still fails when it reported nothing at all, which is
+          # indistinguishable from a scan that never got going.
+          if [ "$rc" -ne 0 ] && [ "$have_vulns" != true ]; then
+            if [ "$partial" = true ] && [ "$vuln_count" -gt 0 ]; then
+              echo "::notice title=Partial scan kept::stopped at its budget with no vulnerabilities.json, but ${vuln_count} findings are in the log -- archiving as PARTIAL rather than discarding them."
+            else
+              echo "::error::strix exited $rc after ${elapsed}s and wrote no vulnerabilities.json -- no evidence the scan produced a result, so it is not reported as a clean scan. strix_scan.log in the private artifact repo has the reason; it is never printed here because it can contain scan content."
+              exit 1
+            fi
+          fi
+
       - name: Dedupe against open issues + build triage report
-        if: steps.scan.outcome == 'success'
+        # Gated on a findings file existing, not on the scan step succeeding:
+        # a scan stopped at its budget, or one that failed a completeness
+        # guard, may still have written one.
+        if: always() && steps.scan.outputs.have_vulns == 'true'
         env:
           STRIX_LLM: ${{ steps.model.outputs.strix_llm }}
         run: |
@@ -213,11 +376,26 @@ jobs:
             --summary-out step-summary.md
 
       - name: Public summary (counts only, no exploit detail)
-        if: steps.scan.outcome == 'success'
+        # Runs whenever the scan step got far enough to publish its numbers,
+        # so a partial or failed run says so here instead of leaving a blank
+        # summary behind a red X.
+        if: always() && steps.scan.outputs.exit_code != ''
         run: |
-          cat step-summary.md >> "$GITHUB_STEP_SUMMARY"
+          if [ -f step-summary.md ]; then
+            cat step-summary.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "## Security scan: no findings file" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "strix wrote no \`vulnerabilities.json\`, so there is nothing to dedupe against open issues. It reported **${{ steps.scan.outputs.vuln_count }}** findings in its log, which is archived to the private repo." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ '${{ steps.scan.outputs.partial }}' = 'true' ]; then
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "> ⚠️ **Partial scan** — strix was stopped at its \`scan_budget_minutes\` budget while still working, so this covers only what it had reached. Findings below are real; their absence is not evidence." >> "$GITHUB_STEP_SUMMARY"
+          fi
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "Model: \`${{ steps.model.outputs.model }}\` · scan mode: \`${{ inputs.scan_mode || 'deep' }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "strix exit code \`${{ steps.scan.outputs.exit_code }}\` · ran for ${{ steps.scan.outputs.elapsed }}s · wrote ${{ steps.scan.outputs.log_bytes }} bytes of log · reported ${{ steps.scan.outputs.vuln_count }} findings. A \`deep\` scan that finishes in a couple of minutes did not really run, whatever it reports." >> "$GITHUB_STEP_SUMMARY"
           if [ '${{ steps.model.outputs.fallback }}' = 'true' ]; then
             echo "" >> "$GITHUB_STEP_SUMMARY"
             echo "> ⚠️ **Fallback model** — the intended model is not served by the gateway, so this scan's coverage is not comparable to previous ones." >> "$GITHUB_STEP_SUMMARY"
@@ -228,11 +406,15 @@ jobs:
         run: kill "$(cat proxy.pid)" 2>/dev/null || true
 
       - name: Push full report to private artifact repo
-        # Runs even when the scan step failed: strix_scan.log is the only
-        # way to debug a startup failure, and it must never be printed to
-        # this (public) job log -- the private repo is the one place it's
-        # safe to look, whether or not the scan actually produced findings.
-        if: always()
+        # Runs even when the scan step failed: strix_scan.log is the only way
+        # to debug a startup failure, and it must never be printed to this
+        # (public) job log, so the private repo is the one place it is safe to
+        # look.
+        #
+        # Skipped only when the preflight itself failed: nothing was scanned,
+        # and pushing anyway would stack a second, misleading error on the one
+        # that already said exactly what to fix.
+        if: always() && steps.archive.outcome == 'success'
         env:
           SECURITY_SCAN_PAT: ${{ secrets.SECURITY_SCAN_PAT }}
           # Repo name lives in a secret, not in this public source.
@@ -244,27 +426,70 @@ jobs:
             echo "## Security scan: report push SKIPPED (SECURITY_ARCHIVE_REPO unset)" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
+          # The preflight at the top of the job established that this
+          # credential can write the archive repo, so a failure here is
+          # something else -- a protected default branch, a token revoked
+          # mid-run. Name that, instead of leaving a bare "exit code 128"
+          # against a redacted URL for someone to guess at.
+          archive_failed() {
+            echo "::error title=Report archiving failed::The scan itself is not what failed here -- pushing its report to the private archive repo did, after the preflight had confirmed write access. Check the archive repo for a protected default branch, or a token revoked mid-run. The report for this run was NOT stored."
+            exit 1
+          }
+          trap archive_failed ERR
           dest=$(mktemp -d)
           git clone --quiet --depth 1 \
             "https://x-access-token:${SECURITY_SCAN_PAT}@github.com/${ARCHIVE_REPO}.git" \
             "$dest"
-          status="${{ steps.scan.outcome == 'success' && 'ok' || 'FAILED' }}"
-          scan_dir="$dest/scans/${{ steps.scan.outputs.run_label }}-${{ inputs.reason || 'scheduled' }}-${status}"
+          if [ "${{ steps.scan.outcome }}" = success ]; then
+            status="${{ steps.scan.outputs.partial == 'true' && 'PARTIAL' || 'ok' }}"
+          else
+            status=FAILED
+          fi
+          # run_label is written at the very top of the scan step, so it
+          # survives almost anything; the timestamp fallback keeps a path from
+          # beginning "-manual-FAILED".
+          run_label="${{ steps.scan.outputs.run_label }}"
+          scan_dir="$dest/scans/${run_label:-$(date -u +%Y%m%d-%H%M%S)}-${{ inputs.reason || 'scheduled' }}-${status}"
           mkdir -p "$scan_dir"
+
+          # Find the run directory on disk rather than trusting the scan
+          # step's output for it: run_dir reaches $GITHUB_OUTPUT only AFTER
+          # strix returns, so every way that step can end early -- a guard's
+          # exit 1, a cancellation, the runner going away -- leaves it empty
+          # while the directory itself is sitting right there. This step is the
+          # last thing between hours of scanning and an empty commit, so
+          # anything it can rediscover for itself, it should.
           run_dir="${{ steps.scan.outputs.run_dir }}"
+          if [ -z "$run_dir" ] || [ ! -d "$run_dir" ]; then
+            shopt -s nullglob
+            found=(strix_runs/*/)
+            shopt -u nullglob
+            if [ ${#found[@]} -gt 0 ]; then
+              run_dir="${found[-1]}"
+              echo "::warning title=Recovered the run directory::The scan step never published its run directory (it ended before it could), so this step found ${run_dir} on disk. Its contents are archived below; without this fallback they would have been discarded."
+            else
+              run_dir=""
+            fi
+          fi
           if [ -n "$run_dir" ] && [ -d "$run_dir" ]; then
             cp -r "$run_dir"/* "$scan_dir"/
           fi
           [ -f triage-report.md ] && cp triage-report.md "$scan_dir"/
           [ -f strix_scan.log ] && cp strix_scan.log "$scan_dir"/
           # proxy.log holds the compaction telemetry (which requests were
-          # compacted, before/after token estimates) -- useful for debugging an
-          # overflow that slipped past compaction. Safe: it logs counts, not
-          # message content.
+          # compacted, token estimates before and after), which is what
+          # explains an overflow that slipped past compaction. Safe to archive:
+          # counts, not message content.
           [ -f proxy.log ] && cp proxy.log "$scan_dir"/
           cd "$dest"
           git config user.name "strix-ci-bot"
           git config user.email "actions@users.noreply.github.com"
           git add .
+          # Nothing staged means nothing ran -- don't let `git commit`'s
+          # "nothing to commit" exit code surface as an archiving failure.
+          if git diff --cached --quiet; then
+            echo "::warning::nothing to archive for this run"
+            exit 0
+          fi
           git commit --quiet -m "scan: ${{ inputs.reason || 'scheduled' }} [$status] ($(date -u +%F))"
           git push --quiet
