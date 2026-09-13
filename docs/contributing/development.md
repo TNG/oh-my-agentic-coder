@@ -35,6 +35,28 @@ go build -trimpath -ldflags "-s -w -X main.Version=0.1.0-local" -o omac ./cmd/om
 
 For full multi-platform artifacts (`.deb`, `.pkg.tar.zst`, checksums), use GoReleaser (`goreleaser release --clean --snapshot --skip=publish`). See [`.goreleaser.yaml`](https://github.com/TNG/oh-my-agentic-coder/blob/main/.goreleaser.yaml).
 
+## Nix flake
+
+`flake.nix` packages `cmd/omac` for the systems listed in its `eachSystem`
+call. On Linux, its wrapper provides the Quick Start runtime executables:
+Bubblewrap, Zenity, and `notify-send` from libnotify. When the platform
+prerequisites change, update both this wrapper and the NixOS instructions in
+the [Quick Start](../getting-started/quick-start.md).
+
+The package version is based on the latest verified release and adds the flake
+source timestamp as an `-unstable-` suffix. When updating that release baseline,
+verify the release tag and commit first, then update the `version` expression in
+`flake.nix`. Do not label an unpinned post-release checkout as the exact release
+version. Update `flake.lock` deliberately with `nix flake update`; when Go
+dependencies change, rebuild `.#omac` and use the vendor hash Nix reports.
+
+Run these checks after a flake, dependency, or version update:
+
+```bash
+nix flake check --all-systems --no-build
+sh scripts/flake_test.sh
+```
+
 ## Documentation site
 
 This directory is published at
