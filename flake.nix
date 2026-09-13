@@ -6,20 +6,21 @@
     flake-utils.url = "github:numtide/flake-utils";
   };
 
-  outputs = { nixpkgs, flake-utils, ... }:
+  outputs = { self, nixpkgs, flake-utils, ... }:
     flake-utils.lib.eachSystem [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ] (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
+        version = "0.9.0-unstable-${self.lastModifiedDate or "19700101"}";
         omac = pkgs.buildGoModule {
           pname = "omac";
-          version = "0.1.0-dev";
+          inherit version;
           src = ./.;
 
           vendorHash = "sha256-gWqBhFQFANzF2tgpMMCIeaQEm7eSnUQxPtwcFQceh/s=";
 
           go = pkgs.go_1_25;
           subPackages = [ "cmd/omac" ];
-          ldflags = [ "-s" "-w" "-X main.Version=0.1.0-dev" ];
+          ldflags = [ "-s" "-w" "-X main.Version=${version}" ];
 
           nativeBuildInputs = [ pkgs.makeWrapper ];
           postInstall = pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
