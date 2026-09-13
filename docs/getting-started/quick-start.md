@@ -76,6 +76,47 @@ If you also develop on Windows, your Windows `PATH` is visible inside WSL, so a 
 
 ## Install
 
+### NixOS (flake)
+
+Add omac as a flake input and install its package for the current system:
+
+```nix
+{
+  inputs.omac.url = "github:TNG/oh-my-agentic-coder";
+
+  outputs = { nixpkgs, omac, ... }: {
+    nixosConfigurations.my-host = nixpkgs.lib.nixosSystem {
+      # ...
+      modules = [
+        ({ pkgs, ... }: {
+          environment.systemPackages = [
+            omac.packages.${pkgs.stdenv.hostPlatform.system}.omac
+          ];
+        })
+      ];
+    };
+  };
+}
+```
+
+The flake provides packages for `x86_64-linux`, `aarch64-linux`, and
+`aarch64-darwin`. Intel macOS is not exported because the pinned nixpkgs
+unstable release no longer supports `x86_64-darwin`.
+
+To try the latest version without adding it to your configuration, run:
+
+```bash
+nix run github:TNG/oh-my-agentic-coder -- doctor
+```
+
+On Linux, the package makes Bubblewrap, Zenity, and `notify-send` available to
+omac. You still need a running Secret Service provider in your user session
+(for example, enable `services.gnome.gnome-keyring`), at least one configured
+harness, unprivileged user namespaces, and Landlock ABI 4 or later (Linux 6.7
+or newer) for kernel-enforced network filtering. KDE users can use Zenity as
+installed by the package; see the [NixOS manual](https://nixos.org/manual/nixos/stable/#sec-gnome-keyring)
+for keyring setup.
+
 ### macOS (Homebrew)
 
 ```bash
