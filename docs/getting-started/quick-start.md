@@ -109,6 +109,31 @@ To try the latest version without adding it to your configuration, run:
 nix run github:TNG/oh-my-agentic-coder -- doctor
 ```
 
+To make a harness available only when omac runs it, import the NixOS module and
+enable it. The module wraps omac and adds selected harnesses only to that
+wrapper's `PATH`, not to `environment.systemPackages`:
+
+```nix
+{
+  imports = [ omac.nixosModules.default ];
+
+  omac = {
+    enable = true;
+    agents = {
+      opencode.enable = true;
+      pi = {
+        enable = true;
+        package = myPiPackage;
+      };
+    };
+  };
+}
+```
+
+OpenCode, Codex, and Copilot use nixpkgs defaults. Pi, Claude Code, and
+CodeWhale need `package` set when enabled because nixpkgs does not provide a
+default package for them.
+
 On Linux, the package makes Bubblewrap, Zenity, and `notify-send` available to
 omac. You still need a running Secret Service provider in your user session
 (for example, enable `services.gnome.gnome-keyring`), at least one configured

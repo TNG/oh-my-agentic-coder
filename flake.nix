@@ -7,7 +7,9 @@
   };
 
   outputs = { self, nixpkgs, flake-utils, ... }:
-    flake-utils.lib.eachSystem [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ] (system:
+    let
+      systems = [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ];
+    in (flake-utils.lib.eachSystem systems (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
         version = "0.9.0-unstable-${self.lastModifiedDate or "19700101"}";
@@ -50,5 +52,52 @@
           ! grep -F "bwrap is not installed" "$out"
           grep -F "[ok] network prompt: dialog backend available" "$out"
         '';
-      });
+      })) // {
+        nixosModules.default = { config, lib, pkgs, ... }:
+          let
+            cfg = config.omac;
+            mkAgent = description: package: {
+              enable = lib.mkEnableOption description;
+              package = lib.mkOption {
+                type = lib.types.nullOr lib.types.package;
+                default = package;
+                description = "Package that provides ${description}.";
+              };
+            };
+            enabledAgents = lib.filter (agent: agent.enable) (lib.attrValues cfg.agents);
+            agentPackages = map (agent: agent.package) enabledAgents;
+            omacWithAgents = pkgs.runCommand "omac-with-agents" {
+              nativeBuildInputs = [ pkgs.makeWrapper ];
+            } ''
+              mkdir -p "$out/bin"
+              makeWrapper ${cfg.package}/bin/omac "$out/bin/omac" \
+                --prefix PATH : ${lib.makeBinPath agentPackages}
+            '';
+          in {
+            options.omac = {
+              enable = lib.mkEnableOption "omac";
+              package = lib.mkOption {
+                type = lib.types.package;
+                default = self.packages.${pkgs.stdenv.hostPlatform.system}.omac;
+                description = "The omac package to wrap.";
+              };
+              agents = {
+                opencode = mkAgent "OpenCode" pkgs.opencode;
+                codex = mkAgent "Codex" pkgs.codex;
+                copilot = mkAgent "Copilot" pkgs.github-copilot-cli;
+                pi = mkAgent "Pi" null;
+                claude-code = mkAgent "Claude Code" null;
+                codewhale = mkAgent "CodeWhale" null;
+              };
+            };
+
+            config = lib.mkIf cfg.enable {
+              assertions = lib.mapAttrsToList (name: agent: {
+                assertion = !agent.enable || agent.package != null;
+                message = "omac.agents.${name}.package must be set when enabled.";
+              }) cfg.agents;
+              environment.systemPackages = [ omacWithAgents ];
+            };
+          };
+      };
 }
