@@ -41,6 +41,29 @@ func writeRawControlInfo(t *testing.T, ci controlInfo) {
 	}
 }
 
+// TestSecurityControlInfoNotWritableFromSandbox asserts that the record does
+// not live where the confined agent can rewrite it.
+//
+// This is the root cause the two tests below are downstream of: validating
+// what the file says is worth doing, but a value check alone leaves the agent
+// choosing among the values that pass. The sandbox baseline grants the shared
+// system temp directory read-write, so a record kept there is agent-controlled
+// by construction.
+func TestSecurityControlInfoNotWritableFromSandbox(t *testing.T) {
+	sharedTemp := os.TempDir()
+
+	// Control: the path is absolute and named, so a comparison against the
+	// shared temp root is meaningful.
+	p := controlInfoPath()
+	if !filepath.IsAbs(p) {
+		t.Fatalf("controlInfoPath() = %q, which is not absolute: the fixture is broken", p)
+	}
+
+	if filepath.Dir(p) == filepath.Clean(sharedTemp) {
+		t.Errorf("the serve control record lives at %s, directly in the shared system temp directory the sandbox is granted read-write: the address host-side omac commands POST to is a file the confined agent owns", p)
+	}
+}
+
 // TestSecurityControlInfoRejectsForeignControlBase asserts that a planted
 // control base is not accepted as the address of the local serve process.
 func TestSecurityControlInfoRejectsForeignControlBase(t *testing.T) {
@@ -97,6 +120,13 @@ func TestSecurityControlInfoWriteDoesNotFollowSymlink(t *testing.T) {
 
 	if err := writeControlInfo("http://127.0.0.1:45671"); err != nil {
 		t.Logf("writeControlInfo reported %v", err)
+	}
+
+	// Control: the record was actually published. Without it, any unrelated
+	// failure of writeControlInfo would leave the victim untouched and read
+	// as a fix.
+	if ci, ok := readControlInfo(); !ok || ci.ControlBase != "http://127.0.0.1:45671" {
+		t.Fatalf("the control record was not published (ok=%v, base=%q): the fixture is broken, not the security property", ok, ci.ControlBase)
 	}
 
 	got, err := os.ReadFile(victim)

@@ -148,6 +148,7 @@ func TestSecurityReloadRejectsUnauthenticatedCaller(t *testing.T) {
 	t.Run("in-process reload does mutate", func(t *testing.T) {
 		sectest.RequireLoopbackListener(t)
 		isolateHome(t)
+		t.Setenv("TMPDIR", t.TempDir())
 		workdir := t.TempDir()
 		r, _ := newLiveReloader(t, workdir)
 		stageForgedSkill(t, workdir, "pwn", "pwn")
@@ -158,14 +159,21 @@ func TestSecurityReloadRejectsUnauthenticatedCaller(t *testing.T) {
 	})
 
 	isolateHome(t)
+	t.Setenv("TMPDIR", t.TempDir()) // startControlPlane publishes the control-info file
 	workdir := t.TempDir()
 	r, _ := newLiveReloader(t, workdir)
 	stageForgedSkill(t, workdir, "pwn", "pwn")
 
-	control := httptest.NewServer(r.startTestMux())
-	t.Cleanup(control.Close)
+	// The production control plane, not a hand-copied mux: a test that served
+	// its own routes would neither see an auth layer added to startControlPlane
+	// nor notice one added only to the copy.
+	controlURL, closeControl, ok := startControlPlane(r)
+	if !ok {
+		t.Fatal("startControlPlane could not bind: the fixture is broken, not the security property")
+	}
+	t.Cleanup(closeControl)
 
-	resp, err := http.Post(control.URL+"/__omac__/reload", "application/json", strings.NewReader("{}"))
+	resp, err := http.Post(controlURL+"/__omac__/reload", "application/json", strings.NewReader("{}"))
 	if err != nil {
 		t.Fatalf("POST /__omac__/reload: %v", err)
 	}

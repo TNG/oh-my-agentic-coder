@@ -134,8 +134,13 @@ func TestSecurityUpgradeProxyEnforcesBodyLimit(t *testing.T) {
 	sectest.RequireLoopbackListener(t)
 
 	const limit = 100
-	const bodyLen = 64 * 1024
-	body := strings.Repeat("A", bodyLen)
+	// A marker rather than a repeated letter: the sidecar records the whole
+	// byte stream, headers included, and any header carrying the filler
+	// character would inflate the count.
+	const marker = "omac-body-"
+	const repeats = 6 * 1024
+	bodyLen := len(marker) * repeats
+	body := strings.Repeat(marker, repeats)
 
 	request := func(extraHeaders string) string {
 		return "POST /skill/ingest HTTP/1.1\r\n" +
@@ -156,7 +161,7 @@ func TestSecurityUpgradeProxyEnforcesBodyLimit(t *testing.T) {
 		_, _ = io.ReadAll(c)
 		time.Sleep(100 * time.Millisecond)
 
-		if got := strings.Count(s.saw(), "A"); got > limit {
+		if got := strings.Count(s.saw(), marker) * len(marker); got > limit {
 			t.Fatalf("the sidecar received %d body bytes through the ordinary path with a %d-byte limit: the limit is not enforced anywhere, so this test cannot show it being bypassed", got, limit)
 		}
 	})
@@ -168,7 +173,7 @@ func TestSecurityUpgradeProxyEnforcesBodyLimit(t *testing.T) {
 	_, _ = io.ReadAll(c)
 	time.Sleep(200 * time.Millisecond)
 
-	if got := strings.Count(s.saw(), "A"); got > limit {
+	if got := strings.Count(s.saw(), marker) * len(marker); got > limit {
 		t.Errorf("the sidecar received %d body bytes despite a %d-byte limit: adding \"Connection: upgrade\" and \"Upgrade: websocket\" to any request switches the limit off", got, limit)
 	}
 }
@@ -216,9 +221,9 @@ func TestSecurityUpgradeProxyRequiresSwitchingProtocols(t *testing.T) {
 	port := startFacade(t, s, 0)
 	c := dialFacade(t, port, upgradeRequest)
 	time.Sleep(100 * time.Millisecond)
-	if _, err := io.WriteString(c, probe); err != nil {
-		t.Fatalf("write post-handshake bytes: %v", err)
-	}
+	// A refused write is the property holding, not a test error: once the
+	// facade stops splicing it closes the client connection.
+	_, _ = io.WriteString(c, probe)
 	time.Sleep(200 * time.Millisecond)
 
 	if strings.Contains(s.saw(), probe) {

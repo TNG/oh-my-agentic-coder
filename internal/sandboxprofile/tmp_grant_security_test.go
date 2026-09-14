@@ -44,7 +44,7 @@ func TestSecurityBaselineDoesNotGrantHostTmp(t *testing.T) {
 		// it a baseline that granted no temp access at all would look like a
 		// pass while breaking every harness that needs scratch space.
 		if !slices.Contains(b.Write, "$TMPDIR") {
-			t.Errorf("%s baseline no longer grants $TMPDIR write: the sandbox has no private scratch space, which is not the fix", name)
+			t.Fatalf("%s baseline no longer grants $TMPDIR write: the sandbox has no private scratch space, so dropping the shared temp grant below would not be the fix it looks like", name)
 		}
 
 		for _, p := range shared {

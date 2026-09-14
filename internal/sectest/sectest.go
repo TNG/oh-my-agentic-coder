@@ -1,10 +1,9 @@
 //go:build vuln
 
-// Package sectest holds the environment guards shared by omac's security
-// regression suite (build tag "vuln"). The suite asserts properties omac is
-// supposed to hold, so a test that cannot run must fail loudly: a silent skip
-// in a suite where red means "vulnerable" reads as "property holds", which is
-// the one outcome that must never be faked.
+// The suite asserts properties omac is supposed to hold, so a test that
+// cannot run must fail loudly: a silent skip in a suite where red means
+// "vulnerable" reads as "property holds", which is the one outcome that must
+// never be faked. See doc.go for the package summary.
 package sectest
 
 import (

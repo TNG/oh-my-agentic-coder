@@ -40,6 +40,16 @@ func TestSecurityCloudMetadataEndpointsAlwaysDenied(t *testing.T) {
 		{"100.100.100.200", "Alibaba Cloud metadata"},
 	}
 
+	// Control: an ordinary public host is allowed. Without it, a filter that
+	// denied everything — a broken fixture, or NewFilter changing its zero
+	// value — would satisfy every assertion below.
+	{
+		f := NewFilter(FilterConfig{Resolve: staticResolver("93.184.216.34")})
+		if v, _ := f.Check(context.Background(), "example.com", 443); v.Decision != Allow {
+			t.Fatalf("an ordinary public host was denied (%s): the fixture is broken, not the security property", v.Reason)
+		}
+	}
+
 	for _, e := range endpoints {
 		// A fresh filter per endpoint so the prompt count below is
 		// attributable to exactly one host.

@@ -21,11 +21,22 @@
 #   scripts/security-suite.sh list     # print the failing set, pin-file format
 #   scripts/security-suite.sh raw      # plain verbose go test output, no compare
 #
-# Tests that would damage the machine they run on (clobbering /tmp state, the
-# real tool cache, a live `omac serve`) skip unless OMAC_SECURITY_CONTAINER=1
-# is set. Run those in a throwaway container, never on a working host.
+# The suite never skips: in a set where red means "vulnerable", a skipped test
+# reads as a passing one. A test that cannot run fails instead, so the
+# environment has to supply what the suite needs. Those preconditions are
+# checked up front (see preflight) rather than being discovered one red test at
+# a time:
+#
+#   - the ability to bind a loopback port (nine tests drive real servers)
+#   - bash, curl and jq            (the harness bridge hooks)
+#   - bubblewrap with working user namespaces, on Linux (datagram confinement)
+#
+# Entries tagged "# linux-only" in the pin file are dropped from the comparison
+# on other platforms, where the test does not exist and would otherwise be
+# reported as fixed.
 #
 # Exit code 0 = failing set matches the pinned set exactly.
+# Exit code 2 = the environment cannot run the suite; nothing was measured.
 
 set -euo pipefail
 
@@ -41,7 +52,10 @@ SELECT='^TestSecurity'
 # of silently shrinking the failing set.
 run_suite() {
     local json
-    json="$(cd "$REPO" && go test -tags="$TAG" -run "$SELECT" -json ./... 2>/dev/null || true)"
+    # stderr is kept: a toolchain or module failure emits nothing on the JSON
+    # stream, which would empty the failing set and report every pinned
+    # property as fixed.
+    json="$(cd "$REPO" && go test -tags="$TAG" -run "$SELECT" -json ./... 2>>/dev/stderr || true)"
     printf '%s\n' "$json" | python3 -c '
 import json, sys
 
@@ -77,21 +91,78 @@ for entry in sorted(failed):
 '
 }
 
-# pinned_set strips comments and blanks so the pin file can be annotated.
+# pinned_set strips comments and blanks so the pin file can be annotated, and
+# drops platform-gated entries whose test does not exist here. LC_ALL=C matches
+# the byte order run_suite emits; a collating locale would order the two sides
+# differently and comm would produce nonsense.
 pinned_set() {
-    grep -vE '^\s*(#|$)' "$PINNED" | sort
+    local entries
+    entries="$(grep -vE '^[[:space:]]*(#|$)' "$PINNED")"
+    if [[ "$(uname -s)" != "Linux" ]]; then
+        entries="$(printf '%s\n' "$entries" | grep -v '# linux-only' || true)"
+    fi
+    printf '%s\n' "$entries" | sed 's/[[:space:]]*#.*$//' | grep -v '^$' | LC_ALL=C sort
+}
+
+# preflight refuses to run when the environment cannot exercise the suite.
+#
+# Without it an unusable machine is indistinguishable from a vulnerable one:
+# every guarded test fails, the failing set still matches the pinned set, and
+# the script reports "no change" and exits 0 having measured nothing. After a
+# fix lands the same machine reports the fix as ineffective. Both answers are
+# wrong in a way no one would notice, so the environment is checked once, here.
+preflight() {
+    local missing=()
+
+    if ! python3 - <<'PY' 2>/dev/null
+import socket, sys
+s = socket.socket()
+try:
+    s.bind(("127.0.0.1", 0))
+except OSError:
+    sys.exit(1)
+finally:
+    s.close()
+PY
+    then
+        missing+=("a bindable loopback port (nine tests drive real servers)")
+    fi
+
+    for tool in bash curl jq; do
+        command -v "$tool" >/dev/null 2>&1 || missing+=("$tool (the harness bridge hooks need it)")
+    done
+
+    if [[ "$(uname -s)" == "Linux" ]]; then
+        if ! command -v bwrap >/dev/null 2>&1; then
+            missing+=("bubblewrap (datagram confinement)")
+        elif ! bwrap --ro-bind / / true >/dev/null 2>&1; then
+            missing+=("working unprivileged user namespaces for bwrap (datagram confinement)")
+        fi
+    fi
+
+    if [[ ${#missing[@]} -gt 0 ]]; then
+        echo "the security suite cannot run here; nothing was measured:" >&2
+        printf '  - %s\n' "${missing[@]}" >&2
+        echo >&2
+        echo "Run it on a normal host, or in the e2e container:" >&2
+        echo "  scripts/e2e-docker.sh build && scripts/e2e-docker.sh shell" >&2
+        exit 2
+    fi
 }
 
 cmd_list() {
+    preflight
     run_suite
 }
 
 cmd_raw() {
+    preflight
     cd "$REPO"
     go test -tags="$TAG" -run "$SELECT" -v ./...
 }
 
 cmd_compare() {
+    preflight
     local actual expected
     actual="$(run_suite)"
     expected="$(pinned_set)"

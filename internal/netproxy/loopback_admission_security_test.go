@@ -50,7 +50,7 @@ func TestSecurityLoopbackGuardRejectsHostnameVariants(t *testing.T) {
 		"::ffff:127.0.0.1",
 	} {
 		if !isLoopbackHost(host) {
-			t.Errorf("isLoopbackHost(%q) = false, want true: the guard no longer recognises a plain loopback destination", host)
+			t.Fatalf("isLoopbackHost(%q) = false, want true: the guard no longer recognises a plain loopback destination, so the evasions below would read as gaps in a guard that is simply gone", host)
 		}
 	}
 

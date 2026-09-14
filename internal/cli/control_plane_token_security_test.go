@@ -85,8 +85,12 @@ func TestSecurityActivateDoesNotDiscloseDirToken(t *testing.T) {
 	// A second session, or any local process, names the victim's directory.
 	replay := postJSON(t, control.URL+"/__omac__/activate", fmt.Sprintf("{%q:%q}", "dir", victimDir))
 
-	if got, _ := replay["dir_token"].(string); got == token {
-		t.Errorf("re-activating an already-active directory returned its live token %q: a caller that knows only the path gains that session's skills, credentials included", got)
+	// Asserting absence rather than difference: a token that is merely
+	// rotated on re-activation is still a live namespace key handed to a
+	// caller that proved nothing, and it additionally cuts off the session
+	// that owns the directory.
+	if got, _ := replay["dir_token"].(string); got != "" {
+		t.Errorf("re-activating an already-active directory returned the live token %q: a caller that knows only the path gains that session's skills, credentials included", got)
 	}
 }
 

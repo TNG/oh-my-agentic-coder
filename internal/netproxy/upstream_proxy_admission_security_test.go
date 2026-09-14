@@ -58,6 +58,15 @@ func TestSecurityChainedProxyDeniesMetadataByResolvedAddress(t *testing.T) {
 // CheckHost never looks at the address. The upstream proxy then opens the
 // connection from the host side of the sandbox boundary.
 func TestSecurityChainedProxyDeniesLoopbackByResolvedAddress(t *testing.T) {
+	// Control: this path admits an ordinary host, so a denial below is a
+	// decision rather than a fixture that rejects everything.
+	{
+		f := NewFilter(FilterConfig{Resolve: staticResolver("93.184.216.34")})
+		if v := f.CheckHost(context.Background(), "example.com", 443); v.Decision != Allow {
+			t.Fatalf("an ordinary public host was denied on the chained path (%s): the fixture is broken, not the security property", v.Reason)
+		}
+	}
+
 	for _, ip := range []string{"127.0.0.1", "::1", "0.0.0.0"} {
 		f := NewFilter(FilterConfig{Resolve: staticResolver(ip)})
 		if v := f.CheckHost(context.Background(), "loopback.alias.example", 8000); v.Decision != Deny {

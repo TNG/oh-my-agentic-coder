@@ -9,9 +9,58 @@
 # When a fix lands, its test turns green: delete the line here in the same
 # commit. That deletion is the record that the fix was verified, not assumed.
 #
+# A trailing "# linux-only" marks a test that does not exist on other
+# platforms; the runner drops those entries when it is not on Linux.
+#
 # Keep sorted (LC_ALL=C sort) so diffs stay readable.
+
+# Existing tests that encode the current, vulnerable behaviour
+# ------------------------------------------------------------
+# These four pass today and will FAIL when the matching fix lands. They are
+# not wrong — they pin behaviour that was deliberate — but whoever changes the
+# behaviour has to update them in the same commit, or `go test ./...` breaks
+# while the security suite goes green:
+#
+#   internal/sandboxrun/bwrap_test.go:61      asserts --new-session is absent
+#   internal/sandboxrun/grants_test.go:53     requires /tmp in WritePaths
+#   internal/sandboxrun/bwrap_test.go:66      TestBwrapNoTmpfsWhenTmpGranted
+#   internal/config/launcher_cache_test.go:23 requires the default scope "global"
+
+# Known gaps
+# ----------
+# Asserted here, but narrower than the finding they come from. Closing the
+# pinned property does not close the whole finding:
+#
+#   facade upgrade path  — hop-by-hop header forwarding and the absent splice
+#                          read deadlines are not asserted
+#   launcher config      — a --profile pointing at a workdir-relative policy
+#                          file is not asserted
+#   reload               — a forged absolute SkillDir makes the host process
+#                          read attacker-chosen paths; not asserted
+#   runtime dir          — only unpredictability; the Stat/RemoveAll/MkdirAll
+#                          race and the serve-mode twin are not asserted
+#   metadata deny        — the direct path's resolved-address screen for
+#                          non-link-local metadata is not asserted
+#   chained proxy        — subdomains of hard-denied names are not asserted
+#   snapshot integrity   — content swapped under a hash-excluded subtree
+#                          (node_modules, .venv) is not asserted
+#   tool cache           — only the default scope; the cache stays a persistent
+#                          host directory granted read-write to the sandbox
+#
+# Duplicated logic no test covers: internal/cli/provenance.go:94 keeps its own
+# copy of the metadata deny list, and internal/cli/diagnose_probe.go:89 its own
+# weaker isLoopbackHost. Fixing internal/netproxy leaves both reporting the old
+# verdict to the user.
+#
+# Deliberately not covered: the self-update signing finding. Prior adversarial
+# validation rejected it — goreleaser-default same-origin checksums are the
+# design, not a defect — so a red test would demand a fix nobody intends. The
+# narrower `apk add --allow-untrusted` in internal/updater/pkgmanagers.go:34
+# was not part of that judgement and is simply untested.
+
 internal/bridge TestSecurityBridgeHookEncodesSessionDirectory
 internal/cli TestSecurityActivateDoesNotDiscloseDirToken
+internal/cli TestSecurityControlInfoNotWritableFromSandbox
 internal/cli TestSecurityControlInfoRejectsForeignControlBase
 internal/cli TestSecurityControlInfoWriteDoesNotFollowSymlink
 internal/cli TestSecurityDefaultToolCacheNotSharedAcrossWorkdirs
@@ -32,8 +81,7 @@ internal/netproxy TestSecurityFilterDeniesHostsResolvingToLoopback
 internal/netproxy TestSecurityLoopbackGuardRejectsHostnameVariants
 internal/netproxy TestSecurityMetadataHardDenySurvivesTrailingDotVariants
 internal/sandboxprofile TestSecurityBaselineDoesNotGrantHostTmp
-internal/sandboxrun TestSecurityDatagramEgressConfined
+internal/sandboxrun TestSecurityDatagramEgressConfined # linux-only
 internal/sandboxrun TestSecuritySandboxDoesNotShareControllingTerminal
 internal/skilltrust TestSecurityApproveWritesOnlyInsideTheStore
-internal/skilltrust TestSecuritySnapshotPathRejectsTraversalInSkillName
 internal/skilltrust TestSecuritySnapshotVerifiedAgainstApprovedHash

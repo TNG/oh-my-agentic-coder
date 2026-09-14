@@ -37,6 +37,22 @@ import (
 // protocols across the same boundary to the same address, so the difference it
 // reports is the protocol and nothing else.
 
+// requireWorkingBwrap fails, rather than skips, when the sandbox cannot be
+// launched. The suite's runner reads a skipped test as a passing one, so
+// skipping here would report the sandbox as confining datagrams on every
+// machine that cannot test it — the one answer that must never be guessed.
+// Deliberately not the package's requireBwrap, which skips by design because
+// the tests it guards are not security assertions.
+func requireWorkingBwrap(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("bwrap"); err != nil {
+		t.Fatalf("bwrap is not installed (%v): this test cannot confirm datagram confinement without it; run the suite in the e2e container", err)
+	}
+	if err := exec.Command("bwrap", "--ro-bind", "/", "/", "true").Run(); err != nil {
+		t.Fatalf("bwrap cannot create a sandbox here (%v), usually unprivileged user namespaces being disabled: run the suite in the e2e container", err)
+	}
+}
+
 // firstNonLoopbackIPv4 returns an address on a real interface. Loopback is
 // deliberately avoided: the sandbox is allowed to reach some loopback
 // services, so a loopback probe could not distinguish a policy allowance from
@@ -84,7 +100,7 @@ func buildOmac(t *testing.T) string {
 // TestSecurityDatagramEgressConfined asserts that filtered mode stops a
 // datagram leaving the sandbox, as it stops a TCP connection.
 func TestSecurityDatagramEgressConfined(t *testing.T) {
-	requireBwrap(t)
+	requireWorkingBwrap(t)
 	if !LandlockNetSupported() {
 		t.Fatalf("Landlock network rules unavailable (ABI %d < 4): filtered mode is not enforced at all here, so this test cannot tell a gap from an unconfigured host", LandlockABI())
 	}

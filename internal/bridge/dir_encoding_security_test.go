@@ -97,7 +97,15 @@ func runHook(t *testing.T, script, event, dir, controlBase string) {
 	}
 	cmd := exec.Command("bash", script)
 	cmd.Stdin = strings.NewReader(string(payload))
-	cmd.Env = append(os.Environ(), "OMAC_CONTROL_BASE="+controlBase)
+	// Built explicitly rather than appended to os.Environ(): an ambient
+	// OMAC_CONTROL_BASE (every shell inside an omac session has one) would
+	// otherwise appear twice, and a shell that prefers the first entry would
+	// aim this hostile payload at a live control plane.
+	cmd.Env = []string{
+		"OMAC_CONTROL_BASE=" + controlBase,
+		"PATH=" + os.Getenv("PATH"),
+		"HOME=" + os.Getenv("HOME"),
+	}
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("hook %s failed: %v\n%s", script, err, out)
 	}

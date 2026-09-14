@@ -48,31 +48,6 @@ func under(root, path string) bool {
 	return strings.HasPrefix(filepath.Clean(path)+string(filepath.Separator), root)
 }
 
-// TestSecuritySnapshotPathRejectsTraversalInSkillName asserts that no skill
-// name can steer a snapshot outside the approval store.
-func TestSecuritySnapshotPathRejectsTraversalInSkillName(t *testing.T) {
-	isolateUnder(t)
-	skills := filepath.Join(dir(), "skills")
-
-	// Control: an ordinary name resolves inside the store. If this fails the
-	// store layout moved and every assertion below is meaningless.
-	if p, _ := SnapshotPath("plain-skill", "sha256:abc"); !under(skills, p) {
-		t.Fatalf("SnapshotPath(%q) = %s, which is not under %s: the store layout changed", "plain-skill", p, skills)
-	}
-
-	for _, name := range []string{
-		"../../../evil",
-		"..",
-		"nested/../../../evil",
-		"./../../evil",
-	} {
-		p, _ := SnapshotPath(name, "sha256:abc")
-		if !under(skills, p) {
-			t.Errorf("SnapshotPath(%q) = %s, outside the store at %s: a skill name chosen by the agent picks a host directory for omac to write", name, p, skills)
-		}
-	}
-}
-
 // TestSecurityApproveWritesOnlyInsideTheStore asserts the same property where
 // it actually bites: Approve does not just compute the path, it creates the
 // directory and copies the skill's files into it.
