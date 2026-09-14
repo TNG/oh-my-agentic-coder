@@ -24,32 +24,33 @@ import (
 // hands the session the manifest. The directory is the whole of the request —
 // it decides which project's skills the session gets.
 //
-// The hooks build the request body by pasting the path straight into a JSON
-// string, `{"dir":"${dir}"}`. A path is a byte string that may contain a
-// double quote, and one closes the JSON string early. The rest of the path is
-// then read as JSON rather than as a path, and a second "dir" key appended
-// that way wins, because a decoder keeps the last occurrence of a duplicate
-// field.
+// The harness hands the hook a JSON payload and the hook reads the directory
+// out of it with jq, correctly. It then builds its own request by pasting that
+// path straight into a JSON string, `{"dir":"${dir}"}`. A path is a byte string
+// that may contain a double quote, and one closes the JSON string early. The
+// rest of the path is read as JSON rather than as a path, and a second "dir"
+// key appended that way wins, because a decoder keeps the last occurrence of a
+// duplicate field.
 //
 // The path is not something omac chooses. It is the directory the session was
 // started in, so it is attacker-chosen whenever a user is induced to open a
 // prepared directory — the same premise as cloning a hostile repository, which
 // omac otherwise handles by confining it.
 
-// hooks are the harness bridge scripts and the env var each reads the session
-// directory from when no payload is parsed.
+// hooks are the harness bridge scripts and the hook event each treats as
+// "session starting", which is the branch that activates a directory.
 var hooks = []struct {
-	name   string
-	path   string
-	dirEnv string
+	name       string
+	path       string
+	startEvent string
 }{
-	{"claude", "../../.claude/hooks/omac-bridge.sh", "CLAUDE_PROJECT_DIR"},
-	{"codex", "../../.codex/hooks/omac-bridge.sh", "CODEX_PROJECT_DIR"},
-	{"copilot", "../../.copilot/hooks/omac-bridge.sh", "COPILOT_PROJECT_DIR"},
+	{"claude", "../../.claude/hooks/omac-bridge.sh", "SessionStart"},
+	{"codex", "../../.codex/hooks/omac-bridge.sh", "SessionStart"},
+	{"copilot", "../../.copilot/hooks/omac-bridge.sh", "SessionStart"},
 }
 
-// controlStub records the directory each activate request resolves to, decoded
-// the way the control plane decodes it.
+// controlStub records the directory each request resolves to, decoded the way
+// the control plane decodes it.
 type controlStub struct {
 	mu   sync.Mutex
 	dirs []string
@@ -80,17 +81,23 @@ func (c *controlStub) seen() ([]string, []string) {
 	return c.dirs, c.raw
 }
 
-// runHook executes one bridge script with an empty payload, so the script
-// falls back to its project-dir environment variable for the session
-// directory.
-func runHook(t *testing.T, script, dirEnv, dir, controlBase string) {
+// runHook executes one bridge script with a well-formed harness payload. The
+// payload is built with a real JSON encoder, so the hostile directory reaches
+// the hook exactly as a harness would deliver it and any breakage below is the
+// hook's own encoding, not the fixture's.
+func runHook(t *testing.T, script, event, dir, controlBase string) {
 	t.Helper()
+	payload, err := json.Marshal(map[string]string{
+		"hook_event_name": event,
+		"cwd":             dir,
+		"session_id":      "security-suite",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	cmd := exec.Command("bash", script)
-	cmd.Stdin = strings.NewReader("")
-	cmd.Env = append(os.Environ(),
-		"OMAC_CONTROL_BASE="+controlBase,
-		dirEnv+"="+dir,
-	)
+	cmd.Stdin = strings.NewReader(string(payload))
+	cmd.Env = append(os.Environ(), "OMAC_CONTROL_BASE="+controlBase)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("hook %s failed: %v\n%s", script, err, out)
 	}
@@ -101,16 +108,16 @@ func runHook(t *testing.T, script, dirEnv, dir, controlBase string) {
 // else.
 func TestSecurityBridgeHookEncodesSessionDirectory(t *testing.T) {
 	sectest.RequireLoopbackListener(t)
-	if _, err := exec.LookPath("bash"); err != nil {
-		t.Fatalf("bash is required to run the bridge hooks: %v", err)
-	}
-	if _, err := exec.LookPath("curl"); err != nil {
-		t.Fatalf("curl is required by the bridge hooks: %v", err)
+	for _, tool := range []string{"bash", "curl", "jq"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			t.Fatalf("%s is required to exercise the bridge hooks: %v", tool, err)
+		}
 	}
 
 	// A directory name that closes the JSON string and appends its own "dir".
 	// Legal on every filesystem omac supports.
 	const hostile = `/tmp/omac-security-probe","dir":"/etc`
+	const plainDir = "/tmp/omac-security-probe"
 
 	for _, h := range hooks {
 		t.Run(h.name, func(t *testing.T) {
@@ -124,15 +131,15 @@ func TestSecurityBridgeHookEncodesSessionDirectory(t *testing.T) {
 			plain := &controlStub{}
 			plainSrv := httptest.NewServer(plain)
 			defer plainSrv.Close()
-			runHook(t, h.path, h.dirEnv, "/tmp/omac-security-probe", plainSrv.URL)
-			if dirs, _ := plain.seen(); len(dirs) == 0 || dirs[0] != "/tmp/omac-security-probe" {
+			runHook(t, h.path, h.startEvent, plainDir, plainSrv.URL)
+			if dirs, _ := plain.seen(); len(dirs) == 0 || dirs[0] != plainDir {
 				t.Fatalf("the hook did not post an ordinary directory (%v): the fixture is broken, not the security property", dirs)
 			}
 
 			stub := &controlStub{}
 			srv := httptest.NewServer(stub)
 			defer srv.Close()
-			runHook(t, h.path, h.dirEnv, hostile, srv.URL)
+			runHook(t, h.path, h.startEvent, hostile, srv.URL)
 
 			dirs, raw := stub.seen()
 			if len(dirs) == 0 {
