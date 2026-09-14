@@ -752,6 +752,7 @@ func runLaunch(env *Env, opts launchOpts) int {
 	}
 
 	var argv []string
+	var watch *protectedWatch
 	if noSandbox {
 		argv = inner
 	} else {
@@ -802,6 +803,10 @@ func runLaunch(env *Env, opts launchOpts) int {
 			argv = injectSandboxFlag(argv, "--audit-run-id", auditor.RunID())
 			argv = injectSandboxFlag(argv, "--audit-mode", string(auditCfg.Mode))
 		}
+		// The kernel mask cannot grow mid-session, so detect
+		// protected-pattern files (e.g. .env) created after launch and
+		// warn the user.
+		watch = startProtectedWatch(auditor, protectedChecker(f), plan, argv, env.Workdir)
 	}
 	if verbose {
 		fmt.Fprintf(env.Stderr, "[verbose] sandbox argv: %v\n", argv)
@@ -917,6 +922,9 @@ func runLaunch(env *Env, opts launchOpts) int {
 
 	code, err := sandbox.ExecWithReady(argv, extra, nil)
 	auditor.Emit(audit.SessionStop(code))
+	watch.report(func(format string, args ...any) {
+		fmt.Fprintf(env.Stderr, prefix+": "+format+"\n", args...)
+	})
 	if err != nil {
 		fmt.Fprintln(env.Stderr, prefix+": exec:", err)
 		return ExitSandboxAbnormal
