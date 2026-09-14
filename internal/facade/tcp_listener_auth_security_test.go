@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/TNG/oh-my-agentic-coder/internal/intent"
+	"github.com/TNG/oh-my-agentic-coder/internal/sectest"
 )
 
 // Who may talk to the facade.
@@ -43,7 +44,7 @@ import (
 // TestSecurityTCPListenerRequiresAuthentication asserts that a caller with no
 // credentials gets nothing useful from the facade's TCP transport.
 func TestSecurityTCPListenerRequiresAuthentication(t *testing.T) {
-	requireLoopbackListener(t)
+	sectest.RequireLoopbackListener(t)
 
 	s := startSidecar(t, "HTTP/1.1 200 OK\r\nContent-Length: 6\r\n\r\nsecret")
 	reg := intent.New(time.Minute)

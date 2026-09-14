@@ -10,6 +10,14 @@
 # commit. That deletion is the record that the fix was verified, not assumed.
 #
 # Keep sorted (LC_ALL=C sort) so diffs stay readable.
+internal/bridge TestSecurityBridgeHookEncodesSessionDirectory
+internal/cli TestSecurityActivateDoesNotDiscloseDirToken
+internal/cli TestSecurityControlInfoRejectsForeignControlBase
+internal/cli TestSecurityControlInfoWriteDoesNotFollowSymlink
+internal/cli TestSecurityFirstRunDoesNotAutoApproveWorkdirSkills
+internal/cli TestSecurityReloadCannotReplaceApprovedSkillRoute
+internal/cli TestSecurityReloadRejectsUnauthenticatedCaller
+internal/cli TestSecurityRuntimeDirIsNotPredictable
 internal/config TestSecurityWorkdirConfigCannotDefineSandboxCommand
 internal/config TestSecurityWorkdirConfigCannotSelectUnsandboxedProfile
 internal/facade TestSecurityTCPListenerRequiresAuthentication

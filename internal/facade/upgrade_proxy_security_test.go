@@ -12,6 +12,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/TNG/oh-my-agentic-coder/internal/sectest"
 )
 
 // The Upgrade path.
@@ -32,17 +34,6 @@ import (
 // These tests need real loopback listeners (the facade binds one, the fake
 // sidecar another) and therefore cannot run in an environment that forbids
 // binding. Run the suite on a normal host or in the e2e container.
-
-// requireLoopbackListener fails loudly when the environment cannot bind, so
-// a missing capability never reads as a passing security test.
-func requireLoopbackListener(t *testing.T) {
-	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("cannot bind a loopback listener (%v): this test needs one; run the security suite outside a sandbox that forbids it", err)
-	}
-	ln.Close()
-}
 
 // fakeSidecar stands in for a skill's sidecar process: it records every byte
 // the facade sends it and replies with a fixed, raw response.
@@ -140,7 +131,7 @@ func dialFacade(t *testing.T, port int, req string) net.Conn {
 // request headers turn it off, it protects only callers who were not trying
 // to get around it.
 func TestSecurityUpgradeProxyEnforcesBodyLimit(t *testing.T) {
-	requireLoopbackListener(t)
+	sectest.RequireLoopbackListener(t)
 
 	const limit = 100
 	const bodyLen = 64 * 1024
@@ -193,7 +184,7 @@ func TestSecurityUpgradeProxyEnforcesBodyLimit(t *testing.T) {
 // facade, and any sidecar speaking a non-HTTP protocol is then addressable
 // directly at the byte level.
 func TestSecurityUpgradeProxyRequiresSwitchingProtocols(t *testing.T) {
-	requireLoopbackListener(t)
+	sectest.RequireLoopbackListener(t)
 
 	const probe = "PING\r\nnot-http\r\n"
 
