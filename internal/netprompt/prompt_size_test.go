@@ -139,6 +139,30 @@ func TestDialogDimensionsEnvInvalidFallsBack(t *testing.T) {
 	}
 }
 
+func TestAlertArgs(t *testing.T) {
+	const title = "omac: protected file created"
+	const body = "/workdir/.env matches a sandbox-protected pattern"
+
+	z := alertZenityArgs(title, body)
+	if z[0] != "--info" {
+		t.Errorf("zenity alert first arg = %q, want --info", z[0])
+	}
+	if got := flagValue(z, "--title"); got != title {
+		t.Errorf("zenity alert --title = %q, want %q", got, title)
+	}
+	if got := flagValue(z, "--text"); got != body {
+		t.Errorf("zenity alert --text = %q, want %q", got, body)
+	}
+
+	k := alertKdialogArgs(title, body)
+	if got := flagValue(k, "--title"); got != title {
+		t.Errorf("kdialog alert --title = %q, want %q", got, title)
+	}
+	if got := flagValue(k, "--msgbox"); got != body {
+		t.Errorf("kdialog alert --msgbox = %q, want %q", got, body)
+	}
+}
+
 // flagValue returns the argument following flag in args, or "".
 func flagValue(args []string, flag string) string {
 	for i, a := range args {

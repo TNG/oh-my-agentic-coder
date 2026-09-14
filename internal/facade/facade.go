@@ -550,6 +550,12 @@ func (f *Facade) handleSandboxDenied(w http.ResponseWriter, r *http.Request) {
 			// marker file also carries, so both denial surfaces agree.
 			note = sandboxdeny.Default().FacadeNote
 		}
+		// A mid-session match is a different situation: the file is
+		// readable right now, so neither the profile's FacadeNote nor
+		// the default may mask that. The rule tag drives the note.
+		if rule == sandboxdeny.RuleMidSession {
+			note = sandboxdeny.Default().MidSessionNote
+		}
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(deniedResp{Denied: true, Path: abs, Rule: rule, Note: note})
 		return

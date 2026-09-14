@@ -525,6 +525,7 @@ func runServe(args []string, env *Env) int {
 	}
 
 	var argv []string
+	var watch *protectedWatch
 	if noSandbox {
 		argv = inner
 	} else {
@@ -600,6 +601,12 @@ func runServe(args []string, env *Env) int {
 		if learn {
 			argv = injectSandboxFlag(argv, "--learn", "")
 		}
+		// The kernel mask cannot grow mid-session, so detect
+		// protected-pattern files (e.g. .env) created after launch and
+		// warn the user.
+		if !noInner && !learn {
+			watch = startProtectedWatch(auditor, protectedChecker(f), plan, argv, env.Workdir)
+		}
 	}
 	if verbose {
 		fmt.Fprintf(env.Stderr, "[verbose] inner argv: %v\n", argv)
@@ -638,6 +645,9 @@ func runServe(args []string, env *Env) int {
 		}
 	})
 	auditor.Emit(audit.SessionStop(code))
+	watch.report(func(format string, args ...any) {
+		fmt.Fprintf(env.Stderr, format+"\n", args...)
+	})
 	if err != nil {
 		fmt.Fprintln(env.Stderr, "omac serve: exec:", err)
 		return ExitSandboxAbnormal

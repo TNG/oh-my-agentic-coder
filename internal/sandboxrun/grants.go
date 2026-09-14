@@ -167,13 +167,7 @@ func ResolveGrants(p *sandboxprofile.Profile, workdir string, notices io.Writer)
 	}
 	allow = append(allow, unixDirs...)
 
-	// Explicit (non-baseline) grants are the roots a basename-glob deny
-	// scans. Computed before the baseline-merged read/write so a deny
-	// like ".env" never triggers a walk of /usr or /lib. The workdir
-	// grant is always an explicit root.
-	denyScan, err := sandboxprofile.ExpandExisting(
-		append(append(append([]string{}, p.Filesystem.Read...), p.Filesystem.Write...), p.Filesystem.Allow...),
-		nil)
+	denyScan, err := denyScanRoots(p, workdir)
 	if err != nil {
 		return nil, err
 	}
@@ -186,9 +180,6 @@ func ResolveGrants(p *sandboxprofile.Profile, workdir string, notices io.Writer)
 		write = append(write, workdir)
 	case sandboxprofile.AccessReadWrite:
 		allow = append(allow, workdir)
-	}
-	if p.Workdir.Access != "" && p.Workdir.Access != sandboxprofile.AccessNone {
-		denyScan = append(denyScan, workdir)
 	}
 
 	// A linked worktree's .git file points at an admin dir under a shared
@@ -384,6 +375,23 @@ func readGitdirPointer(dotgit string) (string, error) {
 // ".env" over a huge granted tree cannot stall launch. Reaching the cap
 // stops the walk for that root (already-found matches are still masked).
 const maxDenyScanEntries = 200000
+
+// denyScanRoots returns the roots a basename-glob deny scans: the
+// explicit (non-baseline) grants plus the workdir when granted.
+// Baseline grants are excluded so a deny like ".env" never walks /usr
+// or /lib.
+func denyScanRoots(p *sandboxprofile.Profile, workdir string) ([]string, error) {
+	roots, err := sandboxprofile.ExpandExisting(
+		append(append(append([]string{}, p.Filesystem.Read...), p.Filesystem.Write...), p.Filesystem.Allow...),
+		nil)
+	if err != nil {
+		return nil, err
+	}
+	if p.Workdir.Access != "" && p.Workdir.Access != sandboxprofile.AccessNone {
+		roots = append(roots, workdir)
+	}
+	return dedupe(roots), nil
+}
 
 // resolveDenyPaths resolves user deny entries and baseline workdir-protected
 // basenames in a single filesystem walk. User deny path-form entries expand

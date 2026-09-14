@@ -12,14 +12,16 @@ package sandboxrun
 import (
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
 )
 
 // ProtectedPathSet answers whether a given absolute path lies under any
 // protected path. It is the facade-side counterpart to the Grants
-// computed by ResolveGrants. Implementations are read-only after
-// construction; safe for concurrent use.
+// computed by ResolveGrants. Launch-derived entries are immutable; the
+// mid-session watch appends dynamic entries via Add. Safe for
+// concurrent use.
 type ProtectedPathSet struct {
 	// entries are the expanded protected paths (absolute).
 	entries []string
@@ -28,6 +30,11 @@ type ProtectedPathSet struct {
 	// entries. This is a coarse tag — the goal is "tell the agent which
 	// knob to turn," not a full audit trail.
 	rules []string
+	// dyn* hold the entries Add appends while the session runs:
+	// protected-pattern matches created after launch. Guarded by dynMu.
+	dynMu      sync.Mutex
+	dynEntries []string
+	dynRules   []string
 }
 
 // NewProtectedPathSet derives the protected set from a resolved profile.
@@ -65,6 +72,20 @@ func NewProtectedPathSet(p *sandboxprofile.Profile) *ProtectedPathSet {
 // is the confusion GET /sandbox/denied exists to remove.
 func UnrestrictedProtectedPathSet() *ProtectedPathSet { return &ProtectedPathSet{} }
 
+// Add records a protected-pattern path discovered while the session runs
+// (the mid-session watch). The kernel mask was fixed at launch, so the
+// path is NOT blocked — the rule tag (RuleMidSession) is what makes the
+// facade report it honestly. Nil-safe.
+func (s *ProtectedPathSet) Add(absPath, rule string) {
+	if s == nil {
+		return
+	}
+	s.dynMu.Lock()
+	defer s.dynMu.Unlock()
+	s.dynEntries = append(s.dynEntries, filepath.Clean(absPath))
+	s.dynRules = append(s.dynRules, rule)
+}
+
 // IsProtected reports whether absPath lies under (or equals) any
 // protected entry. Returns the rule tag of the first match.
 func (s *ProtectedPathSet) IsProtected(absPath string) (rule string, ok bool) {
@@ -78,6 +99,14 @@ func (s *ProtectedPathSet) IsProtected(absPath string) (rule string, ok bool) {
 		entry = filepath.Clean(entry)
 		if absPath == entry || strings.HasPrefix(absPath, entry+string(filepath.Separator)) {
 			return s.rules[i], true
+		}
+	}
+	s.dynMu.Lock()
+	defer s.dynMu.Unlock()
+	for i, entry := range s.dynEntries {
+		entry = filepath.Clean(entry)
+		if absPath == entry || strings.HasPrefix(absPath, entry+string(filepath.Separator)) {
+			return s.dynRules[i], true
 		}
 	}
 	return "", false

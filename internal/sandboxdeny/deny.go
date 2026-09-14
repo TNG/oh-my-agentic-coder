@@ -34,7 +34,17 @@ type Text struct {
 	// concluding the path is missing and explains there is no live popup
 	// for filesystem paths (network-only).
 	NotProtectedNote string
+
+	// MidSessionNote is the "note" for GET /sandbox/denied when the rule
+	// tag is RuleMidSession. Not profile-configurable: it states runtime
+	// facts a profile's denial text cannot know.
+	MidSessionNote string
 }
+
+// RuleMidSession tags a protected-pattern match created after the
+// sandbox launched: the launch-fixed mask does not cover it, so the
+// file is readable until the session is restarted.
+const RuleMidSession = "mid-session"
 
 // Default returns the compiled-in denial text. Neutral wording: never
 // classifies the protected resource as a "secret" or "credential" —
@@ -65,6 +75,10 @@ The user will see your reason when reviewing access.
 			"(POST $OMAC_BASE/sandbox/intent) only records your reason for the session-end review; it does " +
 			"not grant access and raises no dialog. So tell the user which path you need and why, and ask " +
 			"them to add it and relaunch — do not tell them to approve a popup.",
+		MidSessionNote: "This path matches a sandbox-protected pattern, but it was created after this " +
+			"session started, so the launch-time mask does not cover it: it is currently readable. " +
+			"Do not read it. The user has been notified; the file stays readable until the session is " +
+			"restarted (or the user adds the name to filesystem.override_deny).",
 	}
 }
 

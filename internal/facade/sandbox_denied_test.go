@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/TNG/oh-my-agentic-coder/internal/sandboxdeny"
 )
 
 // stubChecker is a minimal ProtectedPathChecker for testing.
@@ -104,6 +106,45 @@ func TestSandboxDeniedNotProtectedNote(t *testing.T) {
 	}
 	if !strings.Contains(strings.ToLower(resp.Note), "not mounted") {
 		t.Errorf("note should explain the not-mounted case: %q", resp.Note)
+	}
+}
+
+// TestSandboxDeniedMidSession guards the honest answer for a
+// protected-pattern file created after launch: the rule tag selects the
+// mid-session note, which must tell the agent the file is currently
+// readable — not the launch-time "intentionally restricted" wording.
+func TestSandboxDeniedMidSession(t *testing.T) {
+	f := &Facade{
+		ProtectedPathChecker: stubChecker{protected: map[string]string{
+			"/workdir/.env": sandboxdeny.RuleMidSession,
+		}},
+	}
+	req := httptest.NewRequest(http.MethodGet, "/sandbox/denied?path=/workdir/.env", nil)
+	w := httptest.NewRecorder()
+	f.handleSandboxDenied(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200", w.Code)
+	}
+	var resp struct {
+		Denied bool   `json:"denied"`
+		Rule   string `json:"rule"`
+		Note   string `json:"note"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	if !resp.Denied {
+		t.Error("denied = false; want true")
+	}
+	if resp.Rule != sandboxdeny.RuleMidSession {
+		t.Errorf("rule = %q; want %q", resp.Rule, sandboxdeny.RuleMidSession)
+	}
+	if !strings.Contains(strings.ToLower(resp.Note), "currently readable") {
+		t.Errorf("note must state the file is readable: %q", resp.Note)
+	}
+	if strings.Contains(strings.ToLower(resp.Note), "intentionally") {
+		t.Errorf("note must not use the launch-time denial wording: %q", resp.Note)
 	}
 }
 

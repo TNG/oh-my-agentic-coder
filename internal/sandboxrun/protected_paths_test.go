@@ -3,6 +3,7 @@ package sandboxrun
 import (
 	"testing"
 
+	"github.com/TNG/oh-my-agentic-coder/internal/sandboxdeny"
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
 )
 
@@ -89,5 +90,27 @@ func TestProtectedPathSetNilSafe(t *testing.T) {
 	_, ok := set.IsProtected("/anything")
 	if ok {
 		t.Error("nil set should return false")
+	}
+	set.Add("/x", sandboxdeny.RuleMidSession) // must not panic
+}
+
+func TestProtectedPathSetAddMidSession(t *testing.T) {
+	set := NewProtectedPathSet(&sandboxprofile.Profile{})
+	if _, ok := set.IsProtected("/workdir/.env"); ok {
+		t.Fatal("IsProtected before Add = true; want false")
+	}
+	set.Add("/workdir/.env", sandboxdeny.RuleMidSession)
+	rule, ok := set.IsProtected("/workdir/.env")
+	if !ok {
+		t.Fatal("IsProtected after Add = false; want true")
+	}
+	if rule != sandboxdeny.RuleMidSession {
+		t.Errorf("rule = %q; want %q", rule, sandboxdeny.RuleMidSession)
+	}
+	// Subpaths of a dynamically added directory are covered too,
+	// matching the static-entry semantics.
+	rule, ok = set.IsProtected("/workdir/.env/nested")
+	if !ok || rule != sandboxdeny.RuleMidSession {
+		t.Errorf("IsProtected(subpath) = %q,%v; want %q,true", rule, ok, sandboxdeny.RuleMidSession)
 	}
 }

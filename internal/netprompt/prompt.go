@@ -396,9 +396,56 @@ func appleScriptString(s string) string {
 }
 
 func notifyDarwin(host string, port int) {
-	script := fmt.Sprintf(`display notification %s with title "omac: network request"`,
-		appleScriptString(notificationText(host, port)))
-	_ = exec.Command("osascript", "-e", script).Run()
+	osNotify("omac: network request", notificationText(host, port))
+}
+
+// osNotify shows a passive desktop notification: osascript on macOS,
+// notify-send on Linux when installed. Best-effort — the user may
+// never see it, so it is a courtesy channel, never the only one.
+func osNotify(title, body string) {
+	if runtime.GOOS == "darwin" {
+		script := fmt.Sprintf(`display notification %s with title %s`,
+			appleScriptString(body), appleScriptString(title))
+		_ = exec.Command("osascript", "-e", script).Run()
+		return
+	}
+	if _, err := exec.LookPath("notify-send"); err == nil {
+		_ = exec.Command("notify-send", title, body).Run()
+	}
+}
+
+// Notify shows a passive desktop notification mid-session — the only
+// channel that reaches a human while a TUI harness owns the terminal.
+func Notify(title, body string) { osNotify(title, body) }
+
+// Alert shows a modal info dialog mid-session — the pop-up equivalent
+// of the network approval dialogs, for notices with no decision to
+// collect. Fire-and-forget: the dialog outlives the call and the caller
+// never blocks on the user's OK. Falls back to the passive osNotify
+// bubble when no dialog backend is installed.
+func Alert(title, body string) {
+	if runtime.GOOS == "darwin" {
+		script := fmt.Sprintf(`display dialog %s with title %s buttons {"OK"} default button "OK"`,
+			appleScriptString(body), appleScriptString(title))
+		go func() { _ = exec.Command("osascript", "-e", script).Run() }()
+		return
+	}
+	switch {
+	case zenityBackend{}.available():
+		go func() { _ = exec.Command("zenity", alertZenityArgs(title, body)...).Run() }()
+	case kdialogBackend{}.available():
+		go func() { _ = exec.Command("kdialog", alertKdialogArgs(title, body)...).Run() }()
+	default:
+		osNotify(title, body)
+	}
+}
+
+func alertZenityArgs(title, body string) []string {
+	return []string{"--info", "--title", title, "--text", body}
+}
+
+func alertKdialogArgs(title, body string) []string {
+	return []string{"--title", title, "--msgbox", body}
 }
 
 // --- Linux ---
@@ -510,7 +557,5 @@ func (kdialogBackend) show(ctx context.Context, host string, port int, suffix, i
 }
 
 func notifyLinux(host string, port int) {
-	if _, err := exec.LookPath("notify-send"); err == nil {
-		_ = exec.Command("notify-send", "omac: network request", notificationText(host, port)).Run()
-	}
+	osNotify("omac: network request", notificationText(host, port))
 }
