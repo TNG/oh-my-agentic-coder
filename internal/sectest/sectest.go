@@ -9,7 +9,6 @@ package sectest
 
 import (
 	"net"
-	"os"
 	"testing"
 )
 
@@ -23,21 +22,4 @@ func RequireLoopbackListener(tb testing.TB) {
 		tb.Fatalf("cannot bind a loopback listener (%v): this test needs one; run the security suite outside a sandbox that forbids it", err)
 	}
 	ln.Close()
-}
-
-// RequireThrowawayContainer skips unless the suite is running in a container
-// it is allowed to wreck. The tests it guards damage the machine they run on:
-// they overwrite state under a live /tmp, poison the shared tool cache, or
-// drive a real `omac serve` that other sessions may be using.
-//
-// This is the one guard in the suite that skips rather than fails. Refusing to
-// run is the correct answer on a developer's machine, and scripts/
-// security-suite.sh keeps the accounting honest by comparing the failing set
-// against the pinned one: a skipped test shows up as "now passing" and has to
-// be explained, so the gap cannot go unnoticed.
-func RequireThrowawayContainer(tb testing.TB) {
-	tb.Helper()
-	if os.Getenv("OMAC_SECURITY_CONTAINER") != "1" {
-		tb.Skip("destructive: set OMAC_SECURITY_CONTAINER=1 and run in a throwaway container (scripts/security-suite.sh handles this)")
-	}
 }
