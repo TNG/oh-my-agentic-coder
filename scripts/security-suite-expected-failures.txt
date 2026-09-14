@@ -1,0 +1,19 @@
+# Security properties omac does NOT hold yet.
+#
+# One "<package> <TestName>" per line. Each entry is a test in the security
+# suite (build tag "vuln") that fails today because the property it asserts is
+# broken in the current tree. scripts/security-suite.sh compares the live
+# failing set against this file and reports any difference in either
+# direction.
+#
+# When a fix lands, its test turns green: delete the line here in the same
+# commit. That deletion is the record that the fix was verified, not assumed.
+#
+# Keep sorted (LC_ALL=C sort) so diffs stay readable.
+internal/netproxy TestSecurityChainedProxyDeniesLoopbackByResolvedAddress
+internal/netproxy TestSecurityChainedProxyDeniesMetadataByResolvedAddress
+internal/netproxy TestSecurityCloudMetadataEndpointsAlwaysDenied
+internal/netproxy TestSecurityDenyRulesSurviveTrailingDotVariants
+internal/netproxy TestSecurityFilterDeniesHostsResolvingToLoopback
+internal/netproxy TestSecurityLoopbackGuardRejectsHostnameVariants
+internal/netproxy TestSecurityMetadataHardDenySurvivesTrailingDotVariants
