@@ -1429,8 +1429,11 @@ func (s *serveServer) autoRegister(absDir string, ent skillsource.Entry) (*regis
 		if rel, rerr := filepath.Rel(absDir, ent.Dir); rerr == nil {
 			stored = rel
 		}
+		// Harness-keyed: a legacy (Harness "") Upsert keys by name only
+		// and would clobber another harness's entry of the same name.
 		reg.Upsert(registry.Entry{
 			Name:                ent.Name,
+			Harness:             s.harness.Name,
 			SkillDir:            stored,
 			BundleHash:          bundle,
 			RegisteredAt:        time.Now().UTC(),
@@ -1439,7 +1442,7 @@ func (s *serveServer) autoRegister(absDir string, ent skillsource.Entry) (*regis
 		if err := registry.Save(absDir, reg); err != nil {
 			return err
 		}
-		e, _ := reg.Find(ent.Name)
+		e, _ := reg.FindForHarness(ent.Name, s.harness.Name)
 		out = e
 		return nil
 	})
