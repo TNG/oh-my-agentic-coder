@@ -10,6 +10,8 @@
 # commit. That deletion is the record that the fix was verified, not assumed.
 #
 # Keep sorted (LC_ALL=C sort) so diffs stay readable.
+internal/config TestSecurityWorkdirConfigCannotDefineSandboxCommand
+internal/config TestSecurityWorkdirConfigCannotSelectUnsandboxedProfile
 internal/netproxy TestSecurityChainedProxyDeniesLoopbackByResolvedAddress
 internal/netproxy TestSecurityChainedProxyDeniesMetadataByResolvedAddress
 internal/netproxy TestSecurityCloudMetadataEndpointsAlwaysDenied
@@ -17,3 +19,7 @@ internal/netproxy TestSecurityDenyRulesSurviveTrailingDotVariants
 internal/netproxy TestSecurityFilterDeniesHostsResolvingToLoopback
 internal/netproxy TestSecurityLoopbackGuardRejectsHostnameVariants
 internal/netproxy TestSecurityMetadataHardDenySurvivesTrailingDotVariants
+internal/sandboxprofile TestSecurityBaselineDoesNotGrantHostTmp
+internal/skilltrust TestSecurityApproveWritesOnlyInsideTheStore
+internal/skilltrust TestSecuritySnapshotPathRejectsTraversalInSkillName
+internal/skilltrust TestSecuritySnapshotVerifiedAgainstApprovedHash
