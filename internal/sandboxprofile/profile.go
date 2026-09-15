@@ -411,6 +411,11 @@ func (p *Profile) Validate() error {
 			}
 		}
 	}
+	if d := p.Denial; d != nil && d.MarkerDirName != "" {
+		if strings.ContainsAny(d.MarkerDirName, `/\`) || d.MarkerDirName == ".." || d.MarkerDirName == "." {
+			return fmt.Errorf("sandbox profile: denial.marker_dir_name %q must be a single path component", d.MarkerDirName)
+		}
+	}
 	return nil
 }
 

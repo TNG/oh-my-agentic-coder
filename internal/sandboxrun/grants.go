@@ -124,7 +124,12 @@ func (g *Grants) prepareMarkers() (func(), error) {
 	if dirFileName == "" {
 		dirFileName = markerDirFileName
 	}
-	if err := os.WriteFile(filepath.Join(markerDir, dirFileName), text, 0o444); err != nil {
+	markerDirFile := filepath.Join(markerDir, dirFileName)
+	if !strings.HasPrefix(filepath.Clean(markerDirFile), markerDir+string(filepath.Separator)) {
+		cleanup()
+		return noop, fmt.Errorf("grants: denial dir name %q escapes marker directory", dirFileName)
+	}
+	if err := os.WriteFile(markerDirFile, text, 0o444); err != nil {
 		cleanup()
 		return noop, err
 	}
