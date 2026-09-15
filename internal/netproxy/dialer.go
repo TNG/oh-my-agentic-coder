@@ -3,6 +3,7 @@ package netproxy
 import (
 	"bufio"
 	"context"
+	"crypto/tls"
 	"encoding/base64"
 	"fmt"
 	"net"
@@ -146,13 +147,31 @@ func (d *upstreamProxyDialer) DialTunnel(ctx context.Context, host string, port 
 	target := net.JoinHostPort(host, fmt.Sprintf("%d", port))
 
 	var nd net.Dialer
-	conn, err := nd.DialContext(ctx, "tcp", d.proxyURL.Host)
+	rawConn, err := nd.DialContext(ctx, "tcp", d.proxyURL.Host)
 	if err != nil {
 		return nil, &UpstreamError{
 			ProxyHost:  d.proxyURL.Host,
 			StatusLine: "",
 			Err:        err,
 		}
+	}
+	var conn net.Conn
+	if d.proxyURL.Scheme == "https" {
+		tlsConn := tls.Client(rawConn, &tls.Config{
+			ServerName: d.proxyURL.Hostname(),
+			MinVersion: tls.VersionTLS12,
+		})
+		if err := tlsConn.HandshakeContext(ctx); err != nil {
+			rawConn.Close()
+			return nil, &UpstreamError{
+				ProxyHost:  d.proxyURL.Host,
+				StatusLine: "",
+				Err:        fmt.Errorf("TLS handshake: %w", err),
+			}
+		}
+		conn = tlsConn
+	} else {
+		conn = rawConn
 	}
 
 	// Pass the hostname (not pre-resolved IPs): corporate proxies perform

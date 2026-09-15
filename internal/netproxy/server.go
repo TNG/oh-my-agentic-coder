@@ -509,15 +509,20 @@ func (s *Server) handleForward(conn net.Conn, br *bufio.Reader, req *http.Reques
 	req.RequestURI = ""
 	outReq := req.Clone(context.Background())
 
-	// Upstream-proxy path: forward in absolute-URI form (so the proxy
-	// knows where to send the request) and set the upstream's
-	// Proxy-Authorization credentials. Direct path: rewrite to
-	// origin-form and send no Proxy-Authorization.
-	if pa, ok := s.dialer.(ProxyAuthenticator); ok {
-		if h := pa.ProxyAuthHeader(); h != "" {
-			outReq.Header.Set("Proxy-Authorization", h)
+	// Upstream-proxy path: forward in absolute-URI form and attach the
+	// upstream's Proxy-Authorization — but only when the connection
+	// actually terminates at the upstream proxy, not at the origin.
+	// ChainsHost distinguishes the two cases: NO_PROXY and direct dialers
+	// both return false, meaning the connection goes straight to the origin
+	// and must never carry the proxy credential.
+	planner, isChained := s.dialer.(TunnelPlanner)
+	if isChained && planner.ChainsHost(host) {
+		if pa, ok := s.dialer.(ProxyAuthenticator); ok {
+			if h := pa.ProxyAuthHeader(); h != "" {
+				outReq.Header.Set("Proxy-Authorization", h)
+			}
 		}
-		// Keep absolute-URI (outReq.URL.Scheme / .Host preserved).
+		// Keep absolute-URI so the upstream proxy knows the destination.
 	} else {
 		outReq.URL.Scheme = ""
 		outReq.URL.Host = ""

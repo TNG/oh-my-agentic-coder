@@ -351,8 +351,8 @@ func (p *Profile) Validate() error {
 	}
 	if p.Network.UpstreamProxy != "" {
 		u, err := url.Parse(p.Network.UpstreamProxy)
-		if err != nil || u.Scheme != "http" || u.Host == "" {
-			return fmt.Errorf("sandbox profile: invalid network.upstream_proxy %q (want http://host[:port])", p.Network.UpstreamProxy)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return fmt.Errorf("sandbox profile: invalid network.upstream_proxy %q (want http:// or https:// URL with host)", p.Network.UpstreamProxy)
 		}
 	}
 	for _, entry := range p.Network.NoProxy {
