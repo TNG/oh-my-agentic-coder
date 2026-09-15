@@ -111,19 +111,21 @@ jobs:
         env:
           GATEWAY_MODEL: ${{ needs.model.outputs.gateway }}
         run: |
-          echo "## README onboarding (${{ matrix.os }})" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "Model: \`$GATEWAY_MODEL\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          if [ "${{ steps.run_onboarding.outcome }}" = "success" ]; then
-            echo "**Result:** README was sufficient — doctor healthy, report written." >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "**Result:** gaps blocked a clean setup, or the agent didn't finish — see the report below." >> "$GITHUB_STEP_SUMMARY"
-          fi
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo '```markdown' >> "$GITHUB_STEP_SUMMARY"
-          cat "${{ runner.temp }}/e2e-readme-logs/ONBOARDING_REPORT.md" >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || echo "(no report file produced)" >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "## README onboarding (${{ matrix.os }})"
+            echo ""
+            echo "Model: \`$GATEWAY_MODEL\`"
+            echo ""
+            if [ "${{ steps.run_onboarding.outcome }}" = "success" ]; then
+              echo "**Result:** README was sufficient — doctor healthy, report written."
+            else
+              echo "**Result:** gaps blocked a clean setup, or the agent didn't finish — see the report below."
+            fi
+            echo ""
+            echo '```markdown'
+            cat "${{ runner.temp }}/e2e-readme-logs/ONBOARDING_REPORT.md" 2>/dev/null || echo "(no report file produced)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload session artifacts
         if: always()

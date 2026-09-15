@@ -84,7 +84,7 @@ jobs:
         id: probe
         run: |
           scripts/probe-model.sh opencode --github-output
-          cc=$(E2E_MODEL= scripts/probe-model.sh claude-code)
+          cc=$(E2E_MODEL='' scripts/probe-model.sh claude-code)
           echo "claude_code=$cc" >> "$GITHUB_OUTPUT"
 
       - name: Report the selection
@@ -211,7 +211,7 @@ jobs:
           case "$(uname -m)" in x86_64|amd64) arch=x86_64;; arm64|aarch64) arch=arm64;; *) echo "unknown arch"; exit 1;; esac
           dir="$RUNNER_TEMP/omac-release"; mkdir -p "$dir"
           gh release download "$tag" --dir "$dir" --pattern "oh-my-agentic-coder_*_${os}_${arch}.tar.gz"
-          f=$(ls "$dir"/*.tar.gz | head -1)
+          f=$(find "$dir" -maxdepth 1 -name '*.tar.gz' | head -1)
           tar -xzf "$f" -C "$dir"
           bin=$(find "$dir" -type f -name omac | head -1)
           [ -x "$bin" ] || { echo "omac binary missing in release asset"; ls -R "$dir"; exit 1; }
@@ -313,7 +313,7 @@ jobs:
           slug="${{ matrix.os }}-${{ matrix.harness }}-${{ matrix.omac }}"
           printf '%s\n' "$row" > "compat/$slug.row"
           echo "$row"
-          echo "row<<EOF" >> "$GITHUB_OUTPUT"; echo "$row" >> "$GITHUB_OUTPUT"; echo "EOF" >> "$GITHUB_OUTPUT"
+          { echo "row<<EOF"; echo "$row"; echo "EOF"; } >> "$GITHUB_OUTPUT"
           # On any failure, emit a self-contained context file for the report
           # job's SKAINET summariser — built here, where the logs live, so the
           # report job never has to reconstruct per-leg log paths.
@@ -626,7 +626,7 @@ jobs:
           slug="wsl2-${{ matrix.harness }}-${{ matrix.omac }}"
           printf '%s\n' "$row" > "$SMOKE_LOG_DIR/compat/$slug.row"
           echo "$row"
-          echo "row<<EOF" >> "$GITHUB_OUTPUT"; echo "$row" >> "$GITHUB_OUTPUT"; echo "EOF" >> "$GITHUB_OUTPUT"
+          { echo "row<<EOF"; echo "$row"; echo "EOF"; } >> "$GITHUB_OUTPUT"
           if printf '%s' "$row" | grep -q '❌'; then
             stages=""
             [ "$contract" = "❌" ] && stages="$stages contract"
@@ -766,7 +766,7 @@ jobs:
           case "$(uname -m)" in x86_64|amd64) arch=x86_64;; arm64|aarch64) arch=arm64;; *) echo "unknown arch"; exit 1;; esac
           dir="$RUNNER_TEMP/omac-release"; mkdir -p "$dir"
           gh release download "$tag" --dir "$dir" --pattern "oh-my-agentic-coder_*_${os}_${arch}.tar.gz"
-          f=$(ls "$dir"/*.tar.gz | head -1)
+          f=$(find "$dir" -maxdepth 1 -name '*.tar.gz' | head -1)
           tar -xzf "$f" -C "$dir"
           bin=$(find "$dir" -type f -name omac | head -1)
           [ -x "$bin" ] || { echo "omac binary missing in release asset"; ls -R "$dir"; exit 1; }
@@ -845,7 +845,7 @@ jobs:
           slug="ubuntu-latest-codewhale-${{ matrix.omac }}"
           printf '%s\n' "$row" > "compat/$slug.row"
           echo "$row"
-          echo "row<<EOF" >> "$GITHUB_OUTPUT"; echo "$row" >> "$GITHUB_OUTPUT"; echo "EOF" >> "$GITHUB_OUTPUT"
+          { echo "row<<EOF"; echo "$row"; echo "EOF"; } >> "$GITHUB_OUTPUT"
           if printf '%s' "$row" | grep -q '❌'; then
             stages=""
             [ "$contract" = "❌" ] && stages="$stages contract"

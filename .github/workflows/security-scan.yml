@@ -337,11 +337,13 @@ jobs:
           vuln_count=$(grep -cE '^╭─ VULN-[0-9]+' strix_scan.log || true)
           have_vulns=false
           [ -f "${run_dirs[-1]}vulnerabilities.json" ] && have_vulns=true
-          echo "vuln_count=$vuln_count" >> "$GITHUB_OUTPUT"
-          echo "have_vulns=$have_vulns" >> "$GITHUB_OUTPUT"
-          echo "exit_code=$rc" >> "$GITHUB_OUTPUT"
-          echo "elapsed=$elapsed" >> "$GITHUB_OUTPUT"
-          echo "log_bytes=$log_bytes" >> "$GITHUB_OUTPUT"
+          {
+            echo "vuln_count=$vuln_count"
+            echo "have_vulns=$have_vulns"
+            echo "exit_code=$rc"
+            echo "elapsed=$elapsed"
+            echo "log_bytes=$log_bytes"
+          } >> "$GITHUB_OUTPUT"
           echo "strix exited $rc after ${elapsed}s, wrote ${log_bytes} bytes of log, reported ${vuln_count} findings"
 
           # A non-zero exit AND no findings file means there is no evidence
@@ -393,25 +395,27 @@ jobs:
           MODEL_FALLBACK: ${{ steps.model.outputs.fallback }}
           SCAN_MODE: ${{ inputs.scan_mode || 'deep' }}
         run: |
-          if [ -f step-summary.md ]; then
-            cat step-summary.md >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "## Security scan: no findings file" >> "$GITHUB_STEP_SUMMARY"
-            echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "strix wrote no \`vulnerabilities.json\`, so there is nothing to dedupe against open issues. It reported **$SCAN_VULN_COUNT** findings in its log, which is archived to the private repo." >> "$GITHUB_STEP_SUMMARY"
-          fi
-          if [ "$SCAN_PARTIAL" = 'true' ]; then
-            echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "> ⚠️ **Partial scan** — strix was stopped at its \`scan_budget_minutes\` budget while still working, so this covers only what it had reached. Findings below are real; their absence is not evidence." >> "$GITHUB_STEP_SUMMARY"
-          fi
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "Model: \`$MODEL_NAME\` · scan mode: \`$SCAN_MODE\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "strix exit code \`$SCAN_EXIT_CODE\` · ran for ${SCAN_ELAPSED}s · wrote $SCAN_LOG_BYTES bytes of log · reported $SCAN_VULN_COUNT findings. A \`deep\` scan that finishes in a couple of minutes did not really run, whatever it reports." >> "$GITHUB_STEP_SUMMARY"
-          if [ "$MODEL_FALLBACK" = 'true' ]; then
-            echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "> ⚠️ **Fallback model** — the intended model is not served by the gateway, so this scan's coverage is not comparable to previous ones." >> "$GITHUB_STEP_SUMMARY"
-          fi
+          {
+            if [ -f step-summary.md ]; then
+              cat step-summary.md
+            else
+              echo "## Security scan: no findings file"
+              echo ""
+              echo "strix wrote no \`vulnerabilities.json\`, so there is nothing to dedupe against open issues. It reported **$SCAN_VULN_COUNT** findings in its log, which is archived to the private repo."
+            fi
+            if [ "$SCAN_PARTIAL" = 'true' ]; then
+              echo ""
+              echo "> ⚠️ **Partial scan** — strix was stopped at its \`scan_budget_minutes\` budget while still working, so this covers only what it had reached. Findings below are real; their absence is not evidence."
+            fi
+            echo ""
+            echo "Model: \`$MODEL_NAME\` · scan mode: \`$SCAN_MODE\`"
+            echo ""
+            echo "strix exit code \`$SCAN_EXIT_CODE\` · ran for ${SCAN_ELAPSED}s · wrote $SCAN_LOG_BYTES bytes of log · reported $SCAN_VULN_COUNT findings. A \`deep\` scan that finishes in a couple of minutes did not really run, whatever it reports."
+            if [ "$MODEL_FALLBACK" = 'true' ]; then
+              echo ""
+              echo "> ⚠️ **Fallback model** — the intended model is not served by the gateway, so this scan's coverage is not comparable to previous ones."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Stop context-compaction proxy
         if: always()
