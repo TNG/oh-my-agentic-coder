@@ -37,7 +37,7 @@ Diagnostic guidance that only the response body can carry SHALL be placed in the
 - **THEN** the `403` body attributes the block to the sandbox network policy and names `network.allow_domain` as the remedy
 
 #### Scenario: Denial by built-in guard
-- **WHEN** the child requests a cloud-metadata hostname or a name resolving to a link-local address, even with that host in `network.allow_domain`
+- **WHEN** the child requests a cloud-metadata hostname, a loopback/unspecified address, or a name resolving to a link-local, loopback, or cloud-metadata address, even with that host in `network.allow_domain`
 - **THEN** the `403` body states the guard is not overridable by a sandbox profile and does not offer the allowlist as a remedy
 
 #### Scenario: Hostname does not resolve
@@ -64,7 +64,7 @@ The child SHALL receive `HTTP_PROXY`, `HTTPS_PROXY` (and lowercase variants) set
 
 ### Requirement: Filter decision order with allowlist and blocklist
 For each requested hostname the proxy SHALL decide in this order:
-1. **Hard deny** (never promptable, overrides everything): the hostnames `169.254.169.254`, `metadata.google.internal`, `metadata.azure.internal`, and any host whose resolved addresses include link-local ranges (169.254.0.0/16, fe80::/10, including IPv4-mapped IPv6 forms).
+1. **Hard deny** (never promptable, overrides everything): the hostnames `169.254.169.254` (AWS/GCP/Azure IMDS), `100.100.100.200` (Alibaba IMDS), `192.0.0.192` (Oracle IMDS), `169.254.170.2` (ECS task metadata), `fd00:ec2::254` (AWS IMDS IPv6), `metadata.google.internal` and all its subdomains, `metadata.azure.internal` and all its subdomains; any host resolving to a link-local address (169.254.0.0/16, fe80::/10), a loopback address (127.0.0.0/8, ::1), an unspecified address (0.0.0.0, ::), or a cloud-metadata address listed above. Loopback and unspecified are also caught before DNS at the hostname level (e.g. `localhost`, `127.0.0.1.`, `0.0.0.0`). Hostnames containing non-LDH characters (anything outside a-z, 0-9, hyphen) or malformed labels are rejected as invalid before rule evaluation.
 2. **Learned permanent deny** entries.
 3. **`deny_domain`** blocklist match.
 4. **Allow** if matched by `allow_domain` or a learned permanent allow.

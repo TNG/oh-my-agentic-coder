@@ -6,8 +6,9 @@
 //   - TLS is never terminated; CONNECT is a raw byte tunnel.
 //   - DNS is resolved once per request and the upstream connection is
 //     made to the resolved IPs (anti DNS-rebinding TOCTOU).
-//   - Cloud metadata endpoints and link-local destinations are denied
-//     unconditionally and are never promptable.
+//   - Cloud metadata endpoints, link-local, loopback, and unspecified
+//     addresses are denied unconditionally and are never promptable.
+//     See hardDenyHosts and hardDeniedAddr for the full set.
 package netproxy
 
 import (
