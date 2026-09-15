@@ -126,6 +126,13 @@ type FilterConfig struct {
 	Session DecisionStore
 	// Resolve overrides DNS resolution in tests. Defaults to net.DefaultResolver.
 	Resolve func(ctx context.Context, host string) ([]netip.Addr, error)
+	// ResolveOnCheckHost enables a best-effort DNS resolve inside CheckHost
+	// (the chained-proxy admission path). When true, CheckHost resolves the
+	// hostname and hard-denies it if any result is a forbidden address. On
+	// resolution failure it falls through (the upstream proxy does its own
+	// DNS, so a name that resolves only behind it should still be admitted).
+	// Set false for omac diagnose --probe, which must not make DNS calls.
+	ResolveOnCheckHost bool
 	// Logf receives one line per decision; nil discards.
 	Logf func(format string, args ...any)
 
@@ -247,6 +254,19 @@ func (f *Filter) CheckHost(ctx context.Context, host string, port int) Verdict {
 	if ip, err := netip.ParseAddr(h); err == nil {
 		if reason, denied := hardDeniedAddr(ip); denied {
 			return f.log(h, port, Verdict{Decision: Deny, Reason: reason})
+		}
+	}
+	// Best-effort resolve: catch wildcard-DNS aliases (e.g. 169.254.169.254.nip.io)
+	// that the upstream proxy would otherwise dutifully connect. On failure we
+	// fall through — a corporate-internal hostname that only resolves behind the
+	// proxy must still be admitted (TestChainedPathAllowsInternalOnlyHost).
+	if f.cfg.ResolveOnCheckHost {
+		if addrs, err := f.cfg.Resolve(ctx, h); err == nil {
+			for _, a := range addrs {
+				if reason, denied := hardDeniedAddr(a); denied {
+					return f.log(h, port, Verdict{Decision: Deny, Reason: "hard-deny: resolves to " + reason[len("hard-deny "):]})
+				}
+			}
 		}
 	}
 	if v := f.checkRules(h); v != nil {

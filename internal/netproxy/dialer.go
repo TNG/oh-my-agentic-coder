@@ -137,6 +137,7 @@ func (d *upstreamProxyDialer) ChainsHost(host string) bool {
 }
 
 func (d *upstreamProxyDialer) DialTunnel(ctx context.Context, host string, port int, addrs []netip.Addr) (net.Conn, error) {
+	host = NormalizeHost(host) // send canonical form; upstream must not see trailing dots
 	if hostMatchesNoProxy(host, d.noProxy) {
 		d.logf("omac netproxy: NO_PROXY match for %s — dialing direct", host)
 		return d.direct.DialTunnel(ctx, host, port, addrs)

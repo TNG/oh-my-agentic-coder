@@ -386,6 +386,7 @@ func buildProxy(p *sandboxprofile.Profile, profilePath string, stderr io.Writer,
 		Session:            session,
 		Logf:               logf,
 		Auditor:            auditor,
+		ResolveOnCheckHost: true,
 	})
 	srv, err := netproxy.NewServer(filter, resolveUpstreamProxy(p, stderr, logf), logf)
 	if err != nil {
