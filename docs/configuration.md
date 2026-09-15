@@ -78,7 +78,7 @@ omac creates this file the first time you run `omac start`. Key fields:
 | Field | Type | Default | What it controls |
 |---|---|---|---|
 | `filesystem.deny` | `string[]` | `[".env", "*.key", "*.pem"]` | Blocks files inside granted directories by name or glob |
-| `network.mode` | `string` | `"filtered"` | `filtered` (prompt for unknown hosts), `blocked` (no outbound at all), `open` (unrestricted) |
+| `network.mode` | `string` | `"filtered"` | `filtered` (prompt for unknown hosts), `blocked` (no outbound TCP; on Linux with kernel enforcement, UDP/ICMP also blocked), `open` (unrestricted) |
 | `environment.allow_vars` | `string[]` | see created file | Env vars passed into the sandbox; everything else is stripped |
 | `filesystem.protected_paths` | `string[]` | `["~/.ssh", "~/.gnupg", ...]` | Paths that remain blocked even if a broader grant would cover them |
 | `filesystem.registry_config` | `string[]` | `[]` | Ecosystems whose package-registry settings are copied into the sandbox without their credentials. Currently `"npm"`. See [Private package registries](#private-package-registries) |

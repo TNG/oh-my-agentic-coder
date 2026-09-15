@@ -10,11 +10,17 @@ description: What omac protects against and how.
 An agent with outbound network access can exfiltrate source code and send data to
 unintended endpoints.
 
-omac routes all outbound traffic through its own proxy. No hosts are
-pre-approved silently. When the agent tries to reach a host that is not in your
-allow list, a native dialog asks you to approve or deny it — once, for the
-session, or permanently. If no dialog is available (CI, headless server), the
-request is denied by default.
+omac routes outbound TCP traffic through its own proxy. When the agent tries to
+reach a host that is not in your allow list, a native dialog asks you to approve
+or deny it — once, for the session, or permanently. If no dialog is available
+(CI, headless server), the request is denied by default.
+
+UDP and ICMP egress is blocked by a seccomp filter on Linux (in kernel-enforced
+mode); on macOS and in env-only mode, those protocols are not intercepted.
+
+One port is pre-approved in the default profile: port 22 (SSH), to allow
+standard git-over-SSH operations. Traffic to port 22 on any host bypasses the
+proxy and is not subject to the domain allow/deny list.
 
 Cloud instance-metadata endpoints (169.254.169.254, 100.100.100.200,
 192.0.0.192, 169.254.170.2, fd00:ec2::254, metadata.google.internal,
