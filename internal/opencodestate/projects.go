@@ -56,10 +56,17 @@ func Worktrees() (worktrees []string, skipped []string, err error) {
 	raw = append(raw, dbWorktrees()...)
 	raw = append(raw, desktopWorktrees()...)
 
+	home, _ := os.UserHomeDir()
 	seen := map[string]bool{}
 	for _, wt := range raw {
 		// Skip the global pseudo-project and anything non-absolute.
 		if wt == "" || wt == "/" || !filepath.IsAbs(wt) || seen[wt] {
+			continue
+		}
+		// Reject $HOME and any ancestor of it: granting them read+write
+		// would expose the entire home directory or broader.
+		if home != "" && isBroadWorktree(wt, home) {
+			skipped = append(skipped, wt)
 			continue
 		}
 		seen[wt] = true
@@ -282,6 +289,21 @@ func desktopGlobalWorktrees(path string) []string {
 		}
 	}
 	return out
+}
+
+// isBroadWorktree reports whether wt is too broad to grant read+write:
+// $HOME itself and any ancestor of it (e.g. /home, /) are rejected.
+func isBroadWorktree(wt, home string) bool {
+	clean := filepath.Clean(wt)
+	homeClean := filepath.Clean(home)
+	for d := homeClean; ; d = filepath.Dir(d) {
+		if d == clean {
+			return true
+		}
+		if d == filepath.Dir(d) {
+			return false
+		}
+	}
 }
 
 // unwrapValue returns the inner JSON when raw is a JSON-encoded string
