@@ -161,19 +161,9 @@
 # narrower `apk add --allow-untrusted` in internal/updater/pkgmanagers.go:34
 # was not part of that judgement and is simply untested.
 #
-# CI / supply-chain findings — covered.
-# internal/ciguard holds six of these as Go tests: three driving YAML
-# parsing/static regex, one (the triage script) via python3 through
-# exec.Command, and two (probe-model.sh's $GITHUB_OUTPUT framing and
-# e2e-docker.sh's env_flags()) by extracting the relevant shell function
-# and driving it with bash through exec.Command — no second pin-file
-# mechanism, same suite. internal/e2e/versions.go, artifacts.go and
-# harnesses.go additionally carry `|| vuln` on their build constraint
-# (alongside their existing `e2e`/`e2e_fast` tags, verified all three
-# combinations still build and vet clean) so pinnedPackage and
-# writeSessionArtifacts are unit-testable under a plain `-tags=vuln` run
-# without pulling in the rest of the e2e package.
-#
+# CI / supply-chain findings — fixed (plan 08).
+# All eight internal/ciguard and internal/e2e CI/supply-chain tests now pass;
+# their lines have been removed from this file.
 # Still out of scope: the static-YAML halves of "a job with unpinned
 # installs must carry no secret" and "artifact retention/upload
 # granularity" — both are judgment calls (which secrets count, what
@@ -186,12 +176,7 @@ internal/audit TestSecurityAuditRecordIsWrittenAtomically
 internal/audit TestSecurityAuditSinkDoesNotStaySilentlyDead
 internal/audit TestSecurityReadLogReportsMalformedRecords
 internal/bridge TestSecurityBridgeHookEncodesSessionDirectory
-internal/ciguard TestSecurityDockerEnvFlagsKeepSecretValuesOffArgv
-internal/ciguard TestSecurityDockerfileDoesNotPipeNetworkToShell
-internal/ciguard TestSecurityGeneratedOpencodeConfigIsValidJSON
-internal/ciguard TestSecurityProbeModelOutputFramingResistsInjection
-internal/ciguard TestSecurityTriageVerdictCannotSuppressFindings
-internal/ciguard TestSecurityWorkflowRunBlocksHaveNoExpressionInterpolation
+
 internal/cli TestSecurityActivateDoesNotDiscloseDirToken
 internal/cli TestSecurityColdStartSpawnedArgvComesFromApprovedSnapshot
 internal/cli TestSecurityControlInfoNotWritableFromSandbox
@@ -225,8 +210,7 @@ internal/config TestSecurityWorkdirConfigCannotDefineSandboxCommand
 internal/config TestSecurityWorkdirConfigCannotEraseBuiltinProfiles
 internal/config TestSecurityWorkdirConfigCannotSelectUnsandboxedProfile
 internal/config TestSecurityWorkdirConfigCannotSilenceAudit
-internal/e2e TestSecurityPinnedPackageRejectsCallerChosenSpec
-internal/e2e TestSecuritySessionArtifactsRecordEnvNamesOnly
+
 internal/facade TestSecurityTCPListenerRequiresAuthentication
 internal/facade TestSecurityUpgradeProxyEnforcesBodyLimit
 internal/facade TestSecurityUpgradeProxyRequiresSwitchingProtocols
