@@ -508,9 +508,9 @@ func (s *Server) handleForward(conn net.Conn, br *bufio.Reader, req *http.Reques
 	req.Header.Del("Proxy-Connection")
 	req.RequestURI = ""
 	outReq := req.Clone(context.Background())
-	// Force Connection: close so each forwarded request gets a fresh,
-	// fully-evaluated connection. Without this, a keep-alive connection
-	// lets follow-up requests skip the token check, filter and audit.
+	// Signal to the origin that we will not reuse this connection.
+	// This makes the origin close its end after the response, which
+	// terminates the response stream cleanly without raw splicing.
 	outReq.Header.Set("Connection", "close")
 	outReq.Close = true
 
@@ -535,11 +535,23 @@ func (s *Server) handleForward(conn net.Conn, br *bufio.Reader, req *http.Reques
 	if err := outReq.Write(upstream); err != nil {
 		return
 	}
-	// Stream the raw response bytes back; the client parses them. This
-	// preserves SSE/chunked semantics without re-buffering.
-	// Any leftover bytes the client already pipelined are forwarded too.
-	splice(conn, upstream)
-	_ = br // request body (if any) was consumed by outReq.Write via req.Body
+
+	// Read the response head so we can inject Connection: close before
+	// forwarding to the client. This tells the client the connection will
+	// not be reused, so every subsequent request opens a fresh TCP
+	// connection that goes through the full admission path.
+	upstreamBr := bufio.NewReader(upstream)
+	resp, err := http.ReadResponse(upstreamBr, outReq)
+	if err != nil {
+		return
+	}
+	resp.Header.Set("Connection", "close")
+	resp.Close = true
+	// Write the response head + body to the client. For streaming
+	// responses (SSE, chunked) resp.Write streams the body via the
+	// underlying reader until the upstream closes or errors.
+	_ = resp.Write(conn)
+	_ = br
 }
 
 // maxParallelDials caps how many pinned addresses are dialed at once.
