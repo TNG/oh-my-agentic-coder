@@ -13,7 +13,19 @@ import (
 func DoctorNotes() []string {
 	abi := LandlockABI()
 	if abi >= landlockNetABI {
-		return []string{fmt.Sprintf("[ok] Landlock ABI %d (network rules supported)", abi)}
+		notes := []string{fmt.Sprintf("[ok] Landlock ABI %d (TCP network rules supported; datagram blocked via seccomp)", abi)}
+		// Report the TIOCSTI sysctl as informational: --new-session is the
+		// primary fix, but older kernels also lack the sysctl fallback.
+		if v, ok := procUint("/proc/sys/dev/tty/legacy_tiocsti"); ok {
+			if v == 0 {
+				notes = append(notes, "[ok] dev.tty.legacy_tiocsti=0 (TIOCSTI disabled by kernel; --new-session also enforced)")
+			} else {
+				notes = append(notes, "[warn] dev.tty.legacy_tiocsti=1 (sysctl allows TIOCSTI; --new-session prevents injection)")
+			}
+		} else {
+			notes = append(notes, "[ok] dev.tty.legacy_tiocsti absent (kernel < 6.2 or not configurable; --new-session prevents injection)")
+		}
+		return notes
 	}
 	envOnlyActive := false
 	if p, _, err := sandboxprofile.Resolve(""); err == nil {

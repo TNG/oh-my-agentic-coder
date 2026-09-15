@@ -95,7 +95,7 @@ func GenerateSBPL(g *Grants) string {
 		fmt.Fprintf(&b, "(allow file-read* file-write-data (literal %s))\n", sbplQuote(dev))
 	}
 	b.WriteString("(allow file-read* file-write-data (regex #\"^/dev/tty\"))\n")
-	b.WriteString("(allow file-ioctl (regex #\"^/dev/\"))\n")
+	b.WriteString("(allow file-ioctl (regex #\"^/dev/tty\") (literal \"/dev/null\") (literal \"/dev/zero\") (literal \"/dev/random\") (literal \"/dev/urandom\"))\n")
 	b.WriteString("(allow pseudo-tty)\n\n")
 
 	// --- Network ---

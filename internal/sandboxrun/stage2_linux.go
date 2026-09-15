@@ -49,6 +49,11 @@ func RunStage2(args []string) error {
 		if err := ApplyLandlockNet(connect, bind); err != nil {
 			return fmt.Errorf("stage2: %w", err)
 		}
+		// ApplyLandlockNet already set no_new_privs; block datagrams now
+		// so UDP/ICMP cannot bypass the Landlock TCP filter.
+		if err := applyDatagramSeccomp(); err != nil {
+			return fmt.Errorf("stage2: %w", err)
+		}
 	}
 	return ExecInner(inner)
 }

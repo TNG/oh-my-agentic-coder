@@ -163,7 +163,7 @@ func BuildChildArgv(g *Grants, innerArgv []string) ([]string, error) {
 				"\n"+
 				"To control the agent's internet access, omac runs a small\n"+
 				"HTTP/HTTPS proxy on your machine and normally uses a Linux kernel feature\n"+
-				"(Landlock ABI 4, needs Linux 6.7+) to force ALL of the agent's traffic\n"+
+				"(Landlock ABI 4, needs Linux 6.7+) to route the agent's TCP traffic\n"+
 				"through that proxy. This kernel is %s (ABI %d), which is too old for it.\n"+
 				"\n"+
 				"You have two options:\n"+
