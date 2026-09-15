@@ -30,7 +30,12 @@ import (
 // second mechanism picks up what Landlock cannot express. Anything that is not
 // TCP therefore leaves the sandbox unexamined: DNS queries, QUIC — which is
 // how a current browser or HTTP client prefers to speak — and any tunnel a
-// process cares to build out of UDP.
+// process cares to build out of UDP. ICMP is in the same class: Landlock has
+// no ICMP rule either, so this UDP test also demonstrates the architectural
+// gap for ICMP. A separate ICMP test (via ping) proved unreliable in CI
+// because ping's success depends on net.ipv4.ping_group_range, which varies
+// across runner environments independently of sandboxing — the test passed
+// vacuously when the runner denied unprivileged ICMP regardless of bwrap.
 //
 // That is an exfiltration path with no prompt, no filtering and no record, for
 // data the agent was legitimately allowed to read. This test compares the two
