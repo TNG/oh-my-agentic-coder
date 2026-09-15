@@ -465,13 +465,29 @@ func TestResolveGrantsWorktreeHooksSymlinkEscape(t *testing.T) {
 	if err := os.MkdirAll(wd, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(wd, ".git"), []byte("gitdir: "+admin+"\n"), 0o600); err != nil {
+	dotgit := filepath.Join(wd, ".git")
+	if err := os.WriteFile(dotgit, []byte("gitdir: "+admin+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Back-pointer required by the worktree check introduced to fix #44.
+	if err := os.WriteFile(filepath.Join(admin, "gitdir"), []byte(dotgit+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	p := &sandboxprofile.Profile{Workdir: sandboxprofile.Workdir{Access: sandboxprofile.AccessReadWrite}}
 	g, err := ResolveGrants(p, wd, nil)
 	if err != nil {
 		t.Fatal(err)
+	}
+	// Control: legitimate subdirs (objects/refs) must still be granted so the
+	// test is not trivially passing because all grants were suppressed.
+	hasObjects := false
+	for _, gp := range append(g.ReadPaths, g.AllowPaths...) {
+		if strings.HasSuffix(gp, "/objects") {
+			hasObjects = true
+		}
+	}
+	if !hasObjects {
+		t.Fatalf("control: no grant for objects dir — worktree grants were suppressed entirely, not just the hooks symlink escape")
 	}
 	for _, list := range [][]string{g.ReadPaths, g.WritePaths, g.AllowPaths} {
 		for _, gp := range list {

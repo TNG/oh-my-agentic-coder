@@ -38,8 +38,11 @@ func PlatformBaseline() Baseline {
 func protectedCommon() []string {
 	return []string{
 		// omac config dir: holds approvals.json and sandbox profiles;
-		// reachable from inside the sandbox → forged skill approvals
+		// reachable from inside the sandbox → forged skill approvals.
+		// Both spellings covered: ~/.config is the conventional default;
+		// $XDG_CONFIG_HOME overrides it on systems that set it.
 		"~/.config/omac",
+		"$XDG_CONFIG_HOME/omac",
 		// credentials
 		"~/.ssh",
 		"~/.gnupg",
