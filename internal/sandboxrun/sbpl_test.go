@@ -90,8 +90,10 @@ func TestSBPLRuleOrderReadDenyWrite(t *testing.T) {
 	if readPos < 0 || denyPos < 0 || writePos < 0 {
 		t.Fatal("expected rules missing")
 	}
-	if !(readPos < denyPos && denyPos < writePos) {
-		t.Errorf("rule order wrong: read=%d deny=%d write=%d (want read < deny < write)", readPos, denyPos, writePos)
+	// Seatbelt is last-match-wins: protected denies must appear after both
+	// read and write allows so they cannot be overridden by a broad grant.
+	if !(readPos < writePos && writePos < denyPos) {
+		t.Errorf("rule order wrong: read=%d write=%d deny=%d (want read < write < deny)", readPos, writePos, denyPos)
 	}
 }
 
