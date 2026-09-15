@@ -158,15 +158,15 @@ jobs:
           prev_tag=$(git tag -l 'v*.*.*' --sort=-v:refname | grep -Fx -A1 "$VERSION" | tail -1)
           ver="${VERSION#v}"; cmaj="${ver%%.*}"; cmin="${ver#*.}"; cmin="${cmin%%.*}"
           if [ -z "$prev_tag" ] || [ "$prev_tag" = "$VERSION" ]; then
-            kind=major
+            kind="major"
           else
             pver="${prev_tag#v}"; pmaj="${pver%%.*}"; pmin="${pver#*.}"; pmin="${pmin%%.*}"
             if [ "$cmaj" != "$pmaj" ]; then
-              kind=major
+              kind="major"
             elif [ "$cmin" != "$pmin" ]; then
-              kind=minor
+              kind="minor"
             else
-              kind=patch
+              kind="patch"
             fi
           fi
           case "$kind" in
