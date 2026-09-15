@@ -78,7 +78,8 @@ If you also develop on Windows, your Windows `PATH` is visible inside WSL, so a 
 
 ### NixOS (flake)
 
-Add omac as a flake input and install its package for the current system:
+Add omac as a flake input and install its package for the current system.
+The flake builds a pinned application release, not the latest development code:
 
 ```nix
 {
@@ -103,11 +104,18 @@ The flake provides packages for `x86_64-linux`, `aarch64-linux`, and
 `aarch64-darwin`. Intel macOS is not exported because the pinned nixpkgs
 unstable release no longer supports `x86_64-darwin`.
 
-To try the latest version without adding it to your configuration, run:
+To try the currently packaged release without adding it to your configuration, run:
 
 ```bash
 nix run github:TNG/oh-my-agentic-coder -- doctor
 ```
+
+New releases packaged by the Nix release workflow also have permanent `nix-*`
+tags. Once `nix-0.10.0` has been published, for example, you can pin it with
+`inputs.omac.url = "github:TNG/oh-my-agentic-coder/nix-0.10.0";`.
+Use the Nix tag rather than `v0.10.0`: the application tag predates its packaging
+update. Update a Nix installation through your flake inputs and rebuild, not
+with `omac update` (the Nix store is read-only).
 
 To make a harness available only when omac runs it, import the NixOS module and
 enable it. The module wraps omac and adds selected harnesses only to that

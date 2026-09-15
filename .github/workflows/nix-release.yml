@@ -1,0 +1,178 @@
+name: Nix release
+
+on:
+  workflow_call:
+    inputs:
+      release_tag:
+        description: Published v-prefixed release tag
+        required: true
+        type: string
+    secrets:
+      NIX_RELEASE_TOKEN:
+        description: PAT with contents and pull requests write on the upstream repository
+        required: true
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Published v-prefixed release tag to validate or recover
+        required: true
+        type: string
+      dry_run:
+        description: Validate only; do not commit, tag, push, or open a PR
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  pull-requests: read
+
+# Serialize retries of one release without displacing other pending releases.
+concurrency:
+  group: nix-release-${{ inputs.release_tag }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    # Reusable calls retain the caller's event name, but only direct dispatch
+    # includes dry_run in this workflow's inputs. Direct recovery must use main.
+    if: >-
+      github.repository == 'TNG/oh-my-agentic-coder' &&
+      (!contains(toJSON(inputs), '"dry_run"') || github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    outputs:
+      base_rev: ${{ steps.release.outputs.base_rev }}
+      source_rev: ${{ steps.release.outputs.source_rev }}
+      recovery: ${{ steps.release.outputs.recovery }}
+    env:
+      GH_REPO: TNG/oh-my-agentic-coder
+      GH_HOST: github.com
+      RELEASE_TAG: ${{ inputs.release_tag }}
+    steps:
+      - name: Checkout upstream main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Resolve published release and capture main
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: sh scripts/publish-nix-release.sh prepare "$RELEASE_TAG"
+
+      # Do not set nix_path or update the checked-in flake.lock.
+      - name: Install Nix
+        if: steps.release.outputs.recovery != 'true'
+        uses: cachix/install-nix-action@v31
+
+      - name: Update packaging and verify vendor fetch
+        if: steps.release.outputs.recovery != 'true'
+        env:
+          SOURCE_REV: ${{ steps.release.outputs.source_rev }}
+        run: |
+          python3 scripts/update-nix-release.py "$RELEASE_TAG" "$SOURCE_REV"
+          git diff --check
+
+      - name: Check publication preconditions (also in dry runs)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_REV: ${{ steps.release.outputs.source_rev }}
+          BASE_REV: ${{ steps.release.outputs.base_rev }}
+        run: sh scripts/publish-nix-release.sh check "$RELEASE_TAG" "$SOURCE_REV" "$BASE_REV"
+
+      - name: Upload prepared flake
+        if: steps.release.outputs.recovery != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: nix-release-flake
+          path: flake.nix
+          if-no-files-found: error
+          retention-days: 1
+
+  validate:
+    needs: prepare
+    if: needs.prepare.outputs.recovery != 'true'
+    name: Validate (${{ matrix.system }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            system: x86_64-linux
+          - runner: ubuntu-24.04-arm
+            system: aarch64-linux
+          - runner: macos-latest
+            system: aarch64-darwin
+    env:
+      RELEASE_TAG: ${{ inputs.release_tag }}
+      EXPECTED_SYSTEM: ${{ matrix.system }}
+    steps:
+      - name: Checkout captured main
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.base_rev }}
+          persist-credentials: false
+
+      - name: Download prepared flake
+        uses: actions/download-artifact@v4
+        with:
+          name: nix-release-flake
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+
+      - name: Build and validate release
+        run: |
+          test "$(nix eval --raw --impure --expr builtins.currentSystem)" = "$EXPECTED_SYSTEM"
+          EXPECTED_VERSION=${RELEASE_TAG#v} sh scripts/flake_test.sh
+          git diff --check
+
+  publish:
+    needs: [prepare, validate]
+    # Recovery reuses an existing immutable tag, so validation is skipped.
+    if: >-
+      always() && needs.prepare.result == 'success' &&
+      (needs.prepare.outputs.recovery == 'true' || needs.validate.result == 'success') &&
+      (github.event_name != 'workflow_dispatch' || !inputs.dry_run) &&
+      github.repository == 'TNG/oh-my-agentic-coder' &&
+      (!contains(toJSON(inputs), '"dry_run"') || github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    env:
+      GH_REPO: TNG/oh-my-agentic-coder
+      GH_HOST: github.com
+      RELEASE_TAG: ${{ inputs.release_tag }}
+      SOURCE_REV: ${{ needs.prepare.outputs.source_rev }}
+      BASE_REV: ${{ needs.prepare.outputs.base_rev }}
+    steps:
+      - name: Checkout captured main
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.base_rev }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Detect publication recovery again
+        id: publication
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: sh scripts/publish-nix-release.sh prepare "$RELEASE_TAG"
+
+      - name: Download prepared flake
+        if: steps.publication.outputs.recovery != 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: nix-release-flake
+
+      - name: Recheck publication preconditions
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: sh scripts/publish-nix-release.sh check "$RELEASE_TAG" "$SOURCE_REV" "$BASE_REV"
+
+      # This fresh runner never executes Nix or the updater. Only this final
+      # step receives the PAT, which triggers PR CI without pushing to main.
+      - name: Publish permanent tag and packaging PR
+        env:
+          GH_TOKEN: ${{ secrets.NIX_RELEASE_TOKEN }}
+        run: sh scripts/publish-nix-release.sh publish "$RELEASE_TAG" "$SOURCE_REV" "$BASE_REV"

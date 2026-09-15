@@ -350,3 +350,17 @@ jobs:
           PY
           )
           curl -sS -X POST -H 'Content-type: application/json' --data "$payload" "$SLACK_WEBHOOK_URL"
+
+  nix-release:
+    needs: goreleaser
+    if: >-
+      startsWith(github.ref, 'refs/tags/v') &&
+      (github.event_name == 'push' || !inputs.dry_run)
+    permissions:
+      contents: read
+      pull-requests: read
+    uses: ./.github/workflows/nix-release.yml
+    with:
+      release_tag: ${{ github.ref_name }}
+    secrets:
+      NIX_RELEASE_TOKEN: ${{ secrets.NIX_RELEASE_TOKEN }}
