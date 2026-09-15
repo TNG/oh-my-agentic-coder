@@ -124,7 +124,12 @@ func (g *Grants) prepareMarkers() (func(), error) {
 	if dirFileName == "" {
 		dirFileName = markerDirFileName
 	}
-	if err := os.WriteFile(filepath.Join(markerDir, dirFileName), text, 0o444); err != nil {
+	markerDirFile := filepath.Join(markerDir, dirFileName)
+	if !strings.HasPrefix(filepath.Clean(markerDirFile), markerDir+string(filepath.Separator)) {
+		cleanup()
+		return noop, fmt.Errorf("grants: denial dir name %q escapes marker directory", dirFileName)
+	}
+	if err := os.WriteFile(markerDirFile, text, 0o444); err != nil {
 		cleanup()
 		return noop, err
 	}
@@ -317,6 +322,13 @@ func resolveWorktreeCommonDir(workdir string) (common, admin string, ok bool) {
 	if err != nil {
 		return "", "", false
 	}
+	// Back-pointer check: <admin>/gitdir must point back at this workdir's
+	// .git file. Without this, any workdir that names another worktree's
+	// admin dir in its .git file gets that repo's grants with no proof of
+	// ownership.
+	if !worktreeBackPointerValid(admin, dotgit) {
+		return "", "", false
+	}
 	data, err := os.ReadFile(filepath.Join(admin, "commondir"))
 	if err != nil {
 		return "", "", false
@@ -336,6 +348,34 @@ func resolveWorktreeCommonDir(workdir string) (common, admin string, ok bool) {
 		return "", "", false
 	}
 	return common, admin, true
+}
+
+// worktreeBackPointerValid reads <admin>/gitdir and checks that it resolves
+// to the same path as dotgit. Both sides are symlink-resolved so that
+// git's canonical (EvalSymlinks) path matches dotgit's possibly-unresolved
+// form (e.g. /var vs /private/var on macOS). Falls back to filepath.Clean
+// when EvalSymlinks fails. Returns false when the file is absent or the
+// paths don't match.
+func worktreeBackPointerValid(admin, dotgit string) bool {
+	data, err := os.ReadFile(filepath.Join(admin, "gitdir"))
+	if err != nil {
+		return false
+	}
+	ptr := strings.TrimSpace(string(data))
+	if ptr == "" {
+		return false
+	}
+	if !filepath.IsAbs(ptr) {
+		ptr = filepath.Join(admin, ptr)
+	}
+	ptr = filepath.Clean(ptr)
+	canonical := func(p string) string {
+		if r, err := filepath.EvalSymlinks(p); err == nil {
+			return r
+		}
+		return p
+	}
+	return canonical(ptr) == canonical(dotgit)
 }
 
 // pathWithinRoot reports whether path, symlinks resolved, is root or inside it.

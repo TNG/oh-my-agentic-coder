@@ -36,7 +36,7 @@ A built-in set of protected paths SHALL be denied to the child even when covered
 - shell history and shell config files: `~/.bash_history`, `~/.zsh_history`, `~/.python_history`, `~/.zshrc`, `~/.zprofile`, `~/.zshenv`, `~/.bashrc`, `~/.bash_profile`, `~/.profile`, `~/.config/fish`, `~/.env`, `~/.envrc`
 - Linux keyring/browser equivalents
 
-A profile MAY punch holes through the protected set via `filesystem.override_deny` (string[]): listed paths are removed from the deny set (a grant is still required to actually access them). On macOS denials SHALL be emitted between read-allow and write-allow rules so granted write paths take precedence as in nono; deny rules MUST cover both literal and canonicalized path forms.
+A profile MAY punch holes through the protected set via `filesystem.override_deny` (string[]): listed paths are removed from the deny set (a grant is still required to actually access them). On macOS, Seatbelt is last-match-wins: protected-path deny rules SHALL be emitted after all read-allow and write-allow rules so they override both; deny rules MUST cover both literal and canonicalized path forms.
 
 #### Scenario: SSH keys protected despite broad grant
 - **WHEN** the profile grants `~/Files` as read and the child reads `~/Files/../.ssh/id_ed25519` or any path under `~/.ssh`
@@ -55,7 +55,7 @@ A profile MAY mask files inside otherwise-granted trees via `filesystem.deny` (s
 - an entry containing a path separator, or beginning with `~` or `$`, is an explicit path: it is expanded and denied at that exact path;
 - a bare basename glob (no separator, e.g. `.env` or `*.key`) SHALL be matched against the file and directory names found by walking the explicitly granted trees and the working directory, and every match denied. Baseline system trees (e.g. `/usr`) SHALL NOT be walked. A matched directory is masked as a whole and not descended into.
 
-Denied paths SHALL be enforced with the same mechanism as the built-in protected set (macOS deny rules between read- and write-allows covering literal and canonicalized forms; Linux `--ro-bind /dev/null` for files and `--tmpfs` for directories). A malformed glob or empty entry SHALL fail profile validation.
+Denied paths SHALL be enforced with the same mechanism as the built-in protected set (macOS deny rules after all allows, covering literal and canonicalized forms; Linux `--ro-bind /dev/null` for files and `--tmpfs` for directories). A malformed glob or empty entry SHALL fail profile validation.
 
 #### Scenario: cwd .env denied while the workdir is granted
 - **WHEN** the profile grants the workdir `readwrite` and sets `filesystem.deny: [".env"]`, and the working directory contains `.env` and `sub/.env`

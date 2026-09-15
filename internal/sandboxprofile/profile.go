@@ -411,6 +411,20 @@ func (p *Profile) Validate() error {
 			}
 		}
 	}
+	if d := p.Denial; d != nil && d.MarkerDirName != "" {
+		if strings.ContainsAny(d.MarkerDirName, `/\`) || d.MarkerDirName == ".." || d.MarkerDirName == "." {
+			return fmt.Errorf("sandbox profile: denial.marker_dir_name %q must be a single path component", d.MarkerDirName)
+		}
+	}
+	for _, entry := range p.Filesystem.Allow {
+		exp, err := ExpandPath(entry)
+		if err != nil {
+			continue
+		}
+		if exp == "/" {
+			return fmt.Errorf("sandbox profile: filesystem.allow contains %q: blanket root grant is not permitted", entry)
+		}
+	}
 	return nil
 }
 

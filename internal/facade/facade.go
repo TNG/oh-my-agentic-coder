@@ -789,16 +789,6 @@ func (f *Facade) writeStatus(w http.ResponseWriter, _ *http.Request) {
 // proxyHTTP forwards plain HTTP (including SSE).
 func (f *Facade) proxyHTTP(w http.ResponseWriter, r *http.Request, route *Route, rest string, started time.Time) {
 	upstream := &url.URL{Scheme: "http", Host: upstreamHost(route.UpstreamPort)}
-	rp := httputil.NewSingleHostReverseProxy(upstream)
-
-	// Rewrite the path and header set for the upstream request.
-	rp.Rewrite = func(pr *httputil.ProxyRequest) {
-		pr.Out.URL.Scheme = "http"
-		pr.Out.URL.Host = upstream.Host
-		pr.Out.URL.Path = "/" + rest
-		pr.Out.Host = upstream.Host
-		pr.Out.Header.Set("X-Forwarded-Prefix", "/"+route.key())
-	}
 
 	// Enforce max body bytes for inbound request body (best-effort; SSE has no body).
 	limit := route.MaxBodyBytes
@@ -809,36 +799,43 @@ func (f *Facade) proxyHTTP(w http.ResponseWriter, r *http.Request, route *Route,
 		r.Body = http.MaxBytesReader(w, r.Body, limit)
 	}
 
-	// Modify response to ensure SSE isn't buffered by any intermediate.
-	rp.ModifyResponse = func(resp *http.Response) error {
-		if ct := resp.Header.Get("Content-Type"); strings.HasPrefix(ct, "text/event-stream") {
-			// net/http on the server side auto-flushes for chunked, but setting
-			// X-Accel-Buffering tells any downstream-minded client we're streaming.
-			resp.Header.Set("X-Accel-Buffering", "no")
-		}
-		return nil
-	}
-
-	rp.ErrorHandler = func(w http.ResponseWriter, _ *http.Request, err error) {
-		reason := "upstream-error"
-		code := http.StatusBadGateway
-		if isTimeout(err) {
-			reason = "timeout"
-			code = http.StatusGatewayTimeout
-		} else if isConnRefused(err) {
-			reason = "sidecar-down"
-			code = http.StatusServiceUnavailable
-		}
-		w.Header().Set("X-Omac-Reason", reason)
-		http.Error(w, "omac: "+reason, code)
-	}
-
-	// Short connect timeout; liberal overall IO.
-	rp.Transport = &http.Transport{
-		DialContext: (&net.Dialer{Timeout: 2 * time.Second}).DialContext,
-		// Disable response buffering so SSE frames flush immediately.
-		DisableCompression:    true,
-		ResponseHeaderTimeout: 30 * time.Second,
+	// Construct the proxy directly with Rewrite so there is no pre-installed
+	// Director from NewSingleHostReverseProxy. Having both Director and Rewrite
+	// set on the same ReverseProxy is illegal and causes every request to be
+	// handled by ErrorHandler instead of reaching the upstream.
+	rp := &httputil.ReverseProxy{
+		Rewrite: func(pr *httputil.ProxyRequest) {
+			pr.Out.URL.Scheme = "http"
+			pr.Out.URL.Host = upstream.Host
+			pr.Out.URL.Path = "/" + rest
+			pr.Out.Host = upstream.Host
+			pr.Out.Header.Set("X-Forwarded-Prefix", "/"+route.key())
+		},
+		ModifyResponse: func(resp *http.Response) error {
+			if ct := resp.Header.Get("Content-Type"); strings.HasPrefix(ct, "text/event-stream") {
+				resp.Header.Set("X-Accel-Buffering", "no")
+			}
+			return nil
+		},
+		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
+			reason := "upstream-error"
+			code := http.StatusBadGateway
+			if isTimeout(err) {
+				reason = "timeout"
+				code = http.StatusGatewayTimeout
+			} else if isConnRefused(err) {
+				reason = "sidecar-down"
+				code = http.StatusServiceUnavailable
+			}
+			w.Header().Set("X-Omac-Reason", reason)
+			http.Error(w, "omac: "+reason, code)
+		},
+		// Short connect timeout; liberal overall IO.
+		Transport: &http.Transport{
+			DialContext:           (&net.Dialer{Timeout: 2 * time.Second}).DialContext,
+			DisableCompression:    true,
+			ResponseHeaderTimeout: 30 * time.Second,
+		},
 	}
 
 	// Wrap ResponseWriter so we capture the upstream status for logging.

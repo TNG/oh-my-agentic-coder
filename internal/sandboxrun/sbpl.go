@@ -12,9 +12,9 @@ import (
 // string generation — unit-testable on every platform; only the exec
 // path is darwin-specific.
 //
-// Rule order matters and mirrors nono (crates/nono/src/sandbox/macos.rs):
-// read allows -> protected-path denies -> write allows, so a granted
-// write path wins over a global deny while protected reads stay denied.
+// Rule order matters: read allows -> write allows -> protected-path denies.
+// Seatbelt is last-match-wins, so protected denies placed last override
+// both read and write allows for those paths.
 func GenerateSBPL(g *Grants) string {
 	var b strings.Builder
 	b.WriteString("(version 1)\n")
@@ -72,20 +72,20 @@ func GenerateSBPL(g *Grants) string {
 	}
 	b.WriteString("\n")
 
-	// --- Protected-path denies (between read and write allows) ---
-	for _, p := range g.ProtectedPaths {
-		for _, fp := range pathForms(p) {
-			fmt.Fprintf(&b, "(deny file-read* (subpath %s))\n", sbplQuote(fp))
-			fmt.Fprintf(&b, "(deny file-write* (subpath %s))\n", sbplQuote(fp))
-		}
-	}
-	b.WriteString("\n")
-
 	// --- Write allows ---
 	writable := append(append([]string{}, g.WritePaths...), g.AllowPaths...)
 	for _, p := range writable {
 		for _, fp := range pathForms(p) {
 			fmt.Fprintf(&b, "(allow file-write* (subpath %s))\n", sbplQuote(fp))
+		}
+	}
+	b.WriteString("\n")
+
+	// --- Protected-path denies (after all allows, so last-match-wins blocks both reads and writes) ---
+	for _, p := range g.ProtectedPaths {
+		for _, fp := range pathForms(p) {
+			fmt.Fprintf(&b, "(deny file-read* (subpath %s))\n", sbplQuote(fp))
+			fmt.Fprintf(&b, "(deny file-write* (subpath %s))\n", sbplQuote(fp))
 		}
 	}
 	b.WriteString("\n")

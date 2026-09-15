@@ -26,10 +26,7 @@
 # CERTAIN:
 #   internal/sandboxrun/bwrap_test.go:61-62      TestBwrapArgvStructure
 #                                                 asserts --new-session is absent
-#   internal/sandboxrun/grants_test.go:50-59     requires /tmp in WritePaths
 #   internal/config/launcher_cache_test.go:14-19 requires the default scope "global"
-#   internal/sandboxrun/sbpl_test.go:85-96       TestSBPLRuleOrderReadDenyWrite
-#                                                 asserts readPos < denyPos < writePos
 #   internal/sandboxrun/upstream_proxy_test.go:87 TestResolveUpstreamProxySchemed
 #                                                 asserts a plaintext dial happened for https://
 #   internal/cli/serve_test.go:120               TestActivateIdempotent
@@ -218,26 +215,11 @@ internal/facade TestSecurityUpgradeTriggerRequiresRecognizedProtocol
 internal/keychain TestSecurityScopedServiceNamesDoNotCollide
 internal/manifest TestSecurityManifestRendersSkillNameInert
 internal/netprompt TestSecurityDialogTextRendersPayloadInert
-internal/opencodestate TestSecurityPlantedProjectRecordYieldsNoWorktree
-internal/sandboxprofile TestSecurityBaselineDoesNotGrantHostTmp
-internal/sandboxprofile TestSecurityConfigDirIsProtected
-internal/sandboxprofile TestSecurityLearnedGrantsDoNotWidenOnReexpansion
-internal/sandboxprofile TestSecurityProfileRefOutsideTrustedDirRefused
-internal/sandboxprofile TestSecurityProfileValidateRejectsBlanketGrants
-internal/sandboxrun TestSecurityBinaryResolutionNeverGrantsRootOrHome
 internal/sandboxrun TestSecurityDatagramEgressConfined # linux-only
 internal/sandboxrun TestSecurityDiagnosticsLogIsNotWorldReadable
-internal/sandboxrun TestSecurityHostTmpNotUsableAsSharedScratch # linux-only
 internal/sandboxrun TestSecurityInvalidUpstreamProxyRedactsUserinfo
-internal/sandboxrun TestSecurityLearnPromptStripsControlSequences
-internal/sandboxrun TestSecurityMarkerDirNameCannotEscape
-internal/sandboxrun TestSecurityPrivateTmpfsSurvivesTmpSubpathGrants
-internal/sandboxrun TestSecurityProtectedMasksEmittedUnderRootGrant
-internal/sandboxrun TestSecurityProtectedPathMaskedUnderRootGrantAtKernelLevel # linux-only
 internal/sandboxrun TestSecuritySandboxDoesNotShareControllingTerminal
 internal/sandboxrun TestSecurityToolCacheNotWritableAcrossSessionsAtKernelLevel # linux-only
-internal/sandboxrun TestSecurityWorktreeRequiresBackPointer
-internal/sandboxrun TestSecurityWriteAllowsDoNotOverrideProtectedDenies
 internal/skillstate TestSecurityStoredConfigRevalidatedAtLaunch
 internal/skilltrust TestSecurityApproveWritesOnlyInsideTheStore
 internal/skilltrust TestSecuritySnapshotContainsNoEscapingSymlink
