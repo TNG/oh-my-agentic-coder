@@ -102,15 +102,23 @@ func BuildBwrapArgv(g *Grants, stage2Argv []string) ([]string, error) {
 	}
 	sort.Slice(ordered, func(i, j int) bool { return ordered[i].path < ordered[j].path })
 
+	// tmpGranted is true only when bare /tmp itself is bound — a scoped
+	// subpath like /tmp/omac-sandbox-tmp-x does not expose the whole shared
+	// host temp dir, so it must not suppress the private --tmpfs /tmp.
 	tmpGranted := rootGranted
+	// Separate /tmp subpath mounts so we can emit them AFTER --tmpfs /tmp.
+	var tmpSubpathMounts []*mount
 	for _, m := range ordered {
-		// A missing -try mount binds nothing, so it can't stand in for the
-		// /tmp tmpfs fallback below.
-		if (m.path == "/tmp" || strings.HasPrefix(m.path, "/tmp/")) && (!m.try || exists(m.path)) {
+		if m.path == "/tmp" && (!m.try || exists(m.path)) {
 			tmpGranted = true
 		}
 		if rootGranted {
-			continue // everything is already bound rw via "/"
+			continue // everything already bound rw via "/"
+		}
+		// Defer /tmp subpath binds: they must layer over --tmpfs /tmp.
+		if strings.HasPrefix(m.path, "/tmp/") {
+			tmpSubpathMounts = append(tmpSubpathMounts, m)
+			continue
 		}
 		flag := "--ro-bind"
 		if m.rw {
@@ -124,10 +132,21 @@ func BuildBwrapArgv(g *Grants, stage2Argv []string) ([]string, error) {
 	if !tmpGranted {
 		argv = append(argv, "--tmpfs", "/tmp")
 	}
+	// Emit /tmp subpath binds after the tmpfs so they shadow it correctly.
+	for _, m := range tmpSubpathMounts {
+		flag := "--ro-bind"
+		if m.rw {
+			flag = "--bind"
+		}
+		if m.try {
+			flag += "-try"
+		}
+		argv = append(argv, flag, m.path, m.path)
+	}
 
-	// Protected-path masking: only needed where a granted tree would
-	// otherwise expose the protected path. Everything else is already
-	// absent (unbound). Masks must come after the binds they shadow.
+	// Protected-path masking: when rootGranted every protected path is
+	// covered; otherwise check against the ordered mount list.
+	// Masks must come after the binds they shadow.
 	//
 	// When denial markers are prepared (see Grants.prepareMarkers), a
 	// protected file is masked with a read-only marker file whose contents
@@ -135,7 +154,7 @@ func BuildBwrapArgv(g *Grants, stage2Argv []string) ([]string, error) {
 	// marker dir holding a single .omac-denied file. When no markers are
 	// prepared, the historical /dev/null + empty-tmpfs behavior applies.
 	for _, prot := range g.ProtectedPaths {
-		if !coveredByAny(prot, ordered) {
+		if !rootGranted && !coveredByAny(prot, ordered) {
 			continue
 		}
 		fi, err := os.Lstat(prot)
