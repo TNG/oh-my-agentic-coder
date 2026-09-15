@@ -21,6 +21,7 @@ func ExpandPath(p string) (string, error) {
 	if p == "" {
 		return "", fmt.Errorf("empty path")
 	}
+	var homePrefix string
 	if p == "~" {
 		home, err := os.UserHomeDir()
 		if err != nil {
@@ -32,12 +33,13 @@ func ExpandPath(p string) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("expand %q: %w", p, err)
 		}
+		homePrefix = home
 		p = filepath.Join(home, p[2:])
 	}
 	p = os.Expand(p, func(name string) string {
 		return os.Getenv(name)
 	})
-	if p == "" {
+	if p == "" || (homePrefix != "" && filepath.Clean(p) == filepath.Clean(homePrefix)) {
 		return "", ErrEmptyExpansion
 	}
 	abs, err := filepath.Abs(p)

@@ -242,7 +242,7 @@ func OfferLearnedFolders(profilePath string, candidates []string, in io.Reader, 
 	fmt.Fprintln(out, "\nomac sandbox: learn mode observed these folders outside the current profile:")
 	intentLines := lookupIntentLines(intentBase, candidates)
 	for i, c := range candidates {
-		fmt.Fprintf(out, "  %-40s — %s\n", c, intentLines[i])
+		fmt.Fprintf(out, "  %-40s — %s\n", sanitizePath(c), intentLines[i])
 	}
 	fmt.Fprintf(out, "Add them to filesystem.allow in %s? [y/N] ", profilePath)
 	reader := bufio.NewReader(in)
@@ -282,6 +282,17 @@ func OfferLearnedFolders(profilePath string, candidates []string, in io.Reader, 
 	}
 	fmt.Fprintf(out, "omac sandbox: added %d folder(s) to %s\n", added, profilePath)
 	return nil
+}
+
+// sanitizePath replaces terminal control bytes in path with '?' so an
+// adversarially crafted path cannot repaint the operator's terminal.
+func sanitizePath(p string) string {
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return '?'
+		}
+		return r
+	}, p)
 }
 
 // abbreviateHome renders /Users/u/x as ~/x for nicer profile entries.
