@@ -117,6 +117,17 @@ mkdir -p "$DRIVER_HOME" "$ONBOARD_DIR"
 git -C "$REPO" show "${README_REF}:README.md" > "$ONBOARD_DIR/README.md"
 
 echo "== Installing opencode CLI ($OPENCODE_VERSION) =="
+# Validate the package spec before passing it to bun install -g: only
+# <name>@<version> is acceptable; a git/tarball URL or a different package
+# name installs arbitrary code with whatever credentials this job holds.
+case "$OPENCODE_VERSION" in
+  *[!A-Za-z0-9_./@-]*|*[!A-Za-z0-9_.+-]*)
+    echo "e2e-readme-onboarding: unsafe package spec: '$OPENCODE_VERSION'" >&2; exit 1 ;;
+esac
+if ! printf '%s' "$OPENCODE_VERSION" | grep -qE '^[A-Za-z0-9_./@-]+@[A-Za-z0-9_.+-]+$'; then
+  echo "e2e-readme-onboarding: package spec must be <name>@<version>, got: '$OPENCODE_VERSION'" >&2
+  exit 1
+fi
 bun install -g "$OPENCODE_VERSION"
 
 echo "== Writing opencode provider config (SKAINET / $MODEL) =="
