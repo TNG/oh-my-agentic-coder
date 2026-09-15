@@ -37,25 +37,38 @@ For full multi-platform artifacts (`.deb`, `.pkg.tar.zst`, checksums), use GoRel
 
 ## Nix flake
 
-`flake.nix` packages `cmd/omac` for the systems listed in its `eachSystem`
-call. On Linux, its wrapper provides the Quick Start runtime executables:
+`flake.nix` packages `cmd/omac` from a pinned release source, not the current
+checkout, for the systems listed in its `eachSystem` call. Ordinary Go dependency
+updates therefore do not change the Nix package or invalidate its hashes.
+On Linux, its wrapper provides the Quick Start runtime executables:
 Bubblewrap, Zenity, and `notify-send` from libnotify. When the platform
 prerequisites change, update both this wrapper and the NixOS instructions in
 the [Quick Start](../getting-started/quick-start.md).
 
-The package version is based on the latest verified release and adds the flake
-source timestamp as an `-unstable-` suffix. When updating that release baseline,
-verify the release tag and commit first, then update the `version` expression in
-`flake.nix`. Do not label an unpinned post-release checkout as the exact release
-version. Update `flake.lock` deliberately with `nix flake update`; when Go
-dependencies change, rebuild `.#omac` and use the vendor hash Nix reports.
+The `release` block in `flake.nix` holds the version, exact source commit, source
+hash, and `vendorHash` together. The [Nix release workflow](#nix-release-publication)
+updates those fields automatically after publication; no separate dependency
+metadata file or manual hash update is needed for ordinary releases. It uses
+the flake's pinned nixpkgs and Go toolchain to calculate the vendor hash.
+Changing the required Go version may still require updating the toolchain in
+the flake. Update `flake.lock` deliberately with `nix flake update`, not during
+automatic release packaging.
 
 Run these checks after a flake, dependency, or version update:
 
 ```bash
 nix flake check --all-systems --no-build
 sh scripts/flake_test.sh
+python3 scripts/update-nix-release_test.py
+python3 scripts/nix-release-workflow_test.py
 ```
+
+The first command evaluates every supported system; the smoke script builds
+and runs the package on the current system and checks its reported version.
+The Python tests exercise hash-update failures and publication against temporary
+local Git repositories, without making GitHub changes. These do not replace
+the [Go tests](testing.md), which test the current checkout rather than the
+pinned Nix release.
 
 ## Documentation site
 
@@ -94,6 +107,55 @@ The release is built by [GoReleaser](https://goreleaser.com/).
 | --- | --- | --- | --- |
 | Stable (`v1.2.3`) | Published as a normal release | Formula updated | Announcement posted |
 | Pre-release (`v1.2.3-rc.1`) | Published as a pre-release | Not updated | No announcement |
+
+### Nix release publication
+
+After GoReleaser publishes a `v*` tag, the reusable
+[Nix release workflow](https://github.com/TNG/oh-my-agentic-coder/blob/main/.github/workflows/nix-release.yml)
+does the following:
+
+1. Checks out `main` and resolves the published release tag to its exact source commit.
+2. Runs `scripts/update-nix-release.py` to update only the four release fields in
+   `flake.nix`. Failed hash updates restore the original file. Separate Linux x86-64,
+   Linux ARM64, and macOS ARM64 jobs build and check the same prepared flake.
+3. Creates a packaging-only commit on `automation/nix-<version>`, and atomically
+   pushes that branch and a permanent `nix-<version>` tag pointing to the commit.
+4. Opens a PR back to `main` using the repository template. Normal review and
+   branch protection still apply; the workflow never pushes to `main`.
+
+For example, `v0.10.0` identifies the application release and `nix-0.10.0`
+identifies its Nix packaging. Consumers can use the Nix tag immediately, even
+before the packaging PR is merged. Deleting the automation branch after merging
+must not delete the tag. The flake fetches the application source from the
+`v0.10.0` commit, not from its own `nix-0.10.0` commit, avoiding a circular source
+hash. Files elsewhere in the Nix-tagged checkout can reflect a later `main`.
+Existing `v*` tags are never moved; releases predating this automation do not
+automatically acquire Nix tags.
+
+**Repository setup:** provide `NIX_RELEASE_TOKEN`, a dedicated fine-grained PAT
+with Contents and Pull requests read/write permissions on this repository. It
+must be allowed to create `automation/nix-*` branches and `nix-*` tags, but needs
+no bypass for protected `main`. Publication runs on a fresh runner, and the token
+is exposed only to the final publication step, not any Nix build or smoke test.
+Using a dedicated token rather than `GITHUB_TOKEN` allows the PR
+to trigger normal CI. Configure tag rules to prohibit updating or deleting
+`nix-*` tags; the workflow itself never force-pushes or replaces them.
+
+For a dry run or recovery, run **Nix release** from the Actions UI on `main`,
+specifying the published `v*` tag. **Dry run** defaults to enabled and performs
+validation without creating commits, tags, or PRs. Disable it to publish. Runs
+for different release versions are independent; concurrent attempts at the same
+version are serialized.
+If `main` advances during validation, preparation stops instead of rebasing;
+rerun against the new `main`. A newer version already packaged on `main` prevents
+publishing an older version as a new update.
+
+If the tag push succeeds but PR creation fails, rerunning reuses the permanent
+tag and retries only the outstanding PR operation. An existing open or merged
+PR is not duplicated. A closed PR, missing automation branch, or conflicting tag
+requires manual investigation; never repair it by moving the permanent tag.
+A Nix packaging failure does not retract the application release, and previously
+published Nix tags remain usable.
 
 ## CI
 
