@@ -344,7 +344,7 @@ jobs:
             echo "## E2E failure classification (${{ matrix.harness }} / ${{ matrix.os }})"
             echo ""
             echo "Model: \`$STEP_MODEL\` · context: \`$STEP_CONTEXT\`"
-            if [ "$NEEDS_FALLBACK" = 'true' ] && [ "$MATRIX_HARNESS" != 'claude-code' ]; then
+            if [ "$NEEDS_FALLBACK" = "true" ] && [ "$MATRIX_HARNESS" != "claude-code" ]; then
               echo ""
               echo "> ⚠️ Fallback model — the intended model is not served by the gateway, so this result does NOT certify it."
             fi
@@ -581,7 +581,7 @@ jobs:
             echo "## E2E failure classification (${{ matrix.harness }} / WSL2)"
             echo ""
             echo "Model: \`$STEP_MODEL\` · context: \`$STEP_CONTEXT\`"
-            if [ "$NEEDS_FALLBACK" = 'true' ] && [ "$MATRIX_HARNESS" != 'claude-code' ]; then
+            if [ "$NEEDS_FALLBACK" = "true" ] && [ "$MATRIX_HARNESS" != "claude-code" ]; then
               echo ""
               echo "> ⚠️ Fallback model — the intended model is not served by the gateway, so this result does NOT certify it."
             fi
@@ -748,7 +748,7 @@ jobs:
             echo "## E2E failure classification (codewhale / ubuntu-latest)"
             echo ""
             echo "Model: \`$STEP_MODEL\` · context: \`$STEP_CONTEXT\`"
-            if [ "$NEEDS_FALLBACK" = 'true' ]; then
+            if [ "$NEEDS_FALLBACK" = "true" ]; then
               echo ""
               echo "> ⚠️ Fallback model — the intended model is not served by the gateway, so this result does NOT certify it."
             fi
