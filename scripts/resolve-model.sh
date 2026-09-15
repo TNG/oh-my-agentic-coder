@@ -42,12 +42,28 @@ reject_unlaunchable() {
   exit 1
 }
 
+# Reject model values that contain characters outside a safe allowlist.
+# Model IDs are provider/name pairs like "zai-org/GLM-5.2" or
+# "claude-sonnet-5"; only alphanumerics, hyphens, dots, underscores,
+# slashes, and colons are needed. Anything else (newlines, shell
+# metacharacters, quotes) is a sign of injection, not a valid model name.
+reject_unsafe_model() {
+  local model="$1"
+  case "$model" in
+    *[!A-Za-z0-9._/:@-]*)
+      echo "resolve-model: model value contains unsafe characters: '$model'" >&2
+      exit 1
+      ;;
+  esac
+}
+
 # 1. Per-harness override.
 # Two tr passes, not one combined set: mixing a character class with a literal
 # in a single SET1 is unspecified, and macOS ships BSD tr.
 per_harness_var="E2E_MODEL_$(printf '%s' "$harness" | tr '[:lower:]' '[:upper:]' | tr '-' '_')"
 per_harness="${!per_harness_var:-}"
 if [ -n "$per_harness" ]; then
+  reject_unsafe_model "$per_harness"
   reject_unlaunchable "$per_harness"
   printf '%s\n' "$per_harness"
   exit 0
@@ -55,6 +71,7 @@ fi
 
 # 2. Cross-harness override.
 if [ -n "${E2E_MODEL:-}" ]; then
+  reject_unsafe_model "$E2E_MODEL"
   reject_unlaunchable "$E2E_MODEL"
   printf '%s\n' "$E2E_MODEL"
   exit 0

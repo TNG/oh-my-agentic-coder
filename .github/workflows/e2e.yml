@@ -92,25 +92,29 @@ jobs:
           # ANTHROPIC_BASE_URL, not this gateway. Its own input wins; failing
           # here (rather than in the matrix) keeps an unlaunchable model from
           # burning an install first.
-          cc=$(E2E_MODEL= scripts/probe-model.sh claude-code)
+          cc=$(E2E_MODEL='' scripts/probe-model.sh claude-code)
           echo "claude_code=$cc" >> "$GITHUB_OUTPUT"
 
       - name: Report the selection
+        env:
+          PROBE_MODEL: ${{ steps.probe.outputs.model }}
+          PROBE_CLAUDE_CODE: ${{ steps.probe.outputs.claude_code }}
+          PROBE_CANDIDATES: ${{ steps.probe.outputs.candidates }}
+          PROBE_FALLBACK: ${{ steps.probe.outputs.fallback }}
         run: |
-          gateway='${{ steps.probe.outputs.model }}'
           {
             echo "## Model selection"
             echo ""
             echo "| Harness | Model |"
             echo "|---|---|"
-            echo "| opencode, codex, copilot, pi, codewhale | \`$gateway\` |"
-            echo "| claude-code | \`${{ steps.probe.outputs.claude_code }}\` |"
+            echo "| opencode, codex, copilot, pi, codewhale | \`$PROBE_MODEL\` |"
+            echo "| claude-code | \`$PROBE_CLAUDE_CODE\` |"
             echo ""
-            echo "Probed: \`${{ steps.probe.outputs.candidates }}\`"
+            echo "Probed: \`$PROBE_CANDIDATES\`"
           } >> "$GITHUB_STEP_SUMMARY"
-          if [ '${{ steps.probe.outputs.fallback }}' = 'true' ]; then
+          if [ "$PROBE_FALLBACK" = 'true' ]; then
             echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "> ⚠️ **Fallback model in use.** The intended model is not served by the gateway, so these results are for \`$gateway\` and do NOT certify the intended one." >> "$GITHUB_STEP_SUMMARY"
+            echo "> ⚠️ **Fallback model in use.** The intended model is not served by the gateway, so these results are for \`$PROBE_MODEL\` and do NOT certify the intended one." >> "$GITHUB_STEP_SUMMARY"
           fi
 
   e2e:
@@ -320,33 +324,42 @@ jobs:
 
       - name: Skipped notice
         if: steps.run_e2e.outcome == 'skipped'
+        env:
+          STEP_MODEL: ${{ steps.model.outputs.model }}
         run: |
           echo "## E2E (${{ matrix.harness }} / ${{ matrix.os }}): SKIPPED" >> "$GITHUB_STEP_SUMMARY"
-          echo "skip_claude_code was set on this workflow_dispatch run (model would have been \`${{ steps.model.outputs.model }}\`)." >> "$GITHUB_STEP_SUMMARY"
+          echo "skip_claude_code was set on this workflow_dispatch run (model would have been \`$STEP_MODEL\`)." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Failure classification summary
         if: always() && steps.run_e2e.outcome != 'skipped'
+        env:
+          STEP_MODEL: ${{ steps.model.outputs.model }}
+          STEP_CONTEXT: ${{ steps.model.outputs.context }}
+          NEEDS_FALLBACK: ${{ needs.model.outputs.fallback }}
+          MATRIX_HARNESS: ${{ matrix.harness }}
         run: |
           # Render a markdown table on the run-summary page so the failure
           # cause is visible by indicator without opening the full log.
-          echo "## E2E failure classification (${{ matrix.harness }} / ${{ matrix.os }})" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "Model: \`${{ steps.model.outputs.model }}\` · context: \`${{ steps.model.outputs.context }}\`" >> "$GITHUB_STEP_SUMMARY"
-          if [ '${{ needs.model.outputs.fallback }}' = 'true' ] && [ '${{ matrix.harness }}' != 'claude-code' ]; then
-            echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "> ⚠️ Fallback model — the intended model is not served by the gateway, so this result does NOT certify it." >> "$GITHUB_STEP_SUMMARY"
-          fi
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Assertion | Mode | Reason |" >> "$GITHUB_STEP_SUMMARY"
-          echo "|-----------|------|--------|" >> "$GITHUB_STEP_SUMMARY"
-          if grep -qE 'FAIL \[[^]]+\]: [A-Z_]+ — ' /tmp/e2e-out.txt; then
-            grep -oE 'FAIL \[[^]]+\]: [A-Z_]+ — [^\\]*' /tmp/e2e-out.txt \
-              | sort -u \
-              | sed -E 's/FAIL \[([^]]+)\]: ([A-Z_]+) — (.*)/| `\1` | `\2` | \3 |/' \
-              >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "| _all passed_ | PASS | no failures |" >> "$GITHUB_STEP_SUMMARY"
-          fi
+          {
+            echo "## E2E failure classification (${{ matrix.harness }} / ${{ matrix.os }})"
+            echo ""
+            echo "Model: \`$STEP_MODEL\` · context: \`$STEP_CONTEXT\`"
+            if [ "$NEEDS_FALLBACK" = "true" ] && [ "$MATRIX_HARNESS" != "claude-code" ]; then
+              echo ""
+              echo "> ⚠️ Fallback model — the intended model is not served by the gateway, so this result does NOT certify it."
+            fi
+            echo ""
+            echo "| Assertion | Mode | Reason |"
+            echo "|-----------|------|--------|"
+            # shellcheck disable=SC2016
+            if grep -qE 'FAIL \[[^]]+\]: [A-Z_]+ — ' /tmp/e2e-out.txt; then
+              grep -oE 'FAIL \[[^]]+\]: [A-Z_]+ — [^\\]*' /tmp/e2e-out.txt \
+                | sort -u \
+                | sed -E 's/FAIL \[([^]]+)\]: ([A-Z_]+) — (.*)/| `\1` | `\2` | \3 |/'
+            else
+              echo "| _all passed_ | PASS | no failures |"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
           # Also echo to stdout so the table is visible in the raw log too.
           cat "$GITHUB_STEP_SUMMARY"
 
@@ -397,7 +410,7 @@ jobs:
       # WSL only forwards vars listed in WSLENV — include every job/step env
       # var the Go tests read via os.Getenv(). Without it, SKAINET_TOKEN,
       # E2E_MODEL_*, etc. are unbound inside wsl-bash.
-      WSLENV: GITHUB_OUTPUT:GITHUB_STEP_SUMMARY:SKAINET_TOKEN:SKAINET_INTERNAL:ANTHROPIC_BASE_URL:E2E_HARNESS:E2E_USE_LATEST:E2E_VERSION_OPENCODE:E2E_VERSION_CLAUDE_CODE:E2E_VERSION_CODEX:E2E_VERSION_COPILOT:E2E_VERSION_PI:E2E_MODEL_OPENCODE:E2E_MODEL_CODEX:E2E_MODEL_COPILOT:E2E_MODEL_PI:E2E_MODEL_CLAUDE_CODE:E2E_LOG_DIR:E2E_CACHE_DIR
+      WSLENV: GITHUB_OUTPUT:GITHUB_STEP_SUMMARY:SKAINET_TOKEN:SKAINET_INTERNAL:ANTHROPIC_BASE_URL:E2E_HARNESS:E2E_USE_LATEST:E2E_VERSION_OPENCODE:E2E_VERSION_CLAUDE_CODE:E2E_VERSION_CODEX:E2E_VERSION_COPILOT:E2E_VERSION_PI:E2E_MODEL_OPENCODE:E2E_MODEL_CODEX:E2E_MODEL_COPILOT:E2E_MODEL_PI:E2E_MODEL_CLAUDE_CODE:E2E_LOG_DIR:E2E_CACHE_DIR:STEP_MODEL:STEP_CONTEXT:NEEDS_FALLBACK:MATRIX_HARNESS
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -548,34 +561,43 @@ jobs:
       - name: Skipped notice
         if: steps.run_e2e.outcome == 'skipped'
         shell: wsl-bash {0}
+        env:
+          STEP_MODEL: ${{ steps.model.outputs.model }}
         run: |
           source "$HOME"/wsl-env.sh
           echo "## E2E (${{ matrix.harness }} / WSL2): SKIPPED" >> "$GITHUB_STEP_SUMMARY"
-          echo "skip_claude_code was set on this workflow_dispatch run (model would have been \`${{ steps.model.outputs.model }}\`)." >> "$GITHUB_STEP_SUMMARY"
+          echo "skip_claude_code was set on this workflow_dispatch run (model would have been \`$STEP_MODEL\`)." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Failure classification summary
         if: always() && steps.run_e2e.outcome != 'skipped'
         shell: wsl-bash {0}
+        env:
+          STEP_MODEL: ${{ steps.model.outputs.model }}
+          STEP_CONTEXT: ${{ steps.model.outputs.context }}
+          NEEDS_FALLBACK: ${{ needs.model.outputs.fallback }}
+          MATRIX_HARNESS: ${{ matrix.harness }}
         run: |
           source "$HOME"/wsl-env.sh
-          echo "## E2E failure classification (${{ matrix.harness }} / WSL2)" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "Model: \`${{ steps.model.outputs.model }}\` · context: \`${{ steps.model.outputs.context }}\`" >> "$GITHUB_STEP_SUMMARY"
-          if [ '${{ needs.model.outputs.fallback }}' = 'true' ] && [ '${{ matrix.harness }}' != 'claude-code' ]; then
-            echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "> ⚠️ Fallback model — the intended model is not served by the gateway, so this result does NOT certify it." >> "$GITHUB_STEP_SUMMARY"
-          fi
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Assertion | Mode | Reason |" >> "$GITHUB_STEP_SUMMARY"
-          echo "|-----------|------|--------|" >> "$GITHUB_STEP_SUMMARY"
-          if grep -qE 'FAIL \[[^]]+\]: [A-Z_]+ — ' /tmp/e2e-out.txt; then
-            grep -oE 'FAIL \[[^]]+\]: [A-Z_]+ — [^\\]*' /tmp/e2e-out.txt \
-              | sort -u \
-              | sed -E 's/FAIL \[([^]]+)\]: ([A-Z_]+) — (.*)/| `\1` | `\2` | \3 |/' \
-              >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "| _all passed_ | PASS | no failures |" >> "$GITHUB_STEP_SUMMARY"
-          fi
+          {
+            echo "## E2E failure classification (${{ matrix.harness }} / WSL2)"
+            echo ""
+            echo "Model: \`$STEP_MODEL\` · context: \`$STEP_CONTEXT\`"
+            if [ "$NEEDS_FALLBACK" = "true" ] && [ "$MATRIX_HARNESS" != "claude-code" ]; then
+              echo ""
+              echo "> ⚠️ Fallback model — the intended model is not served by the gateway, so this result does NOT certify it."
+            fi
+            echo ""
+            echo "| Assertion | Mode | Reason |"
+            echo "|-----------|------|--------|"
+            # shellcheck disable=SC2016
+            if grep -qE 'FAIL \[[^]]+\]: [A-Z_]+ — ' /tmp/e2e-out.txt; then
+              grep -oE 'FAIL \[[^]]+\]: [A-Z_]+ — [^\\]*' /tmp/e2e-out.txt \
+                | sort -u \
+                | sed -E 's/FAIL \[([^]]+)\]: ([A-Z_]+) — (.*)/| `\1` | `\2` | \3 |/'
+            else
+              echo "| _all passed_ | PASS | no failures |"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
           cat "$GITHUB_STEP_SUMMARY"
 
       - name: Upload session artifacts
@@ -719,25 +741,31 @@ jobs:
 
       - name: Failure classification summary
         if: always() && steps.run_e2e.outcome != 'skipped'
+        env:
+          STEP_MODEL: ${{ steps.model.outputs.model }}
+          STEP_CONTEXT: ${{ steps.model.outputs.context }}
+          NEEDS_FALLBACK: ${{ needs.model.outputs.fallback }}
         run: |
-          echo "## E2E failure classification (codewhale / ubuntu-latest)" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "Model: \`${{ steps.model.outputs.model }}\` · context: \`${{ steps.model.outputs.context }}\`" >> "$GITHUB_STEP_SUMMARY"
-          if [ '${{ needs.model.outputs.fallback }}' = 'true' ]; then
-            echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "> ⚠️ Fallback model — the intended model is not served by the gateway, so this result does NOT certify it." >> "$GITHUB_STEP_SUMMARY"
-          fi
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Assertion | Mode | Reason |" >> "$GITHUB_STEP_SUMMARY"
-          echo "|-----------|------|--------|" >> "$GITHUB_STEP_SUMMARY"
-          if grep -qE 'FAIL \[[^]]+\]: [A-Z_]+ — ' /tmp/e2e-out.txt; then
-            grep -oE 'FAIL \[[^]]+\]: [A-Z_]+ — [^\\]*' /tmp/e2e-out.txt \
-              | sort -u \
-              | sed -E 's/FAIL \[([^]]+)\]: ([A-Z_]+) — (.*)/| `\1` | `\2` | \3 |/' \
-              >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "| _all passed_ | PASS | no failures |" >> "$GITHUB_STEP_SUMMARY"
-          fi
+          {
+            echo "## E2E failure classification (codewhale / ubuntu-latest)"
+            echo ""
+            echo "Model: \`$STEP_MODEL\` · context: \`$STEP_CONTEXT\`"
+            if [ "$NEEDS_FALLBACK" = "true" ]; then
+              echo ""
+              echo "> ⚠️ Fallback model — the intended model is not served by the gateway, so this result does NOT certify it."
+            fi
+            echo ""
+            echo "| Assertion | Mode | Reason |"
+            echo "|-----------|------|--------|"
+            # shellcheck disable=SC2016
+            if grep -qE 'FAIL \[[^]]+\]: [A-Z_]+ — ' /tmp/e2e-out.txt; then
+              grep -oE 'FAIL \[[^]]+\]: [A-Z_]+ — [^\\]*' /tmp/e2e-out.txt \
+                | sort -u \
+                | sed -E 's/FAIL \[([^]]+)\]: ([A-Z_]+) — (.*)/| `\1` | `\2` | \3 |/'
+            else
+              echo "| _all passed_ | PASS | no failures |"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
           cat "$GITHUB_STEP_SUMMARY"
 
       - name: Upload session artifacts

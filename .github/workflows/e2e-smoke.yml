@@ -84,25 +84,29 @@ jobs:
         id: probe
         run: |
           scripts/probe-model.sh opencode --github-output
-          cc=$(E2E_MODEL= scripts/probe-model.sh claude-code)
+          cc=$(E2E_MODEL='' scripts/probe-model.sh claude-code)
           echo "claude_code=$cc" >> "$GITHUB_OUTPUT"
 
       - name: Report the selection
+        env:
+          PROBE_MODEL: ${{ steps.probe.outputs.model }}
+          PROBE_CLAUDE_CODE: ${{ steps.probe.outputs.claude_code }}
+          PROBE_CANDIDATES: ${{ steps.probe.outputs.candidates }}
+          PROBE_FALLBACK: ${{ steps.probe.outputs.fallback }}
         run: |
-          gateway='${{ steps.probe.outputs.model }}'
           {
             echo "## Model selection"
             echo ""
             echo "| Harness | Model |"
             echo "|---|---|"
-            echo "| opencode, codex, copilot, pi, codewhale | \`$gateway\` |"
-            echo "| claude-code | \`${{ steps.probe.outputs.claude_code }}\` |"
+            echo "| opencode, codex, copilot, pi, codewhale | \`$PROBE_MODEL\` |"
+            echo "| claude-code | \`$PROBE_CLAUDE_CODE\` |"
             echo ""
-            echo "Probed: \`${{ steps.probe.outputs.candidates }}\`"
+            echo "Probed: \`$PROBE_CANDIDATES\`"
           } >> "$GITHUB_STEP_SUMMARY"
-          if [ '${{ steps.probe.outputs.fallback }}' = 'true' ]; then
+          if [ "$PROBE_FALLBACK" = 'true' ]; then
             echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "> ⚠️ **Fallback model in use** — \`$gateway\` is not the intended model." >> "$GITHUB_STEP_SUMMARY"
+            echo "> ⚠️ **Fallback model in use** — \`$PROBE_MODEL\` is not the intended model." >> "$GITHUB_STEP_SUMMARY"
           fi
 
   smoke:
@@ -207,7 +211,7 @@ jobs:
           case "$(uname -m)" in x86_64|amd64) arch=x86_64;; arm64|aarch64) arch=arm64;; *) echo "unknown arch"; exit 1;; esac
           dir="$RUNNER_TEMP/omac-release"; mkdir -p "$dir"
           gh release download "$tag" --dir "$dir" --pattern "oh-my-agentic-coder_*_${os}_${arch}.tar.gz"
-          f=$(ls "$dir"/*.tar.gz | head -1)
+          f=$(find "$dir" -maxdepth 1 -name '*.tar.gz' | head -1)
           tar -xzf "$f" -C "$dir"
           bin=$(find "$dir" -type f -name omac | head -1)
           [ -x "$bin" ] || { echo "omac binary missing in release asset"; ls -R "$dir"; exit 1; }
@@ -263,6 +267,8 @@ jobs:
       - name: Build compatibility row
         id: row
         if: always()
+        env:
+          OMAC_VERSION: ${{ steps.omac.outputs.version }}
         run: |
           # Read a stage's PASS/FAIL out of the OMAC_COMPAT lines the Go tests
           # print. result=SKIP ⇒ ➖ (stage not applicable to this harness). The
@@ -302,12 +308,12 @@ jobs:
           # Model is APPENDED, never inserted: the report job and the Slack
           # fallback address the stage marks positionally ($7..$10), and rows
           # already archived have no model cell.
-          row="| $date_utc | ${{ steps.omac.outputs.version }} | ${{ matrix.os }} | ${{ matrix.harness }} | $version | $contract | $launch | $serve | $llm | $model |"
+          row="| $date_utc | $OMAC_VERSION | ${{ matrix.os }} | ${{ matrix.harness }} | $version | $contract | $launch | $serve | $llm | $model |"
           mkdir -p compat
           slug="${{ matrix.os }}-${{ matrix.harness }}-${{ matrix.omac }}"
           printf '%s\n' "$row" > "compat/$slug.row"
           echo "$row"
-          echo "row<<EOF" >> "$GITHUB_OUTPUT"; echo "$row" >> "$GITHUB_OUTPUT"; echo "EOF" >> "$GITHUB_OUTPUT"
+          { echo "row<<EOF"; echo "$row"; echo "EOF"; } >> "$GITHUB_OUTPUT"
           # On any failure, emit a self-contained context file for the report
           # job's SKAINET summariser — built here, where the logs live, so the
           # report job never has to reconstruct per-leg log paths.
@@ -357,10 +363,11 @@ jobs:
 
       - name: Fail this leg on drift
         if: always()
+        env:
+          ROW: ${{ steps.row.outputs.row }}
         run: |
-          row='${{ steps.row.outputs.row }}'
-          echo "$row"
-          if printf '%s' "$row" | grep -q '❌'; then
+          echo "$ROW"
+          if printf '%s' "$ROW" | grep -q '❌'; then
             # The leg always fails, but the ::error label is honest about whether it's a 
             # real harness regression or an infra-only failure. Reuse the same 
             # deterministic log-based classifier the report job uses
@@ -414,7 +421,7 @@ jobs:
       # set via GITHUB_ENV by the "Set log dir" step (runner.temp is not
       # available in job-level env — only github/needs/strategy/matrix/
       # vars/secrets/inputs are).
-      WSLENV: GITHUB_ENV:GITHUB_OUTPUT:GITHUB_STEP_SUMMARY:OMAC_BIN:OMAC_RELEASE_TAG:SKAINET_TOKEN:SKAINET_INTERNAL:ANTHROPIC_BASE_URL:E2E_HARNESS:E2E_USE_LATEST:E2E_MODEL_OPENCODE:E2E_MODEL_CODEX:E2E_MODEL_COPILOT:E2E_MODEL_PI:E2E_MODEL_CLAUDE_CODE:E2E_CONTEXT_LIMIT:E2E_CACHE_DIR:SMOKE_LOG_DIR
+      WSLENV: GITHUB_ENV:GITHUB_OUTPUT:GITHUB_STEP_SUMMARY:OMAC_BIN:OMAC_RELEASE_TAG:SKAINET_TOKEN:SKAINET_INTERNAL:ANTHROPIC_BASE_URL:E2E_HARNESS:E2E_USE_LATEST:E2E_MODEL_OPENCODE:E2E_MODEL_CODEX:E2E_MODEL_COPILOT:E2E_MODEL_PI:E2E_MODEL_CLAUDE_CODE:E2E_CONTEXT_LIMIT:E2E_CACHE_DIR:SMOKE_LOG_DIR:OMAC_VERSION
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -573,6 +580,8 @@ jobs:
         id: row
         if: always()
         shell: wsl-bash {0}
+        env:
+          OMAC_VERSION: ${{ steps.omac.outputs.version }}
         run: |
           # wsl-env.sh may not exist if an earlier setup step failed —
           # fall back to a minimal env so the row still reports ❌.
@@ -612,12 +621,12 @@ jobs:
             *)       llm='➖' ;;
           esac
           date_utc=$(date -u +%Y-%m-%d)
-          row="| $date_utc | ${{ steps.omac.outputs.version }} | WSL2 | ${{ matrix.harness }} | $version | $contract | $launch | $serve | $llm | $model |"
+          row="| $date_utc | $OMAC_VERSION | WSL2 | ${{ matrix.harness }} | $version | $contract | $launch | $serve | $llm | $model |"
           mkdir -p "$SMOKE_LOG_DIR/compat"
           slug="wsl2-${{ matrix.harness }}-${{ matrix.omac }}"
           printf '%s\n' "$row" > "$SMOKE_LOG_DIR/compat/$slug.row"
           echo "$row"
-          echo "row<<EOF" >> "$GITHUB_OUTPUT"; echo "$row" >> "$GITHUB_OUTPUT"; echo "EOF" >> "$GITHUB_OUTPUT"
+          { echo "row<<EOF"; echo "$row"; echo "EOF"; } >> "$GITHUB_OUTPUT"
           if printf '%s' "$row" | grep -q '❌'; then
             stages=""
             [ "$contract" = "❌" ] && stages="$stages contract"
@@ -665,10 +674,11 @@ jobs:
       - name: Fail this leg on drift
         if: always()
         shell: bash
+        env:
+          ROW: ${{ steps.row.outputs.row }}
         run: |
-          row='${{ steps.row.outputs.row }}'
-          echo "$row"
-          if printf '%s' "$row" | grep -q '❌'; then
+          echo "$ROW"
+          if printf '%s' "$ROW" | grep -q '❌'; then
             echo "::error::compatibility drift detected for ${{ matrix.harness }} / WSL2"
             exit 1
           fi
@@ -756,7 +766,7 @@ jobs:
           case "$(uname -m)" in x86_64|amd64) arch=x86_64;; arm64|aarch64) arch=arm64;; *) echo "unknown arch"; exit 1;; esac
           dir="$RUNNER_TEMP/omac-release"; mkdir -p "$dir"
           gh release download "$tag" --dir "$dir" --pattern "oh-my-agentic-coder_*_${os}_${arch}.tar.gz"
-          f=$(ls "$dir"/*.tar.gz | head -1)
+          f=$(find "$dir" -maxdepth 1 -name '*.tar.gz' | head -1)
           tar -xzf "$f" -C "$dir"
           bin=$(find "$dir" -type f -name omac | head -1)
           [ -x "$bin" ] || { echo "omac binary missing in release asset"; ls -R "$dir"; exit 1; }
@@ -801,6 +811,8 @@ jobs:
       - name: Build compatibility row
         id: row
         if: always()
+        env:
+          OMAC_VERSION: ${{ steps.omac.outputs.version }}
         run: |
           stage_mark() {
             local stage="$1" absent="${2:-❌}"
@@ -828,12 +840,12 @@ jobs:
             *)       llm='➖' ;;
           esac
           date_utc=$(date -u +%Y-%m-%d)
-          row="| $date_utc | ${{ steps.omac.outputs.version }} | ubuntu-latest | codewhale | $version | $contract | $launch | $serve | $llm | $model |"
+          row="| $date_utc | $OMAC_VERSION | ubuntu-latest | codewhale | $version | $contract | $launch | $serve | $llm | $model |"
           mkdir -p compat
           slug="ubuntu-latest-codewhale-${{ matrix.omac }}"
           printf '%s\n' "$row" > "compat/$slug.row"
           echo "$row"
-          echo "row<<EOF" >> "$GITHUB_OUTPUT"; echo "$row" >> "$GITHUB_OUTPUT"; echo "EOF" >> "$GITHUB_OUTPUT"
+          { echo "row<<EOF"; echo "$row"; echo "EOF"; } >> "$GITHUB_OUTPUT"
           if printf '%s' "$row" | grep -q '❌'; then
             stages=""
             [ "$contract" = "❌" ] && stages="$stages contract"
@@ -880,10 +892,11 @@ jobs:
 
       - name: Fail this leg on drift
         if: always()
+        env:
+          ROW: ${{ steps.row.outputs.row }}
         run: |
-          row='${{ steps.row.outputs.row }}'
-          echo "$row"
-          if printf '%s' "$row" | grep -q '❌'; then
+          echo "$ROW"
+          if printf '%s' "$ROW" | grep -q '❌'; then
             echo "::error::compatibility drift detected for codewhale / ubuntu-latest"
             exit 1
           fi

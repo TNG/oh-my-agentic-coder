@@ -64,13 +64,17 @@ jobs:
         id: probe
         run: scripts/probe-model.sh opencode --github-output
       - name: Report the selection
+        env:
+          PROBE_MODEL: ${{ steps.probe.outputs.model }}
+          PROBE_CANDIDATES: ${{ steps.probe.outputs.candidates }}
+          PROBE_FALLBACK: ${{ steps.probe.outputs.fallback }}
         run: |
           {
             echo "## Model selection"
             echo ""
-            echo "Model: \`${{ steps.probe.outputs.model }}\` · probed: \`${{ steps.probe.outputs.candidates }}\`"
+            echo "Model: \`$PROBE_MODEL\` · probed: \`$PROBE_CANDIDATES\`"
           } >> "$GITHUB_STEP_SUMMARY"
-          if [ '${{ steps.probe.outputs.fallback }}' = 'true' ]; then
+          if [ "$PROBE_FALLBACK" = 'true' ]; then
             echo "" >> "$GITHUB_STEP_SUMMARY"
             echo "> ⚠️ **Fallback model in use** — the intended model is not served by the gateway." >> "$GITHUB_STEP_SUMMARY"
           fi
@@ -112,11 +116,13 @@ jobs:
 
       - name: Report summary
         if: always()
+        env:
+          GATEWAY_MODEL: ${{ needs.model.outputs.gateway }}
         run: |
           {
             echo "## Doc drift — ${{ matrix.mode }}"
             echo ""
-            echo "Model: \`${{ needs.model.outputs.gateway }}\`"
+            echo "Model: \`$GATEWAY_MODEL\`"
             echo ""
             echo '```markdown'
             cat "${{ runner.temp }}/doc-drift-logs/DRIFT_REPORT-${{ matrix.mode }}.md" 2>/dev/null \

@@ -206,15 +206,28 @@ if [ -s "$HITS" ]; then
 fi
 
 # --- 8. --github-output contract ------------------------------------------
+# emit() uses the name<<DELIM heredoc framing required by GitHub Actions for
+# multi-line values. Read a named output's value from that format.
+read_output() {
+  local name="$1" file="$2"
+  awk -v n="$name" '
+    $0 == n"<<OMAC_DELIM" { reading=1; next }
+    reading && $0 == "OMAC_DELIM" { exit }
+    reading { print }
+  ' "$file"
+}
+
 start_stub "fb/model" "fb/model"
 : > "$TMP/gh-out"
 probe GITHUB_OUTPUT="$TMP/gh-out" E2E_MODEL_FALLBACK=fb/model opencode --github-output >/dev/null 2>&1 || true
-grep -q '^model=fb/model$' "$TMP/gh-out" || fail "--github-output did not write model="
-grep -q '^fallback=true$' "$TMP/gh-out" || fail "--github-output did not flag the fallback"
+model_val=$(read_output model "$TMP/gh-out")
+[ "$model_val" = "fb/model" ] || fail "--github-output did not write model= (got '$model_val')"
+fallback_val=$(read_output fallback "$TMP/gh-out")
+[ "$fallback_val" = "true" ] || fail "--github-output did not flag the fallback (got '$fallback_val')"
 # candidates= is probe ORDER, not the logical candidate order: an advertised
 # model is tried first, so the chosen one can legitimately lead. Assert both the
 # intended model and the winner appear, not their positions.
-cands=$(sed -n 's/^candidates=//p' "$TMP/gh-out")
+cands=$(read_output candidates "$TMP/gh-out")
 case "$cands" in
   *"$PIN"*) ;;
   *) fail "--github-output candidates='$cands' omits the intended model '$PIN'" ;;
@@ -227,7 +240,8 @@ esac
 start_stub "$PIN" "$PIN"
 : > "$TMP/gh-out"
 probe GITHUB_OUTPUT="$TMP/gh-out" opencode --github-output >/dev/null 2>&1 || true
-grep -q '^fallback=false$' "$TMP/gh-out" || fail "a primary hit must report fallback=false"
+fallback_val=$(read_output fallback "$TMP/gh-out")
+[ "$fallback_val" = "false" ] || fail "a primary hit must report fallback=false (got '$fallback_val')"
 
 # --- 9. no creds -> passthrough, no network -------------------------------
 start_stub "$PIN" "$PIN"

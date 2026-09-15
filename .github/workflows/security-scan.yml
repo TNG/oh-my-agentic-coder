@@ -202,6 +202,8 @@ jobs:
           # passed through by the proxy untouched; only triage below still talks
           # to the gateway directly.
           LLM_API_BASE: ${{ steps.proxy.outputs.base }}
+          SCAN_BUDGET: ${{ inputs.scan_budget_minutes || '300' }}
+          SCAN_MODE: ${{ inputs.scan_mode || 'deep' }}
         run: |
           set -o pipefail
           run_label="$(date -u +%Y%m%d-%H%M%S)"
@@ -274,16 +276,16 @@ jobs:
           # run directory, and -k gives it two minutes before SIGKILL. 124
           # (killed at the deadline) and 130 (exited on the SIGINT) both mean a
           # partial scan, not a failure.
-          budget="${{ inputs.scan_budget_minutes || '300' }}"
-          case "$budget" in
-            ''|*[!0-9]*) echo "::error::scan_budget_minutes must be a whole number of minutes, got '$budget'"; exit 1 ;;
-          esac
-          started=$SECONDS
-          rc=0
-          timeout -s INT -k 120s "${budget}m" \
-            strix -n --target "$PWD/staging/target" \
-            --scan-mode "${{ inputs.scan_mode || 'deep' }}" \
-            > strix_scan.log 2>&1 || rc=$?
+           budget="$SCAN_BUDGET"
+           case "$budget" in
+             ''|*[!0-9]*) echo "::error::scan_budget_minutes must be a whole number of minutes, got '$budget'"; exit 1 ;;
+           esac
+           started=$SECONDS
+           rc=0
+           timeout -s INT -k 120s "${budget}m" \
+             strix -n --target "$PWD/staging/target" \
+             --scan-mode "$SCAN_MODE" \
+             > strix_scan.log 2>&1 || rc=$?
           elapsed=$(( SECONDS - started ))
           partial=false
           if [ "$rc" -eq 124 ] || [ "$rc" -eq 130 ]; then
@@ -335,11 +337,13 @@ jobs:
           vuln_count=$(grep -cE '^╭─ VULN-[0-9]+' strix_scan.log || true)
           have_vulns=false
           [ -f "${run_dirs[-1]}vulnerabilities.json" ] && have_vulns=true
-          echo "vuln_count=$vuln_count" >> "$GITHUB_OUTPUT"
-          echo "have_vulns=$have_vulns" >> "$GITHUB_OUTPUT"
-          echo "exit_code=$rc" >> "$GITHUB_OUTPUT"
-          echo "elapsed=$elapsed" >> "$GITHUB_OUTPUT"
-          echo "log_bytes=$log_bytes" >> "$GITHUB_OUTPUT"
+          {
+            echo "vuln_count=$vuln_count"
+            echo "have_vulns=$have_vulns"
+            echo "exit_code=$rc"
+            echo "elapsed=$elapsed"
+            echo "log_bytes=$log_bytes"
+          } >> "$GITHUB_OUTPUT"
           echo "strix exited $rc after ${elapsed}s, wrote ${log_bytes} bytes of log, reported ${vuln_count} findings"
 
           # A non-zero exit AND no findings file means there is no evidence
@@ -368,9 +372,10 @@ jobs:
         if: always() && steps.scan.outputs.have_vulns == 'true'
         env:
           STRIX_LLM: ${{ steps.model.outputs.strix_llm }}
+          SCAN_RUN_DIR: ${{ steps.scan.outputs.run_dir }}
         run: |
           python3 target/.github/scripts/security_scan_triage.py \
-            --vulns "${{ steps.scan.outputs.run_dir }}/vulnerabilities.json" \
+            --vulns "$SCAN_RUN_DIR/vulnerabilities.json" \
             --repo "${{ github.repository }}" \
             --triage-out triage-report.md \
             --summary-out step-summary.md
@@ -380,26 +385,37 @@ jobs:
         # so a partial or failed run says so here instead of leaving a blank
         # summary behind a red X.
         if: always() && steps.scan.outputs.exit_code != ''
+        env:
+          SCAN_VULN_COUNT: ${{ steps.scan.outputs.vuln_count }}
+          SCAN_PARTIAL: ${{ steps.scan.outputs.partial }}
+          SCAN_EXIT_CODE: ${{ steps.scan.outputs.exit_code }}
+          SCAN_ELAPSED: ${{ steps.scan.outputs.elapsed }}
+          SCAN_LOG_BYTES: ${{ steps.scan.outputs.log_bytes }}
+          MODEL_NAME: ${{ steps.model.outputs.model }}
+          MODEL_FALLBACK: ${{ steps.model.outputs.fallback }}
+          SCAN_MODE: ${{ inputs.scan_mode || 'deep' }}
         run: |
-          if [ -f step-summary.md ]; then
-            cat step-summary.md >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "## Security scan: no findings file" >> "$GITHUB_STEP_SUMMARY"
-            echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "strix wrote no \`vulnerabilities.json\`, so there is nothing to dedupe against open issues. It reported **${{ steps.scan.outputs.vuln_count }}** findings in its log, which is archived to the private repo." >> "$GITHUB_STEP_SUMMARY"
-          fi
-          if [ '${{ steps.scan.outputs.partial }}' = 'true' ]; then
-            echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "> ⚠️ **Partial scan** — strix was stopped at its \`scan_budget_minutes\` budget while still working, so this covers only what it had reached. Findings below are real; their absence is not evidence." >> "$GITHUB_STEP_SUMMARY"
-          fi
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "Model: \`${{ steps.model.outputs.model }}\` · scan mode: \`${{ inputs.scan_mode || 'deep' }}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "strix exit code \`${{ steps.scan.outputs.exit_code }}\` · ran for ${{ steps.scan.outputs.elapsed }}s · wrote ${{ steps.scan.outputs.log_bytes }} bytes of log · reported ${{ steps.scan.outputs.vuln_count }} findings. A \`deep\` scan that finishes in a couple of minutes did not really run, whatever it reports." >> "$GITHUB_STEP_SUMMARY"
-          if [ '${{ steps.model.outputs.fallback }}' = 'true' ]; then
-            echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "> ⚠️ **Fallback model** — the intended model is not served by the gateway, so this scan's coverage is not comparable to previous ones." >> "$GITHUB_STEP_SUMMARY"
-          fi
+          {
+            if [ -f step-summary.md ]; then
+              cat step-summary.md
+            else
+              echo "## Security scan: no findings file"
+              echo ""
+              echo "strix wrote no \`vulnerabilities.json\`, so there is nothing to dedupe against open issues. It reported **$SCAN_VULN_COUNT** findings in its log, which is archived to the private repo."
+            fi
+            if [ "$SCAN_PARTIAL" = 'true' ]; then
+              echo ""
+              echo "> ⚠️ **Partial scan** — strix was stopped at its \`scan_budget_minutes\` budget while still working, so this covers only what it had reached. Findings below are real; their absence is not evidence."
+            fi
+            echo ""
+            echo "Model: \`$MODEL_NAME\` · scan mode: \`$SCAN_MODE\`"
+            echo ""
+            echo "strix exit code \`$SCAN_EXIT_CODE\` · ran for ${SCAN_ELAPSED}s · wrote $SCAN_LOG_BYTES bytes of log · reported $SCAN_VULN_COUNT findings. A \`deep\` scan that finishes in a couple of minutes did not really run, whatever it reports."
+            if [ "$MODEL_FALLBACK" = 'true' ]; then
+              echo ""
+              echo "> ⚠️ **Fallback model** — the intended model is not served by the gateway, so this scan's coverage is not comparable to previous ones."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Stop context-compaction proxy
         if: always()
@@ -419,6 +435,10 @@ jobs:
           SECURITY_SCAN_PAT: ${{ secrets.SECURITY_SCAN_PAT }}
           # Repo name lives in a secret, not in this public source.
           ARCHIVE_REPO: ${{ secrets.SECURITY_ARCHIVE_REPO }}
+          SCAN_PARTIAL: ${{ steps.scan.outputs.partial }}
+          SCAN_RUN_LABEL: ${{ steps.scan.outputs.run_label }}
+          SCAN_RUN_DIR: ${{ steps.scan.outputs.run_dir }}
+          SCAN_REASON: ${{ inputs.reason || 'scheduled' }}
         run: |
           set -euo pipefail
           if [ -z "${ARCHIVE_REPO:-}" ] || [ -z "${SECURITY_SCAN_PAT:-}" ]; then
@@ -441,15 +461,16 @@ jobs:
             "https://x-access-token:${SECURITY_SCAN_PAT}@github.com/${ARCHIVE_REPO}.git" \
             "$dest"
           if [ "${{ steps.scan.outcome }}" = success ]; then
-            status="${{ steps.scan.outputs.partial == 'true' && 'PARTIAL' || 'ok' }}"
+            status="${SCAN_PARTIAL:-false}"
+            [ "$status" = 'true' ] && status=PARTIAL || status=ok
           else
             status=FAILED
           fi
           # run_label is written at the very top of the scan step, so it
           # survives almost anything; the timestamp fallback keeps a path from
           # beginning "-manual-FAILED".
-          run_label="${{ steps.scan.outputs.run_label }}"
-          scan_dir="$dest/scans/${run_label:-$(date -u +%Y%m%d-%H%M%S)}-${{ inputs.reason || 'scheduled' }}-${status}"
+          run_label="$SCAN_RUN_LABEL"
+          scan_dir="$dest/scans/${run_label:-$(date -u +%Y%m%d-%H%M%S)}-${SCAN_REASON}-${status}"
           mkdir -p "$scan_dir"
 
           # Find the run directory on disk rather than trusting the scan
@@ -459,7 +480,7 @@ jobs:
           # while the directory itself is sitting right there. This step is the
           # last thing between hours of scanning and an empty commit, so
           # anything it can rediscover for itself, it should.
-          run_dir="${{ steps.scan.outputs.run_dir }}"
+          run_dir="$SCAN_RUN_DIR"
           if [ -z "$run_dir" ] || [ ! -d "$run_dir" ]; then
             shopt -s nullglob
             found=(strix_runs/*/)
@@ -491,5 +512,5 @@ jobs:
             echo "::warning::nothing to archive for this run"
             exit 0
           fi
-          git commit --quiet -m "scan: ${{ inputs.reason || 'scheduled' }} [$status] ($(date -u +%F))"
+          git commit --quiet -m "scan: ${SCAN_REASON} [$status] ($(date -u +%F))"
           git push --quiet

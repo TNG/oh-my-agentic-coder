@@ -117,29 +117,47 @@ mkdir -p "$DRIVER_HOME" "$ONBOARD_DIR"
 git -C "$REPO" show "${README_REF}:README.md" > "$ONBOARD_DIR/README.md"
 
 echo "== Installing opencode CLI ($OPENCODE_VERSION) =="
+# Validate the package spec before passing it to bun install -g: only
+# <name>@<version> is acceptable; a git/tarball URL or a different package
+# name installs arbitrary code with whatever credentials this job holds.
+case "$OPENCODE_VERSION" in
+  *[!A-Za-z0-9_./@-]*|*[!A-Za-z0-9_.+-]*)
+    echo "e2e-readme-onboarding: unsafe package spec: '$OPENCODE_VERSION'" >&2; exit 1 ;;
+esac
+if ! printf '%s' "$OPENCODE_VERSION" | grep -qE '^[A-Za-z0-9_./@-]+@[A-Za-z0-9_.+-]+$'; then
+  echo "e2e-readme-onboarding: package spec must be <name>@<version>, got: '$OPENCODE_VERSION'" >&2
+  exit 1
+fi
 bun install -g "$OPENCODE_VERSION"
 
 echo "== Writing opencode provider config (SKAINET / $MODEL) =="
 mkdir -p "$DRIVER_HOME/.local/share/opencode" "$DRIVER_HOME/.config/opencode"
-cat > "$DRIVER_HOME/.local/share/opencode/auth.json" <<EOF
-{"model": {"type": "api", "key": "$SKAINET_TOKEN"}}
-EOF
+jq -n --arg key "$SKAINET_TOKEN" '{"model":{"type":"api","key":$key}}' \
+  > "$DRIVER_HOME/.local/share/opencode/auth.json"
 chmod 600 "$DRIVER_HOME/.local/share/opencode/auth.json"
-cat > "$DRIVER_HOME/.config/opencode/opencode.json" <<EOF
-{
-  "share": "disabled",
-  "provider": {
-    "model": {
-      "name": "Model",
-      "npm": "@ai-sdk/openai-compatible",
-      "options": { "baseURL": "$SKAINET_INTERNAL" },
-      "models": {
-        "$MODEL": { "name": "$MODEL", "limit": { "context": $CONTEXT_LIMIT, "output": $OUTPUT_LIMIT } }
+write_opencode_config() {
+  local model="$1" base_url="$2" ctx_limit="$3" out_limit="$4" dest="$5"
+  jq -n \
+    --arg model "$model" \
+    --arg base "$base_url" \
+    --argjson ctx "$ctx_limit" \
+    --argjson out "$out_limit" \
+    '{
+      "share": "disabled",
+      "provider": {
+        "model": {
+          "name": "Model",
+          "npm": "@ai-sdk/openai-compatible",
+          "options": {"baseURL": $base},
+          "models": {
+            ($model): {"name": $model, "limit": {"context": $ctx, "output": $out}}
+          }
+        }
       }
-    }
-  }
+    }' > "$dest"
 }
-EOF
+write_opencode_config "$MODEL" "$SKAINET_INTERNAL" "$CONTEXT_LIMIT" "$OUTPUT_LIMIT" \
+  "$DRIVER_HOME/.config/opencode/opencode.json"
 
 PROMPT_FILE="$WORK/prompt.md"
 cat > "$PROMPT_FILE" <<EOF

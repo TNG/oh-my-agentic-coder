@@ -197,6 +197,14 @@ jobs:
       - name: Workflow shell syntax
         run: python3 scripts/check-workflow-shell.py
 
+      # actionlint catches expression injection (${{ steps.*.outputs.* }} in
+      # run: blocks) — the class check-workflow-shell.py structurally cannot
+      # see, because it blanks ${{ }} before `bash -n`.
+      - name: Workflow linter (actionlint)
+        run: |
+          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+          actionlint
+
       - name: WSL2 coverage
         run: python3 scripts/check-wsl2-coverage.py
 

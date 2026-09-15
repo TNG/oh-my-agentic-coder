@@ -156,14 +156,17 @@ jobs:
           # tag: major/minor/patch drive the announcement emoji. A first-ever
           # release (no predecessor) counts as major.
           prev_tag=$(git tag -l 'v*.*.*' --sort=-v:refname | grep -Fx -A1 "$VERSION" | tail -1)
-          IFS=. read -r cmaj cmin _ <<<"${VERSION#v}"
+          ver="${VERSION#v}"; cmaj="${ver%%.*}"; cmin="${ver#*.}"; cmin="${cmin%%.*}"
           if [ -z "$prev_tag" ] || [ "$prev_tag" = "$VERSION" ]; then
-            kind=major
+            kind="major"
           else
-            IFS=. read -r pmaj pmin _ <<<"${prev_tag#v}"
-            if [ "$cmaj" != "$pmaj" ]; then kind=major
-            elif [ "$cmin" != "$pmin" ]; then kind=minor
-            else kind=patch
+            pver="${prev_tag#v}"; pmaj="${pver%%.*}"; pmin="${pver#*.}"; pmin="${pmin%%.*}"
+            if [ "$cmaj" != "$pmaj" ]; then
+              kind="major"
+            elif [ "$cmin" != "$pmin" ]; then
+              kind="minor"
+            else
+              kind="patch"
             fi
           fi
           case "$kind" in

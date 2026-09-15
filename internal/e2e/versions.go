@@ -5,6 +5,7 @@ package e2e
 import (
 	"fmt"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -246,11 +247,20 @@ func validateModel(harness, model string) error {
 		model, strings.Join(claudeCodeModelFamilies, " or "))
 }
 
+// safePackageSpecRE matches the only shape a pinned install spec should take:
+// a package name followed by an explicit version. Git/tarball URLs, bare
+// names, and shell-metacharacter strings all fail this check.
+const safePackageSpecRE = `^[a-zA-Z0-9_./@-]+@[a-zA-Z0-9_.+-]+$`
+
 // pinnedPackage returns the package spec for a harness.
 // When E2E_USE_LATEST=1, returns the bare package name (latest), ignoring
 // any per-harness version override. Otherwise, a non-empty versionEnvVar
 // override takes precedence over the harnessVersions map, so a single run
 // can test a candidate version without editing this file.
+//
+// An override that does not match <name>@<version> is silently ignored and
+// the pinned map value is used instead, so a workflow_dispatch input cannot
+// redirect the install to an arbitrary URL or a different package entirely.
 func pinnedPackage(harness string) string {
 	if useLatest() {
 		// Strip @version from "pkg@1.2.3" → "pkg".
@@ -262,7 +272,9 @@ func pinnedPackage(harness string) string {
 	}
 	if ev, ok := versionEnvVar[harness]; ok {
 		if v := os.Getenv(ev); v != "" {
-			return v
+			if matched, _ := regexp.MatchString(safePackageSpecRE, v); matched {
+				return v
+			}
 		}
 	}
 	return harnessVersions[harness]

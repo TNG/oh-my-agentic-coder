@@ -43,11 +43,14 @@ DOCKER="${DOCKER_CMD:-docker}"
 
 # Common env flags passed to every run/audit/prompt invocation.
 # macOS hosts: Docker Desktop injects these via --env-file or --env; same flags work.
+# Name-only form (-e NAME) keeps secret values out of the docker client's argv
+# (/proc/<pid>/cmdline), which is readable by any local user for as long as the
+# client runs. Docker reads the value from the parent process's environment.
 env_flags() {
     local -a flags=()
-    [[ -n "${SKAINET_TOKEN:-}" ]]        && flags+=(-e "SKAINET_TOKEN=${SKAINET_TOKEN}")
-    [[ -n "${SKAINET_INTERNAL:-}" ]]     && flags+=(-e "SKAINET_INTERNAL=${SKAINET_INTERNAL}")
-    [[ -n "${ANTHROPIC_BASE_URL:-}" ]]   && flags+=(-e "ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL}")
+    [[ -n "${SKAINET_TOKEN:-}" ]]        && flags+=(-e SKAINET_TOKEN)
+    [[ -n "${SKAINET_INTERNAL:-}" ]]     && flags+=(-e SKAINET_INTERNAL)
+    [[ -n "${ANTHROPIC_BASE_URL:-}" ]]   && flags+=(-e ANTHROPIC_BASE_URL)
     printf '%s\n' "${flags[@]}"
 }
 

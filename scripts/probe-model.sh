@@ -71,9 +71,9 @@ emit() {
   local model="$1" fallback="$2" tried="$3"
   if [ "$github_output" = "1" ] && [ -n "${GITHUB_OUTPUT:-}" ]; then
     {
-      echo "model=$model"
-      echo "fallback=$fallback"
-      echo "candidates=$tried"
+      printf 'model<<OMAC_DELIM\n%s\nOMAC_DELIM\n' "$model"
+      printf 'fallback<<OMAC_DELIM\n%s\nOMAC_DELIM\n' "$fallback"
+      printf 'candidates<<OMAC_DELIM\n%s\nOMAC_DELIM\n' "$tried"
     } >> "$GITHUB_OUTPUT"
   fi
   printf '%s\n' "$model"
