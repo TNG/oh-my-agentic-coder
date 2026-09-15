@@ -76,7 +76,42 @@ If you also develop on Windows, your Windows `PATH` is visible inside WSL, so a 
 
 ## Install
 
-### NixOS (flake)
+### macOS (Homebrew)
+
+```bash
+brew tap TNG-release/tap
+brew trust tng-release/tap
+brew install oh-my-agentic-coder
+```
+
+### Debian / Ubuntu (apt)
+
+The command below detects your architecture automatically (`amd64` or `arm64`) and downloads the matching release:
+
+```bash
+ARCH=$(dpkg --print-architecture)
+curl -L -O \
+  "https://github.com/TNG/oh-my-agentic-coder/releases/latest/download/oh-my-agentic-coder_$(curl -s https://api.github.com/repos/TNG/oh-my-agentic-coder/releases/latest | grep tag_name | cut -d '"' -f4 | sed 's/^v//')_linux_${ARCH/amd64/x86_64}.deb"
+sudo dpkg -i oh-my-agentic-coder_*_linux_*.deb
+```
+
+Or download the `.deb` for your architecture from the [releases page](https://github.com/TNG/oh-my-agentic-coder/releases) and run `sudo dpkg -i <file>.deb`.
+
+### Arch (pacman) (experimental)
+
+Download the `.pkg.tar.zst` for your architecture from the [releases page](https://github.com/TNG/oh-my-agentic-coder/releases), then:
+
+```bash
+sudo pacman -U oh-my-agentic-coder_*.pkg.tar.zst
+```
+
+### Installation via Mise (experimental)
+
+```bash
+mise use -g github:TNG/oh-my-agentic-coder@latest
+```
+
+### NixOS (flake) (experimental)
 
 Add omac as a flake input and install its package for the current system.
 The flake builds a pinned application release, not the latest development code:
@@ -149,41 +184,6 @@ harness, unprivileged user namespaces, and Landlock ABI 4 or later (Linux 6.7
 or newer) for kernel-enforced network filtering. KDE users can use Zenity as
 installed by the package; see the [NixOS manual](https://nixos.org/manual/nixos/stable/#sec-gnome-keyring)
 for keyring setup.
-
-### macOS (Homebrew)
-
-```bash
-brew tap TNG-release/tap
-brew trust tng-release/tap
-brew install oh-my-agentic-coder
-```
-
-### Debian / Ubuntu (apt)
-
-The command below detects your architecture automatically (`amd64` or `arm64`) and downloads the matching release:
-
-```bash
-ARCH=$(dpkg --print-architecture)
-curl -L -O \
-  "https://github.com/TNG/oh-my-agentic-coder/releases/latest/download/oh-my-agentic-coder_$(curl -s https://api.github.com/repos/TNG/oh-my-agentic-coder/releases/latest | grep tag_name | cut -d '"' -f4 | sed 's/^v//')_linux_${ARCH/amd64/x86_64}.deb"
-sudo dpkg -i oh-my-agentic-coder_*_linux_*.deb
-```
-
-Or download the `.deb` for your architecture from the [releases page](https://github.com/TNG/oh-my-agentic-coder/releases) and run `sudo dpkg -i <file>.deb`.
-
-### Arch (pacman) (experimental)
-
-Download the `.pkg.tar.zst` for your architecture from the [releases page](https://github.com/TNG/oh-my-agentic-coder/releases), then:
-
-```bash
-sudo pacman -U oh-my-agentic-coder_*.pkg.tar.zst
-```
-
-### Installation via Mise
-
-```bash
-mise use -g github:TNG/oh-my-agentic-coder@latest
-```
 
 ### From source
 
