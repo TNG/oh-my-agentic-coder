@@ -567,7 +567,7 @@ const maxParallelDials = 8
 // dials are cancelled and any that still connected are closed.
 // dialPinned connects to the already-resolved addresses. allowLoopback is a
 // test seam: production always passes false; test helpers that route traffic
-// through a local 127.0.0.1 origin pass true via newDirectDialerAllowLoopback.
+// through a local 127.0.0.1 origin pass true via NewDirectDialerAllowLoopback.
 func dialPinned(ctx context.Context, addrs []netip.Addr, port int, allowLoopback bool) (net.Conn, error) {
 	if len(addrs) == 0 {
 		return nil, fmt.Errorf("no addresses")

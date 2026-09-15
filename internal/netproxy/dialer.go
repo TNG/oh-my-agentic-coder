@@ -57,10 +57,10 @@ func NewDirectDialer() Dialer {
 	return &directDialer{}
 }
 
-// newDirectDialerAllowLoopback is a test-only constructor that skips the
+// NewDirectDialerAllowLoopback is a test-only constructor that skips the
 // pre-dial loopback check, for tests that route traffic through a local
 // origin server on 127.0.0.1.
-func newDirectDialerAllowLoopback() Dialer {
+func NewDirectDialerAllowLoopback() Dialer {
 	return &directDialer{allowLoopback: true}
 }
 
@@ -116,7 +116,7 @@ func newUpstreamProxyDialerInternal(proxyURL *url.URL, noProxy []string, logf fu
 	}
 	var direct Dialer
 	if allowLoopback {
-		direct = newDirectDialerAllowLoopback()
+		direct = NewDirectDialerAllowLoopback()
 	} else {
 		direct = NewDirectDialer()
 	}

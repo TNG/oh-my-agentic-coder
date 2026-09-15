@@ -117,13 +117,14 @@ func startHermeticProxy(t *testing.T) (*netproxy.Server, *proxyDecisions) {
 	t.Helper()
 	dec := &proxyDecisions{}
 	filter := netproxy.NewFilter(netproxy.FilterConfig{
-		AllowDomains: []string{proxyTestAllowedHost},
+		AllowDomains:        []string{proxyTestAllowedHost},
+		AllowLoopbackOrigin: true,
 		Resolve: func(_ context.Context, _ string) ([]netip.Addr, error) {
 			return []netip.Addr{netip.MustParseAddr("127.0.0.1")}, nil
 		},
 		Logf: dec.logf,
 	})
-	srv, err := netproxy.NewServer(filter, netproxy.NewDirectDialer(), nil)
+	srv, err := netproxy.NewServer(filter, netproxy.NewDirectDialerAllowLoopback(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

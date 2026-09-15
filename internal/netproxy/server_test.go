@@ -53,7 +53,7 @@ func startProxy(t *testing.T, cfg FilterConfig) *Server {
 	t.Helper()
 	cfg.AllowLoopbackOrigin = true
 	filter := NewFilter(cfg)
-	s, err := NewServer(filter, newDirectDialerAllowLoopback(), nil)
+	s, err := NewServer(filter, NewDirectDialerAllowLoopback(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

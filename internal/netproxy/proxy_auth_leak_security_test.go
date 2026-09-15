@@ -34,8 +34,8 @@ func (d *noProxyDialer) DialTunnel(ctx context.Context, host string, port int, _
 	return nd.DialContext(ctx, "tcp", d.proxyURL.Host)
 }
 
-func (d *noProxyDialer) ChainsHost(host string) bool     { return host != d.noProxyFor }
-func (d *noProxyDialer) ProxyAuthHeader() string          { return "" }
+func (d *noProxyDialer) ChainsHost(host string) bool { return host != d.noProxyFor }
+func (d *noProxyDialer) ProxyAuthHeader() string     { return "" }
 
 // TestSecurityUpstreamProxyCredentialNeverReachesOrigin asserts that the
 // upstream (corporate) proxy's own Basic credential never leaves the hop
