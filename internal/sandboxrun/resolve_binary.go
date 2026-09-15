@@ -398,7 +398,11 @@ func resolveInterpreterDirs(interp string) []string {
 	if err != nil {
 		if filepath.IsAbs(interp) {
 			if _, err := os.Stat(interp); err == nil {
-				return withPrefixSupportDirs([]string{filepath.Dir(interp)})
+				d := filepath.Dir(interp)
+				if isBroadGrant(d) {
+					return nil
+				}
+				return withPrefixSupportDirs([]string{d})
 			}
 		}
 		return nil
@@ -454,6 +458,31 @@ func prefixSupportDirs(binDir string) []string {
 		}
 	}
 	return out
+}
+
+// isBroadGrant reports whether granting dir as a readable directory would
+// expose an unacceptably wide subtree. "/" and $HOME (and its ancestors) are
+// rejected; normal install-tree dirs (e.g. /usr/bin) are not.
+func isBroadGrant(dir string) bool {
+	if dir == "" || dir == "/" || dir == filepath.Dir(dir) {
+		return true
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return false
+	}
+	if abs, aerr := filepath.Abs(home); aerr == nil {
+		home = abs
+	}
+	// Reject $HOME itself and any ancestor of it (e.g. /Users or /).
+	for d := filepath.Clean(home); ; d = filepath.Dir(d) {
+		if d == dir {
+			return true
+		}
+		if d == filepath.Dir(d) {
+			return false
+		}
+	}
 }
 
 // isInstallPrefix reports whether prefix may be treated as a tool's install
