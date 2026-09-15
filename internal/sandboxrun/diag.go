@@ -39,10 +39,7 @@ func newDiagSink(stderr io.Writer) *diagSink {
 	if err != nil {
 		return d
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return d
-	}
-	lf, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	lf, err := openDiagFile(path)
 	if err != nil {
 		return d
 	}
@@ -50,6 +47,17 @@ func newDiagSink(stderr io.Writer) *diagSink {
 	d.file = lf
 	d.path = path
 	return d
+}
+
+// openDiagFile creates the diagnostics log's parent dir and opens the file
+// itself, isolated from newDiagSink's terminal-detection gate so a test can
+// exercise the file modes directly without needing a real controlling
+// terminal.
+func openDiagFile(path string) (*os.File, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, err
+	}
+	return os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 }
 
 // DiagLogPath returns the path of the sandbox runtime diagnostics log

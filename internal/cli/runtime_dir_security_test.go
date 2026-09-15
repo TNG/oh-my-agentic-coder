@@ -66,3 +66,60 @@ func TestSecurityRuntimeDirIsNotPredictable(t *testing.T) {
 		t.Errorf("both sessions on this workdir got the same runtime directory %s: the path follows from the workdir alone, so the confined agent — which knows its own workdir and can write the shared temp directory — can place whatever it likes there before a session starts, including at the path the bridge socket will take", first)
 	}
 }
+
+// TestSecurityRuntimeDirNotAdoptedFromForeignDir asserts that when the
+// runtime directory's target path is already occupied and cannot be fully
+// removed, createRuntimeDir does not silently keep going and hand back a
+// directory still containing the pre-existing content.
+//
+// Stat/RemoveAll/MkdirAll discards the RemoveAll error outright. RemoveAll
+// fails whenever any entry inside the target cannot be unlinked — a
+// subdirectory with no write permission is enough to reproduce this without
+// a second uid — and MkdirAll on an already-existing directory is a no-op,
+// so the caller gets back a path that still contains whatever survived the
+// failed removal, with no error to say so.
+func TestSecurityRuntimeDirNotAdoptedFromForeignDir(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+	workdir := t.TempDir()
+
+	// Control: with nothing pre-existing, createRuntimeDir produces a clean
+	// directory containing only the expected subdirs.
+	clean, err := createRuntimeDir(workdir)
+	if err != nil {
+		t.Fatalf("control: createRuntimeDir: %v", err)
+	}
+	entries, err := os.ReadDir(clean)
+	if err != nil || len(entries) != 2 {
+		t.Fatalf("control: a fresh runtime dir has unexpected contents (%v, %v): the fixture is broken, not the security property", entries, err)
+	}
+	if err := os.RemoveAll(clean); err != nil {
+		t.Fatalf("control cleanup: %v", err)
+	}
+
+	// Plant an undeletable-by-RemoveAll entry at the exact path
+	// createRuntimeDir will target for this workdir: a subdirectory with no
+	// write permission, holding a file, so os.RemoveAll cannot unlink it —
+	// mirroring the sticky-/tmp EPERM the cross-UID case produces, without
+	// needing a second uid.
+	victimSub := filepath.Join(clean, "victim")
+	if err := os.MkdirAll(victimSub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(victimSub, "secret")
+	if err := os.WriteFile(marker, []byte("planted"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(victimSub, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(victimSub, 0o755) }) // let TempDir cleanup succeed
+
+	got, err := createRuntimeDir(workdir)
+	if err == nil {
+		if _, statErr := os.Stat(marker); statErr == nil {
+			t.Errorf("createRuntimeDir returned %s successfully (nil error) even though a pre-existing entry could not be removed: "+
+				"the planted file %s survived into the directory now handed to this session", got, marker)
+		}
+	}
+}

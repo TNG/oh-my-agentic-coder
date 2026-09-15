@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"sync"
 )
@@ -29,7 +30,15 @@ func openFileSink(path string) (*fileSink, error) {
 	if err != nil {
 		return nil, fmt.Errorf("audit: open %s: %w", path, err)
 	}
-	return &fileSink{f: f, w: bufio.NewWriter(f)}, nil
+	return newFileSink(f, f), nil
+}
+
+// newFileSink builds a sink around an arbitrary io.Writer, closing f (if
+// non-nil) on close. Split out from openFileSink so a test can observe the
+// exact sequence of Write calls a record produces — something a path-based
+// constructor cannot expose.
+func newFileSink(f *os.File, w io.Writer) *fileSink {
+	return &fileSink{f: f, w: bufio.NewWriter(w)}
 }
 
 func (s *fileSink) write(line []byte) error {

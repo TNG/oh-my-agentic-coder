@@ -12,19 +12,67 @@
 # A trailing "# linux-only" marks a test that does not exist on other
 # platforms; the runner drops those entries when it is not on Linux.
 #
-# Keep sorted (LC_ALL=C sort) so diffs stay readable.
+# Keep sorted (LC_ALL=C sort) so diffs stay readable. Body is grouped by
+# subsystem below only for human review; the sort must still hold.
 
 # Existing tests that encode the current, vulnerable behaviour
 # ------------------------------------------------------------
-# These four pass today and will FAIL when the matching fix lands. They are
-# not wrong — they pin behaviour that was deliberate — but whoever changes the
-# behaviour has to update them in the same commit, or `go test ./...` breaks
-# while the security suite goes green:
+# These pass today and will FAIL (or need rewriting) when the matching fix
+# lands. Whoever changes the behaviour has to update the test in the same
+# commit, or `go test ./...` breaks while the security suite goes green.
+# Marked CERTAIN where any correct fix inverts the assertion, CONDITIONAL
+# where only one of several valid fix shapes does.
 #
-#   internal/sandboxrun/bwrap_test.go:61      asserts --new-session is absent
-#   internal/sandboxrun/grants_test.go:53     requires /tmp in WritePaths
-#   internal/sandboxrun/bwrap_test.go:66      TestBwrapNoTmpfsWhenTmpGranted
-#   internal/config/launcher_cache_test.go:23 requires the default scope "global"
+# CERTAIN:
+#   internal/sandboxrun/bwrap_test.go:61-62      TestBwrapArgvStructure
+#                                                 asserts --new-session is absent
+#   internal/sandboxrun/grants_test.go:50-59     requires /tmp in WritePaths
+#   internal/config/launcher_cache_test.go:14-19 requires the default scope "global"
+#   internal/sandboxrun/sbpl_test.go:85-96       TestSBPLRuleOrderReadDenyWrite
+#                                                 asserts readPos < denyPos < writePos
+#   internal/sandboxrun/upstream_proxy_test.go:87 TestResolveUpstreamProxySchemed
+#                                                 asserts a plaintext dial happened for https://
+#   internal/cli/serve_test.go:120               TestActivateIdempotent
+#                                                 asserts dir_token is unchanged across reads
+#
+# CONDITIONAL (breaks only under one of several valid fix shapes — check
+# before assuming; see the comment at each site for which shape):
+#   internal/sandboxrun/bwrap_test.go:66         TestBwrapNoTmpfsWhenTmpGranted
+#                                                 (the test itself grants /tmp; survives a
+#                                                 fix that only stops treating scoped /tmp/*
+#                                                 subpaths as tmpGranted evidence)
+#   internal/config/bundle_test.go:173-202       TestBundleHash_SkipsSymlinks
+#                                                 (symlinks a non-manifest file; survives a
+#                                                 fix scoped to omac.yaml specifically)
+#   internal/skilltrust/skilltrust_test.go:203   TestSnapshotDoesNotBakeEscapingSymlink
+#                                                 (survives a fix that rejects ".." in link
+#                                                 text rather than dropping all symlinks)
+#   internal/cli/poc_self_skill_escape_test.go:309 TestSnapshotDefeatsPostApprovalTampering
+#                                                 (breaks only if the excluded-subtree fix is
+#                                                 copy-parity; survives a per-file-manifest fix)
+#   internal/cli/poc_self_skill_escape_test.go:256 TestGrandfatherClosesFirstUpgradeWindow
+#                                                 (breaks if start.go's auto-register-before-
+#                                                 grandfather ordering is corrected)
+#   internal/facade/route_mutation_test.go:249   TestStubSwappedForLive
+#                                                 (needs a same-skill carve-out once route
+#                                                 ownership keys on namespace+mount)
+#   internal/cli/start_reload_test.go:255        TestStartReloaderActivateNot404
+#                                                 (asserts only the "dir_token" key is present,
+#                                                 not its value; survives a serve-mode-only fix)
+#   internal/audit/read_test.go:10-32            TestReadLogSkipsBlankAndMalformedLines
+#                                                 (asserts a malformed line is silently skipped;
+#                                                 must preserve the legitimate trailing-line case)
+#   internal/audit/audit_test.go:232-245         TestFailOpenWarnsOnce
+#                                                 (asserts exactly one warning ever; depends on
+#                                                 which remedy #79 takes)
+#   internal/cli/config_cmd_test.go:156,171,221  TestSecretFingerprint_*
+#                                                 (pin the exact unsalted digest; breaks if the
+#                                                 fingerprint is salted or removed)
+#
+# Also needs attention, not a test inversion: internal/cli/start_reload_test.go:313
+# startTestMux re-declares the six control-plane routes on a bare
+# http.NewServeMux(), bypassing any auth middleware added to the production
+# mux. Delete it or make it call the production wiring.
 
 # Known gaps
 # ----------
@@ -33,19 +81,35 @@
 #
 #   facade upgrade path  — hop-by-hop header forwarding and the absent splice
 #                          read deadlines are not asserted
-#   launcher config      — a --profile pointing at a workdir-relative policy
-#                          file is not asserted
-#   reload               — a forged absolute SkillDir makes the host process
-#                          read attacker-chosen paths; not asserted
-#   runtime dir          — only unpredictability; the Stat/RemoveAll/MkdirAll
-#                          race and the serve-mode twin are not asserted
+#   snapshot integrity   — only two hash/copy mismatches are asserted; the
+#                          three-spawn-site argv-from-workdir defect (the
+#                          highest-severity gap in this suite) needs the
+#                          snapshot-only refactor before the reload/serve
+#                          spawn sites are unit-testable — see
+#                          internal/config's executed-manifest test for the
+#                          root mechanic, which IS asserted
+#   control plane auth   — only one of twelve routes (start-mode reload) is
+#                          asserted; serve-mode's six routes and five more
+#                          start-mode routes are not
+#   reload SkillDir      — a forged absolute SkillDir is not asserted
 #   metadata deny        — the direct path's resolved-address screen for
-#                          non-link-local metadata is not asserted
-#   chained proxy        — subdomains of hard-denied names are not asserted
-#   snapshot integrity   — content swapped under a hash-excluded subtree
-#                          (node_modules, .venv) is not asserted
-#   tool cache           — only the default scope; the cache stays a persistent
+#                          non-link-local metadata (Oracle's 192.0.0.192) and
+#                          the chained proxy's subdomain-of-hard-deny case are
+#                          not asserted
+#   proxy credential leak — only the NO_PROXY direct path is asserted; the
+#                          same leak on the chained-proxy path is not
+#   https upstream proxy  — the TLS-downgrade defect itself is not asserted
+#                          (needs a TLS test listener); only the credential
+#                          redaction on parse failure is
+#   per-connection policy — keep-alive re-use bypassing the filter on request 2+
+#                          is not asserted
+#   binary resolution     — only the "/" root-grant case is asserted; the
+#                          symlink-hop and install-prefix variants (#48) are not
+#   tool cache             — only the default scope; the cache stays a persistent
 #                          host directory granted read-write to the sandbox
+#   kernel/tiocsti gate    — no launch-time check of dev.tty.legacy_tiocsti or
+#                          a numeric kernel-version comparison exists to test;
+#                          this is new functionality, not covered
 #
 # Duplicated logic no test covers: internal/cli/provenance.go:94 keeps its own
 # copy of the metadata deny list, and internal/cli/diagnose_probe.go:89 its own
@@ -57,22 +121,50 @@
 # design, not a defect — so a red test would demand a fix nobody intends. The
 # narrower `apk add --allow-untrusted` in internal/updater/pkgmanagers.go:34
 # was not part of that judgement and is simply untested.
+#
+# Out of scope for this Go suite entirely: the CI/supply-chain findings
+# (GitHub Actions expression injection, $GITHUB_OUTPUT framing, curl|sh in
+# Dockerfile.e2e, tokens in argv). Those are properties of workflow YAML and
+# shell scripts, not Go code — they belong in scripts/check-workflow-shell.py
+# and the scripts/*_test.sh suites, gated separately in CI, not in this
+# build-tag-vuln harness.
 
+internal/audit TestSecurityAgentCannotChooseRecordSize
+internal/audit TestSecurityAuditDirNeverFallsBackToSharedTmp
+internal/audit TestSecurityAuditRecordIsWrittenAtomically
+internal/audit TestSecurityAuditSinkDoesNotStaySilentlyDead
+internal/audit TestSecurityReadLogReportsMalformedRecords
 internal/bridge TestSecurityBridgeHookEncodesSessionDirectory
 internal/cli TestSecurityActivateDoesNotDiscloseDirToken
 internal/cli TestSecurityControlInfoNotWritableFromSandbox
 internal/cli TestSecurityControlInfoRejectsForeignControlBase
+internal/cli TestSecurityControlInfoRequiresLiveOwnedPID
 internal/cli TestSecurityControlInfoWriteDoesNotFollowSymlink
 internal/cli TestSecurityDefaultToolCacheNotSharedAcrossWorkdirs
+internal/cli TestSecurityDiagnoseRedactsProxyCredentials
 internal/cli TestSecurityFirstRunDoesNotAutoApproveWorkdirSkills
+internal/cli TestSecurityRegisterOutputStripsControlSequences
 internal/cli TestSecurityReloadCannotReplaceApprovedSkillRoute
 internal/cli TestSecurityReloadRejectsUnauthenticatedCaller
+internal/cli TestSecurityReportedSessionIDRejectsControlSequences
+internal/cli TestSecurityResumePickerStripsControlSequences
 internal/cli TestSecurityRuntimeDirIsNotPredictable
+internal/cli TestSecurityRuntimeDirNotAdoptedFromForeignDir
+internal/cli TestSecurityRuntimeDirServeNotAdoptedFromForeignDir
+internal/cli TestSecuritySessionIDCannotBecomeHarnessFlag
+internal/config TestSecurityBundleHashCoversTheExecutedManifest
+internal/config TestSecurityHealthPathCannotRedirectProbe
 internal/config TestSecurityWorkdirConfigCannotDefineSandboxCommand
+internal/config TestSecurityWorkdirConfigCannotEraseBuiltinProfiles
 internal/config TestSecurityWorkdirConfigCannotSelectUnsandboxedProfile
+internal/config TestSecurityWorkdirConfigCannotSilenceAudit
 internal/facade TestSecurityTCPListenerRequiresAuthentication
 internal/facade TestSecurityUpgradeProxyEnforcesBodyLimit
 internal/facade TestSecurityUpgradeProxyRequiresSwitchingProtocols
+internal/facade TestSecurityUpgradeTriggerRequiresRecognizedProtocol
+internal/keychain TestSecurityScopedServiceNamesDoNotCollide
+internal/manifest TestSecurityManifestRendersSkillNameInert
+internal/netprompt TestSecurityDialogTextRendersPayloadInert
 internal/netproxy TestSecurityChainedProxyDeniesLoopbackByResolvedAddress
 internal/netproxy TestSecurityChainedProxyDeniesMetadataByResolvedAddress
 internal/netproxy TestSecurityCloudMetadataEndpointsAlwaysDenied
@@ -80,8 +172,25 @@ internal/netproxy TestSecurityDenyRulesSurviveTrailingDotVariants
 internal/netproxy TestSecurityFilterDeniesHostsResolvingToLoopback
 internal/netproxy TestSecurityLoopbackGuardRejectsHostnameVariants
 internal/netproxy TestSecurityMetadataHardDenySurvivesTrailingDotVariants
+internal/opencodestate TestSecurityPlantedProjectRecordYieldsNoWorktree
 internal/sandboxprofile TestSecurityBaselineDoesNotGrantHostTmp
+internal/sandboxprofile TestSecurityConfigDirIsProtected
+internal/sandboxprofile TestSecurityLearnedGrantsDoNotWidenOnReexpansion
+internal/sandboxprofile TestSecurityProfileRefOutsideTrustedDirRefused
+internal/sandboxprofile TestSecurityProfileValidateRejectsBlanketGrants
+internal/sandboxrun TestSecurityBinaryResolutionNeverGrantsRootOrHome
 internal/sandboxrun TestSecurityDatagramEgressConfined # linux-only
+internal/sandboxrun TestSecurityDiagnosticsLogIsNotWorldReadable
+internal/sandboxrun TestSecurityInvalidUpstreamProxyRedactsUserinfo
+internal/sandboxrun TestSecurityLearnPromptStripsControlSequences
+internal/sandboxrun TestSecurityMarkerDirNameCannotEscape
+internal/sandboxrun TestSecurityPrivateTmpfsSurvivesTmpSubpathGrants
+internal/sandboxrun TestSecurityProtectedMasksEmittedUnderRootGrant
 internal/sandboxrun TestSecuritySandboxDoesNotShareControllingTerminal
+internal/sandboxrun TestSecurityWorktreeRequiresBackPointer
+internal/sandboxrun TestSecurityWriteAllowsDoNotOverrideProtectedDenies
+internal/skillstate TestSecurityStoredConfigRevalidatedAtLaunch
 internal/skilltrust TestSecurityApproveWritesOnlyInsideTheStore
+internal/skilltrust TestSecuritySnapshotContainsNoEscapingSymlink
+internal/skilltrust TestSecuritySnapshotCoversHashExcludedSubtrees
 internal/skilltrust TestSecuritySnapshotVerifiedAgainstApprovedHash
