@@ -47,15 +47,12 @@ func TestResolveGrantsBaselineIncluded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// /tmp (or /private/tmp on macOS) must be writable from the baseline.
-	hasTmp := false
+	// The baseline must not grant the shared host /tmp write: each sandbox
+	// gets a private tmpfs instead (see TestSecurityBaselineDoesNotGrantHostTmp).
 	for _, p := range g.WritePaths {
 		if p == "/tmp" || p == "/private/tmp" {
-			hasTmp = true
+			t.Errorf("baseline should not write-grant shared host tmp %s: %v", p, g.WritePaths)
 		}
-	}
-	if !hasTmp {
-		t.Errorf("baseline temp write missing: %v", g.WritePaths)
 	}
 	// Protected paths populated even with an empty profile.
 	hasSSH := false

@@ -114,7 +114,6 @@ func darwinBaseline() Baseline {
 			"/var/folders", "/private/var/folders",
 		},
 		Write: []string{
-			"/private/tmp", "/tmp",
 			"/private/var/folders", "/var/folders",
 			"/dev",
 			"$TMPDIR",
@@ -159,7 +158,6 @@ func linuxBaseline() Baseline {
 			"$TMPDIR",
 		},
 		Write: []string{
-			"/tmp",
 			"$TMPDIR",
 		},
 		ProtectedPaths: append(protectedCommon(),
