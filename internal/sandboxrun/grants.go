@@ -322,6 +322,13 @@ func resolveWorktreeCommonDir(workdir string) (common, admin string, ok bool) {
 	if err != nil {
 		return "", "", false
 	}
+	// Back-pointer check: <admin>/gitdir must point back at this workdir's
+	// .git file. Without this, any workdir that names another worktree's
+	// admin dir in its .git file gets that repo's grants with no proof of
+	// ownership.
+	if !worktreeBackPointerValid(admin, dotgit) {
+		return "", "", false
+	}
 	data, err := os.ReadFile(filepath.Join(admin, "commondir"))
 	if err != nil {
 		return "", "", false
@@ -341,6 +348,28 @@ func resolveWorktreeCommonDir(workdir string) (common, admin string, ok bool) {
 		return "", "", false
 	}
 	return common, admin, true
+}
+
+// worktreeBackPointerValid reads <admin>/gitdir and checks that it resolves
+// to the same path as dotgit. Both paths are cleaned before comparison so
+// relative gitdir pointers and symlinks in either direction don't trick the
+// check. Returns false when the file is absent or the paths don't match.
+func worktreeBackPointerValid(admin, dotgit string) bool {
+	data, err := os.ReadFile(filepath.Join(admin, "gitdir"))
+	if err != nil {
+		return false
+	}
+	ptr := strings.TrimSpace(string(data))
+	if ptr == "" {
+		return false
+	}
+	if !filepath.IsAbs(ptr) {
+		ptr = filepath.Join(admin, ptr)
+	}
+	ptr = filepath.Clean(ptr)
+	// Compare both cleaned absolute paths so a relative gitdir written by git
+	// (e.g. "../../wt/.git") resolves correctly.
+	return ptr == filepath.Clean(dotgit)
 }
 
 // pathWithinRoot reports whether path, symlinks resolved, is root or inside it.

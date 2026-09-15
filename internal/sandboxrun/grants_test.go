@@ -234,7 +234,12 @@ func makeLinkedWorktree(t *testing.T) (workdir, common string) {
 	if err := os.MkdirAll(workdir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(workdir, ".git"), []byte("gitdir: "+admin+"\n"), 0o600); err != nil {
+	dotgit := filepath.Join(workdir, ".git")
+	if err := os.WriteFile(dotgit, []byte("gitdir: "+admin+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// gitdir back-pointer: <admin>/gitdir -> <workdir>/.git (as git writes it).
+	if err := os.WriteFile(filepath.Join(admin, "gitdir"), []byte(dotgit+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	return workdir, common
