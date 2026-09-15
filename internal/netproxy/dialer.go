@@ -109,9 +109,9 @@ func NewUpstreamProxyDialer(proxyURL *url.URL, noProxy []string, logf func(strin
 // using simple hostname suffix matching: host == entry or host ends in
 // "."+entry. CIDR ranges are not supported in this simple version.
 func hostMatchesNoProxy(host string, entries []string) bool {
-	h := strings.ToLower(host)
+	h := NormalizeHost(host)
 	for _, e := range entries {
-		entry := strings.ToLower(strings.TrimSpace(e))
+		entry := NormalizeHost(strings.TrimSpace(e))
 		if entry == "" {
 			continue
 		}

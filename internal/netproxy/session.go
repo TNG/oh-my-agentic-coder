@@ -18,7 +18,7 @@ type sessionEntry struct {
 // request before consulting any rule, and both decision stores apply it
 // to entries on the way in, so matching never has to normalize again.
 func NormalizeHost(host string) string {
-	return strings.ToLower(strings.TrimSuffix(host, "."))
+	return strings.ToLower(strings.TrimRight(host, "."))
 }
 
 // MatchHostRule reports whether host is covered by a rule recorded for

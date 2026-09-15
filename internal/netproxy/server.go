@@ -624,7 +624,41 @@ func splitConnectTarget(target string) (string, int, error) {
 	if err != nil || port < 1 || port > 65535 {
 		return "", 0, fmt.Errorf("invalid port %q", portStr)
 	}
+	host = NormalizeHost(host)
+	if err := validateHostname(host); err != nil {
+		return "", 0, err
+	}
 	return host, port, nil
+}
+
+// validateHostname rejects hostnames that are malformed after normalization.
+// IP literals are exempt — net.SplitHostPort already strips brackets from
+// IPv6 and netip.ParseAddr accepts the result.
+func validateHostname(host string) error {
+	if _, err := netip.ParseAddr(host); err == nil {
+		return nil // IP literal, not a DNS name
+	}
+	if len(host) > 253 {
+		return fmt.Errorf("hostname too long")
+	}
+	labels := strings.Split(host, ".")
+	for _, l := range labels {
+		if l == "" {
+			return fmt.Errorf("hostname has empty label")
+		}
+		if len(l) > 63 {
+			return fmt.Errorf("hostname label too long")
+		}
+		for _, c := range l {
+			if !((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-') {
+				return fmt.Errorf("hostname has invalid character %q", c)
+			}
+		}
+		if l[0] == '-' || l[len(l)-1] == '-' {
+			return fmt.Errorf("hostname label begins or ends with hyphen")
+		}
+	}
+	return nil
 }
 
 func isLoopbackHost(host string) bool {
