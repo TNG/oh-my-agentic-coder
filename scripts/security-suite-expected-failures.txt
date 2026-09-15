@@ -81,28 +81,25 @@
 #
 #   facade upgrade path  — hop-by-hop header forwarding and the absent splice
 #                          read deadlines are not asserted
-#   snapshot integrity   — only two hash/copy mismatches are asserted; the
-#                          three-spawn-site argv-from-workdir defect (the
-#                          highest-severity gap in this suite) needs the
-#                          snapshot-only refactor before the reload/serve
-#                          spawn sites are unit-testable — see
-#                          internal/config's executed-manifest test for the
-#                          root mechanic, which IS asserted
-#   control plane auth   — only one of twelve routes (start-mode reload) is
-#                          asserted; serve-mode's six routes and five more
-#                          start-mode routes are not
-#   reload SkillDir      — a forged absolute SkillDir is not asserted
+#   snapshot integrity   — the argv-from-workdir defect is asserted for the
+#                          live-reload spawn site (via a symlink-into-
+#                          node_modules fixture that keeps the bundle hash
+#                          unaffected) and, independently, at the pure
+#                          BundleHash/LoadMeta level in internal/config. The
+#                          serve and cold-start spawn sites are NOT asserted:
+#                          serve's supervisor is nil in the test harness, and
+#                          cold-start (start.go) builds its supervisor inline
+#                          with the real authorizer and no injection point —
+#                          both need the snapshot-only-spec refactor (or an
+#                          equivalent seam) before they are unit-testable
+#   control plane auth   — three of twelve routes are asserted (start-mode
+#                          reload and activate, serve-mode activate); serve's
+#                          deactivate/dirs/reload-global/session and start's
+#                          dirs/deactivate/reload-global/session are not
 #   metadata deny        — the direct path's resolved-address screen for
 #                          non-link-local metadata (Oracle's 192.0.0.192) and
 #                          the chained proxy's subdomain-of-hard-deny case are
 #                          not asserted
-#   proxy credential leak — only the NO_PROXY direct path is asserted; the
-#                          same leak on the chained-proxy path is not
-#   https upstream proxy  — the TLS-downgrade defect itself is not asserted
-#                          (needs a TLS test listener); only the credential
-#                          redaction on parse failure is
-#   per-connection policy — keep-alive re-use bypassing the filter on request 2+
-#                          is not asserted
 #   binary resolution     — only the "/" root-grant case is asserted; the
 #                          symlink-hop and install-prefix variants (#48) are not
 #   tool cache             — only the default scope; the cache stays a persistent
@@ -153,13 +150,17 @@ internal/cli TestSecurityDiagnoseRedactsProxyCredentials
 internal/cli TestSecurityFirstRunDoesNotAutoApproveWorkdirSkills
 internal/cli TestSecurityRegisterOutputStripsControlSequences
 internal/cli TestSecurityReloadCannotReplaceApprovedSkillRoute
+internal/cli TestSecurityReloadDoesNotWalkArbitraryHostPaths
 internal/cli TestSecurityReloadRejectsUnauthenticatedCaller
 internal/cli TestSecurityReportedSessionIDRejectsControlSequences
 internal/cli TestSecurityResumePickerStripsControlSequences
 internal/cli TestSecurityRuntimeDirIsNotPredictable
 internal/cli TestSecurityRuntimeDirNotAdoptedFromForeignDir
 internal/cli TestSecurityRuntimeDirServeNotAdoptedFromForeignDir
+internal/cli TestSecurityServeActivateRejectsUnauthenticatedCaller
 internal/cli TestSecuritySessionIDCannotBecomeHarnessFlag
+internal/cli TestSecuritySpawnedArgvComesFromApprovedSnapshot
+internal/cli TestSecurityStartActivateRejectsUnauthenticatedCaller
 internal/config TestSecurityBundleHashCoversTheExecutedManifest
 internal/config TestSecurityHealthPathCannotRedirectProbe
 internal/config TestSecurityWorkdirConfigCannotDefineSandboxCommand
@@ -178,8 +179,11 @@ internal/netproxy TestSecurityChainedProxyDeniesMetadataByResolvedAddress
 internal/netproxy TestSecurityCloudMetadataEndpointsAlwaysDenied
 internal/netproxy TestSecurityDenyRulesSurviveTrailingDotVariants
 internal/netproxy TestSecurityFilterDeniesHostsResolvingToLoopback
+internal/netproxy TestSecurityHTTPSUpstreamProxyNeverDialedInPlaintext
+internal/netproxy TestSecurityKeepAliveConnectionReevaluatesEveryRequest
 internal/netproxy TestSecurityLoopbackGuardRejectsHostnameVariants
 internal/netproxy TestSecurityMetadataHardDenySurvivesTrailingDotVariants
+internal/netproxy TestSecurityUpstreamProxyCredentialNeverReachesOrigin
 internal/opencodestate TestSecurityPlantedProjectRecordYieldsNoWorktree
 internal/sandboxprofile TestSecurityBaselineDoesNotGrantHostTmp
 internal/sandboxprofile TestSecurityConfigDirIsProtected
