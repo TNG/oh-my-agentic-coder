@@ -583,13 +583,6 @@ func dialPinned(ctx context.Context, addrs []netip.Addr, port int) (net.Conn, er
 	// a winner cancels ctx.
 	sem := make(chan struct{}, maxParallelDials)
 	for _, a := range addrs {
-		// Belt-and-suspenders: re-validate every address immediately before
-		// dialing, regardless of how it was approved earlier. This makes
-		// dialPinned safe by construction for any future caller.
-		if reason, denied := hardDeniedAddr(a); denied {
-			ch <- result{nil, fmt.Errorf("dial refused: %s", reason)}
-			continue
-		}
 		addr := net.JoinHostPort(a.String(), strconv.Itoa(port))
 		go func() {
 			select {
