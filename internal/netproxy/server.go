@@ -561,6 +561,13 @@ func dialPinned(ctx context.Context, addrs []netip.Addr, port int) (net.Conn, er
 	// a winner cancels ctx.
 	sem := make(chan struct{}, maxParallelDials)
 	for _, a := range addrs {
+		// Belt-and-suspenders: re-validate every address immediately before
+		// dialing, regardless of how it was approved earlier. This makes
+		// dialPinned safe by construction for any future caller.
+		if reason, denied := hardDeniedAddr(a); denied {
+			ch <- result{nil, fmt.Errorf("dial refused: %s", reason)}
+			continue
+		}
 		addr := net.JoinHostPort(a.String(), strconv.Itoa(port))
 		go func() {
 			select {
@@ -661,16 +668,22 @@ func validateHostname(host string) error {
 	return nil
 }
 
-func isLoopbackHost(host string) bool {
-	h := strings.ToLower(host)
+// IsLoopbackHost reports whether the host string names a local destination.
+// It is called on the raw value from the CONNECT/forward request before DNS,
+// so it must catch every syntactic variant: trailing dots, unspecified addrs.
+// Exported so omac diagnose --probe can use the same definition as the proxy.
+func IsLoopbackHost(host string) bool {
+	h := NormalizeHost(host) // strips trailing dots, lowercases
 	if h == "localhost" || strings.HasSuffix(h, ".localhost") {
 		return true
 	}
 	if ip, err := netip.ParseAddr(h); err == nil {
-		return IsLoopback(ip)
+		return isHostLocal(ip)
 	}
 	return false
 }
+
+func isLoopbackHost(host string) bool { return IsLoopbackHost(host) }
 
 // writeRawResponse emits a minimal HTTP/1.1 response on a raw conn.
 func writeRawResponse(conn net.Conn, status int, extraHeaders, body string) {

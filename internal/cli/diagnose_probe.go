@@ -88,12 +88,10 @@ func rawTCPProbe(profile *sandboxprofile.Profile, port int) (probeOutcome, strin
 
 // isLoopbackHost reports whether target names the local host, whose
 // reachability is governed by network.open_port rather than the proxy.
+// Delegates to netproxy.IsLoopbackHost so this and the runtime proxy
+// always agree.
 func isLoopbackHost(host string) bool {
-	if strings.EqualFold(host, "localhost") {
-		return true
-	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
+	return netproxy.IsLoopbackHost(host)
 }
 
 // loopbackProbe returns the verdict for a localhost:port connection: allowed

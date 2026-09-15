@@ -91,10 +91,14 @@ type provenanceView struct {
 	Cache       cacheView       `json:"cache"`
 }
 
-// hardDenyHosts mirrors netproxy.hardDenyHosts (not exported). Kept here
-// for provenance display; if the netproxy list changes, update this too.
+// provenanceHardDenyHosts mirrors netproxy.hardDenyHosts (not exported).
+// Keep in sync with internal/netproxy/filter.go:hardDenyHosts.
 var provenanceHardDenyHosts = []string{
 	"169.254.169.254",
+	"100.100.100.200",
+	"192.0.0.192",
+	"169.254.170.2",
+	"fd00:ec2::254",
 	"metadata.google.internal",
 	"metadata.azure.internal",
 }

@@ -47,10 +47,21 @@ type Verdict struct {
 }
 
 // hardDenyHosts can never be allowed, even interactively (nono parity).
+// Keep in sync with internal/cli/provenance.go:provenanceHardDenyHosts.
 var hardDenyHosts = map[string]bool{
 	"169.254.169.254":          true,
+	"100.100.100.200":          true, // Alibaba Cloud IMDS
+	"192.0.0.192":              true, // Oracle Cloud IMDS
+	"169.254.170.2":            true, // ECS task metadata
+	"fd00:ec2::254":            true, // AWS IMDS over IPv6
 	"metadata.google.internal": true,
 	"metadata.azure.internal":  true,
+}
+
+// hardDenyHostSuffixes are suffix-matched: any subdomain is also hard-denied.
+var hardDenyHostSuffixes = []string{
+	"metadata.google.internal",
+	"metadata.azure.internal",
 }
 
 // Prompter asks the user about a host:port that no static rule covers.
@@ -164,7 +175,7 @@ func NewFilter(cfg FilterConfig) *Filter {
 // verdict plus the pinned addresses to dial (only meaningful on Allow).
 //
 // Pipeline order (spec: sandbox-network "Filter decision order"):
-//  1. hard deny: metadata hostnames + link-local resolved IPs
+//  1. hard deny: metadata hostnames + link-local/loopback/unspecified/metadata resolved IPs
 //  2. learned permanent deny
 //  3. deny_domain blocklist
 //  4. allow_domain allowlist / learned permanent allow
@@ -174,12 +185,12 @@ func (f *Filter) Check(ctx context.Context, host string, port int) (Verdict, []n
 	h := NormalizeHost(host)
 
 	// 1. Hard denies. Never promptable.
-	if hardDenyHosts[h] {
+	if isHardDeniedHost(h) {
 		return f.log(h, port, Verdict{Decision: Deny, Reason: "hard-deny metadata host"}), nil
 	}
 	if ip, err := netip.ParseAddr(h); err == nil {
-		if isLinkLocal(ip) {
-			return f.log(h, port, Verdict{Decision: Deny, Reason: "hard-deny link-local address"}), nil
+		if reason, denied := hardDeniedAddr(ip); denied {
+			return f.log(h, port, Verdict{Decision: Deny, Reason: reason}), nil
 		}
 		if v := f.checkRules(h); v != nil {
 			return f.log(h, port, *v), []netip.Addr{ip}
@@ -197,8 +208,8 @@ func (f *Filter) Check(ctx context.Context, host string, port int) (Verdict, []n
 	}
 	safe := addrs[:0:0]
 	for _, a := range addrs {
-		if isLinkLocal(a) {
-			return f.log(h, port, Verdict{Decision: Deny, Reason: "hard-deny: resolves to link-local"}), nil
+		if reason, denied := hardDeniedAddr(a); denied {
+			return f.log(h, port, Verdict{Decision: Deny, Reason: "hard-deny: resolves to " + reason[len("hard-deny "):]}), nil
 		}
 		safe = append(safe, a)
 	}
@@ -230,11 +241,13 @@ func (f *Filter) Check(ctx context.Context, host string, port int) (Verdict, []n
 // boundary (the upstream proxy resolves it).
 func (f *Filter) CheckHost(ctx context.Context, host string, port int) Verdict {
 	h := NormalizeHost(host)
-	if hardDenyHosts[h] {
+	if isHardDeniedHost(h) {
 		return f.log(h, port, Verdict{Decision: Deny, Reason: "hard-deny metadata host"})
 	}
-	if ip, err := netip.ParseAddr(h); err == nil && isLinkLocal(ip) {
-		return f.log(h, port, Verdict{Decision: Deny, Reason: "hard-deny link-local address"})
+	if ip, err := netip.ParseAddr(h); err == nil {
+		if reason, denied := hardDeniedAddr(ip); denied {
+			return f.log(h, port, Verdict{Decision: Deny, Reason: reason})
+		}
 	}
 	if v := f.checkRules(h); v != nil {
 		return f.log(h, port, *v)
@@ -437,4 +450,69 @@ func IsLoopback(ip netip.Addr) bool {
 		ip = ip.Unmap()
 	}
 	return ip.IsLoopback()
+}
+
+// isHostLocal reports whether ip is loopback or the unspecified address.
+// Connecting to 0.0.0.0 or :: on Linux routes to 127.0.0.1, making them
+// equivalent to loopback from a security standpoint.
+func isHostLocal(ip netip.Addr) bool {
+	u := ip
+	if u.Is4In6() {
+		u = u.Unmap()
+	}
+	return u.IsLoopback() || u.IsUnspecified()
+}
+
+// isCloudMetadata reports whether ip is a cloud instance-metadata address
+// that is not already covered by isLinkLocal (169.254.x.x is link-local).
+var cloudMetadataAddrs = func() map[netip.Addr]bool {
+	m := map[netip.Addr]bool{}
+	for _, s := range []string{
+		"100.100.100.200", // Alibaba Cloud IMDS
+		"192.0.0.192",     // Oracle Cloud IMDS
+		"169.254.170.2",   // ECS task metadata
+		"fd00:ec2::254",   // AWS IMDS over IPv6
+	} {
+		m[netip.MustParseAddr(s)] = true
+	}
+	return m
+}()
+
+func isCloudMetadata(ip netip.Addr) bool {
+	u := ip
+	if u.Is4In6() {
+		u = u.Unmap()
+	}
+	return cloudMetadataAddrs[u]
+}
+
+// hardDeniedAddr returns a "hard-deny ..." reason if ip must never be dialed.
+// It is the single chokepoint applied at all four decision points:
+// literal-IP in Check, resolved-IP in Check, literal-IP in CheckHost,
+// and pre-dial in dialPinned.
+func hardDeniedAddr(ip netip.Addr) (string, bool) {
+	if isLinkLocal(ip) {
+		return "hard-deny link-local address", true
+	}
+	if isHostLocal(ip) {
+		return "hard-deny loopback/unspecified address", true
+	}
+	if isCloudMetadata(ip) {
+		return "hard-deny cloud-metadata address", true
+	}
+	return "", false
+}
+
+// isHardDeniedHost reports whether the normalized hostname string is in the
+// hard-deny map or matches a hard-deny suffix.
+func isHardDeniedHost(h string) bool {
+	if hardDenyHosts[h] {
+		return true
+	}
+	for _, suffix := range hardDenyHostSuffixes {
+		if matchHostOrSuffix(h, suffix, true) {
+			return true
+		}
+	}
+	return false
 }
