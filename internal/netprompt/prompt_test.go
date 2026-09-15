@@ -104,14 +104,22 @@ func TestPromptRecordsExplainMore(t *testing.T) {
 
 func TestRegisteredSuffixHint(t *testing.T) {
 	cases := map[string]string{
-		"api.example.com":    "example.com",
-		"a.b.example.com":    "b.example.com",
-		"example.com":        "example.com", // 2 labels: unchanged
-		"localhost":          "localhost",
-		"192.168.1.1":        "192.168.1.1", // IP literal: unchanged
-		"2001:db8::1":        "2001:db8::1",
-		"registry.npmjs.org": "npmjs.org",
-		"deep.sub.host.tld":  "sub.host.tld",
+		// Standard cases: return the registrable domain (eTLD+1).
+		"api.example.com":           "example.com",
+		"a.b.example.com":           "example.com", // PSL: eTLD+1, not "b.example.com"
+		"registry.npmjs.org":        "npmjs.org",
+		"mybucket.s3.amazonaws.com": "mybucket.s3.amazonaws.com", // s3.amazonaws.com is a PSL entry
+		"sub.sub.example.co.uk":     "example.co.uk",
+		// Registrable domains themselves: return unchanged (no safe wildcard).
+		"example.com": "example.com",
+		"foo.co.uk":   "foo.co.uk",
+		// Hosts without a recognized eTLD: PSL applies the ICANN fallback
+		// (treat the last label as TLD), so multi-label hosts still get eTLD+1.
+		"localhost":         "localhost", // single label: no eTLD+1
+		"deep.sub.host.tld": "host.tld",  // fallback: "tld" is TLD, eTLD+1 = "host.tld"
+		// IP literals: unchanged.
+		"192.168.1.1": "192.168.1.1",
+		"2001:db8::1": "2001:db8::1",
 	}
 	for in, want := range cases {
 		if got := RegisteredSuffixHint(in); got != want {

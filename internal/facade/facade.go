@@ -791,14 +791,13 @@ func (f *Facade) proxyHTTP(w http.ResponseWriter, r *http.Request, route *Route,
 	upstream := &url.URL{Scheme: "http", Host: upstreamHost(route.UpstreamPort)}
 	rp := httputil.NewSingleHostReverseProxy(upstream)
 
-	// Customize the Director so we can rewrite the path and header set.
-	rp.Director = func(req *http.Request) {
-		req.URL.Scheme = "http"
-		req.URL.Host = upstream.Host
-		req.URL.Path = "/" + rest
-		req.Host = upstream.Host
-		req.Header.Set("X-Forwarded-Prefix", "/"+route.key())
-		// Hop-by-hop headers are stripped by httputil automatically.
+	// Rewrite the path and header set for the upstream request.
+	rp.Rewrite = func(pr *httputil.ProxyRequest) {
+		pr.Out.URL.Scheme = "http"
+		pr.Out.URL.Host = upstream.Host
+		pr.Out.URL.Path = "/" + rest
+		pr.Out.Host = upstream.Host
+		pr.Out.Header.Set("X-Forwarded-Prefix", "/"+route.key())
 	}
 
 	// Enforce max body bytes for inbound request body (best-effort; SSE has no body).

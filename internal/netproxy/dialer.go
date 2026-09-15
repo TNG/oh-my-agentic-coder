@@ -3,6 +3,7 @@ package netproxy
 import (
 	"bufio"
 	"context"
+	"crypto/tls"
 	"encoding/base64"
 	"fmt"
 	"net"
@@ -46,7 +47,9 @@ type ProxyAuthenticator interface {
 // directDialer dials the pinned addresses the server already resolved
 // and approved via Filter.Check. It performs no admission control or DNS
 // resolution of its own — that is the server's single responsibility.
-type directDialer struct{}
+type directDialer struct {
+	allowLoopback bool // test seam: skip pre-dial loopback check
+}
 
 // NewDirectDialer creates a Dialer that dials the server-pinned IPs
 // directly (anti-DNS-rebinding preserved by reusing the server's addrs).
@@ -54,8 +57,15 @@ func NewDirectDialer() Dialer {
 	return &directDialer{}
 }
 
+// NewDirectDialerAllowLoopback is a test-only constructor that skips the
+// pre-dial loopback check, for tests that route traffic through a local
+// origin server on 127.0.0.1.
+func NewDirectDialerAllowLoopback() Dialer {
+	return &directDialer{allowLoopback: true}
+}
+
 func (d *directDialer) DialTunnel(ctx context.Context, host string, port int, addrs []netip.Addr) (net.Conn, error) {
-	return dialPinned(ctx, addrs, port)
+	return dialPinned(ctx, addrs, port, d.allowLoopback)
 }
 
 // UpstreamError carries attribution for a failed upstream-proxy
@@ -89,6 +99,14 @@ type upstreamProxyDialer struct {
 // (suffix match on the hostname) bypass the upstream proxy and dial the
 // server-pinned IPs directly instead.
 func NewUpstreamProxyDialer(proxyURL *url.URL, noProxy []string, logf func(string, ...any)) Dialer {
+	return newUpstreamProxyDialerInternal(proxyURL, noProxy, logf, false)
+}
+
+func newUpstreamProxyDialerAllowLoopback(proxyURL *url.URL, noProxy []string, logf func(string, ...any)) Dialer {
+	return newUpstreamProxyDialerInternal(proxyURL, noProxy, logf, true)
+}
+
+func newUpstreamProxyDialerInternal(proxyURL *url.URL, noProxy []string, logf func(string, ...any), allowLoopback bool) Dialer {
 	var proxyAuth string
 	if proxyURL.User != nil {
 		username := proxyURL.User.Username()
@@ -96,11 +114,17 @@ func NewUpstreamProxyDialer(proxyURL *url.URL, noProxy []string, logf func(strin
 		creds := username + ":" + password
 		proxyAuth = "Basic " + base64.StdEncoding.EncodeToString([]byte(creds))
 	}
+	var direct Dialer
+	if allowLoopback {
+		direct = NewDirectDialerAllowLoopback()
+	} else {
+		direct = NewDirectDialer()
+	}
 	return &upstreamProxyDialer{
 		proxyURL:  proxyURL,
 		proxyAuth: proxyAuth,
 		noProxy:   noProxy,
-		direct:    NewDirectDialer(),
+		direct:    direct,
 		logf:      logf,
 	}
 }
@@ -109,9 +133,9 @@ func NewUpstreamProxyDialer(proxyURL *url.URL, noProxy []string, logf func(strin
 // using simple hostname suffix matching: host == entry or host ends in
 // "."+entry. CIDR ranges are not supported in this simple version.
 func hostMatchesNoProxy(host string, entries []string) bool {
-	h := strings.ToLower(host)
+	h := NormalizeHost(host)
 	for _, e := range entries {
-		entry := strings.ToLower(strings.TrimSpace(e))
+		entry := NormalizeHost(strings.TrimSpace(e))
 		if entry == "" {
 			continue
 		}
@@ -137,6 +161,7 @@ func (d *upstreamProxyDialer) ChainsHost(host string) bool {
 }
 
 func (d *upstreamProxyDialer) DialTunnel(ctx context.Context, host string, port int, addrs []netip.Addr) (net.Conn, error) {
+	host = NormalizeHost(host) // send canonical form; upstream must not see trailing dots
 	if hostMatchesNoProxy(host, d.noProxy) {
 		d.logf("omac netproxy: NO_PROXY match for %s — dialing direct", host)
 		return d.direct.DialTunnel(ctx, host, port, addrs)
@@ -145,13 +170,31 @@ func (d *upstreamProxyDialer) DialTunnel(ctx context.Context, host string, port 
 	target := net.JoinHostPort(host, fmt.Sprintf("%d", port))
 
 	var nd net.Dialer
-	conn, err := nd.DialContext(ctx, "tcp", d.proxyURL.Host)
+	rawConn, err := nd.DialContext(ctx, "tcp", d.proxyURL.Host)
 	if err != nil {
 		return nil, &UpstreamError{
 			ProxyHost:  d.proxyURL.Host,
 			StatusLine: "",
 			Err:        err,
 		}
+	}
+	var conn net.Conn
+	if d.proxyURL.Scheme == "https" {
+		tlsConn := tls.Client(rawConn, &tls.Config{
+			ServerName: d.proxyURL.Hostname(),
+			MinVersion: tls.VersionTLS12,
+		})
+		if err := tlsConn.HandshakeContext(ctx); err != nil {
+			rawConn.Close()
+			return nil, &UpstreamError{
+				ProxyHost:  d.proxyURL.Host,
+				StatusLine: "",
+				Err:        fmt.Errorf("TLS handshake: %w", err),
+			}
+		}
+		conn = tlsConn
+	} else {
+		conn = rawConn
 	}
 
 	// Pass the hostname (not pre-resolved IPs): corporate proxies perform
@@ -199,10 +242,10 @@ func (d *upstreamProxyDialer) DialTunnel(ctx context.Context, host string, port 
 	// On 200 the conn is a raw tunnel. Preserve any bytes the
 	// bufio.Reader already pulled past the response head so the client
 	// sees them before reading directly from the socket.
+	resp.Body.Close()
 	if br.Buffered() > 0 {
 		return &bufferedConn{Conn: conn, br: br}, nil
 	}
-	resp.Body.Close()
 	return conn, nil
 }
 

@@ -58,7 +58,8 @@ func dialThroughOmacProxy(t *testing.T, srv *netproxy.Server, targetHost string,
 func makeProxyServer(t *testing.T, dialer netproxy.Dialer) *netproxy.Server {
 	t.Helper()
 	filter := netproxy.NewFilter(netproxy.FilterConfig{
-		AllowDomains: []string{"example.com"},
+		AllowDomains:        []string{"example.com"},
+		AllowLoopbackOrigin: true,
 		Resolve: func(_ context.Context, _ string) ([]netip.Addr, error) {
 			return []netip.Addr{netip.MustParseAddr("127.0.0.1")}, nil
 		},
@@ -82,48 +83,53 @@ func clearProxyEnv(t *testing.T) {
 }
 
 // TestResolveUpstreamProxySchemed verifies that a proxy URL with an
-// explicit http:// or https:// scheme is parsed correctly and the
-// dialer contacts the right host — not "http:" (the double-prefix bug).
+// explicit http:// or https:// scheme is parsed correctly.
+// http:// dials the listener in plain TCP; https:// wraps with TLS and
+// must NOT send credentials to a plaintext listener.
 func TestResolveUpstreamProxySchemed(t *testing.T) {
-	cases := []struct {
-		name   string
-		envVal string
-	}{
-		{"http_scheme", ""},
-		{"https_scheme", ""},
-	}
-	for i, tc := range cases {
+	t.Run("http_scheme", func(t *testing.T) {
 		ln, connCount := startCountingListener(t)
-		addr := ln.Addr().String()
 		defer ln.Close()
+		clearProxyEnv(t)
+		t.Setenv("HTTPS_PROXY", "http://"+ln.Addr().String())
 
-		if i == 0 {
-			tc.envVal = "http://" + addr
-		} else {
-			tc.envVal = "https://" + addr
+		p := &sandboxprofile.Profile{}
+		d := resolveUpstreamProxy(p, &bytes.Buffer{}, t.Logf)
+		_, isUpstream := d.(netproxy.ProxyAuthenticator)
+		if !isUpstream {
+			t.Fatalf("got %T, want upstream proxy dialer", d)
 		}
 
-		t.Run(tc.name, func(t *testing.T) {
-			clearProxyEnv(t)
-			t.Setenv("HTTPS_PROXY", tc.envVal)
+		srv := makeProxyServer(t, d)
+		resp := dialThroughOmacProxy(t, srv, "example.com", 443)
+		time.Sleep(50 * time.Millisecond)
+		if connCount() == 0 {
+			t.Errorf("http:// upstream proxy was not contacted (response: %q)", resp)
+		}
+	})
 
-			p := &sandboxprofile.Profile{}
-			d := resolveUpstreamProxy(p, &bytes.Buffer{}, t.Logf)
+	t.Run("https_scheme", func(t *testing.T) {
+		ln, _ := startCountingListener(t)
+		defer ln.Close()
+		clearProxyEnv(t)
+		t.Setenv("HTTPS_PROXY", "https://"+ln.Addr().String())
 
-			_, isUpstream := d.(netproxy.ProxyAuthenticator)
-			if !isUpstream {
-				t.Fatalf("got %T, want upstream proxy dialer for %q", d, tc.envVal)
-			}
+		p := &sandboxprofile.Profile{}
+		d := resolveUpstreamProxy(p, &bytes.Buffer{}, t.Logf)
+		_, isUpstream := d.(netproxy.ProxyAuthenticator)
+		if !isUpstream {
+			t.Fatalf("got %T, want upstream proxy dialer for https:// URL", d)
+		}
 
-			srv := makeProxyServer(t, d)
-			resp := dialThroughOmacProxy(t, srv, "example.com", 443)
-
-			time.Sleep(50 * time.Millisecond)
-			if connCount() == 0 {
-				t.Errorf("upstream proxy at %q was not contacted (response: %q)", addr, resp)
-			}
-		})
-	}
+		srv := makeProxyServer(t, d)
+		// TLS handshake against a plain listener fails — the CONNECT never
+		// reaches the origin, so we get a 502. That is correct: the dialer
+		// attempted TLS rather than sending credentials in the clear.
+		resp := dialThroughOmacProxy(t, srv, "example.com", 443)
+		if bytes.Contains(resp, []byte("200")) {
+			t.Errorf("https:// upstream proxy returned 200 against a plain listener: credentials were sent in plaintext\n%s", resp)
+		}
+	})
 }
 
 // TestResolveUpstreamProxySchemeLess verifies that a proxy URL without

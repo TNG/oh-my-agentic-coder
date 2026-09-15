@@ -386,6 +386,7 @@ func buildProxy(p *sandboxprofile.Profile, profilePath string, stderr io.Writer,
 		Session:            session,
 		Logf:               logf,
 		Auditor:            auditor,
+		ResolveOnCheckHost: true,
 	})
 	srv, err := netproxy.NewServer(filter, resolveUpstreamProxy(p, stderr, logf), logf)
 	if err != nil {
@@ -442,8 +443,8 @@ func resolveUpstreamProxy(p *sandboxprofile.Profile, stderr io.Writer, logf func
 		parsedStr = "http://" + proxyStr
 	}
 	proxyURL, err := url.Parse(parsedStr)
-	if err != nil || proxyURL.Host == "" {
-		fmt.Fprintf(stderr, "omac sandbox: warning: invalid upstream proxy %q — falling back to direct dialing\n", proxyStr)
+	if err != nil || proxyURL.Host == "" || (proxyURL.Scheme != "http" && proxyURL.Scheme != "https") {
+		fmt.Fprintf(stderr, "omac sandbox: warning: invalid upstream proxy %q (want http:// or https://) — falling back to direct dialing\n", proxyStr)
 		return netproxy.NewDirectDialer()
 	}
 

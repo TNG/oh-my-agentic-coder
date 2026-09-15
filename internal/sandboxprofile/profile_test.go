@@ -1052,7 +1052,7 @@ func TestUpstreamProxyValidation(t *testing.T) {
 	}{
 		{"empty", "", true},
 		{"http", "http://proxy:8080", true},
-		{"https_rejected", "https://proxy:8080", false},
+		{"https_accepted", "https://proxy:8080", true},
 		{"http_no_host", "http://", false},
 		{"invalid_scheme", "ftp://proxy:8080", false},
 		{"malformed", "///not-a-url", false},

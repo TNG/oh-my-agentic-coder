@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/net/publicsuffix"
+
 	"github.com/TNG/oh-my-agentic-coder/internal/netprompt/hostmap"
 	"github.com/TNG/oh-my-agentic-coder/internal/netprompt/origin"
 	"github.com/TNG/oh-my-agentic-coder/internal/netproxy"
@@ -136,18 +138,26 @@ func tokenToResult(token, host, suffix string) netproxy.PromptResult {
 	}
 }
 
-// RegisteredSuffixHint strips the leftmost label of a host with >= 3
-// labels (api.example.com -> example.com). IP literals and shorter
-// hosts are returned unchanged (nono's registered_suffix_hint).
+// RegisteredSuffixHint returns the narrowest safe wildcard for a dialog
+// option. It is at most one label below the registrable domain: offering
+// broader wildcards (e.g. *.co.uk, *.s3.amazonaws.com) would let one
+// approval cover thousands of unrelated sites.
+//
+// IP literals and registrable-domain-or-shorter hosts are returned
+// unchanged (no wildcard is offered).
 func RegisteredSuffixHint(host string) string {
 	if net.ParseIP(host) != nil {
 		return host
 	}
-	labels := strings.Split(host, ".")
-	if len(labels) >= 3 {
-		return strings.Join(labels[1:], ".")
+	// eTLDPlusOne is the registrable domain ("example.co.uk" for
+	// "api.example.co.uk"). If the host IS the registrable domain,
+	// no wildcard is safe.
+	etld1, err := publicsuffix.EffectiveTLDPlusOne(host)
+	if err != nil || etld1 == host {
+		return host
 	}
-	return host
+	// One label below the registrable domain is the narrowest safe choice.
+	return etld1
 }
 
 // promptText is the dialog body. intent is the agent-declared reason (empty

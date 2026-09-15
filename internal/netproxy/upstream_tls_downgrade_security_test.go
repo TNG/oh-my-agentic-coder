@@ -3,11 +3,9 @@
 package netproxy
 
 import (
-	"bufio"
 	"context"
 	"encoding/base64"
 	"fmt"
-	"io"
 	"net"
 	"net/url"
 	"strings"
@@ -19,15 +17,15 @@ import (
 )
 
 // TestSecurityHTTPSUpstreamProxyNeverDialedInPlaintext asserts that an
-// upstream proxy URL configured as https:// results in a TLS-negotiated
-// connection to that proxy — not a plain TCP socket carrying the
-// Proxy-Authorization credential in the clear.
+// upstream proxy URL configured as https:// initiates a TLS handshake
+// rather than sending the Proxy-Authorization credential in plaintext.
 //
-// dialer.go's chained-proxy dial path is bare net.Dialer.DialContext
-// followed directly by writing the CONNECT request and the
-// Proxy-Authorization header; the package imports no crypto/tls at all.
-// An "https://" scheme in the upstream_proxy value is accepted and
-// silently treated exactly like "http://".
+// The fixture uses a plain TCP listener. After the fix, DialTunnel sends
+// a TLS ClientHello instead of a plaintext CONNECT, so the listener sees
+// unrecognisable bytes and the TLS handshake fails — that failure is the
+// proof that TLS was attempted. If the old code ran, the listener would
+// see a plaintext CONNECT with credentials; the dial would succeed and
+// the credential would be readable on the wire.
 func TestSecurityHTTPSUpstreamProxyNeverDialedInPlaintext(t *testing.T) {
 	sectest.RequireLoopbackListener(t)
 
@@ -37,26 +35,22 @@ func TestSecurityHTTPSUpstreamProxyNeverDialedInPlaintext(t *testing.T) {
 	}
 	defer ln.Close()
 
+	// Capture everything the plain listener receives from the dialer.
 	var got atomic.Value
+	got.Store("")
 	go func() {
 		c, err := ln.Accept()
 		if err != nil {
 			return
 		}
 		defer c.Close()
-		br := bufio.NewReader(c)
-		head, _ := br.ReadString('\n')
-		var headers strings.Builder
-		for {
-			line, err := br.ReadString('\n')
-			if err != nil || line == "\r\n" || line == "\n" {
-				break
-			}
-			headers.WriteString(line)
-		}
-		got.Store(head + headers.String())
-		io.WriteString(c, "HTTP/1.1 200 Connection Established\r\n\r\n")
-		time.Sleep(200 * time.Millisecond)
+		// Short deadline so we never block if the TLS handshake stalls.
+		_ = c.SetReadDeadline(time.Now().Add(2 * time.Second))
+		buf := make([]byte, 4096)
+		n, _ := c.Read(buf)
+		got.Store(string(buf[:n]))
+		// Do not send any response — the TLS handshake will fail, which is
+		// exactly what we want to observe.
 	}()
 
 	proxyURL, err := url.Parse(fmt.Sprintf("https://corpuser:hunter2@127.0.0.1:%d", ln.Addr().(*net.TCPAddr).Port))
@@ -65,22 +59,26 @@ func TestSecurityHTTPSUpstreamProxyNeverDialedInPlaintext(t *testing.T) {
 	}
 	d := NewUpstreamProxyDialer(proxyURL, nil, nil)
 
-	conn, err := d.DialTunnel(context.Background(), "internal.example.com", 443, nil)
-	if err != nil {
-		t.Fatalf("DialTunnel to https:// proxy: %v", err)
-	}
-	conn.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, err := d.DialTunnel(ctx, "internal.example.com", 443, nil)
 
-	v, _ := got.Load().(string)
-
-	// Control: the plaintext listener did receive a CONNECT request at
-	// all, so the fixture actually reached the proxy dial path.
-	if !strings.Contains(v, "CONNECT internal.example.com:443") {
-		t.Fatalf("control: no plaintext CONNECT observed at all (%q): the fixture is broken, not the security property", v)
+	// Control: the dial must fail — a TLS handshake against a plain listener
+	// always fails. If it succeeds, the old (plaintext) code path ran.
+	if err == nil {
+		conn.Close()
+		t.Fatal("DialTunnel to https:// proxy succeeded against a plain TCP listener: credentials were sent in plaintext, no TLS was negotiated")
 	}
 
+	// The bytes the listener received must look like a TLS ClientHello
+	// (first byte 0x16 = TLS record type "handshake"), not a plaintext
+	// CONNECT request. This is the definitive proof that TLS was attempted.
+	raw, _ := got.Load().(string)
 	credential := "Basic " + base64.StdEncoding.EncodeToString([]byte("corpuser:hunter2"))
-	if strings.Contains(v, credential) {
-		t.Errorf("an https:// upstream_proxy URL was dialed as plain TCP: the proxy credential was written to the wire in the clear, no TLS ever negotiated:\n%s", v)
+	if strings.Contains(raw, credential) {
+		t.Errorf("the proxy credential was observed in plaintext on the wire — TLS was not negotiated:\n%s", raw)
+	}
+	if strings.Contains(raw, "CONNECT") {
+		t.Errorf("a plaintext CONNECT was sent to an https:// proxy — TLS was not negotiated:\n%s", raw)
 	}
 }

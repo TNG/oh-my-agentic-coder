@@ -16,6 +16,17 @@ allow list, a native dialog asks you to approve or deny it — once, for the
 session, or permanently. If no dialog is available (CI, headless server), the
 request is denied by default.
 
+Cloud instance-metadata endpoints (169.254.169.254, 100.100.100.200,
+192.0.0.192, 169.254.170.2, fd00:ec2::254, metadata.google.internal,
+metadata.azure.internal) are blocked unconditionally and cannot be approved
+interactively. Any hostname resolving to a loopback, unspecified, link-local,
+or metadata address is also blocked.
+
+`host.docker.internal` (the Docker bridge gateway, typically 172.17.0.1) is
+not in the hard-deny set. It is a private RFC 1918 address and is subject to
+the normal prompt or allow/deny policy. If you run Docker and want to
+prevent the agent from reaching it, add it to `network.deny_domain`.
+
 ### Filesystem
 
 An agent with broad filesystem access can read SSH keys, cloud credentials, or

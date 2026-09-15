@@ -78,7 +78,7 @@ func TestNoProxyBypassStillResolvesLocally(t *testing.T) {
 	defer proxyLn.Close()
 
 	proxyURL, _ := url.Parse("http://" + proxyLn.Addr().String())
-	dialer := NewUpstreamProxyDialer(proxyURL, []string{"registry.internal"}, t.Logf)
+	dialer := newUpstreamProxyDialerAllowLoopback(proxyURL, []string{"registry.internal"}, t.Logf)
 
 	var resolves atomic.Int32
 	s := startProxyWithDialer(t, FilterConfig{

@@ -30,14 +30,14 @@ import (
 func TestSecurityChainedProxyDeniesMetadataByResolvedAddress(t *testing.T) {
 	aliasOf := func(t *testing.T, ip string) Verdict {
 		t.Helper()
-		f := NewFilter(FilterConfig{Resolve: staticResolver(ip)})
+		f := NewFilter(FilterConfig{Resolve: staticResolver(ip), ResolveOnCheckHost: true})
 		return f.CheckHost(context.Background(), "metadata.alias.example", 80)
 	}
 
 	// Control: written as a literal, the metadata address is denied on this
 	// path too. That is the rule this test claims is evadable, so it has to
 	// be in force before the evasion means anything.
-	f := NewFilter(FilterConfig{Resolve: staticResolver("93.184.216.34")})
+	f := NewFilter(FilterConfig{Resolve: staticResolver("93.184.216.34"), ResolveOnCheckHost: true})
 	if v := f.CheckHost(context.Background(), "169.254.169.254", 80); v.Decision != Deny {
 		t.Fatal("CheckHost(169.254.169.254) was allowed: the hard-deny is absent on the chained path entirely")
 	}
@@ -68,7 +68,7 @@ func TestSecurityChainedProxyDeniesLoopbackByResolvedAddress(t *testing.T) {
 	}
 
 	for _, ip := range []string{"127.0.0.1", "::1", "0.0.0.0"} {
-		f := NewFilter(FilterConfig{Resolve: staticResolver(ip)})
+		f := NewFilter(FilterConfig{Resolve: staticResolver(ip), ResolveOnCheckHost: true})
 		if v := f.CheckHost(context.Background(), "loopback.alias.example", 8000); v.Decision != Deny {
 			t.Errorf("CheckHost admitted a hostname resolving to %s: the sandboxed agent reaches host-local services through the upstream proxy", ip)
 		}

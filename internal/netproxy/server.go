@@ -508,16 +508,26 @@ func (s *Server) handleForward(conn net.Conn, br *bufio.Reader, req *http.Reques
 	req.Header.Del("Proxy-Connection")
 	req.RequestURI = ""
 	outReq := req.Clone(context.Background())
+	// Signal to the origin that we will not reuse this connection.
+	// This makes the origin close its end after the response, which
+	// terminates the response stream cleanly without raw splicing.
+	outReq.Header.Set("Connection", "close")
+	outReq.Close = true
 
-	// Upstream-proxy path: forward in absolute-URI form (so the proxy
-	// knows where to send the request) and set the upstream's
-	// Proxy-Authorization credentials. Direct path: rewrite to
-	// origin-form and send no Proxy-Authorization.
-	if pa, ok := s.dialer.(ProxyAuthenticator); ok {
-		if h := pa.ProxyAuthHeader(); h != "" {
-			outReq.Header.Set("Proxy-Authorization", h)
+	// Upstream-proxy path: forward in absolute-URI form and attach the
+	// upstream's Proxy-Authorization — but only when the connection
+	// actually terminates at the upstream proxy, not at the origin.
+	// ChainsHost distinguishes the two cases: NO_PROXY and direct dialers
+	// both return false, meaning the connection goes straight to the origin
+	// and must never carry the proxy credential.
+	planner, isChained := s.dialer.(TunnelPlanner)
+	if isChained && planner.ChainsHost(host) {
+		if pa, ok := s.dialer.(ProxyAuthenticator); ok {
+			if h := pa.ProxyAuthHeader(); h != "" {
+				outReq.Header.Set("Proxy-Authorization", h)
+			}
 		}
-		// Keep absolute-URI (outReq.URL.Scheme / .Host preserved).
+		// Keep absolute-URI so the upstream proxy knows the destination.
 	} else {
 		outReq.URL.Scheme = ""
 		outReq.URL.Host = ""
@@ -525,11 +535,28 @@ func (s *Server) handleForward(conn net.Conn, br *bufio.Reader, req *http.Reques
 	if err := outReq.Write(upstream); err != nil {
 		return
 	}
-	// Stream the raw response bytes back; the client parses them. This
-	// preserves SSE/chunked semantics without re-buffering.
-	// Any leftover bytes the client already pipelined are forwarded too.
-	splice(conn, upstream)
-	_ = br // request body (if any) was consumed by outReq.Write via req.Body
+
+	// Parse the response head so we can inject Connection: close before
+	// forwarding it to the client. This tells the client the connection
+	// will not be reused, preventing request pipelining on this socket.
+	upstreamBr := bufio.NewReader(upstream)
+	resp, err := http.ReadResponse(upstreamBr, outReq)
+	if err != nil {
+		return
+	}
+	resp.Header.Set("Connection", "close")
+	resp.Close = true
+
+	// Track upstream so s.Close() can tear it down, which unblocks
+	// resp.Write when it is blocked reading a streaming response body.
+	s.track(upstream, true)
+	defer s.track(upstream, false)
+
+	// Stream head+body upstream→client only. resp.Write reads from
+	// resp.Body (the upstream) and writes to conn — no bytes flow from
+	// conn to upstream, so a pipelined second request is never forwarded.
+	_ = resp.Write(conn)
+	resp.Body.Close()
 }
 
 // maxParallelDials caps how many pinned addresses are dialed at once.
@@ -544,7 +571,10 @@ const maxParallelDials = 8
 // yet has no route) can no longer stall the whole connection ahead of a
 // working address. The first successful connection wins; the losing
 // dials are cancelled and any that still connected are closed.
-func dialPinned(ctx context.Context, addrs []netip.Addr, port int) (net.Conn, error) {
+// dialPinned connects to the already-resolved addresses. allowLoopback is a
+// test seam: production always passes false; test helpers that route traffic
+// through a local 127.0.0.1 origin pass true via NewDirectDialerAllowLoopback.
+func dialPinned(ctx context.Context, addrs []netip.Addr, port int, allowLoopback bool) (net.Conn, error) {
 	if len(addrs) == 0 {
 		return nil, fmt.Errorf("no addresses")
 	}
@@ -555,12 +585,17 @@ func dialPinned(ctx context.Context, addrs []netip.Addr, port int) (net.Conn, er
 		err  error
 	}
 	ch := make(chan result, len(addrs))
-	// Bound concurrent dials (RFC 8305 recommends racing only a small
-	// number). All addresses are still attempted; at most maxParallelDials
-	// are in flight at once. Goroutines waiting for a slot bail as soon as
-	// a winner cancels ctx.
 	sem := make(chan struct{}, maxParallelDials)
 	for _, a := range addrs {
+		// Pre-dial safety check: re-validate every address immediately
+		// before connecting so dialPinned is safe by construction for any
+		// caller, regardless of how the filter was configured.
+		if !allowLoopback || !isHostLocal(a) {
+			if reason, denied := hardDeniedAddr(a); denied {
+				ch <- result{nil, fmt.Errorf("dial refused: %s", reason)}
+				continue
+			}
+		}
 		addr := net.JoinHostPort(a.String(), strconv.Itoa(port))
 		go func() {
 			select {
@@ -624,19 +659,59 @@ func splitConnectTarget(target string) (string, int, error) {
 	if err != nil || port < 1 || port > 65535 {
 		return "", 0, fmt.Errorf("invalid port %q", portStr)
 	}
+	host = NormalizeHost(host)
+	if err := validateHostname(host); err != nil {
+		return "", 0, err
+	}
 	return host, port, nil
 }
 
-func isLoopbackHost(host string) bool {
-	h := strings.ToLower(host)
+// validateHostname rejects hostnames that are malformed after normalization.
+// IP literals are exempt — net.SplitHostPort already strips brackets from
+// IPv6 and netip.ParseAddr accepts the result.
+func validateHostname(host string) error {
+	if _, err := netip.ParseAddr(host); err == nil {
+		return nil // IP literal, not a DNS name
+	}
+	if len(host) > 253 {
+		return fmt.Errorf("hostname too long")
+	}
+	labels := strings.Split(host, ".")
+	for _, l := range labels {
+		if l == "" {
+			return fmt.Errorf("hostname has empty label")
+		}
+		if len(l) > 63 {
+			return fmt.Errorf("hostname label too long")
+		}
+		for _, c := range l {
+			if !((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-') {
+				return fmt.Errorf("hostname has invalid character %q", c)
+			}
+		}
+		if l[0] == '-' || l[len(l)-1] == '-' {
+			return fmt.Errorf("hostname label begins or ends with hyphen")
+		}
+	}
+	return nil
+}
+
+// IsLoopbackHost reports whether the host string names a local destination.
+// It is called on the raw value from the CONNECT/forward request before DNS,
+// so it must catch every syntactic variant: trailing dots, unspecified addrs.
+// Exported so omac diagnose --probe can use the same definition as the proxy.
+func IsLoopbackHost(host string) bool {
+	h := NormalizeHost(host) // strips trailing dots, lowercases
 	if h == "localhost" || strings.HasSuffix(h, ".localhost") {
 		return true
 	}
 	if ip, err := netip.ParseAddr(h); err == nil {
-		return IsLoopback(ip)
+		return isHostLocal(ip)
 	}
 	return false
 }
+
+func isLoopbackHost(host string) bool { return IsLoopbackHost(host) }
 
 // writeRawResponse emits a minimal HTTP/1.1 response on a raw conn.
 func writeRawResponse(conn net.Conn, status int, extraHeaders, body string) {
