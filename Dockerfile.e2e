@@ -9,6 +9,10 @@
 # e2e.yml installs on Ubuntu runners. The container runs privileged so
 # bwrap can create user namespaces; on macOS Docker Desktop the default
 # VM already permits this.
+#
+# All network fetches use ADD --checksum so the image build fails loudly
+# if a downloaded artifact does not match its pinned SHA-256, instead of
+# silently installing whatever a compromised URL serves.
 
 FROM ubuntu:24.04
 
@@ -35,20 +39,35 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Go — match go.mod (1.25.x line; 1.25.0 at time of writing).
-RUN curl -fsSL https://go.dev/dl/go1.25.0.linux-amd64.tar.gz | tar -C /usr/local -xz
+# SHA-256 from https://go.dev/dl/?mode=json&include=all (go1.25.0, linux/amd64).
+ADD --checksum=sha256:2852af0cb20a13139b3448992e69b868e50ed0f8a1e5940ee1de9e19a123b613 \
+    https://go.dev/dl/go1.25.0.linux-amd64.tar.gz /tmp/go.tar.gz
+RUN tar -C /usr/local -xzf /tmp/go.tar.gz && rm /tmp/go.tar.gz
 
-# Bun — opencode harness install needs it.
-RUN curl -fsSL https://bun.sh/install | bash
+# Bun v1.4.2 — opencode harness install needs it.
+# SHA-256 from https://github.com/oven-sh/bun/releases/download/bun-v1.4.2/SHASUMS256.txt
+ADD --checksum=sha256:36368faef7527875d5ffa52e53cd48021741f2a83eb6208a8dd64068d422a913 \
+    https://github.com/oven-sh/bun/releases/download/bun-v1.4.2/bun-linux-x64.zip /tmp/bun.zip
+RUN unzip -j /tmp/bun.zip 'bun-linux-x64/bun' -d /root/.bun/bin \
+    && chmod +x /root/.bun/bin/bun \
+    && rm /tmp/bun.zip
 
-# Node 24 — claude-code/codex/copilot harness installs need npm.
-RUN curl -fsSL https://nodejs.org/dist/v24.0.0/node-v24.0.0-linux-x64.tar.xz \
-    | tar -xJ -C /usr/local --strip-components=1
+# Node 24.0.0 — claude-code/codex/copilot harness installs need npm.
+# SHA-256 from https://nodejs.org/dist/v24.0.0/SHASUMS256.txt
+ADD --checksum=sha256:59b8af617dccd7f9f68cc8451b2aee1e86d6bd5cb92cd51dd6216a31b707efd7 \
+    https://nodejs.org/dist/v24.0.0/node-v24.0.0-linux-x64.tar.xz /tmp/node.tar.xz
+RUN tar -xJ -C /usr/local --strip-components=1 -f /tmp/node.tar.xz && rm /tmp/node.tar.xz
 
-# Rustup minimal stable toolchain — the cargo cache probe (TestE2ECacheTools)
+# Rustup 1.29.1 minimal stable toolchain — the cargo cache probe (TestE2ECacheTools)
 # builds a real crate and asserts CARGO_HOME is redirected under
 # OMAC_CACHE_DIR. `minimal` keeps the image smaller; `cargo` is the
 # only component the probe needs.
-RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+# SHA-256 from https://static.rust-lang.org/rustup/archive/1.29.1/x86_64-unknown-linux-gnu/rustup-init.sha256
+ADD --checksum=sha256:dda7234360b7f578ca8b0ddcb80145646fa61a67c1720a5abc7051b35c9fcb71 \
+    https://static.rust-lang.org/rustup/archive/1.29.1/x86_64-unknown-linux-gnu/rustup-init /tmp/rustup-init
+RUN chmod +x /tmp/rustup-init \
+    && /tmp/rustup-init -y --profile minimal --default-toolchain stable \
+    && rm /tmp/rustup-init
 
 # AppArmor profile so bwrap can create user namespaces inside the container.
 # Mirrors .github/workflows/e2e.yml:45-50. The container runs --privileged,

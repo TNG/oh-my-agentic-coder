@@ -88,21 +88,25 @@ jobs:
           echo "claude_code=$cc" >> "$GITHUB_OUTPUT"
 
       - name: Report the selection
+        env:
+          PROBE_MODEL: ${{ steps.probe.outputs.model }}
+          PROBE_CLAUDE_CODE: ${{ steps.probe.outputs.claude_code }}
+          PROBE_CANDIDATES: ${{ steps.probe.outputs.candidates }}
+          PROBE_FALLBACK: ${{ steps.probe.outputs.fallback }}
         run: |
-          gateway='${{ steps.probe.outputs.model }}'
           {
             echo "## Model selection"
             echo ""
             echo "| Harness | Model |"
             echo "|---|---|"
-            echo "| opencode, codex, copilot, pi, codewhale | \`$gateway\` |"
-            echo "| claude-code | \`${{ steps.probe.outputs.claude_code }}\` |"
+            echo "| opencode, codex, copilot, pi, codewhale | \`$PROBE_MODEL\` |"
+            echo "| claude-code | \`$PROBE_CLAUDE_CODE\` |"
             echo ""
-            echo "Probed: \`${{ steps.probe.outputs.candidates }}\`"
+            echo "Probed: \`$PROBE_CANDIDATES\`"
           } >> "$GITHUB_STEP_SUMMARY"
-          if [ '${{ steps.probe.outputs.fallback }}' = 'true' ]; then
+          if [ "$PROBE_FALLBACK" = 'true' ]; then
             echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "> ⚠️ **Fallback model in use** — \`$gateway\` is not the intended model." >> "$GITHUB_STEP_SUMMARY"
+            echo "> ⚠️ **Fallback model in use** — \`$PROBE_MODEL\` is not the intended model." >> "$GITHUB_STEP_SUMMARY"
           fi
 
   smoke:
@@ -263,6 +267,8 @@ jobs:
       - name: Build compatibility row
         id: row
         if: always()
+        env:
+          OMAC_VERSION: ${{ steps.omac.outputs.version }}
         run: |
           # Read a stage's PASS/FAIL out of the OMAC_COMPAT lines the Go tests
           # print. result=SKIP ⇒ ➖ (stage not applicable to this harness). The
@@ -302,7 +308,7 @@ jobs:
           # Model is APPENDED, never inserted: the report job and the Slack
           # fallback address the stage marks positionally ($7..$10), and rows
           # already archived have no model cell.
-          row="| $date_utc | ${{ steps.omac.outputs.version }} | ${{ matrix.os }} | ${{ matrix.harness }} | $version | $contract | $launch | $serve | $llm | $model |"
+          row="| $date_utc | $OMAC_VERSION | ${{ matrix.os }} | ${{ matrix.harness }} | $version | $contract | $launch | $serve | $llm | $model |"
           mkdir -p compat
           slug="${{ matrix.os }}-${{ matrix.harness }}-${{ matrix.omac }}"
           printf '%s\n' "$row" > "compat/$slug.row"
@@ -357,10 +363,11 @@ jobs:
 
       - name: Fail this leg on drift
         if: always()
+        env:
+          ROW: ${{ steps.row.outputs.row }}
         run: |
-          row='${{ steps.row.outputs.row }}'
-          echo "$row"
-          if printf '%s' "$row" | grep -q '❌'; then
+          echo "$ROW"
+          if printf '%s' "$ROW" | grep -q '❌'; then
             # The leg always fails, but the ::error label is honest about whether it's a 
             # real harness regression or an infra-only failure. Reuse the same 
             # deterministic log-based classifier the report job uses
@@ -573,6 +580,8 @@ jobs:
         id: row
         if: always()
         shell: wsl-bash {0}
+        env:
+          OMAC_VERSION: ${{ steps.omac.outputs.version }}
         run: |
           # wsl-env.sh may not exist if an earlier setup step failed —
           # fall back to a minimal env so the row still reports ❌.
@@ -612,7 +621,7 @@ jobs:
             *)       llm='➖' ;;
           esac
           date_utc=$(date -u +%Y-%m-%d)
-          row="| $date_utc | ${{ steps.omac.outputs.version }} | WSL2 | ${{ matrix.harness }} | $version | $contract | $launch | $serve | $llm | $model |"
+          row="| $date_utc | $OMAC_VERSION | WSL2 | ${{ matrix.harness }} | $version | $contract | $launch | $serve | $llm | $model |"
           mkdir -p "$SMOKE_LOG_DIR/compat"
           slug="wsl2-${{ matrix.harness }}-${{ matrix.omac }}"
           printf '%s\n' "$row" > "$SMOKE_LOG_DIR/compat/$slug.row"
@@ -665,10 +674,11 @@ jobs:
       - name: Fail this leg on drift
         if: always()
         shell: bash
+        env:
+          ROW: ${{ steps.row.outputs.row }}
         run: |
-          row='${{ steps.row.outputs.row }}'
-          echo "$row"
-          if printf '%s' "$row" | grep -q '❌'; then
+          echo "$ROW"
+          if printf '%s' "$ROW" | grep -q '❌'; then
             echo "::error::compatibility drift detected for ${{ matrix.harness }} / WSL2"
             exit 1
           fi
@@ -801,6 +811,8 @@ jobs:
       - name: Build compatibility row
         id: row
         if: always()
+        env:
+          OMAC_VERSION: ${{ steps.omac.outputs.version }}
         run: |
           stage_mark() {
             local stage="$1" absent="${2:-❌}"
@@ -828,7 +840,7 @@ jobs:
             *)       llm='➖' ;;
           esac
           date_utc=$(date -u +%Y-%m-%d)
-          row="| $date_utc | ${{ steps.omac.outputs.version }} | ubuntu-latest | codewhale | $version | $contract | $launch | $serve | $llm | $model |"
+          row="| $date_utc | $OMAC_VERSION | ubuntu-latest | codewhale | $version | $contract | $launch | $serve | $llm | $model |"
           mkdir -p compat
           slug="ubuntu-latest-codewhale-${{ matrix.omac }}"
           printf '%s\n' "$row" > "compat/$slug.row"
@@ -880,10 +892,11 @@ jobs:
 
       - name: Fail this leg on drift
         if: always()
+        env:
+          ROW: ${{ steps.row.outputs.row }}
         run: |
-          row='${{ steps.row.outputs.row }}'
-          echo "$row"
-          if printf '%s' "$row" | grep -q '❌'; then
+          echo "$ROW"
+          if printf '%s' "$ROW" | grep -q '❌'; then
             echo "::error::compatibility drift detected for codewhale / ubuntu-latest"
             exit 1
           fi

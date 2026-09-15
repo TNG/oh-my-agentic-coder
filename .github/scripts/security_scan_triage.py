@@ -112,11 +112,17 @@ def main():
     new_count = 0
     dup_count = 0
 
+    real_issue_numbers = {i["number"] for i in issues}
     for finding in findings:
         sev = (finding.get("severity") or "unknown").lower()
         counts[sev] = counts.get(sev, 0) + 1
         verdict = ask_llm_duplicate(finding, issues)
-        is_dup = verdict.get("duplicate_of") is not None and verdict.get("confidence") != "low"
+        claimed = verdict.get("duplicate_of")
+        is_dup = (
+            claimed is not None
+            and verdict.get("confidence") != "low"
+            and claimed in real_issue_numbers
+        )
         if is_dup:
             dup_count += 1
             status = f"LIKELY DUPLICATE of #{verdict['duplicate_of']} (confidence: {verdict.get('confidence')})"

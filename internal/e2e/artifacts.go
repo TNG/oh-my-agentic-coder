@@ -63,8 +63,9 @@ func writeSessionArtifacts(t *testing.T, h harnessConfig, testType string,
 	mustWrite("agent-stdout.txt", stdout)
 	mustWrite("agent-stderr.txt", stderr)
 
-	// Metadata: harness, OS, prompt, env var names (not values for
-	// secrets).
+	// Metadata: harness, OS, prompt, env var names only — never values.
+	// Recording values risks leaking internal URLs, tokens, or other
+	// sensitive configuration into long-retention uploaded artifacts.
 	var meta strings.Builder
 	fmt.Fprintf(&meta, "harness: %s\n", h.Name)
 	fmt.Fprintf(&meta, "binary: %s\n", h.BinaryName)
@@ -79,15 +80,7 @@ func writeSessionArtifacts(t *testing.T, h harnessConfig, testType string,
 		if eq <= 0 {
 			continue
 		}
-		name := kv[:eq]
-		if strings.Contains(strings.ToUpper(name), "SECRET") ||
-			strings.Contains(strings.ToUpper(name), "TOKEN") ||
-			strings.Contains(strings.ToUpper(name), "KEY") ||
-			strings.Contains(strings.ToUpper(name), "PASSWORD") {
-			fmt.Fprintf(&meta, "  %s=<redacted>\n", name)
-		} else {
-			fmt.Fprintf(&meta, "  %s\n", kv)
-		}
+		fmt.Fprintf(&meta, "  %s\n", kv[:eq])
 	}
 	mustWrite("meta.txt", meta.String())
 

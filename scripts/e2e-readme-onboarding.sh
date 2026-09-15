@@ -121,25 +121,32 @@ bun install -g "$OPENCODE_VERSION"
 
 echo "== Writing opencode provider config (SKAINET / $MODEL) =="
 mkdir -p "$DRIVER_HOME/.local/share/opencode" "$DRIVER_HOME/.config/opencode"
-cat > "$DRIVER_HOME/.local/share/opencode/auth.json" <<EOF
-{"model": {"type": "api", "key": "$SKAINET_TOKEN"}}
-EOF
+jq -n --arg key "$SKAINET_TOKEN" '{"model":{"type":"api","key":$key}}' \
+  > "$DRIVER_HOME/.local/share/opencode/auth.json"
 chmod 600 "$DRIVER_HOME/.local/share/opencode/auth.json"
-cat > "$DRIVER_HOME/.config/opencode/opencode.json" <<EOF
-{
-  "share": "disabled",
-  "provider": {
-    "model": {
-      "name": "Model",
-      "npm": "@ai-sdk/openai-compatible",
-      "options": { "baseURL": "$SKAINET_INTERNAL" },
-      "models": {
-        "$MODEL": { "name": "$MODEL", "limit": { "context": $CONTEXT_LIMIT, "output": $OUTPUT_LIMIT } }
+write_opencode_config() {
+  local model="$1" base_url="$2" ctx_limit="$3" out_limit="$4" dest="$5"
+  jq -n \
+    --arg model "$model" \
+    --arg base "$base_url" \
+    --argjson ctx "$ctx_limit" \
+    --argjson out "$out_limit" \
+    '{
+      "share": "disabled",
+      "provider": {
+        "model": {
+          "name": "Model",
+          "npm": "@ai-sdk/openai-compatible",
+          "options": {"baseURL": $base},
+          "models": {
+            ($model): {"name": $model, "limit": {"context": $ctx, "output": $out}}
+          }
+        }
       }
-    }
-  }
+    }' > "$dest"
 }
-EOF
+write_opencode_config "$MODEL" "$SKAINET_INTERNAL" "$CONTEXT_LIMIT" "$OUTPUT_LIMIT" \
+  "$DRIVER_HOME/.config/opencode/opencode.json"
 
 PROMPT_FILE="$WORK/prompt.md"
 cat > "$PROMPT_FILE" <<EOF

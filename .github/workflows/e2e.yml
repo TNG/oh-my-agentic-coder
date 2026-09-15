@@ -96,21 +96,25 @@ jobs:
           echo "claude_code=$cc" >> "$GITHUB_OUTPUT"
 
       - name: Report the selection
+        env:
+          PROBE_MODEL: ${{ steps.probe.outputs.model }}
+          PROBE_CLAUDE_CODE: ${{ steps.probe.outputs.claude_code }}
+          PROBE_CANDIDATES: ${{ steps.probe.outputs.candidates }}
+          PROBE_FALLBACK: ${{ steps.probe.outputs.fallback }}
         run: |
-          gateway='${{ steps.probe.outputs.model }}'
           {
             echo "## Model selection"
             echo ""
             echo "| Harness | Model |"
             echo "|---|---|"
-            echo "| opencode, codex, copilot, pi, codewhale | \`$gateway\` |"
-            echo "| claude-code | \`${{ steps.probe.outputs.claude_code }}\` |"
+            echo "| opencode, codex, copilot, pi, codewhale | \`$PROBE_MODEL\` |"
+            echo "| claude-code | \`$PROBE_CLAUDE_CODE\` |"
             echo ""
-            echo "Probed: \`${{ steps.probe.outputs.candidates }}\`"
+            echo "Probed: \`$PROBE_CANDIDATES\`"
           } >> "$GITHUB_STEP_SUMMARY"
-          if [ '${{ steps.probe.outputs.fallback }}' = 'true' ]; then
+          if [ "$PROBE_FALLBACK" = 'true' ]; then
             echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "> ⚠️ **Fallback model in use.** The intended model is not served by the gateway, so these results are for \`$gateway\` and do NOT certify the intended one." >> "$GITHUB_STEP_SUMMARY"
+            echo "> ⚠️ **Fallback model in use.** The intended model is not served by the gateway, so these results are for \`$PROBE_MODEL\` and do NOT certify the intended one." >> "$GITHUB_STEP_SUMMARY"
           fi
 
   e2e:
@@ -320,19 +324,25 @@ jobs:
 
       - name: Skipped notice
         if: steps.run_e2e.outcome == 'skipped'
+        env:
+          STEP_MODEL: ${{ steps.model.outputs.model }}
         run: |
           echo "## E2E (${{ matrix.harness }} / ${{ matrix.os }}): SKIPPED" >> "$GITHUB_STEP_SUMMARY"
-          echo "skip_claude_code was set on this workflow_dispatch run (model would have been \`${{ steps.model.outputs.model }}\`)." >> "$GITHUB_STEP_SUMMARY"
+          echo "skip_claude_code was set on this workflow_dispatch run (model would have been \`$STEP_MODEL\`)." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Failure classification summary
         if: always() && steps.run_e2e.outcome != 'skipped'
+        env:
+          STEP_MODEL: ${{ steps.model.outputs.model }}
+          STEP_CONTEXT: ${{ steps.model.outputs.context }}
+          NEEDS_FALLBACK: ${{ needs.model.outputs.fallback }}
         run: |
           # Render a markdown table on the run-summary page so the failure
           # cause is visible by indicator without opening the full log.
           echo "## E2E failure classification (${{ matrix.harness }} / ${{ matrix.os }})" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "Model: \`${{ steps.model.outputs.model }}\` · context: \`${{ steps.model.outputs.context }}\`" >> "$GITHUB_STEP_SUMMARY"
-          if [ '${{ needs.model.outputs.fallback }}' = 'true' ] && [ '${{ matrix.harness }}' != 'claude-code' ]; then
+          echo "Model: \`$STEP_MODEL\` · context: \`$STEP_CONTEXT\`" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$NEEDS_FALLBACK" = 'true' ] && [ '${{ matrix.harness }}' != 'claude-code' ]; then
             echo "" >> "$GITHUB_STEP_SUMMARY"
             echo "> ⚠️ Fallback model — the intended model is not served by the gateway, so this result does NOT certify it." >> "$GITHUB_STEP_SUMMARY"
           fi
@@ -548,20 +558,26 @@ jobs:
       - name: Skipped notice
         if: steps.run_e2e.outcome == 'skipped'
         shell: wsl-bash {0}
+        env:
+          STEP_MODEL: ${{ steps.model.outputs.model }}
         run: |
           source "$HOME"/wsl-env.sh
           echo "## E2E (${{ matrix.harness }} / WSL2): SKIPPED" >> "$GITHUB_STEP_SUMMARY"
-          echo "skip_claude_code was set on this workflow_dispatch run (model would have been \`${{ steps.model.outputs.model }}\`)." >> "$GITHUB_STEP_SUMMARY"
+          echo "skip_claude_code was set on this workflow_dispatch run (model would have been \`$STEP_MODEL\`)." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Failure classification summary
         if: always() && steps.run_e2e.outcome != 'skipped'
         shell: wsl-bash {0}
+        env:
+          STEP_MODEL: ${{ steps.model.outputs.model }}
+          STEP_CONTEXT: ${{ steps.model.outputs.context }}
+          NEEDS_FALLBACK: ${{ needs.model.outputs.fallback }}
         run: |
           source "$HOME"/wsl-env.sh
           echo "## E2E failure classification (${{ matrix.harness }} / WSL2)" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "Model: \`${{ steps.model.outputs.model }}\` · context: \`${{ steps.model.outputs.context }}\`" >> "$GITHUB_STEP_SUMMARY"
-          if [ '${{ needs.model.outputs.fallback }}' = 'true' ] && [ '${{ matrix.harness }}' != 'claude-code' ]; then
+          echo "Model: \`$STEP_MODEL\` · context: \`$STEP_CONTEXT\`" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$NEEDS_FALLBACK" = 'true' ] && [ '${{ matrix.harness }}' != 'claude-code' ]; then
             echo "" >> "$GITHUB_STEP_SUMMARY"
             echo "> ⚠️ Fallback model — the intended model is not served by the gateway, so this result does NOT certify it." >> "$GITHUB_STEP_SUMMARY"
           fi
@@ -719,11 +735,15 @@ jobs:
 
       - name: Failure classification summary
         if: always() && steps.run_e2e.outcome != 'skipped'
+        env:
+          STEP_MODEL: ${{ steps.model.outputs.model }}
+          STEP_CONTEXT: ${{ steps.model.outputs.context }}
+          NEEDS_FALLBACK: ${{ needs.model.outputs.fallback }}
         run: |
           echo "## E2E failure classification (codewhale / ubuntu-latest)" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "Model: \`${{ steps.model.outputs.model }}\` · context: \`${{ steps.model.outputs.context }}\`" >> "$GITHUB_STEP_SUMMARY"
-          if [ '${{ needs.model.outputs.fallback }}' = 'true' ]; then
+          echo "Model: \`$STEP_MODEL\` · context: \`$STEP_CONTEXT\`" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$NEEDS_FALLBACK" = 'true' ]; then
             echo "" >> "$GITHUB_STEP_SUMMARY"
             echo "> ⚠️ Fallback model — the intended model is not served by the gateway, so this result does NOT certify it." >> "$GITHUB_STEP_SUMMARY"
           fi

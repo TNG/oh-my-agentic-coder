@@ -57,13 +57,17 @@ jobs:
         id: probe
         run: scripts/probe-model.sh opencode --github-output
       - name: Report the selection
+        env:
+          PROBE_MODEL: ${{ steps.probe.outputs.model }}
+          PROBE_CANDIDATES: ${{ steps.probe.outputs.candidates }}
+          PROBE_FALLBACK: ${{ steps.probe.outputs.fallback }}
         run: |
           {
             echo "## Model selection"
             echo ""
-            echo "Model: \`${{ steps.probe.outputs.model }}\` · probed: \`${{ steps.probe.outputs.candidates }}\`"
+            echo "Model: \`$PROBE_MODEL\` · probed: \`$PROBE_CANDIDATES\`"
           } >> "$GITHUB_STEP_SUMMARY"
-          if [ '${{ steps.probe.outputs.fallback }}' = 'true' ]; then
+          if [ "$PROBE_FALLBACK" = 'true' ]; then
             echo "" >> "$GITHUB_STEP_SUMMARY"
             echo "> ⚠️ **Fallback model in use** — the intended model is not served by the gateway." >> "$GITHUB_STEP_SUMMARY"
           fi
@@ -104,10 +108,12 @@ jobs:
 
       - name: Report summary
         if: always()
+        env:
+          GATEWAY_MODEL: ${{ needs.model.outputs.gateway }}
         run: |
           echo "## README onboarding (${{ matrix.os }})" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "Model: \`${{ needs.model.outputs.gateway }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "Model: \`$GATEWAY_MODEL\`" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           if [ "${{ steps.run_onboarding.outcome }}" = "success" ]; then
             echo "**Result:** README was sufficient — doctor healthy, report written." >> "$GITHUB_STEP_SUMMARY"
