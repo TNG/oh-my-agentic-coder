@@ -82,16 +82,21 @@
 #   facade upgrade path  — hop-by-hop header forwarding and the absent splice
 #                          read deadlines are not asserted
 #   snapshot integrity   — the argv-from-workdir defect is asserted for the
-#                          live-reload spawn site (via a symlink-into-
-#                          node_modules fixture that keeps the bundle hash
-#                          unaffected) and, independently, at the pure
-#                          BundleHash/LoadMeta level in internal/config. The
-#                          serve and cold-start spawn sites are NOT asserted:
-#                          serve's supervisor is nil in the test harness, and
-#                          cold-start (start.go) builds its supervisor inline
-#                          with the real authorizer and no injection point —
-#                          both need the snapshot-only-spec refactor (or an
-#                          equivalent seam) before they are unit-testable
+#                          live-reload AND cold-start (`omac start`) spawn
+#                          sites (via a symlink-into-node_modules fixture
+#                          that keeps the bundle hash unaffected — the
+#                          cold-start version lets the real, unsandboxed
+#                          sidecar exec run for real and checks its side
+#                          effect, since runLaunch has no injectable
+#                          authorizer) and, independently, at the pure
+#                          BundleHash/LoadMeta level in internal/config.
+#                          Only `omac serve`'s bringUp spawn site remains
+#                          unasserted: its test harness runs with a nil
+#                          supervisor (sufficient for the pending-
+#                          credentials paths those tests cover), so
+#                          reaching a real spawn there needs either a
+#                          non-nil supervisor in that harness or the
+#                          snapshot-only-spec refactor
 #   control plane auth   — eight of twelve routes are asserted (start-mode
 #                          reload/activate/deactivate/reload-global,
 #                          serve-mode activate/deactivate/reload/reload-
@@ -127,17 +132,24 @@
 # narrower `apk add --allow-untrusted` in internal/updater/pkgmanagers.go:34
 # was not part of that judgement and is simply untested.
 #
-# CI / supply-chain findings — partially covered.
-# internal/ciguard holds three of these as Go tests driving YAML parsing,
-# static regex, and (for the triage script) python3 via exec.Command — no
-# second pin-file mechanism, same suite. Still out of scope, and NOT
-# reachable from this build-tag-vuln harness: $GITHUB_OUTPUT framing,
-# unpinned/caller-chosen install specs, tokens in docker argv, unredacted
-# artifact uploads, unescaped shell-generated JSON config. Those need a
-# shell-test lane (scripts/*_test.sh, already CI-gated) or a refactor of
-# internal/e2e's build tags (versions.go/artifacts.go require `e2e` or
-# `e2e_fast`, incompatible with a plain `-tags=vuln` run) before a `vuln`
-# test could see the functions at all.
+# CI / supply-chain findings — covered.
+# internal/ciguard holds six of these as Go tests: three driving YAML
+# parsing/static regex, one (the triage script) via python3 through
+# exec.Command, and two (probe-model.sh's $GITHUB_OUTPUT framing and
+# e2e-docker.sh's env_flags()) by extracting the relevant shell function
+# and driving it with bash through exec.Command — no second pin-file
+# mechanism, same suite. internal/e2e/versions.go, artifacts.go and
+# harnesses.go additionally carry `|| vuln` on their build constraint
+# (alongside their existing `e2e`/`e2e_fast` tags, verified all three
+# combinations still build and vet clean) so pinnedPackage and
+# writeSessionArtifacts are unit-testable under a plain `-tags=vuln` run
+# without pulling in the rest of the e2e package.
+#
+# Still out of scope: the static-YAML halves of "a job with unpinned
+# installs must carry no secret" and "artifact retention/upload
+# granularity" — both are judgment calls (which secrets count, what
+# retention is too long) rather than a clear-cut assertion, and are left
+# for a human policy decision instead of a test.
 
 internal/audit TestSecurityAgentCannotChooseRecordSize
 internal/audit TestSecurityAuditDirNeverFallsBackToSharedTmp
@@ -145,10 +157,14 @@ internal/audit TestSecurityAuditRecordIsWrittenAtomically
 internal/audit TestSecurityAuditSinkDoesNotStaySilentlyDead
 internal/audit TestSecurityReadLogReportsMalformedRecords
 internal/bridge TestSecurityBridgeHookEncodesSessionDirectory
+internal/ciguard TestSecurityDockerEnvFlagsKeepSecretValuesOffArgv
 internal/ciguard TestSecurityDockerfileDoesNotPipeNetworkToShell
+internal/ciguard TestSecurityGeneratedOpencodeConfigIsValidJSON
+internal/ciguard TestSecurityProbeModelOutputFramingResistsInjection
 internal/ciguard TestSecurityTriageVerdictCannotSuppressFindings
 internal/ciguard TestSecurityWorkflowRunBlocksHaveNoExpressionInterpolation
 internal/cli TestSecurityActivateDoesNotDiscloseDirToken
+internal/cli TestSecurityColdStartSpawnedArgvComesFromApprovedSnapshot
 internal/cli TestSecurityControlInfoNotWritableFromSandbox
 internal/cli TestSecurityControlInfoRejectsForeignControlBase
 internal/cli TestSecurityControlInfoRequiresLiveOwnedPID
@@ -180,6 +196,8 @@ internal/config TestSecurityWorkdirConfigCannotDefineSandboxCommand
 internal/config TestSecurityWorkdirConfigCannotEraseBuiltinProfiles
 internal/config TestSecurityWorkdirConfigCannotSelectUnsandboxedProfile
 internal/config TestSecurityWorkdirConfigCannotSilenceAudit
+internal/e2e TestSecurityPinnedPackageRejectsCallerChosenSpec
+internal/e2e TestSecuritySessionArtifactsRecordEnvNamesOnly
 internal/facade TestSecurityTCPListenerRequiresAuthentication
 internal/facade TestSecurityUpgradeProxyEnforcesBodyLimit
 internal/facade TestSecurityUpgradeProxyRequiresSwitchingProtocols
@@ -207,6 +225,7 @@ internal/sandboxrun TestSecurityBinaryResolutionNeverGrantsRootOrHome
 internal/sandboxrun TestSecurityDatagramEgressConfined # linux-only
 internal/sandboxrun TestSecurityDiagnosticsLogIsNotWorldReadable
 internal/sandboxrun TestSecurityHostTmpNotUsableAsSharedScratch # linux-only
+internal/sandboxrun TestSecurityICMPEgressConfined # linux-only
 internal/sandboxrun TestSecurityInvalidUpstreamProxyRedactsUserinfo
 internal/sandboxrun TestSecurityLearnPromptStripsControlSequences
 internal/sandboxrun TestSecurityMarkerDirNameCannotEscape
