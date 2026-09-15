@@ -351,9 +351,11 @@ func resolveWorktreeCommonDir(workdir string) (common, admin string, ok bool) {
 }
 
 // worktreeBackPointerValid reads <admin>/gitdir and checks that it resolves
-// to the same path as dotgit. Both paths are cleaned before comparison so
-// relative gitdir pointers and symlinks in either direction don't trick the
-// check. Returns false when the file is absent or the paths don't match.
+// to the same path as dotgit. Both sides are symlink-resolved so that
+// git's canonical (EvalSymlinks) path matches dotgit's possibly-unresolved
+// form (e.g. /var vs /private/var on macOS). Falls back to filepath.Clean
+// when EvalSymlinks fails. Returns false when the file is absent or the
+// paths don't match.
 func worktreeBackPointerValid(admin, dotgit string) bool {
 	data, err := os.ReadFile(filepath.Join(admin, "gitdir"))
 	if err != nil {
@@ -367,9 +369,13 @@ func worktreeBackPointerValid(admin, dotgit string) bool {
 		ptr = filepath.Join(admin, ptr)
 	}
 	ptr = filepath.Clean(ptr)
-	// Compare both cleaned absolute paths so a relative gitdir written by git
-	// (e.g. "../../wt/.git") resolves correctly.
-	return ptr == filepath.Clean(dotgit)
+	canonical := func(p string) string {
+		if r, err := filepath.EvalSymlinks(p); err == nil {
+			return r
+		}
+		return p
+	}
+	return canonical(ptr) == canonical(dotgit)
 }
 
 // pathWithinRoot reports whether path, symlinks resolved, is root or inside it.
