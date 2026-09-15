@@ -161,9 +161,12 @@ jobs:
             kind=major
           else
             pver="${prev_tag#v}"; pmaj="${pver%%.*}"; pmin="${pver#*.}"; pmin="${pmin%%.*}"
-            if [ "$cmaj" != "$pmaj" ]; then kind=major
-            elif [ "$cmin" != "$pmin" ]; then kind=minor
-            else kind=patch
+            if [ "$cmaj" != "$pmaj" ]; then
+              kind=major
+            elif [ "$cmin" != "$pmin" ]; then
+              kind=minor
+            else
+              kind=patch
             fi
           fi
           case "$kind" in

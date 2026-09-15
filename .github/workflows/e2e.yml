@@ -351,6 +351,7 @@ jobs:
             echo ""
             echo "| Assertion | Mode | Reason |"
             echo "|-----------|------|--------|"
+            # shellcheck disable=SC2016
             if grep -qE 'FAIL \[[^]]+\]: [A-Z_]+ — ' /tmp/e2e-out.txt; then
               grep -oE 'FAIL \[[^]]+\]: [A-Z_]+ — [^\\]*' /tmp/e2e-out.txt \
                 | sort -u \
@@ -588,6 +589,7 @@ jobs:
             echo ""
             echo "| Assertion | Mode | Reason |"
             echo "|-----------|------|--------|"
+            # shellcheck disable=SC2016
             if grep -qE 'FAIL \[[^]]+\]: [A-Z_]+ — ' /tmp/e2e-out.txt; then
               grep -oE 'FAIL \[[^]]+\]: [A-Z_]+ — [^\\]*' /tmp/e2e-out.txt \
                 | sort -u \
@@ -755,6 +757,7 @@ jobs:
             echo ""
             echo "| Assertion | Mode | Reason |"
             echo "|-----------|------|--------|"
+            # shellcheck disable=SC2016
             if grep -qE 'FAIL \[[^]]+\]: [A-Z_]+ — ' /tmp/e2e-out.txt; then
               grep -oE 'FAIL \[[^]]+\]: [A-Z_]+ — [^\\]*' /tmp/e2e-out.txt \
                 | sort -u \
