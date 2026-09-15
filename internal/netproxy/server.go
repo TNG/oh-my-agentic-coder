@@ -551,7 +551,6 @@ func (s *Server) handleForward(conn net.Conn, br *bufio.Reader, req *http.Reques
 	// responses (SSE, chunked) resp.Write streams the body via the
 	// underlying reader until the upstream closes or errors.
 	_ = resp.Write(conn)
-	_ = br
 }
 
 // maxParallelDials caps how many pinned addresses are dialed at once.
@@ -566,7 +565,10 @@ const maxParallelDials = 8
 // yet has no route) can no longer stall the whole connection ahead of a
 // working address. The first successful connection wins; the losing
 // dials are cancelled and any that still connected are closed.
-func dialPinned(ctx context.Context, addrs []netip.Addr, port int) (net.Conn, error) {
+// dialPinned connects to the already-resolved addresses. allowLoopback is a
+// test seam: production always passes false; test helpers that route traffic
+// through a local 127.0.0.1 origin pass true via newDirectDialerAllowLoopback.
+func dialPinned(ctx context.Context, addrs []netip.Addr, port int, allowLoopback bool) (net.Conn, error) {
 	if len(addrs) == 0 {
 		return nil, fmt.Errorf("no addresses")
 	}
@@ -577,12 +579,17 @@ func dialPinned(ctx context.Context, addrs []netip.Addr, port int) (net.Conn, er
 		err  error
 	}
 	ch := make(chan result, len(addrs))
-	// Bound concurrent dials (RFC 8305 recommends racing only a small
-	// number). All addresses are still attempted; at most maxParallelDials
-	// are in flight at once. Goroutines waiting for a slot bail as soon as
-	// a winner cancels ctx.
 	sem := make(chan struct{}, maxParallelDials)
 	for _, a := range addrs {
+		// Pre-dial safety check: re-validate every address immediately
+		// before connecting so dialPinned is safe by construction for any
+		// caller, regardless of how the filter was configured.
+		if !allowLoopback || !isHostLocal(a) {
+			if reason, denied := hardDeniedAddr(a); denied {
+				ch <- result{nil, fmt.Errorf("dial refused: %s", reason)}
+				continue
+			}
+		}
 		addr := net.JoinHostPort(a.String(), strconv.Itoa(port))
 		go func() {
 			select {

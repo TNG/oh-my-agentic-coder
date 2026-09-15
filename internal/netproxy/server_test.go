@@ -53,7 +53,7 @@ func startProxy(t *testing.T, cfg FilterConfig) *Server {
 	t.Helper()
 	cfg.AllowLoopbackOrigin = true
 	filter := NewFilter(cfg)
-	s, err := NewServer(filter, NewDirectDialer(), nil)
+	s, err := NewServer(filter, newDirectDialerAllowLoopback(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -394,6 +394,8 @@ func startProxyWithDialer(t *testing.T, cfg FilterConfig, dialer Dialer) *Server
 	t.Helper()
 	cfg.AllowLoopbackOrigin = true
 	filter := NewFilter(cfg)
+	// dialer is caller-supplied (often an upstreamProxyDialer); the caller
+	// is responsible for its own loopback handling.
 	s, err := NewServer(filter, dialer, t.Logf)
 	if err != nil {
 		t.Fatal(err)
