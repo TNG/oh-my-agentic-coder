@@ -92,18 +92,26 @@
 #                          with the real authorizer and no injection point —
 #                          both need the snapshot-only-spec refactor (or an
 #                          equivalent seam) before they are unit-testable
-#   control plane auth   — three of twelve routes are asserted (start-mode
-#                          reload and activate, serve-mode activate); serve's
-#                          deactivate/dirs/reload-global/session and start's
-#                          dirs/deactivate/reload-global/session are not
+#   control plane auth   — eight of twelve routes are asserted (start-mode
+#                          reload/activate/deactivate/reload-global,
+#                          serve-mode activate/deactivate/reload/reload-
+#                          global); the four read-only disclosure endpoints
+#                          (serve dirs, serve global, start dirs, start
+#                          session) are not, since they leak directory paths/
+#                          session ids rather than mutate state — a real but
+#                          lower-severity gap left for later
 #   metadata deny        — the direct path's resolved-address screen for
 #                          non-link-local metadata (Oracle's 192.0.0.192) and
 #                          the chained proxy's subdomain-of-hard-deny case are
 #                          not asserted
 #   binary resolution     — only the "/" root-grant case is asserted; the
 #                          symlink-hop and install-prefix variants (#48) are not
-#   tool cache             — only the default scope; the cache stays a persistent
-#                          host directory granted read-write to the sandbox
+#   tool cache             — the default scope is confirmed shared and
+#                          writable across independent sessions at the
+#                          kernel level (not just in argv shape); narrowing
+#                          vs. read-only-plus-ephemeral-leaf as the fix is
+#                          still an open design choice this suite doesn't
+#                          take a side on
 #   kernel/tiocsti gate    — no launch-time check of dev.tty.legacy_tiocsti or
 #                          a numeric kernel-version comparison exists to test;
 #                          this is new functionality, not covered
@@ -158,9 +166,14 @@ internal/cli TestSecurityRuntimeDirIsNotPredictable
 internal/cli TestSecurityRuntimeDirNotAdoptedFromForeignDir
 internal/cli TestSecurityRuntimeDirServeNotAdoptedFromForeignDir
 internal/cli TestSecurityServeActivateRejectsUnauthenticatedCaller
+internal/cli TestSecurityServeDeactivateRejectsUnauthenticatedCaller
+internal/cli TestSecurityServeReloadGlobalRejectsUnauthenticatedCaller
+internal/cli TestSecurityServeReloadRejectsUnauthenticatedCaller
 internal/cli TestSecuritySessionIDCannotBecomeHarnessFlag
 internal/cli TestSecuritySpawnedArgvComesFromApprovedSnapshot
 internal/cli TestSecurityStartActivateRejectsUnauthenticatedCaller
+internal/cli TestSecurityStartDeactivateRejectsUnauthenticatedCaller
+internal/cli TestSecurityStartReloadGlobalRejectsUnauthenticatedCaller
 internal/config TestSecurityBundleHashCoversTheExecutedManifest
 internal/config TestSecurityHealthPathCannotRedirectProbe
 internal/config TestSecurityWorkdirConfigCannotDefineSandboxCommand
@@ -201,6 +214,7 @@ internal/sandboxrun TestSecurityPrivateTmpfsSurvivesTmpSubpathGrants
 internal/sandboxrun TestSecurityProtectedMasksEmittedUnderRootGrant
 internal/sandboxrun TestSecurityProtectedPathMaskedUnderRootGrantAtKernelLevel # linux-only
 internal/sandboxrun TestSecuritySandboxDoesNotShareControllingTerminal
+internal/sandboxrun TestSecurityToolCacheNotWritableAcrossSessionsAtKernelLevel # linux-only
 internal/sandboxrun TestSecurityWorktreeRequiresBackPointer
 internal/sandboxrun TestSecurityWriteAllowsDoNotOverrideProtectedDenies
 internal/skillstate TestSecurityStoredConfigRevalidatedAtLaunch
