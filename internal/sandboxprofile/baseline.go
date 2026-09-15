@@ -37,6 +37,9 @@ func PlatformBaseline() Baseline {
 // deny_credentials + deny_shell_history + deny_shell_configs groups).
 func protectedCommon() []string {
 	return []string{
+		// omac config dir: holds approvals.json and sandbox profiles;
+		// reachable from inside the sandbox → forged skill approvals
+		"~/.config/omac",
 		// credentials
 		"~/.ssh",
 		"~/.gnupg",
