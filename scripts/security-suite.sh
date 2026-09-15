@@ -29,6 +29,7 @@
 #
 #   - the ability to bind a loopback port (nine tests drive real servers)
 #   - bash, curl and jq            (the harness bridge hooks)
+#   - python3                      (the triage-script and workflow-YAML checks)
 #   - bubblewrap with working user namespaces, on Linux (datagram confinement)
 #
 # Entries tagged "# linux-only" in the pin file are dropped from the comparison
@@ -131,6 +132,7 @@ PY
     for tool in bash curl jq; do
         command -v "$tool" >/dev/null 2>&1 || missing+=("$tool (the harness bridge hooks need it)")
     done
+    command -v python3 >/dev/null 2>&1 || missing+=("python3 (the loopback check above, plus the triage-script and workflow-YAML checks, need it)")
 
     if [[ "$(uname -s)" == "Linux" ]]; then
         if ! command -v bwrap >/dev/null 2>&1; then

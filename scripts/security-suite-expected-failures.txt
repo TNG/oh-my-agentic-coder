@@ -122,12 +122,17 @@
 # narrower `apk add --allow-untrusted` in internal/updater/pkgmanagers.go:34
 # was not part of that judgement and is simply untested.
 #
-# Out of scope for this Go suite entirely: the CI/supply-chain findings
-# (GitHub Actions expression injection, $GITHUB_OUTPUT framing, curl|sh in
-# Dockerfile.e2e, tokens in argv). Those are properties of workflow YAML and
-# shell scripts, not Go code — they belong in scripts/check-workflow-shell.py
-# and the scripts/*_test.sh suites, gated separately in CI, not in this
-# build-tag-vuln harness.
+# CI / supply-chain findings — partially covered.
+# internal/ciguard holds three of these as Go tests driving YAML parsing,
+# static regex, and (for the triage script) python3 via exec.Command — no
+# second pin-file mechanism, same suite. Still out of scope, and NOT
+# reachable from this build-tag-vuln harness: $GITHUB_OUTPUT framing,
+# unpinned/caller-chosen install specs, tokens in docker argv, unredacted
+# artifact uploads, unescaped shell-generated JSON config. Those need a
+# shell-test lane (scripts/*_test.sh, already CI-gated) or a refactor of
+# internal/e2e's build tags (versions.go/artifacts.go require `e2e` or
+# `e2e_fast`, incompatible with a plain `-tags=vuln` run) before a `vuln`
+# test could see the functions at all.
 
 internal/audit TestSecurityAgentCannotChooseRecordSize
 internal/audit TestSecurityAuditDirNeverFallsBackToSharedTmp
@@ -135,6 +140,9 @@ internal/audit TestSecurityAuditRecordIsWrittenAtomically
 internal/audit TestSecurityAuditSinkDoesNotStaySilentlyDead
 internal/audit TestSecurityReadLogReportsMalformedRecords
 internal/bridge TestSecurityBridgeHookEncodesSessionDirectory
+internal/ciguard TestSecurityDockerfileDoesNotPipeNetworkToShell
+internal/ciguard TestSecurityTriageVerdictCannotSuppressFindings
+internal/ciguard TestSecurityWorkflowRunBlocksHaveNoExpressionInterpolation
 internal/cli TestSecurityActivateDoesNotDiscloseDirToken
 internal/cli TestSecurityControlInfoNotWritableFromSandbox
 internal/cli TestSecurityControlInfoRejectsForeignControlBase
