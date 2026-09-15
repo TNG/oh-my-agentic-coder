@@ -1,4 +1,4 @@
-//go:build e2e || e2e_fast
+//go:build e2e || e2e_fast || vuln
 
 package e2e
 
