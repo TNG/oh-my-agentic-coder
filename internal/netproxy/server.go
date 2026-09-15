@@ -508,6 +508,11 @@ func (s *Server) handleForward(conn net.Conn, br *bufio.Reader, req *http.Reques
 	req.Header.Del("Proxy-Connection")
 	req.RequestURI = ""
 	outReq := req.Clone(context.Background())
+	// Force Connection: close so each forwarded request gets a fresh,
+	// fully-evaluated connection. Without this, a keep-alive connection
+	// lets follow-up requests skip the token check, filter and audit.
+	outReq.Header.Set("Connection", "close")
+	outReq.Close = true
 
 	// Upstream-proxy path: forward in absolute-URI form and attach the
 	// upstream's Proxy-Authorization — but only when the connection
