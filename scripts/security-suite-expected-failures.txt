@@ -69,6 +69,23 @@
 #                                                 (pin the exact unsalted digest; breaks if the
 #                                                 fingerprint is salted or removed)
 #
+# Also CERTAIN — but in the security suite itself (not in an existing test):
+#   internal/config/executed_manifest_security_test.go
+#                                                 TestSecurityBundleHashCoversTheExecutedManifest
+#                                                 The primary documented fix (make BundleHash
+#                                                 refuse a non-regular omac.yaml) causes the
+#                                                 pre-flip BundleHash call at line 32 to error,
+#                                                 firing t.Fatalf("BundleHash before flip") — the
+#                                                 test fails at setup rather than passing. It
+#                                                 needs to be rewritten to expect an error from
+#                                                 BundleHash on a symlink-omac.yaml fixture. An
+#                                                 alternative fix (hash the symlink text so the
+#                                                 hash changes when the link target changes) would
+#                                                 make the test green WITHOUT this rewrite, but
+#                                                 that is the less secure direction. A developer
+#                                                 landing the primary fix must rewrite this test
+#                                                 in the same commit or the test suite breaks.
+#
 # Also needs attention, not a test inversion: internal/cli/start_reload_test.go:313
 # startTestMux re-declares the six control-plane routes on a bare
 # http.NewServeMux(), bypassing any auth middleware added to the production
@@ -97,6 +114,18 @@
 #                          reaching a real spawn there needs either a
 #                          non-nil supervisor in that harness or the
 #                          snapshot-only-spec refactor
+#   reload SkillDir      — TestSecurityReloadDoesNotWalkArbitraryHostPaths
+#                          asserts that the BundleHash error text from the
+#                          foreign directory appears in the stub route's HTTP
+#                          response body. This is correct (the current code
+#                          does propagate the error that far) but fragile: a
+#                          fix that rejects the absolute SkillDir before
+#                          BundleHash makes the test green for the right
+#                          reason, but a fix that swallows the error
+#                          differently could produce a vacuous pass. A more
+#                          robust assertion would check r.isMounted("forged")
+#                          is false and the response body does NOT contain the
+#                          foreign directory path at all.
 #   control plane auth   — eight of twelve routes are asserted (start-mode
 #                          reload/activate/deactivate/reload-global,
 #                          serve-mode activate/deactivate/reload/reload-
