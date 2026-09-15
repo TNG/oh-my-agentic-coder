@@ -7,7 +7,7 @@ Autonomous AI coding agents are powerful but risky: without constraints, an agen
 
 omac runs the agent inside an OS sandbox that enforces three boundaries:
 
-- **Network isolation**: all outbound traffic goes through omac's proxy. Connections to unknown hosts trigger a prompt so you can allow or deny them explicitly. In CI or headless environments, unknown hosts are denied by default.
+- **Network isolation**: outbound TCP traffic goes through omac's proxy. Connections to unknown hosts trigger a prompt so you can allow or deny them explicitly. In CI or headless environments, unknown hosts are denied by default. On Linux (kernel-enforced mode), UDP and ICMP are also blocked via a seccomp filter.
 - **Filesystem isolation**: the agent only sees your working directory and a small set of required toolchain paths. SSH keys, cloud credentials, `.env` files, and other projects are denied.
 - **Secrets isolation**: API tokens never enter the sandbox. They are stored in your OS keychain and injected only into skill helper programs that run on the host. The agent calls these helpers through a controlled interface and never sees the actual credentials.
 

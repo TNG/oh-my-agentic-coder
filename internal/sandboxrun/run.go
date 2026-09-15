@@ -173,7 +173,7 @@ func Run(opts Options) int {
 	if grants.NetworkMode == sandboxprofile.ModeFiltered {
 		if grants.Enforcement == sandboxprofile.EnforceEnvOnly {
 			fmt.Fprintln(stderr, "omac sandbox: WARNING: network.enforcement is \"env-only\" — "+
-				"filtering relies on HTTP(S)_PROXY env vars only and is trivially bypassable. "+
+				"filtering relies on HTTP(S)_PROXY env vars only; TCP, UDP and other protocols are unrestricted. "+
 				"No kernel network guarantee is in effect.")
 		}
 		proxy, err = buildProxy(merged, profilePath, diag.Writer(), logf, netAuditor, intentBase, harnessName(opts.Flags.InnerArgv))

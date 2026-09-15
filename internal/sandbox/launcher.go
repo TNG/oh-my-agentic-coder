@@ -342,7 +342,8 @@ func ExecWithEnv(argv []string, env []string, workdir string, onReady func(pid i
 	// which is what we want: SIGINT terminates by default.
 	sigCh := make(chan os.Signal, 4)
 	signal.Notify(sigCh,
-		syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGQUIT)
+		syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGQUIT,
+		syscall.SIGWINCH)
 	defer signal.Stop(sigCh)
 
 	if err := cmd.Start(); err != nil {
@@ -384,6 +385,11 @@ func ExecWithEnv(argv []string, env []string, workdir string, onReady func(pid i
 			case s := <-sigCh:
 				if ss, ok := s.(syscall.Signal); ok {
 					_ = syscall.Kill(-pgid, ss)
+					// SIGWINCH is a resize notification, not a termination
+					// request; forward it but do not start the kill escalation.
+					if ss == syscall.SIGWINCH {
+						continue
+					}
 					if !first {
 						first = true
 						go func() {
