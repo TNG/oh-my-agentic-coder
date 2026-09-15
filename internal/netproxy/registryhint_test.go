@@ -60,10 +60,11 @@ func TestRegistryUpstreamHintLogsOneLine(t *testing.T) {
 	var mu sync.Mutex
 	var logged []string
 	filter := NewFilter(FilterConfig{
-		AllowDomains: []string{"registry.corp.example.com"},
-		Resolve:      resolveTo("127.0.0.1"),
+		AllowDomains:        []string{"registry.corp.example.com"},
+		AllowLoopbackOrigin: true,
+		Resolve:             resolveTo("127.0.0.1"),
 	})
-	s, err := NewServer(filter, NewDirectDialer(), func(format string, args ...any) {
+	s, err := NewServer(filter, NewDirectDialerAllowLoopback(), func(format string, args ...any) {
 		mu.Lock()
 		defer mu.Unlock()
 		logged = append(logged, fmt.Sprintf(format, args...))

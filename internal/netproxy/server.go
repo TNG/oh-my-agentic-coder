@@ -536,10 +536,9 @@ func (s *Server) handleForward(conn net.Conn, br *bufio.Reader, req *http.Reques
 		return
 	}
 
-	// Read the response head so we can inject Connection: close before
-	// forwarding to the client. This tells the client the connection will
-	// not be reused, so every subsequent request opens a fresh TCP
-	// connection that goes through the full admission path.
+	// Parse the response head so we can inject Connection: close before
+	// forwarding it to the client. This tells the client the connection
+	// will not be reused, preventing request pipelining on this socket.
 	upstreamBr := bufio.NewReader(upstream)
 	resp, err := http.ReadResponse(upstreamBr, outReq)
 	if err != nil {
@@ -547,10 +546,17 @@ func (s *Server) handleForward(conn net.Conn, br *bufio.Reader, req *http.Reques
 	}
 	resp.Header.Set("Connection", "close")
 	resp.Close = true
-	// Write the response head + body to the client. For streaming
-	// responses (SSE, chunked) resp.Write streams the body via the
-	// underlying reader until the upstream closes or errors.
+
+	// Track upstream so s.Close() can tear it down, which unblocks
+	// resp.Write when it is blocked reading a streaming response body.
+	s.track(upstream, true)
+	defer s.track(upstream, false)
+
+	// Stream head+body upstream→client only. resp.Write reads from
+	// resp.Body (the upstream) and writes to conn — no bytes flow from
+	// conn to upstream, so a pipelined second request is never forwarded.
 	_ = resp.Write(conn)
+	resp.Body.Close()
 }
 
 // maxParallelDials caps how many pinned addresses are dialed at once.

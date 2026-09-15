@@ -160,7 +160,7 @@ func TestDirectDialer(t *testing.T) {
 	defer ln.Close()
 	port := ln.Addr().(*net.TCPAddr).Port
 
-	d := NewDirectDialer()
+	d := NewDirectDialerAllowLoopback()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -337,7 +337,7 @@ func TestUpstreamProxyDialerNoProxyBypass(t *testing.T) {
 	echoPort := echoLn.Addr().(*net.TCPAddr).Port
 
 	proxyURL := &url.URL{Scheme: "http", Host: ln.Addr().String()}
-	d := NewUpstreamProxyDialer(proxyURL, []string{"localhost"}, t.Logf)
+	d := newUpstreamProxyDialerAllowLoopback(proxyURL, []string{"localhost"}, t.Logf)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -663,7 +663,7 @@ func TestDirectDialerDialsPin(t *testing.T) {
 	defer ln.Close()
 	port := ln.Addr().(*net.TCPAddr).Port
 
-	d := NewDirectDialer()
+	d := NewDirectDialerAllowLoopback()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
