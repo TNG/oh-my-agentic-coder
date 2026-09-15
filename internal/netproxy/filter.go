@@ -133,6 +133,10 @@ type FilterConfig struct {
 	// DNS, so a name that resolves only behind it should still be admitted).
 	// Set false for omac diagnose --probe, which must not make DNS calls.
 	ResolveOnCheckHost bool
+	// AllowLoopbackOrigin disables the resolved-IP loopback/unspecified check
+	// in Filter.Check. Set only in tests that route traffic through a local
+	// loopback origin server. Never set in production.
+	AllowLoopbackOrigin bool
 	// Logf receives one line per decision; nil discards.
 	Logf func(format string, args ...any)
 
@@ -215,8 +219,11 @@ func (f *Filter) Check(ctx context.Context, host string, port int) (Verdict, []n
 	}
 	safe := addrs[:0:0]
 	for _, a := range addrs {
-		if reason, denied := hardDeniedAddr(a); denied {
-			return f.log(h, port, Verdict{Decision: Deny, Reason: "hard-deny: resolves to " + reason[len("hard-deny "):]}), nil
+		skip := f.cfg.AllowLoopbackOrigin && isHostLocal(a)
+		if !skip {
+			if reason, denied := hardDeniedAddr(a); denied {
+				return f.log(h, port, Verdict{Decision: Deny, Reason: "hard-deny: resolves to " + reason[len("hard-deny "):]}), nil
+			}
 		}
 		safe = append(safe, a)
 	}
@@ -507,9 +514,8 @@ func isCloudMetadata(ip netip.Addr) bool {
 }
 
 // hardDeniedAddr returns a "hard-deny ..." reason if ip must never be dialed.
-// It is the single chokepoint applied at all four decision points:
-// literal-IP in Check, resolved-IP in Check, literal-IP in CheckHost,
-// and pre-dial in dialPinned.
+// Applied at every address-level decision point: literal IPs in Check/CheckHost
+// and resolved IPs in the DNS loop.
 func hardDeniedAddr(ip netip.Addr) (string, bool) {
 	if isLinkLocal(ip) {
 		return "hard-deny link-local address", true

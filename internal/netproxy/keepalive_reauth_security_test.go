@@ -17,6 +17,13 @@ import (
 	"github.com/TNG/oh-my-agentic-coder/internal/sectest"
 )
 
+// dialerFunc adapts a function to the Dialer interface.
+type dialerFunc func(ctx context.Context, host string, port int, addrs []netip.Addr) (net.Conn, error)
+
+func (f dialerFunc) DialTunnel(ctx context.Context, host string, port int, addrs []netip.Addr) (net.Conn, error) {
+	return f(ctx, host, port, addrs)
+}
+
 // TestSecurityKeepAliveConnectionReevaluatesEveryRequest asserts that a
 // second HTTP request on an already-authorized, kept-alive proxy
 // connection is still subject to the token check, the domain filter, and
@@ -61,14 +68,22 @@ func TestSecurityKeepAliveConnectionReevaluatesEveryRequest(t *testing.T) {
 	}()
 	originPort := originLn.Addr().(*net.TCPAddr).Port
 
+	// Resolve to a documentation-range IP (RFC 5737) so the filter's
+	// loopback/hard-deny check passes. A custom dialer routes all
+	// tunnels to the real origin regardless of the pinned addresses —
+	// the test is about proxy filter behaviour, not DNS.
+	originAddr := fmt.Sprintf("127.0.0.1:%d", originPort)
+	dialer := dialerFunc(func(ctx context.Context, host string, port int, _ []netip.Addr) (net.Conn, error) {
+		return net.Dial("tcp", originAddr)
+	})
 	filter := NewFilter(FilterConfig{
 		AllowDomains: []string{"allowed.example"},
 		DenyDomains:  []string{"forbidden.example"},
 		Resolve: func(context.Context, string) ([]netip.Addr, error) {
-			return []netip.Addr{netip.MustParseAddr("127.0.0.1")}, nil
+			return []netip.Addr{netip.MustParseAddr("192.0.2.1")}, nil
 		},
 	})
-	s, err := NewServer(filter, NewDirectDialer(), func(string, ...any) {})
+	s, err := NewServer(filter, dialer, func(string, ...any) {})
 	if err != nil {
 		t.Fatal(err)
 	}

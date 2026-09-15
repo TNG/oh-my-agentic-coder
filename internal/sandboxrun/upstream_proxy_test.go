@@ -58,7 +58,8 @@ func dialThroughOmacProxy(t *testing.T, srv *netproxy.Server, targetHost string,
 func makeProxyServer(t *testing.T, dialer netproxy.Dialer) *netproxy.Server {
 	t.Helper()
 	filter := netproxy.NewFilter(netproxy.FilterConfig{
-		AllowDomains: []string{"example.com"},
+		AllowDomains:       []string{"example.com"},
+		AllowLoopbackOrigin: true,
 		Resolve: func(_ context.Context, _ string) ([]netip.Addr, error) {
 			return []netip.Addr{netip.MustParseAddr("127.0.0.1")}, nil
 		},

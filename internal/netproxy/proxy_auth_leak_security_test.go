@@ -3,11 +3,13 @@
 package netproxy
 
 import (
+	"context"
 	"encoding/base64"
 	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"net/url"
 	"strings"
 	"sync/atomic"
@@ -15,6 +17,25 @@ import (
 
 	"github.com/TNG/oh-my-agentic-coder/internal/sectest"
 )
+
+// noProxyDialer routes a specific host directly to a fixed address,
+// simulating NO_PROXY bypass without touching loopback-blocked resolved IPs.
+type noProxyDialer struct {
+	proxyURL   *url.URL
+	noProxyFor string // host that bypasses the upstream proxy
+	originAddr string // real address to dial for the no-proxy host
+}
+
+func (d *noProxyDialer) DialTunnel(ctx context.Context, host string, port int, _ []netip.Addr) (net.Conn, error) {
+	if host == d.noProxyFor {
+		return net.Dial("tcp", d.originAddr)
+	}
+	var nd net.Dialer
+	return nd.DialContext(ctx, "tcp", d.proxyURL.Host)
+}
+
+func (d *noProxyDialer) ChainsHost(host string) bool     { return host != d.noProxyFor }
+func (d *noProxyDialer) ProxyAuthHeader() string          { return "" }
 
 // TestSecurityUpstreamProxyCredentialNeverReachesOrigin asserts that the
 // upstream (corporate) proxy's own Basic credential never leaves the hop
@@ -59,9 +80,17 @@ func TestSecurityUpstreamProxyCredentialNeverReachesOrigin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dialer := NewUpstreamProxyDialer(proxyURL, []string{"origin.test"}, func(string, ...any) {})
+	// A dialer that knows origin.test bypasses the upstream proxy (ChainsHost
+	// returns false) and routes directly to the real origin server.
+	// Resolving to a documentation-range IP keeps Filter.Check happy.
+	originAddr := origin.Listener.Addr().String()
+	dialer := &noProxyDialer{
+		proxyURL:   proxyURL,
+		noProxyFor: "origin.test",
+		originAddr: originAddr,
+	}
 
-	filter := NewFilter(FilterConfig{Resolve: resolveTo("127.0.0.1")})
+	filter := NewFilter(FilterConfig{Resolve: resolveTo("192.0.2.1")})
 	s, err := NewServer(filter, dialer, nil)
 	if err != nil {
 		t.Fatal(err)

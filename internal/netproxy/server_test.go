@@ -51,6 +51,7 @@ func waitUntil(t *testing.T, cond func() bool) {
 // given upstream listener.
 func startProxy(t *testing.T, cfg FilterConfig) *Server {
 	t.Helper()
+	cfg.AllowLoopbackOrigin = true
 	filter := NewFilter(cfg)
 	s, err := NewServer(filter, NewDirectDialer(), nil)
 	if err != nil {
@@ -391,6 +392,7 @@ func basicAuth(user, pass string) string {
 // upstream-proxy chaining tests).
 func startProxyWithDialer(t *testing.T, cfg FilterConfig, dialer Dialer) *Server {
 	t.Helper()
+	cfg.AllowLoopbackOrigin = true
 	filter := NewFilter(cfg)
 	s, err := NewServer(filter, dialer, t.Logf)
 	if err != nil {
