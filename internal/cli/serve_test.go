@@ -1212,9 +1212,16 @@ func TestRediscoverPicksUpNewSkill(t *testing.T) {
 	if !names["slack"] || !names["email"] {
 		t.Errorf("expected both slack and email, got %v", names)
 	}
-	// Token is stable across rediscover (same activation).
-	if m1["dir_token"] != m2["dir_token"] {
-		t.Errorf("token changed on rediscover: %v -> %v", m1["dir_token"], m2["dir_token"])
+	// Token is not re-issued on rediscover; it was already given on first activation.
+	if _, present := m2["dir_token"]; present {
+		t.Errorf("re-activate returned dir_token again: token must only be issued once")
+	}
+	// The stored token is stable (not rotated) across rediscover.
+	s.mu.RLock()
+	stored := s.dirs[wd].Token
+	s.mu.RUnlock()
+	if m1["dir_token"].(string) != stored {
+		t.Errorf("first-activation token %q no longer matches stored token %q", m1["dir_token"], stored)
 	}
 }
 
