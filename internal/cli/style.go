@@ -146,6 +146,18 @@ func boxPad(cell string, inner, pad int) string {
 	return strings.Repeat(" ", pad) + cell + strings.Repeat(" ", gap) + strings.Repeat(" ", pad)
 }
 
+// stripControlChars removes C0/C1 control characters from s. This prevents
+// terminal escape sequences planted in session ids or titles from injecting
+// display commands when the text is printed to a terminal.
+func stripControlChars(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 || (r >= 0x7f && r <= 0x9f) {
+			return -1
+		}
+		return r
+	}, s)
+}
+
 // visibleLen returns the display width of s, ignoring ANSI SGR escape
 // sequences (ESC [ ... m). Adequate for our ASCII/box-drawing content.
 func visibleLen(s string) int {

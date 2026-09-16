@@ -223,7 +223,7 @@ func (r *startReloader) handleSession(w http.ResponseWriter, req *http.Request) 
 	}
 	if err := json.NewDecoder(req.Body).Decode(&body); err == nil && body.Session != "" {
 		r.mu.Lock()
-		r.lastSession = body.Session
+		r.lastSession = stripControlChars(body.Session)
 		r.mu.Unlock()
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
