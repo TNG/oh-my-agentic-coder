@@ -36,7 +36,11 @@ func writeRawControlInfo(t *testing.T, ci controlInfo) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(controlInfoPath(), data, 0o600); err != nil {
+	p := controlInfoPath()
+	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -67,7 +71,7 @@ func TestSecurityControlInfoNotWritableFromSandbox(t *testing.T) {
 // TestSecurityControlInfoRejectsForeignControlBase asserts that a planted
 // control base is not accepted as the address of the local serve process.
 func TestSecurityControlInfoRejectsForeignControlBase(t *testing.T) {
-	t.Setenv("TMPDIR", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
 	// Control: a genuine record — the shape serve itself writes — is read
 	// back. Without it, a reader that rejected everything would look like a
@@ -104,8 +108,7 @@ func TestSecurityControlInfoRejectsForeignControlBase(t *testing.T) {
 // file being the obvious choice, as it turns the clobber into code the user
 // runs at their next login.
 func TestSecurityControlInfoWriteDoesNotFollowSymlink(t *testing.T) {
-	tmp := t.TempDir()
-	t.Setenv("TMPDIR", tmp)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
 	victim := filepath.Join(t.TempDir(), "shell-startup-file")
 	const original = "# the user's own file\n"

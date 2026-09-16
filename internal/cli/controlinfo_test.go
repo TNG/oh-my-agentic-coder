@@ -41,8 +41,9 @@ func requireLoopbackDial(t *testing.T) {
 }
 
 func TestControlInfoRoundTrip(t *testing.T) {
-	// Isolate the well-known path under a temp TMPDIR.
-	t.Setenv("TMPDIR", t.TempDir())
+	// Isolate the well-known path: controlInfoPath() uses registry.GlobalDir()
+	// which resolves from XDG_CONFIG_HOME or HOME.
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
 	if _, ok := readControlInfo(); ok {
 		t.Fatal("expected no control-info before write")
@@ -69,7 +70,7 @@ func TestControlInfoRoundTrip(t *testing.T) {
 }
 
 func TestNotifyReloadNoServe(t *testing.T) {
-	t.Setenv("TMPDIR", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	ok, msg := notifyReload("/some/dir")
 	if ok {
 		t.Error("expected notify to fail with no serve running")
@@ -81,7 +82,7 @@ func TestNotifyReloadNoServe(t *testing.T) {
 
 func TestNotifyReloadHitsControlPlane(t *testing.T) {
 	requireLoopbackDial(t)
-	t.Setenv("TMPDIR", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
 	var gotDir string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

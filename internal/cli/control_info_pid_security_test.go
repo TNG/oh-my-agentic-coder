@@ -17,7 +17,7 @@ import (
 // verified alive or owned by the current user. A stale or planted record
 // naming a dead pid is indistinguishable from a genuine one.
 func TestSecurityControlInfoRequiresLiveOwnedPID(t *testing.T) {
-	t.Setenv("TMPDIR", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
 	// Control: a record naming our own live pid is accepted, so the
 	// mechanism itself works and a blanket rejection wouldn't make this
