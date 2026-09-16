@@ -350,8 +350,19 @@ func TestResolveExistingDefaultWins(t *testing.T) {
 }
 
 func TestResolveExplicitPath(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "custom.json")
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	// Place the profile inside the trusted directory so an explicit path
+	// reference is accepted.
+	profileDir, err := ProfileDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(profileDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(profileDir, "custom.json")
 	if err := os.WriteFile(path, []byte(`{"meta": {"name": "custom"}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -364,6 +375,15 @@ func TestResolveExplicitPath(t *testing.T) {
 	}
 	if gotPath != path {
 		t.Errorf("returned path = %q", gotPath)
+	}
+
+	// A path outside the trusted directory must be refused.
+	outside := filepath.Join(t.TempDir(), "evil.json")
+	if err := os.WriteFile(outside, []byte(`{"meta": {"name": "evil"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := Resolve(outside); err == nil {
+		t.Errorf("Resolve(%q) accepted a path outside the trusted profile directory", outside)
 	}
 }
 
@@ -441,8 +461,16 @@ func TestResolveIsReadOnlyByDefault(t *testing.T) {
 	})
 
 	t.Run("explicit path loads", func(t *testing.T) {
-		dir := t.TempDir()
-		path := filepath.Join(dir, "explicit.json")
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		profileDir, err := ProfileDir()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(profileDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(profileDir, "explicit.json")
 		if err := os.WriteFile(path, []byte(`{"meta": {"name": "x"}}`), 0o644); err != nil {
 			t.Fatal(err)
 		}

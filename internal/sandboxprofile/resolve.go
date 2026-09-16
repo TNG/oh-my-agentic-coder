@@ -100,12 +100,13 @@ func PagesPath(profilePath string) string {
 	return strings.TrimSuffix(profilePath, ".json") + ".pages.json"
 }
 
-// resolveOpts holds the (currently single) Resolve knob.
+// resolveOpts holds the Resolve knobs.
 type resolveOpts struct {
 	scaffold bool
+	anyPath  bool // allow explicit paths outside the trusted profile directory
 }
 
-// ResolveOption tunes Resolve. The zero set is read-only.
+// ResolveOption tunes Resolve. The zero set is read-only and path-constrained.
 type ResolveOption func(*resolveOpts)
 
 // WithScaffold lets Resolve create ~/.config/omac/sandbox-profiles/default.json
@@ -117,9 +118,17 @@ func WithScaffold() ResolveOption {
 	return func(o *resolveOpts) { o.scaffold = true }
 }
 
+// WithAnyPath allows Resolve to load profiles from any accessible file path,
+// not just files inside the trusted profile directory. Use this only for
+// read-only inspection (provenance, diagnose) where no sandbox is launched.
+// The launch path must never pass this option.
+func WithAnyPath() ResolveOption {
+	return func(o *resolveOpts) { o.anyPath = true }
+}
+
 // Resolve loads a profile reference:
-//   - a path (contains a separator or ends in .json): load that file
-//     (the returned path is the ref itself);
+//   - a path (contains a separator or ends in .json): load that file,
+//     but only if it resolves inside ~/.config/omac/sandbox-profiles/;
 //   - otherwise ~/.config/omac/sandbox-profiles/<ref>.json.
 //
 // An empty ref means "default". A missing named (non-default) profile is
@@ -136,8 +145,24 @@ func Resolve(ref string, opts ...ResolveOption) (*Profile, string, error) {
 		ref = "default"
 	}
 	if strings.ContainsRune(ref, os.PathSeparator) || strings.HasSuffix(ref, ".json") {
-		p, err := loadFile(ref)
-		return p, ref, err
+		abs, err := filepath.Abs(ref)
+		if err != nil {
+			return nil, "", fmt.Errorf("resolve sandbox profile path %q: %w", ref, err)
+		}
+		if !o.anyPath {
+			// Restrict to the trusted profile directory so a workdir-supplied
+			// --profile path cannot point at an attacker-controlled file.
+			profileDir, err := ProfileDir()
+			if err != nil {
+				return nil, "", fmt.Errorf("resolve sandbox profile dir: %w", err)
+			}
+			trusted := filepath.Clean(profileDir) + string(os.PathSeparator)
+			if !strings.HasPrefix(filepath.Clean(abs)+string(os.PathSeparator), trusted) {
+				return nil, "", fmt.Errorf("sandbox profile path %q is outside the trusted directory %s", ref, profileDir)
+			}
+		}
+		p, err := loadFile(abs)
+		return p, abs, err
 	}
 	path, err := ProfilePath(ref)
 	if err != nil {

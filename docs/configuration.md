@@ -7,17 +7,17 @@ description: omac configuration files and options
 
 | File | Purpose | Written by                            |
 |---|---|---------------------------------------|
-| `oh-my-agentic-coder.yaml` | Launcher config: sandbox runtime selection, facade tuning, audit settings | User                                  |
+| `oh-my-agentic-coder.yaml` | Launcher config: sandbox runtime selection, facade tuning, audit settings (global only); cache scope and facade timeouts (also project-local) | User                                  |
 | `sandbox-profiles/default.json` | Sandbox grants: which filesystem paths, network hosts, and env vars the agent can access | `omac start` (first run creates it) |
 | `sandbox-profiles/default.pages.json` | Permanent allow/deny network decisions made via the prompt dialog | Network prompt dialog (user answers)  |
 | `sidecar.json` | Skill registry: names, directories, bundle hashes, declared secrets | `omac register` / `omac deregister`   |
 | `skill-config.yaml` | Non-secret per-skill fields: API base URLs, region names, feature flags | `omac register` / `omac config`       |
 
-These files live under `~/.config/omac/` (user-global) or `<workdir>/.opencode/` (workdir-local). Only the launcher config is read from both: a project-local `oh-my-agentic-coder.yaml` overrides the user-global copy (named `config.yaml`). See [Per-project configuration](#per-project-configuration).
+These files live under `~/.config/omac/` (user-global) or `<workdir>/.opencode/` (workdir-local). The launcher config is read from both locations when both exist; see [Per-project configuration](#per-project-configuration) for what each location can control.
 
 ## Launcher config
 
-The launcher config selects which sandbox runtime to use and tunes a few operational settings. None of this controls what the agent is allowed to access — that is the sandbox profile (see below).
+The launcher config selects which sandbox runtime to use (global config only) and tunes operational settings. The sandbox *grants* — which filesystem paths, network hosts, and env vars the agent can access — are in the sandbox profile (see below), not here.
 
 ```yaml
 sandbox:
@@ -42,15 +42,15 @@ cache:
 
 ### Per-project configuration
 
-To use different launcher settings for different projects, add a project-local launcher config at `<project>/.opencode/oh-my-agentic-coder.yaml`. When you run `omac start` from that project, omac uses this file instead of your user-global one (`~/.config/omac/config.yaml`).
+To use different operational settings for different projects, add a project-local launcher config at `<project>/.opencode/oh-my-agentic-coder.yaml`. This works the same for every supported harness, despite the OpenCode-specific naming.
 
-This works the same for every supported harness, despite the OpenCode-specific naming. (This applies only to omac's launcher config. Each harness's own skills and settings still live in the harness's own directory.)
+**What the project file can set:** `cache.scope`, `facade.idle_timeout_secs`, `facade.max_body_bytes`. These operational settings are layered on top of your global config (or built-in defaults when no global config exists).
 
-The project file **replaces** the global one; omac does not merge the two. Any option you leave out falls back to omac's built-in defaults, not to your global settings.
+**What only the global config (`~/.config/omac/config.yaml`) can set:** `sandbox.*` (which runtime to use, the confinement command, and the system prompt briefing), `audit.*`, and `facade.base_env_passthrough`. A project-local file cannot change any of these. This is intentional: the sandbox command runs on the host with your full environment, so its configuration must stay under your control, not the project's.
 
 **Warning:** In `omac serve`, the launcher config is read once, from the `--workdir` you started the server with, so switching projects within a running server does not load a different project's file!
 
-The launcher config changes only *how omac launches* in the project: the sandbox runtime it selects, the cache scope, and the facade and audit settings. It does **not** change what the agent is allowed to access. Those grants (filesystem paths, network hosts, open ports) come from the user-global sandbox grants file described below and **currently have no per-project equivalent**.
+The sandbox grants (filesystem paths, network hosts, open ports) come from the user-global sandbox profile file described below and have no per-project equivalent.
 
 ## Harness config home
 

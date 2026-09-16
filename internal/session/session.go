@@ -43,6 +43,29 @@ type Session struct {
 // work even when listing does not.
 var ErrUnsupported = errors.New("session listing not supported for this harness")
 
+// validSessionID reports whether id is safe to splice into a harness argv.
+// Accepted grammar: non-empty, starts with a letter or digit, contains only
+// [A-Za-z0-9._-]. This rejects leading dashes (flag injection) and path
+// separators (path traversal) at the enumeration boundary.
+func validSessionID(id string) bool {
+	if id == "" {
+		return false
+	}
+	for i, r := range id {
+		switch {
+		case r >= 'A' && r <= 'Z', r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			// always ok
+		case r == '.' || r == '_' || r == '-':
+			if i == 0 {
+				return false // no leading punctuation (blocks leading dash)
+			}
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 // runner runs a command and returns its stdout. Swappable in tests.
 type runner func(name string, args ...string) ([]byte, error)
 
@@ -66,22 +89,34 @@ func list(h config.Harness, workdir string, run runner, claudeRoot, ocDBPath, co
 		return nil, ErrUnsupported
 	}
 	workdir = filepath.Clean(workdir)
+	var (
+		sessions []Session
+		err      error
+	)
 	switch h.Session.ListKind {
 	case config.SessionListOpenCodeCLI:
-		return listOpenCode(workdir, run, ocDBPath), nil
+		sessions = listOpenCode(workdir, run, ocDBPath)
 	case config.SessionListClaudeFiles:
-		return listClaude(workdir, claudeRoot), nil
+		sessions = listClaude(workdir, claudeRoot)
 	case config.SessionListCodex:
-		return listCodex(workdir, codexRoot), nil
+		sessions = listCodex(workdir, codexRoot)
 	case config.SessionListCopilot:
-		return listCopilot(workdir, copilotDB, copilotState), nil
+		sessions = listCopilot(workdir, copilotDB, copilotState)
 	case config.SessionListPi:
-		return listPi(workdir, piRoot), nil
+		sessions = listPi(workdir, piRoot)
 	case config.SessionListCodewhale:
-		return listCodewhale(workdir, codewhaleDB), nil
+		sessions = listCodewhale(workdir, codewhaleDB)
 	default:
 		return nil, ErrUnsupported
 	}
+	// Drop sessions whose IDs would be unsafe to splice into a harness argv.
+	filtered := sessions[:0]
+	for _, s := range sessions {
+		if validSessionID(s.ID) {
+			filtered = append(filtered, s)
+		}
+	}
+	return filtered, err
 }
 
 // KnownIDs returns the set of session IDs that already exist for workdir

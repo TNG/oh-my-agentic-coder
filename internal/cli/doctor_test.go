@@ -32,6 +32,30 @@ func writeWorkdirConfig(t *testing.T, workdir string, profileName string, comman
 	}
 }
 
+// writeGlobalConfig writes ~/.config/omac/config.yaml with a single sandbox
+// profile. Sandbox settings (profiles, default_profile) are trusted only from
+// the global config, so tests that configure the sandbox runtime must use this.
+func writeGlobalConfig(t *testing.T, profileName string, command []string) {
+	t.Helper()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(home, ".config", "omac")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var sb strings.Builder
+	sb.WriteString("sandbox:\n  default_profile: " + profileName + "\n  profiles:\n")
+	sb.WriteString("    " + profileName + ":\n      command:\n")
+	for _, c := range command {
+		sb.WriteString("        - " + yamlScalar(c) + "\n")
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(sb.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // yamlScalar renders s as a double-quoted YAML scalar, escaping
 // backslashes and double-quotes. Used for command tokens that contain
 // braces ({{self}}) which YAML would otherwise parse as flow mappings.
@@ -383,7 +407,7 @@ func TestDoctorOpaqueExternalCommandSkipped(t *testing.T) {
 
 	// A non-{{self}} sandbox run command is opaque — doctor can't
 	// inspect it, so no warnings should be produced (and no crash).
-	writeWorkdirConfig(t, workdir, "nono", []string{
+	writeGlobalConfig(t, "nono", []string{
 		"nono", "run",
 		"--profile", "tng-sandbox",
 		"--allow-file", "{{socket}}",
@@ -391,14 +415,10 @@ func TestDoctorOpaqueExternalCommandSkipped(t *testing.T) {
 		"--", "{{inner_cmd}}", "{{inner_args}}",
 	})
 
-	// Even with a default profile that has broad grants, doctor must
-	// not warn because it can't see into the nono profile's tng-sandbox.
-	stageProfile(t, home, `{
-	  "meta": {"name": "default"},
-	  "filesystem": {
-	    "allow": ["~/.cargo", "~/.rustup", "~/go"]
-	  }
-	}`)
+	// Doctor must not crash or try to introspect nono's tng-sandbox profile.
+	// No broad grants in the default.json so the built-in profile (always
+	// present) does not produce tool-home warnings that would muddy the assertion.
+	stageProfile(t, home, `{"meta": {"name": "default"}, "environment": {"allow_vars": ["HOME", "PATH"]}}`)
 
 	env, outBuf, _, drain := newPipeEnv(t, "")
 	env.Workdir = workdir
@@ -409,8 +429,9 @@ func TestDoctorOpaqueExternalCommandSkipped(t *testing.T) {
 	if code != ExitOK {
 		t.Errorf("doctor exit = %d, want ExitOK", code)
 	}
-	if strings.Contains(output, "~/.cargo") && strings.Contains(strings.ToLower(output), "tool home") {
-		t.Errorf("doctor warned for opaque external command; got:\n%s", output)
+	// Doctor must not attempt to warn about tng-sandbox internals (opaque).
+	if strings.Contains(output, "tng-sandbox") {
+		t.Errorf("doctor mentioned nono's internal tng-sandbox profile; got:\n%s", output)
 	}
 }
 
@@ -418,7 +439,7 @@ func TestDoctorNonRunBuiltinCommandSkipped(t *testing.T) {
 	home := stageHomeWithCargoSentinels(t)
 	workdir := t.TempDir()
 
-	writeWorkdirConfig(t, workdir, "builtin", []string{
+	writeGlobalConfig(t, "builtin", []string{
 		"{{self}}", "sandbox", "stage2",
 	})
 
@@ -561,17 +582,22 @@ func TestDoctorExplicitProfilePathInspected(t *testing.T) {
 	t.Setenv("HOME", home)
 	workdir := t.TempDir()
 
-	profilePath := filepath.Join(workdir, "my-profile.json")
-	if err := os.WriteFile(profilePath, []byte(`{
+	// Place the custom profile inside the trusted profile directory and
+	// reference it by name from the global launcher config.
+	profileDir := filepath.Join(home, ".config", "omac", "sandbox-profiles")
+	if err := os.MkdirAll(profileDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(profileDir, "custom.json"), []byte(`{
 	  "meta": {"name": "custom"},
 	  "filesystem": {"allow": ["~/go"]}
 	}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	writeWorkdirConfig(t, workdir, "builtin", []string{
+	writeGlobalConfig(t, "builtin", []string{
 		"{{self}}", "sandbox", "run",
-		"--profile", profilePath,
+		"--profile", "custom",
 		"--", "{{inner_cmd}}", "{{inner_args}}",
 	})
 
@@ -585,7 +611,7 @@ func TestDoctorExplicitProfilePathInspected(t *testing.T) {
 		t.Errorf("doctor exit = %d, want ExitOK", code)
 	}
 	if !strings.Contains(output, "~/go") {
-		t.Errorf("doctor should inspect explicit profile path; got:\n%s", output)
+		t.Errorf("doctor should inspect named custom profile; got:\n%s", output)
 	}
 }
 

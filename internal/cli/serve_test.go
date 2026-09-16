@@ -1020,7 +1020,12 @@ func TestRunServeRetainsCacheLockAndAllowsOnlyScope(t *testing.T) {
 	if err := os.WriteFile(capturePath, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	configPath := filepath.Join(workdir, ".opencode", "oh-my-agentic-coder.yaml")
+	// Sandbox profiles are trusted only from the global config; write there.
+	globalHome, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(globalHome, ".config", "omac", "config.yaml")
 	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
 		t.Fatal(err)
 	}

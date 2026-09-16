@@ -77,10 +77,22 @@ func buildResumeOpts(args []string, env *Env) (launchOpts, int) {
 }
 
 // buildResumeInnerArgs puts the harness's resume-by-id flag first, then any
-// user-supplied inner args.
+// user-supplied inner args. For harnesses that use a positional form
+// (e.g. ["resume", id] rather than ["--flag", id]), a "--" separator is
+// inserted before the id so a dash-prefixed id cannot be parsed as a flag
+// by the harness's own argument parser.
 func buildResumeInnerArgs(sess *config.HarnessSession, id string, userInner []string) []string {
-	inner := append([]string(nil), sess.ResumeByIDArgs(id)...)
-	return append(inner, userInner...)
+	args := sess.ResumeByIDArgs(id)
+	// Detect positional form: the id is the last token and the token before
+	// it does not start with "--" (it is a subcommand, not a flag name).
+	if len(args) >= 2 && !strings.HasPrefix(args[len(args)-2], "--") {
+		// Insert "--" before the id to prevent flag injection.
+		fenced := make([]string, 0, len(args)+1)
+		fenced = append(fenced, args[:len(args)-1]...)
+		fenced = append(fenced, "--", id)
+		args = fenced
+	}
+	return append(append([]string(nil), args...), userInner...)
 }
 
 // pickSession renders the session list and reads a 1-based selection from
@@ -158,9 +170,9 @@ func renderSessions(env *Env, st styler, harnessName string, sessions []session.
 	for i, s := range sessions {
 		num := fmt.Sprintf("%*d", idxWidth, i+1)
 		when := fmt.Sprintf("%-8s", relativeTime(s.When))
-		id := fmt.Sprintf("%-*s", idWidth, s.ID)
+		id := fmt.Sprintf("%-*s", idWidth, stripControlChars(s.ID))
 		fmt.Fprintf(env.Stdout, "  %s  %s  %s  %s\n",
-			st.cyan(num), st.gray(when), st.gray(id), s.Title)
+			st.cyan(num), st.gray(when), st.gray(id), stripControlChars(s.Title))
 	}
 }
 

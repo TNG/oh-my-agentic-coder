@@ -352,41 +352,113 @@ func defaultLauncherConfigFor(h Harness) LauncherConfig {
 
 func boolPtr(b bool) *bool { return &b }
 
-// LoadLauncher loads the launcher config from
-// <workdir>/.opencode/oh-my-agentic-coder.yaml or, failing that,
-// $XDG_CONFIG_HOME/omac/config.yaml (~/.config/omac/config.yaml).
-// If neither exists, the compiled-in default is returned.
+// LoadLauncher loads the launcher config for workdir.
 //
-// The config format is YAML (gopkg.in/yaml.v3). YAML is a strict
-// superset of JSON, so existing JSON-shaped files continue to parse
-// correctly — handy if a user has an inline `omac` config snippet
-// they want to paste in. The .yaml extension is the canonical name.
+// It reads both the workdir-local config (<workdir>/.opencode/oh-my-agentic-coder.yaml)
+// and the user-global config (~/.config/omac/config.yaml) when both exist.
+// Security-sensitive fields (sandbox profiles/selection, audit settings,
+// facade env passthrough) come exclusively from the global config or
+// compiled-in defaults — the workdir file may only contribute operational
+// settings (facade timeouts/body limit, cache scope).
+//
+// The returned path is the workdir file when it exists (its operational
+// settings are applied), the global file when only that exists, or ""
+// when neither exists (compiled-in defaults are used).
 func LoadLauncher(workdir string) (LauncherConfig, string, error) {
-	candidates := []string{
-		filepath.Join(workdir, ".opencode", "oh-my-agentic-coder.yaml"),
-	}
+	workdirFile := filepath.Join(workdir, ".opencode", "oh-my-agentic-coder.yaml")
+	var globalFile string
 	if home, err := os.UserHomeDir(); err == nil {
-		candidates = append(candidates, filepath.Join(home, ".config", "omac", "config.yaml"))
+		globalFile = filepath.Join(home, ".config", "omac", "config.yaml")
 	}
-	for _, p := range candidates {
-		raw, err := os.ReadFile(p)
-		if errors.Is(err, os.ErrNotExist) {
-			continue
+
+	// Load the global config (trusted source for security fields).
+	global, globalPath, err := loadLauncherFile(globalFile)
+	if err != nil {
+		return LauncherConfig{}, "", err
+	}
+
+	// Load the workdir config (untrusted; only operational fields apply).
+	local, localPath, err := loadLauncherFile(workdirFile)
+	if err != nil {
+		return LauncherConfig{}, "", err
+	}
+
+	switch {
+	case localPath != "" && globalPath != "":
+		// Both exist: apply global security fields, then layer local
+		// operational-only fields on top.
+		merged := mergeDefaults(global)
+		merged.Facade.IdleTimeoutSecs = pickInt(local.Facade.IdleTimeoutSecs, merged.Facade.IdleTimeoutSecs)
+		merged.Facade.MaxBodyBytes = pickInt64(local.Facade.MaxBodyBytes, merged.Facade.MaxBodyBytes)
+		merged.Cache = local.Cache
+		if _, err := merged.Cache.Resolve(); err != nil {
+			return LauncherConfig{}, "", fmt.Errorf("parse %s: %w", localPath, err)
 		}
-		if err != nil {
-			return LauncherConfig{}, "", fmt.Errorf("read %s: %w", p, err)
-		}
-		var lc LauncherConfig
-		if err := yaml.Unmarshal(raw, &lc); err != nil {
-			return LauncherConfig{}, "", fmt.Errorf("parse %s: %w", p, err)
-		}
+		return merged, localPath, nil
+	case localPath != "":
+		// Workdir file only: strip all security-sensitive fields; fill
+		// them from compiled-in defaults.
+		lc := stripSecurityFields(local)
 		lc = mergeDefaults(lc)
 		if _, err := lc.Cache.Resolve(); err != nil {
-			return LauncherConfig{}, "", fmt.Errorf("parse %s: %w", p, err)
+			return LauncherConfig{}, "", fmt.Errorf("parse %s: %w", localPath, err)
 		}
-		return lc, p, nil
+		return lc, localPath, nil
+	case globalPath != "":
+		lc := mergeDefaults(global)
+		if _, err := lc.Cache.Resolve(); err != nil {
+			return LauncherConfig{}, "", fmt.Errorf("parse %s: %w", globalPath, err)
+		}
+		return lc, globalPath, nil
+	default:
+		return DefaultLauncherConfig(), "", nil
 	}
-	return DefaultLauncherConfig(), "", nil
+}
+
+// loadLauncherFile reads and unmarshals one launcher config file.
+// Returns an empty config and "" path when the file does not exist.
+func loadLauncherFile(path string) (LauncherConfig, string, error) {
+	if path == "" {
+		return LauncherConfig{}, "", nil
+	}
+	raw, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return LauncherConfig{}, "", nil
+	}
+	if err != nil {
+		return LauncherConfig{}, "", fmt.Errorf("read %s: %w", path, err)
+	}
+	var lc LauncherConfig
+	if err := yaml.Unmarshal(raw, &lc); err != nil {
+		return LauncherConfig{}, "", fmt.Errorf("parse %s: %w", path, err)
+	}
+	return lc, path, nil
+}
+
+// stripSecurityFields zeroes all fields a workdir config must not control:
+// sandbox profiles/selection/briefing, audit settings, and facade env
+// passthrough. Only operational settings survive (facade timeouts, cache).
+func stripSecurityFields(lc LauncherConfig) LauncherConfig {
+	lc.Sandbox = SandboxConfig{}
+	lc.Audit = AuditConfig{}
+	lc.Facade.BaseEnvPassthrough = nil
+	return lc
+}
+
+// pickInt returns override when non-zero, else fallback.
+func pickInt(override, fallback int) int {
+	if override != 0 {
+		return override
+	}
+	return fallback
+}
+
+// pickInt64 returns override when non-zero, else fallback.
+func pickInt64(override, fallback int64) int64 {
+	if override != 0 {
+		return override
+	}
+	return fallback
 }
 
 func mergeDefaults(lc LauncherConfig) LauncherConfig {
@@ -394,8 +466,16 @@ func mergeDefaults(lc LauncherConfig) LauncherConfig {
 	if lc.Sandbox.DefaultProfile == "" {
 		lc.Sandbox.DefaultProfile = def.Sandbox.DefaultProfile
 	}
+	// Merge built-in profiles into the map so a config declaring custom
+	// profiles cannot erase the compiled-in ones (e.g. "builtin").
 	if lc.Sandbox.Profiles == nil {
 		lc.Sandbox.Profiles = def.Sandbox.Profiles
+	} else {
+		for name, prof := range def.Sandbox.Profiles {
+			if _, exists := lc.Sandbox.Profiles[name]; !exists {
+				lc.Sandbox.Profiles[name] = prof
+			}
+		}
 	}
 	if lc.Facade.IdleTimeoutSecs == 0 {
 		lc.Facade.IdleTimeoutSecs = def.Facade.IdleTimeoutSecs

@@ -16,10 +16,13 @@ func TestDefaultAuditEnabled(t *testing.T) {
 	}
 }
 
-func TestLoadLauncherAuditExplicitDisable(t *testing.T) {
-	dir := t.TempDir()
-	ocDir := filepath.Join(dir, ".opencode")
-	if err := os.MkdirAll(ocDir, 0o755); err != nil {
+// TestGlobalAuditExplicitDisable verifies that audit settings in the
+// user-global config are honoured (only the global config may control audit).
+func TestGlobalAuditExplicitDisable(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	globalDir := filepath.Join(home, ".config", "omac")
+	if err := os.MkdirAll(globalDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	yaml := `audit:
@@ -28,15 +31,15 @@ func TestLoadLauncherAuditExplicitDisable(t *testing.T) {
   syslog: true
   strict: true
 `
-	if err := os.WriteFile(filepath.Join(ocDir, "oh-my-agentic-coder.yaml"), []byte(yaml), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(globalDir, "config.yaml"), []byte(yaml), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	lc, _, err := LoadLauncher(dir)
+	lc, _, err := LoadLauncher(t.TempDir())
 	if err != nil {
 		t.Fatalf("LoadLauncher: %v", err)
 	}
 	if lc.Audit.AuditEnabled() {
-		t.Fatalf("explicit enabled:false must be preserved")
+		t.Fatalf("explicit enabled:false in global config must be preserved")
 	}
 	if lc.Audit.Path != "/var/log/omac/audit.jsonl" || !lc.Audit.Syslog || !lc.Audit.Strict {
 		t.Fatalf("audit fields not parsed: %+v", lc.Audit)

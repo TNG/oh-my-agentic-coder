@@ -433,7 +433,8 @@ func launchCacheCaptureForHarness(t *testing.T, harnessName string, noSandbox, e
 		t.Fatal(err)
 	}
 	if !noSandbox {
-		configPath := filepath.Join(workdir, ".opencode", "oh-my-agentic-coder.yaml")
+		// Sandbox profiles are trusted only from the global config; write there.
+		configPath := filepath.Join(home, ".config", "omac", "config.yaml")
 		if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
 			t.Fatal(err)
 		}

@@ -244,7 +244,7 @@ func runDoctor(args []string, env *Env) int {
 // the gap where doctor never surfaced the security lint (previously only
 // reachable via `omac provenance --check`).
 func doctorProfileLint(env *Env, profileRef string) {
-	profile, _, err := sandboxprofile.Resolve(profileRef)
+	profile, _, err := sandboxprofile.Resolve(profileRef, sandboxprofile.WithAnyPath())
 	if err != nil {
 		return // profile problems are already reported by the sandbox section
 	}
@@ -267,7 +267,7 @@ func doctorProfileLint(env *Env, profileRef string) {
 //
 // Advisory only — it never affects doctor's exit code.
 func doctorRegistryConfig(env *Env, profileRef string) {
-	profile, _, err := sandboxprofile.Resolve(profileRef)
+	profile, _, err := sandboxprofile.Resolve(profileRef, sandboxprofile.WithAnyPath())
 	if err != nil {
 		return // profile problems are already reported by the sandbox section
 	}
@@ -444,7 +444,7 @@ func doctorSandboxProfileWarnings(env *Env, lc config.LauncherConfig) {
 			// doctor can't see into its profile, so skip silently.
 			continue
 		}
-		p, path, err := sandboxprofile.Resolve(ref)
+		p, path, err := sandboxprofile.Resolve(ref, sandboxprofile.WithAnyPath())
 		if err != nil {
 			fmt.Fprintf(env.Stdout, "  [warn] sandbox profile %q: %v\n", profName, err)
 			continue

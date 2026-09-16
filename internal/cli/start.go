@@ -1011,7 +1011,7 @@ func printContinueHint(env *Env, harness config.Harness, resumedID string, prior
 	// slow/blocking `session list` never runs).
 	if resumedID != "" {
 		fmt.Fprintf(env.Stderr, "\nTo resume this session: omac continue%s -s %s\n",
-			continueHintToken(harness), resumedID)
+			continueHintToken(harness), stripControlChars(resumedID))
 		return
 	}
 	// session.List may shell out to the harness CLI (opencode: ~500ms) or
@@ -1037,7 +1037,7 @@ func printContinueHint(env *Env, harness config.Harness, resumedID string, prior
 			return
 		}
 		tok := continueHintToken(harness)
-		fmt.Fprintf(env.Stderr, "\nTo resume this session: omac continue%s -s %s\n", tok, id)
+		fmt.Fprintf(env.Stderr, "\nTo resume this session: omac continue%s -s %s\n", tok, stripControlChars(id))
 	case <-time.After(hintTimeout):
 		// Timed out — skip the hint rather than blocking exit.
 	}
