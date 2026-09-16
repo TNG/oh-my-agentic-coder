@@ -281,6 +281,40 @@ sanitize_issue_body() {
   done < <(issue_body_forbidden_strings "$vulns_json" "$plans_json")
 }
 
+# Wave assignment for the fix stage ("Job 5" in the pipeline plan): greedy
+# coloring over the selected plans. Plans are placed in (priority, id) order;
+# each gets the lowest wave in which it shares no owned file with a plan
+# already placed there, capped at 4 waves — enough for the default
+# max_plans of 3 and one conflict chain on top. Over-cap plans are reported
+# as overflow: they stay eligible (no PR) and the next run picks them up.
+#
+# Prints one JSON object:
+#   {"waves": {"1": ["01","03"], "2": ["02"]},
+#    "map": {"01": 1, "02": 2, "03": 1},
+#    "overflow": ["04"]}
+assign_waves() {
+  local plans_json=$1 ids=$2
+  jq -cn --slurpfile plans "$plans_json" --arg ids "$ids" '
+    ($ids | split(",") | map(select(length > 0))) as $want
+    | ($plans[0] | sort_by(.priority, .id)
+                   | map(select(.id as $i | ($want | index($i))))) as $sel
+    | reduce $sel[] as $p (
+        {placed: [], overflow: []};
+        ([ .placed[]
+           | select(. as $a | any($p.files[]; . as $f | ($a.files | index($f)) != null))
+           | .wave ]) as $taken
+        | ([range(1; 5)] - $taken | min) as $w
+        | if $w == null then .overflow += [$p.id]
+          else .placed += [{id: $p.id, wave: $w, files: $p.files}]
+          end)
+    | { placed: [.placed[] | select(true)] } as $placed
+    | { waves: (reduce range(1; 5) as $w ({};
+                 . + {($w | tostring): [$placed.placed[] | select(.wave == $w) | .id]}))
+      , map: ($placed.placed | map({key: .id, value: .wave}) | from_entries)
+      , overflow: .overflow }
+  '
+}
+
 # Ownership guard, the mechanical enforcement of the conflict matrix: every
 # changed path in the checkout (staged, unstaged or untracked) must match one
 # of the grep -E patterns in $2, or the guard prints the offending path and

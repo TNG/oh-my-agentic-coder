@@ -282,6 +282,62 @@ echo y > "$g/pkg/name with space.go"
 guard_violation "a quoted untracked path is unquoted before matching" "pkg/name with space.go"
 rm "$g/pkg/name with space.go"
 
+# --- assign_waves ---------------------------------------------------------------
+# Greedy coloring: plans sharing an owned file must land in different waves,
+# each plan gets the lowest free wave, the chain caps at 4 and reports the
+# rest as overflow. Fixture: 01 owns a.go+b.go, 02 shares a.go, 03 is
+# disjoint, 04 shares b.go, 05 is disjoint; 11-15 all share shared.go.
+cat > "$TMP/waves.json" <<'EOF'
+[
+  { "id": "01", "priority": 1, "files": ["a.go", "b.go"] },
+  { "id": "02", "priority": 2, "files": ["a.go"] },
+  { "id": "03", "priority": 3, "files": ["c.go"] },
+  { "id": "04", "priority": 4, "files": ["b.go", "d.go"] },
+  { "id": "05", "priority": 5, "files": ["e.go"] },
+  { "id": "11", "priority": 6, "files": ["shared.go"] },
+  { "id": "12", "priority": 7, "files": ["shared.go"] },
+  { "id": "13", "priority": 8, "files": ["shared.go"] },
+  { "id": "14", "priority": 9, "files": ["shared.go"] },
+  { "id": "15", "priority": 10, "files": ["shared.go"] }
+]
+EOF
+
+expect_waves() {
+  local desc=$1 ids=$2 want=$3 got
+  got="$(assign_waves "$TMP/waves.json" "$ids" | jq -c '.waves')"
+  if [ "$got" = "$want" ]; then
+    echo "ok: $desc"
+  else
+    fail "$desc: want waves $want, got $got"
+  fi
+}
+
+expect_waves "conflicting plans get different waves, disjoint plans share wave 1" \
+  "01,02,03,04,05" \
+  '{"1":["01","03","05"],"2":["02","04"],"3":[],"4":[]}'
+
+expect_waves "a five-deep conflict chain fills the waves and overflows" \
+  "11,12,13,14,15" \
+  '{"1":["11"],"2":["12"],"3":["13"],"4":["14"]}'
+
+overflow="$(assign_waves "$TMP/waves.json" "11,12,13,14,15" | jq -c '.overflow')"
+if [ "$overflow" = '["15"]' ]; then
+  echo "ok: over-cap plans are reported as overflow"
+else
+  fail "over-cap plans are reported as overflow: got $overflow"
+fi
+
+wave_map="$(assign_waves "$TMP/waves.json" "01,02,03" | jq -c '.map')"
+if [ "$wave_map" = '{"01":1,"02":2,"03":1}' ]; then
+  echo "ok: the wave map carries per-plan wave numbers"
+else
+  fail "the wave map carries per-plan wave numbers: got $wave_map"
+fi
+
+expect_waves "an empty selection colors nothing" \
+  "" \
+  '{"1":[],"2":[],"3":[],"4":[]}'
+
 if [ "$failures" -gt 0 ]; then
   echo "$failures plans test(s) failed" >&2
   exit 1

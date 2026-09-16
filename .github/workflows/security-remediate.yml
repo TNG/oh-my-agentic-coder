@@ -5,11 +5,11 @@
 # one ready-to-review fix pull request per plan. Autonomy ends at pull
 # requests: merging stays a human action, per COLLABORATION.md.
 #
-# Implementation order: this file currently wires the preflight, plan, issue
-# and test-suite stages (driver scripts in
-# .github/scripts/security_remediate/). The fix waves join as they land;
-# finalize lives in its own workflow with a cron trigger, because this
-# workflow's triggers do not re-fire on their own.
+# Implementation order: this file currently wires the preflight, plan, issue,
+# test-suite and fix-wave stages (driver scripts in
+# .github/scripts/security_remediate/). Finalize lives in its own workflow
+# with a cron trigger, because this workflow's triggers do not re-fire on
+# their own.
 #
 # Disclosure model: same as security-scan.yml. This is a public repo, so the
 # job log, the step summary and all job outputs carry counts and plan ids
@@ -261,3 +261,308 @@ jobs:
           MODEL: ${{ needs.preflight.outputs.model }}
           REVIEW_MODEL: ${{ inputs.review_model || '' }}
         run: bash repo/.github/scripts/security_remediate/test-suite-stage.sh
+
+  # ---- Fix waves ---------------------------------------------------------------
+  # A matrix starts all of its legs in parallel, so the wave number cannot be
+  # a matrix dimension. Instead one small job computes the greedy coloring
+  # (plans sharing owned files land in different waves, each plan gets the
+  # lowest free wave, capped at four), and each wave is its own matrix job
+  # chained via needs: wave N+1 starts only after wave N's legs pushed.
+
+  waves:
+    name: Waves (greedy coloring)
+    needs: [preflight, plan]
+    if: |
+      !cancelled() &&
+      needs.preflight.outputs.no_op != 'true' &&
+      (needs.plan.result == 'success' || needs.plan.result == 'skipped') &&
+      inputs.stage == 'all'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      wave1: ${{ steps.waves.outputs.wave1 }}
+      wave2: ${{ steps.waves.outputs.wave2 }}
+      wave3: ${{ steps.waves.outputs.wave3 }}
+      wave4: ${{ steps.waves.outputs.wave4 }}
+      wave_map: ${{ steps.waves.outputs.wave_map }}
+      overflow: ${{ steps.waves.outputs.overflow }}
+    env:
+      SECURITY_SCAN_PAT: ${{ secrets.SECURITY_SCAN_PAT }}
+      ARCHIVE_REPO: ${{ secrets.SECURITY_ARCHIVE_REPO }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          path: repo
+
+      - name: Assign plans to waves
+        id: waves
+        env:
+          SCAN_DIR: ${{ needs.preflight.outputs.scan_dir }}
+          SELECTED_IDS: ${{ needs.plan.outputs.selected_ids || needs.preflight.outputs.selected_ids }}
+        run: |
+          # No agent sessions here — pure jq over the manifest, so the leg
+          # matrix is known before the fix jobs start.
+          archive="$PWD/archive"
+          git clone --quiet "https://x-access-token:${SECURITY_SCAN_PAT}@github.com/${ARCHIVE_REPO}.git" "$archive"
+          plans="$archive/scans/${SCAN_DIR}/mitigation-plans/plans.json"
+          # lib.sh is sourced, never run; call assign_waves from a subshell.
+          waves="$(bash -c '. repo/.github/scripts/security_remediate/lib.sh && assign_waves "$1" "$2"' _ "$plans" "$SELECTED_IDS")"
+          for n in 1 2 3 4; do
+            echo "wave$n=$(printf '%s' "$waves" | jq -c --argjson n "$n" '.waves[$n | tostring]')" >> "$GITHUB_OUTPUT"
+          done
+          echo "wave_map=$(printf '%s' "$waves" | jq -c '.map')" >> "$GITHUB_OUTPUT"
+          echo "overflow=$(printf '%s' "$waves" | jq -c '.overflow')" >> "$GITHUB_OUTPUT"
+          {
+            echo "## Security remediation: waves"
+            echo ""
+            printf '%s\n' "$waves" | jq -r '.waves | to_entries | map("wave \(.key): \(.value | join(", "))") | .[]'
+            overflow="$(printf '%s' "$waves" | jq -r '.overflow | join(", ")')"
+            if [ -n "$overflow" ]; then
+              echo "overflow (deferred to the next run): ${overflow}"
+            fi
+          } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+
+  fix-wave-1:
+    name: Fix wave 1 (plan ${{ matrix.plan }})
+    needs: [preflight, issue, waves, test-suite]
+    if: |
+      !cancelled() &&
+      needs.preflight.outputs.no_op != 'true' &&
+      needs.test-suite.result == 'success' &&
+      needs.waves.outputs.wave1 != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      # One failing leg must not cancel its siblings: wave legs never share
+      # owned files, so the others are still safe to execute.
+      fail-fast: false
+      matrix:
+        plan: ${{ fromJSON(needs.waves.outputs.wave1) }}
+    env:
+      SECURITY_SCAN_PAT: ${{ secrets.SECURITY_SCAN_PAT }}
+      ARCHIVE_REPO: ${{ secrets.SECURITY_ARCHIVE_REPO }}
+      GH_TOKEN: ${{ secrets.SECURITY_SCAN_PAT }}
+      SKAINET_TOKEN: ${{ secrets.SKAINET_TOKEN }}
+      SKAINET_INTERNAL: ${{ secrets.SKAINET_INTERNAL }}
+      BUDGET_MINUTES: ${{ inputs.budget_minutes || '60' }}
+      MAX_REVIEW_PASSES: ${{ inputs.max_review_passes || '2' }}
+      STRICT_REVIEW: ${{ inputs.strict_review }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          path: repo
+
+      - name: Install bubblewrap
+        run: |
+          sudo apt-get update && sudo apt-get install -y bubblewrap
+          sudo tee /etc/apparmor.d/bwrap > /dev/null <<'EOF'
+          abi <abi/4.0>,
+          /usr/bin/bwrap flags=(unconfined) {
+            userns,
+          }
+          EOF
+          sudo apparmor_parser -r /etc/apparmor.d/bwrap
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: repo/go.mod
+          cache: true
+          cache-dependency-path: repo/go.sum
+
+      - name: Fix session, review loop, pull request
+        # Branch cut from the regression-suite branch, implementer session,
+        # review loop, green proof (the plan's pinned tests pass, their pin
+        # entries deleted), then the runner shell pushes and opens the PR.
+        # fail-fast is off, so sibling legs keep running whatever happens
+        # here.
+        env:
+          PLAN_ID: ${{ matrix.plan }}
+          SCAN_DIR: ${{ needs.preflight.outputs.scan_dir }}
+          OVERVIEW_ISSUE: ${{ needs.issue.outputs.overview_issue }}
+          TEST_BRANCH: ${{ needs.test-suite.outputs.test_branch }}
+          WAVE_MAP: ${{ needs.waves.outputs.wave_map }}
+          MODEL: ${{ needs.preflight.outputs.model }}
+          REVIEW_MODEL: ${{ inputs.review_model || '' }}
+        run: bash repo/.github/scripts/security_remediate/fix-stage.sh
+
+  fix-wave-2:
+    name: Fix wave 2 (plan ${{ matrix.plan }})
+    # Later waves do NOT gate on the previous wave's results: wave legs never
+    # share owned files, so a sibling's failure leaves them unaffected. A leg
+    # whose stack base (an earlier wave's plan sharing files) has no open PR
+    # falls back to the regression-suite branch at runtime.
+    needs: [preflight, waves, test-suite, issue, fix-wave-1]
+    if: |
+      !cancelled() &&
+      needs.preflight.outputs.no_op != 'true' &&
+      needs.test-suite.result == 'success' &&
+      needs.waves.outputs.wave2 != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        plan: ${{ fromJSON(needs.waves.outputs.wave2) }}
+    env:
+      SECURITY_SCAN_PAT: ${{ secrets.SECURITY_SCAN_PAT }}
+      ARCHIVE_REPO: ${{ secrets.SECURITY_ARCHIVE_REPO }}
+      GH_TOKEN: ${{ secrets.SECURITY_SCAN_PAT }}
+      SKAINET_TOKEN: ${{ secrets.SKAINET_TOKEN }}
+      SKAINET_INTERNAL: ${{ secrets.SKAINET_INTERNAL }}
+      BUDGET_MINUTES: ${{ inputs.budget_minutes || '60' }}
+      MAX_REVIEW_PASSES: ${{ inputs.max_review_passes || '2' }}
+      STRICT_REVIEW: ${{ inputs.strict_review }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          path: repo
+
+      - name: Install bubblewrap
+        run: |
+          sudo apt-get update && sudo apt-get install -y bubblewrap
+          sudo tee /etc/apparmor.d/bwrap > /dev/null <<'EOF'
+          abi <abi/4.0>,
+          /usr/bin/bwrap flags=(unconfined) {
+            userns,
+          }
+          EOF
+          sudo apparmor_parser -r /etc/apparmor.d/bwrap
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: repo/go.mod
+          cache: true
+          cache-dependency-path: repo/go.sum
+
+      - name: Fix session, review loop, pull request
+        env:
+          PLAN_ID: ${{ matrix.plan }}
+          SCAN_DIR: ${{ needs.preflight.outputs.scan_dir }}
+          OVERVIEW_ISSUE: ${{ needs.issue.outputs.overview_issue }}
+          TEST_BRANCH: ${{ needs.test-suite.outputs.test_branch }}
+          WAVE_MAP: ${{ needs.waves.outputs.wave_map }}
+          MODEL: ${{ needs.preflight.outputs.model }}
+          REVIEW_MODEL: ${{ inputs.review_model || '' }}
+        run: bash repo/.github/scripts/security_remediate/fix-stage.sh
+
+  fix-wave-3:
+    name: Fix wave 3 (plan ${{ matrix.plan }})
+    needs: [preflight, waves, test-suite, issue, fix-wave-2]
+    if: |
+      !cancelled() &&
+      needs.preflight.outputs.no_op != 'true' &&
+      needs.test-suite.result == 'success' &&
+      needs.waves.outputs.wave3 != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        plan: ${{ fromJSON(needs.waves.outputs.wave3) }}
+    env:
+      SECURITY_SCAN_PAT: ${{ secrets.SECURITY_SCAN_PAT }}
+      ARCHIVE_REPO: ${{ secrets.SECURITY_ARCHIVE_REPO }}
+      GH_TOKEN: ${{ secrets.SECURITY_SCAN_PAT }}
+      SKAINET_TOKEN: ${{ secrets.SKAINET_TOKEN }}
+      SKAINET_INTERNAL: ${{ secrets.SKAINET_INTERNAL }}
+      BUDGET_MINUTES: ${{ inputs.budget_minutes || '60' }}
+      MAX_REVIEW_PASSES: ${{ inputs.max_review_passes || '2' }}
+      STRICT_REVIEW: ${{ inputs.strict_review }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          path: repo
+
+      - name: Install bubblewrap
+        run: |
+          sudo apt-get update && sudo apt-get install -y bubblewrap
+          sudo tee /etc/apparmor.d/bwrap > /dev/null <<'EOF'
+          abi <abi/4.0>,
+          /usr/bin/bwrap flags=(unconfined) {
+            userns,
+          }
+          EOF
+          sudo apparmor_parser -r /etc/apparmor.d/bwrap
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: repo/go.mod
+          cache: true
+          cache-dependency-path: repo/go.sum
+
+      - name: Fix session, review loop, pull request
+        env:
+          PLAN_ID: ${{ matrix.plan }}
+          SCAN_DIR: ${{ needs.preflight.outputs.scan_dir }}
+          OVERVIEW_ISSUE: ${{ needs.issue.outputs.overview_issue }}
+          TEST_BRANCH: ${{ needs.test-suite.outputs.test_branch }}
+          WAVE_MAP: ${{ needs.waves.outputs.wave_map }}
+          MODEL: ${{ needs.preflight.outputs.model }}
+          REVIEW_MODEL: ${{ inputs.review_model || '' }}
+        run: bash repo/.github/scripts/security_remediate/fix-stage.sh
+
+  fix-wave-4:
+    name: Fix wave 4 (plan ${{ matrix.plan }})
+    needs: [preflight, waves, test-suite, issue, fix-wave-3]
+    if: |
+      !cancelled() &&
+      needs.preflight.outputs.no_op != 'true' &&
+      needs.test-suite.result == 'success' &&
+      needs.waves.outputs.wave4 != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        plan: ${{ fromJSON(needs.waves.outputs.wave4) }}
+    env:
+      SECURITY_SCAN_PAT: ${{ secrets.SECURITY_SCAN_PAT }}
+      ARCHIVE_REPO: ${{ secrets.SECURITY_ARCHIVE_REPO }}
+      GH_TOKEN: ${{ secrets.SECURITY_SCAN_PAT }}
+      SKAINET_TOKEN: ${{ secrets.SKAINET_TOKEN }}
+      SKAINET_INTERNAL: ${{ secrets.SKAINET_INTERNAL }}
+      BUDGET_MINUTES: ${{ inputs.budget_minutes || '60' }}
+      MAX_REVIEW_PASSES: ${{ inputs.max_review_passes || '2' }}
+      STRICT_REVIEW: ${{ inputs.strict_review }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          path: repo
+
+      - name: Install bubblewrap
+        run: |
+          sudo apt-get update && sudo apt-get install -y bubblewrap
+          sudo tee /etc/apparmor.d/bwrap > /dev/null <<'EOF'
+          abi <abi/4.0>,
+          /usr/bin/bwrap flags=(unconfined) {
+            userns,
+          }
+          EOF
+          sudo apparmor_parser -r /etc/apparmor.d/bwrap
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: repo/go.mod
+          cache: true
+          cache-dependency-path: repo/go.sum
+
+      - name: Fix session, review loop, pull request
+        env:
+          PLAN_ID: ${{ matrix.plan }}
+          SCAN_DIR: ${{ needs.preflight.outputs.scan_dir }}
+          OVERVIEW_ISSUE: ${{ needs.issue.outputs.overview_issue }}
+          TEST_BRANCH: ${{ needs.test-suite.outputs.test_branch }}
+          WAVE_MAP: ${{ needs.waves.outputs.wave_map }}
+          MODEL: ${{ needs.preflight.outputs.model }}
+          REVIEW_MODEL: ${{ inputs.review_model || '' }}
+        run: bash repo/.github/scripts/security_remediate/fix-stage.sh
