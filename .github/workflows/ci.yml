@@ -258,6 +258,13 @@ jobs:
       - name: Check model probe against a stub gateway
         run: scripts/probe-model_test.sh
 
+      # The security-remediate pipeline's pure logic (budget selection:
+      # priority order, PR-existence skip, id filter, cap — and the
+      # plans.json schema contract) against fixture manifests and a stubbed
+      # PR list. Same shell-counterpart spirit as the two above.
+      - name: Check security-remediate plan logic
+        run: .github/scripts/security_remediate/plans_test.sh
+
   cache-integration:
     name: Cache integration (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

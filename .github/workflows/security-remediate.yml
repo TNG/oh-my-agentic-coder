@@ -1,0 +1,141 @@
+# Security remediation: what the Security Scan workflow finds, this pipeline
+# fixes. After each scan it batches the findings by origin into fix plans in
+# the private archive repo; later stages (landing incrementally) turn the
+# plans into a sanitized tracking issue, a regression-test pull request, and
+# one ready-to-review fix pull request per plan. Autonomy ends at pull
+# requests: merging stays a human action, per COLLABORATION.md.
+#
+# Implementation order: this file currently wires the preflight and plan
+# stages (driver scripts in .github/scripts/security_remediate/). The
+# issue, test-suite and fix stages join as they land; finalize lives in its
+# own workflow with a cron trigger, because this workflow's triggers do not
+# re-fire on their own.
+#
+# Disclosure model: same as security-scan.yml. This is a public repo, so the
+# job log, the step summary and all job outputs carry counts and plan ids
+# only — never finding titles, PoCs or plan content. Everything
+# finding-specific travels through the private archive repo, named by the
+# SECURITY_ARCHIVE_REPO secret so the name stays out of public source.
+name: Security Remediate
+
+on:
+  workflow_dispatch:
+    inputs:
+      stage:
+        description: 'Which stage to run. Stages land incrementally; later stages arrive as they are implemented.'
+        type: choice
+        options: [all, plan]
+        default: all
+      plans:
+        description: 'Restrict execution to specific plan ids, comma-separated. Intersected with the budget selection (plans with an open or merged PR never consume budget).'
+        type: string
+        default: ''
+      max_plans:
+        description: 'How many plans a single run newly executes.'
+        type: string
+        default: '3'
+      model:
+        description: 'Model id for the planning session, for THIS RUN ONLY. Empty = the opencode harness pin (scripts/resolve-model.sh), verified against the gateway before use.'
+        type: string
+        default: ''
+      budget_minutes:
+        description: 'Wall-clock budget for the planning agent session.'
+        type: string
+        default: '60'
+  workflow_run:
+    workflows: [Security Scan]
+    types: [completed]
+
+permissions:
+  contents: read
+  pull-requests: read # preflight asks which plans already have an open or merged PR
+
+concurrency:
+  group: security-remediate
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    name: Preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      scan_dir: ${{ steps.preflight.outputs.scan_dir }}
+      vuln_count: ${{ steps.preflight.outputs.vuln_count }}
+      plan_needed: ${{ steps.preflight.outputs.plan_needed }}
+      selected_ids: ${{ steps.preflight.outputs.selected_ids }}
+      deferred_count: ${{ steps.preflight.outputs.deferred_count }}
+      no_op: ${{ steps.preflight.outputs.no_op }}
+      model: ${{ steps.model.outputs.model }}
+    env:
+      SECURITY_SCAN_PAT: ${{ secrets.SECURITY_SCAN_PAT }}
+      ARCHIVE_REPO: ${{ secrets.SECURITY_ARCHIVE_REPO }}
+      GH_TOKEN: ${{ github.token }}
+      MAX_PLANS: ${{ inputs.max_plans || '3' }}
+      PLANS_FILTER: ${{ inputs.plans || '' }}
+      # probe-model.sh reads these; E2E_MODEL empty falls through to the
+      # committed pin inside resolve-model.sh.
+      LLM_API_BASE: ${{ secrets.SKAINET_INTERNAL }}
+      LLM_API_KEY: ${{ secrets.SKAINET_TOKEN }}
+      E2E_MODEL: ${{ inputs.model || '' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          path: repo
+
+      - name: Probe credentials and select plans
+        # The first ten seconds decide whether hours of agent sessions are
+        # spent: both write probes (archive repo, this repo), the newest
+        # scan's completeness, and the budget selection all happen here.
+        id: preflight
+        run: bash repo/.github/scripts/security_remediate/preflight.sh
+
+      - name: Resolve and verify model
+        # Same shared probe as the scan workflow: resolves the pin (or the
+        # dispatch override), flips the -TEE variant, falls back to the
+        # configured family. Skipped on a no-op run — there is nothing to
+        # spend the model on.
+        id: model
+        if: steps.preflight.outputs.no_op != 'true'
+        run: |
+          chosen=$(repo/scripts/probe-model.sh opencode)
+          echo "model=$chosen" >> "$GITHUB_OUTPUT"
+          echo "::notice title=Model::remediation runs against ${chosen}"
+
+  plan:
+    name: Plan (batch findings by origin)
+    # "plan_needed" covers the chained case: the newest complete scan has
+    # findings but no manifest yet. The stage input lets an operator force a
+    # re-plan (it re-batches uncovered findings and carries covered plans
+    # forward unchanged).
+    needs: preflight
+    if: needs.preflight.outputs.plan_needed == 'true' || inputs.stage == 'plan'
+    runs-on: ubuntu-latest
+    # Just under the 360-minute hosted-runner ceiling, like the scan job.
+    # The session inside is capped by budget_minutes (60 by default), so this
+    # ceiling is only the backstop against a runaway session plus push.
+    timeout-minutes: 350
+    env:
+      SECURITY_SCAN_PAT: ${{ secrets.SECURITY_SCAN_PAT }}
+      ARCHIVE_REPO: ${{ secrets.SECURITY_ARCHIVE_REPO }}
+      GH_TOKEN: ${{ github.token }}
+      SKAINET_TOKEN: ${{ secrets.SKAINET_TOKEN }}
+      SKAINET_INTERNAL: ${{ secrets.SKAINET_INTERNAL }}
+      MAX_PLANS: ${{ inputs.max_plans || '3' }}
+      PLANS_FILTER: ${{ inputs.plans || '' }}
+      BUDGET_MINUTES: ${{ inputs.budget_minutes || '60' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          path: repo
+
+      - name: Planning session
+        # The agent session gets the gateway key (it must call the model)
+        # but never the PAT or GH_TOKEN: pushing the archive repo is this
+        # script's job, after the session's output passed validation.
+        env:
+          SCAN_DIR: ${{ needs.preflight.outputs.scan_dir }}
+          MODEL: ${{ needs.preflight.outputs.model }}
+        run: bash repo/.github/scripts/security_remediate/plan-stage.sh
