@@ -14,7 +14,7 @@ func TestResolveCacheScope(t *testing.T) {
 		want     config.CacheScope
 		wantErr  bool
 	}{
-		{name: "default global", want: config.CacheScopeGlobal},
+		{name: "default workdir", want: config.CacheScopeWorkdir},
 		{name: "config value honored", cfg: config.CacheScopeWorkdir, want: config.CacheScopeWorkdir},
 		{name: "flag overrides config", cfg: config.CacheScopeWorkdir, override: "global", want: config.CacheScopeGlobal},
 		{name: "flag config scope", override: "config", want: config.CacheScopeConfig},

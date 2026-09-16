@@ -158,7 +158,6 @@ func linuxBaseline() Baseline {
 			"/etc",
 			"/run/systemd/resolve", // resolv.conf indirection on systemd hosts
 			"~/.local/bin",
-			"$TMPDIR",
 		},
 		Write: []string{},
 		ProtectedPaths: append(protectedCommon(),
