@@ -89,6 +89,9 @@ func approvalRefusal(name, skillDir, bundleHash string) error {
 // pass "" to hash it here. A nil error means approved; a non-nil error is the
 // refusal detail (see approvalRefusal).
 func approvedSpawnDir(name, workdirSkillDir, bundleHash string) (snapshotDir string, refusal error) {
+	if err := config.ValidSkillName(name); err != nil {
+		return "", fmt.Errorf("spawn refused: %w", err)
+	}
 	h, err := skillBundleHash(name, workdirSkillDir, bundleHash)
 	if err != nil {
 		return "", err
