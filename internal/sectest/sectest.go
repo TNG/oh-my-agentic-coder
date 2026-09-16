@@ -1,9 +1,6 @@
-//go:build vuln
-
-// The suite asserts properties omac is supposed to hold, so a test that
-// cannot run must fail loudly: a silent skip in a suite where red means
-// "vulnerable" reads as "property holds", which is the one outcome that must
-// never be faked. See doc.go for the package summary.
+// Security tests must fail loudly when the environment cannot exercise the
+// property — a silent skip in a security test reads as "property holds",
+// which is the one outcome that must never be faked.
 package sectest
 
 import (
