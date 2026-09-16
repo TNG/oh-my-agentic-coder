@@ -102,8 +102,8 @@ func PagesPath(profilePath string) string {
 
 // resolveOpts holds the Resolve knobs.
 type resolveOpts struct {
-	scaffold    bool
-	anyPath     bool // allow explicit paths outside the trusted profile directory
+	scaffold bool
+	anyPath  bool // allow explicit paths outside the trusted profile directory
 }
 
 // ResolveOption tunes Resolve. The zero set is read-only and path-constrained.
