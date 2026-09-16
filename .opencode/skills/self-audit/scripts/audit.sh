@@ -43,8 +43,17 @@ ECHO_BASE="${OMAC_ECHO_BASE:-}"
 # Facade TCP transport bearer token (see sandbox briefing). Empty on
 # omac versions that predate facade authentication.
 FACADE_TOKEN="${OMAC_FACADE_TOKEN:-}"
-_facade_auth=""
-[ -n "$FACADE_TOKEN" ] && _facade_auth="-H X-Omac-Facade-Token: $FACADE_TOKEN"
+
+# curl_facade GETs a facade URL with the bearer token as ONE quoted
+# header argument. A "-H Name: value" string expanded unquoted
+# word-splits into three words and curl fetches the token as a URL.
+curl_facade() {
+    if [ -n "$FACADE_TOKEN" ]; then
+        curl -sS -H "X-Omac-Facade-Token: $FACADE_TOKEN" "$1" 2>&1 || true
+    else
+        curl -sS "$1" 2>&1 || true
+    fi
+}
 
 # Write probe output to a file so the test harness can read results
 # directly from disk. Some harnesses (claude-code, copilot) render tool
@@ -220,7 +229,7 @@ echo "--- curl \$OMAC_AUDIT_BASE/whoami ---"
 if [ -z "$AUDIT_BASE" ]; then
     echo "OMAC_AUDIT_BASE not set"
 else
-    curl -sS $_facade_auth "$AUDIT_BASE/whoami" 2>&1 || true
+    curl_facade "$AUDIT_BASE/whoami"
 fi
 echo "=== END: sidecar ==="
 
@@ -230,7 +239,7 @@ echo "--- curl \$OMAC_ECHO_BASE/whoami (cross-skill isolation) ---"
 if [ -z "$ECHO_BASE" ]; then
     echo "OMAC_ECHO_BASE not set (echo-rest not registered)"
 else
-    curl -sS $_facade_auth "$ECHO_BASE/whoami" 2>&1 || true
+    curl_facade "$ECHO_BASE/whoami"
 fi
 echo "=== END: xskill ==="
 
