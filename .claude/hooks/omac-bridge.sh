@@ -81,6 +81,11 @@ render_manifest() {
   local skills_dir="${OMAC_HARNESS_SKILLS_DIR:-.claude/skills}"
   printf '%s' "$manifest" | jq -r --arg skillsdir "$skills_dir" '
     def skillsarr: (.skills // []);
+    def sanitize_field: gsub("[\\n\\r]"; " ") | gsub("\\*"; "") | gsub("[[:cntrl:]]"; "");
+    def safe_secrets_hint(name; missing):
+      if (name | test("^[a-z0-9][a-z0-9-]*$"))
+      then missing | map("omac secrets set " + name + " " + .) | join(" ; ")
+      else "" end;
     "## omac skills available in this workspace\n" +
     "\n" +
     "You can call the following skill HTTP endpoints. Each `base` is the root URL for that skill'"'"'s sidecar; append the skill'"'"'s documented path.\n" +
@@ -93,12 +98,16 @@ render_manifest() {
     "\n" +
     ( skillsarr | sort_by(.name) | map(
         . as $sk |
+        ($sk.name | sanitize_field) as $name |
+        ($sk.scope // "" | sanitize_field) as $scope |
         if .state == "ready" and (.base // "") != "" then
-          "- **" + .name + "** (" + (.scope // "") + ") — ready — base: `" + .base + "`"
+          "- **" + $name + "** (" + $scope + ") — ready — base: `" + .base + "`"
         elif .state == "pending-credentials" then
-          "- **" + .name + "** (" + (.scope // "") + ") — UNAVAILABLE (missing credentials: " + ((.missing // []) | join(", ")) + "). Run in your own terminal: " + ((.missing // []) | map("omac secrets set " + ($sk.name) + " " + .) | join(" ; "))
+          (safe_secrets_hint($sk.name; ($sk.missing // []))) as $hint |
+          "- **" + $name + "** (" + $scope + ") — UNAVAILABLE (missing credentials: " + (($sk.missing // []) | map(sanitize_field) | join(", ")) + ")" +
+          (if $hint != "" then ". Run in your own terminal: " + $hint else "" end)
         elif .state == "broken" then
-          "- **" + .name + "** (" + (.scope // "") + ") — BROKEN: " + (.detail // "see omac logs")
+          "- **" + $name + "** (" + $scope + ") — BROKEN: " + ((.detail // "see omac logs") | sanitize_field)
         else empty end
       ) | join("\n") )
   ' 2>/dev/null || true
