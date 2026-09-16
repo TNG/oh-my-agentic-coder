@@ -153,12 +153,9 @@ func TestConfigShowMarksMissingRequired(t *testing.T) {
 	}
 }
 
-func TestSecretFingerprint_Format(t *testing.T) {
-	// sha256 of "hello world" is b94d27b9934d3e... -> first 12 hex chars.
-	got := secretFingerprint("hello world")
-	const want = "sha256:b94d27b9934d"
-	if got != want {
-		t.Errorf("secretFingerprint(\"hello world\") = %q, want %q", got, want)
+func TestSecretFingerprint_Set(t *testing.T) {
+	if got := secretFingerprint("hello world"); got != "<set>" {
+		t.Errorf("secretFingerprint(non-empty) = %q, want \"<set>\"", got)
 	}
 }
 
@@ -168,14 +165,13 @@ func TestSecretFingerprint_Empty(t *testing.T) {
 	}
 }
 
-func TestSecretFingerprint_DifferentInputsDiffer(t *testing.T) {
+func TestSecretFingerprint_DoesNotLeakValue(t *testing.T) {
 	a := secretFingerprint("alpha")
 	b := secretFingerprint("bravo")
-	if a == b {
-		t.Errorf("fingerprints should differ for different inputs (%q == %q)", a, b)
-	}
-	if !strings.HasPrefix(a, "sha256:") || !strings.HasPrefix(b, "sha256:") {
-		t.Error("fingerprints must carry sha256: prefix")
+	// Both non-empty secrets must produce the same indicator — the output
+	// must not distinguish or encode the actual value.
+	if a != "<set>" || b != "<set>" {
+		t.Errorf("fingerprint must be <set> for any non-empty secret, got %q and %q", a, b)
 	}
 }
 
@@ -212,18 +208,12 @@ func TestRunConfigGet_UnregisteredSkill(t *testing.T) {
 	}
 }
 
-// TestSecretFingerprint_MatchesSidecar pins the byte-for-byte format
-// the echo-rest reference sidecar (sidecar.py) uses, so `omac config
-// show` and the sidecar's /whoami response print the same string for
-// the same secret. If you ever change the algorithm here, change it
-// in sidecar.py's fingerprint() too (and bump a major version, since
-// users rely on cross-checking these two values).
-func TestSecretFingerprint_MatchesSidecar(t *testing.T) {
-	// Sidecar formula: "sha256:" + hashlib.sha256(s).hexdigest()[:12]
-	// With s = "abc" => sha256 = ba7816bf8f01cfea... => prefix "ba7816bf8f01"
+// TestSecretFingerprint_NoDigestInOutput asserts that no SHA-256 hex digest
+// appears in the output, so the indicator cannot be used for offline guessing
+// or cross-host correlation of secret values.
+func TestSecretFingerprint_NoDigestInOutput(t *testing.T) {
 	got := secretFingerprint("abc")
-	const want = "sha256:ba7816bf8f01"
-	if got != want {
-		t.Errorf("fingerprint(%q) = %q, want %q (must match sidecar.py)", "abc", got, want)
+	if strings.HasPrefix(got, "sha256:") {
+		t.Errorf("secretFingerprint must not emit a derivable digest, got %q", got)
 	}
 }

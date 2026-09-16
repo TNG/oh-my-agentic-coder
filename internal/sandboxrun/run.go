@@ -398,6 +398,18 @@ func buildProxy(p *sandboxprofile.Profile, profilePath string, stderr io.Writer,
 	return srv, nil
 }
 
+// redactProxyURL strips userinfo from a proxy URL string before logging.
+// On parse failure it returns only the scheme+host portion, or the original
+// string if no scheme is present (no credentials can survive that path).
+func redactProxyURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return raw
+	}
+	u.User = nil
+	return u.String()
+}
+
 // resolveUpstreamProxy resolves the upstream proxy URL and NO_PROXY list
 // from the profile first, then the host environment, and returns the
 // appropriate Dialer. If no upstream proxy is configured, it returns a
@@ -444,7 +456,7 @@ func resolveUpstreamProxy(p *sandboxprofile.Profile, stderr io.Writer, logf func
 	}
 	proxyURL, err := url.Parse(parsedStr)
 	if err != nil || proxyURL.Host == "" || (proxyURL.Scheme != "http" && proxyURL.Scheme != "https") {
-		fmt.Fprintf(stderr, "omac sandbox: warning: invalid upstream proxy %q (want http:// or https://) — falling back to direct dialing\n", proxyStr)
+		fmt.Fprintf(stderr, "omac sandbox: warning: invalid upstream proxy %s (want http:// or https://) — falling back to direct dialing\n", redactProxyURL(parsedStr))
 		return netproxy.NewDirectDialer()
 	}
 

@@ -16,6 +16,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"strconv"
 
@@ -165,9 +166,23 @@ func policyFromProfile(p *sandboxprofile.Profile) diagnose.Policy {
 		AllowDomains:  p.Network.AllowDomain,
 		DenyDomains:   p.Network.DenyDomain,
 		PromptEnabled: p.Network.PromptEnabled(),
-		UpstreamProxy: p.Network.UpstreamProxy,
+		UpstreamProxy: redactURLUserinfo(p.Network.UpstreamProxy),
 		AllowVars:     p.Environment.AllowVars,
 	}
+}
+
+// redactURLUserinfo strips userinfo (credentials) from a URL string.
+// On parse failure it returns the original string unchanged.
+func redactURLUserinfo(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.User == nil {
+		return raw
+	}
+	u.User = nil
+	return u.String()
 }
 
 // decisionsFromEvents maps net.decision audit events to diagnose Decisions,

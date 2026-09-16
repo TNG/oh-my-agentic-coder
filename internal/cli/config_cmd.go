@@ -20,14 +20,11 @@ package cli
 //      the source column so users don't get confused).
 //   4. Else <missing-required> or <missing-optional> as appropriate.
 //
-// Secrets are surfaced as sha256(value)[:12] fingerprints, byte-for-
-// byte identical to what echo-rest's /whoami currently prints. The
-// plaintext briefly lives in this process's address space (same as
-// during omac start) and is zeroed before the command exits.
+// Secrets are shown as "<set>" or "<absent>". The plaintext briefly
+// lives in this process's address space (same as during omac start)
+// and is zeroed before the command exits.
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -290,18 +287,14 @@ func displayedConfigValue(armed skillstate.Armed, field string) string {
 	return "<missing-required>"
 }
 
-// secretFingerprint returns sha256(s)[:12] in hex, with a "sha256:"
-// prefix to match the reference echo-rest sidecar's /whoami output
-// byte-for-byte. Empty input yields the literal "<absent>" so the
-// caller can tell "secret is the empty string" from "secret was never
-// set" — but in practice keychain.Get returns ErrNotFound for the
-// latter, which is handled upstream.
+// secretFingerprint returns "<set>" when a secret is present or "<absent>"
+// when it is not, so callers can confirm a secret is configured without
+// printing any derivable information about the value.
 func secretFingerprint(s string) string {
 	if s == "" {
 		return "<absent>"
 	}
-	sum := sha256.Sum256([]byte(s))
-	return "sha256:" + hex.EncodeToString(sum[:])[:12]
+	return "<set>"
 }
 
 // writeShowText emits the human-readable view via tabwriter for clean

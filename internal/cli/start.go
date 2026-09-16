@@ -728,7 +728,7 @@ func runLaunch(env *Env, opts launchOpts) int {
 	// terminal mount a new skill onto this running session without a
 	// restart (mirrors serve). Non-fatal if it can't bind.
 	reloader := &startReloader{
-		env: env, facade: f, sup: sup, ctx: ctx,
+		env: env, facade: f, sup: sup, auditor: auditor, ctx: ctx,
 		rtDir: rtDir, socket: socketPath, tcpPort: tcpPort, verbose: verbose,
 		skipSecretPattern: skipSecretPattern,
 		mounted:           map[string]string{},
