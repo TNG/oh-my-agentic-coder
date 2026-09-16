@@ -248,54 +248,78 @@ func TestEditingApprovedSkillCodeRevokesApproval(t *testing.T) {
 }
 
 // TestGrandfatherClosesFirstUpgradeWindow pins the trust-on-first-upgrade
-// contract: a skill already registered when omac first upgrades is
-// grandfathered (approved) exactly once; a skill authored AFTERWARDS is
-// refused. This guards the persistence vector — without the window
-// closing, an agent could plant a skill later and have it grandfathered on
-// a subsequent launch.
+// contract:
+//   - user-global skills are grandfathered (approved) on the first run;
+//   - workdir-local (agent-writable) skills are NOT grandfathered;
+//   - skills registered AFTER the window closes are refused on all subsequent runs.
 func TestGrandfatherClosesFirstUpgradeWindow(t *testing.T) {
 	isolateHome(t)
 	workdir := t.TempDir()
-	secretPath, _ := stageOutsideSecret(t)
 
-	// launch models the once-per-run grandfathering guard that start.go and
-	// serve.go apply: grandfather the registry only on the first upgraded run,
-	// then close the window. Calling it twice must NOT re-grandfather.
+	// Stage a user-global skill outside any workdir — the sandbox cannot reach it.
+	globalSkillDir := filepath.Join(t.TempDir(), "trusted")
+	if err := os.MkdirAll(globalSkillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	globalMeta := "name: trusted\ntype: skill\nsidecar:\n  command: [\"python3\", \"s.py\"]\n  mount: trusted\n"
+	if err := os.WriteFile(filepath.Join(globalSkillDir, config.MetaFileName), []byte(globalMeta), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	globalHash := bundleHashOf(t, globalSkillDir)
+	if err := registry.WithGlobalLock(func() error {
+		reg, err := registry.LoadGlobal()
+		if err != nil {
+			return err
+		}
+		reg.Upsert(registry.Entry{Name: "trusted", SkillDir: globalSkillDir, BundleHash: globalHash, RegisteredAt: time.Now().UTC()})
+		return registry.SaveGlobal(reg)
+	}); err != nil {
+		t.Fatalf("register global skill: %v", err)
+	}
+
+	// Stage a workdir-local skill (agent-writable).
+	secretPath, _ := stageOutsideSecret(t)
+	workdirSkillDir, _ := stageAgentAuthoredSkill(t, workdir, "pwn", secretPath)
+
+	// launch models the once-per-run grandfathering guard: global-only.
 	launch := func() {
 		if firstApprovalUpgrade() {
-			reg, err := registry.Load(workdir)
+			gReg, err := registry.LoadGlobal()
 			if err != nil {
-				t.Fatalf("load registry: %v", err)
+				t.Fatalf("load global registry: %v", err)
 			}
-			if _, err := grandfatherOnce(grandfatherScope{workdir: workdir, reg: reg}); err != nil {
+			if _, err := grandfatherOnce(grandfatherScope{reg: gReg}); err != nil {
 				t.Fatalf("grandfather: %v", err)
 			}
 		}
 	}
 
-	// A skill present (and registered) at first upgrade.
-	preDir, _ := stageAgentAuthoredSkill(t, workdir, "preexisting", secretPath)
 	if !firstApprovalUpgrade() {
 		t.Fatal("precondition: approval store should not exist yet")
 	}
-	launch() // first upgraded run: grandfathers what is registered now.
-	if refusal := approvalRefusal("preexisting", preDir, ""); refusal != nil {
-		t.Errorf("pre-existing skill should be grandfathered/approved: %v", refusal)
+	launch() // first upgraded run: grandfathers global skills only.
+
+	// Global skill must be approved.
+	if refusal := approvalRefusal("trusted", globalSkillDir, ""); refusal != nil {
+		t.Errorf("user-global skill must be grandfathered/approved on first upgrade: %v", refusal)
+	}
+	// Workdir skill must NOT be approved — it is agent-writable.
+	if refusal := approvalRefusal("pwn", workdirSkillDir, ""); refusal == nil {
+		t.Error("workdir-local skill must NOT be grandfathered (agent-writable)")
 	}
 
-	// The agent now plants a NEW skill and forges its registry entry — so it
-	// IS in the registry at the next launch. The decisive check: a SECOND
-	// launch must NOT grandfather it, because the window has closed.
+	// Plant another skill AFTER the window closes.
 	laterDir, _ := stageAgentAuthoredSkill(t, workdir, "authored-later", secretPath)
 	if firstApprovalUpgrade() {
 		t.Fatal("first-upgrade window must be closed after the first launch")
 	}
-	launch() // second run: guard is false, grandfathering must not fire.
+	launch() // second run: window closed, must not grandfather anything new.
 	if refusal := approvalRefusal("authored-later", laterDir, ""); refusal == nil {
-		t.Error("a skill planted AFTER the first upgrade must not be grandfathered on a later launch")
+		t.Error("a skill registered after the first upgrade must not be grandfathered on a later launch")
 	}
-	if refusal := approvalRefusal("preexisting", preDir, ""); refusal != nil {
-		t.Errorf("the grandfathered skill must remain approved across launches: %v", refusal)
+	// Global skill remains approved across launches.
+	if refusal := approvalRefusal("trusted", globalSkillDir, ""); refusal != nil {
+		t.Errorf("grandfathered global skill must remain approved across launches: %v", refusal)
 	}
 }
 

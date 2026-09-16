@@ -376,11 +376,7 @@ func runServe(args []string, env *Env) int {
 	// serve daemon from blessing agent-authored skills mid-session.
 	if firstApprovalUpgrade() {
 		gReg, _ := registry.LoadGlobal()
-		wReg, _ := registry.Load(env.Workdir)
-		n, merr := grandfatherOnce(
-			grandfatherScope{reg: gReg},
-			grandfatherScope{workdir: env.Workdir, reg: wReg},
-		)
+		n, merr := grandfatherOnce(grandfatherScope{reg: gReg})
 		if merr != nil {
 			fmt.Fprintln(env.Stderr, "omac serve: approval store (non-fatal):", merr)
 		}
