@@ -187,6 +187,9 @@ func dedupe(in []string) []string {
 // messages like "found in user-global skills"). os.ErrNotExist is returned
 // when no in-scope layer has the skill, so callers can errors.Is against it.
 func Resolve(workdir string, harness config.Harness, name string) (absDir string, src Source, err error) {
+	if err := config.ValidSkillName(name); err != nil {
+		return "", Source{}, fmt.Errorf("skillsource: resolve: %w", err)
+	}
 	for _, s := range Sources(workdir, harness) {
 		candidate := filepath.Join(s.Root, name)
 		metaPath := filepath.Join(candidate, config.MetaFileName)
@@ -218,6 +221,9 @@ type Candidate struct {
 // ambiguous within this harness's scope (e.g. workdir + global) and the caller
 // should ask the user to disambiguate.
 func Candidates(workdir string, harness config.Harness, name string) ([]Candidate, error) {
+	if err := config.ValidSkillName(name); err != nil {
+		return nil, fmt.Errorf("skillsource: candidates: %w", err)
+	}
 	var out []Candidate
 	for _, s := range Sources(workdir, harness) {
 		candidate := filepath.Join(s.Root, name)

@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/TNG/oh-my-agentic-coder/internal/config"
 )
 
 // Snapshotting freezes a skill's on-disk content at approval time into a
@@ -77,6 +79,9 @@ func containedIn(root, path string) bool {
 // content is identical by construction). The copy is staged in a temp dir and
 // atomically renamed into place, so a snapshot directory is never partial.
 func snapshot(name, bundleHash, srcDir string) (string, error) {
+	if err := config.ValidSkillName(name); err != nil {
+		return "", fmt.Errorf("snapshot: %w", err)
+	}
 	d := dir()
 	if d == "" {
 		return "", errNoGlobalDir
@@ -96,6 +101,16 @@ func snapshot(name, bundleHash, srcDir string) (string, error) {
 	if err := copyTree(srcDir, tmp); err != nil {
 		os.RemoveAll(tmp)
 		return "", fmt.Errorf("snapshot: copy: %w", err)
+	}
+	// Verify the staged copy matches the approved hash before committing.
+	// copyTree applies the same exclusions as BundleHash, so the hashes must
+	// agree. A mismatch means the directory changed between when the user
+	// approved it and when the copy was taken (TOCTOU window during the
+	// approval prompt).
+	got, err := config.BundleHash(tmp)
+	if err != nil || got != bundleHash {
+		os.RemoveAll(tmp)
+		return "", fmt.Errorf("snapshot: staged copy does not match approved hash (content changed during approval; re-run `omac register`)")
 	}
 	if err := os.Rename(tmp, dst); err != nil {
 		os.RemoveAll(tmp)
@@ -134,7 +149,9 @@ func removeSnapshot(name, bundleHash string) {
 //     not-exist / any error, the walk falls through against
 //     filepath.Clean(src) so the missing-dir contract still surfaces a
 //     walk-style error.
-//   - directories are recreated (VCS metadata under .git is skipped),
+//   - directories are recreated; the same directories BundleHash skips
+//     (node_modules, .venv, dist, build, …) are also skipped here so the
+//     hashed set and the executed set are identical by construction,
 //   - regular files are copied with their mode bits (execute bits preserved),
 //   - symlinks are NEVER dereferenced into content. A symlink whose target
 //     resolves INSIDE the skill tree and whose link text is relative is
@@ -163,7 +180,8 @@ func copyTree(src, dst string) error {
 		target := filepath.Join(dst, rel)
 
 		if d.IsDir() {
-			if d.Name() == ".git" {
+			// Skip the same set BundleHash skips so executed bytes == hashed bytes.
+			if config.IsExcludedDirName(d.Name()) {
 				return filepath.SkipDir
 			}
 			return os.MkdirAll(target, 0o700)
@@ -174,7 +192,7 @@ func copyTree(src, dst string) error {
 			return ierr
 		}
 		if info.Mode()&os.ModeSymlink != 0 {
-			return copyInTreeSymlink(p, target, srcReal)
+			return copyInTreeSymlink(p, target, srcReal, dst)
 		}
 		if !info.Mode().IsRegular() {
 			return nil // sockets, devices, fifos: nothing to run
@@ -184,20 +202,38 @@ func copyTree(src, dst string) error {
 }
 
 // copyInTreeSymlink recreates a symlink at target ONLY when it is a relative
-// link resolving inside the skill tree (srcReal); otherwise it is dropped. It
-// never reads the target's content, so an escaping link cannot smuggle a host
-// file into the snapshot.
-func copyInTreeSymlink(p, target, srcReal string) error {
+// link that stays inside both the source tree (srcReal) AND the snapshot root
+// (dstRoot). It never reads the target's content, so an escaping link cannot
+// smuggle a host file into the snapshot.
+//
+// A link containing ".." elements is dropped outright: ".."×N clamps at "/"
+// at both the source and snapshot depths, so a long "../"×N + absolute-path
+// link can pass the source check while escaping the snapshot. Rejecting ".."
+// eliminates this class without affecting legitimate in-tree relative links
+// (e.g. "node_modules/.bin/cmd" -> "../lib/cmd").
+func copyInTreeSymlink(p, target, srcReal, dstRoot string) error {
 	link, err := os.Readlink(p)
 	if err != nil || filepath.IsAbs(link) {
 		return nil // unreadable or absolute: drop
+	}
+	// Reject any link text containing ".." so cross-depth clamping attacks
+	// are impossible regardless of where the snapshot sits on disk.
+	for _, part := range strings.Split(filepath.ToSlash(link), "/") {
+		if part == ".." {
+			return nil // contains "..": drop
+		}
 	}
 	resolved, err := filepath.EvalSymlinks(p)
 	if err != nil {
 		return nil // dangling / unresolvable: drop
 	}
 	if !containedIn(srcReal, resolved) {
-		return nil // escapes the skill tree: drop
+		return nil // escapes the source skill tree: drop
+	}
+	// Also verify the link stays inside the snapshot at the destination depth.
+	dstResolved := filepath.Clean(filepath.Join(filepath.Dir(target), link))
+	if !containedIn(dstRoot, dstResolved) {
+		return nil // escapes the snapshot root: drop
 	}
 	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
 		return err

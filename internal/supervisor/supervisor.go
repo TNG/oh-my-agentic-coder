@@ -17,6 +17,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -449,7 +450,11 @@ func waitHealth(ctx context.Context, port int, spec config.HealthSpec) error {
 	time.Sleep(time.Duration(spec.InitialDelayMS) * time.Millisecond)
 	deadline := time.Now().Add(time.Duration(spec.TimeoutMS) * time.Millisecond)
 	client := &http.Client{Timeout: 1 * time.Second}
-	url := fmt.Sprintf("http://127.0.0.1:%d%s", port, spec.Path)
+	probeURL := (&url.URL{
+		Scheme: "http",
+		Host:   fmt.Sprintf("127.0.0.1:%d", port),
+		Path:   spec.Path,
+	}).String()
 	var lastErr error
 	for time.Now().Before(deadline) {
 		select {
@@ -457,7 +462,7 @@ func waitHealth(ctx context.Context, port int, spec config.HealthSpec) error {
 			return ctx.Err()
 		default:
 		}
-		resp, err := client.Get(url)
+		resp, err := client.Get(probeURL)
 		if err == nil {
 			resp.Body.Close()
 			if resp.StatusCode >= 200 && resp.StatusCode < 300 {

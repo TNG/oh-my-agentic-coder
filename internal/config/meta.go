@@ -140,6 +140,33 @@ func (c ConfigSpec) EffectiveType() ConfigFieldType {
 	return c.Type
 }
 
+// ValidateValue checks v against the spec's constraints (Choices when
+// declared, Pattern for string types). Called both at register time
+// (canonicalizeFieldValue in register.go) and at launch time
+// (skillstate.resolveConfig) so a stored value that violates the schema is
+// refused before it reaches the sidecar's env.
+func (c ConfigSpec) ValidateValue(v string) error {
+	// Choices constrain the value regardless of declared Type.
+	if len(c.Choices) > 0 {
+		for _, choice := range c.Choices {
+			if v == choice {
+				return nil
+			}
+		}
+		return fmt.Errorf("config field %s: value %q is not one of %v", c.Name, v, c.Choices)
+	}
+	if c.EffectiveType() == ConfigFieldString && c.Pattern != "" {
+		re, err := regexp.Compile(c.Pattern)
+		if err != nil {
+			return fmt.Errorf("config field %s: invalid pattern: %w", c.Name, err)
+		}
+		if !re.MatchString(v) {
+			return fmt.Errorf("config field %s: value %q does not match /%s/", c.Name, v, c.Pattern)
+		}
+	}
+	return nil
+}
+
 // HealthSpec controls the liveness probe the supervisor waits on.
 type HealthSpec struct {
 	Path           string `yaml:"path,omitempty"`
@@ -176,9 +203,31 @@ type LimitsSpec struct {
 }
 
 var (
-	envNameRE = regexp.MustCompile(`^[A-Z_][A-Z0-9_]*$`)
-	mountRE   = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
+	envNameRE   = regexp.MustCompile(`^[A-Z_][A-Z0-9_]*$`)
+	mountRE     = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
+	skillNameRE = mountRE // skill names share the mount grammar
 )
+
+// ValidSkillName returns an error when name is not a valid skill name.
+// Valid names match ^[a-z0-9][a-z0-9-]*$, must not be "." or "..", and must
+// not contain any path separator. This is enforced at every name→path sink
+// (approval store, snapshot dir, facade route, keychain service) so that
+// agent-supplied names cannot escape the store or collide with other skills.
+func ValidSkillName(name string) error {
+	if name == "" {
+		return fmt.Errorf("skill name must not be empty")
+	}
+	if name == "." || name == ".." {
+		return fmt.Errorf("skill name %q is a reserved path element", name)
+	}
+	if strings.ContainsAny(name, "/\\") {
+		return fmt.Errorf("skill name %q must not contain a path separator", name)
+	}
+	if !skillNameRE.MatchString(name) {
+		return fmt.Errorf("skill name %q must match %s", name, skillNameRE.String())
+	}
+	return nil
+}
 
 // LoadMeta reads omac.yaml from path and validates it.
 func LoadMeta(path string) (*Meta, error) {
@@ -323,6 +372,12 @@ func (s *SidecarMeta) Validate(skillName string) error {
 			return fmt.Errorf("sidecar: env var %q declared by both env_passthrough and config; pick one", p)
 		}
 	}
+	if s.Health != nil && s.Health.Path != "" {
+		p := s.Health.Path
+		if !strings.HasPrefix(p, "/") || strings.ContainsAny(p, "@:") {
+			return fmt.Errorf("sidecar.health.path %q must start with '/' and contain no '@' or ':'", p)
+		}
+	}
 	return nil
 }
 
@@ -430,9 +485,16 @@ func BundleHash(skillDir string) (string, error) {
 			return nil
 		}
 		if !d.Type().IsRegular() {
-			// Skip in-tree symlinks, sockets, devices. Hashing through symlinks
-			// would let a target replacement silently change the bundle
-			// without tripping detection.
+			// omac.yaml being a non-regular file (e.g. a symlink into an
+			// excluded directory) means the executed manifest is outside the
+			// hash — the entire skill's approval is meaningless. Fail loudly
+			// so the caller cannot unknowingly approve an unhashable skill.
+			if d.Name() == MetaFileName {
+				return fmt.Errorf("bundle hash: %s is not a regular file: approval would not cover the executed manifest", MetaFileName)
+			}
+			// Other non-regular files (symlinks, sockets, devices) are skipped.
+			// Hashing through symlinks would let a target replacement silently
+			// change the bundle without tripping detection.
 			return nil
 		}
 		if isExcludedFileName(d.Name()) {
@@ -460,11 +522,18 @@ func BundleHash(skillDir string) (string, error) {
 	return "sha256:" + hex.EncodeToString(h.Sum(nil)), nil
 }
 
-// isExcludedDirName reports whether walking should skip a subtree
+// IsExcludedDirName reports whether walking should skip a subtree
 // matching a known runtime-artifact / VCS / cache directory name.
 // The check is on the basename only, so a skill that legitimately
 // contains a file called "build" (in some content sense) is still
 // hashed; only directory matches trigger a skip.
+//
+// Exported so snapshot.go can apply the same exclusions, keeping the
+// hashed set identical to the executed set.
+func IsExcludedDirName(name string) bool {
+	return isExcludedDirName(name)
+}
+
 func isExcludedDirName(name string) bool {
 	switch name {
 	case ".git", ".hg", ".svn",

@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/TNG/oh-my-agentic-coder/internal/config"
 )
 
 // isolate points HOME and XDG_CONFIG_HOME at temp dirs so the approvals
@@ -27,6 +29,26 @@ func skillDir(t *testing.T) string {
 	return d
 }
 
+// bundleHash computes the real bundle hash for a directory.
+func bundleHash(t *testing.T, dir string) string {
+	t.Helper()
+	h, err := config.BundleHash(dir)
+	if err != nil {
+		t.Fatalf("BundleHash(%s): %v", dir, err)
+	}
+	return h
+}
+
+// approveDir approves a skill directory using its real bundle hash.
+func approveDir(t *testing.T, name, dir string) string {
+	t.Helper()
+	h := bundleHash(t, dir)
+	if err := Approve(name, h, dir); err != nil {
+		t.Fatalf("Approve(%q): %v", name, err)
+	}
+	return h
+}
+
 func TestUnapprovedByDefault(t *testing.T) {
 	isolate(t)
 	if Exists() {
@@ -43,13 +65,12 @@ func TestUnapprovedByDefault(t *testing.T) {
 
 func TestApproveThenIsApproved(t *testing.T) {
 	isolate(t)
-	if err := Approve("skill", "sha256:abc", skillDir(t)); err != nil {
-		t.Fatalf("Approve: %v", err)
-	}
+	d := skillDir(t)
+	h := approveDir(t, "skill", d)
 	if !Exists() {
 		t.Error("store should exist after Approve")
 	}
-	ok, _ := IsApproved("skill", "sha256:abc")
+	ok, _ := IsApproved("skill", h)
 	if !ok {
 		t.Error("approved (name, hash) should be approved")
 	}
@@ -58,7 +79,7 @@ func TestApproveThenIsApproved(t *testing.T) {
 		t.Error("a different bundle hash must not be approved")
 	}
 	// A different name is not approved.
-	if ok, _ := IsApproved("other", "sha256:abc"); ok {
+	if ok, _ := IsApproved("other", h); ok {
 		t.Error("a different name must not be approved")
 	}
 }
@@ -67,16 +88,24 @@ func TestApproveIsAdditivePerName(t *testing.T) {
 	isolate(t)
 	// The same name may be registered under multiple harnesses / workdirs,
 	// each with its own content, so approvals must accumulate — not clobber.
-	_ = Approve("skill", "sha256:v1", skillDir(t))
-	_ = Approve("skill", "sha256:v2", skillDir(t))
+	d1 := skillDir(t)
+	d2 := skillDir(t)
+	// Make d2 distinct so BundleHash produces a different hash.
+	if err := os.WriteFile(filepath.Join(d2, "v2.txt"), []byte("v2"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h1 := approveDir(t, "skill", d1)
+	h2 := approveDir(t, "skill", d2)
 
-	for _, h := range []string{"sha256:v1", "sha256:v2"} {
+	for _, h := range []string{h1, h2} {
 		if ok, _ := IsApproved("skill", h); !ok {
 			t.Errorf("hash %s should remain approved (additive per name)", h)
 		}
 	}
 	// Re-approving an identical (name, hash) is idempotent (no duplicate).
-	_ = Approve("skill", "sha256:v1", skillDir(t))
+	if err := Approve("skill", h1, d1); err != nil {
+		t.Fatalf("re-approve: %v", err)
+	}
 	s, _ := load()
 	if len(s.Approved) != 2 {
 		t.Errorf("expected 2 approvals, got %d", len(s.Approved))
@@ -85,25 +114,33 @@ func TestApproveIsAdditivePerName(t *testing.T) {
 
 func TestRevokeIsScopedToHash(t *testing.T) {
 	isolate(t)
-	_ = Approve("foo", "sha256:opencode", skillDir(t)) // same name, two harnesses
-	_ = Approve("foo", "sha256:claude", skillDir(t))
-	_ = Approve("bar", "sha256:2", skillDir(t))
+	// Same name, two different content trees (two harnesses), one other skill.
+	dFooA := skillDir(t)
+	dFooB := skillDir(t) // different dir => different hash (different inode/dir path in hash)
+	// Make dFooB content distinct.
+	if err := os.WriteFile(filepath.Join(dFooB, "extra.txt"), []byte("b"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dBar := skillDir(t)
+	hFooA := approveDir(t, "foo", dFooA)
+	hFooB := approveDir(t, "foo", dFooB)
+	hBar := approveDir(t, "bar", dBar)
 
-	removed, err := Revoke("foo", "sha256:opencode")
+	removed, err := Revoke("foo", hFooA)
 	if err != nil {
 		t.Fatalf("Revoke: %v", err)
 	}
 	if !removed {
 		t.Error("Revoke should report removal")
 	}
-	if ok, _ := IsApproved("foo", "sha256:opencode"); ok {
+	if ok, _ := IsApproved("foo", hFooA); ok {
 		t.Error("the revoked (name, hash) should no longer be approved")
 	}
 	// A same-name copy under a different hash keeps its approval.
-	if ok, _ := IsApproved("foo", "sha256:claude"); !ok {
+	if ok, _ := IsApproved("foo", hFooB); !ok {
 		t.Error("Revoke must not touch a same-name copy with a different hash")
 	}
-	if ok, _ := IsApproved("bar", "sha256:2"); !ok {
+	if ok, _ := IsApproved("bar", hBar); !ok {
 		t.Error("Revoke must not touch other skills")
 	}
 	if removed, _ := Revoke("foo", "sha256:missing"); removed {
@@ -123,20 +160,19 @@ func TestEnsureInitializedClosesFirstUpgradeWindow(t *testing.T) {
 		t.Error("store must exist after EnsureInitialized, so the first-upgrade window closes")
 	}
 	// Idempotent and non-destructive: approve, then EnsureInitialized again.
-	_ = Approve("s", "h", skillDir(t))
+	d := skillDir(t)
+	h := approveDir(t, "s", d)
 	if err := EnsureInitialized(); err != nil {
 		t.Fatalf("EnsureInitialized (2nd): %v", err)
 	}
-	if ok, _ := IsApproved("s", "h"); !ok {
+	if ok, _ := IsApproved("s", h); !ok {
 		t.Error("EnsureInitialized must not clobber existing approvals")
 	}
 }
 
 func TestApprovalsSurviveReload(t *testing.T) {
 	isolate(t)
-	if err := Approve("skill", "sha256:abc", skillDir(t)); err != nil {
-		t.Fatalf("Approve: %v", err)
-	}
+	approveDir(t, "skill", skillDir(t))
 	// A fresh Load (new process would do the same) sees the persisted state.
 	s, err := load()
 	if err != nil {
@@ -170,10 +206,8 @@ func TestSnapshotFreezesContentAndRevokeRemovesIt(t *testing.T) {
 	}
 
 	// Approve with a real dir -> a snapshot is created and resolvable.
-	if err := Approve("s", "sha256:h", src); err != nil {
-		t.Fatalf("Approve: %v", err)
-	}
-	snap, ok := SnapshotPath("s", "sha256:h")
+	h := approveDir(t, "s", src)
+	snap, ok := SnapshotPath("s", h)
 	if !ok {
 		t.Fatal("snapshot should exist after Approve with a dir")
 	}
@@ -192,10 +226,10 @@ func TestSnapshotFreezesContentAndRevokeRemovesIt(t *testing.T) {
 	}
 
 	// Revoke removes the snapshot.
-	if _, err := Revoke("s", "sha256:h"); err != nil {
+	if _, err := Revoke("s", h); err != nil {
 		t.Fatalf("Revoke: %v", err)
 	}
-	if _, ok := SnapshotPath("s", "sha256:h"); ok {
+	if _, ok := SnapshotPath("s", h); ok {
 		t.Error("snapshot should be gone after Revoke")
 	}
 }
@@ -222,7 +256,8 @@ func TestSnapshotDoesNotBakeEscapingSymlink(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	snap, err := snapshot("s", "sha256:h", src)
+	h := bundleHash(t, src)
+	snap, err := snapshot("s", h, src)
 	if err != nil {
 		t.Fatalf("Snapshot: %v", err)
 	}

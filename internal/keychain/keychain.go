@@ -65,19 +65,22 @@ func WorkdirID(absWorkdir string) string {
 
 // Service returns the unscoped service identifier for a skill name
 // (omac/<skill>). Used by single-workdir start and by user-global skills.
+// Any "/" in skillName is percent-encoded so names cannot forge a scoped path.
 func Service(skillName string) string {
-	return "omac/" + skillName
+	return "omac/" + strings.ReplaceAll(skillName, "/", "%2F")
 }
 
 // ScopedService returns the service identifier for a (scope, skill) pair.
 // An empty scope yields the unscoped Service form, so callers that don't
 // opt into scoping behave exactly as before. A non-empty scope (a
 // workdir-id or DefaultsScope) yields "omac/<scope>/<skill>".
+// Any "/" in skillName is percent-encoded so a name containing "/" cannot
+// collide with a legitimate (scope, skill) pair.
 func ScopedService(scope, skillName string) string {
 	if scope == "" {
 		return Service(skillName)
 	}
-	return "omac/" + scope + "/" + skillName
+	return "omac/" + scope + "/" + strings.ReplaceAll(skillName, "/", "%2F")
 }
 
 // Set stores a secret for (skill, name) in the unscoped service.

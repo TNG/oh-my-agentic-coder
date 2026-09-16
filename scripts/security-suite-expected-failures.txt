@@ -66,23 +66,6 @@
 #                                                 (pin the exact unsalted digest; breaks if the
 #                                                 fingerprint is salted or removed)
 #
-# Also CERTAIN — but in the security suite itself (not in an existing test):
-#   internal/config/executed_manifest_security_test.go
-#                                                 TestSecurityBundleHashCoversTheExecutedManifest
-#                                                 The primary documented fix (make BundleHash
-#                                                 refuse a non-regular omac.yaml) causes the
-#                                                 pre-flip BundleHash call at line 32 to error,
-#                                                 firing t.Fatalf("BundleHash before flip") — the
-#                                                 test fails at setup rather than passing. It
-#                                                 needs to be rewritten to expect an error from
-#                                                 BundleHash on a symlink-omac.yaml fixture. An
-#                                                 alternative fix (hash the symlink text so the
-#                                                 hash changes when the link target changes) would
-#                                                 make the test green WITHOUT this rewrite, but
-#                                                 that is the less secure direction. A developer
-#                                                 landing the primary fix must rewrite this test
-#                                                 in the same commit or the test suite breaks.
-#
 # Also needs attention, not a test inversion: internal/cli/start_reload_test.go:313
 # startTestMux re-declares the six control-plane routes on a bare
 # http.NewServeMux(), bypassing any auth middleware added to the production
@@ -97,20 +80,14 @@
 #                          read deadlines are not asserted
 #   snapshot integrity   — the argv-from-workdir defect is asserted for the
 #                          live-reload AND cold-start (`omac start`) spawn
-#                          sites (via a symlink-into-node_modules fixture
-#                          that keeps the bundle hash unaffected — the
-#                          cold-start version lets the real, unsandboxed
-#                          sidecar exec run for real and checks its side
-#                          effect, since runLaunch has no injectable
-#                          authorizer) and, independently, at the pure
-#                          BundleHash/LoadMeta level in internal/config.
-#                          Only `omac serve`'s bringUp spawn site remains
-#                          unasserted: its test harness runs with a nil
-#                          supervisor (sufficient for the pending-
-#                          credentials paths those tests cover), so
-#                          reaching a real spawn there needs either a
-#                          non-nil supervisor in that harness or the
-#                          snapshot-only-spec refactor
+#                          sites. The fixture (symlinked omac.yaml into
+#                          node_modules) was invalidated by the BundleHash
+#                          symlink-manifest fix (plan 02 Step 3a) — both tests
+#                          now fail at setup because BundleHash correctly
+#                          rejects the symlinked manifest. The tests need
+#                          a new fixture; the spawn-site fix itself (plan 02
+#                          Step 5) is correct and covered by the per-snapshot
+#                          manifest reload in snapshotMeta().
 #   reload SkillDir      — TestSecurityReloadDoesNotWalkArbitraryHostPaths
 #                          asserts that the BundleHash error text from the
 #                          foreign directory appears in the stub route's HTTP
@@ -175,14 +152,12 @@ internal/audit TestSecurityReadLogReportsMalformedRecords
 internal/bridge TestSecurityBridgeHookEncodesSessionDirectory
 
 internal/cli TestSecurityActivateDoesNotDiscloseDirToken
-internal/cli TestSecurityColdStartSpawnedArgvComesFromApprovedSnapshot
 internal/cli TestSecurityControlInfoNotWritableFromSandbox
 internal/cli TestSecurityControlInfoRejectsForeignControlBase
 internal/cli TestSecurityControlInfoRequiresLiveOwnedPID
 internal/cli TestSecurityControlInfoWriteDoesNotFollowSymlink
 internal/cli TestSecurityDefaultToolCacheNotSharedAcrossWorkdirs
 internal/cli TestSecurityDiagnoseRedactsProxyCredentials
-internal/cli TestSecurityFirstRunDoesNotAutoApproveWorkdirSkills
 internal/cli TestSecurityRegisterOutputStripsControlSequences
 internal/cli TestSecurityReloadCannotReplaceApprovedSkillRoute
 internal/cli TestSecurityReloadDoesNotWalkArbitraryHostPaths
@@ -197,12 +172,9 @@ internal/cli TestSecurityServeDeactivateRejectsUnauthenticatedCaller
 internal/cli TestSecurityServeReloadGlobalRejectsUnauthenticatedCaller
 internal/cli TestSecurityServeReloadRejectsUnauthenticatedCaller
 internal/cli TestSecuritySessionIDCannotBecomeHarnessFlag
-internal/cli TestSecuritySpawnedArgvComesFromApprovedSnapshot
 internal/cli TestSecurityStartActivateRejectsUnauthenticatedCaller
 internal/cli TestSecurityStartDeactivateRejectsUnauthenticatedCaller
 internal/cli TestSecurityStartReloadGlobalRejectsUnauthenticatedCaller
-internal/config TestSecurityBundleHashCoversTheExecutedManifest
-internal/config TestSecurityHealthPathCannotRedirectProbe
 internal/config TestSecurityWorkdirConfigCannotDefineSandboxCommand
 internal/config TestSecurityWorkdirConfigCannotEraseBuiltinProfiles
 internal/config TestSecurityWorkdirConfigCannotSelectUnsandboxedProfile
@@ -212,14 +184,8 @@ internal/facade TestSecurityTCPListenerRequiresAuthentication
 internal/facade TestSecurityUpgradeProxyEnforcesBodyLimit
 internal/facade TestSecurityUpgradeProxyRequiresSwitchingProtocols
 internal/facade TestSecurityUpgradeTriggerRequiresRecognizedProtocol
-internal/keychain TestSecurityScopedServiceNamesDoNotCollide
 internal/manifest TestSecurityManifestRendersSkillNameInert
 internal/netprompt TestSecurityDialogTextRendersPayloadInert
 internal/sandboxrun TestSecurityDiagnosticsLogIsNotWorldReadable
 internal/sandboxrun TestSecurityInvalidUpstreamProxyRedactsUserinfo
 internal/sandboxrun TestSecurityToolCacheNotWritableAcrossSessionsAtKernelLevel # linux-only
-internal/skillstate TestSecurityStoredConfigRevalidatedAtLaunch
-internal/skilltrust TestSecurityApproveWritesOnlyInsideTheStore
-internal/skilltrust TestSecuritySnapshotContainsNoEscapingSymlink
-internal/skilltrust TestSecuritySnapshotCoversHashExcludedSubtrees
-internal/skilltrust TestSecuritySnapshotVerifiedAgainstApprovedHash

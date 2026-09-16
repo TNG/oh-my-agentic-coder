@@ -372,6 +372,22 @@ func runLaunch(env *Env, opts launchOpts) int {
 	// override global values per (skill, field).
 	configStore := skillstate.MergeConfig(globalCfg, workdirCfg)
 
+	// 2a-bis-pre. One-time grandfathering of user-global registered skills
+	//         into the host-only approval store. Must run BEFORE auto-register
+	//         so agent-authored skills registered in the same session are not
+	//         included. Only the global registry is grandfathered: workdir-local
+	//         entries are agent-writable and must not be auto-approved.
+	if firstApprovalUpgrade() {
+		n, merr := grandfatherOnce(grandfatherScope{reg: globalReg})
+		if merr != nil {
+			fmt.Fprintln(env.Stderr, prefix+": approval store (non-fatal):", merr)
+		}
+		if n > 0 {
+			fmt.Fprintf(env.Stderr, "%s: migrated %d registered skill(s) to the host-only approval store; "+
+				"new skills now require `omac register` on the host to spawn\n", prefix, n)
+		}
+	}
+
 	// 2a-bis. Optional auto-registration of workdir-local skills whose
 	//         required values resolve without prompting. Mirrors `omac
 	//         serve`'s autoRegister (serve.go): the workdir-local skill
@@ -410,23 +426,6 @@ func runLaunch(env *Env, opts launchOpts) int {
 			}
 			workdirReg = filterRegistryByHarness(workdirReg, env.Workdir, harness)
 			reg = mergeRegistries(globalReg, workdirReg)
-		}
-	}
-
-	// 2a-ter. One-time grandfathering of the already-registered skills
-	//         into the host-only approval store (see internal/skilltrust
-	//         and skill_approval.go). Only fires the first time (before
-	//         the store exists) so upgrading omac never newly breaks a
-	//         working setup; thereafter a skill must be approved
-	//         explicitly by an out-of-sandbox `omac register`.
-	if firstApprovalUpgrade() {
-		n, merr := grandfatherOnce(grandfatherScope{workdir: env.Workdir, reg: reg})
-		if merr != nil {
-			fmt.Fprintln(env.Stderr, prefix+": approval store (non-fatal):", merr)
-		}
-		if n > 0 {
-			fmt.Fprintf(env.Stderr, "%s: migrated %d registered skill(s) to the host-only approval store; "+
-				"new skills now require `omac register` on the host to spawn\n", prefix, n)
 		}
 	}
 
@@ -636,15 +635,24 @@ func runLaunch(env *Env, opts launchOpts) int {
 
 	specs := make([]supervisor.SidecarSpec, 0, len(approved))
 	for _, s := range approved {
+		// Load behavioural fields from the snapshot, not from the workdir
+		// manifest that was already read into s.Meta. This ensures the
+		// executed argv matches the approved content even if the workdir
+		// manifest was rewritten post-approval.
+		snapM, merr := snapshotMeta(s.Entry.Name, s.AbsDir)
+		if merr != nil {
+			fmt.Fprintf(env.Stderr, "%s: %v\n", prefix, merr)
+			return ExitIOError
+		}
 		health := config.HealthSpec{}
-		if s.Meta.Sidecar.Health != nil {
-			health = *s.Meta.Sidecar.Health
+		if snapM.Sidecar.Health != nil {
+			health = *snapM.Sidecar.Health
 		}
 		specs = append(specs, supervisor.SidecarSpec{
 			Name:             s.Entry.Name,
 			SkillDir:         s.AbsDir,
-			Command:          s.Meta.Sidecar.Command,
-			EnvPassthrough:   s.Meta.Sidecar.EnvPassthrough,
+			Command:          snapM.Sidecar.Command,
+			EnvPassthrough:   snapM.Sidecar.EnvPassthrough,
 			Secrets:          s.Secrets,
 			Config:           s.Config,
 			Health:           health.Defaults(),

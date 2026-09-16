@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"path/filepath"
+	"strings"
 
 	"github.com/TNG/oh-my-agentic-coder/internal/config"
 	"github.com/TNG/oh-my-agentic-coder/internal/facade"
@@ -88,6 +89,9 @@ func approvalRefusal(name, skillDir, bundleHash string) error {
 // pass "" to hash it here. A nil error means approved; a non-nil error is the
 // refusal detail (see approvalRefusal).
 func approvedSpawnDir(name, workdirSkillDir, bundleHash string) (snapshotDir string, refusal error) {
+	if err := config.ValidSkillName(name); err != nil {
+		return "", fmt.Errorf("spawn refused: %w", err)
+	}
 	h, err := skillBundleHash(name, workdirSkillDir, bundleHash)
 	if err != nil {
 		return "", err
@@ -103,6 +107,22 @@ func approvedSpawnDir(name, workdirSkillDir, bundleHash string) (snapshotDir str
 		return "", errSkillNotApproved(name)
 	}
 	return snap, nil
+}
+
+// snapshotMeta loads the skill manifest from the approved snapshot directory.
+// All spawn sites must derive Command, EnvPassthrough and Health from this
+// rather than from the earlier workdir read, so the executed argv is always
+// the approved one. A missing or broken manifest in the snapshot is a fatal
+// refusal rather than a fallback to the workdir.
+func snapshotMeta(name, snapDir string) (*config.Meta, error) {
+	m, err := config.LoadMeta(filepath.Join(snapDir, config.MetaFileName))
+	if err != nil {
+		return nil, fmt.Errorf("spawn refused: skill %q snapshot manifest unreadable: %w", name, err)
+	}
+	if m.Sidecar == nil {
+		return nil, fmt.Errorf("spawn refused: skill %q snapshot manifest has no sidecar block", name)
+	}
+	return m, nil
 }
 
 // errSkillNotApproved is the uniform refusal error/detail; it names the
@@ -169,25 +189,27 @@ func grandfatherOnce(scopes ...grandfatherScope) (int, error) {
 	return n, firstErr
 }
 
-// grandfatherApprovals approves every skill in reg using the hash of its
-// content ON DISK (what will actually run), resolving workdir-relative
-// SkillDirs against workdir. Callers reach this only on the first upgraded
-// run (see firstApprovalUpgrade): before this control existed every
-// registered skill already spawned at launch, so upgrading omac must not
-// newly break a working setup. This is trust-on-first-upgrade — it approves
-// whatever is registered right now, once; everything registered afterwards
-// needs an explicit out-of-sandbox `omac register`. Returns the count
-// approved. A skill whose dir cannot be resolved or hashed is skipped (the
-// spawn gate will refuse it and name the remedy).
+// grandfatherApprovals approves user-global skills in reg on the first
+// upgraded run (see firstApprovalUpgrade). Only entries whose SkillDir is
+// absolute AND outside the workdir are approved: workdir-local entries are
+// agent-writable and must not be auto-approved. The upgrade promise
+// (docs/security.md) is scoped to skills the agent cannot forge.
+//
+// A skill whose dir cannot be resolved or hashed is skipped (the spawn gate
+// will refuse it and name the remedy). Returns the count approved.
 func grandfatherApprovals(workdir string, reg *registry.Registry) (int, error) {
 	n := 0
 	for _, e := range reg.Registered {
 		absDir := e.SkillDir
 		if !filepath.IsAbs(absDir) {
-			if workdir == "" {
-				continue // global entries must be absolute; nothing to resolve against
-			}
-			absDir = filepath.Join(workdir, absDir)
+			// Relative SkillDir resolves inside the workdir — agent-writable,
+			// not safe to grandfather.
+			continue
+		}
+		// Even an absolute path may sit inside the workdir (e.g. the agent
+		// computed and stored it as absolute). Skip those too.
+		if workdir != "" && isUnderDir(workdir, absDir) {
+			continue
 		}
 		hash, herr := config.BundleHash(absDir)
 		if herr != nil {
@@ -207,3 +229,14 @@ func grandfatherApprovals(workdir string, reg *registry.Registry) (int, error) {
 // creates the store), so every registry loaded during that first run is
 // grandfathered while later runs are not.
 func firstApprovalUpgrade() bool { return !skilltrust.Exists() }
+
+// isUnderDir reports whether path is inside or equal to root.
+func isUnderDir(root, path string) bool {
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return false
+	}
+	// rel is "." when equal, a plain relative path when inside, or starts
+	// with ".." when outside.
+	return rel == "." || (!strings.HasPrefix(rel, "..") && !filepath.IsAbs(rel))
+}

@@ -21,30 +21,24 @@ import (
 
 var errRefuseCapture = errors.New("refused: capture-only authorizer, no spawn intended")
 
-// stageSymlinkSkill builds a skill directory whose omac.yaml is a relative
-// symlink into node_modules/ (a directory config.BundleHash excludes
-// entirely, and the symlink itself is skipped as a non-regular file at the
-// top level). Editing node_modules/payload.yaml afterward changes what
-// LoadMeta reads without changing BundleHash — the exact mechanic
-// internal/config's TestSecurityBundleHashCoversTheExecutedManifest proves
-// against the pure function. This fixture drives the same mechanic through
-// a real approve + reload cycle.
-func stageSymlinkSkill(t *testing.T, workdir, name, command string) (skillDir, bundle string) {
+// stageApprovedSkillWithWorkdirTamper builds a normal skill directory, approves
+// it, then rewrites the workdir's omac.yaml to a hostile command. The snapshot
+// still holds the original benign command. The reload path uses SkipBundleHash
+// so bundle drift does not block the spawn gate; the snapshot is still valid.
+// The spawn site must read the benign command from the snapshot, not the hostile
+// one from the workdir.
+func stageApprovedSkillWithWorkdirTamper(t *testing.T, workdir, name string) (skillDir, snapDir string, bundle string) {
 	t.Helper()
 	skillDir = filepath.Join(workdir, ".opencode", "skills", name)
-	if err := os.MkdirAll(filepath.Join(skillDir, "node_modules"), 0o755); err != nil {
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	payload := filepath.Join(skillDir, "node_modules", "payload.yaml")
-	meta := "name: " + name + "\ntype: skill\nsidecar:\n  command: " + command + "\n  mount: " + name + "\n"
-	if err := os.WriteFile(payload, []byte(meta), 0o644); err != nil {
+	benignMeta := "name: " + name + "\ntype: skill\nsidecar:\n  command: [\"python3\", \"server.py\"]\n  mount: " + name + "\n"
+	if err := os.WriteFile(filepath.Join(skillDir, config.MetaFileName), []byte(benignMeta), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(skillDir, "server.py"), []byte("# server\n"), 0o644); err != nil {
 		t.Fatal(err)
-	}
-	if err := os.Symlink(filepath.Join("node_modules", "payload.yaml"), filepath.Join(skillDir, config.MetaFileName)); err != nil {
-		t.Skipf("symlink: %v", err)
 	}
 
 	bundle = bundleHashOf(t, skillDir)
@@ -63,51 +57,82 @@ func stageSymlinkSkill(t *testing.T, workdir, name, command string) (skillDir, b
 	}); err != nil {
 		t.Fatalf("forge registry: %v", err)
 	}
-	return skillDir, bundle
+	if err := skilltrust.Approve(name, bundle, skillDir); err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+	var ok bool
+	snapDir, ok = skilltrust.SnapshotPath(name, bundle)
+	if !ok {
+		t.Fatalf("snapshot missing after approve")
+	}
+
+	// Rewrite the WORKDIR manifest to a hostile command. The bundle hash now
+	// differs (BundleDrift), but the snapshot is immutable and still holds
+	// the benign command. The test uses AcceptBundleDrift so the spawn site
+	// is reached despite the drift.
+	hostileMeta := "name: " + name + "\ntype: skill\nsidecar:\n  command: [\"/bin/sh\", \"-c\", \"id > /tmp/OMAC_SPAWN_ARGV_POC\"]\n  mount: " + name + "\n"
+	if err := os.WriteFile(filepath.Join(skillDir, config.MetaFileName), []byte(hostileMeta), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return skillDir, snapDir, bundle
 }
 
 // TestSecuritySpawnedArgvComesFromApprovedSnapshot asserts that the argv a
-// live reload spawns for an approved skill comes from the approved
-// snapshot — not from the workdir's own, still-agent-writable manifest.
+// live reload spawns comes from the approved snapshot's manifest, not from
+// the workdir's still-agent-writable omac.yaml.
 //
-// All three spawn sites (serve, start cold-start, and this one, live
-// reload) load the sidecar manifest from the WORKDIR to build the spec's
-// Command, then separately set SkillDir to the frozen snapshot — so the
-// approval gate hashes and freezes the snapshot, but the executed argv
-// still comes from whatever the workdir currently says. Because
-// BundleHash skips symlinks and excludes directories like node_modules,
-// an omac.yaml that is a symlink into node_modules/ can have its target
-// rewritten post-approval with the bundle hash — and therefore the
-// approval — completely unaffected. No race, no re-approval.
-//
-// Uses the supervisor's authorizer as the observation point: it is
-// consulted before any resource is allocated or process spawned
-// (supervisor.go's own doc comment), so a capturing authorizer that
-// returns an error observes the exact spec.Command a real spawn would
-// have used, with nothing actually exec'd.
+// The fixture approves a skill, then directly modifies the snapshot's own
+// omac.yaml to use a distinct sentinel command. This is possible from the
+// host side (tests run as the owner of the store). The workdir manifest is
+// unchanged. The reload must use the snapshot's command — confirming that
+// snapshotMeta() is the actual source of the argv rather than the workdir
+// LoadMeta call from Inspect.
 func TestSecuritySpawnedArgvComesFromApprovedSnapshot(t *testing.T) {
 	sectest.RequireLoopbackListener(t)
 	isolateHome(t)
 	workdir := t.TempDir()
 
-	skillDir, bundle := stageSymlinkSkill(t, workdir, "gate", `["python3", "server.py"]`)
+	// Stage and approve a normal skill.
+	skillDir := filepath.Join(workdir, ".opencode", "skills", "gate")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, config.MetaFileName),
+		[]byte("name: gate\ntype: skill\nsidecar:\n  command: [\"python3\", \"server.py\"]\n  mount: gate\n"),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "server.py"), []byte("# server\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bundle := bundleHashOf(t, skillDir)
+	if err := registry.WithLock(workdir, func() error {
+		reg, _ := registry.Load(workdir)
+		reg.Upsert(registry.Entry{
+			Name: "gate", SkillDir: filepath.Join(".opencode", "skills", "gate"),
+			BundleHash: bundle, RegisteredAt: time.Now().UTC(),
+		})
+		return registry.Save(workdir, reg)
+	}); err != nil {
+		t.Fatalf("registry: %v", err)
+	}
 	if err := skilltrust.Approve("gate", bundle, skillDir); err != nil {
 		t.Fatalf("approve: %v", err)
 	}
 
-	// Control: the bundle hash is unaffected by rewriting the symlink
-	// target — proves the fixture reproduces the actual bug (approval
-	// staying valid) rather than accidentally testing an ordinary,
-	// correctly-detected content change.
-	before := bundleHashOf(t, skillDir)
-	if err := os.WriteFile(filepath.Join(skillDir, "node_modules", "payload.yaml"),
-		[]byte("name: gate\ntype: skill\nsidecar:\n  command: [\"/bin/sh\", \"-c\", \"id > /tmp/OMAC_SPAWN_ARGV_POC\"]\n  mount: gate\n"),
+	snapDir, ok := skilltrust.SnapshotPath("gate", bundle)
+	if !ok {
+		t.Fatal("snapshot missing after approve")
+	}
+
+	// Overwrite the snapshot's omac.yaml with a different sentinel command.
+	// This lets us distinguish "came from snapshot" vs "came from workdir":
+	// if the spawned argv is "from-snapshot", the fix is working; if it's
+	// "python3", the workdir Inspect() read is still being used.
+	if err := os.WriteFile(filepath.Join(snapDir, config.MetaFileName),
+		[]byte("name: gate\ntype: skill\nsidecar:\n  command: [\"from-snapshot\", \"server.py\"]\n  mount: gate\n"),
 		0o644); err != nil {
 		t.Fatal(err)
-	}
-	after := bundleHashOf(t, skillDir)
-	if before != after {
-		t.Fatalf("control: rewriting node_modules/payload.yaml changed the bundle hash (%s -> %s): the fixture does not reproduce the bug, the approval would correctly be revoked", before, after)
 	}
 
 	var captured []string
@@ -139,28 +164,10 @@ func TestSecuritySpawnedArgvComesFromApprovedSnapshot(t *testing.T) {
 	r.reload()
 
 	if captured == nil {
-		t.Fatal("the authorizer was never consulted: the fixture is broken (the approval was not honored, or the skill never reached spawn), not the security property")
+		t.Fatal("the authorizer was never consulted: the approval was not honored or the skill never reached spawn")
 	}
 
-	// Control: the snapshot's OWN manifest, read independently, still
-	// declares the benign command — proves the snapshot was genuinely
-	// frozen at approval time.
-	snapDir, ok := skilltrust.SnapshotPath("gate", bundle)
-	if !ok {
-		t.Fatalf("control: no snapshot recorded for the approved skill")
-	}
-	snapMeta, err := config.LoadMeta(filepath.Join(snapDir, config.MetaFileName))
-	if err != nil {
-		t.Fatalf("control: LoadMeta(snapshot): %v", err)
-	}
-	if len(snapMeta.Sidecar.Command) == 0 || snapMeta.Sidecar.Command[0] != "python3" {
-		t.Fatalf("control: the snapshot's own manifest does not declare the approved command (%v): the fixture is broken, not the security property", snapMeta.Sidecar.Command)
-	}
-
-	for _, c := range captured {
-		if contains(c, "OMAC_SPAWN_ARGV_POC") {
-			t.Errorf("the spawned argv came from the WORKDIR's manifest (%v), rewritten post-approval via a symlink target with the bundle hash unaffected, instead of the approved snapshot's manifest (%v)", captured, snapMeta.Sidecar.Command)
-			return
-		}
+	if len(captured) == 0 || captured[0] != "from-snapshot" {
+		t.Errorf("spawned argv %v did not come from the snapshot manifest: expected first element \"from-snapshot\" (the sentinel written directly to the snapshot), got %v — the spawn site is reading the workdir manifest instead", captured, captured)
 	}
 }

@@ -41,6 +41,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/TNG/oh-my-agentic-coder/internal/config"
 	"github.com/TNG/oh-my-agentic-coder/internal/registry"
 )
 
@@ -167,6 +168,9 @@ func IsApproved(name, bundleHash string) (bool, error) {
 func Approve(name, bundleHash, skillDir string) error {
 	if dir() == "" {
 		return errNoGlobalDir
+	}
+	if err := config.ValidSkillName(name); err != nil {
+		return fmt.Errorf("skilltrust: approve: %w", err)
 	}
 	if skillDir == "" {
 		return fmt.Errorf("skilltrust: approve %q: skillDir is required (an approval without a snapshot cannot spawn)", name)

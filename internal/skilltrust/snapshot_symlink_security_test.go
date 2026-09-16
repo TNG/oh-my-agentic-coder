@@ -46,7 +46,9 @@ func TestSecuritySnapshotContainsNoEscapingSymlink(t *testing.T) {
 	if err := os.Symlink("code.py", filepath.Join(srcTree, "alias.py")); err != nil {
 		t.Fatal(err)
 	}
-	controlSnap, err := snapshot("control", "sha256:"+strings.Repeat("ab", 32), srcTree)
+	// Use the real bundle hash so snapshot() verification passes.
+	hash := bundleHash(t, srcTree)
+	controlSnap, err := snapshot("control", hash, srcTree)
 	if err != nil {
 		t.Fatalf("control: snapshot: %v", err)
 	}
@@ -54,7 +56,6 @@ func TestSecuritySnapshotContainsNoEscapingSymlink(t *testing.T) {
 		t.Fatalf("control: an ordinary in-tree relative symlink did not survive snapshotting: %v", err)
 	}
 
-	hash := "sha256:" + strings.Repeat("cd", 32)
 	if err := Approve("s", hash, srcTree); err != nil {
 		t.Fatalf("Approve: %v", err)
 	}

@@ -116,19 +116,25 @@ could write a skill, get it spawned, and use it to read your SSH keys or
 exfiltrate data.
 
 omac prevents this with an approval store at `~/.config/omac/approvals.json`.
-A skill can only run if it has been explicitly approved. Approval requires a
-human running `omac register` in a real terminal, or the marketplace sidecar
-after installing a skill. The sandbox never mounts `~/.config/omac`, so the
-agent cannot create or modify approvals itself.
+A skill can only run if it has been explicitly approved by a human running
+`omac register` in a real terminal, or by the marketplace sidecar after
+installing a skill. The sandbox never mounts `~/.config/omac`, so the agent
+cannot create or modify approvals itself.
 
 Each approval is tied to a specific version of the skill's code via a bundle
 hash. If the skill's files change after approval, the hash no longer matches
 and the spawn is refused. The agent cannot sneak in modified code by editing a
-skill after it was approved.
+skill after it was approved. At approval time, the skill directory is frozen
+into a host-only snapshot; the sidecar is always spawned from that snapshot,
+never from the still-agent-writable workdir.
+
+When upgrading omac on a machine with existing registered skills, only
+**user-global** skills (registered outside any workdir) are automatically
+approved for the first run. Workdir-local skills — which the agent can write —
+always require an explicit `omac register` from a host terminal.
 
 If you change an approved skill yourself, omac refuses to run it until you
-review the change and re-register it with `omac register --force`. Upgrading
-omac does not make you re-approve skills you already registered.
+review the change and re-register it with `omac register --force`.
 
 ## Environment filtering
 
