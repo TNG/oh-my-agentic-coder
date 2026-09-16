@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 
 	"github.com/TNG/oh-my-agentic-coder/internal/audit"
@@ -392,6 +393,20 @@ func (r *startReloader) reload() []string {
 	if err != nil {
 		return nil
 	}
+
+	// Workdir registry entries are always stored with a relative SkillDir (see
+	// register.go). An absolute entry that escapes the workdir is a forged or
+	// hand-edited record; null it out so it produces a broken-meta route
+	// without walking the foreign directory tree (which happens inside
+	// approvedSpawnDir → BundleHash before any approval check runs).
+	workdirClean := filepath.Clean(r.env.Workdir) + string(filepath.Separator)
+	for i, e := range wReg.Registered {
+		if filepath.IsAbs(e.SkillDir) &&
+			!strings.HasPrefix(filepath.Clean(e.SkillDir)+string(filepath.Separator), workdirClean) {
+			wReg.Registered[i].SkillDir = ""
+		}
+	}
+
 	reg := mergeRegistries(gReg, wReg)
 
 	// Drop not-ready state for skills that are no longer registered, so
