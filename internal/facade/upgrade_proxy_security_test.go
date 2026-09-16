@@ -197,6 +197,8 @@ func TestSecurityUpgradeProxyRequiresSwitchingProtocols(t *testing.T) {
 		"Host: facade\r\n" +
 		"Connection: upgrade\r\n" +
 		"Upgrade: websocket\r\n" +
+		"Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n" +
+		"Sec-WebSocket-Version: 13\r\n" +
 		"\r\n"
 
 	// Control: a sidecar that does agree to the upgrade still gets its bytes

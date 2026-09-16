@@ -29,8 +29,6 @@
 #   internal/config/launcher_cache_test.go:14-19 requires the default scope "global"
 #   internal/sandboxrun/upstream_proxy_test.go:87 TestResolveUpstreamProxySchemed
 #                                                 asserts a plaintext dial happened for https://
-#   internal/cli/serve_test.go:120               TestActivateIdempotent
-#                                                 asserts dir_token is unchanged across reads
 #
 # CONDITIONAL (breaks only under one of several valid fix shapes — check
 # before assuming; see the comment at each site for which shape):
@@ -50,12 +48,6 @@
 #   internal/cli/poc_self_skill_escape_test.go:256 TestGrandfatherClosesFirstUpgradeWindow
 #                                                 (breaks if start.go's auto-register-before-
 #                                                 grandfather ordering is corrected)
-#   internal/facade/route_mutation_test.go:249   TestStubSwappedForLive
-#                                                 (needs a same-skill carve-out once route
-#                                                 ownership keys on namespace+mount)
-#   internal/cli/start_reload_test.go:255        TestStartReloaderActivateNot404
-#                                                 (asserts only the "dir_token" key is present,
-#                                                 not its value; survives a serve-mode-only fix)
 #   internal/audit/read_test.go:10-32            TestReadLogSkipsBlankAndMalformedLines
 #                                                 (asserts a malformed line is silently skipped;
 #                                                 must preserve the legitimate trailing-line case)
@@ -65,11 +57,6 @@
 #   internal/cli/config_cmd_test.go:156,171,221  TestSecretFingerprint_*
 #                                                 (pin the exact unsalted digest; breaks if the
 #                                                 fingerprint is salted or removed)
-#
-# Also needs attention, not a test inversion: internal/cli/start_reload_test.go:313
-# startTestMux re-declares the six control-plane routes on a bare
-# http.NewServeMux(), bypassing any auth middleware added to the production
-# mux. Delete it or make it call the production wiring.
 
 # Known gaps
 # ----------
@@ -100,14 +87,14 @@
 #                          robust assertion would check r.isMounted("forged")
 #                          is false and the response body does NOT contain the
 #                          foreign directory path at all.
-#   control plane auth   — eight of twelve routes are asserted (start-mode
-#                          reload/activate/deactivate/reload-global,
-#                          serve-mode activate/deactivate/reload/reload-
-#                          global); the four read-only disclosure endpoints
-#                          (serve dirs, serve global, start dirs, start
-#                          session) are not, since they leak directory paths/
-#                          session ids rather than mutate state — a real but
-#                          lower-severity gap left for later
+#   control plane auth   — all eight mutation routes are now authenticated
+#                          (start-mode reload/activate/deactivate/reload-global,
+#                          serve-mode activate/deactivate/reload/reload-global).
+#                          The four read-only disclosure endpoints (serve dirs,
+#                          serve global, start dirs, start session) are not,
+#                          since they leak directory paths/session ids rather
+#                          than mutate state — a real but lower-severity gap
+#                          left for later
 #   metadata deny        — the direct path's resolved-address screen for
 #                          non-link-local metadata (Oracle's 192.0.0.192) and
 #                          the chained proxy's subdomain-of-hard-deny case are
@@ -148,26 +135,10 @@ internal/audit TestSecurityAgentCannotChooseRecordSize
 internal/audit TestSecurityAuditRecordIsWrittenAtomically
 internal/audit TestSecurityAuditSinkDoesNotStaySilentlyDead
 internal/audit TestSecurityReadLogReportsMalformedRecords
-internal/bridge TestSecurityBridgeHookEncodesSessionDirectory
-
-internal/cli TestSecurityActivateDoesNotDiscloseDirToken
 internal/cli TestSecurityDiagnoseRedactsProxyCredentials
 internal/cli TestSecurityRegisterOutputStripsControlSequences
-internal/cli TestSecurityReloadCannotReplaceApprovedSkillRoute
 internal/cli TestSecurityReloadDoesNotWalkArbitraryHostPaths
-internal/cli TestSecurityReloadRejectsUnauthenticatedCaller
-internal/cli TestSecurityServeActivateRejectsUnauthenticatedCaller
-internal/cli TestSecurityServeDeactivateRejectsUnauthenticatedCaller
-internal/cli TestSecurityServeReloadGlobalRejectsUnauthenticatedCaller
-internal/cli TestSecurityServeReloadRejectsUnauthenticatedCaller
-internal/cli TestSecurityStartActivateRejectsUnauthenticatedCaller
-internal/cli TestSecurityStartDeactivateRejectsUnauthenticatedCaller
-internal/cli TestSecurityStartReloadGlobalRejectsUnauthenticatedCaller
-
-internal/facade TestSecurityTCPListenerRequiresAuthentication
-internal/facade TestSecurityUpgradeProxyEnforcesBodyLimit
 internal/facade TestSecurityUpgradeProxyRequiresSwitchingProtocols
-internal/facade TestSecurityUpgradeTriggerRequiresRecognizedProtocol
 internal/manifest TestSecurityManifestRendersSkillNameInert
 internal/netprompt TestSecurityDialogTextRendersPayloadInert
 internal/sandboxrun TestSecurityDiagnosticsLogIsNotWorldReadable
