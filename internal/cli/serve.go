@@ -1543,19 +1543,26 @@ func (s *serveServer) bringUp(e registry.Entry, absDir, workdir, namespace, secr
 		return sr
 	}
 
-	// Spawn.
-	m := armed.Meta
+	// Spawn. All behavioural fields (Command, EnvPassthrough, Health) come
+	// from the snapshot manifest, not from armed.Meta which was loaded from
+	// the still-agent-writable workdir. This ensures the executed argv is
+	// always the approved one, even if the workdir manifest was rewritten
+	// after approval (e.g. via a symlink into a hash-excluded directory).
+	snapM, serr2 := snapshotMeta(e.Name, snapDir)
+	if serr2 != nil {
+		return broken(serr2.Error())
+	}
 	health := config.HealthSpec{}
-	if m.Sidecar.Health != nil {
-		health = *m.Sidecar.Health
+	if snapM.Sidecar.Health != nil {
+		health = *snapM.Sidecar.Health
 	}
 	spec := supervisor.SidecarSpec{
 		Name:             namespace + "/" + e.Name, // unique tracking key across dirs
 		SkillName:        e.Name,                   // plain name -> SIDECAR_SKILL (no slash)
 		Namespace:        namespace,                // audit only (hashed)
 		SkillDir:         snapDir,                  // run the frozen snapshot, not the workdir
-		Command:          m.Sidecar.Command,
-		EnvPassthrough:   m.Sidecar.EnvPassthrough,
+		Command:          snapM.Sidecar.Command,
+		EnvPassthrough:   snapM.Sidecar.EnvPassthrough,
 		Secrets:          armed.Secrets,
 		Config:           armed.Config,
 		Health:           health.Defaults(),

@@ -635,15 +635,24 @@ func runLaunch(env *Env, opts launchOpts) int {
 
 	specs := make([]supervisor.SidecarSpec, 0, len(approved))
 	for _, s := range approved {
+		// Load behavioural fields from the snapshot, not from the workdir
+		// manifest that was already read into s.Meta. This ensures the
+		// executed argv matches the approved content even if the workdir
+		// manifest was rewritten post-approval.
+		snapM, merr := snapshotMeta(s.Entry.Name, s.AbsDir)
+		if merr != nil {
+			fmt.Fprintf(env.Stderr, "%s: %v\n", prefix, merr)
+			return ExitIOError
+		}
 		health := config.HealthSpec{}
-		if s.Meta.Sidecar.Health != nil {
-			health = *s.Meta.Sidecar.Health
+		if snapM.Sidecar.Health != nil {
+			health = *snapM.Sidecar.Health
 		}
 		specs = append(specs, supervisor.SidecarSpec{
 			Name:             s.Entry.Name,
 			SkillDir:         s.AbsDir,
-			Command:          s.Meta.Sidecar.Command,
-			EnvPassthrough:   s.Meta.Sidecar.EnvPassthrough,
+			Command:          snapM.Sidecar.Command,
+			EnvPassthrough:   snapM.Sidecar.EnvPassthrough,
 			Secrets:          s.Secrets,
 			Config:           s.Config,
 			Health:           health.Defaults(),

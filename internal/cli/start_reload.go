@@ -444,17 +444,25 @@ func (r *startReloader) reload() []string {
 			continue
 		}
 
-		m := armed.Meta
+		// Load behavioural fields from the snapshot, not from armed.Meta
+		// which was loaded from the still-agent-writable workdir.
+		snapM, serr3 := snapshotMeta(e.Name, snapDir)
+		if serr3 != nil {
+			r.facade.AddRoute(brokenApprovalRoute(mount, e.Name, absDir, serr3))
+			r.markNotReady(e.Name, &notReadySkill{Mount: mount, State: facade.RouteBroken, Detail: serr3.Error()})
+			armed.Zero()
+			continue
+		}
 		health := config.HealthSpec{}
-		if m.Sidecar.Health != nil {
-			health = *m.Sidecar.Health
+		if snapM.Sidecar.Health != nil {
+			health = *snapM.Sidecar.Health
 		}
 		spec := supervisor.SidecarSpec{
 			Name:           e.Name,
 			SkillName:      e.Name,
 			SkillDir:       snapDir, // run the frozen snapshot, not the workdir
-			Command:        m.Sidecar.Command,
-			EnvPassthrough: m.Sidecar.EnvPassthrough,
+			Command:        snapM.Sidecar.Command,
+			EnvPassthrough: snapM.Sidecar.EnvPassthrough,
 			Secrets:        armed.Secrets,
 			Config:         armed.Config,
 			Health:         health.Defaults(),

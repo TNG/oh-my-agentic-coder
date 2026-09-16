@@ -106,6 +106,22 @@ func approvedSpawnDir(name, workdirSkillDir, bundleHash string) (snapshotDir str
 	return snap, nil
 }
 
+// snapshotMeta loads the skill manifest from the approved snapshot directory.
+// All spawn sites must derive Command, EnvPassthrough and Health from this
+// rather than from the earlier workdir read, so the executed argv is always
+// the approved one. A missing or broken manifest in the snapshot is a fatal
+// refusal rather than a fallback to the workdir.
+func snapshotMeta(name, snapDir string) (*config.Meta, error) {
+	m, err := config.LoadMeta(filepath.Join(snapDir, config.MetaFileName))
+	if err != nil {
+		return nil, fmt.Errorf("spawn refused: skill %q snapshot manifest unreadable: %w", name, err)
+	}
+	if m.Sidecar == nil {
+		return nil, fmt.Errorf("spawn refused: skill %q snapshot manifest has no sidecar block", name)
+	}
+	return m, nil
+}
+
 // errSkillNotApproved is the uniform refusal error/detail; it names the
 // host-side remedy the sandboxed agent cannot perform itself.
 func errSkillNotApproved(name string) error {
