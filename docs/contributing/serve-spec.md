@@ -60,6 +60,8 @@ The workdir identity keys a directory's persistent state — its keychain secret
 
 When a directory is activated, omac returns a **manifest** — a JSON document listing the directory's workdir-local skills and the server's global skills, each with its state and base URL. Harnesses read it to find each skill's endpoint, and in multi-directory mode to get the namespaced URLs (rather than the flat `OMAC_<SKILL>_BASE` aliases).
 
+`dir_token` is included **only in the first activation response**. A re-activation of an already-active directory (e.g. `SessionStart` fired twice) returns the manifest without `dir_token` — the caller already holds it, and re-issuing it would hand the namespace key to whoever asked, regardless of whether they are the session that originally activated the directory.
+
 ```json
 {
   "dir": "/Users/me/projects/acme",
@@ -110,13 +112,22 @@ OMAC_<SKILL>_BASE
 
 The control plane is a loopback HTTP server, advertised to the sandbox as `OMAC_CONTROL_BASE`.
 
-| Method | Path | Purpose |
-|---|---|---|
-| `POST` | `/__omac__/activate` | Body `{"dir": "/abs/path"}`. Activates (or returns existing) dir. Response = [manifest](#manifest). Idempotent. |
-| `POST` | `/__omac__/deactivate` | Body `{"dir": "/abs/path"}`. Tears down sidecars and routes. |
-| `POST` | `/__omac__/reload` | Body `{"dir": "/abs/path"}`. Re-resolves secrets; promotes `pending-credentials` skills to active if their secrets are now present. |
-| `GET` | `/__omac__/dirs` | List active dirs and their states. |
-| `GET` | `/__omac__/global` | Global skills and their `/__global__/<mount>` URLs. |
+All mutation endpoints (`POST`) require the per-session bearer token delivered as `OMAC_CONTROL_TOKEN` in the sandbox environment. Include it as:
+
+```
+X-Omac-Control-Token: <value of OMAC_CONTROL_TOKEN>
+```
+
+Requests without a valid token receive `401 Unauthorized`. Read-only endpoints (`GET`) are not token-gated.
+
+| Method | Path | Auth | Purpose |
+|---|---|---|---|
+| `POST` | `/__omac__/activate` | required | Body `{"dir": "/abs/path"}`. Activates (or returns existing) dir. Response = [manifest](#manifest). `dir_token` only in first response. |
+| `POST` | `/__omac__/deactivate` | required | Body `{"dir": "/abs/path"}`. Tears down sidecars and routes. |
+| `POST` | `/__omac__/reload` | required | Body `{"dir": "/abs/path"}`. Re-resolves secrets; promotes `pending-credentials` skills to active. |
+| `POST` | `/__omac__/reload-global` | required | Re-activates the global skill layer (after `omac register --global`). |
+| `GET` | `/__omac__/dirs` | none | List active dirs and their states. |
+| `GET` | `/__omac__/global` | none | Global skills and their `/__global__/<mount>` URLs. |
 
 ---
 
