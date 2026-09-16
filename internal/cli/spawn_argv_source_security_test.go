@@ -81,16 +81,59 @@ func stageApprovedSkillWithWorkdirTamper(t *testing.T, workdir, name string) (sk
 // live reload spawns comes from the approved snapshot's manifest, not from
 // the workdir's still-agent-writable omac.yaml.
 //
-// The fixture approves a skill with a benign command, then rewrites the
-// workdir manifest to a hostile command. With AcceptBundleDrift the
-// reloader reaches the spawn site despite the drift. The spawned argv must
-// still be the benign command from the snapshot, not the hostile one.
+// The fixture approves a skill, then directly modifies the snapshot's own
+// omac.yaml to use a distinct sentinel command. This is possible from the
+// host side (tests run as the owner of the store). The workdir manifest is
+// unchanged. The reload must use the snapshot's command — confirming that
+// snapshotMeta() is the actual source of the argv rather than the workdir
+// LoadMeta call from Inspect.
 func TestSecuritySpawnedArgvComesFromApprovedSnapshot(t *testing.T) {
 	sectest.RequireLoopbackListener(t)
 	isolateHome(t)
 	workdir := t.TempDir()
 
-	_, snapDir, bundle := stageApprovedSkillWithWorkdirTamper(t, workdir, "gate")
+	// Stage and approve a normal skill.
+	skillDir := filepath.Join(workdir, ".opencode", "skills", "gate")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, config.MetaFileName),
+		[]byte("name: gate\ntype: skill\nsidecar:\n  command: [\"python3\", \"server.py\"]\n  mount: gate\n"),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "server.py"), []byte("# server\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bundle := bundleHashOf(t, skillDir)
+	if err := registry.WithLock(workdir, func() error {
+		reg, _ := registry.Load(workdir)
+		reg.Upsert(registry.Entry{
+			Name: "gate", SkillDir: filepath.Join(".opencode", "skills", "gate"),
+			BundleHash: bundle, RegisteredAt: time.Now().UTC(),
+		})
+		return registry.Save(workdir, reg)
+	}); err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	if err := skilltrust.Approve("gate", bundle, skillDir); err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+
+	snapDir, ok := skilltrust.SnapshotPath("gate", bundle)
+	if !ok {
+		t.Fatal("snapshot missing after approve")
+	}
+
+	// Overwrite the snapshot's omac.yaml with a different sentinel command.
+	// This lets us distinguish "came from snapshot" vs "came from workdir":
+	// if the spawned argv is "from-snapshot", the fix is working; if it's
+	// "python3", the workdir Inspect() read is still being used.
+	if err := os.WriteFile(filepath.Join(snapDir, config.MetaFileName),
+		[]byte("name: gate\ntype: skill\nsidecar:\n  command: [\"from-snapshot\", \"server.py\"]\n  mount: gate\n"),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	var captured []string
 	capture := func(spec supervisor.SidecarSpec) error {
@@ -117,8 +160,6 @@ func TestSecuritySpawnedArgvComesFromApprovedSnapshot(t *testing.T) {
 		rtDir:   rtDir,
 		tcpPort: f.TCPPort(),
 		mounted: map[string]string{},
-		// reload uses SkipBundleHash:true so the workdir drift does not block
-		// the spawn gate; the approval hash from the registry is used directly.
 	}
 	r.reload()
 
@@ -126,20 +167,7 @@ func TestSecuritySpawnedArgvComesFromApprovedSnapshot(t *testing.T) {
 		t.Fatal("the authorizer was never consulted: the approval was not honored or the skill never reached spawn")
 	}
 
-	// The snapshot's manifest must still declare the benign command.
-	snapMeta, err := config.LoadMeta(filepath.Join(snapDir, config.MetaFileName))
-	if err != nil {
-		t.Fatalf("LoadMeta(snapshot): %v", err)
-	}
-	if len(snapMeta.Sidecar.Command) == 0 || snapMeta.Sidecar.Command[0] != "python3" {
-		t.Fatalf("snapshot manifest does not declare the approved command (%v): fixture broken", snapMeta.Sidecar.Command)
-	}
-	_ = bundle
-
-	for _, c := range captured {
-		if contains(c, "OMAC_SPAWN_ARGV_POC") {
-			t.Errorf("spawned argv came from the WORKDIR manifest (%v) instead of the approved snapshot manifest (%v)", captured, snapMeta.Sidecar.Command)
-			return
-		}
+	if len(captured) == 0 || captured[0] != "from-snapshot" {
+		t.Errorf("spawned argv %v did not come from the snapshot manifest: expected first element \"from-snapshot\" (the sentinel written directly to the snapshot), got %v — the spawn site is reading the workdir manifest instead", captured, captured)
 	}
 }
