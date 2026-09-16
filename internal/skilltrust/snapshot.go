@@ -192,7 +192,7 @@ func copyTree(src, dst string) error {
 			return ierr
 		}
 		if info.Mode()&os.ModeSymlink != 0 {
-			return copyInTreeSymlink(p, target, srcReal)
+			return copyInTreeSymlink(p, target, srcReal, dst)
 		}
 		if !info.Mode().IsRegular() {
 			return nil // sockets, devices, fifos: nothing to run
@@ -202,20 +202,38 @@ func copyTree(src, dst string) error {
 }
 
 // copyInTreeSymlink recreates a symlink at target ONLY when it is a relative
-// link resolving inside the skill tree (srcReal); otherwise it is dropped. It
-// never reads the target's content, so an escaping link cannot smuggle a host
-// file into the snapshot.
-func copyInTreeSymlink(p, target, srcReal string) error {
+// link that stays inside both the source tree (srcReal) AND the snapshot root
+// (dstRoot). It never reads the target's content, so an escaping link cannot
+// smuggle a host file into the snapshot.
+//
+// A link containing ".." elements is dropped outright: ".."×N clamps at "/"
+// at both the source and snapshot depths, so a long "../"×N + absolute-path
+// link can pass the source check while escaping the snapshot. Rejecting ".."
+// eliminates this class without affecting legitimate in-tree relative links
+// (e.g. "node_modules/.bin/cmd" -> "../lib/cmd").
+func copyInTreeSymlink(p, target, srcReal, dstRoot string) error {
 	link, err := os.Readlink(p)
 	if err != nil || filepath.IsAbs(link) {
 		return nil // unreadable or absolute: drop
+	}
+	// Reject any link text containing ".." so cross-depth clamping attacks
+	// are impossible regardless of where the snapshot sits on disk.
+	for _, part := range strings.Split(filepath.ToSlash(link), "/") {
+		if part == ".." {
+			return nil // contains "..": drop
+		}
 	}
 	resolved, err := filepath.EvalSymlinks(p)
 	if err != nil {
 		return nil // dangling / unresolvable: drop
 	}
 	if !containedIn(srcReal, resolved) {
-		return nil // escapes the skill tree: drop
+		return nil // escapes the source skill tree: drop
+	}
+	// Also verify the link stays inside the snapshot at the destination depth.
+	dstResolved := filepath.Clean(filepath.Join(filepath.Dir(target), link))
+	if !containedIn(dstRoot, dstResolved) {
+		return nil // escapes the snapshot root: drop
 	}
 	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
 		return err
