@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/TNG/oh-my-agentic-coder/internal/config"
 )
 
 // Snapshotting freezes a skill's on-disk content at approval time into a
@@ -77,6 +79,9 @@ func containedIn(root, path string) bool {
 // content is identical by construction). The copy is staged in a temp dir and
 // atomically renamed into place, so a snapshot directory is never partial.
 func snapshot(name, bundleHash, srcDir string) (string, error) {
+	if err := config.ValidSkillName(name); err != nil {
+		return "", fmt.Errorf("snapshot: %w", err)
+	}
 	d := dir()
 	if d == "" {
 		return "", errNoGlobalDir

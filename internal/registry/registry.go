@@ -14,6 +14,8 @@ import (
 	"sort"
 	"syscall"
 	"time"
+
+	"github.com/TNG/oh-my-agentic-coder/internal/config"
 )
 
 // SchemaVersion is the current on-disk format version.
@@ -125,6 +127,8 @@ func LoadGlobal() (*Registry, error) {
 }
 
 // loadFrom reads and parses a registry file at an arbitrary path.
+// Entries with invalid skill names are silently dropped so a forged registry
+// cannot reach name→path sinks downstream.
 func loadFrom(p string) (*Registry, error) {
 	raw, err := os.ReadFile(p)
 	if errors.Is(err, os.ErrNotExist) {
@@ -140,6 +144,13 @@ func loadFrom(p string) (*Registry, error) {
 	if r.Version == 0 {
 		r.Version = SchemaVersion
 	}
+	valid := r.Registered[:0:0]
+	for _, e := range r.Registered {
+		if config.ValidSkillName(e.Name) == nil {
+			valid = append(valid, e)
+		}
+	}
+	r.Registered = valid
 	return &r, nil
 }
 

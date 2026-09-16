@@ -176,9 +176,31 @@ type LimitsSpec struct {
 }
 
 var (
-	envNameRE = regexp.MustCompile(`^[A-Z_][A-Z0-9_]*$`)
-	mountRE   = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
+	envNameRE   = regexp.MustCompile(`^[A-Z_][A-Z0-9_]*$`)
+	mountRE     = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
+	skillNameRE = mountRE // skill names share the mount grammar
 )
+
+// ValidSkillName returns an error when name is not a valid skill name.
+// Valid names match ^[a-z0-9][a-z0-9-]*$, must not be "." or "..", and must
+// not contain any path separator. This is enforced at every name→path sink
+// (approval store, snapshot dir, facade route, keychain service) so that
+// agent-supplied names cannot escape the store or collide with other skills.
+func ValidSkillName(name string) error {
+	if name == "" {
+		return fmt.Errorf("skill name must not be empty")
+	}
+	if name == "." || name == ".." {
+		return fmt.Errorf("skill name %q is a reserved path element", name)
+	}
+	if strings.ContainsAny(name, "/\\") {
+		return fmt.Errorf("skill name %q must not contain a path separator", name)
+	}
+	if !skillNameRE.MatchString(name) {
+		return fmt.Errorf("skill name %q must match %s", name, skillNameRE.String())
+	}
+	return nil
+}
 
 // LoadMeta reads omac.yaml from path and validates it.
 func LoadMeta(path string) (*Meta, error) {
