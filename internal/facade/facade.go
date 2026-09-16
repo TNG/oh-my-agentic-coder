@@ -13,7 +13,9 @@
 package facade
 
 import (
+	"bufio"
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -69,6 +71,11 @@ type Route struct {
 	MaxBodyBytes int64         // 0 = inherit facade default
 	IdleTimeout  time.Duration // 0 = inherit facade default
 	Skill        string        // registry name
+
+	// Owner is the skill name that installed this route. When non-empty,
+	// AddRoute refuses to replace the route with one carrying a different
+	// owner, preventing a forged skill from claiming an occupied mount.
+	Owner string
 
 	// SkillDir is the skill's on-disk directory (the dir holding its
 	// omac.yaml and, when present, SKILL.md). It is the source for the
@@ -151,6 +158,16 @@ type Facade struct {
 	// POST /sandbox/intent. nil disables the endpoint (returns 503).
 	IntentRegistry *intent.Registry
 
+	// FacadeToken, when non-empty, is required on every request arriving
+	// over the TCP listener. Callers must include it as the
+	// X-Omac-Facade-Token request header. The Unix socket listener is
+	// unaffected; it is already UID-gated by filesystem permissions.
+	//
+	// This is an interim boundary while the TCP listener exists for
+	// nono-proxy-mode compatibility. The Unix socket with SO_PEERCRED is
+	// the intended end-state (tracked in issue #88).
+	FacadeToken string
+
 	mu          sync.RWMutex
 	routes      map[string]*Route
 	server      *http.Server
@@ -207,11 +224,19 @@ func (f *Facade) SetAuditor(a audit.Auditor) {
 // Start and from multiple goroutines. Used by serve mode to mount a
 // directory's skills lazily and to swap a stub route for a live one once
 // credentials arrive.
+//
+// When both the existing route and the new route carry a non-empty Owner,
+// a replacement is refused if the owners differ — this prevents a forged
+// skill from claiming the mount of an already-running, approved skill.
 func (f *Facade) AddRoute(r Route) {
 	rr := r
 	f.mu.Lock()
 	if f.routes == nil {
 		f.routes = make(map[string]*Route)
+	}
+	if existing, ok := f.routes[rr.key()]; ok && existing.Owner != "" && rr.Owner != "" && existing.Owner != rr.Owner {
+		f.mu.Unlock()
+		return
 	}
 	f.routes[rr.key()] = &rr
 	f.mu.Unlock()
@@ -356,8 +381,27 @@ func (f *Facade) Close() error {
 	return firstErr
 }
 
+// isTCPRemote reports whether the request came from the TCP listener
+// rather than the Unix socket. TCP remote addresses look like "127.0.0.1:<port>".
+func isTCPRemote(r *http.Request) bool {
+	return strings.HasPrefix(r.RemoteAddr, "127.")
+}
+
 // handle is the root HTTP handler.
 func (f *Facade) handle(w http.ResponseWriter, r *http.Request) {
+	// TCP transport authentication (vuln-0003).
+	// The Unix socket is already UID-gated by filesystem permissions (0600);
+	// the TCP listener accepts any local process, so we require a per-session
+	// bearer token. Constant-time comparison to avoid timing side-channels.
+	// (Interim boundary; Unix socket + SO_PEERCRED is the intended end-state, issue #88.)
+	if f.FacadeToken != "" && isTCPRemote(r) {
+		got := r.Header.Get("X-Omac-Facade-Token")
+		if subtle.ConstantTimeCompare([]byte(got), []byte(f.FacadeToken)) != 1 {
+			http.Error(w, "omac: unauthorized", http.StatusUnauthorized)
+			return
+		}
+	}
+
 	started := time.Now()
 	// Normalize: collapse every run of slashes so $OMAC_BASE/sandbox/intent
 	// works when OMAC_BASE ends with a trailing slash (it always does —
@@ -844,9 +888,25 @@ func (f *Facade) proxyHTTP(w http.ResponseWriter, r *http.Request, route *Route,
 	f.logAccess(r, route, rest, wr.status, wr.bytes, time.Since(started))
 }
 
-// proxyUpgrade handles HTTP Upgrade requests (WebSocket) by splicing the
-// underlying TCP connections after forwarding the handshake.
+// hopByHopHeaders lists headers that must not be forwarded across a proxy
+// boundary (RFC 7230 §6.1).
+var hopByHopHeaders = []string{
+	"Connection", "Keep-Alive", "Proxy-Authenticate", "Proxy-Authorization",
+	"TE", "Trailer", "Transfer-Encoding", "Upgrade",
+}
+
+// proxyUpgrade handles WebSocket upgrade requests by splicing the underlying
+// TCP connections after validating that the upstream agreed to upgrade.
 func (f *Facade) proxyUpgrade(w http.ResponseWriter, r *http.Request, route *Route, rest string, started time.Time) {
+	// Apply the body limit before forwarding, same as the plain HTTP path.
+	limit := route.MaxBodyBytes
+	if limit == 0 {
+		limit = f.MaxBodyBytes
+	}
+	if limit > 0 {
+		r.Body = http.MaxBytesReader(w, r.Body, limit)
+	}
+
 	upstreamAddr := upstreamHost(route.UpstreamPort)
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 	defer cancel()
@@ -858,18 +918,45 @@ func (f *Facade) proxyUpgrade(w http.ResponseWriter, r *http.Request, route *Rou
 	}
 	defer upConn.Close()
 
-	// Write the rewritten request to the upstream connection.
+	// Write the rewritten request to the upstream, stripping hop-by-hop headers.
 	clone := r.Clone(r.Context())
 	clone.URL = &url.URL{Scheme: "http", Host: upstreamAddr, Path: "/" + rest, RawQuery: r.URL.RawQuery}
 	clone.Host = upstreamAddr
 	clone.RequestURI = clone.URL.RequestURI()
 	clone.Header = r.Header.Clone()
+	for _, h := range hopByHopHeaders {
+		clone.Header.Del(h)
+	}
 	clone.Header.Set("X-Forwarded-Prefix", "/"+route.key())
 	if err := clone.Write(upConn); err != nil {
 		w.Header().Set("X-Omac-Reason", "upstream-error")
 		http.Error(w, "omac: write upstream: "+err.Error(), http.StatusBadGateway)
 		return
 	}
+
+	// Read the upstream response. Only proceed with the splice if the upstream
+	// answered 101 Switching Protocols; otherwise forward the response normally.
+	upReader := bufio.NewReader(upConn)
+	upResp, err := http.ReadResponse(upReader, clone)
+	if err != nil {
+		w.Header().Set("X-Omac-Reason", "upstream-error")
+		http.Error(w, "omac: read upstream response: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	if upResp.StatusCode != http.StatusSwitchingProtocols {
+		// Upstream refused the upgrade; relay its response to the client.
+		for k, vs := range upResp.Header {
+			for _, v := range vs {
+				w.Header().Add(k, v)
+			}
+		}
+		w.WriteHeader(upResp.StatusCode)
+		_, _ = io.Copy(w, upResp.Body)
+		upResp.Body.Close()
+		f.logAccess(r, route, rest, upResp.StatusCode, 0, time.Since(started))
+		return
+	}
+	upResp.Body.Close()
 
 	// Hijack the client connection.
 	hj, ok := w.(http.Hijacker)
@@ -884,9 +971,47 @@ func (f *Facade) proxyUpgrade(w http.ResponseWriter, r *http.Request, route *Rou
 	}
 	defer clientConn.Close()
 
+	// Forward the 101 response (stripped of hop-by-hop headers) to the client.
+	respOut := &strings.Builder{}
+	respOut.WriteString("HTTP/1.1 101 Switching Protocols\r\n")
+	for k, vs := range upResp.Header {
+		skip := false
+		for _, h := range hopByHopHeaders {
+			if strings.EqualFold(k, h) {
+				skip = true
+				break
+			}
+		}
+		if skip {
+			continue
+		}
+		for _, v := range vs {
+			respOut.WriteString(k + ": " + v + "\r\n")
+		}
+	}
+	respOut.WriteString("\r\n")
+	if _, err := io.WriteString(clientConn, respOut.String()); err != nil {
+		return
+	}
+
+	// Set idle deadlines on both connections.
+	idleTimeout := f.IdleTimeout
+	if idleTimeout <= 0 {
+		idleTimeout = 5 * time.Minute
+	}
+	_ = upConn.SetDeadline(time.Now().Add(idleTimeout))
+	_ = clientConn.SetDeadline(time.Now().Add(idleTimeout))
+
 	// Flush anything already buffered from the client to the upstream.
 	if buf != nil && buf.Reader.Buffered() > 0 {
 		if _, err := io.CopyN(upConn, buf.Reader, int64(buf.Reader.Buffered())); err != nil {
+			return
+		}
+	}
+
+	// Also drain any bytes the upstream already sent after the 101 headers.
+	if upReader.Buffered() > 0 {
+		if _, err := io.CopyN(clientConn, upReader, int64(upReader.Buffered())); err != nil {
 			return
 		}
 	}
@@ -946,11 +1071,18 @@ func splitMount(p string) (string, string) { return splitSegment(p) }
 
 func upstreamHost(port int) string { return "127.0.0.1:" + strconv.Itoa(port) }
 
+// isUpgrade reports whether r is a WebSocket upgrade request.
+// We require WebSocket-specific headers (Sec-WebSocket-Key) so that an
+// arbitrary "Upgrade: h2c" header does not bypass MaxBytesReader and the
+// timeouts enforced on the ordinary HTTP proxy path.
 func isUpgrade(r *http.Request) bool {
 	if !headerHasToken(r.Header.Get("Connection"), "upgrade") {
 		return false
 	}
-	return r.Header.Get("Upgrade") != ""
+	if !strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
+		return false
+	}
+	return r.Header.Get("Sec-WebSocket-Key") != ""
 }
 
 func headerHasToken(hdr, token string) bool {
