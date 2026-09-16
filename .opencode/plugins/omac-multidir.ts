@@ -176,10 +176,13 @@ export const OmacMultiDirPlugin: Plugin = async ({ client, directory, worktree }
     return s.replace(/[\n\r]/g, " ").replace(/\*/g, "").replace(/[\x00-\x1f\x7f-\x9f]/g, "")
   }
 
-  // Only emit omac secrets set when the skill name is a valid identifier.
+  // Only emit omac secrets set when the name is a valid identifier and each
+  // missing var name looks like a conventional env var ([A-Z_][A-Z0-9_]*).
   function secretsHint(name: string, missing: string[]): string {
     if (!/^[a-z0-9][a-z0-9-]*$/.test(name)) return ""
-    return missing.map((m) => `omac secrets set ${name} ${m}`).join(" ; ")
+    const safe = missing.filter((m) => /^[A-Z_][A-Z0-9_]*$/.test(m))
+    if (safe.length === 0) return ""
+    return safe.map((m) => `omac secrets set ${name} ${m}`).join(" ; ")
   }
 
   // Build the system-prompt block describing the skills available to a dir.

@@ -160,10 +160,21 @@ func RegisteredSuffixHint(host string) string {
 	return etld1
 }
 
-// escapePangoMarkup escapes the characters Pango and Qt Rich Text interpret
-// as markup so agent-controlled strings cannot inject styled or structured
-// content into the dialog. Escaping at render time keeps stored values intact.
+// escapePangoMarkup escapes markup characters and collapses whitespace so
+// agent-controlled strings cannot inject styled content or fake dialog labels
+// into the zenity/kdialog display. Escaping at render time keeps stored
+// values intact.
 func escapePangoMarkup(s string) string {
+	// Collapse newlines first so a fake "Origin: ..." line cannot be injected.
+	s = strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\r' {
+			return ' '
+		}
+		if r < 0x20 || (r >= 0x7f && r <= 0x9f) {
+			return -1
+		}
+		return r
+	}, s)
 	s = strings.ReplaceAll(s, "&", "&amp;")
 	s = strings.ReplaceAll(s, "<", "&lt;")
 	s = strings.ReplaceAll(s, ">", "&gt;")
@@ -461,11 +472,11 @@ func Alert(title, body string) {
 }
 
 func alertZenityArgs(title, body string) []string {
-	return []string{"--info", "--title", title, "--text", body}
+	return []string{"--info", "--no-markup", "--title", escapePangoMarkup(title), "--text", escapePangoMarkup(body)}
 }
 
 func alertKdialogArgs(title, body string) []string {
-	return []string{"--title", title, "--msgbox", body}
+	return []string{"--title", escapePangoMarkup(title), "--msgbox", escapePangoMarkup(body)}
 }
 
 // --- Linux ---

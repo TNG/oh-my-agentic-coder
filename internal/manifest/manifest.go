@@ -126,15 +126,39 @@ func sanitizeField(s string) string {
 }
 
 // secretsHint builds the "omac secrets set" commands for missing credentials.
-// Returns an empty string when the skill name contains characters that would
-// make the result unsafe to present as a shell command.
+// Returns an empty string when the skill name is not a valid identifier.
+// Individual missing-credential names are only included when they look like
+// a valid env var name ([A-Z_][A-Z0-9_]*), so a hostile omac.yaml entry
+// cannot inject shell metacharacters into the command text.
 func secretsHint(skillName string, missing []string) string {
 	if config.ValidSkillName(skillName) != nil {
 		return ""
 	}
 	var parts []string
 	for _, m := range missing {
-		parts = append(parts, "omac secrets set "+skillName+" "+m)
+		if validEnvVarName(m) {
+			parts = append(parts, "omac secrets set "+skillName+" "+m)
+		}
 	}
 	return strings.Join(parts, " ; ")
+}
+
+// validEnvVarName reports whether s looks like a conventional environment
+// variable name ([A-Z_][A-Z0-9_]*). Only these names are safe to embed in
+// the "omac secrets set" hint command without shell quoting.
+func validEnvVarName(s string) bool {
+	if len(s) == 0 {
+		return false
+	}
+	for i, r := range s {
+		switch {
+		case r >= 'A' && r <= 'Z', r == '_':
+			// ok
+		case r >= '0' && r <= '9' && i > 0:
+			// ok after first char
+		default:
+			return false
+		}
+	}
+	return true
 }

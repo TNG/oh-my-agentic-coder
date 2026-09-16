@@ -364,7 +364,7 @@ func runRegister(args []string, env *Env) int {
 			[]string{
 				sOut.dim("omac does not run this for you. Inspect it, then run:"),
 				"",
-				"    " + sOut.paint("bash "+installScriptAbs, ansiBold, ansiGreen),
+				"    " + sOut.paint("bash "+fmt.Sprintf("%q", installScriptAbs), ansiBold, ansiGreen),
 			})
 	}
 	return ExitOK

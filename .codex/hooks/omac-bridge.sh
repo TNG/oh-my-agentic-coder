@@ -72,7 +72,7 @@ render_manifest() {
     def sanitize_field: gsub("[\\n\\r]"; " ") | gsub("\\*"; "") | gsub("[[:cntrl:]]"; "");
     def safe_secrets_hint(name; missing):
       if (name | test("^[a-z0-9][a-z0-9-]*$"))
-      then missing | map("omac secrets set " + name + " " + .) | join(" ; ")
+      then [missing[] | select(test("^[A-Z_][A-Z0-9_]*$"))] | map("omac secrets set " + name + " " + .) | join(" ; ")
       else "" end;
     "## omac skills available in this workspace\n" +
     "\n" +

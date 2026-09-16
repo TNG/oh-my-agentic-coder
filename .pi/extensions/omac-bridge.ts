@@ -101,7 +101,9 @@ function sanitizeField(s: string): string {
 
 function secretsHint(name: string, missing: string[]): string {
   if (!/^[a-z0-9][a-z0-9-]*$/.test(name)) return ""
-  return missing.map((m) => `omac secrets set ${name} ${m}`).join(" ; ")
+  const safe = missing.filter((m) => /^[A-Z_][A-Z0-9_]*$/.test(m))
+  if (safe.length === 0) return ""
+  return safe.map((m) => `omac secrets set ${name} ${m}`).join(" ; ")
 }
 
 function renderManifest(manifest: DirManifest): string {
