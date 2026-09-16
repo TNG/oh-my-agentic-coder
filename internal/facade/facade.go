@@ -397,7 +397,7 @@ func (f *Facade) handle(w http.ResponseWriter, r *http.Request) {
 	if f.FacadeToken != "" && isTCPRemote(r) {
 		got := r.Header.Get("X-Omac-Facade-Token")
 		if got == "" || subtle.ConstantTimeCompare([]byte(got), []byte(f.FacadeToken)) != 1 {
-			http.Error(w, "omac: unauthorized", http.StatusUnauthorized)
+			http.Error(w, "omac: unauthorized (send X-Omac-Facade-Token from $OMAC_FACADE_TOKEN)", http.StatusUnauthorized)
 			return
 		}
 	}

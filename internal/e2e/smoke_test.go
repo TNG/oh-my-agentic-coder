@@ -364,8 +364,19 @@ func runServeProbe(t *testing.T, h harnessConfig, omacBin, home, workdir, cwd st
 
 	client := &http.Client{Timeout: 15 * time.Second}
 
+	// The control plane requires the per-session control token. Normal-mode
+	// serve deliberately never prints it to stdout (only --no-inner does,
+	// and this probe needs the real inner daemon); it publishes it in the
+	// control-info file instead — the same channel host-side omac CLI
+	// commands use. The probe owns HOME, so reading it is sanctioned.
+	controlToken, err := waitForServeControlToken(home, waitCh, serveReadyTimeout)
+	if err != nil {
+		return fmt.Errorf("read serve control token: %w\nSTDERR:\n%s",
+			err, tailLines(stderr.String(), 60))
+	}
+
 	// Activate the workdir and assert the manifest carries a namespacing token.
-	manifest, err := serveControlPost(client, controlBase+"/__omac__/activate", workdir)
+	manifest, err := serveControlPost(client, controlBase+"/__omac__/activate", workdir, controlToken)
 	if err != nil {
 		return fmt.Errorf("activate %s: %w\nSTDERR:\n%s", workdir, err, tailLines(stderr.String(), 60))
 	}
@@ -378,7 +389,7 @@ func runServeProbe(t *testing.T, h harnessConfig, omacBin, home, workdir, cwd st
 	}
 
 	// The dir must now show up as active over the control plane.
-	dirsBody, err := serveControlGet(client, controlBase+"/__omac__/dirs")
+	dirsBody, err := serveControlGet(client, controlBase+"/__omac__/dirs", controlToken)
 	if err != nil {
 		return fmt.Errorf("GET /__omac__/dirs: %w", err)
 	}
@@ -387,7 +398,7 @@ func runServeProbe(t *testing.T, h harnessConfig, omacBin, home, workdir, cwd st
 	}
 
 	// Deactivate cleanly.
-	if _, err := serveControlPost(client, controlBase+"/__omac__/deactivate", workdir); err != nil {
+	if _, err := serveControlPost(client, controlBase+"/__omac__/deactivate", workdir, controlToken); err != nil {
 		return fmt.Errorf("deactivate %s: %w", workdir, err)
 	}
 
@@ -515,11 +526,57 @@ func waitForStderr(stderr fmt.Stringer, substr string, waitCh <-chan error, time
 	}
 }
 
+// waitForServeControlToken polls the control-info file a running `omac serve`
+// writes to <home>/.config/omac/serve-control.json until the per-session
+// control token appears. Fails fast if serve exits first or the timeout
+// elapses. The file is written before the control-plane URL is announced on
+// stdout, so in practice it is already there when the caller starts polling.
+func waitForServeControlToken(home string, waitCh <-chan error, timeout time.Duration) (string, error) {
+	path := filepath.Join(home, ".config", "omac", "serve-control.json")
+	deadline := time.After(timeout)
+	tick := time.NewTicker(50 * time.Millisecond)
+	defer tick.Stop()
+	read := func() string {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return ""
+		}
+		var ci struct {
+			ControlToken string `json:"control_token"`
+		}
+		if json.Unmarshal(data, &ci) != nil || ci.ControlToken == "" {
+			return ""
+		}
+		return ci.ControlToken
+	}
+	for {
+		if tok := read(); tok != "" {
+			return tok, nil
+		}
+		select {
+		case werr := <-waitCh:
+			if tok := read(); tok != "" {
+				return tok, nil
+			}
+			return "", fmt.Errorf("omac serve exited before publishing a control token: %v", werr)
+		case <-deadline:
+			return "", fmt.Errorf("no control token at %s within %v", path, timeout)
+		case <-tick.C:
+		}
+	}
+}
+
 // serveControlPost POSTs {"dir": dir} to a control-plane endpoint and returns
 // the decoded JSON response, erroring on any non-200 status.
-func serveControlPost(client *http.Client, url, dir string) (map[string]any, error) {
+func serveControlPost(client *http.Client, url, dir, controlToken string) (map[string]any, error) {
 	body, _ := json.Marshal(map[string]string{"dir": dir})
-	resp, err := client.Post(url, "application/json", bytes.NewReader(body))
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("content-type", "application/json")
+	req.Header.Set("X-Omac-Control-Token", controlToken)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -535,8 +592,13 @@ func serveControlPost(client *http.Client, url, dir string) (map[string]any, err
 }
 
 // serveControlGet GETs a control-plane endpoint and returns the raw body.
-func serveControlGet(client *http.Client, url string) (string, error) {
-	resp, err := client.Get(url)
+func serveControlGet(client *http.Client, url, controlToken string) (string, error) {
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("X-Omac-Control-Token", controlToken)
+	resp, err := client.Do(req)
 	if err != nil {
 		return "", err
 	}

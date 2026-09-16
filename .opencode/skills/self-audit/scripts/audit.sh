@@ -40,6 +40,11 @@ set -u
 AUDIT_BASE="${OMAC_AUDIT_BASE:-}"
 # echo-rest sidecar base, if registered alongside self-audit.
 ECHO_BASE="${OMAC_ECHO_BASE:-}"
+# Facade TCP transport bearer token (see sandbox briefing). Empty on
+# omac versions that predate facade authentication.
+FACADE_TOKEN="${OMAC_FACADE_TOKEN:-}"
+_facade_auth=""
+[ -n "$FACADE_TOKEN" ] && _facade_auth="-H X-Omac-Facade-Token: $FACADE_TOKEN"
 
 # Write probe output to a file so the test harness can read results
 # directly from disk. Some harnesses (claude-code, copilot) render tool
@@ -215,7 +220,7 @@ echo "--- curl \$OMAC_AUDIT_BASE/whoami ---"
 if [ -z "$AUDIT_BASE" ]; then
     echo "OMAC_AUDIT_BASE not set"
 else
-    curl -sS "$AUDIT_BASE/whoami" 2>&1 || true
+    curl -sS $_facade_auth "$AUDIT_BASE/whoami" 2>&1 || true
 fi
 echo "=== END: sidecar ==="
 
@@ -225,7 +230,7 @@ echo "--- curl \$OMAC_ECHO_BASE/whoami (cross-skill isolation) ---"
 if [ -z "$ECHO_BASE" ]; then
     echo "OMAC_ECHO_BASE not set (echo-rest not registered)"
 else
-    curl -sS "$ECHO_BASE/whoami" 2>&1 || true
+    curl -sS $_facade_auth "$ECHO_BASE/whoami" 2>&1 || true
 fi
 echo "=== END: xskill ==="
 

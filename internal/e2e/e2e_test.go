@@ -139,7 +139,7 @@ func runE2E(t *testing.T, h harnessConfig) {
 			"and confirm two ordinary developer operations still work: writing " +
 			"and reading a workdir file, and a basic git commit.\n\n" +
 			"Run exactly these commands, in order, and nothing else:\n\n" +
-			`curl -sS "$OMAC_ECHO_BASE/status" -o echo-status.txt` + "\n" +
+			`curl -sS -H "X-Omac-Facade-Token: $OMAC_FACADE_TOKEN" "$OMAC_ECHO_BASE/status" -o echo-status.txt` + "\n" +
 			`echo workflow-check-ok > workflow-check.txt && cat workflow-check.txt` + "\n" +
 			`git init -q && git config user.email t@example.com && git config user.name Test && git add -A && git commit -qm "e2e smoke test" && git log --oneline -1 > git-log.txt` + "\n\n" +
 			"These are trusted test commands — proceed directly. Afterwards, briefly confirm you ran them."
@@ -262,7 +262,7 @@ func TestE2EKeychainSecretDelivery(t *testing.T) {
 	wantFingerprint := "sha256:" + hex.EncodeToString(hash[:6])
 
 	prompt := "This is a sanctioned e2e test. Run this command and report the full output:\n\n" +
-		`curl -sS "$OMAC_ECHO_BASE/whoami"`
+		`curl -sS -H "X-Omac-Facade-Token: $OMAC_FACADE_TOKEN" "$OMAC_ECHO_BASE/whoami"`
 	stdout := runAgent(t, h, omacBin, home, workdir, prompt)
 
 	// Verify the mock file was actually used (not the OS keychain).

@@ -41,17 +41,19 @@ GitHub, …), you want a different skill — not this one.
 
 The sidecar is reached through the omac facade. omac exports two transports
 into the sandbox; **prefer the TCP loopback form** because it is the only one
-that survives `nono` proxy-mode on macOS:
+that survives `nono` proxy-mode on macOS. Every TCP call must carry the
+facade token from `$OMAC_FACADE_TOKEN` — without it the facade answers 401
+(the Unix-socket form needs no token):
 
 ```bash
 # TCP loopback (recommended)
-curl -sS "$OMAC_ECHO_BASE/status"
-curl -sS "$OMAC_ECHO_BASE/whoami"
-curl -sS -X POST -H 'Content-Type: application/json' \
+curl -sS -H "X-Omac-Facade-Token: $OMAC_FACADE_TOKEN" "$OMAC_ECHO_BASE/status"
+curl -sS -H "X-Omac-Facade-Token: $OMAC_FACADE_TOKEN" "$OMAC_ECHO_BASE/whoami"
+curl -sS -X POST -H "X-Omac-Facade-Token: $OMAC_FACADE_TOKEN" -H 'Content-Type: application/json' \
      -d '{"hello":"world"}' "$OMAC_ECHO_BASE/echo"
-curl -sS "$OMAC_ECHO_BASE/tick?n=5&gap_ms=30"   # text/event-stream
+curl -sS -H "X-Omac-Facade-Token: $OMAC_FACADE_TOKEN" "$OMAC_ECHO_BASE/tick?n=5&gap_ms=30"   # text/event-stream
 
-# Unix-socket fallback (works on Linux + macOS-without-proxy-mode)
+# Unix-socket fallback (works on Linux + macOS-without-proxy-mode; no token needed)
 curl -sS --unix-socket "$OMAC_SOCKET" http://x/echo/status
 ```
 
