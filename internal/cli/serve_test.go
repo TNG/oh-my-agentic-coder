@@ -126,12 +126,26 @@ func TestActivateIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("activate 1: %v", err)
 	}
+	token, _ := m1["dir_token"].(string)
+	if token == "" {
+		t.Fatal("first activation returned no dir_token")
+	}
 	m2, err := s.activate(wd)
 	if err != nil {
 		t.Fatalf("activate 2: %v", err)
 	}
-	if m1["dir_token"] != m2["dir_token"] {
-		t.Errorf("token changed on re-activate: %v vs %v", m1["dir_token"], m2["dir_token"])
+	// dir_token must not appear in the second response; the token is issued
+	// exactly once so a caller who knows only the directory path cannot
+	// retrieve the namespace key of an already-active session.
+	if _, present := m2["dir_token"]; present {
+		t.Errorf("re-activate returned dir_token %q: token must be issued only on first activation", m2["dir_token"])
+	}
+	// The token is stable on the server side.
+	s.mu.RLock()
+	stored := s.dirs[wd].Token
+	s.mu.RUnlock()
+	if stored != token {
+		t.Errorf("stored token %q != first-activation token %q", stored, token)
 	}
 	if len(s.dirs) != 1 {
 		t.Errorf("dirs count = %d, want 1", len(s.dirs))

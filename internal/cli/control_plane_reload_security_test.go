@@ -106,10 +106,13 @@ func TestSecurityReloadCannotReplaceApprovedSkillRoute(t *testing.T) {
 	r, baseURL := newLiveReloader(t, workdir)
 
 	// A host-approved skill, already up and serving on mount "slack".
+	// Owner is set so AddRoute can enforce that a different skill cannot
+	// claim this mount later (the route ownership guard in facade.AddRoute).
 	r.facade.AddRoute(facade.Route{
 		Mount:        "slack",
 		UpstreamPort: portOf(t, victim.URL),
 		Skill:        "slack",
+		Owner:        "slack",
 		State:        facade.RouteReady,
 	})
 	r.markMounted("slack", "slack")

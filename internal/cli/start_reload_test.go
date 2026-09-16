@@ -262,6 +262,7 @@ func TestStartReloaderActivateNot404(t *testing.T) {
 	body := `{"dir":"` + r.env.Workdir + `"}`
 	req := httptest.NewRequest("POST", "/__omac__/activate", stringReader(body))
 	req.Header.Set("content-type", "application/json")
+	r.addTestToken(req)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 	if rec.Code != 200 {
@@ -309,16 +310,27 @@ func TestStartReloaderSessionReport(t *testing.T) {
 	}
 }
 
-// startTestMux builds the same routes startControlPlane wires, for testing.
+// startTestMux builds the same routes startControlPlane wires for testing,
+// including the same auth middleware. Callers that hit auth-gated routes must
+// add the token via addTestToken.
 func (r *startReloader) startTestMux() *http.ServeMux {
+	if r.controlToken == "" {
+		r.controlToken = "test-token"
+	}
+	auth := func(h http.HandlerFunc) http.HandlerFunc { return requireControlTokenStart(r.controlToken, h) }
 	m := http.NewServeMux()
-	m.HandleFunc("/__omac__/reload", r.handleReload)
+	m.HandleFunc("/__omac__/reload", auth(r.handleReload))
 	m.HandleFunc("/__omac__/dirs", r.handleDirs)
-	m.HandleFunc("/__omac__/activate", r.handleActivate)
-	m.HandleFunc("/__omac__/deactivate", r.handleActivate)
-	m.HandleFunc("/__omac__/reload-global", r.handleReloadGlobalStart)
+	m.HandleFunc("/__omac__/activate", auth(r.handleActivate))
+	m.HandleFunc("/__omac__/deactivate", auth(r.handleActivate))
+	m.HandleFunc("/__omac__/reload-global", auth(r.handleReloadGlobalStart))
 	m.HandleFunc("/__omac__/session", r.handleSession)
 	return m
+}
+
+// addTestToken adds the test control token to a request's headers.
+func (r *startReloader) addTestToken(req *http.Request) {
+	req.Header.Set("X-Omac-Control-Token", r.controlToken)
 }
 
 func stringReader(s string) *strings.Reader { return strings.NewReader(s) }
