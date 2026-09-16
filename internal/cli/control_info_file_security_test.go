@@ -116,6 +116,11 @@ func TestSecurityControlInfoWriteDoesNotFollowSymlink(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Ensure the parent dir exists before planting (mirrors what an attacker
+	// with write access to the directory would do).
+	if err := os.MkdirAll(filepath.Dir(controlInfoPath()), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	// The staging path the publisher uses, squatted before serve starts.
 	if err := os.Symlink(victim, controlInfoPath()+".tmp"); err != nil {
 		t.Fatalf("plant symlink: %v", err)
