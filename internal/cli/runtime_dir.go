@@ -11,14 +11,12 @@ import (
 // per-session runtime directories. It is never mounted into any sandbox.
 //
 //   - Linux: $XDG_RUNTIME_DIR/omac when set, else $HOME/.local/state/omac/run
-//   - macOS: $HOME/Library/Application Support/omac/run
+//   - macOS: $TMPDIR/omac — launchd sets $TMPDIR to a per-user 0700 directory
+//     under /var/folders/…/T/, keeping the socket path well under the 104-char
+//     macOS Unix socket limit. This is not the shared /tmp.
 func runtimeDirBase() (string, error) {
 	if runtime.GOOS == "darwin" {
-		home, err := os.UserHomeDir()
-		if err != nil || home == "" {
-			return "", fmt.Errorf("runtime dir: cannot resolve home: %w", err)
-		}
-		return filepath.Join(home, "Library", "Application Support", "omac", "run"), nil
+		return filepath.Join(os.TempDir(), "omac"), nil
 	}
 	if xdg := os.Getenv("XDG_RUNTIME_DIR"); xdg != "" {
 		return filepath.Join(xdg, "omac"), nil

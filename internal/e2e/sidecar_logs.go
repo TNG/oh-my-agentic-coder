@@ -20,10 +20,7 @@ func sidecarLogGlob() string {
 
 func sidecarLogBase() string {
 	if runtime.GOOS == "darwin" {
-		if home, err := os.UserHomeDir(); err == nil && home != "" {
-			return filepath.Join(home, "Library", "Application Support", "omac", "run")
-		}
-		return ""
+		return filepath.Join(os.TempDir(), "omac")
 	}
 	if xdg := os.Getenv("XDG_RUNTIME_DIR"); xdg != "" {
 		return filepath.Join(xdg, "omac")

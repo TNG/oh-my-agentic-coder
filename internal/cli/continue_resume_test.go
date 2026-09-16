@@ -286,9 +286,9 @@ func TestLaunchCacheInjectsSelectedScope(t *testing.T) {
 				}
 				return
 			}
-			cleared, err := toolcache.ClearShared()
+			cleared, err := toolcache.ClearWorkdir(capture.workdir)
 			if err != nil {
-				t.Fatalf("clear shared cache: %v", err)
+				t.Fatalf("clear workdir cache: %v", err)
 			}
 			if cleared.Status != toolcache.ClearRemoved {
 				t.Errorf("clear status = %q, want %q (launch should close the scope)", cleared.Status, toolcache.ClearRemoved)
@@ -408,6 +408,9 @@ func launchCacheCaptureForHarness(t *testing.T, harnessName string, noSandbox, e
 	}
 	t.Cleanup(func() { os.RemoveAll(shortTmp) })
 	t.Setenv("TMPDIR", shortTmp)
+	// Keep the runtime dir under shortTmp so the bridge socket path stays
+	// short enough for the kernel's Unix socket limit (104/108 bytes).
+	t.Setenv("XDG_RUNTIME_DIR", shortTmp)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
