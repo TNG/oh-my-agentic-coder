@@ -452,6 +452,12 @@ func runServe(args []string, env *Env) int {
 	if noInner {
 		auditor.Emit(audit.SessionStart(env.Version, harness.Name, profName, ""))
 		fmt.Fprintf(env.Stdout, "OMAC_CONTROL_BASE=%s\n", controlURL)
+		// Safe to print the tokens here: --no-inner has no sandbox child, so
+		// stdout is owned by the same host process that launched omac and that
+		// legitimately needs these tokens to drive the control plane and facade.
+		// In normal mode the tokens are injected only via the child's env.
+		fmt.Fprintf(env.Stdout, "OMAC_CONTROL_TOKEN=%s\n", controlToken)
+		fmt.Fprintf(env.Stdout, "OMAC_FACADE_TOKEN=%s\n", facadeToken)
 		<-ctx.Done()
 		auditor.Emit(audit.SessionStop(ExitOK))
 		return ExitOK

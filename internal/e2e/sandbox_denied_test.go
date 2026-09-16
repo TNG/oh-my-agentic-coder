@@ -70,29 +70,44 @@ func TestE2ESandboxDeniedAnswersOnDefaultLaunch(t *testing.T) {
 	})
 
 	facadePortCh := make(chan string, 1)
+	facadeTokenCh := make(chan string, 1)
 	go func() {
 		scanner := bufio.NewScanner(stdoutPipe)
 		for scanner.Scan() {
-			if m := facadePortRe.FindStringSubmatch(scanner.Text()); m != nil {
+			line := scanner.Text()
+			if m := facadePortRe.FindStringSubmatch(line); m != nil {
 				select {
 				case facadePortCh <- m[1]:
 				default:
 				}
 			}
+			if m := facadeTokenRe.FindStringSubmatch(line); m != nil {
+				select {
+				case facadeTokenCh <- m[1]:
+				default:
+				}
+			}
 		}
 	}()
-	var facadePort string
+	var facadePort, facadeToken string
 	select {
 	case facadePort = <-facadePortCh:
 	case <-time.After(15 * time.Second):
 		t.Fatalf("omac serve did not print facade port within 15s; stderr:\n%s", stderrBuf.String())
+	}
+	select {
+	case facadeToken = <-facadeTokenCh:
+	case <-time.After(15 * time.Second):
+		t.Fatalf("omac serve did not print OMAC_FACADE_TOKEN within 15s; stderr:\n%s", stderrBuf.String())
 	}
 
 	client := &http.Client{Timeout: 10 * time.Second}
 	query := func(path string) (int, map[string]any) {
 		t.Helper()
 		url := fmt.Sprintf("http://127.0.0.1:%s/sandbox/denied?path=%s", facadePort, path)
-		resp, err := client.Get(url)
+		req, _ := http.NewRequest(http.MethodGet, url, nil)
+		req.Header.Set("X-Omac-Facade-Token", facadeToken)
+		resp, err := client.Do(req)
 		if err != nil {
 			t.Fatalf("GET %s: %v", url, err)
 		}

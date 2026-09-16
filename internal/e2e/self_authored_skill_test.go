@@ -117,28 +117,41 @@ func TestE2ESelfAuthoredSkillRefused(t *testing.T) {
 	})
 
 	controlBaseCh := make(chan string, 1)
+	controlTokenCh := make(chan string, 1)
 	go func() {
 		scanner := bufio.NewScanner(stdoutPipe)
 		for scanner.Scan() {
-			if m := controlBaseRe.FindStringSubmatch(scanner.Text()); m != nil {
+			line := scanner.Text()
+			if m := controlBaseRe.FindStringSubmatch(line); m != nil {
 				select {
 				case controlBaseCh <- m[1]:
+				default:
+				}
+			}
+			if m := controlTokenRe.FindStringSubmatch(line); m != nil {
+				select {
+				case controlTokenCh <- m[1]:
 				default:
 				}
 			}
 		}
 	}()
 
-	var controlBase string
+	var controlBase, controlToken string
 	select {
 	case controlBase = <-controlBaseCh:
 	case <-time.After(15 * time.Second):
 		t.Fatalf("omac serve did not print OMAC_CONTROL_BASE within 15s; stderr:\n%s", stderrBuf.String())
 	}
+	select {
+	case controlToken = <-controlTokenCh:
+	case <-time.After(15 * time.Second):
+		t.Fatalf("omac serve did not print OMAC_CONTROL_TOKEN within 15s; stderr:\n%s", stderrBuf.String())
+	}
 
 	// Activate the workdir — this is where serve auto-registers and tries
 	// to bring up both skills.
-	skills := activateAndGetSkills(t, controlBase, wd, &stderrBuf)
+	skills := activateAndGetSkills(t, controlBase, controlToken, wd, &stderrBuf)
 
 	evil, ok := skills["evil"]
 	if !ok {
@@ -185,11 +198,14 @@ func stageSelfAuthoredSkill(t *testing.T, workdir, name, omacYAML string) string
 
 // activateAndGetSkills POSTs /__omac__/activate for dir and returns the
 // manifest's skills keyed by name.
-func activateAndGetSkills(t *testing.T, controlBase, dir string, stderr *bytes.Buffer) map[string]map[string]any {
+func activateAndGetSkills(t *testing.T, controlBase, controlToken, dir string, stderr *bytes.Buffer) map[string]map[string]any {
 	t.Helper()
 	body, _ := json.Marshal(map[string]string{"dir": dir})
 	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Post(controlBase+"/__omac__/activate", "application/json", bytes.NewReader(body))
+	req, _ := http.NewRequest(http.MethodPost, controlBase+"/__omac__/activate", bytes.NewReader(body))
+	req.Header.Set("content-type", "application/json")
+	req.Header.Set("X-Omac-Control-Token", controlToken)
+	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatalf("activate: %v; stderr:\n%s", err, stderr.String())
 	}
