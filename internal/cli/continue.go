@@ -45,7 +45,7 @@ func buildContinueOpts(args []string, env *Env) (launchOpts, int) {
 				"omac continue: harness %q does not support resuming a specific session id\n", opts.harness.Name)
 			return launchOpts{}, ExitMisuse
 		}
-		inner = append([]string(nil), sess.ResumeByIDArgs(id)...)
+		inner = buildResumeInnerArgs(sess, id, nil)
 	} else {
 		inner = append([]string(nil), sess.ContinueArgs...)
 	}
