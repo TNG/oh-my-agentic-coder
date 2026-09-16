@@ -48,15 +48,15 @@
 #   internal/cli/poc_self_skill_escape_test.go:256 TestGrandfatherClosesFirstUpgradeWindow
 #                                                 (breaks if start.go's auto-register-before-
 #                                                 grandfather ordering is corrected)
-#   internal/audit/read_test.go:10-32            TestReadLogSkipsBlankAndMalformedLines
-#                                                 (asserts a malformed line is silently skipped;
-#                                                 must preserve the legitimate trailing-line case)
+#   internal/audit/read_test.go                  TestReadLogSkipsBlankAndMalformedLines
+#                                                 (renamed + split into TestReadLogSkipsBlankLines,
+#                                                 TestReadLogReportsMalformedMiddleLine,
+#                                                 TestReadLogToleratesTrailingPartialLine — plan 10)
 #   internal/audit/audit_test.go:232-245         TestFailOpenWarnsOnce
-#                                                 (asserts exactly one warning ever; depends on
-#                                                 which remedy #79 takes)
-#   internal/cli/config_cmd_test.go:156,171,221  TestSecretFingerprint_*
-#                                                 (pin the exact unsalted digest; breaks if the
-#                                                 fingerprint is salted or removed)
+#                                                 (warnOnce still fires exactly once; broken flag
+#                                                 removed by plan 10, warnOnce behaviour unchanged)
+#   internal/cli/config_cmd_test.go              TestSecretFingerprint_*
+#                                                 (updated to assert <set>/<absent> — plan 10)
 
 # Known gaps
 # ----------
@@ -131,14 +131,7 @@
 # retention is too long) rather than a clear-cut assertion, and are left
 # for a human policy decision instead of a test.
 
-internal/audit TestSecurityAgentCannotChooseRecordSize
-internal/audit TestSecurityAuditRecordIsWrittenAtomically
-internal/audit TestSecurityAuditSinkDoesNotStaySilentlyDead
-internal/audit TestSecurityReadLogReportsMalformedRecords
-internal/cli TestSecurityDiagnoseRedactsProxyCredentials
 internal/cli TestSecurityRegisterOutputStripsControlSequences
 internal/cli TestSecurityReloadDoesNotWalkArbitraryHostPaths
 internal/manifest TestSecurityManifestRendersSkillNameInert
 internal/netprompt TestSecurityDialogTextRendersPayloadInert
-internal/sandboxrun TestSecurityDiagnosticsLogIsNotWorldReadable
-internal/sandboxrun TestSecurityInvalidUpstreamProxyRedactsUserinfo
