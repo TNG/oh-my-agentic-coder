@@ -1,9 +1,10 @@
+//go:build e2e || e2e_fast
+
 package e2e
 
 import (
 	"fmt"
 	"os"
-	"regexp"
 	"strconv"
 	"strings"
 )
@@ -13,30 +14,11 @@ import (
 // Bump these when testing a new harness release or model.
 // Set E2E_USE_LATEST=1 in CI or locally to skip pinning
 // and install the latest version instead (for fast testing).
-
-// Harness versions (last-known-good as of 2026-07-01).
-var harnessVersions = map[string]string{
-	"opencode":    "opencode-ai@1.17.12",
-	"claude-code": "@anthropic-ai/claude-code@2.1.197",
-	"codex":       "@openai/codex@0.142.5",
-	"copilot":     "@github/copilot@1.0.68",
-	"pi":          "@earendil-works/pi-coding-agent@0.80.6",
-	"codewhale":   "codewhale@0.9.1",
-}
-
-// versionEnvVar maps a harness name to the env var that can override its
-// pinned package spec for a single run, without editing this file. Wired
-// from the e2e workflow's workflow_dispatch *_version inputs
-// (.github/workflows/e2e.yml); unset in the scheduled run, so that run
-// always uses the harnessVersions map above.
-var versionEnvVar = map[string]string{
-	"opencode":    "E2E_VERSION_OPENCODE",
-	"claude-code": "E2E_VERSION_CLAUDE_CODE",
-	"codex":       "E2E_VERSION_CODEX",
-	"copilot":     "E2E_VERSION_COPILOT",
-	"pi":          "E2E_VERSION_PI",
-	"codewhale":   "E2E_VERSION_CODEWHALE",
-}
+//
+// harnessVersions, versionEnvVar, safePackageSpecRE, pinnedPackage,
+// useLatest and lastIndexByte live in pinned_package.go (no build tag)
+// so TestSecurityPinnedPackageRejectsCallerChosenSpec can reach them
+// from the default build.
 
 // Model identifiers per harness. Read through modelID(), never directly, so
 // a run's workflow_dispatch override is honoured.
@@ -243,53 +225,4 @@ func validateModel(harness, model string) error {
 	return fmt.Errorf("claude-code cannot run model %q: it accepts only %s models "+
 		"(override it separately via E2E_MODEL_CLAUDE_CODE / the claude_code_model workflow input)",
 		model, strings.Join(claudeCodeModelFamilies, " or "))
-}
-
-// safePackageSpecRE matches the only shape a pinned install spec should take:
-// a package name followed by an explicit version. Git/tarball URLs, bare
-// names, and shell-metacharacter strings all fail this check.
-const safePackageSpecRE = `^[a-zA-Z0-9_./@-]+@[a-zA-Z0-9_.+-]+$`
-
-// pinnedPackage returns the package spec for a harness.
-// When E2E_USE_LATEST=1, returns the bare package name (latest), ignoring
-// any per-harness version override. Otherwise, a non-empty versionEnvVar
-// override takes precedence over the harnessVersions map, so a single run
-// can test a candidate version without editing this file.
-//
-// An override that does not match <name>@<version> is silently ignored and
-// the pinned map value is used instead, so a workflow_dispatch input cannot
-// redirect the install to an arbitrary URL or a different package entirely.
-func pinnedPackage(harness string) string {
-	if useLatest() {
-		// Strip @version from "pkg@1.2.3" → "pkg".
-		pkg := harnessVersions[harness]
-		if i := lastIndexByte(pkg, '@'); i > 0 {
-			return pkg[:i]
-		}
-		return pkg
-	}
-	if ev, ok := versionEnvVar[harness]; ok {
-		if v := os.Getenv(ev); v != "" {
-			if matched, _ := regexp.MatchString(safePackageSpecRE, v); matched {
-				return v
-			}
-		}
-	}
-	return harnessVersions[harness]
-}
-
-// useLatest returns true when E2E_USE_LATEST=1 is set, which
-// skips version pinning and installs the latest harness release.
-func useLatest() bool {
-	return os.Getenv("E2E_USE_LATEST") != ""
-}
-
-// lastIndexByte returns the index of the last occurrence of b in s, or -1.
-func lastIndexByte(s string, b byte) int {
-	for i := len(s) - 1; i >= 0; i-- {
-		if s[i] == b {
-			return i
-		}
-	}
-	return -1
 }
