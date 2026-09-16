@@ -1,0 +1,49 @@
+# Security Finalize — the tail end of the remediation pipeline
+# (.github/scripts/security_remediate/finalize.sh).
+#
+# The Security Remediate workflow runs when a scan completes or on dispatch,
+# and neither trigger re-fires on its own — so this small workflow babysits
+# the pull requests the remediation runs leave behind. Daily (plus manual
+# dispatch): tick the overview issue's checkboxes for merged plans, append a
+# status section to the private archive, close the overview issue once every
+# plan of the current generation merged. Cheap no-op when nothing moved; it
+# is the "runs until all planned work has merged" stage of the plan.
+#
+# Disclosure model: same as security-remediate.yml — public logs and the
+# step summary carry counts and plan ids only; per-plan detail goes to the
+# private archive repo.
+name: Security Finalize
+
+on:
+  schedule:
+    - cron: '23 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: read # the PAT carries the write permissions; this job never writes with github.token
+
+concurrency:
+  group: security-finalize
+  cancel-in-progress: false
+
+jobs:
+  finalize:
+    name: Finalize (merge states, overview ticks, private report)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      SECURITY_SCAN_PAT: ${{ secrets.SECURITY_SCAN_PAT }}
+      ARCHIVE_REPO: ${{ secrets.SECURITY_ARCHIVE_REPO }}
+      # Ticking and closing the overview issue needs issues:write — the PAT,
+      # same as the remediation workflow's issue job.
+      GH_TOKEN: ${{ secrets.SECURITY_SCAN_PAT }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          path: repo
+
+      - name: Finalize
+        run: bash repo/.github/scripts/security_remediate/finalize.sh
