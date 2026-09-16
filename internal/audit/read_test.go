@@ -7,11 +7,10 @@ import (
 	"testing"
 )
 
-func TestReadLogSkipsBlankAndMalformedLines(t *testing.T) {
+func TestReadLogSkipsBlankLines(t *testing.T) {
 	in := strings.Join([]string{
 		`{"ts":"2026-07-18T10:00:00Z","run_id":"r1","type":"session.start"}`,
 		``,
-		`{ not json`,
 		`{"ts":"2026-07-18T10:00:01Z","run_id":"r1","type":"net.decision","host":"a.example","allow":false}`,
 		`   `,
 	}, "\n")
@@ -21,13 +20,48 @@ func TestReadLogSkipsBlankAndMalformedLines(t *testing.T) {
 		t.Fatalf("ReadLog: %v", err)
 	}
 	if len(events) != 2 {
-		t.Fatalf("want 2 valid events (blank+malformed skipped), got %d: %+v", len(events), events)
+		t.Fatalf("want 2 valid events (blank lines skipped), got %d: %+v", len(events), events)
 	}
 	if events[1].Type != TypeNetDecision || events[1].Host != "a.example" {
 		t.Fatalf("net.decision decoded wrong: %+v", events[1])
 	}
 	if events[1].Allow == nil || *events[1].Allow {
 		t.Fatalf("allow pointer should decode to false, got %v", events[1].Allow)
+	}
+}
+
+func TestReadLogReportsMalformedMiddleLine(t *testing.T) {
+	// A malformed line in the middle (not the last line) must produce a
+	// non-nil error while still returning the surrounding valid records.
+	in := strings.Join([]string{
+		`{"ts":"2026-07-18T10:00:00Z","run_id":"r1","type":"session.start"}`,
+		`{ not json`,
+		`{"ts":"2026-07-18T10:00:01Z","run_id":"r1","type":"net.decision","host":"a.example","allow":false}`,
+	}, "\n")
+
+	events, err := ReadLog(strings.NewReader(in))
+	if err == nil {
+		t.Error("expected non-nil error for malformed middle line, got nil")
+	}
+	if len(events) != 2 {
+		t.Fatalf("want 2 valid events despite corrupt middle line, got %d: %+v", len(events), events)
+	}
+}
+
+func TestReadLogToleratesTrailingPartialLine(t *testing.T) {
+	// A malformed trailing line must be silently tolerated (reader opened
+	// mid-append is the normal concurrent-access case).
+	in := strings.Join([]string{
+		`{"ts":"2026-07-18T10:00:00Z","run_id":"r1","type":"session.start"}`,
+		`{ partial`,
+	}, "\n")
+
+	events, err := ReadLog(strings.NewReader(in))
+	if err != nil {
+		t.Fatalf("trailing partial line should not produce an error, got: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("want 1 valid event, got %d: %+v", len(events), events)
 	}
 }
 
