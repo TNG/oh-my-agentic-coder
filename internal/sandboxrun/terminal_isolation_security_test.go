@@ -1,5 +1,3 @@
-//go:build vuln
-
 package sandboxrun
 
 import (

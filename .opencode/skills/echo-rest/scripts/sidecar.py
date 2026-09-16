@@ -54,10 +54,14 @@ def fingerprint(s: str) -> str:
     return "sha256:" + hashlib.sha256(s.encode()).hexdigest()[:12]
 
 
+def _strip_ctrl(s: str) -> str:
+    return "".join(c for c in s if c >= " " or c == "\t")
+
+
 class Handler(BaseHTTPRequestHandler):
     # Quiet the default access log; omac writes its own access log.
     def log_message(self, fmt: str, *args) -> None:  # noqa: D401
-        sys.stderr.write("[echo-rest] " + (fmt % args) + "\n")
+        sys.stderr.write("[echo-rest] " + _strip_ctrl(fmt % args) + "\n")
 
     def _json(self, code: int, body: dict) -> None:
         raw = json.dumps(body).encode()

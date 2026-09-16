@@ -834,13 +834,20 @@ func (f *Facade) writeStatus(w http.ResponseWriter, _ *http.Request) {
 func (f *Facade) proxyHTTP(w http.ResponseWriter, r *http.Request, route *Route, rest string, started time.Time) {
 	upstream := &url.URL{Scheme: "http", Host: upstreamHost(route.UpstreamPort)}
 
-	// Enforce max body bytes for inbound request body (best-effort; SSE has no body).
+	// Enforce max body bytes for inbound request body (best-effort; SSE has no
+	// body). Use limitedBody rather than http.MaxBytesReader: MaxBytesReader
+	// stores the ResponseWriter and calls requestTooLarge() on it from whatever
+	// goroutine triggers the read — which races with ReverseProxy's own
+	// goroutines (e.g. handleUpgradeResponse) that also write to the same
+	// ResponseWriter. limitedBody returns a sentinel error at the cap; the
+	// transport surfaces it as an error to the ReverseProxy ErrorHandler, which
+	// is called from the server goroutine where it is safe to write the response.
 	limit := route.MaxBodyBytes
 	if limit == 0 {
 		limit = f.MaxBodyBytes
 	}
 	if limit > 0 && r.Body != nil {
-		r.Body = http.MaxBytesReader(w, r.Body, limit)
+		r.Body = &limitedBody{ReadCloser: r.Body, n: limit}
 	}
 
 	// Construct the proxy directly with Rewrite so there is no pre-installed
@@ -864,7 +871,10 @@ func (f *Facade) proxyHTTP(w http.ResponseWriter, r *http.Request, route *Route,
 		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
 			reason := "upstream-error"
 			code := http.StatusBadGateway
-			if isTimeout(err) {
+			if errors.Is(err, errBodyTooLarge) {
+				reason = "body-too-large"
+				code = http.StatusRequestEntityTooLarge
+			} else if isTimeout(err) {
 				reason = "timeout"
 				code = http.StatusGatewayTimeout
 			} else if isConnRefused(err) {
@@ -904,7 +914,7 @@ func (f *Facade) proxyUpgrade(w http.ResponseWriter, r *http.Request, route *Rou
 		limit = f.MaxBodyBytes
 	}
 	if limit > 0 {
-		r.Body = http.MaxBytesReader(w, r.Body, limit)
+		r.Body = &limitedBody{ReadCloser: r.Body, n: limit}
 	}
 
 	upstreamAddr := upstreamHost(route.UpstreamPort)
@@ -1073,7 +1083,7 @@ func upstreamHost(port int) string { return "127.0.0.1:" + strconv.Itoa(port) }
 
 // isUpgrade reports whether r is a WebSocket upgrade request.
 // We require WebSocket-specific headers (Sec-WebSocket-Key) so that an
-// arbitrary "Upgrade: h2c" header does not bypass MaxBytesReader and the
+// arbitrary "Upgrade: h2c" header does not bypass the body limit and the
 // timeouts enforced on the ordinary HTTP proxy path.
 func isUpgrade(r *http.Request) bool {
 	if !headerHasToken(r.Header.Get("Connection"), "upgrade") {
@@ -1146,3 +1156,32 @@ func (w *statusCaptureWriter) Flush() {
 
 // (No Hijack method on the wrapper; the facade calls Hijack on the raw
 // ResponseWriter in proxyUpgrade before wrapping would have happened.)
+
+// errBodyTooLarge is returned by limitedBody when the request body exceeds
+// the configured cap. It is distinct from http.MaxBytesError so it can be
+// matched in the ErrorHandler without importing internal/http details.
+var errBodyTooLarge = errors.New("request body too large")
+
+// limitedBody wraps a request body and returns errBodyTooLarge once more
+// than n bytes have been read. Unlike http.MaxBytesReader it does NOT store
+// the ResponseWriter, so it cannot call requestTooLarge() from a transport
+// goroutine and race with any concurrent ResponseWriter write.
+type limitedBody struct {
+	io.ReadCloser
+	n int64
+}
+
+func (b *limitedBody) Read(p []byte) (int, error) {
+	if b.n <= 0 {
+		return 0, errBodyTooLarge
+	}
+	if int64(len(p)) > b.n {
+		p = p[:b.n]
+	}
+	n, err := b.ReadCloser.Read(p)
+	b.n -= int64(n)
+	if b.n <= 0 && err == nil {
+		err = errBodyTooLarge
+	}
+	return n, err
+}

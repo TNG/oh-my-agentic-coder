@@ -1,5 +1,3 @@
-//go:build vuln
-
 package opencodestate
 
 import (

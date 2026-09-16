@@ -170,6 +170,21 @@ export const OmacMultiDirPlugin: Plugin = async ({ client, directory, worktree }
     }
   }
 
+  // Collapse newlines and strip markdown bold markers from a skill-supplied
+  // field so it cannot inject new blocks or forged structure into the manifest.
+  function sanitizeField(s: string): string {
+    return s.replace(/[\n\r]/g, " ").replace(/\*/g, "").replace(/[\x00-\x1f\x7f-\x9f]/g, "")
+  }
+
+  // Only emit omac secrets set when the name is a valid identifier and each
+  // missing var name looks like a conventional env var ([A-Z_][A-Z0-9_]*).
+  function secretsHint(name: string, missing: string[]): string {
+    if (!/^[a-z0-9][a-z0-9-]*$/.test(name)) return ""
+    const safe = missing.filter((m) => /^[A-Z_][A-Z0-9_]*$/.test(m))
+    if (safe.length === 0) return ""
+    return safe.map((m) => `omac secrets set ${name} ${m}`).join(" ; ")
+  }
+
   // Build the system-prompt block describing the skills available to a dir.
   function renderManifest(m: DirManifest): string {
     const hasGlobal = (m.skills ?? []).some((s) => s.scope === "global" && s.state === "ready")
@@ -201,22 +216,24 @@ export const OmacMultiDirPlugin: Plugin = async ({ client, directory, worktree }
     lines.push("")
     let anyUnavailable = false
     for (const sk of (m.skills ?? []).slice().sort((a, b) => a.name.localeCompare(b.name))) {
+      const name = sanitizeField(sk.name)
+      const scope = sanitizeField(sk.scope)
       if (sk.state === "ready" && sk.base) {
-        lines.push(`- **${sk.name}** (${sk.scope}) — ready — base: \`${sk.base}\``)
+        lines.push(`- **${name}** (${scope}) — ready — base: \`${sk.base}\``)
       } else if (sk.state === "pending-credentials") {
         anyUnavailable = true
-        const miss = (sk.missing ?? []).join(", ")
-        const cmds = (sk.missing ?? []).map((n) => `omac secrets set ${sk.name} ${n}`).join(" ; ")
-        lines.push(
-          `- **${sk.name}** (${sk.scope}) — UNAVAILABLE (missing credentials: ${miss}). ` +
-            `**You (the user) must run this in your own terminal** — it prompts for a ` +
+        const miss = (sk.missing ?? []).map(sanitizeField).join(", ")
+        const cmds = secretsHint(sk.name, sk.missing ?? [])
+        const cmdSuffix = cmds
+          ? `**You (the user) must run this in your own terminal** — it prompts for a ` +
             `masked value the agent cannot type:\n  \`${cmds}\`\n  ` +
             `That command auto-reloads the running omac serve, so the skill becomes ` +
-            `available right after; no restart and no manual reload needed.`,
-        )
+            `available right after; no restart and no manual reload needed.`
+          : `**You (the user) must run \`omac register\` from a host terminal to approve this skill.**`
+        lines.push(`- **${name}** (${scope}) — UNAVAILABLE (missing credentials: ${miss}). ` + cmdSuffix)
       } else if (sk.state === "broken") {
         anyUnavailable = true
-        lines.push(`- **${sk.name}** (${sk.scope}) — BROKEN: ${sk.detail ?? "see omac logs"}`)
+        lines.push(`- **${name}** (${scope}) — BROKEN: ${sanitizeField(sk.detail ?? "see omac logs")}`)
       }
     }
     // Tell the agent how to recover WITHOUT a full restart. The running

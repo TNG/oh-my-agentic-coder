@@ -15,6 +15,11 @@ reach a host that is not in your allow list, a native dialog asks you to approve
 or deny it — once, for the session, or permanently. If no dialog is available
 (CI, headless server), the request is denied by default.
 
+The agent can supply an intent reason for each request (via the sandbox API).
+That text is displayed in the dialog but is sanitized before rendering:
+markup characters and control sequences are stripped so the agent cannot forge
+the dialog's own labels or add visual structure that could mislead the decision.
+
 UDP and ICMP egress is blocked by a seccomp filter on Linux (in kernel-enforced
 mode); on macOS and in env-only mode, those protocols are not intercepted.
 
@@ -120,6 +125,11 @@ A skill can only run if it has been explicitly approved by a human running
 `omac register` in a real terminal, or by the marketplace sidecar after
 installing a skill. The sandbox never mounts `~/.config/omac`, so the agent
 cannot create or modify approvals itself.
+
+Skill names and descriptions shown during `omac register` and in the agent's
+system prompt are sanitized before display. Control sequences and markdown
+structure characters are stripped, so a skill directory with a hostile name
+cannot inject fake instructions into the approval output or the system prompt.
 
 Each approval is tied to a specific version of the skill's code via a bundle
 hash. If the skill's files change after approval, the hash no longer matches
