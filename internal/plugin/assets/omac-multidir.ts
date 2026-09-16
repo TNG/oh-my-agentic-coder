@@ -104,9 +104,15 @@ export const OmacMultiDirPlugin: Plugin = async ({ client, directory, worktree }
   async function controlPost(path: string, body: unknown): Promise<DirManifest | null> {
     if (!enabled()) return null
     try {
+      // omac requires the control token on every /__omac__/* call; omitted
+      // when unset so this plugin also works against pre-token omac builds.
+      const headers: Record<string, string> = { "content-type": "application/json" }
+      if (process.env.OMAC_CONTROL_TOKEN) {
+        headers["X-Omac-Control-Token"] = process.env.OMAC_CONTROL_TOKEN
+      }
       const res = await fetch(`${controlBase}${path}`, {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers,
         body: JSON.stringify(body),
       })
       if (!res.ok) {
