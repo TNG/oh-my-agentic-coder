@@ -116,7 +116,9 @@ pin_file="$REPO_DIR/scripts/security-suite-expected-failures.txt"
 missing_pin_entries() {
   local t missing=""
   while IFS= read -r t; do
-    grep -qF "$t" "$pin_file" || missing="$missing$t
+    # A test name is a Go identifier (regex-safe), matched at line end so a
+    # prefix name never counts for a longer one.
+    grep -qE "[[:space:]]${t}\$" "$pin_file" || missing="$missing$t
 "
   done < <(printf '%s\n' "$selected_manifest" | jq -r '.[].tests[]')
   printf '%s' "$missing"
