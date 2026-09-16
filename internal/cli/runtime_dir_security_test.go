@@ -11,28 +11,17 @@ import (
 // Where a session keeps its runtime state.
 //
 // Each `omac start` creates a directory holding the bridge socket the harness
-// talks to, plus sidecar pid files and logs. Its name is the hex of a hash of
-// the workdir, placed directly in the system temp directory — which on Linux
-// is the shared, world-writable /tmp, and which the sandbox baseline grants
-// the confined agent read-write.
-//
-// Naming it after the workdir makes it computable by anyone who knows the
-// workdir, and the agent running in it certainly does. Whoever computes it
-// first owns the path: the directory is created with MkdirAll, which accepts
-// an entry that is already there and leaves its permissions alone, so a
-// pre-placed directory is used as-is rather than rejected. What lands in it is
-// the socket carrying every facade request of the session.
-//
-// The shared temp directory is the platform's, not omac's to change. Which
-// name omac picks inside it is omac's, and a name nobody else can compute
-// cannot be squatted before the session starts.
+// talks to, plus sidecar pid files and logs. Its name was previously derived
+// from the workdir hash, placed directly in shared /tmp, making it predictable
+// and squattable. The fix uses os.MkdirTemp (random suffix) in the user's
+// state directory, which is not shared with or writable by the sandbox.
 
 // TestSecurityRuntimeDirIsNotPredictable asserts that two sessions on the same
 // workdir do not land on the same, derivable runtime path.
 func TestSecurityRuntimeDirIsNotPredictable(t *testing.T) {
-	// Redirect the system temp dir so nothing here touches the real one.
-	tmp := t.TempDir()
-	t.Setenv("TMPDIR", tmp)
+	// Redirect runtime dir base to an isolated location.
+	t.Setenv("XDG_RUNTIME_DIR", "")
+	t.Setenv("HOME", t.TempDir())
 
 	workdir := t.TempDir()
 
@@ -40,6 +29,7 @@ func TestSecurityRuntimeDirIsNotPredictable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("createRuntimeDir: %v", err)
 	}
+	t.Cleanup(func() { os.RemoveAll(first) })
 
 	// Control: the directory is real, private, and has the subdirectories a
 	// session needs. Without it, a function that returned a fresh useless
@@ -61,65 +51,51 @@ func TestSecurityRuntimeDirIsNotPredictable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("createRuntimeDir (second session): %v", err)
 	}
+	t.Cleanup(func() { os.RemoveAll(second) })
 
 	if first == second {
-		t.Errorf("both sessions on this workdir got the same runtime directory %s: the path follows from the workdir alone, so the confined agent — which knows its own workdir and can write the shared temp directory — can place whatever it likes there before a session starts, including at the path the bridge socket will take", first)
+		t.Errorf("both sessions on this workdir got the same runtime directory %s: the path follows from the workdir alone, so the confined agent can place whatever it likes there before a session starts, including at the path the bridge socket will take", first)
 	}
 }
 
-// TestSecurityRuntimeDirNotAdoptedFromForeignDir asserts that when the
-// runtime directory's target path is already occupied and cannot be fully
-// removed, createRuntimeDir does not silently keep going and hand back a
-// directory still containing the pre-existing content.
-//
-// Stat/RemoveAll/MkdirAll discards the RemoveAll error outright. RemoveAll
-// fails whenever any entry inside the target cannot be unlinked — a
-// subdirectory with no write permission is enough to reproduce this without
-// a second uid — and MkdirAll on an already-existing directory is a no-op,
-// so the caller gets back a path that still contains whatever survived the
-// failed removal, with no error to say so.
+// TestSecurityRuntimeDirNotAdoptedFromForeignDir asserts that the runtime
+// directory is never under shared /tmp (where a confined agent has write
+// access), and that each session gets a fresh directory with only the
+// expected subdirs — no pre-existing content.
 func TestSecurityRuntimeDirNotAdoptedFromForeignDir(t *testing.T) {
-	tmp := t.TempDir()
-	t.Setenv("TMPDIR", tmp)
+	t.Setenv("XDG_RUNTIME_DIR", "")
+	t.Setenv("HOME", t.TempDir())
 	workdir := t.TempDir()
 
-	// Control: with nothing pre-existing, createRuntimeDir produces a clean
-	// directory containing only the expected subdirs.
-	clean, err := createRuntimeDir(workdir)
+	dir, err := createRuntimeDir(workdir)
 	if err != nil {
-		t.Fatalf("control: createRuntimeDir: %v", err)
+		t.Fatalf("createRuntimeDir: %v", err)
 	}
-	entries, err := os.ReadDir(clean)
-	if err != nil || len(entries) != 2 {
-		t.Fatalf("control: a fresh runtime dir has unexpected contents (%v, %v): the fixture is broken, not the security property", entries, err)
-	}
-	if err := os.RemoveAll(clean); err != nil {
-		t.Fatalf("control cleanup: %v", err)
-	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
 
-	// Plant an undeletable-by-RemoveAll entry at the exact path
-	// createRuntimeDir will target for this workdir: a subdirectory with no
-	// write permission, holding a file, so os.RemoveAll cannot unlink it —
-	// mirroring the sticky-/tmp EPERM the cross-UID case produces, without
-	// needing a second uid.
-	victimSub := filepath.Join(clean, "victim")
-	if err := os.MkdirAll(victimSub, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	marker := filepath.Join(victimSub, "secret")
-	if err := os.WriteFile(marker, []byte("planted"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(victimSub, 0o500); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(victimSub, 0o755) }) // let TempDir cleanup succeed
-
-	got, err := createRuntimeDir(workdir)
-	if err == nil {
-		if _, statErr := os.Stat(marker); statErr == nil {
-			t.Errorf("createRuntimeDir returned %s successfully (nil error) even though a pre-existing entry could not be removed: "+
-				"the planted file %s survived into the directory now handed to this session", got, marker)
+	// The directory must not be a direct descendant of bare /tmp (the shared
+	// system temp root, which the sandbox baseline may write-grant). A path
+	// under the user's home (~/.local/state/...) is acceptable even if HOME
+	// itself is redirected to a temp dir in tests.
+	for _, sharedRoot := range []string{"/tmp", "/private/tmp"} {
+		rel, relErr := filepath.Rel(sharedRoot, dir)
+		if relErr == nil && len(rel) > 0 && rel[0] != '.' {
+			// rel must contain at least two path elements: a private
+			// sub-dir, then the actual runtime dir. A bare name (no slash)
+			// means dir is a direct child of sharedRoot.
+			if filepath.Dir(rel) == "." {
+				t.Errorf("runtime dir %s is a direct child of shared temp root %s: "+
+					"a confined agent write-granted that root can reach it", dir, sharedRoot)
+			}
 		}
+	}
+
+	// A fresh runtime dir must contain exactly logs/ and pids/ — no foreign files.
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 {
+		t.Errorf("fresh runtime dir %s has %d entries (want 2: logs, pids): %v", dir, len(entries), entries)
 	}
 }
