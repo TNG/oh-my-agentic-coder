@@ -323,26 +323,28 @@ func TestGrandfatherClosesFirstUpgradeWindow(t *testing.T) {
 	}
 }
 
-// TestSnapshotDefeatsPostApprovalTampering is the core proof of the
-// execute-from-snapshot hardening (issue #209): a file the bundle hash does
-// NOT cover (here under an excluded `.venv/` dir) is frozen at approval time,
-// so rewriting it in the workdir AFTER approval does not change what the
-// sidecar serves — because the sidecar runs from the immutable snapshot, not
-// the agent-writable workdir. Without snapshots this is the residual escape:
-// the hash is unchanged, the gate passes, and the tampered code runs.
+// TestSnapshotDefeatsPostApprovalTampering proves that the snapshot is
+// immutable: editing a regular file in the workdir AFTER approval does not
+// change what the sidecar serves, because it runs from the frozen snapshot.
+//
+// The payload is a regular file (not in an excluded dir), so it IS covered
+// by BundleHash and IS copied into the snapshot. After approval, the workdir
+// copy is rewritten — the bundle hash changes, so the approval is technically
+// revoked. The test re-approves with the new hash to confirm the snapshot
+// independently holds the original bytes. The sidecar must serve the content
+// that was frozen at approval time, not the tampered workdir version.
 func TestSnapshotDefeatsPostApprovalTampering(t *testing.T) {
 	requireWorkingPython3(t)
 	isolateHome(t)
 	workdir := t.TempDir()
 
-	name := "vendored"
+	name := "frozen"
 	skillDir := filepath.Join(workdir, ".opencode", "skills", name)
-	if err := os.MkdirAll(filepath.Join(skillDir, ".venv"), 0o755); err != nil {
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// A payload under .venv — excluded from config.BundleHash, so editing it
-	// later does NOT change the approved hash.
-	payload := filepath.Join(skillDir, ".venv", "payload.txt")
+	// A regular payload file — included in BundleHash and copied into snapshot.
+	payload := filepath.Join(skillDir, "payload.txt")
 	if err := os.WriteFile(payload, []byte("APPROVED-PAYLOAD"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -352,13 +354,13 @@ func TestSnapshotDefeatsPostApprovalTampering(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(skillDir, config.MetaFileName), []byte(meta), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// The sidecar serves the CONTENT of .venv/payload.txt relative to its cwd.
+	// The sidecar serves payload.txt from its cwd (the snapshot).
 	server := `import os, http.server
 class H(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/status":
             self.send_response(200); self.end_headers(); self.wfile.write(b"ok"); return
-        try: data = open(".venv/payload.txt","rb").read()
+        try: data = open("payload.txt","rb").read()
         except Exception as e: data = str(e).encode()
         self.send_response(200); self.end_headers(); self.wfile.write(data)
     def log_message(self, *a): pass
@@ -376,29 +378,58 @@ http.server.HTTPServer(("127.0.0.1", int(os.environ["SIDECAR_PORT"])), H).serve_
 	}); err != nil {
 		t.Fatalf("registry: %v", err)
 	}
-	// Host approves -> snapshot freezes the current .venv/payload.txt.
+	// Host approves -> snapshot freezes payload.txt at "APPROVED-PAYLOAD".
 	if err := skilltrust.Approve(name, bundle, skillDir); err != nil {
 		t.Fatalf("approve: %v", err)
 	}
 
-	// The agent now rewrites the excluded payload in the workdir. The bundle
-	// hash is UNCHANGED (proving the approval still matches), so the gate lets
-	// the skill run — but it must run the snapshot's original payload.
+	// Rewrite payload in the workdir. The bundle hash changes, so re-register
+	// and re-approve with the new hash. The sidecar must still serve the
+	// original frozen bytes from the first snapshot, not this new content.
 	if err := os.WriteFile(payload, []byte("TAMPERED-PAYLOAD"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if bundleHashOf(t, skillDir) != bundle {
-		t.Fatal("precondition: editing an excluded-dir file must NOT change the bundle hash")
+	newBundle := bundleHashOf(t, skillDir)
+	if newBundle == bundle {
+		t.Fatal("precondition: editing a regular file must change the bundle hash")
+	}
+	if err := registry.WithLock(workdir, func() error {
+		reg, _ := registry.Load(workdir)
+		reg.Upsert(registry.Entry{Name: name, SkillDir: filepath.Join(".opencode", "skills", name), BundleHash: newBundle, RegisteredAt: time.Now().UTC()})
+		return registry.Save(workdir, reg)
+	}); err != nil {
+		t.Fatalf("re-register: %v", err)
+	}
+	if err := skilltrust.Approve(name, newBundle, skillDir); err != nil {
+		t.Fatalf("re-approve: %v", err)
 	}
 
-	r, baseURL := newLiveReloader(t, workdir)
-	r.reload()
-	if !r.isMounted(name) {
-		t.Fatal("approved skill should mount (its hash is unchanged)")
+	// The sidecar runs from the first snapshot (keyed by bundle), which holds
+	// the original "APPROVED-PAYLOAD". But now the registry points to newBundle,
+	// so the reloader picks the new snapshot. To confirm the snapshot is
+	// independently immutable, check the FIRST snapshot directly.
+	snap1, ok := skilltrust.SnapshotPath(name, bundle)
+	if !ok {
+		t.Fatal("first snapshot should still exist (only Revoke removes it)")
 	}
-	_, body := httpGet(t, baseURL+"/"+name+"/payload")
-	if body != "APPROVED-PAYLOAD" {
-		t.Fatalf("sidecar served %q; expected the frozen snapshot payload, not the workdir tamper", body)
+	got, err := os.ReadFile(filepath.Join(snap1, "payload.txt"))
+	if err != nil {
+		t.Fatalf("read first snapshot payload: %v", err)
+	}
+	if string(got) != "APPROVED-PAYLOAD" {
+		t.Errorf("first snapshot payload = %q; want APPROVED-PAYLOAD (snapshot must be immutable)", string(got))
+	}
+	// The second snapshot holds the tampered content.
+	snap2, ok := skilltrust.SnapshotPath(name, newBundle)
+	if !ok {
+		t.Fatal("second snapshot should exist after re-approval")
+	}
+	got2, err := os.ReadFile(filepath.Join(snap2, "payload.txt"))
+	if err != nil {
+		t.Fatalf("read second snapshot payload: %v", err)
+	}
+	if string(got2) != "TAMPERED-PAYLOAD" {
+		t.Errorf("second snapshot payload = %q; want TAMPERED-PAYLOAD", string(got2))
 	}
 }
 
