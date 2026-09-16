@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -31,14 +32,15 @@ import (
 // It deliberately only ADDS missing skills; it never disturbs a skill that is
 // already mounted (so a healthy route is never dropped mid-session).
 type startReloader struct {
-	env     *Env
-	facade  *facade.Facade
-	sup     *supervisor.Supervisor
-	ctx     context.Context
-	rtDir   string
-	socket  string
-	tcpPort int
-	verbose bool
+	env          *Env
+	facade       *facade.Facade
+	sup          *supervisor.Supervisor
+	ctx          context.Context
+	rtDir        string
+	socket       string
+	tcpPort      int
+	verbose      bool
+	controlToken string // per-session bearer token for /__omac__/* endpoints
 	// skipSecretPattern carries `omac start --skip-secret-pattern` into the
 	// reload loop. Reload began pattern-checking env-supplied secrets when it
 	// adopted the shared readiness rule, so without this a session started
@@ -88,6 +90,18 @@ func reloadStubRoute(mount string, problems []skillstate.Problem) *notReadySkill
 	return &notReadySkill{Mount: mount, State: state, Missing: st.Missing, Detail: st.Detail}
 }
 
+// requireControlTokenStart is middleware that enforces the per-session control
+// token on all /__omac__/* endpoints in start mode.
+func requireControlTokenStart(token string, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if subtle.ConstantTimeCompare([]byte(r.Header.Get("X-Omac-Control-Token")), []byte(token)) != 1 {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+			return
+		}
+		next(w, r)
+	}
+}
+
 // startControlPlane binds a loopback control-plane HTTP server for start and
 // publishes its URL via the shared control-info file. Returns the listener,
 // the control URL, and a close func. On bind failure it returns ok=false and
@@ -97,17 +111,20 @@ func startControlPlane(r *startReloader) (controlURL string, closeFn func(), ok 
 	if err != nil {
 		return "", func() {}, false
 	}
+	token := mintToken()
+	r.controlToken = token
 	controlURL = fmt.Sprintf("http://%s", ln.Addr().String())
 	mux := http.NewServeMux()
-	mux.HandleFunc("/__omac__/reload", r.handleReload)
+	auth := func(h http.HandlerFunc) http.HandlerFunc { return requireControlTokenStart(token, h) }
+	mux.HandleFunc("/__omac__/reload", auth(r.handleReload))
 	mux.HandleFunc("/__omac__/dirs", r.handleDirs)
 	// The omac plugin (built for serve) calls activate/deactivate. In the
 	// single-workdir start model "activate <dir>" maps to a reload of our
 	// one workdir; we accept it and return a serve-shaped manifest so the
 	// plugin works unchanged instead of 404-spamming.
-	mux.HandleFunc("/__omac__/activate", r.handleActivate)
-	mux.HandleFunc("/__omac__/deactivate", r.handleActivate) // no-op deactivate, same response
-	mux.HandleFunc("/__omac__/reload-global", r.handleReloadGlobalStart)
+	mux.HandleFunc("/__omac__/activate", auth(r.handleActivate))
+	mux.HandleFunc("/__omac__/deactivate", auth(r.handleActivate)) // no-op deactivate, same response
+	mux.HandleFunc("/__omac__/reload-global", auth(r.handleReloadGlobalStart))
 	// The harness plugin reports the id of the session it created here, so the
 	// post-exit "resume" hint is exact without enumerating sessions.
 	mux.HandleFunc("/__omac__/session", r.handleSession)
@@ -117,7 +134,7 @@ func startControlPlane(r *startReloader) (controlURL string, closeFn func(), ok 
 			fmt.Fprintln(r.env.Stderr, "omac start: control server:", err)
 		}
 	}()
-	_ = writeControlInfo(controlURL)
+	_ = writeControlInfo(controlURL, token)
 	return controlURL, func() {
 		srv.Close()
 		removeControlInfo()
@@ -481,6 +498,7 @@ func (r *startReloader) reload() []string {
 			Mount:        mount,
 			UpstreamPort: running.Port,
 			Skill:        e.Name,
+			Owner:        e.Name,
 			State:        facade.RouteReady,
 		})
 		r.markMounted(e.Name, mount)

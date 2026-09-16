@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -342,6 +343,10 @@ func runServe(args []string, env *Env) int {
 	}
 	defer f.Close()
 
+	controlToken := mintToken()
+	facadeToken := mintToken()
+	f.FacadeToken = facadeToken
+
 	srv := &serveServer{
 		env:               env,
 		harness:           harness,
@@ -353,6 +358,8 @@ func runServe(args []string, env *Env) int {
 		sandboxTmp:        sandboxTmp,
 		socketPath:        socketPath,
 		tcpPort:           f.TCPPort(),
+		controlToken:      controlToken,
+		facadeToken:       facadeToken,
 		acceptChanges:     acceptChanges,
 		skipSecretPattern: skipSecretPattern,
 		verbose:           verbose,
@@ -417,10 +424,10 @@ func runServe(args []string, env *Env) int {
 	}
 	controlURL := fmt.Sprintf("http://%s", cln.Addr().String())
 	srv.controlBase = controlURL
-	// Publish the control URL so other omac CLI invocations (register,
+	// Publish the control URL and token so other omac CLI invocations (register,
 	// deregister, secrets, config) can notify this running serve to reload a
 	// directory after they change on-disk state. Best-effort.
-	if err := writeControlInfo(controlURL); err != nil && verbose {
+	if err := writeControlInfo(controlURL, controlToken); err != nil && verbose {
 		fmt.Fprintln(env.Stderr, "[verbose] could not write control-info file:", err)
 	}
 	defer removeControlInfo()
@@ -980,6 +987,8 @@ type serveServer struct {
 	socketPath    string
 	tcpPort       int
 	controlBase   string
+	controlToken  string // per-session bearer token for /__omac__/* endpoints
+	facadeToken   string // per-session bearer token for TCP facade requests
 	acceptChanges bool
 	// skipSecretPattern mirrors start's flag. serve began pattern-checking
 	// env_passthrough-supplied secrets when it adopted the shared readiness
@@ -1601,6 +1610,8 @@ func (s *serveServer) baseEnv() map[string]string {
 		"OMAC_BASE":               fmt.Sprintf("http://127.0.0.1:%d/", s.tcpPort),
 		"OMAC_VERSION":            s.env.Version,
 		"OMAC_CONTROL_BASE":       s.controlBase,
+		"OMAC_CONTROL_TOKEN":      s.controlToken,
+		"OMAC_FACADE_TOKEN":       s.facadeToken,
 		"OMAC_HARNESS":            s.harness.Name,
 		"OMAC_HARNESS_SKILLS_DIR": s.harness.WorkdirSkillsDir(),
 		// Sandbox-granted temp dir exported as TMPDIR (see start.go and
@@ -1699,6 +1710,7 @@ func (s *serveServer) installRoute(sr *skillRoute, port int) {
 		Namespace:    sr.Namespace,
 		UpstreamPort: port,
 		Skill:        sr.Name,
+		Owner:        sr.Name,
 		SkillDir:     sr.SkillDir,
 		State:        sr.State,
 		Detail:       sr.Detail,
@@ -1751,7 +1763,7 @@ func (s *serveServer) refreshSingleDirAliases() {
 		if port == 0 {
 			continue
 		}
-		s.facade.AddRoute(facade.Route{Mount: sr.Mount, Namespace: "", UpstreamPort: port, Skill: sr.Name, SkillDir: sr.SkillDir, State: facade.RouteReady})
+		s.facade.AddRoute(facade.Route{Mount: sr.Mount, Namespace: "", UpstreamPort: port, Skill: sr.Name, Owner: sr.Name, SkillDir: sr.SkillDir, State: facade.RouteReady})
 		s.flatAliasMu.Lock()
 		if s.flatAliases == nil {
 			s.flatAliases = map[string]struct{}{}
@@ -1833,12 +1845,24 @@ func (s *serveServer) skillJSON(sr *skillRoute, scope string) map[string]any {
 
 // ---- control plane ----
 
+// requireControlToken is middleware that enforces the per-session control token
+// on all /__omac__/* endpoints. Callers must include it as X-Omac-Control-Token.
+func (s *serveServer) requireControlToken(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if subtle.ConstantTimeCompare([]byte(r.Header.Get("X-Omac-Control-Token")), []byte(s.controlToken)) != 1 {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+			return
+		}
+		next(w, r)
+	}
+}
+
 func (s *serveServer) controlMux() *http.ServeMux {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/__omac__/activate", s.handleActivate)
-	mux.HandleFunc("/__omac__/deactivate", s.handleDeactivate)
-	mux.HandleFunc("/__omac__/reload", s.handleReload)
-	mux.HandleFunc("/__omac__/reload-global", s.handleReloadGlobal)
+	mux.HandleFunc("/__omac__/activate", s.requireControlToken(s.handleActivate))
+	mux.HandleFunc("/__omac__/deactivate", s.requireControlToken(s.handleDeactivate))
+	mux.HandleFunc("/__omac__/reload", s.requireControlToken(s.handleReload))
+	mux.HandleFunc("/__omac__/reload-global", s.requireControlToken(s.handleReloadGlobal))
 	mux.HandleFunc("/__omac__/dirs", s.handleDirs)
 	mux.HandleFunc("/__omac__/global", s.handleGlobal)
 	return mux
