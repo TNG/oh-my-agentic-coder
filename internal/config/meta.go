@@ -452,9 +452,16 @@ func BundleHash(skillDir string) (string, error) {
 			return nil
 		}
 		if !d.Type().IsRegular() {
-			// Skip in-tree symlinks, sockets, devices. Hashing through symlinks
-			// would let a target replacement silently change the bundle
-			// without tripping detection.
+			// omac.yaml being a non-regular file (e.g. a symlink into an
+			// excluded directory) means the executed manifest is outside the
+			// hash — the entire skill's approval is meaningless. Fail loudly
+			// so the caller cannot unknowingly approve an unhashable skill.
+			if d.Name() == MetaFileName {
+				return fmt.Errorf("bundle hash: %s is not a regular file: approval would not cover the executed manifest", MetaFileName)
+			}
+			// Other non-regular files (symlinks, sockets, devices) are skipped.
+			// Hashing through symlinks would let a target replacement silently
+			// change the bundle without tripping detection.
 			return nil
 		}
 		if isExcludedFileName(d.Name()) {
