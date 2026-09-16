@@ -281,6 +281,30 @@ sanitize_issue_body() {
   done < <(issue_body_forbidden_strings "$vulns_json" "$plans_json")
 }
 
+# Ownership guard, the mechanical enforcement of the conflict matrix: every
+# changed path in the checkout (staged, unstaged or untracked) must match one
+# of the grep -E patterns in $2, or the guard prints the offending path and
+# returns 1. Violations are paths in THIS public repo, so printing them is
+# fine; the sensitive set is the allowed paths from the plan, and those are
+# never printed.
+changed_files_within() {
+  local repo=$1 patterns=$2 path
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    path="${path:3}"             # porcelain v1: XY<TAB>path
+    case "$path" in
+      *" -> "*) path="${path#* -> }" ;;  # renames: R  orig -> path
+    esac
+    path="${path#\"}"
+    path="${path%\"}"
+    [ -n "$path" ] || continue
+    if ! printf '%s\n' "$path" | grep -Eqf "$patterns"; then
+      echo "$path"
+      return 1
+    fi
+  done < <(git -C "$repo" status --porcelain)
+}
+
 # Install the pinned opencode CLI the sessions run with.
 install_opencode() {
   bun install -g "${E2E_VERSION_OPENCODE:-$DEFAULT_OPENCODE_VERSION}"

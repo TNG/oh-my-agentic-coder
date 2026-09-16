@@ -14,6 +14,14 @@
 #                       fields. A regression here lets a malformed manifest
 #                       flow into PR creation with finding data attached.
 #
+#   sanitize_issue_body  the disclosure gate for the public overview issue.
+#
+#   changed_files_within the ownership guard the stages enforce after every
+#                       agent session: staged, unstaged, untracked and
+#                       renamed paths must all stay within the allowed
+#                       patterns. A regression here lets a session edit
+#                       production code or CI from a test-writing prompt.
+#
 # A stub `gh` stands in for the PR API; the fixtures are synthetic. No
 # credentials, no network.
 set -euo pipefail
@@ -209,6 +217,70 @@ sanitize_rejects "a PoC leak is rejected" "$TMP/issue-leak.md"
 
 printf '%s\n' 'hardens the code in internal/netproxy/foo.go' > "$TMP/issue-leak.md"
 sanitize_rejects "a vulnerable file path is rejected" "$TMP/issue-leak.md"
+
+# --- changed_files_within ------------------------------------------------------
+# Fixture repo with one allowed pair (a _test.go file and the pin file) and
+# one production file, so each case creates exactly one violation.
+GUARD="$TMP/guard-patterns"
+cat > "$GUARD" <<'EOF'
+_test\.go$
+^scripts/security-suite-expected-failures\.txt$
+EOF
+
+g="$TMP/guard-repo"
+git init -q "$g"
+git -C "$g" config user.email "test@example.com"
+git -C "$g" config user.name "test"
+mkdir -p "$g/pkg" "$g/scripts"
+echo x > "$g/pkg/old_test.go"
+echo x > "$g/pkg/prod.go"
+echo x > "$g/scripts/security-suite-expected-failures.txt"
+git -C "$g" add -A
+git -C "$g" commit -qm base
+
+guard_clean() {
+  local desc=$1 out
+  if out="$(changed_files_within "$g" "$GUARD")"; then
+    echo "ok: $desc"
+  else
+    fail "$desc: guard reported '$out', expected it to allow the change"
+  fi
+}
+
+guard_violation() {
+  local desc=$1 want=$2 out
+  if out="$(changed_files_within "$g" "$GUARD")"; then
+    fail "$desc: guard allowed the change, expected it to report '$want'"
+  else
+    case "$out" in
+      *"$want"*) echo "ok: $desc" ;;
+      *) fail "$desc: expected '$want', got '$out'" ;;
+    esac
+  fi
+}
+
+guard_clean "a clean tree passes"
+
+echo y >> "$g/pkg/old_test.go"
+echo y > "$g/pkg/fresh_test.go"
+echo y >> "$g/scripts/security-suite-expected-failures.txt"
+guard_clean "modified and new test files and the pin file pass"
+
+echo y >> "$g/pkg/prod.go"
+guard_violation "a modified production file is reported" "pkg/prod.go"
+git -C "$g" checkout -q -- pkg/prod.go
+
+echo y > "$g/pkg/rogue.go"
+guard_violation "an untracked file outside the patterns is reported" "pkg/rogue.go"
+rm "$g/pkg/rogue.go"
+
+git -C "$g" mv pkg/prod.go pkg/prod_renamed.go
+guard_violation "a renamed production file is reported by its new path" "prod_renamed.go"
+git -C "$g" mv pkg/prod_renamed.go pkg/prod.go
+
+echo y > "$g/pkg/name with space.go"
+guard_violation "a quoted untracked path is unquoted before matching" "pkg/name with space.go"
+rm "$g/pkg/name with space.go"
 
 if [ "$failures" -gt 0 ]; then
   echo "$failures plans test(s) failed" >&2
