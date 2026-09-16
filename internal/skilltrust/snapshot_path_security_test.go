@@ -66,19 +66,20 @@ func TestSecurityApproveWritesOnlyInsideTheStore(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(src, "sidecar.py"), []byte("# payload\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	h := bundleHash(t, src)
 
 	// Control: a well-named skill is approved and frozen inside the store.
-	if err := Approve("plain-skill", "sha256:abc", src); err != nil {
+	if err := Approve("plain-skill", h, src); err != nil {
 		t.Fatalf("Approve of an ordinary skill failed: %v", err)
 	}
-	if p, ok := SnapshotPath("plain-skill", "sha256:abc"); !ok || !under(skills, p) {
+	if p, ok := SnapshotPath("plain-skill", h); !ok || !under(skills, p) {
 		t.Fatalf("ordinary skill was not frozen inside the store (path %s, exists %v)", p, ok)
 	}
 
 	const hostile = "../../../evil"
 	// An error here is a pass: nothing was written.
-	if err := Approve(hostile, "sha256:abc", src); err == nil {
-		p, exists := SnapshotPath(hostile, "sha256:abc")
+	if err := Approve(hostile, h, src); err == nil {
+		p, exists := SnapshotPath(hostile, h)
 		if exists && !under(skills, p) {
 			t.Errorf("Approve(%q) froze the skill at %s, outside the store at %s: confined code chose a host path and omac filled it", hostile, p, skills)
 		}

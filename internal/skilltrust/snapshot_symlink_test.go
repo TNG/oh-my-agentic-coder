@@ -48,14 +48,15 @@ func TestSnapshot_SymlinkRootMatchesRealTree(t *testing.T) {
 		t.Skipf("symlinks unsupported here: %v", err)
 	}
 
-	// Use distinct hashes for the symlink vs real snapshot so they land in
+	// Both symlink and realDir resolve to the same content, so BundleHash
+	// returns the same hash for both. Use distinct skill names so they land in
 	// different content-addressed dirs (snapshot is keyed by (name, hash)).
-	// The FILE CONTENTS must match even though the keys differ.
-	snapSym, err := snapshot("s", "sha256:via-symlink", symlink)
+	h := bundleHash(t, symlink)
+	snapSym, err := snapshot("svia-symlink", h, symlink)
 	if err != nil {
 		t.Fatalf("snapshot(via symlink): %v", err)
 	}
-	snapReal, err := snapshot("s", "sha256:via-real", realDir)
+	snapReal, err := snapshot("svia-real", h, realDir)
 	if err != nil {
 		t.Fatalf("snapshot(via real): %v", err)
 	}

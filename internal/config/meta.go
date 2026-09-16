@@ -482,11 +482,18 @@ func BundleHash(skillDir string) (string, error) {
 	return "sha256:" + hex.EncodeToString(h.Sum(nil)), nil
 }
 
-// isExcludedDirName reports whether walking should skip a subtree
+// IsExcludedDirName reports whether walking should skip a subtree
 // matching a known runtime-artifact / VCS / cache directory name.
 // The check is on the basename only, so a skill that legitimately
 // contains a file called "build" (in some content sense) is still
 // hashed; only directory matches trigger a skip.
+//
+// Exported so snapshot.go can apply the same exclusions, keeping the
+// hashed set identical to the executed set.
+func IsExcludedDirName(name string) bool {
+	return isExcludedDirName(name)
+}
+
 func isExcludedDirName(name string) bool {
 	switch name {
 	case ".git", ".hg", ".svn",

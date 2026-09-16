@@ -102,6 +102,16 @@ func snapshot(name, bundleHash, srcDir string) (string, error) {
 		os.RemoveAll(tmp)
 		return "", fmt.Errorf("snapshot: copy: %w", err)
 	}
+	// Verify the staged copy matches the approved hash before committing.
+	// copyTree applies the same exclusions as BundleHash, so the hashes must
+	// agree. A mismatch means the directory changed between when the user
+	// approved it and when the copy was taken (TOCTOU window during the
+	// approval prompt).
+	got, err := config.BundleHash(tmp)
+	if err != nil || got != bundleHash {
+		os.RemoveAll(tmp)
+		return "", fmt.Errorf("snapshot: staged copy does not match approved hash (content changed during approval; re-run `omac register`)")
+	}
 	if err := os.Rename(tmp, dst); err != nil {
 		os.RemoveAll(tmp)
 		// A concurrent writer may have won the race; accept its result.
@@ -139,7 +149,9 @@ func removeSnapshot(name, bundleHash string) {
 //     not-exist / any error, the walk falls through against
 //     filepath.Clean(src) so the missing-dir contract still surfaces a
 //     walk-style error.
-//   - directories are recreated (VCS metadata under .git is skipped),
+//   - directories are recreated; the same directories BundleHash skips
+//     (node_modules, .venv, dist, build, …) are also skipped here so the
+//     hashed set and the executed set are identical by construction,
 //   - regular files are copied with their mode bits (execute bits preserved),
 //   - symlinks are NEVER dereferenced into content. A symlink whose target
 //     resolves INSIDE the skill tree and whose link text is relative is
@@ -168,7 +180,8 @@ func copyTree(src, dst string) error {
 		target := filepath.Join(dst, rel)
 
 		if d.IsDir() {
-			if d.Name() == ".git" {
+			// Skip the same set BundleHash skips so executed bytes == hashed bytes.
+			if config.IsExcludedDirName(d.Name()) {
 				return filepath.SkipDir
 			}
 			return os.MkdirAll(target, 0o700)
