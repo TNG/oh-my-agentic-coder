@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/TNG/oh-my-agentic-coder/internal/audit"
 	"github.com/TNG/oh-my-agentic-coder/internal/facade"
 	"github.com/TNG/oh-my-agentic-coder/internal/skillstate"
 )
@@ -401,5 +402,60 @@ func TestStartReloaderReportsBrokenMeta(t *testing.T) {
 	}
 	if detail, _ := skills[0]["detail"].(string); !strings.Contains(detail, "omac.yaml") {
 		t.Errorf("detail = %q, want it to name the file", detail)
+	}
+}
+
+// TestStartReloaderEmitsAuditEvents asserts that POST /__omac__/reload,
+// /__omac__/activate, /__omac__/deactivate and /__omac__/reload-global each
+// record a control.mutation event in the audit trail.
+func TestStartReloaderEmitsAuditEvents(t *testing.T) {
+	isolateHome(t)
+	auditPath := filepath.Join(t.TempDir(), "audit.jsonl")
+	a, err := audit.New(audit.Config{
+		Enabled: true,
+		Path:    auditPath,
+		Mode:    audit.ModeStart,
+	})
+	if err != nil {
+		t.Fatalf("audit.New: %v", err)
+	}
+	t.Cleanup(func() { _ = a.Close() })
+
+	r := newStartReloaderForTest(t)
+	r.auditor = a
+	mux := r.startTestMux()
+
+	post := func(path string) {
+		t.Helper()
+		req := httptest.NewRequest("POST", path, nil)
+		r.addTestToken(req)
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("POST %s returned %d", path, rec.Code)
+		}
+	}
+
+	post("/__omac__/reload")
+	post("/__omac__/activate")
+	post("/__omac__/deactivate")
+	post("/__omac__/reload-global")
+	_ = a.Close()
+
+	events, err := audit.ReadFile(auditPath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+
+	actions := map[string]bool{}
+	for _, ev := range events {
+		if ev.Type == audit.TypeControlMutation {
+			actions[ev.Action] = true
+		}
+	}
+	for _, want := range []string{"reload", "activate", "deactivate", "reload-global"} {
+		if !actions[want] {
+			t.Errorf("no control.mutation event with action=%q found in audit trail", want)
+		}
 	}
 }

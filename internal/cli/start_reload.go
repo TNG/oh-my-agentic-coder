@@ -304,7 +304,12 @@ func (r *startReloader) handleActivate(w http.ResponseWriter, req *http.Request)
 		return
 	}
 	r.reload()
-	r.aud().Emit(audit.ControlMutation("activate", r.env.Workdir, "ok"))
+	// Derive action name from the path so deactivate is recorded correctly.
+	action := "activate"
+	if req.URL.Path == "/__omac__/deactivate" {
+		action = "deactivate"
+	}
+	r.aud().Emit(audit.ControlMutation(action, r.env.Workdir, "ok"))
 	writeJSON(w, http.StatusOK, r.manifest())
 }
 
@@ -315,6 +320,7 @@ func (r *startReloader) handleReloadGlobalStart(w http.ResponseWriter, req *http
 	}
 	// start has no separate global layer; a reload covers everything.
 	r.reload()
+	r.aud().Emit(audit.ControlMutation("reload-global", r.env.Workdir, "ok"))
 	writeJSON(w, http.StatusOK, map[string]any{"skills": []map[string]any{}})
 }
 
