@@ -160,9 +160,7 @@ func linuxBaseline() Baseline {
 			"~/.local/bin",
 			"$TMPDIR",
 		},
-		Write: []string{
-			"$TMPDIR",
-		},
+		Write: []string{},
 		ProtectedPaths: append(protectedCommon(),
 			// container sockets: root-equivalent host access if reachable.
 			// Both entries are listed because /var/run is a symlink to
