@@ -372,6 +372,12 @@ func (s *SidecarMeta) Validate(skillName string) error {
 			return fmt.Errorf("sidecar: env var %q declared by both env_passthrough and config; pick one", p)
 		}
 	}
+	if s.Health != nil && s.Health.Path != "" {
+		p := s.Health.Path
+		if !strings.HasPrefix(p, "/") || strings.ContainsAny(p, "@:") {
+			return fmt.Errorf("sidecar.health.path %q must start with '/' and contain no '@' or ':'", p)
+		}
+	}
 	return nil
 }
 
