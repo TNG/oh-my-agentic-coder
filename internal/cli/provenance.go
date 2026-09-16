@@ -107,7 +107,7 @@ var provenanceHardDenyHosts = []string{
 // and registry, then assembles a provenanceView. profileRef is a path,
 // name, or "" for the default profile.
 func buildProvenanceView(workdir, profileRef string) (*provenanceView, error) {
-	profile, profPath, err := sandboxprofile.Resolve(profileRef)
+	profile, profPath, err := sandboxprofile.Resolve(profileRef, sandboxprofile.WithAnyPath())
 	if err != nil {
 		return nil, err
 	}
@@ -439,7 +439,7 @@ func runProvenance(args []string, env *Env) int {
 	// not build the provenance view. Keeps --check independent of the
 	// view-build path and its (registry, learned-policy) dependencies.
 	if *checkMode {
-		profile, _, err := sandboxprofile.Resolve(*profileRef)
+		profile, _, err := sandboxprofile.Resolve(*profileRef, sandboxprofile.WithAnyPath())
 		if err != nil {
 			fmt.Fprintln(env.Stderr, "omac provenance --check:", err)
 			return ExitConfigInvalid
