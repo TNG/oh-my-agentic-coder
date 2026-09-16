@@ -242,6 +242,45 @@ plans_schema_errors() {
   ' "$plans_json"
 }
 
+# Strings that must never appear verbatim in the public overview issue: every
+# finding's title, description and impact, any PoC/exploit-style field the
+# scanner happens to emit, and the plans' owned file paths (they point
+# straight at the vulnerable code). Used by the sanitizer below; short
+# values are skipped there to keep false positives down.
+issue_body_forbidden_strings() {
+  local vulns_json=$1 plans_json=$2
+  {
+    jq -r '.[] | (.title // empty), (.description // empty), (.impact // empty)' \
+      "$vulns_json" 2>/dev/null || true
+    jq -r '.[] | to_entries[]
+            | select((.key | test("poc|exploit|proof"; "i")) and (.value | type == "string"))
+            | .value' "$vulns_json" 2>/dev/null || true
+    jq -r '.[].files[]?' "$plans_json" 2>/dev/null || true
+  }
+}
+
+# The disclosure gate for the public overview issue: the assembled body is
+# checked against every forbidden string before anything is posted. Case
+# and whitespace insensitive, line-by-line: a multi-line finding text is
+# checked per line, so a leak is caught even in fragments. Prints nothing
+# and returns 0 when clean; prints a withholding reason and returns 1 on a
+# match — never echo the matched string, this output can reach the public
+# job log.
+sanitize_issue_body() {
+  local body_file=$1 vulns_json=$2 plans_json=$3 s
+  while IFS= read -r s; do
+    # Trim the ends only — multi-word finding text must keep its interior
+    # whitespace to stay findable in the body.
+    s="${s#"${s%%[![:space:]]*}"}"
+    s="${s%"${s##*[![:space:]]}"}"
+    [ "${#s}" -ge 8 ] || continue
+    if grep -Fqi -- "$s" "$body_file"; then
+      echo "issue body contains a string from the scan findings or the vulnerable file paths (string withheld)"
+      return 1
+    fi
+  done < <(issue_body_forbidden_strings "$vulns_json" "$plans_json")
+}
+
 # Install the pinned opencode CLI the sessions run with.
 install_opencode() {
   bun install -g "${E2E_VERSION_OPENCODE:-$DEFAULT_OPENCODE_VERSION}"

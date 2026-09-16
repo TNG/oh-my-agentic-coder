@@ -155,6 +155,61 @@ expect_schema_error "a missing issue line is rejected" "$TMP/broken.json" "issue
 broken '. + [.[0]]'
 expect_schema_error "duplicate plan ids are rejected" "$TMP/broken.json" "duplicate plan ids"
 
+# --- sanitize_issue_body -------------------------------------------------------
+# The public overview issue must not carry finding text or the vulnerable
+# file paths; the body is assembled mechanically, so the gate can also be
+# purely mechanical.
+cat > "$TMP/vulns.json" <<'EOF'
+[
+  {
+    "id": "VULN-0001",
+    "title": "Proxy trusts a spoofable upstream header value",
+    "severity": "high",
+    "description": "An attacker can send X-Internal-Auth and be trusted",
+    "impact": "credential exposure",
+    "poc": "curl -H 'X-Internal-Auth: yes' http://target/whoami"
+  }
+]
+EOF
+# Reuse valid.json's plan: it owns internal/netproxy/foo.go.
+cat > "$TMP/issue-clean.md" <<'EOF'
+- [ ] Network egress admission only trusts the configured upstream boundary
+EOF
+
+sanitize_ok() {
+  local desc=$1 body=$2
+  if sanitize_issue_body "$body" "$TMP/vulns.json" "$TMP/valid.json" >/dev/null 2>&1; then
+    echo "ok: $desc"
+  else
+    fail "$desc: sanitizer rejected a clean body"
+  fi
+}
+
+sanitize_rejects() {
+  local desc=$1 body=$2
+  if sanitize_issue_body "$body" "$TMP/vulns.json" "$TMP/valid.json" >/dev/null 2>&1; then
+    fail "$desc: sanitizer accepted a leaking body"
+  else
+    echo "ok: $desc"
+  fi
+}
+
+sanitize_ok "a clean body passes" "$TMP/issue-clean.md"
+
+# Verbatim finding strings, the way a leak actually happens: the assembler
+# copies text out of the scan instead of paraphrasing it.
+printf '%s\n' 'the gap lets an attacker can send X-Internal-Auth and be trusted via the proxy' > "$TMP/issue-leak.md"
+sanitize_rejects "a description leak is rejected" "$TMP/issue-leak.md"
+
+printf '%s\n' 'the fix ensures the proxy trusts a spoofable upstream header value no longer' > "$TMP/issue-leak.md"
+sanitize_rejects "a title leak is rejected" "$TMP/issue-leak.md"
+
+printf '%s\n' "repro: curl -H 'X-Internal-Auth: yes' http://target/whoami still works" > "$TMP/issue-leak.md"
+sanitize_rejects "a PoC leak is rejected" "$TMP/issue-leak.md"
+
+printf '%s\n' 'hardens the code in internal/netproxy/foo.go' > "$TMP/issue-leak.md"
+sanitize_rejects "a vulnerable file path is rejected" "$TMP/issue-leak.md"
+
 if [ "$failures" -gt 0 ]; then
   echo "$failures plans test(s) failed" >&2
   exit 1
