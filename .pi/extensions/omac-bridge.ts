@@ -95,6 +95,15 @@ async function controlPost(path: string, body: unknown): Promise<DirManifest | n
   }
 }
 
+function sanitizeField(s: string): string {
+  return s.replace(/[\n\r]/g, " ").replace(/\*/g, "").replace(/[\x00-\x1f\x7f-\x9f]/g, "")
+}
+
+function secretsHint(name: string, missing: string[]): string {
+  if (!/^[a-z0-9][a-z0-9-]*$/.test(name)) return ""
+  return missing.map((m) => `omac secrets set ${name} ${m}`).join(" ; ")
+}
+
 function renderManifest(manifest: DirManifest): string {
   const skillsDir = process.env.OMAC_HARNESS_SKILLS_DIR || ".pi/skills"
   const lines: string[] = [
@@ -120,17 +129,17 @@ function renderManifest(manifest: DirManifest): string {
     a.name.localeCompare(b.name),
   )
   for (const sk of sorted) {
+    const name = sanitizeField(sk.name)
+    const scope = sanitizeField(sk.scope || "")
     if (sk.state === "ready" && sk.base) {
-      lines.push(`- **${sk.name}** (${sk.scope || ""}) — ready — base: \`${sk.base}\``)
+      lines.push(`- **${name}** (${scope}) — ready — base: \`${sk.base}\``)
     } else if (sk.state === "pending-credentials") {
-      const missing = (sk.missing || []).join(", ")
-      lines.push(
-        `- **${sk.name}** (${sk.scope || ""}) — UNAVAILABLE (missing credentials: ${missing}). Run in your own terminal: ${(sk.missing || []).map((m) => `omac secrets set ${sk.name} ${m}`).join(" ; ")}`,
-      )
+      const missing = (sk.missing || []).map(sanitizeField).join(", ")
+      const hint = secretsHint(sk.name, sk.missing || [])
+      const hintSuffix = hint ? `. Run in your own terminal: ${hint}` : ""
+      lines.push(`- **${name}** (${scope}) — UNAVAILABLE (missing credentials: ${missing})${hintSuffix}`)
     } else if (sk.state === "broken") {
-      lines.push(
-        `- **${sk.name}** (${sk.scope || ""}) — BROKEN: ${sk.detail || "see omac logs"}`,
-      )
+      lines.push(`- **${name}** (${scope}) — BROKEN: ${sanitizeField(sk.detail || "see omac logs")}`)
     }
   }
 
