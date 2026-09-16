@@ -12,6 +12,7 @@ import (
 	"sort"
 	"sync"
 
+	"github.com/TNG/oh-my-agentic-coder/internal/audit"
 	"github.com/TNG/oh-my-agentic-coder/internal/config"
 	"github.com/TNG/oh-my-agentic-coder/internal/facade"
 	"github.com/TNG/oh-my-agentic-coder/internal/keychain"
@@ -35,6 +36,7 @@ type startReloader struct {
 	env          *Env
 	facade       *facade.Facade
 	sup          *supervisor.Supervisor
+	auditor      audit.Auditor
 	ctx          context.Context
 	rtDir        string
 	socket       string
@@ -71,6 +73,15 @@ type notReadySkill struct {
 	State   facade.RouteState
 	Missing []string
 	Detail  string
+}
+
+// aud returns the reloader's auditor, or a no-op when unset (tests that
+// construct startReloader directly without an auditor still work).
+func (r *startReloader) aud() audit.Auditor {
+	if r.auditor == nil {
+		return audit.Nop()
+	}
+	return r.auditor
 }
 
 // reloadStubRoute maps skillstate problems to the stub route reload should
@@ -270,6 +281,7 @@ func (r *startReloader) handleReload(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	r.reload()
+	r.aud().Emit(audit.ControlMutation("reload", r.env.Workdir, "ok"))
 	writeJSON(w, http.StatusOK, r.manifest())
 }
 
@@ -292,6 +304,7 @@ func (r *startReloader) handleActivate(w http.ResponseWriter, req *http.Request)
 		return
 	}
 	r.reload()
+	r.aud().Emit(audit.ControlMutation("activate", r.env.Workdir, "ok"))
 	writeJSON(w, http.StatusOK, r.manifest())
 }
 
@@ -444,6 +457,7 @@ func (r *startReloader) reload() []string {
 			r.markNotReady(e.Name, &notReadySkill{
 				Mount: mount, State: facade.RouteBroken, Detail: refusal.Error(),
 			})
+			r.aud().Emit(audit.ControlMutation("reload", absDir, "refused: "+refusal.Error()))
 			if r.warnOnce(e.Name, refusal.Error()) {
 				fmt.Fprintf(r.env.Stderr, "omac start: %s\n", refusalNotice(refusal))
 			}
