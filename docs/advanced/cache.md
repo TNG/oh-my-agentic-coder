@@ -10,13 +10,13 @@ The scope controls how widely a single omac cache directory is shared between di
 
 | Scope | Shared across |
 |---|---|
-| `global` (default) | all working directories and all config files |
+| `workdir` (default) | that one working directory only |
 | `config` | all working directories that use the same [config file](../configuration.md) |
-| `workdir` | that one working directory only |
+| `global` | all working directories and all config files |
 
-- **global** — default and cheapest. All your omac projects share one cache directory, so packages downloaded for one project are reused by another. This does **not** expose your host caches — everything stays inside omac's isolated directory; it only means your omac projects are not isolated from *each other*. The shared cache is safe for concurrent use, so running several omac sessions at once is fine.
+- **workdir** — default. Each working directory gets its own isolated cache. Packages downloaded in one project are not available in another, but no sandboxed session can poison another project's cached artifacts.
 - **config** — a middle ground: all projects that use the same [config file](../configuration.md) share one cache, but projects under a different config stay separate.
-- **workdir** — strongest isolation; each working directory gets its own cache, isolated from every other project.
+- **global** — all your omac projects share one cache directory, so packages downloaded for one project are reused by another. This does **not** expose your host caches — everything stays inside omac's isolated directory; it only means your omac projects are not isolated from *each other*.
 
 ### Setting the scope
 
@@ -29,10 +29,10 @@ omac start --cache-scope workdir
 ```yaml
 # oh-my-agentic-coder.yaml
 cache:
-  scope: workdir   # global (default), config, or workdir
+  scope: workdir   # workdir (default), config, or global
 ```
 
-The flag takes precedence over the config file, which takes precedence over the default (`global`).
+The flag takes precedence over the config file, which takes precedence over the default (`workdir`).
 
 To set the scope for one project only, put this in a project-local config file; see [Per-project configuration](../configuration.md#per-project-configuration).
 

@@ -3,7 +3,6 @@ package cli
 import (
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -1988,19 +1987,13 @@ func mintToken() string {
 	return hex.EncodeToString(b[:])
 }
 
-// createRuntimeDirServe creates ${TMPDIR}/omac-serve-<hash>/{logs}.
+// createRuntimeDirServe creates a per-session runtime directory with an
+// unpredictable name under the user's state dir (never under shared /tmp).
 func createRuntimeDirServe(serverRoot string) (string, error) {
-	tmp := os.TempDir()
-	sum := sha256.Sum256([]byte("serve:" + serverRoot))
-	name := "omac-serve-" + hex.EncodeToString(sum[:6])
-	dir := filepath.Join(tmp, name)
-	if _, err := os.Stat(dir); err == nil {
-		_ = os.RemoveAll(dir)
+	_ = serverRoot // kept for caller context; name is randomised, not derived
+	base, err := runtimeDirBase()
+	if err != nil {
+		return "", err
 	}
-	for _, sub := range []string{"", "logs"} {
-		if err := os.MkdirAll(filepath.Join(dir, sub), 0o700); err != nil {
-			return "", err
-		}
-	}
-	return dir, nil
+	return newRuntimeDir(base, "omac-serve-", []string{"logs"})
 }

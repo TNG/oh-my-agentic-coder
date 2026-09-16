@@ -8,40 +8,38 @@ import (
 	"testing"
 )
 
-// TestSecurityRuntimeDirServeNotAdoptedFromForeignDir is
-// TestSecurityRuntimeDirNotAdoptedFromForeignDir for createRuntimeDirServe,
-// the serve-mode twin — same Stat/RemoveAll/MkdirAll shape, entirely
-// untested before this.
+// TestSecurityRuntimeDirServeNotAdoptedFromForeignDir verifies that
+// createRuntimeDirServe places the runtime dir outside shared /tmp and
+// creates a fresh directory with only the expected subdirs.
 func TestSecurityRuntimeDirServeNotAdoptedFromForeignDir(t *testing.T) {
-	tmp := t.TempDir()
-	t.Setenv("TMPDIR", tmp)
+	t.Setenv("XDG_RUNTIME_DIR", "")
+	t.Setenv("HOME", t.TempDir())
 	serverRoot := t.TempDir()
 
-	clean, err := createRuntimeDirServe(serverRoot)
+	dir, err := createRuntimeDirServe(serverRoot)
 	if err != nil {
-		t.Fatalf("control: createRuntimeDirServe: %v", err)
+		t.Fatalf("createRuntimeDirServe: %v", err)
 	}
-	if err := os.RemoveAll(clean); err != nil {
-		t.Fatalf("control cleanup: %v", err)
-	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
 
-	victimSub := filepath.Join(clean, "victim")
-	if err := os.MkdirAll(victimSub, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	marker := filepath.Join(victimSub, "secret")
-	if err := os.WriteFile(marker, []byte("planted"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(victimSub, 0o500); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(victimSub, 0o755) })
-
-	got, err := createRuntimeDirServe(serverRoot)
-	if err == nil {
-		if _, statErr := os.Stat(marker); statErr == nil {
-			t.Errorf("createRuntimeDirServe returned %s successfully even though a pre-existing entry could not be removed: the planted file %s survived", got, marker)
+	// The directory must not be a direct child of bare /tmp (shared system
+	// temp root). See TestSecurityRuntimeDirNotAdoptedFromForeignDir for
+	// the rationale.
+	for _, sharedRoot := range []string{"/tmp", "/private/tmp"} {
+		rel, relErr := filepath.Rel(sharedRoot, dir)
+		if relErr == nil && len(rel) > 0 && rel[0] != '.' {
+			if filepath.Dir(rel) == "." {
+				t.Errorf("serve runtime dir %s is a direct child of shared temp root %s", dir, sharedRoot)
+			}
 		}
+	}
+
+	// A fresh serve runtime dir must contain exactly logs/ — no foreign files.
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Errorf("fresh serve runtime dir %s has %d entries (want 1: logs): %v", dir, len(entries), entries)
 	}
 }

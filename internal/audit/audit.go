@@ -78,10 +78,13 @@ func New(cfg Config) (Auditor, error) {
 	path := cfg.Path
 	if path == "" {
 		p, notGuaranteed := DefaultPath()
-		path = p
 		if notGuaranteed {
-			warnf("no home dir resolved; audit log at %s may not persist", path)
+			// Writing to shared /tmp is the same class of risk as the runtime-dir
+			// and tool-cache findings: another local user can read or tamper with
+			// the audit trail. Refuse rather than silently degrade.
+			return nil, fmt.Errorf("audit: no home directory resolvable; refusing to write audit log to shared temp dir %s", p)
 		}
+		path = p
 	}
 
 	fs, err := openFileSink(path)

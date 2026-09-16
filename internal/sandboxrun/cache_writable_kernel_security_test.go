@@ -6,58 +6,85 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
+	"github.com/TNG/oh-my-agentic-coder/internal/toolcache"
 )
 
-// stripBareTmp removes the baseline's "/tmp"/"/private/tmp" grant AND its
-// separate "$TMPDIR" grant, isolating this test from two other, already-
-// tracked defects (TestSecurityBaselineDoesNotGrantHostTmp and the $TMPDIR
-// entry baseline.go grants alongside it) that would otherwise make the
-// cache-sharing property below untestable on its own: every path this test
-// (or any Go test) creates via t.TempDir() lives under $TMPDIR, so without
-// stripping it too, every sandbox already has broad read-write access to
-// this test's own scratch tree regardless of any cache-specific grant.
+// stripBareTmp removes any /tmp, /private/tmp and the sandbox's own $TMPDIR
+// from the grant lists so the test is not masked by a blanket /tmp write grant.
 func stripBareTmp(paths []string) []string {
 	tmpdir := os.Getenv("TMPDIR")
-	return slices.DeleteFunc(paths, func(p string) bool {
-		return p == "/tmp" || p == "/private/tmp" || (tmpdir != "" && p == tmpdir)
-	})
+	out := paths[:0:0]
+	for _, p := range paths {
+		if p == "/tmp" || p == "/private/tmp" || (tmpdir != "" && p == tmpdir) {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
 }
 
-// TestSecurityToolCacheNotWritableAcrossSessionsAtKernelLevel is the
-// kernel-enforcement complement to TestSecurityDefaultToolCacheNotShared
-// AcrossWorkdirs (argv-shape only): it actually runs bubblewrap twice,
-// simulating two independent sessions granted the same persistent cache
-// directory read-write (start.go/serve.go inject `--allow <cache dir>`
-// unconditionally, independent of workdir), and shows one session's
-// sandboxed process can overwrite a file the other session wrote there.
+// TestSecurityToolCacheNotWritableAcrossSessionsAtKernelLevel verifies that
+// two sandbox sessions started from different workdirs cannot write into each
+// other's tool cache. With the default workdir scope each workdir resolves to
+// a distinct cache directory, so kernel-level isolation requires no additional
+// mechanism: session B simply has no grant on session A's directory.
+//
+// This complements TestSecurityDefaultToolCacheNotSharedAcrossWorkdirs (which
+// only checks the resolved scope path) by actually running bubblewrap.
 func TestSecurityToolCacheNotWritableAcrossSessionsAtKernelLevel(t *testing.T) {
 	requireWorkingBwrap(t)
 
 	omac := buildOmac(t)
-	cacheDir := t.TempDir() // stands in for the real, home-derived shared cache dir
-	marker := filepath.Join(cacheDir, "cached-tool-manifest")
 
-	run := func(allowCache bool, script string) (string, error) {
-		wd := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	wdA := t.TempDir()
+	wdB := t.TempDir()
+
+	scopeA, err := toolcache.DescribePersistent(toolcache.DomainWorkdir, wdA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scopeB, err := toolcache.DescribePersistent(toolcache.DomainWorkdir, wdB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if scopeA.Dir == scopeB.Dir {
+		t.Fatal("workdir scopes unexpectedly collided — the isolation property is untestable")
+	}
+	if err := os.MkdirAll(scopeA.Dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(scopeB.Dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	markerA := filepath.Join(scopeA.Dir, "session-a-artifact")
+	if err := os.WriteFile(markerA, []byte("from-session-a"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Session B: granted only scopeB.Dir (its own workdir cache), not scopeA.Dir.
+	run := func(workdir, cacheDir, script string) (string, error) {
 		p := &sandboxprofile.Profile{
 			Workdir: sandboxprofile.Workdir{Access: sandboxprofile.AccessReadWrite},
+			Filesystem: sandboxprofile.Filesystem{
+				Allow: []string{cacheDir},
+			},
 			Network: sandboxprofile.Network{Mode: sandboxprofile.ModeBlocked},
 		}
-		g, err := ResolveGrants(p, wd, nil)
+		g, err := ResolveGrants(p, workdir, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
 		g.WritePaths = stripBareTmp(g.WritePaths)
 		g.AllowPaths = stripBareTmp(g.AllowPaths)
 		g.ReadPaths = append(g.ReadPaths, filepath.Dir(omac))
-		if allowCache {
-			g.AllowPaths = append(g.AllowPaths, cacheDir)
-		}
 		stage2 := append([]string{omac, "sandbox", "stage2"}, Stage2Args(g)...)
 		tail := append(append([]string{}, stage2...), "--", "/bin/sh", "-c", script)
 		argv, err := BuildBwrapArgv(g, tail)
@@ -68,37 +95,27 @@ func TestSecurityToolCacheNotWritableAcrossSessionsAtKernelLevel(t *testing.T) {
 		return string(out), err
 	}
 
-	// "Session A": writes the file a real tool-cache population would leave
-	// behind.
-	if out, err := run(true, "echo from-session-a > "+marker); err != nil {
-		t.Fatalf("session A setup write failed: %v: %s", err, out)
-	}
-	if data, err := os.ReadFile(marker); err != nil || !strings.Contains(string(data), "from-session-a") {
-		t.Fatalf("control: session A's write did not land at %s (%v): the fixture is broken, not the security property", marker, err)
+	// Control: session B can write inside its own cache scope.
+	if out, err := run(wdB, scopeB.Dir, "echo ok > "+filepath.Join(scopeB.Dir, "probe")); err != nil {
+		t.Fatalf("control: session B cannot write to its own cache: %v: %s", err, out)
 	}
 
-	// Control: an UNGRANTED sandbox cannot touch the same file — proves
-	// this test's sandbox construction really does confine writes in
-	// general, so a successful overwrite below is about cache-sharing
-	// specifically, not a broken fixture.
-	out, ctlErr := run(false, "echo from-ungranted > "+marker)
-	if ctlErr == nil {
-		if data, _ := os.ReadFile(marker); strings.Contains(string(data), "from-ungranted") {
-			t.Fatalf("control: a sandbox with NO grant to %s could still overwrite it (%s): the fixture's confinement itself is broken, not the security property", cacheDir, out)
+	// Session B must NOT be able to read or overwrite session A's artifact.
+	out, _ := run(wdB, scopeB.Dir, "cat "+markerA+" 2>&1")
+	if strings.Contains(out, "from-session-a") {
+		t.Errorf("session B (workdir %s, cache %s) could read session A's cached artifact at %s: "+
+			"the workdir-scoped cache does not isolate sessions at the kernel level", wdB, scopeB.Dir, markerA)
+	}
+
+	if _, err := run(wdB, scopeB.Dir, "echo from-session-b > "+markerA); err == nil {
+		if data, readErr := os.ReadFile(markerA); readErr == nil && strings.Contains(string(data), "from-session-b") {
+			t.Errorf("session B overwrote session A's cache artifact %s: "+
+				"workdir-scoped caches must not overlap", markerA)
 		}
 	}
 
-	// "Session B": an entirely separate sandbox launch (different workdir,
-	// standing in for a different project/session), granted the SAME
-	// persistent cache directory — exactly what start.go/serve.go do by
-	// default, independent of workdir.
-	if out, err := run(true, "echo from-session-b > "+marker); err != nil {
-		t.Fatalf("session B write failed: %v: %s", err, out)
-	}
-
-	data, err := os.ReadFile(marker)
-	if err == nil && strings.Contains(string(data), "from-session-b") {
-		t.Errorf("a second, independent sandboxed session overwrote a file the first session wrote into the shared persistent tool cache (%s): "+
-			"the cache is a shared writable location across sessions, not merely across workdirs — one session can poison another's cached tool state", marker)
+	// Confirm session A's artifact is unchanged on the host.
+	if data, err := os.ReadFile(markerA); err != nil || !strings.Contains(string(data), "from-session-a") {
+		t.Errorf("session A's artifact was modified or unreadable after session B ran: data=%q err=%v", data, err)
 	}
 }

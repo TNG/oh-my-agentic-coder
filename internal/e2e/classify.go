@@ -163,7 +163,7 @@ func contains(s []string, v string) bool {
 // made at least one call — distinguishing "agent never ran / infra crash"
 // from "agent ran but refused/summarized" when probe markers are absent.
 func sidecarSawRequests() bool {
-	pattern := filepath.Join(os.TempDir(), "omac-*", "logs", "*.log")
+	pattern := sidecarLogGlob()
 	matches, _ := filepath.Glob(pattern)
 	for _, m := range matches {
 		data, err := os.ReadFile(m)

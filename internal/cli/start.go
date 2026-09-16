@@ -2,8 +2,6 @@ package cli
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
@@ -1413,20 +1411,13 @@ func startAutoRegisterOne(workdir string, harness config.Harness, ent skillsourc
 	return out, nil
 }
 
-// createRuntimeDir creates ${TMPDIR}/omac-<workdir-hash>/{logs,pids}.
+// createRuntimeDir creates a per-session runtime directory with an
+// unpredictable name under the user's state dir (never under shared /tmp).
 func createRuntimeDir(workdir string) (string, error) {
-	tmp := os.TempDir()
-	sum := sha256.Sum256([]byte(workdir))
-	name := "omac-" + hex.EncodeToString(sum[:6])
-	dir := filepath.Join(tmp, name)
-	// Clean stale directory if present.
-	if _, err := os.Stat(dir); err == nil {
-		_ = os.RemoveAll(dir)
+	_ = workdir // kept for caller context; name is randomised, not derived
+	base, err := runtimeDirBase()
+	if err != nil {
+		return "", err
 	}
-	for _, sub := range []string{"", "logs", "pids"} {
-		if err := os.MkdirAll(filepath.Join(dir, sub), 0o700); err != nil {
-			return "", err
-		}
-	}
-	return dir, nil
+	return newRuntimeDir(base, "omac-", []string{"logs", "pids"})
 }

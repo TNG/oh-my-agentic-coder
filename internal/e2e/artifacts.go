@@ -92,7 +92,7 @@ func writeSessionArtifacts(t *testing.T, h harnessConfig, testType string,
 	}
 
 	// Sidecar logs.
-	pattern := filepath.Join(os.TempDir(), "omac-*", "logs", "*.log")
+	pattern := sidecarLogGlob()
 	matches, _ := filepath.Glob(pattern)
 	for _, m := range matches {
 		data, err := os.ReadFile(m)
