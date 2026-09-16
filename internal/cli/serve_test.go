@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"io"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -65,18 +66,24 @@ func newServeServerForTest(t *testing.T) *serveServer {
 	t.Cleanup(func() { f.Close() })
 
 	return &serveServer{
-		env:        makeEnv(t.TempDir()),
-		harness:    config.DefaultHarness(),
-		facade:     f,
-		sup:        nil, // not used for pending-credentials path
-		ctx:        t.Context(),
-		rtDir:      rt,
-		socketPath: filepath.Join(rt, "bridge.sock"),
-		tcpPort:    f.TCPPort(),
-		dirs:       map[string]*dirState{},
-		byToken:    map[string]*dirState{},
-		global:     map[string]*skillRoute{},
+		env:          makeEnv(t.TempDir()),
+		harness:      config.DefaultHarness(),
+		facade:       f,
+		sup:          nil, // not used for pending-credentials path
+		ctx:          t.Context(),
+		rtDir:        rt,
+		socketPath:   filepath.Join(rt, "bridge.sock"),
+		tcpPort:      f.TCPPort(),
+		controlToken: "test-control-token",
+		dirs:         map[string]*dirState{},
+		byToken:      map[string]*dirState{},
+		global:       map[string]*skillRoute{},
 	}
+}
+
+// addServeTestToken adds the test control token to a request.
+func addServeTestToken(req *http.Request) {
+	req.Header.Set("X-Omac-Control-Token", "test-control-token")
 }
 
 func TestActivatePendingCredentials(t *testing.T) {
@@ -126,12 +133,26 @@ func TestActivateIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("activate 1: %v", err)
 	}
+	token, _ := m1["dir_token"].(string)
+	if token == "" {
+		t.Fatal("first activation returned no dir_token")
+	}
 	m2, err := s.activate(wd)
 	if err != nil {
 		t.Fatalf("activate 2: %v", err)
 	}
-	if m1["dir_token"] != m2["dir_token"] {
-		t.Errorf("token changed on re-activate: %v vs %v", m1["dir_token"], m2["dir_token"])
+	// dir_token must not appear in the second response; the token is issued
+	// exactly once so a caller who knows only the directory path cannot
+	// retrieve the namespace key of an already-active session.
+	if _, present := m2["dir_token"]; present {
+		t.Errorf("re-activate returned dir_token %q: token must be issued only on first activation", m2["dir_token"])
+	}
+	// The token is stable on the server side.
+	s.mu.RLock()
+	stored := s.dirs[wd].Token
+	s.mu.RUnlock()
+	if stored != token {
+		t.Errorf("stored token %q != first-activation token %q", stored, token)
 	}
 	if len(s.dirs) != 1 {
 		t.Errorf("dirs count = %d, want 1", len(s.dirs))
@@ -724,6 +745,7 @@ func TestReloadGlobalEndpointExists(t *testing.T) {
 	s := newServeServerForTest(t)
 	mux := s.controlMux()
 	req := httptest.NewRequest("POST", "/__omac__/reload-global", nil)
+	addServeTestToken(req)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 	// With no global skills it should still succeed (200) and return a list.
@@ -1198,9 +1220,16 @@ func TestRediscoverPicksUpNewSkill(t *testing.T) {
 	if !names["slack"] || !names["email"] {
 		t.Errorf("expected both slack and email, got %v", names)
 	}
-	// Token is stable across rediscover (same activation).
-	if m1["dir_token"] != m2["dir_token"] {
-		t.Errorf("token changed on rediscover: %v -> %v", m1["dir_token"], m2["dir_token"])
+	// Token is not re-issued on rediscover; it was already given on first activation.
+	if _, present := m2["dir_token"]; present {
+		t.Errorf("re-activate returned dir_token again: token must only be issued once")
+	}
+	// The stored token is stable (not rotated) across rediscover.
+	s.mu.RLock()
+	stored := s.dirs[wd].Token
+	s.mu.RUnlock()
+	if m1["dir_token"].(string) != stored {
+		t.Errorf("first-activation token %q no longer matches stored token %q", m1["dir_token"], stored)
 	}
 }
 

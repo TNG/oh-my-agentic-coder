@@ -126,7 +126,7 @@ func TestSecurityControlInfoWriteDoesNotFollowSymlink(t *testing.T) {
 		t.Fatalf("plant symlink: %v", err)
 	}
 
-	if err := writeControlInfo("http://127.0.0.1:45671"); err != nil {
+	if err := writeControlInfo("http://127.0.0.1:45671", "test-token"); err != nil {
 		t.Logf("writeControlInfo reported %v", err)
 	}
 

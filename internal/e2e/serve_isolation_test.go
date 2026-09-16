@@ -45,8 +45,10 @@ func stageServeSkill(t *testing.T, workdir, name string) {
 }
 
 var (
-	controlBaseRe = regexp.MustCompile(`OMAC_CONTROL_BASE=(\S+)`)
-	facadePortRe  = regexp.MustCompile(`facade on 127\.0\.0\.1:(\d+)`)
+	controlBaseRe  = regexp.MustCompile(`OMAC_CONTROL_BASE=(\S+)`)
+	controlTokenRe = regexp.MustCompile(`OMAC_CONTROL_TOKEN=(\S+)`)
+	facadePortRe   = regexp.MustCompile(`facade on 127\.0\.0\.1:(\d+)`)
+	facadeTokenRe  = regexp.MustCompile(`OMAC_FACADE_TOKEN=(\S+)`)
 )
 
 // TestE2EServeDirTokenIsolation is a live regression test for the dir_token
@@ -122,7 +124,9 @@ func TestE2EServeDirTokenIsolation(t *testing.T) {
 	})
 
 	controlBaseCh := make(chan string, 1)
+	controlTokenCh := make(chan string, 1)
 	facadePortCh := make(chan string, 1)
+	facadeTokenCh := make(chan string, 1)
 	go func() {
 		scanner := bufio.NewScanner(stdoutPipe)
 		for scanner.Scan() {
@@ -133,25 +137,47 @@ func TestE2EServeDirTokenIsolation(t *testing.T) {
 				default:
 				}
 			}
+			if m := controlTokenRe.FindStringSubmatch(line); m != nil {
+				select {
+				case controlTokenCh <- m[1]:
+				default:
+				}
+			}
 			if m := facadePortRe.FindStringSubmatch(line); m != nil {
 				select {
 				case facadePortCh <- m[1]:
 				default:
 				}
 			}
+			if m := facadeTokenRe.FindStringSubmatch(line); m != nil {
+				select {
+				case facadeTokenCh <- m[1]:
+				default:
+				}
+			}
 		}
 	}()
 
-	var controlBase, facadePort string
+	var controlBase, controlToken, facadePort, facadeToken string
 	select {
 	case controlBase = <-controlBaseCh:
 	case <-time.After(15 * time.Second):
 		t.Fatalf("omac serve did not print OMAC_CONTROL_BASE within 15s; stderr:\n%s", stderrBuf.String())
 	}
 	select {
+	case controlToken = <-controlTokenCh:
+	case <-time.After(15 * time.Second):
+		t.Fatalf("omac serve did not print OMAC_CONTROL_TOKEN within 15s; stderr:\n%s", stderrBuf.String())
+	}
+	select {
 	case facadePort = <-facadePortCh:
 	case <-time.After(15 * time.Second):
 		t.Fatalf("omac serve did not print facade port within 15s; stderr:\n%s", stderrBuf.String())
+	}
+	select {
+	case facadeToken = <-facadeTokenCh:
+	case <-time.After(15 * time.Second):
+		t.Fatalf("omac serve did not print OMAC_FACADE_TOKEN within 15s; stderr:\n%s", stderrBuf.String())
 	}
 
 	client := &http.Client{Timeout: 10 * time.Second}
@@ -159,7 +185,10 @@ func TestE2EServeDirTokenIsolation(t *testing.T) {
 	activate := func(dir string) map[string]any {
 		t.Helper()
 		body, _ := json.Marshal(map[string]string{"dir": dir})
-		resp, err := client.Post(controlBase+"/__omac__/activate", "application/json", bytes.NewReader(body))
+		req, _ := http.NewRequest(http.MethodPost, controlBase+"/__omac__/activate", bytes.NewReader(body))
+		req.Header.Set("content-type", "application/json")
+		req.Header.Set("X-Omac-Control-Token", controlToken)
+		resp, err := client.Do(req)
 		if err != nil {
 			t.Fatalf("activate %s: %v", dir, err)
 		}
@@ -199,10 +228,12 @@ func TestE2EServeDirTokenIsolation(t *testing.T) {
 	// --- Positive control: each dir's own token still resolves its own
 	// route through the real facade TCP listener — proves namespacing is
 	// live, not just that every request happens to fail. ---
-	facadeGet := func(token string) int {
+	facadeGet := func(dirToken string) int {
 		t.Helper()
-		u := fmt.Sprintf("http://127.0.0.1:%s/%s/slack/status", facadePort, token)
-		r, err := client.Get(u)
+		u := fmt.Sprintf("http://127.0.0.1:%s/%s/slack/status", facadePort, dirToken)
+		req, _ := http.NewRequest(http.MethodGet, u, nil)
+		req.Header.Set("X-Omac-Facade-Token", facadeToken)
+		r, err := client.Do(req)
 		if err != nil {
 			t.Fatalf("GET %s: %v", u, err)
 		}

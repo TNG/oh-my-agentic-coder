@@ -717,6 +717,7 @@ func runLaunch(env *Env, opts launchOpts) int {
 		return ExitIOError
 	}
 	defer f.Close()
+	f.FacadeToken = mintToken()
 	tcpPort := f.TCPPort()
 	if verbose {
 		fmt.Fprintf(env.Stderr, "[verbose] facade listening on %s and 127.0.0.1:%d (%d route(s))\n",
@@ -859,7 +860,9 @@ func runLaunch(env *Env, opts launchOpts) int {
 	}
 	if controlOK {
 		extra["OMAC_CONTROL_BASE"] = controlURL
+		extra["OMAC_CONTROL_TOKEN"] = reloader.controlToken
 	}
+	extra["OMAC_FACADE_TOKEN"] = reloader.facade.FacadeToken
 	if injectBriefing {
 		// The OpenCode plugin reads this and pushes it into the system prompt;
 		// Claude ignores it (it gets the briefing via the flag above).

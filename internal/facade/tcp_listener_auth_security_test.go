@@ -57,6 +57,7 @@ func TestSecurityTCPListenerRequiresAuthentication(t *testing.T) {
 		State:        RouteReady,
 	}}, 0, time.Minute, "", "test")
 	f.IntentRegistry = reg
+	f.FacadeToken = "test-facade-token" // enable TCP authentication
 	if err := f.Start(context.Background()); err != nil {
 		t.Fatalf("facade start: %v", err)
 	}
@@ -69,8 +70,9 @@ func TestSecurityTCPListenerRequiresAuthentication(t *testing.T) {
 	base := fmt.Sprintf("http://127.0.0.1:%d", port)
 	client := &http.Client{Timeout: 5 * time.Second}
 
-	// Control: the facade is up and answering on this port. Without it, a
-	// facade that failed to start would satisfy every assertion below.
+	// Control: the facade is up and rejecting unauthenticated requests.
+	// We use /sandbox/denied which is a built-in that requires no route —
+	// the 401 confirms auth is active, not just that the route is missing.
 	resp, err := client.Get(base + "/sandbox/denied?path=/etc/shadow")
 	if err != nil {
 		t.Fatalf("the facade is not answering on its own TCP port (%v): the fixture is broken, not the security property", err)

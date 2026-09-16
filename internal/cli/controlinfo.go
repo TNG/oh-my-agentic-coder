@@ -22,10 +22,17 @@ import (
 // --workdir and cannot derive the server's runtime-dir hash. The normal
 // deployment has one serve process; if that ever needs to change this can
 // grow into a directory of files keyed by pid.
+//
+// ControlToken is the per-session bearer token required on all control-plane
+// requests. It is written here so host-side CLI commands (omac register, etc.)
+// can notify the running serve without knowing the token out-of-band. The file
+// lives in ~/.config/omac/ which the sandbox baseline never mounts, so a
+// confined agent cannot read it.
 type controlInfo struct {
-	ControlBase string `json:"control_base"`
-	PID         int    `json:"pid"`
-	StartedAt   string `json:"started_at"`
+	ControlBase  string `json:"control_base"`
+	ControlToken string `json:"control_token"`
+	PID          int    `json:"pid"`
+	StartedAt    string `json:"started_at"`
 }
 
 // controlInfoPath returns the well-known path of the serve control-info file,
@@ -40,17 +47,18 @@ func controlInfoPath() string {
 	return filepath.Join(dir, "serve-control.json")
 }
 
-// writeControlInfo publishes the running serve's control URL. Best-effort:
-// a write failure is logged by the caller but does not abort serve.
-func writeControlInfo(controlBase string) error {
+// writeControlInfo publishes the running serve's control URL and token.
+// Best-effort: a write failure is logged by the caller but does not abort serve.
+func writeControlInfo(controlBase, controlToken string) error {
 	p := controlInfoPath()
 	if p == "" {
 		return fmt.Errorf("control-info: no user config dir available; refusing to write to shared temp")
 	}
 	ci := controlInfo{
-		ControlBase: controlBase,
-		PID:         os.Getpid(),
-		StartedAt:   time.Now().UTC().Format(time.RFC3339),
+		ControlBase:  controlBase,
+		ControlToken: controlToken,
+		PID:          os.Getpid(),
+		StartedAt:    time.Now().UTC().Format(time.RFC3339),
 	}
 	data, err := json.MarshalIndent(ci, "", "  ")
 	if err != nil {
@@ -165,6 +173,9 @@ func notifyReload(absDir string) (bool, string) {
 		return false, "reload request build failed"
 	}
 	req.Header.Set("content-type", "application/json")
+	if ci.ControlToken != "" {
+		req.Header.Set("X-Omac-Control-Token", ci.ControlToken)
+	}
 	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -193,6 +204,9 @@ func notifyReloadGlobal() (bool, string) {
 	req, err := http.NewRequest(http.MethodPost, ci.ControlBase+"/__omac__/reload-global", nil)
 	if err != nil {
 		return false, "reload-global request build failed"
+	}
+	if ci.ControlToken != "" {
+		req.Header.Set("X-Omac-Control-Token", ci.ControlToken)
 	}
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)

@@ -48,7 +48,7 @@ func TestControlInfoRoundTrip(t *testing.T) {
 	if _, ok := readControlInfo(); ok {
 		t.Fatal("expected no control-info before write")
 	}
-	if err := writeControlInfo("http://127.0.0.1:12345"); err != nil {
+	if err := writeControlInfo("http://127.0.0.1:12345", "test-token"); err != nil {
 		t.Fatalf("writeControlInfo: %v", err)
 	}
 	ci, ok := readControlInfo()
@@ -99,7 +99,7 @@ func TestNotifyReloadHitsControlPlane(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	if err := writeControlInfo(srv.URL); err != nil {
+	if err := writeControlInfo(srv.URL, "test-token"); err != nil {
 		t.Fatalf("writeControlInfo: %v", err)
 	}
 	ok, msg := notifyReload("/proj/x")

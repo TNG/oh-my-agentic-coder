@@ -58,6 +58,7 @@ control_post() {
   local path="$1" body="$2"
   curl -fsS -X POST "${control_base}${path}" \
     -H 'content-type: application/json' \
+    -H "X-Omac-Control-Token: ${OMAC_CONTROL_TOKEN:-}" \
     -d "$body" 2>/dev/null || true
 }
 
@@ -104,9 +105,11 @@ emit_context() {
   fi
 }
 
+[ "$have_jq" -eq 1 ] || exit 0
+
 case "$event" in
   SessionStart)
-    manifest="$(control_post "/__omac__/activate" "{\"dir\":\"${dir}\"}")"
+    manifest="$(control_post "/__omac__/activate" "$(jq -n --arg d "$dir" '{"dir":$d}')")"
     if [ -n "$manifest" ]; then
       context="$(render_manifest "$manifest")"
       emit_context "$context"
