@@ -140,6 +140,33 @@ func (c ConfigSpec) EffectiveType() ConfigFieldType {
 	return c.Type
 }
 
+// ValidateValue checks v against the spec's constraints (Choices when
+// declared, Pattern for string types). Called both at register time
+// (canonicalizeFieldValue in register.go) and at launch time
+// (skillstate.resolveConfig) so a stored value that violates the schema is
+// refused before it reaches the sidecar's env.
+func (c ConfigSpec) ValidateValue(v string) error {
+	// Choices constrain the value regardless of declared Type.
+	if len(c.Choices) > 0 {
+		for _, choice := range c.Choices {
+			if v == choice {
+				return nil
+			}
+		}
+		return fmt.Errorf("config field %s: value %q is not one of %v", c.Name, v, c.Choices)
+	}
+	if c.EffectiveType() == ConfigFieldString && c.Pattern != "" {
+		re, err := regexp.Compile(c.Pattern)
+		if err != nil {
+			return fmt.Errorf("config field %s: invalid pattern: %w", c.Name, err)
+		}
+		if !re.MatchString(v) {
+			return fmt.Errorf("config field %s: value %q does not match /%s/", c.Name, v, c.Pattern)
+		}
+	}
+	return nil
+}
+
 // HealthSpec controls the liveness probe the supervisor waits on.
 type HealthSpec struct {
 	Path           string `yaml:"path,omitempty"`

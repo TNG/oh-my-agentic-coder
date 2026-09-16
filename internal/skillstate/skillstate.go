@@ -475,15 +475,24 @@ func (r *Resolver) secretFromEnv(name string, passthrough map[string]struct{}) (
 
 // resolveConfig fills armed.Config with precedence
 // stored > spec.Default > $spec.DefaultFromEnv > missing.
-//
-// Config VALUES are not re-validated against spec.Pattern/Choices: that is
-// register-time prompting behaviour and moving it here would newly refuse
-// skills that start fine today.
+// Stored values are re-validated against spec.Pattern/Choices so a value
+// written directly to skill-config.yaml after approval cannot violate the
+// schema that the sidecar relies on.
 func (r *Resolver) resolveConfig(armed *Armed, cfg *skillconfig.Store) []Problem {
 	var problems []Problem
 	for _, spec := range armed.Meta.Sidecar.Config {
 		if cfg != nil {
 			if v, ok := cfg.Get(armed.Entry.Name, spec.Name); ok {
+				if err := spec.ValidateValue(v); err != nil {
+					problems = append(problems, Problem{
+						Kind:   InvalidSecret, // reuse existing terminal kind
+						Skill:  armed.Entry.Name,
+						Field:  spec.Name,
+						Detail: err.Error(),
+						Fix:    "omac register " + armed.Entry.Name + " --reprompt-fields",
+					})
+					continue
+				}
 				armed.Config[spec.Name] = v
 				armed.ConfigSources[spec.Name] = SourceStored
 				continue
