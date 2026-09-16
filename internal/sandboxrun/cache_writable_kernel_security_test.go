@@ -107,7 +107,7 @@ func TestSecurityToolCacheNotWritableAcrossSessionsAtKernelLevel(t *testing.T) {
 			"the workdir-scoped cache does not isolate sessions at the kernel level", wdB, scopeB.Dir, markerA)
 	}
 
-	if out, err := run(wdB, scopeB.Dir, "echo from-session-b > "+markerA); err == nil {
+	if _, err := run(wdB, scopeB.Dir, "echo from-session-b > "+markerA); err == nil {
 		if data, readErr := os.ReadFile(markerA); readErr == nil && strings.Contains(string(data), "from-session-b") {
 			t.Errorf("session B overwrote session A's cache artifact %s: "+
 				"workdir-scoped caches must not overlap", markerA)

@@ -93,8 +93,8 @@ cannot access.
 | Shared skills dirs (`~/.config/agents/skills`, `~/.agents/skills`) | read-only | So the agent can read skill descriptions (`SKILL.md`) |
 | Git config (`~/.gitconfig`, `~/.gitignore_global`) | read-only | Read commit settings and global ignores; write access would affect all your repos |
 | System directories (`/usr`, `/bin`, `/lib`, `/etc`, …) | read-only | OS binaries and libraries needed to run any command (`bash`, `git`, `python`, …) |
-| `$TMPDIR` (private per-launch dir) | read + write | Temporary files during the agent's work; a private tmpfs is mounted over `/tmp` so the shared host temp dir is not exposed |
-| Facade socket (`$TMPDIR/omac-<hash>/bridge.sock`) | connect | The socket the agent uses to reach skill sidecars; created by the facade, not the agent |
+| `$TMPDIR` (private per-launch dir) | read + write | Temporary files during the agent's work; on Linux a private tmpfs is mounted over `/tmp` so nothing the agent writes there is visible on the host or to other sessions |
+| Facade socket (in `~/.local/state/omac/run/` on Linux, `~/Library/Application Support/omac/run/` on macOS) | connect | The socket the agent uses to reach skill sidecars; created by the facade at an unpredictable path the agent cannot pre-compute |
 | `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.kube`, … | **blocked** | Sensitive credentials |
 | `~/.npmrc` | **blocked**; registry addresses can be shared as a stripped copy | Usually holds an access token. See [Private package registries](./configuration.md#private-package-registries) |
 | `~/.config/omac` (approval store, sandbox profiles, global registry) | **blocked** | The agent must not be able to forge skill approvals; protected in the baseline even under broader grants |

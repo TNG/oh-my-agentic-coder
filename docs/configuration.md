@@ -33,7 +33,7 @@ audit:
   syslog: false                     # also mirror events to the system log (Unix)
   strict: false                     # fail-closed: abort the run if a log write fails
 cache:
-  scope: global                     # tool cache sharing: global (default), config, or workdir; see Cache
+  scope: workdir                    # tool cache sharing: workdir (default), config, or global; see Cache
 ```
 
 **`cache.scope`** controls how widely omac's isolated tool cache is shared between projects. It can be overridden per session with `--cache-scope`. See [Cache](./advanced/cache.md) for details.

@@ -9,11 +9,15 @@ The sandboxed child process SHALL only be able to access filesystem paths grante
 
 A platform baseline SHALL be granted implicitly:
 - read-only system paths required for process execution (macOS: `/bin`, `/sbin`, `/usr/bin`, `/usr/sbin`, `/usr/local/*`, `/usr/lib`, `/usr/share`, `/System`, `/Library`, `/dev`, dyld caches (`/private/var/db/dyld`), `/etc` (`/private/etc`), zoneinfo/terminfo, `/opt`, `/Applications`, Homebrew paths (`/opt/homebrew`, `/usr/local/Cellar`, `/usr/local/opt`); Linux: `/bin`, `/sbin`, `/usr`, `/lib*`, `/etc` essentials (resolv.conf, hosts, ssl, ld.so.*, locale, terminfo), `/usr/share`, `/dev` basics, `/proc/self`), plus user-local tool paths (`~/.local/bin`).
-- writable temp and device paths (macOS: `/tmp` (`/private/tmp`), `/var/folders` (`/private/var/folders`), `$TMPDIR`, `/dev`; Linux: `/tmp`, `/dev/null`, `/dev/tty`, ptys, `/proc/self/fd`).
+- writable temp and device paths (macOS: `/var/folders` (`/private/var/folders`), `$TMPDIR`, `/dev`; Linux: a private per-sandbox tmpfs is mounted over `/tmp` so writes there are isolated; the per-launch scratch dir is granted read+write via `{{tmpdir_flags}}`).
 
 #### Scenario: Temp dir writable by default
 - **WHEN** the child writes to `$TMPDIR` (macOS) or `/tmp` (Linux) without an explicit profile grant
-- **THEN** the write succeeds
+- **THEN** the write succeeds inside the sandbox's private namespace and is not visible on the host or to other sessions
+
+#### Scenario: Host /tmp not shared with sandbox (Linux)
+- **WHEN** the sandboxed process writes a file to `/tmp` on Linux
+- **THEN** the file is not visible at that path on the host or to any other concurrent sandbox session
 
 #### Scenario: Ungranted path is inaccessible
 - **WHEN** the child attempts to read `~/.ssh/id_ed25519` and no grant covers it
