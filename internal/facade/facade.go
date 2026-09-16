@@ -234,7 +234,7 @@ func (f *Facade) AddRoute(r Route) {
 	if f.routes == nil {
 		f.routes = make(map[string]*Route)
 	}
-	if existing, ok := f.routes[rr.key()]; ok && existing.Owner != "" && rr.Owner != "" && existing.Owner != rr.Owner {
+	if existing, ok := f.routes[rr.key()]; ok && existing.Owner != "" && existing.Owner != rr.Owner {
 		f.mu.Unlock()
 		return
 	}
@@ -396,7 +396,7 @@ func (f *Facade) handle(w http.ResponseWriter, r *http.Request) {
 	// (Interim boundary; Unix socket + SO_PEERCRED is the intended end-state, issue #88.)
 	if f.FacadeToken != "" && isTCPRemote(r) {
 		got := r.Header.Get("X-Omac-Facade-Token")
-		if subtle.ConstantTimeCompare([]byte(got), []byte(f.FacadeToken)) != 1 {
+		if got == "" || subtle.ConstantTimeCompare([]byte(got), []byte(f.FacadeToken)) != 1 {
 			http.Error(w, "omac: unauthorized", http.StatusUnauthorized)
 			return
 		}

@@ -1849,7 +1849,8 @@ func (s *serveServer) skillJSON(sr *skillRoute, scope string) map[string]any {
 // on all /__omac__/* endpoints. Callers must include it as X-Omac-Control-Token.
 func (s *serveServer) requireControlToken(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if subtle.ConstantTimeCompare([]byte(r.Header.Get("X-Omac-Control-Token")), []byte(s.controlToken)) != 1 {
+		got := r.Header.Get("X-Omac-Control-Token")
+		if s.controlToken == "" || got == "" || subtle.ConstantTimeCompare([]byte(got), []byte(s.controlToken)) != 1 {
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 			return
 		}

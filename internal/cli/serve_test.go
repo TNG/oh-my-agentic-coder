@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"io"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -65,18 +66,24 @@ func newServeServerForTest(t *testing.T) *serveServer {
 	t.Cleanup(func() { f.Close() })
 
 	return &serveServer{
-		env:        makeEnv(t.TempDir()),
-		harness:    config.DefaultHarness(),
-		facade:     f,
-		sup:        nil, // not used for pending-credentials path
-		ctx:        t.Context(),
-		rtDir:      rt,
-		socketPath: filepath.Join(rt, "bridge.sock"),
-		tcpPort:    f.TCPPort(),
-		dirs:       map[string]*dirState{},
-		byToken:    map[string]*dirState{},
-		global:     map[string]*skillRoute{},
+		env:          makeEnv(t.TempDir()),
+		harness:      config.DefaultHarness(),
+		facade:       f,
+		sup:          nil, // not used for pending-credentials path
+		ctx:          t.Context(),
+		rtDir:        rt,
+		socketPath:   filepath.Join(rt, "bridge.sock"),
+		tcpPort:      f.TCPPort(),
+		controlToken: "test-control-token",
+		dirs:         map[string]*dirState{},
+		byToken:      map[string]*dirState{},
+		global:       map[string]*skillRoute{},
 	}
+}
+
+// addServeTestToken adds the test control token to a request.
+func addServeTestToken(req *http.Request) {
+	req.Header.Set("X-Omac-Control-Token", "test-control-token")
 }
 
 func TestActivatePendingCredentials(t *testing.T) {
@@ -738,6 +745,7 @@ func TestReloadGlobalEndpointExists(t *testing.T) {
 	s := newServeServerForTest(t)
 	mux := s.controlMux()
 	req := httptest.NewRequest("POST", "/__omac__/reload-global", nil)
+	addServeTestToken(req)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 	// With no global skills it should still succeed (200) and return a list.

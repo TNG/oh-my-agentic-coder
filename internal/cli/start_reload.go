@@ -94,7 +94,8 @@ func reloadStubRoute(mount string, problems []skillstate.Problem) *notReadySkill
 // token on all /__omac__/* endpoints in start mode.
 func requireControlTokenStart(token string, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if subtle.ConstantTimeCompare([]byte(r.Header.Get("X-Omac-Control-Token")), []byte(token)) != 1 {
+		got := r.Header.Get("X-Omac-Control-Token")
+		if token == "" || got == "" || subtle.ConstantTimeCompare([]byte(got), []byte(token)) != 1 {
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 			return
 		}
