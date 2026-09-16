@@ -721,11 +721,16 @@ func handleOneField(env *Env, store *skillconfig.Store, skill string, spec confi
 	}
 
 	// 5. Interactive prompt loop.
+	displayName := stripControlChars(spec.Name)
 	if spec.Description != "" {
-		fmt.Fprintf(env.Stderr, "  %s %s\n", st.bold(spec.Name), st.dim(spec.Description))
+		fmt.Fprintf(env.Stderr, "  %s %s\n", st.bold(displayName), st.dim(stripControlChars(spec.Description)))
 	}
 	if spec.EffectiveType() == config.ConfigFieldEnum {
-		fmt.Fprintf(env.Stderr, "    %s %s\n", st.gray("choices:"), st.cyan(strings.Join(spec.Choices, ", ")))
+		safeChoices := make([]string, len(spec.Choices))
+		for i, c := range spec.Choices {
+			safeChoices[i] = stripControlChars(c)
+		}
+		fmt.Fprintf(env.Stderr, "    %s %s\n", st.gray("choices:"), st.cyan(strings.Join(safeChoices, ", ")))
 	}
 
 	reader := bufio.NewReader(env.Stdin)
@@ -736,7 +741,7 @@ func handleOneField(env *Env, store *skillconfig.Store, skill string, spec confi
 		if defaultVal != "" {
 			hint = fmt.Sprintf(" [%s, from %s]", defaultVal, defaultSource)
 		}
-		fmt.Fprintf(env.Stderr, "  %s %s%s ", st.cyan("?"), st.bold(spec.Name), st.gray(hint+":"))
+		fmt.Fprintf(env.Stderr, "  %s %s%s ", st.cyan("?"), st.bold(displayName), st.gray(hint+":"))
 
 		line, err := reader.ReadString('\n')
 		if err != nil {
@@ -750,17 +755,14 @@ func handleOneField(env *Env, store *skillconfig.Store, skill string, spec confi
 			if defaultVal != "" {
 				canon, err := canonicalizeFieldValue(spec, defaultVal)
 				if err != nil {
-					// Default itself is invalid (e.g. enum default not in choices,
-					// caught at meta validation but we double-check here). Don't
-					// silently store garbage.
 					return false, fmt.Errorf("default for %s rejected: %w", spec.Name, err)
 				}
 				setField(canon)
-				st.setLine(env.Stderr, spec.Name, canon, fmt.Sprintf("(default from %s)", defaultSource))
+				st.setLine(env.Stderr, displayName, canon, fmt.Sprintf("(default from %s)", defaultSource))
 				return false, nil
 			}
 			if !spec.IsRequired() {
-				st.status(env.Stderr, "[skip]", st.dim(spec.Name+" (optional, not provided)"), ansiYellow)
+				st.status(env.Stderr, "[skip]", st.dim(displayName+" (optional, not provided)"), ansiYellow)
 				return true, nil
 			}
 			if attempts >= 3 {
@@ -779,7 +781,7 @@ func handleOneField(env *Env, store *skillconfig.Store, skill string, spec confi
 			continue
 		}
 		setField(canon)
-		st.setLine(env.Stderr, spec.Name, canon, "")
+		st.setLine(env.Stderr, displayName, canon, "")
 		return false, nil
 	}
 }

@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/TNG/oh-my-agentic-coder/internal/config"
 )
 
 // skill mirrors the fields from the activate response's skills array.
@@ -73,29 +75,63 @@ func Render(activateJSON, skillsDir string) string {
 	})
 
 	for _, sk := range sorted {
+		name := sanitizeField(sk.Name)
+		scope := sanitizeField(sk.Scope)
 		switch sk.State {
 		case "ready":
 			if sk.Base != "" {
-				fmt.Fprintf(&b, "- **%s** (%s) — ready — base: `%s`\n", sk.Name, sk.Scope, sk.Base)
+				fmt.Fprintf(&b, "- **%s** (%s) — ready — base: `%s`\n", name, scope, sk.Base)
 			}
 		case "pending-credentials":
-			missing := strings.Join(sk.Missing, ", ")
-			fmt.Fprintf(&b, "- **%s** (%s) — UNAVAILABLE (missing credentials: %s). Run in your own terminal: %s\n",
-				sk.Name, sk.Scope, missing, secretsHint(sk.Name, sk.Missing))
+			sanitizedMissing := make([]string, len(sk.Missing))
+			for i, m := range sk.Missing {
+				sanitizedMissing[i] = sanitizeField(m)
+			}
+			missing := strings.Join(sanitizedMissing, ", ")
+			hint := secretsHint(sk.Name, sk.Missing)
+			var hintSuffix string
+			if hint != "" {
+				hintSuffix = ". Run in your own terminal: " + hint
+			}
+			fmt.Fprintf(&b, "- **%s** (%s) — UNAVAILABLE (missing credentials: %s)%s\n",
+				name, scope, missing, hintSuffix)
 		case "broken":
-			detail := sk.Detail
+			detail := sanitizeField(sk.Detail)
 			if detail == "" {
 				detail = "see omac logs"
 			}
-			fmt.Fprintf(&b, "- **%s** (%s) — BROKEN: %s\n", sk.Name, sk.Scope, detail)
+			fmt.Fprintf(&b, "- **%s** (%s) — BROKEN: %s\n", name, scope, detail)
 		}
 	}
 
 	return b.String()
 }
 
+// sanitizeField collapses newlines, strips C0/C1 control chars, and removes
+// markdown bold markers (*) so skill-supplied values cannot inject new
+// markdown blocks or forge bold structure into the manifest text.
+func sanitizeField(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\r' {
+			return ' '
+		}
+		if r == '*' {
+			return -1
+		}
+		if r < 0x20 || (r >= 0x7f && r <= 0x9f) {
+			return -1
+		}
+		return r
+	}, s)
+}
+
 // secretsHint builds the "omac secrets set" commands for missing credentials.
+// Returns an empty string when the skill name contains characters that would
+// make the result unsafe to present as a shell command.
 func secretsHint(skillName string, missing []string) string {
+	if config.ValidSkillName(skillName) != nil {
+		return ""
+	}
 	var parts []string
 	for _, m := range missing {
 		parts = append(parts, "omac secrets set "+skillName+" "+m)

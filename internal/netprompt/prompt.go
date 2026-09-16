@@ -160,23 +160,33 @@ func RegisteredSuffixHint(host string) string {
 	return etld1
 }
 
+// escapePangoMarkup escapes the characters Pango and Qt Rich Text interpret
+// as markup so agent-controlled strings cannot inject styled or structured
+// content into the dialog. Escaping at render time keeps stored values intact.
+func escapePangoMarkup(s string) string {
+	s = strings.ReplaceAll(s, "&", "&amp;")
+	s = strings.ReplaceAll(s, "<", "&lt;")
+	s = strings.ReplaceAll(s, ">", "&gt;")
+	return s
+}
+
 // promptText is the dialog body. intent is the agent-declared reason (empty
 // means "not declared"); cause is the harness-attributed likely purpose of the
 // host (empty means unknown, line omitted). cause is labelled "Likely" because
 // it is inferred from the hostname alone — the proxy never sees the URL — and
 // may reflect background harness infrastructure rather than the agent.
 func promptText(host string, port int, intent, cause, originLine string, numOptions int) string {
-	target := fmt.Sprintf("%s:%d", host, port)
+	target := fmt.Sprintf("%s:%d", escapePangoMarkup(host), port)
 	var b strings.Builder
 	fmt.Fprintf(&b, "The sandboxed process is trying to reach:\n\n    %s\n\n", target)
 	if originLine != "" {
-		fmt.Fprintf(&b, "Origin: %s\n", originLine)
+		fmt.Fprintf(&b, "Origin: %s\n", escapePangoMarkup(originLine))
 	}
 	if cause != "" {
-		fmt.Fprintf(&b, "Likely cause: %s\n", cause)
+		fmt.Fprintf(&b, "Likely cause: %s\n", escapePangoMarkup(cause))
 	}
 	if intent != "" {
-		fmt.Fprintf(&b, "Agent intent: %q", intent)
+		fmt.Fprintf(&b, "Agent intent: %q", escapePangoMarkup(intent))
 	} else {
 		b.WriteString("Agent intent: (not declared)")
 	}
@@ -477,6 +487,7 @@ func zenityArgs(host string, port int, suffix, intent, cause, originLine string)
 	width, height := dialogDimensions()
 	args := []string{
 		"--list", "--radiolist",
+		"--no-markup",
 		"--title", "omac: network access",
 		"--text", promptText(host, port, intent, cause, originLine, len(opts)),
 		"--column", "", "--column", "Decision",
