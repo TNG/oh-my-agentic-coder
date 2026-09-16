@@ -138,7 +138,7 @@ jobs:
         uses: Vampire/setup-wsl@v7
         with:
           distribution: Ubuntu-24.04
-          additional-packages: bubblewrap gcc libc6-dev
+          additional-packages: bubblewrap gcc libc6-dev jq
           # update: 'true'  # makes it very slow
 
       - name: Set up Go in WSL2

@@ -5,22 +5,27 @@ description: Install omac, set up prerequisites, and launch your first session.
 
 ## Prerequisites
 
-omac needs three system components:
+omac needs four system components:
 
 - **Sandbox**: isolates the agent from your files and network. On Linux this is [bubblewrap](https://github.com/containers/bubblewrap); on macOS, Seatbelt is built in.
 - **Secret storage**: stores skill API tokens in the OS keychain. On Linux this is the Secret Service (D-Bus); on macOS, Keychain is built in.
 - **Network prompt dialog**: shows a confirmation dialog when the agent tries to reach an unknown host. On macOS, AppleScript handles this automatically.
+- **jq**: the harness bridge hooks use `jq` to build the skill manifest injected into the agent's context. Without it, skills are not surfaced to the agent.
 
 You also need at least one harness installed — see [Supported harnesses](../README.md#supported-harnesses-and-os).
 
 ### macOS
 
-All three components are built into macOS. No additional installation needed — proceed to [Install](#install).
+The sandbox, secret storage, and dialog components are built into macOS. Install `jq` via Homebrew:
+
+```bash
+brew install jq
+```
 
 ### Linux (Debian / Ubuntu)
 
 ```bash
-sudo apt-get install -y bubblewrap zenity libnotify-bin libsecret-1-0
+sudo apt-get install -y bubblewrap zenity libnotify-bin libsecret-1-0 jq
 ```
 
 Replace `zenity` with `kdialog` if you use KDE.
@@ -42,7 +47,7 @@ sudo apparmor_parser -r /etc/apparmor.d/bwrap
 ### Linux (Fedora)
 
 ```bash
-sudo dnf install bubblewrap zenity libnotify libsecret
+sudo dnf install bubblewrap zenity libnotify libsecret jq
 ```
 
 ### WSL2 (Ubuntu)
@@ -53,7 +58,7 @@ Afterward, you should run `sudo apt-get update && sudo apt-get upgrade -y` from 
 WSL2 does not run a keychain daemon by default, so the secret storage setup needs extra steps compared to native Linux.
 
 ```bash
-sudo apt-get install -y bubblewrap zenity libnotify-bin libsecret-1-0 gnome-keyring libsecret-tools
+sudo apt-get install -y bubblewrap zenity libnotify-bin libsecret-1-0 gnome-keyring libsecret-tools jq
 ```
 
 Then create the default keyring once (`omac` can only unlock an existing keyring — it cannot create one). Run this command once and enter a passphrase when prompted:
