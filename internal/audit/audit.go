@@ -154,9 +154,6 @@ func (a *auditor) NextSeq() uint64 { return a.seq.n.Load() + 1 }
 
 // onWriteError applies the selected failure mode to a file-sink error.
 func (a *auditor) onWriteError(err error) {
-	if err == errBroken {
-		return // already handled once
-	}
 	if a.strict {
 		a.fatalOnce.Do(func() {
 			if a.fatal != nil {
@@ -169,7 +166,7 @@ func (a *auditor) onWriteError(err error) {
 		return
 	}
 	a.warnOnce.Do(func() {
-		a.warnf("write failed (%v); further audit writes this run are skipped", err)
+		a.warnf("write failed (%v); audit writes will be retried each event", err)
 	})
 }
 

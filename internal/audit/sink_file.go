@@ -1,7 +1,6 @@
 package audit
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,13 +9,13 @@ import (
 )
 
 // fileSink is the authoritative append-only JSON Lines sink. It opens the
-// file O_APPEND|O_CREATE|O_WRONLY with mode 0600 and flushes after every
-// event to bound loss on crash (volume is human-scale).
+// file O_APPEND|O_CREATE|O_WRONLY with mode 0600. Each record is written
+// as a single Write call (body + newline in one buffer) so concurrent
+// O_APPEND writers on the same file cannot interleave within a record.
 type fileSink struct {
-	mu     sync.Mutex
-	f      *os.File
-	w      *bufio.Writer
-	broken bool
+	mu sync.Mutex
+	f  *os.File
+	w  io.Writer // non-nil in tests that inject a fake writer; nil means use f
 }
 
 // openFileSink creates the parent dir (0700), opens the file (0600), and
@@ -30,36 +29,30 @@ func openFileSink(path string) (*fileSink, error) {
 	if err != nil {
 		return nil, fmt.Errorf("audit: open %s: %w", path, err)
 	}
-	return newFileSink(f, f), nil
+	return newFileSink(f, nil), nil
 }
 
 // newFileSink builds a sink around an arbitrary io.Writer, closing f (if
-// non-nil) on close. Split out from openFileSink so a test can observe the
-// exact sequence of Write calls a record produces — something a path-based
-// constructor cannot expose.
+// non-nil) on close. When w is nil, writes go to f directly (production path).
+// Tests pass a non-nil w to observe the exact number of Write calls.
 func newFileSink(f *os.File, w io.Writer) *fileSink {
-	return &fileSink{f: f, w: bufio.NewWriter(w)}
+	return &fileSink{f: f, w: w}
 }
 
 func (s *fileSink) write(line []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.broken {
-		return errBroken
+	// Append newline in the same buffer so body+newline reach the kernel as
+	// one write(2) call. On O_APPEND files this is atomic up to PIPE_BUF.
+	buf := make([]byte, len(line)+1)
+	copy(buf, line)
+	buf[len(line)] = '\n'
+	w := s.w
+	if w == nil {
+		w = s.f
 	}
-	if _, err := s.w.Write(line); err != nil {
-		s.broken = true
-		return err
-	}
-	if err := s.w.WriteByte('\n'); err != nil {
-		s.broken = true
-		return err
-	}
-	if err := s.w.Flush(); err != nil {
-		s.broken = true
-		return err
-	}
-	return nil
+	_, err := w.Write(buf)
+	return err
 }
 
 func (s *fileSink) close() error {
@@ -68,14 +61,10 @@ func (s *fileSink) close() error {
 	if s.f == nil {
 		return nil
 	}
-	_ = s.w.Flush()
 	err := s.f.Close()
 	s.f = nil
 	return err
 }
-
-// errBroken marks a sink that has already failed once (fail-open path).
-var errBroken = fmt.Errorf("audit: sink previously failed")
 
 // marshalLine renders an event to a compact single-line JSON byte slice
 // (no trailing newline; the sink adds it).

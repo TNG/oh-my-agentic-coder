@@ -69,8 +69,15 @@ func NetDecision(host string, port int, allow bool, scope, source string, persis
 	}
 }
 
+// maxPathBytes caps the agent-controlled path field so a single audit record
+// cannot exceed the ~4 KiB threshold that forces two write(2) calls.
+const maxPathBytes = 512
+
 // FacadeRequest builds a facade.request event.
 func FacadeRequest(method, mount, namespace, path string, status int, bytesOut, durationMS int64) Event {
+	if len(path) > maxPathBytes {
+		path = path[:maxPathBytes] + "…"
+	}
 	return Event{
 		Type:           TypeFacadeRequest,
 		Method:         method,
