@@ -131,7 +131,4 @@
 # retention is too long) rather than a clear-cut assertion, and are left
 # for a human policy decision instead of a test.
 
-internal/cli TestSecurityRegisterOutputStripsControlSequences
 internal/cli TestSecurityReloadDoesNotWalkArbitraryHostPaths
-internal/manifest TestSecurityManifestRendersSkillNameInert
-internal/netprompt TestSecurityDialogTextRendersPayloadInert
