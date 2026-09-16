@@ -136,6 +136,14 @@ always require an explicit `omac register` from a host terminal.
 If you change an approved skill yourself, omac refuses to run it until you
 review the change and re-register it with `omac register --force`.
 
+## Launcher config trust
+
+The launcher config (`oh-my-agentic-coder.yaml`) controls which sandbox command omac runs on your machine. That command executes before any confinement exists, with your full user environment, so it must not be under the project's control.
+
+omac enforces this: security-sensitive launcher fields (`sandbox.*`, `audit.*`, `facade.base_env_passthrough`) are accepted only from your user-global config (`~/.config/omac/config.yaml`) or omac's compiled-in defaults. A project-local `<workdir>/.opencode/oh-my-agentic-coder.yaml` can only contribute operational settings (cache scope, facade timeouts). Opening a repository cannot change the sandbox runtime, disable the audit trail, or redirect audit logs.
+
+Sandbox policy grants (filesystem paths, network hosts, environment variables) live in the sandbox profile (`~/.config/omac/sandbox-profiles/default.json`), which has no project-local equivalent. Profile paths referenced in launcher templates are likewise restricted to that directory.
+
 ## Environment filtering
 
 The sandbox does not inherit all environment variables from the shell that
