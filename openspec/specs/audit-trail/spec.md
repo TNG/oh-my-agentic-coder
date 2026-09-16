@@ -21,6 +21,12 @@ omac SHALL maintain a single, append-only audit stream, written as JSON Lines (o
 - **AND** that line parses as a standalone JSON object
 - **AND** no prior line is modified
 
+#### Scenario: Records are written atomically under concurrent appenders
+
+- **WHEN** two or more processes append to the same audit file concurrently via `O_APPEND`
+- **THEN** each record (JSON body + newline) is written as a single `write(2)` call so records from concurrent writers cannot interleave within a line
+- **AND** agent-controlled fields (such as request paths) are capped so every record stays below the OS atomic-write threshold (PIPE_BUF on Linux)
+
 ### Requirement: Common event envelope
 
 Every audit event SHALL include a common envelope: `ts` (RFC3339Nano UTC), `run_id` (a per-invocation random hex identifier), `seq` (a monotonically increasing per-run unsigned integer), `type` (a dotted event type), `mode` (`start` or `serve`), and `pid`.
@@ -108,12 +114,17 @@ omac SHALL record a `facade.request` event for every request the facade proxies 
 
 ### Requirement: Log control-plane mutations
 
-omac SHALL record a `control.mutation` event for every control-plane state change (`activate`, `deactivate`, `reload`, `reload-global`).
+omac SHALL record a `control.mutation` event for every control-plane state change (`activate`, `deactivate`, `reload`, `reload-global`) in both `start` and `serve` modes. A spawn-approval refusal during live reload SHALL also be recorded.
 
 #### Scenario: Directory activation is logged
 
-- **WHEN** the control plane handles an `activate`/`deactivate`/`reload` request
+- **WHEN** the control plane handles an `activate`/`deactivate`/`reload` request (in either start or serve mode)
 - **THEN** a `control.mutation` event records the action, the absolute target directory, and the result (success or error summary)
+
+#### Scenario: Approval refusal is logged
+
+- **WHEN** live reload refuses to spawn a sidecar because its code is not host-approved
+- **THEN** a `control.mutation` event records the action `reload`, the skill directory, and the refusal reason
 
 #### Scenario: Global reload is logged
 
@@ -171,14 +182,14 @@ The audit writer SHALL redact secret material and secret namespace tokens at the
 
 ### Requirement: Fail-open writing by default
 
-Unless strict mode is enabled, audit writing SHALL never block or crash a sandboxed run. A sink failure SHALL degrade to a single stderr warning, after which further audit writes for that sink are skipped.
+Unless strict mode is enabled, audit writing SHALL never block or crash a sandboxed run. A sink failure SHALL emit exactly one warning to stderr; subsequent write attempts SHALL be retried so that a transient failure (full disk, rotated file) does not permanently disable the audit trail.
 
 #### Scenario: Sink write failure does not abort the run
 
 - **WHEN** strict mode is off and the audit sink returns a write error
 - **THEN** omac emits one warning to stderr
 - **AND** the current operation (command spawn, proxy request, etc.) proceeds normally
-- **AND** subsequent audit writes to that sink are silently skipped
+- **AND** subsequent write attempts are retried — a recovered sink (disk freed, file restored) resumes writing without further warnings
 
 #### Scenario: Auditing disabled uses a no-op sink
 
