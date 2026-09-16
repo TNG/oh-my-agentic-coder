@@ -960,11 +960,12 @@ type skillRoute struct {
 }
 
 type dirState struct {
-	Dir    string
-	Token  string
-	State  string // activating|active|active_partial
-	Skills map[string]*skillRoute
-	mu     sync.Mutex
+	Dir          string
+	Token        string
+	State        string // activating|active|active_partial
+	Skills       map[string]*skillRoute
+	tokenEmitted bool // true after dir_token was included in the first manifest response
+	mu           sync.Mutex
 }
 
 type serveServer struct {
@@ -1780,6 +1781,14 @@ func (s *serveServer) manifestFor(d *dirState) map[string]any {
 	for _, sr := range d.Skills {
 		skills = append(skills, s.skillJSON(sr, "workdir"))
 	}
+	// Emit dir_token exactly once (first activation). A caller that already
+	// received the token and re-activates the same directory must not receive
+	// it again: nothing about a second POST identifies its sender, so
+	// re-issuing the token hands the namespace key to whoever asked.
+	emitToken := !d.tokenEmitted
+	if emitToken {
+		d.tokenEmitted = true
+	}
 	d.mu.Unlock()
 
 	s.mu.RLock()
@@ -1791,12 +1800,15 @@ func (s *serveServer) manifestFor(d *dirState) map[string]any {
 	sort.Slice(skills, func(i, j int) bool {
 		return skills[i]["name"].(string) < skills[j]["name"].(string)
 	})
-	return map[string]any{
-		"dir":       d.Dir,
-		"dir_token": d.Token,
-		"state":     state,
-		"skills":    skills,
+	out := map[string]any{
+		"dir":    d.Dir,
+		"state":  state,
+		"skills": skills,
 	}
+	if emitToken {
+		out["dir_token"] = d.Token
+	}
+	return out
 }
 
 func (s *serveServer) skillJSON(sr *skillRoute, scope string) map[string]any {
