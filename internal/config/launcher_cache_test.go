@@ -6,16 +6,16 @@ import (
 	"testing"
 )
 
-func TestCacheConfigResolveDefaultsToGlobal(t *testing.T) {
+func TestCacheConfigResolveDefaultsToWorkdir(t *testing.T) {
 	scope, err := CacheConfig{}.Resolve()
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
-	if scope != CacheScopeGlobal {
-		t.Errorf("scope = %q, want %q", scope, CacheScopeGlobal)
+	if scope != CacheScopeWorkdir {
+		t.Errorf("scope = %q, want %q", scope, CacheScopeWorkdir)
 	}
-	if got := DefaultLauncherConfig().Cache.Scope; got != CacheScopeGlobal {
-		t.Errorf("default cache scope = %q, want %q", got, CacheScopeGlobal)
+	if got := DefaultLauncherConfig().Cache.Scope; got != CacheScopeWorkdir {
+		t.Errorf("default cache scope = %q, want %q", got, CacheScopeWorkdir)
 	}
 }
 

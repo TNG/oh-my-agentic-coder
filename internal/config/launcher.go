@@ -39,18 +39,18 @@ const (
 
 // CacheConfig controls the tool cache scope (see internal/toolcache).
 //
-// Scope defaults to "global": every workdir shares one persistent cache. The
-// zero value (unset in YAML) resolves to global via Resolve, so no default
-// backfill is needed.
+// Scope defaults to "workdir": each workdir gets its own isolated cache,
+// preventing one sandboxed session from poisoning another's cached artifacts.
+// Set to "global" or "config" explicitly to share caches across workdirs.
 type CacheConfig struct {
 	Scope CacheScope `yaml:"scope" json:"scope"`
 }
 
-// Resolve returns the effective scope, treating unset as global, and errors
+// Resolve returns the effective scope, treating unset as workdir, and errors
 // on an unrecognized value.
 func (c CacheConfig) Resolve() (CacheScope, error) {
 	if c.Scope == "" {
-		return CacheScopeGlobal, nil
+		return CacheScopeWorkdir, nil
 	}
 	return ValidateCacheScope(string(c.Scope))
 }
@@ -205,7 +205,8 @@ func defaultLauncherConfigFor(h Harness) LauncherConfig {
 				// selected tool-cache scope leaf
 				// (~/.cache/omac/<sha256(scope)>) is granted rw at launch
 				// via --allow (see internal/toolcache and
-				// internal/cli/start.go's prepareLaunchCache).
+				// internal/cli/start.go's prepareLaunchCache). Default
+				// scope is "workdir" so each project has its own cache.
 				"builtin": {
 					Command: []string{
 						"{{self}}", "sandbox", "run",
@@ -345,7 +346,7 @@ func defaultLauncherConfigFor(h Harness) LauncherConfig {
 			Syslog:  false,
 			Strict:  false,
 		},
-		Cache: CacheConfig{Scope: CacheScopeGlobal},
+		Cache: CacheConfig{Scope: CacheScopeWorkdir},
 	}
 }
 
