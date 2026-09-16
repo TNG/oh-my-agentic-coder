@@ -997,6 +997,9 @@ func TestRunServeRetainsCacheLockAndAllowsOnlyScope(t *testing.T) {
 	}
 	t.Cleanup(func() { os.RemoveAll(shortTmp) })
 	t.Setenv("TMPDIR", shortTmp)
+	// Runtime dir now lives under XDG_RUNTIME_DIR (not TMPDIR). Use a short
+	// path so the bridge socket stays under the 108-char Unix socket limit.
+	t.Setenv("XDG_RUNTIME_DIR", shortTmp)
 
 	workdir := t.TempDir()
 	argsPath := filepath.Join(t.TempDir(), "args")
@@ -1053,7 +1056,10 @@ func TestRunServeRetainsCacheLockAndAllowsOnlyScope(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 
-	scope, err := toolcache.DescribeShared()
+	// Default scope is now workdir; with no explicit --workdir flag in a
+	// multi-dir serve context, prepareServeCache falls back to DomainServe
+	// keyed on the launch workdir.
+	scope, err := toolcache.DescribePersistent(toolcache.DomainServe, workdir)
 	if err != nil {
 		t.Fatalf("describe serve cache: %v", err)
 	}
