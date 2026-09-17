@@ -108,6 +108,25 @@ Cause: the sandbox only receives environment variables on the `allow_vars` list.
 
 Fix: add the variable to `allow_vars` in `~/.config/omac/sandbox-profiles/default.json`. See [Configuration](./configuration.md).
 
+### claude-code exits silently on macOS (no output, no model calls)
+
+The claude process starts and exits with status 0 within a second. It
+prints nothing, makes no model call, and leaves no error message.
+
+Cause: claude-code keeps its per-session temp files under
+`/tmp/claude-<uid>` by default. It reads `CLAUDE_CODE_TMPDIR` if set, but
+does **not** consult `TMPDIR`. omac's macOS sandbox grants a private
+scratch directory instead of `/tmp`, so claude cannot create its temp
+directory and stops silently. On Linux the sandbox provides its own
+writable `/tmp`, which is why the same setup works there.
+
+Fix: update omac. Current builds point `CLAUDE_CODE_TMPDIR` at the
+sandbox scratch directory when launching claude-code, so no configuration
+is needed. If you cannot update, granting `/private/tmp` write access in
+your profile's `filesystem.write` works as a workaround — but that makes
+the shared host temp directory writable for the agent and weakens the
+default hardening, so prefer the update.
+
 ### An MCP server or other harness-launched tool cannot reach its token or open its port
 
 The harness (opencode, claude-code, …) launches MCP servers **inside the sandbox**, so the MCP server is limited by the sandbox restrictions. Two things commonly need granting:

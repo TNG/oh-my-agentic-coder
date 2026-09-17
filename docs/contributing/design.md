@@ -75,8 +75,10 @@ Sidecar ports are ephemeral and bound to `127.0.0.1`. They are never exposed to 
 ┌─────────────────────────────────┼─ Sandbox (builtin) ───────────────┐
 │  OMAC_SOCKET=/tmp/omac-.../bridge.sock                              │
 │  OMAC_SLACK_BASE=http://127.0.0.1:<port>/slack                      │
+│  OMAC_FACADE_TOKEN=<per-session bearer token>                       │
 │                                                                     │
 │  opencode / claude-code:                                            │
-│    curl "$OMAC_SLACK_BASE/api/chat…"   # always TCP                 │
+│    curl -H "X-Omac-Facade-Token: $OMAC_FACADE_TOKEN" \              │
+│         "$OMAC_SLACK_BASE/api/chat…"   # always TCP                  │
 └─────────────────────────────────────────────────────────────────────┘
 ```

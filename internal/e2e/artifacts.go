@@ -3,12 +3,16 @@
 package e2e
 
 import (
+	"context"
 	"fmt"
+	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 // sessionLogDir is the directory where e2e test output artifacts are
@@ -103,10 +107,55 @@ func writeSessionArtifacts(t *testing.T, h harnessConfig, testType string,
 		mustWrite("sidecar-"+name, string(data))
 	}
 
+	// omac's audit trail: ProcessExit records the harness exit code — the
+	// only place a silent abort is distinguishable from an external kill.
+	auditDir := filepath.Join(home, ".local", "state", "omac", "audit")
+	if runtime.GOOS == "darwin" {
+		auditDir = filepath.Join(home, "Library", "Logs", "omac", "audit")
+	}
+	if data, err := os.ReadFile(filepath.Join(auditDir, "audit.jsonl")); err == nil && len(data) <= 1<<20 {
+		mustWrite("omac-audit.jsonl", string(data))
+	}
+
+	// Seatbelt denials from the macOS unified log. The kernel records every
+	// denied operation (process, class, target) but does not surface it to
+	// the denied process, so this is the only place a silent sandbox-induced
+	// abort names its cause.
+	if runtime.GOOS == "darwin" {
+		mustWrite("darwin-sandbox-denials.txt", sandboxDenials())
+	}
+
 	// opencode's own log.
 	ocLog := filepath.Join(home, ".local", "share", "opencode", "log", "opencode.log")
 	if data, err := os.ReadFile(ocLog); err == nil {
 		mustWrite("omac.log", string(data))
+	}
+
+	// claude's own files: transcripts, debug logs, settings. A silent
+	// pre-turn abort (observed darwin-only) leaves its only traces here.
+	if h.Name == "claude-code" {
+		const maxClaudeFile = 1 << 20
+		claudeDir := filepath.Join(home, ".claude")
+		_ = filepath.WalkDir(claudeDir, func(path string, d fs.DirEntry, err error) error {
+			if err != nil || d.IsDir() {
+				return nil
+			}
+			info, err := d.Info()
+			if err != nil || info.Size() > maxClaudeFile {
+				return nil
+			}
+			rel, rerr := filepath.Rel(claudeDir, path)
+			if rerr != nil {
+				return nil
+			}
+			if data, err := os.ReadFile(path); err == nil {
+				mustWrite("claude-"+strings.ReplaceAll(rel, "/", "-"), string(data))
+			}
+			return nil
+		})
+		if data, err := os.ReadFile(filepath.Join(home, ".claude.json")); err == nil && len(data) <= maxClaudeFile {
+			mustWrite("claude-config.json", string(data))
+		}
 	}
 
 	// Audit output file (security audit test): the raw probe output
@@ -123,4 +172,19 @@ func writeSessionArtifacts(t *testing.T, h harnessConfig, testType string,
 	}
 
 	t.Logf("session artifacts written to %s", dir)
+}
+
+// sandboxDenials returns the recent Seatbelt denial lines from the macOS
+// unified log. Best effort: empty when `log` is unavailable or errors.
+func sandboxDenials() string {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "log", "show", "--last", "5m", "--style", "compact",
+		"--info", "--predicate", `eventMessage CONTAINS "deny"`)
+	out, _ := cmd.Output()
+	const maxBytes = 256 << 10
+	if len(out) > maxBytes {
+		out = out[len(out)-maxBytes:]
+	}
+	return string(out)
 }

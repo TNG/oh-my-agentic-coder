@@ -24,22 +24,23 @@ The `echo-rest` skill is a smoke-test and reference implementation that ships wi
 
 ## Calling it from inside the sandbox
 
-Inside the sandbox, omac sets `$OMAC_ECHO_BASE` to the skill's URL — normally the agent calls it, but you can get a sandboxed shell yourself with `omac start --inner=bash`. Append an endpoint to it:
+Inside the sandbox, omac sets `$OMAC_ECHO_BASE` to the skill's URL — normally the agent calls it, but you can get a sandboxed shell yourself with `omac start --inner=bash`. Every TCP facade call must carry the token from `$OMAC_FACADE_TOKEN` as the header `X-Omac-Facade-Token` (the Unix-socket transport needs none). Append an endpoint to it:
 
 ```bash
 # Health check
-curl "$OMAC_ECHO_BASE/status"
+curl -H "X-Omac-Facade-Token: $OMAC_FACADE_TOKEN" "$OMAC_ECHO_BASE/status"
 
 # Verify secret injection (fingerprint only, value never exposed)
-curl "$OMAC_ECHO_BASE/whoami"
+curl -H "X-Omac-Facade-Token: $OMAC_FACADE_TOKEN" "$OMAC_ECHO_BASE/whoami"
 
 # Round-trip a JSON body
 curl -X POST "$OMAC_ECHO_BASE/echo" \
+  -H "X-Omac-Facade-Token: $OMAC_FACADE_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"hello":"from sandbox","n":7}'
 
 # Consume an SSE stream (5 frames, 30 ms apart)
-curl -N "$OMAC_ECHO_BASE/tick?n=5&gap_ms=30"
+curl -N -H "X-Omac-Facade-Token: $OMAC_FACADE_TOKEN" "$OMAC_ECHO_BASE/tick?n=5&gap_ms=30"
 ```
 
 ## Verifying the full stack

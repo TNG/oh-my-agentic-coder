@@ -850,6 +850,15 @@ func runLaunch(env *Env, opts launchOpts) int {
 		// their runtime into a writable, allowed location.
 		"TMPDIR": sandboxTmp,
 	}
+	if harness.Name == "claude-code" {
+		// claude-code's per-session temp dir reads CLAUDE_CODE_TMPDIR and
+		// otherwise falls back to a hardcoded /tmp, ignoring TMPDIR. On
+		// Linux the sandbox's private /tmp absorbs that; the macOS baseline
+		// deliberately does not grant /tmp, so the create fails and claude
+		// exits silently without output. Point it at the same granted
+		// scratch dir as TMPDIR.
+		extra["CLAUDE_CODE_TMPDIR"] = sandboxTmp
+	}
 	for _, m := range mounts {
 		extra[sandbox.OmacEnvName(m)] = sandbox.OmacTCPEnvValue(m, tcpPort)
 		extra[sandbox.OmacSocketEnvName(m)] = sandbox.OmacEnvValue(m, socketPath)

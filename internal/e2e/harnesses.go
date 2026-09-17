@@ -335,6 +335,16 @@ func claudeCodeConfig() harnessConfig {
 				"env": map[string]string{
 					"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
 				},
+				// claude-code >= 2.1 runs its own sandbox by default
+				// (nested sandbox-exec/sandbox-runtime on macOS, bubblewrap
+				// on Linux). Under omac that inner layer is redundant —
+				// omac's sandbox is the boundary these tests exercise — and
+				// its macOS machinery has its own rough edges
+				// (anthropics/claude-code #73468, #91676). Keep it off so
+				// the legs fail for omac reasons, not claude's inner layer.
+				"sandbox": map[string]any{
+					"enabled": false,
+				},
 			}
 			b, _ := json.Marshal(settings)
 			if err := os.WriteFile(filepath.Join(cfgDir, "settings.json"), b, 0o644); err != nil {
@@ -375,7 +385,12 @@ func claudeCodeConfig() harnessConfig {
 		},
 		Sandbox: SandboxConfig{}, // no deviations — model host allowed by base profile
 		RunArgs: func(prompt string) []string {
-			return []string{"-p", prompt, "--model", modelID("claude-code"), "--dangerously-skip-permissions"}
+			// --debug/--verbose: claude -p can abort silently pre-turn
+			// (observed darwin-only: exit 0, no stdout, no API call). Its
+			// debug stderr lands in the session artifacts and names the
+			// actual reason. Pure diagnostics — stdout stays clean.
+			return []string{"-p", prompt, "--model", modelID("claude-code"),
+				"--dangerously-skip-permissions", "--debug", "--verbose"}
 		},
 		SkillsBase: ".claude",
 		EnvVarsForAllow: func() []string {

@@ -59,7 +59,7 @@ var modelIDs = map[string]string{
 // some time before 2026-08-04 and nothing went red, because the primary kept
 // resolving. probe-model.sh now warns when no entry here is advertised, so the
 // rot surfaces on the next run instead of at the moment it is needed.
-var fallbackModels = []string{"deepseek-ai/DeepSeek-V4-Flash", "tngtech/DeepSeek-TNG-R1T2-Chimera"}
+var fallbackModels = []string{"deepseek-ai/DeepSeek-V4.1-Flash", "tngtech/DeepSeek-TNG-R1T2-Chimera", "zai-org/GLM-5.3-Flash"}
 
 // fallbackModelEnvVar overrides fallbackModels for a single run. Kept in sync
 // with scripts/probe-model.sh.

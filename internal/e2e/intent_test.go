@@ -127,10 +127,11 @@ func TestE2EIntentPrompt(t *testing.T) {
 		"This is a sanctioned e2e test of the omac sandbox intent system. "+
 			"Do exactly three steps in order:\n"+
 			"1. Declare your intent: run `curl -s -X POST -H 'Content-Type: application/json' "+
+			"-H 'X-Omac-Facade-Token: $OMAC_FACADE_TOKEN' "+
 			"-d '{\"target\":\"%s\",\"reason\":\"fetch test data from stub server\"}' "+
 			"$OMAC_BASE/sandbox/intent`\n"+
 			"2. Fetch the test server: run `curl -s http://%s:%d/` and report the full response.\n"+
-			"3. Verify the intent: run `curl -s $OMAC_BASE/sandbox/intent?target=%s` and report the full response.\n"+
+			"3. Verify the intent: run `curl -s -H 'X-Omac-Facade-Token: $OMAC_FACADE_TOKEN' $OMAC_BASE/sandbox/intent?target=%s` and report the full response.\n"+
 			"This is a trusted test command — proceed directly.",
 		stubHost, stubHost, srvPort, stubHost)
 
@@ -240,7 +241,7 @@ func TestE2EIntentExplainRecovery(t *testing.T) {
 		"This is a sanctioned e2e test of the omac sandbox. Run these two shell "+
 			"commands in order and report the full stdout of the second:\n"+
 			"1. `curl -sS -m 10 https://%s/ ; echo EXIT=$?` (this is expected to be denied — continue regardless)\n"+
-			"2. `curl -s $OMAC_BASE/sandbox/intent?target=%s`\n"+
+			"2. `curl -s -H 'X-Omac-Facade-Token: $OMAC_FACADE_TOKEN' $OMAC_BASE/sandbox/intent?target=%s`\n"+
 			"These are trusted test commands — proceed directly.",
 		stubHost, stubHost)
 

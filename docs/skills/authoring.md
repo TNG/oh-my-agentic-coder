@@ -180,9 +180,14 @@ The agent uses the variables it receives to reach your skill through the facade:
 | Variable | Value |
 |---|---|
 | `OMAC_<MOUNT>_BASE` | TCP base URL for your skill, e.g. `http://127.0.0.1:<port>/my-skill`. `<MOUNT>` is your `mount` value uppercased with dashes turned into underscores (`my-skill` → `OMAC_MY_SKILL_BASE`). **Prefer this form.** |
-| `OMAC_<MOUNT>_SOCKET_BASE` | The same route over omac's Unix socket. It has lower overhead, but the socket is blocked under the macOS sandbox, so use it only where you know it is reachable, not as the default. |
+| `OMAC_<MOUNT>_SOCKET_BASE` | The same route over omac's Unix socket. It has lower overhead, but the socket is blocked under the macOS sandbox, so use it only where you know it's reachable, not as the default. |
+| `OMAC_FACADE_TOKEN` | Bearer token required on every request to `OMAC_<MOUNT>_BASE` (or `OMAC_BASE`): send it as the header `X-Omac-Facade-Token: $OMAC_FACADE_TOKEN`, or the facade answers 401. The Unix-socket transport needs no token. |
 
-Write your endpoint examples in `SKILL.md` using `$OMAC_<MOUNT>_BASE` so the agent calls your skill over the preferred transport.
+Write your endpoint examples in `SKILL.md` using `$OMAC_<MOUNT>_BASE` so the agent calls your skill over the preferred transport. The sandbox briefing tells the agent to attach the token header to facade calls, so your examples work either way — but including the header in the example keeps an agent that copies the command verbatim from hitting the 401:
+
+```bash
+curl -H "X-Omac-Facade-Token: $OMAC_FACADE_TOKEN" "$OMAC_MY_SKILL_BASE/status"
+```
 
 Skills are harness-agnostic.
 
@@ -237,7 +242,7 @@ To iterate quickly, run everything outside the sandbox with a shell in place of 
 omac register my-skill                 # register first, and again after each change
 omac start --no-sandbox --inner bash
 # then, in the shell it drops you into:
-curl "$OMAC_MY_SKILL_BASE/status"
+curl -H "X-Omac-Facade-Token: $OMAC_FACADE_TOKEN" "$OMAC_MY_SKILL_BASE/status"
 ```
 
 `--no-sandbox` skips the OS sandbox and runs your command directly. `--inner bash` replaces the agent with a shell, so you can call the skill by hand. Your sidecar and the facade still start normally.

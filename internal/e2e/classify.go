@@ -134,6 +134,14 @@ func classifyAgentOutput(output string) string {
 	if len(neverRan) > 0 {
 		b.WriteString("  probes never ran (empty output): " + strings.Join(neverRan, ", ") + "\n")
 	}
+	// Include the raw output of every probe that ran, so a failure log
+	// shows what the probe actually saw (401 body, connect error,
+	// "<absent>" fingerprint) without digging through the artifact zip.
+	for _, p := range probes {
+		if mode := classifyProbe(output, p); mode == fmPass || mode == fmAgentPartial {
+			b.WriteString("--- probe " + p + " ---\n" + bounded(extractProbe(output, p), 1200) + "\n")
+		}
+	}
 	// Check for infra errors.
 	if strings.Contains(output, "omac start failed") ||
 		strings.Contains(output, "sidecar") && strings.Contains(output, "error") {
@@ -155,6 +163,14 @@ func contains(s []string, v string) bool {
 		}
 	}
 	return false
+}
+
+// bounded truncates s to max runes, appending an ellipsis when cut.
+func bounded(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + " …(truncated)"
 }
 
 // sidecarSawRequests reads the omac sidecar log files and reports whether

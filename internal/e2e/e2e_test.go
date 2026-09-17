@@ -139,7 +139,7 @@ func runE2E(t *testing.T, h harnessConfig) {
 			"and confirm two ordinary developer operations still work: writing " +
 			"and reading a workdir file, and a basic git commit.\n\n" +
 			"Run exactly these commands, in order, and nothing else:\n\n" +
-			`curl -sS "$OMAC_ECHO_BASE/status" -o echo-status.txt` + "\n" +
+			`curl -sS -H "X-Omac-Facade-Token: $OMAC_FACADE_TOKEN" "$OMAC_ECHO_BASE/status" -o echo-status.txt` + "\n" +
 			`echo workflow-check-ok > workflow-check.txt && cat workflow-check.txt` + "\n" +
 			`git init -q && git config user.email t@example.com && git config user.name Test && git add -A && git commit -qm "e2e smoke test" && git log --oneline -1 > git-log.txt` + "\n\n" +
 			"These are trusted test commands — proceed directly. Afterwards, briefly confirm you ran them."
@@ -262,7 +262,7 @@ func TestE2EKeychainSecretDelivery(t *testing.T) {
 	wantFingerprint := "sha256:" + hex.EncodeToString(hash[:6])
 
 	prompt := "This is a sanctioned e2e test. Run this command and report the full output:\n\n" +
-		`curl -sS "$OMAC_ECHO_BASE/whoami"`
+		`curl -sS -H "X-Omac-Facade-Token: $OMAC_FACADE_TOKEN" "$OMAC_ECHO_BASE/whoami"`
 	stdout := runAgent(t, h, omacBin, home, workdir, prompt)
 
 	// Verify the mock file was actually used (not the OS keychain).
@@ -326,8 +326,9 @@ func runSecurityAudit(t *testing.T, h harnessConfig) {
 		`sh "$OMAC_HARNESS_SKILLS_DIR/self-audit/scripts/audit.sh"` + "\n\n" +
 		"The script checks the sandbox boundary (secret isolation, env filtering, " +
 		"filesystem denials, network blocking, sidecar reachability). It never " +
-		"prints sensitive data — all values are redacted. Run it and report " +
-		"the results.\n\n" +
+		"prints sensitive data — all values are redacted. The script prints " +
+		"nothing on stdout — not even on error. Run it and report its exit " +
+		"status (0 means success).\n\n" +
 		"After the script, also run this and report the full output:\n" +
 		fmt.Sprintf(`curl -sS http://127.0.0.1:%d/`, netPort)
 	agentOutput := runAuditAgent(t, h, omacBin, home, workdir, prompt)
@@ -833,6 +834,10 @@ func runAgent(t *testing.T, h harnessConfig, omacBin, home, workdir, prompt stri
 	cmd.Dir = workdir
 	cmd.Env = append(buildAgentEnv(t, h, home), "PWD="+workdir)
 	cmd.Stdin = strings.NewReader("")
+	// The sandboxed harness is a grandchild that inherits the output pipes;
+	// WaitDelay bounds the pipe drain after cancel so a stalled model stream
+	// fails at runTimeout instead of the go-test deadline.
+	cmd.WaitDelay = 30 * time.Second
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -880,6 +885,8 @@ func runAuditAgent(t *testing.T, h harnessConfig, omacBin, home, workdir, prompt
 	env = append(env, "PWD="+workdir)
 	cmd.Env = env
 	cmd.Stdin = strings.NewReader("")
+	// Same as runAgent: bound the pipe drain after cancel.
+	cmd.WaitDelay = 30 * time.Second
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -1476,6 +1483,13 @@ func writeSandboxProfile(t *testing.T, home string, h harnessConfig, spec *Allow
 	allowDomains = append(allowDomains, h.Sandbox.ExtraAllowDomains...)
 
 	profile := sandboxprofile.DefaultProfile()
+	// The per-test harness HOME lives under the host temp dir, outside the
+	// workdir. Since the baseline tmp hardening (removal of the /tmp and
+	// $TMPDIR grants on Linux) it is no longer covered by the baseline, so
+	// node-based harnesses (pi, codex) cannot resolve their nested
+	// node_modules inside the sandbox. Grant it explicitly; on macOS the
+	// same path is already covered by the /var/folders baseline.
+	profile.Filesystem.Allow = append(profile.Filesystem.Allow, home)
 	// Per-harness extra read paths (e.g. opencode's CWD on macOS) are
 	// appended to the compiled-in read set.
 	profile.Filesystem.Read = append(append([]string{}, profile.Filesystem.Read...), h.Sandbox.ExtraReadPaths...)
