@@ -108,6 +108,34 @@ Cause: the sandbox only receives environment variables on the `allow_vars` list.
 
 Fix: add the variable to `allow_vars` in `~/.config/omac/sandbox-profiles/default.json`. See [Configuration](./configuration.md).
 
+### claude-code exits silently on macOS (no output, no model calls)
+
+The claude process starts and exits 0 within a few seconds. It prints
+nothing, makes no model call, and leaves no error message.
+
+Cause: claude-code 2.1 and newer run their **own integrated sandbox**,
+enabled by default on macOS. Every Bash tool call is wrapped in a nested
+`sandbox-exec` with an inline Seatbelt profile. Inside omac's sandbox
+(Seatbelt inside Seatbelt) this can abort the session before the first
+model call. The claude-code tracker tracks related problems under
+[anthropics/claude-code#73468](https://github.com/anthropics/claude-code/issues/73468)
+and
+[anthropics/claude-code#91676](https://github.com/anthropics/claude-code/issues/91676).
+
+Fix: disable claude-code's internal sandbox for the session by adding
+this to the project's `.claude/settings.json` (or `~/.claude/settings.json`
+for all projects):
+
+```json
+{
+  "sandbox": { "enabled": false }
+}
+```
+
+omac's outer sandbox still enforces the security boundary, so you only
+lose claude's redundant extra layer. If the setting does not resolve the
+problem, please [report a bug](#reporting-a-bug).
+
 ### An MCP server or other harness-launched tool cannot reach its token or open its port
 
 The harness (opencode, claude-code, …) launches MCP servers **inside the sandbox**, so the MCP server is limited by the sandbox restrictions. Two things commonly need granting:
