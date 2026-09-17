@@ -833,6 +833,10 @@ func runAgent(t *testing.T, h harnessConfig, omacBin, home, workdir, prompt stri
 	cmd.Dir = workdir
 	cmd.Env = append(buildAgentEnv(t, h, home), "PWD="+workdir)
 	cmd.Stdin = strings.NewReader("")
+	// The sandboxed harness is a grandchild that inherits the output pipes;
+	// WaitDelay bounds the pipe drain after cancel so a stalled model stream
+	// fails at runTimeout instead of the go-test deadline.
+	cmd.WaitDelay = 30 * time.Second
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -880,6 +884,8 @@ func runAuditAgent(t *testing.T, h harnessConfig, omacBin, home, workdir, prompt
 	env = append(env, "PWD="+workdir)
 	cmd.Env = env
 	cmd.Stdin = strings.NewReader("")
+	// Same as runAgent: bound the pipe drain after cancel.
+	cmd.WaitDelay = 30 * time.Second
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout

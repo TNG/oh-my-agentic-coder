@@ -191,6 +191,8 @@ func TestHarnessLaunchProbe(t *testing.T) {
 			}
 			cmd.Env = probeEnv
 			cmd.Stdin = strings.NewReader("")
+			// Same as runAgent: bound the pipe drain after cancel.
+			cmd.WaitDelay = 30 * time.Second
 			var stdout, stderr bytes.Buffer
 			cmd.Stdout = &stdout
 			cmd.Stderr = &stderr
