@@ -4,6 +4,7 @@ package e2e
 
 import (
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -107,6 +108,33 @@ func writeSessionArtifacts(t *testing.T, h harnessConfig, testType string,
 	ocLog := filepath.Join(home, ".local", "share", "opencode", "log", "opencode.log")
 	if data, err := os.ReadFile(ocLog); err == nil {
 		mustWrite("omac.log", string(data))
+	}
+
+	// claude's own files: transcripts, debug logs, settings. A silent
+	// pre-turn abort (observed darwin-only) leaves its only traces here.
+	if h.Name == "claude-code" {
+		const maxClaudeFile = 1 << 20
+		claudeDir := filepath.Join(home, ".claude")
+		_ = filepath.WalkDir(claudeDir, func(path string, d fs.DirEntry, err error) error {
+			if err != nil || d.IsDir() {
+				return nil
+			}
+			info, err := d.Info()
+			if err != nil || info.Size() > maxClaudeFile {
+				return nil
+			}
+			rel, rerr := filepath.Rel(claudeDir, path)
+			if rerr != nil {
+				return nil
+			}
+			if data, err := os.ReadFile(path); err == nil {
+				mustWrite("claude-"+strings.ReplaceAll(rel, "/", "-"), string(data))
+			}
+			return nil
+		})
+		if data, err := os.ReadFile(filepath.Join(home, ".claude.json")); err == nil && len(data) <= maxClaudeFile {
+			mustWrite("claude-config.json", string(data))
+		}
 	}
 
 	// Audit output file (security audit test): the raw probe output

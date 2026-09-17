@@ -335,6 +335,17 @@ func claudeCodeConfig() harnessConfig {
 				"env": map[string]string{
 					"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
 				},
+				// claude-code >= 2.1 ships its own integrated sandbox,
+				// default-on on macOS: nested sandbox-exec with an inline
+				// Seatbelt profile aborts sessions pre-turn under omac's
+				// sandbox (observed: exit 0, no stdout, no API call —
+				// anthropics/claude-code #73468, #91676). omac's outer
+				// sandbox is the boundary under test here, so the inner
+				// layer is off. For real users the same setting is the
+				// documented fix (docs/troubleshooting.md).
+				"sandbox": map[string]any{
+					"enabled": false,
+				},
 			}
 			b, _ := json.Marshal(settings)
 			if err := os.WriteFile(filepath.Join(cfgDir, "settings.json"), b, 0o644); err != nil {
