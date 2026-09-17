@@ -378,19 +378,18 @@ func claudeCodeConfig() harnessConfig {
 			if baseURL == "" {
 				t.Fatal("ANTHROPIC_BASE_URL not set")
 			}
-			env := []string{
+			return []string{
 				"ANTHROPIC_AUTH_TOKEN=" + token,
 				"ANTHROPIC_BASE_URL=" + baseURL,
 				"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1",
 			}
-			if runtime.GOOS == "darwin" {
-				// Silent darwin abort diagnostics: Node prints a stack
-				// trace at every process.exit(), naming the call site.
-				env = append(env, "NODE_OPTIONS=--trace-exit")
-			}
-			return env
 		},
-		Sandbox: SandboxConfig{}, // no deviations — model host allowed by base profile
+		// EXPERIMENT (temporary): attribute claude's silent darwin exit-0
+		// mid-setup to omac's Seatbelt profile or to claude itself. With
+		// NoSandbox on darwin the same leg runs unsandboxed; if the session
+		// comes alive (API call + output), the Seatbelt is the culprit.
+		// Revert once attributed.
+		Sandbox: SandboxConfig{NoSandbox: runtime.GOOS == "darwin"},
 		RunArgs: func(prompt string) []string {
 			// --debug/--verbose: claude -p can abort silently pre-turn
 			// (observed darwin-only: exit 0, no stdout, no API call). Its
@@ -401,11 +400,7 @@ func claudeCodeConfig() harnessConfig {
 		},
 		SkillsBase: ".claude",
 		EnvVarsForAllow: func() []string {
-			vars := []string{"ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"}
-			if runtime.GOOS == "darwin" {
-				vars = append(vars, "NODE_OPTIONS")
-			}
-			return vars
+			return []string{"ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"}
 		},
 		ExpectVisibleEnv: func() []string {
 			return []string{"ANTHROPIC_AUTH_TOKEN=", "ANTHROPIC_BASE_URL=", "OMAC_"}
