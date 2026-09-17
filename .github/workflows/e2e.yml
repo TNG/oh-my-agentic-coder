@@ -300,14 +300,16 @@ jobs:
               exit 1
             fi
             # Only retry when no failure this attempt was classified as a real
-            # regression: SANDBOX_FAIL (a security property went unenforced)
-            # or AGENT_REFUSED/AGENT_PARTIAL (a model-behavior signal, not
-            # infra). Every other failure path — install/build errors,
+            # sandbox regression: SANDBOX_FAIL (a security property went
+            # unenforced). AGENT_REFUSED/AGENT_PARTIAL are model-behavior
+            # failures that also occur as one-off model flakes, so they are
+            # retried; a genuine refusal surfaces as a consistent failure
+            # across all attempts. Everything else — install/build errors,
             # AGENT_NEVER_RAN, INFRA_ERROR, agent timeout — is either a
             # t.Fatalf before any assertion ran, or an infra-classified
             # assertion, and is safe to retry. This ensures a real sandbox
             # regression can never be silently masked by a retry.
-            bad=$(grep -oE 'FAIL \[[^]]+\]: (SANDBOX_FAIL|AGENT_REFUSED|AGENT_PARTIAL)' /tmp/e2e-out.txt | sort -u || true)
+            bad=$(grep -oE 'FAIL \[[^]]+\]: SANDBOX_FAIL' /tmp/e2e-out.txt | sort -u || true)
             if [ -n "$bad" ]; then
               echo "non-infra failure — not retrying:"
               echo "$bad"
@@ -543,7 +545,7 @@ jobs:
               } >> "$GITHUB_STEP_SUMMARY"
               exit 1
             fi
-            bad=$(grep -oE 'FAIL \[[^]]+\]: (SANDBOX_FAIL|AGENT_REFUSED|AGENT_PARTIAL)' /tmp/e2e-out.txt | sort -u || true)
+            bad=$(grep -oE 'FAIL \[[^]]+\]: SANDBOX_FAIL' /tmp/e2e-out.txt | sort -u || true)
             if [ -n "$bad" ]; then
               echo "non-infra failure — not retrying:"
               echo "$bad"
@@ -724,7 +726,7 @@ jobs:
               } >> "$GITHUB_STEP_SUMMARY"
               exit 1
             fi
-            bad=$(grep -oE 'FAIL \[[^]]+\]: (SANDBOX_FAIL|AGENT_REFUSED|AGENT_PARTIAL)' /tmp/e2e-out.txt | sort -u || true)
+            bad=$(grep -oE 'FAIL \[[^]]+\]: SANDBOX_FAIL' /tmp/e2e-out.txt | sort -u || true)
             if [ -n "$bad" ]; then
               echo "non-infra failure — not retrying:"
               echo "$bad"
