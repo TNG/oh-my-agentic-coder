@@ -1,3 +1,5 @@
+//go:build e2e || e2e_fast
+
 package e2e
 
 import (
