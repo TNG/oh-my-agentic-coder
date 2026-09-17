@@ -110,31 +110,22 @@ Fix: add the variable to `allow_vars` in `~/.config/omac/sandbox-profiles/defaul
 
 ### claude-code exits silently on macOS (no output, no model calls)
 
-The claude process starts and exits 0 within a few seconds. It prints
-nothing, makes no model call, and leaves no error message.
+The claude process starts and exits with status 0 within a second. It
+prints nothing, makes no model call, and leaves no error message.
 
-Cause: claude-code 2.1 and newer run their **own integrated sandbox**,
-enabled by default on macOS. Every Bash tool call is wrapped in a nested
-`sandbox-exec` with an inline Seatbelt profile. Inside omac's sandbox
-(Seatbelt inside Seatbelt) this can abort the session before the first
-model call. The claude-code tracker tracks related problems under
-[anthropics/claude-code#73468](https://github.com/anthropics/claude-code/issues/73468)
-and
-[anthropics/claude-code#91676](https://github.com/anthropics/claude-code/issues/91676).
+Cause: claude-code keeps its per-session temp files under
+`/tmp/claude-<uid>` by default. It reads `CLAUDE_CODE_TMPDIR` if set, but
+does **not** consult `TMPDIR`. omac's macOS sandbox grants a private
+scratch directory instead of `/tmp`, so claude cannot create its temp
+directory and stops silently. On Linux the sandbox provides its own
+writable `/tmp`, which is why the same setup works there.
 
-Fix: disable claude-code's internal sandbox for the session by adding
-this to the project's `.claude/settings.json` (or `~/.claude/settings.json`
-for all projects):
-
-```json
-{
-  "sandbox": { "enabled": false }
-}
-```
-
-omac's outer sandbox still enforces the security boundary, so you only
-lose claude's redundant extra layer. If the setting does not resolve the
-problem, please [report a bug](#reporting-a-bug).
+Fix: update omac. Current builds point `CLAUDE_CODE_TMPDIR` at the
+sandbox scratch directory when launching claude-code, so no configuration
+is needed. If you cannot update, granting `/private/tmp` write access in
+your profile's `filesystem.write` works as a workaround — but that makes
+the shared host temp directory writable for the agent and weakens the
+default hardening, so prefer the update.
 
 ### An MCP server or other harness-launched tool cannot reach its token or open its port
 
