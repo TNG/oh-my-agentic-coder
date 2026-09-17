@@ -37,6 +37,10 @@
 
 set -u
 
+# Scratch dir for stderr captures. The macOS sandbox grants TMPDIR but
+# denies /tmp, so a literal /tmp breaks every redirect-based capture.
+AUDIT_TMP="${TMPDIR:-/tmp}"
+
 AUDIT_BASE="${OMAC_AUDIT_BASE:-}"
 # echo-rest sidecar base, if registered alongside self-audit.
 ECHO_BASE="${OMAC_ECHO_BASE:-}"
@@ -105,10 +109,10 @@ probe_read() {
         echo "$label: READABLE (sandbox did not block)"
     else
         # Capture the OS denial message without printing file contents.
-        if cat "$path" >/dev/null 2>/tmp/audit-denial.txt; then
+        if cat "$path" >/dev/null 2>"$AUDIT_TMP/audit-denial.txt"; then
             echo "$label: READABLE (test -r false but cat succeeded)"
         else
-            echo "$label: $(cat /tmp/audit-denial.txt)"
+            echo "$label: $(cat "$AUDIT_TMP/audit-denial.txt")"
         fi
     fi
 }
@@ -144,11 +148,11 @@ echo "=== PROBE: fs_write ==="
 probe_write() {
     label="$1"
     path="$2"
-    if ( echo "test" > "$path" ) 2>/tmp/audit-write-err.txt; then
+    if ( echo "test" > "$path" ) 2>"$AUDIT_TMP/audit-write-err.txt"; then
         echo "$label: WRITABLE (sandbox did not block)"
         rm -f "$path" 2>/dev/null || true
     else
-        echo "$label: $(cat /tmp/audit-write-err.txt)"
+        echo "$label: $(cat "$AUDIT_TMP/audit-write-err.txt")"
     fi
 }
 probe_write "--- write /etc/omac-audit-test ---" /etc/omac-audit-test
@@ -167,15 +171,15 @@ echo "=== PROBE: fs_allow ==="
 # to exist by the time this script runs (workdir always does; the test
 # harness pre-creates $HOME/.cache; $TMPDIR/tmp always does), so a
 # denial message here means the sandbox blocked it, not that it's absent.
-if echo test > ./omac-audit-allow-test 2>/tmp/audit-allow-write-err.txt; then
+if echo test > ./omac-audit-allow-test 2>"$AUDIT_TMP/audit-allow-write-err.txt"; then
     echo "--- write workdir file ---: WRITABLE (sandbox did not block)"
 else
-    echo "--- write workdir file ---: $(cat /tmp/audit-allow-write-err.txt)"
+    echo "--- write workdir file ---: $(cat "$AUDIT_TMP/audit-allow-write-err.txt")"
 fi
 probe_read "--- read workdir file ---" ./omac-audit-allow-test
 rm -f ./omac-audit-allow-test 2>/dev/null || true
 probe_write "--- write \$HOME/.cache file ---" "$HOME/.cache/omac-audit-allow-test"
-probe_write "--- write \${TMPDIR:-/tmp} file ---" "${TMPDIR:-/tmp}/omac-audit-allow-test"
+probe_write "--- write \${TMPDIR:-/tmp} file ---" "$AUDIT_TMP/omac-audit-allow-test"
 echo "=== END: fs_allow ==="
 
 echo ""
@@ -268,7 +272,7 @@ if [ -z "${OMAC_CACHE_DIR:-}" ]; then
     echo "OMAC_CACHE_DIR not set (cache not injected)"
 else
     marker="audit-cache-marker-$$"
-    if echo "$marker" > "$OMAC_CACHE_DIR/audit-marker.txt" 2>/tmp/audit-cache-write.txt; then
+    if echo "$marker" > "$OMAC_CACHE_DIR/audit-marker.txt" 2>"$AUDIT_TMP/audit-cache-write.txt"; then
         echo "CACHE_MARKER_WROTE: $OMAC_CACHE_DIR/audit-marker.txt"
         # Read it back to confirm round-trip.
         if cat "$OMAC_CACHE_DIR/audit-marker.txt" 2>/dev/null | grep -q "$marker"; then
@@ -277,11 +281,11 @@ else
             echo "CACHE_MARKER_READ_BACK: failed (marker not found)"
         fi
     else
-        echo "CACHE_MARKER_WRITE_FAILED: $(cat /tmp/audit-cache-write.txt)"
+        echo "CACHE_MARKER_WRITE_FAILED: $(cat "$AUDIT_TMP/audit-cache-write.txt")"
     fi
 fi
 # Clean up the scratch file used to capture inner-command stderr so it
 # doesn't accumulate across runs. The failure message, if any, has
 # already been folded into the probe output above.
-rm -f /tmp/audit-cache-write.txt 2>/dev/null || true
+rm -f "$AUDIT_TMP/audit-cache-write.txt" 2>/dev/null || true
 echo "=== END: cache ==="
