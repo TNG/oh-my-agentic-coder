@@ -1476,6 +1476,13 @@ func writeSandboxProfile(t *testing.T, home string, h harnessConfig, spec *Allow
 	allowDomains = append(allowDomains, h.Sandbox.ExtraAllowDomains...)
 
 	profile := sandboxprofile.DefaultProfile()
+	// The per-test harness HOME lives under the host temp dir, outside the
+	// workdir. Since the baseline tmp hardening (removal of the /tmp and
+	// $TMPDIR grants on Linux) it is no longer covered by the baseline, so
+	// node-based harnesses (pi, codex) cannot resolve their nested
+	// node_modules inside the sandbox. Grant it explicitly; on macOS the
+	// same path is already covered by the /var/folders baseline.
+	profile.Filesystem.Allow = append(profile.Filesystem.Allow, home)
 	// Per-harness extra read paths (e.g. opencode's CWD on macOS) are
 	// appended to the compiled-in read set.
 	profile.Filesystem.Read = append(append([]string{}, profile.Filesystem.Read...), h.Sandbox.ExtraReadPaths...)
