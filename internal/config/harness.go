@@ -303,6 +303,10 @@ func harnessRegistry() []Harness {
 				"ANTHROPIC_AUTH_TOKEN",
 				"ANTHROPIC_BASE_URL",
 				"ANTHROPIC_MODEL",
+				// omac-injected (see start.go): claude's per-session temp dir
+				// reads CLAUDE_CODE_TMPDIR and otherwise hardcodes /tmp,
+				// which the macOS baseline deliberately does not grant.
+				"CLAUDE_CODE_TMPDIR",
 			},
 			Session: &HarnessSession{
 				ContinueArgs:   []string{"--continue"},
