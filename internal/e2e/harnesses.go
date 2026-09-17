@@ -375,7 +375,12 @@ func claudeCodeConfig() harnessConfig {
 		},
 		Sandbox: SandboxConfig{}, // no deviations — model host allowed by base profile
 		RunArgs: func(prompt string) []string {
-			return []string{"-p", prompt, "--model", modelID("claude-code"), "--dangerously-skip-permissions"}
+			// --debug: claude -p can abort silently pre-turn (observed
+			// darwin-only: exit 0, no stdout, no API call). Its debug
+			// stderr line lands in the session artifacts and names the
+			// actual reason. Pure diagnostics — stdout stays clean.
+			return []string{"-p", prompt, "--model", modelID("claude-code"),
+				"--dangerously-skip-permissions", "--debug"}
 		},
 		SkillsBase: ".claude",
 		EnvVarsForAllow: func() []string {
