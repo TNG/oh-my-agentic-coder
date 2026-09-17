@@ -378,24 +378,34 @@ func claudeCodeConfig() harnessConfig {
 			if baseURL == "" {
 				t.Fatal("ANTHROPIC_BASE_URL not set")
 			}
-			return []string{
+			env := []string{
 				"ANTHROPIC_AUTH_TOKEN=" + token,
 				"ANTHROPIC_BASE_URL=" + baseURL,
 				"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1",
 			}
+			if runtime.GOOS == "darwin" {
+				// Silent darwin abort diagnostics: Node prints a stack
+				// trace at every process.exit(), naming the call site.
+				env = append(env, "NODE_OPTIONS=--trace-exit")
+			}
+			return env
 		},
 		Sandbox: SandboxConfig{}, // no deviations — model host allowed by base profile
 		RunArgs: func(prompt string) []string {
-			// --debug: claude -p can abort silently pre-turn (observed
-			// darwin-only: exit 0, no stdout, no API call). Its debug
-			// stderr line lands in the session artifacts and names the
+			// --debug/--verbose: claude -p can abort silently pre-turn
+			// (observed darwin-only: exit 0, no stdout, no API call). Its
+			// debug stderr lands in the session artifacts and names the
 			// actual reason. Pure diagnostics — stdout stays clean.
 			return []string{"-p", prompt, "--model", modelID("claude-code"),
-				"--dangerously-skip-permissions", "--debug"}
+				"--dangerously-skip-permissions", "--debug", "--verbose"}
 		},
 		SkillsBase: ".claude",
 		EnvVarsForAllow: func() []string {
-			return []string{"ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"}
+			vars := []string{"ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"}
+			if runtime.GOOS == "darwin" {
+				vars = append(vars, "NODE_OPTIONS")
+			}
+			return vars
 		},
 		ExpectVisibleEnv: func() []string {
 			return []string{"ANTHROPIC_AUTH_TOKEN=", "ANTHROPIC_BASE_URL=", "OMAC_"}

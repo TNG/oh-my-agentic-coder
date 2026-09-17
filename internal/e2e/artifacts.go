@@ -104,6 +104,16 @@ func writeSessionArtifacts(t *testing.T, h harnessConfig, testType string,
 		mustWrite("sidecar-"+name, string(data))
 	}
 
+	// omac's audit trail: ProcessExit records the harness exit code — the
+	// only place a silent abort is distinguishable from an external kill.
+	auditDir := filepath.Join(home, ".local", "state", "omac", "audit")
+	if runtime.GOOS == "darwin" {
+		auditDir = filepath.Join(home, "Library", "Logs", "omac", "audit")
+	}
+	if data, err := os.ReadFile(filepath.Join(auditDir, "audit.jsonl")); err == nil && len(data) <= 1<<20 {
+		mustWrite("omac-audit.jsonl", string(data))
+	}
+
 	// opencode's own log.
 	ocLog := filepath.Join(home, ".local", "share", "opencode", "log", "opencode.log")
 	if data, err := os.ReadFile(ocLog); err == nil {
