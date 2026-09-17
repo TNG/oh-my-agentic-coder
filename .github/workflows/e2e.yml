@@ -38,16 +38,19 @@ on:
         description: 'Pinned pi package spec. Overrides internal/e2e/versions.go for THIS RUN ONLY (the file itself is untouched); ignored if "use latest" is checked'
         type: string
         default: '@earendil-works/pi-coding-agent@0.80.6'
-      codewhale_version:
-        description: 'Pinned codewhale package spec. Overrides internal/e2e/versions.go for THIS RUN ONLY (the file itself is untouched); ignored if "use latest" is checked'
-        type: string
-        default: 'codewhale@0.9.1'
       model:
         description: 'Model id for EVERY harness, for THIS RUN ONLY. Set empty to use each harness''s pin in internal/e2e/versions.go (opencode/codex/copilot/pi/codewhale: zai-org/GLM-5.2, claude-code: claude-sonnet-5).'
         type: string
         default: 'deepseek-ai/DeepSeek-V4.1-Flash'
       claude_code_model:
         description: 'Model id for claude-code only — it accepts sonnet or haiku models ONLY, and bills a different provider than the SKAINET gateway the others use. Wins over "model"; leave empty to fall back to it, then to the versions.go pin'
+        type: string
+        default: ''
+      # No `context_limit` input here: with six harnesses pinned this workflow
+      # sits at GitHub's 10-input cap. Set E2E_CONTEXT_LIMIT locally instead, or
+      # use the "E2E: drift" workflow, which still exposes the input.
+      harness:
+        description: 'Comma/space-separated leg filter: harness names (<harness>) or harness/os pairs (<harness>/<os>) — e.g. "claude-code/macos-latest", "codex, pi/wsl2". Valid os tokens: ubuntu-latest, macos-latest, wsl2. Empty runs the full matrix.'
         type: string
         default: ''
       # No `context_limit` input here: with six harnesses pinned this workflow
@@ -117,27 +120,71 @@ jobs:
             echo "> ⚠️ **Fallback model in use.** The intended model is not served by the gateway, so these results are for \`$PROBE_MODEL\` and do NOT certify the intended one." >> "$GITHUB_STEP_SUMMARY"
           fi
 
+  # Computes the filtered test matrices from the `harness` dispatch input.
+  # Static lists live inline here because `strategy.matrix` can only consume
+  # fromJSON of a needs output — and filtering shapes the matrix so skipped
+  # legs never boot a runner at all. Empty filter = full matrix, which is
+  # also what schedule and pull_request runs get (inputs are empty there).
+  matrix-legs:
+    name: Prepare matrix
+    runs-on: ubuntu-latest
+    outputs:
+      e2e: ${{ steps.filter.outputs.e2e }}
+      wsl2: ${{ steps.filter.outputs.wsl2 }}
+      codewhale: ${{ steps.filter.outputs.codewhale }}
+    steps:
+      - name: Filter legs
+        id: filter
+        env:
+          FILTER: ${{ github.event.inputs.harness }}
+        run: |
+          # Tokens are comma/space separated. Entry forms: "<harness>" (all
+          # runners that have it) or "<harness>/<os>" with os tokens
+          # ubuntu-latest, macos-latest, wsl2.
+          tokens=$(echo "$FILTER" | tr ',\t' '  ')
+          match() { # match <harness> <os-token>
+            for t in $tokens; do
+              [ "$t" = "$1" ] && return 0
+              [ "$t" = "$1/$2" ] && return 0
+            done
+            return 1
+          }
+          e2e=()
+          for h in opencode claude-code codex copilot pi; do
+            for os in ubuntu-latest macos-latest; do
+              # codex on macOS: its Rust HTTP client is incompatible with the
+              # macOS Seatbelt sandbox (stream disconnected mid-completion,
+              # even with network=open) — see issue #48.
+              [ "$h" = codex ] && [ "$os" = macos-latest ] && continue
+              if [ -z "$tokens" ] || match "$h" "$os"; then
+                e2e+=("{\"harness\":\"$h\",\"os\":\"$os\"}")
+              fi
+            done
+          done
+          wsl2=()
+          for h in opencode claude-code codex copilot pi; do
+            if [ -z "$tokens" ] || match "$h" wsl2; then
+              wsl2+=("{\"harness\":\"$h\"}")
+            fi
+          done
+          cw=false
+          [ -z "$tokens" ] || match codewhale codewhale && cw=true
+          if [ -n "$tokens" ] && [ ${#e2e[@]} -eq 0 ] && [ ${#wsl2[@]} -eq 0 ] && [ "$cw" = false ]; then
+            echo "::error::harness filter matched no legs: '$FILTER' (valid names: opencode, claude-code, codex, copilot, pi, codewhale; os tokens: ubuntu-latest, macos-latest, wsl2)"
+            exit 1
+          fi
+          {
+            printf 'e2e<<MATRIX_DELIM\n{"include":[%s]}\nMATRIX_DELIM\n' "$(IFS=,; echo "${e2e[*]}")"
+            printf 'wsl2<<MATRIX_DELIM\n{"include":[%s]}\nMATRIX_DELIM\n' "$(IFS=,; echo "${wsl2[*]}")"
+            echo "codewhale=$cw"
+          } >> "$GITHUB_OUTPUT"
+
   e2e:
     name: "${{ matrix.harness }} / ${{ matrix.os }}"
-    needs: model
+    needs: [model, matrix-legs]
     strategy:
       fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-        harness: [opencode, claude-code, codex, copilot, pi]
-        # codex on macOS is excluded — its Rust HTTP client is incompatible
-        # with the macOS Seatbelt sandbox (stream disconnected mid-completion,
-        # even with network=open). `omac start codex` on macOS fails loud;
-        # --no-sandbox would disable the entire omac sandbox, leaving nothing
-        # to assert against. See issue #48.
-        #
-        # codewhale is NOT in the main matrix — it runs in a separate
-        # non-blocking drift job (e2e-codewhale) so its failures don't block
-        # releases. To fully remove codewhale, delete that job + the
-        # codewhale_version input + the Go harness config.
-        exclude:
-          - os: macos-latest
-            harness: codex
+      matrix: ${{ fromJSON(needs.matrix-legs.outputs.e2e) }}
     runs-on: ${{ matrix.os }}
     concurrency:
       group: e2e-${{ matrix.os }}-${{ matrix.harness }}
@@ -384,11 +431,10 @@ jobs:
     # work from both the Windows runner (actions/cache, upload-artifact) and
     # inside WSL (Go test code) via the automount.
     name: "${{ matrix.harness }} / WSL2"
-    needs: model
+    needs: [model, matrix-legs]
     strategy:
       fail-fast: false
-      matrix:
-        harness: [opencode, claude-code, codex, copilot, pi]
+      matrix: ${{ fromJSON(needs.matrix-legs.outputs.wsl2) }}
     runs-on: windows-latest
     concurrency:
       group: e2e-wsl2-${{ matrix.harness }}
@@ -614,11 +660,13 @@ jobs:
   # ── codewhale drift ────────────────────────────────────────────────
   # Non-blocking: runs the full e2e suite for codewhale only, on Linux.
   # Failures are reported but never block releases or the main matrix.
-  # To fully remove codewhale: delete this job + the codewhale_version
-  # input + the Go harness config (harnesses.go, versions.go, etc.).
+  # Skipped when the `harness` filter names other legs. To fully remove
+  # codewhale: delete this job + the Go harness config (harnesses.go,
+  # versions.go, etc.).
   e2e-codewhale:
     name: "codewhale / ubuntu-latest (drift)"
-    needs: model
+    needs: [model, matrix-legs]
+    if: needs.matrix-legs.outputs.codewhale == 'true'
     continue-on-error: true
     runs-on: ubuntu-latest
     concurrency:
@@ -630,7 +678,6 @@ jobs:
       ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
       E2E_HARNESS: codewhale
       E2E_USE_LATEST: ${{ github.event.inputs.use_latest == 'true' && '1' || '' }}
-      E2E_VERSION_CODEWHALE: ${{ github.event.inputs.codewhale_version }}
       E2E_MODEL_CODEWHALE: ${{ needs.model.outputs.gateway }}
     steps:
       - name: Checkout
@@ -675,7 +722,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/e2e-install-cache
-          key: e2e-install-${{ runner.os }}-codewhale-${{ hashFiles('internal/e2e/versions.go') }}-${{ github.event.inputs.use_latest }}-${{ github.event.inputs.codewhale_version }}
+          key: e2e-install-${{ runner.os }}-codewhale-${{ hashFiles('internal/e2e/versions.go') }}-${{ github.event.inputs.use_latest }}
           restore-keys: |
             e2e-install-${{ runner.os }}-codewhale-
 
