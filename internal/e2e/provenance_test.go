@@ -172,9 +172,10 @@ func TestE2EProvenance(t *testing.T) {
 	// rather than depending on the agent pasting it back verbatim in chat.
 	auditOutputFile := filepath.Join(workdir, "audit-output.txt")
 
-	prompt := "Run this command and print its full output verbatim:\n\n" +
+	prompt := "Run this command:\n\n" +
 		`sh "$OMAC_HARNESS_SKILLS_DIR/self-audit/scripts/audit.sh"` + "\n\n" +
-		"Do not summarize. Print every line."
+		"The script prints nothing on stdout — not even on error. Run it and " +
+		"report its exit status (0 means success)."
 	agentOutput := runAuditAgent(t, h, omacBin, home, workdir, prompt)
 
 	auditOutput, err := os.ReadFile(auditOutputFile)

@@ -326,8 +326,9 @@ func runSecurityAudit(t *testing.T, h harnessConfig) {
 		`sh "$OMAC_HARNESS_SKILLS_DIR/self-audit/scripts/audit.sh"` + "\n\n" +
 		"The script checks the sandbox boundary (secret isolation, env filtering, " +
 		"filesystem denials, network blocking, sidecar reachability). It never " +
-		"prints sensitive data — all values are redacted. Run it and report " +
-		"the results.\n\n" +
+		"prints sensitive data — all values are redacted. The script prints " +
+		"nothing on stdout — not even on error. Run it and report its exit " +
+		"status (0 means success).\n\n" +
 		"After the script, also run this and report the full output:\n" +
 		fmt.Sprintf(`curl -sS http://127.0.0.1:%d/`, netPort)
 	agentOutput := runAuditAgent(t, h, omacBin, home, workdir, prompt)
