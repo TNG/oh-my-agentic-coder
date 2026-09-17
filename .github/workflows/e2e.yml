@@ -173,15 +173,25 @@ jobs:
             echo "::error::harness filter matched no legs: '$FILTER' (valid names: opencode, claude-code, codex, copilot, pi, codewhale; os tokens: ubuntu-latest, macos-latest, wsl2)"
             exit 1
           fi
+          # Empty result => EMPTY output, and the consuming job is skipped
+          # by its explicit if-guard below. Emitting {"include":[]} instead
+          # expands to a phantom job state (observed: run marked failure
+          # with no failed job), so only a real include list reaches the
+          # matrix expression.
           {
-            printf 'e2e<<MATRIX_DELIM\n{"include":[%s]}\nMATRIX_DELIM\n' "$(IFS=,; echo "${e2e[*]}")"
-            printf 'wsl2<<MATRIX_DELIM\n{"include":[%s]}\nMATRIX_DELIM\n' "$(IFS=,; echo "${wsl2[*]}")"
+            if [ ${#e2e[@]} -gt 0 ]; then
+              printf 'e2e<<MATRIX_DELIM\n{"include":[%s]}\nMATRIX_DELIM\n' "$(IFS=,; echo "${e2e[*]}")"
+            fi
+            if [ ${#wsl2[@]} -gt 0 ]; then
+              printf 'wsl2<<MATRIX_DELIM\n{"include":[%s]}\nMATRIX_DELIM\n' "$(IFS=,; echo "${wsl2[*]}")"
+            fi
             echo "codewhale=$cw"
           } >> "$GITHUB_OUTPUT"
 
   e2e:
     name: "${{ matrix.harness }} / ${{ matrix.os }}"
     needs: [model, matrix-legs]
+    if: needs.matrix-legs.outputs.e2e != ''
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.matrix-legs.outputs.e2e) }}
@@ -432,6 +442,7 @@ jobs:
     # inside WSL (Go test code) via the automount.
     name: "${{ matrix.harness }} / WSL2"
     needs: [model, matrix-legs]
+    if: needs.matrix-legs.outputs.wsl2 != ''
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.matrix-legs.outputs.wsl2) }}
