@@ -384,12 +384,7 @@ func claudeCodeConfig() harnessConfig {
 				"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1",
 			}
 		},
-		// EXPERIMENT (temporary): attribute claude's silent darwin exit-0
-		// mid-setup to omac's Seatbelt profile or to claude itself. With
-		// NoSandbox on darwin the same leg runs unsandboxed; if the session
-		// comes alive (API call + output), the Seatbelt is the culprit.
-		// Revert once attributed.
-		Sandbox: SandboxConfig{NoSandbox: runtime.GOOS == "darwin"},
+		Sandbox: SandboxConfig{}, // no deviations — model host allowed by base profile
 		RunArgs: func(prompt string) []string {
 			// --debug/--verbose: claude -p can abort silently pre-turn
 			// (observed darwin-only: exit 0, no stdout, no API call). Its

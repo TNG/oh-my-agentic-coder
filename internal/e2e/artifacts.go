@@ -3,13 +3,16 @@
 package e2e
 
 import (
+	"context"
 	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 // sessionLogDir is the directory where e2e test output artifacts are
@@ -114,6 +117,14 @@ func writeSessionArtifacts(t *testing.T, h harnessConfig, testType string,
 		mustWrite("omac-audit.jsonl", string(data))
 	}
 
+	// Seatbelt denials from the macOS unified log. The kernel records every
+	// denied operation (process, class, target) but does not surface it to
+	// the denied process, so this is the only place a silent sandbox-induced
+	// abort names its cause.
+	if runtime.GOOS == "darwin" {
+		mustWrite("darwin-sandbox-denials.txt", sandboxDenials())
+	}
+
 	// opencode's own log.
 	ocLog := filepath.Join(home, ".local", "share", "opencode", "log", "opencode.log")
 	if data, err := os.ReadFile(ocLog); err == nil {
@@ -161,4 +172,19 @@ func writeSessionArtifacts(t *testing.T, h harnessConfig, testType string,
 	}
 
 	t.Logf("session artifacts written to %s", dir)
+}
+
+// sandboxDenials returns the recent Seatbelt denial lines from the macOS
+// unified log. Best effort: empty when `log` is unavailable or errors.
+func sandboxDenials() string {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "log", "show", "--last", "5m", "--style", "compact",
+		"--info", "--predicate", `eventMessage CONTAINS "deny"`)
+	out, _ := cmd.Output()
+	const maxBytes = 256 << 10
+	if len(out) > maxBytes {
+		out = out[len(out)-maxBytes:]
+	}
+	return string(out)
 }
