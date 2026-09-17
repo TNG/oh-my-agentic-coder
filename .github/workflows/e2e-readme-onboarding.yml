@@ -26,7 +26,7 @@ on:
       model:
         description: 'Model id for the onboarding agent, for THIS RUN ONLY. Set empty to use each harness''s pin in internal/e2e/versions.go (opencode/codex/copilot/pi/codewhale: zai-org/GLM-5.2, claude-code: claude-sonnet-5).'
         type: string
-        default: 'deepseek-ai/DeepSeek-V4-Flash'
+        default: 'deepseek-ai/DeepSeek-V4.1-Flash'
       context_limit:
         description: 'Context window declared to the agent, in tokens. Leave empty for the 100000 default, which is safely under every pinned model'
         type: string
