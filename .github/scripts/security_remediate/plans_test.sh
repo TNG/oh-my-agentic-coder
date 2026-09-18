@@ -175,7 +175,19 @@ cat > "$TMP/vulns.json" <<'EOF'
     "severity": "high",
     "description": "An attacker can send X-Internal-Auth and be trusted",
     "impact": "credential exposure",
-    "poc": "curl -H 'X-Internal-Auth: yes' http://target/whoami"
+    "poc": "curl -H 'X-Internal-Auth: yes' http://target/whoami",
+    "endpoint": "/__omac__/whoami (header auto-trust)",
+    "technical_analysis": "The admission check reads the header before validating the upstream peer",
+    "remediation_steps": "Validate the peer address before trusting the header",
+    "code_locations": [
+      {
+        "file": "internal/netproxy/admission.go",
+        "start_line": 42,
+        "end_line": 44,
+        "snippet": "if req.Header.Get(\"X-Internal-Auth\") != \"\" { return true }",
+        "label": "Admission trusts the header unconditionally"
+      }
+    ]
   }
 ]
 EOF
@@ -218,23 +230,40 @@ sanitize_rejects "a PoC leak is rejected" "$TMP/issue-leak.md"
 printf '%s\n' 'hardens the code in internal/netproxy/foo.go' > "$TMP/issue-leak.md"
 sanitize_rejects "a vulnerable file path is rejected" "$TMP/issue-leak.md"
 
+# The scanner's richer fields (code_locations, endpoint, technical_analysis)
+# are exactly the schema drift the schema-agnostic forbidden set exists for:
+# a new field must not become a leak channel just because no field-name rule
+# mentions it.
+printf '%s\n' 'the admission check in internal/netproxy/admission.go must change' > "$TMP/issue-leak.md"
+sanitize_rejects "a code_locations file path is rejected" "$TMP/issue-leak.md"
+
+printf '%s\n' 'fix the snippet if req.Header.Get("X-Internal-Auth") != "" { return true }' > "$TMP/issue-leak.md"
+sanitize_rejects "a code_locations snippet is rejected" "$TMP/issue-leak.md"
+
+printf '%s\n' 'hardens /__omac__/whoami (header auto-trust) so it validates the peer' > "$TMP/issue-leak.md"
+sanitize_rejects "an endpoint leak is rejected" "$TMP/issue-leak.md"
+
+printf '%s\n' 'changes how the admission check reads the header before validating the upstream peer' > "$TMP/issue-leak.md"
+sanitize_rejects "a technical_analysis leak is rejected" "$TMP/issue-leak.md"
+
 # --- changed_files_within ------------------------------------------------------
-# Fixture repo with one allowed pair (a _test.go file and the pin file) and
-# one production file, so each case creates exactly one violation.
+# Fixture repo with the fix leg's guard shape: the plan's owned production
+# file and any *_security_test.go file are allowed; each case creates exactly
+# one violation.
 GUARD="$TMP/guard-patterns"
 cat > "$GUARD" <<'EOF'
-_test\.go$
-^scripts/security-suite-expected-failures\.txt$
+^pkg/prod\.go$
+_security_test\.go$
 EOF
 
 g="$TMP/guard-repo"
 git init -q "$g"
 git -C "$g" config user.email "test@example.com"
 git -C "$g" config user.name "test"
-mkdir -p "$g/pkg" "$g/scripts"
-echo x > "$g/pkg/old_test.go"
+mkdir -p "$g/pkg"
 echo x > "$g/pkg/prod.go"
-echo x > "$g/scripts/security-suite-expected-failures.txt"
+echo x > "$g/pkg/other.go"
+echo x > "$g/pkg/thing_security_test.go"
 git -C "$g" add -A
 git -C "$g" commit -qm base
 
@@ -261,22 +290,22 @@ guard_violation() {
 
 guard_clean "a clean tree passes"
 
-echo y >> "$g/pkg/old_test.go"
-echo y > "$g/pkg/fresh_test.go"
-echo y >> "$g/scripts/security-suite-expected-failures.txt"
-guard_clean "modified and new test files and the pin file pass"
-
 echo y >> "$g/pkg/prod.go"
-guard_violation "a modified production file is reported" "pkg/prod.go"
-git -C "$g" checkout -q -- pkg/prod.go
+echo y >> "$g/pkg/thing_security_test.go"
+echo y > "$g/pkg/fresh_security_test.go"
+guard_clean "the owned file and security test files pass"
+
+echo y >> "$g/pkg/other.go"
+guard_violation "a file outside the plan's owned set is reported" "pkg/other.go"
+git -C "$g" checkout -q -- pkg/other.go
 
 echo y > "$g/pkg/rogue.go"
 guard_violation "an untracked file outside the patterns is reported" "pkg/rogue.go"
 rm "$g/pkg/rogue.go"
 
-git -C "$g" mv pkg/prod.go pkg/prod_renamed.go
-guard_violation "a renamed production file is reported by its new path" "prod_renamed.go"
-git -C "$g" mv pkg/prod_renamed.go pkg/prod.go
+git -C "$g" mv pkg/other.go pkg/other_renamed.go
+guard_violation "a renamed production file is reported by its new path" "other_renamed.go"
+git -C "$g" mv pkg/other_renamed.go pkg/other.go
 
 echo y > "$g/pkg/name with space.go"
 guard_violation "a quoted untracked path is unquoted before matching" "pkg/name with space.go"

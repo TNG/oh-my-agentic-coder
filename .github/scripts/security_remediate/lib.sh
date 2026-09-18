@@ -243,18 +243,18 @@ plans_schema_errors() {
 }
 
 # Strings that must never appear verbatim in the public overview issue: every
-# finding's title, description and impact, any PoC/exploit-style field the
-# scanner happens to emit, and the plans' owned file paths (they point
-# straight at the vulnerable code). Used by the sanitizer below; short
-# values are skipped there to keep false positives down.
+# string the scanner emitted for a finding (titles, descriptions, impacts,
+# PoCs, code locations with their snippets, endpoints, technical analyses —
+# whatever the schema grows next) plus the plans' owned file paths (they
+# point straight at the vulnerable code). Deliberately schema-agnostic:
+# strix has added fields between generations (code_locations, endpoint) and
+# an allowlist of field names silently stops covering what it has not seen.
+# Used by the sanitizer below; short values are skipped there to keep false
+# positives down.
 issue_body_forbidden_strings() {
   local vulns_json=$1 plans_json=$2
   {
-    jq -r '.[] | (.title // empty), (.description // empty), (.impact // empty)' \
-      "$vulns_json" 2>/dev/null || true
-    jq -r '.[] | to_entries[]
-            | select((.key | test("poc|exploit|proof"; "i")) and (.value | type == "string"))
-            | .value' "$vulns_json" 2>/dev/null || true
+    jq -r '[.. | strings] | .[]' "$vulns_json" 2>/dev/null || true
     jq -r '.[].files[]?' "$plans_json" 2>/dev/null || true
   }
 }
