@@ -265,6 +265,13 @@ jobs:
       - name: Check security-remediate plan logic
         run: .github/scripts/security_remediate/plans_test.sh
 
+      # The fix leg's session state machine end to end: stubbed sessions and
+      # tools (no Go, no network) drive test-writer, red check, test
+      # reviewer, fix-writer, green check, fix reviewer and PR writer through
+      # the happy path, the retry path and the not-red failure path.
+      - name: Check security-remediate fix leg
+        run: .github/scripts/security_remediate/fix_stage_test.sh
+
   cache-integration:
     name: Cache integration (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

@@ -29,6 +29,18 @@ DEFAULT_OPENCODE_VERSION="opencode-ai@1.17.12"
 DEFAULT_CONTEXT_LIMIT="100000"
 DEFAULT_OUTPUT_LIMIT="32000"
 
+# Commit identities. Every commit this pipeline makes is signed off (-s), and
+# the Signed-off-by trailer carries whichever agent wrote the content, so the
+# history attributes tests and fixes to their author. The .invalid domain is
+# the RFC-reserved placeholder domain — these are not real mailboxes.
+# Interface variables for the stage drivers, not used in lib.sh itself.
+export TEST_WRITER_NAME="Test Writer Agent"
+export TEST_WRITER_EMAIL="test-writer@security-remediate.invalid"
+export FIX_WRITER_NAME="Fix Writer Agent"
+export FIX_WRITER_EMAIL="fix-writer@security-remediate.invalid"
+export RUNNER_NAME="Security Remediate Runner"
+export RUNNER_EMAIL="runner@security-remediate.invalid"
+
 # Portable stand-in for GNU coreutils `timeout` (stock macOS has none).
 # Same implementation as scripts/doc-drift.sh: background the command, race a
 # sleep+kill watchdog against it, return the command's status (143/SIGTERM
@@ -127,8 +139,8 @@ clone_archive() {
     echo "::error title=Archive clone failed::Could not clone the private archive repo (details above are redacted — they embed the credential URL)."
     return 1
   }
-  git -C "$dest" config user.name "security-remediate-bot"
-  git -C "$dest" config user.email "actions@users.noreply.github.com"
+  git -C "$dest" config user.name "$RUNNER_NAME"
+  git -C "$dest" config user.email "$RUNNER_EMAIL"
 }
 
 # Commit and push whatever the archive clone now contains. Nothing to commit
@@ -141,7 +153,7 @@ push_archive() {
     echo "archive: nothing to push"
     return 0
   fi
-  git -C "$dir" commit --quiet -m "$message"
+  git -C "$dir" commit -s --quiet -m "$message"
   archive_git "$dir" push --quiet origin HEAD || {
     echo "::error title=Archive push failed::Pushing the archive repo failed after the preflight confirmed write access — check for a protected default branch or a token revoked mid-run."
     return 1
@@ -208,8 +220,8 @@ select_plans() {
 # The manifest schema every later stage depends on: branch names carry the
 # generation label, owned files never include .github/ (CI-config findings
 # are manual follow-up, which keeps the PAT free of the workflows
-# permission), test names are TestSecurity* because they run behind the vuln
-# build tag. Prints one "<id>: <problem>" line per violation; no output means
+# permission), test names are TestSecurity* because the promoted security
+# suite names them that way. Prints one "<id>: <problem>" line per violation; no output means
 # the manifest is schema-valid. Path existence is the caller's job — jq
 # cannot stat.
 plans_schema_errors() {
@@ -346,15 +358,23 @@ install_opencode() {
 
 # Fresh HOME for a session's opencode CLI so it never picks up the runner's
 # real omac/opencode state, holding only the generated gateway config — the
-# same isolation scripts/doc-drift.sh applies. Prints the HOME path.
+# same isolation scripts/doc-drift.sh applies. $2 is the implementing model,
+# $3 an optional reviewer model: both must be registered, because a review
+# session runs against the same driver home but may use a different model.
+# Prints the HOME path.
 session_home() {
-  local work=$1 model=$2 driver_home
+  local work=$1 model=$2 reviewer=${3:-} driver_home models
   driver_home="$work/driver-home"
   mkdir -p "$driver_home/.local/share/opencode" "$driver_home/.config/opencode"
   cat > "$driver_home/.local/share/opencode/auth.json" <<EOF
 {"model": {"type": "api", "key": "$SKAINET_TOKEN"}}
 EOF
   chmod 600 "$driver_home/.local/share/opencode/auth.json"
+  models="\"$model\": { \"name\": \"$model\", \"limit\": { \"context\": ${E2E_CONTEXT_LIMIT:-$DEFAULT_CONTEXT_LIMIT}, \"output\": ${E2E_OUTPUT_LIMIT:-$DEFAULT_OUTPUT_LIMIT} } }"
+  if [ -n "$reviewer" ] && [ "$reviewer" != "$model" ]; then
+    models="$models,
+        \"$reviewer\": { \"name\": \"$reviewer\", \"limit\": { \"context\": ${E2E_CONTEXT_LIMIT:-$DEFAULT_CONTEXT_LIMIT}, \"output\": ${E2E_OUTPUT_LIMIT:-$DEFAULT_OUTPUT_LIMIT} } }"
+  fi
   cat > "$driver_home/.config/opencode/opencode.json" <<EOF
 {
   "share": "disabled",
@@ -364,7 +384,7 @@ EOF
       "npm": "@ai-sdk/openai-compatible",
       "options": { "baseURL": "$SKAINET_INTERNAL" },
       "models": {
-        "$MODEL": { "name": "$MODEL", "limit": { "context": ${E2E_CONTEXT_LIMIT:-$DEFAULT_CONTEXT_LIMIT}, "output": ${E2E_OUTPUT_LIMIT:-$DEFAULT_OUTPUT_LIMIT} } }
+        $models
       }
     }
   }
@@ -401,4 +421,71 @@ run_session() {
       opencode run --print-logs --pure --auto -m "model/$model" "$prompt" \
       > "$transcript" 2>&1
   )
+}
+
+# Commit whatever is staged with the given identity, signed off. The runner
+# shell owns commits (agents only write files), so the agent identity is a
+# parameter, not repository config the session could tamper with.
+commit_as() {
+  local dir=$1 name=$2 email=$3 message=$4
+  git -C "$dir" config user.name "$name"
+  git -C "$dir" config user.email "$email"
+  git -C "$dir" commit -s --quiet -m "$message"
+}
+
+# Names from $2 (one per line) that have no "func <name>(" in any *_test.go
+# file under $1. Prints the missing ones; no output means all present. The
+# name is a Go identifier, so embedding it in the regex is safe.
+missing_test_names() {
+  local repo=$1 names_file=$2 name missing=""
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    grep -rqE "^func ${name}\(" "$repo" --include='*_test.go' || missing="$missing$name
+"
+  done < "$names_file"
+  printf '%s' "$missing"
+}
+
+# SHA of the newest commit since $2 whose subject marks it as a test commit
+# ("test(security):" — the runner's prefix; plain "test:" tolerated). The
+# tree at that commit is base plus tests only, which is what the mechanical
+# red check runs against. Empty output when there is no such commit.
+last_test_commit() {
+  git -C "$1" log --format='%H%x09%s' "$2..HEAD" \
+    | awk -F'\t' '$2 ~ /^test\(security\):|^test:/ { print $1; exit }'
+}
+
+# One reviewer session: runs the prompt, then parses the verdict the session
+# wrote to <workspace>/review-verdict.json. A missing or internally
+# inconsistent verdict is a hard failure — the runner never guesses at a
+# verdict. REVIEW.md is moved to $7 (a log-dir path) and review-verdict.json
+# removed, so the next session cannot anchor on the previous review.
+# Sets REVIEW_FINDINGS and REVIEW_VERDICT. Returns 1 on an unusable verdict.
+run_review_session() {
+  local driver_home=$1 secs=$2 model=$3 workspace=$4 prompt_file=$5 log_file=$6 keep=$7
+  local status=0
+  run_session "$driver_home" "$secs" "$model" "$workspace" "$prompt_file" "$log_file" || status=$?
+  local verdict_file="$workspace/review-verdict.json"
+  if [ ! -f "$verdict_file" ] \
+     || ! jq -e '(.findings | type) == "number" and .findings >= 0
+                  and (.verdict | type) == "string"
+                  and (if .findings == 0 then .verdict == "approved"
+                       else .verdict == "insufficient" end)' \
+           "$verdict_file" >/dev/null 2>&1; then
+    echo "::error title=Reviewer produced no verdict::The reviewer session (exit $status) wrote no consistent review-verdict.json (findings count and verdict must agree). Failing the leg rather than guessing at its verdict."
+    return 1
+  fi
+  # Interface variables for the stage driver (exported so shellcheck sees
+  # them as consumed outside this scope).
+  local findings verdict
+  findings="$(jq -r '.findings' "$verdict_file")"
+  verdict="$(jq -r '.verdict' "$verdict_file")"
+  export REVIEW_FINDINGS="$findings"
+  export REVIEW_VERDICT="$verdict"
+  rm -f "$verdict_file"
+  if [ -f "$workspace/REVIEW.md" ]; then
+    [ -n "$keep" ] && cp "$workspace/REVIEW.md" "$keep"
+    rm -f "$workspace/REVIEW.md"
+  fi
+  return 0
 }
