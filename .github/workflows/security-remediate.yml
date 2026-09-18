@@ -42,9 +42,9 @@ on:
         type: string
         default: ''
       budget_minutes:
-        description: 'Wall-clock budget per agent session. A fix leg runs several (test writer, fix writer, reviewers, PR writer), the PR writer capped separately.'
+        description: 'Budget for the first test-writer and fix-writer session of a leg. Reviewers and retry writers derive a shorter cap from the 350-minute leg ceiling; the PR writer gets a fixed 10 minutes.'
         type: string
-        default: '55'
+        default: '60'
       strict_review:
         description: 'Fail the leg on an unresolved review verdict instead of opening the pull request with the findings noted.'
         type: boolean
@@ -90,6 +90,10 @@ jobs:
         uses: actions/checkout@v4
         with:
           path: repo
+          # The checkout token would otherwise persist as an auth header in
+          # repo/.git/config, readable by every session; the stages push with
+          # a credential supplied per invocation instead.
+          persist-credentials: false
 
       - name: Probe credentials and select plans
         # The first ten seconds decide whether hours of agent sessions are
@@ -135,12 +139,16 @@ jobs:
       SKAINET_INTERNAL: ${{ secrets.SKAINET_INTERNAL }}
       MAX_PLANS: ${{ inputs.max_plans || '3' }}
       PLANS_FILTER: ${{ inputs.plans || '' }}
-      BUDGET_MINUTES: ${{ inputs.budget_minutes || '55' }}
+      BUDGET_MINUTES: ${{ inputs.budget_minutes || '60' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           path: repo
+          # The checkout token would otherwise persist as an auth header in
+          # repo/.git/config, readable by every session; the stages push with
+          # a credential supplied per invocation instead.
+          persist-credentials: false
 
       - name: Planning session
         # The agent session gets the gateway key (it must call the model)
@@ -156,7 +164,9 @@ jobs:
     name: Issue (sanitized overview)
     needs: [preflight, plan]
     if: |
+      always() &&
       !cancelled() &&
+      needs.preflight.result == 'success' &&
       needs.preflight.outputs.no_op != 'true' &&
       (needs.plan.result == 'success' || needs.plan.result == 'skipped') &&
       inputs.stage != 'plan'
@@ -175,6 +185,10 @@ jobs:
         uses: actions/checkout@v4
         with:
           path: repo
+          # The checkout token would otherwise persist as an auth header in
+          # repo/.git/config, readable by every session; the stages push with
+          # a credential supplied per invocation instead.
+          persist-credentials: false
 
       - name: Create or update the overview issue
         # The issue body is assembled mechanically from the manifest's
@@ -197,10 +211,12 @@ jobs:
     name: Waves (greedy coloring)
     needs: [preflight, plan]
     if: |
+      always() &&
       !cancelled() &&
+      needs.preflight.result == 'success' &&
       needs.preflight.outputs.no_op != 'true' &&
       (needs.plan.result == 'success' || needs.plan.result == 'skipped') &&
-      inputs.stage == 'all'
+      (inputs.stage == 'all' || github.event_name == 'workflow_run')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
@@ -219,6 +235,10 @@ jobs:
         uses: actions/checkout@v4
         with:
           path: repo
+          # The checkout token would otherwise persist as an auth header in
+          # repo/.git/config, readable by every session; the stages push with
+          # a credential supplied per invocation instead.
+          persist-credentials: false
 
       - name: Assign plans to waves
         id: waves
@@ -226,10 +246,12 @@ jobs:
           SCAN_DIR: ${{ needs.preflight.outputs.scan_dir }}
           SELECTED_IDS: ${{ needs.plan.outputs.selected_ids || needs.preflight.outputs.selected_ids }}
         run: |
+          set -euo pipefail
           # No agent sessions here — pure jq over the manifest, so the leg
           # matrix is known before the fix jobs start.
           archive="$PWD/archive"
           git clone --quiet "https://x-access-token:${SECURITY_SCAN_PAT}@github.com/${ARCHIVE_REPO}.git" "$archive"
+          git -C "$archive" remote set-url origin "https://github.com/${ARCHIVE_REPO}.git"
           plans="$archive/scans/${SCAN_DIR}/mitigation-plans/plans.json"
           # lib.sh is sourced, never run; call assign_waves from a subshell.
           waves="$(bash -c '. repo/.github/scripts/security_remediate/lib.sh && assign_waves "$1" "$2"' _ "$plans" "$SELECTED_IDS")"
@@ -252,8 +274,11 @@ jobs:
     name: Fix wave 1 (plan ${{ matrix.plan }})
     needs: [preflight, issue, waves]
     if: |
+      always() &&
       !cancelled() &&
-      needs.preflight.outputs.no_op != 'true' &&
+      needs.preflight.result == 'success' &&
+      needs.issue.result == 'success' &&
+      needs.waves.result == 'success' &&
       needs.waves.outputs.wave1 != '[]'
     runs-on: ubuntu-latest
     timeout-minutes: 350
@@ -269,13 +294,17 @@ jobs:
       GH_TOKEN: ${{ secrets.SECURITY_SCAN_PAT }}
       SKAINET_TOKEN: ${{ secrets.SKAINET_TOKEN }}
       SKAINET_INTERNAL: ${{ secrets.SKAINET_INTERNAL }}
-      BUDGET_MINUTES: ${{ inputs.budget_minutes || '55' }}
+      BUDGET_MINUTES: ${{ inputs.budget_minutes || '60' }}
       STRICT_REVIEW: ${{ inputs.strict_review }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           path: repo
+          # The checkout token would otherwise persist as an auth header in
+          # repo/.git/config, readable by every session; the stages push with
+          # a credential supplied per invocation instead.
+          persist-credentials: false
 
       - name: Install bubblewrap
         run: |
@@ -319,8 +348,11 @@ jobs:
     # falls back to the default branch at runtime.
     needs: [preflight, waves, issue, fix-wave-1]
     if: |
+      always() &&
       !cancelled() &&
-      needs.preflight.outputs.no_op != 'true' &&
+      needs.preflight.result == 'success' &&
+      needs.issue.result == 'success' &&
+      needs.waves.result == 'success' &&
       needs.waves.outputs.wave2 != '[]'
     runs-on: ubuntu-latest
     timeout-minutes: 350
@@ -334,13 +366,17 @@ jobs:
       GH_TOKEN: ${{ secrets.SECURITY_SCAN_PAT }}
       SKAINET_TOKEN: ${{ secrets.SKAINET_TOKEN }}
       SKAINET_INTERNAL: ${{ secrets.SKAINET_INTERNAL }}
-      BUDGET_MINUTES: ${{ inputs.budget_minutes || '55' }}
+      BUDGET_MINUTES: ${{ inputs.budget_minutes || '60' }}
       STRICT_REVIEW: ${{ inputs.strict_review }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           path: repo
+          # The checkout token would otherwise persist as an auth header in
+          # repo/.git/config, readable by every session; the stages push with
+          # a credential supplied per invocation instead.
+          persist-credentials: false
 
       - name: Install bubblewrap
         run: |
@@ -374,8 +410,11 @@ jobs:
     name: Fix wave 3 (plan ${{ matrix.plan }})
     needs: [preflight, waves, issue, fix-wave-2]
     if: |
+      always() &&
       !cancelled() &&
-      needs.preflight.outputs.no_op != 'true' &&
+      needs.preflight.result == 'success' &&
+      needs.issue.result == 'success' &&
+      needs.waves.result == 'success' &&
       needs.waves.outputs.wave3 != '[]'
     runs-on: ubuntu-latest
     timeout-minutes: 350
@@ -389,13 +428,17 @@ jobs:
       GH_TOKEN: ${{ secrets.SECURITY_SCAN_PAT }}
       SKAINET_TOKEN: ${{ secrets.SKAINET_TOKEN }}
       SKAINET_INTERNAL: ${{ secrets.SKAINET_INTERNAL }}
-      BUDGET_MINUTES: ${{ inputs.budget_minutes || '55' }}
+      BUDGET_MINUTES: ${{ inputs.budget_minutes || '60' }}
       STRICT_REVIEW: ${{ inputs.strict_review }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           path: repo
+          # The checkout token would otherwise persist as an auth header in
+          # repo/.git/config, readable by every session; the stages push with
+          # a credential supplied per invocation instead.
+          persist-credentials: false
 
       - name: Install bubblewrap
         run: |
@@ -429,8 +472,11 @@ jobs:
     name: Fix wave 4 (plan ${{ matrix.plan }})
     needs: [preflight, waves, issue, fix-wave-3]
     if: |
+      always() &&
       !cancelled() &&
-      needs.preflight.outputs.no_op != 'true' &&
+      needs.preflight.result == 'success' &&
+      needs.issue.result == 'success' &&
+      needs.waves.result == 'success' &&
       needs.waves.outputs.wave4 != '[]'
     runs-on: ubuntu-latest
     timeout-minutes: 350
@@ -444,13 +490,17 @@ jobs:
       GH_TOKEN: ${{ secrets.SECURITY_SCAN_PAT }}
       SKAINET_TOKEN: ${{ secrets.SKAINET_TOKEN }}
       SKAINET_INTERNAL: ${{ secrets.SKAINET_INTERNAL }}
-      BUDGET_MINUTES: ${{ inputs.budget_minutes || '55' }}
+      BUDGET_MINUTES: ${{ inputs.budget_minutes || '60' }}
       STRICT_REVIEW: ${{ inputs.strict_review }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           path: repo
+          # The checkout token would otherwise persist as an auth header in
+          # repo/.git/config, readable by every session; the stages push with
+          # a credential supplied per invocation instead.
+          persist-credentials: false
 
       - name: Install bubblewrap
         run: |

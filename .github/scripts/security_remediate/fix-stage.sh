@@ -43,7 +43,9 @@
 #   OVERVIEW_ISSUE     the overview issue number, for Refs
 #   WAVE_MAP           JSON {"<plan id>": <wave>} from the waves job
 #   MODEL, REVIEW_MODEL implementer / reviewer model ids
-#   BUDGET_MINUTES     per-session wall-clock budget (default 55)
+#   BUDGET_MINUTES     budget for the first test/fix writer sessions
+#                      (default 60); reviewers and retry writers derive
+#                      a shorter one, the PR writer gets a fixed cap
 #   STRICT_REVIEW      true = an unresolved "insufficient" verdict fails the
 #                      leg instead of opening the PR
 #   REPO_DIR, ARCHIVE_DIR, LOG_DIR   (defaults ./repo, ./archive, ./logs)
@@ -61,16 +63,11 @@ OVERVIEW_ISSUE="${OVERVIEW_ISSUE:-}"
 WAVE_MAP="${WAVE_MAP:-{\}}"
 MODEL="${MODEL:-}"
 REVIEW_MODEL="${REVIEW_MODEL:-}"
-BUDGET_MINUTES="${BUDGET_MINUTES:-55}"
+BUDGET_MINUTES="${BUDGET_MINUTES:-60}"
 STRICT_REVIEW="${STRICT_REVIEW:-false}"
 REPO_DIR="${REPO_DIR:-$PWD/repo}"
 ARCHIVE_DIR="${ARCHIVE_DIR:-$PWD/archive}"
 LOG_DIR="${LOG_DIR:-$PWD/logs}"
-
-# The PR body is a small, bounded writing task; it does not need a full
-# implementation budget. Keeping it short is what keeps the worst-case leg
-# (three writers + two reviewers + the PR writer) inside the job ceiling.
-PR_WRITER_SECS=600
 
 require_tools jq gh git go curl bun
 
@@ -83,6 +80,9 @@ if [ -z "$OVERVIEW_ISSUE" ]; then
   exit 1
 fi
 case "$BUDGET_MINUTES" in ''|*[!0-9]*) echo "::error::budget_minutes must be a whole number" >&2; exit 2 ;; esac
+WRITER_SECS=$(( $(session_budget writer) * 60 ))
+SHORT_SECS=$(( $(session_budget short) * 60 ))
+PR_WRITER_SECS=$(( PR_WRITER_MINUTES * 60 ))
 if [ -z "${SECURITY_SCAN_PAT:-}" ] || [ -z "${ARCHIVE_REPO:-}" ]; then
   echo "::error title=Missing secrets::SECURITY_SCAN_PAT or SECURITY_ARCHIVE_REPO is not set."
   exit 1
@@ -102,6 +102,15 @@ probe_write_access "$ARCHIVE_REPO" "$SECURITY_SCAN_PAT" "Archive repo"
 scan_abs="$ARCHIVE_DIR/scans/$SCAN_DIR"
 plans_json="$scan_abs/mitigation-plans/plans.json"
 [ -f "$plans_json" ] || { echo "::error title=No manifest::plans.json is missing for scan '$SCAN_DIR'." >&2; exit 1; }
+
+# Re-validate the manifest here: the archive is written by earlier sessions, so
+# a tampered plans.json must not be trusted by a later leg (it feeds the
+# ownership guard below).
+schema_errors="$(plans_schema_errors "$plans_json" "$SCAN_DIR")"
+if [ -n "$schema_errors" ]; then
+  echo "::error title=Manifest invalid::plans.json fails its schema; refusing to run a leg on it. Details are in the private archive's plans-validation.txt from the plan stage."
+  exit 1
+fi
 
 my_plan="$(jq -c --arg id "$PLAN_ID" '.[] | select(.id == $id)' "$plans_json")"
 [ -n "$my_plan" ] || { echo "::error title=Unknown plan::No plan '$PLAN_ID' in the manifest." >&2; exit 1; }
@@ -159,6 +168,14 @@ fi
 # leg's commits.
 base_sha="$(git -C "$REPO_DIR" merge-base HEAD "origin/$base_branch")"
 
+# Both clones are stripped of git hooks and their expected origin recorded, so
+# the runner can refuse to commit or push from a directory a session tampered
+# with (the ownership guard cannot see .git internals).
+repo_origin="$(git -C "$REPO_DIR" remote get-url origin)"
+harden_git_dir "$REPO_DIR"
+harden_git_dir "$ARCHIVE_DIR"
+assert_git_untampered "$REPO_DIR" "$repo_origin" "Source checkout" || exit 1
+
 # --- Guard patterns and prompt scaffolding ---------------------------------------
 mkdir -p "$LOG_DIR"
 WORK="$(mktemp -d)"
@@ -173,7 +190,7 @@ printf '%s\n' "$my_plan" | jq -r '.tests[]' > "$plan_tests_file"
 guard_tests="$WORK/guard-tests"
 printf '%s\n' '_security_test\.go$' > "$guard_tests"
 guard_fix="$WORK/guard-fix"
-printf '%s\n' "$my_plan" | jq -r '.files[]' | sed 's/[^A-Za-z0-9_/.-]/\\&/g; s/^/^/; s/$/$/' > "$guard_fix"
+printf '%s\n' "$my_plan" | jq -r '.files[]' | sed 's/[^A-Za-z0-9_/-]/\\&/g; s/^/^/; s/$/$/' > "$guard_fix"
 guard_fix_retry="$WORK/guard-fix-retry"
 { cat "$guard_fix"; printf '%s\n' '_security_test\.go$'; } > "$guard_fix_retry"
 
@@ -183,9 +200,14 @@ install_opencode
 DRIVER_HOME="$(session_home "$WORK" "$MODEL" "$REVIEWER")"
 
 # --- Runner helpers ---------------------------------------------------------------
+# Push with the credential supplied per invocation. Nothing is written to
+# .git/config, so the PAT is never on disk while a session runs; the explicit
+# URL also bypasses any planted insteadOf rewrite (the tamper check below
+# refuses to push at all if one appeared).
 push_branch() {
-  git -C "$REPO_DIR" remote set-url origin "https://x-access-token:${SECURITY_SCAN_PAT}@github.com/${GITHUB_REPOSITORY}.git"
-  archive_git "$REPO_DIR" push --quiet -u origin "$my_branch"
+  assert_git_untampered "$REPO_DIR" "$repo_origin" "Source checkout" || return 1
+  archive_git "$REPO_DIR" push --quiet \
+    "https://x-access-token:${SECURITY_SCAN_PAT}@github.com/${GITHUB_REPOSITORY}.git" "$my_branch"
 }
 
 has_commits_beyond_base() {
@@ -194,9 +216,14 @@ has_commits_beyond_base() {
 
 # Fail the leg, but never silently: leftovers are committed as a wip commit
 # and the branch is pushed so a human can inspect exactly what the pipeline
-# produced, and so the next run can continue on it.
+# produced, and so the next run can continue on it. A tampered git directory
+# is the exception: nothing is committed or pushed from it.
 fail_leg() {
   local title=$1 msg=$2
+  if ! assert_git_untampered "$REPO_DIR" "$repo_origin" "Source checkout"; then
+    echo "::error title=${title}::${msg} (nothing was pushed: the git directory was tampered with)"
+    exit 1
+  fi
   if [ -n "$(git -C "$REPO_DIR" status --porcelain)" ]; then
     git -C "$REPO_DIR" add -A
     commit_as "$REPO_DIR" "$RUNNER_NAME" "$RUNNER_EMAIL" "wip(security): plan $PLAN_ID — pipeline leg failed" || true
@@ -209,12 +236,13 @@ fail_leg() {
 }
 
 # Run one writer session in $1, log to $2, enforce the $3 ownership guard, and
-# commit as $4 <$5> with message $6. Returns 1 when the session produced no
-# changes (empty diffs are legal in the retry phases, decided by the caller).
+# commit as $4 <$5> with message $6 within a $7-second budget. Returns 1 when
+# the session produced no changes (empty diffs are legal in the retry phases,
+# decided by the caller).
 run_phase() {
-  local prompt=$1 log=$2 guard=$3 name=$4 email=$5 message=$6 status=0
+  local prompt=$1 log=$2 guard=$3 name=$4 email=$5 message=$6 secs=$7 status=0
   set +e
-  run_session "$DRIVER_HOME" "$((BUDGET_MINUTES * 60))" "$MODEL" "$WORKSPACE" "$prompt" "$log"
+  run_session "$DRIVER_HOME" "$secs" "$MODEL" "$WORKSPACE" "$prompt" "$log"
   status=$?
   set -e
   echo "session exit status: $status"
@@ -224,6 +252,7 @@ run_phase() {
   if [ -n "$(changed_files_within "$REPO_DIR" "$guard")" ]; then
     fail_leg "Ownership guard tripped" "The session edited files outside its allowed set; its output is on the branch as a wip commit and no pull request was opened."
   fi
+  assert_git_untampered "$REPO_DIR" "$repo_origin" "Source checkout" || fail_leg "Git directory tampered" "A session modified the checkout's git internals."
   git -C "$REPO_DIR" add -N . >/dev/null 2>&1 || true
   if git -C "$REPO_DIR" diff --quiet; then
     return 1
@@ -234,7 +263,9 @@ run_phase() {
 }
 
 # The red proof: at $1 the plan's tests must exist, compile, and FAIL. A tree
-# that does not compile, or tests that pass, is not red.
+# that does not compile, or tests that pass, is not red. `go build` does not
+# compile _test.go files, so `go vet` is the compile gate for the test tree —
+# otherwise a syntactically broken test would "fail" and count as red.
 red_check() {
   local sha=$1 rc=0
   git -C "$REPO_DIR" checkout --quiet --detach "$sha"
@@ -242,13 +273,16 @@ red_check() {
     echo "== red check at $sha =="
     echo "== the plan's tests must fail against this tree =="
   } > "$LOG_DIR/red-check.log"
-  if ! ( cd "$REPO_DIR" && go build ./... ) >> "$LOG_DIR/red-check.log" 2>&1; then
+  if ! ( cd "$REPO_DIR" && scrubbed go build ./... ) >> "$LOG_DIR/red-check.log" 2>&1; then
     echo "red check: the test-only tree does not compile"
+    rc=1
+  elif ! ( cd "$REPO_DIR" && scrubbed go vet ./... ) >> "$LOG_DIR/red-check.log" 2>&1; then
+    echo "red check: the tests do not compile (go vet failed)"
     rc=1
   elif [ -n "$(missing_test_names "$REPO_DIR" "$plan_tests_file")" ]; then
     echo "red check: planned test names are missing from the tree"
     rc=1
-  elif ( cd "$REPO_DIR" && go test -run "$test_selector" ./... ) >> "$LOG_DIR/red-check.log" 2>&1; then
+  elif ( cd "$REPO_DIR" && scrubbed go test -run "$test_selector" ./... ) >> "$LOG_DIR/red-check.log" 2>&1; then
     echo "red check: the tests PASS before the fix — not red"
     rc=1
   fi
@@ -264,9 +298,9 @@ green_check() {
     echo "== green check at $(git -C "$REPO_DIR" rev-parse --short HEAD) =="
     echo "== the whole promoted security suite must pass =="
   } > "$LOG_DIR/green-check.log"
-  ( cd "$REPO_DIR" && go build ./... ) >> "$LOG_DIR/green-check.log" 2>&1 || { echo "green check: go build failed"; return 1; }
-  ( cd "$REPO_DIR" && go vet ./... ) >> "$LOG_DIR/green-check.log" 2>&1 || { echo "green check: go vet failed"; return 1; }
-  ( cd "$REPO_DIR" && go test -run 'TestSecurity' ./... ) >> "$LOG_DIR/green-check.log" 2>&1 || { echo "green check: security tests failed"; return 1; }
+  ( cd "$REPO_DIR" && scrubbed go build ./... ) >> "$LOG_DIR/green-check.log" 2>&1 || { echo "green check: go build failed"; return 1; }
+  ( cd "$REPO_DIR" && scrubbed go vet ./... ) >> "$LOG_DIR/green-check.log" 2>&1 || { echo "green check: go vet failed"; return 1; }
+  ( cd "$REPO_DIR" && scrubbed go test -run 'TestSecurity' ./... ) >> "$LOG_DIR/green-check.log" 2>&1 || { echo "green check: security tests failed"; return 1; }
   return 0
 }
 
@@ -507,7 +541,7 @@ if [ -z "$last_test" ]; then
   write_test_prompt "$WORK/test-prompt.md"
   if ! run_phase "$WORK/test-prompt.md" "$LOG_DIR/test-writer.log" "$guard_tests" \
       "$TEST_WRITER_NAME" "$TEST_WRITER_EMAIL" \
-      "test(security): regression tests for plan $PLAN_ID"; then
+      "test(security): regression tests for plan $PLAN_ID" "$WRITER_SECS"; then
     fail_leg "No tests written" "The test session produced no changes, so there is nothing to pin the fix."
   fi
   last_test="$(git -C "$REPO_DIR" rev-parse HEAD)"
@@ -521,7 +555,7 @@ if [ -z "$last_test" ]; then
   test_review_ok=false
   if [ "$red_ok" = true ]; then
     write_test_review_prompt "$WORK/test-review-prompt.md"
-    run_review_session "$DRIVER_HOME" "$((BUDGET_MINUTES * 60))" "$REVIEWER" "$WORKSPACE" \
+    run_review_session "$DRIVER_HOME" "$SHORT_SECS" "$REVIEWER" "$WORKSPACE" \
       "$WORK/test-review-prompt.md" "$LOG_DIR/test-review.log" "$LOG_DIR/test-review.md" \
       || fail_leg "Test review produced no verdict" "The reviewer session wrote no usable verdict; failing the leg rather than guessing."
     [ "$REVIEW_VERDICT" = approved ] && test_review_ok=true || red_reason="the test review found the suite insufficient"
@@ -532,23 +566,26 @@ if [ -z "$last_test" ]; then
     write_test_retry_prompt "$WORK/test-retry-prompt.md" "$red_reason"
     if ! run_phase "$WORK/test-retry-prompt.md" "$LOG_DIR/test-retry.log" "$guard_tests" \
         "$TEST_WRITER_NAME" "$TEST_WRITER_EMAIL" \
-        "test(security): regression tests for plan $PLAN_ID"; then
+        "test(security): regression tests for plan $PLAN_ID" "$SHORT_SECS"; then
       fail_leg "Test retry wrote nothing" "The retry session produced no changes; the tests still do not pin the fix."
     fi
     last_test="$(git -C "$REPO_DIR" rev-parse HEAD)"
-    red_check "$last_test" || fail_leg "Tests are not red" "After the retry the plan's tests still do not fail against the current code (missing, not compiling, or passing). The branch carries the attempt."
+    red_check "$last_test" || fail_leg "Tests are not red" "After the retry the plan's tests still do not fail against the current code (missing, not compiling, or passing). If the base branch already fixes this weakness the plan is obsolete; otherwise the tests do not pin it. The branch carries the attempt."
   fi
 else
   echo "phase: verifying the existing tests are red"
   if ! red_check "$last_test"; then
+    if [ -n "$(git -C "$REPO_DIR" log --format=%s "$last_test..HEAD" | grep -E '^fix\(security\):|^fix:' || true)" ]; then
+      fail_leg "Tests are not red on re-entry" "The tests pass on this branch's test-only tree and fix commits already exist above it. Either the base branch already fixes this weakness (the plan is obsolete — close its issue item) or the tests never pinned it. A retry would commit above the fix and cannot turn red; the branch carries the attempt."
+    fi
     write_test_retry_prompt "$WORK/test-retry-prompt.md" "the tests did not fail against the current code"
     if ! run_phase "$WORK/test-retry-prompt.md" "$LOG_DIR/test-retry.log" "$guard_tests" \
         "$TEST_WRITER_NAME" "$TEST_WRITER_EMAIL" \
-        "test(security): regression tests for plan $PLAN_ID"; then
+        "test(security): regression tests for plan $PLAN_ID" "$SHORT_SECS"; then
       fail_leg "Test retry wrote nothing" "The retry session produced no changes; the tests still do not pin the fix."
     fi
     last_test="$(git -C "$REPO_DIR" rev-parse HEAD)"
-    red_check "$last_test" || fail_leg "Tests are not red" "After the retry the plan's tests still do not fail against the current code (missing, not compiling, or passing). The branch carries the attempt."
+    red_check "$last_test" || fail_leg "Tests are not red" "After the retry the plan's tests still do not fail against the current code (missing, not compiling, or passing). If the base branch already fixes this weakness the plan is obsolete; otherwise the tests do not pin it. The branch carries the attempt."
   fi
 fi
 
@@ -566,13 +603,13 @@ else
   # and can send it back once with the test-removal permission.
   run_phase "$WORK/fix-prompt.md" "$LOG_DIR/fix-writer.log" "$guard_fix" \
     "$FIX_WRITER_NAME" "$FIX_WRITER_EMAIL" \
-    "fix(security): $my_issue_line" || true
+    "fix(security): $my_issue_line" "$WRITER_SECS" || true
   green_check && fix_ok=true || fix_ok=false
 fi
 
 echo "phase: reviewing the fix"
 write_fix_review_prompt "$WORK/fix-review-prompt.md"
-run_review_session "$DRIVER_HOME" "$((BUDGET_MINUTES * 60))" "$REVIEWER" "$WORKSPACE" \
+run_review_session "$DRIVER_HOME" "$SHORT_SECS" "$REVIEWER" "$WORKSPACE" \
   "$WORK/fix-review-prompt.md" "$LOG_DIR/fix-review.log" "$LOG_DIR/fix-review.md" \
   || fail_leg "Fix review produced no verdict" "The reviewer session wrote no usable verdict; failing the leg rather than guessing."
 [ "$REVIEW_VERDICT" = approved ] && fix_review_ok=true
@@ -587,7 +624,7 @@ if [ "$fix_ok" != true ] || [ "$fix_review_ok" != true ]; then
   write_fix_retry_prompt "$WORK/fix-retry-prompt.md" "$reason"
   run_phase "$WORK/fix-retry-prompt.md" "$LOG_DIR/fix-retry.log" "$guard_fix_retry" \
     "$FIX_WRITER_NAME" "$FIX_WRITER_EMAIL" \
-    "fix(security): $my_issue_line" || true
+    "fix(security): $my_issue_line" "$SHORT_SECS" || true
   green_check || fail_leg "Tests are not green" "After the final implementation pass the security suite still fails. The branch carries the attempt; no pull request was opened."
 fi
 
@@ -636,6 +673,12 @@ if ! grep -qF "Refs #${OVERVIEW_ISSUE}" "$body_file"; then
   printf 'Refs #%s\n\n%s' "$OVERVIEW_ISSUE" "$(cat "$body_file")" > "$body_file.tmp"
   mv "$body_file.tmp" "$body_file"
 fi
+# "Closes #NN" would auto-close the shared tracking issue when this one pull
+# request merges; the prompt forbids it, the runner enforces it.
+if grep -qiE '(^|[[:space:]])closes[[:space:]]+#' "$body_file"; then
+  sed -E 's/(^|[[:space:]])[Cc]loses([[:space:]]+#)/\1Refs\2/g' "$body_file" > "$body_file.tmp"
+  mv "$body_file.tmp" "$body_file"
+fi
 body_copy="$LOG_DIR/pr-body.md"
 cp "$body_file" "$body_copy"
 rm -f "$body_file"
@@ -663,7 +706,7 @@ else
   pr_status=$?
   set -e
   if [ "$pr_status" -ne 0 ]; then
-    fail_leg "Pull request creation failed" "The fix branch is pushed; the pull request is not open. Create the 'do-not-merge' label and re-run. Details: $pr_url"
+    fail_leg "Pull request creation failed" "The fix branch is pushed; the pull request is not open. Create the 'do-not-merge' label and re-run. Details: $(printf '%s' "$pr_url" | head -n1)"
   fi
   echo "opened fix pull request: $pr_url"
 fi
@@ -672,7 +715,8 @@ fi
 stage_logs="$scan_abs/remediation/fix-$PLAN_ID"
 mkdir -p "$stage_logs"
 cp "$LOG_DIR"/*.log "$LOG_DIR"/*.md "$stage_logs"/ 2>/dev/null || true
-push_archive "$ARCHIVE_DIR" "remediation: fix logs for ${SCAN_DIR} plan ${PLAN_ID} ($(date -u +%F))"
+push_archive "$ARCHIVE_DIR" "remediation: fix logs for ${SCAN_DIR} plan ${PLAN_ID} ($(date -u +%F))" \
+  "scans/$SCAN_DIR/remediation/fix-$PLAN_ID"
 
 printf 'fix stage: plan %s, fix review %s (%s findings), tests %s%s\n' \
   "$PLAN_ID" "$REVIEW_VERDICT" "$REVIEW_FINDINGS" "$([ "$fix_ok" = true ] && echo green || echo retried)" "$note" \

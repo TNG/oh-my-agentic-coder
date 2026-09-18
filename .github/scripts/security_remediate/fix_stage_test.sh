@@ -76,17 +76,20 @@ cat > "$STUBS/bun" <<'EOF'
 exit 0
 EOF
 
-# The go stub emulates the one property that matters here: the security tests
-# are red until a production file contains "fixed" (SIM_MODE=notred makes them
-# green immediately, the "tests do not pin anything" failure).
+# The stubs read their scenario from a .sim-mode file found by walking up
+# from the cwd: the stage runs sessions and the go checks under env -i, so
+# nothing can be injected through the environment any more.
 cat > "$STUBS/go" <<'EOF'
 #!/usr/bin/env bash
+d="$PWD"; sim=""
+while [ "$d" != "/" ]; do [ -f "$d/.sim-mode" ] && { sim="$(cat "$d/.sim-mode")"; break; }; d="$(dirname "$d")"; done
 sub=$1; shift
 case "$sub" in
-  build|vet) exit 0 ;;
+  build) exit 0 ;;
+  vet) [ "$sim" = brokenvet ] && { echo "vet: test file does not compile"; exit 1; }; exit 0 ;;
   test)
     grep -rq 'func TestSecurity' --include='*_security_test.go' . || { echo "no tests to run"; exit 0; }
-    if [ "${SIM_MODE:-}" = notred ]; then exit 0; fi
+    [ "$sim" = notred ] && exit 0
     fixed=0
     for f in $(find . -name 'prod*.go' -not -name '*_test.go'); do
       grep -q fixed "$f" && fixed=1
@@ -102,20 +105,24 @@ EOF
 # so its commit is non-empty.
 cat > "$STUBS/opencode" <<'EOF'
 #!/usr/bin/env bash
+d="$PWD"; root=""
+while [ "$d" != "/" ]; do [ -f "$d/.sim-mode" ] && { root="$d"; break; }; d="$(dirname "$d")"; done
+sim=""; [ -n "$root" ] && sim="$(cat "$root/.sim-mode")"
 r="$PWD"; [ -d repo ] && r="$PWD/repo"
 for last; do :; done
-printf '%s\n' "$last" >> "$SIM_SESSION_LOG"
+[ -n "$root" ] && printf '%s\n' "$last" >> "$root/.sim-sessions.log"
 case "$last" in
   *"You are the test author"*)
     printf 'package pkg\n\nimport "testing"\n\nfunc TestSecurityAlpha(t *testing.T) {}\n' > "$r/pkg/alpha_security_test.go" ;;
   *"did not pass the mechanical red"*)
     printf '// retried\n' >> "$r/pkg/alpha_security_test.go" ;;
   *"You are the implementer"*)
-    echo fixed > "$r/pkg/prod.go" ;;
+    echo fixed > "$r/pkg/prod.go"
+    [ "$sim" = die ] && exit 3 ;;
   *"is not finished"*)
     echo "// retry" >> "$r/pkg/prod.go" ;;
   *"independent reviewer of the regression tests"*)
-    if [ "${SIM_MODE:-}" = retries ]; then
+    if [ "$sim" = retries ]; then
       echo "one finding" > REVIEW.md
       echo '{"findings":1,"verdict":"insufficient"}' > review-verdict.json
     else
@@ -123,7 +130,7 @@ case "$last" in
       echo '{"findings":0,"verdict":"approved"}' > review-verdict.json
     fi ;;
   *"independent reviewer of one security fix"*)
-    if [ "${SIM_MODE:-}" = retries ]; then
+    if [ "$sim" = retries ] || [ "$sim" = strict ]; then
       echo "one finding" > REVIEW.md
       echo '{"findings":1,"verdict":"insufficient"}' > review-verdict.json
     else
@@ -131,7 +138,8 @@ case "$last" in
       echo '{"findings":0,"verdict":"approved"}' > review-verdict.json
     fi ;;
   *"write the pull request description"*)
-    printf '**Issue:** Refs #288\n\n## What\n- fix\n' > PR_BODY.md ;;
+    printf '**Issue:** Refs #288\n\n## What\n- fix\n' > PR_BODY.md
+    [ "$sim" = prfiles ] && echo tampered >> "$r/pkg/other.go" ;;
 esac
 exit 0
 EOF
@@ -184,11 +192,12 @@ new_fixture() {
 ]
 JSON
   git init -q "$root/archive"
+  git -C "$root/archive" remote add origin "https://github.com/sim/archive.git"
   git -C "$root/archive" config user.email "test@example.com"
   git -C "$root/archive" config user.name "test"
   : > "$root/pushes.log"
-  : > "$root/sessions.log"
-  printf '%s\n' "$mode" > "$root/mode"
+  : > "$root/.sim-sessions.log"
+  printf '%s\n' "$mode" > "$root/.sim-mode"
 }
 
 run_stage() {
@@ -197,8 +206,7 @@ run_stage() {
     cd "$root"
     env \
       PATH="$STUBS:$PATH" GIT_REAL="$GIT_REAL" \
-      SIM_MODE="$(cat "$root/mode")" \
-      SIM_PUSH_LOG="$root/pushes.log" SIM_SESSION_LOG="$root/sessions.log" \
+      SIM_PUSH_LOG="$root/pushes.log" \
       PLAN_ID=01 SCAN_DIR="$SCAN" OVERVIEW_ISSUE=288 WAVE_MAP='{"01":1}' \
       MODEL=sim-model REPO_DIR="$root/repo" ARCHIVE_DIR="$root/archive" \
       LOG_DIR="$root/logs" GITHUB_STEP_SUMMARY="$root/summary.md" \
@@ -252,7 +260,8 @@ assert "the fix commit is attributed to the fix writer" "Fix Writer Agent" \
   "$(git -C "$happy/repo" log -1 --format=%an "$fix_sha")"
 assert "the pull request body was captured" "yes" \
   "$([ -s "$happy/logs/pr-body.md" ] && echo yes || echo no)"
-assert "the branch is pushed once" "1" "$(grep -c -- '-u origin' "$happy/pushes.log" || true)"
+assert "the fix branch is pushed once" "1" "$(grep -c "github.com/sim/repo.git" "$happy/pushes.log" || true)"
+assert "the archive log is pushed once" "1" "$(grep -c "github.com/sim/archive.git" "$happy/pushes.log" || true)"
 
 # Red and green checks both ran and both passed their gates.
 assert "the red check ran" "yes" "$([ -s "$happy/logs/red-check.log" ] && echo yes || echo no)"
@@ -280,9 +289,45 @@ notred="$TMP/notred"
 new_fixture "$notred" notred
 if run_stage "$notred"; then fail "not-red path fails the leg"; else echo "ok: not-red path fails the leg"; fi
 assert_fake_origin "the not-red path only ever targets the fixture or the fake URL" "$notred"
-assert "the not-red path pushes the branch" "1" "$(grep -c -- '-u origin' "$notred/pushes.log" || true)"
+assert "the not-red path pushes the branch" "1" "$(grep -c "github.com/sim/repo.git" "$notred/pushes.log" || true)"
+assert "the not-red path pushes no archive log" "0" "$(grep -c "github.com/sim/archive.git" "$notred/pushes.log" || true)"
 assert "the not-red path opens no pull request" "no" \
   "$([ -s "$notred/logs/pr-body.md" ] && echo yes || echo no)"
+
+# --- Broken-test path -----------------------------------------------------------
+# The tests do not compile: without the go-vet gate the red check would call a
+# build failure "red". After one retry the leg fails and the branch is pushed.
+broken="$TMP/broken"
+new_fixture "$broken" brokenvet
+if run_stage "$broken"; then fail "broken-test path fails the leg"; else echo "ok: broken-test path fails the leg"; fi
+assert "the broken-test path rejects the non-compiling red check" "yes" "$(grep -q 'does not compile' "$broken/logs/red-check.log" && echo yes || echo no)"
+assert "the broken-test path opens no pull request" "no"   "$([ -s "$broken/logs/pr-body.md" ] && echo yes || echo no)"
+
+# --- Session-death path ---------------------------------------------------------
+# The fix writer dies mid-phase: its partial work is committed, the branch is
+# pushed, no pull request is opened, and the next run can continue.
+dead="$TMP/dead"
+new_fixture "$dead" die
+if run_stage "$dead"; then fail "session-death path fails the leg"; else echo "ok: session-death path fails the leg"; fi
+assert "the session-death path pushes the partial branch" "1"   "$(grep -c "github.com/sim/repo.git" "$dead/pushes.log" || true)"
+assert "the session-death path opens no pull request" "no"   "$([ -s "$dead/logs/pr-body.md" ] && echo yes || echo no)"
+assert "the session-death path saves the partial fix as wip" "1" "$(git -C "$dead/repo" log --format=%s main..HEAD | grep -c '^wip(security):' || true)"
+
+# --- Strict-review path ---------------------------------------------------------
+# The fix is green but the review stays insufficient: strict_review fails the
+# leg instead of opening the pull request.
+strict="$TMP/strict"
+new_fixture "$strict" strict
+if STRICT_REVIEW=true run_stage "$strict"; then fail "strict-review path fails the leg"; else echo "ok: strict-review path fails the leg"; fi
+assert "the strict-review path opens no pull request" "no"   "$([ -s "$strict/logs/pr-body.md" ] && echo yes || echo no)"
+
+# --- PR-writer misbehaviour -----------------------------------------------------
+# The description session edits a repository file: the change was never
+# reviewed, so the leg fails and nothing is published.
+prfiles="$TMP/prfiles"
+new_fixture "$prfiles" prfiles
+if run_stage "$prfiles"; then fail "PR-writer misbehaviour fails the leg"; else echo "ok: PR-writer misbehaviour fails the leg"; fi
+assert "the PR-writer misbehaviour opens no pull request" "no"   "$([ -s "$prfiles/logs/pr-body.md" ] && echo yes || echo no)"
 
 if [ "$failures" -gt 0 ]; then
   echo "$failures fix-stage test(s) failed" >&2

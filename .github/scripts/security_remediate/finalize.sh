@@ -30,6 +30,12 @@ ARCHIVE_DIR="${ARCHIVE_DIR:-$PWD/archive}"
 
 require_tools jq gh git curl
 
+# Number of comma-separated ids in $1 (empty input is zero).
+id_count() {
+  [ -z "$1" ] && { echo 0; return; }
+  printf '%s' "$1" | awk -F, '{print NF}'
+}
+
 if [ -z "${SECURITY_SCAN_PAT:-}" ] || [ -z "${ARCHIVE_REPO:-}" ]; then
   echo "::error title=Missing secrets::SECURITY_SCAN_PAT or SECURITY_ARCHIVE_REPO is not set."
   exit 1
@@ -41,12 +47,12 @@ fi
 # unmerged generations keep their pull requests — a human merges or closes
 # them; this stage only reports.
 scan_dir=""
-for d in $(ls -1 "$ARCHIVE_DIR/scans" 2>/dev/null | sort -r); do
+while IFS= read -r d; do
   if [ -f "$ARCHIVE_DIR/scans/$d/mitigation-plans/plans.json" ]; then
     scan_dir="$d"
     break
   fi
-done
+done < <(ls -1 "$ARCHIVE_DIR/scans" 2>/dev/null | LC_ALL=C sort -r)
 if [ -z "$scan_dir" ]; then
   echo "no scan with a manifest in the archive — nothing to finalize"
   exit 0
@@ -73,13 +79,15 @@ done < <(jq -c '.[]' "$plans_json")
 merged_ids="${merged_ids%,}"
 open_ids="${open_ids%,}"
 unstarted_ids="${unstarted_ids%,}"
-merged_count="$(tr -cd ',' <<< "$merged_ids" | wc -c)"
+merged_count="$(id_count "$merged_ids")"
 
 # The no-op fingerprint: when the state line matches the last recorded one,
 # nothing happened since the previous finalize run and the day is done.
 status_file="$scan_abs/remediation/status.md"
 fingerprint="merged: ${merged_ids:-none} | open: ${open_ids:-none} | unstarted: ${unstarted_ids:-none}"
-if [ -f "$status_file" ] && grep -qF "<!-- state: $fingerprint -->" "$status_file"; then
+last_state=""
+[ -f "$status_file" ] && last_state="$(grep -F '<!-- state:' "$status_file" | tail -n1 || true)"
+if [ "$last_state" = "<!-- state: $fingerprint -->" ]; then
   echo "nothing changed since the last finalize run (${merged_count}/${plan_count} merged)"
   printf 'Security finalize: idle, %s/%s merged.\n' "$merged_count" "$plan_count" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
   exit 0
@@ -96,7 +104,8 @@ mkdir -p "$scan_abs/remediation"
   echo ""
   echo "<!-- state: $fingerprint -->"
 } >> "$status_file"
-push_archive "$ARCHIVE_DIR" "remediation status: ${scan_dir} ($(date -u +%F))"
+push_archive "$ARCHIVE_DIR" "remediation status: ${scan_dir} ($(date -u +%F))" \
+  "scans/$scan_dir/remediation/status.md"
 
 # --- Overview issue: tick merged plans, close when all merged -------------------
 MARKER="<!-- security-remediation: overview -->"
@@ -136,5 +145,5 @@ else
 fi
 
 printf 'Security finalize: %s/%s merged, %s open.\n' \
-  "$merged_count" "$plan_count" "$(tr -cd ',' <<< "$open_ids" | wc -c)" \
+  "$merged_count" "$plan_count" "$(id_count "$open_ids")" \
   >> "${GITHUB_STEP_SUMMARY:-/dev/null}"

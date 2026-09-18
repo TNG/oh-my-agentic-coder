@@ -54,7 +54,10 @@ if [ ! -f "$plans_json" ]; then
   echo "::error title=No manifest::plans.json is missing for scan '$SCAN_DIR'. The plan stage must run before this one."
   exit 1
 fi
-[ -f "$vulns_json" ] || vulns_json=/dev/null
+[ -f "$vulns_json" ] || {
+  echo "::error title=No findings file::Scan '$SCAN_DIR' has no vulnerabilities.json. Refusing to assemble a public issue without the disclosure gate's source data."
+  exit 1
+}
 
 # --- Find the existing overview issue -----------------------------------------
 # Match by the security + agent-created labels and the body marker, so the
@@ -114,6 +117,8 @@ if [ -n "$existing_number" ]; then
   issue_number="$existing_number"
   echo "updated overview issue #$issue_number"
 else
+  gh label create security --force >/dev/null 2>&1 || true
+  gh label create agent-created --force >/dev/null 2>&1 || true
   issue_number="$(gh issue create --title "$ISSUE_TITLE" \
     --body-file "$body_file" --label security --label agent-created 2>&1 | grep -oE '[0-9]+$')" \
     || {

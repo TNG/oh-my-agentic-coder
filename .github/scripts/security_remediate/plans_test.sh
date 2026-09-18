@@ -170,6 +170,18 @@ expect_schema_error "a missing issue line is rejected" "$TMP/broken.json" "issue
 broken '. + [.[0]]'
 expect_schema_error "duplicate plan ids are rejected" "$TMP/broken.json" "duplicate plan ids"
 
+broken '.[0].branch = "fix/security-20260913-080000-weekly-ok-plan-01 extra"'
+expect_schema_error "a branch with characters git rejects is rejected" "$TMP/broken.json" "characters git rejects"
+
+broken '.[0].files = ["/etc/passwd"]'
+expect_schema_error "an absolute owned path is rejected" "$TMP/broken.json" "repo-relative paths"
+
+broken '.[0].files = ["../outside.go"]'
+expect_schema_error "a parent-relative owned path is rejected" "$TMP/broken.json" "repo-relative paths"
+
+broken '.[0].issue_line = "harden the key\u0301 material"'
+expect_schema_error "a non-ASCII issue line is rejected" "$TMP/broken.json" "plain ASCII"
+
 # --- sanitize_issue_body -------------------------------------------------------
 # The public overview issue must not carry finding text or the vulnerable
 # file paths; the body is assembled mechanically, so the gate can also be
@@ -425,6 +437,48 @@ if git -C "$h" log -1 --format='%an <%ae>%n%b' | grep -qF "Test Writer Agent <te
   echo "ok: commit_as attributes and signs off with the agent identity"
 else
   fail "commit_as: $(git -C "$h" log -1 --format='%an <%ae> | %b')"
+fi
+
+# --- run_review_session verdict contract -----------------------------------------
+# A missing or internally inconsistent verdict must fail hard; a consistent one
+# sets the interface variables. run_session is overridden: no CLI, no network.
+ws="$TMP/verdict-ws"
+mkdir -p "$ws"
+run_session() { :; }
+
+expect_verdict_rejected() {
+  local desc=$1 payload=$2
+  rm -f "$ws/review-verdict.json"
+  [ -n "$payload" ] && printf '%s' "$payload" > "$ws/review-verdict.json"
+  if run_review_session "" 1 m "$ws" /dev/null /dev/null "" >/dev/null 2>&1; then
+    fail "$desc: run_review_session accepted the verdict"
+  else
+    echo "ok: $desc"
+  fi
+}
+
+expect_verdict_rejected "a missing verdict is rejected" ""
+expect_verdict_rejected "an inconsistent verdict is rejected" '{"findings":1,"verdict":"approved"}'
+expect_verdict_rejected "a negative findings count is rejected" '{"findings":-1,"verdict":"approved"}'
+
+printf '%s' '{"findings":2,"verdict":"insufficient"}' > "$ws/review-verdict.json"
+if run_review_session "" 1 m "$ws" /dev/null /dev/null "" >/dev/null 2>&1 \
+   && [ "$REVIEW_FINDINGS" = 2 ] && [ "$REVIEW_VERDICT" = insufficient ]; then
+  echo "ok: a consistent verdict sets the interface variables"
+else
+  fail "a consistent verdict sets the interface variables (got ${REVIEW_FINDINGS:-?}/${REVIEW_VERDICT:-?})"
+fi
+
+# --- session_home ---------------------------------------------------------------
+# The generated gateway config must be valid JSON and register both the
+# implementer and a distinct reviewer model.
+sh="$TMP/sh"
+if SKAINET_TOKEN=sim SKAINET_INTERNAL="http://sim" session_home "$sh" "model-a" "model-b" >/dev/null \
+   && jq -e '.provider.model.models["model-a"] and .provider.model.models["model-b"]' \
+        "$sh/driver-home/.config/opencode/opencode.json" >/dev/null 2>&1; then
+  echo "ok: session_home registers both models in valid JSON"
+else
+  fail "session_home registers both models in valid JSON"
 fi
 
 if [ "$failures" -gt 0 ]; then

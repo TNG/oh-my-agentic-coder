@@ -41,6 +41,32 @@ export FIX_WRITER_EMAIL="fix-writer@security-remediate.invalid"
 export RUNNER_NAME="Security Remediate Runner"
 export RUNNER_EMAIL="runner@security-remediate.invalid"
 
+# Session budgets. The first test writer and the first fix writer carry the
+# work and get the full budget_minutes; the four shorter sessions (two
+# reviewers and the two retry writers) share what the leg ceiling leaves once
+# the two writers, the slack and the PR writer are accounted for, capped by
+# budget_minutes; the PR writer gets a fixed short budget. Everything floors
+# at 10 minutes so an undersized budget cannot produce a zero-second session.
+LEG_CEILING_MINUTES=350
+LEG_SLACK_MINUTES=20
+PR_WRITER_MINUTES=10
+BUDGET_FLOOR_MINUTES=10
+
+# session_budget writer|short — minutes for one session of that class.
+session_budget() {
+  local style=$1 budget=${BUDGET_MINUTES:-60} short
+  case "$budget" in ''|*[!0-9]*) budget=60 ;; esac
+  [ "$budget" -lt "$BUDGET_FLOOR_MINUTES" ] && budget="$BUDGET_FLOOR_MINUTES"
+  case "$style" in
+    short)
+      short=$(( (LEG_CEILING_MINUTES - 2 * budget - LEG_SLACK_MINUTES - PR_WRITER_MINUTES) / 4 ))
+      [ "$short" -gt "$budget" ] && short="$budget"
+      [ "$short" -lt "$BUDGET_FLOOR_MINUTES" ] && short="$BUDGET_FLOOR_MINUTES"
+      echo "$short" ;;
+    *) echo "$budget" ;;
+  esac
+}
+
 # Portable stand-in for GNU coreutils `timeout` (stock macOS has none).
 # Same implementation as scripts/doc-drift.sh: background the command, race a
 # sleep+kill watchdog against it, return the command's status (143/SIGTERM
@@ -130,8 +156,43 @@ archive_git() {
   [ -z "$err" ] || printf '%s\n' "$err" >&2
 }
 
+# The ownership guard reads `git status --porcelain`, which never shows .git
+# internals. A session can therefore plant hook files, set core.hooksPath or
+# core.fsmonitor, or an url.*.insteadOf rewrite there, and a later runner
+# commit/push would execute or follow them with the PAT in scope. Every
+# clone/checkout is stripped of hooks up front, and assert_git_untampered
+# verifies the directory is still exactly as the runner left it before the
+# runner commits or pushes from it.
+harden_git_dir() {
+  rm -rf "$1/.git/hooks"
+  mkdir -p "$1/.git/hooks"
+}
+
+assert_git_untampered() {
+  local dir=$1 expected_origin=$2 what=$3 problem=""
+  [ -z "$(find "$dir/.git/hooks" -type f 2>/dev/null)" ] \
+    || problem="hook files were planted"
+  [ -z "$(git -C "$dir" config --local --get core.hooksPath 2>/dev/null || true)" ] \
+    || problem="${problem:+$problem; }core.hooksPath was set"
+  [ -z "$(git -C "$dir" config --local --get core.fsmonitor 2>/dev/null || true)" ] \
+    || problem="${problem:+$problem; }core.fsmonitor was set"
+  [ -z "$(git -C "$dir" config --local --get-regexp '^url\..*\.insteadof$' 2>/dev/null || true)" ] \
+    || problem="${problem:+$problem; }an url rewrite was planted"
+  if [ "$(git -C "$dir" remote get-url origin 2>/dev/null || true)" != "$expected_origin" ]; then
+    problem="${problem:+$problem; }origin was moved"
+  fi
+  if [ -n "$problem" ]; then
+    echo "::error title=${what} git directory tampered::${problem}. The runner refuses to commit or push from a directory a session could write to; nothing was pushed."
+    return 1
+  fi
+  return 0
+}
+
 # Shallow-clone the private archive repo and give the clone a commit identity,
-# so stages only ever add content and push.
+# so stages only ever add content and push. The token is only needed to clone:
+# leaving it in .git/config would put the PAT on disk inside every session's
+# workspace, so the origin URL is scrubbed immediately and pushes re-supply
+# the credential per invocation, from the runner shell only.
 clone_archive() {
   local dest=$1 repo=$2 pat=$3
   archive_git . clone --quiet --depth 1 \
@@ -139,22 +200,32 @@ clone_archive() {
     echo "::error title=Archive clone failed::Could not clone the private archive repo (details above are redacted — they embed the credential URL)."
     return 1
   }
+  git -C "$dest" remote set-url origin "https://github.com/${repo}.git"
+  harden_git_dir "$dest"
   git -C "$dest" config user.name "$RUNNER_NAME"
   git -C "$dest" config user.email "$RUNNER_EMAIL"
 }
 
-# Commit and push whatever the archive clone now contains. Nothing to commit
-# is success: re-dispatching a stage that already delivered is a no-op, which
-# is how the pipeline's idempotence is meant to work.
+# Commit and push ONLY the paths the runner produced ($3...). A session can
+# write anywhere in the archive clone; the runner stages nothing else, so
+# planted files and edits outside the intended paths never leave the runner.
+# Nothing to commit is success: re-dispatching a stage that already delivered
+# is a no-op, which is how the pipeline's idempotence works. Commits skip
+# hooks, the .git directory is verified untouched, and the credential is
+# supplied per invocation rather than living on disk.
 push_archive() {
-  local dir=$1 message=$2
-  git -C "$dir" add .
+  local dir=$1 message=$2 p; shift 2
+  assert_git_untampered "$dir" "https://github.com/${ARCHIVE_REPO}.git" "Archive repo" || return 1
+  for p in "$@"; do
+    [ -e "$dir/$p" ] && git -C "$dir" add -A -- "$p"
+  done
   if git -C "$dir" diff --cached --quiet; then
     echo "archive: nothing to push"
     return 0
   fi
-  git -C "$dir" commit -s --quiet -m "$message"
-  archive_git "$dir" push --quiet origin HEAD || {
+  git -C "$dir" commit -s --no-verify --quiet -m "$message"
+  archive_git "$dir" push --quiet \
+    "https://x-access-token:${SECURITY_SCAN_PAT}@github.com/${ARCHIVE_REPO}.git" HEAD || {
     echo "::error title=Archive push failed::Pushing the archive repo failed after the preflight confirmed write access — check for a protected default branch or a token revoked mid-run."
     return 1
   }
@@ -166,7 +237,7 @@ push_archive() {
 # is chronological order and `sort -r` puts the newest first.
 newest_scan_dir() {
   local archive_dir=$1
-  ls -1 "${archive_dir}/scans" 2>/dev/null | sort -r | head -1 || true
+  ls -1 "${archive_dir}/scans" 2>/dev/null | LC_ALL=C sort -r | head -1 || true
 }
 
 # The status is the trailing segment of the scan dir name, so the suffix —
@@ -239,13 +310,16 @@ plans_schema_errors() {
           (if (($e.id // "") | test("^[0-9]{2}$") | not) then "\($id): id must be a two-digit string (e.g. 01)" else empty end),
           (if (($e.priority // 0) | type) != "number" or ($e.priority // 0) < 1 then "\($id): priority must be a number >= 1" else empty end),
           (if (($e.branch // "") | type) != "string" or ($e.branch // "") != ("fix/security-\($scan)-plan-\($e.id // "?")") then "\($id): branch must be fix/security-\($scan)-plan-<id>" else empty end),
+          (if (($e.branch // "") | type) == "string" and (($e.branch // "") | test("^[A-Za-z0-9._/-]+$") | not) then "\($id): branch contains characters git rejects (the scan dir name may contain spaces or parentheses)" else empty end),
           (if (($e.files // []) | type) != "array" or ($e.files // [] | length) == 0 then "\($id): files must be a non-empty array" else empty end),
           (if (($e.files // []) | any(. as $x | ($x | type) != "string")) then "\($id): files entries must be strings" else empty end),
           (if (($e.files // []) | map(select(type == "string")) | any(startswith(".github/"))) then "\($id): plans never own .github/ files — CI-config findings are manual follow-up" else empty end),
+          (if (($e.files // []) | map(select(type == "string")) | any(startswith("/") or startswith("../") or contains("/../"))) then "\($id): files must be repo-relative paths" else empty end),
           (if (($e.tests // []) | type) != "array" or ($e.tests // [] | length) == 0 then "\($id): tests must be a non-empty array" else empty end),
           (if (($e.tests // []) | any(. as $x | ($x | type) != "string")) then "\($id): tests entries must be strings" else empty end),
           (if (($e.tests // []) | map(select(type == "string")) | any(test("^TestSecurity") | not)) then "\($id): test names must start with TestSecurity" else empty end),
           (if badstr($e.issue_line) then "\($id): issue_line must be a non-empty string" else empty end),
+          (if (($e.issue_line // "") | type) == "string" and (($e.issue_line // "") | test("[^ -~]")) then "\($id): issue_line must be a single line of plain ASCII" else empty end),
           (if badstr($e.review_criteria) then "\($id): review_criteria must be a non-empty string" else empty end),
           (if badstr($e.plan_file) then "\($id): plan_file must be a non-empty string" else empty end)
         ])
@@ -393,10 +467,24 @@ EOF
   echo "$driver_home"
 }
 
-# Run one headless opencode session. The environment is narrowed to exactly
-# what the session needs: the throwaway HOME and XDG dirs, the gateway key
-# (the session must call the gateway; that is the only credential it gets),
-# and PATH. The PAT, GH_TOKEN and ARCHIVE_REPO stay with the runner shell.
+# Run a command with only PATH, HOME and the Go toolchain/cache variables in
+# scope. The mechanical checks execute code the pipeline does not trust (the
+# scanner's PoC-derived tests), so the job credentials — SECURITY_SCAN_PAT,
+# GH_TOKEN, ARCHIVE_REPO — must not be in their environment.
+scrubbed() {
+  local -a envp=("PATH=$PATH" "HOME=${HOME:-/tmp}")
+  local v
+  for v in TMPDIR GOPATH GOCACHE GOMODCACHE GOPROXY GOFLAGS GOTOOLCHAIN GOOS GOARCH CGO_ENABLED; do
+    [ -n "${!v:-}" ] && envp+=("$v=${!v}")
+  done
+  env -i "${envp[@]}" "$@"
+}
+
+# Run one headless opencode session. The session gets an explicit allowlist,
+# not the job environment: env -i is what keeps SECURITY_SCAN_PAT, GH_TOKEN
+# and ARCHIVE_REPO out of the session and out of everything it spawns (git,
+# go test, a prompt-injected curl). Only the throwaway HOME/XDG dirs, the
+# gateway key, PATH and the Go caches pass through.
 #
 # --pure: no external plugins — the checkout's own .opencode/ plugins expect
 # an omac control plane that does not exist here and would hang the run.
@@ -409,15 +497,21 @@ run_session() {
   # Read the prompt back from a file (avoids bash 3.2's
   # heredoc-in-$() apostrophe bug, same as doc-drift.sh).
   prompt="$(cat "$prompt_file")"
+  local -a envp=(
+    "HOME=$driver_home"
+    "XDG_CONFIG_HOME=$driver_home/.config"
+    "XDG_DATA_HOME=$driver_home/.local/share"
+    "XDG_STATE_HOME=$driver_home/.local/state"
+    "SKAINET_TOKEN=$SKAINET_TOKEN"
+    "PATH=$PATH"
+  )
+  local v
+  for v in TMPDIR GOPATH GOCACHE GOMODCACHE GOPROXY GOFLAGS GOTOOLCHAIN GOOS GOARCH CGO_ENABLED; do
+    [ -n "${!v:-}" ] && envp+=("$v=${!v}")
+  done
   (
     cd "$workdir" || exit 1
-    HOME="$driver_home" \
-    XDG_CONFIG_HOME="$driver_home/.config" \
-    XDG_DATA_HOME="$driver_home/.local/share" \
-    XDG_STATE_HOME="$driver_home/.local/state" \
-    SKAINET_TOKEN="$SKAINET_TOKEN" \
-    PATH="$PATH" \
-    run_with_timeout "$secs" \
+    run_with_timeout "$secs" env -i "${envp[@]}" \
       opencode run --print-logs --pure --auto -m "model/$model" "$prompt" \
       > "$transcript" 2>&1
   )
@@ -425,12 +519,13 @@ run_session() {
 
 # Commit whatever is staged with the given identity, signed off. The runner
 # shell owns commits (agents only write files), so the agent identity is a
-# parameter, not repository config the session could tamper with.
+# parameter, not repository config the session could tamper with. --no-verify
+# skips any hook that appeared since hardening.
 commit_as() {
   local dir=$1 name=$2 email=$3 message=$4
   git -C "$dir" config user.name "$name"
   git -C "$dir" config user.email "$email"
-  git -C "$dir" commit -s --quiet -m "$message"
+  git -C "$dir" commit -s --no-verify --quiet -m "$message"
 }
 
 # Names from $2 (one per line) that have no "func <name>(" in any *_test.go

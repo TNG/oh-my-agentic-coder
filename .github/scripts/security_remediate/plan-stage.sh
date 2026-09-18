@@ -235,7 +235,8 @@ if [ -n "$(git -C "$REPO_DIR" status --porcelain)" ]; then
   git -C "$ARCHIVE_DIR" reset --hard --quiet
   git -C "$ARCHIVE_DIR" clean -fdq scans/
   cp "$TRANSCRIPT" "$mitigation_dir/planning-session.log" 2>/dev/null || true
-  push_archive "$ARCHIVE_DIR" "plans: REJECTED session for ${SCAN_DIR} — it wrote into the source repo"
+  push_archive "$ARCHIVE_DIR" "plans: REJECTED session for ${SCAN_DIR} — it wrote into the source repo" \
+    "scans/$SCAN_DIR"
   echo "::error title=Planning session rejected::The session wrote into the source checkout instead of the archive clone. Its output was discarded (transcript archived privately); nothing was promoted. This is the prompt-injection guard firing."
   exit 1
 fi
@@ -281,7 +282,8 @@ if [ -s "$report" ]; then
     rm -f "$plans_json"
   fi
   cp "$TRANSCRIPT" "$mitigation_dir/planning-session.log" 2>/dev/null || true
-  push_archive "$ARCHIVE_DIR" "plans: DRAFT for ${SCAN_DIR} — validation failed, manifest left as-is ($(date -u +%F))"
+  push_archive "$ARCHIVE_DIR" "plans: DRAFT for ${SCAN_DIR} — validation failed, manifest left as-is ($(date -u +%F))" \
+    "scans/$SCAN_DIR"
   echo "::error title=Plans rejected::plans.json failed ${problem_count} validation checks. The session's output and the checklist of problems are archived to the private repo (plans-validation.txt, plans.draft.json); the manifest itself was left unchanged, so the next run re-plans."
   exit 1
 fi
@@ -291,7 +293,8 @@ plan_count="$(jq 'length' "$plans_json")"
 { read -r selected_ids; read -r deferred_count; } <<< "$(select_plans "$plans_json" "$MAX_PLANS" "$PLANS_FILTER")"
 
 cp "$TRANSCRIPT" "$mitigation_dir/planning-session.log" 2>/dev/null || true
-push_archive "$ARCHIVE_DIR" "plans: ${SCAN_DIR} — ${plan_count} plans ($(date -u +%F))"
+push_archive "$ARCHIVE_DIR" "plans: ${SCAN_DIR} — ${plan_count} plans ($(date -u +%F))" \
+  "scans/$SCAN_DIR"
 
 emit_output selected_ids "$selected_ids"
 emit_output deferred_count "$deferred_count"
