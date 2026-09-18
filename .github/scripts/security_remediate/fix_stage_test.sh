@@ -26,6 +26,16 @@ TMP="$(mktemp -d)"
 cleanup() { rm -rf "$TMP"; }
 trap cleanup EXIT
 
+# Isolate every git operation (the test's and the stage's runner shell, which
+# inherits this environment) from the developer's global and system git
+# config: no global hooks fire on fixture commits, no identity, signing or
+# insteadOf rewrite leaks in or out. This is belt-and-braces — fixture repos
+# already live under mktemp and their only remotes are a local bare repo or a
+# bogus-token github URL — but it makes local runs touch nothing of the user.
+: > "$TMP/empty.gitconfig"
+export GIT_CONFIG_GLOBAL="$TMP/empty.gitconfig"
+export GIT_CONFIG_SYSTEM="$TMP/empty.gitconfig"
+
 failures=0
 fail() { printf 'FAIL: %s\n' "$*" >&2; failures=$((failures + 1)); }
 
@@ -127,6 +137,18 @@ exit 0
 EOF
 chmod +x "$STUBS"/*
 
+# Fail loudly here, not three phases later, if the stubs are not first on the
+# PATH the stage will run with: every stub is what keeps it away from the real
+# git, gh, network and model. Probed explicitly so the test's own fixture git
+# calls keep using the real binary.
+for tool in git gh curl bun opencode go; do
+  resolved="$(PATH="$STUBS:$PATH" command -v "$tool" 2>/dev/null || true)"
+  if [ "$resolved" != "$STUBS/$tool" ]; then
+    echo "stub resolution broken: '$tool' resolves to '${resolved:-nothing}', expected '$STUBS/$tool'" >&2
+    exit 1
+  fi
+done
+
 # --- Fixture --------------------------------------------------------------------
 # A bare origin, a checkout on main, and an archive clone holding one plan
 # that owns pkg/prod.go. The plan's branch is never fetched, so the stage
@@ -137,6 +159,7 @@ new_fixture() {
   mkdir -p "$root"
   git init -q --bare "$root/origin.git"
   git -C "$root" clone -q "$root/origin.git" repo 2>/dev/null
+  git -C "$root/repo" symbolic-ref HEAD refs/heads/main
   git -C "$root/repo" config user.email "test@example.com"
   git -C "$root/repo" config user.name "test"
   mkdir -p "$root/repo/pkg"
@@ -192,10 +215,23 @@ assert() {
   if [ "$want" = "$got" ]; then echo "ok: $desc"; else fail "$desc: want '$want', got '$got'"; fi
 }
 
+# Proof that no surprise remote was ever involved: after a leg has run, the
+# fixture's origin is either its local bare repo (a leg that never pushed) or
+# the bogus-token github URL the stage sets right before pushing.
+assert_fake_origin() {
+  local desc=$1 root=$2 url
+  url="$(git -C "$root/repo" remote get-url origin)"
+  case "$url" in
+    "$root/origin.git"|*"github.com/sim/repo.git") echo "ok: $desc" ;;
+    *) fail "$desc: unexpected origin '$url'" ;;
+  esac
+}
+
 # --- Happy path -----------------------------------------------------------------
 happy="$TMP/happy"
 new_fixture "$happy" happy
 if run_stage "$happy"; then echo "ok: happy path exits 0"; else fail "happy path exits 0"; fi
+assert_fake_origin "the happy path only ever targets the fixture or the fake URL" "$happy"
 
 subjects="$(git -C "$happy/repo" log --reverse --format=%s main..HEAD | paste -sd'|' -)"
 assert "happy path commits tests then fix" \
@@ -228,6 +264,7 @@ assert "the green check ran" "yes" "$([ -s "$happy/logs/green-check.log" ] && ec
 retry="$TMP/retry"
 new_fixture "$retry" retries
 if run_stage "$retry"; then echo "ok: retry path exits 0"; else fail "retry path exits 0"; fi
+assert_fake_origin "the retry path only ever targets the fixture or the fake URL" "$retry"
 
 test_commits="$(git -C "$retry/repo" log --format=%s main..HEAD | grep -c 'test(security):' || true)"
 fix_commits="$(git -C "$retry/repo" log --format=%s main..HEAD | grep -c 'fix(security):' || true)"
@@ -242,6 +279,7 @@ assert "the retry path still opens the pull request" "yes" \
 notred="$TMP/notred"
 new_fixture "$notred" notred
 if run_stage "$notred"; then fail "not-red path fails the leg"; else echo "ok: not-red path fails the leg"; fi
+assert_fake_origin "the not-red path only ever targets the fixture or the fake URL" "$notred"
 assert "the not-red path pushes the branch" "1" "$(grep -c -- '-u origin' "$notred/pushes.log" || true)"
 assert "the not-red path opens no pull request" "no" \
   "$([ -s "$notred/logs/pr-body.md" ] && echo yes || echo no)"

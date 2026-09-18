@@ -33,6 +33,13 @@ TMP="$(mktemp -d)"
 cleanup() { rm -rf "$TMP"; }
 trap cleanup EXIT
 
+# Keep fixture git operations away from the developer's global and system git
+# config — hooks, identity, signing, URL rewrites — so a local run touches
+# nothing of the user's environment. The fixtures live under mktemp regardless.
+: > "$TMP/empty.gitconfig"
+export GIT_CONFIG_GLOBAL="$TMP/empty.gitconfig"
+export GIT_CONFIG_SYSTEM="$TMP/empty.gitconfig"
+
 failures=0
 fail() { printf 'FAIL: %s\n' "$*" >&2; failures=$((failures + 1)); }
 
