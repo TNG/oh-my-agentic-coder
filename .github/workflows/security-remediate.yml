@@ -1,0 +1,544 @@
+# Security remediation: what the Security Scan workflow finds, this pipeline
+# fixes. After each scan it batches the findings by origin into fix plans in
+# the private archive repo; later stages turn the plans into a sanitized
+# tracking issue and one ready-to-review fix pull request per plan, each
+# carrying its own regression tests. Autonomy ends at pull requests: merging
+# stays a human action, per COLLABORATION.md.
+#
+# Implementation order: this file wires the preflight, plan, issue and
+# fix-wave stages (driver scripts in .github/scripts/security_remediate/).
+# Finalize lives in its own workflow with a cron trigger, because this
+# workflow's triggers do not re-fire on their own.
+#
+# Disclosure model: same as security-scan.yml. This is a public repo, so the
+# job log, the step summary and all job outputs carry counts and plan ids
+# only — never finding titles, PoCs or plan content. Everything
+# finding-specific travels through the private archive repo, named by the
+# SECURITY_ARCHIVE_REPO secret so the name stays out of public source.
+name: Security Remediate
+
+on:
+  workflow_dispatch:
+    inputs:
+      stage:
+        description: 'Which stage to run. Stages land incrementally; later stages arrive as they are implemented.'
+        type: choice
+        options: [all, plan, issue]
+        default: all
+      plans:
+        description: 'Restrict execution to specific plan ids, comma-separated. Intersected with the budget selection (plans with an open or merged PR never consume budget).'
+        type: string
+        default: ''
+      max_plans:
+        description: 'How many plans a single run newly executes.'
+        type: string
+        default: '3'
+      model:
+        description: 'Model id for the agent sessions, for THIS RUN ONLY. Empty = the opencode harness pin (scripts/resolve-model.sh), verified against the gateway before use.'
+        type: string
+        default: ''
+      review_model:
+        description: 'Model id for the review sessions. Empty = the same model as the implementing sessions.'
+        type: string
+        default: ''
+      budget_minutes:
+        description: 'Budget for the first test-writer and fix-writer session of a leg. Reviewers and retry writers derive a shorter cap from the 350-minute leg ceiling; the PR writer gets a fixed 10 minutes.'
+        type: string
+        default: '60'
+      strict_review:
+        description: 'Fail the leg on an unresolved review verdict instead of opening the pull request with the findings noted.'
+        type: boolean
+        default: false
+  workflow_run:
+    workflows: [Security Scan]
+    types: [completed]
+
+permissions:
+  contents: read
+  pull-requests: read # preflight asks which plans already have an open or merged PR
+
+concurrency:
+  group: security-remediate
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    name: Preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      scan_dir: ${{ steps.preflight.outputs.scan_dir }}
+      vuln_count: ${{ steps.preflight.outputs.vuln_count }}
+      plan_needed: ${{ steps.preflight.outputs.plan_needed }}
+      selected_ids: ${{ steps.preflight.outputs.selected_ids }}
+      deferred_count: ${{ steps.preflight.outputs.deferred_count }}
+      no_op: ${{ steps.preflight.outputs.no_op }}
+      model: ${{ steps.model.outputs.model }}
+    env:
+      SECURITY_SCAN_PAT: ${{ secrets.SECURITY_SCAN_PAT }}
+      ARCHIVE_REPO: ${{ secrets.SECURITY_ARCHIVE_REPO }}
+      GH_TOKEN: ${{ github.token }}
+      MAX_PLANS: ${{ inputs.max_plans || '3' }}
+      PLANS_FILTER: ${{ inputs.plans || '' }}
+      # probe-model.sh reads these; E2E_MODEL empty falls through to the
+      # committed pin inside resolve-model.sh.
+      LLM_API_BASE: ${{ secrets.SKAINET_INTERNAL }}
+      LLM_API_KEY: ${{ secrets.SKAINET_TOKEN }}
+      E2E_MODEL: ${{ inputs.model || '' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          path: repo
+          # The checkout token would otherwise persist as an auth header in
+          # repo/.git/config, readable by every session; the stages push with
+          # a credential supplied per invocation instead.
+          persist-credentials: false
+
+      - name: Probe credentials and select plans
+        # The first ten seconds decide whether hours of agent sessions are
+        # spent: both write probes (archive repo, this repo), the newest
+        # scan's completeness, and the budget selection all happen here.
+        id: preflight
+        run: bash repo/.github/scripts/security_remediate/preflight.sh
+
+      - name: Resolve and verify model
+        # Same shared probe as the scan workflow: resolves the pin (or the
+        # dispatch override), flips the -TEE variant, falls back to the
+        # configured family. Skipped on a no-op run — there is nothing to
+        # spend the model on.
+        id: model
+        if: steps.preflight.outputs.no_op != 'true'
+        run: |
+          chosen=$(repo/scripts/probe-model.sh opencode)
+          echo "model=$chosen" >> "$GITHUB_OUTPUT"
+          echo "::notice title=Model::remediation runs against ${chosen}"
+
+  plan:
+    name: Plan (batch findings by origin)
+    # "plan_needed" covers the chained case: the newest complete scan has
+    # findings but no manifest yet. The stage input lets an operator force a
+    # re-plan (it re-batches uncovered findings and carries covered plans
+    # forward unchanged).
+    needs: preflight
+    if: needs.preflight.outputs.plan_needed == 'true' || inputs.stage == 'plan'
+    runs-on: ubuntu-latest
+    # Just under the 360-minute hosted-runner ceiling, like the scan job.
+    # The session inside is capped by budget_minutes (60 by default), so
+    # this ceiling is only the backstop against a runaway session plus push.
+    timeout-minutes: 350
+    outputs:
+      selected_ids: ${{ steps.plan.outputs.selected_ids }}
+      deferred_count: ${{ steps.plan.outputs.deferred_count }}
+      plan_count: ${{ steps.plan.outputs.plan_count }}
+    env:
+      SECURITY_SCAN_PAT: ${{ secrets.SECURITY_SCAN_PAT }}
+      ARCHIVE_REPO: ${{ secrets.SECURITY_ARCHIVE_REPO }}
+      GH_TOKEN: ${{ github.token }}
+      SKAINET_TOKEN: ${{ secrets.SKAINET_TOKEN }}
+      SKAINET_INTERNAL: ${{ secrets.SKAINET_INTERNAL }}
+      MAX_PLANS: ${{ inputs.max_plans || '3' }}
+      PLANS_FILTER: ${{ inputs.plans || '' }}
+      BUDGET_MINUTES: ${{ inputs.budget_minutes || '60' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          path: repo
+          # The checkout token would otherwise persist as an auth header in
+          # repo/.git/config, readable by every session; the stages push with
+          # a credential supplied per invocation instead.
+          persist-credentials: false
+
+      - name: Install bubblewrap
+        # The planning session runs inside the write-isolation sandbox; the
+        # AppArmor grant is what lets bwrap create a user namespace.
+        run: |
+          sudo apt-get update && sudo apt-get install -y bubblewrap
+          sudo tee /etc/apparmor.d/bwrap > /dev/null <<'EOF'
+          abi <abi/4.0>,
+          /usr/bin/bwrap flags=(unconfined) {
+            userns,
+          }
+          EOF
+          sudo apparmor_parser -r /etc/apparmor.d/bwrap
+
+      - name: Planning session
+        # The agent session gets the gateway key (it must call the model)
+        # but never the PAT or GH_TOKEN: pushing the archive repo is this
+        # script's job, after the session's output passed validation.
+        id: plan
+        env:
+          SCAN_DIR: ${{ needs.preflight.outputs.scan_dir }}
+          MODEL: ${{ needs.preflight.outputs.model }}
+        run: bash repo/.github/scripts/security_remediate/plan-stage.sh
+
+  issue:
+    name: Issue (sanitized overview)
+    needs: [preflight, plan]
+    if: |
+      always() &&
+      !cancelled() &&
+      needs.preflight.result == 'success' &&
+      needs.preflight.outputs.no_op != 'true' &&
+      (needs.plan.result == 'success' || needs.plan.result == 'skipped') &&
+      inputs.stage != 'plan'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      overview_issue: ${{ steps.issue.outputs.overview_issue }}
+    env:
+      SECURITY_SCAN_PAT: ${{ secrets.SECURITY_SCAN_PAT }}
+      ARCHIVE_REPO: ${{ secrets.SECURITY_ARCHIVE_REPO }}
+      # Creating and editing issues needs issues:write, which github.token
+      # does not have — this is the PAT.
+      GH_TOKEN: ${{ secrets.SECURITY_SCAN_PAT }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          path: repo
+          # The checkout token would otherwise persist as an auth header in
+          # repo/.git/config, readable by every session; the stages push with
+          # a credential supplied per invocation instead.
+          persist-credentials: false
+
+      - name: Create or update the overview issue
+        # The issue body is assembled mechanically from the manifest's
+        # sanitized issue lines and gated by the sanitizer — the text that
+        # goes public is the output of code, never of a model turn.
+        id: issue
+        env:
+          SCAN_DIR: ${{ needs.preflight.outputs.scan_dir }}
+          DEFERRED_COUNT: ${{ needs.plan.outputs.deferred_count || needs.preflight.outputs.deferred_count }}
+        run: bash repo/.github/scripts/security_remediate/issue-stage.sh
+
+  # ---- Fix waves ---------------------------------------------------------------
+  # A matrix starts all of its legs in parallel, so the wave number cannot be
+  # a matrix dimension. Instead one small job computes the greedy coloring
+  # (plans sharing owned files land in different waves, each plan gets the
+  # lowest free wave, capped at four), and each wave is its own matrix job
+  # chained via needs: wave N+1 starts only after wave N's legs pushed.
+
+  waves:
+    name: Waves (greedy coloring)
+    needs: [preflight, plan]
+    if: |
+      always() &&
+      !cancelled() &&
+      needs.preflight.result == 'success' &&
+      needs.preflight.outputs.no_op != 'true' &&
+      (needs.plan.result == 'success' || needs.plan.result == 'skipped') &&
+      (inputs.stage == 'all' || github.event_name == 'workflow_run')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      wave1: ${{ steps.waves.outputs.wave1 }}
+      wave2: ${{ steps.waves.outputs.wave2 }}
+      wave3: ${{ steps.waves.outputs.wave3 }}
+      wave4: ${{ steps.waves.outputs.wave4 }}
+      wave_map: ${{ steps.waves.outputs.wave_map }}
+      overflow: ${{ steps.waves.outputs.overflow }}
+    env:
+      SECURITY_SCAN_PAT: ${{ secrets.SECURITY_SCAN_PAT }}
+      ARCHIVE_REPO: ${{ secrets.SECURITY_ARCHIVE_REPO }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          path: repo
+          # The checkout token would otherwise persist as an auth header in
+          # repo/.git/config, readable by every session; the stages push with
+          # a credential supplied per invocation instead.
+          persist-credentials: false
+
+      - name: Assign plans to waves
+        id: waves
+        env:
+          SCAN_DIR: ${{ needs.preflight.outputs.scan_dir }}
+          SELECTED_IDS: ${{ needs.plan.outputs.selected_ids || needs.preflight.outputs.selected_ids }}
+        run: |
+          set -euo pipefail
+          # No agent sessions here — pure jq over the manifest, so the leg
+          # matrix is known before the fix jobs start.
+          archive="$PWD/archive"
+          git clone --quiet "https://x-access-token:${SECURITY_SCAN_PAT}@github.com/${ARCHIVE_REPO}.git" "$archive"
+          git -C "$archive" remote set-url origin "https://github.com/${ARCHIVE_REPO}.git"
+          plans="$archive/scans/${SCAN_DIR}/mitigation-plans/plans.json"
+          # lib.sh is sourced, never run; call assign_waves from a subshell.
+          waves="$(bash -c '. repo/.github/scripts/security_remediate/lib.sh && assign_waves "$1" "$2"' _ "$plans" "$SELECTED_IDS")"
+          for n in 1 2 3 4; do
+            echo "wave$n=$(printf '%s' "$waves" | jq -c --argjson n "$n" '.waves[$n | tostring]')" >> "$GITHUB_OUTPUT"
+          done
+          echo "wave_map=$(printf '%s' "$waves" | jq -c '.map')" >> "$GITHUB_OUTPUT"
+          echo "overflow=$(printf '%s' "$waves" | jq -c '.overflow')" >> "$GITHUB_OUTPUT"
+          {
+            echo "## Security remediation: waves"
+            echo ""
+            printf '%s\n' "$waves" | jq -r '.waves | to_entries | map("wave \(.key): \(.value | join(", "))") | .[]'
+            overflow="$(printf '%s' "$waves" | jq -r '.overflow | join(", ")')"
+            if [ -n "$overflow" ]; then
+              echo "overflow (deferred to the next run): ${overflow}"
+            fi
+          } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+
+  fix-wave-1:
+    name: Fix wave 1 (plan ${{ matrix.plan }})
+    needs: [preflight, issue, waves]
+    if: |
+      always() &&
+      !cancelled() &&
+      needs.preflight.result == 'success' &&
+      needs.issue.result == 'success' &&
+      needs.waves.result == 'success' &&
+      needs.waves.outputs.wave1 != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      # One failing leg must not cancel its siblings: wave legs never share
+      # owned files, so the others are still safe to execute.
+      fail-fast: false
+      matrix:
+        plan: ${{ fromJSON(needs.waves.outputs.wave1) }}
+    env:
+      SECURITY_SCAN_PAT: ${{ secrets.SECURITY_SCAN_PAT }}
+      ARCHIVE_REPO: ${{ secrets.SECURITY_ARCHIVE_REPO }}
+      GH_TOKEN: ${{ secrets.SECURITY_SCAN_PAT }}
+      SKAINET_TOKEN: ${{ secrets.SKAINET_TOKEN }}
+      SKAINET_INTERNAL: ${{ secrets.SKAINET_INTERNAL }}
+      BUDGET_MINUTES: ${{ inputs.budget_minutes || '60' }}
+      STRICT_REVIEW: ${{ inputs.strict_review }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          path: repo
+          # The checkout token would otherwise persist as an auth header in
+          # repo/.git/config, readable by every session; the stages push with
+          # a credential supplied per invocation instead.
+          persist-credentials: false
+
+      - name: Install bubblewrap
+        run: |
+          sudo apt-get update && sudo apt-get install -y bubblewrap
+          sudo tee /etc/apparmor.d/bwrap > /dev/null <<'EOF'
+          abi <abi/4.0>,
+          /usr/bin/bwrap flags=(unconfined) {
+            userns,
+          }
+          EOF
+          sudo apparmor_parser -r /etc/apparmor.d/bwrap
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: repo/go.mod
+          cache: true
+          cache-dependency-path: repo/go.sum
+
+      - name: Fix leg (tests, fix, reviews, PR)
+        # Test writer, red check, test reviewer, fix writer, green check,
+        # fix reviewer, pull request writer — all orchestrated by the runner
+        # shell, which owns every commit, the push and the PR. A failed leg
+        # pushes its branch for human review instead of discarding it.
+        # fail-fast is off, so sibling legs keep running whatever happens
+        # here.
+        env:
+          PLAN_ID: ${{ matrix.plan }}
+          SCAN_DIR: ${{ needs.preflight.outputs.scan_dir }}
+          OVERVIEW_ISSUE: ${{ needs.issue.outputs.overview_issue }}
+          WAVE_MAP: ${{ needs.waves.outputs.wave_map }}
+          MODEL: ${{ needs.preflight.outputs.model }}
+          REVIEW_MODEL: ${{ inputs.review_model || '' }}
+        run: bash repo/.github/scripts/security_remediate/fix-stage.sh
+
+  fix-wave-2:
+    name: Fix wave 2 (plan ${{ matrix.plan }})
+    # Later waves do NOT gate on the previous wave's results: wave legs never
+    # share owned files, so a sibling's failure leaves them unaffected. A leg
+    # whose stack base (an earlier wave's plan sharing files) has no open PR
+    # falls back to the default branch at runtime.
+    needs: [preflight, waves, issue, fix-wave-1]
+    if: |
+      always() &&
+      !cancelled() &&
+      needs.preflight.result == 'success' &&
+      needs.issue.result == 'success' &&
+      needs.waves.result == 'success' &&
+      needs.waves.outputs.wave2 != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        plan: ${{ fromJSON(needs.waves.outputs.wave2) }}
+    env:
+      SECURITY_SCAN_PAT: ${{ secrets.SECURITY_SCAN_PAT }}
+      ARCHIVE_REPO: ${{ secrets.SECURITY_ARCHIVE_REPO }}
+      GH_TOKEN: ${{ secrets.SECURITY_SCAN_PAT }}
+      SKAINET_TOKEN: ${{ secrets.SKAINET_TOKEN }}
+      SKAINET_INTERNAL: ${{ secrets.SKAINET_INTERNAL }}
+      BUDGET_MINUTES: ${{ inputs.budget_minutes || '60' }}
+      STRICT_REVIEW: ${{ inputs.strict_review }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          path: repo
+          # The checkout token would otherwise persist as an auth header in
+          # repo/.git/config, readable by every session; the stages push with
+          # a credential supplied per invocation instead.
+          persist-credentials: false
+
+      - name: Install bubblewrap
+        run: |
+          sudo apt-get update && sudo apt-get install -y bubblewrap
+          sudo tee /etc/apparmor.d/bwrap > /dev/null <<'EOF'
+          abi <abi/4.0>,
+          /usr/bin/bwrap flags=(unconfined) {
+            userns,
+          }
+          EOF
+          sudo apparmor_parser -r /etc/apparmor.d/bwrap
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: repo/go.mod
+          cache: true
+          cache-dependency-path: repo/go.sum
+
+      - name: Fix leg (tests, fix, reviews, PR)
+        env:
+          PLAN_ID: ${{ matrix.plan }}
+          SCAN_DIR: ${{ needs.preflight.outputs.scan_dir }}
+          OVERVIEW_ISSUE: ${{ needs.issue.outputs.overview_issue }}
+          WAVE_MAP: ${{ needs.waves.outputs.wave_map }}
+          MODEL: ${{ needs.preflight.outputs.model }}
+          REVIEW_MODEL: ${{ inputs.review_model || '' }}
+        run: bash repo/.github/scripts/security_remediate/fix-stage.sh
+
+  fix-wave-3:
+    name: Fix wave 3 (plan ${{ matrix.plan }})
+    needs: [preflight, waves, issue, fix-wave-2]
+    if: |
+      always() &&
+      !cancelled() &&
+      needs.preflight.result == 'success' &&
+      needs.issue.result == 'success' &&
+      needs.waves.result == 'success' &&
+      needs.waves.outputs.wave3 != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        plan: ${{ fromJSON(needs.waves.outputs.wave3) }}
+    env:
+      SECURITY_SCAN_PAT: ${{ secrets.SECURITY_SCAN_PAT }}
+      ARCHIVE_REPO: ${{ secrets.SECURITY_ARCHIVE_REPO }}
+      GH_TOKEN: ${{ secrets.SECURITY_SCAN_PAT }}
+      SKAINET_TOKEN: ${{ secrets.SKAINET_TOKEN }}
+      SKAINET_INTERNAL: ${{ secrets.SKAINET_INTERNAL }}
+      BUDGET_MINUTES: ${{ inputs.budget_minutes || '60' }}
+      STRICT_REVIEW: ${{ inputs.strict_review }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          path: repo
+          # The checkout token would otherwise persist as an auth header in
+          # repo/.git/config, readable by every session; the stages push with
+          # a credential supplied per invocation instead.
+          persist-credentials: false
+
+      - name: Install bubblewrap
+        run: |
+          sudo apt-get update && sudo apt-get install -y bubblewrap
+          sudo tee /etc/apparmor.d/bwrap > /dev/null <<'EOF'
+          abi <abi/4.0>,
+          /usr/bin/bwrap flags=(unconfined) {
+            userns,
+          }
+          EOF
+          sudo apparmor_parser -r /etc/apparmor.d/bwrap
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: repo/go.mod
+          cache: true
+          cache-dependency-path: repo/go.sum
+
+      - name: Fix leg (tests, fix, reviews, PR)
+        env:
+          PLAN_ID: ${{ matrix.plan }}
+          SCAN_DIR: ${{ needs.preflight.outputs.scan_dir }}
+          OVERVIEW_ISSUE: ${{ needs.issue.outputs.overview_issue }}
+          WAVE_MAP: ${{ needs.waves.outputs.wave_map }}
+          MODEL: ${{ needs.preflight.outputs.model }}
+          REVIEW_MODEL: ${{ inputs.review_model || '' }}
+        run: bash repo/.github/scripts/security_remediate/fix-stage.sh
+
+  fix-wave-4:
+    name: Fix wave 4 (plan ${{ matrix.plan }})
+    needs: [preflight, waves, issue, fix-wave-3]
+    if: |
+      always() &&
+      !cancelled() &&
+      needs.preflight.result == 'success' &&
+      needs.issue.result == 'success' &&
+      needs.waves.result == 'success' &&
+      needs.waves.outputs.wave4 != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        plan: ${{ fromJSON(needs.waves.outputs.wave4) }}
+    env:
+      SECURITY_SCAN_PAT: ${{ secrets.SECURITY_SCAN_PAT }}
+      ARCHIVE_REPO: ${{ secrets.SECURITY_ARCHIVE_REPO }}
+      GH_TOKEN: ${{ secrets.SECURITY_SCAN_PAT }}
+      SKAINET_TOKEN: ${{ secrets.SKAINET_TOKEN }}
+      SKAINET_INTERNAL: ${{ secrets.SKAINET_INTERNAL }}
+      BUDGET_MINUTES: ${{ inputs.budget_minutes || '60' }}
+      STRICT_REVIEW: ${{ inputs.strict_review }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          path: repo
+          # The checkout token would otherwise persist as an auth header in
+          # repo/.git/config, readable by every session; the stages push with
+          # a credential supplied per invocation instead.
+          persist-credentials: false
+
+      - name: Install bubblewrap
+        run: |
+          sudo apt-get update && sudo apt-get install -y bubblewrap
+          sudo tee /etc/apparmor.d/bwrap > /dev/null <<'EOF'
+          abi <abi/4.0>,
+          /usr/bin/bwrap flags=(unconfined) {
+            userns,
+          }
+          EOF
+          sudo apparmor_parser -r /etc/apparmor.d/bwrap
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: repo/go.mod
+          cache: true
+          cache-dependency-path: repo/go.sum
+
+      - name: Fix leg (tests, fix, reviews, PR)
+        env:
+          PLAN_ID: ${{ matrix.plan }}
+          SCAN_DIR: ${{ needs.preflight.outputs.scan_dir }}
+          OVERVIEW_ISSUE: ${{ needs.issue.outputs.overview_issue }}
+          WAVE_MAP: ${{ needs.waves.outputs.wave_map }}
+          MODEL: ${{ needs.preflight.outputs.model }}
+          REVIEW_MODEL: ${{ inputs.review_model || '' }}
+        run: bash repo/.github/scripts/security_remediate/fix-stage.sh
