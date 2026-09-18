@@ -480,11 +480,33 @@ scrubbed() {
   env -i "${envp[@]}" "$@"
 }
 
+# Args for the session's write-isolation sandbox. The whole filesystem is
+# mounted read-only, /tmp and the session's working directory are writable,
+# and every .git directory in reach is mounted read-only, so a session cannot
+# tamper with hooks or config at the mount level (the runner-side
+# assert_git_untampered stays as the backstop). Network is deliberately not
+# unshared — the session must reach the model gateway. Ceiling: reads are not
+# restricted, so a session can still read the archive; this bounds writes and
+# tampering, not visibility.
+session_sandbox_args() {
+  local workdir=$1 g
+  local args=(bwrap --die-with-parent --unshare-pid --unshare-ipc --unshare-uts
+              --ro-bind / / --bind /tmp /tmp --dev /dev --proc /proc
+              --bind "$workdir" "$workdir")
+  for g in "$workdir/.git" "$workdir/repo/.git" "$workdir/archive/.git"; do
+    [ -d "$g" ] && args+=(--ro-bind "$g" "$g")
+  done
+  printf '%s\n' "${args[@]}"
+}
+
 # Run one headless opencode session. The session gets an explicit allowlist,
 # not the job environment: env -i is what keeps SECURITY_SCAN_PAT, GH_TOKEN
 # and ARCHIVE_REPO out of the session and out of everything it spawns (git,
 # go test, a prompt-injected curl). Only the throwaway HOME/XDG dirs, the
-# gateway key, PATH and the Go caches pass through.
+# gateway key, PATH and the Go caches pass through. Where bubblewrap is
+# available the session also runs inside the write-isolation sandbox above;
+# locally (or on a runner without the AppArmor grant) it degrades to an
+# unwrapped session with a warning.
 #
 # --pure: no external plugins — the checkout's own .opencode/ plugins expect
 # an omac control plane that does not exist here and would hang the run.
@@ -509,9 +531,16 @@ run_session() {
   for v in TMPDIR GOPATH GOCACHE GOMODCACHE GOPROXY GOFLAGS GOTOOLCHAIN GOOS GOARCH CGO_ENABLED; do
     [ -n "${!v:-}" ] && envp+=("$v=${!v}")
   done
+  local -a sandbox=()
+  if command -v bwrap >/dev/null 2>&1; then
+    while IFS= read -r v; do sandbox+=("$v"); done < <(session_sandbox_args "$workdir")
+  else
+    echo "::warning title=No bubblewrap::Sessions run without the write-isolation sandbox here; CI installs bubblewrap." >&2
+  fi
   (
     cd "$workdir" || exit 1
-    run_with_timeout "$secs" env -i "${envp[@]}" \
+    # ${sandbox[@]+...} keeps an empty array safe under `set -u` on bash 3.2.
+    run_with_timeout "$secs" env -i "${envp[@]}" ${sandbox[@]+"${sandbox[@]}"} \
       opencode run --print-logs --pure --auto -m "model/$model" "$prompt" \
       > "$transcript" 2>&1
   )

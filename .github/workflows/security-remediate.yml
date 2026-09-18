@@ -150,6 +150,19 @@ jobs:
           # a credential supplied per invocation instead.
           persist-credentials: false
 
+      - name: Install bubblewrap
+        # The planning session runs inside the write-isolation sandbox; the
+        # AppArmor grant is what lets bwrap create a user namespace.
+        run: |
+          sudo apt-get update && sudo apt-get install -y bubblewrap
+          sudo tee /etc/apparmor.d/bwrap > /dev/null <<'EOF'
+          abi <abi/4.0>,
+          /usr/bin/bwrap flags=(unconfined) {
+            userns,
+          }
+          EOF
+          sudo apparmor_parser -r /etc/apparmor.d/bwrap
+
       - name: Planning session
         # The agent session gets the gateway key (it must call the model)
         # but never the PAT or GH_TOKEN: pushing the archive repo is this

@@ -469,6 +469,18 @@ else
   fail "a consistent verdict sets the interface variables (got ${REVIEW_FINDINGS:-?}/${REVIEW_VERDICT:-?})"
 fi
 
+# --- session_sandbox_args -------------------------------------------------------
+# The sandbox mounts the whole filesystem read-only, keeps /tmp and the
+# session workdir writable, and pins every .git in reach read-only.
+sb="$TMP/sb"
+mkdir -p "$sb/repo/.git" "$sb/archive/.git"
+sb_args="$(session_sandbox_args "$sb" | paste -sd' ' -)"
+case "$sb_args" in
+  *"--ro-bind / / --bind /tmp /tmp"*"--bind $sb $sb"*"--ro-bind $sb/repo/.git $sb/repo/.git"*"--ro-bind $sb/archive/.git $sb/archive/.git"*)
+    echo "ok: the session sandbox makes the fs read-only, the workdir writable and .git read-only" ;;
+  *) fail "session_sandbox_args: $sb_args" ;;
+esac
+
 # --- session_home ---------------------------------------------------------------
 # The generated gateway config must be valid JSON and register both the
 # implementer and a distinct reviewer model.
