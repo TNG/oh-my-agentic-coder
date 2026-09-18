@@ -132,7 +132,7 @@ fi
 # --- Branch and base ------------------------------------------------------------
 # The default branch comes from the API: actions/checkout leaves a detached
 # HEAD, so origin/HEAD is not reliable in a shallow clone.
-default_branch="$(gh repo view --json defaultBranchRef --jq '.defaultBranchRef.name')"
+default_branch="$(gh repo view -R "$GITHUB_REPOSITORY" --json defaultBranchRef --jq '.defaultBranchRef.name')"
 [ -n "$default_branch" ] || { echo "::error title=No default branch::gh returned no default branch name." >&2; exit 1; }
 
 base_branch=""
@@ -147,7 +147,7 @@ stack_ids="$(jq -r --arg id "$PLAN_ID" --argjson map "$WAVE_MAP" '
     | join(" ")' "$plans_json")"
 for cand in $stack_ids; do
   cand_branch="fix/security-$SCAN_DIR-plan-$cand"
-  if gh pr list --head "$cand_branch" --state open --json url --jq 'length' 2>/dev/null | grep -q '^1$' \
+  if gh pr list -R "$GITHUB_REPOSITORY" --head "$cand_branch" --state open --json url --jq 'length' 2>/dev/null | grep -q '^1$' \
      && git -C "$REPO_DIR" fetch --quiet origin "$cand_branch" 2>/dev/null; then
     base_branch="$cand_branch"
     echo "stacking plan $PLAN_ID on $cand_branch (shares files with plan $cand, whose PR is open)"
@@ -769,20 +769,20 @@ if [ "$base_branch" != "$default_branch" ] && [ "$base_branch" != "$my_branch" ]
   stacked_on="$base_branch"
 fi
 
-pr_url="$(gh pr list --head "$my_branch" --state open --json url --jq '.[0].url' 2>/dev/null || true)"
+pr_url="$(gh pr list -R "$GITHUB_REPOSITORY" --head "$my_branch" --state open --json url --jq '.[0].url' 2>/dev/null || true)"
 if [ -n "$pr_url" ]; then
-  gh pr edit "$my_branch" --body-file "$body_copy" >/dev/null
+  gh pr edit -R "$GITHUB_REPOSITORY" "$my_branch" --body-file "$body_copy" >/dev/null
   echo "updated fix pull request: $pr_url"
 else
   # Idempotent: the workflow's token carries issues:write now, so the label
   # no longer needs to pre-exist by hand.
-  gh label create do-not-merge --description "Hold: automated fix PR, needs a human pass" >/dev/null 2>&1 || true
+  gh label create -R "$GITHUB_REPOSITORY" do-not-merge --description "Hold: automated fix PR, needs a human pass" >/dev/null 2>&1 || true
   set +e
   if [ -n "$stacked_on" ]; then
-    pr_url="$(gh pr create --head "$my_branch" --base "$stacked_on" \
+    pr_url="$(gh pr create -R "$GITHUB_REPOSITORY" --head "$my_branch" --base "$stacked_on" \
       --title "fix(security): $my_issue_line" --body-file "$body_copy" --label do-not-merge 2>&1)"
   else
-    pr_url="$(gh pr create --head "$my_branch" \
+    pr_url="$(gh pr create -R "$GITHUB_REPOSITORY" --head "$my_branch" \
       --title "fix(security): $my_issue_line" --body-file "$body_copy" --label do-not-merge 2>&1)"
   fi
   pr_status=$?

@@ -140,12 +140,12 @@ if [ -n "$issue_number" ]; then
             | .[] | select(.issue_line != null and .issue_line != "") | .issue_line' "$plans_json")
   body_file="$(mktemp)"
   printf '%s\n' "$issue_body" > "$body_file"
-  gh issue edit "$issue_number" --body-file "$body_file" >/dev/null
+  gh issue edit -R "$GITHUB_REPOSITORY" "$issue_number" --body-file "$body_file" >/dev/null
   rm -f "$body_file"
   echo "ticked ${merged_count} merged plan(s) in overview issue #${issue_number}"
 
   if [ "$merged_count" -eq "$plan_count" ] && [ "$plan_count" -gt 0 ]; then
-    gh issue close "$issue_number" --comment "All ${plan_count} planned workstreams merged. The finalize workflow will stay quiet until the next scan." >/dev/null
+    gh issue close -R "$GITHUB_REPOSITORY" "$issue_number" --comment "All ${plan_count} planned workstreams merged. The finalize workflow will stay quiet until the next scan." >/dev/null
     echo "all plans merged — closed overview issue #${issue_number}"
   fi
 else

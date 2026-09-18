@@ -77,6 +77,9 @@ jobs:
     env:
       SECURITY_SCAN_PAT: ${{ secrets.SECURITY_SCAN_PAT }}
       ARCHIVE_REPO: ${{ secrets.SECURITY_ARCHIVE_REPO }}
+      # The stages run from the workspace, which is not a git checkout, so gh
+      # cannot infer the repo from a remote; GH_REPO provides it globally.
+      GH_REPO: ${{ github.repository }}
       GH_TOKEN: ${{ github.token }}
       MAX_PLANS: ${{ inputs.max_plans || '3' }}
       PLANS_FILTER: ${{ inputs.plans || '' }}
@@ -134,6 +137,9 @@ jobs:
     env:
       SECURITY_SCAN_PAT: ${{ secrets.SECURITY_SCAN_PAT }}
       ARCHIVE_REPO: ${{ secrets.SECURITY_ARCHIVE_REPO }}
+      # The stages run from the workspace, which is not a git checkout, so gh
+      # cannot infer the repo from a remote; GH_REPO provides it globally.
+      GH_REPO: ${{ github.repository }}
       GH_TOKEN: ${{ github.token }}
       SKAINET_TOKEN: ${{ secrets.SKAINET_TOKEN }}
       SKAINET_INTERNAL: ${{ secrets.SKAINET_INTERNAL }}
@@ -197,6 +203,9 @@ jobs:
     env:
       SECURITY_SCAN_PAT: ${{ secrets.SECURITY_SCAN_PAT }}
       ARCHIVE_REPO: ${{ secrets.SECURITY_ARCHIVE_REPO }}
+      # The stages run from the workspace, which is not a git checkout, so gh
+      # cannot infer the repo from a remote; GH_REPO provides it globally.
+      GH_REPO: ${{ github.repository }}
       # Creating and editing issues and labels needs issues:write, granted to
       # github.token by the job's permissions block.
       GH_TOKEN: ${{ github.token }}
@@ -249,6 +258,9 @@ jobs:
     env:
       SECURITY_SCAN_PAT: ${{ secrets.SECURITY_SCAN_PAT }}
       ARCHIVE_REPO: ${{ secrets.SECURITY_ARCHIVE_REPO }}
+      # The stages run from the workspace, which is not a git checkout, so gh
+      # cannot infer the repo from a remote; GH_REPO provides it globally.
+      GH_REPO: ${{ github.repository }}
       GH_TOKEN: ${{ github.token }}
     steps:
       - name: Checkout
@@ -315,6 +327,9 @@ jobs:
     env:
       SECURITY_SCAN_PAT: ${{ secrets.SECURITY_SCAN_PAT }}
       ARCHIVE_REPO: ${{ secrets.SECURITY_ARCHIVE_REPO }}
+      # The stages run from the workspace, which is not a git checkout, so gh
+      # cannot infer the repo from a remote; GH_REPO provides it globally.
+      GH_REPO: ${{ github.repository }}
       GH_TOKEN: ${{ github.token }}
       REPO_TOKEN: ${{ github.token }}
       SKAINET_TOKEN: ${{ secrets.SKAINET_TOKEN }}
@@ -396,6 +411,9 @@ jobs:
     env:
       SECURITY_SCAN_PAT: ${{ secrets.SECURITY_SCAN_PAT }}
       ARCHIVE_REPO: ${{ secrets.SECURITY_ARCHIVE_REPO }}
+      # The stages run from the workspace, which is not a git checkout, so gh
+      # cannot infer the repo from a remote; GH_REPO provides it globally.
+      GH_REPO: ${{ github.repository }}
       GH_TOKEN: ${{ github.token }}
       REPO_TOKEN: ${{ github.token }}
       SKAINET_TOKEN: ${{ secrets.SKAINET_TOKEN }}
@@ -467,6 +485,9 @@ jobs:
     env:
       SECURITY_SCAN_PAT: ${{ secrets.SECURITY_SCAN_PAT }}
       ARCHIVE_REPO: ${{ secrets.SECURITY_ARCHIVE_REPO }}
+      # The stages run from the workspace, which is not a git checkout, so gh
+      # cannot infer the repo from a remote; GH_REPO provides it globally.
+      GH_REPO: ${{ github.repository }}
       GH_TOKEN: ${{ github.token }}
       REPO_TOKEN: ${{ github.token }}
       SKAINET_TOKEN: ${{ secrets.SKAINET_TOKEN }}
@@ -538,6 +559,9 @@ jobs:
     env:
       SECURITY_SCAN_PAT: ${{ secrets.SECURITY_SCAN_PAT }}
       ARCHIVE_REPO: ${{ secrets.SECURITY_ARCHIVE_REPO }}
+      # The stages run from the workspace, which is not a git checkout, so gh
+      # cannot infer the repo from a remote; GH_REPO provides it globally.
+      GH_REPO: ${{ github.repository }}
       GH_TOKEN: ${{ github.token }}
       REPO_TOKEN: ${{ github.token }}
       SKAINET_TOKEN: ${{ secrets.SKAINET_TOKEN }}

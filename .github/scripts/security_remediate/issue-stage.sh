@@ -71,7 +71,7 @@ while IFS=$'\t' read -r number body; do
     existing_body="$body"
     break
   fi
-done < <(gh issue list --label security --label agent-created --state open \
+done < <(gh issue list -R "$GITHUB_REPOSITORY" --label security --label agent-created --state open \
           --json number,body --jq '.[] | [.number, .body] | @tsv' 2>/dev/null || true)
 
 # --- Assemble the body --------------------------------------------------------
@@ -113,22 +113,20 @@ if ! sanitize_issue_body "$body_file" "$vulns_json" "$plans_json"; then
 fi
 
 if [ -n "$existing_number" ]; then
-  gh issue edit "$existing_number" --body-file "$body_file" --title "$ISSUE_TITLE" >/dev/null
+  gh issue edit -R "$GITHUB_REPOSITORY" "$existing_number" --body-file "$body_file" --title "$ISSUE_TITLE" >/dev/null
   issue_number="$existing_number"
   echo "updated overview issue #$issue_number"
 else
-  gh label create security --force >/dev/null 2>&1 || true
-  gh label create agent-created --force >/dev/null 2>&1 || true
-  issue_number="$(gh issue create --title "$ISSUE_TITLE" \
-    --body-file "$body_file" --label security --label agent-created 2>&1 | grep -oE '[0-9]+$')" \
-    || {
-      echo "::error title=Issue creation failed::Could not create the overview issue. The 'security' and 'agent-created' labels must exist first (create them once by hand)."
-      exit 1
-    }
-  [ -n "$issue_number" ] || {
-    echo "::error title=Issue creation failed::gh printed no issue number; create the 'security' and 'agent-created' labels and re-run."
+  gh label create -R "$GITHUB_REPOSITORY" security --force >/dev/null 2>&1 || true
+  gh label create -R "$GITHUB_REPOSITORY" agent-created --force >/dev/null 2>&1 || true
+  create_status=0
+  create_out="$(gh issue create -R "$GITHUB_REPOSITORY" --title "$ISSUE_TITLE" \
+    --body-file "$body_file" --label security --label agent-created 2>&1)" || create_status=$?
+  issue_number="$(printf '%s' "$create_out" | grep -oE 'issues/[0-9]+' | head -n1 | grep -oE '[0-9]+')"
+  if [ "$create_status" -ne 0 ] || [ -z "$issue_number" ]; then
+    echo "::error title=Issue creation failed::gh exited $create_status. Details: $(printf '%s' "$create_out" | head -n1)"
     exit 1
-  }
+  fi
   echo "created overview issue #$issue_number"
 fi
 

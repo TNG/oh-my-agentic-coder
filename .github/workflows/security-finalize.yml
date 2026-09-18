@@ -36,6 +36,9 @@ jobs:
     env:
       SECURITY_SCAN_PAT: ${{ secrets.SECURITY_SCAN_PAT }}
       ARCHIVE_REPO: ${{ secrets.SECURITY_ARCHIVE_REPO }}
+      # The stage runs from the workspace, which is not a git checkout, so gh
+      # cannot infer the repo from a remote; GH_REPO provides it globally.
+      GH_REPO: ${{ github.repository }}
       # Ticking and closing the overview issue: github.token with the
       # issues:write permission above, not the archive PAT.
       GH_TOKEN: ${{ github.token }}

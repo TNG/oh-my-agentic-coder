@@ -64,6 +64,23 @@ exec "$real" "$@"
 EOF
 cat > "$STUBS/gh" <<'EOF'
 #!/usr/bin/env bash
+# Real gh cannot infer the repo when the cwd is not a checkout (the stages run
+# from the workspace), so repo-scoped commands must carry -R/--repo or GH_REPO.
+# Enforcing that here catches a missing -R instead of silently passing.
+case "$*" in
+  *"repo view"*|*"pr list"*|*"pr create"*|*"pr edit"*|*"issue "*|*"label "*)
+    if [ -z "${GH_REPO:-}" ]; then
+      has_repo=0; prev=""
+      for a in "$@"; do
+        { [ "$prev" = -R ] || [ "$prev" = --repo ]; } && has_repo=1
+        prev="$a"
+      done
+      if [ "$has_repo" -eq 0 ]; then
+        echo "gh: no repository context: pass -R/--repo or set GH_REPO" >&2
+        exit 1
+      fi
+    fi ;;
+esac
 case "$*" in
   *"pr list"*) case "$*" in *length*) echo 0 ;; *) echo "" ;; esac ;;
   *"pr create"*) printf 'create\n' >> "$SIM_PR_LOG"; echo "https://example.invalid/pr/1" ;;
