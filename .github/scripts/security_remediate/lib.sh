@@ -170,8 +170,10 @@ harden_git_dir() {
 
 assert_git_untampered() {
   local dir=$1 expected_origin=$2 what=$3 problem=""
-  [ -z "$(find "$dir/.git/hooks" -type f 2>/dev/null)" ] \
-    || problem="hook files were planted"
+  # -L: a symlinked hooks dir would hide planted hooks from `find -type f`.
+  if [ -L "$dir/.git/hooks" ] || [ -n "$(find "$dir/.git/hooks" -type f 2>/dev/null)" ]; then
+    problem="hook files were planted"
+  fi
   [ -z "$(git -C "$dir" config --local --get core.hooksPath 2>/dev/null || true)" ] \
     || problem="${problem:+$problem; }core.hooksPath was set"
   [ -z "$(git -C "$dir" config --local --get core.fsmonitor 2>/dev/null || true)" ] \
@@ -224,7 +226,7 @@ push_archive() {
     return 0
   fi
   git -C "$dir" commit -s --no-verify --quiet -m "$message"
-  archive_git "$dir" push --quiet \
+  archive_git "$dir" push --quiet --no-verify \
     "https://x-access-token:${SECURITY_SCAN_PAT}@github.com/${ARCHIVE_REPO}.git" HEAD || {
     echo "::error title=Archive push failed::Pushing the archive repo failed after the preflight confirmed write access — check for a protected default branch or a token revoked mid-run."
     return 1
@@ -254,7 +256,7 @@ scan_dir_status() {
 # Branches that already have an open or merged pull request. A closed-
 # without-merge PR means the leg failed and the plan stays eligible.
 pr_covered_branches() {
-  gh pr list -R "$GITHUB_REPOSITORY" --state all --limit 1000 \
+  gh pr list -R "$GITHUB_REPOSITORY" --state all --limit 5000 \
     --json headRefName,state,mergedAt \
     --jq '.[] | select(.state == "OPEN" or .mergedAt != null) | .headRefName'
 }
@@ -352,8 +354,15 @@ issue_body_forbidden_strings() {
 # and returns 0 when clean; prints a withholding reason and returns 1 on a
 # match — never echo the matched string, this output can reach the public
 # job log.
-sanitize_issue_body() {
-  local body_file=$1 vulns_json=$2 plans_json=$3 s
+#
+# The same per-line check guards the pushed diff, but with a narrower string
+# set: a fix diff legitimately contains the public code the scanner also
+# recorded as a code snippet (that code is what the fix changes), so the
+# snippet/location fields would fire on every honest fix. Titles and PoC
+# text are the exploit-specific strings that must not be pasted into public
+# tests or comments.
+sanitize_lines() {
+  local body_file=$1 s
   while IFS= read -r s; do
     # Trim the ends only — multi-word finding text must keep its interior
     # whitespace to stay findable in the body.
@@ -361,10 +370,30 @@ sanitize_issue_body() {
     s="${s%"${s##*[![:space:]]}"}"
     [ "${#s}" -ge 8 ] || continue
     if grep -Fqi -- "$s" "$body_file"; then
-      echo "issue body contains a string from the scan findings or the vulnerable file paths (string withheld)"
+      echo "text contains a string from the scan findings (string withheld)"
       return 1
     fi
-  done < <(issue_body_forbidden_strings "$vulns_json" "$plans_json")
+  done
+}
+
+sanitize_issue_body() {
+  sanitize_lines "$1" < <(issue_body_forbidden_strings "$2" "$3")
+}
+
+# Strings the pushed diff must not contain: finding titles and every
+# PoC/exploit-style field, but not code locations or snippets (see above).
+diff_forbidden_strings() {
+  local vulns_json=$1
+  {
+    jq -r '.[] | (.title // empty)' "$vulns_json" 2>/dev/null || true
+    jq -r '.[] | to_entries[]
+            | select((.key | test("poc|exploit|proof"; "i")) and (.value | type == "string"))
+            | .value' "$vulns_json" 2>/dev/null || true
+  }
+}
+
+sanitize_diff() {
+  sanitize_lines "$1" < <(diff_forbidden_strings "$2")
 }
 
 # Wave assignment for the fix stage ("Job 5" in the pipeline plan): greedy
@@ -532,7 +561,11 @@ run_session() {
     [ -n "${!v:-}" ] && envp+=("$v=${!v}")
   done
   local -a sandbox=()
-  if command -v bwrap >/dev/null 2>&1; then
+  if [ "${OMAC_SESSION_SANDBOX:-}" = off ]; then
+    # Test/repair seam only, never set by a workflow: a session cannot reach
+    # the runner's environment to turn its own sandbox off.
+    echo "::warning title=Session sandbox disabled::OMAC_SESSION_SANDBOX=off — a session will run without the write-isolation sandbox." >&2
+  elif command -v bwrap >/dev/null 2>&1; then
     while IFS= read -r v; do sandbox+=("$v"); done < <(session_sandbox_args "$workdir")
   else
     echo "::warning title=No bubblewrap::Sessions run without the write-isolation sandbox here; CI installs bubblewrap." >&2
@@ -555,6 +588,16 @@ commit_as() {
   git -C "$dir" config user.name "$name"
   git -C "$dir" config user.email "$email"
   git -C "$dir" commit -s --no-verify --quiet -m "$message"
+}
+
+# Security test files deleted by the commit(s) in $2 (default: the phase
+# commit just made), one path per line.
+deleted_security_tests() {
+  local repo=$1 range=${2:-HEAD~1..HEAD} path
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    case "$path" in *_security_test.go) echo "$path" ;; esac
+  done < <(git -C "$repo" diff --diff-filter=D --name-only "$range")
 }
 
 # Names from $2 (one per line) that have no "func <name>(" in any *_test.go

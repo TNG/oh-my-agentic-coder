@@ -163,6 +163,18 @@ else
   git -C "$REPO_DIR" checkout --quiet -B "$my_branch" "origin/$base_branch"
 fi
 
+# The test writer may invert existing security tests but never delete them;
+# a deleted test would silently shrink the property set the fix is proven
+# against. The final fix pass, which alone has test-edit permission, is the
+# only session allowed to drop a test.
+reject_test_deletions() {
+  local deleted
+  deleted="$(deleted_security_tests "$REPO_DIR")"
+  if [ -n "$deleted" ]; then
+    fail_leg "Security tests deleted" "The test session deleted existing security tests ($(printf '%s' "$deleted" | paste -sd', ' -)). Tests are inverted, never deleted; the branch carries the attempt and no pull request was opened."
+  fi
+}
+
 # The fork point, after the checkout: for a stacked branch this is the stack
 # tip, so the red-check tree and the reviewer's diff contain exactly this
 # leg's commits.
@@ -206,7 +218,7 @@ DRIVER_HOME="$(session_home "$WORK" "$MODEL" "$REVIEWER")"
 # refuses to push at all if one appeared).
 push_branch() {
   assert_git_untampered "$REPO_DIR" "$repo_origin" "Source checkout" || return 1
-  archive_git "$REPO_DIR" push --quiet \
+  archive_git "$REPO_DIR" push --quiet --no-verify \
     "https://x-access-token:${SECURITY_SCAN_PAT}@github.com/${GITHUB_REPOSITORY}.git" "$my_branch"
 }
 
@@ -240,7 +252,8 @@ fail_leg() {
 # the session produced no changes (empty diffs are legal in the retry phases,
 # decided by the caller).
 run_phase() {
-  local prompt=$1 log=$2 guard=$3 name=$4 email=$5 message=$6 secs=$7 status=0
+  local prompt=$1 log=$2 guard=$3 name=$4 email=$5 message=$6 secs=$7 status=0 pre_head
+  pre_head="$(git -C "$REPO_DIR" rev-parse HEAD)"
   set +e
   run_session "$DRIVER_HOME" "$secs" "$MODEL" "$WORKSPACE" "$prompt" "$log"
   status=$?
@@ -248,6 +261,12 @@ run_phase() {
   echo "session exit status: $status"
   if [ "$status" -ne 0 ]; then
     fail_leg "Session incomplete" "The session exited with status $status mid-phase; its output is committed to the branch and the next run continues there."
+  fi
+  # A session must only write files. Its own commit would be invisible to the
+  # working-tree ownership guard, so it is discarded and the leg fails.
+  if [ "$(git -C "$REPO_DIR" rev-parse HEAD)" != "$pre_head" ]; then
+    git -C "$REPO_DIR" reset --hard --quiet "$pre_head"
+    fail_leg "Session committed to the branch" "The session created its own commit, which the ownership guard cannot attribute. The commit was discarded and the leg fails."
   fi
   if [ -n "$(changed_files_within "$REPO_DIR" "$guard")" ]; then
     fail_leg "Ownership guard tripped" "The session edited files outside its allowed set; its output is on the branch as a wip commit and no pull request was opened."
@@ -322,7 +341,10 @@ Another agent will implement the fix afterwards. Your tests must FAIL against
 the current code and pass only once that fix lands.
 
 - Read the plan file, including any runnable PoCs it links elsewhere in the
-  same scan directory — adopt those as tests instead of writing new ones.
+  same scan directory. Use them to understand the exploit path, then write a
+  test that asserts the security property WITHOUT copying exploit mechanics,
+  PoC code or finding strings into the test: the test is published, and the
+  runner mechanically rejects a diff carrying a finding title or PoC text.
 - Use exactly these test names: ${plan_tests_csv}
 - Put them in *_security_test.go files following the pattern of the repo's
   existing security tests, in the package that owns the behaviour under test.
@@ -544,6 +566,7 @@ if [ -z "$last_test" ]; then
       "test(security): regression tests for plan $PLAN_ID" "$WRITER_SECS"; then
     fail_leg "No tests written" "The test session produced no changes, so there is nothing to pin the fix."
   fi
+  reject_test_deletions
   last_test="$(git -C "$REPO_DIR" rev-parse HEAD)"
 
   red_ok=false
@@ -569,6 +592,7 @@ if [ -z "$last_test" ]; then
         "test(security): regression tests for plan $PLAN_ID" "$SHORT_SECS"; then
       fail_leg "Test retry wrote nothing" "The retry session produced no changes; the tests still do not pin the fix."
     fi
+    reject_test_deletions
     last_test="$(git -C "$REPO_DIR" rev-parse HEAD)"
     red_check "$last_test" || fail_leg "Tests are not red" "After the retry the plan's tests still do not fail against the current code (missing, not compiling, or passing). If the base branch already fixes this weakness the plan is obsolete; otherwise the tests do not pin it. The branch carries the attempt."
   fi
@@ -584,6 +608,7 @@ else
         "test(security): regression tests for plan $PLAN_ID" "$SHORT_SECS"; then
       fail_leg "Test retry wrote nothing" "The retry session produced no changes; the tests still do not pin the fix."
     fi
+    reject_test_deletions
     last_test="$(git -C "$REPO_DIR" rev-parse HEAD)"
     red_check "$last_test" || fail_leg "Tests are not red" "After the retry the plan's tests still do not fail against the current code (missing, not compiling, or passing). If the base branch already fixes this weakness the plan is obsolete; otherwise the tests do not pin it. The branch carries the attempt."
   fi
@@ -642,6 +667,15 @@ note=""
 if [ -n "$removed_tests" ]; then
   note="; tests removed by the final pass: $(printf '%s' "$removed_tests" | paste -sd', ' -)"
 fi
+# The branch is public the moment it is pushed. Titles and PoC text must not
+# ride along in the diff (tests adopting PoCs are the main risk); public code
+# snippets are deliberately not in the string set.
+vulns_file="$scan_abs/vulnerabilities.json"
+[ -f "$vulns_file" ] || fail_leg "No findings file" "The scan's vulnerabilities.json is missing; the disclosure gate cannot run, so nothing is pushed."
+git -C "$REPO_DIR" diff "$base_sha..HEAD" > "$WORK/diff.txt"
+sanitize_diff "$WORK/diff.txt" "$vulns_file" \
+  || fail_leg "Diff disclosure gate" "The pushed diff contains a finding title or PoC string; nothing was pushed or published."
+
 write_pr_prompt "$WORK/pr-prompt.md"
 set +e
 run_session "$DRIVER_HOME" "$PR_WRITER_SECS" "$MODEL" "$REPO_DIR" "$WORK/pr-prompt.md" "$LOG_DIR/pr-writer.log"
@@ -664,7 +698,8 @@ if [ "$pr_session_status" -ne 0 ] || [ ! -s "$body_file" ]; then
 fi
 # The description writer may only produce the body file: anything else it
 # touched means it misunderstood the task, and the change would be unproven.
-other_changes="$(git -C "$REPO_DIR" status --porcelain | grep -v 'PR_BODY.md' || true)"
+printf '%s\n' '^PR_BODY\.md$' > "$WORK/guard-pr-body"
+other_changes="$(changed_files_within "$REPO_DIR" "$WORK/guard-pr-body")"
 if [ -n "$other_changes" ]; then
   rm -f "$body_file"
   fail_leg "PR writer modified the repository" "The description session changed files beyond PR_BODY.md; those changes were not reviewed, so the leg fails."
@@ -675,8 +710,8 @@ if ! grep -qF "Refs #${OVERVIEW_ISSUE}" "$body_file"; then
 fi
 # "Closes #NN" would auto-close the shared tracking issue when this one pull
 # request merges; the prompt forbids it, the runner enforces it.
-if grep -qiE '(^|[[:space:]])closes[[:space:]]+#' "$body_file"; then
-  sed -E 's/(^|[[:space:]])[Cc]loses([[:space:]]+#)/\1Refs\2/g' "$body_file" > "$body_file.tmp"
+if grep -qiE '(^|[[:space:]])(close[sd]?|fix(e[sd])?|resolve[sd]?)[[:space:]]*:?[[:space:]]*#' "$body_file"; then
+  sed -E 's/(^|[[:space:]])([Cc]lose[sd]?|[Ff]ix(e[sd])?|[Rr]esolve[sd]?)([[:space:]]*:?[[:space:]]*#)/\1Refs\4/g' "$body_file" > "$body_file.tmp"
   mv "$body_file.tmp" "$body_file"
 fi
 body_copy="$LOG_DIR/pr-body.md"

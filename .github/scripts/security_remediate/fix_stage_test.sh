@@ -49,19 +49,24 @@ STUBS="$TMP/bin"
 mkdir -p "$STUBS"
 cat > "$STUBS/git" <<'EOF'
 #!/usr/bin/env bash
+d="$PWD"; real="$GIT_REAL"
+while [ "$d" != "/" ]; do
+  if [ -f "$d/.git-real" ]; then real="$(cat "$d/.git-real")"; break; fi
+  d="$(dirname "$d")"
+done
 for a in "$@"; do
   if [ "$a" = push ]; then
     printf '%s\n' "$*" >> "$SIM_PUSH_LOG"
     exit 0
   fi
 done
-exec "$GIT_REAL" "$@"
+exec "$real" "$@"
 EOF
 cat > "$STUBS/gh" <<'EOF'
 #!/usr/bin/env bash
 case "$*" in
   *"pr list"*) case "$*" in *length*) echo 0 ;; *) echo "" ;; esac ;;
-  *"pr create"*) echo "https://example.invalid/pr/1" ;;
+  *"pr create"*) printf 'create\n' >> "$SIM_PR_LOG"; echo "https://example.invalid/pr/1" ;;
   *"pr edit"*) echo ok ;;
   *"repo view"*) echo "main" ;;
 esac
@@ -113,12 +118,20 @@ for last; do :; done
 [ -n "$root" ] && printf '%s\n' "$last" >> "$root/.sim-sessions.log"
 case "$last" in
   *"You are the test author"*)
-    printf 'package pkg\n\nimport "testing"\n\nfunc TestSecurityAlpha(t *testing.T) {}\n' > "$r/pkg/alpha_security_test.go" ;;
+    printf 'package pkg\n\nimport "testing"\n\nfunc TestSecurityAlpha(t *testing.T) {}\n' > "$r/pkg/alpha_security_test.go"
+    if [ "$sim" = deleter ]; then rm -f "$r/pkg/existing_security_test.go"; fi
+    if [ "$sim" = leak ]; then
+      printf 'package pkg\n\nimport "testing"\n\n// Sim finding title\nfunc TestSecurityAlpha(t *testing.T) {}\n' > "$r/pkg/alpha_security_test.go"
+    fi ;;
   *"did not pass the mechanical red"*)
     printf '// retried\n' >> "$r/pkg/alpha_security_test.go" ;;
   *"You are the implementer"*)
     echo fixed > "$r/pkg/prod.go"
-    [ "$sim" = die ] && exit 3 ;;
+    [ "$sim" = die ] && exit 3
+    if [ "$sim" = committer ]; then
+      git -C "$r" add -A
+      git -C "$r" commit -qm "evil session commit"
+    fi ;;
   *"is not finished"*)
     echo "// retry" >> "$r/pkg/prod.go" ;;
   *"independent reviewer of the regression tests"*)
@@ -173,6 +186,8 @@ new_fixture() {
   mkdir -p "$root/repo/pkg"
   echo vulnerable > "$root/repo/pkg/prod.go"
   echo other > "$root/repo/pkg/other.go"
+  printf 'package pkg\n\nimport "testing"\n\nfunc TestSecurityExisting(t *testing.T) {}\n' \
+    > "$root/repo/pkg/existing_security_test.go"
   git -C "$root/repo" add -A
   git -C "$root/repo" commit -qm "chore: base"
   git -C "$root/repo" push -q -u origin HEAD:main
@@ -191,12 +206,17 @@ new_fixture() {
   }
 ]
 JSON
+  mkdir -p "$root/archive/scans/$SCAN/mitigation-plans"
+  printf '%s' '[{"id":"vuln-0001","title":"Sim finding title","poc":"curl -H sim-poc http://target"}]' \
+    > "$root/archive/scans/$SCAN/vulnerabilities.json"
   git init -q "$root/archive"
   git -C "$root/archive" remote add origin "https://github.com/sim/archive.git"
   git -C "$root/archive" config user.email "test@example.com"
   git -C "$root/archive" config user.name "test"
   : > "$root/pushes.log"
+  : > "$root/prs.log"
   : > "$root/.sim-sessions.log"
+  printf '%s\n' "$GIT_REAL" > "$root/.git-real"
   printf '%s\n' "$mode" > "$root/.sim-mode"
 }
 
@@ -206,7 +226,7 @@ run_stage() {
     cd "$root"
     env \
       PATH="$STUBS:$PATH" GIT_REAL="$GIT_REAL" \
-      SIM_PUSH_LOG="$root/pushes.log" \
+      SIM_PUSH_LOG="$root/pushes.log" SIM_PR_LOG="$root/prs.log" \
       PLAN_ID=01 SCAN_DIR="$SCAN" OVERVIEW_ISSUE=288 WAVE_MAP='{"01":1}' \
       MODEL=sim-model REPO_DIR="$root/repo" ARCHIVE_DIR="$root/archive" \
       LOG_DIR="$root/logs" GITHUB_STEP_SUMMARY="$root/summary.md" \
@@ -260,6 +280,7 @@ assert "the fix commit is attributed to the fix writer" "Fix Writer Agent" \
   "$(git -C "$happy/repo" log -1 --format=%an "$fix_sha")"
 assert "the pull request body was captured" "yes" \
   "$([ -s "$happy/logs/pr-body.md" ] && echo yes || echo no)"
+assert "the happy path creates one pull request" "1" "$(grep -c create "$happy/prs.log" || true)"
 assert "the fix branch is pushed once" "1" "$(grep -c "github.com/sim/repo.git" "$happy/pushes.log" || true)"
 assert "the archive log is pushed once" "1" "$(grep -c "github.com/sim/archive.git" "$happy/pushes.log" || true)"
 
@@ -291,8 +312,7 @@ if run_stage "$notred"; then fail "not-red path fails the leg"; else echo "ok: n
 assert_fake_origin "the not-red path only ever targets the fixture or the fake URL" "$notred"
 assert "the not-red path pushes the branch" "1" "$(grep -c "github.com/sim/repo.git" "$notred/pushes.log" || true)"
 assert "the not-red path pushes no archive log" "0" "$(grep -c "github.com/sim/archive.git" "$notred/pushes.log" || true)"
-assert "the not-red path opens no pull request" "no" \
-  "$([ -s "$notred/logs/pr-body.md" ] && echo yes || echo no)"
+assert "the not-red path creates no pull request" "0" "$(grep -c create "$notred/prs.log" || true)"
 
 # --- Broken-test path -----------------------------------------------------------
 # The tests do not compile: without the go-vet gate the red check would call a
@@ -328,6 +348,42 @@ prfiles="$TMP/prfiles"
 new_fixture "$prfiles" prfiles
 if run_stage "$prfiles"; then fail "PR-writer misbehaviour fails the leg"; else echo "ok: PR-writer misbehaviour fails the leg"; fi
 assert "the PR-writer misbehaviour opens no pull request" "no"   "$([ -s "$prfiles/logs/pr-body.md" ] && echo yes || echo no)"
+
+# --- Session-commit path --------------------------------------------------------
+# With the sandbox on, the session's own commit cannot happen at all: .git is
+# mounted read-only. The runner then commits the session's file writes as
+# usual and the leg succeeds.
+committer="$TMP/committer"
+new_fixture "$committer" committer
+if run_stage "$committer"; then echo "ok: the sandboxed session cannot commit and the leg succeeds"; else fail "the sandboxed session cannot commit and the leg succeeds"; fi
+assert "the sandbox blocks the session commit" "0" \
+  "$(git -C "$committer/repo" log --format=%s main..HEAD | grep -c 'evil session commit' || true)"
+assert "the sandboxed session still produces one pull request" "1" "$(grep -c create "$committer/prs.log" || true)"
+
+# --- Session-commit path without the sandbox ------------------------------------
+# On a host without bubblewrap the mount-level protection is absent, so the
+# HEAD-unchanged guard must discard the session's commit and fail the leg.
+nobwrap="$TMP/committer-nobwrap"
+new_fixture "$nobwrap" committer
+if OMAC_SESSION_SANDBOX=off run_stage "$nobwrap"; then fail "unsandboxed session-commit fails the leg"; else echo "ok: unsandboxed session-commit fails the leg"; fi
+assert "the unsandboxed session commit is discarded" "0" \
+  "$(git -C "$nobwrap/repo" log --format=%s main..HEAD | grep -c 'evil session commit' || true)"
+assert "the unsandboxed session-commit creates no pull request" "0" "$(grep -c create "$nobwrap/prs.log" || true)"
+
+# --- Test-deletion path ---------------------------------------------------------
+# The test writer deletes an existing security test: rejected, leg fails.
+deleter="$TMP/deleter"
+new_fixture "$deleter" deleter
+if run_stage "$deleter"; then fail "test-deletion path fails the leg"; else echo "ok: test-deletion path fails the leg"; fi
+assert "the test-deletion path creates no pull request" "0" "$(grep -c create "$deleter/prs.log" || true)"
+
+# --- Diff-disclosure path -------------------------------------------------------
+# The test writer pastes the finding title into a public test: the pre-push
+# gate rejects the diff.
+leak="$TMP/leak"
+new_fixture "$leak" leak
+if run_stage "$leak"; then fail "diff-disclosure path fails the leg"; else echo "ok: diff-disclosure path fails the leg"; fi
+assert "the diff-disclosure path creates no pull request" "0" "$(grep -c create "$leak/prs.log" || true)"
 
 if [ "$failures" -gt 0 ]; then
   echo "$failures fix-stage test(s) failed" >&2

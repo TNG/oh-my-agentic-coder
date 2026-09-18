@@ -469,6 +469,41 @@ else
   fail "a consistent verdict sets the interface variables (got ${REVIEW_FINDINGS:-?}/${REVIEW_VERDICT:-?})"
 fi
 
+# --- sanitize_diff: the narrowed string set --------------------------------------
+# A finding title or PoC text in the diff is rejected, but the public code the
+# scanner recorded as a snippet is not: a fix diff legitimately touches it.
+printf '%s\n' '+// Proxy trusts a spoofable upstream header value' > "$TMP/diff-gate.txt"
+if sanitize_diff "$TMP/diff-gate.txt" "$TMP/vulns.json" >/dev/null 2>&1; then
+  fail "a finding title in the diff is rejected"
+else
+  echo "ok: a finding title in the diff is rejected"
+fi
+
+printf '%s\n' '+if req.Header.Get("X-Internal-Auth") != "" { return true }' > "$TMP/diff-gate.txt"
+if sanitize_diff "$TMP/diff-gate.txt" "$TMP/vulns.json" >/dev/null 2>&1; then
+  echo "ok: a public code snippet in the diff is allowed"
+else
+  fail "a public code snippet in the diff is allowed"
+fi
+
+# --- assert_git_untampered: symlinked hooks --------------------------------------
+gd="$TMP/hookrepo"
+git init -q "$gd"
+git -C "$gd" remote add origin "https://example.invalid/repo.git"
+rm -rf "$gd/.git/hooks"
+ln -s "$TMP" "$gd/.git/hooks"
+if assert_git_untampered "$gd" "https://example.invalid/repo.git" "test" >/dev/null 2>&1; then
+  fail "a symlinked hooks directory is detected"
+else
+  echo "ok: a symlinked hooks directory is detected"
+fi
+harden_git_dir "$gd"
+if assert_git_untampered "$gd" "https://example.invalid/repo.git" "test" >/dev/null 2>&1; then
+  echo "ok: a hardened git dir passes the tamper check"
+else
+  fail "a hardened git dir passes the tamper check"
+fi
+
 # --- session_sandbox_args -------------------------------------------------------
 # The sandbox mounts the whole filesystem read-only, keeps /tmp and the
 # session workdir writable, and pins every .git in reach read-only.

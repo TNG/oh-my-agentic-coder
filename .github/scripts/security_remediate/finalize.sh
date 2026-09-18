@@ -59,6 +59,13 @@ if [ -z "$scan_dir" ]; then
 fi
 scan_abs="$ARCHIVE_DIR/scans/$scan_dir"
 plans_json="$scan_abs/mitigation-plans/plans.json"
+# The manifest feeds the issue ticks and the all-merged close; a tampered one
+# must not be trusted (an empty issue_line would tick every line).
+schema_errors="$(plans_schema_errors "$plans_json" "$scan_dir")"
+if [ -n "$schema_errors" ]; then
+  echo "::error title=Manifest invalid::plans.json for '$scan_dir' fails its schema; refusing to tick or close the overview issue."
+  exit 1
+fi
 plan_count="$(jq 'length' "$plans_json")"
 
 # --- Pull request states --------------------------------------------------------
@@ -129,7 +136,8 @@ if [ -n "$issue_number" ]; then
       '{ if (index($0, t) == 1) print r; else print }')"
   done < <(jq -r --arg ids "$merged_ids" \
            '($ids | split(",") | map(select(length > 0))) as $m
-            | map(select(.id as $i | ($m | index($i)))) | .[].issue_line' "$plans_json")
+            | map(select(.id as $i | ($m | index($i))))
+            | .[] | select(.issue_line != null and .issue_line != "") | .issue_line' "$plans_json")
   body_file="$(mktemp)"
   printf '%s\n' "$issue_body" > "$body_file"
   gh issue edit "$issue_number" --body-file "$body_file" >/dev/null
