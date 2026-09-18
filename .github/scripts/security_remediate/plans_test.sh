@@ -367,6 +367,59 @@ expect_waves "an empty selection colors nothing" \
   "" \
   '{"1":[],"2":[],"3":[],"4":[]}'
 
+# --- last_test_commit / missing_test_names / commit_as ---------------------------
+# The fix leg's phase detection and presence check, plus the signed-commit
+# identity: a bug here either skips the red proof or attributes work to the
+# wrong agent.
+h="$TMP/history-repo"
+git init -q "$h"
+git -C "$h" config user.email "test@example.com"
+git -C "$h" config user.name "test"
+echo base > "$h/file.txt"
+git -C "$h" add -A
+git -C "$h" commit -qm "chore: base"
+base_sha="$(git -C "$h" rev-parse HEAD)"
+echo fix1 > "$h/file.txt"
+git -C "$h" commit -qam "fix(security): early fix"
+echo tests > "$h/file.txt"
+git -C "$h" commit -qam "test(security): the tests"
+echo more > "$h/file.txt"
+git -C "$h" commit -qam "test(security): extend the tests"
+last_want="$(git -C "$h" rev-parse HEAD)"
+echo fix2 > "$h/file.txt"
+git -C "$h" commit -qam "fix(security): the fix"
+
+if [ "$(last_test_commit "$h" "$base_sha")" = "$last_want" ]; then
+  echo "ok: last_test_commit finds the newest test commit after the base"
+else
+  fail "last_test_commit finds the newest test commit: got $(last_test_commit "$h" "$base_sha")"
+fi
+if [ -z "$(last_test_commit "$h" "$(git -C "$h" rev-parse HEAD)")" ]; then
+  echo "ok: last_test_commit is empty when the range has no test commit"
+else
+  fail "last_test_commit should be empty for a range without test commits"
+fi
+
+mkdir -p "$h/pkg"
+printf 'package pkg\n\nfunc TestSecurityAlpha(t *testing.T) {}\n' > "$h/pkg/alpha_security_test.go"
+printf 'package pkg\n\nfunc TestSecurityBetaBar(t *testing.T) {}\n' > "$h/pkg/beta_security_test.go"
+printf 'TestSecurityAlpha\nTestSecurityBeta\n' > "$TMP/names.txt"
+if [ "$(missing_test_names "$h" "$TMP/names.txt" | tr -d '\n')" = "TestSecurityBeta" ]; then
+  echo "ok: a prefix name does not count for a longer test name"
+else
+  fail "missing_test_names: got '$(missing_test_names "$h" "$TMP/names.txt" | tr -d '\n')'"
+fi
+
+echo signed > "$h/extra.txt"
+git -C "$h" add extra.txt
+commit_as "$h" "$TEST_WRITER_NAME" "$TEST_WRITER_EMAIL" "test(security): signed"
+if git -C "$h" log -1 --format='%an <%ae>%n%b' | grep -qF "Test Writer Agent <test-writer@security-remediate.invalid>" \
+   && git -C "$h" log -1 --format='%b' | grep -qF "Signed-off-by: Test Writer Agent <test-writer@security-remediate.invalid>"; then
+  echo "ok: commit_as attributes and signs off with the agent identity"
+else
+  fail "commit_as: $(git -C "$h" log -1 --format='%an <%ae> | %b')"
+fi
+
 if [ "$failures" -gt 0 ]; then
   echo "$failures plans test(s) failed" >&2
   exit 1
