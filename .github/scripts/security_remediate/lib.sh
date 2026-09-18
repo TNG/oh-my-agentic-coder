@@ -48,7 +48,7 @@ export RUNNER_EMAIL="runner@security-remediate.invalid"
 # budget_minutes; the PR writer gets a fixed short budget. Everything floors
 # at 10 minutes so an undersized budget cannot produce a zero-second session.
 LEG_CEILING_MINUTES=350
-LEG_SLACK_MINUTES=20
+LEG_SLACK_MINUTES=30
 PR_WRITER_MINUTES=10
 BUDGET_FLOOR_MINUTES=10
 

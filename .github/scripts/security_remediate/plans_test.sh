@@ -504,6 +504,34 @@ else
   fail "a hardened git dir passes the tamper check"
 fi
 
+# --- session_budget -------------------------------------------------------------
+# Writers get budget_minutes; the four short sessions split what the leg
+# ceiling leaves after the writers, the slack and the PR writer, capped by the
+# writer budget and floored at ten minutes. The arithmetic was corrected twice
+# once, so pin it.
+export BUDGET_MINUTES=60
+b_writer="$(session_budget writer)"; b_short="$(session_budget short)"
+if [ "$b_writer" = 60 ] && [ "$b_short" = 47 ]; then
+  echo "ok: default budgets are writers 60, short 47 (350-120-30-10 over four)"
+else
+  fail "default session budgets: writer=$b_writer short=$b_short"
+fi
+export BUDGET_MINUTES=10
+b_short="$(session_budget short)"
+if [ "$(session_budget writer)" = 10 ] && [ "$b_short" = 10 ]; then
+  echo "ok: the ten-minute floor holds for an undersized budget"
+else
+  fail "undersized-budget floor: writer=$(session_budget writer) short=$b_short"
+fi
+export BUDGET_MINUTES=100
+b_short="$(session_budget short)"
+if [ "$(session_budget writer)" = 100 ] && [ "$b_short" = 27 ]; then
+  echo "ok: a large writer budget still caps the short sessions at the ceiling maths"
+else
+  fail "large-budget short cap: writer=$(session_budget writer) short=$b_short"
+fi
+unset BUDGET_MINUTES
+
 # --- session_sandbox_args -------------------------------------------------------
 # The sandbox mounts the whole filesystem read-only, keeps /tmp and the
 # session workdir writable, and pins every .git in reach read-only.
