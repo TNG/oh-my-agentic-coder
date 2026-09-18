@@ -49,7 +49,9 @@
 #   STRICT_REVIEW      true = an unresolved "insufficient" verdict fails the
 #                      leg instead of opening the PR
 #   REPO_DIR, ARCHIVE_DIR, LOG_DIR   (defaults ./repo, ./archive, ./logs)
-#   GH_TOKEN            the write PAT (push, PR creation)
+#   REPO_TOKEN          write token for this repo's branch push (github.token;
+#                       falls back to SECURITY_SCAN_PAT for local hand-runs)
+#   GH_TOKEN            token `gh` uses for PR creation (github.token)
 #   plus the lib.sh variables (ARCHIVE_REPO, SECURITY_SCAN_PAT, SKAINET_*)
 
 set -euo pipefail
@@ -216,14 +218,17 @@ install_opencode
 DRIVER_HOME="$(session_home "$WORK" "$MODEL" "$REVIEWER")"
 
 # --- Runner helpers ---------------------------------------------------------------
-# Push with the credential supplied per invocation. Nothing is written to
-# .git/config, so the PAT is never on disk while a session runs; the explicit
-# URL also bypasses any planted insteadOf rewrite (the tamper check below
-# refuses to push at all if one appeared).
+# Push with the credential supplied per invocation. Writes to this repo use
+# the workflow's github.token (REPO_TOKEN), never the archive PAT — the PAT
+# has no scopes here at all. Nothing is written to .git/config, so no
+# credential is on disk while a session runs; the explicit URL also bypasses
+# any planted insteadOf rewrite (the tamper check refuses to push if one
+# appeared).
 push_branch() {
+  local token="${REPO_TOKEN:-$SECURITY_SCAN_PAT}"
   assert_git_untampered "$REPO_DIR" "$repo_origin" "Source checkout" || return 1
   archive_git "$REPO_DIR" push --quiet --no-verify \
-    "https://x-access-token:${SECURITY_SCAN_PAT}@github.com/${GITHUB_REPOSITORY}.git" "$my_branch"
+    "https://x-access-token:${token}@github.com/${GITHUB_REPOSITORY}.git" "$my_branch"
 }
 
 has_commits_beyond_base() {
@@ -769,6 +774,9 @@ if [ -n "$pr_url" ]; then
   gh pr edit "$my_branch" --body-file "$body_copy" >/dev/null
   echo "updated fix pull request: $pr_url"
 else
+  # Idempotent: the workflow's token carries issues:write now, so the label
+  # no longer needs to pre-exist by hand.
+  gh label create do-not-merge --description "Hold: automated fix PR, needs a human pass" >/dev/null 2>&1 || true
   set +e
   if [ -n "$stacked_on" ]; then
     pr_url="$(gh pr create --head "$my_branch" --base "$stacked_on" \
@@ -780,7 +788,7 @@ else
   pr_status=$?
   set -e
   if [ "$pr_status" -ne 0 ]; then
-    fail_leg "Pull request creation failed" "The fix branch is pushed; the pull request is not open. Create the 'do-not-merge' label and re-run. Details: $(printf '%s' "$pr_url" | head -n1)"
+    fail_leg "Pull request creation failed" "The fix branch is pushed; the pull request is not open. Check that the workflow token has pull-requests:write and issues:write on this repo. Details: $(printf '%s' "$pr_url" | head -n1)"
   fi
   echo "opened fix pull request: $pr_url"
 fi

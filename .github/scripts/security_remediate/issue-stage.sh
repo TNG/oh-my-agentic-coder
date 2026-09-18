@@ -20,7 +20,7 @@
 #   SCAN_DIR            name of the scan directory inside scans/ (required)
 #   DEFERRED_COUNT      deferred plans, for the "Further steps" count
 #   ARCHIVE_DIR         archive clone, created if missing (default ./archive)
-#   GH_TOKEN            the write PAT — issue creation needs issues:write
+#   GH_TOKEN            github.token with issues:write (issue + labels)
 #   ARCHIVE_REPO, SECURITY_SCAN_PAT   (clone)
 
 set -euo pipefail

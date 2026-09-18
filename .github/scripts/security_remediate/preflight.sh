@@ -17,10 +17,10 @@
 #   bash repo/.github/scripts/security_remediate/preflight.sh
 #
 # Environment:
-#   SECURITY_SCAN_PAT        write PAT (required)
+#   SECURITY_SCAN_PAT        archive write PAT (required)
 #   ARCHIVE_REPO             private companion repo (required)
 #   GITHUB_REPOSITORY        this repo
-#   GH_TOKEN                  for `gh pr list` (read-scoped is enough)
+#   GH_TOKEN                  for `gh pr list` (github.token, read-scoped)
 #   MAX_PLANS                budget, plans selected per run (default 3)
 #   PLANS_FILTER             restrict to these plan ids, comma-separated
 #   ARCHIVE_DIR              where to clone (default: ./archive)
@@ -46,11 +46,12 @@ case "$MAX_PLANS" in
     exit 2 ;;
 esac
 
-# Both repos get the write probe: the archive repo for plan/report pushes,
-# this repo for the branches, issues and pull requests the later stages open.
-# A PAT that cannot deliver is caught here, in the first ten seconds.
+# The archive repo gets the write probe: it is the one destination driven by
+# the PAT. Writes to this repo (branches, issues, pull requests) use the
+# workflow's own github.token, whose power is fixed by the job's `permissions`
+# block — there is nothing to probe, and the PAT no longer needs this-repo
+# scopes at all.
 probe_write_access "$ARCHIVE_REPO" "$SECURITY_SCAN_PAT" "Archive repo"
-probe_write_access "$GITHUB_REPOSITORY" "$SECURITY_SCAN_PAT" "This repo"
 
 clone_archive "$ARCHIVE_DIR" "$ARCHIVE_REPO" "$SECURITY_SCAN_PAT"
 

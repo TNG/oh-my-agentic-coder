@@ -246,7 +246,7 @@ run_stage() {
       MODEL=sim-model REPO_DIR="$root/repo" ARCHIVE_DIR="$root/archive" \
       LOG_DIR="$root/logs" GITHUB_STEP_SUMMARY="$root/summary.md" \
       GITHUB_REPOSITORY="sim/repo" \
-      SECURITY_SCAN_PAT=sim-pat ARCHIVE_REPO="sim/archive" \
+      SECURITY_SCAN_PAT=sim-pat REPO_TOKEN=sim-repo-token ARCHIVE_REPO="sim/archive" \
       SKAINET_TOKEN=sim SKAINET_INTERNAL="http://sim" \
       bash "$STAGE"
   ) >/dev/null 2>&1 || rc=$?

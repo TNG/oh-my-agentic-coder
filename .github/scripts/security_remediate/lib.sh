@@ -18,7 +18,8 @@
 #   GH_TOKEN           token `gh` authenticates with. The workflow's
 #                     read-scoped github.token is enough; the PAT never
 #                     reaches gh, let alone an agent session.
-#   SECURITY_SCAN_PAT  the write PAT (probe, archive clone/push)
+#   SECURITY_SCAN_PAT  archive write PAT (probe, clone, push)
+#   REPO_TOKEN         this repo's write token (github.token in CI; branch push)
 #   ARCHIVE_REPO       private companion repo, owner/name
 #   SKAINET_TOKEN      model gateway API key (agent sessions)
 #   SKAINET_INTERNAL   model gateway base URL (agent sessions)
@@ -147,10 +148,15 @@ probe_write_access() {
 # log unredacted: capture, strip the PAT, print the remainder on failure only.
 archive_git() {
   local dir=$1; shift
-  local err status=0
+  local err status=0 redact=("s/${SECURITY_SCAN_PAT}/REDACTED-TOKEN/g")
+  # A failed push prints the credential URL; both tokens can appear now (the
+  # archive PAT and the repo's github.token), so redact either.
+  if [ -n "${REPO_TOKEN:-}" ] && [ "$REPO_TOKEN" != "$SECURITY_SCAN_PAT" ]; then
+    redact+=("s/${REPO_TOKEN}/REDACTED-TOKEN/g")
+  fi
   err=$(git -C "$dir" "$@" 2>&1) || status=$?
   if [ "$status" -ne 0 ]; then
-    printf '%s\n' "$err" | sed "s/${SECURITY_SCAN_PAT}/REDACTED-PAT/g" >&2
+    printf '%s\n' "$err" | sed -e "${redact[@]}" >&2
     return "$status"
   fi
   [ -z "$err" ] || printf '%s\n' "$err" >&2

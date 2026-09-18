@@ -175,6 +175,9 @@ jobs:
 
   issue:
     name: Issue (sanitized overview)
+    permissions:
+      contents: read
+      issues: write # create/edit the overview issue and its labels
     needs: [preflight, plan]
     if: |
       always() &&
@@ -190,9 +193,9 @@ jobs:
     env:
       SECURITY_SCAN_PAT: ${{ secrets.SECURITY_SCAN_PAT }}
       ARCHIVE_REPO: ${{ secrets.SECURITY_ARCHIVE_REPO }}
-      # Creating and editing issues needs issues:write, which github.token
-      # does not have — this is the PAT.
-      GH_TOKEN: ${{ secrets.SECURITY_SCAN_PAT }}
+      # Creating and editing issues and labels needs issues:write, granted to
+      # github.token by the job's permissions block.
+      GH_TOKEN: ${{ github.token }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -285,6 +288,10 @@ jobs:
 
   fix-wave-1:
     name: Fix wave 1 (plan ${{ matrix.plan }})
+    permissions:
+      contents: write # push the fix branch
+      pull-requests: write # open and label the pull request
+      issues: write # create the do-not-merge label
     needs: [preflight, issue, waves]
     if: |
       always() &&
@@ -304,7 +311,8 @@ jobs:
     env:
       SECURITY_SCAN_PAT: ${{ secrets.SECURITY_SCAN_PAT }}
       ARCHIVE_REPO: ${{ secrets.SECURITY_ARCHIVE_REPO }}
-      GH_TOKEN: ${{ secrets.SECURITY_SCAN_PAT }}
+      GH_TOKEN: ${{ github.token }}
+      REPO_TOKEN: ${{ github.token }}
       SKAINET_TOKEN: ${{ secrets.SKAINET_TOKEN }}
       SKAINET_INTERNAL: ${{ secrets.SKAINET_INTERNAL }}
       BUDGET_MINUTES: ${{ inputs.budget_minutes || '60' }}
@@ -355,6 +363,10 @@ jobs:
 
   fix-wave-2:
     name: Fix wave 2 (plan ${{ matrix.plan }})
+    permissions:
+      contents: write # push the fix branch
+      pull-requests: write # open and label the pull request
+      issues: write # create the do-not-merge label
     # Later waves do NOT gate on the previous wave's results: wave legs never
     # share owned files, so a sibling's failure leaves them unaffected. A leg
     # whose stack base (an earlier wave's plan sharing files) has no open PR
@@ -376,7 +388,8 @@ jobs:
     env:
       SECURITY_SCAN_PAT: ${{ secrets.SECURITY_SCAN_PAT }}
       ARCHIVE_REPO: ${{ secrets.SECURITY_ARCHIVE_REPO }}
-      GH_TOKEN: ${{ secrets.SECURITY_SCAN_PAT }}
+      GH_TOKEN: ${{ github.token }}
+      REPO_TOKEN: ${{ github.token }}
       SKAINET_TOKEN: ${{ secrets.SKAINET_TOKEN }}
       SKAINET_INTERNAL: ${{ secrets.SKAINET_INTERNAL }}
       BUDGET_MINUTES: ${{ inputs.budget_minutes || '60' }}
@@ -421,6 +434,10 @@ jobs:
 
   fix-wave-3:
     name: Fix wave 3 (plan ${{ matrix.plan }})
+    permissions:
+      contents: write # push the fix branch
+      pull-requests: write # open and label the pull request
+      issues: write # create the do-not-merge label
     needs: [preflight, waves, issue, fix-wave-2]
     if: |
       always() &&
@@ -438,7 +455,8 @@ jobs:
     env:
       SECURITY_SCAN_PAT: ${{ secrets.SECURITY_SCAN_PAT }}
       ARCHIVE_REPO: ${{ secrets.SECURITY_ARCHIVE_REPO }}
-      GH_TOKEN: ${{ secrets.SECURITY_SCAN_PAT }}
+      GH_TOKEN: ${{ github.token }}
+      REPO_TOKEN: ${{ github.token }}
       SKAINET_TOKEN: ${{ secrets.SKAINET_TOKEN }}
       SKAINET_INTERNAL: ${{ secrets.SKAINET_INTERNAL }}
       BUDGET_MINUTES: ${{ inputs.budget_minutes || '60' }}
@@ -483,6 +501,10 @@ jobs:
 
   fix-wave-4:
     name: Fix wave 4 (plan ${{ matrix.plan }})
+    permissions:
+      contents: write # push the fix branch
+      pull-requests: write # open and label the pull request
+      issues: write # create the do-not-merge label
     needs: [preflight, waves, issue, fix-wave-3]
     if: |
       always() &&
@@ -500,7 +522,8 @@ jobs:
     env:
       SECURITY_SCAN_PAT: ${{ secrets.SECURITY_SCAN_PAT }}
       ARCHIVE_REPO: ${{ secrets.SECURITY_ARCHIVE_REPO }}
-      GH_TOKEN: ${{ secrets.SECURITY_SCAN_PAT }}
+      GH_TOKEN: ${{ github.token }}
+      REPO_TOKEN: ${{ github.token }}
       SKAINET_TOKEN: ${{ secrets.SKAINET_TOKEN }}
       SKAINET_INTERNAL: ${{ secrets.SKAINET_INTERNAL }}
       BUDGET_MINUTES: ${{ inputs.budget_minutes || '60' }}

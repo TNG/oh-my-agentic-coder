@@ -18,7 +18,7 @@
 #
 # Environment:
 #   ARCHIVE_DIR   archive clone, created if missing (default ./archive)
-#   GH_TOKEN      the write PAT (issue edit and close)
+#   GH_TOKEN      github.token with issues:write (edit and close)
 #   plus the lib.sh variables (ARCHIVE_REPO, SECURITY_SCAN_PAT)
 
 set -euo pipefail
