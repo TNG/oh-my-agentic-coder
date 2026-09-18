@@ -93,14 +93,24 @@ case "$sub" in
   build) exit 0 ;;
   vet) [ "$sim" = brokenvet ] && { echo "vet: test file does not compile"; exit 1; }; exit 0 ;;
   test)
+    has_run=0; prev=""
+    for a in "$@"; do [ "$prev" = -run ] && has_run=1; prev="$a"; done
     grep -rq 'func TestSecurity' --include='*_security_test.go' . || { echo "no tests to run"; exit 0; }
     [ "$sim" = notred ] && exit 0
     fixed=0
     for f in $(find . -name 'prod*.go' -not -name '*_test.go'); do
       grep -q fixed "$f" && fixed=1
     done
-    [ "$fixed" -eq 1 ] && exit 0
-    echo "--- FAIL: TestSecurityAlpha"; exit 1 ;;
+    if [ "$has_run" -eq 1 ]; then
+      [ "$fixed" -eq 1 ] && exit 0
+      echo "--- FAIL: TestSecurityAlpha"; exit 1
+    fi
+    [ "$fixed" -eq 1 ] || { echo "--- FAIL: TestSecurityAlpha"; exit 1; }
+    if [ "$sim" = stale ] && grep -rq 'asserts-old' --include='*_test.go' . \
+       && ! grep -rq '// updated' --include='*_test.go' .; then
+      echo "--- FAIL: TestOldBehaviour"; exit 1
+    fi
+    exit 0 ;;
 esac
 exit 0
 EOF
@@ -133,8 +143,10 @@ case "$last" in
       git -C "$r" commit -qm "evil session commit"
     fi ;;
   *"is not finished"*)
-    echo "// retry" >> "$r/pkg/prod.go" ;;
+    echo "// retry" >> "$r/pkg/prod.go"
+    [ "$sim" = stale ] && echo "// updated" >> "$r/pkg/old_test.go" ;;
   *"independent reviewer of the regression tests"*)
+    [ "$sim" = reviewer ] && echo tampered >> "$r/pkg/other.go"
     if [ "$sim" = retries ]; then
       echo "one finding" > REVIEW.md
       echo '{"findings":1,"verdict":"insufficient"}' > review-verdict.json
@@ -152,7 +164,8 @@ case "$last" in
     fi ;;
   *"write the pull request description"*)
     printf '**Issue:** Refs #288\n\n## What\n- fix\n' > PR_BODY.md
-    [ "$sim" = prfiles ] && echo tampered >> "$r/pkg/other.go" ;;
+    [ "$sim" = prfiles ] && echo tampered >> "$r/pkg/other.go"
+    if [ "$sim" = prcommitter ]; then git add PR_BODY.md && git commit -qm "body commit"; fi ;;
 esac
 exit 0
 EOF
@@ -188,6 +201,8 @@ new_fixture() {
   echo other > "$root/repo/pkg/other.go"
   printf 'package pkg\n\nimport "testing"\n\nfunc TestSecurityExisting(t *testing.T) {}\n' \
     > "$root/repo/pkg/existing_security_test.go"
+  printf 'package pkg\n\nimport "testing"\n\n// asserts-old\nfunc TestOldBehaviour(t *testing.T) {}\n' \
+    > "$root/repo/pkg/old_test.go"
   git -C "$root/repo" add -A
   git -C "$root/repo" commit -qm "chore: base"
   git -C "$root/repo" push -q -u origin HEAD:main
@@ -384,6 +399,35 @@ leak="$TMP/leak"
 new_fixture "$leak" leak
 if run_stage "$leak"; then fail "diff-disclosure path fails the leg"; else echo "ok: diff-disclosure path fails the leg"; fi
 assert "the diff-disclosure path creates no pull request" "0" "$(grep -c create "$leak/prs.log" || true)"
+
+# --- Stale-test path ------------------------------------------------------------
+# The fix breaks a pre-existing normal test. The full-suite green check catches
+# it, the retry updates the test, and the pull request opens.
+stale="$TMP/stale"
+new_fixture "$stale" stale
+if run_stage "$stale"; then echo "ok: stale-test path exits 0"; else fail "stale-test path exits 0"; fi
+assert "the stale-test path retries once" "2" \
+  "$(git -C "$stale/repo" log --format=%s main..HEAD | grep -c '^fix(security):' || true)"
+assert "the stale-test path creates one pull request" "1" "$(grep -c create "$stale/prs.log" || true)"
+assert "the stale test was corrected" "1" \
+  "$(git -C "$stale/repo" show HEAD:pkg/old_test.go | grep -c '// updated' || true)"
+
+# --- Reviewer-tamper path -------------------------------------------------------
+# A review session edits the checkout: the change is discarded and the leg fails.
+revtamper="$TMP/revtamper"
+new_fixture "$revtamper" reviewer
+if run_stage "$revtamper"; then fail "reviewer-tamper path fails the leg"; else echo "ok: reviewer-tamper path fails the leg"; fi
+assert "the reviewer-tamper path creates no pull request" "0" "$(grep -c create "$revtamper/prs.log" || true)"
+assert "the reviewer tamper is discarded" "" \
+  "$(git -C "$revtamper/repo" status --porcelain | grep other.go || true)"
+
+# --- PR-writer commit path ------------------------------------------------------
+# Without the sandbox, the description session can commit its change; the
+# commit must be discarded and the leg must fail.
+prcommit="$TMP/prcommit"
+new_fixture "$prcommit" prcommitter
+if OMAC_SESSION_SANDBOX=off run_stage "$prcommit"; then fail "PR-writer commit path fails the leg"; else echo "ok: PR-writer commit path fails the leg"; fi
+assert "the PR-writer commit path creates no pull request" "0" "$(grep -c create "$prcommit/prs.log" || true)"
 
 if [ "$failures" -gt 0 ]; then
   echo "$failures fix-stage test(s) failed" >&2

@@ -197,9 +197,12 @@ RULES:
 - branch: exactly fix/security-${SCAN_DIR}-plan-<id>, with the same id as the
   entry.
 - files: the files this plan may edit. Every path must exist in repo/ (check
-  with your file tools before writing it down). NEVER include .github/
-  paths — findings whose fix requires CI or workflow changes go under
-  "Manual follow-up" in the README, not into a plan.
+  with your file tools before writing it down). Include any existing test
+  files the fix will break because they relied on the old behaviour as a
+  shortcut — the fix sessions may always edit Go test files, but listing them
+  tells the reviewer what to expect. NEVER include .github/ paths — findings
+  whose fix requires CI or workflow changes go under "Manual follow-up" in
+  the README, not into a plan.
 - tests: TestSecurity* names for the regression tests a later stage will
   write. Name them after the security property they assert.
 - issue_line: this text becomes a checklist item in a PUBLIC GitHub issue.

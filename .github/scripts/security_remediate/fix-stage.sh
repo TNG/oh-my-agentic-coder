@@ -202,9 +202,13 @@ printf '%s\n' "$my_plan" | jq -r '.tests[]' > "$plan_tests_file"
 guard_tests="$WORK/guard-tests"
 printf '%s\n' '_security_test\.go$' > "$guard_tests"
 guard_fix="$WORK/guard-fix"
-printf '%s\n' "$my_plan" | jq -r '.files[]' | sed 's/[^A-Za-z0-9_/-]/\\&/g; s/^/^/; s/$/$/' > "$guard_fix"
-guard_fix_retry="$WORK/guard-fix-retry"
-{ cat "$guard_fix"; printf '%s\n' '_security_test\.go$'; } > "$guard_fix_retry"
+{
+  printf '%s\n' "$my_plan" | jq -r '.files[]' | sed 's/[^A-Za-z0-9_/-]/\\&/g; s/^/^/; s/$/$/'
+  # A behaviour fix can break pre-existing tests that encoded the old,
+  # vulnerable behaviour as a shortcut, so the fix sessions may also update
+  # any Go test file. The fix review judges those changes.
+  printf '%s\n' '_test\.go$'
+} > "$guard_fix"
 
 MODEL="${MODEL:-$(bash "$REPO_DIR/scripts/resolve-model.sh" opencode)}"
 REVIEWER="${REVIEW_MODEL:-$MODEL}"
@@ -281,6 +285,22 @@ run_phase() {
   return 0
 }
 
+# Reviewers must not touch the checkout. The prompt says so; this enforces
+# it: a review that changed HEAD or left a dirty tree is reset and fails the
+# leg (its edits would otherwise be swept into the next phase's commit).
+review_guarded() {
+  local pre_head rc=0
+  pre_head="$(git -C "$REPO_DIR" rev-parse HEAD)"
+  run_review_session "$@" || rc=$?
+  if [ -n "$(git -C "$REPO_DIR" status --porcelain)" ] \
+     || [ "$(git -C "$REPO_DIR" rev-parse HEAD)" != "$pre_head" ]; then
+    git -C "$REPO_DIR" reset --hard --quiet "$pre_head" 2>/dev/null || true
+    git -C "$REPO_DIR" clean -fdq >/dev/null 2>&1 || true
+    fail_leg "Reviewer modified the repository" "A review session changed the checkout; the changes were discarded and the leg fails."
+  fi
+  return "$rc"
+}
+
 # The red proof: at $1 the plan's tests must exist, compile, and FAIL. A tree
 # that does not compile, or tests that pass, is not red. `go build` does not
 # compile _test.go files, so `go vet` is the compile gate for the test tree —
@@ -309,17 +329,25 @@ red_check() {
   return "$rc"
 }
 
-# The green proof: at HEAD the tree builds, vets, and the whole promoted
-# security suite passes — not just the plan's selector, because a session may
-# have added or inverted security tests along the way.
+# The green proof: at HEAD the tree builds, vets, and tests pass. $1 selects
+# the scope: "security" runs only the promoted suite (the cheap entry check,
+# so an already-green branch skips the fix writer), anything else runs the
+# whole suite, which also catches pre-existing tests broken by the behaviour
+# change — a failure in the leg is cheaper to debug than a red PR with no CI
+# run to look at.
 green_check() {
+  local scope=${1:-full}
   {
     echo "== green check at $(git -C "$REPO_DIR" rev-parse --short HEAD) =="
-    echo "== the whole promoted security suite must pass =="
+    echo "== scope: ${scope} =="
   } > "$LOG_DIR/green-check.log"
   ( cd "$REPO_DIR" && scrubbed go build ./... ) >> "$LOG_DIR/green-check.log" 2>&1 || { echo "green check: go build failed"; return 1; }
   ( cd "$REPO_DIR" && scrubbed go vet ./... ) >> "$LOG_DIR/green-check.log" 2>&1 || { echo "green check: go vet failed"; return 1; }
-  ( cd "$REPO_DIR" && scrubbed go test -run 'TestSecurity' ./... ) >> "$LOG_DIR/green-check.log" 2>&1 || { echo "green check: security tests failed"; return 1; }
+  if [ "$scope" = security ]; then
+    ( cd "$REPO_DIR" && scrubbed go test -run 'TestSecurity' ./... ) >> "$LOG_DIR/green-check.log" 2>&1 || { echo "green check: security tests failed"; return 1; }
+  else
+    ( cd "$REPO_DIR" && scrubbed go test -count=1 ./... ) >> "$LOG_DIR/green-check.log" 2>&1 || { echo "green check: the full test suite failed"; return 1; }
+  fi
   return 0
 }
 
@@ -401,8 +429,11 @@ Execute the plan for plan ${PLAN_ID}: ${plan_ref}.
 - Implement the minimal fix the plan describes, in the files the plan owns:
   ${my_files}
   Touch nothing else.
-- You must NOT touch any test file. If a test looks wrong, say so in your
-  final message instead of editing it.
+- A pre-existing test that encoded the old (vulnerable) behaviour as a
+  shortcut may now fail. Correct it so it asserts the new behaviour; never
+  weaken or delete a test just to make the suite pass. State every test change
+  and why in your final message.
+- Run the FULL suite before finishing: cd repo && go test -count=1 ./...
 - Nothing you write (identifiers, comments, error strings) may reveal how the
   weaknesses are exploited: this repository is public.
 - You have a limited wall-clock budget and may be stopped at any moment. The
@@ -428,9 +459,11 @@ unnecessary — the reviewer knows tests may be unfeasible; state clearly in
 your final message if you removed or changed one and why.
 
 Everything must be green:
-  cd repo && go build ./... && go vet ./... && go test -run 'TestSecurity' ./...
+  cd repo && go build ./... && go vet ./... && go test -count=1 ./...
 
-Files you may touch: ${my_files} plus *_security_test.go files.
+Files you may touch: ${my_files} plus any Go test file (*_test.go), including
+one that encoded the old behaviour and now fails — correct it, never weaken
+it.
 Plan: ${plan_ref}
 
 Sanctioned, pre-authorized session — proceed directly without asking for
@@ -578,7 +611,7 @@ if [ -z "$last_test" ]; then
   test_review_ok=false
   if [ "$red_ok" = true ]; then
     write_test_review_prompt "$WORK/test-review-prompt.md"
-    run_review_session "$DRIVER_HOME" "$SHORT_SECS" "$REVIEWER" "$WORKSPACE" \
+    review_guarded "$DRIVER_HOME" "$SHORT_SECS" "$REVIEWER" "$WORKSPACE" \
       "$WORK/test-review-prompt.md" "$LOG_DIR/test-review.log" "$LOG_DIR/test-review.md" \
       || fail_leg "Test review produced no verdict" "The reviewer session wrote no usable verdict; failing the leg rather than guessing."
     [ "$REVIEW_VERDICT" = approved ] && test_review_ok=true || red_reason="the test review found the suite insufficient"
@@ -618,7 +651,7 @@ fi
 fix_ok=false
 fix_review_ok=false
 
-if green_check; then
+if green_check security; then
   echo "phase: already green"
   fix_ok=true
 else
@@ -634,7 +667,7 @@ fi
 
 echo "phase: reviewing the fix"
 write_fix_review_prompt "$WORK/fix-review-prompt.md"
-run_review_session "$DRIVER_HOME" "$SHORT_SECS" "$REVIEWER" "$WORKSPACE" \
+review_guarded "$DRIVER_HOME" "$SHORT_SECS" "$REVIEWER" "$WORKSPACE" \
   "$WORK/fix-review-prompt.md" "$LOG_DIR/fix-review.log" "$LOG_DIR/fix-review.md" \
   || fail_leg "Fix review produced no verdict" "The reviewer session wrote no usable verdict; failing the leg rather than guessing."
 [ "$REVIEW_VERDICT" = approved ] && fix_review_ok=true
@@ -647,7 +680,7 @@ if [ "$fix_ok" != true ] || [ "$fix_review_ok" != true ]; then
     reason="the security tests are not green"
   fi
   write_fix_retry_prompt "$WORK/fix-retry-prompt.md" "$reason"
-  run_phase "$WORK/fix-retry-prompt.md" "$LOG_DIR/fix-retry.log" "$guard_fix_retry" \
+  run_phase "$WORK/fix-retry-prompt.md" "$LOG_DIR/fix-retry.log" "$guard_fix" \
     "$FIX_WRITER_NAME" "$FIX_WRITER_EMAIL" \
     "fix(security): $my_issue_line" "$SHORT_SECS" || true
   green_check || fail_leg "Tests are not green" "After the final implementation pass the security suite still fails. The branch carries the attempt; no pull request was opened."
@@ -676,12 +709,18 @@ git -C "$REPO_DIR" diff "$base_sha..HEAD" > "$WORK/diff.txt"
 sanitize_diff "$WORK/diff.txt" "$vulns_file" \
   || fail_leg "Diff disclosure gate" "The pushed diff contains a finding title or PoC string; nothing was pushed or published."
 
+echo "phase: writing the pull request body"
 write_pr_prompt "$WORK/pr-prompt.md"
+pr_pre_head="$(git -C "$REPO_DIR" rev-parse HEAD)"
 set +e
 run_session "$DRIVER_HOME" "$PR_WRITER_SECS" "$MODEL" "$REPO_DIR" "$WORK/pr-prompt.md" "$LOG_DIR/pr-writer.log"
 pr_session_status=$?
 set -e
 echo "pr-writer session exit status: $pr_session_status"
+if [ "$(git -C "$REPO_DIR" rev-parse HEAD)" != "$pr_pre_head" ]; then
+  git -C "$REPO_DIR" reset --hard --quiet "$pr_pre_head" 2>/dev/null || true
+  fail_leg "PR writer committed to the branch" "The description session created a commit; it was discarded and the leg fails."
+fi
 
 body_file="$REPO_DIR/PR_BODY.md"
 if [ "$pr_session_status" -ne 0 ] || [ ! -s "$body_file" ]; then
