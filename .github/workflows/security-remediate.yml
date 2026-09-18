@@ -163,6 +163,10 @@ jobs:
           EOF
           sudo apparmor_parser -r /etc/apparmor.d/bwrap
 
+      - name: Set up Bun
+        # install_opencode in lib.sh installs the pinned opencode CLI with bun.
+        uses: oven-sh/setup-bun@v2
+
       - name: Planning session
         # The agent session gets the gateway key (it must call the model)
         # but never the PAT or GH_TOKEN: pushing the archive repo is this
@@ -345,6 +349,10 @@ jobs:
           cache: true
           cache-dependency-path: repo/go.sum
 
+      - name: Set up Bun
+        # install_opencode in lib.sh installs the pinned opencode CLI with bun.
+        uses: oven-sh/setup-bun@v2
+
       - name: Fix leg (tests, fix, reviews, PR)
         # Test writer, red check, test reviewer, fix writer, green check,
         # fix reviewer, pull request writer — all orchestrated by the runner
@@ -422,6 +430,10 @@ jobs:
           cache: true
           cache-dependency-path: repo/go.sum
 
+      - name: Set up Bun
+        # install_opencode in lib.sh installs the pinned opencode CLI with bun.
+        uses: oven-sh/setup-bun@v2
+
       - name: Fix leg (tests, fix, reviews, PR)
         env:
           PLAN_ID: ${{ matrix.plan }}
@@ -489,6 +501,10 @@ jobs:
           cache: true
           cache-dependency-path: repo/go.sum
 
+      - name: Set up Bun
+        # install_opencode in lib.sh installs the pinned opencode CLI with bun.
+        uses: oven-sh/setup-bun@v2
+
       - name: Fix leg (tests, fix, reviews, PR)
         env:
           PLAN_ID: ${{ matrix.plan }}
@@ -555,6 +571,10 @@ jobs:
           go-version-file: repo/go.mod
           cache: true
           cache-dependency-path: repo/go.sum
+
+      - name: Set up Bun
+        # install_opencode in lib.sh installs the pinned opencode CLI with bun.
+        uses: oven-sh/setup-bun@v2
 
       - name: Fix leg (tests, fix, reviews, PR)
         env:
