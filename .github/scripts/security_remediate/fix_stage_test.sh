@@ -368,12 +368,26 @@ assert "the PR-writer misbehaviour opens no pull request" "no"   "$([ -s "$prfil
 # With the sandbox on, the session's own commit cannot happen at all: .git is
 # mounted read-only. The runner then commits the session's file writes as
 # usual and the leg succeeds.
+# The outcome depends on whether the environment running the stage has
+# bubblewrap (CI's e2e job does not): with the sandbox the session cannot
+# commit at all and the leg succeeds; without it the HEAD-unchanged guard
+# discards the commit and fails the leg.
+stage_has_bwrap() { PATH="$STUBS:$PATH" command -v bwrap >/dev/null 2>&1; }
+
 committer="$TMP/committer"
 new_fixture "$committer" committer
-if run_stage "$committer"; then echo "ok: the sandboxed session cannot commit and the leg succeeds"; else fail "the sandboxed session cannot commit and the leg succeeds"; fi
-assert "the sandbox blocks the session commit" "0" \
-  "$(git -C "$committer/repo" log --format=%s main..HEAD | grep -c 'evil session commit' || true)"
-assert "the sandboxed session still produces one pull request" "1" "$(grep -c create "$committer/prs.log" || true)"
+if stage_has_bwrap; then
+  if run_stage "$committer"; then echo "ok: the sandboxed session cannot commit and the leg succeeds"; else fail "the sandboxed session cannot commit and the leg succeeds"; fi
+  assert "the sandbox blocks the session commit" "0" \
+    "$(git -C "$committer/repo" log --format=%s main..HEAD | grep -c 'evil session commit' || true)"
+  assert "the sandboxed session still produces one pull request" "1" "$(grep -c create "$committer/prs.log" || true)"
+else
+  echo "note: no bubblewrap here; sessions run unsandboxed and the HEAD guard is the backstop"
+  if run_stage "$committer"; then fail "unsandboxed session-commit fails the leg"; else echo "ok: unsandboxed session-commit fails the leg"; fi
+  assert "the session commit is discarded" "0" \
+    "$(git -C "$committer/repo" log --format=%s main..HEAD | grep -c 'evil session commit' || true)"
+  assert "the session-commit creates no pull request" "0" "$(grep -c create "$committer/prs.log" || true)"
+fi
 
 # --- Session-commit path without the sandbox ------------------------------------
 # On a host without bubblewrap the mount-level protection is absent, so the
