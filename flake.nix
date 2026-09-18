@@ -32,6 +32,14 @@
           subPackages = [ "cmd/omac" ];
           ldflags = [ "-s" "-w" "-X main.Version=${release.version}" ];
 
+          # Backport NixOS runtime paths for 0.9.0; future releases must carry
+          # the upstream baseline fix (enforced by the Linux smoke check).
+          postPatch = pkgs.lib.optionalString (release.version == "0.9.0") ''
+            substituteInPlace internal/sandboxprofile/baseline.go \
+              --replace-fail '"/bin", "/sbin", "/usr",' \
+                '"/bin", "/sbin", "/usr", "/nix/store", "/run/current-system",'
+          '';
+
           nativeBuildInputs = [ pkgs.makeWrapper ];
           postInstall = pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
             wrapProgram "$out/bin/omac" \
@@ -53,7 +61,7 @@
         };
 
         checks.omac = pkgs.runCommand "omac-smoke" {
-          nativeBuildInputs = [ omac ];
+          nativeBuildInputs = [ omac ] ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.jq ];
         } (''
           omac version > "$out"
           grep -Fx "omac ${release.version}" "$out"
@@ -62,6 +70,14 @@
           omac doctor >> "$out"
           ! grep -F "bwrap is not installed" "$out"
           grep -F "[ok] network prompt: dialog backend available" "$out"
+          omac provenance --json | jq -e '
+            .filesystem.entries
+            | map(select(.entry == "/nix/store" or .entry == "/run/current-system"))
+            | sort_by(.entry) == [
+                {entry: "/nix/store", action: "read", source: "builtin"},
+                {entry: "/run/current-system", action: "read", source: "builtin"}
+              ]
+          '
         '');
       })) // {
         nixosModules.default = { config, lib, pkgs, ... }:
