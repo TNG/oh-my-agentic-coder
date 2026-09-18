@@ -224,8 +224,11 @@ jobs:
     # mutation-tested assertion predicates, the --no-sandbox exposure report,
     # and the harness/version registry invariants. The full "E2E: full" suite
     # (e2e.yml, live models) still runs weekly; this gate keeps these regressions
-    # off the merge path instead of surfacing them up to a week later. No
-    # bubblewrap: `omac serve --no-inner` exercises the control plane only.
+    # off the merge path instead of surfacing them up to a week later. The Go
+    # tests need no bubblewrap (`omac serve --no-inner` exercises the control
+    # plane only); the Linux step below installs it so the shell fix-leg test
+    # exercises the sandboxed branch, while macOS exercises the no-bubblewrap
+    # fallback branch.
     name: "E2E: model-free (${{ matrix.os }})"
     runs-on: ${{ matrix.os }}
     strategy:
@@ -235,6 +238,21 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Install bubblewrap (Linux only)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update && sudo apt-get install -y bubblewrap
+          # Ubuntu 24.04 AppArmor restricts unprivileged user namespaces.
+          # Grant bwrap the userns permission so the shell fix-leg test can
+          # run its sandboxed branch instead of only the fallback one.
+          sudo tee /etc/apparmor.d/bwrap > /dev/null <<'EOF'
+          abi <abi/4.0>,
+          /usr/bin/bwrap flags=(unconfined) {
+            userns,
+          }
+          EOF
+          sudo apparmor_parser -r /etc/apparmor.d/bwrap
 
       - name: Set up Go
         uses: actions/setup-go@v5
