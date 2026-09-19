@@ -358,6 +358,14 @@ func (s *SidecarMeta) Validate(skillName string) error {
 		if err := claim(c.Name, "config"); err != nil {
 			return err
 		}
+		// A secret-holding skill must not declare an unconstrained string
+		// config field: skill-config.yaml is agent-writable, and an
+		// unconstrained field accepts any value the sidecar would receive
+		// alongside its secrets. Checked after claim so name-collision
+		// errors (a more fundamental problem) take priority.
+		if c.EffectiveType() == ConfigFieldString && len(s.Secrets) > 0 && c.Pattern == "" {
+			return fmt.Errorf("sidecar.config[%d]: a string field on a secret-holding skill must declare a pattern", i)
+		}
 	}
 
 	for _, p := range s.EnvPassthrough {
