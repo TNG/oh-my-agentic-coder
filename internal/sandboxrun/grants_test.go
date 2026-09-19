@@ -1037,6 +1037,12 @@ func TestResolveGrantsWorkdirEnvProtectedByDefault(t *testing.T) {
 	writeFile(t, env)
 	envrc := filepath.Join(wd, ".envrc")
 	writeFile(t, envrc)
+	envLocal := filepath.Join(wd, ".env.local")
+	writeFile(t, envLocal)
+	envProduction := filepath.Join(wd, ".env.production")
+	writeFile(t, envProduction)
+	envProductionLocal := filepath.Join(wd, ".env.production.local")
+	writeFile(t, envProductionLocal)
 	nested := filepath.Join(wd, "config")
 	if err := os.MkdirAll(nested, 0o755); err != nil {
 		t.Fatal(err)
@@ -1062,6 +1068,15 @@ func TestResolveGrantsWorkdirEnvProtectedByDefault(t *testing.T) {
 		}
 		if !slices.Contains(g.ProtectedPaths, nestedEnv) {
 			t.Errorf("nested .env not protected by default: %v", g.ProtectedPaths)
+		}
+		if !slices.Contains(g.ProtectedPaths, envLocal) {
+			t.Errorf("workdir .env.local not protected by default: %v", g.ProtectedPaths)
+		}
+		if !slices.Contains(g.ProtectedPaths, envProduction) {
+			t.Errorf("workdir .env.production not protected by default: %v", g.ProtectedPaths)
+		}
+		if !slices.Contains(g.ProtectedPaths, envProductionLocal) {
+			t.Errorf("workdir .env.production.local not protected by default: %v", g.ProtectedPaths)
 		}
 		if slices.Contains(g.ProtectedPaths, keep) {
 			t.Error("non-.env file must not be protected")
