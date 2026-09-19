@@ -215,10 +215,14 @@ func ResolveGrants(p *sandboxprofile.Profile, workdir string, notices io.Writer)
 	// a single walk over the granted (non-baseline) scan roots. Path-form
 	// deny entries expand to explicit paths; basename globs and baseline
 	// basenames are matched together in one pass.
-	protected = append(protected, resolveDenyPaths(
+	denyResolved, err := resolveDenyPaths(
 		p.Filesystem.Deny, base.WorkdirProtected, p.Filesystem.OverrideDeny,
 		dedupe(denyScan), notices,
-	)...)
+	)
+	if err != nil {
+		return nil, err
+	}
+	protected = append(protected, denyResolved...)
 
 	g := &Grants{
 		Workdir:         workdir,
@@ -437,10 +441,12 @@ func denyScanRoots(p *sandboxprofile.Profile, workdir string) ([]string, error) 
 // basenames in a single filesystem walk. User deny path-form entries expand
 // to explicit protected paths; basename globs and baseline basenames are
 // matched together. override_deny holes (basename or absolute path) are
-// punched through baseline matches.
-func resolveDenyPaths(userDeny, baselineBasenames, overrideDeny, scanRoots []string, notices io.Writer) []string {
+// punched through baseline matches. An incomplete protection scan (a root
+// hitting the entry cap) is reported as an error so the caller fails closed
+// instead of proceeding with a partial protected set.
+func resolveDenyPaths(userDeny, baselineBasenames, overrideDeny, scanRoots []string, notices io.Writer) ([]string, error) {
 	if len(userDeny) == 0 && len(baselineBasenames) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	explicit := pathFormDenies(userDeny, notices)
@@ -461,7 +467,10 @@ func resolveDenyPaths(userDeny, baselineBasenames, overrideDeny, scanRoots []str
 
 	out := explicit
 	if len(globs) > 0 {
-		matches := walkGlobMatches(scanRoots, globs, notices)
+		matches, err := walkGlobMatches(scanRoots, globs, notices)
+		if err != nil {
+			return nil, err
+		}
 		// Drop baseline matches covered by an absolute-path override.
 		for _, m := range matches {
 			if !overrides[m] {
@@ -469,7 +478,7 @@ func resolveDenyPaths(userDeny, baselineBasenames, overrideDeny, scanRoots []str
 			}
 		}
 	}
-	return out
+	return out, nil
 }
 
 // pathFormDenies expands the path-form (non basename-glob) entries of a
@@ -520,9 +529,14 @@ func clampInt(v, lo, hi int) int {
 // (masking the dir is enough). Roots are walked concurrently (bounded by
 // denyScanConcurrency); the result set is order-independent — callers
 // dedupe+sort — so concurrency doesn't affect the resolved grants.
-func walkGlobMatches(roots, globs []string, notices io.Writer) []string {
+//
+// If any root hits the entry cap the walk is incomplete: files the
+// configuration promises are blocked may never be visited and would be
+// left unmasked. Returning an error here makes the launch path refuse
+// to start rather than degrade to a partial protected set.
+func walkGlobMatches(roots, globs []string, notices io.Writer) ([]string, error) {
 	if len(globs) == 0 || len(roots) == 0 {
-		return nil
+		return nil, nil
 	}
 	type rootResult struct {
 		matches []string
@@ -544,13 +558,14 @@ func walkGlobMatches(roots, globs []string, notices io.Writer) []string {
 	wg.Wait()
 
 	// Merge deterministically in root order; dedupe paths matched under
-	// overlapping roots. Cap notices are emitted here (not inside the
-	// concurrent walks) so notice output stays ordered and race-free.
+	// overlapping roots. A cap hit makes the protected set incomplete, so
+	// it is surfaced as an error rather than a notice: a protection scan
+	// that cannot finish must not degrade to "unprotected".
 	seen := map[string]bool{}
 	var out []string
 	for i, root := range roots {
-		if results[i].hitCap && notices != nil {
-			fmt.Fprintf(notices, "omac sandbox: notice: filesystem.deny scan of %s hit the %d-entry limit; some matches may be unmasked\n", root, maxDenyScanEntries)
+		if results[i].hitCap {
+			return nil, fmt.Errorf("sandbox grants: filesystem.deny scan of %s hit the %d-entry limit; refusing to launch with an incomplete protected set", root, maxDenyScanEntries)
 		}
 		for _, m := range results[i].matches {
 			if !seen[m] {
@@ -559,7 +574,7 @@ func walkGlobMatches(roots, globs []string, notices io.Writer) []string {
 			}
 		}
 	}
-	return out
+	return out, nil
 }
 
 // walkOneDenyRoot walks a single root and returns the paths whose base
