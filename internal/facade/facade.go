@@ -277,6 +277,16 @@ func (f *Facade) Start(ctx context.Context) error {
 		Handler:           http.HandlerFunc(f.handle),
 		ReadHeaderTimeout: 15 * time.Second,
 		IdleTimeout:       f.IdleTimeout,
+		// Record which listener accepted each connection so the handler
+		// can gate on transport without inspecting the peer address.
+		ConnContext: func(ctx context.Context, c net.Conn) context.Context {
+			if tc, ok := c.(*transportConn); ok {
+				return context.WithValue(ctx, transportKey{}, tc.transport)
+			}
+			// Untagged listeners (e.g. a future raw Unix listener) are
+			// treated as the trusted local transport.
+			return context.WithValue(ctx, transportKey{}, transportUnix)
+		},
 	}
 
 	if f.AccessLogPath != "" {
@@ -304,9 +314,9 @@ func (f *Facade) Start(ctx context.Context) error {
 			f.cleanupListeners()
 			return fmt.Errorf("facade: chmod socket: %w", err)
 		}
-		f.unixLn = ln
+		f.unixLn = &taggedListener{Listener: ln, transport: transportUnix}
 		go func() {
-			if err := f.server.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			if err := f.server.Serve(f.unixLn); err != nil && !errors.Is(err, http.ErrServerClosed) {
 				_, _ = fmt.Fprintln(os.Stderr, "facade: serve unix:", err)
 			}
 		}()
@@ -321,9 +331,9 @@ func (f *Facade) Start(ctx context.Context) error {
 		if ta, ok := ln.Addr().(*net.TCPAddr); ok {
 			f.boundTCPort = ta.Port
 		}
-		f.tcpLn = ln
+		f.tcpLn = &taggedListener{Listener: ln, transport: transportTCP}
 		go func() {
-			if err := f.server.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			if err := f.server.Serve(f.tcpLn); err != nil && !errors.Is(err, http.ErrServerClosed) {
 				_, _ = fmt.Fprintln(os.Stderr, "facade: serve tcp:", err)
 			}
 		}()
@@ -381,10 +391,49 @@ func (f *Facade) Close() error {
 	return firstErr
 }
 
-// isTCPRemote reports whether the request came from the TCP listener
-// rather than the Unix socket. TCP remote addresses look like "127.0.0.1:<port>".
-func isTCPRemote(r *http.Request) bool {
-	return strings.HasPrefix(r.RemoteAddr, "127.")
+// transportKey is the request-context key carrying the listener that
+// accepted the request. Trust decisions (e.g. the bearer-token gate)
+// read this instead of inferring the transport from the peer address,
+// which a local dialer can choose freely.
+type transportKey struct{}
+
+// transport identifies which listener accepted a connection.
+type transport int
+
+const (
+	transportTCP  transport = 1
+	transportUnix transport = 2
+)
+
+// transportFromContext returns the transport marker set by ConnContext,
+// or zero when none is present.
+func transportFromContext(ctx context.Context) transport {
+	if v, ok := ctx.Value(transportKey{}).(transport); ok {
+		return v
+	}
+	return 0
+}
+
+// transportConn tags an accepted connection with the listener it came in
+// on, so ConnContext can record it in the request context.
+type transportConn struct {
+	net.Conn
+	transport transport
+}
+
+// taggedListener wraps a Listener so every accepted connection carries
+// the given transport marker.
+type taggedListener struct {
+	net.Listener
+	transport transport
+}
+
+func (l *taggedListener) Accept() (net.Conn, error) {
+	c, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	return &transportConn{Conn: c, transport: l.transport}, nil
 }
 
 // handle is the root HTTP handler.
@@ -394,7 +443,11 @@ func (f *Facade) handle(w http.ResponseWriter, r *http.Request) {
 	// the TCP listener accepts any local process, so we require a per-session
 	// bearer token. Constant-time comparison to avoid timing side-channels.
 	// (Interim boundary; Unix socket + SO_PEERCRED is the intended end-state, issue #88.)
-	if f.FacadeToken != "" && isTCPRemote(r) {
+	//
+	// The transport is recorded at accept time (see ConnContext in Start),
+	// not derived from the peer address: a local dialer can bind its source
+	// to any interface address, so RemoteAddr cannot identify the listener.
+	if f.FacadeToken != "" && transportFromContext(r.Context()) == transportTCP {
 		got := r.Header.Get("X-Omac-Facade-Token")
 		if got == "" || subtle.ConstantTimeCompare([]byte(got), []byte(f.FacadeToken)) != 1 {
 			http.Error(w, "omac: unauthorized (send X-Omac-Facade-Token from $OMAC_FACADE_TOKEN)", http.StatusUnauthorized)
