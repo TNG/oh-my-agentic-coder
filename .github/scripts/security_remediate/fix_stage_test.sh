@@ -278,7 +278,7 @@ run_stage() {
       SECURITY_SCAN_PAT=sim-pat REPO_TOKEN=sim-repo-token ARCHIVE_REPO="sim/archive" \
       SKAINET_TOKEN=sim SKAINET_INTERNAL="http://sim" \
       bash "$STAGE"
-  ) >/dev/null 2>&1 || rc=$?
+  ) > "$root/stage.log" 2>&1 || rc=$?
   return "$rc"
 }
 
@@ -332,6 +332,31 @@ assert "the archive log is pushed once" "1" "$(grep -c "github.com/sim/archive.g
 assert "the red check ran" "yes" "$([ -s "$happy/logs/red-check.log" ] && echo yes || echo no)"
 assert "the green check ran" "yes" "$([ -s "$happy/logs/green-check.log" ] && echo yes || echo no)"
 
+# The public log proves each phase ran, so a reader can tell that the tests
+# were red-checked and reviewed instead of guessing from a bare "writing tests"
+# followed by a red entry probe.
+log_has() {
+  local desc=$1 root=$2 needle=$3
+  if grep -qF -- "$needle" "$root/stage.log"; then
+    echo "ok: $desc"
+  else
+    fail "$desc: stage log has no '$needle'"
+  fi
+}
+log_has "the log shows the red check succeeded" "$happy" \
+  "red check: the plan's tests fail against the current tree, as required"
+log_has "the log shows the test review ran and approved" "$happy" \
+  "test review: approved (0 finding(s))"
+log_has "the log frames the entry probe as expected-red" "$happy" \
+  "entry check: the security suite is still red, as expected"
+log_has "the log shows the fix review ran" "$happy" \
+  "fix review: approved (0 finding(s))"
+if grep -qF "test review approved (0 findings)" "$happy/summary.md"; then
+  echo "ok: the step summary carries the test review verdict"
+else
+  fail "the step summary carries the test review verdict"
+fi
+
 # --- Retry path -----------------------------------------------------------------
 # Both reviewers stay insufficient: one test retry and one fix retry run, then
 # the pull request still opens.
@@ -346,6 +371,12 @@ assert "the retry path makes two test commits" "2" "$test_commits"
 assert "the retry path makes two fix commits" "2" "$fix_commits"
 assert "the retry path still opens the pull request" "yes" \
   "$([ -s "$retry/logs/pr-body.md" ] && echo yes || echo no)"
+log_has "the retry path logs the insufficient test review" "$retry" \
+  "test review: insufficient (1 finding(s))"
+log_has "the retry path logs the test retry phase" "$retry" "phase: test retry"
+log_has "the retry path logs the insufficient fix review" "$retry" \
+  "fix review: insufficient (1 finding(s))"
+log_has "the retry path logs the fix retry phase" "$retry" "phase: fix retry (tests may be adjusted)"
 
 # --- Not-red path ---------------------------------------------------------------
 # The tests pass before the fix: after one retry the leg fails, the branch is

@@ -333,6 +333,7 @@ red_check() {
     rc=1
   fi
   git -C "$REPO_DIR" checkout --quiet "$my_branch"
+  [ "$rc" -eq 0 ] && echo "red check: the plan's tests fail against the current tree, as required"
   return "$rc"
 }
 
@@ -341,19 +342,20 @@ red_check() {
 # so an already-green branch skips the fix writer), anything else runs the
 # whole suite, which also catches pre-existing tests broken by the behaviour
 # change — a failure in the leg is cheaper to debug than a red PR with no CI
-# run to look at.
+# run to look at. $2 labels the failure lines, so the entry probe's expected
+# red result does not read like a post-fix failure.
 green_check() {
-  local scope=${1:-full}
+  local scope=${1:-full} label=${2:-green check}
   {
     echo "== green check at $(git -C "$REPO_DIR" rev-parse --short HEAD) =="
     echo "== scope: ${scope} =="
   } > "$LOG_DIR/green-check.log"
-  ( cd "$REPO_DIR" && scrubbed go build ./... ) >> "$LOG_DIR/green-check.log" 2>&1 || { echo "green check: go build failed"; return 1; }
-  ( cd "$REPO_DIR" && scrubbed go vet ./... ) >> "$LOG_DIR/green-check.log" 2>&1 || { echo "green check: go vet failed"; return 1; }
+  ( cd "$REPO_DIR" && scrubbed go build ./... ) >> "$LOG_DIR/green-check.log" 2>&1 || { echo "${label}: go build failed"; return 1; }
+  ( cd "$REPO_DIR" && scrubbed go vet ./... ) >> "$LOG_DIR/green-check.log" 2>&1 || { echo "${label}: go vet failed"; return 1; }
   if [ "$scope" = security ]; then
-    ( cd "$REPO_DIR" && scrubbed go test -run 'TestSecurity' ./... ) >> "$LOG_DIR/green-check.log" 2>&1 || { echo "green check: security tests failed"; return 1; }
+    ( cd "$REPO_DIR" && scrubbed go test -run 'TestSecurity' ./... ) >> "$LOG_DIR/green-check.log" 2>&1 || { echo "${label}: security tests failed"; return 1; }
   else
-    ( cd "$REPO_DIR" && scrubbed go test -count=1 ./... ) >> "$LOG_DIR/green-check.log" 2>&1 || { echo "green check: the full test suite failed"; return 1; }
+    ( cd "$REPO_DIR" && scrubbed go test -count=1 ./... ) >> "$LOG_DIR/green-check.log" 2>&1 || { echo "${label}: the full test suite failed"; return 1; }
   fi
   return 0
 }
@@ -596,6 +598,10 @@ EOF
 }
 
 # --- Phase: tests -----------------------------------------------------------------
+# A re-entry (or a red-check failure that goes straight to the retry) never
+# reviews the tests, so record that honestly for the step summary.
+TEST_REVIEW_VERDICT="not run"
+TEST_REVIEW_FINDINGS=0
 last_test="$(last_test_commit "$REPO_DIR" "$base_sha")"
 
 if [ -z "$last_test" ]; then
@@ -611,16 +617,21 @@ if [ -z "$last_test" ]; then
 
   red_ok=false
   red_reason="the tests did not fail against the current code"
+  echo "phase: red check"
   if red_check "$last_test"; then
     red_ok=true
   fi
 
   test_review_ok=false
   if [ "$red_ok" = true ]; then
+    echo "phase: reviewing the tests"
     write_test_review_prompt "$WORK/test-review-prompt.md"
     review_guarded "$DRIVER_HOME" "$SHORT_SECS" "$REVIEWER" "$WORKSPACE" \
       "$WORK/test-review-prompt.md" "$LOG_DIR/test-review.log" "$LOG_DIR/test-review.md" \
       || fail_leg "Test review produced no verdict" "The reviewer session wrote no usable verdict; failing the leg rather than guessing."
+    TEST_REVIEW_VERDICT="$REVIEW_VERDICT"
+    TEST_REVIEW_FINDINGS="$REVIEW_FINDINGS"
+    echo "test review: $REVIEW_VERDICT ($REVIEW_FINDINGS finding(s))"
     [ "$REVIEW_VERDICT" = approved ] && test_review_ok=true || red_reason="the test review found the suite insufficient"
   fi
 
@@ -658,11 +669,12 @@ fi
 fix_ok=false
 fix_review_ok=false
 
-if green_check security; then
-  echo "phase: already green"
+echo "phase: entry check (security scope)"
+if green_check security "entry check"; then
+  echo "phase: already green — skipping the fix writer"
   fix_ok=true
 else
-  echo "phase: writing the fix"
+  echo "entry check: the security suite is still red, as expected — running the fix writer"
   write_fix_prompt "$WORK/fix-prompt.md"
   # An empty diff is not fatal here: the review below sees the green result
   # and can send it back once with the test-removal permission.
@@ -677,6 +689,7 @@ write_fix_review_prompt "$WORK/fix-review-prompt.md"
 review_guarded "$DRIVER_HOME" "$SHORT_SECS" "$REVIEWER" "$WORKSPACE" \
   "$WORK/fix-review-prompt.md" "$LOG_DIR/fix-review.log" "$LOG_DIR/fix-review.md" \
   || fail_leg "Fix review produced no verdict" "The reviewer session wrote no usable verdict; failing the leg rather than guessing."
+echo "fix review: $REVIEW_VERDICT ($REVIEW_FINDINGS finding(s))"
 [ "$REVIEW_VERDICT" = approved ] && fix_review_ok=true
 
 if [ "$fix_ok" != true ] || [ "$fix_review_ok" != true ]; then
@@ -802,6 +815,7 @@ cp "$LOG_DIR"/*.log "$LOG_DIR"/*.md "$stage_logs"/ 2>/dev/null || true
 push_archive "$ARCHIVE_DIR" "remediation: fix logs for ${SCAN_DIR} plan ${PLAN_ID} ($(date -u +%F))" \
   "scans/$SCAN_DIR/remediation/fix-$PLAN_ID"
 
-printf 'fix stage: plan %s, fix review %s (%s findings), tests %s%s\n' \
-  "$PLAN_ID" "$REVIEW_VERDICT" "$REVIEW_FINDINGS" "$([ "$fix_ok" = true ] && echo green || echo retried)" "$note" \
+printf 'fix stage: plan %s, test review %s (%s findings), fix review %s (%s findings), tests %s%s\n' \
+  "$PLAN_ID" "$TEST_REVIEW_VERDICT" "$TEST_REVIEW_FINDINGS" "$REVIEW_VERDICT" "$REVIEW_FINDINGS" \
+  "$([ "$fix_ok" = true ] && echo green || echo retried)" "$note" \
   >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
