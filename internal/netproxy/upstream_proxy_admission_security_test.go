@@ -192,10 +192,7 @@ func startUpstreamProxyWithOwnResolution(t *testing.T, approvedIP, echoAddr stri
 						break
 					}
 				}
-				target := strings.TrimSpace(firstLine)
-				if strings.HasPrefix(target, "CONNECT ") {
-					target = strings.TrimPrefix(target, "CONNECT ")
-				}
+				target := strings.TrimPrefix(strings.TrimSpace(firstLine), "CONNECT ")
 				if i := strings.LastIndex(target, " "); i >= 0 {
 					target = target[:i]
 				}
