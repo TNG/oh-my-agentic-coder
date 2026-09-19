@@ -668,10 +668,17 @@ func splitConnectTarget(target string) (string, int, error) {
 
 // validateHostname rejects hostnames that are malformed after normalization.
 // IP literals are exempt — net.SplitHostPort already strips brackets from
-// IPv6 and netip.ParseAddr accepts the result.
+// IPv6 and netip.ParseAddr accepts the result. Non-canonical IPv4 spellings
+// that netip.ParseAddr rejects but libc's inet_aton decodes (hex, octal,
+// abbreviated forms) are also rejected so they never enter the DNS path,
+// where a resolver that honours inet_aton would connect to the decoded
+// address, bypassing every address-level check.
 func validateHostname(host string) error {
 	if _, err := netip.ParseAddr(host); err == nil {
 		return nil // IP literal, not a DNS name
+	}
+	if _, ok := inetAtonDecode(host); ok {
+		return fmt.Errorf("non-canonical IPv4 spelling")
 	}
 	if len(host) > 253 {
 		return fmt.Errorf("hostname too long")
@@ -696,9 +703,60 @@ func validateHostname(host string) error {
 	return nil
 }
 
+// inetAtonDecode attempts to decode s as an IPv4 address using inet_aton
+// rules, which accept hex (0x prefix), octal (0 prefix), and abbreviated
+// forms (1-4 dot-separated parts) that netip.ParseAddr rejects. Canonical
+// dotted-decimal is handled by the caller via netip.ParseAddr before this
+// function is reached, so any successful decode here is a non-canonical
+// spelling. Returns false if s is not a valid inet_aton address (including
+// any non-numeric label, which covers ordinary hostnames).
+func inetAtonDecode(s string) (netip.Addr, bool) {
+	parts := strings.Split(s, ".")
+	if len(parts) == 0 || len(parts) > 4 {
+		return netip.Addr{}, false
+	}
+	var vals [4]uint64
+	for i, p := range parts {
+		if p == "" {
+			return netip.Addr{}, false
+		}
+		v, err := strconv.ParseUint(p, 0, 32)
+		if err != nil {
+			return netip.Addr{}, false
+		}
+		vals[i] = v
+	}
+	var addr uint32
+	switch len(parts) {
+	case 1:
+		addr = uint32(vals[0])
+	case 2:
+		// a.b: a is the first byte, b is the remaining 24 bits (inet_aton).
+		if vals[0] > 255 || vals[1] > 0xffffff {
+			return netip.Addr{}, false
+		}
+		addr = uint32(vals[0])<<24 | uint32(vals[1])
+	case 3:
+		// a.b.c: a and b are the first two bytes, c is 16 bits (inet_aton).
+		if vals[0] > 255 || vals[1] > 255 || vals[2] > 0xffff {
+			return netip.Addr{}, false
+		}
+		addr = uint32(vals[0])<<24 | uint32(vals[1])<<16 | uint32(vals[2])
+	case 4:
+		for i := range parts {
+			if vals[i] > 255 {
+				return netip.Addr{}, false
+			}
+		}
+		addr = uint32(vals[0])<<24 | uint32(vals[1])<<16 | uint32(vals[2])<<8 | uint32(vals[3])
+	}
+	return netip.AddrFrom4([4]byte{byte(addr >> 24), byte(addr >> 16), byte(addr >> 8), byte(addr)}), true
+}
+
 // IsLoopbackHost reports whether the host string names a local destination.
 // It is called on the raw value from the CONNECT/forward request before DNS,
-// so it must catch every syntactic variant: trailing dots, unspecified addrs.
+// so it must catch every syntactic variant: trailing dots, unspecified addrs,
+// and non-canonical IPv4 spellings that inet_aton decodes to loopback.
 // Exported so omac diagnose --probe can use the same definition as the proxy.
 func IsLoopbackHost(host string) bool {
 	h := NormalizeHost(host) // strips trailing dots, lowercases
@@ -706,6 +764,11 @@ func IsLoopbackHost(host string) bool {
 		return true
 	}
 	if ip, err := netip.ParseAddr(h); err == nil {
+		return isHostLocal(ip)
+	}
+	// Catch spellings like 0x7f.0.0.1 or 2130706433 that netip.ParseAddr
+	// rejects but libc's inet_aton decodes to 127.0.0.1.
+	if ip, ok := inetAtonDecode(h); ok {
 		return isHostLocal(ip)
 	}
 	return false

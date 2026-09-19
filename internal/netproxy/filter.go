@@ -514,9 +514,25 @@ func isCloudMetadata(ip netip.Addr) bool {
 	return cloudMetadataAddrs[u]
 }
 
+// cgnatRange is the RFC 6598 carrier-grade NAT block. netip.Addr.IsPrivate
+// does not cover it, so hardDeniedAddr checks it separately.
+var cgnatRange = netip.MustParsePrefix("100.64.0.0/10")
+
+// isCGNAT reports whether ip is in the RFC 6598 CGNAT range (after unmapping).
+func isCGNAT(ip netip.Addr) bool {
+	if ip.Is4In6() {
+		ip = ip.Unmap()
+	}
+	return cgnatRange.Contains(ip)
+}
+
 // hardDeniedAddr returns a "hard-deny ..." reason if ip must never be dialed.
 // Applied at every address-level decision point: literal IPs in Check/CheckHost
-// and resolved IPs in the DNS loop.
+// and resolved IPs in the DNS loop. The set covers loopback, unspecified,
+// link-local, cloud-metadata, RFC 1918 private, CGNAT, and IPv6 unique-local
+// ranges. A hostname grant (allow_domain, learned allow, prompt allow) admits
+// the name, not the address — if a later DNS answer resolves into any of these
+// ranges the connect is refused here.
 func hardDeniedAddr(ip netip.Addr) (string, bool) {
 	if isLinkLocal(ip) {
 		return "hard-deny link-local address", true
@@ -526,6 +542,16 @@ func hardDeniedAddr(ip netip.Addr) (string, bool) {
 	}
 	if isCloudMetadata(ip) {
 		return "hard-deny cloud-metadata address", true
+	}
+	u := ip
+	if u.Is4In6() {
+		u = u.Unmap()
+	}
+	if u.IsPrivate() {
+		return "hard-deny private address", true
+	}
+	if isCGNAT(u) {
+		return "hard-deny CGNAT address", true
 	}
 	return "", false
 }

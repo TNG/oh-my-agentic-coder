@@ -34,12 +34,18 @@ Cloud instance-metadata endpoints (169.254.169.254, 100.100.100.200,
 192.0.0.192, 169.254.170.2, fd00:ec2::254, metadata.google.internal,
 metadata.azure.internal) are blocked unconditionally and cannot be approved
 interactively. Any hostname resolving to a loopback, unspecified, link-local,
-or metadata address is also blocked.
+private (RFC 1918), carrier-grade NAT (100.64.0.0/10), IPv6 unique-local
+(fc00::/7), or metadata address is also blocked. A hostname grant
+(allow_domain or an interactively allowed host) admits the name, not the
+address — if a later DNS answer resolves the granted name into any of these
+ranges the connection is refused. On the direct path the proxy pins the
+admission-time resolved IPs and dials those; on the chained (upstream-proxy)
+path the proxy resolves and validates the hostname at admission, before
+issuing CONNECT, aborting if the answer lands in a forbidden range.
 
 `host.docker.internal` (the Docker bridge gateway, typically 172.17.0.1) is
-not in the hard-deny set. It is a private RFC 1918 address and is subject to
-the normal prompt or allow/deny policy. If you run Docker and want to
-prevent the agent from reaching it, add it to `network.deny_domain`.
+a private RFC 1918 address and is blocked under this rule. It cannot be
+reached through the proxy.
 
 ### Filesystem
 
