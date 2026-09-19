@@ -289,6 +289,8 @@ jobs:
           plans="$archive/scans/${SCAN_DIR}/mitigation-plans/plans.json"
           # lib.sh is sourced, never run; call assign_waves from a subshell.
           waves="$(bash -c '. repo/.github/scripts/security_remediate/lib.sh && assign_waves "$1" "$2"' _ "$plans" "$SELECTED_IDS")"
+          echo "plan -> wave: $(printf '%s' "$waves" | jq -r '.map | to_entries | sort_by(.value, .key) | map("\(.key) -> \(.value)") | join(", ")')"
+          echo "overflow: $(printf '%s' "$waves" | jq -c '.overflow')"
           for n in 1 2 3 4; do
             echo "wave$n=$(printf '%s' "$waves" | jq -c --argjson n "$n" '.waves[$n | tostring]')" >> "$GITHUB_OUTPUT"
           done
@@ -365,6 +367,13 @@ jobs:
           go-version-file: repo/go.mod
           cache: true
           cache-dependency-path: repo/go.sum
+
+      - name: Install staticcheck
+        # CI's lint job runs staticcheck, and the leg's green check runs the
+        # same tool, so a fix cannot open a pull request that fails CI lint.
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@latest
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
       - name: Set up Bun
         # install_opencode in lib.sh installs the pinned opencode CLI with bun.
@@ -450,6 +459,13 @@ jobs:
           cache: true
           cache-dependency-path: repo/go.sum
 
+      - name: Install staticcheck
+        # CI's lint job runs staticcheck, and the leg's green check runs the
+        # same tool, so a fix cannot open a pull request that fails CI lint.
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@latest
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
       - name: Set up Bun
         # install_opencode in lib.sh installs the pinned opencode CLI with bun.
         uses: oven-sh/setup-bun@v2
@@ -524,6 +540,13 @@ jobs:
           cache: true
           cache-dependency-path: repo/go.sum
 
+      - name: Install staticcheck
+        # CI's lint job runs staticcheck, and the leg's green check runs the
+        # same tool, so a fix cannot open a pull request that fails CI lint.
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@latest
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
       - name: Set up Bun
         # install_opencode in lib.sh installs the pinned opencode CLI with bun.
         uses: oven-sh/setup-bun@v2
@@ -597,6 +620,13 @@ jobs:
           go-version-file: repo/go.mod
           cache: true
           cache-dependency-path: repo/go.sum
+
+      - name: Install staticcheck
+        # CI's lint job runs staticcheck, and the leg's green check runs the
+        # same tool, so a fix cannot open a pull request that fails CI lint.
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@latest
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
       - name: Set up Bun
         # install_opencode in lib.sh installs the pinned opencode CLI with bun.

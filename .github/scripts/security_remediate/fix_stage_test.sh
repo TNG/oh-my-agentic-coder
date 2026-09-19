@@ -156,6 +156,29 @@ esac
 exit 0
 EOF
 
+# gofmt and staticcheck are what CI's lint job runs; the leg's checks call the
+# same tools, so these stubs let a scenario expose a lint failure. gofmt only
+# reacts once the fix is in place, so the red check on the test-only commit
+# stays clean and the failure lands at the green check.
+cat > "$STUBS/gofmt" <<'EOF'
+#!/usr/bin/env bash
+d="$PWD"; sim=""
+while [ "$d" != "/" ]; do [ -f "$d/.sim-mode" ] && { sim="$(cat "$d/.sim-mode")"; break; }; d="$(dirname "$d")"; done
+if [ "$sim" = unformatted ]; then
+  for f in $(find . -name 'prod*.go' -not -name '*_test.go'); do
+    grep -q fixed "$f" && { echo "./pkg/prod.go"; exit 0; }
+  done
+fi
+exit 0
+EOF
+cat > "$STUBS/staticcheck" <<'EOF'
+#!/usr/bin/env bash
+d="$PWD"; sim=""
+while [ "$d" != "/" ]; do [ -f "$d/.sim-mode" ] && { sim="$(cat "$d/.sim-mode")"; break; }; d="$(dirname "$d")"; done
+[ "$sim" = lint ] && { echo "pkg/prod.go:3:2: this value is never used (SA4006)"; exit 1; }
+exit 0
+EOF
+
 # Each stub session recognises its phase by a phrase in its prompt. In retry
 # mode the reviewers stay insufficient and each retry session appends one line
 # so its commit is non-empty.
@@ -223,7 +246,7 @@ chmod +x "$STUBS"/*
 # PATH the stage will run with: every stub is what keeps it away from the real
 # git, gh, network and model. Probed explicitly so the test's own fixture git
 # calls keep using the real binary.
-for tool in git gh curl bun opencode go; do
+for tool in git gh curl bun opencode go gofmt staticcheck; do
   resolved="$(PATH="$STUBS:$PATH" command -v "$tool" 2>/dev/null || true)"
   if [ "$resolved" != "$STUBS/$tool" ]; then
     echo "stub resolution broken: '$tool' resolves to '${resolved:-nothing}', expected '$STUBS/$tool'" >&2
@@ -367,7 +390,7 @@ log_has "the log shows the red check succeeded" "$happy" \
 log_has "the log shows the test review ran and approved" "$happy" \
   "test review: approved (0 finding(s))"
 log_has "the log frames the entry probe as expected-red" "$happy" \
-  "entry check: the security suite is still red, as expected"
+  "entry check: not green (tests and/or lint) — running the fix writer"
 log_has "the log shows the fix review ran" "$happy" \
   "fix review: approved (0 finding(s))"
 if grep -qF "test review approved (0 findings)" "$happy/summary.md"; then
@@ -572,6 +595,23 @@ if run_stage "$flaky"; then echo "ok: a rejected archive push is retried and the
 assert "the archive push was attempted twice" "2" \
   "$(grep -c "github.com/sim/archive.git" "$flaky/pushes.log" || true)"
 assert "the flaky-archive leg creates one pull request" "1" "$(grep -c create "$flaky/prs.log" || true)"
+
+# --- Lint gate ------------------------------------------------------------------
+# CI's lint job runs gofmt and staticcheck; the leg's green check runs the same
+# tools, so a fix cannot open a pull request that fails CI lint.
+fmt="$TMP/gofmtfail"
+new_fixture "$fmt" unformatted
+if run_stage "$fmt"; then fail "an unformatted fix fails the green check"; else echo "ok: an unformatted fix fails the green check"; fi
+assert "the gofmt failure is reported" "yes" \
+  "$(grep -q 'not gofmt-clean' "$fmt/stage.log" && echo yes || echo no)"
+assert "the unformatted leg opens no pull request" "0" "$(grep -c create "$fmt/prs.log" || true)"
+
+lint="$TMP/lintfail"
+new_fixture "$lint" lint
+if run_stage "$lint"; then fail "a staticcheck finding fails the green check"; else echo "ok: a staticcheck finding fails the green check"; fi
+assert "the staticcheck failure is reported" "yes" \
+  "$(grep -q 'staticcheck reported findings' "$lint/stage.log" && echo yes || echo no)"
+assert "the lint-failing leg opens no pull request" "0" "$(grep -c create "$lint/prs.log" || true)"
 
 if [ "$failures" -gt 0 ]; then
   echo "$failures fix-stage test(s) failed" >&2

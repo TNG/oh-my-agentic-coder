@@ -339,6 +339,43 @@ review_guarded() {
   return "$rc"
 }
 
+# gofmt is what CI's lint job gates on, and it is free, so both the red
+# (test-only) and the green (full) trees must be format-clean: an unformatted
+# file is a red CI run, not a review finding, and catching it before the fix
+# starts is cheaper than a fix retry.
+format_check() {
+  local label=$1 logf=$2 list
+  echo "== gofmt -l . ==" >> "$logf"
+  if ! list="$( cd "$REPO_DIR" && scrubbed gofmt -l . 2>>"$logf" )"; then
+    echo "${label}: gofmt failed to run"
+    return 1
+  fi
+  printf '%s\n' "$list" >> "$logf"
+  if [ -n "$list" ]; then
+    echo "${label}: these files are not gofmt-clean:"
+    printf '%s\n' "$list"
+    return 1
+  fi
+  return 0
+}
+
+# staticcheck is the other half of CI's lint job; the target repo is clean on
+# main, so any finding is this change's. Skipped with a warning where the tool
+# is not installed (the local harness has only stubs).
+staticcheck_check() {
+  local label=$1 logf=$2
+  if ! command -v staticcheck >/dev/null 2>&1; then
+    echo "${label}: staticcheck not installed — lint gate skipped"
+    return 0
+  fi
+  echo "== staticcheck ./... ==" >> "$logf"
+  if ! ( cd "$REPO_DIR" && scrubbed staticcheck ./... ) >> "$logf" 2>&1; then
+    echo "${label}: staticcheck reported findings"
+    return 1
+  fi
+  return 0
+}
+
 # The red proof: at $1 the plan's tests must exist, compile, and FAIL. A tree
 # that does not compile, or tests that pass, is not red. `go build` does not
 # compile _test.go files, so `go vet` is the compile gate for the test tree —
@@ -356,6 +393,8 @@ red_check() {
   elif ! ( cd "$REPO_DIR" && scrubbed go vet ./... ) >> "$LOG_DIR/red-check.log" 2>&1; then
     echo "red check: the tests do not compile (go vet failed)"
     rc=1
+  elif ! format_check "red check" "$LOG_DIR/red-check.log"; then
+    rc=1
   elif [ -n "$(missing_test_names "$REPO_DIR" "$plan_tests_file")" ]; then
     echo "red check: planned test names are missing from the tree"
     rc=1
@@ -368,13 +407,15 @@ red_check() {
   return "$rc"
 }
 
-# The green proof: at HEAD the tree builds, vets, and tests pass. $1 selects
-# the scope: "security" runs only the promoted suite (the cheap entry check,
-# so an already-green branch skips the fix writer), anything else runs the
-# whole suite, which also catches pre-existing tests broken by the behaviour
+# The green proof: at HEAD the tree builds, vets, lints, and tests pass. $1
+# selects the scope: "security" runs only the promoted suite (the cheap entry
+# check, so an already-green branch skips the fix writer), anything else runs
+# the whole suite, which also catches pre-existing tests broken by the behaviour
 # change — a failure in the leg is cheaper to debug than a red PR with no CI
 # run to look at. $2 labels the failure lines, so the entry probe's expected
 # red result does not read like a post-fix failure.
+# Lint runs after the tests so a lint-only failure leaves the findings at the
+# tail of the log, where the retry prompt's excerpt shows them to the writer.
 green_check() {
   local scope=${1:-full} label=${2:-green check}
   {
@@ -388,6 +429,8 @@ green_check() {
   else
     ( cd "$REPO_DIR" && scrubbed go test -count=1 ./... ) >> "$LOG_DIR/green-check.log" 2>&1 || { echo "${label}: the full test suite failed"; return 1; }
   fi
+  format_check "$label" "$LOG_DIR/green-check.log" || return 1
+  staticcheck_check "$label" "$LOG_DIR/green-check.log" || return 1
   return 0
 }
 
@@ -427,6 +470,8 @@ the current code and pass only once that fix lands.
 - Keep comments concise and only where they add value: explain why, never
   restate what the code already says.
 - Verify with: cd repo && go test -run '${test_selector}' ./...
+- Format before finishing: cd repo && gofmt -l . must print nothing. The
+  mechanical red check fails on unformatted files, and CI gates on gofmt.
 - You have a limited wall-clock budget and may be stopped at any moment. The
   runner commits whatever is done.
 
@@ -448,8 +493,8 @@ and FAIL against the current code: ${plan_tests_csv}
 
 Same rules as before: only *_security_test.go files, self-contained, the
 security property of the FIXED state asserted, no exploit mechanics revealed,
-and comments kept concise — only where they add value, explaining why rather
-than restating the code.
+comments kept concise — only where they add value, explaining why rather than
+restating the code, and cd repo && gofmt -l . must print nothing.
 Plan: ${plan_ref}
 
 Sanctioned, pre-authorized session — proceed directly without asking for
@@ -482,6 +527,10 @@ Execute the plan for plan ${PLAN_ID}: ${plan_ref}.
   weaken or delete a test just to make the suite pass. State every test change
   and why in your final message.
 - Run the FULL suite before finishing: cd repo && go test -count=1 ./...
+- The repository's lint gates are part of CI, and the runner's green check runs
+  them, so the fix is not done until they pass too:
+  cd repo && gofmt -l . (prints nothing) && go vet ./... &&
+  staticcheck ./... (reports nothing).
 - Never copy finding material into the code: no finding titles and no
   proof-of-concept descriptions or commands, in identifiers, comments, error
   strings, log messages, commit content or test data. Nothing you write may
@@ -512,8 +561,8 @@ now also edit or delete this plan's regression tests if they are impossible or
 unnecessary — the reviewer knows tests may be unfeasible; state clearly in
 your final message if you removed or changed one and why.
 
-Everything must be green:
-  cd repo && go build ./... && go vet ./... && go test -count=1 ./...
+Everything must be green, including the lint gates CI runs:
+  cd repo && gofmt -l . && go vet ./... && staticcheck ./... && go test -count=1 ./...
 
 The plan's files are guidance: prefer ${my_files}, and if another file is
 genuinely needed, edit it and say why — out-of-plan files are flagged to the
@@ -649,8 +698,8 @@ Requirements:
 - In the template's Issue line use exactly: Refs #${OVERVIEW_ISSUE}
   Never "Closes": other pull requests target the same issue.
 - Be concise: 1-4 bullets in What/Why/How, no restating what the diff shows.
-- The Verification section states that go build, go vet and the security
-  regression tests pass.
+- The Verification section states that go build, go vet, gofmt, staticcheck
+  and the security regression tests pass.
 - Never describe how the underlying vulnerability is exploited, and do not
   mention plan ids, the private archive, or review files.
 - Do NOT change anything in the repository and do NOT create commits: write
@@ -742,7 +791,7 @@ if green_check security "entry check"; then
   echo "phase: already green — skipping the fix writer"
   fix_ok=true
 else
-  echo "entry check: the security suite is still red, as expected — running the fix writer"
+  echo "entry check: not green (tests and/or lint) — running the fix writer"
   write_fix_prompt "$WORK/fix-prompt.md"
   # An empty diff is not fatal here: the review below sees the green result
   # and can send it back once with the test-removal permission.
