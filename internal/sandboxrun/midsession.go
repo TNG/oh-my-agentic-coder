@@ -28,12 +28,16 @@ func WatchNewProtected(p *sandboxprofile.Profile, workdir string, interval time.
 	if err != nil {
 		return err
 	}
-	resolve := func() []string {
+	resolve := func() ([]string, error) {
 		return resolveDenyPaths(p.Filesystem.Deny, base.WorkdirProtected, p.Filesystem.OverrideDeny, roots, nil)
 	}
 
 	known := map[string]bool{}
-	for _, m := range resolve() {
+	initial, err := resolve()
+	if err != nil {
+		return err
+	}
+	for _, m := range initial {
 		known[m] = true
 	}
 
@@ -44,7 +48,11 @@ func WatchNewProtected(p *sandboxprofile.Profile, workdir string, interval time.
 		case <-stop:
 			return nil
 		case <-ticker.C:
-			for _, m := range resolve() {
+			current, err := resolve()
+			if err != nil {
+				return err
+			}
+			for _, m := range current {
 				if !known[m] {
 					known[m] = true
 					onNew(m)
