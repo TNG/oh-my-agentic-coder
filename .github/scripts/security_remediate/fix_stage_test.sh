@@ -168,6 +168,7 @@ case "$last" in
     echo fixed > "$r/pkg/prod.go"
     [ "$sim" = die ] && exit 3
     [ "$sim" = offplan ] && echo wandered >> "$r/pkg/other.go"
+    [ "$sim" = godeny ] && echo "module sim" > "$r/go.mod"
     if [ "$sim" = committer ]; then
       git -C "$r" add -A
       git -C "$r" commit -qm "evil session commit"
@@ -496,13 +497,28 @@ assert "the failed leg archives its logs" "1" \
   "$(git -C "$leakhard/archive" log --format=%s | grep -c 'fix logs (failed)' || true)"
 
 # --- Out-of-plan path -----------------------------------------------------------
-# The fix writer edits a file the plan does not own: the guard fails the leg
-# and names the offending file.
+# The plan's files are guidance: an out-of-plan edit succeeds, but the PR body
+# carries a mechanical note naming the file, and the log reports it.
 offplan="$TMP/offplan"
 new_fixture "$offplan" offplan
-if run_stage "$offplan"; then fail "out-of-plan edit fails the leg"; else echo "ok: out-of-plan edit fails the leg"; fi
-log_has "the ownership guard names the offending file" "$offplan" "pkg/other.go"
-assert "the out-of-plan edit creates no pull request" "0" "$(grep -c create "$offplan/prs.log" || true)"
+if run_stage "$offplan"; then echo "ok: an out-of-plan edit still succeeds"; else fail "an out-of-plan edit still succeeds"; fi
+log_has "the out-of-plan edit is reported in the log" "$offplan" \
+  "out of plan (allowed, flagged to reviewers): pkg/other.go"
+assert "the out-of-plan edit creates one pull request" "1" "$(grep -c create "$offplan/prs.log" || true)"
+if grep -qF "Out-of-plan changes" "$offplan/logs/pr-body.md" && grep -qF -- "- pkg/other.go" "$offplan/logs/pr-body.md"; then
+  echo "ok: the PR body flags and names the out-of-plan file"
+else
+  fail "the PR body flags and names the out-of-plan file"
+fi
+
+# --- Denied-path path -----------------------------------------------------------
+# The fix writer edits a file no session may touch (go.mod): the leg fails and
+# no pull request opens.
+godeny="$TMP/godeny"
+new_fixture "$godeny" godeny
+if run_stage "$godeny"; then fail "a denied-path edit fails the leg"; else echo "ok: a denied-path edit fails the leg"; fi
+log_has "the denied-path failure names the file" "$godeny" "go.mod"
+assert "the denied-path edit creates no pull request" "0" "$(grep -c create "$godeny/prs.log" || true)"
 
 # --- Stale-test path ------------------------------------------------------------
 # The fix breaks a pre-existing normal test. The full-suite green check catches

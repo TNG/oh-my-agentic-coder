@@ -599,12 +599,18 @@ unset BUDGET_MINUTES
 # The sandbox mounts the whole filesystem read-only, keeps /tmp and the
 # session workdir writable, and pins every .git in reach read-only.
 sb="$TMP/sb"
-mkdir -p "$sb/repo/.git" "$sb/archive/.git"
+mkdir -p "$sb/repo/.git" "$sb/archive/.git" "$sb/repo/.github"
+printf 'module sim\n' > "$sb/repo/go.mod"
 sb_args="$(session_sandbox_args "$sb" | paste -sd' ' -)"
 case "$sb_args" in
   *"--ro-bind / / --bind /tmp /tmp"*"--bind $sb $sb"*"--ro-bind $sb/repo/.git $sb/repo/.git"*"--ro-bind $sb/archive/.git $sb/archive/.git"*)
     echo "ok: the session sandbox makes the fs read-only, the workdir writable and .git read-only" ;;
   *) fail "session_sandbox_args: $sb_args" ;;
+esac
+case "$sb_args" in
+  *"--ro-bind $sb/repo/.github $sb/repo/.github"*"--ro-bind $sb/repo/go.mod $sb/repo/go.mod"*)
+    echo "ok: the session sandbox binds CI config and the module graph read-only" ;;
+  *) fail "session_sandbox_args lacks the CI/module read-only binds: $sb_args" ;;
 esac
 
 # --- session_home ---------------------------------------------------------------

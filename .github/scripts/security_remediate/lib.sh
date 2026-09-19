@@ -552,6 +552,13 @@ changed_files_within() {
   return "$violations"
 }
 
+# Paths changed across a commit range ($2, e.g. base..HEAD), one per line —
+# the cumulative view a re-entered branch needs, where the working tree alone
+# would only show the latest session's edits.
+changed_paths_between() {
+  git -C "$1" diff --name-only "$2"
+}
+
 # Install the pinned opencode CLI the sessions run with.
 install_opencode() {
   bun install -g "${E2E_VERSION_OPENCODE:-$DEFAULT_OPENCODE_VERSION}"
@@ -622,6 +629,15 @@ session_sandbox_args() {
               --bind "$workdir" "$workdir")
   for g in "$workdir/.git" "$workdir/repo/.git" "$workdir/archive/.git"; do
     [ -d "$g" ] && args+=(--ro-bind "$g" "$g")
+  done
+  # CI and supply-chain surfaces are read-only for every session — a fix may
+  # edit production files, but never the workflows or the module graph. The
+  # runner-side denylist is the backstop where bubblewrap is unavailable.
+  # These binds come after the workdir bind so they win over its writability.
+  for g in "$workdir/.github" "$workdir/repo/.github" \
+           "$workdir/go.mod" "$workdir/go.sum" "$workdir/go.work" "$workdir/go.work.sum" \
+           "$workdir/repo/go.mod" "$workdir/repo/go.sum" "$workdir/repo/go.work" "$workdir/repo/go.work.sum"; do
+    [ -e "$g" ] && args+=(--ro-bind "$g" "$g")
   done
   printf '%s\n' "${args[@]}"
 }

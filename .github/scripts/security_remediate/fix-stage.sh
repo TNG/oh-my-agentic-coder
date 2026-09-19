@@ -199,20 +199,24 @@ trap 'chmod -R u+w "$WORK" 2>/dev/null; rm -rf "$WORK"' EXIT
 plan_tests_file="$WORK/plan-tests.txt"
 printf '%s\n' "$my_plan" | jq -r '.tests[]' > "$plan_tests_file"
 
-# Test sessions own security test files only; fix sessions own the plan's
-# files only; only the final fix pass may also touch tests, so it alone gets
-# the combined pattern. The guard files live outside the session workspace so
-# no session can read its own leash.
+# Guard files, kept outside the session workspace so no session reads its own
+# leash.
+#   guard_tests — HARD: the test writer may only create/edit security tests.
+#   guard_fix   — the allow list for fix sessions: the plan's files plus any Go
+#                 test file. Guidance, not a cage: an under-specified plan must
+#                 not fail a legitimate fix. Out-of-plan edits are allowed and
+#                 flagged to reviewers; the deny list below still fails the leg.
+#   deny_fix    — HARD: CI config and the module graph, which no session may
+#                 edit (bubblewrap binds them read-only too).
 guard_tests="$WORK/guard-tests"
 printf '%s\n' '_security_test\.go$' > "$guard_tests"
 guard_fix="$WORK/guard-fix"
 {
   printf '%s\n' "$my_plan" | jq -r '.files[]' | sed 's/[^A-Za-z0-9_/-]/\\&/g; s/^/^/; s/$/$/'
-  # A behaviour fix can break pre-existing tests that encoded the old,
-  # vulnerable behaviour as a shortcut, so the fix sessions may also update
-  # any Go test file. The fix review judges those changes.
   printf '%s\n' '_test\.go$'
 } > "$guard_fix"
+deny_fix="$WORK/deny-fix"
+printf '%s\n' '(^|/)\.github/' '^go\.(mod|sum|work|work\.sum)$' > "$deny_fix"
 
 MODEL="${MODEL:-$(bash "$REPO_DIR/scripts/resolve-model.sh" opencode)}"
 REVIEWER="${REVIEW_MODEL:-$MODEL}"
@@ -270,12 +274,16 @@ fail_leg() {
   exit 1
 }
 
-# Run one writer session in $1, log to $2, enforce the $3 ownership guard, and
-# commit as $4 <$5> with message $6 within a $7-second budget. Returns 1 when
-# the session produced no changes (empty diffs are legal in the retry phases,
-# decided by the caller).
+# Run one writer session in $1, log to $2, check its writes against $3, and
+# commit as $4 <$5> with message $6 within a $7-second budget. $8 is the mode:
+# "hard" (test writer) fails on any write outside the allow list; "soft" (fix
+# sessions) fails only on the deny list (.github/, module graph) and reports
+# the rest as out-of-plan for the reviewers and the pull request. Returns 1
+# when the session produced no changes (empty diffs are legal in the retry
+# phases, decided by the caller).
 run_phase() {
-  local prompt=$1 log=$2 guard=$3 name=$4 email=$5 message=$6 secs=$7 status=0 pre_head offending
+  local prompt=$1 log=$2 guard=$3 name=$4 email=$5 message=$6 secs=$7 mode=${8:-hard}
+  local status=0 pre_head offending denied
   pre_head="$(git -C "$REPO_DIR" rev-parse HEAD)"
   set +e
   run_session "$DRIVER_HOME" "$secs" "$MODEL" "$WORKSPACE" "$prompt" "$log"
@@ -293,7 +301,17 @@ run_phase() {
   fi
   offending="$(changed_files_within "$REPO_DIR" "$guard" || true)"
   if [ -n "$offending" ]; then
-    fail_leg "Ownership guard tripped" "The session edited files outside its allowed set: $(printf '%s' "$offending" | paste -sd', ' -). Either the plan's files list is incomplete (a fix may not edit a file it does not own) or the session wandered; the output is on the branch as a wip commit and no pull request was opened."
+    # Paths outside the allow list: the deny list is always fatal, everything
+    # else is only reported — an under-specified plan must not kill a fix.
+    denied="$(printf '%s\n' "$offending" | grep -Ef "$deny_fix" || true)"
+    if [ -n "$denied" ]; then
+      fail_leg "Denied paths edited" "The session edited files that are off limits to every session: $(printf '%s' "$denied" | paste -sd', ' -). Nothing was pushed for review."
+    fi
+    if [ "$mode" = hard ]; then
+      fail_leg "Ownership guard tripped" "The session edited files outside its allowed set: $(printf '%s' "$offending" | paste -sd', ' -). The output is on the branch as a wip commit and no pull request was opened."
+    fi
+    echo "out of plan (allowed, flagged to reviewers): $(printf '%s' "$offending" | paste -sd', ' -)"
+    OUT_OF_PLAN="${OUT_OF_PLAN}${offending}"$'\n'
   fi
   assert_git_untampered "$REPO_DIR" "$repo_origin" "Source checkout" || fail_leg "Git directory tampered" "A session modified the checkout's git internals."
   git -C "$REPO_DIR" add -N . >/dev/null 2>&1 || true
@@ -406,6 +424,8 @@ the current code and pass only once that fix lands.
   that assert the vulnerable behaviour.
 - Nothing in the tests — names, comments, fixture data — may reveal how the
   weaknesses are exploited: this repository is public.
+- Keep comments concise and only where they add value: explain why, never
+  restate what the code already says.
 - Verify with: cd repo && go test -run '${test_selector}' ./...
 - You have a limited wall-clock budget and may be stopped at any moment. The
   runner commits whatever is done.
@@ -427,7 +447,9 @@ Repair the tests so that ALL of these exist with these exact names, compile,
 and FAIL against the current code: ${plan_tests_csv}
 
 Same rules as before: only *_security_test.go files, self-contained, the
-security property of the FIXED state asserted, no exploit mechanics revealed.
+security property of the FIXED state asserted, no exploit mechanics revealed,
+and comments kept concise — only where they add value, explaining why rather
+than restating the code.
 Plan: ${plan_ref}
 
 Sanctioned, pre-authorized session — proceed directly without asking for
@@ -448,9 +470,13 @@ Execute the plan for plan ${PLAN_ID}: ${plan_ref}.
 
 - The tests that must go green: ${plan_tests_csv}
   Verify with: cd repo && go test -run '${test_selector}' ./...
-- Implement the minimal fix the plan describes, in the files the plan owns:
+- Implement the minimal fix the plan describes. The plan's files are
+  guidance, not a cage: start with
   ${my_files}
-  Touch nothing else.
+  but if the fix genuinely needs another file, edit it and say which and why
+  in your final message — every out-of-plan file is flagged to the reviewers
+  on the pull request. Never edit .github/, go.mod, go.sum or go.work: those
+  are off limits (and read-only in the sandbox).
 - A pre-existing test that encoded the old (vulnerable) behaviour as a
   shortcut may now fail. Correct it so it asserts the new behaviour; never
   weaken or delete a test just to make the suite pass. State every test change
@@ -462,6 +488,8 @@ Execute the plan for plan ${PLAN_ID}: ${plan_ref}.
   reveal how the weaknesses are exploited — this repository is public, and the
   runner mechanically rejects a pushed diff containing finding prose verbatim.
   Describe the new behaviour in your own words.
+- Keep comments concise and only where they add value: explain why, never
+  restate what the code already says.
 - You have a limited wall-clock budget and may be stopped at any moment. The
   runner commits whatever is done.
 
@@ -487,9 +515,11 @@ your final message if you removed or changed one and why.
 Everything must be green:
   cd repo && go build ./... && go vet ./... && go test -count=1 ./...
 
-Files you may touch: ${my_files} plus any Go test file (*_test.go), including
-one that encoded the old behaviour and now fails — correct it, never weaken
-it.
+The plan's files are guidance: prefer ${my_files}, and if another file is
+genuinely needed, edit it and say why — out-of-plan files are flagged to the
+reviewers. Never edit .github/, go.mod, go.sum or go.work (off limits and
+read-only). Any Go test file may be corrected to assert the new behaviour,
+but never weakened.
 Plan: ${plan_ref}
 
 Never copy finding material into the code: no finding titles and no
@@ -497,6 +527,9 @@ proof-of-concept descriptions or commands, in identifiers, comments, error
 strings, log messages, commit content or test data. This repository is public
 and the runner mechanically rejects a pushed diff containing finding prose
 verbatim.
+
+Keep comments concise and only where they add value: explain why, never
+restate what the code already says.
 
 Sanctioned, pre-authorized session — proceed directly without asking for
 confirmation.
@@ -561,6 +594,9 @@ The plan: ${plan_ref}
 The plan's own review criteria:
 ${my_criteria}
 
+Out-of-plan changes so far (the plan's file list is guidance, so these are
+allowed — but scrutinize them): ${OUT_OF_PLAN:-none}
+
 Mechanical green-check result (the whole security suite must pass):
 $(check_tail "$LOG_DIR/green-check.log")
 
@@ -571,8 +607,9 @@ Review criteria:
 - Where a spec or doc normatively mandates the vulnerable behaviour, the spec
   or doc is updated in the same change — a code-only fix there gets reverted
   by the next contributor.
-- The change stays within the plan's owned files and never touches CI
-  configuration.
+- The plan's files are guidance: every change outside them must be necessary
+  and justified, not a wander into unrelated code. CI configuration and
+  go.mod/go.sum/go.work must be untouched.
 - The regression tests genuinely pin the property: they were mechanically red
   before the fix, and were not weakened afterwards.
 - The diff contains no verbatim finding prose (a finding title or a
@@ -695,6 +732,10 @@ fi
 # --- Phase: fix -------------------------------------------------------------------
 fix_ok=false
 fix_review_ok=false
+# Files the fix sessions edited outside the plan's declared set, accumulated
+# for the reviewers and the pull request note (the plan's files are guidance,
+# not a boundary).
+OUT_OF_PLAN=""
 
 echo "phase: entry check (security scope)"
 if green_check security "entry check"; then
@@ -707,7 +748,7 @@ else
   # and can send it back once with the test-removal permission.
   run_phase "$WORK/fix-prompt.md" "$LOG_DIR/fix-writer.log" "$guard_fix" \
     "$FIX_WRITER_NAME" "$FIX_WRITER_EMAIL" \
-    "fix(security): $my_issue_line" "$WRITER_SECS" || true
+    "fix(security): $my_issue_line" "$WRITER_SECS" soft || true
   green_check && fix_ok=true || fix_ok=false
 fi
 
@@ -729,7 +770,7 @@ if [ "$fix_ok" != true ] || [ "$fix_review_ok" != true ]; then
   write_fix_retry_prompt "$WORK/fix-retry-prompt.md" "$reason"
   run_phase "$WORK/fix-retry-prompt.md" "$LOG_DIR/fix-retry.log" "$guard_fix" \
     "$FIX_WRITER_NAME" "$FIX_WRITER_EMAIL" \
-    "fix(security): $my_issue_line" "$SHORT_SECS" || true
+    "fix(security): $my_issue_line" "$SHORT_SECS" soft || true
   green_check || fail_leg "Tests are not green" "After the final implementation pass the security suite still fails. The branch carries the attempt; no pull request was opened."
 fi
 
@@ -774,18 +815,33 @@ if [ -n "$hits" ]; then
     echo "Remove or paraphrase those strings from the code, tests, comments and"
     echo "fixtures in repo/, without weakening the tests or changing behaviour."
     echo "The diff must not contain any finding text verbatim. Do not modify"
-    echo "anything else; the runner commits your work."
+    echo "anything else; the runner commits your work. While you are in there,"
+    echo "keep comments concise and only where they add value: explain why, never"
+    echo "restate what the code already says."
     echo ""
     echo "Sanctioned, pre-authorized repair session — proceed directly without"
     echo "asking for confirmation."
   } > "$disclosure_prompt"
   run_phase "$disclosure_prompt" "$LOG_DIR/disclosure-retry.log" "$guard_fix" \
     "$FIX_WRITER_NAME" "$FIX_WRITER_EMAIL" \
-    "fix(security): $my_issue_line" "$SHORT_SECS" || true
+    "fix(security): $my_issue_line" "$SHORT_SECS" soft || true
   hits="$(disclosure_hits)"
 fi
 if [ -n "$hits" ]; then
   fail_leg "Diff disclosure gate" "The pushed diff still contains finding prose after a scrub pass (details in the private log); nothing was pushed or published." nopush
+fi
+
+# The cumulative out-of-plan set, from the branch's whole diff rather than
+# this run's sessions: a re-entered branch carries earlier work, and the body
+# is regenerated every run, so a per-session note would vanish. Denied paths
+# anywhere in the branch are fatal; the rest is annotated for reviewers.
+cum_offending="$(changed_paths_between "$REPO_DIR" "$base_sha..HEAD" | grep -Evf "$guard_fix" || true)"
+if [ -n "$cum_offending" ]; then
+  cum_denied="$(printf '%s\n' "$cum_offending" | grep -Ef "$deny_fix" || true)"
+  [ -z "$cum_denied" ] || fail_leg "Denied paths in the branch" "The branch changes files no session may edit: $(printf '%s' "$cum_denied" | paste -sd', ' -). Failing before the pull request."
+  cum_out_of_plan="$(printf '%s\n' "$cum_offending" | grep -Evf "$deny_fix" | sort -u || true)"
+else
+  cum_out_of_plan=""
 fi
 
 echo "phase: writing the pull request body"
@@ -831,6 +887,18 @@ fi
 if grep -qiE '(^|[[:space:]])(close[sd]?|fix(e[sd])?|resolve[sd]?)[[:space:]]*:?[[:space:]]*#' "$body_file"; then
   sed -E 's/(^|[[:space:]])([Cc]lose[sd]?|[Ff]ix(e[sd])?|[Rr]esolve[sd]?)([[:space:]]*:?[[:space:]]*#)/\1Refs\4/g' "$body_file" > "$body_file.tmp"
   mv "$body_file.tmp" "$body_file"
+fi
+# The plan's files are guidance: an under-specified plan must not fail a
+# legitimate fix, but a human must see what the sessions touched beyond it.
+# Appended mechanically, below the description the session wrote.
+if [ -n "$cum_out_of_plan" ]; then
+  {
+    echo ""
+    echo "---"
+    echo ""
+    echo "⚠ **Out-of-plan changes** — the plan did not declare these files; the fix sessions edited them anyway. Please review carefully:"
+    printf '%s\n' "$cum_out_of_plan" | sed 's/^/- /'
+  } >> "$body_file"
 fi
 body_copy="$LOG_DIR/pr-body.md"
 cp "$body_file" "$body_copy"
@@ -878,3 +946,8 @@ printf 'fix stage: plan %s, test review %s (%s findings), fix review %s (%s find
   "$PLAN_ID" "$TEST_REVIEW_VERDICT" "$TEST_REVIEW_FINDINGS" "$REVIEW_VERDICT" "$REVIEW_FINDINGS" \
   "$([ "$fix_ok" = true ] && echo green || echo retried)" "$note" \
   >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+if [ -n "$cum_out_of_plan" ]; then
+  printf 'out-of-plan changes (flagged on the pull request): %s\n' \
+    "$(printf '%s' "$cum_out_of_plan" | paste -sd', ' -)" \
+    >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+fi
