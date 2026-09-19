@@ -1,7 +1,13 @@
 package netproxy
 
 import (
+	"bufio"
 	"context"
+	"fmt"
+	"net"
+	"net/http"
+	"net/url"
+	"sync/atomic"
 	"testing"
 )
 
@@ -70,5 +76,54 @@ func TestSecurityChainedProxyDeniesLoopbackByResolvedAddress(t *testing.T) {
 		if v := f.CheckHost(context.Background(), "loopback.alias.example", 8000); v.Decision != Deny {
 			t.Errorf("CheckHost admitted a hostname resolving to %s: the sandboxed agent reaches host-local services through the upstream proxy", ip)
 		}
+	}
+}
+
+// TestSecurityUpstreamProxyPinsResolvedAddressOrAborts asserts that the
+// chained path refuses to tunnel a hostname whose resolved address lands in a
+// private range, even when the hostname itself matches an allow rule.
+//
+// On the chained path the server admits on the hostname and the upstream proxy
+// does its own DNS. A hostname that resolves to a private address is therefore
+// admitted and the upstream dutifully connects — unless the resolved address is
+// re-validated immediately before the CONNECT is issued, or the dialer aborts
+// on a forbidden result. Either way the upstream proxy must never be contacted
+// for a destination that resolves into a range the sandbox must never reach.
+func TestSecurityUpstreamProxyPinsResolvedAddressOrAborts(t *testing.T) {
+	echo := startEchoListener(t)
+	defer echo.Close()
+
+	var upstreamConns int32
+	proxyLn := startSplicingUpstreamProxy(t, echo.Addr().String(), &upstreamConns)
+	defer proxyLn.Close()
+
+	proxyURL, _ := url.Parse("http://" + proxyLn.Addr().String())
+	dialer := NewUpstreamProxyDialer(proxyURL, nil, t.Logf)
+
+	s := startProxyWithDialer(t, FilterConfig{
+		AllowDomains:       []string{"chained.example"},
+		Resolve:            staticResolver("10.0.0.1"),
+		ResolveOnCheckHost: true,
+	}, dialer)
+
+	conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", s.Port()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	auth := basicAuth("omac", s.Token())
+	fmt.Fprintf(conn, "CONNECT chained.example:443 HTTP/1.1\r\nHost: chained.example:443\r\nProxy-Authorization: %s\r\n\r\n", auth)
+
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusOK {
+		t.Errorf("CONNECT was tunneled (200) for a host resolving to 10.0.0.1: the chained path must abort before the upstream is contacted")
+	}
+	if got := atomic.LoadInt32(&upstreamConns); got != 0 {
+		t.Errorf("upstream proxy was contacted %d time(s), want 0: a hostname resolving to a private address must not reach the upstream CONNECT", got)
 	}
 }
