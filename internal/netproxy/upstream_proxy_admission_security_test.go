@@ -1,7 +1,14 @@
 package netproxy
 
 import (
+	"bufio"
 	"context"
+	"fmt"
+	"net"
+	"net/http"
+	"net/netip"
+	"net/url"
+	"sync/atomic"
 	"testing"
 )
 
@@ -70,5 +77,71 @@ func TestSecurityChainedProxyDeniesLoopbackByResolvedAddress(t *testing.T) {
 		if v := f.CheckHost(context.Background(), "loopback.alias.example", 8000); v.Decision != Deny {
 			t.Errorf("CheckHost admitted a hostname resolving to %s: the sandboxed agent reaches host-local services through the upstream proxy", ip)
 		}
+	}
+}
+
+// TestSecurityUpstreamProxyPinsResolvedAddressOrAborts asserts that the
+// chained path refuses to tunnel a hostname whose resolved address lands in a
+// private range, even when the hostname itself matches an allow rule.
+//
+// On the chained path the server admits on the hostname and the upstream proxy
+// does its own DNS. A hostname that resolves to a private address is therefore
+// admitted and the upstream dutifully connects — unless the resolved address is
+// re-validated immediately before the CONNECT is issued. The test uses a
+// flipping resolver: the first call (admission) returns a public address so
+// the host is allowed, and the second call (pre-CONNECT re-validation) returns
+// a private address. The dialer must abort before the upstream is contacted,
+// closing the TOCTOU gap between admission and the upstream's own DNS.
+func TestSecurityUpstreamProxyPinsResolvedAddressOrAborts(t *testing.T) {
+	echo := startEchoListener(t)
+	defer echo.Close()
+
+	var upstreamConns int32
+	proxyLn := startSplicingUpstreamProxy(t, echo.Addr().String(), &upstreamConns)
+	defer proxyLn.Close()
+
+	proxyURL, _ := url.Parse("http://" + proxyLn.Addr().String())
+	dialer := NewUpstreamProxyDialer(proxyURL, nil, t.Logf)
+
+	// flippingResolver returns a public address on the first call (admission)
+	// and a private address on every subsequent call (pre-CONNECT
+	// re-validation), simulating a DNS rebinding attack between admission and
+	// CONNECT.
+	var calls atomic.Int32
+	resolve := func(_ context.Context, _ string) ([]netip.Addr, error) {
+		if calls.Add(1) == 1 {
+			return pin("93.184.216.34"), nil // public, admitted
+		}
+		return pin("10.0.0.1"), nil // private, must abort
+	}
+
+	s := startProxyWithDialer(t, FilterConfig{
+		AllowDomains:       []string{"chained.example"},
+		Resolve:            resolve,
+		ResolveOnCheckHost: true,
+	}, dialer)
+
+	conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", s.Port()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	auth := basicAuth("omac", s.Token())
+	fmt.Fprintf(conn, "CONNECT chained.example:443 HTTP/1.1\r\nHost: chained.example:443\r\nProxy-Authorization: %s\r\n\r\n", auth)
+
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusOK {
+		t.Errorf("CONNECT was tunneled (200) for a host whose DNS flipped to 10.0.0.1: the chained path must abort before the upstream is contacted")
+	}
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("status = %d, want 403 (pre-CONNECT re-validation denial, not an upstream error)", resp.StatusCode)
+	}
+	if got := atomic.LoadInt32(&upstreamConns); got != 0 {
+		t.Errorf("upstream proxy was contacted %d time(s), want 0: a hostname resolving to a private address must not reach the upstream CONNECT", got)
 	}
 }
