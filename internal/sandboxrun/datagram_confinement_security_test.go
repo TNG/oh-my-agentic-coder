@@ -3,15 +3,19 @@
 package sandboxrun
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"syscall"
 	"testing"
 	"time"
+	"unsafe"
 
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
+	"golang.org/x/sys/unix"
 )
 
 // What "filtered" covers.
@@ -178,4 +182,176 @@ func TestSecurityDatagramEgressConfined(t *testing.T) {
 		return // nothing arrived: the property holds
 	}
 	t.Errorf("a datagram sent from inside the sandbox arrived outside it carrying %q, while TCP to the same host was refused: anything the agent can read can be sent out over UDP — DNS, QUIC, a hand-rolled tunnel — with no prompt, no domain filtering and no audit record", string(buf[:n]))
+}
+
+// seccompProbeEnv marks a re-exec'd test-binary invocation that runs an
+// in-sandbox probe for one of the seccomp security tests instead of the
+// normal test body. The probe runs under the real stage2 enforcement stack
+// (Landlock net rules + applyDatagramSeccomp) applied by `omac sandbox
+// stage2` inside bwrap, then reports the result via its exit code:
+// 0 means the security property holds, non-zero means a violation (the
+// output explains which case). Re-execing the compiled test binary is what
+// lets the probe issue raw socket(2)/io_uring syscalls from inside the
+// enforced sandbox without the test process itself becoming sandboxed.
+const seccompProbeEnv = "OMAC_SECCOMP_PROBE"
+
+// runSeccompProbe launches the test binary inside a kernel-enforced sandbox
+// so the probe body runs under the production stage2 stack. The binary is
+// re-exec'd with seccompProbeEnv=mode and -test.run filtered to runName,
+// which detects the env and runs the matching probe.
+func runSeccompProbe(t *testing.T, mode, runName string) (string, int) {
+	t.Helper()
+	requireWorkingBwrap(t)
+	if !LandlockNetSupported() {
+		t.Fatalf("Landlock network rules unavailable (ABI %d < 4): kernel-enforced filtered mode is not enforced here, so this test cannot tell a filter gap from an unconfigured host", LandlockABI())
+	}
+	testBin, err := os.Executable()
+	if err != nil {
+		t.Fatalf("locate test binary: %v", err)
+	}
+	omac := buildOmac(t)
+	wd := t.TempDir()
+	p := &sandboxprofile.Profile{
+		Workdir: sandboxprofile.Workdir{Access: sandboxprofile.AccessReadWrite},
+		// No ports opened: nothing is reachable except what the filter lets
+		// through. The probes only test socket creation, not connect/bind.
+		Network: sandboxprofile.Network{Mode: sandboxprofile.ModeFiltered},
+	}
+	g, err := ResolveGrants(p, wd, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The stage2 binary and the re-exec'd test binary both live outside the
+	// workdir; grant their directories so they are visible in the namespace.
+	g.ReadPaths = append(g.ReadPaths, filepath.Dir(omac), filepath.Dir(testBin))
+
+	stage2 := append([]string{omac, "sandbox", "stage2"}, Stage2Args(g)...)
+	tail := append(append([]string{}, stage2...), "--", testBin, "-test.run=^"+runName+"$", "-test.v")
+	argv, err := BuildBwrapArgv(g, tail)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(argv[0], argv[1:]...)
+	cmd.Env = append(os.Environ(), seccompProbeEnv+"="+mode)
+	out, err := cmd.CombinedOutput()
+	code := 0
+	if ee, ok := err.(*exec.ExitError); ok {
+		code = ee.ExitCode()
+	} else if err != nil {
+		t.Fatalf("launch seccomp probe: %v\n%s", err, out)
+	}
+	return string(out), code
+}
+
+// TestSecuritySeccompDeniesNonTcpSocketProtocols asserts that the stage2
+// seccomp filter denies socket(2) combinations outside the TCP allowlist —
+// non-default transports over AF_INET, SOCK_SEQPACKET, SOCK_RAW and
+// AF_PACKET — while plain SOCK_STREAM/IPPROTO_TCP still succeeds. Landlock
+// mediates TCP only, so this filter is the sole layer that can express the
+// denial; the assertion is therefore made directly against the enforced
+// stack rather than against egress traffic.
+func TestSecuritySeccompDeniesNonTcpSocketProtocols(t *testing.T) {
+	if mode := os.Getenv(seccompProbeEnv); mode == "nontcp" {
+		os.Exit(runNonTcpSocketProbe())
+	}
+	out, code := runSeccompProbe(t, "nontcp", "TestSecuritySeccompDeniesNonTcpSocketProtocols")
+	if code != 0 {
+		t.Fatalf("non-TCP socket protocols not denied by the seccomp filter (exit %d):\n%s", code, out)
+	}
+	t.Logf("probe output:\n%s", out)
+}
+
+// runNonTcpSocketProbe runs inside the enforced sandbox. Each case creates a
+// socket(2) and checks whether the filter denies it. Allowed cases prove the
+// filter is not over-blocking; denied cases prove the allowlist closes the
+// non-TCP gap. Exit 0 when every case matches expectation.
+func runNonTcpSocketProbe() int {
+	type c struct {
+		name               string
+		domain, typ, proto int
+		wantEPERM          bool
+	}
+	cases := []c{
+		{"inet-stream-default", syscall.AF_INET, syscall.SOCK_STREAM, 0, false},
+		{"inet-stream-tcp", syscall.AF_INET, syscall.SOCK_STREAM, syscall.IPPROTO_TCP, false},
+		{"inet-stream-sctp", syscall.AF_INET, syscall.SOCK_STREAM, syscall.IPPROTO_SCTP, true},
+		{"inet-seqpacket-sctp", syscall.AF_INET, syscall.SOCK_SEQPACKET, syscall.IPPROTO_SCTP, true},
+		{"inet-raw", syscall.AF_INET, syscall.SOCK_RAW, 0, true},
+		{"af-packet-raw", syscall.AF_PACKET, syscall.SOCK_RAW, 0, true},
+	}
+	failed := 0
+	for _, k := range cases {
+		fd, err := syscall.Socket(k.domain, k.typ, k.proto)
+		gotEPERM := errors.Is(err, syscall.EPERM)
+		if fd >= 0 {
+			syscall.Close(fd)
+		}
+		switch {
+		case gotEPERM && !k.wantEPERM:
+			fmt.Printf("FAIL %s: denied with EPERM, want allowed (%v)\n", k.name, err)
+			failed++
+		case !gotEPERM && k.wantEPERM:
+			fmt.Printf("FAIL %s: allowed (err=%v), want EPERM\n", k.name, err)
+			failed++
+		default:
+			fmt.Printf("OK %s\n", k.name)
+		}
+	}
+	return failed
+}
+
+// TestSecuritySeccompDeniesIoUringSocketCreation asserts the stage2 seccomp
+// filter denies the io_uring syscalls. Since Linux 5.19 a socket can be
+// created in kernel context via io_uring without a socket(2) call, so
+// filtering socket(2) alone cannot confine egress; denying the io_uring
+// family closes that path. The host/container must permit io_uring outside
+// the sandbox — otherwise the in-sandbox denial could not be told apart
+// from the outer profile and the test fails rather than report a vacuous
+// pass.
+func TestSecuritySeccompDeniesIoUringSocketCreation(t *testing.T) {
+	if mode := os.Getenv(seccompProbeEnv); mode == "iouring" {
+		os.Exit(runIoUringProbe())
+	}
+	// Precondition: outside the sandbox io_uring must be usable. If the
+	// host already denies it, the in-sandbox assertion would pass for the
+	// wrong reason, so fail loudly instead of guessing.
+	var params [128]byte
+	fd, _, errno := unix.Syscall(unix.SYS_IO_URING_SETUP, 4, uintptr(unsafe.Pointer(&params[0])), 0)
+	if errno == syscall.EPERM {
+		t.Fatalf("io_uring_setup returns EPERM outside the sandbox: the host/container denies io_uring, so the in-sandbox denial cannot be verified here; run in an e2e container that permits io_uring")
+	}
+	if errno == 0 {
+		unix.Close(int(fd))
+	}
+	out, code := runSeccompProbe(t, "iouring", "TestSecuritySeccompDeniesIoUringSocketCreation")
+	if code != 0 {
+		t.Fatalf("io_uring not denied inside the sandbox (exit %d):\n%s", code, out)
+	}
+	t.Logf("probe output:\n%s", out)
+}
+
+// runIoUringProbe runs inside the enforced sandbox and asserts each io_uring
+// syscall returns EPERM. Denying all three closes ring creation and every
+// submission path, so no socket can be created through io_uring and no
+// datagram built on it can send.
+func runIoUringProbe() int {
+	failed := 0
+	check := func(name string, errno syscall.Errno) {
+		if errno != syscall.EPERM {
+			fmt.Printf("FAIL %s: errno=%d (%v), want EPERM\n", name, int(errno), errno)
+			failed++
+			return
+		}
+		fmt.Printf("OK %s: EPERM\n", name)
+	}
+	var params [128]byte
+	_, _, e1 := unix.Syscall6(unix.SYS_IO_URING_SETUP, 4, uintptr(unsafe.Pointer(&params[0])), 0, 0, 0, 0)
+	check("io_uring_setup", syscall.Errno(e1))
+	// An invalid fd is used so the call cannot accidentally create state; the
+	// filter is expected to fire at syscall entry, before any fd validation.
+	_, _, e2 := unix.Syscall6(unix.SYS_IO_URING_ENTER, ^uintptr(0), 0, 0, 0, 0, 0)
+	check("io_uring_enter", syscall.Errno(e2))
+	_, _, e3 := unix.Syscall6(unix.SYS_IO_URING_REGISTER, ^uintptr(0), 0, 0, 0, 0, 0)
+	check("io_uring_register", syscall.Errno(e3))
+	return failed
 }
