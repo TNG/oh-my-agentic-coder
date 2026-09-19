@@ -312,9 +312,9 @@ func (s *SidecarMeta) Validate(skillName string) error {
 					return fmt.Errorf("sidecar.config[%d].pattern is not a valid regex: %w", i, err)
 				}
 			}
-		if len(c.Choices) > 0 {
-			return fmt.Errorf("sidecar.config[%d]: 'choices' is only valid with type=enum", i)
-		}
+			if len(c.Choices) > 0 {
+				return fmt.Errorf("sidecar.config[%d]: 'choices' is only valid with type=enum", i)
+			}
 		case ConfigFieldBool:
 			if c.Pattern != "" || len(c.Choices) > 0 {
 				return fmt.Errorf("sidecar.config[%d]: type=bool does not accept pattern/choices", i)
