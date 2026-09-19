@@ -30,12 +30,6 @@ ARCHIVE_DIR="${ARCHIVE_DIR:-$PWD/archive}"
 
 require_tools jq gh git curl
 
-# Number of comma-separated ids in $1 (empty input is zero).
-id_count() {
-  [ -z "$1" ] && { echo 0; return; }
-  printf '%s' "$1" | awk -F, '{print NF}'
-}
-
 if [ -z "${SECURITY_SCAN_PAT:-}" ] || [ -z "${ARCHIVE_REPO:-}" ]; then
   echo "::error title=Missing secrets::SECURITY_SCAN_PAT or SECURITY_ARCHIVE_REPO is not set."
   exit 1
@@ -69,23 +63,10 @@ fi
 plan_count="$(jq 'length' "$plans_json")"
 
 # --- Pull request states --------------------------------------------------------
-merged_ids=""
-open_ids=""
-unstarted_ids=""
-while IFS= read -r entry; do
-  id="$(printf '%s' "$entry" | jq -r '.id')"
-  branch="$(printf '%s' "$entry" | jq -r '.branch')"
-  pr_state="$(gh pr list -R "$GITHUB_REPOSITORY" --head "$branch" --state all \
-    --limit 1 --json state --jq '.[0].state' 2>/dev/null || true)"
-  case "$pr_state" in
-    MERGED) merged_ids="${merged_ids}${id}," ;;
-    OPEN)   open_ids="${open_ids}${id}," ;;
-    *)      unstarted_ids="${unstarted_ids}${id}," ;;
-  esac
-done < <(jq -c '.[]' "$plans_json")
-merged_ids="${merged_ids%,}"
-open_ids="${open_ids%,}"
-unstarted_ids="${unstarted_ids%,}"
+{ read -r merged_line; read -r open_line; read -r unstarted_line; } <<< "$(plan_pr_states "$plans_json")"
+merged_ids="${merged_line#merged:}"
+open_ids="${open_line#open:}"
+unstarted_ids="${unstarted_line#unstarted:}"
 merged_count="$(id_count "$merged_ids")"
 
 # The no-op fingerprint: when the state line matches the last recorded one,
@@ -114,7 +95,7 @@ mkdir -p "$scan_abs/remediation"
 push_archive "$ARCHIVE_DIR" "remediation status: ${scan_dir} ($(date -u +%F))" \
   "scans/$scan_dir/remediation/status.md"
 
-# --- Overview issue: tick merged plans, close when all merged -------------------
+# --- Overview issue: refresh status and ticks, close when all merged ------------
 MARKER="<!-- security-remediation: overview -->"
 issue_body=""
 issue_number=""
@@ -128,21 +109,18 @@ done < <(gh issue list -R "$GITHUB_REPOSITORY" --label security --label agent-cr
           --state open --json number,body --jq '.[] | [.number, .body] | @tsv' 2>/dev/null || true)
 
 if [ -n "$issue_number" ]; then
-  # One flip per merged plan: the body's unticked line becomes ticked. Matched
-  # literally at line start, so no plan text is interpreted as a regex.
-  while IFS= read -r line; do
-    [ -n "$line" ] || continue
-    issue_body="$(printf '%s\n' "$issue_body" | awk -v t="- [ ] $line" -v r="- [x] $line" \
-      '{ if (index($0, t) == 1) print r; else print }')"
-  done < <(jq -r --arg ids "$merged_ids" \
-           '($ids | split(",") | map(select(length > 0))) as $m
-            | map(select(.id as $i | ($m | index($i))))
-            | .[] | select(.issue_line != null and .issue_line != "") | .issue_line' "$plans_json")
+  # The body is rebuilt with the shared generator, so the status counts and
+  # the ticks always match the manifest; the edit is skipped when nothing
+  # changed, keeping the daily run a true no-op.
   body_file="$(mktemp)"
-  printf '%s\n' "$issue_body" > "$body_file"
-  gh issue edit -R "$GITHUB_REPOSITORY" "$issue_number" --body-file "$body_file" >/dev/null
+  overview_body "$plans_json" "$merged_ids" "$open_ids" "$unstarted_ids" > "$body_file"
+  if [ "$(cat "$body_file")" = "$issue_body" ]; then
+    echo "overview issue #${issue_number} already up to date"
+  else
+    gh issue edit -R "$GITHUB_REPOSITORY" "$issue_number" --body-file "$body_file" >/dev/null
+    echo "refreshed overview issue #${issue_number} (${merged_count}/${plan_count} merged)"
+  fi
   rm -f "$body_file"
-  echo "ticked ${merged_count} merged plan(s) in overview issue #${issue_number}"
 
   if [ "$merged_count" -eq "$plan_count" ] && [ "$plan_count" -gt 0 ]; then
     gh issue close -R "$GITHUB_REPOSITORY" "$issue_number" --comment "All ${plan_count} planned workstreams merged. The finalize workflow will stay quiet until the next scan." >/dev/null

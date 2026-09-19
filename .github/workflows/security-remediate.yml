@@ -226,7 +226,6 @@ jobs:
         id: issue
         env:
           SCAN_DIR: ${{ needs.preflight.outputs.scan_dir }}
-          DEFERRED_COUNT: ${{ needs.plan.outputs.deferred_count || needs.preflight.outputs.deferred_count }}
         run: bash repo/.github/scripts/security_remediate/issue-stage.sh
 
   # ---- Fix waves ---------------------------------------------------------------

@@ -18,7 +18,6 @@
 #
 # Environment:
 #   SCAN_DIR            name of the scan directory inside scans/ (required)
-#   DEFERRED_COUNT      deferred plans, for the "Further steps" count
 #   ARCHIVE_DIR         archive clone, created if missing (default ./archive)
 #   GH_TOKEN            github.token with issues:write (issue + labels)
 #   ARCHIVE_REPO, SECURITY_SCAN_PAT   (clone)
@@ -29,7 +28,6 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/lib.sh"
 
 SCAN_DIR="${SCAN_DIR:-}"
-DEFERRED_COUNT="${DEFERRED_COUNT:-0}"
 ARCHIVE_DIR="${ARCHIVE_DIR:-$PWD/archive}"
 
 require_tools jq gh git
@@ -64,47 +62,27 @@ fi
 # manual #288 (same topic, no marker) is never touched and re-runs update
 # instead of duplicating.
 existing_number=""
-existing_body=""
 while IFS=$'\t' read -r number body; do
   if [ -n "$number" ] && printf '%s' "$body" | grep -Fq "$MARKER"; then
     existing_number="$number"
-    existing_body="$body"
     break
   fi
 done < <(gh issue list -R "$GITHUB_REPOSITORY" --label security --label agent-created --state open \
           --json number,body --jq '.[] | [.number, .body] | @tsv' 2>/dev/null || true)
 
 # --- Assemble the body --------------------------------------------------------
+# The body is rebuilt on every run from the manifest plus the live PR states,
+# so the status counts always match the workstream list (the old "Further
+# steps" count was read as additional work). Ticks derive from merged PRs.
 plan_count="$(jq 'length' "$plans_json")"
+{ read -r merged_line; read -r open_line; read -r unstarted_line; } <<< "$(plan_pr_states "$plans_json")"
+merged_ids="${merged_line#merged:}"
+open_ids="${open_line#open:}"
+unstarted_ids="${unstarted_line#unstarted:}"
+
 body_file="$(mktemp)"
 trap 'rm -f "$body_file"' EXIT
-{
-  echo "$MARKER"
-  echo ""
-  echo "The security remediation pipeline tracks its workstreams here. Each item is"
-  echo "one origin-batched fix plan, executed by an automated pipeline whose pull"
-  echo "requests reference this issue. Detailed plans live in the private companion"
-  echo "repo; this issue stays sanitized by design."
-  echo ""
-  echo "## Workstreams"
-  jq -r 'sort_by(.priority, .id) | .[] | .issue_line' "$plans_json" | while IFS= read -r line; do
-    state=' '
-    if [ -n "$existing_body" ] && printf '%s' "$existing_body" | grep -Fq -- "- [x] $line"; then
-      state='x'
-    fi
-    echo "- [$state] $line"
-  done
-  if [ "$DEFERRED_COUNT" -gt 0 ]; then
-    echo ""
-    echo "## Further steps"
-    echo ""
-    echo "${DEFERRED_COUNT} further workstreams are scheduled for follow-up runs of this pipeline; re-running it picks them up in priority order."
-  fi
-  echo ""
-  echo "## Notes"
-  echo ""
-  echo "- Merging stays a human action: every pull request needs at least one approval (\`COLLABORATION.md\`)."
-} > "$body_file"
+overview_body "$plans_json" "$merged_ids" "$open_ids" "$unstarted_ids" > "$body_file"
 
 # --- Sanitizer gate, then post ------------------------------------------------
 if ! sanitize_issue_body "$body_file" "$vulns_json" "$plans_json"; then
@@ -134,5 +112,5 @@ emit_output overview_issue "$issue_number"
 {
   echo "## Security remediation: overview issue"
   echo ""
-  echo "Issue #${issue_number} carries ${plan_count} workstreams; ${DEFERRED_COUNT} deferred."
+  echo "Issue #${issue_number} carries ${plan_count} workstreams (merged $(id_count "$merged_ids"), in review $(id_count "$open_ids"), not yet started $(id_count "$unstarted_ids"))."
 } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"

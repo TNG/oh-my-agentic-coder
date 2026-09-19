@@ -402,6 +402,76 @@ sanitize_diff() {
   sanitize_lines "$1" < <(diff_forbidden_strings "$2")
 }
 
+# Number of comma-separated ids in $1 (empty input is zero).
+id_count() {
+  [ -z "$1" ] && { echo 0; return; }
+  printf '%s' "$1" | awk -F, '{print NF}'
+}
+
+# The per-plan pull-request state, the single source of truth for "executed":
+# a plan is done when its PR is merged, in flight when the PR is open, and
+# still queued otherwise (no PR — a leg that failed pushed its branch but no
+# PR, so it stays queued and is retried on a later run).
+# Prints three lines: "merged:<ids>", "open:<ids>", "unstarted:<ids>".
+plan_pr_states() {
+  local plans_json=$1 merged="" open="" unstarted="" entry id branch state
+  while IFS= read -r entry; do
+    id="$(printf '%s' "$entry" | jq -r '.id')"
+    branch="$(printf '%s' "$entry" | jq -r '.branch')"
+    state="$(gh pr list -R "$GITHUB_REPOSITORY" --head "$branch" --state all \
+      --limit 1 --json state --jq '.[0].state' 2>/dev/null || true)"
+    case "$state" in
+      MERGED) merged="$merged$id," ;;
+      OPEN)   open="$open$id," ;;
+      *)      unstarted="$unstarted$id," ;;
+    esac
+  done < <(jq -c '.[]' "$plans_json")
+  printf 'merged:%s\nopen:%s\nunstarted:%s\n' "${merged%,}" "${open%,}" "${unstarted%,}"
+}
+
+# The overview issue body, shared by the issue stage (which creates or
+# rewrites it) and the finalize workflow (which refreshes it daily), so the
+# two writers cannot drift apart. Ticks derive from the merged-id list, which
+# is why no state is carried in the old body.
+# Prints the body; $1 plans.json, $2/$3/$4 the merged/open/unstarted id lists.
+overview_body() {
+  local plans_json=$1 merged=$2 open=$3 unstarted=$4
+  local total merged_n open_n unstarted_n
+  total="$(jq 'length' "$plans_json")"
+  merged_n="$(id_count "$merged")"
+  open_n="$(id_count "$open")"
+  unstarted_n="$(id_count "$unstarted")"
+
+  printf '%s\n' '<!-- security-remediation: overview -->'
+  printf '\n'
+  printf '%s\n' '> **Note:** this issue is maintained automatically by the security'
+  printf '%s\n' '> remediation pipeline. It is rewritten by the pipeline on every run and'
+  printf '%s\n' '> updated by the daily finalize workflow, so please do not edit it by hand.'
+  printf '\n'
+  printf '%s\n' 'The security remediation pipeline tracks its workstreams here. Each item is'
+  printf '%s\n' 'one origin-batched fix plan, executed by an automated pipeline whose pull'
+  printf '%s\n' 'requests reference this issue. Detailed plans live in the private companion'
+  printf '%s\n' 'repo; this issue stays sanitized by design.'
+  printf '\n'
+  printf '%s\n' '## Status'
+  printf '\n'
+  printf -- '- Workstreams: %s total — %s merged, %s in review, %s not yet started.\n' \
+    "$total" "$merged_n" "$open_n" "$unstarted_n"
+  printf '\n'
+  printf '%s\n' '## Workstreams'
+  printf '\n'
+  while IFS=$'\t' read -r id line; do
+    local state=' '
+    case ",$merged," in *",$id,"*) state='x' ;; esac
+    printf -- '- [%s] %s\n' "$state" "$line"
+  done < <(jq -r 'sort_by(.priority, .id) | .[] | "\(.id)\t\(.issue_line)"' "$plans_json")
+  printf '\n'
+  printf '%s\n' '## Notes'
+  printf '\n'
+  printf '%s\n' '- Merging stays a human action: every pull request needs at least one approval (COLLABORATION.md).'
+  printf '%s\n' '- Each run starts up to max_plans not-yet-started workstreams in priority order; one whose leg fails stays queued and is retried on a later run.'
+}
+
 # Wave assignment for the fix stage ("Job 5" in the pipeline plan): greedy
 # coloring over the selected plans. Plans are placed in (priority, id) order;
 # each gets the lowest wave in which it shares no owned file with a plan

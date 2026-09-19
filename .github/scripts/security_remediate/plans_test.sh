@@ -66,10 +66,24 @@ EOF
 mkdir -p "$TMP/bin"
 cat > "$TMP/bin/gh" <<'EOF'
 #!/usr/bin/env bash
-# Stub: real gh applies the caller's --jq filter itself and prints the
-# covered headRefNames one per line, so this stub just prints those lines
-# (one open PR for plan 02, one merged for a plan that is not in the
-# fixture).
+# Stub for two call shapes:
+#   pr_covered_branches: no --head; real gh applies the caller's --jq filter
+#     and prints the covered headRefNames one per line (one open PR for plan
+#     02, one merged for a plan outside the fixture).
+#   plan_pr_states: --head <branch>; print that plan's state.
+head=""; prev=""
+for a in "$@"; do
+  [ "$prev" = --head ] && head="$a"
+  prev="$a"
+done
+if [ -n "$head" ]; then
+  case "$head" in
+    *plan-02) echo MERGED ;;
+    *plan-03) echo OPEN ;;
+    *) echo "" ;;
+  esac
+  exit 0
+fi
 printf '%s\n' \
   'fix/security-s1-plan-02' \
   'fix/security-s1-plan-09'
@@ -555,6 +569,46 @@ if SKAINET_TOKEN=sim SKAINET_INTERNAL="http://sim" session_home "$sh" "model-a" 
 else
   fail "session_home registers both models in valid JSON"
 fi
+
+# --- plan_pr_states -------------------------------------------------------------
+# The stub answers plan-02 MERGED, plan-03 OPEN, everything else unstarted.
+states="$(plan_pr_states "$TMP/plans.json" | paste -sd'|' -)"
+if [ "$states" = "merged:02|open:03|unstarted:01,04" ]; then
+  echo "ok: plan_pr_states classifies merged, open and unstarted plans"
+else
+  fail "plan_pr_states: got '$states'"
+fi
+
+# --- overview_body --------------------------------------------------------------
+# The public issue body: the auto-maintained note, a status line whose counts
+# match the workstream list, ticks derived from merged PRs, and no "Further
+# steps" count to misread.
+cat > "$TMP/body.json" <<'EOF'
+[
+  { "id": "01", "priority": 1, "issue_line": "First workstream" },
+  { "id": "02", "priority": 2, "issue_line": "Second workstream" },
+  { "id": "03", "priority": 3, "issue_line": "Third workstream" }
+]
+EOF
+body="$(overview_body "$TMP/body.json" "02" "03" "01")"
+body_check() {
+  local desc=$1 needle=$2
+  case "$body" in
+    *"$needle"*) echo "ok: $desc" ;;
+    *) fail "$desc: body does not contain '$needle'" ;;
+  esac
+}
+body_check "the body carries the auto-maintained note" "do not edit it by hand"
+body_check "the status counts match the list" \
+  "Workstreams: 3 total — 1 merged, 1 in review, 1 not yet started."
+body_check "a merged plan is ticked" "- [x] Second workstream"
+body_check "an open plan is unticked" "- [ ] Third workstream"
+body_check "the dispatch/retry mechanic is explained" \
+  "one whose leg fails stays queued and is retried on a later run"
+case "$body" in
+  *"Further steps"*) fail "the removed Further steps section is still present" ;;
+  *) echo "ok: the removed Further steps section is gone" ;;
+esac
 
 if [ "$failures" -gt 0 ]; then
   echo "$failures plans test(s) failed" >&2

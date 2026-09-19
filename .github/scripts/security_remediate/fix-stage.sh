@@ -132,7 +132,9 @@ fi
 # --- Branch and base ------------------------------------------------------------
 # The default branch comes from the API: actions/checkout leaves a detached
 # HEAD, so origin/HEAD is not reliable in a shallow clone.
-default_branch="$(gh repo view -R "$GITHUB_REPOSITORY" --json defaultBranchRef --jq '.defaultBranchRef.name')"
+# gh repo view takes the repository as a positional argument — it has no -R
+# flag (unlike the issue/pr/label commands).
+default_branch="$(gh repo view "$GITHUB_REPOSITORY" --json defaultBranchRef --jq '.defaultBranchRef.name')"
 [ -n "$default_branch" ] || { echo "::error title=No default branch::gh returned no default branch name." >&2; exit 1; }
 
 base_branch=""
