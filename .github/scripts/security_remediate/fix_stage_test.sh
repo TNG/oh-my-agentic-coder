@@ -159,17 +159,23 @@ case "$last" in
   *"You are the test author"*)
     printf 'package pkg\n\nimport "testing"\n\nfunc TestSecurityAlpha(t *testing.T) {}\n' > "$r/pkg/alpha_security_test.go"
     if [ "$sim" = deleter ]; then rm -f "$r/pkg/existing_security_test.go"; fi
-    if [ "$sim" = leak ]; then
-      printf 'package pkg\n\nimport "testing"\n\n// Sim finding title\nfunc TestSecurityAlpha(t *testing.T) {}\n' > "$r/pkg/alpha_security_test.go"
+    if [ "$sim" = leak ] || [ "$sim" = leakhard ]; then
+      printf 'package pkg\n\nimport "testing"\n\n// Simulated finding title for the disclosure gate\nfunc TestSecurityAlpha(t *testing.T) {}\n' > "$r/pkg/alpha_security_test.go"
     fi ;;
   *"did not pass the mechanical red"*)
     printf '// retried\n' >> "$r/pkg/alpha_security_test.go" ;;
   *"You are the implementer"*)
     echo fixed > "$r/pkg/prod.go"
     [ "$sim" = die ] && exit 3
+    [ "$sim" = offplan ] && echo wandered >> "$r/pkg/other.go"
     if [ "$sim" = committer ]; then
       git -C "$r" add -A
       git -C "$r" commit -qm "evil session commit"
+    fi ;;
+  *"rejected the pushed diff for disclosure"*)
+    # A well-behaved scrub pass removes the finding prose; leakhard refuses.
+    if [ "$sim" != leakhard ]; then
+      printf 'package pkg\n\nimport "testing"\n\nfunc TestSecurityAlpha(t *testing.T) {}\n' > "$r/pkg/alpha_security_test.go"
     fi ;;
   *"is not finished"*)
     echo "// retry" >> "$r/pkg/prod.go"
@@ -251,7 +257,7 @@ new_fixture() {
 ]
 JSON
   mkdir -p "$root/archive/scans/$SCAN/mitigation-plans"
-  printf '%s' '[{"id":"vuln-0001","title":"Sim finding title","poc":"curl -H sim-poc http://target"}]' \
+  printf '%s' '[{"id":"vuln-0001","title":"Simulated finding title for the disclosure gate","poc":"curl -H sim-poc http://target"}]' \
     > "$root/archive/scans/$SCAN/vulnerabilities.json"
   git init -q "$root/archive"
   git -C "$root/archive" remote add origin "https://github.com/sim/archive.git"
@@ -386,7 +392,7 @@ new_fixture "$notred" notred
 if run_stage "$notred"; then fail "not-red path fails the leg"; else echo "ok: not-red path fails the leg"; fi
 assert_fake_origin "the not-red path only ever targets the fixture or the fake URL" "$notred"
 assert "the not-red path pushes the branch" "1" "$(grep -c "github.com/sim/repo.git" "$notred/pushes.log" || true)"
-assert "the not-red path pushes no archive log" "0" "$(grep -c "github.com/sim/archive.git" "$notred/pushes.log" || true)"
+assert "the not-red path archives its failed logs" "1" "$(grep -c "github.com/sim/archive.git" "$notred/pushes.log" || true)"
 assert "the not-red path creates no pull request" "0" "$(grep -c create "$notred/prs.log" || true)"
 
 # --- Broken-test path -----------------------------------------------------------
@@ -468,11 +474,35 @@ assert "the test-deletion path creates no pull request" "0" "$(grep -c create "$
 
 # --- Diff-disclosure path -------------------------------------------------------
 # The test writer pastes the finding title into a public test: the pre-push
-# gate rejects the diff.
+# gate rejects the diff, one scrub session removes the prose, and the pull
+# request opens.
 leak="$TMP/leak"
 new_fixture "$leak" leak
-if run_stage "$leak"; then fail "diff-disclosure path fails the leg"; else echo "ok: diff-disclosure path fails the leg"; fi
-assert "the diff-disclosure path creates no pull request" "0" "$(grep -c create "$leak/prs.log" || true)"
+if run_stage "$leak"; then echo "ok: diff-disclosure path recovers with a scrub pass"; else fail "diff-disclosure path recovers with a scrub pass"; fi
+assert "the diff-disclosure path creates one pull request" "1" "$(grep -c create "$leak/prs.log" || true)"
+log_has "the diff-disclosure path logs the scrub phase" "$leak" "phase: disclosure retry"
+log_has "the diff-disclosure path no longer trips the gate" "$leak" \
+  "opened fix pull request"
+
+# A scrub pass that does not remove the prose fails the leg: nothing is
+# pushed or published, and the failed leg's logs are archived privately.
+leakhard="$TMP/leakhard"
+new_fixture "$leakhard" leakhard
+if run_stage "$leakhard"; then fail "unscrubbed disclosure fails the leg"; else echo "ok: unscrubbed disclosure fails the leg"; fi
+assert "the unscrubbed disclosure creates no pull request" "0" "$(grep -c create "$leakhard/prs.log" || true)"
+assert "the unscrubbed disclosure pushes no branch" "0" \
+  "$(grep -c "github.com/sim/repo.git" "$leakhard/pushes.log" || true)"
+assert "the failed leg archives its logs" "1" \
+  "$(git -C "$leakhard/archive" log --format=%s | grep -c 'fix logs (failed)' || true)"
+
+# --- Out-of-plan path -----------------------------------------------------------
+# The fix writer edits a file the plan does not own: the guard fails the leg
+# and names the offending file.
+offplan="$TMP/offplan"
+new_fixture "$offplan" offplan
+if run_stage "$offplan"; then fail "out-of-plan edit fails the leg"; else echo "ok: out-of-plan edit fails the leg"; fi
+log_has "the ownership guard names the offending file" "$offplan" "pkg/other.go"
+assert "the out-of-plan edit creates no pull request" "0" "$(grep -c create "$offplan/prs.log" || true)"
 
 # --- Stale-test path ------------------------------------------------------------
 # The fix breaks a pre-existing normal test. The full-suite green check catches

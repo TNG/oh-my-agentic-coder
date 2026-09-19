@@ -361,20 +361,16 @@ issue_body_forbidden_strings() {
 # match — never echo the matched string, this output can reach the public
 # job log.
 #
-# The same per-line check guards the pushed diff, but with a narrower string
-# set: a fix diff legitimately contains the public code the scanner also
-# recorded as a code snippet (that code is what the fix changes), so the
-# snippet/location fields would fire on every honest fix. Titles and PoC
-# text are the exploit-specific strings that must not be pasted into public
-# tests or comments.
+# The same per-line check guards the pushed diff, with a narrower string set
+# and a higher length floor (see diff_forbidden_strings).
 sanitize_lines() {
-  local body_file=$1 s
+  local body_file=$1 min_len=${2:-8} s
   while IFS= read -r s; do
     # Trim the ends only — multi-word finding text must keep its interior
     # whitespace to stay findable in the body.
     s="${s#"${s%%[![:space:]]*}"}"
     s="${s%"${s##*[![:space:]]}"}"
-    [ "${#s}" -ge 8 ] || continue
+    [ "${#s}" -ge "$min_len" ] || continue
     if grep -Fqi -- "$s" "$body_file"; then
       echo "text contains a string from the scan findings (string withheld)"
       return 1
@@ -386,20 +382,43 @@ sanitize_issue_body() {
   sanitize_lines "$1" < <(issue_body_forbidden_strings "$2" "$3")
 }
 
-# Strings the pushed diff must not contain: finding titles and every
-# PoC/exploit-style field, but not code locations or snippets (see above).
+# Strings the pushed diff must not contain: the finding TITLES and the PoC's
+# prose fields, but not code locations, snippets or poc_script_code. A fix
+# diff and the tests it adds are Go code, and every scanner PoC block is
+# ordinary Go/HTTP test scaffolding: matching those line-by-line fired on
+# boilerplate (`t.Setenv(...)`, error checks) in both test and production
+# files. The prose fields are the exploit-specific strings that must not be
+# pasted into a public test or comment.
 diff_forbidden_strings() {
   local vulns_json=$1
   {
     jq -r '.[] | (.title // empty)' "$vulns_json" 2>/dev/null || true
     jq -r '.[] | to_entries[]
-            | select((.key | test("poc|exploit|proof"; "i")) and (.value | type == "string"))
+            | select((.key | test("poc|exploit|proof"; "i"))
+                     and (.key | test("(^|[_-])(code|script)([_-]|$)"; "i") | not)
+                     and (.value | type == "string"))
             | .value' "$vulns_json" 2>/dev/null || true
   }
 }
 
+# The diff's length floor is higher than the issue body's: prose sentences are
+# long, so a 20-character minimum keeps short boilerplate from ever matching.
 sanitize_diff() {
-  sanitize_lines "$1" < <(diff_forbidden_strings "$2")
+  sanitize_lines "$1" 20 < <(diff_forbidden_strings "$2")
+}
+
+# The forbidden strings that actually appear in $1, one per line — for the
+# private repair prompt. Finding text, so this output must never reach a
+# public surface. Always returns 0; callers judge by the output.
+diff_disclosure_hits() {
+  local diff_file=$1 vulns_json=$2 s
+  while IFS= read -r s; do
+    s="${s#"${s%%[![:space:]]*}"}"
+    s="${s%"${s##*[![:space:]]}"}"
+    [ "${#s}" -ge 20 ] || continue
+    grep -Fqi -- "$s" "$diff_file" && printf '%s\n' "$s"
+  done < <(diff_forbidden_strings "$vulns_json")
+  return 0
 }
 
 # Number of comma-separated ids in $1 (empty input is zero).
@@ -513,7 +532,7 @@ assign_waves() {
 # fine; the sensitive set is the allowed paths from the plan, and those are
 # never printed.
 changed_files_within() {
-  local repo=$1 patterns=$2 path
+  local repo=$1 patterns=$2 path violations=0
   while IFS= read -r path; do
     [ -n "$path" ] || continue
     path="${path:3}"             # porcelain v1: XY<TAB>path
@@ -524,10 +543,13 @@ changed_files_within() {
     path="${path%\"}"
     [ -n "$path" ] || continue
     if ! printf '%s\n' "$path" | grep -Eqf "$patterns"; then
+      # Print every violation, not only the first: the stage names them in the
+      # failure message so an under-specified plan is diagnosable at a glance.
       echo "$path"
-      return 1
+      violations=1
     fi
   done < <(git -C "$repo" status --porcelain)
+  return "$violations"
 }
 
 # Install the pinned opencode CLI the sessions run with.

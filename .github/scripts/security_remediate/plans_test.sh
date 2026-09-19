@@ -500,6 +500,55 @@ else
   fail "a public code snippet in the diff is allowed"
 fi
 
+# Scanner PoC code blocks are ordinary Go/HTTP test scaffolding; matching them
+# line-by-line flagged boilerplate in both test and production files on a real
+# run, so the diff set excludes them and floors the length at 20 characters.
+cat > "$TMP/diff-vulns.json" <<'EOF'
+[
+  {
+    "id": "vuln-0001",
+    "title": "Short bug",
+    "poc_description": "An attacker can reach the internal metadata endpoint",
+    "poc_script_code": "t.Setenv(\"TMPDIR\", t.TempDir())"
+  }
+]
+EOF
+
+printf '%s\n' '+An attacker can reach the internal metadata endpoint' > "$TMP/diff-gate.txt"
+if sanitize_diff "$TMP/diff-gate.txt" "$TMP/diff-vulns.json" >/dev/null 2>&1; then
+  fail "a PoC description in the diff is rejected"
+else
+  echo "ok: a PoC description in the diff is rejected"
+fi
+
+printf '%s\n' "+t.Setenv(\"TMPDIR\", t.TempDir())" > "$TMP/diff-gate.txt"
+if sanitize_diff "$TMP/diff-gate.txt" "$TMP/diff-vulns.json" >/dev/null 2>&1; then
+  echo "ok: a poc_script_code line in the diff is allowed"
+else
+  fail "a poc_script_code line in the diff is allowed"
+fi
+
+printf '%s\n' '+// Short bug' > "$TMP/diff-gate.txt"
+if sanitize_diff "$TMP/diff-gate.txt" "$TMP/diff-vulns.json" >/dev/null 2>&1; then
+  echo "ok: a title under the 20-character floor does not trip the diff"
+else
+  fail "a title under the 20-character floor does not trip the diff"
+fi
+
+printf '%s\n' '+An attacker can reach the internal metadata endpoint' > "$TMP/diff-gate.txt"
+hits="$(diff_disclosure_hits "$TMP/diff-gate.txt" "$TMP/diff-vulns.json")"
+if [ "$hits" = "An attacker can reach the internal metadata endpoint" ]; then
+  echo "ok: diff_disclosure_hits reports the offending prose for the private repair prompt"
+else
+  fail "diff_disclosure_hits: got '$hits'"
+fi
+printf '%s\n' '+if err := srv.Serve(ln); err != nil {' '+	// rebind is rejected before the upstream CONNECT' > "$TMP/diff-clean.txt"
+if [ -z "$(diff_disclosure_hits "$TMP/diff-clean.txt" "$TMP/diff-vulns.json")" ]; then
+  echo "ok: diff_disclosure_hits is empty for a clean diff"
+else
+  fail "diff_disclosure_hits is not empty for a clean diff"
+fi
+
 # --- assert_git_untampered: symlinked hooks --------------------------------------
 gd="$TMP/hookrepo"
 git init -q "$gd"

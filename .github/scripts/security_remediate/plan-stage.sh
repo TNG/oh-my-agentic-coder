@@ -200,11 +200,16 @@ violation rejects the whole run, so follow these exactly:
 - plan_file: a STRING, the plan file's path RELATIVE TO THE SCAN DIRECTORY,
   including the directory prefix: "mitigation-plans/01-<slug>.md".
 - files: an array of repo-relative STRINGS that exist in repo/ — the files
-  this plan may edit. Include any existing test file the fix will break
-  because it relied on the old behaviour as a shortcut (the fix sessions may
-  always edit Go test files; listing them tells the reviewer what to expect).
-  NEVER include .github/ paths — findings whose fix requires CI or workflow
-  changes go under "Manual follow-up" in the README, not into a plan.
+  this plan may edit. This list is a hard boundary, not a hint: the runner
+  rejects a fix session that edits any file outside it. So enumerate EVERY
+  file the fix will plausibly touch, not just the first one — grep the call
+  sites before you decide. Include spec or documentation files when the
+  review criteria demand updating them, and any existing test file the fix
+  will break because it relied on the old behaviour as a shortcut (the fix
+  sessions may always edit Go test files; listing them tells the reviewer
+  what to expect). NEVER include .github/ paths — findings whose fix requires
+  CI or workflow changes go under "Manual follow-up" in the README, not into
+  a plan.
 - tests: an array of STRINGS, each a Go test FUNCTION NAME starting with
   TestSecurity, e.g. "TestSecurityChainedProxyRebindsHost". These are the
   regression tests a later stage will WRITE, named after the security

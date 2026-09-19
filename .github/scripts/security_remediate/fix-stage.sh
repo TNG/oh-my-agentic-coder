@@ -239,10 +239,12 @@ has_commits_beyond_base() {
 
 # Fail the leg, but never silently: leftovers are committed as a wip commit
 # and the branch is pushed so a human can inspect exactly what the pipeline
-# produced, and so the next run can continue on it. A tampered git directory
-# is the exception: nothing is committed or pushed from it.
+# produced, and so the next run can continue on it. Two exceptions push
+# nothing: a tampered git directory (untrusted), and a third argument of
+# "nopush" — the disclosure gate's failure, where pushing would publish the
+# very finding prose the gate rejected. Logs are archived privately either way.
 fail_leg() {
-  local title=$1 msg=$2
+  local title=$1 msg=$2 push=${3:-push}
   if ! assert_git_untampered "$REPO_DIR" "$repo_origin" "Source checkout"; then
     echo "::error title=${title}::${msg} (nothing was pushed: the git directory was tampered with)"
     exit 1
@@ -251,8 +253,18 @@ fail_leg() {
     git -C "$REPO_DIR" add -A
     commit_as "$REPO_DIR" "$RUNNER_NAME" "$RUNNER_EMAIL" "wip(security): plan $PLAN_ID — pipeline leg failed" || true
   fi
-  if has_commits_beyond_base; then
+  if [ "$push" = push ] && has_commits_beyond_base; then
     push_branch || echo "::warning title=Push failed::The branch could not be pushed; its work is lost with the runner."
+  fi
+  # Archive the logs privately even on failure: without them a failed leg has
+  # no transcript to explain why it tripped (best effort — a tampered archive
+  # refuses, and the leg is failing anyway).
+  if [ -d "$ARCHIVE_DIR" ]; then
+    stage_logs="$scan_abs/remediation/fix-$PLAN_ID"
+    mkdir -p "$stage_logs"
+    cp "$LOG_DIR"/*.log "$LOG_DIR"/*.md "$stage_logs"/ 2>/dev/null || true
+    push_archive "$ARCHIVE_DIR" "remediation: fix logs (failed) for ${SCAN_DIR} plan ${PLAN_ID} ($(date -u +%F))" \
+      "scans/$SCAN_DIR/remediation/fix-$PLAN_ID" || true
   fi
   echo "::error title=${title}::${msg}"
   exit 1
@@ -263,7 +275,7 @@ fail_leg() {
 # the session produced no changes (empty diffs are legal in the retry phases,
 # decided by the caller).
 run_phase() {
-  local prompt=$1 log=$2 guard=$3 name=$4 email=$5 message=$6 secs=$7 status=0 pre_head
+  local prompt=$1 log=$2 guard=$3 name=$4 email=$5 message=$6 secs=$7 status=0 pre_head offending
   pre_head="$(git -C "$REPO_DIR" rev-parse HEAD)"
   set +e
   run_session "$DRIVER_HOME" "$secs" "$MODEL" "$WORKSPACE" "$prompt" "$log"
@@ -279,8 +291,9 @@ run_phase() {
     git -C "$REPO_DIR" reset --hard --quiet "$pre_head"
     fail_leg "Session committed to the branch" "The session created its own commit, which the ownership guard cannot attribute. The commit was discarded and the leg fails."
   fi
-  if [ -n "$(changed_files_within "$REPO_DIR" "$guard")" ]; then
-    fail_leg "Ownership guard tripped" "The session edited files outside its allowed set; its output is on the branch as a wip commit and no pull request was opened."
+  offending="$(changed_files_within "$REPO_DIR" "$guard" || true)"
+  if [ -n "$offending" ]; then
+    fail_leg "Ownership guard tripped" "The session edited files outside its allowed set: $(printf '%s' "$offending" | paste -sd', ' -). Either the plan's files list is incomplete (a fix may not edit a file it does not own) or the session wandered; the output is on the branch as a wip commit and no pull request was opened."
   fi
   assert_git_untampered "$REPO_DIR" "$repo_origin" "Source checkout" || fail_leg "Git directory tampered" "A session modified the checkout's git internals."
   git -C "$REPO_DIR" add -N . >/dev/null 2>&1 || true
@@ -443,8 +456,12 @@ Execute the plan for plan ${PLAN_ID}: ${plan_ref}.
   weaken or delete a test just to make the suite pass. State every test change
   and why in your final message.
 - Run the FULL suite before finishing: cd repo && go test -count=1 ./...
-- Nothing you write (identifiers, comments, error strings) may reveal how the
-  weaknesses are exploited: this repository is public.
+- Never copy finding material into the code: no finding titles and no
+  proof-of-concept descriptions or commands, in identifiers, comments, error
+  strings, log messages, commit content or test data. Nothing you write may
+  reveal how the weaknesses are exploited — this repository is public, and the
+  runner mechanically rejects a pushed diff containing finding prose verbatim.
+  Describe the new behaviour in your own words.
 - You have a limited wall-clock budget and may be stopped at any moment. The
   runner commits whatever is done.
 
@@ -475,6 +492,12 @@ one that encoded the old behaviour and now fails — correct it, never weaken
 it.
 Plan: ${plan_ref}
 
+Never copy finding material into the code: no finding titles and no
+proof-of-concept descriptions or commands, in identifiers, comments, error
+strings, log messages, commit content or test data. This repository is public
+and the runner mechanically rejects a pushed diff containing finding prose
+verbatim.
+
 Sanctioned, pre-authorized session — proceed directly without asking for
 confirmation.
 EOF
@@ -501,7 +524,8 @@ Review criteria:
 - Existing tests that encoded the vulnerable behaviour were inverted
   deliberately, not deleted.
 - Nothing in names, comments or fixtures reveals exploit mechanics: the
-  repository is public.
+  repository is public. No finding prose (title or proof-of-concept
+  description) appears verbatim in the diff.
 - The tests need no helpers outside *_security_test.go files.
 
 Count a finding only when it is concrete and must be resolved before the fix
@@ -551,6 +575,9 @@ Review criteria:
   configuration.
 - The regression tests genuinely pin the property: they were mechanically red
   before the fix, and were not weakened afterwards.
+- The diff contains no verbatim finding prose (a finding title or a
+  proof-of-concept description) in code, comments or fixtures; the repository
+  is public and the runner enforces this mechanically.
 
 Count a finding only when it is concrete and must be resolved before the
 change can be merged; style nits are not findings. Verdict rules:
@@ -720,14 +747,46 @@ note=""
 if [ -n "$removed_tests" ]; then
   note="; tests removed by the final pass: $(printf '%s' "$removed_tests" | paste -sd', ' -)"
 fi
-# The branch is public the moment it is pushed. Titles and PoC text must not
-# ride along in the diff (tests adopting PoCs are the main risk); public code
-# snippets are deliberately not in the string set.
+# The branch is public the moment it is pushed. Finding titles and PoC prose
+# must not ride along in the diff; public code (and the scanner's PoC code
+# blocks, full of ordinary test scaffolding) is deliberately not in the
+# string set. A hit is repairable, so it buys one scrub session before the leg
+# fails — the alternative is re-dispatching into the same model behaviour.
 vulns_file="$scan_abs/vulnerabilities.json"
 [ -f "$vulns_file" ] || fail_leg "No findings file" "The scan's vulnerabilities.json is missing; the disclosure gate cannot run, so nothing is pushed."
-git -C "$REPO_DIR" diff "$base_sha..HEAD" > "$WORK/diff.txt"
-sanitize_diff "$WORK/diff.txt" "$vulns_file" \
-  || fail_leg "Diff disclosure gate" "The pushed diff contains a finding title or PoC string; nothing was pushed or published."
+disclosure_hits() {
+  git -C "$REPO_DIR" diff "$base_sha..HEAD" > "$WORK/diff.txt"
+  diff_disclosure_hits "$WORK/diff.txt" "$vulns_file"
+}
+hits="$(disclosure_hits)"
+if [ -n "$hits" ]; then
+  echo "phase: disclosure retry"
+  # $hits is finding prose: it goes to the private log and the session prompt,
+  # never to a public surface.
+  printf '%s\n' "$hits" > "$LOG_DIR/disclosure-hits.txt"
+  disclosure_prompt="$WORK/disclosure-prompt.md"
+  {
+    echo "The runner rejected the pushed diff for disclosure: it contains"
+    echo "finding prose (titles or proof-of-concept descriptions) verbatim."
+    echo "The offending strings:"
+    cat "$LOG_DIR/disclosure-hits.txt"
+    echo ""
+    echo "Remove or paraphrase those strings from the code, tests, comments and"
+    echo "fixtures in repo/, without weakening the tests or changing behaviour."
+    echo "The diff must not contain any finding text verbatim. Do not modify"
+    echo "anything else; the runner commits your work."
+    echo ""
+    echo "Sanctioned, pre-authorized repair session — proceed directly without"
+    echo "asking for confirmation."
+  } > "$disclosure_prompt"
+  run_phase "$disclosure_prompt" "$LOG_DIR/disclosure-retry.log" "$guard_fix" \
+    "$FIX_WRITER_NAME" "$FIX_WRITER_EMAIL" \
+    "fix(security): $my_issue_line" "$SHORT_SECS" || true
+  hits="$(disclosure_hits)"
+fi
+if [ -n "$hits" ]; then
+  fail_leg "Diff disclosure gate" "The pushed diff still contains finding prose after a scrub pass (details in the private log); nothing was pushed or published." nopush
+fi
 
 echo "phase: writing the pull request body"
 write_pr_prompt "$WORK/pr-prompt.md"
@@ -758,7 +817,7 @@ fi
 # The description writer may only produce the body file: anything else it
 # touched means it misunderstood the task, and the change would be unproven.
 printf '%s\n' '^PR_BODY\.md$' > "$WORK/guard-pr-body"
-other_changes="$(changed_files_within "$REPO_DIR" "$WORK/guard-pr-body")"
+other_changes="$(changed_files_within "$REPO_DIR" "$WORK/guard-pr-body" || true)"
 if [ -n "$other_changes" ]; then
   rm -f "$body_file"
   fail_leg "PR writer modified the repository" "The description session changed files beyond PR_BODY.md; those changes were not reviewed, so the leg fails."
