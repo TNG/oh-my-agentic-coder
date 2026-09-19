@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -114,4 +117,132 @@ func TestSecurityTCPListenerRequiresAuthentication(t *testing.T) {
 			t.Errorf("an unauthenticated caller wrote an intent record (%q): the text shown to the user when approving access is writable by anyone on the machine", e.Reason)
 		}
 	})
+}
+
+// TestSecurityTCPAuthRejectsNonLoopbackSource asserts that a request
+// arriving over the TCP listener must present the bearer token even when
+// the caller's source address is not loopback. The source address of a
+// local TCP connection is chosen by the dialer, so it cannot serve as a
+// marker that the request came from the trusted Unix transport: trust must
+// follow from the listener that accepted the connection.
+func TestSecurityTCPAuthRejectsNonLoopbackSource(t *testing.T) {
+	sectest.RequireLoopbackListener(t)
+	src := nonLoopbackSourceIP(t)
+
+	s := startSidecar(t, "HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\nbody")
+	f := New("", "127.0.0.1:0", []Route{{
+		Mount:        "slack",
+		UpstreamPort: s.port,
+		Skill:        "slack",
+		State:        RouteReady,
+	}}, 0, time.Minute, "", "test")
+	f.FacadeToken = "test-facade-token"
+	if err := f.Start(context.Background()); err != nil {
+		t.Fatalf("facade start: %v", err)
+	}
+	t.Cleanup(func() { f.Close() })
+
+	dialer := &net.Dialer{LocalAddr: &net.TCPAddr{IP: net.ParseIP(src)}}
+	client := &http.Client{
+		Timeout:   5 * time.Second,
+		Transport: &http.Transport{DialContext: dialer.DialContext},
+	}
+
+	resp, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/slack/whoami", f.TCPPort()))
+	if err != nil {
+		t.Fatalf("request with non-loopback source %s failed (%v): the fixture is broken, not the security property", src, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("TCP request with non-loopback source %s got status %d, want 401: a TCP request must require the bearer token regardless of the peer's source address", src, resp.StatusCode)
+	}
+}
+
+// TestSecurityUnixSocketExemptByTransportFlag asserts that a request over
+// the Unix socket is exempt from the bearer-token gate by virtue of the
+// transport it arrived on, not by inspecting its peer address string. The
+// dialer binds its socket to a path whose textual form is indistinguishable
+// from a loopback TCP peer address; exemption must still hold, because it
+// is the accepting listener that identifies the transport.
+func TestSecurityUnixSocketExemptByTransportFlag(t *testing.T) {
+	sectest.RequireLoopbackListener(t)
+	requireUnixSocket(t)
+
+	s := startSidecar(t, "HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\nbody")
+	dir, err := os.MkdirTemp(".", "omac-sec-")
+	if err != nil {
+		t.Fatalf("mkdir temp: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	socket := filepath.Join(dir, "s.sock")
+
+	f := New(socket, "", []Route{{
+		Mount:        "slack",
+		UpstreamPort: s.port,
+		Skill:        "slack",
+		State:        RouteReady,
+	}}, 0, time.Minute, "", "test")
+	f.FacadeToken = "test-facade-token"
+	if err := f.Start(context.Background()); err != nil {
+		t.Fatalf("facade start: %v", err)
+	}
+	t.Cleanup(func() { f.Close() })
+
+	// Bind the dialing socket to a relative path whose textual form could
+	// be confused with a loopback TCP peer. Exemption must follow from the
+	// accepting listener, not from parsing that string.
+	localName := "127.omac-sec-client"
+	t.Cleanup(func() { os.Remove(localName) })
+	local := &net.UnixAddr{Name: localName, Net: "unix"}
+	remote := &net.UnixAddr{Name: socket, Net: "unix"}
+	client := &http.Client{
+		Timeout: 5 * time.Second,
+		Transport: &http.Transport{
+			DisableKeepAlives: true,
+			DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
+				return net.DialUnix("unix", local, remote)
+			},
+		},
+	}
+
+	resp, err := client.Get("http://x/slack/whoami")
+	if err != nil {
+		t.Fatalf("Unix-socket request failed (%v): the fixture is broken, not the security property", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("Unix-socket request got status %d, want 200: the Unix transport must be exempt by the listener that accepted it, not by address string", resp.StatusCode)
+	}
+}
+
+// nonLoopbackSourceIP returns a non-loopback IPv4 address of an active
+// interface, failing the test when the environment offers none — a TCP
+// request with a non-loopback source cannot be constructed without one,
+// and silently skipping would read as the property holding.
+func nonLoopbackSourceIP(t *testing.T) string {
+	t.Helper()
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		t.Fatalf("enumerate network interfaces: %v", err)
+	}
+	for _, iface := range ifaces {
+		if iface.Flags&net.FlagLoopback != 0 || iface.Flags&net.FlagUp == 0 {
+			continue
+		}
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, a := range addrs {
+			ipNet, ok := a.(*net.IPNet)
+			if !ok {
+				continue
+			}
+			if ip := ipNet.IP.To4(); ip != nil && !ip.IsLoopback() {
+				return ip.String()
+			}
+		}
+	}
+	t.Fatalf("no non-loopback interface address available: this test needs one to send a TCP request with a non-loopback source")
+	return ""
 }
