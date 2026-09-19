@@ -18,7 +18,8 @@
 #   GH_TOKEN           token `gh` authenticates with. The workflow's
 #                     read-scoped github.token is enough; the PAT never
 #                     reaches gh, let alone an agent session.
-#   SECURITY_SCAN_PAT  the write PAT (probe, archive clone/push)
+#   SECURITY_SCAN_PAT  archive write PAT (probe, clone, push)
+#   REPO_TOKEN         this repo's write token (github.token in CI; branch push)
 #   ARCHIVE_REPO       private companion repo, owner/name
 #   SKAINET_TOKEN      model gateway API key (agent sessions)
 #   SKAINET_INTERNAL   model gateway base URL (agent sessions)
@@ -147,10 +148,19 @@ probe_write_access() {
 # log unredacted: capture, strip the PAT, print the remainder on failure only.
 archive_git() {
   local dir=$1; shift
-  local err status=0
+  local err status=0 s
+  local -a redact sedargs
+  redact=("s/${SECURITY_SCAN_PAT}/REDACTED-TOKEN/g")
+  # A failed push prints the credential URL; both tokens can appear now (the
+  # archive PAT and the repo's github.token), so redact either. One -e per
+  # pattern: a bare `sed "${redact[@]}"` treats the second pattern as a file.
+  if [ -n "${REPO_TOKEN:-}" ] && [ "$REPO_TOKEN" != "$SECURITY_SCAN_PAT" ]; then
+    redact+=("s/${REPO_TOKEN}/REDACTED-TOKEN/g")
+  fi
+  for s in "${redact[@]}"; do sedargs+=(-e "$s"); done
   err=$(git -C "$dir" "$@" 2>&1) || status=$?
   if [ "$status" -ne 0 ]; then
-    printf '%s\n' "$err" | sed "s/${SECURITY_SCAN_PAT}/REDACTED-PAT/g" >&2
+    printf '%s\n' "$err" | sed "${sedargs[@]}" >&2
     return "$status"
   fi
   [ -z "$err" ] || printf '%s\n' "$err" >&2
@@ -226,12 +236,29 @@ push_archive() {
     return 0
   fi
   git -C "$dir" commit -s --no-verify --quiet -m "$message"
-  archive_git "$dir" push --quiet --no-verify \
-    "https://x-access-token:${SECURITY_SCAN_PAT}@github.com/${ARCHIVE_REPO}.git" HEAD || {
-    echo "::error title=Archive push failed::Pushing the archive repo failed after the preflight confirmed write access — check for a protected default branch or a token revoked mid-run."
-    return 1
-  }
-  echo "archive: pushed"
+  # Parallel wave legs share the archive clone, so the loser of a concurrent
+  # push gets a non-fast-forward rejection. The paths are disjoint per stage,
+  # so rebasing onto the new tip is conflict-free — retry before failing.
+  local attempt
+  for attempt in 1 2 3; do
+    if archive_git "$dir" push --quiet --no-verify \
+         "https://x-access-token:${SECURITY_SCAN_PAT}@github.com/${ARCHIVE_REPO}.git" HEAD; then
+      echo "archive: pushed"
+      return 0
+    fi
+    if [ "$attempt" -lt 3 ]; then
+      echo "archive: push rejected (likely a parallel leg) — rebasing onto the new tip and retrying ($attempt/3)" >&2
+      # Fetch by explicit credentialed URL: origin is the clean URL, and the
+      # archive is private, so an unauthenticated fetch would fail and the
+      # rebase would never happen.
+      archive_git "$dir" fetch --quiet \
+        "https://x-access-token:${SECURITY_SCAN_PAT}@github.com/${ARCHIVE_REPO}.git" HEAD >&2 || true
+      archive_git "$dir" rebase --quiet FETCH_HEAD >&2 \
+        || archive_git "$dir" rebase --abort >&2 || true
+    fi
+  done
+  echo "::error title=Archive push failed::Pushing the archive repo failed after retries — check for a protected default branch or a token revoked mid-run."
+  return 1
 }
 
 # Scan dirs are named "<label>-<reason>-<status>" and the label is always
@@ -355,20 +382,16 @@ issue_body_forbidden_strings() {
 # match — never echo the matched string, this output can reach the public
 # job log.
 #
-# The same per-line check guards the pushed diff, but with a narrower string
-# set: a fix diff legitimately contains the public code the scanner also
-# recorded as a code snippet (that code is what the fix changes), so the
-# snippet/location fields would fire on every honest fix. Titles and PoC
-# text are the exploit-specific strings that must not be pasted into public
-# tests or comments.
+# The same per-line check guards the pushed diff, with a narrower string set
+# and a higher length floor (see diff_forbidden_strings).
 sanitize_lines() {
-  local body_file=$1 s
+  local body_file=$1 min_len=${2:-8} s
   while IFS= read -r s; do
     # Trim the ends only — multi-word finding text must keep its interior
     # whitespace to stay findable in the body.
     s="${s#"${s%%[![:space:]]*}"}"
     s="${s%"${s##*[![:space:]]}"}"
-    [ "${#s}" -ge 8 ] || continue
+    [ "${#s}" -ge "$min_len" ] || continue
     if grep -Fqi -- "$s" "$body_file"; then
       echo "text contains a string from the scan findings (string withheld)"
       return 1
@@ -380,20 +403,140 @@ sanitize_issue_body() {
   sanitize_lines "$1" < <(issue_body_forbidden_strings "$2" "$3")
 }
 
-# Strings the pushed diff must not contain: finding titles and every
-# PoC/exploit-style field, but not code locations or snippets (see above).
+# Strings the pushed diff must not contain: the finding TITLES and the PoC's
+# prose fields, but not code locations, snippets or poc_script_code. A fix
+# diff and the tests it adds are Go code, and every scanner PoC block is
+# ordinary Go/HTTP test scaffolding: matching those line-by-line fired on
+# boilerplate (`t.Setenv(...)`, error checks) in both test and production
+# files. The prose fields are the exploit-specific strings that must not be
+# pasted into a public test or comment.
 diff_forbidden_strings() {
   local vulns_json=$1
   {
     jq -r '.[] | (.title // empty)' "$vulns_json" 2>/dev/null || true
     jq -r '.[] | to_entries[]
-            | select((.key | test("poc|exploit|proof"; "i")) and (.value | type == "string"))
+            | select((.key | test("poc|exploit|proof"; "i"))
+                     and (.key | test("(^|[_-])(code|script)([_-]|$)"; "i") | not)
+                     and (.value | type == "string"))
             | .value' "$vulns_json" 2>/dev/null || true
   }
 }
 
+# The diff's length floor is higher than the issue body's: prose sentences are
+# long, so a 20-character minimum keeps short boilerplate from ever matching.
 sanitize_diff() {
-  sanitize_lines "$1" < <(diff_forbidden_strings "$2")
+  sanitize_lines "$1" 20 < <(diff_forbidden_strings "$2")
+}
+
+# The forbidden strings that actually appear in $1, one per line — for the
+# private repair prompt. Finding text, so this output must never reach a
+# public surface. Always returns 0; callers judge by the output.
+diff_disclosure_hits() {
+  local diff_file=$1 vulns_json=$2 s
+  while IFS= read -r s; do
+    s="${s#"${s%%[![:space:]]*}"}"
+    s="${s%"${s##*[![:space:]]}"}"
+    [ "${#s}" -ge 20 ] || continue
+    grep -Fqi -- "$s" "$diff_file" && printf '%s\n' "$s"
+  done < <(diff_forbidden_strings "$vulns_json")
+  return 0
+}
+
+# Number of comma-separated ids in $1 (empty input is zero).
+id_count() {
+  [ -z "$1" ] && { echo 0; return; }
+  printf '%s' "$1" | awk -F, '{print NF}'
+}
+
+# The per-plan pull-request state, the single source of truth for "executed":
+# a plan is done when its PR is merged, in flight when the PR is open, and
+# still queued otherwise (no PR — a leg that failed pushed its branch but no
+# PR, so it stays queued and is retried on a later run).
+# Prints three lines: "merged:<ids>", "open:<ids>", "unstarted:<ids>".
+plan_pr_states() {
+  local plans_json=$1 merged="" open="" unstarted="" entry id branch state
+  while IFS= read -r entry; do
+    id="$(printf '%s' "$entry" | jq -r '.id')"
+    branch="$(printf '%s' "$entry" | jq -r '.branch')"
+    state="$(gh pr list -R "$GITHUB_REPOSITORY" --head "$branch" --state all \
+      --limit 1 --json state --jq '.[0].state' 2>/dev/null || true)"
+    case "$state" in
+      MERGED) merged="$merged$id," ;;
+      OPEN)   open="$open$id," ;;
+      *)      unstarted="$unstarted$id," ;;
+    esac
+  done < <(jq -c '.[]' "$plans_json")
+  printf 'merged:%s\nopen:%s\nunstarted:%s\n' "${merged%,}" "${open%,}" "${unstarted%,}"
+}
+
+# The overview issue body, shared by the issue stage (which creates or
+# rewrites it) and the finalize workflow (which refreshes it daily), so the
+# two writers cannot drift apart. Ticks derive from the merged-id list, which
+# is why no state is carried in the old body.
+# Plan ids whose generation branch already exists on origin: a leg pushes its
+# branch on success (a pull request follows) or on failure (a wip push), so a
+# branch means "dispatched at least once". One ls-remote covers the whole
+# generation, which is why no state has to be carried between runs.
+branch_dispatched_ids() {
+  local repo=$1 scan_dir=$2 prefix="refs/heads/fix/security-${scan_dir}-plan-"
+  git -C "$repo" ls-remote --heads origin "${prefix}*" 2>/dev/null \
+    | awk -v p="$prefix" '{ i = index($2, p); if (i) print substr($2, i + length(p)) }' \
+    | sort -u | paste -sd, -
+}
+
+# The "in flight" bucket: dispatched at least once but no pull request yet.
+# $1 branch-derived ids, $2 extra ids (this run's selection), $3 merged ids,
+# $4 open ids. Disjoint from merged/open by construction, so the four status
+# buckets sum to the total.
+dispatched_bucket() {
+  local id out=""
+  for id in $(printf '%s,%s' "$1" "$2" | tr ',' ' '); do
+    [ -n "$id" ] || continue
+    case ",$3,$4," in *",$id,"*) continue ;; esac
+    case ",$out," in *",$id,"*) continue ;; esac
+    out="$out$id,"
+  done
+  printf '%s' "${out%,}"
+}
+
+# Prints the body; $1 plans.json, $2/$3/$4 the merged/open/in-flight id lists.
+overview_body() {
+  local plans_json=$1 merged=$2 open=$3 dispatched=$4
+  local total merged_n open_n dispatched_n not_dispatched_n
+  total="$(jq 'length' "$plans_json")"
+  merged_n="$(id_count "$merged")"
+  open_n="$(id_count "$open")"
+  dispatched_n="$(id_count "$dispatched")"
+  not_dispatched_n=$(( total - merged_n - open_n - dispatched_n ))
+
+  printf '%s\n' '<!-- security-remediation: overview -->'
+  printf '\n'
+  printf '%s\n' '> **Note:** this issue is maintained automatically by the security'
+  printf '%s\n' '> remediation pipeline. It is rewritten by the pipeline on every run and'
+  printf '%s\n' '> updated by the daily finalize workflow, so please do not edit it by hand.'
+  printf '\n'
+  printf '%s\n' 'The security remediation pipeline tracks its workstreams here. Each item is'
+  printf '%s\n' 'one origin-batched fix plan, executed by an automated pipeline whose pull'
+  printf '%s\n' 'requests reference this issue. Detailed plans live in the private companion'
+  printf '%s\n' 'repo; this issue stays sanitized by design.'
+  printf '\n'
+  printf '%s\n' '## Status'
+  printf '\n'
+  printf -- '- Workstreams: %s total — %s merged, %s in review, %s in flight, %s not yet dispatched.\n' \
+    "$total" "$merged_n" "$open_n" "$dispatched_n" "$not_dispatched_n"
+  printf '\n'
+  printf '%s\n' '## Workstreams'
+  printf '\n'
+  while IFS=$'\t' read -r id line; do
+    local state=' '
+    case ",$merged," in *",$id,"*) state='x' ;; esac
+    printf -- '- [%s] %s\n' "$state" "$line"
+  done < <(jq -r 'sort_by(.priority, .id) | .[] | "\(.id)\t\(.issue_line)"' "$plans_json")
+  printf '\n'
+  printf '%s\n' '## Notes'
+  printf '\n'
+  printf '%s\n' '- Merging stays a human action: every pull request needs at least one approval (COLLABORATION.md).'
+  printf '%s\n' '- Each run starts up to max_plans not-yet-dispatched workstreams in priority order; one whose leg fails stays queued and is retried on a later run.'
 }
 
 # Wave assignment for the fix stage ("Job 5" in the pipeline plan): greedy
@@ -437,7 +580,7 @@ assign_waves() {
 # fine; the sensitive set is the allowed paths from the plan, and those are
 # never printed.
 changed_files_within() {
-  local repo=$1 patterns=$2 path
+  local repo=$1 patterns=$2 path violations=0
   while IFS= read -r path; do
     [ -n "$path" ] || continue
     path="${path:3}"             # porcelain v1: XY<TAB>path
@@ -448,10 +591,20 @@ changed_files_within() {
     path="${path%\"}"
     [ -n "$path" ] || continue
     if ! printf '%s\n' "$path" | grep -Eqf "$patterns"; then
+      # Print every violation, not only the first: the stage names them in the
+      # failure message so an under-specified plan is diagnosable at a glance.
       echo "$path"
-      return 1
+      violations=1
     fi
   done < <(git -C "$repo" status --porcelain)
+  return "$violations"
+}
+
+# Paths changed across a commit range ($2, e.g. base..HEAD), one per line —
+# the cumulative view a re-entered branch needs, where the working tree alone
+# would only show the latest session's edits.
+changed_paths_between() {
+  git -C "$1" diff --name-only "$2"
 }
 
 # Install the pinned opencode CLI the sessions run with.
@@ -524,6 +677,15 @@ session_sandbox_args() {
               --bind "$workdir" "$workdir")
   for g in "$workdir/.git" "$workdir/repo/.git" "$workdir/archive/.git"; do
     [ -d "$g" ] && args+=(--ro-bind "$g" "$g")
+  done
+  # CI and supply-chain surfaces are read-only for every session — a fix may
+  # edit production files, but never the workflows or the module graph. The
+  # runner-side denylist is the backstop where bubblewrap is unavailable.
+  # These binds come after the workdir bind so they win over its writability.
+  for g in "$workdir/.github" "$workdir/repo/.github" \
+           "$workdir/go.mod" "$workdir/go.sum" "$workdir/go.work" "$workdir/go.work.sum" \
+           "$workdir/repo/go.mod" "$workdir/repo/go.sum" "$workdir/repo/go.work" "$workdir/repo/go.work.sum"; do
+    [ -e "$g" ] && args+=(--ro-bind "$g" "$g")
   done
   printf '%s\n' "${args[@]}"
 }

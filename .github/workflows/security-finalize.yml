@@ -20,9 +20,9 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
-  pull-requests: read
-  issues: read # the PAT carries the write permissions; this job never writes with github.token
+  contents: read # checkout; archive writes use the PAT
+  pull-requests: read # read merge states
+  issues: write # tick checkboxes and close the overview issue
 
 concurrency:
   group: security-finalize
@@ -36,9 +36,12 @@ jobs:
     env:
       SECURITY_SCAN_PAT: ${{ secrets.SECURITY_SCAN_PAT }}
       ARCHIVE_REPO: ${{ secrets.SECURITY_ARCHIVE_REPO }}
-      # Ticking and closing the overview issue needs issues:write — the PAT,
-      # same as the remediation workflow's issue job.
-      GH_TOKEN: ${{ secrets.SECURITY_SCAN_PAT }}
+      # The stage runs from the workspace, which is not a git checkout, so gh
+      # cannot infer the repo from a remote; GH_REPO provides it globally.
+      GH_REPO: ${{ github.repository }}
+      # Ticking and closing the overview issue: github.token with the
+      # issues:write permission above, not the archive PAT.
+      GH_TOKEN: ${{ github.token }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4

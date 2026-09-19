@@ -49,7 +49,9 @@
 #   STRICT_REVIEW      true = an unresolved "insufficient" verdict fails the
 #                      leg instead of opening the PR
 #   REPO_DIR, ARCHIVE_DIR, LOG_DIR   (defaults ./repo, ./archive, ./logs)
-#   GH_TOKEN            the write PAT (push, PR creation)
+#   REPO_TOKEN          write token for this repo's branch push (github.token;
+#                       falls back to SECURITY_SCAN_PAT for local hand-runs)
+#   GH_TOKEN            token `gh` uses for PR creation (github.token)
 #   plus the lib.sh variables (ARCHIVE_REPO, SECURITY_SCAN_PAT, SKAINET_*)
 
 set -euo pipefail
@@ -130,7 +132,9 @@ fi
 # --- Branch and base ------------------------------------------------------------
 # The default branch comes from the API: actions/checkout leaves a detached
 # HEAD, so origin/HEAD is not reliable in a shallow clone.
-default_branch="$(gh repo view --json defaultBranchRef --jq '.defaultBranchRef.name')"
+# gh repo view takes the repository as a positional argument — it has no -R
+# flag (unlike the issue/pr/label commands).
+default_branch="$(gh repo view "$GITHUB_REPOSITORY" --json defaultBranchRef --jq '.defaultBranchRef.name')"
 [ -n "$default_branch" ] || { echo "::error title=No default branch::gh returned no default branch name." >&2; exit 1; }
 
 base_branch=""
@@ -145,7 +149,7 @@ stack_ids="$(jq -r --arg id "$PLAN_ID" --argjson map "$WAVE_MAP" '
     | join(" ")' "$plans_json")"
 for cand in $stack_ids; do
   cand_branch="fix/security-$SCAN_DIR-plan-$cand"
-  if gh pr list --head "$cand_branch" --state open --json url --jq 'length' 2>/dev/null | grep -q '^1$' \
+  if gh pr list -R "$GITHUB_REPOSITORY" --head "$cand_branch" --state open --json url --jq 'length' 2>/dev/null | grep -q '^1$' \
      && git -C "$REPO_DIR" fetch --quiet origin "$cand_branch" 2>/dev/null; then
     base_branch="$cand_branch"
     echo "stacking plan $PLAN_ID on $cand_branch (shares files with plan $cand, whose PR is open)"
@@ -195,20 +199,24 @@ trap 'chmod -R u+w "$WORK" 2>/dev/null; rm -rf "$WORK"' EXIT
 plan_tests_file="$WORK/plan-tests.txt"
 printf '%s\n' "$my_plan" | jq -r '.tests[]' > "$plan_tests_file"
 
-# Test sessions own security test files only; fix sessions own the plan's
-# files only; only the final fix pass may also touch tests, so it alone gets
-# the combined pattern. The guard files live outside the session workspace so
-# no session can read its own leash.
+# Guard files, kept outside the session workspace so no session reads its own
+# leash.
+#   guard_tests — HARD: the test writer may only create/edit security tests.
+#   guard_fix   — the allow list for fix sessions: the plan's files plus any Go
+#                 test file. Guidance, not a cage: an under-specified plan must
+#                 not fail a legitimate fix. Out-of-plan edits are allowed and
+#                 flagged to reviewers; the deny list below still fails the leg.
+#   deny_fix    — HARD: CI config and the module graph, which no session may
+#                 edit (bubblewrap binds them read-only too).
 guard_tests="$WORK/guard-tests"
 printf '%s\n' '_security_test\.go$' > "$guard_tests"
 guard_fix="$WORK/guard-fix"
 {
   printf '%s\n' "$my_plan" | jq -r '.files[]' | sed 's/[^A-Za-z0-9_/-]/\\&/g; s/^/^/; s/$/$/'
-  # A behaviour fix can break pre-existing tests that encoded the old,
-  # vulnerable behaviour as a shortcut, so the fix sessions may also update
-  # any Go test file. The fix review judges those changes.
   printf '%s\n' '_test\.go$'
 } > "$guard_fix"
+deny_fix="$WORK/deny-fix"
+printf '%s\n' '(^|/)\.github/' '^go\.(mod|sum|work|work\.sum)$' > "$deny_fix"
 
 MODEL="${MODEL:-$(bash "$REPO_DIR/scripts/resolve-model.sh" opencode)}"
 REVIEWER="${REVIEW_MODEL:-$MODEL}"
@@ -216,14 +224,17 @@ install_opencode
 DRIVER_HOME="$(session_home "$WORK" "$MODEL" "$REVIEWER")"
 
 # --- Runner helpers ---------------------------------------------------------------
-# Push with the credential supplied per invocation. Nothing is written to
-# .git/config, so the PAT is never on disk while a session runs; the explicit
-# URL also bypasses any planted insteadOf rewrite (the tamper check below
-# refuses to push at all if one appeared).
+# Push with the credential supplied per invocation. Writes to this repo use
+# the workflow's github.token (REPO_TOKEN), never the archive PAT — the PAT
+# has no scopes here at all. Nothing is written to .git/config, so no
+# credential is on disk while a session runs; the explicit URL also bypasses
+# any planted insteadOf rewrite (the tamper check refuses to push if one
+# appeared).
 push_branch() {
+  local token="${REPO_TOKEN:-$SECURITY_SCAN_PAT}"
   assert_git_untampered "$REPO_DIR" "$repo_origin" "Source checkout" || return 1
   archive_git "$REPO_DIR" push --quiet --no-verify \
-    "https://x-access-token:${SECURITY_SCAN_PAT}@github.com/${GITHUB_REPOSITORY}.git" "$my_branch"
+    "https://x-access-token:${token}@github.com/${GITHUB_REPOSITORY}.git" "$my_branch"
 }
 
 has_commits_beyond_base() {
@@ -232,10 +243,12 @@ has_commits_beyond_base() {
 
 # Fail the leg, but never silently: leftovers are committed as a wip commit
 # and the branch is pushed so a human can inspect exactly what the pipeline
-# produced, and so the next run can continue on it. A tampered git directory
-# is the exception: nothing is committed or pushed from it.
+# produced, and so the next run can continue on it. Two exceptions push
+# nothing: a tampered git directory (untrusted), and a third argument of
+# "nopush" — the disclosure gate's failure, where pushing would publish the
+# very finding prose the gate rejected. Logs are archived privately either way.
 fail_leg() {
-  local title=$1 msg=$2
+  local title=$1 msg=$2 push=${3:-push}
   if ! assert_git_untampered "$REPO_DIR" "$repo_origin" "Source checkout"; then
     echo "::error title=${title}::${msg} (nothing was pushed: the git directory was tampered with)"
     exit 1
@@ -244,19 +257,33 @@ fail_leg() {
     git -C "$REPO_DIR" add -A
     commit_as "$REPO_DIR" "$RUNNER_NAME" "$RUNNER_EMAIL" "wip(security): plan $PLAN_ID — pipeline leg failed" || true
   fi
-  if has_commits_beyond_base; then
+  if [ "$push" = push ] && has_commits_beyond_base; then
     push_branch || echo "::warning title=Push failed::The branch could not be pushed; its work is lost with the runner."
+  fi
+  # Archive the logs privately even on failure: without them a failed leg has
+  # no transcript to explain why it tripped (best effort — a tampered archive
+  # refuses, and the leg is failing anyway).
+  if [ -d "$ARCHIVE_DIR" ]; then
+    stage_logs="$scan_abs/remediation/fix-$PLAN_ID"
+    mkdir -p "$stage_logs"
+    cp "$LOG_DIR"/*.log "$LOG_DIR"/*.md "$stage_logs"/ 2>/dev/null || true
+    push_archive "$ARCHIVE_DIR" "remediation: fix logs (failed) for ${SCAN_DIR} plan ${PLAN_ID} ($(date -u +%F))" \
+      "scans/$SCAN_DIR/remediation/fix-$PLAN_ID" || true
   fi
   echo "::error title=${title}::${msg}"
   exit 1
 }
 
-# Run one writer session in $1, log to $2, enforce the $3 ownership guard, and
-# commit as $4 <$5> with message $6 within a $7-second budget. Returns 1 when
-# the session produced no changes (empty diffs are legal in the retry phases,
-# decided by the caller).
+# Run one writer session in $1, log to $2, check its writes against $3, and
+# commit as $4 <$5> with message $6 within a $7-second budget. $8 is the mode:
+# "hard" (test writer) fails on any write outside the allow list; "soft" (fix
+# sessions) fails only on the deny list (.github/, module graph) and reports
+# the rest as out-of-plan for the reviewers and the pull request. Returns 1
+# when the session produced no changes (empty diffs are legal in the retry
+# phases, decided by the caller).
 run_phase() {
-  local prompt=$1 log=$2 guard=$3 name=$4 email=$5 message=$6 secs=$7 status=0 pre_head
+  local prompt=$1 log=$2 guard=$3 name=$4 email=$5 message=$6 secs=$7 mode=${8:-hard}
+  local status=0 pre_head offending denied
   pre_head="$(git -C "$REPO_DIR" rev-parse HEAD)"
   set +e
   run_session "$DRIVER_HOME" "$secs" "$MODEL" "$WORKSPACE" "$prompt" "$log"
@@ -272,8 +299,19 @@ run_phase() {
     git -C "$REPO_DIR" reset --hard --quiet "$pre_head"
     fail_leg "Session committed to the branch" "The session created its own commit, which the ownership guard cannot attribute. The commit was discarded and the leg fails."
   fi
-  if [ -n "$(changed_files_within "$REPO_DIR" "$guard")" ]; then
-    fail_leg "Ownership guard tripped" "The session edited files outside its allowed set; its output is on the branch as a wip commit and no pull request was opened."
+  offending="$(changed_files_within "$REPO_DIR" "$guard" || true)"
+  if [ -n "$offending" ]; then
+    # Paths outside the allow list: the deny list is always fatal, everything
+    # else is only reported — an under-specified plan must not kill a fix.
+    denied="$(printf '%s\n' "$offending" | grep -Ef "$deny_fix" || true)"
+    if [ -n "$denied" ]; then
+      fail_leg "Denied paths edited" "The session edited files that are off limits to every session: $(printf '%s' "$denied" | paste -sd', ' -). Nothing was pushed for review."
+    fi
+    if [ "$mode" = hard ]; then
+      fail_leg "Ownership guard tripped" "The session edited files outside its allowed set: $(printf '%s' "$offending" | paste -sd', ' -). The output is on the branch as a wip commit and no pull request was opened."
+    fi
+    echo "out of plan (allowed, flagged to reviewers): $(printf '%s' "$offending" | paste -sd', ' -)"
+    OUT_OF_PLAN="${OUT_OF_PLAN}${offending}"$'\n'
   fi
   assert_git_untampered "$REPO_DIR" "$repo_origin" "Source checkout" || fail_leg "Git directory tampered" "A session modified the checkout's git internals."
   git -C "$REPO_DIR" add -N . >/dev/null 2>&1 || true
@@ -301,6 +339,43 @@ review_guarded() {
   return "$rc"
 }
 
+# gofmt is what CI's lint job gates on, and it is free, so both the red
+# (test-only) and the green (full) trees must be format-clean: an unformatted
+# file is a red CI run, not a review finding, and catching it before the fix
+# starts is cheaper than a fix retry.
+format_check() {
+  local label=$1 logf=$2 list
+  echo "== gofmt -l . ==" >> "$logf"
+  if ! list="$( cd "$REPO_DIR" && scrubbed gofmt -l . 2>>"$logf" )"; then
+    echo "${label}: gofmt failed to run"
+    return 1
+  fi
+  printf '%s\n' "$list" >> "$logf"
+  if [ -n "$list" ]; then
+    echo "${label}: these files are not gofmt-clean:"
+    printf '%s\n' "$list"
+    return 1
+  fi
+  return 0
+}
+
+# staticcheck is the other half of CI's lint job; the target repo is clean on
+# main, so any finding is this change's. Skipped with a warning where the tool
+# is not installed (the local harness has only stubs).
+staticcheck_check() {
+  local label=$1 logf=$2
+  if ! command -v staticcheck >/dev/null 2>&1; then
+    echo "${label}: staticcheck not installed — lint gate skipped"
+    return 0
+  fi
+  echo "== staticcheck ./... ==" >> "$logf"
+  if ! ( cd "$REPO_DIR" && scrubbed staticcheck ./... ) >> "$logf" 2>&1; then
+    echo "${label}: staticcheck reported findings"
+    return 1
+  fi
+  return 0
+}
+
 # The red proof: at $1 the plan's tests must exist, compile, and FAIL. A tree
 # that does not compile, or tests that pass, is not red. `go build` does not
 # compile _test.go files, so `go vet` is the compile gate for the test tree —
@@ -318,6 +393,8 @@ red_check() {
   elif ! ( cd "$REPO_DIR" && scrubbed go vet ./... ) >> "$LOG_DIR/red-check.log" 2>&1; then
     echo "red check: the tests do not compile (go vet failed)"
     rc=1
+  elif ! format_check "red check" "$LOG_DIR/red-check.log"; then
+    rc=1
   elif [ -n "$(missing_test_names "$REPO_DIR" "$plan_tests_file")" ]; then
     echo "red check: planned test names are missing from the tree"
     rc=1
@@ -326,28 +403,34 @@ red_check() {
     rc=1
   fi
   git -C "$REPO_DIR" checkout --quiet "$my_branch"
+  [ "$rc" -eq 0 ] && echo "red check: the plan's tests fail against the current tree, as required"
   return "$rc"
 }
 
-# The green proof: at HEAD the tree builds, vets, and tests pass. $1 selects
-# the scope: "security" runs only the promoted suite (the cheap entry check,
-# so an already-green branch skips the fix writer), anything else runs the
-# whole suite, which also catches pre-existing tests broken by the behaviour
+# The green proof: at HEAD the tree builds, vets, lints, and tests pass. $1
+# selects the scope: "security" runs only the promoted suite (the cheap entry
+# check, so an already-green branch skips the fix writer), anything else runs
+# the whole suite, which also catches pre-existing tests broken by the behaviour
 # change — a failure in the leg is cheaper to debug than a red PR with no CI
-# run to look at.
+# run to look at. $2 labels the failure lines, so the entry probe's expected
+# red result does not read like a post-fix failure.
+# Lint runs after the tests so a lint-only failure leaves the findings at the
+# tail of the log, where the retry prompt's excerpt shows them to the writer.
 green_check() {
-  local scope=${1:-full}
+  local scope=${1:-full} label=${2:-green check}
   {
     echo "== green check at $(git -C "$REPO_DIR" rev-parse --short HEAD) =="
     echo "== scope: ${scope} =="
   } > "$LOG_DIR/green-check.log"
-  ( cd "$REPO_DIR" && scrubbed go build ./... ) >> "$LOG_DIR/green-check.log" 2>&1 || { echo "green check: go build failed"; return 1; }
-  ( cd "$REPO_DIR" && scrubbed go vet ./... ) >> "$LOG_DIR/green-check.log" 2>&1 || { echo "green check: go vet failed"; return 1; }
+  ( cd "$REPO_DIR" && scrubbed go build ./... ) >> "$LOG_DIR/green-check.log" 2>&1 || { echo "${label}: go build failed"; return 1; }
+  ( cd "$REPO_DIR" && scrubbed go vet ./... ) >> "$LOG_DIR/green-check.log" 2>&1 || { echo "${label}: go vet failed"; return 1; }
   if [ "$scope" = security ]; then
-    ( cd "$REPO_DIR" && scrubbed go test -run 'TestSecurity' ./... ) >> "$LOG_DIR/green-check.log" 2>&1 || { echo "green check: security tests failed"; return 1; }
+    ( cd "$REPO_DIR" && scrubbed go test -run 'TestSecurity' ./... ) >> "$LOG_DIR/green-check.log" 2>&1 || { echo "${label}: security tests failed"; return 1; }
   else
-    ( cd "$REPO_DIR" && scrubbed go test -count=1 ./... ) >> "$LOG_DIR/green-check.log" 2>&1 || { echo "green check: the full test suite failed"; return 1; }
+    ( cd "$REPO_DIR" && scrubbed go test -count=1 ./... ) >> "$LOG_DIR/green-check.log" 2>&1 || { echo "${label}: the full test suite failed"; return 1; }
   fi
+  format_check "$label" "$LOG_DIR/green-check.log" || return 1
+  staticcheck_check "$label" "$LOG_DIR/green-check.log" || return 1
   return 0
 }
 
@@ -384,7 +467,11 @@ the current code and pass only once that fix lands.
   that assert the vulnerable behaviour.
 - Nothing in the tests — names, comments, fixture data — may reveal how the
   weaknesses are exploited: this repository is public.
+- Keep comments concise and only where they add value: explain why, never
+  restate what the code already says.
 - Verify with: cd repo && go test -run '${test_selector}' ./...
+- Format before finishing: cd repo && gofmt -l . must print nothing. The
+  mechanical red check fails on unformatted files, and CI gates on gofmt.
 - You have a limited wall-clock budget and may be stopped at any moment. The
   runner commits whatever is done.
 
@@ -405,7 +492,9 @@ Repair the tests so that ALL of these exist with these exact names, compile,
 and FAIL against the current code: ${plan_tests_csv}
 
 Same rules as before: only *_security_test.go files, self-contained, the
-security property of the FIXED state asserted, no exploit mechanics revealed.
+security property of the FIXED state asserted, no exploit mechanics revealed,
+comments kept concise — only where they add value, explaining why rather than
+restating the code, and cd repo && gofmt -l . must print nothing.
 Plan: ${plan_ref}
 
 Sanctioned, pre-authorized session — proceed directly without asking for
@@ -426,16 +515,30 @@ Execute the plan for plan ${PLAN_ID}: ${plan_ref}.
 
 - The tests that must go green: ${plan_tests_csv}
   Verify with: cd repo && go test -run '${test_selector}' ./...
-- Implement the minimal fix the plan describes, in the files the plan owns:
+- Implement the minimal fix the plan describes. The plan's files are
+  guidance, not a cage: start with
   ${my_files}
-  Touch nothing else.
+  but if the fix genuinely needs another file, edit it and say which and why
+  in your final message — every out-of-plan file is flagged to the reviewers
+  on the pull request. Never edit .github/, go.mod, go.sum or go.work: those
+  are off limits (and read-only in the sandbox).
 - A pre-existing test that encoded the old (vulnerable) behaviour as a
   shortcut may now fail. Correct it so it asserts the new behaviour; never
   weaken or delete a test just to make the suite pass. State every test change
   and why in your final message.
 - Run the FULL suite before finishing: cd repo && go test -count=1 ./...
-- Nothing you write (identifiers, comments, error strings) may reveal how the
-  weaknesses are exploited: this repository is public.
+- The repository's lint gates are part of CI, and the runner's green check runs
+  them, so the fix is not done until they pass too:
+  cd repo && gofmt -l . (prints nothing) && go vet ./... &&
+  staticcheck ./... (reports nothing).
+- Never copy finding material into the code: no finding titles and no
+  proof-of-concept descriptions or commands, in identifiers, comments, error
+  strings, log messages, commit content or test data. Nothing you write may
+  reveal how the weaknesses are exploited — this repository is public, and the
+  runner mechanically rejects a pushed diff containing finding prose verbatim.
+  Describe the new behaviour in your own words.
+- Keep comments concise and only where they add value: explain why, never
+  restate what the code already says.
 - You have a limited wall-clock budget and may be stopped at any moment. The
   runner commits whatever is done.
 
@@ -458,13 +561,24 @@ now also edit or delete this plan's regression tests if they are impossible or
 unnecessary — the reviewer knows tests may be unfeasible; state clearly in
 your final message if you removed or changed one and why.
 
-Everything must be green:
-  cd repo && go build ./... && go vet ./... && go test -count=1 ./...
+Everything must be green, including the lint gates CI runs:
+  cd repo && gofmt -l . && go vet ./... && staticcheck ./... && go test -count=1 ./...
 
-Files you may touch: ${my_files} plus any Go test file (*_test.go), including
-one that encoded the old behaviour and now fails — correct it, never weaken
-it.
+The plan's files are guidance: prefer ${my_files}, and if another file is
+genuinely needed, edit it and say why — out-of-plan files are flagged to the
+reviewers. Never edit .github/, go.mod, go.sum or go.work (off limits and
+read-only). Any Go test file may be corrected to assert the new behaviour,
+but never weakened.
 Plan: ${plan_ref}
+
+Never copy finding material into the code: no finding titles and no
+proof-of-concept descriptions or commands, in identifiers, comments, error
+strings, log messages, commit content or test data. This repository is public
+and the runner mechanically rejects a pushed diff containing finding prose
+verbatim.
+
+Keep comments concise and only where they add value: explain why, never
+restate what the code already says.
 
 Sanctioned, pre-authorized session — proceed directly without asking for
 confirmation.
@@ -492,7 +606,8 @@ Review criteria:
 - Existing tests that encoded the vulnerable behaviour were inverted
   deliberately, not deleted.
 - Nothing in names, comments or fixtures reveals exploit mechanics: the
-  repository is public.
+  repository is public. No finding prose (title or proof-of-concept
+  description) appears verbatim in the diff.
 - The tests need no helpers outside *_security_test.go files.
 
 Count a finding only when it is concrete and must be resolved before the fix
@@ -528,6 +643,9 @@ The plan: ${plan_ref}
 The plan's own review criteria:
 ${my_criteria}
 
+Out-of-plan changes so far (the plan's file list is guidance, so these are
+allowed — but scrutinize them): ${OUT_OF_PLAN:-none}
+
 Mechanical green-check result (the whole security suite must pass):
 $(check_tail "$LOG_DIR/green-check.log")
 
@@ -538,10 +656,14 @@ Review criteria:
 - Where a spec or doc normatively mandates the vulnerable behaviour, the spec
   or doc is updated in the same change — a code-only fix there gets reverted
   by the next contributor.
-- The change stays within the plan's owned files and never touches CI
-  configuration.
+- The plan's files are guidance: every change outside them must be necessary
+  and justified, not a wander into unrelated code. CI configuration and
+  go.mod/go.sum/go.work must be untouched.
 - The regression tests genuinely pin the property: they were mechanically red
   before the fix, and were not weakened afterwards.
+- The diff contains no verbatim finding prose (a finding title or a
+  proof-of-concept description) in code, comments or fixtures; the repository
+  is public and the runner enforces this mechanically.
 
 Count a finding only when it is concrete and must be resolved before the
 change can be merged; style nits are not findings. Verdict rules:
@@ -576,8 +698,8 @@ Requirements:
 - In the template's Issue line use exactly: Refs #${OVERVIEW_ISSUE}
   Never "Closes": other pull requests target the same issue.
 - Be concise: 1-4 bullets in What/Why/How, no restating what the diff shows.
-- The Verification section states that go build, go vet and the security
-  regression tests pass.
+- The Verification section states that go build, go vet, gofmt, staticcheck
+  and the security regression tests pass.
 - Never describe how the underlying vulnerability is exploited, and do not
   mention plan ids, the private archive, or review files.
 - Do NOT change anything in the repository and do NOT create commits: write
@@ -589,6 +711,10 @@ EOF
 }
 
 # --- Phase: tests -----------------------------------------------------------------
+# A re-entry (or a red-check failure that goes straight to the retry) never
+# reviews the tests, so record that honestly for the step summary.
+TEST_REVIEW_VERDICT="not run"
+TEST_REVIEW_FINDINGS=0
 last_test="$(last_test_commit "$REPO_DIR" "$base_sha")"
 
 if [ -z "$last_test" ]; then
@@ -604,16 +730,21 @@ if [ -z "$last_test" ]; then
 
   red_ok=false
   red_reason="the tests did not fail against the current code"
+  echo "phase: red check"
   if red_check "$last_test"; then
     red_ok=true
   fi
 
   test_review_ok=false
   if [ "$red_ok" = true ]; then
+    echo "phase: reviewing the tests"
     write_test_review_prompt "$WORK/test-review-prompt.md"
     review_guarded "$DRIVER_HOME" "$SHORT_SECS" "$REVIEWER" "$WORKSPACE" \
       "$WORK/test-review-prompt.md" "$LOG_DIR/test-review.log" "$LOG_DIR/test-review.md" \
       || fail_leg "Test review produced no verdict" "The reviewer session wrote no usable verdict; failing the leg rather than guessing."
+    TEST_REVIEW_VERDICT="$REVIEW_VERDICT"
+    TEST_REVIEW_FINDINGS="$REVIEW_FINDINGS"
+    echo "test review: $REVIEW_VERDICT ($REVIEW_FINDINGS finding(s))"
     [ "$REVIEW_VERDICT" = approved ] && test_review_ok=true || red_reason="the test review found the suite insufficient"
   fi
 
@@ -650,18 +781,23 @@ fi
 # --- Phase: fix -------------------------------------------------------------------
 fix_ok=false
 fix_review_ok=false
+# Files the fix sessions edited outside the plan's declared set, accumulated
+# for the reviewers and the pull request note (the plan's files are guidance,
+# not a boundary).
+OUT_OF_PLAN=""
 
-if green_check security; then
-  echo "phase: already green"
+echo "phase: entry check (security scope)"
+if green_check security "entry check"; then
+  echo "phase: already green — skipping the fix writer"
   fix_ok=true
 else
-  echo "phase: writing the fix"
+  echo "entry check: not green (tests and/or lint) — running the fix writer"
   write_fix_prompt "$WORK/fix-prompt.md"
   # An empty diff is not fatal here: the review below sees the green result
   # and can send it back once with the test-removal permission.
   run_phase "$WORK/fix-prompt.md" "$LOG_DIR/fix-writer.log" "$guard_fix" \
     "$FIX_WRITER_NAME" "$FIX_WRITER_EMAIL" \
-    "fix(security): $my_issue_line" "$WRITER_SECS" || true
+    "fix(security): $my_issue_line" "$WRITER_SECS" soft || true
   green_check && fix_ok=true || fix_ok=false
 fi
 
@@ -670,6 +806,7 @@ write_fix_review_prompt "$WORK/fix-review-prompt.md"
 review_guarded "$DRIVER_HOME" "$SHORT_SECS" "$REVIEWER" "$WORKSPACE" \
   "$WORK/fix-review-prompt.md" "$LOG_DIR/fix-review.log" "$LOG_DIR/fix-review.md" \
   || fail_leg "Fix review produced no verdict" "The reviewer session wrote no usable verdict; failing the leg rather than guessing."
+echo "fix review: $REVIEW_VERDICT ($REVIEW_FINDINGS finding(s))"
 [ "$REVIEW_VERDICT" = approved ] && fix_review_ok=true
 
 if [ "$fix_ok" != true ] || [ "$fix_review_ok" != true ]; then
@@ -682,7 +819,7 @@ if [ "$fix_ok" != true ] || [ "$fix_review_ok" != true ]; then
   write_fix_retry_prompt "$WORK/fix-retry-prompt.md" "$reason"
   run_phase "$WORK/fix-retry-prompt.md" "$LOG_DIR/fix-retry.log" "$guard_fix" \
     "$FIX_WRITER_NAME" "$FIX_WRITER_EMAIL" \
-    "fix(security): $my_issue_line" "$SHORT_SECS" || true
+    "fix(security): $my_issue_line" "$SHORT_SECS" soft || true
   green_check || fail_leg "Tests are not green" "After the final implementation pass the security suite still fails. The branch carries the attempt; no pull request was opened."
 fi
 
@@ -700,14 +837,61 @@ note=""
 if [ -n "$removed_tests" ]; then
   note="; tests removed by the final pass: $(printf '%s' "$removed_tests" | paste -sd', ' -)"
 fi
-# The branch is public the moment it is pushed. Titles and PoC text must not
-# ride along in the diff (tests adopting PoCs are the main risk); public code
-# snippets are deliberately not in the string set.
+# The branch is public the moment it is pushed. Finding titles and PoC prose
+# must not ride along in the diff; public code (and the scanner's PoC code
+# blocks, full of ordinary test scaffolding) is deliberately not in the
+# string set. A hit is repairable, so it buys one scrub session before the leg
+# fails — the alternative is re-dispatching into the same model behaviour.
 vulns_file="$scan_abs/vulnerabilities.json"
 [ -f "$vulns_file" ] || fail_leg "No findings file" "The scan's vulnerabilities.json is missing; the disclosure gate cannot run, so nothing is pushed."
-git -C "$REPO_DIR" diff "$base_sha..HEAD" > "$WORK/diff.txt"
-sanitize_diff "$WORK/diff.txt" "$vulns_file" \
-  || fail_leg "Diff disclosure gate" "The pushed diff contains a finding title or PoC string; nothing was pushed or published."
+disclosure_hits() {
+  git -C "$REPO_DIR" diff "$base_sha..HEAD" > "$WORK/diff.txt"
+  diff_disclosure_hits "$WORK/diff.txt" "$vulns_file"
+}
+hits="$(disclosure_hits)"
+if [ -n "$hits" ]; then
+  echo "phase: disclosure retry"
+  # $hits is finding prose: it goes to the private log and the session prompt,
+  # never to a public surface.
+  printf '%s\n' "$hits" > "$LOG_DIR/disclosure-hits.txt"
+  disclosure_prompt="$WORK/disclosure-prompt.md"
+  {
+    echo "The runner rejected the pushed diff for disclosure: it contains"
+    echo "finding prose (titles or proof-of-concept descriptions) verbatim."
+    echo "The offending strings:"
+    cat "$LOG_DIR/disclosure-hits.txt"
+    echo ""
+    echo "Remove or paraphrase those strings from the code, tests, comments and"
+    echo "fixtures in repo/, without weakening the tests or changing behaviour."
+    echo "The diff must not contain any finding text verbatim. Do not modify"
+    echo "anything else; the runner commits your work. While you are in there,"
+    echo "keep comments concise and only where they add value: explain why, never"
+    echo "restate what the code already says."
+    echo ""
+    echo "Sanctioned, pre-authorized repair session — proceed directly without"
+    echo "asking for confirmation."
+  } > "$disclosure_prompt"
+  run_phase "$disclosure_prompt" "$LOG_DIR/disclosure-retry.log" "$guard_fix" \
+    "$FIX_WRITER_NAME" "$FIX_WRITER_EMAIL" \
+    "fix(security): $my_issue_line" "$SHORT_SECS" soft || true
+  hits="$(disclosure_hits)"
+fi
+if [ -n "$hits" ]; then
+  fail_leg "Diff disclosure gate" "The pushed diff still contains finding prose after a scrub pass (details in the private log); nothing was pushed or published." nopush
+fi
+
+# The cumulative out-of-plan set, from the branch's whole diff rather than
+# this run's sessions: a re-entered branch carries earlier work, and the body
+# is regenerated every run, so a per-session note would vanish. Denied paths
+# anywhere in the branch are fatal; the rest is annotated for reviewers.
+cum_offending="$(changed_paths_between "$REPO_DIR" "$base_sha..HEAD" | grep -Evf "$guard_fix" || true)"
+if [ -n "$cum_offending" ]; then
+  cum_denied="$(printf '%s\n' "$cum_offending" | grep -Ef "$deny_fix" || true)"
+  [ -z "$cum_denied" ] || fail_leg "Denied paths in the branch" "The branch changes files no session may edit: $(printf '%s' "$cum_denied" | paste -sd', ' -). Failing before the pull request."
+  cum_out_of_plan="$(printf '%s\n' "$cum_offending" | grep -Evf "$deny_fix" | sort -u || true)"
+else
+  cum_out_of_plan=""
+fi
 
 echo "phase: writing the pull request body"
 write_pr_prompt "$WORK/pr-prompt.md"
@@ -738,7 +922,7 @@ fi
 # The description writer may only produce the body file: anything else it
 # touched means it misunderstood the task, and the change would be unproven.
 printf '%s\n' '^PR_BODY\.md$' > "$WORK/guard-pr-body"
-other_changes="$(changed_files_within "$REPO_DIR" "$WORK/guard-pr-body")"
+other_changes="$(changed_files_within "$REPO_DIR" "$WORK/guard-pr-body" || true)"
 if [ -n "$other_changes" ]; then
   rm -f "$body_file"
   fail_leg "PR writer modified the repository" "The description session changed files beyond PR_BODY.md; those changes were not reviewed, so the leg fails."
@@ -753,6 +937,18 @@ if grep -qiE '(^|[[:space:]])(close[sd]?|fix(e[sd])?|resolve[sd]?)[[:space:]]*:?
   sed -E 's/(^|[[:space:]])([Cc]lose[sd]?|[Ff]ix(e[sd])?|[Rr]esolve[sd]?)([[:space:]]*:?[[:space:]]*#)/\1Refs\4/g' "$body_file" > "$body_file.tmp"
   mv "$body_file.tmp" "$body_file"
 fi
+# The plan's files are guidance: an under-specified plan must not fail a
+# legitimate fix, but a human must see what the sessions touched beyond it.
+# Appended mechanically, below the description the session wrote.
+if [ -n "$cum_out_of_plan" ]; then
+  {
+    echo ""
+    echo "---"
+    echo ""
+    echo "⚠ **Out-of-plan changes** — the plan did not declare these files; the fix sessions edited them anyway. Please review carefully:"
+    printf '%s\n' "$cum_out_of_plan" | sed 's/^/- /'
+  } >> "$body_file"
+fi
 body_copy="$LOG_DIR/pr-body.md"
 cp "$body_file" "$body_copy"
 rm -f "$body_file"
@@ -764,34 +960,46 @@ if [ "$base_branch" != "$default_branch" ] && [ "$base_branch" != "$my_branch" ]
   stacked_on="$base_branch"
 fi
 
-pr_url="$(gh pr list --head "$my_branch" --state open --json url --jq '.[0].url' 2>/dev/null || true)"
+pr_url="$(gh pr list -R "$GITHUB_REPOSITORY" --head "$my_branch" --state open --json url --jq '.[0].url' 2>/dev/null || true)"
 if [ -n "$pr_url" ]; then
-  gh pr edit "$my_branch" --body-file "$body_copy" >/dev/null
+  gh pr edit -R "$GITHUB_REPOSITORY" "$my_branch" --body-file "$body_copy" >/dev/null
   echo "updated fix pull request: $pr_url"
 else
+  # Idempotent: the workflow's token carries issues:write now, so the label
+  # no longer needs to pre-exist by hand.
+  gh label create -R "$GITHUB_REPOSITORY" do-not-merge --description "Hold: automated fix PR, needs a human pass" >/dev/null 2>&1 || true
   set +e
   if [ -n "$stacked_on" ]; then
-    pr_url="$(gh pr create --head "$my_branch" --base "$stacked_on" \
+    pr_url="$(gh pr create -R "$GITHUB_REPOSITORY" --head "$my_branch" --base "$stacked_on" \
       --title "fix(security): $my_issue_line" --body-file "$body_copy" --label do-not-merge 2>&1)"
   else
-    pr_url="$(gh pr create --head "$my_branch" \
+    pr_url="$(gh pr create -R "$GITHUB_REPOSITORY" --head "$my_branch" \
       --title "fix(security): $my_issue_line" --body-file "$body_copy" --label do-not-merge 2>&1)"
   fi
   pr_status=$?
   set -e
   if [ "$pr_status" -ne 0 ]; then
-    fail_leg "Pull request creation failed" "The fix branch is pushed; the pull request is not open. Create the 'do-not-merge' label and re-run. Details: $(printf '%s' "$pr_url" | head -n1)"
+    fail_leg "Pull request creation failed" "The fix branch is pushed; the pull request is not open. Check that the workflow token has pull-requests:write and issues:write on this repo. Details: $(printf '%s' "$pr_url" | head -n1)"
   fi
   echo "opened fix pull request: $pr_url"
 fi
 
 # --- Archive the session logs privately ------------------------------------------
+# Best effort: the pull request is already open, so failing the job over log
+# shipping would turn a successful fix into a failed leg.
 stage_logs="$scan_abs/remediation/fix-$PLAN_ID"
 mkdir -p "$stage_logs"
 cp "$LOG_DIR"/*.log "$LOG_DIR"/*.md "$stage_logs"/ 2>/dev/null || true
 push_archive "$ARCHIVE_DIR" "remediation: fix logs for ${SCAN_DIR} plan ${PLAN_ID} ($(date -u +%F))" \
-  "scans/$SCAN_DIR/remediation/fix-$PLAN_ID"
+  "scans/$SCAN_DIR/remediation/fix-$PLAN_ID" \
+  || echo "::warning title=Archive log push failed::The pull request is open, but the stage logs could not be archived after retries."
 
-printf 'fix stage: plan %s, fix review %s (%s findings), tests %s%s\n' \
-  "$PLAN_ID" "$REVIEW_VERDICT" "$REVIEW_FINDINGS" "$([ "$fix_ok" = true ] && echo green || echo retried)" "$note" \
+printf 'fix stage: plan %s, test review %s (%s findings), fix review %s (%s findings), tests %s%s\n' \
+  "$PLAN_ID" "$TEST_REVIEW_VERDICT" "$TEST_REVIEW_FINDINGS" "$REVIEW_VERDICT" "$REVIEW_FINDINGS" \
+  "$([ "$fix_ok" = true ] && echo green || echo retried)" "$note" \
   >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+if [ -n "$cum_out_of_plan" ]; then
+  printf 'out-of-plan changes (flagged on the pull request): %s\n' \
+    "$(printf '%s' "$cum_out_of_plan" | paste -sd', ' -)" \
+    >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+fi

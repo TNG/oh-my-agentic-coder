@@ -77,6 +77,9 @@ jobs:
     env:
       SECURITY_SCAN_PAT: ${{ secrets.SECURITY_SCAN_PAT }}
       ARCHIVE_REPO: ${{ secrets.SECURITY_ARCHIVE_REPO }}
+      # The stages run from the workspace, which is not a git checkout, so gh
+      # cannot infer the repo from a remote; GH_REPO provides it globally.
+      GH_REPO: ${{ github.repository }}
       GH_TOKEN: ${{ github.token }}
       MAX_PLANS: ${{ inputs.max_plans || '3' }}
       PLANS_FILTER: ${{ inputs.plans || '' }}
@@ -134,6 +137,9 @@ jobs:
     env:
       SECURITY_SCAN_PAT: ${{ secrets.SECURITY_SCAN_PAT }}
       ARCHIVE_REPO: ${{ secrets.SECURITY_ARCHIVE_REPO }}
+      # The stages run from the workspace, which is not a git checkout, so gh
+      # cannot infer the repo from a remote; GH_REPO provides it globally.
+      GH_REPO: ${{ github.repository }}
       GH_TOKEN: ${{ github.token }}
       SKAINET_TOKEN: ${{ secrets.SKAINET_TOKEN }}
       SKAINET_INTERNAL: ${{ secrets.SKAINET_INTERNAL }}
@@ -163,6 +169,10 @@ jobs:
           EOF
           sudo apparmor_parser -r /etc/apparmor.d/bwrap
 
+      - name: Set up Bun
+        # install_opencode in lib.sh installs the pinned opencode CLI with bun.
+        uses: oven-sh/setup-bun@v2
+
       - name: Planning session
         # The agent session gets the gateway key (it must call the model)
         # but never the PAT or GH_TOKEN: pushing the archive repo is this
@@ -175,6 +185,9 @@ jobs:
 
   issue:
     name: Issue (sanitized overview)
+    permissions:
+      contents: read
+      issues: write # create/edit the overview issue and its labels
     needs: [preflight, plan]
     if: |
       always() &&
@@ -190,9 +203,12 @@ jobs:
     env:
       SECURITY_SCAN_PAT: ${{ secrets.SECURITY_SCAN_PAT }}
       ARCHIVE_REPO: ${{ secrets.SECURITY_ARCHIVE_REPO }}
-      # Creating and editing issues needs issues:write, which github.token
-      # does not have — this is the PAT.
-      GH_TOKEN: ${{ secrets.SECURITY_SCAN_PAT }}
+      # The stages run from the workspace, which is not a git checkout, so gh
+      # cannot infer the repo from a remote; GH_REPO provides it globally.
+      GH_REPO: ${{ github.repository }}
+      # Creating and editing issues and labels needs issues:write, granted to
+      # github.token by the job's permissions block.
+      GH_TOKEN: ${{ github.token }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -210,7 +226,9 @@ jobs:
         id: issue
         env:
           SCAN_DIR: ${{ needs.preflight.outputs.scan_dir }}
-          DEFERRED_COUNT: ${{ needs.plan.outputs.deferred_count || needs.preflight.outputs.deferred_count }}
+          # The plans this run dispatches: the issue is written before the legs
+          # push their branches, so its in-flight bucket needs the selection.
+          SELECTED_IDS: ${{ needs.plan.outputs.selected_ids || needs.preflight.outputs.selected_ids }}
         run: bash repo/.github/scripts/security_remediate/issue-stage.sh
 
   # ---- Fix waves ---------------------------------------------------------------
@@ -242,6 +260,9 @@ jobs:
     env:
       SECURITY_SCAN_PAT: ${{ secrets.SECURITY_SCAN_PAT }}
       ARCHIVE_REPO: ${{ secrets.SECURITY_ARCHIVE_REPO }}
+      # The stages run from the workspace, which is not a git checkout, so gh
+      # cannot infer the repo from a remote; GH_REPO provides it globally.
+      GH_REPO: ${{ github.repository }}
       GH_TOKEN: ${{ github.token }}
     steps:
       - name: Checkout
@@ -268,6 +289,8 @@ jobs:
           plans="$archive/scans/${SCAN_DIR}/mitigation-plans/plans.json"
           # lib.sh is sourced, never run; call assign_waves from a subshell.
           waves="$(bash -c '. repo/.github/scripts/security_remediate/lib.sh && assign_waves "$1" "$2"' _ "$plans" "$SELECTED_IDS")"
+          echo "plan -> wave: $(printf '%s' "$waves" | jq -r '.map | to_entries | sort_by(.value, .key) | map("\(.key) -> \(.value)") | join(", ")')"
+          echo "overflow: $(printf '%s' "$waves" | jq -c '.overflow')"
           for n in 1 2 3 4; do
             echo "wave$n=$(printf '%s' "$waves" | jq -c --argjson n "$n" '.waves[$n | tostring]')" >> "$GITHUB_OUTPUT"
           done
@@ -285,6 +308,10 @@ jobs:
 
   fix-wave-1:
     name: Fix wave 1 (plan ${{ matrix.plan }})
+    permissions:
+      contents: write # push the fix branch
+      pull-requests: write # open and label the pull request
+      issues: write # create the do-not-merge label
     needs: [preflight, issue, waves]
     if: |
       always() &&
@@ -304,7 +331,11 @@ jobs:
     env:
       SECURITY_SCAN_PAT: ${{ secrets.SECURITY_SCAN_PAT }}
       ARCHIVE_REPO: ${{ secrets.SECURITY_ARCHIVE_REPO }}
-      GH_TOKEN: ${{ secrets.SECURITY_SCAN_PAT }}
+      # The stages run from the workspace, which is not a git checkout, so gh
+      # cannot infer the repo from a remote; GH_REPO provides it globally.
+      GH_REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ github.token }}
+      REPO_TOKEN: ${{ github.token }}
       SKAINET_TOKEN: ${{ secrets.SKAINET_TOKEN }}
       SKAINET_INTERNAL: ${{ secrets.SKAINET_INTERNAL }}
       BUDGET_MINUTES: ${{ inputs.budget_minutes || '60' }}
@@ -337,6 +368,17 @@ jobs:
           cache: true
           cache-dependency-path: repo/go.sum
 
+      - name: Install staticcheck
+        # CI's lint job runs staticcheck, and the leg's green check runs the
+        # same tool, so a fix cannot open a pull request that fails CI lint.
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@latest
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Set up Bun
+        # install_opencode in lib.sh installs the pinned opencode CLI with bun.
+        uses: oven-sh/setup-bun@v2
+
       - name: Fix leg (tests, fix, reviews, PR)
         # Test writer, red check, test reviewer, fix writer, green check,
         # fix reviewer, pull request writer — all orchestrated by the runner
@@ -355,6 +397,10 @@ jobs:
 
   fix-wave-2:
     name: Fix wave 2 (plan ${{ matrix.plan }})
+    permissions:
+      contents: write # push the fix branch
+      pull-requests: write # open and label the pull request
+      issues: write # create the do-not-merge label
     # Later waves do NOT gate on the previous wave's results: wave legs never
     # share owned files, so a sibling's failure leaves them unaffected. A leg
     # whose stack base (an earlier wave's plan sharing files) has no open PR
@@ -376,7 +422,11 @@ jobs:
     env:
       SECURITY_SCAN_PAT: ${{ secrets.SECURITY_SCAN_PAT }}
       ARCHIVE_REPO: ${{ secrets.SECURITY_ARCHIVE_REPO }}
-      GH_TOKEN: ${{ secrets.SECURITY_SCAN_PAT }}
+      # The stages run from the workspace, which is not a git checkout, so gh
+      # cannot infer the repo from a remote; GH_REPO provides it globally.
+      GH_REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ github.token }}
+      REPO_TOKEN: ${{ github.token }}
       SKAINET_TOKEN: ${{ secrets.SKAINET_TOKEN }}
       SKAINET_INTERNAL: ${{ secrets.SKAINET_INTERNAL }}
       BUDGET_MINUTES: ${{ inputs.budget_minutes || '60' }}
@@ -409,6 +459,17 @@ jobs:
           cache: true
           cache-dependency-path: repo/go.sum
 
+      - name: Install staticcheck
+        # CI's lint job runs staticcheck, and the leg's green check runs the
+        # same tool, so a fix cannot open a pull request that fails CI lint.
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@latest
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Set up Bun
+        # install_opencode in lib.sh installs the pinned opencode CLI with bun.
+        uses: oven-sh/setup-bun@v2
+
       - name: Fix leg (tests, fix, reviews, PR)
         env:
           PLAN_ID: ${{ matrix.plan }}
@@ -421,6 +482,10 @@ jobs:
 
   fix-wave-3:
     name: Fix wave 3 (plan ${{ matrix.plan }})
+    permissions:
+      contents: write # push the fix branch
+      pull-requests: write # open and label the pull request
+      issues: write # create the do-not-merge label
     needs: [preflight, waves, issue, fix-wave-2]
     if: |
       always() &&
@@ -438,7 +503,11 @@ jobs:
     env:
       SECURITY_SCAN_PAT: ${{ secrets.SECURITY_SCAN_PAT }}
       ARCHIVE_REPO: ${{ secrets.SECURITY_ARCHIVE_REPO }}
-      GH_TOKEN: ${{ secrets.SECURITY_SCAN_PAT }}
+      # The stages run from the workspace, which is not a git checkout, so gh
+      # cannot infer the repo from a remote; GH_REPO provides it globally.
+      GH_REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ github.token }}
+      REPO_TOKEN: ${{ github.token }}
       SKAINET_TOKEN: ${{ secrets.SKAINET_TOKEN }}
       SKAINET_INTERNAL: ${{ secrets.SKAINET_INTERNAL }}
       BUDGET_MINUTES: ${{ inputs.budget_minutes || '60' }}
@@ -471,6 +540,17 @@ jobs:
           cache: true
           cache-dependency-path: repo/go.sum
 
+      - name: Install staticcheck
+        # CI's lint job runs staticcheck, and the leg's green check runs the
+        # same tool, so a fix cannot open a pull request that fails CI lint.
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@latest
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Set up Bun
+        # install_opencode in lib.sh installs the pinned opencode CLI with bun.
+        uses: oven-sh/setup-bun@v2
+
       - name: Fix leg (tests, fix, reviews, PR)
         env:
           PLAN_ID: ${{ matrix.plan }}
@@ -483,6 +563,10 @@ jobs:
 
   fix-wave-4:
     name: Fix wave 4 (plan ${{ matrix.plan }})
+    permissions:
+      contents: write # push the fix branch
+      pull-requests: write # open and label the pull request
+      issues: write # create the do-not-merge label
     needs: [preflight, waves, issue, fix-wave-3]
     if: |
       always() &&
@@ -500,7 +584,11 @@ jobs:
     env:
       SECURITY_SCAN_PAT: ${{ secrets.SECURITY_SCAN_PAT }}
       ARCHIVE_REPO: ${{ secrets.SECURITY_ARCHIVE_REPO }}
-      GH_TOKEN: ${{ secrets.SECURITY_SCAN_PAT }}
+      # The stages run from the workspace, which is not a git checkout, so gh
+      # cannot infer the repo from a remote; GH_REPO provides it globally.
+      GH_REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ github.token }}
+      REPO_TOKEN: ${{ github.token }}
       SKAINET_TOKEN: ${{ secrets.SKAINET_TOKEN }}
       SKAINET_INTERNAL: ${{ secrets.SKAINET_INTERNAL }}
       BUDGET_MINUTES: ${{ inputs.budget_minutes || '60' }}
@@ -532,6 +620,17 @@ jobs:
           go-version-file: repo/go.mod
           cache: true
           cache-dependency-path: repo/go.sum
+
+      - name: Install staticcheck
+        # CI's lint job runs staticcheck, and the leg's green check runs the
+        # same tool, so a fix cannot open a pull request that fails CI lint.
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@latest
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Set up Bun
+        # install_opencode in lib.sh installs the pinned opencode CLI with bun.
+        uses: oven-sh/setup-bun@v2
 
       - name: Fix leg (tests, fix, reviews, PR)
         env:

@@ -49,14 +49,26 @@ STUBS="$TMP/bin"
 mkdir -p "$STUBS"
 cat > "$STUBS/git" <<'EOF'
 #!/usr/bin/env bash
-d="$PWD"; real="$GIT_REAL"
+d="$PWD"; real="$GIT_REAL"; root=""
 while [ "$d" != "/" ]; do
-  if [ -f "$d/.git-real" ]; then real="$(cat "$d/.git-real")"; break; fi
+  if [ -f "$d/.git-real" ]; then real="$(cat "$d/.git-real")"; root="$d"; break; fi
   d="$(dirname "$d")"
 done
 for a in "$@"; do
   if [ "$a" = push ]; then
     printf '%s\n' "$*" >> "$SIM_PUSH_LOG"
+    # Simulate a parallel leg having pushed first: reject the archive push
+    # while the counter says so.
+    case "$*" in
+      *sim/archive*)
+        if [ -n "$root" ] && [ -f "$root/.archive-failures" ]; then
+          n="$(cat "$root/.archive-failures")"
+          if [ "$n" -gt 0 ]; then
+            printf '%s\n' "$((n - 1))" > "$root/.archive-failures"
+            exit 1
+          fi
+        fi ;;
+    esac
     exit 0
   fi
 done
@@ -64,6 +76,35 @@ exec "$real" "$@"
 EOF
 cat > "$STUBS/gh" <<'EOF'
 #!/usr/bin/env bash
+# Real gh cannot infer the repo when the cwd is not a checkout (the stages run
+# from the workspace), so repo-scoped commands must carry -R/--repo or GH_REPO.
+# `gh repo view` is the exception: it takes the repository as a positional
+# argument and REJECTS -R, exactly as this stub does — that mismatch is what
+# broke a real run once, so it is encoded here.
+case "$*" in
+  *"repo view"*)
+    for a in "$@"; do
+      case "$a" in -R|--repo)
+        echo "unknown shorthand flag: 'R' in -R" >&2
+        exit 1 ;;
+      esac
+    done
+    case "$*" in *"/"*) : ;; *)
+      [ -n "${GH_REPO:-}" ] || { echo "gh: no repository context" >&2; exit 1; } ;;
+    esac ;;
+  *"pr list"*|*"pr create"*|*"pr edit"*|*"issue "*|*"label "*)
+    if [ -z "${GH_REPO:-}" ]; then
+      has_repo=0; prev=""
+      for a in "$@"; do
+        { [ "$prev" = -R ] || [ "$prev" = --repo ]; } && has_repo=1
+        prev="$a"
+      done
+      if [ "$has_repo" -eq 0 ]; then
+        echo "gh: no repository context: pass -R/--repo or set GH_REPO" >&2
+        exit 1
+      fi
+    fi ;;
+esac
 case "$*" in
   *"pr list"*) case "$*" in *length*) echo 0 ;; *) echo "" ;; esac ;;
   *"pr create"*) printf 'create\n' >> "$SIM_PR_LOG"; echo "https://example.invalid/pr/1" ;;
@@ -115,6 +156,29 @@ esac
 exit 0
 EOF
 
+# gofmt and staticcheck are what CI's lint job runs; the leg's checks call the
+# same tools, so these stubs let a scenario expose a lint failure. gofmt only
+# reacts once the fix is in place, so the red check on the test-only commit
+# stays clean and the failure lands at the green check.
+cat > "$STUBS/gofmt" <<'EOF'
+#!/usr/bin/env bash
+d="$PWD"; sim=""
+while [ "$d" != "/" ]; do [ -f "$d/.sim-mode" ] && { sim="$(cat "$d/.sim-mode")"; break; }; d="$(dirname "$d")"; done
+if [ "$sim" = unformatted ]; then
+  for f in $(find . -name 'prod*.go' -not -name '*_test.go'); do
+    grep -q fixed "$f" && { echo "./pkg/prod.go"; exit 0; }
+  done
+fi
+exit 0
+EOF
+cat > "$STUBS/staticcheck" <<'EOF'
+#!/usr/bin/env bash
+d="$PWD"; sim=""
+while [ "$d" != "/" ]; do [ -f "$d/.sim-mode" ] && { sim="$(cat "$d/.sim-mode")"; break; }; d="$(dirname "$d")"; done
+[ "$sim" = lint ] && { echo "pkg/prod.go:3:2: this value is never used (SA4006)"; exit 1; }
+exit 0
+EOF
+
 # Each stub session recognises its phase by a phrase in its prompt. In retry
 # mode the reviewers stay insufficient and each retry session appends one line
 # so its commit is non-empty.
@@ -130,17 +194,24 @@ case "$last" in
   *"You are the test author"*)
     printf 'package pkg\n\nimport "testing"\n\nfunc TestSecurityAlpha(t *testing.T) {}\n' > "$r/pkg/alpha_security_test.go"
     if [ "$sim" = deleter ]; then rm -f "$r/pkg/existing_security_test.go"; fi
-    if [ "$sim" = leak ]; then
-      printf 'package pkg\n\nimport "testing"\n\n// Sim finding title\nfunc TestSecurityAlpha(t *testing.T) {}\n' > "$r/pkg/alpha_security_test.go"
+    if [ "$sim" = leak ] || [ "$sim" = leakhard ]; then
+      printf 'package pkg\n\nimport "testing"\n\n// Simulated finding title for the disclosure gate\nfunc TestSecurityAlpha(t *testing.T) {}\n' > "$r/pkg/alpha_security_test.go"
     fi ;;
   *"did not pass the mechanical red"*)
     printf '// retried\n' >> "$r/pkg/alpha_security_test.go" ;;
   *"You are the implementer"*)
     echo fixed > "$r/pkg/prod.go"
     [ "$sim" = die ] && exit 3
+    [ "$sim" = offplan ] && echo wandered >> "$r/pkg/other.go"
+    [ "$sim" = godeny ] && echo "module sim" > "$r/go.mod"
     if [ "$sim" = committer ]; then
       git -C "$r" add -A
       git -C "$r" commit -qm "evil session commit"
+    fi ;;
+  *"rejected the pushed diff for disclosure"*)
+    # A well-behaved scrub pass removes the finding prose; leakhard refuses.
+    if [ "$sim" != leakhard ]; then
+      printf 'package pkg\n\nimport "testing"\n\nfunc TestSecurityAlpha(t *testing.T) {}\n' > "$r/pkg/alpha_security_test.go"
     fi ;;
   *"is not finished"*)
     echo "// retry" >> "$r/pkg/prod.go"
@@ -175,7 +246,7 @@ chmod +x "$STUBS"/*
 # PATH the stage will run with: every stub is what keeps it away from the real
 # git, gh, network and model. Probed explicitly so the test's own fixture git
 # calls keep using the real binary.
-for tool in git gh curl bun opencode go; do
+for tool in git gh curl bun opencode go gofmt staticcheck; do
   resolved="$(PATH="$STUBS:$PATH" command -v "$tool" 2>/dev/null || true)"
   if [ "$resolved" != "$STUBS/$tool" ]; then
     echo "stub resolution broken: '$tool' resolves to '${resolved:-nothing}', expected '$STUBS/$tool'" >&2
@@ -222,7 +293,7 @@ new_fixture() {
 ]
 JSON
   mkdir -p "$root/archive/scans/$SCAN/mitigation-plans"
-  printf '%s' '[{"id":"vuln-0001","title":"Sim finding title","poc":"curl -H sim-poc http://target"}]' \
+  printf '%s' '[{"id":"vuln-0001","title":"Simulated finding title for the disclosure gate","poc":"curl -H sim-poc http://target"}]' \
     > "$root/archive/scans/$SCAN/vulnerabilities.json"
   git init -q "$root/archive"
   git -C "$root/archive" remote add origin "https://github.com/sim/archive.git"
@@ -246,10 +317,10 @@ run_stage() {
       MODEL=sim-model REPO_DIR="$root/repo" ARCHIVE_DIR="$root/archive" \
       LOG_DIR="$root/logs" GITHUB_STEP_SUMMARY="$root/summary.md" \
       GITHUB_REPOSITORY="sim/repo" \
-      SECURITY_SCAN_PAT=sim-pat ARCHIVE_REPO="sim/archive" \
+      SECURITY_SCAN_PAT=sim-pat REPO_TOKEN=sim-repo-token ARCHIVE_REPO="sim/archive" \
       SKAINET_TOKEN=sim SKAINET_INTERNAL="http://sim" \
       bash "$STAGE"
-  ) >/dev/null 2>&1 || rc=$?
+  ) > "$root/stage.log" 2>&1 || rc=$?
   return "$rc"
 }
 
@@ -303,6 +374,31 @@ assert "the archive log is pushed once" "1" "$(grep -c "github.com/sim/archive.g
 assert "the red check ran" "yes" "$([ -s "$happy/logs/red-check.log" ] && echo yes || echo no)"
 assert "the green check ran" "yes" "$([ -s "$happy/logs/green-check.log" ] && echo yes || echo no)"
 
+# The public log proves each phase ran, so a reader can tell that the tests
+# were red-checked and reviewed instead of guessing from a bare "writing tests"
+# followed by a red entry probe.
+log_has() {
+  local desc=$1 root=$2 needle=$3
+  if grep -qF -- "$needle" "$root/stage.log"; then
+    echo "ok: $desc"
+  else
+    fail "$desc: stage log has no '$needle'"
+  fi
+}
+log_has "the log shows the red check succeeded" "$happy" \
+  "red check: the plan's tests fail against the current tree, as required"
+log_has "the log shows the test review ran and approved" "$happy" \
+  "test review: approved (0 finding(s))"
+log_has "the log frames the entry probe as expected-red" "$happy" \
+  "entry check: not green (tests and/or lint) — running the fix writer"
+log_has "the log shows the fix review ran" "$happy" \
+  "fix review: approved (0 finding(s))"
+if grep -qF "test review approved (0 findings)" "$happy/summary.md"; then
+  echo "ok: the step summary carries the test review verdict"
+else
+  fail "the step summary carries the test review verdict"
+fi
+
 # --- Retry path -----------------------------------------------------------------
 # Both reviewers stay insufficient: one test retry and one fix retry run, then
 # the pull request still opens.
@@ -317,6 +413,12 @@ assert "the retry path makes two test commits" "2" "$test_commits"
 assert "the retry path makes two fix commits" "2" "$fix_commits"
 assert "the retry path still opens the pull request" "yes" \
   "$([ -s "$retry/logs/pr-body.md" ] && echo yes || echo no)"
+log_has "the retry path logs the insufficient test review" "$retry" \
+  "test review: insufficient (1 finding(s))"
+log_has "the retry path logs the test retry phase" "$retry" "phase: test retry"
+log_has "the retry path logs the insufficient fix review" "$retry" \
+  "fix review: insufficient (1 finding(s))"
+log_has "the retry path logs the fix retry phase" "$retry" "phase: fix retry (tests may be adjusted)"
 
 # --- Not-red path ---------------------------------------------------------------
 # The tests pass before the fix: after one retry the leg fails, the branch is
@@ -326,7 +428,7 @@ new_fixture "$notred" notred
 if run_stage "$notred"; then fail "not-red path fails the leg"; else echo "ok: not-red path fails the leg"; fi
 assert_fake_origin "the not-red path only ever targets the fixture or the fake URL" "$notred"
 assert "the not-red path pushes the branch" "1" "$(grep -c "github.com/sim/repo.git" "$notred/pushes.log" || true)"
-assert "the not-red path pushes no archive log" "0" "$(grep -c "github.com/sim/archive.git" "$notred/pushes.log" || true)"
+assert "the not-red path archives its failed logs" "1" "$(grep -c "github.com/sim/archive.git" "$notred/pushes.log" || true)"
 assert "the not-red path creates no pull request" "0" "$(grep -c create "$notred/prs.log" || true)"
 
 # --- Broken-test path -----------------------------------------------------------
@@ -408,11 +510,50 @@ assert "the test-deletion path creates no pull request" "0" "$(grep -c create "$
 
 # --- Diff-disclosure path -------------------------------------------------------
 # The test writer pastes the finding title into a public test: the pre-push
-# gate rejects the diff.
+# gate rejects the diff, one scrub session removes the prose, and the pull
+# request opens.
 leak="$TMP/leak"
 new_fixture "$leak" leak
-if run_stage "$leak"; then fail "diff-disclosure path fails the leg"; else echo "ok: diff-disclosure path fails the leg"; fi
-assert "the diff-disclosure path creates no pull request" "0" "$(grep -c create "$leak/prs.log" || true)"
+if run_stage "$leak"; then echo "ok: diff-disclosure path recovers with a scrub pass"; else fail "diff-disclosure path recovers with a scrub pass"; fi
+assert "the diff-disclosure path creates one pull request" "1" "$(grep -c create "$leak/prs.log" || true)"
+log_has "the diff-disclosure path logs the scrub phase" "$leak" "phase: disclosure retry"
+log_has "the diff-disclosure path no longer trips the gate" "$leak" \
+  "opened fix pull request"
+
+# A scrub pass that does not remove the prose fails the leg: nothing is
+# pushed or published, and the failed leg's logs are archived privately.
+leakhard="$TMP/leakhard"
+new_fixture "$leakhard" leakhard
+if run_stage "$leakhard"; then fail "unscrubbed disclosure fails the leg"; else echo "ok: unscrubbed disclosure fails the leg"; fi
+assert "the unscrubbed disclosure creates no pull request" "0" "$(grep -c create "$leakhard/prs.log" || true)"
+assert "the unscrubbed disclosure pushes no branch" "0" \
+  "$(grep -c "github.com/sim/repo.git" "$leakhard/pushes.log" || true)"
+assert "the failed leg archives its logs" "1" \
+  "$(git -C "$leakhard/archive" log --format=%s | grep -c 'fix logs (failed)' || true)"
+
+# --- Out-of-plan path -----------------------------------------------------------
+# The plan's files are guidance: an out-of-plan edit succeeds, but the PR body
+# carries a mechanical note naming the file, and the log reports it.
+offplan="$TMP/offplan"
+new_fixture "$offplan" offplan
+if run_stage "$offplan"; then echo "ok: an out-of-plan edit still succeeds"; else fail "an out-of-plan edit still succeeds"; fi
+log_has "the out-of-plan edit is reported in the log" "$offplan" \
+  "out of plan (allowed, flagged to reviewers): pkg/other.go"
+assert "the out-of-plan edit creates one pull request" "1" "$(grep -c create "$offplan/prs.log" || true)"
+if grep -qF "Out-of-plan changes" "$offplan/logs/pr-body.md" && grep -qF -- "- pkg/other.go" "$offplan/logs/pr-body.md"; then
+  echo "ok: the PR body flags and names the out-of-plan file"
+else
+  fail "the PR body flags and names the out-of-plan file"
+fi
+
+# --- Denied-path path -----------------------------------------------------------
+# The fix writer edits a file no session may touch (go.mod): the leg fails and
+# no pull request opens.
+godeny="$TMP/godeny"
+new_fixture "$godeny" godeny
+if run_stage "$godeny"; then fail "a denied-path edit fails the leg"; else echo "ok: a denied-path edit fails the leg"; fi
+log_has "the denied-path failure names the file" "$godeny" "go.mod"
+assert "the denied-path edit creates no pull request" "0" "$(grep -c create "$godeny/prs.log" || true)"
 
 # --- Stale-test path ------------------------------------------------------------
 # The fix breaks a pre-existing normal test. The full-suite green check catches
@@ -442,6 +583,35 @@ prcommit="$TMP/prcommit"
 new_fixture "$prcommit" prcommitter
 if OMAC_SESSION_SANDBOX=off run_stage "$prcommit"; then fail "PR-writer commit path fails the leg"; else echo "ok: PR-writer commit path fails the leg"; fi
 assert "the PR-writer commit path creates no pull request" "0" "$(grep -c create "$prcommit/prs.log" || true)"
+
+# --- Flaky archive push ---------------------------------------------------------
+# Parallel wave legs race on the archive clone: the first push attempt is
+# rejected (non-fast-forward in reality), the runner rebases and retries, and
+# the leg still succeeds.
+flaky="$TMP/archiveflaky"
+new_fixture "$flaky" happy
+printf '1\n' > "$flaky/.archive-failures"
+if run_stage "$flaky"; then echo "ok: a rejected archive push is retried and the leg succeeds"; else fail "a rejected archive push is retried and the leg succeeds"; fi
+assert "the archive push was attempted twice" "2" \
+  "$(grep -c "github.com/sim/archive.git" "$flaky/pushes.log" || true)"
+assert "the flaky-archive leg creates one pull request" "1" "$(grep -c create "$flaky/prs.log" || true)"
+
+# --- Lint gate ------------------------------------------------------------------
+# CI's lint job runs gofmt and staticcheck; the leg's green check runs the same
+# tools, so a fix cannot open a pull request that fails CI lint.
+fmt="$TMP/gofmtfail"
+new_fixture "$fmt" unformatted
+if run_stage "$fmt"; then fail "an unformatted fix fails the green check"; else echo "ok: an unformatted fix fails the green check"; fi
+assert "the gofmt failure is reported" "yes" \
+  "$(grep -q 'not gofmt-clean' "$fmt/stage.log" && echo yes || echo no)"
+assert "the unformatted leg opens no pull request" "0" "$(grep -c create "$fmt/prs.log" || true)"
+
+lint="$TMP/lintfail"
+new_fixture "$lint" lint
+if run_stage "$lint"; then fail "a staticcheck finding fails the green check"; else echo "ok: a staticcheck finding fails the green check"; fi
+assert "the staticcheck failure is reported" "yes" \
+  "$(grep -q 'staticcheck reported findings' "$lint/stage.log" && echo yes || echo no)"
+assert "the lint-failing leg opens no pull request" "0" "$(grep -c create "$lint/prs.log" || true)"
 
 if [ "$failures" -gt 0 ]; then
   echo "$failures fix-stage test(s) failed" >&2

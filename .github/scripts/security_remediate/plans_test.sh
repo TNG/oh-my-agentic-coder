@@ -66,10 +66,24 @@ EOF
 mkdir -p "$TMP/bin"
 cat > "$TMP/bin/gh" <<'EOF'
 #!/usr/bin/env bash
-# Stub: real gh applies the caller's --jq filter itself and prints the
-# covered headRefNames one per line, so this stub just prints those lines
-# (one open PR for plan 02, one merged for a plan that is not in the
-# fixture).
+# Stub for two call shapes:
+#   pr_covered_branches: no --head; real gh applies the caller's --jq filter
+#     and prints the covered headRefNames one per line (one open PR for plan
+#     02, one merged for a plan outside the fixture).
+#   plan_pr_states: --head <branch>; print that plan's state.
+head=""; prev=""
+for a in "$@"; do
+  [ "$prev" = --head ] && head="$a"
+  prev="$a"
+done
+if [ -n "$head" ]; then
+  case "$head" in
+    *plan-02) echo MERGED ;;
+    *plan-03) echo OPEN ;;
+    *) echo "" ;;
+  esac
+  exit 0
+fi
 printf '%s\n' \
   'fix/security-s1-plan-02' \
   'fix/security-s1-plan-09'
@@ -486,6 +500,55 @@ else
   fail "a public code snippet in the diff is allowed"
 fi
 
+# Scanner PoC code blocks are ordinary Go/HTTP test scaffolding; matching them
+# line-by-line flagged boilerplate in both test and production files on a real
+# run, so the diff set excludes them and floors the length at 20 characters.
+cat > "$TMP/diff-vulns.json" <<'EOF'
+[
+  {
+    "id": "vuln-0001",
+    "title": "Short bug",
+    "poc_description": "An attacker can reach the internal metadata endpoint",
+    "poc_script_code": "t.Setenv(\"TMPDIR\", t.TempDir())"
+  }
+]
+EOF
+
+printf '%s\n' '+An attacker can reach the internal metadata endpoint' > "$TMP/diff-gate.txt"
+if sanitize_diff "$TMP/diff-gate.txt" "$TMP/diff-vulns.json" >/dev/null 2>&1; then
+  fail "a PoC description in the diff is rejected"
+else
+  echo "ok: a PoC description in the diff is rejected"
+fi
+
+printf '%s\n' "+t.Setenv(\"TMPDIR\", t.TempDir())" > "$TMP/diff-gate.txt"
+if sanitize_diff "$TMP/diff-gate.txt" "$TMP/diff-vulns.json" >/dev/null 2>&1; then
+  echo "ok: a poc_script_code line in the diff is allowed"
+else
+  fail "a poc_script_code line in the diff is allowed"
+fi
+
+printf '%s\n' '+// Short bug' > "$TMP/diff-gate.txt"
+if sanitize_diff "$TMP/diff-gate.txt" "$TMP/diff-vulns.json" >/dev/null 2>&1; then
+  echo "ok: a title under the 20-character floor does not trip the diff"
+else
+  fail "a title under the 20-character floor does not trip the diff"
+fi
+
+printf '%s\n' '+An attacker can reach the internal metadata endpoint' > "$TMP/diff-gate.txt"
+hits="$(diff_disclosure_hits "$TMP/diff-gate.txt" "$TMP/diff-vulns.json")"
+if [ "$hits" = "An attacker can reach the internal metadata endpoint" ]; then
+  echo "ok: diff_disclosure_hits reports the offending prose for the private repair prompt"
+else
+  fail "diff_disclosure_hits: got '$hits'"
+fi
+printf '%s\n' '+if err := srv.Serve(ln); err != nil {' '+	// rebind is rejected before the upstream CONNECT' > "$TMP/diff-clean.txt"
+if [ -z "$(diff_disclosure_hits "$TMP/diff-clean.txt" "$TMP/diff-vulns.json")" ]; then
+  echo "ok: diff_disclosure_hits is empty for a clean diff"
+else
+  fail "diff_disclosure_hits is not empty for a clean diff"
+fi
+
 # --- assert_git_untampered: symlinked hooks --------------------------------------
 gd="$TMP/hookrepo"
 git init -q "$gd"
@@ -536,12 +599,18 @@ unset BUDGET_MINUTES
 # The sandbox mounts the whole filesystem read-only, keeps /tmp and the
 # session workdir writable, and pins every .git in reach read-only.
 sb="$TMP/sb"
-mkdir -p "$sb/repo/.git" "$sb/archive/.git"
+mkdir -p "$sb/repo/.git" "$sb/archive/.git" "$sb/repo/.github"
+printf 'module sim\n' > "$sb/repo/go.mod"
 sb_args="$(session_sandbox_args "$sb" | paste -sd' ' -)"
 case "$sb_args" in
   *"--ro-bind / / --bind /tmp /tmp"*"--bind $sb $sb"*"--ro-bind $sb/repo/.git $sb/repo/.git"*"--ro-bind $sb/archive/.git $sb/archive/.git"*)
     echo "ok: the session sandbox makes the fs read-only, the workdir writable and .git read-only" ;;
   *) fail "session_sandbox_args: $sb_args" ;;
+esac
+case "$sb_args" in
+  *"--ro-bind $sb/repo/.github $sb/repo/.github"*"--ro-bind $sb/repo/go.mod $sb/repo/go.mod"*)
+    echo "ok: the session sandbox binds CI config and the module graph read-only" ;;
+  *) fail "session_sandbox_args lacks the CI/module read-only binds: $sb_args" ;;
 esac
 
 # --- session_home ---------------------------------------------------------------
@@ -554,6 +623,93 @@ if SKAINET_TOKEN=sim SKAINET_INTERNAL="http://sim" session_home "$sh" "model-a" 
   echo "ok: session_home registers both models in valid JSON"
 else
   fail "session_home registers both models in valid JSON"
+fi
+
+# --- plan_pr_states -------------------------------------------------------------
+# The stub answers plan-02 MERGED, plan-03 OPEN, everything else unstarted.
+states="$(plan_pr_states "$TMP/plans.json" | paste -sd'|' -)"
+if [ "$states" = "merged:02|open:03|unstarted:01,04" ]; then
+  echo "ok: plan_pr_states classifies merged, open and unstarted plans"
+else
+  fail "plan_pr_states: got '$states'"
+fi
+
+# --- dispatched_bucket ----------------------------------------------------------
+# In flight = dispatched at least once (branch on origin, or this run's
+# selection) minus the plans already merged or in review, so the four status
+# buckets stay disjoint and sum to the total.
+bucket="$(dispatched_bucket "01,02" "02,03" "02" "")"
+if [ "$bucket" = "01,03" ]; then
+  echo "ok: dispatched_bucket unions branches and the run selection, minus merged/open"
+else
+  fail "dispatched_bucket: got '$bucket'"
+fi
+bucket="$(dispatched_bucket "01" "" "01" "")"
+if [ -z "$bucket" ]; then
+  echo "ok: dispatched_bucket drops a plan whose pull request is merged"
+else
+  fail "dispatched_bucket merged plan: got '$bucket'"
+fi
+bucket="$(dispatched_bucket "" "01" "" "01")"
+if [ -z "$bucket" ]; then
+  echo "ok: dispatched_bucket drops a plan whose pull request is open"
+else
+  fail "dispatched_bucket open plan: got '$bucket'"
+fi
+
+# --- overview_body --------------------------------------------------------------
+# The public issue body: the auto-maintained note, a status line whose counts
+# match the workstream list, ticks derived from merged PRs, and no "Further
+# steps" count to misread.
+cat > "$TMP/body.json" <<'EOF'
+[
+  { "id": "01", "priority": 1, "issue_line": "First workstream" },
+  { "id": "02", "priority": 2, "issue_line": "Second workstream" },
+  { "id": "03", "priority": 3, "issue_line": "Third workstream" }
+]
+EOF
+body="$(overview_body "$TMP/body.json" "02" "03" "01")"
+body_check() {
+  local desc=$1 needle=$2
+  case "$body" in
+    *"$needle"*) echo "ok: $desc" ;;
+    *) fail "$desc: body does not contain '$needle'" ;;
+  esac
+}
+body_check "the body carries the auto-maintained note" "do not edit it by hand"
+body_check "the status counts match the list" \
+  "Workstreams: 3 total — 1 merged, 1 in review, 1 in flight, 0 not yet dispatched."
+body_check "a merged plan is ticked" "- [x] Second workstream"
+body_check "an open plan is unticked" "- [ ] Third workstream"
+body_check "the dispatch/retry mechanic is explained" \
+  "one whose leg fails stays queued and is retried on a later run"
+case "$body" in
+  *"Further steps"*) fail "the removed Further steps section is still present" ;;
+  *) echo "ok: the removed Further steps section is gone" ;;
+esac
+
+# --- archive_git redaction ------------------------------------------------------
+# Both the archive PAT and the repo token can appear in a failed push's error
+# output; the redaction must strip either without sed mistaking the second
+# expression for an input file.
+mkdir -p "$TMP/fakebin"
+cat > "$TMP/fakebin/git" <<'EOF'
+#!/usr/bin/env bash
+echo "https://x-access-token:sim-pat@github.com/o/archive.git" >&2
+echo "https://x-access-token:sim-repo-token@github.com/o/repo.git" >&2
+exit 1
+EOF
+chmod +x "$TMP/fakebin/git"
+PATH_SAVE="$PATH"
+PATH="$TMP/fakebin:$PATH" \
+  SECURITY_SCAN_PAT=sim-pat REPO_TOKEN=sim-repo-token \
+  archive_git "$TMP" rev-parse HEAD 2>"$TMP/redact.out" || true
+PATH="$PATH_SAVE"
+if [ "$(grep -c 'REDACTED-TOKEN' "$TMP/redact.out")" = 2 ] \
+   && ! grep -q 'sim-pat\|sim-repo-token' "$TMP/redact.out"; then
+  echo "ok: archive_git redacts both tokens in a failed command's output"
+else
+  fail "archive_git redaction: $(cat "$TMP/redact.out")"
 fi
 
 if [ "$failures" -gt 0 ]; then

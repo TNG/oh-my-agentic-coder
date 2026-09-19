@@ -191,23 +191,43 @@ archive/scans/${SCAN_DIR}/mitigation-plans/:
      }
    ]
 
-RULES:
-- priority: 1 is most urgent. Derive it from finding severity and validation
-  status.
-- branch: exactly fix/security-${SCAN_DIR}-plan-<id>, with the same id as the
-  entry.
-- files: the files this plan may edit. Every path must exist in repo/ (check
-  with your file tools before writing it down). Include any existing test
-  files the fix will break because they relied on the old behaviour as a
-  shortcut — the fix sessions may always edit Go test files, but listing them
-  tells the reviewer what to expect. NEVER include .github/ paths — findings
-  whose fix requires CI or workflow changes go under "Manual follow-up" in
-  the README, not into a plan.
-- tests: TestSecurity* names for the regression tests a later stage will
-  write. Name them after the security property they assert.
-- issue_line: this text becomes a checklist item in a PUBLIC GitHub issue.
-  Describe the gap's origin, WITHOUT revealing how it is exploited: no
-  finding titles, no proof-of-concept strings, no file paths.
+FIELD TYPES — the manifest is machine-validated field by field and ONE
+violation rejects the whole run, so follow these exactly:
+- id: a two-digit STRING, "01", "02", ...
+- priority: a JSON NUMBER (1, 2, 3, ...), most urgent first. NOT "P0", not
+  "high", not a quoted string.
+- branch: the STRING fix/security-${SCAN_DIR}-plan-<id>, same id as the entry.
+- plan_file: a STRING, the plan file's path RELATIVE TO THE SCAN DIRECTORY,
+  including the directory prefix: "mitigation-plans/01-<slug>.md".
+- files: an array of repo-relative STRINGS that exist in repo/ — the files
+  this plan expects to edit, and the basis for the conflict matrix and wave
+  coloring. Enumerate the files the fix will plausibly touch — grep the call
+  sites before you decide — and include spec or documentation files when the
+  review criteria demand updating them, plus any existing test file the fix
+  will break because it relied on the old behaviour as a shortcut. This list
+  guides the fix sessions rather than binding them (a fix may discover one
+  more file, which is then flagged to reviewers), so a missing call site costs
+  review attention, not a failed leg — but a thoughtful list keeps parallel
+  plans from colliding. NEVER include .github/ paths — findings whose fix
+  requires CI or workflow changes go under "Manual follow-up" in the README,
+  not into a plan.
+- tests: an array of STRINGS, each a Go test FUNCTION NAME starting with
+  TestSecurity, e.g. "TestSecurityChainedProxyRebindsHost". These are the
+  regression tests a later stage will WRITE, named after the security
+  property they assert. This is NOT a list of file paths and NOT the names of
+  existing tests; a test FILE the fix must touch belongs in files instead.
+- issue_line: a STRING of ONE line of plain ASCII — no em dashes, smart
+  quotes or other non-ASCII punctuation. It becomes a checklist item in a
+  PUBLIC GitHub issue: describe the gap's origin WITHOUT revealing how it is
+  exploited — no finding titles, no proof-of-concept strings, no file paths.
+- review_criteria: a STRING of free text for the reviewer.
+
+MANDATORY SELF-CHECK before you finish. It is a hard gate, and a second
+session will be spent repairing your manifest if it fails:
+  bash -c '. repo/.github/scripts/security_remediate/lib.sh && plans_schema_errors archive/scans/${SCAN_DIR}/mitigation-plans/plans.json ${SCAN_DIR}'
+must print NOTHING. Also check that every plan_file exists under
+archive/scans/${SCAN_DIR}/ and every files[] path exists in repo/. Fix the
+manifest and re-run until it is clean.
 - Findings already covered by an existing plan whose pull request is open or
   merged are done. Carry every existing plans.json entry forward unchanged
   (same ids, same branches — renumber nothing), and give new findings fresh
@@ -230,45 +250,100 @@ session_status=$?
 set -e
 echo "planning session exit status: $session_status"
 
-# The session contract is archive-only. A dirty checkout means the contract
-# is broken (prompt injection, or a confused session): treat ALL of its
-# output as untrusted. Keep the archive push so a human can debug the
-# transcript, but keep the manifest untouched.
-if [ -n "$(git -C "$REPO_DIR" status --porcelain)" ]; then
-  git -C "$ARCHIVE_DIR" reset --hard --quiet
-  git -C "$ARCHIVE_DIR" clean -fdq scans/
-  cp "$TRANSCRIPT" "$mitigation_dir/planning-session.log" 2>/dev/null || true
-  push_archive "$ARCHIVE_DIR" "plans: REJECTED session for ${SCAN_DIR} — it wrote into the source repo" \
-    "scans/$SCAN_DIR"
-  echo "::error title=Planning session rejected::The session wrote into the source checkout instead of the archive clone. Its output was discarded (transcript archived privately); nothing was promoted. This is the prompt-injection guard firing."
-  exit 1
-fi
+# ---- Guards and manifest validation -----------------------------------------
+# The session contract is archive-only. A dirty checkout means the contract is
+# broken (prompt injection, or a confused session): treat ALL of its output as
+# untrusted. Keep the archive push so a human can debug the transcript, but
+# keep the manifest untouched.
+reject_if_repo_dirty() {
+  local reason=$1
+  if [ -n "$(git -C "$REPO_DIR" status --porcelain)" ]; then
+    git -C "$ARCHIVE_DIR" reset --hard --quiet
+    git -C "$ARCHIVE_DIR" clean -fdq scans/
+    cp "$TRANSCRIPT" "$mitigation_dir/planning-session.log" 2>/dev/null || true
+    push_archive "$ARCHIVE_DIR" "plans: REJECTED session for ${SCAN_DIR} — it wrote into the source repo" \
+      "scans/$SCAN_DIR"
+    echo "::error title=Planning session rejected::${reason} Its output was discarded (transcript archived privately); nothing was promoted. This is the prompt-injection guard firing."
+    exit 1
+  fi
+}
 
-# ---- Validate the manifest --------------------------------------------------
-# Error details go to a file in the private archive; the public log sees the
-# count and the plan ids only.
-report="$mitigation_dir/plans-validation.txt"
-: > "$report"
-if [ -f "$plans_json" ]; then
-  plans_schema_errors "$plans_json" "$SCAN_DIR" >> "$report"
-
-  # jq cannot stat: every owned file must exist in the checkout, every
-  # plan_file in the scan dir.
+# The manifest contract, written to $1: schema errors plus the existence checks
+# jq cannot do (every owned file in the checkout, every plan_file in the scan
+# dir). An empty report file means the manifest is valid.
+validate_manifest() {
+  local report_file=$1 entry id pf f
+  : > "$report_file"
+  if [ ! -f "$plans_json" ]; then
+    echo "-: plans.json is missing (the session may have run out of budget before writing it)" >> "$report_file"
+    return 0
+  fi
+  plans_schema_errors "$plans_json" "$SCAN_DIR" >> "$report_file"
   jq -c '.[] | {id: (.id // "-"), plan_file: (.plan_file // ""), files: (.files // [])}' \
     "$plans_json" 2>/dev/null | while IFS= read -r entry; do
     id="$(printf '%s' "$entry" | jq -r '.id')"
     pf="$(printf '%s' "$entry" | jq -r '.plan_file')"
     if [ -n "$pf" ] && [ ! -f "$scan_abs/$pf" ]; then
-      echo "$id: plan_file does not exist in the scan dir: $pf" >> "$report"
+      echo "$id: plan_file does not exist in the scan dir: $pf" >> "$report_file"
     fi
     printf '%s' "$entry" | jq -r '.files[]' | while IFS= read -r f; do
       if [ ! -e "$REPO_DIR/$f" ]; then
-        echo "$id: owned file does not exist in the checkout: $f" >> "$report"
+        echo "$id: owned file does not exist in the checkout: $f" >> "$report_file"
       fi
     done
   done
-else
-  echo "-: plans.json is missing (the session may have run out of budget before writing it)" >> "$report"
+}
+
+reject_if_repo_dirty "The session wrote into the source checkout instead of the archive clone."
+
+report="$mitigation_dir/plans-validation.txt"
+validate_manifest "$report"
+
+if [ -s "$report" ]; then
+  # One bounded repair session. The failures are almost always format-level (a
+  # string priority, test file paths in tests[], a plan_file without the
+  # mitigation-plans/ prefix), and repairing costs one session where a full
+  # re-plan costs one session plus re-reading every finding.
+  echo "manifest failed $(wc -l < "$report") checks — running one repair session"
+  repair_prompt="$WORK/plan-repair-prompt.md"
+  {
+    echo "Your plans.json for scan ${SCAN_DIR} failed the pipeline's machine"
+    echo "validation. Fix ONLY the manifest, at:"
+    echo "  archive/scans/${SCAN_DIR}/mitigation-plans/plans.json"
+    echo "Do not rewrite the plan files; they are fine. Do not modify repo/."
+    echo ""
+    echo "The failures:"
+    cat "$report"
+    echo ""
+    echo "The field rules it must satisfy:"
+    echo "- id: a two-digit string, \"01\"."
+    echo "- priority: a JSON number (1, 2, 3, ...), not a string like \"P0\"."
+    echo "- branch: fix/security-${SCAN_DIR}-plan-<id>."
+    echo "- plan_file: path relative to the scan directory, including the"
+    echo "  mitigation-plans/ prefix."
+    echo "- files: repo-relative paths that exist in repo/; a test file the fix"
+    echo "  will break belongs here."
+    echo "- tests: TestSecurity* Go test FUNCTION names (strings), not file paths"
+    echo "  and not existing test names."
+    echo "- issue_line: ONE line of plain ASCII, no em dashes or smart quotes."
+    echo ""
+    echo "After editing, re-check and keep fixing until clean:"
+    echo "  bash -c '. repo/.github/scripts/security_remediate/lib.sh && plans_schema_errors archive/scans/${SCAN_DIR}/mitigation-plans/plans.json ${SCAN_DIR}'"
+    echo "must print nothing; every plan_file must exist under"
+    echo "archive/scans/${SCAN_DIR}/; every files[] path must exist in repo/."
+    echo ""
+    echo "Sanctioned, pre-authorized repair session — proceed directly without"
+    echo "asking for confirmation."
+  } > "$repair_prompt"
+  set +e
+  run_session "$DRIVER_HOME" "$(( $(session_budget short) * 60 ))" "$MODEL" "$WORKSPACE" \
+    "$repair_prompt" "$WORK/plan-repair.log"
+  repair_status=$?
+  set -e
+  echo "repair session exit status: $repair_status"
+  cp "$WORK/plan-repair.log" "$mitigation_dir/plan-repair-session.log" 2>/dev/null || true
+  reject_if_repo_dirty "The repair session wrote into the source checkout instead of the archive clone."
+  validate_manifest "$report"
 fi
 
 if [ -s "$report" ]; then
@@ -287,7 +362,7 @@ if [ -s "$report" ]; then
   cp "$TRANSCRIPT" "$mitigation_dir/planning-session.log" 2>/dev/null || true
   push_archive "$ARCHIVE_DIR" "plans: DRAFT for ${SCAN_DIR} — validation failed, manifest left as-is ($(date -u +%F))" \
     "scans/$SCAN_DIR"
-  echo "::error title=Plans rejected::plans.json failed ${problem_count} validation checks. The session's output and the checklist of problems are archived to the private repo (plans-validation.txt, plans.draft.json); the manifest itself was left unchanged, so the next run re-plans."
+  echo "::error title=Plans rejected::plans.json failed ${problem_count} validation checks (after one repair session). The session's output and the checklist of problems are archived to the private repo (plans-validation.txt, plans.draft.json); the manifest itself was left unchanged, so the next run re-plans."
   exit 1
 fi
 rm -f "$report"
