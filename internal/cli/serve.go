@@ -1610,7 +1610,7 @@ func (s *serveServer) bringUp(e registry.Entry, absDir, workdir, namespace, secr
 		s.installRoute(sr, 0)
 		return sr
 	}
-	sr := &skillRoute{Name: e.Name, Mount: mount, Namespace: namespace, SkillDir: absDir, State: facade.RouteReady}
+	sr := &skillRoute{Name: e.Name, Mount: mount, Namespace: namespace, SkillDir: snapDir, State: facade.RouteReady}
 	s.installRoute(sr, running.Port)
 	return sr
 }
