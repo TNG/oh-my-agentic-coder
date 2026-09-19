@@ -27,6 +27,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/lib.sh"
 
 ARCHIVE_DIR="${ARCHIVE_DIR:-$PWD/archive}"
+REPO_DIR="${REPO_DIR:-$PWD/repo}"
 
 require_tools jq gh git curl
 
@@ -68,6 +69,10 @@ merged_ids="${merged_line#merged:}"
 open_ids="${open_line#open:}"
 unstarted_ids="${unstarted_line#unstarted:}"
 merged_count="$(id_count "$merged_ids")"
+# Finalize does not dispatch, so it derives in-flight purely from the branches
+# on origin; by the time it runs daily, a dispatched leg has pushed one.
+dispatched_ids="$(dispatched_bucket \
+  "$(branch_dispatched_ids "$REPO_DIR" "$scan_dir")" "" "$merged_ids" "$open_ids")"
 
 # The no-op fingerprint: when the state line matches the last recorded one,
 # nothing happened since the previous finalize run and the day is done.
@@ -113,7 +118,7 @@ if [ -n "$issue_number" ]; then
   # the ticks always match the manifest; the edit is skipped when nothing
   # changed, keeping the daily run a true no-op.
   body_file="$(mktemp)"
-  overview_body "$plans_json" "$merged_ids" "$open_ids" "$unstarted_ids" > "$body_file"
+  overview_body "$plans_json" "$merged_ids" "$open_ids" "$dispatched_ids" > "$body_file"
   if [ "$(cat "$body_file")" = "$issue_body" ]; then
     echo "overview issue #${issue_number} already up to date"
   else

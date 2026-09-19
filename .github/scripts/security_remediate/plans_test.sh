@@ -634,6 +634,29 @@ else
   fail "plan_pr_states: got '$states'"
 fi
 
+# --- dispatched_bucket ----------------------------------------------------------
+# In flight = dispatched at least once (branch on origin, or this run's
+# selection) minus the plans already merged or in review, so the four status
+# buckets stay disjoint and sum to the total.
+bucket="$(dispatched_bucket "01,02" "02,03" "02" "")"
+if [ "$bucket" = "01,03" ]; then
+  echo "ok: dispatched_bucket unions branches and the run selection, minus merged/open"
+else
+  fail "dispatched_bucket: got '$bucket'"
+fi
+bucket="$(dispatched_bucket "01" "" "01" "")"
+if [ -z "$bucket" ]; then
+  echo "ok: dispatched_bucket drops a plan whose pull request is merged"
+else
+  fail "dispatched_bucket merged plan: got '$bucket'"
+fi
+bucket="$(dispatched_bucket "" "01" "" "01")"
+if [ -z "$bucket" ]; then
+  echo "ok: dispatched_bucket drops a plan whose pull request is open"
+else
+  fail "dispatched_bucket open plan: got '$bucket'"
+fi
+
 # --- overview_body --------------------------------------------------------------
 # The public issue body: the auto-maintained note, a status line whose counts
 # match the workstream list, ticks derived from merged PRs, and no "Further
@@ -655,7 +678,7 @@ body_check() {
 }
 body_check "the body carries the auto-maintained note" "do not edit it by hand"
 body_check "the status counts match the list" \
-  "Workstreams: 3 total — 1 merged, 1 in review, 1 not yet started."
+  "Workstreams: 3 total — 1 merged, 1 in review, 1 in flight, 0 not yet dispatched."
 body_check "a merged plan is ticked" "- [x] Second workstream"
 body_check "an open plan is unticked" "- [ ] Third workstream"
 body_check "the dispatch/retry mechanic is explained" \

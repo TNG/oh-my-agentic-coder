@@ -452,14 +452,41 @@ plan_pr_states() {
 # rewrites it) and the finalize workflow (which refreshes it daily), so the
 # two writers cannot drift apart. Ticks derive from the merged-id list, which
 # is why no state is carried in the old body.
-# Prints the body; $1 plans.json, $2/$3/$4 the merged/open/unstarted id lists.
+# Plan ids whose generation branch already exists on origin: a leg pushes its
+# branch on success (a pull request follows) or on failure (a wip push), so a
+# branch means "dispatched at least once". One ls-remote covers the whole
+# generation, which is why no state has to be carried between runs.
+branch_dispatched_ids() {
+  local repo=$1 scan_dir=$2 prefix="refs/heads/fix/security-${scan_dir}-plan-"
+  git -C "$repo" ls-remote --heads origin "${prefix}*" 2>/dev/null \
+    | awk -v p="$prefix" '{ i = index($2, p); if (i) print substr($2, i + length(p)) }' \
+    | sort -u | paste -sd, -
+}
+
+# The "in flight" bucket: dispatched at least once but no pull request yet.
+# $1 branch-derived ids, $2 extra ids (this run's selection), $3 merged ids,
+# $4 open ids. Disjoint from merged/open by construction, so the four status
+# buckets sum to the total.
+dispatched_bucket() {
+  local id out=""
+  for id in $(printf '%s,%s' "$1" "$2" | tr ',' ' '); do
+    [ -n "$id" ] || continue
+    case ",$3,$4," in *",$id,"*) continue ;; esac
+    case ",$out," in *",$id,"*) continue ;; esac
+    out="$out$id,"
+  done
+  printf '%s' "${out%,}"
+}
+
+# Prints the body; $1 plans.json, $2/$3/$4 the merged/open/in-flight id lists.
 overview_body() {
-  local plans_json=$1 merged=$2 open=$3 unstarted=$4
-  local total merged_n open_n unstarted_n
+  local plans_json=$1 merged=$2 open=$3 dispatched=$4
+  local total merged_n open_n dispatched_n not_dispatched_n
   total="$(jq 'length' "$plans_json")"
   merged_n="$(id_count "$merged")"
   open_n="$(id_count "$open")"
-  unstarted_n="$(id_count "$unstarted")"
+  dispatched_n="$(id_count "$dispatched")"
+  not_dispatched_n=$(( total - merged_n - open_n - dispatched_n ))
 
   printf '%s\n' '<!-- security-remediation: overview -->'
   printf '\n'
@@ -474,8 +501,8 @@ overview_body() {
   printf '\n'
   printf '%s\n' '## Status'
   printf '\n'
-  printf -- '- Workstreams: %s total — %s merged, %s in review, %s not yet started.\n' \
-    "$total" "$merged_n" "$open_n" "$unstarted_n"
+  printf -- '- Workstreams: %s total — %s merged, %s in review, %s in flight, %s not yet dispatched.\n' \
+    "$total" "$merged_n" "$open_n" "$dispatched_n" "$not_dispatched_n"
   printf '\n'
   printf '%s\n' '## Workstreams'
   printf '\n'
@@ -488,7 +515,7 @@ overview_body() {
   printf '%s\n' '## Notes'
   printf '\n'
   printf '%s\n' '- Merging stays a human action: every pull request needs at least one approval (COLLABORATION.md).'
-  printf '%s\n' '- Each run starts up to max_plans not-yet-started workstreams in priority order; one whose leg fails stays queued and is retried on a later run.'
+  printf '%s\n' '- Each run starts up to max_plans not-yet-dispatched workstreams in priority order; one whose leg fails stays queued and is retried on a later run.'
 }
 
 # Wave assignment for the fix stage ("Job 5" in the pipeline plan): greedy

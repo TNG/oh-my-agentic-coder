@@ -226,6 +226,9 @@ jobs:
         id: issue
         env:
           SCAN_DIR: ${{ needs.preflight.outputs.scan_dir }}
+          # The plans this run dispatches: the issue is written before the legs
+          # push their branches, so its in-flight bucket needs the selection.
+          SELECTED_IDS: ${{ needs.plan.outputs.selected_ids || needs.preflight.outputs.selected_ids }}
         run: bash repo/.github/scripts/security_remediate/issue-stage.sh
 
   # ---- Fix waves ---------------------------------------------------------------

@@ -18,6 +18,9 @@
 #
 # Environment:
 #   SCAN_DIR            name of the scan directory inside scans/ (required)
+#   SELECTED_IDS        plans this run dispatches, comma ids (for the in-flight
+#                       bucket: the legs have not pushed their branches yet)
+#   REPO_DIR            this repo's checkout, for the branch lookup (default ./repo)
 #   ARCHIVE_DIR         archive clone, created if missing (default ./archive)
 #   GH_TOKEN            github.token with issues:write (issue + labels)
 #   ARCHIVE_REPO, SECURITY_SCAN_PAT   (clone)
@@ -28,6 +31,8 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/lib.sh"
 
 SCAN_DIR="${SCAN_DIR:-}"
+SELECTED_IDS="${SELECTED_IDS:-}"
+REPO_DIR="${REPO_DIR:-$PWD/repo}"
 ARCHIVE_DIR="${ARCHIVE_DIR:-$PWD/archive}"
 
 require_tools jq gh git
@@ -75,14 +80,20 @@ done < <(gh issue list -R "$GITHUB_REPOSITORY" --label security --label agent-cr
 # so the status counts always match the workstream list (the old "Further
 # steps" count was read as additional work). Ticks derive from merged PRs.
 plan_count="$(jq 'length' "$plans_json")"
-{ read -r merged_line; read -r open_line; read -r unstarted_line; } <<< "$(plan_pr_states "$plans_json")"
+{ read -r merged_line; read -r open_line; read -r _unstarted_line; } <<< "$(plan_pr_states "$plans_json")"
 merged_ids="${merged_line#merged:}"
 open_ids="${open_line#open:}"
-unstarted_ids="${unstarted_line#unstarted:}"
+
+# In flight = dispatched before (its branch exists) or by this very run (its
+# leg has not pushed yet, but it is selected), and no pull request yet. The
+# run's selection is the piece finalize cannot know, which is why the issue
+# stage writes this bucket at dispatch time.
+dispatched_ids="$(dispatched_bucket \
+  "$(branch_dispatched_ids "$REPO_DIR" "$SCAN_DIR")" "$SELECTED_IDS" "$merged_ids" "$open_ids")"
 
 body_file="$(mktemp)"
 trap 'rm -f "$body_file"' EXIT
-overview_body "$plans_json" "$merged_ids" "$open_ids" "$unstarted_ids" > "$body_file"
+overview_body "$plans_json" "$merged_ids" "$open_ids" "$dispatched_ids" > "$body_file"
 
 # --- Sanitizer gate, then post ------------------------------------------------
 if ! sanitize_issue_body "$body_file" "$vulns_json" "$plans_json"; then
@@ -112,5 +123,5 @@ emit_output overview_issue "$issue_number"
 {
   echo "## Security remediation: overview issue"
   echo ""
-  echo "Issue #${issue_number} carries ${plan_count} workstreams (merged $(id_count "$merged_ids"), in review $(id_count "$open_ids"), not yet started $(id_count "$unstarted_ids"))."
+  echo "Issue #${issue_number} carries ${plan_count} workstreams (merged $(id_count "$merged_ids"), in review $(id_count "$open_ids"), in flight $(id_count "$dispatched_ids"), not yet dispatched $(( plan_count - $(id_count "$merged_ids") - $(id_count "$open_ids") - $(id_count "$dispatched_ids") )))."
 } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
