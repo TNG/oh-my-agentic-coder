@@ -203,6 +203,11 @@ func TestStage2ArgsFiltered(t *testing.T) {
 		"--connect-tcp", "54321",
 		"--bind-tcp", "4097",
 		"--bind-tcp", "49152",
+		"--rw-grant", "/dev",
+		"--rw-grant", "/proc",
+		"--rw-grant", "/scratch",
+		"--rw-grant", "/tmp",
+		"--rw-grant", "/work",
 		"--enforce",
 	}
 	if !slices.Equal(got, want) {
@@ -214,8 +219,16 @@ func TestStage2ArgsBlocked(t *testing.T) {
 	g := bwrapGrants()
 	g.NetworkMode = sandboxprofile.ModeBlocked
 	got := Stage2Args(g)
-	if !slices.Equal(got, []string{"--enforce"}) {
-		t.Errorf("blocked mode = %v, want bare --enforce (full TCP block)", got)
+	want := []string{
+		"--rw-grant", "/dev",
+		"--rw-grant", "/proc",
+		"--rw-grant", "/scratch",
+		"--rw-grant", "/tmp",
+		"--rw-grant", "/work",
+		"--enforce",
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("blocked mode = %v, want %v", got, want)
 	}
 }
 

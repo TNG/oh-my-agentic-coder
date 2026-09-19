@@ -96,6 +96,28 @@ primitives built into the OS so confinement is enforced by the kernel.
 | Secret store | Keychain | Secret Service |
 | Prompt dialog | AppleScript | zenity / kdialog |
 
+On Linux, kernel-enforced mode (filtered or blocked network) applies two
+Landlock rulesets inside the sandbox before the inner command starts:
+
+1. **Filesystem ruleset.** Write-related operations (write, truncate,
+   remove, make-node, and `REFER` — the right to link or rename across
+   directories) are allowed only beneath read-write grant roots (the
+   workdir, harness dirs, tool cache, `$TMPDIR`). Read-only grants
+   receive no write rights, so read, execute and traverse still work but
+   every write-related syscall is denied. This blocks a confined process
+   from giving a read-only file a new name in a writable directory and
+   writing through that name back to the original: `link(2)` itself
+   fails because the source directory lacks `REFER`. The read-only bind
+   mount flag alone does not prevent this — the kernel's link operation
+   checks write permission on the target directory, not mount flags on
+   the source — so the Landlock ruleset is the layer that enforces
+   read-only grants at the inode level.
+
+2. **Network ruleset.** TCP connect and bind are restricted to the
+   ports the proxy and your allow list permit (see [Network](#network)
+   above). A seccomp filter then denies non-TCP socket creation so UDP,
+   ICMP and other datagram protocols cannot bypass the TCP filter.
+
 ## Sandbox access reference
 
 The table below lists which paths and environment variables the sandbox can and

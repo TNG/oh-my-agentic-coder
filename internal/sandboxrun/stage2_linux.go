@@ -9,11 +9,13 @@ import (
 
 // RunStage2 is the entry point for the hidden `omac sandbox stage2`
 // subcommand, executed by bwrap inside the mount/pid namespaces. It
-// parses --connect-tcp/--bind-tcp/--enforce flags, applies the
+// parses --connect-tcp/--bind-tcp/--rw-grant/--enforce flags, applies
+// the Landlock FS ruleset (read-only grant enforcement) and the
 // Landlock net ruleset when --enforce is present, and execs the inner
 // command. Returns only on error.
 func RunStage2(args []string) error {
 	var connect, bind []int
+	var rwGrants []string
 	enforce := false
 	var inner []string
 	i := 0
@@ -33,6 +35,12 @@ func RunStage2(args []string) error {
 				bind = append(bind, port)
 			}
 			i++
+		case "--rw-grant":
+			if i+1 >= len(args) {
+				return fmt.Errorf("stage2: %s requires a value", args[i])
+			}
+			rwGrants = append(rwGrants, args[i+1])
+			i++
 		case "--enforce":
 			enforce = true
 		case "--":
@@ -46,6 +54,9 @@ func RunStage2(args []string) error {
 		return fmt.Errorf("stage2: no inner command after --")
 	}
 	if enforce {
+		if err := ApplyLandlockFS(rwGrants); err != nil {
+			return fmt.Errorf("stage2: %w", err)
+		}
 		if err := ApplyLandlockNet(connect, bind); err != nil {
 			return fmt.Errorf("stage2: %w", err)
 		}

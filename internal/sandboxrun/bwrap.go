@@ -208,11 +208,14 @@ func coveredByAny(path string, mounts []*mount) bool {
 	return false
 }
 
-// Stage2Args serializes the network rules for the stage2 re-exec.
-// Format: repeated --connect-tcp N / --bind-tcp N flags, then -- and
-// the inner argv.
+// Stage2Args serializes the network rules and filesystem grant roots
+// for the stage2 re-exec. Format: repeated --rw-grant PATH flags for
+// each read-write grant root (consumed by the Landlock FS ruleset),
+// then repeated --connect-tcp N / --bind-tcp N flags, then -- and the
+// inner argv.
 func Stage2Args(g *Grants) []string {
 	var args []string
+	enforce := false
 	if g.NetworkMode == sandboxprofile.ModeFiltered && g.Enforcement == sandboxprofile.EnforceKernel {
 		connect := map[int]bool{}
 		bind := map[int]bool{}
@@ -235,9 +238,29 @@ func Stage2Args(g *Grants) []string {
 		for _, p := range sortedKeys(bind) {
 			args = append(args, "--bind-tcp", strconv.Itoa(p))
 		}
-		args = append(args, "--enforce")
+		enforce = true
 	} else if g.NetworkMode == sandboxprofile.ModeBlocked {
-		args = append(args, "--enforce") // no ports at all = full TCP block
+		enforce = true // no ports at all = full TCP block
+	}
+	if enforce {
+		// Emit read-write grant roots so stage2 can install a Landlock
+		// FS ruleset that denies writes outside these roots, blocking
+		// hardlink write-through of read-only grants. WritePaths and
+		// AllowPaths together cover every writable root (the workdir is
+		// in one of those lists based on its access level).
+		//
+		// bwrap also creates fresh writable mounts that are not in the
+		// grant lists: /dev (devtmpfs), /proc (procfs), and /tmp
+		// (private tmpfs, unless /tmp was granted read-only). Without
+		// rules for these, the FS ruleset would block git opening
+		// /dev/null, chromium creating temp dirs in /tmp, etc.
+		rwRoots := dedupe(append(append([]string{}, g.WritePaths...), g.AllowPaths...))
+		rwRoots = append(rwRoots, bwrapWritableMounts(g)...)
+		rwRoots = dedupe(rwRoots)
+		for _, p := range rwRoots {
+			args = append(args, "--rw-grant", p)
+		}
+		args = append(args, "--enforce")
 	}
 	// open mode / env-only: no --enforce, stage2 just execs.
 	return args
@@ -250,4 +273,27 @@ func sortedKeys(m map[int]bool) []int {
 	}
 	sort.Ints(out)
 	return out
+}
+
+// bwrapWritableMounts returns the bwrap-created mount points that are
+// writable inside the namespace but absent from the grant lists: /dev
+// (fresh devtmpfs), /proc (fresh procfs), and /tmp (private tmpfs).
+// These need Landlock write rules or the FS ruleset would block normal
+// operations like git opening /dev/null or processes creating temp files.
+//
+// /tmp is omitted when it appears in ReadPaths (read-only bind from the
+// host). When "/" is in AllowPaths the root rule already covers every
+// path, so nothing is added.
+func bwrapWritableMounts(g *Grants) []string {
+	for _, p := range g.AllowPaths {
+		if p == "/" {
+			return nil
+		}
+	}
+	for _, p := range g.ReadPaths {
+		if p == "/tmp" {
+			return []string{"/dev", "/proc"}
+		}
+	}
+	return []string{"/dev", "/proc", "/tmp"}
 }

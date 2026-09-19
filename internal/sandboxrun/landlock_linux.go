@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"unsafe"
 
@@ -94,6 +95,88 @@ func ApplyLandlockNet(connectPorts, bindPorts []int) error {
 	}
 	if _, _, errno := unix.Syscall(unix.SYS_LANDLOCK_RESTRICT_SELF, uintptr(fd), 0, 0); errno != 0 {
 		return fmt.Errorf("landlock_restrict_self: %w", errno)
+	}
+	return nil
+}
+
+// landlockFsWriteAccess is the set of filesystem rights the FS ruleset
+// handles. Rights NOT in this set (read, execute, traverse) stay
+// unrestricted, so read-only grants remain readable while every
+// write-related operation requires an explicit allow rule on an
+// ancestor directory. REFER must be handled so that link(2)/rename(2)
+// across directories are denied when the source directory lacks the
+// right — this is what blocks giving a read-only file a new name in a
+// writable directory and writing through it.
+var landlockFsWriteAccess = uint64(
+	unix.LANDLOCK_ACCESS_FS_WRITE_FILE |
+		unix.LANDLOCK_ACCESS_FS_TRUNCATE |
+		unix.LANDLOCK_ACCESS_FS_REMOVE_FILE |
+		unix.LANDLOCK_ACCESS_FS_REMOVE_DIR |
+		unix.LANDLOCK_ACCESS_FS_REFER |
+		unix.LANDLOCK_ACCESS_FS_MAKE_CHAR |
+		unix.LANDLOCK_ACCESS_FS_MAKE_DIR |
+		unix.LANDLOCK_ACCESS_FS_MAKE_REG |
+		unix.LANDLOCK_ACCESS_FS_MAKE_SOCK |
+		unix.LANDLOCK_ACCESS_FS_MAKE_FIFO |
+		unix.LANDLOCK_ACCESS_FS_MAKE_BLOCK |
+		unix.LANDLOCK_ACCESS_FS_MAKE_SYM)
+
+// ApplyLandlockFS installs a Landlock filesystem ruleset that permits
+// write-related operations only beneath the given read-write roots.
+// Every other path — including read-only grants — is denied write
+// access, so a hardlink from a read-only file into a writable directory
+// cannot mutate the original: the source directory lacks REFER, so
+// link(2) itself is denied. Read, execute, and traverse are not
+// handled and remain unrestricted. Stacks on top of any existing
+// Landlock ruleset (Landlock intersections rulesets).
+//
+// Paths that do not exist are skipped: bwrap uses --bind-try for
+// not-yet-created dirs (e.g. unix-socket dirs), so they are absent from
+// the namespace and need no rule.
+func ApplyLandlockFS(readWriteRoots []string) error {
+	abi := LandlockABI()
+	if abi < landlockNetABI {
+		return fmt.Errorf("landlock ABI >= %d required for filesystem ruleset; this kernel has ABI %d",
+			landlockNetABI, abi)
+	}
+	attr := unix.LandlockRulesetAttr{
+		Access_fs: landlockFsWriteAccess,
+	}
+	fdp, _, errno := unix.Syscall(unix.SYS_LANDLOCK_CREATE_RULESET,
+		uintptr(unsafe.Pointer(&attr)), unsafe.Sizeof(attr), 0)
+	if errno != 0 {
+		return fmt.Errorf("landlock_create_ruleset(fs): %w", errno)
+	}
+	fd := int(fdp)
+	defer unix.Close(fd)
+
+	for _, root := range readWriteRoots {
+		root = filepath.Clean(root)
+		f, err := os.Open(root)
+		if err != nil {
+			continue // not in the namespace (bwrap --bind-try skipped it)
+		}
+		pathBeneath := unix.LandlockPathBeneathAttr{
+			Allowed_access: landlockFsWriteAccess,
+			Parent_fd:      int32(f.Fd()),
+		}
+		_, _, errno := unix.Syscall6(unix.SYS_LANDLOCK_ADD_RULE,
+			uintptr(fd),
+			uintptr(unix.LANDLOCK_RULE_PATH_BENEATH),
+			uintptr(unsafe.Pointer(&pathBeneath)),
+			0, 0, 0)
+		f.Close()
+		if errno != 0 {
+			return fmt.Errorf("landlock_add_rule(fs %q): %w", root, errno)
+		}
+	}
+
+	runtime.LockOSThread()
+	if err := unix.Prctl(unix.PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0); err != nil {
+		return fmt.Errorf("prctl(NO_NEW_PRIVS): %w", err)
+	}
+	if _, _, errno := unix.Syscall(unix.SYS_LANDLOCK_RESTRICT_SELF, uintptr(fd), 0, 0); errno != 0 {
+		return fmt.Errorf("landlock_restrict_self(fs): %w", errno)
 	}
 	return nil
 }
