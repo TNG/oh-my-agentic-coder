@@ -688,6 +688,30 @@ case "$body" in
   *) echo "ok: the removed Further steps section is gone" ;;
 esac
 
+# --- archive_git redaction ------------------------------------------------------
+# Both the archive PAT and the repo token can appear in a failed push's error
+# output; the redaction must strip either without sed mistaking the second
+# expression for an input file.
+mkdir -p "$TMP/fakebin"
+cat > "$TMP/fakebin/git" <<'EOF'
+#!/usr/bin/env bash
+echo "https://x-access-token:sim-pat@github.com/o/archive.git" >&2
+echo "https://x-access-token:sim-repo-token@github.com/o/repo.git" >&2
+exit 1
+EOF
+chmod +x "$TMP/fakebin/git"
+PATH_SAVE="$PATH"
+PATH="$TMP/fakebin:$PATH" \
+  SECURITY_SCAN_PAT=sim-pat REPO_TOKEN=sim-repo-token \
+  archive_git "$TMP" rev-parse HEAD 2>"$TMP/redact.out" || true
+PATH="$PATH_SAVE"
+if [ "$(grep -c 'REDACTED-TOKEN' "$TMP/redact.out")" = 2 ] \
+   && ! grep -q 'sim-pat\|sim-repo-token' "$TMP/redact.out"; then
+  echo "ok: archive_git redacts both tokens in a failed command's output"
+else
+  fail "archive_git redaction: $(cat "$TMP/redact.out")"
+fi
+
 if [ "$failures" -gt 0 ]; then
   echo "$failures plans test(s) failed" >&2
   exit 1

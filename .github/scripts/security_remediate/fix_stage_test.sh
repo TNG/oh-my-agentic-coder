@@ -49,14 +49,26 @@ STUBS="$TMP/bin"
 mkdir -p "$STUBS"
 cat > "$STUBS/git" <<'EOF'
 #!/usr/bin/env bash
-d="$PWD"; real="$GIT_REAL"
+d="$PWD"; real="$GIT_REAL"; root=""
 while [ "$d" != "/" ]; do
-  if [ -f "$d/.git-real" ]; then real="$(cat "$d/.git-real")"; break; fi
+  if [ -f "$d/.git-real" ]; then real="$(cat "$d/.git-real")"; root="$d"; break; fi
   d="$(dirname "$d")"
 done
 for a in "$@"; do
   if [ "$a" = push ]; then
     printf '%s\n' "$*" >> "$SIM_PUSH_LOG"
+    # Simulate a parallel leg having pushed first: reject the archive push
+    # while the counter says so.
+    case "$*" in
+      *sim/archive*)
+        if [ -n "$root" ] && [ -f "$root/.archive-failures" ]; then
+          n="$(cat "$root/.archive-failures")"
+          if [ "$n" -gt 0 ]; then
+            printf '%s\n' "$((n - 1))" > "$root/.archive-failures"
+            exit 1
+          fi
+        fi ;;
+    esac
     exit 0
   fi
 done
@@ -548,6 +560,18 @@ prcommit="$TMP/prcommit"
 new_fixture "$prcommit" prcommitter
 if OMAC_SESSION_SANDBOX=off run_stage "$prcommit"; then fail "PR-writer commit path fails the leg"; else echo "ok: PR-writer commit path fails the leg"; fi
 assert "the PR-writer commit path creates no pull request" "0" "$(grep -c create "$prcommit/prs.log" || true)"
+
+# --- Flaky archive push ---------------------------------------------------------
+# Parallel wave legs race on the archive clone: the first push attempt is
+# rejected (non-fast-forward in reality), the runner rebases and retries, and
+# the leg still succeeds.
+flaky="$TMP/archiveflaky"
+new_fixture "$flaky" happy
+printf '1\n' > "$flaky/.archive-failures"
+if run_stage "$flaky"; then echo "ok: a rejected archive push is retried and the leg succeeds"; else fail "a rejected archive push is retried and the leg succeeds"; fi
+assert "the archive push was attempted twice" "2" \
+  "$(grep -c "github.com/sim/archive.git" "$flaky/pushes.log" || true)"
+assert "the flaky-archive leg creates one pull request" "1" "$(grep -c create "$flaky/prs.log" || true)"
 
 if [ "$failures" -gt 0 ]; then
   echo "$failures fix-stage test(s) failed" >&2

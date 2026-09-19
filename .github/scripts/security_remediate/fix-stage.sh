@@ -936,11 +936,14 @@ else
 fi
 
 # --- Archive the session logs privately ------------------------------------------
+# Best effort: the pull request is already open, so failing the job over log
+# shipping would turn a successful fix into a failed leg.
 stage_logs="$scan_abs/remediation/fix-$PLAN_ID"
 mkdir -p "$stage_logs"
 cp "$LOG_DIR"/*.log "$LOG_DIR"/*.md "$stage_logs"/ 2>/dev/null || true
 push_archive "$ARCHIVE_DIR" "remediation: fix logs for ${SCAN_DIR} plan ${PLAN_ID} ($(date -u +%F))" \
-  "scans/$SCAN_DIR/remediation/fix-$PLAN_ID"
+  "scans/$SCAN_DIR/remediation/fix-$PLAN_ID" \
+  || echo "::warning title=Archive log push failed::The pull request is open, but the stage logs could not be archived after retries."
 
 printf 'fix stage: plan %s, test review %s (%s findings), fix review %s (%s findings), tests %s%s\n' \
   "$PLAN_ID" "$TEST_REVIEW_VERDICT" "$TEST_REVIEW_FINDINGS" "$REVIEW_VERDICT" "$REVIEW_FINDINGS" \

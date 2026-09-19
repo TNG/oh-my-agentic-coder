@@ -148,15 +148,19 @@ probe_write_access() {
 # log unredacted: capture, strip the PAT, print the remainder on failure only.
 archive_git() {
   local dir=$1; shift
-  local err status=0 redact=("s/${SECURITY_SCAN_PAT}/REDACTED-TOKEN/g")
+  local err status=0 s
+  local -a redact sedargs
+  redact=("s/${SECURITY_SCAN_PAT}/REDACTED-TOKEN/g")
   # A failed push prints the credential URL; both tokens can appear now (the
-  # archive PAT and the repo's github.token), so redact either.
+  # archive PAT and the repo's github.token), so redact either. One -e per
+  # pattern: a bare `sed "${redact[@]}"` treats the second pattern as a file.
   if [ -n "${REPO_TOKEN:-}" ] && [ "$REPO_TOKEN" != "$SECURITY_SCAN_PAT" ]; then
     redact+=("s/${REPO_TOKEN}/REDACTED-TOKEN/g")
   fi
+  for s in "${redact[@]}"; do sedargs+=(-e "$s"); done
   err=$(git -C "$dir" "$@" 2>&1) || status=$?
   if [ "$status" -ne 0 ]; then
-    printf '%s\n' "$err" | sed -e "${redact[@]}" >&2
+    printf '%s\n' "$err" | sed "${sedargs[@]}" >&2
     return "$status"
   fi
   [ -z "$err" ] || printf '%s\n' "$err" >&2
@@ -232,12 +236,29 @@ push_archive() {
     return 0
   fi
   git -C "$dir" commit -s --no-verify --quiet -m "$message"
-  archive_git "$dir" push --quiet --no-verify \
-    "https://x-access-token:${SECURITY_SCAN_PAT}@github.com/${ARCHIVE_REPO}.git" HEAD || {
-    echo "::error title=Archive push failed::Pushing the archive repo failed after the preflight confirmed write access — check for a protected default branch or a token revoked mid-run."
-    return 1
-  }
-  echo "archive: pushed"
+  # Parallel wave legs share the archive clone, so the loser of a concurrent
+  # push gets a non-fast-forward rejection. The paths are disjoint per stage,
+  # so rebasing onto the new tip is conflict-free — retry before failing.
+  local attempt
+  for attempt in 1 2 3; do
+    if archive_git "$dir" push --quiet --no-verify \
+         "https://x-access-token:${SECURITY_SCAN_PAT}@github.com/${ARCHIVE_REPO}.git" HEAD; then
+      echo "archive: pushed"
+      return 0
+    fi
+    if [ "$attempt" -lt 3 ]; then
+      echo "archive: push rejected (likely a parallel leg) — rebasing onto the new tip and retrying ($attempt/3)" >&2
+      # Fetch by explicit credentialed URL: origin is the clean URL, and the
+      # archive is private, so an unauthenticated fetch would fail and the
+      # rebase would never happen.
+      archive_git "$dir" fetch --quiet \
+        "https://x-access-token:${SECURITY_SCAN_PAT}@github.com/${ARCHIVE_REPO}.git" HEAD >&2 || true
+      archive_git "$dir" rebase --quiet FETCH_HEAD >&2 \
+        || archive_git "$dir" rebase --abort >&2 || true
+    fi
+  done
+  echo "::error title=Archive push failed::Pushing the archive repo failed after retries — check for a protected default branch or a token revoked mid-run."
+  return 1
 }
 
 # Scan dirs are named "<label>-<reason>-<status>" and the label is always
