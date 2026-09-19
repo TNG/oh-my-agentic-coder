@@ -21,7 +21,10 @@ markup characters and control sequences are stripped so the agent cannot forge
 the dialog's own labels or add visual structure that could mislead the decision.
 
 UDP and ICMP egress is blocked by a seccomp filter on Linux (in kernel-enforced
-mode); on macOS and in env-only mode, those protocols are not intercepted.
+mode). The filter denies both the `socket(2)` calls that would create non-TCP
+sockets (via a protocol-aware allowlist covering domain, type and protocol) and
+the `io_uring` syscalls that could create a socket without going through
+`socket(2)`; on macOS and in env-only mode, those protocols are not intercepted.
 
 One port is pre-approved in the default profile: port 22 (SSH), to allow
 standard git-over-SSH operations. Traffic to port 22 on any host bypasses the
