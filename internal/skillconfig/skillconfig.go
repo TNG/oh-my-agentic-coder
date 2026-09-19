@@ -41,6 +41,11 @@ type Store struct {
 	// (docs/contributing/serve-spec.md). Only meaningful in the global
 	// store; never consulted at runtime (runtime uses Skills only).
 	Defaults map[string]map[string]string `yaml:"defaults,omitempty"`
+	// Overrides records (skill, field) pairs where a workdir-layer value
+	// replaced a differing global-layer value during MergeConfig. Not
+	// serialized — runtime-only provenance so resolveConfig can flag
+	// agent-writable changes to an approved value for re-approval.
+	Overrides map[string]map[string]bool `yaml:"-"`
 }
 
 // Path returns the skill-config file path for a given workdir.

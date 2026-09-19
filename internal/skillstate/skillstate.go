@@ -493,6 +493,22 @@ func (r *Resolver) resolveConfig(armed *Armed, cfg *skillconfig.Store) []Problem
 					})
 					continue
 				}
+				// A workdir-layer override of a differing global value
+				// is a post-approval change to an agent-writable file.
+				// Refuse it so the sidecar does not respawn with the
+				// tampered value; re-registration is required.
+				if cfg.Overrides != nil {
+					if fields, ok := cfg.Overrides[armed.Entry.Name]; ok && fields[spec.Name] {
+						problems = append(problems, Problem{
+							Kind:   InvalidSecret,
+							Skill:  armed.Entry.Name,
+							Field:  spec.Name,
+							Detail: "workdir config value differs from the approved global value",
+							Fix:    "omac register " + armed.Entry.Name + " --reprompt-fields",
+						})
+						continue
+					}
+				}
 				armed.Config[spec.Name] = v
 				armed.ConfigSources[spec.Name] = SourceStored
 				continue
@@ -687,6 +703,25 @@ func MergeConfig(global, workdir *skillconfig.Store) *skillconfig.Store {
 		for skill, fields := range layer.Skills {
 			for field, val := range fields {
 				out.Set(skill, field, val)
+			}
+		}
+	}
+	// Record workdir values that overrode a DIFFERING global value. The
+	// workdir skill-config.yaml is agent-writable and outside the hashed
+	// bundle, so such an override is a post-approval change resolveConfig
+	// must flag rather than silently honour.
+	if global != nil && workdir != nil {
+		for skill, wdFields := range workdir.Skills {
+			for field, wdVal := range wdFields {
+				if gVal, ok := global.Get(skill, field); ok && gVal != wdVal {
+					if out.Overrides == nil {
+						out.Overrides = map[string]map[string]bool{}
+					}
+					if out.Overrides[skill] == nil {
+						out.Overrides[skill] = map[string]bool{}
+					}
+					out.Overrides[skill][field] = true
+				}
 			}
 		}
 	}
