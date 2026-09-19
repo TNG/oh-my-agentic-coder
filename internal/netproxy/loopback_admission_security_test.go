@@ -98,3 +98,38 @@ func TestSecurityFilterDeniesHostsResolvingToLoopback(t *testing.T) {
 		}
 	}
 }
+
+// TestSecurityConnectLoopbackGuardDecodesInetAton asserts that the loopback
+// string guard recognises non-canonical IPv4 spellings of 127.0.0.1 that
+// netip.ParseAddr rejects but libc's inet_aton decodes to a real address.
+//
+// handleConnect and handleForward call isLoopbackHost on the raw host string
+// before any DNS. The guard relies on netip.ParseAddr for IP-literal detection,
+// so a spelling the parser rejects falls through to the "not loopback" return.
+// The CONNECT then proceeds to admission, where the string is treated as a DNS
+// name and may resolve to 127.0.0.1 via a resolver that honours inet_aton.
+func TestSecurityConnectLoopbackGuardDecodesInetAton(t *testing.T) {
+	// Control: canonical loopback spellings are already recognised. If these
+	// fail, the guard itself is gone and the cases below would pass vacuously.
+	for _, host := range []string{"127.0.0.1", "::1"} {
+		if !isLoopbackHost(host) {
+			t.Fatalf("isLoopbackHost(%q) = false, want true: the guard no longer recognises canonical loopback", host)
+		}
+	}
+	// Control: a canonical public address is not flagged as loopback.
+	if isLoopbackHost("93.184.216.34") {
+		t.Fatal("isLoopbackHost(93.184.216.34) = true, want false: a public address must not be flagged as loopback")
+	}
+
+	for _, host := range []string{
+		"0x7f.0.0.1",
+		"0177.0.0.1",
+		"2130706433",
+		"127.1",
+		"0x7f000001",
+	} {
+		if !isLoopbackHost(host) {
+			t.Errorf("isLoopbackHost(%q) = false, want true: this spelling decodes to 127.0.0.1 under inet_aton and must be treated as loopback before the CONNECT proceeds", host)
+		}
+	}
+}
