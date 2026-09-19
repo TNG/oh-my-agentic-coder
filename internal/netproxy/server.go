@@ -237,6 +237,17 @@ func NewServer(filter *Filter, dialer Dialer, logf func(string, ...any)) (*Serve
 	if logf == nil {
 		logf = func(string, ...any) {}
 	}
+	// Wire pre-CONNECT re-validation for the chained (upstream-proxy)
+	// path so the dialer can re-resolve and re-validate the hostname
+	// immediately before issuing CONNECT, closing the TOCTOU gap between
+	// admission and the upstream's own DNS. Only active when admission
+	// itself resolves (ResolveOnCheckHost=true); a nil resolver or
+	// revalidate=false makes the chained path a no-op pass-through.
+	if upd, ok := dialer.(interface {
+		SetResolver(func(context.Context, string) ([]netip.Addr, error), bool)
+	}); ok {
+		upd.SetResolver(filter.Resolver(), filter.ResolveOnCheckHost())
+	}
 	return &Server{
 		filter: filter,
 		dialer: dialer,
@@ -417,6 +428,13 @@ func (s *Server) handleConnect(conn net.Conn, req *http.Request) {
 		if hint := registryUpstreamHint(host); hint != "" {
 			s.logf("omac sandbox: %s", flattenForLog(hint))
 		}
+		var fae *ForbiddenAddressError
+		if errors.As(err, &fae) {
+			s.logf("omac sandbox: %v", err)
+			v := Verdict{Decision: Deny, Reason: fae.Reason}
+			writeRawResponse(conn, http.StatusForbidden, denyHeaders(v), denyBody(host, v))
+			return
+		}
 		var ue *UpstreamError
 		if errors.As(err, &ue) {
 			s.logf("omac sandbox: upstream error: %v", err)
@@ -489,6 +507,13 @@ func (s *Server) handleForward(conn net.Conn, br *bufio.Reader, req *http.Reques
 	if err != nil {
 		if hint := registryUpstreamHint(host); hint != "" {
 			s.logf("omac sandbox: %s", flattenForLog(hint))
+		}
+		var fae *ForbiddenAddressError
+		if errors.As(err, &fae) {
+			s.logf("omac sandbox: %v", err)
+			v := Verdict{Decision: Deny, Reason: fae.Reason}
+			writeRawResponse(conn, http.StatusForbidden, denyHeaders(v), denyBody(host, v))
+			return
 		}
 		var ue *UpstreamError
 		if errors.As(err, &ue) {

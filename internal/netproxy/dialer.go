@@ -17,9 +17,13 @@ import (
 // transport: admission control and DNS resolution are performed once by
 // the server's Filter.Check, whose pinned, approved addresses are passed
 // in as addrs. The direct implementation dials those pinned IPs
-// (anti-DNS-rebinding); the upstream-proxy implementation ignores them
-// and passes the hostname to the corporate proxy for its own DNS, except
-// on a NO_PROXY match where it dials the pinned IPs directly.
+// (anti-DNS-rebinding); the upstream-proxy implementation passes the
+// hostname to the corporate proxy for its own DNS, except on a NO_PROXY
+// match where it dials the pinned IPs directly. When a resolver is wired
+// (SetResolver), the upstream-proxy dialer also re-resolves and
+// re-validates the hostname against the hard-deny ranges immediately
+// before issuing CONNECT, closing the TOCTOU gap between admission and
+// the upstream's own DNS.
 type Dialer interface {
 	DialTunnel(ctx context.Context, host string, port int, addrs []netip.Addr) (net.Conn, error)
 }
@@ -83,15 +87,32 @@ func (e *UpstreamError) Error() string {
 	return fmt.Sprintf("upstream proxy %s rejected tunnel: %s", e.ProxyHost, e.StatusLine)
 }
 
+// ForbiddenAddressError is returned by DialTunnel when a pre-CONNECT
+// re-resolution of the hostname lands in a hard-denied address range. The
+// server maps it to a 403 denial (not a 502 upstream error) so the agent
+// sees the same "hard-deny" body it would for any other forbidden
+// destination.
+type ForbiddenAddressError struct {
+	Host   string
+	Addr   netip.Addr
+	Reason string // "hard-deny ..." reason from hardDeniedAddr
+}
+
+func (e *ForbiddenAddressError) Error() string {
+	return fmt.Sprintf("pre-CONNECT re-validation denied %s: resolves to %s (%s)", e.Host, e.Addr, e.Reason)
+}
+
 // upstreamProxyDialer tunnels connections through an upstream corporate
 // proxy via HTTP CONNECT. It is used when the sandbox itself sits behind
 // a corporate egress proxy and cannot dial the destination directly.
 type upstreamProxyDialer struct {
-	proxyURL  *url.URL
-	proxyAuth string   // "Basic <base64>" or ""
-	noProxy   []string // host suffixes that bypass the upstream proxy
-	direct    Dialer   // fallback for NO_PROXY matches (wraps the filter)
-	logf      func(string, ...any)
+	proxyURL   *url.URL
+	proxyAuth  string   // "Basic <base64>" or ""
+	noProxy    []string // host suffixes that bypass the upstream proxy
+	direct     Dialer   // fallback for NO_PROXY matches (wraps the filter)
+	logf       func(string, ...any)
+	resolve    func(context.Context, string) ([]netip.Addr, error) // nil = no pre-CONNECT re-validation
+	revalidate bool                                                // gate re-validation on ResolveOnCheckHost
 }
 
 // NewUpstreamProxyDialer creates a Dialer that tunnels through the
@@ -127,6 +148,20 @@ func newUpstreamProxyDialerInternal(proxyURL *url.URL, noProxy []string, logf fu
 		direct:    direct,
 		logf:      logf,
 	}
+}
+
+// SetResolver wires the DNS resolver and re-validation flag for the
+// chained (upstream-proxy) path. When revalidate is true and resolve is
+// non-nil, DialTunnel re-resolves the hostname immediately before issuing
+// CONNECT and aborts if any resolved address is in a hard-denied range,
+// closing the TOCTOU gap between admission and the upstream's own DNS.
+// When resolve is nil or revalidate is false, the chained path forwards
+// the hostname as-is (the upstream proxy does its own DNS). On resolver
+// failure the re-validation is skipped: a corporate-internal hostname
+// that only resolves behind the proxy must still be admitted.
+func (d *upstreamProxyDialer) SetResolver(resolve func(context.Context, string) ([]netip.Addr, error), revalidate bool) {
+	d.resolve = resolve
+	d.revalidate = revalidate
 }
 
 // hostMatchesNoProxy reports whether host matches any entry in noProxy
@@ -165,6 +200,28 @@ func (d *upstreamProxyDialer) DialTunnel(ctx context.Context, host string, port 
 	if hostMatchesNoProxy(host, d.noProxy) {
 		d.logf("omac netproxy: NO_PROXY match for %s — dialing direct", host)
 		return d.direct.DialTunnel(ctx, host, port, addrs)
+	}
+
+	// Pre-CONNECT re-validation: close the TOCTOU gap between the
+	// admission-time CheckHost (which resolved the hostname) and the
+	// upstream proxy's own DNS lookup. If DNS has flipped the answer into
+	// a hard-denied range since admission, abort before sending CONNECT.
+	// Skipped when no resolver is wired (diagnose --probe) or admission
+	// did not resolve (ResolveOnCheckHost=false). A resolver failure is
+	// not fatal: a corporate-internal hostname may only resolve behind
+	// the upstream proxy, so we fall through and let the proxy resolve it.
+	if d.revalidate && d.resolve != nil {
+		if ip, err := netip.ParseAddr(host); err == nil {
+			if reason, denied := hardDeniedAddr(ip); denied {
+				return nil, &ForbiddenAddressError{Host: host, Addr: ip, Reason: reason}
+			}
+		} else if addrs, rerr := d.resolve(ctx, host); rerr == nil {
+			for _, a := range addrs {
+				if reason, denied := hardDeniedAddr(a); denied {
+					return nil, &ForbiddenAddressError{Host: host, Addr: a, Reason: reason}
+				}
+			}
+		}
 	}
 
 	target := net.JoinHostPort(host, fmt.Sprintf("%d", port))

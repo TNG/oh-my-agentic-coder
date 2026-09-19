@@ -47,6 +47,23 @@ type Verdict struct {
 	IntentReason string
 }
 
+// Resolver returns the filter's DNS resolver function. The upstream-proxy
+// dialer uses it to re-resolve and re-validate the hostname immediately
+// before issuing CONNECT, closing the TOCTOU gap between admission and the
+// upstream's own DNS lookup.
+func (f *Filter) Resolver() func(context.Context, string) ([]netip.Addr, error) {
+	return f.cfg.Resolve
+}
+
+// ResolveOnCheckHost reports whether the chained-path admission check
+// resolves hostnames. The upstream-proxy dialer re-resolves before CONNECT
+// only when this is true, so the dialer and admission stay consistent:
+// when admission skips DNS (e.g. omac diagnose --probe), the dialer does
+// too.
+func (f *Filter) ResolveOnCheckHost() bool {
+	return f.cfg.ResolveOnCheckHost
+}
+
 // hardDenyHosts can never be allowed, even interactively (nono parity).
 // Keep in sync with internal/cli/provenance.go:provenanceHardDenyHosts.
 var hardDenyHosts = map[string]bool{

@@ -40,8 +40,11 @@ private (RFC 1918), carrier-grade NAT (100.64.0.0/10), IPv6 unique-local
 address — if a later DNS answer resolves the granted name into any of these
 ranges the connection is refused. On the direct path the proxy pins the
 admission-time resolved IPs and dials those; on the chained (upstream-proxy)
-path the proxy resolves and validates the hostname at admission, before
-issuing CONNECT, aborting if the answer lands in a forbidden range.
+path the proxy re-resolves and re-validates the hostname immediately before
+issuing CONNECT, aborting if the answer lands in a forbidden range. This closes
+the TOCTOU gap between admission and the upstream proxy's own DNS lookup: a
+name whose DNS record flips from a public to a private address between the two
+checks is refused before the upstream is ever contacted.
 
 `host.docker.internal` (the Docker bridge gateway, typically 172.17.0.1) is
 a private RFC 1918 address and is blocked under this rule. It cannot be
