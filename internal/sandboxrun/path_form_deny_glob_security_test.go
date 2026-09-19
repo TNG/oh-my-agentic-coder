@@ -26,27 +26,35 @@ func TestSecurityPathFormDenyGlobRejected(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// An entry that is neither a bare basename glob nor a plain path.
+	// An entry that is neither a bare basename glob nor a plain path:
+	// it carries both a separator and a metacharacter.
 	entry := "configs/*.key"
 
-	// One acceptable outcome: validation rejects the entry outright.
 	prof := &sandboxprofile.Profile{
 		Filesystem: sandboxprofile.Filesystem{Deny: []string{entry}},
+		Workdir:    sandboxprofile.Workdir{Access: sandboxprofile.AccessReadWrite},
+		Network:    sandboxprofile.Network{Mode: sandboxprofile.ModeBlocked},
 	}
-	validationErr := prof.Validate()
 
-	// The other acceptable outcome: the entry is resolved as a glob and
-	// the intended file appears in the protected set.
-	resolved := resolveDenyPaths([]string{entry}, nil, nil, []string{root}, nil)
-	covered := false
-	for _, p := range resolved {
+	// One acceptable Outcome: validation rejects the misconfigured entry
+	// outright, surfacing the misconfiguration at profile load time.
+	if err := prof.Validate(); err != nil {
+		return
+	}
+
+	// The other acceptable Outcome: the entry is resolved as a glob
+	// against the granted roots and the intended file is actually masked.
+	// ResolveGrants is the real launch-time entry point, so the protected
+	// set it produces is what the kernel backend enforces.
+	g, err := ResolveGrants(prof, root, nil)
+	if err != nil {
+		t.Fatalf("Validate accepted %q but ResolveGrants failed: %v", entry, err)
+	}
+	for _, p := range g.ProtectedPaths {
 		if p == target {
-			covered = true
+			return
 		}
 	}
-
-	if validationErr == nil && !covered {
-		t.Errorf("deny entry %q is neither rejected at validation nor resolved to protect %s: "+
-			"it is a silent no-op", entry, target)
-	}
+	t.Errorf("deny entry %q is neither rejected at validation nor resolved to protect %s: "+
+		"it is a silent no-op", entry, target)
 }

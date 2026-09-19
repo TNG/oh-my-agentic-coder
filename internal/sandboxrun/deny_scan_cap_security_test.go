@@ -19,24 +19,30 @@ import (
 func TestSecurityDenyScanCapFailsClosed(t *testing.T) {
 	workdir := t.TempDir()
 
-	// Build a granted workdir large enough that the launch-time protection
-	// scan's enumeration bound is reached. The tree holds a real protected
-	// basename file so the scan has a concrete target it is responsible for.
-	if err := os.Mkdir(filepath.Join(workdir, "configs"), 0o755); err != nil {
+	// A protected baseline basename file placed at a lexically late path.
+	// The protection scan walks granted roots in lexical order and stops
+	// after maxDenyScanEntries, so a target sorted after the padding tree
+	// is never visited and would be left unmasked by an implementation
+	// that fails open. Placing it late makes the incompleteness concrete:
+	// under the broken behavior the file is genuinely absent from the
+	// protected set, not merely unconfirmed.
+	protectedDir := filepath.Join(workdir, "zzz-protected")
+	if err := os.Mkdir(protectedDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(workdir, "configs", ".env"), []byte("secret"), 0o600); err != nil {
+	protectedFile := filepath.Join(protectedDir, ".env")
+	if err := os.WriteFile(protectedFile, []byte("secret"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	populateLargeTree(t, workdir)
 
 	prof := &sandboxprofile.Profile{
-		Workdir:  sandboxprofile.Workdir{Access: sandboxprofile.AccessReadWrite},
-		Network:  sandboxprofile.Network{Mode: sandboxprofile.ModeBlocked},
+		Workdir: sandboxprofile.Workdir{Access: sandboxprofile.AccessReadWrite},
+		Network: sandboxprofile.Network{Mode: sandboxprofile.ModeBlocked},
 	}
 
-	// Control: a small workdir resolves without error, proving any refusal
-	// below is caused by the unbounded tree, not by the test setup.
+	// Control: a small workdir resolves without error, proving any
+	// refusal below is caused by the unbounded tree, not by the setup.
 	controlProf := &sandboxprofile.Profile{
 		Workdir: sandboxprofile.Workdir{Access: sandboxprofile.AccessReadWrite},
 		Network: sandboxprofile.Network{Mode: sandboxprofile.ModeBlocked},
@@ -45,24 +51,29 @@ func TestSecurityDenyScanCapFailsClosed(t *testing.T) {
 		t.Fatalf("control: small workdir should resolve, got %v", err)
 	}
 
+	// Fixed state: an incomplete protection scan refuses to launch
+	// rather than proceed with a partial protected set. ResolveGrants is
+	// the real launch-time entry point, so the refusal must surface here.
 	g, err := ResolveGrants(prof, workdir, nil)
 	if err == nil {
-		// The scan could not complete, yet launch proceeded. Confirm the
-		// concrete protected target was left out of the protected set, then
-		// fail: an incomplete scan must refuse to start.
-		want := filepath.Join(workdir, "configs", ".env")
+		// Diagnose: confirm the scan was actually incomplete (the late
+		// protected target is absent from the protected set), so the
+		// failure message reports the concrete gap rather than a bare
+		// "expected refusal".
 		for _, p := range g.ProtectedPaths {
-			if p == want {
-				t.Fatalf("launch proceeded after an incomplete protection scan; expected refusal")
+			if p == protectedFile {
+				t.Fatalf("protection scan completed for %s but launch was not refused; an incomplete scan must fail closed", protectedFile)
 			}
 		}
-		t.Errorf("launch proceeded after an incomplete protection scan (protected target %s unmasked); expected ResolveGrants to refuse", want)
+		t.Fatalf("launch proceeded after an incomplete protection scan (%s unmasked); expected refusal", protectedFile)
 	}
 }
 
 // populateLargeTree fills root with more entries than the protection scan
 // can enumerate, so the scan is guaranteed to be incomplete. It is laid out
-// as many small directories to keep directory reads cheap.
+// as many small directories whose names sort before "zzz-*", keeping the
+// protected target past the enumeration bound. Directory reads are kept
+// cheap by spreading entries across many dirs.
 func populateLargeTree(t *testing.T, root string) {
 	t.Helper()
 	const dirs = 400
