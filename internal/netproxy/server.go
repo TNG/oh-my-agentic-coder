@@ -382,13 +382,17 @@ func (s *Server) authorized(req *http.Request) bool {
 
 // admit runs the network filter for host:port, resolving locally only
 // when the connection will be dialed directly. Hosts routed through an
-// upstream proxy are admitted on the hostname alone (the proxy does its
-// own DNS), so an internal-only hostname is not rejected by a local DNS
-// failure. Returns the verdict and the pinned addrs to dial (nil on the
-// chained path, where the dialer ignores them).
+// upstream proxy are admitted on the hostname (the proxy does its own DNS
+// for any name it receives), but when ResolveOnCheckHost is set the
+// hostname is also resolved locally so the resolved IPs can be pinned and
+// handed to the dialer: the dialer CONNECTs to the literal IP, so the
+// address the upstream proxy connects to is the address that was checked.
+// Returns the verdict and the pinned addrs to dial (nil when no addresses
+// were resolved, e.g. an internal-only host admitted by an allow rule
+// without ResolveOnCheckHost).
 func (s *Server) admit(ctx context.Context, host string, port int) (Verdict, []netip.Addr) {
 	if planner, ok := s.dialer.(TunnelPlanner); ok && planner.ChainsHost(host) {
-		return s.filter.CheckHost(ctx, host, port), nil
+		return s.filter.checkHostPinned(ctx, host, port)
 	}
 	return s.filter.Check(ctx, host, port)
 }
