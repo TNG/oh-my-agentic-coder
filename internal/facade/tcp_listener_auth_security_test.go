@@ -166,7 +166,7 @@ func TestSecurityTCPAuthRejectsNonLoopbackSource(t *testing.T) {
 // is the accepting listener that identifies the transport.
 func TestSecurityUnixSocketExemptByTransportFlag(t *testing.T) {
 	sectest.RequireLoopbackListener(t)
-	requireUnixSocket(t)
+	requireUnixSocketTransport(t)
 
 	s := startSidecar(t, "HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\nbody")
 	dir, err := os.MkdirTemp(".", "omac-sec-")
@@ -245,4 +245,39 @@ func nonLoopbackSourceIP(t *testing.T) string {
 	}
 	t.Fatalf("no non-loopback interface address available: this test needs one to send a TCP request with a non-loopback source")
 	return ""
+}
+
+// requireUnixSocketTransport skips (or fails in CI) when AF_UNIX listen/dial
+// is not permitted, so a missing capability never reads as the property holding.
+func requireUnixSocketTransport(t *testing.T) {
+	t.Helper()
+	probeDir, err := os.MkdirTemp(".", "omac-sec-probe-")
+	if err != nil {
+		secEnvSkip(t, "mkdir temp: %v", err)
+	}
+	defer os.RemoveAll(probeDir)
+	ps := filepath.Join(probeDir, "p.sock")
+	pl, err := net.Listen("unix", ps)
+	if err != nil {
+		secEnvSkip(t, "unix listen not permitted: %v", err)
+	}
+	c, err := net.Dial("unix", ps)
+	if err != nil {
+		pl.Close()
+		secEnvSkip(t, "unix dial not permitted: %v", err)
+	}
+	c.Close()
+	pl.Close()
+}
+
+// secEnvSkip skips locally but fails in CI, so a missing environment
+// capability surfaces as an infrastructure regression rather than a
+// silently green run with no coverage from the gated tests.
+func secEnvSkip(t *testing.T, format string, args ...any) {
+	t.Helper()
+	msg := fmt.Sprintf(format, args...)
+	if os.Getenv("GITHUB_ACTIONS") == "true" {
+		t.Fatal(msg)
+	}
+	t.Skip(msg)
 }
