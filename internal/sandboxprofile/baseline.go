@@ -92,6 +92,15 @@ func workdirProtectedCommon() []string {
 	return []string{
 		".env",
 		".envrc",
+		".env.local",
+		".env.development",
+		".env.production",
+		".env.staging",
+		".env.test",
+		".env.development.local",
+		".env.production.local",
+		".env.test.local",
+		".env.backup",
 	}
 }
 
