@@ -24,36 +24,43 @@ import (
 // io_uring syscalls are denied at the head of the program so a socket
 // cannot be created via IORING_OP_SOCKET, which never reaches socket(2).
 // All unrelated syscalls pass through.
-func applyDatagramSeccomp() error {
-	// seccomp_data offsets (kernel uapi/linux/seccomp.h):
-	//   0:  nr        (u32) — syscall number
-	//   16: args[0]   (u64) — socket domain
-	//   24: args[1]   (u64) — socket type
-	//   32: args[2]   (u64) — socket protocol
-	//
-	// BPF_LD|BPF_W|BPF_ABS reads a u32 at the given offset. On little-endian
-	// hosts the low 32 bits live at the field offset, which is sufficient
-	// since every value compared here fits in 16 bits.
-	const (
-		// seccomp_data field offsets.
-		offNR   = 0
-		offArg0 = 16 // domain
-		offArg1 = 24 // type
-		offArg2 = 32 // protocol
 
-		// BPF instruction classes.
-		bpfLD  = unix.BPF_LD | unix.BPF_W | unix.BPF_ABS
-		bpfJEQ = unix.BPF_JMP | unix.BPF_JEQ | unix.BPF_K
-		bpfRET = unix.BPF_RET | unix.BPF_K
+// seccomp_data field offsets (kernel uapi/linux/seccomp.h):
+//
+//	0:  nr        (u32) — syscall number
+//	16: args[0]   (u64) — socket domain
+//	24: args[1]   (u64) — socket type
+//	32: args[2]   (u64) — socket protocol
+//
+// BPF_LD|BPF_W|BPF_ABS reads a u32 at the given offset; on little-endian
+// hosts the low 32 bits live at the field offset, which is sufficient
+// since every value compared here fits in 16 bits.
+const (
+	offNR   = 0
+	offArg0 = 16 // domain
+	offArg1 = 24 // type
+	offArg2 = 32 // protocol
 
-		// SOCK_TYPE_MASK strips SOCK_CLOEXEC (0x80000) and SOCK_NONBLOCK
-		// (0x800) from the type argument so comparisons hit the base type.
-		sockTypeMask = 0xf
+	bpfLD  = unix.BPF_LD | unix.BPF_W | unix.BPF_ABS
+	bpfJEQ = unix.BPF_JMP | unix.BPF_JEQ | unix.BPF_K
+	bpfRET = unix.BPF_RET | unix.BPF_K
 
-		retAllow = unix.SECCOMP_RET_ALLOW
-		retEPERM = unix.SECCOMP_RET_ERRNO | uint32(syscall.EPERM)
-	)
+	// sockTypeMask strips SOCK_CLOEXEC (0x80000) and SOCK_NONBLOCK
+	// (0x800) from the type argument so comparisons hit the base type.
+	sockTypeMask = 0xf
 
+	retAllow = unix.SECCOMP_RET_ALLOW
+	retEPERM = unix.SECCOMP_RET_ERRNO | uint32(syscall.EPERM)
+)
+
+// datagramSeccompFilter returns the seccomp-BPF program installed by
+// applyDatagramSeccomp. It is a separate function so the regression suite
+// can load the exact production program into a userspace BPF walker and
+// assert the action it returns for every (domain, type, protocol) the
+// allowlist is supposed to cover, plus the io_uring numbers and unrelated
+// syscalls — without depending on a kernel-enforced sandbox being runnable
+// in CI.
+func datagramSeccompFilter() []unix.SockFilter {
 	// Program layout (jt/jf are skips from the next instruction):
 	//  0: load nr
 	//  1-3: nr == io_uring_setup/enter/register → deny
@@ -119,6 +126,11 @@ func applyDatagramSeccomp() error {
 		// 23: deny
 		{Code: bpfRET, K: retEPERM},
 	}
+	return filter
+}
+
+func applyDatagramSeccomp() error {
+	filter := datagramSeccompFilter()
 
 	prog := &unix.SockFprog{
 		Len:    uint16(len(filter)),

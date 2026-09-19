@@ -3,6 +3,7 @@
 package sandboxrun
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"net"
@@ -351,4 +352,132 @@ func runIoUringProbe() int {
 	_, _, e3 := unix.Syscall6(unix.SYS_IO_URING_REGISTER, ^uintptr(0), 0, 0, 0, 0, 0)
 	check("io_uring_register", syscall.Errno(e3))
 	return failed
+}
+
+// seccompData builds a little-endian seccomp_data buffer carrying the given
+// syscall number and socket(2) arguments. Only the fields the filter reads
+// (nr, args[0..2]) are populated; the rest is zero.
+func seccompData(nr, domain, typ, proto uint32) []byte {
+	b := make([]byte, 64)
+	binary.LittleEndian.PutUint32(b[offNR:], nr)
+	binary.LittleEndian.PutUint32(b[offArg0:], domain)
+	binary.LittleEndian.PutUint32(b[offArg1:], typ)
+	binary.LittleEndian.PutUint32(b[offArg2:], proto)
+	return b
+}
+
+// evalDatagramFilter walks the production seccomp-BPF program with a
+// userspace interpreter over the supplied seccomp_data and returns the
+// action the kernel would apply. It implements exactly the instruction
+// classes the filter uses (LD|W|ABS, JMP|JEQ|K, ALU|AND|K, RET|K) so it is
+// a faithful trace of the kernel's classic-BPF evaluation for this program.
+func evalDatagramFilter(t *testing.T, data []byte) uint32 {
+	t.Helper()
+	filter := datagramSeccompFilter()
+	var a uint32
+	for pc := 0; pc < len(filter); {
+		ins := filter[pc]
+		switch ins.Code {
+		case bpfLD:
+			off := int(ins.K)
+			if off+4 > len(data) {
+				t.Fatalf("BPF load out of bounds: pc=%d off=%d len=%d", pc, off, len(data))
+			}
+			a = binary.LittleEndian.Uint32(data[off : off+4])
+			pc++
+		case bpfJEQ:
+			if a == ins.K {
+				pc += 1 + int(ins.Jt)
+			} else {
+				pc += 1 + int(ins.Jf)
+			}
+		case unix.BPF_ALU | unix.BPF_AND | unix.BPF_K:
+			a &= ins.K
+			pc++
+		case bpfRET:
+			return ins.K
+		default:
+			t.Fatalf("unsupported BPF instruction 0x%x at pc=%d", ins.Code, pc)
+		}
+	}
+	t.Fatalf("BPF program ran off the end without returning")
+	return 0
+}
+
+// TestSecurityDatagramSeccompFilterMatrix asserts the production seccomp-BPF
+// program returns the intended action for the full (domain, type, protocol)
+// matrix the allowlist must cover, the three io_uring syscall numbers, and
+// an unrelated syscall. This is a userspace BPF-interpreter simulation over
+// the exact program applyDatagramSeccomp installs, so it pins every dispatch
+// branch — including the AF_INET6 allow path, AF_UNIX/AF_NETLINK allow and
+// deny paths, the SOCK_CLOEXEC/SOCK_NONBLOCK flag-stripping logic, and the
+// non-socket pass-through — without depending on a kernel-enforced sandbox
+// being runnable in CI. A regression in any branch flips at least one case.
+func TestSecurityDatagramSeccompFilterMatrix(t *testing.T) {
+	type c struct {
+		name                   string
+		nr, domain, typ, proto uint32
+		wantAllow              bool
+	}
+	socket := uint32(unix.SYS_SOCKET)
+	cases := []c{
+		// io_uring family — denied at the head of the program.
+		{"iouring-setup", unix.SYS_IO_URING_SETUP, 0, 0, 0, false},
+		{"iouring-enter", unix.SYS_IO_URING_ENTER, 0, 0, 0, false},
+		{"iouring-register", unix.SYS_IO_URING_REGISTER, 0, 0, 0, false},
+
+		// Unrelated syscall — must pass through to ALLOW.
+		{"read-passthrough", unix.SYS_READ, 0, 0, 0, true},
+
+		// AF_UNIX — unrestricted.
+		{"unix-stream", socket, syscall.AF_UNIX, syscall.SOCK_STREAM, 0, true},
+		{"unix-dgram", socket, syscall.AF_UNIX, syscall.SOCK_DGRAM, 0, true},
+		{"unix-seqpacket", socket, syscall.AF_UNIX, syscall.SOCK_SEQPACKET, 0, true},
+
+		// AF_NETLINK — only SOCK_RAW/NETLINK_ROUTE allowed.
+		{"netlink-raw-route", socket, syscall.AF_NETLINK, syscall.SOCK_RAW, unix.NETLINK_ROUTE, true},
+		{"netlink-raw-nonroute", socket, syscall.AF_NETLINK, syscall.SOCK_RAW, unix.NETLINK_USERSOCK, false},
+		{"netlink-dgram-route", socket, syscall.AF_NETLINK, syscall.SOCK_DGRAM, unix.NETLINK_ROUTE, false},
+		{"netlink-stream-route", socket, syscall.AF_NETLINK, syscall.SOCK_STREAM, unix.NETLINK_ROUTE, false},
+
+		// AF_INET — SOCK_STREAM with protocol 0/IPPROTO_TCP/IPPROTO_MPTCP only.
+		{"inet-stream-default", socket, syscall.AF_INET, syscall.SOCK_STREAM, 0, true},
+		{"inet-stream-tcp", socket, syscall.AF_INET, syscall.SOCK_STREAM, syscall.IPPROTO_TCP, true},
+		{"inet-stream-mptcp", socket, syscall.AF_INET, syscall.SOCK_STREAM, unix.IPPROTO_MPTCP, true},
+		{"inet-stream-sctp", socket, syscall.AF_INET, syscall.SOCK_STREAM, syscall.IPPROTO_SCTP, false},
+		{"inet-dgram-default", socket, syscall.AF_INET, syscall.SOCK_DGRAM, 0, false},
+		{"inet-seqpacket-sctp", socket, syscall.AF_INET, syscall.SOCK_SEQPACKET, syscall.IPPROTO_SCTP, false},
+		{"inet-raw", socket, syscall.AF_INET, syscall.SOCK_RAW, 0, false},
+
+		// AF_INET6 — same allowlist as AF_INET; this branch had no pin before.
+		{"inet6-stream-default", socket, syscall.AF_INET6, syscall.SOCK_STREAM, 0, true},
+		{"inet6-stream-tcp", socket, syscall.AF_INET6, syscall.SOCK_STREAM, syscall.IPPROTO_TCP, true},
+		{"inet6-stream-mptcp", socket, syscall.AF_INET6, syscall.SOCK_STREAM, unix.IPPROTO_MPTCP, true},
+		{"inet6-stream-sctp", socket, syscall.AF_INET6, syscall.SOCK_STREAM, syscall.IPPROTO_SCTP, false},
+		{"inet6-dgram-default", socket, syscall.AF_INET6, syscall.SOCK_DGRAM, 0, false},
+		{"inet6-seqpacket-sctp", socket, syscall.AF_INET6, syscall.SOCK_SEQPACKET, syscall.IPPROTO_SCTP, false},
+		{"inet6-raw", socket, syscall.AF_INET6, syscall.SOCK_RAW, 0, false},
+
+		// SOCK_CLOEXEC / SOCK_NONBLOCK must be stripped before the type compare
+		// on both the inet and netlink paths.
+		{"inet-stream-cloexec", socket, syscall.AF_INET, syscall.SOCK_STREAM | syscall.SOCK_CLOEXEC, syscall.IPPROTO_TCP, true},
+		{"inet-stream-nonblock", socket, syscall.AF_INET, syscall.SOCK_STREAM | syscall.SOCK_NONBLOCK, 0, true},
+		{"inet6-stream-cloexec-nonblock", socket, syscall.AF_INET6, syscall.SOCK_STREAM | syscall.SOCK_CLOEXEC | syscall.SOCK_NONBLOCK, syscall.IPPROTO_TCP, true},
+		{"netlink-raw-route-cloexec", socket, syscall.AF_NETLINK, syscall.SOCK_RAW | syscall.SOCK_CLOEXEC, unix.NETLINK_ROUTE, true},
+
+		// AF_PACKET and an unhandled domain — denied.
+		{"af-packet-raw", socket, syscall.AF_PACKET, syscall.SOCK_RAW, 0, false},
+		{"af-bluetooth", socket, syscall.AF_BLUETOOTH, syscall.SOCK_STREAM, 0, false},
+	}
+	for _, k := range cases {
+		data := seccompData(k.nr, k.domain, k.typ, k.proto)
+		got := evalDatagramFilter(t, data)
+		gotAllow := got == retAllow
+		switch {
+		case gotAllow && !k.wantAllow:
+			t.Errorf("%s: filter allowed (action=0x%x), want EPERM", k.name, got)
+		case !gotAllow && k.wantAllow:
+			t.Errorf("%s: filter returned action=0x%x, want ALLOW", k.name, got)
+		}
+	}
 }
