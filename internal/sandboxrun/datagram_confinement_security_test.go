@@ -28,23 +28,20 @@ import (
 // on that denial holding, because only traffic that has to go through the
 // proxy can be filtered at all.
 //
-// On Linux the denial is implemented with Landlock, whose network rules cover
-// TCP connect and bind and nothing else. Landlock has no concept of a
-// datagram, and bwrap is deliberately run without a network namespace, so no
-// second mechanism picks up what Landlock cannot express. Anything that is not
-// TCP therefore leaves the sandbox unexamined: DNS queries, QUIC — which is
-// how a current browser or HTTP client prefers to speak — and any tunnel a
-// process cares to build out of UDP. ICMP is in the same class: Landlock has
-// no ICMP rule either, so this UDP test also demonstrates the architectural
-// gap for ICMP. A separate ICMP test (via ping) proved unreliable in CI
+// On Linux the denial is layered. Landlock network rules cover TCP connect and
+// bind and nothing else. The datagram gap Landlock cannot express is closed by
+// a seccomp-BPF filter (applyDatagramSeccomp) that denies every socket(2)
+// combination outside a TCP-only allowlist (and the io_uring syscalls that
+// could create a socket without socket(2)), so non-TCP egress such as UDP,
+// QUIC, DNS, ICMP and tunnels built out of datagrams is blocked at socket
+// creation rather than left unexamined. ICMP via raw ping is still flaky in CI
 // because ping's success depends on net.ipv4.ping_group_range, which varies
-// across runner environments independently of sandboxing — the test passed
-// vacuously when the runner denied unprivileged ICMP regardless of bwrap.
+// across runner environments independently of sandboxing; this UDP test is the
+// stable witness that the datagram class is confined.
 //
-// That is an exfiltration path with no prompt, no filtering and no record, for
-// data the agent was legitimately allowed to read. This test compares the two
-// protocols across the same boundary to the same address, so the difference it
-// reports is the protocol and nothing else.
+// This test compares a TCP connection and a UDP datagram across the same
+// boundary to the same address, so the difference it reports is the protocol
+// and nothing else.
 
 // requireWorkingBwrap fails, rather than skips, when the sandbox cannot be
 // launched. The suite's runner reads a skipped test as a passing one, so
