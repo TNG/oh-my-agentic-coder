@@ -37,3 +37,15 @@ func testGitRun(t *testing.T, dir string, args ...string) {
 		t.Fatalf("git %v: %v\n%s", args, err, out)
 	}
 }
+
+// stagedHome points HOME at a fresh temp dir so a profile that grants the
+// whole home is a small scan root. The launch-time walk for protected
+// basenames fails closed past maxDenyScanEntries, and a real CI home can
+// overflow it even with the dependency/cache-dir pruning, so tests that
+// need a "broad home grant" must not depend on the host home's size.
+func stagedHome(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	return home
+}

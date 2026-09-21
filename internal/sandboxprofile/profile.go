@@ -403,6 +403,14 @@ func (p *Profile) Validate() error {
 		if strings.TrimSpace(d) == "" {
 			return fmt.Errorf("sandbox profile: filesystem.deny contains an empty entry")
 		}
+		// A deny entry that combines a path separator with a glob
+		// metacharacter is neither a bare basename glob nor a plain
+		// explicit path: the path-form branch expands it literally, so
+		// the intended files stay unmasked. Reject it so the
+		// misconfiguration surfaces instead of silently protecting nothing.
+		if strings.ContainsRune(d, '/') && strings.ContainsAny(d, "*?[") {
+			return fmt.Errorf("sandbox profile: filesystem.deny %q mixes a path separator with glob metacharacters; use a bare basename glob or an explicit path", d)
+		}
 		// A basename-glob entry must be a valid pattern so a typo like
 		// "[" fails loudly here rather than silently denying nothing.
 		if IsBasenameGlob(d) {

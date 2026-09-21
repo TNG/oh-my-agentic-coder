@@ -24,9 +24,7 @@ Platform-specific behaviour lives in separate files gated by a `//go:build` cons
 
 Runtime skipping is a separate mechanism: some facade and serve tests are compiled everywhere but skip themselves at runtime when they cannot open a loopback TCP port or Unix socket (e.g. on locked-down CI runners), and these do show up as skipped in the test output.
 
-Two Linux sandbox integration tests (`TestIntegrationProtectedMaskedUnderGrant`, `TestIntegrationOverrideDenyGrantsAccess` in `internal/sandboxrun/`) let the sandbox read your whole home folder, then check that sensitive folders (`~/.ssh`, `~/.aws`, `~/.azure`, …) are still hidden inside the sandbox.
-To hide one, the sandbox covers it with an empty folder — which only works if the real path exists as a normal folder. If any of those paths is instead a dangling symlink (common on WSL), bwrap can't cover it and the test fails at launch.
-This can be avoided by moving broken links aside (`mv ~/.azure ~/.old-azure` etc.) or by relying on the CI, which runs the tests for any PR.
+Two Linux sandbox integration tests (`TestIntegrationProtectedMaskedUnderGrant`, `TestIntegrationOverrideDenyGrantsAccess` in `internal/sandboxrun/`) grant a staged temporary home directory, then check that sensitive folders (`~/.ssh`, `~/.aws`, `~/.azure`, …) are still hidden inside the sandbox. Staging the home keeps the broad grant a small scan root and avoids depending on which home paths happen to exist on the machine.
 
 ---
 

@@ -1037,6 +1037,12 @@ func TestResolveGrantsWorkdirEnvProtectedByDefault(t *testing.T) {
 	writeFile(t, env)
 	envrc := filepath.Join(wd, ".envrc")
 	writeFile(t, envrc)
+	envLocal := filepath.Join(wd, ".env.local")
+	writeFile(t, envLocal)
+	envProduction := filepath.Join(wd, ".env.production")
+	writeFile(t, envProduction)
+	envProductionLocal := filepath.Join(wd, ".env.production.local")
+	writeFile(t, envProductionLocal)
 	nested := filepath.Join(wd, "config")
 	if err := os.MkdirAll(nested, 0o755); err != nil {
 		t.Fatal(err)
@@ -1062,6 +1068,15 @@ func TestResolveGrantsWorkdirEnvProtectedByDefault(t *testing.T) {
 		}
 		if !slices.Contains(g.ProtectedPaths, nestedEnv) {
 			t.Errorf("nested .env not protected by default: %v", g.ProtectedPaths)
+		}
+		if !slices.Contains(g.ProtectedPaths, envLocal) {
+			t.Errorf("workdir .env.local not protected by default: %v", g.ProtectedPaths)
+		}
+		if !slices.Contains(g.ProtectedPaths, envProduction) {
+			t.Errorf("workdir .env.production not protected by default: %v", g.ProtectedPaths)
+		}
+		if !slices.Contains(g.ProtectedPaths, envProductionLocal) {
+			t.Errorf("workdir .env.production.local not protected by default: %v", g.ProtectedPaths)
 		}
 		if slices.Contains(g.ProtectedPaths, keep) {
 			t.Error("non-.env file must not be protected")
@@ -1173,5 +1188,106 @@ func TestResolveGrantsUserDenyAndBaselineBothActive(t *testing.T) {
 			t.Errorf("duplicate protected path: %s", prot)
 		}
 		seen[prot] = true
+	}
+}
+
+// TestResolveGrantsBaselineEnvProtectedInExplicitGrant covers the
+// documented promise for granted project dirs: a .env inside an
+// explicitly read-granted tree is masked by the baseline set, not only
+// inside the workdir.
+func TestResolveGrantsBaselineEnvProtectedInExplicitGrant(t *testing.T) {
+	granted := t.TempDir()
+	env := filepath.Join(granted, ".env")
+	writeFile(t, env)
+	nested := filepath.Join(granted, "sub", ".env")
+	if err := os.MkdirAll(filepath.Dir(nested), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, nested)
+	wd := t.TempDir()
+
+	p := &sandboxprofile.Profile{
+		Workdir:    sandboxprofile.Workdir{Access: sandboxprofile.AccessReadWrite},
+		Filesystem: sandboxprofile.Filesystem{Read: []string{granted}},
+	}
+	g, err := ResolveGrants(p, wd, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{env, nested} {
+		if !slices.Contains(g.ProtectedPaths, want) {
+			t.Errorf("baseline .env in explicit grant not protected: %s (%v)", want, g.ProtectedPaths)
+		}
+	}
+}
+
+// TestResolveGrantsDenyScanSkipsDependencyDirs covers layer 2: the walk
+// does not descend into known dependency/cache trees, so a node_modules
+// full of files cannot exhaust the entry cap. The deliberate trade-off is
+// that a .env inside a skipped tree stays unmasked.
+func TestResolveGrantsDenyScanSkipsDependencyDirs(t *testing.T) {
+	wd := t.TempDir()
+	rootEnv := filepath.Join(wd, ".env")
+	writeFile(t, rootEnv)
+	kept := filepath.Join(wd, "sub", ".env")
+	if err := os.MkdirAll(filepath.Dir(kept), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, kept)
+	depEnv := filepath.Join(wd, "node_modules", "pkg", ".env")
+	if err := os.MkdirAll(filepath.Dir(depEnv), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, depEnv)
+
+	p := &sandboxprofile.Profile{
+		Workdir: sandboxprofile.Workdir{Access: sandboxprofile.AccessReadWrite},
+	}
+	g, err := ResolveGrants(p, wd, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{rootEnv, kept} {
+		if !slices.Contains(g.ProtectedPaths, want) {
+			t.Errorf(".env outside a skipped tree not protected: %s (%v)", want, g.ProtectedPaths)
+		}
+	}
+	if slices.Contains(g.ProtectedPaths, depEnv) {
+		t.Errorf("dependency-tree .env must be pruned, not descended: %s", depEnv)
+	}
+}
+
+// TestResolveGrantsDenyScanPrunesProtectedDirs covers layer 1: the walk
+// does not descend into a subtree an ancestor rule already denies. The
+// ancestor itself stays protected; a .env inside it is not enumerated
+// because the ancestor deny already masks it.
+func TestResolveGrantsDenyScanPrunesProtectedDirs(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	sshEnv := filepath.Join(home, ".ssh", ".env")
+	if err := os.MkdirAll(filepath.Dir(sshEnv), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, sshEnv)
+	homeEnv := filepath.Join(home, ".env")
+	writeFile(t, homeEnv)
+	wd := t.TempDir()
+
+	p := &sandboxprofile.Profile{
+		Workdir:    sandboxprofile.Workdir{Access: sandboxprofile.AccessReadWrite},
+		Filesystem: sandboxprofile.Filesystem{Read: []string{home}},
+	}
+	g, err := ResolveGrants(p, wd, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(g.ProtectedPaths, homeEnv) {
+		t.Errorf("home .env not protected: %v", g.ProtectedPaths)
+	}
+	if !slices.Contains(g.ProtectedPaths, filepath.Join(home, ".ssh")) {
+		t.Errorf("~/.ssh must stay protected: %v", g.ProtectedPaths)
+	}
+	if slices.Contains(g.ProtectedPaths, sshEnv) {
+		t.Errorf("protected subtree must be pruned, not descended: %s", sshEnv)
 	}
 }
