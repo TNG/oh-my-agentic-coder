@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -97,16 +98,22 @@ func TestWorktrees(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	existing1 := filepath.Join(home, "proj-a")
-	existing2 := filepath.Join(home, "proj-b")
+	// Legitimate storage records must live outside $HOME: records from
+	// the agent-writable storage tree that name an in-home path are
+	// rejected (the confined process can forge them and DAC offers no
+	// protection inside $HOME). In-home paths are exercised by the
+	// security tests in home_grant_security_test.go.
+	base := t.TempDir()
+	existing1 := filepath.Join(base, "proj-a")
+	existing2 := filepath.Join(base, "proj-b")
 	nested := filepath.Join(existing1, "sub", "module") // inside proj-a
-	prefixSib := filepath.Join(home, "proj-a-suffix")   // shares prefix, NOT nested
+	prefixSib := filepath.Join(base, "proj-a-suffix")   // shares prefix, NOT nested
 	for _, d := range []string{existing1, existing2, nested, prefixSib} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
-	stale := filepath.Join(home, "gone")
+	stale := filepath.Join(base, "gone") // doesn't exist
 
 	writeProject(t, stateDir, "aaa", existing1)
 	writeProject(t, stateDir, "bbb", existing2)
@@ -125,11 +132,13 @@ func TestWorktrees(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(worktrees, []string{existing1, prefixSib, existing2}) {
-		t.Errorf("worktrees = %v (nested must collapse into parent, prefix sibling must stay)", worktrees)
+	want := []string{existing1, prefixSib, existing2}
+	sort.Strings(want)
+	if !slices.Equal(worktrees, want) {
+		t.Errorf("worktrees = %v, want %v (nested must collapse into parent, prefix sibling must stay)", worktrees, want)
 	}
 	if !slices.Equal(skipped, []string{stale}) {
-		t.Errorf("skipped = %v", skipped)
+		t.Errorf("skipped = %v, want [%s]", skipped, stale)
 	}
 }
 
