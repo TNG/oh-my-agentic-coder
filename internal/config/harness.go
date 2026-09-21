@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -218,11 +219,22 @@ type ServerLaunch struct {
 
 	// ListenPort is the TCP port the harness's server daemon binds on
 	// loopback by default (OpenCode's `serve` listens on 4096). `omac serve`
-	// must allowlist this port for binding in the sandbox — otherwise the
-	// daemon's bind() is denied under a restrictive profile and it crashes on
-	// startup (issue #115). Zero means the harness declares no fixed port and
-	// omac injects no listen-port grant.
+	// must allowlist this port in the sandbox for BOTH bind and loopback
+	// connect. Bind, because otherwise the daemon's bind() is denied under a
+	// restrictive profile and it crashes on startup (issue #115). Connect,
+	// because the harness's own in-process clients dial the server back over
+	// loopback: OpenCode hands every plugin an SDK client whose transport is
+	// plain HTTP to 127.0.0.1:<port>, so a missing connect grant turns every
+	// plugin callback into ECONNREFUSED. Zero means the harness declares no
+	// fixed port and omac injects no port grant.
 	ListenPort int
+
+	// PortFlag names the harness server's own CLI flag for overriding
+	// ListenPort ("--port" for `opencode serve --port 4095`). When the launch
+	// argv sets it, that value — not ListenPort — is the port omac must
+	// grant; see ResolveListenPort. Empty means the harness exposes no
+	// override and ListenPort is always authoritative.
+	PortFlag string
 
 	// AuthEnvVar names the environment variable the harness's server reads to
 	// require authentication on its exposed loopback port (OpenCode uses
@@ -247,7 +259,7 @@ func harnessRegistry() []Harness {
 			Name:         "opencode",
 			Aliases:      []string{"oc"},
 			InnerCmd:     []string{"opencode"},
-			ServerLaunch: &ServerLaunch{Subcommand: "serve", ListenPort: 4096, AuthEnvVar: "OPENCODE_SERVER_PASSWORD"},
+			ServerLaunch: &ServerLaunch{Subcommand: "serve", ListenPort: 4096, PortFlag: "--port", AuthEnvVar: "OPENCODE_SERVER_PASSWORD"},
 			BridgeDir:    filepath.Join(".opencode", "plugins"),
 			SkillsBase:   "opencode",
 			// No HomeEnv: OpenCode has no config-home override. OPENCODE_CONFIG_DIR
@@ -869,6 +881,47 @@ func (h Harness) ApplyServerLaunch(inner, trailing []string) []string {
 	out = append(out, inner[0], h.ServerLaunch.Subcommand)
 	out = append(out, inner[1:]...)
 	return out
+}
+
+// ResolveListenPort returns the loopback TCP port this harness's server will
+// actually bind for a launch whose full inner argv is argv. It is the port
+// `omac serve` has to grant — both for bind and for loopback connect.
+//
+// The declared ServerLaunch.ListenPort is only the harness default. A user
+// who runs `omac serve -- --port 4095` moves the server, and granting the
+// default 4096 then guards the wrong port: the daemon's bind is ungranted and
+// every loopback callback into the server is refused. So the harness's own
+// port flag wins when the argv sets it, in either `--port 4095` or
+// `--port=4095` form; the last occurrence wins, matching how CLIs parse
+// repeated flags. Anything unparseable (missing, non-numeric, out of the
+// 1-65535 range) falls back to the declared default.
+//
+// Returns 0 for harnesses that declare no server port, which callers treat as
+// "inject no port grant".
+func (h Harness) ResolveListenPort(argv []string) int {
+	if h.ServerLaunch == nil || h.ServerLaunch.ListenPort <= 0 {
+		return 0
+	}
+	port := h.ServerLaunch.ListenPort
+	flag := h.ServerLaunch.PortFlag
+	if flag == "" {
+		return port
+	}
+	for i, a := range argv {
+		var raw string
+		switch {
+		case a == flag && i+1 < len(argv):
+			raw = argv[i+1]
+		case strings.HasPrefix(a, flag+"="):
+			raw = strings.TrimPrefix(a, flag+"=")
+		default:
+			continue
+		}
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 && n <= 65535 {
+			port = n
+		}
+	}
+	return port
 }
 
 // ResolveInnerCmd computes the inner command argv for a launch, applying the

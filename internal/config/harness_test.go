@@ -136,10 +136,50 @@ func TestServerLaunchListenPort(t *testing.T) {
 	if oc.ServerLaunch.AuthEnvVar != "OPENCODE_SERVER_PASSWORD" {
 		t.Errorf("opencode ServerLaunch.AuthEnvVar = %q, want OPENCODE_SERVER_PASSWORD", oc.ServerLaunch.AuthEnvVar)
 	}
+	// The port flag is what lets omac follow a user's `--port` override
+	// instead of guarding the default (see ResolveListenPort).
+	if oc.ServerLaunch.PortFlag != "--port" {
+		t.Errorf("opencode ServerLaunch.PortFlag = %q, want --port", oc.ServerLaunch.PortFlag)
+	}
 	for _, name := range []string{"claude-code", "codex", "copilot", "pi", "codewhale"} {
 		h, _ := LookupHarness(name)
 		if h.ServerLaunch != nil {
 			t.Errorf("%s unexpectedly declares a ServerLaunch (%+v)", name, h.ServerLaunch)
+		}
+	}
+}
+
+// TestResolveListenPort covers the port omac serve must grant: the harness
+// default, unless the launch argv overrides it via the harness's port flag.
+// Granting the wrong port leaves the server's bind ungranted and every
+// loopback callback into it refused (issues #115 / #313).
+func TestResolveListenPort(t *testing.T) {
+	oc, _ := LookupHarness("opencode")
+	cc, _ := LookupHarness("claude-code")
+	cases := []struct {
+		name string
+		h    Harness
+		argv []string
+		want int
+	}{
+		{"default when no override", oc, []string{"opencode", "serve"}, 4096},
+		{"nil argv falls back to default", oc, nil, 4096},
+		{"separate-value override", oc, []string{"opencode", "serve", "--port", "4095"}, 4095},
+		{"equals-form override", oc, []string{"opencode", "serve", "--port=4095"}, 4095},
+		{"last occurrence wins", oc, []string{"opencode", "serve", "--port", "4095", "--port", "4090"}, 4090},
+		// Malformed values must not silently produce a bogus grant.
+		{"non-numeric falls back", oc, []string{"opencode", "serve", "--port", "abc"}, 4096},
+		{"out of range falls back", oc, []string{"opencode", "serve", "--port", "70000"}, 4096},
+		{"zero falls back", oc, []string{"opencode", "serve", "--port", "0"}, 4096},
+		{"dangling flag falls back", oc, []string{"opencode", "serve", "--port"}, 4096},
+		// A prefix match must not be mistaken for the flag itself.
+		{"similar flag ignored", oc, []string{"opencode", "serve", "--portable", "4095"}, 4096},
+		// No server mode -> nothing to grant.
+		{"non-server harness", cc, []string{"claude", "--port", "4095"}, 0},
+	}
+	for _, c := range cases {
+		if got := c.h.ResolveListenPort(c.argv); got != c.want {
+			t.Errorf("%s: ResolveListenPort(%v) = %d, want %d", c.name, c.argv, got, c.want)
 		}
 	}
 }

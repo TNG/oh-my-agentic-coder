@@ -622,7 +622,7 @@ func runServe(args []string, env *Env) int {
 
 	// Caution when the harness server will expose an unauthenticated loopback
 	// port (fires whether sandboxed or not — the server listens either way).
-	if w := serverExposureWarning(harness, os.Getenv); w != "" {
+	if w := serverExposureWarning(harness, inner, os.Getenv); w != "" {
 		fmt.Fprintln(env.Stderr, w)
 	}
 
@@ -708,9 +708,8 @@ func controlPortOf(ln net.Listener) string {
 //     {{tcp_port}}`; without it the sandboxed inner (and its plugin) can't
 //     reach OMAC_CONTROL_BASE and the loopback connect is denied. Skipped
 //     when controlPort is "".
-//   - the harness server daemon's own listen port, so its bind() is permitted
-//     (issue #115 — otherwise a restrictive profile denies the bind and the
-//     daemon crashes on startup).
+//   - the harness server daemon's own port, opened for bind AND loopback
+//     connect (issues #115 / #313). See injectServerPortGrant.
 //   - the selected harness's existing runtime dirs (config/state/sessions)
 //     read+write; runServe pre-creates the declared first-use dirs.
 //
@@ -724,39 +723,57 @@ func sandboxServeArgv(prof config.SandboxProfile, in sandbox.Inputs, controlPort
 	if controlPort != "" {
 		argv = injectOpenPort(argv, controlPort)
 	}
-	argv = injectServerListenPort(argv, h)
+	argv = injectServerPortGrant(argv, h, in.InnerCmd)
 	argv = injectSandboxDirs(argv, h.ResolvedSandboxDirs())
 	return argv, nil
 }
 
-// injectServerListenPort splices `--listen-port <port>` into a sandbox argv
-// for a harness whose server daemon binds a fixed loopback port (declared on
-// its ServerLaunch descriptor). Without this the daemon's bind() is denied
-// under a restrictive sandbox profile and it crashes on startup (issue #115).
+// injectServerPortGrant splices `--open-port <port>` into a sandbox argv for a
+// harness whose server daemon binds a loopback port. innerArgv is the launch's
+// resolved inner command, so a user-supplied port override (`omac serve --
+// --port 4095`) is granted instead of the harness default.
+//
+// open-port, not listen-port, because the grant has to cover both directions:
+//
+//   - bind, or the daemon crashes on startup under a restrictive profile
+//     (issue #115). `open_port` subsumes `listen_port` on both backends —
+//     sandboxrun/sbpl.go allows network-bind for either, and
+//     sandboxrun/bwrap.go's Stage2Args maps OpenPorts to --bind-tcp too.
+//   - loopback connect, or every in-sandbox client of the server is refused
+//     (issue #313). OpenCode hands each plugin an SDK client that talks plain
+//     HTTP to 127.0.0.1:<port>; with only a bind grant those calls fail with
+//     ECONNREFUSED, which surfaces as "plugin config hook failed" and — for a
+//     plugin that registers a provider — a 500 from GET /config/providers,
+//     i.e. an empty model list in OpenCode Desktop.
+//
 // Harnesses with no server mode, or none declaring a port, are a no-op.
-func injectServerListenPort(argv []string, h config.Harness) []string {
-	if h.ServerLaunch == nil || h.ServerLaunch.ListenPort <= 0 {
+func injectServerPortGrant(argv []string, h config.Harness, innerArgv []string) []string {
+	port := h.ResolveListenPort(innerArgv)
+	if port <= 0 {
 		return argv
 	}
-	return injectSandboxFlag(argv, "--listen-port", strconv.Itoa(h.ServerLaunch.ListenPort))
+	return injectSandboxFlag(argv, "--open-port", strconv.Itoa(port))
 }
 
 // serverExposureWarning returns a one-line caution when a harness's server
 // daemon will bind a loopback port that is NOT protected by its auth env var
 // — that port is reachable by any local process, so an unauthenticated server
 // lets local callers drive the agent (bounded by the sandbox, but still). It
-// returns "" when there is no server port or the auth env var is set. getenv
-// is injected for testability.
-func serverExposureWarning(h config.Harness, getenv func(string) string) string {
+// returns "" when there is no server port or the auth env var is set.
+// innerArgv is the launch's resolved inner command so the warning names the
+// port the server will really bind, not the harness default. getenv is
+// injected for testability.
+func serverExposureWarning(h config.Harness, innerArgv []string, getenv func(string) string) string {
 	sl := h.ServerLaunch
-	if sl == nil || sl.ListenPort <= 0 || sl.AuthEnvVar == "" {
+	port := h.ResolveListenPort(innerArgv)
+	if sl == nil || port <= 0 || sl.AuthEnvVar == "" {
 		return ""
 	}
 	if getenv(sl.AuthEnvVar) != "" {
 		return ""
 	}
 	return fmt.Sprintf("omac serve: %s server will listen on 127.0.0.1:%d, reachable by any local "+
-		"process; set %s to require authentication.", h.Name, sl.ListenPort, sl.AuthEnvVar)
+		"process; set %s to require authentication.", h.Name, port, sl.AuthEnvVar)
 }
 
 // injectOpenPort splices `--open-port <port>` into a sandbox argv so the

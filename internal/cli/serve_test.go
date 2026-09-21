@@ -237,30 +237,41 @@ func TestRootsPolicy(t *testing.T) {
 	}
 }
 
-func TestInjectServerListenPort(t *testing.T) {
+func TestInjectServerPortGrant(t *testing.T) {
 	oc, _ := config.LookupHarness("opencode")
 	cc, _ := config.LookupHarness("claude-code")
 
-	// A server harness gets its listen port allowlisted, spliced before `--`.
+	// A server harness gets its port opened (bind + loopback connect),
+	// spliced before `--`.
 	in := []string{"omac", "sandbox", "run", "--profile", "tng-default", "--open-port", "5000", "--", "opencode", "serve"}
-	got := injectServerListenPort(in, oc)
-	want := []string{"omac", "sandbox", "run", "--profile", "tng-default", "--open-port", "5000", "--listen-port", "4096", "--", "opencode", "serve"}
+	got := injectServerPortGrant(in, oc, []string{"opencode", "serve"})
+	want := []string{"omac", "sandbox", "run", "--profile", "tng-default", "--open-port", "5000", "--open-port", "4096", "--", "opencode", "serve"}
 	if !equalStrings(got, want) {
 		t.Errorf("opencode: got %v, want %v", got, want)
 	}
 
+	// A user-supplied --port moves the server, so that is the port granted.
+	gotOverride := injectServerPortGrant(in, oc, []string{"opencode", "serve", "--port", "4095"})
+	if !contains(strings.Join(gotOverride, " "), "--open-port 4095") {
+		t.Errorf("--port override not granted: %v", gotOverride)
+	}
+	if contains(strings.Join(gotOverride, " "), "--open-port 4096") {
+		t.Errorf("harness default granted despite --port override: %v", gotOverride)
+	}
+
 	// A harness with no server mode is a no-op (nothing to allowlist).
 	in2 := []string{"nono", "run", "--", "claude"}
-	if got2 := injectServerListenPort(in2, cc); !equalStrings(got2, in2) {
+	if got2 := injectServerPortGrant(in2, cc, []string{"claude"}); !equalStrings(got2, in2) {
 		t.Errorf("claude-code should be a no-op: got %v, want %v", got2, in2)
 	}
 }
 
-// TestSandboxServeArgvInjectsListenPort exercises the serve argv assembly
+// TestSandboxServeArgvOpensServerPort exercises the serve argv assembly
 // end-to-end (the pipeline runServe actually calls), not just the
-// injectServerListenPort helper in isolation. It guards against the #115 bind
-// grant being dropped from the pipeline during a refactor.
-func TestSandboxServeArgvInjectsListenPort(t *testing.T) {
+// injectServerPortGrant helper in isolation. It guards against the #115 bind
+// grant and the #313 loopback-connect grant being dropped from the pipeline
+// during a refactor.
+func TestSandboxServeArgvOpensServerPort(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	oc, _ := config.LookupHarness("opencode")
 	prof := config.SandboxProfile{
@@ -275,31 +286,47 @@ func TestSandboxServeArgvInjectsListenPort(t *testing.T) {
 	}
 	joined := strings.Join(argv, " ")
 
-	// The opencode server binds 4096; the pipeline must allowlist it for bind.
-	if !contains(joined, "--listen-port 4096") {
-		t.Errorf("serve argv missing --listen-port 4096: %s", joined)
+	// The opencode server binds 4096 and its plugins dial it back over
+	// loopback; the pipeline must open that port for both.
+	if !contains(joined, "--open-port 4096") {
+		t.Errorf("serve argv missing --open-port 4096: %s", joined)
 	}
 	// The control-plane port is opened for connect too.
 	if !contains(joined, "--open-port 51234") {
 		t.Errorf("serve argv missing --open-port 51234: %s", joined)
 	}
 	// Grants splice before the `--` separator, not after it.
-	if lp, sep := strings.Index(joined, "--listen-port"), strings.Index(joined, " -- "); lp < 0 || sep < 0 || lp > sep {
-		t.Errorf("--listen-port must appear before `--`: %s", joined)
+	if lp, sep := strings.Index(joined, "--open-port"), strings.Index(joined, " -- "); lp < 0 || sep < 0 || lp > sep {
+		t.Errorf("--open-port must appear before `--`: %s", joined)
 	}
 
-	// Empty control port skips only the control-plane grant; the #115 bind
-	// grant still applies.
+	// A user-supplied `omac serve -- --port 4095` must move the grant with
+	// the server, otherwise omac guards a port nothing listens on.
+	override := sandbox.Inputs{Workdir: "/w", InnerCmd: []string{"opencode", "serve", "--port", "4095"}}
+	oargv, err := sandboxServeArgv(prof, override, "", oc)
+	if err != nil {
+		t.Fatalf("sandboxServeArgv (port override): %v", err)
+	}
+	oj := strings.Join(oargv, " ")
+	if !contains(oj, "--open-port 4095") {
+		t.Errorf("serve argv missing --open-port 4095 for `--port 4095`: %s", oj)
+	}
+	if contains(oj, "--open-port 4096") {
+		t.Errorf("serve argv still grants the default 4096 despite `--port 4095`: %s", oj)
+	}
+
+	// Empty control port skips only the control-plane grant; the harness
+	// server port grant still applies.
 	noCP, err := sandboxServeArgv(prof, in, "", oc)
 	if err != nil {
 		t.Fatalf("sandboxServeArgv (no control port): %v", err)
 	}
 	nj := strings.Join(noCP, " ")
-	if contains(nj, "--open-port") {
-		t.Errorf("empty control port should add no --open-port: %s", nj)
+	if contains(nj, "--open-port 51234") {
+		t.Errorf("empty control port should add no control-plane --open-port: %s", nj)
 	}
-	if !contains(nj, "--listen-port 4096") {
-		t.Errorf("listen-port grant must still apply without a control port: %s", nj)
+	if !contains(nj, "--open-port 4096") {
+		t.Errorf("server port grant must still apply without a control port: %s", nj)
 	}
 }
 
@@ -378,9 +405,16 @@ func TestServerExposureWarning(t *testing.T) {
 
 	// opencode server + auth env UNSET -> warn (names the port + the env var).
 	unset := func(string) string { return "" }
-	w := serverExposureWarning(oc, unset)
+	inner := []string{"opencode", "serve"}
+	w := serverExposureWarning(oc, inner, unset)
 	if w == "" || !strings.Contains(w, "4096") || !strings.Contains(w, "OPENCODE_SERVER_PASSWORD") {
 		t.Errorf("expected warning naming :4096 and OPENCODE_SERVER_PASSWORD, got %q", w)
+	}
+
+	// The warning names the port actually bound, not the harness default.
+	ow := serverExposureWarning(oc, []string{"opencode", "serve", "--port", "4095"}, unset)
+	if !strings.Contains(ow, "4095") || strings.Contains(ow, "4096") {
+		t.Errorf("expected warning naming :4095 for `--port 4095`, got %q", ow)
 	}
 
 	// Auth env SET -> no warning (the exposed port is protected).
@@ -390,12 +424,12 @@ func TestServerExposureWarning(t *testing.T) {
 		}
 		return ""
 	}
-	if w := serverExposureWarning(oc, set); w != "" {
+	if w := serverExposureWarning(oc, inner, set); w != "" {
 		t.Errorf("auth set should suppress the warning, got %q", w)
 	}
 
 	// Harness with no server mode -> nothing to warn about.
-	if w := serverExposureWarning(cc, unset); w != "" {
+	if w := serverExposureWarning(cc, []string{"claude"}, unset); w != "" {
 		t.Errorf("non-server harness should not warn, got %q", w)
 	}
 }
