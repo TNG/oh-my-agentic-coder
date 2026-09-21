@@ -247,43 +247,66 @@ func (f *Filter) Check(ctx context.Context, host string, port int) (Verdict, []n
 	return f.log(h, port, Verdict{Decision: Deny, Reason: "default deny"}), nil
 }
 
-// CheckHost runs the admission pipeline WITHOUT local DNS resolution, for
-// hosts that will be tunneled through an upstream proxy (which performs
-// its own DNS). All hostname rules apply — metadata hard-deny, deny_domain,
-// allow_domain, learned rules, and the prompt/default decision. Anti-DNS-
-// rebinding IP pinning does not: on the chained path omac never dials the
-// pinned IPs, so the hostname the child requested is the admission
-// boundary (the upstream proxy resolves it).
+// CheckHost runs the admission pipeline for hosts that will be tunneled
+// through an upstream proxy. All hostname rules apply — metadata hard-deny,
+// deny_domain, allow_domain, learned rules, and the prompt/default decision.
+//
+// When ResolveOnCheckHost is set, the hostname is resolved locally so that
+// wildcard-DNS aliases of hard-denied addresses (e.g. 169.254.169.254.nip.io)
+// are caught before the request reaches the upstream proxy, and the resolved
+// addresses are pinned via checkHostPinned so the dialer CONNECTs to the
+// literal IP. This closes the gap between omac's admission resolve and the
+// upstream proxy's own resolve: the address actually connected is the address
+// that was checked. On resolution failure the request is denied rather than
+// admitted on the hostname alone, since a name that does not resolve locally
+// cannot be address-checked. A corporate-internal hostname that only resolves
+// behind the proxy should be admitted via an explicit allow rule.
 func (f *Filter) CheckHost(ctx context.Context, host string, port int) Verdict {
+	v, _ := f.checkHostPinned(ctx, host, port)
+	return v
+}
+
+// checkHostPinned is the pinned-address form of CheckHost. It mirrors
+// Filter.Check's contract: on Allow the returned addresses are the ones the
+// dialer must connect to; on Deny they are nil. Used by the chained path so
+// the upstream-proxy dialer receives the admission-resolved IPs and can
+// CONNECT to the literal address that was checked.
+func (f *Filter) checkHostPinned(ctx context.Context, host string, port int) (Verdict, []netip.Addr) {
 	h := NormalizeHost(host)
 	if isHardDeniedHost(h) {
-		return f.log(h, port, Verdict{Decision: Deny, Reason: "hard-deny metadata host"})
+		return f.log(h, port, Verdict{Decision: Deny, Reason: "hard-deny metadata host"}), nil
 	}
+	var pinned []netip.Addr
 	if ip, err := netip.ParseAddr(h); err == nil {
 		if reason, denied := hardDeniedAddr(ip); denied {
-			return f.log(h, port, Verdict{Decision: Deny, Reason: reason})
+			return f.log(h, port, Verdict{Decision: Deny, Reason: reason}), nil
 		}
-	}
-	// Best-effort resolve: catch wildcard-DNS aliases (e.g. 169.254.169.254.nip.io)
-	// that the upstream proxy would otherwise dutifully connect. On failure we
-	// fall through — a corporate-internal hostname that only resolves behind the
-	// proxy must still be admitted (TestChainedPathAllowsInternalOnlyHost).
-	if f.cfg.ResolveOnCheckHost {
-		if addrs, err := f.cfg.Resolve(ctx, h); err == nil {
-			for _, a := range addrs {
-				if reason, denied := hardDeniedAddr(a); denied {
-					return f.log(h, port, Verdict{Decision: Deny, Reason: "hard-deny: resolves to " + reason[len("hard-deny "):]})
-				}
+		pinned = []netip.Addr{ip}
+	} else if f.cfg.ResolveOnCheckHost {
+		addrs, err := f.cfg.Resolve(ctx, h)
+		if err != nil || len(addrs) == 0 {
+			return f.log(h, port, Verdict{Decision: Deny, Reason: "dns resolution failed"}), nil
+		}
+		for _, a := range addrs {
+			if reason, denied := hardDeniedAddr(a); denied {
+				return f.log(h, port, Verdict{Decision: Deny, Reason: "hard-deny: resolves to " + reason[len("hard-deny "):]}), nil
 			}
+			pinned = append(pinned, a)
 		}
 	}
 	if v := f.checkRules(h); v != nil {
-		return f.log(h, port, *v)
+		if v.Decision == Deny {
+			return f.log(h, port, *v), nil
+		}
+		return f.log(h, port, *v), pinned
 	}
 	if v, ok := f.defaultDecision(ctx, h, port); ok {
-		return f.log(h, port, v)
+		if v.Decision == Deny {
+			return f.log(h, port, v), nil
+		}
+		return f.log(h, port, v), pinned
 	}
-	return f.log(h, port, Verdict{Decision: Deny, Reason: "default deny"})
+	return f.log(h, port, Verdict{Decision: Deny, Reason: "default deny"}), nil
 }
 
 // checkRules evaluates the stored and static rules. A remembered deny is

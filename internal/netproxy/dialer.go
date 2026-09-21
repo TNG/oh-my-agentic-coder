@@ -15,21 +15,24 @@ import (
 
 // Dialer establishes a tunnel connection to host:port. It is a pure
 // transport: admission control and DNS resolution are performed once by
-// the server's Filter.Check, whose pinned, approved addresses are passed
-// in as addrs. The direct implementation dials those pinned IPs
-// (anti-DNS-rebinding); the upstream-proxy implementation ignores them
-// and passes the hostname to the corporate proxy for its own DNS, except
-// on a NO_PROXY match where it dials the pinned IPs directly.
+// the server's Filter.Check/checkHostPinned, whose pinned, approved
+// addresses are passed in as addrs. The direct implementation dials those
+// pinned IPs (anti-DNS-rebinding); the upstream-proxy implementation
+// CONNECTs to the pinned IP literal when addrs is non-empty so the
+// upstream proxy connects to the exact address that was checked, and only
+// falls back to the hostname when no addresses were pinned. On a NO_PROXY
+// match it dials the pinned IPs directly.
 type Dialer interface {
 	DialTunnel(ctx context.Context, host string, port int, addrs []netip.Addr) (net.Conn, error)
 }
 
 // TunnelPlanner reports whether a host will be tunneled through an
-// upstream proxy (which does its own DNS) rather than dialed directly.
-// When ChainsHost is true the server admits the host WITHOUT local DNS
-// resolution: the upstream proxy resolves it and the hostname is the
-// admission boundary. Only the upstream-proxy dialer implements it;
-// direct dialers do not (they always need pinned IPs to dial).
+// upstream proxy rather than dialed directly. When ChainsHost is true the
+// server admits the host via checkHostPinned: it resolves locally when
+// ResolveOnCheckHost is set (so the resolved IPs can be pinned and
+// CONNECTed to as literals) and otherwise admits on the hostname alone.
+// Only the upstream-proxy dialer implements it; direct dialers do not
+// (they always need pinned IPs to dial).
 type TunnelPlanner interface {
 	ChainsHost(host string) bool
 }
@@ -167,7 +170,18 @@ func (d *upstreamProxyDialer) DialTunnel(ctx context.Context, host string, port 
 		return d.direct.DialTunnel(ctx, host, port, addrs)
 	}
 
-	target := net.JoinHostPort(host, fmt.Sprintf("%d", port))
+	// When admission pinned resolved addresses, CONNECT to the literal IP so
+	// the upstream proxy connects to the exact address that was checked. A
+	// hostname target would let the upstream proxy's own resolve diverge from
+	// the admission-time answer. Without pinned addresses (e.g. an
+	// internal-only host admitted by an allow rule without ResolveOnCheckHost)
+	// the hostname is the only target available, so the upstream proxy resolves
+	// it as before.
+	targetHost := host
+	if len(addrs) > 0 {
+		targetHost = addrs[0].String()
+	}
+	target := net.JoinHostPort(targetHost, fmt.Sprintf("%d", port))
 
 	var nd net.Dialer
 	rawConn, err := nd.DialContext(ctx, "tcp", d.proxyURL.Host)
@@ -197,8 +211,9 @@ func (d *upstreamProxyDialer) DialTunnel(ctx context.Context, host string, port 
 		conn = rawConn
 	}
 
-	// Pass the hostname (not pre-resolved IPs): corporate proxies perform
-	// their own DNS resolution.
+	// CONNECT to the admission-pinned address when available (see targetHost
+	// above); otherwise fall back to the hostname and let the upstream proxy
+	// resolve it.
 	var req strings.Builder
 	req.WriteString("CONNECT " + target + " HTTP/1.1\r\n")
 	req.WriteString("Host: " + target + "\r\n")

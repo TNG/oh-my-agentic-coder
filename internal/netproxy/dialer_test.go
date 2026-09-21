@@ -18,9 +18,11 @@ import (
 
 // pin is the server-resolved, filter-approved address set the Dialer
 // receives. The direct dialer dials these; the upstream-proxy dialer
-// ignores them on the CONNECT path and uses them only on a NO_PROXY
-// bypass. Admission control and DNS resolution are the server's job
-// (Filter.Check) — the Dialer is pure transport.
+// CONNECTs to the pinned IP literal so the upstream proxy connects to the
+// exact address that was checked, and only falls back to the hostname when
+// no addresses were pinned. Admission control and DNS resolution are the
+// server's job (Filter.Check / checkHostPinned) — the Dialer is pure
+// transport.
 func pin(ips ...string) []netip.Addr {
 	addrs := make([]netip.Addr, 0, len(ips))
 	for _, ip := range ips {
@@ -199,7 +201,10 @@ func TestDirectDialerNoAddrs(t *testing.T) {
 func TestUpstreamProxyDialerCONNECT(t *testing.T) {
 	var gotReq string
 	var conns int32
-	ln := startFakeUpstreamProxy(t, "example.com", "", "", &gotReq, &conns)
+	// The pinned address must appear in the CONNECT line: the upstream proxy
+	// connects to the exact address admission checked, not to whatever its own
+	// resolver would return for the hostname.
+	ln := startFakeUpstreamProxy(t, "203.0.113.9", "", "", &gotReq, &conns)
 	defer ln.Close()
 
 	proxyURL := &url.URL{Scheme: "http", Host: ln.Addr().String()}
@@ -208,18 +213,18 @@ func TestUpstreamProxyDialerCONNECT(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	// Pass a pin the dialer must IGNORE: the upstream proxy does its own DNS.
+	// Admission pinned 203.0.113.9; the dialer must CONNECT to that literal IP.
 	conn, err := d.DialTunnel(ctx, "example.com", 443, pin("203.0.113.9"))
 	if err != nil {
 		t.Fatalf("DialTunnel example.com:443: %v", err)
 	}
 	defer conn.Close()
 
-	if !strings.Contains(gotReq, "CONNECT example.com:443 HTTP/1.1") {
-		t.Errorf("CONNECT line missing hostname; got:\n%s", gotReq)
+	if !strings.Contains(gotReq, "CONNECT 203.0.113.9:443 HTTP/1.1") {
+		t.Errorf("CONNECT line should target the pinned IP; got:\n%s", gotReq)
 	}
-	if !strings.Contains(gotReq, "Host: example.com:443") {
-		t.Errorf("Host header missing hostname; got:\n%s", gotReq)
+	if !strings.Contains(gotReq, "Host: 203.0.113.9:443") {
+		t.Errorf("Host header should target the pinned IP; got:\n%s", gotReq)
 	}
 	if strings.Contains(gotReq, "Proxy-Authorization:") {
 		t.Errorf("unexpected Proxy-Authorization header; got:\n%s", gotReq)
@@ -365,7 +370,8 @@ func TestUpstreamProxyDialerNoProxyBypass(t *testing.T) {
 		t.Errorf("upstream connections for bypass = %d, want 0", got)
 	}
 
-	// Non-match → chained through the upstream proxy (pin ignored).
+	// Non-match → chained through the upstream proxy. The pinned IP is used as
+	// the CONNECT target so the upstream connects to the checked address.
 	conn2, err := d.DialTunnel(ctx, "nonproxy.test", 443, pin("203.0.113.9"))
 	if err != nil {
 		t.Fatalf("DialTunnel nonproxy.test via upstream: %v", err)
