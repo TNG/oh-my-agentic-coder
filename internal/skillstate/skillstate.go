@@ -499,6 +499,18 @@ func (r *Resolver) resolveConfig(armed *Armed, cfg *skillconfig.Store) []Problem
 					problems = append(problems, configProblem(skill, spec.Name, err.Error()))
 					continue
 				}
+				// A code-execution env var sourced from the agent-writable
+				// workdir layer is refused for every skill, regardless of
+				// anchor or secrets: the layer is agent-writable, so accepting
+				// the value would let the sandbox steer what an unsandboxed
+				// sidecar runs. This runs before the anchor check on purpose:
+				// even a value that matches the host-approved anchor must come
+				// from the host-only layer, not the agent-writable one.
+				if workdirSourced(cfg, skill, spec.Name) && isCodeExecutionEnvVar(spec.Name) {
+					problems = append(problems, configProblem(skill, spec.Name,
+						"value for a code-execution environment variable comes from the agent-writable workdir config"))
+					continue
+				}
 				if anchored {
 					if av, ok := anchor[spec.Name]; !ok || av != v {
 						problems = append(problems, configProblem(skill, spec.Name,
@@ -567,6 +579,44 @@ func configProblem(skill, field, detail string) Problem {
 // the agent-writable workdir layer.
 func workdirSourced(cfg *skillconfig.Store, skill, field string) bool {
 	return cfg != nil && cfg.FromWorkdir[skill] != nil && cfg.FromWorkdir[skill][field]
+}
+
+// codeExecutionEnvVars names environment variables that select or alter the
+// code a sidecar's interpreter/loader runs (search paths, startup scripts,
+// preloaded libraries, VCS helpers). The workdir config layer is
+// agent-writable, so a value sourced from it for one of these names can be
+// flipped by the sandbox to steer what an unsandboxed sidecar executes. Keep
+// every name here uppercase and matching config.ConfigSpec's env-name shape so
+// the rejection is never bypassed by a spelling the validator would accept.
+var codeExecutionEnvVars = map[string]struct{}{
+	"PYTHONPATH":            {},
+	"PYTHONHOME":            {},
+	"PYTHONSTARTUP":         {},
+	"NODE_OPTIONS":          {},
+	"NODE_PATH":             {},
+	"RUBYOPT":               {},
+	"RUBYLIB":               {},
+	"PERL5OPT":              {},
+	"PERLLIB":               {},
+	"BASH_ENV":              {},
+	"ENV":                   {},
+	"LD_PRELOAD":            {},
+	"LD_LIBRARY_PATH":       {},
+	"DYLD_INSERT_LIBRARIES": {},
+	"DYLD_LIBRARY_PATH":     {},
+	"JAVA_TOOL_OPTIONS":     {},
+	"GIT_SSH_COMMAND":       {},
+	"GIT_CONFIG":            {},
+	"GIT_CONFIG_GLOBAL":     {},
+	"GIT_CONFIG_SYSTEM":     {},
+}
+
+// isCodeExecutionEnvVar reports whether name controls what code a sidecar's
+// interpreter or loader runs, and therefore must never be supplied by the
+// agent-writable workdir layer.
+func isCodeExecutionEnvVar(name string) bool {
+	_, ok := codeExecutionEnvVars[name]
+	return ok
 }
 
 // dangerousConfigField reports whether a field gives the agent-writable store
