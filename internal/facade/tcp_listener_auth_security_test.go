@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -168,7 +169,12 @@ func TestSecurityUnixSocketExemptByTransportFlag(t *testing.T) {
 	sectest.RequireLoopbackListener(t)
 	requireUnixSocketTransport(t)
 
-	s := startSidecar(t, "HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\nbody")
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(upstream.Close)
+	upstreamPort := upstream.Listener.Addr().(*net.TCPAddr).Port
+
 	dir, err := os.MkdirTemp(".", "omac-sec-")
 	if err != nil {
 		t.Fatalf("mkdir temp: %v", err)
@@ -178,7 +184,7 @@ func TestSecurityUnixSocketExemptByTransportFlag(t *testing.T) {
 
 	f := New(socket, "", []Route{{
 		Mount:        "slack",
-		UpstreamPort: s.port,
+		UpstreamPort: upstreamPort,
 		Skill:        "slack",
 		State:        RouteReady,
 	}}, 0, time.Minute, "", "test")
