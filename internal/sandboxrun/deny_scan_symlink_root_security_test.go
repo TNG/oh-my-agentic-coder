@@ -21,7 +21,9 @@ func setupSymlinkedGrantRoot(t *testing.T) (realDir, link, envReal, envGranted s
 	t.Helper()
 	realDir = t.TempDir()
 	envReal = filepath.Join(realDir, ".env")
-	writeFile(t, envReal)
+	if err := os.WriteFile(envReal, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	workdir := t.TempDir()
 	link = filepath.Join(workdir, "linked")
@@ -102,7 +104,9 @@ func TestSecurityDenyScanEmitsBothSpellingsForSymlinkRoot(t *testing.T) {
 	// scan past the granted root and could blow the entry cap.
 	outTree := t.TempDir()
 	outEnv := filepath.Join(outTree, ".env")
-	writeFile(t, outEnv)
+	if err := os.WriteFile(outEnv, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	interiorLink := filepath.Join(realDir, "out-link")
 	if err := os.Symlink(outTree, interiorLink); err != nil {
 		t.Fatalf("interior symlink: %v", err)
