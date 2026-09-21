@@ -117,11 +117,13 @@ func TestIntegrationReadOnlyGrant(t *testing.T) {
 }
 
 func TestIntegrationProtectedPathDeniedUnderBroadGrant(t *testing.T) {
-	// Grant the whole home dir read; ~/.ssh must still be denied.
-	home, _ := os.UserHomeDir()
+	// Grant the whole home dir read; ~/.ssh must still be denied. Stage a
+	// synthetic home so the broad grant is a small scan root: a real CI home
+	// can overflow the protected-basename scan, which now fails closed.
+	home := stagedHome(t)
 	sshDir := filepath.Join(home, ".ssh")
-	if _, err := os.Stat(sshDir); err != nil {
-		t.Skip("no ~/.ssh on this machine")
+	if err := os.Mkdir(sshDir, 0o700); err != nil {
+		t.Fatal(err)
 	}
 	wd := t.TempDir()
 	p := &sandboxprofile.Profile{
@@ -149,13 +151,10 @@ func TestIntegrationProtectedPathDeniedUnderBroadGrant(t *testing.T) {
 // grants_test.go only checks ProtectedPaths no longer contains the
 // entry).
 func TestIntegrationOverrideDenyGrantsAccess(t *testing.T) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		t.Skip("no home")
-	}
+	home := stagedHome(t)
 	sshDir := filepath.Join(home, ".ssh")
-	if _, err := os.Stat(sshDir); err != nil {
-		t.Skip("no ~/.ssh on this machine")
+	if err := os.Mkdir(sshDir, 0o700); err != nil {
+		t.Fatal(err)
 	}
 	wd := t.TempDir()
 	p := &sandboxprofile.Profile{
@@ -227,10 +226,10 @@ func TestIntegrationKeychainDenied(t *testing.T) {
 	// broad home grant), and (b) the keychain daemons' mach services
 	// are denied. The deterministic, prompt-free check is (a): the
 	// legacy in-process keychain API cannot read what it cannot open.
-	home, _ := os.UserHomeDir()
+	home := stagedHome(t)
 	kcDir := filepath.Join(home, "Library", "Keychains")
-	if _, err := os.Stat(kcDir); err != nil {
-		t.Skip("no ~/Library/Keychains")
+	if err := os.MkdirAll(kcDir, 0o700); err != nil {
+		t.Fatal(err)
 	}
 	wd := t.TempDir()
 	p := &sandboxprofile.Profile{

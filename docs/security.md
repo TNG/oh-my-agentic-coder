@@ -63,6 +63,18 @@ example, `"*.key"` blocks all files ending in `.key` inside any directory the
 agent can access. See [Configuration](./configuration.md) for how to edit the
 sandbox profile.
 
+The `.env` / `.envrc` scan covers your working directory and every directory
+you grant explicitly, but it skips large dependency, build, and cache trees:
+`node_modules`, `.git`, `.hg`, `.svn`, `vendor`, `.venv`, `venv`,
+`__pycache__`, `target`, `dist`, `build`, `out`, the package caches
+`.gradle`, `.m2`, `.cargo`, `.rustup`, `.nvm`, `.npm`, `.yarn`,
+`.pnpm-store`, `.cache`, and `~/Library` on macOS. Those trees are not where
+dotenv secrets live, and walking them would make launch scale with your whole
+home directory. A file inside a skipped tree is not masked; keep dotenv files
+outside such trees, or deny their directory by path. If a scan would still
+have to look at more entries than omac allows, launch stops rather than run
+with a partially protected set.
+
 ### Secrets
 
 Integrations (GitHub, GitLab, Jira, email) need API tokens. If the agent holds
@@ -103,7 +115,7 @@ cannot access.
 | `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.kube`, … | **blocked** | Sensitive credentials |
 | `~/.npmrc` | **blocked**; registry addresses can be shared as a stripped copy | Usually holds an access token. See [Private package registries](./configuration.md#private-package-registries) |
 | `~/.config/omac` (approval store, sandbox profiles, global registry) | **blocked** | The agent must not be able to forge skill approvals; protected in the baseline even under broader grants |
-| `.env` / `.envrc` files (including nested ones inside the project) | **blocked** | Often contain secrets |
+| `.env` / `.envrc` files (including nested ones inside the project; dependency/cache trees are skipped) | **blocked** | Often contain secrets |
 | `~/.cache`, `~/Library/Caches` (host cache roots) | **blocked** | Prevents cross-project cache poisoning; omac provides its own isolated cache |
 | Files matching `filesystem.deny` patterns (e.g. `*.key`) | **blocked** | User-defined extra restrictions |
 | Environment variables in `allow_vars` (`OMAC_*`, `HOME`, `PATH`, `LANG`, …) | passed through | Operational minimum |

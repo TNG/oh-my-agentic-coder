@@ -28,8 +28,9 @@ func WatchNewProtected(p *sandboxprofile.Profile, workdir string, interval time.
 	if err != nil {
 		return err
 	}
+	protected := sandboxprofile.EffectiveProtectedPaths(base, p.Filesystem.OverrideDeny)
 	resolve := func() ([]string, error) {
-		return resolveDenyPaths(p.Filesystem.Deny, base.WorkdirProtected, p.Filesystem.OverrideDeny, roots, nil)
+		return resolveDenyPaths(p.Filesystem.Deny, base.WorkdirProtected, p.Filesystem.OverrideDeny, roots, protected, nil)
 	}
 
 	known := map[string]bool{}

@@ -217,7 +217,7 @@ func ResolveGrants(p *sandboxprofile.Profile, workdir string, notices io.Writer)
 	// basenames are matched together in one pass.
 	denyResolved, err := resolveDenyPaths(
 		p.Filesystem.Deny, base.WorkdirProtected, p.Filesystem.OverrideDeny,
-		dedupe(denyScan), notices,
+		dedupe(denyScan), protected, notices,
 	)
 	if err != nil {
 		return nil, err
@@ -420,6 +420,45 @@ func readGitdirPointer(dotgit string) (string, error) {
 // stops the walk for that root (already-found matches are still masked).
 const maxDenyScanEntries = 200000
 
+// denyScanSkipDirNames are directory basenames the deny walk does not
+// descend into. They are dependency, build and cache trees: large enough
+// to dominate a scan, and not where users keep dotenv secrets. Matching
+// on the basename (not a path) prunes at any depth. A skipped subtree
+// means a matching file inside it is left unmasked, which keeps the
+// workdir-and-grants scan bounded on toolchain and home roots.
+//
+// PONYTAIL: a huge tree whose name is not listed still fails closed at
+// maxDenyScanEntries. Add the name here (or narrow the grant) rather
+// than growing this into a path-aware configuration.
+var denyScanSkipDirNames = map[string]bool{
+	// dependency / VCS trees
+	"node_modules": true,
+	".git":         true,
+	".hg":          true,
+	".svn":         true,
+	"vendor":       true,
+	// language build caches
+	".venv":       true,
+	"venv":        true,
+	"__pycache__": true,
+	"target":      true,
+	".gradle":     true,
+	".m2":         true,
+	".cargo":      true,
+	".rustup":     true,
+	".nvm":        true,
+	".npm":        true,
+	".yarn":       true,
+	".pnpm-store": true,
+	// generic build outputs and caches
+	"dist":   true,
+	"build":  true,
+	"out":    true,
+	".cache": true,
+	// macOS user library: app support, caches, containers
+	"Library": true,
+}
+
 // denyScanRoots returns the roots a basename-glob deny scans: the
 // explicit (non-baseline) grants plus the workdir when granted.
 // Baseline grants are excluded so a deny like ".env" never walks /usr
@@ -441,10 +480,12 @@ func denyScanRoots(p *sandboxprofile.Profile, workdir string) ([]string, error) 
 // basenames in a single filesystem walk. User deny path-form entries expand
 // to explicit protected paths; basename globs and baseline basenames are
 // matched together. override_deny holes (basename or absolute path) are
-// punched through baseline matches. An incomplete protection scan (a root
-// hitting the entry cap) is reported as an error so the caller fails closed
-// instead of proceeding with a partial protected set.
-func resolveDenyPaths(userDeny, baselineBasenames, overrideDeny, scanRoots []string, notices io.Writer) ([]string, error) {
+// punched through baseline matches. protectedDirs are paths already denied
+// by an ancestor rule: the walk prunes them (a match inside is masked by the
+// ancestor anyway). An incomplete protection scan (a root hitting the entry
+// cap) is reported as an error so the caller fails closed instead of
+// proceeding with a partial protected set.
+func resolveDenyPaths(userDeny, baselineBasenames, overrideDeny, scanRoots, protectedDirs []string, notices io.Writer) ([]string, error) {
 	if len(userDeny) == 0 && len(baselineBasenames) == 0 {
 		return nil, nil
 	}
@@ -467,7 +508,7 @@ func resolveDenyPaths(userDeny, baselineBasenames, overrideDeny, scanRoots []str
 
 	out := explicit
 	if len(globs) > 0 {
-		matches, err := walkGlobMatches(scanRoots, globs, notices)
+		matches, err := walkGlobMatches(scanRoots, globs, protectedDirs, notices)
 		if err != nil {
 			return nil, err
 		}
@@ -534,9 +575,19 @@ func clampInt(v, lo, hi int) int {
 // configuration promises are blocked may never be visited and would be
 // left unmasked. Returning an error here makes the launch path refuse
 // to start rather than degrade to a partial protected set.
-func walkGlobMatches(roots, globs []string, notices io.Writer) ([]string, error) {
+//
+// protectedDirs are already-denied paths the walk prunes without
+// descending (any match inside is masked by the ancestor rule), and
+// denyScanSkipDirNames prunes large dependency/cache trees.
+func walkGlobMatches(roots, globs, protectedDirs []string, notices io.Writer) ([]string, error) {
 	if len(globs) == 0 || len(roots) == 0 {
 		return nil, nil
+	}
+	protected := map[string]bool{}
+	for _, p := range protectedDirs {
+		for _, fp := range pathForms(p) {
+			protected[fp] = true
+		}
 	}
 	type rootResult struct {
 		matches []string
@@ -552,7 +603,7 @@ func walkGlobMatches(roots, globs []string, notices io.Writer) ([]string, error)
 		go func() {
 			defer wg.Done()
 			defer func() { <-sem }()
-			results[i].matches, results[i].hitCap = walkOneDenyRoot(root, globs)
+			results[i].matches, results[i].hitCap = walkOneDenyRoot(root, globs, protected)
 		}()
 	}
 	wg.Wait()
@@ -580,7 +631,10 @@ func walkGlobMatches(roots, globs []string, notices io.Writer) ([]string, error)
 // walkOneDenyRoot walks a single root and returns the paths whose base
 // name matches a glob, plus whether the entry cap was reached. It holds
 // no shared state so walkGlobMatches can run it concurrently per root.
-func walkOneDenyRoot(root string, globs []string) (matches []string, hitCap bool) {
+// protected holds already-denied paths to prune (layer 1); a directory
+// whose basename is in denyScanSkipDirNames is pruned too (layer 2), but
+// only when it is not itself a glob match — a matched dir is masked.
+func walkOneDenyRoot(root string, globs []string, protected map[string]bool) (matches []string, hitCap bool) {
 	count := 0
 	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
@@ -594,6 +648,9 @@ func walkOneDenyRoot(root string, globs []string) (matches []string, hitCap bool
 		if path == root {
 			return nil // never match the root grant itself
 		}
+		if d.IsDir() && protected[path] {
+			return filepath.SkipDir
+		}
 		name := d.Name()
 		for _, g := range globs {
 			if ok, _ := filepath.Match(g, name); ok {
@@ -603,6 +660,9 @@ func walkOneDenyRoot(root string, globs []string) (matches []string, hitCap bool
 				}
 				return nil
 			}
+		}
+		if d.IsDir() && denyScanSkipDirNames[name] {
+			return filepath.SkipDir
 		}
 		return nil
 	})

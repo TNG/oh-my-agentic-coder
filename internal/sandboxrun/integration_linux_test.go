@@ -166,13 +166,16 @@ func TestIntegrationWorkdirWritable(t *testing.T) {
 
 func TestIntegrationProtectedMaskedUnderGrant(t *testing.T) {
 	requireBwrap(t)
-	home, err := os.UserHomeDir()
-	if err != nil {
-		t.Skip("no home")
-	}
+	// Stage a synthetic home: the broad grant must be a small scan root, and
+	// a real CI home can overflow the protected-basename scan, which now
+	// fails closed. A sentinel file makes the tmpfs mask observable.
+	home := stagedHome(t)
 	sshDir := filepath.Join(home, ".ssh")
-	if _, err := os.Stat(sshDir); err != nil {
-		t.Skip("no ~/.ssh")
+	if err := os.Mkdir(sshDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sshDir, "known_hosts"), []byte("host"), 0o600); err != nil {
+		t.Fatal(err)
 	}
 	wd := t.TempDir()
 	p := &sandboxprofile.Profile{
@@ -311,13 +314,10 @@ func TestIntegrationMaskedShellConfigSourcesCleanly(t *testing.T) {
 // entry).
 func TestIntegrationOverrideDenyGrantsAccess(t *testing.T) {
 	requireBwrap(t)
-	home, err := os.UserHomeDir()
-	if err != nil {
-		t.Skip("no home")
-	}
+	home := stagedHome(t)
 	sshDir := filepath.Join(home, ".ssh")
-	if _, err := os.Stat(sshDir); err != nil {
-		t.Skip("no ~/.ssh on this machine")
+	if err := os.Mkdir(sshDir, 0o700); err != nil {
+		t.Fatal(err)
 	}
 	wd := t.TempDir()
 	p := &sandboxprofile.Profile{
