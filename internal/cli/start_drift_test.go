@@ -16,12 +16,13 @@ import (
 	"github.com/TNG/oh-my-agentic-coder/internal/registry"
 )
 
-// isolateHome points HOME, XDG_CONFIG_HOME and XDG_STATE_HOME at empty
-// temp dirs so user-global scans and the audit trail (which on Linux
-// resolves to $XDG_STATE_HOME/omac/audit) don't pick up real state from
-// the developer's environment. All tests that don't deliberately stage
-// user-global content should call this; otherwise their assertions
-// become machine-dependent.
+// isolateHome points HOME, XDG_CONFIG_HOME and XDG_STATE_HOME at empty temp
+// dirs so findUnregisteredSkills's user-global scan doesn't pick up real
+// skills installed under the developer's actual ~/.config/opencode, and so
+// commands that resolve the audit trail via XDG_STATE_HOME (see
+// internal/audit.DefaultDir) don't read a real host-level audit.jsonl.
+// All tests that don't deliberately stage user-global content should call
+// this; otherwise their assertions become machine-dependent.
 func isolateHome(t *testing.T) {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())

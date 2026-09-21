@@ -381,6 +381,32 @@ func (s *SidecarMeta) Validate(skillName string) error {
 	return nil
 }
 
+// PatternlessSecretStringFields returns the string config fields that carry
+// neither a pattern nor choices on a skill that also declares secrets. Such a
+// field accepts any value from the agent-writable config store, which the
+// sidecar then receives alongside its secrets, so registration warns about it.
+func (s *SidecarMeta) PatternlessSecretStringFields() []string {
+	if len(s.Secrets) == 0 {
+		return nil
+	}
+	var out []string
+	for _, c := range s.Config {
+		if c.EffectiveType() == ConfigFieldString && c.Pattern == "" && len(c.Choices) == 0 {
+			out = append(out, c.Name)
+		}
+	}
+	return out
+}
+
+// PatternlessSecretStringFields is Meta's convenience wrapper over
+// SidecarMeta.PatternlessSecretStringFields; nil when there is no sidecar.
+func (m *Meta) PatternlessSecretStringFields() []string {
+	if m.Sidecar == nil {
+		return nil
+	}
+	return m.Sidecar.PatternlessSecretStringFields()
+}
+
 // parseBoolField accepts a small set of human-friendly bool spellings.
 // Used both for validating ConfigSpec.Default and for converting prompt
 // input. Returns the canonical value ("true" or "false") on success.

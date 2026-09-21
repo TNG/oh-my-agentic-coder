@@ -122,6 +122,12 @@ func runDoctor(args []string, env *Env) int {
 			absDir = filepath.Join(env.Workdir, absDir)
 		}
 		armed, problems := resolver.Load(e, absDir, cfgStore)
+		if armed.Meta != nil {
+			if fields := armed.Meta.PatternlessSecretStringFields(); len(fields) > 0 {
+				fmt.Fprintf(env.Stdout, "  [warn] %-20s unconstrained string config field(s) on a secret-holding skill: %s\n",
+					e.Name, strings.Join(fields, ", "))
+			}
+		}
 		// Resolution reads secret plaintext (it is the same code path start
 		// uses, which is the point); wipe it as soon as we have counted.
 		armed.Zero()
@@ -170,7 +176,7 @@ func runDoctor(args []string, env *Env) int {
 				missingSecrets++
 			case skillstate.MissingField:
 				missingFields++
-			case skillstate.InvalidSecret:
+			case skillstate.InvalidSecret, skillstate.InvalidConfig:
 				invalid++
 			}
 		}
@@ -182,7 +188,7 @@ func runDoctor(args []string, env *Env) int {
 			status, e.Name, binOK, missingSecrets, missingFields)
 		for _, p := range problems {
 			switch p.Kind {
-			case skillstate.KeychainUnavailable, skillstate.InvalidSecret:
+			case skillstate.KeychainUnavailable, skillstate.InvalidSecret, skillstate.InvalidConfig:
 				line := fmt.Sprintf("         %s/%s: %s", p.Skill, p.Field, p.Detail)
 				if p.Fix != "" {
 					line += " — " + p.Fix

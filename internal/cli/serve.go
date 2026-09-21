@@ -1174,6 +1174,21 @@ func (s *serveServer) checkGlobalDrift() int {
 	return ExitConfigInvalid
 }
 
+// loadWorkdirConfig merges a project's config with the host-only global layer,
+// so serve resolves stored values, the approval anchor and the workdir/value
+// provenance exactly as `omac start` does.
+func loadWorkdirConfig(absDir string) (*skillconfig.Store, error) {
+	w, err := skillconfig.Load(absDir)
+	if err != nil {
+		return nil, err
+	}
+	g, err := skillconfig.LoadGlobal()
+	if err != nil {
+		return nil, err
+	}
+	return skillstate.MergeConfig(g, w), nil
+}
+
 func (s *serveServer) activateGlobals() error {
 	gReg, err := registry.LoadGlobal()
 	if err != nil {
@@ -1282,7 +1297,7 @@ func (s *serveServer) activate(absDir string) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	wCfg, err := skillconfig.Load(absDir)
+	wCfg, err := loadWorkdirConfig(absDir)
 	if err != nil {
 		return nil, err
 	}
@@ -1353,7 +1368,7 @@ func (s *serveServer) rediscover(d *dirState) {
 	if err != nil {
 		return
 	}
-	wCfg, err := skillconfig.Load(absDir)
+	wCfg, err := loadWorkdirConfig(absDir)
 	if err != nil {
 		return
 	}

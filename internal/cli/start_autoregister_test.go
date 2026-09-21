@@ -82,6 +82,7 @@ sidecar:
       type: string
       description: "optional"
       required: false
+      pattern: "^[a-zA-Z0-9_-]*$"
 `
 
 const sidecarWithRequiredSecret = `name: needs-secret

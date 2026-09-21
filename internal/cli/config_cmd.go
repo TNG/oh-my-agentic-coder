@@ -245,6 +245,16 @@ func buildSkillView(env *Env, skill string) (*skillView, int) {
 		}
 		fmt.Fprintln(env.Stderr, "omac config: warning: keychain:", detail)
 	}
+	for _, p := range problems {
+		if p.Kind != skillstate.InvalidConfig {
+			continue
+		}
+		detail := p.Detail
+		if p.Fix != "" {
+			detail += " — " + p.Fix
+		}
+		fmt.Fprintf(env.Stderr, "omac config: warning: %s/%s: %s\n", p.Skill, p.Field, detail)
+	}
 
 	for _, spec := range meta.Sidecar.Config {
 		out.Config = append(out.Config, fieldView{

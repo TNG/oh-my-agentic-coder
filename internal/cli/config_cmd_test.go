@@ -38,8 +38,10 @@ func stageSkillForConfigShow(t *testing.T, env *Env, name string) {
 		"  config:\n" +
 		"    - name: API_BASE\n" +
 		"      default_from_env: OMAC_TEST_API_BASE\n" +
+		"      pattern: \"^https://.*\"\n" +
 		"    - name: OPTIONAL_F\n" +
-		"      required: false\n"
+		"      required: false\n" +
+		"      pattern: \"^[a-zA-Z0-9_-]*$\"\n"
 	if err := os.WriteFile(filepath.Join(dir, "omac.yaml"), []byte(meta), 0o644); err != nil {
 		t.Fatal(err)
 	}
