@@ -41,12 +41,14 @@ func TestSecurityWorkdirEnvControlVarRefusedOnLegacySkill(t *testing.T) {
 	}
 }
 
-// TestSecurityEnvControlDenylistAppliesToAnchoredSkill pins that a workdir
-// override of a code-execution environment variable is refused for an anchored
-// skill when it differs from the host-approved anchor, while a workdir value
-// equal to the anchor is still accepted. The equal case is the anchor-match
-// exception that lets a legitimate re-registration re-supply the same
-// host-approved value.
+// TestSecurityEnvControlDenylistAppliesToAnchoredSkill asserts that a
+// code-execution environment variable sourced from the agent-writable workdir
+// layer is refused for an anchored skill too. The anchor records what the host
+// approved at register time, but the workdir layer remains agent-writable, so a
+// value sourced from it must never reach armed.Config for such a name — even
+// when it coincidentally equals the anchor. A host-only global value for the
+// same name still resolves (control), so the refusal is proven to track the
+// workdir provenance, not the field name alone.
 func TestSecurityEnvControlDenylistAppliesToAnchoredSkill(t *testing.T) {
 	dir := skillDir(t)
 	e := entry(t, "probe", dir)
@@ -54,32 +56,42 @@ func TestSecurityEnvControlDenylistAppliesToAnchoredSkill(t *testing.T) {
 	m := meta(nil, nil, []config.ConfigSpec{spec})
 
 	const approved = "--max-old-space-size=256"
-	const override = "--max-old-space-size=512"
-
-	global := &skillconfig.Store{Version: skillconfig.SchemaVersion}
-	global.Set("probe", "NODE_OPTIONS", approved)
-	global.RecordApproved("wd", "probe", map[string]string{"NODE_OPTIONS": approved})
-
 	r := New(Options{Scope: "wd"})
 
-	// A workdir-sourced override that differs from the anchor is refused.
-	diff := &skillconfig.Store{Version: skillconfig.SchemaVersion}
-	diff.Set("probe", "NODE_OPTIONS", override)
-	armed, problems := r.Resolve(m, e, dir, MergeConfig(global, diff))
+	// Control: a denylisted name whose value comes only from the host-only
+	// global layer, matching the host-approved anchor, resolves normally. The
+	// denylist guards the agent-writable workdir layer, not host-approved
+	// values, so a fix that refused every value for the name would not make
+	// this control pass for the wrong reason.
+	hostOnly := &skillconfig.Store{Version: skillconfig.SchemaVersion}
+	hostOnly.Set("probe", "NODE_OPTIONS", approved)
+	hostOnly.RecordApproved("wd", "probe", map[string]string{"NODE_OPTIONS": approved})
+	armed, problems := r.Resolve(m, e, dir, hostOnly)
 	defer armed.Zero()
-	if got := armed.Config["NODE_OPTIONS"]; got == override {
-		t.Errorf("a workdir override %q differing from the anchor reached armed.Config", got)
-	}
-	if !Has(problems, InvalidConfig) {
-		t.Errorf("no InvalidConfig problem for a workdir override differing from the anchor: %v", problems)
+	if got := armed.Config["NODE_OPTIONS"]; got != approved || Has(problems, InvalidConfig) {
+		t.Fatalf("control: a host-only denylisted value did not resolve (value=%q, problems=%v): the fixture is broken, not the security property", got, problems)
 	}
 
-	// A workdir value equal to the anchor is accepted (anchor-match exception).
-	match := &skillconfig.Store{Version: skillconfig.SchemaVersion}
-	match.Set("probe", "NODE_OPTIONS", approved)
-	armed2, problems2 := r.Resolve(m, e, dir, MergeConfig(global, match))
+	// The workdir layer supplies the same value the host approved, with no
+	// global value shadowing it, so MergeConfig marks it workdir-sourced. The
+	// anchor match must NOT redeem an agent-writable source for a
+	// code-execution env var: the sidecar would run with a value the sandbox
+	// can change at any time.
+	workdir := &skillconfig.Store{Version: skillconfig.SchemaVersion}
+	workdir.Set("probe", "NODE_OPTIONS", approved)
+	global := &skillconfig.Store{Version: skillconfig.SchemaVersion}
+	global.RecordApproved("wd", "probe", map[string]string{"NODE_OPTIONS": approved})
+	merged := MergeConfig(global, workdir)
+	if _, wdSourced := merged.FromWorkdir["probe"]["NODE_OPTIONS"]; !wdSourced {
+		t.Fatalf("fixture broken: the workdir value was not marked workdir-sourced (got %+v)", merged.FromWorkdir)
+	}
+
+	armed2, problems2 := r.Resolve(m, e, dir, merged)
 	defer armed2.Zero()
-	if got := armed2.Config["NODE_OPTIONS"]; got != approved {
-		t.Errorf("a workdir value equal to the anchor was refused (value=%q, problems=%v): the anchor-match exception must preserve a re-supplied host-approved value", got, problems2)
+	if got, ok := armed2.Config["NODE_OPTIONS"]; ok && got == approved {
+		t.Errorf("a workdir-sourced denylisted value %q reached armed.Config for an anchored skill: the agent-writable layer must not supply code-execution env vars", got)
+	}
+	if !Has(problems2, InvalidConfig) {
+		t.Errorf("no InvalidConfig problem for a workdir-sourced denylisted value on an anchored skill: %v", problems2)
 	}
 }
