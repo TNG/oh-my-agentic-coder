@@ -558,12 +558,30 @@ func (f *Facade) serveSkillDoc(w http.ResponseWriter, r *http.Request, route *Ro
 		return false
 	}
 	docPath := filepath.Join(route.SkillDir, skillDocName)
-	// Defense in depth: SkillDir comes from omac's own registry, but make
-	// sure the resolved path stays inside the skill dir regardless.
-	if !strings.HasPrefix(filepath.Clean(docPath), filepath.Clean(route.SkillDir)+string(os.PathSeparator)) {
+	// Resolve all symlink components on both the doc path and the skill dir
+	// before comparing. A lexical prefix check alone cannot establish
+	// containment when any component of docPath is a caller-controlled
+	// symlink: EvalSymlinks collapses those to their real targets first.
+	resolved, err := filepath.EvalSymlinks(docPath)
+	if err != nil {
 		return false
 	}
-	data, err := os.ReadFile(docPath)
+	skillDirResolved, err := filepath.EvalSymlinks(route.SkillDir)
+	if err != nil {
+		return false
+	}
+	resolved = filepath.Clean(resolved)
+	skillDirResolved = filepath.Clean(skillDirResolved)
+	if !strings.HasPrefix(resolved, skillDirResolved+string(os.PathSeparator)) {
+		return false
+	}
+	// Reject a symlink planted as the final component. EvalSymlinks already
+	// followed it above, so this catches the case where the link target is
+	// itself inside the skill dir but the link itself is agent-controlled.
+	if fi, err := os.Lstat(docPath); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+		return false
+	}
+	data, err := os.ReadFile(resolved)
 	if err != nil {
 		return false
 	}
