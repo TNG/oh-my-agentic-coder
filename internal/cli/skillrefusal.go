@@ -54,6 +54,9 @@ func renderSkillRefusal(w io.Writer, prefix string, problems []skillstate.Proble
 	perField(w, problems, skillstate.InvalidSecret,
 		"secret from environment failed pattern validation (pass --skip-secret-pattern if the pattern is outdated):")
 
+	perField(w, problems, skillstate.InvalidConfig,
+		"config value is not one approved at register (re-register):")
+
 	// Config fields are grouped per skill: one `omac register <skill>
 	// --reprompt-fields` run re-prompts all of a skill's fields, so listing
 	// the command per field would be misleading.

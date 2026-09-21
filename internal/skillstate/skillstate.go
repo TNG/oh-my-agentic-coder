@@ -58,6 +58,11 @@ const (
 	// its declared pattern. Keychain values were vetted at register time, so
 	// this only ever arises for env_passthrough-supplied values.
 	InvalidSecret ProblemKind = "invalid-secret"
+	// InvalidConfig means a stored config value is not one the user approved:
+	// it violates the field's declared schema, differs from the host-only
+	// anchor recorded at register time, or was removed. Re-registration is the
+	// remedy.
+	InvalidConfig ProblemKind = "invalid-config"
 	// KeychainUnavailable means the keychain could not answer for a required
 	// secret: the backend is missing (headless Linux/WSL with no Secret
 	// Service), or it failed opaquely (a macOS authorization denial, a corrupt
@@ -480,37 +485,42 @@ func (r *Resolver) secretFromEnv(name string, passthrough map[string]struct{}) (
 // schema that the sidecar relies on.
 func (r *Resolver) resolveConfig(armed *Armed, cfg *skillconfig.Store) []Problem {
 	var problems []Problem
+	skill := armed.Entry.Name
+	// The host-only anchor recorded at register time is what tells a value the
+	// user approved from one an agent later wrote into the agent-writable
+	// workdir layer. When it is absent the skill predates anchoring, so a
+	// workdir value is allowed unless it is on an unconstrained field of a
+	// secret-holding skill.
+	anchor, anchored := cfg.ApprovedFor(r.opts.Scope, skill)
 	for _, spec := range armed.Meta.Sidecar.Config {
 		if cfg != nil {
-			if v, ok := cfg.Get(armed.Entry.Name, spec.Name); ok {
+			if v, ok := cfg.Get(skill, spec.Name); ok {
 				if err := spec.ValidateValue(v); err != nil {
-					problems = append(problems, Problem{
-						Kind:   InvalidSecret, // reuse existing terminal kind
-						Skill:  armed.Entry.Name,
-						Field:  spec.Name,
-						Detail: err.Error(),
-						Fix:    "omac register " + armed.Entry.Name + " --reprompt-fields",
-					})
+					problems = append(problems, configProblem(skill, spec.Name, err.Error()))
 					continue
 				}
-				// A workdir-layer override of a differing global value
-				// is a post-approval change to an agent-writable file.
-				// Refuse it so the sidecar does not respawn with the
-				// tampered value; re-registration is required.
-				if cfg.Overrides != nil {
-					if fields, ok := cfg.Overrides[armed.Entry.Name]; ok && fields[spec.Name] {
-						problems = append(problems, Problem{
-							Kind:   InvalidSecret,
-							Skill:  armed.Entry.Name,
-							Field:  spec.Name,
-							Detail: "workdir config value differs from the approved global value",
-							Fix:    "omac register " + armed.Entry.Name + " --reprompt-fields",
-						})
+				if anchored {
+					if av, ok := anchor[spec.Name]; !ok || av != v {
+						problems = append(problems, configProblem(skill, spec.Name,
+							"config value changed since register"))
 						continue
 					}
+				} else if workdirSourced(cfg, skill, spec.Name) && dangerousConfigField(spec, armed.Meta) {
+					problems = append(problems, configProblem(skill, spec.Name,
+						"value for an unconstrained field on a secret-holding skill comes from the agent-writable workdir config"))
+					continue
 				}
 				armed.Config[spec.Name] = v
 				armed.ConfigSources[spec.Name] = SourceStored
+				continue
+			}
+		}
+		// A field the anchor recorded but that no longer resolves to any stored
+		// value was removed after register.
+		if anchored {
+			if _, ok := anchor[spec.Name]; ok {
+				problems = append(problems, configProblem(skill, spec.Name,
+					"approved config value removed"))
 				continue
 			}
 		}
@@ -540,6 +550,31 @@ func (r *Resolver) resolveConfig(armed *Armed, cfg *skillconfig.Store) []Problem
 		})
 	}
 	return problems
+}
+
+// configProblem builds the re-registration refusal for a stored config field.
+func configProblem(skill, field, detail string) Problem {
+	return Problem{
+		Kind:   InvalidConfig,
+		Skill:  skill,
+		Field:  field,
+		Detail: detail,
+		Fix:    "omac register " + skill + " --reprompt-fields",
+	}
+}
+
+// workdirSourced reports whether the merged value for (skill, field) came from
+// the agent-writable workdir layer.
+func workdirSourced(cfg *skillconfig.Store, skill, field string) bool {
+	return cfg != nil && cfg.FromWorkdir[skill] != nil && cfg.FromWorkdir[skill][field]
+}
+
+// dangerousConfigField reports whether a field gives the agent-writable store
+// an unconstrained value to hand the sidecar alongside its secrets.
+func dangerousConfigField(spec config.ConfigSpec, m *config.Meta) bool {
+	return m.Sidecar != nil && len(m.Sidecar.Secrets) > 0 &&
+		spec.EffectiveType() == config.ConfigFieldString &&
+		spec.Pattern == "" && len(spec.Choices) == 0
 }
 
 func (r *Resolver) lookupEnv(name string) (string, bool) {
@@ -605,7 +640,7 @@ func StallFor(problems []Problem) *Stall {
 	// Unreadable and malformed values are also things to supply/fix, so they
 	// belong in the list the agent is shown.
 	for _, p := range problems {
-		if p.Kind == KeychainUnavailable || p.Kind == InvalidSecret {
+		if p.Kind == KeychainUnavailable || p.Kind == InvalidSecret || p.Kind == InvalidConfig {
 			st.Missing = append(st.Missing, p.Field)
 		}
 	}
@@ -614,7 +649,7 @@ func StallFor(problems []Problem) *Stall {
 
 	// A cause with a remedy of its own outranks the generic list: "run omac
 	// secrets set" is useless advice for a keychain that isn't running.
-	if p := First(problems, KeychainUnavailable, InvalidSecret); p != nil {
+	if p := First(problems, KeychainUnavailable, InvalidSecret, InvalidConfig); p != nil {
 		st.Detail = withFix(*p)
 		return st
 	}
@@ -706,21 +741,31 @@ func MergeConfig(global, workdir *skillconfig.Store) *skillconfig.Store {
 			}
 		}
 	}
-	// Record workdir values that overrode a DIFFERING global value. The
-	// workdir skill-config.yaml is agent-writable and outside the hashed
-	// bundle, so such an override is a post-approval change resolveConfig
-	// must flag rather than silently honour.
-	if global != nil && workdir != nil {
+	// The host-only global store carries the approval anchor; the
+	// agent-writable workdir store must never supply one, even if it declares
+	// an `approved:` block.
+	if global != nil {
+		out.Approved = global.Approved
+	}
+	// Record which merged values came from the workdir layer. The workdir
+	// skill-config.yaml is agent-writable, so resolveConfig uses this
+	// provenance to refuse an unapproved value on a secret-holding skill's
+	// unconstrained field.
+	if workdir != nil {
 		for skill, wdFields := range workdir.Skills {
 			for field, wdVal := range wdFields {
-				if gVal, ok := global.Get(skill, field); ok && gVal != wdVal {
-					if out.Overrides == nil {
-						out.Overrides = map[string]map[string]bool{}
+				gVal, gok := "", false
+				if global != nil {
+					gVal, gok = global.Get(skill, field)
+				}
+				if !gok || gVal != wdVal {
+					if out.FromWorkdir == nil {
+						out.FromWorkdir = map[string]map[string]bool{}
 					}
-					if out.Overrides[skill] == nil {
-						out.Overrides[skill] = map[string]bool{}
+					if out.FromWorkdir[skill] == nil {
+						out.FromWorkdir[skill] = map[string]bool{}
 					}
-					out.Overrides[skill][field] = true
+					out.FromWorkdir[skill][field] = true
 				}
 			}
 		}

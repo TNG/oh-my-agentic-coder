@@ -121,3 +121,23 @@ func TestStartSeesGloballyRegisteredSkill(t *testing.T) {
 		t.Fatalf("globally-registered skill should not be unregistered, got %v", unreg)
 	}
 }
+
+// TestEffectiveConfigWorkdirWins locks the value set register anchors as
+// approved: the workdir layer overrides the global layer per field, and
+// global-only fields still surface.
+func TestEffectiveConfigWorkdirWins(t *testing.T) {
+	global := &skillconfig.Store{Skills: map[string]map[string]string{}}
+	global.Set("email", "host", "global.example.com")
+	global.Set("email", "port", "993")
+	workdir := &skillconfig.Store{Skills: map[string]map[string]string{}}
+	workdir.Set("email", "host", "workdir.example.com")
+
+	got := effectiveConfig(global, workdir, "email")
+	want := map[string]string{"host": "workdir.example.com", "port": "993"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("effectiveConfig = %v, want %v", got, want)
+	}
+	if effectiveConfig(global, workdir, "absent") != nil {
+		t.Error("effectiveConfig for an unknown skill should be nil")
+	}
+}

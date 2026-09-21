@@ -358,14 +358,6 @@ func (s *SidecarMeta) Validate(skillName string) error {
 		if err := claim(c.Name, "config"); err != nil {
 			return err
 		}
-		// A secret-holding skill must not declare an unconstrained string
-		// config field: skill-config.yaml is agent-writable, and an
-		// unconstrained field accepts any value the sidecar would receive
-		// alongside its secrets. Checked after claim so name-collision
-		// errors (a more fundamental problem) take priority.
-		if c.EffectiveType() == ConfigFieldString && len(s.Secrets) > 0 && c.Pattern == "" {
-			return fmt.Errorf("sidecar.config[%d]: a string field on a secret-holding skill must declare a pattern", i)
-		}
 	}
 
 	for _, p := range s.EnvPassthrough {
@@ -387,6 +379,32 @@ func (s *SidecarMeta) Validate(skillName string) error {
 		}
 	}
 	return nil
+}
+
+// PatternlessSecretStringFields returns the string config fields that carry
+// neither a pattern nor choices on a skill that also declares secrets. Such a
+// field accepts any value from the agent-writable config store, which the
+// sidecar then receives alongside its secrets, so registration warns about it.
+func (s *SidecarMeta) PatternlessSecretStringFields() []string {
+	if len(s.Secrets) == 0 {
+		return nil
+	}
+	var out []string
+	for _, c := range s.Config {
+		if c.EffectiveType() == ConfigFieldString && c.Pattern == "" && len(c.Choices) == 0 {
+			out = append(out, c.Name)
+		}
+	}
+	return out
+}
+
+// PatternlessSecretStringFields is Meta's convenience wrapper over
+// SidecarMeta.PatternlessSecretStringFields; nil when there is no sidecar.
+func (m *Meta) PatternlessSecretStringFields() []string {
+	if m.Sidecar == nil {
+		return nil
+	}
+	return m.Sidecar.PatternlessSecretStringFields()
 }
 
 // parseBoolField accepts a small set of human-friendly bool spellings.

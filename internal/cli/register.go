@@ -80,6 +80,13 @@ func runRegister(args []string, env *Env) int {
 		fmt.Fprintf(env.Stderr, "omac register: skill %q has no sidecar block; nothing to register\n", skillName)
 		return ExitMisuse
 	}
+	if fields := meta.PatternlessSecretStringFields(); len(fields) > 0 {
+		fmt.Fprintf(env.Stderr,
+			"[warn] %s declares secrets and unconstrained string config field(s): %s\n"+
+				"       these fields accept any value from the agent-writable config store, which the sidecar receives alongside its secrets;\n"+
+				"       add a `pattern` (or `choices`) in %s to constrain them\n",
+			skillName, strings.Join(fields, ", "), config.MetaFileName)
+	}
 	bundleHash, err := config.BundleHash(skillDir)
 	if err != nil {
 		fmt.Fprintln(env.Stderr, "omac register: bundle hash:", err)
@@ -107,6 +114,11 @@ func runRegister(args []string, env *Env) int {
 	if !global {
 		secretScope = keychain.WorkdirID(env.Workdir)
 	}
+	// anchorID keys the host-only config approval for this workdir. Unlike
+	// secretScope it is set for global skills too: a global skill still needs
+	// a per-workdir anchor so an intentional workdir override is
+	// distinguishable from an agent tampering with the workdir config file.
+	anchorID := keychain.WorkdirID(env.Workdir)
 
 	// Pull the previous registration's "intentionally skipped" lists so
 	// re-register doesn't re-prompt for optional values the user
@@ -209,6 +221,20 @@ func runRegister(args []string, env *Env) int {
 				if skipped {
 					skippedFields = append(skippedFields, spec.Name)
 				}
+			}
+			// Anchor the values the user just approved in the host-only global
+			// store, keyed by this workdir. resolveConfig compares later
+			// launches against this, so a value the agent writes into the
+			// workdir layer is refused rather than injected.
+			if global {
+				wdStore, err := skillconfig.Load(env.Workdir)
+				if err != nil {
+					return err
+				}
+				store.RecordApproved(anchorID, skillName, effectiveConfig(store, wdStore, skillName))
+				store.RecordApproved(skillconfig.GlobalApprovedKey, skillName, store.Skills[skillName])
+			} else if defStore != nil {
+				defStore.RecordApproved(anchorID, skillName, effectiveConfig(defStore, store, skillName))
 			}
 			if err := saveSkillConfig(env.Workdir, global, store); err != nil {
 				return err
@@ -407,6 +433,27 @@ func saveSkillConfig(workdir string, global bool, store *skillconfig.Store) erro
 		return skillconfig.SaveGlobal(store)
 	}
 	return skillconfig.Save(workdir, store)
+}
+
+// effectiveConfig is the workdir-resolved config for one skill: the global
+// layer's values overridden by the workdir layer's, matching what a launch
+// resolves. This is what gets anchored as approved at register time.
+func effectiveConfig(global, workdir *skillconfig.Store, skill string) map[string]string {
+	out := map[string]string{}
+	if global != nil {
+		for field, val := range global.Skills[skill] {
+			out[field] = val
+		}
+	}
+	if workdir != nil {
+		for field, val := range workdir.Skills[skill] {
+			out[field] = val
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // rel returns path relative to base, or the original if not reachable.

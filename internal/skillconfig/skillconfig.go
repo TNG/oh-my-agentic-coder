@@ -41,11 +41,55 @@ type Store struct {
 	// (docs/contributing/serve-spec.md). Only meaningful in the global
 	// store; never consulted at runtime (runtime uses Skills only).
 	Defaults map[string]map[string]string `yaml:"defaults,omitempty"`
-	// Overrides records (skill, field) pairs where a workdir-layer value
-	// replaced a differing global-layer value during MergeConfig. Not
-	// serialized — runtime-only provenance so resolveConfig can flag
-	// agent-writable changes to an approved value for re-approval.
-	Overrides map[string]map[string]bool `yaml:"-"`
+	// Approved is the host-only trust anchor: the config values that were in
+	// effect when each (workdir, skill) was last registered. It is keyed
+	// workdir-id -> skill -> field -> value, with the reserved workdir-id
+	// "__global__" holding the user-global layer. Only meaningful in the
+	// global store (~/.config/omac, never mounted into the sandbox); a workdir
+	// store's Approved block is ignored by MergeConfig, because the workdir
+	// layer is agent-writable.
+	Approved map[string]map[string]map[string]string `yaml:"approved,omitempty"`
+	// FromWorkdir marks (skill, field) pairs whose merged value came from the
+	// agent-writable workdir layer rather than the host-only global layer.
+	// Not serialized; runtime-only provenance.
+	FromWorkdir map[string]map[string]bool `yaml:"-"`
+}
+
+// GlobalApprovedKey is the reserved Approved workdir-id under which a
+// user-global skill's values are anchored, so a global skill resolves in a
+// workdir that never registered it.
+const GlobalApprovedKey = "__global__"
+
+// ApprovedFor returns the anchored values for (workdirID, skill), falling back
+// to the global anchor. ok is false when the skill was never anchored.
+func (s *Store) ApprovedFor(workdirID, skill string) (map[string]string, bool) {
+	if s == nil || s.Approved == nil {
+		return nil, false
+	}
+	if workdirID != "" {
+		if m, ok := s.Approved[workdirID]; ok {
+			if f, ok := m[skill]; ok {
+				return f, true
+			}
+		}
+	}
+	if m, ok := s.Approved[GlobalApprovedKey]; ok {
+		if f, ok := m[skill]; ok {
+			return f, true
+		}
+	}
+	return nil, false
+}
+
+// RecordApproved anchors values for (workdirID, skill) in the global store.
+func (s *Store) RecordApproved(workdirID, skill string, values map[string]string) {
+	if s.Approved == nil {
+		s.Approved = map[string]map[string]map[string]string{}
+	}
+	if s.Approved[workdirID] == nil {
+		s.Approved[workdirID] = map[string]map[string]string{}
+	}
+	s.Approved[workdirID][skill] = values
 }
 
 // Path returns the skill-config file path for a given workdir.
