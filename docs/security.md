@@ -41,6 +41,18 @@ not in the hard-deny set. It is a private RFC 1918 address and is subject to
 the normal prompt or allow/deny policy. If you run Docker and want to
 prevent the agent from reaching it, add it to `network.deny_domain`.
 
+**Accepted gap, by design: private address ranges are not hard-denied.**
+Only loopback, unspecified, link-local, and cloud-metadata addresses are
+blocked unconditionally. RFC 1918 (`10/8`, `172.16/12`, `192.168/16`),
+carrier-grade NAT (`100.64/10`), and IPv6 unique-local (`fc00::/7`) stay
+subject to the normal prompt and allow/deny policy. A hard deny would make VPN
+and corporate-internal hosts unreachable even after you allow them, for every
+user behind a VPN. The accepted tradeoff is that a granted hostname can reach a
+private address, including when its DNS answer changes after admission. omac
+pins the resolved address and dials only that, and `network.deny_domain` blocks
+specific internal hosts. Recorded as an accepted gap, not a defect to be
+re-reported.
+
 ### Filesystem
 
 An agent with broad filesystem access can read SSH keys, cloud credentials, or
