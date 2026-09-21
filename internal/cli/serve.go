@@ -337,15 +337,17 @@ func runServe(args []string, env *Env) int {
 	wireFacadeSandbox(f, noSandbox, learn, plan, func(format string, args ...any) {
 		fmt.Fprintf(env.Stderr, format+"\n", args...)
 	})
+	// Mint both per-session tokens before the listener accepts connections so
+	// the TCP auth gate is active from the first accepted request. Assigning
+	// FacadeToken after Start would leave a window where the gate is disabled.
+	controlToken := mintToken()
+	facadeToken := mintToken()
+	f.FacadeToken = facadeToken
 	if err := f.Start(ctx); err != nil {
 		fmt.Fprintln(env.Stderr, "omac serve: facade:", err)
 		return ExitIOError
 	}
 	defer f.Close()
-
-	controlToken := mintToken()
-	facadeToken := mintToken()
-	f.FacadeToken = facadeToken
 
 	srv := &serveServer{
 		env:               env,

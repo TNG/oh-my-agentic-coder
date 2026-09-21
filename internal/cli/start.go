@@ -712,12 +712,14 @@ func runLaunch(env *Env, opts launchOpts) int {
 	wireFacadeSandbox(f, noSandbox, false, plan, func(format string, args ...any) {
 		fmt.Fprintf(env.Stderr, prefix+": "+format+"\n", args...)
 	})
+	// Mint and assign the facade token before Start so the TCP auth gate is
+	// active from the first accepted connection (no unauthenticated window).
+	f.FacadeToken = mintToken()
 	if err := f.Start(ctx); err != nil {
 		fmt.Fprintln(env.Stderr, prefix+": facade:", err)
 		return ExitIOError
 	}
 	defer f.Close()
-	f.FacadeToken = mintToken()
 	tcpPort := f.TCPPort()
 	if verbose {
 		fmt.Fprintf(env.Stderr, "[verbose] facade listening on %s and 127.0.0.1:%d (%d route(s))\n",
