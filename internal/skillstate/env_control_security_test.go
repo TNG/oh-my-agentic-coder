@@ -41,14 +41,13 @@ func TestSecurityWorkdirEnvControlVarRefusedOnLegacySkill(t *testing.T) {
 	}
 }
 
-// TestSecurityEnvControlDenylistAppliesToAnchoredSkill asserts that a
-// code-execution environment variable sourced from the agent-writable workdir
-// layer is refused for an anchored skill too. The anchor records what the host
-// approved at register time, but the workdir layer remains agent-writable, so a
-// value sourced from it must never reach armed.Config for such a name — even
-// when it coincidentally equals the anchor. A host-only global value for the
-// same name still resolves (control), so the refusal is proven to track the
-// workdir provenance, not the field name alone.
+// TestSecurityEnvControlDenylistAppliesToAnchoredSkill asserts that the
+// denylist coverage reaches anchored skills while the anchor-match exception
+// is preserved: a workdir value equal to the host-approved anchor is accepted
+// (legitimate re-supply of a host-approved interpreter flag), but a
+// workdir-sourced override that differs from the anchor is refused. A
+// host-only global value for the same name also resolves (control), so the
+// acceptance is proven to track the anchor match, not a missing denylist.
 func TestSecurityEnvControlDenylistAppliesToAnchoredSkill(t *testing.T) {
 	dir := skillDir(t)
 	e := entry(t, "probe", dir)
@@ -74,9 +73,9 @@ func TestSecurityEnvControlDenylistAppliesToAnchoredSkill(t *testing.T) {
 
 	// The workdir layer supplies the same value the host approved, with no
 	// global value shadowing it, so MergeConfig marks it workdir-sourced. The
-	// anchor match must NOT redeem an agent-writable source for a
-	// code-execution env var: the sidecar would run with a value the sandbox
-	// can change at any time.
+	// anchor match redeems the agent-writable source: the value reaching the
+	// sidecar is precisely the one the host approved, so legitimate
+	// re-supply of a host-approved interpreter flag is not broken.
 	workdir := &skillconfig.Store{Version: skillconfig.SchemaVersion}
 	workdir.Set("probe", "NODE_OPTIONS", approved)
 	global := &skillconfig.Store{Version: skillconfig.SchemaVersion}
@@ -88,10 +87,33 @@ func TestSecurityEnvControlDenylistAppliesToAnchoredSkill(t *testing.T) {
 
 	armed2, problems2 := r.Resolve(m, e, dir, merged)
 	defer armed2.Zero()
-	if got, ok := armed2.Config["NODE_OPTIONS"]; ok && got == approved {
-		t.Errorf("a workdir-sourced denylisted value %q reached armed.Config for an anchored skill: the agent-writable layer must not supply code-execution env vars", got)
+	if got := armed2.Config["NODE_OPTIONS"]; got != approved {
+		t.Errorf("a workdir-sourced denylisted value equal to the anchor did not reach armed.Config (got %q): legitimate re-supply of a host-approved value must be accepted", got)
 	}
-	if !Has(problems2, InvalidConfig) {
-		t.Errorf("no InvalidConfig problem for a workdir-sourced denylisted value on an anchored skill: %v", problems2)
+	if Has(problems2, InvalidConfig) {
+		t.Errorf("an anchor-matching workdir value was refused: %v", problems2)
+	}
+
+	// A workdir-sourced override that differs from the host-approved anchor
+	// is refused: the anchor check rejects the mismatch before any denylist
+	// consideration, so the sandbox cannot steer the sidecar with a flipped
+	// value.
+	const hostile = "--require=/tmp/evil.js"
+	workdir2 := &skillconfig.Store{Version: skillconfig.SchemaVersion}
+	workdir2.Set("probe", "NODE_OPTIONS", hostile)
+	global2 := &skillconfig.Store{Version: skillconfig.SchemaVersion}
+	global2.RecordApproved("wd", "probe", map[string]string{"NODE_OPTIONS": approved})
+	merged2 := MergeConfig(global2, workdir2)
+	if _, wdSourced := merged2.FromWorkdir["probe"]["NODE_OPTIONS"]; !wdSourced {
+		t.Fatalf("fixture broken: the hostile workdir value was not marked workdir-sourced (got %+v)", merged2.FromWorkdir)
+	}
+
+	armed3, problems3 := r.Resolve(m, e, dir, merged2)
+	defer armed3.Zero()
+	if got, ok := armed3.Config["NODE_OPTIONS"]; ok && got == hostile {
+		t.Errorf("a workdir-sourced override %q differing from the anchor reached armed.Config for an anchored skill", got)
+	}
+	if !Has(problems3, InvalidConfig) {
+		t.Errorf("no InvalidConfig problem for a workdir-sourced override differing from the anchor on an anchored skill: %v", problems3)
 	}
 }

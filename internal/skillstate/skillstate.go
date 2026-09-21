@@ -499,18 +499,6 @@ func (r *Resolver) resolveConfig(armed *Armed, cfg *skillconfig.Store) []Problem
 					problems = append(problems, configProblem(skill, spec.Name, err.Error()))
 					continue
 				}
-				// A code-execution env var sourced from the agent-writable
-				// workdir layer is refused for every skill, regardless of
-				// anchor or secrets: the layer is agent-writable, so accepting
-				// the value would let the sandbox steer what an unsandboxed
-				// sidecar runs. This runs before the anchor check on purpose:
-				// even a value that matches the host-approved anchor must come
-				// from the host-only layer, not the agent-writable one.
-				if workdirSourced(cfg, skill, spec.Name) && isCodeExecutionEnvVar(spec.Name) {
-					problems = append(problems, configProblem(skill, spec.Name,
-						"value for a code-execution environment variable comes from the agent-writable workdir config"))
-					continue
-				}
 				if anchored {
 					if av, ok := anchor[spec.Name]; !ok || av != v {
 						problems = append(problems, configProblem(skill, spec.Name,
@@ -519,7 +507,7 @@ func (r *Resolver) resolveConfig(armed *Armed, cfg *skillconfig.Store) []Problem
 					}
 				} else if workdirSourced(cfg, skill, spec.Name) && dangerousConfigField(spec, armed.Meta) {
 					problems = append(problems, configProblem(skill, spec.Name,
-						"value for an unconstrained field on a secret-holding skill comes from the agent-writable workdir config"))
+						"value for a sensitive field comes from the agent-writable workdir config"))
 					continue
 				}
 				armed.Config[spec.Name] = v
@@ -620,8 +608,14 @@ func isCodeExecutionEnvVar(name string) bool {
 }
 
 // dangerousConfigField reports whether a field gives the agent-writable store
-// an unconstrained value to hand the sidecar alongside its secrets.
+// an unconstrained value to hand the sidecar alongside its secrets, or names a
+// code-execution env var that the agent-writable layer must never supply
+// (anchored skills are handled by the anchor-match branch before this runs, so
+// a workdir value equal to the host-approved anchor is still accepted).
 func dangerousConfigField(spec config.ConfigSpec, m *config.Meta) bool {
+	if isCodeExecutionEnvVar(spec.Name) {
+		return true
+	}
 	return m.Sidecar != nil && len(m.Sidecar.Secrets) > 0 &&
 		spec.EffectiveType() == config.ConfigFieldString &&
 		spec.Pattern == "" && len(spec.Choices) == 0
