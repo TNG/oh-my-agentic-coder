@@ -634,9 +634,33 @@ func walkGlobMatches(roots, globs, protectedDirs []string, notices io.Writer) ([
 // protected holds already-denied paths to prune (layer 1); a directory
 // whose basename is in denyScanSkipDirNames is pruned too (layer 2), but
 // only when it is not itself a glob match — a matched dir is masked.
+//
+// When root is itself a symlink, the kernel backends resolve it and mount
+// the real tree, but filepath.WalkDir lstat's the root and so would not
+// descend a symlink root. We resolve the root with EvalSymlinks first
+// and walk the real path; on resolution failure (broken link, permission)
+// we fall back to walking the granted spelling, matching the pre-fix
+// behavior for an unresolvable root so the change is strictly an
+// improvement. Each match is re-grafted onto the granted spelling of the
+// root (filepath.Join of the suffix under the resolved root), because
+// that is the spelling every consumer uses: bwrap's coveredByAny and the
+// marker bind destination, Seatbelt subpath rules (which canonicalize via
+// pathForms) and, most importantly, the facade-side ProtectedPathSet —
+// the mid-session watch stores these strings and IsProtected matches
+// lexically against the alias spelling the agent actually queries. On
+// macOS a plain /var-rooted grant would otherwise emit /private/var
+// spellings the consumers compare against /var. Interior symlinks are
+// still not followed: WalkDir lstat's every entry other than the
+// resolved root, and any real-tree location the agent can reach belongs
+// to some granted root whose own scan emits its spelling.
 func walkOneDenyRoot(root string, globs []string, protected map[string]bool) (matches []string, hitCap bool) {
+	resolved, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		resolved = root
+	}
+	rootSep := resolved + string(filepath.Separator)
 	count := 0
-	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+	_ = filepath.WalkDir(resolved, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return nil // unreadable entry: skip, don't abort the walk
 		}
@@ -645,7 +669,7 @@ func walkOneDenyRoot(root string, globs []string, protected map[string]bool) (ma
 			hitCap = true
 			return filepath.SkipAll
 		}
-		if path == root {
+		if path == resolved {
 			return nil // never match the root grant itself
 		}
 		if d.IsDir() && protected[path] {
@@ -654,7 +678,7 @@ func walkOneDenyRoot(root string, globs []string, protected map[string]bool) (ma
 		name := d.Name()
 		for _, g := range globs {
 			if ok, _ := filepath.Match(g, name); ok {
-				matches = append(matches, path)
+				matches = append(matches, filepath.Join(root, strings.TrimPrefix(path, rootSep)))
 				if d.IsDir() {
 					return filepath.SkipDir
 				}
