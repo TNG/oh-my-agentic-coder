@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 )
@@ -25,6 +26,17 @@ const (
 // (connection reuse) instead of building a fresh transport per call. Per-call
 // deadlines are applied via context, not a client-level Timeout.
 var httpClient = &http.Client{}
+
+// The facade rejects tokenless TCP requests with 401 whenever a facade token
+// is minted. The sandbox child carries that token in OMAC_FACADE_TOKEN, the
+// same env var the agent is told to use; attach it so lookups succeed in
+// production. With no token in the env the header is simply omitted, which
+// still works against a gateless facade.
+func setFacadeAuthHeader(req *http.Request) {
+	if token := os.Getenv("OMAC_FACADE_TOKEN"); token != "" {
+		req.Header.Set("X-Omac-Facade-Token", token)
+	}
+}
 
 // LookupOverHTTP queries a facade's GET /sandbox/intent?target=<target>
 // endpoint for an exact agent-declared intent (used by the network
@@ -60,6 +72,7 @@ func MarkExplainMoreOverHTTP(baseURL, target string) {
 	if err != nil {
 		return
 	}
+	setFacadeAuthHeader(req)
 	resp, err := httpClient.Do(req)
 	if err != nil {
 		return
@@ -82,6 +95,7 @@ func lookupOverHTTP(baseURL, target string, subtree bool, timeout time.Duration)
 	if err != nil {
 		return "", false
 	}
+	setFacadeAuthHeader(req)
 	resp, err := httpClient.Do(req)
 	if err != nil {
 		return "", false
