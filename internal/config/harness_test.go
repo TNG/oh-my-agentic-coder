@@ -209,11 +209,11 @@ func TestResolveInnerCmd(t *testing.T) {
 }
 
 func TestDefaultSandboxProfilesHaveEmptyInnerCmd(t *testing.T) {
-	// The sandboxed profiles must NOT bake an inner_cmd: the harness supplies
+	// The sandboxed profile must NOT bake an inner_cmd: the harness supplies
 	// it at launch. Baking one here would make `omac start claude` silently
 	// run the baked command instead of Claude.
 	lc := DefaultLauncherConfig()
-	for _, name := range []string{"nono", "nono-netprofile"} {
+	for _, name := range []string{"builtin"} {
 		prof, ok := lc.Sandbox.Profiles[name]
 		if !ok {
 			t.Fatalf("%s profile missing", name)
@@ -225,10 +225,6 @@ func TestDefaultSandboxProfilesHaveEmptyInnerCmd(t *testing.T) {
 		if joined := strings.Join(prof.Command, " "); !strings.Contains(joined, "{{inner_cmd}}") {
 			t.Errorf("%s command lost {{inner_cmd}} placeholder: %v", name, prof.Command)
 		}
-	}
-	// no-sandbox-debug is a debug shell, not an agent harness: it keeps bash.
-	if got := lc.Sandbox.Profiles["no-sandbox-debug"].InnerCmd; !reflect.DeepEqual(got, []string{"bash"}) {
-		t.Errorf("no-sandbox-debug inner_cmd = %v, want [bash]", got)
 	}
 }
 
@@ -313,7 +309,7 @@ func TestHarnessSuppliesInnerForEmptyProfile(t *testing.T) {
 	oc, _ := LookupHarness("opencode")
 	cc, _ := LookupHarness("claude-code")
 	lc := DefaultLauncherConfig()
-	prof := lc.Sandbox.Profiles["nono"]
+	prof := lc.Sandbox.Profiles["builtin"]
 	if got := oc.ResolveInnerCmd(prof.InnerCmd, ""); !reflect.DeepEqual(got, []string{"opencode"}) {
 		t.Errorf("opencode harness inner = %v, want [opencode]", got)
 	}

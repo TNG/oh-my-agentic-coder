@@ -13,55 +13,17 @@ import (
 )
 
 // writeWorkdirConfig writes an oh-my-agentic-coder.yaml into the workdir
-// with a single sandbox profile whose command is the given argv template.
-func writeWorkdirConfig(t *testing.T, workdir string, profileName string, command []string) {
+// selecting the built-in sandbox, so LoadLauncher finds a workdir config.
+func writeWorkdirConfig(t *testing.T, workdir string) {
 	t.Helper()
 	dir := filepath.Join(workdir, ".opencode")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// Build YAML by hand to avoid pulling in yaml.v3 from the test.
-	var sb strings.Builder
-	sb.WriteString("sandbox:\n  default_profile: " + profileName + "\n  profiles:\n")
-	sb.WriteString("    " + profileName + ":\n      command:\n")
-	for _, c := range command {
-		sb.WriteString("        - " + yamlScalar(c) + "\n")
-	}
-	if err := os.WriteFile(filepath.Join(dir, "oh-my-agentic-coder.yaml"), []byte(sb.String()), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "oh-my-agentic-coder.yaml"),
+		[]byte("sandbox:\n  default_profile: builtin\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-}
-
-// writeGlobalConfig writes ~/.config/omac/config.yaml with a single sandbox
-// profile. Sandbox settings (profiles, default_profile) are trusted only from
-// the global config, so tests that configure the sandbox runtime must use this.
-func writeGlobalConfig(t *testing.T, profileName string, command []string) {
-	t.Helper()
-	home, err := os.UserHomeDir()
-	if err != nil {
-		t.Fatal(err)
-	}
-	dir := filepath.Join(home, ".config", "omac")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	var sb strings.Builder
-	sb.WriteString("sandbox:\n  default_profile: " + profileName + "\n  profiles:\n")
-	sb.WriteString("    " + profileName + ":\n      command:\n")
-	for _, c := range command {
-		sb.WriteString("        - " + yamlScalar(c) + "\n")
-	}
-	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(sb.String()), 0o644); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// yamlScalar renders s as a double-quoted YAML scalar, escaping
-// backslashes and double-quotes. Used for command tokens that contain
-// braces ({{self}}) which YAML would otherwise parse as flow mappings.
-func yamlScalar(s string) string {
-	r := strings.NewReplacer("\\", "\\\\", "\"", "\\\"")
-	return "\"" + r.Replace(s) + "\""
 }
 
 // stageHomeWithCargoSentinels creates a fake HOME with mode-000 cargo
@@ -95,13 +57,7 @@ func TestDoctorCacheRootsWarning(t *testing.T) {
 	// A profile that grants Allow on ~/.cache and ~/Library/Caches,
 	// plus Read on ~/.cache (still a warning) but NOT on ~/go (no warning
 	// for ~/go Read here — that's covered separately).
-	writeWorkdirConfig(t, workdir, "builtin", []string{
-		"{{self}}", "sandbox", "run",
-		"--profile", "default",
-		"--allow-file", "{{socket}}",
-		"--read", "{{socket_dir}}",
-		"--", "{{inner_cmd}}", "{{inner_args}}",
-	})
+	writeWorkdirConfig(t, workdir)
 
 	// Stage a sandbox profile that grants cache roots.
 	stageProfile(t, home, `{
@@ -139,13 +95,7 @@ func TestDoctorCargoToolchainWarnings(t *testing.T) {
 	home := stageHomeWithCargoSentinels(t)
 	workdir := t.TempDir()
 
-	writeWorkdirConfig(t, workdir, "builtin", []string{
-		"{{self}}", "sandbox", "run",
-		"--profile", "default",
-		"--allow-file", "{{socket}}",
-		"--read", "{{socket_dir}}",
-		"--", "{{inner_cmd}}", "{{inner_args}}",
-	})
+	writeWorkdirConfig(t, workdir)
 
 	// Profile granting Allow on ~/.cargo, ~/.rustup, ~/go (whole tool homes).
 	stageProfile(t, home, `{
@@ -196,11 +146,7 @@ func TestDoctorCargoReadWarned(t *testing.T) {
 	t.Setenv("HOME", home)
 	workdir := t.TempDir()
 
-	writeWorkdirConfig(t, workdir, "builtin", []string{
-		"{{self}}", "sandbox", "run",
-		"--profile", "default",
-		"--", "{{inner_cmd}}", "{{inner_args}}",
-	})
+	writeWorkdirConfig(t, workdir)
 
 	// A Read grant for the whole Cargo home exposes host configuration and
 	// credentials inside the sandbox.
@@ -233,11 +179,7 @@ func TestDoctorCargoBinReadNotWarned(t *testing.T) {
 	t.Setenv("HOME", home)
 	workdir := t.TempDir()
 
-	writeWorkdirConfig(t, workdir, "builtin", []string{
-		"{{self}}", "sandbox", "run",
-		"--profile", "default",
-		"--", "{{inner_cmd}}", "{{inner_args}}",
-	})
+	writeWorkdirConfig(t, workdir)
 
 	// The narrow runtime grant does not expose the whole Cargo home.
 	stageProfile(t, home, `{
@@ -265,11 +207,7 @@ func TestDoctorCargoSentinelsWarnForIsolatedCARGOHome(t *testing.T) {
 	home := stageHomeWithCargoSentinels(t)
 	workdir := t.TempDir()
 
-	writeWorkdirConfig(t, workdir, "builtin", []string{
-		"{{self}}", "sandbox", "run",
-		"--profile", "default",
-		"--", "{{inner_cmd}}", "{{inner_args}}",
-	})
+	writeWorkdirConfig(t, workdir)
 
 	stageProfile(t, home, `{
 	  "meta": {"name": "default"},
@@ -305,11 +243,7 @@ func TestDoctorWholeHomeReadWarned(t *testing.T) {
 	t.Setenv("HOME", home)
 	workdir := t.TempDir()
 
-	writeWorkdirConfig(t, workdir, "builtin", []string{
-		"{{self}}", "sandbox", "run",
-		"--profile=default",
-		"--", "{{inner_cmd}}", "{{inner_args}}",
-	})
+	writeWorkdirConfig(t, workdir)
 
 	// A whole-home Read grant covers ~/.cargo/config etc transitively.
 	stageProfile(t, home, `{
@@ -338,11 +272,7 @@ func TestDoctorParentPathHome(t *testing.T) {
 	t.Setenv("HOME", home)
 	workdir := t.TempDir()
 
-	writeWorkdirConfig(t, workdir, "builtin", []string{
-		"{{self}}", "sandbox", "run",
-		"--profile", "default",
-		"--", "{{inner_cmd}}", "{{inner_args}}",
-	})
+	writeWorkdirConfig(t, workdir)
 
 	// Grant Allow on $HOME (the parent) which transitively covers
 	// ~/.cargo etc.
@@ -372,11 +302,7 @@ func TestDoctorNoFalseMatchForCargo2(t *testing.T) {
 	t.Setenv("HOME", home)
 	workdir := t.TempDir()
 
-	writeWorkdirConfig(t, workdir, "builtin", []string{
-		"{{self}}", "sandbox", "run",
-		"--profile", "default",
-		"--", "{{inner_cmd}}", "{{inner_args}}",
-	})
+	writeWorkdirConfig(t, workdir)
 
 	// ~/.cargo2 is NOT ~/.cargo — must not trigger the cargo warning.
 	stageProfile(t, home, `{
@@ -400,82 +326,13 @@ func TestDoctorNoFalseMatchForCargo2(t *testing.T) {
 	}
 }
 
-func TestDoctorOpaqueExternalCommandSkipped(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	workdir := t.TempDir()
-
-	// A non-{{self}} sandbox run command is opaque — doctor can't
-	// inspect it, so no warnings should be produced (and no crash).
-	writeGlobalConfig(t, "nono", []string{
-		"nono", "run",
-		"--profile", "tng-sandbox",
-		"--allow-file", "{{socket}}",
-		"--read", "{{socket_dir}}",
-		"--", "{{inner_cmd}}", "{{inner_args}}",
-	})
-
-	// Doctor must not crash or try to introspect nono's tng-sandbox profile.
-	// No broad grants in the default.json so the built-in profile (always
-	// present) does not produce tool-home warnings that would muddy the assertion.
-	stageProfile(t, home, `{"meta": {"name": "default"}, "environment": {"allow_vars": ["HOME", "PATH"]}}`)
-
-	env, outBuf, _, drain := newPipeEnv(t, "")
-	env.Workdir = workdir
-	code := runDoctor([]string{}, env)
-	drain()
-	output := outBuf.String()
-
-	if code != ExitOK {
-		t.Errorf("doctor exit = %d, want ExitOK", code)
-	}
-	// Doctor must not attempt to warn about tng-sandbox internals (opaque).
-	if strings.Contains(output, "tng-sandbox") {
-		t.Errorf("doctor mentioned nono's internal tng-sandbox profile; got:\n%s", output)
-	}
-}
-
-func TestDoctorNonRunBuiltinCommandSkipped(t *testing.T) {
-	home := stageHomeWithCargoSentinels(t)
-	workdir := t.TempDir()
-
-	writeGlobalConfig(t, "builtin", []string{
-		"{{self}}", "sandbox", "stage2",
-	})
-
-	stageProfile(t, home, `{
-	  "meta": {"name": "default"},
-	  "filesystem": {
-	    "allow": ["~/.cargo"]
-	  }
-	}`)
-
-	env, outBuf, _, drain := newPipeEnv(t, "")
-	env.Workdir = workdir
-	code := runDoctor([]string{}, env)
-	drain()
-	output := outBuf.String()
-
-	if code != ExitOK {
-		t.Errorf("doctor exit = %d, want ExitOK", code)
-	}
-	if strings.Contains(output, `[warn] sandbox profile "builtin"`) {
-		t.Errorf("doctor warned for non-run built-in command; got:\n%s", output)
-	}
-}
-
 func TestDoctorOmittedProfileInspectsDefault(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	workdir := t.TempDir()
 
 	// Omitted --profile resolves to "default".
-	writeWorkdirConfig(t, workdir, "builtin", []string{
-		"{{self}}", "sandbox", "run",
-		"--allow-file", "{{socket}}",
-		"--read", "{{socket_dir}}",
-		"--", "{{inner_cmd}}", "{{inner_args}}",
-	})
+	writeWorkdirConfig(t, workdir)
 
 	stageProfile(t, home, `{
 	  "meta": {"name": "default"},
@@ -508,11 +365,7 @@ func TestDoctorEmptyAllowVarsWarned(t *testing.T) {
 	t.Setenv("HOME", home)
 	workdir := t.TempDir()
 
-	writeWorkdirConfig(t, workdir, "builtin", []string{
-		"{{self}}", "sandbox", "run",
-		"--profile", "default",
-		"--", "{{inner_cmd}}", "{{inner_args}}",
-	})
+	writeWorkdirConfig(t, workdir)
 
 	// No "environment" block → empty allow_vars (the legacy inherit-all shape).
 	stageProfile(t, home, `{
@@ -555,11 +408,7 @@ func TestDoctorNonEmptyAllowVarsNotWarned(t *testing.T) {
 	t.Setenv("HOME", home)
 	workdir := t.TempDir()
 
-	writeWorkdirConfig(t, workdir, "builtin", []string{
-		"{{self}}", "sandbox", "run",
-		"--profile", "default",
-		"--", "{{inner_cmd}}", "{{inner_args}}",
-	})
+	writeWorkdirConfig(t, workdir)
 
 	stageProfile(t, home, `{
 	  "meta": {"name": "default"},
@@ -577,54 +426,12 @@ func TestDoctorNonEmptyAllowVarsNotWarned(t *testing.T) {
 	}
 }
 
-func TestDoctorExplicitProfilePathInspected(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	workdir := t.TempDir()
-
-	// Place the custom profile inside the trusted profile directory and
-	// reference it by name from the global launcher config.
-	profileDir := filepath.Join(home, ".config", "omac", "sandbox-profiles")
-	if err := os.MkdirAll(profileDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(profileDir, "custom.json"), []byte(`{
-	  "meta": {"name": "custom"},
-	  "filesystem": {"allow": ["~/go"]}
-	}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	writeGlobalConfig(t, "builtin", []string{
-		"{{self}}", "sandbox", "run",
-		"--profile", "custom",
-		"--", "{{inner_cmd}}", "{{inner_args}}",
-	})
-
-	env, outBuf, _, drain := newPipeEnv(t, "")
-	env.Workdir = workdir
-	code := runDoctor([]string{}, env)
-	drain()
-	output := outBuf.String()
-
-	if code != ExitOK {
-		t.Errorf("doctor exit = %d, want ExitOK", code)
-	}
-	if !strings.Contains(output, "~/go") {
-		t.Errorf("doctor should inspect named custom profile; got:\n%s", output)
-	}
-}
-
 func TestDoctorExistingProfileUnchanged(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	workdir := t.TempDir()
 
-	writeWorkdirConfig(t, workdir, "builtin", []string{
-		"{{self}}", "sandbox", "run",
-		"--profile", "default",
-		"--", "{{inner_cmd}}", "{{inner_args}}",
-	})
+	writeWorkdirConfig(t, workdir)
 
 	profileJSON := `{
 	  "meta": {"name": "default"},
@@ -662,11 +469,7 @@ func TestDoctorWarningsExitCodeNeutral(t *testing.T) {
 	home := stageHomeWithCargoSentinels(t)
 	workdir := t.TempDir()
 
-	writeWorkdirConfig(t, workdir, "builtin", []string{
-		"{{self}}", "sandbox", "run",
-		"--profile", "default",
-		"--", "{{inner_cmd}}", "{{inner_args}}",
-	})
+	writeWorkdirConfig(t, workdir)
 
 	stageProfile(t, home, `{
 	  "meta": {"name": "default"},

@@ -44,7 +44,6 @@ type serveParse struct {
 	controlAddr       string
 	acceptChanges     bool
 	skipSecretPattern bool
-	profile           string
 	innerCmdOverride  string
 	noSandbox         bool
 	noInner           bool
@@ -70,7 +69,6 @@ func parseServeArgs(args []string, env *Env) (serveParse, bool) {
 		controlAddr       = fs.String("control-addr", "127.0.0.1:0", "Bind address for the control-plane HTTP server.")
 		acceptChanges     = fs.Bool("accept-skill-changes", false, "Tolerate bundle_hash drift in registered skills.")
 		skipSecretPattern = fs.Bool("skip-secret-pattern", false, "Do not enforce a secret's pattern against an env_passthrough-supplied value (escape hatch for an outdated pattern; the raw value is still passed through). Mirrors the flag on `omac start`.")
-		profile           = fs.String("sandbox", "", "Name of a sandbox profile from the launcher config.")
 		innerCmdOverride  = fs.String("inner", "", "Override inner_cmd's executable (default: opencode serve).")
 		noSandbox         = fs.Bool("no-sandbox", false, "Run the inner command directly, without a sandbox (debug only).")
 		noInner           = fs.Bool("no-inner", false, "Do not launch any inner command; run the control plane only (testing/headless).")
@@ -127,7 +125,6 @@ func parseServeArgs(args []string, env *Env) (serveParse, bool) {
 		controlAddr:       *controlAddr,
 		acceptChanges:     *acceptChanges,
 		skipSecretPattern: *skipSecretPattern,
-		profile:           *profile,
 		innerCmdOverride:  *innerCmdOverride,
 		noSandbox:         *noSandbox,
 		noInner:           *noInner,
@@ -165,7 +162,6 @@ func runServe(args []string, env *Env) int {
 	controlAddr := parsed.controlAddr
 	acceptChanges := parsed.acceptChanges
 	skipSecretPattern := parsed.skipSecretPattern
-	profile := parsed.profile
 	innerCmdOverride := parsed.innerCmdOverride
 	noSandbox := parsed.noSandbox
 	noInner := parsed.noInner
@@ -189,7 +185,7 @@ func runServe(args []string, env *Env) int {
 	// (templated argv) plus, for omac's native backend, its policy profile
 	// (grant JSON). Everything downstream reads the plan instead of
 	// re-resolving a bare name — see internal/cli/sandboxplan.go.
-	plan, planErr := resolveSandboxPlan(lc, profile)
+	plan, planErr := resolveSandboxPlan(lc)
 	if planErr != nil && !noSandbox && !noInner {
 		fmt.Fprintln(env.Stderr, "omac serve:", planErr)
 		return ExitConfigInvalid
@@ -295,9 +291,9 @@ func runServe(args []string, env *Env) int {
 	}
 	defer auditor.Close()
 
-	// Per-session sandbox temp dir exported as TMPDIR; the nono profile
-	// grants RW on it via {{tmpdir}} so Bun-built harnesses (opencode) can
-	// extract their embedded runtime. Removed on exit. See start.go.
+	// Per-session sandbox temp dir exported as TMPDIR; the sandbox profile
+	// grants RW on it via {{tmpdir_flags}} so Bun-built harnesses (opencode)
+	// can extract their embedded runtime. Removed on exit. See start.go.
 	sandboxTmp, err := os.MkdirTemp("", "omac-sandbox-tmp-")
 	if err != nil {
 		fmt.Fprintln(env.Stderr, "omac serve: sandbox temp dir:", err)
@@ -545,11 +541,9 @@ func runServe(args []string, env *Env) int {
 			fmt.Fprintln(env.Stderr, "omac serve: harness runtime dirs:", err)
 			return ExitIOError
 		}
-		argv, err = sandboxServeArgv(prof, sandbox.Inputs{
-			Workdir:  env.Workdir,
+		argv, err = sandboxServeArgv(sandbox.Inputs{
 			Socket:   socketPath,
 			TCPPort:  srv.tcpPort,
-			Mounts:   srv.facadeMounts(),
 			InnerCmd: inner,
 			TmpDir:   srv.sandboxTmp,
 		}, controlPortOf(cln), harness)
@@ -564,7 +558,7 @@ func runServe(args []string, env *Env) int {
 		// profile's restrictive allow_vars filter. (Control-plane port and
 		// harness runtime dirs are granted inside sandboxServeArgv.)
 		argv = forwardHarnessEnv(env, argv, harness, plan)
-		argv = injectUserOpenPorts(env, argv, openPorts, prof)
+		argv = injectUserOpenPorts(argv, openPorts)
 		// Pass the resolved audit path to `omac sandbox run` so its
 		// network-filter subprocess appends net.decision events to the
 		// same persistent log. Inherit the parent's run_id + mode so the
@@ -649,7 +643,7 @@ func runServe(args []string, env *Env) int {
 	auditor.Emit(audit.SessionStart(env.Version, harness.Name, profName, backend))
 	auditor.Emit(audit.InnerExec(argv, profName, sandboxed))
 
-	code, err := sandbox.ExecWithReady(argv, extra, func() {
+	code, err := execWithReady(argv, extra, func() {
 		if verbose {
 			fmt.Fprintln(env.Stderr, "[verbose] inner command started; control plane live")
 		}
@@ -717,8 +711,8 @@ func controlPortOf(ln net.Listener) string {
 //
 // Kept as one pure function so the grant sequence stays unit-testable without
 // launching the control plane.
-func sandboxServeArgv(prof config.SandboxProfile, in sandbox.Inputs, controlPort string, h config.Harness) ([]string, error) {
-	argv, err := sandbox.Expand(prof, in)
+func sandboxServeArgv(in sandbox.Inputs, controlPort string, h config.Harness) ([]string, error) {
+	argv, err := sandbox.BuildBuiltinArgv(in)
 	if err != nil {
 		return nil, err
 	}
@@ -856,9 +850,9 @@ func forwardHarnessEnv(env *Env, argv []string, harness config.Harness, plan san
 		// Seed only the operational minimum; do NOT auto-forward auth vars.
 		// HomeEnv goes through: it is a path, not a credential, and
 		// ResolvedSandboxDirs already granted the config home it names.
-		return injectSandboxEnvAllow(argv, append(sandboxprofile.DefaultAllowVars(), harness.HomeEnv), plan)
+		return injectSandboxEnvAllow(argv, append(sandboxprofile.DefaultAllowVars(), harness.HomeEnv))
 	}
-	return injectSandboxEnvAllow(argv, harness.ForwardedEnvVars(), plan)
+	return injectSandboxEnvAllow(argv, harness.ForwardedEnvVars())
 }
 
 // planAllowVarsEmpty reports whether the launch's resolved policy profile
@@ -881,18 +875,8 @@ func planDeniedBaseVars(plan sandboxPlan) []string {
 // injectSandboxEnvAllow splices --allow-env flags for each harness-declared
 // auth env var into the sandbox argv, so they survive the default profile's
 // restrictive allow_vars filter. Only the selected harness's vars are added.
-//
-// --allow-env is understood only by omac's native `sandbox run` backend
-// (where FilterEnv applies the allowlist); other backends (nono) do their
-// own env filtering via their own profile, so injecting the flag there
-// would be meaningless and could fail on an unknown flag. Guarded by
-// plan.Native (config.SandboxProfile.PolicyRef anchors on the leading
-// template tokens, so a nono profile whose INNER command merely contains
-// "sandbox"/"run" is not misclassified). Empty/nil is a no-op.
-func injectSandboxEnvAllow(argv []string, names []string, plan sandboxPlan) []string {
-	if !plan.Native {
-		return argv
-	}
+// `omac sandbox run` applies the allowlist via FilterEnv. Empty/nil is a no-op.
+func injectSandboxEnvAllow(argv []string, names []string) []string {
 	for _, n := range names {
 		if n == "" {
 			continue
@@ -902,17 +886,9 @@ func injectSandboxEnvAllow(argv []string, names []string, plan sandboxPlan) []st
 	return argv
 }
 
-// injectUserOpenPorts splices user --open-port values into a native-sandbox
-// argv. On non-native backends it leaves argv untouched and warns once when
-// any port was requested (nono does not understand these flags).
-func injectUserOpenPorts(env *Env, argv []string, ports []int, prof config.SandboxProfile) []string {
+// injectUserOpenPorts splices user --open-port values into the sandbox argv.
+func injectUserOpenPorts(argv []string, ports []int) []string {
 	if len(ports) == 0 {
-		return argv
-	}
-	if _, native := prof.PolicyRef(); !native {
-		if env != nil {
-			fmt.Fprintln(env.Stderr, "omac: --open-port applies only to the native sandbox backend; ignoring on this profile.")
-		}
 		return argv
 	}
 	for _, port := range ports {
@@ -1659,7 +1635,7 @@ func (s *serveServer) baseEnv() map[string]string {
 		"OMAC_HARNESS":            s.harness.Name,
 		"OMAC_HARNESS_SKILLS_DIR": s.harness.WorkdirSkillsDir(),
 		// Sandbox-granted temp dir exported as TMPDIR (see start.go and
-		// the nono profile's {{tmpdir}} grant).
+		// the sandbox profile's {{tmpdir_flags}} grant).
 		"TMPDIR": s.sandboxTmp,
 	}
 	for k, v := range s.cacheEnv {
@@ -1718,23 +1694,6 @@ func prepareServeCache(noSandbox, noInner, ephemeral bool, scope config.CacheSco
 	default:
 		return toolcache.PrepareShared()
 	}
-}
-
-// facadeMounts returns the set of facade mount segments to advertise to the
-// sandbox profile's {{skills_csv}} / {{per_skill_env_flags}} template. At
-// cold start this is the global skills' namespaced keys; per-dir mounts are
-// added lazily and not known here.
-func (s *serveServer) facadeMounts() []string {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	out := make([]string, 0, len(s.global))
-	for mount, sr := range s.global {
-		if sr.State == facade.RouteReady {
-			out = append(out, facade.GlobalNamespace+"/"+mount)
-		}
-	}
-	sort.Strings(out)
-	return out
 }
 
 func joinCSV(parts []string) string {

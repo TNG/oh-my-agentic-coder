@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -92,53 +91,14 @@ type SandboxConfig struct {
 	Briefing string `yaml:"briefing"        json:"briefing"`
 }
 
-// SandboxProfile describes how to launch the sandbox for a given runtime.
+// SandboxProfile is one entry under `sandbox.profiles` in the launcher
+// config. omac launches only the built-in sandbox, and its command is
+// assembled in Go by sandbox.BuildBuiltinArgv rather than from these fields.
+// They are kept so existing config files still parse and so `omac doctor`
+// can recognize the built-in profile.
 type SandboxProfile struct {
-	// Command is a templated argv. Supported placeholders:
-	//   {{socket}}, {{socket_dir}}, {{inner_cmd}}, {{inner_args}},
-	//   {{skills_csv}}, {{per_skill_env_flags}}, {{workdir}}
-	// Tokens that expand to multiple argv entries (inner_args,
-	// per_skill_env_flags) must stand alone in their slot.
 	Command  []string `yaml:"command"   json:"command"`
 	InnerCmd []string `yaml:"inner_cmd" json:"inner_cmd"`
-}
-
-// PolicyRef reports the sandbox-*policy* reference this launcher profile's
-// argv template hands to `omac sandbox run --profile` — the second,
-// unrelated "sandbox profile" namespace (a grant JSON under
-// ~/.config/omac/sandbox-profiles), keyed differently from the launcher
-// profile names in SandboxConfig.Profiles. The default launcher profile
-// is named "builtin" and its policy ref is "default"; the two must never
-// be interchanged.
-//
-// Recognized run forms:
-//   - "--profile", "default"   (separate args)
-//   - "--profile=default"      (inline)
-//   - omitted --profile        (resolves to "default")
-//
-// native is false for launchers whose policy omac cannot see: external
-// launchers (nono), the no-sandbox debug shell, and any non-`sandbox run`
-// subcommand. Only `{{self}} sandbox run` templates are inspectable.
-func (p SandboxProfile) PolicyRef() (ref string, native bool) {
-	c := p.Command
-	if len(c) < 3 || c[0] != "{{self}}" || c[1] != "sandbox" || c[2] != "run" {
-		return "", false
-	}
-	// Find "--profile" (separate or inline) before "--".
-	for i := 3; i < len(c); i++ {
-		arg := c[i]
-		if arg == "--" {
-			break
-		}
-		if arg == "--profile" && i+1 < len(c) {
-			return c[i+1], true
-		}
-		if strings.HasPrefix(arg, "--profile=") {
-			return strings.TrimPrefix(arg, "--profile="), true
-		}
-	}
-	// Omitted --profile resolves to "default".
-	return "default", true
 }
 
 // FacadeConfig tunes the reverse proxy.
@@ -150,23 +110,21 @@ type FacadeConfig struct {
 
 // DefaultLauncherConfig returns a config that ships as the compiled-in default.
 //
-// The sandboxed profiles (nono, nono-netprofile) deliberately ship with an
-// EMPTY inner_cmd: the inner command is supplied by the selected harness (the
-// positional `omac start <harness>` token; default opencode) via
-// Harness.ResolveInnerCmd. This is what lets `omac start claude` actually run
-// Claude Code without editing config. A user who pins a profile's inner_cmd in
-// their own oh-my-agentic-coder.yaml still wins (that explicit value takes
-// precedence over the harness default — see ResolveInnerCmd). The
-// no-sandbox-debug profile keeps its explicit `bash` because it is a debug
-// shell, not an agent harness.
+// The builtin sandbox profile deliberately ships with an EMPTY inner_cmd: the
+// inner command is supplied by the selected harness (the positional
+// `omac start <harness>` token; default opencode) via Harness.ResolveInnerCmd.
+// This is what lets `omac start claude` actually run Claude Code without editing
+// config. A user who pins a profile's inner_cmd in their own
+// oh-my-agentic-coder.yaml still wins (that explicit value takes precedence over
+// the harness default — see ResolveInnerCmd).
 func DefaultLauncherConfig() LauncherConfig {
 	return defaultLauncherConfigFor(DefaultHarness())
 }
 
 // defaultLauncherConfigFor builds the default launcher config. The harness
 // argument is currently only used to keep the signature future-proof and to
-// let tests assert harness-independence; the sandboxed profiles intentionally
-// leave inner_cmd empty so the harness fills it at launch. The sandbox
+// let tests assert harness-independence; the builtin profile intentionally
+// leaves inner_cmd empty so the harness fills it at launch. The sandbox
 // *command* templates are harness-independent (they only reference
 // {{inner_cmd}} / {{inner_args}} placeholders).
 func defaultLauncherConfigFor(h Harness) LauncherConfig {
@@ -176,17 +134,15 @@ func defaultLauncherConfigFor(h Harness) LauncherConfig {
 			DefaultProfile: "builtin",
 			Profiles: map[string]SandboxProfile{
 				// builtin re-execs the running omac binary as
-				// `omac sandbox run` — the native replacement for nono
+				// `omac sandbox run` — omac's native OS sandbox
 				// (Seatbelt on macOS, bubblewrap+Landlock on Linux).
-				// Flag semantics intentionally mirror the nono profile
-				// below so the two stay drop-in interchangeable:
+				// Flag semantics:
 				//
 				//   --allow-file <socket>   AF_UNIX bridge socket (the
 				//                           generated Seatbelt profile
 				//                           allows connect explicitly,
-				//                           so unlike nono this works
-				//                           on macOS even under the
-				//                           network deny)
+				//                           so this works on macOS even
+				//                           under the network deny)
 				//   --read <socket-dir>     path-component lookup
 				//   {{tmpdir_flags}}        rw on the TMPDIR temp dir
 				//   --open-port <tcp-port>  loopback facade transport
@@ -195,14 +151,12 @@ func defaultLauncherConfigFor(h Harness) LauncherConfig {
 				// allow_tcp_connect, network prompt) is resolved by
 				// `omac sandbox run --profile default`: user override at
 				// ~/.config/omac/profiles/default.json, else compiled-in
-				// defaults. The compiled-in default profile is NOT a
-				// byte-for-byte equivalent of nono's external
-				// tng-sandbox.json: it intentionally does NOT broad-grant
-				// the host cache roots (~/.cache, ~/Library/Caches) or
-				// the whole tool homes (~/go, ~/.cargo, ~/.rustup). Only
-				// the toolchain bin leaves (~/.cargo/bin, ~/.rustup,
-				// ~/go/bin, ~/.nvm, ~/.bun/bin) are read-only; the
-				// selected tool-cache scope leaf
+				// defaults. The compiled-in default profile intentionally
+				// does NOT broad-grant the host cache roots (~/.cache,
+				// ~/Library/Caches) or the whole tool homes (~/go,
+				// ~/.cargo, ~/.rustup). Only the toolchain bin leaves
+				// (~/.cargo/bin, ~/.rustup, ~/go/bin, ~/.nvm, ~/.bun/bin)
+				// are read-only; the selected tool-cache scope leaf
 				// (~/.cache/omac/<sha256(scope)>) is granted rw at launch
 				// via --allow (see internal/toolcache and
 				// internal/cli/start.go's prepareLaunchCache). Default
@@ -220,118 +174,6 @@ func defaultLauncherConfigFor(h Harness) LauncherConfig {
 					},
 					// Empty: filled by the selected harness at launch.
 					InnerCmd: nil,
-				},
-				// Retained for transition: select with
-				// `omac start --sandbox-profile nono` or via config.
-				"nono": {
-					// Reference invocation for nono (https://nono.sh).
-					//
-					// Transport: omac binds the facade on BOTH a Unix
-					// socket and a 127.0.0.1 TCP port. We tell nono to:
-					//
-					//   - --allow-file <socket>      grant open(2) on the
-					//                                Unix socket inode
-					//                                (Linux: this is enough;
-					//                                macOS: necessary but
-					//                                not sufficient under
-					//                                proxy mode).
-					//
-					//   - --read <socket-dir>        path-component lookup
-					//                                during connect(2).
-					//
-					//   - --open-port <tcp-port>     allow bidirectional
-					//                                127.0.0.1:<port> from
-					//                                inside the sandbox.
-					//                                THIS is the transport
-					//                                that works on macOS
-					//                                under proxy mode (auto-
-					//                                activated by any nono
-					//                                profile with
-					//                                custom_credentials,
-					//                                network_profile,
-					//                                --allow-domain,
-					//                                --credential, or
-					//                                --upstream-proxy).
-					//                                Per the nono
-					//                                "Networking" docs,
-					//                                --open-port emits a
-					//                                Seatbelt allow rule
-					//                                that takes precedence
-					//                                over the proxy-mode
-					//                                `(deny network*)`.
-					//
-					// Inside the sandbox the agent reads OMAC_<SKILL>_BASE
-					// (a TCP URL) by default, falling back to
-					// OMAC_<SKILL>_SOCKET_BASE for the http+unix:// form.
-					//
-					// Env-var injection: nono no longer accepts a literal
-					// `--env KEY=VAL` flag. Instead sandbox.Exec sets
-					// OMAC_* in nono's own process environment, and nono
-					// propagates the parent env to the inner process by
-					// default. If you author a custom nono profile with
-					// environment.allow_vars set, add `OMAC_*` to the
-					// list.
-					//
-					// IMPORTANT: this profile does NOT use --block-net.
-					// On macOS that installs `(deny network*)` plus a
-					// `--open-port` allowance — but the interaction with
-					// --network-profile and Seatbelt rule ordering is
-					// untested for our use case. Use --network-profile
-					// instead (see nono-netprofile below).
-					//
-					//   - --read <tmpdir> --write <tmpdir>
-					//                                grant the inner command
-					//                                read+write on a host temp
-					//                                dir that omac also exports
-					//                                as TMPDIR. Bun-built
-					//                                harnesses (opencode)
-					//                                extract their embedded
-					//                                runtime into TMPDIR at
-					//                                startup; without a
-					//                                writable, sandbox-granted
-					//                                temp dir that extraction
-					//                                fails and the agent never
-					//                                starts.
-					Command: []string{
-						"nono", "run",
-						"--allow-cwd",
-						"--profile", "tng-sandbox",
-						"--allow-file", "{{socket}}",
-						"--read", "{{socket_dir}}",
-						"{{tmpdir_flags}}",
-						"--open-port", "{{tcp_port}}",
-						"--",
-						"{{inner_cmd}}", "{{inner_args}}",
-					},
-					// Empty: filled by the selected harness at launch.
-					InnerCmd: nil,
-				},
-				// Same as above but adds --network-profile opencode so
-				// outbound HTTP goes through nono's credential-injection
-				// proxy. --open-port keeps the facade reachable; per the
-				// nono docs it works alongside domain filtering.
-				"nono-netprofile": {
-					Command: []string{
-						"nono", "run",
-						"--allow-cwd",
-						"--profile", "tng-sandbox",
-						"--network-profile", "opencode",
-						"--allow-file", "{{socket}}",
-						"--read", "{{socket_dir}}",
-						// See the nono profile above: grant RW on the
-						// host temp dir exported as TMPDIR so Bun-built
-						// harnesses can extract their runtime.
-						"{{tmpdir_flags}}",
-						"--open-port", "{{tcp_port}}",
-						"--",
-						"{{inner_cmd}}", "{{inner_args}}",
-					},
-					// Empty: filled by the selected harness at launch.
-					InnerCmd: nil,
-				},
-				"no-sandbox-debug": {
-					Command:  []string{"{{inner_cmd}}", "{{inner_args}}"},
-					InnerCmd: []string{"bash"},
 				},
 			},
 		},
@@ -385,6 +227,12 @@ func LoadLauncher(workdir string) (LauncherConfig, string, error) {
 
 	switch {
 	case localPath != "" && globalPath != "":
+		// Validate the raw sandbox block (before defaults are merged, so it
+		// sees exactly what the user wrote). The workdir layer cannot set
+		// sandbox fields, so only the global block is validated.
+		if err := validateSandbox(global.Sandbox, globalPath); err != nil {
+			return LauncherConfig{}, "", err
+		}
 		// Both exist: apply global security fields, then layer local
 		// operational-only fields on top.
 		merged := mergeDefaults(global)
@@ -397,7 +245,8 @@ func LoadLauncher(workdir string) (LauncherConfig, string, error) {
 		return merged, localPath, nil
 	case localPath != "":
 		// Workdir file only: strip all security-sensitive fields; fill
-		// them from compiled-in defaults.
+		// them from compiled-in defaults. The workdir sandbox block is
+		// ignored entirely, so there is nothing to validate.
 		lc := stripSecurityFields(local)
 		lc = mergeDefaults(lc)
 		if _, err := lc.Cache.Resolve(); err != nil {
@@ -405,6 +254,12 @@ func LoadLauncher(workdir string) (LauncherConfig, string, error) {
 		}
 		return lc, localPath, nil
 	case globalPath != "":
+		// Validate the raw sandbox block (before defaults are merged, so it
+		// sees exactly what the user wrote). Fires for every command, so a
+		// removed backend can't be masked by e.g. --no-sandbox.
+		if err := validateSandbox(global.Sandbox, globalPath); err != nil {
+			return LauncherConfig{}, "", err
+		}
 		lc := mergeDefaults(global)
 		if _, err := lc.Cache.Resolve(); err != nil {
 			return LauncherConfig{}, "", fmt.Errorf("parse %s: %w", globalPath, err)
@@ -492,4 +347,33 @@ func mergeDefaults(lc LauncherConfig) LauncherConfig {
 		lc.Audit.Enabled = def.Audit.Enabled
 	}
 	return lc
+}
+
+// validateSandbox rejects a launcher config that selects a removed or unknown
+// sandbox backend, with a migration hint. omac ships only the built-in
+// sandbox, so `default_profile` must be "builtin" (or unset).
+func validateSandbox(sb SandboxConfig, path string) error {
+	switch sb.DefaultProfile {
+	case "", "builtin":
+		// The built-in sandbox: the only supported backend.
+	case "nono", "nono-netprofile":
+		return fmt.Errorf("%s: the %q sandbox has been removed; only the built-in sandbox remains.\n"+
+			"  Set 'default_profile: builtin' (or delete the line — builtin is the default).\n"+
+			"  See docs/configuration.md.", path, sb.DefaultProfile)
+	case "no-sandbox-debug":
+		return fmt.Errorf("%s: the 'no-sandbox-debug' profile has been removed.\n"+
+			"  For an unsandboxed shell, run: omac start --no-sandbox --inner bash\n"+
+			"  Remove 'default_profile: no-sandbox-debug' from your config.\n"+
+			"  See docs/configuration.md.", path)
+	default:
+		return fmt.Errorf("%s: unknown sandbox profile %q; only \"builtin\" is supported.\n"+
+			"  Set 'default_profile: builtin' (or delete the line).\n"+
+			"  See docs/configuration.md.", path, sb.DefaultProfile)
+	}
+	if len(sb.Profiles) > 0 {
+		return fmt.Errorf("%s: custom sandbox launcher profiles are no longer supported; only the built-in sandbox is available.\n"+
+			"  Remove the 'sandbox.profiles' block from your config.\n"+
+			"  See docs/configuration.md.", path)
+	}
+	return nil
 }

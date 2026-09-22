@@ -3,25 +3,24 @@ package cli
 import (
 	"fmt"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/TNG/oh-my-agentic-coder/internal/config"
 	"github.com/TNG/oh-my-agentic-coder/internal/facade"
 )
 
-// wireForTest runs the real launch wiring for the named launcher profile
-// ("" = the config default) and returns the facade plus any warnings.
-func wireForTest(t *testing.T, launcherProfile string, noSandbox bool) (*facade.Facade, []string) {
+// wireForTest runs the real launch wiring for the default launcher profile
+// and returns the facade plus any warnings.
+func wireForTest(t *testing.T, noSandbox bool) (*facade.Facade, []string) {
 	t.Helper()
-	return wireModeForTest(t, launcherProfile, noSandbox, false)
+	return wireModeForTest(t, noSandbox, false)
 }
 
-func wireModeForTest(t *testing.T, launcherProfile string, noSandbox, learnMode bool) (*facade.Facade, []string) {
+func wireModeForTest(t *testing.T, noSandbox, learnMode bool) (*facade.Facade, []string) {
 	t.Helper()
-	plan, err := resolveSandboxPlan(config.DefaultLauncherConfig(), launcherProfile)
+	plan, err := resolveSandboxPlan(config.DefaultLauncherConfig())
 	if err != nil {
-		t.Fatalf("resolveSandboxPlan(%q): %v", launcherProfile, err)
+		t.Fatalf("resolveSandboxPlan: %v", err)
 	}
 	f := facade.New("", "", nil, 0, 0, "", "test")
 	var warnings []string
@@ -42,7 +41,7 @@ func TestWireFacadeSandboxDefaultProfileWiresChecker(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
-	f, warnings := wireForTest(t, "", false)
+	f, warnings := wireForTest(t, false)
 
 	if len(warnings) != 0 {
 		t.Errorf("default profile must wire cleanly; got warnings: %v", warnings)
@@ -77,7 +76,7 @@ func TestWireFacadeSandboxAppliesDenialFacadeNote(t *testing.T) {
 	const note = "custom note from the profile"
 	stageProfile(t, home, `{"meta": {"name": "default"}, "denial": {"facade_note": "`+note+`"}}`)
 
-	f, warnings := wireForTest(t, "", false)
+	f, warnings := wireForTest(t, false)
 
 	if len(warnings) != 0 {
 		t.Errorf("unexpected warnings: %v", warnings)
@@ -87,32 +86,12 @@ func TestWireFacadeSandboxAppliesDenialFacadeNote(t *testing.T) {
 	}
 }
 
-// TestWireFacadeSandboxOpaqueLauncherDisablesEndpoint: an external launcher
-// (nono) has no omac policy to read, so the endpoint stays off — but the
-// warning now says why, instead of reporting a bogus resolve failure for a
-// policy file that was never meant to exist.
-func TestWireFacadeSandboxOpaqueLauncherDisablesEndpoint(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-
-	f, warnings := wireForTest(t, "nono", false)
-
-	if f.ProtectedPathChecker != nil {
-		t.Error("an opaque launcher must not get a protected-path checker")
-	}
-	if len(warnings) != 1 || !strings.Contains(warnings[0], "nono") {
-		t.Errorf("expected one warning naming the launcher profile; got %v", warnings)
-	}
-	if f.IntentRegistry == nil {
-		t.Error("IntentRegistry must be wired regardless of the sandbox backend")
-	}
-}
-
 // TestWireFacadeSandboxNoSandboxIsSilent: with --no-sandbox there is no
 // sandbox to describe, so the checker stays nil and nothing is warned.
 func TestWireFacadeSandboxNoSandboxIsSilent(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
-	f, warnings := wireForTest(t, "", true)
+	f, warnings := wireForTest(t, true)
 
 	if f.ProtectedPathChecker != nil {
 		t.Error("--no-sandbox must not wire a protected-path checker")
@@ -135,7 +114,7 @@ func TestWireFacadeSandboxLearnModeProtectsNothing(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
-	f, warnings := wireModeForTest(t, "", false, true)
+	f, warnings := wireModeForTest(t, false, true)
 
 	if len(warnings) != 0 {
 		t.Errorf("learn mode must not warn; got %v", warnings)
