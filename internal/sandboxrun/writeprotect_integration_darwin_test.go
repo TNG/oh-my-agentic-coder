@@ -47,6 +47,14 @@ func TestIntegrationOmacConfigDirMasked(t *testing.T) {
 	// Mirror what Run assembles (writeProtectProfilePaths + launcher config).
 	g.WriteProtectedPaths = []string{profile, pages, cfg}
 
+	// A prepared directory the agent owns: moving it into .omac is a
+	// directory-entry create under the protected path (the replacement
+	// vector if the directory itself could be removed).
+	prepared := filepath.Join(workdir, "prepared")
+	if err := os.MkdirAll(prepared, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
 	// The definition files are not readable.
 	for _, target := range []string{cfg, profile, pages} {
 		if out, code := runSandboxed(t, g, "/bin/sh", "-c", "cat "+target); code == 0 {
@@ -54,7 +62,7 @@ func TestIntegrationOmacConfigDirMasked(t *testing.T) {
 		}
 	}
 
-	// Nothing inside .omac accepts writes, creations, or removal.
+	// Nothing inside .omac accepts writes or creations.
 	for _, sh := range []string{
 		"echo tampered >> " + profile,
 		"rm " + profile,
@@ -62,12 +70,21 @@ func TestIntegrationOmacConfigDirMasked(t *testing.T) {
 		"echo own > " + filepath.Join(localDir, "evil.json"),
 		"mkdir " + filepath.Join(localDir, "evil"),
 		"cp /etc/hosts " + profile,
-		"rm -rf " + localDir,
+		"mv " + prepared + " " + localDir,
 	} {
 		if out, code := runSandboxed(t, g, "/bin/sh", "-c", sh); code == 0 {
 			t.Fatalf("must fail inside the sandbox (a way to read, plant, or replace the sandbox definition): %q\n%s", sh, out)
 		}
 	}
+
+	// Seatbelt attributes removing/creating a directory ENTRY to the writable
+	// parent, so `rm -rf <workdir>/.omac` — and replacing it — cannot be
+	// blocked on macOS (verified: an agent can delete the dir and move a
+	// prepared one into its place). The kernel is not the trust anchor here;
+	// project-local sandbox configuration is pinned host-side and a changed
+	// .omac is ignored on the next launch (internal/config/projecttrust.go).
+	// This test asserts what Seatbelt can enforce: contents unreadable and
+	// unwritable, and no entry created under the protected dir.
 
 	// Control: the workdir itself stays writable, so the protection is
 	// scoped to .omac, not a blanket deny.

@@ -62,11 +62,36 @@ func resolveSandboxPlan(workdir string, sel config.ProfileSelection) sandboxPlan
 
 // activeProfileSelection applies --profile-path when given, else the launcher
 // config's layer-local selection.
-func activeProfileSelection(workdir, cliPath string) (config.ProfileSelection, error) {
+//
+// A project-local selection is only used while it matches the content pinned in
+// the host-only store (see config.ProjectSandboxTrust). The workdir is
+// agent-writable, and the macOS backend cannot block replacing <workdir>/.omac
+// between sessions, so a mismatch means the local layer may have been planted:
+// it is ignored (global fallback) unless acceptProject re-approves it.
+func activeProfileSelection(workdir, cliPath string, acceptProject bool, warn io.Writer) (config.ProfileSelection, error) {
 	if strings.TrimSpace(cliPath) != "" {
 		return config.ExplicitProfileSelection(workdir, cliPath)
 	}
-	return config.ResolveSandboxProfile(workdir)
+	sel, err := config.ResolveSandboxProfile(workdir)
+	if err != nil || workdir == "" {
+		return sel, err
+	}
+	trusted, firstUse, reason := config.ProjectSandboxTrust(workdir, sel)
+	switch {
+	case firstUse, acceptProject && !trusted:
+		if perr := config.PinProjectSandbox(workdir, sel); perr != nil && warn != nil {
+			fmt.Fprintf(warn, "omac: cannot record the approved project sandbox configuration (%v); "+
+				"a later replacement will not be detected\n", perr)
+		}
+	case !trusted:
+		if warn != nil {
+			fmt.Fprintf(warn, "omac: [warn] %s — ignoring it and using the global sandbox configuration.\n", reason)
+			fmt.Fprintln(warn, "      Review the change (git diff -- .omac) and re-approve with "+
+				"--accept-project-config, or restore it (git checkout -- .omac).")
+		}
+		return config.GlobalSandboxProfile()
+	}
+	return sel, nil
 }
 
 // warnPermissiveProfile prints advisory findings for a custom sandbox profile

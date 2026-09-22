@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -184,15 +185,70 @@ func TestActiveProfileSelectionCLIPathWins(t *testing.T) {
 	if err := os.WriteFile(local, []byte("{}"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	sel, err := activeProfileSelection(workdir, local)
+	sel, err := activeProfileSelection(workdir, local, false, io.Discard)
 	if err != nil {
 		t.Fatalf("activeProfileSelection: %v", err)
 	}
 	if sel.Path != local || sel.Layer != "workdir" {
 		t.Errorf("selection = %+v; want path %q layer local", sel, local)
 	}
-	if _, err := activeProfileSelection(workdir, filepath.Join(t.TempDir(), "evil.json")); err == nil {
+	if _, err := activeProfileSelection(workdir, filepath.Join(t.TempDir(), "evil.json"), false, io.Discard); err == nil {
 		t.Error("a --profile-path outside the trusted dirs must be rejected")
+	}
+}
+
+// A project-local config is trusted on first use (pinned); once its content
+// changes without re-approval it is ignored in favour of the global layer.
+func TestActiveProfileSelectionDistrustsChangedProjectConfig(t *testing.T) {
+	isolateHome(t)
+	workdir := t.TempDir()
+	local := filepath.Join(config.LocalConfigDir(workdir), "strict.json")
+	if err := os.MkdirAll(filepath.Dir(local), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(local, []byte(`{"meta":{"name":"strict"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(config.ProjectLauncherConfigPath(workdir), []byte("sandbox:\n  profile_name: strict\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// First use pins the content and keeps the local selection.
+	sel, err := activeProfileSelection(workdir, "", false, io.Discard)
+	if err != nil {
+		t.Fatalf("first use: %v", err)
+	}
+	if sel.Layer != "workdir" {
+		t.Fatalf("first use should trust and select the local layer, got %+v", sel)
+	}
+
+	// Simulate the agent replacing the profile between sessions.
+	if err := os.WriteFile(local, []byte(`{"meta":{"name":"evil"},"network":{"mode":"open"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var warn bytes.Buffer
+	sel, err = activeProfileSelection(workdir, "", false, &warn)
+	if err != nil {
+		t.Fatalf("tampered: %v", err)
+	}
+	if sel.Layer == "workdir" {
+		t.Errorf("a changed project config must not be trusted, got %+v", sel)
+	}
+	if !strings.Contains(warn.String(), "changed since it was approved") {
+		t.Errorf("expected a re-approval warning, got:\n%s", warn.String())
+	}
+
+	// Explicit re-approval trusts the new content again.
+	sel, err = activeProfileSelection(workdir, "", true, io.Discard)
+	if err != nil {
+		t.Fatalf("re-approve: %v", err)
+	}
+	if sel.Layer != "workdir" || sel.Path != local {
+		t.Errorf("re-approval should restore the local selection, got %+v", sel)
+	}
+	sel, err = activeProfileSelection(workdir, "", false, io.Discard)
+	if err != nil || sel.Layer != "workdir" {
+		t.Errorf("after re-approval the local layer must be trusted: %+v (%v)", sel, err)
 	}
 }
 
