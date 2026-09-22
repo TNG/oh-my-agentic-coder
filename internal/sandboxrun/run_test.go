@@ -10,6 +10,35 @@ import (
 	"github.com/TNG/oh-my-agentic-coder/internal/toolcache"
 )
 
+func TestEnsureLocalConfigDir(t *testing.T) {
+	workdir := t.TempDir()
+	dir, err := ensureLocalConfigDir(workdir)
+	if err != nil {
+		t.Fatalf("ensureLocalConfigDir: %v", err)
+	}
+	if dir != filepath.Join(workdir, ".omac") {
+		t.Errorf("dir = %q; want <workdir>/.omac", dir)
+	}
+	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
+		t.Fatalf(".omac was not created as a directory: %v", err)
+	}
+
+	// A symlinked .omac is refused: it could point outside the project.
+	other := t.TempDir()
+	linked := t.TempDir()
+	if err := os.Symlink(other, filepath.Join(linked, ".omac")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if _, err := ensureLocalConfigDir(linked); err == nil {
+		t.Fatal("a symlinked .omac must be rejected")
+	}
+
+	// Empty workdir is a no-op.
+	if dir, err := ensureLocalConfigDir(""); err != nil || dir != "" {
+		t.Errorf("ensureLocalConfigDir(\"\") = (%q, %v); want (\"\", nil)", dir, err)
+	}
+}
+
 func TestInjectedToolCacheEnv(t *testing.T) {
 	cacheDir := t.TempDir()
 	grants := &Grants{AllowPaths: []string{cacheDir}}

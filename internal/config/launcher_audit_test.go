@@ -48,13 +48,12 @@ func TestGlobalAuditExplicitDisable(t *testing.T) {
 
 func TestLoadLauncherAuditUnsetDefaultsOn(t *testing.T) {
 	dir := t.TempDir()
-	ocDir := filepath.Join(dir, ".opencode")
-	if err := os.MkdirAll(ocDir, 0o755); err != nil {
+	if err := os.MkdirAll(LocalConfigDir(dir), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	// Config present but with no audit block: audit should default on.
 	yaml := "facade:\n  idle_timeout_secs: 60\n"
-	if err := os.WriteFile(filepath.Join(ocDir, "oh-my-agentic-coder.yaml"), []byte(yaml), 0o644); err != nil {
+	if err := os.WriteFile(ProjectLauncherConfigPath(dir), []byte(yaml), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	lc, _, err := LoadLauncher(dir)

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/TNG/oh-my-agentic-coder/internal/config"
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
 )
 
@@ -14,7 +15,7 @@ func TestResolveSandboxPlanDefaultProfileResolvesPolicy(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
-	plan := resolveSandboxPlan("")
+	plan := resolveSandboxPlan("", config.ProfileSelection{})
 	if plan.PolicyRef != "default" {
 		t.Errorf("PolicyRef = %q, want default", plan.PolicyRef)
 	}
@@ -39,7 +40,7 @@ func TestResolveSandboxPlanLoadsPolicyFile(t *testing.T) {
 	t.Setenv("HOME", home)
 	stageProfile(t, home, `{"meta": {"name": "default"}, "workdir": {"access": "read"}}`)
 
-	plan := resolveSandboxPlan("")
+	plan := resolveSandboxPlan("", config.ProfileSelection{})
 	if plan.Policy == nil || plan.Policy.Workdir.Access != "read" {
 		t.Fatalf("staged policy file must win; got %+v", plan.Policy)
 	}
@@ -49,16 +50,20 @@ func TestResolveSandboxPlanLoadsPolicyFile(t *testing.T) {
 	}
 }
 
-// A non-empty profileRef (the resolved sandbox.profile_path) is the policy the
+// A non-empty selection path (the resolved sandbox profile) is the policy the
 // plan enforces, loaded from that exact path rather than the default.
 func TestResolveSandboxPlanUsesProfileRef(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	custom := filepath.Join(t.TempDir(), "custom.json")
+	workdir := t.TempDir()
+	custom := filepath.Join(config.LocalConfigDir(workdir), "custom.json")
+	if err := os.MkdirAll(filepath.Dir(custom), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(custom, []byte(`{"meta": {"name": "custom"}, "workdir": {"access": "read"}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	plan := resolveSandboxPlan(custom)
+	plan := resolveSandboxPlan(workdir, config.ProfileSelection{Path: custom, Name: "custom", Layer: "workdir"})
 	if plan.PolicyRef != custom {
 		t.Errorf("PolicyRef = %q, want %q", plan.PolicyRef, custom)
 	}
@@ -126,46 +131,79 @@ func TestExcludeProfilePagesFile(t *testing.T) {
 	}
 }
 
-func TestInspectProfileRef(t *testing.T) {
+func TestProfileRefFromConfig(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
 	// An explicit --profile flag value wins.
-	got, err := inspectProfileRef(t.TempDir(), "/x/custom.json")
+	got, err := profileRefFromConfig(t.TempDir(), "/x/custom.json")
 	if err != nil || got != "/x/custom.json" {
 		t.Errorf("flag ref should win, got (%q, %v)", got, err)
 	}
 
 	// No config on disk resolves to the built-in default ("").
-	if got, err = inspectProfileRef(t.TempDir(), ""); err != nil || got != "" {
+	if got, err = profileRefFromConfig(t.TempDir(), ""); err != nil || got != "" {
 		t.Errorf("no config should resolve to default (empty), got (%q, %v)", got, err)
 	}
 
-	// A project config with profile_path resolves to that absolute path.
+	// A project config with profile_name resolves to that .omac path.
 	workdir := t.TempDir()
-	prof := filepath.Join(workdir, "sandbox.json")
+	prof := filepath.Join(config.LocalConfigDir(workdir), "strict.json")
+	if err := os.MkdirAll(filepath.Dir(prof), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(prof, []byte("{}"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	ocDir := filepath.Join(workdir, ".opencode")
-	if err := os.MkdirAll(ocDir, 0o755); err != nil {
+	if err := os.WriteFile(config.ProjectLauncherConfigPath(workdir),
+		[]byte("sandbox:\n  profile_name: strict\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(ocDir, "oh-my-agentic-coder.yaml"),
-		[]byte("sandbox:\n  profile_path: ./sandbox.json\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if got, err = inspectProfileRef(workdir, ""); err != nil || got != prof {
-		t.Errorf("inspectProfileRef = (%q, %v), want (%q, nil)", got, err, prof)
+	if got, err = profileRefFromConfig(workdir, ""); err != nil || got != prof {
+		t.Errorf("profileRefFromConfig = (%q, %v), want (%q, nil)", got, err, prof)
 	}
 
-	// A broken profile_path surfaces its error instead of silently
+	// A broken profile_name surfaces its error instead of silently
 	// falling back to the default.
-	if err := os.WriteFile(filepath.Join(ocDir, "oh-my-agentic-coder.yaml"),
-		[]byte("sandbox:\n  profile_path: ./missing.json\n"), 0o644); err != nil {
+	if err := os.WriteFile(config.ProjectLauncherConfigPath(workdir),
+		[]byte("sandbox:\n  profile_name: missing\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = inspectProfileRef(workdir, ""); err == nil {
-		t.Error("a missing profile_path should return an error, got nil")
+	if _, err = profileRefFromConfig(workdir, ""); err == nil {
+		t.Error("a missing profile_name should return an error, got nil")
+	}
+}
+
+func TestActiveProfileSelectionCLIPathWins(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	workdir := t.TempDir()
+	local := filepath.Join(config.LocalConfigDir(workdir), "strict.json")
+	if err := os.MkdirAll(filepath.Dir(local), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(local, []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sel, err := activeProfileSelection(workdir, local)
+	if err != nil {
+		t.Fatalf("activeProfileSelection: %v", err)
+	}
+	if sel.Path != local || sel.Layer != "workdir" {
+		t.Errorf("selection = %+v; want path %q layer local", sel, local)
+	}
+	if _, err := activeProfileSelection(workdir, filepath.Join(t.TempDir(), "evil.json")); err == nil {
+		t.Error("a --profile-path outside the trusted dirs must be rejected")
+	}
+}
+
+func TestRejectLegacySandboxFlag(t *testing.T) {
+	env, _, errBuf, drain := newPipeEnv(t, "")
+	if !rejectLegacySandboxFlag("start", []string{"--sandbox", "builtin"}, env) {
+		t.Fatal("--sandbox must be rejected with a migration error")
+	}
+	drain()
+	if out := errBuf.String(); !strings.Contains(out, "0.10.0") || !strings.Contains(out, "--profile-path") {
+		t.Errorf("migration error should name the release and the replacement; got:\n%s", out)
 	}
 }
 
@@ -178,7 +216,7 @@ func TestResolveSandboxPlanBrokenPolicyIsRecordedNotFatal(t *testing.T) {
 	t.Setenv("HOME", home)
 	stageProfile(t, home, `{ not valid json`)
 
-	plan := resolveSandboxPlan("")
+	plan := resolveSandboxPlan("", config.ProfileSelection{})
 	if plan.PolicyErr == nil {
 		t.Error("PolicyErr should record the failed policy resolution")
 	}

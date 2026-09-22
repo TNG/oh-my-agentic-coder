@@ -301,7 +301,7 @@ func TestSandboxServeArgvOpensServerPort(t *testing.T) {
 
 	// A user-supplied `omac serve -- --port 4095` must move the grant with
 	// the server, otherwise omac guards a port nothing listens on.
-	override := sandbox.Inputs{Workdir: "/w", InnerCmd: []string{"opencode", "serve", "--port", "4095"}}
+	override := sandbox.Inputs{InnerCmd: []string{"opencode", "serve", "--port", "4095"}}
 	oargv, err := sandboxServeArgv(override, "", oc)
 	if err != nil {
 		t.Fatalf("sandboxServeArgv (port override): %v", err)
@@ -656,7 +656,7 @@ func TestForwardHarnessEnvNoHomeEnvAddsNothing(t *testing.T) {
 // behaviour is read from.
 func nativePlanForTest(t *testing.T) sandboxPlan {
 	t.Helper()
-	return resolveSandboxPlan("")
+	return resolveSandboxPlan("", config.ProfileSelection{})
 }
 
 func equalStrings(a, b []string) bool {

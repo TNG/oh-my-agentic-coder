@@ -175,11 +175,11 @@ review the change and re-register it with `omac register --force`.
 
 ## Launcher config trust
 
-The launcher config (`oh-my-agentic-coder.yaml`) controls which sandbox command omac runs on your machine. That command executes before any confinement exists, with your full user environment, so it must not be under the project's control.
+The launcher config (`config.yaml`) selects which sandbox policy omac enforces and tunes the audit and facade settings. omac always runs its built-in sandbox; the launcher config cannot supply the command that runs on your machine.
 
-omac enforces this: security-sensitive launcher fields (`sandbox.*`, `audit.*`, `facade.base_env_passthrough`) are accepted only from your user-global config (`~/.config/omac/config.yaml`) or omac's compiled-in defaults. A project-local `<workdir>/.opencode/oh-my-agentic-coder.yaml` can only contribute operational settings (cache scope, facade timeouts). Opening a repository cannot change the sandbox runtime, disable the audit trail, or redirect audit logs.
+omac enforces a trust split: security-sensitive launcher fields (`audit.*`, `facade.base_env_passthrough`, and the sandbox system-prompt briefing) are accepted only from your user-global config (`~/.config/omac/config.yaml`) or omac's compiled-in defaults. A project-local `<workdir>/.omac/config.yaml` can contribute operational settings (cache scope, facade timeouts) plus `sandbox.profile_name`. Opening a repository cannot disable the audit trail or redirect audit logs.
 
-Sandbox policy grants (filesystem paths, network hosts, environment variables) live in the sandbox profile (`~/.config/omac/sandbox-profiles/default.json`), which has no project-local equivalent. Profile paths referenced in launcher templates are likewise restricted to that directory.
+Sandbox policy grants (filesystem paths, network hosts, environment variables) live in the sandbox profile (`~/.config/omac/sandbox-profiles/default.json` globally, `<workdir>/.omac/default.json` for a project). `sandbox.profile_name` resolves a bare name only inside the directory of the config that declares it, so layers never mix. Committed project profiles are allowed, but they must live under `.omac/`, which omac creates on a sandboxed launch and masks **read+write** inside the sandbox, even in learn mode: a session can neither read the rules nor write, create, rename, or delete anything in it, so it cannot plant or rewrite a profile a later launch would trust. Symlinked profiles are rejected. `--profile-path` accepts only a path inside the global `sandbox-profiles/` directory or `<workdir>/.omac/`.
 
 ## Environment filtering
 

@@ -9,7 +9,7 @@ description: Building and understanding the omac codebase.
 |---|---|
 | `cmd/omac/` | Entrypoint |
 | `internal/cli/` | Subcommand dispatch (one file per subcommand; see [CLI reference](../usage/cli.md)) |
-| `internal/config/` | Types for both config files: `omac.yaml` (skill manifest) and `oh-my-agentic-coder.yaml` (launcher config) |
+| `internal/config/` | Types for both config files: `omac.yaml` (skill manifest) and `config.yaml` (launcher config) |
 | `internal/registry/` | `.opencode/sidecar.json` (atomic writes, flock) |
 | `internal/keychain/` | Thin wrapper over `github.com/zalando/go-keyring` |
 | `internal/secrets/` | Secret type (redacted Stringer, zeroize) + masked prompt |

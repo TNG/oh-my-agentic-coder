@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/TNG/oh-my-agentic-coder/internal/config"
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxdeny"
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
 )
@@ -233,6 +234,10 @@ func ResolveGrants(p *sandboxprofile.Profile, workdir string, notices io.Writer)
 		return nil, err
 	}
 	protected = append(protected, denyResolved...)
+
+	// The omac config directories hold the sandbox definition and are never
+	// overridable, even if the profile lists them in override_deny.
+	protected = append(protected, sandboxprofile.NonOverridableProtectedPaths(config.LocalConfigDir(workdir))...)
 
 	g := &Grants{
 		Workdir:         workdir,
@@ -508,10 +513,11 @@ func resolveDenyPaths(userDeny, baselineBasenames, overrideDeny, scanRoots, prot
 		}
 	}
 
-	// Filter baseline basenames through overrides before walking.
+	// Filter baseline basenames through overrides before walking. ".omac"
+	// is the omac config directory and is never overridable.
 	overrides := sandboxprofile.BuildOverrideLookup(overrideDeny)
 	for _, b := range baselineBasenames {
-		if !overrides[b] {
+		if b == nonOverridableOMACDir || !overrides[b] {
 			globs = append(globs, b)
 		}
 	}
@@ -522,15 +528,19 @@ func resolveDenyPaths(userDeny, baselineBasenames, overrideDeny, scanRoots, prot
 		if err != nil {
 			return nil, err
 		}
-		// Drop baseline matches covered by an absolute-path override.
+		// Drop baseline matches covered by an absolute-path override, except
+		// the omac config directory.
 		for _, m := range matches {
-			if !overrides[m] {
+			if filepath.Base(m) == nonOverridableOMACDir || !overrides[m] {
 				out = append(out, m)
 			}
 		}
 	}
 	return out, nil
 }
+
+// nonOverridableOMACDir is the project-local omac config directory basename.
+const nonOverridableOMACDir = ".omac"
 
 // pathFormDenies expands the path-form (non basename-glob) entries of a
 // filesystem.deny list to absolute paths. Glob entries are skipped —

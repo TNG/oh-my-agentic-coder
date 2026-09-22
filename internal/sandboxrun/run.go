@@ -78,12 +78,22 @@ func Run(opts Options) int {
 		return 1
 	}
 
+	// The project-local .omac directory holds the sandbox definition. Create
+	// it up front so it exists at launch and can be masked as a directory,
+	// regardless of whether any profile is committed: an agent must never be
+	// able to create it and have a later launch trust its contents.
+	localDir, err := ensureLocalConfigDir(opts.Workdir)
+	if err != nil {
+		return fail("%v", err)
+	}
+
 	// WithScaffold: this is the launch path — the child the default
 	// launcher template invokes — so first run creates the user's editable
 	// ~/.config/omac/sandbox-profiles/default.json. Every inspection
 	// caller (doctor, diagnose, provenance, facade wiring) resolves
-	// read-only instead.
-	profile, profilePath, err := sandboxprofile.Resolve(opts.Flags.ProfileRef, sandboxprofile.WithScaffold())
+	// read-only instead. WithProjectDir admits an explicit path only inside
+	// the project's .omac directory.
+	profile, profilePath, err := sandboxprofile.Resolve(opts.Flags.ProfileRef, sandboxprofile.WithScaffold(), sandboxprofile.WithProjectDir(localDir))
 	if err != nil {
 		return fail("%v", err)
 	}
@@ -145,6 +155,11 @@ func Run(opts Options) int {
 		recorder = newLearnRecorder(grants, intentBase)
 		grants = grants.withUnrestrictedFilesystem()
 	}
+
+	// The omac config directories define the sandbox itself and stay masked
+	// even in learn mode. Without this a session could plant a .omac/ (or
+	// rewrite the global config) that a later, non-learn launch would trust.
+	grants.ProtectedPaths = dedupe(append(grants.ProtectedPaths, sandboxprofile.NonOverridableProtectedPaths(localDir)...))
 
 	// Injected child env. The validated cache redirect is recreated here
 	// and proxy vars are added before the backend builds its rules.
@@ -317,10 +332,29 @@ func writeProtectProfilePaths(ref, profilePath string, protected []string, stder
 	return dropDenied(candidates, protected), nil
 }
 
+// ensureLocalConfigDir creates <workdir>/.omac (the project config dir) so it
+// exists at launch and can be masked as a directory. A symlinked .omac is
+// rejected: it could point outside the project and defeat the mask. Returns ""
+// when workdir is empty.
+func ensureLocalConfigDir(workdir string) (string, error) {
+	if workdir == "" {
+		return "", nil
+	}
+	dir := config.LocalConfigDir(workdir)
+	if li, err := os.Lstat(dir); err == nil && li.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("%s is a symlink; the project .omac directory must be a real directory "+
+			"(a symlinked config dir could point outside the project and defeat the mask)", dir)
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", fmt.Errorf("create %s: %w", dir, err)
+	}
+	return dir, nil
+}
+
 // launcherConfigPath returns the launcher config for workdir ("" for the
-// built-in defaults). The config selects profile_path and audit settings,
-// so it is write-protected like the profile; a load failure (the parent
-// already validated the config) only skips the protection with a warning.
+// built-in defaults). The config selects the profile and audit settings, so it
+// is write-protected like the profile; a load failure (the parent already
+// validated the config) only skips the protection with a warning.
 func launcherConfigPath(workdir string, stderr io.Writer) string {
 	_, cfgPath, err := config.LoadLauncher(workdir)
 	if err != nil {

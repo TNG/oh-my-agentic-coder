@@ -102,8 +102,9 @@ func PagesPath(profilePath string) string {
 
 // resolveOpts holds the Resolve knobs.
 type resolveOpts struct {
-	scaffold bool
-	anyPath  bool // allow explicit paths outside the trusted profile directory
+	scaffold   bool
+	anyPath    bool   // allow explicit paths outside the trusted profile directory
+	projectDir string // extra directory explicit paths may live under (the workdir)
 }
 
 // ResolveOption tunes Resolve. The zero set is read-only and path-constrained.
@@ -124,6 +125,14 @@ func WithScaffold() ResolveOption {
 // The launch path must never pass this option.
 func WithAnyPath() ResolveOption {
 	return func(o *resolveOpts) { o.anyPath = true }
+}
+
+// WithProjectDir permits an explicit path that resolves inside dir, on top of
+// the trusted profile directory. The launch path passes the project's .omac
+// directory so a committed local profile works without opening the door to
+// arbitrary host paths.
+func WithProjectDir(dir string) ResolveOption {
+	return func(o *resolveOpts) { o.projectDir = dir }
 }
 
 // Resolve loads a profile reference:
@@ -150,14 +159,19 @@ func Resolve(ref string, opts ...ResolveOption) (*Profile, string, error) {
 			return nil, "", fmt.Errorf("resolve sandbox profile path %q: %w", ref, err)
 		}
 		if !o.anyPath {
-			// Restrict to the trusted profile directory so a workdir-supplied
-			// --profile path cannot point at an attacker-controlled file.
+			// Restrict explicit paths to the trusted profile directory so a
+			// workdir-supplied --profile path cannot point at an
+			// attacker-controlled file. A project-committed profile is the
+			// one exception, and only inside the workdir itself.
 			profileDir, err := ProfileDir()
 			if err != nil {
 				return nil, "", fmt.Errorf("resolve sandbox profile dir: %w", err)
 			}
-			trusted := filepath.Clean(profileDir) + string(os.PathSeparator)
-			if !strings.HasPrefix(filepath.Clean(abs)+string(os.PathSeparator), trusted) {
+			allowed := withinDir(profileDir, abs)
+			if !allowed && o.projectDir != "" {
+				allowed = withinDir(o.projectDir, abs)
+			}
+			if !allowed {
 				return nil, "", fmt.Errorf("sandbox profile path %q is outside the trusted directory %s", ref, profileDir)
 			}
 		}
@@ -233,6 +247,16 @@ func writeAtomic(path string, data []byte) error {
 		return err
 	}
 	return nil
+}
+
+// withinDir reports whether path equals dir or lies under it, lexically.
+func withinDir(dir, path string) bool {
+	dir = filepath.Clean(dir)
+	path = filepath.Clean(path)
+	if path == dir {
+		return true
+	}
+	return strings.HasPrefix(path+string(os.PathSeparator), dir+string(os.PathSeparator))
 }
 
 func loadFile(path string) (*Profile, error) {

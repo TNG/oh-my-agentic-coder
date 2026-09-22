@@ -11,27 +11,29 @@ import (
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
 )
 
-// TestIntegrationWriteProtectedProfileReadOnly is the real-Seatbelt proof of
-// #267: inside a read-write workdir, the profile, its pages sibling, and the
-// launcher config stay readable but reject every write form, including
-// unlink, rename, and replace. The file-write* denies sit after every allow
-// in the SBPL, so they win over the writable workdir and TMPDIR baseline.
-func TestIntegrationWriteProtectedProfileReadOnly(t *testing.T) {
+// TestIntegrationOmacConfigDirMasked is the real-Seatbelt proof: the
+// project-local .omac directory holds the sandbox definition (launcher config,
+// profile, pages). Inside a read-write workdir it must be entirely unreadable
+// and unwritable, so a session can neither read the rules nor plant or rewrite
+// a file a later launch would trust. The protected denies sit after every
+// allow in the SBPL, so they win over the writable workdir.
+func TestIntegrationOmacConfigDirMasked(t *testing.T) {
 	workdir := t.TempDir()
-	profile := filepath.Join(workdir, "sandbox.json")
-	if err := os.WriteFile(profile, []byte(`{"meta":{"name":"t"}}`), 0o644); err != nil {
+	localDir := config.LocalConfigDir(workdir)
+	if err := os.MkdirAll(localDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	pages := filepath.Join(workdir, "sandbox.pages.json")
-	if err := os.WriteFile(pages, []byte(`{"schema":1,"entries":[]}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	cfgPath := config.ProjectLauncherConfigPath(workdir)
-	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(cfgPath, []byte("sandbox:\n  profile_path: ./sandbox.json\n"), 0o644); err != nil {
-		t.Fatal(err)
+	cfg := config.ProjectLauncherConfigPath(workdir)
+	profile := filepath.Join(localDir, "profile.json")
+	pages := filepath.Join(localDir, "profile.pages.json")
+	for path, body := range map[string]string{
+		cfg:     "sandbox:\n  profile_name: profile\n",
+		profile: `{"meta":{"name":"profile"}}`,
+		pages:   `{"schema":1,"entries":[]}`,
+	} {
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	p := &sandboxprofile.Profile{
@@ -42,50 +44,40 @@ func TestIntegrationWriteProtectedProfileReadOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Mirror what Run assembles (writeProtectProfilePaths + the launcher
-	// config append).
-	g.WriteProtectedPaths = []string{profile, pages, cfgPath}
+	// Mirror what Run assembles (writeProtectProfilePaths + launcher config).
+	g.WriteProtectedPaths = []string{profile, pages, cfg}
 
-	// All three files stay readable.
-	if out, code := runSandboxed(t, g, "/bin/sh", "-c",
-		"cat "+profile+" >/dev/null && cat "+pages+" >/dev/null && cat "+cfgPath+" >/dev/null && echo READ-OK"); code != 0 || out == "" {
-		t.Fatalf("profile, pages, and launcher config must stay readable (exit %d):\n%s", code, out)
-	}
-
-	// None accepts writes.
-	for _, target := range []string{profile, pages, cfgPath} {
-		if out, code := runSandboxed(t, g, "/bin/sh", "-c", "echo tampered >> "+target); code == 0 {
-			t.Fatalf("write to %s must fail — a sandboxed session could rewrite the next launch's grants\n%s", target, out)
+	// The definition files are not readable.
+	for _, target := range []string{cfg, profile, pages} {
+		if out, code := runSandboxed(t, g, "/bin/sh", "-c", "cat "+target); code == 0 {
+			t.Fatalf("%s must not be readable inside the sandbox, got:\n%s", target, out)
 		}
 	}
 
-	// Remove, rename, and replace are writes too: a session must not be
-	// able to swap the protected file for its own.
+	// Nothing inside .omac accepts writes, creations, or removal.
 	for _, sh := range []string{
+		"echo tampered >> " + profile,
 		"rm " + profile,
 		"mv " + profile + " " + profile + ".moved",
-		"echo own > " + profile + ".own && mv " + profile + ".own " + profile,
+		"echo own > " + filepath.Join(localDir, "evil.json"),
+		"mkdir " + filepath.Join(localDir, "evil"),
 		"cp /etc/hosts " + profile,
-		"ln " + profile + " " + profile + ".hardlink",
+		"rm -rf " + localDir,
 	} {
 		if out, code := runSandboxed(t, g, "/bin/sh", "-c", sh); code == 0 {
-			t.Fatalf("must fail inside the sandbox (a way to remove, rename, or replace the profile): %q\n%s", sh, out)
+			t.Fatalf("must fail inside the sandbox (a way to read, plant, or replace the sandbox definition): %q\n%s", sh, out)
 		}
 	}
 
 	// Control: the workdir itself stays writable, so the protection is
-	// per-path, not a blanket deny.
+	// scoped to .omac, not a blanket deny.
 	if out, code := runSandboxed(t, g, "/bin/sh", "-c",
 		"echo ok > "+filepath.Join(workdir, "agentfile")); code != 0 {
 		t.Fatalf("workdir must stay writable (exit %d):\n%s", code, out)
 	}
 
-	// Nothing leaked through: the host profile is byte-identical.
-	data, err := os.ReadFile(profile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(data) != `{"meta":{"name":"t"}}` {
-		t.Fatalf("profile was tampered with: %s", data)
+	// Nothing leaked through: the host files are byte-identical.
+	if data, err := os.ReadFile(profile); err != nil || string(data) != `{"meta":{"name":"profile"}}` {
+		t.Fatalf("profile was tampered with: %s (err %v)", data, err)
 	}
 }

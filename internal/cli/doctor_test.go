@@ -6,22 +6,22 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/TNG/oh-my-agentic-coder/internal/config"
 	"github.com/TNG/oh-my-agentic-coder/internal/keychain"
 	"github.com/TNG/oh-my-agentic-coder/internal/secrets"
 	"github.com/TNG/oh-my-agentic-coder/internal/skillconfig"
 	"github.com/TNG/oh-my-agentic-coder/internal/skillstate"
 )
 
-// writeWorkdirConfig writes an oh-my-agentic-coder.yaml into the workdir
-// selecting the built-in sandbox, so LoadLauncher finds a workdir config.
+// writeWorkdirConfig writes a project launcher config into the workdir, so
+// LoadLauncher finds a project-local config.
 func writeWorkdirConfig(t *testing.T, workdir string) {
 	t.Helper()
-	dir := filepath.Join(workdir, ".opencode")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	path := config.ProjectLauncherConfigPath(workdir)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "oh-my-agentic-coder.yaml"),
-		[]byte("sandbox:\n  default_profile: builtin\n"), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte("cache:\n  scope: workdir\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -426,26 +426,25 @@ func TestDoctorNonEmptyAllowVarsNotWarned(t *testing.T) {
 	}
 }
 
-// TestDoctorCustomProfileLabel asserts a custom sandbox.profile_path is named
+// TestDoctorCustomProfileLabel asserts a custom sandbox.profile_name is named
 // in doctor's sandbox warnings instead of being mislabeled "default".
 func TestDoctorCustomProfileLabel(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	workdir := t.TempDir()
 
-	prof := filepath.Join(workdir, "sandbox.json")
+	prof := filepath.Join(config.LocalConfigDir(workdir), "team.json")
+	if err := os.MkdirAll(filepath.Dir(prof), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(prof, []byte(`{
 	  "meta": {"name": "team"},
 	  "filesystem": {"allow": ["~/.cargo"]}
 	}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	ocDir := filepath.Join(workdir, ".opencode")
-	if err := os.MkdirAll(ocDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(ocDir, "oh-my-agentic-coder.yaml"),
-		[]byte("sandbox:\n  profile_path: ./sandbox.json\n"), 0o644); err != nil {
+	if err := os.WriteFile(config.ProjectLauncherConfigPath(workdir),
+		[]byte("sandbox:\n  profile_name: team\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -467,19 +466,18 @@ func TestDoctorCustomProfileLabel(t *testing.T) {
 }
 
 // TestDoctorBrokenProfilePathWarns asserts doctor says so when the configured
-// sandbox.profile_path cannot be resolved, instead of silently inspecting the
+// sandbox.profile_name cannot be resolved, instead of silently inspecting the
 // default.
 func TestDoctorBrokenProfilePathWarns(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	workdir := t.TempDir()
 
-	ocDir := filepath.Join(workdir, ".opencode")
-	if err := os.MkdirAll(ocDir, 0o755); err != nil {
+	if err := os.MkdirAll(config.LocalConfigDir(workdir), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(ocDir, "oh-my-agentic-coder.yaml"),
-		[]byte("sandbox:\n  profile_path: ./missing.json\n"), 0o644); err != nil {
+	if err := os.WriteFile(config.ProjectLauncherConfigPath(workdir),
+		[]byte("sandbox:\n  profile_name: missing\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -492,8 +490,8 @@ func TestDoctorBrokenProfilePathWarns(t *testing.T) {
 	if code != ExitOK {
 		t.Errorf("doctor exit = %d, want ExitOK (advisory fallback)", code)
 	}
-	if !strings.Contains(output, "missing.json") || !strings.Contains(output, "built-in default") {
-		t.Errorf("doctor should warn about the broken profile_path and the fallback; got:\n%s", output)
+	if !strings.Contains(output, "missing") || !strings.Contains(output, "built-in default") {
+		t.Errorf("doctor should warn about the broken profile_name and the fallback; got:\n%s", output)
 	}
 }
 

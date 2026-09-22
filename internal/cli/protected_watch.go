@@ -44,12 +44,12 @@ type protectedWatch struct {
 // onto the policy profile exactly like the sandbox child does, so the
 // watcher scans the same roots the child masks.
 //
-// Returns nil when there is nothing to mirror (non-native launcher,
+// Returns nil when there is nothing to mirror (no resolved policy, or
 // argv not a `omac sandbox run`); callers skip learn mode, where
 // nothing is protected. checker may be nil; audit events are dropped
 // when a is nil.
 func startProtectedWatch(a audit.Auditor, checker *sandboxrun.ProtectedPathSet, plan sandboxPlan, argv []string, workdir string) *protectedWatch {
-	if !plan.Native || plan.Policy == nil || len(argv) < 3 || argv[1] != "sandbox" || argv[2] != "run" {
+	if plan.Policy == nil || len(argv) < 3 || argv[1] != "sandbox" || argv[2] != "run" {
 		return nil
 	}
 	flags, err := sandboxprofile.ParseFlags(argv[3:])

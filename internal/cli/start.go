@@ -72,6 +72,10 @@ type launchOpts struct {
 	// sessionID, when non-empty, selects a specific session to continue by id
 	// (`omac continue -s <id>`). Empty means "most recent" (the default).
 	sessionID string
+	// profilePath is an explicit sandbox grants profile (--profile-path),
+	// overriding the launcher config's profile_name. It must live in the
+	// global sandbox-profiles directory or the project's .omac directory.
+	profilePath string
 	// openPorts are extra loopback ports from --open-port (repeatable),
 	// typically a local webServer port for browser tests.
 	openPorts []int
@@ -102,6 +106,7 @@ func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, int) 
 		noAudit            = fs.Bool("no-audit", false, "Disable the security audit trail.")
 		auditStrict        = fs.Bool("audit-strict", false, "Fail-closed: abort if the audit log cannot be written.")
 		sessionID          = fs.String("session", "", "Continue a specific session by id instead of the most recent one. (shorthand: -s)")
+		profilePath        = fs.String("profile-path", "", "Path to a sandbox grants profile inside ~/.config/omac/sandbox-profiles/ or <workdir>/.omac/. Overrides sandbox.profile_name.")
 	)
 	var openPorts intMultiFlag
 	fs.Var(&openPorts, "open-port", "Allow the sandboxed process to bind and connect on this TCP port (repeatable). Useful for a local app/dev server the agent or its tools talk to — e.g. Playwright/Vite/Next on :3000. On Linux, Landlock cannot limit that to loopback: outbound TCP to any host on the same port is also allowed.")
@@ -130,6 +135,9 @@ func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, int) 
 	harness, ourArgs, err := splitHarnessToken(ourArgs)
 	if err != nil {
 		fmt.Fprintf(env.Stderr, "omac %s: %v\n", cmdName, err)
+		return launchOpts{}, ExitMisuse
+	}
+	if rejectLegacySandboxFlag(cmdName, ourArgs, env) {
 		return launchOpts{}, ExitMisuse
 	}
 	if code, ok := parseWithHarnessArgsHint(fs, cmdName, ourArgs, env); !ok {
@@ -162,9 +170,26 @@ func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, int) 
 		noAudit:            *noAudit,
 		auditStrict:        *auditStrict,
 		sessionID:          *sessionID,
+		profilePath:        *profilePath,
 		openPorts:          append([]int(nil), openPorts...),
 		innerArgs:          innerArgs,
 	}, ExitOK
+}
+
+// rejectLegacySandboxFlag turns 0.9.0's `--sandbox <name>` (which selected a
+// launcher argv template) into an actionable migration error.
+func rejectLegacySandboxFlag(cmdName string, args []string, env *Env) bool {
+	for _, a := range args {
+		if a == "--sandbox" || strings.HasPrefix(a, "--sandbox=") {
+			fmt.Fprintf(env.Stderr, "omac %s: --sandbox was removed in 0.10.0.\n"+
+				"  omac now always runs its built-in sandbox. To choose sandbox grants, put a profile\n"+
+				"  file in .omac/ (e.g. .omac/default.json) and pass --profile-path .omac/default.json,\n"+
+				"  or set 'sandbox.profile_name' in .omac/config.yaml.\n"+
+				"  See docs/configuration.md\n", cmdName)
+			return true
+		}
+	}
+	return false
 }
 
 // checkInnerBinary verifies the resolved inner command binary is on $PATH.
@@ -246,29 +271,33 @@ func runLaunch(env *Env, opts launchOpts) int {
 	if verbose && cfgPath != "" {
 		fmt.Fprintf(env.Stderr, "[verbose] loaded launcher config: %s\n", cfgPath)
 	}
-	for _, w := range lc.Sandbox.DeprecationWarnings() {
+	for _, w := range config.LegacyProjectConfigWarnings(env.Workdir) {
 		fmt.Fprintln(env.Stderr, prefix+": [warn] "+w)
 	}
-	// Resolve sandbox.profile_path (if set) to the policy profile the run
-	// enforces. A bad path is fatal under a real sandbox; under --no-sandbox no
-	// profile is applied, so a resolution error is ignored.
-	profileRef, profErr := lc.ResolveSandboxProfileRef(cfgPath, env.Workdir)
-	if profErr != nil && !noSandbox {
-		fmt.Fprintln(env.Stderr, prefix+": sandbox profile:", profErr)
+	// Resolve the sandbox grants profile. A bad selection is fatal under a
+	// real sandbox; under --no-sandbox no profile is applied, so an error is
+	// ignored and the built-in default is used for the plan.
+	sel, selErr := activeProfileSelection(env.Workdir, opts.profilePath)
+	if selErr != nil && !noSandbox {
+		fmt.Fprintln(env.Stderr, prefix+": sandbox profile:", selErr)
 		return ExitConfigInvalid
 	}
+	if selErr != nil {
+		sel = config.ProfileSelection{Name: "default", Layer: "builtin"}
+	}
+	profileRef := sel.Path
 	if verbose {
 		if profileRef != "" {
-			fmt.Fprintf(env.Stderr, "[verbose] sandbox profile: %s (from sandbox.profile_path)\n", profileRef)
+			fmt.Fprintf(env.Stderr, "[verbose] sandbox profile: %s (from %s)\n", profileRef, sel.Layer)
 		} else {
-			fmt.Fprintln(env.Stderr, "[verbose] sandbox profile: default")
+			fmt.Fprintln(env.Stderr, "[verbose] sandbox profile: default (builtin)")
 		}
 	}
 	// One resolved sandbox plan for the whole launch: the launcher profile
 	// (templated argv) plus, for omac's native backend, its policy profile
 	// (grant JSON). Everything downstream reads the plan instead of
 	// re-resolving a bare name — see internal/cli/sandboxplan.go.
-	plan := resolveSandboxPlan(profileRef)
+	plan := resolveSandboxPlan(env.Workdir, sel)
 	if !noSandbox {
 		// A custom profile is user-authored (and may be committed by a teammate),
 		// so surface anything that weakens the sandbox and keep its learned

@@ -29,11 +29,11 @@ func wireFacadeSandbox(f *facade.Facade, noSandbox, learnMode bool, plan sandbox
 	if !noSandbox {
 		switch {
 		case learnMode:
-			// Nothing is protected in a learn session; say so rather than
-			// claiming the profile's static set is in force.
-			f.ProtectedPathChecker = sandboxrun.UnrestrictedProtectedPathSet()
+			// Learn mode lifts the profile's protected set; only the omac
+			// config dirs stay masked, so report exactly those.
+			f.ProtectedPathChecker = sandboxrun.UnrestrictedProtectedPathSet(plan.Workdir)
 		case plan.Policy != nil:
-			f.ProtectedPathChecker = sandboxrun.NewProtectedPathSet(plan.Policy)
+			f.ProtectedPathChecker = sandboxrun.NewProtectedPathSet(plan.Policy, plan.Workdir)
 			if d := plan.Policy.Denial; d != nil && d.FacadeNote != "" {
 				f.DenialNote = d.FacadeNote
 			}
