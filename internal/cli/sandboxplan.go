@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 	"github.com/TNG/oh-my-agentic-coder/internal/config"
 	"github.com/TNG/oh-my-agentic-coder/internal/profileaudit"
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
+	"github.com/TNG/oh-my-agentic-coder/internal/sandboxrun"
 )
 
 // sandboxPlan is the launch's resolved sandbox policy: the grant JSON the run
@@ -105,12 +107,23 @@ func excludeProfilePagesFile(workdir, profileRef string) {
 	gitExcludePath(workdir, rel)
 }
 
+// ensureOmacLocalDir creates <workdir>/.omac before the launch. It returns the
+// error untouched when .omac is a symlink (callers refuse the launch); any
+// other creation failure only warns — a workdir omac cannot create .omac in
+// cannot have it created by the agent either, so nothing plantable is missing.
+func ensureOmacLocalDir(w io.Writer, workdir string) error {
+	_, err := sandboxrun.EnsureLocalConfigDir(workdir)
+	if err == nil || errors.Is(err, sandboxrun.ErrLocalConfigDirSymlink) {
+		return err
+	}
+	fmt.Fprintf(w, "[warn] %v\n", err)
+	fmt.Fprintln(w, "[warn] proceeding without project-local sandbox configuration; the agent")
+	fmt.Fprintln(w, "[warn] runs with your own permissions, so it cannot create this directory either.")
+	return nil
+}
+
 // profileRefFromConfig returns the profile a read-only inspection should
 // examine, matching a launch: the explicit --profile value, else the launcher
-// config's layer-local selection, else "" (the built-in "default"). On a config
-// error it returns "" plus the error, so callers can warn before falling back
-// to the default — a silently swapped profile would hide the very problem the
-// inspection is meant to reveal.
 func profileRefFromConfig(workdir, flagRef string) (string, error) {
 	if strings.TrimSpace(flagRef) != "" {
 		return flagRef, nil

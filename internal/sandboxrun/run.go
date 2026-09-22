@@ -82,9 +82,15 @@ func Run(opts Options) int {
 	// it up front so it exists at launch and can be masked as a directory,
 	// regardless of whether any profile is committed: an agent must never be
 	// able to create it and have a later launch trust its contents.
-	localDir, err := ensureLocalConfigDir(opts.Workdir)
-	if err != nil {
+	localDir, err := EnsureLocalConfigDir(opts.Workdir)
+	switch {
+	case err != nil && errors.Is(err, ErrLocalConfigDirSymlink):
 		return fail("%v", err)
+	case err != nil:
+		fmt.Fprintf(stderr, "omac sandbox: warning: %v.\n", err)
+		fmt.Fprintf(stderr, "  Proceeding without project-local sandbox configuration: the sandboxed agent\n"+
+			"  runs with your own permissions, so it cannot create or read this directory either.\n")
+		localDir = ""
 	}
 
 	// WithScaffold: this is the launch path — the child the default
@@ -332,21 +338,34 @@ func writeProtectProfilePaths(ref, profilePath string, protected []string, stder
 	return dropDenied(candidates, protected), nil
 }
 
-// ensureLocalConfigDir creates <workdir>/.omac (the project config dir) so it
-// exists at launch and can be masked as a directory. A symlinked .omac is
-// rejected: it could point outside the project and defeat the mask. Returns ""
-// when workdir is empty.
-func ensureLocalConfigDir(workdir string) (string, error) {
+// ErrLocalConfigDirSymlink marks a workdir whose .omac is a symlink: a
+// symlinked config dir could point outside the project and defeat the mask,
+// so callers must refuse the launch instead of continuing without it.
+var ErrLocalConfigDirSymlink = errors.New("symlinked .omac config directory")
+
+// EnsureLocalConfigDir creates <workdir>/.omac (the project config dir) so it
+// exists before the sandbox starts and can be masked as a directory. The
+// parent (omac start/serve) calls it before spawning the child, so the
+// protected-pattern watch sees the dir as pre-existing rather than reporting
+// it as a mid-session creation.
+//
+// Returns "" when workdir is empty. A symlinked .omac fails with
+// ErrLocalConfigDirSymlink. Any other creation failure also surfaces as an
+// error and is safe to treat as advisory: a workdir omac cannot create .omac
+// in, the agent (running with the omac user's own permissions) cannot create
+// in either, so nothing plantable is missing — callers warn loudly instead of
+// aborting.
+func EnsureLocalConfigDir(workdir string) (string, error) {
 	if workdir == "" {
 		return "", nil
 	}
 	dir := config.LocalConfigDir(workdir)
 	if li, err := os.Lstat(dir); err == nil && li.Mode()&os.ModeSymlink != 0 {
-		return "", fmt.Errorf("%s is a symlink; the project .omac directory must be a real directory "+
-			"(a symlinked config dir could point outside the project and defeat the mask)", dir)
+		return "", fmt.Errorf("%w: %s must be a real directory, not a symlink — it could point "+
+			"outside the project and the sandbox mask would follow the symlink", ErrLocalConfigDirSymlink, dir)
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", fmt.Errorf("create %s: %w", dir, err)
+		return "", fmt.Errorf("cannot create %s: %w", dir, err)
 	}
 	return dir, nil
 }

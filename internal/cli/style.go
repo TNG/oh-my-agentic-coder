@@ -146,6 +146,65 @@ func boxPad(cell string, inner, pad int) string {
 	return strings.Repeat(" ", pad) + cell + strings.Repeat(" ", gap) + strings.Repeat(" ", pad)
 }
 
+// wrapVisible word-wraps text to lines of at most max visible columns
+// (widths measured with visibleLen, so a caller can pass the width that
+// must fit inside a box). Space-separated words keep meaning; a word longer
+// than max is hard-split. Text is expected plain, without ANSI escapes.
+func wrapVisible(text string, max int) []string {
+	if max < 1 {
+		max = 1
+	}
+	var out []string
+	var line []rune
+	width := 0
+	flush := func() {
+		if len(line) == 0 {
+			return
+		}
+		out = append(out, string(line))
+		line = nil
+		width = 0
+	}
+	for _, word := range strings.Fields(text) {
+		runes := []rune(word)
+		for len(runes) > 0 {
+			w := visibleLen(string(runes))
+			room := max
+			if len(line) > 0 {
+				room = max - width - 1 // + the joining space
+			}
+			switch {
+			case w <= room:
+				if len(line) > 0 {
+					line = append(line, ' ')
+					width++
+				}
+				line = append(line, runes...)
+				width += w
+				runes = nil
+			default:
+				// Does not fit: close the line, then emit the word in
+				// full-width chunks (at most one chunk per line).
+				flush()
+				n := min(max, len(runes))
+				line = append(line, runes[:n]...)
+				width += visibleLen(string(runes[:n]))
+				runes = runes[n:]
+				flush()
+			}
+		}
+	}
+	flush()
+	return out
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
 // stripControlChars removes C0/C1 control characters from s. This prevents
 // terminal escape sequences planted in session ids or titles from injecting
 // display commands when the text is printed to a terminal.

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"os"
 	"sync"
 	"time"
 
@@ -34,11 +35,17 @@ type protectedWatch struct {
 // startProtectedWatch mirrors the sandboxed child's deny-pattern walk
 // in the parent: a protected-pattern file (".env", ...) created after
 // launch is readable by the agent until the session restarts, because
-// the kernel mask is fixed at launch. Each detection pops an info
-// dialog plus a passive notification (netprompt.Alert/Notify — stderr
-// would corrupt the TUI's frame), tagged into the facade's protected
-// set so GET /sandbox/denied answers honestly, audit-logged, and
-// recorded for the session-end report.
+// the kernel mask is fixed at launch. Each detection
+//
+//   - pops an info dialog plus a passive desktop notification
+//     (netprompt.Alert/Notify), which survive a harness TUI redraw,
+//   - prints a red banner once on stderr, the tty the harness shares
+//     with omac: the TUI scrolls up on it rather than overpainting it,
+//     so one print is already unmissable.
+//
+// and tags the path into the facade's protected set so
+// GET /sandbox/denied answers honestly, audit-logs it, and records it
+// for the session-end callout.
 //
 // argv is the expanded sandbox argv: its flags are parsed and merged
 // onto the policy profile exactly like the sandbox child does, so the
@@ -48,7 +55,7 @@ type protectedWatch struct {
 // argv not a `omac sandbox run`); callers skip learn mode, where
 // nothing is protected. checker may be nil; audit events are dropped
 // when a is nil.
-func startProtectedWatch(a audit.Auditor, checker *sandboxrun.ProtectedPathSet, plan sandboxPlan, argv []string, workdir string) *protectedWatch {
+func startProtectedWatch(a audit.Auditor, checker *sandboxrun.ProtectedPathSet, plan sandboxPlan, argv []string, workdir string, stderr *os.File) *protectedWatch {
 	if plan.Policy == nil || len(argv) < 3 || argv[1] != "sandbox" || argv[2] != "run" {
 		return nil
 	}
@@ -60,6 +67,7 @@ func startProtectedWatch(a audit.Auditor, checker *sandboxrun.ProtectedPathSet, 
 	}
 	profile, _ := sandboxprofile.Merge(plan.Policy, flags)
 	w := &protectedWatch{stop: make(chan struct{}), exited: make(chan struct{})}
+	announce := newNoticeAnnouncer(stderr)
 	go func() {
 		defer close(w.exited)
 		if err := sandboxrun.WatchNewProtected(profile, workdir, midsessionProtectedWatchInterval, func(path string) {
@@ -68,9 +76,10 @@ func startProtectedWatch(a audit.Auditor, checker *sandboxrun.ProtectedPathSet, 
 				checker.Add(path, sandboxdeny.RuleMidSession)
 			}
 			const title = "omac: protected file created"
-			msg := fmt.Sprintf("%s matches a sandbox-protected pattern and is readable by the agent until the session is restarted", path)
+			msg := fmt.Sprintf("%s matches a sandbox-protected pattern and is readable by the agent until the session is restarted. Restart omac to have the sandbox mask it.", path)
 			netprompt.Alert(title, msg)
 			netprompt.Notify(title, msg)
+			announce.announce(path)
 			if a != nil {
 				a.Emit(audit.ControlMutation("protected-file-watch", path, "created mid-session; readable until restart"))
 			}
@@ -81,22 +90,72 @@ func startProtectedWatch(a audit.Auditor, checker *sandboxrun.ProtectedPathSet, 
 	return w
 }
 
-// report stops the watch and prints one line per recorded notice via
-// warn. Call it only after the harness exited and the parent owns the
-// terminal again — mid-session stderr writes would be painted over the
-// harness TUI's frame. Nil-safe: a watch that never started reports
-// nothing.
-func (w *protectedWatch) report(warn func(format string, args ...any)) {
-	if w == nil {
+// noticeAnnouncer paints a newly detected protected path prominently on the
+// terminal, once.
+type noticeAnnouncer struct {
+	w      *os.File
+	styler styler
+}
+
+func newNoticeAnnouncer(stderr *os.File) noticeAnnouncer {
+	if stderr == nil {
+		return noticeAnnouncer{}
+	}
+	return noticeAnnouncer{
+		w:      stderr,
+		styler: newStyler(stderr),
+	}
+}
+
+// announce prints the banner once, synchronously in the detection callback.
+func (n noticeAnnouncer) announce(path string) {
+	if n.w == nil {
 		return
+	}
+	path = stripControlChars(path)
+	fmt.Fprintf(n.w, "\n%s\n", n.styler.paint(
+		"⚠ omac: "+path+" matches a protected pattern (e.g. .env/.omac) and was created during this session; the agent can read it until omac restarts.",
+		ansiBold, ansiRed))
+}
+
+// stopAndNotices stops the watch and any pending repaint, waits for the
+// walker to exit, and returns the recorded notices. Call it only after the
+// harness exited and the parent owns the terminal again; callers render the
+// session-end callout. Nil-safe: a watch that never started reports nothing.
+func (w *protectedWatch) stopAndNotices() []string {
+	if w == nil {
+		return nil
 	}
 	close(w.stop)
 	<-w.exited
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	for _, n := range w.notices {
-		warn("%s", n)
+	return w.notices
+}
+
+// maxRestartCalloutContent is the visible width each callout line wraps to:
+// 76 content + 1+1 padding + 2 borders keeps the box within ~80 columns, so
+// it never wraps its own frame into a second line on a narrow terminal.
+const maxRestartCalloutContent = 76
+
+// printRestartCallout renders the session-end notices as a full-width
+// callout: the next omac start re-runs the deny scan, so the flagged paths
+// are masked from that session on, and the callout does not repeat. Long
+// lines are word-wrapped to the box width rather than pushing the frame
+// beyond/~around the terminal edge.
+func printRestartCallout(w *os.File, notices []string) {
+	if len(notices) == 0 || w == nil {
+		return
 	}
+	st := newStyler(w)
+	var lines []string
+	for _, n := range notices {
+		lines = append(lines, wrapVisible(stripControlChars(n), maxRestartCalloutContent)...)
+	}
+	lines = append(lines, wrapVisible(
+		"The next omac start re-runs the deny scan, so the flagged paths are masked from that session on. This callout does not repeat.",
+		maxRestartCalloutContent)...)
+	st.callout(w, ansiYellow, "Restart recommended", lines)
 }
 
 func (w *protectedWatch) record(notice string) {

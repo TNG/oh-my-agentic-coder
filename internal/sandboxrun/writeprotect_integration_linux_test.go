@@ -5,6 +5,8 @@ package sandboxrun
 import (
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/TNG/oh-my-agentic-coder/internal/config"
@@ -62,6 +64,12 @@ func TestIntegrationOmacConfigDirMasked(t *testing.T) {
 		}
 	}
 
+	// The masked .omac dir shows only the denial explanation — the agent
+	// learns why the path is blocked instead of suspecting data loss.
+	if out, code := runBwrapped(t, g, "/bin/sh", "-c", "ls -A "+localDir); code != 0 || !strings.Contains(out, markerDirFileName) {
+		t.Fatalf("%s must list the denial notice marker %q inside the sandbox, got code %d:\n%s", localDir, markerDirFileName, code, out)
+	}
+
 	// Nothing inside .omac accepts writes, creations, or removal.
 	for _, sh := range []string{
 		"echo tampered >> " + profile,
@@ -88,6 +96,75 @@ func TestIntegrationOmacConfigDirMasked(t *testing.T) {
 	// Nothing leaked through: the host files are byte-identical.
 	if data, err := os.ReadFile(profile); err != nil || string(data) != `{"meta":{"name":"profile"}}` {
 		t.Fatalf("profile was tampered with: %s (err %v)", data, err)
+	}
+}
+
+// TestIntegrationPlantedOmacDirMaskedWithDenial: resolving grants must
+// catch a planted .omac under a granted tree by leaf name, and mask it
+// read-only with the denial explanation — a session cannot read or rewrite
+// a profile that a later launch (e.g. started from that subdir) would
+// trust, and the agent learns the directory is intentionally blocked.
+func TestIntegrationPlantedOmacDirMaskedWithDenial(t *testing.T) {
+	requireBwrap(t)
+	workdir := t.TempDir()
+	nested := filepath.Join(workdir, "sub")
+	localDir := filepath.Join(nested, ".omac")
+	if err := os.MkdirAll(localDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	profile := filepath.Join(localDir, "default.json")
+	if err := os.WriteFile(profile, []byte(`{"meta":{"name":"evil"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	p := &sandboxprofile.Profile{
+		Workdir: sandboxprofile.Workdir{Access: sandboxprofile.AccessReadWrite},
+		Network: sandboxprofile.Network{Mode: sandboxprofile.ModeBlocked},
+	}
+	g, err := ResolveGrants(p, workdir, os.Stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.DenialText = "denied by test"
+	cleanup, err := g.prepareMarkers()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+
+	// The planted dir is caught by the deny walk (leaf name .omac) and
+	// therefore part of ProtectedPaths.
+	if !slices.Contains(g.ProtectedPaths, localDir) {
+		t.Fatalf("ProtectedPaths = %v; want %q", g.ProtectedPaths, localDir)
+	}
+
+	// Listing shows only the denial notice; reads and writes fail.
+	if out, code := runBwrapped(t, g, "/bin/sh", "-c", "ls -A "+localDir); code != 0 || !strings.Contains(out, markerDirFileName) {
+		t.Fatalf("a planted nested .omac must expose only the denial notice %q, got code %d:\n%s", markerDirFileName, code, out)
+	}
+	// Planted content is unreadable; writes and removal fail. The denial
+	// notice itself is the one readable byte (positive control).
+	if out, code := runBwrapped(t, g, "/bin/sh", "-c", "cat "+localDir+"/"+markerDirFileName); code != 0 {
+		t.Fatalf("the denial notice must be readable inside the sandbox, got code %d:\n%s", code, out)
+	}
+	for _, sh := range []string{
+		"cat " + profile,
+		"echo own > " + filepath.Join(localDir, "planted.json"),
+		"rm -rf " + localDir,
+	} {
+		if out, code := runBwrapped(t, g, "/bin/sh", "-c", sh); code == 0 {
+			t.Fatalf("planted nested .omac must be masked by %q — got:\n%s", sh, out)
+		}
+	}
+
+	// Control: a sibling dot-env keeps the explanatory marker like any
+	// other protected path.
+	dotenv := filepath.Join(workdir, ".env")
+	if err := os.WriteFile(dotenv, []byte("SECRET=1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, code := runBwrapped(t, g, "/bin/sh", "-c", "cat "+dotenv); code != 0 {
+		t.Fatalf(".env must be masked with its explanatory marker (readable), got code %d:\n%s", code, out)
 	}
 }
 

@@ -239,6 +239,46 @@ func TestBwrapProtectedPathMasking(t *testing.T) {
 	}
 }
 
+// TestBwrapOmacDirUsesDenialMarker: a .omac config dir is masked like any
+// other protected directory — with the explanatory marker dir, so the agent
+// reads why the path is blocked instead of suspecting data loss; the marker
+// leaks no rules.
+func TestBwrapOmacDirMaskedWithDenialMarker(t *testing.T) {
+	home := t.TempDir()
+	omac := filepath.Join(home, ".omac")
+	if err := os.MkdirAll(omac, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sshDir := filepath.Join(home, ".ssh")
+	if err := os.MkdirAll(sshDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	g := &Grants{
+		Workdir:        home,
+		AllowPaths:     []string{home},
+		ProtectedPaths: []string{omac, sshDir},
+		DenialText:     "denied by test",
+		NetworkMode:    sandboxprofile.ModeBlocked,
+	}
+	cleanup, err := g.prepareMarkers()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+
+	argv, err := BuildBwrapArgv(g, []string{"x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(argv, " ")
+	if !strings.Contains(joined, "--ro-bind "+g.markerDir+" "+omac) {
+		t.Errorf(".omac must mask with the explanatory marker dir like every other protected dir: %s", joined)
+	}
+	if !strings.Contains(joined, "--ro-bind "+g.markerDir+" "+sshDir) {
+		t.Errorf("other protected dirs keep the explanatory marker: %s", joined)
+	}
+}
+
 func TestBwrapProtectedOutsideGrantsNotMasked(t *testing.T) {
 	g := &Grants{
 		Workdir:        "/work",
