@@ -1,6 +1,7 @@
 package sandboxrun
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,7 +13,7 @@ import (
 
 func TestEnsureLocalConfigDir(t *testing.T) {
 	workdir := t.TempDir()
-	dir, err := ensureLocalConfigDir(workdir)
+	dir, err := EnsureLocalConfigDir(workdir)
 	if err != nil {
 		t.Fatalf("ensureLocalConfigDir: %v", err)
 	}
@@ -29,13 +30,13 @@ func TestEnsureLocalConfigDir(t *testing.T) {
 	if err := os.Symlink(other, filepath.Join(linked, ".omac")); err != nil {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
-	if _, err := ensureLocalConfigDir(linked); err == nil {
-		t.Fatal("a symlinked .omac must be rejected")
+	if _, err := EnsureLocalConfigDir(linked); !errors.Is(err, ErrLocalConfigDirSymlink) {
+		t.Fatalf("a symlinked .omac must fail with ErrLocalConfigDirSymlink, got %v", err)
 	}
 
 	// Empty workdir is a no-op.
-	if dir, err := ensureLocalConfigDir(""); err != nil || dir != "" {
-		t.Errorf("ensureLocalConfigDir(\"\") = (%q, %v); want (\"\", nil)", dir, err)
+	if dir, err := EnsureLocalConfigDir(""); err != nil || dir != "" {
+		t.Errorf("EnsureLocalConfigDir(\"\") = (%q, %v); want (\"\", nil)", dir, err)
 	}
 }
 

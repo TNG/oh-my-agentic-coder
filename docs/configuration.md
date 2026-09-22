@@ -20,7 +20,7 @@ Each layer has its own directory:
 | user-global | `~/.config/omac/` | `config.yaml` | `sandbox-profiles/<name>.json` |
 | project-local | `<workdir>/.omac/` | `config.yaml` | `<name>.json` |
 
-The project-local directory is created on a sandboxed launch and is **masked read+write inside the sandbox**: a session can neither read the rules nor plant or rewrite a file a later launch would trust. See [Per-project configuration](#per-project-configuration).
+The project-local directory is created whenever you run `omac start`/`omac serve` and is **read-only inside the sandbox, exposing only an explanatory denial notice** (`.omac-denied`): a session can neither read the rules nor plant or rewrite a file a later launch would trust. If the workdir (e.g. a read-only checkout) prevents creation, omac warns and continues — the agent runs with your own permissions, so it could not create or read it either. A symlinked `.omac` refuses the launch. See [Per-project configuration](#per-project-configuration).
 
 ## Launcher config
 
@@ -58,7 +58,7 @@ hard error. See [Sharing a profile across a team](#sharing-a-profile-across-a-te
 
 To use different operational or sandbox settings for a project, add a
 project-local config at `<project>/.omac/config.yaml`. omac creates the
-`.omac/` directory on a sandboxed launch if it is missing.
+`.omac/` directory whenever you run `omac start`/`omac serve` if it is missing.
 
 **What the project config can set:** `cache.scope`,
 `facade.idle_timeout_secs`, `facade.max_body_bytes`, and

@@ -297,6 +297,73 @@ func TestLaunchCacheInjectsSelectedScope(t *testing.T) {
 	}
 }
 
+// TestLaunchCreatesOmacConfigDir: <workdir>/.omac is created by the parent
+// before the sandbox (and its protected-pattern watch) starts — with and
+// without a sandbox, mirroring the unconditional creation policy. The launch
+// ends early via the failed persistent-cache fixture so no facade/listener
+// is needed; the dir creation precedes that point.
+func TestLaunchCreatesOmacConfigDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	if err := os.MkdirAll(filepath.Join(home, ".cache"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".cache", "omac"), []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	create := func(t *testing.T, noSandbox bool) {
+		t.Helper()
+		workdir := t.TempDir()
+		env, stderr := launchTestEnv(t, workdir)
+		harness, ok := config.LookupHarness("claude")
+		if !ok {
+			t.Fatal("claude harness missing")
+		}
+		code := runLaunch(env, launchOpts{label: "start", harness: harness, innerCmdOverride: "/bin/true", noSandbox: noSandbox})
+		if code != ExitIOError {
+			t.Fatalf("code = %d, want ExitIOError:\n%s", code, stderr())
+		}
+		fi, err := os.Stat(filepath.Join(workdir, ".omac"))
+		if err != nil || !fi.IsDir() {
+			t.Fatalf("omac must create <workdir>/.omac on launch (noSandbox=%v): %v", noSandbox, err)
+		}
+	}
+
+	create(t, false)
+	create(t, true)
+}
+
+// TestLaunchRefusesSymlinkedOmacConfigDir: a symlinked .omac could point
+// outside the project; the launch refuses instead of operating on the target.
+func TestLaunchRefusesSymlinkedOmacConfigDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	workdir := t.TempDir()
+	if err := os.Symlink(t.TempDir(), filepath.Join(workdir, ".omac")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	env, stderr := launchTestEnv(t, workdir)
+	harness, ok := config.LookupHarness("claude")
+	if !ok {
+		t.Fatal("claude harness missing")
+	}
+	code := runLaunch(env, launchOpts{label: "start", harness: harness, innerCmdOverride: "/bin/true"})
+	if code != ExitConfigInvalid {
+		t.Fatalf("code = %d, want ExitConfigInvalid:\n%s", code, stderr())
+	}
+	if out := stderr(); !strings.Contains(out, "symlink") {
+		t.Errorf("refusal message should name the symlink; got:\n%s", out)
+	}
+	// The symlink itself is untouched: the refusal must not rm it silently.
+	if fi, err := os.Lstat(filepath.Join(workdir, ".omac")); err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("the symlinked .omac must be left as-is: %v", err)
+	}
+}
+
 func TestLaunchCachePersistentSetupFailureHasRecoveryHint(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

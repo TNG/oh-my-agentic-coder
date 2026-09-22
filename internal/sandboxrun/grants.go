@@ -92,7 +92,10 @@ const markerDirFileName = ".omac-denied"
 // prepareMarkers creates the bind sources that mask protected paths with
 // an explanatory denial marker: a read-only file bound over protected
 // files, and a directory holding a single .omac-denied file bound over
-// protected directories. Both carry DenialText.
+// protected directories. Both carry DenialText. The omac config dirs
+// (leaf name .omac) use the same treatment on purpose: the marker explains
+// an intentional block, and it leaks no rules — the profile, launcher
+// config, and pages alongside it stay unreadable.
 //
 // The text is written in its inert (comment-prefixed) form: the baseline
 // protected set includes shell configs, which exist to be executed, so a

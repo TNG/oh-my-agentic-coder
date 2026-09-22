@@ -1,6 +1,7 @@
 package sandboxrun
 
 import (
+	"path/filepath"
 	"testing"
 
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxdeny"
@@ -58,6 +59,31 @@ func TestUnrestrictedProtectedPathSetKeepsOmac(t *testing.T) {
 	set := UnrestrictedProtectedPathSet(workdir)
 	if rule, ok := set.IsProtected(workdir + "/.omac/default.json"); !ok || rule != "omac" {
 		t.Errorf("learn-mode set must keep .omac protected, got (%q, %v)", rule, ok)
+	}
+}
+
+// The facade answers by leaf name for planted .omac dirs under any granted
+// tree — matching what the deny walk masks at the next launch.
+func TestProtectedPathSetOmacLeafName(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	workdir := t.TempDir()
+	set := NewProtectedPathSet(&sandboxprofile.Profile{}, workdir)
+	for _, p := range []string{
+		filepath.Join(workdir, ".omac", "config.yaml"),
+		filepath.Join(workdir, "sub", "deep", ".omac", "default.json"),
+		filepath.Join(workdir, "sub", "deep", ".omac"),
+		filepath.Join("/other", "granted", ".omac"),
+	} {
+		if rule, ok := set.IsProtected(p); !ok || rule != "omac" {
+			t.Errorf("IsProtected(%q) = (%q, %v); want omac", p, rule, ok)
+		}
+	}
+	// Lookalikes must not collide.
+	if _, ok := set.IsProtected(filepath.Join(workdir, ".omacX", "config.yaml")); ok {
+		t.Error(".omacX must not match the .omac leaf rule")
+	}
+	if _, ok := set.IsProtected(filepath.Join(workdir, "admin")); ok {
+		t.Error("admin must not match the .omac leaf rule")
 	}
 }
 
