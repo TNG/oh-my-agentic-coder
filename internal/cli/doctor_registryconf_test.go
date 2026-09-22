@@ -48,7 +48,7 @@ func TestDoctorRegistryConfigWarnsOnInvisibleMapping(t *testing.T) {
 	if !strings.Contains(out, "registry config") || !strings.Contains(out, "npm.acme.test") {
 		t.Errorf("doctor did not report the invisible mapping; got:\n%s", out)
 	}
-	if !strings.Contains(out, "404") {
+	if !strings.Contains(out, "404 against the public registry") {
 		t.Errorf("doctor did not explain the 404 symptom; got:\n%s", out)
 	}
 	if !strings.Contains(out, `registry_config: ["npm"]`) {
@@ -66,7 +66,7 @@ func TestDoctorRegistryConfigQuietWhenEnabled(t *testing.T) {
 	if !strings.Contains(out, "[ok] registry config") {
 		t.Errorf("doctor did not confirm the projection; got:\n%s", out)
 	}
-	if strings.Contains(out, "404") {
+	if strings.Contains(out, "404 against the public registry") {
 		t.Errorf("doctor still warned with registry_config enabled; got:\n%s", out)
 	}
 }
@@ -224,7 +224,7 @@ func TestDoctorRegistryConfigReportsUnreadableConfig(t *testing.T) {
 	if !strings.Contains(out, "cannot inspect") {
 		t.Errorf("doctor stayed silent on an unreadable npmrc; got:\n%s", out)
 	}
-	if !strings.Contains(out, "404") {
+	if !strings.Contains(out, "404 against the public registry") {
 		t.Errorf("doctor did not explain the consequence; got:\n%s", out)
 	}
 }
