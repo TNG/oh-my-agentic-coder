@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -260,7 +259,7 @@ func TestInjectServerPortGrant(t *testing.T) {
 	}
 
 	// A harness with no server mode is a no-op (nothing to allowlist).
-	in2 := []string{"nono", "run", "--", "claude"}
+	in2 := []string{"external-sbx", "run", "--", "claude"}
 	if got2 := injectServerPortGrant(in2, cc, []string{"claude"}); !equalStrings(got2, in2) {
 		t.Errorf("claude-code should be a no-op: got %v, want %v", got2, in2)
 	}
@@ -274,13 +273,13 @@ func TestInjectServerPortGrant(t *testing.T) {
 func TestSandboxServeArgvOpensServerPort(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	oc, _ := config.LookupHarness("opencode")
-	prof := config.SandboxProfile{
-		Command:  []string{"omac", "sandbox", "run", "--", "{{inner_cmd}}", "{{inner_args}}"},
-		InnerCmd: []string{"opencode"},
+	in := sandbox.Inputs{
+		Socket:   "/w/bridge.sock",
+		TCPPort:  6000,
+		InnerCmd: []string{"opencode", "serve"},
 	}
-	in := sandbox.Inputs{Workdir: "/w", InnerCmd: []string{"opencode", "serve"}}
 
-	argv, err := sandboxServeArgv(prof, in, "51234", oc)
+	argv, err := sandboxServeArgv(in, "51234", oc)
 	if err != nil {
 		t.Fatalf("sandboxServeArgv: %v", err)
 	}
@@ -303,7 +302,7 @@ func TestSandboxServeArgvOpensServerPort(t *testing.T) {
 	// A user-supplied `omac serve -- --port 4095` must move the grant with
 	// the server, otherwise omac guards a port nothing listens on.
 	override := sandbox.Inputs{Workdir: "/w", InnerCmd: []string{"opencode", "serve", "--port", "4095"}}
-	oargv, err := sandboxServeArgv(prof, override, "", oc)
+	oargv, err := sandboxServeArgv(override, "", oc)
 	if err != nil {
 		t.Fatalf("sandboxServeArgv (port override): %v", err)
 	}
@@ -315,15 +314,19 @@ func TestSandboxServeArgvOpensServerPort(t *testing.T) {
 		t.Errorf("serve argv still grants the default 4096 despite `--port 4095`: %s", oj)
 	}
 
-	// Empty control port skips only the control-plane grant; the harness
-	// server port grant still applies.
-	noCP, err := sandboxServeArgv(prof, in, "", oc)
+	// Empty control port skips only the control-plane grant; the #115 bind
+	// grant still applies. (The builtin facade --open-port is always present.)
+	noCP, err := sandboxServeArgv(in, "", oc)
 	if err != nil {
 		t.Fatalf("sandboxServeArgv (no control port): %v", err)
 	}
 	nj := strings.Join(noCP, " ")
 	if contains(nj, "--open-port 51234") {
+<<<<<<< HEAD
 		t.Errorf("empty control port should add no control-plane --open-port: %s", nj)
+=======
+		t.Errorf("empty control port should not add the control-plane --open-port: %s", nj)
+>>>>>>> a1feec4 (Implement the built-in sandbox's launch command)
 	}
 	if !contains(nj, "--open-port 4096") {
 		t.Errorf("server port grant must still apply without a control port: %s", nj)
@@ -436,17 +439,17 @@ func TestServerExposureWarning(t *testing.T) {
 
 func TestInjectOpenPort(t *testing.T) {
 	// With a `--` separator, the flag goes right before it.
-	in := []string{"nono", "run", "--open-port", "5000", "--", "opencode", "serve"}
+	in := []string{"external-sbx", "run", "--open-port", "5000", "--", "opencode", "serve"}
 	got := injectOpenPort(in, "6000")
-	want := []string{"nono", "run", "--open-port", "5000", "--open-port", "6000", "--", "opencode", "serve"}
+	want := []string{"external-sbx", "run", "--open-port", "5000", "--open-port", "6000", "--", "opencode", "serve"}
 	if !equalStrings(got, want) {
 		t.Errorf("with --: got %v, want %v", got, want)
 	}
 
 	// Without a `--`, it goes right after argv[0].
-	in2 := []string{"nono", "run", "--allow-cwd"}
+	in2 := []string{"external-sbx", "run", "--allow-cwd"}
 	got2 := injectOpenPort(in2, "6000")
-	want2 := []string{"nono", "--open-port", "6000", "run", "--allow-cwd"}
+	want2 := []string{"external-sbx", "--open-port", "6000", "run", "--allow-cwd"}
 	if !equalStrings(got2, want2) {
 		t.Errorf("without --: got %v, want %v", got2, want2)
 	}
@@ -458,124 +461,51 @@ func TestInjectOpenPort(t *testing.T) {
 }
 
 func TestInjectSandboxEnvAllow(t *testing.T) {
-	isolateHome(t)
-	lc := config.DefaultLauncherConfig()
-	profiles := lc.Sandbox.Profiles
-	planFor := func(t *testing.T, name string) sandboxPlan {
-		t.Helper()
-		plan, err := resolveSandboxPlan(lc, name)
-		if err != nil {
-			t.Fatalf("resolveSandboxPlan(%q): %v", name, err)
-		}
-		return plan
-	}
-	expand := func(t *testing.T, prof config.SandboxProfile) []string {
-		t.Helper()
-		argv, err := sandbox.Expand(prof, sandbox.Inputs{
-			Workdir:  "/w",
-			Socket:   "/w/bridge.sock",
-			TCPPort:  6000,
-			InnerCmd: []string{"claude"},
-			TmpDir:   "/w/tmp",
-		})
-		if err != nil {
-			t.Fatalf("Expand: %v", err)
-		}
-		return argv
-	}
-
-	// Native backend: use the real Expand output (argv[0] is os.Executable(),
-	// an absolute path — NOT the literal "omac"), so the detector cannot rely
-	// on argv[0] matching a hand-rolled name.
-	builtinProf := profiles["builtin"]
-	builtinPlan := planFor(t, "builtin")
-	builtin := expand(t, builtinProf)
-	got := injectSandboxEnvAllow(builtin, []string{"ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"}, builtinPlan)
-	joined := strings.Join(got, " ")
-	if !strings.Contains(joined, "--allow-env ANTHROPIC_API_KEY") ||
-		!strings.Contains(joined, "--allow-env ANTHROPIC_BASE_URL") {
-		t.Errorf("native backend must gain --allow-env flags: %v", got)
-	}
-
-	// Empty names is a no-op; empty entries are skipped.
-	if g := injectSandboxEnvAllow(builtin, nil, builtinPlan); !equalStrings(g, builtin) {
-		t.Errorf("nil names should be a no-op: %v", g)
-	}
-	if g := injectSandboxEnvAllow(builtin, []string{""}, builtinPlan); !equalStrings(g, builtin) {
-		t.Errorf("empty entry should be skipped: %v", g)
-	}
-
-	// Non-native backend (nono) does not understand --allow-env: the argv
-	// must be left untouched (env filtering is nono's own concern).
-	nonoProf := profiles["nono"]
-	nonoPlan := planFor(t, "nono")
-	nono := expand(t, nonoProf)
-	if g := injectSandboxEnvAllow(nono, []string{"ANTHROPIC_API_KEY"}, nonoPlan); !equalStrings(g, nono) {
-		t.Errorf("nono argv must be untouched: %v", g)
-	}
-
-	// Regression (issue #111 review): a nono profile whose inner command
-	// itself contains "sandbox" "run" tokens must NOT be misclassified as the
-	// native backend. Detection anchors on the profile template, not on a
-	// bare token scan of the expanded argv.
-	nonoInnerProf := nonoProf
-	nonoArgv, err := sandbox.Expand(nonoInnerProf, sandbox.Inputs{
-		Workdir:  "/w",
-		Socket:   "/w/bridge.sock",
-		TCPPort:  6000,
-		InnerCmd: []string{"sandbox", "run", "--weird"},
-		TmpDir:   "/w/tmp",
-	})
-	if err != nil {
-		t.Fatalf("Expand nono-inner: %v", err)
-	}
-	if g := injectSandboxEnvAllow(nonoArgv, []string{"ANTHROPIC_API_KEY"}, nonoPlan); !equalStrings(g, nonoArgv) {
-		t.Errorf("nono argv with inner sandbox/run tokens must be untouched: %v", g)
-	}
-}
-
-func TestInjectUserOpenPorts(t *testing.T) {
-	profiles := config.DefaultLauncherConfig().Sandbox.Profiles
-	builtinProf := profiles["builtin"]
-	argv, err := sandbox.Expand(builtinProf, sandbox.Inputs{
-		Workdir:  "/w",
+	argv, err := sandbox.BuildBuiltinArgv(sandbox.Inputs{
 		Socket:   "/w/bridge.sock",
 		TCPPort:  6000,
 		InnerCmd: []string{"claude"},
 		TmpDir:   "/w/tmp",
 	})
 	if err != nil {
-		t.Fatalf("Expand: %v", err)
+		t.Fatalf("BuildBuiltinArgv: %v", err)
 	}
 
-	got := injectUserOpenPorts(nil, argv, []int{3000, 4173}, builtinProf)
+	got := injectSandboxEnvAllow(argv, []string{"ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"})
+	joined := strings.Join(got, " ")
+	if !strings.Contains(joined, "--allow-env ANTHROPIC_API_KEY") ||
+		!strings.Contains(joined, "--allow-env ANTHROPIC_BASE_URL") {
+		t.Errorf("must gain --allow-env flags: %v", got)
+	}
+
+	// Empty names is a no-op; empty entries are skipped.
+	if g := injectSandboxEnvAllow(argv, nil); !equalStrings(g, argv) {
+		t.Errorf("nil names should be a no-op: %v", g)
+	}
+	if g := injectSandboxEnvAllow(argv, []string{""}); !equalStrings(g, argv) {
+		t.Errorf("empty entry should be skipped: %v", g)
+	}
+}
+
+func TestInjectUserOpenPorts(t *testing.T) {
+	argv, err := sandbox.BuildBuiltinArgv(sandbox.Inputs{
+		Socket:   "/w/bridge.sock",
+		TCPPort:  6000,
+		InnerCmd: []string{"claude"},
+		TmpDir:   "/w/tmp",
+	})
+	if err != nil {
+		t.Fatalf("BuildBuiltinArgv: %v", err)
+	}
+
+	got := injectUserOpenPorts(argv, []int{3000, 4173})
 	joined := strings.Join(got, " ")
 	if !strings.Contains(joined, "--open-port 3000") || !strings.Contains(joined, "--open-port 4173") {
 		t.Errorf("missing open-port flags: %s", joined)
 	}
 
-	if g := injectUserOpenPorts(nil, argv, nil, builtinProf); !equalStrings(g, argv) {
+	if g := injectUserOpenPorts(argv, nil); !equalStrings(g, argv) {
 		t.Errorf("empty inject should be no-op: %v", g)
-	}
-
-	nonoProf := profiles["nono"]
-	nono, err := sandbox.Expand(nonoProf, sandbox.Inputs{
-		Workdir:  "/w",
-		Socket:   "/w/bridge.sock",
-		TCPPort:  6000,
-		InnerCmd: []string{"claude"},
-		TmpDir:   "/w/tmp",
-	})
-	if err != nil {
-		t.Fatalf("Expand nono: %v", err)
-	}
-	env2, _, errBuf2, drain2 := newPipeEnv(t, "")
-	if g := injectUserOpenPorts(env2, nono, []int{3000}, nonoProf); !equalStrings(g, nono) {
-		t.Errorf("nono argv must be untouched: %v", g)
-	}
-	drain2()
-	if !strings.Contains(errBuf2.String(), "ignoring") {
-		t.Errorf("expected non-native warning, got %q", errBuf2.String())
 	}
 }
 
@@ -744,7 +674,7 @@ func nativePlanForTest(t *testing.T) sandboxPlan {
 			Command: []string{"{{self}}", "sandbox", "run", "--profile", "default", "--", "x"},
 		}},
 	}}
-	plan, err := resolveSandboxPlan(lc, "")
+	plan, err := resolveSandboxPlan(lc)
 	if err != nil {
 		t.Fatalf("resolveSandboxPlan: %v", err)
 	}
@@ -1058,63 +988,55 @@ func TestRunServeRetainsCacheLockAndAllowsOnlyScope(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", shortTmp)
 
 	workdir := t.TempDir()
-	argsPath := filepath.Join(t.TempDir(), "args")
-	envPath := filepath.Join(t.TempDir(), "env")
-	readyPath := filepath.Join(t.TempDir(), "ready")
-	releasePath := filepath.Join(t.TempDir(), "release")
-	t.Setenv("OMAC_SERVE_TEST_ARGS", argsPath)
-	t.Setenv("OMAC_SERVE_TEST_ENV", envPath)
-	t.Setenv("OMAC_SERVE_TEST_READY", readyPath)
-	t.Setenv("OMAC_SERVE_TEST_RELEASE", releasePath)
 
-	capturePath := filepath.Join(t.TempDir(), "capture")
-	script := "#!/bin/sh\n" +
-		"printf '%s\\n' \"$@\" > \"$OMAC_SERVE_TEST_ARGS\"\n" +
-		"env > \"$OMAC_SERVE_TEST_ENV\"\n" +
-		": > \"$OMAC_SERVE_TEST_READY\"\n" +
-		"while [ ! -f \"$OMAC_SERVE_TEST_RELEASE\" ]; do sleep 0.01; done\n"
-	if err := os.WriteFile(capturePath, []byte(script), 0o700); err != nil {
-		t.Fatal(err)
+	// Capture the assembled serve argv/env via the exec seam and block the
+	// "child" (as the real sandbox would) until the test releases it, so we
+	// can assert the cache scope is held active during the session and
+	// cleared afterwards — without launching a real subprocess.
+	orig := execWithReady
+	t.Cleanup(func() { execWithReady = orig })
+	ready := make(chan struct{})
+	release := make(chan struct{})
+	var gotArgv []string
+	gotEnv := map[string]string{}
+	execWithReady = func(argv []string, extraEnv map[string]string, onReady func()) (int, error) {
+		gotArgv = append([]string(nil), argv...)
+		for _, kv := range os.Environ() {
+			if i := strings.IndexByte(kv, '='); i >= 0 {
+				gotEnv[kv[:i]] = kv[i+1:]
+			}
+		}
+		for k, v := range extraEnv {
+			gotEnv[k] = v
+		}
+		if onReady != nil {
+			onReady()
+		}
+		close(ready)
+		<-release
+		return ExitOK, nil
 	}
-	// Sandbox profiles are trusted only from the global config; write there.
-	globalHome, err := os.UserHomeDir()
-	if err != nil {
-		t.Fatal(err)
+	releaseOnce := func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
 	}
-	configPath := filepath.Join(globalHome, ".config", "omac", "config.yaml")
-	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	configText := fmt.Sprintf("sandbox:\n  default_profile: capture\n  profiles:\n    capture:\n      command: [%q, %q, %q, %q]\n", capturePath, "--", "{{inner_cmd}}", "{{inner_args}}")
-	if err := os.WriteFile(configPath, []byte(configText), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	t.Cleanup(releaseOnce)
 
 	env, stderr := launchTestEnv(t, workdir)
 	done := make(chan int, 1)
 	go func() {
-		done <- runServe([]string{"claude", "--sandbox", "capture", "--inner", "/bin/true"}, env)
+		done <- runServe([]string{"claude", "--inner", "/bin/true"}, env)
 	}()
-	t.Cleanup(func() {
-		if _, err := os.Stat(releasePath); os.IsNotExist(err) {
-			_ = os.WriteFile(releasePath, nil, 0o600)
-		}
-	})
 
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		if _, err := os.Stat(readyPath); err == nil {
-			break
-		}
-		select {
-		case code := <-done:
-			t.Fatalf("runServe exited early with %d:\n%s", code, stderr())
-		default:
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for capture process:\n%s", stderr())
-		}
-		time.Sleep(10 * time.Millisecond)
+	select {
+	case <-ready:
+	case code := <-done:
+		t.Fatalf("runServe exited early with %d:\n%s", code, stderr())
+	case <-time.After(5 * time.Second):
+		t.Fatalf("timed out waiting for exec:\n%s", stderr())
 	}
 
 	// Default scope is now workdir; with no explicit --workdir flag in a
@@ -1124,16 +1046,11 @@ func TestRunServeRetainsCacheLockAndAllowsOnlyScope(t *testing.T) {
 	if err != nil {
 		t.Fatalf("describe serve cache: %v", err)
 	}
-	args, err := os.ReadFile(argsPath)
-	if err != nil {
-		t.Fatalf("read captured args: %v", err)
-	}
-	capturedArgs := strings.Fields(string(args))
 	var cacheAllows []string
 	scopeAllows := 0
-	for i, arg := range capturedArgs {
-		if arg == "--allow" && i+1 < len(capturedArgs) {
-			allowed := capturedArgs[i+1]
+	for i, arg := range gotArgv {
+		if arg == "--allow" && i+1 < len(gotArgv) {
+			allowed := gotArgv[i+1]
 			cacheAllows = append(cacheAllows, allowed)
 			if allowed == scope.Dir {
 				scopeAllows++
@@ -1149,13 +1066,9 @@ func TestRunServeRetainsCacheLockAndAllowsOnlyScope(t *testing.T) {
 		}
 	}
 
-	envData, err := os.ReadFile(envPath)
-	if err != nil {
-		t.Fatalf("read captured environment: %v", err)
-	}
 	for _, key := range []string{"OMAC_CACHE_DIR", "OMAC_CACHE_MODE"} {
 		want := toolcache.Environment(scope.Dir, toolcache.ModePersistent)[key]
-		if got := parseEnvironment(string(envData))[key]; got != want {
+		if got := gotEnv[key]; got != want {
 			t.Errorf("%s = %q, want %q", key, got, want)
 		}
 	}
@@ -1168,9 +1081,7 @@ func TestRunServeRetainsCacheLockAndAllowsOnlyScope(t *testing.T) {
 		t.Errorf("active clear results = %#v, want active %q", active, scope.Dir)
 	}
 
-	if err := os.WriteFile(releasePath, nil, 0o600); err != nil {
-		t.Fatalf("release capture process: %v", err)
-	}
+	releaseOnce()
 	select {
 	case code := <-done:
 		if code != ExitOK {

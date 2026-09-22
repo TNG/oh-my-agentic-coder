@@ -15,9 +15,9 @@ import (
 // empty uses the embedded default).
 //
 // It injects only when a real sandbox wraps the inner command AND that command
-// is the harness's own agent binary. The latter excludes profile-pinned or
-// --inner-overridden commands such as the no-sandbox-debug `bash` profile, so
-// the briefing never lands on the wrong process.
+// is the harness's own agent binary. The latter excludes --inner-overridden
+// commands (e.g. `--inner bash`), so the briefing never lands on the wrong
+// process.
 //
 // The cache guidance paragraph is always appended (default or custom
 // briefing) because hardcoded host caches are denied by the sandbox —

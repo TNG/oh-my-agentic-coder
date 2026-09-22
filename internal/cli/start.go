@@ -29,6 +29,11 @@ import (
 	"github.com/TNG/oh-my-agentic-coder/internal/toolcache"
 )
 
+// execWithReady runs the fully-assembled sandbox argv. It is indirected as a
+// package var so tests can capture the final argv and env (after all flag
+// injection) without spawning a real subprocess.
+var execWithReady = sandbox.ExecWithReady
+
 // launchOpts carries everything runLaunch needs: the resolved harness, the
 // parsed start-family flags, and the inner args to append to the resolved
 // inner command. `omac start`, `omac continue`, and `omac resume` all build
@@ -40,7 +45,6 @@ type launchOpts struct {
 	// `omac continue`/`omac resume` is not mislabeled as `omac start:`.
 	label              string
 	harness            config.Harness
-	profile            string
 	innerCmdOverride   string
 	noSandbox          bool
 	ephemeralCache     bool
@@ -85,7 +89,6 @@ func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, int) 
 	fs := flag.NewFlagSet(cmdName, flag.ContinueOnError)
 	fs.SetOutput(env.Stderr)
 	var (
-		profile            = fs.String("sandbox", "", "Name of a sandbox profile from the launcher config.")
 		innerCmdOverride   = fs.String("inner", "", "Override inner_cmd's executable.")
 		noSandbox          = fs.Bool("no-sandbox", false, "Run inner command directly, without a sandbox (debug only).")
 		ephemeralCache     = fs.Bool("ephemeral-cache", false, "Use a per-launch cache instead of the persistent cache.")
@@ -146,7 +149,6 @@ func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, int) 
 	return launchOpts{
 		label:              cmdName,
 		harness:            harness,
-		profile:            *profile,
 		innerCmdOverride:   *innerCmdOverride,
 		noSandbox:          *noSandbox,
 		ephemeralCache:     *ephemeralCache,
@@ -212,7 +214,6 @@ func runStart(args []string, env *Env) int {
 // the inner command. It is invoked by `start`, `continue`, and `resume`.
 func runLaunch(env *Env, opts launchOpts) int {
 	harness := opts.harness
-	profile := opts.profile
 	innerCmdOverride := opts.innerCmdOverride
 	noSandbox := opts.noSandbox
 	keepRunning := opts.keepRunning
@@ -249,7 +250,7 @@ func runLaunch(env *Env, opts launchOpts) int {
 	// (templated argv) plus, for omac's native backend, its policy profile
 	// (grant JSON). Everything downstream reads the plan instead of
 	// re-resolving a bare name — see internal/cli/sandboxplan.go.
-	plan, planErr := resolveSandboxPlan(lc, profile)
+	plan, planErr := resolveSandboxPlan(lc)
 	if planErr != nil && !noSandbox {
 		fmt.Fprintln(env.Stderr, prefix+":", planErr)
 		return ExitConfigInvalid
@@ -570,11 +571,11 @@ func runLaunch(env *Env, opts launchOpts) int {
 	}
 	defer auditor.Close()
 
-	// Per-session sandbox temp dir. Bun-built harnesses (opencode) extract
+	// Per-session sandbox temp dir. Bun-built harnesses (e.g., opencode) extract
 	// an embedded runtime into TMPDIR at startup; the sandbox must grant
-	// read+write on it (the nono profile does, via {{tmpdir}}) AND the inner
-	// command must see it as TMPDIR (set in `extra` below). We create a
-	// fresh, isolated dir per launch and remove it on exit.
+	// read+write on it (the sandbox profile does, via {{tmpdir_flags}}) AND
+	// the inner command must see it as TMPDIR (set in `extra` below). We
+	// create a fresh, isolated dir per launch and remove it on exit.
 	sandboxTmp, err := os.MkdirTemp("", "omac-sandbox-tmp-")
 	if err != nil {
 		fmt.Fprintln(env.Stderr, prefix+": sandbox temp dir:", err)
@@ -765,11 +766,9 @@ func runLaunch(env *Env, opts launchOpts) int {
 	if noSandbox {
 		argv = inner
 	} else {
-		argv, err = sandbox.Expand(prof, sandbox.Inputs{
-			Workdir:  env.Workdir,
+		argv, err = sandbox.BuildBuiltinArgv(sandbox.Inputs{
 			Socket:   socketPath,
 			TCPPort:  tcpPort,
-			Mounts:   mounts,
 			InnerCmd: inner,
 			TmpDir:   sandboxTmp,
 		})
@@ -800,8 +799,8 @@ func runLaunch(env *Env, opts launchOpts) int {
 		// selected harness.
 		argv = forwardHarnessEnv(env, argv, harness, plan)
 		// User --open-port grants (e.g. local Playwright webServer). Additive
-		// on top of the profile; no-op on non-native backends (with a warning).
-		argv = injectUserOpenPorts(env, argv, opts.openPorts, prof)
+		// on top of the profile.
+		argv = injectUserOpenPorts(argv, opts.openPorts)
 		// Pass the resolved audit path down to `omac sandbox run` so the
 		// network-filter subprocess appends net.decision events to the
 		// same persistent log. Inherit the parent's run_id + mode so the
@@ -830,13 +829,13 @@ func runLaunch(env *Env, opts launchOpts) int {
 
 	// Extra env passed into the sandbox runtime's own process environment.
 	// The runtime is expected to propagate parent env to the inner process
-	// (nono's default behavior; controllable via the profile's
-	// `environment.allow_vars` field — if set, OMAC_* must be in it).
+	// (external launchers may gate this via their own profile's env
+	// allowlist — if so, OMAC_* must be included).
 	//
 	// Both transports are advertised to the sandbox. Clients should
-	// prefer OMAC_<SKILL>_BASE (TCP-based by default; that is what works
-	// under nono proxy mode), and fall back to OMAC_<SKILL>_SOCKET_BASE
-	// for environments that prefer Unix sockets.
+	// prefer OMAC_<SKILL>_BASE (TCP-based by default; the transport that
+	// works under every sandbox backend), and fall back to
+	// OMAC_<SKILL>_SOCKET_BASE for environments that prefer Unix sockets.
 	extra := map[string]string{
 		"OMAC_SOCKET":             socketPath,
 		"OMAC_HOST":               "127.0.0.1",
@@ -847,9 +846,9 @@ func runLaunch(env *Env, opts launchOpts) int {
 		"OMAC_HARNESS":            harness.Name,
 		"OMAC_HARNESS_SKILLS_DIR": harness.WorkdirSkillsDir(),
 		// Point the inner command at the sandbox-granted temp dir. The
-		// nono profile grants RW on this path via {{tmpdir}}; exporting it
-		// as TMPDIR is what makes Bun-built harnesses (opencode) extract
-		// their runtime into a writable, allowed location.
+		// sandbox profile grants RW on this path via {{tmpdir_flags}};
+		// exporting it as TMPDIR is what makes Bun-built harnesses
+		// (opencode) extract their runtime into a writable, allowed location.
 		"TMPDIR": sandboxTmp,
 	}
 	if harness.Name == "claude-code" {
@@ -940,7 +939,7 @@ func runLaunch(env *Env, opts launchOpts) int {
 		}, hintTimeout)
 	}
 
-	code, err := sandbox.ExecWithReady(argv, extra, nil)
+	code, err := execWithReady(argv, extra, nil)
 	auditor.Emit(audit.SessionStop(code))
 	watch.report(func(format string, args ...any) {
 		fmt.Fprintf(env.Stderr, prefix+": "+format+"\n", args...)
