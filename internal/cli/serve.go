@@ -181,28 +181,42 @@ func runServe(args []string, env *Env) int {
 		fmt.Fprintln(env.Stderr, "omac serve: launcher config:", err)
 		return ExitConfigInvalid
 	}
+	for _, w := range lc.Sandbox.DeprecationWarnings() {
+		fmt.Fprintln(env.Stderr, "omac serve: [warn] "+w)
+	}
+	// Resolve sandbox.profile_path (if set) to the policy profile the run
+	// enforces. A bad path is fatal under a real sandbox; ignored when no
+	// sandboxed inner is launched (--no-sandbox / --no-inner).
+	profileRef, profErr := lc.ResolveSandboxProfileRef(cfgPath, env.Workdir)
+	if profErr != nil && !noSandbox && !noInner {
+		fmt.Fprintln(env.Stderr, "omac serve: sandbox profile:", profErr)
+		return ExitConfigInvalid
+	}
+	if verbose {
+		if profileRef != "" {
+			fmt.Fprintf(env.Stderr, "[verbose] sandbox profile: %s (from sandbox.profile_path)\n", profileRef)
+		} else {
+			fmt.Fprintln(env.Stderr, "[verbose] sandbox profile: default")
+		}
+	}
 	// One resolved sandbox plan for the whole run: the launcher profile
 	// (templated argv) plus, for omac's native backend, its policy profile
 	// (grant JSON). Everything downstream reads the plan instead of
 	// re-resolving a bare name — see internal/cli/sandboxplan.go.
-	plan, planErr := resolveSandboxPlan(lc)
-	if planErr != nil && !noSandbox && !noInner {
-		fmt.Fprintln(env.Stderr, "omac serve:", planErr)
-		return ExitConfigInvalid
+	plan := resolveSandboxPlan(profileRef)
+	if !noSandbox && !noInner {
+		// A custom profile is user-authored (and may be committed by a teammate),
+		// so surface anything that weakens the sandbox and keep its learned
+		// network decisions out of git.
+		warnPermissiveProfile(env.Stderr, profileRef, plan.Policy)
+		excludeProfilePagesFile(env.Workdir, profileRef)
 	}
-	profName := plan.Name
-	prof := plan.Launcher
+	policyRef := plan.PolicyRef
 
-	// Pre-flight: inner harness binary must be on $PATH (unless --no-inner
-	// or --inner override). Checked on the RESOLVED argv so a profile-pinned
-	// inner_cmd is verified rather than the harness default the launch will
-	// not use — see checkInnerBinary.
+	// Pre-flight: inner harness binary must be on $PATH (unless --no-inner or
+	// --inner override) — see checkInnerBinary.
 	if !noInner && innerCmdOverride == "" {
-		preflightInner := prof.InnerCmd
-		if !plan.Known {
-			preflightInner = nil
-		}
-		if code := checkInnerBinary(harness.ResolveInnerCmd(preflightInner, ""), "omac serve", env); code != ExitOK {
+		if code := checkInnerBinary(harness.ResolveInnerCmd(nil, ""), "omac serve", env); code != ExitOK {
 			return code
 		}
 	}
@@ -448,7 +462,7 @@ func runServe(args []string, env *Env) int {
 
 	// --no-inner: run the control plane only (testing / headless drivers).
 	if noInner {
-		auditor.Emit(audit.SessionStart(env.Version, harness.Name, profName, ""))
+		auditor.Emit(audit.SessionStart(env.Version, harness.Name, policyRef, ""))
 		fmt.Fprintf(env.Stdout, "OMAC_CONTROL_BASE=%s\n", controlURL)
 		// Safe to print the tokens here: --no-inner has no sandbox child, so
 		// stdout is owned by the same host process that launched omac and that
@@ -480,17 +494,11 @@ func runServe(args []string, env *Env) int {
 	ensureOpenCodePlugin(env, harness)
 
 	// Build the inner argv. serve mode runs the selected harness's *server*
-	// form: the inner executable is resolved from the profile (or --inner, or
-	// the harness default), then the harness's ServerLaunch convention is
-	// applied — e.g. OpenCode gets `serve` inserted unless a subcommand is
-	// already present, while Claude Code (no server convention) runs as-is.
-	profileInner := prof.InnerCmd
-	if !plan.Known {
-		profileInner = nil
-	}
-	// Resolve the inner command for the selected harness: --inner override
-	// wins, else the profile's inner_cmd, else the harness default.
-	inner := harness.ResolveInnerCmd(profileInner, innerCmdOverride)
+	// form: the inner executable is resolved (--inner override, else the
+	// harness default), then the harness's ServerLaunch convention is applied
+	// — e.g. OpenCode gets `serve` inserted unless a subcommand is already
+	// present, while Claude Code (no server convention) runs as-is.
+	inner := harness.ResolveInnerCmd(nil, innerCmdOverride)
 	// Apply the harness's server-launch convention (e.g. OpenCode injects
 	// `serve` when no subcommand is present). Harnesses without a server
 	// mode leave the inner command unchanged.
@@ -524,7 +532,7 @@ func runServe(args []string, env *Env) int {
 			if rel, werr := harness.BriefingFileFunc(briefingText, env.Workdir); werr != nil {
 				fmt.Fprintln(env.Stderr, "omac serve: briefing file:", werr)
 			} else if rel != "" {
-				gitExcludeBriefing(env.Workdir, rel)
+				gitExcludePath(env.Workdir, rel)
 				defer removeBriefingFile(filepath.Join(env.Workdir, rel))
 			}
 		}
@@ -542,10 +550,11 @@ func runServe(args []string, env *Env) int {
 			return ExitIOError
 		}
 		argv, err = sandboxServeArgv(sandbox.Inputs{
-			Socket:   socketPath,
-			TCPPort:  srv.tcpPort,
-			InnerCmd: inner,
-			TmpDir:   srv.sandboxTmp,
+			Socket:     socketPath,
+			TCPPort:    srv.tcpPort,
+			InnerCmd:   inner,
+			TmpDir:     srv.sandboxTmp,
+			ProfileRef: profileRef,
 		}, controlPortOf(cln), harness)
 		if err != nil {
 			fmt.Fprintln(env.Stderr, "omac serve: sandbox argv:", err)
@@ -638,10 +647,10 @@ func runServe(args []string, env *Env) int {
 	sandboxed := !noSandbox && !noInner
 	backend := ""
 	if sandboxed {
-		backend = profName
+		backend = "builtin"
 	}
-	auditor.Emit(audit.SessionStart(env.Version, harness.Name, profName, backend))
-	auditor.Emit(audit.InnerExec(argv, profName, sandboxed))
+	auditor.Emit(audit.SessionStart(env.Version, harness.Name, policyRef, backend))
+	auditor.Emit(audit.InnerExec(argv, policyRef, sandboxed))
 
 	code, err := execWithReady(argv, extra, func() {
 		if verbose {

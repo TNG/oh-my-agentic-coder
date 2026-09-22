@@ -79,6 +79,36 @@ func TestDiagnoseSurfacesBlockedHostAndHint(t *testing.T) {
 	}
 }
 
+// A broken sandbox.profile_path must not silently swap in the default
+// profile: diagnose says so and falls back, since a real launch would fail.
+func TestDiagnoseWarnsOnBrokenProfilePath(t *testing.T) {
+	isolateHome(t)
+	writeProfileFixture(t, `{"meta":{"name":"default"}}`)
+
+	workdir := t.TempDir()
+	ocDir := filepath.Join(workdir, ".opencode")
+	if err := os.MkdirAll(ocDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ocDir, "oh-my-agentic-coder.yaml"),
+		[]byte("sandbox:\n  profile_path: ./missing.json\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	env, _, errBuf, drain := newPipeEnv(t, "")
+	env.Workdir = workdir
+	code := runDiagnose(nil, env)
+	drain()
+
+	if code != ExitOK {
+		t.Fatalf("code=%d, want ExitOK (fallback)", code)
+	}
+	if s := errBuf.String(); !strings.Contains(s, "missing.json") ||
+		!strings.Contains(s, "built-in default profile instead") {
+		t.Errorf("diagnose should warn about the broken profile_path and the fallback; got:\n%s", s)
+	}
+}
+
 func TestDiagnoseVerboseExpandsAdvisoriesAndConfig(t *testing.T) {
 	isolateHome(t)
 	writeAuditFixture(t,

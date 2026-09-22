@@ -1,30 +1,22 @@
 package cli
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
-	"github.com/TNG/oh-my-agentic-coder/internal/config"
+	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
 )
 
 func TestResolveSandboxPlanDefaultProfileResolvesPolicy(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
-	plan, err := resolveSandboxPlan(config.DefaultLauncherConfig())
-	if err != nil {
-		t.Fatalf("resolveSandboxPlan: %v", err)
-	}
-	// The two namespaces: launcher name "builtin", policy ref "default".
-	if plan.Name != "builtin" {
-		t.Errorf("Name = %q, want builtin (the launcher profile)", plan.Name)
-	}
+	plan := resolveSandboxPlan("")
 	if plan.PolicyRef != "default" {
-		t.Errorf("PolicyRef = %q, want default (the policy profile)", plan.PolicyRef)
-	}
-	if !plan.Known {
-		t.Errorf("Known = %v; want true", plan.Known)
+		t.Errorf("PolicyRef = %q, want default", plan.PolicyRef)
 	}
 	if plan.PolicyErr != nil {
 		t.Errorf("PolicyErr = %v; the default policy must resolve", plan.PolicyErr)
@@ -47,16 +39,133 @@ func TestResolveSandboxPlanLoadsPolicyFile(t *testing.T) {
 	t.Setenv("HOME", home)
 	stageProfile(t, home, `{"meta": {"name": "default"}, "workdir": {"access": "read"}}`)
 
-	plan, err := resolveSandboxPlan(config.DefaultLauncherConfig())
-	if err != nil {
-		t.Fatalf("resolveSandboxPlan: %v", err)
-	}
+	plan := resolveSandboxPlan("")
 	if plan.Policy == nil || plan.Policy.Workdir.Access != "read" {
 		t.Fatalf("staged policy file must win; got %+v", plan.Policy)
 	}
 	want := filepath.Join(home, ".config", "omac", "sandbox-profiles", "default.json")
 	if plan.PolicyPath != want {
 		t.Errorf("PolicyPath = %q, want %q", plan.PolicyPath, want)
+	}
+}
+
+// A non-empty profileRef (the resolved sandbox.profile_path) is the policy the
+// plan enforces, loaded from that exact path rather than the default.
+func TestResolveSandboxPlanUsesProfileRef(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	custom := filepath.Join(t.TempDir(), "custom.json")
+	if err := os.WriteFile(custom, []byte(`{"meta": {"name": "custom"}, "workdir": {"access": "read"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	plan := resolveSandboxPlan(custom)
+	if plan.PolicyRef != custom {
+		t.Errorf("PolicyRef = %q, want %q", plan.PolicyRef, custom)
+	}
+	if plan.PolicyPath != custom {
+		t.Errorf("PolicyPath = %q, want %q", plan.PolicyPath, custom)
+	}
+	if plan.Policy == nil || plan.Policy.Workdir.Access != "read" {
+		t.Fatalf("custom policy must load; got %+v", plan.Policy)
+	}
+	// The parent seeds env forwarding from plan.Policy (forwardHarnessEnv), so
+	// it must reflect the custom file — not the default's non-empty allow_vars.
+	if len(plan.Policy.Environment.AllowVars) != 0 {
+		t.Errorf("AllowVars = %v; the custom profile declares none, so the plan must not show the default's", plan.Policy.Environment.AllowVars)
+	}
+}
+
+func TestWarnPermissiveProfile(t *testing.T) {
+	// A profile that reaches a cloud metadata endpoint is a HIGH finding.
+	p := &sandboxprofile.Profile{
+		Environment: sandboxprofile.Environment{AllowVars: []string{"PATH"}},
+		Network:     sandboxprofile.Network{AllowDomain: []string{"169.254.169.254"}},
+	}
+	var buf bytes.Buffer
+	warnPermissiveProfile(&buf, "/repo/custom.json", p)
+	if !strings.Contains(buf.String(), "169.254.169.254") {
+		t.Errorf("expected a finding about the metadata endpoint, got:\n%s", buf.String())
+	}
+
+	// The default profile (ref == "") is not linted here.
+	buf.Reset()
+	warnPermissiveProfile(&buf, "", p)
+	if buf.Len() != 0 {
+		t.Errorf("empty ref should be a no-op, got:\n%s", buf.String())
+	}
+
+	// A nil policy is a no-op.
+	buf.Reset()
+	warnPermissiveProfile(&buf, "/repo/custom.json", nil)
+	if buf.Len() != 0 {
+		t.Errorf("nil policy should be a no-op, got:\n%s", buf.String())
+	}
+}
+
+func TestExcludeProfilePagesFile(t *testing.T) {
+	workdir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(workdir, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// A profile inside the workdir: its .pages.json sibling is git-excluded.
+	excludeProfilePagesFile(workdir, filepath.Join(workdir, "sandbox.json"))
+	data, err := os.ReadFile(filepath.Join(workdir, ".git", "info", "exclude"))
+	if err != nil {
+		t.Fatalf("exclude file not written: %v", err)
+	}
+	if !strings.Contains(string(data), "sandbox.pages.json") {
+		t.Errorf("exclude should list the pages file, got: %q", data)
+	}
+
+	// A profile outside the workdir is not excluded.
+	excludeProfilePagesFile(workdir, filepath.Join(t.TempDir(), "external.json"))
+	data, _ = os.ReadFile(filepath.Join(workdir, ".git", "info", "exclude"))
+	if strings.Contains(string(data), "external.pages.json") {
+		t.Errorf("a profile outside the workdir must not be excluded, got: %q", data)
+	}
+}
+
+func TestInspectProfileRef(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	// An explicit --profile flag value wins.
+	got, err := inspectProfileRef(t.TempDir(), "/x/custom.json")
+	if err != nil || got != "/x/custom.json" {
+		t.Errorf("flag ref should win, got (%q, %v)", got, err)
+	}
+
+	// No config on disk resolves to the built-in default ("").
+	if got, err = inspectProfileRef(t.TempDir(), ""); err != nil || got != "" {
+		t.Errorf("no config should resolve to default (empty), got (%q, %v)", got, err)
+	}
+
+	// A project config with profile_path resolves to that absolute path.
+	workdir := t.TempDir()
+	prof := filepath.Join(workdir, "sandbox.json")
+	if err := os.WriteFile(prof, []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ocDir := filepath.Join(workdir, ".opencode")
+	if err := os.MkdirAll(ocDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ocDir, "oh-my-agentic-coder.yaml"),
+		[]byte("sandbox:\n  profile_path: ./sandbox.json\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got, err = inspectProfileRef(workdir, ""); err != nil || got != prof {
+		t.Errorf("inspectProfileRef = (%q, %v), want (%q, nil)", got, err, prof)
+	}
+
+	// A broken profile_path surfaces its error instead of silently
+	// falling back to the default.
+	if err := os.WriteFile(filepath.Join(ocDir, "oh-my-agentic-coder.yaml"),
+		[]byte("sandbox:\n  profile_path: ./missing.json\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = inspectProfileRef(workdir, ""); err == nil {
+		t.Error("a missing profile_path should return an error, got nil")
 	}
 }
 
@@ -69,10 +178,7 @@ func TestResolveSandboxPlanBrokenPolicyIsRecordedNotFatal(t *testing.T) {
 	t.Setenv("HOME", home)
 	stageProfile(t, home, `{ not valid json`)
 
-	plan, err := resolveSandboxPlan(config.DefaultLauncherConfig())
-	if err != nil {
-		t.Fatalf("a broken policy must not fail the plan: %v", err)
-	}
+	plan := resolveSandboxPlan("")
 	if plan.PolicyErr == nil {
 		t.Error("PolicyErr should record the failed policy resolution")
 	}

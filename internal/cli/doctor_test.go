@@ -426,6 +426,77 @@ func TestDoctorNonEmptyAllowVarsNotWarned(t *testing.T) {
 	}
 }
 
+// TestDoctorCustomProfileLabel asserts a custom sandbox.profile_path is named
+// in doctor's sandbox warnings instead of being mislabeled "default".
+func TestDoctorCustomProfileLabel(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	workdir := t.TempDir()
+
+	prof := filepath.Join(workdir, "sandbox.json")
+	if err := os.WriteFile(prof, []byte(`{
+	  "meta": {"name": "team"},
+	  "filesystem": {"allow": ["~/.cargo"]}
+	}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ocDir := filepath.Join(workdir, ".opencode")
+	if err := os.MkdirAll(ocDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ocDir, "oh-my-agentic-coder.yaml"),
+		[]byte("sandbox:\n  profile_path: ./sandbox.json\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	env, outBuf, _, drain := newPipeEnv(t, "")
+	env.Workdir = workdir
+	code := runDoctor([]string{}, env)
+	drain()
+	output := outBuf.String()
+
+	if code != ExitOK {
+		t.Errorf("doctor exit = %d, want ExitOK (advisory)", code)
+	}
+	if !strings.Contains(output, `sandbox profile "`+prof+`"`) {
+		t.Errorf("doctor should name the custom profile %q; got:\n%s", prof, output)
+	}
+	if strings.Contains(output, `sandbox profile "default"`) {
+		t.Errorf("doctor must not mislabel the custom profile as \"default\"; got:\n%s", output)
+	}
+}
+
+// TestDoctorBrokenProfilePathWarns asserts doctor says so when the configured
+// sandbox.profile_path cannot be resolved, instead of silently inspecting the
+// default.
+func TestDoctorBrokenProfilePathWarns(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	workdir := t.TempDir()
+
+	ocDir := filepath.Join(workdir, ".opencode")
+	if err := os.MkdirAll(ocDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ocDir, "oh-my-agentic-coder.yaml"),
+		[]byte("sandbox:\n  profile_path: ./missing.json\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	env, outBuf, _, drain := newPipeEnv(t, "")
+	env.Workdir = workdir
+	code := runDoctor([]string{}, env)
+	drain()
+	output := outBuf.String()
+
+	if code != ExitOK {
+		t.Errorf("doctor exit = %d, want ExitOK (advisory fallback)", code)
+	}
+	if !strings.Contains(output, "missing.json") || !strings.Contains(output, "built-in default") {
+		t.Errorf("doctor should warn about the broken profile_path and the fallback; got:\n%s", output)
+	}
+}
+
 func TestDoctorExistingProfileUnchanged(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
