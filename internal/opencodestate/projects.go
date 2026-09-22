@@ -43,6 +43,24 @@ const (
 	originDesktop                             // Desktop app's opencode.global.dat
 )
 
+// SkipReason tells why Worktrees rejected a recorded worktree. The
+// reason is for the human behind `omac serve`: stale means the folder
+// no longer exists, untrusted means the folder exists inside $HOME
+// but the record that named it comes from a source the confined
+// process can write, so it cannot drive a grant.
+type SkipReason string
+
+const (
+	SkipStale     SkipReason = "no longer exists"
+	SkipUntrusted SkipReason = "untrusted for a grant decision (record from agent-writable OpenCode state names an in-home path)"
+)
+
+// SkippedWorktree pairs a rejected worktree path with its reason.
+type SkippedWorktree struct {
+	Path   string
+	Reason SkipReason
+}
+
 // worktreeEntry pairs a harvested worktree path with its origin so the
 // filter in Worktrees can apply a stricter rule to agent-writable sources.
 type worktreeEntry struct {
@@ -66,7 +84,7 @@ func storageProjectDir() (string, error) {
 // emitting both would only add redundant sandbox rules.
 // Missing state (OpenCode not installed / never run) yields an empty
 // list, not an error. skipped receives worktrees that were recorded
-// but rejected (no longer exists, or untrusted for a grant decision).
+// but rejected, each with its reason.
 //
 // Records from agent-writable sources (the storage JSON tree and the
 // opencode.db SQLite db, both under ~/.local/share/opencode) are not
@@ -76,7 +94,7 @@ func storageProjectDir() (string, error) {
 // records are routed into skipped. Records from the Desktop app's own
 // store (outside the sandbox mount) keep the looser isBroadWorktree
 // rule so the Desktop workflow still resolves in-home projects.
-func Worktrees() (worktrees []string, skipped []string, err error) {
+func Worktrees() (worktrees []string, skipped []SkippedWorktree, err error) {
 	storage, err := storageWorktrees()
 	if err != nil {
 		return nil, nil, err
@@ -96,17 +114,19 @@ func Worktrees() (worktrees []string, skipped []string, err error) {
 		// source, and additionally any path inside $HOME from
 		// agent-writable sources.
 		if home != "" && rejectsForHome(wt, home, e.origin) {
-			skipped = append(skipped, wt)
+			skipped = append(skipped, SkippedWorktree{Path: wt, Reason: SkipUntrusted})
 			continue
 		}
 		seen[wt] = true
 		if fi, serr := os.Stat(wt); serr != nil || !fi.IsDir() {
-			skipped = append(skipped, wt)
+			skipped = append(skipped, SkippedWorktree{Path: wt, Reason: SkipStale})
 			continue
 		}
 		worktrees = append(worktrees, wt)
 	}
-	sort.Strings(skipped)
+	sort.Slice(skipped, func(i, j int) bool {
+		return skipped[i].Path < skipped[j].Path
+	})
 	return collapseNested(worktrees), skipped, nil
 }
 

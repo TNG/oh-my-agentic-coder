@@ -52,8 +52,8 @@ func TestSecurityPlantedRecordRejectsStrictHomeDescendant(t *testing.T) {
 	if slices.Contains(worktrees, inHome) {
 		t.Errorf("in-home record %q was returned from an agent-writable source: %v", inHome, worktrees)
 	}
-	if !slices.Contains(skipped, inHome) {
-		t.Errorf("in-home record %q was not surfaced in skipped: %v", inHome, skipped)
+	if !slices.Contains(skipped, SkippedWorktree{Path: inHome, Reason: SkipUntrusted}) {
+		t.Errorf("in-home record %q was not surfaced in skipped as untrusted: %v", inHome, skipped)
 	}
 }
 
@@ -91,8 +91,8 @@ func TestSecurityDesktopWorktreeInHomeStillHonored(t *testing.T) {
 	if !slices.Contains(worktrees, inHome) {
 		t.Errorf("in-home Desktop record %q was not honored: %v", inHome, worktrees)
 	}
-	if !slices.Contains(skipped, inHome) {
-		t.Errorf("in-home storage record %q was not surfaced in skipped: %v", inHome, skipped)
+	if !slices.Contains(skipped, SkippedWorktree{Path: inHome, Reason: SkipUntrusted}) {
+		t.Errorf("in-home storage record %q was not surfaced in skipped as untrusted: %v", inHome, skipped)
 	}
 }
 

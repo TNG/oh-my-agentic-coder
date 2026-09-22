@@ -582,8 +582,8 @@ func runServe(args []string, env *Env) int {
 				fmt.Fprintln(env.Stderr, "omac serve: --for-opencode-desktop:", derr)
 				return ExitIOError
 			}
-			for _, wt := range skipped {
-				fmt.Fprintf(env.Stderr, "omac serve: skipping stale OpenCode worktree %s (no longer exists)\n", wt)
+			for _, s := range skipped {
+				fmt.Fprintf(env.Stderr, "omac serve: skipping OpenCode worktree %s (%s)\n", s.Path, s.Reason)
 			}
 			if len(worktrees) == 0 {
 				fmt.Fprintln(env.Stderr, "omac serve: --for-opencode-desktop: no OpenCode projects found")

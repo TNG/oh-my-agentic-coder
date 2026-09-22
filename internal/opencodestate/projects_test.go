@@ -137,8 +137,8 @@ func TestWorktrees(t *testing.T) {
 	if !slices.Equal(worktrees, want) {
 		t.Errorf("worktrees = %v, want %v (nested must collapse into parent, prefix sibling must stay)", worktrees, want)
 	}
-	if !slices.Equal(skipped, []string{stale}) {
-		t.Errorf("skipped = %v, want [%s]", skipped, stale)
+	if !slices.Equal(skipped, []SkippedWorktree{{Path: stale, Reason: SkipStale}}) {
+		t.Errorf("skipped = %v, want [{%s stale}]", skipped, stale)
 	}
 }
 
