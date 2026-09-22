@@ -23,6 +23,8 @@ import (
 //   - --die-with-parent --new-session
 //   - protected paths inside granted trees masked with --tmpfs (dirs)
 //     or --ro-bind /dev/null (files), honoring override_deny
+//   - write-protected paths re-bound read-only after the mounts they
+//     shadow (readable, never writable)
 //
 // stage2Argv is the command bwrap execs; the caller passes the
 // re-exec'd `omac sandbox stage2 ...` argv (which applies Landlock net
@@ -138,6 +140,22 @@ func BuildBwrapArgv(g *Grants, stage2Argv []string) ([]string, error) {
 			flag += "-try"
 		}
 		argv = append(argv, flag, m.path, m.path)
+	}
+
+	// Write-protected paths: re-bound read-only after the mounts they
+	// shadow (e.g. the workdir's rw bind), but before the protected-path
+	// masks below so a deny on the same path still wins. Ungranted paths
+	// stay unbound: a bind would materialize them read-only inside the
+	// sandbox, and invisible is stronger. A learn-mode root grant covers
+	// everything, so the protection survives learn mode.
+	for _, p := range g.WriteProtectedPaths {
+		if !rootGranted && !coveredByAny(p, ordered) {
+			continue
+		}
+		if !exists(p) {
+			continue // nothing on disk to bind; the rule would dangle
+		}
+		argv = append(argv, "--ro-bind", p, p)
 	}
 
 	// Protected-path masking: when rootGranted every protected path is

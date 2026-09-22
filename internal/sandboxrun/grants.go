@@ -35,6 +35,16 @@ type Grants struct {
 	// a missing ~/.ssh today may exist tomorrow.
 	ProtectedPaths []string
 
+	// WriteProtectedPaths are readable but never writable, even when a
+	// broader grant (e.g. the read-write workdir) covers them: the sandbox
+	// profile, its pages sibling, and the launcher config, so a session
+	// cannot rewrite the grants the next launch enforces (#267). Unlike
+	// ProtectedPaths they survive learn mode; paths already denied are
+	// omitted. Path-based: a writable hardlink alias could bypass it
+	// (cross-mount links are EXDEV, same-mount writes hit the read-only
+	// bind).
+	WriteProtectedPaths []string
+
 	// Network.
 	NetworkMode     string // filtered|blocked|open
 	ProxyPort       int    // 0 when no proxy is running
@@ -725,6 +735,9 @@ func dedupeInts(in []int) []int {
 // filesystem opened up (learn mode): the root directory becomes a
 // read+write grant and the protected-path denials are dropped.
 // Network and env restrictions are untouched.
+//
+// WriteProtectedPaths survive: learn mode collects its results in the
+// profile at exit, so the session must not rewrite it mid-run.
 func (g *Grants) withUnrestrictedFilesystem() *Grants {
 	out := *g
 	out.AllowPaths = append(append([]string{}, g.AllowPaths...), "/")

@@ -12,9 +12,11 @@ import (
 // string generation — unit-testable on every platform; only the exec
 // path is darwin-specific.
 //
-// Rule order matters: read allows -> write allows -> protected-path denies.
-// Seatbelt is last-match-wins, so protected denies placed last override
-// both read and write allows for those paths.
+// Rule order matters: read allows -> write allows -> protected-path denies
+// -> write-protected denies. Seatbelt is last-match-wins, so protected denies
+// placed after the allows override both read and write for those paths, and
+// write-protected paths stay unwritable under a covering write grant while
+// remaining readable.
 func GenerateSBPL(g *Grants) string {
 	var b strings.Builder
 	b.WriteString("(version 1)\n")
@@ -85,6 +87,14 @@ func GenerateSBPL(g *Grants) string {
 	for _, p := range g.ProtectedPaths {
 		for _, fp := range pathForms(p) {
 			fmt.Fprintf(&b, "(deny file-read* (subpath %s))\n", sbplQuote(fp))
+			fmt.Fprintf(&b, "(deny file-write* (subpath %s))\n", sbplQuote(fp))
+		}
+	}
+
+	// --- Write-protected paths: after the protected denies, since Seatbelt
+	// is last-match-wins. Readable via the read allows above, never writable.
+	for _, p := range g.WriteProtectedPaths {
+		for _, fp := range pathForms(p) {
 			fmt.Fprintf(&b, "(deny file-write* (subpath %s))\n", sbplQuote(fp))
 		}
 	}
