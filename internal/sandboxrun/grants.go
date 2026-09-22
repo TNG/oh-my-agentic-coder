@@ -641,12 +641,18 @@ func walkGlobMatches(roots, globs, protectedDirs []string, notices io.Writer) ([
 // and walk the real path; on resolution failure (broken link, permission)
 // we fall back to walking the granted spelling, matching the pre-fix
 // behavior for an unresolvable root so the change is strictly an
-// improvement. Each match is emitted in both the real spelling (what the
-// walk visits, used by the facade-side ProtectedPathSet) and the granted
-// spelling (filepath.Join of the suffix under root, matched by bwrap's
-// coveredByAny and Seatbelt subpath denies) so every backend masks the
-// path the sandbox actually sees. Interior symlinks are still not
-// followed: WalkDir lstat's every entry other than the resolved root.
+// improvement. Each match is re-grafted onto the granted spelling of the
+// root (filepath.Join of the suffix under the resolved root), because
+// that is the spelling every consumer uses: bwrap's coveredByAny and the
+// marker bind destination, Seatbelt subpath rules (which canonicalize via
+// pathForms) and, most importantly, the facade-side ProtectedPathSet —
+// the mid-session watch stores these strings and IsProtected matches
+// lexically against the alias spelling the agent actually queries. On
+// macOS a plain /var-rooted grant would otherwise emit /private/var
+// spellings the consumers compare against /var. Interior symlinks are
+// still not followed: WalkDir lstat's every entry other than the
+// resolved root, and any real-tree location the agent can reach belongs
+// to some granted root whose own scan emits its spelling.
 func walkOneDenyRoot(root string, globs []string, protected map[string]bool) (matches []string, hitCap bool) {
 	resolved, err := filepath.EvalSymlinks(root)
 	if err != nil {
@@ -672,13 +678,7 @@ func walkOneDenyRoot(root string, globs []string, protected map[string]bool) (ma
 		name := d.Name()
 		for _, g := range globs {
 			if ok, _ := filepath.Match(g, name); ok {
-				matches = append(matches, path)
-				// Also emit the granted spelling so the backends that
-				// match the sandbox-visible path (bwrap --bind source,
-				// Seatbelt subpath allow) mask the file the agent opens.
-				if resolved != root && strings.HasPrefix(path, rootSep) {
-					matches = append(matches, filepath.Join(root, strings.TrimPrefix(path, rootSep)))
-				}
+				matches = append(matches, filepath.Join(root, strings.TrimPrefix(path, rootSep)))
 				if d.IsDir() {
 					return filepath.SkipDir
 				}
