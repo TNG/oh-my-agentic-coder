@@ -292,28 +292,68 @@ pr_covered_branches() {
 #   1. drop plans whose branch has an open or merged PR (done or in flight,
 #      consuming no budget),
 #   2. intersect with the operator's id filter when one is given,
-#   3. take the first max_plans in (priority, id) order.
-# Prints two lines: the selected ids comma-joined (possibly empty), then the
-# deferred count (eligible minus selected, where eligible is the list after
-# steps 1 and 2). Two lines, not "ids count" on one: an empty selection would
-# otherwise shift into the count field on read.
+#   3. drop plans whose findings all rate below the severity floor (held
+#      back: never dispatched automatically, invisible to the budget),
+#   4. take the first max_plans in (priority, id) order.
+# Prints three lines: the selected ids comma-joined (possibly empty), the
+# deferred count (eligible minus selected, after steps 1-3), and the
+# hold-back count (the plans step 3 dropped). Separate lines, not one
+# comma-joined string: an empty selection would otherwise shift into the
+# count field on read.
 #
-# $1 = plans.json path, $2 = max_plans (number), $3 = filter ("" or comma ids)
+# $1 = plans.json path, $2 = max_plans (number), $3 = filter ("" or comma ids),
+# $4 = vulnerabilities.json path, $5 = severity floor ("" disables it). The
+# floor is the workflow's SEVERITY_THRESHOLD input; rating ranks fail open
+# (an unknown or missing rating ranks as high), so a plan the planner left
+# unrated is never silently held back, nor is one whose findings the
+# infrastructure could not join.
 select_plans() {
-  local plans_json=$1 max=$2 filter=$3 covered
+  local plans_json=$1 max=$2 filter=$3 vulns_json=$4 floor=${5:-}
   covered="$(pr_covered_branches || true)"
-  jq -nr --slurpfile plans "$plans_json" \
-       --arg covered "$covered" --arg filter "$filter" --argjson max "$max" '
-    ($plans[0] | sort_by(.priority, .id)) as $sorted
+  jq -nr --slurpfile plans "$plans_json" --slurpfile vulns "$vulns_json" \
+       --arg covered "$covered" --arg filter "$filter" --argjson max "$max" \
+       --arg floor "$floor" '
+    ({low: 1, medium: 2, high: 3}) as $rank
+    | ([ $vulns[0][]? | {key: .id, value: .severity} ] | from_entries) as $sev
+    | ($plans[0] | sort_by(.priority, .id)) as $sorted
     | ($covered | split("\n") | map(select(length > 0))) as $c
     | ($filter | if length > 0 then split(",") else [] end) as $f
     | ($sorted
        | map(select(.branch as $b | ($c | index($b)) | not))
-       | (if ($f | length) > 0 then map(select(.id as $i | ($f | index($i)))) else . end)
-      ) as $eligible
+       | (if ($f | length) > 0 then map(select(.id as $i | ($f | index($i)))) else . end))
+      as $uncovered
+    | ($uncovered
+       | map(. as $p
+              | . + {floor_rank:
+                       ([ $p.findings[]? | ($rank[($sev[.]?)]? // 3) ]
+                          | (max // 3)) }))
+    | (if ($floor | length) > 0 then map(select(.floor_rank >= ($rank[$floor]? // 0))) else . end)
+      as $eligible
     | ($eligible | .[0:$max]) as $selected
     | ($selected | map(.id) | join(",")),
-      (($eligible | length) - ($selected | length))
+      (($eligible | length) - ($selected | length)),
+      (($uncovered | length) - ($eligible | length))
+  '
+}
+
+# Number of uncovered plans held back below the severity floor — the same
+# rating rule select_plans applies, minus the plans that already have an open
+# pull request, a merged one or a dispatched branch: their state already
+# records that they are moving, the floor only governs new dispatches. Used
+# by the overview issue's status line.
+held_back_count() {
+  local plans_json=$1 vulns_json=$2 floor=$3 excluded=$4
+  jq -n --slurpfile plans "$plans_json" --slurpfile vulns "$vulns_json" \
+     --arg floor "$floor" --arg excluded "$excluded" '
+    ({low: 1, medium: 2, high: 3}) as $rank
+    | ([ $vulns[0][]? | {key: .id, value: .severity} ] | from_entries) as $sev
+    | ($excluded | split(",") | map(select(length > 0))) as $ex
+    | [ $plans[0][]?
+        | select(.id as $i | ($ex | index($i)) | not)
+        | [ .findings[]? | ($rank[($sev[.]?)]? // 3) ]
+        | (max // 3) ]
+    | map(select(. < ($rank[$floor]? // 3)))
+    | length
   '
 }
 
@@ -501,13 +541,14 @@ dispatched_bucket() {
 
 # Prints the body; $1 plans.json, $2/$3/$4 the merged/open/in-flight id lists.
 overview_body() {
-  local plans_json=$1 merged=$2 open=$3 dispatched=$4
-  local total merged_n open_n dispatched_n not_dispatched_n
+  local plans_json=$1 merged=$2 open=$3 dispatched=$4 vulns_json=$5 floor=${6:-high}
+  local total merged_n open_n dispatched_n not_dispatched_n held_back
   total="$(jq 'length' "$plans_json")"
   merged_n="$(id_count "$merged")"
   open_n="$(id_count "$open")"
   dispatched_n="$(id_count "$dispatched")"
   not_dispatched_n=$(( total - merged_n - open_n - dispatched_n ))
+  held_back="$(held_back_count "$plans_json" "$vulns_json" "$floor" "$merged,$open,$dispatched")"
 
   printf '%s\n' '<!-- security-remediation: overview -->'
   printf '\n'
@@ -522,8 +563,13 @@ overview_body() {
   printf '\n'
   printf '%s\n' '## Status'
   printf '\n'
-  printf -- '- Workstreams: %s total — %s merged, %s in review, %s in flight, %s not yet dispatched.\n' \
-    "$total" "$merged_n" "$open_n" "$dispatched_n" "$not_dispatched_n"
+  if [ "$held_back" -gt 0 ]; then
+    printf -- '- Workstreams: %s total — %s merged, %s in review, %s in flight, %s not yet dispatched (%s below the %s rating floor, dispatched only on explicit runs).\n' \
+      "$total" "$merged_n" "$open_n" "$dispatched_n" "$not_dispatched_n" "$held_back" "$floor"
+  else
+    printf -- '- Workstreams: %s total — %s merged, %s in review, %s in flight, %s not yet dispatched.\n' \
+      "$total" "$merged_n" "$open_n" "$dispatched_n" "$not_dispatched_n"
+  fi
   printf '\n'
   printf '%s\n' '## Workstreams'
   printf '\n'
@@ -537,6 +583,7 @@ overview_body() {
   printf '\n'
   printf '%s\n' '- Merging stays a human action: every pull request needs at least one approval (COLLABORATION.md).'
   printf '%s\n' '- Each run starts up to max_plans not-yet-dispatched workstreams in priority order; one whose leg fails stays queued and is retried on a later run.'
+  printf '%s\n' '- Automated runs dispatch only workstreams rated '"$floor"' or higher; anything below is dispatched on an explicit run with a lower severity_threshold input.'
 }
 
 # Wave assignment for the fix stage ("Job 5" in the pipeline plan): greedy

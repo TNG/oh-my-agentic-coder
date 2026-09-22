@@ -368,7 +368,10 @@ fi
 rm -f "$report"
 
 plan_count="$(jq 'length' "$plans_json")"
-{ read -r selected_ids; read -r deferred_count; } <<< "$(select_plans "$plans_json" "$MAX_PLANS" "$PLANS_FILTER")"
+{ read -r selected_ids; read -r deferred_count; read -r held_back; } \
+  <<< "$(select_plans "$plans_json" "$MAX_PLANS" "$PLANS_FILTER" \
+        "$scan_abs/vulnerabilities.json" "${SEVERITY_THRESHOLD:-high}")"
+held_back="${held_back:-0}"
 
 cp "$TRANSCRIPT" "$mitigation_dir/planning-session.log" 2>/dev/null || true
 push_archive "$ARCHIVE_DIR" "plans: ${SCAN_DIR} — ${plan_count} plans ($(date -u +%F))" \

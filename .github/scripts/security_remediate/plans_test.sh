@@ -54,13 +54,24 @@ expect() {
 
 # --- Fixture manifest and stubbed PR list ------------------------------------
 # Sorted by (priority, id) the fixture order is 02, 03, 01, 04; 02 has an
-# open PR and 09 a merged one, so the eligible order is 03, 01, 04.
+# open PR and 09 a merged one, so the eligible order is 03, 01, 04. The
+# findings annotations carry the ratings the severity-floor cases need: 01
+# covers one low finding (the only plan a medium or high floor holds back),
+# 03 and 04 rate high (04 deliberately mixes a medium with a high finding,
+# so a plan runs when any of its findings clears the floor).
 cat > "$TMP/plans.json" <<'EOF'
 [
-  { "id": "01", "priority": 2, "branch": "fix/security-s1-plan-01" },
-  { "id": "02", "priority": 1, "branch": "fix/security-s1-plan-02" },
-  { "id": "03", "priority": 1, "branch": "fix/security-s1-plan-03" },
-  { "id": "04", "priority": 3, "branch": "fix/security-s1-plan-04" }
+  { "id": "01", "priority": 2, "branch": "fix/security-s1-plan-01", "findings": ["VULN-LOW"] },
+  { "id": "02", "priority": 1, "branch": "fix/security-s1-plan-02", "findings": ["VULN-HIGH"] },
+  { "id": "03", "priority": 1, "branch": "fix/security-s1-plan-03", "findings": ["VULN-HIGH"] },
+  { "id": "04", "priority": 3, "branch": "fix/security-s1-plan-04", "findings": ["VULN-MED", "VULN-HIGH"] }
+]
+EOF
+cat > "$TMP/sel-vulns.json" <<'EOF'
+[
+  { "id": "VULN-LOW", "severity": "low" },
+  { "id": "VULN-MED", "severity": "medium" },
+  { "id": "VULN-HIGH", "severity": "high" }
 ]
 EOF
 mkdir -p "$TMP/bin"
@@ -93,7 +104,7 @@ PATH="$TMP/bin:$PATH"
 export GITHUB_REPOSITORY="example/repo"
 
 run_selection() {
-  { read -r sel; read -r def; } <<< "$(select_plans "$TMP/plans.json" "$1" "$2")"
+  { read -r sel; read -r def; read -r held; } <<< "$(select_plans "$TMP/plans.json" "$1" "$2" "$TMP/sel-vulns.json" "${3:-}")"
 }
 
 # --- Cases --------------------------------------------------------------------
@@ -111,6 +122,65 @@ expect "filter keeps deferred arithmetic on the filtered set" "03,01" 1 "$sel" "
 
 run_selection 3 "02"
 expect "a PR-covered plan is not selected even when filtered for" "" 0 "$sel" "$def"
+
+# The severity floor: an empty floor disables it, so held-back is 0 in every
+# case above regardless of the fixture's ratings.
+if [ "${held:-x}" = "0" ]; then
+  echo "ok: without a floor no plan is held back"
+else
+  fail "without a floor the hold-back count is '${held:-<unset>}', expected 0"
+fi
+
+run_selection 10 "" high
+expect "the high floor holds back the low-rated plan held back from selection" "03,04" 0 "$sel" "$def"
+if [ "$held" = "1" ]; then
+  echo "ok: the high floor reports the held-back plan count"
+else
+  fail "the high floor hold-back count: got '$held', expected 1"
+fi
+
+run_selection 10 "" medium
+expect "the medium floor behaves like high for a mixed plan" "03,04" 0 "$sel" "$def"
+
+run_selection 1 "" high
+expect "the floor does not consume budget" "03" 1 "$sel" "$def"
+if [ "$held" = "1" ]; then
+  echo "ok: held-back plans are neither deferred nor budget-consumed"
+else
+  fail "held-back count with budget exhaustion: got '$held', expected 1"
+fi
+
+run_selection 10 "" low
+expect "a low floor runs the held-back plan again (explicit run)" "03,01,04" 0 "$sel" "$def"
+if [ "$held" = "0" ]; then
+  echo "ok: a low floor holds nothing back"
+else
+  fail "low-floor hold-back count: got '$held', expected 0"
+fi
+
+# Unrated plans fail open: a plan the planner left without a findings list,
+# and one whose finding has no severity, both rank high and run on an
+# automated high-floor run.
+cat > "$TMP/unrated-plans.json" <<'EOF'
+[
+  { "id": "01", "priority": 1, "branch": "fix/security-s1-plan-01" },
+  { "id": "02", "priority": 2, "branch": "fix/security-s1-plan-03", "findings": ["VULN-UNRATED"] }
+]
+EOF
+cat > "$TMP/unrated-vulns.json" <<'EOF'
+[
+  { "id": "VULN-UNRATED", "title": "rating deliberately absent" }
+]
+EOF
+{ read -r sel; read -r def; read -r held; } \
+  <<< "$(select_plans "$TMP/unrated-plans.json" 10 "" "$TMP/unrated-vulns.json" high)"
+expect "unrated plans never trip the floor" "01,02" 0 "$sel" "$def"
+if [ "$held" = "0" ]; then
+  echo "ok: unrated plans are not held back (fail open)"
+else
+  fail "unrated-plan hold-back: got '$held', expected 0"
+fi
+
 
 # --- plans_schema_errors -------------------------------------------------------
 # Fixtures are jq transforms of one valid plan, so each case exercises
@@ -699,7 +769,7 @@ cat > "$TMP/body.json" <<'EOF'
   { "id": "03", "priority": 3, "issue_line": "Third workstream" }
 ]
 EOF
-body="$(overview_body "$TMP/body.json" "02" "03" "01")"
+body="$(overview_body "$TMP/body.json" "02" "03" "01" "$TMP/sel-vulns.json" high)"
 body_check() {
   local desc=$1 needle=$2
   case "$body" in
@@ -714,9 +784,49 @@ body_check "a merged plan is ticked" "- [x] Second workstream"
 body_check "an open plan is unticked" "- [ ] Third workstream"
 body_check "the dispatch/retry mechanic is explained" \
   "one whose leg fails stays queued and is retried on a later run"
+body_check "the floor mechanic is explained" "a lower severity_threshold input"
 case "$body" in
   *"Further steps"*) fail "the removed Further steps section is still present" ;;
   *) echo "ok: the removed Further steps section is gone" ;;
+esac
+
+# A plan below the floor is marked in the status counts only — the tickable
+# workstream list stays untouched, so the issue keeps working as a checklist.
+cat > "$TMP/body-hold.json" <<'EOF'
+[
+  { "id": "01", "priority": 1, "issue_line": "Merged workstream", "findings": ["VULN-LOW"] },
+  { "id": "02", "priority": 2, "issue_line": "Held workstream", "findings": ["VULN-LOW"] }
+]
+EOF
+hold_emitted="$(overview_body "$TMP/body-hold.json" "01" "" "" "$TMP/sel-vulns.json" high)"
+hold_check() {
+  local desc=$1 needle=$2
+  case "$hold_emitted" in
+    *"$needle"*) echo "ok: $desc" ;;
+    *) fail "$desc: held-back body does not contain '$needle'" ;;
+  esac
+}
+hold_check "the status names the hold-back" \
+  "1 not yet dispatched (1 below the high rating floor, dispatched only on explicit runs)."
+hold_check "the workstream line stays annotation-free" "- [ ] Held workstream"
+if printf '%s' "$hold_emitted" | grep -Fq "Held workstream ("; then
+  fail "the workstream line carries a floor annotation"
+else
+  echo "ok: the tickable list stays clean of floor annotations"
+fi
+
+# A held-back plan whose branch was dispatched before the floor existed (the
+# legacy pre-floor run case) counts as in flight and is excluded from the
+# hold-back count: without the exclusion, the parenthesis would read "2
+# below..." here.
+in_flight_call="$(overview_body "$TMP/body-hold.json" "" "" "02" "$TMP/sel-vulns.json" high)"
+case "$in_flight_call" in
+  *"1 in flight, 1 not yet dispatched (1 below the high rating floor, dispatched only on explicit runs)."*)
+    echo "ok: a dispatched held-back plan stays in the in-flight bucket"
+    ;;
+  *)
+    fail "dispatched hold-back accounting is off: $(grep 'Workstreams:' <<< "$in_flight_call")"
+    ;;
 esac
 
 # --- archive_git redaction ------------------------------------------------------
