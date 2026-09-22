@@ -37,12 +37,12 @@ func TestProtectedWatchReportNilSafe(t *testing.T) {
 	})
 }
 
-func TestStartProtectedWatchSkipsNonNative(t *testing.T) {
-	if w := startProtectedWatch(audit.Nop(), nil, sandboxPlan{Name: "nono"}, nil, "/workdir"); w != nil {
-		t.Fatal("non-native plan must not start a watch")
+func TestStartProtectedWatchSkipsNoPolicy(t *testing.T) {
+	if w := startProtectedWatch(audit.Nop(), nil, sandboxPlan{}, nil, "/workdir"); w != nil {
+		t.Fatal("a plan without a resolved policy must not start a watch")
 	}
 	argv := []string{"/omac", "not-sandbox", "run"}
-	plan := sandboxPlan{Name: "builtin", Native: true, Policy: &sandboxprofile.Profile{}}
+	plan := sandboxPlan{Policy: &sandboxprofile.Profile{}}
 	if w := startProtectedWatch(audit.Nop(), nil, plan, argv, "/workdir"); w != nil {
 		t.Fatal("argv that is not a sandbox run must not start a watch")
 	}

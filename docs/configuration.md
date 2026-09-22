@@ -7,13 +7,20 @@ description: omac configuration files and options
 
 | File | Purpose | Written by                            |
 |---|---|---------------------------------------|
-| `oh-my-agentic-coder.yaml` | Launcher config: sandbox runtime selection, facade tuning, audit settings (global only); cache scope and facade timeouts (also project-local) | User                                  |
-| `sandbox-profiles/default.json` | Sandbox grants: which filesystem paths, network hosts, and env vars the agent can access | `omac start` (first run creates it) |
-| `sandbox-profiles/default.pages.json` | Permanent allow/deny network decisions made via the prompt dialog | `omac start` (creates it empty at launch); network prompt dialog (user answers) |
+| `config.yaml` | Launcher config: `sandbox.profile_name` (global or project-local); facade tuning, cache scope, and audit settings (global only) | User                                  |
+| `<name>.json` | Sandbox grants: which filesystem paths, network hosts, and env vars the agent can access | `omac start` (first run scaffolds the global `default.json`) |
+| `<name>.pages.json` | Permanent allow/deny network decisions made via the prompt dialog | `omac start` (creates it empty at launch); network prompt dialog (user answers) |
 | `sidecar.json` | Skill registry: names, directories, bundle hashes, declared secrets | `omac register` / `omac deregister`   |
 | `skill-config.yaml` | Non-secret per-skill fields: API base URLs, region names, feature flags | `omac register` / `omac config`       |
 
-These files live under `~/.config/omac/` (user-global) or `<workdir>/.opencode/` (workdir-local). The launcher config is read from both locations when both exist; see [Per-project configuration](#per-project-configuration) for what each location can control.
+Each layer has its own directory:
+
+| Layer | Directory | Launcher config | Profiles |
+|---|---|---|---|
+| user-global | `~/.config/omac/` | `config.yaml` | `sandbox-profiles/<name>.json` |
+| project-local | `<workdir>/.omac/` | `config.yaml` | `<name>.json` |
+
+The project-local directory is created on a sandboxed launch and is **masked read+write inside the sandbox**: a session can neither read the rules nor plant or rewrite a file a later launch would trust. See [Per-project configuration](#per-project-configuration).
 
 ## Launcher config
 
@@ -21,7 +28,7 @@ The launcher config tunes a few operational settings. None of this controls what
 
 ```yaml
 sandbox:
-  profile_path: ""                  # path to a custom sandbox grants file; "" uses the built-in default.json
+  profile_name: ""                  # pick <name>.json from this config's own directory; "" uses default.json
 facade:
   idle_timeout_secs: 300            # close idle HTTP keep-alive connections after N seconds; does not end the session
   max_body_bytes: 10485760          # 10 MB request body cap
@@ -35,9 +42,13 @@ cache:
   scope: workdir                    # tool cache sharing: workdir (default), config, or global; see Cache
 ```
 
-**`sandbox.profile_path`** points at a custom sandbox grants file that replaces the built-in `default.json`.
-It is an absolute path, or a path relative to the config file's project (for `<project>/.opencode/oh-my-agentic-coder.yaml`, relative to the project root; for the global `config.yaml`, relative to `~/.config/omac`).
-A missing file is a hard error. See [Sharing a profile across a team](#sharing-a-profile-across-a-team).
+**`sandbox.profile_name`** selects a sandbox grants profile by name. The name is
+resolved in the directory of the config that declares it and never crosses
+layers: a project-local `config.yaml` selects from `<workdir>/.omac/`, a global
+`config.yaml` from `~/.config/omac/sandbox-profiles/`. Empty means "this
+layer's `default.json` if it exists, else the other layer, else the built-in
+default". A name that does not exist, or one containing a path separator, is a
+hard error. See [Sharing a profile across a team](#sharing-a-profile-across-a-team).
 
 **`cache.scope`** controls how widely omac's isolated tool cache is shared between projects. It can be overridden per session with `--cache-scope`. See [Cache](./advanced/cache.md) for details.
 
@@ -45,15 +56,32 @@ A missing file is a hard error. See [Sharing a profile across a team](#sharing-a
 
 ### Per-project configuration
 
-To use different operational settings for different projects, add a project-local launcher config at `<project>/.opencode/oh-my-agentic-coder.yaml`. This works the same for every supported harness, despite the OpenCode-specific naming.
+To use different operational or sandbox settings for a project, add a
+project-local config at `<project>/.omac/config.yaml`. omac creates the
+`.omac/` directory on a sandboxed launch if it is missing.
 
-**What the project file can set:** `cache.scope`, `facade.idle_timeout_secs`, `facade.max_body_bytes`. These operational settings are layered on top of your global config (or built-in defaults when no global config exists).
+**What the project config can set:** `cache.scope`,
+`facade.idle_timeout_secs`, `facade.max_body_bytes`, and
+`sandbox.profile_name` (which resolves only inside `<project>/.omac/`). These
+are layered on top of your global config (or built-in defaults when no global
+config exists).
 
-**What only the global config (`~/.config/omac/config.yaml`) can set:** `sandbox.*` (which runtime to use, the confinement command, and the system prompt briefing), `audit.*`, and `facade.base_env_passthrough`. A project-local file cannot change any of these. This is intentional: the sandbox command runs on the host with your full environment, so its configuration must stay under your control, not the project's.
+**What only the global config (`~/.config/omac/config.yaml`) can set:** the
+sandbox system-prompt briefing, `audit.*`, and `facade.base_env_passthrough`. A
+project-local file cannot change any of these. Settings that decide how the
+sandbox runs on the host, or whether its actions are recorded, must stay under
+your control, not the project's. `sandbox.profile_name` is the one sandbox
+setting a project may set, because the file it names is committed and reviewed
+in git, lives in a directory the agent cannot read or write, and never crosses
+into the global layer.
 
-**Warning:** In `omac serve`, the launcher config is read once, from the `--workdir` you started the server with, so switching projects within a running server does not load a different project's file!
+**Warning:** In `omac serve`, the launcher config is read once, from the
+`--workdir` you started the server with, so switching projects within a running
+server does not load a different project's file!
 
-The sandbox grants (filesystem paths, network hosts, open ports) come from the sandbox grants file below — per-project via `sandbox.profile_path`, which a project-local launcher config may set.
+The sandbox grants (filesystem paths, network hosts, open ports) come from the
+sandbox grants file below — per-project by committing `.omac/default.json` (or
+another profile plus `sandbox.profile_name`).
 
 ## Harness config home
 
@@ -74,9 +102,15 @@ A redirect also **hides** the skills installed under the default home: omac scan
 
 ## Sandbox grants
 
-The sandbox grants file (`~/.config/omac/sandbox-profiles/default.json`) controls what the agent is actually allowed to access — filesystem paths, network mode, and environment variables. This is separate from the launcher config above, which only tunes operational settings (facade, cache, audit). To use a different file (e.g. a profile committed to a project), set `sandbox.profile_path` in the launcher config.
+The sandbox grants profile (`~/.config/omac/sandbox-profiles/default.json` globally, or `<workdir>/.omac/default.json` for a project) controls what the agent is actually allowed to access — filesystem paths, network mode, and environment variables. This is separate from the launcher config above, which selects the profile and tunes operational settings (facade, cache, audit).
 
 omac creates this file the first time you run `omac start`. Key fields:
+
+**Selection is by file name.** A profile is selected by its *file name*
+(`profile_name: team` → `<layer>/team.json`); the `"name"` in the JSON's
+`meta` block (`meta.name`) is a display label only — it never selects a
+profile, and omac does not check that it matches the file name. Keep them in
+sync to avoid confusing diagnostics output.
 
 | Field | Type | Default | What it controls |
 |---|---|---|---|
@@ -94,32 +128,59 @@ The reverse also applies. An unknown field is an error, so that a typo cannot qu
 
 ### Sharing a profile across a team
 
-Commit a profile when a project needs different grants and everyone should get the same ones (reviewed in git).
+Commit a profile when a project needs different grants and everyone should get
+the same ones (reviewed in git).
 
-1. Scaffold a starting file: `omac start` writes `~/.config/omac/sandbox-profiles/default.json`.
-2. Copy it into the repo (e.g. `.opencode/sandbox.json`), edit the grants.
-3. Point at it:
+1. Scaffold a starting file globally: `omac start` writes
+   `~/.config/omac/sandbox-profiles/default.json`.
+2. Copy it into the project as `.omac/default.json`, then edit the grants. If
+   the project should not use `default.json`, name it and select it:
 
 ```yaml
-# <project>/.opencode/oh-my-agentic-coder.yaml
+# <project>/.omac/config.yaml
 sandbox:
-  profile_path: .opencode/sandbox.json
+  profile_name: team
 ```
 
-- **Shared:** the profile (commit it). Team allowlist → `network.allow_domain`.
-- **Local:** `<profile>.pages.json` (per-user "allow permanently" clicks) — created empty on the first launch, git-ignored automatically, never shared.
+- **Shared:** the profile(s) under `.omac/` (commit them). Team allowlist →
+  `network.allow_domain`.
+- **Local:** `<profile>.pages.json` (per-user "allow permanently" clicks) —
+  created empty on the first launch, git-ignored automatically, never shared.
 
-**Tamper protection.** Inside the sandbox, the agent can *read* the profile, its `<profile>.pages.json` sibling, and the project launcher config — but never *write* them — even though the workdir (where all of them live) is read-write. So a session cannot rewrite the grants a later launch enforces, nor pre-allow network hosts by editing the pages file, nor repoint `profile_path` at a different file. omac itself writes learned decisions from outside the sandbox, so nothing changes for you. A profile outside every granted path (e.g. one in `~/.config`) is stronger still: the sandboxed session cannot see it at all, on both platforms.
+Several local profiles can live side by side in `.omac/`; switch between them
+with `sandbox.profile_name` or `--profile-path .omac/<name>.json`. A name never
+resolves across layers, so a local `strict` is always `<workdir>/.omac/strict.json`
+and never the global `strict`.
 
-**Hiding the profile entirely.** If the agent should not even be able to *read* the profile (or the pages file), deny it from inside the profile itself:
+**Tamper and read protection.** The whole `.omac/` directory is masked
+read+write inside the sandbox, so the agent can neither read the rules nor
+write, create, rename, or delete anything in it. A session cannot rewrite the
+grants a later launch enforces, cannot pre-allow network hosts by editing the
+pages file, and cannot plant a `.omac/` that a later launch would trust. omac
+writes learned decisions from outside the sandbox, so nothing changes for you.
+A global profile (`~/.config/omac/`) sits outside every granted path and is
+invisible to the session on both platforms.
 
-```json
-"filesystem": {
-  "deny": [".opencode/sandbox.json", ".opencode/sandbox.pages.json", ".opencode/oh-my-agentic-coder.yaml"]
-}
-```
+`--profile-path` is constrained too: it accepts only a path inside
+`~/.config/omac/sandbox-profiles/` or `<workdir>/.omac/`, and refuses symlinks.
 
-A denied path is masked read+write inside the sandbox — the agent sees a short explanation instead of the file. Use the path form (as above), not a bare filename like `"sandbox.json"`: a bare name would be denied in *every* granted directory. Only the sandboxed session is affected; omac itself keeps reading the profile normally.
+### Migrating from 0.9.0
+
+- The project launcher config moved from
+  `<project>/.opencode/oh-my-agentic-coder.yaml` to `<project>/.omac/config.yaml`.
+  Move it with `mkdir -p .omac && mv .opencode/oh-my-agentic-coder.yaml .omac/config.yaml`.
+  The old path is no longer read; omac warns when it exists.
+- `sandbox.default_profile` and the `sandbox.profiles` argv templates have no
+  effect and are rejected: remove the line/block. If `default_profile` named a
+  profile you still want (omac lists the profiles it finds for that layer),
+  rename the field instead:
+  `default_profile: team` → `profile_name: team`. omac always runs its built-in
+  sandbox; `sandbox.profile_name` chooses sandbox grants, put the profile at
+  `~/.config/omac/sandbox-profiles/<name>.json` (global config) or
+  `<workdir>/.omac/<name>.json` (project config).
+- The `--sandbox <name>` flag on `omac start`/`serve` was removed. Use
+  `--profile-path .omac/<name>.json` (or `sandbox.profile_name`).
+- `omac sandbox run --profile` is unchanged (name or path).
 
 ### Opening a port
 

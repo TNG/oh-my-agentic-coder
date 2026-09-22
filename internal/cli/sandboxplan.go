@@ -12,16 +12,23 @@ import (
 )
 
 // sandboxPlan is the launch's resolved sandbox policy: the grant JSON the run
-// enforces, resolved from sandbox.profile_path or the built-in "default".
+// enforces, resolved from the selected profile or the built-in "default".
 type sandboxPlan struct {
 	// PolicyRef is the policy profile the run enforces: "default", or the
-	// resolved sandbox.profile_path when one is set.
+	// selected profile's absolute path when one is set.
 	PolicyRef string
 	// Policy is the resolved policy profile; nil when PolicyErr is set.
 	Policy *sandboxprofile.Profile
 	// PolicyPath is the file Policy was loaded from; "" means the
 	// compiled-in defaults were used and no file was consulted.
 	PolicyPath string
+	// Layer is where the profile was selected: "workdir", "global", or
+	// "builtin".
+	Layer string
+	// Workdir is the project root the plan resolved against, so callers can
+	// derive the non-overridable .omac protection without threading it
+	// separately.
+	Workdir string
 	// PolicyErr records a failed policy resolution. Never fatal: the
 	// launch proceeds (the `omac sandbox run` child resolves the policy
 	// itself), but facade features derived from the policy are disabled.
@@ -31,15 +38,17 @@ type sandboxPlan struct {
 // resolveSandboxPlan resolves the policy profile the run enforces — read-only,
 // so inspecting a profile never scaffolds files.
 //
-// profileRef is the resolved sandbox.profile_path (absolute) or "" for the
-// built-in "default" profile — see LauncherConfig.ResolveSandboxProfileRef.
-func resolveSandboxPlan(profileRef string) sandboxPlan {
-	ref := profileRef
+// sel is the profile selected by the launcher config or --profile-path; its
+// Path is absolute and already validated, or "" for the built-in default.
+// workdir is the project root, the one place outside the trusted profile
+// directory a project-committed profile may live.
+func resolveSandboxPlan(workdir string, sel config.ProfileSelection) sandboxPlan {
+	ref := sel.Path
 	if ref == "" {
 		ref = "default"
 	}
-	plan := sandboxPlan{PolicyRef: ref}
-	policy, path, err := sandboxprofile.Resolve(ref)
+	plan := sandboxPlan{PolicyRef: ref, Layer: sel.Layer, Workdir: workdir}
+	policy, path, err := sandboxprofile.Resolve(ref, sandboxprofile.WithProjectDir(config.LocalConfigDir(workdir)))
 	if err != nil {
 		plan.PolicyErr = err
 		return plan
@@ -49,11 +58,20 @@ func resolveSandboxPlan(profileRef string) sandboxPlan {
 	return plan
 }
 
+// activeProfileSelection applies --profile-path when given, else the launcher
+// config's layer-local selection.
+func activeProfileSelection(workdir, cliPath string) (config.ProfileSelection, error) {
+	if strings.TrimSpace(cliPath) != "" {
+		return config.ExplicitProfileSelection(workdir, cliPath)
+	}
+	return config.ResolveSandboxProfile(workdir)
+}
+
 // warnPermissiveProfile prints advisory findings for a custom sandbox profile
 // that weakens the sandbox (secret-path grants, open network, empty allow_vars,
 // ...). It is warn-and-continue: findings never block the launch, they only
-// make a permissive profile visible — a committed profile_path may be authored
-// by someone other than the person launching. The default profile is not linted
+// make a permissive profile visible — a committed project profile may be
+// authored by someone other than the person launching. The default is not linted
 // here (doctor covers it), so ref == "" or a nil policy is a no-op.
 func warnPermissiveProfile(w io.Writer, ref string, policy *sandboxprofile.Profile) {
 	if ref == "" || policy == nil {
@@ -87,32 +105,21 @@ func excludeProfilePagesFile(workdir, profileRef string) {
 	gitExcludePath(workdir, rel)
 }
 
-// inspectProfileRef returns the profile a read-only inspection should examine,
-// matching a launch: the explicit --profile value, else sandbox.profile_path,
-// else "" (the built-in "default"). Best-effort: on a config or profile_path
+// profileRefFromConfig returns the profile a read-only inspection should
+// examine, matching a launch: the explicit --profile value, else the launcher
+// config's layer-local selection, else "" (the built-in "default"). On a config
 // error it returns "" plus the error, so callers can warn before falling back
-// to the default — a silently swapped profile would hide the very problem
-// the inspection is meant to reveal.
-func inspectProfileRef(workdir, flagRef string) (string, error) {
-	if flagRef != "" {
+// to the default — a silently swapped profile would hide the very problem the
+// inspection is meant to reveal.
+func profileRefFromConfig(workdir, flagRef string) (string, error) {
+	if strings.TrimSpace(flagRef) != "" {
 		return flagRef, nil
 	}
-	lc, cfgPath, err := config.LoadLauncher(workdir)
+	sel, err := config.ResolveSandboxProfile(workdir)
 	if err != nil {
 		return "", err
 	}
-	return profileRefFromConfig(lc, cfgPath, workdir, "")
-}
-
-// profileRefFromConfig resolves the configured sandbox.profile_path from an
-// already-loaded launcher config, so a caller that loaded the config once
-// (doctor) does not load it again. flagRef is a non-empty explicit --profile
-// reference, passed through verbatim.
-func profileRefFromConfig(lc config.LauncherConfig, cfgPath, workdir, flagRef string) (string, error) {
-	if flagRef != "" {
-		return flagRef, nil
-	}
-	return lc.ResolveSandboxProfileRef(cfgPath, workdir)
+	return sel.Path, nil
 }
 
 // profileDisplayName returns the label inspection output should use for a

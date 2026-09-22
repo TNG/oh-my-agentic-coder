@@ -57,6 +57,36 @@ func TestProvenanceViewJSONRoundTrip(t *testing.T) {
 	}
 }
 
+// The omac config dir must still be reported as denied even when the profile
+// tries to override_deny it, matching the kernel's non-overridable set.
+func TestBuildProvenanceView_NonOverridableProtectedDenied(t *testing.T) {
+	isolateHome(t)
+	wd := t.TempDir()
+	profPath := filepath.Join(config.LocalConfigDir(wd), "default.json")
+	if err := os.MkdirAll(filepath.Dir(profPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(profPath, []byte(`{
+		"meta": {"name": "default"},
+		"workdir": {"access": "readwrite"},
+		"filesystem": {"override_deny": ["~/.config/omac"]}
+	}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	view, err := buildTestView(wd, profPath)
+	if err != nil {
+		t.Fatalf("buildProvenanceView: %v", err)
+	}
+	want := filepath.Join(os.Getenv("HOME"), ".config", "omac")
+	for _, e := range view.Filesystem.Entries {
+		if e.Entry == want && e.Action == "deny" {
+			return
+		}
+	}
+	t.Errorf("provenance must report %s as denied despite override_deny; got %+v", want, view.Filesystem.Entries)
+}
+
 func TestBuildProvenanceView_NetworkEntries(t *testing.T) {
 	isolateHome(t)
 	wd := t.TempDir()
@@ -349,7 +379,7 @@ func TestRunProvenance_BadProfile(t *testing.T) {
 func brokenConfigWorkdir(t *testing.T) string {
 	t.Helper()
 	wd := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(wd, ".opencode"), 0o755); err != nil {
+	if err := os.MkdirAll(config.LocalConfigDir(wd), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	cfg := config.ProjectLauncherConfigPath(wd)
@@ -506,11 +536,11 @@ func TestRunProvenance_CheckJSONRiskyProfileHasFindings(t *testing.T) {
 func TestBuildProvenanceView_CacheSection(t *testing.T) {
 	isolateHome(t)
 	wd := t.TempDir()
-	profDir := filepath.Join(wd, ".opencode")
+	profDir := config.LocalConfigDir(wd)
 	os.MkdirAll(profDir, 0o755)
 	profPath := filepath.Join(profDir, "default.json")
 	os.WriteFile(profPath, []byte(`{"meta":{"name":"default"},"workdir":{"access":"readwrite"}}`), 0o644)
-	os.WriteFile(filepath.Join(profDir, "oh-my-agentic-coder.yaml"), []byte("cache:\n  scope: workdir\n"), 0o644)
+	os.WriteFile(config.ProjectLauncherConfigPath(wd), []byte("cache:\n  scope: workdir\n"), 0o644)
 
 	view, err := buildTestView(wd, profPath)
 	if err != nil {

@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/TNG/oh-my-agentic-coder/internal/config"
 	"github.com/TNG/oh-my-agentic-coder/internal/facade"
 )
 
@@ -17,7 +18,7 @@ func wireForTest(t *testing.T, noSandbox bool) (*facade.Facade, []string) {
 
 func wireModeForTest(t *testing.T, noSandbox, learnMode bool) (*facade.Facade, []string) {
 	t.Helper()
-	plan := resolveSandboxPlan("")
+	plan := resolveSandboxPlan("", config.ProfileSelection{})
 	f := facade.New("", "", nil, 0, 0, "", "test")
 	var warnings []string
 	wireFacadeSandbox(f, noSandbox, learnMode, plan, func(format string, args ...any) {

@@ -55,7 +55,7 @@ func runDoctor(args []string, env *Env) int {
 	// Launcher config resolution: report which config file (if any) applies.
 	// Retained for later sections (sandbox profile warnings, lint) so the
 	// config is loaded once.
-	launcherCfg, cfgPath, err := config.LoadLauncher(env.Workdir)
+	_, cfgPath, err := config.LoadLauncher(env.Workdir)
 	if err != nil {
 		fmt.Fprintln(env.Stdout, "[fail] launcher config:", err)
 		return ExitConfigInvalid
@@ -65,8 +65,8 @@ func runDoctor(args []string, env *Env) int {
 	} else {
 		fmt.Fprintln(env.Stdout, "[ok] launcher config:", cfgPath)
 	}
-	for _, warn := range launcherCfg.Sandbox.DeprecationWarnings() {
-		fmt.Fprintln(env.Stdout, "[warn] launcher config:", warn)
+	for _, warn := range config.LegacyProjectConfigWarnings(env.Workdir) {
+		fmt.Fprintln(env.Stdout, "[warn]", warn)
 	}
 
 	// Registry. Merge the workdir layer with the user-global layer
@@ -207,9 +207,9 @@ func runDoctor(args []string, env *Env) int {
 	// Built-in skills provisioned by `omac setup`, per installed harness.
 	doctorBuiltinSkills(env)
 
-	// Inspect the same policy profile a launch would use (sandbox.profile_path,
-	// else the built-in "default"), so doctor reflects the real config.
-	profileRef, refErr := profileRefFromConfig(launcherCfg, cfgPath, env.Workdir, "")
+	// Inspect the same policy profile a launch would use (the layer-local
+	// selection, else the built-in "default"), so doctor reflects the real config.
+	profileRef, refErr := profileRefFromConfig(env.Workdir, "")
 	if refErr != nil {
 		fmt.Fprintf(env.Stdout, "[warn] sandbox profile: %v — inspecting the built-in default instead.\n", refErr)
 	}
@@ -435,7 +435,7 @@ type toolHomeWarning struct {
 // never mutate the on-disk profile.
 func doctorSandboxProfileWarnings(env *Env, profileRef string) {
 	name := profileDisplayName(profileRef)
-	p, path, err := sandboxprofile.Resolve(profileRef)
+	p, path, err := sandboxprofile.Resolve(profileRef, sandboxprofile.WithAnyPath())
 	if err != nil {
 		fmt.Fprintf(env.Stdout, "  [warn] sandbox profile: %v\n", err)
 		return

@@ -10,8 +10,8 @@ import (
 )
 
 // DoctorNotes returns extra platform diagnostics for `omac doctor`. profileRef
-// is the policy profile the run would enforce (sandbox.profile_path, else the
-// built-in "default"), so the network-enforcement note reflects the real config.
+// is the policy profile the run would enforce (the layer-local selection, else
+// the built-in "default"), so the network-enforcement note reflects the real config.
 func DoctorNotes(profileRef string) []string {
 	abi := LandlockABI()
 	if abi >= landlockNetABI {
@@ -30,7 +30,9 @@ func DoctorNotes(profileRef string) []string {
 		return notes
 	}
 	envOnlyActive := false
-	if p, _, err := sandboxprofile.Resolve(profileRef); err == nil {
+	// Read-only inspection: WithAnyPath so a project-local .omac/.json profile
+	// (outside the trusted global dir) still yields the correct note.
+	if p, _, err := sandboxprofile.Resolve(profileRef, sandboxprofile.WithAnyPath()); err == nil {
 		envOnlyActive = p.Network.EffectiveEnforcement() == sandboxprofile.EnforceEnvOnly
 	}
 	if envOnlyActive {

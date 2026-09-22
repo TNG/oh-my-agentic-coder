@@ -53,14 +53,14 @@ func runDiagnose(args []string, env *Env) int {
 	// One load serves the profile ref and the audit path below. A load
 	// failure only warns (zero-value config): diagnose should still be
 	// able to report on the rest.
-	lc, cfgPath, cfgErr := config.LoadLauncher(env.Workdir)
+	lc, _, cfgErr := config.LoadLauncher(env.Workdir)
 	if cfgErr != nil {
 		fmt.Fprintf(env.Stderr, "omac diagnose: %v — showing the built-in default profile instead.\n", cfgErr)
 	}
-	ref, refErr := profileRefFromConfig(lc, cfgPath, env.Workdir, *profileRef)
+	ref, refErr := profileRefFromConfig(env.Workdir, *profileRef)
 	if refErr != nil {
-		// A broken profile_path makes a real launch fail; diagnose is the
-		// tool that should say so rather than silently show the default.
+		// A broken profile selection makes a real launch fail; diagnose is
+		// the tool that should say so rather than silently show the default.
 		fmt.Fprintf(env.Stderr, "omac diagnose: %v — showing the built-in default profile instead.\n", refErr)
 	}
 	profile, profPath, err := sandboxprofile.Resolve(ref, sandboxprofile.WithAnyPath())

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/TNG/oh-my-agentic-coder/internal/audit"
+	"github.com/TNG/oh-my-agentic-coder/internal/config"
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
 )
 
@@ -79,19 +80,18 @@ func TestDiagnoseSurfacesBlockedHostAndHint(t *testing.T) {
 	}
 }
 
-// A broken sandbox.profile_path must not silently swap in the default
+// A broken sandbox.profile_name must not silently swap in the default
 // profile: diagnose says so and falls back, since a real launch would fail.
 func TestDiagnoseWarnsOnBrokenProfilePath(t *testing.T) {
 	isolateHome(t)
 	writeProfileFixture(t, `{"meta":{"name":"default"}}`)
 
 	workdir := t.TempDir()
-	ocDir := filepath.Join(workdir, ".opencode")
-	if err := os.MkdirAll(ocDir, 0o755); err != nil {
+	if err := os.MkdirAll(config.LocalConfigDir(workdir), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(ocDir, "oh-my-agentic-coder.yaml"),
-		[]byte("sandbox:\n  profile_path: ./missing.json\n"), 0o644); err != nil {
+	if err := os.WriteFile(config.ProjectLauncherConfigPath(workdir),
+		[]byte("sandbox:\n  profile_name: missing\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -103,9 +103,9 @@ func TestDiagnoseWarnsOnBrokenProfilePath(t *testing.T) {
 	if code != ExitOK {
 		t.Fatalf("code=%d, want ExitOK (fallback)", code)
 	}
-	if s := errBuf.String(); !strings.Contains(s, "missing.json") ||
+	if s := errBuf.String(); !strings.Contains(s, "missing") ||
 		!strings.Contains(s, "built-in default profile instead") {
-		t.Errorf("diagnose should warn about the broken profile_path and the fallback; got:\n%s", s)
+		t.Errorf("diagnose should warn about the broken profile_name and the fallback; got:\n%s", s)
 	}
 }
 

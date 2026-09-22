@@ -55,6 +55,7 @@ type serveParse struct {
 	auditLog          string
 	noAudit           bool
 	auditStrict       bool
+	profilePath       string
 	roots             multiFlag
 	openPorts         []int
 }
@@ -80,6 +81,7 @@ func parseServeArgs(args []string, env *Env) (serveParse, bool) {
 		auditLog          = fs.String("audit-log", "", "Path to the audit log (default: persistent central location). Overrides config.")
 		noAudit           = fs.Bool("no-audit", false, "Disable the security audit trail.")
 		auditStrict       = fs.Bool("audit-strict", false, "Fail-closed: abort if the audit log cannot be written.")
+		profilePath       = fs.String("profile-path", "", "Path to a sandbox grants profile inside ~/.config/omac/sandbox-profiles/ or <workdir>/.omac/. Overrides sandbox.profile_name.")
 	)
 	var roots multiFlag
 	var openPorts intMultiFlag
@@ -103,6 +105,9 @@ func parseServeArgs(args []string, env *Env) (serveParse, bool) {
 	harness, ourArgs, err := splitHarnessToken(ourArgs)
 	if err != nil {
 		fmt.Fprintln(env.Stderr, "omac serve:", err)
+		return serveParse{}, false
+	}
+	if rejectLegacySandboxFlag("serve", ourArgs, env) {
 		return serveParse{}, false
 	}
 	if _, ok := parseWithHarnessArgsHint(fs, "serve", ourArgs, env); !ok {
@@ -136,6 +141,7 @@ func parseServeArgs(args []string, env *Env) (serveParse, bool) {
 		auditLog:          *auditLog,
 		noAudit:           *noAudit,
 		auditStrict:       *auditStrict,
+		profilePath:       *profilePath,
 		roots:             roots,
 		openPorts:         append([]int(nil), openPorts...),
 	}, true
@@ -175,35 +181,40 @@ func runServe(args []string, env *Env) int {
 	auditStrict := parsed.auditStrict
 	roots := parsed.roots
 	openPorts := parsed.openPorts
+	profilePathFlag := parsed.profilePath
 
 	lc, cfgPath, err := config.LoadLauncher(env.Workdir)
 	if err != nil {
 		fmt.Fprintln(env.Stderr, "omac serve: launcher config:", err)
 		return ExitConfigInvalid
 	}
-	for _, w := range lc.Sandbox.DeprecationWarnings() {
+	for _, w := range config.LegacyProjectConfigWarnings(env.Workdir) {
 		fmt.Fprintln(env.Stderr, "omac serve: [warn] "+w)
 	}
-	// Resolve sandbox.profile_path (if set) to the policy profile the run
-	// enforces. A bad path is fatal under a real sandbox; ignored when no
-	// sandboxed inner is launched (--no-sandbox / --no-inner).
-	profileRef, profErr := lc.ResolveSandboxProfileRef(cfgPath, env.Workdir)
-	if profErr != nil && !noSandbox && !noInner {
-		fmt.Fprintln(env.Stderr, "omac serve: sandbox profile:", profErr)
+	// Resolve the sandbox grants profile. A bad selection is fatal under a
+	// real sandbox; ignored when no sandboxed inner is launched
+	// (--no-sandbox / --no-inner).
+	sel, selErr := activeProfileSelection(env.Workdir, profilePathFlag)
+	if selErr != nil && !noSandbox && !noInner {
+		fmt.Fprintln(env.Stderr, "omac serve: sandbox profile:", selErr)
 		return ExitConfigInvalid
 	}
+	if selErr != nil {
+		sel = config.ProfileSelection{Name: "default", Layer: "builtin"}
+	}
+	profileRef := sel.Path
 	if verbose {
 		if profileRef != "" {
-			fmt.Fprintf(env.Stderr, "[verbose] sandbox profile: %s (from sandbox.profile_path)\n", profileRef)
+			fmt.Fprintf(env.Stderr, "[verbose] sandbox profile: %s (from %s)\n", profileRef, sel.Layer)
 		} else {
-			fmt.Fprintln(env.Stderr, "[verbose] sandbox profile: default")
+			fmt.Fprintln(env.Stderr, "[verbose] sandbox profile: default (builtin)")
 		}
 	}
 	// One resolved sandbox plan for the whole run: the launcher profile
 	// (templated argv) plus, for omac's native backend, its policy profile
 	// (grant JSON). Everything downstream reads the plan instead of
 	// re-resolving a bare name — see internal/cli/sandboxplan.go.
-	plan := resolveSandboxPlan(profileRef)
+	plan := resolveSandboxPlan(env.Workdir, sel)
 	if !noSandbox && !noInner {
 		// A custom profile is user-authored (and may be committed by a teammate),
 		// so surface anything that weakens the sandbox and keep its learned
