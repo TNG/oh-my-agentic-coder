@@ -15,4 +15,4 @@ func BuildChildArgv(_ *Grants, _ []string) ([]string, error) {
 }
 
 // DoctorNotes returns extra platform diagnostics for `omac doctor`.
-func DoctorNotes() []string { return nil }
+func DoctorNotes(_ string) []string { return nil }
