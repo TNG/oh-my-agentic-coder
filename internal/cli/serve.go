@@ -1303,6 +1303,10 @@ func (s *serveServer) activate(absDir string) (map[string]any, error) {
 	token := mintToken()
 	d := &dirState{Dir: absDir, Token: token, State: "activating", Skills: map[string]*skillRoute{}}
 	s.mu.Lock()
+	// Clear flat aliases before the second dir becomes visible so there is
+	// no instant at which len(s.dirs) >= 2 and a token-less alias from the
+	// first dir is still routeable.
+	s.clearFlatAliases()
 	s.dirs[absDir] = d
 	s.byToken[token] = d
 	s.mu.Unlock()
