@@ -607,6 +607,57 @@ changed_paths_between() {
   git -C "$1" diff --name-only "$2"
 }
 
+# Undo every edit the ownership guard reports for a hard-leashed session,
+# given the guard's printed list: tracked modifications and deletions are
+# restored from HEAD, staged additions and untracked files are deleted, and
+# a staged rename is moved back. The removed diff is written to $3 first —
+# untracked files are captured via intent-to-add before they are deleted and
+# a rename's source path joins the pathspec so the pair stays visible — so
+# the fix session under the soft leash can judge what was taken away and
+# reapply what it needs.
+revert_offending_edits() {
+  local repo=$1 paths=$2 report=$3 path old xy
+  local -a specs=()
+  # A pathspec limited to one side of a staged rename (old -> new) reports the
+  # new path as a plain add, so renames are resolved against the full index
+  # diff; the capture needs both sides in its pathspec anyway.
+  rename_source() {
+    git -C "$repo" diff --cached -M --name-status \
+      | awk -F'\t' -v new="$path" '$3 == new { print $2; exit }'
+  }
+  : > "$report"
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    if [ "$(git -C "$repo" status --porcelain -- "$path" | head -n1 | cut -c1-2)" = "??" ]; then
+      # Intent-to-add: otherwise the capture below shows nothing for it.
+      git -C "$repo" add -N -- "$path" 2>/dev/null || true
+    fi
+    old="$(rename_source)"
+    [ -n "$old" ] && specs+=("$old")
+    specs+=("$path")
+  done <<< "$paths"
+  git -C "$repo" diff HEAD -M -- "${specs[@]}" >> "$report"
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    old="$(rename_source)"
+    if [ -n "$old" ]; then
+      git -C "$repo" mv -f "$path" "$old"
+      continue
+    fi
+    xy="$(git -C "$repo" status --porcelain -- "$path" | head -n1 | cut -c1-2)"
+    case "$xy" in
+      'A'*)
+        git -C "$repo" rm -f -q -- "$path" ;;
+      'M '*|' M'*|'MM'*|'D '*|' D'*)
+        git -C "$repo" checkout -q HEAD -- "$path" ;;
+      *)
+        # Plain untracked or intent-to-add: drop the index entry with the file.
+        rm -f "$repo/$path"
+        git -C "$repo" rm -q --cached -- "$path" 2>/dev/null || true ;;
+    esac
+  done <<< "$paths"
+}
+
 # Install the pinned opencode CLI the sessions run with.
 install_opencode() {
   bun install -g "${E2E_VERSION_OPENCODE:-$DEFAULT_OPENCODE_VERSION}"

@@ -344,6 +344,37 @@ echo y > "$g/pkg/name with space.go"
 guard_violation "a quoted untracked path is unquoted before matching" "pkg/name with space.go"
 rm "$g/pkg/name with space.go"
 
+# --- revert_offending_edits ----------------------------------------------------
+# The hard-leashed test phase's substitute for failing the leg: strays are
+# restored from HEAD and their diff banked for the fix session. A regression
+# here leaves tree or index debris, or hands the fix-writer an incomplete
+# report.
+echo guard-y >> "$g/pkg/other.go"
+echo fresh > "$g/pkg/rogue.go"
+git -C "$g" checkout -q -- pkg/prod.go   # the guard section's allowed edit stays; clean up for the rename case
+git -C "$g" mv pkg/prod.go pkg/prod_moved.go
+report="$TMP/guard-removed.diff"
+revert_offending_edits "$g" "$(printf '%s\n' pkg/other.go pkg/rogue.go pkg/prod_moved.go)" "$report"
+
+if [ -z "$(git -C "$g" status --porcelain -- pkg/other.go pkg/rogue.go pkg/prod.go pkg/prod_moved.go)" ]; then
+  echo "ok: the restore leaves no residue for the offending paths"
+else
+  fail "the restore leaves debris for the offending paths: $(git -C "$g" status --porcelain -- pkg/)"
+fi
+if [ ! -e "$g/pkg/rogue.go" ] && [ -f "$g/pkg/prod.go" ] && [ ! -e "$g/pkg/prod_moved.go" ] \
+   && [ "$(cat "$g/pkg/other.go")" = x ]; then
+  echo "ok: modified, deleted-new and renamed offending files are all undone"
+else
+  fail "the restore did not undo every offending edit: $(ls -la "$g/pkg")"
+fi
+if grep -q '^diff --git a/pkg/other.go' "$report" \
+   && grep -q '^+fresh' "$report" \
+   && grep -q 'rename from pkg/prod.go' "$report"; then
+  echo "ok: the removed diff records the tracked edit, the untracked file and the rename"
+else
+  fail "the removed-diff report is incomplete: $(cat "$report")"
+fi
+
 # --- assign_waves ---------------------------------------------------------------
 # Greedy coloring: plans sharing an owned file must land in different waves,
 # each plan gets the lowest free wave, the chain caps at 4 and reports the
