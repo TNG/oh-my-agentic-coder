@@ -82,6 +82,34 @@ func TestSBPLFilesystemRules(t *testing.T) {
 	}
 }
 
+func TestSBPLWriteProtectedPaths(t *testing.T) {
+	g := baseGrants()
+	g.WriteProtectedPaths = []string{"/work/.opencode/sandbox.json", "/work/.opencode/sandbox.pages.json"}
+	p := GenerateSBPL(g)
+	for _, want := range []string{
+		`(deny file-write* (subpath "/work/.opencode/sandbox.json"))`,
+		`(deny file-write* (subpath "/work/.opencode/sandbox.pages.json"))`,
+	} {
+		if !strings.Contains(p, want) {
+			t.Errorf("profile missing %q", want)
+		}
+	}
+	// The deny must come after the covering write allow: Seatbelt is
+	// last-match-wins, so an earlier deny would be overridden.
+	denyPos := strings.Index(p, `(deny file-write* (subpath "/work/.opencode/sandbox.json"))`)
+	allowPos := strings.Index(p, `(allow file-write* (subpath "/work"))`)
+	if denyPos < 0 || allowPos < 0 {
+		t.Fatal("expected rules missing")
+	}
+	if denyPos < allowPos {
+		t.Errorf("write-protected deny must follow the write allows: deny=%d allow=%d", denyPos, allowPos)
+	}
+	// No read deny: write-protected paths stay readable.
+	if strings.Contains(p, `(deny file-read* (subpath "/work/.opencode/sandbox.json"))`) {
+		t.Error("write-protected paths must not be read-denied")
+	}
+}
+
 func TestSBPLRuleOrderReadDenyWrite(t *testing.T) {
 	p := GenerateSBPL(baseGrants())
 	readPos := strings.Index(p, `(allow file-read* (subpath "/usr/lib"))`)

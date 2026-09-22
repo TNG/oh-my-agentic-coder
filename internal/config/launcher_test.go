@@ -136,6 +136,32 @@ func TestResolveSandboxProfileRefDirectoryIsError(t *testing.T) {
 	}
 }
 
+func TestResolveSandboxProfileRefSymlinkIsError(t *testing.T) {
+	// A symlinked profile cannot be write-protected inside the sandbox
+	// (a session could replace the symlink and steer the next launch),
+	// so the config layer rejects it outright.
+	dir := t.TempDir()
+	prof := filepath.Join(dir, "sandbox.json")
+	if err := os.WriteFile(prof, []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link.json")
+	if err := os.Symlink(prof, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	lc := LauncherConfig{Sandbox: SandboxConfig{ProfilePath: link}}
+	_, err := lc.ResolveSandboxProfileRef("", "")
+	if err == nil {
+		t.Fatal("a symlinked profile_path should be an error")
+	}
+	if !strings.Contains(err.Error(), "symlink") {
+		t.Errorf("error should explain the symlink problem: %v", err)
+	}
+	if !strings.Contains(err.Error(), "real file") {
+		t.Errorf("error should say what to do instead: %v", err)
+	}
+}
+
 func TestResolveSandboxProfileRefProjectRelative(t *testing.T) {
 	workdir := t.TempDir()
 	// The project layer anchors on the project root (workdir), NOT the config
