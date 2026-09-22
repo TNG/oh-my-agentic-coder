@@ -23,6 +23,8 @@
 #   GH_TOKEN                  for `gh pr list` (github.token, read-scoped)
 #   MAX_PLANS                budget, plans selected per run (default 3)
 #   PLANS_FILTER             restrict to these plan ids, comma-separated
+#   SEVERITY_THRESHOLD       dispatch only workstreams rated at or above this
+#                            (high|medium|low, default high; "" disables)
 #   ARCHIVE_DIR              where to clone (default: ./archive)
 
 set -euo pipefail
@@ -32,6 +34,10 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 
 MAX_PLANS="${MAX_PLANS:-3}"
 PLANS_FILTER="${PLANS_FILTER:-}"
+# Rating floor for automatic dispatch (the workflow's severity_threshold
+# input). Held-back plans are marked on the overview issue and stay queued
+# for an explicit run with a lower threshold — never dispatched on their own.
+SEVERITY_THRESHOLD="${SEVERITY_THRESHOLD:-high}"
 ARCHIVE_DIR="${ARCHIVE_DIR:-$PWD/archive}"
 
 require_tools jq gh git curl
@@ -73,18 +79,19 @@ emit_all() {
   emit_output selected_ids "$4"
   emit_output deferred_count "$5"
   emit_output no_op "$6"
+  emit_output held_back "$7"
 }
 
 scan_dir="$(newest_scan_dir "$ARCHIVE_DIR")"
 if [ -z "$scan_dir" ]; then
-  emit_all "" 0 false "" 0 true
+  emit_all "" 0 false "" 0 true 0
   no_op_summary "The private archive repo contains no scans, so there is nothing to remediate."
   exit 0
 fi
 
 status="$(scan_dir_status "$scan_dir")"
 if [ "$status" != ok ]; then
-  emit_all "$scan_dir" 0 false "" 0 true
+  emit_all "$scan_dir" 0 false "" 0 true 0
   no_op_summary "Newest scan \`$scan_dir\` is \`$status\`, not \`ok\` — ${status} scans are not remediated (their findings are ${status}-scan data), so this run waits for the next complete scan."
   exit 0
 fi
@@ -93,13 +100,13 @@ vulns_json="$ARCHIVE_DIR/scans/$scan_dir/vulnerabilities.json"
 if [ ! -f "$vulns_json" ]; then
   # A completed scan with no findings file is a clean result, not an anomaly
   # (security-scan.yml accepts rc=0-without-file as clean, #194).
-  emit_all "$scan_dir" 0 false "" 0 true
+  emit_all "$scan_dir" 0 false "" 0 true 0
   no_op_summary "Newest scan \`$scan_dir\` recorded no findings — nothing to remediate."
   exit 0
 fi
 vuln_count="$(jq 'length' "$vulns_json")"
 if [ "$vuln_count" -eq 0 ]; then
-  emit_all "$scan_dir" 0 false "" 0 true
+  emit_all "$scan_dir" 0 false "" 0 true 0
   no_op_summary "Newest scan \`$scan_dir\` recorded 0 findings — nothing to remediate."
   exit 0
 fi
@@ -107,10 +114,19 @@ fi
 plans_json="$ARCHIVE_DIR/scans/$scan_dir/mitigation-plans/plans.json"
 if [ -f "$plans_json" ]; then
   plan_needed=false
-  { read -r selected_ids; read -r deferred_count; } <<< "$(select_plans "$plans_json" "$MAX_PLANS" "$PLANS_FILTER")"
+  { read -r selected_ids; read -r deferred_count; read -r held_back; } \
+    <<< "$(select_plans "$plans_json" "$MAX_PLANS" "$PLANS_FILTER" "$vulns_json" "$SEVERITY_THRESHOLD")"
+  held_back="${held_back:-0}"
   if [ -z "$selected_ids" ] && [ "$deferred_count" -eq 0 ]; then
-    no_op=true
-    no_op_summary "Newest scan \`$scan_dir\` has ${vuln_count} findings; every plan already has an open or merged pull request, so this run has nothing left to execute."
+    if [ "$held_back" -eq 0 ]; then
+      no_op=true
+      no_op_summary "Newest scan \`$scan_dir\` has ${vuln_count} findings; every plan already has an open or merged pull request, so this run has nothing left to execute."
+    else
+      # Nothing to execute, but not a no-op: the overview issue must learn
+      # about the plans held back below the floor, so it refreshes while the
+      # wave selection stays empty and no fix legs start.
+      no_op=false
+    fi
   else
     no_op=false
   fi
@@ -118,15 +134,17 @@ else
   plan_needed=true
   selected_ids=""
   deferred_count=0
+  # Unset here: the planning stage selects against the fresh manifest.
+  held_back=""
   no_op=false
 fi
 
-emit_all "$scan_dir" "$vuln_count" "$plan_needed" "$selected_ids" "$deferred_count" "$no_op"
+emit_all "$scan_dir" "$vuln_count" "$plan_needed" "$selected_ids" "$deferred_count" "$no_op" "${held_back:-0}"
 
 if [ "$no_op" != true ]; then
   {
     echo "## Security remediation"
     echo ""
-    echo "Newest scan: \`$scan_dir\` — ${vuln_count} findings. Plans: $([ "$plan_needed" = true ] && echo "none yet, planning stage will run" || echo "present, ${selected_ids:-none} selected for this run, ${deferred_count} deferred")."
+    echo "Newest scan: \`$scan_dir\` — ${vuln_count} findings. Plans: $([ "$plan_needed" = true ] && echo "none yet, planning stage will run" || echo "present, ${selected_ids:-none} selected for this run, ${deferred_count} deferred")$([ "${held_back:-0}" -gt 0 ] && echo ", ${held_back} held back below the ${SEVERITY_THRESHOLD} rating floor (explicit runs only)")."
   } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
 fi

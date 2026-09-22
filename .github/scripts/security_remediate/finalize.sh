@@ -118,7 +118,8 @@ if [ -n "$issue_number" ]; then
   # the ticks always match the manifest; the edit is skipped when nothing
   # changed, keeping the daily run a true no-op.
   body_file="$(mktemp)"
-  overview_body "$plans_json" "$merged_ids" "$open_ids" "$dispatched_ids" > "$body_file"
+  overview_body "$plans_json" "$merged_ids" "$open_ids" "$dispatched_ids" \
+    "$scan_abs/vulnerabilities.json" "${SEVERITY_THRESHOLD:-high}" > "$body_file"
   if [ "$(cat "$body_file")" = "$issue_body" ]; then
     echo "overview issue #${issue_number} already up to date"
   else

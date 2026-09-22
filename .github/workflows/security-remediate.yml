@@ -49,6 +49,11 @@ on:
         description: 'Fail the leg on an unresolved review verdict instead of opening the pull request with the findings noted.'
         type: boolean
         default: false
+      severity_threshold:
+        description: 'Rating floor for automatic dispatch: workstreams whose covered findings all rate below this stay queued (only workstreams with an open or merged pull request are exempt). Set to low or medium for a run that also executes them; the overview issue labels the resulting hold-back. A run with a lower threshold also un-holds workstreams whose earlier leg failed.'
+        type: choice
+        options: [low, medium, high]
+        default: high
   workflow_run:
     workflows: [Security Scan]
     types: [completed]
@@ -83,6 +88,9 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       MAX_PLANS: ${{ inputs.max_plans || '3' }}
       PLANS_FILTER: ${{ inputs.plans || '' }}
+      # The dispatch severity floor; the empty fallback applies on scheduled
+      # (workflow_run) triggers, which carry no inputs.
+      SEVERITY_THRESHOLD: ${{ inputs.severity_threshold || 'high' }}
       # probe-model.sh reads these; E2E_MODEL empty falls through to the
       # committed pin inside resolve-model.sh.
       LLM_API_BASE: ${{ secrets.SKAINET_INTERNAL }}
@@ -146,6 +154,7 @@ jobs:
       MAX_PLANS: ${{ inputs.max_plans || '3' }}
       PLANS_FILTER: ${{ inputs.plans || '' }}
       BUDGET_MINUTES: ${{ inputs.budget_minutes || '60' }}
+      SEVERITY_THRESHOLD: ${{ inputs.severity_threshold || 'high' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -209,6 +218,8 @@ jobs:
       # Creating and editing issues and labels needs issues:write, granted to
       # github.token by the job's permissions block.
       GH_TOKEN: ${{ github.token }}
+      # The overview issue's status line names the floor the run applied.
+      SEVERITY_THRESHOLD: ${{ inputs.severity_threshold || 'high' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4

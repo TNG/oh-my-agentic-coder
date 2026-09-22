@@ -93,7 +93,8 @@ dispatched_ids="$(dispatched_bucket \
 
 body_file="$(mktemp)"
 trap 'rm -f "$body_file"' EXIT
-overview_body "$plans_json" "$merged_ids" "$open_ids" "$dispatched_ids" > "$body_file"
+overview_body "$plans_json" "$merged_ids" "$open_ids" "$dispatched_ids" \
+  "$vulns_json" "${SEVERITY_THRESHOLD:-high}" > "$body_file"
 
 # --- Sanitizer gate, then post ------------------------------------------------
 if ! sanitize_issue_body "$body_file" "$vulns_json" "$plans_json"; then
