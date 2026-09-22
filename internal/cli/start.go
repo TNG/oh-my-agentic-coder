@@ -76,6 +76,9 @@ type launchOpts struct {
 	// overriding the launcher config's profile_name. It must live in the
 	// global sandbox-profiles directory or the project's .omac directory.
 	profilePath string
+	// acceptProjectConfig re-approves (re-pins) the project-local sandbox
+	// configuration after it changed since it was approved.
+	acceptProjectConfig bool
 	// openPorts are extra loopback ports from --open-port (repeatable),
 	// typically a local webServer port for browser tests.
 	openPorts []int
@@ -107,6 +110,7 @@ func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, int) 
 		auditStrict        = fs.Bool("audit-strict", false, "Fail-closed: abort if the audit log cannot be written.")
 		sessionID          = fs.String("session", "", "Continue a specific session by id instead of the most recent one. (shorthand: -s)")
 		profilePath        = fs.String("profile-path", "", "Path to a sandbox grants profile inside ~/.config/omac/sandbox-profiles/ or <workdir>/.omac/. Overrides sandbox.profile_name.")
+		acceptProjectCfg   = fs.Bool("accept-project-config", false, "Re-approve the project-local .omac sandbox configuration after it changed since it was approved.")
 	)
 	var openPorts intMultiFlag
 	fs.Var(&openPorts, "open-port", "Allow the sandboxed process to bind and connect on this TCP port (repeatable). Useful for a local app/dev server the agent or its tools talk to — e.g. Playwright/Vite/Next on :3000. On Linux, Landlock cannot limit that to loopback: outbound TCP to any host on the same port is also allowed.")
@@ -155,24 +159,25 @@ func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, int) 
 	}
 	innerArgs = append(fs.Args(), innerArgs...)
 	return launchOpts{
-		label:              cmdName,
-		harness:            harness,
-		innerCmdOverride:   *innerCmdOverride,
-		noSandbox:          *noSandbox,
-		ephemeralCache:     *ephemeralCache,
-		cacheScope:         *cacheScope,
-		keepRunning:        *keepRunning,
-		acceptSkillChanges: *acceptSkillChanges,
-		skipSecretPattern:  *skipSecretPattern,
-		verbose:            *verbose,
-		autoRegisterSkills: *autoRegisterSkills,
-		auditLog:           *auditLog,
-		noAudit:            *noAudit,
-		auditStrict:        *auditStrict,
-		sessionID:          *sessionID,
-		profilePath:        *profilePath,
-		openPorts:          append([]int(nil), openPorts...),
-		innerArgs:          innerArgs,
+		label:               cmdName,
+		harness:             harness,
+		innerCmdOverride:    *innerCmdOverride,
+		noSandbox:           *noSandbox,
+		ephemeralCache:      *ephemeralCache,
+		cacheScope:          *cacheScope,
+		keepRunning:         *keepRunning,
+		acceptSkillChanges:  *acceptSkillChanges,
+		skipSecretPattern:   *skipSecretPattern,
+		verbose:             *verbose,
+		autoRegisterSkills:  *autoRegisterSkills,
+		auditLog:            *auditLog,
+		noAudit:             *noAudit,
+		auditStrict:         *auditStrict,
+		sessionID:           *sessionID,
+		profilePath:         *profilePath,
+		acceptProjectConfig: *acceptProjectCfg,
+		openPorts:           append([]int(nil), openPorts...),
+		innerArgs:           innerArgs,
 	}, ExitOK
 }
 
@@ -289,7 +294,7 @@ func runLaunch(env *Env, opts launchOpts) int {
 	// Resolve the sandbox grants profile. A bad selection is fatal under a
 	// real sandbox; under --no-sandbox no profile is applied, so an error is
 	// ignored and the built-in default is used for the plan.
-	sel, selErr := activeProfileSelection(env.Workdir, opts.profilePath)
+	sel, selErr := activeProfileSelection(env.Workdir, opts.profilePath, opts.acceptProjectConfig, env.Stderr)
 	if selErr != nil && !noSandbox {
 		fmt.Fprintln(env.Stderr, prefix+": sandbox profile:", selErr)
 		return ExitConfigInvalid

@@ -88,6 +88,11 @@ func GenerateSBPL(g *Grants) string {
 		for _, fp := range pathForms(p) {
 			fmt.Fprintf(&b, "(deny file-read* (subpath %s))\n", sbplQuote(fp))
 			fmt.Fprintf(&b, "(deny file-write* (subpath %s))\n", sbplQuote(fp))
+			// Note: Seatbelt attributes removing/creating a directory ENTRY to
+			// the writable parent, so no rule on the child path can stop a
+			// session from deleting and replacing a protected directory inside
+			// an agent-writable workdir. That is why project-local sandbox
+			// configuration is pinned host-side instead (config.ProjectSandboxTrust).
 		}
 	}
 

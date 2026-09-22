@@ -56,6 +56,7 @@ type serveParse struct {
 	noAudit           bool
 	auditStrict       bool
 	profilePath       string
+	acceptProjectCfg  bool
 	roots             multiFlag
 	openPorts         []int
 }
@@ -82,6 +83,7 @@ func parseServeArgs(args []string, env *Env) (serveParse, bool) {
 		noAudit           = fs.Bool("no-audit", false, "Disable the security audit trail.")
 		auditStrict       = fs.Bool("audit-strict", false, "Fail-closed: abort if the audit log cannot be written.")
 		profilePath       = fs.String("profile-path", "", "Path to a sandbox grants profile inside ~/.config/omac/sandbox-profiles/ or <workdir>/.omac/. Overrides sandbox.profile_name.")
+		acceptProjectCfg  = fs.Bool("accept-project-config", false, "Re-approve the project-local .omac sandbox configuration after it changed since it was approved.")
 	)
 	var roots multiFlag
 	var openPorts intMultiFlag
@@ -142,6 +144,7 @@ func parseServeArgs(args []string, env *Env) (serveParse, bool) {
 		noAudit:           *noAudit,
 		auditStrict:       *auditStrict,
 		profilePath:       *profilePath,
+		acceptProjectCfg:  *acceptProjectCfg,
 		roots:             roots,
 		openPorts:         append([]int(nil), openPorts...),
 	}, true
@@ -182,6 +185,7 @@ func runServe(args []string, env *Env) int {
 	roots := parsed.roots
 	openPorts := parsed.openPorts
 	profilePathFlag := parsed.profilePath
+	acceptProjectCfg := parsed.acceptProjectCfg
 
 	// See ensureOmacLocalDir in start.go: .omac must exist before the
 	// protected-pattern watch scans and the child masks it.
@@ -201,7 +205,7 @@ func runServe(args []string, env *Env) int {
 	// Resolve the sandbox grants profile. A bad selection is fatal under a
 	// real sandbox; ignored when no sandboxed inner is launched
 	// (--no-sandbox / --no-inner).
-	sel, selErr := activeProfileSelection(env.Workdir, profilePathFlag)
+	sel, selErr := activeProfileSelection(env.Workdir, profilePathFlag, acceptProjectCfg, env.Stderr)
 	if selErr != nil && !noSandbox && !noInner {
 		fmt.Fprintln(env.Stderr, "omac serve: sandbox profile:", selErr)
 		return ExitConfigInvalid
