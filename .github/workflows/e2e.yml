@@ -41,7 +41,7 @@ on:
       model:
         description: 'Model id for EVERY harness, for THIS RUN ONLY. Set empty to use each harness''s pin in internal/e2e/versions.go (opencode/codex/copilot/pi/codewhale: zai-org/GLM-5.2, claude-code: claude-sonnet-5).'
         type: string
-        default: 'deepseek-ai/DeepSeek-V4.1-Flash'
+        default: ''
       claude_code_model:
         description: 'Model id for claude-code only — it accepts sonnet or haiku models ONLY, and bills a different provider than the SKAINET gateway the others use. Wins over "model"; leave empty to fall back to it, then to the versions.go pin'
         type: string
