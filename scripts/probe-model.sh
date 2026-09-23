@@ -62,7 +62,8 @@ done
 
 base="${MODEL_PROBE_BASE:-${SKAINET_INTERNAL:-${LLM_API_BASE:-}}}"
 token="${MODEL_PROBE_TOKEN:-${SKAINET_TOKEN:-${LLM_API_KEY:-}}}"
-responses_wire="not-probed" # set by probe_responses on any gateway path
+responses_wire="not-probed" # set by assess_responses on any gateway path
+responses_model=""          # set by assess_responses; passthroughs fill it in
 
 # The resolved model, before any gateway consideration. Not guarded with
 # `|| true`: an unresolvable model is a real misconfiguration and the caller
@@ -77,47 +78,74 @@ emit() {
       printf 'fallback<<OMAC_DELIM\n%s\nOMAC_DELIM\n' "$fallback"
       printf 'candidates<<OMAC_DELIM\n%s\nOMAC_DELIM\n' "$tried"
       printf 'responses_wire<<OMAC_DELIM\n%s\nOMAC_DELIM\n' "$responses_wire"
+      printf 'responses_model<<OMAC_DELIM\n%s\nOMAC_DELIM\n' "$responses_model"
     } >> "$GITHUB_OUTPUT"
   fi
   printf '%s\n' "$model"
 }
 
-# Probe the responses wire (GET-free POST) for the SELECTED model, warn-only.
+# Two-track selection: the CHAT track picks a model the way the script always
+# did (chat/completions probes); the RESPONSES track exists because codex can
+# only drive OpenAI-compat /responses (see codexConfig in internal/e2e) and the
+# two routes' health diverges per model — a July run had a chat-dead /
+# responses-fine model at the same time a responses-dead / chat-fine one was
+# being served. The workflow wires E2E_MODEL_CODEX from responses_model, so
+# codex picks a responses-healthy model independently of the chat harnesses.
 #
-# codex and copilot are the only harnesses driving OpenAI-compat /responses;
-# every other gateway harness uses chat/completions, which this script already
-# vets — so a healthy chat probe with a broken responses route used to mean a
-# green preflight and hours of red legs misread as gateway overload
-# (whole-route 500 on DeepSeek-V4.1-Flash, 2026-09-22). Warn-only: the
-# selection stays chat-based, and codex/copilot keep functioning as the live
-# tripwire until the route is repaired.
-probe_responses() {
-  local model="$1"
-  responses_wire="ok"
-  local attempt=1 max=2 code body
-  body=/tmp/probe-model-responses.$$
+# responses_probe_one echoes "<verdict> <code>" for ONE model on /responses
+# (both stdout because it runs in a command substitution), with a small retry
+# budget so a single blip is not misread as a route outage.
+responses_probe_one() {
+  local m="$1" attempt=1 max=2 code verdict rbody
+  rbody=/tmp/probe-model-responses.$$
   while :; do
-    code=$(curl -s -o "$body" -w '%{http_code}' --max-time 30 \
+    code=$(curl -s -o "$rbody" -w '%{http_code}' --max-time 30 \
       -X POST "${base%/}/responses" \
       -H "authorization: Bearer $token" \
       -H 'content-type: application/json' \
-      -d "{\"model\":\"${model}\",\"input\":[{\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"ping\"}]}]}" \
+      -d "{\"model\":\"${m}\",\"input\":[{\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"ping\"}]}]}" \
       2>/dev/null) || code="000"
-    case "$code" in
-      200) responses_wire="ok"; break ;;
-      408|409|425|429|500|502|503|504|000)
-        if [ "$attempt" -ge "$max" ]; then responses_wire="unhealthy"; break; fi
-        echo "probe-model: responses wire hit a transient gateway error (HTTP $code) — retrying ($((attempt + 1))/$max)" >&2
-        attempt=$((attempt + 1)); sleep $((attempt * 2)) ;;
-      *) responses_wire="unhealthy"; break ;;
-    esac
+    verdict=$(classify_code "$code")
+    [ "$verdict" != "transient" ] && break
+    if [ "$attempt" -ge "$max" ]; then break; fi
+    echo "probe-model: responses wire hit a transient gateway error (HTTP $code) — retrying ($((attempt + 1))/$max)" >&2
+    attempt=$((attempt + 1)); sleep $((attempt * 2))
   done
-  local msg
-  if [ "$responses_wire" = "unhealthy" ]; then
-    msg=$(sed -n 's/.*"message"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$body" 2>/dev/null | head -1 || true)
-    echo "::warning title=Responses wire unhealthy::the model was selected via chat/completions, but the gateway's /responses route failed (HTTP $code)${msg:+: $msg}. codex and copilot are the harnesses on that route — expect their model-driven legs to fail until it recovers. This result does NOT invalidate the other legs." >&2
+  rm -f "$rbody"
+  printf '%s %s' "$verdict" "$code"
+}
+
+# assess_responses <chat-selected-model>: sets the track outputs for the emit.
+#   responses_wire  ok | unhealthy | not-probed (parenthetically: passthrough)
+#   responses_model the model codex should run (healthy on /responses),
+#                   falling back to the chat selection with a loud warning
+#                   when nothing on the chain answers on that wire.
+assess_responses() {
+  local selected="$1" c verdict code
+  read -r verdict code <<EOF
+$(responses_probe_one "$selected")
+EOF
+  if [ "$verdict" = "ok" ]; then
+    responses_wire="ok"
+    responses_model="$selected"
+    return 0
   fi
-  rm -f "$body"
+  responses_wire="unhealthy"
+  echo "probe-model: responses wire unhealthy for '$selected' (HTTP $code) — scanning the chain for a responses-healthy fallback" >&2
+  for c in $ordered; do
+    case " $selected " in *" $c "*) continue ;; esac
+    read -r verdict code <<EOF
+$(responses_probe_one "$c")
+EOF
+    if [ "$verdict" = "ok" ]; then
+      responses_model="$c"
+      echo "::warning title=Responses wire fallback::the gateway's /responses route is unhealthy for '$selected' (last HTTP $code); codex will run '$c' instead. The other gateway harnesses keep '$selected' on the chat wire." >&2
+      return 0
+    fi
+    echo "probe-model: responses probe inconclusive for '$c' (HTTP $code) — trying the next candidate" >&2
+  done
+  responses_model="$selected"
+  echo "::warning title=Responses wire unhealthy::no candidate answered on /responses (last HTTP $code); codex will attempt '$selected' — its model-driven legs are expected to fail until the route recovers. This does NOT invalidate the chat-wire legs." >&2
 }
 
 
@@ -131,6 +159,7 @@ fi
 
 if [ -z "$base" ] || [ -z "$token" ]; then
   echo "probe-model: no gateway base URL / token on the env — using '$primary' unprobed" >&2
+  responses_model="$primary"
   emit "$primary" false "$primary"
   exit 0
 fi
@@ -286,24 +315,20 @@ probe_candidate() {
   printf '%s %s' "$verdict" "$code"
 }
 
-# Tier 0 — the intended model and its name variant. A TRANSIENT result here must
-# never let the loop reach a fallback: the gateway being briefly unwell says
-# nothing about the model, and silently swapping families over a 30-second blip
-# would change what the run tested for no good reason. Definitive
-# unavailability is the only thing a backup is for.
+# Tier 0 — the intended model and its name variant. Definitive
+# unavailability (422/404) is what the variant flip and fallback exist for.
+#
+# A TRANSIENT result used to veto the whole fallback chain (no family swap
+# onto a briefly unwell gateway — the #184 rule). Since then the wire-health
+# evidence showed the two routes' health diverges per model while chat routes
+# for OTHER models stay served, so a persistently-transient primary tier no
+# longer blocks the run: the loop falls through with an annotated swap and a
+# fatal exit only if literally nothing answers (the end-of-loop path).
+# "Persistent" = the full retry budget on both tier-0 names failed.
 primary_tier=" $primary $(flip_tee "$primary") "
 primary_transient=0
 
 for candidate in $ordered; do
-  case "$primary_tier" in
-    *" $candidate "*) ;;
-    *)
-      if [ "$primary_transient" = "1" ]; then
-        echo "::error title=Gateway unhealthy::'$primary' could not be verified — the gateway kept returning transient errors (last HTTP $code). NOT falling back to another model: a transient fault is no reason to change which model is under test. Re-run once the gateway recovers." >&2
-        exit 1
-      fi
-      ;;
-  esac
   tried="${tried:+$tried,}$candidate"
   read -r verdict code <<EOF
 $(probe_candidate "$candidate")
@@ -315,13 +340,17 @@ EOF
       [ "$candidate" != "$primary" ] && \
         echo "probe-model: '$primary' not served; using name variant '$candidate'" >&2
         warn_if_chain_rotted
-        probe_responses "$candidate"
+        assess_responses "$candidate"
         emit "$candidate" false "$tried"
       else
         # A different family. A green run on this means something weaker than a
         # green run on the intended model, so say so where CI will surface it.
-        echo "::warning title=Model fallback::'$primary' is not served by the gateway; fell back to '$candidate'. Results are for $candidate, NOT $primary." >&2
-        probe_responses "$candidate"
+        if [ "$primary_transient" = "1" ]; then
+          echo "::warning title=Chat route on '$primary' unwell::the pinned model's chat/completions route kept returning transient errors for its whole retry budget, so this run uses '$candidate' on the chat wire instead. Results are attributed to '$candidate', NOT '$primary'." >&2
+        else
+          echo "::warning title=Model fallback::'$primary' is not served by the gateway; fell back to '$candidate'. Results are for $candidate, NOT $primary." >&2
+        fi
+        assess_responses "$candidate"
         emit "$candidate" true "$tried"
     fi
     exit 0

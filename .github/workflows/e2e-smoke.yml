@@ -71,6 +71,7 @@ jobs:
       fallback: ${{ steps.probe.outputs.fallback }}
       candidates: ${{ steps.probe.outputs.candidates }}
       claude_code: ${{ steps.probe.outputs.claude_code }}
+      codex_responses: ${{ steps.probe.outputs.responses_model }}
     env:
       SKAINET_TOKEN: ${{ secrets.SKAINET_TOKEN }}
       SKAINET_INTERNAL: ${{ secrets.SKAINET_INTERNAL }}
@@ -94,6 +95,7 @@ jobs:
           PROBE_CANDIDATES: ${{ steps.probe.outputs.candidates }}
           PROBE_FALLBACK: ${{ steps.probe.outputs.fallback }}
           PROBE_RESPONSES_WIRE: ${{ steps.probe.outputs.responses_wire }}
+          PROBE_CODEX_MODEL: ${{ steps.probe.outputs.responses_model }}
         run: |
           {
             echo "## Model selection"
@@ -106,7 +108,11 @@ jobs:
             echo "Probed: \`$PROBE_CANDIDATES\`"
             if [ "$PROBE_RESPONSES_WIRE" = "unhealthy" ]; then
               echo ""
-              echo "> ⚠️ **Responses wire ${PROBE_RESPONSES_WIRE}:** the gateway's \`/responses\` route could not be verified. codex and copilot are on that route — their model-driven legs may fail independently of the model choice." >> "$GITHUB_STEP_SUMMARY"
+              echo "> ⚠️ **Responses wire ${PROBE_RESPONSES_WIRE}:** the gateway's \`/responses\` route could not be verified. the chat-wire harnesses are unaffected; codex runs the split model noted below unless no responses-healthy candidate exists." >> "$GITHUB_STEP_SUMMARY"
+            fi
+            if [ -n "$PROBE_CODEX_MODEL" ] && [ "$PROBE_CODEX_MODEL" != "$PROBE_MODEL" ]; then
+              echo ""
+              echo "> ℹ️ **codex split model:** codex runs \`$PROBE_CODEX_MODEL\` on the responses wire while the other gateway harnesses run \`$PROBE_MODEL\` on the chat wire." >> "$GITHUB_STEP_SUMMARY"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
           if [ "$PROBE_FALLBACK" = 'true' ]; then
@@ -153,7 +159,7 @@ jobs:
       # PER HARNESS, not via cross-harness E2E_MODEL: the probed value is a
       # gateway model and claude-code is on another provider.
       E2E_MODEL_OPENCODE: ${{ needs.model.outputs.gateway }}
-      E2E_MODEL_CODEX: ${{ needs.model.outputs.gateway }}
+      E2E_MODEL_CODEX: ${{ needs.model.outputs.codex_responses }}
       E2E_MODEL_COPILOT: ${{ needs.model.outputs.gateway }}
       E2E_MODEL_PI: ${{ needs.model.outputs.gateway }}
       E2E_MODEL_CLAUDE_CODE: ${{ needs.model.outputs.claude_code }}
@@ -414,7 +420,7 @@ jobs:
       E2E_HARNESS: ${{ matrix.harness }}
       E2E_USE_LATEST: ${{ (github.event_name == 'schedule' || github.event.inputs.use_latest != 'false') && '1' || '' }}
       E2E_MODEL_OPENCODE: ${{ needs.model.outputs.gateway }}
-      E2E_MODEL_CODEX: ${{ needs.model.outputs.gateway }}
+      E2E_MODEL_CODEX: ${{ needs.model.outputs.codex_responses }}
       E2E_MODEL_COPILOT: ${{ needs.model.outputs.gateway }}
       E2E_MODEL_PI: ${{ needs.model.outputs.gateway }}
       E2E_MODEL_CLAUDE_CODE: ${{ needs.model.outputs.claude_code }}
