@@ -1,0 +1,69 @@
+# omac ephemeral-docker: per-session throwaway Docker VM (omac-eph-a1b2c3d4).
+# Generated file. Session state lives under the omac cache scope.
+vmType: qemu
+cpus: 2
+memory: "3GiB"
+disk: "15GiB"
+images:
+- location: "/cache/omac/ephemeral-docker/alpine-cloud.qcow2"
+  arch: "x86_64"
+  digest: "sha512:abababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab"
+mounts: []
+containerd: {system: false, user: false}
+provision:
+- mode: system
+  script: |
+    #!/bin/sh
+    apk add --no-cache docker docker-cli nftables
+- mode: system
+  script: |
+    #!/bin/sh
+    cat > /etc/omac-vmguard.nft <<'OMACVMGUARD'
+    #!/usr/sbin/nft -f
+    # omac-vmguard — network boundary of the ephemeral Docker VM.
+    #
+    # Production copy of the ruleset measured in the 2026-09-09 firewall spike
+    # (see openspec/changes/add-ephemeral-docker). Docker's own FORWARD chain
+    # accepts first; this table hooks at priority filter + 10 and drops what
+    # Docker accepted, flipping container egress and host-canary traffic to
+    # blocked while pulls, published ports, and bridge-local traffic stay green.
+    #
+    # Two rules measured dead in the spike are deliberately kept (decision
+    # 2026-09-09), so do not remove them:
+    #   1. DNAT accept (0 hits with the userland docker-proxy path): fallback
+    #      if Docker's userland-proxy is ever disabled and published-port
+    #      traffic arrives DNATed through the forward hook.
+    #   2. Bridge-local accept `iifname != "eth0" oifname != "eth0"` (0 hits;
+    #      br_netfilter is not loaded on the measured guest): insurance if
+    #      br_netfilter ever ships loaded and routes bridge-local IP traffic
+    #      through the forward hook.
+    # Every rule carries a counter; the final explicit `counter drop` allows
+    # cause analysis from the guest.
+    table inet omac-vmguard {
+      chain forward {
+        type filter hook forward priority filter + 10; policy drop;
+        ct state established,related counter accept
+        iifname "eth0" ct status dnat counter accept
+        iifname != "eth0" oifname != "eth0" counter accept
+        counter drop
+      }
+    }
+    OMACVMGUARD
+    nft -f /etc/omac-vmguard.nft || { echo "omac-vmguard install failed"; exit 1; }
+    nft list table inet omac-vmguard
+- mode: system
+  script: |
+    #!/bin/sh
+    [ -x /usr/bin/dockerd ] || { echo "dockerd missing"; exit 0; }
+    mkdir -p /etc/docker
+    echo '{"ip":"127.0.0.1","iptables":true}' > /etc/docker/daemon.json
+    nohup dockerd -H unix:///var/run/docker.sock -H tcp://127.0.0.1:2375 > /var/log/dockerd.log 2>&1 &
+probes:
+- script: |
+    #!/bin/sh
+    timeout 90 sh -c 'until docker version >/dev/null 2>&1; do sleep 1; done'
+portForwards:
+- guestIP: "127.0.0.1"
+  guestPort: 2375
+  hostIP: "127.0.0.1"
+  hostPort: 31234
