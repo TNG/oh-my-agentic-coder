@@ -365,21 +365,6 @@ func ResolveSandboxProfile(workdir string) (ProfileSelection, error) {
 	return globalSandboxProfile(globalCfg)
 }
 
-// GlobalSandboxProfile selects the sandbox grants profile from the user-global
-// config only, ignoring any project .omac layer. It is the fallback used when a
-// project-local selection is distrusted (e.g. a project .omac was replaced
-// after it was approved).
-func GlobalSandboxProfile() (ProfileSelection, error) {
-	globalCfg, globalPath, err := loadLauncherFile(GlobalLauncherConfigPath())
-	if err != nil {
-		return ProfileSelection{}, err
-	}
-	if err := validateSandbox(globalCfg.Sandbox, globalPath, globalProfileDir(), false); err != nil {
-		return ProfileSelection{}, err
-	}
-	return globalSandboxProfile(globalCfg)
-}
-
 // globalSandboxProfile resolves the global selection from an already-loaded
 // global config: profile_name, else sandbox-profiles/default.json, else builtin.
 func globalSandboxProfile(globalCfg LauncherConfig) (ProfileSelection, error) {

@@ -18,7 +18,7 @@ import (
 // attacker's config. Trust therefore has to be anchored host-side: the content
 // a project contributes to a launch is pinned under ~/.config/omac (host-only,
 // invisible to the sandbox) the first time it is used, and a later launch
-// ignores the local layer when the content no longer matches.
+// aborts the launch when the content no longer matches.
 
 // projectPinsFile is the host-only store of approved project sandbox content.
 type projectPinsFile struct {

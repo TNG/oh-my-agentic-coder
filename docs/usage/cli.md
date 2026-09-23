@@ -32,7 +32,7 @@ omac start claude       # specific harness
 | `--ephemeral-cache` | false | Use a temporary cache deleted when the session ends. Use this for a clean build environment or when you do not want the agent's package downloads to persist. |
 | `--cache-scope <scope>` | global | Which cache to use for the agent's package downloads (npm, pip, cargo, etc.). `global` shares one cache across all your projects, `config` shares it across projects using the same config file, `workdir` gives each project its own isolated cache. See [Cache](../advanced/cache.md). |
 | `--profile-path <path>` | — | Use this sandbox grants profile for the session, overriding `sandbox.profile_name`. The path must be inside `~/.config/omac/sandbox-profiles/` or `<workdir>/.omac/`; a relative path is anchored to the workdir. Symlinks are refused. See [Sharing a profile across a team](../configuration.md#sharing-a-profile-across-a-team). |
-| `--accept-project-config` | false | Re-approve the project-local `.omac` sandbox configuration after it changed since it was approved; without it, omac ignores the changed local layer and uses the global one. |
+| `--accept-project-config` | false | Re-approve the project-local `.omac` sandbox configuration after it changed since it was approved; without it, omac refuses to start. |
 | `--open-port <port>` | — | Allow the sandboxed process to bind and connect on this local TCP port (repeatable) for this session only. Useful for a local dev server or an MCP server the harness talks to. To make it permanent, use `network.open_port` in the grants file — see [Opening a port](../configuration.md#opening-a-port). |
 | `--no-audit` | false | Disable the security audit trail for this session. |
 
@@ -52,7 +52,7 @@ omac serve --workdir ~/my-project
 | `--workdir <dir>` | — | Activate this directory immediately at startup, so skills are ready as soon as OpenCode Desktop connects. Without this flag, no skills will be active — OpenCode Desktop does not yet automatically tell omac which project is currently open. |
 | `--root <dir>` | — | Only allow directories under this path to be activated (repeatable). For example, `--root ~/work --root ~/personal` restricts activation to those two trees. If not set, any directory can be activated.                                       |
 | `--profile-path <path>` | — | Use this sandbox grants profile, overriding `sandbox.profile_name`. Same constraints as on `omac start`. |
-| `--accept-project-config` | false | Re-approve a changed project-local `.omac` sandbox configuration. Same as on `omac start`. |
+| `--accept-project-config` | false | Re-approve a changed project-local `.omac` sandbox configuration; without it, omac refuses to start. Same as on `omac start`. |
 
 ### omac continue
 

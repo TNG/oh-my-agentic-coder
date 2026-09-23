@@ -67,29 +67,45 @@ func resolveSandboxPlan(workdir string, sel config.ProfileSelection) sandboxPlan
 // the host-only store (see config.ProjectSandboxTrust). The workdir is
 // agent-writable, and the macOS backend cannot block replacing <workdir>/.omac
 // between sessions, so a mismatch means the local layer may have been planted:
-// it is ignored (global fallback) unless acceptProject re-approves it.
+// the launch aborts (ExitConfigInvalid) until the changed content is
+// re-approved with --accept-project-config or restored.
 func activeProfileSelection(workdir, cliPath string, acceptProject bool, warn io.Writer) (config.ProfileSelection, error) {
 	if strings.TrimSpace(cliPath) != "" {
-		return config.ExplicitProfileSelection(workdir, cliPath)
+		sel, err := config.ExplicitProfileSelection(workdir, cliPath)
+		if err != nil {
+			return sel, err
+		}
+		if sel.Layer != "workdir" {
+			// A global-layer path lives in the non-overridable host config
+			// dir, which no session can read or write: the command line itself
+			// is the approval, and every launch re-reads the file.
+			return sel, nil
+		}
+		return approvedProjectSandbox(workdir, sel, acceptProject, warn)
 	}
 	sel, err := config.ResolveSandboxProfile(workdir)
 	if err != nil || workdir == "" {
 		return sel, err
 	}
+	return approvedProjectSandbox(workdir, sel, acceptProject, warn)
+}
+
+// approvedProjectSandbox enforces the trust pin behind one explicit path. The
+// pin hash covers <workdir>/.omac/config.yaml and, when a workdir-layer
+// profile is selected, the profile file — so a config that selects nothing is
+// still covered against a later profile_name injection (the replacement path).
+func approvedProjectSandbox(workdir string, sel config.ProfileSelection, acceptProject bool, warn io.Writer) (config.ProfileSelection, error) {
 	trusted, firstUse, reason := config.ProjectSandboxTrust(workdir, sel)
 	switch {
 	case firstUse, acceptProject && !trusted:
 		if perr := config.PinProjectSandbox(workdir, sel); perr != nil && warn != nil {
 			fmt.Fprintf(warn, "omac: cannot record the approved project sandbox configuration (%v); "+
-				"a later replacement will not be detected\n", perr)
+				"a later tampering will not be detected\n", perr)
 		}
 	case !trusted:
-		if warn != nil {
-			fmt.Fprintf(warn, "omac: [warn] %s — ignoring it and using the global sandbox configuration.\n", reason)
-			fmt.Fprintln(warn, "      Review the change (git diff -- .omac) and re-approve with "+
-				"--accept-project-config, or restore it (git checkout -- .omac).")
-		}
-		return config.GlobalSandboxProfile()
+		return sel, fmt.Errorf("%s — refusing to start until re-approved\n"+
+			"       review the change (git diff -- .omac) and re-approve with --accept-project-config, or restore it (git checkout -- .omac)",
+			reason)
 	}
 	return sel, nil
 }
