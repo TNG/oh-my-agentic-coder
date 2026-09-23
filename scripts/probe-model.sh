@@ -114,7 +114,7 @@ probe_responses() {
   done
   local msg
   if [ "$responses_wire" = "unhealthy" ]; then
-    msg=$(sed -n 's/.*"message"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$body" 2>/dev/null | head -1)
+    msg=$(sed -n 's/.*"message"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$body" 2>/dev/null | head -1 || true)
     echo "::warning title=Responses wire unhealthy::the model was selected via chat/completions, but the gateway's /responses route failed (HTTP $code)${msg:+: $msg}. codex and copilot are the harnesses on that route — expect their model-driven legs to fail until it recovers. This result does NOT invalidate the other legs." >&2
   fi
   rm -f "$body"
@@ -326,7 +326,11 @@ EOF
     fi
     exit 0
   fi
-  msg=$(sed -n 's/.*"message"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' /tmp/probe-model-resp.$$ 2>/dev/null | head -1)
+  # A curl timeout / connection failure leaves no response file, so this used
+  # to kill the script: sed exits 2 on a missing file and set -euo pipefail
+  # treats the substitution's status as fatal (observed as a silent exit 2
+  # mid-preflight, 2026-09-23).
+  msg=$(sed -n 's/.*"message"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' /tmp/probe-model-resp.$$ 2>/dev/null | head -1 || true)
   rm -f /tmp/probe-model-resp.$$
   if [ "$verdict" = "transient" ]; then
     inconclusive="${inconclusive:+$inconclusive,}$candidate"
