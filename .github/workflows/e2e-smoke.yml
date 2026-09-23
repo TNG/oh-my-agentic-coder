@@ -104,7 +104,7 @@ jobs:
             echo "| claude-code | \`$PROBE_CLAUDE_CODE\` |"
             echo ""
             echo "Probed: \`$PROBE_CANDIDATES\`"
-            if [ "$PROBE_RESPONSES_WIRE" != "ok" ]; then
+            if [ "$PROBE_RESPONSES_WIRE" = "unhealthy" ]; then
               echo ""
               echo "> ⚠️ **Responses wire ${PROBE_RESPONSES_WIRE}:** the gateway's \`/responses\` route could not be verified. codex and copilot are on that route — their model-driven legs may fail independently of the model choice." >> "$GITHUB_STEP_SUMMARY"
             fi

@@ -92,10 +92,12 @@ emit() {
 # selection stays chat-based, and codex/copilot keep functioning as the live
 # tripwire until the route is repaired.
 probe_responses() {
+  local model="$1"
   responses_wire="ok"
-  local attempt=1 max=2 code
+  local attempt=1 max=2 code body
+  body=/tmp/probe-model-responses.$$
   while :; do
-    code=$(curl -s -o /tmp/probe-model-responses.$$ -w '%{http_code}' --max-time 30 \
+    code=$(curl -s -o "$body" -w '%{http_code}' --max-time 30 \
       -X POST "${base%/}/responses" \
       -H "authorization: Bearer $token" \
       -H 'content-type: application/json' \
@@ -112,11 +114,10 @@ probe_responses() {
   done
   local msg
   if [ "$responses_wire" = "unhealthy" ]; then
-    msg=$(sed -n 's/.*"message"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' /tmp/probe-model-responses.$$ 2>/dev/null | head -1)
-    rm -f /tmp/probe-model-responses.$$
+    msg=$(sed -n 's/.*"message"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$body" 2>/dev/null | head -1)
     echo "::warning title=Responses wire unhealthy::the model was selected via chat/completions, but the gateway's /responses route failed (HTTP $code)${msg:+: $msg}. codex and copilot are the harnesses on that route — expect their model-driven legs to fail until it recovers. This result does NOT invalidate the other legs." >&2
   fi
-  rm -f /tmp/probe-model-responses.$$ 2>/dev/null || true
+  rm -f "$body"
 }
 
 
@@ -314,13 +315,13 @@ EOF
       [ "$candidate" != "$primary" ] && \
         echo "probe-model: '$primary' not served; using name variant '$candidate'" >&2
         warn_if_chain_rotted
-        probe_responses
+        probe_responses "$candidate"
         emit "$candidate" false "$tried"
       else
         # A different family. A green run on this means something weaker than a
         # green run on the intended model, so say so where CI will surface it.
         echo "::warning title=Model fallback::'$primary' is not served by the gateway; fell back to '$candidate'. Results are for $candidate, NOT $primary." >&2
-        probe_responses
+        probe_responses "$candidate"
         emit "$candidate" true "$tried"
     fi
     exit 0
