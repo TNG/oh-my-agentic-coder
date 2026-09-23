@@ -108,6 +108,19 @@ Cause: the sandbox only receives environment variables on the `allow_vars` list.
 
 Fix: add the variable to `allow_vars` in `~/.config/omac/sandbox-profiles/default.json`. See [Configuration](./configuration.md).
 
+### Copilot fails against a bring-your-own-key provider with request/validation errors
+
+The `COPILOT_*` variables are forwarded by omac automatically (provider type,
+base URL, API key, model, wire format), so a BYO-key copilot works under the
+sandbox. If the provider rejects the requests themselves, the usual suspect is
+the wire format GitHub Copilot picks: many OpenAI-compatible gateways only
+serve `chat/completions` reliably, and copilot defaults to the OpenAI
+Responses API (`responses`).
+
+Fix: export `COPILOT_PROVIDER_WIRE_API=completions` before `omac start copilot`
+— it is in the auto-forwarded set, so no profile change is needed. The full
+variable set is documented by `copilot help providers`.
+
 ### claude-code exits silently on macOS (no output, no model calls)
 
 The claude process starts and exits with status 0 within a second. It
