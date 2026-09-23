@@ -23,6 +23,11 @@ func FindLimactl(lookPath func(string) (string, error)) (string, error) {
 	return path, nil
 }
 
+// defaultLookPath is exec.LookPath without the import cycle in tests.
+func defaultLookPath(name string) (string, error) {
+	return exec.LookPath(name)
+}
+
 // DefaultLimaCtl runs limactl with LIMA_HOME set to limaHome (see the
 // LimaCtl type for why every call must name its unit). Lima's progress
 // output goes to stderr for diagnosability.

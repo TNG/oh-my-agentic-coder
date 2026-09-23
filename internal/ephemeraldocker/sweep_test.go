@@ -24,13 +24,25 @@ type fakeLima struct {
 	mu    sync.Mutex
 	calls []limaCall
 	err   error
+	// fail, when set, decides per call whether it fails; err is the
+	// fallback for calls fail does not cover.
+	fail func(args []string) error
 }
 
 func (f *fakeLima) run(home string, args ...string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, limaCall{home: home, args: append([]string(nil), args...)})
+	if f.fail != nil {
+		return f.fail(append([]string(nil), args...))
+	}
 	return f.err
+}
+
+func (f *fakeLima) setFail(fn func(args []string) error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.fail = fn
 }
 
 func (f *fakeLima) recorded() []limaCall {
