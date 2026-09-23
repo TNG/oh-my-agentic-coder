@@ -441,7 +441,13 @@ func codexConfig() harnessConfig {
 				t.Fatal(err)
 			}
 			// config.toml: codex requires wire_api=responses (Responses API).
-			// The responses API (SKAINET_INTERNAL) supports /v1/responses with the configured model.
+			// Tested the other way: codex 0.142.5 rejects wire_api=chat at
+			// config load ("no longer supported", openai/codex discussion
+			// 7782), so its legs cannot avoid the gateway's /responses
+			// route. A route outage (responses 500 — e.g. this exact failure
+			// on DeepSeek-V4.1-Flash 2026-09-22/23) reds codex legs until it
+			// recovers; the preflight's responses_wire probe announces that
+			// up front.
 			configToml := `model = "` + modelID("codex") + `"
 model_provider = "model"
 
@@ -500,7 +506,13 @@ http_headers = { "X-User-Agent" = "Codex", "X-Separate-Reasoning" = "1" }
 //	COPILOT_PROVIDER_BASE_URL=<url>   — model provider base URL (from SKAINET_INTERNAL)
 //	COPILOT_PROVIDER_API_KEY=<token>  — API key (from SKAINET_TOKEN)
 //	COPILOT_MODEL=<model>             — model ID
-//	COPILOT_PROVIDER_WIRE_API=responses — use Responses API wire format
+//	COPILOT_PROVIDER_WIRE_API=completions — chat/completions wire format
+//
+// completions, not responses: the gateway's /responses route has proven
+// unreliable for these runs (whole-route 500 on DeepSeek-V4.1-Flash, converter
+// regressions on GLM-5.2 — issue #181), and it is the only wire the two
+// failing harnesses shared. chat/completions is probed on every run and has
+// been the stable route.
 //
 // Sandbox deviations: none. The model provider host (from
 // SKAINET_INTERNAL) is allowed by the base profile.
@@ -545,7 +557,7 @@ func copilotConfig() harnessConfig {
 				"COPILOT_PROVIDER_BASE_URL=" + baseURL,
 				"COPILOT_PROVIDER_API_KEY=" + token,
 				"COPILOT_MODEL=" + modelID("copilot"),
-				"COPILOT_PROVIDER_WIRE_API=responses",
+				"COPILOT_PROVIDER_WIRE_API=completions",
 			}
 		},
 		Sandbox: SandboxConfig{}, // no deviations — model host allowed by base profile

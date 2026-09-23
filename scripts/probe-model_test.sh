@@ -3,10 +3,11 @@
 #
 # A stub, not the real gateway: the whole point of the script is behaviour when
 # the gateway renames or drops a model, and those states can't be produced on
-# demand upstream. The stub reproduces exactly the two shapes that matter —
-# an OpenAI-style GET /models listing, and a POST /chat/completions that 422s
-# with "Requested model name ... is currently not available" for anything it
-# does not serve, which is what broke CI in #184.
+# demand upstream. The stub reproduces the shapes that matter — an OpenAI-style
+# GET /models listing, a POST /chat/completions that 422s with "Requested model
+# name ... is currently not available" for anything it does not serve (#184),
+# transient 500s that apply per model and per route (the 2026-09 wire-health
+# divergence: chat-healthy while /responses is sick for the same model id).
 set -euo pipefail
 
 ROOT="$(git rev-parse --show-toplevel)"
@@ -37,6 +38,9 @@ LIST_STATUS = int(os.environ.get("STUB_LIST_STATUS", "200"))
 # Models that answer with a transient 500 rather than a name rejection — the
 # real "internal error occurred while invoking the model" case.
 TRANSIENT = os.environ.get("STUB_TRANSIENT", "").split()
+# Models whose /responses route 500s while their /chat/completions works —
+# the wire-health split the two-track preflight selection exists for.
+RESPONSES_TRANSIENT = os.environ.get("STUB_RESPONSES_TRANSIENT", "").split()
 HITS = os.environ.get("STUB_HITS", "/tmp/stub-hits")
 
 
@@ -69,6 +73,11 @@ class H(BaseHTTPRequestHandler):
         req = json.loads(self.rfile.read(n) or b"{}")
         model = req.get("model", "")
         self._record("POST " + model)
+        on_responses = self.path.endswith("/responses")
+        if on_responses and model in RESPONSES_TRANSIENT:
+            return self._send(500, {"error": {"message":
+                "An internal error occurred while invoking the model. The model "
+                "inference should recover automatically within a few minutes."}})
         if model in TRANSIENT:
             return self._send(500, {"error": {"message":
                 "An internal error occurred while invoking the model. The model "
@@ -105,7 +114,7 @@ start_stub() {
   [ -n "$STUB_PID" ] && { kill "$STUB_PID" 2>/dev/null || true; wait "$STUB_PID" 2>/dev/null || true; }
   : > "$HITS"
   STUB_LISTED="$1" STUB_ACCEPTED="$2" STUB_LIST_STATUS="${3:-200}" \
-    STUB_TRANSIENT="${4:-}" \
+    STUB_TRANSIENT="${4:-}" STUB_RESPONSES_TRANSIENT="${5:-}" \
     STUB_PORT="$PORT" STUB_HITS="$HITS" python3 "$TMP/stub.py" &
   STUB_PID=$!
   local up=0 _
@@ -242,6 +251,8 @@ start_stub "$PIN" "$PIN"
 probe GITHUB_OUTPUT="$TMP/gh-out" opencode --github-output >/dev/null 2>&1 || true
 fallback_val=$(read_output fallback "$TMP/gh-out")
 [ "$fallback_val" = "false" ] || fail "a primary hit must report fallback=false (got '$fallback_val')"
+responses_model=$(read_output responses_model "$TMP/gh-out")
+[ "$responses_model" = "$PIN" ] || fail "--github-output did not publish responses_model for the pin (got '$responses_model')"
 
 # --- 9. no creds -> passthrough, no network -------------------------------
 start_stub "$PIN" "$PIN"
@@ -253,17 +264,24 @@ if [ -s "$HITS" ]; then
   fail "credential-less run still hit the network ($(tr '\n' ';' < "$HITS"))"
 fi
 
-# --- 10. a transient primary must NOT trigger a fallback -------------------
+# --- 10. a persistent transient on the whole pinned tier falls through ------
 # Observed on 2026-07-29: the gateway answered 500 "internal error occurred
 # while invoking the model ... should recover automatically". That says nothing
-# about the model name, so swapping families over it would change what the run
-# tested for no reason. Must fail as infra, and must never emit the fallback.
+# about the model name — but a persistent outage on the pinned tier would lock
+# the whole matrix behind one dead route (2026-09-23: GLM-5.2's chat route sat
+# unwell while DeepSeek answered chat and GLM answered /responses). So after
+# the full retry budget on both tier-0 names the loop falls through to the
+# fallback chain, loudly annotated; it must NOT exit non-zero and must not use
+# the "model not served" wording.
 start_stub "$PIN fb/model" "fb/model" 200 "$PIN $PIN_FLIP"
-if out=$(probe E2E_MODEL_FALLBACK=fb/model opencode 2>"$TMP/err"); then
-  fail "transient primary: expected a non-zero exit, got '$out'"
-fi
-grep -q "title=Gateway unhealthy" "$TMP/err" || fail "a transient primary was not reported as a gateway-health problem"
-grep -q "title=Model fallback" "$TMP/err" && fail "a transient primary must not fall back to another family"
+out=$(probe E2E_MODEL_FALLBACK=fb/model opencode 2>"$TMP/err" || true)
+[ "$out" = "fb/model" ] || fail "transient primary: expected the annotated chat fallback, got '$out'"
+grep -q "title=Chat route on '$PIN' unwell" "$TMP/err" \
+  || fail "a persistent transient primary was not announced as an annotated chat fallback"
+grep -q "title=Gateway unhealthy" "$TMP/err" \
+  && fail "a persistently transient primary must not be reported as a total gateway outage"
+grep -q "title=Model fallback" "$TMP/err" \
+  && fail "the transient fallback must not use the not-served wording"
 # It must have retried rather than given up on the first 500.
 [ "$(grep -c "POST $PIN\$" "$HITS")" -ge 2 ] || fail "a transient result was not retried"
 
@@ -312,6 +330,42 @@ grep -q "title=Fallback chain unserved" "$TMP/err" && fail "a chain with one adv
 start_stub "$PIN" "$PIN" 500
 probe E2E_MODEL_FALLBACK=gone/model opencode 2>"$TMP/err" >/dev/null || true
 grep -q "title=Fallback chain unserved" "$TMP/err" && fail "the chain must not be judged rotted when the listing is unavailable"
+
+# --- 14. chat healthy while /responses is sick -> codex gets a split model --
+# The 2026-09-23 shape in miniature: the chat wire serves the pin, its
+# /responses route 500s, but a chain candidate answers on /responses. The chat
+# harnesses keep the pin; codex runs the responses-healthy fallback.
+start_stub "$PIN fb/model" "$PIN fb/model" 200 "" "$PIN"
+: > "$TMP/gh-out"
+probe GITHUB_OUTPUT="$TMP/gh-out" E2E_MODEL_FALLBACK=fb/model opencode --github-output \
+  >"$TMP/out" 2>"$TMP/err" || true
+model_val=$(read_output model "$TMP/gh-out")
+[ "$model_val" = "$PIN" ] || fail "responses split: chat selection changed (got '$model_val', want '$PIN')"
+responses_wire=$(read_output responses_wire "$TMP/gh-out")
+[ "$responses_wire" = "unhealthy" ] || fail "responses split: wire not reported unhealthy (got '$responses_wire')"
+responses_model=$(read_output responses_model "$TMP/gh-out")
+[ "$responses_model" = "fb/model" ] \
+  || fail "responses split: codex did not get the responses-healthy fallback (got '$responses_model')"
+grep -q "title=Responses wire fallback" "$TMP/err" \
+  || fail "a codex split model was not announced"
+# The chat track must have stopped at the pin: fb/model answers chat too, so a
+# buggy selection would have swapped families instead of splitting.
+case "$(tr '\n' ';' < "$HITS")" in
+  *"POST fb/model"*) : ;;  # the responses scan may legitimately probe it
+  *) fail "responses split: fb/model was never reached by the responses scan" ;;
+esac
+# The chat probe must have visited the pin BEFORE the responses scan — no
+# /responses probing happens before a chat winner exists.
+[ "$(grep -c "POST $PIN\$" "$HITS")" -ge 1 ] || fail "responses split: chat probe of the pin missing"
+
+# --- 15. no responses-healthy candidate anywhere -> codex stays on track ----
+# /responses is sick for the pin AND for every chain candidate. codex keeps
+# the chat-selected model (its legs become the tripwire) with a loud caveat.
+start_stub "$PIN fb/model" "fb/model $PIN" 200 "" "$PIN fb/model"
+out=$(probe E2E_MODEL_FALLBACK=fb/model opencode 2>"$TMP/err" || true)
+[ "$out" = "$PIN" ] || fail "responses outage: chat selection changed (got '$out', want '$PIN')"
+grep -q "title=Responses wire unhealthy" "$TMP/err" \
+  || fail "an all-routes-out responses track was not reported with a codex caveat"
 
 if [ "$failures" -ne 0 ]; then
   printf '\n%d check(s) failed\n' "$failures" >&2
