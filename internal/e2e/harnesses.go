@@ -441,7 +441,13 @@ func codexConfig() harnessConfig {
 				t.Fatal(err)
 			}
 			// config.toml: codex requires wire_api=responses (Responses API).
-			// The responses API (SKAINET_INTERNAL) supports /v1/responses with the configured model.
+			// Tested the other way: codex 0.142.5 rejects wire_api=chat at
+			// config load ("no longer supported", openai/codex discussion
+			// 7782), so its legs cannot avoid the gateway's /responses
+			// route. A route outage (responses 500 — e.g. this exact failure
+			// on DeepSeek-V4.1-Flash 2026-09-22/23) reds codex legs until it
+			// recovers; the preflight's responses_wire probe announces that
+			// up front.
 			configToml := `model = "` + modelID("codex") + `"
 model_provider = "model"
 
