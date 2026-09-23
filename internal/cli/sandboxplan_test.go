@@ -198,7 +198,8 @@ func TestActiveProfileSelectionCLIPathWins(t *testing.T) {
 }
 
 // A project-local config is trusted on first use (pinned); once its content
-// changes without re-approval it is ignored in favour of the global layer.
+// changes without re-approval the launch aborts — nothing on the global layer
+// runs instead, and the error points at --accept-project-config.
 func TestActiveProfileSelectionDistrustsChangedProjectConfig(t *testing.T) {
 	isolateHome(t)
 	workdir := t.TempDir()
@@ -227,15 +228,14 @@ func TestActiveProfileSelectionDistrustsChangedProjectConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	var warn bytes.Buffer
-	sel, err = activeProfileSelection(workdir, "", false, &warn)
-	if err != nil {
-		t.Fatalf("tampered: %v", err)
+	if _, err := activeProfileSelection(workdir, "", false, &warn); err == nil {
+		t.Fatal("a changed project config must abort the launch, not fall back")
+	} else if !strings.Contains(err.Error(), "changed since it was approved") ||
+		!strings.Contains(err.Error(), "--accept-project-config") {
+		t.Errorf("abort error should name the mismatch and the re-approval flag, got: %v", err)
 	}
-	if sel.Layer == "workdir" {
-		t.Errorf("a changed project config must not be trusted, got %+v", sel)
-	}
-	if !strings.Contains(warn.String(), "changed since it was approved") {
-		t.Errorf("expected a re-approval warning, got:\n%s", warn.String())
+	if warn.Len() != 0 {
+		t.Errorf("no pin warning expected on the abort path, got: %s", warn.String())
 	}
 
 	// Explicit re-approval trusts the new content again.
@@ -249,6 +249,60 @@ func TestActiveProfileSelectionDistrustsChangedProjectConfig(t *testing.T) {
 	sel, err = activeProfileSelection(workdir, "", false, io.Discard)
 	if err != nil || sel.Layer != "workdir" {
 		t.Errorf("after re-approval the local layer must be trusted: %+v (%v)", sel, err)
+	}
+}
+
+// --profile-path into <workdir>/.omac goes through the same trust gate as the
+// config-driven selection: first use pins, a between-session change aborts,
+// and --accept-project-config re-approves. A global-layer path is exempt —
+// ~/.config/omac is the non-overridable host dir and re-read on every launch.
+func TestActiveProfileSelectionExplicitPathSharesThePin(t *testing.T) {
+	isolateHome(t)
+	workdir := t.TempDir()
+	local := filepath.Join(config.LocalConfigDir(workdir), "strict.json")
+	if err := os.MkdirAll(filepath.Dir(local), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(local, []byte(`{"meta":{"name":"strict"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	sel, err := activeProfileSelection(workdir, local, false, io.Discard)
+	if err != nil {
+		t.Fatalf("explicit first use: %v", err)
+	}
+	if sel.Path != local {
+		t.Fatalf("selection = %+v; want %q", sel, local)
+	}
+
+	sel, err = activeProfileSelection(workdir, local, false, io.Discard)
+	if err != nil || sel.Path != local {
+		t.Fatalf("unchanged explicit path must still run: %+v (%v)", sel, err)
+	}
+
+	// The agent replaces the profile between the two explicit launches.
+	if err := os.WriteFile(local, []byte(`{"meta":{"name":"evil"},"network":{"mode":"open"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := activeProfileSelection(workdir, local, false, io.Discard); err == nil {
+		t.Fatal("a replaced workdir-layer profile must abort the explicit-path launch")
+	}
+	sel, err = activeProfileSelection(workdir, local, true, io.Discard)
+	if err != nil || sel.Path != local {
+		t.Fatalf("re-approval must accept the explicit path again: %+v (%v)", sel, err)
+	}
+
+	// A global-layer path is exempt, even with a live (now re-approved) pin:
+	// the host config dir is user-maintained by construction.
+	global := filepath.Join(os.Getenv("HOME"), ".config", "omac", "sandbox-profiles", "global-strict.json")
+	if err := os.MkdirAll(filepath.Dir(global), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(global, []byte(`{}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := activeProfileSelection(workdir, global, false, io.Discard); err != nil {
+		t.Fatalf("global-layer --profile-path must not be trust-gated: %v", err)
 	}
 }
 
