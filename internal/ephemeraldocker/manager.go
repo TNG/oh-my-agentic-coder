@@ -54,6 +54,22 @@ type Session struct {
 	tornDown bool
 }
 
+// Handle is the CLI's view of one running session: enough to wire
+// DOCKER_HOST and tear the unit down, without exposing the layout.
+// *Session implements it.
+type Handle interface {
+	// Port is the loopback host port forwarding to the guest docker
+	// endpoint; it must be opened into the sandbox (--open-port).
+	Port() int
+	// DockerHost is the value the sandboxed agent receives in
+	// DOCKER_HOST.
+	DockerHost() string
+	// Teardown removes the whole unit (idempotent).
+	Teardown() error
+}
+
+func (s *Session) Port() int { return s.HostPort }
+
 // DockerHost is the value the sandboxed agent receives in DOCKER_HOST.
 func (s *Session) DockerHost() string {
 	return fmt.Sprintf("tcp://127.0.0.1:%d", s.HostPort)
