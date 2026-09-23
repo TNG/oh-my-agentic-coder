@@ -93,6 +93,7 @@ jobs:
           PROBE_CLAUDE_CODE: ${{ steps.probe.outputs.claude_code }}
           PROBE_CANDIDATES: ${{ steps.probe.outputs.candidates }}
           PROBE_FALLBACK: ${{ steps.probe.outputs.fallback }}
+          PROBE_RESPONSES_WIRE: ${{ steps.probe.outputs.responses_wire }}
         run: |
           {
             echo "## Model selection"
@@ -103,6 +104,10 @@ jobs:
             echo "| claude-code | \`$PROBE_CLAUDE_CODE\` |"
             echo ""
             echo "Probed: \`$PROBE_CANDIDATES\`"
+            if [ "$PROBE_RESPONSES_WIRE" != "ok" ]; then
+              echo ""
+              echo "> ⚠️ **Responses wire ${PROBE_RESPONSES_WIRE}:** the gateway's \`/responses\` route could not be verified. codex and copilot are on that route — their model-driven legs may fail independently of the model choice." >> "$GITHUB_STEP_SUMMARY"
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
           if [ "$PROBE_FALLBACK" = 'true' ]; then
             echo "" >> "$GITHUB_STEP_SUMMARY"

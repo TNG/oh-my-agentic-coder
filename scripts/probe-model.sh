@@ -29,8 +29,9 @@
 #   scripts/probe-model.sh [harness]              # default harness: opencode
 #   scripts/probe-model.sh [harness] --github-output
 #
-# --github-output additionally writes model= / fallback= / candidates= to
-# $GITHUB_OUTPUT so a workflow can consume the result without re-parsing stdout.
+# --github-output additionally writes model= / fallback= / candidates= /
+# responses_wire= to $GITHUB_OUTPUT so a workflow can consume the result
+# without re-parsing stdout.
 #
 # Environment:
 #   SKAINET_INTERNAL | LLM_API_BASE | MODEL_PROBE_BASE   gateway base URL
@@ -61,6 +62,7 @@ done
 
 base="${MODEL_PROBE_BASE:-${SKAINET_INTERNAL:-${LLM_API_BASE:-}}}"
 token="${MODEL_PROBE_TOKEN:-${SKAINET_TOKEN:-${LLM_API_KEY:-}}}"
+responses_wire="not-probed" # set by probe_responses on any gateway path
 
 # The resolved model, before any gateway consideration. Not guarded with
 # `|| true`: an unresolvable model is a real misconfiguration and the caller
@@ -74,10 +76,49 @@ emit() {
       printf 'model<<OMAC_DELIM\n%s\nOMAC_DELIM\n' "$model"
       printf 'fallback<<OMAC_DELIM\n%s\nOMAC_DELIM\n' "$fallback"
       printf 'candidates<<OMAC_DELIM\n%s\nOMAC_DELIM\n' "$tried"
+      printf 'responses_wire<<OMAC_DELIM\n%s\nOMAC_DELIM\n' "$responses_wire"
     } >> "$GITHUB_OUTPUT"
   fi
   printf '%s\n' "$model"
 }
+
+# Probe the responses wire (GET-free POST) for the SELECTED model, warn-only.
+#
+# codex and copilot are the only harnesses driving OpenAI-compat /responses;
+# every other gateway harness uses chat/completions, which this script already
+# vets — so a healthy chat probe with a broken responses route used to mean a
+# green preflight and hours of red legs misread as gateway overload
+# (whole-route 500 on DeepSeek-V4.1-Flash, 2026-09-22). Warn-only: the
+# selection stays chat-based, and codex/copilot keep functioning as the live
+# tripwire until the route is repaired.
+probe_responses() {
+  responses_wire="ok"
+  local attempt=1 max=2 code
+  while :; do
+    code=$(curl -s -o /tmp/probe-model-responses.$$ -w '%{http_code}' --max-time 30 \
+      -X POST "${base%/}/responses" \
+      -H "authorization: Bearer $token" \
+      -H 'content-type: application/json' \
+      -d "{\"model\":\"${model}\",\"input\":[{\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"ping\"}]}]}" \
+      2>/dev/null) || code="000"
+    case "$code" in
+      200) responses_wire="ok"; break ;;
+      408|409|425|429|500|502|503|504|000)
+        if [ "$attempt" -ge "$max" ]; then responses_wire="unhealthy"; break; fi
+        echo "probe-model: responses wire hit a transient gateway error (HTTP $code) — retrying ($((attempt + 1))/$max)" >&2
+        attempt=$((attempt + 1)); sleep $((attempt * 2)) ;;
+      *) responses_wire="unhealthy"; break ;;
+    esac
+  done
+  local msg
+  if [ "$responses_wire" = "unhealthy" ]; then
+    msg=$(sed -n 's/.*"message"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' /tmp/probe-model-responses.$$ 2>/dev/null | head -1)
+    rm -f /tmp/probe-model-responses.$$
+    echo "::warning title=Responses wire unhealthy::the model was selected via chat/completions, but the gateway's /responses route failed (HTTP $code)${msg:+: $msg}. codex and copilot are the harnesses on that route — expect their model-driven legs to fail until it recovers. This result does NOT invalidate the other legs." >&2
+  fi
+  rm -f /tmp/probe-model-responses.$$ 2>/dev/null || true
+}
+
 
 # --- passthrough paths (no network) -----------------------------------------
 
@@ -272,13 +313,15 @@ EOF
       # Same model, gateway naming quirk — safe to substitute quietly.
       [ "$candidate" != "$primary" ] && \
         echo "probe-model: '$primary' not served; using name variant '$candidate'" >&2
-      warn_if_chain_rotted
-      emit "$candidate" false "$tried"
-    else
-      # A different family. A green run on this means something weaker than a
-      # green run on the intended model, so say so where CI will surface it.
-      echo "::warning title=Model fallback::'$primary' is not served by the gateway; fell back to '$candidate'. Results are for $candidate, NOT $primary." >&2
-      emit "$candidate" true "$tried"
+        warn_if_chain_rotted
+        probe_responses
+        emit "$candidate" false "$tried"
+      else
+        # A different family. A green run on this means something weaker than a
+        # green run on the intended model, so say so where CI will surface it.
+        echo "::warning title=Model fallback::'$primary' is not served by the gateway; fell back to '$candidate'. Results are for $candidate, NOT $primary." >&2
+        probe_responses
+        emit "$candidate" true "$tried"
     fi
     exit 0
   fi
