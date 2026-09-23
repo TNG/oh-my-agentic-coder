@@ -438,7 +438,8 @@ func ExplicitProfileSelection(workdir, path string) (ProfileSelection, error) {
 		layer = "workdir"
 	default:
 		return ProfileSelection{}, fmt.Errorf("--profile-path %q is outside %s and %s; "+
-			"a profile must live in the global sandbox-profiles directory or the project's .omac directory",
+			"a profile must live in the global sandbox-profiles directory or the project's .omac directory "+
+			"to be protected from agentic edits",
 			path, globalDir, localDir)
 	}
 	if err := checkProfileFile(abs, "--profile-path "+path); err != nil {

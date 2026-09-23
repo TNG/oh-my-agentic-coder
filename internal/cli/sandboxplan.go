@@ -63,12 +63,12 @@ func resolveSandboxPlan(workdir string, sel config.ProfileSelection) sandboxPlan
 // activeProfileSelection applies --profile-path when given, else the launcher
 // config's layer-local selection.
 //
-// A project-local selection is only used while it matches the content pinned in
-// the host-only store (see config.ProjectSandboxTrust). The workdir is
-// agent-writable, and the macOS backend cannot block replacing <workdir>/.omac
-// between sessions, so a mismatch means the local layer may have been planted:
-// the launch aborts (ExitConfigInvalid) until the changed content is
-// re-approved with --accept-project-config or restored.
+// A project-local selection is only used while the files it loads match the
+// per-file pins in the host-only store (see config.ProjectSandboxTrust). The
+// workdir is agent-writable, and the macOS backend cannot block replacing
+// <workdir>/.omac between sessions, so a mismatch or still-unapproved content
+// aborts the launch (ExitConfigInvalid) until a human reviews the files and
+// re-runs with --accept-project-config.
 func activeProfileSelection(workdir, cliPath string, acceptProject bool, warn io.Writer) (config.ProfileSelection, error) {
 	if strings.TrimSpace(cliPath) != "" {
 		sel, err := config.ExplicitProfileSelection(workdir, cliPath)
@@ -77,37 +77,49 @@ func activeProfileSelection(workdir, cliPath string, acceptProject bool, warn io
 		}
 		if sel.Layer != "workdir" {
 			// A global-layer path lives in the non-overridable host config
-			// dir, which no session can read or write: the command line itself
-			// is the approval, and every launch re-reads the file.
+			// dir; the command line itself is the approval, and every launch
+			// re-reads the file.
 			return sel, nil
 		}
-		return approvedProjectSandbox(workdir, sel, acceptProject, warn)
+		return approvedProjectSandbox(workdir, sel, acceptProject, warn, false)
 	}
 	sel, err := config.ResolveSandboxProfile(workdir)
 	if err != nil || workdir == "" {
 		return sel, err
 	}
-	return approvedProjectSandbox(workdir, sel, acceptProject, warn)
+	return approvedProjectSandbox(workdir, sel, acceptProject, warn, true)
 }
 
-// approvedProjectSandbox enforces the trust pin behind one explicit path. The
-// pin hash covers <workdir>/.omac/config.yaml and, when a workdir-layer
-// profile is selected, the profile file — so a config that selects nothing is
-// still covered against a later profile_name injection (the replacement path).
-func approvedProjectSandbox(workdir string, sel config.ProfileSelection, acceptProject bool, warn io.Writer) (config.ProfileSelection, error) {
-	trusted, firstUse, reason := config.ProjectSandboxTrust(workdir, sel)
+// approvedProjectSandbox enforces the trust pin behind one selection.
+// configDriven is false for an explicit --profile-path: the typed path is its
+// own approval, so a first use pins without a flag, while config-driven first
+// use (content that could have been planted in the repo) requires one.
+func approvedProjectSandbox(workdir string, sel config.ProfileSelection, acceptProject bool, warn io.Writer, configDriven bool) (config.ProfileSelection, error) {
+	trusted, firstUse, reason := config.ProjectSandboxTrust(workdir, sel, configDriven)
 	switch {
-	case firstUse, acceptProject && !trusted:
-		if perr := config.PinProjectSandbox(workdir, sel); perr != nil && warn != nil {
+	case trusted:
+		return sel, nil
+	case firstUse && configDriven && !acceptProject:
+		return sel, fmt.Errorf("%s — refusing to start until the content is approved\n"+
+			"       the project directory is agent-writable, so omac only runs sandbox configuration you have reviewed; "+
+			"if it is yours, re-run with --accept-project-config",
+			reason)
+	case !firstUse && !acceptProject:
+		return sel, fmt.Errorf("%s — refusing to start until re-approved\n"+
+			"       the project directory is agent-writable and its sandbox configuration steers future launches, "+
+			"so omac runs only the content you have reviewed; if the change is yours, re-run with --accept-project-config",
+			reason)
+	default:
+		// First use behind an explicit path (the command line is the
+		// approval), or re-approval via --accept-project-config: pin the
+		// loaded files. Only the files this launch loads get slots, so an
+		// approval never covers content it did not see.
+		if perr := config.PinProjectSandbox(workdir, sel, configDriven); perr != nil && warn != nil {
 			fmt.Fprintf(warn, "omac: cannot record the approved project sandbox configuration (%v); "+
 				"a later tampering will not be detected\n", perr)
 		}
-	case !trusted:
-		return sel, fmt.Errorf("%s — refusing to start until re-approved\n"+
-			"       review the change (git diff -- .omac) and re-approve with --accept-project-config, or restore it (git checkout -- .omac)",
-			reason)
+		return sel, nil
 	}
-	return sel, nil
 }
 
 // warnPermissiveProfile prints advisory findings for a custom sandbox profile
