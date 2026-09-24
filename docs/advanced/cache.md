@@ -27,7 +27,7 @@ omac start --cache-scope workdir
 ```
 
 ```yaml
-# oh-my-agentic-coder.yaml
+# config.yaml
 cache:
   scope: workdir   # workdir (default), config, or global
 ```

@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/TNG/oh-my-agentic-coder/internal/config"
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
 )
 
@@ -43,7 +44,7 @@ type ProtectedPathSet struct {
 // (those need the workdir and granted trees; the facade doesn't have
 // them). Baseline and explicit path-form denies are enough to answer
 // "is this the kind of path the sandbox protects?" for the agent.
-func NewProtectedPathSet(p *sandboxprofile.Profile) *ProtectedPathSet {
+func NewProtectedPathSet(p *sandboxprofile.Profile, workdir string) *ProtectedPathSet {
 	base := sandboxprofile.PlatformBaseline()
 	protected := sandboxprofile.EffectiveProtectedPaths(base, p.Filesystem.OverrideDeny)
 
@@ -53,6 +54,13 @@ func NewProtectedPathSet(p *sandboxprofile.Profile) *ProtectedPathSet {
 			set.entries = append(set.entries, exp)
 			set.rules = append(set.rules, "baseline")
 		}
+	}
+	// The omac config directories are never overridable (see
+	// NonOverridableProtectedPaths), so the facade must report them even when
+	// the profile lists them in override_deny.
+	for _, exp := range sandboxprofile.NonOverridableProtectedPaths(config.LocalConfigDir(workdir)) {
+		set.entries = append(set.entries, exp)
+		set.rules = append(set.rules, "omac")
 	}
 	// User path-form denies (globs are skipped — they need a walk). Shared
 	// with ResolveGrants via pathFormDenies so both agree on which paths
@@ -64,13 +72,21 @@ func NewProtectedPathSet(p *sandboxprofile.Profile) *ProtectedPathSet {
 	return set
 }
 
-// UnrestrictedProtectedPathSet returns a set that protects nothing — the
-// facade-side counterpart to Grants.withUnrestrictedFilesystem, which learn
-// mode (`omac serve --learn`) uses to drop every protected path and grant
-// "/". Reporting the profile's static set during a learn session would tell
-// the agent that a genuinely missing file was blocked by the sandbox, which
-// is the confusion GET /sandbox/denied exists to remove.
-func UnrestrictedProtectedPathSet() *ProtectedPathSet { return &ProtectedPathSet{} }
+// UnrestrictedProtectedPathSet returns the set that survives learn mode
+// (`omac serve --learn`): the non-overridable omac config directories. Learn
+// mode lifts the profile's protected paths and grants "/", but the config
+// directories stay masked so a session cannot plant a .omac/ a later launch
+// would trust. Reporting the profile's static set during a learn session would
+// tell the agent that a genuinely missing file was blocked by the sandbox,
+// which is the confusion GET /sandbox/denied exists to remove.
+func UnrestrictedProtectedPathSet(workdir string) *ProtectedPathSet {
+	set := &ProtectedPathSet{}
+	for _, exp := range sandboxprofile.NonOverridableProtectedPaths(config.LocalConfigDir(workdir)) {
+		set.entries = append(set.entries, exp)
+		set.rules = append(set.rules, "omac")
+	}
+	return set
+}
 
 // Add records a protected-pattern path discovered while the session runs
 // (the mid-session watch). The kernel mask was fixed at launch, so the
@@ -95,6 +111,13 @@ func (s *ProtectedPathSet) IsProtected(absPath string) (rule string, ok bool) {
 	// Normalize: clean the path but don't follow symlinks (the agent
 	// queries with the path it tried; we match lexically).
 	absPath = filepath.Clean(absPath)
+	// Any .omac directory is protected by leaf name: omac creates
+	// <workdir>/.omac itself, may only mask what existed at launch, and a
+	// planted nested .omac is empty-but-blocked from the next launch on —
+	// an empty listing is the denial, not a missing directory.
+	if underOmacLeaf(absPath) {
+		return "omac", true
+	}
 	for i, entry := range s.entries {
 		entry = filepath.Clean(entry)
 		if absPath == entry || strings.HasPrefix(absPath, entry+string(filepath.Separator)) {
@@ -110,4 +133,15 @@ func (s *ProtectedPathSet) IsProtected(absPath string) (rule string, ok bool) {
 		}
 	}
 	return "", false
+}
+
+// underOmacLeaf reports whether absPath is an .omac directory or lies
+// inside one (any path component named .omac).
+func underOmacLeaf(absPath string) bool {
+	for _, part := range strings.Split(absPath, string(filepath.Separator)) {
+		if part == ".omac" {
+			return true
+		}
+	}
+	return false
 }

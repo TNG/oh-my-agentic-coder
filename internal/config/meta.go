@@ -1,6 +1,6 @@
 // Package config defines the on-disk configuration formats used by omac:
 // skill omac.yaml (with the sidecar block), the per-workdir sidecar.json
-// registry, and the oh-my-agentic-coder.yaml launcher config.
+// registry, and the config.yaml launcher config.
 package config
 
 import (

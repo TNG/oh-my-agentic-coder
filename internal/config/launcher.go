@@ -5,12 +5,16 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
+	"sort"
 	"strings"
 
+	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
 	"gopkg.in/yaml.v3"
 )
 
-// LauncherConfig is the oh-my-agentic-coder.yaml file.
+// LauncherConfig is the config.yaml launcher file (global ~/.config/omac/ or
+// project-local <workdir>/.omac/).
 //
 // Both `yaml:` and `json:` struct tags are kept on every field so the
 // type stays compatible if a caller ever needs to dump the config back
@@ -81,64 +85,29 @@ type AuditConfig struct {
 // AuditEnabled reports whether auditing is on, treating unset as true.
 func (a AuditConfig) AuditEnabled() bool { return a.Enabled == nil || *a.Enabled }
 
-// SandboxConfig declares named sandbox profiles.
+// SandboxConfig is the `sandbox` block of the launcher config.
 type SandboxConfig struct {
-	DefaultProfile string                    `yaml:"default_profile" json:"default_profile"`
-	Profiles       map[string]SandboxProfile `yaml:"profiles"        json:"profiles"`
+	// DefaultProfile and Profiles are the 0.9.0 launcher-template settings.
+	// omac always launches its built-in sandbox, so neither has any effect;
+	// they are parsed only as presence sentinels so validateSandbox can
+	// reject any config that still carries them with a migration hint. A nil
+	// DefaultProfile means the key was absent; any present value (including
+	// "builtin" or "") is rejected.
+	DefaultProfile *string        `yaml:"default_profile" json:"default_profile"`
+	Profiles       map[string]any `yaml:"profiles"        json:"profiles"`
+
+	// ProfileName selects the sandbox grants profile by name. The name is
+	// resolved inside the directory of the launcher config that declared it:
+	// the project's <workdir>/.omac/ or the user-global
+	// ~/.config/omac/sandbox-profiles/. It never crosses layers. Empty means
+	// "default.json of this layer if it exists, else the other layer, else
+	// the compiled-in default".
+	ProfileName string `yaml:"profile_name" json:"profile_name"`
 
 	// Briefing optionally overrides the embedded sandbox briefing text.
 	// Empty/unset uses the compiled-in default (sandboxbrief.Default);
 	// resolution happens at launch, not here.
 	Briefing string `yaml:"briefing"        json:"briefing"`
-}
-
-// SandboxProfile describes how to launch the sandbox for a given runtime.
-type SandboxProfile struct {
-	// Command is a templated argv. Supported placeholders:
-	//   {{socket}}, {{socket_dir}}, {{inner_cmd}}, {{inner_args}},
-	//   {{skills_csv}}, {{per_skill_env_flags}}, {{workdir}}
-	// Tokens that expand to multiple argv entries (inner_args,
-	// per_skill_env_flags) must stand alone in their slot.
-	Command  []string `yaml:"command"   json:"command"`
-	InnerCmd []string `yaml:"inner_cmd" json:"inner_cmd"`
-}
-
-// PolicyRef reports the sandbox-*policy* reference this launcher profile's
-// argv template hands to `omac sandbox run --profile` — the second,
-// unrelated "sandbox profile" namespace (a grant JSON under
-// ~/.config/omac/sandbox-profiles), keyed differently from the launcher
-// profile names in SandboxConfig.Profiles. The default launcher profile
-// is named "builtin" and its policy ref is "default"; the two must never
-// be interchanged.
-//
-// Recognized run forms:
-//   - "--profile", "default"   (separate args)
-//   - "--profile=default"      (inline)
-//   - omitted --profile        (resolves to "default")
-//
-// native is false for launchers whose policy omac cannot see: external
-// launchers (nono), the no-sandbox debug shell, and any non-`sandbox run`
-// subcommand. Only `{{self}} sandbox run` templates are inspectable.
-func (p SandboxProfile) PolicyRef() (ref string, native bool) {
-	c := p.Command
-	if len(c) < 3 || c[0] != "{{self}}" || c[1] != "sandbox" || c[2] != "run" {
-		return "", false
-	}
-	// Find "--profile" (separate or inline) before "--".
-	for i := 3; i < len(c); i++ {
-		arg := c[i]
-		if arg == "--" {
-			break
-		}
-		if arg == "--profile" && i+1 < len(c) {
-			return c[i+1], true
-		}
-		if strings.HasPrefix(arg, "--profile=") {
-			return strings.TrimPrefix(arg, "--profile="), true
-		}
-	}
-	// Omitted --profile resolves to "default".
-	return "default", true
 }
 
 // FacadeConfig tunes the reverse proxy.
@@ -148,193 +117,11 @@ type FacadeConfig struct {
 	BaseEnvPassthrough []string `yaml:"base_env_passthrough" json:"base_env_passthrough"`
 }
 
-// DefaultLauncherConfig returns a config that ships as the compiled-in default.
-//
-// The sandboxed profiles (nono, nono-netprofile) deliberately ship with an
-// EMPTY inner_cmd: the inner command is supplied by the selected harness (the
-// positional `omac start <harness>` token; default opencode) via
-// Harness.ResolveInnerCmd. This is what lets `omac start claude` actually run
-// Claude Code without editing config. A user who pins a profile's inner_cmd in
-// their own oh-my-agentic-coder.yaml still wins (that explicit value takes
-// precedence over the harness default — see ResolveInnerCmd). The
-// no-sandbox-debug profile keeps its explicit `bash` because it is a debug
-// shell, not an agent harness.
+// DefaultLauncherConfig returns the config that ships as the compiled-in
+// default. It sets no sandbox block: omac always launches its built-in sandbox,
+// and the inner command comes from the selected harness at launch.
 func DefaultLauncherConfig() LauncherConfig {
-	return defaultLauncherConfigFor(DefaultHarness())
-}
-
-// defaultLauncherConfigFor builds the default launcher config. The harness
-// argument is currently only used to keep the signature future-proof and to
-// let tests assert harness-independence; the sandboxed profiles intentionally
-// leave inner_cmd empty so the harness fills it at launch. The sandbox
-// *command* templates are harness-independent (they only reference
-// {{inner_cmd}} / {{inner_args}} placeholders).
-func defaultLauncherConfigFor(h Harness) LauncherConfig {
-	_ = h // inner_cmd is supplied by the harness at resolve time, not baked here
 	return LauncherConfig{
-		Sandbox: SandboxConfig{
-			DefaultProfile: "builtin",
-			Profiles: map[string]SandboxProfile{
-				// builtin re-execs the running omac binary as
-				// `omac sandbox run` — the native replacement for nono
-				// (Seatbelt on macOS, bubblewrap+Landlock on Linux).
-				// Flag semantics intentionally mirror the nono profile
-				// below so the two stay drop-in interchangeable:
-				//
-				//   --allow-file <socket>   AF_UNIX bridge socket (the
-				//                           generated Seatbelt profile
-				//                           allows connect explicitly,
-				//                           so unlike nono this works
-				//                           on macOS even under the
-				//                           network deny)
-				//   --read <socket-dir>     path-component lookup
-				//   {{tmpdir_flags}}        rw on the TMPDIR temp dir
-				//   --open-port <tcp-port>  loopback facade transport
-				//
-				// The sandbox profile itself (fs grants, listen_port,
-				// allow_tcp_connect, network prompt) is resolved by
-				// `omac sandbox run --profile default`: user override at
-				// ~/.config/omac/profiles/default.json, else compiled-in
-				// defaults. The compiled-in default profile is NOT a
-				// byte-for-byte equivalent of nono's external
-				// tng-sandbox.json: it intentionally does NOT broad-grant
-				// the host cache roots (~/.cache, ~/Library/Caches) or
-				// the whole tool homes (~/go, ~/.cargo, ~/.rustup). Only
-				// the toolchain bin leaves (~/.cargo/bin, ~/.rustup,
-				// ~/go/bin, ~/.nvm, ~/.bun/bin) are read-only; the
-				// selected tool-cache scope leaf
-				// (~/.cache/omac/<sha256(scope)>) is granted rw at launch
-				// via --allow (see internal/toolcache and
-				// internal/cli/start.go's prepareLaunchCache). Default
-				// scope is "workdir" so each project has its own cache.
-				"builtin": {
-					Command: []string{
-						"{{self}}", "sandbox", "run",
-						"--profile", "default",
-						"--allow-file", "{{socket}}",
-						"--read", "{{socket_dir}}",
-						"{{tmpdir_flags}}",
-						"--open-port", "{{tcp_port}}",
-						"--",
-						"{{inner_cmd}}", "{{inner_args}}",
-					},
-					// Empty: filled by the selected harness at launch.
-					InnerCmd: nil,
-				},
-				// Retained for transition: select with
-				// `omac start --sandbox-profile nono` or via config.
-				"nono": {
-					// Reference invocation for nono (https://nono.sh).
-					//
-					// Transport: omac binds the facade on BOTH a Unix
-					// socket and a 127.0.0.1 TCP port. We tell nono to:
-					//
-					//   - --allow-file <socket>      grant open(2) on the
-					//                                Unix socket inode
-					//                                (Linux: this is enough;
-					//                                macOS: necessary but
-					//                                not sufficient under
-					//                                proxy mode).
-					//
-					//   - --read <socket-dir>        path-component lookup
-					//                                during connect(2).
-					//
-					//   - --open-port <tcp-port>     allow bidirectional
-					//                                127.0.0.1:<port> from
-					//                                inside the sandbox.
-					//                                THIS is the transport
-					//                                that works on macOS
-					//                                under proxy mode (auto-
-					//                                activated by any nono
-					//                                profile with
-					//                                custom_credentials,
-					//                                network_profile,
-					//                                --allow-domain,
-					//                                --credential, or
-					//                                --upstream-proxy).
-					//                                Per the nono
-					//                                "Networking" docs,
-					//                                --open-port emits a
-					//                                Seatbelt allow rule
-					//                                that takes precedence
-					//                                over the proxy-mode
-					//                                `(deny network*)`.
-					//
-					// Inside the sandbox the agent reads OMAC_<SKILL>_BASE
-					// (a TCP URL) by default, falling back to
-					// OMAC_<SKILL>_SOCKET_BASE for the http+unix:// form.
-					//
-					// Env-var injection: nono no longer accepts a literal
-					// `--env KEY=VAL` flag. Instead sandbox.Exec sets
-					// OMAC_* in nono's own process environment, and nono
-					// propagates the parent env to the inner process by
-					// default. If you author a custom nono profile with
-					// environment.allow_vars set, add `OMAC_*` to the
-					// list.
-					//
-					// IMPORTANT: this profile does NOT use --block-net.
-					// On macOS that installs `(deny network*)` plus a
-					// `--open-port` allowance — but the interaction with
-					// --network-profile and Seatbelt rule ordering is
-					// untested for our use case. Use --network-profile
-					// instead (see nono-netprofile below).
-					//
-					//   - --read <tmpdir> --write <tmpdir>
-					//                                grant the inner command
-					//                                read+write on a host temp
-					//                                dir that omac also exports
-					//                                as TMPDIR. Bun-built
-					//                                harnesses (opencode)
-					//                                extract their embedded
-					//                                runtime into TMPDIR at
-					//                                startup; without a
-					//                                writable, sandbox-granted
-					//                                temp dir that extraction
-					//                                fails and the agent never
-					//                                starts.
-					Command: []string{
-						"nono", "run",
-						"--allow-cwd",
-						"--profile", "tng-sandbox",
-						"--allow-file", "{{socket}}",
-						"--read", "{{socket_dir}}",
-						"{{tmpdir_flags}}",
-						"--open-port", "{{tcp_port}}",
-						"--",
-						"{{inner_cmd}}", "{{inner_args}}",
-					},
-					// Empty: filled by the selected harness at launch.
-					InnerCmd: nil,
-				},
-				// Same as above but adds --network-profile opencode so
-				// outbound HTTP goes through nono's credential-injection
-				// proxy. --open-port keeps the facade reachable; per the
-				// nono docs it works alongside domain filtering.
-				"nono-netprofile": {
-					Command: []string{
-						"nono", "run",
-						"--allow-cwd",
-						"--profile", "tng-sandbox",
-						"--network-profile", "opencode",
-						"--allow-file", "{{socket}}",
-						"--read", "{{socket_dir}}",
-						// See the nono profile above: grant RW on the
-						// host temp dir exported as TMPDIR so Bun-built
-						// harnesses can extract their runtime.
-						"{{tmpdir_flags}}",
-						"--open-port", "{{tcp_port}}",
-						"--",
-						"{{inner_cmd}}", "{{inner_args}}",
-					},
-					// Empty: filled by the selected harness at launch.
-					InnerCmd: nil,
-				},
-				"no-sandbox-debug": {
-					Command:  []string{"{{inner_cmd}}", "{{inner_args}}"},
-					InnerCmd: []string{"bash"},
-				},
-			},
-		},
 		Facade: FacadeConfig{
 			IdleTimeoutSecs:    300,
 			MaxBodyBytes:       10 * 1024 * 1024,
@@ -352,53 +139,91 @@ func defaultLauncherConfigFor(h Harness) LauncherConfig {
 
 func boolPtr(b bool) *bool { return &b }
 
+// LocalConfigDir returns the project-local omac config directory
+// (<workdir>/.omac). It is created at launch and masked for the agent, so the
+// files in it are the sandbox definition and can never be written by a session.
+func LocalConfigDir(workdir string) string {
+	return filepath.Join(workdir, ".omac")
+}
+
+// ProjectLauncherConfigPath returns the per-workdir launcher config path.
+func ProjectLauncherConfigPath(workdir string) string {
+	return filepath.Join(LocalConfigDir(workdir), "config.yaml")
+}
+
+// GlobalLauncherConfigPath returns the user-global launcher config path.
+func GlobalLauncherConfigPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".config", "omac", "config.yaml")
+}
+
+// legacyProjectConfigPaths are the 0.9.0 locations for project-local config.
+// They are no longer read; callers surface a migration warning when one exists.
+func legacyProjectConfigPaths(workdir string) []string {
+	return []string{
+		filepath.Join(workdir, ".opencode", "oh-my-agentic-coder.yaml"),
+		filepath.Join(workdir, ".opencode", "sandbox.json"),
+	}
+}
+
 // LoadLauncher loads the launcher config for workdir.
 //
-// It reads both the workdir-local config (<workdir>/.opencode/oh-my-agentic-coder.yaml)
-// and the user-global config (~/.config/omac/config.yaml) when both exist.
-// Security-sensitive fields (sandbox profiles/selection, audit settings,
-// facade env passthrough) come exclusively from the global config or
-// compiled-in defaults — the workdir file may only contribute operational
-// settings (facade timeouts/body limit, cache scope).
+// It reads both the project-local config (<workdir>/.omac/config.yaml) and the
+// user-global config (~/.config/omac/config.yaml) when both exist. Operational
+// settings (facade timeouts/body limit, cache scope) layer local over global.
+// Security-sensitive settings (audit, facade env passthrough, the sandbox
+// briefing) come exclusively from the global config or compiled-in defaults.
+// sandbox.profile_name is the one sandbox field a project may set, and it
+// resolves only within the local .omac/ directory (see ResolveSandboxProfile).
 //
-// The returned path is the workdir file when it exists (its operational
-// settings are applied), the global file when only that exists, or ""
-// when neither exists (compiled-in defaults are used).
+// The returned path is the local file when it exists (its operational settings
+// are applied), the global file when only that exists, or "" when neither
+// exists (compiled-in defaults are used).
 func LoadLauncher(workdir string) (LauncherConfig, string, error) {
-	workdirFile := filepath.Join(workdir, ".opencode", "oh-my-agentic-coder.yaml")
-	var globalFile string
-	if home, err := os.UserHomeDir(); err == nil {
-		globalFile = filepath.Join(home, ".config", "omac", "config.yaml")
+	global, globalPath, err := loadLauncherFile(GlobalLauncherConfigPath())
+	if err != nil {
+		return LauncherConfig{}, "", err
 	}
-
-	// Load the global config (trusted source for security fields).
-	global, globalPath, err := loadLauncherFile(globalFile)
+	local, localPath, err := loadLauncherFile(ProjectLauncherConfigPath(workdir))
 	if err != nil {
 		return LauncherConfig{}, "", err
 	}
 
-	// Load the workdir config (untrusted; only operational fields apply).
-	local, localPath, err := loadLauncherFile(workdirFile)
-	if err != nil {
+	// Validate the raw sandbox block of both layers before defaults are
+	// merged. This turns 0.9.0's launcher-template settings into an
+	// actionable error instead of a silent ignore.
+	if err := validateSandbox(global.Sandbox, globalPath, globalProfileDir(), false); err != nil {
+		return LauncherConfig{}, "", err
+	}
+	if err := validateSandbox(local.Sandbox, localPath, LocalConfigDir(workdir), true); err != nil {
 		return LauncherConfig{}, "", err
 	}
 
 	switch {
 	case localPath != "" && globalPath != "":
-		// Both exist: apply global security fields, then layer local
-		// operational-only fields on top.
+		// Global security fields, local operational settings on top.
 		merged := mergeDefaults(global)
+		if n := strings.TrimSpace(local.Sandbox.ProfileName); n != "" {
+			merged.Sandbox.ProfileName = n
+		}
 		merged.Facade.IdleTimeoutSecs = pickInt(local.Facade.IdleTimeoutSecs, merged.Facade.IdleTimeoutSecs)
 		merged.Facade.MaxBodyBytes = pickInt64(local.Facade.MaxBodyBytes, merged.Facade.MaxBodyBytes)
-		merged.Cache = local.Cache
+		// Only override the global cache scope when the project actually sets
+		// one; otherwise a project config that exists only for profile_name
+		// would silently reset a global scope to the workdir default.
+		if local.Cache.Scope != "" {
+			merged.Cache = local.Cache
+		}
 		if _, err := merged.Cache.Resolve(); err != nil {
 			return LauncherConfig{}, "", fmt.Errorf("parse %s: %w", localPath, err)
 		}
 		return merged, localPath, nil
 	case localPath != "":
-		// Workdir file only: strip all security-sensitive fields; fill
-		// them from compiled-in defaults.
 		lc := stripSecurityFields(local)
+		lc.Sandbox.ProfileName = strings.TrimSpace(local.Sandbox.ProfileName)
 		lc = mergeDefaults(lc)
 		if _, err := lc.Cache.Resolve(); err != nil {
 			return LauncherConfig{}, "", fmt.Errorf("parse %s: %w", localPath, err)
@@ -436,8 +261,9 @@ func loadLauncherFile(path string) (LauncherConfig, string, error) {
 }
 
 // stripSecurityFields zeroes all fields a workdir config must not control:
-// sandbox profiles/selection/briefing, audit settings, and facade env
-// passthrough. Only operational settings survive (facade timeouts, cache).
+// sandbox briefing, audit settings, and facade env passthrough. Only
+// operational settings (facade timeouts, cache) and sandbox.profile_name
+// survive; the caller re-applies profile_name.
 func stripSecurityFields(lc LauncherConfig) LauncherConfig {
 	lc.Sandbox = SandboxConfig{}
 	lc.Audit = AuditConfig{}
@@ -463,20 +289,6 @@ func pickInt64(override, fallback int64) int64 {
 
 func mergeDefaults(lc LauncherConfig) LauncherConfig {
 	def := DefaultLauncherConfig()
-	if lc.Sandbox.DefaultProfile == "" {
-		lc.Sandbox.DefaultProfile = def.Sandbox.DefaultProfile
-	}
-	// Merge built-in profiles into the map so a config declaring custom
-	// profiles cannot erase the compiled-in ones (e.g. "builtin").
-	if lc.Sandbox.Profiles == nil {
-		lc.Sandbox.Profiles = def.Sandbox.Profiles
-	} else {
-		for name, prof := range def.Sandbox.Profiles {
-			if _, exists := lc.Sandbox.Profiles[name]; !exists {
-				lc.Sandbox.Profiles[name] = prof
-			}
-		}
-	}
 	if lc.Facade.IdleTimeoutSecs == 0 {
 		lc.Facade.IdleTimeoutSecs = def.Facade.IdleTimeoutSecs
 	}
@@ -492,4 +304,351 @@ func mergeDefaults(lc LauncherConfig) LauncherConfig {
 		lc.Audit.Enabled = def.Audit.Enabled
 	}
 	return lc
+}
+
+// ProfileSelection is the sandbox grants profile a launch should enforce.
+type ProfileSelection struct {
+	// Path is the profile file to load; "" means the compiled-in default.
+	Path string
+	// Name is the profile name ("default" for the implicit default).
+	Name string
+	// Layer is where the selection came from: "workdir", "global", or
+	// "builtin".
+	Layer string
+}
+
+// ResolveSandboxProfile selects the sandbox grants profile for workdir.
+//
+// The project-local .omac layer wins over the user-global layer, and the
+// layers never mix:
+//
+//  1. .omac/config.yaml sandbox.profile_name -> .omac/<name>.json
+//  2. .omac/default.json, if it exists
+//  3. global config.yaml sandbox.profile_name -> sandbox-profiles/<name>.json
+//  4. global sandbox-profiles/default.json
+//  5. compiled-in default
+//
+// A named profile that does not exist is an error rather than a silent fall
+// back, so a typo cannot quietly downgrade the grants.
+func ResolveSandboxProfile(workdir string) (ProfileSelection, error) {
+	var localDir, localCfgFile string
+	if workdir != "" {
+		localDir = LocalConfigDir(workdir)
+		localCfgFile = filepath.Join(localDir, "config.yaml")
+	}
+	localCfg, localPath, err := loadLauncherFile(localCfgFile)
+	if err != nil {
+		return ProfileSelection{}, err
+	}
+	globalCfg, globalPath, err := loadLauncherFile(GlobalLauncherConfigPath())
+	if err != nil {
+		return ProfileSelection{}, err
+	}
+	if err := validateSandbox(localCfg.Sandbox, localPath, localDir, true); err != nil {
+		return ProfileSelection{}, err
+	}
+	if err := validateSandbox(globalCfg.Sandbox, globalPath, globalProfileDir(), false); err != nil {
+		return ProfileSelection{}, err
+	}
+
+	if name := strings.TrimSpace(localCfg.Sandbox.ProfileName); name != "" && localDir != "" {
+		return namedProfileSelection(localDir, name, "workdir")
+	}
+	if localDir != "" {
+		if sel, ok, err := defaultProfileSelection(localDir, "workdir"); err != nil {
+			return ProfileSelection{}, err
+		} else if ok {
+			return sel, nil
+		}
+	}
+
+	return globalSandboxProfile(globalCfg)
+}
+
+// globalSandboxProfile resolves the global selection from an already-loaded
+// global config: profile_name, else sandbox-profiles/default.json, else builtin.
+func globalSandboxProfile(globalCfg LauncherConfig) (ProfileSelection, error) {
+	globalDir, err := sandboxprofile.ProfileDir()
+	if err != nil {
+		return ProfileSelection{}, err
+	}
+	if name := strings.TrimSpace(globalCfg.Sandbox.ProfileName); name != "" {
+		return namedProfileSelection(globalDir, name, "global")
+	}
+	if sel, ok, err := defaultProfileSelection(globalDir, "global"); err != nil {
+		return ProfileSelection{}, err
+	} else if ok {
+		return sel, nil
+	}
+	return ProfileSelection{Path: "", Name: "default", Layer: "builtin"}, nil
+}
+
+// defaultProfileSelection returns the layer's default.json when a regular file
+// (not a symlink or directory) exists there. A symlinked default is rejected
+// like a named profile, so the auto-selected path cannot bypass the
+// write-protection guarantee.
+func defaultProfileSelection(dir, layer string) (ProfileSelection, bool, error) {
+	p := filepath.Join(dir, "default.json")
+	if _, err := os.Lstat(p); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return ProfileSelection{}, false, nil
+		}
+		// A permission or I/O error must not silently downgrade the selection
+		// to the next layer or the built-in default.
+		return ProfileSelection{}, false, fmt.Errorf("stat %s: %w", p, err)
+	}
+	if err := checkProfileFile(p, "sandbox profile default"); err != nil {
+		return ProfileSelection{}, false, err
+	}
+	return ProfileSelection{Path: p, Name: "default", Layer: layer}, true, nil
+}
+
+// ExplicitProfileSelection validates an explicit --profile-path and returns the
+// selection. The path must resolve inside the global sandbox-profiles/
+// directory or the project's .omac/ directory; anything else is rejected so a
+// CLI argument (or a wrapper script) cannot point the launch at an arbitrary
+// host file.
+func ExplicitProfileSelection(workdir, path string) (ProfileSelection, error) {
+	raw := strings.TrimSpace(path)
+	if raw == "" {
+		return ProfileSelection{}, fmt.Errorf("--profile-path requires a value")
+	}
+	var abs string
+	if filepath.IsAbs(raw) {
+		abs = filepath.Clean(raw)
+	} else {
+		// A relative --profile-path is anchored to --workdir, not the
+		// process CWD, so it means the same thing as the docs say: a file
+		// inside <workdir>/.omac/.
+		if workdir == "" {
+			return ProfileSelection{}, fmt.Errorf("a relative --profile-path needs --workdir")
+		}
+		abs = filepath.Clean(filepath.Join(workdir, raw))
+	}
+	globalDir, err := sandboxprofile.ProfileDir()
+	if err != nil {
+		return ProfileSelection{}, err
+	}
+	localDir := LocalConfigDir(workdir)
+	layer := ""
+	switch {
+	case withinDir(globalDir, abs):
+		layer = "global"
+	case workdir != "" && withinDir(localDir, abs):
+		layer = "workdir"
+	default:
+		return ProfileSelection{}, fmt.Errorf("--profile-path %q is outside %s and %s; "+
+			"a profile must live in the global sandbox-profiles directory or the project's .omac directory "+
+			"to be protected from agentic edits",
+			path, globalDir, localDir)
+	}
+	if err := checkProfileFile(abs, "--profile-path "+path); err != nil {
+		return ProfileSelection{}, err
+	}
+	return ProfileSelection{Path: abs, Name: strings.TrimSuffix(filepath.Base(abs), ".json"), Layer: layer}, nil
+}
+
+// namedProfileSelection resolves a bare profile name inside dir.
+func namedProfileSelection(dir, name, layer string) (ProfileSelection, error) {
+	if err := validateProfileName(name); err != nil {
+		return ProfileSelection{}, err
+	}
+	name = strings.TrimSuffix(name, ".json")
+	abs := filepath.Join(dir, name+".json")
+	if !fileExists(abs) {
+		return ProfileSelection{}, fmt.Errorf("sandbox profile %q not found (expected %s)", name, abs)
+	}
+	if err := checkProfileFile(abs, "sandbox profile "+name); err != nil {
+		return ProfileSelection{}, err
+	}
+	return ProfileSelection{Path: abs, Name: name, Layer: layer}, nil
+}
+
+// validateProfileName rejects names that could escape the layer directory.
+func validateProfileName(name string) error {
+	if name == "" || name == "." || name == ".." || strings.ContainsAny(name, `/\`) {
+		return fmt.Errorf("invalid sandbox profile name %q", name)
+	}
+	return nil
+}
+
+// checkProfileFile rejects a symlinked, missing, or directory profile.
+func checkProfileFile(path, label string) error {
+	if li, err := os.Lstat(path); err == nil && li.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("%s is a symlink (%s); a symlinked profile cannot be write-protected "+
+			"inside the sandbox — a session could replace it and steer the next launch", label, path)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("%s does not exist (%s)", label, path)
+		}
+		return fmt.Errorf("%s (%s): %w", label, path, err)
+	}
+	if info.IsDir() {
+		return fmt.Errorf("%s is a directory, not a profile file (%s)", label, path)
+	}
+	return nil
+}
+
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
+}
+
+// withinDir reports whether path equals dir or lies under it, lexically.
+func withinDir(dir, path string) bool {
+	dir = filepath.Clean(dir)
+	path = filepath.Clean(path)
+	if path == dir {
+		return true
+	}
+	return strings.HasPrefix(path+string(os.PathSeparator), dir+string(os.PathSeparator))
+}
+
+// globalProfileDir returns the user-global sandbox-profiles directory, or ""
+// when the home directory is unavailable (the migration hints degrade to the
+// short form).
+func globalProfileDir() string {
+	dir, err := sandboxprofile.ProfileDir()
+	if err != nil {
+		return ""
+	}
+	return dir
+}
+
+// LegacyProjectConfigWarnings returns migration notices for 0.9.0 project
+// config locations that are no longer read. Callers print them after a load.
+func LegacyProjectConfigWarnings(workdir string) []string {
+	var warns []string
+	for _, p := range legacyProjectConfigPaths(workdir) {
+		if _, err := os.Stat(p); err != nil {
+			continue
+		}
+		rel, rerr := filepath.Rel(workdir, p)
+		if rerr != nil {
+			rel = p
+		}
+		if strings.HasSuffix(p, ".json") {
+			warns = append(warns, fmt.Sprintf("project sandbox profile %s is no longer read; project "+
+				"profiles now live in .omac/. Move it to be selected automatically, or name it and "+
+				"set sandbox.profile_name:\n    mkdir -p .omac && mv %s .omac/default.json",
+				rel, rel))
+			continue
+		}
+		warns = append(warns, fmt.Sprintf("project config %s is no longer read; project omac config "+
+			"now lives in .omac/. Move it with:\n    mkdir -p .omac && mv %s .omac/config.yaml",
+			rel, rel))
+	}
+	return warns
+}
+
+// maxShownProfileNames caps how many profile names a migration error lists.
+// # PONYTAIL: fixed cap; make the cap configurable if profiles grow past it.
+const maxShownProfileNames = 5
+
+// listProfileNames returns the selectable profile names in dir (a layer's
+// profile directory): regular non-symlink *.json files, excluding pages
+// siblings and the implicit default. nil when dir is "" or unreadable. Profiles
+// are selected by file name only, so meta.name is irrelevant here.
+func listProfileNames(dir string) []string {
+	if dir == "" {
+		return nil
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, e := range entries {
+		name := e.Name()
+		if !strings.HasSuffix(name, ".json") || strings.HasSuffix(name, ".pages.json") {
+			continue
+		}
+		if li, err := e.Info(); err != nil || !li.Mode().IsRegular() {
+			continue
+		}
+		if n := strings.TrimSuffix(name, ".json"); n != "" && n != "default" {
+			out = append(out, n)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// joinProfileNames renders names for a message, capping the display.
+func joinProfileNames(names []string) string {
+	if len(names) <= maxShownProfileNames {
+		return strings.Join(names, ", ")
+	}
+	return fmt.Sprintf("%s and %d more", strings.Join(names[:maxShownProfileNames], ", "), len(names)-maxShownProfileNames)
+}
+
+// validateSandbox rejects a launcher config that still carries the 0.9.0
+// launcher-template settings. omac always launches its built-in sandbox, so
+// `default_profile` and `profiles` have no effect; any presence is a hard
+// error. profileDir is the layer's profile directory, enumerated so the hint
+// can offer the profiles the user actually has ("" disables the list). local
+// selects the location the grants pointer names: the project's .omac/ for a
+// project config, the global sandbox-profiles/ for a global one.
+func validateSandbox(sb SandboxConfig, path string, profileDir string, local bool) error {
+	grantsHint := "set 'sandbox.profile_name: <name>' and put the profile at " +
+		"~/.config/omac/sandbox-profiles/<name>.json"
+	if local {
+		grantsHint = "set 'sandbox.profile_name: <name>' and put the profile at " +
+			"<workdir>/.omac/<name>.json"
+	}
+	if sb.DefaultProfile != nil {
+		v := *sb.DefaultProfile
+		names := listProfileNames(profileDir)
+		if len(names) == 0 {
+			return defaultProfileRemovedError(path, v, grantsHint)
+		}
+		match := slices.Contains(names, v)
+		var b strings.Builder
+		fmt.Fprintf(&b, "%s: sandbox.default_profile: %q is no longer supported.\n", path, v)
+		fmt.Fprintf(&b, "  Profiles defined for this layer: %s\n", joinProfileNames(names))
+		if match {
+			b.WriteString("  - Keep using your previous one by renaming the field:\n")
+			fmt.Fprintf(&b, "        sandbox:\n          profile_name: %q\n", v)
+			var others []string
+			for _, n := range names {
+				if n != v {
+					others = append(others, n)
+				}
+			}
+			if len(others) > 0 {
+				fmt.Fprintf(&b, "  - Or use one of the other profiles defined for this layer: %s\n", joinProfileNames(others))
+			}
+		} else {
+			fmt.Fprintf(&b, "  - Or use one of the profiles defined for this layer: %s\n", joinProfileNames(names))
+		}
+		b.WriteString("  - Or remove the line to fall back to this layer's default.json.\n")
+		b.WriteString("  See docs/configuration.md")
+		if v == "no-sandbox-debug" {
+			b.WriteString("\n  For an unsandboxed shell, run: omac start --no-sandbox --inner bash")
+		}
+		return errors.New(b.String())
+	}
+	if sb.Profiles != nil {
+		return fmt.Errorf("%s: sandbox.profiles (the 0.9.0 launcher argv templates) is no longer "+
+			"supported; remove the block.\n"+
+			"  omac always runs its built-in sandbox. To choose sandbox grants, %s.\n"+
+			"  For fixed launch environment variables (previously set by a profile's argv template), "+
+			"use \"environment.set\" in the sandbox grants profile.\n"+
+			"  See docs/configuration.md", path, grantsHint)
+	}
+	return nil
+}
+
+// defaultProfileRemovedError is the short hint for a present default_profile
+// when the declaring layer defines no further profiles.
+func defaultProfileRemovedError(path, value, grantsHint string) error {
+	msg := fmt.Sprintf("%s: sandbox.default_profile: %q is no longer supported; remove the line.\n"+
+		"  omac always runs its built-in sandbox. To choose sandbox grants, %s.\n"+
+		"  See docs/configuration.md", path, value, grantsHint)
+	if value == "no-sandbox-debug" {
+		msg += "\n  For an unsandboxed shell, run: omac start --no-sandbox --inner bash"
+	}
+	return errors.New(msg)
 }

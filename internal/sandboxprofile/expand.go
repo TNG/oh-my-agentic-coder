@@ -49,6 +49,28 @@ func ExpandPath(p string) (string, error) {
 	return abs, nil
 }
 
+// ExpandEnvValue expands ~ and $VAR / ${VAR} in a profile environment.set
+// value, evaluated in the supervisor's environment. Unlike ExpandPath it
+// does not absolutize or demand existence: a value may be a non-path (a
+// flag, a URL, a number), and an unset variable expands to the empty
+// string (os.Expand semantics).
+func ExpandEnvValue(v string) (string, error) {
+	if v == "~" || strings.HasPrefix(v, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("expand %q: %w", v, err)
+		}
+		if v == "~" {
+			v = home
+		} else {
+			v = filepath.Join(home, v[2:])
+		}
+	}
+	return os.Expand(v, func(name string) string {
+		return os.Getenv(name)
+	}), nil
+}
+
 // ExpandExisting expands every entry of paths and returns those that
 // exist on disk. Entries that expand but do not exist are skipped with
 // a notice on w (nono behaviour: missing grant targets are not fatal),

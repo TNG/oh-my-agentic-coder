@@ -29,6 +29,11 @@ import (
 	"github.com/TNG/oh-my-agentic-coder/internal/toolcache"
 )
 
+// execWithReady runs the fully-assembled sandbox argv. It is indirected as a
+// package var so tests can capture the final argv and env (after all flag
+// injection) without spawning a real subprocess.
+var execWithReady = sandbox.ExecWithReady
+
 // launchOpts carries everything runLaunch needs: the resolved harness, the
 // parsed start-family flags, and the inner args to append to the resolved
 // inner command. `omac start`, `omac continue`, and `omac resume` all build
@@ -40,7 +45,6 @@ type launchOpts struct {
 	// `omac continue`/`omac resume` is not mislabeled as `omac start:`.
 	label              string
 	harness            config.Harness
-	profile            string
 	innerCmdOverride   string
 	noSandbox          bool
 	ephemeralCache     bool
@@ -68,6 +72,13 @@ type launchOpts struct {
 	// sessionID, when non-empty, selects a specific session to continue by id
 	// (`omac continue -s <id>`). Empty means "most recent" (the default).
 	sessionID string
+	// profilePath is an explicit sandbox grants profile (--profile-path),
+	// overriding the launcher config's profile_name. It must live in the
+	// global sandbox-profiles directory or the project's .omac directory.
+	profilePath string
+	// acceptProjectConfig re-approves (re-pins) the project-local sandbox
+	// configuration after it changed since it was approved.
+	acceptProjectConfig bool
 	// openPorts are extra loopback ports from --open-port (repeatable),
 	// typically a local webServer port for browser tests.
 	openPorts []int
@@ -85,7 +96,6 @@ func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, int) 
 	fs := flag.NewFlagSet(cmdName, flag.ContinueOnError)
 	fs.SetOutput(env.Stderr)
 	var (
-		profile            = fs.String("sandbox", "", "Name of a sandbox profile from the launcher config.")
 		innerCmdOverride   = fs.String("inner", "", "Override inner_cmd's executable.")
 		noSandbox          = fs.Bool("no-sandbox", false, "Run inner command directly, without a sandbox (debug only).")
 		ephemeralCache     = fs.Bool("ephemeral-cache", false, "Use a per-launch cache instead of the persistent cache.")
@@ -99,6 +109,8 @@ func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, int) 
 		noAudit            = fs.Bool("no-audit", false, "Disable the security audit trail.")
 		auditStrict        = fs.Bool("audit-strict", false, "Fail-closed: abort if the audit log cannot be written.")
 		sessionID          = fs.String("session", "", "Continue a specific session by id instead of the most recent one. (shorthand: -s)")
+		profilePath        = fs.String("profile-path", "", "Path to a sandbox grants profile inside ~/.config/omac/sandbox-profiles/ or <workdir>/.omac/. Overrides sandbox.profile_name.")
+		acceptProjectCfg   = fs.Bool("accept-project-config", false, "Re-approve the project-local .omac sandbox configuration after it changed since it was approved.")
 	)
 	var openPorts intMultiFlag
 	fs.Var(&openPorts, "open-port", "Allow the sandboxed process to bind and connect on this TCP port (repeatable). Useful for a local app/dev server the agent or its tools talk to — e.g. Playwright/Vite/Next on :3000. On Linux, Landlock cannot limit that to loopback: outbound TCP to any host on the same port is also allowed.")
@@ -129,6 +141,9 @@ func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, int) 
 		fmt.Fprintf(env.Stderr, "omac %s: %v\n", cmdName, err)
 		return launchOpts{}, ExitMisuse
 	}
+	if rejectLegacySandboxFlag(cmdName, ourArgs, env) {
+		return launchOpts{}, ExitMisuse
+	}
 	if code, ok := parseWithHarnessArgsHint(fs, cmdName, ourArgs, env); !ok {
 		return launchOpts{}, code
 	}
@@ -144,25 +159,42 @@ func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, int) 
 	}
 	innerArgs = append(fs.Args(), innerArgs...)
 	return launchOpts{
-		label:              cmdName,
-		harness:            harness,
-		profile:            *profile,
-		innerCmdOverride:   *innerCmdOverride,
-		noSandbox:          *noSandbox,
-		ephemeralCache:     *ephemeralCache,
-		cacheScope:         *cacheScope,
-		keepRunning:        *keepRunning,
-		acceptSkillChanges: *acceptSkillChanges,
-		skipSecretPattern:  *skipSecretPattern,
-		verbose:            *verbose,
-		autoRegisterSkills: *autoRegisterSkills,
-		auditLog:           *auditLog,
-		noAudit:            *noAudit,
-		auditStrict:        *auditStrict,
-		sessionID:          *sessionID,
-		openPorts:          append([]int(nil), openPorts...),
-		innerArgs:          innerArgs,
+		label:               cmdName,
+		harness:             harness,
+		innerCmdOverride:    *innerCmdOverride,
+		noSandbox:           *noSandbox,
+		ephemeralCache:      *ephemeralCache,
+		cacheScope:          *cacheScope,
+		keepRunning:         *keepRunning,
+		acceptSkillChanges:  *acceptSkillChanges,
+		skipSecretPattern:   *skipSecretPattern,
+		verbose:             *verbose,
+		autoRegisterSkills:  *autoRegisterSkills,
+		auditLog:            *auditLog,
+		noAudit:             *noAudit,
+		auditStrict:         *auditStrict,
+		sessionID:           *sessionID,
+		profilePath:         *profilePath,
+		acceptProjectConfig: *acceptProjectCfg,
+		openPorts:           append([]int(nil), openPorts...),
+		innerArgs:           innerArgs,
 	}, ExitOK
+}
+
+// rejectLegacySandboxFlag turns 0.9.0's `--sandbox <name>` (which selected a
+// launcher argv template) into an actionable migration error.
+func rejectLegacySandboxFlag(cmdName string, args []string, env *Env) bool {
+	for _, a := range args {
+		if a == "--sandbox" || strings.HasPrefix(a, "--sandbox=") {
+			fmt.Fprintf(env.Stderr, "omac %s: --sandbox was removed in 0.10.0.\n"+
+				"  omac now always runs its built-in sandbox. To choose sandbox grants, put a profile\n"+
+				"  file in .omac/ (e.g. .omac/default.json) and pass --profile-path .omac/default.json,\n"+
+				"  or set 'sandbox.profile_name' in .omac/config.yaml.\n"+
+				"  See docs/configuration.md\n", cmdName)
+			return true
+		}
+	}
+	return false
 }
 
 // checkInnerBinary verifies the resolved inner command binary is on $PATH.
@@ -212,7 +244,6 @@ func runStart(args []string, env *Env) int {
 // the inner command. It is invoked by `start`, `continue`, and `resume`.
 func runLaunch(env *Env, opts launchOpts) int {
 	harness := opts.harness
-	profile := opts.profile
 	innerCmdOverride := opts.innerCmdOverride
 	noSandbox := opts.noSandbox
 	keepRunning := opts.keepRunning
@@ -236,6 +267,18 @@ func runLaunch(env *Env, opts launchOpts) int {
 		return ExitMisuse
 	}
 
+	// Always create the project config dir before anything that would watch
+	// or launch the sandbox: the mid-session protected-pattern watch scans
+	// for .omac, so it must see the directory as pre-existing, and the
+	// kernel mask needs it to exist at launch. Unconditional — a --no-sandbox
+	// debug run is not a special case. A read-only or otherwise uncreatable
+	// workdir is not fatal: the agent runs with the omac user's own
+	// permissions, so it can create the directory no more than omac can.
+	if err := ensureOmacLocalDir(env.Stderr, env.Workdir); err != nil {
+		fmt.Fprintln(env.Stderr, prefix+":", err)
+		return ExitConfigInvalid
+	}
+
 	// 1. Load launcher config.
 	lc, cfgPath, err := config.LoadLauncher(env.Workdir)
 	if err != nil {
@@ -245,25 +288,49 @@ func runLaunch(env *Env, opts launchOpts) int {
 	if verbose && cfgPath != "" {
 		fmt.Fprintf(env.Stderr, "[verbose] loaded launcher config: %s\n", cfgPath)
 	}
+	for _, w := range config.LegacyProjectConfigWarnings(env.Workdir) {
+		fmt.Fprintln(env.Stderr, prefix+": [warn] "+w)
+	}
+	// Resolve the sandbox grants profile. A bad selection is fatal under a
+	// real sandbox; under --no-sandbox no profile is applied, so an error is
+	// ignored and the built-in default is used for the plan.
+	sel, selErr := activeProfileSelection(env.Workdir, opts.profilePath, opts.acceptProjectConfig, env.Stderr)
+	if selErr != nil && !noSandbox {
+		fmt.Fprintln(env.Stderr, prefix+": sandbox profile:", selErr)
+		return ExitConfigInvalid
+	}
+	if selErr != nil {
+		sel = config.ProfileSelection{Name: "default", Layer: "builtin"}
+	}
+	profileRef := sel.Path
+	if verbose {
+		if profileRef != "" {
+			fmt.Fprintf(env.Stderr, "[verbose] sandbox profile: %s (from %s)\n", profileRef, sel.Layer)
+		} else {
+			fmt.Fprintln(env.Stderr, "[verbose] sandbox profile: default (builtin)")
+		}
+	}
 	// One resolved sandbox plan for the whole launch: the launcher profile
 	// (templated argv) plus, for omac's native backend, its policy profile
 	// (grant JSON). Everything downstream reads the plan instead of
 	// re-resolving a bare name — see internal/cli/sandboxplan.go.
-	plan, planErr := resolveSandboxPlan(lc, profile)
-	if planErr != nil && !noSandbox {
-		fmt.Fprintln(env.Stderr, prefix+":", planErr)
-		return ExitConfigInvalid
+	plan := resolveSandboxPlan(env.Workdir, sel)
+	if !noSandbox {
+		// A custom profile is user-authored (and may be committed by a teammate),
+		// so surface anything that weakens the sandbox and keep its learned
+		// network decisions out of git.
+		warnPermissiveProfile(env.Stderr, profileRef, plan.Policy)
+		excludeProfilePagesFile(env.Workdir, profileRef)
 	}
-	profName := plan.Name
-	prof := plan.Launcher
+	policyRef := plan.PolicyRef
 
 	// 1b. Pre-flight: inner harness binary must be on $PATH. Checked on the
-	//     resolved argv (profile inner_cmd, else harness default) — the same
-	//     argv step 8 hands to the sandbox. An explicit --inner skips: that
-	//     points at an exact binary, which is an escape hatch; sandboxrun
-	//     warns non-fatally if it cannot resolve it either.
+	//     resolved argv (the harness default) — the same argv step 8 hands to
+	//     the sandbox. An explicit --inner skips: that points at an exact
+	//     binary, which is an escape hatch; sandboxrun warns non-fatally if it
+	//     cannot resolve it either.
 	if innerCmdOverride == "" {
-		if code := checkInnerBinary(harness.ResolveInnerCmd(prof.InnerCmd, ""), prefix, env); code != ExitOK {
+		if code := checkInnerBinary(harness.ResolveInnerCmd(nil, ""), prefix, env); code != ExitOK {
 			return code
 		}
 	}
@@ -570,11 +637,11 @@ func runLaunch(env *Env, opts launchOpts) int {
 	}
 	defer auditor.Close()
 
-	// Per-session sandbox temp dir. Bun-built harnesses (opencode) extract
-	// an embedded runtime into TMPDIR at startup; the sandbox must grant
-	// read+write on it (the nono profile does, via {{tmpdir}}) AND the inner
-	// command must see it as TMPDIR (set in `extra` below). We create a
-	// fresh, isolated dir per launch and remove it on exit.
+	// Per-session sandbox temp dir. Bun-built harnesses (e.g., opencode) extract
+	// an embedded runtime into TMPDIR at startup; the launch grants the
+	// sandbox read+write on it (--read/--write flags on the sandbox argv)
+	// AND the inner command must see it as TMPDIR (set in `extra` below).
+	// We create a fresh, isolated dir per launch and remove it on exit.
 	sandboxTmp, err := os.MkdirTemp("", "omac-sandbox-tmp-")
 	if err != nil {
 		fmt.Fprintln(env.Stderr, prefix+": sandbox temp dir:", err)
@@ -746,10 +813,10 @@ func runLaunch(env *Env, opts launchOpts) int {
 
 	// 8. Build sandbox argv and exec.
 	//
-	// Resolve the inner command for the selected harness: an explicit
-	// --inner override wins, else the profile's inner_cmd, else the
-	// harness's default InnerCmd (config.Harness.ResolveInnerCmd).
-	inner := harness.ResolveInnerCmd(prof.InnerCmd, innerCmdOverride)
+	// Resolve the inner command for the selected harness: an explicit --inner
+	// override wins, else the harness's default InnerCmd
+	// (config.Harness.ResolveInnerCmd).
+	inner := harness.ResolveInnerCmd(nil, innerCmdOverride)
 	// Inject the sandbox briefing: Claude via its --append-system-prompt flag
 	// (SystemContextArgs), OpenCode via OMAC_SANDBOX_BRIEFING set below.
 	briefingText, injectBriefing := briefingInjection(noSandbox, inner, harness, lc.Sandbox.Briefing, cacheScope)
@@ -765,13 +832,12 @@ func runLaunch(env *Env, opts launchOpts) int {
 	if noSandbox {
 		argv = inner
 	} else {
-		argv, err = sandbox.Expand(prof, sandbox.Inputs{
-			Workdir:  env.Workdir,
-			Socket:   socketPath,
-			TCPPort:  tcpPort,
-			Mounts:   mounts,
-			InnerCmd: inner,
-			TmpDir:   sandboxTmp,
+		argv, err = sandbox.BuildBuiltinArgv(sandbox.Inputs{
+			Socket:     socketPath,
+			TCPPort:    tcpPort,
+			InnerCmd:   inner,
+			TmpDir:     sandboxTmp,
+			ProfileRef: profileRef,
 		})
 		if err != nil {
 			fmt.Fprintln(env.Stderr, prefix+": sandbox argv:", err)
@@ -800,8 +866,8 @@ func runLaunch(env *Env, opts launchOpts) int {
 		// selected harness.
 		argv = forwardHarnessEnv(env, argv, harness, plan)
 		// User --open-port grants (e.g. local Playwright webServer). Additive
-		// on top of the profile; no-op on non-native backends (with a warning).
-		argv = injectUserOpenPorts(env, argv, opts.openPorts, prof)
+		// on top of the profile.
+		argv = injectUserOpenPorts(argv, opts.openPorts)
 		// Pass the resolved audit path down to `omac sandbox run` so the
 		// network-filter subprocess appends net.decision events to the
 		// same persistent log. Inherit the parent's run_id + mode so the
@@ -815,7 +881,7 @@ func runLaunch(env *Env, opts launchOpts) int {
 		// The kernel mask cannot grow mid-session, so detect
 		// protected-pattern files (e.g. .env) created after launch and
 		// warn the user.
-		watch = startProtectedWatch(auditor, protectedChecker(f), plan, argv, env.Workdir)
+		watch = startProtectedWatch(auditor, protectedChecker(f), plan, argv, env.Workdir, env.Stderr)
 	}
 	if verbose {
 		fmt.Fprintf(env.Stderr, "[verbose] sandbox argv: %v\n", argv)
@@ -830,13 +896,13 @@ func runLaunch(env *Env, opts launchOpts) int {
 
 	// Extra env passed into the sandbox runtime's own process environment.
 	// The runtime is expected to propagate parent env to the inner process
-	// (nono's default behavior; controllable via the profile's
-	// `environment.allow_vars` field — if set, OMAC_* must be in it).
+	// (external launchers may gate this via their own profile's env
+	// allowlist — if so, OMAC_* must be included).
 	//
 	// Both transports are advertised to the sandbox. Clients should
-	// prefer OMAC_<SKILL>_BASE (TCP-based by default; that is what works
-	// under nono proxy mode), and fall back to OMAC_<SKILL>_SOCKET_BASE
-	// for environments that prefer Unix sockets.
+	// prefer OMAC_<SKILL>_BASE (TCP-based by default; the transport that
+	// works under every sandbox backend), and fall back to
+	// OMAC_<SKILL>_SOCKET_BASE for environments that prefer Unix sockets.
 	extra := map[string]string{
 		"OMAC_SOCKET":             socketPath,
 		"OMAC_HOST":               "127.0.0.1",
@@ -847,9 +913,10 @@ func runLaunch(env *Env, opts launchOpts) int {
 		"OMAC_HARNESS":            harness.Name,
 		"OMAC_HARNESS_SKILLS_DIR": harness.WorkdirSkillsDir(),
 		// Point the inner command at the sandbox-granted temp dir. The
-		// nono profile grants RW on this path via {{tmpdir}}; exporting it
-		// as TMPDIR is what makes Bun-built harnesses (opencode) extract
-		// their runtime into a writable, allowed location.
+		// launch grants the sandbox RW on this path (--read/--write
+		// flags); exporting it as TMPDIR is what makes Bun-built
+		// harnesses (opencode) extract their runtime into a writable,
+		// allowed location.
 		"TMPDIR": sandboxTmp,
 	}
 	if harness.Name == "claude-code" {
@@ -894,7 +961,7 @@ func runLaunch(env *Env, opts launchOpts) int {
 			} else if rel != "" {
 				// Keep git from committing the briefing (persists across a
 				// SIGKILL); remove the file itself on a clean exit.
-				gitExcludeBriefing(env.Workdir, rel)
+				gitExcludePath(env.Workdir, rel)
 				defer removeBriefingFile(filepath.Join(env.Workdir, rel))
 			}
 		}
@@ -919,10 +986,10 @@ func runLaunch(env *Env, opts launchOpts) int {
 	sandboxed := !noSandbox
 	sandboxBackend := ""
 	if sandboxed {
-		sandboxBackend = profName
+		sandboxBackend = "builtin"
 	}
-	auditor.Emit(audit.SessionStart(env.Version, harness.Name, profName, sandboxBackend))
-	auditor.Emit(audit.InnerExec(argv, profName, sandboxed))
+	auditor.Emit(audit.SessionStart(env.Version, harness.Name, policyRef, sandboxBackend))
+	auditor.Emit(audit.InnerExec(argv, policyRef, sandboxed))
 
 	// The post-exit hint needs the id of the session this run created. opencode
 	// self-reports it via the control plane (the omac plugin POSTs
@@ -940,11 +1007,9 @@ func runLaunch(env *Env, opts launchOpts) int {
 		}, hintTimeout)
 	}
 
-	code, err := sandbox.ExecWithReady(argv, extra, nil)
+	code, err := execWithReady(argv, extra, nil)
 	auditor.Emit(audit.SessionStop(code))
-	watch.report(func(format string, args ...any) {
-		fmt.Fprintf(env.Stderr, prefix+": "+format+"\n", args...)
-	})
+	printRestartCallout(env.Stderr, watch.stopAndNotices())
 	if err != nil {
 		fmt.Fprintln(env.Stderr, prefix+": exec:", err)
 		return ExitSandboxAbnormal

@@ -297,6 +297,74 @@ func TestLaunchCacheInjectsSelectedScope(t *testing.T) {
 	}
 }
 
+// TestLaunchCreatesOmacConfigDir: <workdir>/.omac is created by the parent
+// before anything else, with and without a sandbox. The launch is stopped
+// right after that point deterministically by a global launcher config that
+// still carries a removed setting (sandbox.profiles) — LoadLauncher fails
+// with ExitConfigInvalid, so no facade, listener, cache, or subprocess is
+// involved on any OS.
+func TestLaunchCreatesOmacConfigDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // os.UserHomeDir on Windows
+	globalCfg := filepath.Join(home, ".config", "omac", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(globalCfg), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(globalCfg, []byte("sandbox:\n  profiles:\n    x: {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	create := func(t *testing.T, noSandbox bool) {
+		t.Helper()
+		workdir := t.TempDir()
+		env, stderr := launchTestEnv(t, workdir)
+		harness, ok := config.LookupHarness("claude")
+		if !ok {
+			t.Fatal("claude harness missing")
+		}
+		code := runLaunch(env, launchOpts{label: "start", harness: harness, innerCmdOverride: "/bin/true", noSandbox: noSandbox})
+		if code != ExitConfigInvalid {
+			t.Fatalf("code = %d, want ExitConfigInvalid:\n%s", code, stderr())
+		}
+		if fi, err := os.Stat(filepath.Join(workdir, ".omac")); err != nil || !fi.IsDir() {
+			t.Fatalf("omac must create <workdir>/.omac before the config failure (noSandbox=%v): %v", noSandbox, err)
+		}
+	}
+
+	create(t, false)
+	create(t, true)
+}
+
+// TestLaunchRefusesSymlinkedOmacConfigDir: a symlinked .omac could point
+// outside the project; the launch refuses instead of operating on the target.
+func TestLaunchRefusesSymlinkedOmacConfigDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	workdir := t.TempDir()
+	if err := os.Symlink(t.TempDir(), filepath.Join(workdir, ".omac")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	env, stderr := launchTestEnv(t, workdir)
+	harness, ok := config.LookupHarness("claude")
+	if !ok {
+		t.Fatal("claude harness missing")
+	}
+	code := runLaunch(env, launchOpts{label: "start", harness: harness, innerCmdOverride: "/bin/true"})
+	if code != ExitConfigInvalid {
+		t.Fatalf("code = %d, want ExitConfigInvalid:\n%s", code, stderr())
+	}
+	if out := stderr(); !strings.Contains(out, "symlink") {
+		t.Errorf("refusal message should name the symlink; got:\n%s", out)
+	}
+	// The symlink itself is untouched: the refusal must not rm it silently.
+	if fi, err := os.Lstat(filepath.Join(workdir, ".omac")); err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("the symlinked .omac must be left as-is: %v", err)
+	}
+}
+
 func TestLaunchCachePersistentSetupFailureHasRecoveryHint(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -424,24 +492,28 @@ func launchCacheCaptureForHarness(t *testing.T, harnessName string, noSandbox, e
 	}
 
 	workdir := t.TempDir()
-	argsPath := filepath.Join(t.TempDir(), "args")
-	envPath := filepath.Join(t.TempDir(), "env")
-	t.Setenv("OMAC_TEST_ARGS", argsPath)
-	t.Setenv("OMAC_TEST_ENV", envPath)
-	capturePath := filepath.Join(t.TempDir(), "capture")
-	if err := os.WriteFile(capturePath, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$OMAC_TEST_ARGS\"\nenv > \"$OMAC_TEST_ENV\"\n"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if !noSandbox {
-		// Sandbox profiles are trusted only from the global config; write there.
-		configPath := filepath.Join(home, ".config", "omac", "config.yaml")
-		if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
-			t.Fatal(err)
+
+	// Capture the fully-assembled sandbox argv and the child's effective
+	// environment (host env overlaid with omac's extras, mirroring
+	// sandbox.ExecWithReady) via the exec seam — no real subprocess.
+	orig := execWithReady
+	t.Cleanup(func() { execWithReady = orig })
+	var gotArgv []string
+	gotEnv := map[string]string{}
+	execWithReady = func(argv []string, extraEnv map[string]string, onReady func()) (int, error) {
+		gotArgv = append([]string(nil), argv...)
+		for _, kv := range os.Environ() {
+			if i := strings.IndexByte(kv, '='); i >= 0 {
+				gotEnv[kv[:i]] = kv[i+1:]
+			}
 		}
-		configText := fmt.Sprintf("sandbox:\n  default_profile: capture\n  profiles:\n    capture:\n      command: [%q, %q, %q, %q]\n", capturePath, "--", "{{inner_cmd}}", "{{inner_args}}")
-		if err := os.WriteFile(configPath, []byte(configText), 0o600); err != nil {
-			t.Fatal(err)
+		for k, v := range extraEnv {
+			gotEnv[k] = v
 		}
+		if onReady != nil {
+			onReady()
+		}
+		return ExitOK, nil
 	}
 
 	env, stderr := launchTestEnv(t, workdir)
@@ -449,14 +521,10 @@ func launchCacheCaptureForHarness(t *testing.T, harnessName string, noSandbox, e
 	if !ok {
 		t.Fatalf("%s harness missing", harnessName)
 	}
-	inner := "/bin/true"
-	if noSandbox {
-		inner = capturePath
-	}
 	code := runLaunch(env, launchOpts{
 		label:            "start",
 		harness:          harness,
-		innerCmdOverride: inner,
+		innerCmdOverride: "/bin/true",
 		noSandbox:        noSandbox,
 		ephemeralCache:   ephemeral,
 		verbose:          verbose,
@@ -465,17 +533,9 @@ func launchCacheCaptureForHarness(t *testing.T, harnessName string, noSandbox, e
 		t.Fatalf("runLaunch() = %d, want ExitOK\nstderr:\n%s", code, stderr())
 	}
 
-	args, err := os.ReadFile(argsPath)
-	if err != nil {
-		t.Fatalf("read captured args: %v", err)
-	}
-	envData, err := os.ReadFile(envPath)
-	if err != nil {
-		t.Fatalf("read captured environment: %v", err)
-	}
 	return cacheCapture{
-		args:    strings.Fields(string(args)),
-		env:     parseEnvironment(string(envData)),
+		args:    gotArgv,
+		env:     gotEnv,
 		home:    home,
 		workdir: workdir,
 		stderr:  stderr(),
@@ -512,17 +572,6 @@ func launchTestEnv(t *testing.T, workdir string) (*Env, func() string) {
 		}
 		return string(contents)
 	}
-}
-
-func parseEnvironment(data string) map[string]string {
-	env := map[string]string{}
-	for _, line := range strings.Split(data, "\n") {
-		key, value, ok := strings.Cut(line, "=")
-		if ok {
-			env[key] = value
-		}
-	}
-	return env
 }
 
 func assertCacheScopeAllowed(t *testing.T, args []string, want string) {

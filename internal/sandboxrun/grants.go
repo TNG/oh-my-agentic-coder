@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/TNG/oh-my-agentic-coder/internal/config"
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxdeny"
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
 )
@@ -34,6 +35,16 @@ type Grants struct {
 	// override_deny holes already punched). Not existence-filtered:
 	// a missing ~/.ssh today may exist tomorrow.
 	ProtectedPaths []string
+
+	// WriteProtectedPaths are readable but never writable, even when a
+	// broader grant (e.g. the read-write workdir) covers them: the sandbox
+	// profile, its pages sibling, and the launcher config, so a session
+	// cannot rewrite the grants the next launch enforces (#267). Unlike
+	// ProtectedPaths they survive learn mode; paths already denied are
+	// omitted. Path-based: a writable hardlink alias could bypass it
+	// (cross-mount links are EXDEV, same-mount writes hit the read-only
+	// bind).
+	WriteProtectedPaths []string
 
 	// Network.
 	NetworkMode     string // filtered|blocked|open
@@ -81,7 +92,10 @@ const markerDirFileName = ".omac-denied"
 // prepareMarkers creates the bind sources that mask protected paths with
 // an explanatory denial marker: a read-only file bound over protected
 // files, and a directory holding a single .omac-denied file bound over
-// protected directories. Both carry DenialText.
+// protected directories. Both carry DenialText. The omac config dirs
+// (leaf name .omac) use the same treatment on purpose: the marker explains
+// an intentional block, and it leaks no rules — the profile, launcher
+// config, and pages alongside it stay unreadable.
 //
 // The text is written in its inert (comment-prefixed) form: the baseline
 // protected set includes shell configs, which exist to be executed, so a
@@ -223,6 +237,10 @@ func ResolveGrants(p *sandboxprofile.Profile, workdir string, notices io.Writer)
 		return nil, err
 	}
 	protected = append(protected, denyResolved...)
+
+	// The omac config directories hold the sandbox definition and are never
+	// overridable, even if the profile lists them in override_deny.
+	protected = append(protected, sandboxprofile.NonOverridableProtectedPaths(config.LocalConfigDir(workdir))...)
 
 	g := &Grants{
 		Workdir:         workdir,
@@ -498,10 +516,11 @@ func resolveDenyPaths(userDeny, baselineBasenames, overrideDeny, scanRoots, prot
 		}
 	}
 
-	// Filter baseline basenames through overrides before walking.
+	// Filter baseline basenames through overrides before walking. ".omac"
+	// is the omac config directory and is never overridable.
 	overrides := sandboxprofile.BuildOverrideLookup(overrideDeny)
 	for _, b := range baselineBasenames {
-		if !overrides[b] {
+		if b == nonOverridableOMACDir || !overrides[b] {
 			globs = append(globs, b)
 		}
 	}
@@ -512,15 +531,19 @@ func resolveDenyPaths(userDeny, baselineBasenames, overrideDeny, scanRoots, prot
 		if err != nil {
 			return nil, err
 		}
-		// Drop baseline matches covered by an absolute-path override.
+		// Drop baseline matches covered by an absolute-path override, except
+		// the omac config directory.
 		for _, m := range matches {
-			if !overrides[m] {
+			if filepath.Base(m) == nonOverridableOMACDir || !overrides[m] {
 				out = append(out, m)
 			}
 		}
 	}
 	return out, nil
 }
+
+// nonOverridableOMACDir is the project-local omac config directory basename.
+const nonOverridableOMACDir = ".omac"
 
 // pathFormDenies expands the path-form (non basename-glob) entries of a
 // filesystem.deny list to absolute paths. Glob entries are skipped —
@@ -725,6 +748,9 @@ func dedupeInts(in []int) []int {
 // filesystem opened up (learn mode): the root directory becomes a
 // read+write grant and the protected-path denials are dropped.
 // Network and env restrictions are untouched.
+//
+// WriteProtectedPaths survive: learn mode collects its results in the
+// profile at exit, so the session must not rewrite it mid-run.
 func (g *Grants) withUnrestrictedFilesystem() *Grants {
 	out := *g
 	out.AllowPaths = append(append([]string{}, g.AllowPaths...), "/")

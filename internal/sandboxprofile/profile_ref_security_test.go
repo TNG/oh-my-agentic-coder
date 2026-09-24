@@ -48,6 +48,43 @@ func TestSecurityProfileRefOutsideTrustedDirRefused(t *testing.T) {
 	}
 }
 
+// TestSecurityProjectDirConfinesExplicitPaths asserts that WithProjectDir
+// admits a project-committed profile without admitting arbitrary host files:
+// the launch path passes the project's .omac directory, not WithAnyPath.
+func TestSecurityProjectDirConfinesExplicitPaths(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	localDir := filepath.Join(t.TempDir(), ".omac")
+
+	inside := filepath.Join(localDir, "sandbox.json")
+	if err := os.MkdirAll(localDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(inside, []byte(`{"meta":{"name":"inside"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := Resolve(inside, WithProjectDir(localDir)); err != nil {
+		t.Fatalf("a project-committed profile inside .omac was refused: %v", err)
+	}
+
+	// A sibling under the project root but outside .omac must be refused,
+	// matching what the launch path passes.
+	sibling := filepath.Join(filepath.Dir(localDir), "sandbox.json")
+	if err := os.WriteFile(sibling, []byte(`{"meta":{"name":"sibling"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := Resolve(sibling, WithProjectDir(localDir)); err == nil {
+		t.Errorf("Resolve(%q) with WithProjectDir(%q) loaded a profile outside .omac", sibling, localDir)
+	}
+
+	outside := filepath.Join(t.TempDir(), "evil.json")
+	if err := os.WriteFile(outside, []byte(`{"filesystem":{"allow":["/"]}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := Resolve(outside, WithProjectDir(localDir)); err == nil {
+		t.Errorf("Resolve(%q) with WithProjectDir(%q) loaded a profile outside .omac", outside, localDir)
+	}
+}
+
 // TestSecurityProfileValidateRejectsBlanketGrants asserts that Validate
 // refuses a filesystem.allow entry naming the filesystem root (or the
 // user's home directory), rather than accepting every profile that

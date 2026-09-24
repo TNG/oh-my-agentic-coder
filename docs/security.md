@@ -134,6 +134,7 @@ cannot access.
 | `~/.cache`, `~/Library/Caches` (host cache roots) | **blocked** | Prevents cross-project cache poisoning; omac provides its own isolated cache |
 | Files matching `filesystem.deny` patterns (e.g. `*.key`) | **blocked** | User-defined extra restrictions |
 | Environment variables in `allow_vars` (`OMAC_*`, `HOME`, `PATH`, `LANG`, …) | passed through | Operational minimum |
+| `environment.set` values from the sandbox profile | injected | Fixed per-profile values (paths, flags); omac's own injections win, and the always-stripped list still applies |
 | All other environment variables (cloud secrets, `DOCKER_HOST`, `SSH_AUTH_SOCK`, …) | **stripped** | Not needed and potentially sensitive |
 
 ## Self-authored skills
@@ -175,11 +176,11 @@ review the change and re-register it with `omac register --force`.
 
 ## Launcher config trust
 
-The launcher config (`oh-my-agentic-coder.yaml`) controls which sandbox command omac runs on your machine. That command executes before any confinement exists, with your full user environment, so it must not be under the project's control.
+The launcher config (`config.yaml`) selects which sandbox policy omac enforces and tunes the audit and facade settings. omac always runs its built-in sandbox; the launcher config cannot supply the command that runs on your machine.
 
-omac enforces this: security-sensitive launcher fields (`sandbox.*`, `audit.*`, `facade.base_env_passthrough`) are accepted only from your user-global config (`~/.config/omac/config.yaml`) or omac's compiled-in defaults. A project-local `<workdir>/.opencode/oh-my-agentic-coder.yaml` can only contribute operational settings (cache scope, facade timeouts). Opening a repository cannot change the sandbox runtime, disable the audit trail, or redirect audit logs.
+omac enforces a trust split: security-sensitive launcher fields (`audit.*`, `facade.base_env_passthrough`, and the sandbox system-prompt briefing) are accepted only from your user-global config (`~/.config/omac/config.yaml`) or omac's compiled-in defaults. A project-local `<workdir>/.omac/config.yaml` can contribute operational settings (cache scope, facade timeouts) plus `sandbox.profile_name`. Opening a repository cannot disable the audit trail or redirect audit logs.
 
-Sandbox policy grants (filesystem paths, network hosts, environment variables) live in the sandbox profile (`~/.config/omac/sandbox-profiles/default.json`), which has no project-local equivalent. Profile paths referenced in launcher templates are likewise restricted to that directory.
+Sandbox policy grants (filesystem paths, network hosts, environment variables) live in the sandbox profile (`~/.config/omac/sandbox-profiles/default.json` globally, `<workdir>/.omac/default.json` for a project). `sandbox.profile_name` resolves a bare name only inside the directory of the config that declares it, so layers never mix. Committed project profiles are allowed, but they must live under `.omac/`, which omac creates whenever you run `omac start`/`omac serve` and masks as a **read-only directory exposing only an explanatory denial notice** (`.omac-denied`) inside the sandbox (also in learn mode, and for any planted `.omac` under another granted tree): a session can neither read the rules nor write or create files in it. Because the workdir is agent-writable and the macOS Seatbelt backend cannot block replacing a directory inside it, omac additionally **pins the project-local content a launch loads host-side, per file** (`~/.config/omac/project-sandbox.json`, invisible to the sandbox), refuses to launch when a loaded file changed since its approval, and requires one approval (`--accept-project-config`) for the project layer's first use — so repo-shipped or planted configuration never runs unreviewed. An explicit `--profile-path` into the project layer is its own approval and is compared only against the files it loads; a global-layer path needs no approval because the host dir is user-maintained. A symlinked `.omac` refuses the launch; if creation is impossible (e.g. a read-only checkout), omac warns and continues — the agent runs with your own permissions and could not create or read it either. Symlinked profiles are rejected. `--profile-path` accepts only a path inside the global `sandbox-profiles/` directory or `<workdir>/.omac/`.
 
 ## Environment filtering
 

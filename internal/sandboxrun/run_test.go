@@ -1,6 +1,7 @@
 package sandboxrun
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +10,35 @@ import (
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
 	"github.com/TNG/oh-my-agentic-coder/internal/toolcache"
 )
+
+func TestEnsureLocalConfigDir(t *testing.T) {
+	workdir := t.TempDir()
+	dir, err := EnsureLocalConfigDir(workdir)
+	if err != nil {
+		t.Fatalf("ensureLocalConfigDir: %v", err)
+	}
+	if dir != filepath.Join(workdir, ".omac") {
+		t.Errorf("dir = %q; want <workdir>/.omac", dir)
+	}
+	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
+		t.Fatalf(".omac was not created as a directory: %v", err)
+	}
+
+	// A symlinked .omac is refused: it could point outside the project.
+	other := t.TempDir()
+	linked := t.TempDir()
+	if err := os.Symlink(other, filepath.Join(linked, ".omac")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if _, err := EnsureLocalConfigDir(linked); !errors.Is(err, ErrLocalConfigDirSymlink) {
+		t.Fatalf("a symlinked .omac must fail with ErrLocalConfigDirSymlink, got %v", err)
+	}
+
+	// Empty workdir is a no-op.
+	if dir, err := EnsureLocalConfigDir(""); err != nil || dir != "" {
+		t.Errorf("EnsureLocalConfigDir(\"\") = (%q, %v); want (\"\", nil)", dir, err)
+	}
+}
 
 func TestInjectedToolCacheEnv(t *testing.T) {
 	cacheDir := t.TempDir()

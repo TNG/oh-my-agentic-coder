@@ -50,7 +50,20 @@ func runDiagnose(args []string, env *Env) int {
 		return ExitMisuse
 	}
 
-	profile, profPath, err := sandboxprofile.Resolve(*profileRef, sandboxprofile.WithAnyPath())
+	// One load serves the profile ref and the audit path below. A load
+	// failure only warns (zero-value config): diagnose should still be
+	// able to report on the rest.
+	lc, _, cfgErr := config.LoadLauncher(env.Workdir)
+	if cfgErr != nil {
+		fmt.Fprintf(env.Stderr, "omac diagnose: %v — showing the built-in default profile instead.\n", cfgErr)
+	}
+	ref, refErr := profileRefFromConfig(env.Workdir, *profileRef)
+	if refErr != nil {
+		// A broken profile selection makes a real launch fail; diagnose is
+		// the tool that should say so rather than silently show the default.
+		fmt.Fprintf(env.Stderr, "omac diagnose: %v — showing the built-in default profile instead.\n", refErr)
+	}
+	profile, profPath, err := sandboxprofile.Resolve(ref, sandboxprofile.WithAnyPath())
 	if err != nil {
 		fmt.Fprintln(env.Stderr, "omac diagnose:", err)
 		return ExitConfigInvalid
@@ -64,7 +77,6 @@ func runDiagnose(args []string, env *Env) int {
 
 	// Resolve the audit log path exactly as the writer does (single
 	// source of truth: audit.EffectivePath), then read it back.
-	lc, _, _ := config.LoadLauncher(env.Workdir)
 	auditPath := audit.EffectivePath(audit.Config{
 		Enabled: lc.Audit.AuditEnabled(),
 		Path:    lc.Audit.Path,
