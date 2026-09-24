@@ -40,6 +40,10 @@ func DefaultProfile() *Profile {
 				"~/.cargo/bin",
 				"~/.rustup",
 				"~/go/bin",
+				// Access to pnpm executables, pnpm-installed global tools,
+				// and the pnpm store
+				"~/.local/share/pnpm",
+				"~/Library/pnpm",
 				// Shared neutral skills base (agentskills.io). In scope for every
 				// harness via InScopeSkillsBases, so a guidance-only SKILL.md
 				// placed under the shared global root is readable inside the

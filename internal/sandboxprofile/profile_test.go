@@ -297,6 +297,20 @@ func TestDefaultProfileGrantsSharedAgentsSkillsRead(t *testing.T) {
 	}
 }
 
+func TestDefaultProfileGrantsPnpmHomeRead(t *testing.T) {
+	p := DefaultProfile()
+	for _, dir := range []string{"~/.local/share/pnpm", "~/Library/pnpm"} {
+		if !containsPath(p.Filesystem.Read, dir) {
+			t.Errorf("DefaultProfile.Filesystem.Read missing %q: %v", dir, p.Filesystem.Read)
+		}
+		for _, paths := range [][]string{p.Filesystem.Allow, p.Filesystem.Write} {
+			if containsPath(paths, dir) {
+				t.Errorf("DefaultProfile grants %q allow/write: %v", dir, paths)
+			}
+		}
+	}
+}
+
 func TestDefaultProfileIsolatesToolCaches(t *testing.T) {
 	p := DefaultProfile()
 
