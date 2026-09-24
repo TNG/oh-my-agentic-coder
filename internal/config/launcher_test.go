@@ -194,7 +194,7 @@ func TestValidateSandboxRejectsProfilesPresent(t *testing.T) {
 			t.Errorf("%s profiles block should be rejected", name)
 			continue
 		}
-		for _, want := range []string{"profiles", "profile_name", "sandbox-profiles/<name>.json", "docs/configuration.md"} {
+		for _, want := range []string{"profiles", "profile_name", "sandbox-profiles/<name>.json", "environment.set", "docs/configuration.md"} {
 			if !strings.Contains(err.Error(), want) {
 				t.Errorf("%s: error should contain %q: %v", name, want, err)
 			}
