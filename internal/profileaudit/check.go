@@ -22,8 +22,59 @@ func Check(profile *sandboxprofile.Profile) []Finding {
 	findings = append(findings, checkFSGrants(profile)...)
 	findings = append(findings, checkNetwork(profile)...)
 	findings = append(findings, checkEnvironment(profile)...)
+	findings = append(findings, checkEnvironmentSet(profile)...)
 	sortFindings(findings)
 	return findings
+}
+
+// checkEnvironmentSet flags environment.set entries that either cannot take
+// effect or put a credential in the profile file.
+//
+//   - A name on the always-stripped blocklist is never injected (the launch
+//     path drops it with a warning), so the author's intent silently fails.
+//   - A secret-looking name stores its value in the profile file, which for a
+//     project-layer profile is committable. allow_vars is the safer channel:
+//     the value stays in the environment, only the name is in the profile.
+func checkEnvironmentSet(profile *sandboxprofile.Profile) []Finding {
+	names := make([]string, 0, len(profile.Environment.Set))
+	for name := range profile.Environment.Set {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	var findings []Finding
+	for _, name := range names {
+		if sandboxprofile.IsDangerousEnvVar(name) {
+			findings = append(findings, Finding{
+				Severity: SeverityHigh,
+				Category: CatEnvironment,
+				Field:    "environment.set",
+				Value:    name,
+				Message:  "on the always-stripped blocklist, so the launch path drops it and the value never reaches the harness; remove it (a profile must not route around the blocklist)",
+			})
+			continue
+		}
+		if looksSecretName(name) {
+			findings = append(findings, Finding{
+				Severity: SeverityMedium,
+				Category: CatEnvironment,
+				Field:    "environment.set",
+				Value:    name,
+				Message:  "secret-looking name with its value in the profile file (committable for a project profile); prefer environment.allow_vars so only the name lives here and the value comes from the environment",
+			})
+		}
+	}
+	return findings
+}
+
+// looksSecretName matches the conventional credential suffixes.
+func looksSecretName(name string) bool {
+	upper := strings.ToUpper(name)
+	for _, marker := range []string{"TOKEN", "SECRET", "PASSWORD", "PASSWD", "CREDENTIAL", "APIKEY"} {
+		if strings.Contains(upper, marker) {
+			return true
+		}
+	}
+	return strings.HasSuffix(upper, "_KEY") || upper == "KEY"
 }
 
 // checkEnvironment flags an empty env allowlist. An empty allow_vars no

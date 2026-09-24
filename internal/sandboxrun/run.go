@@ -167,10 +167,13 @@ func Run(opts Options) int {
 	// rewrite the global config) that a later, non-learn launch would trust.
 	grants.ProtectedPaths = dedupe(append(grants.ProtectedPaths, sandboxprofile.NonOverridableProtectedPaths(localDir)...))
 
-	// Injected child env. The validated cache redirect is recreated here
-	// and proxy vars are added before the backend builds its rules.
-	injected := cacheEnv
-
+	// Injected child env. Profile-defined values come first so omac's own
+	// operational injections (the validated cache redirect, proxy vars,
+	// registry config) win on collision; deny_vars still strips last.
+	injected := profileSetEnv(merged.Environment.Set, stderr)
+	for k, v := range cacheEnv {
+		injected[k] = v
+	}
 	// Audit sink for network decisions. This subprocess is separate from
 	// the parent omac, so it opens its own append-only handle to the same
 	// persistent audit file (append-safe across processes). Non-strict
@@ -301,6 +304,27 @@ func Run(opts Options) int {
 		}
 	}
 	return code
+}
+
+// profileSetEnv expands the profile's environment.set values. Names on the
+// always-stripped blocklist are dropped rather than injected: the blocklist
+// protects the child from code-loading variables, and a profile must not be a
+// way around it. A value that fails to expand is dropped with a warning.
+func profileSetEnv(set map[string]string, stderr io.Writer) map[string]string {
+	out := make(map[string]string, len(set))
+	for k, v := range set {
+		if sandboxprofile.IsDangerousEnvVar(k) {
+			fmt.Fprintf(stderr, "omac sandbox: warning: environment.set %q is on the always-stripped list and has no effect\n", k)
+			continue
+		}
+		expanded, err := sandboxprofile.ExpandEnvValue(v)
+		if err != nil {
+			fmt.Fprintf(stderr, "omac sandbox: warning: environment.set %q: %v; ignored\n", k, err)
+			continue
+		}
+		out[k] = expanded
+	}
+	return out
 }
 
 // writeProtectProfilePaths returns the profile and its pages sibling for

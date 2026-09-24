@@ -5,6 +5,25 @@ import (
 	"strings"
 )
 
+// validEnvName reports whether name is a POSIX-style environment variable
+// name: a letter or underscore followed by letters, digits or underscores.
+func validEnvName(name string) bool {
+	if name == "" || (name[0] != '_' && !isAlphaByte(name[0])) {
+		return false
+	}
+	for i := 1; i < len(name); i++ {
+		c := name[i]
+		if c != '_' && !isAlphaByte(c) && (c < '0' || c > '9') {
+			return false
+		}
+	}
+	return true
+}
+
+func isAlphaByte(c byte) bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+}
+
 // dangerousEnvExact are always dropped from the child environment,
 // even when matched by allow_vars (nono's env_sanitization list plus
 // the 1Password meta-secrets).
