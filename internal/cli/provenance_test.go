@@ -723,3 +723,44 @@ func TestProvenanceDoesNotScaffoldProfileInFreshHome(t *testing.T) {
 		})
 	}
 }
+
+// environment.set appears in the provenance environment view as names with
+// action set (or "set (stripped)" when the blocklist wins) and never as
+// values — provenance is printable and must not leak profile-set values.
+func TestProvenanceViewShowsSetNamesNotValues(t *testing.T) {
+	isolateHome(t)
+	wd := t.TempDir()
+	profPath := filepath.Join(wd, "profile.json")
+	os.WriteFile(profPath, []byte(`{
+		"meta":{"name":"tng"},
+		"environment":{
+			"set":{
+				"NPM_CONFIG_USERCONFIG":"~/.config/opencode/tng-npmrc",
+				"LD_PRELOAD":"/tmp/evil.so"
+			}
+		}
+	}`), 0o644)
+
+	view, err := buildTestView(wd, profPath)
+	if err != nil {
+		t.Fatalf("buildProvenanceView: %v", err)
+	}
+
+	actions := map[string]string{}
+	for _, e := range view.Environment.Entries {
+		if e.Entry == "NPM_CONFIG_USERCONFIG" || e.Entry == "LD_PRELOAD" {
+			actions[e.Entry] = e.Action
+		}
+	}
+	if actions["NPM_CONFIG_USERCONFIG"] != "set" {
+		t.Errorf("set entry action = %q; want \"set\" (entries: %+v)", actions["NPM_CONFIG_USERCONFIG"], view.Environment.Entries)
+	}
+	if actions["LD_PRELOAD"] != "set (stripped)" {
+		t.Errorf("blocklisted set entry action = %q; want \"set (stripped)\"", actions["LD_PRELOAD"])
+	}
+	for _, e := range view.Environment.Entries {
+		if strings.Contains(e.Entry, "tng-npmrc") || strings.Contains(e.Entry, "evil.so") {
+			t.Errorf("provenance must not render set values, got entry %q", e.Entry)
+		}
+	}
+}

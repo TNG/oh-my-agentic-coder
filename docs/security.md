@@ -134,6 +134,7 @@ cannot access.
 | `~/.cache`, `~/Library/Caches` (host cache roots) | **blocked** | Prevents cross-project cache poisoning; omac provides its own isolated cache |
 | Files matching `filesystem.deny` patterns (e.g. `*.key`) | **blocked** | User-defined extra restrictions |
 | Environment variables in `allow_vars` (`OMAC_*`, `HOME`, `PATH`, `LANG`, …) | passed through | Operational minimum |
+| `environment.set` values from the sandbox profile | injected | Fixed per-profile values (paths, flags); omac's own injections win, and the always-stripped list still applies |
 | All other environment variables (cloud secrets, `DOCKER_HOST`, `SSH_AUTH_SOCK`, …) | **stripped** | Not needed and potentially sensitive |
 
 ## Self-authored skills
