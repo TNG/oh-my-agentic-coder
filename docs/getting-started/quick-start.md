@@ -110,11 +110,85 @@ Download the `.pkg.tar.zst` for your architecture from the [releases page](https
 sudo pacman -U oh-my-agentic-coder_*.pkg.tar.zst
 ```
 
-### Installation via Mise
+### Installation via Mise (experimental)
 
 ```bash
 mise use -g github:TNG/oh-my-agentic-coder@latest
 ```
+
+### NixOS (flake) (experimental)
+
+Add omac as a flake input and install its package for the current system.
+The flake builds a pinned application release, not the latest development code:
+
+```nix
+{
+  inputs.omac.url = "github:TNG/oh-my-agentic-coder";
+
+  outputs = { nixpkgs, omac, ... }: {
+    nixosConfigurations.my-host = nixpkgs.lib.nixosSystem {
+      # ...
+      modules = [
+        ({ pkgs, ... }: {
+          environment.systemPackages = [
+            omac.packages.${pkgs.stdenv.hostPlatform.system}.omac
+          ];
+        })
+      ];
+    };
+  };
+}
+```
+
+The flake provides packages for `x86_64-linux`, `aarch64-linux`, and
+`aarch64-darwin`. Intel macOS is not exported because the pinned nixpkgs
+unstable release no longer supports `x86_64-darwin`.
+
+To try the currently packaged release without adding it to your configuration, run:
+
+```bash
+nix run github:TNG/oh-my-agentic-coder -- doctor
+```
+
+New releases packaged by the Nix release workflow also have permanent `nix-*`
+tags. Once `nix-0.10.0` has been published, for example, you can pin it with
+`inputs.omac.url = "github:TNG/oh-my-agentic-coder/nix-0.10.0";`.
+Use the Nix tag rather than `v0.10.0`: the application tag predates its packaging
+update. Update a Nix installation through your flake inputs and rebuild, not
+with `omac update` (the Nix store is read-only).
+
+To make a harness available only when omac runs it, import the NixOS module and
+enable it. The module wraps omac and adds selected harnesses only to that
+wrapper's `PATH`, not to `environment.systemPackages`:
+
+```nix
+{
+  imports = [ omac.nixosModules.default ];
+
+  omac = {
+    enable = true;
+    agents = {
+      opencode.enable = true;
+      pi = {
+        enable = true;
+        package = myPiPackage;
+      };
+    };
+  };
+}
+```
+
+OpenCode, Codex, and Copilot use nixpkgs defaults. Pi, Claude Code, and
+CodeWhale need `package` set when enabled because nixpkgs does not provide a
+default package for them.
+
+On Linux, the package makes Bubblewrap, Zenity, and `notify-send` available to
+omac. You still need a running Secret Service provider in your user session
+(for example, enable `services.gnome.gnome-keyring`), at least one configured
+harness, unprivileged user namespaces, and Landlock ABI 4 or later (Linux 6.7
+or newer) for kernel-enforced network filtering. KDE users can use Zenity as
+installed by the package; see the [NixOS manual](https://nixos.org/manual/nixos/stable/#sec-gnome-keyring)
+for keyring setup.
 
 ### From source
 
