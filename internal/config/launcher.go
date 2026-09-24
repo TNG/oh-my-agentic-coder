@@ -634,6 +634,8 @@ func validateSandbox(sb SandboxConfig, path string, profileDir string, local boo
 		return fmt.Errorf("%s: sandbox.profiles (the 0.9.0 launcher argv templates) is no longer "+
 			"supported; remove the block.\n"+
 			"  omac always runs its built-in sandbox. To choose sandbox grants, %s.\n"+
+			"  For fixed launch environment variables (previously set by a profile's argv template), "+
+			"use \"environment.set\" in the sandbox grants profile.\n"+
 			"  See docs/configuration.md", path, grantsHint)
 	}
 	return nil
