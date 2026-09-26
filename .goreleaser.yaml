@@ -53,7 +53,7 @@ archives:
 # Linux packages: .deb (apt/Debian/Ubuntu), .rpm (Fedora/RHEL/openSUSE),
 # .apk (Alpine), and .pkg.tar.zst (pacman/Arch).
 # All are attached to the GitHub release; users download and install with
-# `sudo dpkg -i ...`, `sudo rpm -i ...`, `sudo apk add --allow-untrusted ...`,
+# `sudo dpkg -i ...`, `sudo rpm -i ...`, `sudo apk add ...`,
 # or `sudo pacman -U ...` respectively.
 nfpms:
   - id: linux-packages
@@ -121,6 +121,20 @@ brews:
 checksum:
   name_template: "checksums.txt"
   algorithm: sha256
+
+# Sign checksums.txt with ed25519 so the updater can verify authenticity
+# before trusting any checksum. The private key seed is read from the
+# OMAC_RELEASE_SIGNING_SEED environment variable (hex-encoded 32 bytes).
+# For local snapshot builds without a seed, use --skip=sign.
+signs:
+  - cmd: go
+    args:
+      - run
+      - ./scripts/sign-checksums
+      - "${artifact}"
+      - "${signature}"
+    signature: "${artifact}.sig"
+    artifacts: checksums
 
 snapshot:
   version_template: "{{ incpatch .Version }}-next"

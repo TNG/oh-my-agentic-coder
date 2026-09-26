@@ -3,6 +3,7 @@ package updater
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -10,7 +11,10 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 // Self-contained fakes for the security regression tests.  These duplicate
@@ -250,5 +254,127 @@ func TestSecurityUpdaterReVerifiesBeforeInstall(t *testing.T) {
 	}
 	if len(runner2.calls) != 0 {
 		t.Errorf("Apply invoked the installer despite the artifact being modified after verification")
+	}
+}
+
+// TestSecurityReleaseSpecSignsChecksums asserts that .goreleaser.yaml
+// produces a checksums.txt.sig signature file. Without a signing step in
+// the release spec, the updater's signature verification always fails
+// because no signature asset is published, making the entire signature
+// check dead code rather than a security control.
+func TestSecurityReleaseSpecSignsChecksums(t *testing.T) {
+	root, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "go.mod")); err != nil {
+		t.Fatalf("repo root not found (no go.mod): %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(root, ".goreleaser.yaml"))
+	if err != nil {
+		t.Fatalf("read .goreleaser.yaml: %v", err)
+	}
+	var cfg struct {
+		Signs []struct {
+			Cmd       string   `yaml:"cmd"`
+			Args      []string `yaml:"args"`
+			Signature string   `yaml:"signature"`
+			Artifacts string   `yaml:"artifacts"`
+		} `yaml:"signs"`
+	}
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("parse .goreleaser.yaml: %v", err)
+	}
+	if len(cfg.Signs) == 0 {
+		t.Fatal(".goreleaser.yaml has no signs: section; release would ship no checksums.txt.sig")
+	}
+	sign := cfg.Signs[0]
+	if sign.Artifacts != "checksums" {
+		t.Errorf("signs[0].artifacts = %q, want %q", sign.Artifacts, "checksums")
+	}
+	if sign.Signature != "${artifact}.sig" {
+		t.Errorf("signs[0].signature = %q, want %q", sign.Signature, "${artifact}.sig")
+	}
+	// The signing command must reference the sign-checksums script so the
+	// signature is produced with ed25519, not an unsigned or GPG default.
+	found := false
+	for _, arg := range sign.Args {
+		if arg == "./scripts/sign-checksums" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("signs[0].args does not reference ./scripts/sign-checksums: %v", sign.Args)
+	}
+}
+
+// TestSecurityPinnedKeyConsistency asserts that the ed25519 public key
+// pinned in updater.go matches the key embedded in
+// scripts/verify-checksums/main.go. If they diverge, manual signature
+// verification would accept signatures the updater rejects (or vice versa).
+func TestSecurityPinnedKeyConsistency(t *testing.T) {
+	root, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	script, err := os.ReadFile(filepath.Join(root, "scripts", "verify-checksums", "main.go"))
+	if err != nil {
+		t.Fatalf("read scripts/verify-checksums/main.go: %v", err)
+	}
+	// Extract the hex key from: const pinnedKey = "<hex>"
+	re := regexp.MustCompile(`const pinnedKey = "([0-9a-fA-F]{64})"`)
+	m := re.FindStringSubmatch(string(script))
+	if m == nil {
+		t.Fatal("scripts/verify-checksums/main.go: no pinnedKey const with a 64-char hex value found")
+	}
+	scriptKey, err := hex.DecodeString(m[1])
+	if err != nil {
+		t.Fatalf("decode script key: %v", err)
+	}
+	if !bytes.Equal(pinnedReleaseSigningKey, scriptKey) {
+		t.Errorf("pinned key mismatch: updater.go has %x, verify-checksums has %x",
+			[]byte(pinnedReleaseSigningKey), scriptKey)
+	}
+}
+
+// TestSecurityVerifyReleaseSignatureRoundTrip asserts that
+// verifyReleaseSignature accepts a valid ed25519 signature and rejects a
+// tampered one. The pinned key is temporarily swapped for a test keypair
+// so the test does not need the release private key.
+func TestSecurityVerifyReleaseSignatureRoundTrip(t *testing.T) {
+	orig := pinnedReleaseSigningKey
+	defer func() { pinnedReleaseSigningKey = orig }()
+
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	pinnedReleaseSigningKey = pub
+
+	data := []byte("checksums content")
+	sig := ed25519.Sign(priv, data)
+
+	if err := verifyReleaseSignature(data, sig); err != nil {
+		t.Fatalf("verifyReleaseSignature rejected valid signature: %v", err)
+	}
+
+	// Tamper the data: the signature must no longer verify.
+	if err := verifyReleaseSignature([]byte("tampered"), sig); err == nil {
+		t.Fatal("verifyReleaseSignature accepted a signature over different data")
+	}
+
+	// Wrong key: a signature from a different keypair must be rejected.
+	_, priv2, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("GenerateKey (2): %v", err)
+	}
+	sig2 := ed25519.Sign(priv2, data)
+	if err := verifyReleaseSignature(data, sig2); err == nil {
+		t.Fatal("verifyReleaseSignature accepted a signature from a different key")
+	}
+
+	// Wrong length: must be rejected with a clear error.
+	if err := verifyReleaseSignature(data, []byte("short")); err == nil {
+		t.Fatal("verifyReleaseSignature accepted a too-short signature")
 	}
 }

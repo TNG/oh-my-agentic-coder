@@ -174,7 +174,7 @@ var (
 // pipeline; it is never fetched from the release source, so an attacker who
 // compromises the release artifacts cannot also forge this signature.
 var pinnedReleaseSigningKey = func() ed25519.PublicKey {
-	b, err := hex.DecodeString("42a56c8433da0b46cc76d30524001bd9a3673a3ad46ac31432f7e9cb7b89fc57")
+	b, err := hex.DecodeString("866775807484337b8447c737fecb572f26ee6905b803ab45ba8bfb07bc85e2a0")
 	if err != nil {
 		panic("pinnedReleaseSigningKey: invalid hex: " + err.Error())
 	}
