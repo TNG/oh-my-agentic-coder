@@ -760,6 +760,8 @@ func runLaunch(env *Env, opts launchOpts) int {
 		inner = append(inner, innerArgs...)
 	}
 
+	// ocPin pins opencode v2's background service; set only for sandboxed v2 launches.
+	var ocPin *openCodeServicePin
 	var argv []string
 	var watch *protectedWatch
 	if noSandbox {
@@ -783,6 +785,20 @@ func runLaunch(env *Env, opts launchOpts) int {
 		if controlOK {
 			if _, port, perr := net.SplitHostPort(controlURL[len("http://"):]); perr == nil {
 				argv = injectOpenPort(argv, port)
+			}
+		}
+		// opencode v2's service binds fixed port 49374, which Landlock denies; pin it to a granted port instead.
+		var pinErr error
+		if plan.Native {
+			ocPin, pinErr = pinOpenCodeV2Service(harness, inner, sandboxTmp)
+		}
+		if pinErr != nil {
+			fmt.Fprintln(env.Stderr, prefix+": opencode v2 service pin:", pinErr)
+		} else if ocPin != nil {
+			argv = ocPin.install(argv, plan)
+			if verbose {
+				fmt.Fprintf(env.Stderr, "[verbose] opencode v2 service pin: port=%d config=%s state=%s\n",
+					ocPin.Port, ocPin.CfgDir, ocPin.StateDir)
 			}
 		}
 		// Create the harness's runtime dirs (plus a redirected config home)
@@ -851,6 +867,10 @@ func runLaunch(env *Env, opts launchOpts) int {
 		// as TMPDIR is what makes Bun-built harnesses (opencode) extract
 		// their runtime into a writable, allowed location.
 		"TMPDIR": sandboxTmp,
+	}
+	if ocPin != nil {
+		// Config home carries the pinned port; state home keeps the sandboxed registration off the host's.
+		ocPin.apply(extra)
 	}
 	if harness.Name == "claude-code" {
 		// claude-code's per-session temp dir reads CLAUDE_CODE_TMPDIR and
