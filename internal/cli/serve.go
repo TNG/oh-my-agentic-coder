@@ -1462,6 +1462,9 @@ func (s *serveServer) rediscover(d *dirState) {
 // without prompting (serve mode has no human at the keyboard). Mirrors the
 // non-interactive parts of `omac register`.
 func (s *serveServer) autoRegister(absDir string, ent skillsource.Entry) (*registry.Entry, error) {
+	if err := config.ValidSkillName(ent.Name); err != nil {
+		return nil, fmt.Errorf("skillsource: autoRegister: %w", err)
+	}
 	metaPath := filepath.Join(ent.Dir, config.MetaFileName)
 	m, err := config.LoadMeta(metaPath)
 	if err != nil {

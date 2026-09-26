@@ -63,12 +63,16 @@ func startProtectedWatch(a audit.Auditor, checker *sandboxrun.ProtectedPathSet, 
 	go func() {
 		defer close(w.exited)
 		if err := sandboxrun.WatchNewProtected(profile, workdir, midsessionProtectedWatchInterval, func(path string) {
-			w.record(fmt.Sprintf("security notice: %s matches a sandbox-protected pattern but was created after this session started; the agent could read it until this session ended", path))
+			// A watched-file path is filesystem-derived and may carry
+			// control bytes; strip it before it reaches any notice, alert
+			// or audit entry that is printed to a terminal.
+			safe := stripControlChars(path)
+			w.record(fmt.Sprintf("security notice: %s matches a sandbox-protected pattern but was created after this session started; the agent could read it until this session ended", safe))
 			if checker != nil {
 				checker.Add(path, sandboxdeny.RuleMidSession)
 			}
 			const title = "omac: protected file created"
-			msg := fmt.Sprintf("%s matches a sandbox-protected pattern and is readable by the agent until the session is restarted", path)
+			msg := fmt.Sprintf("%s matches a sandbox-protected pattern and is readable by the agent until the session is restarted", safe)
 			netprompt.Alert(title, msg)
 			netprompt.Notify(title, msg)
 			if a != nil {

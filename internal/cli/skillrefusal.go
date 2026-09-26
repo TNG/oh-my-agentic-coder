@@ -33,6 +33,11 @@ func renderSkillRefusal(w io.Writer, prefix string, problems []skillstate.Proble
 	fmt.Fprintf(w, prefix+": refusing to start, found %d problem(s):\n", len(problems))
 	s := stylerFor(w)
 
+	// Skill-derived fields are stripped of control bytes here, at the sink,
+	// so a problem carrying hostile bytes cannot repaint or forge the report
+	// regardless of which section renders it.
+	problems = sanitizeProblems(problems)
+
 	// Section order is most-fundamental-first. A dead keychain leads because
 	// the next section's remedy (`omac secrets set`) cannot work until it is
 	// fixed — telling a headless user to store a secret in a keychain that
@@ -77,6 +82,24 @@ func renderSkillRefusal(w io.Writer, prefix string, problems []skillstate.Proble
 		return ExitSecretRefused
 	}
 	return ExitConfigInvalid
+}
+
+// sanitizeProblems returns a copy of problems with every text field run through
+// stripControlChars. The report is the operator's trusted explanation of why a
+// launch was refused, so none of its inputs may carry raw control bytes.
+func sanitizeProblems(problems []skillstate.Problem) []skillstate.Problem {
+	if len(problems) == 0 {
+		return problems
+	}
+	out := make([]skillstate.Problem, len(problems))
+	for i, p := range problems {
+		p.Skill = stripControlChars(p.Skill)
+		p.Field = stripControlChars(p.Field)
+		p.Detail = stripControlChars(p.Detail)
+		p.Fix = stripControlChars(p.Fix)
+		out[i] = p
+	}
+	return out
 }
 
 // keychainSection renders the keychain-unavailable class. Unlike every other
