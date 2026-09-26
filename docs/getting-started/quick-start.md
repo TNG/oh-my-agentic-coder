@@ -171,10 +171,20 @@ omac update --yes  # skip confirmation (CI/scripting)
 
 ## Verify downloads
 
+Every release ships `checksums.txt` and `checksums.txt.sig` — a raw
+ed25519 signature over `checksums.txt` made with a key pinned inside the
+`omac` binary. Verify the signature first, then check the checksums:
+
 ```bash
 curl -L -O https://github.com/TNG/oh-my-agentic-coder/releases/latest/download/checksums.txt
+curl -L -O https://github.com/TNG/oh-my-agentic-coder/releases/latest/download/checksums.txt.sig
+go run ./scripts/verify-checksums checksums.txt checksums.txt.sig
 sha256sum -c checksums.txt --ignore-missing
 ```
+
+`omac update` performs this signature verification automatically before
+installing, so manual verification is only needed when you download a
+package directly from the releases page.
 
 Keep each downloaded file under its original release name. `sha256sum -c` matches entries by filename and `--ignore-missing` silently skips any file whose name is not in the list — so a renamed download would verify nothing.
 
