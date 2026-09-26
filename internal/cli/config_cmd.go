@@ -212,9 +212,10 @@ func buildSkillView(env *Env, skill string) (*skillView, int) {
 	//
 	// SkipBundleHash: this command reports values, not drift.
 	//
-	// Scope: workdir-scoped with the unscoped fallback inside GetWithFallback,
-	// matching start — which uses the same scope for globally-registered skills
-	// too, since their secrets live under the unscoped key the fallback finds.
+	// Scope: workdir-scoped, matching start. GetWithFallback only bridges a
+	// scoped miss to the unscoped key when keychain.FallbackConsent grants
+	// it, so globally-registered skills (whose secrets live under the
+	// unscoped key) resolve only when consent is given.
 	armed, problems := skillstate.New(skillstate.Options{
 		Scope:          keychain.WorkdirID(env.Workdir),
 		SkipBundleHash: true,

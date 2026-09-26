@@ -133,9 +133,10 @@ func SourceDefaultFromEnv(envVar string) Source { return Source("default_from_en
 // against the real keychain and the real process environment.
 type Options struct {
 	// Scope is the keychain scope: a workdir-id for workdir-local skills, or
-	// "" for user-global skills and legacy single-workdir start. Lookups
-	// always fall back to the unscoped key (see keychain.GetWithFallback), so
-	// a secret stored either way resolves.
+	// "" for user-global skills and legacy single-workdir start. A scoped
+	// miss returns keychain.ErrNotFound unless keychain.FallbackConsent
+	// grants the bridge to the unscoped entry (default deny), so a
+	// same-named skill in another scope cannot inherit a global secret.
 	Scope string
 
 	// Env reads the host environment. nil means os.LookupEnv. Injected by
