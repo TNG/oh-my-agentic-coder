@@ -66,6 +66,13 @@ func (f httpFetcher) FetchToFile(ctx context.Context, url, dir, pattern string) 
 		return "", err
 	}
 	defer tmp.Close()
+	// Staged artifacts are installed with elevated privileges; lock the temp
+	// file to owner-only access even though CreateTemp already opens 0600, so
+	// no other local user can tamper with it before verification.
+	if err := tmp.Chmod(0o600); err != nil {
+		os.Remove(tmp.Name())
+		return "", err
+	}
 	if _, err := io.Copy(tmp, body); err != nil {
 		os.Remove(tmp.Name())
 		return "", err

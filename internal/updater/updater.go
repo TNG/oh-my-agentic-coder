@@ -11,6 +11,7 @@ package updater
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -56,12 +57,16 @@ type PackageManager struct {
 // every method except MethodUpToDate/MethodBrew) a checksum-verified local
 // download ready for Apply to install.
 type Plan struct {
-	CurrentVersion   string
-	LatestVersion    string
-	Method           Method
-	PackageManager   string // set for MethodLinuxPackage
-	Asset            Asset
-	LocalPath        string
+	CurrentVersion string
+	LatestVersion  string
+	Method         Method
+	PackageManager string // set for MethodLinuxPackage
+	Asset          Asset
+	LocalPath      string
+	// ExpectedSum is the SHA-256 hex digest the staged artifact must match,
+	// taken from the signature-verified checksums.txt. Apply re-checks it
+	// immediately before install to close the check-then-use window.
+	ExpectedSum      string
 	ChecksumVerified bool
 }
 
@@ -79,6 +84,13 @@ type Deps struct {
 	Fetcher  Fetcher
 	Runner   CommandRunner
 	Replacer SelfReplacer
+
+	// SignatureVerifier checks that signature is a valid signature over signed
+	// data (the release checksums.txt) using a key pinned in the binary or a
+	// trusted keyring — never a key fetched from the same release source. A nil
+	// verifier fails closed: every signature is rejected. RealDeps wires the
+	// production ed25519 verifier; tests inject a double.
+	SignatureVerifier func(signed, signature []byte) error
 
 	// BrewInstalled reports whether omac is a Homebrew-managed install.
 	// Only consulted when GOOS == "darwin".
@@ -118,22 +130,23 @@ type Deps struct {
 // filesystem replace, real host detection.
 func RealDeps(stdin io.Reader, stdout, stderr io.Writer) Deps {
 	return Deps{
-		Source:          NewGitHubReleaseSource(),
-		Fetcher:         NewHTTPFetcher(),
-		Runner:          execRunner{},
-		Replacer:        fsSelfReplacer{},
-		BrewInstalled:   func() bool { return DetectBrewInstalled(os.Executable, exec.LookPath, runCommand) },
-		PkgManagers:     DetectPackageManagers(exec.LookPath),
-		Executable:      os.Executable,
-		PathLookup:      exec.LookPath,
-		VersionProbe:    probeVersion,
-		SelfReplaceable: selfReplaceable,
-		GOOS:            runtime.GOOS,
-		GOARCH:          runtime.GOARCH,
-		TempDir:         os.TempDir(),
-		Stdin:           stdin,
-		Stdout:          stdout,
-		Stderr:          stderr,
+		Source:            NewGitHubReleaseSource(),
+		Fetcher:           NewHTTPFetcher(),
+		Runner:            execRunner{},
+		Replacer:          fsSelfReplacer{},
+		SignatureVerifier: verifyReleaseSignature,
+		BrewInstalled:     func() bool { return DetectBrewInstalled(os.Executable, exec.LookPath, runCommand) },
+		PkgManagers:       DetectPackageManagers(exec.LookPath),
+		Executable:        os.Executable,
+		PathLookup:        exec.LookPath,
+		VersionProbe:      probeVersion,
+		SelfReplaceable:   selfReplaceable,
+		GOOS:              runtime.GOOS,
+		GOARCH:            runtime.GOARCH,
+		TempDir:           os.TempDir(),
+		Stdin:             stdin,
+		Stdout:            stdout,
+		Stderr:            stderr,
 	}
 }
 
@@ -148,7 +161,37 @@ var (
 	// ErrChecksumMismatch means the downloaded asset's SHA-256 does not
 	// match the release's published checksums.txt.
 	ErrChecksumMismatch = errors.New("checksum verification failed")
+	// ErrNoSignature means the release ships no signature for checksums.txt,
+	// so its checksum cannot be trusted as authenticity.
+	ErrNoSignature = errors.New("release has no signature for checksums.txt")
+	// ErrSignatureVerification means the signature on checksums.txt is absent
+	// or does not verify against the pinned key.
+	ErrSignatureVerification = errors.New("signature verification failed")
 )
+
+// pinnedReleaseSigningKey is the ed25519 public key that release checksums.txt
+// must be signed with. The corresponding private key lives only in the release
+// pipeline; it is never fetched from the release source, so an attacker who
+// compromises the release artifacts cannot also forge this signature.
+var pinnedReleaseSigningKey = func() ed25519.PublicKey {
+	b, err := hex.DecodeString("42a56c8433da0b46cc76d30524001bd9a3673a3ad46ac31432f7e9cb7b89fc57")
+	if err != nil {
+		panic("pinnedReleaseSigningKey: invalid hex: " + err.Error())
+	}
+	return ed25519.PublicKey(b)
+}()
+
+// verifyReleaseSignature is the production SignatureVerifier: it checks sig
+// against checksums data using the pinned ed25519 key.
+func verifyReleaseSignature(signed, signature []byte) error {
+	if len(signature) != ed25519.SignatureSize {
+		return fmt.Errorf("signature has %d bytes, want %d", len(signature), ed25519.SignatureSize)
+	}
+	if !ed25519.Verify(pinnedReleaseSigningKey, signed, signature) {
+		return errors.New("signature does not verify against pinned key")
+	}
+	return nil
+}
 
 // Check contacts GitHub for the latest release, decides the install method
 // for this host, and (unless already up to date, or installing via brew)
@@ -225,22 +268,40 @@ func Check(ctx context.Context, opts Options, deps Deps) (Plan, error) {
 }
 
 // downloadAndVerify fetches p.Asset into a temp file and checks its SHA-256
-// against the release's checksums.txt, setting p.LocalPath/ChecksumVerified.
+// against the release's checksums.txt, setting p.LocalPath/ExpectedSum/
+// ChecksumVerified. The checksums.txt itself must carry a signature that
+// verifies against a pinned key (not a key from the same release), so a
+// same-release checksum alone is never accepted as authenticity.
 func downloadAndVerify(ctx context.Context, p *Plan, rel Release, deps Deps) error {
-	var sums Asset
-	var ok bool
+	var sums, sig Asset
+	var haveSums, haveSig bool
 	for _, a := range rel.Assets {
-		if a.Name == "checksums.txt" {
-			sums, ok = a, true
-			break
+		switch a.Name {
+		case "checksums.txt":
+			sums, haveSums = a, true
+		case "checksums.txt.sig":
+			sig, haveSig = a, true
 		}
 	}
-	if !ok {
+	if !haveSums {
 		return fmt.Errorf("%w: release has no checksums.txt", ErrNoMatchingAsset)
+	}
+	if !haveSig {
+		return ErrNoSignature
 	}
 	sumsData, err := deps.Fetcher.FetchAll(ctx, sums.BrowserDownloadURL)
 	if err != nil {
 		return fmt.Errorf("fetch checksums.txt: %w", err)
+	}
+	sigData, err := deps.Fetcher.FetchAll(ctx, sig.BrowserDownloadURL)
+	if err != nil {
+		return fmt.Errorf("fetch checksums.txt signature: %w", err)
+	}
+	if deps.SignatureVerifier == nil {
+		return fmt.Errorf("%w: no signature verifier configured", ErrSignatureVerification)
+	}
+	if err := deps.SignatureVerifier(sumsData, sigData); err != nil {
+		return fmt.Errorf("%w: %s", ErrSignatureVerification, err)
 	}
 	wantSum, ok := parseChecksums(sumsData, p.Asset.Name)
 	if !ok {
@@ -264,6 +325,7 @@ func downloadAndVerify(ctx context.Context, p *Plan, rel Release, deps Deps) err
 		return fmt.Errorf("%w: %s", ErrChecksumMismatch, p.Asset.Name)
 	}
 	p.LocalPath = path
+	p.ExpectedSum = wantSum
 	p.ChecksumVerified = true
 	return nil
 }
@@ -308,6 +370,9 @@ func Apply(ctx context.Context, plan Plan, deps Deps) error {
 	case MethodBrew:
 		return deps.Runner.Run(ctx, "brew", []string{"upgrade", "oh-my-agentic-coder"}, deps.Stdin, deps.Stdout, deps.Stderr)
 	case MethodLinuxPackage:
+		if err := reverifyArtifact(plan); err != nil {
+			return err
+		}
 		var pm PackageManager
 		for _, c := range deps.PkgManagers {
 			if c.Name == plan.PackageManager {
@@ -321,10 +386,33 @@ func Apply(ctx context.Context, plan Plan, deps Deps) error {
 		args := append([]string{pm.Name}, pm.InstallArgs(plan.LocalPath)...)
 		return deps.Runner.Run(ctx, "sudo", args, deps.Stdin, deps.Stdout, deps.Stderr)
 	case MethodTarballSelfReplace:
+		if err := reverifyArtifact(plan); err != nil {
+			return err
+		}
 		return applySelfReplace(plan, deps)
 	default:
 		return fmt.Errorf("unknown update method %d", plan.Method)
 	}
+}
+
+// reverifyArtifact re-checks the staged artifact's SHA-256 immediately before
+// install. Check verified the hash right after download, but the temp file
+// sits on disk between Check and Apply; re-verifying closes that window so a
+// tampered file is never handed to an elevated installer. Plans not produced
+// by Check (no ExpectedSum) skip this, since they have no staged artifact to
+// protect.
+func reverifyArtifact(plan Plan) error {
+	if plan.ExpectedSum == "" {
+		return nil
+	}
+	got, err := sha256File(plan.LocalPath)
+	if err != nil {
+		return fmt.Errorf("re-verify %s: %w", plan.Asset.Name, err)
+	}
+	if !strings.EqualFold(got, plan.ExpectedSum) {
+		return fmt.Errorf("%w: %s changed after verification", ErrChecksumMismatch, plan.Asset.Name)
+	}
+	return nil
 }
 
 func applySelfReplace(plan Plan, deps Deps) error {

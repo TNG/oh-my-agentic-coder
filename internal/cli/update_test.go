@@ -79,16 +79,28 @@ func checksumsFile(name string, content []byte) []byte {
 	return []byte(fmt.Sprintf("%s  %s\n", hex.EncodeToString(sum[:]), name))
 }
 
+// cliTestSignatureVerifier is a test double for the production ed25519
+// verifier: it accepts any non-empty signature so these CLI tests can exercise
+// the update flow without real cryptography. Production wires the real
+// verifier via updater.RealDeps.
+func cliTestSignatureVerifier(signed, sig []byte) error {
+	if len(sig) == 0 {
+		return errors.New("empty signature")
+	}
+	return nil
+}
+
 func baseTestDeps(t *testing.T) updater.Deps {
 	t.Helper()
 	return updater.Deps{
-		Executable: func() (string, error) { return filepath.Join(t.TempDir(), "omac"), nil },
-		TempDir:    t.TempDir(),
-		GOOS:       "linux",
-		GOARCH:     "amd64",
-		Stdin:      bytes.NewReader(nil),
-		Stdout:     io.Discard,
-		Stderr:     io.Discard,
+		Executable:        func() (string, error) { return filepath.Join(t.TempDir(), "omac"), nil },
+		TempDir:           t.TempDir(),
+		SignatureVerifier: cliTestSignatureVerifier,
+		GOOS:              "linux",
+		GOARCH:            "amd64",
+		Stdin:             bytes.NewReader(nil),
+		Stdout:            io.Discard,
+		Stderr:            io.Discard,
 	}
 }
 
@@ -161,14 +173,17 @@ func TestRunUpdate_CurrentNewerThanLatestNoDowngrade(t *testing.T) {
 func TestRunUpdate_NonInteractiveWithoutYesNoops(t *testing.T) {
 	debURL := "https://example.invalid/x.deb"
 	sumsURL := "https://example.invalid/checksums.txt"
+	sigURL := sumsURL + ".sig"
 	deps := baseTestDeps(t)
 	deps.Source = fakeSource{rel: updater.Release{TagName: "v2.0.0", Assets: []updater.Asset{
 		{Name: "oh-my-agentic-coder_2.0.0_linux_x86_64.deb", BrowserDownloadURL: debURL},
 		{Name: "checksums.txt", BrowserDownloadURL: sumsURL},
+		{Name: "checksums.txt.sig", BrowserDownloadURL: sigURL},
 	}}}
 	body := []byte("deb-bytes")
 	deps.Fetcher = fakeFetcher{files: map[string][]byte{
 		sumsURL: checksumsFile("oh-my-agentic-coder_2.0.0_linux_x86_64.deb", body),
+		sigURL:  []byte("test-signature"),
 		debURL:  body,
 	}}
 	deps.PkgManagers = []updater.PackageManager{
@@ -193,14 +208,17 @@ func TestRunUpdate_NonInteractiveWithoutYesNoops(t *testing.T) {
 func TestRunUpdate_YesSkipsPromptAndApplies(t *testing.T) {
 	debURL := "https://example.invalid/x.deb"
 	sumsURL := "https://example.invalid/checksums.txt"
+	sigURL := sumsURL + ".sig"
 	deps := baseTestDeps(t)
 	deps.Source = fakeSource{rel: updater.Release{TagName: "v2.0.0", Assets: []updater.Asset{
 		{Name: "oh-my-agentic-coder_2.0.0_linux_x86_64.deb", BrowserDownloadURL: debURL},
 		{Name: "checksums.txt", BrowserDownloadURL: sumsURL},
+		{Name: "checksums.txt.sig", BrowserDownloadURL: sigURL},
 	}}}
 	body := []byte("deb-bytes")
 	deps.Fetcher = fakeFetcher{files: map[string][]byte{
 		sumsURL: checksumsFile("oh-my-agentic-coder_2.0.0_linux_x86_64.deb", body),
+		sigURL:  []byte("test-signature"),
 		debURL:  body,
 	}}
 	deps.PkgManagers = []updater.PackageManager{
@@ -223,14 +241,17 @@ func debUpdateDeps(t *testing.T) updater.Deps {
 	t.Helper()
 	debURL := "https://example.invalid/x.deb"
 	sumsURL := "https://example.invalid/checksums.txt"
+	sigURL := sumsURL + ".sig"
 	deps := baseTestDeps(t)
 	deps.Source = fakeSource{rel: updater.Release{TagName: "v2.0.0", Assets: []updater.Asset{
 		{Name: "oh-my-agentic-coder_2.0.0_linux_x86_64.deb", BrowserDownloadURL: debURL},
 		{Name: "checksums.txt", BrowserDownloadURL: sumsURL},
+		{Name: "checksums.txt.sig", BrowserDownloadURL: sigURL},
 	}}}
 	body := []byte("deb-bytes")
 	deps.Fetcher = fakeFetcher{files: map[string][]byte{
 		sumsURL: checksumsFile("oh-my-agentic-coder_2.0.0_linux_x86_64.deb", body),
+		sigURL:  []byte("test-signature"),
 		debURL:  body,
 	}}
 	deps.PkgManagers = []updater.PackageManager{
@@ -290,13 +311,16 @@ func TestRunUpdate_SelfCheckProbeFailureIsSilent(t *testing.T) {
 func TestRunUpdate_ChecksumMismatch(t *testing.T) {
 	debURL := "https://example.invalid/x.deb"
 	sumsURL := "https://example.invalid/checksums.txt"
+	sigURL := sumsURL + ".sig"
 	deps := baseTestDeps(t)
 	deps.Source = fakeSource{rel: updater.Release{TagName: "v2.0.0", Assets: []updater.Asset{
 		{Name: "oh-my-agentic-coder_2.0.0_linux_x86_64.deb", BrowserDownloadURL: debURL},
 		{Name: "checksums.txt", BrowserDownloadURL: sumsURL},
+		{Name: "checksums.txt.sig", BrowserDownloadURL: sigURL},
 	}}}
 	deps.Fetcher = fakeFetcher{files: map[string][]byte{
 		sumsURL: checksumsFile("oh-my-agentic-coder_2.0.0_linux_x86_64.deb", []byte("expected")),
+		sigURL:  []byte("test-signature"),
 		debURL:  []byte("actually-different"),
 	}}
 	deps.PkgManagers = []updater.PackageManager{
@@ -328,14 +352,17 @@ func TestRunUpdate_NoMatchingAsset(t *testing.T) {
 func TestRunUpdate_InstallCommandFailure(t *testing.T) {
 	debURL := "https://example.invalid/x.deb"
 	sumsURL := "https://example.invalid/checksums.txt"
+	sigURL := sumsURL + ".sig"
 	deps := baseTestDeps(t)
 	deps.Source = fakeSource{rel: updater.Release{TagName: "v2.0.0", Assets: []updater.Asset{
 		{Name: "oh-my-agentic-coder_2.0.0_linux_x86_64.deb", BrowserDownloadURL: debURL},
 		{Name: "checksums.txt", BrowserDownloadURL: sumsURL},
+		{Name: "checksums.txt.sig", BrowserDownloadURL: sigURL},
 	}}}
 	body := []byte("deb-bytes")
 	deps.Fetcher = fakeFetcher{files: map[string][]byte{
 		sumsURL: checksumsFile("oh-my-agentic-coder_2.0.0_linux_x86_64.deb", body),
+		sigURL:  []byte("test-signature"),
 		debURL:  body,
 	}}
 	deps.PkgManagers = []updater.PackageManager{
@@ -355,12 +382,14 @@ func TestRunUpdate_SelfReplacePermissionDenied(t *testing.T) {
 	writeTestTarGzForCLI(t, tgzPath, "omac", []byte("bytes"), 0o755)
 	tgzURL := "https://example.invalid/x.tar.gz"
 	sumsURL := "https://example.invalid/checksums.txt"
+	sigURL := sumsURL + ".sig"
 
 	deps := baseTestDeps(t)
 	deps.GOOS, deps.GOARCH = "linux", "amd64"
 	deps.Source = fakeSource{rel: updater.Release{TagName: "v2.0.0", Assets: []updater.Asset{
 		{Name: "oh-my-agentic-coder_2.0.0_linux_x86_64.tar.gz", BrowserDownloadURL: tgzURL},
 		{Name: "checksums.txt", BrowserDownloadURL: sumsURL},
+		{Name: "checksums.txt.sig", BrowserDownloadURL: sigURL},
 	}}}
 	content, err := os.ReadFile(tgzPath)
 	if err != nil {
@@ -368,6 +397,7 @@ func TestRunUpdate_SelfReplacePermissionDenied(t *testing.T) {
 	}
 	deps.Fetcher = fakeFetcher{files: map[string][]byte{
 		sumsURL: checksumsFile("oh-my-agentic-coder_2.0.0_linux_x86_64.tar.gz", content),
+		sigURL:  []byte("test-signature"),
 		tgzURL:  content,
 	}}
 	deps.PkgManagers = nil

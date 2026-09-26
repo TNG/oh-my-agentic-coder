@@ -77,14 +77,26 @@ func secChecksumsFile(name string, content []byte) []byte {
 	return []byte(fmt.Sprintf("%s  %s\n", hex.EncodeToString(sum[:]), name))
 }
 
+// secSignatureVerifier is the security suite's test double for the production
+// ed25519 verifier. It accepts any non-empty signature so the suite can drive
+// the download/verify and re-verify-before-install paths without real
+// cryptography; production wires verifyReleaseSignature via RealDeps.
+func secSignatureVerifier(signed, sig []byte) error {
+	if len(sig) == 0 {
+		return errors.New("empty signature")
+	}
+	return nil
+}
+
 func secBaseDeps(t *testing.T) Deps {
 	t.Helper()
 	return Deps{
-		Executable: func() (string, error) { return filepath.Join(t.TempDir(), "omac"), nil },
-		TempDir:    t.TempDir(),
-		Stdin:      bytes.NewReader(nil),
-		Stdout:     io.Discard,
-		Stderr:     io.Discard,
+		Executable:        func() (string, error) { return filepath.Join(t.TempDir(), "omac"), nil },
+		TempDir:           t.TempDir(),
+		SignatureVerifier: secSignatureVerifier,
+		Stdin:             bytes.NewReader(nil),
+		Stdout:            io.Discard,
+		Stderr:            io.Discard,
 	}
 }
 
