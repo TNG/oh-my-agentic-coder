@@ -442,7 +442,8 @@ func runLaunch(env *Env, opts launchOpts) int {
 	if len(unregistered) > 0 {
 		fmt.Fprintln(env.Stderr, prefix+": unregistered skills found in this workdir:")
 		for _, name := range unregistered {
-			fmt.Fprintf(env.Stderr, "  %s — register with: omac register %s\n", name, name)
+			safe := stripControlChars(name)
+			fmt.Fprintf(env.Stderr, "  %s — register with: omac register %s\n", safe, safe)
 		}
 		fmt.Fprintln(env.Stderr, "\nA skill you no longer want can be deleted with `omac deregister <skill>` (add --global for a user-global skill).")
 		return ExitPrerequisiteMissing
