@@ -124,7 +124,7 @@ Permanent prompt decisions SHALL be persisted immediately and atomically (write-
 The effective profile's port lists SHALL be enforced as follows:
 - `listen_port`: the child may bind/listen on these TCP ports. On Linux enforcement is per-port (Landlock `bind_tcp`). On macOS, Seatbelt cannot filter bind by port, so any non-empty `listen_port` grants bind/listen generally; this platform limitation MUST be documented.
 - `allow_tcp_connect`: the child may make direct outbound TCP connections on these ports to any host (kernel cannot constrain the destination host); intended for protocols that cannot use an HTTP proxy, e.g. SSH on port 22.
-- `open_port`: the child may both connect to and bind these ports on localhost; used for the omac bridge TCP port.
+- `open_port`: the child may both connect to and bind these ports on localhost; used for the omac bridge TCP port and for a pinned harness-internal service port (opencode v2's background service).
 
 #### Scenario: SSH via allow_tcp_connect
 - **WHEN** `allow_tcp_connect` includes 22 and the child runs `ssh git@github.com`
