@@ -484,6 +484,11 @@ func TestStartAutoRegisterWorkdirSkills_KeychainSecretBeatsInvalidPassthroughVal
 }
 
 func TestStartAutoRegisterWorkdirSkills_UnscopedKeychainSecretBeatsInvalidPassthroughValue(t *testing.T) {
+	// A workdir-scoped auto-register must not inherit a global (unscoped)
+	// secret for the same skill name without explicit consent. Without
+	// consent the invalid passthrough value wins, so the skill stays
+	// unregistered; with consent the global entry resolves it and the skill
+	// is auto-registered.
 	isolateHome(t)
 	t.Setenv("MUST_SECRET", "invalid-token")
 	wd := t.TempDir()
@@ -500,12 +505,30 @@ func TestStartAutoRegisterWorkdirSkills_UnscopedKeychainSecretBeatsInvalidPassth
 		}
 	})
 
+	prevConsent := keychain.FallbackConsent
+	t.Cleanup(func() { keychain.FallbackConsent = prevConsent })
+
+	// No consent: the scoped resolver must not bridge to the global entry,
+	// so the invalid passthrough value keeps the skill unregistered.
+	keychain.FallbackConsent = nil
 	done, errs := runAutoRegisterWorkdirSkills(t, makeEnv(wd), config.DefaultHarness(), &registry.Registry{}, false)
 	if len(errs) != 0 {
 		t.Fatalf("unexpected errors: %v", errs)
 	}
+	if len(done) != 0 {
+		t.Errorf("auto-registered without consent = %v, want []: a scoped caller must not inherit a global secret", done)
+	}
+
+	// With explicit consent the global entry resolves the secret and the
+	// skill is auto-registered, preserving the legacy behaviour for callers
+	// that opted in.
+	keychain.FallbackConsent = func(scope, skill, name string) bool { return true }
+	done, errs = runAutoRegisterWorkdirSkills(t, makeEnv(wd), config.DefaultHarness(), &registry.Registry{}, false)
+	if len(errs) != 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
 	if want := []string{"patterned-passthrough-secret"}; !reflect.DeepEqual(done, want) {
-		t.Errorf("auto-registered = %v, want %v", done, want)
+		t.Errorf("auto-registered with consent = %v, want %v", done, want)
 	}
 }
 

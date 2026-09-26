@@ -240,13 +240,23 @@ func Ping() error {
 	return err
 }
 
-// GetWithFallback retrieves a secret under (scope, skill), falling back to
-// the unscoped key (omac/<skill>) when the scoped key is absent. This lets
-// readers (start, serve) find secrets whether they were stored scoped
-// (per-workdir, written by serve-aware register) or unscoped (legacy /
-// global). An empty scope is just the unscoped lookup. Returns ErrNotFound
-// only when neither key exists — additionally wrapping ErrUnavailable when
-// the reason neither key could be read is a missing backend.
+// FallbackConsent decides whether GetWithFallback may bridge a scoped miss
+// to the unscoped (global) entry for the same skill name. It defaults to
+// nil, which denies: a workdir-scoped skill never silently inherits a
+// global secret stored under the same name, so a same-named skill in a
+// different project directory cannot receive another skill's credentials.
+// Callers that have obtained explicit user consent (an interactive prompt
+// answered affirmatively, or a configuration flag the user opted into) set
+// this so legacy global entries keep resolving for scoped callers.
+var FallbackConsent func(scope, skillName, name string) bool
+
+// GetWithFallback retrieves a secret under (scope, skill). When scope is
+// empty the lookup is the plain unscoped (legacy/global) read. When scope is
+// non-empty the scoped entry is read first; on a miss the unscoped entry is
+// consulted only when FallbackConsent grants it, so a scoped skill cannot
+// inherit a global secret without explicit user consent. Returns ErrNotFound
+// when no permitted entry exists — additionally wrapping ErrUnavailable when
+// the reason is a missing backend.
 func GetWithFallback(scope, skillName, name string) (secrets.Secret, error) {
 	if scope != "" {
 		v, err := GetScoped(scope, skillName, name)
@@ -255,6 +265,12 @@ func GetWithFallback(scope, skillName, name string) (secrets.Secret, error) {
 		}
 		if !errors.Is(err, ErrNotFound) {
 			return secrets.Secret{}, err
+		}
+		// Scoped miss. Do not bridge to the unscoped entry unless the caller
+		// has explicit consent: a same-named skill in another scope must not
+		// receive a global secret it does not own.
+		if FallbackConsent == nil || !FallbackConsent(scope, skillName, name) {
+			return secrets.Secret{}, ErrNotFound
 		}
 	}
 	return GetScoped("", skillName, name)
