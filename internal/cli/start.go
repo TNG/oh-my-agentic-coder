@@ -790,6 +790,11 @@ func runLaunch(env *Env, opts launchOpts) int {
 		// opencode v2's service binds fixed port 49374, which Landlock denies; pin it to a granted port instead.
 		var pinErr error
 		if plan.Native {
+			// A profile denying the vars the pin redirects would silently undo the pin; refuse loudly instead.
+			if denyErr := openCodePinDenied(plan); denyErr != nil {
+				fmt.Fprintln(env.Stderr, prefix+": opencode v2 service pin:", denyErr)
+				return ExitConfigInvalid
+			}
 			ocPin, pinErr = pinOpenCodeV2Service(harness, inner, sandboxTmp)
 		}
 		if pinErr != nil {

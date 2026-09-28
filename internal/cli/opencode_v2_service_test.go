@@ -5,9 +5,11 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/TNG/oh-my-agentic-coder/internal/config"
+	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
 )
 
 // fakeVersionBinary writes an executable sh script that prints script as its --version output.
@@ -54,6 +56,81 @@ func TestOpenCodeIsV2SkipsMissingBinary(t *testing.T) {
 	}
 	if openCodeIsV2(nil) || openCodeIsV2([]string{}) {
 		t.Error("empty inner must not be treated as v2")
+	}
+}
+
+// Wrapper runtimes resolve the real binary only at runtime, so a versioned spec in their args decides — no exec.
+func TestOpenCodeIsV2FromWrapperSpec(t *testing.T) {
+	cases := []struct {
+		name  string
+		inner []string
+		want  bool
+	}{
+		{"bunx v2 spec", []string{"bunx", "opencode-ai@2.0.1"}, true},
+		{"npx with flags v1 spec", []string{"npx", "-y", "opencode-ai@1.2.3"}, false},
+		{"pnpm dlx v1 spec", []string{"pnpm", "dlx", "opencode@1.9.0", "run"}, false},
+		{"env-wrapped npx v2", []string{"env", "FOO=1", "npx", "opencode-ai@2.0.18"}, true},
+		{"v tag", []string{"bunx", "opencode-ai@v2.1.0"}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := openCodeIsV2(tc.inner); got != tc.want {
+				t.Errorf("openCodeIsV2(%v) = %v, want %v", tc.inner, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestOpenCodeSpecVersion(t *testing.T) {
+	maj, ok := openCodeSpecVersion([]string{"-y", "--package=opencode@1.3.17", "opencode"})
+	if !ok || maj != 1 {
+		t.Errorf("openCodeSpecVersion = (%d, %v), want (1, true)", maj, ok)
+	}
+	if _, ok := openCodeSpecVersion([]string{"opencode-ai@latest"}); ok {
+		t.Error("spec without a pinned major version must be undecidable")
+	}
+}
+
+// Known wrapper without a spec: undecidable → pin, no version probe may run.
+func TestOpenCodeIsV2UndecidableWrapperPins(t *testing.T) {
+	if !openCodeIsV2([]string{"bunx", "opencode-ai"}) {
+		t.Error("undecidable known wrapper must default to pin")
+	}
+}
+
+// A profile denying the vars the pin redirects must stop the launch instead of silently stripping the pin.
+func TestOpenCodePinDenied(t *testing.T) {
+	denies := func(vars ...string) *sandboxprofile.Profile {
+		return &sandboxprofile.Profile{Environment: sandboxprofile.Environment{DenyVars: vars}}
+	}
+	cases := []struct {
+		name    string
+		plan    sandboxPlan
+		blocked bool
+	}{
+		{"no policy", sandboxPlan{Native: true}, false},
+		{"clean profile", sandboxPlan{PolicyRef: "default", Policy: &sandboxprofile.Profile{}}, false},
+		{"exact XDG_STATE_HOME", sandboxPlan{PolicyRef: "default", Policy: denies("HTTP_PROXY", "XDG_STATE_HOME")}, true},
+		{"exact OPENCODE_CONFIG_DIR", sandboxPlan{PolicyRef: "default", Policy: denies("OPENCODE_CONFIG_DIR")}, true},
+		{"XDG_* prefix", sandboxPlan{PolicyRef: "default", Policy: denies("XDG_*")}, true},
+		{"deny star", sandboxPlan{PolicyRef: "default", Policy: denies("*")}, true},
+		{"allow-only profile", sandboxPlan{PolicyRef: "default", Policy: &sandboxprofile.Profile{Environment: sandboxprofile.Environment{AllowVars: []string{"PATH"}}}}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := openCodePinDenied(tc.plan)
+			if tc.blocked && err == nil {
+				t.Error("expected denial error, got nil")
+			}
+			if !tc.blocked && err != nil {
+				t.Errorf("unexpected denial: %v", err)
+			}
+		})
+	}
+
+	err := openCodePinDenied(sandboxPlan{PolicyRef: "default", Policy: denies("XDG_STATE_HOME")})
+	if err == nil || !strings.Contains(err.Error(), "XDG_STATE_HOME") || !strings.Contains(err.Error(), `"default"`) {
+		t.Errorf("denial error must name the var and the profile: %v", err)
 	}
 }
 

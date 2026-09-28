@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/TNG/oh-my-agentic-coder/internal/config"
+	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxrun"
 )
 
@@ -116,7 +117,15 @@ func seedOpenCodeServiceConfig(realCfg, cfgDir string, port int) (string, error)
 // openCodeVersionRe matches the first semver-ish token in --version output.
 var openCodeVersionRe = regexp.MustCompile(`v?(\d+)\.\d+\.\d+`)
 
-// openCodeIsV2 reports whether inner is opencode v2+; resolution mirrors checkInnerBinary, undecidable → true.
+// openCodeWrappers are package runners whose cmd[0] is the runner itself, not the opencode binary.
+var openCodeWrappers = map[string]bool{
+	"npx": true, "bunx": true, "pnpm": true, "yarn": true, "uvx": true, "uv": true,
+}
+
+// openCodeSpecRe detects a versioned opencode package spec in wrapper args (opencode-ai@2.1.0, --package=opencode@1.3.17).
+var openCodeSpecRe = regexp.MustCompile(`opencode(?:-ai)?@v?(\d+)`)
+
+// openCodeIsV2 reports whether inner is opencode v2+; wrappers decide from a versioned package spec in their args, only a direct opencode binary is probed with --version, undecidable → true.
 func openCodeIsV2(inner []string) bool {
 	cmd := sandboxrun.UnwrapEnv(inner)
 	for len(cmd) > 0 && strings.HasPrefix(cmd[0], "-") {
@@ -124,6 +133,16 @@ func openCodeIsV2(inner []string) bool {
 	}
 	if len(cmd) == 0 || cmd[0] == "" {
 		return false
+	}
+	if maj, ok := openCodeSpecVersion(cmd[1:]); ok {
+		return maj != 1
+	}
+	switch filepath.Base(cmd[0]) {
+	case "opencode", "opencode-ai":
+		// Direct binary: probe its version below.
+	default:
+		// Known wrapper without spec: undecidable → pin, a missed v2 pin fails loudly while a redundant v1 pin is benign.
+		return openCodeWrappers[filepath.Base(cmd[0])]
 	}
 	bin, err := exec.LookPath(cmd[0])
 	if err != nil {
@@ -144,4 +163,35 @@ func openCodeIsV2(inner []string) bool {
 		return true
 	}
 	return major != 1
+}
+
+// openCodeSpecVersion extracts the pinned major from a versioned opencode spec among args (bunx opencode-ai@1.2.0 → 1).
+func openCodeSpecVersion(args []string) (int, bool) {
+	for _, arg := range args {
+		m := openCodeSpecRe.FindStringSubmatch(arg)
+		if m == nil {
+			continue
+		}
+		if major, err := strconv.Atoi(m[1]); err == nil {
+			return major, true
+		}
+	}
+	return 0, false
+}
+
+// openCodePinDenied hard-errors when the profile's deny_vars would strip a var the pin's config/state redirects rely on.
+func openCodePinDenied(plan sandboxPlan) error {
+	if plan.Policy == nil {
+		return nil
+	}
+	profile := plan.PolicyRef
+	if profile == "" {
+		profile = plan.Name
+	}
+	for _, v := range []string{"XDG_STATE_HOME", "OPENCODE_CONFIG_DIR"} {
+		if sandboxprofile.EnvVarMatches(v, plan.Policy.Environment.DenyVars) {
+			return fmt.Errorf("profile %q: deny_vars denies %s, which the opencode v2 service pin needs; the pin's redirects would be stripped and the sandboxed service would revert to its ungranted default port. Remove %s from the profile's deny_vars.", profile, v, v)
+		}
+	}
+	return nil
 }
