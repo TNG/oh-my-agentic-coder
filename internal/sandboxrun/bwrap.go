@@ -23,6 +23,9 @@ import (
 //   - --die-with-parent --new-session
 //   - protected paths inside granted trees masked with --tmpfs (dirs)
 //     or --ro-bind /dev/null (files), honoring override_deny
+//   - bind destinations that exist on the host as a symlink shadowed
+//     by an earlier mount are rebound at their symlink-resolved path
+//     (see resolveSymlinkMountDests)
 //
 // stage2Argv is the command bwrap execs; the caller passes the
 // re-exec'd `omac sandbox stage2 ...` argv (which applies Landlock net
@@ -91,12 +94,20 @@ func BuildBwrapArgv(g *Grants, stage2Argv []string) ([]string, error) {
 		}
 	}
 
+	// Capture the pre-rewrite spellings: a symlinked mount path that
+	// resolveSymlinkMountDests rewrites still covers everything under it
+	// (the spelling resolves through the covering ancestor to the
+	// rebound target), so both spellings count for reachability checks.
+	orderedPre := sortedMounts(mounts)
+
+	// Rebind shadowed symlink destinations at their resolved paths
+	// before any argv is emitted (see resolveSymlinkMountDests).
+	resolveSymlinkMountDests(mounts, rootGranted)
+
 	// Sort parents before children so nested binds layer correctly.
-	ordered := make([]*mount, 0, len(mounts))
-	for _, m := range mounts {
-		ordered = append(ordered, m)
-	}
-	sort.Slice(ordered, func(i, j int) bool { return ordered[i].path < ordered[j].path })
+	ordered := sortedMounts(mounts)
+	// Reachability = covered by any bind in either spelling.
+	coverage := append(append([]*mount{}, orderedPre...), ordered...)
 
 	// tmpGranted is true only when bare /tmp itself is bound — a scoped
 	// subpath like /tmp/omac-sandbox-tmp-x does not expose the whole shared
@@ -141,8 +152,8 @@ func BuildBwrapArgv(g *Grants, stage2Argv []string) ([]string, error) {
 	}
 
 	// Protected-path masking: when rootGranted every protected path is
-	// covered; otherwise check against the ordered mount list.
-	// Masks must come after the binds they shadow.
+	// covered; otherwise check against the mount list (both spellings,
+	// see `coverage` above). Masks must come after the binds they shadow.
 	//
 	// When denial markers are prepared (see Grants.prepareMarkers), a
 	// protected file is masked with a read-only marker file whose contents
@@ -150,24 +161,43 @@ func BuildBwrapArgv(g *Grants, stage2Argv []string) ([]string, error) {
 	// marker dir holding a single .omac-denied file. When no markers are
 	// prepared, the historical /dev/null + empty-tmpfs behavior applies.
 	for _, prot := range g.ProtectedPaths {
-		if !rootGranted && !coveredByAny(prot, ordered) {
+		if !rootGranted && !coveredByAny(prot, coverage) {
 			continue
 		}
+		target := prot
 		fi, err := os.Lstat(prot)
 		if err != nil {
 			continue // doesn't exist; nothing to mask
 		}
+		if fi.Mode()&os.ModeSymlink != 0 {
+			// A protected path that is itself a symlink cannot be masked
+			// at its own spelling: inside the covering bind the spelling
+			// exists as that symlink, and bwrap refuses to mount on it
+			// (same refusal resolveSymlinkMountDests avoids for grants).
+			// Mask the resolved target instead. Reads through the spelling
+			// land on the target, so the deny holds; masking the target is
+			// strictly what the profile asked for, since it is the secret
+			// the symlink spelling was denied over.
+			resolved, rerr := filepath.EvalSymlinks(prot)
+			if rerr != nil {
+				continue // broken link: the spelling reads as ENOENT already
+			}
+			target = resolved
+			if fi, err = os.Lstat(target); err != nil {
+				continue
+			}
+		}
 		if fi.IsDir() {
 			if g.markerDir != "" {
-				argv = append(argv, "--ro-bind", g.markerDir, prot)
+				argv = append(argv, "--ro-bind", g.markerDir, target)
 			} else {
-				argv = append(argv, "--tmpfs", prot)
+				argv = append(argv, "--tmpfs", target)
 			}
 		} else {
 			if g.markerFile != "" {
-				argv = append(argv, "--ro-bind", g.markerFile, prot)
+				argv = append(argv, "--ro-bind", g.markerFile, target)
 			} else {
-				argv = append(argv, "--ro-bind", "/dev/null", prot)
+				argv = append(argv, "--ro-bind", "/dev/null", target)
 			}
 		}
 	}
@@ -178,7 +208,7 @@ func BuildBwrapArgv(g *Grants, stage2Argv []string) ([]string, error) {
 	// the whole launch, so fall back to / (matching macOS, where the
 	// child simply cannot read an ungranted cwd).
 	chdir := g.Workdir
-	if !rootGranted && !coveredByAny(g.Workdir, ordered) && g.Workdir != "/" {
+	if !rootGranted && !coveredByAny(g.Workdir, coverage) && g.Workdir != "/" {
 		chdir = "/"
 	}
 	argv = append(argv, "--chdir", chdir, "--")
@@ -191,6 +221,74 @@ type mount struct {
 	path string
 	rw   bool
 	try  bool // use the -try variant: skip silently if the source is absent
+}
+
+// sortedMounts returns the map's mounts ordered parents before children,
+// which lexicographic path order guarantees.
+func sortedMounts(mounts map[string]*mount) []*mount {
+	out := make([]*mount, 0, len(mounts))
+	for _, m := range mounts {
+		out = append(out, m)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].path < out[j].path })
+	return out
+}
+
+// resolveSymlinkMountDests rewrites every mount whose destination exists on
+// the host as a symlink that an earlier mount shadows, binding its
+// symlink-resolved target instead.
+//
+// Why this is needed: bubblewrap creates a bind destination inside the
+// sandbox when no earlier mount covers it, so a symlink destination whose
+// ancestor is not yet mounted is harmless (it becomes a fresh directory
+// holding the target's content). But once an ancestor is mounted, the
+// destination exists in the sandbox as that symlink, and bwrap refuses to
+// mount on it ("Can't mount on symlink destination") to keep sandboxed code
+// from steering mount layout through symlinks. That is the default layout on
+// merged-/usr distributions (issue #302: /usr/lib64 -> lib while the
+// baseline binds /usr read-only), and it also crashes profile-granted paths
+// the same way.
+//
+// Mounts whose destination is a symlink without a covering ancestor are left
+// alone, deliberately: the fresh-directory behavior preserves the spelling
+// itself, which binaries can depend on.
+func resolveSymlinkMountDests(mounts map[string]*mount, rootGranted bool) {
+	shadowed := func(p string) bool {
+		if rootGranted {
+			return true
+		}
+		for q := range mounts {
+			if q != p && strings.HasPrefix(p, q+string(filepath.Separator)) {
+				return true
+			}
+		}
+		return false
+	}
+	for changed := true; changed; {
+		changed = false
+		for p, m := range mounts {
+			fi, err := os.Lstat(p)
+			if err != nil || fi.Mode()&os.ModeSymlink == 0 || !shadowed(p) {
+				continue
+			}
+			// Unresolvable (broken) links stay as-is: their --bind would
+			// fail on the missing source either way, which is the
+			// documented abort-on-missing-source behavior.
+			resolved, rerr := filepath.EvalSymlinks(p)
+			if rerr != nil || resolved == p {
+				continue
+			}
+			if existing, ok := mounts[resolved]; ok {
+				existing.rw = existing.rw || m.rw
+			} else {
+				cp := *m
+				cp.path = resolved
+				mounts[resolved] = &cp
+			}
+			delete(mounts, p)
+			changed = true
+		}
+	}
 }
 
 func exists(p string) bool {
