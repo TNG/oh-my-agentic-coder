@@ -21,6 +21,10 @@ Linux.
 omac is **not** an LLM, a marketplace, or an agent. It sandboxes, bridges, and
 audits; skills and onboarding come from elsewhere.
 
+## TNG-Employees
+
+Please use the internal [omac-tng-installer repo](https://bitbucket.int.tngtech.com/projects/TNG/repos/omac-tng-installer/browse) to install and set up omac for use with internally hosted models.
+
 ## Supported OS/harnesses
 
 | Harness                        | OS                           |
