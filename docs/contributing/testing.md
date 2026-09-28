@@ -20,6 +20,20 @@ go test -race ./...    # with race detector (matches CI)
 
 These cover: CLI subcommands, config parsing, sandbox grant resolution, the HTTP facade (SSE and WebSocket forwarding), the network proxy, keychain reads and writes, skill registry atomic writes, and plugin discovery.
 
+The OpenCode bridge also has adapter tests and a typecheck against both
+supported APIs, run on every PR. With Node 24 and npm:
+
+```sh
+cd internal/plugin
+npm ci --ignore-scripts
+npm run typecheck
+npm test
+```
+
+These exercise the v1 and v2 hooks with simulated host contexts. The oldest
+supported OpenCode release is **1.18.29**; earlier v1 loaders cannot load the
+dual entrypoint. The pinned OpenCode E2E version exercises that minimum.
+
 Platform-specific behaviour lives in separate files gated by a `//go:build` constraint — `*_integration_linux_test.go` (tagged `linux`) tests bwrap and Landlock; `*_integration_darwin_test.go` (tagged `darwin`) tests Seatbelt. Go compiles each file only on its target OS, so on the other OS those tests are left out of the test binary entirely.
 
 Runtime skipping is a separate mechanism: some facade and serve tests are compiled everywhere but skip themselves at runtime when they cannot open a loopback TCP port or Unix socket (e.g. on locked-down CI runners), and these do show up as skipped in the test output.

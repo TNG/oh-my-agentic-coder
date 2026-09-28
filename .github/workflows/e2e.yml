@@ -21,7 +21,7 @@ on:
       opencode_version:
         description: 'Pinned opencode package spec. Overrides internal/e2e/versions.go for THIS RUN ONLY (the file itself is untouched); ignored if "use latest" is checked'
         type: string
-        default: 'opencode-ai@1.17.12'
+        default: 'opencode-ai@1.18.29'
       claude_code_version:
         description: 'Pinned claude-code package spec. Overrides internal/e2e/versions.go for THIS RUN ONLY (the file itself is untouched); ignored if "use latest" is checked'
         type: string

@@ -22,7 +22,7 @@ on:
       opencode_version:
         description: 'Pinned opencode package spec for the driving agent (THIS RUN ONLY)'
         type: string
-        default: 'opencode-ai@1.17.12'
+        default: 'opencode-ai@1.18.29'
       timeout_secs:
         description: 'Wall-clock timeout for the audit agent, in seconds'
         type: string
