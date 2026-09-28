@@ -127,14 +127,14 @@ func ensureBuiltinSkills(env *Env, harness config.Harness) {
 // ensureOpenCodePlugin idempotently provisions omac's OpenCode bridge plugin
 // into the harness's global plugins dir (~/.config/opencode/plugins) on
 // launch, so the sandbox-briefing relay works even when the user never ran
-// `omac plugin install`. Mirrors the global provisioning ensureBuiltinSkills
-// does for skills: OpenCode-only, quiet when unchanged, and a failure (or a
-// foreign same-named file, which InstallMultiDirIn refuses to clobber) is a
-// warning, never a launch blocker.
+// `omac plugin install`. It reports the minimum supported OpenCode version
+// even when unchanged. Installation failures and conflicting local edits
+// produce warnings, never block launch, and never overwrite the local file.
 func ensureOpenCodePlugin(env *Env, harness config.Harness) {
 	if !harness.NeedsPluginBootstrap {
 		return
 	}
+	fmt.Fprintln(env.Stderr, "[warn]", plugin.MultiDirCompatibility)
 	dir := harness.GlobalBridgeDir()
 	if dir == "" {
 		return

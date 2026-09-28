@@ -1,0 +1,15 @@
+{
+  "name": "omac-plugin-tests",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test --test-isolation=none test/*.test.mjs",
+    "typecheck": "tsc --noEmit --strict --moduleResolution bundler --module esnext --target es2022 --lib es2022,dom --skipLibCheck assets/omac-multidir.ts"
+  },
+  "devDependencies": {
+    "@opencode-ai/plugin": "1.18.29",
+    "@opencode/plugin": "2.0.18",
+    "@types/node": "24.12.2",
+    "typescript": "5.8.2"
+  }
+}

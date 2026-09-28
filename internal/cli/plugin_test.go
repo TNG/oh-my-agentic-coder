@@ -3,6 +3,7 @@ package cli
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/TNG/oh-my-agentic-coder/internal/config"
@@ -13,6 +14,12 @@ import (
 func TestPluginInstallCommand(t *testing.T) {
 	isolateHome(t)
 	env := makeEnv(t.TempDir())
+	warnings, err := os.CreateTemp(t.TempDir(), "warnings")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer warnings.Close()
+	env.Stderr = warnings
 
 	if code := runPlugin([]string{"install", "opencode-desktop"}, env); code != ExitOK {
 		t.Fatalf("install exit=%d, want %d", code, ExitOK)
@@ -20,6 +27,35 @@ func TestPluginInstallCommand(t *testing.T) {
 	dest := filepath.Join(env.Workdir, ".opencode", "plugins", plugin.MultiDirFileName)
 	if _, err := os.Stat(dest); err != nil {
 		t.Fatalf("plugin not written: %v", err)
+	}
+	output, err := os.ReadFile(warnings.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(output), plugin.MultiDirCompatibility) {
+		t.Fatal("install must warn about the minimum OpenCode version")
+	}
+}
+
+func TestOpenCodePluginBootstrapWarnsAboutCompatibility(t *testing.T) {
+	isolateHome(t)
+	env := makeEnv(t.TempDir())
+	warnings, err := os.CreateTemp(t.TempDir(), "warnings")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer warnings.Close()
+	env.Stderr = warnings
+	h, _ := config.LookupHarness("opencode")
+	for range 2 {
+		ensureOpenCodePlugin(env, h)
+	}
+	output, err := os.ReadFile(warnings.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(string(output), plugin.MultiDirCompatibility) != 2 {
+		t.Fatal("both first launch and unchanged installs must warn about compatibility")
 	}
 }
 

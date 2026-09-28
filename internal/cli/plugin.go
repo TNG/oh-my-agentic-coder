@@ -122,6 +122,7 @@ func runPluginInstall(args []string, env *Env) int {
 		return ExitGeneric
 	}
 
+	fmt.Fprintln(env.Stderr, "[warn]", plugin.MultiDirCompatibility)
 	var (
 		res   plugin.InstallResult
 		err   error
@@ -275,6 +276,9 @@ Flags:
   --global   Install into the harness's user-global plugin directory
              (e.g. ~/.config/opencode/plugins) instead of this workdir.
   --force    Overwrite an existing, differing plugin file.
+
+Compatibility: OpenCode 1.18.29+ (v1) or 2.x is required.
+Older v1 releases cannot load this plugin. Upgrade OpenCode first.
 
 Examples:
   omac plugin install opencode-desktop
