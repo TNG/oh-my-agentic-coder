@@ -5,8 +5,9 @@
 [![License](https://img.shields.io/github/license/TNG/oh-my-agentic-coder)](./LICENSE)
 [![Go](https://img.shields.io/github/go-mod/go-version/TNG/oh-my-agentic-coder)](./go.mod)
 
-[![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20macOS%20%7C%20WSL2-blue)](#supported-harnesses--os)
-[![Harnesses](https://img.shields.io/badge/harnesses-opencode%20%7C%20claude--code%20%7C%20codex%20%7C%20copilot%20%7C%20pi%20%7C%20codewhale-blue)](#supported-harnesses--os)
+[![Platforms](https://img.shields.io/badge/platforms-Ubuntu%2024.04%20%7C%20macOS%2015%20%7C%20WSL2-blue)](#supported-osharnesses)
+[![Harnesses](https://img.shields.io/badge/harnesses-opencode%20%7C%20claude--code%20%7C%20copilot-blue)](#supported-osharnesses)
+[![Experimental harnesses](https://img.shields.io/badge/experimental-codex%20%7C%20pi%20%7C%20codewhale-orange)](#supported-osharnesses)
 
 ## What it is
 
