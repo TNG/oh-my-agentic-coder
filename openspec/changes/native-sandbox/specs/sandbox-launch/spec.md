@@ -22,7 +22,7 @@ The launcher SHALL provide a compiled-in launch profile named `builtin` that run
 - **THEN** the external `nono run ...` template is used unchanged
 
 ### Requirement: Bridge connectivity inside the sandbox
-Under the default `builtin` profile, the inner harness MUST be able to reach the omac facade over both transports: the Unix domain socket (`bridge.sock`, granted via `--allow-file` and explicitly allowed in the macOS Seatbelt profile despite the network deny) and the loopback TCP port (granted via `--open-port`). All `OMAC_*` environment variables exported by the launcher MUST be visible to the inner harness (the default profile's env filtering passes `OMAC_*`).
+Under the default `builtin` profile, the inner harness MUST be able to reach the omac facade over both transports: the Unix domain socket (`bridge.sock`, granted via `--allow-file` and explicitly allowed in the macOS Seatbelt profile despite the network deny) and the loopback TCP port (granted via `--open-port`). All `OMAC_*` environment variables exported by the launcher MUST be visible to the inner harness (the default profile's env filtering passes `OMAC_*`). Launch-injected harness vars (e.g. `OPENCODE_CONFIG_DIR` when pinning opencode v2's background service) pass via `--allow-env`.
 
 #### Scenario: Unix socket transport on macOS
 - **WHEN** the harness connects to `OMAC_SOCKET` from inside the sandbox on macOS with network filtering active
