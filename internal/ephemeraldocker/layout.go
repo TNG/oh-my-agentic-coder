@@ -28,15 +28,17 @@ const (
 	// instances (colima etc.) never match.
 	vmPrefix = "omac-eph-"
 
-	// symlinkPrefix marks the short LIMA_HOME aliases under /tmp.
-	symlinkPrefix = "omac-eph-docker-"
+	// shortHomePrefix marks the feature's LIMA_HOME directories under
+	// /tmp.
+	shortHomePrefix = "omac-eph-docker-"
 
-	// The physical state lives deep inside the cache scope, but macOS
-	// rejects unix sockets whose path is >= 104 bytes and lima builds
-	// guestagent control sockets as <LIMA_HOME>/<vm>/ssh.sock.<nonce>.
-	// A cache-scope path (~/.cache/omac/<64 hex>) can never fit, so lima
-	// receives this short alias while the state stays in the scope.
-	symlinkDir = "/tmp"
+	// The session's bookkeeping lives deep inside the cache scope, but
+	// lima builds guestagent control sockets as
+	// <LIMA_HOME>/<vm>/ssh.sock.<nonce> and rejects paths >= 104 bytes.
+	// A cache-scope path (~/.cache/omac/<64 hex>) can never fit, and
+	// lima resolves symlinks before that check, so an alias cannot hide
+	// the depth: lima needs a real, short directory.
+	shortHomeDir = "/tmp"
 
 	maxUnixSocketPath = 104
 	sshNonceAllowance = 20
@@ -47,13 +49,12 @@ const (
 type SessionMarker struct {
 	VMName   string    `json:"vm_name"`
 	HostPort int       `json:"host_port"`
-	Symlink  string    `json:"symlink"`
 	Created  time.Time `json:"created"`
 }
 
-// Layout is the session's on-disk footprint: the private LIMA_HOME
-// (physically inside the cache scope, exposed to lima via a short /tmp
-// symlink), its marker, and its liveness lock.
+// Layout is the session's on-disk footprint: the bookkeeping dir in the
+// cache scope (marker, lock, lima.yaml), the short real LIMA_HOME under
+// /tmp that lima needs for its unix sockets, and the liveness lock.
 type Layout struct {
 	// Root is the feature's directory inside the cache scope
 	// (<cache>/ephemeral-docker), shared with previous sessions.
@@ -61,15 +62,16 @@ type Layout struct {
 	// ImageFile is the digest-pinned base image shared across sessions
 	// of this cache scope.
 	ImageFile string
-	// Dir is the per-session private LIMA_HOME.
+	// Dir is the per-session bookkeeping dir in the cache scope.
 	Dir string
 	// VMName is the limactl instance name (omac-eph-<hex>).
 	VMName string
 	// HostPort is the deterministic loopback port forwarding to the
 	// guest docker endpoint.
 	HostPort int
-	// SymlinkPath is the short alias lima sees as LIMA_HOME.
-	SymlinkPath string
+	// LimaHome is the short real LIMA_HOME under /tmp that lima
+	// receives; the VM's instance data lives there, not in the scope.
+	LimaHome string
 	// MarkerPath is the session.json marker file.
 	MarkerPath string
 	// LockPath is the flock-held liveness file.
@@ -80,11 +82,11 @@ type Layout struct {
 	lockFile *os.File
 }
 
-// NewLayout creates the session directory inside the cache scope, writes
-// the marker, takes the liveness lock, and installs the short /tmp
-// symlink. Callers hold the returned layout for the session lifetime and
-// call Release to drop the lock (the sweep then treats the unit as
-// orphaned once the process is gone).
+// NewLayout creates the session's bookkeeping dir inside the cache
+// scope, writes the marker, takes the liveness lock, and creates the
+// short real LIMA_HOME under /tmp. Callers hold the returned layout for
+// the session lifetime and call Release to drop the lock (the sweep then
+// treats the unit as orphaned once the process is gone).
 func NewLayout(cacheDir, workdir string, isFree func(int) bool) (*Layout, error) {
 	if cacheDir == "" {
 		return nil, errors.New("ephemeral-docker: cache dir required")
@@ -108,7 +110,7 @@ func NewLayout(cacheDir, workdir string, isFree func(int) bool) (*Layout, error)
 		Dir:         filepath.Join(cacheDir, scopeDirName, sess),
 		VMName:      vmPrefix + hex.EncodeToString(vmID[:]),
 		HostPort:    port,
-		SymlinkPath: filepath.Join(symlinkDir, symlinkPrefix+sess),
+		LimaHome:    filepath.Join(shortHomeDir, shortHomePrefix+sess),
 		MarkerPath:  "",
 		LockPath:    "",
 		LimaYAML:    "",
@@ -118,10 +120,10 @@ func NewLayout(cacheDir, workdir string, isFree func(int) bool) (*Layout, error)
 	lay.LimaYAML = filepath.Join(lay.Dir, limaYAMLName)
 
 	// Guard the unix-socket path limit before anything boots: lima builds
-	// <LIMA_HOME>/<vm>/ssh.sock.<nonce> and macOS rejects >= 104 bytes.
-	probe := lay.SymlinkPath + string(filepath.Separator) + lay.VMName + "/ssh.sock."
+	// <LIMA_HOME>/<vm>/ssh.sock.<nonce> and rejects paths >= 104 bytes.
+	probe := lay.LimaHome + string(filepath.Separator) + lay.VMName + "/ssh.sock."
 	if len(probe)+sshNonceAllowance >= maxUnixSocketPath {
-		return nil, fmt.Errorf("ephemeral-docker: LIMA_HOME alias %s too long for lima unix sockets", lay.SymlinkPath)
+		return nil, fmt.Errorf("ephemeral-docker: LIMA_HOME %s too long for lima unix sockets", lay.LimaHome)
 	}
 
 	if err := os.MkdirAll(lay.Dir, 0o700); err != nil {
@@ -139,21 +141,20 @@ func NewLayout(cacheDir, workdir string, isFree func(int) bool) (*Layout, error)
 	}
 	lay.lockFile = lock
 
-	// Replace any leftover at the alias path (a stale dangling symlink
-	// with the same random name), then point it at the session dir.
-	if err := os.Remove(lay.SymlinkPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
+	// Replace any leftover at the home path (a stale unit with the same
+	// random name), then create the short real LIMA_HOME.
+	if err := os.RemoveAll(lay.LimaHome); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		_ = lock.Close()
-		return nil, fmt.Errorf("ephemeral-docker: clear stale alias %s: %w", lay.SymlinkPath, err)
+		return nil, fmt.Errorf("ephemeral-docker: clear stale LIMA_HOME %s: %w", lay.LimaHome, err)
 	}
-	if err := os.Symlink(lay.Dir, lay.SymlinkPath); err != nil {
+	if err := os.MkdirAll(lay.LimaHome, 0o700); err != nil {
 		_ = lock.Close()
-		return nil, fmt.Errorf("ephemeral-docker: LIMA_HOME alias: %w", err)
+		return nil, fmt.Errorf("ephemeral-docker: LIMA_HOME: %w", err)
 	}
 
 	marker := SessionMarker{
 		VMName:   lay.VMName,
 		HostPort: lay.HostPort,
-		Symlink:  lay.SymlinkPath,
 		Created:  time.Now().UTC(),
 	}
 	raw, err := json.Marshal(marker)

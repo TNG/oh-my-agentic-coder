@@ -152,10 +152,10 @@ func StartSession(ctx context.Context, opts SessionOpts) (*Session, error) {
 	// create/start exit codes are logged, not authoritative: lima is
 	// known to report failure on paths where the VM still boots (protob
 	// precedent). The endpoint and the firewall check decide alone.
-	if err := opts.Run(lay.SymlinkPath, "create", "--name", lay.VMName, lay.LimaYAML); err != nil {
+	if err := opts.Run(lay.LimaHome, "create", "--name", lay.VMName, lay.LimaYAML); err != nil {
 		opts.logf("ephemeral-docker: limactl create reported failure (endpoint decides): %v", err)
 	}
-	if err := opts.Run(lay.SymlinkPath, "start", "--tty=false", lay.VMName); err != nil {
+	if err := opts.Run(lay.LimaHome, "start", "--tty=false", lay.VMName); err != nil {
 		opts.logf("ephemeral-docker: limactl start reported failure (endpoint decides): %v", err)
 	}
 
@@ -166,16 +166,17 @@ func StartSession(ctx context.Context, opts SessionOpts) (*Session, error) {
 			"ephemeral-docker: %s: docker endpoint did not answer on port %d within %s",
 			lay.VMName, lay.HostPort, opts.BootTimeout))
 	}
-	if err := VerifyFirewall(opts.Run, lay.SymlinkPath, lay.VMName); err != nil {
+	if err := VerifyFirewall(opts.Run, lay.LimaHome, lay.VMName); err != nil {
 		return nil, s.teardownJoin(err)
 	}
 	return s, nil
 }
 
-// Teardown removes the whole unit: limactl delete -f, QEMU reap, alias,
-// state dir, liveness lock — then verifies no listener remains on the
-// host port. Failures are joined; every error names the VM so the user
-// and the next sweep can clean up. Idempotent.
+// Teardown removes the whole unit: limactl delete -f, QEMU reap, the
+// short LIMA_HOME under /tmp, the bookkeeping dir in the scope, the
+// liveness lock — then verifies no listener remains on the host port.
+// Failures are joined; every error names the VM so the user and the next
+// sweep can clean up. Idempotent.
 func (s *Session) Teardown() error {
 	if s == nil {
 		return nil
@@ -188,14 +189,14 @@ func (s *Session) Teardown() error {
 	s.tornDown = true
 
 	var errs []error
-	if err := s.opts.Run(s.Lay.SymlinkPath, "delete", "-f", s.VMName); err != nil {
+	if err := s.opts.Run(s.Lay.LimaHome, "delete", "-f", s.VMName); err != nil {
 		errs = append(errs, fmt.Errorf("ephemeral-docker: teardown of %s: limactl delete failed: %w", s.VMName, err))
 	}
 	if err := s.opts.Reap(s.VMName); err != nil {
 		errs = append(errs, fmt.Errorf("ephemeral-docker: teardown of %s: QEMU reap failed: %w", s.VMName, err))
 	}
-	if err := os.Remove(s.Lay.SymlinkPath); err != nil && !os.IsNotExist(err) {
-		errs = append(errs, fmt.Errorf("ephemeral-docker: teardown of %s: remove alias %s: %w", s.VMName, s.Lay.SymlinkPath, err))
+	if err := os.RemoveAll(s.Lay.LimaHome); err != nil && !os.IsNotExist(err) {
+		errs = append(errs, fmt.Errorf("ephemeral-docker: teardown of %s: remove LIMA_HOME %s: %w", s.VMName, s.Lay.LimaHome, err))
 	}
 	if err := os.RemoveAll(s.Lay.Dir); err != nil {
 		errs = append(errs, fmt.Errorf("ephemeral-docker: teardown of %s: remove state dir %s: %w", s.VMName, s.Lay.Dir, err))

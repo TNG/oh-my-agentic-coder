@@ -61,7 +61,7 @@ provision:
 probes:
 - script: |
     #!/bin/sh
-    timeout 90 sh -c 'until docker version >/dev/null 2>&1; do sleep 1; done'
+    timeout 90 sh -c 'until DOCKER_HOST=tcp://127.0.0.1:2375 docker version >/dev/null 2>&1; do sleep 1; done'
 portForwards:
 - guestIP: "127.0.0.1"
   guestPort: 2375

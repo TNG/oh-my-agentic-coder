@@ -14,21 +14,24 @@ func TestLayoutCreatesMarkedSessionDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewLayout: %v", err)
 	}
+	t.Cleanup(func() { _ = os.RemoveAll(lay.LimaHome) })
 	defer lay.Release()
 
 	if !strings.HasPrefix(lay.Dir, filepath.Join(cache, "ephemeral-docker")) {
 		t.Errorf("session dir %s must live under the cache scope", lay.Dir)
 	}
-	// Symlink must point at the session dir and carry the marker prefix.
-	target, err := os.Readlink(lay.SymlinkPath)
+	// LIMA_HOME must be a real directory under /tmp carrying the marker
+	// prefix; lima resolves symlinks, so an alias could not hide the
+	// deep cache-scope path.
+	info, err := os.Lstat(lay.LimaHome)
 	if err != nil {
-		t.Fatalf("symlink missing: %v", err)
+		t.Fatalf("LIMA_HOME missing: %v", err)
 	}
-	if target != lay.Dir {
-		t.Errorf("symlink -> %s, want %s", target, lay.Dir)
+	if !info.IsDir() {
+		t.Errorf("LIMA_HOME %s must be a real directory", lay.LimaHome)
 	}
-	if !strings.HasPrefix(filepath.Base(lay.SymlinkPath), "omac-eph-docker-") {
-		t.Errorf("symlink %s must carry the omac-eph-docker marker", lay.SymlinkPath)
+	if !strings.HasPrefix(filepath.Base(lay.LimaHome), "omac-eph-docker-") {
+		t.Errorf("LIMA_HOME %s must carry the omac-eph-docker marker", lay.LimaHome)
 	}
 	// VM name must be recognizable and short enough for QEMU argv matching.
 	if !strings.HasPrefix(lay.VMName, "omac-eph-") {
@@ -44,30 +47,29 @@ func TestLayoutCreatesMarkedSessionDir(t *testing.T) {
 	if err := json.Unmarshal(raw, &m); err != nil {
 		t.Fatalf("marker not JSON: %v", err)
 	}
-	if m.VMName != lay.VMName || m.HostPort != lay.HostPort || m.Symlink != lay.SymlinkPath {
+	if m.VMName != lay.VMName || m.HostPort != lay.HostPort {
 		t.Errorf("marker drifted: %+v", m)
 	}
 }
 
 func TestLayoutSocketPathsStayUnderUnixLimit(t *testing.T) {
 	// Lima builds guestagent control sockets as
-	// <LIMA_HOME>/<vm>/ssh.sock.<nonce>; macOS rejects paths >= 104 bytes.
-	// The short /tmp symlink is the workaround; guard the invariant.
+	// <LIMA_HOME>/<vm>/ssh.sock.<nonce> and rejects paths >= 104 bytes,
+	// resolving symlinks first; hence the short real home under /tmp.
+	// Guard the invariant.
 	cache := t.TempDir()
 	lay, err := NewLayout(cache, "/Users/me/work/proj", func(int) bool { return true })
 	if err != nil {
 		t.Fatalf("NewLayout: %v", err)
 	}
+	t.Cleanup(func() { _ = os.RemoveAll(lay.LimaHome) })
 	defer lay.Release()
-	// Lima binds its control sockets via the short alias, not the deep
-	// physical cache-scope path; only the alias-based string counts
-	// against the 104-byte unix socket limit.
-	probe := filepath.Join(lay.SymlinkPath, lay.VMName, "ssh.sock.0123456789abcdef")
+	probe := filepath.Join(lay.LimaHome, lay.VMName, "ssh.sock.0123456789abcdef")
 	if len(probe) >= 104 {
 		t.Errorf("socket-relevant path too long (%d): %s", len(probe), probe)
 	}
 	if !strings.Contains(probe, "omac-eph-docker-") {
-		t.Errorf("unexpected alias shape: %s", probe)
+		t.Errorf("unexpected LIMA_HOME shape: %s", probe)
 	}
 }
 
@@ -77,6 +79,7 @@ func TestLayoutLockGuardsOrphanDetection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewLayout: %v", err)
 	}
+	t.Cleanup(func() { _ = os.RemoveAll(lay.LimaHome) })
 	if acquired, _ := tryLock(lay.LockPath); acquired {
 		t.Error("the live session's lock must not be acquirable by the sweep")
 	}
@@ -94,6 +97,7 @@ func TestLayoutReleaseIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewLayout: %v", err)
 	}
+	t.Cleanup(func() { _ = os.RemoveAll(lay.LimaHome) })
 	if err := lay.Release(); err != nil {
 		t.Fatalf("first Release: %v", err)
 	}
@@ -113,11 +117,13 @@ func TestLayoutPortDeterministicForWorktree(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewLayout A: %v", err)
 	}
+	t.Cleanup(func() { _ = os.RemoveAll(a.LimaHome) })
 	defer a.Release()
 	b, err := NewLayout(cache, "/Users/me/work/proj", func(int) bool { return true })
 	if err != nil {
 		t.Fatalf("NewLayout B: %v", err)
 	}
+	t.Cleanup(func() { _ = os.RemoveAll(b.LimaHome) })
 	defer b.Release()
 	if a.HostPort != b.HostPort {
 		t.Errorf("same worktree resolved different ports: %d vs %d", a.HostPort, b.HostPort)

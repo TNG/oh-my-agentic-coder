@@ -17,7 +17,7 @@ var ErrUnpinnedArch = errors.New("no pinned image digest for this architecture")
 
 const (
 	alpineRelease    = "3.22.4"
-	alpineURLFormat  = "https://dl-cdn.alpinelinux.org/alpine/v3.22/releases/cloud/nocloud_alpine-%s-" + alpineRelease + "-uefi-cloudinit-r0.qcow2"
+	alpineURLFormat  = "https://dl-cdn.alpinelinux.org/alpine/v3.22/releases/cloud/nocloud_alpine-" + alpineRelease + "-%s-uefi-cloudinit-r0.qcow2"
 	alpineAarch64SHA = "a53620902f99b1fd4591125d348e4385f036d590607f4fa90d6f85fea0248007ec763cc81d025f347ede5bd746b3726cf5eddd461b6c94c35376f71cb7558317"
 )
 
@@ -134,7 +134,7 @@ func RenderLimaConfig(cfg LimaConfig) (string, error) {
 	b.WriteString("probes:\n")
 	b.WriteString("- script: |\n")
 	b.WriteString("    #!/bin/sh\n")
-	b.WriteString("    timeout 90 sh -c 'until docker version >/dev/null 2>&1; do sleep 1; done'\n")
+	b.WriteString("    timeout 90 sh -c 'until DOCKER_HOST=tcp://127.0.0.1:2375 docker version >/dev/null 2>&1; do sleep 1; done'\n")
 
 	// Explicit forward of the docker endpoint to the deterministic host
 	// loopback port; DOCKER_HOST inside the sandbox points here.

@@ -92,7 +92,7 @@ func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, int) 
 		innerCmdOverride   = fs.String("inner", "", "Override inner_cmd's executable.")
 		noSandbox          = fs.Bool("no-sandbox", false, "Run inner command directly, without a sandbox (debug only).")
 		ephemeralCache     = fs.Bool("ephemeral-cache", false, "Use a per-launch cache instead of the persistent cache.")
-		ephemeralDocker    = fs.Bool("ephemeral-docker", false, "Boot a session-private throwaway Docker VM (macOS, lima/qemu). The sandboxed agent gets DOCKER_HOST pointing at it; the VM and its state are deleted when the session ends.")
+		ephemeralDocker    = fs.Bool("ephemeral-docker", false, "Boot a session-private throwaway Docker VM (lima/qemu). The sandboxed agent gets DOCKER_HOST pointing at it; the VM and its state are deleted when the session ends.")
 		cacheScope         = fs.String("cache-scope", "", "Persistent cache scope: global, config, or workdir. Overrides config (default: global).")
 		keepRunning        = fs.Bool("keep-running", false, "Do not stop sidecars when the inner command exits.")
 		acceptSkillChanges = fs.Bool("accept-skill-changes", false, "Tolerate bundle_hash drift in registered skills (proceed even if the on-disk skill differs from what was registered).")
@@ -762,15 +762,11 @@ func runLaunch(env *Env, opts launchOpts) int {
 	//     throwaway VM with its own docker daemon, booted and torn down by
 	//     this unsandboxed parent. The sandboxed agent reaches it only via
 	//     DOCKER_HOST over a loopback forward (--open-port below); the VM
-	//     shares nothing with the host. macOS only (lima/qemu backend);
+	//     shares nothing with the host (lima/qemu backend);
 	//     --no-sandbox is refused at parse time. On a crash the next
 	//     session's orphan sweep reaps the unit.
 	var ephVM ephemeraldocker.Handle
 	if opts.ephemeralDocker {
-		if runtime.GOOS != "darwin" {
-			fmt.Fprintf(env.Stderr, "%s: --ephemeral-docker is macOS-only (lima/qemu backend)\n", prefix)
-			return ExitMisuse
-		}
 		if cacheScope == nil {
 			// Defensive: with the no-sandbox combination already refused,
 			// a launch always has a cache scope.

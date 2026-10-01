@@ -82,7 +82,7 @@ func WaitForEndpoint(ctx context.Context, hostPort int, interval time.Duration, 
 // guest exit code — both a failed shell call and a missing table land
 // here as errors, and the session must not start in either case.
 func VerifyFirewall(run LimaCtl, limaHome, vmName string) error {
-	if err := run(limaHome, "shell", vmName, "--", "nft", "list", "table", "inet", "omac-vmguard"); err != nil {
+	if err := run(limaHome, "shell", vmName, "--", "sudo", "nft", "list", "table", "inet", "omac-vmguard"); err != nil {
 		return fmt.Errorf("ephemeral-docker: firewall verification failed for %s: %w", vmName, err)
 	}
 	return nil

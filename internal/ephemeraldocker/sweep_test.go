@@ -95,19 +95,22 @@ func mkUnit(t *testing.T, root, sess string, marker *SessionMarker, hold bool) {
 	_ = lock.Close()
 }
 
-func unitSymlink(sess string) string {
-	return filepath.Join(symlinkDir, symlinkPrefix+sess)
+// unitHome stages the unit's short LIMA_HOME under /tmp.
+func unitHome(t *testing.T, sess string) string {
+	t.Helper()
+	home := filepath.Join(shortHomeDir, shortHomePrefix+sess)
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(home) })
+	return home
 }
 
 func TestSweepReapsOrphan(t *testing.T) {
 	root := t.TempDir()
 	sess := "0123456789ab"
-	sym := unitSymlink(sess)
-	if err := os.Symlink(filepath.Join(root, sess), sym); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Remove(sym) })
-	mkUnit(t, root, sess, &SessionMarker{VMName: "omac-eph-aaaa1111", HostPort: 39999, Symlink: sym}, false)
+	home := unitHome(t, sess)
+	mkUnit(t, root, sess, &SessionMarker{VMName: "omac-eph-aaaa1111", HostPort: 39999}, false)
 
 	fl := &fakeLima{}
 	rp := &fakeReaper{}
@@ -122,14 +125,15 @@ func TestSweepReapsOrphan(t *testing.T) {
 	if len(calls) != 1 {
 		t.Fatalf("limactl calls = %d, want 1", len(calls))
 	}
-	if calls[0].home != sym || calls[0].args[0] != "delete" || calls[0].args[1] != "-f" || calls[0].args[2] != "omac-eph-aaaa1111" {
+	// The delete must target the session-id-derived home, not a marker field.
+	if calls[0].home != home || calls[0].args[0] != "delete" || calls[0].args[1] != "-f" || calls[0].args[2] != "omac-eph-aaaa1111" {
 		t.Errorf("unexpected delete call: %+v", calls[0])
 	}
 	if _, err := os.Stat(filepath.Join(root, sess)); !errors.Is(err, os.ErrNotExist) {
 		t.Error("orphan session dir must be removed")
 	}
-	if _, err := os.Lstat(sym); !errors.Is(err, os.ErrNotExist) {
-		t.Error("orphan LIMA_HOME alias must be removed")
+	if _, err := os.Lstat(home); !errors.Is(err, os.ErrNotExist) {
+		t.Error("orphan LIMA_HOME must be removed")
 	}
 	if len(rp.names) != 0 {
 		t.Errorf("QEMU reap must not run on a clean delete, got %v", rp.names)
@@ -139,7 +143,8 @@ func TestSweepReapsOrphan(t *testing.T) {
 func TestSweepSkipsActiveSession(t *testing.T) {
 	root := t.TempDir()
 	sess := "456789abcdef"
-	mkUnit(t, root, sess, &SessionMarker{VMName: "omac-eph-bbbb2222", HostPort: 30001, Symlink: unitSymlink(sess)}, true)
+	home := unitHome(t, sess)
+	mkUnit(t, root, sess, &SessionMarker{VMName: "omac-eph-bbbb2222", HostPort: 30001}, true)
 
 	fl := &fakeLima{}
 	res, errs := Sweep(root, fl.run, func(string) error { return nil })
@@ -157,6 +162,9 @@ func TestSweepSkipsActiveSession(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, sess)); err != nil {
 		t.Errorf("active session dir must stay: %v", err)
+	}
+	if _, err := os.Stat(home); err != nil {
+		t.Errorf("active session LIMA_HOME must stay: %v", err)
 	}
 }
 
@@ -192,11 +200,7 @@ func TestSweepIgnoresForeignEntries(t *testing.T) {
 func TestSweepCleansUnmarkedGarbage(t *testing.T) {
 	root := t.TempDir()
 	sess := "abc123def456"
-	sym := unitSymlink(sess)
-	if err := os.Symlink(filepath.Join(root, sess), sym); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Remove(sym) })
+	home := unitHome(t, sess)
 	// Lock file exists, lock free, but no marker: layout crashed midway
 	// — no VM was ever started, so no limactl call may happen.
 	mkUnit(t, root, sess, nil, false)
@@ -215,8 +219,8 @@ func TestSweepCleansUnmarkedGarbage(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(root, sess)); !errors.Is(err, os.ErrNotExist) {
 		t.Error("garbage session dir must be removed")
 	}
-	if _, err := os.Lstat(sym); !errors.Is(err, os.ErrNotExist) {
-		t.Error("garbage LIMA_HOME alias must be removed")
+	if _, err := os.Lstat(home); !errors.Is(err, os.ErrNotExist) {
+		t.Error("garbage LIMA_HOME must be removed")
 	}
 }
 
@@ -230,7 +234,7 @@ func TestSweepTreatsCorruptMarkerAsGarbage(t *testing.T) {
 		t.Fatal(err)
 	}
 	good := "badbadbad002"
-	mkUnit(t, root, good, &SessionMarker{VMName: "omac-eph-cccc3333", HostPort: 30002, Symlink: unitSymlink(good)}, false)
+	mkUnit(t, root, good, &SessionMarker{VMName: "omac-eph-cccc3333", HostPort: 30002}, false)
 
 	fl := &fakeLima{}
 	res, errs := Sweep(root, fl.run, func(string) error { return nil })
@@ -251,7 +255,7 @@ func TestSweepTreatsCorruptMarkerAsGarbage(t *testing.T) {
 func TestSweepQEMUReapOnDeleteFailure(t *testing.T) {
 	root := t.TempDir()
 	sess := "112233445566"
-	mkUnit(t, root, sess, &SessionMarker{VMName: "omac-eph-dddd4444", HostPort: 30003, Symlink: unitSymlink(sess)}, false)
+	mkUnit(t, root, sess, &SessionMarker{VMName: "omac-eph-dddd4444", HostPort: 30003}, false)
 
 	fl := &fakeLima{err: errors.New("limactl delete failed")}
 	rp := &fakeReaper{}
@@ -274,30 +278,23 @@ func TestSweepQEMUReapOnDeleteFailure(t *testing.T) {
 	}
 }
 
-func TestSweepRemovesDanglingAliases(t *testing.T) {
+func TestSweepRemovesOrphanHomes(t *testing.T) {
 	root := t.TempDir()
-	// A dangling alias whose unit is already gone.
-	dangling := unitSymlink("998877665544")
-	if err := os.Symlink(filepath.Join(root, "gone"), dangling); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Remove(dangling) })
-	// An alias whose target exists (an active unit) must survive.
-	live := unitSymlink("998877665545")
-	if err := os.Symlink(root, live); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Remove(live) })
+	// An orphan LIMA_HOME whose unit dir under root is already gone.
+	orphan := unitHome(t, "998877665544")
+	// A home whose unit dir exists under root must survive.
+	live := unitHome(t, "998877665545")
+	mkUnit(t, root, "998877665545", &SessionMarker{VMName: "omac-eph-ffff6666", HostPort: 30005}, true)
 
 	_, errs := Sweep(root, func(string, ...string) error { return nil }, func(string) error { return nil })
 	if len(errs) != 0 {
 		t.Fatalf("unexpected errors: %v", errs)
 	}
-	if _, err := os.Lstat(dangling); !errors.Is(err, os.ErrNotExist) {
-		t.Error("dangling alias must be removed")
+	if _, err := os.Lstat(orphan); !errors.Is(err, os.ErrNotExist) {
+		t.Error("orphan LIMA_HOME must be removed")
 	}
 	if _, err := os.Lstat(live); err != nil {
-		t.Error("alias with existing target must survive")
+		t.Error("LIMA_HOME of a unit with existing dir must survive")
 	}
 }
 

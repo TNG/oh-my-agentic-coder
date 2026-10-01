@@ -31,11 +31,30 @@ omac start claude       # specific harness
 | `--sandbox <profile>` | builtin | Sandbox profile: `builtin` (recommended), `nono` (deprecated), `nono-netprofile` (deprecated), `no-sandbox-debug` (removes all isolation, debug only). |
 | `--no-sandbox` | false | Run the harness without sandboxing. Removes all isolation — debug use only. |
 | `--ephemeral-cache` | false | Use a temporary cache deleted when the session ends. Use this for a clean build environment or when you do not want the agent's package downloads to persist. |
+| `--ephemeral-docker` | false | Boot a session-private throwaway Docker VM and export `DOCKER_HOST` to the sandboxed agent. See [Ephemeral Docker sessions](#ephemeral-docker-sessions). |
 | `--cache-scope <scope>` | global | Which cache to use for the agent's package downloads (npm, pip, cargo, etc.). `global` shares one cache across all your projects, `config` shares it across projects using the same config file, `workdir` gives each project its own isolated cache. See [Cache](../advanced/cache.md). |
 | `--open-port <port>` | — | Allow the sandboxed process to bind and connect on this local TCP port (repeatable) for this session only. Useful for a local dev server or an MCP server the harness talks to. To make it permanent, use `network.open_port` in the grants file — see [Opening a port](../configuration.md#opening-a-port). |
 | `--no-audit` | false | Disable the security audit trail for this session. |
 
 For all flags: `omac start --help`.
+
+#### Ephemeral Docker sessions
+
+`omac start --ephemeral-docker` boots a short-lived Linux VM ([Lima](https://github.com/lima-vm/lima) with QEMU) that has its own Docker daemon, and exports `DOCKER_HOST` into the sandbox. This lets the agent run container-based tests (Testcontainers, docker-compose) without a shared host daemon. The flag is also accepted by `omac continue` and `omac resume`.
+
+- The VM has no host filesystem mounts, host sockets, or credentials. Its Docker endpoint is forwarded to a deterministic loopback port that the sandbox is granted access to; published container ports are also forwarded to loopback.
+- The guest runs the omac-vmguard firewall: image pulls and published container ports work, but new outbound connections from containers to the outside are dropped.
+- The Alpine base image is digest-pinned and shared between sessions of the same cache scope (see [Cache](../advanced/cache.md)). With `--ephemeral-cache`, the image is downloaded anew each session.
+- When the session ends, the VM and its state are deleted. A unit left behind by a crash is reaped by the next session's orphan sweep.
+
+Limitations and failure behavior:
+
+- The verified host is an Apple Silicon Mac. Linux and WSL users can try the same Lima/QEMU path and contribute platform-specific setup and test results. Install `limactl`, QEMU, and the firmware needed by the guest architecture. For x86_64 hosts, add a verified image digest in `internal/ephemeraldocker/limaconfig.go` and update its image-pin tests; unpinned images remain rejected.
+- A missing `limactl` prints an install hint and exits with code 4; any boot failure (endpoint timeout, firewall verification) deletes the VM, exits with code 1, and names the VM so leftovers stay traceable.
+
+For projects with private Gradle dependencies, run the project's wrapper on the host first with `GRADLE_USER_HOME` pointing to a project-local ignored directory, using your normal registry credentials and host Docker if the build needs it. Then run the same task inside `omac start --ephemeral-docker` with that directory as `GRADLE_USER_HOME` and Gradle's `--offline` flag. Allow `GRADLE_USER_HOME` through the sandbox profile's environment filter and grant the required JDK path; projects with dynamic local ports also need `network.open_port: [0]` on macOS. omac does not prime Gradle dependencies or provide private Maven credentials.
+
+For Linux/WSL validation, start with `omac start --ephemeral-docker --verbose --inner /bin/bash`. Check VM boot, the Docker endpoint, published container ports, blocked container egress, and teardown before running the full test suite. Linux's Landlock filter grants TCP access by port across all destinations, so use explicit port grants and retain kernel enforcement. The macOS loopback wildcard `[0]` is not a Linux equivalent. Record the working profile and commands with your test results.
 
 ### omac serve
 

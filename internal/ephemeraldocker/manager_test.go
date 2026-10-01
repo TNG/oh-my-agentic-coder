@@ -53,7 +53,7 @@ func TestStartSessionHappyPath(t *testing.T) {
 		t.Fatalf("limactl calls = %d (%+v), want create+start+shell", len(calls), calls)
 	}
 	vm := s.VMName
-	if calls[0].home != s.Lay.SymlinkPath || calls[0].args[0] != "create" || calls[0].args[1] != "--name" || calls[0].args[2] != vm {
+	if calls[0].home != s.Lay.LimaHome || calls[0].args[0] != "create" || calls[0].args[1] != "--name" || calls[0].args[2] != vm {
 		t.Errorf("create call wrong: %+v", calls[0])
 	}
 	if calls[1].args[0] != "start" || calls[1].args[1] != "--tty=false" || calls[1].args[2] != vm {
@@ -75,7 +75,7 @@ func TestStartSessionHappyPath(t *testing.T) {
 		t.Errorf("marker missing: %v", err)
 	}
 
-	// Teardown: delete -f, alias gone, dir gone, lock released.
+	// Teardown: delete -f, LIMA_HOME gone, dir gone, lock released.
 	if err := s.Teardown(); err != nil {
 		t.Fatalf("Teardown: %v", err)
 	}
@@ -86,14 +86,14 @@ func TestStartSessionHappyPath(t *testing.T) {
 			deletes = append(deletes, c)
 		}
 	}
-	if len(deletes) != 1 || deletes[0].args[1] != "-f" || deletes[0].args[2] != vm || deletes[0].home != s.Lay.SymlinkPath {
+	if len(deletes) != 1 || deletes[0].args[1] != "-f" || deletes[0].args[2] != vm || deletes[0].home != s.Lay.LimaHome {
 		t.Errorf("teardown delete call wrong: %+v", deletes)
 	}
 	if _, err := os.Stat(s.Lay.Dir); !errors.Is(err, os.ErrNotExist) {
 		t.Error("session dir must be gone after teardown")
 	}
-	if _, err := os.Lstat(s.Lay.SymlinkPath); !errors.Is(err, os.ErrNotExist) {
-		t.Error("LIMA_HOME alias must be gone after teardown")
+	if _, err := os.Lstat(s.Lay.LimaHome); !errors.Is(err, os.ErrNotExist) {
+		t.Error("LIMA_HOME must be gone after teardown")
 	}
 	if acquired, cleanup := tryLock(s.Lay.LockPath); !acquired {
 		t.Error("liveness lock must be released after teardown")
@@ -215,7 +215,7 @@ func TestStartSessionSweepsOrphansFirst(t *testing.T) {
 	cache := t.TempDir()
 	root := filepath.Join(cache, scopeDirName)
 	orphan := "999999999999"
-	mkUnit(t, root, orphan, &SessionMarker{VMName: "omac-eph-eeee5555", HostPort: 30004, Symlink: unitSymlink(orphan)}, false)
+	mkUnit(t, root, orphan, &SessionMarker{VMName: "omac-eph-eeee5555", HostPort: 30004}, false)
 
 	s, err := StartSession(context.Background(), baseOpts(t, cache, fl))
 	if err != nil {

@@ -76,7 +76,7 @@ func TestRenderLimaConfigProvisionOrder(t *testing.T) {
 	pkg := strings.Index(got, "apk add --no-cache docker docker-cli nftables")
 	vmguard := strings.Index(got, "nft -f /etc/omac-vmguard.nft")
 	dockerd := strings.Index(got, "nohup dockerd -H unix:///var/run/docker.sock -H tcp://127.0.0.1:2375")
-	probe := strings.Index(got, "until docker version")
+	probe := strings.Index(got, "until DOCKER_HOST=tcp://127.0.0.1:2375 docker version")
 	if pkg < 0 || vmguard < 0 || dockerd < 0 || probe < 0 {
 		t.Fatalf("config misses a provision stage (pkg=%d vmguard=%d dockerd=%d probe=%d)",
 			pkg, vmguard, dockerd, probe)
@@ -149,7 +149,10 @@ func TestAlpineImagePinsDigest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AlpineImage(aarch64): %v", err)
 	}
-	if !strings.Contains(url, "nocloud_alpine-") || !strings.HasSuffix(url, "-uefi-cloudinit-r0.qcow2") {
+	// The real filename on dl-cdn puts the release before the arch;
+	// the exact-match check guards against placeholder-order regressions
+	// that pass Contains/HasSuffix checks but 404 on download.
+	if url != "https://dl-cdn.alpinelinux.org/alpine/v3.22/releases/cloud/nocloud_alpine-3.22.4-aarch64-uefi-cloudinit-r0.qcow2" {
 		t.Errorf("unexpected image URL %q", url)
 	}
 	if !strings.HasPrefix(digest, "sha512:") || len(digest) != len("sha512:")+128 {

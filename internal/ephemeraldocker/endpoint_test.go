@@ -77,7 +77,7 @@ func TestVerifyFirewallSuccess(t *testing.T) {
 	if err := VerifyFirewall(run, "/tmp/alias", "omac-eph-abcd1234"); err != nil {
 		t.Fatalf("VerifyFirewall: %v", err)
 	}
-	want := []string{"shell", "omac-eph-abcd1234", "--", "nft", "list", "table", "inet", "omac-vmguard"}
+	want := []string{"shell", "omac-eph-abcd1234", "--", "sudo", "nft", "list", "table", "inet", "omac-vmguard"}
 	if strings.Join(got.args, " ") != strings.Join(want, " ") {
 		t.Errorf("args = %v, want %v", got.args, want)
 	}

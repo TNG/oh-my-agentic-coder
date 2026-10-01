@@ -72,13 +72,14 @@ func Sweep(root string, run LimaCtl, reap Reaper) (SweepResult, []error) {
 			res.Reaped = append(res.Reaped, vmName)
 		}
 	}
-	errs = append(errs, sweepDanglingAliases()...)
+	errs = append(errs, sweepOrphanHomes(root)...)
 	return res, errs
 }
 
-// reapUnit removes one orphaned unit: VM first, then alias, then dir. It
-// returns the unit's VM name ("" for unmarked garbage) and an error when
-// the unit dir could not be removed.
+// reapUnit removes one orphaned unit: VM first, then the short LIMA_HOME
+// under /tmp, then the bookkeeping dir. It returns the unit's VM name
+// ("" for unmarked garbage) and an error when the unit dir could not be
+// removed.
 func reapUnit(sess, unit string, run LimaCtl, reap Reaper, errs *[]error) (vmName string, dirErr error) {
 	var marker SessionMarker
 	vmName = ""
@@ -91,8 +92,13 @@ func reapUnit(sess, unit string, run LimaCtl, reap Reaper, errs *[]error) (vmNam
 		// delete, the dir is garbage.
 	}
 
+	// The LIMA_HOME is derived from the session id, never taken from
+	// the marker: a corrupted marker must not make the sweep point
+	// limactl at an arbitrary LIMA_HOME or remove arbitrary paths.
+	home := filepath.Join(shortHomeDir, shortHomePrefix+sess)
+
 	if vmName != "" {
-		if err := run(marker.Symlink, "delete", "-f", vmName); err != nil {
+		if err := run(home, "delete", "-f", vmName); err != nil {
 			*errs = append(*errs, fmt.Errorf("sweep: unit %s: limactl delete %s failed: %w", sess, vmName, err))
 			if rerr := reap(vmName); rerr != nil {
 				*errs = append(*errs, fmt.Errorf("sweep: unit %s: QEMU reap of %s failed: %w", sess, vmName, rerr))
@@ -100,10 +106,8 @@ func reapUnit(sess, unit string, run LimaCtl, reap Reaper, errs *[]error) (vmNam
 		}
 	}
 
-	// Remove the alias by its derived name, not by the marker field: a
-	// corrupted marker must not make the sweep remove arbitrary paths.
-	if err := os.Remove(filepath.Join(symlinkDir, symlinkPrefix+sess)); err != nil && !os.IsNotExist(err) {
-		return "", fmt.Errorf("sweep: unit %s: remove alias: %w", sess, err)
+	if err := os.RemoveAll(home); err != nil {
+		return "", fmt.Errorf("sweep: unit %s: remove LIMA_HOME: %w", sess, err)
 	}
 	if err := os.RemoveAll(unit); err != nil {
 		return "", fmt.Errorf("sweep: unit %s: remove dir: %w", sess, err)
@@ -111,31 +115,30 @@ func reapUnit(sess, unit string, run LimaCtl, reap Reaper, errs *[]error) (vmNam
 	return vmName, nil
 }
 
-// sweepDanglingAliases removes /tmp LIMA_HOME aliases whose target is
-// gone (a teardown that died between dir removal and alias removal).
-// Aliases with a live target belong to active units and survive.
-func sweepDanglingAliases() []error {
+// sweepOrphanHomes removes /tmp LIMA_HOME directories whose unit dir
+// under root is gone (a teardown or reboot that lost the scope state).
+// Homes whose unit dir exists belong to active or locked units and are
+// handled by the main loop.
+func sweepOrphanHomes(root string) []error {
 	var errs []error
-	entries, err := os.ReadDir(symlinkDir)
+	entries, err := os.ReadDir(shortHomeDir)
 	if err != nil {
 		return nil
 	}
 	for _, entry := range entries {
 		name := entry.Name()
-		if entry.Type()&os.ModeSymlink == 0 || !strings.HasPrefix(name, symlinkPrefix) {
+		if !entry.IsDir() || !strings.HasPrefix(name, shortHomePrefix) {
 			continue
 		}
-		if !isSessionID(strings.TrimPrefix(name, symlinkPrefix)) {
+		sess := strings.TrimPrefix(name, shortHomePrefix)
+		if !isSessionID(sess) {
 			continue
 		}
-		target, err := os.Readlink(filepath.Join(symlinkDir, name))
-		if err != nil {
-			continue
+		if _, statErr := os.Stat(filepath.Join(root, sess)); statErr == nil {
+			continue // unit dir exists: not ours to judge here
 		}
-		if _, err := os.Stat(target); os.IsNotExist(err) {
-			if rmErr := os.Remove(filepath.Join(symlinkDir, name)); rmErr != nil && !os.IsNotExist(rmErr) {
-				errs = append(errs, fmt.Errorf("sweep: remove dangling alias %s: %w", name, rmErr))
-			}
+		if rmErr := os.RemoveAll(filepath.Join(shortHomeDir, name)); rmErr != nil && !os.IsNotExist(rmErr) {
+			errs = append(errs, fmt.Errorf("sweep: remove orphan LIMA_HOME %s: %w", name, rmErr))
 		}
 	}
 	return errs
