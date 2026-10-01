@@ -255,7 +255,7 @@ func TestIntegrationProtectedMarkerLaunchAndContent(t *testing.T) {
 }
 
 // TestIntegrationMaskedShellConfigSourcesCleanly is the end-to-end form
-// of #213: with $HOME as the workdir, ~/.profile is mounted and masked,
+// of: with $HOME as the workdir, ~/.profile is mounted and masked,
 // so every login shell inside the sandbox sources the marker. A marker
 // of plain prose hung there forever (its "POST ..." line runs
 // libwww-perl's lwp-request, which blocks on stdin) and spewed

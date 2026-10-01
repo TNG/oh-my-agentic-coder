@@ -52,7 +52,7 @@ var (
 )
 
 // TestE2EServeDirTokenIsolation is a live regression test for the dir_token
-// leak fixed in 3ea0336 (#74, tracked for e2e coverage in #66): the
+// leak fixed in 3ea0336 (tracked for e2e coverage in): the
 // control-plane port is whitelisted into the sandbox (see injectOpenPort in
 // internal/cli/serve.go), so anything /__omac__/dirs returns is available
 // to a fully-confined sandboxed agent process. Before the fix, that
@@ -222,7 +222,7 @@ func TestE2EServeDirTokenIsolation(t *testing.T) {
 	dirsBody, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if strings.Contains(string(dirsBody), tokA) || strings.Contains(string(dirsBody), tokB) {
-		t.Errorf("/__omac__/dirs leaked a dir_token over the wire (issue #74 regression): %s", dirsBody)
+		t.Errorf("/__omac__/dirs leaked a dir_token over the wire: %s", dirsBody)
 	}
 
 	// --- Positive control: each dir's own token still resolves its own

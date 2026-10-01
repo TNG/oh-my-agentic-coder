@@ -140,10 +140,13 @@ func DefaultLauncherConfig() LauncherConfig {
 func boolPtr(b bool) *bool { return &b }
 
 // LocalConfigDir returns the project-local omac config directory
-// (<workdir>/.omac). It is created at launch and masked for the agent, so the
-// files in it are the sandbox definition and can never be written by a session.
+// (<workdir>/.omac). Inside a session it is masked, so the files in it carry
+// the sandbox definition, and the macOS backend cannot block replacing the
+// directory itself in the writable workdir, so what a launch may trust is
+// what the host-side approval pins (config.ProjectSandboxTrust) recorded —
+// this path is the key into that pin store.
 func LocalConfigDir(workdir string) string {
-	return filepath.Join(workdir, ".omac")
+	return filepath.Join(workdir, sandboxprofile.ProjectConfigDirName)
 }
 
 // ProjectLauncherConfigPath returns the per-workdir launcher config path.
@@ -169,6 +172,51 @@ func legacyProjectConfigPaths(workdir string) []string {
 	}
 }
 
+// launcherLayers is the loaded pair of launcher config files for workdir.
+type launcherLayers struct {
+	global     LauncherConfig
+	globalPath string
+	local      LauncherConfig
+	localPath  string
+}
+
+// readLauncherLayers loads both launcher config layers and validates each
+// layer's sandbox block and cache scope before anything is merged. The
+// 0.9.0 launcher-template settings are rejected here, whatever the caller
+// does with the rest, and per-layer validation makes an invalid cache scope
+// name the file that set it.
+func readLauncherLayers(workdir string) (launcherLayers, error) {
+	var l launcherLayers
+	var err error
+	if l.global, l.globalPath, err = loadLauncherFile(GlobalLauncherConfigPath()); err != nil {
+		return l, err
+	}
+	if l.local, l.localPath, err = loadLauncherFile(ProjectLauncherConfigPath(workdir)); err != nil {
+		return l, err
+	}
+	if l.globalPath != "" {
+		if err := validateSandbox(l.global.Sandbox, l.globalPath, globalProfileDir(), false); err != nil {
+			return l, err
+		}
+		if l.global.Cache.Scope != "" {
+			if _, cerr := ValidateCacheScope(string(l.global.Cache.Scope)); cerr != nil {
+				return l, fmt.Errorf("parse %s: %w", l.globalPath, cerr)
+			}
+		}
+	}
+	if l.localPath != "" {
+		if err := validateSandbox(l.local.Sandbox, l.localPath, LocalConfigDir(workdir), true); err != nil {
+			return l, err
+		}
+		if l.local.Cache.Scope != "" {
+			if _, cerr := ValidateCacheScope(string(l.local.Cache.Scope)); cerr != nil {
+				return l, fmt.Errorf("parse %s: %w", l.localPath, cerr)
+			}
+		}
+	}
+	return l, nil
+}
+
 // LoadLauncher loads the launcher config for workdir.
 //
 // It reads both the project-local config (<workdir>/.omac/config.yaml) and the
@@ -183,58 +231,28 @@ func legacyProjectConfigPaths(workdir string) []string {
 // are applied), the global file when only that exists, or "" when neither
 // exists (compiled-in defaults are used).
 func LoadLauncher(workdir string) (LauncherConfig, string, error) {
-	global, globalPath, err := loadLauncherFile(GlobalLauncherConfigPath())
+	layers, err := readLauncherLayers(workdir)
 	if err != nil {
-		return LauncherConfig{}, "", err
-	}
-	local, localPath, err := loadLauncherFile(ProjectLauncherConfigPath(workdir))
-	if err != nil {
-		return LauncherConfig{}, "", err
-	}
-
-	// Validate the raw sandbox block of both layers before defaults are
-	// merged. This turns 0.9.0's launcher-template settings into an
-	// actionable error instead of a silent ignore.
-	if err := validateSandbox(global.Sandbox, globalPath, globalProfileDir(), false); err != nil {
-		return LauncherConfig{}, "", err
-	}
-	if err := validateSandbox(local.Sandbox, localPath, LocalConfigDir(workdir), true); err != nil {
 		return LauncherConfig{}, "", err
 	}
 
 	switch {
-	case localPath != "" && globalPath != "":
+	case layers.localPath != "" && layers.globalPath != "":
 		// Global security fields, local operational settings on top.
-		merged := mergeDefaults(global)
-		if n := strings.TrimSpace(local.Sandbox.ProfileName); n != "" {
-			merged.Sandbox.ProfileName = n
-		}
-		merged.Facade.IdleTimeoutSecs = pickInt(local.Facade.IdleTimeoutSecs, merged.Facade.IdleTimeoutSecs)
-		merged.Facade.MaxBodyBytes = pickInt64(local.Facade.MaxBodyBytes, merged.Facade.MaxBodyBytes)
+		merged := mergeDefaults(layers.global)
+		merged.Facade.IdleTimeoutSecs = pickInt(layers.local.Facade.IdleTimeoutSecs, merged.Facade.IdleTimeoutSecs)
+		merged.Facade.MaxBodyBytes = pickInt64(layers.local.Facade.MaxBodyBytes, merged.Facade.MaxBodyBytes)
 		// Only override the global cache scope when the project actually sets
 		// one; otherwise a project config that exists only for profile_name
 		// would silently reset a global scope to the workdir default.
-		if local.Cache.Scope != "" {
-			merged.Cache = local.Cache
+		if layers.local.Cache.Scope != "" {
+			merged.Cache = layers.local.Cache
 		}
-		if _, err := merged.Cache.Resolve(); err != nil {
-			return LauncherConfig{}, "", fmt.Errorf("parse %s: %w", localPath, err)
-		}
-		return merged, localPath, nil
-	case localPath != "":
-		lc := stripSecurityFields(local)
-		lc.Sandbox.ProfileName = strings.TrimSpace(local.Sandbox.ProfileName)
-		lc = mergeDefaults(lc)
-		if _, err := lc.Cache.Resolve(); err != nil {
-			return LauncherConfig{}, "", fmt.Errorf("parse %s: %w", localPath, err)
-		}
-		return lc, localPath, nil
-	case globalPath != "":
-		lc := mergeDefaults(global)
-		if _, err := lc.Cache.Resolve(); err != nil {
-			return LauncherConfig{}, "", fmt.Errorf("parse %s: %w", globalPath, err)
-		}
-		return lc, globalPath, nil
+		return merged, layers.localPath, nil
+	case layers.localPath != "":
+		return mergeDefaults(stripSecurityFields(layers.local)), layers.localPath, nil
+	case layers.globalPath != "":
+		return mergeDefaults(layers.global), layers.globalPath, nil
 	default:
 		return DefaultLauncherConfig(), "", nil
 	}
@@ -261,9 +279,8 @@ func loadLauncherFile(path string) (LauncherConfig, string, error) {
 }
 
 // stripSecurityFields zeroes all fields a workdir config must not control:
-// sandbox briefing, audit settings, and facade env passthrough. Only
-// operational settings (facade timeouts, cache) and sandbox.profile_name
-// survive; the caller re-applies profile_name.
+// the whole sandbox block, audit settings, and facade env passthrough. Only
+// operational settings (facade timeouts, cache) survive.
 func stripSecurityFields(lc LauncherConfig) LauncherConfig {
 	lc.Sandbox = SandboxConfig{}
 	lc.Audit = AuditConfig{}
@@ -331,27 +348,16 @@ type ProfileSelection struct {
 // A named profile that does not exist is an error rather than a silent fall
 // back, so a typo cannot quietly downgrade the grants.
 func ResolveSandboxProfile(workdir string) (ProfileSelection, error) {
-	var localDir, localCfgFile string
+	layers, err := readLauncherLayers(workdir)
+	if err != nil {
+		return ProfileSelection{}, err
+	}
+	var localDir string
 	if workdir != "" {
 		localDir = LocalConfigDir(workdir)
-		localCfgFile = filepath.Join(localDir, "config.yaml")
-	}
-	localCfg, localPath, err := loadLauncherFile(localCfgFile)
-	if err != nil {
-		return ProfileSelection{}, err
-	}
-	globalCfg, globalPath, err := loadLauncherFile(GlobalLauncherConfigPath())
-	if err != nil {
-		return ProfileSelection{}, err
-	}
-	if err := validateSandbox(localCfg.Sandbox, localPath, localDir, true); err != nil {
-		return ProfileSelection{}, err
-	}
-	if err := validateSandbox(globalCfg.Sandbox, globalPath, globalProfileDir(), false); err != nil {
-		return ProfileSelection{}, err
 	}
 
-	if name := strings.TrimSpace(localCfg.Sandbox.ProfileName); name != "" && localDir != "" {
+	if name := strings.TrimSpace(layers.local.Sandbox.ProfileName); name != "" && localDir != "" {
 		return namedProfileSelection(localDir, name, "workdir")
 	}
 	if localDir != "" {
@@ -362,7 +368,7 @@ func ResolveSandboxProfile(workdir string) (ProfileSelection, error) {
 		}
 	}
 
-	return globalSandboxProfile(globalCfg)
+	return globalSandboxProfile(layers.global)
 }
 
 // globalSandboxProfile resolves the global selection from an already-loaded
@@ -385,8 +391,8 @@ func globalSandboxProfile(globalCfg LauncherConfig) (ProfileSelection, error) {
 
 // defaultProfileSelection returns the layer's default.json when a regular file
 // (not a symlink or directory) exists there. A symlinked default is rejected
-// like a named profile, so the auto-selected path cannot bypass the
-// write-protection guarantee.
+// like a named profile: an auto-selected path must not escape the layer whose
+// content the pin store covers.
 func defaultProfileSelection(dir, layer string) (ProfileSelection, bool, error) {
 	p := filepath.Join(dir, "default.json")
 	if _, err := os.Lstat(p); err != nil {
@@ -397,17 +403,19 @@ func defaultProfileSelection(dir, layer string) (ProfileSelection, bool, error) 
 		// to the next layer or the built-in default.
 		return ProfileSelection{}, false, fmt.Errorf("stat %s: %w", p, err)
 	}
-	if err := checkProfileFile(p, "sandbox profile default"); err != nil {
+	if err := sandboxprofile.CheckProfileFile(p, "sandbox profile default"); err != nil {
 		return ProfileSelection{}, false, err
 	}
 	return ProfileSelection{Path: p, Name: "default", Layer: layer}, true, nil
 }
 
 // ExplicitProfileSelection validates an explicit --profile-path and returns the
-// selection. The path must resolve inside the global sandbox-profiles/
-// directory or the project's .omac/ directory; anything else is rejected so a
-// CLI argument (or a wrapper script) cannot point the launch at an arbitrary
-// host file.
+// selection. The path must resolve (symlinks followed) inside the global
+// sandbox-profiles/ directory or the project's .omac/ directory; anything else
+// is rejected so a CLI argument (or a wrapper script) cannot point the launch
+// at an arbitrary host file. The returned Path is the fully resolved location,
+// so what the launch reads is the file that was validated, whatever symlinked
+// parents are between it and the layer directory.
 func ExplicitProfileSelection(workdir, path string) (ProfileSelection, error) {
 	raw := strings.TrimSpace(path)
 	if raw == "" {
@@ -425,6 +433,13 @@ func ExplicitProfileSelection(workdir, path string) (ProfileSelection, error) {
 		}
 		abs = filepath.Clean(filepath.Join(workdir, raw))
 	}
+	if err := sandboxprofile.CheckProfileFile(abs, "--profile-path "+path); err != nil {
+		return ProfileSelection{}, err
+	}
+	resolved, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return ProfileSelection{}, fmt.Errorf("--profile-path %q: %w", path, err)
+	}
 	globalDir, err := sandboxprofile.ProfileDir()
 	if err != nil {
 		return ProfileSelection{}, err
@@ -432,20 +447,27 @@ func ExplicitProfileSelection(workdir, path string) (ProfileSelection, error) {
 	localDir := LocalConfigDir(workdir)
 	layer := ""
 	switch {
-	case withinDir(globalDir, abs):
+	case inResolvedDir(globalDir, resolved):
 		layer = "global"
-	case workdir != "" && withinDir(localDir, abs):
+	case workdir != "" && inResolvedDir(localDir, resolved):
 		layer = "workdir"
 	default:
-		return ProfileSelection{}, fmt.Errorf("--profile-path %q is outside %s and %s; "+
+		return ProfileSelection{}, fmt.Errorf("--profile-path %q resolves outside %s and %s; "+
 			"a profile must live in the global sandbox-profiles directory or the project's .omac directory "+
 			"to be protected from agentic edits",
 			path, globalDir, localDir)
 	}
-	if err := checkProfileFile(abs, "--profile-path "+path); err != nil {
-		return ProfileSelection{}, err
+	return ProfileSelection{Path: resolved, Name: strings.TrimSuffix(filepath.Base(resolved), ".json"), Layer: layer}, nil
+}
+
+// inResolvedDir reports whether path lies under dir after resolving dir's own
+// symlinks (missing dir cannot contain path).
+func inResolvedDir(dir, path string) bool {
+	resolvedDir, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return false
 	}
-	return ProfileSelection{Path: abs, Name: strings.TrimSuffix(filepath.Base(abs), ".json"), Layer: layer}, nil
+	return sandboxprofile.WithinDir(resolvedDir, path)
 }
 
 // namedProfileSelection resolves a bare profile name inside dir.
@@ -458,7 +480,7 @@ func namedProfileSelection(dir, name, layer string) (ProfileSelection, error) {
 	if !fileExists(abs) {
 		return ProfileSelection{}, fmt.Errorf("sandbox profile %q not found (expected %s)", name, abs)
 	}
-	if err := checkProfileFile(abs, "sandbox profile "+name); err != nil {
+	if err := sandboxprofile.CheckProfileFile(abs, "sandbox profile "+name); err != nil {
 		return ProfileSelection{}, err
 	}
 	return ProfileSelection{Path: abs, Name: name, Layer: layer}, nil
@@ -472,38 +494,9 @@ func validateProfileName(name string) error {
 	return nil
 }
 
-// checkProfileFile rejects a symlinked, missing, or directory profile.
-func checkProfileFile(path, label string) error {
-	if li, err := os.Lstat(path); err == nil && li.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("%s is a symlink (%s); a symlinked profile cannot be write-protected "+
-			"inside the sandbox — a session could replace it and steer the next launch", label, path)
-	}
-	info, err := os.Stat(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("%s does not exist (%s)", label, path)
-		}
-		return fmt.Errorf("%s (%s): %w", label, path, err)
-	}
-	if info.IsDir() {
-		return fmt.Errorf("%s is a directory, not a profile file (%s)", label, path)
-	}
-	return nil
-}
-
 func fileExists(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && !info.IsDir()
-}
-
-// withinDir reports whether path equals dir or lies under it, lexically.
-func withinDir(dir, path string) bool {
-	dir = filepath.Clean(dir)
-	path = filepath.Clean(path)
-	if path == dir {
-		return true
-	}
-	return strings.HasPrefix(path+string(os.PathSeparator), dir+string(os.PathSeparator))
 }
 
 // globalProfileDir returns the user-global sandbox-profiles directory, or ""
@@ -544,7 +537,6 @@ func LegacyProjectConfigWarnings(workdir string) []string {
 }
 
 // maxShownProfileNames caps how many profile names a migration error lists.
-// # PONYTAIL: fixed cap; make the cap configurable if profiles grow past it.
 const maxShownProfileNames = 5
 
 // listProfileNames returns the selectable profile names in dir (a layer's
@@ -568,7 +560,7 @@ func listProfileNames(dir string) []string {
 		if li, err := e.Info(); err != nil || !li.Mode().IsRegular() {
 			continue
 		}
-		if n := strings.TrimSuffix(name, ".json"); n != "" && n != "default" {
+		if n := strings.TrimSuffix(name, ".json"); n != "" {
 			out = append(out, n)
 		}
 	}

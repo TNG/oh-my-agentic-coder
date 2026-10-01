@@ -123,8 +123,8 @@ func list(h config.Harness, workdir string, run runner, claudeRoot, ocDBPath, co
 // before a run begins. The continue-hint logic snapshots this set just before
 // launching the harness; after the harness exits, any id absent from the
 // snapshot is the session this run created, so a sibling session that stayed
-// active in the same workdir is never mistaken for "this" session (see
-// cli.printContinueHint and issue #141).
+// active in the same workdir is never mistaken for "this" session; the
+// continue hint applies the same rule.
 //
 // It is a cheap, best-effort snapshot: identifiers are enumerated without the
 // full parse List performs, and any error yields an empty (never nil) set.
@@ -225,7 +225,7 @@ func listOpenCodeDB(workdir, dbPath string) []Session {
 	if err != nil {
 		return nil
 	}
-	// ponytail: workdir is cleaned by the caller; embed it literally. The
+	// workdir is cleaned by the caller; embed it literally. The
 	// session table's directory column holds the absolute path opencode was
 	// launched from, which is what we match against. parent_id IS NULL keeps
 	// only top-level sessions: opencode stores sub-agent/child sessions in the

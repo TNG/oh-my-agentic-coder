@@ -163,9 +163,16 @@ func TestBuildProvenanceView_LearnedDecisions(t *testing.T) {
 	}
 	profPath := filepath.Join(profDir, "p.json")
 	os.WriteFile(profPath, []byte(`{"meta":{"name":"p"},"workdir":{"access":"readwrite"}}`), 0o644)
-	// Write learned decisions file.
-	pagesPath := filepath.Join(profDir, "p.pages.json")
-	os.WriteFile(pagesPath, []byte(`{"schema":1,"entries":[{"host":"learned.example.com","scope":"host","decision":"allow"}]}`), 0o644)
+	// Write the learned decisions file where PagesPath puts it now: a
+	// project profile's decisions live under the host config dir, not
+	// next to the agent-writable profile.
+	pagesPath := sandboxprofile.PagesPath(profPath)
+	if err := os.MkdirAll(filepath.Dir(pagesPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(pagesPath, []byte(`{"schema":1,"entries":[{"host":"learned.example.com","scope":"host","decision":"allow"}]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	view, err := buildTestView(wd, profPath)
 	if err != nil {
@@ -697,7 +704,7 @@ func TestBuildCacheView_ErrorNotSwallowed(t *testing.T) {
 }
 
 // Provenance is an inspection command: like `omac diagnose` it must not
-// scaffold default.json in a fresh home. (Regression guard for #173: it
+// scaffold default.json in a fresh home. (Regression guard: provenance
 // used the mutating resolver, so merely viewing the effective policy —
 // or running --check — wrote a file into the user's config dir.)
 func TestProvenanceDoesNotScaffoldProfileInFreshHome(t *testing.T) {

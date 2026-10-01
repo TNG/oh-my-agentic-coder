@@ -13,10 +13,10 @@ import (
 // When the sandbox is active it builds the protected-path checker from the
 // plan's already-resolved policy profile — the set the agent queries via
 // GET /sandbox/denied?path=X to tell a sandbox denial from a genuinely
-// missing file. Taking the plan rather than a profile name is the fix for
-// #173: the callers hold a LAUNCHER profile name ("builtin"), which is not
-// a POLICY reference ("default"), and resolving the former as the latter
-// always failed — leaving the endpoint 404 on every default launch. A plan
+// missing file. Taking the plan rather than a profile name matters: the
+// callers hold a LAUNCHER profile name ("builtin"), which is not a POLICY
+// reference ("default"), and resolving the former as the latter always
+// failed — leaving the endpoint 404 on every default launch. A plan
 // without a usable policy is reported via warn rather than silently
 // disabling the endpoint. The intent registry is always wired: in-memory,
 // session-scoped, written by the agent via POST /sandbox/intent and read
@@ -31,7 +31,7 @@ func wireFacadeSandbox(f *facade.Facade, noSandbox, learnMode bool, plan sandbox
 		case learnMode:
 			// Learn mode lifts the profile's protected set; only the omac
 			// config dirs stay masked, so report exactly those.
-			f.ProtectedPathChecker = sandboxrun.UnrestrictedProtectedPathSet(plan.Workdir)
+			f.ProtectedPathChecker = sandboxrun.UnrestrictedProtectedPathSet()
 		case plan.Policy != nil:
 			f.ProtectedPathChecker = sandboxrun.NewProtectedPathSet(plan.Policy, plan.Workdir)
 			if d := plan.Policy.Denial; d != nil && d.FacadeNote != "" {

@@ -13,7 +13,7 @@ const testDenialText = "X-Omac-Sandbox: denied\nprotected\n"
 
 // wantInertMarker asserts the bytes bwrap binds into the sandbox carry
 // the denial text but cannot execute: every content line is commented
-// (#213 — the marker is bound over shell configs, which get sourced).
+// (the marker is bound over shell configs, which get sourced).
 func wantInertMarker(t *testing.T, path, wantText string) {
 	t.Helper()
 	got, err := os.ReadFile(path)
@@ -74,8 +74,8 @@ func TestBwrapMarkerFileUsedWhenDenialTextSet(t *testing.T) {
 	wantInertMarker(t, g.markerFile, testDenialText)
 }
 
-// TestBwrapMarkerNeutralizesHostileDenialText pins the scope note in
-// #213: denial.marker_file is profile-configurable, so a profile must
+// TestBwrapMarkerNeutralizesHostileDenialText covers the profile-supplied
+// denial.marker_file text: it is profile-configurable, so a profile must
 // not be able to bind a command over a file the sandboxed process
 // sources.
 func TestBwrapMarkerNeutralizesHostileDenialText(t *testing.T) {

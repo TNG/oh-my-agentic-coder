@@ -38,12 +38,11 @@ func PlatformBaseline() Baseline {
 // deny_credentials + deny_shell_history + deny_shell_configs groups).
 func protectedCommon() []string {
 	return []string{
-		// omac config dir: holds approvals.json and sandbox profiles;
+		// omac config dir: holds approvals.json and the sandbox profiles;
 		// reachable from inside the sandbox → forged skill approvals.
-		// Both spellings covered: ~/.config is the conventional default;
-		// $XDG_CONFIG_HOME overrides it on systems that set it.
+		// omac has exactly one config home and always reads
+		// ~/.config/omac (see ProfileDir), so only that spelling matters.
 		"~/.config/omac",
-		"$XDG_CONFIG_HOME/omac",
 		// credentials
 		"~/.ssh",
 		"~/.gnupg",
@@ -92,10 +91,10 @@ func protectedCommon() []string {
 func workdirProtectedCommon() []string {
 	return []string{
 		// The project-local omac config directory holds the sandbox
-		// definition (config.yaml, profile JSON, pages). Any .omac found
+		// definition (config.yaml, profile JSON). Any entry with this name
 		// under a granted tree is masked, so a session cannot plant one that
 		// a future launch from a different root would trust.
-		".omac",
+		ProjectConfigDirName,
 		".env",
 		".envrc",
 		".env.local",
@@ -204,15 +203,23 @@ func linuxBaseline() Baseline {
 // Callers append the result after override filtering has run.
 func NonOverridableProtectedPaths(projectDir string) []string {
 	var out []string
-	for _, p := range []string{"~/.config/omac", "$XDG_CONFIG_HOME/omac"} {
-		if exp, err := ExpandPath(p); err == nil && exp != "" {
-			out = append(out, exp)
-		}
+	if exp := expandConfigDir(); exp != "" {
+		out = append(out, exp)
 	}
 	if filepath.IsAbs(projectDir) {
 		out = append(out, projectDir)
 	}
 	return out
+}
+
+// expandConfigDir expands the unexpanded omac config-dir entry. Kept here so
+// callers cannot forget the expansion step.
+func expandConfigDir() string {
+	exp, err := ExpandPath("~/.config/omac")
+	if err != nil {
+		return ""
+	}
+	return exp
 }
 
 // EffectiveProtectedPaths returns the platform protected set minus the

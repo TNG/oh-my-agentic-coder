@@ -109,7 +109,7 @@ func runDoctor(args []string, env *Env) int {
 	// whether a value is present. It used to probe the keychain UNSCOPED while
 	// start probed it workdir-scoped with an unscoped fallback, so a secret
 	// stored per-workdir made doctor report a missing required secret while
-	// start launched happily (issue #174, Failure 3).
+	// start launched happily (Failure 3).
 	//
 	// SkipBundleHash: doctor reports on values, not on drift (that is
 	// `omac provenance --check` and start's own gate), so it should not pay a
@@ -264,7 +264,7 @@ func doctorProfileLint(env *Env, profileRef string) {
 // registry that the sandbox cannot see. That combination fails in a way no
 // other check catches: the masked file yields no denial event, and npm's
 // fallback to the public registry returns a plain 404 that reads like "no
-// such package" (see #150, #241).
+// such package".
 //
 // Advisory only — it never affects doctor's exit code.
 func doctorRegistryConfig(env *Env, profileRef string) {
@@ -448,8 +448,7 @@ func doctorSandboxProfileWarnings(env *Env, profileRef string) {
 		fmt.Fprintln(env.Stdout, "         impact:      at launch omac forwards only the operational minimum (HOME, PATH,")
 		fmt.Fprintln(env.Stdout, "                      TERM, locale, …); all other ambient env vars — including provider")
 		fmt.Fprintln(env.Stdout, "                      tokens and secrets — are NOT passed through, and omac does not")
-		fmt.Fprintln(env.Stdout, "                      auto-forward auth vars. This differs from the pre-#102 inherit-")
-		fmt.Fprintln(env.Stdout, "                      everything behavior; the harness starts but will not authenticate.")
+		fmt.Fprintln(env.Stdout, "                      auto-forward auth vars. The harness starts but will not authenticate.")
 		fmt.Fprintln(env.Stdout, "         remediation: custom profiles are not updated by omac upgrades; refresh this profile")
 		fmt.Fprintln(env.Stdout, "                      from its installer or original source. If you maintain it manually,")
 		fmt.Fprintln(env.Stdout, "                      add the vars the harness needs to allow_vars (see")

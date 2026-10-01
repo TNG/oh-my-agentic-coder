@@ -198,13 +198,6 @@ func wrapVisible(text string, max int) []string {
 	return out
 }
 
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
 // stripControlChars removes C0/C1 control characters from s. This prevents
 // terminal escape sequences planted in session ids or titles from injecting
 // display commands when the text is printed to a terminal.

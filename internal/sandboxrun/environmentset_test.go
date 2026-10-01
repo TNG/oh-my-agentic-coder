@@ -47,36 +47,80 @@ func TestProfileSetEnv(t *testing.T) {
 	}
 }
 
-// The documented precedence: omac's operational injections overwrite a
-// profile's set value, and deny_vars still strips a set var afterwards.
-func TestProfileSetEnvPrecedenceAndDeny(t *testing.T) {
+// The documented precedence, asserted through the real merge: omac's
+// operational injections overwrite a profile's set value, proxy vars win
+// over cache env, registry config wins last, and deny_vars still strips a
+// set var afterwards.
+func TestMergeInjectedEnvPrecedence(t *testing.T) {
+	merged := mergeInjectedEnv(
+		map[string]string{"A": "profile", "B": "profile", "SHARE": "profile"},
+		map[string]string{"B": "cache", "SHARE": "cache"},
+		map[string]string{"SHARE": "proxy"},
+		map[string]string{"SHARE": "registry"},
+	)
+	for _, tc := range []struct{ key, want string }{
+		{"A", "profile"},
+		{"B", "cache"},
+		{"SHARE", "registry"},
+	} {
+		if merged[tc.key] != tc.want {
+			t.Errorf("merged[%q] = %q; want %q", tc.key, merged[tc.key], tc.want)
+		}
+	}
+}
+
+// A profile setting a var the omac proxy also injects collides; the merge
+// order decides, and FilterEnv must apply deny_vars to the result either way.
+func TestProfileSetEnvProxyCollision(t *testing.T) {
+	set := profileSetEnv(map[string]string{"HTTPS_PROXY": "http://profile-proxy:1"}, &bytes.Buffer{})
+	proxyEnv := map[string]string{"HTTPS_PROXY": "http://omac-proxy:2"}
+	merged := mergeInjectedEnv(set, nil, proxyEnv, nil)
+	env := sandboxprofile.FilterEnv(nil, nil, nil, merged)
+
+	joined := strings.Join(env, "\n")
+	if !strings.Contains(joined, "HTTPS_PROXY=http://omac-proxy:2") {
+		t.Errorf("the omac proxy env must win over a profile set value, got:\n%s", joined)
+	}
+}
+
+func TestBlockedEnvValueRef(t *testing.T) {
+	cases := map[string]string{
+		"$OP_SERVICE_ACCOUNT_TOKEN":   "OP_SERVICE_ACCOUNT_TOKEN",
+		"prefix-${LD_PRELOAD}-suffix": "LD_PRELOAD",
+		"${NODE_OPTIONS}":             "NODE_OPTIONS",
+	}
+	for value, want := range cases {
+		if got := blockedEnvValueRef(value); got != want {
+			t.Errorf("blockedEnvValueRef(%q) = %q; want %q", value, got, want)
+		}
+	}
+	for _, value := range []string{"literal", "$HOME", "${PATH}", "$FAILED_MATCH", "$$escape", "~/.local"} {
+		if got := blockedEnvValueRef(value); got != "" {
+			t.Errorf("blockedEnvValueRef(%q) = %q; want empty", value, got)
+		}
+	}
+}
+
+// A set value that expands a blocklisted variable under a benign name must be
+// dropped: the blocklist is meant to be absolute, and the value would come
+// from the supervisor's ambient environment, bypassing allow_vars.
+func TestProfileSetEnvDropsBlocklistedValueRefs(t *testing.T) {
+	t.Setenv("OP_SERVICE_ACCOUNT_TOKEN", "leaked-by-profile")
+	t.Setenv("MY_AUX_ALLOWED", "someone-else")
+
 	var warn bytes.Buffer
-	set := profileSetEnv(map[string]string{
-		"NPM_CONFIG_CACHE": "/profile/npm",
-		"DROPME":           "kept-unless-denied",
+	got := profileSetEnv(map[string]string{
+		"MY_AUX":        "$OP_SERVICE_ACCOUNT_TOKEN",
+		"MY_AGENT_HOME": "~",
 	}, &warn)
 
-	// Run merges the supervisor's cache env after the profile's set values.
-	injected := map[string]string{}
-	for k, v := range set {
-		injected[k] = v
+	if _, ok := got["MY_AUX"]; ok {
+		t.Errorf("a set value referencing a blocklisted variable must be dropped, got %v", got)
 	}
-	injected["NPM_CONFIG_CACHE"] = "/omac/managed/npm"
-
-	env := sandboxprofile.FilterEnv(
-		[]string{"PATH=/usr/bin"},
-		sandboxprofile.EffectiveAllowVars(nil),
-		[]string{"DROPME"},
-		injected,
-	)
-	joined := strings.Join(env, "\n")
-	if !strings.Contains(joined, "NPM_CONFIG_CACHE=/omac/managed/npm") {
-		t.Errorf("omac's injection must win over the profile's set value, got:\n%s", joined)
+	if got["MY_AGENT_HOME"] == "" {
+		t.Error("a value referencing a non-blocklisted variable must still expand")
 	}
-	if strings.Contains(joined, "/profile/npm") {
-		t.Errorf("the shadowed profile value must not appear, got:\n%s", joined)
-	}
-	if strings.Contains(joined, "DROPME=") {
-		t.Errorf("deny_vars must strip a profile set var, got:\n%s", joined)
+	if !strings.Contains(warn.String(), "OP_SERVICE_ACCOUNT_TOKEN") {
+		t.Errorf("the drop must be announced with the referenced name, got %q", warn.String())
 	}
 }

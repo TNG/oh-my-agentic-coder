@@ -108,30 +108,6 @@ func TestWarnPermissiveProfile(t *testing.T) {
 	}
 }
 
-func TestExcludeProfilePagesFile(t *testing.T) {
-	workdir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(workdir, ".git"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	// A profile inside the workdir: its .pages.json sibling is git-excluded.
-	excludeProfilePagesFile(workdir, filepath.Join(workdir, "sandbox.json"))
-	data, err := os.ReadFile(filepath.Join(workdir, ".git", "info", "exclude"))
-	if err != nil {
-		t.Fatalf("exclude file not written: %v", err)
-	}
-	if !strings.Contains(string(data), "sandbox.pages.json") {
-		t.Errorf("exclude should list the pages file, got: %q", data)
-	}
-
-	// A profile outside the workdir is not excluded.
-	excludeProfilePagesFile(workdir, filepath.Join(t.TempDir(), "external.json"))
-	data, _ = os.ReadFile(filepath.Join(workdir, ".git", "info", "exclude"))
-	if strings.Contains(string(data), "external.pages.json") {
-		t.Errorf("a profile outside the workdir must not be excluded, got: %q", data)
-	}
-}
-
 func TestProfileRefFromConfig(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
@@ -361,5 +337,82 @@ func TestResolveSandboxPlanBrokenPolicyIsRecordedNotFatal(t *testing.T) {
 	}
 	if plan.Policy != nil {
 		t.Error("Policy must be nil when resolution failed")
+	}
+}
+
+// An uncreatable .omac (e.g. the workdir path is a file) warns and continues:
+// whatever omac cannot create the agent cannot create either, so nothing
+// plantable is missing.
+func TestEnsureOmacLocalDirWarnsOnUncreatable(t *testing.T) {
+	blocked := filepath.Join(t.TempDir(), "blocked")
+	if err := os.WriteFile(blocked, []byte("not a directory"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var buf strings.Builder
+	if err := ensureOmacLocalDir(&buf, blocked); err != nil {
+		t.Fatalf("ensureOmacLocalDir must warn and continue, got error: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "proceeding without project-local sandbox configuration") {
+		t.Errorf("expected the warn-and-continue notice, got %q", out)
+	}
+}
+
+// A pinning failure under --accept-project-config aborts: the user believes
+// they approved, but without the record the later tampering check is gone —
+// failing open is not an option.
+func TestApprovedProjectSandboxAbortsWhenPinUnrecordable(t *testing.T) {
+	isolateHome(t)
+	home := os.Getenv("HOME")
+	workdir := t.TempDir()
+	profPath := filepath.Join(workdir, ".omac", "strict.json")
+	if err := os.MkdirAll(filepath.Dir(profPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(profPath, []byte(`{}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workdir, ".omac", "config.yaml"), []byte("sandbox:\n  profile_name: strict\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sel, err := config.ResolveSandboxProfile(workdir)
+	if err != nil {
+		t.Fatalf("ResolveSandboxProfile: %v", err)
+	}
+	// The pin store directory is readable but not writable: the trust check
+	// succeeds, the record fails.
+	if os.Getuid() == 0 {
+		t.Skip("running as root: chmod does not deny writes")
+	}
+	if err := os.MkdirAll(filepath.Join(home, ".config", "omac"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeFileT(t, projectPinsPathFor(t), "{}\n")
+	if err := os.Chmod(filepath.Join(home, ".config", "omac"), 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(filepath.Join(home, ".config", "omac"), 0o700) })
+	_, verr := approvedProjectSandbox(workdir, sel, true, true)
+	if verr == nil {
+		t.Fatal("an approval that cannot be recorded must abort the launch")
+	}
+	if !strings.Contains(verr.Error(), "cannot record the approved project sandbox configuration") {
+		t.Errorf("refusal must say the approval could not be recorded, got: %v", verr)
+	}
+}
+
+// projectPinsPathFor exposes the host pin store path under the test's HOME.
+func projectPinsPathFor(t *testing.T) string {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(os.Getenv("HOME"), ".config", "omac"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return filepath.Join(os.Getenv("HOME"), ".config", "omac", "project-sandbox.json")
+}
+
+func writeFileT(t *testing.T, path, body string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
 	}
 }

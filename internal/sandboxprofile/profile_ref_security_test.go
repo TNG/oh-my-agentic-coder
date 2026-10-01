@@ -3,6 +3,7 @@ package sandboxprofile
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -154,5 +155,90 @@ func TestSecurityConfigDirIsProtected(t *testing.T) {
 				t.Errorf("%s baseline's ProtectedPaths does not include ~/.config/omac: the skill-approval store it holds is reachable and forgeable from inside the sandbox", name)
 			}
 		})
+	}
+}
+
+// A symlinked profile file must not load: the symlink entry itself is
+// replaceable inside an agent-writable directory, so it could point the
+// launch somewhere else between approval and enforcement. This is the one
+// leaf check Resolve does itself, so every entry point (the launcher
+// config, the CLI, a direct `omac sandbox run`) shares it.
+func TestSecurityResolveRefusesSymlinkedProfile(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	localDir := filepath.Join(t.TempDir(), ".omac")
+	if err := os.MkdirAll(localDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	realProfile := filepath.Join(t.TempDir(), "real.json")
+	if err := os.WriteFile(realProfile, []byte(`{"meta":{"name":"real"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("path-form ref", func(t *testing.T) {
+		link := filepath.Join(localDir, "p.json")
+		if err := os.Symlink(realProfile, link); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+		if _, _, err := Resolve(link, WithProjectDir(localDir)); err == nil {
+			t.Error("Resolve loaded a symlinked profile; the symlink could be re-pointed without changing what was approved")
+		}
+	})
+
+	t.Run("named ref", func(t *testing.T) {
+		dir, err := ProfileDir()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		named := filepath.Join(dir, "linked.json")
+		if err := os.Symlink(realProfile, named); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+		if _, _, err := Resolve("linked"); err == nil {
+			t.Error("Resolve loaded a symlinked named profile")
+		}
+	})
+}
+
+// WithinDir is purely lexical: it treats a symlinked parent as inside. This
+// pins the contract the containment callers rely on (they EvalSymlinks
+// themselves where that matters).
+func TestWithinDirLexical(t *testing.T) {
+	dir := filepath.Join("/work", ".omac")
+	if !WithinDir(dir, filepath.Join(dir, "p.json")) || !WithinDir(dir, dir) {
+		t.Error("a path at or under dir must be inside")
+	}
+	if WithinDir(dir, filepath.Join("/work", ".omacX", "p.json")) {
+		t.Error("a sibling sharing the prefix must not be inside")
+	}
+	if WithinDir("", filepath.Join(dir, "p.json")) {
+		t.Error("an empty dir contains nothing")
+	}
+}
+
+// CheckProfileFile is the shared leaf check: symlink refusal, existence, and
+// regular-file enforcement.
+func TestCheckProfileFile(t *testing.T) {
+	dir := t.TempDir()
+	regular := filepath.Join(dir, "p.json")
+	if err := os.WriteFile(regular, []byte(`{}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckProfileFile(regular, "profile"); err != nil {
+		t.Fatalf("regular file refused: %v", err)
+	}
+	link := filepath.Join(dir, "linked.json")
+	if err := os.Symlink(regular, link); err == nil {
+		if err := CheckProfileFile(link, "profile"); err == nil {
+			t.Error("a symlinked profile must be refused")
+		}
+	}
+	if err := CheckProfileFile(filepath.Join(dir, "missing.json"), "profile"); err == nil {
+		t.Error("a missing profile must be refused")
+	}
+	if err := CheckProfileFile(dir, "profile"); err == nil || !strings.Contains("x"+err.Error(), "directory") {
+		t.Errorf("a directory must be refused as a profile file, got %v", err)
 	}
 }

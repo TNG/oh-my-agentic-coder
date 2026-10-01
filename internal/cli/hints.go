@@ -27,7 +27,7 @@ func registerCmd(skill string, flags ...string) string {
 //
 // The label is not optional. Without it the line reads as one run-on string
 // ("skill-marketplace — omac register ..."), which is ambiguous about where the
-// command starts; see issue #227. Coloring the command reinforces the split on
+// command starts. Coloring the command reinforces the split on
 // terminals that support it.
 func skillProblemLine(s styler, skill, label, cmd string) string {
 	return "    " + skill + " — " + label + ": " + s.cyan(cmd)

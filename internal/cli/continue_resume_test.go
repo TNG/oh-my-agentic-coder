@@ -699,7 +699,7 @@ func TestHintSessionID(t *testing.T) {
 			wantOK:   true,
 		},
 		{
-			// #141: the newest session is a sibling that existed before launch;
+			//: the newest session is a sibling that existed before launch;
 			// advertise the session this run created (absent from prior),
 			// even though it is not index 0.
 			name:     "skips-sibling-picks-new-session",
@@ -761,7 +761,7 @@ func writeClaudeSessionFile(t *testing.T, home, workdir, id, ts string) {
 	}
 }
 
-// TestContinueHintSkipsSiblingSession reproduces #141 end-to-end against a real
+// TestContinueHintSkipsSiblingSession reproduces end-to-end against a real
 // on-disk Claude session store (the harness-agnostic snapshot path): a sibling
 // session is active in the workdir when our run starts and stays the
 // most-recently-updated row, yet the hint must advertise the session this run
@@ -794,5 +794,25 @@ func TestContinueHintSkipsSiblingSession(t *testing.T) {
 	id, ok := hintSessionID(sessions, "", prior)
 	if !ok || id != "ours-1111" {
 		t.Errorf("hint = (%q, %v), want (\"ours-1111\", true) — sibling must be skipped", id, ok)
+	}
+}
+
+// Parse-level wiring tests for the project-sandbox trust flags: a regression
+// that drops them during flag assembly would leave the agent-facing start /
+// serve commands unable to (re-)approve the project configuration, with no
+// error anywhere on the parse path.
+func TestParseLaunchArgsProjectSandboxFlags(t *testing.T) {
+	opts, code := parseLaunchArgs("start", []string{
+		"--accept-project-config",
+		"--profile-path", ".omac/strict.json",
+	}, devnullEnv(t))
+	if code != ExitOK {
+		t.Fatalf("parseLaunchArgs() code = %d, want ExitOK", code)
+	}
+	if !opts.acceptProjectConfig {
+		t.Error("--accept-project-config did not reach the parsed options")
+	}
+	if opts.profilePath != ".omac/strict.json" {
+		t.Errorf("--profile-path parsed as %q", opts.profilePath)
 	}
 }

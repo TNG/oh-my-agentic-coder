@@ -163,7 +163,7 @@ type Facade struct {
 	//
 	// This is an interim boundary while the TCP listener exists for
 	// nono-proxy-mode compatibility. The Unix socket with SO_PEERCRED is
-	// the intended end-state (tracked in issue #88).
+	// the intended end-state.
 	FacadeToken string
 
 	mu          sync.RWMutex
@@ -440,7 +440,7 @@ func (f *Facade) handle(w http.ResponseWriter, r *http.Request) {
 	// The Unix socket is already UID-gated by filesystem permissions (0600);
 	// the TCP listener accepts any local process, so we require a per-session
 	// bearer token. Constant-time comparison to avoid timing side-channels.
-	// (Interim boundary; Unix socket + SO_PEERCRED is the intended end-state, issue #88.)
+	// (Interim boundary; Unix socket + SO_PEERCRED is the intended end-state.)
 	//
 	// The transport is recorded at accept time (see ConnContext in Start),
 	// not derived from the peer address: a local dialer can bind its source

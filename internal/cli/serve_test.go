@@ -267,8 +267,8 @@ func TestInjectServerPortGrant(t *testing.T) {
 
 // TestSandboxServeArgvOpensServerPort exercises the serve argv assembly
 // end-to-end (the pipeline runServe actually calls), not just the
-// injectServerPortGrant helper in isolation. It guards against the #115 bind
-// grant and the #313 loopback-connect grant being dropped from the pipeline
+// injectServerPortGrant helper in isolation. It guards against the bind
+// grant and the loopback-connect grant being dropped from the pipeline
 // during a refactor.
 func TestSandboxServeArgvOpensServerPort(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
@@ -314,7 +314,7 @@ func TestSandboxServeArgvOpensServerPort(t *testing.T) {
 		t.Errorf("serve argv still grants the default 4096 despite `--port 4095`: %s", oj)
 	}
 
-	// Empty control port skips only the control-plane grant; the #115 bind
+	// Empty control port skips only the control-plane grant; the bind
 	// grant still applies. (The builtin facade --open-port is always present.)
 	noCP, err := sandboxServeArgv(in, "", oc)
 	if err != nil {
@@ -1248,7 +1248,7 @@ func stageSkillWithPassthroughSecret(t *testing.T, workdir, name string) {
 	}
 }
 
-// TestActivateEnvPassthroughSecretIsNotPending is issue #174's Failure 2:
+// TestActivateEnvPassthroughSecretIsNotPending is:
 // serve's own copy of the resolution rule never consulted env_passthrough, so
 // on a headless runner a skill whose required secret came from the shell was
 // reported pending-credentials with a "missing credentials" hint — even though
@@ -1298,5 +1298,24 @@ func TestActivateEmptyPassthroughSecretIsStillPending(t *testing.T) {
 	sk := manifest["skills"].([]map[string]any)[0]
 	if sk["state"] != string(facade.RoutePendingCredentials) {
 		t.Errorf("state = %v, want pending-credentials for an empty exported value", sk["state"])
+	}
+}
+
+// The serve variant of the project-sandbox trust flag parse test (see the
+// start variant in continue_resume_test.go).
+func TestParseServeArgsProjectSandboxFlags(t *testing.T) {
+	opts, ok := parseServeArgs([]string{
+		"--accept-project-config",
+		"--profile-path", ".omac/strict.json",
+		"--workdir", "/repo",
+	}, devnullEnv(t))
+	if !ok {
+		t.Fatal("parseServeArgs() returned false")
+	}
+	if !opts.acceptProjectCfg {
+		t.Error("--accept-project-config did not reach the parsed options")
+	}
+	if opts.profilePath != ".omac/strict.json" {
+		t.Errorf("--profile-path parsed as %q", opts.profilePath)
 	}
 }

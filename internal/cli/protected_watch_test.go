@@ -47,8 +47,7 @@ func TestStartProtectedWatchSkipsNoPolicy(t *testing.T) {
 	}
 }
 
-// TestNoticeAnnouncerPrintsOnce: one banner per detection, tinted when the
-// sink is a terminal, plain when not, never repeated.
+// TestNoticeAnnouncerPrintsOnce: one banner per detection, never repeated.
 func TestNoticeAnnouncerPrintsOnce(t *testing.T) {
 	f, err := os.CreateTemp(t.TempDir(), "stderr-*")
 	if err != nil {

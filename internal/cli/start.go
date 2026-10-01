@@ -99,7 +99,7 @@ func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, int) 
 		innerCmdOverride   = fs.String("inner", "", "Override inner_cmd's executable.")
 		noSandbox          = fs.Bool("no-sandbox", false, "Run inner command directly, without a sandbox (debug only).")
 		ephemeralCache     = fs.Bool("ephemeral-cache", false, "Use a per-launch cache instead of the persistent cache.")
-		cacheScope         = fs.String("cache-scope", "", "Persistent cache scope: global, config, or workdir. Overrides config (default: global).")
+		cacheScope         = fs.String("cache-scope", "", "Persistent cache scope: global, config, or workdir. Overrides config (default: workdir).")
 		keepRunning        = fs.Bool("keep-running", false, "Do not stop sidecars when the inner command exits.")
 		acceptSkillChanges = fs.Bool("accept-skill-changes", false, "Tolerate bundle_hash drift in registered skills (proceed even if the on-disk skill differs from what was registered).")
 		skipSecretPattern  = fs.Bool("skip-secret-pattern", false, "Do not enforce a secret's pattern against an env_passthrough-supplied value (escape hatch for an outdated pattern; the raw value is still passed through).")
@@ -110,7 +110,7 @@ func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, int) 
 		auditStrict        = fs.Bool("audit-strict", false, "Fail-closed: abort if the audit log cannot be written.")
 		sessionID          = fs.String("session", "", "Continue a specific session by id instead of the most recent one. (shorthand: -s)")
 		profilePath        = fs.String("profile-path", "", "Path to a sandbox grants profile inside ~/.config/omac/sandbox-profiles/ or <workdir>/.omac/. Overrides sandbox.profile_name.")
-		acceptProjectCfg   = fs.Bool("accept-project-config", false, "Re-approve the project-local .omac sandbox configuration after it changed since it was approved.")
+		acceptProjectCfg   = fs.Bool("accept-project-config", false, "Approve the project-local .omac sandbox configuration (needed on first use, and again after any change to the files a launch loads).")
 	)
 	var openPorts intMultiFlag
 	fs.Var(&openPorts, "open-port", "Allow the sandboxed process to bind and connect on this TCP port (repeatable). Useful for a local app/dev server the agent or its tools talk to — e.g. Playwright/Vite/Next on :3000. On Linux, Landlock cannot limit that to loopback: outbound TCP to any host on the same port is also allowed.")
@@ -267,13 +267,8 @@ func runLaunch(env *Env, opts launchOpts) int {
 		return ExitMisuse
 	}
 
-	// Always create the project config dir before anything that would watch
-	// or launch the sandbox: the mid-session protected-pattern watch scans
-	// for .omac, so it must see the directory as pre-existing, and the
-	// kernel mask needs it to exist at launch. Unconditional — a --no-sandbox
-	// debug run is not a special case. A read-only or otherwise uncreatable
-	// workdir is not fatal: the agent runs with the omac user's own
-	// permissions, so it can create the directory no more than omac can.
+	// .omac must exist before the protected-pattern watch scans and before
+	// the child masks it (see ensureOmacLocalDir in sandboxplan.go).
 	if err := ensureOmacLocalDir(env.Stderr, env.Workdir); err != nil {
 		fmt.Fprintln(env.Stderr, prefix+":", err)
 		return ExitConfigInvalid
@@ -303,6 +298,10 @@ func runLaunch(env *Env, opts launchOpts) int {
 		sel = config.ProfileSelection{Name: "default", Layer: "builtin"}
 	}
 	profileRef := sel.Path
+	// The sandbox child re-verifies the project-local sandbox content
+	// against the host-side approval pins; tell it how this profile was
+	// selected so the child's check matches the parent's.
+	projectTrust := projectTrustMode(opts.profilePath)
 	if verbose {
 		if profileRef != "" {
 			fmt.Fprintf(env.Stderr, "[verbose] sandbox profile: %s (from %s)\n", profileRef, sel.Layer)
@@ -310,17 +309,16 @@ func runLaunch(env *Env, opts launchOpts) int {
 			fmt.Fprintln(env.Stderr, "[verbose] sandbox profile: default (builtin)")
 		}
 	}
-	// One resolved sandbox plan for the whole launch: the launcher profile
-	// (templated argv) plus, for omac's native backend, its policy profile
-	// (grant JSON). Everything downstream reads the plan instead of
-	// re-resolving a bare name — see internal/cli/sandboxplan.go.
+	// One resolved sandbox plan for the whole launch: the policy profile
+	// (grant JSON) the sandbox run enforces. Everything downstream reads
+	// the plan instead of re-resolving a bare name — see
+	// internal/cli/sandboxplan.go.
 	plan := resolveSandboxPlan(env.Workdir, sel)
 	if !noSandbox {
 		// A custom profile is user-authored (and may be committed by a teammate),
 		// so surface anything that weakens the sandbox and keep its learned
 		// network decisions out of git.
 		warnPermissiveProfile(env.Stderr, profileRef, plan.Policy)
-		excludeProfilePagesFile(env.Workdir, profileRef)
 	}
 	policyRef := plan.PolicyRef
 
@@ -339,7 +337,7 @@ func runLaunch(env *Env, opts launchOpts) int {
 	//     sandbox — its Rust HTTP client disconnects mid-stream even with
 	//     network=open. Fail loud rather than hang. --no-sandbox disables
 	//     the entire omac sandbox (fs/network/secret isolation) so it is
-	//     not a safe workaround. See issue #48.
+	//     not a safe workaround.
 	if runtime.GOOS == "darwin" && harness.Name == "codex" && !noSandbox {
 		fmt.Fprintf(env.Stderr, "%s: codex is incompatible with the macOS Seatbelt sandbox "+
 			"(its HTTP client disconnects mid-stream even with network=open). "+
@@ -535,7 +533,7 @@ func runLaunch(env *Env, opts launchOpts) int {
 	// secret or config field, and what counts as unready — lives in
 	// internal/skillstate, shared with serve, live reload, doctor and `config
 	// show`. It used to be reimplemented on each of those paths and the copies
-	// drifted silently (issue #174). start's only job here is presentation:
+	// drifted silently. start's only job here is presentation:
 	// accumulate problems, then render one consolidated refusal.
 	//
 	// We accumulate rather than returning on the first problem. The user's
@@ -833,11 +831,13 @@ func runLaunch(env *Env, opts launchOpts) int {
 		argv = inner
 	} else {
 		argv, err = sandbox.BuildBuiltinArgv(sandbox.Inputs{
-			Socket:     socketPath,
-			TCPPort:    tcpPort,
-			InnerCmd:   inner,
-			TmpDir:     sandboxTmp,
-			ProfileRef: profileRef,
+			Socket:            socketPath,
+			TCPPort:           tcpPort,
+			InnerCmd:          inner,
+			TmpDir:            sandboxTmp,
+			ProfileRef:        profileRef,
+			ProjectTrust:      projectTrust,
+			ProjectTrustLayer: sel.Layer,
 		})
 		if err != nil {
 			fmt.Fprintln(env.Stderr, prefix+": sandbox argv:", err)
@@ -996,7 +996,7 @@ func runLaunch(env *Env, opts launchOpts) int {
 	// /__omac__/session), so the pre-exec enumeration is skipped for it:
 	// `opencode session list` runs before the inner launches and can block
 	// indefinitely. Other harnesses enumerate here — cheap on-disk reads — to
-	// tell a fresh session apart from a sibling active in the same workdir (#145).
+	// tell a fresh session apart from a sibling active in the same workdir.
 	selfReportsSession := harness.Session != nil && harness.Session.ListKind == config.SessionListOpenCodeCLI
 	var priorSessions map[string]struct{}
 	if harness.Session != nil && len(harness.Session.ContinueArgs) > 0 && !selfReportsSession {
@@ -1043,7 +1043,7 @@ func prepareLaunchCache(noSandbox, ephemeral bool, scope config.CacheScope, work
 }
 
 // resolveCacheScope merges the config's cache scope with an optional
-// --cache-scope flag override (precedence: flag > config > default global).
+// --cache-scope flag override (precedence: flag > config > default workdir).
 func resolveCacheScope(cfg config.CacheConfig, override string) (config.CacheScope, error) {
 	if override != "" {
 		return config.ValidateCacheScope(override)
@@ -1128,8 +1128,8 @@ func printContinueHint(env *Env, harness config.Harness, resumedID string, prior
 // resumedID is advertised verbatim — it is exactly the session that ran.
 // Otherwise the run created a fresh session: the most-recent session absent
 // from prior (the snapshot of ids taken before launch) is that new session, so
-// a sibling session that stayed active in the same workdir is never advertised
-// (issue #141). When nothing is new — the snapshot was unavailable, or the
+// a sibling session that stayed active in the same workdir is never advertised.
+// When nothing is new — the snapshot was unavailable, or the
 // harness reused an id — it falls back to the most-recent session, preserving
 // the previous best-effort behavior.
 //
@@ -1160,7 +1160,7 @@ func hintSessionID(sessions []session.Session, resumedID string, prior map[strin
 const hintTimeout = 2 * time.Second
 
 // boundedKnownIDs runs the prior-session enumeration but never waits longer
-// than d for it. The snapshot only sharpens the post-exit resume hint (#145),
+// than d for it. The snapshot only sharpens the post-exit resume hint,
 // so a slow or stuck session store must never stall the inner launch: on
 // timeout we return an empty snapshot and carry on (best-effort, matching
 // printContinueHint). This is the structural guarantee that `omac start` never
@@ -1384,7 +1384,7 @@ func startAutoRegisterWorkdirSkills(env *Env, harness config.Harness, reg *regis
 //
 // "Satisfiable without prompting" is by definition whatever runLaunch's
 // preflight would accept, so this asks internal/skillstate rather than
-// restating the precedence ladder — before #174 it was a sixth hand-rolled
+// restating the precedence ladder — before it was a sixth hand-rolled
 // copy of it, in the same file as the first.
 //
 // A skill with at least one required-and-unsatisfiable secret/field is

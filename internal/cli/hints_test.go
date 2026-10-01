@@ -32,7 +32,7 @@ func TestRegisterCmd(t *testing.T) {
 	}
 }
 
-// TestSkillProblemLine pins the shape issue #227 complained about: the skill
+// TestSkillProblemLine pins the shape complained about: the skill
 // name and the command must be separated by a label, so the line cannot be
 // misread as a single "skill-marketplace - omac register ..." command.
 func TestSkillProblemLine(t *testing.T) {
@@ -45,8 +45,7 @@ func TestSkillProblemLine(t *testing.T) {
 }
 
 // TestHintsUseDocumentedFlagOrder guards every hint the CLI prints against
-// regressing to the flag-before-skill order reported in issue #227. The
-// suggested command must match `Usage: omac register <skill> [flags]`, which is
+// regressing to the flag-before-skill order. The suggested command must match `Usage: omac register <skill> [flags]`, which is
 // also the form that reads unambiguously and survives the user appending
 // `--harness` after a disambiguation prompt.
 func TestHintsUseDocumentedFlagOrder(t *testing.T) {
@@ -80,9 +79,10 @@ func TestHintsUseDocumentedFlagOrder(t *testing.T) {
 	}
 }
 
-// TestRegister_BoolFlagBeforeSkillKeepsLaterFlags pins the parser half of
-// issue #227. omac's drift hint used to suggest `omac register --force <skill>`;
-// when the skill name was ambiguous across harnesses, omac then asked the user
+// TestRegister_BoolFlagBeforeSkillKeepsLaterFlags pins the parser side of
+// the hint contract. omac's drift hint used to suggest
+// `omac register --force <skill>`; when the skill name was ambiguous across
+// harnesses, omac then asked the user
 // to add `--harness`, producing `--force <skill> --harness <h>`. reorderFlagsFirst
 // glued the skill name onto the boolean --force, so flag.Parse stopped at the
 // positional and never saw --harness: the command died with a usage dump.

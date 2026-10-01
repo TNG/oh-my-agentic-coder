@@ -56,7 +56,7 @@ func runResume(args []string, env *Env) int {
 	}
 
 	// Record the picked id so the post-exit continue hint advertises this exact
-	// session rather than whichever sibling was most-recently-updated (#141).
+	// session rather than whichever sibling was most-recently-updated.
 	opts.sessionID = sessions[idx].ID
 	opts.innerArgs = buildResumeInnerArgs(h.Session, sessions[idx].ID, opts.innerArgs)
 	return runLaunch(env, opts)

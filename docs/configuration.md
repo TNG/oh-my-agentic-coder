@@ -9,7 +9,7 @@ description: omac configuration files and options
 |---|---|---------------------------------------|
 | `config.yaml` | Launcher config: `sandbox.profile_name` (global or project-local); facade tuning, cache scope, and audit settings (global only) | User                                  |
 | `<name>.json` | Sandbox grants: which filesystem paths, network hosts, and env vars the agent can access | `omac start` (first run scaffolds the global `default.json`) |
-| `<name>.pages.json` | Permanent allow/deny network decisions made via the prompt dialog | `omac start` (creates it empty at launch); network prompt dialog (user answers) |
+| `<name>.pages.json` (global profiles) / `learned/<name>-<hash>.pages.json` (project profiles) | Permanent allow/deny network decisions made via the prompt dialog | network prompt dialog (user answers) |
 | `sidecar.json` | Skill registry: names, directories, bundle hashes, declared secrets | `omac register` / `omac deregister`   |
 | `skill-config.yaml` | Non-secret per-skill fields: API base URLs, region names, feature flags | `omac register` / `omac config`       |
 
@@ -20,7 +20,7 @@ Each layer has its own directory:
 | user-global | `~/.config/omac/` | `config.yaml` | `sandbox-profiles/<name>.json` |
 | project-local | `<workdir>/.omac/` | `config.yaml` | `<name>.json` |
 
-The project-local directory is created whenever you run `omac start`/`omac serve` and is **read-only inside the sandbox, exposing only an explanatory denial notice** (`.omac-denied`): a session can neither read the rules nor write or create files in it, and a symlinked `.omac` refuses the launch. Because the workdir is agent-writable, omac also **pins the project-local content a launch loads host-side, per file** (`~/.config/omac/project-sandbox.json`, invisible to the sandbox): the project layer must be approved once with `--accept-project-config` (an explicit `--profile-path` into the project layer is its own approval), and a later change to a loaded file **refuses to start** — a replaced profile is never trusted. Only the files a launch actually loads are pinned and compared, so an explicit `--profile-path` is not gated by the `config.yaml` it bypasses; a global-layer `--profile-path` needs no approval because `~/.config/omac` is maintained by you and not forwarded into the sandbox. If the workdir (e.g. a read-only checkout) prevents creation, omac warns and continues — the agent runs with your own permissions, so it could not create or read it either. See [Per-project configuration](#per-project-configuration).
+The project-local directory is created whenever you run `omac start`/`omac serve`. Inside the sandbox it is read-only for the agent: a session can neither read the rules nor write or create files in it, and a symlinked `.omac` refuses the launch. Because the workdir is agent-writable, the project layer must be **approved once** with `--accept-project-config` (an explicit `--profile-path` into the project layer is its own approval); omac then pins the approved content host-side, so any later change to a file a launch loads refuses to start until you re-approve. If the workdir (e.g. a read-only checkout) prevents creation, omac warns and continues — the agent runs with your own permissions, so it could not create or read it either. The [security](security.md#launcher-config-trust) section records how this approval works and why the project layer is safe to use.
 
 ## Launcher config
 
@@ -145,8 +145,10 @@ sandbox:
 
 - **Shared:** the profile(s) under `.omac/` (commit them). Team allowlist →
   `network.allow_domain`.
-- **Local:** `<profile>.pages.json` (per-user "allow permanently" clicks) —
-  created empty on the first launch, git-ignored automatically, never shared.
+- **Local:** learned decisions for a project profile live under
+  `~/.config/omac/learned/` on the host (keyed to the profile file, per "allow
+  permanently" click), never shared and outside the agent's reach — they
+  steer network decisions and must not be committable.
 
 Several local profiles can live side by side in `.omac/`; switch between them
 with `sandbox.profile_name` or `--profile-path .omac/<name>.json`. A name never
@@ -157,28 +159,29 @@ Because a project's own `.omac/` content is not trusted on sight, every fresh
 clone approves it once: the first `omac start` aborts with a review hint, and
 `omac start --accept-project-config` (after you checked the commits that
 introduced it) makes it run. omac pins that approved content host-side and
-re-asks whenever a loaded file changes afterwards.
+re-asks whenever a loaded file changes or disappears afterwards (a deletion
+would otherwise silently fall back to the wider global layer).
 
 **Tamper and read protection.** Inside the sandbox the `.omac/` directory is
-masked read-only, so the agent can neither read the rules nor write or create
-files in it — it cannot rewrite the grants a later launch enforces, nor
-pre-allow network hosts by editing the pages file. On Linux the directory is
-also an unremovable read-only mount. On macOS Seatbelt cannot block replacing
-the directory inside a writable workdir, so omac anchors trust host-side
-instead: every project-local file a launch loads is pinned per file in
-`~/.config/omac/project-sandbox.json` (invisible to the session), and a launch
-aborts when a loaded file changed since its approval — a replaced profile is
-never trusted. The project layer must be approved once
-(`--accept-project-config`); an explicit `--profile-path` into `.omac/` is its
-own first approval, and only the files that launch loads are pinned and
-compared. A global profile (`~/.config/omac/`) always sits outside every
-granted path and is invisible to the session on both platforms. omac writes
-learned decisions from outside the sandbox, so nothing changes for you.
+masked read-only, so a session can neither read the rules nor write there —
+it cannot rewrite the grants a later launch enforces, and on Linux the masking
+is an unremovable mount. Beyond that, the host-side pin described under
+[approval](#per-project-configuration) catches the one thing a mask can miss:
+on macOS, a session can replace a directory inside the writable workdir, so
+omac pins the project-local files a launch loads in
+`~/.config/omac/project-sandbox.json` (invisible to the session) and refuses
+to start on any change or disappearance since approval. The full threat model
+— which also states when the gate does not apply (a launch without a sandbox
+has no sandbox definition to enforce) and why a profile that grants `~` or
+`~/.config` writable voids these guarantees — is in
+[security.md](security.md#launcher-config-trust).
 
-`--profile-path` is constrained too: it accepts only a path inside
-`~/.config/omac/sandbox-profiles/` or `<workdir>/.omac/`, and refuses symlinks.
+`--profile-path` is constrained too: it accepts only a path that resolves
+(symlinks followed) inside `~/.config/omac/sandbox-profiles/` or
+`<workdir>/.omac/`; the launch reads the resolved file, and symlinks are
+refused.
 
-### Migrating from 0.9.0
+### Migrating Configs from 0.9.0
 
 - The project launcher config moved from
   `<project>/.opencode/oh-my-agentic-coder.yaml` to `<project>/.omac/config.yaml`.

@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -73,5 +74,22 @@ func TestLoadLauncherRejectsInvalidCacheScope(t *testing.T) {
 	}
 	if _, _, err := LoadLauncher(dir); err == nil {
 		t.Fatalf("LoadLauncher accepted invalid cache scope")
+	}
+}
+
+// With both layers present, an invalid scope must be blamed on the file that
+// set it: the global file, not the local one the launch also happens to read.
+func TestLoadLauncherBlamesInvalidGlobalCacheScope(t *testing.T) {
+	isolateHome(t)
+	workdir := t.TempDir()
+	writeFile(t, GlobalLauncherConfigPath(), "cache:\n  scope: nonsense\n")
+	writeFile(t, ProjectLauncherConfigPath(workdir), "facade:\n  max_body_bytes: 42\n")
+
+	_, _, err := LoadLauncher(workdir)
+	if err == nil {
+		t.Fatal("invalid global cache scope accepted")
+	}
+	if !strings.Contains(err.Error(), GlobalLauncherConfigPath()) {
+		t.Errorf("error must name the file that set the scope, got: %v", err)
 	}
 }

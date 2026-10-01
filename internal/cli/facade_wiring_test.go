@@ -29,7 +29,7 @@ func wireModeForTest(t *testing.T, noSandbox, learnMode bool) (*facade.Facade, [
 
 // TestWireFacadeSandboxDefaultProfileWiresChecker: a default launch resolves
 // the "default" policy profile and wires ProtectedPathChecker, so
-// GET /sandbox/denied can distinguish a sandbox denial from a missing file (#173).
+// GET /sandbox/denied can distinguish a sandbox denial from a missing file.
 func TestWireFacadeSandboxDefaultProfileWiresChecker(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

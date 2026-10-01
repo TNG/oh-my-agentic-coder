@@ -32,6 +32,17 @@ type Inputs struct {
 	// resolves the same policy profile the parent did. Empty lets the child
 	// use its own default ("default").
 	ProfileRef string
+	// ProjectTrust, when set, tells the child to re-verify the project-local
+	// sandbox content against the host-side approval pins (per-file digests)
+	// before loading it — the parent verified the pins but then spent time
+	// reconciling skills and spawning sidecars, and the child re-reads the
+	// profile from disk. "config" means the launch followed the project's
+	// .omac/config.yaml; "explicit" means it followed --profile-path.
+	// Empty (a direct `omac sandbox run`) skips the check.
+	ProjectTrust string
+	// ProjectTrustLayer is the profile layer the parent resolved
+	// (workdir|global|builtin), for the child's re-verification.
+	ProjectTrustLayer string
 }
 
 // BuildBuiltinArgv builds the argv that launches the builtin sandbox: it
@@ -48,6 +59,9 @@ func BuildBuiltinArgv(in Inputs) ([]string, error) {
 	argv := []string{self, "sandbox", "run"}
 	if in.ProfileRef != "" {
 		argv = append(argv, "--profile", in.ProfileRef)
+	}
+	if in.ProjectTrust != "" {
+		argv = append(argv, "--project-trust", in.ProjectTrust, "--project-trust-layer", in.ProjectTrustLayer)
 	}
 	argv = append(argv,
 		"--allow-file", in.Socket,

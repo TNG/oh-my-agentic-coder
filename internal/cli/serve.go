@@ -75,7 +75,7 @@ func parseServeArgs(args []string, env *Env) (serveParse, bool) {
 		noSandbox         = fs.Bool("no-sandbox", false, "Run the inner command directly, without a sandbox (debug only).")
 		noInner           = fs.Bool("no-inner", false, "Do not launch any inner command; run the control plane only (testing/headless).")
 		ephemeralCache    = fs.Bool("ephemeral-cache", false, "Use a per-launch cache instead of the persistent cache.")
-		cacheScopeFlag    = fs.String("cache-scope", "", "Persistent cache scope: global, config, or workdir. Overrides config (default: global).")
+		cacheScopeFlag    = fs.String("cache-scope", "", "Persistent cache scope: global, config, or workdir. Overrides config (default: workdir).")
 		verbose           = fs.Bool("verbose", false, "Verbose lifecycle logging.")
 		forDesktop        = fs.Bool("for-opencode-desktop", false, "Grant every project worktree from the local OpenCode state (Desktop projects) read+write in the sandbox.")
 		learn             = fs.Bool("learn", false, "Learn mode: do not restrict filesystem access; record folders used and offer to add them to the sandbox profile at session end.")
@@ -83,7 +83,7 @@ func parseServeArgs(args []string, env *Env) (serveParse, bool) {
 		noAudit           = fs.Bool("no-audit", false, "Disable the security audit trail.")
 		auditStrict       = fs.Bool("audit-strict", false, "Fail-closed: abort if the audit log cannot be written.")
 		profilePath       = fs.String("profile-path", "", "Path to a sandbox grants profile inside ~/.config/omac/sandbox-profiles/ or <workdir>/.omac/. Overrides sandbox.profile_name.")
-		acceptProjectCfg  = fs.Bool("accept-project-config", false, "Re-approve the project-local .omac sandbox configuration after it changed since it was approved.")
+		acceptProjectCfg  = fs.Bool("accept-project-config", false, "Approve the project-local .omac sandbox configuration (needed on first use, and again after any change to the files a launch loads).")
 	)
 	var roots multiFlag
 	var openPorts intMultiFlag
@@ -187,7 +187,7 @@ func runServe(args []string, env *Env) int {
 	profilePathFlag := parsed.profilePath
 	acceptProjectCfg := parsed.acceptProjectCfg
 
-	// See ensureOmacLocalDir in start.go: .omac must exist before the
+	// See ensureOmacLocalDir in sandboxplan.go: .omac must exist before the
 	// protected-pattern watch scans and the child masks it.
 	if err := ensureOmacLocalDir(env.Stderr, env.Workdir); err != nil {
 		fmt.Fprintln(env.Stderr, "omac serve:", err)
@@ -214,6 +214,10 @@ func runServe(args []string, env *Env) int {
 		sel = config.ProfileSelection{Name: "default", Layer: "builtin"}
 	}
 	profileRef := sel.Path
+	// The sandbox child re-verifies the project-local sandbox content
+	// against the host-side approval pins; tell it how this profile was
+	// selected so the child's check matches the parent's.
+	projectTrust := projectTrustMode(profilePathFlag)
 	if verbose {
 		if profileRef != "" {
 			fmt.Fprintf(env.Stderr, "[verbose] sandbox profile: %s (from %s)\n", profileRef, sel.Layer)
@@ -221,17 +225,16 @@ func runServe(args []string, env *Env) int {
 			fmt.Fprintln(env.Stderr, "[verbose] sandbox profile: default (builtin)")
 		}
 	}
-	// One resolved sandbox plan for the whole run: the launcher profile
-	// (templated argv) plus, for omac's native backend, its policy profile
-	// (grant JSON). Everything downstream reads the plan instead of
-	// re-resolving a bare name — see internal/cli/sandboxplan.go.
+	// One resolved sandbox plan for the whole run: the policy profile
+	// (grant JSON) the sandbox run enforces. Everything downstream reads
+	// the plan instead of re-resolving a bare name — see
+	// internal/cli/sandboxplan.go.
 	plan := resolveSandboxPlan(env.Workdir, sel)
 	if !noSandbox && !noInner {
 		// A custom profile is user-authored (and may be committed by a teammate),
 		// so surface anything that weakens the sandbox and keep its learned
 		// network decisions out of git.
 		warnPermissiveProfile(env.Stderr, profileRef, plan.Policy)
-		excludeProfilePagesFile(env.Workdir, profileRef)
 	}
 	policyRef := plan.PolicyRef
 
@@ -573,11 +576,13 @@ func runServe(args []string, env *Env) int {
 			return ExitIOError
 		}
 		argv, err = sandboxServeArgv(sandbox.Inputs{
-			Socket:     socketPath,
-			TCPPort:    srv.tcpPort,
-			InnerCmd:   inner,
-			TmpDir:     srv.sandboxTmp,
-			ProfileRef: profileRef,
+			Socket:            socketPath,
+			TCPPort:           srv.tcpPort,
+			InnerCmd:          inner,
+			TmpDir:            srv.sandboxTmp,
+			ProfileRef:        profileRef,
+			ProjectTrust:      projectTrust,
+			ProjectTrustLayer: sel.Layer,
 		}, controlPortOf(cln), harness)
 		if err != nil {
 			fmt.Fprintln(env.Stderr, "omac serve: sandbox argv:", err)
@@ -735,7 +740,8 @@ func controlPortOf(ln net.Listener) string {
 //     reach OMAC_CONTROL_BASE and the loopback connect is denied. Skipped
 //     when controlPort is "".
 //   - the harness server daemon's own port, opened for bind AND loopback
-//     connect (issues #115 / #313). See injectServerPortGrant.
+//
+// connect. See injectServerPortGrant.
 //   - the selected harness's existing runtime dirs (config/state/sessions)
 //     read+write; runServe pre-creates the declared first-use dirs.
 //
@@ -761,13 +767,13 @@ func sandboxServeArgv(in sandbox.Inputs, controlPort string, h config.Harness) (
 //
 // open-port, not listen-port, because the grant has to cover both directions:
 //
-//   - bind, or the daemon crashes on startup under a restrictive profile
-//     (issue #115). `open_port` subsumes `listen_port` on both backends —
-//     sandboxrun/sbpl.go allows network-bind for either, and
-//     sandboxrun/bwrap.go's Stage2Args maps OpenPorts to --bind-tcp too.
-//   - loopback connect, or every in-sandbox client of the server is refused
-//     (issue #313). OpenCode hands each plugin an SDK client that talks plain
-//     HTTP to 127.0.0.1:<port>; with only a bind grant those calls fail with
+//   - bind, or the daemon crashes on startup under a restrictive profile.
+//     `open_port` subsumes `listen_port` on both backends: sandboxrun/sbpl.go
+//     allows network-bind for either, and sandboxrun/bwrap.go's Stage2Args
+//     maps OpenPorts to --bind-tcp too.
+//   - loopback connect, or every in-sandbox client of the server is refused.
+//     OpenCode hands each plugin an SDK client that talks plain HTTP to
+//     127.0.0.1:<port>; with only a bind grant those calls fail with
 //     ECONNREFUSED, which surfaces as "plugin config hook failed" and — for a
 //     plugin that registers a provider — a 500 from GET /config/providers,
 //     i.e. an empty model list in OpenCode Desktop.
@@ -847,7 +853,7 @@ var emptyAllowVarsWarnDelay = 2 * time.Second
 // forwardHarnessEnv forwards the selected harness's auth env vars into the
 // sandbox via --allow-env. If the resolved sandbox profile has an EMPTY
 // environment.allow_vars, leaving it empty would inherit every ambient host
-// var (the pre-#102 leak). Rather than either leak or break, omac fails
+// var). Rather than either leak or break, omac fails
 // closed: it seeds ONLY the operational minimum (sandboxprofile.DefaultAllowVars)
 // so the empty inherit-all list becomes a restrictive allowlist — ambient
 // secrets are stripped while HOME/PATH/locale keep the harness runnable.
@@ -1532,7 +1538,7 @@ func (s *serveServer) autoRegister(absDir string, ent skillsource.Entry) (*regis
 func (s *serveServer) bringUp(e registry.Entry, absDir, workdir, namespace, secretScope string, cfg *skillconfig.Store) *skillRoute {
 	// The readiness rule is shared with start, live reload, doctor and `config
 	// show` (internal/skillstate); serve's job is only to turn its problems
-	// into a route state. Before #174 this was serve's own copy, which had
+	// into a route state. Before this was serve's own copy, which had
 	// drifted: it never honoured the env_passthrough fallback, so a skill whose
 	// required secret came from the shell was reported pending-credentials even
 	// though the supervisor would have injected the value at spawn.
@@ -1575,7 +1581,7 @@ func (s *serveServer) bringUp(e registry.Entry, absDir, workdir, namespace, secr
 	// (see runServe), NOT here: a long-lived serve daemon must not keep
 	// blessing skills authored mid-session.
 	//
-	// It is reported ahead of any credential problem — as it was before #174,
+	// It is reported ahead of any credential problem — as it was before,
 	// when the gate ran before resolution — so an unapproved skill's route
 	// always names the security refusal rather than an incidental keychain
 	// error found on the way. armed.Bundle was hashed once above and is reused

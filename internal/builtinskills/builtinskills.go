@@ -24,6 +24,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+
+	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
 )
 
 // assetsFS holds every built-in bundle under assets/<skill-name>/...
@@ -302,32 +304,8 @@ func writeTree(src fs.FS, dir string) error {
 	})
 }
 
-// atomicWrite writes data to path via a temp file in the same directory
-// followed by rename, so a concurrent reader never sees a partial file.
+// atomicWrite is the shared temp-file-plus-rename write (0o644, so
+// provisioned bundles stay world-readable like their source).
 func atomicWrite(path string, data []byte) error {
-	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
-	if err != nil {
-		return err
-	}
-	tmpPath := tmp.Name()
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		os.Remove(tmpPath)
-		return err
-	}
-	if err := tmp.Chmod(0o644); err != nil {
-		tmp.Close()
-		os.Remove(tmpPath)
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmpPath)
-		return err
-	}
-	if err := os.Rename(tmpPath, path); err != nil {
-		os.Remove(tmpPath)
-		return err
-	}
-	return nil
+	return sandboxprofile.WriteFileAtomic(path, data, 0o644)
 }

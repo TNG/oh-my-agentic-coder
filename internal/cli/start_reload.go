@@ -55,7 +55,7 @@ type startReloader struct {
 	mounted map[string]string // skill name -> mount, for skills mounted on the facade
 	// notReady holds the skills a reload could not bring up, keyed by skill
 	// name, so /__omac__/reload's manifest reports them instead of omitting
-	// them. Before #174 an unready skill was silently `continue`d: no message,
+	// them. Before an unready skill was silently `continue`d: no message,
 	// no route, no diagnostic, and no way for the agent to learn why the skill
 	// it just registered never appeared.
 	notReady map[string]*notReadySkill
@@ -88,8 +88,8 @@ func (r *startReloader) aud() audit.Auditor {
 // reloadStubRoute maps skillstate problems to the stub route reload should
 // install, or nil when the skill is ready to spawn. The classification itself
 // is skillstate.StallFor, shared with serve's bringUp: both install a stub
-// route rather than refusing a process, and a divergence between them is
-// exactly what issue #174 was about.
+// route rather than refusing a process, so both must classify identically —
+// a divergence between them is the failure mode sharing this helper prevents.
 func reloadStubRoute(mount string, problems []skillstate.Problem) *notReadySkill {
 	st := skillstate.StallFor(problems)
 	if st == nil {
@@ -425,10 +425,9 @@ func (r *startReloader) reload() []string {
 	// (internal/skillstate). Reload's own copy used to omit the
 	// $default_from_env rung and the env_passthrough fallback entirely and to
 	// read any keychain error as "absent", so a skill that started fine under
-	// `omac start` could never be brought up live — silently (issue #174,
-	// Failure 1). SkipBundleHash: reload has always mounted the current
-	// on-disk code and left drift to the approval gate below, which re-derives
-	// the hash itself.
+	// `omac start` could never be brought up live. SkipBundleHash: reload has
+	// always mounted the current on-disk code and left drift to the approval
+	// gate below, which re-derives the hash itself.
 	resolver := skillstate.New(skillstate.Options{
 		Scope:             keychain.WorkdirID(r.env.Workdir),
 		SkipBundleHash:    true,
