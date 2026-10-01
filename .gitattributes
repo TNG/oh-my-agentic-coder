@@ -1,1 +1,2 @@
 internal/ephemeraldocker/testdata/*.golden text eol=lf
+internal/ephemeraldocker/omac-vmguard.nft text eol=lf

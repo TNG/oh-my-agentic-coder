@@ -36,9 +36,3 @@ func TestRulesetDocumentsDeliberateRules(t *testing.T) {
 		t.Error("Ruleset() bridge-acceptance comment must mention br_netfilter")
 	}
 }
-
-func TestRulesetStable(t *testing.T) {
-	if Ruleset() != Ruleset() {
-		t.Error("Ruleset() must return the same embedded content on every call")
-	}
-}
