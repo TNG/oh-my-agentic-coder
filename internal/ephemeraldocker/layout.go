@@ -105,15 +105,15 @@ func NewLayout(cacheDir, workdir string, isFree func(int) bool) (*Layout, error)
 	}
 	sess := hex.EncodeToString(sessID[:])
 	lay := &Layout{
-		Root:        filepath.Join(cacheDir, scopeDirName),
-		ImageFile:   filepath.Join(cacheDir, imageFileDir, imageFilePat),
-		Dir:         filepath.Join(cacheDir, scopeDirName, sess),
-		VMName:      vmPrefix + hex.EncodeToString(vmID[:]),
-		HostPort:    port,
-		LimaHome:    filepath.Join(shortHomeDir, shortHomePrefix+sess),
-		MarkerPath:  "",
-		LockPath:    "",
-		LimaYAML:    "",
+		Root:       filepath.Join(cacheDir, scopeDirName),
+		ImageFile:  filepath.Join(cacheDir, imageFileDir, imageFilePat),
+		Dir:        filepath.Join(cacheDir, scopeDirName, sess),
+		VMName:     vmPrefix + hex.EncodeToString(vmID[:]),
+		HostPort:   port,
+		LimaHome:   filepath.Join(shortHomeDir, shortHomePrefix+sess),
+		MarkerPath: "",
+		LockPath:   "",
+		LimaYAML:   "",
 	}
 	lay.MarkerPath = filepath.Join(lay.Dir, markerName)
 	lay.LockPath = filepath.Join(lay.Dir, lockName)
