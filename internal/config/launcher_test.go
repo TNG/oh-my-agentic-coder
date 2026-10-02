@@ -375,8 +375,16 @@ func TestExplicitProfileSelectionContainment(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: %v", tc.name, err)
 		}
-		if sel.Path != tc.path || sel.Layer != tc.layer {
-			t.Errorf("%s: sel = %+v; want path %q layer %q", tc.name, sel, tc.path, tc.layer)
+		// The selection returns the resolved path, so compare against the
+		// resolved spelling too: on macOS the temp-dir tree is a symlinked
+		// ancestor (/var -> /private/var) that realpaths out of the
+		// written form.
+		want, werr := filepath.EvalSymlinks(tc.path)
+		if werr != nil {
+			t.Fatalf("%s: %v", tc.name, werr)
+		}
+		if sel.Path != want || sel.Layer != tc.layer {
+			t.Errorf("%s: sel = %+v; want path %q layer %q", tc.name, sel, want, tc.layer)
 		}
 	}
 
@@ -414,8 +422,11 @@ func TestExplicitProfileSelectionRelativeAnchorsWorkdir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ExplicitProfileSelection: %v", err)
 	}
-	if sel.Path != local || sel.Layer != "workdir" {
-		t.Errorf("selection = %+v; want path %q layer workdir", sel, local)
+	if want, werr := filepath.EvalSymlinks(local); werr != nil || sel.Path != want {
+		t.Errorf("selection = %+v; want the resolved form of %q", sel, local)
+	}
+	if sel.Layer != "workdir" {
+		t.Errorf("selection layer = %q; want workdir", sel.Layer)
 	}
 
 	// A relative path needs a workdir to anchor on.

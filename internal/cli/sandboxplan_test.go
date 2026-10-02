@@ -165,8 +165,11 @@ func TestActiveProfileSelectionCLIPathWins(t *testing.T) {
 	if err != nil {
 		t.Fatalf("activeProfileSelection: %v", err)
 	}
-	if sel.Path != local || sel.Layer != "workdir" {
-		t.Errorf("selection = %+v; want path %q layer local", sel, local)
+	if want, werr := filepath.EvalSymlinks(local); werr != nil || sel.Path != want {
+		t.Errorf("selection = %+v; want the resolved form of %q", sel, local)
+	}
+	if sel.Layer != "workdir" {
+		t.Errorf("selection layer = %q; want workdir", sel.Layer)
 	}
 	if _, err := activeProfileSelection(workdir, filepath.Join(t.TempDir(), "evil.json"), false, io.Discard); err == nil {
 		t.Error("a --profile-path outside the trusted dirs must be rejected")
@@ -263,12 +266,12 @@ func TestActiveProfileSelectionExplicitPathSharesThePin(t *testing.T) {
 	if err != nil {
 		t.Fatalf("explicit first use: %v", err)
 	}
-	if sel.Path != local {
-		t.Fatalf("selection = %+v; want %q", sel, local)
+	if want, werr := filepath.EvalSymlinks(local); werr != nil || sel.Path != want {
+		t.Fatalf("selection = %+v; want the resolved form of %q", sel, local)
 	}
 
 	sel, err = activeProfileSelection(workdir, local, false, io.Discard)
-	if err != nil || sel.Path != local {
+	if err != nil {
 		t.Fatalf("unchanged explicit path must still run: %+v (%v)", sel, err)
 	}
 

@@ -242,3 +242,60 @@ func TestCheckProfileFile(t *testing.T) {
 		t.Errorf("a directory must be refused as a profile file, got %v", err)
 	}
 }
+
+// The launch path hands the child a symlink-resolved profile selection
+// (config.ExplicitProfileSelection returns EvalSymlinks' output). On macOS
+// the big top component of the temp/home trees it points into rewrites the
+// spelling (/var -> /private/var), so the child's containment must be judged
+// on the resolved form: a workdir reachable through a symlinked component
+// stays a legal location, while a path that only lexically looks like it is
+// inside (a symlinked intermediate directory pointing outside) is still
+// refused.
+func TestProjectDirAdmitsResolvedSpelling(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	realRoot := filepath.Join(t.TempDir(), "real-root")
+	local := filepath.Join(realRoot, ".omac")
+	if err := os.MkdirAll(local, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	profile := filepath.Join(local, "p.json")
+	if err := os.WriteFile(profile, []byte(`{"meta":{"name":"p"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// The same workdir, spelled through a symlinked ancestor — the macOS
+	// /var -> /private/var shape.
+	aliasRoot := filepath.Join(t.TempDir(), "alias-root")
+	if err := os.Symlink(realRoot, aliasRoot); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	aliasOmac := filepath.Join(aliasRoot, ".omac")
+
+	// The resolved spelling the parent returns must load.
+	if _, _, err := Resolve(profile, WithProjectDir(aliasOmac)); err != nil {
+		t.Errorf("resolved form of a project profile was refused: %v", err)
+	}
+	// ...and so must the lexical alias spelling it also validates.
+	if _, _, err := Resolve(aliasOmac+"/p.json", WithProjectDir(aliasOmac)); err != nil {
+		t.Errorf("lexical alias spelling was refused: %v", err)
+	}
+
+	// A path that lexically sits inside .omac but realpaths OUTSIDE (a
+	// symlinked intermediate directory) remains refused — this is the rule
+	// the selection layer enforces and the child must agree.
+	tamperRoot := filepath.Join(t.TempDir(), "team-profiles")
+	if err := os.MkdirAll(tamperRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tamperRoot, "evil.json"), []byte(`{}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	escape := filepath.Join(aliasRoot, ".omac", "escape")
+	if err := os.Symlink(tamperRoot, escape); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if _, _, err := Resolve(escape+"/evil.json", WithProjectDir(aliasOmac)); err == nil {
+		t.Error("a lexical .omac path that resolves outside .omac must be refused")
+	}
+}

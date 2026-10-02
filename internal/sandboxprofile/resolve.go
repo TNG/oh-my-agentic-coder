@@ -238,14 +238,17 @@ func Resolve(ref string, opts ...ResolveOption) (*Profile, string, error) {
 			// Restrict explicit paths to the trusted profile directory so a
 			// workdir-supplied --profile path cannot point at an
 			// attacker-controlled file. A project-committed profile is the
-			// one exception, and only inside the workdir itself.
+			// one exception, and only inside the workdir itself. Containment
+			// holds on the resolved form too: the launch path hands down the
+			// symlink-resolved selection, which may realpath out of the
+			// spelling its workdir was written in.
 			profileDir, err := ProfileDir()
 			if err != nil {
 				return nil, "", fmt.Errorf("resolve sandbox profile dir: %w", err)
 			}
-			allowed := WithinDir(profileDir, abs)
+			allowed := DirContainsPath(profileDir, abs)
 			if !allowed && o.projectDir != "" {
-				allowed = WithinDir(o.projectDir, abs)
+				allowed = DirContainsPath(o.projectDir, abs)
 			}
 			if !allowed {
 				return nil, "", fmt.Errorf("sandbox profile path %q is outside the trusted directory %s", ref, profileDir)
@@ -350,6 +353,23 @@ func WithinDir(dir, path string) bool {
 		return true
 	}
 	return strings.HasPrefix(path+string(os.PathSeparator), dir+string(os.PathSeparator))
+}
+
+// DirContainsPath reports whether path lies within dir. When both sides
+// resolve (file exists, no dangling ancestor), containment is judged on the
+// resolved form — same rule as the selection layer's
+// config.ExplicitProfileSelection, on both platforms: a path whose ancestors
+// realpath elsewhere must resolve into the directory, and the common macOS
+// spelling where a symlinked top component rewrites the path (/var ->
+// /private/var) stays admitted. Only an unresolvable path falls back to the
+// lexical comparison (and fails the load anyway).
+func DirContainsPath(dir, path string) bool {
+	if resolvedPath, err := filepath.EvalSymlinks(path); err == nil {
+		if resolvedDir, derr := filepath.EvalSymlinks(dir); derr == nil {
+			return WithinDir(resolvedDir, resolvedPath)
+		}
+	}
+	return WithinDir(dir, path)
 }
 
 // CheckProfileFile rejects a symlinked, missing, or directory profile file.

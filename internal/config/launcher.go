@@ -447,9 +447,9 @@ func ExplicitProfileSelection(workdir, path string) (ProfileSelection, error) {
 	localDir := LocalConfigDir(workdir)
 	layer := ""
 	switch {
-	case inResolvedDir(globalDir, resolved):
+	case sandboxprofile.DirContainsPath(globalDir, resolved):
 		layer = "global"
-	case workdir != "" && inResolvedDir(localDir, resolved):
+	case workdir != "" && sandboxprofile.DirContainsPath(localDir, resolved):
 		layer = "workdir"
 	default:
 		return ProfileSelection{}, fmt.Errorf("--profile-path %q resolves outside %s and %s; "+
@@ -458,16 +458,6 @@ func ExplicitProfileSelection(workdir, path string) (ProfileSelection, error) {
 			path, globalDir, localDir)
 	}
 	return ProfileSelection{Path: resolved, Name: strings.TrimSuffix(filepath.Base(resolved), ".json"), Layer: layer}, nil
-}
-
-// inResolvedDir reports whether path lies under dir after resolving dir's own
-// symlinks (missing dir cannot contain path).
-func inResolvedDir(dir, path string) bool {
-	resolvedDir, err := filepath.EvalSymlinks(dir)
-	if err != nil {
-		return false
-	}
-	return sandboxprofile.WithinDir(resolvedDir, path)
 }
 
 // namedProfileSelection resolves a bare profile name inside dir.
