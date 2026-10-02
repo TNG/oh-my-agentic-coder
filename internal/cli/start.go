@@ -11,11 +11,13 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/TNG/oh-my-agentic-coder/internal/audit"
 	"github.com/TNG/oh-my-agentic-coder/internal/config"
+	"github.com/TNG/oh-my-agentic-coder/internal/ephemeraldocker"
 	"github.com/TNG/oh-my-agentic-coder/internal/facade"
 	"github.com/TNG/oh-my-agentic-coder/internal/keychain"
 	"github.com/TNG/oh-my-agentic-coder/internal/registry"
@@ -44,6 +46,7 @@ type launchOpts struct {
 	innerCmdOverride   string
 	noSandbox          bool
 	ephemeralCache     bool
+	ephemeralDocker    bool
 	cacheScope         string
 	keepRunning        bool
 	acceptSkillChanges bool
@@ -89,6 +92,7 @@ func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, int) 
 		innerCmdOverride   = fs.String("inner", "", "Override inner_cmd's executable.")
 		noSandbox          = fs.Bool("no-sandbox", false, "Run inner command directly, without a sandbox (debug only).")
 		ephemeralCache     = fs.Bool("ephemeral-cache", false, "Use a per-launch cache instead of the persistent cache.")
+		ephemeralDocker    = fs.Bool("ephemeral-docker", false, "Boot a session-private throwaway Docker VM (lima/qemu). The sandboxed agent gets DOCKER_HOST pointing at it; the VM and its state are deleted when the session ends.")
 		cacheScope         = fs.String("cache-scope", "", "Persistent cache scope: global, config, or workdir. Overrides config (default: global).")
 		keepRunning        = fs.Bool("keep-running", false, "Do not stop sidecars when the inner command exits.")
 		acceptSkillChanges = fs.Bool("accept-skill-changes", false, "Tolerate bundle_hash drift in registered skills (proceed even if the on-disk skill differs from what was registered).")
@@ -136,6 +140,10 @@ func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, int) 
 		fmt.Fprintf(env.Stderr, "omac %s: --ephemeral-cache cannot be used with --no-sandbox\n", cmdName)
 		return launchOpts{}, ExitMisuse
 	}
+	if *ephemeralDocker && *noSandbox {
+		fmt.Fprintf(env.Stderr, "omac %s: --ephemeral-docker cannot be used with --no-sandbox\n", cmdName)
+		return launchOpts{}, ExitMisuse
+	}
 	if *cacheScope != "" {
 		if _, err := config.ValidateCacheScope(*cacheScope); err != nil {
 			fmt.Fprintf(env.Stderr, "omac %s: %v\n", cmdName, err)
@@ -150,6 +158,7 @@ func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, int) 
 		innerCmdOverride:   *innerCmdOverride,
 		noSandbox:          *noSandbox,
 		ephemeralCache:     *ephemeralCache,
+		ephemeralDocker:    *ephemeralDocker,
 		cacheScope:         *cacheScope,
 		keepRunning:        *keepRunning,
 		acceptSkillChanges: *acceptSkillChanges,
@@ -233,6 +242,11 @@ func runLaunch(env *Env, opts launchOpts) int {
 	// Reject the audit misuse combination up front (before any work).
 	if opts.noAudit && opts.auditStrict {
 		fmt.Fprintln(env.Stderr, prefix+": --no-audit cannot be combined with --audit-strict")
+		return ExitMisuse
+	}
+	// The parser refuses this combination; guard programmatic callers too.
+	if opts.ephemeralDocker && noSandbox {
+		fmt.Fprintln(env.Stderr, prefix+": --ephemeral-docker cannot be used with --no-sandbox")
 		return ExitMisuse
 	}
 
@@ -744,6 +758,44 @@ func runLaunch(env *Env, opts launchOpts) int {
 		fmt.Fprintf(env.Stderr, "[verbose] control plane: %s\n", controlURL)
 	}
 
+	// 7b. Ephemeral Docker VM (--ephemeral-docker): a session-private
+	//     throwaway VM with its own docker daemon, booted and torn down by
+	//     this unsandboxed parent. The sandboxed agent reaches it only via
+	//     DOCKER_HOST over a loopback forward (--open-port below); the VM
+	//     shares nothing with the host (lima/qemu backend);
+	//     --no-sandbox is refused at parse time. On a crash the next
+	//     session's orphan sweep reaps the unit.
+	var ephVM ephemeraldocker.Handle
+	if opts.ephemeralDocker {
+		if cacheScope == nil {
+			// Defensive: with the no-sandbox combination already refused,
+			// a launch always has a cache scope.
+			fmt.Fprintf(env.Stderr, "%s: --ephemeral-docker needs a cache scope for its state\n", prefix)
+			return ExitMisuse
+		}
+		s, berr := newEphemeralDockerSession(ctx, ephemeraldocker.SessionOpts{
+			CacheDir: cacheScope.Dir,
+			WorkDir:  env.Workdir,
+			Arch:     ephemeralDockerGuestArch(runtime.GOARCH),
+			Log: func(format string, args ...any) {
+				fmt.Fprintf(env.Stderr, prefix+": ephemeral-docker: "+format+"\n", args...)
+			},
+		})
+		if berr != nil {
+			fmt.Fprintln(env.Stderr, prefix+": ephemeral-docker:", berr)
+			return ephemeralDockerExitCode(berr)
+		}
+		ephVM = s
+		defer func() {
+			if tdErr := s.Teardown(); tdErr != nil {
+				fmt.Fprintf(env.Stderr, "%s: ephemeral-docker teardown: %v\n", prefix, tdErr)
+			}
+		}()
+		if verbose {
+			fmt.Fprintf(env.Stderr, "[verbose] ephemeral-docker: DOCKER_HOST=%s\n", s.DockerHost())
+		}
+	}
+
 	// 8. Build sandbox argv and exec.
 	//
 	// Resolve the inner command for the selected harness: an explicit
@@ -802,6 +854,14 @@ func runLaunch(env *Env, opts launchOpts) int {
 		// User --open-port grants (e.g. local Playwright webServer). Additive
 		// on top of the profile; no-op on non-native backends (with a warning).
 		argv = injectUserOpenPorts(env, argv, opts.openPorts, prof)
+		// Ephemeral Docker: open the loopback forward port so the
+		// sandboxed agent may connect to the guest dockerd, and allow
+		// DOCKER_HOST through the profile's env filter (deny_vars in the
+		// profile still wins over this, by design).
+		if ephVM != nil {
+			argv = injectOpenPort(argv, strconv.Itoa(ephVM.Port()))
+			argv = injectSandboxFlag(argv, "--allow-env", "DOCKER_HOST")
+		}
 		// Pass the resolved audit path down to `omac sandbox run` so the
 		// network-filter subprocess appends net.decision events to the
 		// same persistent log. Inherit the parent's run_id + mode so the
@@ -869,6 +929,11 @@ func runLaunch(env *Env, opts launchOpts) int {
 		extra["OMAC_CACHE_DIR"] = cacheScope.Dir
 		extra["OMAC_CACHE_MODE"] = string(cacheScope.Mode)
 	}
+	if ephVM != nil {
+		// The injected overlay wins over any inherited value, so the
+		// agent's docker CLI always talks to this session's VM.
+		extra["DOCKER_HOST"] = ephVM.DockerHost()
+	}
 	if controlOK {
 		extra["OMAC_CONTROL_BASE"] = controlURL
 		extra["OMAC_CONTROL_TOKEN"] = reloader.controlToken
@@ -906,6 +971,13 @@ func runLaunch(env *Env, opts launchOpts) int {
 	// failure mid-run lands here.
 	fatalTeardown = func(ferr error) {
 		fmt.Fprintln(env.Stderr, prefix+": audit (strict) write failed, aborting:", ferr)
+		if ephVM != nil {
+			// os.Exit below skips the deferred teardown, so the VM unit
+			// is removed here explicitly (idempotent with the defer).
+			if tdErr := ephVM.Teardown(); tdErr != nil {
+				fmt.Fprintln(env.Stderr, prefix+": ephemeral-docker teardown:", tdErr)
+			}
+		}
 		if !keepRunning {
 			sup.ShutdownAll(5 * time.Second)
 		}
