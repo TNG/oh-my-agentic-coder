@@ -261,12 +261,19 @@ func TestActiveProfileSelectionExplicitPathSharesThePin(t *testing.T) {
 	if err := os.WriteFile(local, []byte(`{"meta":{"name":"strict"}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// Explicit selection returns the resolved path, so all assertions below
+	// speak the resolved spelling too: on macOS the temp tree realpaths
+	// /var/folders -> /private/var/folders.
+	wantLocal, werr := filepath.EvalSymlinks(local)
+	if werr != nil {
+		t.Fatal(werr)
+	}
 
 	sel, err := activeProfileSelection(workdir, local, false, io.Discard)
 	if err != nil {
 		t.Fatalf("explicit first use: %v", err)
 	}
-	if want, werr := filepath.EvalSymlinks(local); werr != nil || sel.Path != want {
+	if sel.Path != wantLocal {
 		t.Fatalf("selection = %+v; want the resolved form of %q", sel, local)
 	}
 
@@ -283,11 +290,11 @@ func TestActiveProfileSelectionExplicitPathSharesThePin(t *testing.T) {
 	if err == nil {
 		t.Fatal("a replaced workdir-layer profile must abort the explicit-path launch")
 	}
-	if !strings.Contains(err.Error(), local) || !strings.Contains(err.Error(), "changed since it was approved") {
+	if !strings.Contains(err.Error(), wantLocal) || !strings.Contains(err.Error(), "changed since it was approved") {
 		t.Errorf("abort error should name the profile, got: %v", err)
 	}
 	sel, err = activeProfileSelection(workdir, local, true, io.Discard)
-	if err != nil || sel.Path != local {
+	if err != nil || sel.Path != wantLocal {
 		t.Fatalf("re-approval must accept the explicit path again: %+v (%v)", sel, err)
 	}
 
@@ -297,7 +304,7 @@ func TestActiveProfileSelectionExplicitPathSharesThePin(t *testing.T) {
 		t.Fatal(err)
 	}
 	sel, err = activeProfileSelection(workdir, local, false, io.Discard)
-	if err != nil || sel.Path != local {
+	if err != nil || sel.Path != wantLocal {
 		t.Fatalf("an untouched explicit launch must not be gated by the bypassed config.yaml: %+v (%v)", sel, err)
 	}
 
