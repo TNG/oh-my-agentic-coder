@@ -93,7 +93,7 @@ The user will see your reason when reviewing access.
 // supplied via denial.marker_file. Before this, the default marker's
 // "  POST $OMAC_BASE/sandbox/intent ..." line hung every login shell on
 // hosts where /usr/bin/POST is libwww-perl's lwp-request, which blocks
-// reading its body from stdin (#213).
+// reading its body from stdin.
 //
 // "#" comments every format the protected set covers: sh, bash, zsh,
 // fish, .envrc, .env, .npmrc, ini. Lines already commented are left

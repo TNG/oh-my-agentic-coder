@@ -77,7 +77,7 @@ const maxSymlinkHops = 32
 // and Dir(EvalSymlinks(path)) amounts to — is not enough, because the kernel
 // resolves the chain one hop at a time and needs read access to each link it
 // reads on the way. Homebrew under a non-default prefix is the case that
-// exposed it (issue #229): with the prefix outside every baseline grant,
+// exposed it: with the prefix outside every baseline grant,
 //
 //	<prefix>/bin/opencode
 //	  -> <prefix>/Cellar/opencode/<v>/bin/opencode          <- ungranted hop

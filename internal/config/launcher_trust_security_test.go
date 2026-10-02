@@ -3,33 +3,26 @@ package config
 import (
 	"os"
 	"path/filepath"
-	"slices"
+	"strings"
 	"testing"
 )
 
 // Provenance of the launcher config.
 //
-// LoadLauncher reads <workdir>/.opencode/oh-my-agentic-coder.yaml before it
-// falls back to the user's own ~/.config/omac/config.yaml. The workdir is the
-// cloned repository — the untrusted party the sandbox exists to confine — and
-// two fields in that file decide how confinement happens:
+// LoadLauncher reads the project-local <workdir>/.omac/config.yaml and the
+// user-global ~/.config/omac/config.yaml. The workdir is the cloned repository
+// — the untrusted party the sandbox exists to confine — and 0.9.0 let its
+// sandbox block decide how confinement happened:
 //
-//   - sandbox.profiles.<name>.command is the argv omac runs on the HOST to
-//     start the sandbox. It is executed before any confinement exists,
-//     inheriting the user's full environment, including the provider API
-//     tokens omac is otherwise careful to keep out of the sandbox.
-//   - sandbox.default_profile picks which of those templates is used, and one
-//     of the shipped profiles ("no-sandbox-debug") is a plain pass-through
-//     with no confinement at all.
+//   - sandbox.profiles.<name>.command was the argv omac ran on the HOST to
+//     start the sandbox, before any confinement existed and with the user's
+//     full environment (including provider tokens).
+//   - sandbox.default_profile picked which template was used, and one shipped
+//     profile ("no-sandbox-debug") ran the harness with no sandbox at all.
 //
-// Either one lets a repository decide the terms of its own confinement, which
-// is the same as having none. Opening a hostile repo with omac must not be
-// more dangerous than opening it without.
-//
-// Project-scoped settings that carry no host-execution power are a different
-// matter and must keep working, or "fix" and "ignore the file entirely"
-// become indistinguishable. Both tests below assert one such setting as a
-// control.
+// Both are now rejected outright, and the only sandbox field a project may set
+// (sandbox.profile_name) resolves solely inside the project's .omac/
+// directory. These tests pin that.
 
 // writeConfig writes a launcher config to path, creating parent dirs.
 func writeConfig(t *testing.T, path, body string) {
@@ -42,13 +35,41 @@ func writeConfig(t *testing.T, path, body string) {
 	}
 }
 
+// TestLegacyProjectConfigWarnsAndIsIgnored asserts the 0.9.0 project config
+// location is no longer read, but is surfaced with a move hint.
+func TestLegacyProjectConfigWarnsAndIsIgnored(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	workdir := t.TempDir()
+	writeConfig(t, filepath.Join(workdir, ".opencode", "oh-my-agentic-coder.yaml"),
+		"facade:\n  max_body_bytes: 4242\n")
+
+	warns := LegacyProjectConfigWarnings(workdir)
+	if len(warns) == 0 {
+		t.Fatal("expected a migration warning for the 0.9.0 project config path")
+	}
+	if !strings.Contains(warns[0], "mkdir -p .omac") || !strings.Contains(warns[0], "mv ") {
+		t.Errorf("warning should include the move command; got: %q", warns[0])
+	}
+
+	lc, path, err := LoadLauncher(workdir)
+	if err != nil {
+		t.Fatalf("LoadLauncher: %v", err)
+	}
+	if path != "" {
+		t.Errorf("the legacy config must be ignored, but LoadLauncher reported path %q", path)
+	}
+	if lc.Facade.MaxBodyBytes == 4242 {
+		t.Error("the legacy config's settings were applied despite the move to .omac/")
+	}
+}
+
 // TestSecurityWorkdirConfigCannotDefineSandboxCommand asserts that the argv
 // omac executes on the host does not come from the project being opened.
 func TestSecurityWorkdirConfigCannotDefineSandboxCommand(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	workdir := t.TempDir()
 
-	writeConfig(t, filepath.Join(workdir, ".opencode", "oh-my-agentic-coder.yaml"), `
+	writeConfig(t, ProjectLauncherConfigPath(workdir), `
 facade:
   max_body_bytes: 4242
 sandbox:
@@ -58,34 +79,26 @@ sandbox:
       inner_cmd: ["bash"]
 `)
 
+	if _, _, err := LoadLauncher(workdir); err == nil {
+		t.Fatal("a project config defining sandbox.profiles was accepted; a repository could decide the argv omac runs on the host")
+	} else if !strings.Contains(err.Error(), "sandbox.profiles") {
+		t.Errorf("error should name the removed sandbox.profiles setting: %v", err)
+	}
+
+	// Control: a clean project config still loads and applies its operational
+	// settings, so the test is not passing because the file was ignored.
+	writeConfig(t, ProjectLauncherConfigPath(workdir), "facade:\n  max_body_bytes: 4242\nsandbox:\n  profile_name: \"\"\n")
 	lc, path, err := LoadLauncher(workdir)
 	if err != nil {
-		t.Fatalf("LoadLauncher: %v", err)
+		t.Fatalf("LoadLauncher (clean config): %v", err)
 	}
-
-	// Control: the file was found, parsed, and its harmless project-scoped
-	// setting applied. Without this, a config that silently failed to load
-	// would look like a passing security test.
 	if path == "" || lc.Facade.MaxBodyBytes != 4242 {
 		t.Fatalf("workdir config was not applied at all (path %q, max_body_bytes %d): the fixture is broken, not the security property", path, lc.Facade.MaxBodyBytes)
-	}
-
-	got := lc.Sandbox.Profiles["builtin"].Command
-	if slices.Contains(got, "/bin/sh") {
-		t.Errorf("the launch argv came from the workdir config: omac would run %v on the host, unconfined and with the user's full environment", got)
-	}
-	if inner := lc.Sandbox.Profiles["builtin"].InnerCmd; slices.Contains(inner, "bash") {
-		t.Errorf("the workdir config chose the command run inside the sandbox: %v", inner)
 	}
 }
 
 // TestSecurityWorkdirConfigCannotSelectUnsandboxedProfile asserts that the
 // project cannot point omac at the shipped no-confinement profile.
-//
-// This is the cheaper half of the same problem: the attacker does not even
-// have to supply an argv, only to name the debug profile omac already
-// carries, whose template runs the harness directly with no sandbox around
-// it.
 func TestSecurityWorkdirConfigCannotSelectUnsandboxedProfile(t *testing.T) {
 	const selectDebug = `
 facade:
@@ -94,40 +107,55 @@ sandbox:
   default_profile: no-sandbox-debug
 `
 
-	// Control: the same request from the user's own global config is
-	// honored. It is their machine and their choice, and it proves this test
-	// is about where the setting came from rather than about the profile
-	// name being blacklisted everywhere.
-	t.Run("global config may select it", func(t *testing.T) {
+	t.Run("global config selecting it is rejected", func(t *testing.T) {
 		home := t.TempDir()
 		t.Setenv("HOME", home)
-		writeConfig(t, filepath.Join(home, ".config", "omac", "config.yaml"), selectDebug)
+		writeConfig(t, GlobalLauncherConfigPath(), selectDebug)
 
-		lc, path, err := LoadLauncher(t.TempDir())
-		if err != nil {
-			t.Fatalf("LoadLauncher: %v", err)
+		_, _, err := LoadLauncher(t.TempDir())
+		if err == nil {
+			t.Fatal("the global config selected the removed no-sandbox-debug profile without error")
 		}
-		if path == "" {
-			t.Fatal("the global config was not loaded: the fixture is broken")
-		}
-		if lc.Sandbox.DefaultProfile != "no-sandbox-debug" {
-			t.Fatalf("the user's own global config was overridden (default_profile = %q): this test can no longer tell provenance apart", lc.Sandbox.DefaultProfile)
+		for _, want := range []string{"default_profile", "no-sandbox-debug", "sandbox-profiles/<name>.json", "--no-sandbox --inner bash"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("global error should contain %q: %v", want, err)
+			}
 		}
 	})
 
 	t.Setenv("HOME", t.TempDir())
 	workdir := t.TempDir()
-	writeConfig(t, filepath.Join(workdir, ".opencode", "oh-my-agentic-coder.yaml"), selectDebug)
+	writeConfig(t, ProjectLauncherConfigPath(workdir), selectDebug)
 
-	lc, path, err := LoadLauncher(workdir)
+	_, _, err := LoadLauncher(workdir)
+	if err == nil {
+		t.Fatal("the project selected the removed no-sandbox-debug profile without error")
+	}
+	if !strings.Contains(err.Error(), "<workdir>/.omac/<name>.json") {
+		t.Errorf("project error should point at the project location: %v", err)
+	}
+}
+
+// TestSecurityProjectProfileNameStaysInOmacDir asserts the containment rule on
+// the one sandbox field a project config may set.
+func TestSecurityProjectProfileNameStaysInOmacDir(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	workdir := t.TempDir()
+
+	// A name with a path separator must not escape .omac/.
+	writeConfig(t, ProjectLauncherConfigPath(workdir), "sandbox:\n  profile_name: ../../etc/passwd\n")
+	if _, err := ResolveSandboxProfile(workdir); err == nil {
+		t.Error("a profile_name containing a path separator was accepted; the project could steer the launch at a host file")
+	}
+
+	// A bare name resolves inside .omac/ only.
+	writeConfig(t, filepath.Join(workdir, ".omac", "strict.json"), "{}")
+	writeConfig(t, ProjectLauncherConfigPath(workdir), "sandbox:\n  profile_name: strict\n")
+	sel, err := ResolveSandboxProfile(workdir)
 	if err != nil {
-		t.Fatalf("LoadLauncher: %v", err)
+		t.Fatalf("ResolveSandboxProfile: %v", err)
 	}
-	if path == "" || lc.Facade.MaxBodyBytes != 4242 {
-		t.Fatalf("workdir config was not applied at all (path %q, max_body_bytes %d): the fixture is broken, not the security property", path, lc.Facade.MaxBodyBytes)
-	}
-
-	if lc.Sandbox.DefaultProfile == "no-sandbox-debug" {
-		t.Error("the project selected the no-confinement profile: cloning and opening a repository is enough to run its code on the host with no sandbox")
+	if sel.Path != filepath.Join(workdir, ".omac", "strict.json") || sel.Layer != "workdir" {
+		t.Errorf("selection = %+v; want the local .omac profile", sel)
 	}
 }

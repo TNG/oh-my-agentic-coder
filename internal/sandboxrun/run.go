@@ -43,7 +43,7 @@ type Options struct {
 // `omac sandbox run` against an empty profile, whose fail-closed behavior
 // otherwise has no warning surface at all. Sitting at the enforcement
 // point also covers profiles the launcher layer cannot inspect (its
-// warnings are gated on the `{{self}} sandbox run` command shape).
+// warnings apply only to the launches it assembles itself).
 func warnEmptyAllowVars(stderr io.Writer, allowVars []string) {
 	if len(allowVars) > 0 {
 		return
@@ -78,14 +78,41 @@ func Run(opts Options) int {
 		return 1
 	}
 
-	// WithScaffold: this is the launch path — the child the default
-	// launcher template invokes — so first run creates the user's editable
+	// The project-local .omac directory holds the sandbox definition. Create
+	// it up front so it exists at launch and can be masked as a directory,
+	// regardless of whether any profile is committed: an agent must never be
+	// able to create it and have a later launch trust its contents.
+	localDir, err := EnsureLocalConfigDir(opts.Workdir)
+	switch {
+	case err != nil && errors.Is(err, ErrLocalConfigDirSymlink):
+		return fail("%v", err)
+	case err != nil:
+		fmt.Fprintf(stderr, "omac sandbox: warning: %v.\n", err)
+		fmt.Fprintf(stderr, "  Proceeding without project-local sandbox configuration: the sandboxed agent\n"+
+			"  runs with your own permissions, so it cannot create or read this directory either.\n")
+		localDir = ""
+	}
+
+	// WithScaffold: this is the launch path (`omac start` and `omac serve`
+	// spawn this child), so first run creates the user's editable
 	// ~/.config/omac/sandbox-profiles/default.json. Every inspection
 	// caller (doctor, diagnose, provenance, facade wiring) resolves
-	// read-only instead.
-	profile, profilePath, err := sandboxprofile.Resolve(opts.Flags.ProfileRef, sandboxprofile.WithScaffold())
+	// read-only instead. WithProjectDir admits an explicit path only inside
+	// the project's .omac directory.
+	profile, profilePath, err := sandboxprofile.Resolve(opts.Flags.ProfileRef, sandboxprofile.WithScaffold(), sandboxprofile.WithProjectDir(localDir))
 	if err != nil {
 		return fail("%v", err)
+	}
+	// The parent verified the approval pins for the project-local sandbox
+	// content before spawning this child, then spent some time reconciling
+	// skills and starting sidecars. On macOS a process from a previous
+	// session can still delete and replace <workdir>/.omac inside that
+	// window, and this child re-reads the profile from disk; re-run the same
+	// check here so what is loaded below is what was approved.
+	if opts.Flags.ProjectTrust != "" {
+		if terr := verifyProjectTrust(opts.Workdir, opts.Flags.ProjectTrust, opts.Flags.ProjectTrustLayer, profilePath); terr != nil {
+			return fail("%v", terr)
+		}
 	}
 	merged, warnings := sandboxprofile.Merge(profile, opts.Flags)
 	for _, w := range warnings {
@@ -133,10 +160,16 @@ func Run(opts Options) int {
 		grants = grants.withUnrestrictedFilesystem()
 	}
 
-	// Injected child env. The validated cache redirect is recreated here
-	// and proxy vars are added before the backend builds its rules.
-	injected := cacheEnv
+	// The omac config directories define the sandbox itself and stay masked
+	// even in learn mode. Without this a session could plant a .omac/ (or
+	// rewrite the global config) that a later, non-learn launch would trust.
+	grants.ProtectedPaths = dedupe(append(grants.ProtectedPaths, sandboxprofile.NonOverridableProtectedPaths(localDir)...))
 
+	// Injected child env. Profile-defined values come first so omac's own
+	// operational injections (the validated cache redirect, proxy vars,
+	// registry config) win on collision; deny_vars still strips last.
+	envSet := profileSetEnv(merged.Environment.Set, stderr)
+	envProxy := map[string]string{}
 	// Audit sink for network decisions. This subprocess is separate from
 	// the parent omac, so it opens its own append-only handle to the same
 	// persistent audit file (append-safe across processes). Non-strict
@@ -183,7 +216,7 @@ func Run(opts Options) int {
 		defer proxy.Close()
 		grants.ProxyPort = proxy.Port()
 		for k, v := range proxy.EnvVars() {
-			injected[k] = v
+			envProxy[k] = v
 		}
 		if families := merged.Network.ProxyInjection; len(families) > 0 {
 			env, oerr := ProxyInjectionEnv(families, proxy.ProxyURL())
@@ -191,7 +224,7 @@ func Run(opts Options) int {
 				return fail("%v", oerr)
 			}
 			for k, v := range env {
-				injected[k] = v
+				envProxy[k] = v
 			}
 			routed := families
 			if slices.Contains(families, sandboxprofile.ProxyInjectNode) {
@@ -219,11 +252,16 @@ func Run(opts Options) int {
 	// grant read access to the copies. Must run before BuildChildArgv, which
 	// freezes grants into backend rules, and the projection dir must outlive
 	// the child (bwrap binds it at launch), so cleanup is deferred.
-	registryCleanup, err := setupRegistryConfig(merged, grants, injected, stderr)
+	registryCleanup, envRegistry, err := setupRegistryConfig(merged, grants, stderr)
 	if err != nil {
 		return fail("%v", err)
 	}
 	defer registryCleanup()
+
+	// One merge, one order: profile set values first, then omac's
+	// operational injections, so the latter win on collision. FilterEnv
+	// applies deny_vars last on top of the result.
+	injected := mergeInjectedEnv(envSet, cacheEnv, envProxy, envRegistry)
 
 	// Denial markers must outlive argv construction: bwrap reads the
 	// bind sources at launch, so cleanup is deferred until after the
@@ -267,6 +305,114 @@ func Run(opts Options) int {
 		}
 	}
 	return code
+}
+
+// profileSetEnv expands the profile's environment.set values. Names on the
+// always-stripped blocklist are dropped rather than injected: the blocklist
+// protects the child from code-loading variables, and a profile must not be a
+// way around it — not through its name, and not through a value that expands
+// a blocklisted variable under a benign name. A value that fails to expand is
+// dropped with a warning.
+func profileSetEnv(set map[string]string, stderr io.Writer) map[string]string {
+	out := make(map[string]string, len(set))
+	for k, v := range set {
+		if sandboxprofile.IsDangerousEnvVar(k) {
+			fmt.Fprintf(stderr, "omac sandbox: warning: environment.set %q is on the always-stripped list and has no effect\n", k)
+			continue
+		}
+		if ref := blockedEnvValueRef(v); ref != "" {
+			fmt.Fprintf(stderr, "omac sandbox: warning: environment.set %q references the always-stripped variable %q in its value; "+
+				"the entry is dropped — a profile must not route a stripped variable in under another name\n", k, ref)
+			continue
+		}
+		expanded, err := sandboxprofile.ExpandEnvValue(v)
+		if err != nil {
+			fmt.Fprintf(stderr, "omac sandbox: warning: environment.set %q: %v; ignored\n", k, err)
+			continue
+		}
+		out[k] = expanded
+	}
+	return out
+}
+
+// blockedEnvValueRef returns the first variable name a set value references
+// via $VAR/${VAR} that is on the always-stripped blocklist, or "".
+func blockedEnvValueRef(v string) string {
+	for _, ref := range sandboxprofile.EnvValueRefs(v) {
+		if sandboxprofile.IsDangerousEnvVar(ref) {
+			return ref
+		}
+	}
+	return ""
+}
+
+// mergeInjectedEnv layers the injected child-env maps in precedence order:
+// the profile's set values first, then the omac operational injections, so
+// the latter win on collision. deny_vars is applied afterwards by FilterEnv.
+func mergeInjectedEnv(profileSet, cacheEnv, proxyEnv, registryEnv map[string]string) map[string]string {
+	out := make(map[string]string, len(profileSet)+len(cacheEnv)+len(proxyEnv)+len(registryEnv))
+	for _, src := range []map[string]string{profileSet, cacheEnv, proxyEnv, registryEnv} {
+		for k, v := range src {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+// verifyProjectTrust re-checks the project-local sandbox content this child
+// is about to load against the host-side approval pin, exactly as the parent
+// did before spawning (config.ProjectSandboxTrust). mode is the value of
+// --project-trust set by the launching parent: “config” when the launch
+// followed .omac/config.yaml, “explicit” when it followed --profile-path;
+// layer is the profile layer the parent resolved (workdir, global, builtin).
+// A direct `omac sandbox run` passes neither flag and skips the check —
+// there is no approval to compare against.
+func verifyProjectTrust(workdir, mode, layer, profilePath string) error {
+	if workdir == "" {
+		return nil
+	}
+	sel := config.ProfileSelection{Path: profilePath, Layer: layer}
+	trusted, _, reason, terr := config.ProjectSandboxTrust(workdir, sel, mode == "config")
+	if terr != nil {
+		return fmt.Errorf("cannot re-verify the project sandbox configuration: %s", terr)
+	}
+	if !trusted {
+		return fmt.Errorf("%s — refusing to start, the project sandbox configuration changed between approval and launch; "+
+			"re-run with --accept-project-config if the change is yours", reason)
+	}
+	return nil
+}
+
+// ErrLocalConfigDirSymlink marks a workdir whose .omac is a symlink: a
+// symlinked config dir could point outside the project and defeat the mask,
+// so callers must refuse the launch instead of continuing without it.
+var ErrLocalConfigDirSymlink = errors.New("symlinked .omac config directory")
+
+// EnsureLocalConfigDir creates <workdir>/.omac (the project config dir) so it
+// exists before the sandbox starts and can be masked as a directory. The
+// parent (omac start/serve) calls it before spawning the child, so the
+// protected-pattern watch sees the dir as pre-existing rather than reporting
+// it as a mid-session creation.
+//
+// Returns "" when workdir is empty. A symlinked .omac fails with
+// ErrLocalConfigDirSymlink. Any other creation failure also surfaces as an
+// error and is safe to treat as advisory: whatever keeps omac from creating
+// .omac keeps the agent (running with the omac user's own permissions) from
+// creating it too, so nothing plantable is missing — callers warn loudly
+// instead of aborting.
+func EnsureLocalConfigDir(workdir string) (string, error) {
+	if workdir == "" {
+		return "", nil
+	}
+	dir := config.LocalConfigDir(workdir)
+	if li, err := os.Lstat(dir); err == nil && li.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("%w: %s must be a real directory, not a symlink — it could point "+
+			"outside the project and the sandbox mask would follow the symlink", ErrLocalConfigDirSymlink, dir)
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", fmt.Errorf("cannot create %s: %w", dir, err)
+	}
+	return dir, nil
 }
 
 // injectedToolCacheEnv recreates the cache redirects for a sandbox re-exec
@@ -346,8 +492,9 @@ func harnessName(innerArgv []string) string {
 }
 
 // buildProxy assembles page policy, prompter, filter and server. The
-// page policy (learned website decisions) lives next to the profile:
-// <profile>.pages.json (e.g. default.pages.json).
+// page policy (learned website decisions) lives at PagesPath(profilePath):
+// next to the profile in the trusted profile directory, and under
+// ~/.config/omac/learned/ for a project profile.
 func buildProxy(p *sandboxprofile.Profile, profilePath string, stderr io.Writer, logf func(string, ...any), auditor audit.Auditor, intentBase, harness string) (*netproxy.Server, error) {
 	var learned netproxy.DecisionStore
 	pagesPath := sandboxprofile.PagesPath(profilePath)

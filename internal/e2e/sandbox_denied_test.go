@@ -17,7 +17,7 @@ import (
 )
 
 // TestE2ESandboxDeniedAnswersOnDefaultLaunch is the live regression test for
-// #173: on a DEFAULT launch (no flags) the facade must be able to tell the
+// : on a DEFAULT launch (no flags) the facade must be able to tell the
 // agent whether a path it could not read is protected by the sandbox or
 // simply absent.
 //

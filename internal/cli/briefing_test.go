@@ -124,8 +124,8 @@ func TestGitExcludeBriefingAppendsAndIsIdempotent(t *testing.T) {
 	}
 	rel := filepath.Join(".codewhale", "rules", "omac-sandbox-briefing.md")
 
-	gitExcludeBriefing(wd, rel)
-	gitExcludeBriefing(wd, rel) // second call must not duplicate
+	gitExcludePath(wd, rel)
+	gitExcludePath(wd, rel) // second call must not duplicate
 
 	excludePath := filepath.Join(wd, ".git", "info", "exclude")
 	data, err := os.ReadFile(excludePath)
@@ -141,9 +141,9 @@ func TestGitExcludeBriefingAppendsAndIsIdempotent(t *testing.T) {
 
 func TestGitExcludeBriefingNoOpWithoutGitDir(t *testing.T) {
 	wd := t.TempDir() // no .git
-	gitExcludeBriefing(wd, ".codewhale/rules/omac-sandbox-briefing.md")
+	gitExcludePath(wd, ".codewhale/rules/omac-sandbox-briefing.md")
 	if _, err := os.Stat(filepath.Join(wd, ".git")); !os.IsNotExist(err) {
-		t.Errorf("gitExcludeBriefing must not create .git when absent (err=%v)", err)
+		t.Errorf("gitExcludePath must not create .git when absent (err=%v)", err)
 	}
 }
 
@@ -158,7 +158,7 @@ func TestGitExcludeBriefingPreservesExistingEntries(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(infoDir, "exclude"), []byte("*.tmp\nbuild/\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	gitExcludeBriefing(wd, ".codewhale/rules/omac-sandbox-briefing.md")
+	gitExcludePath(wd, ".codewhale/rules/omac-sandbox-briefing.md")
 	data, err := os.ReadFile(filepath.Join(infoDir, "exclude"))
 	if err != nil {
 		t.Fatal(err)

@@ -110,7 +110,7 @@ func wantKinds(t *testing.T, problems []Problem, want ...ProblemKind) {
 
 // ---- the acceptance criteria ----
 
-// TestDefaultFromEnvSatisfiesRequiredField is issue #174's Failure 1: a skill
+// TestDefaultFromEnvSatisfiesRequiredField is: a skill
 // whose only required config field comes from $default_from_env. It started
 // fine under start and serve but live reload skipped it forever, because
 // reload's copy of the rule omitted the DefaultFromEnv rung entirely. With one

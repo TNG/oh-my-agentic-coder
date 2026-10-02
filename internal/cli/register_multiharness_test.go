@@ -26,7 +26,7 @@ func stageHarnessSkillBody(t *testing.T, workdir, base, name, extra string) {
 	}
 }
 
-// TestRegister_SameSkillTwoHarnesses pins the fix for issue #57: the
+// TestRegister_SameSkillTwoHarnesses pins the fix for: the
 // same skill name, installed as two separate on-disk copies (one per
 // harness) with DIFFERENT bundle hashes, must register under a second
 // harness WITHOUT --force. The registry keys entries by (Name, Harness),

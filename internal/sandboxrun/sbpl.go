@@ -13,8 +13,8 @@ import (
 // path is darwin-specific.
 //
 // Rule order matters: read allows -> write allows -> protected-path denies.
-// Seatbelt is last-match-wins, so protected denies placed last override
-// both read and write allows for those paths.
+// Seatbelt is last-match-wins, so a protected deny placed after the allows
+// overrides both read and write for that path.
 func GenerateSBPL(g *Grants) string {
 	var b strings.Builder
 	b.WriteString("(version 1)\n")
@@ -82,6 +82,12 @@ func GenerateSBPL(g *Grants) string {
 	b.WriteString("\n")
 
 	// --- Protected-path denies (after all allows, so last-match-wins blocks both reads and writes) ---
+	//
+	// Note: Seatbelt attributes removing/creating a directory ENTRY to
+	// the writable parent, so no rule on the child path can stop a
+	// session from deleting and replacing a protected directory inside
+	// an agent-writable workdir. That is why project-local sandbox
+	// configuration is pinned host-side instead (config.ProjectSandboxTrust).
 	for _, p := range g.ProtectedPaths {
 		for _, fp := range pathForms(p) {
 			fmt.Fprintf(&b, "(deny file-read* (subpath %s))\n", sbplQuote(fp))

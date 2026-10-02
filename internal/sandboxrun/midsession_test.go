@@ -57,6 +57,48 @@ func TestWatchNewProtected(t *testing.T) {
 	}
 }
 
+// The launch-time .omac must be known to the watch (omac creates it before
+// the parent starts any watch), so only mid-session ones alert.
+func TestWatchNewProtectedKnowsOmacDir(t *testing.T) {
+	dir := t.TempDir()
+	local := filepath.Join(dir, ".omac")
+	if err := os.MkdirAll(local, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	p := &sandboxprofile.Profile{}
+	p.Workdir.Access = sandboxprofile.AccessReadWrite
+
+	stop := make(chan struct{})
+	defer close(stop)
+	got := make(chan string, 8)
+	go func() {
+		if err := WatchNewProtected(p, dir, 10*time.Millisecond, func(path string) { got <- path }, stop); err != nil {
+			t.Errorf("WatchNewProtected: %v", err)
+		}
+	}()
+
+	// No alert for the launch-time .omac.
+	select {
+	case path := <-got:
+		t.Fatalf("alerted for launch-time .omac: %s", path)
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	// A mid-session .omac does alert.
+	if err := os.MkdirAll(filepath.Join(dir, "sub", ".omac"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case path := <-got:
+		if want := filepath.Join(dir, "sub", ".omac"); path != want {
+			t.Fatalf("alerted %s, want %s", path, want)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no alert for mid-session planted .omac")
+	}
+}
+
 func TestWatchNewProtectedOverrideDeny(t *testing.T) {
 	dir := t.TempDir()
 	p := &sandboxprofile.Profile{}

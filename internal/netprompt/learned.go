@@ -15,6 +15,7 @@ import (
 	"sync"
 
 	"github.com/TNG/oh-my-agentic-coder/internal/netproxy"
+	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
 )
 
 // learnedSchema is the only supported schema version.
@@ -43,9 +44,7 @@ type LearnedPolicy struct {
 	mu      sync.RWMutex
 	path    string
 	entries []LearnedEntry
-}
-
-// LoadLearnedPolicy reads the file at path (missing file = empty store).
+} // LoadLearnedPolicy reads the file at path (missing file = empty store).
 func LoadLearnedPolicy(path string) (*LearnedPolicy, error) {
 	lp := &LearnedPolicy{path: path}
 	data, err := os.ReadFile(path)
@@ -126,31 +125,13 @@ func (lp *LearnedPolicy) saveLocked() error {
 	if lp.path == "" {
 		return nil // in-memory only
 	}
-	if err := os.MkdirAll(filepath.Dir(lp.path), 0o755); err != nil {
-		return fmt.Errorf("create learned policy dir: %w", err)
-	}
 	data, err := json.MarshalIndent(learnedFile{Schema: learnedSchema, Entries: lp.entries}, "", "  ")
 	if err != nil {
 		return err
 	}
 	data = append(data, '\n')
-	tmp, err := os.CreateTemp(filepath.Dir(lp.path), ".learned-*")
-	if err != nil {
-		return err
+	if err := os.MkdirAll(filepath.Dir(lp.path), 0o755); err != nil {
+		return fmt.Errorf("create learned policy dir: %w", err)
 	}
-	tmpName := tmp.Name()
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		os.Remove(tmpName)
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmpName)
-		return err
-	}
-	if err := os.Rename(tmpName, lp.path); err != nil {
-		os.Remove(tmpName)
-		return err
-	}
-	return nil
+	return sandboxprofile.WriteFileAtomic(lp.path, data, 0o600)
 }

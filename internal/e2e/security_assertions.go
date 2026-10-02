@@ -73,7 +73,7 @@ func fsAllowDenied(output string, labels []string) string {
 // marker — lands in the section ahead of the probe's own
 // "<label>: READABLE (sandbox did not block)". Matching the call reported a
 // working sandbox as an over-restriction, and fsAllowed classifies as
-// SANDBOX_FAIL, which is never retried (#224).
+// SANDBOX_FAIL, which is never retried.
 func probeResultLine(section, label string) (string, bool) {
 	for _, line := range strings.Split(section, "\n") {
 		line = strings.TrimSpace(line)
@@ -132,7 +132,7 @@ var netDenialMarkers = []string{
 // running with --no-sandbox: whether the audit probe ran to completion and
 // whether the property is exposed (unenforced). It turns the previously
 // silent "skip all negative assertions" path into an explicit, asserted,
-// human-readable record of the real risk surface (issue #66).
+// human-readable record of the real risk surface.
 type exposureRecord struct {
 	Property string      // e.g. "filesystem read isolation"
 	Probe    string      // audit.sh probe name, e.g. "fs_read"

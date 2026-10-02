@@ -273,7 +273,7 @@ func TestDenyBodyHardDenyDoesNotOfferAllowlist(t *testing.T) {
 }
 
 // TestDenyBodyDeclinedIntentOmitsRegistryHint resolves a conflict between two
-// correct behaviours that met in the merge with #157. When the user has
+// correct behaviours. When the user has
 // reviewed a declared intent and declined it, the intent hint says: do not
 // retry. The registry hint's prompt:deny remedy says: re-run and choose Allow.
 // On this path the decision has already been made on full information, so the

@@ -771,7 +771,7 @@ sidecar:
 // TestSkillEligibleForAutoRegister_OptionalSecretPatternDoesNotBlock: eligibility
 // asks whether the skill's REQUIRED values resolve without prompting. A stale
 // placeholder in the developer's shell that fails an OPTIONAL secret's pattern
-// must not veto registration — the pre-#174 check skipped optional secrets
+// must not veto registration — an earlier check skipped optional secrets
 // entirely, and declining here would send the user to `omac register`, which
 // cannot fix an exported value either. Registering lets start's preflight report
 // it with the --skip-secret-pattern hint instead.
@@ -792,7 +792,7 @@ func TestSkillEligibleForAutoRegister_OptionalSecretPatternDoesNotBlock(t *testi
 
 // TestSkillEligibleForAutoRegister_RequiredSecretPatternBlocks is the other
 // half: for a REQUIRED secret, a host value that fails the pattern is exactly
-// the case the pre-#174 check refused, and it still refuses.
+// the case an earlier check refused, and it still refuses.
 func TestSkillEligibleForAutoRegister_RequiredSecretPatternBlocks(t *testing.T) {
 	isolateHome(t)
 	wd := t.TempDir()

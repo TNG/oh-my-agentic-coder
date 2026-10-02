@@ -15,7 +15,7 @@ import (
 
 // TestIntegrationWorktreeHooksRunButNotWritable is the Linux bwrap
 // counterpart of the darwin test: a host-authored prepare-commit-msg hook
-// RUNS during a sandboxed commit (the #30 bug was that it couldn't) and the
+// RUNS during a sandboxed commit (the bug was that it couldn't) and the
 // commit succeeds, yet the shared hooks dir is NOT writable — so the agent
 // can't plant a hook that runs un-sandboxed on the host's next commit.
 //
@@ -75,7 +75,7 @@ func TestIntegrationWorktreeHooksRunButNotWritable(t *testing.T) {
 		"GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null git -c user.name=t -c user.email=t@t add f.txt && " +
 		"GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null git -c user.name=t -c user.email=t@t commit -m base"
 	if out, code := runBwrapped(t, g, "/bin/sh", "-c", commit); code != 0 {
-		t.Fatalf("sandboxed commit failed (exit %d) — #30 regressed:\n%s", code, out)
+		t.Fatalf("sandboxed commit failed (exit %d):\n%s", code, out)
 	}
 	c := exec.Command("git", "log", "-1", "--format=%B")
 	c.Dir = wt
