@@ -79,11 +79,27 @@ function globalEnvName(mount: string): string {
   return `OMAC_G_${envIdent(mount)}_BASE`
 }
 
+// Upper bound on a single control-plane request, so a hung control plane
+// cannot stall plugin init or a hook forever. Generous by default; the
+// env override exists so tests can use a short value.
+const CONTROL_TIMEOUT_MS = 10_000
+
+function controlTimeoutMs(): number {
+  const raw = process.env.OMAC_CONTROL_TIMEOUT_MS
+  if (!raw) return CONTROL_TIMEOUT_MS
+  const n = Number(raw)
+  return Number.isFinite(n) && n > 0 ? n : CONTROL_TIMEOUT_MS
+}
+
 async function createBridge(
   pluginDir: string,
   lookupSessionDir: (sessionID: string) => Promise<string | undefined>,
 ) {
   const controlBase = process.env.OMAC_CONTROL_BASE?.replace(/\/+$/, "")
+
+  // Aborts every in-flight control-plane fetch when the plugin unloads, so
+  // shutdown does not wait for a slow or stuck control plane.
+  const shutdown = new AbortController()
 
   // OpenCode instantiates this plugin once per project directory it
   // bootstraps (not once per session), and binds `directory` to that
@@ -109,6 +125,14 @@ async function createBridge(
 
   async function controlPost(path: string, body: unknown): Promise<DirManifest | null> {
     if (!enabled()) return null
+    // One controller serves both bounds: the request timeout and plugin
+    // shutdown. This avoids depending on AbortSignal.any, which older type
+    // libraries may not declare.
+    const controller = new AbortController()
+    const onShutdown = () => controller.abort()
+    if (shutdown.signal.aborted) controller.abort()
+    else shutdown.signal.addEventListener("abort", onShutdown, { once: true })
+    const timer = setTimeout(() => controller.abort(), controlTimeoutMs())
     try {
       // omac requires the control token on every /__omac__/* call; omitted
       // when unset so this plugin also works against pre-token omac builds.
@@ -120,6 +144,7 @@ async function createBridge(
         method: "POST",
         headers,
         body: JSON.stringify(body),
+        signal: controller.signal,
       })
       if (!res.ok) {
         // 4xx/5xx from the control plane (e.g. dir outside allowed --root).
@@ -134,8 +159,12 @@ async function createBridge(
       if (m && !Array.isArray(m.skills)) m.skills = []
       return m
     } catch (err) {
-      console.error(`[omac] ${path} request failed:`, err)
+      // A request cancelled by shutdown is expected; only log real failures.
+      if (!shutdown.signal.aborted) console.error(`[omac] ${path} request failed:`, err)
       return null
+    } finally {
+      clearTimeout(timer)
+      shutdown.signal.removeEventListener("abort", onShutdown)
     }
   }
 
@@ -149,6 +178,13 @@ async function createBridge(
     }
     const m = await controlPost("/__omac__/activate", { dir })
     if (m) {
+      // The server emits dir_token only on the first activation. A refresh
+      // response therefore omits it; carry the token learned earlier forward,
+      // or the env names built from it break.
+      if (!m.dir_token) {
+        const cached = manifests.get(dir)?.dir_token
+        if (cached) m.dir_token = cached
+      }
       manifests.set(dir, m)
       activated.add(dir)
     }
@@ -341,7 +377,18 @@ async function createBridge(
     }
   }
 
-  return { sessionOpened, sessionDeleted, dirForSession, dirForCwd, systemText, shellEnv }
+  return {
+    sessionOpened,
+    sessionDeleted,
+    dirForSession,
+    dirForCwd,
+    systemText,
+    shellEnv,
+    // The event subscription uses `signal`; unload calls `abort`, which also
+    // cancels any control-plane fetch still in flight.
+    signal: shutdown.signal,
+    abort: () => shutdown.abort(),
+  }
 }
 
 const server: V1Plugin = async ({ client, directory, worktree }) => {
@@ -371,6 +418,11 @@ const server: V1Plugin = async ({ client, directory, worktree }) => {
     },
     "shell.env": async (input, output) => {
       await bridge.shellEnv(await bridge.dirForSession(input.sessionID), output.env)
+    },
+    // v1 has no event-subscription signal to abort, but dispose still cancels
+    // any control-plane fetch in flight so shutdown is not held up.
+    dispose: async () => {
+      bridge.abort()
     },
   }
 }
@@ -406,11 +458,10 @@ export default {
       await bridge.shellEnv(bridge.dirForCwd(event.cwd), event.env)
     })
 
-    const controller = new AbortController()
     const events = (async () => {
       try {
-        for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
-          if (controller.signal.aborted) break
+        for await (const event of ctx.event.subscribe({ signal: bridge.signal })) {
+          if (bridge.signal.aborted) break
           switch (event.type) {
             case "session.created":
             case "session.moved":
@@ -422,11 +473,12 @@ export default {
           }
         }
       } catch (err) {
-        if (!controller.signal.aborted) console.error("[omac] event subscription ended:", err)
+        if (!bridge.signal.aborted) console.error("[omac] event subscription ended:", err)
       }
     })()
     return async () => {
-      controller.abort()
+      // One abort cancels the event subscription and any in-flight fetch.
+      bridge.abort()
       await events
     }
   },

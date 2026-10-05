@@ -127,14 +127,15 @@ func ensureBuiltinSkills(env *Env, harness config.Harness) {
 // ensureOpenCodePlugin idempotently provisions omac's OpenCode bridge plugin
 // into the harness's global plugins dir (~/.config/opencode/plugins) on
 // launch, so the sandbox-briefing relay works even when the user never ran
-// `omac plugin install`. It reports the minimum supported OpenCode version
-// even when unchanged. Installation failures and conflicting local edits
-// produce warnings, never block launch, and never overwrite the local file.
+// `omac plugin install`. On the common path where the installed plugin is
+// already current, it is silent. It prints the minimum supported OpenCode
+// version only when it changed something or found a conflict. Installation
+// failures and conflicting local edits produce warnings, never block launch,
+// and never overwrite the local file.
 func ensureOpenCodePlugin(env *Env, harness config.Harness) {
 	if !harness.NeedsPluginBootstrap {
 		return
 	}
-	fmt.Fprintln(env.Stderr, "[warn]", plugin.MultiDirCompatibility)
 	dir := harness.GlobalBridgeDir()
 	if dir == "" {
 		return
@@ -148,8 +149,9 @@ func ensureOpenCodePlugin(env *Env, harness config.Harness) {
 			// The common post-upgrade case: a stale/edited copy differs from
 			// the embedded plugin. A plain re-install hits the same guard, so
 			// point at the actual remedy (overwrite, or delete + relaunch).
+			fmt.Fprintln(env.Stderr, "[warn]", plugin.MultiDirCompatibility)
 			fmt.Fprintf(env.Stderr, "[warn] an existing, differing %s is at %s; the sandbox briefing won't appear in OpenCode until it is refreshed.\n", plugin.MultiDirFileName, conflict.Path)
-			fmt.Fprintln(env.Stderr, "       Overwrite it:  omac plugin install opencode-desktop --global --force")
+			fmt.Fprintln(env.Stderr, "       Overwrite it:  omac plugin install opencode-desktop --global --force (then restart OpenCode to load the replacement)")
 			fmt.Fprintf(env.Stderr, "       Or delete %s and relaunch (omac reprovisions it automatically).\n", conflict.Path)
 			return
 		}
@@ -157,6 +159,7 @@ func ensureOpenCodePlugin(env *Env, harness config.Harness) {
 		return
 	}
 	if !res.Unchanged {
+		fmt.Fprintln(env.Stderr, "[warn]", plugin.MultiDirCompatibility)
 		fmt.Fprintln(env.Stderr, "[ok] provisioned the omac OpenCode plugin")
 	}
 }

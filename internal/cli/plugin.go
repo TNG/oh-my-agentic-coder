@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bufio"
+	"bytes"
 	"flag"
 	"fmt"
 	"os"
@@ -144,6 +145,11 @@ func runPluginInstall(args []string, env *Env) int {
 		fmt.Fprintln(env.Stderr, "omac plugin install:", err)
 		return ExitIOError
 	}
+	// Installing resolves only one location. If the project-local copy is a
+	// different file, warn about it so it is not left stale, and name the exact
+	// command that refreshes that path. The launch bootstrap cannot do this
+	// because it has no project context.
+	warnStaleLocalPlugin(env, harness, res.Path)
 
 	sOut := newStyler(env.Stdout)
 	okTag := sOut.paint("[ok]", ansiBold, ansiGreen)
@@ -160,6 +166,30 @@ func runPluginInstall(args []string, env *Env) int {
 			okTag, sOut.bold(target.name), scopeTag, res.Path)
 	}
 	return ExitOK
+}
+
+// warnStaleLocalPlugin warns when this project's own copy of the multidir
+// plugin exists, differs from the bundled version, and was not the file just
+// installed. installedPath is the file the install call resolved; a local
+// install of that same path is already current and must not warn.
+func warnStaleLocalPlugin(env *Env, harness config.Harness, installedPath string) {
+	if harness.BridgeDir == "" {
+		return
+	}
+	localPath := plugin.MultiDirPath(env.Workdir, harness.BridgeDir)
+	if localPath == installedPath {
+		return
+	}
+	data, err := os.ReadFile(localPath)
+	if err != nil {
+		// Absent (or unreadable): nothing to warn about.
+		return
+	}
+	if bytes.Equal(data, plugin.MultiDirSource()) {
+		return
+	}
+	fmt.Fprintf(env.Stderr, "[warn] a differing %s also exists at %s; refresh it with: omac --workdir %s plugin install opencode-desktop --force\n",
+		plugin.MultiDirFileName, localPath, env.Workdir)
 }
 
 // warnPluginMissing checks whether the harness's client-side multidir

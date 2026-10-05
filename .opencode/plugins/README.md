@@ -36,10 +36,12 @@ uses it to:
    request hooks append a block listing the session directory's skills,
    their `base` URLs, and any `pending-credentials` / `broken` status.
    Text is merged into the last system part, preserving its cache metadata.
-3. **Inject skill env** — v1's `shell.env` and v2's `create.before` set
+3. **Inject skill env**: v1's `shell.env` and v2's `create.before` set
    `OMAC_D_<token>_<MOUNT>_BASE` (and the flat `OMAC_<MOUNT>_BASE` single-dir
-   alias, §5.5) for the session's directory, plus `OMAC_G_<MOUNT>_BASE` for
-   global skills, so skill `SKILL.md` files that read env vars resolve.
+   alias, §5.5), plus `OMAC_G_<MOUNT>_BASE` for global skills, so skill
+   `SKILL.md` files that read env vars resolve. V1 uses the session's
+   directory. V2 shell events carry no session ID, so v2 uses the command's
+   working directory (see item 4).
 4. **Maintain session→directory mapping** — model hooks use the session's
    directory. V2 shell events lack a session ID, so the plugin uses the most
    specific known project containing the command's working directory.
