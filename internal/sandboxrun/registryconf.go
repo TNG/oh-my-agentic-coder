@@ -15,31 +15,33 @@ import (
 // read access to that copy alone, and points the tool at it through its
 // native config env var. The protected host file stays masked.
 //
-// grants and injected are mutated in place, so this must run after grants
-// are resolved and before BuildChildArgv turns them into backend rules.
-// The returned cleanup removes the projection directory; it is safe to
-// call even on the error paths.
-func setupRegistryConfig(merged *sandboxprofile.Profile, grants *Grants, injected map[string]string, stderr io.Writer) (func(), error) {
-	noop := func() {}
+// grants is mutated in place, so this must run after grants are resolved and
+// before BuildChildArgv turns them into backend rules. The returned injected
+// map holds the config-env pointers, which the caller layers last (below its
+// profile set values, cache redirect and proxy vars — see mergeInjectedEnv).
+// The returned cleanup removes the projection directory; it is safe to call
+// even on the error paths.
+func setupRegistryConfig(merged *sandboxprofile.Profile, grants *Grants, stderr io.Writer) (cleanup func(), injected map[string]string, err error) {
+	injected = map[string]string{}
 	ecosystems := merged.Filesystem.RegistryConfig
 	if len(ecosystems) == 0 {
-		return noop, nil
+		return func() {}, injected, nil
 	}
 
-	dir, err := os.MkdirTemp("", "omac-registryconf-")
-	if err != nil {
-		return noop, fmt.Errorf("registry_config: create projection dir: %w", err)
+	dir, mkErr := os.MkdirTemp("", "omac-registryconf-")
+	if mkErr != nil {
+		return func() {}, injected, fmt.Errorf("registry_config: create projection dir: %w", mkErr)
 	}
-	cleanup := func() { _ = os.RemoveAll(dir) }
+	cleanup = func() { _ = os.RemoveAll(dir) }
 	if err := os.Chmod(dir, 0o700); err != nil {
 		cleanup()
-		return noop, fmt.Errorf("registry_config: secure projection dir: %w", err)
+		return func() {}, injected, fmt.Errorf("registry_config: secure projection dir: %w", err)
 	}
 
-	projections, err := registryconf.Project(ecosystems, dir)
-	if err != nil {
+	projections, perr := registryconf.Project(ecosystems, dir)
+	if perr != nil {
 		cleanup()
-		return noop, err
+		return func() {}, injected, perr
 	}
 	overrides := sandboxprofile.BuildOverrideLookup(merged.Filesystem.OverrideDeny)
 	granted := 0
@@ -92,7 +94,7 @@ func setupRegistryConfig(merged *sandboxprofile.Profile, grants *Grants, injecte
 		fmt.Fprintf(stderr, "omac sandbox: registry_config (%s): no registry mapping was projected; "+
 			"scoped packages will resolve against the default registry\n", strings.Join(ecosystems, ", "))
 		cleanup()
-		return noop, nil
+		return func() {}, injected, nil
 	}
-	return cleanup, nil
+	return cleanup, injected, nil
 }

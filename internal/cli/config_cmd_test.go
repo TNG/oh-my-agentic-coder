@@ -4,7 +4,7 @@ package cli
 // projection, the source columns, and secretFingerprint (the on-the-wire
 // format). The precedence ladder itself now lives in internal/skillstate and is
 // tested there — this command only renders its result, which is the point of
-// issue #174: what `config show` DISPLAYS is by construction what start USES.
+//: what `config show` DISPLAYS is by construction what start USES.
 
 import (
 	"os"
@@ -19,7 +19,7 @@ import (
 
 // stageSkillForConfigShow writes a skill declaring one config field sourced
 // from $default_from_env and one required secret that is ALSO listed under
-// env_passthrough — the two shapes issue #174 found mishandled — then registers
+// env_passthrough — the two shapes found mishandled — then registers
 // it workdir-local.
 func stageSkillForConfigShow(t *testing.T, env *Env, name string) {
 	t.Helper()
@@ -96,7 +96,7 @@ func TestConfigShowSourcesFromEnvPassthroughAndDefaultFromEnv(t *testing.T) {
 	}
 }
 
-// TestConfigShowFindsWorkdirScopedSecret is issue #174's Failure 3 for this
+// TestConfigShowFindsWorkdirScopedSecret pins the workdir scope on the
 // command: it read secrets UNSCOPED while start reads them workdir-scoped, so a
 // secret stored per-workdir showed as missing here while start launched fine.
 func TestConfigShowFindsWorkdirScopedSecret(t *testing.T) {

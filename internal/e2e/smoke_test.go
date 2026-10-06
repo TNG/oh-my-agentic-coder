@@ -73,7 +73,7 @@ const serveReadyTimeout = 90 * time.Second
 // serveTeardownGrace bounds each step of the serve probe's teardown: first
 // waiting for a graceful exit after the context is cancelled, then waiting for
 // the process to be reaped after SIGKILL. Teardown must never be unbounded —
-// an unbounded wait here cost the suite the full 30-minute test deadline (#222).
+// an unbounded wait here cost the suite the full 30-minute test deadline.
 const serveTeardownGrace = 10 * time.Second
 
 // serveControlBaseRe extracts the control-plane base URL from the line
@@ -327,7 +327,7 @@ func runServeProbe(t *testing.T, h harnessConfig, omacBin, home, workdir, cwd st
 	waitCh := make(chan error, 1)
 	go func() { waitCh <- cmd.Wait() }()
 	// Teardown is bounded at every step. An unbounded wait here is what turned
-	// a passing probe into a 30-minute go-test timeout (#222): if Wait is still
+	// a passing probe into a 30-minute go-test timeout: if Wait is still
 	// blocked after a SIGKILL to the whole group, report it and move on rather
 	// than hanging the suite.
 	t.Cleanup(func() {

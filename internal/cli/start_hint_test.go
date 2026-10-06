@@ -16,7 +16,7 @@ func TestBoundedKnownIDsNeverWaitsIndefinitely(t *testing.T) {
 
 	start := time.Now()
 	got := boundedKnownIDs(func() map[string]struct{} {
-		<-block // simulate an enumeration that never returns (the #145 hang)
+		<-block // simulate an enumeration that never returns
 		return map[string]struct{}{"unreachable": {}}
 	}, 50*time.Millisecond)
 

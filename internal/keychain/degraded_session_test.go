@@ -22,7 +22,7 @@ func TestReadsDegradeWhenSessionBusSocketIsDead(t *testing.T) {
 
 	// errors.Is, not ==: the error also carries ErrUnavailable so a caller
 	// that has exhausted its fallbacks can say "no Secret Service provider"
-	// instead of "run omac secrets set" (issue #174, Failure 4). Every
+	// instead of "run omac secrets set" (Failure 4). Every
 	// fallback-relying caller still sees ErrNotFound, which is the point.
 	_, err := Get("wsl2-probe-skill", "token")
 	if !errors.Is(err, ErrNotFound) {

@@ -68,7 +68,7 @@ type Harness struct {
 	// is unset or empty, the harness falls back to its default config home
 	// (UserConfigHome under $HOME, or XDG for opencode). Leave it empty when
 	// upstream exposes no such variable: an invented override would make
-	// ResolvedSandboxDirs grant a directory the harness never reads (#233).
+	// ResolvedSandboxDirs grant a directory the harness never reads.
 	HomeEnv string
 
 	// Session, when non-nil, declares how omac re-enters prior sessions of
@@ -221,7 +221,7 @@ type ServerLaunch struct {
 	// loopback by default (OpenCode's `serve` listens on 4096). `omac serve`
 	// must allowlist this port in the sandbox for BOTH bind and loopback
 	// connect. Bind, because otherwise the daemon's bind() is denied under a
-	// restrictive profile and it crashes on startup (issue #115). Connect,
+	// restrictive profile and it crashes on startup. Connect,
 	// because the harness's own in-process clients dial the server back over
 	// loopback: OpenCode hands every plugin an SDK client whose transport is
 	// plain HTTP to 127.0.0.1:<port>, so a missing connect grant turns every
@@ -265,7 +265,7 @@ func harnessRegistry() []Harness {
 			// No HomeEnv: OpenCode has no config-home override. OPENCODE_CONFIG_DIR
 			// only adds a config-search dir (credentials live elsewhere), so wiring
 			// it here would move omac's grants away from the dirs OpenCode reads.
-			// $XDG_CONFIG_HOME is the supported redirect (#233).
+			// $XDG_CONFIG_HOME is the supported redirect.
 			Session: &HarnessSession{
 				ContinueArgs:   []string{"--continue"},
 				ResumeByIDArgs: func(id string) []string { return []string{"--session", id} },

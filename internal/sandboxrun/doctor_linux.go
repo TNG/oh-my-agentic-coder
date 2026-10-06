@@ -9,8 +9,10 @@ import (
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
 )
 
-// DoctorNotes returns extra platform diagnostics for `omac doctor`.
-func DoctorNotes() []string {
+// DoctorNotes returns extra platform diagnostics for `omac doctor`. profileRef
+// is the policy profile the run would enforce (the layer-local selection, else
+// the built-in "default"), so the network-enforcement note reflects the real config.
+func DoctorNotes(profileRef string) []string {
 	abi := LandlockABI()
 	if abi >= landlockNetABI {
 		notes := []string{fmt.Sprintf("[ok] Landlock ABI %d (TCP network rules supported; datagram blocked via seccomp)", abi)}
@@ -28,7 +30,9 @@ func DoctorNotes() []string {
 		return notes
 	}
 	envOnlyActive := false
-	if p, _, err := sandboxprofile.Resolve(""); err == nil {
+	// Read-only inspection: WithAnyPath so a project-local .omac/.json profile
+	// (outside the trusted global dir) still yields the correct note.
+	if p, _, err := sandboxprofile.Resolve(profileRef, sandboxprofile.WithAnyPath()); err == nil {
 		envOnlyActive = p.Network.EffectiveEnforcement() == sandboxprofile.EnforceEnvOnly
 	}
 	if envOnlyActive {

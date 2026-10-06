@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/TNG/oh-my-agentic-coder/internal/config"
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxdeny"
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
 )
@@ -81,12 +82,15 @@ const markerDirFileName = ".omac-denied"
 // prepareMarkers creates the bind sources that mask protected paths with
 // an explanatory denial marker: a read-only file bound over protected
 // files, and a directory holding a single .omac-denied file bound over
-// protected directories. Both carry DenialText.
+// protected directories. Both carry DenialText. The omac config dirs
+// (leaf name .omac) use the same treatment on purpose: the marker explains
+// an intentional block, and it leaks no rules — the profile, launcher
+// config, and learned decisions alongside it stay unreadable.
 //
 // The text is written in its inert (comment-prefixed) form: the baseline
 // protected set includes shell configs, which exist to be executed, so a
 // marker of plain prose bound over ~/.profile is sourced by every login
-// shell inside the sandbox (#213). Neutralizing here — at the boundary
+// shell inside the sandbox. Neutralizing here — at the boundary
 // where bytes enter the sandbox — covers profile-supplied
 // denial.marker_file text too, so no profile can inject commands into
 // the process omac is confining.
@@ -224,6 +228,10 @@ func ResolveGrants(p *sandboxprofile.Profile, workdir string, notices io.Writer)
 	}
 	protected = append(protected, denyResolved...)
 
+	// The omac config directories hold the sandbox definition and are never
+	// overridable, even if the profile lists them in override_deny.
+	protected = append(protected, sandboxprofile.NonOverridableProtectedPaths(config.LocalConfigDir(workdir))...)
+
 	g := &Grants{
 		Workdir:         workdir,
 		ReadPaths:       dedupe(read),
@@ -255,7 +263,7 @@ func ResolveGrants(p *sandboxprofile.Profile, workdir string, notices io.Writer)
 // objects/refs/logs and the per-worktree admin dir are granted at the workdir's
 // access level; config/info/packed-refs/hooks stay read-only — readable (so git
 // reads config and RUNS host commit hooks) but never writable, blocking the
-// #30 persistence vector (planting a hook or mutating core.hooksPath).
+// persistence vector (planting a hook or mutating core.hooksPath).
 //
 // The common-dir ROOT is never granted: git can't create <common>/packed-refs.lock,
 // so a non-fatal EPERM prints on ref updates (loose refs still write, commit
@@ -426,10 +434,6 @@ const maxDenyScanEntries = 200000
 // on the basename (not a path) prunes at any depth. A skipped subtree
 // means a matching file inside it is left unmasked, which keeps the
 // workdir-and-grants scan bounded on toolchain and home roots.
-//
-// PONYTAIL: a huge tree whose name is not listed still fails closed at
-// maxDenyScanEntries. Add the name here (or narrow the grant) rather
-// than growing this into a path-aware configuration.
 var denyScanSkipDirNames = map[string]bool{
 	// dependency / VCS trees
 	"node_modules": true,
@@ -498,10 +502,11 @@ func resolveDenyPaths(userDeny, baselineBasenames, overrideDeny, scanRoots, prot
 		}
 	}
 
-	// Filter baseline basenames through overrides before walking.
+	// Filter baseline basenames through overrides before walking. ".omac"
+	// is the omac config directory and is never overridable.
 	overrides := sandboxprofile.BuildOverrideLookup(overrideDeny)
 	for _, b := range baselineBasenames {
-		if !overrides[b] {
+		if b == sandboxprofile.ProjectConfigDirName || !overrides[b] {
 			globs = append(globs, b)
 		}
 	}
@@ -512,9 +517,10 @@ func resolveDenyPaths(userDeny, baselineBasenames, overrideDeny, scanRoots, prot
 		if err != nil {
 			return nil, err
 		}
-		// Drop baseline matches covered by an absolute-path override.
+		// Drop baseline matches covered by an absolute-path override, except
+		// the omac config directory.
 		for _, m := range matches {
-			if !overrides[m] {
+			if filepath.Base(m) == sandboxprofile.ProjectConfigDirName || !overrides[m] {
 				out = append(out, m)
 			}
 		}

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/TNG/oh-my-agentic-coder/internal/audit"
+	"github.com/TNG/oh-my-agentic-coder/internal/config"
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
 )
 
@@ -76,6 +77,35 @@ func TestDiagnoseSurfacesBlockedHostAndHint(t *testing.T) {
 	}
 	if !strings.Contains(s, "advisory note(s)") {
 		t.Fatalf("advisory collapse summary missing:\n%s", s)
+	}
+}
+
+// A broken sandbox.profile_name must not silently swap in the default
+// profile: diagnose says so and falls back, since a real launch would fail.
+func TestDiagnoseWarnsOnBrokenProfilePath(t *testing.T) {
+	isolateHome(t)
+	writeProfileFixture(t, `{"meta":{"name":"default"}}`)
+
+	workdir := t.TempDir()
+	if err := os.MkdirAll(config.LocalConfigDir(workdir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(config.ProjectLauncherConfigPath(workdir),
+		[]byte("sandbox:\n  profile_name: missing\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	env, _, errBuf, drain := newPipeEnv(t, "")
+	env.Workdir = workdir
+	code := runDiagnose(nil, env)
+	drain()
+
+	if code != ExitOK {
+		t.Fatalf("code=%d, want ExitOK (fallback)", code)
+	}
+	if s := errBuf.String(); !strings.Contains(s, "missing") ||
+		!strings.Contains(s, "built-in default profile instead") {
+		t.Errorf("diagnose should warn about the broken profile_name and the fallback; got:\n%s", s)
 	}
 }
 
