@@ -50,28 +50,6 @@ go test -tags=e2e -run TestE2ESandboxDenied -v ./internal/e2e/
 
 E2E tests use temporary home directories and do not modify your real keychain or global omac config.
 
-### OpenCode v2 host reproductions
-
-The ancestor-directory check is an ordinary Darwin regression: it verifies working-directory resolution and listing while denying unrelated file contents, writes, protected paths, and symlink escapes. The `opencode_v2_repro` tag selects opt-in OpenCode host probes outside ordinary CI.
-
-Run these commands from the repository root on a genuine macOS host outside omac, using the Go version required by `go.mod`:
-
-```sh
-go test -count=1 -run '^TestIntegrationAncestorDirectoryData$' -v ./internal/sandboxrun/
-go test -tags=e2e,opencode_v2_repro -count=1 -run '^TestOpenCodeRestrictedHomeIsolation$' -v ./internal/e2e/
-env OC2_BIN=/absolute/path/to/opencode GOTOOLCHAIN=go1.26.0 go test -timeout=3m -tags=e2e,opencode_v2_repro -count=1 -run '^TestOpenCodeV2WithoutProjectDiscoveryProbe$' -v ./internal/e2e/
-```
-
-Set `OC2_BIN` to the absolute path of exactly OpenCode 2.0.20. The production
-probe freshly builds omac and runs foreground `start` and `serve` in an isolated
-HOME under the native sandbox, checking HTTP readiness and project config boot
-via `/api/plugin`. Unsupported or nested runs skip.
-
-`TestOpenCodeV2PluginActivationProbe` is a separate opt-in diagnosis that requires
-active plugin status with a test-local discovery override; HTTP 200 alone is not
-plugin acceptance. Select it with the same command's `-run` flag. The Claude
-metadata and skills probes remain separate diagnoses.
-
 ### Stages
 
 | Stage | What it tests | Needs credentials? | Harnesses             |

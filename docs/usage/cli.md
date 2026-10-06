@@ -55,24 +55,11 @@ omac serve --workdir ~/my-project
 
 For confirmed OpenCode v2+ versions, `omac start` and `omac serve` set
 `OPENCODE_CONFIG_PROJECT_DISABLE=1` in the native macOS sandbox. This avoids
-fatal discovery attempts outside granted directories. It also disables automatic
-project and parent-directory sources: `opencode.json`, `opencode.jsonc`,
-`.opencode`, `.claude`, and `.agents`. Configuration, plugins, skills, agents,
-and instructions supplied through those sources are therefore not automatically
-loaded, even inside the granted project.
-
-In OpenCode 2.0.20, global OpenCode configuration and its directory sources,
-global `~/.claude` and `~/.agents` compatibility sources, explicit configuration
-(`OPENCODE_CONFIG`), inline configuration (`OPENCODE_CONFIG_CONTENT`), and
-authenticated well-known configuration remain eligible. They still require the
-normal filesystem, environment, and network permissions; omac adds none for them.
-
-The workaround is not injected for v1 or unknown versions, other harnesses,
-Linux, external sandbox backends, `--no-sandbox`, `serve --no-inner`, or
-`serve --learn`. Versioned package runners such as
-`npx --package=@opencode/cli@2.0.20 opencode` are recognized. A matching
-`environment.deny_vars` rule stops the launch with an error rather than silently
-removing the workaround.
+discovery attempts outside granted directories. Project and parent-directory
+sources such as `opencode.json`, `.opencode`, `.claude`, and `.agents` are not
+loaded automatically, even inside the project. Other versions and sandbox
+backends are unchanged. If `environment.deny_vars` blocks this variable, omac
+stops the launch instead of silently dropping the workaround.
 
 ### omac continue
 
