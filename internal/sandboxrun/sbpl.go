@@ -63,6 +63,13 @@ func GenerateSBPL(g *Grants) string {
 	for _, p := range ancestorDirs(append(append(append([]string{}, g.ReadPaths...), g.WritePaths...), g.AllowPaths...)) {
 		fmt.Fprintf(&b, "(allow file-read-metadata (literal %s))\n", sbplQuote(p))
 	}
+	// The working directory's ancestors need directory data reads so the
+	// confined process can resolve its cwd (getcwd). Granting data reads on
+	// every grant's ancestors instead lets a process list sibling names in
+	// unrelated trees (e.g. sibling tool-cache scopes).
+	for _, p := range ancestorDirs([]string{g.Workdir}) {
+		fmt.Fprintf(&b, "(allow file-read-data (literal %s))\n", sbplQuote(p))
+	}
 	// DYLD-injection defense: only readable paths may be mapped
 	// executable. (allow file-read* implies open; mapping is separate.)
 	for _, p := range readable {

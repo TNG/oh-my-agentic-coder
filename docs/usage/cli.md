@@ -51,6 +51,16 @@ omac serve --workdir ~/my-project
 | `--workdir <dir>` | — | Activate this directory immediately at startup, so skills are ready as soon as OpenCode Desktop connects. Without this flag, no skills will be active — OpenCode Desktop does not yet automatically tell omac which project is currently open. |
 | `--root <dir>` | — | Only allow directories under this path to be activated (repeatable). For example, `--root ~/work --root ~/personal` restricts activation to those two trees. If not set, any directory can be activated.                                       |
 
+#### OpenCode v2 project discovery on macOS
+
+For confirmed OpenCode v2+ versions, `omac start` and `omac serve` set
+`OPENCODE_CONFIG_PROJECT_DISABLE=1` in the native macOS sandbox. This avoids
+discovery attempts outside granted directories. Project and parent-directory
+sources such as `opencode.json`, `.opencode`, `.claude`, and `.agents` are not
+loaded automatically, even inside the project. Other versions and sandbox
+backends are unchanged. If `environment.deny_vars` blocks this variable, omac
+stops the launch instead of silently dropping the workaround.
+
 ### omac continue
 
 Re-enters the most recent session for this workdir or a session with a certain ID (omac prints an `omac continue -s <id>` hint when a session ends).

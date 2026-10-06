@@ -564,6 +564,13 @@ func runServe(args []string, env *Env) int {
 		// profile's restrictive allow_vars filter. (Control-plane port and
 		// harness runtime dirs are granted inside sandboxServeArgv.)
 		argv = forwardHarnessEnv(env, argv, harness, plan)
+		if !learn {
+			argv, err = injectOpenCodeProjectDiscovery(argv, extra, harness, inner, plan)
+			if err != nil {
+				fmt.Fprintln(env.Stderr, "omac serve: opencode project discovery:", err)
+				return ExitConfigInvalid
+			}
+		}
 		argv = injectUserOpenPorts(env, argv, openPorts, prof)
 		// Pass the resolved audit path to `omac sandbox run` so its
 		// network-filter subprocess appends net.decision events to the

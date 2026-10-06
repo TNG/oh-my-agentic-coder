@@ -383,14 +383,6 @@ func writeStubCompletion(w http.ResponseWriter) {
 	}
 }
 
-// writeStubProviderConfig writes the OpenCode provider fixture pointing
-// at the stub endpoint: auth.json for the (unused but required) API key
-// and opencode.json declaring an @ai-sdk/openai-compatible provider
-// keyed "model" with a single model id.
-//
-// Mirrors opencodeConfig().ProviderSetup (harnesses.go) but takes the
-// base URL as an argument instead of reading SKAINET_INTERNAL, which is
-// what makes this test credential-free.
 func writeStubProviderConfig(t *testing.T, home, baseURL string) {
 	t.Helper()
 
