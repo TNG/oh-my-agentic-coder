@@ -102,7 +102,7 @@ func TestOpenCodeProjectDiscoveryEnvironment(t *testing.T) {
 				if got["OPENCODE_CONFIG_PROJECT_DISABLE"] != want {
 					t.Errorf("filtered discovery disable = %q, want %q", got["OPENCODE_CONFIG_PROJECT_DISABLE"], want)
 				}
-				if got["AMBIENT_SECRET"] != "" || got["TMPDIR"] != "/tmp/keep" {
+				if got["AMBIENT_SECRET"] != "" || (got["TMPDIR"] != "/tmp/keep" && !sandboxprofile.EnvVarMatches("TMPDIR", tc.deny)) {
 					t.Errorf("unrelated environment changed: %v", got)
 				}
 			})

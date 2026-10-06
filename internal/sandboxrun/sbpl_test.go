@@ -323,13 +323,21 @@ func TestSBPLQuoteEscaping(t *testing.T) {
 }
 
 func TestAncestorDirectoryReadRules(t *testing.T) {
-	p := GenerateSBPL(baseGrants())
-	for _, want := range []string{
-		`(allow file-read-metadata file-read-data (literal "/cfg"))`,
-	} {
-		if !strings.Contains(p, want) {
-			t.Errorf("profile missing %q", want)
-		}
+	g := baseGrants()
+	g.Workdir = "/work/app"
+	p := GenerateSBPL(g)
+	// The working directory's ancestors allow directory data reads so the
+	// process can resolve its cwd.
+	if !strings.Contains(p, `(allow file-read-data (literal "/work"))`) {
+		t.Error("working-directory ancestor must allow file-read-data")
+	}
+	// Ancestors of other grants keep metadata only: directory data reads
+	// there would expose sibling names under unrelated granted trees.
+	if !strings.Contains(p, `(allow file-read-metadata (literal "/cfg"))`) {
+		t.Error("grant ancestor must allow file-read-metadata")
+	}
+	if strings.Contains(p, `(allow file-read-data (literal "/cfg"))`) {
+		t.Error("non-workdir ancestor must not allow file-read-data")
 	}
 }
 
