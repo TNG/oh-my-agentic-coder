@@ -147,8 +147,7 @@ func runPluginInstall(args []string, env *Env) int {
 	}
 	// Installing resolves only one location. If the project-local copy is a
 	// different file, warn about it so it is not left stale, and name the exact
-	// command that refreshes that path. The launch bootstrap cannot do this
-	// because it has no project context.
+	// command that refreshes that path.
 	warnStaleLocalPlugin(env, harness, res.Path)
 
 	sOut := newStyler(env.Stdout)

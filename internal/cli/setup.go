@@ -140,6 +140,7 @@ func ensureOpenCodePlugin(env *Env, harness config.Harness) {
 	if dir == "" {
 		return
 	}
+	warnStaleLocalPlugin(env, harness, plugin.MultiDirPathIn(dir))
 	// force=false, so an existing differing file yields an error (not an
 	// overwrite) and Unchanged covers the silent common path.
 	res, err := plugin.InstallMultiDirIn(dir, false)

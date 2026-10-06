@@ -91,6 +91,76 @@ func TestOpenCodePluginBootstrap_ChangedWarnsAboutCompatibility(t *testing.T) {
 	}
 }
 
+func TestOpenCodePluginBootstrap_ChecksProjectLocalCopy(t *testing.T) {
+	for _, tc := range []struct {
+		name             string
+		global           string
+		local            string
+		wantLocalWarning bool
+	}{
+		{"current global, stale local", "current", "stale", true},
+		{"missing global, stale local", "missing", "stale", true},
+		{"conflicting global, stale local", "stale", "stale", true},
+		{"current global, current local", "current", "current", false},
+		{"current global, missing local", "current", "missing", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			isolateHome(t)
+			env := makeEnv(t.TempDir())
+			h, _ := config.LookupHarness("opencode")
+			local := plugin.MultiDirPath(env.Workdir, h.BridgeDir)
+			for _, file := range []struct {
+				path  string
+				state string
+			}{
+				{plugin.MultiDirPathIn(h.GlobalBridgeDir()), tc.global},
+				{local, tc.local},
+			} {
+				if file.state == "missing" {
+					continue
+				}
+				data := []byte("older plugin\n")
+				if file.state == "current" {
+					data = plugin.MultiDirSource()
+				}
+				if err := os.MkdirAll(filepath.Dir(file.path), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(file.path, data, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			warnings, err := os.CreateTemp(t.TempDir(), "warnings")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer warnings.Close()
+			env.Stderr = warnings
+			ensureOpenCodePlugin(env, h)
+			output, err := os.ReadFile(warnings.Name())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := strings.Contains(string(output), local); got != tc.wantLocalWarning {
+				t.Fatalf("local warning = %v, want %v; output: %s", got, tc.wantLocalWarning, output)
+			}
+			if tc.wantLocalWarning {
+				command := "omac --workdir " + env.Workdir + " plugin install opencode-desktop --force"
+				if !strings.Contains(string(output), command) {
+					t.Fatalf("missing project-local replacement command; output: %s", output)
+				}
+				data, err := os.ReadFile(local)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if string(data) != "older plugin\n" {
+					t.Fatal("bootstrap overwrote the differing project-local plugin")
+				}
+			}
+		})
+	}
+}
+
 // A conflicting local edit changes what the user must do, so it must print the
 // compatibility requirement and tell the user to restart OpenCode.
 func TestOpenCodePluginBootstrap_ConflictWarnsAndSaysRestart(t *testing.T) {
@@ -132,7 +202,6 @@ func TestOpenCodePluginBootstrap_ConflictWarnsAndSaysRestart(t *testing.T) {
 
 // A stale project-local copy must be flagged when installing, so a user who
 // only ever runs the global install still learns their local copy is old.
-// The launch bootstrap cannot do this: it has no project context.
 func TestPluginInstall_WarnsAboutStaleProjectLocalCopy(t *testing.T) {
 	isolateHome(t)
 	env := makeEnv(t.TempDir())
