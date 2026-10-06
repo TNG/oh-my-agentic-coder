@@ -122,11 +122,16 @@ var openCodeWrappers = map[string]bool{
 	"npx": true, "bunx": true, "pnpm": true, "yarn": true, "uvx": true, "uv": true,
 }
 
-// openCodeSpecRe detects a versioned opencode package spec in wrapper args (opencode-ai@2.1.0, --package=opencode@1.3.17).
-var openCodeSpecRe = regexp.MustCompile(`opencode(?:-ai)?@v?(\d+)`)
+// Match whole package arguments so similarly named packages cannot select a version.
+var openCodeSpecRe = regexp.MustCompile(`^(?:--package=)?(?:@opencode/cli|opencode(?:-ai)?)@v?(\d+)(?:\.\d+(?:\.\d+)?(?:[-+][0-9A-Za-z.-]+)?)?$`)
 
 // openCodeIsV2 reports whether inner is opencode v2+; wrappers decide from a versioned package spec in their args, only a direct opencode binary is probed with --version, undecidable → true.
 func openCodeIsV2(inner []string) bool {
+	return openCodeV2(inner, true)
+}
+
+// Service pinning tolerates unknown versions; disabling project sources requires a confirmed version.
+func openCodeV2(inner []string, unknown bool) bool {
 	cmd := sandboxrun.UnwrapEnv(inner)
 	for len(cmd) > 0 && strings.HasPrefix(cmd[0], "-") {
 		cmd = cmd[1:]
@@ -134,15 +139,17 @@ func openCodeIsV2(inner []string) bool {
 	if len(cmd) == 0 || cmd[0] == "" {
 		return false
 	}
-	if maj, ok := openCodeSpecVersion(cmd[1:]); ok {
-		return maj != 1
+	if openCodeWrappers[filepath.Base(cmd[0])] {
+		if maj, ok := openCodeSpecVersion(cmd[1:]); ok {
+			return maj != 1 && (unknown || maj >= 2)
+		}
+		return unknown
 	}
 	switch filepath.Base(cmd[0]) {
 	case "opencode", "opencode-ai":
 		// Direct binary: probe its version below.
 	default:
-		// Known wrapper without spec: undecidable → pin, a missed v2 pin fails loudly while a redundant v1 pin is benign.
-		return openCodeWrappers[filepath.Base(cmd[0])]
+		return false
 	}
 	bin, err := exec.LookPath(cmd[0])
 	if err != nil {
@@ -152,17 +159,17 @@ func openCodeIsV2(inner []string) bool {
 	defer cancel()
 	out, err := exec.CommandContext(ctx, bin, "--version").CombinedOutput()
 	if err != nil || len(out) == 0 {
-		return true
+		return unknown
 	}
 	m := openCodeVersionRe.FindStringSubmatch(string(out))
 	if m == nil {
-		return true
+		return unknown
 	}
 	major, convErr := strconv.Atoi(m[1])
 	if convErr != nil {
-		return true
+		return unknown
 	}
-	return major != 1
+	return major != 1 && (unknown || major >= 2)
 }
 
 // openCodeSpecVersion extracts the pinned major from a versioned opencode spec among args (bunx opencode-ai@1.2.0 → 1).

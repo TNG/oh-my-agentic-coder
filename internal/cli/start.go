@@ -879,6 +879,13 @@ func runLaunch(env *Env, opts launchOpts) int {
 		// Config home carries the pinned port; state home keeps the sandboxed registration off the host's.
 		ocPin.apply(extra)
 	}
+	if !noSandbox {
+		argv, err = injectOpenCodeProjectDiscovery(argv, extra, harness, inner, plan)
+		if err != nil {
+			fmt.Fprintln(env.Stderr, prefix+": opencode project discovery:", err)
+			return ExitConfigInvalid
+		}
+	}
 	if harness.Name == "claude-code" {
 		// claude-code's per-session temp dir reads CLAUDE_CODE_TMPDIR and
 		// otherwise falls back to a hardcoded /tmp, ignoring TMPDIR. On

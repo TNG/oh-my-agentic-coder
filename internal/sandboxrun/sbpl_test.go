@@ -322,15 +322,11 @@ func TestSBPLQuoteEscaping(t *testing.T) {
 	}
 }
 
-func TestAncestorMetadataRules(t *testing.T) {
+func TestAncestorDirectoryReadRules(t *testing.T) {
 	p := GenerateSBPL(baseGrants())
 	for _, want := range []string{
-		`(allow file-read-metadata (literal "/cfg"))`,
-		`(allow file-read-metadata (literal "/home/u"))`, // ancestors of write paths too
+		`(allow file-read-metadata file-read-data (literal "/cfg"))`,
 	} {
-		if want == `(allow file-read-metadata (literal "/home/u"))` {
-			continue // protected paths don't need metadata; skip
-		}
 		if !strings.Contains(p, want) {
 			t.Errorf("profile missing %q", want)
 		}

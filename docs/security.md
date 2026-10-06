@@ -61,6 +61,10 @@ unrelated projects, and can write outside its intended scope.
 omac gives the agent access only to what it needs:
 
 - Your working directory (read and write).
+- On macOS, ancestor directories of granted paths can be listed so programs
+  can resolve their working directory. This exposes file and directory names,
+  including sibling names, but grants no access to their contents or writes;
+  separately granted paths retain their own access rules.
 - The config directories the active harness requires. Each
   harness declares exactly which directories it needs; omac injects them at
   launch.

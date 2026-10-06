@@ -59,9 +59,9 @@ func GenerateSBPL(g *Grants) string {
 			fmt.Fprintf(&b, "(allow file-read* (subpath %s))\n", sbplQuote(fp))
 		}
 	}
-	// Metadata on ancestors so path resolution works.
+	// Literal ancestor grants allow directory listing without granting child-file contents.
 	for _, p := range ancestorDirs(append(append(append([]string{}, g.ReadPaths...), g.WritePaths...), g.AllowPaths...)) {
-		fmt.Fprintf(&b, "(allow file-read-metadata (literal %s))\n", sbplQuote(p))
+		fmt.Fprintf(&b, "(allow file-read-metadata file-read-data (literal %s))\n", sbplQuote(p))
 	}
 	// DYLD-injection defense: only readable paths may be mapped
 	// executable. (allow file-read* implies open; mapping is separate.)
