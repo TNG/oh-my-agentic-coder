@@ -18,7 +18,7 @@ on:
       opencode_version:
         description: 'Pinned opencode package spec for the driving agent. Overrides scripts/e2e-readme-onboarding.sh''s default for THIS RUN ONLY'
         type: string
-        default: 'opencode-ai@1.17.12'
+        default: 'opencode-ai@1.18.29'
       timeout_secs:
         description: 'Wall-clock timeout for the onboarding agent session, in seconds'
         type: string

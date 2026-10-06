@@ -12,8 +12,8 @@
  *
  * Responsibilities (and the spec section each maps to):
  *   1. Activate-on-directory-open  — POST /__omac__/activate {dir}      (§5.2 pull trigger)
- *   2. Surface skills to the agent — experimental.chat.system.transform  (§6.3 manifest)
- *   3. Per-session skill env       — shell.env injects OMAC_D_* vars     (§4.1, §5.5)
+ *   2. Surface skills to the agent — system transform / model hooks    (§6.3 manifest)
+ *   3. Skill env                   — shell hooks inject OMAC_D_* vars   (§4.1, §5.5)
  *   4. Session→directory mapping   — so each session only ever sees its
  *                                    own dir's token (§8 isolation)
  *   5. Lifecycle                   — deactivate on session delete         (§5.2)
@@ -24,7 +24,11 @@
  * cold start as OMAC_G_<SKILL> and OMAC_SKILLS, needing no per-session work).
  */
 
-import type { Plugin } from "@opencode-ai/plugin"
+// Requires OpenCode 1.18.29+ or 2.x. Older v1 loaders cannot read an object
+// entrypoint. Package imports are type-only; node:path is built into the host.
+import type { Plugin as V1Plugin } from "@opencode-ai/plugin"
+import type { Plugin as V2Plugin } from "@opencode/plugin"
+import { isAbsolute, relative, sep } from "node:path"
 
 // Minimal ambient declaration so this file typechecks without pulling in
 // @types/node. The OpenCode plugin host (bun/node) provides `process` at
@@ -75,8 +79,27 @@ function globalEnvName(mount: string): string {
   return `OMAC_G_${envIdent(mount)}_BASE`
 }
 
-export const OmacMultiDirPlugin: Plugin = async ({ client, directory, worktree }) => {
+// Upper bound on a single control-plane request, so a hung control plane
+// cannot stall plugin init or a hook forever. Generous by default; the
+// env override exists so tests can use a short value.
+const CONTROL_TIMEOUT_MS = 10_000
+
+function controlTimeoutMs(): number {
+  const raw = process.env.OMAC_CONTROL_TIMEOUT_MS
+  if (!raw) return CONTROL_TIMEOUT_MS
+  const n = Number(raw)
+  return Number.isFinite(n) && n > 0 ? n : CONTROL_TIMEOUT_MS
+}
+
+async function createBridge(
+  pluginDir: string,
+  lookupSessionDir: (sessionID: string) => Promise<string | undefined>,
+) {
   const controlBase = process.env.OMAC_CONTROL_BASE?.replace(/\/+$/, "")
+
+  // Aborts every in-flight control-plane fetch when the plugin unloads, so
+  // shutdown does not wait for a slow or stuck control plane.
+  const shutdown = new AbortController()
 
   // OpenCode instantiates this plugin once per project directory it
   // bootstraps (not once per session), and binds `directory` to that
@@ -84,7 +107,6 @@ export const OmacMultiDirPlugin: Plugin = async ({ client, directory, worktree }
   // trigger: many flows (reopening an existing session, headless API use)
   // never emit session.created. So we activate `directory` immediately at
   // construction. `pluginDir` is this instance's bound directory.
-  const pluginDir = directory || worktree || ""
 
   // sessionID -> absolute directory, learned from session lifecycle events.
   const sessionDir = new Map<string, string>()
@@ -103,6 +125,14 @@ export const OmacMultiDirPlugin: Plugin = async ({ client, directory, worktree }
 
   async function controlPost(path: string, body: unknown): Promise<DirManifest | null> {
     if (!enabled()) return null
+    // One controller serves both bounds: the request timeout and plugin
+    // shutdown. This avoids depending on AbortSignal.any, which older type
+    // libraries may not declare.
+    const controller = new AbortController()
+    const onShutdown = () => controller.abort()
+    if (shutdown.signal.aborted) controller.abort()
+    else shutdown.signal.addEventListener("abort", onShutdown, { once: true })
+    const timer = setTimeout(() => controller.abort(), controlTimeoutMs())
     try {
       // omac requires the control token on every /__omac__/* call; omitted
       // when unset so this plugin also works against pre-token omac builds.
@@ -114,6 +144,7 @@ export const OmacMultiDirPlugin: Plugin = async ({ client, directory, worktree }
         method: "POST",
         headers,
         body: JSON.stringify(body),
+        signal: controller.signal,
       })
       if (!res.ok) {
         // 4xx/5xx from the control plane (e.g. dir outside allowed --root).
@@ -128,8 +159,12 @@ export const OmacMultiDirPlugin: Plugin = async ({ client, directory, worktree }
       if (m && !Array.isArray(m.skills)) m.skills = []
       return m
     } catch (err) {
-      console.error(`[omac] ${path} request failed:`, err)
+      // A request cancelled by shutdown is expected; only log real failures.
+      if (!shutdown.signal.aborted) console.error(`[omac] ${path} request failed:`, err)
       return null
+    } finally {
+      clearTimeout(timer)
+      shutdown.signal.removeEventListener("abort", onShutdown)
     }
   }
 
@@ -143,6 +178,13 @@ export const OmacMultiDirPlugin: Plugin = async ({ client, directory, worktree }
     }
     const m = await controlPost("/__omac__/activate", { dir })
     if (m) {
+      // The server emits dir_token only on the first activation. A refresh
+      // response therefore omits it; carry the token learned earlier forward,
+      // or the env names built from it break.
+      if (!m.dir_token) {
+        const cached = manifests.get(dir)?.dir_token
+        if (cached) m.dir_token = cached
+      }
       manifests.set(dir, m)
       activated.add(dir)
     }
@@ -161,14 +203,13 @@ export const OmacMultiDirPlugin: Plugin = async ({ client, directory, worktree }
   }
 
   // Resolve a session's directory: prefer the cached mapping, else ask the
-  // server (system.transform only gives us a sessionID).
+  // server (model hooks only give us a sessionID).
   async function dirForSession(sessionID: string | undefined): Promise<string | undefined> {
     if (!sessionID) return undefined
     const cached = sessionDir.get(sessionID)
     if (cached) return cached
     try {
-      const resp: any = await (client as any).session.get({ path: { id: sessionID } })
-      const dir: string | undefined = resp?.data?.directory ?? resp?.directory
+      const dir = await lookupSessionDir(sessionID)
       if (dir) sessionDir.set(sessionID, dir)
       return dir
     } catch {
@@ -271,105 +312,174 @@ export const OmacMultiDirPlugin: Plugin = async ({ client, directory, worktree }
     await activate(pluginDir)
   }
 
+  async function sessionOpened(id: string, dir: string): Promise<void> {
+    if (!enabled() || !id || !dir) return
+    const previous = sessionDir.get(id)
+    sessionDir.set(id, dir)
+    await activate(dir)
+    if (previous && previous !== dir) await deactivate(previous)
+    if (!reportedSessions.has(id)) {
+      reportedSessions.add(id)
+      await controlPost("/__omac__/session", { session: id })
+    }
+  }
+
+  async function sessionDeleted(id: string): Promise<void> {
+    const dir = sessionDir.get(id)
+    sessionDir.delete(id)
+    reportedSessions.delete(id)
+    if (dir) await deactivate(dir)
+  }
+
+  // V2 shell events have cwd but no session ID. Choose the most specific
+  // known project containing cwd. Path components avoid matching /app-other
+  // to /app, and relative() handles roots, trailing separators and Windows.
+  function dirForCwd(cwd: string): string | undefined {
+    if (!isAbsolute(cwd)) return undefined
+    let best: string | undefined
+    const candidates = new Set([pluginDir, ...sessionDir.values(), ...manifests.keys()])
+    for (const dir of candidates) {
+      if (!dir || !isAbsolute(dir)) continue
+      const child = relative(dir, cwd)
+      if (child === ".." || child.startsWith(`..${sep}`) || isAbsolute(child)) continue
+      if (!best || dir.length > best.length) best = dir
+    }
+    return best
+  }
+
+  async function systemText(sessionID: string | undefined): Promise<string> {
+    const blocks: string[] = []
+    const brief = process.env.OMAC_SANDBOX_BRIEFING
+    if (brief && brief.trim().length > 0) blocks.push(brief)
+    if (enabled()) {
+      const dir = await dirForSession(sessionID)
+      if (dir) {
+        const m = (await activate(dir, true)) ?? manifests.get(dir)
+        if (m && m.skills.length > 0) blocks.push(renderManifest(m))
+      }
+    }
+    return blocks.join("\n\n")
+  }
+
+  async function shellEnv(dir: string | undefined, env: Record<string, string | undefined>): Promise<void> {
+    if (!enabled() || !dir) return
+    // Refresh on each command so skills installed mid-session are available.
+    const m = (await activate(dir, true)) ?? manifests.get(dir)
+    if (!m) return
+    for (const sk of m.skills) {
+      if (sk.state !== "ready" || !sk.base) continue
+      if (sk.scope === "global") {
+        env[globalEnvName(sk.mount)] = sk.base
+      } else {
+        env[dirEnvName(m.dir_token, sk.mount)] = sk.base
+        env[`OMAC_${envIdent(sk.mount)}_BASE`] = sk.base
+      }
+    }
+  }
+
   return {
-    // --- 1+4: learn session→dir and activate on session open (§5.2) ---
+    sessionOpened,
+    sessionDeleted,
+    dirForSession,
+    dirForCwd,
+    systemText,
+    shellEnv,
+    // The event subscription uses `signal`; unload calls `abort`, which also
+    // cancels any control-plane fetch still in flight.
+    signal: shutdown.signal,
+    abort: () => shutdown.abort(),
+  }
+}
+
+const server: V1Plugin = async ({ client, directory, worktree }) => {
+  const bridge = await createBridge(directory || worktree || "", async (sessionID) => {
+    const response = await client.session.get({ path: { id: sessionID } })
+    return response.data?.directory
+  })
+  return {
     event: async ({ event }) => {
-      if (!enabled()) return
-      const e: any = event
-      switch (e?.type) {
+      switch (event.type) {
         case "session.created":
-        case "session.updated": {
-          const info = e.properties?.info
-          const id: string | undefined = info?.id
-          const dir: string | undefined = info?.directory
-          if (id && dir) {
-            sessionDir.set(id, dir)
-            await activate(dir)
-            if (!reportedSessions.has(id)) {
-              reportedSessions.add(id)
-              // Tell omac which session this run created, so its post-exit
-              // "resume" hint is exact — no `opencode session list` needed.
-              void controlPost("/__omac__/session", { session: id })
-            }
-          }
+        case "session.updated":
+          await bridge.sessionOpened(event.properties.info.id, event.properties.info.directory)
           break
-        }
-        case "session.deleted": {
-          const info = e.properties?.info
-          const id: string | undefined = info?.id
-          if (id) {
-            const dir = sessionDir.get(id)
-            sessionDir.delete(id)
-            if (dir) await deactivate(dir)
-          }
+        case "session.deleted":
+          await bridge.sessionDeleted(event.properties.info.id)
           break
-        }
       }
     },
-
-    // --- 2: surface the per-dir skills to the model (§6.3) ---
     "experimental.chat.system.transform": async (input, output) => {
-      // omac sandbox briefing: always-on, independent of the control plane.
-      // Only omac sets OMAC_SANDBOX_BRIEFING (inside the sandbox), so this is
-      // inert outside omac and purely additive — never touches user config.
-      //
-      // Both additions are folded into the LAST existing system block rather
-      // than pushed as new entries. OpenCode hands this hook a single joined
-      // string and then maps every entry of `system` to its own
-      // {role:"system"} message (session/llm/request.ts), so a plain push
-      // turns OpenCode's one system message into two. Strict
-      // OpenAI-compatible servers — Qwen chat templates in particular —
-      // reject a system message at index > 0 ("system message must come
-      // first"). Merging keeps the message count at whatever OpenCode and
-      // other plugins produced, so omac stays invisible to the wire format.
-      // Prompt caching is unaffected: OpenCode places its single system
-      // cache breakpoint on the last system part either way
-      // (@opencode-ai/llm cache-policy.ts markLastSystem).
-      const blocks: string[] = []
-      const brief = process.env.OMAC_SANDBOX_BRIEFING
-      if (brief && brief.trim().length > 0) blocks.push(brief)
-      if (enabled()) {
-        const dir = await dirForSession(input.sessionID)
-        if (dir) {
-          // Refresh the manifest so the prompt reflects the current skill
-          // state (e.g. a pending-credentials skill that has since been
-          // supplied a secret and reloaded).
-          const m = (await activate(dir, true)) ?? manifests.get(dir)
-          if (m && m.skills && m.skills.length > 0) blocks.push(renderManifest(m))
-        }
-      }
-      if (blocks.length === 0) return
-      const text = blocks.join("\n\n")
+      const text = await bridge.systemText(input.sessionID)
+      if (!text) return
+      // Keep the existing number of system messages for strict providers.
       const last = output.system.length - 1
       if (last < 0) output.system.push(text)
       else output.system[last] = `${output.system[last]}\n\n${text}`
     },
-
-    // --- 3: inject per-session skill env so SKILL.md env-var reads resolve (§4.1/§5.5) ---
     "shell.env": async (input, output) => {
-      if (!enabled()) return
-      const dir = await dirForSession(input.sessionID)
-      if (!dir) return
-      // Refresh from omac on every shell exec, so a skill registered mid-
-      // session (which reloads the running serve) is reachable from the
-      // very next command — no new session needed. activate() is cheap and
-      // idempotent on the omac side.
-      const m = (await activate(dir, true)) ?? manifests.get(dir)
-      if (!m || !m.skills) return
-      for (const sk of m.skills) {
-        if (sk.state !== "ready" || !sk.base) continue
-        if (sk.scope === "global") {
-          output.env[globalEnvName(sk.mount)] = sk.base
-        } else {
-          output.env[dirEnvName(m.dir_token, sk.mount)] = sk.base
-          // Single-dir convenience alias (§5.5): also expose the flat name.
-          // Harmless when multiple dirs are active because each session only
-          // ever sees its own dir's manifest here.
-          output.env[`OMAC_${envIdent(sk.mount)}_BASE`] = sk.base
-        }
-      }
+      await bridge.shellEnv(await bridge.dirForSession(input.sessionID), output.env)
+    },
+    // v1 has no event-subscription signal to abort, but dispose still cancels
+    // any control-plane fetch in flight so shutdown is not held up.
+    dispose: async () => {
+      bridge.abort()
     },
   }
 }
 
-export default OmacMultiDirPlugin
+// Plugin.define is an identity helper. `satisfies` checks the same definition
+// without importing the v2 runtime into v1 installations. Export ONLY this
+// object: v1 also discovers named exports and could initialize hooks twice.
+export default {
+  id: "omac.multidir",
+  server,
+  async setup(ctx) {
+    const bridge = await createBridge(ctx.location.directory, async (sessionID) => {
+      const info = await ctx.session.get({ sessionID })
+      return info.location.directory
+    })
+
+    // Auxiliary model requests use separate hooks in v2. All carry the same
+    // briefing, just as they did through v1's system transform.
+    for (const hook of ["context", "compaction", "generate", "title"] as const) {
+      await ctx.session.hook(hook, async (event) => {
+        const text = await bridge.systemText(event.sessionID)
+        if (!text) return
+        const last = event.system.length - 1
+        if (last < 0) event.system.push({ type: "text", text })
+        else {
+          // Retain the last part's cache policy and metadata, including when
+          // its readonly text belongs to a frozen object from another plugin.
+          event.system[last] = { ...event.system[last], text: `${event.system[last].text}\n\n${text}` }
+        }
+      })
+    }
+    await ctx.shell.hook("create.before", async (event) => {
+      await bridge.shellEnv(bridge.dirForCwd(event.cwd), event.env)
+    })
+
+    const events = (async () => {
+      try {
+        for await (const event of ctx.event.subscribe({ signal: bridge.signal })) {
+          if (bridge.signal.aborted) break
+          switch (event.type) {
+            case "session.created":
+            case "session.moved":
+              await bridge.sessionOpened(event.data.sessionID, event.data.location.directory)
+              break
+            case "session.deleted":
+              await bridge.sessionDeleted(event.data.sessionID)
+              break
+          }
+        }
+      } catch (err) {
+        if (!bridge.signal.aborted) console.error("[omac] event subscription ended:", err)
+      }
+    })()
+    return async () => {
+      // One abort cancels the event subscription and any in-flight fetch.
+      bridge.abort()
+      await events
+    }
+  },
+} satisfies V2Plugin.Plugin & { server: V1Plugin }

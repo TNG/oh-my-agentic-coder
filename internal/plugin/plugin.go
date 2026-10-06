@@ -23,6 +23,9 @@ import (
 // a harness's bridge directory (e.g. ".opencode/plugins/omac-multidir.ts").
 const MultiDirFileName = "omac-multidir.ts"
 
+// MultiDirCompatibility is shown before installing or loading the bridge.
+const MultiDirCompatibility = "The omac OpenCode plugin requires OpenCode 1.18.29+ (v1) or 2.x. Older v1 releases cannot load it; upgrade OpenCode before using this plugin."
+
 // multiDirSource is the canonical OpenCode multidir plugin, embedded at
 // build time. It is kept byte-for-byte in sync with
 // .opencode/plugins/omac-multidir.ts.

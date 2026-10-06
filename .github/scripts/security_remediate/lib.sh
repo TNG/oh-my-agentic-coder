@@ -26,7 +26,7 @@
 
 # Keep in sync with internal/e2e/versions.go's "opencode" pin, same as
 # scripts/doc-drift.sh.
-DEFAULT_OPENCODE_VERSION="opencode-ai@1.17.12"
+DEFAULT_OPENCODE_VERSION="opencode-ai@1.18.29"
 DEFAULT_CONTEXT_LIMIT="100000"
 DEFAULT_OUTPUT_LIMIT="32000"
 
