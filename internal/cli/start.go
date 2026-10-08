@@ -885,6 +885,7 @@ func runLaunch(env *Env, opts launchOpts) int {
 			fmt.Fprintln(env.Stderr, prefix+": opencode project discovery:", err)
 			return ExitConfigInvalid
 		}
+		warnOpenCodeAgentsAccess(env, argv, plan, extra)
 	}
 	if harness.Name == "claude-code" {
 		// claude-code's per-session temp dir reads CLAUDE_CODE_TMPDIR and

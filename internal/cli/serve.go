@@ -618,6 +618,9 @@ func runServe(args []string, env *Env) int {
 		if learn {
 			argv = injectSandboxFlag(argv, "--learn", "")
 		}
+		if !noInner && !learn {
+			warnOpenCodeAgentsAccess(env, argv, plan, extra)
+		}
 		// The kernel mask cannot grow mid-session, so detect
 		// protected-pattern files (e.g. .env) created after launch and
 		// warn the user.
