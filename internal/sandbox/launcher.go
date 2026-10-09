@@ -282,16 +282,22 @@ func Exec(argv []string, extraEnv map[string]string) (int, error) {
 // be wired via the caller's own defers (the caller still owns the facade
 // and supervisor).
 func ExecWithReady(argv []string, extraEnv map[string]string, onReady func()) (int, error) {
+	var hook func(int)
+	if onReady != nil {
+		hook = func(int) { onReady() }
+	}
+	return ExecWithReadyPID(argv, extraEnv, hook)
+}
+
+// ExecWithReadyPID is ExecWithReady with the child's pid (also its process
+// group id) passed to onReady.
+func ExecWithReadyPID(argv []string, extraEnv map[string]string, onReady func(pid int)) (int, error) {
 	// Inherit host env, then overlay extras.
 	env := os.Environ()
 	for k, v := range extraEnv {
 		env = append(env, k+"="+v)
 	}
-	var hook func(int)
-	if onReady != nil {
-		hook = func(int) { onReady() }
-	}
-	return ExecWithEnv(argv, env, "", hook)
+	return ExecWithEnv(argv, env, "", onReady)
 }
 
 // newChildCmd builds the child command with its stdio, environment and

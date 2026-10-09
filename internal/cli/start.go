@@ -791,6 +791,8 @@ func runLaunch(env *Env, opts launchOpts) int {
 		var pinErr error
 		if plan.Native {
 			ocPin, pinErr = pinOpenCodeV2Service(harness, inner, sandboxTmp)
+			// The pin holds its port until handOff; free it on every early return.
+			defer ocPin.release()
 			// The pin redirect matters only when the pin applies, so the denied-var check fires only then.
 			if pinErr == nil && ocPin != nil {
 				if denyErr := openCodePinDenied(plan); denyErr != nil {
@@ -800,7 +802,9 @@ func runLaunch(env *Env, opts launchOpts) int {
 			}
 		}
 		if pinErr != nil {
+			// No fallback: without the pin the service would use a port omac has not checked.
 			fmt.Fprintln(env.Stderr, prefix+": opencode v2 service pin:", pinErr)
+			return ExitSandboxAbnormal
 		} else if ocPin != nil {
 			argv = ocPin.install(argv, plan)
 			if verbose {
@@ -949,6 +953,19 @@ func runLaunch(env *Env, opts launchOpts) int {
 		os.Exit(ExitIOError)
 	}
 
+	// Hand the pinned port over as late as possible: release omac's hold and
+	// re-check it, so only the inner startup is left for another process to
+	// take it. The watch below covers that remainder.
+	var onReady func(pid int)
+	var finishServiceCheck func() (int, error)
+	if ocPin != nil {
+		if err := ocPin.handOff(); err != nil {
+			fmt.Fprintln(env.Stderr, prefix+": opencode v2 service:", err)
+			return ExitSandboxAbnormal
+		}
+		onReady, finishServiceCheck = ocPin.watch(defaultServiceCheck)
+	}
+
 	// session.start is emitted just before the inner command launches. In
 	// strict mode a failure to write it invokes fatalTeardown above.
 	sandboxed := !noSandbox
@@ -975,11 +992,21 @@ func runLaunch(env *Env, opts launchOpts) int {
 		}, hintTimeout)
 	}
 
-	code, err := sandbox.ExecWithReady(argv, extra, nil)
+	code, err := sandbox.ExecWithReadyPID(argv, extra, onReady)
 	auditor.Emit(audit.SessionStop(code))
 	watch.report(func(format string, args ...any) {
 		fmt.Fprintf(env.Stderr, prefix+": "+format+"\n", args...)
 	})
+	if finishServiceCheck != nil {
+		svcPID, svcErr := finishServiceCheck()
+		if svcErr != nil {
+			fmt.Fprintln(env.Stderr, prefix+": opencode v2 service:", svcErr)
+			return ExitSandboxAbnormal
+		}
+		if verbose && svcPID > 0 {
+			fmt.Fprintf(env.Stderr, "[verbose] opencode v2 service on port %d confirmed (pid %d)\n", ocPin.Port, svcPID)
+		}
+	}
 	if err != nil {
 		fmt.Fprintln(env.Stderr, prefix+": exec:", err)
 		return ExitSandboxAbnormal
