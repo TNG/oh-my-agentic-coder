@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -119,6 +120,11 @@ type Harness struct {
 	// SandboxCreateDirs is the subset of SandboxDirs that omac must create
 	// before grant resolution so a dependency can populate it on first use.
 	SandboxCreateDirs []string
+	// SandboxDenyPaths are explicit paths (no globs) the sandbox may neither
+	// read nor write, even inside a granted SandboxDirs entry. omac passes
+	// them as --deny, so they become protected paths. Use it for files in a
+	// granted dir that the sandboxed harness does not need.
+	SandboxDenyPaths []string
 
 	// NeedsPluginBootstrap is true for harnesses that require omac to
 	// idempotently provision a client-side bridge plugin on launch.
@@ -281,6 +287,12 @@ func harnessRegistry() []Harness {
 				"~/.opencode",
 			},
 			SandboxCreateDirs: []string{opentuiDataDir},
+			// The host's OpenCode v2 shared service keeps its configuration
+			// and registration in service.json inside two granted dirs. The
+			// sandboxed OpenCode gets a private service.json in the sandbox
+			// tmp (internal/cli/opencode_v2_service.go), so it never needs
+			// the host's copies.
+			SandboxDenyPaths: openCodeHostServiceFiles(),
 			// OpenCode authenticates primarily via auth.json (in SandboxDirs,
 			// granted read+write). It also supports several providers'
 			// env-var API keys, but omac does NOT auto-forward them: pushing
@@ -850,6 +862,43 @@ func userConfigRoot() string {
 		return ""
 	}
 	return filepath.Join(home, ".config")
+}
+
+// openCodeHostServiceFiles lists the host OpenCode v2 shared service's
+// service.json files: its configuration in the config home and its
+// registration in the state home. The first two entries use the same
+// spelling as the opencode SandboxDirs grants. The env-derived entries
+// cover the other locations omac resolves for the host service
+// (hostOpenCodeServicePorts in internal/cli), in case another grant
+// reaches them. An env value with glob metacharacters is skipped, since
+// filesystem.deny rejects such paths.
+func openCodeHostServiceFiles() []string {
+	out := []string{
+		"~/.config/opencode/service.json",
+		"~/.local/state/opencode/service.json",
+	}
+	for _, dir := range []string{
+		envJoin("XDG_CONFIG_HOME", "opencode"),
+		envJoin("OPENCODE_CONFIG_DIR"),
+		envJoin("XDG_STATE_HOME", "opencode"),
+	} {
+		if dir == "" || strings.ContainsAny(dir, "*?[") {
+			continue
+		}
+		if p := filepath.Join(dir, "service.json"); !slices.Contains(out, p) {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// envJoin joins elem onto $name, or returns "" when name is unset or empty.
+func envJoin(name string, elem ...string) string {
+	root := os.Getenv(name)
+	if root == "" {
+		return ""
+	}
+	return filepath.Join(append([]string{root}, elem...)...)
 }
 
 // xdgDataDir returns an application's XDG data directory while preserving the

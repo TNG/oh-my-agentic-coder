@@ -1381,3 +1381,73 @@ func TestActivateEmptyPassthroughSecretIsStillPending(t *testing.T) {
 		t.Errorf("state = %v, want pending-credentials for an empty exported value", sk["state"])
 	}
 }
+
+// The opencode harness's sandbox argv denies the host OpenCode service's
+// service.json files (#347) in both launch pipelines' shared helpers, keeps
+// the dir grants that contain them, and adds nothing for other harnesses or
+// for a non-native backend that does not understand --deny.
+func TestSandboxServeArgvDeniesOpenCodeServiceFiles(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	for _, v := range []string{"XDG_CONFIG_HOME", "OPENCODE_CONFIG_DIR", "XDG_STATE_HOME", "XDG_DATA_HOME"} {
+		t.Setenv(v, "")
+	}
+	native := config.SandboxProfile{
+		Command:  []string{"{{self}}", "sandbox", "run", "--profile", "default", "--", "{{inner_cmd}}", "{{inner_args}}"},
+		InnerCmd: []string{"opencode"},
+	}
+	in := sandbox.Inputs{Workdir: "/w", InnerCmd: []string{"opencode", "serve"}}
+	oc, _ := config.LookupHarness("opencode")
+
+	argv, err := sandboxServeArgv(native, in, "", oc)
+	if err != nil {
+		t.Fatalf("sandboxServeArgv: %v", err)
+	}
+	joined := strings.Join(argv, " ")
+	for _, want := range []string{
+		"--deny ~/.config/opencode/service.json",
+		"--deny ~/.local/state/opencode/service.json",
+		"--allow ~/.config/opencode",
+		"--allow ~/.local/state/opencode",
+	} {
+		if !contains(joined, want) {
+			t.Errorf("opencode serve argv missing %q: %s", want, joined)
+		}
+	}
+	if d, sep := strings.LastIndex(joined, "--deny"), strings.Index(joined, " -- "); d < 0 || sep < 0 || d > sep {
+		t.Errorf("--deny must appear before `--`: %s", joined)
+	}
+	if n := strings.Count(joined, "--deny "); n != 2 {
+		t.Errorf("opencode serve argv has %d --deny flags, want 2: %s", n, joined)
+	}
+
+	cc, _ := config.LookupHarness("claude-code")
+	ccArgv, err := sandboxServeArgv(native, sandbox.Inputs{Workdir: "/w", InnerCmd: []string{"claude"}}, "", cc)
+	if err != nil {
+		t.Fatalf("sandboxServeArgv (claude-code): %v", err)
+	}
+	if j := strings.Join(ccArgv, " "); contains(j, "--deny") {
+		t.Errorf("claude-code argv must carry no harness deny: %s", j)
+	}
+
+	nono := config.SandboxProfile{Command: []string{"nono", "run", "--", "{{inner_cmd}}", "{{inner_args}}"}, InnerCmd: []string{"opencode"}}
+	nonoArgv, err := sandboxServeArgv(nono, in, "", oc)
+	if err != nil {
+		t.Fatalf("sandboxServeArgv (nono): %v", err)
+	}
+	if j := strings.Join(nonoArgv, " "); contains(j, "--deny") {
+		t.Errorf("non-native backend must not receive --deny: %s", j)
+	}
+}
+
+func TestInjectSandboxDenies(t *testing.T) {
+	native := config.SandboxProfile{Command: []string{"{{self}}", "sandbox", "run", "--"}}
+	in := []string{"omac", "sandbox", "run", "--", "opencode"}
+	got := injectSandboxDenies(in, []string{"/a/service.json", "", "/b/service.json"}, native)
+	want := []string{"omac", "sandbox", "run", "--deny", "/a/service.json", "--deny", "/b/service.json", "--", "opencode"}
+	if !equalStrings(got, want) {
+		t.Errorf("injectSandboxDenies = %v, want %v", got, want)
+	}
+	if got := injectSandboxDenies(in, nil, native); !equalStrings(got, in) {
+		t.Errorf("no deny paths must be a no-op: %v", got)
+	}
+}

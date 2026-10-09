@@ -737,6 +737,7 @@ func sandboxServeArgv(prof config.SandboxProfile, in sandbox.Inputs, controlPort
 	}
 	argv = injectServerPortGrant(argv, h, in.InnerCmd)
 	argv = injectSandboxDirs(argv, h.ResolvedSandboxDirs())
+	argv = injectSandboxDenies(argv, h.SandboxDenyPaths, prof)
 	return argv, nil
 }
 
@@ -821,6 +822,23 @@ func injectSandboxDirs(argv []string, dirs []string) []string {
 			continue
 		}
 		argv = injectSandboxFlag(argv, "--allow", d)
+	}
+	return argv
+}
+
+// injectSandboxDenies splices --deny flags for each harness-declared path the
+// sandbox may neither read nor write (Harness.SandboxDenyPaths), so files the
+// harness does not need stay out of reach inside its granted dirs. --deny is a
+// flag of omac's native `sandbox run`; other backends (nono) get no flags.
+func injectSandboxDenies(argv []string, paths []string, prof config.SandboxProfile) []string {
+	if _, native := prof.PolicyRef(); !native {
+		return argv
+	}
+	for _, p := range paths {
+		if p == "" {
+			continue
+		}
+		argv = injectSandboxFlag(argv, "--deny", p)
 	}
 	return argv
 }
