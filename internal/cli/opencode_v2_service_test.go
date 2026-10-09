@@ -1,12 +1,19 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/TNG/oh-my-agentic-coder/internal/config"
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
@@ -154,6 +161,7 @@ func TestPinOpenCodeV2ServiceSeedsConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("XDG_CONFIG_HOME", cfgRoot)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 
 	sandboxTmp := t.TempDir()
 	inner := []string{fakeVersionBinary(t, "#!/bin/sh\necho 2.0.18\n")}
@@ -164,6 +172,10 @@ func TestPinOpenCodeV2ServiceSeedsConfig(t *testing.T) {
 	}
 	if pin == nil {
 		t.Fatal("v2 inner command produced no pin")
+	}
+	defer pin.release()
+	if pin.Port == openCodeDefaultServicePort {
+		t.Errorf("pin picked OpenCode's default shared-service port %d", pin.Port)
 	}
 	if pin.Port < 1 || pin.Port > 65535 {
 		t.Errorf("port out of range: %d", pin.Port)
@@ -292,4 +304,334 @@ func TestOpenCodeServicePinApply(t *testing.T) {
 	if extra["TMPDIR"] != "/tmp/t" {
 		t.Errorf("apply must not clobber unrelated keys, TMPDIR = %q", extra["TMPDIR"])
 	}
+}
+
+// holdPort binds a free loopback port for the test and returns it.
+func holdPort(t *testing.T) (int, net.Listener) {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = l.Close() })
+	return l.Addr().(*net.TCPAddr).Port, l
+}
+
+// freePort returns a loopback port that was free a moment ago.
+func freePort(t *testing.T) int {
+	t.Helper()
+	port, l := holdPort(t)
+	_ = l.Close()
+	return port
+}
+
+func writeJSONFile(t *testing.T, path, body string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The host service's ports are never picked: the default, the configured port, and the registered one.
+func TestHostOpenCodeServicePorts(t *testing.T) {
+	h, _ := config.LookupHarness("opencode")
+	cfgRoot, stateRoot, extraCfg := t.TempDir(), t.TempDir(), t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", cfgRoot)
+	t.Setenv("XDG_STATE_HOME", stateRoot)
+	t.Setenv("OPENCODE_CONFIG_DIR", "")
+
+	ports := hostOpenCodeServicePorts(h)
+	if len(ports) != 1 || ports[openCodeDefaultServicePort] == "" {
+		t.Fatalf("without host files only the default port is excluded, got %v", ports)
+	}
+
+	writeJSONFile(t, filepath.Join(cfgRoot, "opencode", "service.json"), `{"port":52001,"password":"x"}`)
+	writeJSONFile(t, filepath.Join(extraCfg, "service.json"), `{"port":52002}`)
+	writeJSONFile(t, filepath.Join(stateRoot, "opencode", "service.json"), `{"url":"http://127.0.0.1:52003","pid":4242,"password":"x"}`)
+	t.Setenv("OPENCODE_CONFIG_DIR", extraCfg)
+
+	ports = hostOpenCodeServicePorts(h)
+	for _, p := range []int{openCodeDefaultServicePort, 52001, 52002, 52003} {
+		if ports[p] == "" {
+			t.Errorf("port %d not excluded: %v", p, ports)
+		}
+	}
+	if !strings.Contains(ports[52003], "pid 4242") {
+		t.Errorf("registered port reason should name the host service pid: %q", ports[52003])
+	}
+
+	// Garbage files are ignored, never fatal.
+	writeJSONFile(t, filepath.Join(cfgRoot, "opencode", "service.json"), `not json`)
+	if ports := hostOpenCodeServicePorts(h); ports[52001] != "" {
+		t.Errorf("unparsable config must not add a port: %v", ports)
+	}
+}
+
+func TestOpenCodeServiceInfoPort(t *testing.T) {
+	cases := []struct {
+		info openCodeServiceInfo
+		want int
+	}{
+		{openCodeServiceInfo{Port: 5000}, 5000},
+		{openCodeServiceInfo{URL: "http://127.0.0.1:5001"}, 5001},
+		{openCodeServiceInfo{Port: 5002, URL: "http://127.0.0.1:5003"}, 5002},
+		{openCodeServiceInfo{URL: "http://127.0.0.1"}, 0},
+		{openCodeServiceInfo{URL: "::bad"}, 0},
+		{openCodeServiceInfo{}, 0},
+	}
+	for _, tc := range cases {
+		if got := tc.info.port(); got != tc.want {
+			t.Errorf("%+v.port() = %d, want %d", tc.info, got, tc.want)
+		}
+	}
+}
+
+// A kernel pick that lands on a host service port is skipped (and not handed out again); the next one is used and held.
+func TestReserveServicePortSkipsHostPorts(t *testing.T) {
+	t.Setenv(openCodeServicePortEnv, "")
+	excluded, _ := holdPort(t)
+	l1, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	l2, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	picks := []net.Listener{l1, l2}
+	host := map[int]string{l1.Addr().(*net.TCPAddr).Port: "is a host port", excluded: "is a host port"}
+	orig := listenAnyLoopback
+	listenAnyLoopback = func() (net.Listener, error) {
+		l := picks[0]
+		picks = picks[1:]
+		return l, nil
+	}
+	t.Cleanup(func() { listenAnyLoopback = orig })
+
+	port, hold, err := reserveServicePort(host)
+	if err != nil {
+		t.Fatalf("reserveServicePort: %v", err)
+	}
+	defer hold.Close()
+	if want := l2.Addr().(*net.TCPAddr).Port; port != want {
+		t.Errorf("port = %d, want the second, non-excluded pick %d", port, want)
+	}
+	if _, err := net.Listen("tcp", loopbackAddr(port)); err == nil {
+		t.Error("the reserved port must stay bound until handOff")
+	}
+	// The skipped pick is released once the reservation is made.
+	if l, err := net.Listen("tcp", l1.Addr().String()); err != nil {
+		t.Errorf("skipped pick still bound: %v", err)
+	} else {
+		_ = l.Close()
+	}
+}
+
+// Every pick excluded → a clear error instead of an endless loop or a host port.
+func TestReserveServicePortAllExcluded(t *testing.T) {
+	t.Setenv(openCodeServicePortEnv, "")
+	host := map[int]string{}
+	orig := listenAnyLoopback
+	listenAnyLoopback = func() (net.Listener, error) {
+		l, err := net.Listen("tcp", "127.0.0.1:0")
+		if err == nil {
+			host[l.Addr().(*net.TCPAddr).Port] = "is a host port"
+		}
+		return l, err
+	}
+	t.Cleanup(func() { listenAnyLoopback = orig })
+	if _, _, err := reserveServicePort(host); err == nil || !strings.Contains(err.Error(), "no free loopback port") {
+		t.Errorf("want no-free-port error, got %v", err)
+	}
+}
+
+// The test hook forces the port but never bypasses the checks.
+func TestReserveServicePortForced(t *testing.T) {
+	t.Run("taken", func(t *testing.T) {
+		port, _ := holdPort(t)
+		t.Setenv(openCodeServicePortEnv, strconv.Itoa(port))
+		_, _, err := reserveServicePort(nil)
+		var pe *servicePortError
+		if !errors.As(err, &pe) || pe.Port != port {
+			t.Fatalf("want servicePortError for port %d, got %v", port, err)
+		}
+		for _, want := range []string{strconv.Itoa(port), "already in use by another process", "run the command again"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("error %q lacks %q", err, want)
+			}
+		}
+	})
+	t.Run("host port", func(t *testing.T) {
+		t.Setenv(openCodeServicePortEnv, strconv.Itoa(openCodeDefaultServicePort))
+		_, _, err := reserveServicePort(map[int]string{openCodeDefaultServicePort: "is OpenCode's default shared-service port"})
+		if err == nil || !strings.Contains(err.Error(), "default shared-service port") {
+			t.Errorf("want default-port refusal, got %v", err)
+		}
+	})
+	t.Run("free", func(t *testing.T) {
+		want := freePort(t)
+		t.Setenv(openCodeServicePortEnv, strconv.Itoa(want))
+		port, hold, err := reserveServicePort(nil)
+		if err != nil {
+			t.Fatalf("reserveServicePort: %v", err)
+		}
+		defer hold.Close()
+		if port != want {
+			t.Errorf("port = %d, want forced %d", port, want)
+		}
+	})
+	t.Run("invalid", func(t *testing.T) {
+		t.Setenv(openCodeServicePortEnv, "70000")
+		if _, _, err := reserveServicePort(nil); err == nil {
+			t.Error("out-of-range forced port must be rejected")
+		}
+	})
+}
+
+func TestCheckServicePortFree(t *testing.T) {
+	if err := checkServicePortFree(freePort(t), nil); err != nil {
+		t.Errorf("free port refused: %v", err)
+	}
+	taken, _ := holdPort(t)
+	if err := checkServicePortFree(taken, nil); err == nil || !strings.Contains(err.Error(), "already in use") {
+		t.Errorf("taken port: want in-use error, got %v", err)
+	}
+	free := freePort(t)
+	err := checkServicePortFree(free, map[int]string{free: "is registered by the host OpenCode shared service (pid 7)"})
+	if err == nil || !strings.Contains(err.Error(), "host OpenCode shared service") {
+		t.Errorf("host-registered port: want refusal, got %v", err)
+	}
+}
+
+// handOff frees the held port and re-checks it, including a host service that registered the port meanwhile.
+func TestOpenCodeServicePinHandOff(t *testing.T) {
+	port, hold := holdPort(t)
+	pin := &openCodeServicePin{Port: port, hold: hold}
+	if err := pin.handOff(); err != nil {
+		t.Fatalf("handOff of a held, free port: %v", err)
+	}
+	if l, err := net.Listen("tcp", loopbackAddr(port)); err != nil {
+		t.Errorf("port still bound after handOff: %v", err)
+	} else {
+		_ = l.Close()
+	}
+	pin.release() // idempotent
+	var nilPin *openCodeServicePin
+	nilPin.release()
+
+	port, hold = holdPort(t)
+	pin = &openCodeServicePin{Port: port, hold: hold, hostPorts: func() map[int]string {
+		return map[int]string{port: "is registered by the host OpenCode shared service"}
+	}}
+	if err := pin.handOff(); err == nil {
+		t.Error("handOff must refuse a port the host service registered meanwhile")
+	}
+}
+
+func TestParseLsofHolder(t *testing.T) {
+	cases := map[string]string{
+		"p41394\ncPython\n":          "Python, pid 41394",
+		"p1\ncfirst\np2\ncsecond\n":  "first, pid 1",
+		"p77\n":                      "pid 77",
+		"":                           "",
+		"garbage\n":                  "",
+		"p5\nccmd with spaces\nf7\n": "cmd with spaces, pid 5",
+	}
+	for in, want := range cases {
+		if got := parseLsofHolder(in); got != want {
+			t.Errorf("parseLsofHolder(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// fakeOpenCodeService serves /api/info like OpenCode v2: basic auth opencode:<password>, then {"pid":pid}.
+func fakeOpenCodeService(t *testing.T, password string, pid int) int {
+	t.Helper()
+	port, l := holdPort(t)
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		user, pw, ok := r.BasicAuth()
+		if !ok || user != "opencode" || pw != password {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		_, _ = fmt.Fprintf(w, `{"version":"2.0.26","pid":%d}`, pid)
+	})}
+	go func() { _ = srv.Serve(l) }()
+	t.Cleanup(func() { _ = srv.Close() })
+	return port
+}
+
+func writeRegistration(t *testing.T, stateDir string, port, pid int, password string) {
+	t.Helper()
+	writeJSONFile(t, filepath.Join(stateDir, "opencode", "service.json"),
+		fmt.Sprintf(`{"id":"x","version":"2.0.26","url":"http://127.0.0.1:%d","pid":%d,"password":%q}`, port, pid, password))
+}
+
+var fastServiceCheck = serviceCheck{Poll: 20 * time.Millisecond, Grace: 300 * time.Millisecond, Window: 500 * time.Millisecond}
+
+func TestVerifyService(t *testing.T) {
+	t.Run("own service proven", func(t *testing.T) {
+		port := fakeOpenCodeService(t, "pw", 4321)
+		pin := &openCodeServicePin{Port: port, StateDir: t.TempDir()}
+		writeRegistration(t, pin.StateDir, port, 4321, "pw")
+		pid, err := pin.verifyService(context.Background(), fastServiceCheck)
+		if err != nil || pid != 4321 {
+			t.Errorf("verifyService = (%d, %v), want (4321, nil)", pid, err)
+		}
+	})
+	t.Run("foreign listener without registration", func(t *testing.T) {
+		port, _ := holdPort(t)
+		pin := &openCodeServicePin{Port: port, StateDir: t.TempDir()}
+		start := time.Now()
+		_, err := pin.verifyService(context.Background(), fastServiceCheck)
+		if err == nil || !strings.Contains(err.Error(), "taken by another process") {
+			t.Fatalf("want taken-port error, got %v", err)
+		}
+		if waited := time.Since(start); waited < fastServiceCheck.Grace {
+			t.Errorf("refused after %v, before the %v grace", waited, fastServiceCheck.Grace)
+		}
+	})
+	t.Run("listener rejects the registration", func(t *testing.T) {
+		// A different service (other credentials) holds the port while our registration claims it.
+		port := fakeOpenCodeService(t, "someone-else", 99)
+		pin := &openCodeServicePin{Port: port, StateDir: t.TempDir()}
+		writeRegistration(t, pin.StateDir, port, 4321, "pw")
+		if _, err := pin.verifyService(context.Background(), fastServiceCheck); err == nil {
+			t.Error("a listener that does not answer for the registration must be refused")
+		}
+	})
+	t.Run("pid mismatch", func(t *testing.T) {
+		port := fakeOpenCodeService(t, "pw", 99)
+		pin := &openCodeServicePin{Port: port, StateDir: t.TempDir()}
+		writeRegistration(t, pin.StateDir, port, 4321, "pw")
+		if _, err := pin.verifyService(context.Background(), fastServiceCheck); err == nil {
+			t.Error("a service reporting another pid must be refused")
+		}
+	})
+	t.Run("registered another port", func(t *testing.T) {
+		pin := &openCodeServicePin{Port: freePort(t), StateDir: t.TempDir()}
+		writeRegistration(t, pin.StateDir, pin.Port+1, 4321, "pw")
+		if _, err := pin.verifyService(context.Background(), fastServiceCheck); err == nil || !strings.Contains(err.Error(), "registered port") {
+			t.Errorf("want registered-port error, got %v", err)
+		}
+	})
+	t.Run("service never started", func(t *testing.T) {
+		pin := &openCodeServicePin{Port: freePort(t), StateDir: t.TempDir()}
+		pid, err := pin.verifyService(context.Background(), fastServiceCheck)
+		if err != nil || pid != 0 {
+			t.Errorf("verifyService = (%d, %v), want (0, nil) when nothing listens", pid, err)
+		}
+	})
+	t.Run("session ended", func(t *testing.T) {
+		port, _ := holdPort(t)
+		pin := &openCodeServicePin{Port: port, StateDir: t.TempDir()}
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if _, err := pin.verifyService(ctx, serviceCheck{Poll: time.Second, Grace: time.Hour, Window: time.Hour}); err != nil {
+			t.Errorf("a finished session must not be refused afterwards: %v", err)
+		}
+	})
 }
