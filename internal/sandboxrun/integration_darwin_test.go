@@ -395,3 +395,22 @@ func TestIntegrationDNSTimeboxSanity(t *testing.T) {
 		t.Errorf("blocked-network curl took %v", elapsed)
 	}
 }
+
+// TestIntegrationDeniedFileInGrantedDir is the Seatbelt half of #347: a file
+// denied inside a read+write dir grant (the opencode harness's service.json)
+// can be neither read, written, removed, nor replaced by a rename or a symlink
+// from the parent dir. A file that does not exist yet cannot be created either,
+// since Seatbelt matches the path, not an inode.
+func TestIntegrationDeniedFileInGrantedDir(t *testing.T) {
+	for _, withFile := range []bool{true, false} {
+		name := "existing"
+		if !withFile {
+			name = "absent"
+		}
+		t.Run(name, func(t *testing.T) {
+			fx, g := newDenyFileFixture(t, withFile)
+			out, _ := runSandboxed(t, g, "/bin/sh", "-c", fx.probeScript())
+			fx.check(t, out, withFile)
+		})
+	}
+}

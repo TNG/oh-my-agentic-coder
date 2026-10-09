@@ -408,3 +408,32 @@ func TestIntegrationStage2LandlockPorts(t *testing.T) {
 		t.Errorf("blocked port %d reachable", blockedPort)
 	}
 }
+
+// TestIntegrationDeniedFileInGrantedDir is the bubblewrap half of #347: a file
+// denied inside a read+write dir grant (the opencode harness's service.json) is
+// masked by a read-only bind. Its content is hidden, writes fail, and rename,
+// symlink replacement and removal fail because the path is a mount point.
+// bwrap masks only paths that exist at launch, so unlike Seatbelt this covers
+// a file that exists when the session starts.
+func TestIntegrationDeniedFileInGrantedDir(t *testing.T) {
+	requireBwrap(t)
+	for _, marker := range []bool{false, true} {
+		name := "dev-null mask"
+		if marker {
+			name = "denial marker"
+		}
+		t.Run(name, func(t *testing.T) {
+			fx, g := newDenyFileFixture(t, true)
+			if marker {
+				g.DenialText = "denied by omac\n"
+				cleanup, err := g.prepareMarkers()
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer cleanup()
+			}
+			out, _ := runBwrapped(t, g, "/bin/sh", "-c", fx.probeScript())
+			fx.check(t, out, true)
+		})
+	}
+}

@@ -819,6 +819,7 @@ func runLaunch(env *Env, opts launchOpts) int {
 			return ExitIOError
 		}
 		argv = injectSandboxDirs(argv, harness.ResolvedSandboxDirs())
+		argv = injectSandboxDenies(argv, harness.SandboxDenyPaths, prof)
 		if cacheScope != nil {
 			argv = injectSandboxFlag(argv, "--allow", cacheScope.Dir)
 		}
