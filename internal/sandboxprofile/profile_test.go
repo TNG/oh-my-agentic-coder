@@ -234,8 +234,12 @@ func TestExpandExistingSkipsMissing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(out) != 1 || out[0] != dir {
-		t.Errorf("out = %v", out)
+	want := dir
+	if resolved, rerr := filepath.EvalSymlinks(dir); rerr == nil {
+		want = resolved
+	}
+	if len(out) != 1 || out[0] != want {
+		t.Errorf("out = %v, want [%s]", out, want)
 	}
 	if !strings.Contains(buf.String(), "skipping nonexistent path") {
 		t.Errorf("notice missing: %q", buf.String())

@@ -50,11 +50,13 @@ func ExpandPath(p string) (string, error) {
 }
 
 // ExpandExisting expands every entry of paths and returns those that
-// exist on disk. Entries that expand but do not exist are skipped with
-// a notice on w (nono behaviour: missing grant targets are not fatal),
-// as are entries whose variables expand to nothing (e.g. `$TMPDIR` on
-// Linux, where TMPDIR is commonly unset). Other expansion failures
-// produce an error.
+// exist on disk, canonicalized via EvalSymlinks so that a symlinked
+// grant root is resolved to its real target before it reaches the
+// kernel backends. Entries that expand but do not exist are skipped
+// with a notice on w (nono behaviour: missing grant targets are not
+// fatal), as are entries whose variables expand to nothing (e.g.
+// `$TMPDIR` on Linux, where TMPDIR is commonly unset). Other expansion
+// failures produce an error.
 func ExpandExisting(paths []string, w io.Writer) ([]string, error) {
 	var out []string
 	for _, raw := range paths {
@@ -76,6 +78,9 @@ func ExpandExisting(paths []string, w io.Writer) ([]string, error) {
 				continue
 			}
 			return nil, fmt.Errorf("filesystem path %q: %w", raw, statErr)
+		}
+		if resolved, rerr := filepath.EvalSymlinks(p); rerr == nil {
+			p = resolved
 		}
 		out = append(out, p)
 	}

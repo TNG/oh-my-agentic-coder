@@ -50,8 +50,12 @@ func TestProfileFixturesParseAndResolve(t *testing.T) {
 		{
 			file: "docker_socket_recipe.json",
 			check: func(t *testing.T, p *sandboxprofile.Profile, g *Grants) {
-				if !slices.Contains(g.UnixSocketDirs, "/var/run") {
-					t.Errorf("allow_unix_dir not resolved into UnixSocketDirs: %v", g.UnixSocketDirs)
+				want := "/var/run"
+				if resolved, err := filepath.EvalSymlinks("/var/run"); err == nil {
+					want = resolved
+				}
+				if !slices.Contains(g.UnixSocketDirs, want) {
+					t.Errorf("allow_unix_dir not resolved into UnixSocketDirs: want %s, got %v", want, g.UnixSocketDirs)
 				}
 				for _, p := range g.ProtectedPaths {
 					if p == "/var/run/docker.sock" {

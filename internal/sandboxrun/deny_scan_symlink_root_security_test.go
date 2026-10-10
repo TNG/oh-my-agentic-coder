@@ -43,7 +43,7 @@ func setupSymlinkedGrantRoot(t *testing.T) (realDir, link, envReal, envGranted s
 // keep masking the file, isolating the root-symlink descent as the property
 // under test.
 func TestSecuritySymlinkedGrantRootDenyScanDescends(t *testing.T) {
-	realDir, link, envReal, envGranted := setupSymlinkedGrantRoot(t)
+	realDir, link, envReal, _ := setupSymlinkedGrantRoot(t)
 	workdir := t.TempDir()
 
 	// Control: granting the real spelling masks the protected file, so
@@ -66,9 +66,9 @@ func TestSecuritySymlinkedGrantRootDenyScanDescends(t *testing.T) {
 	}
 
 	// Fixed state: granting the symlink spelling must resolve the root and
-	// descend the real tree, so the protected file is masked at the alias
-	// spelling the sandbox actually mounts and the agent opens. Pre-fix the
-	// scan never descended a symlinked root, so nothing was emitted at all.
+	// descend the real tree, so the protected file is masked at the
+	// resolved spelling the sandbox actually mounts. Pre-fix the scan
+	// never descended a symlinked root, so nothing was emitted at all.
 	prof := &sandboxprofile.Profile{
 		Filesystem: sandboxprofile.Filesystem{Read: []string{link}, Deny: []string{".env"}},
 		Workdir:    sandboxprofile.Workdir{Access: sandboxprofile.AccessNone},
@@ -81,22 +81,23 @@ func TestSecuritySymlinkedGrantRootDenyScanDescends(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
-	if !slices.Contains(g.ProtectedPaths, envGranted) {
-		t.Errorf("granting a symlink spelling of a dir did not descend to mask %s (alias spelling): %v",
-			envGranted, g.ProtectedPaths)
+	if !slices.Contains(g.ProtectedPaths, envReal) {
+		t.Errorf("granting a symlink spelling of a dir did not descend to mask %s (resolved spelling): %v",
+			envReal, g.ProtectedPaths)
 	}
 }
 
-// TestSecurityDenyScanEmitsGrantedSpellingForSymlinkRoot asserts that a
-// match found under a symlinked grant root is emitted at the granted
-// (alias) spelling — the one bwrap's coveredByAny check matches and the
-// one the facade-side ProtectedPathSet can answer lexically for the query
-// spelling the agent actually sees. It also guards the boundary of that
-// fix: a symlink INSIDE the granted tree is still not followed, so an
-// out-of-tree file reachable only through such a link is not enumerated
-// (the entry cap and loop-bypass protection are preserved).
-func TestSecurityDenyScanEmitsGrantedSpellingForSymlinkRoot(t *testing.T) {
-	realDir, link, _, envGranted := setupSymlinkedGrantRoot(t)
+// TestSecurityDenyScanEmitsResolvedSpellingForSymlinkRoot asserts that a
+// match found under a symlinked grant root is emitted at the resolved
+// spelling — the one ExpandExisting canonicalizes to, the one bwrap's
+// coveredByAny check matches, and the one the facade-side
+// ProtectedPathSet can answer lexically for the query spelling the agent
+// actually sees. It also guards the boundary of that fix: a symlink
+// INSIDE the granted tree is still not followed, so an out-of-tree file
+// reachable only through such a link is not enumerated (the entry cap
+// and loop-bypass protection are preserved).
+func TestSecurityDenyScanEmitsResolvedSpellingForSymlinkRoot(t *testing.T) {
+	realDir, link, envReal, _ := setupSymlinkedGrantRoot(t)
 	workdir := t.TempDir()
 
 	// An interior symlink to an OUT-of-tree dir holding its own protected
@@ -126,8 +127,8 @@ func TestSecurityDenyScanEmitsGrantedSpellingForSymlinkRoot(t *testing.T) {
 		t.Fatalf("resolve: %v", err)
 	}
 
-	if !slices.Contains(g.ProtectedPaths, envGranted) {
-		t.Errorf("alias spelling %s not masked under a symlinked grant root: %v", envGranted, g.ProtectedPaths)
+	if !slices.Contains(g.ProtectedPaths, envReal) {
+		t.Errorf("resolved spelling %s not masked under a symlinked grant root: %v", envReal, g.ProtectedPaths)
 	}
 	if slices.Contains(g.ProtectedPaths, outEnv) {
 		t.Errorf("out-of-tree file %s reachable only through an in-tree symlink was enumerated; "+

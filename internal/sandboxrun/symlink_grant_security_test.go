@@ -123,7 +123,9 @@ func TestSecuritySymlinkGrantMaskPresent(t *testing.T) {
 	}
 
 	// The symlink spelling of the grant root covers the protected path
-	// after resolution, so the mask must be emitted.
+	// after resolution, so the mask must be emitted — at the resolved
+	// spelling (pathForms) and at the mount-relative alias spelling
+	// (maskDestinations defense-in-depth).
 	g := &Grants{
 		Workdir:        workdir,
 		AllowPaths:     []string{link},
@@ -137,5 +139,10 @@ func TestSecuritySymlinkGrantMaskPresent(t *testing.T) {
 	if !strings.Contains(joined, secretFile) {
 		t.Errorf("protected path %s under the resolved target of mount %s (symlink to %s) received no mask: %s",
 			secretFile, link, realDir, joined)
+	}
+	aliasSpelling := filepath.Join(link, "secret")
+	if !strings.Contains(joined, aliasSpelling) {
+		t.Errorf("mount-relative alias spelling %s for protected path under symlinked mount %s received no mask: %s",
+			aliasSpelling, link, joined)
 	}
 }

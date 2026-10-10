@@ -147,8 +147,10 @@ func BuildBwrapArgv(g *Grants, stage2Argv []string) ([]string, error) {
 	// The coverage check is resolution-aware: a mount whose literal
 	// spelling is a symlink still covers paths under its resolved target,
 	// because the kernel backend binds the real tree. Masks are emitted
-	// at every pathForms() spelling of each protected path so the mask is
-	// present regardless of which spelling the agent uses to reach it.
+	// at every spelling of each protected path — including pathForms()
+	// (literal + resolved) and mount-relative spellings (mount literal +
+	// suffix under the mount's resolved root) — so the mask is present
+	// regardless of which spelling the agent uses to reach it.
 	//
 	// When denial markers are prepared (see Grants.prepareMarkers), a
 	// protected file is masked with a read-only marker file whose contents
@@ -159,22 +161,22 @@ func BuildBwrapArgv(g *Grants, stage2Argv []string) ([]string, error) {
 		if !rootGranted && !coveredByAny(prot, ordered) {
 			continue
 		}
-		for _, protForm := range pathForms(prot) {
-			fi, err := os.Lstat(protForm)
+		for _, dest := range maskDestinations(prot, ordered) {
+			fi, err := os.Lstat(dest)
 			if err != nil {
 				continue // doesn't exist; nothing to mask
 			}
 			if fi.IsDir() {
 				if g.markerDir != "" {
-					argv = append(argv, "--ro-bind", g.markerDir, protForm)
+					argv = append(argv, "--ro-bind", g.markerDir, dest)
 				} else {
-					argv = append(argv, "--tmpfs", protForm)
+					argv = append(argv, "--tmpfs", dest)
 				}
 			} else {
 				if g.markerFile != "" {
-					argv = append(argv, "--ro-bind", g.markerFile, protForm)
+					argv = append(argv, "--ro-bind", g.markerFile, dest)
 				} else {
-					argv = append(argv, "--ro-bind", "/dev/null", protForm)
+					argv = append(argv, "--ro-bind", "/dev/null", dest)
 				}
 			}
 		}
@@ -223,6 +225,42 @@ func coveredByAny(path string, mounts []*mount) bool {
 		}
 	}
 	return false
+}
+
+// maskDestinations returns every sandbox-visible spelling of a protected
+// path that should receive a mask. It includes pathForms(prot) (literal +
+// resolved) and, for each mount whose literal spelling differs from its
+// resolved form, the mount-relative spelling: the mount's literal path
+// joined with the suffix of the protected path under the mount's resolved
+// root. This ensures a mask is emitted at the path the agent actually
+// sees inside the sandbox, even when the grant was constructed without
+// going through ExpandExisting (e.g. in tests or future callers).
+func maskDestinations(prot string, mounts []*mount) []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(p string) {
+		if p != "" && !seen[p] {
+			seen[p] = true
+			out = append(out, p)
+		}
+	}
+	for _, pf := range pathForms(prot) {
+		add(pf)
+	}
+	for _, m := range mounts {
+		for _, mf := range pathForms(m.path) {
+			for _, pf := range pathForms(prot) {
+				if pf == mf {
+					add(m.path)
+				} else if strings.HasPrefix(pf, mf+string(filepath.Separator)) {
+					rel := strings.TrimPrefix(pf, mf+string(filepath.Separator))
+					add(filepath.Join(m.path, rel))
+				}
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // Stage2Args serializes the network rules for the stage2 re-exec.

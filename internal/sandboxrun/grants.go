@@ -144,6 +144,10 @@ func (g *Grants) prepareMarkers() (func(), error) {
 func ResolveGrants(p *sandboxprofile.Profile, workdir string, notices io.Writer) (*Grants, error) {
 	base := sandboxprofile.PlatformBaseline()
 
+	if resolved, err := filepath.EvalSymlinks(workdir); err == nil {
+		workdir = resolved
+	}
+
 	read, err := sandboxprofile.ExpandExisting(append(append([]string{}, base.Read...), p.Filesystem.Read...), notices)
 	if err != nil {
 		return nil, err
@@ -169,6 +173,11 @@ func ResolveGrants(p *sandboxprofile.Profile, workdir string, notices io.Writer)
 			return nil, fmt.Errorf("allow_unix_dir %q: %w", raw, expErr)
 		}
 		unixDirs = append(unixDirs, abs)
+	}
+	for i, d := range unixDirs {
+		if resolved, rerr := filepath.EvalSymlinks(d); rerr == nil {
+			unixDirs[i] = resolved
+		}
 	}
 	allow = append(allow, unixDirs...)
 
@@ -267,11 +276,11 @@ func gitWorktreeGrants(workdir, access string) (readAdds, allowAdds, denyAdds []
 		return nil, nil, nil, false
 	}
 	// SECURITY: grant paths derive from in-workdir files (.git, <admin>/commondir)
-	// a prior sandboxed session could have tampered with. The backends resolve
-	// symlinks when checking coverage (bwrap's coveredByAny uses pathForms;
-	// Seatbelt emits every pathForms spelling), so a symlinked grant root does
-	// not widen a grant to an out-of-tree path. Admit only entries physically
-	// inside the common dir as a second layer of defense.
+	// a prior sandboxed session could have tampered with. ExpandExisting
+	// canonicalizes every grant root via EvalSymlinks, so a symlinked grant
+	// root is resolved to its real target before it reaches the backends.
+	// Admit only entries physically inside the common dir as a second layer
+	// of defense.
 	root, err := filepath.EvalSymlinks(common)
 	if err != nil {
 		return nil, nil, nil, false
