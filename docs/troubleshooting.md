@@ -149,11 +149,11 @@ The harness (opencode, claude-code, …) launches MCP servers **inside the sandb
 
 See [Running an MCP server the harness launches](./configuration.md#running-an-mcp-server-the-harness-launches) for a combined example.
 
-### Gradle build hangs or cannot reach its daemon
+### Gradle build hangs, cannot reach its daemon, or cannot start a daemon
 
 Cause: the Gradle daemon talks to its client over a random loopback port, which the sandbox's default kernel network enforcement blocks.
 
-Fix: run Gradle without the daemon — `./gradlew --no-daemon` (or set `org.gradle.daemon=false`). This is the recommended fix.
+Fix: run Gradle without the daemon — `./gradlew --no-daemon` (or set `org.gradle.daemon=false`). If Gradle still tries to start a daemon, align the JVM arguments with the project (see the [Gradle documentation](https://docs.gradle.org/current/userguide/gradle_daemon.html#sec:disabling_the_daemon); the _Single-use Daemon_ case must be prevented).
 
 On macOS only, if you must keep the daemon, you can grant loopback with `"network": { "open_port": [0] }` in the sandbox grants file (`~/.config/omac/sandbox-profiles/default.json`) — `0` means "any loopback port" and external TCP egress stays kernel-blocked. On Linux there is no equivalent that keeps kernel enforcement, so use `--no-daemon`.
 
