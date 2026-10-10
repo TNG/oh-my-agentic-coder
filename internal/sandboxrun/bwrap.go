@@ -144,6 +144,12 @@ func BuildBwrapArgv(g *Grants, stage2Argv []string) ([]string, error) {
 	// covered; otherwise check against the ordered mount list.
 	// Masks must come after the binds they shadow.
 	//
+	// The coverage check is resolution-aware: a mount whose literal
+	// spelling is a symlink still covers paths under its resolved target,
+	// because the kernel backend binds the real tree. Masks are emitted
+	// at every pathForms() spelling of each protected path so the mask is
+	// present regardless of which spelling the agent uses to reach it.
+	//
 	// When denial markers are prepared (see Grants.prepareMarkers), a
 	// protected file is masked with a read-only marker file whose contents
 	// explain the denial, and a protected dir is masked with a read-only
@@ -153,21 +159,23 @@ func BuildBwrapArgv(g *Grants, stage2Argv []string) ([]string, error) {
 		if !rootGranted && !coveredByAny(prot, ordered) {
 			continue
 		}
-		fi, err := os.Lstat(prot)
-		if err != nil {
-			continue // doesn't exist; nothing to mask
-		}
-		if fi.IsDir() {
-			if g.markerDir != "" {
-				argv = append(argv, "--ro-bind", g.markerDir, prot)
-			} else {
-				argv = append(argv, "--tmpfs", prot)
+		for _, protForm := range pathForms(prot) {
+			fi, err := os.Lstat(protForm)
+			if err != nil {
+				continue // doesn't exist; nothing to mask
 			}
-		} else {
-			if g.markerFile != "" {
-				argv = append(argv, "--ro-bind", g.markerFile, prot)
+			if fi.IsDir() {
+				if g.markerDir != "" {
+					argv = append(argv, "--ro-bind", g.markerDir, protForm)
+				} else {
+					argv = append(argv, "--tmpfs", protForm)
+				}
 			} else {
-				argv = append(argv, "--ro-bind", "/dev/null", prot)
+				if g.markerFile != "" {
+					argv = append(argv, "--ro-bind", g.markerFile, protForm)
+				} else {
+					argv = append(argv, "--ro-bind", "/dev/null", protForm)
+				}
 			}
 		}
 	}
@@ -198,11 +206,20 @@ func exists(p string) bool {
 	return err == nil
 }
 
-// coveredByAny reports whether path lies under (or equals) any mount.
+// coveredByAny reports whether path lies under (or equals) any mount,
+// accounting for symlink resolution on both sides: a mount whose literal
+// spelling is a symlink covers paths under its resolved target, and a
+// path given via a symlink spelling is covered by a mount at the real
+// target.
 func coveredByAny(path string, mounts []*mount) bool {
+	pathSet := pathForms(path)
 	for _, m := range mounts {
-		if path == m.path || strings.HasPrefix(path, m.path+string(filepath.Separator)) {
-			return true
+		for _, mf := range pathForms(m.path) {
+			for _, pf := range pathSet {
+				if pf == mf || strings.HasPrefix(pf, mf+string(filepath.Separator)) {
+					return true
+				}
+			}
 		}
 	}
 	return false

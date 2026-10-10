@@ -432,6 +432,12 @@ func (p *Profile) Validate() error {
 		if exp == "/" {
 			return fmt.Errorf("sandbox profile: filesystem.allow contains %q: blanket root grant is not permitted", entry)
 		}
+		// Resolve symlinks so a grant whose alias is not "/" but whose
+		// target is the filesystem root is rejected just like a literal
+		// "/" entry.
+		if resolved, rerr := filepath.EvalSymlinks(exp); rerr == nil && resolved == "/" {
+			return fmt.Errorf("sandbox profile: filesystem.allow contains %q: blanket root grant is not permitted", entry)
+		}
 	}
 	return nil
 }

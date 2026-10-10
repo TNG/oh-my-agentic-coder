@@ -267,10 +267,11 @@ func gitWorktreeGrants(workdir, access string) (readAdds, allowAdds, denyAdds []
 		return nil, nil, nil, false
 	}
 	// SECURITY: grant paths derive from in-workdir files (.git, <admin>/commondir)
-	// a prior sandboxed session could have tampered with, and backends
-	// symlink-canonicalize every grant into a kernel rule. Admit only entries
-	// physically inside the common dir so a planted symlink (e.g. `objects` ->
-	// ~/.ssh) cannot widen a grant to an out-of-tree path.
+	// a prior sandboxed session could have tampered with. The backends resolve
+	// symlinks when checking coverage (bwrap's coveredByAny uses pathForms;
+	// Seatbelt emits every pathForms spelling), so a symlinked grant root does
+	// not widen a grant to an out-of-tree path. Admit only entries physically
+	// inside the common dir as a second layer of defense.
 	root, err := filepath.EvalSymlinks(common)
 	if err != nil {
 		return nil, nil, nil, false
