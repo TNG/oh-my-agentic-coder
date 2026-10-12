@@ -659,12 +659,15 @@ func walkGlobMatches(roots, globs, protectedDirs []string, notices io.Writer) ([
 	// Merge deterministically in root order; dedupe paths matched under
 	// overlapping roots. A cap hit makes the protected set incomplete, so
 	// it is surfaced as an error rather than a notice: a protection scan
-	// that cannot finish must not degrade to "unprotected".
+	// that cannot finish must not degrade to "unprotected". Every root that
+	// hit the cap is named, so the user can fix them all in one go instead
+	// of learning about them one failed launch at a time.
 	seen := map[string]bool{}
-	var out []string
+	var out, incomplete []string
 	for i, root := range roots {
 		if results[i].hitCap {
-			return nil, fmt.Errorf("sandbox grants: filesystem.deny scan of %s hit the %d-entry limit; refusing to launch with an incomplete protected set", root, maxDenyScanEntries)
+			incomplete = append(incomplete, root)
+			continue
 		}
 		for _, m := range results[i].matches {
 			if !seen[m] {
@@ -672,6 +675,10 @@ func walkGlobMatches(roots, globs, protectedDirs []string, notices io.Writer) ([
 				out = append(out, m)
 			}
 		}
+	}
+	if len(incomplete) > 0 {
+		return nil, fmt.Errorf("sandbox grants: filesystem.deny scan hit the %d-entry limit in these folders, so they were not fully searched; refusing to launch with an incomplete protected set:\n  %s",
+			maxDenyScanEntries, strings.Join(incomplete, "\n  "))
 	}
 	return out, nil
 }

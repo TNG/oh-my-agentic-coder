@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -66,6 +67,29 @@ func TestSecurityDenyScanCapFailsClosed(t *testing.T) {
 			}
 		}
 		t.Fatalf("launch proceeded after an incomplete protection scan (%s unmasked); expected refusal", protectedFile)
+	}
+}
+
+// TestDenyScanCapNamesEveryIncompleteFolder checks that when several
+// granted folders are too large to scan, the launch refusal names all of
+// them, not just the first, so the user can fix them in one go.
+func TestDenyScanCapNamesEveryIncompleteFolder(t *testing.T) {
+	big1, big2 := t.TempDir(), t.TempDir()
+	populateLargeTree(t, big1)
+	populateLargeTree(t, big2)
+
+	prof := &sandboxprofile.Profile{
+		Workdir:    sandboxprofile.Workdir{Access: sandboxprofile.AccessReadWrite},
+		Filesystem: sandboxprofile.Filesystem{Read: []string{big1, big2}},
+	}
+	_, err := ResolveGrants(prof, t.TempDir(), nil)
+	if err == nil {
+		t.Fatal("launch must be refused when deny scans are incomplete")
+	}
+	for _, dir := range []string{big1, big2} {
+		if !strings.Contains(err.Error(), dir) {
+			t.Errorf("refusal must name %s, got: %v", dir, err)
+		}
 	}
 }
 
