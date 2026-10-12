@@ -30,6 +30,8 @@ type Flags struct {
 	AuditRunID    string   // --audit-run-id <id>: inherit parent's run_id ("" = mint fresh)
 	AuditMode     string   // --audit-mode <start|serve>: inherit parent's mode ("" = start)
 	InnerArgv     []string // everything after --
+
+	AcceptIncompleteScan bool // --accept-incomplete-scan: start even if the .env scan stopped early
 }
 
 // ParseFlags parses the argument vector for `omac sandbox run` (the
@@ -179,6 +181,11 @@ func ParseFlags(args []string) (*Flags, error) {
 				return nil, fmt.Errorf("--learn takes no value")
 			}
 			f.Learn = true
+		case "--accept-incomplete-scan":
+			if hasInline {
+				return nil, fmt.Errorf("--accept-incomplete-scan takes no value")
+			}
+			f.AcceptIncompleteScan = true
 		case "--audit-log":
 			v, err := val(a)
 			if err != nil {

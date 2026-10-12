@@ -1,6 +1,7 @@
 package sandboxrun
 
 import (
+	"slices"
 	"time"
 
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
@@ -24,23 +25,25 @@ import (
 // and an already-alerted path must not re-alert on every tick.
 func WatchNewProtected(p *sandboxprofile.Profile, workdir string, interval time.Duration, onNew func(path string), stop <-chan struct{}) error {
 	base := sandboxprofile.PlatformBaseline()
-	roots, err := denyScanRoots(p, workdir)
+	scan, err := denyScanRoots(p, workdir)
 	if err != nil {
 		return err
 	}
 	protected := sandboxprofile.EffectiveProtectedPaths(base, p.Filesystem.OverrideDeny)
-	resolve := func() ([]string, error) {
-		return resolveDenyPaths(p.Filesystem.Deny, base.WorkdirProtected, p.Filesystem.OverrideDeny, roots, protected, nil)
+	resolve := func(roots []string) ([]string, []string) {
+		return resolveDenyPaths(p.Filesystem.Deny, base.WorkdirProtected, p.Filesystem.OverrideDeny, roots, protected, scan.toolchain, nil)
 	}
 
 	known := map[string]bool{}
-	initial, err := resolve()
-	if err != nil {
-		return err
-	}
+	initial, incomplete := resolve(scan.roots)
 	for _, m := range initial {
 		known[m] = true
 	}
+	// A root the launch scan could not finish (launch asked the user
+	// about it) is left out of the ticks: re-walking it up to the cap
+	// every tick is costly, and where the cap falls shifts as files come
+	// and go, so a tick would report old files as new.
+	roots := slices.DeleteFunc(slices.Clone(scan.roots), func(r string) bool { return slices.Contains(incomplete, r) })
 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -49,10 +52,7 @@ func WatchNewProtected(p *sandboxprofile.Profile, workdir string, interval time.
 		case <-stop:
 			return nil
 		case <-ticker.C:
-			current, err := resolve()
-			if err != nil {
-				return err
-			}
+			current, _ := resolve(roots)
 			for _, m := range current {
 				if !known[m] {
 					known[m] = true

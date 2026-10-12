@@ -1,0 +1,211 @@
+package sandboxrun
+
+import (
+	"bytes"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+	"testing"
+
+	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
+)
+
+// TestResolveGrantsDenyScanSkipsToolchainGrant reproduces the launch
+// failure "~/Library/pnpm hit the 200000-entry limit". The default profile
+// grants tool-install dirs like the pnpm home read-only so the agent can
+// run the tools; they are not where secrets live, so the scan leaves them
+// out instead of walking pnpm's store (one file per installed package file).
+func TestResolveGrantsDenyScanSkipsToolchainGrant(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	populateLargeTree(t, mkdirAll(t, home, "Library", "pnpm", "store", "v10", "files"))
+
+	p := &sandboxprofile.Profile{
+		Workdir:    sandboxprofile.Workdir{Access: sandboxprofile.AccessReadWrite},
+		Filesystem: sandboxprofile.Filesystem{Read: []string{"~/Library/pnpm"}},
+	}
+	g, err := ResolveGrants(p, t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(g.IncompleteDenyScanRoots) > 0 {
+		t.Errorf("toolchain grant must not be deny-scanned, scan stopped in %v", g.IncompleteDenyScanRoots)
+	}
+}
+
+// TestResolveGrantsDenyScanPrunesToolchainUnderBroadGrant covers a user
+// who grants all of ~: the walk prunes the toolchain dirs inside it, but
+// still scans everything else, so ~/project/.env stays protected.
+func TestResolveGrantsDenyScanPrunesToolchainUnderBroadGrant(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	pnpmHome := filepath.Join(home, ".local", "share", "pnpm")
+	populateLargeTree(t, mkdirAll(t, pnpmHome, "store", "v10", "files"))
+	toolEnv := filepath.Join(pnpmHome, ".env")
+	writeFile(t, toolEnv)
+	projectEnv := filepath.Join(mkdirAll(t, home, "project"), ".env")
+	writeFile(t, projectEnv)
+
+	p := &sandboxprofile.Profile{
+		Workdir:    sandboxprofile.Workdir{Access: sandboxprofile.AccessReadWrite},
+		Filesystem: sandboxprofile.Filesystem{Read: []string{"~"}},
+	}
+	g, err := ResolveGrants(p, t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(g.IncompleteDenyScanRoots) > 0 {
+		t.Errorf("toolchain dir under a broad grant must be pruned, scan stopped in %v", g.IncompleteDenyScanRoots)
+	}
+	if !slices.Contains(g.ProtectedPaths, projectEnv) {
+		t.Errorf(".env outside the toolchain dirs not protected: %s (%v)", projectEnv, g.ProtectedPaths)
+	}
+	if slices.Contains(g.ProtectedPaths, toolEnv) {
+		t.Errorf("toolchain dir must be pruned, not descended: %s", toolEnv)
+	}
+}
+
+// TestResolveGrantsLogsSkippedToolchainDirs checks that launch says which
+// granted dirs the .env scan left out, so a user can tell that a .env
+// inside e.g. ~/.nvm is not hidden. A toolchain dir outside every grant
+// was never going to be scanned and is not mentioned.
+func TestResolveGrantsLogsSkippedToolchainDirs(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	nvm := mkdirAll(t, home, ".nvm")
+	mkdirAll(t, home, ".rustup")
+
+	p := &sandboxprofile.Profile{
+		Workdir:    sandboxprofile.Workdir{Access: sandboxprofile.AccessReadWrite},
+		Filesystem: sandboxprofile.Filesystem{Read: []string{"~/.nvm"}},
+	}
+	var notices bytes.Buffer
+	if _, err := ResolveGrants(p, t.TempDir(), &notices); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(notices.String(), "did not search these tool-install folders") || !strings.Contains(notices.String(), nvm) {
+		t.Errorf("notice must name the skipped toolchain dir %s, got:\n%s", nvm, notices.String())
+	}
+	if strings.Contains(notices.String(), ".rustup") {
+		t.Errorf("ungranted toolchain dir must not be named, got:\n%s", notices.String())
+	}
+}
+
+// A toolchain dir that is not granted itself but sits inside a broader
+// grant (here ~) is pruned from that grant's scan, so it must be named too.
+func TestResolveGrantsLogsToolchainDirUnderBroadGrant(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	nvm := mkdirAll(t, home, ".nvm")
+
+	p := &sandboxprofile.Profile{
+		Workdir:    sandboxprofile.Workdir{Access: sandboxprofile.AccessReadWrite},
+		Filesystem: sandboxprofile.Filesystem{Read: []string{"~"}},
+	}
+	var notices bytes.Buffer
+	if _, err := ResolveGrants(p, t.TempDir(), &notices); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(notices.String(), "did not search these tool-install folders") || !strings.Contains(notices.String(), nvm) {
+		t.Errorf("notice must name %s, pruned from the ~ grant, got:\n%s", nvm, notices.String())
+	}
+}
+
+func mkdirAll(t *testing.T, elem ...string) string {
+	t.Helper()
+	dir := filepath.Join(elem...)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+// TestResolveGrantsLogsGrantInsideToolchainDir covers the reverse case: a
+// grant (here the workdir) that sits inside a toolchain dir, e.g. someone
+// working on nvm itself in ~/.nvm. It is not scanned either, so the
+// notice must name it.
+func TestResolveGrantsLogsGrantInsideToolchainDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	workdir := mkdirAll(t, home, ".nvm", "work")
+	env := filepath.Join(workdir, ".env")
+	writeFile(t, env)
+
+	p := &sandboxprofile.Profile{Workdir: sandboxprofile.Workdir{Access: sandboxprofile.AccessReadWrite}}
+	var notices bytes.Buffer
+	g, err := ResolveGrants(p, workdir, &notices)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(g.ProtectedPaths, env) {
+		t.Errorf("grant inside a toolchain dir is expected to be left out of the scan: %s", env)
+	}
+	if !strings.Contains(notices.String(), "did not search these tool-install folders") || !strings.Contains(notices.String(), workdir) {
+		t.Errorf("notice must name the unscanned grant %s, got:\n%s", workdir, notices.String())
+	}
+}
+
+// TestResolveGrantsToolchainLookupIsBestEffort checks that the toolchain
+// list cannot fail a launch whose profile does not use it. Here ~/go is a
+// file, so checking ~/go/bin fails with "not a directory".
+func TestResolveGrantsToolchainLookupIsBestEffort(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeFile(t, filepath.Join(home, "go"))
+	p := &sandboxprofile.Profile{Workdir: sandboxprofile.Workdir{Access: sandboxprofile.AccessReadWrite}}
+	if _, err := ResolveGrants(p, t.TempDir(), nil); err != nil {
+		t.Fatalf("toolchain lookup must not fail the launch: %v", err)
+	}
+}
+
+func TestWithinAnyRootDir(t *testing.T) {
+	if !withinAny("/home/me/.nvm", []string{"/"}, toolchainForms) {
+		t.Error("every absolute path is inside /")
+	}
+	if withinAny("/home/meow", []string{"/home/me"}, toolchainForms) {
+		t.Error("/home/meow is not inside /home/me")
+	}
+}
+
+// A toolchain dir that is a symlink must not take its target out of the
+// scan. With ~/.bun/bin -> ~, following the link would skip the whole home
+// dir, workdir included. An agent with write access to ~/.cargo could set
+// that up for the next launch by replacing ~/.cargo/bin.
+func TestResolveGrantsSymlinkedToolchainDirKeepsTargetScanned(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		read []string
+		inWD bool
+	}{
+		{name: "workdir under the link target", inWD: true},
+		{name: "broad grant containing the link", read: []string{"~"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			mkdirAll(t, home, ".bun")
+			if err := os.Symlink(home, filepath.Join(home, ".bun", "bin")); err != nil {
+				t.Fatal(err)
+			}
+			project := mkdirAll(t, home, "projects", "app")
+			env := filepath.Join(project, ".env")
+			writeFile(t, env)
+			wd := t.TempDir()
+			if tc.inWD {
+				wd = project
+			}
+			p := &sandboxprofile.Profile{
+				Workdir:    sandboxprofile.Workdir{Access: sandboxprofile.AccessReadWrite},
+				Filesystem: sandboxprofile.Filesystem{Read: tc.read},
+			}
+			g, err := ResolveGrants(p, wd, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Contains(g.ProtectedPaths, env) {
+				t.Errorf("%s not protected although only the symlink ~/.bun/bin points at its parent", env)
+			}
+		})
+	}
+}

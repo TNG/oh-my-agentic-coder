@@ -1,6 +1,7 @@
 package sandboxrun
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
 	"io"
@@ -8,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/TNG/oh-my-agentic-coder/internal/audit"
@@ -21,6 +23,7 @@ import (
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxdeny"
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
 	"github.com/TNG/oh-my-agentic-coder/internal/toolcache"
+	"golang.org/x/term"
 )
 
 // Options bundles the inputs for Run.
@@ -55,6 +58,109 @@ func warnEmptyAllowVars(stderr io.Writer, allowVars []string) {
 	fmt.Fprintln(stderr, "  profile from its installer or original source. If you maintain it manually, add")
 	fmt.Fprintln(stderr, "  what it needs to allow_vars or pass --allow-env <name>.")
 	fmt.Fprintln(stderr, `  allow_vars: ["*"] is not recommended because it inherits every non-blocklisted var.`)
+}
+
+// confirmIncompleteDenyScan warns about each granted folder the
+// filesystem.deny scan (.env, .envrc, ...) could not finish and asks
+// whether to start anyway. Files found before the scan stopped are still
+// hidden; anything further in is not. accept (--accept-incomplete-scan)
+// skips the question. Without a terminal to ask on, it declines, so an
+// unattended launch never starts with unhidden secrets by default. With
+// canRemember, the question also offers "a" (always for these folders);
+// always reports that answer so the caller can store it.
+func confirmIncompleteDenyScan(stderr io.Writer, in io.Reader, interactive, accept, canRemember bool, roots []string) (start, always bool) {
+	if len(roots) == 0 {
+		return true, false
+	}
+	fmt.Fprintf(stderr, "omac sandbox: warning: these folders have more than %s files and folders. omac stopped searching them for secret files (.env, ...), so such a file deeper inside may be visible to the agent:\n", formatThousands(maxDenyScanEntries))
+	for _, r := range roots {
+		fmt.Fprintf(stderr, "  %s\n", r)
+	}
+	fmt.Fprintln(stderr, "To avoid this, grant a smaller folder (see docs/security.md).")
+	if accept {
+		return true, false
+	}
+	if !interactive {
+		fmt.Fprintln(stderr, "omac sandbox: not started (no terminal to ask on). Grant a smaller folder, or pass --accept-incomplete-scan to start anyway.")
+		return false, false
+	}
+	if canRemember {
+		fmt.Fprint(stderr, "Start anyway? [y/N, a = always for these folders] ")
+	} else {
+		fmt.Fprint(stderr, "Start anyway? [y/N] ")
+	}
+	answer, _ := bufio.NewReader(in).ReadString('\n')
+	switch strings.ToLower(strings.TrimSpace(answer)) {
+	case "y", "yes":
+		return true, false
+	case "a", "always":
+		if canRemember {
+			return true, true
+		}
+	}
+	fmt.Fprintln(stderr, "omac sandbox: not started. Grant a smaller folder, or pass --accept-incomplete-scan to skip this question.")
+	return false, false
+}
+
+// formatThousands writes n with comma separators (200000 -> "200,000").
+func formatThousands(n int) string {
+	s := strconv.Itoa(n)
+	for i := len(s) - 3; i > 0; i -= 3 {
+		s = s[:i] + "," + s[i:]
+	}
+	return s
+}
+
+// startAfterDenyScan decides whether launch may go ahead when the deny
+// scan was cut short in some folders (g.IncompleteDenyScanRoots), and then
+// stores what the scan state remembers (scanstate.go). Learn mode lifts
+// every filesystem restriction, masks included, so an incomplete scan
+// changes nothing there: it neither asks nor stores anything.
+//
+// Folders the user answered "always" for earlier start without a
+// question; logf notes them. That does not hold when a secret file found
+// at an earlier launch is gone from such a folder (g.MissingSecrets): it
+// may have been moved past the point where the scan stops, so launch
+// names it and asks. Otherwise --accept-incomplete-scan or the user's
+// answer decides (confirmIncompleteDenyScan).
+func startAfterDenyScan(stderr io.Writer, in io.Reader, interactive bool, flags *sandboxprofile.Flags, g *Grants, state *scanState, logf func(string, ...any)) bool {
+	if flags.Learn {
+		return true
+	}
+	var ask, accepted []string
+	for _, r := range g.IncompleteDenyScanRoots {
+		if len(g.MissingSecrets) == 0 && state.isAccepted(r) {
+			accepted = append(accepted, r)
+		} else {
+			ask = append(ask, r)
+		}
+	}
+	if len(accepted) > 0 {
+		logf("omac sandbox: notice: the secret file scan stopped early in %s; starting without asking, as you chose earlier (remove the folder from %s to be asked again)",
+			strings.Join(accepted, ", "), state.path)
+	}
+	if len(g.MissingSecrets) > 0 {
+		fmt.Fprintln(stderr, "omac sandbox: warning: these secret files were hidden at an earlier launch but are gone now. If they were moved deeper into their folder, they are no longer hidden:")
+		for _, m := range g.MissingSecrets {
+			fmt.Fprintf(stderr, "  %s\n", m)
+		}
+	}
+	start, always := confirmIncompleteDenyScan(stderr, in, interactive, flags.AcceptIncompleteScan, state.canSave(), ask)
+	if !start {
+		return false
+	}
+	if always {
+		state.acceptAlways(ask)
+	}
+	if err := state.save(g.DenyScanRoots, g.FoundSecrets, g.KeptSecrets); err != nil {
+		logf("omac sandbox: warning: could not save the secret file scan state: %v", err)
+		if always {
+			fmt.Fprintf(stderr, "omac sandbox: warning: could not save your answer, so omac will ask again next time: %v\n", err)
+		}
+	} else if always {
+		fmt.Fprintf(stderr, "omac sandbox: saved in %s; remove a folder there to be asked again.\n", state.path)
+	}
+	return true
 }
 
 // Run is the `omac sandbox run` supervisor: resolve profile + flags,
@@ -96,12 +202,22 @@ func Run(opts Options) int {
 	}
 	warnEmptyAllowVars(stderr, merged.Environment.AllowVars)
 
-	grants, err := ResolveGrants(merged, opts.Workdir, diag.Writer())
+	// The scan state (<profile>.scan.json) holds "always" answers and the
+	// secret files earlier launches hid. A file this omac cannot read is
+	// left alone and launch behaves as if it did not exist.
+	scanState, err := loadScanState(sandboxprofile.ScanStatePath(profilePath))
+	if err != nil {
+		diag.Logf("omac sandbox: warning: ignoring the secret file scan state: %v", err)
+	}
+	grants, err := resolveGrants(merged, opts.Workdir, diag.Writer(), scanState.knownSecrets())
 	if err != nil {
 		return fail("%v", err)
 	}
 	if err := grants.Validate(); err != nil {
 		return fail("%v", err)
+	}
+	if !startAfterDenyScan(stderr, os.Stdin, term.IsTerminal(int(os.Stdin.Fd())), opts.Flags, grants, scanState, diag.Logf) {
+		return 1
 	}
 	den := resolvedDenial(merged.Denial)
 	grants.DenialText = den.MarkerFile

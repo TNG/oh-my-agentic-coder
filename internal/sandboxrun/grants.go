@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -34,6 +35,22 @@ type Grants struct {
 	// override_deny holes already punched). Not existence-filtered:
 	// a missing ~/.ssh today may exist tomorrow.
 	ProtectedPaths []string
+
+	// IncompleteDenyScanRoots are granted folders the filesystem.deny scan
+	// stopped in after maxDenyScanEntries entries. Files matched before the
+	// stop are in ProtectedPaths; a match further in is not hidden. Launch
+	// names them and asks before starting (confirmIncompleteDenyScan).
+	IncompleteDenyScanRoots []string
+	// What launch stores in the scan state (scanstate.go). DenyScanRoots
+	// are the folders the scan walked. FoundSecrets are the files it
+	// matched and KeptSecrets the remembered files kept for a folder it
+	// could not finish, both with symlinks resolved. MissingSecrets are
+	// remembered files in such a folder that are gone, e.g. because a
+	// folder on the way was renamed; launch asks again then.
+	DenyScanRoots  []string
+	FoundSecrets   []string
+	KeptSecrets    []string
+	MissingSecrets []string
 
 	// Network.
 	NetworkMode     string // filtered|blocked|open
@@ -142,6 +159,13 @@ func (g *Grants) prepareMarkers() (func(), error) {
 // workdir access level into a Grants value. notices receives skip
 // notices for nonexistent paths.
 func ResolveGrants(p *sandboxprofile.Profile, workdir string, notices io.Writer) (*Grants, error) {
+	return resolveGrants(p, workdir, notices, nil)
+}
+
+// resolveGrants is ResolveGrants plus knownSecrets, the files earlier
+// launches hid (scanstate.go). They stay hidden where the scan stops
+// early this time; see resolveDenyPaths.
+func resolveGrants(p *sandboxprofile.Profile, workdir string, notices io.Writer, knownSecrets []string) (*Grants, error) {
 	base := sandboxprofile.PlatformBaseline()
 
 	read, err := sandboxprofile.ExpandExisting(append(append([]string{}, base.Read...), p.Filesystem.Read...), notices)
@@ -172,7 +196,7 @@ func ResolveGrants(p *sandboxprofile.Profile, workdir string, notices io.Writer)
 	}
 	allow = append(allow, unixDirs...)
 
-	denyScan, err := denyScanRoots(p, workdir)
+	scan, err := denyScanRoots(p, workdir)
 	if err != nil {
 		return nil, err
 	}
@@ -215,27 +239,41 @@ func ResolveGrants(p *sandboxprofile.Profile, workdir string, notices io.Writer)
 	// a single walk over the granted (non-baseline) scan roots. Path-form
 	// deny entries expand to explicit paths; basename globs and baseline
 	// basenames are matched together in one pass.
-	denyResolved, err := resolveDenyPaths(
+	deny := findDenyMatches(
 		p.Filesystem.Deny, base.WorkdirProtected, p.Filesystem.OverrideDeny,
-		dedupe(denyScan), protected, notices,
+		scan.roots, protected, scan.toolchain, notices,
 	)
-	if err != nil {
-		return nil, err
-	}
+	denyResolved := append(slices.Clone(deny.explicit), deny.matches...)
+	known := checkKnownSecrets(knownSecrets, deny.incomplete, deny.globs, p.Filesystem.OverrideDeny,
+		append(slices.Clone(protected), denyResolved...))
 	protected = append(protected, denyResolved...)
+	protected = append(protected, known.hide...)
+	var found []string
+	for _, m := range deny.matches {
+		found = append(found, resolvedDir(m))
+	}
+	if notices != nil && len(scan.skipped) > 0 {
+		fmt.Fprintf(notices, "omac sandbox: notice: omac did not search these tool-install folders for secret files (.env, .envrc, ...), so such a file inside them is not hidden from the agent: %s\n",
+			strings.Join(scan.skipped, ", "))
+	}
 
 	g := &Grants{
-		Workdir:         workdir,
-		ReadPaths:       dedupe(read),
-		WritePaths:      dedupe(write),
-		AllowPaths:      dedupe(allow),
-		ProtectedPaths:  dedupe(protected),
-		NetworkMode:     p.Network.EffectiveMode(),
-		ListenPorts:     dedupeInts(p.Network.ListenPort),
-		AllowTCPConnect: dedupeInts(p.Network.AllowTCPConnect),
-		OpenPorts:       dedupeInts(p.Network.OpenPort),
-		UnixSocketDirs:  dedupe(unixDirs),
-		Enforcement:     p.Network.EffectiveEnforcement(),
+		Workdir:                 workdir,
+		ReadPaths:               dedupe(read),
+		WritePaths:              dedupe(write),
+		AllowPaths:              dedupe(allow),
+		ProtectedPaths:          dedupe(protected),
+		IncompleteDenyScanRoots: deny.incomplete,
+		DenyScanRoots:           scan.roots,
+		FoundSecrets:            dedupe(found),
+		KeptSecrets:             dedupe(known.kept),
+		MissingSecrets:          dedupe(known.missing),
+		NetworkMode:             p.Network.EffectiveMode(),
+		ListenPorts:             dedupeInts(p.Network.ListenPort),
+		AllowTCPConnect:         dedupeInts(p.Network.AllowTCPConnect),
+		OpenPorts:               dedupeInts(p.Network.OpenPort),
+		UnixSocketDirs:          dedupe(unixDirs),
+		Enforcement:             p.Network.EffectiveEnforcement(),
 	}
 
 	// Unix sockets: any allow-granted path that is a socket file gets
@@ -417,7 +455,8 @@ func readGitdirPointer(dotgit string) (string, error) {
 
 // maxDenyScanEntries bounds the basename-glob walk so a deny like
 // ".env" over a huge granted tree cannot stall launch. Reaching the cap
-// stops the walk for that root (already-found matches are still masked).
+// stops the walk for that root (already-found matches are still masked)
+// and launch asks before starting (confirmIncompleteDenyScan).
 const maxDenyScanEntries = 200000
 
 // denyScanSkipDirNames are directory basenames the deny walk does not
@@ -427,9 +466,10 @@ const maxDenyScanEntries = 200000
 // means a matching file inside it is left unmasked, which keeps the
 // workdir-and-grants scan bounded on toolchain and home roots.
 //
-// PONYTAIL: a huge tree whose name is not listed still fails closed at
-// maxDenyScanEntries. Add the name here (or narrow the grant) rather
-// than growing this into a path-aware configuration.
+// PONYTAIL: a huge tree whose name is not listed is only partly scanned
+// (maxDenyScanEntries), and launch asks before starting. Add the name here
+// (or narrow the grant) rather than growing this into a path-aware
+// configuration.
 var denyScanSkipDirNames = map[string]bool{
 	// dependency / VCS trees
 	"node_modules": true,
@@ -459,21 +499,100 @@ var denyScanSkipDirNames = map[string]bool{
 	"Library": true,
 }
 
-// denyScanRoots returns the roots a basename-glob deny scans: the
-// explicit (non-baseline) grants plus the workdir when granted.
-// Baseline grants are excluded so a deny like ".env" never walks /usr
-// or /lib.
-func denyScanRoots(p *sandboxprofile.Profile, workdir string) ([]string, error) {
+// denyScan is what the basename-glob deny walk covers.
+type denyScan struct {
+	// roots are the explicit (non-baseline) grants plus the workdir when
+	// granted, minus any inside a toolchain dir.
+	roots []string
+	// toolchain are the existing toolchain dirs; the walk prunes them
+	// when a broader root such as ~ contains them.
+	toolchain []string
+	// skipped are the granted dirs not searched because of the toolchain
+	// rule: toolchain dirs inside a root, and roots inside a toolchain
+	// dir. Launch names them so the user knows a .env there is not hidden.
+	skipped []string
+}
+
+// denyScanRoots works out what a basename-glob deny scans. Baseline
+// grants are excluded so a deny like ".env" never walks /usr or /lib.
+// Toolchain dirs (~/.nvm, ~/Library/pnpm, ...) are excluded for the same
+// reason: they hold tool installs and package stores, and pnpm's store
+// alone overruns maxDenyScanEntries.
+func denyScanRoots(p *sandboxprofile.Profile, workdir string) (denyScan, error) {
 	roots, err := sandboxprofile.ExpandExisting(
 		append(append(append([]string{}, p.Filesystem.Read...), p.Filesystem.Write...), p.Filesystem.Allow...),
 		nil)
 	if err != nil {
-		return nil, err
+		return denyScan{}, err
 	}
 	if p.Workdir.Access != "" && p.Workdir.Access != sandboxprofile.AccessNone {
 		roots = append(roots, workdir)
 	}
-	return dedupe(roots), nil
+	roots = dedupe(roots)
+	scan := denyScan{toolchain: toolchainDirs()}
+	for _, t := range scan.toolchain {
+		if withinAny(t, roots, pathForms) {
+			scan.skipped = append(scan.skipped, t)
+		}
+	}
+	for _, r := range roots {
+		if withinAny(r, scan.toolchain, toolchainForms) {
+			scan.skipped = append(scan.skipped, r)
+		} else {
+			scan.roots = append(scan.roots, r)
+		}
+	}
+	scan.skipped = dedupe(scan.skipped)
+	return scan, nil
+}
+
+// toolchainDirs returns the existing toolchain dirs the deny scan leaves
+// out. It is best effort: a path that cannot be expanded (e.g. HOME
+// unset) or stat'ed is left out rather than failing the launch, since a
+// profile that does not grant it never needed it.
+func toolchainDirs() []string {
+	var out []string
+	for _, raw := range sandboxprofile.ToolchainReadPaths() {
+		if dirs, err := sandboxprofile.ExpandExisting([]string{raw}, nil); err == nil {
+			out = append(out, dirs...)
+		}
+	}
+	return out
+}
+
+// toolchainForms returns the spellings a toolchain dir is matched by: as
+// written, and with its parent's symlinks resolved (macOS /var is
+// /private/var). The dir itself is never resolved: if ~/.bun/bin were a
+// symlink to ~, resolving it would leave all of ~ (the workdir included)
+// out of the scan, and an agent with write access to ~/.cargo could set
+// that up for the next launch by replacing ~/.cargo/bin.
+func toolchainForms(dir string) []string {
+	out := []string{dir}
+	if parent := canonicalPath(filepath.Dir(dir)); parent != "" {
+		if f := filepath.Join(parent, filepath.Base(dir)); f != dir {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// withinAny reports whether path is one of dirs or inside one of them,
+// comparing the given and symlink-resolved spellings of path with the
+// spellings forms returns for each dir (toolchainForms for toolchain dirs).
+func withinAny(path string, dirs []string, forms func(string) []string) bool {
+	pforms := pathForms(path)
+	for _, d := range dirs {
+		for _, df := range forms(d) {
+			// TrimSuffix keeps a "/" dir from becoming the prefix "//".
+			prefix := strings.TrimSuffix(df, string(filepath.Separator)) + string(filepath.Separator)
+			for _, pf := range pforms {
+				if pf == df || strings.HasPrefix(pf, prefix) {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 // resolveDenyPaths resolves user deny entries and baseline workdir-protected
@@ -482,44 +601,157 @@ func denyScanRoots(p *sandboxprofile.Profile, workdir string) ([]string, error) 
 // matched together. override_deny holes (basename or absolute path) are
 // punched through baseline matches. protectedDirs are paths already denied
 // by an ancestor rule: the walk prunes them (a match inside is masked by the
-// ancestor anyway). An incomplete protection scan (a root hitting the entry
-// cap) is reported as an error so the caller fails closed instead of
-// proceeding with a partial protected set.
-func resolveDenyPaths(userDeny, baselineBasenames, overrideDeny, scanRoots, protectedDirs []string, notices io.Writer) ([]string, error) {
-	if len(userDeny) == 0 && len(baselineBasenames) == 0 {
-		return nil, nil
-	}
+// ancestor anyway). incomplete lists the scan roots that hit the entry
+// cap (see walkGlobMatches); their matches up to the cap are still in out.
+// pruneDirs are dirs the walk skips without masking them (toolchain dirs).
+func resolveDenyPaths(userDeny, baselineBasenames, overrideDeny, scanRoots, protectedDirs, pruneDirs []string, notices io.Writer) (out, incomplete []string) {
+	d := findDenyMatches(userDeny, baselineBasenames, overrideDeny, scanRoots, protectedDirs, pruneDirs, notices)
+	return append(d.explicit, d.matches...), d.incomplete
+}
 
-	explicit := pathFormDenies(userDeny, notices)
+// denyMatches is resolveDenyPaths' result kept apart: explicit are the
+// path-form deny entries, matches the walk's glob matches, globs the
+// patterns it matched against.
+type denyMatches struct {
+	explicit, matches, globs, incomplete []string
+}
+
+func findDenyMatches(userDeny, baselineBasenames, overrideDeny, scanRoots, protectedDirs, pruneDirs []string, notices io.Writer) denyMatches {
+	if len(userDeny) == 0 && len(baselineBasenames) == 0 {
+		return denyMatches{}
+	}
+	d := denyMatches{
+		explicit: pathFormDenies(userDeny, notices),
+		globs:    denyGlobs(userDeny, baselineBasenames, overrideDeny),
+	}
+	if len(d.globs) > 0 {
+		overrides := sandboxprofile.BuildOverrideLookup(overrideDeny)
+		var matches []string
+		matches, d.incomplete = walkGlobMatches(scanRoots, d.globs, protectedDirs, pruneDirs)
+		// Drop baseline matches covered by an absolute-path override.
+		for _, m := range matches {
+			if !overrides[m] {
+				d.matches = append(d.matches, m)
+			}
+		}
+	}
+	return d
+}
+
+// denyGlobs returns the basename patterns the deny walk matches: the
+// user's basename-glob deny entries plus the baseline basenames that
+// override_deny does not lift.
+func denyGlobs(userDeny, baselineBasenames, overrideDeny []string) []string {
 	var globs []string
 	for _, d := range userDeny {
 		if sandboxprofile.IsBasenameGlob(d) {
 			globs = append(globs, d)
 		}
 	}
-
-	// Filter baseline basenames through overrides before walking.
 	overrides := sandboxprofile.BuildOverrideLookup(overrideDeny)
 	for _, b := range baselineBasenames {
 		if !overrides[b] {
 			globs = append(globs, b)
 		}
 	}
+	return globs
+}
 
-	out := explicit
-	if len(globs) > 0 {
-		matches, err := walkGlobMatches(scanRoots, globs, protectedDirs, notices)
-		if err != nil {
-			return nil, err
-		}
-		// Drop baseline matches covered by an absolute-path override.
-		for _, m := range matches {
-			if !overrides[m] {
-				out = append(out, m)
-			}
+// resolvedDir returns p with the symlinks in its folder resolved, but not
+// p itself: a .env that is a symlink stays the .env, not its target. The
+// scan state stores this spelling (scanstate.go).
+func resolvedDir(p string) string {
+	if dir := canonicalPath(filepath.Dir(p)); dir != "" {
+		return filepath.Join(dir, filepath.Base(p))
+	}
+	return p
+}
+
+// knownSecretCheck is what checkKnownSecrets decided: hide are paths to mask,
+// in the current spelling of their folder; kept are the stored entries to
+// keep remembering; missing are stored entries whose file is gone.
+type knownSecretCheck struct {
+	hide, kept, missing []string
+}
+
+// checkKnownSecrets looks at the files an earlier launch hid (known,
+// stored with symlinks resolved) that lie in a folder this launch's scan
+// stopped early in (incomplete). The scan may not have reached them this
+// time, e.g. because an agent added many files in front of them, so they
+// are hidden from the stored list instead.
+//
+// A stored entry is never resolved again: if a folder on its way was
+// replaced by a symlink, following it could mask a path outside the
+// grant (bwrap then fails to mount) or a different file. Such an entry,
+// and one whose file is gone, counts as missing. An entry that exists is
+// kept even when it is not hidden this time (override_deny lifts it, its
+// name no longer matches, or a hidden folder already covers it), so a
+// temporary profile change does not make omac forget it.
+func checkKnownSecrets(known, incomplete, globs, overrideDeny, hidden []string) knownSecretCheck {
+	var out knownSecretCheck
+	if len(known) == 0 || len(incomplete) == 0 {
+		return out
+	}
+	overrides := sandboxprofile.BuildOverrideLookup(overrideDeny)
+	hiddenSet := map[string]bool{}
+	for _, h := range hidden {
+		for _, f := range pathForms(h) {
+			hiddenSet[f] = true
 		}
 	}
-	return out, nil
+	sep := string(filepath.Separator)
+	for _, r := range incomplete {
+		rr := canonicalPath(r)
+		if rr == "" {
+			continue
+		}
+		prefix := strings.TrimSuffix(rr, sep) + sep
+		for _, k := range known {
+			if !strings.HasPrefix(k, prefix) {
+				continue
+			}
+			dir := filepath.Dir(k)
+			if resolved, err := filepath.EvalSymlinks(dir); err != nil || resolved != dir {
+				out.missing = append(out.missing, k)
+				continue
+			}
+			if _, err := os.Lstat(k); err != nil {
+				out.missing = append(out.missing, k)
+				continue
+			}
+			out.kept = append(out.kept, k)
+			cur := filepath.Join(r, strings.TrimPrefix(k, prefix))
+			if overrides[k] || overrides[cur] || !matchesAnyGlob(globs, filepath.Base(k)) ||
+				insideAny(cur, hiddenSet) || insideAny(k, hiddenSet) {
+				continue
+			}
+			out.hide = append(out.hide, cur)
+		}
+	}
+	return out
+}
+
+func matchesAnyGlob(globs []string, name string) bool {
+	for _, g := range globs {
+		if ok, _ := filepath.Match(g, name); ok {
+			return true
+		}
+	}
+	return false
+}
+
+// insideAny reports whether p or one of its parent folders is in set.
+func insideAny(p string, set map[string]bool) bool {
+	for {
+		if set[p] {
+			return true
+		}
+		parent := filepath.Dir(p)
+		if parent == p {
+			return false
+		}
+		p = parent
+	}
 }
 
 // pathFormDenies expands the path-form (non basename-glob) entries of a
@@ -571,21 +803,28 @@ func clampInt(v, lo, hi int) int {
 // denyScanConcurrency); the result set is order-independent — callers
 // dedupe+sort — so concurrency doesn't affect the resolved grants.
 //
-// If any root hits the entry cap the walk is incomplete: files the
-// configuration promises are blocked may never be visited and would be
-// left unmasked. Returning an error here makes the launch path refuse
-// to start rather than degrade to a partial protected set.
+// If a root hits the entry cap, its walk stops there: files further in
+// are never visited and stay unmasked. Such roots are returned in
+// incomplete (matches found before the stop are still returned) so
+// launch can warn about each of them.
 //
 // protectedDirs are already-denied paths the walk prunes without
-// descending (any match inside is masked by the ancestor rule), and
-// denyScanSkipDirNames prunes large dependency/cache trees.
-func walkGlobMatches(roots, globs, protectedDirs []string, notices io.Writer) ([]string, error) {
+// descending (any match inside is masked by the ancestor rule),
+// pruneDirs (toolchain dirs, see denyScanRoots) are pruned the same way
+// but not masked, and denyScanSkipDirNames prunes large dependency/cache
+// trees.
+func walkGlobMatches(roots, globs, protectedDirs, pruneDirs []string) (out, incomplete []string) {
 	if len(globs) == 0 || len(roots) == 0 {
 		return nil, nil
 	}
 	protected := map[string]bool{}
 	for _, p := range protectedDirs {
 		for _, fp := range pathForms(p) {
+			protected[fp] = true
+		}
+	}
+	for _, p := range pruneDirs {
+		for _, fp := range toolchainForms(p) {
 			protected[fp] = true
 		}
 	}
@@ -609,14 +848,11 @@ func walkGlobMatches(roots, globs, protectedDirs []string, notices io.Writer) ([
 	wg.Wait()
 
 	// Merge deterministically in root order; dedupe paths matched under
-	// overlapping roots. A cap hit makes the protected set incomplete, so
-	// it is surfaced as an error rather than a notice: a protection scan
-	// that cannot finish must not degrade to "unprotected".
+	// overlapping roots.
 	seen := map[string]bool{}
-	var out []string
 	for i, root := range roots {
 		if results[i].hitCap {
-			return nil, fmt.Errorf("sandbox grants: filesystem.deny scan of %s hit the %d-entry limit; refusing to launch with an incomplete protected set", root, maxDenyScanEntries)
+			incomplete = append(incomplete, root)
 		}
 		for _, m := range results[i].matches {
 			if !seen[m] {
@@ -625,7 +861,7 @@ func walkGlobMatches(roots, globs, protectedDirs []string, notices io.Writer) ([
 			}
 		}
 	}
-	return out, nil
+	return out, incomplete
 }
 
 // walkOneDenyRoot walks a single root and returns the paths whose base

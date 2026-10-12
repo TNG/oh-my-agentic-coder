@@ -10,6 +10,7 @@ description: omac configuration files and options
 | `oh-my-agentic-coder.yaml` | Launcher config: sandbox runtime selection, facade tuning, audit settings (global only); cache scope and facade timeouts (also project-local) | User                                  |
 | `sandbox-profiles/default.json` | Sandbox grants: which filesystem paths, network hosts, and env vars the agent can access | `omac start` (first run creates it) |
 | `sandbox-profiles/default.pages.json` | Permanent allow/deny network decisions made via the prompt dialog | Network prompt dialog (user answers)  |
+| `sandbox-profiles/default.scan.json` | Folders you answered "always" for when the `.env` scan stopped early, and the `.env` files earlier scans hid (see [Security](./security.md)) | `omac start` (your answers and scan results) |
 | `sidecar.json` | Skill registry: names, directories, bundle hashes, declared secrets | `omac register` / `omac deregister`   |
 | `skill-config.yaml` | Non-secret per-skill fields: API base URLs, region names, feature flags | `omac register` / `omac config`       |
 

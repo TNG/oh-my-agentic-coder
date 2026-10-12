@@ -71,6 +71,9 @@ type launchOpts struct {
 	// openPorts are extra loopback ports from --open-port (repeatable),
 	// typically a local webServer port for browser tests.
 	openPorts []int
+	// acceptIncompleteScan (--accept-incomplete-scan) starts without
+	// asking when the sandbox's .env scan could not finish a granted folder.
+	acceptIncompleteScan bool
 	// innerArgs are appended to the resolved inner command (user-supplied
 	// trailing `-- args` plus any command-specific flags like --continue).
 	innerArgs []string
@@ -98,6 +101,7 @@ func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, int) 
 		auditLog           = fs.String("audit-log", "", "Path to the audit log (default: persistent central location). Overrides config.")
 		noAudit            = fs.Bool("no-audit", false, "Disable the security audit trail.")
 		auditStrict        = fs.Bool("audit-strict", false, "Fail-closed: abort if the audit log cannot be written.")
+		acceptIncomplete   = fs.Bool("accept-incomplete-scan", false, "Start without asking when the sandbox could not fully scan a granted folder for secrets (.env, ...) because it has more than 200,000 files and folders.")
 		sessionID          = fs.String("session", "", "Continue a specific session by id instead of the most recent one. (shorthand: -s)")
 	)
 	var openPorts intMultiFlag
@@ -144,24 +148,25 @@ func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, int) 
 	}
 	innerArgs = append(fs.Args(), innerArgs...)
 	return launchOpts{
-		label:              cmdName,
-		harness:            harness,
-		profile:            *profile,
-		innerCmdOverride:   *innerCmdOverride,
-		noSandbox:          *noSandbox,
-		ephemeralCache:     *ephemeralCache,
-		cacheScope:         *cacheScope,
-		keepRunning:        *keepRunning,
-		acceptSkillChanges: *acceptSkillChanges,
-		skipSecretPattern:  *skipSecretPattern,
-		verbose:            *verbose,
-		autoRegisterSkills: *autoRegisterSkills,
-		auditLog:           *auditLog,
-		noAudit:            *noAudit,
-		auditStrict:        *auditStrict,
-		sessionID:          *sessionID,
-		openPorts:          append([]int(nil), openPorts...),
-		innerArgs:          innerArgs,
+		label:                cmdName,
+		harness:              harness,
+		profile:              *profile,
+		innerCmdOverride:     *innerCmdOverride,
+		noSandbox:            *noSandbox,
+		ephemeralCache:       *ephemeralCache,
+		cacheScope:           *cacheScope,
+		keepRunning:          *keepRunning,
+		acceptSkillChanges:   *acceptSkillChanges,
+		skipSecretPattern:    *skipSecretPattern,
+		verbose:              *verbose,
+		autoRegisterSkills:   *autoRegisterSkills,
+		auditLog:             *auditLog,
+		noAudit:              *noAudit,
+		auditStrict:          *auditStrict,
+		sessionID:            *sessionID,
+		openPorts:            append([]int(nil), openPorts...),
+		acceptIncompleteScan: *acceptIncomplete,
+		innerArgs:            innerArgs,
 	}, ExitOK
 }
 
@@ -830,6 +835,7 @@ func runLaunch(env *Env, opts launchOpts) int {
 		// User --open-port grants (e.g. local Playwright webServer). Additive
 		// on top of the profile; no-op on non-native backends (with a warning).
 		argv = injectUserOpenPorts(env, argv, opts.openPorts, prof)
+		argv = injectAcceptIncompleteScan(argv, opts.acceptIncompleteScan, prof)
 		// Pass the resolved audit path down to `omac sandbox run` so the
 		// network-filter subprocess appends net.decision events to the
 		// same persistent log. Inherit the parent's run_id + mode so the

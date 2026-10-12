@@ -84,16 +84,65 @@ agent can access. See [Configuration](./configuration.md) for how to edit the
 sandbox profile.
 
 The `.env` / `.envrc` scan covers your working directory and every directory
-you grant explicitly, but it skips large dependency, build, and cache trees:
+you grant explicitly. It leaves out the tool-install directories the default
+profile grants read-only: `~/.nvm`, `~/.rustup`, `~/.cargo/bin`, `~/go/bin`,
+`~/.bun/bin`, and pnpm's home (`~/.local/share/pnpm` on Linux,
+`~/Library/pnpm` on macOS). This also applies when they sit inside a broader
+grant such as `~`. A directory you grant inside one of them, such as a workdir
+under `~/.nvm`, is not scanned either. They hold installed tools and package
+stores, not your files. If one of them is a symlink, omac does not follow it,
+so the folder it points to is still scanned. omac writes which of these
+directories it left out to the sandbox log (`~/.local/state/omac/sandbox.log`
+when you run omac in a terminal).
+
+The scan also skips large dependency, build, and cache trees:
 `node_modules`, `.git`, `.hg`, `.svn`, `vendor`, `.venv`, `venv`,
 `__pycache__`, `target`, `dist`, `build`, `out`, the package caches
 `.gradle`, `.m2`, `.cargo`, `.rustup`, `.nvm`, `.npm`, `.yarn`,
 `.pnpm-store`, `.cache`, and `~/Library` on macOS. Those trees are not where
 dotenv secrets live, and walking them would make launch scale with your whole
 home directory. A file inside a skipped tree is not masked; keep dotenv files
-outside such trees, or deny their directory by path. If a scan would still
-have to look at more entries than omac allows, launch stops rather than run
-with a partially protected set.
+outside such trees, or deny their directory by path.
+
+If a granted directory has more than 200,000 files and folders, omac stops
+scanning it there. Files found before that point are still masked; a `.env`
+further in is not. omac names each such directory and asks
+`Start anyway? [y/N, a = always for these folders]`. Learn mode (`--learn`)
+never asks, because it lifts all filesystem restrictions anyway.
+
+There are three ways to start without the question:
+
+- **Answer `a` once.** omac saves the directory and from then on starts
+  without asking about it, also without a terminal (for example `omac serve`
+  started by OpenCode Desktop). It only notes this in the sandbox log. The
+  answer is saved in `~/.config/omac/sandbox-profiles/default.scan.json`
+  (`<name>.scan.json` when you use `--profile <name>`). To be asked again,
+  remove the directory from `accepted_incomplete` there. The sandbox hides
+  `~/.config/omac` from the agent, so the agent cannot add a directory itself.
+- **Pass `--accept-incomplete-scan`** to `omac start`, `omac continue`,
+  `omac resume`, `omac serve` or `omac sandbox run`. It skips the question for
+  that launch only.
+- **Grant a narrower directory**, so the scan finishes.
+
+Without a terminal to ask on (for example in CI), omac does not start unless
+the directory was saved with `a` or the flag is set. If you know where the
+secret files in the large directory are, deny them by path in
+`filesystem.deny`; then it is safe to start anyway. During a session, omac
+keeps checking for new `.env` files, but not in directories it could not fully
+scan at launch.
+
+The same file also remembers the secret files omac found in earlier scans
+(`known_secrets`), so a later scan that stops early keeps hiding them.
+Example: your project has `secrets/.env`, and the agent creates 200,000 files
+whose names sort before `secrets`. The scan now stops before `secrets/`, but
+`secrets/.env` stays hidden because an earlier launch found it. If a
+remembered file is gone from a directory omac could not fully scan, for
+example because its folder was renamed, omac names it and asks again, even
+for a directory you answered `a` for.
+
+This covers only files an earlier scan found. Right after you update from an
+omac version without this file, the list is empty and fills up from that
+launch on. omac forgets a remembered file once you delete it.
 
 ### Secrets
 
