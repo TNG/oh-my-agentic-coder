@@ -88,7 +88,8 @@ you grant explicitly, but it skips large dependency, build, and cache trees:
 `node_modules`, `.git`, `.hg`, `.svn`, `vendor`, `.venv`, `venv`,
 `__pycache__`, `target`, `dist`, `build`, `out`, the package caches
 `.gradle`, `.m2`, `.cargo`, `.rustup`, `.nvm`, `.npm`, `.yarn`,
-`.pnpm-store`, `.cache`, and `~/Library` on macOS. Those trees are not where
+`.pnpm-store`, `.cache`, the pnpm package store (a `store` folder
+holding a version folder such as `v10`), and `~/Library` on macOS. Those trees are not where
 dotenv secrets live, and walking them would make launch scale with your whole
 home directory. A file inside a skipped tree is not masked; keep dotenv files
 outside such trees, or deny their directory by path. If a scan would still

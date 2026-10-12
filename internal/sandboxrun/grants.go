@@ -685,12 +685,34 @@ func walkOneDenyRoot(root string, globs []string, protected map[string]bool) (ma
 				return nil
 			}
 		}
-		if d.IsDir() && denyScanSkipDirNames[name] {
+		if d.IsDir() && (denyScanSkipDirNames[name] || isPnpmStore(path, name)) {
 			return filepath.SkipDir
 		}
 		return nil
 	})
 	return matches, hitCap
+}
+
+// isPnpmStore reports whether dir is pnpm's content-addressable package
+// store, e.g. ~/Library/pnpm/store/v10/files/... It holds one file per
+// package file ever installed, so it overruns maxDenyScanEntries on its
+// own. "store" alone is too common a name to skip (src/store in a
+// frontend project), so it also has to contain a version dir like "v10".
+func isPnpmStore(dir, name string) bool {
+	if name != "store" {
+		return false
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		v, ok := strings.CutPrefix(e.Name(), "v")
+		if e.IsDir() && ok && v != "" && strings.Trim(v, "0123456789") == "" {
+			return true
+		}
+	}
+	return false
 }
 
 func dedupe(in []string) []string {
