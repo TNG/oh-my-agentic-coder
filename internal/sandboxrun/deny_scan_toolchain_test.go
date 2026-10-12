@@ -140,10 +140,52 @@ func TestResolveGrantsToolchainLookupIsBestEffort(t *testing.T) {
 }
 
 func TestWithinAnyRootDir(t *testing.T) {
-	if !withinAny("/home/me/.nvm", []string{"/"}) {
+	if !withinAny("/home/me/.nvm", []string{"/"}, toolchainForms) {
 		t.Error("every absolute path is inside /")
 	}
-	if withinAny("/home/meow", []string{"/home/me"}) {
+	if withinAny("/home/meow", []string{"/home/me"}, toolchainForms) {
 		t.Error("/home/meow is not inside /home/me")
+	}
+}
+
+// A toolchain dir that is a symlink must not take its target out of the
+// scan. With ~/.bun/bin -> ~, following the link would skip the whole home
+// dir, workdir included. An agent with write access to ~/.cargo could set
+// that up for the next launch by replacing ~/.cargo/bin.
+func TestResolveGrantsSymlinkedToolchainDirKeepsTargetScanned(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		read []string
+		inWD bool
+	}{
+		{name: "workdir under the link target", inWD: true},
+		{name: "broad grant containing the link", read: []string{"~"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			mkdirAll(t, home, ".bun")
+			if err := os.Symlink(home, filepath.Join(home, ".bun", "bin")); err != nil {
+				t.Fatal(err)
+			}
+			project := mkdirAll(t, home, "projects", "app")
+			env := filepath.Join(project, ".env")
+			writeFile(t, env)
+			wd := t.TempDir()
+			if tc.inWD {
+				wd = project
+			}
+			p := &sandboxprofile.Profile{
+				Workdir:    sandboxprofile.Workdir{Access: sandboxprofile.AccessReadWrite},
+				Filesystem: sandboxprofile.Filesystem{Read: tc.read},
+			}
+			g, err := ResolveGrants(p, wd, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Contains(g.ProtectedPaths, env) {
+				t.Errorf("%s not protected although only the symlink ~/.bun/bin points at its parent", env)
+			}
+		})
 	}
 }

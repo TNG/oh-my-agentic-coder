@@ -12,7 +12,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -501,12 +500,12 @@ func denyScanRoots(p *sandboxprofile.Profile, workdir string) (denyScan, error) 
 	roots = dedupe(roots)
 	scan := denyScan{toolchain: toolchainDirs()}
 	for _, t := range scan.toolchain {
-		if withinAny(t, roots) {
+		if withinAny(t, roots, pathForms) {
 			scan.skipped = append(scan.skipped, t)
 		}
 	}
 	for _, r := range roots {
-		if withinAny(r, scan.toolchain) {
+		if withinAny(r, scan.toolchain, toolchainForms) {
 			scan.skipped = append(scan.skipped, r)
 		} else {
 			scan.roots = append(scan.roots, r)
@@ -530,12 +529,29 @@ func toolchainDirs() []string {
 	return out
 }
 
+// toolchainForms returns the spellings a toolchain dir is matched by: as
+// written, and with its parent's symlinks resolved (macOS /var is
+// /private/var). The dir itself is never resolved: if ~/.bun/bin were a
+// symlink to ~, resolving it would leave all of ~ (the workdir included)
+// out of the scan, and an agent with write access to ~/.cargo could set
+// that up for the next launch by replacing ~/.cargo/bin.
+func toolchainForms(dir string) []string {
+	out := []string{dir}
+	if parent := canonicalPath(filepath.Dir(dir)); parent != "" {
+		if f := filepath.Join(parent, filepath.Base(dir)); f != dir {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
 // withinAny reports whether path is one of dirs or inside one of them,
-// comparing both the given and the symlink-resolved spellings.
-func withinAny(path string, dirs []string) bool {
+// comparing the given and symlink-resolved spellings of path with the
+// spellings forms returns for each dir (toolchainForms for toolchain dirs).
+func withinAny(path string, dirs []string, forms func(string) []string) bool {
 	pforms := pathForms(path)
 	for _, d := range dirs {
-		for _, df := range pathForms(d) {
+		for _, df := range forms(d) {
 			// TrimSuffix keeps a "/" dir from becoming the prefix "//".
 			prefix := strings.TrimSuffix(df, string(filepath.Separator)) + string(filepath.Separator)
 			for _, pf := range pforms {
@@ -656,8 +672,13 @@ func walkGlobMatches(roots, globs, protectedDirs, pruneDirs []string) (out, inco
 		return nil, nil
 	}
 	protected := map[string]bool{}
-	for _, p := range append(slices.Clone(protectedDirs), pruneDirs...) {
+	for _, p := range protectedDirs {
 		for _, fp := range pathForms(p) {
+			protected[fp] = true
+		}
+	}
+	for _, p := range pruneDirs {
+		for _, fp := range toolchainForms(p) {
 			protected[fp] = true
 		}
 	}
