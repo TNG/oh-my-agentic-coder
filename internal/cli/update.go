@@ -117,7 +117,7 @@ func printUpdatePlan(env *Env, plan updater.Plan) {
 	fmt.Fprintf(env.Stdout, "omac %s -> %s\n", plan.CurrentVersion, plan.LatestVersion)
 	switch plan.Method {
 	case updater.MethodBrew:
-		fmt.Fprintln(env.Stdout, "method: brew upgrade oh-my-agentic-coder")
+		fmt.Fprintln(env.Stdout, "method: brew update && brew upgrade oh-my-agentic-coder")
 	case updater.MethodLinuxPackage:
 		fmt.Fprintf(env.Stdout, "method: %s (%s), checksum verified: %v\n", plan.PackageManager, plan.Asset.Name, plan.ChecksumVerified)
 	case updater.MethodTarballSelfReplace:

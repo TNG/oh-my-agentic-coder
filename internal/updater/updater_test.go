@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -440,8 +441,29 @@ func TestApply_Brew(t *testing.T) {
 	if err := Apply(context.Background(), plan, deps); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
-	if len(runner.calls) != 1 || runner.calls[0].name != "brew" {
-		t.Fatalf("calls = %+v, want one brew call", runner.calls)
+	want := []string{"update", "upgrade oh-my-agentic-coder"}
+	if len(runner.calls) != len(want) {
+		t.Fatalf("calls = %+v, want %v", runner.calls, want)
+	}
+	for i, c := range runner.calls {
+		if c.name != "brew" || strings.Join(c.args, " ") != want[i] {
+			t.Fatalf("calls[%d] = %+v, want brew %s", i, c, want[i])
+		}
+	}
+}
+
+func TestApply_BrewUpdateFailureSkipsUpgrade(t *testing.T) {
+	deps := baseDeps(t)
+	sentinel := errors.New("brew update exited 1")
+	runner := &fakeRunner{err: sentinel}
+	deps.Runner = runner
+
+	err := Apply(context.Background(), Plan{Method: MethodBrew}, deps)
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("err = %v, want sentinel", err)
+	}
+	if len(runner.calls) != 1 {
+		t.Fatalf("calls = %+v, want only brew update", runner.calls)
 	}
 }
 
