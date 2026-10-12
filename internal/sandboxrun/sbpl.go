@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"unicode"
 
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
 )
@@ -95,6 +96,7 @@ func GenerateSBPL(g *Grants) string {
 			fmt.Fprintf(&b, "(deny file-write* (subpath %s))\n", sbplQuote(fp))
 		}
 	}
+	b.WriteString(sbplNameDenies(g))
 	b.WriteString("\n")
 
 	// --- Devices every process needs ---
@@ -234,4 +236,81 @@ func sbplQuote(s string) string {
 	s = strings.ReplaceAll(s, `\`, `\\`)
 	s = strings.ReplaceAll(s, `"`, `\"`)
 	return `"` + s + `"`
+}
+
+// sbplNameDenies hides secret files by name in the folders too large for
+// the launch-time scan (Grants.NameDenyRoots): below each such folder,
+// every file or folder whose name matches one of NameDenyGlobs. Unlike
+// the scan, this also covers files created during the session. It is
+// stricter than the scan in one way: it also matches inside dependency
+// and cache folders the scan skips (node_modules, ...).
+// resolveDenyPaths only puts a folder here if canDenyByName accepted it,
+// so sbplNameRegex cannot fail for it.
+func sbplNameDenies(g *Grants) string {
+	var b strings.Builder
+	for _, root := range g.NameDenyRoots {
+		for _, fp := range pathForms(root) {
+			res, err := sbplNameRegex(fp, g.NameDenyGlobs)
+			if err != nil {
+				continue
+			}
+			for _, re := range res {
+				fmt.Fprintf(&b, "(deny file-read* (regex #\"%s\"))\n", re)
+				fmt.Fprintf(&b, "(deny file-write* (regex #\"%s\"))\n", re)
+			}
+		}
+	}
+	return b.String()
+}
+
+// sbplNameRegex returns one regular expression per glob that matches a
+// path below root whose name, or the name of a folder on the way below
+// root, matches the glob. For root /p and glob .env it matches /p/.env,
+// /p/a/b/.env, /p/a/.env/x and /p/.ENV (letters match either case, as
+// the disk does by default), but not /p/.env.example, /p/x.env or
+// /q/.env. Globs use filepath.Match syntax; only * and ? are supported,
+// and a path or glob the rule cannot spell (a quote, a control
+// character or backslash, [ in a glob) is an error.
+func sbplNameRegex(root string, globs []string) ([]string, error) {
+	if strings.ContainsAny(root, "\"\\\x00\n\r") {
+		return nil, fmt.Errorf("folder path %q cannot be used in a name rule", root)
+	}
+	prefix := "^" + regexQuote(strings.TrimSuffix(root, "/")) + "/(.*/)?"
+	var out []string
+	for _, g := range globs {
+		if g == "" || strings.ContainsAny(g, "[\\/\"\x00\n\r") {
+			return nil, fmt.Errorf("pattern %q cannot be used in a name rule", g)
+		}
+		var name strings.Builder
+		for _, r := range g {
+			switch r {
+			case '*':
+				name.WriteString("[^/]*")
+			case '?':
+				name.WriteString("[^/]")
+			default:
+				// macOS disks ignore case by default: .ENV opens .env.
+				if lo, up := unicode.ToLower(r), unicode.ToUpper(r); lo != up {
+					name.WriteString("[" + string(lo) + string(up) + "]")
+				} else {
+					name.WriteString(regexQuote(string(r)))
+				}
+			}
+		}
+		out = append(out, prefix+name.String()+"(/.*)?$")
+	}
+	return out, nil
+}
+
+// regexQuote escapes the characters that have a meaning in a regular
+// expression.
+func regexQuote(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if strings.ContainsRune(`\.+*?()|[]{}^$`, r) {
+			b.WriteByte('\\')
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }

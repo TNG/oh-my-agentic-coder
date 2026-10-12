@@ -1,6 +1,8 @@
 package sandboxrun
 
 import (
+	"fmt"
+	"slices"
 	"time"
 
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
@@ -30,14 +32,24 @@ func WatchNewProtected(p *sandboxprofile.Profile, workdir string, interval time.
 	}
 	protected := sandboxprofile.EffectiveProtectedPaths(base, p.Filesystem.OverrideDeny)
 	resolve := func() ([]string, error) {
-		return resolveDenyPaths(p.Filesystem.Deny, base.WorkdirProtected, p.Filesystem.OverrideDeny, roots, protected, nil)
+		out, byName, err := resolveDenyPaths(p.Filesystem.Deny, base.WorkdirProtected, p.Filesystem.OverrideDeny, roots, protected, nil)
+		if err == nil && len(byName.roots) > 0 {
+			// The folder grew past the cap during the session. The profile
+			// has no name rule for it, so stop as an incomplete scan does.
+			err = fmt.Errorf("sandbox grants: filesystem.deny scan of %s hit the %d-entry limit during the session", byName.roots[0], denyScanLimit.Load())
+		}
+		return out, err
 	}
 
 	known := map[string]bool{}
-	initial, err := resolve()
+	initial, byName, err := resolveDenyPaths(p.Filesystem.Deny, base.WorkdirProtected, p.Filesystem.OverrideDeny, roots, protected, nil)
 	if err != nil {
 		return err
 	}
+	// A folder too large to scan is covered by a name rule (macOS), which
+	// also hides files created during the session, so the ticks leave it
+	// out instead of re-walking it up to the cap every interval.
+	roots = slices.DeleteFunc(roots, func(r string) bool { return slices.Contains(byName.roots, r) })
 	for _, m := range initial {
 		known[m] = true
 	}

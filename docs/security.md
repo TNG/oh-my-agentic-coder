@@ -91,9 +91,21 @@ you grant explicitly, but it skips large dependency, build, and cache trees:
 `.pnpm-store`, `.cache`, and `~/Library` on macOS. Those trees are not where
 dotenv secrets live, and walking them would make launch scale with your whole
 home directory. A file inside a skipped tree is not masked; keep dotenv files
-outside such trees, or deny their directory by path. If a scan would still
-have to look at more entries than omac allows, launch stops rather than run
-with a partially protected set.
+outside such trees, or deny their directory by path.
+
+Some directories have more files and folders than omac lists at launch.
+What happens then depends on the system:
+
+- **Linux:** launch stops rather than run with a partially protected set.
+- **macOS:** launch goes ahead. Instead of listing the directory, a sandbox
+  rule hides every file or folder in it whose name matches (for example any
+  `.env`, however deep). This rule also covers the skipped trees above and
+  files created during the session. omac notes the directory in the sandbox
+  log. Upper and lower case count as the same, as on the macOS disk.
+  Launch still stops in two cases the rule cannot express: you made one such
+  file readable with an absolute `override_deny` path inside that directory
+  (the rule would hide it too), or a `filesystem.deny` pattern uses `[...]`
+  or `\` (for example `*.[pk]em`).
 
 ### Secrets
 

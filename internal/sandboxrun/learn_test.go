@@ -86,12 +86,13 @@ func TestCollapseAncestors(t *testing.T) {
 
 func TestWithUnrestrictedFilesystem(t *testing.T) {
 	g := learnGrants(t, t.TempDir())
+	g.NameDenyRoots, g.NameDenyGlobs = []string{g.Workdir}, []string{".env"}
 	u := g.withUnrestrictedFilesystem()
 	if !slices.Contains(u.AllowPaths, "/") {
 		t.Error("learn grants must include /")
 	}
-	if len(u.ProtectedPaths) != 0 {
-		t.Error("learn grants must drop protected denials")
+	if len(u.ProtectedPaths) != 0 || len(u.NameDenyRoots) != 0 || strings.Contains(GenerateSBPL(u), "(regex #\"^"+regexQuote(g.Workdir)) {
+		t.Error("learn grants must drop protected denials, name rules included")
 	}
 	// Original untouched.
 	if slices.Contains(g.AllowPaths, "/") || len(g.ProtectedPaths) == 0 {

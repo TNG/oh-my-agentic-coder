@@ -18,6 +18,7 @@ import (
 // the only safe response to an incomplete enumeration is to fail closed.
 func TestSecurityDenyScanCapFailsClosed(t *testing.T) {
 	setDenyScanLimit(t, 20000)
+	setDenyByName(t, false) // Linux; macOS hides by name instead (deny_by_name_test.go)
 	workdir := t.TempDir()
 
 	// A protected baseline basename file placed at a lexically late path.

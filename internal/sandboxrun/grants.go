@@ -36,6 +36,14 @@ type Grants struct {
 	// a missing ~/.ssh today may exist tomorrow.
 	ProtectedPaths []string
 
+	// NameDenyRoots are granted folders with too many entries for the
+	// launch-time scan (maxDenyScanEntries). Instead of listing their
+	// secret files, the macOS profile hides every file or folder below
+	// them whose name matches one of NameDenyGlobs (see sbplNameDenies).
+	// Always empty on Linux, where such a folder still refuses launch.
+	NameDenyRoots []string
+	NameDenyGlobs []string
+
 	// Network.
 	NetworkMode     string // filtered|blocked|open
 	ProxyPort       int    // 0 when no proxy is running
@@ -216,7 +224,7 @@ func ResolveGrants(p *sandboxprofile.Profile, workdir string, notices io.Writer)
 	// a single walk over the granted (non-baseline) scan roots. Path-form
 	// deny entries expand to explicit paths; basename globs and baseline
 	// basenames are matched together in one pass.
-	denyResolved, err := resolveDenyPaths(
+	denyResolved, byName, err := resolveDenyPaths(
 		p.Filesystem.Deny, base.WorkdirProtected, p.Filesystem.OverrideDeny,
 		dedupe(denyScan), protected, notices,
 	)
@@ -224,6 +232,10 @@ func ResolveGrants(p *sandboxprofile.Profile, workdir string, notices io.Writer)
 		return nil, err
 	}
 	protected = append(protected, denyResolved...)
+	if notices != nil && len(byName.roots) > 0 {
+		fmt.Fprintf(notices, "omac sandbox: notice: these folders have more than %d entries, so secret files (.env, ...) in them are hidden by name instead of being listed: %s\n",
+			denyScanLimit.Load(), strings.Join(byName.roots, ", "))
+	}
 
 	g := &Grants{
 		Workdir:         workdir,
@@ -231,6 +243,8 @@ func ResolveGrants(p *sandboxprofile.Profile, workdir string, notices io.Writer)
 		WritePaths:      dedupe(write),
 		AllowPaths:      dedupe(allow),
 		ProtectedPaths:  dedupe(protected),
+		NameDenyRoots:   byName.roots,
+		NameDenyGlobs:   byName.globs,
 		NetworkMode:     p.Network.EffectiveMode(),
 		ListenPorts:     dedupeInts(p.Network.ListenPort),
 		AllowTCPConnect: dedupeInts(p.Network.AllowTCPConnect),
@@ -491,12 +505,16 @@ func denyScanRoots(p *sandboxprofile.Profile, workdir string) ([]string, error) 
 // matched together. override_deny holes (basename or absolute path) are
 // punched through baseline matches. protectedDirs are paths already denied
 // by an ancestor rule: the walk prunes them (a match inside is masked by the
-// ancestor anyway). An incomplete protection scan (a root hitting the entry
-// cap) is reported as an error so the caller fails closed instead of
-// proceeding with a partial protected set.
-func resolveDenyPaths(userDeny, baselineBasenames, overrideDeny, scanRoots, protectedDirs []string, notices io.Writer) ([]string, error) {
+// ancestor anyway).
+//
+// A root the walk could not finish (it hit the entry cap) is returned in
+// byName when the sandbox can hide files there by name (macOS, see
+// denyByName): the profile then covers every match, listed or not.
+// Otherwise an incomplete scan is an error so the caller fails closed
+// instead of proceeding with a partial protected set.
+func resolveDenyPaths(userDeny, baselineBasenames, overrideDeny, scanRoots, protectedDirs []string, notices io.Writer) (out []string, byName nameDeny, err error) {
 	if len(userDeny) == 0 && len(baselineBasenames) == 0 {
-		return nil, nil
+		return nil, nameDeny{}, nil
 	}
 
 	explicit := pathFormDenies(userDeny, notices)
@@ -515,11 +533,16 @@ func resolveDenyPaths(userDeny, baselineBasenames, overrideDeny, scanRoots, prot
 		}
 	}
 
-	out := explicit
+	out = explicit
 	if len(globs) > 0 {
-		matches, err := walkGlobMatches(scanRoots, globs, protectedDirs, notices)
-		if err != nil {
-			return nil, err
+		matches, incomplete := walkGlobMatches(scanRoots, globs, protectedDirs)
+		for _, root := range incomplete {
+			if ok, reason := canDenyByName(root, globs, overrideDeny); !ok {
+				return nil, nameDeny{}, fmt.Errorf("sandbox grants: filesystem.deny scan of %s hit the %d-entry limit; refusing to launch with an incomplete protected set%s", root, denyScanLimit.Load(), reason)
+			}
+		}
+		if len(incomplete) > 0 {
+			byName = nameDeny{roots: incomplete, globs: globs}
 		}
 		// Drop baseline matches covered by an absolute-path override.
 		for _, m := range matches {
@@ -528,7 +551,63 @@ func resolveDenyPaths(userDeny, baselineBasenames, overrideDeny, scanRoots, prot
 			}
 		}
 	}
-	return out, nil
+	return out, byName, nil
+}
+
+// nameDeny hides, below each of roots, every file or folder whose name
+// matches one of globs, without listing them first.
+type nameDeny struct {
+	roots, globs []string
+}
+
+// denyByName reports whether the sandbox can hide files by name below a
+// folder: Seatbelt on macOS matches paths with regular expressions. The
+// Linux backends can only hide paths that exist at launch, so there a
+// folder too large to scan still refuses launch. Tests on Linux switch it
+// on to cover the shared code.
+var denyByName atomic.Bool
+
+func init() { denyByName.Store(runtime.GOOS == "darwin") }
+
+// canDenyByName reports whether root can be covered by a name rule; if
+// not, reason (possibly empty) is appended to the refusal. An absolute
+// override_deny path inside root would be hidden by the rule although
+// the user lifted it, and a path or pattern the rule cannot spell is not
+// covered, so those setups keep refusing launch, as before name rules.
+func canDenyByName(root string, globs, overrideDeny []string) (ok bool, reason string) {
+	if !denyByName.Load() {
+		return false, ""
+	}
+	for _, o := range overrideDeny {
+		exp, err := sandboxprofile.ExpandPath(o)
+		if err != nil || !filepath.IsAbs(exp) || !insideFolder(exp, root) {
+			continue
+		}
+		for _, g := range globs {
+			if ok, _ := filepath.Match(g, filepath.Base(exp)); ok {
+				return false, fmt.Sprintf(" (override_deny %q is inside it)", o)
+			}
+		}
+	}
+	for _, fp := range pathForms(root) {
+		if _, err := sbplNameRegex(fp, globs); err != nil {
+			return false, fmt.Sprintf(" (%v)", err)
+		}
+	}
+	return true, ""
+}
+
+// insideFolder reports whether p is below root, comparing the written
+// and symlink-resolved spellings of both.
+func insideFolder(p, root string) bool {
+	for _, pf := range pathForms(p) {
+		for _, rf := range pathForms(root) {
+			if strings.HasPrefix(pf, strings.TrimSuffix(rf, string(filepath.Separator))+string(filepath.Separator)) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // pathFormDenies expands the path-form (non basename-glob) entries of a
@@ -581,15 +660,16 @@ func clampInt(v, lo, hi int) int {
 // order-independent — callers dedupe+sort — so concurrency doesn't
 // affect the resolved grants.
 //
-// If any root hits the entry cap the walk is incomplete: files the
+// If a root hits the entry cap its walk is incomplete: files the
 // configuration promises are blocked may never be visited and would be
-// left unmasked. Returning an error here makes the launch path refuse
-// to start rather than degrade to a partial protected set.
+// left unmasked. Such roots are returned in incomplete (their matches up
+// to the cap are still in matches), and resolveDenyPaths decides between
+// refusing launch and hiding files there by name.
 //
 // protectedDirs are already-denied paths the walk prunes without
 // descending (any match inside is masked by the ancestor rule), and
 // denyScanSkipDirNames prunes large dependency/cache trees.
-func walkGlobMatches(roots, globs, protectedDirs []string, notices io.Writer) ([]string, error) {
+func walkGlobMatches(roots, globs, protectedDirs []string) (matches, incomplete []string) {
 	if len(globs) == 0 || len(roots) == 0 {
 		return nil, nil
 	}
@@ -617,23 +697,20 @@ func walkGlobMatches(roots, globs, protectedDirs []string, notices io.Writer) ([
 	wg.Wait()
 
 	// Merge deterministically in root order; dedupe paths matched under
-	// overlapping roots. A cap hit makes the protected set incomplete, so
-	// it is surfaced as an error rather than a notice: a protection scan
-	// that cannot finish must not degrade to "unprotected".
+	// overlapping roots.
 	seen := map[string]bool{}
-	var out []string
 	for i, root := range roots {
 		if results[i].hitCap {
-			return nil, fmt.Errorf("sandbox grants: filesystem.deny scan of %s hit the %d-entry limit; refusing to launch with an incomplete protected set", root, denyScanLimit.Load())
+			incomplete = append(incomplete, root)
 		}
 		for _, m := range results[i].matches {
 			if !seen[m] {
 				seen[m] = true
-				out = append(out, m)
+				matches = append(matches, m)
 			}
 		}
 	}
-	return out, nil
+	return matches, incomplete
 }
 
 // walkOneDenyRoot walks a single root and returns the paths whose base
@@ -780,6 +857,7 @@ func (g *Grants) withUnrestrictedFilesystem() *Grants {
 	out := *g
 	out.AllowPaths = append(append([]string{}, g.AllowPaths...), "/")
 	out.ProtectedPaths = nil
+	out.NameDenyRoots, out.NameDenyGlobs = nil, nil
 	return &out
 }
 
