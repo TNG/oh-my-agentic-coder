@@ -101,7 +101,7 @@ func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, int) 
 		auditLog           = fs.String("audit-log", "", "Path to the audit log (default: persistent central location). Overrides config.")
 		noAudit            = fs.Bool("no-audit", false, "Disable the security audit trail.")
 		auditStrict        = fs.Bool("audit-strict", false, "Fail-closed: abort if the audit log cannot be written.")
-		acceptIncomplete   = fs.Bool("accept-incomplete-scan", false, "Start without asking when the sandbox could not fully scan a granted folder for secrets (.env, ...) because it has more than 200000 files and folders.")
+		acceptIncomplete   = fs.Bool("accept-incomplete-scan", false, "Start without asking when the sandbox could not fully scan a granted folder for secrets (.env, ...) because it has more than 200,000 files and folders.")
 		sessionID          = fs.String("session", "", "Continue a specific session by id instead of the most recent one. (shorthand: -s)")
 	)
 	var openPorts intMultiFlag

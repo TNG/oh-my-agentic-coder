@@ -10,29 +10,28 @@ import (
 // list-valued flags are repeatable and merge additively into the
 // loaded profile; --block-net and --workdir-access replace.
 type Flags struct {
-	ProfileRef   string
-	Allow        []string // --allow <path>        read+write dir/file
-	Read         []string // --read <path>         read-only
-	Write        []string // --write <path>        write-only
-	Deny         []string // --deny <path|glob>    mask within granted trees
-	AllowFile    []string // --allow-file <path>   read+write single file
-	AllowUnixDir []string // --allow-unix-dir <dir> AF_UNIX connect to any socket under dir
-	OpenPort     []int    // --open-port <port>
-	ListenPort   []int    // --listen-port <port>
-	AllowTCP     []int    // --allow-tcp-connect <port>
-	AllowDomain  []string // --allow-domain <domain>
-	DenyDomain   []string // --deny-domain <domain>
-	AllowEnv     []string // --allow-env <name>    additive env allow_vars entry
-	BlockNet     bool     // --block-net
-	Learn        bool     // --learn: unrestricted fs + folder recording
-	// --accept-incomplete-scan: start without asking when the .env scan
-	// could not finish a granted folder (too many files)
-	AcceptIncompleteScan bool
-	WorkdirAccess        string   // --workdir-access <level>
-	AuditLog             string   // --audit-log <path>: append net.decision events here ("" = disabled)
-	AuditRunID           string   // --audit-run-id <id>: inherit parent's run_id ("" = mint fresh)
-	AuditMode            string   // --audit-mode <start|serve>: inherit parent's mode ("" = start)
-	InnerArgv            []string // everything after --
+	ProfileRef    string
+	Allow         []string // --allow <path>        read+write dir/file
+	Read          []string // --read <path>         read-only
+	Write         []string // --write <path>        write-only
+	Deny          []string // --deny <path|glob>    mask within granted trees
+	AllowFile     []string // --allow-file <path>   read+write single file
+	AllowUnixDir  []string // --allow-unix-dir <dir> AF_UNIX connect to any socket under dir
+	OpenPort      []int    // --open-port <port>
+	ListenPort    []int    // --listen-port <port>
+	AllowTCP      []int    // --allow-tcp-connect <port>
+	AllowDomain   []string // --allow-domain <domain>
+	DenyDomain    []string // --deny-domain <domain>
+	AllowEnv      []string // --allow-env <name>    additive env allow_vars entry
+	BlockNet      bool     // --block-net
+	Learn         bool     // --learn: unrestricted fs + folder recording
+	WorkdirAccess string   // --workdir-access <level>
+	AuditLog      string   // --audit-log <path>: append net.decision events here ("" = disabled)
+	AuditRunID    string   // --audit-run-id <id>: inherit parent's run_id ("" = mint fresh)
+	AuditMode     string   // --audit-mode <start|serve>: inherit parent's mode ("" = start)
+	InnerArgv     []string // everything after --
+
+	AcceptIncompleteScan bool // --accept-incomplete-scan: start even if the .env scan stopped early
 }
 
 // ParseFlags parses the argument vector for `omac sandbox run` (the

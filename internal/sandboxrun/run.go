@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/TNG/oh-my-agentic-coder/internal/audit"
@@ -69,15 +70,16 @@ func confirmIncompleteDenyScan(stderr io.Writer, in io.Reader, interactive, acce
 	if len(roots) == 0 {
 		return true
 	}
-	fmt.Fprintf(stderr, "omac sandbox: warning: these folders have more than %d files and folders, so they could not be fully scanned and secrets (.env, ...) in them may not be redacted:\n", maxDenyScanEntries)
+	fmt.Fprintf(stderr, "omac sandbox: warning: these folders have more than %s files and folders. omac stopped searching them for secret files (.env, ...), so such a file deeper inside may be visible to the agent:\n", formatThousands(maxDenyScanEntries))
 	for _, r := range roots {
 		fmt.Fprintf(stderr, "  %s\n", r)
 	}
+	fmt.Fprintln(stderr, "To avoid this, grant a smaller folder (see docs/security.md).")
 	if accept {
 		return true
 	}
 	if !interactive {
-		fmt.Fprintln(stderr, "omac sandbox: not started (no terminal to confirm). Pass --accept-incomplete-scan to start anyway.")
+		fmt.Fprintln(stderr, "omac sandbox: not started (no terminal to ask on). Grant a smaller folder, or pass --accept-incomplete-scan to start anyway.")
 		return false
 	}
 	fmt.Fprint(stderr, "Start anyway? [y/N] ")
@@ -86,8 +88,17 @@ func confirmIncompleteDenyScan(stderr io.Writer, in io.Reader, interactive, acce
 	if answer == "y" || answer == "yes" {
 		return true
 	}
-	fmt.Fprintln(stderr, "omac sandbox: not started. Pass --accept-incomplete-scan to skip this question.")
+	fmt.Fprintln(stderr, "omac sandbox: not started. Grant a smaller folder, or pass --accept-incomplete-scan to skip this question.")
 	return false
+}
+
+// formatThousands writes n with comma separators (200000 -> "200,000").
+func formatThousands(n int) string {
+	s := strconv.Itoa(n)
+	for i := len(s) - 3; i > 0; i -= 3 {
+		s = s[:i] + "," + s[i:]
+	}
+	return s
 }
 
 // mayStartAfterDenyScan decides whether launch may go ahead when the deny

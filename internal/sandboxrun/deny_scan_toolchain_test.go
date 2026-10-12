@@ -84,7 +84,7 @@ func TestResolveGrantsLogsSkippedToolchainDirs(t *testing.T) {
 	if _, err := ResolveGrants(p, t.TempDir(), &notices); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(notices.String(), "did not search") || !strings.Contains(notices.String(), nvm) {
+	if !strings.Contains(notices.String(), "did not search these tool-install folders") || !strings.Contains(notices.String(), nvm) {
 		t.Errorf("notice must name the skipped toolchain dir %s, got:\n%s", nvm, notices.String())
 	}
 	if strings.Contains(notices.String(), ".rustup") {
@@ -107,7 +107,7 @@ func TestResolveGrantsLogsToolchainDirUnderBroadGrant(t *testing.T) {
 	if _, err := ResolveGrants(p, t.TempDir(), &notices); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(notices.String(), "did not search") || !strings.Contains(notices.String(), nvm) {
+	if !strings.Contains(notices.String(), "did not search these tool-install folders") || !strings.Contains(notices.String(), nvm) {
 		t.Errorf("notice must name %s, pruned from the ~ grant, got:\n%s", nvm, notices.String())
 	}
 }
@@ -141,7 +141,7 @@ func TestResolveGrantsLogsGrantInsideToolchainDir(t *testing.T) {
 	if slices.Contains(g.ProtectedPaths, env) {
 		t.Errorf("grant inside a toolchain dir is expected to be left out of the scan: %s", env)
 	}
-	if !strings.Contains(notices.String(), "did not search") || !strings.Contains(notices.String(), workdir) {
+	if !strings.Contains(notices.String(), "did not search these tool-install folders") || !strings.Contains(notices.String(), workdir) {
 		t.Errorf("notice must name the unscanned grant %s, got:\n%s", workdir, notices.String())
 	}
 }

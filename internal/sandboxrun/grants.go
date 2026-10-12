@@ -227,7 +227,7 @@ func ResolveGrants(p *sandboxprofile.Profile, workdir string, notices io.Writer)
 	)
 	protected = append(protected, denyResolved...)
 	if notices != nil && len(scan.skipped) > 0 {
-		fmt.Fprintf(notices, "omac sandbox: notice: the filesystem.deny scan (.env, .envrc, ...) did not search these toolchain dirs, so a matching file inside them is not hidden: %s\n",
+		fmt.Fprintf(notices, "omac sandbox: notice: omac did not search these tool-install folders for secret files (.env, .envrc, ...), so such a file inside them is not hidden from the agent: %s\n",
 			strings.Join(scan.skipped, ", "))
 	}
 
@@ -436,9 +436,10 @@ const maxDenyScanEntries = 200000
 // means a matching file inside it is left unmasked, which keeps the
 // workdir-and-grants scan bounded on toolchain and home roots.
 //
-// PONYTAIL: a huge tree whose name is not listed is still only partly
-// scanned past maxDenyScanEntries, with a launch warning. Add the name here (or narrow the grant) rather
-// than growing this into a path-aware configuration.
+// PONYTAIL: a huge tree whose name is not listed is only partly scanned
+// (maxDenyScanEntries), and launch asks before starting. Add the name here
+// (or narrow the grant) rather than growing this into a path-aware
+// configuration.
 var denyScanSkipDirNames = map[string]bool{
 	// dependency / VCS trees
 	"node_modules": true,

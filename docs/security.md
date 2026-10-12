@@ -85,11 +85,16 @@ sandbox profile.
 
 The `.env` / `.envrc` scan covers your working directory and every directory
 you grant explicitly. It leaves out the tool-install directories the default
-profile grants read-only (`~/.nvm`, `~/.rustup`, `~/.cargo/bin`, `~/go/bin`,
-`~/.bun/bin`, and the pnpm home), also when they sit inside a broader grant
-such as `~`. A directory you grant inside one of them, such as a workdir
+profile grants read-only: `~/.nvm`, `~/.rustup`, `~/.cargo/bin`, `~/go/bin`,
+`~/.bun/bin`, and pnpm's home (`~/.local/share/pnpm` on Linux,
+`~/Library/pnpm` on macOS). This also applies when they sit inside a broader
+grant such as `~`. A directory you grant inside one of them, such as a workdir
 under `~/.nvm`, is not scanned either. They hold installed tools and package
-stores, not your files.
+stores, not your files. If one of them is a symlink, omac does not follow it,
+so the folder it points to is still scanned. omac writes which of these
+directories it left out to the sandbox log (`~/.local/state/omac/sandbox.log`
+when you run omac in a terminal).
+
 The scan also skips large dependency, build, and cache trees:
 `node_modules`, `.git`, `.hg`, `.svn`, `vendor`, `.venv`, `venv`,
 `__pycache__`, `target`, `dist`, `build`, `out`, the package caches
@@ -97,15 +102,23 @@ The scan also skips large dependency, build, and cache trees:
 `.pnpm-store`, `.cache`, and `~/Library` on macOS. Those trees are not where
 dotenv secrets live, and walking them would make launch scale with your whole
 home directory. A file inside a skipped tree is not masked; keep dotenv files
-outside such trees, or deny their directory by path. Launch logs which of those
-tool-install directories (or directories inside them) it left out. If a granted directory has more than
-200,000 files and folders, omac cannot fully scan it. It names each such directory and
-asks whether to start anyway. Files found before the scan stopped are still
-masked; a `.env` further in is not. Pass `--accept-incomplete-scan` to
-`omac start` or `omac serve` to start without asking. Without a terminal to
-ask on (for example in CI), omac does not start unless that flag is set. To
-avoid the question, grant a narrower directory or deny the secret files by
-path. The check for new `.env` files during a session skips such directories.
+outside such trees, or deny their directory by path.
+
+If a granted directory has more than 200,000 files and folders, omac stops
+scanning it there. Files found before that point are still masked; a `.env`
+further in is not. omac names each such directory and asks whether to start
+anyway. To start without being asked, pass `--accept-incomplete-scan` to
+`omac start`, `omac continue`, `omac resume`, `omac serve` or
+`omac sandbox run`. Without a terminal to ask on (for example in CI, or
+`omac serve` started by OpenCode Desktop), omac does not start unless that
+flag is set. Learn mode (`--learn`) never asks, because it lifts all
+filesystem restrictions anyway.
+
+To avoid the question, grant a narrower directory. If you know where the
+secret files in the large directory are, deny them by path in
+`filesystem.deny`; then it is safe to answer `y`. During a session, omac keeps
+checking for new `.env` files, but not in directories it could not fully scan
+at launch.
 
 ### Secrets
 

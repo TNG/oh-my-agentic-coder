@@ -72,9 +72,12 @@ omac continue              # most recent session
 omac continue -s <id>      # specific session by ID
 ```
 
+It accepts the same flags as `omac start`, for example `--accept-incomplete-scan`.
+
 ### omac resume
 
 Use this when you want to choose from a list of past sessions rather. Shows a numbered picker of recent sessions for the active workdir.
+It accepts the same flags as `omac start`.
 
 ---
 

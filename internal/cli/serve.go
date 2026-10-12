@@ -79,7 +79,7 @@ func parseServeArgs(args []string, env *Env) (serveParse, bool) {
 		cacheScopeFlag    = fs.String("cache-scope", "", "Persistent cache scope: global, config, or workdir. Overrides config (default: global).")
 		verbose           = fs.Bool("verbose", false, "Verbose lifecycle logging.")
 		forDesktop        = fs.Bool("for-opencode-desktop", false, "Grant every project worktree from the local OpenCode state (Desktop projects) read+write in the sandbox.")
-		acceptIncomplete  = fs.Bool("accept-incomplete-scan", false, "Start without asking when the sandbox could not fully scan a granted folder for secrets (.env, ...) because it has more than 200000 files and folders.")
+		acceptIncomplete  = fs.Bool("accept-incomplete-scan", false, "Start without asking when the sandbox could not fully scan a granted folder for secrets (.env, ...) because it has more than 200,000 files and folders.")
 		learn             = fs.Bool("learn", false, "Learn mode: do not restrict filesystem access; record folders used and offer to add them to the sandbox profile at session end.")
 		auditLog          = fs.String("audit-log", "", "Path to the audit log (default: persistent central location). Overrides config.")
 		noAudit           = fs.Bool("no-audit", false, "Disable the security audit trail.")

@@ -66,7 +66,7 @@ func TestConfirmIncompleteDenyScan(t *testing.T) {
 	}{
 		{name: "yes", input: "y\n", interactive: true, want: true, wantOut: "Start anyway? [y/N]"},
 		{name: "default is no", input: "\n", interactive: true, want: false, wantOut: "--accept-incomplete-scan"},
-		{name: "no terminal", interactive: false, want: false, wantOut: "no terminal to confirm"},
+		{name: "no terminal", interactive: false, want: false, wantOut: "no terminal to ask on"},
 		{name: "flag skips question", interactive: true, accept: true, want: true},
 	}
 	for _, c := range cases {
@@ -187,4 +187,12 @@ func populateLargeTree(t *testing.T, root string) {
 	}
 	close(jobs)
 	wg.Wait()
+}
+
+func TestFormatThousands(t *testing.T) {
+	for n, want := range map[int]string{0: "0", 999: "999", 1000: "1,000", 200000: "200,000", 1234567: "1,234,567"} {
+		if got := formatThousands(n); got != want {
+			t.Errorf("formatThousands(%d) = %q, want %q", n, got, want)
+		}
+	}
 }
