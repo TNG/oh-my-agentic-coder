@@ -24,7 +24,7 @@ import (
 // and an already-alerted path must not re-alert on every tick.
 func WatchNewProtected(p *sandboxprofile.Profile, workdir string, interval time.Duration, onNew func(path string), stop <-chan struct{}) error {
 	base := sandboxprofile.PlatformBaseline()
-	roots, err := denyScanRoots(p, workdir)
+	roots, _, err := denyScanRoots(p, workdir)
 	if err != nil {
 		return err
 	}

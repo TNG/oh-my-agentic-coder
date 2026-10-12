@@ -173,7 +173,7 @@ func ResolveGrants(p *sandboxprofile.Profile, workdir string, notices io.Writer)
 	}
 	allow = append(allow, unixDirs...)
 
-	denyScan, err := denyScanRoots(p, workdir)
+	denyScan, skippedToolchain, err := denyScanRoots(p, workdir)
 	if err != nil {
 		return nil, err
 	}
@@ -224,6 +224,10 @@ func ResolveGrants(p *sandboxprofile.Profile, workdir string, notices io.Writer)
 		return nil, err
 	}
 	protected = append(protected, denyResolved...)
+	if notices != nil && len(skippedToolchain) > 0 {
+		fmt.Fprintf(notices, "omac sandbox: notice: the filesystem.deny scan (.env, .envrc, ...) did not search these toolchain dirs, so a matching file inside them is not hidden: %s\n",
+			strings.Join(skippedToolchain, ", "))
+	}
 
 	g := &Grants{
 		Workdir:         workdir,
@@ -465,23 +469,30 @@ var denyScanSkipDirNames = map[string]bool{
 // Baseline grants are excluded so a deny like ".env" never walks /usr
 // or /lib. Toolchain grants (~/.nvm, ~/Library/pnpm, ...) are excluded
 // for the same reason: they hold tool installs and package stores, and
-// pnpm's store alone overruns maxDenyScanEntries.
-func denyScanRoots(p *sandboxprofile.Profile, workdir string) ([]string, error) {
-	roots, err := sandboxprofile.ExpandExisting(
+// pnpm's store alone overruns maxDenyScanEntries. skipped lists the
+// toolchain dirs left out because they are a root or sit inside one, so
+// the caller can say which dirs were not searched.
+func denyScanRoots(p *sandboxprofile.Profile, workdir string) (roots, skipped []string, err error) {
+	roots, err = sandboxprofile.ExpandExisting(
 		append(append(append([]string{}, p.Filesystem.Read...), p.Filesystem.Write...), p.Filesystem.Allow...),
 		nil)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if p.Workdir.Access != "" && p.Workdir.Access != sandboxprofile.AccessNone {
 		roots = append(roots, workdir)
 	}
 	toolchain, err := toolchainDirs()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
+	}
+	for _, t := range toolchain {
+		if withinAny(t, roots) {
+			skipped = append(skipped, t)
+		}
 	}
 	roots = slices.DeleteFunc(roots, func(r string) bool { return withinAny(r, toolchain) })
-	return dedupe(roots), nil
+	return dedupe(roots), skipped, nil
 }
 
 // toolchainDirs returns the existing toolchain dirs the deny scan leaves

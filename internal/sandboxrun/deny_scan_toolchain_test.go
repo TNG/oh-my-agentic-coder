@@ -1,9 +1,11 @@
 package sandboxrun
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
@@ -54,6 +56,32 @@ func TestResolveGrantsDenyScanPrunesToolchainUnderBroadGrant(t *testing.T) {
 	}
 	if slices.Contains(g.ProtectedPaths, toolEnv) {
 		t.Errorf("toolchain dir must be pruned, not descended: %s", toolEnv)
+	}
+}
+
+// TestResolveGrantsLogsSkippedToolchainDirs checks that launch says which
+// granted dirs the .env scan left out, so a user can tell that a .env
+// inside e.g. ~/.nvm is not hidden. A toolchain dir outside every grant
+// was never going to be scanned and is not mentioned.
+func TestResolveGrantsLogsSkippedToolchainDirs(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	nvm := mkdirAll(t, home, ".nvm")
+	mkdirAll(t, home, ".rustup")
+
+	p := &sandboxprofile.Profile{
+		Workdir:    sandboxprofile.Workdir{Access: sandboxprofile.AccessReadWrite},
+		Filesystem: sandboxprofile.Filesystem{Read: []string{"~/.nvm"}},
+	}
+	var notices bytes.Buffer
+	if _, err := ResolveGrants(p, t.TempDir(), &notices); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(notices.String(), "did not search") || !strings.Contains(notices.String(), nvm) {
+		t.Errorf("notice must name the skipped toolchain dir %s, got:\n%s", nvm, notices.String())
+	}
+	if strings.Contains(notices.String(), ".rustup") {
+		t.Errorf("ungranted toolchain dir must not be named, got:\n%s", notices.String())
 	}
 }
 
