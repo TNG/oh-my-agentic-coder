@@ -34,6 +34,7 @@ omac start claude       # specific harness
 | `--cache-scope <scope>` | global | Which cache to use for the agent's package downloads (npm, pip, cargo, etc.). `global` shares one cache across all your projects, `config` shares it across projects using the same config file, `workdir` gives each project its own isolated cache. See [Cache](../advanced/cache.md). |
 | `--open-port <port>` | — | Allow the sandboxed process to bind and connect on this local TCP port (repeatable) for this session only. Useful for a local dev server or an MCP server the harness talks to. To make it permanent, use `network.open_port` in the grants file — see [Opening a port](../configuration.md#opening-a-port). |
 | `--no-audit` | false | Disable the security audit trail for this session. |
+| `--accept-incomplete-scan` | false | Start without asking when a granted folder has more than 200,000 files and folders, so omac could not fully scan it for `.env` files to hide. Without a terminal (e.g. CI), omac does not start in that case unless this flag is set. See [Security](../security.md). |
 
 For all flags: `omac start --help`.
 
@@ -50,6 +51,7 @@ omac serve --workdir ~/my-project
 |---|---|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `--workdir <dir>` | — | Activate this directory immediately at startup, so skills are ready as soon as OpenCode Desktop connects. Without this flag, no skills will be active — OpenCode Desktop does not yet automatically tell omac which project is currently open. |
 | `--root <dir>` | — | Only allow directories under this path to be activated (repeatable). For example, `--root ~/work --root ~/personal` restricts activation to those two trees. If not set, any directory can be activated.                                       |
+| `--accept-incomplete-scan` | false | Same as for `omac start`: start without asking when a granted folder is too large to fully scan for `.env` files. Needed when `omac serve` runs without a terminal, e.g. started by OpenCode Desktop. |
 
 #### OpenCode v2 project discovery on macOS
 

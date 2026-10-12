@@ -100,3 +100,50 @@ func mkdirAll(t *testing.T, elem ...string) string {
 	}
 	return dir
 }
+
+// TestResolveGrantsLogsGrantInsideToolchainDir covers the reverse case: a
+// grant (here the workdir) that sits inside a toolchain dir, e.g. someone
+// working on nvm itself in ~/.nvm. It is not scanned either, so the
+// notice must name it.
+func TestResolveGrantsLogsGrantInsideToolchainDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	workdir := mkdirAll(t, home, ".nvm", "work")
+	env := filepath.Join(workdir, ".env")
+	writeFile(t, env)
+
+	p := &sandboxprofile.Profile{Workdir: sandboxprofile.Workdir{Access: sandboxprofile.AccessReadWrite}}
+	var notices bytes.Buffer
+	g, err := ResolveGrants(p, workdir, &notices)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(g.ProtectedPaths, env) {
+		t.Errorf("grant inside a toolchain dir is expected to be left out of the scan: %s", env)
+	}
+	if !strings.Contains(notices.String(), "did not search") || !strings.Contains(notices.String(), workdir) {
+		t.Errorf("notice must name the unscanned grant %s, got:\n%s", workdir, notices.String())
+	}
+}
+
+// TestResolveGrantsToolchainLookupIsBestEffort checks that the toolchain
+// list cannot fail a launch whose profile does not use it. Here ~/go is a
+// file, so checking ~/go/bin fails with "not a directory".
+func TestResolveGrantsToolchainLookupIsBestEffort(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeFile(t, filepath.Join(home, "go"))
+	p := &sandboxprofile.Profile{Workdir: sandboxprofile.Workdir{Access: sandboxprofile.AccessReadWrite}}
+	if _, err := ResolveGrants(p, t.TempDir(), nil); err != nil {
+		t.Fatalf("toolchain lookup must not fail the launch: %v", err)
+	}
+}
+
+func TestWithinAnyRootDir(t *testing.T) {
+	if !withinAny("/home/me/.nvm", []string{"/"}) {
+		t.Error("every absolute path is inside /")
+	}
+	if withinAny("/home/meow", []string{"/home/me"}) {
+		t.Error("/home/meow is not inside /home/me")
+	}
+}

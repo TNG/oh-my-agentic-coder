@@ -39,7 +39,7 @@ type Grants struct {
 	// IncompleteDenyScanRoots are granted folders the filesystem.deny scan
 	// stopped in after maxDenyScanEntries entries. Files matched before the
 	// stop are in ProtectedPaths; a match further in is not hidden. Launch
-	// warns about these instead of refusing to start.
+	// names them and asks before starting (confirmIncompleteDenyScan).
 	IncompleteDenyScanRoots []string
 
 	// Network.
@@ -179,7 +179,7 @@ func ResolveGrants(p *sandboxprofile.Profile, workdir string, notices io.Writer)
 	}
 	allow = append(allow, unixDirs...)
 
-	denyScan, skippedToolchain, err := denyScanRoots(p, workdir)
+	scan, err := denyScanRoots(p, workdir)
 	if err != nil {
 		return nil, err
 	}
@@ -222,17 +222,14 @@ func ResolveGrants(p *sandboxprofile.Profile, workdir string, notices io.Writer)
 	// a single walk over the granted (non-baseline) scan roots. Path-form
 	// deny entries expand to explicit paths; basename globs and baseline
 	// basenames are matched together in one pass.
-	denyResolved, incompleteScan, err := resolveDenyPaths(
+	denyResolved, incompleteScan := resolveDenyPaths(
 		p.Filesystem.Deny, base.WorkdirProtected, p.Filesystem.OverrideDeny,
-		dedupe(denyScan), protected, notices,
+		scan.roots, protected, scan.toolchain, notices,
 	)
-	if err != nil {
-		return nil, err
-	}
 	protected = append(protected, denyResolved...)
-	if notices != nil && len(skippedToolchain) > 0 {
+	if notices != nil && len(scan.skipped) > 0 {
 		fmt.Fprintf(notices, "omac sandbox: notice: the filesystem.deny scan (.env, .envrc, ...) did not search these toolchain dirs, so a matching file inside them is not hidden: %s\n",
-			strings.Join(skippedToolchain, ", "))
+			strings.Join(scan.skipped, ", "))
 	}
 
 	g := &Grants{
@@ -430,7 +427,7 @@ func readGitdirPointer(dotgit string) (string, error) {
 // maxDenyScanEntries bounds the basename-glob walk so a deny like
 // ".env" over a huge granted tree cannot stall launch. Reaching the cap
 // stops the walk for that root (already-found matches are still masked)
-// and launch warns about it (warnIncompleteDenyScan).
+// and launch asks before starting (confirmIncompleteDenyScan).
 const maxDenyScanEntries = 200000
 
 // denyScanSkipDirNames are directory basenames the deny walk does not
@@ -472,51 +469,77 @@ var denyScanSkipDirNames = map[string]bool{
 	"Library": true,
 }
 
-// denyScanRoots returns the roots a basename-glob deny scans: the
-// explicit (non-baseline) grants plus the workdir when granted.
-// Baseline grants are excluded so a deny like ".env" never walks /usr
-// or /lib. Toolchain grants (~/.nvm, ~/Library/pnpm, ...) are excluded
-// for the same reason: they hold tool installs and package stores, and
-// pnpm's store alone overruns maxDenyScanEntries. skipped lists the
-// toolchain dirs left out because they are a root or sit inside one, so
-// the caller can say which dirs were not searched.
-func denyScanRoots(p *sandboxprofile.Profile, workdir string) (roots, skipped []string, err error) {
-	roots, err = sandboxprofile.ExpandExisting(
+// denyScan is what the basename-glob deny walk covers.
+type denyScan struct {
+	// roots are the explicit (non-baseline) grants plus the workdir when
+	// granted, minus any inside a toolchain dir.
+	roots []string
+	// toolchain are the existing toolchain dirs; the walk prunes them
+	// when a broader root such as ~ contains them.
+	toolchain []string
+	// skipped are the granted dirs not searched because of the toolchain
+	// rule: toolchain dirs inside a root, and roots inside a toolchain
+	// dir. Launch names them so the user knows a .env there is not hidden.
+	skipped []string
+}
+
+// denyScanRoots works out what a basename-glob deny scans. Baseline
+// grants are excluded so a deny like ".env" never walks /usr or /lib.
+// Toolchain dirs (~/.nvm, ~/Library/pnpm, ...) are excluded for the same
+// reason: they hold tool installs and package stores, and pnpm's store
+// alone overruns maxDenyScanEntries.
+func denyScanRoots(p *sandboxprofile.Profile, workdir string) (denyScan, error) {
+	roots, err := sandboxprofile.ExpandExisting(
 		append(append(append([]string{}, p.Filesystem.Read...), p.Filesystem.Write...), p.Filesystem.Allow...),
 		nil)
 	if err != nil {
-		return nil, nil, err
+		return denyScan{}, err
 	}
 	if p.Workdir.Access != "" && p.Workdir.Access != sandboxprofile.AccessNone {
 		roots = append(roots, workdir)
 	}
-	toolchain, err := toolchainDirs()
-	if err != nil {
-		return nil, nil, err
-	}
-	for _, t := range toolchain {
+	roots = dedupe(roots)
+	scan := denyScan{toolchain: toolchainDirs()}
+	for _, t := range scan.toolchain {
 		if withinAny(t, roots) {
-			skipped = append(skipped, t)
+			scan.skipped = append(scan.skipped, t)
 		}
 	}
-	roots = slices.DeleteFunc(roots, func(r string) bool { return withinAny(r, toolchain) })
-	return dedupe(roots), skipped, nil
+	for _, r := range roots {
+		if withinAny(r, scan.toolchain) {
+			scan.skipped = append(scan.skipped, r)
+		} else {
+			scan.roots = append(scan.roots, r)
+		}
+	}
+	scan.skipped = dedupe(scan.skipped)
+	return scan, nil
 }
 
 // toolchainDirs returns the existing toolchain dirs the deny scan leaves
-// out, both as roots (denyScanRoots) and when a broader grant such as ~
-// contains them (walkGlobMatches).
-func toolchainDirs() ([]string, error) {
-	return sandboxprofile.ExpandExisting(sandboxprofile.ToolchainReadPaths(), nil)
+// out. It is best effort: a path that cannot be expanded (e.g. HOME
+// unset) or stat'ed is left out rather than failing the launch, since a
+// profile that does not grant it never needed it.
+func toolchainDirs() []string {
+	var out []string
+	for _, raw := range sandboxprofile.ToolchainReadPaths() {
+		if dirs, err := sandboxprofile.ExpandExisting([]string{raw}, nil); err == nil {
+			out = append(out, dirs...)
+		}
+	}
+	return out
 }
 
 // withinAny reports whether path is one of dirs or inside one of them,
 // comparing both the given and the symlink-resolved spellings.
 func withinAny(path string, dirs []string) bool {
+	pforms := pathForms(path)
 	for _, d := range dirs {
 		for _, df := range pathForms(d) {
-			for _, pf := range pathForms(path) {
-				if pf == df || strings.HasPrefix(pf, df+string(filepath.Separator)) {
+			// TrimSuffix keeps a "/" dir from becoming the prefix "//".
+			prefix := strings.TrimSuffix(df, string(filepath.Separator)) + string(filepath.Separator)
+			for _, pf := range pforms {
+				if pf == df || strings.HasPrefix(pf, prefix) {
 					return true
 				}
 			}
@@ -533,9 +556,10 @@ func withinAny(path string, dirs []string) bool {
 // by an ancestor rule: the walk prunes them (a match inside is masked by the
 // ancestor anyway). incomplete lists the scan roots that hit the entry
 // cap (see walkGlobMatches); their matches up to the cap are still in out.
-func resolveDenyPaths(userDeny, baselineBasenames, overrideDeny, scanRoots, protectedDirs []string, notices io.Writer) (out, incomplete []string, err error) {
+// pruneDirs are dirs the walk skips without masking them (toolchain dirs).
+func resolveDenyPaths(userDeny, baselineBasenames, overrideDeny, scanRoots, protectedDirs, pruneDirs []string, notices io.Writer) (out, incomplete []string) {
 	if len(userDeny) == 0 && len(baselineBasenames) == 0 {
-		return nil, nil, nil
+		return nil, nil
 	}
 
 	explicit := pathFormDenies(userDeny, notices)
@@ -557,10 +581,7 @@ func resolveDenyPaths(userDeny, baselineBasenames, overrideDeny, scanRoots, prot
 	out = explicit
 	if len(globs) > 0 {
 		var matches []string
-		matches, incomplete, err = walkGlobMatches(scanRoots, globs, protectedDirs)
-		if err != nil {
-			return nil, nil, err
-		}
+		matches, incomplete = walkGlobMatches(scanRoots, globs, protectedDirs, pruneDirs)
 		// Drop baseline matches covered by an absolute-path override.
 		for _, m := range matches {
 			if !overrides[m] {
@@ -568,7 +589,7 @@ func resolveDenyPaths(userDeny, baselineBasenames, overrideDeny, scanRoots, prot
 			}
 		}
 	}
-	return out, incomplete, nil
+	return out, incomplete
 }
 
 // pathFormDenies expands the path-form (non basename-glob) entries of a
@@ -627,20 +648,15 @@ func clampInt(v, lo, hi int) int {
 //
 // protectedDirs are already-denied paths the walk prunes without
 // descending (any match inside is masked by the ancestor rule),
-// toolchain dirs are pruned the same way, and denyScanSkipDirNames
-// prunes large dependency/cache trees.
-func walkGlobMatches(roots, globs, protectedDirs []string) (out, incomplete []string, err error) {
+// pruneDirs (toolchain dirs, see denyScanRoots) are pruned the same way
+// but not masked, and denyScanSkipDirNames prunes large dependency/cache
+// trees.
+func walkGlobMatches(roots, globs, protectedDirs, pruneDirs []string) (out, incomplete []string) {
 	if len(globs) == 0 || len(roots) == 0 {
-		return nil, nil, nil
-	}
-	// Toolchain dirs are pruned like protected ones: not masked, just not
-	// worth walking (see denyScanRoots).
-	toolchain, err := toolchainDirs()
-	if err != nil {
-		return nil, nil, err
+		return nil, nil
 	}
 	protected := map[string]bool{}
-	for _, p := range append(slices.Clone(protectedDirs), toolchain...) {
+	for _, p := range append(slices.Clone(protectedDirs), pruneDirs...) {
 		for _, fp := range pathForms(p) {
 			protected[fp] = true
 		}
@@ -678,7 +694,7 @@ func walkGlobMatches(roots, globs, protectedDirs []string) (out, incomplete []st
 			}
 		}
 	}
-	return out, incomplete, nil
+	return out, incomplete
 }
 
 // walkOneDenyRoot walks a single root and returns the paths whose base

@@ -69,7 +69,7 @@ func confirmIncompleteDenyScan(stderr io.Writer, in io.Reader, interactive, acce
 	if len(roots) == 0 {
 		return true
 	}
-	fmt.Fprintf(stderr, "omac sandbox: warning: these folders have more than %d files, so they could not be fully scanned and secrets (.env, ...) in them may not be redacted:\n", maxDenyScanEntries)
+	fmt.Fprintf(stderr, "omac sandbox: warning: these folders have more than %d files and folders, so they could not be fully scanned and secrets (.env, ...) in them may not be redacted:\n", maxDenyScanEntries)
 	for _, r := range roots {
 		fmt.Fprintf(stderr, "  %s\n", r)
 	}
@@ -136,9 +136,13 @@ func Run(opts Options) int {
 	if err := grants.Validate(); err != nil {
 		return fail("%v", err)
 	}
-	interactive := term.IsTerminal(int(os.Stdin.Fd()))
-	if !confirmIncompleteDenyScan(stderr, os.Stdin, interactive, opts.Flags.AcceptIncompleteScan, grants.IncompleteDenyScanRoots) {
-		return 1
+	// Learn mode lifts every filesystem restriction, masks included, so
+	// an incomplete scan changes nothing there and is not worth asking about.
+	if !opts.Flags.Learn {
+		interactive := term.IsTerminal(int(os.Stdin.Fd()))
+		if !confirmIncompleteDenyScan(stderr, os.Stdin, interactive, opts.Flags.AcceptIncompleteScan, grants.IncompleteDenyScanRoots) {
+			return 1
+		}
 	}
 	den := resolvedDenial(merged.Denial)
 	grants.DenialText = den.MarkerFile

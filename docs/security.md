@@ -87,7 +87,9 @@ The `.env` / `.envrc` scan covers your working directory and every directory
 you grant explicitly. It leaves out the tool-install directories the default
 profile grants read-only (`~/.nvm`, `~/.rustup`, `~/.cargo/bin`, `~/go/bin`,
 `~/.bun/bin`, and the pnpm home), also when they sit inside a broader grant
-such as `~`. They hold installed tools and package stores, not your files.
+such as `~`. A directory you grant inside one of them, such as a workdir
+under `~/.nvm`, is not scanned either. They hold installed tools and package
+stores, not your files.
 The scan also skips large dependency, build, and cache trees:
 `node_modules`, `.git`, `.hg`, `.svn`, `vendor`, `.venv`, `venv`,
 `__pycache__`, `target`, `dist`, `build`, `out`, the package caches
@@ -96,14 +98,14 @@ The scan also skips large dependency, build, and cache trees:
 dotenv secrets live, and walking them would make launch scale with your whole
 home directory. A file inside a skipped tree is not masked; keep dotenv files
 outside such trees, or deny their directory by path. Launch logs which of those
-tool-install directories it left out. If a granted directory has more than
-200,000 files, omac cannot fully scan it. It names each such directory and
+tool-install directories (or directories inside them) it left out. If a granted directory has more than
+200,000 files and folders, omac cannot fully scan it. It names each such directory and
 asks whether to start anyway. Files found before the scan stopped are still
 masked; a `.env` further in is not. Pass `--accept-incomplete-scan` to
 `omac start` or `omac serve` to start without asking. Without a terminal to
 ask on (for example in CI), omac does not start unless that flag is set. To
 avoid the question, grant a narrower directory or deny the secret files by
-path.
+path. The check for new `.env` files during a session skips such directories.
 
 ### Secrets
 
