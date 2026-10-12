@@ -17,6 +17,7 @@ import (
 // any file the configuration promises is blocked must remain blocked, so
 // the only safe response to an incomplete enumeration is to fail closed.
 func TestSecurityDenyScanCapFailsClosed(t *testing.T) {
+	setDenyScanLimit(t, 20000)
 	workdir := t.TempDir()
 
 	// A protected baseline basename file placed at a lexically late path.
@@ -69,15 +70,24 @@ func TestSecurityDenyScanCapFailsClosed(t *testing.T) {
 	}
 }
 
+// setDenyScanLimit lowers the scan cap for one test, so the test needs
+// thousands of files instead of a million.
+func setDenyScanLimit(t *testing.T, n int64) {
+	t.Helper()
+	old := denyScanLimit.Swap(n)
+	t.Cleanup(func() { denyScanLimit.Store(old) })
+}
+
 // populateLargeTree fills root with more entries than the protection scan
-// can enumerate, so the scan is guaranteed to be incomplete. It is laid out
-// as many small directories whose names sort before "zzz-*", keeping the
-// protected target past the enumeration bound. Directory reads are kept
-// cheap by spreading entries across many dirs.
+// can enumerate (the current denyScanLimit), so the scan is guaranteed to
+// be incomplete. It is laid out as many small directories whose names
+// sort before "zzz-*", keeping the protected target past the enumeration
+// bound. Directory reads are kept cheap by spreading entries across many
+// dirs.
 func populateLargeTree(t *testing.T, root string) {
 	t.Helper()
 	const dirs = 400
-	const perDir = 505
+	perDir := int(denyScanLimit.Load())/dirs + 5
 
 	workers := 16
 	jobs := make(chan int, workers*2)
