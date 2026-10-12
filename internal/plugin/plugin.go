@@ -13,7 +13,9 @@
 package plugin
 
 import (
+	"crypto/sha256"
 	_ "embed"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -106,6 +108,16 @@ type InstallResult struct {
 	// Unchanged is true when the file already existed with identical
 	// content and was left untouched (no write performed).
 	Unchanged bool
+	// Upgraded is true when the replaced file was an unedited copy from an
+	// older omac (see previousMultiDirSHA256), replaced without force.
+	Upgraded bool
+}
+
+// IsPreviousMultiDir reports whether data is a plugin version shipped by an
+// earlier omac, byte for byte. Such a copy holds no user edits.
+func IsPreviousMultiDir(data []byte) bool {
+	sum := sha256.Sum256(data)
+	return previousMultiDirSHA256[hex.EncodeToString(sum[:])]
 }
 
 // InstallMultiDir writes the embedded multidir plugin into workdir's
@@ -115,7 +127,8 @@ type InstallResult struct {
 // If the file already exists with identical content it is left as-is
 // (Unchanged=true). If it exists with different content and force is
 // false, an error is returned so the caller can warn the user instead of
-// clobbering local edits; with force=true it is overwritten.
+// clobbering local edits; with force=true it is overwritten. An unedited
+// copy from an older omac is overwritten even without force (Upgraded=true).
 func InstallMultiDir(workdir, bridgeDir string, force bool) (InstallResult, error) {
 	if bridgeDir == "" {
 		return InstallResult{}, fmt.Errorf("harness has no bridge directory")
@@ -136,12 +149,13 @@ func InstallMultiDirIn(dir string, force bool) (InstallResult, error) {
 func installMultiDirIn(dir string, force bool) (InstallResult, error) {
 	dest := filepath.Join(dir, MultiDirFileName)
 
-	overwrote := false
+	overwrote, upgraded := false, false
 	if existing, err := os.ReadFile(dest); err == nil {
 		if bytesEqual(existing, multiDirSource) {
 			return InstallResult{Path: dest, Unchanged: true}, nil
 		}
-		if !force {
+		upgraded = IsPreviousMultiDir(existing)
+		if !force && !upgraded {
 			return InstallResult{Path: dest}, &ConflictError{Path: dest}
 		}
 		overwrote = true
@@ -175,7 +189,7 @@ func installMultiDirIn(dir string, force bool) (InstallResult, error) {
 		os.Remove(tmpPath)
 		return InstallResult{}, fmt.Errorf("rename plugin into place: %w", err)
 	}
-	return InstallResult{Path: dest, Overwrote: overwrote}, nil
+	return InstallResult{Path: dest, Overwrote: overwrote, Upgraded: upgraded}, nil
 }
 
 func bytesEqual(a, b []byte) bool {

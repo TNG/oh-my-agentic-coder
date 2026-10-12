@@ -1,6 +1,9 @@
 package plugin
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"os"
 	"path/filepath"
@@ -123,5 +126,44 @@ func TestInstallMultiDirIn_AbsoluteDir(t *testing.T) {
 	ok, err := IsMultiDirInstalledIn(dir)
 	if err != nil || !ok {
 		t.Errorf("IsMultiDirInstalledIn = %v, %v; want true, nil", ok, err)
+	}
+}
+
+// A plugin change must record its old hash, or users holding the old copy
+// keep it forever after an upgrade (issue #360).
+func TestMultiDirHashesUpToDate(t *testing.T) {
+	sum := sha256.Sum256(multiDirSource)
+	if got := hex.EncodeToString(sum[:]); got != multiDirSHA256 {
+		t.Fatalf("assets/omac-multidir.ts changed: add the old multiDirSHA256 (%s) to previousMultiDirSHA256, then set multiDirSHA256 to %s", multiDirSHA256, got)
+	}
+	if previousMultiDirSHA256[multiDirSHA256] {
+		t.Fatal("the current plugin hash must not be listed as a previous version")
+	}
+}
+
+func TestInstallUpgradesPreviousVersionWithoutForce(t *testing.T) {
+	old := []byte("// plugin from an older omac\n")
+	sum := sha256.Sum256(old)
+	previousMultiDirSHA256[hex.EncodeToString(sum[:])] = true
+	t.Cleanup(func() { delete(previousMultiDirSHA256, hex.EncodeToString(sum[:])) })
+
+	dir := t.TempDir()
+	dest := MultiDirPathIn(dir)
+	if err := os.WriteFile(dest, old, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res, err := InstallMultiDirIn(dir, false)
+	if err != nil {
+		t.Fatalf("install over a previous version: %v", err)
+	}
+	if !res.Upgraded || !res.Overwrote {
+		t.Errorf("want Upgraded and Overwrote, got %+v", res)
+	}
+	got, err := os.ReadFile(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, multiDirSource) {
+		t.Error("the previous version was not replaced with the embedded plugin")
 	}
 }

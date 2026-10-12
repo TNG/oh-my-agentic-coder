@@ -189,6 +189,7 @@ func warnStaleLocalPlugin(env *Env, harness config.Harness, installedPath string
 	}
 	fmt.Fprintf(env.Stderr, "[warn] a differing %s also exists at %s; refresh it with: omac --workdir %s plugin install opencode-desktop --force\n",
 		plugin.MultiDirFileName, localPath, env.Workdir)
+	fmt.Fprintln(env.Stderr, "       OpenCode loads this copy too; an outdated one can fail to activate skills (e.g. \"/__omac__/activate -> 401\").")
 }
 
 // warnPluginMissing checks whether the harness's client-side multidir
