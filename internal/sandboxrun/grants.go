@@ -36,6 +36,12 @@ type Grants struct {
 	// a missing ~/.ssh today may exist tomorrow.
 	ProtectedPaths []string
 
+	// IncompleteDenyScanRoots are granted folders the filesystem.deny scan
+	// stopped in after maxDenyScanEntries entries. Files matched before the
+	// stop are in ProtectedPaths; a match further in is not hidden. Launch
+	// warns about these instead of refusing to start.
+	IncompleteDenyScanRoots []string
+
 	// Network.
 	NetworkMode     string // filtered|blocked|open
 	ProxyPort       int    // 0 when no proxy is running
@@ -216,7 +222,7 @@ func ResolveGrants(p *sandboxprofile.Profile, workdir string, notices io.Writer)
 	// a single walk over the granted (non-baseline) scan roots. Path-form
 	// deny entries expand to explicit paths; basename globs and baseline
 	// basenames are matched together in one pass.
-	denyResolved, err := resolveDenyPaths(
+	denyResolved, incompleteScan, err := resolveDenyPaths(
 		p.Filesystem.Deny, base.WorkdirProtected, p.Filesystem.OverrideDeny,
 		dedupe(denyScan), protected, notices,
 	)
@@ -230,17 +236,18 @@ func ResolveGrants(p *sandboxprofile.Profile, workdir string, notices io.Writer)
 	}
 
 	g := &Grants{
-		Workdir:         workdir,
-		ReadPaths:       dedupe(read),
-		WritePaths:      dedupe(write),
-		AllowPaths:      dedupe(allow),
-		ProtectedPaths:  dedupe(protected),
-		NetworkMode:     p.Network.EffectiveMode(),
-		ListenPorts:     dedupeInts(p.Network.ListenPort),
-		AllowTCPConnect: dedupeInts(p.Network.AllowTCPConnect),
-		OpenPorts:       dedupeInts(p.Network.OpenPort),
-		UnixSocketDirs:  dedupe(unixDirs),
-		Enforcement:     p.Network.EffectiveEnforcement(),
+		Workdir:                 workdir,
+		ReadPaths:               dedupe(read),
+		WritePaths:              dedupe(write),
+		AllowPaths:              dedupe(allow),
+		ProtectedPaths:          dedupe(protected),
+		IncompleteDenyScanRoots: incompleteScan,
+		NetworkMode:             p.Network.EffectiveMode(),
+		ListenPorts:             dedupeInts(p.Network.ListenPort),
+		AllowTCPConnect:         dedupeInts(p.Network.AllowTCPConnect),
+		OpenPorts:               dedupeInts(p.Network.OpenPort),
+		UnixSocketDirs:          dedupe(unixDirs),
+		Enforcement:             p.Network.EffectiveEnforcement(),
 	}
 
 	// Unix sockets: any allow-granted path that is a socket file gets
@@ -422,7 +429,8 @@ func readGitdirPointer(dotgit string) (string, error) {
 
 // maxDenyScanEntries bounds the basename-glob walk so a deny like
 // ".env" over a huge granted tree cannot stall launch. Reaching the cap
-// stops the walk for that root (already-found matches are still masked).
+// stops the walk for that root (already-found matches are still masked)
+// and launch warns about it (warnIncompleteDenyScan).
 const maxDenyScanEntries = 200000
 
 // denyScanSkipDirNames are directory basenames the deny walk does not
@@ -432,8 +440,8 @@ const maxDenyScanEntries = 200000
 // means a matching file inside it is left unmasked, which keeps the
 // workdir-and-grants scan bounded on toolchain and home roots.
 //
-// PONYTAIL: a huge tree whose name is not listed still fails closed at
-// maxDenyScanEntries. Add the name here (or narrow the grant) rather
+// PONYTAIL: a huge tree whose name is not listed is still only partly
+// scanned past maxDenyScanEntries, with a launch warning. Add the name here (or narrow the grant) rather
 // than growing this into a path-aware configuration.
 var denyScanSkipDirNames = map[string]bool{
 	// dependency / VCS trees
@@ -523,12 +531,11 @@ func withinAny(path string, dirs []string) bool {
 // matched together. override_deny holes (basename or absolute path) are
 // punched through baseline matches. protectedDirs are paths already denied
 // by an ancestor rule: the walk prunes them (a match inside is masked by the
-// ancestor anyway). An incomplete protection scan (a root hitting the entry
-// cap) is reported as an error so the caller fails closed instead of
-// proceeding with a partial protected set.
-func resolveDenyPaths(userDeny, baselineBasenames, overrideDeny, scanRoots, protectedDirs []string, notices io.Writer) ([]string, error) {
+// ancestor anyway). incomplete lists the scan roots that hit the entry
+// cap (see walkGlobMatches); their matches up to the cap are still in out.
+func resolveDenyPaths(userDeny, baselineBasenames, overrideDeny, scanRoots, protectedDirs []string, notices io.Writer) (out, incomplete []string, err error) {
 	if len(userDeny) == 0 && len(baselineBasenames) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	explicit := pathFormDenies(userDeny, notices)
@@ -547,11 +554,12 @@ func resolveDenyPaths(userDeny, baselineBasenames, overrideDeny, scanRoots, prot
 		}
 	}
 
-	out := explicit
+	out = explicit
 	if len(globs) > 0 {
-		matches, err := walkGlobMatches(scanRoots, globs, protectedDirs, notices)
+		var matches []string
+		matches, incomplete, err = walkGlobMatches(scanRoots, globs, protectedDirs)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		// Drop baseline matches covered by an absolute-path override.
 		for _, m := range matches {
@@ -560,7 +568,7 @@ func resolveDenyPaths(userDeny, baselineBasenames, overrideDeny, scanRoots, prot
 			}
 		}
 	}
-	return out, nil
+	return out, incomplete, nil
 }
 
 // pathFormDenies expands the path-form (non basename-glob) entries of a
@@ -612,24 +620,24 @@ func clampInt(v, lo, hi int) int {
 // denyScanConcurrency); the result set is order-independent — callers
 // dedupe+sort — so concurrency doesn't affect the resolved grants.
 //
-// If any root hits the entry cap the walk is incomplete: files the
-// configuration promises are blocked may never be visited and would be
-// left unmasked. Returning an error here makes the launch path refuse
-// to start rather than degrade to a partial protected set.
+// If a root hits the entry cap, its walk stops there: files further in
+// are never visited and stay unmasked. Such roots are returned in
+// incomplete (matches found before the stop are still returned) so
+// launch can warn about each of them.
 //
 // protectedDirs are already-denied paths the walk prunes without
 // descending (any match inside is masked by the ancestor rule),
 // toolchain dirs are pruned the same way, and denyScanSkipDirNames
 // prunes large dependency/cache trees.
-func walkGlobMatches(roots, globs, protectedDirs []string, notices io.Writer) ([]string, error) {
+func walkGlobMatches(roots, globs, protectedDirs []string) (out, incomplete []string, err error) {
 	if len(globs) == 0 || len(roots) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	// Toolchain dirs are pruned like protected ones: not masked, just not
 	// worth walking (see denyScanRoots).
 	toolchain, err := toolchainDirs()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	protected := map[string]bool{}
 	for _, p := range append(slices.Clone(protectedDirs), toolchain...) {
@@ -657,17 +665,11 @@ func walkGlobMatches(roots, globs, protectedDirs []string, notices io.Writer) ([
 	wg.Wait()
 
 	// Merge deterministically in root order; dedupe paths matched under
-	// overlapping roots. A cap hit makes the protected set incomplete, so
-	// it is surfaced as an error rather than a notice: a protection scan
-	// that cannot finish must not degrade to "unprotected". Every root that
-	// hit the cap is named, so the user can fix them all in one go instead
-	// of learning about them one failed launch at a time.
+	// overlapping roots.
 	seen := map[string]bool{}
-	var out, incomplete []string
 	for i, root := range roots {
 		if results[i].hitCap {
 			incomplete = append(incomplete, root)
-			continue
 		}
 		for _, m := range results[i].matches {
 			if !seen[m] {
@@ -676,11 +678,7 @@ func walkGlobMatches(roots, globs, protectedDirs []string, notices io.Writer) ([
 			}
 		}
 	}
-	if len(incomplete) > 0 {
-		return nil, fmt.Errorf("sandbox grants: filesystem.deny scan hit the %d-entry limit in these folders, so they were not fully searched; refusing to launch with an incomplete protected set:\n  %s",
-			maxDenyScanEntries, strings.Join(incomplete, "\n  "))
-	}
-	return out, nil
+	return out, incomplete, nil
 }
 
 // walkOneDenyRoot walks a single root and returns the paths whose base

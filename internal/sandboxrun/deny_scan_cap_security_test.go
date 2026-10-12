@@ -1,9 +1,11 @@
 package sandboxrun
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -11,29 +13,24 @@ import (
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
 )
 
-// TestSecurityDenyScanCapFailsClosed asserts that when the launch-time
-// protection scan cannot enumerate a granted tree completely, the sandbox
-// refuses to start instead of proceeding with an incomplete protected set.
-// A protection scan that cannot finish must not degrade to "unprotected":
-// any file the configuration promises is blocked must remain blocked, so
-// the only safe response to an incomplete enumeration is to fail closed.
-func TestSecurityDenyScanCapFailsClosed(t *testing.T) {
+// TestSecurityDenyScanCapWarnsAndKeepsMatches covers a granted tree too
+// large for the launch-time protection scan. Launch goes ahead, but the
+// tree is reported as incomplete so the user is warned, and a .env found
+// before the scan stopped is still hidden.
+func TestSecurityDenyScanCapWarnsAndKeepsMatches(t *testing.T) {
 	workdir := t.TempDir()
 
-	// A protected baseline basename file placed at a lexically late path.
-	// The protection scan walks granted roots in lexical order and stops
-	// after maxDenyScanEntries, so a target sorted after the padding tree
-	// is never visited and would be left unmasked by an implementation
-	// that fails open. Placing it late makes the incompleteness concrete:
-	// under the broken behavior the file is genuinely absent from the
-	// protected set, not merely unconfirmed.
-	protectedDir := filepath.Join(workdir, "zzz-protected")
-	if err := os.Mkdir(protectedDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	protectedFile := filepath.Join(protectedDir, ".env")
-	if err := os.WriteFile(protectedFile, []byte("secret"), 0o600); err != nil {
-		t.Fatal(err)
+	// "aaa-protected" sorts before the padding tree, so the scan reaches
+	// it before the cap; "zzz-protected" sorts after and is never visited.
+	early := filepath.Join(workdir, "aaa-protected", ".env")
+	late := filepath.Join(workdir, "zzz-protected", ".env")
+	for _, f := range []string{early, late} {
+		if err := os.MkdirAll(filepath.Dir(f), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(f, []byte("secret"), 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
 	populateLargeTree(t, workdir)
 
@@ -41,38 +38,27 @@ func TestSecurityDenyScanCapFailsClosed(t *testing.T) {
 		Workdir: sandboxprofile.Workdir{Access: sandboxprofile.AccessReadWrite},
 		Network: sandboxprofile.Network{Mode: sandboxprofile.ModeBlocked},
 	}
-
-	// Control: a small workdir resolves without error, proving any
-	// refusal below is caused by the unbounded tree, not by the setup.
-	controlProf := &sandboxprofile.Profile{
-		Workdir: sandboxprofile.Workdir{Access: sandboxprofile.AccessReadWrite},
-		Network: sandboxprofile.Network{Mode: sandboxprofile.ModeBlocked},
-	}
-	if _, err := ResolveGrants(controlProf, t.TempDir(), nil); err != nil {
-		t.Fatalf("control: small workdir should resolve, got %v", err)
-	}
-
-	// Fixed state: an incomplete protection scan refuses to launch
-	// rather than proceed with a partial protected set. ResolveGrants is
-	// the real launch-time entry point, so the refusal must surface here.
 	g, err := ResolveGrants(prof, workdir, nil)
-	if err == nil {
-		// Diagnose: confirm the scan was actually incomplete (the late
-		// protected target is absent from the protected set), so the
-		// failure message reports the concrete gap rather than a bare
-		// "expected refusal".
-		for _, p := range g.ProtectedPaths {
-			if p == protectedFile {
-				t.Fatalf("protection scan completed for %s but launch was not refused; an incomplete scan must fail closed", protectedFile)
-			}
-		}
-		t.Fatalf("launch proceeded after an incomplete protection scan (%s unmasked); expected refusal", protectedFile)
+	if err != nil {
+		t.Fatalf("an incomplete scan must warn, not refuse launch: %v", err)
+	}
+	if !slices.Equal(g.IncompleteDenyScanRoots, []string{workdir}) {
+		t.Errorf("IncompleteDenyScanRoots = %v, want [%s]", g.IncompleteDenyScanRoots, workdir)
+	}
+	if !slices.Contains(g.ProtectedPaths, early) {
+		t.Errorf("match found before the cap must still be protected: %s", early)
+	}
+
+	var stderr bytes.Buffer
+	warnIncompleteDenyScan(&stderr, g.IncompleteDenyScanRoots)
+	if !strings.Contains(stderr.String(), "warning") || !strings.Contains(stderr.String(), workdir) {
+		t.Errorf("warning must name %s, got:\n%s", workdir, stderr.String())
 	}
 }
 
 // TestDenyScanCapNamesEveryIncompleteFolder checks that when several
-// granted folders are too large to scan, the launch refusal names all of
-// them, not just the first, so the user can fix them in one go.
+// granted folders are too large to scan, all of them are reported, not
+// just the first.
 func TestDenyScanCapNamesEveryIncompleteFolder(t *testing.T) {
 	big1, big2 := t.TempDir(), t.TempDir()
 	populateLargeTree(t, big1)
@@ -82,21 +68,19 @@ func TestDenyScanCapNamesEveryIncompleteFolder(t *testing.T) {
 		Workdir:    sandboxprofile.Workdir{Access: sandboxprofile.AccessReadWrite},
 		Filesystem: sandboxprofile.Filesystem{Read: []string{big1, big2}},
 	}
-	_, err := ResolveGrants(prof, t.TempDir(), nil)
-	if err == nil {
-		t.Fatal("launch must be refused when deny scans are incomplete")
+	g, err := ResolveGrants(prof, t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, dir := range []string{big1, big2} {
-		if !strings.Contains(err.Error(), dir) {
-			t.Errorf("refusal must name %s, got: %v", dir, err)
-		}
+	if !slices.Equal(g.IncompleteDenyScanRoots, []string{big1, big2}) {
+		t.Errorf("IncompleteDenyScanRoots = %v, want both %s and %s", g.IncompleteDenyScanRoots, big1, big2)
 	}
 }
 
 // populateLargeTree fills root with more entries than the protection scan
 // can enumerate, so the scan is guaranteed to be incomplete. It is laid out
-// as many small directories whose names sort before "zzz-*", keeping the
-// protected target past the enumeration bound. Directory reads are kept
+// as many small directories whose names sort between "aaa-*" and "zzz-*",
+// so a "zzz-*" target lies past the enumeration bound. Directory reads are kept
 // cheap by spreading entries across many dirs.
 func populateLargeTree(t *testing.T, root string) {
 	t.Helper()

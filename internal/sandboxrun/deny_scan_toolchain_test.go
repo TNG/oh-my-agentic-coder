@@ -12,7 +12,7 @@ import (
 )
 
 // TestResolveGrantsDenyScanSkipsToolchainGrant reproduces the launch
-// refusal "~/Library/pnpm hit the 200000-entry limit". The default profile
+// failure "~/Library/pnpm hit the 200000-entry limit". The default profile
 // grants tool-install dirs like the pnpm home read-only so the agent can
 // run the tools; they are not where secrets live, so the scan leaves them
 // out instead of walking pnpm's store (one file per installed package file).
@@ -25,8 +25,12 @@ func TestResolveGrantsDenyScanSkipsToolchainGrant(t *testing.T) {
 		Workdir:    sandboxprofile.Workdir{Access: sandboxprofile.AccessReadWrite},
 		Filesystem: sandboxprofile.Filesystem{Read: []string{"~/Library/pnpm"}},
 	}
-	if _, err := ResolveGrants(p, t.TempDir(), nil); err != nil {
-		t.Fatalf("toolchain grant must not be deny-scanned: %v", err)
+	g, err := ResolveGrants(p, t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(g.IncompleteDenyScanRoots) > 0 {
+		t.Errorf("toolchain grant must not be deny-scanned, scan stopped in %v", g.IncompleteDenyScanRoots)
 	}
 }
 
@@ -49,7 +53,10 @@ func TestResolveGrantsDenyScanPrunesToolchainUnderBroadGrant(t *testing.T) {
 	}
 	g, err := ResolveGrants(p, t.TempDir(), nil)
 	if err != nil {
-		t.Fatalf("toolchain dir under a broad grant must be pruned: %v", err)
+		t.Fatal(err)
+	}
+	if len(g.IncompleteDenyScanRoots) > 0 {
+		t.Errorf("toolchain dir under a broad grant must be pruned, scan stopped in %v", g.IncompleteDenyScanRoots)
 	}
 	if !slices.Contains(g.ProtectedPaths, projectEnv) {
 		t.Errorf(".env outside the toolchain dirs not protected: %s (%v)", projectEnv, g.ProtectedPaths)

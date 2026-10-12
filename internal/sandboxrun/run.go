@@ -57,6 +57,21 @@ func warnEmptyAllowVars(stderr io.Writer, allowVars []string) {
 	fmt.Fprintln(stderr, `  allow_vars: ["*"] is not recommended because it inherits every non-blocklisted var.`)
 }
 
+// warnIncompleteDenyScan names each granted folder the filesystem.deny
+// scan (.env, .envrc, ...) could not finish, before the agent starts.
+// Launch goes ahead: matches found before the scan stopped are hidden,
+// anything further in is not.
+func warnIncompleteDenyScan(stderr io.Writer, roots []string) {
+	if len(roots) == 0 {
+		return
+	}
+	fmt.Fprintf(stderr, "omac sandbox: warning: the filesystem.deny scan (.env, .envrc, ...) stopped after %d entries in these folders, so a matching file further in is NOT hidden from the agent:\n", maxDenyScanEntries)
+	for _, r := range roots {
+		fmt.Fprintf(stderr, "  %s\n", r)
+	}
+	fmt.Fprintln(stderr, "  Grant a narrower folder, or deny the secret files by path.")
+}
+
 // Run is the `omac sandbox run` supervisor: resolve profile + flags,
 // start the filtering proxy, launch the sandboxed child, forward
 // signals, propagate the exit code, tear everything down. Returns the
@@ -103,6 +118,7 @@ func Run(opts Options) int {
 	if err := grants.Validate(); err != nil {
 		return fail("%v", err)
 	}
+	warnIncompleteDenyScan(stderr, grants.IncompleteDenyScanRoots)
 	den := resolvedDenial(merged.Denial)
 	grants.DenialText = den.MarkerFile
 	grants.DenialDirName = den.MarkerDirName

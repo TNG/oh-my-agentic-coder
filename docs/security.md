@@ -97,9 +97,10 @@ dotenv secrets live, and walking them would make launch scale with your whole
 home directory. A file inside a skipped tree is not masked; keep dotenv files
 outside such trees, or deny their directory by path. Launch logs which of those
 tool-install directories it left out. If a scan would still have to look at
-more than 200,000 entries, launch stops rather than run with a partially
-protected set. The error lists every granted directory that was too large,
-so you can remove those grants or deny the directories by path in one go.
+more than 200,000 entries, omac stops scanning that directory and prints a
+warning before the agent starts, naming every such directory. Files found
+before the stop are still masked; a `.env` further in is not. To fix it,
+grant a narrower directory or deny the secret files by path.
 
 ### Secrets
 

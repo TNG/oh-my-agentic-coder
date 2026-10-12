@@ -29,8 +29,11 @@ func WatchNewProtected(p *sandboxprofile.Profile, workdir string, interval time.
 		return err
 	}
 	protected := sandboxprofile.EffectiveProtectedPaths(base, p.Filesystem.OverrideDeny)
+	// Incomplete roots were already warned about at launch; a tick masks
+	// what it can reach, like launch does.
 	resolve := func() ([]string, error) {
-		return resolveDenyPaths(p.Filesystem.Deny, base.WorkdirProtected, p.Filesystem.OverrideDeny, roots, protected, nil)
+		out, _, err := resolveDenyPaths(p.Filesystem.Deny, base.WorkdirProtected, p.Filesystem.OverrideDeny, roots, protected, nil)
+		return out, err
 	}
 
 	known := map[string]bool{}
