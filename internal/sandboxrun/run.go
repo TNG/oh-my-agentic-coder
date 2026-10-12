@@ -90,6 +90,18 @@ func confirmIncompleteDenyScan(stderr io.Writer, in io.Reader, interactive, acce
 	return false
 }
 
+// mayStartAfterDenyScan decides whether launch may go ahead when the deny
+// scan was cut short in roots. Learn mode lifts every filesystem
+// restriction, masks included, so an incomplete scan changes nothing there
+// and is not worth asking about. Otherwise --accept-incomplete-scan or the
+// user's answer decides (confirmIncompleteDenyScan).
+func mayStartAfterDenyScan(stderr io.Writer, in io.Reader, interactive bool, flags *sandboxprofile.Flags, roots []string) bool {
+	if flags.Learn {
+		return true
+	}
+	return confirmIncompleteDenyScan(stderr, in, interactive, flags.AcceptIncompleteScan, roots)
+}
+
 // Run is the `omac sandbox run` supervisor: resolve profile + flags,
 // start the filtering proxy, launch the sandboxed child, forward
 // signals, propagate the exit code, tear everything down. Returns the
@@ -136,13 +148,8 @@ func Run(opts Options) int {
 	if err := grants.Validate(); err != nil {
 		return fail("%v", err)
 	}
-	// Learn mode lifts every filesystem restriction, masks included, so
-	// an incomplete scan changes nothing there and is not worth asking about.
-	if !opts.Flags.Learn {
-		interactive := term.IsTerminal(int(os.Stdin.Fd()))
-		if !confirmIncompleteDenyScan(stderr, os.Stdin, interactive, opts.Flags.AcceptIncompleteScan, grants.IncompleteDenyScanRoots) {
-			return 1
-		}
+	if !mayStartAfterDenyScan(stderr, os.Stdin, term.IsTerminal(int(os.Stdin.Fd())), opts.Flags, grants.IncompleteDenyScanRoots) {
+		return 1
 	}
 	den := resolvedDenial(merged.Denial)
 	grants.DenialText = den.MarkerFile

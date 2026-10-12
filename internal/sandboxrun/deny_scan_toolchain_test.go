@@ -92,6 +92,26 @@ func TestResolveGrantsLogsSkippedToolchainDirs(t *testing.T) {
 	}
 }
 
+// A toolchain dir that is not granted itself but sits inside a broader
+// grant (here ~) is pruned from that grant's scan, so it must be named too.
+func TestResolveGrantsLogsToolchainDirUnderBroadGrant(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	nvm := mkdirAll(t, home, ".nvm")
+
+	p := &sandboxprofile.Profile{
+		Workdir:    sandboxprofile.Workdir{Access: sandboxprofile.AccessReadWrite},
+		Filesystem: sandboxprofile.Filesystem{Read: []string{"~"}},
+	}
+	var notices bytes.Buffer
+	if _, err := ResolveGrants(p, t.TempDir(), &notices); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(notices.String(), "did not search") || !strings.Contains(notices.String(), nvm) {
+		t.Errorf("notice must name %s, pruned from the ~ grant, got:\n%s", nvm, notices.String())
+	}
+}
+
 func mkdirAll(t *testing.T, elem ...string) string {
 	t.Helper()
 	dir := filepath.Join(elem...)

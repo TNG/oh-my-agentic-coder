@@ -96,6 +96,31 @@ func TestParseLaunchArgsOpenPort(t *testing.T) {
 	}
 }
 
+// --accept-incomplete-scan must survive parsing for every start-family
+// command, and parsing for serve, or the sandbox asks (or refuses without a
+// terminal) although the user already said yes.
+func TestParseArgsAcceptIncompleteScan(t *testing.T) {
+	for _, cmd := range []string{"start", "continue", "resume"} {
+		opts, code := parseLaunchArgs(cmd, []string{"--accept-incomplete-scan"}, devnullEnv(t))
+		if code != ExitOK {
+			t.Fatalf("%s: parseLaunchArgs() code = %d, want ExitOK", cmd, code)
+		}
+		if !opts.acceptIncompleteScan {
+			t.Errorf("%s: acceptIncompleteScan = false, want true", cmd)
+		}
+	}
+	if opts, _ := parseLaunchArgs("start", nil, devnullEnv(t)); opts.acceptIncompleteScan {
+		t.Error("acceptIncompleteScan must default to false")
+	}
+	sp, ok := parseServeArgs([]string{"opencode", "--accept-incomplete-scan"}, devnullEnv(t))
+	if !ok {
+		t.Fatal("parseServeArgs() returned false")
+	}
+	if !sp.acceptIncomplete {
+		t.Error("serve: acceptIncomplete = false, want true")
+	}
+}
+
 func TestParseLaunchArgsRejectsBadOpenPort(t *testing.T) {
 	if _, code := parseLaunchArgs("start", []string{"--open-port", "0"}, devnullEnv(t)); code == ExitOK {
 		t.Error("port 0 should be rejected")

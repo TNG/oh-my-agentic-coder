@@ -91,6 +91,44 @@ func TestConfirmIncompleteDenyScan(t *testing.T) {
 	}
 }
 
+// TestMayStartAfterDenyScan checks the launch decision as Run makes it
+// from the parsed flags: learn mode never asks, --accept-incomplete-scan
+// starts, and otherwise there is no start without a "y" on a terminal.
+func TestMayStartAfterDenyScan(t *testing.T) {
+	roots := []string{"/data/huge"}
+	parse := func(args ...string) *sandboxprofile.Flags {
+		t.Helper()
+		f, err := sandboxprofile.ParseFlags(append(args, "--", "true"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return f
+	}
+	for _, tc := range []struct {
+		name        string
+		flags       *sandboxprofile.Flags
+		interactive bool
+		answer      string
+		want        bool
+	}{
+		{name: "learn mode starts without asking", flags: parse("--learn"), want: true},
+		{name: "flag starts without a terminal", flags: parse("--accept-incomplete-scan"), want: true},
+		{name: "no flag, no terminal", flags: parse(), want: false},
+		{name: "no flag, answer no", flags: parse(), interactive: true, answer: "n\n", want: false},
+		{name: "no flag, answer yes", flags: parse(), interactive: true, answer: "y\n", want: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var out bytes.Buffer
+			if got := mayStartAfterDenyScan(&out, strings.NewReader(tc.answer), tc.interactive, tc.flags, roots); got != tc.want {
+				t.Errorf("mayStartAfterDenyScan = %v, want %v; output:\n%s", got, tc.want, out.String())
+			}
+			if tc.flags.Learn && out.Len() > 0 {
+				t.Errorf("learn mode must not warn or ask, got:\n%s", out.String())
+			}
+		})
+	}
+}
+
 // TestDenyScanCapNamesEveryIncompleteFolder checks that when several
 // granted folders are too large to scan, all of them are reported, not
 // just the first.
