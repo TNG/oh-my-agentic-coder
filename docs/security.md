@@ -120,6 +120,24 @@ secret files in the large directory are, deny them by path in
 checking for new `.env` files, but not in directories it could not fully scan
 at launch.
 
+To stop being asked about a directory, answer `a` (always). omac saves that
+directory in `~/.config/omac/sandbox-profiles/default.scan.json` and from then
+on starts without asking, also without a terminal; it only notes this in the
+sandbox log. A directory not saved there is still asked about. To be asked
+again, remove the directory from `accepted_incomplete` in that file. The
+sandbox hides `~/.config/omac` from the agent, so the agent cannot add a
+directory there itself.
+
+The same file remembers the secret files omac found in earlier scans
+(`known_secrets`). omac keeps hiding them even when a later scan stops before
+reaching them. Example: you have `secrets/.env` in your project, and the agent
+creates 200,000 files whose names sort before `secrets`. The scan now stops
+before `secrets/`, but `secrets/.env` stays hidden because an earlier launch
+found it. A file no earlier scan reached is not covered. Right after you
+update from an omac version without this file, the list is empty and fills up
+from that launch on. A remembered file is no longer hidden once you delete it
+or lift it with `override_deny`.
+
 ### Secrets
 
 Integrations (GitHub, GitLab, Jira, email) need API tokens. If the agent holds

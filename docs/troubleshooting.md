@@ -164,6 +164,10 @@ When you answer the network prompt, "session" decisions are held in memory only,
 - Session decision: restart `omac start` — session decisions never persist and cannot be edited from a file, so a restart clears them.
 - Permanent decision: remove the entry from `~/.config/omac/sandbox-profiles/default.pages.json`.
 
+### Be asked again about a folder too large to scan
+
+If you answered `a` (always) when omac said it could not fully scan a folder for `.env` files, omac no longer asks about that folder. To be asked again, remove its entry from `accepted_incomplete` in `~/.config/omac/sandbox-profiles/default.scan.json`.
+
 ## Reporting a bug
 
 If `omac doctor` and the fixes above don't resolve your problem, please report it

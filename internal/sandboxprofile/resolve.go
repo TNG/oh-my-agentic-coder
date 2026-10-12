@@ -114,6 +114,16 @@ func PagesPath(profilePath string) string {
 	return strings.TrimSuffix(profilePath, ".json") + ".pages.json"
 }
 
+// ScanStatePath returns the sibling file that remembers what the secret
+// file scan needs across launches: <dir>/<name>.scan.json. Like
+// PagesPath, an empty profilePath yields "" (nothing is stored).
+func ScanStatePath(profilePath string) string {
+	if profilePath == "" {
+		return ""
+	}
+	return strings.TrimSuffix(profilePath, ".json") + ".scan.json"
+}
+
 // resolveOpts holds the Resolve knobs.
 type resolveOpts struct {
 	scaffold bool
@@ -213,7 +223,7 @@ func WriteProfile(path string, p *Profile) error {
 	if err != nil {
 		return err
 	}
-	return writeAtomic(path, data)
+	return WriteFileAtomic(path, data)
 }
 
 // MarshalPretty renders any value as indented JSON with a trailing
@@ -226,8 +236,9 @@ func MarshalPretty(v any) ([]byte, error) {
 	return append(data, '\n'), nil
 }
 
-// writeAtomic writes data via temp-file + rename.
-func writeAtomic(path string, data []byte) error {
+// WriteFileAtomic writes data via temp-file + rename, so a reader never
+// sees a half-written file.
+func WriteFileAtomic(path string, data []byte) error {
 	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+"-*")
 	if err != nil {
 		return err

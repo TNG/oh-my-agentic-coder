@@ -53,7 +53,8 @@ func TestSecurityDenyScanCapWarnsAndKeepsMatches(t *testing.T) {
 
 // TestConfirmIncompleteDenyScan covers the question asked before launch
 // when a folder could not be fully scanned: it names every folder, starts
-// only on "y" or --accept-incomplete-scan, and declines without a terminal.
+// only on "y", "a" or --accept-incomplete-scan, and declines without a
+// terminal. "a" (always) is only offered and accepted when it can be saved.
 func TestConfirmIncompleteDenyScan(t *testing.T) {
 	roots := []string{"/home/me/data", "/home/me/archive"}
 	cases := []struct {
@@ -61,20 +62,24 @@ func TestConfirmIncompleteDenyScan(t *testing.T) {
 		input       string
 		interactive bool
 		accept      bool
+		remember    bool
 		want        bool
+		wantAlways  bool
 		wantOut     string
 	}{
 		{name: "yes", input: "y\n", interactive: true, want: true, wantOut: "Start anyway? [y/N]"},
 		{name: "default is no", input: "\n", interactive: true, want: false, wantOut: "--accept-incomplete-scan"},
 		{name: "no terminal", interactive: false, want: false, wantOut: "no terminal to ask on"},
 		{name: "flag skips question", interactive: true, accept: true, want: true},
+		{name: "always", input: "a\n", interactive: true, remember: true, want: true, wantAlways: true, wantOut: "a = always for these folders"},
+		{name: "always without a state file", input: "a\n", interactive: true, want: false, wantOut: "Start anyway? [y/N] "},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			var out bytes.Buffer
-			got := confirmIncompleteDenyScan(&out, strings.NewReader(c.input), c.interactive, c.accept, roots)
-			if got != c.want {
-				t.Errorf("confirm = %v, want %v", got, c.want)
+			got, always := confirmIncompleteDenyScan(&out, strings.NewReader(c.input), c.interactive, c.accept, c.remember, roots)
+			if got != c.want || always != c.wantAlways {
+				t.Errorf("confirm = %v, always = %v, want %v, %v", got, always, c.want, c.wantAlways)
 			}
 			for _, want := range []string{roots[0], roots[1], c.wantOut} {
 				if !strings.Contains(out.String(), want) {
@@ -86,7 +91,7 @@ func TestConfirmIncompleteDenyScan(t *testing.T) {
 			}
 		})
 	}
-	if !confirmIncompleteDenyScan(io.Discard, strings.NewReader(""), false, false, nil) {
+	if ok, _ := confirmIncompleteDenyScan(io.Discard, strings.NewReader(""), false, false, false, nil); !ok {
 		t.Error("a complete scan must start without asking")
 	}
 }
@@ -119,7 +124,7 @@ func TestMayStartAfterDenyScan(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var out bytes.Buffer
-			if got := mayStartAfterDenyScan(&out, strings.NewReader(tc.answer), tc.interactive, tc.flags, roots); got != tc.want {
+			if got := mayStartAfterDenyScan(&out, strings.NewReader(tc.answer), tc.interactive, tc.flags, roots, &scanState{}, t.Logf); got != tc.want {
 				t.Errorf("mayStartAfterDenyScan = %v, want %v; output:\n%s", got, tc.want, out.String())
 			}
 			if tc.flags.Learn && out.Len() > 0 {

@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -40,6 +41,11 @@ type Grants struct {
 	// stop are in ProtectedPaths; a match further in is not hidden. Launch
 	// names them and asks before starting (confirmIncompleteDenyScan).
 	IncompleteDenyScanRoots []string
+	// DenyScanRoots are the folders the scan walked, and FoundSecrets the
+	// files it hid there (known secrets kept from earlier launches
+	// included). Launch stores both in the scan state (scanstate.go).
+	DenyScanRoots []string
+	FoundSecrets  []string
 
 	// Network.
 	NetworkMode     string // filtered|blocked|open
@@ -148,6 +154,13 @@ func (g *Grants) prepareMarkers() (func(), error) {
 // workdir access level into a Grants value. notices receives skip
 // notices for nonexistent paths.
 func ResolveGrants(p *sandboxprofile.Profile, workdir string, notices io.Writer) (*Grants, error) {
+	return resolveGrants(p, workdir, notices, nil)
+}
+
+// resolveGrants is ResolveGrants plus knownSecrets, the files earlier
+// launches hid (scanstate.go). They stay hidden where the scan stops
+// early this time; see resolveDenyPaths.
+func resolveGrants(p *sandboxprofile.Profile, workdir string, notices io.Writer, knownSecrets []string) (*Grants, error) {
 	base := sandboxprofile.PlatformBaseline()
 
 	read, err := sandboxprofile.ExpandExisting(append(append([]string{}, base.Read...), p.Filesystem.Read...), notices)
@@ -225,7 +238,14 @@ func ResolveGrants(p *sandboxprofile.Profile, workdir string, notices io.Writer)
 		p.Filesystem.Deny, base.WorkdirProtected, p.Filesystem.OverrideDeny,
 		scan.roots, protected, scan.toolchain, notices,
 	)
+	explicit := pathFormDenies(p.Filesystem.Deny, nil)
+	found := slices.DeleteFunc(slices.Clone(denyResolved), func(m string) bool { return slices.Contains(explicit, m) })
+	kept := keepKnownSecrets(knownSecrets, incompleteScan,
+		denyGlobs(p.Filesystem.Deny, base.WorkdirProtected, p.Filesystem.OverrideDeny), p.Filesystem.OverrideDeny,
+		append(slices.Clone(protected), denyResolved...))
 	protected = append(protected, denyResolved...)
+	protected = append(protected, kept...)
+	found = append(found, kept...)
 	if notices != nil && len(scan.skipped) > 0 {
 		fmt.Fprintf(notices, "omac sandbox: notice: omac did not search these tool-install folders for secret files (.env, .envrc, ...), so such a file inside them is not hidden from the agent: %s\n",
 			strings.Join(scan.skipped, ", "))
@@ -238,6 +258,8 @@ func ResolveGrants(p *sandboxprofile.Profile, workdir string, notices io.Writer)
 		AllowPaths:              dedupe(allow),
 		ProtectedPaths:          dedupe(protected),
 		IncompleteDenyScanRoots: incompleteScan,
+		DenyScanRoots:           scan.roots,
+		FoundSecrets:            dedupe(found),
 		NetworkMode:             p.Network.EffectiveMode(),
 		ListenPorts:             dedupeInts(p.Network.ListenPort),
 		AllowTCPConnect:         dedupeInts(p.Network.AllowTCPConnect),
@@ -580,20 +602,8 @@ func resolveDenyPaths(userDeny, baselineBasenames, overrideDeny, scanRoots, prot
 	}
 
 	explicit := pathFormDenies(userDeny, notices)
-	var globs []string
-	for _, d := range userDeny {
-		if sandboxprofile.IsBasenameGlob(d) {
-			globs = append(globs, d)
-		}
-	}
-
-	// Filter baseline basenames through overrides before walking.
+	globs := denyGlobs(userDeny, baselineBasenames, overrideDeny)
 	overrides := sandboxprofile.BuildOverrideLookup(overrideDeny)
-	for _, b := range baselineBasenames {
-		if !overrides[b] {
-			globs = append(globs, b)
-		}
-	}
 
 	out = explicit
 	if len(globs) > 0 {
@@ -607,6 +617,53 @@ func resolveDenyPaths(userDeny, baselineBasenames, overrideDeny, scanRoots, prot
 		}
 	}
 	return out, incomplete
+}
+
+// denyGlobs returns the basename patterns the deny walk matches: the
+// user's basename-glob deny entries plus the baseline basenames that
+// override_deny does not lift.
+func denyGlobs(userDeny, baselineBasenames, overrideDeny []string) []string {
+	var globs []string
+	for _, d := range userDeny {
+		if sandboxprofile.IsBasenameGlob(d) {
+			globs = append(globs, d)
+		}
+	}
+	overrides := sandboxprofile.BuildOverrideLookup(overrideDeny)
+	for _, b := range baselineBasenames {
+		if !overrides[b] {
+			globs = append(globs, b)
+		}
+	}
+	return globs
+}
+
+// keepKnownSecrets returns the files an earlier launch hid (known) that
+// lie in a folder this launch's scan stopped early in (incomplete). The
+// scan may not have reached them this time, e.g. because an agent added
+// many files in front of them, so they are hidden from the stored list.
+// Each must still exist and still be a match: its name matches a glob,
+// override_deny does not lift it, and it is not inside an already hidden
+// path (masked, a nested mask would fail to mount on Linux).
+func keepKnownSecrets(known, incomplete, globs, overrideDeny, hidden []string) []string {
+	if len(known) == 0 || len(incomplete) == 0 {
+		return nil
+	}
+	overrides := sandboxprofile.BuildOverrideLookup(overrideDeny)
+	var out []string
+	for _, k := range known {
+		if !filepath.IsAbs(k) || overrides[k] || !withinAny(k, incomplete, pathForms) || withinAny(k, hidden, pathForms) {
+			continue
+		}
+		if !slices.ContainsFunc(globs, func(g string) bool { ok, _ := filepath.Match(g, filepath.Base(k)); return ok }) {
+			continue
+		}
+		if _, err := os.Lstat(k); err != nil {
+			continue
+		}
+		out = append(out, k)
+	}
+	return out
 }
 
 // pathFormDenies expands the path-form (non basename-glob) entries of a
