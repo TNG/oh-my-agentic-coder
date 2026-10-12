@@ -96,11 +96,14 @@ The scan also skips large dependency, build, and cache trees:
 dotenv secrets live, and walking them would make launch scale with your whole
 home directory. A file inside a skipped tree is not masked; keep dotenv files
 outside such trees, or deny their directory by path. Launch logs which of those
-tool-install directories it left out. If a scan would still have to look at
-more than 200,000 entries, omac stops scanning that directory and prints a
-warning before the agent starts, naming every such directory. Files found
-before the stop are still masked; a `.env` further in is not. To fix it,
-grant a narrower directory or deny the secret files by path.
+tool-install directories it left out. If a granted directory has more than
+200,000 files, omac cannot fully scan it. It names each such directory and
+asks whether to start anyway. Files found before the scan stopped are still
+masked; a `.env` further in is not. Pass `--accept-incomplete-scan` to
+`omac start` or `omac serve` to start without asking. Without a terminal to
+ask on (for example in CI), omac does not start unless that flag is set. To
+avoid the question, grant a narrower directory or deny the secret files by
+path.
 
 ### Secrets
 

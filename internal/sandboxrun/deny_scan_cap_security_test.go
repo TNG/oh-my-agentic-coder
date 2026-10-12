@@ -3,6 +3,7 @@ package sandboxrun
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -14,9 +15,9 @@ import (
 )
 
 // TestSecurityDenyScanCapWarnsAndKeepsMatches covers a granted tree too
-// large for the launch-time protection scan. Launch goes ahead, but the
-// tree is reported as incomplete so the user is warned, and a .env found
-// before the scan stopped is still hidden.
+// large for the launch-time protection scan. Grant resolution succeeds,
+// but the tree is reported as incomplete so launch can ask the user, and a
+// .env found before the scan stopped is still hidden.
 func TestSecurityDenyScanCapWarnsAndKeepsMatches(t *testing.T) {
 	workdir := t.TempDir()
 
@@ -48,11 +49,45 @@ func TestSecurityDenyScanCapWarnsAndKeepsMatches(t *testing.T) {
 	if !slices.Contains(g.ProtectedPaths, early) {
 		t.Errorf("match found before the cap must still be protected: %s", early)
 	}
+}
 
-	var stderr bytes.Buffer
-	warnIncompleteDenyScan(&stderr, g.IncompleteDenyScanRoots)
-	if !strings.Contains(stderr.String(), "warning") || !strings.Contains(stderr.String(), workdir) {
-		t.Errorf("warning must name %s, got:\n%s", workdir, stderr.String())
+// TestConfirmIncompleteDenyScan covers the question asked before launch
+// when a folder could not be fully scanned: it names every folder, starts
+// only on "y" or --accept-incomplete-scan, and declines without a terminal.
+func TestConfirmIncompleteDenyScan(t *testing.T) {
+	roots := []string{"/home/me/data", "/home/me/archive"}
+	cases := []struct {
+		name        string
+		input       string
+		interactive bool
+		accept      bool
+		want        bool
+		wantOut     string
+	}{
+		{name: "yes", input: "y\n", interactive: true, want: true, wantOut: "Start anyway? [y/N]"},
+		{name: "default is no", input: "\n", interactive: true, want: false, wantOut: "--accept-incomplete-scan"},
+		{name: "no terminal", interactive: false, want: false, wantOut: "no terminal to confirm"},
+		{name: "flag skips question", interactive: true, accept: true, want: true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var out bytes.Buffer
+			got := confirmIncompleteDenyScan(&out, strings.NewReader(c.input), c.interactive, c.accept, roots)
+			if got != c.want {
+				t.Errorf("confirm = %v, want %v", got, c.want)
+			}
+			for _, want := range []string{roots[0], roots[1], c.wantOut} {
+				if !strings.Contains(out.String(), want) {
+					t.Errorf("output must contain %q, got:\n%s", want, out.String())
+				}
+			}
+			if c.accept && strings.Contains(out.String(), "Start anyway?") {
+				t.Errorf("--accept-incomplete-scan must not ask, got:\n%s", out.String())
+			}
+		})
+	}
+	if !confirmIncompleteDenyScan(io.Discard, strings.NewReader(""), false, false, nil) {
+		t.Error("a complete scan must start without asking")
 	}
 }
 

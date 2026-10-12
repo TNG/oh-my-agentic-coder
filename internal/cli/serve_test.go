@@ -1451,3 +1451,20 @@ func TestInjectSandboxDenies(t *testing.T) {
 		t.Errorf("no deny paths must be a no-op: %v", got)
 	}
 }
+
+func TestInjectAcceptIncompleteScan(t *testing.T) {
+	native := config.SandboxProfile{Command: []string{"{{self}}", "sandbox", "run", "--"}}
+	nono := config.SandboxProfile{Command: []string{"nono", "run", "--", "{{inner_cmd}}"}}
+	in := []string{"omac", "sandbox", "run", "--", "opencode"}
+	want := []string{"omac", "sandbox", "run", "--accept-incomplete-scan", "--", "opencode"}
+	if got := injectAcceptIncompleteScan(in, true, native); !equalStrings(got, want) {
+		t.Errorf("injectAcceptIncompleteScan = %v, want %v", got, want)
+	}
+	if got := injectAcceptIncompleteScan(in, false, native); !equalStrings(got, in) {
+		t.Errorf("flag not set must be a no-op: %v", got)
+	}
+	nonoIn := []string{"nono", "run", "--", "opencode"}
+	if got := injectAcceptIncompleteScan(nonoIn, true, nono); !equalStrings(got, nonoIn) {
+		t.Errorf("non-native backend must get no flag: %v", got)
+	}
+}

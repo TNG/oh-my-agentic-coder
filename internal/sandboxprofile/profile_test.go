@@ -1215,3 +1215,16 @@ func TestUnknownFieldErrorHintsAtVersionSkew(t *testing.T) {
 		t.Errorf("version hint leaked onto an unrelated parse error: %v", err)
 	}
 }
+
+func TestParseFlagsAcceptIncompleteScan(t *testing.T) {
+	f, err := ParseFlags([]string{"--accept-incomplete-scan", "--", "opencode"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !f.AcceptIncompleteScan {
+		t.Error("--accept-incomplete-scan not parsed")
+	}
+	if _, err := ParseFlags([]string{"--accept-incomplete-scan=yes", "--", "opencode"}); err == nil {
+		t.Error("--accept-incomplete-scan must not take a value")
+	}
+}

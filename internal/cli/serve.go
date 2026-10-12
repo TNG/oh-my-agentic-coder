@@ -53,6 +53,7 @@ type serveParse struct {
 	verbose           bool
 	forDesktop        bool
 	learn             bool
+	acceptIncomplete  bool
 	auditLog          string
 	noAudit           bool
 	auditStrict       bool
@@ -78,6 +79,7 @@ func parseServeArgs(args []string, env *Env) (serveParse, bool) {
 		cacheScopeFlag    = fs.String("cache-scope", "", "Persistent cache scope: global, config, or workdir. Overrides config (default: global).")
 		verbose           = fs.Bool("verbose", false, "Verbose lifecycle logging.")
 		forDesktop        = fs.Bool("for-opencode-desktop", false, "Grant every project worktree from the local OpenCode state (Desktop projects) read+write in the sandbox.")
+		acceptIncomplete  = fs.Bool("accept-incomplete-scan", false, "Start without asking when the sandbox could not fully scan a granted folder for secrets (.env, ...) because it has more than 200000 files.")
 		learn             = fs.Bool("learn", false, "Learn mode: do not restrict filesystem access; record folders used and offer to add them to the sandbox profile at session end.")
 		auditLog          = fs.String("audit-log", "", "Path to the audit log (default: persistent central location). Overrides config.")
 		noAudit           = fs.Bool("no-audit", false, "Disable the security audit trail.")
@@ -136,6 +138,7 @@ func parseServeArgs(args []string, env *Env) (serveParse, bool) {
 		verbose:           *verbose,
 		forDesktop:        *forDesktop,
 		learn:             *learn,
+		acceptIncomplete:  *acceptIncomplete,
 		auditLog:          *auditLog,
 		noAudit:           *noAudit,
 		auditStrict:       *auditStrict,
@@ -174,6 +177,7 @@ func runServe(args []string, env *Env) int {
 	verbose := parsed.verbose
 	forDesktop := parsed.forDesktop
 	learn := parsed.learn
+	acceptIncomplete := parsed.acceptIncomplete
 	auditLog := parsed.auditLog
 	noAudit := parsed.noAudit
 	auditStrict := parsed.auditStrict
@@ -572,6 +576,7 @@ func runServe(args []string, env *Env) int {
 			}
 		}
 		argv = injectUserOpenPorts(env, argv, openPorts, prof)
+		argv = injectAcceptIncompleteScan(argv, acceptIncomplete, prof)
 		// Pass the resolved audit path to `omac sandbox run` so its
 		// network-filter subprocess appends net.decision events to the
 		// same persistent log. Inherit the parent's run_id + mode so the
@@ -928,6 +933,17 @@ func injectSandboxEnvAllow(argv []string, names []string, plan sandboxPlan) []st
 		argv = injectSandboxFlag(argv, "--allow-env", n)
 	}
 	return argv
+}
+
+// injectAcceptIncompleteScan passes --accept-incomplete-scan through to
+// omac's native `sandbox run`, which otherwise asks before starting when
+// its .env scan could not finish a granted folder. Other backends (nono)
+// do no such scan and get no flag.
+func injectAcceptIncompleteScan(argv []string, accept bool, prof config.SandboxProfile) []string {
+	if _, native := prof.PolicyRef(); !accept || !native {
+		return argv
+	}
+	return injectSandboxFlag(argv, "--accept-incomplete-scan", "")
 }
 
 // injectUserOpenPorts splices user --open-port values into a native-sandbox

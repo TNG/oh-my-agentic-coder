@@ -1,6 +1,7 @@
 package sandboxrun
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
 	"io"
@@ -21,6 +22,7 @@ import (
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxdeny"
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
 	"github.com/TNG/oh-my-agentic-coder/internal/toolcache"
+	"golang.org/x/term"
 )
 
 // Options bundles the inputs for Run.
@@ -57,19 +59,35 @@ func warnEmptyAllowVars(stderr io.Writer, allowVars []string) {
 	fmt.Fprintln(stderr, `  allow_vars: ["*"] is not recommended because it inherits every non-blocklisted var.`)
 }
 
-// warnIncompleteDenyScan names each granted folder the filesystem.deny
-// scan (.env, .envrc, ...) could not finish, before the agent starts.
-// Launch goes ahead: matches found before the scan stopped are hidden,
-// anything further in is not.
-func warnIncompleteDenyScan(stderr io.Writer, roots []string) {
+// confirmIncompleteDenyScan warns about each granted folder the
+// filesystem.deny scan (.env, .envrc, ...) could not finish and asks
+// whether to start anyway. Files found before the scan stopped are still
+// hidden; anything further in is not. accept (--accept-incomplete-scan)
+// skips the question. Without a terminal to ask on, it declines, so an
+// unattended launch never starts with unhidden secrets by default.
+func confirmIncompleteDenyScan(stderr io.Writer, in io.Reader, interactive, accept bool, roots []string) bool {
 	if len(roots) == 0 {
-		return
+		return true
 	}
-	fmt.Fprintf(stderr, "omac sandbox: warning: the filesystem.deny scan (.env, .envrc, ...) stopped after %d entries in these folders, so a matching file further in is NOT hidden from the agent:\n", maxDenyScanEntries)
+	fmt.Fprintf(stderr, "omac sandbox: warning: these folders have more than %d files, so they could not be fully scanned and secrets (.env, ...) in them may not be redacted:\n", maxDenyScanEntries)
 	for _, r := range roots {
 		fmt.Fprintf(stderr, "  %s\n", r)
 	}
-	fmt.Fprintln(stderr, "  Grant a narrower folder, or deny the secret files by path.")
+	if accept {
+		return true
+	}
+	if !interactive {
+		fmt.Fprintln(stderr, "omac sandbox: not started (no terminal to confirm). Pass --accept-incomplete-scan to start anyway.")
+		return false
+	}
+	fmt.Fprint(stderr, "Start anyway? [y/N] ")
+	answer, _ := bufio.NewReader(in).ReadString('\n')
+	answer = strings.ToLower(strings.TrimSpace(answer))
+	if answer == "y" || answer == "yes" {
+		return true
+	}
+	fmt.Fprintln(stderr, "omac sandbox: not started. Pass --accept-incomplete-scan to skip this question.")
+	return false
 }
 
 // Run is the `omac sandbox run` supervisor: resolve profile + flags,
@@ -118,7 +136,10 @@ func Run(opts Options) int {
 	if err := grants.Validate(); err != nil {
 		return fail("%v", err)
 	}
-	warnIncompleteDenyScan(stderr, grants.IncompleteDenyScanRoots)
+	interactive := term.IsTerminal(int(os.Stdin.Fd()))
+	if !confirmIncompleteDenyScan(stderr, os.Stdin, interactive, opts.Flags.AcceptIncompleteScan, grants.IncompleteDenyScanRoots) {
+		return 1
+	}
 	den := resolvedDenial(merged.Denial)
 	grants.DenialText = den.MarkerFile
 	grants.DenialDirName = den.MarkerDirName
