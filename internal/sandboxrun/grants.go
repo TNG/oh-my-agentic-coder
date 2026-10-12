@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -462,7 +463,9 @@ var denyScanSkipDirNames = map[string]bool{
 // denyScanRoots returns the roots a basename-glob deny scans: the
 // explicit (non-baseline) grants plus the workdir when granted.
 // Baseline grants are excluded so a deny like ".env" never walks /usr
-// or /lib.
+// or /lib. Toolchain grants (~/.nvm, ~/Library/pnpm, ...) are excluded
+// for the same reason: they hold tool installs and package stores, and
+// pnpm's store alone overruns maxDenyScanEntries.
 func denyScanRoots(p *sandboxprofile.Profile, workdir string) ([]string, error) {
 	roots, err := sandboxprofile.ExpandExisting(
 		append(append(append([]string{}, p.Filesystem.Read...), p.Filesystem.Write...), p.Filesystem.Allow...),
@@ -473,7 +476,34 @@ func denyScanRoots(p *sandboxprofile.Profile, workdir string) ([]string, error) 
 	if p.Workdir.Access != "" && p.Workdir.Access != sandboxprofile.AccessNone {
 		roots = append(roots, workdir)
 	}
+	toolchain, err := toolchainDirs()
+	if err != nil {
+		return nil, err
+	}
+	roots = slices.DeleteFunc(roots, func(r string) bool { return withinAny(r, toolchain) })
 	return dedupe(roots), nil
+}
+
+// toolchainDirs returns the existing toolchain dirs the deny scan leaves
+// out, both as roots (denyScanRoots) and when a broader grant such as ~
+// contains them (walkGlobMatches).
+func toolchainDirs() ([]string, error) {
+	return sandboxprofile.ExpandExisting(sandboxprofile.ToolchainReadPaths(), nil)
+}
+
+// withinAny reports whether path is one of dirs or inside one of them,
+// comparing both the given and the symlink-resolved spellings.
+func withinAny(path string, dirs []string) bool {
+	for _, d := range dirs {
+		for _, df := range pathForms(d) {
+			for _, pf := range pathForms(path) {
+				if pf == df || strings.HasPrefix(pf, df+string(filepath.Separator)) {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 // resolveDenyPaths resolves user deny entries and baseline workdir-protected
@@ -577,14 +607,21 @@ func clampInt(v, lo, hi int) int {
 // to start rather than degrade to a partial protected set.
 //
 // protectedDirs are already-denied paths the walk prunes without
-// descending (any match inside is masked by the ancestor rule), and
-// denyScanSkipDirNames prunes large dependency/cache trees.
+// descending (any match inside is masked by the ancestor rule),
+// toolchain dirs are pruned the same way, and denyScanSkipDirNames
+// prunes large dependency/cache trees.
 func walkGlobMatches(roots, globs, protectedDirs []string, notices io.Writer) ([]string, error) {
 	if len(globs) == 0 || len(roots) == 0 {
 		return nil, nil
 	}
+	// Toolchain dirs are pruned like protected ones: not masked, just not
+	// worth walking (see denyScanRoots).
+	toolchain, err := toolchainDirs()
+	if err != nil {
+		return nil, err
+	}
 	protected := map[string]bool{}
-	for _, p := range protectedDirs {
+	for _, p := range append(slices.Clone(protectedDirs), toolchain...) {
 		for _, fp := range pathForms(p) {
 			protected[fp] = true
 		}
@@ -685,34 +722,12 @@ func walkOneDenyRoot(root string, globs []string, protected map[string]bool) (ma
 				return nil
 			}
 		}
-		if d.IsDir() && (denyScanSkipDirNames[name] || isPnpmStore(path, name)) {
+		if d.IsDir() && denyScanSkipDirNames[name] {
 			return filepath.SkipDir
 		}
 		return nil
 	})
 	return matches, hitCap
-}
-
-// isPnpmStore reports whether dir is pnpm's content-addressable package
-// store, e.g. ~/Library/pnpm/store/v10/files/... It holds one file per
-// package file ever installed, so it overruns maxDenyScanEntries on its
-// own. "store" alone is too common a name to skip (src/store in a
-// frontend project), so it also has to contain a version dir like "v10".
-func isPnpmStore(dir, name string) bool {
-	if name != "store" {
-		return false
-	}
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return false
-	}
-	for _, e := range entries {
-		v, ok := strings.CutPrefix(e.Name(), "v")
-		if e.IsDir() && ok && v != "" && strings.Trim(v, "0123456789") == "" {
-			return true
-		}
-	}
-	return false
 }
 
 func dedupe(in []string) []string {

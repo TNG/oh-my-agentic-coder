@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -25,25 +26,10 @@ func DefaultProfile() *Profile {
 		Meta:    Meta{Name: "default"},
 		Workdir: Workdir{Access: AccessReadWrite},
 		Filesystem: Filesystem{
-			Read: []string{
+			Read: slices.Concat([]string{
 				"~/.gitconfig",
 				"~/.gitignore_global",
-				// Generic version-manager / toolchain bin dirs, so tools the
-				// agent shells out to (node, cargo, ...) are reachable. The
-				// active harness's OWN binary dir is NOT listed here: it is
-				// resolved and granted per-launch, install-method agnostically,
-				// by sandboxrun.resolveInnerBinaryDirs (handles bun/npm/mise/
-				// asdf shims + their symlink targets). Do not re-add a specific
-				// harness package path here.
-				"~/.nvm",
-				"~/.bun/bin",
-				"~/.cargo/bin",
-				"~/.rustup",
-				"~/go/bin",
-				// Access to pnpm executables, pnpm-installed global tools,
-				// and the pnpm store
-				"~/.local/share/pnpm",
-				"~/Library/pnpm",
+			}, ToolchainReadPaths(), []string{
 				// Shared neutral skills base (agentskills.io). In scope for every
 				// harness via InScopeSkillsBases, so a guidance-only SKILL.md
 				// placed under the shared global root is readable inside the
@@ -51,7 +37,7 @@ func DefaultProfile() *Profile {
 				// Harness.SandboxDirs at launch.
 				"~/.config/agents/skills",
 				"~/.agents/skills",
-			},
+			}),
 		},
 		Network: Network{
 			Mode:            ModeFiltered,
@@ -68,6 +54,30 @@ func DefaultProfile() *Profile {
 		// capability pointers) except the danger blocklist — the leak
 		// fixed here. Harness auth vars are merged at launch.
 		Environment: Environment{AllowVars: DefaultAllowVars()},
+	}
+}
+
+// ToolchainReadPaths are the version-manager / toolchain dirs the default
+// profile grants read-only, so tools the agent shells out to (node, cargo,
+// pnpm, ...) are reachable. They hold tool installs and package stores,
+// not user data, so the launch-time .env scan leaves them out
+// (sandboxrun.denyScanRoots) just like the /usr-style baseline.
+//
+// The active harness's OWN binary dir is NOT listed here: it is resolved
+// and granted per-launch, install-method agnostically, by
+// sandboxrun.resolveInnerBinaryDirs (handles bun/npm/mise/asdf shims +
+// their symlink targets). Do not re-add a specific harness package path
+// here.
+func ToolchainReadPaths() []string {
+	return []string{
+		"~/.nvm",
+		"~/.bun/bin",
+		"~/.cargo/bin",
+		"~/.rustup",
+		"~/go/bin",
+		// pnpm executables, pnpm-installed global tools, and the pnpm store
+		"~/.local/share/pnpm",
+		"~/Library/pnpm",
 	}
 }
 
