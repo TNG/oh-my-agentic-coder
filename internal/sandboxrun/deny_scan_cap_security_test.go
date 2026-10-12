@@ -96,11 +96,11 @@ func TestConfirmIncompleteDenyScan(t *testing.T) {
 	}
 }
 
-// TestMayStartAfterDenyScan checks the launch decision as Run makes it
-// from the parsed flags: learn mode never asks, --accept-incomplete-scan
-// starts, and otherwise there is no start without a "y" on a terminal.
-func TestMayStartAfterDenyScan(t *testing.T) {
-	roots := []string{"/data/huge"}
+// TestStartAfterDenyScan checks the launch decision as Run makes it from
+// the parsed flags: learn mode never asks, --accept-incomplete-scan
+// starts, and otherwise there is no start without a "y" or "a" on a
+// terminal. Only "a" is remembered, and learn mode stores nothing.
+func TestStartAfterDenyScan(t *testing.T) {
 	parse := func(args ...string) *sandboxprofile.Flags {
 		t.Helper()
 		f, err := sandboxprofile.ParseFlags(append(args, "--", "true"))
@@ -110,25 +110,50 @@ func TestMayStartAfterDenyScan(t *testing.T) {
 		return f
 	}
 	for _, tc := range []struct {
-		name        string
-		flags       *sandboxprofile.Flags
-		interactive bool
-		answer      string
-		want        bool
+		name         string
+		flags        *sandboxprofile.Flags
+		interactive  bool
+		answer       string
+		want         bool
+		wantAccepted bool
 	}{
 		{name: "learn mode starts without asking", flags: parse("--learn"), want: true},
 		{name: "flag starts without a terminal", flags: parse("--accept-incomplete-scan"), want: true},
 		{name: "no flag, no terminal", flags: parse(), want: false},
 		{name: "no flag, answer no", flags: parse(), interactive: true, answer: "n\n", want: false},
 		{name: "no flag, answer yes", flags: parse(), interactive: true, answer: "y\n", want: true},
+		{name: "no flag, answer always", flags: parse(), interactive: true, answer: "a\n", want: true, wantAccepted: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			huge := t.TempDir()
+			path := filepath.Join(t.TempDir(), "default.scan.json")
+			state, err := loadScanState(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			g := &Grants{
+				IncompleteDenyScanRoots: []string{huge},
+				DenyScanRoots:           []string{huge},
+				FoundSecrets:            []string{filepath.Join(huge, ".env")},
+			}
 			var out bytes.Buffer
-			if got := mayStartAfterDenyScan(&out, strings.NewReader(tc.answer), tc.interactive, tc.flags, roots, &scanState{}, t.Logf); got != tc.want {
-				t.Errorf("mayStartAfterDenyScan = %v, want %v; output:\n%s", got, tc.want, out.String())
+			if got := startAfterDenyScan(&out, strings.NewReader(tc.answer), tc.interactive, tc.flags, g, state, t.Logf); got != tc.want {
+				t.Errorf("startAfterDenyScan = %v, want %v; output:\n%s", got, tc.want, out.String())
 			}
 			if tc.flags.Learn && out.Len() > 0 {
 				t.Errorf("learn mode must not warn or ask, got:\n%s", out.String())
+			}
+			saved, err := loadScanState(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if saved.isAccepted(huge) != tc.wantAccepted {
+				t.Errorf("folder accepted = %v, want %v", saved.isAccepted(huge), tc.wantAccepted)
+			}
+			// Found secrets are stored once launch starts, never in learn
+			// mode (masks are lifted there) or when the user declines.
+			if wantSaved := tc.want && !tc.flags.Learn; (len(saved.knownSecrets()) > 0) != wantSaved {
+				t.Errorf("known secrets saved = %v, want %v", saved.knownSecrets(), wantSaved)
 			}
 		})
 	}

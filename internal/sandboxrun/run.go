@@ -111,20 +111,25 @@ func formatThousands(n int) string {
 	return s
 }
 
-// mayStartAfterDenyScan decides whether launch may go ahead when the deny
-// scan was cut short in roots. Learn mode lifts every filesystem
-// restriction, masks included, so an incomplete scan changes nothing there
-// and is not worth asking about. Folders the user answered "always" for
-// earlier (state) start without a question; logf notes them. For the rest
-// --accept-incomplete-scan or the user's answer decides
-// (confirmIncompleteDenyScan), and an "always" answer is recorded in state.
-func mayStartAfterDenyScan(stderr io.Writer, in io.Reader, interactive bool, flags *sandboxprofile.Flags, roots []string, state *scanState, logf func(string, ...any)) bool {
+// startAfterDenyScan decides whether launch may go ahead when the deny
+// scan was cut short in some folders (g.IncompleteDenyScanRoots), and then
+// stores what the scan state remembers (scanstate.go). Learn mode lifts
+// every filesystem restriction, masks included, so an incomplete scan
+// changes nothing there: it neither asks nor stores anything.
+//
+// Folders the user answered "always" for earlier start without a
+// question; logf notes them. That does not hold when a secret file found
+// at an earlier launch is gone from such a folder (g.MissingSecrets): it
+// may have been moved past the point where the scan stops, so launch
+// names it and asks. Otherwise --accept-incomplete-scan or the user's
+// answer decides (confirmIncompleteDenyScan).
+func startAfterDenyScan(stderr io.Writer, in io.Reader, interactive bool, flags *sandboxprofile.Flags, g *Grants, state *scanState, logf func(string, ...any)) bool {
 	if flags.Learn {
 		return true
 	}
 	var ask, accepted []string
-	for _, r := range roots {
-		if state.isAccepted(r) {
+	for _, r := range g.IncompleteDenyScanRoots {
+		if len(g.MissingSecrets) == 0 && state.isAccepted(r) {
 			accepted = append(accepted, r)
 		} else {
 			ask = append(ask, r)
@@ -134,12 +139,28 @@ func mayStartAfterDenyScan(stderr io.Writer, in io.Reader, interactive bool, fla
 		logf("omac sandbox: notice: the secret file scan stopped early in %s; starting without asking, as you chose earlier (remove the folder from %s to be asked again)",
 			strings.Join(accepted, ", "), state.path)
 	}
+	if len(g.MissingSecrets) > 0 {
+		fmt.Fprintln(stderr, "omac sandbox: warning: these secret files were hidden at an earlier launch but are gone now. If they were moved deeper into their folder, they are no longer hidden:")
+		for _, m := range g.MissingSecrets {
+			fmt.Fprintf(stderr, "  %s\n", m)
+		}
+	}
 	start, always := confirmIncompleteDenyScan(stderr, in, interactive, flags.AcceptIncompleteScan, state.canSave(), ask)
+	if !start {
+		return false
+	}
 	if always {
 		state.acceptAlways(ask)
+	}
+	if err := state.save(g.DenyScanRoots, g.FoundSecrets, g.KeptSecrets); err != nil {
+		logf("omac sandbox: warning: could not save the secret file scan state: %v", err)
+		if always {
+			fmt.Fprintf(stderr, "omac sandbox: warning: could not save your answer, so omac will ask again next time: %v\n", err)
+		}
+	} else if always {
 		fmt.Fprintf(stderr, "omac sandbox: saved in %s; remove a folder there to be asked again.\n", state.path)
 	}
-	return start
+	return true
 }
 
 // Run is the `omac sandbox run` supervisor: resolve profile + flags,
@@ -195,13 +216,8 @@ func Run(opts Options) int {
 	if err := grants.Validate(); err != nil {
 		return fail("%v", err)
 	}
-	if !mayStartAfterDenyScan(stderr, os.Stdin, term.IsTerminal(int(os.Stdin.Fd())), opts.Flags, grants.IncompleteDenyScanRoots, scanState, diag.Logf) {
+	if !startAfterDenyScan(stderr, os.Stdin, term.IsTerminal(int(os.Stdin.Fd())), opts.Flags, grants, scanState, diag.Logf) {
 		return 1
-	}
-	if !opts.Flags.Learn {
-		if err := scanState.save(grants.DenyScanRoots, grants.FoundSecrets); err != nil {
-			diag.Logf("omac sandbox: warning: could not save the secret file scan state: %v", err)
-		}
 	}
 	den := resolvedDenial(merged.Denial)
 	grants.DenialText = den.MarkerFile

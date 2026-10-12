@@ -166,7 +166,7 @@ When you answer the network prompt, "session" decisions are held in memory only,
 
 ### Be asked again about a folder too large to scan
 
-If you answered `a` (always) when omac said it could not fully scan a folder for `.env` files, omac no longer asks about that folder. To be asked again, remove its entry from `accepted_incomplete` in `~/.config/omac/sandbox-profiles/default.scan.json`.
+If you answered `a` (always) when omac said it could not fully scan a folder for `.env` files, omac no longer asks about that folder. To be asked again, remove its entry from `accepted_incomplete` in `~/.config/omac/sandbox-profiles/default.scan.json` (`<name>.scan.json` if you use `--profile <name>`).
 
 ## Reporting a bug
 

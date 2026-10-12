@@ -106,37 +106,43 @@ outside such trees, or deny their directory by path.
 
 If a granted directory has more than 200,000 files and folders, omac stops
 scanning it there. Files found before that point are still masked; a `.env`
-further in is not. omac names each such directory and asks whether to start
-anyway. To start without being asked, pass `--accept-incomplete-scan` to
-`omac start`, `omac continue`, `omac resume`, `omac serve` or
-`omac sandbox run`. Without a terminal to ask on (for example in CI, or
-`omac serve` started by OpenCode Desktop), omac does not start unless that
-flag is set. Learn mode (`--learn`) never asks, because it lifts all
-filesystem restrictions anyway.
+further in is not. omac names each such directory and asks
+`Start anyway? [y/N, a = always for these folders]`. Learn mode (`--learn`)
+never asks, because it lifts all filesystem restrictions anyway.
 
-To avoid the question, grant a narrower directory. If you know where the
+There are three ways to start without the question:
+
+- **Answer `a` once.** omac saves the directory and from then on starts
+  without asking about it, also without a terminal (for example `omac serve`
+  started by OpenCode Desktop). It only notes this in the sandbox log. The
+  answer is saved in `~/.config/omac/sandbox-profiles/default.scan.json`
+  (`<name>.scan.json` when you use `--profile <name>`). To be asked again,
+  remove the directory from `accepted_incomplete` there. The sandbox hides
+  `~/.config/omac` from the agent, so the agent cannot add a directory itself.
+- **Pass `--accept-incomplete-scan`** to `omac start`, `omac continue`,
+  `omac resume`, `omac serve` or `omac sandbox run`. It skips the question for
+  that launch only.
+- **Grant a narrower directory**, so the scan finishes.
+
+Without a terminal to ask on (for example in CI), omac does not start unless
+the directory was saved with `a` or the flag is set. If you know where the
 secret files in the large directory are, deny them by path in
-`filesystem.deny`; then it is safe to answer `y`. During a session, omac keeps
-checking for new `.env` files, but not in directories it could not fully scan
-at launch.
+`filesystem.deny`; then it is safe to start anyway. During a session, omac
+keeps checking for new `.env` files, but not in directories it could not fully
+scan at launch.
 
-To stop being asked about a directory, answer `a` (always). omac saves that
-directory in `~/.config/omac/sandbox-profiles/default.scan.json` and from then
-on starts without asking, also without a terminal; it only notes this in the
-sandbox log. A directory not saved there is still asked about. To be asked
-again, remove the directory from `accepted_incomplete` in that file. The
-sandbox hides `~/.config/omac` from the agent, so the agent cannot add a
-directory there itself.
+The same file also remembers the secret files omac found in earlier scans
+(`known_secrets`), so a later scan that stops early keeps hiding them.
+Example: your project has `secrets/.env`, and the agent creates 200,000 files
+whose names sort before `secrets`. The scan now stops before `secrets/`, but
+`secrets/.env` stays hidden because an earlier launch found it. If a
+remembered file is gone from a directory omac could not fully scan, for
+example because its folder was renamed, omac names it and asks again, even
+for a directory you answered `a` for.
 
-The same file remembers the secret files omac found in earlier scans
-(`known_secrets`). omac keeps hiding them even when a later scan stops before
-reaching them. Example: you have `secrets/.env` in your project, and the agent
-creates 200,000 files whose names sort before `secrets`. The scan now stops
-before `secrets/`, but `secrets/.env` stays hidden because an earlier launch
-found it. A file no earlier scan reached is not covered. Right after you
-update from an omac version without this file, the list is empty and fills up
-from that launch on. A remembered file is no longer hidden once you delete it
-or lift it with `override_deny`.
+This covers only files an earlier scan found. Right after you update from an
+omac version without this file, the list is empty and fills up from that
+launch on. omac forgets a remembered file once you delete it.
 
 ### Secrets
 
