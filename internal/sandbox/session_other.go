@@ -4,4 +4,4 @@ package sandbox
 
 // detachedSessionGroups is Linux-only: only the bwrap backend detaches the
 // child from the terminal session.
-func detachedSessionGroups(_, _ int) []int { return nil }
+func detachedSessionGroups(_ int) []int { return nil }
