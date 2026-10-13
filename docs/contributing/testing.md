@@ -36,6 +36,8 @@ dual entrypoint. The pinned OpenCode E2E version exercises that minimum.
 
 Platform-specific behaviour lives in separate files gated by a `//go:build` constraint — `*_integration_linux_test.go` (tagged `linux`) tests bwrap and Landlock; `*_integration_darwin_test.go` (tagged `darwin`) tests Seatbelt. Go compiles each file only on its target OS, so on the other OS those tests are left out of the test binary entirely.
 
+Terminal resize on Linux is covered at two levels, because bwrap detaches the sandboxed program from the terminal and omac has to pass resize notifications (`SIGWINCH`) on by itself. The tests in `internal/sandboxrun/resize_integration_linux_test.go` run a small shell script that prints the window size on every resize. They start it inside a pseudo-terminal, through `omac sandbox run` and through `omac start`, resize the terminal and check that the new size arrives. The E2E stage `resize` (below) does the same with the real OpenCode interface.
+
 Runtime skipping is a separate mechanism: some facade and serve tests are compiled everywhere but skip themselves at runtime when they cannot open a loopback TCP port or Unix socket (e.g. on locked-down CI runners), and these do show up as skipped in the test output.
 
 Two Linux sandbox integration tests (`TestIntegrationProtectedMaskedUnderGrant`, `TestIntegrationOverrideDenyGrantsAccess` in `internal/sandboxrun/`) grant a staged temporary home directory, then check that sensitive folders (`~/.ssh`, `~/.aws`, `~/.azure`, …) are still hidden inside the sandbox. Staging the home keeps the broad grant a small scan root and avoids depending on which home paths happen to exist on the machine.
@@ -76,6 +78,7 @@ E2E tests use temporary home directories and do not modify your real keychain or
 | `sandbox_denied` | Protected paths (`.ssh`, `.aws`, `.env`, …) stay inaccessible inside the sandbox | no | all                   |
 | `security_assertions` | A live agent runs an in-sandbox self-audit script; the test then checks its output to confirm protected files (read/write, incl. symlink escape), secrets, filtered env vars, and disallowed network requests were all blocked, while allowed paths still worked | yes | all                   |
 | `self_authored_skill` | A user-written skill can be registered and executed | no | all                   |
+| `resize` | `omac start opencode` runs in a pseudo-terminal that is resized from 24x80 to 50x160; OpenCode must redraw at the new size (Linux only) | no | OpenCode only         |
 
 **For the `llm` stage:** credentials are read from environment variables at runtime — `internal/e2e/versions.go` declares which variable names, and `.github/workflows/e2e.yml` wires them from GitHub Actions encrypted secrets. When running tests locally, you supply credentials through your own shell environment.
 All harnesses except claude-code use a shared model gateway (`zai-org/GLM-5.2`) because it is cost-effective.
