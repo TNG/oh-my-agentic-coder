@@ -37,7 +37,8 @@ func BuildBwrapArgv(g *Grants, stage2Argv []string) ([]string, error) {
 		// --new-session creates a new terminal session (setsid), preventing
 		// TIOCSTI keystroke injection from confined code into the host shell.
 		// The child no longer receives kernel-delivered SIGWINCH on resize;
-		// the supervisor relays it explicitly via kill(-pgid, SIGWINCH).
+		// the supervisor keeps the terminal foreground and relays it to the
+		// new session (sandbox.ExecDetachedSession).
 		"--new-session",
 		"--unshare-pid",
 		"--unshare-ipc",

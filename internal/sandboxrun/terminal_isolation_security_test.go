@@ -32,12 +32,10 @@ import (
 // broken terminal resize is a visible annoyance; a silent escape on a
 // long-term-support kernel is not, and the two are not the same kind of cost.
 //
-// Detaching is not one fix among several. Recovering resize means giving the
-// child its own pseudo-terminal and forwarding window changes to it, and a
-// process only becomes the session leader of a new terminal by leaving the old
-// session — which for a bwrap child is --new-session either way. The flag is
-// the floor, not the ceiling: asserting it does not rule out the pty-proxying
-// version, it is a component of it.
+// Detaching does not have to cost resize: omac keeps the terminal foreground,
+// receives SIGWINCH itself and relays it into the detached session
+// (sandbox.ExecDetachedSession, covered by
+// TestIntegrationResizeReachesSandboxedTUI).
 
 // TestSecuritySandboxDoesNotShareControllingTerminal asserts that the sandbox
 // child leaves the terminal the user launched it from.

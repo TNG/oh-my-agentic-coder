@@ -323,6 +323,30 @@ func newChildCmd(argv []string, env []string, workdir string) *exec.Cmd {
 // group). Used by `omac sandbox run`, which builds the child env from
 // scratch (env_clear semantics with blocklist/allowlist filtering).
 func ExecWithEnv(argv []string, env []string, workdir string, onReady func(pid int)) (int, error) {
+	return execChild(argv, env, workdir, onReady, false)
+}
+
+// ExecDetachedSession is ExecWithEnv for a child that leaves the terminal
+// session (Linux bwrap --new-session calls setsid before starting the inner
+// command). Such a child has no controlling terminal, so the kernel never
+// sends it SIGWINCH when the window is resized. Two things differ from
+// ExecWithEnv to make up for that:
+//
+//   - omac keeps the terminal foreground instead of handing it to the child.
+//     The kernel sends SIGWINCH to the foreground process group only, so
+//     this is how omac learns about a resize at all.
+//   - SIGWINCH is relayed to the new session's process group as well, found
+//     via the child's direct children (for bwrap: the process that called
+//     setsid, whose group the inner command shares).
+//
+// Example: the user resizes the window from 172x42 to 242x62. The kernel
+// signals omac, omac signals the sandboxed TUI, and the TUI reads the new
+// size with TIOCGWINSZ and redraws.
+func ExecDetachedSession(argv []string, env []string, workdir string, onReady func(pid int)) (int, error) {
+	return execChild(argv, env, workdir, onReady, true)
+}
+
+func execChild(argv []string, env []string, workdir string, onReady func(pid int), detached bool) (int, error) {
 	if len(argv) == 0 {
 		return 1, fmt.Errorf("empty argv")
 	}
@@ -364,9 +388,13 @@ func ExecWithEnv(argv []string, env []string, workdir string, onReady func(pid i
 	// kernel's terminal-driver-driven SIGINT goes there. Ignore SIGTTOU
 	// during tcsetpgrp itself; otherwise we get suspended on the syscall
 	// because we are no longer the foreground group.
-	tty, restoreTTY := claimTerminalFor(pgid)
-	defer restoreTTY()
-	_ = tty
+	// A detached child cannot use the terminal for job control anyway, and
+	// omac must stay in the foreground to receive SIGWINCH (see
+	// ExecDetachedSession).
+	if !detached {
+		_, restoreTTY := claimTerminalFor(pgid)
+		defer restoreTTY()
+	}
 	done := make(chan struct{})
 	go func() {
 		// Escalation policy when omac itself receives a termination signal:
@@ -388,6 +416,11 @@ func ExecWithEnv(argv []string, env []string, workdir string, onReady func(pid i
 					// SIGWINCH is a resize notification, not a termination
 					// request; forward it but do not start the kill escalation.
 					if ss == syscall.SIGWINCH {
+						if detached {
+							for _, g := range detachedSessionGroups(pid, pgid) {
+								_ = syscall.Kill(-g, ss)
+							}
+						}
 						continue
 					}
 					if !first {

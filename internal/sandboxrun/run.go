@@ -255,7 +255,7 @@ func Run(opts Options) int {
 	if recorder != nil {
 		onReady = recorder.Start
 	}
-	code, err := sandbox.ExecWithEnv(childArgv, env, grants.Workdir, onReady)
+	code, err := execSandboxChild(childArgv, env, grants.Workdir, onReady)
 	if err != nil {
 		return fail("%v", err)
 	}
@@ -493,4 +493,14 @@ func resolvedDenial(d *sandboxprofile.Denial) sandboxdeny.Text {
 		MarkerDirName: d.MarkerDirName,
 		FacadeNote:    d.FacadeNote,
 	})
+}
+
+// execSandboxChild runs the backend's child argv. A child that leaves the
+// terminal session (bwrap --new-session) needs omac to relay window
+// resizes to it; see sandbox.ExecDetachedSession.
+func execSandboxChild(argv, env []string, workdir string, onReady func(int)) (int, error) {
+	if childLeavesSession {
+		return sandbox.ExecDetachedSession(argv, env, workdir, onReady)
+	}
+	return sandbox.ExecWithEnv(argv, env, workdir, onReady)
 }

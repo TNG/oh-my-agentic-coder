@@ -10,6 +10,9 @@ import (
 // sandboxExecPath is the Seatbelt CLI shipped with every macOS.
 const sandboxExecPath = "/usr/bin/sandbox-exec"
 
+// childLeavesSession: sandbox-exec keeps the terminal session.
+const childLeavesSession = false
+
 // CheckPlatform verifies the macOS sandbox prerequisites.
 func CheckPlatform() error {
 	if _, err := exec.LookPath(sandboxExecPath); err != nil {

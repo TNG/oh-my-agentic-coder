@@ -13,6 +13,9 @@ import (
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
 )
 
+// childLeavesSession: bwrap runs with --new-session (see BuildBwrapArgv).
+const childLeavesSession = true
+
 // CheckPlatform verifies the Linux sandbox prerequisites: bwrap must
 // be installed AND functional (unprivileged user namespaces can be
 // disabled by distro policy, in containers, or via sysctl, in which
