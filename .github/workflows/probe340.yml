@@ -1,0 +1,60 @@
+name: probe340
+on:
+  push:
+    branches: [probe/340-keychain]
+jobs:
+  probe:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-go@v5
+        with: { go-version-file: go.mod }
+      - name: Build omac main / pr (dcbd3c2) / fix (this branch)
+        run: |
+          go build -o /tmp/omac-fix ./cmd/omac
+          for v in main:origin/main pr:dcbd3c2; do
+            git worktree add -q /tmp/wt-${v%%:*} ${v#*:}
+            (cd /tmp/wt-${v%%:*} && go build -o /tmp/omac-${v%%:*} ./cmd/omac)
+          done
+      - name: Darwin sandbox tests (fix)
+        run: go test -count=1 -run 'SBPL|Keychain|RootCertificates' ./internal/sandboxrun -v 2>&1 | grep -E '^(=== RUN|--- |ok|FAIL|PASS)|_test.go'
+      - name: Build Rust probe
+        run: cd .github/probe340 && cargo build -q --release && cp target/release/tlsprobe /tmp/tlsprobe
+      - name: Keychain probes
+        run: |
+          set +e
+          to() { perl -e 'alarm 30; exec @ARGV' "$@"; }
+          mkdir -p /tmp/kc $HOME/wd
+          security create-keychain -p pw /tmp/kc/probe.keychain
+          security create-keychain -p pw /tmp/kc/plainname
+          security create-keychain -p pw $HOME/wd/wd.keychain
+          echo "files:"; ls -la /tmp/kc $HOME/wd
+          for k in /tmp/kc/probe.keychain-db $HOME/wd/wd.keychain-db; do
+            security unlock-keychain -p pw $k
+            security add-generic-password -k $k -s omac-probe-kc -a p -w "LEAKED-$(basename $k)" -A
+            security set-generic-password-partition-list -S apple-tool:,apple: -k pw $k >/dev/null
+          done
+          security list-keychains -d user -s $HOME/Library/Keychains/login.keychain-db /tmp/kc/probe.keychain-db
+          echo "outside: $(security find-generic-password -s omac-probe-kc -w /tmp/kc/probe.keychain-db)"
+          cd $HOME/wd
+          for v in main pr fix; do
+            W="/tmp/omac-$v sandbox run --block-net --"
+            echo "=== $v"
+            echo "tmp keychain:      $(to $W /usr/bin/security find-generic-password -s omac-probe-kc -w /tmp/kc/probe.keychain-db 2>&1 | grep -v INFO | tr '\n' ' ')"
+            echo "workdir keychain:  $(to $W /usr/bin/security find-generic-password -s omac-probe-kc -w $HOME/wd/wd.keychain-db 2>&1 | grep -v INFO | tr '\n' ' ')"
+            echo "search list:       $(to $W /usr/bin/security find-generic-password -s omac-probe-kc -w 2>&1 | grep -v INFO | tr '\n' ' ')"
+            echo "hardlink tmp kc:   $(to $W /bin/sh -c 'rm -f "$TMPDIR/hl"; ln /tmp/kc/probe.keychain-db "$TMPDIR/hl" && /usr/bin/security find-generic-password -s omac-probe-kc -w "$TMPDIR/hl"' 2>&1 | grep -v INFO | tr '\n' ' ')"
+            echo "hardlink login kc: $(to $W /bin/sh -c 'rm -f "$TMPDIR/hl2"; ln $HOME/Library/Keychains/login.keychain-db "$TMPDIR/hl2" && echo linked' 2>&1 | grep -v INFO | tr '\n' ' ')"
+            echo "symlink tmp kc:    $(to $W /bin/sh -c 'rm -f "$TMPDIR/sl"; ln -s /tmp/kc/probe.keychain-db "$TMPDIR/sl" && /usr/bin/security find-generic-password -s omac-probe-kc -w "$TMPDIR/sl"' 2>&1 | grep -v INFO | tr '\n' ' ')"
+            echo "root certs:        $(to $W /usr/bin/security find-certificate -c DigiCert /System/Library/Keychains/SystemRootCertificates.keychain 2>&1 | grep -v INFO | head -1; echo " exit=${PIPESTATUS[0]}")"
+          done
+          rm -f $TMPDIR/hl $TMPDIR/hl2 $TMPDIR/sl
+      - name: native-tls probe
+        run: |
+          set +e
+          to() { perl -e 'alarm 60; exec @ARGV' "$@"; }
+          echo "none: $(to /tmp/tlsprobe https://api.github.com/zen 2>&1)"
+          for v in main pr fix; do
+            echo "$v: $(to /tmp/omac-$v sandbox run --allow-domain api.github.com -- /tmp/tlsprobe https://api.github.com/zen 2>&1 | grep -v INFO | tr '\n' ' ')"
+          done
