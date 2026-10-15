@@ -81,7 +81,7 @@ On macOS the sandbox SHALL be applied by executing the child under a generated S
 - allow `process-exec*` and `process-fork`; scope `process-info*` and signal delivery to the child's own sandbox (`(target self)` / same-sandbox), not arbitrary host processes;
 - emit `file-read*` / `file-write*` rules for the granted paths, covering both the literal and the canonicalized form of each path (e.g. `/tmp` and `/private/tmp`); emit `file-read-metadata` for ancestor directories of granted paths so path resolution works;
 - restrict `file-map-executable` to readable paths (DYLD-injection defense);
-- allow `mach-lookup` generally but deny the Keychain service daemons (`com.apple.securityd`, `com.apple.security.keychaind`, `com.apple.secd`, `com.apple.security.agent`). `com.apple.SecurityServer` stays reachable because TLS certificate trust needs it; Keychain files remain unreadable through the protected-path denies;
+- allow `mach-lookup` generally but deny the Keychain service daemons (`com.apple.securityd`, `com.apple.security.keychaind`, `com.apple.secd`, `com.apple.security.agent`). `com.apple.SecurityServer` stays reachable because TLS certificate trust needs it; Keychain files remain unreadable through the protected-path denies plus a deny on `*.keychain` / `*.keychain-db` file names anywhere, except Apple's read-only root store under `/System/Library/Keychains`;
 - allow POSIX shared memory and the mDNSResponder Unix-socket carve-out needed for DNS resolution.
 
 #### Scenario: Keychain inaccessible

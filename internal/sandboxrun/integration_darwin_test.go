@@ -223,8 +223,8 @@ func TestIntegrationAllowUnixDirGrantsSocketAccess(t *testing.T) {
 func TestIntegrationKeychainDenied(t *testing.T) {
 	// The hard guarantee is layered: (a) the keychain DB files under
 	// ~/Library/Keychains are protected paths (unreadable even under a
-	// broad home grant), and (b) the keychain daemons' mach services
-	// are denied. The deterministic, prompt-free check is (a): the
+	// broad home grant), and (b) keychain daemons other than securityd
+	// are denied (#340). The deterministic, prompt-free check is (a): the
 	// legacy in-process keychain API cannot read what it cannot open.
 	home := stagedHome(t)
 	kcDir := filepath.Join(home, "Library", "Keychains")
@@ -243,6 +243,20 @@ func TestIntegrationKeychainDenied(t *testing.T) {
 	}
 	if out, code := runSandboxed(t, g, "/bin/ls", kcDir); code == 0 {
 		t.Errorf("~/Library/Keychains must be denied even under broad home grant, got: %s", out)
+	}
+}
+
+func TestIntegrationKeychainFileOutsideKeychainsDirDenied(t *testing.T) {
+	// securityd is reachable, so it decrypts any unlocked keychain whose
+	// file the process can read. A keychain kept in the workdir or /tmp
+	// (e.g. a CI signing keychain) must stay unreadable by name.
+	g := testGrants(t)
+	kc := filepath.Join(g.Workdir, "signing.keychain-db")
+	if err := os.WriteFile(kc, []byte("kych"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out, code := runSandboxed(t, g, "/bin/cat", kc); code == 0 {
+		t.Errorf("keychain file in a granted folder must be denied, got: %s", out)
 	}
 }
 

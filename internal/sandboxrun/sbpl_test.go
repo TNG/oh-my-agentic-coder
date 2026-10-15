@@ -60,6 +60,29 @@ func TestSBPLKeychainDenied(t *testing.T) {
 	}
 }
 
+func TestSBPLKeychainFilesDeniedByName(t *testing.T) {
+	// With securityd reachable, a readable keychain file anywhere (e.g.
+	// /tmp/signing.keychain-db) would be decryptable, so keychain files
+	// are denied by name after every allow. Apple's root store is the
+	// one exception and must come after the deny to win.
+	p := GenerateSBPL(baseGrants())
+	deny := `(deny file-read* (regex #"\.[kK][eE][yY][cC][hH][aA][iI][nN](-[dD][bB])?$"))`
+	roots := `(allow file-read* (subpath "/System/Library/Keychains"))`
+	di, ri := strings.Index(p, deny), strings.Index(p, roots)
+	if di < 0 || ri < 0 {
+		t.Fatalf("keychain name deny or root-store allow missing:\n%s", p)
+	}
+	if di < strings.Index(p, `(allow file-read* (subpath "/work"))`) {
+		t.Error("keychain name deny must come after the grant allows")
+	}
+	if ri < di {
+		t.Error("root-store allow must come after the keychain name deny")
+	}
+	if !strings.Contains(p, `(deny file-write* (regex #"\.[kK][eE][yY][cC][hH][aA][iI][nN](-[dD][bB])?$"))`) {
+		t.Error("keychain files must not be writable either")
+	}
+}
+
 func TestSBPLFilesystemRules(t *testing.T) {
 	p := GenerateSBPL(baseGrants())
 	for _, want := range []string{

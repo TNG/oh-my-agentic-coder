@@ -38,7 +38,7 @@ func GenerateSBPL(g *Grants) string {
 	// Secure Transport (e.g. Rust native-tls in Copilot CLI >= 1.0.93) fail
 	// with "bad certificate format" without it (#340). Keychain items stay
 	// unreadable: the legacy keychain API opens the keychain files in-process,
-	// and ~/Library/Keychains and /Library/Keychains are protected paths.
+	// and keychain files are denied by folder and by name (see below).
 	b.WriteString("(allow mach-lookup)\n")
 	for _, svc := range []string{
 		"com.apple.securityd",
@@ -103,6 +103,14 @@ func GenerateSBPL(g *Grants) string {
 		}
 	}
 	b.WriteString(sbplNameDenies(g))
+	// securityd is reachable (see the mach section), so it decrypts any
+	// unlocked keychain whose file the process can read. Keychains outside
+	// the protected folders (e.g. a CI signing keychain in /tmp) must be
+	// hidden by name. Apple's read-only root stores stay readable: TLS
+	// trust evaluation needs them.
+	b.WriteString("(deny file-read* (regex #\"\\.[kK][eE][yY][cC][hH][aA][iI][nN](-[dD][bB])?$\"))\n")
+	b.WriteString("(deny file-write* (regex #\"\\.[kK][eE][yY][cC][hH][aA][iI][nN](-[dD][bB])?$\"))\n")
+	b.WriteString("(allow file-read* (subpath \"/System/Library/Keychains\"))\n")
 	b.WriteString("\n")
 
 	// --- Devices every process needs ---
