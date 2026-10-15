@@ -29,24 +29,24 @@ jobs:
           security create-keychain -p pw /tmp/kc/probe.keychain
           security create-keychain -p pw /tmp/kc/plainname
           security create-keychain -p pw $HOME/wd/wd.keychain
-          echo "files:"; ls -la /tmp/kc $HOME/wd
-          for k in /tmp/kc/probe.keychain-db $HOME/wd/wd.keychain-db; do
+                    for k in /tmp/kc/probe.keychain /tmp/kc/plainname $HOME/wd/wd.keychain; do
             security unlock-keychain -p pw $k
             security add-generic-password -k $k -s omac-probe-kc -a p -w "LEAKED-$(basename $k)" -A
             security set-generic-password-partition-list -S apple-tool:,apple: -k pw $k >/dev/null
           done
-          security list-keychains -d user -s $HOME/Library/Keychains/login.keychain-db /tmp/kc/probe.keychain-db
-          echo "outside: $(security find-generic-password -s omac-probe-kc -w /tmp/kc/probe.keychain-db)"
+          security list-keychains -d user -s $HOME/Library/Keychains/login.keychain-db /tmp/kc/probe.keychain
+          for k in /tmp/kc/probe.keychain /tmp/kc/plainname $HOME/wd/wd.keychain; do echo "outside $k: $(security find-generic-password -s omac-probe-kc -w $k 2>&1)"; done
           cd $HOME/wd
           for v in main pr fix; do
             W="/tmp/omac-$v sandbox run --block-net --"
             echo "=== $v"
-            echo "tmp keychain:      $(to $W /usr/bin/security find-generic-password -s omac-probe-kc -w /tmp/kc/probe.keychain-db 2>&1 | grep -v INFO | tr '\n' ' ')"
-            echo "workdir keychain:  $(to $W /usr/bin/security find-generic-password -s omac-probe-kc -w $HOME/wd/wd.keychain-db 2>&1 | grep -v INFO | tr '\n' ' ')"
+            echo "tmp keychain:      $(to $W /usr/bin/security find-generic-password -s omac-probe-kc -w /tmp/kc/probe.keychain 2>&1 | grep -v INFO | tr '\n' ' ')"
+            echo "workdir keychain:  $(to $W /usr/bin/security find-generic-password -s omac-probe-kc -w $HOME/wd/wd.keychain 2>&1 | grep -v INFO | tr '\n' ' ')"
+            echo "no-ext keychain:   $(to $W /usr/bin/security find-generic-password -s omac-probe-kc -w /tmp/kc/plainname 2>&1 | grep -v INFO | tr '\n' ' ')"
             echo "search list:       $(to $W /usr/bin/security find-generic-password -s omac-probe-kc -w 2>&1 | grep -v INFO | tr '\n' ' ')"
-            echo "hardlink tmp kc:   $(to $W /bin/sh -c 'rm -f "$TMPDIR/hl"; ln /tmp/kc/probe.keychain-db "$TMPDIR/hl" && /usr/bin/security find-generic-password -s omac-probe-kc -w "$TMPDIR/hl"' 2>&1 | grep -v INFO | tr '\n' ' ')"
+            echo "hardlink tmp kc:   $(to $W /bin/sh -c 'rm -f "$TMPDIR/hl"; ln /tmp/kc/probe.keychain "$TMPDIR/hl" && /usr/bin/security find-generic-password -s omac-probe-kc -w "$TMPDIR/hl"' 2>&1 | grep -v INFO | tr '\n' ' ')"
             echo "hardlink login kc: $(to $W /bin/sh -c 'rm -f "$TMPDIR/hl2"; ln $HOME/Library/Keychains/login.keychain-db "$TMPDIR/hl2" && echo linked' 2>&1 | grep -v INFO | tr '\n' ' ')"
-            echo "symlink tmp kc:    $(to $W /bin/sh -c 'rm -f "$TMPDIR/sl"; ln -s /tmp/kc/probe.keychain-db "$TMPDIR/sl" && /usr/bin/security find-generic-password -s omac-probe-kc -w "$TMPDIR/sl"' 2>&1 | grep -v INFO | tr '\n' ' ')"
+            echo "symlink tmp kc:    $(to $W /bin/sh -c 'rm -f "$TMPDIR/sl"; ln -s /tmp/kc/probe.keychain "$TMPDIR/sl" && /usr/bin/security find-generic-password -s omac-probe-kc -w "$TMPDIR/sl"' 2>&1 | grep -v INFO | tr '\n' ' ')"
             echo "root certs:        $(to $W /usr/bin/security find-certificate -c DigiCert /System/Library/Keychains/SystemRootCertificates.keychain 2>&1 | grep -v INFO | head -1; echo " exit=${PIPESTATUS[0]}")"
           done
           rm -f $TMPDIR/hl $TMPDIR/hl2 $TMPDIR/sl
