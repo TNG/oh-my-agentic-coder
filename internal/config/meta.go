@@ -67,6 +67,14 @@ type SecretSpec struct {
 	Pattern        string `yaml:"pattern,omitempty"`
 	DefaultFromEnv string `yaml:"default_from_env,omitempty"`
 	Multiline      bool   `yaml:"multiline,omitempty"`
+	// Hint is optional multi-line help printed under the description at
+	// `omac register`, for example the steps to obtain the value. It is
+	// printed again after a value fails the pattern check.
+	Hint string `yaml:"hint,omitempty"`
+	// Docs optionally points to a file inside the skill that explains the
+	// value, with an optional section anchor, e.g.
+	// "SKILL.md#obtaining-the-token". See SplitDocsRef.
+	Docs string `yaml:"docs,omitempty"`
 }
 
 // IsRequired returns true unless the spec explicitly opts out.
@@ -127,6 +135,8 @@ type ConfigSpec struct {
 	DefaultFromEnv string          `yaml:"default_from_env,omitempty"`
 	Pattern        string          `yaml:"pattern,omitempty"` // string-only; regex
 	Choices        []string        `yaml:"choices,omitempty"` // enum-only; non-empty
+	Hint           string          `yaml:"hint,omitempty"`    // multi-line help; see SecretSpec.Hint
+	Docs           string          `yaml:"docs,omitempty"`    // file in the skill; see SecretSpec.Docs
 }
 
 // IsRequired returns true unless the spec explicitly opts out.
@@ -296,6 +306,9 @@ func (s *SidecarMeta) Validate(skillName string) error {
 				return fmt.Errorf("sidecar.secrets[%d].pattern is not a valid regex: %w", i, err)
 			}
 		}
+		if err := validateDocsRef(sec.Docs); err != nil {
+			return fmt.Errorf("sidecar.secrets[%d].docs: %w", i, err)
+		}
 		if err := claim(sec.Name, "secrets"); err != nil {
 			return err
 		}
@@ -304,6 +317,9 @@ func (s *SidecarMeta) Validate(skillName string) error {
 	for i, c := range s.Config {
 		if !envNameRE.MatchString(c.Name) {
 			return fmt.Errorf("sidecar.config[%d].name %q is not a valid env var name", i, c.Name)
+		}
+		if err := validateDocsRef(c.Docs); err != nil {
+			return fmt.Errorf("sidecar.config[%d].docs: %w", i, err)
 		}
 		switch c.EffectiveType() {
 		case ConfigFieldString:
@@ -379,6 +395,80 @@ func (s *SidecarMeta) Validate(skillName string) error {
 		}
 	}
 	return nil
+}
+
+// SplitDocsRef splits a `docs` value into the file path and the optional
+// section anchor after the first '#'. For "SKILL.md#getting-a-token" it
+// returns "SKILL.md" and "getting-a-token".
+func SplitDocsRef(ref string) (path, anchor string) {
+	path, anchor, _ = strings.Cut(ref, "#")
+	return path, anchor
+}
+
+// validateDocsRef checks a `docs` value. The path must name a file inside
+// the skill directory: relative, and without ".." steps that leave it.
+// "docs/token.md#steps" is fine; "/etc/passwd", "../other/SKILL.md" and
+// "#steps" (no file) are not. An empty value means "no docs" and is fine.
+//
+// Whether the file exists is not checked here, because the skill directory
+// is not known at this point. See MissingDocs.
+func validateDocsRef(ref string) error {
+	if ref == "" {
+		return nil
+	}
+	path, _ := SplitDocsRef(ref)
+	if path == "" {
+		return fmt.Errorf("%q does not name a file; use a path inside the skill, e.g. SKILL.md#section", ref)
+	}
+	if filepath.IsAbs(path) || strings.HasPrefix(path, "/") {
+		return fmt.Errorf("%q must be a path relative to the skill directory, not an absolute path", ref)
+	}
+	if !filepath.IsLocal(path) {
+		return fmt.Errorf("%q must stay inside the skill directory (no '..' that leaves it)", ref)
+	}
+	return nil
+}
+
+// DocsPath returns the absolute path of a validated `docs` value inside
+// skillDir, plus its section anchor. It returns "" for an empty ref.
+func DocsPath(skillDir, ref string) (abs, anchor string) {
+	if ref == "" {
+		return "", ""
+	}
+	path, anchor := SplitDocsRef(ref)
+	dir, err := filepath.Abs(skillDir)
+	if err != nil {
+		dir = skillDir
+	}
+	return filepath.Join(dir, path), anchor
+}
+
+// MissingDocs returns one message per `docs` entry whose file does not
+// exist in skillDir, e.g. "sidecar.secrets[0].docs: SKILL.md not found in
+// the skill directory". A missing docs file only loses some help text, so
+// callers report these as warnings rather than refusing the skill.
+func (m *Meta) MissingDocs(skillDir string) []string {
+	if m.Sidecar == nil {
+		return nil
+	}
+	var out []string
+	check := func(field, ref string) {
+		abs, _ := DocsPath(skillDir, ref)
+		if abs == "" {
+			return
+		}
+		if _, err := os.Stat(abs); err != nil {
+			path, _ := SplitDocsRef(ref)
+			out = append(out, fmt.Sprintf("%s: %s not found in the skill directory", field, path))
+		}
+	}
+	for i, s := range m.Sidecar.Secrets {
+		check(fmt.Sprintf("sidecar.secrets[%d].docs", i), s.Docs)
+	}
+	for i, c := range m.Sidecar.Config {
+		check(fmt.Sprintf("sidecar.config[%d].docs", i), c.Docs)
+	}
+	return out
 }
 
 // PatternlessSecretStringFields returns the string config fields that carry
