@@ -272,7 +272,8 @@ func runRegister(args []string, env *Env) int {
 				fmt.Fprintln(env.Stderr, "omac register:", err)
 				return ExitSecretRefused
 			}
-			fmt.Fprintln(env.Stderr, "omac register: skill-config:", err)
+			// The error can quote enum choices or a default from omac.yaml.
+			fmt.Fprintln(env.Stderr, "omac register: skill-config:", stripControlChars(err.Error()))
 			return ExitIOError
 		}
 	} else if *noFields {
@@ -634,7 +635,9 @@ func handleOneSecret(env *Env, scope, skill, skillDir string, spec config.Secret
 		if v, ok := os.LookupEnv(spec.DefaultFromEnv); ok && v != "" {
 			// Accept on empty input.
 			if err := spec.ValidateValue(v); err == nil {
-				defaultHint = fmt.Sprintf("press Enter to accept value from $%s", spec.DefaultFromEnv)
+				// The variable name comes from omac.yaml and is not
+				// validated, so strip control characters before printing.
+				defaultHint = fmt.Sprintf("press Enter to accept value from $%s", stripControlChars(spec.DefaultFromEnv))
 			}
 		}
 	}
@@ -665,7 +668,7 @@ func handleOneSecret(env *Env, scope, skill, skillDir string, spec config.Secret
 						return false, fmt.Errorf("keychain: %w", keychain.WrapUnavailable(err, host))
 					}
 					s.Zero()
-					st.status(env.Stderr, "stored", spec.Name+st.gray(fmt.Sprintf(" (from $%s)", spec.DefaultFromEnv)), ansiGreen)
+					st.status(env.Stderr, "stored", spec.Name+st.gray(fmt.Sprintf(" (from $%s)", stripControlChars(spec.DefaultFromEnv))), ansiGreen)
 					return false, nil
 				}
 			}
@@ -911,7 +914,9 @@ func handleOneField(env *Env, store *skillconfig.Store, skill, skillDir string, 
 		attempts++
 		var hint string
 		if defaultVal != "" {
-			hint = fmt.Sprintf(" [%s, from %s]", defaultVal, defaultSource)
+			// Both parts can come from omac.yaml (`default:` and the
+			// `default_from_env:` variable name) or from the host env.
+			hint = fmt.Sprintf(" [%s, from %s]", stripControlChars(defaultVal), stripControlChars(defaultSource))
 		}
 		fmt.Fprintf(env.Stderr, "  %s %s%s ", st.cyan("?"), st.bold(displayName), st.gray(hint+":"))
 

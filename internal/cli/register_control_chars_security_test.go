@@ -158,3 +158,73 @@ func TestSecurityRegisterHintAndDocsStripControlSequences(t *testing.T) {
 		check(t, out)
 	})
 }
+
+// TestSecurityRegisterDefaultsStripControlSequences covers the default
+// values shown on the prompts. A config field's `default:` is printed in
+// the prompt (" [<default>, from spec.default]") and again in the "set"
+// line after Enter; a `default_from_env:` variable name is printed in the
+// config prompt and in the secret prompt note. All of them come from
+// omac.yaml.
+func TestSecurityRegisterDefaultsStripControlSequences(t *testing.T) {
+	const payload = "\x1b[2J"
+	const c1 = "\u009b31m"
+	hasControl := func(out string) bool {
+		return strings.ContainsRune(out, 0x1b) || strings.ContainsRune(out, 0x9b)
+	}
+
+	t.Run("config default", func(t *testing.T) {
+		env, _, errBuf, drain := newPipeEnv(t, "\n")
+		spec := config.ConfigSpec{Name: "FIELD", Default: "def" + payload + "ault" + c1}
+		if _, err := handleOneField(env, &skillconfig.Store{}, "sec-default", "", spec, true, nil, nil, false, nil); err != nil {
+			t.Fatalf("handleOneField: %v", err)
+		}
+		drain()
+		out := errBuf.String()
+		// Control: the default reaches both the prompt and the set line.
+		if strings.Count(out, "def[2Jault") != 2 || !strings.Contains(out, "from spec.default") {
+			t.Fatalf("control: default not rendered in prompt and set line: the fixture is broken\n%q", out)
+		}
+		if hasControl(out) {
+			t.Errorf("config prompt output contains a raw control character from a skill-supplied default: %q", out)
+		}
+	})
+
+	t.Run("config default_from_env", func(t *testing.T) {
+		envName := "OMAC_TEST_DEF" + payload + c1
+		t.Setenv(envName, "fromenv")
+		env, _, errBuf, drain := newPipeEnv(t, "\n")
+		spec := config.ConfigSpec{Name: "FIELD", DefaultFromEnv: envName}
+		if _, err := handleOneField(env, &skillconfig.Store{}, "sec-default-env", "", spec, true, nil, nil, false, nil); err != nil {
+			t.Fatalf("handleOneField: %v", err)
+		}
+		drain()
+		out := errBuf.String()
+		if strings.Count(out, "$OMAC_TEST_DEF") != 2 || !strings.Contains(out, "fromenv") {
+			t.Fatalf("control: env default source not rendered in prompt and set line: the fixture is broken\n%q", out)
+		}
+		if hasControl(out) {
+			t.Errorf("config prompt output contains a raw control character from a default_from_env name: %q", out)
+		}
+	})
+
+	t.Run("secret default_from_env", func(t *testing.T) {
+		envName := "OMAC_TEST_SECDEF" + payload + c1
+		t.Setenv(envName, "fromenv")
+		env, _, errBuf, drain := newPipeEnv(t, "")
+		prompts := fakeSecretInput(t, "") // Enter: accept the env value
+		spec := config.SecretSpec{Name: "TOKEN", DefaultFromEnv: envName}
+		if _, err := handleOneSecret(env, "", "sec-secret-default", "", spec, true, nil, nil, false, "linux"); err != nil {
+			t.Fatalf("handleOneSecret: %v", err)
+		}
+		drain()
+		out := errBuf.String() + prompts.String()
+		// Control: the name reaches the prompt note and the "stored" line.
+		if !strings.Contains(prompts.String(), "press Enter to accept value from $OMAC_TEST_SECDEF") ||
+			!strings.Contains(errBuf.String(), "(from $OMAC_TEST_SECDEF") {
+			t.Fatalf("control: default_from_env name not rendered in prompt and stored line: the fixture is broken\n%q", out)
+		}
+		if hasControl(out) {
+			t.Errorf("secret prompt output contains a raw control character from a default_from_env name: %q", out)
+		}
+	})
+}

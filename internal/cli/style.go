@@ -92,7 +92,12 @@ func (s styler) status(w *os.File, tag, detail string, codes ...string) {
 
 // setLine prints a "set NAME = VALUE  (source)" assignment line with the
 // name bolded, the value greened, and the optional source dimmed.
+//
+// The value can be a skill's `default:` from omac.yaml and the source can
+// name its `default_from_env:` variable, so all three parts go through
+// stripControlChars.
 func (s styler) setLine(w *os.File, name, value, source string) {
+	name, value, source = stripControlChars(name), stripControlChars(value), stripControlChars(source)
 	tail := ""
 	if source != "" {
 		tail = s.gray(" " + source)
