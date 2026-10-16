@@ -107,9 +107,12 @@ func Render(activateJSON, skillsDir string) string {
 	return b.String()
 }
 
-// sanitizeField collapses newlines, strips C0/C1 control chars, and removes
-// markdown bold markers (*) so skill-supplied values cannot inject new
-// markdown blocks or forge bold structure into the manifest text.
+// sanitizeField collapses newlines, strips every C0/C1 control character and
+// every Unicode format/control rune that can forge markdown structure or invert
+// text direction, and removes markdown bold markers (*) so skill-supplied
+// values cannot inject new markdown blocks or forge bold structure into the
+// manifest text. It is the last sink before the text joins the agent's own
+// system prompt, so it defends regardless of what discovery accepted.
 func sanitizeField(s string) string {
 	return strings.Map(func(r rune) rune {
 		if r == '\n' || r == '\r' {
@@ -119,6 +122,16 @@ func sanitizeField(s string) string {
 			return -1
 		}
 		if r < 0x20 || (r >= 0x7f && r <= 0x9f) {
+			return -1
+		}
+		// Bidi overrides, isolates and directional marks forge or invert
+		// text direction; line/paragraph separators split the markdown;
+		// zero-width runes can hide or smuggle structure. Strip them all.
+		switch r {
+		case '\u2028', '\u2029', // line / paragraph separators
+			'\u200b', '\u200c', '\u200d', '\ufeff', // zero-width
+			'\u202a', '\u202b', '\u202c', '\u202d', '\u202e', // bidi overrides
+			'\u2066', '\u2067', '\u2068', '\u2069': // bidi isolates
 			return -1
 		}
 		return r

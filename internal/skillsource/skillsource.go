@@ -357,17 +357,26 @@ func Discover(workdir string, harness config.Harness) ([]Entry, error) {
 			if !ent.IsDir() {
 				continue
 			}
-			if _, dup := seen[ent.Name()]; dup {
+			name := ent.Name()
+			// Discovery is the trust boundary for skill names: the
+			// workdir roots are writable by the confined agent, so an
+			// on-disk name can carry control bytes or path-breaking
+			// characters. Reject anything that is not a valid skill
+			// identifier before it reaches any downstream consumer.
+			if err := config.ValidSkillName(name); err != nil {
 				continue
 			}
-			metaPath := filepath.Join(s.Root, ent.Name(), config.MetaFileName)
+			if _, dup := seen[name]; dup {
+				continue
+			}
+			metaPath := filepath.Join(s.Root, name, config.MetaFileName)
 			if _, err := os.Stat(metaPath); err != nil {
 				continue
 			}
-			seen[ent.Name()] = struct{}{}
+			seen[name] = struct{}{}
 			out = append(out, Entry{
-				Name: ent.Name(),
-				Dir:  filepath.Join(s.Root, ent.Name()),
+				Name: name,
+				Dir:  filepath.Join(s.Root, name),
 				Kind: s.Kind,
 			})
 		}
