@@ -266,10 +266,10 @@ func LoadMeta(path string) (*Meta, error) {
 // ignored exactly as LoadMeta ignores them; the warnings are only for
 // showing to the skill author.
 //
-// The warnings are also returned when validation fails, because an
-// unknown key often explains the failure: with `- nmae: TOKEN` the error
-// is "name is not a valid env var name", and the warning names the typo.
-// Only a read or YAML syntax error returns no warnings.
+// The warnings are also returned when decoding or validation fails,
+// because an unknown key often explains the failure: with `- nmae: TOKEN`
+// the error is "name is not a valid env var name", and the warning names
+// the typo. Only a read or YAML syntax error returns no warnings.
 func LoadMetaWithWarnings(path string) (*Meta, []string, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -284,11 +284,13 @@ func LoadMetaWithWarnings(path string) (*Meta, []string, error) {
 	var m Meta
 	var warnings []string
 	if len(doc.Content) > 0 {
-		if err := doc.Decode(&m); err != nil {
-			return nil, nil, fmt.Errorf("parse meta: %w", err)
-		}
+		// Collect the unknown keys first, so they are also reported when
+		// decoding fails on a value of the wrong type.
 		for _, key := range unknownMetaKeys(doc.Content[0]) {
 			warnings = append(warnings, key+": unknown field (ignored)")
+		}
+		if err := doc.Decode(&m); err != nil {
+			return nil, warnings, fmt.Errorf("parse meta: %w", err)
 		}
 	}
 	if err := m.Validate(); err != nil {

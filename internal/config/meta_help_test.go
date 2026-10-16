@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -265,4 +266,92 @@ sidecar:
 	if _, err := LoadMeta(p); err == nil {
 		t.Errorf("LoadMeta should fail the same way")
 	}
+}
+
+// TestLoadMetaWithWarnings_MatchesLoadMeta pins that both loaders return
+// the same Meta and the same error for awkward inputs. LoadMeta decodes
+// the bytes directly; LoadMetaWithWarnings goes through a yaml.Node first,
+// and the two paths must not drift apart.
+func TestLoadMetaWithWarnings_MatchesLoadMeta(t *testing.T) {
+	cases := map[string]string{
+		"empty file":     "",
+		"comment only":   "# nothing here\n",
+		"document start": "---\n",
+		"null document":  "~\n",
+		"multi-document": "name: first\n---\nname: second\n",
+		"merge with anchor": `name: s
+sidecar:
+  command: ["true"]
+  config:
+    - &base
+      name: A
+      description: shared
+    - <<: *base
+      name: B
+`,
+		"alias reused as list item": `name: s
+sidecar:
+  command: ["true"]
+  secrets:
+    - &tok
+      name: TOKEN
+    - *tok
+`,
+		"type error command":   "name: s\nsidecar:\n  command: a\n",
+		"type error name":      "name: [x]\n",
+		"type error timeout":   "name: s\nsidecar:\n  command: [\"true\"]\n  health:\n    timeout_ms: abc\n",
+		"sequence at root":     "- name: s\n",
+		"duplicate keys":       "name: a\nname: b\n",
+		"tab indentation":      "name: s\nsidecar:\n\tcommand: [\"true\"]\n",
+		"bad docs still loads": "name: s\nsidecar:\n  command: [\"true\"]\n  secrets:\n    - name: T\n      docs: ../README.md\n",
+		"valid":                "name: s\nsidecar:\n  command: [\"true\"]\n",
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			p := writeMeta(t, body)
+			m1, err1 := LoadMeta(p)
+			m2, _, err2 := LoadMetaWithWarnings(p)
+			if errString(err1) != errString(err2) {
+				t.Errorf("errors differ:\n LoadMeta:             %v\n LoadMetaWithWarnings: %v", err1, err2)
+			}
+			if !reflect.DeepEqual(m1, m2) {
+				t.Errorf("Meta differs:\n LoadMeta:             %+v\n LoadMetaWithWarnings: %+v", m1, m2)
+			}
+			// Control: the cases really exercise both outcomes, so the
+			// comparison above is not only ever comparing two nils.
+			if wantOK := loadsFine[name]; wantOK != (err1 == nil) {
+				t.Errorf("control: LoadMeta error = %v, want success %v", err1, wantOK)
+			}
+		})
+	}
+}
+
+// loadsFine names the cases of TestLoadMetaWithWarnings_MatchesLoadMeta
+// that load without error; every other case must fail.
+var loadsFine = map[string]bool{
+	"multi-document":            true, // only the first document is read
+	"merge with anchor":         true,
+	"alias reused as list item": false, // two secrets named TOKEN collide
+	"bad docs still loads":      true,
+	"valid":                     true,
+}
+
+// A decode error (a value of the wrong type) still comes with the
+// unknown-key warnings.
+func TestLoadMetaWithWarnings_UnknownKeysOnDecodeError(t *testing.T) {
+	p := writeMeta(t, "name: s\nsidecar:\n  comand: [\"true\"]\n  command: a\n")
+	_, warnings, err := LoadMetaWithWarnings(p)
+	if err == nil || !strings.Contains(err.Error(), "parse meta") {
+		t.Fatalf("control: want a decode error, got %v", err)
+	}
+	if want := "sidecar.comand: unknown field (ignored)"; len(warnings) != 1 || warnings[0] != want {
+		t.Errorf("warnings = %q, want [%q]", warnings, want)
+	}
+}
+
+func errString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
