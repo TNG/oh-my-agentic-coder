@@ -22,6 +22,7 @@ type LauncherConfig struct {
 	Facade  FacadeConfig  `yaml:"facade"  json:"facade"`
 	Audit   AuditConfig   `yaml:"audit"   json:"audit"`
 	Cache   CacheConfig   `yaml:"cache"   json:"cache"`
+	Herdr   HerdrConfig   `yaml:"herdr"   json:"herdr"`
 }
 
 // CacheScope selects how the persistent tool cache is partitioned.
@@ -80,6 +81,29 @@ type AuditConfig struct {
 
 // AuditEnabled reports whether auditing is on, treating unset as true.
 func (a AuditConfig) AuditEnabled() bool { return a.Enabled == nil || *a.Enabled }
+
+// HerdrConfig controls the host-side herdr pane bridge (see
+// internal/herdr): when omac itself runs inside a herdr pane, it
+// reports the pane's agent name, an idle/working state, and a resume
+// command that restores through the omac sandbox.
+//
+// Enabled defaults to true because the bridge is invisible outside
+// herdr and fail-soft inside it: with no herdr environment, omac
+// behavior is unchanged. The field is a *bool so "unset in YAML" (nil)
+// can be distinguished from an explicit `enabled: false`;
+// BridgeEnabled fills nil with true.
+//
+// Like sandbox.* this is a host-side, security-relevant switch (the
+// bridge reports on the user's behalf and supplies restore commands),
+// so workdir-level configs cannot change it: stripSecurityFields zeroes
+// it and only the global config is honored.
+type HerdrConfig struct {
+	Enabled *bool `yaml:"enabled" json:"enabled"`
+}
+
+// BridgeEnabled reports whether the herdr bridge may activate, treating
+// unset as true.
+func (h HerdrConfig) BridgeEnabled() bool { return h.Enabled == nil || *h.Enabled }
 
 // SandboxConfig declares named sandbox profiles.
 type SandboxConfig struct {
@@ -442,6 +466,7 @@ func stripSecurityFields(lc LauncherConfig) LauncherConfig {
 	lc.Sandbox = SandboxConfig{}
 	lc.Audit = AuditConfig{}
 	lc.Facade.BaseEnvPassthrough = nil
+	lc.Herdr = HerdrConfig{}
 	return lc
 }
 

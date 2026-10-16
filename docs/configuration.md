@@ -34,9 +34,13 @@ audit:
   strict: false                     # fail-closed: abort the run if a log write fails
 cache:
   scope: workdir                    # tool cache sharing: workdir (default), config, or global; see Cache
+herdr:
+  enabled: true                     # report pane state to herdr when running inside a herdr pane (default on); see Herdr panes
 ```
 
 **`cache.scope`** controls how widely omac's isolated tool cache is shared between projects. It can be overridden per session with `--cache-scope`. See [Cache](./advanced/cache.md) for details.
+
+**`herdr.enabled`** turns off the herdr pane bridge globally (default on; it only activates inside [herdr](https://herdr.dev) panes). See [Herdr panes](./advanced/herdr.md) for what the bridge reports and why it is host-side.
 
 **`idle_timeout_secs`** controls how long idle HTTP keep-alive connections to the facade are held open. It does not end the session — the agent and sandbox keep running regardless.
 
@@ -46,7 +50,7 @@ To use different operational settings for different projects, add a project-loca
 
 **What the project file can set:** `cache.scope`, `facade.idle_timeout_secs`, `facade.max_body_bytes`. These operational settings are layered on top of your global config (or built-in defaults when no global config exists).
 
-**What only the global config (`~/.config/omac/config.yaml`) can set:** `sandbox.*` (which runtime to use, the confinement command, and the system prompt briefing), `audit.*`, and `facade.base_env_passthrough`. A project-local file cannot change any of these. This is intentional: the sandbox command runs on the host with your full environment, so its configuration must stay under your control, not the project's.
+**What only the global config (`~/.config/omac/config.yaml`) can set:** `sandbox.*` (which runtime to use, the confinement command, and the system prompt briefing), `audit.*`, `facade.base_env_passthrough`, and `herdr.enabled`. A project-local file cannot change any of these. This is intentional: the sandbox command runs on the host with your full environment, so its configuration must stay under your control, not the project's.
 
 **Warning:** In `omac serve`, the launcher config is read once, from the `--workdir` you started the server with, so switching projects within a running server does not load a different project's file!
 

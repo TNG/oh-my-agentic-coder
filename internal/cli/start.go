@@ -993,6 +993,18 @@ func runLaunch(env *Env, opts launchOpts) int {
 		}, hintTimeout)
 	}
 
+	// 8b. Host-side herdr pane bridge: when omac itself runs inside a
+	//     herdr pane, report the pane's agent identity, an idle/working
+	//     state, and a resume command that restores through omac, so a
+	//     herdr restart re-enters the session inside the sandbox instead
+	//     of as a bare harness on the host (issue #371). Fail-soft and
+	//     entirely outside the inner environment.
+	bridge := maybeHerdrBridge(lc, harness, env, reloader, opts.sessionID, verbose)
+	if bridge != nil {
+		bridge.Start()
+		defer bridge.Close()
+	}
+
 	code, err := sandbox.ExecWithReadyPID(argv, extra, onReady)
 	auditor.Emit(audit.SessionStop(code))
 	watch.report(func(format string, args ...any) {
