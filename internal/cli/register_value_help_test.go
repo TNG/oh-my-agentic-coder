@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -404,5 +405,23 @@ func TestSecretsSetShowsHintAndDocs(t *testing.T) {
 	}
 	if got := prompts.String(); got != "  ? SET_TOKEN (input hidden): \n" {
 		t.Errorf("prompt = %q", got)
+	}
+}
+
+// Blank lines around a YAML block hint are dropped, and blank lines inside
+// it carry no trailing indent, so a copied snippet has no stray whitespace.
+func TestPrintValueHelpTrimsBlankHintLines(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	printValueHelp(w, styler{}, "NAME", "d", "\n\nfirst\n\n  \t\nlast\n", "", "")
+	w.Close()
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "  NAME d\n\n    first\n\n\n    last\n\n"; string(out) != want {
+		t.Errorf("got %q, want %q", out, want)
 	}
 }

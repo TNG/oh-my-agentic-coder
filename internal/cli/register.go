@@ -729,10 +729,14 @@ func printValueHelp(w *os.File, st styler, name, description, hint, docs, skillD
 		fmt.Fprintln(w, valueHeadline(st, name, description))
 	}
 	var lines []string
-	if hint = strings.TrimRight(hint, " \t\r\n"); hint != "" {
+	if hint = strings.TrimLeft(strings.TrimRight(hint, " \t\r\n"), "\r\n"); hint != "" {
 		for _, l := range strings.Split(hint, "\n") {
 			l = strings.ReplaceAll(strings.TrimRight(l, "\r"), "\t", "    ")
-			lines = append(lines, "    "+stripControlChars(l))
+			if l = strings.TrimRight(stripControlChars(l), " "); l == "" {
+				lines = append(lines, "")
+				continue
+			}
+			lines = append(lines, "    "+l)
 		}
 	}
 	if abs, anchor := config.DocsPath(skillDir, docs); abs != "" {
