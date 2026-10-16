@@ -195,6 +195,163 @@ func TestBwrapUnixSocketDirMissingUnderTmpKeepsTmpfs(t *testing.T) {
 	}
 }
 
+// issue #302: a grant whose destination is a symlink inside an
+// already-mounted tree kills bwrap ("Can't mount on symlink
+// destination"), because the destination exists in the sandbox as that
+// symlink. The bind must be emitted at the symlink-resolved path instead.
+func TestBwrapSymlinkMountUnderBoundAncestorRedirected(t *testing.T) {
+	root := t.TempDir()
+	real := filepath.Join(root, "real")
+	if err := os.Mkdir(real, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	lnk := filepath.Join(root, "lnk")
+	if err := os.Symlink(real, lnk); err != nil {
+		t.Fatal(err)
+	}
+	// rw grant via the symlink spelling, ro grant of the resolved path:
+	// the rewrite must merge them with rw winning.
+	g := &Grants{
+		Workdir:     root,
+		ReadPaths:   []string{root, real},
+		WritePaths:  []string{lnk},
+		NetworkMode: sandboxprofile.ModeBlocked,
+	}
+	argv, err := BuildBwrapArgv(g, []string{"x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(argv, " ")
+	if strings.Contains(joined, "--bind "+lnk+" "+lnk) {
+		t.Errorf("symlink spelling must not be a bind destination (bwrap refuses to mount on it): %s", joined)
+	}
+	if strings.Count(joined, real+" "+real) != 1 {
+		t.Errorf("resolved path must be bound exactly once: %s", joined)
+	}
+	if !strings.Contains(joined, "--bind "+real+" "+real) {
+		t.Errorf("rw grant must survive the rewrite as --bind: %s", joined)
+	}
+}
+
+// A symlink grant with no mounted ancestor is left at its own spelling:
+// bwrap creates the destination as a fresh directory holding the target's
+// content, and the spelling itself must stay usable (an ELF interpreter
+// path like /lib64/ld-linux-x86-64.so.2 depends on the spelling, not the
+// resolved path, when /usr is not yet mounted).
+func TestBwrapSymlinkMountWithoutAncestorKept(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target")
+	if err := os.Mkdir(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	lnk := filepath.Join(dir, "lnk")
+	if err := os.Symlink(target, lnk); err != nil {
+		t.Fatal(err)
+	}
+	g := &Grants{
+		Workdir:     dir,
+		ReadPaths:   []string{lnk}, // dir itself NOT granted
+		NetworkMode: sandboxprofile.ModeBlocked,
+	}
+	argv, err := BuildBwrapArgv(g, []string{"x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(argv, " ")
+	if !strings.Contains(joined, "--ro-bind "+lnk+" "+lnk) {
+		t.Errorf("unshadowed symlink grant must keep its own spelling: %s", joined)
+	}
+	if strings.Contains(joined, target+" "+target) {
+		t.Errorf("no rewrite without a covering ancestor: %s", joined)
+	}
+}
+
+// With the whole root granted (learn mode), the emit loop drops every
+// other bind (--bind / / already covers them, rw), so no symlink
+// destination is ever emitted. The rewrite pass still normalizes the
+// mount map: the symlink spelling must not appear as a bind.
+func TestBwrapSymlinkMountDroppedUnderRootGrant(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target")
+	if err := os.Mkdir(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	lnk := filepath.Join(dir, "lnk")
+	if err := os.Symlink(target, lnk); err != nil {
+		t.Fatal(err)
+	}
+	g := &Grants{
+		Workdir:     dir,
+		AllowPaths:  []string{"/", lnk},
+		NetworkMode: sandboxprofile.ModeBlocked,
+	}
+	argv, err := BuildBwrapArgv(g, []string{"x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(argv, " ")
+	if !strings.Contains(joined, "--bind / /") {
+		t.Errorf("root grant must bind the whole tree rw: %s", joined)
+	}
+	if strings.Contains(joined, lnk) {
+		t.Errorf("under a root grant the symlink spelling must not be emitted as a bind: %s", joined)
+	}
+}
+
+// A protected path that is itself a symlink cannot be masked at its own
+// spelling (same bwrap refusal). The mask must land on the resolved
+// target, so reads through the spelling hit the marker.
+func TestBwrapProtectedSymlinkMaskedAtResolvedTarget(t *testing.T) {
+	home := t.TempDir()
+	secretDir := filepath.Join(home, "secrets")
+	if err := os.Mkdir(secretDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	secretFile := filepath.Join(secretDir, "env")
+	if err := os.WriteFile(secretFile, []byte("secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	wd := filepath.Join(home, "proj")
+	if err := os.Mkdir(wd, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	linkEnv := filepath.Join(wd, ".env")
+	if err := os.Symlink(secretFile, linkEnv); err != nil {
+		t.Fatal(err)
+	}
+	linkDir := filepath.Join(wd, "ssh")
+	if err := os.Symlink(secretDir, linkDir); err != nil {
+		t.Fatal(err)
+	}
+	broken := filepath.Join(wd, "broken")
+	if err := os.Symlink(filepath.Join(home, "does-not-exist"), broken); err != nil {
+		t.Fatal(err)
+	}
+	g := &Grants{
+		Workdir:        wd,
+		AllowPaths:     []string{wd},
+		ProtectedPaths: []string{linkEnv, linkDir, broken},
+		NetworkMode:    sandboxprofile.ModeBlocked,
+	}
+	argv, err := BuildBwrapArgv(g, []string{"x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(argv, " ")
+	if !strings.Contains(joined, "--ro-bind /dev/null "+secretFile) {
+		t.Errorf("symlinked protected file must be masked at its resolved target: %s", joined)
+	}
+	if !strings.Contains(joined, "--tmpfs "+secretDir) {
+		t.Errorf("symlinked protected dir must be masked at its resolved target: %s", joined)
+	}
+	if strings.Contains(joined, "--ro-bind /dev/null "+linkEnv) || strings.Contains(joined, "--tmpfs "+linkDir) {
+		t.Errorf("masks must not land on the symlink spellings (bwrap refuses to mount on them): %s", joined)
+	}
+	if strings.Contains(joined, broken) {
+		t.Errorf("a broken protected symlink reads as ENOENT and must be skipped, not masked: %s", joined)
+	}
+}
+
 func TestStage2ArgsFiltered(t *testing.T) {
 	got := Stage2Args(bwrapGrants())
 	want := []string{
