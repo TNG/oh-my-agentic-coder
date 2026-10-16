@@ -760,11 +760,12 @@ func printValueHelp(w *os.File, st styler, name, description, hint, docs, skillD
 }
 
 // valueHeadline renders the "  NAME description" line above a prompt, with
-// control characters stripped from both parts.
+// control characters stripped from both parts. A multi-line description is
+// joined into one line (see oneLine).
 func valueHeadline(st styler, name, description string) string {
 	line := "  " + st.bold(stripControlChars(name))
-	if description != "" {
-		line += " " + st.dim(stripControlChars(description))
+	if d := oneLine(description); d != "" {
+		line += " " + st.dim(d)
 	}
 	return line
 }

@@ -324,3 +324,28 @@ func TestRunRegisterWarnsAboutUnknownKeysOnInvalidMeta(t *testing.T) {
 		t.Errorf("want the unknown-key warning before the validation error:\n%s", out)
 	}
 }
+
+// A multi-line description (e.g. `description: |` in YAML) is printed on
+// one line with spaces where the line breaks and tabs were, instead of
+// running the words together. The hint keeps its lines.
+func TestRegisterMultiLineDescriptionStaysReadable(t *testing.T) {
+	fakeSecretInputHidden(t, false)
+	env, _, errBuf, drain := newPipeEnv(t, "")
+	fakeSecretInput(t, "v")
+	spec := config.SecretSpec{
+		Name:        "TOKEN",
+		Description: "line one\nline two\tand\r\nthree\n",
+		Hint:        "step one\nstep two\n",
+	}
+	if _, err := handleOneSecret(env, "", "help-multiline", "", spec, true, nil, nil, false, "linux"); err != nil {
+		t.Fatalf("handleOneSecret: %v", err)
+	}
+	drain()
+	out := errBuf.String()
+	if want := "  TOKEN line one line two and three\n"; !strings.HasPrefix(out, want) {
+		t.Errorf("stderr = %q, want prefix %q", out, want)
+	}
+	if !strings.Contains(out, "    step one\n    step two\n") {
+		t.Errorf("hint lost its line breaks: %q", out)
+	}
+}

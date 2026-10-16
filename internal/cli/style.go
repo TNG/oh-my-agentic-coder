@@ -163,6 +163,15 @@ func stripControlChars(s string) string {
 	}, s)
 }
 
+// oneLine prepares text that is printed on a single line, such as a
+// skill's description. Line breaks and tabs become spaces, so that
+// "line one\nline two" reads "line one line two" instead of running the
+// words together, and then the remaining control characters are removed.
+func oneLine(s string) string {
+	s = strings.NewReplacer("\r\n", " ", "\n", " ", "\r", " ", "\t", " ").Replace(s)
+	return strings.TrimSpace(stripControlChars(s))
+}
+
 // visibleLen returns the display width of s, ignoring ANSI SGR escape
 // sequences (ESC [ ... m). Adequate for our ASCII/box-drawing content.
 func visibleLen(s string) int {

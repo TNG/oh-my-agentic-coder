@@ -63,9 +63,10 @@ func runSecretsList(args []string, env *Env) int {
 		if s.IsRequired() {
 			req = "required"
 		}
-		// The description comes from the skill's omac.yaml; strip control
-		// characters so it cannot inject terminal escape sequences.
-		fmt.Fprintf(env.Stdout, "  %-28s %-8s %-8s %s\n", s.Name, req, status, stripControlChars(s.Description))
+		// The description comes from the skill's omac.yaml; oneLine strips
+		// control characters so it cannot inject terminal escape sequences,
+		// and keeps a multi-line description on this row.
+		fmt.Fprintf(env.Stdout, "  %-28s %-8s %-8s %s\n", s.Name, req, status, oneLine(s.Description))
 	}
 	return ExitOK
 }
