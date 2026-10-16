@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"sort"
 	"strconv"
@@ -32,7 +33,9 @@ import (
 const MetaFileName = "omac.yaml"
 
 // Meta is the skill metadata as stored in omac.yaml. Only the fields
-// omac cares about are declared; unknown keys are ignored.
+// omac cares about are declared. Unknown keys do not stop a skill from
+// loading, but LoadMetaWithWarnings reports them, so that `omac register`
+// can point out a typo such as `hnit:` instead of silently dropping it.
 type Meta struct {
 	Name         string   `yaml:"name"`
 	Type         string   `yaml:"type"`
@@ -239,20 +242,145 @@ func ValidSkillName(name string) error {
 	return nil
 }
 
-// LoadMeta reads omac.yaml from path and validates it.
+// LoadMeta reads omac.yaml from path and validates it. Keys omac does not
+// know are ignored; use LoadMetaWithWarnings to list them.
 func LoadMeta(path string) (*Meta, error) {
+	m, _, err := LoadMetaWithWarnings(path)
+	return m, err
+}
+
+// LoadMetaWithWarnings is LoadMeta plus one warning per key in the file
+// that omac does not know, e.g.
+// "sidecar.secrets[0].hnit: unknown field (ignored)". The keys are
+// ignored exactly as LoadMeta ignores them; the warnings are only for
+// showing to the skill author.
+func LoadMetaWithWarnings(path string) (*Meta, []string, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("read meta: %w", err)
+		return nil, nil, fmt.Errorf("read meta: %w", err)
 	}
 	var m Meta
 	if err := yaml.Unmarshal(raw, &m); err != nil {
-		return nil, fmt.Errorf("parse meta: %w", err)
+		return nil, nil, fmt.Errorf("parse meta: %w", err)
 	}
 	if err := m.Validate(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return &m, nil
+	var warnings []string
+	for _, key := range UnknownMetaKeys(raw) {
+		warnings = append(warnings, key+": unknown field (ignored)")
+	}
+	return &m, warnings, nil
+}
+
+// UnknownMetaKeys lists the keys in an omac.yaml document that do not map
+// to a field of Meta, as dotted paths with list indexes, e.g.
+// "sidecar.secrets[0].hnit". Map-typed fields such as install_scripts
+// accept any key and are not checked. It returns nil when raw does not
+// parse; LoadMeta reports that error.
+//
+// yaml.v3's Decoder.KnownFields(true) finds the same keys, but reports
+// them as decode errors with a Go type name, e.g. "line 7: field hnit not
+// found in type config.SecretSpec". Walking the parsed YAML tree next to
+// the Go type gives the path a skill author knows from the docs instead.
+func UnknownMetaKeys(raw []byte) []string {
+	var doc yaml.Node
+	if err := yaml.Unmarshal(raw, &doc); err != nil || len(doc.Content) == 0 {
+		return nil
+	}
+	var out []string
+	collectUnknownKeys(doc.Content[0], reflect.TypeOf(Meta{}), "", &out)
+	return out
+}
+
+// collectUnknownKeys walks node, which should hold a value of type t, and
+// appends the path of every mapping key that t has no field for.
+func collectUnknownKeys(node *yaml.Node, t reflect.Type, path string, out *[]string) {
+	if node == nil {
+		return
+	}
+	if node.Kind == yaml.AliasNode {
+		collectUnknownKeys(node.Alias, t, path, out)
+		return
+	}
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	switch t.Kind() {
+	case reflect.Struct:
+		if node.Kind != yaml.MappingNode {
+			return
+		}
+		fields := yamlFieldTypes(t)
+		for i := 0; i+1 < len(node.Content); i += 2 {
+			key, val := node.Content[i], node.Content[i+1]
+			// "<<: *anchor" merges another mapping into this one; check
+			// the merged keys as if they were written here.
+			if key.Value == "<<" && key.Tag == "!!merge" {
+				if val.Kind == yaml.SequenceNode {
+					for _, m := range val.Content {
+						collectUnknownKeys(m, t, path, out)
+					}
+				} else {
+					collectUnknownKeys(val, t, path, out)
+				}
+				continue
+			}
+			p := key.Value
+			if path != "" {
+				p = path + "." + key.Value
+			}
+			ft, ok := fields[key.Value]
+			if !ok {
+				*out = append(*out, p)
+				continue
+			}
+			collectUnknownKeys(val, ft, p, out)
+		}
+	case reflect.Slice:
+		if node.Kind != yaml.SequenceNode {
+			return
+		}
+		for i, item := range node.Content {
+			collectUnknownKeys(item, t.Elem(), fmt.Sprintf("%s[%d]", path, i), out)
+		}
+	}
+}
+
+// yamlFieldTypes maps each YAML key of struct type t to its field type,
+// following the `yaml:"name,..."` tags the way yaml.v3 does: a field
+// without a name in its tag uses its lowercased Go name, "-" is skipped,
+// and ",inline" pulls in the fields of an embedded struct.
+func yamlFieldTypes(t reflect.Type) map[string]reflect.Type {
+	out := map[string]reflect.Type{}
+	for i := 0; i < t.NumField(); i++ {
+		f := t.Field(i)
+		if !f.IsExported() {
+			continue
+		}
+		tag := f.Tag.Get("yaml")
+		if tag == "-" {
+			continue
+		}
+		name, opts, _ := strings.Cut(tag, ",")
+		if strings.Contains(","+opts+",", ",inline,") {
+			ft := f.Type
+			for ft.Kind() == reflect.Pointer {
+				ft = ft.Elem()
+			}
+			if ft.Kind() == reflect.Struct {
+				for k, v := range yamlFieldTypes(ft) {
+					out[k] = v
+				}
+			}
+			continue
+		}
+		if name == "" {
+			name = strings.ToLower(f.Name)
+		}
+		out[name] = f.Type
+	}
+	return out
 }
 
 // Validate checks the invariants of a Meta value (including the sidecar block).

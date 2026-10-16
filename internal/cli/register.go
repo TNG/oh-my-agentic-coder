@@ -69,14 +69,21 @@ func runRegister(args []string, env *Env) int {
 		fmt.Fprintf(env.Stdout, "[info] using user-global skill source: %s\n", skillDir)
 	}
 
-	// 1. Load + validate meta.
-	meta, err := config.LoadMeta(metaPath)
+	// 1. Load + validate meta. Keys omac does not know are ignored, but
+	//    register is where a skill author looks at the result, so it
+	//    names them (a typo like `hnit:` would otherwise drop the help
+	//    text without notice). Other commands load omac.yaml on every
+	//    start and stay quiet about it.
+	meta, unknownKeys, err := config.LoadMetaWithWarnings(metaPath)
 	if err != nil {
 		fmt.Fprintln(env.Stderr, "omac register:", err)
 		if errors.Is(err, iofs.ErrNotExist) {
 			return ExitPrerequisiteMissing
 		}
 		return ExitConfigInvalid
+	}
+	for _, w := range unknownKeys {
+		fmt.Fprintf(env.Stderr, "[warn] %s: %s\n", config.MetaFileName, stripControlChars(w))
 	}
 	if meta.Sidecar == nil {
 		fmt.Fprintf(env.Stderr, "omac register: skill %q has no sidecar block; nothing to register\n", skillName)

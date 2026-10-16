@@ -259,3 +259,31 @@ func TestRunRegisterShowsHelpAndWarnsAboutMissingDocs(t *testing.T) {
 		t.Errorf("prompt = %q, want %q", got, want)
 	}
 }
+
+// TestRunRegisterWarnsAboutUnknownKeys: a key omac does not know (here the
+// typo `hnit`) is named in a warning, and registration still succeeds.
+func TestRunRegisterWarnsAboutUnknownKeys(t *testing.T) {
+	isolateHome(t)
+	wd := t.TempDir()
+	stageHarnessSkillBody(t, wd, "opencode", "typo", `  secrets:
+    - name: TYPO_TOKEN
+      required: false
+      hnit: Get it from the admin.
+`)
+	env, _, errBuf, drain := newPipeEnv(t, "")
+	env.Workdir = wd
+	fakeSecretInput(t, "")
+
+	code := runRegister([]string{"typo", "--harness", "opencode"}, env)
+	drain()
+	out := errBuf.String()
+	if code != ExitOK {
+		t.Fatalf("register: code = %d, want ExitOK\n%s", code, out)
+	}
+	if want := "[warn] omac.yaml: sidecar.secrets[0].hnit: unknown field (ignored)\n"; !strings.Contains(out, want) {
+		t.Errorf("stderr is missing %q:\n%s", want, out)
+	}
+	if strings.Contains(out, "Get it from the admin.") {
+		t.Errorf("an unknown key's value must not be shown as help:\n%s", out)
+	}
+}
