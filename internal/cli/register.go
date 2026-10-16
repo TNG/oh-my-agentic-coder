@@ -620,14 +620,17 @@ func handleOneSecret(env *Env, scope, skill string, spec config.SecretSpec, repr
 	}
 
 	// 5. Interactive prompt loop.
+	// The description comes from the skill author's omac.yaml. Strip
+	// control characters so an ANSI sequence in it cannot repaint the
+	// terminal right before the user types a secret.
 	if spec.Description != "" {
-		fmt.Fprintf(env.Stderr, "  %s %s\n", st.bold(spec.Name), st.dim(spec.Description))
+		fmt.Fprintf(env.Stderr, "  %s %s\n", st.bold(spec.Name), st.dim(stripControlChars(spec.Description)))
 	}
 	attempts := 0
 	for {
 		attempts++
 		prompt := fmt.Sprintf("  %s %s%s ", st.cyan("?"), st.bold(spec.Name), st.gray(defaultHint+":"))
-		value, err := secrets.ReadPassword(prompt)
+		value, err := readSecretInput(prompt)
 		if err != nil {
 			return false, fmt.Errorf("read %s: %w", spec.Name, err)
 		}
@@ -673,6 +676,12 @@ func handleOneSecret(env *Env, scope, skill string, spec config.SecretSpec, repr
 		return false, nil
 	}
 }
+
+// readSecretInput prints prompt and reads one secret value without echo
+// when stdin is a terminal. It is a variable so tests can feed values and
+// capture the prompt; secrets.ReadPassword itself always uses the real
+// os.Stdin and os.Stderr.
+var readSecretInput = secrets.ReadPassword
 
 // handleOneField implements the per-field prompting flow. Mirrors
 // handleOneSecret but writes to the skillconfig store instead of the
