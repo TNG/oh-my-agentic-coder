@@ -739,7 +739,9 @@ func printValueHelp(w *os.File, st styler, name, description, hint, docs, skillD
 		if fi, err := os.Stat(abs); err == nil && !fi.IsDir() {
 			more := "    " + st.gray("More:") + " " + stripControlChars(abs)
 			if anchor = stripControlChars(anchor); anchor != "" {
-				more += st.gray(fmt.Sprintf(" (section %q)", anchor))
+				// Plain quotes, not %q: %q would escape some characters
+				// and hide whether the strip above did its job.
+				more += st.gray(` (section "` + anchor + `")`)
 			}
 			if len(lines) > 0 {
 				lines = append(lines, "")

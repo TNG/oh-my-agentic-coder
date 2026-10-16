@@ -117,7 +117,7 @@ func TestSecurityRegisterHintAndDocsStripControlSequences(t *testing.T) {
 		t.Helper()
 		// Control: hint, docs path and section all reach the output, so a
 		// fix that drops the help block cannot pass for the wrong reason.
-		for _, frag := range []string{"hintline", "second", "More:", "file.md", "section"} {
+		for _, frag := range []string{"hintline", "second", "More:", "file.md", `(section "sec`} {
 			if !strings.Contains(out, frag) {
 				t.Fatalf("control: %q not rendered: the fixture is broken, not the security property\n%q", frag, out)
 			}
