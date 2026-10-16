@@ -246,8 +246,18 @@ func ValidSkillName(name string) error {
 // LoadMeta reads omac.yaml from path and validates it. Keys omac does not
 // know are ignored; use LoadMetaWithWarnings to list them.
 func LoadMeta(path string) (*Meta, error) {
-	m, _, err := LoadMetaWithWarnings(path)
-	return m, err
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read meta: %w", err)
+	}
+	var m Meta
+	if err := yaml.Unmarshal(raw, &m); err != nil {
+		return nil, fmt.Errorf("parse meta: %w", err)
+	}
+	if err := m.Validate(); err != nil {
+		return nil, err
+	}
+	return &m, nil
 }
 
 // LoadMetaWithWarnings is LoadMeta plus one warning per key in the file
@@ -255,42 +265,50 @@ func LoadMeta(path string) (*Meta, error) {
 // "sidecar.secrets[0].hnit: unknown field (ignored)". The keys are
 // ignored exactly as LoadMeta ignores them; the warnings are only for
 // showing to the skill author.
+//
+// The warnings are also returned when validation fails, because an
+// unknown key often explains the failure: with `- nmae: TOKEN` the error
+// is "name is not a valid env var name", and the warning names the typo.
+// Only a read or YAML syntax error returns no warnings.
 func LoadMetaWithWarnings(path string) (*Meta, []string, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, nil, fmt.Errorf("read meta: %w", err)
 	}
-	var m Meta
-	if err := yaml.Unmarshal(raw, &m); err != nil {
+	// Parse once into a node tree, then decode the Meta from it and walk
+	// the same tree for unknown keys.
+	var doc yaml.Node
+	if err := yaml.Unmarshal(raw, &doc); err != nil {
 		return nil, nil, fmt.Errorf("parse meta: %w", err)
 	}
-	if err := m.Validate(); err != nil {
-		return nil, nil, err
-	}
+	var m Meta
 	var warnings []string
-	for _, key := range UnknownMetaKeys(raw) {
-		warnings = append(warnings, key+": unknown field (ignored)")
+	if len(doc.Content) > 0 {
+		if err := doc.Decode(&m); err != nil {
+			return nil, nil, fmt.Errorf("parse meta: %w", err)
+		}
+		for _, key := range unknownMetaKeys(doc.Content[0]) {
+			warnings = append(warnings, key+": unknown field (ignored)")
+		}
+	}
+	if err := m.Validate(); err != nil {
+		return nil, warnings, err
 	}
 	return &m, warnings, nil
 }
 
-// UnknownMetaKeys lists the keys in an omac.yaml document that do not map
-// to a field of Meta, as dotted paths with list indexes, e.g.
+// unknownMetaKeys lists the keys in a parsed omac.yaml document that do
+// not map to a field of Meta, as dotted paths with list indexes, e.g.
 // "sidecar.secrets[0].hnit". Map-typed fields such as install_scripts
-// accept any key and are not checked. It returns nil when raw does not
-// parse; LoadMeta reports that error.
+// accept any key and are not checked.
 //
 // yaml.v3's Decoder.KnownFields(true) finds the same keys, but reports
 // them as decode errors with a Go type name, e.g. "line 7: field hnit not
 // found in type config.SecretSpec". Walking the parsed YAML tree next to
 // the Go type gives the path a skill author knows from the docs instead.
-func UnknownMetaKeys(raw []byte) []string {
-	var doc yaml.Node
-	if err := yaml.Unmarshal(raw, &doc); err != nil || len(doc.Content) == 0 {
-		return nil
-	}
+func unknownMetaKeys(root *yaml.Node) []string {
 	var out []string
-	collectUnknownKeys(doc.Content[0], reflect.TypeOf(Meta{}), "", &out)
+	collectUnknownKeys(root, reflect.TypeOf(Meta{}), "", &out)
 	return out
 }
 

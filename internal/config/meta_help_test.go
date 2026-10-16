@@ -242,3 +242,27 @@ func TestLoadMetaWithWarnings_RepoSkillsHaveNone(t *testing.T) {
 		}
 	}
 }
+
+// When validation fails, the unknown-key warnings still come back, since a
+// typo such as `nmae:` is usually what broke validation.
+func TestLoadMetaWithWarnings_ReportsUnknownKeysOnValidationError(t *testing.T) {
+	p := writeMeta(t, `name: s
+sidecar:
+  command: ["true"]
+  secrets:
+    - nmae: TOKEN
+`)
+	m, warnings, err := LoadMetaWithWarnings(p)
+	if err == nil || !strings.Contains(err.Error(), "not a valid env var name") {
+		t.Fatalf("control: want the validation error for the missing name, got m=%v err=%v", m, err)
+	}
+	if m != nil {
+		t.Errorf("a failed load must not return a Meta")
+	}
+	if want := "sidecar.secrets[0].nmae: unknown field (ignored)"; len(warnings) != 1 || warnings[0] != want {
+		t.Errorf("warnings = %q, want [%q]", warnings, want)
+	}
+	if _, err := LoadMeta(p); err == nil {
+		t.Errorf("LoadMeta should fail the same way")
+	}
+}

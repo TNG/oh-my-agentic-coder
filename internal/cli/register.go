@@ -74,16 +74,18 @@ func runRegister(args []string, env *Env) int {
 	//    names them (a typo like `hnit:` would otherwise drop the help
 	//    text without notice). Other commands load omac.yaml on every
 	//    start and stay quiet about it.
+	//    The warnings come first, also when loading fails: a typo like
+	//    `nmae:` is often the reason for the error below it.
 	meta, unknownKeys, err := config.LoadMetaWithWarnings(metaPath)
+	for _, w := range unknownKeys {
+		fmt.Fprintf(env.Stderr, "[warn] %s: %s\n", config.MetaFileName, stripControlChars(w))
+	}
 	if err != nil {
 		fmt.Fprintln(env.Stderr, "omac register:", err)
 		if errors.Is(err, iofs.ErrNotExist) {
 			return ExitPrerequisiteMissing
 		}
 		return ExitConfigInvalid
-	}
-	for _, w := range unknownKeys {
-		fmt.Fprintf(env.Stderr, "[warn] %s: %s\n", config.MetaFileName, stripControlChars(w))
 	}
 	if meta.Sidecar == nil {
 		fmt.Fprintf(env.Stderr, "omac register: skill %q has no sidecar block; nothing to register\n", skillName)

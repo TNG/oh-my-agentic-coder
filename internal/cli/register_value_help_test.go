@@ -299,3 +299,28 @@ func TestRunRegisterWarnsAboutUnknownKeys(t *testing.T) {
 		t.Errorf("an unknown key's value must not be shown as help:\n%s", out)
 	}
 }
+
+// TestRunRegisterWarnsAboutUnknownKeysOnInvalidMeta: when omac.yaml fails
+// validation, the unknown-key warning is printed before the error, so the
+// author sees the typo that caused it.
+func TestRunRegisterWarnsAboutUnknownKeysOnInvalidMeta(t *testing.T) {
+	isolateHome(t)
+	wd := t.TempDir()
+	stageHarnessSkillBody(t, wd, "opencode", "badname", `  secrets:
+    - nmae: TOKEN
+`)
+	env, _, errBuf, drain := newPipeEnv(t, "")
+	env.Workdir = wd
+
+	code := runRegister([]string{"badname", "--harness", "opencode"}, env)
+	drain()
+	out := errBuf.String()
+	if code != ExitConfigInvalid {
+		t.Fatalf("control: register code = %d, want ExitConfigInvalid\n%s", code, out)
+	}
+	warn := strings.Index(out, "[warn] omac.yaml: sidecar.secrets[0].nmae: unknown field (ignored)\n")
+	errLine := strings.Index(out, "omac register: sidecar.secrets[0].name")
+	if warn < 0 || errLine < 0 || warn > errLine {
+		t.Errorf("want the unknown-key warning before the validation error:\n%s", out)
+	}
+}
