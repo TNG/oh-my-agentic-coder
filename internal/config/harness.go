@@ -72,6 +72,18 @@ type Harness struct {
 	// ResolvedSandboxDirs grant a directory the harness never reads (#233).
 	HomeEnv string
 
+	// CacheHomeEnv, when non-empty, names an environment variable whose
+	// value relocates the harness's package-extraction cache directory.
+	// omac points it at ConfigHome() before launch: the standalone copilot
+	// binary (Node SEA) extracts its bundled package into
+	// ~/Library/Caches/copilot on macOS — a dir the default profile
+	// deliberately does not grant (tool-cache isolation, #26) — and honors
+	// only this variable for relocation, ignoring TMPDIR (#375). Empty
+	// means the harness extracts nowhere omac needs to redirect. The name
+	// must also appear in SandboxEnvAllow so the injected value survives
+	// the sandbox's env filter.
+	CacheHomeEnv string
+
 	// Session, when non-nil, declares how omac re-enters prior sessions of
 	// this harness for `omac continue` and `omac resume`. A nil Session means
 	// the harness exposes no session continue/resume support, and those
@@ -386,6 +398,16 @@ func harnessRegistry() []Harness {
 			HomeEnv:        "COPILOT_HOME",
 			// Copilot stores configuration, session state, and authentication in ~/.copilot.
 			SandboxDirs: []string{"~/.copilot"},
+			// Created before grant resolution (which drops missing paths):
+			// on a fresh install ~/.copilot does not exist yet, and without
+			// the grant the redirected package cache below would point at
+			// a dir the sandbox cannot write (#375).
+			SandboxCreateDirs: []string{"~/.copilot"},
+			// The standalone (Node SEA) binary extracts its bundled package
+			// into ~/Library/Caches/copilot on macOS, which the default
+			// profile does not grant; omac redirects the extraction into
+			// the granted config home at launch (#375).
+			CacheHomeEnv: "COPILOT_CACHE_HOME",
 			// Copilot authenticates with a GitHub token or its native BYOK
 			// provider configuration. COPILOT_CUSTOM_INSTRUCTIONS_DIRS is set by
 			// omac's BriefingEnvFunc to point copilot at the per-launch briefing
@@ -399,6 +421,9 @@ func harnessRegistry() []Harness {
 				"COPILOT_PROVIDER_API_KEY",
 				"COPILOT_MODEL",
 				"COPILOT_PROVIDER_WIRE_API",
+				// omac-injected (see CacheHomeEnv): relocates the SEA
+				// package extraction into the granted config home.
+				"COPILOT_CACHE_HOME",
 			},
 			Session: &HarnessSession{
 				ContinueArgs:   []string{"--continue"},

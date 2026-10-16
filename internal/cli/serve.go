@@ -512,6 +512,10 @@ func runServe(args []string, env *Env) int {
 	// per-skill OMAC_G_*/OMAC_D_* vars are added on top by serve as routes
 	// come and go; the static globals are set here once.
 	extra := srv.baseEnv()
+	// copilot: point the package-extraction cache at the granted config
+	// home so the SEA binary can extract there (#375). Same injection as
+	// start.go.
+	injectHarnessCacheHome(harness, extra)
 	if injectBriefing {
 		// Consumed by the OpenCode plugin; see start.go.
 		extra["OMAC_SANDBOX_BRIEFING"] = briefingText

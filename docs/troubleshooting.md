@@ -121,6 +121,29 @@ Fix: export `COPILOT_PROVIDER_WIRE_API=completions` before `omac start copilot`
 — it is in the auto-forwarded set, so no profile change is needed. The full
 variable set is documented by `copilot help providers`.
 
+### copilot dies at startup with "Failed to extract bundled package: EPERM"
+
+The standalone copilot CLI (Homebrew cask or GitHub release download, 1.0.9x+)
+is a Node single-executable binary that extracts its bundled package on startup
+into a hardcoded user cache dir — `~/Library/Caches/copilot` on macOS — before
+doing anything else. The sandbox deliberately does not grant that dir
+(tool-cache isolation), so the first launch dies before any model call:
+
+    Failed to extract bundled package: Error: EPERM: operation not permitted,
+    mkdir '/Users/<you>/Library/Caches/copilot/pkg/darwin-arm64'
+
+The dir is ungranted for reads too, so pre-extracting by running copilot once
+in a plain terminal does not help: the sandboxed loader cannot see the
+package and retries the extraction.
+
+Fix: update omac. Current builds point `COPILOT_CACHE_HOME` at copilot's
+sandbox-granted config home (`~/.copilot`) when launching copilot, so the
+extraction happens there. If you cannot update, either add
+`"~/Library/Caches/copilot"` to `filesystem.allow` in
+`~/.config/omac/sandbox-profiles/default.json`, or export
+`COPILOT_CACHE_HOME="$HOME/.copilot"` yourself and add `COPILOT_CACHE_HOME`
+to `environment.allow_vars`.
+
 ### claude-code exits silently on macOS (no output, no model calls)
 
 The claude process starts and exits with status 0 within a second. It

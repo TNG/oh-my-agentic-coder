@@ -308,6 +308,31 @@ func TestCopilotForwardsBYOKProviderEnvironment(t *testing.T) {
 	}
 }
 
+// TestCopilotCacheHomeWiring pins the #375 extraction-cache redirect: the
+// env var is declared, forwarded through the sandbox env filter, and the
+// config home it points at is pre-created so the grant survives existence
+// filtering on a fresh install. Only copilot redirects a package cache.
+func TestCopilotCacheHomeWiring(t *testing.T) {
+	for _, h := range AllHarnesses() {
+		if h.Name != "copilot" && h.CacheHomeEnv != "" {
+			t.Errorf("%s declares CacheHomeEnv %q; only copilot redirects a package cache", h.Name, h.CacheHomeEnv)
+		}
+	}
+	h, ok := LookupHarness("copilot")
+	if !ok {
+		t.Fatal("copilot harness not found")
+	}
+	if h.CacheHomeEnv != "COPILOT_CACHE_HOME" {
+		t.Errorf("copilot CacheHomeEnv = %q; want COPILOT_CACHE_HOME", h.CacheHomeEnv)
+	}
+	if !slices.Contains(h.ForwardedEnvVars(), "COPILOT_CACHE_HOME") {
+		t.Errorf("copilot ForwardedEnvVars missing COPILOT_CACHE_HOME; got %v", h.ForwardedEnvVars())
+	}
+	if !slices.Contains(h.SandboxCreateDirs, "~/.copilot") {
+		t.Errorf("copilot SandboxCreateDirs missing ~/.copilot; got %v", h.SandboxCreateDirs)
+	}
+}
+
 func TestHarnessSuppliesInnerForEmptyProfile(t *testing.T) {
 	// With the default (empty) profile inner_cmd, the harness default is used.
 	oc, _ := LookupHarness("opencode")
@@ -530,6 +555,10 @@ func TestSandboxDirsOpenCode(t *testing.T) {
 }
 
 func TestSandboxCreateDirsAreGranted(t *testing.T) {
+	// opencode pre-creates its data/state dirs; copilot pre-creates its
+	// config home so the redirected package cache (CacheHomeEnv, #375)
+	// lands inside a granted dir even on a fresh install.
+	createAllowed := map[string]bool{"opencode": true, "copilot": true}
 	for _, h := range AllHarnesses() {
 		granted := make(map[string]bool, len(h.SandboxDirs))
 		for _, dir := range h.SandboxDirs {
@@ -540,7 +569,7 @@ func TestSandboxCreateDirsAreGranted(t *testing.T) {
 				t.Errorf("%s SandboxCreateDirs contains ungranted path %q", h.Name, dir)
 			}
 		}
-		if h.Name != "opencode" && len(h.SandboxCreateDirs) != 0 {
+		if !createAllowed[h.Name] && len(h.SandboxCreateDirs) != 0 {
 			t.Errorf("%s SandboxCreateDirs = %v; want none", h.Name, h.SandboxCreateDirs)
 		}
 	}

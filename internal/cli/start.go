@@ -901,6 +901,9 @@ func runLaunch(env *Env, opts launchOpts) int {
 		// scratch dir as TMPDIR.
 		extra["CLAUDE_CODE_TMPDIR"] = sandboxTmp
 	}
+	// copilot: point the package-extraction cache at the granted config
+	// home so the SEA binary can extract there (#375).
+	injectHarnessCacheHome(harness, extra)
 	for _, m := range mounts {
 		extra[sandbox.OmacEnvName(m)] = sandbox.OmacTCPEnvValue(m, tcpPort)
 		extra[sandbox.OmacSocketEnvName(m)] = sandbox.OmacEnvValue(m, socketPath)
