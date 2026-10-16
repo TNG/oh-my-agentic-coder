@@ -523,7 +523,7 @@ func BundleHash(skillDir string) (string, error) {
 			// change the bundle without tripping detection.
 			return nil
 		}
-		if isExcludedFileName(d.Name()) {
+		if IsExcludedFileName(d.Name()) {
 			return nil
 		}
 		raw, readErr := os.ReadFile(p)
@@ -573,9 +573,12 @@ func isExcludedDirName(name string) bool {
 	return false
 }
 
-// isExcludedFileName reports whether a file should be skipped from
+// IsExcludedFileName reports whether a file should be skipped from
 // the hash. Compiled output and OS-level junk only.
-func isExcludedFileName(name string) bool {
+//
+// Exported so snapshot.go can apply the same exclusions, keeping the
+// hashed file set identical to the executed file set.
+func IsExcludedFileName(name string) bool {
 	switch name {
 	case ".DS_Store", "Thumbs.db", ".gitignore.swp":
 		return true
