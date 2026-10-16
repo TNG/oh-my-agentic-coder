@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	iofs "io/fs"
 	"os"
 	"path/filepath"
@@ -532,6 +533,28 @@ func dedupSorted(names []string) []string {
 // workdir-local skills (omac/<workdir-id>/<skill>) — it MUST match the scope
 // serve reads with (see serve.go bringUp), or the skill will never see the
 // value. See docs/contributing/serve-spec.md.
+// printFieldHelp prints a field's name, description and multi-line hint above
+// its register prompt. All three come from the skill author's omac.yaml, so
+// control characters are stripped; the hint keeps its line breaks so
+// copy-paste snippets stay intact.
+func printFieldHelp(w io.Writer, st styler, name, description, hint string) {
+	if description == "" && hint == "" {
+		return
+	}
+	fmt.Fprintf(w, "  %s %s\n", st.bold(stripControlChars(name)), st.dim(stripControlChars(description)))
+	hint = strings.TrimRight(hint, "\r\n")
+	if hint == "" {
+		return
+	}
+	for _, line := range strings.Split(hint, "\n") {
+		if line = strings.TrimRight(stripControlChars(line), " \t"); line == "" {
+			fmt.Fprintln(w)
+			continue
+		}
+		fmt.Fprintf(w, "    %s\n", line)
+	}
+}
+
 func handleOneSecret(env *Env, scope, skill string, spec config.SecretSpec, reprompt bool, prevSkipped map[string]bool, fromFile map[string]string, useDefaults bool, host osinfo.OS) (bool, error) {
 	st := newStyler(env.Stderr)
 	// 1. Already in keychain?
@@ -620,9 +643,7 @@ func handleOneSecret(env *Env, scope, skill string, spec config.SecretSpec, repr
 	}
 
 	// 5. Interactive prompt loop.
-	if spec.Description != "" {
-		fmt.Fprintf(env.Stderr, "  %s %s\n", st.bold(spec.Name), st.dim(spec.Description))
-	}
+	printFieldHelp(env.Stderr, st, spec.Name, spec.Description, spec.Hint)
 	attempts := 0
 	for {
 		attempts++
@@ -769,9 +790,7 @@ func handleOneField(env *Env, store *skillconfig.Store, skill string, spec confi
 
 	// 5. Interactive prompt loop.
 	displayName := stripControlChars(spec.Name)
-	if spec.Description != "" {
-		fmt.Fprintf(env.Stderr, "  %s %s\n", st.bold(displayName), st.dim(stripControlChars(spec.Description)))
-	}
+	printFieldHelp(env.Stderr, st, spec.Name, spec.Description, spec.Hint)
 	if spec.EffectiveType() == config.ConfigFieldEnum {
 		safeChoices := make([]string, len(spec.Choices))
 		for i, c := range spec.Choices {

@@ -63,6 +63,7 @@ type SidecarMeta struct {
 type SecretSpec struct {
 	Name           string `yaml:"name"`
 	Description    string `yaml:"description,omitempty"`
+	Hint           string `yaml:"hint,omitempty"`     // multi-line "how to obtain" help
 	Required       *bool  `yaml:"required,omitempty"` // default true
 	Pattern        string `yaml:"pattern,omitempty"`
 	DefaultFromEnv string `yaml:"default_from_env,omitempty"`
@@ -121,6 +122,7 @@ const (
 type ConfigSpec struct {
 	Name           string          `yaml:"name"`
 	Description    string          `yaml:"description,omitempty"`
+	Hint           string          `yaml:"hint,omitempty"`     // multi-line "how to obtain" help
 	Type           ConfigFieldType `yaml:"type,omitempty"`     // default "string"
 	Required       *bool           `yaml:"required,omitempty"` // default true
 	Default        string          `yaml:"default,omitempty"`  // pre-fill value at prompt

@@ -44,6 +44,7 @@ These two files are all omac needs. A skill published through the marketplace al
 |---|---|---|---|
 | `name` | yes | — | Valid env var name (`^[A-Z_][A-Z0-9_]*$`). Injected into the sidecar at start time. |
 | `description` | no | — | Shown at the `omac register` prompt. |
+| `hint` | no | — | Multi-line help printed below `description` at the prompt, e.g. steps to obtain the value. Line breaks are kept. |
 | `required` | no | `true` | Must the field be set? |
 | `pattern` | no | — | Regex the value must match. |
 | `default_from_env` | no | — | Host env var to pre-fill at the prompt. |
@@ -55,6 +56,7 @@ These two files are all omac needs. A skill published through the marketplace al
 |---|---|---|---|
 | `name` | yes | — | Valid env var name (`^[A-Z_][A-Z0-9_]*$`). Injected into the sidecar at start time. |
 | `description` | no | — | Shown at the `omac register` prompt. |
+| `hint` | no | — | Multi-line help printed below `description` at the prompt, e.g. steps to obtain the value. Line breaks are kept. |
 | `type` | no | `string` | Value type: `string`, `bool`, `int`, or `enum`. |
 | `required` | no | `true` | Must the field be set? |
 | `default` | no | — | Pre-filled value at the prompt; must be valid for `type`. |
