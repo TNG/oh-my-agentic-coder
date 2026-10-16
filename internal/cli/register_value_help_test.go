@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/TNG/oh-my-agentic-coder/internal/config"
+	"github.com/TNG/oh-my-agentic-coder/internal/registry"
 	"github.com/TNG/oh-my-agentic-coder/internal/skillconfig"
 )
 
@@ -347,5 +348,60 @@ func TestRegisterMultiLineDescriptionStaysReadable(t *testing.T) {
 	}
 	if !strings.Contains(out, "    step one\n    step two\n") {
 		t.Errorf("hint lost its line breaks: %q", out)
+	}
+}
+
+// TestSecretsSetShowsHintAndDocs: `omac secrets set` prompts through the
+// same code as register. It finds the skill directory from the registry,
+// where a workdir-local skill is stored relative to the workdir, and must
+// join it with the workdir to print an absolute docs path.
+func TestSecretsSetShowsHintAndDocs(t *testing.T) {
+	isolateHome(t)
+	fakeSecretInputHidden(t, true)
+	wd := t.TempDir()
+	stageHarnessSkillBody(t, wd, "opencode", "setdemo", `  secrets:
+    - name: SET_TOKEN
+      description: Set token.
+      hint: Ask the set service.
+      docs: SKILL.md#token
+`)
+	skillDir := filepath.Join(wd, ".opencode", "skills", "setdemo")
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("# setdemo\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	regEnv := makeEnv(wd)
+	if code := runRegister([]string{"setdemo", "--harness", "opencode", "--no-secrets"}, regEnv); code != ExitOK {
+		t.Fatalf("register: code = %d", code)
+	}
+	// Control: the registry stores the skill dir relative to the workdir,
+	// so the join below is actually exercised.
+	reg, err := registry.Load(wd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e, _ := reg.Find("setdemo"); e == nil || filepath.IsAbs(e.SkillDir) {
+		t.Fatalf("control: want a relative SkillDir in the registry, got %+v", e)
+	}
+
+	env, _, errBuf, drain := newPipeEnv(t, "")
+	env.Workdir = wd
+	prompts := fakeSecretInput(t, "value")
+	code := runSecrets([]string{"set", "setdemo", "SET_TOKEN"}, env)
+	drain()
+	out := errBuf.String()
+	if code != ExitOK {
+		t.Fatalf("secrets set: code = %d\n%s", code, out)
+	}
+	want := "  SET_TOKEN Set token.\n" +
+		"\n" +
+		"    Ask the set service.\n" +
+		"\n" +
+		"    More: " + filepath.Join(skillDir, "SKILL.md") + ` (section "token")` + "\n" +
+		"\n"
+	if !strings.HasPrefix(out, want) {
+		t.Errorf("stderr =\n%s\nwant prefix\n%s", out, want)
+	}
+	if got := prompts.String(); got != "  ? SET_TOKEN (input hidden): \n" {
+		t.Errorf("prompt = %q", got)
 	}
 }
