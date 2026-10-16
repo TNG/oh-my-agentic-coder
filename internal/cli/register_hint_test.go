@@ -1,10 +1,12 @@
 package cli
 
 import (
+	"os"
 	"strings"
 	"testing"
 
 	"github.com/TNG/oh-my-agentic-coder/internal/config"
+	"github.com/TNG/oh-my-agentic-coder/internal/osinfo"
 	"github.com/TNG/oh-my-agentic-coder/internal/skillconfig"
 	"gopkg.in/yaml.v3"
 )
@@ -51,16 +53,50 @@ func TestRegisterShowsManifestHint(t *testing.T) {
 	}
 }
 
-// TestPrintFieldHelpStripsControlSequences asserts that an author-controlled
-// hint cannot inject terminal escapes while its line breaks are kept.
-func TestPrintFieldHelpStripsControlSequences(t *testing.T) {
-	var b strings.Builder
-	printFieldHelp(&b, styler{}, "NAME", "", "line one\x1b[2J\nline two\n")
-	out := b.String()
-	if strings.ContainsRune(out, 0x1b) {
-		t.Errorf("hint output contains a raw ANSI escape: %q", out)
+// TestRegisterSecretShowsManifestHint covers the secret prompt path, the
+// motivating case (Slack tokens), end to end against the mocked keychain.
+func TestRegisterSecretShowsManifestHint(t *testing.T) {
+	var spec config.SecretSpec
+	if err := yaml.Unmarshal([]byte(slackLikeManifest), &spec); err != nil {
+		t.Fatalf("unmarshal: %v", err)
 	}
-	if !strings.Contains(out, "    line one[2J\n    line two\n") {
-		t.Errorf("hint lines not rendered as expected: %q", out)
+	env, _, errBuf, drain := newPipeEnv(t, "xoxd-value\n")
+	origStdin := os.Stdin
+	os.Stdin = env.Stdin
+	t.Cleanup(func() { os.Stdin = origStdin })
+
+	if _, err := handleOneSecret(env, "", "hint-skill", spec, true, nil, nil, false, osinfo.Linux); err != nil {
+		t.Fatalf("handleOneSecret: %v", err)
+	}
+	drain()
+	if want := "\n    document.cookie.split('; ').find(c => c.startsWith('d='))?.slice(2);\n"; !strings.Contains(errBuf.String(), want) {
+		t.Errorf("secret prompt missing hint line %q\n%s", want, errBuf.String())
+	}
+}
+
+// TestPrintFieldHelp pins the rendering, including that a field without a
+// hint prints exactly the pre-hint "  NAME description" line.
+func TestPrintFieldHelp(t *testing.T) {
+	cases := []struct {
+		name, desc, hint, want string
+	}{
+		{"no hint keeps old output", "API token.", "", "  NAME API token.\n"},
+		{"nothing to show", "", "", ""},
+		{"whitespace-only hint", "", " \t\n", ""},
+		{"hint without description", "", "step one\n", "  NAME\n    step one\n"},
+		{"multi-line description joined", "first\nsecond", "", "  NAME first second\n"},
+		{"blank lines and indent kept", "d", "a\n\n  b\n", "  NAME d\n    a\n\n      b\n"},
+		{"CRLF and outer blank lines", "d", "\r\na\r\nb\r\n\r\n", "  NAME d\n    a\n    b\n"},
+		{"tabs expanded", "d", "x\ty", "  NAME d\n    x    y\n"},
+		{"escapes stripped", "d\x1b[2J", "one\x1b[2J\ntwo", "  NAME d[2J\n    one[2J\n    two\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var b strings.Builder
+			printFieldHelp(&b, styler{}, "NAME", tc.desc, tc.hint)
+			if got := b.String(); got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
 	}
 }

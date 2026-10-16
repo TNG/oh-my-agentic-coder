@@ -515,6 +515,37 @@ func dedupSorted(names []string) []string {
 	return out
 }
 
+// printFieldHelp prints a field's name, description and multi-line hint above
+// its register prompt. All three come from the skill author's omac.yaml, so
+// control characters are stripped. The hint keeps line breaks and expands tabs
+// so copy-paste snippets stay intact; prints nothing if both texts are empty.
+func printFieldHelp(w io.Writer, st styler, name, description, hint string) {
+	description = strings.TrimSpace(stripControlChars(strings.NewReplacer("\r\n", " ", "\n", " ").Replace(description)))
+	hint = strings.Trim(strings.ReplaceAll(hint, "\r\n", "\n"), "\n")
+	if strings.TrimSpace(hint) == "" {
+		hint = ""
+	}
+	if description == "" && hint == "" {
+		return
+	}
+	line := "  " + st.bold(stripControlChars(name))
+	if description != "" {
+		line += " " + st.dim(description)
+	}
+	fmt.Fprintln(w, line)
+	if hint == "" {
+		return
+	}
+	for _, l := range strings.Split(hint, "\n") {
+		l = strings.TrimRight(stripControlChars(strings.ReplaceAll(l, "\t", "    ")), " ")
+		if l == "" {
+			fmt.Fprintln(w)
+			continue
+		}
+		fmt.Fprintf(w, "    %s\n", l)
+	}
+}
+
 // handleOneSecret implements the per-secret flow from §16.4.
 //
 // The bool return reports whether the user explicitly skipped an
@@ -533,28 +564,6 @@ func dedupSorted(names []string) []string {
 // workdir-local skills (omac/<workdir-id>/<skill>) — it MUST match the scope
 // serve reads with (see serve.go bringUp), or the skill will never see the
 // value. See docs/contributing/serve-spec.md.
-// printFieldHelp prints a field's name, description and multi-line hint above
-// its register prompt. All three come from the skill author's omac.yaml, so
-// control characters are stripped; the hint keeps its line breaks so
-// copy-paste snippets stay intact.
-func printFieldHelp(w io.Writer, st styler, name, description, hint string) {
-	if description == "" && hint == "" {
-		return
-	}
-	fmt.Fprintf(w, "  %s %s\n", st.bold(stripControlChars(name)), st.dim(stripControlChars(description)))
-	hint = strings.TrimRight(hint, "\r\n")
-	if hint == "" {
-		return
-	}
-	for _, line := range strings.Split(hint, "\n") {
-		if line = strings.TrimRight(stripControlChars(line), " \t"); line == "" {
-			fmt.Fprintln(w)
-			continue
-		}
-		fmt.Fprintf(w, "    %s\n", line)
-	}
-}
-
 func handleOneSecret(env *Env, scope, skill string, spec config.SecretSpec, reprompt bool, prevSkipped map[string]bool, fromFile map[string]string, useDefaults bool, host osinfo.OS) (bool, error) {
 	st := newStyler(env.Stderr)
 	// 1. Already in keychain?
