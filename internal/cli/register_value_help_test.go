@@ -210,8 +210,9 @@ func TestRegisterFieldWithoutHelpIsUnchanged(t *testing.T) {
 
 // TestRunRegisterShowsHelpAndWarnsAboutMissingDocs runs the whole
 // `omac register` command against a staged skill: the hint and the docs
-// path appear at the prompt, and a docs entry that names a missing file or an unusable path
-// is reported as a warning without failing the registration.
+// path appear at the prompt, and a docs entry that names a missing file
+// or an unusable path is reported as a warning without failing the
+// registration.
 func TestRunRegisterShowsHelpAndWarnsAboutMissingDocs(t *testing.T) {
 	isolateHome(t)
 	fakeSecretInputHidden(t, true)
