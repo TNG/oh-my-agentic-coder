@@ -2,6 +2,8 @@ package cli
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -26,7 +28,7 @@ func TestSecurityRegisterOutputStripsControlSequences(t *testing.T) {
 	payload := "harmless\x1b[2Jname"
 	spec := config.ConfigSpec{Name: payload, Type: config.ConfigFieldString}
 
-	if _, err := handleOneField(env, store, "skill", spec, false, nil, nil, false, nil); err != nil {
+	if _, err := handleOneField(env, store, "skill", "", spec, false, nil, nil, false, nil); err != nil {
 		t.Fatalf("handleOneField: %v", err)
 	}
 	drain()
@@ -58,7 +60,7 @@ func TestSecurityRegisterSecretDescriptionStripsControlSequences(t *testing.T) {
 		Description: "harmless\x1b[2Jdescription\u009b31m",
 	}
 
-	if _, err := handleOneSecret(env, "", "sec-desc-skill", spec, true, nil, nil, false, "linux"); err != nil {
+	if _, err := handleOneSecret(env, "", "sec-desc-skill", "", spec, true, nil, nil, false, "linux"); err != nil {
 		t.Fatalf("handleOneSecret: %v", err)
 	}
 	drain()
@@ -93,4 +95,66 @@ func fakeSecretInput(t *testing.T, values ...string) *bytes.Buffer {
 	}
 	t.Cleanup(func() { readSecretInput = orig })
 	return prompts
+}
+
+// TestSecurityRegisterHintAndDocsStripControlSequences covers the `hint`
+// and `docs` fields of secrets and config fields. Both come from the skill
+// author's omac.yaml and are printed next to the prompt, like the
+// description. The docs file name and its section anchor both carry a
+// payload; the file really exists so the "More:" line is printed.
+func TestSecurityRegisterHintAndDocsStripControlSequences(t *testing.T) {
+	const esc = "\x1b[2J"
+	const c1 = "\u009b31m"
+	dir := t.TempDir()
+	docFile := "doc" + esc + "file.md"
+	if err := os.WriteFile(filepath.Join(dir, docFile), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	hint := "hintline" + esc + "one\nsecond" + c1 + "line\n"
+	docs := docFile + "#sec" + esc + "tion" + c1
+
+	check := func(t *testing.T, out string) {
+		t.Helper()
+		// Control: hint, docs path and section all reach the output, so a
+		// fix that drops the help block cannot pass for the wrong reason.
+		for _, frag := range []string{"hintline", "second", "More:", "file.md", "section"} {
+			if !strings.Contains(out, frag) {
+				t.Fatalf("control: %q not rendered: the fixture is broken, not the security property\n%q", frag, out)
+			}
+		}
+		if strings.ContainsRune(out, 0x1b) || strings.ContainsRune(out, 0x9b) {
+			t.Errorf("register output contains a raw control character from a skill-supplied hint or docs: %q", out)
+		}
+	}
+
+	t.Run("secret", func(t *testing.T) {
+		env, _, errBuf, drain := newPipeEnv(t, "")
+		// The first value fails the pattern, so the hint is printed a second
+		// time on the retry path, which must be sanitized as well.
+		promptBuf := fakeSecretInput(t, "bad", "ok-value")
+		spec := config.SecretSpec{Name: "TOKEN", Pattern: "^ok-", Hint: hint, Docs: docs}
+		if _, err := handleOneSecret(env, "", "sec-hint-skill", dir, spec, true, nil, nil, false, "linux"); err != nil {
+			t.Fatalf("handleOneSecret: %v", err)
+		}
+		drain()
+		out := errBuf.String() + promptBuf.String()
+		if strings.Count(out, "hintline") != 2 {
+			t.Fatalf("control: the hint was not repeated on the retry path\n%q", out)
+		}
+		check(t, out)
+	})
+
+	t.Run("config field", func(t *testing.T) {
+		env, _, errBuf, drain := newPipeEnv(t, "BAD\nok\n")
+		spec := config.ConfigSpec{Name: "FIELD", Pattern: "^[a-z]+$", Hint: hint, Docs: docs}
+		if _, err := handleOneField(env, &skillconfig.Store{}, "sec-hint-field", dir, spec, true, nil, nil, false, nil); err != nil {
+			t.Fatalf("handleOneField: %v", err)
+		}
+		drain()
+		out := errBuf.String()
+		if strings.Count(out, "hintline") != 2 {
+			t.Fatalf("control: the hint was not repeated on the retry path\n%q", out)
+		}
+		check(t, out)
+	})
 }
