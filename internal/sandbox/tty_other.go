@@ -12,3 +12,9 @@ func claimTerminalFor(pgid int) (*os.File, func()) {
 	_ = pgid
 	return nil, func() {}
 }
+
+// saveTerminal is a no-op where there is no POSIX terminal to restore.
+func saveTerminal(in, out *os.File) func() {
+	_, _ = in, out
+	return func() {}
+}

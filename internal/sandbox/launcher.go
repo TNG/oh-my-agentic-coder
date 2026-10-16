@@ -391,6 +391,14 @@ func execChild(argv []string, env []string, workdir string, onReady func(pid int
 	}
 	defer signal.Stop(sigCh)
 
+	// Snapshot the terminal before the child can change it, and put it back
+	// once the child is gone, so a TUI that died without cleaning up does
+	// not leave the shell in raw mode with mouse reports turned on. Deferred
+	// before claimTerminalFor's restore so it runs after it: by then omac is
+	// the terminal's foreground group again.
+	restoreTerminal := saveTerminal(os.Stdin, os.Stdout)
+	defer restoreTerminal()
+
 	if err := cmd.Start(); err != nil {
 		return 1, fmt.Errorf("exec %s: %w", argv[0], err)
 	}
