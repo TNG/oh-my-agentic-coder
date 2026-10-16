@@ -76,7 +76,8 @@ type SecretSpec struct {
 	Hint string `yaml:"hint,omitempty"`
 	// Docs optionally points to a file inside the skill that explains the
 	// value, with an optional section anchor, e.g.
-	// "SKILL.md#obtaining-the-token". See SplitDocsRef.
+	// "SKILL.md#obtaining-the-token". An unusable value is a warning at
+	// `omac register`, never a load error; see DocsWarnings.
 	Docs string `yaml:"docs,omitempty"`
 }
 
@@ -434,9 +435,6 @@ func (s *SidecarMeta) Validate(skillName string) error {
 				return fmt.Errorf("sidecar.secrets[%d].pattern is not a valid regex: %w", i, err)
 			}
 		}
-		if err := validateDocsRef(sec.Docs); err != nil {
-			return fmt.Errorf("sidecar.secrets[%d].docs: %w", i, err)
-		}
 		if err := claim(sec.Name, "secrets"); err != nil {
 			return err
 		}
@@ -445,9 +443,6 @@ func (s *SidecarMeta) Validate(skillName string) error {
 	for i, c := range s.Config {
 		if !envNameRE.MatchString(c.Name) {
 			return fmt.Errorf("sidecar.config[%d].name %q is not a valid env var name", i, c.Name)
-		}
-		if err := validateDocsRef(c.Docs); err != nil {
-			return fmt.Errorf("sidecar.config[%d].docs: %w", i, err)
 		}
 		switch c.EffectiveType() {
 		case ConfigFieldString:
@@ -525,45 +520,49 @@ func (s *SidecarMeta) Validate(skillName string) error {
 	return nil
 }
 
-// SplitDocsRef splits a `docs` value into the file path and the optional
+// splitDocsRef splits a `docs` value into the file path and the optional
 // section anchor after the first '#'. For "SKILL.md#getting-a-token" it
 // returns "SKILL.md" and "getting-a-token".
-func SplitDocsRef(ref string) (path, anchor string) {
+func splitDocsRef(ref string) (path, anchor string) {
 	path, anchor, _ = strings.Cut(ref, "#")
 	return path, anchor
 }
 
-// validateDocsRef checks a `docs` value. The path must name a file inside
-// the skill directory: relative, and without ".." steps that leave it.
-// "docs/token.md#steps" is fine; "/etc/passwd", "../other/SKILL.md" and
-// "#steps" (no file) are not. An empty value means "no docs" and is fine.
+// docsRefProblem says why a `docs` value cannot be shown, or returns ""
+// when it can. The path must name a file inside the skill directory:
+// relative, and without ".." steps that leave it. "docs/token.md#steps"
+// is fine; "/etc/passwd", "../other/SKILL.md", "~/notes.md",
+// "https://example.com/help" and "#steps" (no file) are not.
 //
-// Whether the file exists is not checked here, because the skill directory
-// is not known at this point. See MissingDocs.
-func validateDocsRef(ref string) error {
-	if ref == "" {
-		return nil
+// This is deliberately not part of Validate. `docs` is only help text, and
+// before omac knew the key, a skill with any `docs` value loaded fine; a
+// bad value must not make such a skill fail to start. `omac register`
+// reports it as a warning (see DocsWarnings) and shows no "More:" line.
+func docsRefProblem(ref string) string {
+	path, _ := splitDocsRef(ref)
+	switch {
+	case path == "":
+		return fmt.Sprintf("%q does not name a file; use a path inside the skill, e.g. SKILL.md#section", ref)
+	case strings.Contains(path, "://"):
+		return fmt.Sprintf("%q must be a file path inside the skill, not a URL", ref)
+	case strings.HasPrefix(path, "~"):
+		return fmt.Sprintf("%q must be a path relative to the skill directory; '~' is not expanded", ref)
+	case filepath.IsAbs(path) || strings.HasPrefix(path, "/"):
+		return fmt.Sprintf("%q must be a path relative to the skill directory, not an absolute path", ref)
+	case !filepath.IsLocal(path):
+		return fmt.Sprintf("%q must stay inside the skill directory (no '..' that leaves it)", ref)
 	}
-	path, _ := SplitDocsRef(ref)
-	if path == "" {
-		return fmt.Errorf("%q does not name a file; use a path inside the skill, e.g. SKILL.md#section", ref)
-	}
-	if filepath.IsAbs(path) || strings.HasPrefix(path, "/") {
-		return fmt.Errorf("%q must be a path relative to the skill directory, not an absolute path", ref)
-	}
-	if !filepath.IsLocal(path) {
-		return fmt.Errorf("%q must stay inside the skill directory (no '..' that leaves it)", ref)
-	}
-	return nil
+	return ""
 }
 
-// DocsPath returns the absolute path of a validated `docs` value inside
-// skillDir, plus its section anchor. It returns "" for an empty ref.
+// DocsPath returns the absolute path of a `docs` value inside skillDir,
+// plus its section anchor. It returns "" when ref is empty or unusable
+// (see docsRefProblem). It does not check that the file exists.
 func DocsPath(skillDir, ref string) (abs, anchor string) {
-	if ref == "" {
+	if ref == "" || docsRefProblem(ref) != "" {
 		return "", ""
 	}
-	path, anchor := SplitDocsRef(ref)
+	path, anchor := splitDocsRef(ref)
 	dir, err := filepath.Abs(skillDir)
 	if err != nil {
 		dir = skillDir
@@ -571,23 +570,33 @@ func DocsPath(skillDir, ref string) (abs, anchor string) {
 	return filepath.Join(dir, path), anchor
 }
 
-// MissingDocs returns one message per `docs` entry whose file does not
-// exist in skillDir, e.g. "sidecar.secrets[0].docs: SKILL.md not found in
-// the skill directory". A missing docs file only loses some help text, so
-// callers report these as warnings rather than refusing the skill.
-func (m *Meta) MissingDocs(skillDir string) []string {
+// DocsWarnings returns one message per `docs` entry that omac cannot show,
+// e.g. "sidecar.secrets[0].docs: SKILL.md not found in the skill
+// directory". Reasons: the value is not a path inside the skill (see
+// docsRefProblem), the file does not exist, or it is a directory. A bad
+// docs value only loses some help text, so callers report these as
+// warnings rather than refusing the skill.
+func (m *Meta) DocsWarnings(skillDir string) []string {
 	if m.Sidecar == nil {
 		return nil
 	}
 	var out []string
 	check := func(field, ref string) {
-		abs, _ := DocsPath(skillDir, ref)
-		if abs == "" {
+		if ref == "" {
 			return
 		}
-		if _, err := os.Stat(abs); err != nil {
-			path, _ := SplitDocsRef(ref)
+		if problem := docsRefProblem(ref); problem != "" {
+			out = append(out, field+": "+problem)
+			return
+		}
+		abs, _ := DocsPath(skillDir, ref)
+		path, _ := splitDocsRef(ref)
+		fi, err := os.Stat(abs)
+		switch {
+		case err != nil:
 			out = append(out, fmt.Sprintf("%s: %s not found in the skill directory", field, path))
+		case fi.IsDir():
+			out = append(out, fmt.Sprintf("%s: %s is a directory, not a file", field, path))
 		}
 	}
 	for i, s := range m.Sidecar.Secrets {

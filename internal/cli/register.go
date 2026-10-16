@@ -96,10 +96,10 @@ func runRegister(args []string, env *Env) int {
 				"       add a `pattern` (or `choices`) in %s to constrain them\n",
 			skillName, strings.Join(fields, ", "), config.MetaFileName)
 	}
-	// A `docs` entry that names a missing file only loses some help text,
-	// so it is a warning, not an error. The prompt then leaves the
-	// "More:" line out.
-	for _, w := range meta.MissingDocs(skillDir) {
+	// A `docs` entry that is not a file inside the skill only loses some
+	// help text, so it is a warning, not an error. The prompt then leaves
+	// the "More:" line out.
+	for _, w := range meta.DocsWarnings(skillDir) {
 		fmt.Fprintf(env.Stderr, "[warn] %s: %s\n", config.MetaFileName, stripControlChars(w))
 	}
 	bundleHash, err := config.BundleHash(skillDir)
@@ -713,7 +713,8 @@ func handleOneSecret(env *Env, scope, skill, skillDir string, spec config.Secret
 //
 // The hint is plain text, printed line by line with a 4-space indent. The
 // docs file is printed as an absolute path inside skillDir; it is left out
-// when the file does not exist (`omac register` warns about that up front).
+// when the value is not a file inside the skill or the file does not exist
+// (`omac register` warns about that up front).
 // Without a hint and docs, only the name line is printed, as before.
 //
 // All of this text comes from the skill's omac.yaml, so every piece goes
@@ -730,7 +731,7 @@ func printValueHelp(w *os.File, st styler, name, description, hint, docs, skillD
 		}
 	}
 	if abs, anchor := config.DocsPath(skillDir, docs); abs != "" {
-		if _, err := os.Stat(abs); err == nil {
+		if fi, err := os.Stat(abs); err == nil && !fi.IsDir() {
 			more := "    " + st.gray("More:") + " " + stripControlChars(abs)
 			if anchor = stripControlChars(anchor); anchor != "" {
 				more += st.gray(fmt.Sprintf(" (section %q)", anchor))

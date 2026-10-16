@@ -55,7 +55,7 @@ omac reads only the fields listed below. Other keys do not stop the skill from l
 | `default_from_env` | no | — | Host env var to pre-fill at the prompt. |
 | `multiline` | no | `false` | Allow multi-line input. |
 | `hint` | no | — | Multi-line help shown under the description at the prompt, e.g. how to obtain the value. Shown again when a value does not match `pattern`. Plain text; Markdown is not rendered. |
-| `docs` | no | — | File inside the skill that explains the value, with an optional section: `SKILL.md#getting-a-token`. Shown as an absolute path at the prompt. Must be a relative path that stays inside the skill directory. |
+| `docs` | no | — | File inside the skill that explains the value, with an optional section: `SKILL.md#getting-a-token`. Shown as an absolute path at the prompt. Must be a relative path to a file inside the skill directory (not a URL, not absolute, no `~`, no `..` that leaves the skill). |
 
 **`config[]` entry fields**
 
@@ -152,7 +152,7 @@ If a value is hard to find, tell the user how to get it with `hint` and `docs`:
   ? SLACK_XOXC_TOKEN (input hidden; must match ^xoxc-.+):
 ```
 
-If the `docs` file does not exist, `omac register` warns and leaves the `More:` line out. omac removes control characters (such as terminal escape sequences) from `description`, `hint` and `docs` before printing them.
+If a `docs` value is not a file inside the skill, or the file does not exist, `omac register` warns and leaves the `More:` line out. The skill still loads and runs; `docs` is only help text. omac removes control characters (such as terminal escape sequences) from `description`, `hint` and `docs` before printing them.
 
 To update stored values after registration:
 

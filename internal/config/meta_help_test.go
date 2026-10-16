@@ -52,19 +52,30 @@ sidecar:
 	}
 }
 
-func TestSidecar_DocsRefValidation(t *testing.T) {
+// TestDocsWarnings covers every reason a docs value cannot be shown. Each
+// one is a warning naming the field, never a load error.
+func TestDocsWarnings(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("# s\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, "docs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	cases := []struct {
-		ref     string
-		wantErr string // "" means valid
+		ref  string
+		want string // "" means no warning
 	}{
 		{"", ""},
 		{"SKILL.md", ""},
 		{"SKILL.md#obtaining-slack-tokens", ""},
-		{"docs/tokens.md#step-2", ""},
 		{"docs/../SKILL.md", ""}, // stays inside after cleaning
+		{"missing.md#gone", "missing.md not found in the skill directory"},
+		{"docs", "docs is a directory, not a file"},
 		{"#section", "does not name a file"},
+		{"https://example.com/help", "not a URL"},
+		{"~/notes.md", "'~' is not expanded"},
 		{"/etc/passwd", "not an absolute path"},
-		{"/home/me/SKILL.md#x", "not an absolute path"},
 		{"../other-skill/SKILL.md", "stay inside the skill directory"},
 		{"docs/../../SKILL.md", "stay inside the skill directory"},
 		{"..", "stay inside the skill directory"},
@@ -77,21 +88,45 @@ func TestSidecar_DocsRefValidation(t *testing.T) {
 			} else {
 				m.Sidecar.Config = []ConfigSpec{{Name: "FIELD", Docs: tc.ref}}
 			}
-			err := m.Validate()
-			if tc.wantErr == "" {
-				if err != nil {
-					t.Errorf("%s docs %q: unexpected error: %v", kind, tc.ref, err)
+			if err := m.Validate(); err != nil {
+				t.Errorf("%s docs %q: Validate must not fail over docs: %v", kind, tc.ref, err)
+			}
+			got := m.DocsWarnings(dir)
+			if tc.want == "" {
+				if len(got) != 0 {
+					t.Errorf("%s docs %q: unexpected warnings %q", kind, tc.ref, got)
 				}
 				continue
 			}
-			if err == nil {
-				t.Errorf("%s docs %q: expected an error containing %q", kind, tc.ref, tc.wantErr)
-				continue
+			if len(got) != 1 || !strings.HasPrefix(got[0], "sidecar."+kind+"[0].docs: ") || !strings.Contains(got[0], tc.want) {
+				t.Errorf("%s docs %q: warnings = %q, want one naming the field and containing %q", kind, tc.ref, got, tc.want)
 			}
-			if !strings.Contains(err.Error(), tc.wantErr) || !strings.Contains(err.Error(), "sidecar."+kind+"[0].docs") {
-				t.Errorf("%s docs %q: error %q should name the field and contain %q", kind, tc.ref, err, tc.wantErr)
+			if abs, _ := DocsPath(dir, tc.ref); docsRefProblem(tc.ref) != "" && abs != "" {
+				t.Errorf("%s docs %q: DocsPath = %q, want \"\" for an unusable value", kind, tc.ref, abs)
 			}
 		}
+	}
+}
+
+// A skill whose docs value is unusable kept loading before omac knew the
+// key. It must keep loading now: start, serve and list all use LoadMeta.
+func TestLoadMeta_BadDocsStillLoads(t *testing.T) {
+	p := writeMeta(t, `name: s
+sidecar:
+  command: ["true"]
+  secrets:
+    - name: TOKEN
+      docs: ../README.md
+  config:
+    - name: FIELD
+      docs: /abs/path.md
+`)
+	m, err := LoadMeta(p)
+	if err != nil {
+		t.Fatalf("LoadMeta refused a skill over its docs value: %v", err)
+	}
+	if got := m.DocsWarnings(filepath.Dir(p)); len(got) != 2 {
+		t.Errorf("DocsWarnings = %q, want two warnings", got)
 	}
 }
 
@@ -103,29 +138,6 @@ func TestDocsPath_AbsoluteWithAnchor(t *testing.T) {
 	}
 	if abs, anchor := DocsPath(dir, ""); abs != "" || anchor != "" {
 		t.Errorf("empty ref: DocsPath = %q, %q; want empty", abs, anchor)
-	}
-}
-
-func TestMeta_MissingDocs(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("# s\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	m := validMeta()
-	m.Sidecar.Secrets = []SecretSpec{
-		{Name: "A", Docs: "SKILL.md#present"},
-		{Name: "B", Docs: "missing.md#gone"},
-		{Name: "C"},
-	}
-	m.Sidecar.Config = []ConfigSpec{{Name: "F", Docs: "nope.md"}}
-
-	got := m.MissingDocs(dir)
-	want := []string{
-		"sidecar.secrets[1].docs: missing.md not found in the skill directory",
-		"sidecar.config[0].docs: nope.md not found in the skill directory",
-	}
-	if strings.Join(got, "\n") != strings.Join(want, "\n") {
-		t.Errorf("MissingDocs =\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
 }
 

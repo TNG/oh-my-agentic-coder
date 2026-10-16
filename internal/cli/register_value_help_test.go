@@ -209,7 +209,7 @@ func TestRegisterFieldWithoutHelpIsUnchanged(t *testing.T) {
 
 // TestRunRegisterShowsHelpAndWarnsAboutMissingDocs runs the whole
 // `omac register` command against a staged skill: the hint and the docs
-// path appear at the prompt, and a docs entry that names a missing file
+// path appear at the prompt, and a docs entry that names a missing file or an unusable path
 // is reported as a warning without failing the registration.
 func TestRunRegisterShowsHelpAndWarnsAboutMissingDocs(t *testing.T) {
 	isolateHome(t)
@@ -227,11 +227,18 @@ func TestRunRegisterShowsHelpAndWarnsAboutMissingDocs(t *testing.T) {
       pattern: "^[a-z]+$"
       hint: Any lowercase word.
       docs: missing.md
+    - name: DEMO_MODE
+      required: false
+      hint: Any mode.
+      docs: https://example.com/help
 `)
 	skillDir := filepath.Join(wd, ".opencode", "skills", "helpdemo")
 	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("# helpdemo\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// Only one line of input: each config prompt reads stdin through its
+	// own buffered reader, so the first one would swallow later lines.
+	// DEMO_MODE is optional and gets skipped.
 	env, _, errBuf, drain := newPipeEnv(t, "eu\n")
 	env.Workdir = wd
 	prompts := fakeSecretInput(t, "demo-123")
@@ -247,10 +254,15 @@ func TestRunRegisterShowsHelpAndWarnsAboutMissingDocs(t *testing.T) {
 		"    Ask the demo service for a token.\n",
 		"    More: " + filepath.Join(skillDir, "SKILL.md") + ` (section "getting-a-token")` + "\n",
 		"    Any lowercase word.\n",
+		"[warn] omac.yaml: sidecar.config[1].docs: \"https://example.com/help\" must be a file path inside the skill, not a URL\n",
+		"    Any mode.\n",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("stderr is missing %q:\n%s", want, out)
 		}
+	}
+	if strings.Count(out, "More: ") != 1 {
+		t.Errorf("only the valid docs entry should get a More: line:\n%s", out)
 	}
 	if strings.Contains(out, "More: "+filepath.Join(skillDir, "missing.md")) {
 		t.Errorf("the missing docs file should not get a More: line:\n%s", out)
