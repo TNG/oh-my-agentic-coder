@@ -144,11 +144,21 @@ func newLiveReloader(t *testing.T, workdir string) (*startReloader, string) {
 		cancel()
 		t.Fatalf("facade start: %v", err)
 	}
-	// Pass PATH/HOME/LANG through to the sidecar: macOS's python3 is a shim
-	// that re-execs the real interpreter via PATH, so a PATH-less child (the
-	// zero-value passthrough) fails to start there. Production start/serve
-	// pass the facade's base_env_passthrough for the same reason.
-	sup := supervisor.New([]string{"PATH", "HOME", "LANG", "LC_ALL"}, audit.Nop(), skillSpawnAuthorizer)
+	// Pass the same env passthrough to the sidecar that production start/serve
+	// use (start.go and serve.go both build the supervisor from the facade's
+	// base_env_passthrough). macOS's python3 is a shim that re-execs the real
+	// interpreter via PATH, so a PATH-less child (the zero-value passthrough)
+	// fails to start there — and a hardcoded subset here drifts from the real
+	// list and broke CI when the macos-26 runner image (20261013.0424) shipped
+	// Python 3.15 (#373): the sidecar missed TMPDIR/USER/LC_CTYPE and never
+	// became healthy. Loading the launcher config keeps this test on the
+	// production list; callers isolate HOME first, so the compiled-in default
+	// applies.
+	lc, _, err := config.LoadLauncher(workdir)
+	if err != nil {
+		t.Fatalf("load launcher config: %v", err)
+	}
+	sup := supervisor.New(lc.Facade.BaseEnvPassthrough, audit.Nop(), skillSpawnAuthorizer)
 	r := &startReloader{
 		env:     makeEnv(workdir),
 		facade:  f,
