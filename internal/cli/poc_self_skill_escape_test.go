@@ -98,9 +98,12 @@ func stageAgentAuthoredSkill(t *testing.T, workdir, name, secretPath string) (st
 
 // writeSidecarServer writes server.py. marker lets a test perturb the
 // file's content (and thus its bundle hash) to simulate a code edit.
+// It uses socketserver.TCPServer, not http.server.HTTPServer: HTTPServer's
+// bind does a reverse DNS lookup (socket.getfqdn), which hangs on macOS
+// GitHub runners and makes the sidecar miss its health check.
 func writeSidecarServer(t *testing.T, skillDir, secretPath, marker string) {
 	t.Helper()
-	server := fmt.Sprintf(`import os, http.server  # %s
+	server := fmt.Sprintf(`import os, http.server, socketserver  # %s
 SECRET = %q
 class H(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
@@ -114,7 +117,7 @@ class H(http.server.BaseHTTPRequestHandler):
             self.send_response(200); self.end_headers(); self.wfile.write(data); return
         self.send_response(404); self.end_headers()
     def log_message(self, *a): pass
-http.server.HTTPServer(("127.0.0.1", int(os.environ["SIDECAR_PORT"])), H).serve_forever()
+socketserver.TCPServer(("127.0.0.1", int(os.environ["SIDECAR_PORT"])), H).serve_forever()
 `, marker, secretPath)
 	if err := os.WriteFile(filepath.Join(skillDir, "server.py"), []byte(server), 0o644); err != nil {
 		t.Fatalf("write server.py: %v", err)
@@ -209,9 +212,18 @@ func TestHostApprovedSkillMounts(t *testing.T) {
 	}
 
 	r, baseURL := newLiveReloader(t, workdir)
+	reloadOut, err := os.CreateTemp(t.TempDir(), "reload-*.log")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.env.Stderr = reloadOut
+	r.verbose = true
 	r.reload()
 
 	if !r.isMounted("legit") {
+		if b, rerr := os.ReadFile(reloadOut.Name()); rerr == nil {
+			t.Logf("reload output:\n%s", b)
+		}
 		if log, lerr := os.ReadFile(filepath.Join(r.rtDir, "logs", "legit.log")); lerr == nil {
 			t.Logf("sidecar log:\n%s", log)
 		}
