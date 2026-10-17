@@ -1,8 +1,15 @@
 package cli
 
 import (
+	"crypto/rand"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -235,5 +242,255 @@ func TestSecurityStartReloadGlobalRejectsUnauthenticatedCaller(t *testing.T) {
 
 	if r.facade.HasRoute("", "pwn") {
 		t.Errorf("an unauthenticated POST /__omac__/reload-global (status %d) changed the session's routing table", resp.StatusCode)
+	}
+}
+
+// ---- control-plane invariants: token memory, minting, bounds, gating ----
+
+// controlRoundTrip issues a request against a control-plane endpoint and
+// returns the response status and body. An empty token sends the request
+// without credentials.
+func controlRoundTrip(t *testing.T, method, url, token, body string) (int, string) {
+	t.Helper()
+	var rdr io.Reader
+	if body != "" {
+		rdr = strings.NewReader(body)
+	}
+	req, err := http.NewRequest(method, url, rdr)
+	if err != nil {
+		t.Fatalf("%s %s: %v", method, url, err)
+	}
+	if token != "" {
+		req.Header.Set("X-Omac-Control-Token", token)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("%s %s: %v", method, url, err)
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("%s %s: read response: %v", method, url, err)
+	}
+	return resp.StatusCode, string(raw)
+}
+
+// jsonStrField returns the named string field of a JSON object body, or ""
+// when the body is not a JSON object or the field is absent.
+func jsonStrField(raw, field string) string {
+	var m map[string]any
+	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+		return ""
+	}
+	v, _ := m[field].(string)
+	return v
+}
+
+// failingEntropyReader stands in for a CSPRNG that cannot produce bytes.
+type failingEntropyReader struct{}
+
+func (failingEntropyReader) Read([]byte) (int, error) {
+	return 0, errors.New("entropy source unavailable")
+}
+
+// TestSecurityMintTokenFailsClosedOnEntropyFailure guards token minting:
+// when the crypto entropy source fails, the mint must report the failure and
+// produce no token value. Degraded tokens (predictable fallbacks) would
+// defeat the purpose of every bearer-token check in the process.
+//
+// Note on the failure channel: since Go 1.25 crypto/rand.Read terminates the
+// process on failure instead of returning an error, so the fail-closed
+// contract "mintToken returns an error" is only satisfiable when the mint
+// draws its bytes from rand.Reader through an error-propagating read
+// (io.ReadFull-style). The invariant below asserts the returned error
+// itself, which is what callers depend on to refuse the operation cleanly.
+func TestSecurityMintTokenFailsClosedOnEntropyFailure(t *testing.T) {
+	orig := rand.Reader
+	rand.Reader = failingEntropyReader{}
+	t.Cleanup(func() { rand.Reader = orig })
+
+	tok, err := mintToken()
+	if err == nil {
+		t.Errorf("mintToken succeeded although the entropy source fails: session bearer tokens must not be minted without crypto-grade randomness")
+	}
+	if tok != "" {
+		t.Errorf("mintToken produced a token (%q) although the entropy source fails: no token value may be produced without crypto-grade randomness", tok)
+	}
+}
+
+// TestSecurityReloadDoesNotReissueDirToken guards the once-only emission of a
+// directory token: the first activation hands the token to the caller that
+// brought the directory online, and no later control-plane operation may
+// hand out a token for the same directory again.
+func TestSecurityReloadDoesNotReissueDirToken(t *testing.T) {
+	sectest.RequireLoopbackListener(t)
+	s := newServeServerForTest(t)
+	wd := t.TempDir()
+	stageSkillWithSecret(t, wd, "slack")
+
+	first, err := s.activate(wd)
+	if err != nil {
+		t.Fatalf("control: s.activate: %v", err)
+	}
+	firstTok, _ := first["dir_token"].(string)
+	if firstTok == "" {
+		t.Fatalf("control: activation returned no dir_token: the fixture is broken, not the security property")
+	}
+
+	srv := httptest.NewServer(s.controlMux())
+	t.Cleanup(srv.Close)
+
+	// A reload of an already-activated directory must never respond with a
+	// token for it.
+	status, raw := controlRoundTrip(t, http.MethodPost, srv.URL+"/__omac__/reload", s.controlToken, fmt.Sprintf(`{"dir":%q}`, wd))
+	if status != http.StatusOK {
+		t.Fatalf("POST /__omac__/reload returned %d (%s): the control-token holder must still be able to reload", status, raw)
+	}
+	if tok := jsonStrField(raw, "dir_token"); tok != "" {
+		t.Errorf("reload of an already-activated directory re-issued dir_token %q (first activation issued %q): a directory token is emitted exactly once per directory", tok, firstTok)
+	}
+
+	// The once-only guarantee must also survive a deactivate/reactivate
+	// cycle: the directory keeps it for its lifetime.
+	status, raw = controlRoundTrip(t, http.MethodPost, srv.URL+"/__omac__/deactivate", s.controlToken, fmt.Sprintf(`{"dir":%q}`, wd))
+	if status != http.StatusOK {
+		t.Fatalf("POST /__omac__/deactivate returned %d (%s): the control-token holder must still be able to deactivate", status, raw)
+	}
+	status, raw = controlRoundTrip(t, http.MethodPost, srv.URL+"/__omac__/activate", s.controlToken, fmt.Sprintf(`{"dir":%q}`, wd))
+	if status != http.StatusOK {
+		t.Fatalf("POST /__omac__/activate returned %d (%s): the control-token holder must still be able to reactivate", status, raw)
+	}
+	if tok := jsonStrField(raw, "dir_token"); tok != "" {
+		t.Errorf("reactivation after a deactivation re-issued dir_token %q: a directory token is emitted exactly once per directory", tok)
+	}
+
+	// Control: the cycle must leave the directory active again, so the
+	// assertions above are about token emission, not a broken cycle.
+	s.mu.RLock()
+	_, active := s.dirs[wd]
+	s.mu.RUnlock()
+	if !active {
+		t.Errorf("reload/deactivate/reactivate left directory %s inactive", wd)
+	}
+}
+
+// TestSecurityActivateEnforcesDirectoryCapAndRoot guards activation bounds:
+// with --root configured, only directories under it may activate, and a
+// serve session keeps a maximum number of active directories instead of
+// growing without bound.
+func TestSecurityActivateEnforcesDirectoryCapAndRoot(t *testing.T) {
+	sectest.RequireLoopbackListener(t)
+	s := newServeServerForTest(t)
+	base := t.TempDir()
+	allowedRoot := filepath.Join(base, "allowed")
+	if err := os.MkdirAll(allowedRoot, 0o755); err != nil {
+		t.Fatalf("mkdir allowed root: %v", err)
+	}
+	s.roots = []string{allowedRoot}
+
+	srv := httptest.NewServer(s.controlMux())
+	t.Cleanup(srv.Close)
+
+	// Outside the configured root: refused, even for the control-token
+	// holder.
+	outside := filepath.Join(base, "outside")
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatalf("mkdir outside dir: %v", err)
+	}
+	if status, raw := controlRoundTrip(t, http.MethodPost, srv.URL+"/__omac__/activate", s.controlToken, fmt.Sprintf(`{"dir":%q}`, outside)); status == http.StatusOK {
+		t.Errorf("activation of a directory outside the configured --root was accepted (%d): %s", status, raw)
+	}
+
+	// Inside the root: distinct directories are accepted one after another
+	// until the session's bound on active directories is reached. Some
+	// activation within this probe being refused proves such a bound
+	// exists.
+	const probe = 200
+	refused := false
+	for i := 0; i < probe; i++ {
+		dir := filepath.Join(allowedRoot, fmt.Sprintf("d%03d", i))
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir probe dir: %v", err)
+		}
+		status, _ := controlRoundTrip(t, http.MethodPost, srv.URL+"/__omac__/activate", s.controlToken, fmt.Sprintf(`{"dir":%q}`, dir))
+		if i == 0 && status != http.StatusOK {
+			t.Fatalf("first activation inside the root returned %d: the fixture must work before any bound is reached", status)
+		}
+		if status != http.StatusOK {
+			refused = true
+			break
+		}
+	}
+	if !refused {
+		t.Errorf("%d distinct directories were activated on one serve session and none was refused: activation must enforce a maximum number of active directories", probe)
+	}
+}
+
+// TestSecuritySessionWriteRequiresControlToken guards the start-mode session
+// endpoint: the recorded session id backs the post-exit resume hint, so only
+// the session's control-token holder may change it.
+func TestSecuritySessionWriteRequiresControlToken(t *testing.T) {
+	sectest.RequireLoopbackListener(t)
+	isolateHome(t)
+	t.Setenv("TMPDIR", t.TempDir()) // startControlPlane publishes its control-info file here
+	workdir := t.TempDir()
+	r, _ := newLiveReloader(t, workdir)
+
+	controlURL, closeControl, ok := startControlPlane(r)
+	if !ok {
+		t.Fatal("startControlPlane could not bind: the fixture is broken, not the security property")
+	}
+	t.Cleanup(closeControl)
+
+	status, raw := controlRoundTrip(t, http.MethodPost, controlURL+"/__omac__/session", "", `{"session":"ses_from_a_passerby"}`)
+	if status != http.StatusUnauthorized {
+		t.Errorf("tokenless POST /__omac__/session returned %d (%s), want 401", status, raw)
+	}
+	if got := r.reportedSession(); got != "" {
+		t.Errorf("tokenless POST /__omac__/session changed the recorded session id (now %q): the endpoint must require the control token", got)
+	}
+
+	// Control: the control-token holder's report still lands, so the
+	// assertion above is about authorization, not a broken endpoint.
+	status, raw = controlRoundTrip(t, http.MethodPost, controlURL+"/__omac__/session", r.controlToken, `{"session":"ses_from_the_agent"}`)
+	if status != http.StatusOK {
+		t.Fatalf("authorized POST /__omac__/session returned %d (%s): the endpoint must keep working for the control-token holder", status, raw)
+	}
+	if got := r.reportedSession(); got != "ses_from_the_agent" {
+		t.Errorf("authorized POST /__omac__/session did not record the session id (got %q)", got)
+	}
+}
+
+// TestSecurityDirsEndpointRequiresControlToken guards the serve-mode
+// directory listing: which directories a session manages is per-session
+// state, so the endpoint must refuse callers that do not present the
+// control token.
+func TestSecurityDirsEndpointRequiresControlToken(t *testing.T) {
+	sectest.RequireLoopbackListener(t)
+	s := newServeServerForTest(t)
+	wd := t.TempDir()
+	stageSkillWithSecret(t, wd, "slack")
+	if _, err := s.activate(wd); err != nil {
+		t.Fatalf("control: s.activate: %v", err)
+	}
+
+	srv := httptest.NewServer(s.controlMux())
+	t.Cleanup(srv.Close)
+
+	status, raw := controlRoundTrip(t, http.MethodGet, srv.URL+"/__omac__/dirs", "", "")
+	if status != http.StatusUnauthorized {
+		t.Errorf("tokenless GET /__omac__/dirs returned %d (%s), want 401", status, raw)
+	}
+	if strings.Contains(raw, wd) {
+		t.Errorf("tokenless GET /__omac__/dirs disclosed the active workdir %q: %s", wd, raw)
+	}
+	if strings.Contains(strings.ToLower(raw), "token") {
+		t.Errorf("tokenless GET /__omac__/dirs response mentions a token: %s", raw)
+	}
+
+	// Control: the control-token holder still gets the listing.
+	status, raw = controlRoundTrip(t, http.MethodGet, srv.URL+"/__omac__/dirs", s.controlToken, "")
+	if status != http.StatusOK || !strings.Contains(raw, wd) {
+		t.Errorf("authorized GET /__omac__/dirs returned %d (%s): the control-token holder must still get the listing", status, raw)
 	}
 }

@@ -51,7 +51,11 @@ func tokenAssignmentPrecedesStart(t *testing.T, filename string) {
 func assertTokenlessTCPRejected(t *testing.T) {
 	t.Helper()
 	f := facade.New("", "127.0.0.1:0", nil, 1<<20, 0, "", "test")
-	f.FacadeToken = mintToken()
+	facadeTok, err := mintToken()
+	if err != nil {
+		t.Fatalf("mint facade token: %v", err)
+	}
+	f.FacadeToken = facadeTok
 	if err := f.Start(t.Context()); err != nil {
 		t.Fatalf("facade start: %v", err)
 	}
