@@ -760,15 +760,25 @@ func inetAtonDecode(s string) (netip.Addr, bool) {
 // IsLoopbackHost reports whether the host string names a local destination.
 // It is called on the raw value from the CONNECT/forward request before DNS,
 // so it must catch every syntactic variant: trailing dots, unspecified addrs,
-// and non-canonical IPv4 spellings that inet_aton decodes to loopback.
-// Exported so omac diagnose --probe can use the same definition as the proxy.
+// non-canonical IPv4 spellings that inet_aton decodes to loopback, and
+// embedded-IPv4 spellings whose destination is local. Exported so omac
+// diagnose --probe can use the same definition as the proxy.
 func IsLoopbackHost(host string) bool {
 	h := NormalizeHost(host) // strips trailing dots, lowercases
 	if h == "localhost" || strings.HasSuffix(h, ".localhost") {
 		return true
 	}
 	if ip, err := netip.ParseAddr(h); err == nil {
-		return isHostLocal(ip)
+		if isHostLocal(ip) {
+			return true
+		}
+		// An embedded-IPv4 spelling names the embedded destination; a
+		// loopback, unspecified, or link-local destination is local in
+		// every spelling that carries it.
+		if v4, ok := embeddedIPv4(ip); ok {
+			return isHostLocal(v4) || isLinkLocal(v4)
+		}
+		return false
 	}
 	// Catch spellings like 0x7f.0.0.1 or 2130706433 that netip.ParseAddr
 	// rejects but libc's inet_aton decodes to 127.0.0.1.
