@@ -11,6 +11,7 @@ import (
 
 	"github.com/TNG/oh-my-agentic-coder/internal/builtinskills"
 	"github.com/TNG/oh-my-agentic-coder/internal/config"
+	"github.com/TNG/oh-my-agentic-coder/internal/herdr"
 	"github.com/TNG/oh-my-agentic-coder/internal/keychain"
 	"github.com/TNG/oh-my-agentic-coder/internal/netprompt"
 	"github.com/TNG/oh-my-agentic-coder/internal/osinfo"
@@ -64,6 +65,17 @@ func runDoctor(args []string, env *Env) int {
 		fmt.Fprintln(env.Stdout, "[ok] launcher config: (built-in defaults)")
 	} else {
 		fmt.Fprintln(env.Stdout, "[ok] launcher config:", cfgPath)
+	}
+
+	// herdr pane bridge (host-side; only active inside a herdr pane).
+	if firstLauncher.Herdr.BridgeEnabled() {
+		if det, ok := herdr.Detect(os.Getenv); ok {
+			fmt.Fprintf(env.Stdout, "[ok] herdr bridge: enabled (running in herdr pane %s)\n", det.PaneID)
+		} else {
+			fmt.Fprintln(env.Stdout, "[ok] herdr bridge: enabled (omac not running inside herdr)")
+		}
+	} else {
+		fmt.Fprintln(env.Stdout, "[ok] herdr bridge: disabled by config (herdr.enabled: false)")
 	}
 
 	// Registry. Merge the workdir layer with the user-global layer
