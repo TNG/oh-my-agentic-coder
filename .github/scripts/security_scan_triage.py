@@ -21,7 +21,7 @@ import sys
 import urllib.request
 
 LLM_API_BASE = os.environ.get("LLM_API_BASE", "https://chat.model.tngtech.com/v1")
-LLM_MODEL = os.environ.get("STRIX_LLM", "openai/zai-org/GLM-5.2").removeprefix("openai/")
+LLM_MODEL = os.environ.get("STRIX_LLM", "openai/zai-org/GLM-5.3").removeprefix("openai/")
 LLM_API_KEY = os.environ.get("LLM_API_KEY", "")
 
 

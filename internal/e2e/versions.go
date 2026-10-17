@@ -32,12 +32,12 @@ import (
 // rather than reddening the matrix. Keeping the pin current is therefore not a
 // correctness requirement, only a way to spend one fewer probe round-trip.
 var modelIDs = map[string]string{
-	"opencode":    "zai-org/GLM-5.2",
-	"claude-code": "claude-sonnet-5",
-	"codex":       "zai-org/GLM-5.2",
-	"copilot":     "zai-org/GLM-5.2",
-	"pi":          "zai-org/GLM-5.2",
-	"codewhale":   "zai-org/GLM-5.2",
+	"opencode":    "zai-org/GLM-5.3",
+	"claude-code": "claude-sonnet-5-5",
+	"codex":       "zai-org/GLM-5.3",
+	"copilot":     "zai-org/GLM-5.3",
+	"pi":          "zai-org/GLM-5.3",
+	"codewhale":   "zai-org/GLM-5.3",
 }
 
 // fallbackModels are tried, in order, when neither name variant of the
