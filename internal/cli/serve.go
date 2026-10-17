@@ -58,6 +58,7 @@ type serveParse struct {
 	auditStrict       bool
 	roots             multiFlag
 	openPorts         []int
+	maxDirs           int
 }
 
 // parseServeArgs parses serve's harness token, flags, and trailing `--`
@@ -82,6 +83,7 @@ func parseServeArgs(args []string, env *Env) (serveParse, bool) {
 		auditLog          = fs.String("audit-log", "", "Path to the audit log (default: persistent central location). Overrides config.")
 		noAudit           = fs.Bool("no-audit", false, "Disable the security audit trail.")
 		auditStrict       = fs.Bool("audit-strict", false, "Fail-closed: abort if the audit log cannot be written.")
+		maxDirs           = fs.Int("max-dirs", 0, "Maximum number of directories that may be active at once (0 = built-in default of 128). Caps how much state one serve session can accumulate.")
 	)
 	var roots multiFlag
 	var openPorts intMultiFlag
@@ -120,6 +122,10 @@ func parseServeArgs(args []string, env *Env) (serveParse, bool) {
 			return serveParse{}, false
 		}
 	}
+	if *maxDirs < 0 {
+		fmt.Fprintln(env.Stderr, "omac serve: --max-dirs cannot be negative")
+		return serveParse{}, false
+	}
 	return serveParse{
 		harness:           harness,
 		innerArgs:         append(fs.Args(), innerArgs...),
@@ -141,6 +147,7 @@ func parseServeArgs(args []string, env *Env) (serveParse, bool) {
 		auditStrict:       *auditStrict,
 		roots:             roots,
 		openPorts:         append([]int(nil), openPorts...),
+		maxDirs:           *maxDirs,
 	}, true
 }
 
@@ -179,6 +186,7 @@ func runServe(args []string, env *Env) int {
 	auditStrict := parsed.auditStrict
 	roots := parsed.roots
 	openPorts := parsed.openPorts
+	maxDirs := parsed.maxDirs
 
 	lc, cfgPath, err := config.LoadLauncher(env.Workdir)
 	if err != nil {
@@ -340,8 +348,18 @@ func runServe(args []string, env *Env) int {
 	// Mint both per-session tokens before the listener accepts connections so
 	// the TCP auth gate is active from the first accepted request. Assigning
 	// FacadeToken after Start would leave a window where the gate is disabled.
-	controlToken := mintToken()
-	facadeToken := mintToken()
+	// Minting fails closed: without crypto-grade randomness there is no token
+	// and the session does not start.
+	controlToken, err := mintToken()
+	if err != nil {
+		fmt.Fprintln(env.Stderr, "omac serve: control token:", err)
+		return ExitIOError
+	}
+	facadeToken, err := mintToken()
+	if err != nil {
+		fmt.Fprintln(env.Stderr, "omac serve: facade token:", err)
+		return ExitIOError
+	}
 	f.FacadeToken = facadeToken
 	if err := f.Start(ctx); err != nil {
 		fmt.Fprintln(env.Stderr, "omac serve: facade:", err)
@@ -366,6 +384,7 @@ func runServe(args []string, env *Env) int {
 		skipSecretPattern: skipSecretPattern,
 		verbose:           verbose,
 		roots:             absRoots,
+		maxDirs:           maxDirs,
 		dirs:              map[string]*dirState{},
 		byToken:           map[string]*dirState{},
 		global:            map[string]*skillRoute{},
@@ -1050,12 +1069,20 @@ type serveServer struct {
 	skipSecretPattern bool
 	verbose           bool
 	roots             []string // §5.4 Option B; empty = allow any directory
-	cacheEnv          map[string]string
+	// maxDirs caps how many directories may be active at once; 0 means the
+	// built-in default (see dirLimit). Keeps a session's state bounded.
+	maxDirs  int
+	cacheEnv map[string]string
 
 	mu      sync.RWMutex
 	dirs    map[string]*dirState   // abs dir -> state
 	byToken map[string]*dirState   // token -> dir
 	global  map[string]*skillRoute // mount -> global skill
+	// tokenMemory remembers, per directory ever managed this session, its
+	// token and whether that token was already emitted to a caller. A
+	// deactivate/reactivate cycle consults it so the same directory keeps
+	// its token and the token is never emitted twice for its lifetime.
+	tokenMemory map[string]dirTokenMemory
 
 	// actMu serializes per-dir activation so two concurrent activate
 	// calls for the same directory coalesce (§5.2 step 1) without holding
@@ -1068,6 +1095,25 @@ type serveServer struct {
 	// directory activates.
 	flatAliasMu sync.Mutex
 	flatAliases map[string]struct{}
+}
+
+// dirTokenMemory preserves a directory's token and emitted flag across
+// deactivate/reactivate cycles, so one directory keeps one token for the
+// lifetime of the serve session and that token is handed out at most once.
+type dirTokenMemory struct {
+	token   string
+	emitted bool
+}
+
+// defaultMaxDirs is the activation cap when --max-dirs is unset (0).
+const defaultMaxDirs = 128
+
+// dirLimit returns the maximum number of simultaneously active directories.
+func (s *serveServer) dirLimit() int {
+	if s.maxDirs > 0 {
+		return s.maxDirs
+	}
+	return defaultMaxDirs
 }
 
 // aud returns the server's auditor, or a no-op when unset (tests construct
@@ -1328,15 +1374,35 @@ func (s *serveServer) activate(absDir string) (map[string]any, error) {
 		return nil, fmt.Errorf("directory %s is not under any allowed --root", absDir)
 	}
 
-	token := mintToken()
+	// Mint the token before taking the lock; minting fails closed so a
+	// directory cannot go live under a degraded token.
+	token, err := mintToken()
+	if err != nil {
+		return nil, fmt.Errorf("mint directory token: %w", err)
+	}
 	d := &dirState{Dir: absDir, Token: token, State: "activating", Skills: map[string]*skillRoute{}}
 	s.mu.Lock()
+	// A previously deactivated directory keeps its token and its
+	// "already handed out" flag, so reactivation neither rotates nor
+	// re-discloses it.
+	emitted := false
+	if mem, ok := s.tokenMemory[absDir]; ok {
+		d.Token = mem.token
+		emitted = mem.emitted
+	}
+	// Cap the number of simultaneously active directories; refusing here
+	// leaves all existing state untouched.
+	if len(s.dirs) >= s.dirLimit() {
+		s.mu.Unlock()
+		return nil, fmt.Errorf("too many active directories (limit %d); deactivate one first or raise --max-dirs", s.dirLimit())
+	}
 	// Clear flat aliases before the second dir becomes visible so there is
 	// no instant at which len(s.dirs) >= 2 and a token-less alias from the
 	// first dir is still routeable.
 	s.clearFlatAliases()
+	d.tokenEmitted = emitted
 	s.dirs[absDir] = d
-	s.byToken[token] = d
+	s.byToken[d.Token] = d
 	s.mu.Unlock()
 
 	discovered, err := skillsource.Discover(absDir, s.harness)
@@ -1936,7 +2002,7 @@ func (s *serveServer) controlMux() *http.ServeMux {
 	mux.HandleFunc("/__omac__/deactivate", s.requireControlToken(s.handleDeactivate))
 	mux.HandleFunc("/__omac__/reload", s.requireControlToken(s.handleReload))
 	mux.HandleFunc("/__omac__/reload-global", s.requireControlToken(s.handleReloadGlobal))
-	mux.HandleFunc("/__omac__/dirs", s.handleDirs)
+	mux.HandleFunc("/__omac__/dirs", s.requireControlToken(s.handleDirs))
 	mux.HandleFunc("/__omac__/global", s.handleGlobal)
 	return mux
 }
@@ -2069,6 +2135,17 @@ func (s *serveServer) deactivate(absDir string) {
 	if ok {
 		delete(s.dirs, absDir)
 		delete(s.byToken, d.Token)
+		// Remember the token and whether it was already handed out so a
+		// later reactivation reuses it instead of minting and disclosing
+		// a fresh one. d.mu is taken here (inside s.mu) to match the
+		// lock ordering of handleDirs.
+		d.mu.Lock()
+		emitted := d.tokenEmitted
+		d.mu.Unlock()
+		if s.tokenMemory == nil {
+			s.tokenMemory = map[string]dirTokenMemory{}
+		}
+		s.tokenMemory[absDir] = dirTokenMemory{token: d.Token, emitted: emitted}
 	}
 	s.mu.Unlock()
 	if !ok {
@@ -2087,13 +2164,21 @@ func (s *serveServer) deactivate(absDir string) {
 
 // ---- helpers ----
 
-func mintToken() string {
+// mintToken mints a 16-byte hex session token. It fails closed: if the
+// crypto entropy source cannot be read, no token is produced and the error
+// is returned so the caller can refuse the operation. A degraded fallback
+// value would defeat every bearer-token check in the process.
+//
+// The read goes through rand.Reader.Read rather than rand.Read on purpose:
+// rand.Read turns a failing entropy source into an irrecoverable runtime
+// fatal (go.dev/issue/66821), which would take the whole process down with
+// no chance to refuse the operation cleanly.
+func mintToken() (string, error) {
 	var b [16]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		// Extremely unlikely; fall back to a time-based value.
-		return hex.EncodeToString([]byte(time.Now().Format(time.RFC3339Nano)))
+	if _, err := rand.Reader.Read(b[:]); err != nil {
+		return "", fmt.Errorf("cannot read from the crypto entropy source: %w", err)
 	}
-	return hex.EncodeToString(b[:])
+	return hex.EncodeToString(b[:]), nil
 }
 
 // createRuntimeDirServe creates a per-session runtime directory with an
