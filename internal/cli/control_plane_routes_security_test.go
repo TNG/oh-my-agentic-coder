@@ -12,11 +12,16 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/TNG/oh-my-agentic-coder/internal/audit"
 	"github.com/TNG/oh-my-agentic-coder/internal/facade"
 	"github.com/TNG/oh-my-agentic-coder/internal/sectest"
+	"github.com/TNG/oh-my-agentic-coder/internal/skilltrust"
+	"github.com/TNG/oh-my-agentic-coder/internal/supervisor"
 )
 
 // TestSecurityServeActivateRejectsUnauthenticatedCaller extends
@@ -405,6 +410,110 @@ func TestSecurityReloadDoesNotReissueDirToken(t *testing.T) {
 	s.mu.RUnlock()
 	if !active {
 		t.Errorf("reload/deactivate/reactivate left directory %s inactive", wd)
+	}
+}
+
+// hexTokenPattern matches the 16-byte hex token form used by dir tokens
+// across manifests and facade URLs.
+var hexTokenPattern = regexp.MustCompile(`[0-9a-f]{32}`)
+
+// readySkillBase returns the base URL of the first ready workdir skill in
+// a JSON manifest body, or "" when the manifest has none.
+func readySkillBase(t *testing.T, raw string) string {
+	t.Helper()
+	var m map[string]any
+	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+		t.Fatalf("parse manifest: %v", err)
+	}
+	skills, _ := m["skills"].([]any)
+	for _, skAny := range skills {
+		sk, _ := skAny.(map[string]any)
+		if sk["scope"] != "workdir" || sk["state"] != "ready" {
+			continue
+		}
+		base, _ := sk["base"].(string)
+		return base
+	}
+	return ""
+}
+
+// TestSecurityReactivationKeepsRoutingUnderLifetimeToken guards routing
+// continuity across the deactivate/reactivate cycle performed by POST
+// /__omac__/reload: a directory keeps one token for its lifetime, so the
+// base URLs handed out at first activation must keep routing afterwards,
+// and no later response may carry a different token for that directory.
+func TestSecurityReactivationKeepsRoutingUnderLifetimeToken(t *testing.T) {
+	sectest.RequireLoopbackListener(t)
+	requireWorkingPython3(t)
+
+	s := newServeServerForTest(t)
+	if s.tcpPort == 0 {
+		t.Fatal("facade did not bind: the fixture needs a live facade")
+	}
+	wd := t.TempDir()
+	secretPath, _ := stageOutsideSecret(t)
+	skillDir, bundle := stageAgentAuthoredSkill(t, wd, "slack", secretPath)
+	if err := skilltrust.Approve("slack", bundle, skillDir); err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+	s.sup = supervisor.New([]string{"PATH", "HOME", "LANG", "LC_ALL"}, audit.Nop(), skillSpawnAuthorizer)
+	t.Cleanup(func() { s.sup.ShutdownAll(2 * time.Second) })
+
+	first, err := s.activate(wd)
+	if err != nil {
+		t.Fatalf("control: s.activate: %v", err)
+	}
+	firstTok, _ := first["dir_token"].(string)
+	if firstTok == "" {
+		t.Fatalf("control: activation returned no dir_token: the fixture is broken, not the security property")
+	}
+	rawFirst, err := json.Marshal(first)
+	if err != nil {
+		t.Fatalf("marshal first manifest: %v", err)
+	}
+	base := readySkillBase(t, string(rawFirst))
+	if base == "" || !strings.Contains(base, "/"+firstTok+"/") {
+		t.Fatalf("control: ready skill base %q does not address the directory token: the fixture is broken, not the security property", base)
+	}
+	if _, body := httpGet(t, base+"/status"); body != "ok" {
+		t.Fatalf("control: GET %s before the cycle = %q: the fixture is broken, not the security property", base+"/status", body)
+	}
+
+	srv := httptest.NewServer(s.controlMux())
+	t.Cleanup(srv.Close)
+
+	// reload runs a full deactivate/reactivate cycle; the directory must
+	// come back under the token its first caller already holds.
+	status, raw := controlRoundTrip(t, http.MethodPost, srv.URL+"/__omac__/reload", s.controlToken, fmt.Sprintf(`{"dir":%q}`, wd))
+	if status != http.StatusOK {
+		t.Fatalf("POST /__omac__/reload returned %d (%s): the control-token holder must still be able to reload", status, raw)
+	}
+	if tok := jsonStrField(raw, "dir_token"); tok != "" {
+		t.Errorf("reload re-issued dir_token %q: a directory token is emitted exactly once per directory", tok)
+	}
+	// Every token-shaped value in the response must be the one the first
+	// caller already holds; a fresh one would disclose the namespace key
+	// to whoever triggered the reload.
+	for _, tok := range hexTokenPattern.FindAllString(raw, -1) {
+		if tok != firstTok {
+			t.Errorf("reload response carries token %q besides the directory's lifetime token %q: %s", tok, firstTok, raw)
+		}
+	}
+	if rebased := readySkillBase(t, raw); rebased != base {
+		t.Errorf("reload moved the ready skill's base URL from %q to %q: a directory keeps one token for its lifetime, so base URLs already handed to callers must survive the cycle", base, rebased)
+	}
+
+	// Routing under the first activation's base URL must survive.
+	resp, body := httpGet(t, base+"/status")
+	if resp.StatusCode != http.StatusOK || body != "ok" {
+		t.Errorf("GET %s after the cycle = %d %q: the first activation's base URL must keep routing", base+"/status", resp.StatusCode, body)
+	}
+
+	s.mu.RLock()
+	mapped := s.byToken[firstTok]
+	s.mu.RUnlock()
+	if mapped == nil || mapped.Dir != wd {
+		t.Errorf("the routing table no longer resolves the directory's lifetime token after the cycle")
 	}
 }
 

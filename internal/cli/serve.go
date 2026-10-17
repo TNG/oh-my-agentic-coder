@@ -1380,16 +1380,19 @@ func (s *serveServer) activate(absDir string) (map[string]any, error) {
 	if err != nil {
 		return nil, fmt.Errorf("mint directory token: %w", err)
 	}
-	d := &dirState{Dir: absDir, Token: token, State: "activating", Skills: map[string]*skillRoute{}}
 	s.mu.Lock()
 	// A previously deactivated directory keeps its token and its
 	// "already handed out" flag, so reactivation neither rotates nor
-	// re-discloses it.
+	// re-discloses it. Rebind the local token as well: routes, aliases
+	// and byToken must all come up under the remembered value, or the
+	// base URLs and env vars callers hold from the first activation
+	// stop routing.
 	emitted := false
 	if mem, ok := s.tokenMemory[absDir]; ok {
-		d.Token = mem.token
+		token = mem.token
 		emitted = mem.emitted
 	}
+	d := &dirState{Dir: absDir, Token: token, State: "activating", Skills: map[string]*skillRoute{}}
 	// Cap the number of simultaneously active directories; refusing here
 	// leaves all existing state untouched.
 	if len(s.dirs) >= s.dirLimit() {
