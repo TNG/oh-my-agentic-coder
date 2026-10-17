@@ -505,6 +505,12 @@ func embeddedIPv4(ip netip.Addr) (netip.Addr, bool) {
 	if ip.Is4() {
 		return netip.Addr{}, false
 	}
+	// Prefix.Contains is false for any zoned address, so match on the
+	// zone-stripped form. The zone only selects an outgoing interface;
+	// it never changes which IPv4 destination the spelling embeds.
+	if ip.Zone() != "" {
+		ip = ip.WithZone("")
+	}
 	for _, p := range translationPrefixes {
 		if p.Contains(ip) {
 			b := ip.As16()
@@ -579,8 +585,13 @@ func hardDeniedAddr(ip netip.Addr) (string, bool) {
 	}
 	// Any other address inside a translation prefix is refused too: the
 	// spelling may be rewritten to an IPv4 destination downstream, so it
-	// must never reach a translator unverified.
+	// must never reach a translator unverified. Zone-suffixed spellings
+	// denote the same destination, so the zone is stripped before the
+	// prefix match (Prefix.Contains is false for zoned addresses).
 	if !ip.Is4() && !ip.Is4In6() {
+		if ip.Zone() != "" {
+			ip = ip.WithZone("")
+		}
 		for _, p := range translationPrefixes {
 			if p.Contains(ip) {
 				return "hard-deny IPv6 translation prefix", true

@@ -36,15 +36,29 @@ metadata.azure.internal) are blocked unconditionally and cannot be approved
 interactively. Any hostname resolving to a loopback, unspecified, link-local,
 or metadata address is also blocked.
 
+An IPv4 destination can also be named by an IPv6 address that embeds it.
+The proxy unwraps the IPv4-mapped form (`::ffff:` followed by the IPv4
+address) and the well-known translation prefixes `64:ff9b::/96` and
+`64:ff9b:1::/96` (RFC 6052 and RFC 8215). Networks that translate between
+IPv6 and IPv4 (known as NAT64) use these prefixes to carry an IPv4 address
+in their low 32 bits, so a connection to such a spelling is delivered to
+the embedded IPv4 destination. These spellings therefore receive the
+verdict of the IPv4 destination they name, including when they carry a
+trailing `%zone` interface suffix. Any other address inside those two
+prefixes is blocked unconditionally and cannot be approved interactively:
+on a network with a translator, the connection would be delivered to an
+IPv4 destination the policy never evaluated.
+
 `host.docker.internal` (the Docker bridge gateway, typically 172.17.0.1) is
 not in the hard-deny set. It is a private RFC 1918 address and is subject to
 the normal prompt or allow/deny policy. If you run Docker and want to
 prevent the agent from reaching it, add it to `network.deny_domain`.
 
 **Accepted gap, by design: private address ranges are not hard-denied.**
-Only loopback, unspecified, link-local, and cloud-metadata addresses are
-blocked unconditionally. RFC 1918 (`10/8`, `172.16/12`, `192.168/16`),
-carrier-grade NAT (`100.64/10`), and IPv6 unique-local (`fc00::/7`) stay
+Only loopback, unspecified, link-local, cloud-metadata, and
+translation-prefix addresses (see above) are blocked unconditionally.
+RFC 1918 (`10/8`, `172.16/12`, `192.168/16`), carrier-grade NAT
+(`100.64/10`), and IPv6 unique-local (`fc00::/7`) stay
 subject to the normal prompt and allow/deny policy. A hard deny would make VPN
 and corporate-internal hosts unreachable even after you allow them, for every
 user behind a VPN. The accepted tradeoff is that a granted hostname can reach a

@@ -67,6 +67,15 @@ func TestSecurityNAT64WellKnownPrefixSpellingsDenied(t *testing.T) {
 		"64:ff9b:1::100.100.100.200",
 		"64:ff9b::192.0.0.192",
 		"64:ff9b:1::192.0.0.192",
+		// An IPv6 address may carry a %zone suffix naming an outgoing
+		// interface. The zone does not change which IPv4 destination the
+		// spelling embeds, so these denote the same targets as above.
+		"64:ff9b::127.0.0.1%eth0",
+		"64:ff9b:1::127.0.0.1%lo",
+		"64:ff9b::169.254.169.254%eth0",
+		"64:ff9b:1::169.254.169.254%lo",
+		"64:ff9b::%25",
+		"64:ff9b:1::%lo",
 	} {
 		if !denied(host) {
 			t.Errorf("Check(%q) was allowed: this spelling denotes a hard-denied IPv4 destination and must be refused exactly like the plain form", host)
@@ -119,8 +128,11 @@ func TestSecurityEmbeddedIPv4FormsMatchPlainIPv4Policy(t *testing.T) {
 		}
 		for _, spelling := range []string{
 			"::ffff:" + target.ip,
+			"::ffff:" + target.ip + "%eth0",
 			"64:ff9b::" + target.ip,
+			"64:ff9b::" + target.ip + "%eth0",
 			"64:ff9b:1::" + target.ip,
+			"64:ff9b:1::" + target.ip + "%lo",
 		} {
 			if got := verdict(spelling); got != want {
 				t.Errorf("Check(%q) = %v, but Check(%q) = %v: %s gets a different verdict in an embedded spelling than in the destination it denotes", spelling, got, target.ip, want, target.what)
@@ -129,8 +141,8 @@ func TestSecurityEmbeddedIPv4FormsMatchPlainIPv4Policy(t *testing.T) {
 	}
 
 	// The well-known prefix addresses themselves embed the unspecified
-	// address, so they must inherit its verdict.
-	for _, host := range []string{"64:ff9b::", "64:ff9b:1::"} {
+	// address, so they must inherit its verdict, with or without a zone.
+	for _, host := range []string{"64:ff9b::", "64:ff9b:1::", "64:ff9b::%25", "64:ff9b:1::%lo"} {
 		if got := verdict(host); got != Deny {
 			t.Errorf("Check(%q) = %v, want Deny: the prefix address itself denotes the unspecified address and must share its verdict", host, got)
 		}
@@ -162,6 +174,12 @@ func TestSecurityIsLoopbackHostRejectsNAT64Spellings(t *testing.T) {
 		"64:ff9b:1::",
 		"64:ff9b::169.254.169.254",
 		"64:ff9b:1::169.254.169.254",
+		// Zone-suffixed spellings name the same destinations.
+		"64:ff9b::127.0.0.1%eth0",
+		"64:ff9b:1::127.0.0.1%lo",
+		"64:ff9b::169.254.169.254%eth0",
+		"64:ff9b::%25",
+		"64:ff9b:1::%lo",
 	} {
 		if !IsLoopbackHost(host) {
 			t.Errorf("IsLoopbackHost(%q) = false, want true: the raw-destination guard and the filter must agree that this spelling names a destination the proxy refuses to reach", host)
