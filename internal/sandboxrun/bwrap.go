@@ -99,6 +99,20 @@ func BuildBwrapArgv(g *Grants, stage2Argv []string) ([]string, error) {
 	}
 	sort.Slice(ordered, func(i, j int) bool { return ordered[i].path < ordered[j].path })
 
+	// A granted symlink inside another grant already exists in the sandbox
+	// as that symlink, and bwrap >= 0.12 refuses to mount onto it (#302:
+	// /usr/lib64 -> lib under /usr). Drop the bind when it changes nothing.
+	// Otherwise keep it and let bwrap refuse: binding the link's target
+	// instead would let a link the agent planted in a writable tree choose
+	// what gets mounted (e.g. workdir/lib -> /).
+	kept := make([]*mount, 0, len(ordered))
+	for _, m := range ordered {
+		if !redundantLinkMount(m, ordered) {
+			kept = append(kept, m)
+		}
+	}
+	ordered = kept
+
 	// tmpGranted is true only when bare /tmp itself is bound — a scoped
 	// subpath like /tmp/omac-sandbox-tmp-x does not expose the whole shared
 	// host temp dir, so it must not suppress the private --tmpfs /tmp.
@@ -199,10 +213,97 @@ func exists(p string) bool {
 	return err == nil
 }
 
+// symlinkMountDests returns the destinations in a bwrap argv that are
+// symlinks on the host inside an earlier grant bind. There the sandbox
+// shows them as symlinks, and bwrap >= 0.12 refuses to mount onto them.
+func symlinkMountDests(argv []string) []string {
+	var bound []*mount
+	var out []string
+	for i := 0; i < len(argv) && argv[i] != "--"; i++ {
+		var src, dest string
+		switch argv[i] {
+		case "--bind", "--ro-bind", "--bind-try", "--ro-bind-try":
+			src, dest = argv[i+1], argv[i+2]
+			i += 2
+		case "--tmpfs":
+			dest = argv[i+1]
+			i++
+		default:
+			continue
+		}
+		if fi, err := os.Lstat(dest); err == nil && fi.Mode()&os.ModeSymlink != 0 &&
+			(coveredByAny(dest, bound) || (len(bound) > 0 && bound[0].path == "/")) {
+			out = append(out, dest)
+		}
+		if src == dest { // a grant; masks and tmpfs show no host content
+			bound = append(bound, &mount{path: dest})
+		}
+	}
+	return out
+}
+
+// redundantLinkMount reports whether m is a symlink inside another mount
+// whose target the sandbox already shows with the same access as m.
+func redundantLinkMount(m *mount, mounts []*mount) bool {
+	if innermostMount(filepath.Dir(m.path), mounts) == nil {
+		return false // not nested: bwrap creates a fresh dir and binds there
+	}
+	target := sandboxLinkTarget(m.path)
+	if target == m.path || !sameRealPath(target, m.path) {
+		return false
+	}
+	c := innermostMount(target, mounts)
+	return c != nil && c.rw == m.rw
+}
+
+// sandboxLinkTarget follows the symlink at p, if any, keeping the spelling
+// the sandbox sees. Mounts keep their host path there, so a relative target
+// is joined to the link's own spelling rather than resolved to the host's
+// real path: under a grant on the symlinked dir /alias -> /real,
+// /alias/lib64 -> lib points at /alias/lib. The join is textual, so ".."
+// can disagree with the kernel; callers confirm the result with
+// sameRealPath. Returns p when it is not a symlink.
+func sandboxLinkTarget(p string) string {
+	for range maxSymlinkHops {
+		target, err := os.Readlink(p)
+		if err != nil {
+			break
+		}
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(filepath.Dir(p), target)
+		}
+		p = filepath.Clean(target)
+	}
+	return p
+}
+
+// sameRealPath reports whether a and b resolve to the same host path.
+func sameRealPath(a, b string) bool {
+	ra, errA := filepath.EvalSymlinks(a)
+	rb, errB := filepath.EvalSymlinks(b)
+	return errA == nil && errB == nil && ra == rb
+}
+
+// innermostMount returns the deepest mount at or above path, or nil.
+func innermostMount(path string, mounts []*mount) *mount {
+	var best *mount
+	for _, m := range mounts {
+		if isUnder(path, m.path) && (best == nil || len(m.path) > len(best.path)) {
+			best = m
+		}
+	}
+	return best
+}
+
+// isUnder reports whether path equals root or lies below it.
+func isUnder(path, root string) bool {
+	return path == root || strings.HasPrefix(path, root+string(filepath.Separator))
+}
+
 // coveredByAny reports whether path lies under (or equals) any mount.
 func coveredByAny(path string, mounts []*mount) bool {
 	for _, m := range mounts {
-		if path == m.path || strings.HasPrefix(path, m.path+string(filepath.Separator)) {
+		if isUnder(path, m.path) {
 			return true
 		}
 	}
