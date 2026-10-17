@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -45,17 +46,29 @@ func tokenAssignmentPrecedesStart(t *testing.T, filename string) {
 	}
 }
 
+// mintTokenForTest mints a token through the production helper. It calls
+// mintToken through reflection so this file compiles both before the
+// fail-closed rework (token-only return) and after it (token, error).
+func mintTokenForTest(t *testing.T) string {
+	t.Helper()
+	res := reflect.ValueOf(mintToken).Call(nil)
+	if len(res) > 1 && !res[1].IsNil() {
+		t.Fatalf("mint facade token: %v", res[1].Interface())
+	}
+	tok := res[0].String()
+	if tok == "" {
+		t.Fatalf("mint facade token: empty token")
+	}
+	return tok
+}
+
 // assertTokenlessTCPRejected verifies that a facade with the token set
 // before Start rejects tokenless TCP requests with 401 from the first
 // connection — the behavioral consequence of the correct ordering.
 func assertTokenlessTCPRejected(t *testing.T) {
 	t.Helper()
 	f := facade.New("", "127.0.0.1:0", nil, 1<<20, 0, "", "test")
-	facadeTok, err := mintToken()
-	if err != nil {
-		t.Fatalf("mint facade token: %v", err)
-	}
-	f.FacadeToken = facadeTok
+	f.FacadeToken = mintTokenForTest(t)
 	if err := f.Start(t.Context()); err != nil {
 		t.Fatalf("facade start: %v", err)
 	}

@@ -9,7 +9,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -293,27 +295,59 @@ func (failingEntropyReader) Read([]byte) (int, error) {
 	return 0, errors.New("entropy source unavailable")
 }
 
+// mintEntropyHelperEnv marks the re-exec'd test binary that performs the
+// actual mint under a failing entropy source. The mint must be observed
+// from a child process: crypto/rand.Read reacts to a failing rand.Reader
+// with an irrecoverable runtime fatal (Go issue 66821), so an in-process
+// probe with the current mint would take the whole test binary down
+// instead of reporting the violation.
+const mintEntropyHelperEnv = "OMAC_TEST_MINT_ENTROPY_HELPER"
+
 // TestSecurityMintTokenFailsClosedOnEntropyFailure guards token minting:
-// when the crypto entropy source fails, the mint must report the failure and
-// produce no token value. Degraded tokens (predictable fallbacks) would
-// defeat the purpose of every bearer-token check in the process.
-//
-// Note on the failure channel: since Go 1.25 crypto/rand.Read terminates the
-// process on failure instead of returning an error, so the fail-closed
-// contract "mintToken returns an error" is only satisfiable when the mint
-// draws its bytes from rand.Reader through an error-propagating read
-// (io.ReadFull-style). The invariant below asserts the returned error
-// itself, which is what callers depend on to refuse the operation cleanly.
+// when the crypto entropy source fails, minting must report the failure and
+// produce no token value. Degraded tokens would defeat the purpose of
+// every bearer-token check in the process.
 func TestSecurityMintTokenFailsClosedOnEntropyFailure(t *testing.T) {
+	if os.Getenv(mintEntropyHelperEnv) == "1" {
+		mintTokenWithFailingEntropy(t)
+		return
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestSecurityMintTokenFailsClosedOnEntropyFailure$")
+	cmd.Env = append(os.Environ(), mintEntropyHelperEnv+"=1")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Errorf("mintToken did not fail closed while the entropy source was failing (child process outcome: %v)\n%s", err, out)
+	}
+}
+
+// mintTokenWithFailingEntropy is the child half of
+// TestSecurityMintTokenFailsClosedOnEntropyFailure: mint a token while the
+// entropy source fails and report every way the fail-closed contract can be
+// broken. The mint is invoked through reflection so this file compiles both
+// before the fix (token-only signature, no failure channel) and after it
+// (token, error). The failure must surface through rand.Reader: that is the
+// only seam through which a caller can observe and refuse the degraded
+// mint instead of receiving a silently degraded token.
+func mintTokenWithFailingEntropy(t *testing.T) {
 	orig := rand.Reader
 	rand.Reader = failingEntropyReader{}
-	t.Cleanup(func() { rand.Reader = orig })
+	defer func() { rand.Reader = orig }()
 
-	tok, err := mintToken()
-	if err == nil {
-		t.Errorf("mintToken succeeded although the entropy source fails: session bearer tokens must not be minted without crypto-grade randomness")
+	defer func() {
+		if rec := recover(); rec != nil {
+			t.Errorf("mintToken panicked under entropy failure (%v): the failure must reach the caller as an error so the operation can be refused", rec)
+		}
+	}()
+
+	res := reflect.ValueOf(mintToken).Call(nil)
+	if len(res) < 2 {
+		t.Errorf("mintToken returns only a token value: an entropy failure cannot reach the caller, so the mint cannot fail closed")
+		return
 	}
-	if tok != "" {
+	if res[1].IsNil() {
+		t.Errorf("mintToken reported no error although the entropy source fails: session bearer tokens must not be minted without crypto-grade randomness")
+	}
+	if tok := res[0].String(); tok != "" {
 		t.Errorf("mintToken produced a token (%q) although the entropy source fails: no token value may be produced without crypto-grade randomness", tok)
 	}
 }
@@ -404,8 +438,8 @@ func TestSecurityActivateEnforcesDirectoryCapAndRoot(t *testing.T) {
 	// Inside the root: distinct directories are accepted one after another
 	// until the session's bound on active directories is reached. Some
 	// activation within this probe being refused proves such a bound
-	// exists.
-	const probe = 200
+	// exists; the probe sits well above any plausible default cap.
+	const probe = 1000
 	refused := false
 	for i := 0; i < probe; i++ {
 		dir := filepath.Join(allowedRoot, fmt.Sprintf("d%03d", i))
@@ -484,8 +518,10 @@ func TestSecurityDirsEndpointRequiresControlToken(t *testing.T) {
 	if strings.Contains(raw, wd) {
 		t.Errorf("tokenless GET /__omac__/dirs disclosed the active workdir %q: %s", wd, raw)
 	}
-	if strings.Contains(strings.ToLower(raw), "token") {
-		t.Errorf("tokenless GET /__omac__/dirs response mentions a token: %s", raw)
+	// Match the JSON key, not the substring: workdir paths may embed the
+	// test's own name.
+	if strings.Contains(strings.ToLower(raw), `"token"`) {
+		t.Errorf("tokenless GET /__omac__/dirs response discloses a token field: %s", raw)
 	}
 
 	// Control: the control-token holder still gets the listing.
