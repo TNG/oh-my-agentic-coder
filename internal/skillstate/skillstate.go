@@ -308,7 +308,7 @@ func (r *Resolver) inspectMeta(m *config.Meta, e registry.Entry, absDir string) 
 			problems = append(problems, Problem{
 				Kind:   BundleDrift,
 				Skill:  e.Name,
-				Detail: "bundle changed since register",
+				Detail: "files changed since register; its code and SKILL.md instructions are untrusted",
 				Fix:    "omac register " + e.Name + " --force",
 			})
 		}
