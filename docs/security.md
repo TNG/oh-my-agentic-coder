@@ -208,14 +208,21 @@ never from the still-agent-writable workdir.
 The harness also reads each skill's `SKILL.md` itself and gives it to the model
 as instructions. The agent can edit those files too, for example to plant
 instructions that every later session would follow. So at every launch, omac
-checks each omac skill (a skill folder with an `omac.yaml`) in the workdir and
-in the user-global skill folders. omac hides the whole skill folder from the
-sandbox for that session, and prints why, when:
+checks each omac skill in the workdir and in the user-global skill folders. An
+omac skill is a skill folder with an `omac.yaml`, or one whose name you have
+approved before. omac hides the whole skill folder from the sandbox for that
+session, and prints why, when:
 
-- the skill's files do not match an approved version, or
-- the skill contains a `SKILL.md` that the approval does not cover: a symlink,
-  or a file under a folder the bundle hash skips, such as `build/` or
-  `node_modules/`.
+- the skill's files do not match an approved version,
+- its `omac.yaml` is missing or is not a regular file, or
+- the skill contains a `SKILL.md` that the approval does not cover: a symlink
+  named `SKILL.md`, a file under a folder the bundle hash skips (such as
+  `build/` or `node_modules/`), or anything behind a symlinked folder that
+  leads outside the skill. Symlinked folders that stay inside the skill, like
+  a Python venv's `lib64 -> lib`, are fine.
+
+If omac cannot list one of the skill folders (for example because it was
+replaced by a file), it hides that whole folder and keeps checking the others.
 
 For example, if an agent appends text to `.opencode/skills/slack/SKILL.md`, the
 next `omac start` prints `skill "slack": its files do not match an approved

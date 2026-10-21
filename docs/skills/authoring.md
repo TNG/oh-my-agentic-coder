@@ -270,7 +270,7 @@ When you run `omac register`, omac copies your skill directory. It always runs t
 Before launching, `omac start` compares the skills on disk against what you registered. It refuses to start, and prints the exact fix, if it finds any of:
 
 - An **unregistered** skill directory. Run `omac register <skill>`.
-- A registered skill whose files **changed since you registered it** (bundle drift). Re-register with `omac register <skill> --force`, or pass `omac start --accept-skill-changes` to run the edited files as they are.
+- A registered skill whose files **changed since you registered it** (bundle drift). Re-register with `omac register <skill> --force`, or pass `omac start --accept-skill-changes` to start without the edited skills. omac does not run them, and it hides them from the agent.
 - A **required config field** with no value. Run `omac register <skill> --reprompt-fields`.
 
 If a registered skill's directory has been deleted, omac auto-deregisters it and continues.
