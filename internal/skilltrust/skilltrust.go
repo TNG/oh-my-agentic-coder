@@ -150,6 +150,22 @@ func IsApproved(name, bundleHash string) (bool, error) {
 	return false, nil
 }
 
+// HasName reports whether any approval is recorded for name, whatever its
+// bundle hash. A read error fails closed (returns true, err), so a caller
+// that ignores the error still treats the name as an omac skill to check.
+func HasName(name string) (bool, error) {
+	s, err := load()
+	if err != nil {
+		return true, err
+	}
+	for _, a := range s.Approved {
+		if a.Name == name {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // Approve records an approval for (name, bundleHash). Approvals are
 // additive and keyed by (name, bundle hash): the same skill name may hold
 // several approved hashes at once, because a name can be registered under
