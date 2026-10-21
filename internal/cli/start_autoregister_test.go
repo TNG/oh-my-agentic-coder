@@ -509,13 +509,18 @@ func TestStartAutoRegisterWorkdirSkills_UnscopedKeychainSecretBeatsInvalidPassth
 	}
 }
 
+// A required field stored only in the agent-writable workdir file is not
+// enough: no anchor vouches for it, so start would refuse it (#400). The skill
+// is left for `omac register`, which records one.
 func TestStartAutoRegisterWorkdirSkills_StoredConfigSatisfiesRequiredField(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		save func(*testing.T, string)
+		want bool
 	}{
 		{
 			name: "workdir",
+			want: false,
 			save: func(t *testing.T, workdir string) {
 				t.Helper()
 				store, err := skillconfig.Load(workdir)
@@ -530,6 +535,7 @@ func TestStartAutoRegisterWorkdirSkills_StoredConfigSatisfiesRequiredField(t *te
 		},
 		{
 			name: "global",
+			want: true,
 			save: func(t *testing.T, _ string) {
 				t.Helper()
 				store, err := skillconfig.LoadGlobal()
@@ -553,7 +559,11 @@ func TestStartAutoRegisterWorkdirSkills_StoredConfigSatisfiesRequiredField(t *te
 			if len(errs) != 0 {
 				t.Fatalf("unexpected errors: %v", errs)
 			}
-			if want := []string{"needs-field"}; !reflect.DeepEqual(done, want) {
+			var want []string
+			if tc.want {
+				want = []string{"needs-field"}
+			}
+			if !reflect.DeepEqual(done, want) {
 				t.Errorf("auto-registered = %v, want %v", done, want)
 			}
 
@@ -561,8 +571,8 @@ func TestStartAutoRegisterWorkdirSkills_StoredConfigSatisfiesRequiredField(t *te
 			if err != nil {
 				t.Fatalf("registry.Load: %v", err)
 			}
-			if entry, _ := loaded.Find("needs-field"); entry == nil {
-				t.Error("needs-field was not persisted from its stored config value")
+			if entry, _ := loaded.Find("needs-field"); (entry != nil) != tc.want {
+				t.Errorf("needs-field persisted = %v, want %v", entry != nil, tc.want)
 			}
 		})
 	}
