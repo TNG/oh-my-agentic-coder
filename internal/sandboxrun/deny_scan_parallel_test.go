@@ -110,7 +110,7 @@ func TestWalkOneDenyRootMatchesSequentialWalk(t *testing.T) {
 		t.Fatalf("test setup: sequential walk found %d matches (cap %v)", len(want), wantCap)
 	}
 	for range 20 { // repeat: the parallel walk's order varies run to run
-		got, hitCap := walkOneDenyRoot(root, globs, protected, make(chan struct{}, denyScanConcurrency))
+		got, hitCap := walkOneDenyRoot(root, globs, protected, make(chan struct{}, denyScanConcurrency), nil, denyScanConcurrency)
 		slices.Sort(got)
 		if hitCap || !slices.Equal(got, want) {
 			t.Fatalf("parallel walk differs from the sequential walk:\n got  %v (cap %v)\n want %v", got, hitCap, want)

@@ -28,6 +28,7 @@ import (
 	"github.com/TNG/oh-my-agentic-coder/internal/registry"
 	"github.com/TNG/oh-my-agentic-coder/internal/sandbox"
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
+	"github.com/TNG/oh-my-agentic-coder/internal/sandboxrun"
 	"github.com/TNG/oh-my-agentic-coder/internal/skillconfig"
 	"github.com/TNG/oh-my-agentic-coder/internal/skillsource"
 	"github.com/TNG/oh-my-agentic-coder/internal/skillstate"
@@ -625,7 +626,10 @@ func runServe(args []string, env *Env) int {
 		// protected-pattern files (e.g. .env) created after launch and
 		// warn the user.
 		if !noInner && !learn {
-			watch = startProtectedWatch(auditor, protectedChecker(f), plan, argv, env.Workdir)
+			watch = startProtectedWatch(auditor, protectedChecker(f), plan, argv, env.Workdir, sandboxrun.WatchTuning{
+				FullPassTicks:       lc.Sandbox.MidsessionWatch.FullPassTicks,
+				FullPassConcurrency: lc.Sandbox.MidsessionWatch.FullPassConcurrency,
+			})
 		}
 	}
 	if verbose {

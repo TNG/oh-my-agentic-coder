@@ -15,10 +15,14 @@ import (
 
 // midsessionProtectedWatchInterval is how often the parent re-walks the
 // deny-scan roots looking for files a protected pattern matched only
-// after launch. Detection latency equals this interval; a file that
-// appears and disappears within one interval is never detected. Each
-// tick is a full re-walk; switch to fsnotify if the I/O cost ever
-// matters.
+// after launch. Each tick re-walks incrementally: a denyScanCache
+// carries every directory's fingerprint between ticks, so unchanged
+// directories cost one lstat and only changed ones are re-read. A
+// directory whose last read fell inside the coarse-timestamp window is
+// listed once more on the next tick, so worst-case detection latency is
+// one tick; an optional full pass (off by default) is a backstop for
+// coarser filesystems. A file that appears and disappears within one
+// interval is never detected. See sandboxrun.denyScanCache.
 const midsessionProtectedWatchInterval = 10 * time.Second
 
 // protectedWatch records what the mid-session protected-file watch
@@ -47,8 +51,9 @@ type protectedWatch struct {
 // Returns nil when there is nothing to mirror (non-native launcher,
 // argv not a `omac sandbox run`); callers skip learn mode, where
 // nothing is protected. checker may be nil; audit events are dropped
-// when a is nil.
-func startProtectedWatch(a audit.Auditor, checker *sandboxrun.ProtectedPathSet, plan sandboxPlan, argv []string, workdir string) *protectedWatch {
+// when a is nil. tuning comes from the launcher config's
+// sandbox.midsession_watch block.
+func startProtectedWatch(a audit.Auditor, checker *sandboxrun.ProtectedPathSet, plan sandboxPlan, argv []string, workdir string, tuning sandboxrun.WatchTuning) *protectedWatch {
 	if !plan.Native || plan.Policy == nil || len(argv) < 3 || argv[1] != "sandbox" || argv[2] != "run" {
 		return nil
 	}
@@ -74,7 +79,7 @@ func startProtectedWatch(a audit.Auditor, checker *sandboxrun.ProtectedPathSet, 
 			if a != nil {
 				a.Emit(audit.ControlMutation("protected-file-watch", path, "created mid-session; readable until restart"))
 			}
-		}, w.stop); err != nil {
+		}, w.stop, tuning); err != nil {
 			w.record(fmt.Sprintf("protected-file watch not started: %v", err))
 		}
 	}()

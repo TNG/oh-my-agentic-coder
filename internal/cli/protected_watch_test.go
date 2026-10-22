@@ -8,6 +8,7 @@ import (
 
 	"github.com/TNG/oh-my-agentic-coder/internal/audit"
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
+	"github.com/TNG/oh-my-agentic-coder/internal/sandboxrun"
 )
 
 func TestProtectedWatchReport(t *testing.T) {
@@ -38,12 +39,12 @@ func TestProtectedWatchReportNilSafe(t *testing.T) {
 }
 
 func TestStartProtectedWatchSkipsNonNative(t *testing.T) {
-	if w := startProtectedWatch(audit.Nop(), nil, sandboxPlan{Name: "nono"}, nil, "/workdir"); w != nil {
+	if w := startProtectedWatch(audit.Nop(), nil, sandboxPlan{Name: "nono"}, nil, "/workdir", sandboxrun.WatchTuning{}); w != nil {
 		t.Fatal("non-native plan must not start a watch")
 	}
 	argv := []string{"/omac", "not-sandbox", "run"}
 	plan := sandboxPlan{Name: "builtin", Native: true, Policy: &sandboxprofile.Profile{}}
-	if w := startProtectedWatch(audit.Nop(), nil, plan, argv, "/workdir"); w != nil {
+	if w := startProtectedWatch(audit.Nop(), nil, plan, argv, "/workdir", sandboxrun.WatchTuning{}); w != nil {
 		t.Fatal("argv that is not a sandbox run must not start a watch")
 	}
 }

@@ -22,7 +22,7 @@ func TestWatchNewProtected(t *testing.T) {
 	defer close(stop)
 	got := make(chan string, 8)
 	go func() {
-		if err := WatchNewProtected(p, dir, 10*time.Millisecond, func(path string) { got <- path }, stop); err != nil {
+		if err := WatchNewProtected(p, dir, 10*time.Millisecond, func(path string) { got <- path }, stop, WatchTuning{}); err != nil {
 			t.Errorf("WatchNewProtected: %v", err)
 		}
 	}()
@@ -57,6 +57,69 @@ func TestWatchNewProtected(t *testing.T) {
 	}
 }
 
+// TestWatchNewProtectedFullPassOff covers the default full_pass_ticks: 0:
+// the incremental ticks and the per-directory re-check must still detect
+// ordinary mid-session files.
+func TestWatchNewProtectedFullPassOff(t *testing.T) {
+	dir := t.TempDir()
+	p := &sandboxprofile.Profile{}
+	p.Workdir.Access = sandboxprofile.AccessReadWrite
+
+	stop := make(chan struct{})
+	defer close(stop)
+	got := make(chan string, 8)
+	go func() {
+		if err := WatchNewProtected(p, dir, 10*time.Millisecond, func(path string) { got <- path }, stop, WatchTuning{}); err != nil {
+			t.Errorf("WatchNewProtected: %v", err)
+		}
+	}()
+
+	// First tick = snapshot done.
+	select {
+	case path := <-got:
+		t.Fatalf("alerted on empty dir: %s", path)
+	case <-time.After(80 * time.Millisecond):
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case path := <-got:
+		if want := filepath.Join(dir, ".env"); path != want {
+			t.Fatalf("alerted %s, want %s", path, want)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no alert for mid-session .env with the full pass off (default)")
+	}
+}
+
+// TestFullPassDue covers the opt-in full-pass cadence, including the
+// positive path the old constant made untestable: 0 is off, N fires on
+// every Nth tick.
+func TestFullPassDue(t *testing.T) {
+	cases := []struct {
+		name    string
+		ticks   int
+		cadence int
+		want    bool
+	}{
+		{"off", 6, 0, false},
+		{"before", 5, 6, false},
+		{"due", 6, 6, true},
+		{"later", 12, 6, true},
+		{"every", 1, 1, true},
+		{"first", 0, 6, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := (resolvedTuning{fullPassTicks: tc.cadence}).fullPassDue(tc.ticks); got != tc.want {
+				t.Errorf("fullPassDue(ticks=%d, cadence=%d) = %v, want %v", tc.ticks, tc.cadence, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestWatchNewProtectedOverrideDeny(t *testing.T) {
 	dir := t.TempDir()
 	p := &sandboxprofile.Profile{}
@@ -67,7 +130,7 @@ func TestWatchNewProtectedOverrideDeny(t *testing.T) {
 	defer close(stop)
 	got := make(chan string, 8)
 	go func() {
-		if err := WatchNewProtected(p, dir, 10*time.Millisecond, func(path string) { got <- path }, stop); err != nil {
+		if err := WatchNewProtected(p, dir, 10*time.Millisecond, func(path string) { got <- path }, stop, WatchTuning{}); err != nil {
 			t.Errorf("WatchNewProtected: %v", err)
 		}
 	}()
