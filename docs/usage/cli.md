@@ -33,6 +33,7 @@ omac start claude       # specific harness
 | `--ephemeral-cache` | false | Use a temporary cache deleted when the session ends. Use this for a clean build environment or when you do not want the agent's package downloads to persist. |
 | `--cache-scope <scope>` | global | Which cache to use for the agent's package downloads (npm, pip, cargo, etc.). `global` shares one cache across all your projects, `config` shares it across projects using the same config file, `workdir` gives each project its own isolated cache. See [Cache](../advanced/cache.md). |
 | `--open-port <port>` | — | Allow the sandboxed process to bind and connect on this local TCP port (repeatable) for this session only. Useful for a local dev server or an MCP server the harness talks to. To make it permanent, use `network.open_port` in the grants file — see [Opening a port](../configuration.md#opening-a-port). |
+| `--vm` | false | Attach this session to the omac VM (a long-lived Linux VM with rootless Docker, see [omac vm](#omac-vm)). Sets `DOCKER_HOST` inside the sandbox. Requires `omac vm up` first and works only with the `builtin` sandbox. |
 | `--no-audit` | false | Disable the security audit trail for this session. |
 
 For all flags: `omac start --help`.
@@ -194,6 +195,27 @@ The cache stores downloaded packages (npm, pip, cargo, etc.) between sessions, i
 omac cache clear        # remove the cache for the current scope
 omac cache clear --all  # remove all caches not currently in use
 ```
+
+### omac vm
+
+The omac VM is one long-lived Linux virtual machine per computer, which omac creates and manages with [Lima](https://lima-vm.io). Docker runs inside it, and a session started with `--vm` uses that Docker instead of one on your host. The VM sees none of your host files and has no network access, except while `omac vm up` sets it up and while you switch it to `omac vm online`.
+
+```bash
+omac vm up                     # create and provision once, then switch offline (needs network once)
+omac vm status
+omac vm image add postgres:16  # import an image; the VM never pulls itself
+omac start --vm                # DOCKER_HOST inside the sandbox points at the VM
+omac vm online / offline       # open the VM's network for provisioning or priming, then close it
+omac vm down / reset
+```
+
+You need Lima installed: `brew install lima` on macOS, the `lima` package on Linux.
+
+Because the VM has no network, `docker pull` inside it fails. Instead, `omac vm image add` downloads the image on your host and loads it into the VM, once per image.
+
+The VM is either `offline` (the default) or `online`. Sessions attach only while it is offline, and `omac vm online` is refused while a session is attached.
+
+`omac vm up --reprovision` reinstalls the extra packages listed in `vm.yaml`, and `omac vm reset` deletes the VM and creates it anew. For CPUs, memory, disk and packages, see [omac VM (vm.yaml)](../configuration.md#omac-vm-vmyaml).
 
 ### omac provenance
 

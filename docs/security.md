@@ -186,12 +186,32 @@ cannot access.
 | `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.kube`, … | **blocked** | Sensitive credentials |
 | `~/.npmrc` | **blocked**; registry addresses can be shared as a stripped copy | Usually holds an access token. See [Private package registries](./configuration.md#private-package-registries) |
 | The host OpenCode service's `service.json` in `~/.config/opencode` and `~/.local/state/opencode` (also under `$XDG_CONFIG_HOME`, `$OPENCODE_CONFIG_DIR` and `$XDG_STATE_HOME` when set) | **blocked** (OpenCode harness) | Least privilege: these files hold the configuration and registration of the host's OpenCode v2 shared service. A sandboxed OpenCode v2 uses its own private `service.json` in the per-launch temp dir instead, so the sandbox doesn't need the host's copies. Keeping them out of reach means a sandboxed session cannot read or change the host service's settings. The rest of both dirs stays read + write. On Linux the file is masked when it exists at launch |
+| The omac VM's two loopback ports (Docker API and SSH, opened like `--open-port`) and a copy of the VM's agent SSH key in the session's cache directory | connect / read, **only with `--vm`** | So the agent can use Docker in the VM. See [The omac VM](#the-omac-vm) |
 | `~/.config/omac` (approval store, sandbox profiles, global registry) | **blocked** | The agent must not be able to forge skill approvals; protected in the baseline even under broader grants |
+| `~/.local/state/omac/vm` (also under `$XDG_STATE_HOME`) | **blocked** | The omac VM's state, including the key that gives root access to the VM; protected in the baseline even under broader grants |
 | `.env` / `.envrc` files (including nested ones inside the project; dependency/cache trees are skipped) | **blocked** | Often contain secrets |
 | `~/.cache`, `~/Library/Caches` (host cache roots) | **blocked** | Prevents cross-project cache poisoning; omac provides its own isolated cache |
 | Files matching `filesystem.deny` patterns (e.g. `*.key`) | **blocked** | User-defined extra restrictions |
 | Environment variables in `allow_vars` (`OMAC_*`, `HOME`, `PATH`, `LANG`, …) | passed through | Operational minimum |
-| All other environment variables (cloud secrets, `DOCKER_HOST`, `SSH_AUTH_SOCK`, …) | **stripped** | Not needed and potentially sensitive |
+| All other environment variables (cloud secrets, `DOCKER_HOST` (passed through only with `--vm`), `SSH_AUTH_SOCK`, …) | **stripped** | Not needed and potentially sensitive |
+
+## The omac VM
+
+A session started with `--vm` uses Docker inside the omac VM (see [omac vm](./usage/cli.md#omac-vm)). The VM, not the sandbox, is then the boundary around everything the agent runs in Docker.
+
+These hold even if the agent became root inside the VM:
+- The VM has no access to host files: omac mounts no host directory into it.
+- It holds no host credentials and no host sockets, such as your SSH agent or the host's Docker.
+- The only link from the host into the VM is two ports on the host's loopback interface: the Docker API and SSH.
+
+This holds only while the agent is not root inside the VM: the VM has no outbound network. A firewall inside the VM rejects every new outbound connection, including to Lima's gateway to the host.
+
+Known limits:
+- A kernel exploit inside the VM gives the agent root there, and root can turn the firewall off.
+- On Linux, opening a port for the sandbox opens it on every address, not only on loopback.
+- All sessions of one user share the VM, so one session can see and change the containers of another.
+
+The VM's state lives in `~/.local/state/omac/vm` and includes the key for root access to the VM. The sandbox blocks this directory.
 
 ## Self-authored skills
 
