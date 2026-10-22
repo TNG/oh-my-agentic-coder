@@ -820,6 +820,7 @@ func runLaunch(env *Env, opts launchOpts) int {
 		}
 		argv = injectSandboxDirs(argv, harness.ResolvedSandboxDirs())
 		argv = injectSandboxDenies(argv, harness.SandboxDenyPaths, prof)
+		argv = injectUntrustedSkillDenies(argv, env.Stderr, prefix, prof, env.Workdir)
 		if cacheScope != nil {
 			argv = injectSandboxFlag(argv, "--allow", cacheScope.Dir)
 		}
