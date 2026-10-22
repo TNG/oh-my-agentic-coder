@@ -36,7 +36,7 @@ func fakeLima(t *testing.T, wantHome, out string, retErr error) LimaCtl {
 		if limaHome != wantHome {
 			t.Errorf("limaHome = %q, want %q", limaHome, wantHome)
 		}
-		if want := []string{"list", "--json", "omac"}; !slices.Equal(args, want) {
+		if want := []string{"list", "--json"}; !slices.Equal(args, want) {
 			t.Errorf("args = %v, want %v", args, want)
 		}
 		if stdout != nil {
@@ -58,6 +58,27 @@ func TestInspectParsesInstance(t *testing.T) {
 	want := Instance{Name: "omac", Status: StatusStopped, SSHLocalPort: 42022}
 	if *inst != want {
 		t.Errorf("instance = %+v, want %+v", *inst, want)
+	}
+}
+
+func TestInspectSkipsForeignInstances(t *testing.T) {
+	out := `{"name":"other","status":"Running","sshLocalPort":60022}` + "\n" +
+		`{"name":"omac","status":"Running","sshLocalPort":42022}` + "\n"
+	inst, err := Inspect(context.Background(), fakeLima(t, "/lh", out, nil), "/lh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := Instance{Name: "omac", Status: StatusRunning, SSHLocalPort: 42022}
+	if inst == nil || *inst != want {
+		t.Fatalf("instance = %+v, want %+v", inst, want)
+	}
+}
+
+func TestInspectOnlyForeignInstanceMeansAbsent(t *testing.T) {
+	out := `{"name":"other","status":"Running"}` + "\n"
+	inst, err := Inspect(context.Background(), fakeLima(t, "/lh", out, nil), "/lh")
+	if err != nil || inst != nil {
+		t.Fatalf("Inspect = %+v, %v; want nil, nil", inst, err)
 	}
 }
 

@@ -55,10 +55,12 @@ type Instance struct {
 // Inspect reports the omac instance, or nil when it does not exist.
 func Inspect(ctx context.Context, run LimaCtl, limaHome string) (*Instance, error) {
 	var out bytes.Buffer
-	if err := run(ctx, limaHome, &out, "list", "--json", InstanceName); err != nil {
+	// No name argument: `limactl list --json omac` exits 1 when omac does not
+	// exist, while the unfiltered list exits 0 and prints one JSON object per
+	// instance and line (nothing for an empty LIMA_HOME).
+	if err := run(ctx, limaHome, &out, "list", "--json"); err != nil {
 		return nil, fmt.Errorf("omac vm: limactl list: %w", err)
 	}
-	// limactl prints one JSON object per line and nothing for an unknown name.
 	for line := range bytes.Lines(out.Bytes()) {
 		line = bytes.TrimSpace(line)
 		if len(line) == 0 {
@@ -68,7 +70,9 @@ func Inspect(ctx context.Context, run LimaCtl, limaHome string) (*Instance, erro
 		if err := json.Unmarshal(line, &inst); err != nil {
 			return nil, fmt.Errorf("omac vm: parse limactl list output: %w", err)
 		}
-		return &inst, nil
+		if inst.Name == InstanceName {
+			return &inst, nil
+		}
 	}
 	return nil, nil
 }
