@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -245,9 +246,10 @@ func TestVMSandboxEnv(t *testing.T) {
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Errorf("env = %v\nwant  %v", got, want)
 	}
-	st, err := os.Stat(want["OMAC_VM_SSH_KEY"])
-	if err != nil || st.Mode().Perm() != 0o600 {
-		t.Errorf("key copy: %v mode=%v, want 0600", err, st.Mode().Perm())
+	if st, err := os.Stat(want["OMAC_VM_SSH_KEY"]); err != nil {
+		t.Errorf("key copy: %v", err)
+	} else if st.Mode().Perm() != 0o600 {
+		t.Errorf("key copy mode = %v, want 0600", st.Mode().Perm())
 	}
 	if b, _ := os.ReadFile(want["OMAC_VM_SSH_KEY"]); string(b) != "PRIVATE KEY\n" {
 		t.Errorf("key copy content = %q", b)
@@ -262,6 +264,84 @@ func TestVMSandboxEnv(t *testing.T) {
 func TestVMSandboxEnvMissingKey(t *testing.T) {
 	if _, err := vmSandboxEnv(vm.AttachInfo{AgentKeyPath: filepath.Join(t.TempDir(), "nope")}, t.TempDir()); err == nil {
 		t.Fatal("vmSandboxEnv succeeded without an agent key")
+	}
+}
+
+// A sandboxed session can write the cache dir, so it could plant a symlink
+// that redirects the key copy or DOCKER_CONFIG anywhere the host user writes.
+func TestVMSandboxEnvRefusesSymlinks(t *testing.T) {
+	key := testAgentKey(t)
+	for _, planted := range []string{"vm", filepath.Join("vm", "docker")} {
+		t.Run(planted, func(t *testing.T) {
+			scope, target := t.TempDir(), t.TempDir()
+			if err := os.MkdirAll(filepath.Dir(filepath.Join(scope, planted)), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(target, filepath.Join(scope, planted)); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := vmSandboxEnv(vm.AttachInfo{AgentKeyPath: key}, scope); err == nil {
+				t.Fatalf("vmSandboxEnv accepted a symlinked %s", planted)
+			}
+			if entries, _ := os.ReadDir(target); len(entries) != 0 {
+				t.Errorf("symlink target was written: %v", entries)
+			}
+		})
+	}
+}
+
+// attachOrderManager checks, inside PrepareAttach, that this process's
+// session marker already exists.
+type attachOrderManager struct {
+	fakeVMManager
+	sessions  string
+	sawMarker bool
+	attachErr error
+}
+
+func (a *attachOrderManager) PrepareAttach(context.Context) (vm.AttachInfo, error) {
+	_, err := os.Stat(filepath.Join(a.sessions, strconv.Itoa(os.Getpid())))
+	a.sawMarker = err == nil
+	return vm.AttachInfo{DockerPort: 1}, a.attachErr
+}
+
+func useAttachOrderManager(t *testing.T, attachErr error) (*attachOrderManager, string) {
+	t.Helper()
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	root, err := vm.DefaultRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := &attachOrderManager{sessions: vm.NewLayout(root).SessionsDir, attachErr: attachErr}
+	orig := newVMManager
+	newVMManager = func(*Env) (vmManager, error) { return fake, nil }
+	t.Cleanup(func() { newVMManager = orig })
+	return fake, fake.sessions
+}
+
+func TestPrepareVMAttachRegistersBeforeChecking(t *testing.T) {
+	fake, sessions := useAttachOrderManager(t, nil)
+	_, release, err := prepareVMAttach(context.Background(), devnullEnv(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !fake.sawMarker {
+		t.Error("PrepareAttach ran before the session marker was written")
+	}
+	release()
+	if entries, _ := os.ReadDir(sessions); len(entries) != 0 {
+		t.Errorf("markers left after release: %v", entries)
+	}
+}
+
+func TestPrepareVMAttachFailureLeavesNoMarker(t *testing.T) {
+	_, sessions := useAttachOrderManager(t, vm.ErrOnline)
+	_, release, err := prepareVMAttach(context.Background(), devnullEnv(t))
+	if !errors.Is(err, vm.ErrOnline) || release != nil {
+		t.Fatalf("prepareVMAttach = (release=%v, %v), want (nil, ErrOnline)", release != nil, err)
+	}
+	if entries, _ := os.ReadDir(sessions); len(entries) != 0 {
+		t.Errorf("markers left after a failed attach: %v", entries)
 	}
 }
 

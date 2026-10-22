@@ -415,12 +415,8 @@ func (m *Manager) SetMode(ctx context.Context, mode string) error {
 		return fmt.Errorf("omac vm: unknown mode %q (want %s or %s)", mode, ModeOnline, ModeOffline)
 	}
 	if mode == ModeOnline {
-		pids, err := AttachedSessions(m.Layout, m.Deps.Alive)
-		if err != nil {
+		if err := m.refuseAttached(); err != nil {
 			return err
-		}
-		if len(pids) > 0 {
-			return fmt.Errorf("omac vm: %w (pids %s); end them before going online", ErrSessionsAttached, joinInts(pids))
 		}
 	}
 	inst, err := m.instance(ctx)
@@ -434,8 +430,37 @@ func (m *Manager) SetMode(ctx context.Context, mode string) error {
 	if err != nil {
 		return err
 	}
+	if mode == ModeOnline {
+		// A session registers before it reads the mode. Once state says
+		// online, new sessions refuse to attach, so a second check catches
+		// any session that registered after the first one.
+		prev := st.Mode
+		st.Mode = ModeOnline
+		if err := SaveState(m.Layout.StatePath, st); err != nil {
+			return err
+		}
+		if err := m.refuseAttached(); err != nil {
+			st.Mode = prev
+			if serr := SaveState(m.Layout.StatePath, st); serr != nil {
+				return errors.Join(err, serr)
+			}
+			return err
+		}
+	}
 	fmt.Fprintf(m.Out, "omac vm: switching %s (restarts the VM)…\n", mode)
 	return m.switchMode(ctx, st, mode, inst.Status == StatusRunning, m.Deps.RestartTimeout)
+}
+
+// refuseAttached returns ErrSessionsAttached while any session is attached.
+func (m *Manager) refuseAttached() error {
+	pids, err := AttachedSessions(m.Layout, m.Deps.Alive)
+	if err != nil {
+		return err
+	}
+	if len(pids) > 0 {
+		return fmt.Errorf("omac vm: %w (pids %s); end them before going online", ErrSessionsAttached, joinInts(pids))
+	}
+	return nil
 }
 
 // AttachInfo is what a session needs to use the VM's Docker.

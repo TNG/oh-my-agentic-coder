@@ -11,15 +11,13 @@ import (
 	"github.com/TNG/oh-my-agentic-coder/internal/vm"
 )
 
-// prepareVMAttach checks that the omac VM can take a session and registers
-// this process as attached. The returned func removes the registration; it
-// never stops the VM, which outlives every session. Tests replace it.
+// prepareVMAttach registers this process as attached, then checks that the
+// omac VM can take a session. Registering first means `omac vm online`, which
+// re-checks the markers after marking itself online, either sees this session
+// or makes the check below fail. The returned func removes the registration;
+// it never stops the VM, which outlives every session. Tests replace it.
 var prepareVMAttach = func(ctx context.Context, env *Env) (vm.AttachInfo, func(), error) {
 	m, err := newVMManager(env)
-	if err != nil {
-		return vm.AttachInfo{}, nil, err
-	}
-	info, err := m.PrepareAttach(ctx)
 	if err != nil {
 		return vm.AttachInfo{}, nil, err
 	}
@@ -29,6 +27,11 @@ var prepareVMAttach = func(ctx context.Context, env *Env) (vm.AttachInfo, func()
 	}
 	release, err := vm.RegisterSession(vm.NewLayout(root), os.Getpid())
 	if err != nil {
+		return vm.AttachInfo{}, nil, err
+	}
+	info, err := m.PrepareAttach(ctx)
+	if err != nil {
+		release()
 		return vm.AttachInfo{}, nil, err
 	}
 	return info, release, nil
@@ -57,7 +60,14 @@ func vmSandboxEnv(info vm.AttachInfo, scopeDir string) (map[string]string, error
 	dir := filepath.Join(scopeDir, "vm")
 	dockerDir := filepath.Join(dir, "docker")
 	for _, d := range []string{dir, dockerDir} {
-		if err := os.MkdirAll(d, 0o700); err != nil {
+		// The sandbox can write scopeDir; refuse a planted symlink or file
+		// instead of following it with the key copy or chmod.
+		if fi, err := os.Lstat(d); err == nil && !fi.IsDir() {
+			return nil, fmt.Errorf("%s exists but is not a directory", d)
+		} else if err != nil && !os.IsNotExist(err) {
+			return nil, err
+		}
+		if err := os.Mkdir(d, 0o700); err != nil && !os.IsExist(err) {
 			return nil, err
 		}
 		if err := os.Chmod(d, 0o700); err != nil {

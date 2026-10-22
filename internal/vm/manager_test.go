@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -478,6 +479,34 @@ func TestSetModeOnlineRefusesWithSessions(t *testing.T) {
 		t.Fatalf("SetMode(online) = %v, want ErrSessionsAttached naming 4242", err)
 	}
 	assertVerbs(t, lima)
+}
+
+// A session that registers after the first marker check (here: during the
+// instance lookup) is caught by the second check, before any restart.
+func TestSetModeOnlineRefusesSessionRegisteredMidSwitch(t *testing.T) {
+	m, lima, _, _ := newTestManager(t)
+	mustUp(t, m)
+	m.Deps.Alive = func(pid int) bool { return pid == 5151 }
+	lima.reset()
+	registered := false
+	m.Deps.Lima = func(ctx context.Context, home string, stdout io.Writer, args ...string) error {
+		if args[0] == "list" && !registered {
+			registered = true
+			if _, err := RegisterSession(m.Layout, 5151); err != nil {
+				t.Error(err)
+			}
+		}
+		return lima.run(ctx, home, stdout, args...)
+	}
+
+	err := m.SetMode(context.Background(), ModeOnline)
+	if !errors.Is(err, ErrSessionsAttached) || !strings.Contains(err.Error(), "5151") {
+		t.Fatalf("SetMode(online) = %v, want ErrSessionsAttached naming 5151", err)
+	}
+	assertVerbs(t, lima, "list")
+	if st := mustState(t, m); st.Mode != ModeOffline {
+		t.Errorf("mode = %q, want offline restored", st.Mode)
+	}
 }
 
 func TestSetModeOnlineCyclesAndVerifiesNoFirewall(t *testing.T) {
