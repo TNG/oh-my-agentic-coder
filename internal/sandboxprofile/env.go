@@ -64,9 +64,8 @@ var dangerousEnvPrefixes = []string{
 // operational minimum a sandboxed process needs to run at all and which
 // is never desirable to withhold. EffectiveAllowVars merges these into
 // every restrictive profile's allow_vars, so a profile author cannot
-// accidentally strip them (COLORTERM was the motivating gap — issue
-// #139). A profile can ADD to the allowlist; it cannot subtract from
-// this base. All entries are non-secret.
+// accidentally strip them. A profile can ADD to the allowlist; it cannot
+// subtract from this base. All entries are non-secret.
 //
 // Entries are exact names or trailing-* prefixes (see envVarAllowed).
 // Injected variables (HTTP(S)_PROXY, OMAC_* skill bases) bypass the
@@ -134,17 +133,16 @@ func DefaultAllowVars() []string {
 //
 //   - an explicit "*" wildcard means "grant every non-blocklisted var"
 //     and is returned unchanged — the only sanctioned inherit-all opt-in;
-//   - an EMPTY list is NOT inherit-all. Since #102/#111 an empty allow_vars
-//     is a misconfiguration that resolves to the operational defaults
-//     (DefaultAllowVars), never the pre-#102 inherit-everything. cmd/serve
-//     and cmd/start already seed this at launch; resolving it here too
-//     closes the gap for a bare `omac sandbox run` against an empty
-//     profile, so the policy holds regardless of entry point;
+//   - an EMPTY list is NOT inherit-all. Since this is a documented
+//     misconfiguration state, an empty allow_vars resolves to the
+//     operational defaults (DefaultAllowVars), never inherit-everything.
+//     cmd/serve and cmd/start already seed this at launch; resolving it
+//     here too closes the gap for a bare `omac sandbox run` against an
+//     empty profile, so the policy holds regardless of entry point;
 //   - a non-empty list has the full DefaultAllowVars merged in, so every
 //     operational default (base + convenience) is granted by default
-//     regardless of what the profile itself lists (COLORTERM was the
-//     motivating gap — issue #139). A profile removes a default it does
-//     not want with deny_vars, not by omitting it here.
+//     regardless of what the profile itself lists. A profile removes a
+//     default it does not want with deny_vars, not by omitting it here.
 //
 // The returned slice is a fresh copy — default entries first, then the
 // profile's own additions with duplicates removed — so callers may retain
@@ -208,6 +206,41 @@ func IsDangerousEnvVar(key string) bool {
 		}
 	}
 	return false
+}
+
+// EnvValueRefs returns the variable names a profile environment.set value
+// references via $VAR or ${VAR} expansion, without expanding. The scan
+// mirrors os.Expand's rules, including the "$$" escape, so the references
+// found here are exactly the ones expansion would consult. A value that
+// references another variable is injected from the supervisor's ambient
+// environment, bypassing allow_vars, so the reference is part of the
+// profile's effective behavior and must be auditable.
+func EnvValueRefs(v string) []string {
+	var out []string
+	for i := 0; i < len(v); i++ {
+		if v[i] != '$' || i+1 >= len(v) {
+			continue
+		}
+		switch c := v[i+1]; {
+		case c == '$':
+			i++ // os.Expand's "$$" escape: a literal dollar sign
+		case c == '{':
+			end := strings.IndexByte(v[i+2:], '}')
+			if end < 0 {
+				continue
+			}
+			out = append(out, v[i+2:i+2+end])
+			i += 2 + end
+		case c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'):
+			j := i + 1
+			for j < len(v) && (v[j] == '_' || (v[j] >= 'a' && v[j] <= 'z') || (v[j] >= 'A' && v[j] <= 'Z') || (v[j] >= '0' && v[j] <= '9')) {
+				j++
+			}
+			out = append(out, v[i+1:j])
+			i = j - 1
+		}
+	}
+	return out
 }
 
 // DangerousEnvBlocklist returns sorted copies of the always-drop env

@@ -4,6 +4,7 @@ import (
 	"os"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -152,5 +153,34 @@ func TestOmacTCPEnvValueNS(t *testing.T) {
 	}
 	if got, want := OmacTCPEnvValueNS("", "flat", 41017), "http://127.0.0.1:41017/flat"; got != want {
 		t.Errorf("OmacTCPEnvValueNS(flat) = %q, want %q", got, want)
+	}
+}
+
+// The trust re-check flags are forwarded only when a parent launched this
+// child; a direct run omits them and stays unchecked.
+func TestBuildBuiltinArgvProjectTrust(t *testing.T) {
+	got, err := BuildBuiltinArgv(Inputs{
+		Socket:            "/s/bridge.sock",
+		InnerCmd:          []string{"agent"},
+		ProfileRef:        "/repo/.omac/default.json",
+		ProjectTrust:      "config",
+		ProjectTrustLayer: "workdir",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(got, " ")
+	for _, want := range []string{"--project-trust config", "--project-trust-layer workdir"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("missing %q in %q", want, joined)
+		}
+	}
+
+	direct, err := BuildBuiltinArgv(Inputs{Socket: "/s/bridge.sock", InnerCmd: []string{"agent"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(strings.Join(direct, " "), "--project-trust") {
+		t.Errorf("direct run must not carry the trust flags: %v", direct)
 	}
 }

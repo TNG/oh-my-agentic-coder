@@ -570,7 +570,7 @@ func stageProfile(t *testing.T, home, jsonContent string) {
 	}
 }
 
-// TestDoctorAgreesWithStartOnWorkdirScopedSecret is issue #174's Failure 3.
+// TestDoctorAgreesWithStartOnWorkdirScopedSecret pins the scope split:
 // doctor probed the keychain UNSCOPED (keychain.Has) while `omac start` probes
 // it workdir-scoped with an unscoped fallback (keychain.GetWithFallback), so a
 // secret stored only under the workdir scope made doctor report a missing

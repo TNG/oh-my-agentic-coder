@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"path/filepath"
 	"strings"
 
 	"github.com/TNG/oh-my-agentic-coder/internal/config"
@@ -64,8 +63,8 @@ func resolveSandboxPlan(workdir string, sel config.ProfileSelection) sandboxPlan
 // config's layer-local selection.
 //
 // A project-local selection is only used while the files it loads match the
-// per-file pins in the host-only store (see config.ProjectSandboxTrust). The
-// workdir is agent-writable, and the macOS backend cannot block replacing
+// approved digests in the host-only pin store (see config.ProjectSandboxTrust).
+// The workdir is agent-writable, and the macOS backend cannot block replacing
 // <workdir>/.omac between sessions, so a mismatch or still-unapproved content
 // aborts the launch (ExitConfigInvalid) until a human reviews the files and
 // re-runs with --accept-project-config.
@@ -81,21 +80,26 @@ func activeProfileSelection(workdir, cliPath string, acceptProject bool, warn io
 			// re-reads the file.
 			return sel, nil
 		}
-		return approvedProjectSandbox(workdir, sel, acceptProject, warn, false)
+		return approvedProjectSandbox(workdir, sel, acceptProject, false)
 	}
 	sel, err := config.ResolveSandboxProfile(workdir)
 	if err != nil || workdir == "" {
 		return sel, err
 	}
-	return approvedProjectSandbox(workdir, sel, acceptProject, warn, true)
+	return approvedProjectSandbox(workdir, sel, acceptProject, true)
 }
 
 // approvedProjectSandbox enforces the trust pin behind one selection.
 // configDriven is false for an explicit --profile-path: the typed path is its
 // own approval, so a first use pins without a flag, while config-driven first
 // use (content that could have been planted in the repo) requires one.
-func approvedProjectSandbox(workdir string, sel config.ProfileSelection, acceptProject bool, warn io.Writer, configDriven bool) (config.ProfileSelection, error) {
-	trusted, firstUse, reason := config.ProjectSandboxTrust(workdir, sel, configDriven)
+func approvedProjectSandbox(workdir string, sel config.ProfileSelection, acceptProject bool, configDriven bool) (config.ProfileSelection, error) {
+	trusted, firstUse, reason, terr := config.ProjectSandboxTrust(workdir, sel, configDriven)
+	if terr != nil {
+		// A read failure is not a content change: re-approving would record
+		// nothing, so refusals must say what is actually wrong.
+		return sel, fmt.Errorf("cannot read the project sandbox configuration: %s", terr)
+	}
 	switch {
 	case trusted:
 		return sel, nil
@@ -112,11 +116,14 @@ func approvedProjectSandbox(workdir string, sel config.ProfileSelection, acceptP
 	default:
 		// First use behind an explicit path (the command line is the
 		// approval), or re-approval via --accept-project-config: pin the
-		// loaded files. Only the files this launch loads get slots, so an
-		// approval never covers content it did not see.
-		if perr := config.PinProjectSandbox(workdir, sel, configDriven); perr != nil && warn != nil {
-			fmt.Fprintf(warn, "omac: cannot record the approved project sandbox configuration (%v); "+
-				"a later tampering will not be detected\n", perr)
+		// loaded files. Only the files this launch loads get entries, so an
+		// approval never covers content it did not see. A pin that cannot be
+		// recorded must abort: the user would believe they approved, but
+		// tomorrow's tampering check would be missing.
+		if perr := config.PinProjectSandbox(workdir, sel, configDriven); perr != nil {
+			return sel, fmt.Errorf("cannot record the approved project sandbox configuration (%s) — "+
+				"without the approval record omac cannot detect later tampering; "+
+				"check that ~/.config/omac is writable and re-run with --accept-project-config", perr)
 		}
 		return sel, nil
 	}
@@ -142,28 +149,22 @@ func warnPermissiveProfile(w io.Writer, ref string, policy *sandboxprofile.Profi
 	}
 }
 
-// excludeProfilePagesFile keeps a custom profile's learned-decisions sibling
-// (<profile>.pages.json) out of git when the profile lives inside the workdir.
-// omac creates the file at launch (see sandboxrun.writeProtectProfilePaths),
-// so excluding it up front stops a per-user file from being committed.
-// No-op for the default profile, a profile outside the workdir, or a non-git
-// workdir.
-func excludeProfilePagesFile(workdir, profileRef string) {
-	if profileRef == "" {
-		return
+// projectTrustMode maps the launching parent's selection source onto the
+// --project-trust value the sandbox child verifies its loaded content with:
+// "config" when the launch followed .omac/config.yaml, "explicit" when it
+// followed --profile-path.
+func projectTrustMode(cliPath string) string {
+	if strings.TrimSpace(cliPath) != "" {
+		return "explicit"
 	}
-	pages := sandboxprofile.PagesPath(profileRef)
-	rel, err := filepath.Rel(workdir, pages)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
-		return // the pages file is outside the workdir
-	}
-	gitExcludePath(workdir, rel)
+	return "config"
 }
 
 // ensureOmacLocalDir creates <workdir>/.omac before the launch. It returns the
 // error untouched when .omac is a symlink (callers refuse the launch); any
-// other creation failure only warns — a workdir omac cannot create .omac in
-// cannot have it created by the agent either, so nothing plantable is missing.
+// other creation failure only warns — whatever keeps omac from creating
+// .omac keeps the agent (with the same user's permissions — its own) from
+// creating it too, so nothing plantable is missing.
 func ensureOmacLocalDir(w io.Writer, workdir string) error {
 	_, err := sandboxrun.EnsureLocalConfigDir(workdir)
 	if err == nil || errors.Is(err, sandboxrun.ErrLocalConfigDirSymlink) {

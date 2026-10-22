@@ -20,7 +20,7 @@ import (
 // tests only read .netrc/.ssh, which are data — and the default text's
 // "  POST $OMAC_BASE/sandbox/intent ..." line hung every bash invocation
 // on hosts where /usr/bin/POST is libwww-perl's lwp-request, which
-// blocks reading its request body from stdin (#213).
+// blocks reading its request body from stdin.
 //
 // These tests source the real production marker bytes with a stub POST
 // on PATH, so the hang reproduces deterministically without libwww-perl

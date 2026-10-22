@@ -14,7 +14,6 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/TNG/oh-my-agentic-coder/internal/config"
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
 )
 
@@ -55,10 +54,13 @@ func NewProtectedPathSet(p *sandboxprofile.Profile, workdir string) *ProtectedPa
 			set.rules = append(set.rules, "baseline")
 		}
 	}
-	// The omac config directories are never overridable (see
-	// NonOverridableProtectedPaths), so the facade must report them even when
-	// the profile lists them in override_deny.
-	for _, exp := range sandboxprofile.NonOverridableProtectedPaths(config.LocalConfigDir(workdir)) {
+	// The global omac config directory is never overridable (see
+	// NonOverridableProtectedPaths), so the facade must report it even when
+	// the profile lists it in override_deny. The project dir is NOT part of
+	// the facade set: IsProtected answers any path with a .omac component
+	// first (underOmacLeaf), so a project-dir entry here could never decide
+	// a match.
+	for _, exp := range sandboxprofile.NonOverridableProtectedPaths("") {
 		set.entries = append(set.entries, exp)
 		set.rules = append(set.rules, "omac")
 	}
@@ -73,15 +75,17 @@ func NewProtectedPathSet(p *sandboxprofile.Profile, workdir string) *ProtectedPa
 }
 
 // UnrestrictedProtectedPathSet returns the set that survives learn mode
-// (`omac serve --learn`): the non-overridable omac config directories. Learn
-// mode lifts the profile's protected paths and grants "/", but the config
-// directories stay masked so a session cannot plant a .omac/ a later launch
-// would trust. Reporting the profile's static set during a learn session would
-// tell the agent that a genuinely missing file was blocked by the sandbox,
-// which is the confusion GET /sandbox/denied exists to remove.
-func UnrestrictedProtectedPathSet(workdir string) *ProtectedPathSet {
+// (`omac serve --learn`): the non-overridable global omac config directory.
+// Learn mode lifts the profile's protected paths and grants "/", but the
+// config directory stays masked so a session cannot plant a .omac/ a later
+// launch would trust. Reporting the profile's static set during a learn
+// session would tell the agent that a genuinely missing file was blocked by
+// the sandbox, which is the confusion GET /sandbox/denied exists to remove.
+// The project dir is not part of the set: underOmacLeaf already covers every
+// path under a .omac directory.
+func UnrestrictedProtectedPathSet() *ProtectedPathSet {
 	set := &ProtectedPathSet{}
-	for _, exp := range sandboxprofile.NonOverridableProtectedPaths(config.LocalConfigDir(workdir)) {
+	for _, exp := range sandboxprofile.NonOverridableProtectedPaths("") {
 		set.entries = append(set.entries, exp)
 		set.rules = append(set.rules, "omac")
 	}
@@ -111,10 +115,7 @@ func (s *ProtectedPathSet) IsProtected(absPath string) (rule string, ok bool) {
 	// Normalize: clean the path but don't follow symlinks (the agent
 	// queries with the path it tried; we match lexically).
 	absPath = filepath.Clean(absPath)
-	// Any .omac directory is protected by leaf name: omac creates
-	// <workdir>/.omac itself, may only mask what existed at launch, and a
-	// planted nested .omac is empty-but-blocked from the next launch on —
-	// an empty listing is the denial, not a missing directory.
+	// Any .omac directory is protected by leaf name (see underOmacLeaf).
 	if underOmacLeaf(absPath) {
 		return "omac", true
 	}
@@ -136,10 +137,13 @@ func (s *ProtectedPathSet) IsProtected(absPath string) (rule string, ok bool) {
 }
 
 // underOmacLeaf reports whether absPath is an .omac directory or lies
-// inside one (any path component named .omac).
+// inside one (any path component named .omac). omac creates <workdir>/.omac
+// itself, may only mask what existed at launch, and a planted nested .omac is
+// empty-but-blocked from the next launch on — an empty listing is the denial,
+// not a missing directory.
 func underOmacLeaf(absPath string) bool {
 	for _, part := range strings.Split(absPath, string(filepath.Separator)) {
-		if part == ".omac" {
+		if part == sandboxprofile.ProjectConfigDirName {
 			return true
 		}
 	}

@@ -52,3 +52,33 @@ func TestExpandEnvValue(t *testing.T) {
 		}
 	}
 }
+
+func TestEnvValueRefs(t *testing.T) {
+	cases := []struct {
+		value string
+		want  []string
+	}{
+		{"plain literal", nil},
+		{"$HOME/logs", []string{"HOME"}},
+		{"${HOME}/logs", []string{"HOME"}},
+		{"a$B_c d", []string{"B_c"}},
+		{"$$escaped", nil},
+		{"cost is $5", nil},
+		{"${UNTERMINATED", nil},
+		{"$TRAILING", []string{"TRAILING"}},
+		{"${}empty", []string{""}},
+		{"a$1num", nil},
+	}
+	for _, tc := range cases {
+		got := EnvValueRefs(tc.value)
+		if len(got) != len(tc.want) {
+			t.Errorf("EnvValueRefs(%q) = %v; want %v", tc.value, got, tc.want)
+			continue
+		}
+		for i := range got {
+			if got[i] != tc.want[i] {
+				t.Errorf("EnvValueRefs(%q) = %v; want %v", tc.value, got, tc.want)
+			}
+		}
+	}
+}

@@ -9,7 +9,7 @@ import (
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
 )
 
-// Tests for the PR #259 review findings. Each case is a shape that slipped
+// Tests for the PR review findings. Each case is a shape that slipped
 // through the first round: the credential correlation was keyed on a host
 // spelled differently on each side, and the value expansion could smuggle a
 // secret into a position nothing stripped or refused.

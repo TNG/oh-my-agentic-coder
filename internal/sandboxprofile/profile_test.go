@@ -417,7 +417,7 @@ func TestResolveUnknownProfileNamesExpectedPath(t *testing.T) {
 // scaffolding variant but never writes default.json when "default" is
 // missing — inspection callers (doctor, diagnose, provenance, facade
 // wiring) must not mutate the user's filesystem as a side effect of
-// reading (#173).
+// reading.
 func TestResolveIsReadOnlyByDefault(t *testing.T) {
 	t.Run("missing named profile errors", func(t *testing.T) {
 		t.Setenv("HOME", t.TempDir())
@@ -527,9 +527,42 @@ func TestPagesPathEmptyProfilePath(t *testing.T) {
 	}
 }
 
+// PagesPath is layer-aware: a profile inside the trusted profile directory
+// keeps its sibling <name>.pages.json; a profile elsewhere (a project's
+// .omac, the agent-writable workdir) is keyed under the host learned dir so
+// no session can rewrite the network decisions.
 func TestPagesPath(t *testing.T) {
-	if got := PagesPath("/x/sandbox-profiles/default.json"); got != "/x/sandbox-profiles/default.pages.json" {
-		t.Errorf("PagesPath = %q", got)
+	t.Setenv("HOME", t.TempDir())
+	profInDir, err := ProfilePath("default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := PagesPath(profInDir); got != profInDir[:len(profInDir)-len(".json")]+".pages.json" {
+		t.Errorf("global-layer PagesPath = %q", got)
+	}
+
+	outside := filepath.Join(t.TempDir(), "p.json")
+	got := PagesPath(outside)
+	if got == "" || filepath.Dir(got) != strings.TrimSuffix(got, "/"+filepath.Base(got)) {
+		t.Fatalf("PagesPath = %q", got)
+	}
+	if b := filepath.Base(got); !strings.HasPrefix(b, "p-") || !strings.HasSuffix(b, ".pages.json") {
+		t.Errorf("project profile's learned file should be keyed under the host dir, got %q", got)
+	}
+	learned, err := LearnedDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Dir(got) != learned {
+		t.Errorf("PagesPath dir = %q, want %q", filepath.Dir(got), learned)
+	}
+
+	// Same profile path → stable; different base names are distinguishable.
+	if again := PagesPath(outside); again != got {
+		t.Errorf("PagesPath not stable for the same profile: %q vs %q", again, got)
+	}
+	if other := PagesPath(filepath.Join(t.TempDir(), "q.json")); other == got {
+		t.Error("different profiles must not share a learned file")
 	}
 }
 
@@ -573,6 +606,29 @@ func TestParseFlagsErrors(t *testing.T) {
 		{"--read"},             // missing value
 	}
 	for _, c := range cases {
+		if _, err := ParseFlags(c); err == nil {
+			t.Errorf("ParseFlags(%v) should fail", c)
+		}
+	}
+}
+
+// The parent-launched child carries the project-trust re-verification flags;
+// invalid values are rejected and the empty default skips the check.
+func TestParseFlagsProjectTrust(t *testing.T) {
+	f, err := ParseFlags([]string{
+		"--profile=o", "--project-trust", "config", "--project-trust-layer", "workdir", "--", "true",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.ProjectTrust != "config" || f.ProjectTrustLayer != "workdir" {
+		t.Errorf("project-trust flags = %q/%q", f.ProjectTrust, f.ProjectTrustLayer)
+	}
+	for _, c := range [][]string{
+		{"--project-trust", "meh", "--", "true"},
+		{"--project-trust-layer", "other", "--", "true"},
+		{"--project-trust"},
+	} {
 		if _, err := ParseFlags(c); err == nil {
 			t.Errorf("ParseFlags(%v) should fail", c)
 		}
@@ -770,7 +826,7 @@ func TestFilterEnv(t *testing.T) {
 
 	// Inverse of the no-allowlist case: with the default allowlist an
 	// ambient secret that is neither injected nor listed must be stripped
-	// (issue #102 — ambient env leak). HOME/PATH still pass.
+	// ( — ambient env leak). HOME/PATH still pass.
 	got = FilterEnv(environ, DefaultAllowVars(), nil, nil)
 	gotMap = envMap(got)
 	if _, ok := gotMap["AWS_SECRET_ACCESS_KEY"]; ok {
@@ -785,7 +841,7 @@ func TestFilterEnv(t *testing.T) {
 
 // TestDefaultProfileEnvAllowlist asserts the compiled-in (and therefore
 // scaffolded) default profile ships an explicit env allowlist, so the
-// sandbox does not inherit arbitrary ambient variables (issue #102).
+// sandbox does not inherit arbitrary ambient variables.
 func TestDefaultProfileEnvAllowlist(t *testing.T) {
 	p := DefaultProfile()
 	if len(p.Environment.AllowVars) == 0 {
@@ -813,7 +869,7 @@ func TestDefaultProfileEnvAllowlist(t *testing.T) {
 // launch via --allow-env), PLUS the injected HTTP(S)_PROXY/OMAC_* overlay.
 // It asserts the exact resulting child env — operational + auth vars pass,
 // the injected overlay wins over an inherited value, and an ambient secret
-// not on either list is stripped (issue #111 review: no default-CI coverage
+// not on either list is stripped ( review: no default-CI coverage
 // of the merged env, only the e2e build tag).
 func TestFilterEnvMergedLaunchEnv(t *testing.T) {
 	environ := []string{
@@ -861,7 +917,7 @@ func TestFilterEnvMergedLaunchEnv(t *testing.T) {
 // TestDefaultAllowVarsGoldenList pins the exact membership of
 // DefaultAllowVars so future drift (an accidental add or removal) is caught
 // by the test suite rather than silently changing the sandbox's operational
-// minimum (issue #111 review).
+// minimum ( review).
 func TestDefaultAllowVarsGoldenList(t *testing.T) {
 	want := []string{
 		"OMAC_*",
@@ -929,7 +985,7 @@ func TestBaseAllowVarsGoldenList(t *testing.T) {
 
 func TestEffectiveAllowVars(t *testing.T) {
 	// Empty fails closed to the operational minimum — NOT inherit-all
-	// (issue #102/#111). It must equal DefaultAllowVars.
+	//. It must equal DefaultAllowVars.
 	got0 := EffectiveAllowVars(nil)
 	def := DefaultAllowVars()
 	if len(got0) != len(def) {
@@ -948,7 +1004,7 @@ func TestEffectiveAllowVars(t *testing.T) {
 	if got := EffectiveAllowVars([]string{"FOO", "*"}); len(got) != 2 {
 		t.Errorf("EffectiveAllowVars([FOO,*]) = %v, want the list unchanged", got)
 	}
-	// A restrictive list (the tng-default.json / #139 case) gets the FULL
+	// A restrictive list (as shipped in older shipped default profiles) gets the FULL
 	// DefaultAllowVars merged in — base AND convenience — defaults first.
 	got := EffectiveAllowVars([]string{"SKAINET_TOKEN", "TERM"})
 	set := map[string]bool{}

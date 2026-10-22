@@ -1,7 +1,7 @@
 package cli
 
 // The consolidated refusal report and its exit-code priority rule had NO test
-// before issue #174: they were inline in a 769-line runLaunch, reachable only
+// before: they were inline in a 769-line runLaunch, reachable only
 // by launching a harness, so `grep "refusing to start\|ExitSecretRefused"`
 // across every _test.go returned nothing. Extracting renderSkillRefusal as a
 // pure function over (writer, problems) is what makes these assertions possible.

@@ -47,7 +47,7 @@ func TestResolveEmptyFallsBack(t *testing.T) {
 	}
 }
 
-// TestInertCommentsEveryContentLine guards #213: the default marker is
+// TestInertCommentsEveryContentLine guards: the default marker is
 // bound over shell configs, so every line that carries content must be
 // a comment — one uncommented line is one command the login shell runs.
 func TestInertCommentsEveryContentLine(t *testing.T) {
@@ -83,7 +83,7 @@ func TestInertIsIdempotentAndPreservesShape(t *testing.T) {
 	}
 }
 
-// TestInertNeutralizesHostileOverride pins the scope note in #213:
+// TestInertNeutralizesHostileOverride pins the denial.marker_file scope:
 // denial.marker_file is profile-configurable, so a profile author must
 // not be able to place a command into a file the sandboxed process
 // executes.

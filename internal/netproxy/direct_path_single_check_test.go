@@ -24,7 +24,7 @@ func (p *countingPrompter) Prompt(ctx context.Context, host string, port int) Pr
 // (DNS resolve + interactive prompt + audit log via f.log) runs exactly
 // ONCE per client connection on the direct dial path.
 //
-// The PR #112 refactor has the server call filter.Check (discarding the
+// The PR refactor has the server call filter.Check (discarding the
 // resolved addrs) and then directDialer.DialTunnel call filter.Check a
 // second time to obtain them. Because Check is not side-effect free, on
 // the default (direct) path that means: double DNS resolution, double

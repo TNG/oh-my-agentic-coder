@@ -34,7 +34,7 @@ func stageDoctorNpmrc(t *testing.T, npmrc, profileJSON string) string {
 	return outBuf.String()
 }
 
-// TestDoctorRegistryConfigWarnsOnInvisibleMapping is the #241 shape: a scope
+// TestDoctorRegistryConfigWarnsOnInvisibleMapping is the shape: a scope
 // mapped to a private registry that the sandbox cannot read.
 func TestDoctorRegistryConfigWarnsOnInvisibleMapping(t *testing.T) {
 	out := stageDoctorNpmrc(t,

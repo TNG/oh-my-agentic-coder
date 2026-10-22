@@ -112,8 +112,8 @@ type SandboxConfig struct {
 
 // allHarnesses returns the harnesses eligible on this host. codex is
 // excluded on darwin — its Rust HTTP client is incompatible with the
-// macOS Seatbelt sandbox; `omac start codex` on macOS fails loud (see
-// issue #48). Running the e2e with --no-sandbox would disable the entire
+// macOS Seatbelt sandbox; `omac start codex` on macOS fails loud.
+// Running the e2e with --no-sandbox would disable the entire
 // omac sandbox, leaving nothing to assert against.
 //
 // claude-code is excluded when E2E_SKIP_CLAUDE_CODE=1 — it is the only
@@ -134,7 +134,7 @@ func allHarnesses() []harnessConfig {
 		// codex and codewhale are excluded on darwin — both are Rust CLIs
 		// whose HTTP clients are (codex: confirmed; codewhale: by analogy,
 		// unverified — see codewhaleConfig) incompatible with the macOS
-		// Seatbelt sandbox. See issue #48.
+		// Seatbelt sandbox.
 		out := all[:0]
 		for _, h := range all {
 			if h.Name != "codex" && h.Name != "codewhale" {
@@ -339,8 +339,7 @@ func claudeCodeConfig() harnessConfig {
 				// (nested sandbox-exec/sandbox-runtime on macOS, bubblewrap
 				// on Linux). Under omac that inner layer is redundant —
 				// omac's sandbox is the boundary these tests exercise — and
-				// its macOS machinery has its own rough edges
-				// (anthropics/claude-code #73468, #91676). Keep it off so
+				// its macOS machinery has its own rough edges. Keep it off so
 				// the legs fail for omac reasons, not claude's inner layer.
 				"sandbox": map[string]any{
 					"enabled": false,
@@ -511,7 +510,7 @@ http_headers = { "X-User-Agent" = "Codex", "X-Separate-Reasoning" = "1" }
 //
 // completions, not responses: the gateway's /responses route has proven
 // unreliable for these runs (whole-route 500 on DeepSeek-V4.1-Flash, converter
-// regressions on GLM-5.2 — issue #181), and it is the only wire the two
+// regressions on GLM-5.2), and it is the only wire the two
 // failing harnesses shared. chat/completions is probed on every run and has
 // been the stable route.
 //
@@ -732,7 +731,7 @@ func piConfig() harnessConfig {
 //
 // macOS: excluded from allHarnesses() by analogy with codex — CodeWhale is
 // Rust with its own HTTP client, the same class that makes codex's client
-// disconnect mid-stream under macOS Seatbelt (issue #48). This is a
+// disconnect mid-stream under macOS Seatbelt. This is a
 // precaution, NOT a verified CodeWhale failure; re-test on macOS and drop the
 // exclusion (here, in expectedHarnessNames, and in e2e.yml) if it works.
 //

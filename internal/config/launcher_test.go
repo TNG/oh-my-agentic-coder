@@ -112,11 +112,11 @@ func TestValidateSandboxSuggestsRenameWhenProfileExists(t *testing.T) {
 	out := err.Error()
 	for _, want := range []string{
 		`"tng-default"`,
-		"Profiles defined for this layer: tng-default, work",
+		"Profiles defined for this layer: default, tng-default, work",
 		"- Keep using your previous one by renaming the field:",
 		`sandbox:`,
 		`profile_name: "tng-default"`,
-		"- Or use one of the other profiles defined for this layer: work",
+		"- Or use one of the other profiles defined for this layer: default, work",
 		"- Or remove the line to fall back to this layer's default.json.",
 		"docs/configuration.md",
 	} {
@@ -162,7 +162,7 @@ func TestListProfileNames(t *testing.T) {
 	writeFile(t, filepath.Join(dir, "a.pages.json"), "{}")
 	writeFile(t, filepath.Join(dir, "notjson.yaml"), "{}")
 
-	if got, want := listProfileNames(dir), []string{"a", "work"}; !slices.Equal(got, want) {
+	if got, want := listProfileNames(dir), []string{"a", "default", "work"}; !slices.Equal(got, want) {
 		t.Errorf("listProfileNames = %v; want %v", got, want)
 	}
 	if got := listProfileNames(""); got != nil {
@@ -203,8 +203,8 @@ func TestValidateSandboxRejectsProfilesPresent(t *testing.T) {
 }
 
 // A launcher config that still carries a legacy field fails both layers'
-// loaders with the layer-appropriate hint, including the (soon) renamed-hint
-// shape.
+// loaders with the layer-appropriate hint, including the rename hint that
+// turns default_profile: <name> into profile_name: <name>.
 func TestResolveSandboxProfileLegacyDefaultProfileError(t *testing.T) {
 	isolateHome(t)
 	globalDir := filepath.Join(os.Getenv("HOME"), ".config", "omac", "sandbox-profiles")
@@ -375,8 +375,16 @@ func TestExplicitProfileSelectionContainment(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: %v", tc.name, err)
 		}
-		if sel.Path != tc.path || sel.Layer != tc.layer {
-			t.Errorf("%s: sel = %+v; want path %q layer %q", tc.name, sel, tc.path, tc.layer)
+		// The selection returns the resolved path, so compare against the
+		// resolved spelling too: on macOS the temp-dir tree is a symlinked
+		// ancestor (/var -> /private/var) that realpaths out of the
+		// written form.
+		want, werr := filepath.EvalSymlinks(tc.path)
+		if werr != nil {
+			t.Fatalf("%s: %v", tc.name, werr)
+		}
+		if sel.Path != want || sel.Layer != tc.layer {
+			t.Errorf("%s: sel = %+v; want path %q layer %q", tc.name, sel, want, tc.layer)
 		}
 	}
 
@@ -414,8 +422,11 @@ func TestExplicitProfileSelectionRelativeAnchorsWorkdir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ExplicitProfileSelection: %v", err)
 	}
-	if sel.Path != local || sel.Layer != "workdir" {
-		t.Errorf("selection = %+v; want path %q layer workdir", sel, local)
+	if want, werr := filepath.EvalSymlinks(local); werr != nil || sel.Path != want {
+		t.Errorf("selection = %+v; want the resolved form of %q", sel, local)
+	}
+	if sel.Layer != "workdir" {
+		t.Errorf("selection layer = %q; want workdir", sel.Layer)
 	}
 
 	// A relative path needs a workdir to anchor on.
@@ -441,5 +452,33 @@ func TestExplicitProfileSelectionSymlinkIsError(t *testing.T) {
 func TestProjectLauncherConfigPathIsOmacDir(t *testing.T) {
 	if got, want := ProjectLauncherConfigPath("/w"), filepath.Join("/w", ".omac", "config.yaml"); got != want {
 		t.Errorf("ProjectLauncherConfigPath = %q; want %q", got, want)
+	}
+}
+
+// A --profile-path whose leaf is a regular file must not reach outside the
+// layer through a symlinked intermediate directory: the enforced profile
+// would live outside .omac where the session can read and write it. The
+// selection resolves the path and checks containment of the RESOLVED
+// location, so containment is judged on the real tree, not the spelling.
+func TestExplicitProfileSelectionSymlinkedIntermediateIsRefused(t *testing.T) {
+	isolateHome(t)
+	workdir := filepath.Join(t.TempDir(), "repo")
+	if err := os.MkdirAll(filepath.Join(workdir, ".omac"), 0o707); err != nil {
+		t.Fatal(err)
+	}
+	teamProfiles := filepath.Join(t.TempDir(), "team-profiles")
+	writeFile(t, filepath.Join(teamProfiles, "shared.json"), `{}`)
+
+	shared := filepath.Join(workdir, ".omac", "shared")
+	realPath := filepath.Join(teamProfiles, "shared.json")
+	if err := os.Symlink(teamProfiles, shared); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	if _, err := ExplicitProfileSelection(workdir, filepath.Join(shared, "shared.json")); err == nil {
+		t.Fatal("--profile-path through a symlinked intermediate directory outside .omac was accepted")
+	}
+	if _, err := ExplicitProfileSelection(workdir, realPath); err == nil {
+		t.Fatal("the same host path passed explicitly was accepted")
 	}
 }

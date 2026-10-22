@@ -123,7 +123,7 @@ type Filesystem struct {
 	// This exists because a scope→registry mapping is load-bearing
 	// *configuration* that happens to live in the same file as a
 	// credential. Without it, a scoped package resolves against the
-	// public registry and 404s (see #150, #241). Values:
+	// public registry and 404s (see). Values:
 	//   - "npm": derive from ~/.npmrc, inject NPM_CONFIG_USERCONFIG.
 	//
 	// Unset means the historical behavior: the file stays fully masked.

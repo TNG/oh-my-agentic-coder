@@ -81,5 +81,13 @@ Flags (list flags are repeatable; they merge additively onto the profile):
   --allow-env <name>         pass an environment variable into the sandbox for
                              this run (adds to the profile's allow_vars)
   --block-net                block all network access (overrides profile)
-  --workdir-access <level>   none|read|write|readwrite (replaces profile value)`)
+  --workdir-access <level>   none|read|write|readwrite (replaces profile value)
+
+Parent-only flags (set by omac start/omac serve; direct runs leave them
+unset and skip the project-content re-verification):
+  --project-trust <config|explicit>     re-verify the project-local sandbox
+                                        content against the host-side
+                                        approval pins before loading it
+  --project-trust-layer <layer>         the profile layer the parent resolved
+                                        (workdir|global|builtin)`)
 }

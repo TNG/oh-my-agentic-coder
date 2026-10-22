@@ -382,7 +382,7 @@ func runSecurityAudit(t *testing.T, h harnessConfig) {
 		// enforce the negative properties, so we can't assert they hold.
 		// But we do assert the audit still RAN to completion and document
 		// the resulting exposure surface — so the risk is recorded instead
-		// of silently excluded (issue #66).
+		// of silently excluded.
 		assertNoSandboxAuditReported(t, stdout, spec)
 	}
 
@@ -1379,7 +1379,7 @@ func assertNetworkReachable(t *testing.T, output, marker string) {
 // surface for these harnesses — it asserts the audit actually ran to
 // completion and logs an explicit per-property exposure table. A no-sandbox
 // run that produces no audit output now fails loudly rather than passing
-// green with nothing checked (issue #66).
+// green with nothing checked.
 func assertNoSandboxAuditReported(t *testing.T, output string, spec AllowanceSpec) {
 	t.Helper()
 	t.Logf("--no-sandbox harness: negative properties are NOT enforced by omac; documenting exposure surface:")
@@ -1513,7 +1513,7 @@ func writeSandboxProfile(t *testing.T, home string, h harnessConfig, spec *Allow
 	} else if h.EnvVarsForAllow != nil {
 		// Non-audit path (echo-rest LLM leg, launch/serve probes): the
 		// compiled-in DefaultAllowVars deliberately omits harness
-		// provider-auth vars (#111), so append this harness's auth
+		// provider-auth vars, so append this harness's auth
 		// allow-list. Without it the sandbox strips the token an env-auth
 		// harness reads from the process env (codex/copilot →
 		// "Missing SKAINET_TOKEN" / "No authentication found"); file-auth

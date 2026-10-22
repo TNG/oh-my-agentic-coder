@@ -32,8 +32,7 @@ func TestWrapUnavailableOnlyHintsBackendFailures(t *testing.T) {
 // TestWrapUnavailableHintsClassifiedReadErrors covers the read path, whose
 // errors no longer carry the raw backend text IsUnavailable sniffs for — they
 // carry the ErrUnavailable sentinel instead (see GetScoped). Without this the
-// hint would silently stop appearing on the launch path, which is the
-// regression issue #174 called Failure 4.
+// hint would silently stop appearing on the launch path.
 func TestWrapUnavailableHintsClassifiedReadErrors(t *testing.T) {
 	readErr := fmt.Errorf("%w: %w: %v", ErrNotFound, ErrUnavailable, errors.New("dbus: no session bus"))
 	got := WrapUnavailable(readErr, osinfo.Linux)

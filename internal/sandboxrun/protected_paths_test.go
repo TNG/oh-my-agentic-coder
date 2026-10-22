@@ -56,7 +56,7 @@ func TestProtectedPathSetOmacDirSurvivesOverride(t *testing.T) {
 func TestUnrestrictedProtectedPathSetKeepsOmac(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	workdir := t.TempDir()
-	set := UnrestrictedProtectedPathSet(workdir)
+	set := UnrestrictedProtectedPathSet()
 	if rule, ok := set.IsProtected(workdir + "/.omac/default.json"); !ok || rule != "omac" {
 		t.Errorf("learn-mode set must keep .omac protected, got (%q, %v)", rule, ok)
 	}

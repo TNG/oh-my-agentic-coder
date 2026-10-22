@@ -15,6 +15,7 @@ import (
 	"sync"
 
 	"github.com/TNG/oh-my-agentic-coder/internal/netproxy"
+	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
 )
 
 // learnedSchema is the only supported schema version.
@@ -43,40 +44,7 @@ type LearnedPolicy struct {
 	mu      sync.RWMutex
 	path    string
 	entries []LearnedEntry
-}
-
-// EnsureLearnedPolicyFile creates an empty learned-policy store at path if
-// it is missing, so callers can bind or grant it before any decision has
-// been recorded. An existing file is left untouched.
-func EnsureLearnedPolicyFile(path string) error {
-	if path == "" {
-		return nil
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return fmt.Errorf("create learned policy dir: %w", err)
-	}
-	data, err := json.MarshalIndent(learnedFile{Schema: learnedSchema, Entries: []LearnedEntry{}}, "", "  ")
-	if err != nil {
-		return err
-	}
-	data = append(data, '\n')
-	// O_EXCL so a concurrent launch's first permanent decision can't be
-	// clobbered by this empty store.
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-	if err != nil {
-		if os.IsExist(err) {
-			return nil
-		}
-		return fmt.Errorf("create learned policy %s: %w", path, err)
-	}
-	if _, err := f.Write(data); err != nil {
-		f.Close()
-		return fmt.Errorf("create learned policy %s: %w", path, err)
-	}
-	return f.Close()
-}
-
-// LoadLearnedPolicy reads the file at path (missing file = empty store).
+} // LoadLearnedPolicy reads the file at path (missing file = empty store).
 func LoadLearnedPolicy(path string) (*LearnedPolicy, error) {
 	lp := &LearnedPolicy{path: path}
 	data, err := os.ReadFile(path)
@@ -157,31 +125,13 @@ func (lp *LearnedPolicy) saveLocked() error {
 	if lp.path == "" {
 		return nil // in-memory only
 	}
-	if err := os.MkdirAll(filepath.Dir(lp.path), 0o755); err != nil {
-		return fmt.Errorf("create learned policy dir: %w", err)
-	}
 	data, err := json.MarshalIndent(learnedFile{Schema: learnedSchema, Entries: lp.entries}, "", "  ")
 	if err != nil {
 		return err
 	}
 	data = append(data, '\n')
-	tmp, err := os.CreateTemp(filepath.Dir(lp.path), ".learned-*")
-	if err != nil {
-		return err
+	if err := os.MkdirAll(filepath.Dir(lp.path), 0o755); err != nil {
+		return fmt.Errorf("create learned policy dir: %w", err)
 	}
-	tmpName := tmp.Name()
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		os.Remove(tmpName)
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmpName)
-		return err
-	}
-	if err := os.Rename(tmpName, lp.path); err != nil {
-		os.Remove(tmpName)
-		return err
-	}
-	return nil
+	return sandboxprofile.WriteFileAtomic(lp.path, data, 0o600)
 }

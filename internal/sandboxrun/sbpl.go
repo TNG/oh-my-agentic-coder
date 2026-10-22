@@ -110,15 +110,16 @@ func GenerateSBPL(g *Grants) string {
 	b.WriteString("\n")
 
 	// --- Protected-path and keychain denies (after all allows, so last-match-wins blocks both reads and writes) ---
+	//
+	// Note: Seatbelt attributes removing/creating a directory ENTRY to
+	// the writable parent, so no rule on the child path can stop a
+	// session from deleting and replacing a protected directory inside
+	// an agent-writable workdir. That is why project-local sandbox
+	// configuration is pinned host-side instead (config.ProjectSandboxTrust).
 	for _, p := range g.ProtectedPaths {
 		for _, fp := range pathForms(p) {
 			fmt.Fprintf(&b, "(deny file-read* (subpath %s))\n", sbplQuote(fp))
 			fmt.Fprintf(&b, "(deny file-write* (subpath %s))\n", sbplQuote(fp))
-			// Note: Seatbelt attributes removing/creating a directory ENTRY to
-			// the writable parent, so no rule on the child path can stop a
-			// session from deleting and replacing a protected directory inside
-			// an agent-writable workdir. That is why project-local sandbox
-			// configuration is pinned host-side instead (config.ProjectSandboxTrust).
 		}
 	}
 	b.WriteString(sbplNameDenies(g))
@@ -132,14 +133,6 @@ func GenerateSBPL(g *Grants) string {
 	fmt.Fprintf(&b, "(deny file-read* (regex #\"%s\"))\n", sbplKeychainNameRegex)
 	fmt.Fprintf(&b, "(deny file-write* (regex #\"%s\"))\n", sbplKeychainNameRegex)
 	b.WriteString("(allow file-read* (subpath \"/System/Library/Keychains\"))\n")
-
-	// --- Write-protected paths: after the protected denies, since Seatbelt
-	// is last-match-wins. Readable via the read allows above, never writable.
-	for _, p := range g.WriteProtectedPaths {
-		for _, fp := range pathForms(p) {
-			fmt.Fprintf(&b, "(deny file-write* (subpath %s))\n", sbplQuote(fp))
-		}
-	}
 	b.WriteString("\n")
 
 	// --- Devices every process needs ---

@@ -5,7 +5,7 @@
 #
 #   1. TCP loopback ($OMAC_ECHO_BASE = http://127.0.0.1:<port>/echo) —
 #      the transport that works under every sandbox backend, thanks to
-#      --open-port in the launcher profile. NB: the value has no trailing
+#      omac granting --open-port for the echo sidecar. NB: the value has no trailing
 #      slash; callers append "/<route>" themselves.
 #
 #   2. Unix socket ($OMAC_ECHO_SOCKET_BASE = http+unix://...) — the
