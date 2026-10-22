@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -184,15 +185,153 @@ func TestActiveProfileSelectionCLIPathWins(t *testing.T) {
 	if err := os.WriteFile(local, []byte("{}"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	sel, err := activeProfileSelection(workdir, local)
+	sel, err := activeProfileSelection(workdir, local, false, io.Discard)
 	if err != nil {
 		t.Fatalf("activeProfileSelection: %v", err)
 	}
 	if sel.Path != local || sel.Layer != "workdir" {
 		t.Errorf("selection = %+v; want path %q layer local", sel, local)
 	}
-	if _, err := activeProfileSelection(workdir, filepath.Join(t.TempDir(), "evil.json")); err == nil {
+	if _, err := activeProfileSelection(workdir, filepath.Join(t.TempDir(), "evil.json"), false, io.Discard); err == nil {
 		t.Error("a --profile-path outside the trusted dirs must be rejected")
+	}
+}
+
+// A project-local config is used only after one approval: a first use (content
+// that could have been planted in the repo) aborts until
+// --accept-project-config, an approved pin covers the loaded files per file,
+// and a between-session change aborts with the file that changed named.
+func TestActiveProfileSelectionDistrustsChangedProjectConfig(t *testing.T) {
+	isolateHome(t)
+	workdir := t.TempDir()
+	local := filepath.Join(config.LocalConfigDir(workdir), "strict.json")
+	if err := os.MkdirAll(filepath.Dir(local), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(local, []byte(`{"meta":{"name":"strict"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(config.ProjectLauncherConfigPath(workdir), []byte("sandbox:\n  profile_name: strict\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// First use aborts until approved: the content could have been planted.
+	var warn bytes.Buffer
+	_, err := activeProfileSelection(workdir, "", false, &warn)
+	if err == nil {
+		t.Fatal("an unapproved project config must abort the launch")
+	}
+	if !strings.Contains(err.Error(), "not yet approved") ||
+		!strings.Contains(err.Error(), local) ||
+		!strings.Contains(err.Error(), config.ProjectLauncherConfigPath(workdir)) ||
+		!strings.Contains(err.Error(), "--accept-project-config") {
+		t.Errorf("abort error should name the files and the approval flag, got: %v", err)
+	}
+
+	// The approval pins the loaded files and the local selection runs.
+	sel, err := activeProfileSelection(workdir, "", true, io.Discard)
+	if err != nil {
+		t.Fatalf("approved first use: %v", err)
+	}
+	if sel.Layer != "workdir" {
+		t.Fatalf("approval should select the local layer, got %+v", sel)
+	}
+
+	// Simulate the agent replacing the profile between sessions.
+	if err := os.WriteFile(local, []byte(`{"meta":{"name":"evil"},"network":{"mode":"open"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err = activeProfileSelection(workdir, "", false, &warn)
+	if err == nil {
+		t.Fatal("a changed project config must abort the launch, not fall back")
+	}
+	if !strings.Contains(err.Error(), "changed since it was approved") ||
+		!strings.Contains(err.Error(), local) ||
+		strings.Contains(err.Error(), config.ProjectLauncherConfigPath(workdir)) ||
+		!strings.Contains(err.Error(), "--accept-project-config") {
+		t.Errorf("abort error should name the changed file only and the re-approval flag, got: %v", err)
+	}
+
+	// Explicit re-approval trusts the new content again.
+	sel, err = activeProfileSelection(workdir, "", true, io.Discard)
+	if err != nil {
+		t.Fatalf("re-approve: %v", err)
+	}
+	if sel.Layer != "workdir" || sel.Path != local {
+		t.Errorf("re-approval should restore the local selection, got %+v", sel)
+	}
+	sel, err = activeProfileSelection(workdir, "", false, io.Discard)
+	if err != nil || sel.Layer != "workdir" {
+		t.Errorf("after re-approval the local layer must be trusted: %+v (%v)", sel, err)
+	}
+}
+
+// --profile-path into <workdir>/.omac goes through the same trust store, but
+// the typed path is its own approval: the first use pins the profile, a
+// between-session change aborts, and --accept-project-config re-approves. The
+// bypassed config.yaml neither gates an explicit launch nor inherits the
+// approval. A global-layer path is exempt — ~/.config/omac is the
+// non-overridable host dir re-read on every launch.
+func TestActiveProfileSelectionExplicitPathSharesThePin(t *testing.T) {
+	isolateHome(t)
+	workdir := t.TempDir()
+	local := filepath.Join(config.LocalConfigDir(workdir), "strict.json")
+	if err := os.MkdirAll(filepath.Dir(local), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(local, []byte(`{"meta":{"name":"strict"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	sel, err := activeProfileSelection(workdir, local, false, io.Discard)
+	if err != nil {
+		t.Fatalf("explicit first use: %v", err)
+	}
+	if sel.Path != local {
+		t.Fatalf("selection = %+v; want %q", sel, local)
+	}
+
+	sel, err = activeProfileSelection(workdir, local, false, io.Discard)
+	if err != nil || sel.Path != local {
+		t.Fatalf("unchanged explicit path must still run: %+v (%v)", sel, err)
+	}
+
+	// The agent replaces the profile between the two explicit launches.
+	if err := os.WriteFile(local, []byte(`{"meta":{"name":"evil"},"network":{"mode":"open"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err = activeProfileSelection(workdir, local, false, io.Discard)
+	if err == nil {
+		t.Fatal("a replaced workdir-layer profile must abort the explicit-path launch")
+	}
+	if !strings.Contains(err.Error(), local) || !strings.Contains(err.Error(), "changed since it was approved") {
+		t.Errorf("abort error should name the profile, got: %v", err)
+	}
+	sel, err = activeProfileSelection(workdir, local, true, io.Discard)
+	if err != nil || sel.Path != local {
+		t.Fatalf("re-approval must accept the explicit path again: %+v (%v)", sel, err)
+	}
+
+	// A config planted after the explicit approvals does not gate an explicit
+	// launch (only loaded files are pinned), ...
+	if err := os.WriteFile(config.ProjectLauncherConfigPath(workdir), []byte("sandbox:\n  profile_name: strict\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sel, err = activeProfileSelection(workdir, local, false, io.Discard)
+	if err != nil || sel.Path != local {
+		t.Fatalf("an untouched explicit launch must not be gated by the bypassed config.yaml: %+v (%v)", sel, err)
+	}
+
+	// ... while a global-layer path is exempt outright.
+	global := filepath.Join(os.Getenv("HOME"), ".config", "omac", "sandbox-profiles", "global-strict.json")
+	if err := os.MkdirAll(filepath.Dir(global), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(global, []byte(`{}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := activeProfileSelection(workdir, global, false, io.Discard); err != nil {
+		t.Fatalf("global-layer --profile-path must not be trust-gated: %v", err)
 	}
 }
 

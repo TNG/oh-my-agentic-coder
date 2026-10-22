@@ -25,7 +25,7 @@ const sidebars = {
     {
       type: 'category',
       label: 'Advanced',
-      items: ['advanced/cache', 'advanced/serve-mode', 'advanced/nono'],
+      items: ['advanced/cache', 'advanced/serve-mode'],
     },
     // Reference material you reach for when something is wrong or when you need
     // to know what omac guarantees — after the how-to pages, before contributing.

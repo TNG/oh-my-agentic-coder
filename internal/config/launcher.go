@@ -412,6 +412,12 @@ func ResolveSandboxProfile(workdir string) (ProfileSelection, error) {
 		}
 	}
 
+	return globalSandboxProfile(globalCfg)
+}
+
+// globalSandboxProfile resolves the global selection from an already-loaded
+// global config: profile_name, else sandbox-profiles/default.json, else builtin.
+func globalSandboxProfile(globalCfg LauncherConfig) (ProfileSelection, error) {
 	globalDir, err := sandboxprofile.ProfileDir()
 	if err != nil {
 		return ProfileSelection{}, err
@@ -482,7 +488,8 @@ func ExplicitProfileSelection(workdir, path string) (ProfileSelection, error) {
 		layer = "workdir"
 	default:
 		return ProfileSelection{}, fmt.Errorf("--profile-path %q is outside %s and %s; "+
-			"a profile must live in the global sandbox-profiles directory or the project's .omac directory",
+			"a profile must live in the global sandbox-profiles directory or the project's .omac directory "+
+			"to be protected from agentic edits",
 			path, globalDir, localDir)
 	}
 	if err := checkProfileFile(abs, "--profile-path "+path); err != nil {

@@ -75,13 +75,25 @@ func TestWriteProtectProfilePathsSymlinkPolicy(t *testing.T) {
 	}
 
 	// A named ref resolving to a symlink protects the target (dotfiles
-	// managers symlink ~/.config).
+	// managers symlink ~/.config). Compare canonically: on macOS the temp dir
+	// is spelled /var/... (a symlink to /private/var/...), and the target is
+	// resolved while the pages sibling keeps the granted spelling.
 	got, err := writeProtectProfilePaths("default", link, nil, io.Discard)
 	if err != nil {
 		t.Fatalf("named-ref symlink must resolve, got %v", err)
 	}
-	if !slices.Contains(got, target) {
-		t.Errorf("the symlink target must be protected, got %v", got)
+	resolvedTarget, rerr := filepath.EvalSymlinks(target)
+	if rerr != nil {
+		t.Fatalf("resolve target: %v", rerr)
+	}
+	found := false
+	for _, p := range got {
+		if rp, err := filepath.EvalSymlinks(p); err == nil && rp == resolvedTarget {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("the symlink target (%s) must be protected, got %v", resolvedTarget, got)
 	}
 }
 

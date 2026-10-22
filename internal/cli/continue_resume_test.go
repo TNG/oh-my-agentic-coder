@@ -298,18 +298,20 @@ func TestLaunchCacheInjectsSelectedScope(t *testing.T) {
 }
 
 // TestLaunchCreatesOmacConfigDir: <workdir>/.omac is created by the parent
-// before the sandbox (and its protected-pattern watch) starts — with and
-// without a sandbox, mirroring the unconditional creation policy. The launch
-// ends early via the failed persistent-cache fixture so no facade/listener
-// is needed; the dir creation precedes that point.
+// before anything else, with and without a sandbox. The launch is stopped
+// right after that point deterministically by a global launcher config that
+// still carries a removed setting (sandbox.profiles) — LoadLauncher fails
+// with ExitConfigInvalid, so no facade, listener, cache, or subprocess is
+// involved on any OS.
 func TestLaunchCreatesOmacConfigDir(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
-	if err := os.MkdirAll(filepath.Join(home, ".cache"), 0o700); err != nil {
+	t.Setenv("USERPROFILE", home) // os.UserHomeDir on Windows
+	globalCfg := filepath.Join(home, ".config", "omac", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(globalCfg), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(home, ".cache", "omac"), []byte("not a directory"), 0o600); err != nil {
+	if err := os.WriteFile(globalCfg, []byte("sandbox:\n  profiles:\n    x: {}\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -322,12 +324,11 @@ func TestLaunchCreatesOmacConfigDir(t *testing.T) {
 			t.Fatal("claude harness missing")
 		}
 		code := runLaunch(env, launchOpts{label: "start", harness: harness, innerCmdOverride: "/bin/true", noSandbox: noSandbox})
-		if code != ExitIOError {
-			t.Fatalf("code = %d, want ExitIOError:\n%s", code, stderr())
+		if code != ExitConfigInvalid {
+			t.Fatalf("code = %d, want ExitConfigInvalid:\n%s", code, stderr())
 		}
-		fi, err := os.Stat(filepath.Join(workdir, ".omac"))
-		if err != nil || !fi.IsDir() {
-			t.Fatalf("omac must create <workdir>/.omac on launch (noSandbox=%v): %v", noSandbox, err)
+		if fi, err := os.Stat(filepath.Join(workdir, ".omac")); err != nil || !fi.IsDir() {
+			t.Fatalf("omac must create <workdir>/.omac before the config failure (noSandbox=%v): %v", noSandbox, err)
 		}
 	}
 
