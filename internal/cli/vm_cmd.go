@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/TNG/oh-my-agentic-coder/internal/vm"
@@ -65,7 +67,9 @@ func runVM(args []string, env *Env) int {
 		if op, code = parseVMImage(rest, env); op == nil {
 			return code
 		}
-	// "exec" is reserved for the next PR (run a command against the VM's Docker).
+	case "exec":
+		// exec talks to the VM over ssh only, so it never builds a manager.
+		return runVMExec(rest, env)
 	case "help", "-h", "--help":
 		printVMUsage(env)
 		return ExitOK
@@ -90,6 +94,139 @@ func runVM(args []string, env *Env) int {
 		return vmExitCode(err)
 	}
 	return ExitOK
+}
+
+// resolveVMConn finds the VM's ssh connection: from the OMAC_VM_*
+// variables inside a sandbox, else from the host-side state directory.
+var resolveVMConn = func(*Env) (vm.ConnInfo, error) {
+	root, err := vm.DefaultRoot()
+	if err != nil {
+		return vm.ConnInfo{}, err
+	}
+	return vm.ResolveConn(os.Getenv, vm.NewLayout(root), vm.RealDeps().HostUser)
+}
+
+// runVMExecFn is vm.Exec; tests replace it so no VM is touched.
+var runVMExecFn = vm.Exec
+
+// vmExecArgs is a parsed `omac vm exec` invocation.
+type vmExecArgs struct {
+	cwd     string
+	envs    []string
+	cmd     []string
+	verbose bool
+}
+
+// parseVMExecArgs parses [--cwd <dir>] [--env SPEC]... [--verbose] -- <cmd...>.
+// Without "--", the first non-flag argument starts the command. help is
+// true for -h/--help.
+func parseVMExecArgs(args []string) (a vmExecArgs, help bool, err error) {
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--" {
+			a.cmd = args[i+1:]
+			break
+		}
+		if !strings.HasPrefix(arg, "-") {
+			a.cmd = args[i:]
+			break
+		}
+		name, value, hasValue := strings.Cut(arg, "=")
+		switch name {
+		case "-h", "--help":
+			return a, true, nil
+		case "--verbose":
+			if hasValue {
+				return a, false, errors.New("--verbose takes no value")
+			}
+			a.verbose = true
+			continue
+		case "--cwd", "--env":
+		default:
+			return a, false, fmt.Errorf("unknown flag %q", arg)
+		}
+		if !hasValue {
+			if i+1 >= len(args) {
+				return a, false, fmt.Errorf("%s needs a value", name)
+			}
+			i++
+			value = args[i]
+		}
+		if name == "--cwd" {
+			a.cwd = value
+		} else {
+			a.envs = append(a.envs, value)
+		}
+	}
+	if len(a.cmd) == 0 {
+		return a, false, errors.New("no command given")
+	}
+	return a, false, nil
+}
+
+// runVMExec runs `omac vm exec`: copy the worktree into the VM, run the
+// command there, return its exit code.
+func runVMExec(args []string, env *Env) int {
+	a, help, err := parseVMExecArgs(args)
+	if help {
+		printVMExecUsage(env.Stdout)
+		return ExitOK
+	}
+	if err != nil {
+		return vmExecMisuse(env, err.Error())
+	}
+	envs, err := vm.ResolveEnv(a.envs, os.Getenv)
+	if err != nil {
+		return vmExecMisuse(env, strings.TrimPrefix(err.Error(), "omac vm exec: "))
+	}
+	conn, err := resolveVMConn(env)
+	if err != nil {
+		fmt.Fprintln(env.Stderr, err)
+		if errors.Is(err, vm.ErrNotCreated) {
+			fmt.Fprintln(env.Stderr, "omac vm exec: run `omac vm up` first")
+			return ExitPrerequisiteMissing
+		}
+		return ExitIOError
+	}
+	var logf func(string, ...any)
+	if a.verbose {
+		logf = func(format string, v ...any) { fmt.Fprintf(env.Stderr, format+"\n", v...) }
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	code, err := runVMExecFn(ctx, vm.ExecOpts{
+		Workdir: env.Workdir,
+		Cwd:     a.cwd,
+		Env:     envs,
+		Cmd:     a.cmd,
+		Conn:    conn,
+		Run:     vm.ExecRunner,
+		SSH:     vm.DefaultSSH,
+		Stdin:   env.Stdin,
+		Stdout:  env.Stdout,
+		Stderr:  env.Stderr,
+		Log:     logf,
+	})
+	if err != nil {
+		fmt.Fprintln(env.Stderr, err)
+		return ExitIOError
+	}
+	return code
+}
+
+func vmExecMisuse(env *Env, msg string) int {
+	fmt.Fprintln(env.Stderr, "omac vm exec:", msg)
+	printVMExecUsage(env.Stderr)
+	return ExitMisuse
+}
+
+const vmExecUsage = `  omac vm exec [--cwd <dir>] [--env NAME[=VALUE]]... [--verbose] -- <cmd...>
+                               Copies the worktree into the VM (one way, skipping what git ignores),
+                               runs the command there, in <dir> relative to the worktree if given;
+                               results such as build output stay in the VM and are not copied back.`
+
+func printVMExecUsage(w io.Writer) {
+	fmt.Fprintln(w, "Usage:\n"+vmExecUsage)
 }
 
 func vmNoArgOp(verb string) vmOp {
@@ -181,5 +318,6 @@ Usage:
   omac vm offline              Restart the VM without internet access, the mode sessions need.
   omac vm image add <ref>      Pull an image on the host and load it into the VM's Docker.
   omac vm image list           Print the VM's images, one reference per line.
-  omac vm image rm <ref>       Remove an image from the VM's Docker.`)
+  omac vm image rm <ref>       Remove an image from the VM's Docker.
+`+vmExecUsage)
 }
