@@ -1,0 +1,310 @@
+package cli
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+	"sync"
+	"testing"
+
+	"github.com/TNG/oh-my-agentic-coder/internal/config"
+	"github.com/TNG/oh-my-agentic-coder/internal/sectest"
+	"github.com/TNG/oh-my-agentic-coder/internal/vm"
+)
+
+func TestParseLaunchArgsVM(t *testing.T) {
+	for _, cmd := range []string{"start", "continue"} {
+		opts, code := parseLaunchArgs(cmd, []string{"--vm"}, devnullEnv(t))
+		if code != ExitOK || !opts.vm {
+			t.Errorf("%s --vm: code=%d vm=%v, want ExitOK and true", cmd, code, opts.vm)
+		}
+	}
+	if _, code := parseLaunchArgs("start", []string{"--vm", "--no-sandbox"}, devnullEnv(t)); code != ExitMisuse {
+		t.Errorf("--vm --no-sandbox: code = %d, want ExitMisuse", code)
+	}
+}
+
+func TestVMAttachExitCode(t *testing.T) {
+	cases := []struct {
+		err  error
+		want int
+	}{
+		{fmt.Errorf("x: %w", vm.ErrLimaMissing), ExitPrerequisiteMissing},
+		{vm.ErrNotCreated, ExitPrerequisiteMissing},
+		{vm.ErrNotRunning, ExitPrerequisiteMissing},
+		{vm.ErrOnline, ExitPrerequisiteMissing},
+		{vm.ErrFirewallMissing, ExitPrerequisiteMissing},
+		{errors.New("docker did not answer"), ExitGeneric},
+	}
+	for _, c := range cases {
+		if got := vmAttachExitCode(c.err); got != c.want {
+			t.Errorf("vmAttachExitCode(%v) = %d, want %d", c.err, got, c.want)
+		}
+	}
+}
+
+// fakeVMAttach replaces prepareVMAttach and counts release calls.
+type fakeVMAttach struct {
+	mu       sync.Mutex
+	released int
+}
+
+func (f *fakeVMAttach) release() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.released++
+}
+
+func (f *fakeVMAttach) releases() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.released
+}
+
+func stubVMAttach(t *testing.T, info vm.AttachInfo, err error) *fakeVMAttach {
+	t.Helper()
+	fake := &fakeVMAttach{}
+	orig := prepareVMAttach
+	prepareVMAttach = func(context.Context, *Env) (vm.AttachInfo, func(), error) {
+		if err != nil {
+			return vm.AttachInfo{}, nil, err
+		}
+		return info, fake.release, nil
+	}
+	t.Cleanup(func() { prepareVMAttach = orig })
+	return fake
+}
+
+// vmCaptureFixture configures a "capture" sandbox profile whose command is
+// script, so runLaunch runs end-to-end without a real sandbox backend and the
+// script records what the wiring injected. Sandbox profiles are trusted only
+// from the global config, so the profile goes into the isolated HOME.
+func vmCaptureFixture(t *testing.T, script string) (workdir, capturePath string) {
+	t.Helper()
+	isolateHome(t)
+	shortTmp, err := os.MkdirTemp("/tmp", "omac-cli-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(shortTmp) })
+	t.Setenv("TMPDIR", shortTmp)
+	// Runtime dir (sockets, sidecar logs) outside HOME, as launchCacheCapture does.
+	t.Setenv("XDG_RUNTIME_DIR", shortTmp)
+
+	workdir = t.TempDir()
+	capturePath = filepath.Join(t.TempDir(), "capture")
+	if err := os.WriteFile(capturePath, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(os.Getenv("HOME"), ".config", "omac", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	configText := fmt.Sprintf("sandbox:\n  default_profile: capture\n  profiles:\n    capture:\n      command: [%q, %q, %q, %q]\n",
+		capturePath, "--", "{{inner_cmd}}", "{{inner_args}}")
+	if err := os.WriteFile(configPath, []byte(configText), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return workdir, capturePath
+}
+
+func testAgentKey(t *testing.T) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "agent_key")
+	if err := os.WriteFile(p, []byte("PRIVATE KEY\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// The capture profile is not the native backend, so the grants are skipped
+// with a warning (asserted here to prove the call site); their content is
+// covered by TestInjectVMGrants. The env vars reach the process either way.
+func TestRunLaunchVMWiring(t *testing.T) {
+	sectest.RequireLoopbackListener(t)
+	dump := filepath.Join(t.TempDir(), "dump")
+	script := "#!/bin/sh\n{\n" +
+		"printf 'ARGV:%s\\n' \"$*\"\n" +
+		"for v in DOCKER_HOST DOCKER_CONFIG OMAC_VM_HOST OMAC_VM_SSH_KEY OMAC_VM_SSH_PORT OMAC_VM_USER; do eval \"printf '%s=%s\\n' $v \\\"\\$$v\\\"\"; done\n" +
+		"[ -d \"$DOCKER_CONFIG\" ] && echo DOCKER_CONFIG_IS_DIR\n" +
+		"ls -l \"$OMAC_VM_SSH_KEY\"\n" +
+		"printf 'KEY:'; cat \"$OMAC_VM_SSH_KEY\"\n" +
+		"} >" + dump + "\n"
+	workdir, capturePath := vmCaptureFixture(t, script)
+	env, stderr := launchTestEnv(t, workdir)
+	// claude, not opencode: with opencode this fixture intermittently fails
+	// its HOME cleanup ("directory not empty"), with or without --vm.
+	harness, ok := config.LookupHarness("claude")
+	if !ok {
+		t.Fatal("claude harness missing")
+	}
+	fake := stubVMAttach(t, vm.AttachInfo{DockerPort: 31234, SSHPort: 31022, User: "alice", AgentKeyPath: testAgentKey(t)}, nil)
+
+	code := runLaunch(env, launchOpts{label: "start", harness: harness, vm: true, innerCmdOverride: capturePath})
+	if code != ExitOK {
+		t.Fatalf("runLaunch code = %d, want ExitOK\nstderr:\n%s", code, stderr())
+	}
+	raw, err := os.ReadFile(dump)
+	if err != nil {
+		t.Fatalf("capture dump missing: %v", err)
+	}
+	got := string(raw)
+	for _, want := range []string{
+		"DOCKER_HOST=tcp://127.0.0.1:31234",
+		"OMAC_VM_HOST=127.0.0.1",
+		"OMAC_VM_SSH_PORT=31022",
+		"OMAC_VM_USER=alice",
+		"DOCKER_CONFIG_IS_DIR",
+		"-rw-------",
+		"KEY:PRIVATE KEY",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("dump lacks %q:\n%s", want, got)
+		}
+	}
+	if !strings.Contains(stderr(), "--vm applies only to the native sandbox backend") {
+		t.Errorf("no non-native warning, so injectVMGrants was not called:\n%s", stderr())
+	}
+	if fake.releases() != 1 {
+		t.Errorf("release calls = %d, want 1", fake.releases())
+	}
+}
+
+// The existing launch tests already pin the argv without --vm; this one
+// pins that no VM variable leaks into the environment either.
+func TestRunLaunchWithoutVMAddsNothing(t *testing.T) {
+	sectest.RequireLoopbackListener(t)
+	dump := filepath.Join(t.TempDir(), "dump")
+	script := "#!/bin/sh\nenv >" + dump + "\nprintf 'ARGV:%s\\n' \"$*\" >>" + dump + "\n"
+	workdir, capturePath := vmCaptureFixture(t, script)
+	env, stderr := launchTestEnv(t, workdir)
+	harness, _ := config.LookupHarness("claude")
+	stubVMAttach(t, vm.AttachInfo{}, errors.New("prepareVMAttach must not be called without --vm"))
+
+	if code := runLaunch(env, launchOpts{label: "start", harness: harness, innerCmdOverride: capturePath}); code != ExitOK {
+		t.Fatalf("runLaunch code = %d\nstderr:\n%s", code, stderr())
+	}
+	raw, _ := os.ReadFile(dump)
+	for _, bad := range []string{"OMAC_VM_", "--vm"} {
+		if strings.Contains(string(raw), bad) {
+			t.Errorf("dump contains %q without --vm:\n%s", bad, raw)
+		}
+	}
+}
+
+func TestRunLaunchVMNotRunning(t *testing.T) {
+	sectest.RequireLoopbackListener(t)
+	workdir, capturePath := vmCaptureFixture(t, "#!/bin/sh\ntrue\n")
+	env, stderr := launchTestEnv(t, workdir)
+	harness, _ := config.LookupHarness("claude")
+	stubVMAttach(t, vm.AttachInfo{}, vm.ErrNotRunning)
+
+	code := runLaunch(env, launchOpts{label: "start", harness: harness, vm: true, innerCmdOverride: capturePath})
+	if code != ExitPrerequisiteMissing {
+		t.Fatalf("code = %d, want ExitPrerequisiteMissing", code)
+	}
+	if !strings.Contains(stderr(), "omac vm up") {
+		t.Errorf("stderr lacks the `omac vm up` remedy:\n%s", stderr())
+	}
+}
+
+func TestRunLaunchVMNeedsSandbox(t *testing.T) {
+	isolateHome(t)
+	code := runLaunch(makeEnv(t.TempDir()), launchOpts{label: "start", harness: config.DefaultHarness(), vm: true, noSandbox: true})
+	if code != ExitMisuse {
+		t.Fatalf("code = %d, want ExitMisuse", code)
+	}
+}
+
+func TestVMSandboxEnv(t *testing.T) {
+	scope := t.TempDir()
+	key := testAgentKey(t)
+	// A stale copy is overwritten, never appended to or kept.
+	if err := os.MkdirAll(filepath.Join(scope, "vm"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(scope, "vm", "agent_key"), []byte("OLD OLD OLD OLD\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := vmSandboxEnv(vm.AttachInfo{DockerPort: 31234, SSHPort: 31022, User: "alice", AgentKeyPath: key}, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{
+		"DOCKER_HOST":      "tcp://127.0.0.1:31234",
+		"DOCKER_CONFIG":    filepath.Join(scope, "vm", "docker"),
+		"OMAC_VM_HOST":     "127.0.0.1",
+		"OMAC_VM_SSH_PORT": "31022",
+		"OMAC_VM_SSH_KEY":  filepath.Join(scope, "vm", "agent_key"),
+		"OMAC_VM_USER":     "alice",
+	}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("env = %v\nwant  %v", got, want)
+	}
+	st, err := os.Stat(want["OMAC_VM_SSH_KEY"])
+	if err != nil || st.Mode().Perm() != 0o600 {
+		t.Errorf("key copy: %v mode=%v, want 0600", err, st.Mode().Perm())
+	}
+	if b, _ := os.ReadFile(want["OMAC_VM_SSH_KEY"]); string(b) != "PRIVATE KEY\n" {
+		t.Errorf("key copy content = %q", b)
+	}
+	for _, d := range []string{filepath.Join(scope, "vm"), want["DOCKER_CONFIG"]} {
+		if st, err := os.Stat(d); err != nil || !st.IsDir() || st.Mode().Perm() != 0o700 {
+			t.Errorf("%s: %v, want a 0700 dir", d, err)
+		}
+	}
+}
+
+func TestVMSandboxEnvMissingKey(t *testing.T) {
+	if _, err := vmSandboxEnv(vm.AttachInfo{AgentKeyPath: filepath.Join(t.TempDir(), "nope")}, t.TempDir()); err == nil {
+		t.Fatal("vmSandboxEnv succeeded without an agent key")
+	}
+}
+
+func TestInjectVMGrants(t *testing.T) {
+	argv := []string{"omac", "sandbox", "run", "--profile", "default", "--", "opencode"}
+	got := injectVMGrants(devnullEnv(t), argv, vm.AttachInfo{DockerPort: 31234, SSHPort: 31022}, sandboxPlan{Native: true})
+	want := []string{"omac", "sandbox", "run", "--profile", "default",
+		"--open-port", "31234", "--open-port", "31022",
+		"--allow-env", "DOCKER_HOST", "--allow-env", "DOCKER_CONFIG",
+		"--", "opencode"}
+	if !slices.Equal(got, want) {
+		t.Errorf("argv = %q\nwant   %q", got, want)
+	}
+}
+
+func TestInjectVMGrantsNonNativeWarns(t *testing.T) {
+	env, stderr := launchTestEnv(t, t.TempDir())
+	argv := []string{"nono", "run", "--", "opencode"}
+	got := injectVMGrants(env, argv, vm.AttachInfo{DockerPort: 31234, SSHPort: 31022}, sandboxPlan{Native: false})
+	if !slices.Equal(got, argv) {
+		t.Errorf("argv changed on a non-native backend: %q", got)
+	}
+	if !strings.Contains(stderr(), "native sandbox backend") {
+		t.Errorf("no warning: %q", stderr())
+	}
+}
+
+func TestServeVMWiring(t *testing.T) {
+	p, ok := parseServeArgs([]string{"--vm"}, devnullEnv(t))
+	if !ok || !p.vm {
+		t.Fatalf("parseServeArgs(--vm): ok=%v vm=%v", ok, p.vm)
+	}
+	for _, other := range []string{"--no-sandbox", "--no-inner"} {
+		if _, ok := parseServeArgs([]string{"--vm", other}, devnullEnv(t)); ok {
+			t.Errorf("parseServeArgs(--vm %s) accepted", other)
+		}
+	}
+	srv := &serveServer{env: makeEnv(t.TempDir()), vmEnv: map[string]string{"DOCKER_HOST": "tcp://127.0.0.1:31234", "OMAC_VM_USER": "alice"}}
+	env := srv.baseEnv()
+	if env["DOCKER_HOST"] != "tcp://127.0.0.1:31234" || env["OMAC_VM_USER"] != "alice" {
+		t.Errorf("baseEnv lacks the VM vars: %v", env)
+	}
+	if _, has := (&serveServer{env: makeEnv(t.TempDir())}).baseEnv()["DOCKER_HOST"]; has {
+		t.Error("baseEnv sets DOCKER_HOST without --vm")
+	}
+}
