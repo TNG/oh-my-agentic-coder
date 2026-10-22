@@ -81,15 +81,27 @@ func GenerateSBPL(g *Grants) string {
 	// confined process can resolve its cwd (getcwd). Granting data reads on
 	// every grant's ancestors instead lets a process list sibling names in
 	// unrelated trees (e.g. sibling tool-cache scopes).
+	// HOME is skipped even when the workdir sits inside it: a data read
+	// there would let `ls ~` list HOME's entry names. The HOME rule below
+	// still grants metadata.
+	var homeForms []string
+	if g.HomeDir != "" {
+		homeForms = pathForms(g.HomeDir)
+	}
+	home := map[string]bool{}
+	for _, p := range homeForms {
+		home[p] = true
+	}
 	for _, p := range ancestorDirs([]string{g.Workdir}) {
+		if home[p] {
+			continue
+		}
 		fmt.Fprintf(&b, "(allow file-read-data (literal %s))\n", sbplQuote(p))
 	}
-	// Bun's realpath opens HOME even when it is not a workdir ancestor.
-	// Literal access exposes entry names, but not their contents.
-	if g.HomeDir != "" {
-		for _, p := range pathForms(g.HomeDir) {
-			fmt.Fprintf(&b, "(allow file-read-data file-read-metadata (literal %s))\n", sbplQuote(p))
-		}
+	// OpenCode v2 resolves HOME even when it is not a workdir ancestor.
+	// Metadata only: a data read would let `ls ~` list HOME's entry names.
+	for _, p := range homeForms {
+		fmt.Fprintf(&b, "(allow file-read-metadata (literal %s))\n", sbplQuote(p))
 	}
 	// DYLD-injection defense: only readable paths may be mapped
 	// executable. (allow file-read* implies open; mapping is separate.)

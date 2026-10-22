@@ -354,8 +354,11 @@ func TestAncestorDirectoryReadRules(t *testing.T) {
 	g.Workdir = "/work/app"
 	g.HomeDir = "/Users/u"
 	p := GenerateSBPL(g)
-	if !strings.Contains(p, `(allow file-read-data file-read-metadata (literal "/Users/u"))`) {
+	if !strings.Contains(p, `(allow file-read-metadata (literal "/Users/u"))`) {
 		t.Error("home directory must be resolvable even outside the workdir's ancestors")
+	}
+	if strings.Contains(p, `(allow file-read-data (literal "/Users/u"))`) {
+		t.Error("home entry names must not be listable outside the workdir's ancestors")
 	}
 	if strings.Contains(p, `(subpath "/Users/u")`) {
 		t.Error("home directory must not receive recursive access")
@@ -368,6 +371,22 @@ func TestAncestorDirectoryReadRules(t *testing.T) {
 	}
 	if strings.Contains(p, `(allow file-read-data (literal "/cfg"))`) {
 		t.Error("non-workdir ancestor must not allow file-read-data")
+	}
+}
+
+func TestAncestorDirectoryReadRulesWorkdirInsideHome(t *testing.T) {
+	g := baseGrants()
+	g.Workdir = "/Users/u/src/app"
+	g.HomeDir = "/Users/u"
+	p := GenerateSBPL(g)
+	if strings.Contains(p, `(allow file-read-data (literal "/Users/u"))`) {
+		t.Error("home entry names must not be listable when the workdir is inside home")
+	}
+	if !strings.Contains(p, `(allow file-read-metadata (literal "/Users/u"))`) {
+		t.Error("home must stay resolvable when the workdir is inside home")
+	}
+	if !strings.Contains(p, `(allow file-read-data (literal "/Users/u/src"))`) {
+		t.Error("other working-directory ancestors must keep file-read-data")
 	}
 }
 

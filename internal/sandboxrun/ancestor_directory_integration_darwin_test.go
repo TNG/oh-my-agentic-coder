@@ -102,7 +102,7 @@ func testIntegrationAncestorDirectoryData(t *testing.T, outsideHome bool) {
 	}{
 		{"chdir", []string{"/bin/sh", "-c", `cd "$HOME"`}, true},
 		{"getcwd", []string{"/bin/sh", "-c", `cd "$HOME" && /bin/pwd -P`}, true},
-		{"list", []string{"/bin/ls", home}, true},
+		{"list", []string{"/bin/ls", home}, false},
 		{"sibling-file", []string{"/bin/cat", filepath.Join(home, "sibling.txt")}, false},
 		{"write-sibling", []string{"/bin/sh", "-c", `printf x > "$HOME/new-file"`}, false},
 		{"protected", []string{"/bin/ls", filepath.Join(home, ".ssh")}, false},
@@ -148,9 +148,6 @@ func testIntegrationAncestorDirectoryData(t *testing.T, outsideHome bool) {
 			}
 			if tc.name == "getcwd" && strings.TrimSpace(string(out)) != canonical {
 				t.Errorf("home resolved to %q, want %q", out, canonical)
-			}
-			if tc.name == "list" && !strings.Contains(string(out), "sibling.txt") {
-				t.Errorf("home entry names should be visible: %q", out)
 			}
 			if tc.name == "workdir-read-write" && string(out) != "inside-workdir" {
 				t.Errorf("allowed read/write did not round-trip: %q", out)
