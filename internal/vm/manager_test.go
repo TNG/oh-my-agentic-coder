@@ -841,6 +841,63 @@ func TestStatusToleratesProbeFailure(t *testing.T) {
 	}
 }
 
+func TestStatusListsWorktreesFromGuest(t *testing.T) {
+	m, lima, ssh, _ := newTestManager(t)
+	ctx := context.Background()
+	mustUp(t, m)
+	// State.Worktrees is no longer written; only the guest registry counts.
+	st := mustState(t, m)
+	st.Worktrees = []string{"/from/host/state"}
+	if err := SaveState(m.Layout.StatePath, st); err != nil {
+		t.Fatal(err)
+	}
+	ssh.setWorktrees("a1b2c3 /Users/alice/proj\n\nd4e5f6 /Users/alice/my proj\n")
+
+	r, err := m.Status(ctx)
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	want := []string{"/Users/alice/proj (a1b2c3)", "/Users/alice/my proj (d4e5f6)"}
+	if !slices.Equal(r.Worktrees, want) {
+		t.Errorf("Worktrees = %q, want %q", r.Worktrees, want)
+	}
+	calls, _ := ssh.snapshot()
+	var listed bool
+	for _, c := range calls {
+		if c.remote == listWorktreesCmd {
+			listed = true
+			if c.target.User != AgentUserName("alice") {
+				t.Errorf("listed worktrees as %q, want the agent user", c.target.User)
+			}
+		}
+	}
+	if !listed {
+		t.Errorf("Status never ran %q; remotes = %q", listWorktreesCmd, ssh.remotes())
+	}
+
+	// An SSH failure only empties the list.
+	ssh.fail = func(remote string) error {
+		if remote == listWorktreesCmd {
+			return errors.New("exit status 255")
+		}
+		return nil
+	}
+	if r, err = m.Status(ctx); err != nil || len(r.Worktrees) != 0 {
+		t.Errorf("Status with failing ssh = %q, %v; want no worktrees, no error", r.Worktrees, err)
+	}
+	ssh.fail = nil
+
+	// A stopped VM is not asked.
+	lima.setStatus(StatusStopped)
+	before := len(ssh.remotes())
+	if r, err = m.Status(ctx); err != nil || len(r.Worktrees) != 0 {
+		t.Errorf("Status of stopped VM = %q, %v; want no worktrees, no error", r.Worktrees, err)
+	}
+	if after := ssh.remotes(); len(after) != before {
+		t.Errorf("Status of stopped VM ran ssh: %q", after[before:])
+	}
+}
+
 func TestImageAddPullsLoadsAndRecords(t *testing.T) {
 	m, _, ssh, _ := newTestManager(t)
 	ctx := context.Background()
@@ -1174,6 +1231,8 @@ func TestStatusReportWrite(t *testing.T) {
 		Created: true, Running: true, Mode: ModeOffline, SSHPort: 42022, DockerPort: 42375,
 		Resources: Resources{CPUs: 8, Memory: "16GiB", Disk: "60GiB"},
 		Images:    []string{"index.docker.io/library/alpine:latest", "index.docker.io/library/busybox:1.36"},
+		Worktrees: []string{"/Users/alice/proj (a1b2c3)"},
+		JDKs:      []string{"temurin-25"},
 		Docker:    &DockerVersion{APIVersion: "1.47", Version: "27.3.1"},
 	}
 	var b bytes.Buffer
@@ -1182,10 +1241,20 @@ func TestStatusReportWrite(t *testing.T) {
 	for _, want := range []string{
 		"status: running", "mode: offline", "ssh: 127.0.0.1:42022", "docker: tcp://127.0.0.1:42375",
 		"images:\n  - index.docker.io/library/alpine:latest\n  - index.docker.io/library/busybox:1.36\n",
+		"worktrees:\n  - /Users/alice/proj (a1b2c3)\n",
+		"jdks:\n  - temurin-25\n",
 		"sessions: none",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("report lacks %q:\n%s", want, out)
+		}
+	}
+
+	b.Reset()
+	StatusReport{Created: true}.Write(&b)
+	for _, want := range []string{"status: stopped", "worktrees: none", "jdks: none"} {
+		if !strings.Contains(b.String(), want) {
+			t.Errorf("stopped report lacks %q:\n%s", want, b.String())
 		}
 	}
 

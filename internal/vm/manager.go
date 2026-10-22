@@ -108,6 +108,9 @@ const (
 	// bootDoneCmd succeeds once Lima finished every provisioning script of
 	// the current boot; `limactl start` waits for the same file.
 	bootDoneCmd = "test -f /run/lima-boot-done"
+	// listWorktreesCmd prints the registry that Exec appends to, one
+	// "<slug> <host path>" line per copied worktree; empty when none.
+	listWorktreesCmd = "cat omac/.worktrees 2>/dev/null || true"
 )
 
 // writeModeCmd sets ModeFile, which the boot script reads on the next start.

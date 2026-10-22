@@ -1,10 +1,12 @@
 package vm
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
 	"strconv"
+	"strings"
 )
 
 // StatusReport is what `omac vm status` shows.
@@ -20,7 +22,8 @@ type StatusReport struct {
 }
 
 // Status reports the VM without changing it. A failed Docker probe only
-// leaves Docker nil.
+// leaves Docker nil. The copied worktrees are read from the guest here and
+// not in report, so the status that an idempotent Up prints needs no SSH.
 func (m *Manager) Status(ctx context.Context) (StatusReport, error) {
 	inst, err := m.instance(ctx)
 	if err != nil {
@@ -30,7 +33,11 @@ func (m *Manager) Status(ctx context.Context) (StatusReport, error) {
 	if err != nil {
 		return StatusReport{}, err
 	}
-	return m.report(ctx, inst, st)
+	r, err := m.report(ctx, inst, st)
+	if err == nil && r.Running && st != nil {
+		r.Worktrees = m.guestWorktrees(ctx, st)
+	}
+	return r, err
 }
 
 func (m *Manager) report(ctx context.Context, inst *Instance, st *State) (StatusReport, error) {
@@ -45,7 +52,7 @@ func (m *Manager) report(ctx context.Context, inst *Instance, st *State) (Status
 	}
 	if st != nil {
 		r.Mode, r.SSHPort, r.DockerPort = st.Mode, st.SSHPort, st.DockerPort
-		r.Images, r.Worktrees, r.JDKs, r.Packages = st.Images, st.Worktrees, st.JDKs, st.Packages
+		r.Images, r.JDKs, r.Packages = st.Images, st.JDKs, st.Packages
 	}
 	if r.Sessions, err = AttachedSessions(m.Layout, m.Deps.Alive); err != nil {
 		return StatusReport{}, err
@@ -56,6 +63,25 @@ func (m *Manager) report(ctx context.Context, inst *Instance, st *State) (Status
 		}
 	}
 	return r, nil
+}
+
+// guestWorktrees reads the registry that Exec keeps in the guest and returns
+// "<host path> (<slug>)" entries. Status is informational, so an SSH failure
+// only yields an empty list.
+func (m *Manager) guestWorktrees(ctx context.Context, st *State) []string {
+	var out bytes.Buffer
+	if err := m.ssh(ctx, m.agentTarget(st), nil, &out, listWorktreesCmd); err != nil {
+		return nil
+	}
+	var entries []string
+	for line := range strings.Lines(out.String()) {
+		slug, path, ok := strings.Cut(strings.TrimRight(line, "\r\n"), " ")
+		if !ok || slug == "" || path == "" {
+			continue
+		}
+		entries = append(entries, path+" ("+slug+")")
+	}
+	return entries
 }
 
 // Write prints the report as "key: value" lines; lists as "  - item".
