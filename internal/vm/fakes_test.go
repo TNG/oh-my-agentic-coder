@@ -132,7 +132,10 @@ type fakeSSH struct {
 	// stickyFirewall keeps the table loaded across boots, simulating a guest
 	// that ignores the online mode.
 	stickyFirewall bool
-	fail           func(remote string) error
+	// provisionFailures makes that many boots leave ProvisionedMarker absent,
+	// as a failed system provisioning script would.
+	provisionFailures int
+	fail              func(remote string) error
 }
 
 func (f *fakeSSH) run(_ context.Context, t SSHTarget, stdin io.Reader, stdout, _ io.Writer, remote string) error {
@@ -170,6 +173,10 @@ func (f *fakeSSH) run(_ context.Context, t SSHTarget, stdin io.Reader, stdout, _
 		if !g.firewall {
 			return errors.New("exit status 1: Error: No such file or directory")
 		}
+	case remote == markerPresentCmd:
+		if !g.provisioned {
+			return errors.New("exit status 1")
+		}
 	case remote == dockerCmd("load"):
 		g.images = append(g.images, in)
 	case strings.HasPrefix(remote, dockerCmd("image ls")):
@@ -196,6 +203,10 @@ func (f *fakeSSH) boot() {
 		mode = f.guest.modeFile
 	}
 	f.guest.firewall = mode == ModeOffline || f.stickyFirewall
+	if f.provisionFailures > 0 {
+		f.provisionFailures--
+		return
+	}
 	f.guest.provisioned = true
 }
 

@@ -101,7 +101,10 @@ func NewManager(l Layout, configPath string, deps Deps, out io.Writer) *Manager 
 
 // Remote commands. The test fakes match these exact strings, so they are
 // built in one place.
-const verifyFirewallCmd = "nft list table inet " + GuardTable
+const (
+	verifyFirewallCmd = "nft list table inet " + GuardTable
+	markerPresentCmd  = "test -f " + ProvisionedMarker
+)
 
 // writeModeCmd sets ModeFile, which the boot script reads on the next start.
 // mode is ModeOnline or ModeOffline, so it needs no quoting.
@@ -130,10 +133,10 @@ func (m *Manager) rootTarget(st *State) SSHTarget {
 	return SSHTarget{User: "root", Port: st.SSHPort, KeyPath: m.Layout.AdminKey, KnownHosts: m.Layout.KnownHosts}
 }
 
-// Up creates, provisions and starts the VM, always ending offline with the
+// Up creates, provisions and starts the VM, ending offline with the
 // firewall verified. With reprovision, an existing VM reinstalls its
-// packages from vm.yaml; state still saying online also reprovisions, as it
-// means an earlier provisioning did not finish.
+// packages from vm.yaml. A VM whose state says online is left online
+// unless its provisioning never finished; see upOnline.
 func (m *Manager) Up(ctx context.Context, reprovision bool) error {
 	if _, err := FindLimactl(m.Deps.LookPath); err != nil {
 		return fmt.Errorf("omac vm: %w", err)
@@ -161,10 +164,7 @@ func (m *Manager) Up(ctx context.Context, reprovision bool) error {
 	case reprovision:
 		return m.reprovision(ctx, st, cfg, running)
 	case st.Mode != ModeOffline:
-		// State stays online until a switch to offline verified the
-		// firewall, so this is an interrupted (or running) provisioning.
-		fmt.Fprintln(m.Out, "omac vm: provisioning was not completed, re-running it")
-		return m.reprovision(ctx, st, cfg, running)
+		return m.upOnline(ctx, st, cfg, running)
 	case !running:
 		fmt.Fprintln(m.Out, "omac vm: starting (offline)…")
 		return m.startOffline(ctx, st)
@@ -241,6 +241,26 @@ func (m *Manager) create(ctx context.Context, st *State, cfg UserConfig, res Res
 }
 
 const retryUpHint = "run `omac vm up` again (or `omac vm up --reprovision`)"
+
+// upOnline handles a VM whose state says online: either the user switched
+// online, or a provisioning was interrupted (state stays online until an
+// offline switch verified the firewall). The guest's ProvisionedMarker tells
+// them apart. Any failure of the check counts as missing, which errs
+// towards re-provisioning rather than leaving apt locked out by an offline
+// switch.
+func (m *Manager) upOnline(ctx context.Context, st *State, cfg UserConfig, running bool) error {
+	if !running {
+		if err := m.start(ctx); err != nil {
+			return err
+		}
+	}
+	if m.ssh(ctx, m.rootTarget(st), nil, nil, markerPresentCmd) == nil {
+		fmt.Fprintln(m.Out, "omac vm: VM is online; run `omac vm offline` before attaching sessions")
+		return nil
+	}
+	fmt.Fprintln(m.Out, "omac vm: provisioning was not completed, re-running it")
+	return m.reprovision(ctx, st, cfg, true)
+}
 
 // startOffline boots a stopped VM whose state says offline. The root-owned
 // mode file already says offline (or is absent, which means offline once

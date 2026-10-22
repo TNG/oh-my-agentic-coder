@@ -178,6 +178,9 @@ func TestUpRecoversFromInterruptedProvisioning(t *testing.T) {
 	}
 
 	delete(lima.failOn, "start")
+	ssh.mu.Lock()
+	ssh.provisionFailures = 1 // the next boot's provisioning fails too
+	ssh.mu.Unlock()
 	lima.reset()
 	var out bytes.Buffer
 	m.Out = &out
@@ -186,8 +189,9 @@ func TestUpRecoversFromInterruptedProvisioning(t *testing.T) {
 		t.Errorf("output = %q, want the re-run notice", out.String())
 	}
 	assertVerbs(t, lima, "list", "start", "stop", "start", "stop", "start")
-	if !slices.Contains(ssh.remotes(), reprovisionCmd(nil)) {
-		t.Errorf("ssh commands %v lack the reprovision command", ssh.remotes())
+	remotes := ssh.remotes()
+	if !slices.Contains(remotes, markerPresentCmd) || !slices.Contains(remotes, reprovisionCmd(nil)) {
+		t.Errorf("ssh commands %v lack the marker check or the reprovision command", remotes)
 	}
 	if _, g := ssh.snapshot(); !g.provisioned || !g.firewall || g.modeFile != ModeOffline {
 		t.Errorf("guest = %+v, want provisioned, offline, firewall loaded", g)
@@ -197,19 +201,72 @@ func TestUpRecoversFromInterruptedProvisioning(t *testing.T) {
 	}
 }
 
-func TestUpRerunsProvisioningWhenRunningOnline(t *testing.T) {
+func TestUpRerunsProvisioningWhenRunningUnprovisioned(t *testing.T) {
 	m, lima, ssh, probe := newTestManager(t)
+	ssh.provisionFailures = 1
 	probe.setErr(errors.New("connection refused")) // Docker never comes up
 	if err := m.Up(context.Background(), false); err == nil || !strings.Contains(err.Error(), "omac vm up --reprovision") {
 		t.Fatalf("Up = %v, want the retry hint", err)
+	}
+	if _, g := ssh.snapshot(); g.provisioned || lima.status() != StatusRunning {
+		t.Fatalf("setup: guest %+v, status %q; want running and unprovisioned", g, lima.status())
 	}
 	probe.setErr(nil)
 	lima.reset()
 
 	mustUp(t, m)
 	assertVerbs(t, lima, "list", "stop", "start", "stop", "start")
-	if _, g := ssh.snapshot(); !g.firewall || g.modeFile != ModeOffline {
-		t.Errorf("guest = %+v, want offline with firewall", g)
+	if !slices.Contains(ssh.remotes(), reprovisionCmd(nil)) {
+		t.Errorf("ssh commands %v lack the reprovision command", ssh.remotes())
+	}
+	if _, g := ssh.snapshot(); !g.provisioned || !g.firewall || g.modeFile != ModeOffline {
+		t.Errorf("guest = %+v, want provisioned, offline with firewall", g)
+	}
+}
+
+func TestUpLeavesDeliberateOnlineAlone(t *testing.T) {
+	m, lima, ssh, _ := newTestManager(t)
+	mustUp(t, m)
+	if err := m.SetMode(context.Background(), ModeOnline); err != nil {
+		t.Fatal(err)
+	}
+	lima.reset()
+	nBefore := len(ssh.remotes())
+	var out bytes.Buffer
+	m.Out = &out
+
+	mustUp(t, m)
+	assertVerbs(t, lima, "list")
+	if got := ssh.remotes()[nBefore:]; !slices.Equal(got, []string{markerPresentCmd}) {
+		t.Errorf("ssh commands = %v, want only the marker check", got)
+	}
+	if !strings.Contains(out.String(), "VM is online; run `omac vm offline`") {
+		t.Errorf("output = %q, want the online hint", out.String())
+	}
+	if st := mustState(t, m); st.Mode != ModeOnline {
+		t.Errorf("mode = %q, want online kept", st.Mode)
+	}
+}
+
+func TestUpStartsStoppedDeliberateOnlineWithoutReprovision(t *testing.T) {
+	m, lima, ssh, _ := newTestManager(t)
+	ctx := context.Background()
+	mustUp(t, m)
+	if err := m.SetMode(ctx, ModeOnline); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Down(ctx); err != nil {
+		t.Fatal(err)
+	}
+	lima.reset()
+
+	mustUp(t, m)
+	assertVerbs(t, lima, "list", "start")
+	if slices.Contains(ssh.remotes(), reprovisionCmd(nil)) {
+		t.Error("deliberate online VM was reprovisioned")
+	}
+	if _, g := ssh.snapshot(); g.modeFile != ModeOnline || g.firewall {
+		t.Errorf("guest = %+v, want online without firewall", g)
 	}
 }
 
