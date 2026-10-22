@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"runtime"
 
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/crane"
 	"github.com/google/go-containerregistry/pkg/name"
+	v1 "github.com/google/go-containerregistry/pkg/v1"
 )
 
 // ImagePuller downloads the image ref into a docker-save style tarball at
@@ -20,8 +22,15 @@ type ImagePuller func(ctx context.Context, ref, tarPath string) error
 //
 // The tarball is written to tarPath+".part" and renamed on success, so
 // tarPath never holds a partial image.
+//
+// Multi-arch images resolve to linux/runtime.GOARCH because the Lima guest
+// runs with the host's architecture; crane would otherwise pick linux/amd64.
 func CranePull(ctx context.Context, ref, tarPath string) error {
-	img, err := crane.Pull(ref, crane.WithContext(ctx), crane.WithAuthFromKeychain(authn.DefaultKeychain))
+	img, err := crane.Pull(ref,
+		crane.WithContext(ctx),
+		crane.WithAuthFromKeychain(authn.DefaultKeychain),
+		crane.WithPlatform(&v1.Platform{OS: "linux", Architecture: runtime.GOARCH}),
+	)
 	if err != nil {
 		return fmt.Errorf("pull %s: %w", ref, err)
 	}
