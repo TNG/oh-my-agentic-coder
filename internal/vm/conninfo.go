@@ -1,7 +1,9 @@
 package vm
 
 import (
+	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strconv"
 )
@@ -52,6 +54,10 @@ func ConnFromEnv(getenv func(string) string) (ConnInfo, bool, error) {
 // ConnFromState builds the target from the host-side state directory.
 func ConnFromState(l Layout, hostUser string) (ConnInfo, error) {
 	st, err := LoadState(l.StatePath)
+	if errors.Is(err, os.ErrPermission) {
+		// The sandbox hides the state dir; only --vm exports a connection.
+		return ConnInfo{}, fmt.Errorf("%w (inside an omac session, start it with --vm so omac vm exec can reach the VM)", err)
+	}
 	if err != nil {
 		return ConnInfo{}, err
 	}

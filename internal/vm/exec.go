@@ -20,6 +20,7 @@ import (
 // basename plus a hash of the full path, so two checkouts with the same
 // name never share a directory. Example: "/Users/a/My Repo" → "my-repo-1a2b3c4d".
 func WorktreeSlug(absWorkdir string) string {
+	absWorkdir = filepath.Clean(absWorkdir)
 	base := strings.Map(func(r rune) rune {
 		switch {
 		case r >= 'A' && r <= 'Z':
@@ -35,6 +36,23 @@ func WorktreeSlug(absWorkdir string) string {
 	}
 	sum := sha256.Sum256([]byte(absWorkdir))
 	return base + "-" + hex.EncodeToString(sum[:4])
+}
+
+// rsyncLiteral makes name match only itself as an rsync pattern. rsync
+// honors backslash escapes only in patterns that contain a wildcard, so a
+// name without one stays as is: "a\b" is literal, "foo[1]" → `foo\[1\]`.
+func rsyncLiteral(name string) string {
+	if !strings.ContainsAny(name, "*?[") {
+		return name
+	}
+	var b strings.Builder
+	for _, r := range name {
+		if strings.ContainsRune(`*?[]\`, r) {
+			b.WriteByte('\\')
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }
 
 // RemoteDir is the copy's directory, relative to the agent user's home.
@@ -68,17 +86,18 @@ func IgnoredPaths(ctx context.Context, run CommandRunner, workdir string) ([]str
 	return paths, true, nil
 }
 
-// WriteExcludeFile writes an rsync exclude list into dir: ".git/" at any
-// depth, then each ignored path anchored at the transfer root.
+// WriteExcludeFile writes an rsync exclude list into dir: ".git" at any
+// depth (a directory, or the file a `git worktree` checkout has), then each
+// ignored path anchored at the transfer root.
 func WriteExcludeFile(dir string, ignored []string) (string, error) {
 	var b strings.Builder
-	b.WriteString(".git/\n")
+	b.WriteString(".git\n")
 	for _, p := range ignored {
 		// rsync reads one pattern per line; a newline in a name cannot be expressed.
 		if strings.ContainsAny(p, "\r\n") {
 			continue
 		}
-		b.WriteString("/" + p + "\n")
+		b.WriteString("/" + rsyncLiteral(p) + "\n")
 	}
 	path := filepath.Join(dir, "exclude")
 	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
@@ -180,6 +199,8 @@ func Exec(ctx context.Context, o ExecOpts) (int, error) {
 	if !filepath.IsAbs(o.Workdir) || strings.ContainsAny(o.Workdir, "\r\n") {
 		return 1, fmt.Errorf("omac vm exec: workdir %q must be an absolute path without newlines", o.Workdir)
 	}
+	// One slug and one registry line per directory, however it was spelled.
+	o.Workdir = filepath.Clean(o.Workdir)
 	slug := WorktreeSlug(o.Workdir)
 	remoteDir := RemoteDir(slug)
 	remote, err := RemoteCommand(remoteDir, o.Cwd, o.Env, o.Cmd)
@@ -192,7 +213,7 @@ func Exec(ctx context.Context, o ExecOpts) (int, error) {
 		return 1, err
 	}
 	if !isRepo {
-		logf("omac vm exec: %s is not a git work tree; copying everything except .git/", o.Workdir)
+		logf("omac vm exec: %s is not a git work tree; copying everything except .git", o.Workdir)
 	}
 	tmp, err := os.MkdirTemp("", "omac-vm-exec-")
 	if err != nil {

@@ -2,7 +2,9 @@ package vm
 
 import (
 	"errors"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -64,6 +66,27 @@ func TestConnFromState(t *testing.T) {
 	want := SSHTarget{User: AgentUserName("Bob"), Port: 31055, KeyPath: l.AgentKey, KnownHosts: l.KnownHosts}
 	if ci.Target != want || ci.FromSandbox {
 		t.Fatalf("got %+v, want %+v host-side", ci, want)
+	}
+}
+
+// Inside a session without --vm the state dir is unreadable; the error
+// should say how to get a working connection.
+func TestConnFromStateUnreadable(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	root := t.TempDir()
+	l := NewLayout(root)
+	if err := SaveState(l.StatePath, &State{SSHPort: 31055}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(root, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(root, 0o700) })
+	_, err := ConnFromState(l, "bob")
+	if !errors.Is(err, os.ErrPermission) || !strings.Contains(err.Error(), "start it with --vm") {
+		t.Fatalf("err = %v, want permission error with --vm hint", err)
 	}
 }
 

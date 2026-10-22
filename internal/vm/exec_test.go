@@ -27,6 +27,9 @@ func TestWorktreeSlug(t *testing.T) {
 	if other := WorktreeSlug("/Users/b/My Repo"); other == s {
 		t.Fatalf("same basename, different path, same slug %q", s)
 	}
+	if slashed := WorktreeSlug("/Users/a/Code/My Repo/"); slashed != s {
+		t.Fatalf("trailing slash changes the slug: %q vs %q", slashed, s)
+	}
 	if RemoteDir(s) != "omac/"+s+"/" {
 		t.Fatalf("RemoteDir = %q", RemoteDir(s))
 	}
@@ -74,7 +77,7 @@ func TestIgnoredPathsUsesGit(t *testing.T) {
 }
 
 func TestWriteExcludeFile(t *testing.T) {
-	p, err := WriteExcludeFile(t.TempDir(), []string{"build/", "x.log"})
+	p, err := WriteExcludeFile(t.TempDir(), []string{"build/", "x.log", "foo[1]", `a*b?\c`, `plain\name`})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,7 +85,11 @@ func TestWriteExcludeFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := ".git/\n/build/\n/x.log\n"; string(raw) != want {
+	// ".git" without a slash also matches the .git FILE of a `git worktree`
+	// checkout; glob characters in names are escaped so they match literally.
+	// rsync treats backslashes as escapes only in patterns with a wildcard,
+	// so a name without one is written unchanged.
+	if want := ".git\n/build/\n/x.log\n/foo\\[1\\]\n/a\\*b\\?\\\\c\n/plain\\name\n"; string(raw) != want {
 		t.Fatalf("exclude file = %q, want %q", raw, want)
 	}
 }
@@ -258,7 +265,7 @@ func TestExecRunsRsyncThenSSH(t *testing.T) {
 	if n := len(f.rsync); n < 2 || f.rsync[n-2] != "/w/My Repo/" || f.rsync[n-1] != "alice@127.0.0.1:omac/"+slug+"/" {
 		t.Fatalf("rsync args = %q", f.rsync)
 	}
-	if f.excludes != ".git/\n/build/\n" {
+	if f.excludes != ".git\n/build/\n" {
 		t.Fatalf("exclude file = %q", f.excludes)
 	}
 	if len(f.remotes) != 2 {
@@ -272,6 +279,20 @@ func TestExecRunsRsyncThenSSH(t *testing.T) {
 	wantCmd, _ := RemoteCommand(RemoteDir(slug), "sub", []string{"A=b c"}, []string{"make", "test"})
 	if f.remotes[1] != wantCmd {
 		t.Fatalf("command = %s, want %s", f.remotes[1], wantCmd)
+	}
+}
+
+func TestExecCleansWorkdir(t *testing.T) {
+	f := &execFakes{}
+	if _, err := Exec(context.Background(), f.opts("/w/repo/", io.Discard)); err != nil {
+		t.Fatal(err)
+	}
+	slug := WorktreeSlug("/w/repo")
+	if !strings.Contains(f.remotes[0], ShellQuote(slug+" /w/repo")) {
+		t.Fatalf("registration = %s, want the cleaned path", f.remotes[0])
+	}
+	if n := len(f.rsync); f.rsync[n-1] != "alice@127.0.0.1:"+RemoteDir(slug) {
+		t.Fatalf("rsync target = %q", f.rsync[n-1])
 	}
 }
 
