@@ -293,6 +293,16 @@ type Environment struct {
 	// operational var (see BaseAllowVars) is permitted but flagged by the
 	// launch path and `omac doctor`, since it is rarely intended.
 	DenyVars []string `json:"deny_vars,omitempty"`
+
+	// Set defines environment values injected into the harness at launch.
+	// They are applied after the allowlist pass-through and before omac's
+	// own operational injections (tool cache, proxy, registry config),
+	// which win on collision; deny_vars still applies last. Values support
+	// ~ and $VAR / ${VAR} expansion from the supervisor's environment.
+	// Names on the always-stripped blocklist are dropped (with a warning)
+	// rather than injected. Prefer allow_vars when the value is a secret:
+	// it lives in this file, and a project-layer profile is committable.
+	Set map[string]string `json:"set,omitempty"`
 }
 
 // Parse decodes and validates a profile, rejecting unknown fields.
@@ -397,6 +407,11 @@ func (p *Profile) Validate() error {
 	for _, v := range p.Environment.DenyVars {
 		if strings.TrimSpace(v) == "" {
 			return fmt.Errorf("sandbox profile: environment.deny_vars contains an empty entry")
+		}
+	}
+	for name := range p.Environment.Set {
+		if !validEnvName(name) {
+			return fmt.Errorf("sandbox profile: environment.set key %q is not a valid environment variable name", name)
 		}
 	}
 	for _, d := range p.Filesystem.Deny {

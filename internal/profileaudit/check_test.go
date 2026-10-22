@@ -449,3 +449,34 @@ func TestCheck_NetworkTableDriven(t *testing.T) {
 		})
 	}
 }
+
+// environment.set: a blocklisted name can never take effect (HIGH), a
+// secret-looking name puts its value in a committable file (MEDIUM), and a
+// clean non-secret entry is silent.
+func TestCheck_EnvironmentSet(t *testing.T) {
+	p := cleanProfile()
+	p.Environment.Set = map[string]string{
+		"LD_PRELOAD":            "/tmp/evil.so",
+		"NPM_CONFIG_USERCONFIG": "~/.config/opencode/tng-npmrc",
+		"MY_API_TOKEN":          "secret-value",
+	}
+	findings := Check(p)
+
+	byValue := map[string]Finding{}
+	for _, f := range findings {
+		if f.Field == "environment.set" {
+			byValue[f.Value] = f
+		}
+	}
+	high, ok := byValue["LD_PRELOAD"]
+	if !ok || high.Severity != SeverityHigh {
+		t.Errorf("a blocklisted set name must be HIGH; got %+v (all: %+v)", high, findings)
+	}
+	med, ok := byValue["MY_API_TOKEN"]
+	if !ok || med.Severity != SeverityMedium {
+		t.Errorf("a secret-looking set name must be MEDIUM; got %+v (all: %+v)", med, findings)
+	}
+	if _, ok := byValue["NPM_CONFIG_USERCONFIG"]; ok {
+		t.Errorf("a clean set name must not be flagged; got %+v", byValue)
+	}
+}

@@ -273,8 +273,31 @@ func buildEnvironmentView(profile *sandboxprofile.Profile, profPath, workdir str
 			break
 		}
 	}
+	// deny_vars is applied last and wins over everything (allowlist, "*",
+	// injected overlay), so render it after the allow entries. environment.set
+	// injects values, so only the names appear here — never the values.
+	// Rendered on every allowlist shape (including empty and "*"), since a
+	// profile can carry deny/set entries with either.
+	tail := func() {
+		for _, v := range profile.Environment.DenyVars {
+			ev.Entries = append(ev.Entries, provEntry{Entry: v, Action: "deny", Source: profSrc})
+		}
+		setNames := make([]string, 0, len(profile.Environment.Set))
+		for name := range profile.Environment.Set {
+			setNames = append(setNames, name)
+		}
+		sort.Strings(setNames)
+		for _, name := range setNames {
+			action := "set"
+			if sandboxprofile.IsDangerousEnvVar(name) {
+				action = "set (stripped)" // blocklist wins: no effect
+			}
+			ev.Entries = append(ev.Entries, provEntry{Entry: name, Action: action, Source: profSrc})
+		}
+	}
 	if wildcard {
 		ev.Entries = append(ev.Entries, provEntry{Entry: "*", Action: "allow", Source: profSrc})
+		tail()
 		return ev
 	}
 	if len(profile.Environment.AllowVars) == 0 {
@@ -283,6 +306,7 @@ func buildEnvironmentView(profile *sandboxprofile.Profile, profPath, workdir str
 		for _, v := range sandboxprofile.DefaultAllowVars() {
 			ev.Entries = append(ev.Entries, provEntry{Entry: v, Action: "allow", Source: "builtin (empty→minimum)"})
 		}
+		tail()
 		return ev
 	}
 	// Restrictive list: the full DefaultAllowVars is granted by default
@@ -299,11 +323,7 @@ func buildEnvironmentView(profile *sandboxprofile.Profile, profPath, workdir str
 		}
 		ev.Entries = append(ev.Entries, provEntry{Entry: v, Action: "allow", Source: profSrc})
 	}
-	// deny_vars is applied last and wins over everything (allowlist, "*",
-	// injected overlay), so render it after the allow entries.
-	for _, v := range profile.Environment.DenyVars {
-		ev.Entries = append(ev.Entries, provEntry{Entry: v, Action: "deny", Source: profSrc})
-	}
+	tail()
 	return ev
 }
 

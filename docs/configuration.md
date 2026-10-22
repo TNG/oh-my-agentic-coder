@@ -117,6 +117,7 @@ sync to avoid confusing diagnostics output.
 | `filesystem.deny` | `string[]` | `[".env", "*.key", "*.pem"]` | Blocks files inside granted directories by name or glob |
 | `network.mode` | `string` | `"filtered"` | `filtered` (prompt for unknown hosts), `blocked` (no outbound TCP; on Linux with kernel enforcement, UDP/ICMP also blocked), `open` (unrestricted) |
 | `environment.allow_vars` | `string[]` | see created file | Env vars passed into the sandbox; everything else is stripped |
+| `environment.set` | `object` | `{}` | Env values omac injects into the harness (`{"NPM_CONFIG_USERCONFIG": "~/.config/tool/npmrc"}`). Supports `~`/`$VAR` expansion. See [Setting an environment value](#setting-an-environment-value) |
 | `filesystem.protected_paths` | `string[]` | `["~/.ssh", "~/.gnupg", ...]` | Paths that remain blocked even if a broader grant would cover them |
 | `filesystem.registry_config` | `string[]` | `[]` | Ecosystems whose package-registry settings are copied into the sandbox without their credentials. Currently `"npm"`. See [Private package registries](#private-package-registries) |
 
@@ -226,6 +227,28 @@ A few things to know:
 - For safety, a few variables that let a program load extra code (`LD_*`, `NODE_OPTIONS`, `PYTHONPATH`, …) are always stripped, even if you add them to `allow_vars`. Run `omac provenance` and look at the `environment` section: the always-stripped variables are the rows with action `deny` and source `blocklist`. To list just those, run `omac provenance | grep blocklist`.
 - An empty `allow_vars` means "operational defaults only", not "pass everything through".
 - Do not use this to pass through secrets (e.g. for skills). See the next section and [Security model](./security.md) for secure ways to do so.
+
+### Setting an environment value
+
+When the *value* is fixed by the project setup rather than by your shell — an npmrc path, a
+feature flag, a provider endpoint — put it in `environment.set`. Uses the same grants file as
+`allow_vars`:
+
+```json
+"environment": { "set": { "NPM_CONFIG_USERCONFIG": "~/.config/tool/npmrc" } }
+```
+
+Values support `~` and `$VAR` / `${VAR}` expansion, evaluated in your shell's environment. omac
+injects them into the harness; `deny_vars` can still strip one afterwards. A name that omac itself
+injects (the package-cache redirects `NPM_CONFIG_CACHE`, `PIP_CACHE_DIR`, …, or the proxy variables)
+keeps omac's value, so a profile cannot break cache isolation or proxy routing by accident.
+
+Prefer `allow_vars` when the value is a secret: `set` stores the value in the profile file, and a
+project-layer profile (`.omac/*.json`) is committable. `omac doctor` and `omac provenance` report
+what a profile sets — names only, never values.
+
+The always-stripped list (`LD_*`, `NODE_OPTIONS`, …) applies here too: setting one of those names has
+no effect, and omac warns at launch and in `omac doctor`.
 
 ### Running an MCP server the harness launches
 
