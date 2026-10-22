@@ -1,0 +1,17 @@
+# omac-vmguard: network boundary of the omac VM in offline mode.
+# Hooks after Docker's own chains (priority filter + 10) and drops every
+# packet that leaves the VM, except loopback and replies to inbound
+# connections such as the forwarded Docker API port.
+table inet omac-vmguard {
+  chain output {
+    type filter hook output priority filter + 10; policy drop;
+    oifname "lo" accept
+    ct state established,related accept
+    counter reject
+  }
+  chain forward {
+    type filter hook forward priority filter + 10; policy drop;
+    ct state established,related accept
+    counter drop
+  }
+}
