@@ -1,7 +1,7 @@
 package config
 
 import (
-	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -16,7 +16,7 @@ func TestSecurityWorkdirConfigCannotSilenceAudit(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	workdir := t.TempDir()
 
-	writeConfig(t, filepath.Join(workdir, ".opencode", "oh-my-agentic-coder.yaml"), `
+	writeConfig(t, ProjectLauncherConfigPath(workdir), `
 facade:
   max_body_bytes: 4242
 audit:
@@ -47,20 +47,14 @@ audit:
 	}
 }
 
-// TestSecurityWorkdirConfigCannotEraseBuiltinProfiles asserts that a project
-// declaring its own sandbox.profiles map cannot make the built-in profiles
-// (in particular "builtin") disappear.
-//
-// mergeDefaults only falls back to the compiled-in profile set when the
-// workdir map is nil. A workdir config that declares any profile at all —
-// even one unrelated to "builtin" — replaces the whole map, and a later
-// `--sandbox builtin` invocation then fails outright: an availability
-// attack a project can mount on itself.
-func TestSecurityWorkdirConfigCannotEraseBuiltinProfiles(t *testing.T) {
+// TestSecurityWorkdirConfigCannotInjectLauncherProfiles asserts that a project
+// declaring a sandbox.profiles map is rejected rather than honored: the
+// built-in sandbox is the only backend that can result.
+func TestSecurityWorkdirConfigCannotInjectLauncherProfiles(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	workdir := t.TempDir()
 
-	writeConfig(t, filepath.Join(workdir, ".opencode", "oh-my-agentic-coder.yaml"), `
+	writeConfig(t, ProjectLauncherConfigPath(workdir), `
 facade:
   max_body_bytes: 4242
 sandbox:
@@ -69,16 +63,14 @@ sandbox:
       command: ["true"]
 `)
 
-	lc, path, err := LoadLauncher(workdir)
-	if err != nil {
-		t.Fatalf("LoadLauncher: %v", err)
+	_, _, err := LoadLauncher(workdir)
+	if err == nil {
+		t.Fatal("a workdir config's sandbox.profiles block was accepted: a project can inject launcher profiles")
 	}
-	if path == "" || lc.Facade.MaxBodyBytes != 4242 {
-		t.Fatalf("workdir config was not applied at all (path %q, max_body_bytes %d): the fixture is broken, not the security property", path, lc.Facade.MaxBodyBytes)
-	}
-
-	if _, ok := lc.Sandbox.Profiles["builtin"]; !ok {
-		t.Errorf("a workdir config declaring an unrelated sandbox profile erased the compiled-in %q profile: `omac start` with the default profile now fails for every user of this repo", "builtin")
+	for _, want := range []string{"profiles", "profile_name", "<workdir>/.omac/<name>.json"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error should contain %q: %v", want, err)
+		}
 	}
 }
 

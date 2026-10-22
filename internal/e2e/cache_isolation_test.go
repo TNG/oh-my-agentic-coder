@@ -246,12 +246,12 @@ func writeCacheTestProfile(t *testing.T, home string, extraRead, extraAllow []st
 // cmd.Dir=workdir (provenance, cache clear) resolve that scope.
 func writeLauncherCacheScope(t *testing.T, workdir, scope string) {
 	t.Helper()
-	cfgDir := filepath.Join(workdir, ".opencode")
+	cfgDir := filepath.Join(workdir, ".omac")
 	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	cfg := "cache:\n  scope: " + scope + "\n"
-	if err := os.WriteFile(filepath.Join(cfgDir, "oh-my-agentic-coder.yaml"), []byte(cfg), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(cfgDir, "config.yaml"), []byte(cfg), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }

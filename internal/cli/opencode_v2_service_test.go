@@ -115,7 +115,7 @@ func TestOpenCodePinDenied(t *testing.T) {
 		plan    sandboxPlan
 		blocked bool
 	}{
-		{"no policy", sandboxPlan{Native: true}, false},
+		{"no policy", sandboxPlan{}, false},
 		{"clean profile", sandboxPlan{PolicyRef: "default", Policy: &sandboxprofile.Profile{}}, false},
 		{"exact XDG_STATE_HOME", sandboxPlan{PolicyRef: "default", Policy: denies("HTTP_PROXY", "XDG_STATE_HOME")}, true},
 		{"exact OPENCODE_CONFIG_DIR", sandboxPlan{PolicyRef: "default", Policy: denies("OPENCODE_CONFIG_DIR")}, true},
@@ -272,20 +272,16 @@ func TestPinOpenCodeV2ServiceSkipsOtherHarness(t *testing.T) {
 	}
 }
 
-// install splices both flags on native plans (allow-env is load-bearing: FilterEnv strips the env otherwise) and nothing on non-native.
+// install splices both flags (allow-env is load-bearing: FilterEnv strips the env otherwise).
 func TestOpenCodeServicePinInstall(t *testing.T) {
 	pin := &openCodeServicePin{Port: 59991, CfgDir: "/tmp/t/opencode-config", StateDir: "/tmp/t/opencode-state"}
 	in := []string{"omac", "sandbox", "run", "--profile", "default", "--", "opencode"}
 
-	native := sandboxPlan{Native: true, PolicyRef: "default"}
+	plan := sandboxPlan{PolicyRef: "default"}
 	want := []string{"omac", "sandbox", "run", "--profile", "default",
 		"--open-port", "59991", "--allow-env", "OPENCODE_CONFIG_DIR", "--", "opencode"}
-	if got := pin.install(in, native); !equalStrings(got, want) {
-		t.Errorf("install(native): got %v, want %v", got, want)
-	}
-
-	if got := pin.install(in, sandboxPlan{Native: false}); !equalStrings(got, in) {
-		t.Errorf("install(non-native) must not splice flags: got %v, want %v", got, in)
+	if got := pin.install(in, plan); !equalStrings(got, want) {
+		t.Errorf("install: got %v, want %v", got, want)
 	}
 }
 

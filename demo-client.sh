@@ -4,16 +4,16 @@
 # transports:
 #
 #   1. TCP loopback ($OMAC_ECHO_BASE = http://127.0.0.1:<port>/echo) —
-#      this is the form that works under nono proxy mode (auto-activated
-#      by tng-sandbox.json's custom_credentials block) thanks to
+#      the transport that works under every sandbox backend, thanks to
 #      --open-port in the launcher profile. NB: the value has no trailing
 #      slash; callers append "/<route>" themselves.
 #
 #   2. Unix socket ($OMAC_ECHO_SOCKET_BASE = http+unix://...) — the
-#      lower-overhead form. Works in --no-sandbox runs and in nono on
-#      Linux. On macOS under proxy mode, Seatbelt's `(deny network*)`
-#      blocks AF_UNIX connect(2), so this path is expected to fail
-#      there; we test it anyway so the failure is visible and explicit.
+#      lower-overhead form. Works in --no-sandbox runs and wherever the
+#      sandbox permits AF_UNIX connect(2). Under a sandbox configuration
+#      whose `(deny network*)` rule blocks AF_UNIX connect(2) this path is
+#      expected to fail; we test it anyway so the failure is visible and
+#      explicit. Prefer the TCP form above.
 set -euo pipefail
 
 echo "=============================================================="
@@ -82,7 +82,7 @@ echo
 if [[ -n "${OMAC_SOCKET:-}" ]]; then
   echo
   echo "############# Unix-socket transport ($OMAC_SOCKET) #############"
-  echo "(expected to fail on macOS under nono proxy mode; works elsewhere)"
+  echo "(expected to fail where the sandbox blocks AF_UNIX connect(2); works elsewhere)"
 
   section "GET /echo/status (unix)"
   try curl -sS --unix-socket "$OMAC_SOCKET" http://x/echo/status

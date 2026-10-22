@@ -9,7 +9,7 @@ import (
 
 func TestProtectedPathSetBaselineMatch(t *testing.T) {
 	prof := &sandboxprofile.Profile{}
-	set := NewProtectedPathSet(prof)
+	set := NewProtectedPathSet(prof, "")
 	if set == nil {
 		t.Fatal("nil set")
 	}
@@ -33,9 +33,37 @@ func TestProtectedPathSetBaselineMatch(t *testing.T) {
 	}
 }
 
+// The facade must report the .omac config dir even when the profile tries to
+// override_deny it, mirroring the non-overridable kernel set.
+func TestProtectedPathSetOmacDirSurvivesOverride(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	workdir := t.TempDir()
+	prof := &sandboxprofile.Profile{
+		Filesystem: sandboxprofile.Filesystem{OverrideDeny: []string{".omac", "~/.config/omac"}},
+	}
+	set := NewProtectedPathSet(prof, workdir)
+	for _, p := range []string{workdir + "/.omac", workdir + "/.omac/config.yaml"} {
+		if rule, ok := set.IsProtected(p); !ok || rule != "omac" {
+			t.Errorf("IsProtected(%q) = (%q, %v); want omac-protected", p, rule, ok)
+		}
+	}
+	if _, ok := set.IsProtected(workdir + "/.omac"); !ok {
+		t.Error(".omac must be reported protected despite override_deny")
+	}
+}
+
+func TestUnrestrictedProtectedPathSetKeepsOmac(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	workdir := t.TempDir()
+	set := UnrestrictedProtectedPathSet(workdir)
+	if rule, ok := set.IsProtected(workdir + "/.omac/default.json"); !ok || rule != "omac" {
+		t.Errorf("learn-mode set must keep .omac protected, got (%q, %v)", rule, ok)
+	}
+}
+
 func TestProtectedPathSetSubpathMatch(t *testing.T) {
 	prof := &sandboxprofile.Profile{}
-	set := NewProtectedPathSet(prof)
+	set := NewProtectedPathSet(prof, "")
 	var sample string
 	for _, e := range set.entries {
 		if len(e) > 0 && e[0] == '/' {
@@ -58,7 +86,7 @@ func TestProtectedPathSetSubpathMatch(t *testing.T) {
 
 func TestProtectedPathSetNoMatch(t *testing.T) {
 	prof := &sandboxprofile.Profile{}
-	set := NewProtectedPathSet(prof)
+	set := NewProtectedPathSet(prof, "")
 	_, ok := set.IsProtected("/tmp/random-file")
 	if ok {
 		t.Error("IsProtected(/tmp/random-file) = true; want false")
@@ -71,7 +99,7 @@ func TestProtectedPathSetProfileDeny(t *testing.T) {
 			Deny: []string{"~/secrets.json"},
 		},
 	}
-	set := NewProtectedPathSet(prof)
+	set := NewProtectedPathSet(prof, "")
 	var found bool
 	for _, e := range set.entries {
 		rule, ok := set.IsProtected(e)
@@ -95,7 +123,7 @@ func TestProtectedPathSetNilSafe(t *testing.T) {
 }
 
 func TestProtectedPathSetAddMidSession(t *testing.T) {
-	set := NewProtectedPathSet(&sandboxprofile.Profile{})
+	set := NewProtectedPathSet(&sandboxprofile.Profile{}, "")
 	if _, ok := set.IsProtected("/workdir/.env"); ok {
 		t.Fatal("IsProtected before Add = true; want false")
 	}

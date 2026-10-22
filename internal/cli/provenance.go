@@ -105,8 +105,9 @@ var provenanceHardDenyHosts = []string{
 
 // buildProvenanceView loads the profile, learned decisions, baseline,
 // and registry, then assembles a provenanceView. profileRef is a path,
-// name, or "" for the default profile.
-func buildProvenanceView(workdir, profileRef string) (*provenanceView, error) {
+// name, or "" for the default profile. lc/cfgPath is the launcher config
+// runProvenance already loaded (it resolves the ref from the same load).
+func buildProvenanceView(workdir, profileRef string, lc config.LauncherConfig, cfgPath string) (*provenanceView, error) {
 	profile, profPath, err := sandboxprofile.Resolve(profileRef, sandboxprofile.WithAnyPath())
 	if err != nil {
 		return nil, err
@@ -129,10 +130,6 @@ func buildProvenanceView(workdir, profileRef string) (*provenanceView, error) {
 	view.Skills = buildSkillsView(workdir)
 
 	// --- Cache (persistent scope this workdir would resolve to) ---
-	lc, cfgPath, err := config.LoadLauncher(workdir)
-	if err != nil {
-		return nil, fmt.Errorf("cache: %w", err)
-	}
 	cacheScope, err := lc.Cache.Resolve()
 	if err != nil {
 		return nil, fmt.Errorf("cache: %w", err)
@@ -184,12 +181,10 @@ func classifyProfilePath(profPath, workdir string) string {
 	if profPath == "" {
 		return "builtin"
 	}
-	if rel, err := filepath.Rel(filepath.Join(workdir, ".opencode"), profPath); err == nil && !strings.HasPrefix(rel, "..") {
-		return "workdir"
-	}
-	home, err := os.UserHomeDir()
-	if err == nil && strings.HasPrefix(profPath, filepath.Join(home, ".config", "omac")) {
-		return "global"
+	if workdir != "" {
+		if rel, err := filepath.Rel(workdir, profPath); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return "workdir"
+		}
 	}
 	return "global"
 }
@@ -250,8 +245,12 @@ func buildFilesystemView(profile *sandboxprofile.Profile, profPath, workdir stri
 	baseline := sandboxprofile.PlatformBaseline()
 	add(baseline.Read, "read", "builtin")
 	add(baseline.Write, "write", "builtin")
-	// Effective protected paths.
-	for _, p := range sandboxprofile.EffectiveProtectedPaths(baseline, profile.Filesystem.OverrideDeny) {
+	// Effective protected paths, plus the omac config dirs that
+	// override_deny cannot remove (see NonOverridableProtectedPaths), so the
+	// view agrees with what the kernel enforces.
+	protected := sandboxprofile.EffectiveProtectedPaths(baseline, profile.Filesystem.OverrideDeny)
+	protected = append(protected, sandboxprofile.NonOverridableProtectedPaths(config.LocalConfigDir(workdir))...)
+	for _, p := range protected {
 		fv.Entries = append(fv.Entries, provEntry{Entry: p, Action: "deny", Source: "builtin"})
 	}
 	return fv
@@ -351,14 +350,14 @@ func writeProvenanceJSON(w io.Writer, v *provenanceView) int {
 // writeProvenanceText renders the view as four tabwriter tables.
 func writeProvenanceText(w io.Writer, v *provenanceView) int {
 	// Network
-	fmt.Fprintf(w, "\nnetwork (profile: %s, mode: %s, prompt: %s, on_unavailable: %s)\n",
-		v.Profile.Name, v.Network.Mode,
+	fmt.Fprintf(w, "\nnetwork (profile: %s [%s], mode: %s, prompt: %s, on_unavailable: %s)\n",
+		v.Profile.Name, v.Profile.Path, v.Network.Mode,
 		onOff(v.Network.PromptOn), v.Network.OnUnavailable)
 	writeProvTable(w, v.Network.Entries)
 
 	// Filesystem
-	fmt.Fprintf(w, "\nfilesystem (profile: %s, workdir.access: %s)\n",
-		v.Profile.Name, v.Filesystem.WorkdirAccess)
+	fmt.Fprintf(w, "\nfilesystem (profile: %s [%s], workdir.access: %s)\n",
+		v.Profile.Name, v.Profile.Path, v.Filesystem.WorkdirAccess)
 	writeProvTable(w, v.Filesystem.Entries)
 
 	// Environment
@@ -424,7 +423,7 @@ func truncateEntry(s string) string {
 func runProvenance(args []string, env *Env) int {
 	fs := flag.NewFlagSet("provenance", flag.ContinueOnError)
 	fs.SetOutput(env.Stderr)
-	profileRef := fs.String("profile", "", "sandbox profile name, path, or builtin (default: default)")
+	profileRef := fs.String("profile", "", "sandbox profile name or path; default resolves like `omac start`")
 	checkMode := fs.Bool("check", false, "Static security lint of the resolved profile.")
 	jsonOut := fs.Bool("json", false, "Emit a JSON object instead of tabular text.")
 	fs.Usage = func() {
@@ -435,11 +434,23 @@ func runProvenance(args []string, env *Env) int {
 		return code
 	}
 
+	// One load serves the profile ref and the cache section; on error it
+	// warns and continues with the built-in defaults (provenance is an
+	// inspection tool).
+	lc, cfgPath, cfgErr := config.LoadLauncher(env.Workdir)
+	if cfgErr != nil {
+		fmt.Fprintf(env.Stderr, "omac provenance: %v — showing the built-in defaults instead.\n", cfgErr)
+	}
+	ref, refErr := profileRefFromConfig(env.Workdir, *profileRef)
+
 	// --check resolves the profile itself and runs the lint; it does
 	// not build the provenance view. Keeps --check independent of the
 	// view-build path and its (registry, learned-policy) dependencies.
 	if *checkMode {
-		profile, _, err := sandboxprofile.Resolve(*profileRef, sandboxprofile.WithAnyPath())
+		if refErr != nil {
+			fmt.Fprintf(env.Stderr, "omac provenance --check: %v — linting the built-in default profile instead.\n", refErr)
+		}
+		profile, _, err := sandboxprofile.Resolve(ref, sandboxprofile.WithAnyPath())
 		if err != nil {
 			fmt.Fprintln(env.Stderr, "omac provenance --check:", err)
 			return ExitConfigInvalid
@@ -451,7 +462,10 @@ func runProvenance(args []string, env *Env) int {
 		return writeCheckText(env.Stdout, findings)
 	}
 
-	view, err := buildProvenanceView(env.Workdir, *profileRef)
+	if refErr != nil {
+		fmt.Fprintf(env.Stderr, "omac provenance: %v — showing the built-in default profile instead.\n", refErr)
+	}
+	view, err := buildProvenanceView(env.Workdir, ref, lc, cfgPath)
 	if err != nil {
 		fmt.Fprintln(env.Stderr, "omac provenance:", err)
 		return ExitConfigInvalid

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/TNG/oh-my-agentic-coder/internal/config"
 	"github.com/TNG/oh-my-agentic-coder/internal/toolcache"
 )
 
@@ -14,11 +15,11 @@ import (
 // scope rather than the default shared one.
 func writeWorkdirScopeConfig(t *testing.T, workdir string) {
 	t.Helper()
-	dir := filepath.Join(workdir, ".opencode")
+	dir := config.LocalConfigDir(workdir)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatalf("mkdir .opencode: %v", err)
+		t.Fatalf("mkdir .omac: %v", err)
 	}
-	cfg := filepath.Join(dir, "oh-my-agentic-coder.yaml")
+	cfg := config.ProjectLauncherConfigPath(workdir)
 	if err := os.WriteFile(cfg, []byte("cache:\n  scope: workdir\n"), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}

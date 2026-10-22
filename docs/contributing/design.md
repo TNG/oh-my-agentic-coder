@@ -7,7 +7,9 @@ description: The WHY behind omac's architecture
 
 ### OS sandbox primitives, not a custom layer
 
-omac delegates all filesystem, network, and process isolation to a sandbox backend — an OS-level program that builds the sandbox. The default `builtin` backend re-executes omac itself to drive Seatbelt on macOS and bubblewrap + Landlock on Linux. A custom sandbox would duplicate what the OS already does and force omac to track kernel-level security guarantees itself. Instead, omac only configures what the backend exposes: which socket path to allow and which loopback TCP port to open. The command that launches the backend is a config-driven argv template (`sandbox.profiles.<name>.command`), so you can swap in a different backend without changing omac; the external `nono` backend is still selectable but deprecated.
+omac delegates all filesystem, network, and process isolation to a sandbox backend — an OS-level program that builds the sandbox. The default `builtin` backend re-executes omac itself to drive Seatbelt on macOS and bubblewrap + Landlock on Linux. 
+A custom sandbox would duplicate what the OS already does and force omac to track kernel-level security guarantees itself. Instead, omac only configures what the backend exposes: which socket path to allow and which loopback TCP port to open.
+omac assembles the built-in backend's launch command internally; there is no user-configurable launcher command.
 
 ### Sidecars run on the host, not inside the sandbox
 
@@ -23,7 +25,7 @@ Credentials in env vars, `.opencode/` files, or shell configs are readable by an
 
 ### Two transports: TCP loopback and Unix socket
 
-The facade binds two transports: a loopback TCP port (`OMAC_<SKILL>_BASE`) and a Unix socket (`OMAC_SOCKET`). Skills should always use TCP — it works under every backend, including the deprecated nono proxy mode on macOS, where Seatbelt's `(deny network*)` rule blocks `connect(2)` on a Unix socket. The socket is the original transport, kept for compatibility; there is no case where a skill needs to prefer it.
+The facade binds two transports: a loopback TCP port (`OMAC_<SKILL>_BASE`) and a Unix socket (`OMAC_SOCKET`). Skills should always use TCP — it works under every backend, including sandbox configurations where a `(deny network*)` rule blocks `connect(2)` on a Unix socket. The socket is the original transport, kept for compatibility; there is no case where a skill needs to prefer it.
 
 ```
 curl -sS "${OMAC_SLACK_BASE}/api/chat.postMessage" -d '...'

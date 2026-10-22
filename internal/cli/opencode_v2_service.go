@@ -43,14 +43,11 @@ func (p *openCodeServicePin) apply(extra map[string]string) {
 	extra["XDG_STATE_HOME"] = p.StateDir
 }
 
-// install splices the port grant and OPENCODE_CONFIG_DIR's --allow-env into argv; native backend only.
+// install splices the port grant and OPENCODE_CONFIG_DIR's --allow-env into argv.
 func (p *openCodeServicePin) install(argv []string, plan sandboxPlan) []string {
-	if !plan.Native {
-		return argv
-	}
 	argv = p.grant(argv)
 	// FilterEnv's allowlist strips OPENCODE_CONFIG_DIR without this.
-	return injectSandboxEnvAllow(argv, []string{"OPENCODE_CONFIG_DIR"}, plan)
+	return injectSandboxEnvAllow(argv, []string{"OPENCODE_CONFIG_DIR"})
 }
 
 // release frees the reserved port; safe on a nil pin and when called twice.
@@ -530,9 +527,6 @@ func openCodePinDenied(plan sandboxPlan) error {
 		return nil
 	}
 	profile := plan.PolicyRef
-	if profile == "" {
-		profile = plan.Name
-	}
 	for _, v := range []string{"XDG_STATE_HOME", "OPENCODE_CONFIG_DIR"} {
 		if sandboxprofile.EnvVarMatches(v, plan.Policy.Environment.DenyVars) {
 			return fmt.Errorf("profile %q: deny_vars denies %s, which the opencode v2 service pin needs; the pin's redirects would be stripped and the sandboxed service would revert to its ungranted default port, remove %s from the profile's deny_vars", profile, v, v)

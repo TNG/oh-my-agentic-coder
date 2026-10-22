@@ -43,7 +43,7 @@ type Options struct {
 // `omac sandbox run` against an empty profile, whose fail-closed behavior
 // otherwise has no warning surface at all. Sitting at the enforcement
 // point also covers profiles the launcher layer cannot inspect (its
-// warnings are gated on the `{{self}} sandbox run` command shape).
+// warnings apply only to the launches it assembles itself).
 func warnEmptyAllowVars(stderr io.Writer, allowVars []string) {
 	if len(allowVars) > 0 {
 		return
@@ -78,12 +78,22 @@ func Run(opts Options) int {
 		return 1
 	}
 
+	// The project-local .omac directory holds the sandbox definition. Create
+	// it up front so it exists at launch and can be masked as a directory,
+	// regardless of whether any profile is committed: an agent must never be
+	// able to create it and have a later launch trust its contents.
+	localDir, err := ensureLocalConfigDir(opts.Workdir)
+	if err != nil {
+		return fail("%v", err)
+	}
+
 	// WithScaffold: this is the launch path — the child the default
 	// launcher template invokes — so first run creates the user's editable
 	// ~/.config/omac/sandbox-profiles/default.json. Every inspection
 	// caller (doctor, diagnose, provenance, facade wiring) resolves
-	// read-only instead.
-	profile, profilePath, err := sandboxprofile.Resolve(opts.Flags.ProfileRef, sandboxprofile.WithScaffold())
+	// read-only instead. WithProjectDir admits an explicit path only inside
+	// the project's .omac directory.
+	profile, profilePath, err := sandboxprofile.Resolve(opts.Flags.ProfileRef, sandboxprofile.WithScaffold(), sandboxprofile.WithProjectDir(localDir))
 	if err != nil {
 		return fail("%v", err)
 	}
@@ -106,6 +116,19 @@ func Run(opts Options) int {
 	den := resolvedDenial(merged.Denial)
 	grants.DenialText = den.MarkerFile
 	grants.DenialDirName = den.MarkerDirName
+
+	// Write-protect the profile, its pages sibling, and the launcher config
+	// (#267): all steer the next launch and typically sit inside the
+	// read-write workdir grant. Learned decisions are written by this
+	// supervisor, outside the sandbox.
+	if profilePath != "" {
+		wp, wpErr := writeProtectProfilePaths(opts.Flags.ProfileRef, profilePath, grants.ProtectedPaths, stderr)
+		if wpErr != nil {
+			return fail("%v", wpErr)
+		}
+		wp = appendProtected(wp, launcherConfigPath(opts.Workdir, stderr), grants.ProtectedPaths)
+		grants.WriteProtectedPaths = wp
+	}
 
 	// Intent lookup: the agent declares intents via POST $OMAC_BASE/
 	// /sandbox/intent (the facade, in the parent process). The popup
@@ -132,6 +155,11 @@ func Run(opts Options) int {
 		recorder = newLearnRecorder(grants, intentBase)
 		grants = grants.withUnrestrictedFilesystem()
 	}
+
+	// The omac config directories define the sandbox itself and stay masked
+	// even in learn mode. Without this a session could plant a .omac/ (or
+	// rewrite the global config) that a later, non-learn launch would trust.
+	grants.ProtectedPaths = dedupe(append(grants.ProtectedPaths, sandboxprofile.NonOverridableProtectedPaths(localDir)...))
 
 	// Injected child env. The validated cache redirect is recreated here
 	// and proxy vars are added before the backend builds its rules.
@@ -267,6 +295,108 @@ func Run(opts Options) int {
 		}
 	}
 	return code
+}
+
+// writeProtectProfilePaths returns the profile and its pages sibling for
+// WriteProtectedPaths, creating the pages file if missing (bwrap needs an
+// existing source to bind; a creation failure only drops the pages
+// protection). A symlinked path-form ref is an error: mounts and SBPL rules
+// resolve through symlinks, so the symlink itself would stay replaceable.
+// A named ref that resolves to a symlink protects the target instead — the
+// symlink then sits in the config dir, outside the sandbox's write grants.
+func writeProtectProfilePaths(ref, profilePath string, protected []string, stderr io.Writer) ([]string, error) {
+	// Binds and SBPL rules need the absolute form of a relative ref.
+	if abs, err := filepath.Abs(profilePath); err == nil {
+		profilePath = abs
+	}
+	protectPath := profilePath
+	if li, err := os.Lstat(profilePath); err == nil && li.Mode()&os.ModeSymlink != 0 {
+		if isPathFormProfileRef(ref) {
+			return nil, fmt.Errorf("sandbox profile %s is a symlink; a symlinked profile cannot be "+
+				"write-protected inside the sandbox (a session could replace the symlink and steer "+
+				"the next launch). Point --profile at the real file instead", profilePath)
+		}
+		if resolved, rerr := filepath.EvalSymlinks(profilePath); rerr == nil {
+			protectPath = resolved
+		}
+	}
+	candidates := []string{filepath.Clean(protectPath)}
+	if pages := sandboxprofile.PagesPath(profilePath); pages != "" {
+		if err := netprompt.EnsureLearnedPolicyFile(pages); err != nil {
+			fmt.Fprintf(stderr, "omac sandbox: warning: cannot create learned-decision file %s (%v); "+
+				"its write-protection is skipped for this session\n", pages, err)
+		} else {
+			candidates = append(candidates, filepath.Clean(pages))
+		}
+	}
+	return dropDenied(candidates, protected), nil
+}
+
+// ensureLocalConfigDir creates <workdir>/.omac (the project config dir) so it
+// exists at launch and can be masked as a directory. A symlinked .omac is
+// rejected: it could point outside the project and defeat the mask. Returns ""
+// when workdir is empty.
+func ensureLocalConfigDir(workdir string) (string, error) {
+	if workdir == "" {
+		return "", nil
+	}
+	dir := config.LocalConfigDir(workdir)
+	if li, err := os.Lstat(dir); err == nil && li.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("%s is a symlink; the project .omac directory must be a real directory "+
+			"(a symlinked config dir could point outside the project and defeat the mask)", dir)
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", fmt.Errorf("create %s: %w", dir, err)
+	}
+	return dir, nil
+}
+
+// launcherConfigPath returns the launcher config for workdir ("" for the
+// built-in defaults). The config selects the profile and audit settings, so it
+// is write-protected like the profile; a load failure (the parent already
+// validated the config) only skips the protection with a warning.
+func launcherConfigPath(workdir string, stderr io.Writer) string {
+	_, cfgPath, err := config.LoadLauncher(workdir)
+	if err != nil {
+		fmt.Fprintf(stderr, "omac sandbox: warning: cannot re-load the launcher config to write-protect it (%v)\n", err)
+		return ""
+	}
+	return cfgPath
+}
+
+// appendProtected appends path to paths unless empty or covered by a deny.
+func appendProtected(paths []string, path string, protected []string) []string {
+	if path == "" || coveredByProtected(path, protected) {
+		return paths
+	}
+	return append(paths, path)
+}
+
+// dropDenied drops paths covered by a protected-path deny: on Linux a later
+// read-only bind would shadow the deny mask, and a deny is stricter anyway.
+func dropDenied(paths, protected []string) []string {
+	out := make([]string, 0, len(paths))
+	for _, p := range paths {
+		if !coveredByProtected(p, protected) {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// coveredByProtected reports whether path equals or lies under a deny.
+func coveredByProtected(path string, protected []string) bool {
+	for _, prot := range protected {
+		if pathCoveredBy(path, prot) {
+			return true
+		}
+	}
+	return false
+}
+
+// isPathFormProfileRef mirrors sandboxprofile.Resolve's path-form check.
+func isPathFormProfileRef(ref string) bool {
+	return strings.ContainsRune(ref, os.PathSeparator) || strings.HasSuffix(ref, ".json")
 }
 
 // injectedToolCacheEnv recreates the cache redirects for a sandbox re-exec

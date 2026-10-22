@@ -127,6 +127,14 @@ func GenerateSBPL(g *Grants) string {
 	fmt.Fprintf(&b, "(deny file-read* (regex #\"%s\"))\n", sbplKeychainNameRegex)
 	fmt.Fprintf(&b, "(deny file-write* (regex #\"%s\"))\n", sbplKeychainNameRegex)
 	b.WriteString("(allow file-read* (subpath \"/System/Library/Keychains\"))\n")
+
+	// --- Write-protected paths: after the protected denies, since Seatbelt
+	// is last-match-wins. Readable via the read allows above, never writable.
+	for _, p := range g.WriteProtectedPaths {
+		for _, fp := range pathForms(p) {
+			fmt.Fprintf(&b, "(deny file-write* (subpath %s))\n", sbplQuote(fp))
+		}
+	}
 	b.WriteString("\n")
 
 	// --- Devices every process needs ---

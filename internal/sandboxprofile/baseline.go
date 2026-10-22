@@ -1,6 +1,7 @@
 package sandboxprofile
 
 import (
+	"path/filepath"
 	"runtime"
 )
 
@@ -90,6 +91,11 @@ func protectedCommon() []string {
 // `<workdir>/.env` are blocked by default without a --deny flag.
 func workdirProtectedCommon() []string {
 	return []string{
+		// The project-local omac config directory holds the sandbox
+		// definition (config.yaml, profile JSON, pages). Any .omac found
+		// under a granted tree is masked, so a session cannot plant one that
+		// a future launch from a different root would trust.
+		".omac",
 		".env",
 		".envrc",
 		".env.local",
@@ -190,6 +196,23 @@ func linuxBaseline() Baseline {
 		),
 		WorkdirProtected: workdirProtectedCommon(),
 	}
+}
+
+// NonOverridableProtectedPaths returns paths that must stay masked even when a
+// profile lists them in override_deny: the omac config directories define the
+// sandbox itself. projectDir is the project-local .omac directory ("" to omit).
+// Callers append the result after override filtering has run.
+func NonOverridableProtectedPaths(projectDir string) []string {
+	var out []string
+	for _, p := range []string{"~/.config/omac", "$XDG_CONFIG_HOME/omac"} {
+		if exp, err := ExpandPath(p); err == nil && exp != "" {
+			out = append(out, exp)
+		}
+	}
+	if filepath.IsAbs(projectDir) {
+		out = append(out, projectDir)
+	}
+	return out
 }
 
 // EffectiveProtectedPaths returns the platform protected set minus the
