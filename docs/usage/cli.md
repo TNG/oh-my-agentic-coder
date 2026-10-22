@@ -51,6 +51,7 @@ omac serve --workdir ~/my-project
 |---|---|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `--workdir <dir>` | — | Activate this directory immediately at startup, so skills are ready as soon as OpenCode Desktop connects. Without this flag, no skills will be active — OpenCode Desktop does not yet automatically tell omac which project is currently open. |
 | `--root <dir>` | — | Only allow directories under this path to be activated (repeatable). For example, `--root ~/work --root ~/personal` restricts activation to those two trees. If not set, any directory can be activated.                                       |
+| `--vm` | false | Attach to the omac VM, as with `omac start --vm`. Refused together with `--no-sandbox` or `--no-inner`. |
 
 #### OpenCode v2 project discovery on macOS
 
@@ -198,15 +199,19 @@ omac cache clear --all  # remove all caches not currently in use
 
 ### omac vm
 
-The omac VM is one long-lived Linux virtual machine per computer, which omac creates and manages with [Lima](https://lima-vm.io). Docker runs inside it, and a session started with `--vm` uses that Docker instead of one on your host. The VM sees none of your host files and has no network access, except while `omac vm up` sets it up and while you switch it to `omac vm online`.
+The omac VM is one long-lived Linux virtual machine per computer, which omac creates and manages with [Lima](https://lima-vm.io). Docker runs inside it, and a session started with `--vm` uses that Docker instead of one on your host. The VM sees none of your host files and has no network access, except while `omac vm up` or `omac vm up --reprovision` sets it up and while it is online.
 
 ```bash
 omac vm up                     # create and provision once, then switch offline (needs network once)
-omac vm status
+omac vm status                 # show state, mode, ports, resources, images and sessions
 omac vm image add postgres:16  # import an image; the VM never pulls itself
+omac vm image list             # list the VM's images
+omac vm image rm postgres:16   # remove an image from the VM
 omac start --vm                # DOCKER_HOST inside the sandbox points at the VM
-omac vm online / offline       # open the VM's network for provisioning or priming, then close it
-omac vm down / reset
+omac vm online                 # restart the VM with network access, e.g. for provisioning
+omac vm offline                # restart the VM without network access, the mode sessions need
+omac vm down                   # stop the VM
+omac vm reset                  # delete the VM and create it anew
 ```
 
 You need Lima installed: `brew install lima` on macOS, the `lima` package on Linux.

@@ -193,7 +193,7 @@ cannot access.
 | `~/.cache`, `~/Library/Caches` (host cache roots) | **blocked** | Prevents cross-project cache poisoning; omac provides its own isolated cache |
 | Files matching `filesystem.deny` patterns (e.g. `*.key`) | **blocked** | User-defined extra restrictions |
 | Environment variables in `allow_vars` (`OMAC_*`, `HOME`, `PATH`, `LANG`, …) | passed through | Operational minimum |
-| All other environment variables (cloud secrets, `DOCKER_HOST` (passed through only with `--vm`), `SSH_AUTH_SOCK`, …) | **stripped** | Not needed and potentially sensitive |
+| All other environment variables (cloud secrets, `DOCKER_HOST`, `SSH_AUTH_SOCK`, …) | **stripped** | Not needed and potentially sensitive. With `--vm`, `DOCKER_HOST` is set to the VM's address instead of your own value, and `DOCKER_CONFIG` points at an empty directory in omac's tool cache |
 
 ## The omac VM
 
@@ -202,13 +202,13 @@ A session started with `--vm` uses Docker inside the omac VM (see [omac vm](./us
 These hold even if the agent became root inside the VM:
 - The VM has no access to host files: omac mounts no host directory into it.
 - It holds no host credentials and no host sockets, such as your SSH agent or the host's Docker.
-- The only link from the host into the VM is two ports on the host's loopback interface: the Docker API and SSH.
+- Traffic from the host into the VM goes only over the host's loopback interface. That covers the two omac ports (Docker API and SSH) and any port a container publishes, which Lima forwards to the host's loopback as well.
 
-This holds only while the agent is not root inside the VM: the VM has no outbound network. A firewall inside the VM rejects every new outbound connection, including to Lima's gateway to the host.
+This holds only while the agent is not root inside the VM: the VM has no outbound network. A firewall inside the VM rejects every new outbound connection, including to Lima's gateway to the host. So while the firewall is loaded, nothing in the VM can open a connection to the host or the network by itself.
 
 Known limits:
-- A kernel exploit inside the VM gives the agent root there, and root can turn the firewall off.
-- On Linux, opening a port for the sandbox opens it on every address, not only on loopback.
+- A kernel exploit inside the VM gives the agent root there. Root can turn the firewall off and then reach the internet and services on your host's loopback interface through Lima's gateway.
+- On Linux, the grant for the VM's two ports also lets the agent connect to those port numbers on any host, not only on loopback, because Landlock cannot scope a port to an address.
 - All sessions of one user share the VM, so one session can see and change the containers of another.
 
 The VM's state lives in `~/.local/state/omac/vm` and includes the key for root access to the VM. The sandbox blocks this directory.

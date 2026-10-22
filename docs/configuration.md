@@ -197,7 +197,7 @@ packages: [jq]   # extra Ubuntu packages to install; default: none
 
 A further field, `jdks`, is reserved: Java versions for the VM are installed in a follow-up release. An unknown field is an error, so a typo does not silently fall back to the defaults.
 
-The VM reads this file only when omac creates or provisions it. After changing `packages`, run `omac vm up --reprovision`. After changing `cpus`, `memory` or `disk`, run `omac vm reset`, which deletes the VM and creates it anew, including its imported images.
+omac applies this file only when it creates the VM or reprovisions it. After changing `packages`, run `omac vm up --reprovision`. After changing `cpus`, `memory` or `disk`, run `omac vm reset`, which deletes the VM, its imported images and its keys, then creates it anew; add the images again afterwards.
 
 ## Corporate proxy
 
