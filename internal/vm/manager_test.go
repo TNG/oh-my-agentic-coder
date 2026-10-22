@@ -454,6 +454,61 @@ func TestUpReprovisionRewritesPackagesAndCycles(t *testing.T) {
 	}
 }
 
+func TestUpInstallsJDKPackages(t *testing.T) {
+	m, _, _, _ := newTestManager(t)
+	writeConfig(t, m, "packages: [jq]\njdks: [temurin-25]\n")
+	mustUp(t, m)
+
+	yaml, err := os.ReadFile(m.Layout.LimaYAML)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(yaml), "jq temurin-25-jdk") {
+		t.Errorf("lima yaml lacks the package line %q:\n%s", "jq temurin-25-jdk", yaml)
+	}
+	st := mustState(t, m)
+	if !slices.Equal(st.JDKs, []string{"temurin-25"}) || !slices.Equal(st.Packages, []string{"jq"}) {
+		t.Errorf("state jdks = %v, packages = %v; want [temurin-25], [jq]", st.JDKs, st.Packages)
+	}
+	r, err := m.Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	r.Write(&out)
+	if !strings.Contains(out.String(), "jdks:\n  - temurin-25\n") {
+		t.Errorf("status output lacks the jdk:\n%s", out.String())
+	}
+}
+
+func TestUpReprovisionAddsJDK(t *testing.T) {
+	m, _, ssh, _ := newTestManager(t)
+	writeConfig(t, m, "packages: [jq]\n")
+	mustUp(t, m)
+	writeConfig(t, m, "packages: [jq]\njdks: [temurin-21]\n")
+
+	if err := m.Up(context.Background(), true); err != nil {
+		t.Fatalf("Up(reprovision): %v", err)
+	}
+	if _, g := ssh.snapshot(); g.packages != "jq temurin-21-jdk" {
+		t.Errorf("guest packages = %q, want %q", g.packages, "jq temurin-21-jdk")
+	}
+	st := mustState(t, m)
+	if !slices.Equal(st.JDKs, []string{"temurin-21"}) || !slices.Equal(st.Packages, []string{"jq"}) {
+		t.Errorf("state jdks = %v, packages = %v; want [temurin-21], [jq]", st.JDKs, st.Packages)
+	}
+}
+
+func TestUpRejectsUnsupportedJDKBeforeLima(t *testing.T) {
+	m, lima, _, _ := newTestManager(t)
+	writeConfig(t, m, "jdks: [openjdk-21]\n")
+	err := m.Up(context.Background(), false)
+	if err == nil || !strings.Contains(err.Error(), `unsupported jdk "openjdk-21"`) {
+		t.Fatalf("Up = %v, want an unsupported jdk error", err)
+	}
+	assertVerbs(t, lima)
+}
+
 func TestUpReprovisionStartsStoppedInstanceFirst(t *testing.T) {
 	m, lima, _, _ := newTestManager(t)
 	mustUp(t, m)
