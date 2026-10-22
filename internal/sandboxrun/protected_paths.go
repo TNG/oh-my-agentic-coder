@@ -111,6 +111,13 @@ func (s *ProtectedPathSet) IsProtected(absPath string) (rule string, ok bool) {
 	// Normalize: clean the path but don't follow symlinks (the agent
 	// queries with the path it tried; we match lexically).
 	absPath = filepath.Clean(absPath)
+	// Any .omac directory is protected by leaf name: omac creates
+	// <workdir>/.omac itself, may only mask what existed at launch, and a
+	// planted nested .omac is empty-but-blocked from the next launch on —
+	// an empty listing is the denial, not a missing directory.
+	if underOmacLeaf(absPath) {
+		return "omac", true
+	}
 	for i, entry := range s.entries {
 		entry = filepath.Clean(entry)
 		if absPath == entry || strings.HasPrefix(absPath, entry+string(filepath.Separator)) {
@@ -126,4 +133,15 @@ func (s *ProtectedPathSet) IsProtected(absPath string) (rule string, ok bool) {
 		}
 	}
 	return "", false
+}
+
+// underOmacLeaf reports whether absPath is an .omac directory or lies
+// inside one (any path component named .omac).
+func underOmacLeaf(absPath string) bool {
+	for _, part := range strings.Split(absPath, string(filepath.Separator)) {
+		if part == ".omac" {
+			return true
+		}
+	}
+	return false
 }

@@ -263,6 +263,18 @@ func runLaunch(env *Env, opts launchOpts) int {
 		return ExitMisuse
 	}
 
+	// Always create the project config dir before anything that would watch
+	// or launch the sandbox: the mid-session protected-pattern watch scans
+	// for .omac, so it must see the directory as pre-existing, and the
+	// kernel mask needs it to exist at launch. Unconditional — a --no-sandbox
+	// debug run is not a special case. A read-only or otherwise uncreatable
+	// workdir is not fatal: the agent runs with the omac user's own
+	// permissions, so it can create the directory no more than omac can.
+	if err := ensureOmacLocalDir(env.Stderr, env.Workdir); err != nil {
+		fmt.Fprintln(env.Stderr, prefix+":", err)
+		return ExitConfigInvalid
+	}
+
 	// 1. Load launcher config.
 	lc, cfgPath, err := config.LoadLauncher(env.Workdir)
 	if err != nil {
@@ -891,7 +903,7 @@ func runLaunch(env *Env, opts launchOpts) int {
 		// The kernel mask cannot grow mid-session, so detect
 		// protected-pattern files (e.g. .env) created after launch and
 		// warn the user.
-		watch = startProtectedWatch(auditor, protectedChecker(f), plan, argv, env.Workdir, sandboxrun.WatchTuning{
+		watch = startProtectedWatch(auditor, protectedChecker(f), plan, argv, env.Workdir, env.Stderr, sandboxrun.WatchTuning{
 			FullPassTicks:       lc.Sandbox.MidsessionWatch.FullPassTicks,
 			FullPassConcurrency: lc.Sandbox.MidsessionWatch.FullPassConcurrency,
 		})
@@ -1043,9 +1055,7 @@ func runLaunch(env *Env, opts launchOpts) int {
 
 	code, err := execWithReady(argv, extra, onReady)
 	auditor.Emit(audit.SessionStop(code))
-	watch.report(func(format string, args ...any) {
-		fmt.Fprintf(env.Stderr, prefix+": "+format+"\n", args...)
-	})
+	printRestartCallout(env.Stderr, watch.stopAndNotices())
 	if finishServiceCheck != nil {
 		svcPID, svcErr := finishServiceCheck()
 		if svcErr != nil {

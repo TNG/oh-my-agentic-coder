@@ -876,6 +876,36 @@ func TestPrepareServeCache(t *testing.T) {
 	}
 }
 
+// TestRunServeRefusesSymlinkedOmacConfigDir: the .omac symlink refusal fires
+// in the parent before any listener is bound, so the test never needs one.
+func TestRunServeRefusesSymlinkedOmacConfigDir(t *testing.T) {
+	stderr, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe stderr: %v", err)
+	}
+	t.Cleanup(func() { stderr.Close() })
+	env := devnullEnv(t)
+	workdir := t.TempDir()
+	env.Workdir = workdir
+	if err := os.Symlink(t.TempDir(), filepath.Join(workdir, ".omac")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	env.Stderr = writer
+	if code := runServe([]string{"--no-inner", "--no-sandbox"}, env); code != ExitConfigInvalid {
+		t.Errorf("exit = %d, want ExitConfigInvalid", code)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close stderr writer: %v", err)
+	}
+	output, err := io.ReadAll(stderr)
+	if err != nil {
+		t.Fatalf("read stderr: %v", err)
+	}
+	if !strings.Contains(string(output), "symlink") {
+		t.Errorf("stderr = %q, want the symlink refusal", output)
+	}
+}
+
 func TestRunServeRejectsEphemeralCacheWithoutSandbox(t *testing.T) {
 	stderr, writer, err := os.Pipe()
 	if err != nil {

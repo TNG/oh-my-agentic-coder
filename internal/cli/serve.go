@@ -184,6 +184,13 @@ func runServe(args []string, env *Env) int {
 	openPorts := parsed.openPorts
 	profilePathFlag := parsed.profilePath
 
+	// See ensureOmacLocalDir in start.go: .omac must exist before the
+	// protected-pattern watch scans and the child masks it.
+	if err := ensureOmacLocalDir(env.Stderr, env.Workdir); err != nil {
+		fmt.Fprintln(env.Stderr, "omac serve:", err)
+		return ExitConfigInvalid
+	}
+
 	lc, cfgPath, err := config.LoadLauncher(env.Workdir)
 	if err != nil {
 		fmt.Fprintln(env.Stderr, "omac serve: launcher config:", err)
@@ -641,7 +648,7 @@ func runServe(args []string, env *Env) int {
 		// protected-pattern files (e.g. .env) created after launch and
 		// warn the user.
 		if !noInner && !learn {
-			watch = startProtectedWatch(auditor, protectedChecker(f), plan, argv, env.Workdir, sandboxrun.WatchTuning{
+			watch = startProtectedWatch(auditor, protectedChecker(f), plan, argv, env.Workdir, env.Stderr, sandboxrun.WatchTuning{
 				FullPassTicks:       lc.Sandbox.MidsessionWatch.FullPassTicks,
 				FullPassConcurrency: lc.Sandbox.MidsessionWatch.FullPassConcurrency,
 			})
@@ -684,9 +691,7 @@ func runServe(args []string, env *Env) int {
 		}
 	})
 	auditor.Emit(audit.SessionStop(code))
-	watch.report(func(format string, args ...any) {
-		fmt.Fprintf(env.Stderr, format+"\n", args...)
-	})
+	printRestartCallout(env.Stderr, watch.stopAndNotices())
 	if err != nil {
 		fmt.Fprintln(env.Stderr, "omac serve: exec:", err)
 		return ExitSandboxAbnormal
