@@ -132,7 +132,8 @@ func (m *Manager) rootTarget(st *State) SSHTarget {
 
 // Up creates, provisions and starts the VM, always ending offline with the
 // firewall verified. With reprovision, an existing VM reinstalls its
-// packages from vm.yaml.
+// packages from vm.yaml; state still saying online also reprovisions, as it
+// means an earlier provisioning did not finish.
 func (m *Manager) Up(ctx context.Context, reprovision bool) error {
 	if _, err := FindLimactl(m.Deps.LookPath); err != nil {
 		return fmt.Errorf("omac vm: %w", err)
@@ -159,12 +160,14 @@ func (m *Manager) Up(ctx context.Context, reprovision bool) error {
 		return m.create(ctx, st, cfg, res)
 	case reprovision:
 		return m.reprovision(ctx, st, cfg, running)
+	case st.Mode != ModeOffline:
+		// State stays online until a switch to offline verified the
+		// firewall, so this is an interrupted (or running) provisioning.
+		fmt.Fprintln(m.Out, "omac vm: provisioning was not completed, re-running it")
+		return m.reprovision(ctx, st, cfg, running)
 	case !running:
 		fmt.Fprintln(m.Out, "omac vm: starting (offline)…")
-		return m.switchMode(ctx, st, ModeOffline, false, m.Deps.RestartTimeout)
-	case st.Mode != ModeOffline:
-		fmt.Fprintln(m.Out, "omac vm: VM is online; run `omac vm offline` before attaching sessions")
-		return nil
+		return m.startOffline(ctx, st)
 	default:
 		r, err := m.report(ctx, inst, st)
 		if err != nil {
@@ -221,19 +224,41 @@ func (m *Manager) create(ctx context.Context, st *State, cfg UserConfig, res Res
 		return err
 	}
 	// The first boot runs online (nothing provisioned yet); record that
-	// before anything can fail.
+	// before anything can fail. Lists of a VM deleted outside omac go.
 	st.Mode = ModeOnline
 	st.Packages = cfg.Packages
+	st.Images, st.JDKs, st.Worktrees = nil, nil, nil
 	if err := SaveState(m.Layout.StatePath, st); err != nil {
 		return err
 	}
 	if err := m.start(ctx); err != nil {
-		return err
+		return fmt.Errorf("%w; %s", err, retryUpHint)
 	}
 	if err := m.waitDocker(ctx, st, m.Deps.ProvisionTimeout); err != nil {
-		return err
+		return fmt.Errorf("%w; %s", err, retryUpHint)
 	}
 	return m.switchMode(ctx, st, ModeOffline, true, m.Deps.RestartTimeout)
+}
+
+const retryUpHint = "run `omac vm up` again (or `omac vm up --reprovision`)"
+
+// startOffline boots a stopped VM whose state says offline. The root-owned
+// mode file already says offline (or is absent, which means offline once
+// provisioned), so one start suffices; only if the firewall is then
+// missing does it fall back to the full write-mode cycle.
+func (m *Manager) startOffline(ctx context.Context, st *State) error {
+	if err := m.start(ctx); err != nil {
+		return err
+	}
+	if err := m.waitDocker(ctx, st, m.Deps.RestartTimeout); err != nil {
+		return err
+	}
+	if err := m.verifyMode(ctx, st, ModeOffline); err != nil {
+		fmt.Fprintln(m.Out, "omac vm: firewall not loaded after start, rewriting the mode and restarting")
+		return m.switchMode(ctx, st, ModeOffline, true, m.Deps.RestartTimeout)
+	}
+	fmt.Fprintln(m.Out, "omac vm: running, offline")
+	return nil
 }
 
 func (m *Manager) reprovision(ctx context.Context, st *State, cfg UserConfig, running bool) error {
@@ -260,6 +285,9 @@ func (m *Manager) reprovision(ctx context.Context, st *State, cfg UserConfig, ru
 		return err
 	}
 	st.Packages = cfg.Packages
+	if err := SaveState(m.Layout.StatePath, st); err != nil {
+		return err
+	}
 	return m.switchMode(ctx, st, ModeOffline, true, m.Deps.RestartTimeout)
 }
 

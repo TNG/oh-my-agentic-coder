@@ -133,7 +133,7 @@ func TestUpStartsStoppedInstanceOffline(t *testing.T) {
 	lima.reset()
 
 	mustUp(t, m)
-	assertVerbs(t, lima, "list", "start", "stop", "start")
+	assertVerbs(t, lima, "list", "start")
 	if _, g := ssh.snapshot(); !g.firewall {
 		t.Error("firewall not loaded after Up of a stopped instance")
 	}
@@ -142,6 +142,107 @@ func TestUpStartsStoppedInstanceOffline(t *testing.T) {
 	}
 	if st := mustState(t, m); st.Mode != ModeOffline {
 		t.Errorf("mode = %q, want offline", st.Mode)
+	}
+}
+
+func TestUpStoppedInstanceFallsBackWhenFirewallMissing(t *testing.T) {
+	m, lima, ssh, _ := newTestManager(t)
+	mustUp(t, m)
+	lima.setStatus(StatusStopped)
+	ssh.mu.Lock()
+	ssh.guest.modeFile = ModeOnline // guest disagrees with state
+	ssh.guest.firewall = false
+	ssh.mu.Unlock()
+	lima.reset()
+
+	mustUp(t, m)
+	assertVerbs(t, lima, "list", "start", "stop", "start")
+	if _, g := ssh.snapshot(); g.modeFile != ModeOffline || !g.firewall {
+		t.Errorf("guest = %+v, want mode offline with firewall", g)
+	}
+	if st := mustState(t, m); st.Mode != ModeOffline {
+		t.Errorf("mode = %q, want offline", st.Mode)
+	}
+}
+
+func TestUpRecoversFromInterruptedProvisioning(t *testing.T) {
+	m, lima, ssh, _ := newTestManager(t)
+	lima.failOn["start"] = errors.New("boot timed out")
+
+	err := m.Up(context.Background(), false)
+	if err == nil || !strings.Contains(err.Error(), "run `omac vm up` again (or `omac vm up --reprovision`)") {
+		t.Fatalf("Up = %v, want the retry hint", err)
+	}
+	if st := mustState(t, m); st.Mode != ModeOnline {
+		t.Errorf("mode after interrupted create = %q, want online", st.Mode)
+	}
+
+	delete(lima.failOn, "start")
+	lima.reset()
+	var out bytes.Buffer
+	m.Out = &out
+	mustUp(t, m)
+	if !strings.Contains(out.String(), "provisioning was not completed, re-running it") {
+		t.Errorf("output = %q, want the re-run notice", out.String())
+	}
+	assertVerbs(t, lima, "list", "start", "stop", "start", "stop", "start")
+	if !slices.Contains(ssh.remotes(), reprovisionCmd(nil)) {
+		t.Errorf("ssh commands %v lack the reprovision command", ssh.remotes())
+	}
+	if _, g := ssh.snapshot(); !g.provisioned || !g.firewall || g.modeFile != ModeOffline {
+		t.Errorf("guest = %+v, want provisioned, offline, firewall loaded", g)
+	}
+	if st := mustState(t, m); st.Mode != ModeOffline {
+		t.Errorf("mode = %q, want offline", st.Mode)
+	}
+}
+
+func TestUpRerunsProvisioningWhenRunningOnline(t *testing.T) {
+	m, lima, ssh, probe := newTestManager(t)
+	probe.setErr(errors.New("connection refused")) // Docker never comes up
+	if err := m.Up(context.Background(), false); err == nil || !strings.Contains(err.Error(), "omac vm up --reprovision") {
+		t.Fatalf("Up = %v, want the retry hint", err)
+	}
+	probe.setErr(nil)
+	lima.reset()
+
+	mustUp(t, m)
+	assertVerbs(t, lima, "list", "stop", "start", "stop", "start")
+	if _, g := ssh.snapshot(); !g.firewall || g.modeFile != ModeOffline {
+		t.Errorf("guest = %+v, want offline with firewall", g)
+	}
+}
+
+func TestReprovisionKeepsPackagesWhenOfflineSwitchFails(t *testing.T) {
+	m, _, ssh, _ := newTestManager(t)
+	mustUp(t, m)
+	writeConfig(t, m, "packages: [jq]\n")
+	// The online check expects nft to fail; the final offline check fails.
+	ssh.fail = func(remote string) error {
+		if remote == verifyFirewallCmd {
+			return errors.New("exit status 1")
+		}
+		return nil
+	}
+	if err := m.Up(context.Background(), true); !errors.Is(err, ErrFirewallMissing) {
+		t.Fatalf("Up(reprovision) = %v, want ErrFirewallMissing", err)
+	}
+	st := mustState(t, m)
+	if !slices.Equal(st.Packages, []string{"jq"}) || st.Mode != ModeOnline {
+		t.Errorf("state = %+v, want packages [jq] kept and mode online", st)
+	}
+}
+
+func TestUpCreateClearsStaleLists(t *testing.T) {
+	m, _, _, _ := newTestManager(t)
+	stale := &State{SSHPort: 42022, DockerPort: 42375, Mode: ModeOffline,
+		Images: []string{"x"}, JDKs: []string{"17"}, Worktrees: []string{"/w"}}
+	if err := SaveState(m.Layout.StatePath, stale); err != nil {
+		t.Fatal(err)
+	}
+	mustUp(t, m)
+	if st := mustState(t, m); len(st.Images)+len(st.JDKs)+len(st.Worktrees) != 0 {
+		t.Errorf("state = %+v, want lists cleared", st)
 	}
 }
 
