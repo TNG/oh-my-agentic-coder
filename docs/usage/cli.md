@@ -33,7 +33,7 @@ omac start claude       # specific harness
 | `--ephemeral-cache` | false | Use a temporary cache deleted when the session ends. Use this for a clean build environment or when you do not want the agent's package downloads to persist. |
 | `--cache-scope <scope>` | global | Which cache to use for the agent's package downloads (npm, pip, cargo, etc.). `global` shares one cache across all your projects, `config` shares it across projects using the same config file, `workdir` gives each project its own isolated cache. See [Cache](../advanced/cache.md). |
 | `--open-port <port>` | — | Allow the sandboxed process to bind and connect on this local TCP port (repeatable) for this session only. Useful for a local dev server or an MCP server the harness talks to. To make it permanent, use `network.open_port` in the grants file — see [Opening a port](../configuration.md#opening-a-port). |
-| `--vm` | false | Attach this session to the omac VM (a long-lived Linux VM with rootless Docker, see [omac vm](#omac-vm)). Sets `DOCKER_HOST` inside the sandbox. Requires `omac vm up` first and works only with the `builtin` sandbox. |
+| `--vm` | false | Attach this session to the omac VM (a long-lived Linux VM whose Docker runs without root rights, see [omac vm](#omac-vm)). Sets `DOCKER_HOST` and `DOCKER_CONFIG` inside the sandbox, plus `OMAC_VM_HOST`, `OMAC_VM_SSH_PORT`, `OMAC_VM_SSH_KEY` and `OMAC_VM_USER`, which give the agent an SSH login to the VM as an unprivileged user. Requires `omac vm up` first. Refused together with `--no-sandbox` and on sandbox profiles other than `builtin`. |
 | `--no-audit` | false | Disable the security audit trail for this session. |
 
 For all flags: `omac start --help`.
@@ -51,7 +51,7 @@ omac serve --workdir ~/my-project
 |---|---|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `--workdir <dir>` | — | Activate this directory immediately at startup, so skills are ready as soon as OpenCode Desktop connects. Without this flag, no skills will be active — OpenCode Desktop does not yet automatically tell omac which project is currently open. |
 | `--root <dir>` | — | Only allow directories under this path to be activated (repeatable). For example, `--root ~/work --root ~/personal` restricts activation to those two trees. If not set, any directory can be activated.                                       |
-| `--vm` | false | Attach to the omac VM, as with `omac start --vm`. Refused together with `--no-sandbox` or `--no-inner`. |
+| `--vm` | false | Attach to the omac VM, as with `omac start --vm`. Refused together with `--no-sandbox` or `--no-inner` and on sandbox profiles other than `builtin`. |
 
 #### OpenCode v2 project discovery on macOS
 
@@ -72,9 +72,11 @@ omac continue              # most recent session
 omac continue -s <id>      # specific session by ID
 ```
 
+`omac continue` accepts `--vm`, as `omac start` does.
+
 ### omac resume
 
-Use this when you want to choose from a list of past sessions rather. Shows a numbered picker of recent sessions for the active workdir.
+Use this when you want to choose from a list of past sessions rather. Shows a numbered picker of recent sessions for the active workdir. `omac resume` accepts `--vm`, as `omac start` does.
 
 ---
 
@@ -203,7 +205,7 @@ The omac VM is one long-lived Linux virtual machine per computer, which omac cre
 
 ```bash
 omac vm up                     # create and provision once, then switch offline (needs network once)
-omac vm status                 # show state, mode, ports, resources, images and sessions
+omac vm status                 # show state, mode, ports, images, sessions and the resources set in vm.yaml
 omac vm image add postgres:16  # import an image; the VM never pulls itself
 omac vm image list             # list the VM's images
 omac vm image rm postgres:16   # remove an image from the VM
@@ -214,11 +216,10 @@ omac vm down                   # stop the VM
 omac vm reset                  # delete the VM and create it anew
 ```
 
-You need Lima installed: `brew install lima` on macOS, the `lima` package on Linux.
-
+You need Lima 1.0 or newer (`brew install lima` on macOS; on Linux the release tarball from the Lima GitHub releases or Homebrew on Linux, plus QEMU).
 Because the VM has no network, `docker pull` inside it fails. Instead, `omac vm image add` downloads the image on your host and loads it into the VM, once per image.
 
-The VM is either `offline` (the default) or `online`. Sessions attach only while it is offline, and `omac vm online` is refused while a session is attached.
+The VM is either `offline` (the default) or `online`. Sessions attach only while it is offline. `omac vm online`, `omac vm up --reprovision` and `omac vm reset` take the VM online, so they are refused while a session is attached.
 
 `omac vm up --reprovision` reinstalls the extra packages listed in `vm.yaml`, and `omac vm reset` deletes the VM and creates it anew. For CPUs, memory, disk and packages, see [omac VM (vm.yaml)](../configuration.md#omac-vm-vmyaml).
 
