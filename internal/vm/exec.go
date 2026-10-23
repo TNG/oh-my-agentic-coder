@@ -14,6 +14,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
 )
 
 // WorktreeSlug names the copy of absWorkdir in the VM: the sanitized
@@ -62,17 +64,21 @@ func RemoteDir(slug string) string {
 
 // IgnoredPaths lists the paths git ignores in workdir, relative to it;
 // ignored directories are listed once, with a trailing slash. ok is false
-// when workdir is not inside a git work tree.
+// when workdir is not inside a git work tree. Any other git failure, such
+// as "detected dubious ownership", is an error: copying everything could
+// leak what .gitignore keeps out.
 func IgnoredPaths(ctx context.Context, run CommandRunner, workdir string) ([]string, bool, error) {
-	err := run(ctx, "git", []string{"-C", workdir, "rev-parse", "--is-inside-work-tree"}, nil, io.Discard, io.Discard)
+	var stderr bytes.Buffer
+	err := run(ctx, "git", []string{"-C", workdir, "rev-parse", "--is-inside-work-tree"}, nil, io.Discard, &stderr)
 	var ee *exec.ExitError
-	if errors.As(err, &ee) {
+	if errors.As(err, &ee) && strings.Contains(stderr.String(), "not a git repository") {
 		return nil, false, nil
 	}
 	if err != nil {
-		return nil, false, fmt.Errorf("omac vm exec: git rev-parse: %w", err)
+		return nil, false, fmt.Errorf("omac vm exec: git rev-parse: %w: %s", err, strings.TrimSpace(stderr.String()))
 	}
-	var out, stderr bytes.Buffer
+	var out bytes.Buffer
+	stderr.Reset()
 	args := []string{"-C", workdir, "ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"}
 	if err := run(ctx, "git", args, nil, &out, &stderr); err != nil {
 		return nil, false, fmt.Errorf("omac vm exec: git ls-files: %w: %s", err, strings.TrimSpace(stderr.String()))
@@ -87,11 +93,15 @@ func IgnoredPaths(ctx context.Context, run CommandRunner, workdir string) ([]str
 }
 
 // WriteExcludeFile writes an rsync exclude list into dir: ".git" at any
-// depth (a directory, or the file a `git worktree` checkout has), then each
+// depth (a directory, or the file a `git worktree` checkout has), the files
+// the sandbox hides in every workdir (such as .env) at any depth, then each
 // ignored path anchored at the transfer root.
 func WriteExcludeFile(dir string, ignored []string) (string, error) {
 	var b strings.Builder
 	b.WriteString(".git\n")
+	for _, name := range sandboxprofile.PlatformBaseline().WorkdirProtected {
+		b.WriteString(rsyncLiteral(name) + "\n")
+	}
 	for _, p := range ignored {
 		// rsync reads one pattern per line; a newline in a name cannot be expressed.
 		if strings.ContainsAny(p, "\r\n") {
@@ -213,7 +223,7 @@ func Exec(ctx context.Context, o ExecOpts) (int, error) {
 		return 1, err
 	}
 	if !isRepo {
-		logf("omac vm exec: %s is not a git work tree; copying everything except .git", o.Workdir)
+		fmt.Fprintf(o.Stderr, "omac vm exec: %s is not a git work tree; copying everything except .git and .env files\n", o.Workdir)
 	}
 	tmp, err := os.MkdirTemp("", "omac-vm-exec-")
 	if err != nil {

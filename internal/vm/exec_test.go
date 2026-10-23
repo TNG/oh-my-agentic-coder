@@ -14,6 +14,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
 )
 
 func TestWorktreeSlug(t *testing.T) {
@@ -76,8 +78,20 @@ func TestIgnoredPathsUsesGit(t *testing.T) {
 	}
 }
 
-func TestWriteExcludeFile(t *testing.T) {
-	p, err := WriteExcludeFile(t.TempDir(), []string{"build/", "x.log", "foo[1]", `a*b?\c`, `plain\name`})
+func TestIgnoredPathsFailsOnOtherGitErrors(t *testing.T) {
+	run := func(_ context.Context, _ string, _ []string, _ io.Reader, _, stderr io.Writer) error {
+		_, _ = io.WriteString(stderr, "fatal: detected dubious ownership in repository at '/w/repo'\n")
+		return exitErr(t, 128)
+	}
+	_, _, err := IgnoredPaths(context.Background(), run, "/w/repo")
+	if err == nil || !strings.Contains(err.Error(), "dubious ownership") {
+		t.Fatalf("err = %v, want the git error instead of copying everything", err)
+	}
+}
+
+func readExcludeFile(t *testing.T, ignored []string) []string {
+	t.Helper()
+	p, err := WriteExcludeFile(t.TempDir(), ignored)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,12 +99,39 @@ func TestWriteExcludeFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// ".git" without a slash also matches the .git FILE of a `git worktree`
-	// checkout; glob characters in names are escaped so they match literally.
-	// rsync treats backslashes as escapes only in patterns with a wildcard,
-	// so a name without one is written unchanged.
-	if want := ".git\n/build/\n/x.log\n/foo\\[1\\]\n/a\\*b\\?\\\\c\n/plain\\name\n"; string(raw) != want {
-		t.Fatalf("exclude file = %q, want %q", raw, want)
+	return strings.Split(strings.TrimSuffix(string(raw), "\n"), "\n")
+}
+
+func TestWriteExcludeFileAlwaysExcludesProtectedFiles(t *testing.T) {
+	protected := sandboxprofile.PlatformBaseline().WorkdirProtected
+	if !slices.Contains(protected, ".env") {
+		t.Fatalf("baseline lacks .env: %q", protected)
+	}
+	lines := readExcludeFile(t, nil)
+	// Unanchored, so they match at any depth; ".git" also matches the
+	// .git file of a `git worktree` checkout.
+	if want := append([]string{".git"}, protected...); !slices.Equal(lines, want) {
+		t.Fatalf("exclude file = %q, want %q", lines, want)
+	}
+}
+
+func TestWriteExcludeFileAnchorsIgnoredPaths(t *testing.T) {
+	for _, c := range []struct{ name, ignored, want string }{
+		{"directory", "build/", "/build/"},
+		{"plain file", "x.log", "/x.log"},
+		{"brackets escaped", "foo[1]", `/foo\[1\]`},
+		{"wildcards and backslash escaped", `a*b?\c`, `/a\*b\?\\c`},
+		{"backslash kept without wildcard", `plain\name`, `/plain\name`},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			lines := readExcludeFile(t, []string{c.ignored})
+			if got := lines[len(lines)-1]; got != c.want {
+				t.Fatalf("pattern = %q, want %q", got, c.want)
+			}
+		})
+	}
+	if lines := readExcludeFile(t, []string{"a\nb"}); slices.Contains(lines, "/a") {
+		t.Fatalf("a name with a newline split into patterns: %q", lines)
 	}
 }
 
@@ -201,12 +242,17 @@ type execFakes struct {
 	rsyncErr error
 	remotes  []string
 	cmdErr   error
+	notRepo  error // returned by `git rev-parse`, with git's "not a git repository" message
 }
 
-func (f *execFakes) run(_ context.Context, name string, args []string, _ io.Reader, stdout, _ io.Writer) error {
+func (f *execFakes) run(_ context.Context, name string, args []string, _ io.Reader, stdout, stderr io.Writer) error {
 	f.runCalls = append(f.runCalls, name)
 	switch name {
 	case "git":
+		if f.notRepo != nil {
+			_, _ = io.WriteString(stderr, "fatal: not a git repository (or any of the parent directories): .git\n")
+			return f.notRepo
+		}
 		// Pretend the workdir is a repository with one ignored directory.
 		if slices.Contains(args, "ls-files") {
 			_, _ = io.WriteString(stdout, "build/\x00")
@@ -269,7 +315,7 @@ func TestExecRunsRsyncThenSSH(t *testing.T) {
 	if n := len(f.rsync); n < 2 || f.rsync[n-2] != "/w/My Repo/" || f.rsync[n-1] != "alice@127.0.0.1:omac/"+slug+"/" {
 		t.Fatalf("rsync args = %q", f.rsync)
 	}
-	if f.excludes != ".git\n/build/\n" {
+	if !strings.HasPrefix(f.excludes, ".git\n.env\n") || !strings.HasSuffix(f.excludes, "\n/build/\n") {
 		t.Fatalf("exclude file = %q", f.excludes)
 	}
 	if len(f.remotes) != 2 {
@@ -297,6 +343,22 @@ func TestExecCleansWorkdir(t *testing.T) {
 	}
 	if n := len(f.rsync); f.rsync[n-1] != "alice@127.0.0.1:"+RemoteDir(slug) {
 		t.Fatalf("rsync target = %q", f.rsync[n-1])
+	}
+}
+
+func TestExecWarnsOutsideRepoWithoutVerbose(t *testing.T) {
+	f := &execFakes{notRepo: exitErr(t, 128)}
+	var stderr bytes.Buffer
+	o := f.opts("/w/plain", io.Discard)
+	o.Stderr = &stderr
+	if _, err := Exec(context.Background(), o); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stderr.String(), "not a git work tree") {
+		t.Fatalf("stderr = %q, want the non-repo warning", stderr.String())
+	}
+	if !strings.Contains(f.excludes, "\n.env\n") {
+		t.Fatalf("exclude file outside a repo = %q, want the protected files", f.excludes)
 	}
 }
 
