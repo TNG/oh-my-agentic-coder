@@ -37,22 +37,34 @@ func TestWorktreeSlug(t *testing.T) {
 	}
 }
 
-func TestIgnoredPathsUsesGit(t *testing.T) {
+// git runs a real git command in dir and fails the test on error.
+func git(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	var stderr bytes.Buffer
+	args = append([]string{"-C", dir, "-c", "user.name=t", "-c", "user.email=t@t", "-c", "protocol.file.allow=always"}, args...)
+	if err := ExecRunner(context.Background(), "git", args, nil, io.Discard, &stderr); err != nil {
+		t.Fatalf("git %q: %v: %s", args, err, stderr.String())
+	}
+}
+
+// newRepo creates a git repository with files (name → content) and returns
+// its path with symlinks resolved, as git reports it.
+func newRepo(t *testing.T, files map[string]string) string {
+	t.Helper()
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not installed")
 	}
-	ctx := context.Background()
-	dir := t.TempDir()
-	if err := ExecRunner(ctx, "git", []string{"init", "-q", dir}, nil, io.Discard, io.Discard); err != nil {
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
 		t.Fatal(err)
 	}
-	files := map[string]string{
-		".gitignore":   "build/\n*.log\n",
-		"build/out.o":  "x",
-		"x.log":        "x",
-		"src/main.go":  "package main",
-		"src/keep.txt": "x",
-	}
+	git(t, dir, "init", "-q")
+	writeFiles(t, dir, files)
+	return dir
+}
+
+func writeFiles(t *testing.T, dir string, files map[string]string) {
+	t.Helper()
 	for name, body := range files {
 		p := filepath.Join(dir, name)
 		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
@@ -62,30 +74,86 @@ func TestIgnoredPathsUsesGit(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	got, ok, err := IgnoredPaths(ctx, ExecRunner, dir)
-	if err != nil || !ok {
-		t.Fatalf("IgnoredPaths = %v, %v", ok, err)
-	}
-	slices.Sort(got)
-	if want := []string{"build/", "x.log"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("ignored = %q, want %q", got, want)
+}
+
+func TestRepoRoot(t *testing.T) {
+	ctx := context.Background()
+	top := newRepo(t, map[string]string{"backend/src/a.go": "package a"})
+	for dir, wantPrefix := range map[string]string{
+		top:                                  "",
+		filepath.Join(top, "backend"):        "backend",
+		filepath.Join(top, "backend", "src"): "backend/src",
+	} {
+		got, prefix, ok, err := RepoRoot(ctx, ExecRunner, dir)
+		if err != nil || !ok || got != top || prefix != wantPrefix {
+			t.Errorf("RepoRoot(%s) = %q, %q, %v, %v; want %q, %q, true", dir, got, prefix, ok, err, top, wantPrefix)
+		}
 	}
 
-	plain := t.TempDir()
-	got, ok, err = IgnoredPaths(ctx, ExecRunner, plain)
-	if err != nil || ok || len(got) != 0 {
-		t.Fatalf("non-repo: %q, %v, %v; want empty, false, nil", got, ok, err)
+	if _, _, ok, err := RepoRoot(ctx, ExecRunner, t.TempDir()); err != nil || ok {
+		t.Errorf("non-repo: ok = %v, err = %v; want false, nil", ok, err)
 	}
 }
 
-func TestIgnoredPathsFailsOnOtherGitErrors(t *testing.T) {
+func TestRepoRootFailsOnOtherGitErrors(t *testing.T) {
 	run := func(_ context.Context, _ string, _ []string, _ io.Reader, _, stderr io.Writer) error {
 		_, _ = io.WriteString(stderr, "fatal: detected dubious ownership in repository at '/w/repo'\n")
 		return exitErr(t, 128)
 	}
-	_, _, err := IgnoredPaths(context.Background(), run, "/w/repo")
+	_, _, _, err := RepoRoot(context.Background(), run, "/w/repo")
 	if err == nil || !strings.Contains(err.Error(), "dubious ownership") {
 		t.Fatalf("err = %v, want the git error instead of copying everything", err)
+	}
+}
+
+func TestIgnoredPathsUsesGit(t *testing.T) {
+	top := newRepo(t, map[string]string{
+		".gitignore":   "build/\n*.log\ngen/\n",
+		"build/out.o":  "x",
+		"x.log":        "x",
+		"src/main.go":  "package main",
+		"src/keep.txt": "x",
+		"gen/a/b.txt":  "x", // a subdirectory whose content is all ignored
+	})
+	got, err := IgnoredPaths(context.Background(), ExecRunner, top)
+	if err != nil {
+		t.Fatal(err)
+	}
+	slices.Sort(got)
+	if want := []string{"build/", "gen/", "x.log"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("ignored = %q, want %q", got, want)
+	}
+}
+
+func TestIgnoredPathsIncludesSubmodules(t *testing.T) {
+	lib := newRepo(t, map[string]string{".gitignore": "out/\n", "lib.go": "package lib"})
+	git(t, lib, "add", ".")
+	git(t, lib, "commit", "-qm", "init")
+	top := newRepo(t, map[string]string{".gitignore": "build/\n", "build/x": "x"})
+	git(t, top, "submodule", "add", "-q", lib, "libs/lib")
+	writeFiles(t, top, map[string]string{"libs/lib/out/o.class": "x"})
+
+	got, err := IgnoredPaths(context.Background(), ExecRunner, top)
+	if err != nil {
+		t.Fatal(err)
+	}
+	slices.Sort(got)
+	if want := []string{"build/", "libs/lib/out/"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("ignored = %q, want %q", got, want)
+	}
+}
+
+func TestIgnoredPathsDropsBareDot(t *testing.T) {
+	// git prints "./" for a listed directory whose content is all ignored.
+	run := func(_ context.Context, _ string, args []string, _ io.Reader, stdout, _ io.Writer) error {
+		if slices.Contains(args, "ls-files") {
+			_, _ = io.WriteString(stdout, "./\x00build/\x00")
+		}
+		return nil
+	}
+	got, err := IgnoredPaths(context.Background(), run, "/w/repo")
+	if err != nil || !reflect.DeepEqual(got, []string{"build/"}) {
+		t.Fatalf("IgnoredPaths = %q, %v; want [build/]", got, err)
 	}
 }
 
@@ -243,6 +311,9 @@ type execFakes struct {
 	remotes  []string
 	cmdErr   error
 	notRepo  error // returned by `git rev-parse`, with git's "not a git repository" message
+	// top and prefix are what `git rev-parse --show-toplevel --show-prefix`
+	// prints; by default the workdir is the top level.
+	top, prefix string
 }
 
 func (f *execFakes) run(_ context.Context, name string, args []string, _ io.Reader, stdout, stderr io.Writer) error {
@@ -253,9 +324,18 @@ func (f *execFakes) run(_ context.Context, name string, args []string, _ io.Read
 			_, _ = io.WriteString(stderr, "fatal: not a git repository (or any of the parent directories): .git\n")
 			return f.notRepo
 		}
-		// Pretend the workdir is a repository with one ignored directory.
-		if slices.Contains(args, "ls-files") {
-			_, _ = io.WriteString(stdout, "build/\x00")
+		switch {
+		case slices.Contains(args, "rev-parse"):
+			top := f.top
+			if top == "" {
+				top = args[1] // git -C <dir>
+			}
+			_, _ = io.WriteString(stdout, top+"\n"+f.prefix+"\n")
+		case slices.Contains(args, "ls-files"):
+			// One ignored directory, in the top level only.
+			if args[1] == f.top || f.top == "" {
+				_, _ = io.WriteString(stdout, "build/\x00")
+			}
 		}
 		return nil
 	case "rsync":
@@ -343,6 +423,57 @@ func TestExecCleansWorkdir(t *testing.T) {
 	}
 	if n := len(f.rsync); f.rsync[n-1] != "alice@127.0.0.1:"+RemoteDir(slug) {
 		t.Fatalf("rsync target = %q", f.rsync[n-1])
+	}
+}
+
+func TestExecCopiesTopLevelFromSubdir(t *testing.T) {
+	// Run from <repo>/backend with --cwd sub: the copy is the whole
+	// repository, and the command runs in backend/sub of it.
+	f := &execFakes{top: "/w/repo", prefix: "backend/"}
+	if _, err := Exec(context.Background(), f.opts("/w/repo/backend", io.Discard)); err != nil {
+		t.Fatal(err)
+	}
+	slug := WorktreeSlug("/w/repo")
+	if n := len(f.rsync); f.rsync[n-2] != "/w/repo/" || f.rsync[n-1] != "alice@127.0.0.1:"+RemoteDir(slug) {
+		t.Fatalf("rsync = %q, want the top level copied to %s", f.rsync, RemoteDir(slug))
+	}
+	if f.remotes[0] != registerCmd(slug, "/w/repo") {
+		t.Fatalf("registration = %s", f.remotes[0])
+	}
+	if want, _ := RemoteCommand(RemoteDir(slug), "backend/sub", []string{"A=b c"}, []string{"make", "test"}); f.remotes[1] != want {
+		t.Fatalf("command = %s, want %s", f.remotes[1], want)
+	}
+}
+
+func TestExecFromSubdirOfRealRepo(t *testing.T) {
+	top := newRepo(t, map[string]string{".gitignore": "build/\n", "build/x": "x", "backend/b.txt": "b"})
+	f := &execFakes{}
+	run := func(ctx context.Context, name string, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
+		if name == "git" {
+			return ExecRunner(ctx, name, args, stdin, stdout, stderr)
+		}
+		return f.run(ctx, name, args, stdin, stdout, stderr)
+	}
+	slug := WorktreeSlug(top)
+	for _, c := range []struct{ workdir, cwd string }{
+		{top, "backend"},                    // omac vm exec --cwd backend, from the top level
+		{filepath.Join(top, "backend"), ""}, // omac vm exec, from backend/
+	} {
+		f.remotes = nil
+		o := f.opts(c.workdir, io.Discard)
+		o.Cwd, o.Run = c.cwd, run
+		if _, err := Exec(context.Background(), o); err != nil {
+			t.Fatal(err)
+		}
+		if n := len(f.rsync); f.rsync[n-2] != top+"/" {
+			t.Errorf("from %s: rsync source = %q, want %s/", c.workdir, f.rsync[n-2], top)
+		}
+		if want, _ := RemoteCommand(RemoteDir(slug), "backend", []string{"A=b c"}, []string{"make", "test"}); f.remotes[1] != want {
+			t.Errorf("from %s: command = %s, want %s", c.workdir, f.remotes[1], want)
+		}
+		if !strings.HasSuffix(f.excludes, "\n/build/\n") {
+			t.Errorf("from %s: exclude file = %q", c.workdir, f.excludes)
+		}
 	}
 }
 

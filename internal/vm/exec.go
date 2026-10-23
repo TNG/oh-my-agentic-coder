@@ -62,34 +62,65 @@ func RemoteDir(slug string) string {
 	return "omac/" + slug + "/"
 }
 
-// IgnoredPaths lists the paths git ignores in workdir, relative to it;
-// ignored directories are listed once, with a trailing slash. ok is false
-// when workdir is not inside a git work tree. Any other git failure, such
-// as "detected dubious ownership", is an error: copying everything could
-// leak what .gitignore keeps out.
-func IgnoredPaths(ctx context.Context, run CommandRunner, workdir string) ([]string, bool, error) {
-	var stderr bytes.Buffer
-	err := run(ctx, "git", []string{"-C", workdir, "rev-parse", "--is-inside-work-tree"}, nil, io.Discard, &stderr)
+// RepoRoot finds the git top level of dir and dir's path relative to it
+// ("" at the top level). ok is false when dir is not inside a git work
+// tree. Any other git failure, such as "detected dubious ownership", is an
+// error: copying everything could leak what .gitignore keeps out.
+func RepoRoot(ctx context.Context, run CommandRunner, dir string) (top, prefix string, ok bool, err error) {
+	var out, stderr bytes.Buffer
+	err = run(ctx, "git", []string{"-C", dir, "rev-parse", "--show-toplevel", "--show-prefix"}, nil, &out, &stderr)
 	var ee *exec.ExitError
 	if errors.As(err, &ee) && strings.Contains(stderr.String(), "not a git repository") {
-		return nil, false, nil
+		return "", "", false, nil
 	}
 	if err != nil {
-		return nil, false, fmt.Errorf("omac vm exec: git rev-parse: %w: %s", err, strings.TrimSpace(stderr.String()))
+		return "", "", false, gitError("rev-parse", err, &stderr)
 	}
-	var out bytes.Buffer
-	stderr.Reset()
-	args := []string{"-C", workdir, "ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"}
-	if err := run(ctx, "git", args, nil, &out, &stderr); err != nil {
-		return nil, false, fmt.Errorf("omac vm exec: git ls-files: %w: %s", err, strings.TrimSpace(stderr.String()))
+	lines := strings.Split(out.String(), "\n")
+	if len(lines) < 2 || !filepath.IsAbs(lines[0]) {
+		return "", "", false, fmt.Errorf("omac vm exec: unexpected git rev-parse output %q", out.String())
 	}
-	var paths []string
-	for _, p := range strings.Split(out.String(), "\x00") {
-		if p != "" {
-			paths = append(paths, p)
+	return lines[0], strings.TrimSuffix(lines[1], "/"), true, nil
+}
+
+// IgnoredPaths lists the paths git ignores in the repository at top and in
+// its checked-out submodules, relative to top; ignored directories are
+// listed once, with a trailing slash.
+func IgnoredPaths(ctx context.Context, run CommandRunner, top string) ([]string, error) {
+	var out, stderr bytes.Buffer
+	foreach := []string{"-C", top, "submodule", "--quiet", "foreach", "--recursive", `echo "$displaypath"`}
+	if err := run(ctx, "git", foreach, nil, &out, &stderr); err != nil {
+		return nil, gitError("submodule foreach", err, &stderr)
+	}
+	roots := []string{""}
+	for line := range strings.Lines(out.String()) {
+		if sub := strings.TrimRight(line, "\r\n"); sub != "" {
+			roots = append(roots, sub+"/")
 		}
 	}
-	return paths, true, nil
+	var paths []string
+	for _, root := range roots {
+		out.Reset()
+		stderr.Reset()
+		args := []string{"-C", filepath.Join(top, root), "ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"}
+		if err := run(ctx, "git", args, nil, &out, &stderr); err != nil {
+			return nil, gitError("ls-files", err, &stderr)
+		}
+		for _, p := range strings.Split(out.String(), "\x00") {
+			// git prints "./" when everything it lists is ignored. In a
+			// submodule that excludes the submodule; a bare "./" is dropped.
+			if p == "./" && root != "" {
+				paths = append(paths, root)
+			} else if p != "" && p != "./" {
+				paths = append(paths, root+p)
+			}
+		}
+	}
+	return paths, nil
+}
+
+func gitError(step string, err error, stderr *bytes.Buffer) error {
+	return fmt.Errorf("omac vm exec: git %s: %w: %s", step, err, strings.TrimSpace(stderr.String()))
 }
 
 // WriteExcludeFile writes an rsync exclude list into dir: ".git" at any
@@ -131,19 +162,28 @@ func RsyncArgs(workdir, excludeFile string, t SSHTarget, remoteDir string) []str
 
 var envNameRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
+// ValidateCwd accepts a working directory relative to the copy that does
+// not leave it.
+func ValidateCwd(cwd string) error {
+	if strings.HasPrefix(cwd, "/") {
+		return fmt.Errorf("omac vm exec: working directory %q must be relative to the worktree", cwd)
+	}
+	for _, part := range strings.Split(cwd, "/") {
+		if part == ".." {
+			return fmt.Errorf("omac vm exec: working directory %q leaves the worktree", cwd)
+		}
+	}
+	return nil
+}
+
 // RemoteCommand is the shell line that runs cmd in remoteDir/cwd with envs
 // ("NAME=VALUE") set. Every user-controlled part is single-quoted.
 func RemoteCommand(remoteDir, cwd string, envs []string, cmd []string) (string, error) {
 	if len(cmd) == 0 {
 		return "", errors.New("omac vm exec: no command given")
 	}
-	if strings.HasPrefix(cwd, "/") {
-		return "", fmt.Errorf("omac vm exec: working directory %q must be relative to the worktree", cwd)
-	}
-	for _, part := range strings.Split(cwd, "/") {
-		if part == ".." {
-			return "", fmt.Errorf("omac vm exec: working directory %q leaves the worktree", cwd)
-		}
+	if err := ValidateCwd(cwd); err != nil {
+		return "", err
 	}
 	var b strings.Builder
 	b.WriteString("cd " + ShellQuote(path.Join(remoteDir, cwd)) + " && exec ")
@@ -183,7 +223,8 @@ func ResolveEnv(specs []string, getenv func(string) string) ([]string, error) {
 	return out, nil
 }
 
-// ExecOpts configures Exec. Workdir must be absolute; Cwd is relative to it.
+// ExecOpts configures Exec. Workdir must be absolute; Cwd is relative to
+// it. Inside a git repository, Exec copies the repository's top level.
 type ExecOpts struct {
 	Workdir string
 	Cwd     string
@@ -198,9 +239,10 @@ type ExecOpts struct {
 	Log     func(string, ...any)
 }
 
-// Exec records the copy in ~/omac/.worktrees, copies Workdir into the VM
-// (one way, never deleting there), and runs Cmd in it. It returns
-// the remote command's exit code; err is set only when omac itself failed.
+// Exec records the copy in ~/omac/.worktrees, copies the git top level of
+// Workdir (or Workdir outside a repository) into the VM (one way, never
+// deleting there), and runs Cmd in it. It returns the remote command's
+// exit code; err is set only when omac itself failed.
 func Exec(ctx context.Context, o ExecOpts) (int, error) {
 	logf := o.Log
 	if logf == nil {
@@ -209,22 +251,38 @@ func Exec(ctx context.Context, o ExecOpts) (int, error) {
 	if !filepath.IsAbs(o.Workdir) || strings.ContainsAny(o.Workdir, "\r\n") {
 		return 1, fmt.Errorf("omac vm exec: workdir %q must be an absolute path without newlines", o.Workdir)
 	}
+	if len(o.Cmd) == 0 {
+		return 1, errors.New("omac vm exec: no command given")
+	}
+	if err := ValidateCwd(o.Cwd); err != nil {
+		return 1, err
+	}
 	// One slug and one registry line per directory, however it was spelled.
-	o.Workdir = filepath.Clean(o.Workdir)
-	slug := WorktreeSlug(o.Workdir)
+	root := filepath.Clean(o.Workdir)
+	cwd := o.Cwd
+	top, prefix, isRepo, err := RepoRoot(ctx, o.Run, root)
+	if err != nil {
+		return 1, err
+	}
+	var ignored []string
+	if isRepo {
+		root, cwd = top, path.Join(prefix, cwd)
+		if ignored, err = IgnoredPaths(ctx, o.Run, top); err != nil {
+			return 1, err
+		}
+	} else {
+		fmt.Fprintf(o.Stderr, "omac vm exec: %s is not a git work tree; copying everything except .git and .env files\n", root)
+	}
+	if strings.ContainsAny(root, "\r\n") {
+		return 1, fmt.Errorf("omac vm exec: copy root %q contains a newline", root)
+	}
+	slug := WorktreeSlug(root)
 	remoteDir := RemoteDir(slug)
-	remote, err := RemoteCommand(remoteDir, o.Cwd, o.Env, o.Cmd)
+	remote, err := RemoteCommand(remoteDir, cwd, o.Env, o.Cmd)
 	if err != nil {
 		return 1, err
 	}
 
-	ignored, isRepo, err := IgnoredPaths(ctx, o.Run, o.Workdir)
-	if err != nil {
-		return 1, err
-	}
-	if !isRepo {
-		fmt.Fprintf(o.Stderr, "omac vm exec: %s is not a git work tree; copying everything except .git and .env files\n", o.Workdir)
-	}
 	tmp, err := os.MkdirTemp("", "omac-vm-exec-")
 	if err != nil {
 		return 1, fmt.Errorf("omac vm exec: temp dir: %w", err)
@@ -235,11 +293,11 @@ func Exec(ctx context.Context, o ExecOpts) (int, error) {
 		return 1, err
 	}
 
-	if err := o.SSH(ctx, o.Conn.Target, nil, io.Discard, o.Stderr, registerCmd(slug, o.Workdir)); err != nil {
+	if err := o.SSH(ctx, o.Conn.Target, nil, io.Discard, o.Stderr, registerCmd(slug, root)); err != nil {
 		return 1, sshError("register worktree", err)
 	}
-	logf("omac vm exec: copying %s to the VM (%s)", o.Workdir, remoteDir)
-	if err := o.Run(ctx, "rsync", RsyncArgs(o.Workdir, excludeFile, o.Conn.Target, remoteDir), nil, o.Stderr, o.Stderr); err != nil {
+	logf("omac vm exec: copying %s to the VM (%s)", root, remoteDir)
+	if err := o.Run(ctx, "rsync", RsyncArgs(root, excludeFile, o.Conn.Target, remoteDir), nil, o.Stderr, o.Stderr); err != nil {
 		return 1, fmt.Errorf("omac vm exec: rsync to the VM failed: %w", err)
 	}
 

@@ -254,9 +254,10 @@ func vmExecMisuse(env *Env, msg string) int {
 }
 
 const vmExecUsage = `  omac vm exec [--cwd <dir>] [--env NAME[=VALUE]]... [--verbose] -- <cmd...>
-                               Copies the worktree into the VM (one way, skipping what git ignores),
-                               runs the command there, in <dir> relative to the worktree if given;
-                               results such as build output stay in the VM and are not copied back.`
+                               Copies the worktree (the git top level) into the VM, one way, skipping
+                               .git, .env files and what git ignores. Runs the command there, in the
+                               current directory or in <dir> relative to it. Results such as build
+                               output stay in the VM and are not copied back.`
 
 func printVMExecUsage(w io.Writer) {
 	fmt.Fprintln(w, "Usage:\n"+vmExecUsage)

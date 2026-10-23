@@ -201,7 +201,7 @@ omac cache clear --all  # remove all caches not currently in use
 
 ### omac vm
 
-The omac VM is one long-lived Linux virtual machine per computer, which omac creates and manages with [Lima](https://lima-vm.io). Docker runs inside it, and a session started with `--vm` uses that Docker instead of one on your host. The VM does not mount your host files. Only `omac vm exec` copies the current worktree into it, and those copies stay in the VM. The VM has no network access, except while `omac vm up` or `omac vm up --reprovision` sets it up and while it is online.
+The omac VM is one long-lived Linux virtual machine per computer, which omac creates and manages with [Lima](https://lima-vm.io). Docker runs inside it, and a session started with `--vm` uses that Docker instead of one on your host. The VM does not mount your host files. Only `omac vm exec` copies the current worktree (the git top level) into it, and those copies stay in the VM. The VM has no network access, except while `omac vm up` or `omac vm up --reprovision` sets it up and while it is online.
 
 ```bash
 omac vm up                     # create and provision once, then switch offline (needs network once)
@@ -226,7 +226,7 @@ The VM is either `offline` (the default) or `online`. Sessions attach only while
 
 `omac vm up --reprovision` reinstalls the extra packages listed in `vm.yaml`, and `omac vm reset` deletes the VM and creates it anew. For CPUs, memory, disk, packages and Java versions, see [omac VM (vm.yaml)](../configuration.md#omac-vm-vmyaml).
 
-`omac vm exec` runs a command inside the VM on a copy of your worktree, for example a Gradle build that needs more memory or tools than the sandbox has. It works from your host and from inside a session.
+`omac vm exec` runs a command inside the VM on a copy of your worktree (the git top level), for example a Gradle build that needs more memory or tools than the sandbox has. It works from your host and from inside a session.
 
 ```bash
 omac vm exec -- ./gradlew test --offline            # copies the worktree into the VM first, then runs there
@@ -234,7 +234,7 @@ omac vm exec --cwd backend -- ./gradlew test --offline
 omac vm exec -- cat backend/build/reports/tests/test/index.html   # results stay in the VM; read them back like this
 ```
 
-Each run first copies the current directory into the VM, then runs the command there. `--cwd <dir>` runs it in a subdirectory of the worktree. `--env NAME` passes the variable `NAME` with the value from your shell. The variable must be set there, otherwise the command fails before anything runs. `--env NAME=VALUE` sets the value explicitly. Repeat `--env` for more variables.
+The command runs in the same place inside the copy as your current directory is in the worktree. `--cwd <dir>` runs it in `<dir>`, relative to the current directory. So `omac vm exec --cwd backend -- …` from the repository root and `omac vm exec -- …` from `backend/` both run in `backend`. Outside a git repository, omac copies the current directory. `--env NAME` passes the variable `NAME` with the value from your shell. The variable must be set there, otherwise the command fails before anything runs. `--env NAME=VALUE` sets the value explicitly. Repeat `--env` for more variables.
 
 The copy goes one way only:
 

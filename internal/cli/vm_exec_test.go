@@ -208,7 +208,7 @@ func TestVMExecHelp(t *testing.T) {
 			t.Fatalf("%s: exit = %d", h, code)
 		}
 		out := stdout()
-		for _, want := range []string{"omac vm exec", "--cwd", "--env", "Copies the worktree", "runs the command", "stay in the VM"} {
+		for _, want := range []string{"omac vm exec", "--cwd", "--env", "Copies the worktree (the git top level)", "Runs the command", "stay in the VM"} {
 			if !strings.Contains(out, want) {
 				t.Errorf("%s: stdout lacks %q:\n%s", h, want, out)
 			}
