@@ -327,7 +327,7 @@ func printVMUsage(env *Env) {
 	fmt.Fprintln(env.Stderr, `omac vm — persistent Lima VM that runs Docker for omac sessions
 
 Usage:
-  omac vm up [--reprovision]   Create or start the VM offline; --reprovision reinstalls the packages from vm.yaml.
+  omac vm up [--reprovision]   Create or start the VM offline; --reprovision reinstalls the packages and JDKs from vm.yaml.
   omac vm down                 Stop the VM.
   omac vm reset                Delete the VM with all its host-side state and create it anew.
   omac vm status               Show whether the VM runs, its mode, ports, resources, images, JDKs, packages, copied worktrees and attached sessions.

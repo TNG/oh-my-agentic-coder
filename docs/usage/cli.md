@@ -205,7 +205,7 @@ The omac VM is one long-lived Linux virtual machine per computer, which omac cre
 
 ```bash
 omac vm up                     # create and provision once, then switch offline (needs network once)
-omac vm status                 # show state, mode, ports, images, copied worktrees, sessions and the resources set in vm.yaml
+omac vm status                 # show state, mode, ports, resources, packages, JDKs, copied worktrees, images and sessions
 omac vm image add postgres:16  # import an image; the VM never pulls itself
 omac vm image list             # list the VM's images
 omac vm image rm postgres:16   # remove an image from the VM
@@ -224,23 +224,27 @@ Container ports published in the range 30000 to 30099 (for example `docker run -
 
 The VM is either `offline` (the default) or `online`. Sessions attach only while it is offline. `omac vm online`, `omac vm up --reprovision` and `omac vm reset` take the VM online, so they are refused while a session is attached.
 
-`omac vm up --reprovision` reinstalls the extra packages listed in `vm.yaml`, and `omac vm reset` deletes the VM and creates it anew. For CPUs, memory, disk, packages and Java versions, see [omac VM (vm.yaml)](../configuration.md#omac-vm-vmyaml).
+`omac vm up --reprovision` reinstalls the extra packages and JDKs listed in `vm.yaml`, and `omac vm reset` deletes the VM and creates it anew. For CPUs, memory, disk, packages and Java versions, see [omac VM (vm.yaml)](../configuration.md#omac-vm-vmyaml).
 
-`omac vm exec` runs a command inside the VM on a copy of your worktree (the git top level), for example a Gradle build that needs more memory or tools than the sandbox has. It works from your host and from inside a session.
+`omac vm exec` runs a command inside the VM on a copy of your worktree (the git top level), for example a Gradle build that needs more memory or tools than the sandbox has. It works from your host and from inside a session started with `--vm`.
 
 ```bash
-omac vm exec -- ./gradlew test --offline            # copies the worktree into the VM first, then runs there
+omac vm exec -- ./gradlew test --offline
 omac vm exec --cwd backend -- ./gradlew test --offline
 omac vm exec -- cat backend/build/reports/tests/test/index.html   # results stay in the VM; read them back like this
 ```
 
-The command runs in the same place inside the copy as your current directory is in the worktree. `--cwd <dir>` runs it in `<dir>`, relative to the current directory. So `omac vm exec --cwd backend -- …` from the repository root and `omac vm exec -- …` from `backend/` both run in `backend`. Outside a git repository, omac copies the current directory. `--env NAME` passes the variable `NAME` with the value from your shell. The variable must be set there, otherwise the command fails before anything runs. `--env NAME=VALUE` sets the value explicitly. Repeat `--env` for more variables.
+The command runs in the same place inside the copy as your current directory is in the worktree. `--cwd <dir>` runs it in `<dir>`, relative to the current directory. So `omac vm exec --cwd backend -- …` from the repository root and `omac vm exec -- …` from `backend/` both run in `backend`. Outside a git repository, omac copies the current directory.
+
+`--env NAME` passes the variable `NAME` with the value from your shell. The variable must be set there, otherwise the command fails before anything runs. `--env NAME=VALUE` sets the value explicitly. Repeat `--env` for more variables. `--env` is meant for priming, see below. `--verbose` prints which directory omac copies and where it goes in the VM.
+
+omac returns the command's exit code as is. That code can coincide with omac's own exit codes 2 (wrong usage), 4 (VM not created) and 5 (copy or connection failed). For example, a command that ends with `exit 5` looks like a failed copy, so check the error message on stderr.
 
 When your input is a terminal, the command gets one in the VM too, and Ctrl-C stops it there. Without a terminal, for example when you pipe input into `omac vm exec`, Ctrl-C stops only omac and the command keeps running in the VM.
 
 The copy goes one way only:
 
-- `.git` and the paths git ignores, such as `build/`, `.gradle/` and `node_modules/`, are not copied.
+- `.git`, the `.env` files the sandbox hides, and the paths git ignores, also inside submodules, are not copied. `build/`, `.gradle/` and `node_modules/` stay out only if `.gitignore` lists them.
 - Nothing on your host is deleted or changed.
 - Files you delete on the host are not removed from the copy in the VM. If a stale file gets in the way, run `omac vm exec -- rm -rf <path>` or `omac vm reset`.
 - Nothing is copied back from the VM. Build output stays there, so read it with another `omac vm exec`.
