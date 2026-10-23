@@ -30,9 +30,9 @@ provision:
       ln -sf /run/systemd/resolve/resolv.conf /etc/resolv.conf
       cat > /etc/omac-vmguard.nft <<'OMACVMGUARD'
       # omac-vmguard: network boundary of the omac VM in offline mode.
-      # Hooks after Docker's own chains (priority filter + 10) and drops every
-      # packet that leaves the VM, except loopback and replies to inbound
-      # connections such as the forwarded Docker API port.
+      # The output chain rejects every packet that leaves the VM, except
+      # loopback and replies to inbound connections such as the forwarded
+      # Docker API port. The forward chain drops forwarded packets the same way.
       table inet omac-vmguard {
         chain output {
           type filter hook output priority filter + 10; policy drop;

@@ -1,11 +1,15 @@
 package vm
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -103,6 +107,55 @@ func TestInspectRejectsGarbage(t *testing.T) {
 	run := fakeLima(t, "/lh", "not json\n", nil)
 	if _, err := Inspect(context.Background(), run, "/lh"); err == nil {
 		t.Fatal("Inspect accepted non-JSON output")
+	}
+}
+
+// Before the VM exists, `limactl list` prints "No instance found. Run
+// limactl create" to stderr, which points users at the wrong tool. A call
+// that captures stdout keeps stderr for its error; other calls show
+// limactl's progress on omac's stderr.
+func TestDefaultLimaCtlStderr(t *testing.T) {
+	bin := t.TempDir()
+	script := "#!/bin/sh\necho 'No instance found. Run limactl create' >&2\n[ \"$1\" = fail ] && exit 3\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(bin, "limactl"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	errFile, err := os.CreateTemp(t.TempDir(), "stderr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	orig := os.Stderr
+	os.Stderr = errFile
+	t.Cleanup(func() { os.Stderr = orig })
+	printed := func() string {
+		b, err := os.ReadFile(errFile.Name())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	ctx := context.Background()
+
+	var out bytes.Buffer
+	if err := DefaultLimaCtl(ctx, t.TempDir(), &out, "list", "--json"); err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if got := printed(); got != "" {
+		t.Errorf("successful list printed %q to stderr, want nothing", got)
+	}
+	err = DefaultLimaCtl(ctx, t.TempDir(), &out, "fail")
+	if err == nil || !strings.Contains(err.Error(), "No instance found") {
+		t.Errorf("failing captured call = %v, want limactl's stderr in the error", err)
+	}
+	if got := printed(); got != "" {
+		t.Errorf("failing captured call printed %q, want it only in the error", got)
+	}
+	if err := DefaultLimaCtl(ctx, t.TempDir(), nil, "start"); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if got := printed(); !strings.Contains(got, "No instance found") {
+		t.Errorf("uncaptured call printed %q, want limactl's stderr passed through", got)
 	}
 }
 

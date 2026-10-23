@@ -73,7 +73,8 @@ func runVM(args []string, env *Env) int {
 		return vmMisuse(env, fmt.Sprintf("unknown verb %q", verb))
 	}
 
-	// Manager errors already start with "omac vm", so they print unprefixed.
+	// Errors print as returned: most Manager errors already start with
+	// "omac vm", and a prefix here would repeat it.
 	m, err := newVMManager(env)
 	if err != nil {
 		fmt.Fprintln(env.Stderr, err)

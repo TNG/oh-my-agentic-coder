@@ -47,11 +47,15 @@ func CranePull(ctx context.Context, ref, tarPath string) error {
 }
 
 // ValidateImageRef parses ref and returns its fully qualified form, for
-// example "alpine" becomes "index.docker.io/library/alpine:latest".
+// example "alpine" becomes "index.docker.io/library/alpine:latest". Digest
+// references are rejected: docker load cannot name an image by digest.
 func ValidateImageRef(ref string) (string, error) {
 	parsed, err := name.ParseReference(ref)
 	if err != nil {
 		return "", fmt.Errorf("invalid image reference %q: %w", ref, err)
+	}
+	if _, ok := parsed.(name.Digest); ok {
+		return "", fmt.Errorf("image reference %q pins a digest, which docker load cannot keep; use a tag", ref)
 	}
 	return parsed.Name(), nil
 }

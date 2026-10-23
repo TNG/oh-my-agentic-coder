@@ -865,11 +865,32 @@ func TestImageRemove(t *testing.T) {
 	if err := m.ImageRemove(ctx, "alpine"); err != nil {
 		t.Fatalf("ImageRemove: %v", err)
 	}
-	if !slices.Contains(ssh.remotes(), dockerCmd("image rm 'index.docker.io/library/alpine:latest'")) {
+	if !slices.Contains(ssh.remotes(), imageRemoveCmd("index.docker.io/library/alpine:latest")) {
 		t.Errorf("no docker image rm in %v", ssh.remotes())
 	}
 	if _, g := ssh.snapshot(); len(g.images) != 0 {
 		t.Errorf("guest images = %v, want none", g.images)
+	}
+	if st := mustState(t, m); len(st.Images) != 0 {
+		t.Errorf("state images = %v, want none", st.Images)
+	}
+}
+
+// An image deleted inside the VM (docker image rm, docker system prune)
+// still drops out of state.
+func TestImageRemoveMissingImageClearsState(t *testing.T) {
+	m, _, ssh, _ := newTestManager(t)
+	ctx := context.Background()
+	mustUp(t, m)
+	if err := m.ImageAdd(ctx, "alpine"); err != nil {
+		t.Fatal(err)
+	}
+	ssh.mu.Lock()
+	ssh.guest.images = nil
+	ssh.mu.Unlock()
+
+	if err := m.ImageRemove(ctx, "alpine"); err != nil {
+		t.Fatalf("ImageRemove of a missing image: %v", err)
 	}
 	if st := mustState(t, m); len(st.Images) != 0 {
 		t.Errorf("state images = %v, want none", st.Images)

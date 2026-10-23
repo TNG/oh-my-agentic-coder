@@ -45,6 +45,16 @@ func TestValidateImageRef(t *testing.T) {
 	if _, err := ValidateImageRef("not a ref!"); err == nil {
 		t.Error(`ValidateImageRef("not a ref!") succeeded, want error`)
 	}
+	// docker load cannot tag an image by digest, so a digest would load as
+	// an image nobody can address by the name the user gave.
+	for _, ref := range []string{
+		"alpine@sha256:" + strings.Repeat("a", 64),
+		"alpine:3.20@sha256:" + strings.Repeat("b", 64),
+	} {
+		if _, err := ValidateImageRef(ref); err == nil || !strings.Contains(err.Error(), "use a tag") {
+			t.Errorf("ValidateImageRef(%q) = %v, want an error asking for a tag", ref, err)
+		}
+	}
 }
 
 // startTestRegistry serves an in-memory registry on loopback and returns its

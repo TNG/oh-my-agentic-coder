@@ -202,8 +202,16 @@ func (f *fakeSSH) run(_ context.Context, t SSHTarget, stdin io.Reader, stdout, _
 		for _, img := range g.images {
 			fmt.Fprintln(stdout, img)
 		}
+	case strings.HasPrefix(remote, "if "+dockerCmd("image inspect ")):
+		// imageRemoveCmd: removes the image if Docker has it, else exits 0.
+		ref := strings.TrimPrefix(remote, "if "+dockerCmd("image inspect "))
+		ref = strings.Trim(ref[:strings.Index(ref, " ")], "'")
+		g.images = slices.DeleteFunc(g.images, func(s string) bool { return s == ref })
 	case strings.HasPrefix(remote, dockerCmd("image rm ")):
 		ref := strings.Trim(strings.TrimPrefix(remote, dockerCmd("image rm ")), "'")
+		if !slices.Contains(g.images, ref) {
+			return errors.New("exit status 1: Error response from daemon: No such image: " + ref)
+		}
 		g.images = slices.DeleteFunc(g.images, func(s string) bool { return s == ref })
 	}
 	return nil

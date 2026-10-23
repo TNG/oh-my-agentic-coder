@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strings"
 )
 
 // ErrLimaMissing reports that limactl is not installed.
@@ -29,8 +30,9 @@ func FindLimactl(lookPath func(string) (string, error)) (string, error) {
 	return p, nil
 }
 
-// LimaCtl runs limactl with LIMA_HOME set to limaHome. Its stderr goes to
-// os.Stderr; a nil stdout discards the output.
+// LimaCtl runs limactl with LIMA_HOME set to limaHome. A nil stdout
+// discards the output, and stderr goes to os.Stderr so limactl's progress
+// shows. A caller that captures stdout gets stderr only inside the error.
 type LimaCtl func(ctx context.Context, limaHome string, stdout io.Writer, args ...string) error
 
 // DefaultLimaCtl runs the limactl binary found on $PATH.
@@ -38,11 +40,22 @@ func DefaultLimaCtl(ctx context.Context, limaHome string, stdout io.Writer, args
 	cmd := exec.CommandContext(ctx, "limactl", args...)
 	cmd.Env = append(os.Environ(), "LIMA_HOME="+limaHome)
 	if stdout == nil {
-		stdout = io.Discard
+		cmd.Stdout = io.Discard
+		cmd.Stderr = os.Stderr
+		return cmd.Run()
 	}
+	// `limactl list` warns "No instance found. Run limactl create" before
+	// the VM exists, which points users at the wrong tool.
+	var stderr bytes.Buffer
 	cmd.Stdout = stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		if msg := strings.TrimSpace(stderr.String()); msg != "" {
+			return fmt.Errorf("%w: %s", err, msg)
+		}
+		return err
+	}
+	return nil
 }
 
 // Instance is the subset of `limactl list --json` that omac reads.

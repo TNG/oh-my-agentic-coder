@@ -93,11 +93,18 @@ func (m *Manager) ImageRemove(ctx context.Context, ref string) error {
 	if err != nil {
 		return err
 	}
-	if err := m.ssh(ctx, m.agentTarget(st), nil, nil, dockerCmd("image rm "+ShellQuote(norm))); err != nil {
+	if err := m.ssh(ctx, m.agentTarget(st), nil, nil, imageRemoveCmd(norm)); err != nil {
 		return fmt.Errorf("omac vm: docker image rm %s: %w", norm, err)
 	}
 	st.Images = slices.DeleteFunc(st.Images, func(s string) bool { return s == norm })
 	return SaveState(m.Layout.StatePath, st)
+}
+
+// imageRemoveCmd removes ref from the VM's Docker. An image that is already
+// gone counts as removed, so state can still drop it.
+func imageRemoveCmd(ref string) string {
+	q := ShellQuote(ref)
+	return "if " + dockerCmd("image inspect "+q) + " >/dev/null 2>&1; then " + dockerCmd("image rm "+q) + "; fi"
 }
 
 func addSorted(list []string, s string) []string {
