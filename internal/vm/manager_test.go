@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 func mustUp(t *testing.T, m *Manager) {
@@ -45,6 +46,7 @@ func writeConfig(t *testing.T, m *Manager, content string) {
 
 func TestUpCreatesProvisionsAndGoesOffline(t *testing.T) {
 	m, lima, ssh, _ := newTestManager(t)
+	m.Deps.ProvisionTimeout = 2 * time.Second
 	l := m.Layout
 	mustUp(t, m)
 
@@ -57,8 +59,13 @@ func TestUpCreatesProvisionsAndGoesOffline(t *testing.T) {
 	if want := []string{"create", "--tty=false", "--name", InstanceName, l.LimaYAML}; !slices.Equal(lima.calls[1].args, want) {
 		t.Errorf("create args = %v, want %v", lima.calls[1].args, want)
 	}
-	if want := []string{"start", "--tty=false", InstanceName}; !slices.Equal(lima.calls[2].args, want) {
-		t.Errorf("start args = %v, want %v", lima.calls[2].args, want)
+	// The provisioning boot gets the provisioning timeout, the restart into
+	// offline mode the restart timeout.
+	if want := []string{"start", "--tty=false", "--timeout", "2s", InstanceName}; !slices.Equal(lima.calls[2].args, want) {
+		t.Errorf("first start args = %v, want %v", lima.calls[2].args, want)
+	}
+	if want := []string{"start", "--tty=false", "--timeout", "1s", InstanceName}; !slices.Equal(lima.calls[4].args, want) {
+		t.Errorf("second start args = %v, want %v", lima.calls[4].args, want)
 	}
 
 	yaml, err := os.ReadFile(l.LimaYAML)
@@ -202,6 +209,43 @@ func TestUpRecoversFromInterruptedProvisioning(t *testing.T) {
 	}
 }
 
+// limactl start times out while the guest still runs apt. The next up must
+// wait for that provisioning instead of stopping the VM in the middle of it.
+func TestUpWaitsForProvisioningStillRunning(t *testing.T) {
+	m, lima, ssh, _ := newTestManager(t)
+	ssh.slowBoots = 1
+	lima.startTimeout = errors.New(`did not receive an event with the "running" status`)
+	if err := m.Up(context.Background(), false); err == nil || !strings.Contains(err.Error(), retryUpHint) {
+		t.Fatalf("Up = %v, want the retry hint", err)
+	}
+	if _, g := ssh.snapshot(); g.provisioned || g.bootDone || lima.status() != StatusRunning {
+		t.Fatalf("setup: guest %+v, status %q; want running and still provisioning", g, lima.status())
+	}
+	lima.reset()
+	nSSH := len(ssh.remotes())
+	var out bytes.Buffer
+	m.Out = &out
+
+	mustUp(t, m)
+	if !strings.Contains(out.String(), "omac vm: provisioning is still running, waiting") {
+		t.Errorf("output = %q, want the waiting notice", out.String())
+	}
+	assertVerbs(t, lima, "list", "stop", "start")
+	remotes := ssh.remotes()[nSSH:]
+	if len(remotes) == 0 || remotes[0] != bootDoneCmd {
+		t.Errorf("ssh commands = %v, want the boot-done check first", remotes)
+	}
+	if slices.Contains(remotes, reprovisionCmd(nil)) {
+		t.Errorf("ssh commands = %v, want no reprovisioning", remotes)
+	}
+	if _, g := ssh.snapshot(); !g.provisioned || !g.firewall || g.modeFile != ModeOffline {
+		t.Errorf("guest = %+v, want provisioned, offline with firewall", g)
+	}
+	if st := mustState(t, m); st.Mode != ModeOffline {
+		t.Errorf("mode = %q, want offline", st.Mode)
+	}
+}
+
 func TestUpRerunsProvisioningWhenRunningUnprovisioned(t *testing.T) {
 	m, lima, ssh, probe := newTestManager(t)
 	ssh.provisionFailures = 1
@@ -238,8 +282,8 @@ func TestUpLeavesDeliberateOnlineAlone(t *testing.T) {
 
 	mustUp(t, m)
 	assertVerbs(t, lima, "list")
-	if got := ssh.remotes()[nBefore:]; !slices.Equal(got, []string{markerPresentCmd}) {
-		t.Errorf("ssh commands = %v, want only the marker check", got)
+	if got := ssh.remotes()[nBefore:]; !slices.Equal(got, []string{bootDoneCmd, markerPresentCmd}) {
+		t.Errorf("ssh commands = %v, want only the boot-done and marker checks", got)
 	}
 	if !strings.Contains(out.String(), "VM is online; run `omac vm offline`") {
 		t.Errorf("output = %q, want the online hint", out.String())
@@ -339,10 +383,17 @@ func TestUpReprovisionRewritesPackagesAndCycles(t *testing.T) {
 	writeConfig(t, m, "packages: [jq]\n")
 	lima.reset()
 
+	m.Deps.ProvisionTimeout = 2 * time.Second
 	if err := m.Up(context.Background(), true); err != nil {
 		t.Fatalf("Up(reprovision): %v", err)
 	}
 	assertVerbs(t, lima, "list", "stop", "start", "stop", "start")
+	if got := lima.calls[2].args; !slices.Equal(got, []string{"start", "--tty=false", "--timeout", "2s", InstanceName}) {
+		t.Errorf("reprovisioning start args = %v, want the provisioning timeout", got)
+	}
+	if got := lima.calls[4].args; !slices.Equal(got, []string{"start", "--tty=false", "--timeout", "1s", InstanceName}) {
+		t.Errorf("offline start args = %v, want the restart timeout", got)
+	}
 	remotes := strings.Join(ssh.remotes(), "\n")
 	for _, want := range []string{"> /etc/omac-vm/packages", "rm -f /var/lib/omac-vm/provisioned"} {
 		if !strings.Contains(remotes, want) {

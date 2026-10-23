@@ -29,6 +29,9 @@ type fakeLimaCtl struct {
 	failOn  map[string]error
 	onStart func()
 	onStop  func()
+	// startTimeout makes the next start boot the guest and then fail, as
+	// limactl does when its --timeout expires while the guest provisions.
+	startTimeout error
 }
 
 func (f *fakeLimaCtl) run(_ context.Context, home string, stdout io.Writer, args ...string) error {
@@ -58,6 +61,10 @@ func (f *fakeLimaCtl) run(_ context.Context, home string, stdout io.Writer, args
 		f.inst.Status = StatusRunning
 		if f.onStart != nil {
 			f.onStart()
+		}
+		if err := f.startTimeout; err != nil {
+			f.startTimeout = nil
+			return err
 		}
 	case "stop":
 		if f.inst == nil {
@@ -116,12 +123,15 @@ type sshCall struct {
 
 // fakeGuest mirrors the guest files the manager writes and the boot script
 // reads: ModeFile, PackagesFile, ProvisionedMarker, plus whether the
-// omac-vmguard table is loaded and which images Docker holds.
+// omac-vmguard table is loaded and which images Docker holds. bootDone is
+// /run/lima-boot-done: set once a boot's provisioning finished, cleared by
+// a shutdown.
 type fakeGuest struct {
 	modeFile    string
 	packages    string
 	provisioned bool
 	firewall    bool
+	bootDone    bool
 	images      []string
 }
 
@@ -135,7 +145,12 @@ type fakeSSH struct {
 	// provisionFailures makes that many boots leave ProvisionedMarker absent,
 	// as a failed system provisioning script would.
 	provisionFailures int
-	fail              func(remote string) error
+	// slowBoots makes that many boots leave provisioning running: the
+	// marker and bootDone stay unset until the next successful Docker probe
+	// (see finishPending).
+	slowBoots int
+	pending   bool
+	fail      func(remote string) error
 }
 
 func (f *fakeSSH) run(_ context.Context, t SSHTarget, stdin io.Reader, stdout, _ io.Writer, remote string) error {
@@ -177,6 +192,10 @@ func (f *fakeSSH) run(_ context.Context, t SSHTarget, stdin io.Reader, stdout, _
 		if !g.provisioned {
 			return errors.New("exit status 1")
 		}
+	case remote == bootDoneCmd:
+		if !g.bootDone {
+			return errors.New("exit status 1")
+		}
 	case remote == dockerCmd("load"):
 		g.images = append(g.images, in)
 	case strings.HasPrefix(remote, dockerCmd("image ls")):
@@ -203,6 +222,17 @@ func (f *fakeSSH) boot() {
 		mode = f.guest.modeFile
 	}
 	f.guest.firewall = mode == ModeOffline || f.stickyFirewall
+	if f.slowBoots > 0 {
+		f.slowBoots--
+		f.pending = true
+		return
+	}
+	f.finishBoot()
+}
+
+// finishBoot ends the provisioning of the current boot. Called with f.mu held.
+func (f *fakeSSH) finishBoot() {
+	f.guest.bootDone = true
 	if f.provisionFailures > 0 {
 		f.provisionFailures--
 		return
@@ -210,10 +240,23 @@ func (f *fakeSSH) boot() {
 	f.guest.provisioned = true
 }
 
+// finishPending completes a slow boot; Docker answering means the
+// provisioning scripts are done.
+func (f *fakeSSH) finishPending() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.pending {
+		f.pending = false
+		f.finishBoot()
+	}
+}
+
 func (f *fakeSSH) halt() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.guest.firewall = false
+	f.guest.bootDone = false
+	f.pending = false
 }
 
 func (f *fakeSSH) snapshot() ([]sshCall, fakeGuest) {
@@ -242,10 +285,11 @@ func (f *fakeSSH) remotes() []string {
 // fakeProbe answers like Docker while the fake instance runs; err forces
 // a failure.
 type fakeProbe struct {
-	mu    sync.Mutex
-	calls int
-	err   error
-	lima  *fakeLimaCtl
+	mu      sync.Mutex
+	calls   int
+	err     error
+	lima    *fakeLimaCtl
+	onReady func() // runs after each successful probe
 }
 
 func (p *fakeProbe) run(_ context.Context, _ int) (DockerVersion, error) {
@@ -258,6 +302,9 @@ func (p *fakeProbe) run(_ context.Context, _ int) (DockerVersion, error) {
 	}
 	if p.lima.status() != StatusRunning {
 		return DockerVersion{}, errors.New("connection refused")
+	}
+	if p.onReady != nil {
+		p.onReady()
 	}
 	return DockerVersion{APIVersion: "1.47", Version: "27.3.1"}, nil
 }
@@ -275,7 +322,7 @@ func newTestManager(t *testing.T) (*Manager, *fakeLimaCtl, *fakeSSH, *fakeProbe)
 	ssh := &fakeSSH{}
 	lima.onStart = ssh.boot
 	lima.onStop = ssh.halt
-	probe := &fakeProbe{lima: lima}
+	probe := &fakeProbe{lima: lima, onReady: ssh.finishPending}
 	n := 0
 	keygen := func(_ context.Context, name string, args []string, _ io.Reader, _, _ io.Writer) error {
 		i := slices.Index(args, "-f")

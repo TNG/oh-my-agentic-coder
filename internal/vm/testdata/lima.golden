@@ -65,6 +65,7 @@ provision:
       [ -f /etc/omac-vm/packages ] || printf '%s\n' 'jq unzip' > /etc/omac-vm/packages
       [ -f /var/lib/omac-vm/provisioned ] && exit 0
       export DEBIAN_FRONTEND=noninteractive
+      dpkg --configure -a || true
       apt-get update
       apt-get install -y ca-certificates curl uidmap dbus-user-session nftables slirp4netns wget apt-transport-https gpg
       install -m 0755 -d /etc/apt/keyrings

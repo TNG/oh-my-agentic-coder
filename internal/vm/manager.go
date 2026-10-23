@@ -104,6 +104,9 @@ func NewManager(l Layout, configPath string, deps Deps, out io.Writer) *Manager 
 const (
 	verifyFirewallCmd = "nft list table inet " + GuardTable
 	markerPresentCmd  = "test -f " + ProvisionedMarker
+	// bootDoneCmd succeeds once Lima finished every provisioning script of
+	// the current boot; `limactl start` waits for the same file.
+	bootDoneCmd = "test -f /run/lima-boot-done"
 )
 
 // writeModeCmd sets ModeFile, which the boot script reads on the next start.
@@ -231,7 +234,7 @@ func (m *Manager) create(ctx context.Context, st *State, cfg UserConfig, res Res
 	if err := SaveState(m.Layout.StatePath, st); err != nil {
 		return err
 	}
-	if err := m.start(ctx); err != nil {
+	if err := m.start(ctx, m.Deps.ProvisionTimeout); err != nil {
 		return fmt.Errorf("%w; %s", err, retryUpHint)
 	}
 	if err := m.waitDocker(ctx, st, m.Deps.ProvisionTimeout); err != nil {
@@ -244,18 +247,30 @@ const retryUpHint = "run `omac vm up` again (or `omac vm up --reprovision`)"
 
 // upOnline handles a VM whose state says online: either the user switched
 // online, or a provisioning was interrupted (state stays online until an
-// offline switch verified the firewall). The guest's ProvisionedMarker tells
-// them apart. Any failure of the check counts as missing, which errs
-// towards re-provisioning rather than leaving apt locked out by an offline
-// switch.
+// offline switch verified the firewall), or a provisioning boot is still
+// running after limactl start gave up waiting for it. A missing Lima
+// boot-done file means the last case: up waits instead of restarting the
+// VM in the middle of apt. Otherwise the guest's ProvisionedMarker tells
+// the first two apart. Any failure of the marker check counts as missing,
+// which errs towards re-provisioning rather than leaving apt locked out by
+// an offline switch.
 func (m *Manager) upOnline(ctx context.Context, st *State, cfg UserConfig, running bool) error {
 	// This path may re-run provisioning online, so it refuses up front.
 	if err := m.markOnlineUnattached(st); err != nil {
 		return err
 	}
 	if !running {
-		if err := m.start(ctx); err != nil {
+		if err := m.start(ctx, m.Deps.RestartTimeout); err != nil {
 			return err
+		}
+	}
+	if m.ssh(ctx, m.rootTarget(st), nil, nil, bootDoneCmd) != nil {
+		fmt.Fprintln(m.Out, "omac vm: provisioning is still running, waiting")
+		if err := m.waitDocker(ctx, st, m.Deps.ProvisionTimeout); err != nil {
+			return fmt.Errorf("%w; %s", err, retryUpHint)
+		}
+		if m.ssh(ctx, m.rootTarget(st), nil, nil, markerPresentCmd) == nil {
+			return m.switchMode(ctx, st, ModeOffline, true, m.Deps.RestartTimeout)
 		}
 	}
 	if m.ssh(ctx, m.rootTarget(st), nil, nil, markerPresentCmd) == nil {
@@ -271,7 +286,7 @@ func (m *Manager) upOnline(ctx context.Context, st *State, cfg UserConfig, runni
 // provisioned), so one start suffices; only if the firewall is then
 // missing does it fall back to the full write-mode cycle.
 func (m *Manager) startOffline(ctx context.Context, st *State) error {
-	if err := m.start(ctx); err != nil {
+	if err := m.start(ctx, m.Deps.RestartTimeout); err != nil {
 		return err
 	}
 	if err := m.waitDocker(ctx, st, m.Deps.RestartTimeout); err != nil {
@@ -297,7 +312,7 @@ func (m *Manager) reprovision(ctx context.Context, st *State, cfg UserConfig, ru
 	fmt.Fprintln(m.Out, "omac vm: reprovisioning (this takes a few minutes)…")
 	if !running {
 		// The VM boots offline; root ssh works regardless.
-		if err := m.start(ctx); err != nil {
+		if err := m.start(ctx, m.Deps.RestartTimeout); err != nil {
 			return err
 		}
 	}
@@ -329,7 +344,7 @@ func (m *Manager) switchMode(ctx context.Context, st *State, mode string, runnin
 		}
 	}
 	if !running {
-		if err := m.start(ctx); err != nil {
+		if err := m.start(ctx, m.Deps.RestartTimeout); err != nil {
 			return err
 		}
 	}
@@ -339,7 +354,7 @@ func (m *Manager) switchMode(ctx context.Context, st *State, mode string, runnin
 	if err := m.lima(ctx, "stop", InstanceName); err != nil {
 		return err
 	}
-	if err := m.start(ctx); err != nil {
+	if err := m.start(ctx, timeout); err != nil {
 		return err
 	}
 	if err := m.waitDocker(ctx, st, timeout); err != nil {
@@ -585,8 +600,11 @@ func (m *Manager) lima(ctx context.Context, args ...string) error {
 	return nil
 }
 
-func (m *Manager) start(ctx context.Context) error {
-	return m.lima(ctx, "start", "--tty=false", InstanceName)
+// start boots the VM. limactl blocks until every provisioning script of the
+// boot finished, so a boot that provisions needs the provisioning timeout;
+// limactl's own default is shorter.
+func (m *Manager) start(ctx context.Context, timeout time.Duration) error {
+	return m.lima(ctx, "start", "--tty=false", "--timeout", timeout.String(), InstanceName)
 }
 
 func (m *Manager) waitDocker(ctx context.Context, st *State, timeout time.Duration) error {

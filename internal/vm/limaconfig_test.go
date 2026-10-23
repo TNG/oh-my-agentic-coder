@@ -140,6 +140,8 @@ func TestRenderLimaConfigProvisionOrder(t *testing.T) {
 			"ssh-ed25519 AAAAadmin",
 			"loginctl enable-linger alice",
 			"jq unzip",
+			// A boot stopped during apt leaves dpkg half-configured.
+			"dpkg --configure -a || true\n      apt-get update\n",
 			"> " + PackagesFile,
 			"> " + ProvisionedMarker,
 		}},
