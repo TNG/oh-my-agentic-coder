@@ -200,7 +200,7 @@ cannot access.
 A session started with `--vm` uses Docker inside the omac VM (see [omac vm](./usage/cli.md#omac-vm)). The VM, not the sandbox, is then the boundary around everything the agent runs in Docker.
 
 These hold even if the agent became root inside the VM:
-- The VM has no access to host files: omac mounts no host directory into it.
+- The VM cannot reach host files: omac mounts no host directory into it. Host files get into the VM only as the copies that `omac vm exec` makes, see below.
 - It holds no host credentials and no host sockets, such as your SSH agent or the host's Docker.
 - Traffic from the host into the VM goes only over the host's loopback interface and only to the two omac ports (Docker API and SSH) plus the published range 30000 to 30099. omac turns off Lima's forwarding of all other ports, so no process in the VM can take over a port on your host that a host tool expects to be local. For example, a container started with `docker run -p 8080:80` is not reachable on your host's port 8080; `docker run -p 30000:80` is reachable on your host's port 30000, and you know that whatever answers there runs in the VM.
 
@@ -210,6 +210,12 @@ Known limits:
 - A kernel exploit inside the VM gives the agent root there. Root can turn the firewall off and then reach the internet and services on your host's loopback interface through Lima's gateway.
 - On Linux, the grant for the VM's two ports also lets the agent connect to those port numbers on any host, not only on loopback, because Landlock cannot scope a port to an address.
 - All sessions of one user share the VM, so one session can see and change the containers of another.
+
+What `omac vm exec` shares with the VM:
+- It copies the worktree (the git top level) into the VM. It skips `.git`, the `.env` files the sandbox hides, and the paths git ignores. Untracked files that git does not ignore are copied. The copies stay in the VM until `omac vm reset`.
+- All `--vm` sessions log in to the VM as the same user. So every session can read and change every copy, including the copies of other projects.
+- Values passed with `--env` are visible in the VM's process list while the command runs.
+- A command run while the VM is online has network access. For example, a build that runs during priming can download dependencies, and it could also send data out.
 
 The VM's state lives in `~/.local/state/omac/vm` and includes the key for root access to the VM. The sandbox blocks this directory.
 
