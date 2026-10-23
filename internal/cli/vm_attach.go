@@ -114,14 +114,16 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 	return os.Rename(tmp.Name(), path)
 }
 
+// vmProfileMisuse is the usage error for --vm on a sandbox profile other
+// than omac's own: only that backend can open the VM's ports.
+func vmProfileMisuse(plan sandboxPlan) string {
+	return fmt.Sprintf("--vm needs the builtin sandbox; sandbox profile %q cannot open the omac VM's ports", plan.Name)
+}
+
 // injectVMGrants opens the VM's Docker and SSH ports for the sandbox and
-// lets DOCKER_HOST and DOCKER_CONFIG through its env filter. Only omac's
-// native backend understands these flags; other backends get a warning.
-func injectVMGrants(env *Env, argv []string, info vm.AttachInfo, plan sandboxPlan) []string {
-	if !plan.Native {
-		fmt.Fprintln(env.Stderr, "omac: --vm applies only to the native sandbox backend; its ports and DOCKER_HOST are not granted on this profile.")
-		return argv
-	}
+// lets DOCKER_HOST and DOCKER_CONFIG through its env filter. Callers refuse
+// --vm on non-native plans first (vmProfileMisuse).
+func injectVMGrants(argv []string, info vm.AttachInfo, plan sandboxPlan) []string {
 	argv = injectOpenPort(argv, strconv.Itoa(info.DockerPort))
 	argv = injectOpenPort(argv, strconv.Itoa(info.SSHPort))
 	return injectSandboxEnvAllow(argv, []string{"DOCKER_HOST", "DOCKER_CONFIG"}, plan)

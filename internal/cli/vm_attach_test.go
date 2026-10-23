@@ -122,56 +122,43 @@ func testAgentKey(t *testing.T) string {
 	return p
 }
 
-// The capture profile is not the native backend, so the grants are skipped
-// with a warning (asserted here to prove the call site); their content is
-// covered by TestInjectVMGrants. The env vars reach the process either way.
-func TestRunLaunchVMWiring(t *testing.T) {
-	sectest.RequireLoopbackListener(t)
-	dump := filepath.Join(t.TempDir(), "dump")
-	script := "#!/bin/sh\n{\n" +
-		"printf 'ARGV:%s\\n' \"$*\"\n" +
-		"for v in DOCKER_HOST DOCKER_CONFIG OMAC_VM_HOST OMAC_VM_SSH_KEY OMAC_VM_SSH_PORT OMAC_VM_USER; do eval \"printf '%s=%s\\n' $v \\\"\\$$v\\\"\"; done\n" +
-		"[ -d \"$DOCKER_CONFIG\" ] && echo DOCKER_CONFIG_IS_DIR\n" +
-		"ls -l \"$OMAC_VM_SSH_KEY\"\n" +
-		"printf 'KEY:'; cat \"$OMAC_VM_SSH_KEY\"\n" +
-		"} >" + dump + "\n"
-	workdir, capturePath := vmCaptureFixture(t, script)
+// The capture profile is not omac's builtin sandbox, which is the only one
+// that can open the VM's ports. --vm is refused before the session
+// registers with the VM; the stub fails the launch if it is reached.
+func TestRunLaunchVMRefusesNonNativeProfile(t *testing.T) {
+	ran := filepath.Join(t.TempDir(), "ran")
+	workdir, capturePath := vmCaptureFixture(t, "#!/bin/sh\ntouch "+ran+"\n")
 	env, stderr := launchTestEnv(t, workdir)
-	// claude, not opencode: with opencode this fixture intermittently fails
-	// its HOME cleanup ("directory not empty"), with or without --vm.
-	harness, ok := config.LookupHarness("claude")
-	if !ok {
-		t.Fatal("claude harness missing")
-	}
-	fake := stubVMAttach(t, vm.AttachInfo{DockerPort: 31234, SSHPort: 31022, User: "alice", AgentKeyPath: testAgentKey(t)}, nil)
+	harness, _ := config.LookupHarness("claude")
+	stubVMAttach(t, vm.AttachInfo{}, errors.New("prepareVMAttach must not be called on a non-native profile"))
 
 	code := runLaunch(env, launchOpts{label: "start", harness: harness, vm: true, innerCmdOverride: capturePath})
-	if code != ExitOK {
-		t.Fatalf("runLaunch code = %d, want ExitOK\nstderr:\n%s", code, stderr())
+	if code != ExitMisuse {
+		t.Fatalf("runLaunch code = %d, want ExitMisuse\nstderr:\n%s", code, stderr())
 	}
-	raw, err := os.ReadFile(dump)
-	if err != nil {
-		t.Fatalf("capture dump missing: %v", err)
+	if !strings.Contains(stderr(), "--vm needs the builtin sandbox") {
+		t.Errorf("stderr lacks the refusal:\n%s", stderr())
 	}
-	got := string(raw)
-	for _, want := range []string{
-		"DOCKER_HOST=tcp://127.0.0.1:31234",
-		"OMAC_VM_HOST=127.0.0.1",
-		"OMAC_VM_SSH_PORT=31022",
-		"OMAC_VM_USER=alice",
-		"DOCKER_CONFIG_IS_DIR",
-		"-rw-------",
-		"KEY:PRIVATE KEY",
-	} {
-		if !strings.Contains(got, want) {
-			t.Errorf("dump lacks %q:\n%s", want, got)
-		}
+	if _, err := os.Stat(ran); err == nil {
+		t.Error("the sandbox command ran although --vm was refused")
 	}
-	if !strings.Contains(stderr(), "--vm applies only to the native sandbox backend") {
-		t.Errorf("no non-native warning, so injectVMGrants was not called:\n%s", stderr())
+}
+
+func TestServeVMRefusesNonNativeProfile(t *testing.T) {
+	ran := filepath.Join(t.TempDir(), "ran")
+	workdir, _ := vmCaptureFixture(t, "#!/bin/sh\ntouch "+ran+"\n")
+	env, stderr := launchTestEnv(t, workdir)
+	stubVMAttach(t, vm.AttachInfo{}, errors.New("prepareVMAttach must not be called on a non-native profile"))
+
+	code := runServe([]string{"claude", "--vm", "--inner", "/bin/true"}, env)
+	if code != ExitMisuse {
+		t.Fatalf("runServe code = %d, want ExitMisuse\nstderr:\n%s", code, stderr())
 	}
-	if fake.releases() != 1 {
-		t.Errorf("release calls = %d, want 1", fake.releases())
+	if !strings.Contains(stderr(), "--vm needs the builtin sandbox") {
+		t.Errorf("stderr lacks the refusal:\n%s", stderr())
+	}
+	if _, err := os.Stat(ran); err == nil {
+		t.Error("the sandbox command ran although --vm was refused")
 	}
 }
 
@@ -194,22 +181,6 @@ func TestRunLaunchWithoutVMAddsNothing(t *testing.T) {
 		if strings.Contains(string(raw), bad) {
 			t.Errorf("dump contains %q without --vm:\n%s", bad, raw)
 		}
-	}
-}
-
-func TestRunLaunchVMNotRunning(t *testing.T) {
-	sectest.RequireLoopbackListener(t)
-	workdir, capturePath := vmCaptureFixture(t, "#!/bin/sh\ntrue\n")
-	env, stderr := launchTestEnv(t, workdir)
-	harness, _ := config.LookupHarness("claude")
-	stubVMAttach(t, vm.AttachInfo{}, vm.ErrNotRunning)
-
-	code := runLaunch(env, launchOpts{label: "start", harness: harness, vm: true, innerCmdOverride: capturePath})
-	if code != ExitPrerequisiteMissing {
-		t.Fatalf("code = %d, want ExitPrerequisiteMissing", code)
-	}
-	if !strings.Contains(stderr(), "omac vm up") {
-		t.Errorf("stderr lacks the `omac vm up` remedy:\n%s", stderr())
 	}
 }
 
@@ -347,25 +318,13 @@ func TestPrepareVMAttachFailureLeavesNoMarker(t *testing.T) {
 
 func TestInjectVMGrants(t *testing.T) {
 	argv := []string{"omac", "sandbox", "run", "--profile", "default", "--", "opencode"}
-	got := injectVMGrants(devnullEnv(t), argv, vm.AttachInfo{DockerPort: 31234, SSHPort: 31022}, sandboxPlan{Native: true})
+	got := injectVMGrants(argv, vm.AttachInfo{DockerPort: 31234, SSHPort: 31022}, sandboxPlan{Native: true})
 	want := []string{"omac", "sandbox", "run", "--profile", "default",
 		"--open-port", "31234", "--open-port", "31022",
 		"--allow-env", "DOCKER_HOST", "--allow-env", "DOCKER_CONFIG",
 		"--", "opencode"}
 	if !slices.Equal(got, want) {
 		t.Errorf("argv = %q\nwant   %q", got, want)
-	}
-}
-
-func TestInjectVMGrantsNonNativeWarns(t *testing.T) {
-	env, stderr := launchTestEnv(t, t.TempDir())
-	argv := []string{"nono", "run", "--", "opencode"}
-	got := injectVMGrants(env, argv, vm.AttachInfo{DockerPort: 31234, SSHPort: 31022}, sandboxPlan{Native: false})
-	if !slices.Equal(got, argv) {
-		t.Errorf("argv changed on a non-native backend: %q", got)
-	}
-	if !strings.Contains(stderr(), "native sandbox backend") {
-		t.Errorf("no warning: %q", stderr())
 	}
 }
 

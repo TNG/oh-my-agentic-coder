@@ -203,6 +203,10 @@ func runServe(args []string, env *Env) int {
 		fmt.Fprintln(env.Stderr, "omac serve:", planErr)
 		return ExitConfigInvalid
 	}
+	if parsed.vm && !plan.Native {
+		fmt.Fprintln(env.Stderr, "omac serve: "+vmProfileMisuse(plan))
+		return ExitMisuse
+	}
 	profName := plan.Name
 	prof := plan.Launcher
 
@@ -609,7 +613,7 @@ func runServe(args []string, env *Env) int {
 		}
 		argv = injectUserOpenPorts(env, argv, openPorts, prof)
 		if parsed.vm {
-			argv = injectVMGrants(env, argv, vmInfo, plan)
+			argv = injectVMGrants(argv, vmInfo, plan)
 		}
 		// Pass the resolved audit path to `omac sandbox run` so its
 		// network-filter subprocess appends net.decision events to the

@@ -268,6 +268,10 @@ func runLaunch(env *Env, opts launchOpts) int {
 		fmt.Fprintln(env.Stderr, prefix+":", planErr)
 		return ExitConfigInvalid
 	}
+	if opts.vm && !plan.Native {
+		fmt.Fprintln(env.Stderr, prefix+": "+vmProfileMisuse(plan))
+		return ExitMisuse
+	}
 	profName := plan.Name
 	prof := plan.Launcher
 
@@ -873,7 +877,7 @@ func runLaunch(env *Env, opts launchOpts) int {
 		// on top of the profile; no-op on non-native backends (with a warning).
 		argv = injectUserOpenPorts(env, argv, opts.openPorts, prof)
 		if opts.vm {
-			argv = injectVMGrants(env, argv, vmInfo, plan)
+			argv = injectVMGrants(argv, vmInfo, plan)
 		}
 		// Pass the resolved audit path down to `omac sandbox run` so the
 		// network-filter subprocess appends net.decision events to the
