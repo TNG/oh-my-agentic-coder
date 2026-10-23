@@ -888,12 +888,14 @@ func runLaunch(env *Env, opts launchOpts) int {
 		ocPin.apply(extra)
 	}
 	if !noSandbox {
-		argv, err = injectOpenCodeProjectDiscovery(argv, extra, harness, inner, plan)
+		var ocClass openCodeVersionKind
+		argv, ocClass, err = injectOpenCodeProjectDiscovery(argv, extra, harness, inner, plan)
 		if err != nil {
 			fmt.Fprintln(env.Stderr, prefix+": opencode project discovery:", err)
 			return ExitConfigInvalid
 		}
-		warnOpenCodeAgentsAccess(env, argv, plan, extra)
+		warnOpenCodeMajorOnlySpec(env, ocClass)
+		warnOpenCodeAgentsAccess(env, argv, plan, ocClass)
 	}
 	if harness.LaunchEnvFunc != nil {
 		for k, v := range harness.LaunchEnvFunc(harness.ConfigHome(), sandboxTmp) {

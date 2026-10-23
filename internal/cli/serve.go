@@ -565,8 +565,9 @@ func runServe(args []string, env *Env) int {
 		// profile's restrictive allow_vars filter. (Control-plane port and
 		// harness runtime dirs are granted inside sandboxServeArgv.)
 		argv = forwardHarnessEnv(env, argv, harness, plan)
+		var ocClass openCodeVersionKind
 		if !learn {
-			argv, err = injectOpenCodeProjectDiscovery(argv, extra, harness, inner, plan)
+			argv, ocClass, err = injectOpenCodeProjectDiscovery(argv, extra, harness, inner, plan)
 			if err != nil {
 				fmt.Fprintln(env.Stderr, "omac serve: opencode project discovery:", err)
 				return ExitConfigInvalid
@@ -620,7 +621,8 @@ func runServe(args []string, env *Env) int {
 			argv = injectSandboxFlag(argv, "--learn", "")
 		}
 		if !noInner && !learn {
-			warnOpenCodeAgentsAccess(env, argv, plan, extra)
+			warnOpenCodeMajorOnlySpec(env, ocClass)
+			warnOpenCodeAgentsAccess(env, argv, plan, ocClass)
 		}
 		// The kernel mask cannot grow mid-session, so detect
 		// protected-pattern files (e.g. .env) created after launch and
