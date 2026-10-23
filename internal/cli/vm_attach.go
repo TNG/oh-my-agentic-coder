@@ -114,10 +114,11 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 	return os.Rename(tmp.Name(), path)
 }
 
-// vmProfileMisuse is the usage error for --vm on a sandbox profile other
-// than omac's own: only that backend can open the VM's ports.
+// vmProfileMisuse is the usage error for --vm on a launcher profile that
+// runs a sandbox other than omac's own: only that backend can open the
+// VM's ports. A custom policy file for omac's sandbox is fine.
 func vmProfileMisuse(plan sandboxPlan) string {
-	return fmt.Sprintf("--vm needs the builtin sandbox; sandbox profile %q cannot open the omac VM's ports", plan.Name)
+	return fmt.Sprintf("--vm needs omac's own sandbox; launcher profile %q runs a different sandbox, so omac cannot open the VM's ports there", plan.Name)
 }
 
 // injectVMGrants opens the VM's Docker and SSH ports for the sandbox and

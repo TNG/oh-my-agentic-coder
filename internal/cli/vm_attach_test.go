@@ -114,7 +114,7 @@ func TestRunLaunchVMRefusesNonNativeProfile(t *testing.T) {
 	if code != ExitMisuse {
 		t.Fatalf("runLaunch code = %d, want ExitMisuse\nstderr:\n%s", code, stderr())
 	}
-	if !strings.Contains(stderr(), "--vm needs the builtin sandbox") {
+	if !strings.Contains(stderr(), "--vm needs omac's own sandbox") {
 		t.Errorf("stderr lacks the refusal:\n%s", stderr())
 	}
 	if _, err := os.Stat(ran); err == nil {
@@ -132,7 +132,7 @@ func TestServeVMRefusesNonNativeProfile(t *testing.T) {
 	if code != ExitMisuse {
 		t.Fatalf("runServe code = %d, want ExitMisuse\nstderr:\n%s", code, stderr())
 	}
-	if !strings.Contains(stderr(), "--vm needs the builtin sandbox") {
+	if !strings.Contains(stderr(), "--vm needs omac's own sandbox") {
 		t.Errorf("stderr lacks the refusal:\n%s", stderr())
 	}
 	if _, err := os.Stat(ran); err == nil {
