@@ -876,23 +876,23 @@ func TestStatusListsWorktreesFromGuest(t *testing.T) {
 		t.Errorf("Status never ran %q; remotes = %q", listWorktreesCmd, ssh.remotes())
 	}
 
-	// An SSH failure only empties the list.
+	// An SSH failure makes the list unknown, not empty.
 	ssh.fail = func(remote string) error {
 		if remote == listWorktreesCmd {
 			return errors.New("exit status 255")
 		}
 		return nil
 	}
-	if r, err = m.Status(ctx); err != nil || len(r.Worktrees) != 0 {
-		t.Errorf("Status with failing ssh = %q, %v; want no worktrees, no error", r.Worktrees, err)
+	if r, err = m.Status(ctx); err != nil || len(r.Worktrees) != 0 || !strings.HasPrefix(r.WorktreesNote, "unknown") {
+		t.Errorf("Status with failing ssh = %q, note %q, %v; want unknown, no error", r.Worktrees, r.WorktreesNote, err)
 	}
 	ssh.fail = nil
 
 	// A stopped VM is not asked.
 	lima.setStatus(StatusStopped)
 	before := len(ssh.remotes())
-	if r, err = m.Status(ctx); err != nil || len(r.Worktrees) != 0 {
-		t.Errorf("Status of stopped VM = %q, %v; want no worktrees, no error", r.Worktrees, err)
+	if r, err = m.Status(ctx); err != nil || len(r.Worktrees) != 0 || r.WorktreesNote != "unknown (VM not running)" {
+		t.Errorf("Status of stopped VM = %q, note %q, %v; want unknown (VM not running), no error", r.Worktrees, r.WorktreesNote, err)
 	}
 	if after := ssh.remotes(); len(after) != before {
 		t.Errorf("Status of stopped VM ran ssh: %q", after[before:])
@@ -1232,17 +1232,18 @@ func TestStatusReportWrite(t *testing.T) {
 		Created: true, Running: true, Mode: ModeOffline, SSHPort: 42022, DockerPort: 42375,
 		Resources: Resources{CPUs: 8, Memory: "16GiB", Disk: "60GiB"},
 		Images:    []string{"index.docker.io/library/alpine:latest", "index.docker.io/library/busybox:1.36"},
-		Worktrees: []string{"/Users/alice/proj (a1b2c3)"},
+		// The agent user writes the registry and answers the Docker probe.
+		Worktrees: []string{"/Users/alice/proj (a1b2c3)", "/x\x1b]52;c;Zm9v\x07\nmode: online (s)"},
 		JDKs:      []string{"temurin-25"},
-		Docker:    &DockerVersion{APIVersion: "1.47", Version: "27.3.1"},
+		Docker:    &DockerVersion{APIVersion: "1.47", Version: "27.3.1\x1b[2J"},
 	}
 	var b bytes.Buffer
 	r.Write(&b)
 	out := b.String()
 	for _, want := range []string{
-		"status: running", "mode: offline", "ssh: 127.0.0.1:42022", "docker: tcp://127.0.0.1:42375",
+		"status: running", "mode: offline", "ssh: 127.0.0.1:42022", "docker: tcp://127.0.0.1:42375 (Docker 27.3.1\\x1b[2J, API 1.47)",
 		"images:\n  - index.docker.io/library/alpine:latest\n  - index.docker.io/library/busybox:1.36\n",
-		"worktrees:\n  - /Users/alice/proj (a1b2c3)\n",
+		"worktrees:\n  - /Users/alice/proj (a1b2c3)\n  - /x\\x1b]52;c;Zm9v\\x07\\nmode: online (s)\n",
 		"jdks:\n  - temurin-25\n",
 		"sessions: none",
 	} {
@@ -1250,10 +1251,13 @@ func TestStatusReportWrite(t *testing.T) {
 			t.Errorf("report lacks %q:\n%s", want, out)
 		}
 	}
+	if strings.ContainsAny(out, "\x1b\x07") {
+		t.Errorf("report passes control characters through: %q", out)
+	}
 
 	b.Reset()
-	StatusReport{Created: true}.Write(&b)
-	for _, want := range []string{"status: stopped", "worktrees: none", "jdks: none"} {
+	StatusReport{Created: true, WorktreesNote: "unknown (VM not running)"}.Write(&b)
+	for _, want := range []string{"status: stopped", "worktrees: unknown (VM not running)", "jdks: none"} {
 		if !strings.Contains(b.String(), want) {
 			t.Errorf("stopped report lacks %q:\n%s", want, b.String())
 		}
