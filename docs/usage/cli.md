@@ -210,13 +210,13 @@ omac vm image add postgres:16  # import an image; the VM never pulls itself
 omac vm image list             # list the VM's images
 omac vm image rm postgres:16   # remove an image from the VM
 omac start --vm                # DOCKER_HOST inside the sandbox points at the VM
-omac vm online                 # restart the VM with network access, e.g. for provisioning
+omac vm online                 # restart the VM with network access, e.g. to download build dependencies
 omac vm offline                # restart the VM without network access, the mode sessions need
 omac vm down                   # stop the VM
 omac vm reset                  # delete the VM and create it anew
 ```
 
-You need Lima 1.0 or newer (`brew install lima` on macOS; on Linux the release tarball from the Lima GitHub releases or Homebrew on Linux, plus QEMU).
+You need Lima; omac is tested with Lima 2.1 (`brew install lima` on macOS; on Linux the release tarball from the Lima GitHub releases or Homebrew on Linux, plus QEMU).
 Because the VM has no network, `docker pull` inside it fails. Instead, `omac vm image add` downloads the image on your host and loads it into the VM, once per image.
 
 Container ports published in the range 30000 to 30099 (for example `docker run -p 30000:5432 postgres:16`) are reachable from your host on `localhost` at the same port. Ports outside that range stay inside the VM.
