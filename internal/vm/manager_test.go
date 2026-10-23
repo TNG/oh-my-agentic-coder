@@ -368,6 +368,31 @@ func TestUpFailsWhenFirewallMissingOffline(t *testing.T) {
 	}
 }
 
+// The forwarded ports are baked into the instance's lima.yaml, so new ports
+// picked for a lost state.json would point every later attach elsewhere.
+func TestUpRefusesExistingInstanceWithoutState(t *testing.T) {
+	m, lima, ssh, _ := newTestManager(t)
+	mustUp(t, m)
+	if err := os.Remove(m.Layout.StatePath); err != nil {
+		t.Fatal(err)
+	}
+	m.Deps.PortFree = func(p int) bool { return p != 42022 && p != 42375 } // Lima holds both
+	lima.reset()
+	nSSH := len(ssh.remotes())
+
+	err := m.Up(context.Background(), false)
+	if err == nil || !strings.Contains(err.Error(), "is missing; run `omac vm reset`") {
+		t.Fatalf("Up = %v, want the missing-state error", err)
+	}
+	assertVerbs(t, lima, "list")
+	if n := len(ssh.remotes()) - nSSH; n != 0 {
+		t.Errorf("ran %d ssh commands, want none", n)
+	}
+	if _, err := os.Stat(m.Layout.StatePath); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("state.json recreated (err %v)", err)
+	}
+}
+
 func TestUpMissingLimactl(t *testing.T) {
 	m, lima, _, _ := newTestManager(t)
 	m.Deps.LookPath = func(string) (string, error) { return "", errors.New("not found") }

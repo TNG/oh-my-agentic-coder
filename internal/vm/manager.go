@@ -152,11 +152,11 @@ func (m *Manager) Up(ctx context.Context, reprovision bool) error {
 	if err := EnsureKeys(ctx, m.Layout, m.Deps.Run); err != nil {
 		return err
 	}
-	st, err := m.loadOrInitState(cfg)
+	inst, err := m.inspect(ctx)
 	if err != nil {
 		return err
 	}
-	inst, err := m.inspect(ctx)
+	st, err := m.loadOrInitState(cfg, inst != nil)
 	if err != nil {
 		return err
 	}
@@ -181,7 +181,12 @@ func (m *Manager) Up(ctx context.Context, reprovision bool) error {
 	}
 }
 
-func (m *Manager) loadOrInitState(cfg UserConfig) (*State, error) {
+// loadOrInitState picks fresh ports only for a VM that does not exist yet:
+// an existing instance has its ports baked into its lima.yaml.
+func (m *Manager) loadOrInitState(cfg UserConfig, instanceExists bool) (*State, error) {
+	if instanceExists {
+		return m.loadState()
+	}
 	st, err := LoadState(m.Layout.StatePath)
 	if err != nil || st != nil {
 		return st, err
