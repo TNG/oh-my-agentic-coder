@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -129,63 +130,40 @@ type vmExecArgs struct {
 	verbose bool
 }
 
-// parseVMExecArgs parses [--cwd <dir>] [--env SPEC]... [--verbose] -- <cmd...>.
-// Without "--", the first non-flag argument starts the command. help is
-// true for -h/--help.
-func parseVMExecArgs(args []string) (a vmExecArgs, help bool, err error) {
-	for i := 0; i < len(args); i++ {
-		arg := args[i]
-		if arg == "--" {
-			a.cmd = args[i+1:]
-			break
-		}
-		if !strings.HasPrefix(arg, "-") {
-			a.cmd = args[i:]
-			break
-		}
-		name, value, hasValue := strings.Cut(arg, "=")
-		switch name {
-		case "-h", "--help":
-			return a, true, nil
-		case "--verbose":
-			if hasValue {
-				return a, false, errors.New("--verbose takes no value")
-			}
-			a.verbose = true
-			continue
-		case "--cwd", "--env":
-		default:
-			return a, false, fmt.Errorf("unknown flag %q", arg)
-		}
-		if !hasValue {
-			if i+1 >= len(args) {
-				return a, false, fmt.Errorf("%s needs a value", name)
-			}
-			i++
-			value = args[i]
-		}
-		if name == "--cwd" {
-			a.cwd = value
-		} else {
-			a.envs = append(a.envs, value)
-		}
+// parseVMExecArgs parses [--cwd <dir>] [--env SPEC]... [--verbose] [--] <cmd...>.
+// Flags end at "--" or at the first argument that is not a flag, so the
+// command keeps its own flags. ok is false when the caller should exit with
+// code: after -h/--help or a usage error.
+func parseVMExecArgs(args []string, env *Env) (a vmExecArgs, code int, ok bool) {
+	fs := flag.NewFlagSet("omac vm exec", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	fs.StringVar(&a.cwd, "cwd", "", "")
+	fs.Func("env", "", func(s string) error {
+		a.envs = append(a.envs, s)
+		return nil
+	})
+	fs.BoolVar(&a.verbose, "verbose", false, "")
+	if err := fs.Parse(args); errors.Is(err, flag.ErrHelp) {
+		printVMExecUsage(env.Stdout)
+		return a, ExitOK, false
+	} else if err != nil {
+		return a, vmExecMisuse(env, err.Error()), false
 	}
-	if len(a.cmd) == 0 {
-		return a, false, errors.New("no command given")
+	if a.cmd = fs.Args(); len(a.cmd) == 0 {
+		return a, vmExecMisuse(env, "no command given"), false
 	}
-	return a, false, nil
+	if err := vm.ValidateCwd(a.cwd); err != nil {
+		return a, vmExecMisuse(env, strings.TrimPrefix(err.Error(), "omac vm exec: ")), false
+	}
+	return a, ExitOK, true
 }
 
 // runVMExec runs `omac vm exec`: copy the worktree into the VM, run the
 // command there, return its exit code.
 func runVMExec(args []string, env *Env) int {
-	a, help, err := parseVMExecArgs(args)
-	if help {
-		printVMExecUsage(env.Stdout)
-		return ExitOK
-	}
-	if err != nil {
-		return vmExecMisuse(env, err.Error())
+	a, code, ok := parseVMExecArgs(args, env)
+	if !ok {
+		return code
 	}
 	envs, err := vm.ResolveEnv(a.envs, os.Getenv)
 	if err != nil {
@@ -193,9 +171,8 @@ func runVMExec(args []string, env *Env) int {
 	}
 	conn, err := resolveVMConn(env)
 	if err != nil {
-		fmt.Fprintln(env.Stderr, err)
+		fmt.Fprintln(env.Stderr, err) // ErrNotCreated already says to run `omac vm up`
 		if errors.Is(err, vm.ErrNotCreated) {
-			fmt.Fprintln(env.Stderr, "omac vm exec: run `omac vm up` first")
 			return ExitPrerequisiteMissing
 		}
 		return ExitIOError
@@ -211,7 +188,7 @@ func runVMExec(args []string, env *Env) int {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	code, err := runVMExecFn(ctx, vm.ExecOpts{
+	code, err = runVMExecFn(ctx, vm.ExecOpts{
 		Workdir: env.Workdir,
 		Cwd:     a.cwd,
 		Env:     envs,

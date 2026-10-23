@@ -153,9 +153,15 @@ func TestVMExecMisuse(t *testing.T) {
 		"unknown flag":     {"exec", "--bogus", "--", "true"},
 		"env unset":        {"exec", "--env", "OMAC_TEST_SURELY_UNSET_VAR", "--", "true"},
 		"env invalid name": {"exec", "--env", "1BAD=x", "--", "true"},
+		"cwd leaves":       {"exec", "--cwd", "../x", "--", "true"},
+		"cwd absolute":     {"exec", "--cwd=/etc", "--", "true"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			calls := useFakeVMExec(t, nil, 0, nil)
+			resolveVMConn = func(*Env) (vm.ConnInfo, error) {
+				t.Error("misuse must be caught before the connection is resolved")
+				return vm.ConnInfo{}, errors.New("no connection")
+			}
 			env, _, stderr := vmTestEnv(t)
 			if code := runVM(args, env); code != ExitMisuse {
 				t.Fatalf("exit = %d, want %d; stderr:\n%s", code, ExitMisuse, stderr())
@@ -181,8 +187,8 @@ func TestVMExecNotCreated(t *testing.T) {
 	if code := runVM([]string{"exec", "--", "true"}, env); code != ExitPrerequisiteMissing {
 		t.Fatalf("exit = %d, want %d", code, ExitPrerequisiteMissing)
 	}
-	if !strings.Contains(stderr(), "omac vm up") {
-		t.Errorf("stderr lacks hint:\n%s", stderr())
+	if n := strings.Count(stderr(), "omac vm up"); n != 1 {
+		t.Errorf("stderr names `omac vm up` %d times, want once:\n%s", n, stderr())
 	}
 	if len(*calls) != 0 {
 		t.Errorf("runVMExecFn called without a VM")
