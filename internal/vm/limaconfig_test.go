@@ -202,6 +202,17 @@ func TestUserScriptRecoversAcrossBoots(t *testing.T) {
 	}
 }
 
+// The cloud-init drop-in must be written on every boot, before the early
+// exit for provisioned VMs, or a VM provisioned without it never gets it.
+func TestSystemScriptKeepsSSHHostKeys(t *testing.T) {
+	system := renderedScripts(t, renderGolden(t))["system"]
+	dropIn := strings.Index(system, "printf 'ssh_deletekeys: false\\n' > /etc/cloud/cloud.cfg.d/99-omac-keep-hostkeys.cfg\n")
+	exit := strings.Index(system, "[ -f "+ProvisionedMarker+" ] && exit 0")
+	if dropIn < 0 || exit < 0 || dropIn > exit {
+		t.Fatalf("system script must write the ssh_deletekeys drop-in before the provisioned exit (drop-in at %d, exit at %d):\n%s", dropIn, exit, system)
+	}
+}
+
 // renderedScripts returns each provisioning script of cfg with its YAML
 // indentation removed, keyed by its mode.
 func renderedScripts(t *testing.T, cfg string) map[string]string {

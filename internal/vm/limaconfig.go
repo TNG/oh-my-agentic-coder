@@ -220,6 +220,9 @@ const systemScript = `#!/bin/bash
 set -eu
 hn="$(hostname)"
 grep -q "127.0.1.1 $hn" /etc/hosts || echo "127.0.1.1 $hn" >> /etc/hosts
+# Lima sets a new cloud-init instance-id per boot, which would regenerate the SSH host keys omac pins.
+mkdir -p /etc/cloud/cloud.cfg.d
+printf 'ssh_deletekeys: false\n' > /etc/cloud/cloud.cfg.d/99-omac-keep-hostkeys.cfg
 if [ -f /etc/sudoers.d/90-cloud-init-users ]; then mv /etc/sudoers.d/90-cloud-init-users /root/90-cloud-init-users.disabled; fi
 install -d -m 0700 /root/.ssh
 printf '%s\n' '<ADMIN_PUB_KEY>' > /root/.ssh/authorized_keys
