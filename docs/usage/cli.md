@@ -245,15 +245,17 @@ The copy goes one way only:
 
 `omac vm status` lists the worktrees copied so far.
 
-Since the VM is offline, a build that downloads dependencies has to fill its caches once while the VM is online. Run this from your host, with no session attached. The `--env` line passes a token the build needs for its downloads; use whatever variable your build reads.
+Since the VM is offline, a build that downloads dependencies has to fill its caches once while the VM is online. Run this from your host. omac accepts `--env` only there and only while the VM is online, which also means no session is attached. `--env` passes a token the build needs for its downloads.
 
 ```bash
 omac vm online
-omac vm exec --env ORG_GRADLE_PROJECT_ID_GITLABCOM_TOKEN --cwd backend -- ./gradlew test
+omac vm exec --env MY_REPO_TOKEN --cwd backend -- ./gradlew test --no-daemon
 omac vm offline
 ```
 
 After that, `./gradlew test --offline` finds its dependencies in the VM.
+
+The priming run executes as the same VM user that every earlier `--vm` session controlled, and it trusts everything those sessions could leave in that user's home. Examples are a Gradle init script in `~/.gradle/init.d/`, an edited build file in the copy, or a process still running. Use `--no-daemon` for the priming build, so that no Gradle daemon keeps the token after the run.
 
 ### omac provenance
 

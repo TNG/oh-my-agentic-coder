@@ -106,6 +106,16 @@ var resolveVMConn = func(*Env) (vm.ConnInfo, error) {
 	return vm.ResolveConn(os.Getenv, vm.NewLayout(root), vm.RealDeps().HostUser)
 }
 
+// loadVMState reads the host-side state.json; nil when the VM was never
+// created. Tests replace it.
+var loadVMState = func() (*vm.State, error) {
+	root, err := vm.DefaultRoot()
+	if err != nil {
+		return nil, err
+	}
+	return vm.LoadState(vm.NewLayout(root).StatePath)
+}
+
 // runVMExecFn is vm.Exec; tests replace it so no VM is touched.
 var runVMExecFn = vm.Exec
 
@@ -188,6 +198,11 @@ func runVMExec(args []string, env *Env) int {
 		}
 		return ExitIOError
 	}
+	if len(envs) > 0 {
+		if code, ok := checkVMExecEnvAllowed(env, conn); !ok {
+			return code
+		}
+	}
 	var logf func(string, ...any)
 	if a.verbose {
 		logf = func(format string, v ...any) { fmt.Fprintf(env.Stderr, format+"\n", v...) }
@@ -212,6 +227,24 @@ func runVMExec(args []string, env *Env) int {
 		return ExitIOError
 	}
 	return code
+}
+
+// checkVMExecEnvAllowed limits --env to priming: from the host, while the
+// VM is online, which also means no session is attached.
+func checkVMExecEnvAllowed(env *Env, conn vm.ConnInfo) (int, bool) {
+	const reason = "--env is for priming from the host while the VM is online"
+	if conn.FromSandbox {
+		return vmExecMisuse(env, reason), false
+	}
+	st, err := loadVMState()
+	if err != nil {
+		fmt.Fprintln(env.Stderr, err)
+		return ExitIOError, false
+	}
+	if st == nil || st.Mode != vm.ModeOnline {
+		return vmExecMisuse(env, reason+"; run `omac vm online` first"), false
+	}
+	return ExitOK, true
 }
 
 func vmExecMisuse(env *Env, msg string) int {

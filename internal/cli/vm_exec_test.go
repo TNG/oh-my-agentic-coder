@@ -15,10 +15,14 @@ import (
 // holds the options of the last runVMExecFn call.
 func useFakeVMExec(t *testing.T, connErr error, code int, execErr error) *[]vm.ExecOpts {
 	t.Helper()
-	origConn, origRun, origMgr := resolveVMConn, runVMExecFn, newVMManager
-	t.Cleanup(func() { resolveVMConn, runVMExecFn, newVMManager = origConn, origRun, origMgr })
+	origConn, origRun, origMgr, origState := resolveVMConn, runVMExecFn, newVMManager, loadVMState
+	t.Cleanup(func() {
+		resolveVMConn, runVMExecFn, newVMManager, loadVMState = origConn, origRun, origMgr, origState
+	})
 	conn := vm.ConnInfo{Target: vm.SSHTarget{User: "agent", Port: 42022}}
 	resolveVMConn = func(*Env) (vm.ConnInfo, error) { return conn, connErr }
+	// --env needs an online VM; tests about other refusals override this.
+	loadVMState = func() (*vm.State, error) { return &vm.State{Mode: vm.ModeOnline}, nil }
 	var calls []vm.ExecOpts
 	runVMExecFn = func(_ context.Context, o vm.ExecOpts) (int, error) {
 		calls = append(calls, o)
@@ -84,6 +88,49 @@ func TestVMExecEnvFromHost(t *testing.T) {
 	o := (*calls)[0]
 	if o.Cwd != "sub" || !reflect.DeepEqual(o.Env, []string{"OMAC_TEST_EXEC_VAR=hello"}) {
 		t.Errorf("Cwd = %q, Env = %q", o.Cwd, o.Env)
+	}
+}
+
+func TestVMExecEnvRefusedFromSandbox(t *testing.T) {
+	calls := useFakeVMExec(t, nil, 0, nil)
+	resolveVMConn = func(*Env) (vm.ConnInfo, error) {
+		return vm.ConnInfo{Target: vm.SSHTarget{User: "agent", Port: 42022}, FromSandbox: true}, nil
+	}
+	env, _, stderr := vmTestEnv(t)
+	if code := runVM([]string{"exec", "--env", "A=1", "--", "true"}, env); code != ExitMisuse {
+		t.Fatalf("exit = %d, want %d; stderr:\n%s", code, ExitMisuse, stderr())
+	}
+	if !strings.Contains(stderr(), "--env is for priming from the host while the VM is online") {
+		t.Errorf("stderr lacks the reason:\n%s", stderr())
+	}
+	if len(*calls) != 0 {
+		t.Errorf("runVMExecFn called despite the refusal")
+	}
+	// Without --env, exec from the sandbox works.
+	if code := runVM([]string{"exec", "--", "true"}, env); code != ExitOK {
+		t.Fatalf("exit without --env = %d; stderr:\n%s", code, stderr())
+	}
+}
+
+func TestVMExecEnvRefusedUnlessOnline(t *testing.T) {
+	for name, st := range map[string]*vm.State{
+		"offline":     {Mode: vm.ModeOffline},
+		"not created": nil,
+	} {
+		t.Run(name, func(t *testing.T) {
+			calls := useFakeVMExec(t, nil, 0, nil)
+			loadVMState = func() (*vm.State, error) { return st, nil }
+			env, _, stderr := vmTestEnv(t)
+			if code := runVM([]string{"exec", "--env", "A=1", "--", "true"}, env); code != ExitMisuse {
+				t.Fatalf("exit = %d, want %d; stderr:\n%s", code, ExitMisuse, stderr())
+			}
+			if !strings.Contains(stderr(), "--env is for priming from the host while the VM is online") {
+				t.Errorf("stderr lacks the reason:\n%s", stderr())
+			}
+			if len(*calls) != 0 {
+				t.Errorf("runVMExecFn called despite the refusal")
+			}
+		})
 	}
 }
 
