@@ -144,7 +144,6 @@ func TestIgnoredPathsIncludesSubmodules(t *testing.T) {
 }
 
 func TestIgnoredPathsDropsBareDot(t *testing.T) {
-	// git prints "./" for a listed directory whose content is all ignored.
 	run := func(_ context.Context, _ string, args []string, _ io.Reader, stdout, _ io.Writer) error {
 		if slices.Contains(args, "ls-files") {
 			_, _ = io.WriteString(stdout, "./\x00build/\x00")
@@ -176,8 +175,6 @@ func TestWriteExcludeFileAlwaysExcludesProtectedFiles(t *testing.T) {
 		t.Fatalf("baseline lacks .env: %q", protected)
 	}
 	lines := readExcludeFile(t, nil)
-	// Unanchored, so they match at any depth; ".git" also matches the
-	// .git file of a `git worktree` checkout.
 	if want := append([]string{".git"}, protected...); !slices.Equal(lines, want) {
 		t.Fatalf("exclude file = %q, want %q", lines, want)
 	}

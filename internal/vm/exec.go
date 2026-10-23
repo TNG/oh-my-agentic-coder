@@ -228,8 +228,7 @@ func ResolveEnv(specs []string, getenv func(string) string) ([]string, error) {
 // cancelled, typically by Ctrl-C.
 var ErrInterrupted = errors.New("omac vm exec: interrupted")
 
-// ExecOpts configures Exec. Workdir must be absolute; Cwd is relative to
-// it. Inside a git repository, Exec copies the repository's top level.
+// ExecOpts configures Exec. Workdir must be absolute; Cwd is relative to it.
 type ExecOpts struct {
 	Workdir string
 	Cwd     string
