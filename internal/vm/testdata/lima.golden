@@ -104,7 +104,7 @@ provision:
       systemctl --user start dbus || true
       [ -f ~/.config/systemd/user/docker.service ] || dockerd-rootless-setuptool.sh install
       mkdir -p ~/.config/systemd/user/docker.service.d
-      printf '[Service]\nEnvironment=DOCKERD_ROOTLESS_ROOTLESSKIT_FLAGS=-p 127.0.0.1:2375:2375/tcp\nExecStart=\nExecStart=/usr/bin/dockerd-rootless.sh -H unix://%%t/docker.sock -H tcp://127.0.0.1:2375\n' > ~/.config/systemd/user/docker.service.d/override.conf
+      printf '[Service]\nExecStart=\nExecStart=/usr/bin/dockerd-rootless.sh -H unix://%%t/docker.sock -H tcp://127.0.0.1:2375\n' > ~/.config/systemd/user/docker.service.d/override.conf
       systemctl --user daemon-reload
       systemctl --user enable docker
       systemctl --user restart docker

@@ -251,7 +251,8 @@ date -u +%FT%TZ > /var/lib/omac-vm/provisioned`
 // manager came up. The restart (not `enable --now`) applies the override
 // to the dockerd that the setuptool install already started. The %%t in
 // the printf format becomes the systemd specifier %t (runtime directory)
-// in override.conf.
+// in override.conf. No rootlesskit -p port flag: with --detach-netns,
+// dockerd already listens on 127.0.0.1:2375 in the VM's own netns.
 const userScript = `#!/bin/bash
 set -eu
 mkdir -p ~/.ssh && chmod 0700 ~/.ssh
@@ -261,7 +262,7 @@ command -v dockerd-rootless-setuptool.sh >/dev/null || exit 0
 systemctl --user start dbus || true
 [ -f ~/.config/systemd/user/docker.service ] || dockerd-rootless-setuptool.sh install
 mkdir -p ~/.config/systemd/user/docker.service.d
-printf '[Service]\nEnvironment=DOCKERD_ROOTLESS_ROOTLESSKIT_FLAGS=-p 127.0.0.1:2375:2375/tcp\nExecStart=\nExecStart=/usr/bin/dockerd-rootless.sh -H unix://%%t/docker.sock -H tcp://127.0.0.1:2375\n' > ~/.config/systemd/user/docker.service.d/override.conf
+printf '[Service]\nExecStart=\nExecStart=/usr/bin/dockerd-rootless.sh -H unix://%%t/docker.sock -H tcp://127.0.0.1:2375\n' > ~/.config/systemd/user/docker.service.d/override.conf
 systemctl --user daemon-reload
 systemctl --user enable docker
 systemctl --user restart docker

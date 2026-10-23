@@ -158,7 +158,6 @@ func TestRenderLimaConfigProvisionOrder(t *testing.T) {
 		}},
 		{"user", user, []string{
 			"dockerd-rootless-setuptool.sh install",
-			"DOCKERD_ROOTLESS_ROOTLESSKIT_FLAGS=-p 127.0.0.1:2375:2375/tcp",
 			"ExecStart=/usr/bin/dockerd-rootless.sh -H unix://%%t/docker.sock -H tcp://127.0.0.1:2375",
 			"ssh-ed25519 AAAAagent",
 			"testcontainers.properties",
@@ -185,7 +184,7 @@ func TestUserScriptRecoversAcrossBoots(t *testing.T) {
 		"systemctl --user start dbus || true\n",
 		"[ -f ~/.config/systemd/user/docker.service ] || dockerd-rootless-setuptool.sh install\n",
 		"mkdir -p ~/.config/systemd/user/docker.service.d\n",
-		`printf '[Service]\nEnvironment=DOCKERD_ROOTLESS_ROOTLESSKIT_FLAGS=-p 127.0.0.1:2375:2375/tcp\nExecStart=\nExecStart=/usr/bin/dockerd-rootless.sh -H unix://%%t/docker.sock -H tcp://127.0.0.1:2375\n' > ~/.config/systemd/user/docker.service.d/override.conf` + "\n",
+		`printf '[Service]\nExecStart=\nExecStart=/usr/bin/dockerd-rootless.sh -H unix://%%t/docker.sock -H tcp://127.0.0.1:2375\n' > ~/.config/systemd/user/docker.service.d/override.conf` + "\n",
 		"systemctl --user daemon-reload\n",
 		"systemctl --user enable docker\n",
 		"systemctl --user restart docker\n",
