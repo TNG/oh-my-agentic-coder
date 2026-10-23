@@ -210,8 +210,6 @@ func TestVMSandboxEnv(t *testing.T) {
 	}
 }
 
-// The host's known_hosts sits next to the agent key in the VM state dir; a
-// copy in the sandbox lets ssh verify the pinned host key.
 func TestVMSandboxEnvCopiesKnownHosts(t *testing.T) {
 	key := testAgentKey(t)
 	src := filepath.Join(filepath.Dir(key), "known_hosts")

@@ -24,7 +24,7 @@ func TestJDKPackagesEmpty(t *testing.T) {
 }
 
 func TestJDKPackagesRejectsUnsupported(t *testing.T) {
-	for _, jdk := range []string{"25", "openjdk-21", "temurin", "temurin-", "temurin-1234", "temurin-25-jre", "temurin-x", "Temurin-25", "temurin-25; reboot", ""} {
+	for _, jdk := range []string{"25", "openjdk-21", "temurin", "temurin-", "temurin-1234", "temurin-0", "temurin-025", "temurin-007-jdk", "temurin-25-jre", "temurin-x", "Temurin-25", "temurin-25; reboot", ""} {
 		_, err := JDKPackages([]string{jdk})
 		if err == nil || !strings.Contains(err.Error(), "supported: temurin-<version>") {
 			t.Errorf("JDKPackages(%q) err = %v, want unsupported error", jdk, err)

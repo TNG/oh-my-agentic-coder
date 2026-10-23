@@ -196,7 +196,7 @@ packages: [jq]      # extra Ubuntu packages to install; default: none
 jdks: [temurin-25]  # Java versions to install; default: none
 ```
 
-Each `jdks` entry installs the matching Adoptium package during `omac vm up` or `omac vm up --reprovision`: `temurin-25` installs `temurin-25-jdk`. Only entries of the form `temurin-<version>` are supported. An unknown field is an error, so a typo does not silently fall back to the defaults.
+Each `jdks` entry installs the matching Adoptium package during `omac vm up` or `omac vm up --reprovision`: `temurin-25` installs `temurin-25-jdk`. Only entries of the form `temurin-<version>` are supported, where the version has no leading zero. The package name itself, such as `temurin-25-jdk`, works as well. An unknown field is an error, so a typo does not silently fall back to the defaults.
 
 omac applies this file only when it creates the VM or reprovisions it. After changing `packages` or `jdks`, run `omac vm up --reprovision`. After changing `cpus`, `memory` or `disk`, run `omac vm reset`, which deletes the VM, its imported images and its keys, then creates it anew; add the images again afterwards.
 

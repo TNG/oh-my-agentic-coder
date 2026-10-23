@@ -358,12 +358,12 @@ func TestReprovisionKeepsPackagesWhenOfflineSwitchFails(t *testing.T) {
 func TestUpCreateClearsStaleLists(t *testing.T) {
 	m, _, _, _ := newTestManager(t)
 	stale := &State{SSHPort: 42022, DockerPort: 42375, Mode: ModeOffline,
-		Images: []string{"x"}, JDKs: []string{"17"}, Worktrees: []string{"/w"}}
+		Images: []string{"x"}, JDKs: []string{"17"}}
 	if err := SaveState(m.Layout.StatePath, stale); err != nil {
 		t.Fatal(err)
 	}
 	mustUp(t, m)
-	if st := mustState(t, m); len(st.Images)+len(st.JDKs)+len(st.Worktrees) != 0 {
+	if st := mustState(t, m); len(st.Images)+len(st.JDKs) != 0 {
 		t.Errorf("state = %+v, want lists cleared", st)
 	}
 }
@@ -478,6 +478,23 @@ func TestUpInstallsJDKPackages(t *testing.T) {
 	r.Write(&out)
 	if !strings.Contains(out.String(), "jdks:\n  - temurin-25\n") {
 		t.Errorf("status output lacks the jdk:\n%s", out.String())
+	}
+}
+
+func TestUpCreateRecordsJDKsOnlyAfterProvisioning(t *testing.T) {
+	m, _, ssh, _ := newTestManager(t)
+	writeConfig(t, m, "jdks: [temurin-25]\n")
+	ssh.fail = func(remote string) error {
+		if remote == verifyFirewallCmd {
+			return errors.New("exit status 1")
+		}
+		return nil
+	}
+	if err := m.Up(context.Background(), false); !errors.Is(err, ErrFirewallMissing) {
+		t.Fatalf("Up = %v, want ErrFirewallMissing", err)
+	}
+	if st := mustState(t, m); len(st.JDKs) != 0 {
+		t.Errorf("state jdks = %v after a failed provisioning, want none", st.JDKs)
 	}
 }
 
@@ -845,12 +862,6 @@ func TestStatusListsWorktreesFromGuest(t *testing.T) {
 	m, lima, ssh, _ := newTestManager(t)
 	ctx := context.Background()
 	mustUp(t, m)
-	// State.Worktrees is no longer written; only the guest registry counts.
-	st := mustState(t, m)
-	st.Worktrees = []string{"/from/host/state"}
-	if err := SaveState(m.Layout.StatePath, st); err != nil {
-		t.Fatal(err)
-	}
 	// Two concurrent first runs can both append the same line.
 	ssh.setWorktrees("a1b2c3 /Users/alice/proj\n\nd4e5f6 /Users/alice/my proj\na1b2c3 /Users/alice/proj\n")
 
