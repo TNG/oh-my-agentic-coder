@@ -146,11 +146,19 @@ type fakeSSH struct {
 	// as a failed system provisioning script would.
 	provisionFailures int
 	// slowBoots makes that many boots leave provisioning running: the
-	// marker and bootDone stay unset until the next successful Docker probe
-	// (see finishPending).
-	slowBoots int
-	pending   bool
-	fail      func(remote string) error
+	// marker and bootDone stay unset until the pendingPolls-th boot-done
+	// check of that boot (0: never).
+	slowBoots    int
+	pendingPolls int
+	pending      bool
+	bootPolls    int
+	// dockerEarly makes Docker answer while provisioning still runs, as the
+	// enabled user unit does on every provisioning boot after the first.
+	// Without it Docker answers only once the boot finished.
+	dockerEarly bool
+	// haltedPending records a stop while provisioning was still running.
+	haltedPending bool
+	fail          func(remote string) error
 }
 
 func (f *fakeSSH) run(_ context.Context, t SSHTarget, stdin io.Reader, stdout, _ io.Writer, remote string) error {
@@ -193,6 +201,13 @@ func (f *fakeSSH) run(_ context.Context, t SSHTarget, stdin io.Reader, stdout, _
 			return errors.New("exit status 1")
 		}
 	case remote == bootDoneCmd:
+		if f.pending {
+			f.bootPolls++
+			if f.bootPolls == f.pendingPolls {
+				f.pending = false
+				f.finishBoot()
+			}
+		}
 		if !g.bootDone {
 			return errors.New("exit status 1")
 		}
@@ -233,6 +248,7 @@ func (f *fakeSSH) boot() {
 	if f.slowBoots > 0 {
 		f.slowBoots--
 		f.pending = true
+		f.bootPolls = 0
 		return
 	}
 	f.finishBoot()
@@ -248,20 +264,25 @@ func (f *fakeSSH) finishBoot() {
 	f.guest.provisioned = true
 }
 
-// finishPending completes a slow boot; Docker answering means the
-// provisioning scripts are done.
-func (f *fakeSSH) finishPending() {
+func (f *fakeSSH) stoppedWhileProvisioning() bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.pending {
-		f.pending = false
-		f.finishBoot()
-	}
+	return f.haltedPending
+}
+
+// dockerAnswers reports whether the guest's Docker listens yet.
+func (f *fakeSSH) dockerAnswers() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return !f.pending || f.dockerEarly
 }
 
 func (f *fakeSSH) halt() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.pending {
+		f.haltedPending = true
+	}
 	f.guest.firewall = false
 	f.guest.bootDone = false
 	f.pending = false
@@ -290,14 +311,14 @@ func (f *fakeSSH) remotes() []string {
 	return out
 }
 
-// fakeProbe answers like Docker while the fake instance runs; err forces
-// a failure.
+// fakeProbe answers like Docker while the fake instance runs and ready
+// says the guest's Docker listens; err forces a failure.
 type fakeProbe struct {
-	mu      sync.Mutex
-	calls   int
-	err     error
-	lima    *fakeLimaCtl
-	onReady func() // runs after each successful probe
+	mu    sync.Mutex
+	calls int
+	err   error
+	lima  *fakeLimaCtl
+	ready func() bool
 }
 
 func (p *fakeProbe) run(_ context.Context, _ int) (DockerVersion, error) {
@@ -308,11 +329,8 @@ func (p *fakeProbe) run(_ context.Context, _ int) (DockerVersion, error) {
 	if forced != nil {
 		return DockerVersion{}, forced
 	}
-	if p.lima.status() != StatusRunning {
+	if p.lima.status() != StatusRunning || (p.ready != nil && !p.ready()) {
 		return DockerVersion{}, errors.New("connection refused")
-	}
-	if p.onReady != nil {
-		p.onReady()
 	}
 	return DockerVersion{APIVersion: "1.47", Version: "27.3.1"}, nil
 }
@@ -330,7 +348,7 @@ func newTestManager(t *testing.T) (*Manager, *fakeLimaCtl, *fakeSSH, *fakeProbe)
 	ssh := &fakeSSH{}
 	lima.onStart = ssh.boot
 	lima.onStop = ssh.halt
-	probe := &fakeProbe{lima: lima, onReady: ssh.finishPending}
+	probe := &fakeProbe{lima: lima, ready: ssh.dockerAnswers}
 	n := 0
 	keygen := func(_ context.Context, name string, args []string, _ io.Reader, _, _ io.Writer) error {
 		i := slices.Index(args, "-f")
