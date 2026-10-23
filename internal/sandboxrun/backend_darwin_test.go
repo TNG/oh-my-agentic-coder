@@ -112,9 +112,12 @@ func TestBuildChildArgvHomeOutsideWorkdir(t *testing.T) {
 	}
 	profile := argv[2]
 	for _, path := range []string{link, canonical} {
-		want := "(allow file-read-data file-read-metadata (literal " + sbplQuote(path) + "))"
+		want := "(allow file-read-metadata (literal " + sbplQuote(path) + "))"
 		if !strings.Contains(profile, want) {
 			t.Errorf("home directory cannot be resolved: profile missing %s", want)
+		}
+		if strings.Contains(profile, "(allow file-read-data (literal "+sbplQuote(path)+"))") {
+			t.Errorf("home entry names must not be listable: %s", path)
 		}
 		if strings.Contains(profile, "(subpath "+sbplQuote(path)+")") {
 			t.Errorf("home must not receive recursive access: %s", path)
