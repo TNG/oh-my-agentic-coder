@@ -220,7 +220,7 @@ omac vm reset                  # delete the VM and create it anew
 You need Lima; omac is tested with Lima 2.1 (`brew install lima` on macOS; on Linux the release tarball from the Lima GitHub releases or Homebrew on Linux, plus QEMU).
 Because the VM has no network, `docker pull` inside it fails. Instead, `omac vm image add` downloads the image on your host and loads it into the VM, once per image.
 
-Container ports published in the range 30000 to 30099 (for example `docker run -p 30000:5432 postgres:16`) are reachable from your host on `localhost` at the same port. Ports outside that range stay inside the VM.
+Container ports published in the range 30000 to 30099 (for example `docker run -p 30000:5432 postgres:16`) are reachable from your host on `localhost` at the same port. Ports outside that range stay inside the VM; use `omac vm exec` to reach them from the VM side.
 
 The VM is either `offline` (the default) or `online`. Sessions attach only while it is offline. `omac vm online`, `omac vm up --reprovision` and `omac vm reset` take the VM online, so they are refused while a session is attached.
 
