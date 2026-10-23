@@ -202,7 +202,7 @@ A session started with `--vm` uses Docker inside the omac VM (see [omac vm](./us
 These hold even if the agent became root inside the VM:
 - The VM has no access to host files: omac mounts no host directory into it.
 - It holds no host credentials and no host sockets, such as your SSH agent or the host's Docker.
-- Traffic from the host into the VM goes only over the host's loopback interface. That covers the two omac ports (Docker API and SSH) and any port a container publishes, which Lima forwards to the host's loopback as well.
+- Traffic from the host into the VM goes only over the host's loopback interface and only to the two omac ports (Docker API and SSH). omac turns off Lima's forwarding of all other ports. For example, a container started with `docker run -p 8080:80` is not reachable on your host's port 8080, and no process in the VM can take over a port on your host.
 
 This holds only while the agent is not root inside the VM: the VM has no outbound network. A firewall inside the VM rejects every new outbound connection, including to Lima's gateway to the host. So while the firewall is loaded, nothing in the VM can open a connection to the host or the network by itself.
 

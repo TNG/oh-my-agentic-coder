@@ -70,6 +70,14 @@ func RenderLimaConfig(in LimaInputs) (string, error) {
 	b.WriteString("    guestPort: " + strconv.Itoa(GuestDockerPort) + "\n")
 	b.WriteString("    hostIP: 127.0.0.1\n")
 	b.WriteString("    hostPort: " + strconv.Itoa(in.DockerPort) + "\n")
+	// Without these, Lima forwards every other guest listener to the same
+	// port on the host's loopback, so a VM process could claim a host port
+	// that a host tool later connects to.
+	for _, ip := range []string{"127.0.0.1", "0.0.0.0"} {
+		b.WriteString("  - guestIP: " + ip + "\n")
+		b.WriteString("    guestPortRange: [1, 65535]\n")
+		b.WriteString("    ignore: true\n")
+	}
 	b.WriteString("provision:\n")
 
 	b.WriteString("  - mode: boot\n    script: |\n")

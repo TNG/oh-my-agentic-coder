@@ -15,6 +15,12 @@ portForwards:
     guestPort: 2375
     hostIP: 127.0.0.1
     hostPort: 42375
+  - guestIP: 127.0.0.1
+    guestPortRange: [1, 65535]
+    ignore: true
+  - guestIP: 0.0.0.0
+    guestPortRange: [1, 65535]
+    ignore: true
 provision:
   - mode: boot
     script: |
