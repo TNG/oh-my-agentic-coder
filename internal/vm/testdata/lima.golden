@@ -16,6 +16,11 @@ portForwards:
     hostIP: 127.0.0.1
     hostPort: 42375
   - guestIP: 127.0.0.1
+    guestPortRange: [30000, 30099]
+    hostIP: 127.0.0.1
+    hostPortRange: [30000, 30099]
+    proto: tcp
+  - guestIP: 127.0.0.1
     guestPortRange: [1, 65535]
     proto: any
     ignore: true

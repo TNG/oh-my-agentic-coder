@@ -14,6 +14,13 @@ const (
 	// GuestDockerPort is where rootless dockerd listens inside the VM; Lima
 	// forwards it to LimaInputs.DockerPort on the host loopback.
 	GuestDockerPort = 2375
+	// PublishedPortFirst..PublishedPortLast is the only range of guest
+	// ports that Lima forwards to the same ports on the host loopback.
+	// A container published there (`docker run -p 30000:5432 …`) is
+	// reachable from host tools; every other guest listener stays inside
+	// the VM.
+	PublishedPortFirst = 30000
+	PublishedPortLast  = 30099
 	// ModeFile holds "online" or "offline"; absent means offline once the
 	// VM is provisioned. Root-owned, read by the boot script.
 	ModeFile = "/etc/omac-vm/mode"
@@ -70,6 +77,12 @@ func RenderLimaConfig(in LimaInputs) (string, error) {
 	b.WriteString("    guestPort: " + strconv.Itoa(GuestDockerPort) + "\n")
 	b.WriteString("    hostIP: 127.0.0.1\n")
 	b.WriteString("    hostPort: " + strconv.Itoa(in.DockerPort) + "\n")
+	published := "[" + strconv.Itoa(PublishedPortFirst) + ", " + strconv.Itoa(PublishedPortLast) + "]"
+	b.WriteString("  - guestIP: 127.0.0.1\n")
+	b.WriteString("    guestPortRange: " + published + "\n")
+	b.WriteString("    hostIP: 127.0.0.1\n")
+	b.WriteString("    hostPortRange: " + published + "\n")
+	b.WriteString("    proto: tcp\n")
 	// Without these, Lima forwards every other guest listener to the same
 	// port on the host's loopback, so a VM process could claim a host port
 	// that a host tool later connects to.
