@@ -189,6 +189,28 @@ func TestVMExecNotCreated(t *testing.T) {
 	}
 }
 
+func TestVMExecInterruptedExits130(t *testing.T) {
+	useFakeVMExec(t, nil, 130, vm.ErrInterrupted)
+	env, _, stderr := vmTestEnv(t)
+	if code := runVM([]string{"exec", "--", "sleep", "60"}, env); code != 130 {
+		t.Fatalf("exit = %d, want 130; stderr:\n%s", code, stderr())
+	}
+	if !strings.Contains(stderr(), "interrupted") {
+		t.Errorf("stderr lacks the interruption:\n%s", stderr())
+	}
+}
+
+func TestVMExecNoTTYWhenStdinIsAFile(t *testing.T) {
+	calls := useFakeVMExec(t, nil, 0, nil)
+	env, _, _ := vmTestEnv(t)
+	if code := runVM([]string{"exec", "--", "true"}, env); code != ExitOK {
+		t.Fatalf("exit = %d", code)
+	}
+	if (*calls)[0].TTY {
+		t.Errorf("TTY = true for a non-terminal stdin")
+	}
+}
+
 func TestVMExecErrorIsIOError(t *testing.T) {
 	useFakeVMExec(t, nil, 1, errors.New("omac vm exec: rsync to the VM failed: boom"))
 	env, _, stderr := vmTestEnv(t)

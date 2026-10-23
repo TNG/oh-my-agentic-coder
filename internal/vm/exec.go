@@ -151,6 +151,7 @@ func WriteExcludeFile(dir string, ignored []string) (string, error) {
 // deletes on the remote side, and the flags work with both Apple's
 // openrsync and rsync 3.x.
 func RsyncArgs(workdir, excludeFile string, t SSHTarget, remoteDir string) []string {
+	t.TTY = false // a terminal would garble rsync's protocol stream
 	return []string{
 		"-rlpt", "--no-owner", "--no-group", "-z",
 		"--exclude-from=" + excludeFile,
@@ -223,6 +224,10 @@ func ResolveEnv(specs []string, getenv func(string) string) ([]string, error) {
 	return out, nil
 }
 
+// ErrInterrupted reports that Exec stopped because its context was
+// cancelled, typically by Ctrl-C.
+var ErrInterrupted = errors.New("omac vm exec: interrupted")
+
 // ExecOpts configures Exec. Workdir must be absolute; Cwd is relative to
 // it. Inside a git repository, Exec copies the repository's top level.
 type ExecOpts struct {
@@ -233,6 +238,7 @@ type ExecOpts struct {
 	Conn    ConnInfo
 	Run     CommandRunner
 	SSH     SSHRunner
+	TTY     bool // stdin is a terminal; the command then runs with one in the VM
 	Stdin   io.Reader
 	Stdout  io.Writer
 	Stderr  io.Writer
@@ -293,23 +299,50 @@ func Exec(ctx context.Context, o ExecOpts) (int, error) {
 		return 1, err
 	}
 
-	if err := o.SSH(ctx, o.Conn.Target, nil, io.Discard, o.Stderr, registerCmd(slug, root)); err != nil {
-		return 1, sshError("register worktree", err)
+	target := o.Conn.Target
+	target.TTY = false
+	if err := o.SSH(ctx, target, nil, io.Discard, o.Stderr, registerCmd(slug, root)); err != nil {
+		return failure(ctx, sshError("register worktree", err))
 	}
 	logf("omac vm exec: copying %s to the VM (%s)", root, remoteDir)
-	if err := o.Run(ctx, "rsync", RsyncArgs(root, excludeFile, o.Conn.Target, remoteDir), nil, o.Stderr, o.Stderr); err != nil {
-		return 1, fmt.Errorf("omac vm exec: rsync to the VM failed: %w", err)
+	if err := o.Run(ctx, "rsync", RsyncArgs(root, excludeFile, target, remoteDir), nil, o.Stderr, o.Stderr); err != nil {
+		if exitCode(err) == 255 || exitCode(err) == 12 { // ssh failed, or the stream broke
+			err = fmt.Errorf("%w; %s", err, connectionHint)
+		}
+		return failure(ctx, fmt.Errorf("omac vm exec: rsync to the VM failed: %w", err))
 	}
 
-	err = o.SSH(ctx, o.Conn.Target, o.Stdin, o.Stdout, o.Stderr, remote)
-	var ee *exec.ExitError
-	if errors.As(err, &ee) && ee.ExitCode() != 255 {
-		return ee.ExitCode(), nil
+	target.TTY = o.TTY
+	err = o.SSH(ctx, target, o.Stdin, o.Stdout, o.Stderr, remote)
+	if ctx.Err() != nil {
+		return 130, ErrInterrupted
+	}
+	if code := exitCode(err); code > 0 && code != 255 {
+		return code, nil
 	}
 	if err != nil {
 		return 1, sshError("run command", err)
 	}
 	return 0, nil
+}
+
+const connectionHint = "connection lost or remote command killed (is the VM running? `omac vm status`)"
+
+// failure reports err, or an interruption when the context was cancelled.
+func failure(ctx context.Context, err error) (int, error) {
+	if ctx.Err() != nil {
+		return 130, ErrInterrupted
+	}
+	return 1, err
+}
+
+// exitCode is the exit status of a process that ran and exited, else -1.
+func exitCode(err error) int {
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		return ee.ExitCode()
+	}
+	return -1
 }
 
 // registerCmd creates the copy's directory, which the VM's rsync cannot
@@ -321,11 +354,11 @@ func registerCmd(slug, workdir string) string {
 		" && { grep -qxF -- " + entry + " omac/.worktrees 2>/dev/null || printf '%s\\n' " + entry + " >> omac/.worktrees; }"
 }
 
-// sshError maps ssh's exit status 255 (connection failure) to a hint.
+// sshError maps ssh's exit status 255 to a hint. ssh exits 255 when the
+// connection fails and also when the remote command dies from a signal.
 func sshError(step string, err error) error {
-	var ee *exec.ExitError
-	if errors.As(err, &ee) && ee.ExitCode() == 255 {
-		return errors.New("omac vm exec: ssh connection failed (is the VM running? `omac vm status`)")
+	if exitCode(err) == 255 {
+		return errors.New("omac vm exec: " + connectionHint)
 	}
 	return fmt.Errorf("omac vm exec: %s: %w", step, err)
 }

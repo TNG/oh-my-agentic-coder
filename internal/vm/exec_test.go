@@ -228,6 +228,12 @@ func TestRsyncArgs(t *testing.T) {
 	if got := RsyncArgs("/w/repo/", "/tmp/ex", testTarget, "omac/slug/"); got[7] != "/w/repo/" {
 		t.Fatalf("source = %q", got[7])
 	}
+	// rsync's own ssh never gets a terminal.
+	tty := testTarget
+	tty.TTY = true
+	if got := RsyncArgs("/w/repo", "/tmp/ex", tty, "omac/slug/"); !reflect.DeepEqual(got, want) {
+		t.Fatalf("args with TTY =\n%q\nwant\n%q", got, want)
+	}
 }
 
 func TestRemoteCommand(t *testing.T) {
@@ -314,6 +320,8 @@ type execFakes struct {
 	// top and prefix are what `git rev-parse --show-toplevel --show-prefix`
 	// prints; by default the workdir is the top level.
 	top, prefix string
+	ttys        []bool // SSHTarget.TTY per ssh call
+	onCmd       func() // runs when the command's ssh call starts
 }
 
 func (f *execFakes) run(_ context.Context, name string, args []string, _ io.Reader, stdout, stderr io.Writer) error {
@@ -352,10 +360,14 @@ func (f *execFakes) run(_ context.Context, name string, args []string, _ io.Read
 	return errors.New("unexpected " + name)
 }
 
-func (f *execFakes) ssh(_ context.Context, _ SSHTarget, _ io.Reader, stdout, _ io.Writer, remote string) error {
+func (f *execFakes) ssh(_ context.Context, t SSHTarget, _ io.Reader, stdout, _ io.Writer, remote string) error {
 	f.order = append(f.order, "ssh")
 	f.remotes = append(f.remotes, remote)
+	f.ttys = append(f.ttys, t.TTY)
 	if len(f.remotes) == 2 {
+		if f.onCmd != nil {
+			f.onCmd()
+		}
 		_, _ = io.WriteString(stdout, "hello\n")
 		return f.cmdErr
 	}
@@ -515,8 +527,44 @@ func TestExecRsyncFailureStopsBeforeCommand(t *testing.T) {
 func TestExecSSHConnectionFailure(t *testing.T) {
 	f := &execFakes{cmdErr: exitErr(t, 255)}
 	_, err := Exec(context.Background(), f.opts("/w/repo", io.Discard))
-	if err == nil || !strings.Contains(err.Error(), "omac vm status") {
+	if err == nil || !strings.Contains(err.Error(), "connection lost or remote command killed (is the VM running? `omac vm status`)") {
 		t.Fatalf("err = %v, want connection error naming omac vm status", err)
+	}
+}
+
+func TestExecRsyncConnectionFailure(t *testing.T) {
+	for _, code := range []int{255, 12} {
+		f := &execFakes{rsyncErr: exitErr(t, code)}
+		_, err := Exec(context.Background(), f.opts("/w/repo", io.Discard))
+		if err == nil || !strings.Contains(err.Error(), "omac vm status") {
+			t.Errorf("rsync exit %d: err = %v, want the connection hint", code, err)
+		}
+	}
+}
+
+func TestExecInterrupted(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	// Ctrl-C cancels the context; the killed ssh then reports exit -1.
+	f := &execFakes{onCmd: cancel, cmdErr: errors.New("signal: killed")}
+	code, err := Exec(ctx, f.opts("/w/repo", io.Discard))
+	if code != 130 || !errors.Is(err, ErrInterrupted) {
+		t.Fatalf("Exec = %d, %v; want 130, ErrInterrupted", code, err)
+	}
+}
+
+func TestExecTTYOnlyForTheCommand(t *testing.T) {
+	f := &execFakes{}
+	o := f.opts("/w/repo", io.Discard)
+	o.TTY = true
+	if _, err := Exec(context.Background(), o); err != nil {
+		t.Fatal(err)
+	}
+	if want := []bool{false, true}; !slices.Equal(f.ttys, want) {
+		t.Fatalf("TTY per ssh call = %v, want %v", f.ttys, want)
+	}
+	if slices.Contains(f.rsync, "-t") || strings.Contains(f.rsync[6], " -t") {
+		t.Fatalf("rsync got a terminal: %q", f.rsync)
 	}
 }
 

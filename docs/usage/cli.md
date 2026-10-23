@@ -236,6 +236,8 @@ omac vm exec -- cat backend/build/reports/tests/test/index.html   # results stay
 
 The command runs in the same place inside the copy as your current directory is in the worktree. `--cwd <dir>` runs it in `<dir>`, relative to the current directory. So `omac vm exec --cwd backend -- …` from the repository root and `omac vm exec -- …` from `backend/` both run in `backend`. Outside a git repository, omac copies the current directory. `--env NAME` passes the variable `NAME` with the value from your shell. The variable must be set there, otherwise the command fails before anything runs. `--env NAME=VALUE` sets the value explicitly. Repeat `--env` for more variables.
 
+When your input is a terminal, the command gets one in the VM too, and Ctrl-C stops it there. Without a terminal, for example when you pipe input into `omac vm exec`, Ctrl-C stops only omac and the command keeps running in the VM.
+
 The copy goes one way only:
 
 - `.git` and the paths git ignores, such as `build/`, `.gradle/` and `node_modules/`, are not copied.

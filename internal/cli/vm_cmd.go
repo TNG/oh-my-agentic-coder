@@ -10,6 +10,8 @@ import (
 	"strings"
 	"syscall"
 
+	"golang.org/x/term"
+
 	"github.com/TNG/oh-my-agentic-coder/internal/vm"
 )
 
@@ -217,6 +219,7 @@ func runVMExec(args []string, env *Env) int {
 		Conn:    conn,
 		Run:     vm.ExecRunner,
 		SSH:     vm.DefaultSSH,
+		TTY:     env.Stdin != nil && term.IsTerminal(int(env.Stdin.Fd())),
 		Stdin:   env.Stdin,
 		Stdout:  env.Stdout,
 		Stderr:  env.Stderr,
@@ -224,6 +227,9 @@ func runVMExec(args []string, env *Env) int {
 	})
 	if err != nil {
 		fmt.Fprintln(env.Stderr, err)
+		if errors.Is(err, vm.ErrInterrupted) {
+			return code
+		}
 		return ExitIOError
 	}
 	return code
