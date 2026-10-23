@@ -38,7 +38,9 @@ type LimaCtl func(ctx context.Context, limaHome string, stdout io.Writer, args .
 // DefaultLimaCtl runs the limactl binary found on $PATH.
 func DefaultLimaCtl(ctx context.Context, limaHome string, stdout io.Writer, args ...string) error {
 	cmd := exec.CommandContext(ctx, "limactl", args...)
-	cmd.Env = append(os.Environ(), "LIMA_HOME="+limaHome)
+	// Lima's default gRPC port forwarder turns a client's half-close into a
+	// full close, so `docker run` without -i loses the container's output.
+	cmd.Env = append(os.Environ(), "LIMA_HOME="+limaHome, "LIMA_SSH_PORT_FORWARDER=true")
 	if stdout == nil {
 		cmd.Stdout = io.Discard
 		cmd.Stderr = os.Stderr

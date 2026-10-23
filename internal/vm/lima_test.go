@@ -159,6 +159,23 @@ func TestDefaultLimaCtlStderr(t *testing.T) {
 	}
 }
 
+func TestDefaultLimaCtlUsesSSHPortForwarder(t *testing.T) {
+	bin := t.TempDir()
+	script := "#!/bin/sh\nprintf '%s' \"$LIMA_SSH_PORT_FORWARDER\"\n"
+	if err := os.WriteFile(filepath.Join(bin, "limactl"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	t.Setenv("LIMA_SSH_PORT_FORWARDER", "false")
+	var out bytes.Buffer
+	if err := DefaultLimaCtl(context.Background(), t.TempDir(), &out, "start"); err != nil {
+		t.Fatal(err)
+	}
+	if got := out.String(); got != "true" {
+		t.Errorf("limactl saw LIMA_SSH_PORT_FORWARDER=%q, want true", got)
+	}
+}
+
 func TestDefaultLimaCtlWithoutBinary(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 	if err := DefaultLimaCtl(context.Background(), t.TempDir(), nil, "list"); err == nil {
