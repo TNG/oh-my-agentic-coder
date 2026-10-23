@@ -95,6 +95,37 @@ func TestRepoRoot(t *testing.T) {
 	}
 }
 
+func TestGitRunsWithCLocale(t *testing.T) {
+	var envs [][]string
+	run := func(ctx context.Context, _ string, _ []string, _ io.Reader, stdout, _ io.Writer) error {
+		envs = append(envs, commandEnv(ctx))
+		_, _ = io.WriteString(stdout, "/w/repo\n\n")
+		return nil
+	}
+	if _, _, _, err := RepoRoot(context.Background(), run, "/w/repo"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := IgnoredPaths(context.Background(), run, "/w/repo"); err != nil {
+		t.Fatal(err)
+	}
+	for i, env := range envs {
+		if !slices.Contains(env, "LC_ALL=C") {
+			t.Errorf("git call %d env = %q, want LC_ALL=C", i, env)
+		}
+	}
+}
+
+func TestExecRunnerAppliesCommandEnv(t *testing.T) {
+	var out bytes.Buffer
+	ctx := withCommandEnv(context.Background(), "LC_ALL=C")
+	if err := ExecRunner(ctx, "sh", []string{"-c", "printf %s \"$LC_ALL\""}, nil, &out, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if out.String() != "C" {
+		t.Fatalf("LC_ALL in the child = %q, want C", out.String())
+	}
+}
+
 func TestRepoRootFailsOnOtherGitErrors(t *testing.T) {
 	run := func(_ context.Context, _ string, _ []string, _ io.Reader, _, stderr io.Writer) error {
 		_, _ = io.WriteString(stderr, "fatal: detected dubious ownership in repository at '/w/repo'\n")

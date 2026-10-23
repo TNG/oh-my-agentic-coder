@@ -3,7 +3,9 @@ package cli
 import (
 	"context"
 	"errors"
+	"os"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -214,6 +216,34 @@ func TestVMExecNoTTYWhenStdinIsAFile(t *testing.T) {
 	}
 	if (*calls)[0].TTY {
 		t.Errorf("TTY = true for a non-terminal stdin")
+	}
+}
+
+// useTerminals makes isTerminal true for exactly the given files.
+func useTerminals(t *testing.T, files ...*os.File) {
+	t.Helper()
+	orig := isTerminal
+	t.Cleanup(func() { isTerminal = orig })
+	isTerminal = func(f *os.File) bool { return slices.Contains(files, f) }
+}
+
+func TestVMExecNoTTYWhenStdoutIsAFile(t *testing.T) {
+	calls := useFakeVMExec(t, nil, 0, nil)
+	env, _, _ := vmTestEnv(t)
+	useTerminals(t, env.Stdin) // omac vm exec -- cat report.html > report.html
+	if code := runVM([]string{"exec", "--", "true"}, env); code != ExitOK {
+		t.Fatalf("exit = %d", code)
+	}
+	if (*calls)[0].TTY {
+		t.Errorf("TTY = true although stdout is a file")
+	}
+
+	useTerminals(t, env.Stdin, env.Stdout)
+	if code := runVM([]string{"exec", "--", "true"}, env); code != ExitOK {
+		t.Fatalf("exit = %d", code)
+	}
+	if !(*calls)[1].TTY {
+		t.Errorf("TTY = false although stdin and stdout are terminals")
 	}
 }
 

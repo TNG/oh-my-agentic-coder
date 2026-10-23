@@ -109,6 +109,9 @@ var resolveVMConn = func(*Env) (vm.ConnInfo, error) {
 	return vm.ResolveConn(os.Getenv, vm.NewLayout(root), vm.RealDeps().HostUser)
 }
 
+// isTerminal reports whether f is a terminal. Tests replace it.
+var isTerminal = func(f *os.File) bool { return f != nil && term.IsTerminal(int(f.Fd())) }
+
 // loadVMState reads the host-side state.json; nil when the VM was never
 // created. Tests replace it.
 var loadVMState = func() (*vm.State, error) {
@@ -196,11 +199,13 @@ func runVMExec(args []string, env *Env) int {
 		Conn:    conn,
 		Run:     vm.ExecRunner,
 		SSH:     vm.DefaultSSH,
-		TTY:     env.Stdin != nil && term.IsTerminal(int(env.Stdin.Fd())),
-		Stdin:   env.Stdin,
-		Stdout:  env.Stdout,
-		Stderr:  env.Stderr,
-		Log:     logf,
+		// A terminal in the VM turns "\n" into "\r\n" and mixes stderr into
+		// stdout, which would corrupt `omac vm exec -- cat x > x`.
+		TTY:    isTerminal(env.Stdin) && isTerminal(env.Stdout),
+		Stdin:  env.Stdin,
+		Stdout: env.Stdout,
+		Stderr: env.Stderr,
+		Log:    logf,
 	})
 	if err != nil {
 		fmt.Fprintln(env.Stderr, err)

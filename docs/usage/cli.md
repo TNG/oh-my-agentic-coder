@@ -240,7 +240,7 @@ The command runs in the same place inside the copy as your current directory is 
 
 omac returns the command's exit code as is. That code can coincide with omac's own exit codes 2 (wrong usage), 4 (VM not created) and 5 (copy or connection failed). For example, a command that ends with `exit 5` looks like a failed copy, so check the error message on stderr.
 
-When your input is a terminal, the command gets one in the VM too, and Ctrl-C stops it there. Without a terminal, for example when you pipe input into `omac vm exec`, Ctrl-C stops only omac and the command keeps running in the VM.
+When both stdin and stdout are a terminal, the command gets one in the VM too, and Ctrl-C stops it there. Otherwise, for example when you pipe input into `omac vm exec` or redirect its output to a file, Ctrl-C stops only omac and the command keeps running in the VM.
 
 The copy goes one way only:
 

@@ -67,6 +67,7 @@ func RemoteDir(slug string) string {
 // tree. Any other git failure, such as "detected dubious ownership", is an
 // error: copying everything could leak what .gitignore keeps out.
 func RepoRoot(ctx context.Context, run CommandRunner, dir string) (top, prefix string, ok bool, err error) {
+	ctx = gitContext(ctx)
 	var out, stderr bytes.Buffer
 	err = run(ctx, "git", []string{"-C", dir, "rev-parse", "--show-toplevel", "--show-prefix"}, nil, &out, &stderr)
 	var ee *exec.ExitError
@@ -83,10 +84,16 @@ func RepoRoot(ctx context.Context, run CommandRunner, dir string) (top, prefix s
 	return lines[0], strings.TrimSuffix(lines[1], "/"), true, nil
 }
 
+// gitContext pins git's messages to English, which RepoRoot matches on.
+func gitContext(ctx context.Context) context.Context {
+	return withCommandEnv(ctx, "LC_ALL=C")
+}
+
 // IgnoredPaths lists the paths git ignores in the repository at top and in
 // its checked-out submodules, relative to top; ignored directories are
 // listed once, with a trailing slash.
 func IgnoredPaths(ctx context.Context, run CommandRunner, top string) ([]string, error) {
+	ctx = gitContext(ctx)
 	var out, stderr bytes.Buffer
 	foreach := []string{"-C", top, "submodule", "--quiet", "foreach", "--recursive", `echo "$displaypath"`}
 	if err := run(ctx, "git", foreach, nil, &out, &stderr); err != nil {
@@ -237,7 +244,7 @@ type ExecOpts struct {
 	Conn    ConnInfo
 	Run     CommandRunner
 	SSH     SSHRunner
-	TTY     bool // stdin is a terminal; the command then runs with one in the VM
+	TTY     bool // run the command with a terminal in the VM
 	Stdin   io.Reader
 	Stdout  io.Writer
 	Stderr  io.Writer
