@@ -34,6 +34,7 @@ import (
 	"github.com/TNG/oh-my-agentic-coder/internal/skillstate"
 	"github.com/TNG/oh-my-agentic-coder/internal/supervisor"
 	"github.com/TNG/oh-my-agentic-coder/internal/toolcache"
+	"github.com/TNG/oh-my-agentic-coder/internal/vm"
 )
 
 // serveParse is the parsed `omac serve` command line. Extracted so tests can
@@ -59,6 +60,7 @@ type serveParse struct {
 	auditStrict       bool
 	roots             multiFlag
 	openPorts         []int
+	vm                bool
 }
 
 // parseServeArgs parses serve's harness token, flags, and trailing `--`
@@ -83,6 +85,7 @@ func parseServeArgs(args []string, env *Env) (serveParse, bool) {
 		auditLog          = fs.String("audit-log", "", "Path to the audit log (default: persistent central location). Overrides config.")
 		noAudit           = fs.Bool("no-audit", false, "Disable the security audit trail.")
 		auditStrict       = fs.Bool("audit-strict", false, "Fail-closed: abort if the audit log cannot be written.")
+		vmAttach          = fs.Bool("vm", false, "Attach to the omac VM: DOCKER_HOST points at its Docker API, its two loopback ports are opened for the sandbox. Requires `omac vm up` and offline mode.")
 	)
 	var roots multiFlag
 	var openPorts intMultiFlag
@@ -115,6 +118,10 @@ func parseServeArgs(args []string, env *Env) (serveParse, bool) {
 		fmt.Fprintln(env.Stderr, "omac serve: --ephemeral-cache cannot be used with --no-sandbox")
 		return serveParse{}, false
 	}
+	if *vmAttach && (*noSandbox || *noInner) {
+		fmt.Fprintln(env.Stderr, "omac serve: --vm cannot be used with --no-sandbox or --no-inner")
+		return serveParse{}, false
+	}
 	if *cacheScopeFlag != "" {
 		if _, err := config.ValidateCacheScope(*cacheScopeFlag); err != nil {
 			fmt.Fprintln(env.Stderr, "omac serve:", err)
@@ -142,6 +149,7 @@ func parseServeArgs(args []string, env *Env) (serveParse, bool) {
 		auditStrict:       *auditStrict,
 		roots:             roots,
 		openPorts:         append([]int(nil), openPorts...),
+		vm:                *vmAttach,
 	}, true
 }
 
@@ -194,6 +202,10 @@ func runServe(args []string, env *Env) int {
 	if planErr != nil && !noSandbox && !noInner {
 		fmt.Fprintln(env.Stderr, "omac serve:", planErr)
 		return ExitConfigInvalid
+	}
+	if parsed.vm && !plan.Native {
+		fmt.Fprintln(env.Stderr, "omac serve: "+vmProfileMisuse(plan))
+		return ExitMisuse
 	}
 	profName := plan.Name
 	prof := plan.Launcher
@@ -322,6 +334,32 @@ func runServe(args []string, env *Env) int {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// omac VM (--vm): attach only, as in `omac start`; the VM outlives serve.
+	var vmInfo vm.AttachInfo
+	var vmEnv map[string]string
+	releaseVM := func() {}
+	if parsed.vm {
+		info, release, aerr := prepareVMAttach(ctx, env)
+		if aerr != nil {
+			fmt.Fprintln(env.Stderr, "omac serve: --vm:", aerr)
+			return vmAttachExitCode(aerr)
+		}
+		releaseVM = release
+		defer releaseVM()
+		vmInfo = info
+		scopeDir := sandboxTmp
+		if cacheScope != nil {
+			scopeDir = cacheScope.Dir
+		}
+		if vmEnv, err = vmSandboxEnv(info, scopeDir); err != nil {
+			fmt.Fprintln(env.Stderr, "omac serve: --vm:", err)
+			return ExitIOError
+		}
+		if verbose {
+			fmt.Fprintf(env.Stderr, "[verbose] omac vm: docker %s api %s, ssh 127.0.0.1:%d\n", info.Docker.Version, info.Docker.APIVersion, info.SSHPort)
+		}
+	}
+
 	sup := supervisor.New(lc.Facade.BaseEnvPassthrough, auditor, skillSpawnAuthorizer)
 	defer sup.ShutdownAll(5 * time.Second)
 
@@ -377,6 +415,7 @@ func runServe(args []string, env *Env) int {
 			"OMAC_CACHE_MODE": string(cacheScope.Mode),
 		}
 	}
+	srv.vmEnv = vmEnv
 	// Trust-on-first-upgrade (see skill_approval.go): grandfather the skills
 	// KNOWN at cold start — the user-global registry plus the launch workdir —
 	// so a pre-existing setup keeps working, then close the window. Skills
@@ -573,6 +612,9 @@ func runServe(args []string, env *Env) int {
 			}
 		}
 		argv = injectUserOpenPorts(env, argv, openPorts, prof)
+		if parsed.vm {
+			argv = injectVMGrants(argv, vmInfo, plan)
+		}
 		// Pass the resolved audit path to `omac sandbox run` so its
 		// network-filter subprocess appends net.decision events to the
 		// same persistent log. Inherit the parent's run_id + mode so the
@@ -653,6 +695,7 @@ func runServe(args []string, env *Env) int {
 		sup.ShutdownAll(5 * time.Second)
 		_ = f.Close()
 		httpSrv.Close()
+		releaseVM() // os.Exit skips the deferred release
 		os.Exit(ExitIOError)
 	}
 	sandboxed := !noSandbox && !noInner
@@ -1055,6 +1098,7 @@ type serveServer struct {
 	verbose           bool
 	roots             []string // §5.4 Option B; empty = allow any directory
 	cacheEnv          map[string]string
+	vmEnv             map[string]string // --vm: DOCKER_HOST and the OMAC_VM_* vars
 
 	mu      sync.RWMutex
 	dirs    map[string]*dirState   // abs dir -> state
@@ -1695,6 +1739,9 @@ func (s *serveServer) baseEnv() map[string]string {
 		"TMPDIR": s.sandboxTmp,
 	}
 	for k, v := range s.cacheEnv {
+		extra[k] = v
+	}
+	for k, v := range s.vmEnv {
 		extra[k] = v
 	}
 	// Global skills are known at cold start (§4.5/§5.1): inject their base
