@@ -41,9 +41,9 @@ GitHub, …), you want a different skill — not this one.
 
 The sidecar is reached through the omac facade. omac exports two transports
 into the sandbox; **prefer the TCP loopback form** because it is the only one
-that survives `nono` proxy-mode on macOS. Every TCP call must carry the
-facade token from `$OMAC_FACADE_TOKEN` — without it the facade answers 401
-(the Unix-socket form needs no token):
+that survives sandbox configurations that block AF_UNIX connect(2). Every TCP
+call must carry the facade token from `$OMAC_FACADE_TOKEN` — without it the
+facade answers 401 (the Unix-socket form needs no token):
 
 ```bash
 # TCP loopback (recommended)

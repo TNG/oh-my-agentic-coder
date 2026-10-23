@@ -29,7 +29,15 @@ type Flags struct {
 	AuditLog      string   // --audit-log <path>: append net.decision events here ("" = disabled)
 	AuditRunID    string   // --audit-run-id <id>: inherit parent's run_id ("" = mint fresh)
 	AuditMode     string   // --audit-mode <start|serve>: inherit parent's mode ("" = start)
-	InnerArgv     []string // everything after --
+	// ProjectTrust and ProjectTrustLayer are set by the launching parent
+	// (`omac start`/`omac serve`) so the child re-verifies the project-local
+	// sandbox content against the host-side approval pins before loading it:
+	// trust names what selected the profile (config | explicit), layer is
+	// the profile layer the parent resolved (workdir | global | builtin).
+	// A direct `omac sandbox run` leaves both empty and skips the check.
+	ProjectTrust      string   // --project-trust <config|explicit>
+	ProjectTrustLayer string   // --project-trust-layer <workdir|global|builtin>
+	InnerArgv         []string // everything after --
 }
 
 // ParseFlags parses the argument vector for `omac sandbox run` (the
@@ -191,6 +199,24 @@ func ParseFlags(args []string) (*Flags, error) {
 				return nil, err
 			}
 			f.AuditRunID = v
+		case "--project-trust":
+			v, err := val(a)
+			if err != nil {
+				return nil, err
+			}
+			if v != "config" && v != "explicit" {
+				return nil, fmt.Errorf("--project-trust must be config or explicit, got %q", v)
+			}
+			f.ProjectTrust = v
+		case "--project-trust-layer":
+			v, err := val(a)
+			if err != nil {
+				return nil, err
+			}
+			if v != "workdir" && v != "global" && v != "builtin" {
+				return nil, fmt.Errorf("--project-trust-layer must be workdir, global, or builtin, got %q", v)
+			}
+			f.ProjectTrustLayer = v
 		case "--audit-mode":
 			v, err := val(a)
 			if err != nil {

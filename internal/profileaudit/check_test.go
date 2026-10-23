@@ -84,8 +84,7 @@ func TestCheck_EmptyAllowVarsIsFailClosed(t *testing.T) {
 // TestCheck_WildcardAllowVarsNoFinding documents allow_vars: ["*"] as the
 // explicit "inherit everything (except the danger blocklist)" escape hatch:
 // it is non-empty, so it suppresses the empty-allowlist finding, and it is
-// still safe because IsDangerousEnvVar wins over the allowlist in FilterEnv
-// (issue #111 review).
+// still safe because IsDangerousEnvVar wins over the allowlist in FilterEnv.
 func TestCheck_WildcardAllowVarsNoFinding(t *testing.T) {
 	p := cleanProfile()
 	p.Environment.AllowVars = []string{"*"}
@@ -447,5 +446,127 @@ func TestCheck_NetworkTableDriven(t *testing.T) {
 				t.Errorf("severity = %q; want %q", got.Severity, tc.wantSev)
 			}
 		})
+	}
+}
+
+// environment.set: a blocklisted name can never take effect (HIGH), a
+// secret-looking name puts its value in a committable file (MEDIUM), and a
+// clean non-secret entry is silent.
+func TestCheck_EnvironmentSet(t *testing.T) {
+	p := cleanProfile()
+	p.Environment.Set = map[string]string{
+		"LD_PRELOAD":            "/tmp/evil.so",
+		"NPM_CONFIG_USERCONFIG": "~/.config/opencode/tng-npmrc",
+		"MY_API_TOKEN":          "secret-value",
+	}
+	findings := Check(p)
+
+	byValue := map[string]Finding{}
+	for _, f := range findings {
+		if f.Field == "environment.set" {
+			byValue[f.Value] = f
+		}
+	}
+	high, ok := byValue["LD_PRELOAD"]
+	if !ok || high.Severity != SeverityHigh {
+		t.Errorf("a blocklisted set name must be HIGH; got %+v (all: %+v)", high, findings)
+	}
+	med, ok := byValue["MY_API_TOKEN"]
+	if !ok || med.Severity != SeverityMedium {
+		t.Errorf("a secret-looking set name must be MEDIUM; got %+v (all: %+v)", med, findings)
+	}
+	if _, ok := byValue["NPM_CONFIG_USERCONFIG"]; ok {
+		t.Errorf("a clean set name must not be flagged; got %+v", byValue)
+	}
+}
+
+// A set value may expand an always-stripped variable under a benign name:
+// the expanded value is injected from the supervisor's ambient environment,
+// bypassing allow_vars. The audit must show the reference pre-expansion, so
+// the finding appears whether the launch runs (drop) or a reviewer reads it.
+func TestCheckSetValueReferencesBlocklistedVar(t *testing.T) {
+	p := cleanProfile()
+	p.Environment.Set = map[string]string{"MY_AUX": "$OP_SERVICE_ACCOUNT_TOKEN"}
+	findings := Check(p)
+	found := false
+	for _, f := range findings {
+		if f.Field == "environment.set" && f.Severity == SeverityHigh {
+			found = true
+			if !strings.Contains(f.Message, "OP_SERVICE_ACCOUNT_TOKEN") {
+				t.Errorf("finding must name the referenced variable: %s", f.Message)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("no HIGH finding for a set value expanding a blocklisted var: %+v", findings)
+	}
+}
+
+// A value also must not expand a secret-looking variable under a benign
+// name, even when the referenced name is not on the blocklist.
+func TestCheckSetValueReferencesSecretLikeVar(t *testing.T) {
+	p := cleanProfile()
+	p.Environment.Set = map[string]string{"MY_BASE_URL": "$GITHUB_TOKEN"}
+	findings := Check(p)
+	found := false
+	for _, f := range findings {
+		if f.Field == "environment.set" && strings.Contains(f.Message, "GITHUB_TOKEN") {
+			found = true
+			if f.Severity != SeverityMedium {
+				t.Errorf("secret-like reference severity = %q, want medium", f.Severity)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("no finding for a set value expanding a secret-looking var: %+v", findings)
+	}
+}
+
+// Literal set values and references to ordinary variables stay permitted;
+// only the reference itself is the finding.
+func TestCheckSetValueLiteralsAndPlainRefsAllowed(t *testing.T) {
+	p := cleanProfile()
+	p.Environment.Set = map[string]string{
+		"MODE":     "production",
+		"LOG_HOME": "$HOME/logs",
+	}
+	for _, f := range Check(p) {
+		if f.Severity == SeverityHigh && f.Field == "environment.set" {
+			t.Errorf("ordinary set entries must not be HIGH findings: %+v", f)
+		}
+	}
+}
+
+// A profile the user approves that grants ~ or ~/.config writable voids the
+// host-side pin anchor on macOS (a session can replace ~/.config/omac and
+// forge the pins). That grant must surface as HIGH so nobody approves it
+// unreviewed.
+func TestCheckWritableGrantOverConfigDirParent(t *testing.T) {
+	for _, entry := range []string{"~", "~/", "~/.config", "$XDG_CONFIG_HOME"} {
+		p := cleanProfile()
+		p.Filesystem.Allow = []string{entry}
+		if entry == "$XDG_CONFIG_HOME" {
+			t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+		}
+		findings := Check(p)
+		found := false
+		for _, f := range findings {
+			if f.Field == "filesystem.allow" && f.Severity == SeverityHigh && strings.Contains(f.Message, "writable grant covers") {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("writable %q grant must produce a HIGH finding naming the anchor; got %+v", entry, findings)
+		}
+	}
+
+	// A grant under ~/.config that is not the config dir's parent (and not
+	// the dir itself) stays out of this check's scope.
+	p := cleanProfile()
+	p.Filesystem.Allow = []string{"~/.config/fish"}
+	for _, f := range Check(p) {
+		if strings.Contains(f.Message, "writable grant covers") {
+			t.Errorf("grant below the config dir must not be treated as covering it: %+v", f)
+		}
 	}
 }

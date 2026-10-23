@@ -1,14 +1,45 @@
 package sandboxrun
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/TNG/oh-my-agentic-coder/internal/config"
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
 	"github.com/TNG/oh-my-agentic-coder/internal/toolcache"
 )
+
+func TestEnsureLocalConfigDir(t *testing.T) {
+	workdir := t.TempDir()
+	dir, err := EnsureLocalConfigDir(workdir)
+	if err != nil {
+		t.Fatalf("ensureLocalConfigDir: %v", err)
+	}
+	if dir != filepath.Join(workdir, ".omac") {
+		t.Errorf("dir = %q; want <workdir>/.omac", dir)
+	}
+	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
+		t.Fatalf(".omac was not created as a directory: %v", err)
+	}
+
+	// A symlinked .omac is refused: it could point outside the project.
+	other := t.TempDir()
+	linked := t.TempDir()
+	if err := os.Symlink(other, filepath.Join(linked, ".omac")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if _, err := EnsureLocalConfigDir(linked); !errors.Is(err, ErrLocalConfigDirSymlink) {
+		t.Fatalf("a symlinked .omac must fail with ErrLocalConfigDirSymlink, got %v", err)
+	}
+
+	// Empty workdir is a no-op.
+	if dir, err := EnsureLocalConfigDir(""); err != nil || dir != "" {
+		t.Errorf("EnsureLocalConfigDir(\"\") = (%q, %v); want (\"\", nil)", dir, err)
+	}
+}
 
 func TestInjectedToolCacheEnv(t *testing.T) {
 	cacheDir := t.TempDir()
@@ -219,6 +250,73 @@ func TestWarnEmptyAllowVars(t *testing.T) {
 		warnEmptyAllowVars(&buf, merged.Environment.AllowVars)
 		if buf.String() != "" {
 			t.Errorf("seeded launch warned: %s", buf.String())
+		}
+	})
+}
+
+// The child re-verifies the project-local sandbox content against the
+// approval pins before loading it: the parent checked, then spent startup
+// time spawning sidecars — a window a leftover process can use to swap the
+// .omac content on macOS.
+func TestVerifyProjectTrust(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	workdir := t.TempDir()
+	profPath := filepath.Join(workdir, ".omac", "strict.json")
+	cfgPath := config.ProjectLauncherConfigPath(workdir)
+	for path, body := range map[string]string{
+		cfgPath:  "sandbox:\n  profile_name: strict\n",
+		profPath: `{"meta":{"name":"strict"}}`,
+	} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := config.PinProjectSandbox(workdir, config.ProfileSelection{Path: profPath, Name: "strict", Layer: "workdir"}, true); err != nil {
+		t.Fatalf("pin: %v", err)
+	}
+
+	t.Run("untouched content passes", func(t *testing.T) {
+		if err := verifyProjectTrust(workdir, "config", "workdir", profPath); err != nil {
+			t.Errorf("trusted content must pass, got %v", err)
+		}
+	})
+
+	t.Run("profile swapped after approval is refused", func(t *testing.T) {
+		if err := os.WriteFile(profPath, []byte(`{"meta":{"name":"evil"},"filesystem":{"allow":["/"]}}`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := verifyProjectTrust(workdir, "config", "workdir", profPath); err == nil {
+			t.Error("a pinned profile rewritten after approval must be refused by the child")
+		}
+	})
+
+	t.Run("config-driven check covers config.yaml", func(t *testing.T) {
+		if err := os.WriteFile(profPath, []byte(`{"meta":{"name":"strict"}}`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(cfgPath, []byte("sandbox:\n  profile_name: other\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := verifyProjectTrust(workdir, "config", "workdir", profPath); err == nil {
+			t.Error("config.yaml rewritten after approval must be refused under --project-trust config")
+		}
+		if err := verifyProjectTrust(workdir, "explicit", "workdir", profPath); err != nil {
+			t.Errorf("an explicit-path launch must not be gated by config.yaml, got %v", err)
+		}
+		if err := os.WriteFile(cfgPath, []byte("sandbox:\n  profile_name: strict\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	t.Run("direct runs skip the check", func(t *testing.T) {
+		if err := os.WriteFile(profPath, []byte(`{"meta":{"name":"evil"},"filesystem":{"allow":["/"]}}`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := verifyProjectTrust("", "", "builtin", ""); err != nil {
+			t.Errorf("an empty workdir must skip: %v", err)
 		}
 	})
 }

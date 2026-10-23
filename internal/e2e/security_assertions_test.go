@@ -18,9 +18,9 @@ import (
 // denial substring appeared ANYWHERE in the whole probe section — so one
 // leaked path among many probed ones slipped through undetected as long as
 // a different path in the same section was denied. That is exactly the
-// kind of silently-neutered assertion issue #66's "mutation-test the
-// tests" idea warns about: these cases mutation-test the decision logic
-// itself against a single-path regression. fsAllowDenied is the positive
+// kind of silently-neutered assertion these mutation tests warn about:
+// they mutate the decision logic itself against a single-path regression.
+// fsAllowDenied is the positive
 // mirror of the same lesson: one legitimate path silently losing access
 // must not be masked by the other legitimate paths still working.
 //
@@ -122,7 +122,7 @@ func TestFsAllowDeniedCatchesSingleDenial(t *testing.T) {
 	}
 }
 
-// TestFsAllowDeniedIgnoresShellTraceLines pins the fix for #224 against the
+// TestFsAllowDeniedIgnoresShellTraceLines pins the fix for against the
 // output that produced it. The fixture is the fs_allow section captured
 // verbatim from run 31528427272 (claude-code / ubuntu-latest), where the agent
 // invoked audit.sh under `sh -x`: xtrace echoed every command, audit.sh
@@ -212,7 +212,7 @@ func TestSymlinkEscapeLeakedCatchesEitherHalf(t *testing.T) {
 }
 
 // TestNoSandboxExposureReport covers the --no-sandbox documentation path
-// (issue #66): the report must (a) flag a property as EXPOSED when the audit
+// : the report must (a) flag a property as EXPOSED when the audit
 // output shows it unenforced, (b) flag it contained when the probe shows a
 // denial, and (c) mark a probe as not-Ran when its section is missing, so the
 // live wrapper fails a no-sandbox run that produced no audit instead of

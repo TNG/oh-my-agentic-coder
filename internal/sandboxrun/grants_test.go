@@ -469,7 +469,7 @@ func TestResolveGrantsWorktreeHooksSymlinkEscape(t *testing.T) {
 	if err := os.WriteFile(dotgit, []byte("gitdir: "+admin+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// Back-pointer required by the worktree check introduced to fix #44.
+	// Back-pointer required by the worktree ownership check.
 	if err := os.WriteFile(filepath.Join(admin, "gitdir"), []byte(dotgit+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}

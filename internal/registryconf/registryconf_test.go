@@ -35,7 +35,7 @@ func TestScrubNPMRCKeepsOnlyRegistryMappings(t *testing.T) {
 		rejected int
 	}{
 		{
-			name:     "the #241 shape: bare scope mapping",
+			name:     "bare scope shape mapping",
 			src:      "@tngtech:registry=https://tng-artifacts.int.tngtech.com\n",
 			wantKeys: []string{"@tngtech:registry"},
 			wantBody: "@tngtech:registry=https://tng-artifacts.int.tngtech.com\n",

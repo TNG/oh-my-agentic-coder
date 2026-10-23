@@ -7,7 +7,9 @@ description: The WHY behind omac's architecture
 
 ### OS sandbox primitives, not a custom layer
 
-omac delegates all filesystem, network, and process isolation to a sandbox backend — an OS-level program that builds the sandbox. The default `builtin` backend re-executes omac itself to drive Seatbelt on macOS and bubblewrap + Landlock on Linux. A custom sandbox would duplicate what the OS already does and force omac to track kernel-level security guarantees itself. Instead, omac only configures what the backend exposes: which socket path to allow and which loopback TCP port to open. The command that launches the backend is a config-driven argv template (`sandbox.profiles.<name>.command`), so you can swap in a different backend without changing omac; the external `nono` backend is still selectable but deprecated.
+omac delegates all filesystem, network, and process isolation to a sandbox backend — an OS-level program that builds the sandbox. omac's built-in backend re-executes omac itself to drive Seatbelt on macOS and bubblewrap + Landlock on Linux. 
+A custom sandbox would duplicate what the OS already does and force omac to track kernel-level security guarantees itself. Instead, omac only configures what the backend exposes: which socket path to allow and which loopback TCP port to open.
+omac assembles the built-in backend's launch command internally; there is no user-configurable launcher command.
 
 ### Sidecars run on the host, not inside the sandbox
 
@@ -23,7 +25,7 @@ Credentials in env vars, `.opencode/` files, or shell configs are readable by an
 
 ### Two transports: TCP loopback and Unix socket
 
-The facade binds two transports: a loopback TCP port (`OMAC_<SKILL>_BASE`) and a Unix socket (`OMAC_SOCKET`). Skills should always use TCP — it works under every backend, including the deprecated nono proxy mode on macOS, where Seatbelt's `(deny network*)` rule blocks `connect(2)` on a Unix socket. The socket is the original transport, kept for compatibility; there is no case where a skill needs to prefer it.
+The facade binds two transports: a loopback TCP port (`OMAC_<SKILL>_BASE`) and a Unix socket (`OMAC_SOCKET`). Skills should always use TCP — it works under every backend, including sandbox configurations where a `(deny network*)` rule blocks `connect(2)` on a Unix socket. The socket is the original transport, kept for compatibility; there is no case where a skill needs to prefer it.
 
 ```
 curl -sS "${OMAC_SLACK_BASE}/api/chat.postMessage" -d '...'
@@ -46,6 +48,17 @@ An omac skill needs two files: `SKILL.md`, read by the agent, and `omac.yaml`, r
 ### The facade is the single trust boundary
 
 Sidecar ports are ephemeral and bound to `127.0.0.1`. They are never exposed to the sandbox. Every sandbox request goes through the facade, which strips the `/<skill>/` mount prefix, enforces per-skill body-size and timeout limits, and routes to the right sidecar. A compromised sandbox can at most send HTTP to the facade — it cannot reach a sidecar port, host env var, or the keychain. The facade also gives skills a stable, mount-rooted URL regardless of which ephemeral port a sidecar lands on. Because it proxies rather than buffers, streaming responses such as Server-Sent Events and WebSocket upgrades reach the agent in real time.
+
+### The sandbox definition is split over a trusted and an untrusted layer
+
+The files that decide what a launch enforces (the launcher config's sandbox pointer, the sandbox profile, the learned network decisions) live in exactly two places: the user-global `~/.config/omac/` tree and the project-local `<workdir>/.omac/` directory. That split mirrors the trust split: the global layer is host-maintained and sits outside every granted path, the project layer sits in the agent-writable workdir and gets no trust on sight.
+
+- A project may steer the sandbox through exactly one channel: `sandbox.profile_name` in `<workdir>/.omac/config.yaml`, and it resolves only inside `.omac/` (or a leaf-named profile at a layer directory). Everything else a config could control — audit settings, facade env passthrough, the briefing — comes exclusively from the global layer.
+- Every launch that loads project-local content requires one explicit approval (`--accept-project-config`). The approval records a digest **per file path** in the host-only *pin store* (`~/.config/omac/project-sandbox.json`); "pin" is the term for an approved digest, distinct from the skill *approval record* (the code snapshot bundle_hash). A later launch aborts when a loaded file changed or disappeared since its pin, and the sandbox child re-verifies the pins before loading — the parent's check alone runs before several seconds of startup work that a leftover process could exploit.
+- Defense is layered, from the inside out: the deny rules mask `.omac` for the running session (kernel mask on Linux, subpath rules on macOS); the pins detect anything the masks cannot prevent on macOS (a directory-entry replacement into the writable workdir); the human approval makes the first use of planted or committed project content a deliberate choice. What voids the pin guarantee on macOS is a profile — with grants over `~` or `~/.config` — approved by its user; the launch-time profile warning flags those grants as HIGH.
+- Learned network decisions never live in a project directory; they are keyed under `~/.config/omac/learned/` (project profiles) or next to the global profile, and written by the sandbox supervisor process from outside the sandbox.
+
+The 0.9.0 launcher-template settings (`sandbox.default_profile`, `sandbox.profiles`) are rejected with a migration hint. They are parsed only as presence sentinels so the hint can name the user's old values; when 0.10.x has been out long enough that a 0.9.0 config can no longer be expected in use, delete the sentinel fields and `validateSandbox`, plus the migration hint tests that pin them.
 
 ## Architecture diagram
 

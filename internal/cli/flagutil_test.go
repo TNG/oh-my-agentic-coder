@@ -78,7 +78,7 @@ func TestReorderFlagsFirst(t *testing.T) {
 }
 
 // TestReorderFlagsFirst_BoolFlagDoesNotSwallowPositional pins the fix for
-// issue #227. A boolean flag written before the positional used to absorb the
+// . A boolean flag written before the positional used to absorb the
 // skill name ("--force echo-rest"), which made flag.Parse stop at that
 // positional and silently discard every flag after it — so
 // `omac register --force <skill> --harness opencode` died with a usage dump

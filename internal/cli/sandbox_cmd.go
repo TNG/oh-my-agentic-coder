@@ -56,10 +56,11 @@ func printSandboxUsage(env *Env) {
 Usage:
   omac sandbox run [flags] -- <cmd> [args...]
 
-Flags apply to this single run only; they layer on top of the chosen profile.
-List flags (--allow, --allow-env, …) are
-repeatable and merge additively onto the profile's grants:
-  --profile <ref>            profile name, path, or builtin (default: "default")
+Flags (list flags are repeatable; they merge additively onto the profile):
+  --profile <ref>            profile name, path, or builtin (default: "default").
+                              Direct "omac sandbox run" reads only this flag, not
+                              the launcher config; "omac start"/"omac serve" apply
+                              sandbox.profile_name (or --profile-path) themselves
   --allow <path>             grant read+write on a directory or file
   --read <path>              grant read-only
   --write <path>             grant write-only
@@ -80,5 +81,13 @@ repeatable and merge additively onto the profile's grants:
   --allow-env <name>         pass an environment variable into the sandbox for
                              this run (adds to the profile's allow_vars)
   --block-net                block all network access (overrides profile)
-  --workdir-access <level>   none|read|write|readwrite (replaces profile value)`)
+  --workdir-access <level>   none|read|write|readwrite (replaces profile value)
+
+Parent-only flags (set by omac start/omac serve; direct runs leave them
+unset and skip the project-content re-verification):
+  --project-trust <config|explicit>     re-verify the project-local sandbox
+                                        content against the host-side
+                                        approval pins before loading it
+  --project-trust-layer <layer>         the profile layer the parent resolved
+                                        (workdir|global|builtin)`)
 }

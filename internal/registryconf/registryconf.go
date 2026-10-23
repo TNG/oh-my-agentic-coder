@@ -8,7 +8,7 @@
 // commonly holds `_authToken`. Masking it entirely makes npm fall back to
 // the public registry, where the package does not exist — the install
 // fails with a 404 that reads like "no such package" rather than "your
-// registry configuration is invisible". See #150 / #241.
+// registry configuration is invisible.
 //
 // No credential can survive by construction. Only registry-mapping keys are
 // kept; a kept value must parse as an http(s) URL; userinfo in that URL is

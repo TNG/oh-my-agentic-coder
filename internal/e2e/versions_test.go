@@ -9,7 +9,7 @@ import "testing"
 //
 // The e2e workflow exports E2E_MODEL_<HARNESS> for every harness, carrying the
 // name the gateway actually serves — which flips between the plain and -TEE
-// variant without notice (#184). A per-harness override outranks the
+// variant without notice. A per-harness override outranks the
 // cross-harness one, so clearing only E2E_MODEL leaves a pinned-map assertion
 // at the mercy of whichever variant the gateway served that day. Derived from
 // modelEnvVar rather than a literal list so a new harness is covered by
@@ -76,7 +76,7 @@ func TestModelIDOverride(t *testing.T) {
 }
 
 // TestFlipTEE covers the gateway's one naming quirk: it serves the plain name
-// or the -TEE name, never both, and flips without notice (#184). The flip must
+// or the -TEE name, never both, and flips without notice. The flip must
 // work in both directions so pinning either variant survives the next flip.
 func TestFlipTEE(t *testing.T) {
 	cases := map[string]string{

@@ -47,7 +47,7 @@ func TestStartReloaderMountedTracking(t *testing.T) {
 
 // TestStartReloaderReloadReportsMissingSecret: a skill missing a required
 // secret must not be spawned — and must not be dropped in silence either.
-// Before #174 reload just `continue`d: no message, no route, no diagnostic, so
+// Before reload just `continue`d: no message, no route, no diagnostic, so
 // an agent that had installed and registered a skill had no way to learn why it
 // never appeared. It now gets a pending-credentials route, a manifest entry,
 // and one line on stderr.

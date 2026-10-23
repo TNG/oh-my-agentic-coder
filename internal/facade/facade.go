@@ -119,15 +119,13 @@ func routeKey(namespace, mount string) string {
 //
 // Why both:
 //
-//   - Unix socket: lower overhead, file-permission-gated; works in
-//     unsandboxed runs and in nono on Linux (where AF_UNIX is purely
-//     filesystem-governed).
-//   - TCP loopback: required on macOS when nono runs in proxy mode
-//     (auto-activated by `custom_credentials`, `--network-profile`,
-//     etc.). Proxy mode installs `(deny network*)` in Seatbelt, which
-//     classifies AF_UNIX `connect(2)` as `network-outbound` and blocks
-//     it. There is no documented way to override that for a single
-//     Unix-socket path. `--open-port` whitelists a TCP port instead.
+//   - Unix socket: lower overhead, file-permission-gated; works wherever
+//     the sandbox governs AF_UNIX purely by the filesystem (e.g. Linux).
+//   - TCP loopback: required whenever the sandbox installs a
+//     `(deny network*)` rule that classifies AF_UNIX `connect(2)` as
+//     `network-outbound` and blocks it (e.g. macOS Seatbelt under a
+//     network deny). There is no documented way to override that for a
+//     single Unix-socket path. `--open-port` whitelists a TCP port instead.
 type Facade struct {
 	SocketPath    string // Unix socket path; "" disables Unix listener.
 	TCPAddr       string // bind addr for TCP listener (e.g. "127.0.0.1:0"); "" disables TCP.
@@ -165,7 +163,7 @@ type Facade struct {
 	//
 	// This is an interim boundary while the TCP listener exists for
 	// nono-proxy-mode compatibility. The Unix socket with SO_PEERCRED is
-	// the intended end-state (tracked in issue #88).
+	// the intended end-state.
 	FacadeToken string
 
 	mu          sync.RWMutex
@@ -442,7 +440,7 @@ func (f *Facade) handle(w http.ResponseWriter, r *http.Request) {
 	// The Unix socket is already UID-gated by filesystem permissions (0600);
 	// the TCP listener accepts any local process, so we require a per-session
 	// bearer token. Constant-time comparison to avoid timing side-channels.
-	// (Interim boundary; Unix socket + SO_PEERCRED is the intended end-state, issue #88.)
+	// (Interim boundary; Unix socket + SO_PEERCRED is the intended end-state.)
 	//
 	// The transport is recorded at accept time (see ConnContext in Start),
 	// not derived from the peer address: a local dialer can bind its source

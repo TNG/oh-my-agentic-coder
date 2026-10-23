@@ -23,9 +23,8 @@ import (
 // skill C: N invocations to fix N problems.
 //
 // Kept as a pure function over (writer, problems) so the sections and the
-// exit-code priority rule below are directly testable. Before #174 this logic
-// was inline in a 769-line runLaunch and reachable only by launching a harness,
-// which is why it had no test at all.
+// exit-code priority rule below are directly testable instead of reachable
+// only from deep inside runLaunch.
 func renderSkillRefusal(w io.Writer, prefix string, problems []skillstate.Problem) int {
 	if len(problems) == 0 {
 		return ExitOK
@@ -36,14 +35,14 @@ func renderSkillRefusal(w io.Writer, prefix string, problems []skillstate.Proble
 	// Section order is most-fundamental-first. A dead keychain leads because
 	// the next section's remedy (`omac secrets set`) cannot work until it is
 	// fixed — telling a headless user to store a secret in a keychain that
-	// isn't running is issue #174's Failure 4.
+	// isn't running is worse than no remedy at all.
 	keychainSection(w, problems)
 
 	perSkill(w, problems, skillstate.MetaBroken,
 		config.MetaFileName+" broken:")
 
 	// Bundle drift uses skillProblemLine so the skill name is labeled
-	// separately from the copy-pasteable command (issue #227).
+	// separately from the copy-pasteable command.
 	labeledSkills(w, s, problems, skillstate.BundleDrift,
 		"bundle changed since register (pass --accept-skill-changes to proceed, or re-register):",
 		"re-register")
@@ -135,7 +134,7 @@ func perSkill(w io.Writer, problems []skillstate.Problem, kind skillstate.Proble
 }
 
 // labeledSkills renders a skill-level class through skillProblemLine so the
-// remedy command is visually split from the skill name (issue #227).
+// remedy command is visually split from the skill name.
 func labeledSkills(w io.Writer, s styler, problems []skillstate.Problem, kind skillstate.ProblemKind, header, label string) {
 	first := true
 	for _, p := range problems {

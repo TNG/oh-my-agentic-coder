@@ -27,47 +27,44 @@ func TestOpenCodeProjectDiscoveryEnvironment(t *testing.T) {
 		name    string
 		inner   []string
 		harness string
-		native  bool
 		deny    []string
 		want    bool
 		blocked bool
 	}{
-		{"v2", []string{v2}, "opencode", true, nil, true, false},
-		{"v1", []string{v1}, "opencode", true, nil, false, false},
-		{"unknown", []string{unknown}, "opencode", true, nil, false, false},
-		{"failed version", []string{failed}, "opencode", true, nil, false, false},
-		{"missing", []string{"omac-missing-opencode"}, "opencode", true, nil, false, false},
-		{"npm v2", []string{"npx", "-y", "@opencode/cli@2.0.20"}, "opencode", true, nil, true, false},
-		{"env npm v2", []string{"env", "FOO=1", "npx", "--package=@opencode/cli@2.0.20", "opencode"}, "opencode", true, nil, true, false},
-		{"legacy wrapper v1", []string{"bunx", "opencode-ai@1.2.3"}, "opencode", true, nil, false, false},
-		{"unversioned wrapper", []string{"bunx", "@opencode/cli"}, "opencode", true, nil, false, false},
-		{"similar package", []string{"npx", "my-opencode-ai@2.0.20"}, "opencode", true, nil, false, false},
-		{"package suffix", []string{"npx", "@opencode/cli@2oops"}, "opencode", true, nil, false, false},
-		{"other executable", []string{"other", "@opencode/cli@2.0.20"}, "opencode", true, nil, false, false},
-		{"other harness", []string{v2}, "claude-code", true, nil, false, false},
-		{"external backend", []string{v2}, "opencode", false, nil, false, false},
-		{"deny exact", []string{v2}, "opencode", true, []string{"OPENCODE_CONFIG_PROJECT_DISABLE"}, false, true},
-		{"deny prefix", []string{v2}, "opencode", true, []string{"OPENCODE_*"}, false, true},
-		{"deny all", []string{v2}, "opencode", true, []string{"*"}, false, true},
-		{"v1 denied", []string{v1}, "opencode", true, []string{"OPENCODE_*"}, false, false},
+		{"v2", []string{v2}, "opencode", nil, true, false},
+		{"v1", []string{v1}, "opencode", nil, false, false},
+		{"unknown", []string{unknown}, "opencode", nil, false, false},
+		{"failed version", []string{failed}, "opencode", nil, false, false},
+		{"missing", []string{"omac-missing-opencode"}, "opencode", nil, false, false},
+		{"npm v2", []string{"npx", "-y", "@opencode/cli@2.0.20"}, "opencode", nil, true, false},
+		{"env npm v2", []string{"env", "FOO=1", "npx", "--package=@opencode/cli@2.0.20", "opencode"}, "opencode", nil, true, false},
+		{"legacy wrapper v1", []string{"bunx", "opencode-ai@1.2.3"}, "opencode", nil, false, false},
+		{"unversioned wrapper", []string{"bunx", "@opencode/cli"}, "opencode", nil, false, false},
+		{"similar package", []string{"npx", "my-opencode-ai@2.0.20"}, "opencode", nil, false, false},
+		{"package suffix", []string{"npx", "@opencode/cli@2oops"}, "opencode", nil, false, false},
+		{"other executable", []string{"other", "@opencode/cli@2.0.20"}, "opencode", nil, false, false},
+		{"other harness", []string{v2}, "claude-code", nil, false, false},
+		{"deny exact", []string{v2}, "opencode", []string{"OPENCODE_CONFIG_PROJECT_DISABLE"}, false, true},
+		{"deny prefix", []string{v2}, "opencode", []string{"OPENCODE_*"}, false, true},
+		{"deny all", []string{v2}, "opencode", []string{"*"}, false, true},
+		{"v1 denied", []string{v1}, "opencode", []string{"OPENCODE_*"}, false, false},
 	}
 	for _, caller := range []string{"start", "serve"} {
 		for _, tc := range cases {
 			t.Run(caller+"/"+tc.name, func(t *testing.T) {
-				profile := config.DefaultLauncherConfig().Sandbox.Profiles["builtin"]
-				in := sandbox.Inputs{Workdir: t.TempDir(), TCPPort: 61500, InnerCmd: tc.inner}
+				in := sandbox.Inputs{TCPPort: 61500, InnerCmd: tc.inner}
 				var argv []string
 				var err error
 				if caller == "serve" {
-					argv, err = sandboxServeArgv(profile, in, "", h)
+					argv, err = sandboxServeArgv(in, "", h)
 				} else {
-					argv, err = sandbox.Expand(profile, in)
+					argv, err = sandbox.BuildBuiltinArgv(in)
 				}
 				if err != nil {
 					t.Fatal(err)
 				}
 				policy := &sandboxprofile.Profile{Environment: sandboxprofile.Environment{AllowVars: []string{"PATH"}, DenyVars: tc.deny}}
-				plan := sandboxPlan{Native: tc.native, PolicyRef: "restricted", Policy: policy}
+				plan := sandboxPlan{PolicyRef: "restricted", Policy: policy}
 				harness, _ := config.LookupHarness(tc.harness)
 				extra := map[string]string{"TMPDIR": "/tmp/keep"}
 				argv, err = injectOpenCodeProjectDiscovery(argv, extra, harness, tc.inner, plan)
@@ -140,7 +137,7 @@ func TestOpenCodeProjectDiscoveryEnvOverride(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			plan := sandboxPlan{Native: true, PolicyRef: "restricted", Policy: &sandboxprofile.Profile{Environment: sandboxprofile.Environment{DenyVars: tc.deny}}}
+			plan := sandboxPlan{PolicyRef: "restricted", Policy: &sandboxprofile.Profile{Environment: sandboxprofile.Environment{DenyVars: tc.deny}}}
 			extra := map[string]string{}
 			_, err := injectOpenCodeProjectDiscovery([]string{"omac", "sandbox", "run", "--", "opencode"}, extra, h, tc.inner, plan)
 			if tc.wantError != "" {
@@ -285,4 +282,15 @@ func TestOpenCodeProjectDiscoveryDeniedLaunch(t *testing.T) {
 			}
 		})
 	}
+}
+
+func parseEnvironment(data string) map[string]string {
+	env := map[string]string{}
+	for _, line := range strings.Split(data, "\n") {
+		key, value, ok := strings.Cut(line, "=")
+		if ok {
+			env[key] = value
+		}
+	}
+	return env
 }

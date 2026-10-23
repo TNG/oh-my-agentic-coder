@@ -26,10 +26,9 @@ func writeNpmrc(t *testing.T, body string) string {
 func TestSetupRegistryConfigNoopWhenUnset(t *testing.T) {
 	writeNpmrc(t, "@acme:registry=https://npm.acme.test\n")
 	grants := &Grants{}
-	injected := map[string]string{}
 	var stderr bytes.Buffer
 
-	cleanup, err := setupRegistryConfig(&sandboxprofile.Profile{}, grants, injected, &stderr)
+	cleanup, injected, err := setupRegistryConfig(&sandboxprofile.Profile{}, grants, &stderr)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,13 +48,12 @@ func TestSetupRegistryConfigNoopWhenUnset(t *testing.T) {
 func TestSetupRegistryConfigGrantsProjectionOnly(t *testing.T) {
 	npmrc := writeNpmrc(t, "@acme:registry=https://npm.acme.test\n//npm.acme.test/:_authToken=SECRET\n")
 	grants := &Grants{}
-	injected := map[string]string{}
 	var stderr bytes.Buffer
 
 	profile := &sandboxprofile.Profile{
 		Filesystem: sandboxprofile.Filesystem{RegistryConfig: []string{sandboxprofile.RegistryConfigNPM}},
 	}
-	cleanup, err := setupRegistryConfig(profile, grants, injected, &stderr)
+	cleanup, injected, err := setupRegistryConfig(profile, grants, &stderr)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +100,7 @@ func TestSetupRegistryConfigWarnsWhenOverrideDenyAlsoGrantsHostFile(t *testing.T
 			OverrideDeny:   []string{npmrc},
 		},
 	}
-	cleanup, err := setupRegistryConfig(profile, grants, map[string]string{}, &stderr)
+	cleanup, _, err := setupRegistryConfig(profile, grants, &stderr)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,13 +115,12 @@ func TestSetupRegistryConfigWarnsWhenOverrideDenyAlsoGrantsHostFile(t *testing.T
 func TestSetupRegistryConfigReportsNothingToProject(t *testing.T) {
 	writeNpmrc(t, "_auth=SECRET\n") // credentials only, no mapping
 	grants := &Grants{}
-	injected := map[string]string{}
 	var stderr bytes.Buffer
 
 	profile := &sandboxprofile.Profile{
 		Filesystem: sandboxprofile.Filesystem{RegistryConfig: []string{sandboxprofile.RegistryConfigNPM}},
 	}
-	cleanup, err := setupRegistryConfig(profile, grants, injected, &stderr)
+	cleanup, injected, err := setupRegistryConfig(profile, grants, &stderr)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,13 +137,12 @@ func TestSetupRegistryConfigReportsNothingToProject(t *testing.T) {
 func TestSetupRegistryConfigMissingHostFileIsQuietNoop(t *testing.T) {
 	t.Setenv("HOME", t.TempDir()) // no .npmrc at all
 	grants := &Grants{}
-	injected := map[string]string{}
 	var stderr bytes.Buffer
 
 	profile := &sandboxprofile.Profile{
 		Filesystem: sandboxprofile.Filesystem{RegistryConfig: []string{sandboxprofile.RegistryConfigNPM}},
 	}
-	cleanup, err := setupRegistryConfig(profile, grants, injected, &stderr)
+	cleanup, injected, err := setupRegistryConfig(profile, grants, &stderr)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,12 +161,11 @@ func TestSetupRegistryConfigWarnsWhenEnvVarAlreadySet(t *testing.T) {
 	t.Setenv("NPM_CONFIG_USERCONFIG", "/home/dev/custom-npmrc")
 
 	grants := &Grants{}
-	injected := map[string]string{}
 	var stderr bytes.Buffer
 	profile := &sandboxprofile.Profile{
 		Filesystem: sandboxprofile.Filesystem{RegistryConfig: []string{sandboxprofile.RegistryConfigNPM}},
 	}
-	cleanup, err := setupRegistryConfig(profile, grants, injected, &stderr)
+	cleanup, injected, err := setupRegistryConfig(profile, grants, &stderr)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -196,7 +191,7 @@ func TestSetupRegistryConfigQuietWhenEnvVarUnset(t *testing.T) {
 	profile := &sandboxprofile.Profile{
 		Filesystem: sandboxprofile.Filesystem{RegistryConfig: []string{sandboxprofile.RegistryConfigNPM}},
 	}
-	cleanup, err := setupRegistryConfig(profile, &Grants{}, map[string]string{}, &stderr)
+	cleanup, _, err := setupRegistryConfig(profile, &Grants{}, &stderr)
 	if err != nil {
 		t.Fatal(err)
 	}

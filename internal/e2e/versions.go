@@ -25,8 +25,8 @@ import (
 //
 // The gateway serves one name variant at a time and flips between the plain
 // name and a "-TEE" suffixed one without notice — on 2026-07-29 it stopped
-// accepting plain "zai-org/GLM-5.2" and every non-opencode llm stage went red
-// (see issue #184), then by 2026-08-04 it had flipped back to the plain name.
+// accepting plain "zai-org/GLM-5.2" and every non-opencode llm stage went red;
+// by 2026-08-04 it had flipped back to the plain name.
 // Pin whichever variant is currently served; scripts/probe-model.sh flips to
 // the other one automatically, so a future flip in either direction self-heals
 // rather than reddening the matrix. Keeping the pin current is therefore not a

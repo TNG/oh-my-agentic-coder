@@ -133,7 +133,7 @@ func TestCompatLine(t *testing.T) {
 
 	// Built from modelIDs rather than the literal pin: this asserts that the
 	// line carries the resolved model, not what that model happens to be
-	// today — the pin moves whenever the gateway renames a variant (#184).
+	// today — the pin moves whenever the gateway renames a variant.
 	got := compatLine("claude-code", "2.1.197", "linux", "contract", "PASS")
 	want := "OMAC_COMPAT harness=claude-code version=2.1.197 os=linux model=" +
 		modelIDs["claude-code"] + " stage=contract result=PASS"

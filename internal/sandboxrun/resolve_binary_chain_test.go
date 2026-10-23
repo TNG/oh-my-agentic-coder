@@ -44,7 +44,7 @@ func writeHomebrewChain(t *testing.T, root string) string {
 // PATH-entry dir and the fully resolved dir — leaves the middle link
 // unreadable and the launch dies there.
 //
-// Homebrew under a non-default prefix (issue #229) is the layout that exposes
+// Homebrew under a non-default prefix is the layout that exposes
 // it: the middle hop sits in <cellar>/bin while the real file sits in
 // <cellar>/libexec/..., so neither end's grant covers it. macOS then reports
 // the failed in-sandbox lookup of a bare argv[0] as

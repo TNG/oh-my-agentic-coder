@@ -1,12 +1,21 @@
 package sandboxprofile
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 )
+
+// ProjectConfigDirName is the directory-entry name of the project-local omac
+// config directory, <workdir>/.omac. Production code spells .omac through this
+// constant so a rename cannot strand one of the checks that treat the entry as
+// sandbox definition.
+const ProjectConfigDirName = ".omac"
 
 // boolPtr is a tiny helper for NetworkPrompt.Enabled.
 func boolPtr(b bool) *bool { return &b }
@@ -89,25 +98,11 @@ func ProfilePath(name string) (string, error) {
 	return filepath.Join(dir, name+".json"), nil
 }
 
-// PagesPath returns the sibling pages file for a profile path or name:
-// <dir>/<name>.pages.json.
-//
-// An empty profilePath means no file was consulted (Resolve fell back to
-// the compiled-in defaults), so there is no sibling pages file either. It
-// must NOT become the relative ".pages.json", which would read — or write —
-// a stray file in the current working directory. Callers treat "" as the
-// empty learned store (netprompt.LoadLearnedPolicy("")).
-func PagesPath(profilePath string) string {
-	if profilePath == "" {
-		return ""
-	}
-	return strings.TrimSuffix(profilePath, ".json") + ".pages.json"
-}
-
 // resolveOpts holds the Resolve knobs.
 type resolveOpts struct {
-	scaffold bool
-	anyPath  bool // allow explicit paths outside the trusted profile directory
+	scaffold   bool
+	anyPath    bool   // allow explicit paths outside the trusted profile directory
+	projectDir string // extra directory explicit paths may live under (the workdir)
 }
 
 // ResolveOption tunes Resolve. The zero set is read-only and path-constrained.
@@ -130,6 +125,92 @@ func WithAnyPath() ResolveOption {
 	return func(o *resolveOpts) { o.anyPath = true }
 }
 
+// WithProjectDir permits an explicit path that resolves inside dir, on top of
+// the trusted profile directory. The launch path passes the project's .omac
+// directory so a committed local profile works without opening the door to
+// arbitrary host paths.
+func WithProjectDir(dir string) ResolveOption {
+	return func(o *resolveOpts) { o.projectDir = dir }
+}
+
+// LearnedDir returns the host directory where learned network decisions live
+// for profiles outside the trusted profile directory (project profiles).
+func LearnedDir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".config", "omac", "learned"), nil
+}
+
+// PagesPath returns the learned-decisions file for a resolved profile path.
+// The file steers network allow decisions, so it must live where sessions
+// cannot rewrite it.
+//
+// A profile in the trusted profile directory keeps its sibling
+// <profile-name>.pages.json (that directory is masked as a whole). A project
+// profile lives in the agent-writable workdir, and on macOS the Seatbelt
+// backend cannot even block replacing its .omac directory, so its pages file
+// is keyed under LearnedDir instead: <sanitized-name>-<path-hash>.pages.json.
+//
+// An empty profilePath means no file was consulted (Resolve fell back to the
+// compiled-in defaults), so there is no pages file either. It must NOT become
+// a relative ".pages.json", which would read or write a stray file in the
+// current working directory. Callers treat "" as the empty learned store
+// (netprompt.LoadLearnedPolicy("")).
+func PagesPath(profilePath string) string {
+	if profilePath == "" {
+		return ""
+	}
+	base := strings.TrimSuffix(filepath.Base(profilePath), ".json")
+	if dir, err := ProfileDir(); err == nil && dir != "" && WithinDir(dir, filepath.Clean(profilePath)) {
+		return filepath.Join(filepath.Dir(profilePath), base+".pages.json")
+	}
+	if precision, err := sha256HexPrefix(profilePath, 16); err == nil {
+		sanitized := sanitizeFileName(base)
+		learned, err := LearnedDir()
+		if err == nil {
+			return filepath.Join(learned, sanitized+"-"+precision+".pages.json")
+		}
+	}
+	return ""
+}
+
+// sha256HexPrefix returns the first n lowercase hex characters of the
+// SHA-256 over the UTF-8 bytes of s.
+func sha256HexPrefix(s string, n int) (string, error) {
+	sum := sha256.Sum256([]byte(s))
+	hexed := hex.EncodeToString(sum[:])
+	if n < 0 || n > len(hexed) {
+		n = len(hexed)
+	}
+	return hexed[:n], nil
+}
+
+// sanitizeFileName keeps a file name readable while stripping path deltas and
+// separators: runs of characters outside letters, digits, "-", "." and "_"
+// become "_".
+func sanitizeFileName(name string) string {
+	var b strings.Builder
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '.', r == '_':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+	}
+	return strings.Trim(b.String(), "_-.")
+}
+
+// IsPathFormProfileRef reports whether ref names a profile by file path or
+// file name suffix rather than a bare profile name. The launch-path callers
+// treat the two forms differently: a path must stay inside a trusted
+// directory, a name is looked up inside one.
+func IsPathFormProfileRef(ref string) bool {
+	return strings.ContainsRune(ref, os.PathSeparator) || strings.HasSuffix(ref, ".json")
+}
+
 // Resolve loads a profile reference:
 //   - a path (contains a separator or ends in .json): load that file,
 //     but only if it resolves inside ~/.config/omac/sandbox-profiles/;
@@ -148,22 +229,33 @@ func Resolve(ref string, opts ...ResolveOption) (*Profile, string, error) {
 	if ref == "" {
 		ref = "default"
 	}
-	if strings.ContainsRune(ref, os.PathSeparator) || strings.HasSuffix(ref, ".json") {
+	if IsPathFormProfileRef(ref) {
 		abs, err := filepath.Abs(ref)
 		if err != nil {
 			return nil, "", fmt.Errorf("resolve sandbox profile path %q: %w", ref, err)
 		}
 		if !o.anyPath {
-			// Restrict to the trusted profile directory so a workdir-supplied
-			// --profile path cannot point at an attacker-controlled file.
+			// Restrict explicit paths to the trusted profile directory so a
+			// workdir-supplied --profile path cannot point at an
+			// attacker-controlled file. A project-committed profile is the
+			// one exception, and only inside the workdir itself. Containment
+			// holds on the resolved form too: the launch path hands down the
+			// symlink-resolved selection, which may realpath out of the
+			// spelling its workdir was written in.
 			profileDir, err := ProfileDir()
 			if err != nil {
 				return nil, "", fmt.Errorf("resolve sandbox profile dir: %w", err)
 			}
-			trusted := filepath.Clean(profileDir) + string(os.PathSeparator)
-			if !strings.HasPrefix(filepath.Clean(abs)+string(os.PathSeparator), trusted) {
+			allowed := DirContainsPath(profileDir, abs)
+			if !allowed && o.projectDir != "" {
+				allowed = DirContainsPath(o.projectDir, abs)
+			}
+			if !allowed {
 				return nil, "", fmt.Errorf("sandbox profile path %q is outside the trusted directory %s", ref, profileDir)
 			}
+		}
+		if err := CheckProfileFile(abs, "sandbox profile "+ref); err != nil {
+			return nil, "", err
 		}
 		p, err := loadFile(abs)
 		return p, abs, err
@@ -189,12 +281,15 @@ func Resolve(ref string, opts ...ResolveOption) (*Profile, string, error) {
 			return nil, "", fmt.Errorf("scaffold default sandbox profile: %w", err)
 		}
 	}
+	if err := CheckProfileFile(path, "sandbox profile "+ref); err != nil {
+		return nil, "", err
+	}
 	p, err := loadFile(path)
 	return p, path, err
 }
 
 // WriteProfile writes a profile pretty-printed (2-space indent,
-// trailing newline) atomically.
+// trailing newline), atomically.
 func WriteProfile(path string, p *Profile) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
@@ -203,7 +298,7 @@ func WriteProfile(path string, p *Profile) error {
 	if err != nil {
 		return err
 	}
-	return writeAtomic(path, data)
+	return WriteFileAtomic(path, data, 0o600)
 }
 
 // MarshalPretty renders any value as indented JSON with a trailing
@@ -216,13 +311,19 @@ func MarshalPretty(v any) ([]byte, error) {
 	return append(data, '\n'), nil
 }
 
-// writeAtomic writes data via temp-file + rename.
-func writeAtomic(path string, data []byte) error {
+// WriteFileAtomic writes data to path via temp file + rename, so a reader
+// never observes a half-written file. mode applies to the final file.
+func WriteFileAtomic(path string, data []byte, mode os.FileMode) error {
 	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+"-*")
 	if err != nil {
 		return err
 	}
 	tmpName := tmp.Name()
+	if err := tmp.Chmod(mode); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return err
+	}
 	if _, err := tmp.Write(data); err != nil {
 		tmp.Close()
 		os.Remove(tmpName)
@@ -235,6 +336,62 @@ func writeAtomic(path string, data []byte) error {
 	if err := os.Rename(tmpName, path); err != nil {
 		os.Remove(tmpName)
 		return err
+	}
+	return nil
+}
+
+// WithinDir reports whether path equals dir or lies under it, lexically
+// (no symlink resolution). Callers that must not be fooled by a symlinked
+// parent resolve both sides with filepath.EvalSymlinks first.
+func WithinDir(dir, path string) bool {
+	dir = filepath.Clean(dir)
+	path = filepath.Clean(path)
+	if dir == "" {
+		return false
+	}
+	if path == dir {
+		return true
+	}
+	return strings.HasPrefix(path+string(os.PathSeparator), dir+string(os.PathSeparator))
+}
+
+// DirContainsPath reports whether path lies within dir. When both sides
+// resolve (file exists, no dangling ancestor), containment is judged on the
+// resolved form — same rule as the selection layer's
+// config.ExplicitProfileSelection, on both platforms: a path whose ancestors
+// realpath elsewhere must resolve into the directory, and the common macOS
+// spelling where a symlinked top component rewrites the path (/var ->
+// /private/var) stays admitted. Only an unresolvable path falls back to the
+// lexical comparison (and fails the load anyway).
+func DirContainsPath(dir, path string) bool {
+	if resolvedPath, err := filepath.EvalSymlinks(path); err == nil {
+		if resolvedDir, derr := filepath.EvalSymlinks(dir); derr == nil {
+			return WithinDir(resolvedDir, resolvedPath)
+		}
+	}
+	return WithinDir(dir, path)
+}
+
+// CheckProfileFile rejects a symlinked, missing, or directory profile file.
+// Project profiles live in an agent-writable directory, so the file a launch
+// loads must be a plain regular file: a symlink resolves through the sandbox
+// rules while the symlink entry itself stays replaceable, so either side of
+// it could diverge from what was approved.
+func CheckProfileFile(path, label string) error {
+	if li, err := os.Lstat(path); err == nil && li.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("%s is a symlink (%s); profile files must be plain regular files — "+
+			"a symlinked profile could point outside the directory it is supposed to live in",
+			label, path)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("%s does not exist (%s)", label, path)
+		}
+		return fmt.Errorf("%s (%s): %w", label, path, err)
+	}
+	if info.IsDir() {
+		return fmt.Errorf("%s is a directory, not a profile file (%s)", label, path)
 	}
 	return nil
 }

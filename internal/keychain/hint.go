@@ -14,8 +14,8 @@ import (
 // It lives here rather than in the CLI so every path that can hit a dead
 // backend — register and `secrets set` on the write side, `start`/`serve`/
 // reload/`doctor` via internal/skillstate on the read side — renders the same
-// remedy. Issue #174 was in part a bug about this text existing on one path
-// and not the other.
+// remedy; older behavior kept the text on one path only, so the two
+// surfaces told different stories about the same dead backend.
 func UnavailableHint(host osinfo.OS) string {
 	if host == osinfo.WSL {
 		return "WSL has no Secret Service by default; install one:\n" +

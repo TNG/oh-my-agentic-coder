@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -55,18 +54,9 @@ func TestSecurityColdStartSpawnedArgvComesFromApprovedSnapshot(t *testing.T) {
 	// is NOT created (snapshot's python3 command doesn't write it).
 	_ = skillDir // used in stageApprovedSkillWithWorkdirTamper
 
-	// The fake sandbox-launch template.
+	// A harmless inner command; the sidecar is what the test cares about.
 	capturePath := filepath.Join(t.TempDir(), "capture")
 	if err := os.WriteFile(capturePath, []byte("#!/bin/sh\ntrue\n"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	configPath := filepath.Join(workdir, ".opencode", "oh-my-agentic-coder.yaml")
-	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	configText := fmt.Sprintf("sandbox:\n  default_profile: capture\n  profiles:\n    capture:\n      command: [%q, %q, %q, %q]\n",
-		capturePath, "--", "{{inner_cmd}}", "{{inner_args}}")
-	if err := os.WriteFile(configPath, []byte(configText), 0o600); err != nil {
 		t.Fatal(err)
 	}
 

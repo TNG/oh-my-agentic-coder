@@ -13,7 +13,7 @@ import (
 )
 
 func injectOpenCodeProjectDiscovery(argv []string, extra map[string]string, h config.Harness, inner []string, plan sandboxPlan) ([]string, error) {
-	if runtime.GOOS != "darwin" || !plan.Native || h.Name != "opencode" || !openCodeV2(inner, false) {
+	if runtime.GOOS != "darwin" || h.Name != "opencode" || !openCodeV2(inner, false) {
 		return argv, nil
 	}
 	const name = "OPENCODE_CONFIG_PROJECT_DISABLE"
@@ -30,11 +30,11 @@ func injectOpenCodeProjectDiscovery(argv []string, extra map[string]string, h co
 		return argv, fmt.Errorf("inner env options can remove %s=1, required by the OpenCode v2 macOS sandbox; use an env wrapper with assignments only", name)
 	}
 	extra[name] = "1"
-	return injectSandboxEnvAllow(argv, []string{name}, plan), nil
+	return injectSandboxEnvAllow(argv, []string{name}), nil
 }
 
 func warnOpenCodeAgentsAccess(env *Env, argv []string, plan sandboxPlan, extra map[string]string) {
-	if extra["OPENCODE_CONFIG_PROJECT_DISABLE"] != "1" || !plan.Native || plan.Policy == nil || len(argv) < 3 || argv[1] != "sandbox" || argv[2] != "run" {
+	if extra["OPENCODE_CONFIG_PROJECT_DISABLE"] != "1" || plan.Policy == nil || len(argv) < 3 || argv[1] != "sandbox" || argv[2] != "run" {
 		return
 	}
 	home, err := os.UserHomeDir()

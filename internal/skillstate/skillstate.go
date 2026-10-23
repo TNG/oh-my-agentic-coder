@@ -12,7 +12,6 @@
 // keychain-less CI runners — was rejected by serve even though the supervisor
 // would have injected it at spawn; doctor probed the keychain unscoped while
 // start probed it workdir-scoped, so the two disagreed about the same secret.
-// See issue #174.
 //
 // The split of responsibility is: this package owns the RULE and emits
 // []Problem; every caller owns only the PRESENTATION of those problems —
@@ -215,7 +214,7 @@ type Resolver struct {
 	opts Options
 	// keychainDown records that the BACKEND reported itself unavailable. Once
 	// set, later skills in this pass skip it entirely rather than re-dialing a
-	// bus that is provably not there — start's pre-#174 behaviour was to abort
+	// bus that is provably not there — start was originally about to abort
 	// the launch on the first keychain error, and collecting every skill's
 	// problems instead must not turn that into N failed dials (on macOS, N
 	// blocking authorization prompts).
@@ -344,7 +343,7 @@ func (r *Resolver) Fill(armed *Armed, cfg *skillconfig.Store) []Problem {
 // shell resolves them here exactly as before. Only once no fallback has
 // satisfied a required secret does the ErrUnavailable classification matter —
 // at which point reporting "no Secret Service provider" instead of "run omac
-// secrets set" is the whole point of issue #174's Failure 4.
+// secrets set" is the whole point of this classification.
 //
 // spec.DefaultFromEnv is deliberately NOT consulted for secrets. register.go
 // honours it when prompting, but the supervisor only injects variables named
@@ -645,7 +644,7 @@ func MissingFields(problems []Problem) []string {
 // Stall is why a skill cannot arm yet, in the shape the two callers that keep
 // serving (serve, live reload) need: they install a stub route rather than
 // refusing a whole process, and both must classify identically — a divergence
-// between them is what issue #174 was about.
+// between them is the failure this type exists to prevent.
 type Stall struct {
 	// Terminal distinguishes the two route states. A stall is terminal when no
 	// value the user could supply clears it: the skill must be re-registered

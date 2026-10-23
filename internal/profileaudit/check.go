@@ -1,6 +1,8 @@
 package profileaudit
 
 import (
+	"errors"
+	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -22,15 +24,113 @@ func Check(profile *sandboxprofile.Profile) []Finding {
 	findings = append(findings, checkFSGrants(profile)...)
 	findings = append(findings, checkNetwork(profile)...)
 	findings = append(findings, checkEnvironment(profile)...)
+	findings = append(findings, checkEnvironmentSet(profile)...)
+	findings = append(findings, checkAnchorGrants(profile)...)
 	sortFindings(findings)
 	return findings
+}
+
+// checkEnvironmentSet flags environment.set entries that either cannot take
+// effect or put a credential in the profile file.
+//
+//   - A name on the always-stripped blocklist is never injected (the launch
+//     path drops it with a warning), so the author's intent silently fails.
+//   - A secret-looking name stores its value in the profile file, which for a
+//     project-layer profile is committable. allow_vars is the safer channel:
+//     the value stays in the environment, only the name is in the profile.
+func checkEnvironmentSet(profile *sandboxprofile.Profile) []Finding {
+	names := make([]string, 0, len(profile.Environment.Set))
+	for name := range profile.Environment.Set {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	var findings []Finding
+	for _, name := range names {
+		value := profile.Environment.Set[name]
+		if sandboxprofile.IsDangerousEnvVar(name) {
+			findings = append(findings, Finding{
+				Severity: SeverityHigh,
+				Category: CatEnvironment,
+				Field:    "environment.set",
+				Value:    name,
+				Message:  "on the always-stripped blocklist, so the launch path drops it and the value never reaches the harness; remove it (a profile must not route around the blocklist)",
+			})
+			continue
+		}
+		refs := sandboxprofile.EnvValueRefs(value)
+		if containsDangerousRef(refs) {
+			findings = append(findings, Finding{
+				Severity: SeverityHigh,
+				Category: CatEnvironment,
+				Field:    "environment.set",
+				Value:    name,
+				Message:  "value expands a variable on the always-stripped blocklist (" + firstDangerousRef(refs) + ") — the launch path drops the entry, so the author's intent silently fails; a profile must not route a stripped variable in under another name",
+			})
+		}
+		if looksSecretName(name) {
+			findings = append(findings, Finding{
+				Severity: SeverityMedium,
+				Category: CatEnvironment,
+				Field:    "environment.set",
+				Value:    name,
+				Message:  "secret-looking name with its value in the profile file (committable for a project profile); prefer environment.allow_vars so only the name lives here and the value comes from the environment",
+			})
+		} else if secretRef, isSecret := firstSecretRef(refs); isSecret {
+			findings = append(findings, Finding{
+				Severity: SeverityMedium,
+				Category: CatEnvironment,
+				Field:    "environment.set",
+				Value:    name,
+				Message:  "value expands the secret-looking variable " + secretRef + " — the expanded value is injected, bypassing the environment allowlist; route the variable through allow_vars instead",
+			})
+		}
+	}
+	return findings
+}
+
+func containsDangerousRef(refs []string) bool {
+	for _, r := range refs {
+		if sandboxprofile.IsDangerousEnvVar(r) {
+			return true
+		}
+	}
+	return false
+}
+
+func firstDangerousRef(refs []string) string {
+	for _, r := range refs {
+		if sandboxprofile.IsDangerousEnvVar(r) {
+			return r
+		}
+	}
+	return ""
+}
+
+func firstSecretRef(refs []string) (string, bool) {
+	for _, r := range refs {
+		if looksSecretName(r) && !sandboxprofile.IsDangerousEnvVar(r) {
+			return r, true
+		}
+	}
+	return "", false
+}
+
+// looksSecretName matches the conventional credential suffixes.
+func looksSecretName(name string) bool {
+	upper := strings.ToUpper(name)
+	for _, marker := range []string{"TOKEN", "SECRET", "PASSWORD", "PASSWD", "CREDENTIAL", "APIKEY"} {
+		if strings.Contains(upper, marker) {
+			return true
+		}
+	}
+	return strings.HasSuffix(upper, "_KEY") || upper == "KEY"
 }
 
 // checkEnvironment flags an empty env allowlist. An empty allow_vars no
 // longer inherits the ambient environment: sandboxprofile.EffectiveAllowVars
 // resolves it to the operational defaults, and every launch path enforces
 // that, so the "no host env unless explicitly forwarded" trust model
-// (issue #102) holds. What remains is a misconfiguration — the profile
+// holds. What remains is a misconfiguration — the profile
 // forwards nothing the harness needs beyond HOME/PATH/locale, so the
 // harness starts and then cannot authenticate.
 //
@@ -74,8 +174,8 @@ func sortFindings(findings []Finding) {
 // baseline-protected path. Each such entry is a deliberate weakening of
 // a credential protection and is always HIGH.
 //
-// ponytail: baseline paths are stored unexpanded (~/.ssh); we expand
-// both sides before comparing so tilde/env-var entries match.
+// Baseline paths are stored unexpanded (~/.ssh); both sides are expanded
+// before comparing so tilde/env-var entries match.
 func checkOverrideDeny(profile *sandboxprofile.Profile) []Finding {
 	if len(profile.Filesystem.OverrideDeny) == 0 {
 		return nil
@@ -83,7 +183,7 @@ func checkOverrideDeny(profile *sandboxprofile.Profile) []Finding {
 	// BaselineSecretPaths returns unexpanded paths (e.g. ~/.ssh).
 	// Expand each so the comparison is in canonical absolute form.
 	// Entries that fail to expand are kept verbatim, mirroring
-	// EffectiveProtectedPaths (baseline.go:160).
+	// EffectiveProtectedPaths.
 	baseSet := make(map[string]bool)
 	for _, p := range BaselineSecretPaths() {
 		exp, err := sandboxprofile.ExpandPath(p)
@@ -284,6 +384,67 @@ func isParent(parent, child string) bool {
 		return true
 	}
 	return strings.HasPrefix(child, parent+string(filepath.Separator))
+}
+
+// checkAnchorGrants flags a WRITABLE grant whose path covers the omac config
+// directory's parent on the host: ~/.config/omac holds the sandbox profiles
+// and the approved-content pin store, and on macOS a Seatbelt deny cannot
+// stop a session from replacing a directory whose PARENT is writable — a
+// session could replace the whole config directory and forge the pin store
+// to match its own project content, so the next launch would enforce the
+// attacker's profile with no approval interaction. (Linux is not affected:
+// the kernel sandbox masks the config dir outright.)
+func checkAnchorGrants(profile *sandboxprofile.Profile) []Finding {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return nil
+	}
+	anchors := []string{home, filepath.Join(home, ".config")}
+	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
+		anchors = append(anchors, xdg)
+	}
+	writable := []struct {
+		field   string
+		entries []string
+	}{
+		{"filesystem.allow", profile.Filesystem.Allow},
+		{"filesystem.write", profile.Filesystem.Write},
+	}
+	var findings []Finding
+	for _, slot := range writable {
+		for _, entry := range slot.entries {
+			exp, eerr := sandboxprofile.ExpandPath(entry)
+			candidate := exp
+			switch {
+			case eerr == nil:
+				// candidate is the expanded entry
+			case errors.Is(eerr, sandboxprofile.ErrEmptyExpansion) && strings.TrimSuffix(entry, "/") == "~":
+				// "~" and "~/" expand to the home directory itself
+				candidate = home
+			case strings.TrimSuffix(entry, "/") == "$XDG_CONFIG_HOME":
+				if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
+					candidate = xdg
+				} else {
+					continue
+				}
+			default:
+				continue // broad grants are reported by checkFSGrants / checkBroadGrant
+			}
+			for _, anchor := range anchors {
+				if candidate == anchor || isParent(candidate, anchor) {
+					findings = append(findings, Finding{
+						Severity: SeverityHigh,
+						Category: CatFSGrant,
+						Field:    slot.field,
+						Value:    entry,
+						Message:  "writable grant covers " + anchor + " — the directory holding the sandbox profiles and the approved-content pins. A session can replace that directory (macOS) and forge the approval pins; expect every launch's trust guarantee to be void while this grant exists",
+					})
+					break
+				}
+			}
+		}
+	}
+	return findings
 }
 
 // cloudMetadataHosts are the cloud instance-metadata endpoints that
