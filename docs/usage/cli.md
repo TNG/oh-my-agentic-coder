@@ -201,15 +201,16 @@ omac cache clear --all  # remove all caches not currently in use
 
 ### omac vm
 
-The omac VM is one long-lived Linux virtual machine per computer, which omac creates and manages with [Lima](https://lima-vm.io). Docker runs inside it, and a session started with `--vm` uses that Docker instead of one on your host. The VM sees none of your host files and has no network access, except while `omac vm up` or `omac vm up --reprovision` sets it up and while it is online.
+The omac VM is one long-lived Linux virtual machine per computer, which omac creates and manages with [Lima](https://lima-vm.io). Docker runs inside it, and a session started with `--vm` uses that Docker instead of one on your host. The VM does not mount your host files. Only `omac vm exec` copies the current worktree into it, and those copies stay in the VM. The VM has no network access, except while `omac vm up` or `omac vm up --reprovision` sets it up and while it is online.
 
 ```bash
 omac vm up                     # create and provision once, then switch offline (needs network once)
-omac vm status                 # show state, mode, ports, images, sessions and the resources set in vm.yaml
+omac vm status                 # show state, mode, ports, images, copied worktrees, sessions and the resources set in vm.yaml
 omac vm image add postgres:16  # import an image; the VM never pulls itself
 omac vm image list             # list the VM's images
 omac vm image rm postgres:16   # remove an image from the VM
 omac start --vm                # DOCKER_HOST inside the sandbox points at the VM
+omac vm exec -- ./gradlew test # copy the worktree into the VM and run there
 omac vm online                 # restart the VM with network access, e.g. to download build dependencies
 omac vm offline                # restart the VM without network access, the mode sessions need
 omac vm down                   # stop the VM
@@ -233,12 +234,13 @@ omac vm exec --cwd backend -- ./gradlew test --offline
 omac vm exec -- cat backend/build/reports/tests/test/index.html   # results stay in the VM; read them back like this
 ```
 
-Each run first copies the current directory into the VM, then runs the command there. `--cwd <dir>` runs it in a subdirectory of the worktree. `--env NAME` passes the variable `NAME` with the value from your shell, and `--env NAME=VALUE` sets it explicitly; repeat `--env` for more variables.
+Each run first copies the current directory into the VM, then runs the command there. `--cwd <dir>` runs it in a subdirectory of the worktree. `--env NAME` passes the variable `NAME` with the value from your shell. The variable must be set there, otherwise the command fails before anything runs. `--env NAME=VALUE` sets the value explicitly. Repeat `--env` for more variables.
 
 The copy goes one way only:
 
 - `.git` and the paths git ignores, such as `build/`, `.gradle/` and `node_modules/`, are not copied.
 - Nothing on your host is deleted or changed.
+- Files you delete on the host are not removed from the copy in the VM. If a stale file gets in the way, run `omac vm exec -- rm -rf <path>` or `omac vm reset`.
 - Nothing is copied back from the VM. Build output stays there, so read it with another `omac vm exec`.
 
 `omac vm status` lists the worktrees copied so far.
