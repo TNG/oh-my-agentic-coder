@@ -186,18 +186,19 @@ By default, a write error emits a warning and the run continues.
 
 ## omac VM (vm.yaml)
 
-`~/.config/omac/vm.yaml` (or `$XDG_CONFIG_HOME/omac/vm.yaml` when that variable is set) sets the size of the omac VM and the extra packages installed into it (see [omac vm](./usage/cli.md#omac-vm)). The file is optional, and every field in it is optional too.
+`~/.config/omac/vm.yaml` (or `$XDG_CONFIG_HOME/omac/vm.yaml` when that variable is set) sets the size of the omac VM and the extra packages and Java versions installed into it (see [omac vm](./usage/cli.md#omac-vm)). The file is optional, and every field in it is optional too.
 
 ```yaml
-cpus: 8          # default: half the host's cores, at least 4
-memory: 16GiB    # default: a quarter of the host's RAM, at least 8GiB
-disk: 60GiB      # default: 60GiB
-packages: [jq]   # extra Ubuntu packages to install; default: none
+cpus: 8             # default: half the host's cores, at least 4
+memory: 16GiB       # default: a quarter of the host's RAM, at least 8GiB
+disk: 60GiB         # default: 60GiB
+packages: [jq]      # extra Ubuntu packages to install; default: none
+jdks: [temurin-25]  # Java versions to install; default: none
 ```
 
-A further field, `jdks`, is reserved: Java versions for the VM are installed in a follow-up release. An unknown field is an error, so a typo does not silently fall back to the defaults.
+Each `jdks` entry installs the matching Adoptium package during `omac vm up` or `omac vm up --reprovision`: `temurin-25` installs `temurin-25-jdk`. Only entries of the form `temurin-<version>` are supported. An unknown field is an error, so a typo does not silently fall back to the defaults.
 
-omac applies this file only when it creates the VM or reprovisions it. After changing `packages`, run `omac vm up --reprovision`. After changing `cpus`, `memory` or `disk`, run `omac vm reset`, which deletes the VM, its imported images and its keys, then creates it anew; add the images again afterwards.
+omac applies this file only when it creates the VM or reprovisions it. After changing `packages` or `jdks`, run `omac vm up --reprovision`. After changing `cpus`, `memory` or `disk`, run `omac vm reset`, which deletes the VM, its imported images and its keys, then creates it anew; add the images again afterwards.
 
 ## Corporate proxy
 

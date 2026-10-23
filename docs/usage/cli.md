@@ -223,7 +223,35 @@ Container ports published in the range 30000 to 30099 (for example `docker run -
 
 The VM is either `offline` (the default) or `online`. Sessions attach only while it is offline. `omac vm online`, `omac vm up --reprovision` and `omac vm reset` take the VM online, so they are refused while a session is attached.
 
-`omac vm up --reprovision` reinstalls the extra packages listed in `vm.yaml`, and `omac vm reset` deletes the VM and creates it anew. For CPUs, memory, disk and packages, see [omac VM (vm.yaml)](../configuration.md#omac-vm-vmyaml).
+`omac vm up --reprovision` reinstalls the extra packages listed in `vm.yaml`, and `omac vm reset` deletes the VM and creates it anew. For CPUs, memory, disk, packages and Java versions, see [omac VM (vm.yaml)](../configuration.md#omac-vm-vmyaml).
+
+`omac vm exec` runs a command inside the VM on a copy of your worktree, for example a Gradle build that needs more memory or tools than the sandbox has. It works from your host and from inside a session.
+
+```bash
+omac vm exec -- ./gradlew test --offline            # copies the worktree into the VM first, then runs there
+omac vm exec --cwd backend -- ./gradlew test --offline
+omac vm exec -- cat backend/build/reports/tests/test/index.html   # results stay in the VM; read them back like this
+```
+
+Each run first copies the current directory into the VM, then runs the command there. `--cwd <dir>` runs it in a subdirectory of the worktree. `--env NAME` passes the variable `NAME` with the value from your shell, and `--env NAME=VALUE` sets it explicitly; repeat `--env` for more variables.
+
+The copy goes one way only:
+
+- `.git` and the paths git ignores, such as `build/`, `.gradle/` and `node_modules/`, are not copied.
+- Nothing on your host is deleted or changed.
+- Nothing is copied back from the VM. Build output stays there, so read it with another `omac vm exec`.
+
+`omac vm status` lists the worktrees copied so far.
+
+Since the VM is offline, a build that downloads dependencies has to fill its caches once while the VM is online. Run this from your host, with no session attached. The `--env` line passes a token the build needs for its downloads; use whatever variable your build reads.
+
+```bash
+omac vm online
+omac vm exec --env ORG_GRADLE_PROJECT_ID_GITLABCOM_TOKEN --cwd backend -- ./gradlew test
+omac vm offline
+```
+
+After that, `./gradlew test --offline` finds its dependencies in the VM.
 
 ### omac provenance
 
