@@ -188,8 +188,8 @@ type ExecOpts struct {
 	Log     func(string, ...any)
 }
 
-// Exec copies Workdir into the VM (one way, never deleting there),
-// records the copy in ~/omac/.worktrees, and runs Cmd in it. It returns
+// Exec records the copy in ~/omac/.worktrees, copies Workdir into the VM
+// (one way, never deleting there), and runs Cmd in it. It returns
 // the remote command's exit code; err is set only when omac itself failed.
 func Exec(ctx context.Context, o ExecOpts) (int, error) {
 	logf := o.Log
@@ -225,15 +225,12 @@ func Exec(ctx context.Context, o ExecOpts) (int, error) {
 		return 1, err
 	}
 
+	if err := o.SSH(ctx, o.Conn.Target, nil, io.Discard, o.Stderr, registerCmd(slug, o.Workdir)); err != nil {
+		return 1, sshError("register worktree", err)
+	}
 	logf("omac vm exec: copying %s to the VM (%s)", o.Workdir, remoteDir)
 	if err := o.Run(ctx, "rsync", RsyncArgs(o.Workdir, excludeFile, o.Conn.Target, remoteDir), nil, o.Stderr, o.Stderr); err != nil {
 		return 1, fmt.Errorf("omac vm exec: rsync to the VM failed: %w", err)
-	}
-
-	entry := ShellQuote(slug + " " + o.Workdir)
-	register := "mkdir -p omac && grep -qxF -- " + entry + " omac/.worktrees 2>/dev/null || printf '%s\\n' " + entry + " >> omac/.worktrees"
-	if err := o.SSH(ctx, o.Conn.Target, nil, io.Discard, o.Stderr, register); err != nil {
-		return 1, sshError("register worktree", err)
 	}
 
 	err = o.SSH(ctx, o.Conn.Target, o.Stdin, o.Stdout, o.Stderr, remote)
@@ -245,6 +242,15 @@ func Exec(ctx context.Context, o ExecOpts) (int, error) {
 		return 1, sshError("run command", err)
 	}
 	return 0, nil
+}
+
+// registerCmd creates the copy's directory, which the VM's rsync cannot
+// do for a missing parent, and appends "<slug> <workdir>" to the registry
+// that `omac vm status` lists, unless the line is there already.
+func registerCmd(slug, workdir string) string {
+	entry := ShellQuote(slug + " " + workdir)
+	return "mkdir -p -- " + ShellQuote("omac/"+slug) +
+		" && { grep -qxF -- " + entry + " omac/.worktrees 2>/dev/null || printf '%s\\n' " + entry + " >> omac/.worktrees; }"
 }
 
 // sshError maps ssh's exit status 255 (connection failure) to a hint.

@@ -851,7 +851,8 @@ func TestStatusListsWorktreesFromGuest(t *testing.T) {
 	if err := SaveState(m.Layout.StatePath, st); err != nil {
 		t.Fatal(err)
 	}
-	ssh.setWorktrees("a1b2c3 /Users/alice/proj\n\nd4e5f6 /Users/alice/my proj\n")
+	// Two concurrent first runs can both append the same line.
+	ssh.setWorktrees("a1b2c3 /Users/alice/proj\n\nd4e5f6 /Users/alice/my proj\na1b2c3 /Users/alice/proj\n")
 
 	r, err := m.Status(ctx)
 	if err != nil {

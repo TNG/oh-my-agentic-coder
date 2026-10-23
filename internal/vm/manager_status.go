@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -73,13 +74,21 @@ func (m *Manager) guestWorktrees(ctx context.Context, st *State) []string {
 	if err := m.ssh(ctx, m.agentTarget(st), nil, &out, listWorktreesCmd); err != nil {
 		return nil
 	}
+	return parseWorktreeRegistry(out.String())
+}
+
+// parseWorktreeRegistry turns "<slug> <host path>" lines into
+// "<host path> (<slug>)" entries, skipping malformed and repeated lines.
+func parseWorktreeRegistry(registry string) []string {
 	var entries []string
-	for line := range strings.Lines(out.String()) {
+	for line := range strings.Lines(registry) {
 		slug, path, ok := strings.Cut(strings.TrimRight(line, "\r\n"), " ")
 		if !ok || slug == "" || path == "" {
 			continue
 		}
-		entries = append(entries, path+" ("+slug+")")
+		if e := path + " (" + slug + ")"; !slices.Contains(entries, e) {
+			entries = append(entries, e)
+		}
 	}
 	return entries
 }

@@ -194,6 +194,7 @@ func exitErr(t *testing.T, code int) error {
 }
 
 type execFakes struct {
+	order    []string // "rsync" and "ssh" in call order
 	runCalls []string
 	rsync    []string
 	excludes string
@@ -212,6 +213,7 @@ func (f *execFakes) run(_ context.Context, name string, args []string, _ io.Read
 		}
 		return nil
 	case "rsync":
+		f.order = append(f.order, "rsync")
 		f.rsync = args
 		for _, a := range args {
 			if p, ok := strings.CutPrefix(a, "--exclude-from="); ok {
@@ -225,6 +227,7 @@ func (f *execFakes) run(_ context.Context, name string, args []string, _ io.Read
 }
 
 func (f *execFakes) ssh(_ context.Context, _ SSHTarget, _ io.Reader, stdout, _ io.Writer, remote string) error {
+	f.order = append(f.order, "ssh")
 	f.remotes = append(f.remotes, remote)
 	if len(f.remotes) == 2 {
 		_, _ = io.WriteString(stdout, "hello\n")
@@ -259,8 +262,9 @@ func TestExecRunsRsyncThenSSH(t *testing.T) {
 	if out.String() != "hello\n" {
 		t.Fatalf("stdout = %q", out.String())
 	}
-	if f.runCalls[len(f.runCalls)-1] != "rsync" {
-		t.Fatalf("run calls = %q", f.runCalls)
+	// The registration creates the copy's directory, so it runs before rsync.
+	if want := []string{"ssh", "rsync", "ssh"}; !slices.Equal(f.order, want) {
+		t.Fatalf("call order = %q, want %q", f.order, want)
 	}
 	if n := len(f.rsync); n < 2 || f.rsync[n-2] != "/w/My Repo/" || f.rsync[n-1] != "alice@127.0.0.1:omac/"+slug+"/" {
 		t.Fatalf("rsync args = %q", f.rsync)
@@ -272,7 +276,7 @@ func TestExecRunsRsyncThenSSH(t *testing.T) {
 		t.Fatalf("ssh calls = %q", f.remotes)
 	}
 	entry := ShellQuote(slug + " " + workdir)
-	wantReg := "mkdir -p omac && grep -qxF -- " + entry + " omac/.worktrees 2>/dev/null || printf '%s\\n' " + entry + " >> omac/.worktrees"
+	wantReg := "mkdir -p -- " + ShellQuote("omac/"+slug) + " && { grep -qxF -- " + entry + " omac/.worktrees 2>/dev/null || printf '%s\\n' " + entry + " >> omac/.worktrees; }"
 	if f.remotes[0] != wantReg {
 		t.Fatalf("registration =\n%s\nwant\n%s", f.remotes[0], wantReg)
 	}
@@ -304,14 +308,14 @@ func TestExecZeroExit(t *testing.T) {
 	}
 }
 
-func TestExecRsyncFailureStopsBeforeSSH(t *testing.T) {
+func TestExecRsyncFailureStopsBeforeCommand(t *testing.T) {
 	f := &execFakes{rsyncErr: errors.New("boom")}
 	_, err := Exec(context.Background(), f.opts("/w/repo", io.Discard))
 	if err == nil || !strings.Contains(err.Error(), "rsync") {
 		t.Fatalf("err = %v, want rsync error", err)
 	}
-	if len(f.remotes) != 0 {
-		t.Fatalf("ssh ran after rsync failure: %q", f.remotes)
+	if len(f.remotes) != 1 {
+		t.Fatalf("ssh calls after rsync failure = %q, want only the registration", f.remotes)
 	}
 }
 
