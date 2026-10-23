@@ -445,10 +445,12 @@ func TestResetDeletesEverythingThenUp(t *testing.T) {
 	if st := mustState(t, m); len(st.Images) != 0 || st.Mode != ModeOffline {
 		t.Errorf("state after reset = %+v, want fresh and offline", st)
 	}
-	for _, p := range []string{l.SessionsDir, filepath.Dir(stray)} {
-		if _, err := os.Stat(p); !errors.Is(err, os.ErrNotExist) {
-			t.Errorf("%s survived reset (err %v)", p, err)
-		}
+	if _, err := os.Stat(filepath.Dir(stray)); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("%s survived reset (err %v)", filepath.Dir(stray), err)
+	}
+	// Markers are pruned by process ID, never deleted by reset.
+	if _, err := os.Stat(l.SessionsDir); err != nil {
+		t.Errorf("sessions dir removed by reset: %v", err)
 	}
 	if lima.status() != StatusRunning {
 		t.Errorf("status = %q, want running", lima.status())
@@ -506,6 +508,76 @@ func TestSetModeOnlineRefusesSessionRegisteredMidSwitch(t *testing.T) {
 	assertVerbs(t, lima, "list")
 	if st := mustState(t, m); st.Mode != ModeOffline {
 		t.Errorf("mode = %q, want offline restored", st.Mode)
+	}
+}
+
+// attachLiveSession registers pid as a live session and clears the call logs.
+func attachLiveSession(t *testing.T, m *Manager, lima *fakeLimaCtl, pid int) {
+	t.Helper()
+	if _, err := RegisterSession(m.Layout, pid); err != nil {
+		t.Fatal(err)
+	}
+	m.Deps.Alive = func(p int) bool { return p == pid }
+	lima.reset()
+}
+
+// Every path that takes the VM online refuses while a session is attached,
+// before any ssh command or limactl verb beyond the instance lookup.
+func TestOnlineTransitionsRefuseAttachedSessions(t *testing.T) {
+	cases := []struct {
+		name  string
+		setup func(t *testing.T, m *Manager, lima *fakeLimaCtl)
+		run   func(m *Manager) error
+		verbs []string // limactl verbs allowed before the refusal
+	}{
+		{
+			name:  "up --reprovision",
+			setup: func(t *testing.T, m *Manager, _ *fakeLimaCtl) { mustUp(t, m) },
+			run:   func(m *Manager) error { return m.Up(context.Background(), true) },
+			verbs: []string{"list"},
+		},
+		{
+			name: "up re-running interrupted provisioning",
+			setup: func(t *testing.T, m *Manager, lima *fakeLimaCtl) {
+				lima.failOn["start"] = errors.New("boot timed out")
+				if err := m.Up(context.Background(), false); err == nil {
+					t.Fatal("setup: Up succeeded, want the interrupted create")
+				}
+				delete(lima.failOn, "start")
+			},
+			run:   func(m *Manager) error { return m.Up(context.Background(), false) },
+			verbs: []string{"list"},
+		},
+		{
+			name:  "reset",
+			setup: func(t *testing.T, m *Manager, _ *fakeLimaCtl) { mustUp(t, m) },
+			run:   func(m *Manager) error { return m.Reset(context.Background()) },
+			verbs: nil, // refuses before the instance lookup
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			m, lima, ssh, _ := newTestManager(t)
+			c.setup(t, m, lima)
+			adminKey, _ := os.ReadFile(m.Layout.AdminKey)
+			attachLiveSession(t, m, lima, 4343)
+			nSSH := len(ssh.remotes())
+
+			err := c.run(m)
+			if !errors.Is(err, ErrSessionsAttached) || !strings.Contains(err.Error(), "4343") {
+				t.Fatalf("err = %v, want ErrSessionsAttached naming 4343", err)
+			}
+			assertVerbs(t, lima, c.verbs...)
+			if got := ssh.remotes()[nSSH:]; len(got) != 0 {
+				t.Errorf("ssh commands after refusal: %v", got)
+			}
+			if pids, _ := AttachedSessions(m.Layout, m.Deps.Alive); !slices.Equal(pids, []int{4343}) {
+				t.Errorf("attached sessions = %v, want the marker kept", pids)
+			}
+			if key, _ := os.ReadFile(m.Layout.AdminKey); !bytes.Equal(key, adminKey) {
+				t.Error("admin key changed by a refused command")
+			}
+		})
 	}
 }
 

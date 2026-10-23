@@ -249,6 +249,10 @@ const retryUpHint = "run `omac vm up` again (or `omac vm up --reprovision`)"
 // towards re-provisioning rather than leaving apt locked out by an offline
 // switch.
 func (m *Manager) upOnline(ctx context.Context, st *State, cfg UserConfig, running bool) error {
+	// This path may re-run provisioning online, so it refuses up front.
+	if err := m.markOnlineUnattached(st); err != nil {
+		return err
+	}
 	if !running {
 		if err := m.start(ctx); err != nil {
 			return err
@@ -286,6 +290,9 @@ func (m *Manager) reprovision(ctx context.Context, st *State, cfg UserConfig, ru
 		if !packagePattern.MatchString(p) {
 			return fmt.Errorf("omac vm: package name %q has characters outside [A-Za-z0-9.+-]", p)
 		}
+	}
+	if err := m.markOnlineUnattached(st); err != nil {
+		return err
 	}
 	fmt.Fprintln(m.Out, "omac vm: reprovisioning (this takes a few minutes)…")
 	if !running {
@@ -385,8 +392,17 @@ func (m *Manager) Down(ctx context.Context) error {
 }
 
 // Reset deletes the VM and all host-side state below Root (keys, state,
-// sessions, images, Lima home), then runs Up.
+// images, Lima home), then runs Up, which creates the VM online. It refuses
+// while sessions are attached and keeps their markers.
 func (m *Manager) Reset(ctx context.Context) error {
+	// A state.json that does not load is deleted below anyway.
+	st, err := LoadState(m.Layout.StatePath)
+	if err != nil {
+		st = nil
+	}
+	if err := m.markOnlineUnattached(st); err != nil {
+		return err
+	}
 	inst, err := m.instance(ctx)
 	if err != nil {
 		return err
@@ -398,7 +414,7 @@ func (m *Manager) Reset(ctx context.Context) error {
 	}
 	l := m.Layout
 	for _, p := range []string{
-		l.LimaHome, l.StatePath, l.KnownHosts, l.SessionsDir, l.LimaYAML, m.imagesDir(),
+		l.LimaHome, l.StatePath, l.KnownHosts, l.LimaYAML, m.imagesDir(),
 		l.AdminKey, l.AdminKey + ".pub", l.AgentKey, l.AgentKey + ".pub",
 	} {
 		if err := os.RemoveAll(p); err != nil {
@@ -431,24 +447,40 @@ func (m *Manager) SetMode(ctx context.Context, mode string) error {
 		return err
 	}
 	if mode == ModeOnline {
-		// A session registers before it reads the mode. Once state says
-		// online, new sessions refuse to attach, so a second check catches
-		// any session that registered after the first one.
-		prev := st.Mode
-		st.Mode = ModeOnline
-		if err := SaveState(m.Layout.StatePath, st); err != nil {
-			return err
-		}
-		if err := m.refuseAttached(); err != nil {
-			st.Mode = prev
-			if serr := SaveState(m.Layout.StatePath, st); serr != nil {
-				return errors.Join(err, serr)
-			}
+		if err := m.markOnlineUnattached(st); err != nil {
 			return err
 		}
 	}
 	fmt.Fprintf(m.Out, "omac vm: switching %s (restarts the VM)…\n", mode)
 	return m.switchMode(ctx, st, mode, inst.Status == StatusRunning, m.Deps.RestartTimeout)
+}
+
+// markOnlineUnattached guards every path that takes the VM online. It
+// refuses while a session is attached, records ModeOnline in st, and checks
+// again: a session registers before it reads the mode, and once state says
+// online new sessions refuse to attach, so the second check catches any
+// session that registered after the first one. On a hit the previous mode
+// is restored. With a nil st (no state.json) only the first check runs.
+func (m *Manager) markOnlineUnattached(st *State) error {
+	if err := m.refuseAttached(); err != nil {
+		return err
+	}
+	if st == nil {
+		return nil
+	}
+	prev := st.Mode
+	st.Mode = ModeOnline
+	if err := SaveState(m.Layout.StatePath, st); err != nil {
+		return err
+	}
+	if err := m.refuseAttached(); err != nil {
+		st.Mode = prev
+		if serr := SaveState(m.Layout.StatePath, st); serr != nil {
+			return errors.Join(err, serr)
+		}
+		return err
+	}
+	return nil
 }
 
 // refuseAttached returns ErrSessionsAttached while any session is attached.
