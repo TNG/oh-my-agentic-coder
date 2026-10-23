@@ -190,6 +190,10 @@ fi
 nft -f /etc/omac-vmguard.nft
 nft list table inet omac-vmguard >/dev/null`
 
+// systemScript runs as root on every boot. Moving cloud-init's sudoers
+// drop-in removes the agent user's sudo; root is reachable only over SSH
+// with admin_key. The offline firewall depends on this: an agent with root
+// could unload it.
 const systemScript = `#!/bin/bash
 set -eu
 hn="$(hostname)"
@@ -218,19 +222,25 @@ systemctl disable --now docker.service docker.socket containerd.service || true
 systemctl mask docker.service docker.socket containerd.service || true
 date -u +%FT%TZ > /var/lib/omac-vm/provisioned`
 
-// userScript runs as the agent user. The %%t in the printf format becomes
-// the systemd specifier %t (runtime directory) in override.conf.
+// userScript runs as the agent user on every boot, so a failed Docker start
+// is retried on the next boot. The user D-Bus starts first because the
+// system script installs dbus-user-session after the user's systemd
+// manager came up. The restart (not `enable --now`) applies the override
+// to the dockerd that the setuptool install already started. The %%t in
+// the printf format becomes the systemd specifier %t (runtime directory)
+// in override.conf.
 const userScript = `#!/bin/bash
 set -eu
 mkdir -p ~/.ssh && chmod 0700 ~/.ssh
 grep -qF '<AGENT_PUB_KEY>' ~/.ssh/authorized_keys 2>/dev/null || printf '%s\n' '<AGENT_PUB_KEY>' >> ~/.ssh/authorized_keys
 chmod 0600 ~/.ssh/authorized_keys
 command -v dockerd-rootless-setuptool.sh >/dev/null || exit 0
-[ -f ~/.config/systemd/user/docker.service.d/override.conf ] && exit 0
-dockerd-rootless-setuptool.sh install
+systemctl --user start dbus || true
+[ -f ~/.config/systemd/user/docker.service ] || dockerd-rootless-setuptool.sh install
 mkdir -p ~/.config/systemd/user/docker.service.d
 printf '[Service]\nEnvironment=DOCKERD_ROOTLESS_ROOTLESSKIT_FLAGS=-p 127.0.0.1:2375:2375/tcp\nExecStart=\nExecStart=/usr/bin/dockerd-rootless.sh -H unix://%%t/docker.sock -H tcp://127.0.0.1:2375\n' > ~/.config/systemd/user/docker.service.d/override.conf
 systemctl --user daemon-reload
+systemctl --user enable docker
 systemctl --user restart docker
 for f in ~/.bashrc ~/.profile; do grep -q '^export DOCKER_HOST=' "$f" 2>/dev/null || printf 'export DOCKER_HOST=unix:///run/user/%s/docker.sock\n' "$(id -u)" >> "$f"; done
 printf 'docker.host=unix:///run/user/%s/docker.sock\n' "$(id -u)" > ~/.testcontainers.properties`

@@ -87,11 +87,12 @@ provision:
       grep -qF 'ssh-ed25519 AAAAagent omac-vm-agent' ~/.ssh/authorized_keys 2>/dev/null || printf '%s\n' 'ssh-ed25519 AAAAagent omac-vm-agent' >> ~/.ssh/authorized_keys
       chmod 0600 ~/.ssh/authorized_keys
       command -v dockerd-rootless-setuptool.sh >/dev/null || exit 0
-      [ -f ~/.config/systemd/user/docker.service.d/override.conf ] && exit 0
-      dockerd-rootless-setuptool.sh install
+      systemctl --user start dbus || true
+      [ -f ~/.config/systemd/user/docker.service ] || dockerd-rootless-setuptool.sh install
       mkdir -p ~/.config/systemd/user/docker.service.d
       printf '[Service]\nEnvironment=DOCKERD_ROOTLESS_ROOTLESSKIT_FLAGS=-p 127.0.0.1:2375:2375/tcp\nExecStart=\nExecStart=/usr/bin/dockerd-rootless.sh -H unix://%%t/docker.sock -H tcp://127.0.0.1:2375\n' > ~/.config/systemd/user/docker.service.d/override.conf
       systemctl --user daemon-reload
+      systemctl --user enable docker
       systemctl --user restart docker
       for f in ~/.bashrc ~/.profile; do grep -q '^export DOCKER_HOST=' "$f" 2>/dev/null || printf 'export DOCKER_HOST=unix:///run/user/%s/docker.sock\n' "$(id -u)" >> "$f"; done
       printf 'docker.host=unix:///run/user/%s/docker.sock\n' "$(id -u)" > ~/.testcontainers.properties

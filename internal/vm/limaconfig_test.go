@@ -163,6 +163,33 @@ func TestRenderLimaConfigProvisionOrder(t *testing.T) {
 	}
 }
 
+// Lima runs the user script on every boot. A failed Docker start must not
+// make later boots skip Docker: only the setuptool install is guarded, and
+// the override plus the Docker start run every time, in this order.
+func TestUserScriptRecoversAcrossBoots(t *testing.T) {
+	_, _, user := provisionBlocks(t, renderGolden(t))
+	steps := []string{
+		"systemctl --user start dbus || true\n",
+		"[ -f ~/.config/systemd/user/docker.service ] || dockerd-rootless-setuptool.sh install\n",
+		"mkdir -p ~/.config/systemd/user/docker.service.d\n",
+		`printf '[Service]\nEnvironment=DOCKERD_ROOTLESS_ROOTLESSKIT_FLAGS=-p 127.0.0.1:2375:2375/tcp\nExecStart=\nExecStart=/usr/bin/dockerd-rootless.sh -H unix://%%t/docker.sock -H tcp://127.0.0.1:2375\n' > ~/.config/systemd/user/docker.service.d/override.conf` + "\n",
+		"systemctl --user daemon-reload\n",
+		"systemctl --user enable docker\n",
+		"systemctl --user restart docker\n",
+	}
+	pos := 0
+	for _, s := range steps {
+		i := strings.Index(user[pos:], "      "+s)
+		if i < 0 {
+			t.Fatalf("user block lacks %q after offset %d:\n%s", s, pos, user)
+		}
+		pos += i + len(s)
+	}
+	if strings.Contains(user, "override.conf ] && exit 0") {
+		t.Error("user script still exits early once override.conf exists")
+	}
+}
+
 func TestRenderLimaConfigEmbedsRuleset(t *testing.T) {
 	boot, _, _ := provisionBlocks(t, renderGolden(t))
 	for _, line := range strings.Split(Ruleset(), "\n") {
