@@ -9,7 +9,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
 
 	"github.com/TNG/oh-my-agentic-coder/internal/config"
@@ -48,36 +47,15 @@ func TestVMAttachExitCode(t *testing.T) {
 	}
 }
 
-// fakeVMAttach replaces prepareVMAttach and counts release calls.
-type fakeVMAttach struct {
-	mu       sync.Mutex
-	released int
-}
-
-func (f *fakeVMAttach) release() {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.released++
-}
-
-func (f *fakeVMAttach) releases() int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.released
-}
-
-func stubVMAttach(t *testing.T, info vm.AttachInfo, err error) *fakeVMAttach {
+// stubVMAttachFailure makes prepareVMAttach fail with err, so a launch that
+// reaches the attach step ends with a non-zero code.
+func stubVMAttachFailure(t *testing.T, err error) {
 	t.Helper()
-	fake := &fakeVMAttach{}
 	orig := prepareVMAttach
 	prepareVMAttach = func(context.Context, *Env) (vm.AttachInfo, func(), error) {
-		if err != nil {
-			return vm.AttachInfo{}, nil, err
-		}
-		return info, fake.release, nil
+		return vm.AttachInfo{}, nil, err
 	}
 	t.Cleanup(func() { prepareVMAttach = orig })
-	return fake
 }
 
 // vmCaptureFixture configures a "capture" sandbox profile whose command is
@@ -130,7 +108,7 @@ func TestRunLaunchVMRefusesNonNativeProfile(t *testing.T) {
 	workdir, capturePath := vmCaptureFixture(t, "#!/bin/sh\ntouch "+ran+"\n")
 	env, stderr := launchTestEnv(t, workdir)
 	harness, _ := config.LookupHarness("claude")
-	stubVMAttach(t, vm.AttachInfo{}, errors.New("prepareVMAttach must not be called on a non-native profile"))
+	stubVMAttachFailure(t, errors.New("prepareVMAttach must not be called on a non-native profile"))
 
 	code := runLaunch(env, launchOpts{label: "start", harness: harness, vm: true, innerCmdOverride: capturePath})
 	if code != ExitMisuse {
@@ -148,7 +126,7 @@ func TestServeVMRefusesNonNativeProfile(t *testing.T) {
 	ran := filepath.Join(t.TempDir(), "ran")
 	workdir, _ := vmCaptureFixture(t, "#!/bin/sh\ntouch "+ran+"\n")
 	env, stderr := launchTestEnv(t, workdir)
-	stubVMAttach(t, vm.AttachInfo{}, errors.New("prepareVMAttach must not be called on a non-native profile"))
+	stubVMAttachFailure(t, errors.New("prepareVMAttach must not be called on a non-native profile"))
 
 	code := runServe([]string{"claude", "--vm", "--inner", "/bin/true"}, env)
 	if code != ExitMisuse {
@@ -171,7 +149,7 @@ func TestRunLaunchWithoutVMAddsNothing(t *testing.T) {
 	workdir, capturePath := vmCaptureFixture(t, script)
 	env, stderr := launchTestEnv(t, workdir)
 	harness, _ := config.LookupHarness("claude")
-	stubVMAttach(t, vm.AttachInfo{}, errors.New("prepareVMAttach must not be called without --vm"))
+	stubVMAttachFailure(t, errors.New("prepareVMAttach must not be called without --vm"))
 
 	if code := runLaunch(env, launchOpts{label: "start", harness: harness, innerCmdOverride: capturePath}); code != ExitOK {
 		t.Fatalf("runLaunch code = %d\nstderr:\n%s", code, stderr())
