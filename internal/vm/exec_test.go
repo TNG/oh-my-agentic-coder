@@ -573,6 +573,8 @@ func TestExecRejectsBadInputBeforeCopy(t *testing.T) {
 		"relative workdir": func(o *ExecOpts) { o.Workdir = "repo" },
 		"escaping cwd":     func(o *ExecOpts) { o.Cwd = "../etc" },
 		"empty cmd":        func(o *ExecOpts) { o.Cmd = nil },
+		"quote in key":     func(o *ExecOpts) { o.Conn.Target.KeyPath = "/Users/o'brien/key" },
+		"quote in hosts":   func(o *ExecOpts) { o.Conn.Target.KnownHosts = "/Users/o'brien/known_hosts" },
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := &execFakes{}

@@ -263,6 +263,12 @@ func Exec(ctx context.Context, o ExecOpts) (int, error) {
 	if err := ValidateCwd(o.Cwd); err != nil {
 		return 1, err
 	}
+	// rsync's -e parser does not understand the '\'' that ShellQuote emits.
+	for _, p := range []string{o.Conn.Target.KeyPath, o.Conn.Target.KnownHosts} {
+		if strings.Contains(p, "'") {
+			return 1, fmt.Errorf("omac vm exec: %q contains a single quote, which rsync cannot pass to ssh", p)
+		}
+	}
 	// One slug and one registry line per directory, however it was spelled.
 	root := filepath.Clean(o.Workdir)
 	cwd := o.Cwd

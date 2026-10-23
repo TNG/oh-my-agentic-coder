@@ -95,12 +95,12 @@ func vmSandboxEnv(info vm.AttachInfo, scopeDir string) (map[string]string, error
 		return nil, fmt.Errorf("known_hosts: %w", err)
 	}
 	return map[string]string{
-		"DOCKER_HOST":      info.DockerHost(),
-		"DOCKER_CONFIG":    dockerDir,
-		"OMAC_VM_HOST":     "127.0.0.1",
-		"OMAC_VM_SSH_PORT": strconv.Itoa(info.SSHPort),
-		"OMAC_VM_SSH_KEY":  keyPath,
-		"OMAC_VM_USER":     info.User,
+		"DOCKER_HOST":   info.DockerHost(),
+		"DOCKER_CONFIG": dockerDir,
+		vm.EnvVMHost:    "127.0.0.1",
+		vm.EnvVMSSHPort: strconv.Itoa(info.SSHPort),
+		vm.EnvVMSSHKey:  keyPath,
+		vm.EnvVMUser:    info.User,
 	}, nil
 }
 

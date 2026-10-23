@@ -39,10 +39,15 @@ func TestConnFromEnvAbsent(t *testing.T) {
 
 func TestConnFromEnvIncomplete(t *testing.T) {
 	cases := map[string]map[string]string{
-		"port only":    {EnvVMSSHPort: "31022"},
-		"no user":      {EnvVMSSHPort: "31022", EnvVMSSHKey: "/k"},
-		"bad port":     {EnvVMSSHPort: "x", EnvVMSSHKey: "/k", EnvVMUser: "alice"},
-		"port too big": {EnvVMSSHPort: "70000", EnvVMSSHKey: "/k", EnvVMUser: "alice"},
+		"port only":             {EnvVMSSHPort: "31022"},
+		"no user":               {EnvVMSSHPort: "31022", EnvVMSSHKey: "/k"},
+		"bad port":              {EnvVMSSHPort: "x", EnvVMSSHKey: "/k", EnvVMUser: "alice"},
+		"port too big":          {EnvVMSSHPort: "70000", EnvVMSSHKey: "/k", EnvVMUser: "alice"},
+		"user is an ssh option": {EnvVMSSHPort: "31022", EnvVMSSHKey: "/k", EnvVMUser: "-oProxyCommand=id"},
+		"user with uppercase":   {EnvVMSSHPort: "31022", EnvVMSSHKey: "/k", EnvVMUser: "Alice"},
+		"user too long":         {EnvVMSSHPort: "31022", EnvVMSSHKey: "/k", EnvVMUser: strings.Repeat("a", 33)},
+		"relative key":          {EnvVMSSHPort: "31022", EnvVMSSHKey: "k", EnvVMUser: "alice"},
+		"key with space":        {EnvVMSSHPort: "31022", EnvVMSSHKey: "/a b/k", EnvVMUser: "alice"},
 	}
 	for name, env := range cases {
 		t.Run(name, func(t *testing.T) {

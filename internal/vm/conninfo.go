@@ -5,7 +5,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
+	"strings"
+	"unicode"
 )
 
 // Environment variables omac exports into a session attached to the VM.
@@ -23,6 +26,8 @@ type ConnInfo struct {
 	FromSandbox bool
 }
 
+var vmUserRE = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
+
 // ConnFromEnv reads the OMAC_VM_* variables. ok is false when
 // OMAC_VM_SSH_PORT is unset; once it is set, the key and user must be set
 // too. The known_hosts file sits next to the copied key, because the
@@ -39,6 +44,14 @@ func ConnFromEnv(getenv func(string) string) (ConnInfo, bool, error) {
 	key, user := getenv(EnvVMSSHKey), getenv(EnvVMUser)
 	if key == "" || user == "" {
 		return ConnInfo{}, true, fmt.Errorf("omac vm: %s is set but %s or %s is missing", EnvVMSSHPort, EnvVMSSHKey, EnvVMUser)
+	}
+	// The user goes before "--" on the ssh command line, and a space would
+	// split the key's known_hosts path in UserKnownHostsFile.
+	if !vmUserRE.MatchString(user) {
+		return ConnInfo{}, true, fmt.Errorf("omac vm: %s=%q is not a valid user name", EnvVMUser, user)
+	}
+	if !filepath.IsAbs(key) || strings.IndexFunc(key, unicode.IsSpace) >= 0 {
+		return ConnInfo{}, true, fmt.Errorf("omac vm: %s=%q must be an absolute path without whitespace", EnvVMSSHKey, key)
 	}
 	return ConnInfo{
 		Target: SSHTarget{
