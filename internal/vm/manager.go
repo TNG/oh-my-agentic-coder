@@ -254,8 +254,8 @@ const retryUpHint = "run `omac vm up` again (or `omac vm up --reprovision`)"
 // online, or a provisioning was interrupted (state stays online until an
 // offline switch verified the firewall), or a provisioning boot is still
 // running after limactl start gave up waiting for it. A missing Lima
-// boot-done file means the last case: up waits for that file instead of
-// restarting the VM in the middle of apt. Otherwise the guest's
+// boot-done file means the last case: up refuses instead of restarting the
+// VM in the middle of apt. Otherwise the guest's
 // ProvisionedMarker tells the first two apart. Any failure of the marker
 // check counts as missing, which errs towards re-provisioning rather than
 // leaving apt locked out by an offline switch.
@@ -270,45 +270,15 @@ func (m *Manager) upOnline(ctx context.Context, st *State, cfg UserConfig, runni
 			return fmt.Errorf("%w; %s", err, retryUpHint)
 		}
 	}
-	waited := false
 	if m.ssh(ctx, m.rootTarget(st), nil, nil, bootDoneCmd) != nil {
-		fmt.Fprintln(m.Out, "omac vm: provisioning is still running, waiting")
-		if err := m.waitBootDone(ctx, st, m.Deps.ProvisionTimeout); err != nil {
-			return fmt.Errorf("%w; %s", err, retryUpHint)
-		}
-		waited = true
+		return errors.New("omac vm: provisioning is still running; run `omac vm up` again in a few minutes")
 	}
-	switch {
-	case m.ssh(ctx, m.rootTarget(st), nil, nil, markerPresentCmd) != nil:
+	if m.ssh(ctx, m.rootTarget(st), nil, nil, markerPresentCmd) != nil {
 		fmt.Fprintln(m.Out, "omac vm: provisioning was not completed, re-running it")
 		return m.reprovision(ctx, st, cfg, true)
-	case waited:
-		return m.switchMode(ctx, st, ModeOffline, true, m.Deps.RestartTimeout)
-	default:
-		fmt.Fprintln(m.Out, "omac vm: VM is online; run `omac vm offline` before attaching sessions")
-		return nil
 	}
-}
-
-// waitBootDone polls bootDoneCmd until the boot's provisioning finished.
-// Docker answering proves nothing here: on every provisioning boot after
-// the first, the user's Docker unit starts while the system script still
-// runs apt.
-func (m *Manager) waitBootDone(ctx context.Context, st *State, timeout time.Duration) error {
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	ticker := time.NewTicker(m.Deps.ProbeInterval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return fmt.Errorf("omac vm: provisioning did not finish within %s: %w", timeout, ctx.Err())
-		case <-ticker.C:
-		}
-		if m.ssh(ctx, m.rootTarget(st), nil, nil, bootDoneCmd) == nil {
-			return nil
-		}
-	}
+	fmt.Fprintln(m.Out, "omac vm: VM is online; run `omac vm offline` before attaching sessions")
+	return nil
 }
 
 // startOffline boots a stopped VM whose state says offline. The root-owned

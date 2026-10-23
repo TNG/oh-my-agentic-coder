@@ -210,11 +210,10 @@ func TestUpRecoversFromInterruptedProvisioning(t *testing.T) {
 }
 
 // limactl start times out while the guest still runs apt. The next up must
-// wait for that provisioning instead of stopping the VM in the middle of it.
-func TestUpWaitsForProvisioningStillRunning(t *testing.T) {
+// refuse instead of stopping the VM in the middle of that provisioning.
+func TestUpRefusesWhileProvisioningStillRunning(t *testing.T) {
 	m, lima, ssh, _ := newTestManager(t)
 	ssh.slowBoots = 1
-	ssh.pendingPolls = 2
 	lima.startTimeout = errors.New(`did not receive an event with the "running" status`)
 	if err := m.Up(context.Background(), false); err == nil || !strings.Contains(err.Error(), retryUpHint) {
 		t.Fatalf("Up = %v, want the retry hint", err)
@@ -224,109 +223,17 @@ func TestUpWaitsForProvisioningStillRunning(t *testing.T) {
 	}
 	lima.reset()
 	nSSH := len(ssh.remotes())
-	var out bytes.Buffer
-	m.Out = &out
-
-	mustUp(t, m)
-	if !strings.Contains(out.String(), "omac vm: provisioning is still running, waiting") {
-		t.Errorf("output = %q, want the waiting notice", out.String())
-	}
-	assertVerbs(t, lima, "list", "stop", "start")
-	remotes := ssh.remotes()[nSSH:]
-	if len(remotes) == 0 || remotes[0] != bootDoneCmd {
-		t.Errorf("ssh commands = %v, want the boot-done check first", remotes)
-	}
-	if slices.Contains(remotes, reprovisionCmd(nil)) {
-		t.Errorf("ssh commands = %v, want no reprovisioning", remotes)
-	}
-	if ssh.stoppedWhileProvisioning() {
-		t.Error("the VM was stopped while provisioning still ran")
-	}
-	if _, g := ssh.snapshot(); !g.provisioned || !g.firewall || g.modeFile != ModeOffline {
-		t.Errorf("guest = %+v, want provisioned, offline with firewall", g)
-	}
-	if st := mustState(t, m); st.Mode != ModeOffline {
-		t.Errorf("mode = %q, want offline", st.Mode)
-	}
-}
-
-// setupPendingReprovision leaves a running VM whose state says online and
-// whose reprovisioning boot still runs apt: limactl start gave up waiting
-// for it. Docker already answers, as the enabled user unit does on every
-// provisioning boot after the first. The pending boot finishes on the
-// pendingPolls-th boot-done check (0: never).
-func setupPendingReprovision(t *testing.T, pendingPolls int) (*Manager, *fakeLimaCtl, *fakeSSH, int) {
-	t.Helper()
-	m, lima, ssh, _ := newTestManager(t)
-	mustUp(t, m)
-	ssh.slowBoots = 1
-	ssh.pendingPolls = pendingPolls
-	ssh.dockerEarly = true
-	lima.startTimeout = errors.New(`did not receive an event with the "running" status`)
-	if err := m.Up(context.Background(), true); err == nil {
-		t.Fatal("reprovisioning Up = nil, want the start timeout")
-	}
-	if _, g := ssh.snapshot(); g.provisioned || g.bootDone || lima.status() != StatusRunning || mustState(t, m).Mode != ModeOnline {
-		t.Fatalf("setup: guest %+v, status %q; want running, online and still provisioning", g, lima.status())
-	}
-	lima.reset()
-	return m, lima, ssh, len(ssh.remotes())
-}
-
-func countRemote(remotes []string, cmd string) int {
-	n := 0
-	for _, r := range remotes {
-		if r == cmd {
-			n++
-		}
-	}
-	return n
-}
-
-// Docker answering is no sign that a provisioning boot finished: only
-// Lima's boot-done file is.
-func TestUpWaitsForBootDoneNotDocker(t *testing.T) {
-	m, lima, ssh, nSSH := setupPendingReprovision(t, 3)
-	var out bytes.Buffer
-	m.Out = &out
-
-	mustUp(t, m)
-	if !strings.Contains(out.String(), "omac vm: provisioning is still running, waiting") {
-		t.Errorf("output = %q, want the waiting notice", out.String())
-	}
-	if ssh.stoppedWhileProvisioning() {
-		t.Error("the VM was stopped while provisioning still ran")
-	}
-	assertVerbs(t, lima, "list", "stop", "start")
-	remotes := ssh.remotes()[nSSH:]
-	if n := countRemote(remotes, bootDoneCmd); n < 2 {
-		t.Errorf("boot-done checks = %d in %v, want more than one", n, remotes)
-	}
-	if slices.Contains(remotes, reprovisionCmd(nil)) {
-		t.Errorf("ssh commands = %v, want no reprovisioning", remotes)
-	}
-	if _, g := ssh.snapshot(); !g.provisioned || !g.firewall || g.modeFile != ModeOffline {
-		t.Errorf("guest = %+v, want provisioned, offline with firewall", g)
-	}
-	if st := mustState(t, m); st.Mode != ModeOffline {
-		t.Errorf("mode = %q, want offline", st.Mode)
-	}
-}
-
-func TestUpBootDoneTimeout(t *testing.T) {
-	m, lima, ssh, nSSH := setupPendingReprovision(t, 0)
-	m.Deps.ProvisionTimeout = 50 * time.Millisecond
 
 	err := m.Up(context.Background(), false)
-	if err == nil || !strings.Contains(err.Error(), retryUpHint) {
-		t.Fatalf("Up = %v, want the retry hint", err)
+	if err == nil || !strings.Contains(err.Error(), "provisioning is still running") {
+		t.Fatalf("Up = %v, want the still-running refusal", err)
 	}
 	assertVerbs(t, lima, "list")
 	if ssh.stoppedWhileProvisioning() {
 		t.Error("the VM was stopped while provisioning still ran")
 	}
-	if remotes := ssh.remotes()[nSSH:]; slices.Contains(remotes, reprovisionCmd(nil)) {
-		t.Errorf("ssh commands = %v, want no reprovisioning", remotes)
+	if remotes := ssh.remotes()[nSSH:]; !slices.Equal(remotes, []string{bootDoneCmd}) {
+		t.Errorf("ssh commands = %v, want only the boot-done check", remotes)
 	}
 	if st := mustState(t, m); st.Mode != ModeOnline {
 		t.Errorf("mode = %q, want online kept", st.Mode)
