@@ -350,43 +350,28 @@ func TestSBPLQuoteEscaping(t *testing.T) {
 }
 
 func TestAncestorDirectoryReadRules(t *testing.T) {
-	g := baseGrants()
-	g.Workdir = "/work/app"
-	g.HomeDir = "/Users/u"
-	p := GenerateSBPL(g)
-	if !strings.Contains(p, `(allow file-read-metadata (literal "/Users/u"))`) {
-		t.Error("home directory must be resolvable even outside the workdir's ancestors")
-	}
-	if strings.Contains(p, `(allow file-read-data (literal "/Users/u"))`) {
-		t.Error("home entry names must not be listable outside the workdir's ancestors")
-	}
-	if strings.Contains(p, `(subpath "/Users/u")`) {
-		t.Error("home directory must not receive recursive access")
-	}
-	if !strings.Contains(p, `(allow file-read-data (literal "/work"))`) {
-		t.Error("working-directory ancestor must allow file-read-data")
-	}
-	if !strings.Contains(p, `(allow file-read-metadata (literal "/cfg"))`) {
-		t.Error("grant ancestor must allow file-read-metadata")
-	}
-	if strings.Contains(p, `(allow file-read-data (literal "/cfg"))`) {
-		t.Error("non-workdir ancestor must not allow file-read-data")
-	}
-}
-
-func TestAncestorDirectoryReadRulesWorkdirInsideHome(t *testing.T) {
-	g := baseGrants()
-	g.Workdir = "/Users/u/src/app"
-	g.HomeDir = "/Users/u"
-	p := GenerateSBPL(g)
-	if strings.Contains(p, `(allow file-read-data (literal "/Users/u"))`) {
-		t.Error("home entry names must not be listable when the workdir is inside home")
-	}
-	if !strings.Contains(p, `(allow file-read-metadata (literal "/Users/u"))`) {
-		t.Error("home must stay resolvable when the workdir is inside home")
-	}
-	if !strings.Contains(p, `(allow file-read-data (literal "/Users/u/src"))`) {
-		t.Error("other working-directory ancestors must keep file-read-data")
+	for _, workdir := range []string{"/work/app", "/Users/u/src/app"} {
+		g := baseGrants()
+		g.Workdir = workdir
+		g.HomeDir = "/Users/u"
+		p := GenerateSBPL(g)
+		for _, dir := range []string{"/Users/u", filepath.Dir(workdir), filepath.Dir(filepath.Dir(workdir)), "/cfg"} {
+			if !strings.Contains(p, "(allow file-read-metadata (literal "+sbplQuote(dir)+"))") {
+				t.Errorf("workdir %s: ancestor %s must stay resolvable", workdir, dir)
+			}
+		}
+		if strings.Contains(p, `(subpath "/Users/u")`) {
+			t.Errorf("workdir %s: home directory must not receive recursive access", workdir)
+		}
+		// A data read on a directory lets `ls` list its entry names. Only
+		// "/" keeps one, because dyld aborts without it. /dev entries are
+		// device files, not directories.
+		for _, line := range strings.Split(p, "\n") {
+			if (strings.Contains(line, "file-read-data") || strings.Contains(line, "file-read*")) &&
+				strings.Contains(line, "(literal ") && !strings.Contains(line, `(literal "/")`) && !strings.Contains(line, `"/dev/`) {
+				t.Errorf("workdir %s: directory names must not be listable: %s", workdir, line)
+			}
+		}
 	}
 }
 
