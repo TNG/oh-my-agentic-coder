@@ -11,10 +11,10 @@
       systems = [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ];
       # Updated together by scripts/update-nix-release.py before the nix-* tag.
       release = {
-        version = "0.9.0";
-        rev = "a44213177e298ecdf2a5161004185bcc98000579";
-        hash = "sha256-7p1X+n2zwJl2dTRDMLbNNh2hnAmDWv8d8fT2cd12ibg=";
-        vendorHash = "sha256-gWqBhFQFANzF2tgpMMCIeaQEm7eSnUQxPtwcFQceh/s=";
+        version = "0.11.0";
+        rev = "6f9500a6af758d5a7077e49ce774e062e0fc6907";
+        hash = "sha256-3upMMqO4mk3ZlkWXWbfAcGzdNg/CfDiu/j/Dy0ggfE8=";
+        vendorHash = "sha256-ZLXFiuYcTI3D2xMlZT3pBWaN9TVWY92aR5MyCIXVHdM=";
       };
     in (flake-utils.lib.eachSystem systems (system:
       let
@@ -32,9 +32,10 @@
           subPackages = [ "cmd/omac" ];
           ldflags = [ "-s" "-w" "-X main.Version=${release.version}" ];
 
-          # Backport NixOS runtime paths for 0.9.0; future releases must carry
-          # the upstream baseline fix (enforced by the Linux smoke check).
-          postPatch = pkgs.lib.optionalString (release.version == "0.9.0") ''
+          # Backport NixOS runtime paths until upstream grants /nix/store and
+          # /run/current-system in its baseline. Once the upstream fix lands,
+          # --replace-fail breaks the build loudly; delete this patch then.
+          postPatch = ''
             substituteInPlace internal/sandboxprofile/baseline.go \
               --replace-fail '"/bin", "/sbin", "/usr",' \
                 '"/bin", "/sbin", "/usr", "/nix/store", "/run/current-system",'
