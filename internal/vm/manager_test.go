@@ -897,6 +897,139 @@ func TestImageRemoveMissingImageClearsState(t *testing.T) {
 	}
 }
 
+// Each operation fails part-way through; state and host files must stay
+// what they were, so a retry starts from a truthful state.
+func TestManagerFailureBranches(t *testing.T) {
+	boom := errors.New("boom")
+	imagesEmpty := func(t *testing.T, m *Manager) {
+		t.Helper()
+		if entries, _ := os.ReadDir(filepath.Join(m.Layout.Root, "images")); len(entries) != 0 {
+			t.Errorf("tarball left behind: %v", entries)
+		}
+		if st := mustState(t, m); len(st.Images) != 0 {
+			t.Errorf("state images = %v, want none", st.Images)
+		}
+	}
+	cases := []struct {
+		name  string
+		setup func(t *testing.T, m *Manager, lima *fakeLimaCtl, ssh *fakeSSH)
+		run   func(m *Manager) error
+		check func(t *testing.T, m *Manager, lima *fakeLimaCtl, ssh *fakeSSH)
+	}{
+		{
+			name: "image add, pull fails",
+			setup: func(t *testing.T, m *Manager, _ *fakeLimaCtl, _ *fakeSSH) {
+				m.Deps.Pull = func(_ context.Context, _, tar string) error {
+					if err := os.WriteFile(tar, []byte("partial"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+					return boom
+				}
+			},
+			run: func(m *Manager) error { return m.ImageAdd(context.Background(), "alpine") },
+			check: func(t *testing.T, m *Manager, _ *fakeLimaCtl, ssh *fakeSSH) {
+				imagesEmpty(t, m)
+				if slices.Contains(ssh.remotes(), dockerCmd("load")) {
+					t.Error("docker load ran after a failed pull")
+				}
+			},
+		},
+		{
+			name: "image add, docker load fails",
+			setup: func(_ *testing.T, _ *Manager, _ *fakeLimaCtl, ssh *fakeSSH) {
+				ssh.fail = func(remote string) error {
+					if remote == dockerCmd("load") {
+						return boom
+					}
+					return nil
+				}
+			},
+			run: func(m *Manager) error { return m.ImageAdd(context.Background(), "alpine") },
+			check: func(t *testing.T, m *Manager, _ *fakeLimaCtl, ssh *fakeSSH) {
+				imagesEmpty(t, m)
+				if _, g := ssh.snapshot(); len(g.images) != 0 {
+					t.Errorf("guest images = %v, want none", g.images)
+				}
+			},
+		},
+		{
+			name: "image rm on a stopped VM",
+			setup: func(t *testing.T, m *Manager, _ *fakeLimaCtl, _ *fakeSSH) {
+				if err := m.ImageAdd(context.Background(), "alpine"); err != nil {
+					t.Fatal(err)
+				}
+				if err := m.Down(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+			},
+			run: func(m *Manager) error { return m.ImageRemove(context.Background(), "alpine") },
+			check: func(t *testing.T, m *Manager, _ *fakeLimaCtl, _ *fakeSSH) {
+				if st := mustState(t, m); !slices.Equal(st.Images, []string{"index.docker.io/library/alpine:latest"}) {
+					t.Errorf("state images = %v, want alpine kept", st.Images)
+				}
+			},
+		},
+		{
+			name:  "down, limactl stop fails",
+			setup: func(_ *testing.T, _ *Manager, lima *fakeLimaCtl, _ *fakeSSH) { lima.failOn["stop"] = boom },
+			run:   func(m *Manager) error { return m.Down(context.Background()) },
+			check: func(t *testing.T, m *Manager, lima *fakeLimaCtl, _ *fakeSSH) {
+				if lima.status() != StatusRunning {
+					t.Errorf("status = %q, want running", lima.status())
+				}
+				if st := mustState(t, m); st.Mode != ModeOffline {
+					t.Errorf("mode = %q, want offline kept", st.Mode)
+				}
+			},
+		},
+		{
+			name: "offline switch, stop fails after the mode file was written",
+			setup: func(t *testing.T, m *Manager, lima *fakeLimaCtl, _ *fakeSSH) {
+				if err := m.SetMode(context.Background(), ModeOnline); err != nil {
+					t.Fatal(err)
+				}
+				lima.failOn["stop"] = boom
+			},
+			run: func(m *Manager) error { return m.SetMode(context.Background(), ModeOffline) },
+			check: func(t *testing.T, m *Manager, _ *fakeLimaCtl, ssh *fakeSSH) {
+				if _, g := ssh.snapshot(); g.modeFile != ModeOffline {
+					t.Fatalf("setup: guest mode file = %q, want offline written", g.modeFile)
+				}
+				if st := mustState(t, m); st.Mode != ModeOnline {
+					t.Errorf("mode = %q, want online until the firewall is verified", st.Mode)
+				}
+			},
+		},
+		{
+			name:  "reset, limactl delete fails",
+			setup: func(_ *testing.T, _ *Manager, lima *fakeLimaCtl, _ *fakeSSH) { lima.failOn["delete"] = boom },
+			run:   func(m *Manager) error { return m.Reset(context.Background()) },
+			check: func(t *testing.T, m *Manager, lima *fakeLimaCtl, _ *fakeSSH) {
+				l := m.Layout
+				for _, p := range []string{l.StatePath, l.AdminKey, l.AdminKey + ".pub", l.AgentKey, l.AgentKey + ".pub", l.LimaYAML} {
+					if _, err := os.Stat(p); err != nil {
+						t.Errorf("%s removed although the VM still exists: %v", p, err)
+					}
+				}
+				if lima.status() == "" {
+					t.Error("instance gone")
+				}
+			},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			m, lima, ssh, _ := newTestManager(t)
+			mustUp(t, m)
+			c.setup(t, m, lima, ssh)
+			if err := c.run(m); err == nil {
+				t.Fatal("err = nil, want a failure")
+			}
+			c.check(t, m, lima, ssh)
+		})
+	}
+}
+
 func TestPrepareAttachChecks(t *testing.T) {
 	m, _, _, probe := newTestManager(t)
 	ctx := context.Background()

@@ -4,6 +4,8 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -198,6 +200,58 @@ func TestUserScriptRecoversAcrossBoots(t *testing.T) {
 	if strings.Contains(user, "override.conf ] && exit 0") {
 		t.Error("user script still exits early once override.conf exists")
 	}
+}
+
+// renderedScripts returns each provisioning script of cfg with its YAML
+// indentation removed, keyed by its mode.
+func renderedScripts(t *testing.T, cfg string) map[string]string {
+	t.Helper()
+	scripts := map[string]string{}
+	lines := strings.Split(cfg, "\n")
+	for i := 0; i < len(lines); i++ {
+		mode, ok := strings.CutPrefix(lines[i], "  - mode: ")
+		if !ok {
+			continue
+		}
+		if i+1 >= len(lines) || lines[i+1] != "    script: |" {
+			t.Fatalf("mode %s is not followed by a script block", mode)
+		}
+		var b strings.Builder
+		for i += 2; i < len(lines) && (lines[i] == "" || strings.HasPrefix(lines[i], "      ")); i++ {
+			b.WriteString(strings.TrimPrefix(lines[i], "      ") + "\n")
+		}
+		i--
+		scripts[mode] = b.String()
+	}
+	if len(scripts) != 3 {
+		t.Fatalf("found scripts for %d modes, want boot, system and user", len(scripts))
+	}
+	return scripts
+}
+
+// The golden file freezes the script text but never parses it. Lima runs
+// the boot script with /bin/sh whatever its shebang says, so it must also
+// pass a POSIX shell's syntax check.
+func TestRenderedScriptsParse(t *testing.T) {
+	scripts := renderedScripts(t, renderGolden(t))
+	check := func(shell, mode string) {
+		t.Helper()
+		path, err := exec.LookPath(shell)
+		if err != nil {
+			t.Skipf("%s not found: %v", shell, err)
+		}
+		f := filepath.Join(t.TempDir(), mode+".sh")
+		if err := os.WriteFile(f, []byte(scripts[mode]), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if out, err := exec.Command(path, "-n", f).CombinedOutput(); err != nil {
+			t.Errorf("%s -n on the %s script: %v\n%s", shell, mode, err, out)
+		}
+	}
+	for _, mode := range []string{"boot", "system", "user"} {
+		check("bash", mode)
+	}
+	check("sh", "boot")
 }
 
 func TestRenderLimaConfigEmbedsRuleset(t *testing.T) {
