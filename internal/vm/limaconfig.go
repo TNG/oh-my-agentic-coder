@@ -76,6 +76,7 @@ func RenderLimaConfig(in LimaInputs) (string, error) {
 	for _, ip := range []string{"127.0.0.1", "0.0.0.0"} {
 		b.WriteString("  - guestIP: " + ip + "\n")
 		b.WriteString("    guestPortRange: [1, 65535]\n")
+		b.WriteString("    proto: any\n")
 		b.WriteString("    ignore: true\n")
 	}
 	b.WriteString("provision:\n")

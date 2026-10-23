@@ -93,8 +93,8 @@ func TestRenderLimaConfigStructure(t *testing.T) {
 		// guest listener to the host's loopback.
 		"portForwards:\n" +
 			"  - guestIP: 127.0.0.1\n    guestPort: 2375\n    hostIP: 127.0.0.1\n    hostPort: 42375\n" +
-			"  - guestIP: 127.0.0.1\n    guestPortRange: [1, 65535]\n    ignore: true\n" +
-			"  - guestIP: 0.0.0.0\n    guestPortRange: [1, 65535]\n    ignore: true\n" +
+			"  - guestIP: 127.0.0.1\n    guestPortRange: [1, 65535]\n    proto: any\n    ignore: true\n" +
+			"  - guestIP: 0.0.0.0\n    guestPortRange: [1, 65535]\n    proto: any\n    ignore: true\n" +
 			"provision:\n",
 	} {
 		if !strings.Contains(got, want) {

@@ -17,9 +17,11 @@ portForwards:
     hostPort: 42375
   - guestIP: 127.0.0.1
     guestPortRange: [1, 65535]
+    proto: any
     ignore: true
   - guestIP: 0.0.0.0
     guestPortRange: [1, 65535]
+    proto: any
     ignore: true
 provision:
   - mode: boot
