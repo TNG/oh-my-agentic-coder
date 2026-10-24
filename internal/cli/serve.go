@@ -226,7 +226,10 @@ func runServe(args []string, env *Env) int {
 		return ExitConfigInvalid
 	}
 
-	// Normalize pre-declared roots to absolute paths (§5.4 Option B).
+	// Normalize pre-declared roots to absolute, physically resolved paths
+	// (§5.4 Option B). Activation compares the candidate's resolved path
+	// against these, so both sides must be in resolved form; a root that
+	// cannot be resolved is a startup error (fail closed).
 	absRoots := make([]string, 0, len(roots))
 	for _, r := range roots {
 		ar, err := filepath.Abs(r)
@@ -234,7 +237,12 @@ func runServe(args []string, env *Env) int {
 			fmt.Fprintln(env.Stderr, "omac serve: --root:", err)
 			return ExitMisuse
 		}
-		absRoots = append(absRoots, ar)
+		resolved, err := filepath.EvalSymlinks(ar)
+		if err != nil {
+			fmt.Fprintln(env.Stderr, "omac serve: --root:", err)
+			return ExitMisuse
+		}
+		absRoots = append(absRoots, resolved)
 	}
 
 	if noAudit && auditStrict {
@@ -1305,15 +1313,46 @@ func (s *serveServer) reloadGlobals() error {
 
 // activate brings a directory online (idempotent) and returns its manifest.
 func (s *serveServer) activate(absDir string) (map[string]any, error) {
+	// Validation runs before any side effect, so every path through
+	// activation — including re-discovery of an already-active directory —
+	// is gated identically.
+
+	// Validate it's a real directory.
+	if info, err := os.Stat(absDir); err != nil || !info.IsDir() {
+		return nil, fmt.Errorf("not a directory: %s", absDir)
+	}
+	// A link as the final path component is refused even when its target
+	// would be allowed: a directory must be named by the directory itself,
+	// never through a link, mirroring the facade's doc-serving discipline.
+	if fi, err := os.Lstat(absDir); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("refusing to activate %s: the final path component is a symbolic link", absDir)
+	}
+	// Resolve all components before the policy check: a link earlier in
+	// the path must not be able to point the activation at a directory the
+	// roots policy forbids.
+	resolved, rerr := filepath.EvalSymlinks(absDir)
+	if rerr != nil {
+		return nil, fmt.Errorf("resolving %s: %w", absDir, rerr)
+	}
+	// Enforce the pre-declared roots policy (§5.4 Option B) on the
+	// resolved path.
+	if !s.dirAllowed(resolved) {
+		return nil, fmt.Errorf("directory %s is not under any allowed --root", absDir)
+	}
+
+	// All state and privileged work below runs on the resolved path, so
+	// the validated path and the operated-on path are the same object,
+	// and two lexical names for one physical directory share one entry.
+
 	// Per-dir coalescing (§5.2 step 1): concurrent activate calls for the
 	// same directory serialize here, so only the first does the work and
 	// the rest observe the finished state.
-	lock := s.dirActLock(absDir)
+	lock := s.dirActLock(resolved)
 	lock.Lock()
 	defer lock.Unlock()
 
 	s.mu.RLock()
-	existing, already := s.dirs[absDir]
+	existing, already := s.dirs[resolved]
 	s.mu.RUnlock()
 	if already {
 		// Already active: re-discover so a skill installed/registered since
@@ -1323,40 +1362,31 @@ func (s *serveServer) activate(absDir string) (map[string]any, error) {
 		return s.manifestFor(existing), nil
 	}
 
-	// Validate it's a real directory.
-	if info, err := os.Stat(absDir); err != nil || !info.IsDir() {
-		return nil, fmt.Errorf("not a directory: %s", absDir)
-	}
-	// Enforce the pre-declared roots policy (§5.4 Option B).
-	if !s.dirAllowed(absDir) {
-		return nil, fmt.Errorf("directory %s is not under any allowed --root", absDir)
-	}
-
 	token := mintToken()
-	d := &dirState{Dir: absDir, Token: token, State: "activating", Skills: map[string]*skillRoute{}}
+	d := &dirState{Dir: resolved, Token: token, State: "activating", Skills: map[string]*skillRoute{}}
 	s.mu.Lock()
 	// Clear flat aliases before the second dir becomes visible so there is
 	// no instant at which len(s.dirs) >= 2 and a token-less alias from the
 	// first dir is still routeable.
 	s.clearFlatAliases()
-	s.dirs[absDir] = d
+	s.dirs[resolved] = d
 	s.byToken[token] = d
 	s.mu.Unlock()
 
-	discovered, err := skillsource.Discover(absDir, s.harness)
+	discovered, err := skillsource.Discover(resolved, s.harness)
 	if err != nil {
 		return nil, err
 	}
 
-	wReg, err := registry.Load(absDir)
+	wReg, err := registry.Load(resolved)
 	if err != nil {
 		return nil, err
 	}
-	wCfg, err := loadWorkdirConfig(absDir)
+	wCfg, err := loadWorkdirConfig(resolved)
 	if err != nil {
 		return nil, err
 	}
-	workdirID := keychain.WorkdirID(absDir)
+	workdirID := keychain.WorkdirID(resolved)
 
 	partial := false
 	for _, ent := range discovered {
@@ -1368,7 +1398,7 @@ func (s *serveServer) activate(absDir string) (map[string]any, error) {
 		// Auto-register workdir-local skills not yet in this dir's registry.
 		e, _ := wReg.Find(ent.Name)
 		if e == nil {
-			ne, rerr := s.autoRegister(absDir, ent)
+			ne, rerr := s.autoRegister(resolved, ent)
 			if rerr != nil {
 				// Surface as a broken route rather than failing the whole dir.
 				sr := &skillRoute{Name: ent.Name, Mount: ent.Name, Namespace: token,
@@ -1383,8 +1413,8 @@ func (s *serveServer) activate(absDir string) (map[string]any, error) {
 			e = ne
 		}
 		// workdir-local skill: OMAC_WORKDIR is the activated project dir
-		// (absDir), not the skill's own directory (ent.Dir).
-		sr := s.bringUp(*e, ent.Dir, absDir, token, workdirID, wCfg)
+		// (resolved), not the skill's own directory (ent.Dir).
+		sr := s.bringUp(*e, ent.Dir, resolved, token, workdirID, wCfg)
 		if sr.State != facade.RouteReady {
 			partial = true
 		}
@@ -2013,7 +2043,11 @@ func (s *serveServer) handleDeactivate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	s.deactivate(abs)
+	if err := s.deactivate(abs); err != nil {
+		s.aud().Emit(audit.ControlMutation("deactivate", abs, "error: "+err.Error()))
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
 	s.aud().Emit(audit.ControlMutation("deactivate", abs, "ok"))
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deactivated", "dir": abs})
 }
@@ -2030,7 +2064,11 @@ func (s *serveServer) handleReload(w http.ResponseWriter, r *http.Request) {
 	}
 	// Reload = re-run activation logic for an already-known dir: drop and
 	// re-activate so pending-credentials skills get promoted.
-	s.deactivate(abs)
+	if err := s.deactivate(abs); err != nil {
+		s.aud().Emit(audit.ControlMutation("reload", abs, "error: "+err.Error()))
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
 	manifest, err := s.activate(abs)
 	if err != nil {
 		s.aud().Emit(audit.ControlMutation("reload", abs, "error: "+err.Error()))
@@ -2067,16 +2105,33 @@ func (s *serveServer) handleGlobal(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"skills": skills})
 }
 
-func (s *serveServer) deactivate(absDir string) {
+// deactivate tears down absDir's routes and state (idempotent). It applies
+// the same path discipline as activate: a link as the final component never
+// names a managed directory, and teardown addresses the physical path the
+// caller's name resolves to — the same key activation stores state under. A
+// directory deleted since activation has nothing left to resolve, so it is
+// addressed by its given name.
+func (s *serveServer) deactivate(absDir string) error {
+	if fi, err := os.Lstat(absDir); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("refusing to deactivate %s: the final path component is a symbolic link", absDir)
+	}
+	key := absDir
+	if resolved, err := filepath.EvalSymlinks(absDir); err == nil {
+		key = resolved
+	}
 	s.mu.Lock()
-	d, ok := s.dirs[absDir]
+	d, ok := s.dirs[key]
+	if !ok {
+		key = absDir
+		d, ok = s.dirs[key]
+	}
 	if ok {
-		delete(s.dirs, absDir)
+		delete(s.dirs, key)
 		delete(s.byToken, d.Token)
 	}
 	s.mu.Unlock()
 	if !ok {
-		return
+		return nil
 	}
 	d.mu.Lock()
 	for _, sr := range d.Skills {
@@ -2087,6 +2142,7 @@ func (s *serveServer) deactivate(absDir string) {
 	}
 	d.mu.Unlock()
 	s.refreshSingleDirAliases()
+	return nil
 }
 
 // ---- helpers ----

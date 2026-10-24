@@ -50,7 +50,7 @@ func TestServeControlMutationsAudited(t *testing.T) {
 	s := newServeServerForTest(t)
 	s.auditor = a
 
-	wd := t.TempDir()
+	wd := resolvedTempDir(t)
 	stageSkillWithSecret(t, wd, "slack") // pending-credentials => route.state
 
 	if _, err := s.activate(wd); err != nil {

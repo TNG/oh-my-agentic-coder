@@ -64,7 +64,7 @@ func TestSecurityFlatAliasesClearedBeforeSecondDirVisible(t *testing.T) {
 
 	// Dir A: activate with a pending-credentials skill, then promote it to
 	// READY so refreshSingleDirAliases installs the flat alias.
-	dirA := t.TempDir()
+	dirA := resolvedTempDir(t)
 	stageSkillWithSecret(t, dirA, "alpha")
 	manifestA, err := s.activate(dirA)
 	if err != nil {
@@ -80,7 +80,7 @@ func TestSecurityFlatAliasesClearedBeforeSecondDirVisible(t *testing.T) {
 	}
 
 	// Dir B: stage many skills to widen the activation window.
-	dirB := t.TempDir()
+	dirB := resolvedTempDir(t)
 	stageManySkills(t, dirB, 30)
 
 	// Poll concurrently during activate(B). The invariant: at no sample
@@ -156,7 +156,7 @@ func TestSecurityFlatAliasesClearedBeforeSecondDirVisible(t *testing.T) {
 func TestSecurityFlatAliasGoneDuringSecondDirActivation(t *testing.T) {
 	s := newServeServerForTest(t)
 
-	dirA := t.TempDir()
+	dirA := resolvedTempDir(t)
 	stageSkillWithSecret(t, dirA, "alpha")
 	manifestA, err := s.activate(dirA)
 	if err != nil {
@@ -171,7 +171,7 @@ func TestSecurityFlatAliasGoneDuringSecondDirActivation(t *testing.T) {
 		t.Fatal("precondition: flat alias for A's ready skill should exist")
 	}
 
-	dirB := t.TempDir()
+	dirB := resolvedTempDir(t)
 	stageManySkills(t, dirB, 30)
 
 	// Concurrent observer: count how many times the flat alias is routeable

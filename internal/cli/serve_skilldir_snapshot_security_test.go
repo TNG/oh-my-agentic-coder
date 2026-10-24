@@ -20,7 +20,7 @@ func TestSecurityServeModeSkillDirIsSnapshot(t *testing.T) {
 	requireWorkingPython3(t)
 
 	s := newServeServerForTest(t) // isolates HOME/XDG
-	workdir := t.TempDir()
+	workdir := resolvedTempDir(t)
 
 	// Stage a workdir-local skill with a live sidecar and approve it so
 	// activation reaches the READY state.
