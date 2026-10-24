@@ -113,6 +113,114 @@ func TestSecurityActivateSymlinkOutsideRootsRefused(t *testing.T) {
 	assertActiveDirs(t, s, project)
 }
 
+// TestSecurityReactivateSwappedSymlinkRefused pins the discipline on the
+// re-activation path: a directory that was legitimately activated while it
+// was a plain directory must not be re-discovered through its old name once
+// that name has been replaced by a link. Validation must gate the
+// already-active short-circuit too, so the swap is refused before any
+// discovery, registration or mounting runs against the linked target.
+func TestSecurityReactivateSwappedSymlinkRefused(t *testing.T) {
+	sectest.RequireLoopbackListener(t)
+	s := newServeServerForTest(t) // isolates HOME/XDG
+
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("resolve root: %v", err)
+	}
+	s.roots = []string{root}
+
+	// A second tree foreign to the policy, holding a registrable skill so a
+	// buggy re-activation would leave registry state behind in it.
+	outside, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("resolve outside dir: %v", err)
+	}
+	stageSkillWithSecret(t, outside, "implant")
+	before := treeFiles(t, outside)
+
+	// Activate the plain directory inside the root, then replace the name
+	// with a link to the foreign tree.
+	hijacked := filepath.Join(root, "hijacked")
+	stageSkillWithSecret(t, hijacked, "resident")
+	if _, err := s.activate(hijacked); err != nil {
+		t.Fatalf("control: activate on the plain directory failed: %v", err)
+	}
+	if err := os.RemoveAll(hijacked); err != nil {
+		t.Fatalf("remove plain dir: %v", err)
+	}
+	if err := os.Symlink(outside, hijacked); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	// Re-activation of the same name must be refused: the final component
+	// is now a link, and no activation side effect may run against it.
+	if _, err := s.activate(hijacked); err == nil {
+		t.Errorf("re-activate on %s succeeded after the name was replaced by a link: the already-active path must be gated by the same checks as a fresh activation", hijacked)
+	}
+	assertActiveDirs(t, s, hijacked)
+
+	// Refusal must also mean no host-side writes into the foreign tree.
+	if after := treeFiles(t, outside); !slices.Equal(before, after) {
+		t.Errorf("files appeared in the foreign directory after the refused re-activation: %v", after)
+	}
+}
+
+// TestSecurityActivateAliasCollapsesToSingleEntry pins the identity of the
+// activation key: state is keyed by the resolved path, so one physical
+// directory reached through two lexical names (an intermediate link) is a
+// single active entry with one dir token, not two parallel activations.
+func TestSecurityActivateAliasCollapsesToSingleEntry(t *testing.T) {
+	sectest.RequireLoopbackListener(t)
+	s := newServeServerForTest(t) // isolates HOME/XDG
+
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("resolve root: %v", err)
+	}
+	s.roots = []string{root}
+
+	proj := filepath.Join(root, "proj")
+	stageSkillWithSecret(t, proj, "aliascheck")
+
+	// An intermediate link back to the root: root/alias/proj names the
+	// same physical directory as root/proj.
+	alias := filepath.Join(root, "alias")
+	if err := os.Symlink(root, alias); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	m1, err := s.activate(proj)
+	if err != nil {
+		t.Fatalf("activate by plain name: %v", err)
+	}
+	token, _ := m1["dir_token"].(string)
+	if token == "" {
+		t.Fatalf("first activation issued no dir_token: the fixture is broken, not the security property")
+	}
+
+	// Activation through the aliased name must succeed as the SAME
+	// directory: no second entry, no second token.
+	m2, err := s.activate(filepath.Join(alias, "proj"))
+	if err != nil {
+		t.Fatalf("activate by aliased name: %v", err)
+	}
+	if _, present := m2["dir_token"]; present {
+		t.Errorf("re-activate by aliased name issued a second dir_token %q: one physical directory must yield exactly one token", m2["dir_token"])
+	}
+	assertActiveDirs(t, s, proj)
+
+	s.mu.RLock()
+	stored := s.dirs[proj]
+	entries := len(s.dirs)
+	s.mu.RUnlock()
+	if stored == nil || stored.Token != token {
+		t.Errorf("active entry for %s has token %v; want the single entry keyed by the resolved path with the original token", proj, stored)
+	}
+	if entries != 1 {
+		t.Errorf("activate through two lexical names produced %d active entries; want 1", entries)
+	}
+}
+
 // treeFiles lists every file under dir, sorted, for before/after comparison.
 func treeFiles(t *testing.T, dir string) []string {
 	t.Helper()

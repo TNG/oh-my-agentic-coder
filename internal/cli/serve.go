@@ -1313,23 +1313,9 @@ func (s *serveServer) reloadGlobals() error {
 
 // activate brings a directory online (idempotent) and returns its manifest.
 func (s *serveServer) activate(absDir string) (map[string]any, error) {
-	// Per-dir coalescing (§5.2 step 1): concurrent activate calls for the
-	// same directory serialize here, so only the first does the work and
-	// the rest observe the finished state.
-	lock := s.dirActLock(absDir)
-	lock.Lock()
-	defer lock.Unlock()
-
-	s.mu.RLock()
-	existing, already := s.dirs[absDir]
-	s.mu.RUnlock()
-	if already {
-		// Already active: re-discover so a skill installed/registered since
-		// this dir was first activated is mounted now — no manual reload or
-		// restart needed. Existing healthy skills are left untouched.
-		s.rediscover(existing)
-		return s.manifestFor(existing), nil
-	}
+	// Validation runs before any side effect, so every path through
+	// activation — including re-discovery of an already-active directory —
+	// is gated identically.
 
 	// Validate it's a real directory.
 	if info, err := os.Stat(absDir); err != nil || !info.IsDir() {
@@ -1354,31 +1340,53 @@ func (s *serveServer) activate(absDir string) (map[string]any, error) {
 		return nil, fmt.Errorf("directory %s is not under any allowed --root", absDir)
 	}
 
+	// All state and privileged work below runs on the resolved path, so
+	// the validated path and the operated-on path are the same object,
+	// and two lexical names for one physical directory share one entry.
+
+	// Per-dir coalescing (§5.2 step 1): concurrent activate calls for the
+	// same directory serialize here, so only the first does the work and
+	// the rest observe the finished state.
+	lock := s.dirActLock(resolved)
+	lock.Lock()
+	defer lock.Unlock()
+
+	s.mu.RLock()
+	existing, already := s.dirs[resolved]
+	s.mu.RUnlock()
+	if already {
+		// Already active: re-discover so a skill installed/registered since
+		// this dir was first activated is mounted now — no manual reload or
+		// restart needed. Existing healthy skills are left untouched.
+		s.rediscover(existing)
+		return s.manifestFor(existing), nil
+	}
+
 	token := mintToken()
-	d := &dirState{Dir: absDir, Token: token, State: "activating", Skills: map[string]*skillRoute{}}
+	d := &dirState{Dir: resolved, Token: token, State: "activating", Skills: map[string]*skillRoute{}}
 	s.mu.Lock()
 	// Clear flat aliases before the second dir becomes visible so there is
 	// no instant at which len(s.dirs) >= 2 and a token-less alias from the
 	// first dir is still routeable.
 	s.clearFlatAliases()
-	s.dirs[absDir] = d
+	s.dirs[resolved] = d
 	s.byToken[token] = d
 	s.mu.Unlock()
 
-	discovered, err := skillsource.Discover(absDir, s.harness)
+	discovered, err := skillsource.Discover(resolved, s.harness)
 	if err != nil {
 		return nil, err
 	}
 
-	wReg, err := registry.Load(absDir)
+	wReg, err := registry.Load(resolved)
 	if err != nil {
 		return nil, err
 	}
-	wCfg, err := loadWorkdirConfig(absDir)
+	wCfg, err := loadWorkdirConfig(resolved)
 	if err != nil {
 		return nil, err
 	}
-	workdirID := keychain.WorkdirID(absDir)
+	workdirID := keychain.WorkdirID(resolved)
 
 	partial := false
 	for _, ent := range discovered {
@@ -1390,7 +1398,7 @@ func (s *serveServer) activate(absDir string) (map[string]any, error) {
 		// Auto-register workdir-local skills not yet in this dir's registry.
 		e, _ := wReg.Find(ent.Name)
 		if e == nil {
-			ne, rerr := s.autoRegister(absDir, ent)
+			ne, rerr := s.autoRegister(resolved, ent)
 			if rerr != nil {
 				// Surface as a broken route rather than failing the whole dir.
 				sr := &skillRoute{Name: ent.Name, Mount: ent.Name, Namespace: token,
@@ -1405,8 +1413,8 @@ func (s *serveServer) activate(absDir string) (map[string]any, error) {
 			e = ne
 		}
 		// workdir-local skill: OMAC_WORKDIR is the activated project dir
-		// (absDir), not the skill's own directory (ent.Dir).
-		sr := s.bringUp(*e, ent.Dir, absDir, token, workdirID, wCfg)
+		// (resolved), not the skill's own directory (ent.Dir).
+		sr := s.bringUp(*e, ent.Dir, resolved, token, workdirID, wCfg)
 		if sr.State != facade.RouteReady {
 			partial = true
 		}
@@ -2100,8 +2108,9 @@ func (s *serveServer) handleGlobal(w http.ResponseWriter, r *http.Request) {
 // deactivate tears down absDir's routes and state (idempotent). It applies
 // the same path discipline as activate: a link as the final component never
 // names a managed directory, and teardown addresses the physical path the
-// caller's name resolves to. A directory deleted since activation has
-// nothing left to resolve, so it is addressed by its given name.
+// caller's name resolves to — the same key activation stores state under. A
+// directory deleted since activation has nothing left to resolve, so it is
+// addressed by its given name.
 func (s *serveServer) deactivate(absDir string) error {
 	if fi, err := os.Lstat(absDir); err == nil && fi.Mode()&os.ModeSymlink != 0 {
 		return fmt.Errorf("refusing to deactivate %s: the final path component is a symbolic link", absDir)
