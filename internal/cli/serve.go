@@ -226,7 +226,10 @@ func runServe(args []string, env *Env) int {
 		return ExitConfigInvalid
 	}
 
-	// Normalize pre-declared roots to absolute paths (§5.4 Option B).
+	// Normalize pre-declared roots to absolute, physically resolved paths
+	// (§5.4 Option B). Activation compares the candidate's resolved path
+	// against these, so both sides must be in resolved form; a root that
+	// cannot be resolved is a startup error (fail closed).
 	absRoots := make([]string, 0, len(roots))
 	for _, r := range roots {
 		ar, err := filepath.Abs(r)
@@ -234,7 +237,12 @@ func runServe(args []string, env *Env) int {
 			fmt.Fprintln(env.Stderr, "omac serve: --root:", err)
 			return ExitMisuse
 		}
-		absRoots = append(absRoots, ar)
+		resolved, err := filepath.EvalSymlinks(ar)
+		if err != nil {
+			fmt.Fprintln(env.Stderr, "omac serve: --root:", err)
+			return ExitMisuse
+		}
+		absRoots = append(absRoots, resolved)
 	}
 
 	if noAudit && auditStrict {
@@ -1327,8 +1335,22 @@ func (s *serveServer) activate(absDir string) (map[string]any, error) {
 	if info, err := os.Stat(absDir); err != nil || !info.IsDir() {
 		return nil, fmt.Errorf("not a directory: %s", absDir)
 	}
-	// Enforce the pre-declared roots policy (§5.4 Option B).
-	if !s.dirAllowed(absDir) {
+	// A link as the final path component is refused even when its target
+	// would be allowed: a directory must be named by the directory itself,
+	// never through a link, mirroring the facade's doc-serving discipline.
+	if fi, err := os.Lstat(absDir); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("refusing to activate %s: the final path component is a symbolic link", absDir)
+	}
+	// Resolve all components before the policy check: a link earlier in
+	// the path must not be able to point the activation at a directory the
+	// roots policy forbids.
+	resolved, rerr := filepath.EvalSymlinks(absDir)
+	if rerr != nil {
+		return nil, fmt.Errorf("resolving %s: %w", absDir, rerr)
+	}
+	// Enforce the pre-declared roots policy (§5.4 Option B) on the
+	// resolved path.
+	if !s.dirAllowed(resolved) {
 		return nil, fmt.Errorf("directory %s is not under any allowed --root", absDir)
 	}
 
@@ -2013,7 +2035,11 @@ func (s *serveServer) handleDeactivate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	s.deactivate(abs)
+	if err := s.deactivate(abs); err != nil {
+		s.aud().Emit(audit.ControlMutation("deactivate", abs, "error: "+err.Error()))
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
 	s.aud().Emit(audit.ControlMutation("deactivate", abs, "ok"))
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deactivated", "dir": abs})
 }
@@ -2030,7 +2056,11 @@ func (s *serveServer) handleReload(w http.ResponseWriter, r *http.Request) {
 	}
 	// Reload = re-run activation logic for an already-known dir: drop and
 	// re-activate so pending-credentials skills get promoted.
-	s.deactivate(abs)
+	if err := s.deactivate(abs); err != nil {
+		s.aud().Emit(audit.ControlMutation("reload", abs, "error: "+err.Error()))
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
 	manifest, err := s.activate(abs)
 	if err != nil {
 		s.aud().Emit(audit.ControlMutation("reload", abs, "error: "+err.Error()))
@@ -2067,16 +2097,32 @@ func (s *serveServer) handleGlobal(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"skills": skills})
 }
 
-func (s *serveServer) deactivate(absDir string) {
+// deactivate tears down absDir's routes and state (idempotent). It applies
+// the same path discipline as activate: a link as the final component never
+// names a managed directory, and teardown addresses the physical path the
+// caller's name resolves to. A directory deleted since activation has
+// nothing left to resolve, so it is addressed by its given name.
+func (s *serveServer) deactivate(absDir string) error {
+	if fi, err := os.Lstat(absDir); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("refusing to deactivate %s: the final path component is a symbolic link", absDir)
+	}
+	key := absDir
+	if resolved, err := filepath.EvalSymlinks(absDir); err == nil {
+		key = resolved
+	}
 	s.mu.Lock()
-	d, ok := s.dirs[absDir]
+	d, ok := s.dirs[key]
+	if !ok {
+		key = absDir
+		d, ok = s.dirs[key]
+	}
 	if ok {
-		delete(s.dirs, absDir)
+		delete(s.dirs, key)
 		delete(s.byToken, d.Token)
 	}
 	s.mu.Unlock()
 	if !ok {
-		return
+		return nil
 	}
 	d.mu.Lock()
 	for _, sr := range d.Skills {
@@ -2087,6 +2133,7 @@ func (s *serveServer) deactivate(absDir string) {
 	}
 	d.mu.Unlock()
 	s.refreshSingleDirAliases()
+	return nil
 }
 
 // ---- helpers ----
