@@ -1,11 +1,13 @@
 package skilltrust
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/TNG/oh-my-agentic-coder/internal/config"
 )
@@ -197,6 +199,12 @@ func copyTree(src, dst string) error {
 		if !info.Mode().IsRegular() {
 			return nil // sockets, devices, fifos: nothing to run
 		}
+		// Skip the same file names BundleHash skips, so the frozen set
+		// equals the hashed set by construction: a file whose bytes the
+		// approved hash ignores must not end up in what actually runs.
+		if config.IsExcludedFileName(d.Name()) {
+			return nil
+		}
 		return copyFile(p, target, info.Mode().Perm())
 	})
 }
@@ -243,12 +251,21 @@ func copyInTreeSymlink(p, target, srcReal, dstRoot string) error {
 
 // copyFile copies a single regular file, creating parent dirs as needed and
 // applying perm (so an executable entry-point stays executable).
+//
+// The source is opened with O_NOFOLLOW: between the walk and this copy the
+// path may have been replaced by a symlink, and reading through it would
+// freeze whatever the link points at instead of the walk-time regular file.
+// If that happens the file is dropped from the snapshot; there is no retry,
+// since a retry would re-open the same race.
 func copyFile(src, dst string, perm os.FileMode) error {
 	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
 		return err
 	}
-	in, err := os.Open(src)
+	in, err := os.OpenFile(src, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 	if err != nil {
+		if errors.Is(err, syscall.ELOOP) {
+			return nil // no longer a walk-time regular file: drop
+		}
 		return err
 	}
 	defer in.Close()

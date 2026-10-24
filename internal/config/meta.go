@@ -807,6 +807,15 @@ func IsExcludedDirName(name string) bool {
 	return isExcludedDirName(name)
 }
 
+// IsExcludedFileName reports whether a file should be skipped as a
+// runtime artifact or OS-level junk. Exported so the snapshot copy in
+// internal/skilltrust applies the exact same skips as BundleHash: a
+// file the hash ignores must never be frozen into what actually runs.
+// The list lives here and nowhere else.
+func IsExcludedFileName(name string) bool {
+	return isExcludedFileName(name)
+}
+
 func isExcludedDirName(name string) bool {
 	switch name {
 	case ".git", ".hg", ".svn",
