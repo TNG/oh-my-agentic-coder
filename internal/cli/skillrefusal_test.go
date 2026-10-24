@@ -40,6 +40,7 @@ func TestRenderSkillRefusalEveryKind(t *testing.T) {
 		name    string
 		problem skillstate.Problem
 		want    []string
+		banned  []string
 	}{
 		{
 			name: "meta broken",
@@ -51,8 +52,13 @@ func TestRenderSkillRefusalEveryKind(t *testing.T) {
 			name: "bundle drift",
 			problem: skillstate.Problem{Kind: skillstate.BundleDrift, Skill: "bravo",
 				Detail: "bundle changed since register", Fix: "omac register bravo --force"},
-			want: []string{"bundle changed since register", "--accept-skill-changes", "bravo",
+			// The remedy is review-then-re-register. The drift-acceptance
+			// flag must NOT be recommended: a change the user did not make
+			// may have been written inside the sandbox.
+			want: []string{"bundle changed since register", "review it on the host",
+				"inside the sandbox", "bravo",
 				"re-register", "omac register bravo --force"},
+			banned: []string{"--accept-skill-changes"},
 		},
 		{
 			name: "missing secret",
@@ -90,6 +96,11 @@ func TestRenderSkillRefusalEveryKind(t *testing.T) {
 			for _, want := range c.want {
 				if !strings.Contains(out, want) {
 					t.Errorf("output missing %q:\n%s", want, out)
+				}
+			}
+			for _, banned := range c.banned {
+				if strings.Contains(out, banned) {
+					t.Errorf("output must not contain %q:\n%s", banned, out)
 				}
 			}
 		})
