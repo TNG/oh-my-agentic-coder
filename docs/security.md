@@ -224,8 +224,13 @@ never from the still-agent-writable workdir.
 
 When upgrading omac on a machine with existing registered skills, only
 **user-global** skills (registered outside any workdir) are automatically
-approved for the first run. Workdir-local skills — which the agent can write —
-always require an explicit `omac register` from a host terminal.
+approved for the first run, and only when the skill's on-disk content still
+matches the bundle hash recorded at registration. The recorded hash is the
+only evidence of what you reviewed when you registered the skill, so it is
+what the upgrade trusts. A user-global skill whose content has changed since
+registration is not migrated: review the change on the host and re-register
+the skill with `omac register --force`. Workdir-local skills — which the agent
+can write — always require an explicit `omac register` from a host terminal.
 
 If you change an approved skill yourself, omac refuses to run it until you
 review the change and re-register it with `omac register --force`.

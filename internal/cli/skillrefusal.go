@@ -43,9 +43,12 @@ func renderSkillRefusal(w io.Writer, prefix string, problems []skillstate.Proble
 		config.MetaFileName+" broken:")
 
 	// Bundle drift uses skillProblemLine so the skill name is labeled
-	// separately from the copy-pasteable command (issue #227).
+	// separately from the copy-pasteable command (issue #227). The remedy is
+	// review-then-re-register, not the drift-acceptance flag: a change the
+	// user did not make may have been written inside the sandbox, and the
+	// flag must not be the recommended way past that.
 	labeledSkills(w, s, problems, skillstate.BundleDrift,
-		"bundle changed since register (pass --accept-skill-changes to proceed, or re-register):",
+		"bundle changed since register (review it on the host and re-register; a change you did not make may have been made inside the sandbox):",
 		"re-register")
 
 	perField(w, problems, skillstate.MissingSecret,
