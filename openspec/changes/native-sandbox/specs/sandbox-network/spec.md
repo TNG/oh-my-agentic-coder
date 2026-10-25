@@ -64,7 +64,7 @@ The child SHALL receive `HTTP_PROXY`, `HTTPS_PROXY` (and lowercase variants) set
 
 ### Requirement: Filter decision order with allowlist and blocklist
 For each requested hostname the proxy SHALL decide in this order:
-1. **Hard deny** (never promptable, overrides everything): the hostnames `169.254.169.254` (AWS/GCP/Azure IMDS), `100.100.100.200` (Alibaba IMDS), `192.0.0.192` (Oracle IMDS), `169.254.170.2` (ECS task metadata), `fd00:ec2::254` (AWS IMDS IPv6), `metadata.google.internal` and all its subdomains, `metadata.azure.internal` and all its subdomains; any host resolving to a link-local address (169.254.0.0/16, fe80::/10), a loopback address (127.0.0.0/8, ::1), an unspecified address (0.0.0.0, ::), or a cloud-metadata address listed above. Loopback and unspecified are also caught before DNS at the hostname level (e.g. `localhost`, `127.0.0.1.`, `0.0.0.0`). Hostnames containing non-LDH characters (anything outside a-z, 0-9, hyphen) or malformed labels are rejected as invalid before rule evaluation.
+1. **Hard deny** (never promptable, overrides everything): the hostnames `169.254.169.254` (AWS/GCP/Azure IMDS), `100.100.100.200` (Alibaba IMDS), `192.0.0.192` (Oracle IMDS), `169.254.170.2` (ECS task metadata), `fd00:ec2::254` (AWS IMDS IPv6), `metadata.google.internal` and all its subdomains, `metadata.azure.internal` and all its subdomains; any host resolving to a link-local address (169.254.0.0/16, fe80::/10), a loopback address (127.0.0.0/8, ::1), an unspecified address (0.0.0.0, ::), a cloud-metadata address listed above, or any address inside the IPv6 translation prefixes `64:ff9b::/96` (RFC 6052) and `64:ff9b:1::/96` (RFC 8215). IPv6 spellings that embed an IPv4 destination, meaning the IPv4-mapped form and both translation prefixes, with or without a `%zone` suffix, SHALL receive the verdict of the embedded destination. Loopback and unspecified are also caught before DNS at the hostname level (e.g. `localhost`, `127.0.0.1.`, `0.0.0.0`). Hostnames containing non-LDH characters (anything outside a-z, 0-9, hyphen) or malformed labels are rejected as invalid before rule evaluation.
 2. **Learned permanent deny** entries.
 3. **`deny_domain`** blocklist match.
 4. **Allow** if matched by `allow_domain` or a learned permanent allow.
@@ -75,6 +75,10 @@ Domain matching SHALL support exact hostnames and `*.suffix` wildcards (matching
 #### Scenario: Metadata endpoint always denied
 - **WHEN** the child requests `CONNECT 169.254.169.254:80`, even with prompt enabled and the user willing to allow
 - **THEN** the request is denied without prompting
+
+#### Scenario: Embedded-IPv4 spelling of a hard-denied destination
+- **WHEN** the child requests a connection to an IPv6 spelling that embeds a hard-denied IPv4 destination, such as `[64:ff9b::169.254.169.254]:80`, with or without a `%zone` suffix, even with prompt enabled and the user willing to allow
+- **THEN** the request is denied without prompting, exactly like the plain IPv4 destination
 
 #### Scenario: Blocklist-only filtering
 - **WHEN** `allow_domain` is empty, prompt is disabled, and `deny_domain` is `["*.facebook.com"]`
