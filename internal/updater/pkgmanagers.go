@@ -31,7 +31,9 @@ func DetectPackageManagers(lookPath func(string) (string, error)) []PackageManag
 		{
 			Name:        "apk",
 			AssetSuffix: ".apk",
-			InstallArgs: func(p string) []string { return []string{"add", "--allow-untrusted", p} },
+			// No --allow-untrusted: apk must verify the package's own signature
+			// against the trusted system keyring before installing it.
+			InstallArgs: func(p string) []string { return []string{"add", p} },
 		},
 	}
 
