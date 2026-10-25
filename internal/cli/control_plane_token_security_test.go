@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -21,9 +20,9 @@ import (
 // session's reach.
 //
 // The control plane's port is opened into every sandbox on purpose — the
-// harness plugin activates and reloads through it — so a confined agent is an
-// intended client of these endpoints. GET /__omac__/dirs was already fixed to
-// list directories without their tokens for exactly that reason. Re-activating
+// harness plugin activates and reloads through it, presenting the control
+// token it was handed via the environment. GET /__omac__/dirs requires the
+// control token and lists directories without their dir tokens. Re-activating
 // a directory that is already active reaches the same token by a different
 // route: the caller names a directory it does not own, and the response is
 // that directory's live manifest, token included.
@@ -31,21 +30,6 @@ import (
 // Nothing about a POST identifies its sender. The session that owns the
 // directory was handed its token when it activated and has no need to be told
 // again, so re-issuing it can only ever inform someone else.
-
-// postJSON sends body to the control plane and decodes the JSON response.
-func postJSON(t *testing.T, url, body string) map[string]any {
-	t.Helper()
-	resp, err := http.Post(url, "application/json", strings.NewReader(body))
-	if err != nil {
-		t.Fatalf("POST %s: %v", url, err)
-	}
-	defer resp.Body.Close()
-	var out map[string]any
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		t.Fatalf("decode response from %s: %v", url, err)
-	}
-	return out
-}
 
 // TestSecurityActivateDoesNotDiscloseDirToken asserts that activating a
 // directory that is already active does not hand its token to the caller.
@@ -70,39 +54,32 @@ func TestSecurityActivateDoesNotDiscloseDirToken(t *testing.T) {
 	control := httptest.NewServer(s.controlMux())
 	t.Cleanup(control.Close)
 
-	// Control: the directory is discoverable without its token, which is what
-	// makes the disclosure below reachable — an attacker needs only the path.
-	dirs := postJSONGet(t, control.URL+"/__omac__/dirs")
-	if !strings.Contains(fmt.Sprint(dirs), victimDir) {
-		t.Fatalf("the active directory was not listed at all (%v): the fixture is broken", dirs)
+	// Control: the control-plane holder (the operator who started serve)
+	// can list the active directories, and the listing must not include
+	// the tokens.
+	dirsStatus, dirsRaw := controlRoundTrip(t, http.MethodGet, control.URL+"/__omac__/dirs", s.controlToken, "")
+	if dirsStatus != http.StatusOK {
+		t.Fatalf("GET /__omac__/dirs (with control token) status = %d: the fixture is broken, not the security property (body=%s)", dirsStatus, dirsRaw)
 	}
-	if strings.Contains(fmt.Sprint(dirs), token) {
+	if !strings.Contains(dirsRaw, victimDir) {
+		t.Fatalf("the active directory was not listed at all (%s): the fixture is broken", dirsRaw)
+	}
+	if strings.Contains(dirsRaw, token) {
 		t.Errorf("GET /__omac__/dirs disclosed the dir token: the directory listing hands out the key to every active session's skills")
 	}
 
 	// A second session, or any local process, names the victim's directory.
-	replay := postJSON(t, control.URL+"/__omac__/activate", fmt.Sprintf("{%q:%q}", "dir", victimDir))
+	replayStatus, replayRaw := controlRoundTrip(t, http.MethodPost, control.URL+"/__omac__/activate", s.controlToken, fmt.Sprintf("{%q:%q}", "dir", victimDir))
+	if replayStatus != http.StatusOK {
+		t.Fatalf("control: re-activation returned %d (%s): the fixture is broken, not the security property", replayStatus, replayRaw)
+	}
+	replay := jsonStrField(replayRaw, "dir_token")
 
 	// Asserting absence rather than difference: a token that is merely
 	// rotated on re-activation is still a live namespace key handed to a
 	// caller that proved nothing, and it additionally cuts off the session
 	// that owns the directory.
-	if got, _ := replay["dir_token"].(string); got != "" {
-		t.Errorf("re-activating an already-active directory returned the live token %q: a caller that knows only the path gains that session's skills, credentials included", got)
+	if replay != "" {
+		t.Errorf("re-activating an already-active directory returned the live token %q: a caller that knows only the path gains that session's skills, credentials included", replay)
 	}
-}
-
-// postJSONGet performs a GET and decodes the JSON response.
-func postJSONGet(t *testing.T, url string) map[string]any {
-	t.Helper()
-	resp, err := http.Get(url)
-	if err != nil {
-		t.Fatalf("GET %s: %v", url, err)
-	}
-	defer resp.Body.Close()
-	var out map[string]any
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		t.Fatalf("decode response from %s: %v", url, err)
-	}
-	return out
 }

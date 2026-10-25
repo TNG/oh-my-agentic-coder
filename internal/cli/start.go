@@ -714,7 +714,14 @@ func runLaunch(env *Env, opts launchOpts) int {
 	})
 	// Mint and assign the facade token before Start so the TCP auth gate is
 	// active from the first accepted connection (no unauthenticated window).
-	f.FacadeToken = mintToken()
+	// Minting fails closed: without crypto-grade randomness there is no
+	// token, and without a token the gate cannot protect anything.
+	facadeToken, err := mintToken()
+	if err != nil {
+		fmt.Fprintln(env.Stderr, prefix+": facade token:", err)
+		return ExitIOError
+	}
+	f.FacadeToken = facadeToken
 	if err := f.Start(ctx); err != nil {
 		fmt.Fprintln(env.Stderr, prefix+": facade:", err)
 		return ExitIOError
