@@ -246,7 +246,7 @@ func TestFailOpenWarnsOnce(t *testing.T) {
 
 func TestValidJSONPerLine(t *testing.T) {
 	a, path := newTestAuditor(t, Config{})
-	a.Emit(NetDecision("example.com", 443, true, "host", "prompt", true))
+	a.Emit(NetDecision("example.com", 443, true, "host", "prompt", true, 0))
 	a.Emit(SecretInject("s", "tok", []string{"A", "B"}, []string{"C"}))
 	a.Emit(RouteStateEvent("s", "tok", "broken", "boom"))
 	_ = a.Close()
@@ -293,7 +293,7 @@ func TestInheritedRunIDPreservesCorrelation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("child New: %v", err)
 	}
-	child.Emit(NetDecision("host.example", 443, true, "host", "prompt", false)) // seq 1
+	child.Emit(NetDecision("host.example", 443, true, "host", "prompt", false, 0)) // seq 1
 	_ = parent.Close()
 	_ = child.Close()
 
