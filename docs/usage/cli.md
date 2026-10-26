@@ -258,19 +258,19 @@ The copy goes one way only:
 - Files you delete on the host are not removed from the copy in the VM. If a stale file gets in the way, run `omac vm exec -- rm -rf <path>` or `omac vm reset`.
 - Nothing is copied back from the VM. Build output stays there, so read it with another `omac vm exec`.
 
-`omac vm status` lists the worktrees copied so far.
+`omac vm status` lists the worktrees copied so far. It runs only on your host, because the sandbox blocks the VM's state; inside a session, `omac vm exec -- true` checks that the VM is reachable. The built-in skill `omac-vm` (see [Built-in skills](./skills.md#built-in-skills)) gives the agent in a `--vm` session these commands.
 
 Since the VM is offline, a build that downloads dependencies has to fill its caches once while the VM is online. Run this from your host. omac accepts `--env` only there and only while the VM is online, which also means no session is attached. `--env` passes a token the build needs for its downloads.
 
 ```bash
 omac vm online
-omac vm exec --env MY_REPO_TOKEN --cwd backend -- ./gradlew test --no-daemon
+omac vm exec --env MY_REPO_TOKEN --cwd backend -- ./gradlew check --no-daemon
 omac vm offline
 ```
 
-After that, `./gradlew test --offline` finds its dependencies in the VM.
+After that, `./gradlew test --offline` finds its dependencies in the VM. Prime with the task that runs all the checks you need, not only `test`: Gradle downloads the tools behind tasks such as Checkstyle or Spotless only when those tasks run.
 
-The priming run executes as the same VM user that every earlier `--vm` session controlled, and it trusts everything those sessions could leave in that user's home. Examples are a Gradle init script in `~/.gradle/init.d/`, an edited build file in the copy, or a process still running. Use `--no-daemon` for the priming build, so that no Gradle daemon keeps the token after the run.
+The priming run executes as the same VM user that every earlier `--vm` session controlled, and it trusts everything those sessions could leave in that user's home. Examples are a Gradle init script in `~/.gradle/init.d/`, an edited build file in the copy, or a process still running. Use a short-lived token, because anything a session left behind runs online with it. Use `--no-daemon` for the priming build, so that no Gradle daemon keeps the token after the run.
 
 ### omac provenance
 
