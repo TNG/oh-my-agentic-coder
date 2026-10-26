@@ -175,32 +175,41 @@ func vmAttachExitCode(err error) int {
 var vmEnvNames = []string{"DOCKER_HOST", "DOCKER_CONFIG", "OMAC_VM_HOST", "OMAC_VM_SSH_PORT", "OMAC_VM_SSH_KEY", "OMAC_VM_USER"}
 
 // vmSandboxEnv creates <tmpDir>/vm with a copy of the agent key (the
-// original lives in host-only VM state) and an empty DOCKER_CONFIG, and
-// returns the variables that point the agent at the VM.
+// original lives in host-only VM state), the host's pinned known_hosts and
+// an empty DOCKER_CONFIG, and returns the variables that point the agent at
+// the VM.
 func vmSandboxEnv(info vm.AttachInfo, tmpDir string) (map[string]string, error) {
 	key, err := os.ReadFile(info.AgentKeyPath)
 	if err != nil {
 		return nil, fmt.Errorf("agent key: %w", err)
 	}
-	if err := writeVMFiles(tmpDir, key); err != nil {
+	// ssh in the sandbox reads known_hosts next to the key copy (see
+	// vm.ConnFromEnv); with the host's pinned entry it verifies the VM
+	// instead of trusting the first key it sees.
+	hosts, err := os.ReadFile(filepath.Join(filepath.Dir(info.AgentKeyPath), "known_hosts"))
+	if err != nil && !os.IsNotExist(err) {
+		return nil, fmt.Errorf("known_hosts: %w", err)
+	}
+	if err := writeVMFiles(tmpDir, key, hosts); err != nil {
 		return nil, err
 	}
 	dir := filepath.Join(tmpDir, "vm")
 	return map[string]string{
-		"DOCKER_HOST":      info.DockerHost(),
-		"DOCKER_CONFIG":    filepath.Join(dir, "docker"),
-		"OMAC_VM_HOST":     "127.0.0.1",
-		"OMAC_VM_SSH_PORT": strconv.Itoa(info.SSHPort),
-		"OMAC_VM_SSH_KEY":  filepath.Join(dir, "agent_key"),
-		"OMAC_VM_USER":     info.User,
+		"DOCKER_HOST":   info.DockerHost(),
+		"DOCKER_CONFIG": filepath.Join(dir, "docker"),
+		vm.EnvVMHost:    "127.0.0.1",
+		vm.EnvVMSSHPort: strconv.Itoa(info.SSHPort),
+		vm.EnvVMSSHKey:  filepath.Join(dir, "agent_key"),
+		vm.EnvVMUser:    info.User,
 	}, nil
 }
 
-// writeVMFiles creates vm/, vm/docker/ and vm/agent_key in tmpDir. Other
-// sandboxes may write tmpDir (on macOS every sandbox may write
-// /var/folders), so it creates instead of reusing, and resolves through
-// os.Root so a symlink planted inside tmpDir cannot redirect the key.
-func writeVMFiles(tmpDir string, key []byte) error {
+// writeVMFiles creates vm/, vm/docker/, vm/agent_key and, when knownHosts
+// is not nil, vm/known_hosts in tmpDir. Other sandboxes may write tmpDir
+// (on macOS every sandbox may write /var/folders), so it creates instead of
+// reusing, and resolves through os.Root so a symlink planted inside tmpDir
+// cannot redirect the key.
+func writeVMFiles(tmpDir string, key, knownHosts []byte) error {
 	root, err := os.OpenRoot(tmpDir)
 	if err != nil {
 		return err
@@ -211,13 +220,26 @@ func writeVMFiles(tmpDir string, key []byte) error {
 			return err
 		}
 	}
-	f, err := root.OpenFile(filepath.Join("vm", "agent_key"), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if err != nil {
+	if err := createVMFile(root, "agent_key", key); err != nil {
 		return fmt.Errorf("agent key copy: %w", err)
 	}
-	if _, err := f.Write(key); err != nil {
+	if knownHosts == nil {
+		return nil
+	}
+	if err := createVMFile(root, "known_hosts", knownHosts); err != nil {
+		return fmt.Errorf("known_hosts copy: %w", err)
+	}
+	return nil
+}
+
+func createVMFile(root *os.Root, name string, data []byte) error {
+	f, err := root.OpenFile(filepath.Join("vm", name), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
 		f.Close()
-		return fmt.Errorf("agent key copy: %w", err)
+		return err
 	}
 	return f.Close()
 }
