@@ -15,10 +15,27 @@ import (
 // uses ExecRunner.
 type CommandRunner func(ctx context.Context, name string, args []string, stdin io.Reader, stdout, stderr io.Writer) error
 
-// ExecRunner runs name with args via os/exec.
+type commandEnvKey struct{}
+
+// withCommandEnv adds NAME=VALUE entries to the environment of every
+// command ExecRunner starts with the returned context.
+func withCommandEnv(ctx context.Context, kv ...string) context.Context {
+	return context.WithValue(ctx, commandEnvKey{}, kv)
+}
+
+func commandEnv(ctx context.Context) []string {
+	kv, _ := ctx.Value(commandEnvKey{}).([]string)
+	return kv
+}
+
+// ExecRunner runs name with args via os/exec, adding the environment set
+// with withCommandEnv.
 func ExecRunner(ctx context.Context, name string, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Stdin = stdin
+	if kv := commandEnv(ctx); len(kv) > 0 {
+		cmd.Env = append(os.Environ(), kv...)
+	}
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	return cmd.Run()

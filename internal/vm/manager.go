@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"os/user"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -107,6 +108,9 @@ const (
 	// bootDoneCmd succeeds once Lima finished every provisioning script of
 	// the current boot; `limactl start` waits for the same file.
 	bootDoneCmd = "test -f /run/lima-boot-done"
+	// listWorktreesCmd prints the registry that Exec appends to, one
+	// "<slug> <host path>" line per copied worktree; empty when none.
+	listWorktreesCmd = "cat omac/.worktrees 2>/dev/null || true"
 )
 
 // writeModeCmd sets ModeFile, which the boot script reads on the next start.
@@ -148,6 +152,12 @@ func (m *Manager) Up(ctx context.Context, reprovision bool) error {
 	if err != nil {
 		return fmt.Errorf("omac vm: %w", err)
 	}
+	jdkPkgs, err := JDKPackages(cfg.JDKs)
+	if err != nil {
+		return err
+	}
+	// The guest installs vm.yaml packages and JDK packages in one apt run.
+	aptPkgs := append(slices.Clone(cfg.Packages), jdkPkgs...)
 	res := ResolveResources(cfg, m.Deps.Host)
 	if err := EnsureKeys(ctx, m.Layout, m.Deps.Run); err != nil {
 		return err
@@ -163,11 +173,11 @@ func (m *Manager) Up(ctx context.Context, reprovision bool) error {
 	running := inst != nil && inst.Status == StatusRunning
 	switch {
 	case inst == nil:
-		return m.create(ctx, st, cfg, res)
+		return m.create(ctx, st, cfg, aptPkgs, res)
 	case reprovision:
-		return m.reprovision(ctx, st, cfg, running)
+		return m.reprovision(ctx, st, cfg, aptPkgs, running)
 	case st.Mode != ModeOffline:
-		return m.upOnline(ctx, st, cfg, running)
+		return m.upOnline(ctx, st, cfg, aptPkgs, running)
 	case !running:
 		fmt.Fprintln(m.Out, "omac vm: starting (offline)…")
 		return m.startOffline(ctx, st)
@@ -199,7 +209,7 @@ func (m *Manager) loadOrInitState(cfg UserConfig, instanceExists bool) (*State, 
 	return st, SaveState(m.Layout.StatePath, st)
 }
 
-func (m *Manager) create(ctx context.Context, st *State, cfg UserConfig, res Resources) error {
+func (m *Manager) create(ctx context.Context, st *State, cfg UserConfig, aptPkgs []string, res Resources) error {
 	adminPub, err := ReadPubKey(m.Layout.AdminKey)
 	if err != nil {
 		return err
@@ -215,7 +225,7 @@ func (m *Manager) create(ctx context.Context, st *State, cfg UserConfig, res Res
 		AgentUser:   AgentUserName(m.Deps.HostUser),
 		AdminPubKey: adminPub,
 		AgentPubKey: agentPub,
-		Packages:    cfg.Packages,
+		Packages:    aptPkgs,
 		Ruleset:     Ruleset(),
 	})
 	if err != nil {
@@ -232,10 +242,11 @@ func (m *Manager) create(ctx context.Context, st *State, cfg UserConfig, res Res
 		return err
 	}
 	// The first boot runs online (nothing provisioned yet); record that
-	// before anything can fail. Lists of a VM deleted outside omac go.
+	// before anything can fail. Lists of a VM deleted outside omac go, and
+	// the JDKs count only once provisioning succeeded.
 	st.Mode = ModeOnline
 	st.Packages = cfg.Packages
-	st.Images, st.JDKs, st.Worktrees = nil, nil, nil
+	st.Images, st.JDKs = nil, nil
 	if err := SaveState(m.Layout.StatePath, st); err != nil {
 		return err
 	}
@@ -245,7 +256,11 @@ func (m *Manager) create(ctx context.Context, st *State, cfg UserConfig, res Res
 	if err := m.waitDocker(ctx, st, m.Deps.ProvisionTimeout); err != nil {
 		return fmt.Errorf("%w; %s", err, retryUpHint)
 	}
-	return m.switchMode(ctx, st, ModeOffline, true, m.Deps.RestartTimeout)
+	if err := m.switchMode(ctx, st, ModeOffline, true, m.Deps.RestartTimeout); err != nil {
+		return err
+	}
+	st.JDKs = cfg.JDKs
+	return SaveState(m.Layout.StatePath, st)
 }
 
 const retryUpHint = "run `omac vm up` again (or `omac vm up --reprovision`)"
@@ -259,7 +274,7 @@ const retryUpHint = "run `omac vm up` again (or `omac vm up --reprovision`)"
 // ProvisionedMarker tells the first two apart. Any failure of the marker
 // check counts as missing, which errs towards re-provisioning rather than
 // leaving apt locked out by an offline switch.
-func (m *Manager) upOnline(ctx context.Context, st *State, cfg UserConfig, running bool) error {
+func (m *Manager) upOnline(ctx context.Context, st *State, cfg UserConfig, aptPkgs []string, running bool) error {
 	// This path may re-run provisioning online, so it refuses up front.
 	if err := m.markOnlineUnattached(st); err != nil {
 		return err
@@ -275,7 +290,7 @@ func (m *Manager) upOnline(ctx context.Context, st *State, cfg UserConfig, runni
 	}
 	if m.ssh(ctx, m.rootTarget(st), nil, nil, markerPresentCmd) != nil {
 		fmt.Fprintln(m.Out, "omac vm: provisioning was not completed, re-running it")
-		return m.reprovision(ctx, st, cfg, true)
+		return m.reprovision(ctx, st, cfg, aptPkgs, true)
 	}
 	fmt.Fprintln(m.Out, "omac vm: VM is online; run `omac vm offline` before attaching sessions")
 	return nil
@@ -300,8 +315,8 @@ func (m *Manager) startOffline(ctx context.Context, st *State) error {
 	return nil
 }
 
-func (m *Manager) reprovision(ctx context.Context, st *State, cfg UserConfig, running bool) error {
-	for _, p := range cfg.Packages {
+func (m *Manager) reprovision(ctx context.Context, st *State, cfg UserConfig, aptPkgs []string, running bool) error {
+	for _, p := range aptPkgs {
 		if !packagePattern.MatchString(p) {
 			return fmt.Errorf("omac vm: package name %q has characters outside [A-Za-z0-9.+-]", p)
 		}
@@ -320,13 +335,13 @@ func (m *Manager) reprovision(ctx context.Context, st *State, cfg UserConfig, ru
 	if err := SaveState(m.Layout.StatePath, st); err != nil {
 		return err
 	}
-	if err := m.ssh(ctx, m.rootTarget(st), nil, nil, reprovisionCmd(cfg.Packages)); err != nil {
+	if err := m.ssh(ctx, m.rootTarget(st), nil, nil, reprovisionCmd(aptPkgs)); err != nil {
 		return fmt.Errorf("omac vm: reset provisioning: %w", err)
 	}
 	if err := m.switchMode(ctx, st, ModeOnline, true, m.Deps.ProvisionTimeout); err != nil {
 		return err
 	}
-	st.Packages = cfg.Packages
+	st.Packages, st.JDKs = cfg.Packages, cfg.JDKs
 	if err := SaveState(m.Layout.StatePath, st); err != nil {
 		return err
 	}
