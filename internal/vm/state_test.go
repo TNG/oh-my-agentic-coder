@@ -11,8 +11,8 @@ func TestSaveLoadStateRoundTrip(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "state.json")
 	want := &State{
 		Version: StateVersion, SSHPort: 60022, DockerPort: 62375, Mode: ModeOffline,
-		Images: []string{"postgres:16"}, Worktrees: []string{"/w/a"},
-		JDKs: []string{"temurin-25"}, Packages: []string{"jq"},
+		Images: []string{"postgres:16"},
+		JDKs:   []string{"temurin-25"}, Packages: []string{"jq"},
 	}
 	if err := SaveState(p, want); err != nil {
 		t.Fatal(err)
@@ -30,6 +30,17 @@ func TestLoadStateMissingIsNil(t *testing.T) {
 	got, err := LoadState(filepath.Join(t.TempDir(), "state.json"))
 	if err != nil || got != nil {
 		t.Errorf("LoadState(missing) = %+v, %v; want nil, nil", got, err)
+	}
+}
+
+func TestLoadStateIgnoresOldWorktreesField(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "state.json")
+	if err := os.WriteFile(p, []byte(`{"mode":"offline","worktrees":["/w/a"],"jdks":["temurin-25"]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st, err := LoadState(p)
+	if err != nil || st.Mode != ModeOffline || len(st.JDKs) != 1 {
+		t.Fatalf("LoadState = %+v, %v; want the other fields read", st, err)
 	}
 }
 
