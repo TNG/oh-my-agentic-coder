@@ -43,6 +43,10 @@ func protectedCommon() []string {
 		// $XDG_CONFIG_HOME overrides it on systems that set it.
 		"~/.config/omac",
 		"$XDG_CONFIG_HOME/omac",
+		// omac VM state: holds admin_key, root access to the omac VM;
+		// the sandbox must never read it.
+		"~/.local/state/omac/vm",
+		"$XDG_STATE_HOME/omac/vm",
 		// credentials
 		"~/.ssh",
 		"~/.gnupg",
