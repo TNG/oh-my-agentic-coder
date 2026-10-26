@@ -94,6 +94,12 @@ dotenv secrets live, and walking them would make launch scale with your whole
 home directory. A file inside a skipped tree is not masked; keep dotenv files
 outside such trees, or deny their directory by path.
 
+The scan also skips the Nix store (`/nix/store`), even when you grant it or
+a folder that contains it. On NixOS every installed program lives there, so
+granting it is how the agent gets to run them, and it is far too large to
+list at launch. Nix makes everything in the store readable by every user on
+the machine, so a secret there is not protected by hiding it.
+
 Some directories have more files and folders than omac lists at launch.
 What happens then depends on the system:
 
