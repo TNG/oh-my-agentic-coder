@@ -94,8 +94,8 @@ func runRegister(args []string, env *Env) int {
 	if fields := meta.PatternlessSecretStringFields(); len(fields) > 0 {
 		fmt.Fprintf(env.Stderr,
 			"[warn] %s declares secrets and unconstrained string config field(s): %s\n"+
-				"       these fields accept any value from the agent-writable config store, which the sidecar receives alongside its secrets;\n"+
-				"       add a `pattern` (or `choices`) in %s to constrain them\n",
+				"       these fields accept any string you approve, and the sidecar receives it alongside its secrets;\n"+
+				"       add a `pattern` (or `choices`) in %s so omac rejects unexpected values\n",
 			skillName, strings.Join(fields, ", "), config.MetaFileName)
 	}
 	// A `docs` entry that is not a file inside the skill only loses some

@@ -53,10 +53,10 @@ func TestSecurityStoredConfigRevalidatedAtLaunch(t *testing.T) {
 // TestSecurityPatternlessConfigFieldIsFlaggedNotFatal asserts that a skill
 // declaring both secrets and a string config field without a pattern or choices
 // still validates, but is reported by PatternlessSecretStringFields so
-// registration and `omac doctor` can warn. The field accepts any value from the
-// agent-writable config store, which the sidecar then receives alongside its
-// secrets; enforcement happens at launch (see the workdir-override and
-// agent-writable tests), not by refusing the manifest.
+// registration and `omac doctor` can warn. The field accepts any string the
+// user approves, which the sidecar then receives alongside its secrets; values
+// the agent writes are refused at launch unless approved (see the
+// workdir-override and agent-writable tests), not by refusing the manifest.
 func TestSecurityPatternlessConfigFieldIsFlaggedNotFatal(t *testing.T) {
 	withSecrets := []config.SecretSpec{{Name: "API_KEY"}}
 

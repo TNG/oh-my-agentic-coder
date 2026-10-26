@@ -509,10 +509,11 @@ func TestStartAutoRegisterWorkdirSkills_UnscopedKeychainSecretBeatsInvalidPassth
 	}
 }
 
-// A required field stored only in the agent-writable workdir file is not
-// enough: no anchor vouches for it, so start would refuse it (#400). The skill
-// is left for `omac register`, which records one.
-func TestStartAutoRegisterWorkdirSkills_StoredConfigSatisfiesRequiredField(t *testing.T) {
+// A required field stored in the host-only global config makes the skill
+// eligible. Stored only in the agent-writable workdir file it does not: no
+// anchor vouches for it, so start would refuse it (#400). The skill is left
+// for `omac register`, which records one.
+func TestStartAutoRegisterWorkdirSkills_OnlyGlobalStoredConfigSatisfiesRequiredField(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		save func(*testing.T, string)
