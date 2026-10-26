@@ -61,11 +61,12 @@ unrelated projects, and can write outside its intended scope.
 omac gives the agent access only to what it needs:
 
 - Your working directory (read and write).
-- On macOS, ancestor directories of the working directory can be listed so
-  programs can resolve their current directory. This exposes file and directory
-  names, including sibling names along that path, but grants no access to their
-  contents or writes. Ancestors of other granted paths expose metadata only,
-  not directory listings.
+- On macOS, every directory above the working directory and above each
+  granted path, and your home directory, can be looked up (for example with
+  `stat`) but not listed: `ls ~` and `ls ..` fail. Guessing a name still
+  reveals whether it exists. In your home directory, `/bin/pwd -P` fails;
+  the shell's built-in `pwd` works. The root directory `/` stays listable
+  because every macOS program reads it at startup.
 - The config directories the active harness requires. Each
   harness declares exactly which directories it needs; omac injects them at
   launch.

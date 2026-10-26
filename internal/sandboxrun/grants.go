@@ -26,7 +26,10 @@ import (
 // the platform backends.
 type Grants struct {
 	Workdir string // absolute; always the child's cwd
-	HomeDir string // literal directory access for macOS home resolution; not recursive
+	// HomeDir is resolvable on macOS because OpenCode v2 resolves HOME's
+	// real path and fails with EPERM if it cannot (#337), even when HOME
+	// lies outside every other grant.
+	HomeDir string
 
 	// Path grants (expanded, absolute, existing).
 	ReadPaths  []string // read-only
