@@ -150,20 +150,47 @@ func IsApproved(name, bundleHash string) (bool, error) {
 	return false, nil
 }
 
+// Approvals is the approval store read once, for a caller that checks many
+// skills in a row (the launch-time SKILL.md scan) and should not re-read
+// and re-parse the file for each one.
+type Approvals struct {
+	names    map[string]bool
+	approved map[[2]string]bool
+	err      error
+}
+
+// LoadApprovals reads the approval store once. A read error is kept and
+// returned by every query, which then fails closed.
+func LoadApprovals() *Approvals {
+	s, err := load()
+	if err != nil {
+		return &Approvals{err: err}
+	}
+	out := &Approvals{names: map[string]bool{}, approved: map[[2]string]bool{}}
+	for _, a := range s.Approved {
+		out.names[a.Name] = true
+		out.approved[[2]string{a.Name, a.BundleHash}] = true
+	}
+	return out
+}
+
 // HasName reports whether any approval is recorded for name, whatever its
 // bundle hash. A read error fails closed (returns true, err), so a caller
 // that ignores the error still treats the name as an omac skill to check.
-func HasName(name string) (bool, error) {
-	s, err := load()
-	if err != nil {
-		return true, err
+func (s *Approvals) HasName(name string) (bool, error) {
+	if s.err != nil {
+		return true, s.err
 	}
-	for _, a := range s.Approved {
-		if a.Name == name {
-			return true, nil
-		}
+	return s.names[name], nil
+}
+
+// IsApproved is IsApproved against the loaded store: (false, err) on a read
+// error.
+func (s *Approvals) IsApproved(name, bundleHash string) (bool, error) {
+	if s.err != nil {
+		return false, s.err
 	}
-	return false, nil
+	return s.approved[[2]string{name, bundleHash}], nil
 }
 
 // Approve records an approval for (name, bundleHash). Approvals are

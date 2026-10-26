@@ -221,6 +221,7 @@ func ResolveGrants(p *sandboxprofile.Profile, workdir string, notices io.Writer)
 
 	protected := sandboxprofile.EffectiveProtectedPaths(base, p.Filesystem.OverrideDeny)
 	protected = append(protected, worktreeDeny...)
+	protected = append(protected, literalDenies(p)...)
 
 	// User deny entries and baseline workdir-protected basenames share
 	// a single walk over the granted (non-baseline) scan roots. Path-form
@@ -619,6 +620,17 @@ func insideFolder(p, root string) bool {
 		}
 	}
 	return false
+}
+
+// literalDenies returns the profile's DenyLiteral paths cleaned but
+// otherwise as written: a folder named "foo$HOME" or "foo[1]" is denied
+// under that very name, not an expansion or a pattern of it.
+func literalDenies(p *sandboxprofile.Profile) []string {
+	out := make([]string, 0, len(p.Filesystem.DenyLiteral))
+	for _, d := range p.Filesystem.DenyLiteral {
+		out = append(out, filepath.Clean(d))
+	}
+	return out
 }
 
 // pathFormDenies expands the path-form (non basename-glob) entries of a

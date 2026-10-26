@@ -227,9 +227,13 @@ never from the still-agent-writable workdir.
 The harness also reads each skill's `SKILL.md` itself and gives it to the model
 as instructions. The agent can edit those files too, for example to plant
 instructions that every later session would follow. So at every launch, omac
-checks each omac skill in the workdir and in the user-global skill folders. An
-omac skill is a skill folder with an `omac.yaml`, or one whose name you have
-approved before. omac hides the whole skill folder from the sandbox for that
+checks each omac skill in the workdir and in the user-global skill folders.
+Under `omac serve --for-opencode-desktop` it checks every project folder it
+grants the sandbox. An omac skill is a skill folder with an `omac.yaml`, or one
+whose name you have approved before. Harnesses also load skills from folders
+nested inside a skill folder, so omac checks those too: an approved
+`.opencode/skills/slack` moved to `.opencode/skills/team/slack` and edited is
+still hidden. omac hides the whole skill folder from the sandbox for that
 session, and prints why, when:
 
 - the skill's files do not match an approved version,
@@ -241,12 +245,15 @@ session, and prints why, when:
   a Python venv's `lib64 -> lib`, are fine.
 
 If omac cannot list one of the skill folders (for example because it was
-replaced by a file), it hides that whole folder and keeps checking the others.
+replaced by a file), or it holds more than 50,000 folders, omac hides that
+whole folder and keeps checking the others.
 
-For example, if an agent appends text to `.opencode/skills/slack/SKILL.md`, the
-next `omac start` prints `skill "slack": its files do not match an approved
-version, so its SKILL.md instructions are untrusted ...`, and the harness does
-not see the skill. Review the change, then run `omac register slack --force`.
+For example, if an agent appends text to `.opencode/skills/slack/SKILL.md`,
+`omac start` refuses to launch; `omac start --accept-skill-changes` instead
+prints `skill "slack": its files do not match an approved version, so its
+SKILL.md instructions are untrusted ...` and hides the skill when using the
+built-in sandbox.
+Review the change, then run `omac register slack --force`.
 
 This has limits:
 

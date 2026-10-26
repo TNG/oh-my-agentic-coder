@@ -558,14 +558,25 @@ func runServe(args []string, env *Env) int {
 			fmt.Fprintln(env.Stderr, "omac serve: sandbox argv:", err)
 			return ExitConfigInvalid
 		}
+		// --for-opencode-desktop grants every project worktree OpenCode
+		// knows about (below). Read the list once, here, so the skill check
+		// covers exactly the projects the sandbox is granted.
+		var desktopWorktrees []string
+		if forDesktop {
+			worktrees, skipped, derr := opencodestate.Worktrees()
+			if derr != nil {
+				fmt.Fprintln(env.Stderr, "omac serve: --for-opencode-desktop:", derr)
+				return ExitIOError
+			}
+			for _, s := range skipped {
+				fmt.Fprintf(env.Stderr, "omac serve: skipping OpenCode worktree %s (%s)\n", s.Path, s.Reason)
+			}
+			desktopWorktrees = worktrees
+		}
 		// Checked once at launch: the sandbox cannot gain new denies later, so
 		// an approved skill edited during this serve run stays visible until
 		// restart (see docs/security.md).
-		skillWorkdirs := []string{env.Workdir}
-		if abs, aerr := filepath.Abs(workdir); workdir != "" && aerr == nil {
-			skillWorkdirs = append(skillWorkdirs, abs)
-		}
-		argv = injectUntrustedSkillDenies(argv, env.Stderr, "omac serve", prof, skillWorkdirs...)
+		argv = injectUntrustedSkillDenies(argv, env.Stderr, "omac serve", prof, serveSkillWorkdirs(env.Workdir, workdir, desktopWorktrees)...)
 		if cacheScope != nil {
 			argv = injectSandboxFlag(argv, "--allow", cacheScope.Dir)
 		}
@@ -595,19 +606,11 @@ func runServe(args []string, env *Env) int {
 		// folders opened for the first time during this session still
 		// need a restart (or --learn).
 		if forDesktop {
-			worktrees, skipped, derr := opencodestate.Worktrees()
-			if derr != nil {
-				fmt.Fprintln(env.Stderr, "omac serve: --for-opencode-desktop:", derr)
-				return ExitIOError
-			}
-			for _, s := range skipped {
-				fmt.Fprintf(env.Stderr, "omac serve: skipping OpenCode worktree %s (%s)\n", s.Path, s.Reason)
-			}
-			if len(worktrees) == 0 {
+			if len(desktopWorktrees) == 0 {
 				fmt.Fprintln(env.Stderr, "omac serve: --for-opencode-desktop: no OpenCode projects found")
 			} else {
-				fmt.Fprintf(env.Stderr, "omac serve: granting %d OpenCode project folder(s):\n", len(worktrees))
-				for _, wt := range worktrees {
+				fmt.Fprintf(env.Stderr, "omac serve: granting %d OpenCode project folder(s):\n", len(desktopWorktrees))
+				for _, wt := range desktopWorktrees {
 					fmt.Fprintf(env.Stderr, "  r+w %s\n", wt)
 					argv = injectSandboxFlag(argv, "--allow", wt)
 				}
@@ -836,6 +839,18 @@ func injectSandboxDirs(argv []string, dirs []string) []string {
 		argv = injectSandboxFlag(argv, "--allow", d)
 	}
 	return argv
+}
+
+// serveSkillWorkdirs returns the project folders whose skills omac serve
+// checks at launch: the launch dir, --workdir, and the project worktrees
+// granted under --for-opencode-desktop. A project the sandbox can read but
+// the check skipped would keep tampered SKILL.md instructions visible.
+func serveSkillWorkdirs(launchDir, workdirFlag string, desktopWorktrees []string) []string {
+	out := []string{launchDir}
+	if abs, err := filepath.Abs(workdirFlag); workdirFlag != "" && err == nil {
+		out = append(out, abs)
+	}
+	return append(out, desktopWorktrees...)
 }
 
 // injectSandboxDenies splices --deny flags for each harness-declared path the

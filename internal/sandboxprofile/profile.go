@@ -110,6 +110,12 @@ type Filesystem struct {
 	//     denied wherever that filename appears inside a granted tree,
 	//     the current working directory included.
 	Deny []string `json:"deny,omitempty"`
+	// DenyLiteral holds absolute paths denied exactly as written: no ~ or
+	// $VAR expansion and no glob matching. omac fills it from the
+	// --deny-literal flag for paths it found on disk, whose names may
+	// contain "$" or "[" (e.g. a folder named "foo$HOME"). Not settable
+	// from a profile file.
+	DenyLiteral []string `json:"-"`
 	// OverrideDeny removes entries from the built-in protected-path
 	// deny set (Baseline.ProtectedPaths). It does not grant access by
 	// itself; a matching allow/read/write grant is still required.
@@ -417,6 +423,11 @@ func (p *Profile) Validate() error {
 			if _, err := filepath.Match(d, "probe"); err != nil {
 				return fmt.Errorf("sandbox profile: filesystem.deny %q is not a valid glob: %w", d, err)
 			}
+		}
+	}
+	for _, d := range p.Filesystem.DenyLiteral {
+		if !filepath.IsAbs(d) {
+			return fmt.Errorf("sandbox: --deny-literal %q is not an absolute path", d)
 		}
 	}
 	if d := p.Denial; d != nil && d.MarkerDirName != "" {
