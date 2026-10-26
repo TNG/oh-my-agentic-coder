@@ -82,13 +82,25 @@ func vmSandboxEnv(info vm.AttachInfo, scopeDir string) (map[string]string, error
 	if err := writeFileAtomic(keyPath, key, 0o600); err != nil {
 		return nil, fmt.Errorf("agent key copy: %w", err)
 	}
+	// ssh in the sandbox reads known_hosts next to the key copy (see
+	// vm.ConnFromEnv); with the host's pinned entry it verifies the VM
+	// instead of trusting the first key it sees.
+	hosts, err := os.ReadFile(filepath.Join(filepath.Dir(info.AgentKeyPath), "known_hosts"))
+	switch {
+	case err == nil:
+		if err := writeFileAtomic(filepath.Join(dir, "known_hosts"), hosts, 0o600); err != nil {
+			return nil, fmt.Errorf("known_hosts copy: %w", err)
+		}
+	case !os.IsNotExist(err):
+		return nil, fmt.Errorf("known_hosts: %w", err)
+	}
 	return map[string]string{
-		"DOCKER_HOST":      info.DockerHost(),
-		"DOCKER_CONFIG":    dockerDir,
-		"OMAC_VM_HOST":     "127.0.0.1",
-		"OMAC_VM_SSH_PORT": strconv.Itoa(info.SSHPort),
-		"OMAC_VM_SSH_KEY":  keyPath,
-		"OMAC_VM_USER":     info.User,
+		"DOCKER_HOST":   info.DockerHost(),
+		"DOCKER_CONFIG": dockerDir,
+		vm.EnvVMHost:    "127.0.0.1",
+		vm.EnvVMSSHPort: strconv.Itoa(info.SSHPort),
+		vm.EnvVMSSHKey:  keyPath,
+		vm.EnvVMUser:    info.User,
 	}, nil
 }
 
