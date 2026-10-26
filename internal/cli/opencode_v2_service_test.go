@@ -89,11 +89,19 @@ func TestOpenCodeIsV2FromWrapperSpec(t *testing.T) {
 }
 
 func TestOpenCodeSpecVersion(t *testing.T) {
-	maj, ok := openCodeSpecVersion([]string{"-y", "--package=opencode@1.3.17", "opencode"})
-	if !ok || maj != 1 {
-		t.Errorf("openCodeSpecVersion = (%d, %v), want (1, true)", maj, ok)
+	maj, min, hasMinor, ok := openCodeSpecVersion([]string{"-y", "--package=opencode@1.3.17", "opencode"})
+	if !ok || maj != 1 || min != 3 || !hasMinor {
+		t.Errorf("openCodeSpecVersion = (%d, %d, %v, %v), want (1, 3, true, true)", maj, min, hasMinor, ok)
 	}
-	if _, ok := openCodeSpecVersion([]string{"opencode-ai@latest"}); ok {
+	maj, min, hasMinor, ok = openCodeSpecVersion([]string{"bunx", "opencode-ai@2", "run"})
+	if !ok || maj != 2 || hasMinor || min != 0 {
+		t.Errorf("openCodeSpecVersion major-only = (%d, %d, %v, %v), want (2, 0, false, true)", maj, min, hasMinor, ok)
+	}
+	maj, min, hasMinor, ok = openCodeSpecVersion([]string{"npx", "-y", "@opencode/cli@2.1-rc"})
+	if !ok || maj != 2 || min != 1 || !hasMinor {
+		t.Errorf("openCodeSpecVersion pre-release = (%d, %d, %v, %v), want (2, 1, true, true)", maj, min, hasMinor, ok)
+	}
+	if _, _, _, ok := openCodeSpecVersion([]string{"opencode-ai@latest"}); ok {
 		t.Error("spec without a pinned major version must be undecidable")
 	}
 }
