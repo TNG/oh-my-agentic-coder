@@ -162,7 +162,7 @@ omac start
 
 By default, this launches OpenCode. To use a different harness, pass its name or a short alias after the subcommand (also works with `serve`, `continue`, `resume`) — e.g. `omac start claude`. Aliases: `oc` (opencode), `claude` / `cc` (claude-code), `cx` (codex), `co` (copilot), `cw` (codewhale); `pi` has no alias.
 
-Run `omac setup` after your first start to provision the built-in `omac-write-a-skill` skill, which lets the agent create new skills.
+Run `omac setup` after your first start to provision the built-in skills: `omac-write-a-skill`, which lets the agent create new skills, and `omac-vm`, which tells it how to use the omac VM.
 
 ## Update
 
