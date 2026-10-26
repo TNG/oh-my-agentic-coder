@@ -239,7 +239,10 @@ func TestSecurityInjectUntrustedSkillDenies(t *testing.T) {
 		}
 	}
 	for _, d := range []string{bad, cross, global} {
-		if !denied[d] {
+		// A path outside home and workdir may only be denied resolved, e.g.
+		// /private/var/... for /var/... on macOS.
+		resolved, _ := filepath.EvalSymlinks(d)
+		if !denied[d] && !denied[resolved] {
 			t.Errorf("want --deny %s in %v", d, got)
 		}
 	}
