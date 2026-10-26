@@ -32,7 +32,7 @@ func TestSecurityStoredConfigRevalidatedAtLaunch(t *testing.T) {
 	// Control: a value on the declared choices list resolves normally, so
 	// a fix that refuses every stored value wouldn't make this test pass
 	// for the wrong reason.
-	armed, problems := r.Resolve(m, e, dir, store)
+	armed, problems := r.Resolve(m, e, dir, MergeConfig(store, nil))
 	defer armed.Zero()
 	if got := armed.Config["MODE"]; got != "safe" || len(problems) != 0 {
 		t.Fatalf("control: a valid stored choice was not resolved cleanly (value=%q, problems=%v): the fixture is broken, not the security property", got, problems)
@@ -53,10 +53,10 @@ func TestSecurityStoredConfigRevalidatedAtLaunch(t *testing.T) {
 // TestSecurityPatternlessConfigFieldIsFlaggedNotFatal asserts that a skill
 // declaring both secrets and a string config field without a pattern or choices
 // still validates, but is reported by PatternlessSecretStringFields so
-// registration and `omac doctor` can warn. The field accepts any value from the
-// agent-writable config store, which the sidecar then receives alongside its
-// secrets; enforcement happens at launch (see the workdir-override and
-// agent-writable tests), not by refusing the manifest.
+// registration and `omac doctor` can warn. The field accepts any string the
+// user approves, which the sidecar then receives alongside its secrets; values
+// the agent writes are refused at launch unless approved (see the
+// workdir-override and agent-writable tests), not by refusing the manifest.
 func TestSecurityPatternlessConfigFieldIsFlaggedNotFatal(t *testing.T) {
 	withSecrets := []config.SecretSpec{{Name: "API_KEY"}}
 
@@ -105,15 +105,6 @@ func TestSecurityWorkdirConfigOverrideRequiresReapproval(t *testing.T) {
 	global.Set("probe", "URL", "https://primary.example.com")
 	workdir := &skillconfig.Store{Version: skillconfig.SchemaVersion}
 	workdir.Set("probe", "URL", "https://secondary.example.com")
-
-	// Control: with no anchor the legacy value resolves (pre-anchor installs
-	// are grandfathered).
-	r := New(Options{Env: env(nil)})
-	armed, problems := r.Resolve(m, e, dir, MergeConfig(global, workdir))
-	defer armed.Zero()
-	if got := armed.Config["URL"]; got != "https://secondary.example.com" || len(problems) != 0 {
-		t.Fatalf("control: an unanchored stored value did not resolve cleanly (value=%q, problems=%v)", got, problems)
-	}
 
 	tampered := MergeConfig(global, workdir)
 	tampered.RecordApproved("wd", "probe", map[string]string{"URL": "https://primary.example.com"})
@@ -177,5 +168,67 @@ func TestSecurityWorkdirCannotForgeApprovalAnchor(t *testing.T) {
 	merged := MergeConfig(nil, forged)
 	if _, ok := merged.ApprovedFor("wd", "probe"); ok {
 		t.Error("a workdir store's `approved:` block was honoured as a trust anchor")
+	}
+}
+
+// TestSecurityUnanchoredWorkdirValueRefused asserts that a skill with no
+// anchor (registered before anchoring existed, or auto-registered) does not
+// take any value from the agent-writable workdir layer, whatever the field's
+// type. Before #400 only unconstrained string fields were refused, so an agent
+// could flip a bool like GH_ALLOW_WRITE from "false" to "true" unnoticed.
+func TestSecurityUnanchoredWorkdirValueRefused(t *testing.T) {
+	dir := skillDir(t)
+	e := entry(t, "probe", dir)
+	spec := config.ConfigSpec{Name: "GH_ALLOW_WRITE", Type: config.ConfigFieldBool}
+	m := meta(nil, []config.SecretSpec{{Name: "API_KEY"}}, []config.ConfigSpec{spec})
+	r := New(Options{Env: env(map[string]string{"API_KEY": "x"}), Scope: "wd"})
+
+	global := &skillconfig.Store{Version: skillconfig.SchemaVersion}
+	global.Set("probe", "GH_ALLOW_WRITE", "false")
+
+	// Control: the host-only global value resolves, so the refusal below is
+	// about the workdir source, not about the skill being unanchored.
+	armed, problems := r.Resolve(m, e, dir, MergeConfig(global, nil))
+	defer armed.Zero()
+	if got := armed.Config["GH_ALLOW_WRITE"]; got != "false" || Has(problems, InvalidConfig) {
+		t.Fatalf("control: a host-only global value did not resolve (value=%q, problems=%v)", got, problems)
+	}
+
+	// A workdir value equal to the global one is not workdir-sourced.
+	same := &skillconfig.Store{Version: skillconfig.SchemaVersion}
+	same.Set("probe", "GH_ALLOW_WRITE", "false")
+	armed2, problems2 := r.Resolve(m, e, dir, MergeConfig(global, same))
+	defer armed2.Zero()
+	if got := armed2.Config["GH_ALLOW_WRITE"]; got != "false" || Has(problems2, InvalidConfig) {
+		t.Errorf("a workdir value equal to the global one was refused (value=%q, problems=%v)", got, problems2)
+	}
+
+	for name, g := range map[string]*skillconfig.Store{"over a global value": global, "with no global value": nil} {
+		flipped := &skillconfig.Store{Version: skillconfig.SchemaVersion}
+		flipped.Set("probe", "GH_ALLOW_WRITE", "true")
+		armed3, problems3 := r.Resolve(m, e, dir, MergeConfig(g, flipped))
+		if got := armed3.Config["GH_ALLOW_WRITE"]; got == "true" || !Has(problems3, InvalidConfig) {
+			t.Errorf("%s: an unanchored workdir value %q resolved without an InvalidConfig problem", name, got)
+		}
+		armed3.Zero()
+	}
+}
+
+// TestSecurityUnmergedStoreRefused asserts that a store which did not go
+// through MergeConfig carries no provenance, so an unanchored value in it is
+// refused rather than read as "not from the workdir".
+func TestSecurityUnmergedStoreRefused(t *testing.T) {
+	dir := skillDir(t)
+	e := entry(t, "probe", dir)
+	spec := config.ConfigSpec{Name: "GH_ALLOW_WRITE", Type: config.ConfigFieldBool}
+	m := meta(nil, []config.SecretSpec{{Name: "API_KEY"}}, []config.ConfigSpec{spec})
+	r := New(Options{Env: env(map[string]string{"API_KEY": "x"}), Scope: "wd"})
+
+	direct := &skillconfig.Store{Version: skillconfig.SchemaVersion}
+	direct.Set("probe", "GH_ALLOW_WRITE", "true")
+	armed, problems := r.Resolve(m, e, dir, direct)
+	defer armed.Zero()
+	if got := armed.Config["GH_ALLOW_WRITE"]; got == "true" || !Has(problems, InvalidConfig) {
+		t.Errorf("an unanchored value from an unmerged store resolved (value=%q, problems=%v)", got, problems)
 	}
 }

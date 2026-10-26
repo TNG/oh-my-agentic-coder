@@ -272,6 +272,7 @@ Before launching, `omac start` compares the skills on disk against what you regi
 - An **unregistered** skill directory. Run `omac register <skill>`.
 - A registered skill whose files **changed since you registered it** (bundle drift). Re-register with `omac register <skill> --force`, or pass `omac start --accept-skill-changes` to start without the edited skills. omac does not run them, and it hides them from the agent.
 - A **required config field** with no value. Run `omac register <skill> --reprompt-fields`.
+- A **config value you never approved** in `<workdir>/.opencode/skill-config.yaml`. The agent can write that file, so omac only accepts a value from it if it matches what you approved at `omac register`. For example, if `GH_ALLOW_WRITE` was `false` when you registered and the file now says `true`, the skill is refused. Run `omac register <skill> --reprompt-fields` to approve the current values; the prompt prints each stored value (and any workdir override), so check it before pressing Enter. Skills registered before omac v0.10.0 (or added with `--auto-register-skills`) have no approval on record yet, so they need this once if they keep values in that file.
 
 If a registered skill's directory has been deleted, omac auto-deregisters it and continues.
 

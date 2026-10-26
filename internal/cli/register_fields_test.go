@@ -146,7 +146,7 @@ func TestHandleOneField_PreviouslySkippedOptional(t *testing.T) {
 	r := false
 	spec := config.ConfigSpec{Name: "F", Type: config.ConfigFieldString, Required: &r}
 
-	skipped, err := handleOneField(env, store, "skill", "", spec, false, map[string]bool{"F": true}, nil, false, nil)
+	skipped, err := handleOneField(env, store, nil, "skill", "", spec, false, map[string]bool{"F": true}, nil, false, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -170,7 +170,7 @@ func TestHandleOneField_PreviouslySkippedRequired(t *testing.T) {
 	store := &skillconfig.Store{}
 	spec := config.ConfigSpec{Name: "F", Type: config.ConfigFieldString} // required by default
 
-	_, err := handleOneField(env, store, "skill", "", spec, false, map[string]bool{"F": true}, nil, false, nil)
+	_, err := handleOneField(env, store, nil, "skill", "", spec, false, map[string]bool{"F": true}, nil, false, nil)
 	if err == nil || !strings.Contains(err.Error(), "refused: required config field") {
 		t.Errorf("expected refused-required error, got %v", err)
 	}
@@ -185,7 +185,7 @@ func TestHandleOneField_RepromptIgnoresPrevSkipped(t *testing.T) {
 	r := false
 	spec := config.ConfigSpec{Name: "F", Type: config.ConfigFieldString, Required: &r}
 
-	skipped, err := handleOneField(env, store, "skill", "", spec, true, map[string]bool{"F": true}, nil, false, nil)
+	skipped, err := handleOneField(env, store, nil, "skill", "", spec, true, map[string]bool{"F": true}, nil, false, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -207,7 +207,7 @@ func TestHandleOneField_OptionalSkipReturnsTrue(t *testing.T) {
 	r := false
 	spec := config.ConfigSpec{Name: "F", Type: config.ConfigFieldString, Required: &r}
 
-	skipped, err := handleOneField(env, store, "skill", "", spec, false, nil, nil, false, nil)
+	skipped, err := handleOneField(env, store, nil, "skill", "", spec, false, nil, nil, false, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -229,7 +229,7 @@ func TestHandleOneField_AlreadyConfiguredReturnsFalse(t *testing.T) {
 	store.Set("skill", "F", "previously-stored")
 	spec := config.ConfigSpec{Name: "F", Type: config.ConfigFieldString}
 
-	skipped, err := handleOneField(env, store, "skill", "", spec, false, map[string]bool{"F": true}, nil, false, nil)
+	skipped, err := handleOneField(env, store, nil, "skill", "", spec, false, map[string]bool{"F": true}, nil, false, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -256,6 +256,109 @@ func TestDedupSorted(t *testing.T) {
 	for i := range want {
 		if got[i] != want[i] {
 			t.Errorf("dedupSorted[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+// With --reprompt-fields, Enter approves the stored value, so the prompt
+// must show it as the default. Without this an agent-written value can be
+// approved without the user ever seeing it.
+func TestHandleOneField_RepromptShowsStoredValueAsDefault(t *testing.T) {
+	env := envWithStdin(t, "\n")
+	out := captureStderr(t, env)
+	store := &skillconfig.Store{}
+	store.Set("skill", "F", "agent-wrote-this")
+	r := false
+	spec := config.ConfigSpec{Name: "F", Type: config.ConfigFieldString, Required: &r}
+
+	skipped, err := handleOneField(env, store, nil, "skill", "", spec, true, nil, nil, false, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if skipped {
+		t.Errorf("skipped = true; Enter on a stored value approves it")
+	}
+	if !strings.Contains(out(), "agent-wrote-this") {
+		t.Errorf("prompt does not show the stored value:\n%s", out())
+	}
+	if v, _ := store.Get("skill", "F"); v != "agent-wrote-this" {
+		t.Errorf("store[F] = %q; Enter must keep the shown value", v)
+	}
+}
+
+// The skip line is the only place a user sees a value that register keeps
+// without prompting, so it names the value.
+func TestHandleOneField_AlreadyConfiguredShowsValue(t *testing.T) {
+	env := envWithStdin(t, "")
+	out := captureStderr(t, env)
+	store := &skillconfig.Store{}
+	store.Set("skill", "F", "previously-stored")
+	spec := config.ConfigSpec{Name: "F", Type: config.ConfigFieldString}
+
+	if _, err := handleOneField(env, store, nil, "skill", "", spec, false, nil, nil, false, nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(out(), "previously-stored") {
+		t.Errorf("skip line does not show the stored value:\n%s", out())
+	}
+}
+
+// captureStderr points env.Stderr at a temp file and returns a reader for
+// what was written so far.
+func captureStderr(t *testing.T, env *Env) func() string {
+	t.Helper()
+	f, err := os.CreateTemp(t.TempDir(), "stderr")
+	if err != nil {
+		t.Fatalf("CreateTemp: %v", err)
+	}
+	t.Cleanup(func() { f.Close() })
+	env.Stderr = f
+	return func() string {
+		b, err := os.ReadFile(f.Name())
+		if err != nil {
+			t.Fatalf("ReadFile: %v", err)
+		}
+		return string(b)
+	}
+}
+
+// A field with a `default:` keeps resetting to it on Enter under
+// --reprompt-fields, and the stored value is still printed above the prompt.
+func TestHandleOneField_RepromptEnterResetsToSpecDefault(t *testing.T) {
+	env := envWithStdin(t, "\n")
+	out := captureStderr(t, env)
+	store := &skillconfig.Store{}
+	store.Set("skill", "F", "true")
+	spec := config.ConfigSpec{Name: "F", Type: config.ConfigFieldBool, Default: "false"}
+
+	if _, err := handleOneField(env, store, nil, "skill", "", spec, true, nil, nil, false, nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if v, _ := store.Get("skill", "F"); v != "false" {
+		t.Errorf("store[F] = %q; Enter must reset to the spec default", v)
+	}
+	if !strings.Contains(out(), "currently stored:") || !strings.Contains(out(), "true") {
+		t.Errorf("stored value not shown:\n%s", out())
+	}
+}
+
+// For a global skill the workdir layer wins and is what gets anchored, so
+// it must be shown, not the global value alone.
+func TestHandleOneField_GlobalSkillShowsWorkdirOverride(t *testing.T) {
+	spec := config.ConfigSpec{Name: "F", Type: config.ConfigFieldBool}
+	global := &skillconfig.Store{}
+	global.Set("skill", "F", "false")
+	wd := &skillconfig.Store{}
+	wd.Set("skill", "F", "true")
+
+	for name, reprompt := range map[string]bool{"skip line": false, "prompt": true} {
+		env := envWithStdin(t, "\n")
+		out := captureStderr(t, env)
+		if _, err := handleOneField(env, global, wd, "skill", "", spec, reprompt, nil, nil, false, nil); err != nil {
+			t.Fatalf("%s: unexpected error: %v", name, err)
+		}
+		if !strings.Contains(out(), "overridden by the agent-writable workdir config") || !strings.Contains(out(), `"true"`) {
+			t.Errorf("%s: workdir override not shown:\n%s", name, out())
 		}
 	}
 }

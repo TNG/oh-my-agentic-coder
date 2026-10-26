@@ -630,8 +630,8 @@ func (m *Meta) DocsWarnings(skillDir string) []string {
 
 // PatternlessSecretStringFields returns the string config fields that carry
 // neither a pattern nor choices on a skill that also declares secrets. Such a
-// field accepts any value from the agent-writable config store, which the
-// sidecar then receives alongside its secrets, so registration warns about it.
+// field accepts any string the user approves, and the sidecar receives it
+// alongside its secrets, so registration and `omac doctor` warn about it.
 func (s *SidecarMeta) PatternlessSecretStringFields() []string {
 	if len(s.Secrets) == 0 {
 		return nil
