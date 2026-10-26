@@ -136,7 +136,12 @@ func TestClassifyOpenCode(t *testing.T) {
 		{"2.1 spec", []string{"npx", "-y", "@opencode/cli@2.1.0"}, openCodeV21Plus},
 		{"2.0 minor spec", []string{"bunx", "opencode-ai@2.0"}, openCodeV20x},
 		{"2.1 minor spec", []string{"bunx", "opencode-ai@2.1"}, openCodeV21Plus},
+		{"2.1 pre-release spec", []string{"npx", "-y", "@opencode/cli@2.1-rc"}, openCodeV21Plus},
+		{"2.0 pre-release spec", []string{"bunx", "opencode-ai@2.0-rc"}, openCodeV20x},
+		{"2.0 patch pre-release spec", []string{"bunx", "opencode-ai@2.0.0-rc.1"}, openCodeV20x},
+		{"2.1 build metadata spec", []string{"bunx", "opencode-ai@2.1.4+build.7"}, openCodeV21Plus},
 		{"major-only spec stays conservative", []string{"bunx", "opencode-ai@2"}, openCodeV2MajorOnly},
+		{"major-only pre-release spec stays conservative", []string{"bunx", "opencode-ai@2-rc"}, openCodeUndecidable},
 		{"unversioned wrapper", []string{"bunx", "opencode-ai"}, openCodeUndecidable},
 		{"similar package", []string{"npx", "my-opencode-ai@2.0.32"}, openCodeUndecidable},
 		{"v1 spec", []string{"bunx", "opencode-ai@1.2.3"}, openCodeV1},
@@ -208,6 +213,51 @@ func TestOpenCodeProjectDiscoveryEnvOverride(t *testing.T) {
 				if err != nil || string(out) != "1" {
 					t.Fatalf("after inner env wrapper: %q, error=%v", out, err)
 				}
+			}
+		})
+	}
+}
+
+func TestOpenCodeProjectDiscoveryErrorsNameTheVersion(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("macOS discovery workaround")
+	}
+	h, _ := config.LookupHarness("opencode")
+	v20 := fakeVersionBinary(t, "#!/bin/sh\nprintf '2.0.20\\n'\n")
+	denied := &sandboxprofile.Profile{Environment: sandboxprofile.Environment{DenyVars: []string{"OPENCODE_CONFIG_PROJECT_DISABLE"}}}
+	open := &sandboxprofile.Profile{}
+	cases := []struct {
+		name     string
+		inner    []string
+		policy   *sandboxprofile.Profile
+		wantHint bool
+	}{
+		{"major-only deny_vars hints", []string{"bunx", "opencode-ai@2"}, denied, true},
+		{"major-only conflicting assignment hints", []string{"env", "OPENCODE_CONFIG_PROJECT_DISABLE=0", "bunx", "opencode-ai@2"}, open, true},
+		{"major-only env options hint", []string{"env", "-i", "bunx", "opencode-ai@2"}, open, true},
+		{"2.0.x deny_vars stays specific", []string{v20}, denied, false},
+		{"2.0.x conflicting assignment stays specific", []string{"env", "OPENCODE_CONFIG_PROJECT_DISABLE=0", v20}, open, false},
+		{"2.0.x env options stay specific", []string{"env", "-i", v20}, open, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			plan := sandboxPlan{Native: true, PolicyRef: "restricted", Policy: tc.policy}
+			_, class, err := injectOpenCodeProjectDiscovery([]string{"omac", "sandbox", "run", "--", "opencode"}, map[string]string{}, h, tc.inner, plan)
+			if err == nil {
+				t.Fatal("expected a launch error")
+			}
+			if !strings.Contains(err.Error(), "OPENCODE_CONFIG_PROJECT_DISABLE") {
+				t.Fatalf("error does not name the variable: %v", err)
+			}
+			hinted := strings.Contains(err.Error(), "pin @2.1 or newer")
+			if hinted != tc.wantHint {
+				t.Errorf("hint present = %v, want %v: %v", hinted, tc.wantHint, err)
+			}
+			if hinted && class != openCodeV2MajorOnly {
+				t.Errorf("hint shown for class %v, want openCodeV2MajorOnly", class)
+			}
+			if !hinted && !strings.Contains(err.Error(), "OpenCode 2.0.x") {
+				t.Errorf("error does not name OpenCode 2.0.x: %v", err)
 			}
 		})
 	}

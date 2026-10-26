@@ -460,8 +460,9 @@ var openCodeWrappers = map[string]bool{
 	"npx": true, "bunx": true, "pnpm": true, "yarn": true, "uvx": true, "uv": true,
 }
 
-// Match whole package arguments so similarly named packages cannot select a version.
-var openCodeSpecRe = regexp.MustCompile(`^(?:--package=)?(?:@opencode/cli|opencode(?:-ai)?)@v?(\d+)(?:\.(\d+))?(?:\.\d+(?:[-+][0-9A-Za-z.-]+)?)?$`)
+// Match whole package arguments so similarly named packages cannot select a version. A pre-release or
+// build suffix may follow the minor version (opencode-ai@2.1-rc), which still proves the minor.
+var openCodeSpecRe = regexp.MustCompile(`^(?:--package=)?(?:@opencode/cli|opencode(?:-ai)?)@v?(\d+)(?:\.(\d+)(?:[-+][0-9A-Za-z.-]+)?)?(?:\.\d+(?:[-+][0-9A-Za-z.-]+)?)?$`)
 
 // openCodeVersionKind classifies which OpenCode the inner command will launch.
 type openCodeVersionKind int

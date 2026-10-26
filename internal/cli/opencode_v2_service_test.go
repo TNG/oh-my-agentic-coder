@@ -97,6 +97,10 @@ func TestOpenCodeSpecVersion(t *testing.T) {
 	if !ok || maj != 2 || hasMinor || min != 0 {
 		t.Errorf("openCodeSpecVersion major-only = (%d, %d, %v, %v), want (2, 0, false, true)", maj, min, hasMinor, ok)
 	}
+	maj, min, hasMinor, ok = openCodeSpecVersion([]string{"npx", "-y", "@opencode/cli@2.1-rc"})
+	if !ok || maj != 2 || min != 1 || !hasMinor {
+		t.Errorf("openCodeSpecVersion pre-release = (%d, %d, %v, %v), want (2, 1, true, true)", maj, min, hasMinor, ok)
+	}
 	if _, _, _, ok := openCodeSpecVersion([]string{"opencode-ai@latest"}); ok {
 		t.Error("spec without a pinned major version must be undecidable")
 	}

@@ -24,20 +24,31 @@ func injectOpenCodeProjectDiscovery(argv []string, extra map[string]string, h co
 		return argv, class, nil
 	}
 	const name = "OPENCODE_CONFIG_PROJECT_DISABLE"
+	subject, remedy := openCodeDiscoverySubject(class)
 	if plan.Policy != nil && sandboxprofile.EnvVarMatches(name, plan.Policy.Environment.DenyVars) {
-		return argv, class, fmt.Errorf("profile %q: deny_vars denies %s, required to disable OpenCode 2.0.x project discovery and avoid denied ancestor lookups in the macOS sandbox; remove the matching deny_vars rule to launch", plan.PolicyRef, name)
+		return argv, class, fmt.Errorf("profile %q: deny_vars denies %s, required to disable project discovery for %s and avoid denied ancestor lookups in the macOS sandbox; remove the matching deny_vars rule to launch%s", plan.PolicyRef, name, subject, remedy)
 	}
 	unwrapped := sandboxrun.UnwrapEnv(inner)
 	for _, arg := range inner[:len(inner)-len(unwrapped)] {
 		if value, ok := strings.CutPrefix(arg, name+"="); ok && value != "1" {
-			return argv, class, fmt.Errorf("inner env wrapper assigns %s=%q, but the OpenCode 2.0.x macOS sandbox requires %s=1; remove the conflicting assignment", name, value, name)
+			return argv, class, fmt.Errorf("inner env wrapper assigns %s=%q, but the macOS sandbox requires %s=1 to disable project discovery for %s; remove the conflicting assignment%s", name, value, name, subject, remedy)
 		}
 	}
 	if len(unwrapped) < len(inner) && len(unwrapped) > 0 && strings.HasPrefix(unwrapped[0], "-") {
-		return argv, class, fmt.Errorf("inner env options can remove %s=1, required by the OpenCode 2.0.x macOS sandbox; use an env wrapper with assignments only", name)
+		return argv, class, fmt.Errorf("inner env options can remove %s=1, required to disable project discovery for %s in the macOS sandbox; use an env wrapper with assignments only%s", name, subject, remedy)
 	}
 	extra[name] = "1"
 	return injectSandboxEnvAllow(argv, []string{name}, plan), class, nil
+}
+
+// openCodeDiscoverySubject names what the discovery workaround applies to in launch errors, plus a
+// remedy when only the major version is pinned: the spec may still resolve to 2.1+, where the
+// workaround is unnecessary and keeps project sources from loading.
+func openCodeDiscoverySubject(class openCodeVersionKind) (subject, remedy string) {
+	if class == openCodeV2MajorOnly {
+		return "an @2-only spec that may resolve to OpenCode 2.0.x", "; pin @2.1 or newer to keep project discovery enabled instead"
+	}
+	return "OpenCode 2.0.x", ""
 }
 
 // warnOpenCodeAgentsAccess warns when the sandbox profile cannot list ~/.agents, where
