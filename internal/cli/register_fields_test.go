@@ -259,3 +259,65 @@ func TestDedupSorted(t *testing.T) {
 		}
 	}
 }
+
+// With --reprompt-fields, Enter approves the stored value, so the prompt
+// must show it as the default. Without this an agent-written value can be
+// approved without the user ever seeing it.
+func TestHandleOneField_RepromptShowsStoredValueAsDefault(t *testing.T) {
+	env := envWithStdin(t, "\n")
+	out := captureStderr(t, env)
+	store := &skillconfig.Store{}
+	store.Set("skill", "F", "agent-wrote-this")
+	r := false
+	spec := config.ConfigSpec{Name: "F", Type: config.ConfigFieldString, Required: &r}
+
+	skipped, err := handleOneField(env, store, "skill", "", spec, true, nil, nil, false, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if skipped {
+		t.Errorf("skipped = true; Enter on a stored value approves it")
+	}
+	if !strings.Contains(out(), "agent-wrote-this") {
+		t.Errorf("prompt does not show the stored value:\n%s", out())
+	}
+	if v, _ := store.Get("skill", "F"); v != "agent-wrote-this" {
+		t.Errorf("store[F] = %q; Enter must keep the shown value", v)
+	}
+}
+
+// The skip line is the only place a user sees a value that register keeps
+// without prompting, so it names the value.
+func TestHandleOneField_AlreadyConfiguredShowsValue(t *testing.T) {
+	env := envWithStdin(t, "")
+	out := captureStderr(t, env)
+	store := &skillconfig.Store{}
+	store.Set("skill", "F", "previously-stored")
+	spec := config.ConfigSpec{Name: "F", Type: config.ConfigFieldString}
+
+	if _, err := handleOneField(env, store, "skill", "", spec, false, nil, nil, false, nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(out(), "previously-stored") {
+		t.Errorf("skip line does not show the stored value:\n%s", out())
+	}
+}
+
+// captureStderr points env.Stderr at a temp file and returns a reader for
+// what was written so far.
+func captureStderr(t *testing.T, env *Env) func() string {
+	t.Helper()
+	f, err := os.CreateTemp(t.TempDir(), "stderr")
+	if err != nil {
+		t.Fatalf("CreateTemp: %v", err)
+	}
+	t.Cleanup(func() { f.Close() })
+	env.Stderr = f
+	return func() string {
+		b, err := os.ReadFile(f.Name())
+		if err != nil {
+			t.Fatalf("ReadFile: %v", err)
+		}
+		return string(b)
+	}
+}

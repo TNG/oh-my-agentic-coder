@@ -32,7 +32,7 @@ func TestSecurityStoredConfigRevalidatedAtLaunch(t *testing.T) {
 	// Control: a value on the declared choices list resolves normally, so
 	// a fix that refuses every stored value wouldn't make this test pass
 	// for the wrong reason.
-	armed, problems := r.Resolve(m, e, dir, store)
+	armed, problems := r.Resolve(m, e, dir, MergeConfig(store, nil))
 	defer armed.Zero()
 	if got := armed.Config["MODE"]; got != "safe" || len(problems) != 0 {
 		t.Fatalf("control: a valid stored choice was not resolved cleanly (value=%q, problems=%v): the fixture is broken, not the security property", got, problems)
@@ -211,5 +211,24 @@ func TestSecurityUnanchoredWorkdirValueRefused(t *testing.T) {
 			t.Errorf("%s: an unanchored workdir value %q resolved without an InvalidConfig problem", name, got)
 		}
 		armed3.Zero()
+	}
+}
+
+// TestSecurityUnmergedStoreRefused asserts that a store which did not go
+// through MergeConfig carries no provenance, so an unanchored value in it is
+// refused rather than read as "not from the workdir".
+func TestSecurityUnmergedStoreRefused(t *testing.T) {
+	dir := skillDir(t)
+	e := entry(t, "probe", dir)
+	spec := config.ConfigSpec{Name: "GH_ALLOW_WRITE", Type: config.ConfigFieldBool}
+	m := meta(nil, []config.SecretSpec{{Name: "API_KEY"}}, []config.ConfigSpec{spec})
+	r := New(Options{Env: env(map[string]string{"API_KEY": "x"}), Scope: "wd"})
+
+	direct := &skillconfig.Store{Version: skillconfig.SchemaVersion}
+	direct.Set("probe", "GH_ALLOW_WRITE", "true")
+	armed, problems := r.Resolve(m, e, dir, direct)
+	defer armed.Zero()
+	if got := armed.Config["GH_ALLOW_WRITE"]; got == "true" || !Has(problems, InvalidConfig) {
+		t.Errorf("an unanchored value from an unmerged store resolved (value=%q, problems=%v)", got, problems)
 	}
 }

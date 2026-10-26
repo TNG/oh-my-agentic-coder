@@ -839,7 +839,9 @@ func handleOneField(env *Env, store *skillconfig.Store, skill, skillDir string, 
 			if defStore != nil {
 				defStore.SetDefault(skill, spec.Name, cur)
 			}
-			st.status(env.Stderr, "[skip]", st.dim(spec.Name+" already configured"), ansiYellow)
+			// Show the value: register anchors it as approved, and the
+			// workdir file it may come from is agent-writable.
+			st.status(env.Stderr, "[skip]", st.dim(spec.Name+" already configured: "+stripControlChars(cur)), ansiYellow)
 			return false, nil
 		}
 		// 1b. Previously skipped on a prior register run? Honor that
@@ -898,6 +900,19 @@ func handleOneField(env *Env, store *skillconfig.Store, skill, skillDir string, 
 		if v, ok := os.LookupEnv(spec.DefaultFromEnv); ok && v != "" {
 			defaultVal = v
 			defaultSource = "$" + spec.DefaultFromEnv
+		}
+	}
+
+	// 4b. Under --reprompt-fields a value is already stored, and pressing
+	//     Enter would approve it. Offer it as the default so the user sees
+	//     what they are approving (an agent may have rewritten it in the
+	//     workdir file). A stored value the spec rejects is not offered.
+	if reprompt {
+		if cur, ok := store.Get(skill, spec.Name); ok {
+			if _, err := canonicalizeFieldValue(spec, cur); err == nil {
+				defaultVal = cur
+				defaultSource = "stored value"
+			}
 		}
 	}
 

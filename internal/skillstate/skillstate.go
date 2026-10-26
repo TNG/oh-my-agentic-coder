@@ -505,7 +505,7 @@ func (r *Resolver) resolveConfig(armed *Armed, cfg *skillconfig.Store) []Problem
 							"config value changed since register"))
 						continue
 					}
-				} else if workdirSourced(cfg, skill, spec.Name) {
+				} else if !cfg.Merged || workdirSourced(cfg, skill, spec.Name) {
 					problems = append(problems, configProblem(skill, spec.Name,
 						"value comes from the agent-writable workdir config and was never approved"))
 					continue
@@ -722,7 +722,7 @@ func First(problems []Problem, kinds ...ProblemKind) *Problem {
 // error — and <workdir>/.opencode/skill-config.yaml is agent-writable, so
 // dereferencing it would let malformed YAML panic the live-reload handler.
 func MergeConfig(global, workdir *skillconfig.Store) *skillconfig.Store {
-	out := &skillconfig.Store{Version: skillconfig.SchemaVersion, Skills: map[string]map[string]string{}}
+	out := &skillconfig.Store{Version: skillconfig.SchemaVersion, Skills: map[string]map[string]string{}, Merged: true}
 	for _, layer := range []*skillconfig.Store{global, workdir} { // low priority first
 		if layer == nil {
 			continue
