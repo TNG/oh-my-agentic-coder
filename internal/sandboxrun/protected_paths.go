@@ -61,6 +61,10 @@ func NewProtectedPathSet(p *sandboxprofile.Profile) *ProtectedPathSet {
 		set.entries = append(set.entries, exp)
 		set.rules = append(set.rules, "profile")
 	}
+	for _, lit := range literalDenies(p) {
+		set.entries = append(set.entries, lit)
+		set.rules = append(set.rules, "profile")
+	}
 	return set
 }
 

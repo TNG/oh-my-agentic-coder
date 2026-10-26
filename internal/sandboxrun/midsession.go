@@ -96,6 +96,7 @@ func WatchNewProtected(p *sandboxprofile.Profile, workdir string, interval time.
 		return err
 	}
 	protected := sandboxprofile.EffectiveProtectedPaths(base, p.Filesystem.OverrideDeny)
+	protected = append(protected, literalDenies(p)...)
 	cache := newDenyScanCache()
 	resolve := func(scanCache *denyScanCache, concurrency int) ([]string, error) {
 		out, byName, err := resolveDenyPaths(p.Filesystem.Deny, base.WorkdirProtected, p.Filesystem.OverrideDeny, roots, protected, nil, scanCache, concurrency)
