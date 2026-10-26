@@ -2,20 +2,40 @@ package builtinskills
 
 import (
 	"bytes"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"testing"
 )
 
-func TestNamesIncludesWriteASkill(t *testing.T) {
-	found := false
-	for _, n := range Names() {
-		if n == "omac-write-a-skill" {
-			found = true
+func TestNamesIncludesBuiltins(t *testing.T) {
+	for _, want := range []string{"omac-vm", "omac-write-a-skill"} {
+		if !slices.Contains(Names(), want) {
+			t.Errorf("Names() = %v, want to include %s", Names(), want)
 		}
 	}
-	if !found {
-		t.Fatalf("Names() = %v, want to include omac-write-a-skill", Names())
+}
+
+// Harnesses match a skill by the frontmatter name, and `omac setup` refreshes
+// only directories that carry the marker.
+func TestBundlesNameMatchesDirAndCarryMarker(t *testing.T) {
+	for _, name := range Names() {
+		b, err := fs.ReadFile(assetsFS, assetsRoot+"/"+name+"/SKILL.md")
+		if err != nil {
+			t.Fatal(err)
+		}
+		fm, ok := frontmatter(b)
+		if !ok {
+			t.Fatalf("%s: SKILL.md has no frontmatter", name)
+		}
+		if !regexp.MustCompile(`(?m)^name: ` + regexp.QuoteMeta(name) + `$`).Match(fm) {
+			t.Errorf("%s: frontmatter name does not match the directory", name)
+		}
+		if !markerRe.Match(fm) {
+			t.Errorf("%s: frontmatter lacks %s: \"true\"", name, MarkerKey)
+		}
 	}
 }
 
@@ -67,6 +87,25 @@ func TestMaterializeCreateUnchangedUpdate(t *testing.T) {
 	}
 	if !bytes.Equal(got, orig) {
 		t.Fatal("SKILL.md was not refreshed to the embedded version")
+	}
+}
+
+// SKILL.md links to the bundle's other files, so they must be written too.
+func TestMaterializeWritesWholeBundle(t *testing.T) {
+	parent := t.TempDir()
+	if _, err := Materialize("omac-vm", parent, false); err != nil {
+		t.Fatal(err)
+	}
+	want, err := fs.ReadFile(assetsFS, assetsRoot+"/omac-vm/setup.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(parent, "omac-vm", "setup.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatal("setup.md differs from the embedded version")
 	}
 }
 

@@ -65,6 +65,7 @@ This is handled by `omac serve` instead of `omac start`. Desktop integration is 
 | **Skill** | A self-contained package that extends what the agent can do. It provides instructions to the agent and optionally a helper program that can call external services and securely hold their credentials. |
 | **Sidecar** | A helper program that runs on your machine, outside the sandbox, and implements a skill's API. If the skill needs credentials, the sidecar holds them — the agent never sees them directly.             |
 | **Facade** | The component inside omac that connects the sandbox to the skill sidecars. The agent sends requests to the facade; the facade forwards them to the right sidecar.                                       |
+| **omac VM** | A long-lived Linux virtual machine on your computer that omac manages. It runs Docker and builds for sessions started with `--vm`, has no network access by default, and gets your code only as copies made by `omac vm exec`. See [omac vm](./usage/cli.md#omac-vm). |
 | **MCP server** | A tool server that a harness connects to over the Model Context Protocol to gain extra capabilities (example: an MCP server can provide information on demand).                                         |
 
 ## Known limitations
