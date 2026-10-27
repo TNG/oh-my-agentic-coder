@@ -90,6 +90,22 @@ func FacadeRequest(method, mount, namespace, path string, status int, bytesOut, 
 	}
 }
 
+// FacadeApproval builds a facade.approval event: the gate's decision for one
+// request to a skill that declares approvals. result is "allow" or "deny";
+// source is why (declared, prompt, session, always, undeclared-endpoint,
+// invalid-path, timeout, unavailable, abandoned, deny-all); scope is
+// once|session|always when a user answer was involved. The query string is
+// never recorded.
+func FacadeApproval(skill, method, mount, namespace, path, result, source, scope string) Event {
+	if len(path) > maxPathBytes {
+		path = path[:maxPathBytes] + "…"
+	}
+	return Event{
+		Type: TypeFacadeApproval, Skill: skill, Method: method, Mount: mount,
+		Namespace: namespace, Path: path, Result: result, Source: source, Scope: scope,
+	}
+}
+
 // ControlMutation builds a control.mutation event.
 func ControlMutation(action, dir, result string) Event {
 	return Event{Type: TypeControlMutation, Action: action, Dir: dir, Result: result}
