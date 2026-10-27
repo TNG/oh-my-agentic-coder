@@ -4,6 +4,7 @@
 package config
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -18,6 +19,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/TNG/oh-my-agentic-coder/internal/approval"
 	"github.com/TNG/oh-my-agentic-coder/internal/osinfo"
 )
 
@@ -59,6 +61,58 @@ type SidecarMeta struct {
 	InstallScripts map[string]string `yaml:"install_scripts,omitempty"`
 	Protocols      []string          `yaml:"protocols,omitempty"`
 	Limits         *LimitsSpec       `yaml:"limits,omitempty"`
+	Approvals      *ApprovalsSpec    `yaml:"approvals,omitempty"`
+}
+
+// ApprovalsSpec is the optional closed-world endpoint declaration under
+// sidecar.approvals. When present, the facade forwards only requests that
+// match a declared endpoint; see internal/approval.
+type ApprovalsSpec struct {
+	Version   int            `yaml:"version"`
+	Endpoints []ApprovalSpec `yaml:"endpoints"`
+}
+
+// ApprovalSpec declares one endpoint: "<METHOD|ANY> <path>" and whether the
+// user must approve calls to it.
+type ApprovalSpec struct {
+	Match       string        `yaml:"match"`
+	Approval    approval.Mode `yaml:"approval"`
+	Description string        `yaml:"description,omitempty"`
+}
+
+// UnmarshalYAML decodes the block strictly: unknown keys are an error here,
+// unlike the rest of omac.yaml, because a misspelled key in a security
+// declaration must not silently weaken it.
+func (a *ApprovalsSpec) UnmarshalYAML(node *yaml.Node) error {
+	raw, err := yaml.Marshal(node)
+	if err != nil {
+		return err
+	}
+	type plain ApprovalsSpec
+	dec := yaml.NewDecoder(bytes.NewReader(raw))
+	dec.KnownFields(true)
+	var p plain
+	if err := dec.Decode(&p); err != nil {
+		return fmt.Errorf("sidecar.approvals: %w", err)
+	}
+	*a = ApprovalsSpec(p)
+	return nil
+}
+
+// Compile validates the declaration and returns the matcher the facade uses.
+func (a *ApprovalsSpec) Compile() (*approval.Set, error) {
+	if a.Version != 1 {
+		return nil, fmt.Errorf("sidecar.approvals.version must be 1, got %d", a.Version)
+	}
+	entries := make([]approval.Entry, len(a.Endpoints))
+	for i, e := range a.Endpoints {
+		entries[i] = approval.Entry{Match: e.Match, Approval: e.Approval, Description: e.Description}
+	}
+	set, err := approval.Compile(entries)
+	if err != nil {
+		return nil, fmt.Errorf("sidecar.%w", err)
+	}
+	return set, nil
 }
 
 // SecretSpec describes a single credential that omac prompts for at
@@ -424,6 +478,11 @@ func (s *SidecarMeta) Validate(skillName string) error {
 	}
 	if s.Mount != "" && !mountRE.MatchString(s.Mount) {
 		return fmt.Errorf("sidecar.mount %q must match %s", s.Mount, mountRE.String())
+	}
+	if s.Approvals != nil {
+		if _, err := s.Approvals.Compile(); err != nil {
+			return err
+		}
 	}
 
 	// Track every authoritatively-declared env var (secrets + config) so
