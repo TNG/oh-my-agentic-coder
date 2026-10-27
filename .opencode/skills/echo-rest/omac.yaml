@@ -71,3 +71,19 @@ sidecar:
     linux: install/install.linux.sh
 
   protocols: ["http"]
+
+  # Closed world: omac forwards only the endpoints listed here. Everything
+  # else gets 403 undeclared-endpoint without reaching the sidecar. POST
+  # /echo asks the user first; the reads need no approval.
+  approvals:
+    version: 1
+    endpoints:
+      - match: "GET /status"
+        approval: none
+      - match: "GET /whoami"
+        approval: none
+      - match: "GET /tick"
+        approval: none
+      - match: "POST /echo"
+        approval: required
+        description: "Echoes the request body back"
