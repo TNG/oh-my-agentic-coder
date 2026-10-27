@@ -107,12 +107,15 @@ instead.
   `postgres:16-alpine`, and ask the human to run
   `omac vm image add <image>` on the host.
 - **Dependencies do not resolve offline.** Gradle reports `Could not resolve`
-  or `No cached version ... available for offline mode`. Do not drop
-  `--offline`. Name the dependency and the build file you changed, and ask
-  the human to prime the VM from the host, as described in "Prime the build
-  caches" in [setup.md](setup.md). They prime from a fresh clone, in a
-  new folder, of a commit with your change, and omac refuses `omac vm online` while a session is
-  attached, so they end this session first.
+  or `No cached version ... available for offline mode`. If the Gradle
+  wrapper already fails with `UnknownHostException: services.gradle.org`
+  while downloading its distribution, the VM was never primed, for example
+  after `omac vm reset`. Do not drop `--offline`. Name the dependency and
+  the build file you changed, and ask the human to prime the VM from the
+  host, as described in "Prime the build caches" in [setup.md](setup.md).
+  They prime from a fresh clone, in a new folder, of a commit with your
+  change, and omac refuses `omac vm online` while a session is attached, so
+  they end this session first. Never look for the token yourself.
 - **A JDK or system package is missing.** Gradle reports `No matching
   toolchains found` or `Cannot find a Java installation`, or a command is
   not found. Name it, for example `temurin-21`, and ask the human to add it
