@@ -407,6 +407,8 @@ func runRegister(args []string, env *Env) int {
 		}
 	}
 
+	fmt.Fprintln(env.Stdout, approvalsSummary(meta))
+
 	// Prominent "what next?" callout for the install script. This is the
 	// single most actionable follow-up after a register, so it gets a
 	// bordered box at the very end where it can't be missed. omac never
