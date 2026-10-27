@@ -96,10 +96,12 @@ omac vm exec --cwd backend -- sh -c 'grep -l -e "<failure" -e "<error" build/tes
   `postgres:16-alpine`, and ask the human to run
   `omac vm image add <image>` on the host.
 - **Dependencies do not resolve offline.** Gradle reports `Could not resolve`
-  or `No cached version ... available for offline mode`. Do not drop
-  `--offline`. Ask the human to prime the VM from the host. omac refuses
-  `omac vm online` while a session is attached, so they end this session
-  first:
+  or `No cached version ... available for offline mode`. If the Gradle
+  wrapper already fails with `UnknownHostException: services.gradle.org`
+  while downloading its distribution, the VM was never primed, for example
+  after `omac vm reset`. Do not drop `--offline`. Ask the human to prime the
+  VM from the host. omac refuses `omac vm online` while a session is
+  attached, so they end this session first:
 
   ```sh
   omac vm online
@@ -110,7 +112,9 @@ omac vm exec --cwd backend -- sh -c 'grep -l -e "<failure" -e "<error" build/tes
   `<check task>` is the task that runs all checks, such as `check`, not only
   `test`: Gradle downloads the tools behind tasks such as Checkstyle or
   Spotless only when those tasks run. Leave out `--env` if the downloads need
-  no token. `--no-daemon` is only for priming: a daemon would keep the token.
+  no token; otherwise the human exports it in that shell first. Never look
+  for the token yourself. `--no-daemon` is only for priming: a daemon would
+  keep the token. Priming has to end with `BUILD SUCCESSFUL`.
 - **A JDK or system package is missing.** Gradle reports `Cannot find a Java
   installation matching ...`, or a command is not found. Name it, for example
   `temurin-21`, and ask the human to add it to `jdks` or `packages` in
