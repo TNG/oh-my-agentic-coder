@@ -13,14 +13,14 @@ import (
 
 // StatusReport is what `omac vm status` shows.
 type StatusReport struct {
-	Created, Running    bool
-	Mode                string
-	SSHPort, DockerPort int
-	Resources           Resources
-	Images, Worktrees   []string
-	JDKs, Packages      []string
-	Sessions            []int
-	Docker              *DockerVersion // nil when the probe failed or the VM is stopped
+	Created, Running  bool
+	Mode              string
+	SSHPort           int
+	Resources         Resources
+	Images, Worktrees []string
+	JDKs, Packages    []string
+	Sessions          []int
+	Docker            *DockerVersion // nil when the probe failed or the VM is stopped
 	// WorktreesNote replaces the worktree list when it could not be read.
 	WorktreesNote string
 }
@@ -28,7 +28,8 @@ type StatusReport struct {
 // Status reports the VM state without modifying the VM. A failed Docker probe
 // only leaves Docker nil. An existing instance without state.json is an
 // error: its mode and ports are unknown, so the report would be misleading.
-// Copied worktrees are read here, not in report, so an idempotent Up needs no SSH.
+// Copied worktrees are read here, not in report, so an idempotent Up needs only
+// the Docker check over SSH.
 func (m *Manager) Status(ctx context.Context) (StatusReport, error) {
 	inst, err := m.instance(ctx)
 	if err != nil {
@@ -66,14 +67,14 @@ func (m *Manager) report(ctx context.Context, inst *Instance, st *State) (Status
 		Resources: ResolveResources(cfg, m.Deps.Host),
 	}
 	if st != nil {
-		r.Mode, r.SSHPort, r.DockerPort = st.Mode, st.SSHPort, st.DockerPort
+		r.Mode, r.SSHPort = st.Mode, st.SSHPort
 		r.Images, r.JDKs, r.Packages = st.Images, st.JDKs, st.Packages
 	}
 	if r.Sessions, err = AttachedSessions(m.Layout, m.Deps.Alive); err != nil {
 		return StatusReport{}, err
 	}
 	if r.Running && st != nil {
-		if v, err := m.Deps.Probe(ctx, st.DockerPort); err == nil {
+		if v, err := m.dockerVersion(ctx, st); err == nil {
 			r.Docker = &v
 		}
 	}
@@ -125,7 +126,7 @@ func (s StatusReport) Write(w io.Writer) {
 	if s.Docker != nil {
 		docker = fmt.Sprintf("Docker %s, API %s", printable(s.Docker.Version), printable(s.Docker.APIVersion))
 	}
-	fmt.Fprintf(w, "docker: tcp://127.0.0.1:%d (%s)\n", s.DockerPort, docker)
+	fmt.Fprintf(w, "docker: %s\n", docker)
 	fmt.Fprintf(w, "resources: %d cpus, %s memory, %s disk\n", s.Resources.CPUs, s.Resources.Memory, s.Resources.Disk)
 	writeList(w, "packages", s.Packages)
 	writeList(w, "jdks", s.JDKs)

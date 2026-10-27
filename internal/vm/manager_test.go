@@ -45,7 +45,7 @@ func writeConfig(t *testing.T, m *Manager, content string) {
 }
 
 func TestUpCreatesProvisionsAndGoesOffline(t *testing.T) {
-	m, lima, ssh, _ := newTestManager(t)
+	m, lima, ssh := newTestManager(t)
 	m.Deps.ProvisionTimeout = 2 * time.Second
 	l := m.Layout
 	mustUp(t, m)
@@ -72,10 +72,13 @@ func TestUpCreatesProvisionsAndGoesOffline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"localPort: 42022", "hostPort: 42375", "name: alice", "AAAAkey1", "AAAAkey2"} {
+	for _, want := range []string{"localPort: 42022", "name: alice", "AAAAkey1", "AAAAkey2"} {
 		if !strings.Contains(string(yaml), want) {
 			t.Errorf("lima yaml lacks %q", want)
 		}
+	}
+	if strings.Contains(string(yaml), "42375") {
+		t.Error("lima yaml forwards a Docker port")
 	}
 	for path, want := range map[string]os.FileMode{l.Root: 0o700, l.LimaHome: 0o700, l.LimaYAML: 0o600} {
 		fi, err := os.Stat(path)
@@ -93,16 +96,22 @@ func TestUpCreatesProvisionsAndGoesOffline(t *testing.T) {
 	}
 
 	st := mustState(t, m)
-	if st.Mode != ModeOffline || st.SSHPort != 42022 || st.DockerPort != 42375 {
-		t.Errorf("state = %+v, want offline on 42022/42375", st)
+	if st.Mode != ModeOffline || st.SSHPort != 42022 {
+		t.Errorf("state = %+v, want offline on 42022", st)
 	}
 
 	calls, guest := ssh.snapshot()
 	wantRoot := SSHTarget{User: "root", Port: 42022, KeyPath: l.AdminKey, KnownHosts: l.KnownHosts}
+	// The Docker check runs as the agent user, who owns rootless dockerd.
+	wantAgent := SSHTarget{User: "alice", Port: 42022, KeyPath: l.AgentKey, KnownHosts: l.KnownHosts}
 	var wroteMode, verified bool
 	for _, c := range calls {
-		if c.target != wantRoot {
-			t.Errorf("ssh %q ran as %+v, want %+v", c.remote, c.target, wantRoot)
+		want := wantRoot
+		if c.remote == dockerVersionCmd {
+			want = wantAgent
+		}
+		if c.target != want {
+			t.Errorf("ssh %q ran as %+v, want %+v", c.remote, c.target, want)
 		}
 		wroteMode = wroteMode || c.remote == "printf '%s' offline > /etc/omac-vm/mode"
 		verified = verified || c.remote == "nft list table inet omac-vmguard"
@@ -116,7 +125,7 @@ func TestUpCreatesProvisionsAndGoesOffline(t *testing.T) {
 }
 
 func TestUpIsIdempotentWhenRunningOffline(t *testing.T) {
-	m, lima, ssh, _ := newTestManager(t)
+	m, lima, ssh := newTestManager(t)
 	mustUp(t, m)
 	lima.reset()
 	before := len(ssh.remotes())
@@ -125,8 +134,9 @@ func TestUpIsIdempotentWhenRunningOffline(t *testing.T) {
 
 	mustUp(t, m)
 	assertVerbs(t, lima, "list")
-	if n := len(ssh.remotes()); n != before {
-		t.Errorf("second Up ran %d ssh commands, want none", n-before)
+	// Only the status report's Docker check over ssh.
+	if got := ssh.remotes()[before:]; !slices.Equal(got, []string{dockerVersionCmd}) {
+		t.Errorf("second Up ran ssh commands %q, want only the Docker check", got)
 	}
 	if !strings.Contains(out.String(), "status: running") {
 		t.Errorf("second Up output = %q, want a status report", out.String())
@@ -134,7 +144,7 @@ func TestUpIsIdempotentWhenRunningOffline(t *testing.T) {
 }
 
 func TestUpStartsStoppedInstanceOffline(t *testing.T) {
-	m, lima, ssh, _ := newTestManager(t)
+	m, lima, ssh := newTestManager(t)
 	mustUp(t, m)
 	lima.setStatus(StatusStopped) // host rebooted
 	ssh.halt()
@@ -154,7 +164,7 @@ func TestUpStartsStoppedInstanceOffline(t *testing.T) {
 }
 
 func TestUpStoppedInstanceFallsBackWhenFirewallMissing(t *testing.T) {
-	m, lima, ssh, _ := newTestManager(t)
+	m, lima, ssh := newTestManager(t)
 	mustUp(t, m)
 	lima.setStatus(StatusStopped)
 	ssh.mu.Lock()
@@ -174,7 +184,7 @@ func TestUpStoppedInstanceFallsBackWhenFirewallMissing(t *testing.T) {
 }
 
 func TestUpRecoversFromInterruptedProvisioning(t *testing.T) {
-	m, lima, ssh, _ := newTestManager(t)
+	m, lima, ssh := newTestManager(t)
 	lima.failOn["start"] = errors.New("boot timed out")
 
 	err := m.Up(context.Background(), false)
@@ -212,7 +222,7 @@ func TestUpRecoversFromInterruptedProvisioning(t *testing.T) {
 // limactl start times out while the guest still runs apt. The next up must
 // refuse instead of stopping the VM in the middle of that provisioning.
 func TestUpRefusesWhileProvisioningStillRunning(t *testing.T) {
-	m, lima, ssh, _ := newTestManager(t)
+	m, lima, ssh := newTestManager(t)
 	ssh.slowBoots = 1
 	lima.startTimeout = errors.New(`did not receive an event with the "running" status`)
 	if err := m.Up(context.Background(), false); err == nil || !strings.Contains(err.Error(), retryUpHint) {
@@ -251,7 +261,7 @@ func TestLifecycleRefusesWhileProvisioningStillRunning(t *testing.T) {
 	}
 	for _, op := range operations {
 		t.Run(op.name, func(t *testing.T) {
-			m, lima, ssh, _ := newTestManager(t)
+			m, lima, ssh := newTestManager(t)
 			ssh.slowBoots = 1
 			lima.startTimeout = errors.New("boot timed out")
 			if err := m.Up(context.Background(), false); err == nil {
@@ -292,9 +302,9 @@ func TestLifecycleRefusesWhileProvisioningStillRunning(t *testing.T) {
 func TestSetModeOfflineRefusesUnprovisionedGuest(t *testing.T) {
 	for _, stopped := range []bool{false, true} {
 		t.Run(fmt.Sprintf("stopped=%t", stopped), func(t *testing.T) {
-			m, lima, ssh, probe := newTestManager(t)
+			m, lima, ssh := newTestManager(t)
 			ssh.provisionFailures = 1
-			probe.setErr(errors.New("connection refused"))
+			ssh.fail = dockerDown
 			if err := m.Up(context.Background(), false); err == nil {
 				t.Fatal("setup: expected provisioning failure")
 			}
@@ -308,7 +318,7 @@ func TestSetModeOfflineRefusesUnprovisionedGuest(t *testing.T) {
 				}
 				ssh.provisionFailures = 1
 			}
-			probe.setErr(nil)
+			ssh.fail = nil
 			lima.reset()
 			nSSH := len(ssh.remotes())
 
@@ -334,7 +344,7 @@ func TestSetModeOfflineRefusesUnprovisionedGuest(t *testing.T) {
 func TestLifecycleReadinessProbeFailureRefusesMutation(t *testing.T) {
 	for _, op := range []string{"reprovision", "offline", "online"} {
 		t.Run(op, func(t *testing.T) {
-			m, lima, ssh, _ := newTestManager(t)
+			m, lima, ssh := newTestManager(t)
 			mustUp(t, m)
 			_, before := ssh.snapshot()
 			probeErr := errors.New("SSH disconnected")
@@ -379,7 +389,7 @@ func TestLifecycleReadinessProbeFailureRefusesMutation(t *testing.T) {
 // A stopped VM whose state says online may lack the provisioned marker, so
 // its boot provisions: it needs the provisioning timeout and the retry hint.
 func TestUpStartsStoppedOnlineWithProvisionTimeout(t *testing.T) {
-	m, lima, _, _ := newTestManager(t)
+	m, lima, _ := newTestManager(t)
 	ctx := context.Background()
 	mustUp(t, m)
 	if err := m.SetMode(ctx, ModeOnline); err != nil {
@@ -403,16 +413,16 @@ func TestUpStartsStoppedOnlineWithProvisionTimeout(t *testing.T) {
 }
 
 func TestUpRerunsProvisioningWhenRunningUnprovisioned(t *testing.T) {
-	m, lima, ssh, probe := newTestManager(t)
+	m, lima, ssh := newTestManager(t)
 	ssh.provisionFailures = 1
-	probe.setErr(errors.New("connection refused")) // Docker never comes up
+	ssh.fail = dockerDown // Docker never comes up
 	if err := m.Up(context.Background(), false); err == nil || !strings.Contains(err.Error(), "omac vm up --reprovision") {
 		t.Fatalf("Up = %v, want the retry hint", err)
 	}
 	if _, g := ssh.snapshot(); g.provisioned || lima.status() != StatusRunning {
 		t.Fatalf("setup: guest %+v, status %q; want running and unprovisioned", g, lima.status())
 	}
-	probe.setErr(nil)
+	ssh.fail = nil
 	lima.reset()
 
 	mustUp(t, m)
@@ -426,7 +436,7 @@ func TestUpRerunsProvisioningWhenRunningUnprovisioned(t *testing.T) {
 }
 
 func TestUpLeavesDeliberateOnlineAlone(t *testing.T) {
-	m, lima, ssh, _ := newTestManager(t)
+	m, lima, ssh := newTestManager(t)
 	mustUp(t, m)
 	if err := m.SetMode(context.Background(), ModeOnline); err != nil {
 		t.Fatal(err)
@@ -450,7 +460,7 @@ func TestUpLeavesDeliberateOnlineAlone(t *testing.T) {
 }
 
 func TestUpStartsStoppedDeliberateOnlineWithoutReprovision(t *testing.T) {
-	m, lima, ssh, _ := newTestManager(t)
+	m, lima, ssh := newTestManager(t)
 	ctx := context.Background()
 	mustUp(t, m)
 	if err := m.SetMode(ctx, ModeOnline); err != nil {
@@ -472,7 +482,7 @@ func TestUpStartsStoppedDeliberateOnlineWithoutReprovision(t *testing.T) {
 }
 
 func TestReprovisionKeepsPackagesWhenOfflineSwitchFails(t *testing.T) {
-	m, _, ssh, _ := newTestManager(t)
+	m, _, ssh := newTestManager(t)
 	mustUp(t, m)
 	writeConfig(t, m, "packages: [jq]\n")
 	// The online check expects nft to fail; the final offline check fails.
@@ -492,8 +502,8 @@ func TestReprovisionKeepsPackagesWhenOfflineSwitchFails(t *testing.T) {
 }
 
 func TestUpCreateClearsStaleLists(t *testing.T) {
-	m, _, _, _ := newTestManager(t)
-	stale := &State{SSHPort: 42022, DockerPort: 42375, Mode: ModeOffline,
+	m, _, _ := newTestManager(t)
+	stale := &State{SSHPort: 42022, Mode: ModeOffline,
 		Images: []string{"x"}, JDKs: []string{"17"}}
 	if err := SaveState(m.Layout.StatePath, stale); err != nil {
 		t.Fatal(err)
@@ -504,8 +514,27 @@ func TestUpCreateClearsStaleLists(t *testing.T) {
 	}
 }
 
+func TestUpCreateDropsStaleKnownHosts(t *testing.T) {
+	m, _, _ := newTestManager(t)
+	const staleEntry = "[127.0.0.1]:42022 ssh-ed25519 AAAAstale\n"
+	if err := os.MkdirAll(filepath.Dir(m.Layout.KnownHosts), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(m.Layout.KnownHosts, []byte(staleEntry), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	mustUp(t, m)
+	got, err := os.ReadFile(m.Layout.KnownHosts)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(got), "AAAAstale") {
+		t.Errorf("known_hosts = %q, want the stale entry gone", got)
+	}
+}
+
 func TestUpFailsWhenFirewallMissingOffline(t *testing.T) {
-	m, _, ssh, _ := newTestManager(t)
+	m, _, ssh := newTestManager(t)
 	ssh.fail = func(remote string) error {
 		if remote == verifyFirewallCmd {
 			return errors.New("exit status 1")
@@ -524,15 +553,15 @@ func TestUpFailsWhenFirewallMissingOffline(t *testing.T) {
 	}
 }
 
-// The forwarded ports are baked into the instance's lima.yaml, so new ports
-// picked for a lost state.json would point every later attach elsewhere.
+// The forwarded ssh port is baked into the instance's lima.yaml, so a new
+// port picked for a lost state.json would point every later attach elsewhere.
 func TestUpRefusesExistingInstanceWithoutState(t *testing.T) {
-	m, lima, ssh, _ := newTestManager(t)
+	m, lima, ssh := newTestManager(t)
 	mustUp(t, m)
 	if err := os.Remove(m.Layout.StatePath); err != nil {
 		t.Fatal(err)
 	}
-	m.Deps.PortFree = func(p int) bool { return p != 42022 && p != 42375 } // Lima holds both
+	m.Deps.PortFree = func(p int) bool { return p != 42022 } // Lima holds it
 	lima.reset()
 	nSSH := len(ssh.remotes())
 
@@ -549,20 +578,20 @@ func TestUpRefusesExistingInstanceWithoutState(t *testing.T) {
 	}
 }
 
-func TestUpReusesLeftoverPortsOnlyWhileTheyAreFree(t *testing.T) {
-	const sshPort, dockerPort = 42030, 42380
+func TestUpReusesLeftoverSSHPortOnlyWhileFree(t *testing.T) {
+	const sshPort = 42030
 	cases := []struct {
 		name    string
 		free    func(int) bool
 		wantSSH int
 	}{
 		{"free", func(int) bool { return true }, sshPort},
-		{"taken", func(p int) bool { return p != sshPort && p != dockerPort }, 0},
+		{"taken", func(p int) bool { return p != sshPort }, 0},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			m, _, _, _ := newTestManager(t)
-			leftover := &State{Version: StateVersion, SSHPort: sshPort, DockerPort: dockerPort, Mode: ModeOffline}
+			m, _, _ := newTestManager(t)
+			leftover := &State{Version: StateVersion, SSHPort: sshPort, Mode: ModeOffline}
 			if err := SaveState(m.Layout.StatePath, leftover); err != nil {
 				t.Fatal(err)
 			}
@@ -570,20 +599,20 @@ func TestUpReusesLeftoverPortsOnlyWhileTheyAreFree(t *testing.T) {
 			mustUp(t, m)
 			st := mustState(t, m)
 			if c.wantSSH != 0 {
-				if st.SSHPort != c.wantSSH || st.DockerPort != dockerPort {
-					t.Errorf("ports = %d/%d, want the leftover %d/%d", st.SSHPort, st.DockerPort, c.wantSSH, dockerPort)
+				if st.SSHPort != c.wantSSH {
+					t.Errorf("SSH port = %d, want the leftover %d", st.SSHPort, c.wantSSH)
 				}
 				return
 			}
-			if st.SSHPort == sshPort || st.DockerPort == dockerPort {
-				t.Errorf("ports = %d/%d, want fresh ones", st.SSHPort, st.DockerPort)
+			if st.SSHPort == sshPort {
+				t.Errorf("SSH port = %d, want a fresh one", st.SSHPort)
 			}
 		})
 	}
 }
 
 func TestUpReplacesUnloadableLeftoverState(t *testing.T) {
-	m, _, _, _ := newTestManager(t)
+	m, _, _ := newTestManager(t)
 	if err := os.MkdirAll(filepath.Dir(m.Layout.StatePath), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -591,13 +620,13 @@ func TestUpReplacesUnloadableLeftoverState(t *testing.T) {
 		t.Fatal(err)
 	}
 	mustUp(t, m)
-	if st := mustState(t, m); st.SSHPort == 0 || st.DockerPort == 0 {
-		t.Errorf("state = %+v, want fresh ports", st)
+	if st := mustState(t, m); st.SSHPort == 0 {
+		t.Errorf("state = %+v, want a fresh SSH port", st)
 	}
 }
 
 func TestUpMissingLimactl(t *testing.T) {
-	m, lima, _, _ := newTestManager(t)
+	m, lima, _ := newTestManager(t)
 	m.Deps.LookPath = func(string) (string, error) { return "", errors.New("not found") }
 	if err := m.Up(context.Background(), false); !errors.Is(err, ErrLimaMissing) {
 		t.Fatalf("Up = %v, want ErrLimaMissing", err)
@@ -606,7 +635,7 @@ func TestUpMissingLimactl(t *testing.T) {
 }
 
 func TestUpReprovisionRewritesPackagesAndCycles(t *testing.T) {
-	m, lima, ssh, _ := newTestManager(t)
+	m, lima, ssh := newTestManager(t)
 	mustUp(t, m)
 	writeConfig(t, m, "packages: [jq]\n")
 	lima.reset()
@@ -638,7 +667,7 @@ func TestUpReprovisionRewritesPackagesAndCycles(t *testing.T) {
 }
 
 func TestUpInstallsJDKPackages(t *testing.T) {
-	m, _, _, _ := newTestManager(t)
+	m, _, _ := newTestManager(t)
 	writeConfig(t, m, "packages: [jq]\njdks: [temurin-25]\n")
 	mustUp(t, m)
 
@@ -665,7 +694,7 @@ func TestUpInstallsJDKPackages(t *testing.T) {
 }
 
 func TestUpCreateRecordsJDKsOnlyAfterProvisioning(t *testing.T) {
-	m, _, ssh, _ := newTestManager(t)
+	m, _, ssh := newTestManager(t)
 	writeConfig(t, m, "jdks: [temurin-25]\n")
 	ssh.fail = func(remote string) error {
 		if remote == verifyFirewallCmd {
@@ -682,7 +711,7 @@ func TestUpCreateRecordsJDKsOnlyAfterProvisioning(t *testing.T) {
 }
 
 func TestUpReprovisionAddsJDK(t *testing.T) {
-	m, _, ssh, _ := newTestManager(t)
+	m, _, ssh := newTestManager(t)
 	writeConfig(t, m, "packages: [jq]\n")
 	mustUp(t, m)
 	writeConfig(t, m, "packages: [jq]\njdks: [temurin-21]\n")
@@ -700,7 +729,7 @@ func TestUpReprovisionAddsJDK(t *testing.T) {
 }
 
 func TestUpRejectsUnsupportedJDKBeforeLima(t *testing.T) {
-	m, lima, _, _ := newTestManager(t)
+	m, lima, _ := newTestManager(t)
 	writeConfig(t, m, "jdks: [openjdk-21]\n")
 	err := m.Up(context.Background(), false)
 	if err == nil || !strings.Contains(err.Error(), `unsupported jdk "openjdk-21"`) {
@@ -710,7 +739,7 @@ func TestUpRejectsUnsupportedJDKBeforeLima(t *testing.T) {
 }
 
 func TestUpReprovisionStartsStoppedInstanceFirst(t *testing.T) {
-	m, lima, _, _ := newTestManager(t)
+	m, lima, _ := newTestManager(t)
 	mustUp(t, m)
 	if err := m.Down(context.Background()); err != nil {
 		t.Fatal(err)
@@ -729,7 +758,7 @@ func TestUpReprovisionStartsStoppedInstanceFirst(t *testing.T) {
 }
 
 func TestUpReprovisionRejectsBadPackageName(t *testing.T) {
-	m, lima, _, _ := newTestManager(t)
+	m, lima, _ := newTestManager(t)
 	mustUp(t, m)
 	writeConfig(t, m, "packages: [\"jq; reboot\"]\n")
 	lima.reset()
@@ -740,7 +769,7 @@ func TestUpReprovisionRejectsBadPackageName(t *testing.T) {
 }
 
 func TestDownStopsAndKeepsState(t *testing.T) {
-	m, lima, _, _ := newTestManager(t)
+	m, lima, _ := newTestManager(t)
 	mustUp(t, m)
 	lima.reset()
 	if err := m.Down(context.Background()); err != nil {
@@ -761,14 +790,14 @@ func TestDownStopsAndKeepsState(t *testing.T) {
 }
 
 func TestDownNotCreated(t *testing.T) {
-	m, _, _, _ := newTestManager(t)
+	m, _, _ := newTestManager(t)
 	if err := m.Down(context.Background()); !errors.Is(err, ErrNotCreated) {
 		t.Fatalf("Down = %v, want ErrNotCreated", err)
 	}
 }
 
 func TestResetDeletesEverythingThenUp(t *testing.T) {
-	m, lima, _, _ := newTestManager(t)
+	m, lima, _ := newTestManager(t)
 	l := m.Layout
 	mustUp(t, m)
 	oldKey, _ := os.ReadFile(l.AdminKey)
@@ -815,7 +844,7 @@ func TestResetDeletesEverythingThenUp(t *testing.T) {
 }
 
 func TestResetWithoutInstanceSkipsDelete(t *testing.T) {
-	m, lima, _, _ := newTestManager(t)
+	m, lima, _ := newTestManager(t)
 	if err := m.Reset(context.Background()); err != nil {
 		t.Fatalf("Reset: %v", err)
 	}
@@ -825,7 +854,7 @@ func TestResetWithoutInstanceSkipsDelete(t *testing.T) {
 }
 
 func TestSetModeOnlineRefusesWithSessions(t *testing.T) {
-	m, lima, _, _ := newTestManager(t)
+	m, lima, _ := newTestManager(t)
 	mustUp(t, m)
 	if _, err := RegisterSession(m.Layout, 4242); err != nil {
 		t.Fatal(err)
@@ -843,7 +872,7 @@ func TestSetModeOnlineRefusesWithSessions(t *testing.T) {
 // A session that registers after the first marker check (here: during the
 // instance lookup) is caught by the second check, before any restart.
 func TestSetModeOnlineRefusesSessionRegisteredMidSwitch(t *testing.T) {
-	m, lima, _, _ := newTestManager(t)
+	m, lima, _ := newTestManager(t)
 	mustUp(t, m)
 	m.Deps.Alive = func(pid int) bool { return pid == 5151 }
 	lima.reset()
@@ -914,7 +943,7 @@ func TestOnlineTransitionsRefuseAttachedSessions(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			m, lima, ssh, _ := newTestManager(t)
+			m, lima, ssh := newTestManager(t)
 			c.setup(t, m, lima)
 			adminKey, _ := os.ReadFile(m.Layout.AdminKey)
 			attachLiveSession(t, m, lima, 4343)
@@ -939,7 +968,7 @@ func TestOnlineTransitionsRefuseAttachedSessions(t *testing.T) {
 }
 
 func TestSetModeOnlineCyclesAndVerifiesNoFirewall(t *testing.T) {
-	m, lima, ssh, _ := newTestManager(t)
+	m, lima, ssh := newTestManager(t)
 	mustUp(t, m)
 	lima.reset()
 	nBefore := len(ssh.remotes())
@@ -963,7 +992,7 @@ func TestSetModeOnlineCyclesAndVerifiesNoFirewall(t *testing.T) {
 }
 
 func TestSetModeOnlineFailsWhenFirewallStillLoaded(t *testing.T) {
-	m, _, ssh, _ := newTestManager(t)
+	m, _, ssh := newTestManager(t)
 	mustUp(t, m)
 	ssh.mu.Lock()
 	ssh.stickyFirewall = true
@@ -975,7 +1004,7 @@ func TestSetModeOnlineFailsWhenFirewallStillLoaded(t *testing.T) {
 }
 
 func TestSetModeOfflineRestoresFirewall(t *testing.T) {
-	m, _, ssh, _ := newTestManager(t)
+	m, _, ssh := newTestManager(t)
 	mustUp(t, m)
 	if err := m.SetMode(context.Background(), ModeOnline); err != nil {
 		t.Fatal(err)
@@ -995,7 +1024,7 @@ func TestSetModeOfflineRestoresFirewall(t *testing.T) {
 }
 
 func TestSetModeAlreadyOfflineDoesNotRestart(t *testing.T) {
-	m, lima, _, _ := newTestManager(t)
+	m, lima, _ := newTestManager(t)
 	mustUp(t, m)
 	attachLiveSession(t, m, lima, 4242)
 
@@ -1012,7 +1041,7 @@ func TestSetModeAlreadyOfflineDoesNotRestart(t *testing.T) {
 }
 
 func TestSetModeAlreadyOfflineRepairsMissingFirewall(t *testing.T) {
-	m, lima, ssh, _ := newTestManager(t)
+	m, lima, ssh := newTestManager(t)
 	mustUp(t, m)
 	ssh.setFirewall(false)
 	lima.reset()
@@ -1027,7 +1056,7 @@ func TestSetModeAlreadyOfflineRepairsMissingFirewall(t *testing.T) {
 }
 
 func TestSetModeOnlineStartsStoppedVM(t *testing.T) {
-	m, lima, _, _ := newTestManager(t)
+	m, lima, _ := newTestManager(t)
 	ctx := context.Background()
 	mustUp(t, m)
 	if err := m.SetMode(ctx, ModeOnline); err != nil {
@@ -1048,7 +1077,7 @@ func TestSetModeOnlineStartsStoppedVM(t *testing.T) {
 }
 
 func TestSetModeOnStoppedVMUsesProvisionTimeout(t *testing.T) {
-	m, lima, _, _ := newTestManager(t)
+	m, lima, _ := newTestManager(t)
 	ctx := context.Background()
 	mustUp(t, m)
 	if err := m.Down(ctx); err != nil {
@@ -1067,7 +1096,7 @@ func TestSetModeOnStoppedVMUsesProvisionTimeout(t *testing.T) {
 }
 
 func TestVerifyModeFailsWhenGuestIsUnreachable(t *testing.T) {
-	m, _, _, _ := newTestManager(t)
+	m, _, _ := newTestManager(t)
 	mustUp(t, m)
 	if err := m.Down(context.Background()); err != nil {
 		t.Fatal(err)
@@ -1078,7 +1107,7 @@ func TestVerifyModeFailsWhenGuestIsUnreachable(t *testing.T) {
 }
 
 func TestSetModeRejectsUnknownMode(t *testing.T) {
-	m, lima, _, _ := newTestManager(t)
+	m, lima, _ := newTestManager(t)
 	if err := m.SetMode(context.Background(), "airplane"); err == nil {
 		t.Fatal("SetMode(airplane) succeeded")
 	}
@@ -1086,7 +1115,7 @@ func TestSetModeRejectsUnknownMode(t *testing.T) {
 }
 
 func TestStatusRefusesExistingInstanceWithoutState(t *testing.T) {
-	m, _, _, _ := newTestManager(t)
+	m, _, _ := newTestManager(t)
 	mustUp(t, m)
 	if err := os.Remove(m.Layout.StatePath); err != nil {
 		t.Fatal(err)
@@ -1097,7 +1126,7 @@ func TestStatusRefusesExistingInstanceWithoutState(t *testing.T) {
 }
 
 func TestStatusReportsEverything(t *testing.T) {
-	m, _, _, _ := newTestManager(t)
+	m, _, _ := newTestManager(t)
 	ctx := context.Background()
 	r, err := m.Status(ctx)
 	if err != nil || r.Created {
@@ -1117,7 +1146,7 @@ func TestStatusReportsEverything(t *testing.T) {
 		t.Fatalf("Status: %v", err)
 	}
 	want := StatusReport{
-		Created: true, Running: true, Mode: ModeOffline, SSHPort: 42022, DockerPort: 42375,
+		Created: true, Running: true, Mode: ModeOffline, SSHPort: 42022,
 		Resources: Resources{CPUs: 8, Memory: "16GiB", Disk: "60GiB"},
 		Images:    []string{"index.docker.io/library/alpine:latest"},
 		Sessions:  []int{77},
@@ -1132,9 +1161,9 @@ func TestStatusReportsEverything(t *testing.T) {
 }
 
 func TestStatusToleratesProbeFailure(t *testing.T) {
-	m, _, _, probe := newTestManager(t)
+	m, _, ssh := newTestManager(t)
 	mustUp(t, m)
-	probe.setErr(errors.New("connection refused"))
+	ssh.fail = dockerDown
 	r, err := m.Status(context.Background())
 	if err != nil || r.Docker != nil || !r.Running {
 		t.Fatalf("Status = %+v, %v; want running with Docker nil", r, err)
@@ -1142,7 +1171,7 @@ func TestStatusToleratesProbeFailure(t *testing.T) {
 }
 
 func TestStatusListsWorktreesFromGuest(t *testing.T) {
-	m, lima, ssh, _ := newTestManager(t)
+	m, lima, ssh := newTestManager(t)
 	ctx := context.Background()
 	mustUp(t, m)
 	// Two concurrent first runs can both append the same line.
@@ -1194,7 +1223,7 @@ func TestStatusListsWorktreesFromGuest(t *testing.T) {
 }
 
 func TestImageAddPullsLoadsAndRecords(t *testing.T) {
-	m, _, ssh, _ := newTestManager(t)
+	m, _, ssh := newTestManager(t)
 	ctx := context.Background()
 	mustUp(t, m)
 	var pulls []string
@@ -1253,7 +1282,7 @@ func TestImageAddPullsLoadsAndRecords(t *testing.T) {
 }
 
 func TestImageAddInvalidRef(t *testing.T) {
-	m, lima, _, _ := newTestManager(t)
+	m, lima, _ := newTestManager(t)
 	err := m.ImageAdd(context.Background(), "not a ref!")
 	if err == nil || !strings.HasPrefix(err.Error(), "omac vm:") {
 		t.Fatalf("ImageAdd = %v, want omac vm: error", err)
@@ -1262,7 +1291,7 @@ func TestImageAddInvalidRef(t *testing.T) {
 }
 
 func TestImageListMergesStateAndVM(t *testing.T) {
-	m, _, ssh, _ := newTestManager(t)
+	m, _, ssh := newTestManager(t)
 	ctx := context.Background()
 	mustUp(t, m)
 	if err := m.ImageAdd(ctx, "alpine"); err != nil {
@@ -1283,7 +1312,7 @@ func TestImageListMergesStateAndVM(t *testing.T) {
 }
 
 func TestImageRemove(t *testing.T) {
-	m, _, ssh, _ := newTestManager(t)
+	m, _, ssh := newTestManager(t)
 	ctx := context.Background()
 	mustUp(t, m)
 	if err := m.ImageAdd(ctx, "alpine"); err != nil {
@@ -1306,7 +1335,7 @@ func TestImageRemove(t *testing.T) {
 // An image deleted inside the VM (docker image rm, docker system prune)
 // still drops out of state.
 func TestImageRemoveMissingImageClearsState(t *testing.T) {
-	m, _, ssh, _ := newTestManager(t)
+	m, _, ssh := newTestManager(t)
 	ctx := context.Background()
 	mustUp(t, m)
 	if err := m.ImageAdd(ctx, "alpine"); err != nil {
@@ -1446,7 +1475,7 @@ func TestManagerFailureBranches(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			m, lima, ssh, _ := newTestManager(t)
+			m, lima, ssh := newTestManager(t)
 			mustUp(t, m)
 			c.setup(t, m, lima, ssh)
 			if err := c.run(m); err == nil {
@@ -1458,7 +1487,7 @@ func TestManagerFailureBranches(t *testing.T) {
 }
 
 func TestPrepareAttachChecks(t *testing.T) {
-	m, _, _, probe := newTestManager(t)
+	m, _, ssh := newTestManager(t)
 	ctx := context.Background()
 	if _, err := m.PrepareAttach(ctx); !errors.Is(err, ErrNotCreated) {
 		t.Fatalf("not created: %v", err)
@@ -1480,38 +1509,35 @@ func TestPrepareAttachChecks(t *testing.T) {
 	if err := m.SetMode(ctx, ModeOffline); err != nil {
 		t.Fatal(err)
 	}
-	probe.setErr(fmt.Errorf("port 42375: %w", ErrNotDocker))
-	if _, err := m.PrepareAttach(ctx); !errors.Is(err, ErrNotDocker) {
-		t.Fatalf("not docker: %v", err)
+	ssh.fail = dockerDown
+	if _, err := m.PrepareAttach(ctx); err == nil || !strings.Contains(err.Error(), "docker in the VM") {
+		t.Fatalf("docker down: %v", err)
 	}
-	probe.setErr(nil)
+	ssh.fail = nil
 
 	info, err := m.PrepareAttach(ctx)
 	if err != nil {
 		t.Fatalf("PrepareAttach: %v", err)
 	}
-	want := AttachInfo{DockerPort: 42375, SSHPort: 42022, AgentKeyPath: m.Layout.AgentKey, User: "alice",
+	want := AttachInfo{SSHPort: 42022, AgentKeyPath: m.Layout.AgentKey, User: "alice",
 		Docker: DockerVersion{APIVersion: "1.47", Version: "27.3.1"}}
 	if info != want {
 		t.Errorf("AttachInfo = %+v, want %+v", info, want)
 	}
-	if got := info.DockerHost(); got != "tcp://127.0.0.1:42375" {
-		t.Errorf("DockerHost = %q", got)
-	}
 }
 
 func TestPrepareAttachRequiresLoadedFirewall(t *testing.T) {
-	m, _, ssh, probe := newTestManager(t)
+	m, _, ssh := newTestManager(t)
 	ctx := context.Background()
 	mustUp(t, m)
 	ssh.setFirewall(false) // state says offline, but the table is gone
-	probeCalls := probe.calls
+	nSSH := len(ssh.remotes())
 
 	_, err := m.PrepareAttach(ctx)
 	if !errors.Is(err, ErrFirewallMissing) {
 		t.Fatalf("PrepareAttach = %v, want ErrFirewallMissing", err)
 	}
-	if probe.calls != probeCalls {
+	if slices.Contains(ssh.remotes()[nSSH:], dockerVersionCmd) {
 		t.Error("probed Docker although the firewall check failed")
 	}
 	ssh.fail = func(string) error { return errors.New("ssh: connect refused") }
@@ -1523,7 +1549,7 @@ func TestPrepareAttachRequiresLoadedFirewall(t *testing.T) {
 
 func TestStatusReportWrite(t *testing.T) {
 	r := StatusReport{
-		Created: true, Running: true, Mode: ModeOffline, SSHPort: 42022, DockerPort: 42375,
+		Created: true, Running: true, Mode: ModeOffline, SSHPort: 42022,
 		Resources: Resources{CPUs: 8, Memory: "16GiB", Disk: "60GiB"},
 		Images:    []string{"index.docker.io/library/alpine:latest", "index.docker.io/library/busybox:1.36"},
 		// The agent user writes the registry and answers the Docker probe.
@@ -1535,7 +1561,7 @@ func TestStatusReportWrite(t *testing.T) {
 	r.Write(&b)
 	out := b.String()
 	for _, want := range []string{
-		"status: running", "mode: offline", "ssh: 127.0.0.1:42022", "docker: tcp://127.0.0.1:42375 (Docker 27.3.1\\x1b[2J, API 1.47)",
+		"status: running", "mode: offline", "ssh: 127.0.0.1:42022", "docker: Docker 27.3.1\\x1b[2J, API 1.47\n",
 		"images:\n  - index.docker.io/library/alpine:latest\n  - index.docker.io/library/busybox:1.36\n",
 		"worktrees:\n  - /Users/alice/proj (a1b2c3)\n  - /x\\x1b]52;c;Zm9v\\x07\\nmode: online (s)\n",
 		"jdks:\n  - temurin-25\n",
@@ -1551,7 +1577,7 @@ func TestStatusReportWrite(t *testing.T) {
 
 	b.Reset()
 	StatusReport{Created: true, WorktreesNote: "unknown (VM not running)"}.Write(&b)
-	for _, want := range []string{"status: stopped", "worktrees: unknown (VM not running)", "jdks: none"} {
+	for _, want := range []string{"status: stopped", "docker: not answering\n", "worktrees: unknown (VM not running)", "jdks: none"} {
 		if !strings.Contains(b.String(), want) {
 			t.Errorf("stopped report lacks %q:\n%s", want, b.String())
 		}

@@ -22,10 +22,11 @@ metadata:
 # omac-vm
 
 The omac VM is one long-lived Linux VM on the human's computer. In a session
-started with `--vm`, the `docker` command talks to the Docker inside the VM,
-and `omac vm exec` runs a command in the VM on a copy of the worktree. The VM
-has no network access. Only the human can import Docker images into it and
-fill its build caches ("priming"), from the host; you cannot do either.
+started with `--vm`, `omac vm exec` runs a command in the VM on a copy of the
+worktree. Docker exists only there: run `omac vm exec -- docker ps`, not
+`docker ps`. The VM has no network access. Only the human can import Docker
+images into it and fill its build caches ("priming"), from the host; you
+cannot do either.
 
 ## Setting up the VM for the first time
 
@@ -69,8 +70,10 @@ For a Gradle project in `backend/`, `<module>` is `backend`.
   killed in the VM, for example when it ran out of memory.
 - omac quotes every argument after `--`, so `*` and `|` are not expanded in
   the VM. Wrap such a command in `sh -c '...'`, as in the examples below.
-- Run tests that use Testcontainers through `omac vm exec`, not in the
-  sandbox: the sandbox reaches the Docker API but not the containers' ports.
+- Run Docker commands and tests that use Testcontainers through
+  `omac vm exec`; the sandbox has no Docker. Paths in `docker run -v` and
+  `docker build` refer to the VM, so use paths inside the worktree copy, for
+  example `omac vm exec -- docker build -t app .`.
 - Keep runs short: run focused tests (`--tests 'com.example.FooTest'`), do not
   run `clean`, and let the Gradle daemon keep running between runs.
 
