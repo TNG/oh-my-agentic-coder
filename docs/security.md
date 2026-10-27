@@ -162,6 +162,14 @@ keychain (Keychain on macOS, Secret Service on Linux) and injected only into
 the sidecar process for the relevant skill as an environment variable. The
 agent calls that skill through the facade and never sees the actual token.
 
+### Sidecar calls
+
+A skill's sidecar runs on the host with the user's rights, so what the agent may ask it to do matters as much as what the agent can reach itself. A sidecar can declare its endpoints in `omac.yaml` (see [authoring](skills/authoring.md#approvals-declare-what-the-agent-may-call)).
+
+- **Gated.** For a skill with an `approvals` block, the facade rejects every request that is not declared, before it reaches the sidecar, and holds every `required` request until the user answers a native dialog. The declaration comes from the host-side approved snapshot, so the agent cannot weaken it by editing the project copy.
+- **Answers.** The agent cannot create one: they come from the dialog only, "allow always" is stored under `~/.config/omac` (blocked in the sandbox), and no route reachable from the sandbox accepts a verdict. `omac approvals list` and `omac approvals revoke` manage them.
+- **Not gated.** A skill without the block (`omac register` says so). Anything inside a declared endpoint: the dialog shows the method, path and query, not the body, so one endpoint that does many things, such as a generic passthrough, is one decision. Frames on an allowed WebSocket. Shell commands and file edits, which the sandbox grants cover as before.
+
 ## How isolation works
 
 omac ships no kernel module or custom isolation layer. It uses security
