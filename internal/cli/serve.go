@@ -85,7 +85,7 @@ func parseServeArgs(args []string, env *Env) (serveParse, bool) {
 		auditLog          = fs.String("audit-log", "", "Path to the audit log (default: persistent central location). Overrides config.")
 		noAudit           = fs.Bool("no-audit", false, "Disable the security audit trail.")
 		auditStrict       = fs.Bool("audit-strict", false, "Fail-closed: abort if the audit log cannot be written.")
-		vmAttach          = fs.Bool("vm", false, "Attach to the omac VM: DOCKER_HOST points at its Docker API, its two loopback ports are opened for the sandbox. Requires `omac vm up` and offline mode.")
+		vmAttach          = fs.Bool("vm", false, "Attach to the omac VM: its SSH port is opened for the sandbox, so `omac vm exec` runs Docker, Gradle and tests there. Requires `omac vm up` and offline mode.")
 	)
 	var roots multiFlag
 	var openPorts intMultiFlag
@@ -664,7 +664,7 @@ func runServe(args []string, env *Env) int {
 			}
 		}
 		argv = injectUserOpenPorts(env, argv, openPorts, prof)
-		argv = vmSess.grant(argv, plan)
+		argv = vmSess.grant(argv)
 		// Pass the resolved audit path to `omac sandbox run` so its
 		// network-filter subprocess appends net.decision events to the
 		// same persistent log. Inherit the parent's run_id + mode so the

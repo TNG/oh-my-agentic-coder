@@ -11,9 +11,6 @@ import (
 // Fixed locations and names inside the VM. The provisioning scripts below
 // spell these paths out literally; limaconfig_test.go checks they agree.
 const (
-	// GuestDockerPort is where rootless dockerd listens inside the VM; Lima
-	// forwards it to LimaInputs.DockerPort on the host loopback.
-	GuestDockerPort = 2375
 	// PublishedPortFirst..PublishedPortLast is the only range of guest
 	// ports that Lima forwards to the same ports on the host loopback.
 	// A container published there (`docker run -p 30000:5432 …`) is
@@ -42,7 +39,6 @@ const heredocEnd = "OMACVMGUARD"
 type LimaInputs struct {
 	Resources   Resources
 	SSHPort     int
-	DockerPort  int
 	AgentUser   string   // Lima user name, see AgentUserName
 	AdminPubKey string   // content of admin_key.pub (one line)
 	AgentPubKey string   // content of agent_key.pub
@@ -73,10 +69,6 @@ func RenderLimaConfig(in LimaInputs) (string, error) {
 	b.WriteString("mounts: []\n")
 	b.WriteString("ssh:\n  localPort: " + strconv.Itoa(in.SSHPort) + "\n")
 	b.WriteString("portForwards:\n")
-	b.WriteString("  - guestIP: 127.0.0.1\n")
-	b.WriteString("    guestPort: " + strconv.Itoa(GuestDockerPort) + "\n")
-	b.WriteString("    hostIP: 127.0.0.1\n")
-	b.WriteString("    hostPort: " + strconv.Itoa(in.DockerPort) + "\n")
 	published := "[" + strconv.Itoa(PublishedPortFirst) + ", " + strconv.Itoa(PublishedPortLast) + "]"
 	b.WriteString("  - guestIP: 127.0.0.1\n")
 	b.WriteString("    guestPortRange: " + published + "\n")
@@ -136,12 +128,6 @@ func validateLimaInputs(in LimaInputs) error {
 	}
 	if in.SSHPort <= 0 || in.SSHPort > 65535 {
 		errs = append(errs, fmt.Errorf("ssh port %d out of range", in.SSHPort))
-	}
-	if in.DockerPort <= 0 || in.DockerPort > 65535 {
-		errs = append(errs, fmt.Errorf("docker port %d out of range", in.DockerPort))
-	}
-	if in.SSHPort == in.DockerPort {
-		errs = append(errs, fmt.Errorf("ssh port and docker port are both %d", in.SSHPort))
 	}
 	if !agentUserPattern.MatchString(in.AgentUser) {
 		errs = append(errs, fmt.Errorf("agent user %q is not a valid user name", in.AgentUser))
@@ -251,11 +237,8 @@ date -u +%FT%TZ > /var/lib/omac-vm/provisioned`
 // userScript runs as the agent user on every boot, so a failed Docker start
 // is retried on the next boot. The user D-Bus starts first because the
 // system script installs dbus-user-session after the user's systemd
-// manager came up. The restart (not `enable --now`) applies the override
-// to the dockerd that the setuptool install already started. The %%t in
-// the printf format becomes the systemd specifier %t (runtime directory)
-// in override.conf. No rootlesskit -p port flag: with --detach-netns,
-// dockerd already listens on 127.0.0.1:2375 in the VM's own netns.
+// manager came up. dockerd listens only on its Unix socket; omac reaches
+// it over ssh.
 const userScript = `#!/bin/bash
 set -eu
 mkdir -p ~/.ssh && chmod 0700 ~/.ssh
@@ -264,10 +247,6 @@ chmod 0600 ~/.ssh/authorized_keys
 command -v dockerd-rootless-setuptool.sh >/dev/null || exit 0
 systemctl --user start dbus || true
 [ -f ~/.config/systemd/user/docker.service ] || dockerd-rootless-setuptool.sh install
-mkdir -p ~/.config/systemd/user/docker.service.d
-printf '[Service]\nExecStart=\nExecStart=/usr/bin/dockerd-rootless.sh -H unix://%%t/docker.sock -H tcp://127.0.0.1:2375\n' > ~/.config/systemd/user/docker.service.d/override.conf
-systemctl --user daemon-reload
-systemctl --user enable docker
-systemctl --user restart docker
+systemctl --user enable --now docker
 for f in ~/.bashrc ~/.profile; do grep -q '^export DOCKER_HOST=' "$f" 2>/dev/null || printf 'export DOCKER_HOST=unix:///run/user/%s/docker.sock\n' "$(id -u)" >> "$f"; done
 printf 'docker.host=unix:///run/user/%s/docker.sock\n' "$(id -u)" > ~/.testcontainers.properties`

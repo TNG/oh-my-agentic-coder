@@ -1,7 +1,7 @@
 # omac-vmguard: network boundary of the omac VM in offline mode.
 # The output chain rejects every packet that leaves the VM, except
 # loopback and replies to inbound connections such as the forwarded
-# Docker API port. The forward chain drops forwarded packets the same way.
+# SSH port. The forward chain drops forwarded packets the same way.
 table inet omac-vmguard {
   chain output {
     type filter hook output priority filter + 10; policy drop;

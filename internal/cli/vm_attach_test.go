@@ -105,7 +105,7 @@ func testAgentKey(t *testing.T) string {
 }
 
 // The capture profile is not omac's builtin sandbox, which is the only one
-// that can open the VM's ports. --vm is refused before the session
+// that can open the VM's SSH port. --vm is refused before the session
 // registers with the VM; the stub fails the launch if it is reached.
 func TestRunLaunchVMRefusesNonNativeProfile(t *testing.T) {
 	ran := filepath.Join(t.TempDir(), "ran")
@@ -177,13 +177,12 @@ func TestRunLaunchVMNeedsSandbox(t *testing.T) {
 func TestVMSandboxEnv(t *testing.T) {
 	tmp := t.TempDir()
 	key := testAgentKey(t)
-	got, err := vmSandboxEnv(vm.AttachInfo{DockerPort: 31234, SSHPort: 31022, User: "alice", AgentKeyPath: key}, tmp)
+	got, err := vmSandboxEnv(vm.AttachInfo{SSHPort: 31022, User: "alice", AgentKeyPath: key}, tmp)
 	if err != nil {
 		t.Fatal(err)
 	}
+	// No DOCKER_* vars: the session reaches Docker only through `omac vm exec`.
 	want := map[string]string{
-		"DOCKER_HOST":      "tcp://127.0.0.1:31234",
-		"DOCKER_CONFIG":    filepath.Join(tmp, "vm", "docker"),
 		"OMAC_VM_HOST":     "127.0.0.1",
 		"OMAC_VM_SSH_PORT": "31022",
 		"OMAC_VM_SSH_KEY":  filepath.Join(tmp, "vm", "agent_key"),
@@ -200,10 +199,11 @@ func TestVMSandboxEnv(t *testing.T) {
 	if b, _ := os.ReadFile(want["OMAC_VM_SSH_KEY"]); string(b) != "PRIVATE KEY\n" {
 		t.Errorf("key copy content = %q", b)
 	}
-	for _, d := range []string{filepath.Join(tmp, "vm"), want["DOCKER_CONFIG"]} {
-		if st, err := os.Stat(d); err != nil || !st.IsDir() || st.Mode().Perm() != 0o700 {
-			t.Errorf("%s: %v, want a 0700 dir", d, err)
-		}
+	if st, err := os.Stat(filepath.Join(tmp, "vm")); err != nil || !st.IsDir() || st.Mode().Perm() != 0o700 {
+		t.Errorf("vm dir: %v, want a 0700 dir", err)
+	}
+	if _, err := os.Stat(filepath.Join(tmp, "vm", "docker")); !os.IsNotExist(err) {
+		t.Errorf("vm/docker: %v, want absent", err)
 	}
 	names := slices.Sorted(maps.Keys(got))
 	if !slices.Equal(names, slices.Sorted(slices.Values(vmEnvNames))) {
@@ -292,12 +292,12 @@ func TestVMSandboxEnvRefusesExistingDir(t *testing.T) {
 	}
 
 	// A real directory planted by another session must not be reused either:
-	// its docker/config.json would configure this session's docker.
+	// its known_hosts would pin a VM of that session's choice.
 	planted := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(planted, "vm", "docker"), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Join(planted, "vm"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(planted, "vm", "docker", "config.json"), []byte("{}"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(planted, "vm", "known_hosts"), []byte("planted\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := vmSandboxEnv(vm.AttachInfo{AgentKeyPath: key}, planted); err == nil {
@@ -312,13 +312,13 @@ func TestVMProfileMisuse(t *testing.T) {
 		p.Environment.DenyVars = pats
 		return p
 	}
-	if msg := vmProfileMisuse(sandboxPlan{Native: true, PolicyRef: "default", Policy: denies("AWS_*")}); msg != "" {
+	if msg := vmProfileMisuse(sandboxPlan{Native: true, PolicyRef: "default", Policy: denies("AWS_*", "DOCKER_*")}); msg != "" {
 		t.Errorf("unrelated deny_vars refused: %s", msg)
 	}
 	if msg := vmProfileMisuse(sandboxPlan{Name: "nono"}); !strings.Contains(msg, "--vm needs omac's own sandbox") {
 		t.Errorf("non-native plan: %q", msg)
 	}
-	for _, pat := range []string{"DOCKER_*", "DOCKER_CONFIG", "OMAC_VM_*", "*"} {
+	for _, pat := range []string{"OMAC_VM_*", "OMAC_VM_SSH_KEY", "*"} {
 		msg := vmProfileMisuse(sandboxPlan{Native: true, PolicyRef: "strict", Policy: denies(pat)})
 		if !strings.Contains(msg, `"strict"`) || !strings.Contains(msg, "deny_vars") {
 			t.Errorf("deny_vars %q: %q, want a refusal naming the profile", pat, msg)
@@ -416,7 +416,7 @@ func TestVMSessionReadyHook(t *testing.T) {
 func TestVMSessionNilIsNoOp(t *testing.T) {
 	var s *vmSession
 	argv := []string{"omac", "sandbox", "run", "--", "x"}
-	if got := s.grant(argv, sandboxPlan{Native: true}); !slices.Equal(got, argv) {
+	if got := s.grant(argv); !slices.Equal(got, argv) {
 		t.Errorf("nil grant changed argv: %q", got)
 	}
 	if s.sandboxEnv() != nil {
@@ -445,7 +445,7 @@ type attachOrderManager struct {
 func (a *attachOrderManager) PrepareAttach(context.Context) (vm.AttachInfo, error) {
 	_, err := os.Stat(filepath.Join(a.sessions, strconv.Itoa(os.Getpid())))
 	a.sawMarker = err == nil
-	return vm.AttachInfo{DockerPort: 1, AgentKeyPath: a.agentKey}, a.attachErr
+	return vm.AttachInfo{SSHPort: 1, AgentKeyPath: a.agentKey}, a.attachErr
 }
 
 func useAttachOrderManager(t *testing.T, attachErr error) (*attachOrderManager, string) {
@@ -548,11 +548,11 @@ func TestSandboxDeniesIgnoreRelativeStateHome(t *testing.T) {
 
 func TestVMSessionGrant(t *testing.T) {
 	argv := []string{"omac", "sandbox", "run", "--profile", "default", "--", "opencode"}
-	s := &vmSession{info: vm.AttachInfo{DockerPort: 31234, SSHPort: 31022}}
-	got := s.grant(argv, sandboxPlan{Native: true})
+	s := &vmSession{info: vm.AttachInfo{SSHPort: 31022}}
+	got := s.grant(argv)
+	// Only the ssh port: no Docker port and no --allow-env DOCKER_*.
 	want := []string{"omac", "sandbox", "run", "--profile", "default",
-		"--open-port", "31234", "--open-port", "31022",
-		"--allow-env", "DOCKER_HOST", "--allow-env", "DOCKER_CONFIG",
+		"--open-port", "31022",
 		"--", "opencode"}
 	if !slices.Equal(got, want) {
 		t.Errorf("argv = %q\nwant   %q", got, want)
@@ -569,12 +569,12 @@ func TestServeVMWiring(t *testing.T) {
 			t.Errorf("parseServeArgs(--vm %s) accepted", other)
 		}
 	}
-	srv := &serveServer{env: makeEnv(t.TempDir()), vmEnv: map[string]string{"DOCKER_HOST": "tcp://127.0.0.1:31234", "OMAC_VM_USER": "alice"}}
+	srv := &serveServer{env: makeEnv(t.TempDir()), vmEnv: map[string]string{"OMAC_VM_SSH_PORT": "31022", "OMAC_VM_USER": "alice"}}
 	env := srv.baseEnv()
-	if env["DOCKER_HOST"] != "tcp://127.0.0.1:31234" || env["OMAC_VM_USER"] != "alice" {
+	if env["OMAC_VM_SSH_PORT"] != "31022" || env["OMAC_VM_USER"] != "alice" {
 		t.Errorf("baseEnv lacks the VM vars: %v", env)
 	}
-	if _, has := (&serveServer{env: makeEnv(t.TempDir())}).baseEnv()["DOCKER_HOST"]; has {
-		t.Error("baseEnv sets DOCKER_HOST without --vm")
+	if _, has := (&serveServer{env: makeEnv(t.TempDir())}).baseEnv()["OMAC_VM_USER"]; has {
+		t.Error("baseEnv sets OMAC_VM_USER without --vm")
 	}
 }

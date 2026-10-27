@@ -42,16 +42,13 @@ func attachVM(ctx context.Context, env *Env, tmpDir string) (*vmSession, error) 
 	return &vmSession{info: info, env: vmEnv, markers: markers, stderr: env.Stderr}, nil
 }
 
-// grant opens the VM's Docker and SSH ports for the sandbox and lets
-// DOCKER_HOST and DOCKER_CONFIG through its env filter. The VM state is
-// blocked on every launch, see injectSandboxDenies.
-func (s *vmSession) grant(argv []string, plan sandboxPlan) []string {
+// grant opens the VM's SSH port for the sandbox. The VM state is blocked
+// on every launch, see injectSandboxDenies.
+func (s *vmSession) grant(argv []string) []string {
 	if s == nil {
 		return argv
 	}
-	argv = injectOpenPort(argv, strconv.Itoa(s.info.DockerPort))
-	argv = injectOpenPort(argv, strconv.Itoa(s.info.SSHPort))
-	return injectSandboxEnvAllow(argv, []string{"DOCKER_HOST", "DOCKER_CONFIG"}, plan)
+	return injectOpenPort(argv, strconv.Itoa(s.info.SSHPort))
 }
 
 func (s *vmSession) sandboxEnv() map[string]string {
@@ -172,12 +169,11 @@ func vmAttachExitCode(err error) int {
 }
 
 // vmEnvNames are the variables vmSandboxEnv sets.
-var vmEnvNames = []string{"DOCKER_HOST", "DOCKER_CONFIG", "OMAC_VM_HOST", "OMAC_VM_SSH_PORT", "OMAC_VM_SSH_KEY", "OMAC_VM_USER"}
+var vmEnvNames = []string{vm.EnvVMHost, vm.EnvVMSSHPort, vm.EnvVMSSHKey, vm.EnvVMUser}
 
 // vmSandboxEnv creates <tmpDir>/vm with a copy of the agent key (the
-// original lives in host-only VM state), the host's pinned known_hosts and
-// an empty DOCKER_CONFIG, and returns the variables that point the agent at
-// the VM.
+// original lives in host-only VM state) and the host's pinned known_hosts,
+// and returns the variables that point the agent at the VM.
 func vmSandboxEnv(info vm.AttachInfo, tmpDir string) (map[string]string, error) {
 	key, err := os.ReadFile(info.AgentKeyPath)
 	if err != nil {
@@ -195,8 +191,6 @@ func vmSandboxEnv(info vm.AttachInfo, tmpDir string) (map[string]string, error) 
 	}
 	dir := filepath.Join(tmpDir, "vm")
 	return map[string]string{
-		"DOCKER_HOST":   info.DockerHost(),
-		"DOCKER_CONFIG": filepath.Join(dir, "docker"),
 		vm.EnvVMHost:    "127.0.0.1",
 		vm.EnvVMSSHPort: strconv.Itoa(info.SSHPort),
 		vm.EnvVMSSHKey:  filepath.Join(dir, "agent_key"),
@@ -204,7 +198,7 @@ func vmSandboxEnv(info vm.AttachInfo, tmpDir string) (map[string]string, error) 
 	}, nil
 }
 
-// writeVMFiles creates vm/, vm/docker/, vm/agent_key and, when knownHosts
+// writeVMFiles creates vm/, vm/agent_key and, when knownHosts
 // is not nil, vm/known_hosts in tmpDir. Other sandboxes may write tmpDir
 // (on macOS every sandbox may write /var/folders), so it creates instead of
 // reusing, and resolves through os.Root so a symlink planted inside tmpDir
@@ -215,10 +209,8 @@ func writeVMFiles(tmpDir string, key, knownHosts []byte) error {
 		return err
 	}
 	defer root.Close()
-	for _, d := range []string{"vm", filepath.Join("vm", "docker")} {
-		if err := root.Mkdir(d, 0o700); err != nil {
-			return err
-		}
+	if err := root.Mkdir("vm", 0o700); err != nil {
+		return err
 	}
 	if err := createVMFile(root, "agent_key", key); err != nil {
 		return fmt.Errorf("agent key copy: %w", err)
@@ -248,7 +240,7 @@ func createVMFile(root *os.Root, name string, data []byte) error {
 // deny_vars is checked because FilterEnv applies it after every grant.
 func vmProfileMisuse(plan sandboxPlan) string {
 	if !plan.Native {
-		return fmt.Sprintf("--vm needs omac's own sandbox; launcher profile %q runs a different sandbox, so omac cannot open the VM's ports there", plan.Name)
+		return fmt.Sprintf("--vm needs omac's own sandbox; launcher profile %q runs a different sandbox, so omac cannot open the VM's SSH port there", plan.Name)
 	}
 	if launcherLearns(plan.Launcher.Command) {
 		return fmt.Sprintf("--vm: launcher profile %q runs the sandbox with --learn, which would let the agent reach the VM's admin key", plan.Name)
