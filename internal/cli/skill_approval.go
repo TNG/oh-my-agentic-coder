@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/TNG/oh-my-agentic-coder/internal/approval"
 	"github.com/TNG/oh-my-agentic-coder/internal/config"
 	"github.com/TNG/oh-my-agentic-coder/internal/facade"
 	"github.com/TNG/oh-my-agentic-coder/internal/registry"
@@ -123,6 +124,22 @@ func snapshotMeta(name, snapDir string) (*config.Meta, error) {
 		return nil, fmt.Errorf("spawn refused: skill %q snapshot manifest has no sidecar block", name)
 	}
 	return m, nil
+}
+
+// routeApprovals is the declared endpoint set the facade enforces for a skill,
+// taken from the approved snapshot's manifest. A skill without an approvals
+// block yields nil (ungated). The block was validated when the manifest was
+// loaded; if it cannot be compiled anyway the result admits nothing, never
+// everything.
+func routeApprovals(m *config.Meta) *approval.Set {
+	if m == nil || m.Sidecar == nil || m.Sidecar.Approvals == nil {
+		return nil
+	}
+	set, err := m.Sidecar.Approvals.Compile()
+	if err != nil {
+		return approval.DenyAll()
+	}
+	return set
 }
 
 // errSkillNotApproved is the uniform refusal error/detail; it names the

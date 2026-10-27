@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/TNG/oh-my-agentic-coder/internal/approval"
 	"github.com/TNG/oh-my-agentic-coder/internal/audit"
 	"github.com/TNG/oh-my-agentic-coder/internal/config"
 	"github.com/TNG/oh-my-agentic-coder/internal/facade"
@@ -632,6 +633,7 @@ func runLaunch(env *Env, opts launchOpts) int {
 	}
 
 	specs := make([]supervisor.SidecarSpec, 0, len(approved))
+	approvalSets := make([]*approval.Set, 0, len(approved))
 	for _, s := range approved {
 		// Load behavioural fields from the snapshot, not from the workdir
 		// manifest that was already read into s.Meta. This ensures the
@@ -646,6 +648,7 @@ func runLaunch(env *Env, opts launchOpts) int {
 		if snapM.Sidecar.Health != nil {
 			health = *snapM.Sidecar.Health
 		}
+		approvalSets = append(approvalSets, routeApprovals(snapM))
 		specs = append(specs, supervisor.SidecarSpec{
 			Name:             s.Entry.Name,
 			SkillDir:         s.AbsDir,
@@ -685,6 +688,7 @@ func runLaunch(env *Env, opts launchOpts) int {
 			IdleTimeout:  idle,
 			Skill:        r.Name,
 			SkillDir:     approved[i].AbsDir,
+			Approvals:    approvalSets[i],
 		})
 		mounts = append(mounts, mount)
 	}
