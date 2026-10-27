@@ -33,7 +33,7 @@ omac start claude       # specific harness
 | `--ephemeral-cache` | false | Use a temporary cache deleted when the session ends. Use this for a clean build environment or when you do not want the agent's package downloads to persist. |
 | `--cache-scope <scope>` | global | Which cache to use for the agent's package downloads (npm, pip, cargo, etc.). `global` shares one cache across all your projects, `config` shares it across projects using the same config file, `workdir` gives each project its own isolated cache. See [Cache](../advanced/cache.md). |
 | `--open-port <port>` | — | Allow the sandboxed process to bind and connect on this local TCP port (repeatable) for this session only. Useful for a local dev server or an MCP server the harness talks to. To make it permanent, use `network.open_port` in the grants file — see [Opening a port](../configuration.md#opening-a-port). |
-| `--vm` | false | Attach this session to the omac VM (a long-lived Linux VM whose Docker runs without root rights, see [omac vm](#omac-vm)). Sets `DOCKER_HOST` and `DOCKER_CONFIG` inside the sandbox, plus `OMAC_VM_HOST`, `OMAC_VM_SSH_PORT`, `OMAC_VM_SSH_KEY` and `OMAC_VM_USER`, which give the agent an SSH login to the VM as an unprivileged user. Requires `omac vm up` first. Refused together with `--no-sandbox`, and with launcher profiles that run a sandbox other than omac's own (`nono`, `no-sandbox-debug`, custom wrappers), because omac can open the VM's ports only in its own sandbox. Your own policy file under `sandbox-profiles/` is fine. |
+| `--vm` | false | Attach this session to the omac VM (a long-lived Linux VM whose Docker runs without root rights, see [omac vm](#omac-vm)). Sets `OMAC_VM_HOST`, `OMAC_VM_SSH_PORT`, `OMAC_VM_SSH_KEY` and `OMAC_VM_USER` inside the sandbox, which give the agent an SSH login to the VM as an unprivileged user. Docker, Gradle and tests then run in the VM through `omac vm exec`; the sandbox itself gets no Docker endpoint. Requires `omac vm up` first. Refused together with `--no-sandbox`, and with launcher profiles that run a sandbox other than omac's own (`nono`, `no-sandbox-debug`, custom wrappers), because omac can open the VM's SSH port only in its own sandbox. Your own policy file under `sandbox-profiles/` is fine. |
 | `--no-audit` | false | Disable the security audit trail for this session. |
 
 For all flags: `omac start --help`.
@@ -210,7 +210,7 @@ omac cache clear --all  # remove all caches not currently in use
 
 ### omac vm
 
-The omac VM is one long-lived Linux virtual machine per computer, which omac creates and manages with [Lima](https://lima-vm.io). Docker runs inside it, and a session started with `--vm` uses that Docker instead of one on your host. The VM does not mount your host files. Only `omac vm exec` copies the current worktree (the git top level) into it, and those copies stay in the VM. The VM has no network access, except while `omac vm up` or `omac vm up --reprovision` sets it up and while it is online.
+The omac VM is one long-lived Linux virtual machine per computer, which omac creates and manages with [Lima](https://lima-vm.io). Docker runs inside it, and a session started with `--vm` reaches that Docker through `omac vm exec`. The VM does not mount your host files. Only `omac vm exec` copies the current worktree (the git top level) into it, and those copies stay in the VM. The VM has no network access, except while `omac vm up` or `omac vm up --reprovision` sets it up and while it is online.
 
 ```bash
 omac vm up                     # create and provision once, then switch offline (needs network once)
@@ -218,7 +218,7 @@ omac vm status                 # show state, mode, ports, resources, packages, J
 omac vm image add postgres:16  # import an image; the VM never pulls itself
 omac vm image list             # list the VM's images
 omac vm image rm postgres:16   # remove an image from the VM
-omac start --vm                # DOCKER_HOST inside the sandbox points at the VM
+omac start --vm                # the session runs Docker and builds in the VM with omac vm exec
 omac vm exec -- ./gradlew test # copy the worktree into the VM and run there
 omac vm online                 # restart the VM with network access, e.g. to download build dependencies
 omac vm offline                # restart the VM without network access, the mode sessions need
@@ -242,6 +242,8 @@ omac vm exec -- ./gradlew test --offline
 omac vm exec --cwd backend -- ./gradlew test --offline
 omac vm exec -- cat backend/build/reports/tests/test/index.html   # results stay in the VM; read them back like this
 ```
+
+Docker commands run in the VM, so paths in `docker run -v` and `docker build` refer to the VM, for example the worktree copy that `omac vm exec` runs in: `omac vm exec -- docker build -t app .`
 
 The command runs in the same place inside the copy as your current directory is in the worktree. `--cwd <dir>` runs it in `<dir>`, relative to the current directory. So `omac vm exec --cwd backend -- …` from the repository root and `omac vm exec -- …` from `backend/` both run in `backend`. Outside a git repository, omac copies the current directory.
 
