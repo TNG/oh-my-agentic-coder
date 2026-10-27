@@ -711,6 +711,7 @@ func runLaunch(env *Env, opts launchOpts) int {
 		env.Version,
 	)
 	f.SetAuditor(auditor)
+	f.Approver = newSidecarApprover(env.Stderr, prefix, func(string) string { return workdirScope(env.Workdir) })
 	// `omac start` has no --learn (serve-only), so the protected set is
 	// always the profile's.
 	wireFacadeSandbox(f, noSandbox, false, plan, func(format string, args ...any) {

@@ -326,6 +326,9 @@ func runServe(args []string, env *Env) int {
 	sup := supervisor.New(lc.Facade.BaseEnvPassthrough, auditor, skillSpawnAuthorizer)
 	defer sup.ShutdownAll(5 * time.Second)
 
+	// srvRef is set once the server exists; verdict scopes are only asked
+	// for after routes are installed.
+	var srvRef *serveServer
 	f := facade.New(
 		socketPath,
 		"127.0.0.1:0",
@@ -336,6 +339,26 @@ func runServe(args []string, env *Env) int {
 		env.Version,
 	)
 	f.SetAuditor(auditor)
+	f.Approver = newSidecarApprover(env.Stderr, "omac serve", func(namespace string) string {
+		if namespace == facade.GlobalNamespace {
+			return "global"
+		}
+		if srvRef != nil {
+			srvRef.mu.RLock()
+			defer srvRef.mu.RUnlock()
+			if d := srvRef.byToken[namespace]; d != nil {
+				return workdirScope(d.Dir)
+			}
+			// The single-directory flat alias has no namespace; it belongs
+			// to the one active directory.
+			if namespace == "" && len(srvRef.dirs) == 1 {
+				for _, d := range srvRef.dirs {
+					return workdirScope(d.Dir)
+				}
+			}
+		}
+		return "ns-unknown"
+	})
 	wireFacadeSandbox(f, noSandbox, learn, plan, func(format string, args ...any) {
 		fmt.Fprintf(env.Stderr, format+"\n", args...)
 	})
@@ -372,6 +395,7 @@ func runServe(args []string, env *Env) int {
 		byToken:           map[string]*dirState{},
 		global:            map[string]*skillRoute{},
 	}
+	srvRef = srv
 	if cacheScope != nil {
 		srv.cacheEnv = map[string]string{
 			"OMAC_CACHE_DIR":  cacheScope.Dir,
