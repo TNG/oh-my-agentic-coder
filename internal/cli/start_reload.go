@@ -535,6 +535,7 @@ func (r *startReloader) reload() []string {
 			UpstreamPort: running.Port,
 			Skill:        e.Name,
 			Owner:        e.Name,
+			Approvals:    routeApprovals(snapM),
 			State:        facade.RouteReady,
 		})
 		r.markMounted(e.Name, mount)
