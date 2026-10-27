@@ -102,7 +102,7 @@ func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, int) 
 		noAudit            = fs.Bool("no-audit", false, "Disable the security audit trail.")
 		auditStrict        = fs.Bool("audit-strict", false, "Fail-closed: abort if the audit log cannot be written.")
 		sessionID          = fs.String("session", "", "Continue a specific session by id instead of the most recent one. (shorthand: -s)")
-		vmAttach           = fs.Bool("vm", false, "Attach to the omac VM: DOCKER_HOST points at its Docker API, its two loopback ports are opened for the sandbox. Requires `omac vm up` and offline mode.")
+		vmAttach           = fs.Bool("vm", false, "Attach to the omac VM: its SSH port is opened for the sandbox, so `omac vm exec` runs Docker, Gradle and tests there. Requires `omac vm up` and offline mode.")
 	)
 	var openPorts intMultiFlag
 	fs.Var(&openPorts, "open-port", "Allow the sandboxed process to bind and connect on this TCP port (repeatable). Useful for a local app/dev server the agent or its tools talk to — e.g. Playwright/Vite/Next on :3000. On Linux, Landlock cannot limit that to loopback: outbound TCP to any host on the same port is also allowed.")
@@ -878,7 +878,7 @@ func runLaunch(env *Env, opts launchOpts) int {
 		// on top of the profile; no-op on non-native backends (with a warning).
 		argv = injectUserOpenPorts(env, argv, opts.openPorts, prof)
 		if opts.vm {
-			argv = injectVMGrants(argv, vmInfo, plan)
+			argv = injectVMGrants(argv, vmInfo)
 		}
 		// Pass the resolved audit path down to `omac sandbox run` so the
 		// network-filter subprocess appends net.decision events to the

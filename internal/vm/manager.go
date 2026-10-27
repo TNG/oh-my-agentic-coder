@@ -36,7 +36,6 @@ type Deps struct {
 	Lima     LimaCtl
 	SSH      SSHRunner
 	Run      CommandRunner // ssh-keygen
-	Probe    DockerProbe
 	Pull     ImagePuller
 	LookPath func(string) (string, error)
 	PortFree func(int) bool
@@ -55,7 +54,6 @@ func RealDeps() Deps {
 		Lima:     DefaultLimaCtl,
 		SSH:      DefaultSSH,
 		Run:      ExecRunner,
-		Probe:    DefaultDockerProbe,
 		Pull:     CranePull,
 		LookPath: exec.LookPath,
 		PortFree: PortFree,
@@ -126,10 +124,11 @@ func reprovisionCmd(pkgs []string) string {
 		" && rm -f " + ProvisionedMarker + " && " + writeModeCmd(ModeOnline)
 }
 
-// dockerCmd addresses rootless dockerd over its TCP socket: a non-interactive
-// ssh command does not read the DOCKER_HOST export in ~/.bashrc.
+// dockerCmd addresses rootless dockerd over its Unix socket: a
+// non-interactive ssh command does not read the DOCKER_HOST export in
+// ~/.bashrc.
 func dockerCmd(args string) string {
-	return "docker -H tcp://127.0.0.1:" + strconv.Itoa(GuestDockerPort) + " " + args
+	return "docker -H unix:///run/user/$(id -u)/docker.sock " + args
 }
 
 func (m *Manager) agentTarget(st *State) SSHTarget {
@@ -201,11 +200,11 @@ func (m *Manager) loadOrInitState(cfg UserConfig, instanceExists bool) (*State, 
 	if err != nil || st != nil {
 		return st, err
 	}
-	sshPort, dockerPort, err := PickPorts(m.Deps.PortFree)
+	sshPort, err := PickSSHPort(m.Deps.PortFree)
 	if err != nil {
 		return nil, err
 	}
-	st = &State{Version: StateVersion, SSHPort: sshPort, DockerPort: dockerPort, Mode: ModeOffline, Packages: cfg.Packages}
+	st = &State{Version: StateVersion, SSHPort: sshPort, Mode: ModeOffline, Packages: cfg.Packages}
 	return st, SaveState(m.Layout.StatePath, st)
 }
 
@@ -221,7 +220,6 @@ func (m *Manager) create(ctx context.Context, st *State, cfg UserConfig, aptPkgs
 	yaml, err := RenderLimaConfig(LimaInputs{
 		Resources:   res,
 		SSHPort:     st.SSHPort,
-		DockerPort:  st.DockerPort,
 		AgentUser:   AgentUserName(m.Deps.HostUser),
 		AdminPubKey: adminPub,
 		AgentPubKey: agentPub,
@@ -236,6 +234,11 @@ func (m *Manager) create(ctx context.Context, st *State, cfg UserConfig, aptPkgs
 	}
 	if err := os.WriteFile(m.Layout.LimaYAML, []byte(yaml), 0o600); err != nil {
 		return fmt.Errorf("omac vm: write lima config: %w", err)
+	}
+	// A new instance has new host keys, so an entry left by a VM deleted
+	// outside omac would fail every SSH check until the timeout.
+	if err := os.Remove(m.Layout.KnownHosts); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("omac vm: remove stale known_hosts: %w", err)
 	}
 	fmt.Fprintln(m.Out, "omac vm: creating and provisioning the VM (this takes a few minutes)…")
 	if err := m.lima(ctx, "create", "--tty=false", "--name", InstanceName, m.Layout.LimaYAML); err != nil {
@@ -525,20 +528,15 @@ func (m *Manager) refuseAttached() error {
 	return nil
 }
 
-// AttachInfo is what a session needs to use the VM's Docker.
+// AttachInfo is what a session needs to reach the VM over ssh.
 type AttachInfo struct {
-	DockerPort, SSHPort int
-	AgentKeyPath, User  string
-	Docker              DockerVersion
-}
-
-// DockerHost is the DOCKER_HOST value for the forwarded port.
-func (a AttachInfo) DockerHost() string {
-	return "tcp://127.0.0.1:" + strconv.Itoa(a.DockerPort)
+	SSHPort            int
+	AgentKeyPath, User string
+	Docker             DockerVersion
 }
 
 // PrepareAttach succeeds only for a running, offline VM whose firewall is
-// loaded and whose forwarded port answers as Docker.
+// loaded and whose Docker answers.
 func (m *Manager) PrepareAttach(ctx context.Context) (AttachInfo, error) {
 	st, err := m.runningState(ctx)
 	if err != nil {
@@ -550,12 +548,11 @@ func (m *Manager) PrepareAttach(ctx context.Context) (AttachInfo, error) {
 	if err := m.checkFirewall(ctx, st); err != nil {
 		return AttachInfo{}, err
 	}
-	v, err := m.Deps.Probe(ctx, st.DockerPort)
+	v, err := m.dockerVersion(ctx, st)
 	if err != nil {
-		return AttachInfo{}, fmt.Errorf("omac vm: docker on 127.0.0.1:%d: %w", st.DockerPort, err)
+		return AttachInfo{}, fmt.Errorf("omac vm: docker in the VM: %w", err)
 	}
 	return AttachInfo{
-		DockerPort:   st.DockerPort,
 		SSHPort:      st.SSHPort,
 		AgentKeyPath: m.Layout.AgentKey,
 		User:         AgentUserName(m.Deps.HostUser),
@@ -620,16 +617,6 @@ func (m *Manager) lima(ctx context.Context, args ...string) error {
 // limactl's own default is shorter.
 func (m *Manager) start(ctx context.Context, timeout time.Duration) error {
 	return m.lima(ctx, "start", "--tty=false", "--timeout", timeout.String(), InstanceName)
-}
-
-func (m *Manager) waitDocker(ctx context.Context, st *State, timeout time.Duration) error {
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	_, err := WaitForDocker(ctx, st.DockerPort, m.Deps.ProbeInterval, m.Deps.Probe)
-	if err != nil && !strings.HasPrefix(err.Error(), "omac vm:") {
-		err = fmt.Errorf("omac vm: %w", err)
-	}
-	return err
 }
 
 // ssh runs remote and folds its stderr into the error.

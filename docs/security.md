@@ -193,29 +193,30 @@ cannot access.
 | `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.kube`, … | **blocked** | Sensitive credentials |
 | `~/.npmrc` | **blocked**; registry addresses can be shared as a stripped copy | Usually holds an access token. See [Private package registries](./configuration.md#private-package-registries) |
 | The host OpenCode service's `service.json` in `~/.config/opencode` and `~/.local/state/opencode` (also under `$XDG_CONFIG_HOME`, `$OPENCODE_CONFIG_DIR` and `$XDG_STATE_HOME` when set) | **blocked** (OpenCode harness) | Least privilege: these files hold the configuration and registration of the host's OpenCode v2 shared service. A sandboxed OpenCode v2 uses its own private `service.json` in the per-launch temp dir instead, so the sandbox doesn't need the host's copies. Keeping them out of reach means a sandboxed session cannot read or change the host service's settings. The rest of both dirs stays read + write. On Linux the file is masked when it exists at launch |
-| The omac VM's two loopback ports (Docker API and SSH, opened like `--open-port`) and a copy of the VM's agent SSH key in omac's tool cache | ports: connect and bind, **only with `--vm`**; key copy: read | So the agent can use Docker in the VM. The key copy stays in the tool cache after the session, so later sessions that share that cache can read it. It is only useful together with the SSH port, which only `--vm` sessions get, unless your sandbox profile opens all loopback ports (`open_port: [0]`); then any session can reach the VM's SSH and Docker ports. See [The omac VM](#the-omac-vm) |
+| The omac VM's SSH port (opened like `--open-port`) and a copy of the VM's agent SSH key in omac's tool cache | port: connect and bind, **only with `--vm`**; key copy: read | So the agent can run commands in the VM with `omac vm exec`, including Docker. The key copy stays in the tool cache after the session, so later sessions that share that cache can read it. It is only useful together with the SSH port, which only `--vm` sessions get, unless your sandbox profile opens all loopback ports (`open_port: [0]`); then any session can reach the VM's SSH port. See [The omac VM](#the-omac-vm) |
 | `~/.config/omac` (approval store, sandbox profiles, global registry) | **blocked** | The agent must not be able to forge skill approvals; protected in the baseline even under broader grants |
 | `~/.local/state/omac/vm` (also under `$XDG_STATE_HOME`) | **blocked** | The omac VM's state, including the key that gives root access to the VM; protected in the baseline even under broader grants |
 | `.env` / `.envrc` files (including nested ones inside the project; dependency/cache trees are skipped) | **blocked** | Often contain secrets |
 | `~/.cache`, `~/Library/Caches` (host cache roots) | **blocked** | Prevents cross-project cache poisoning; omac provides its own isolated cache |
 | Files matching `filesystem.deny` patterns (e.g. `*.key`) | **blocked** | User-defined extra restrictions |
 | Environment variables in `allow_vars` (`OMAC_*`, `HOME`, `PATH`, `LANG`, …) | passed through | Operational minimum |
-| All other environment variables (cloud secrets, `DOCKER_HOST`, `SSH_AUTH_SOCK`, …) | **stripped** | Not needed and potentially sensitive. With `--vm`, `DOCKER_HOST` is set to the VM's address instead of your own value, and `DOCKER_CONFIG` points at an empty directory in omac's tool cache |
+| All other environment variables (cloud secrets, `DOCKER_HOST`, `SSH_AUTH_SOCK`, …) | **stripped** | Not needed and potentially sensitive |
 
 ## The omac VM
 
-A session started with `--vm` uses Docker inside the omac VM (see [omac vm](./usage/cli.md#omac-vm)). The VM, not the sandbox, is then the boundary around everything the agent runs in Docker.
+A session started with `--vm` runs Docker, builds and tests in the omac VM through `omac vm exec` (see [omac vm](./usage/cli.md#omac-vm)). The VM, not the sandbox, is then the boundary around everything the agent runs in Docker.
 
 These hold even if the agent became root inside the VM:
 - The VM cannot reach host files: omac mounts no host directory into it. Host files get into the VM only as the copies that `omac vm exec` makes, see below.
 - It holds no host credentials and no host sockets, such as your SSH agent or the host's Docker.
-- Traffic from the host into the VM goes only over the host's loopback interface and only to the two omac ports (Docker API and SSH) plus the published range 30000 to 30099. omac turns off Lima's forwarding of all other ports, so no process in the VM can take over a port on your host that a host tool expects to be local. For example, a container started with `docker run -p 8080:80` is not reachable on your host's port 8080; `docker run -p 30000:80` is reachable on your host's port 30000, and you know that whatever answers there runs in the VM.
+- Traffic from the host into the VM goes only over the host's loopback interface and only to the VM's SSH port plus the published range 30000 to 30099. omac turns off Lima's forwarding of all other ports, so no process in the VM can take over a port on your host that a host tool expects to be local. For example, a container started with `docker run -p 8080:80` is not reachable on your host's port 8080; `docker run -p 30000:80` is reachable on your host's port 30000, and you know that whatever answers there runs in the VM.
+- Docker in the VM listens only on its Unix socket inside the VM. Neither the host nor the sandbox has a network path to the Docker API; the agent reaches it only through `omac vm exec`.
 
 This holds only while the agent is not root inside the VM: the VM has no outbound network. A firewall inside the VM rejects every new outbound connection, including to Lima's gateway to the host. So while the firewall is loaded, nothing in the VM can open a connection to the host or the network by itself.
 
 Known limits:
 - A kernel exploit inside the VM gives the agent root there. Root can turn the firewall off and then reach the internet and services on your host's loopback interface through Lima's gateway.
-- On Linux, the grant for the VM's two ports also lets the agent connect to those port numbers on any host, not only on loopback, because Landlock cannot scope a port to an address.
+- On Linux, the grant for the VM's SSH port also lets the agent connect to that port number on any host, not only on loopback, because Landlock cannot scope a port to an address.
 - All sessions of one user share the VM, so one session can see and change the containers of another.
 
 What `omac vm exec` shares with the VM:

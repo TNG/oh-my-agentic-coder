@@ -58,21 +58,18 @@ func vmAttachExitCode(err error) int {
 // copied there because the original lives in host-only VM state.
 func vmSandboxEnv(info vm.AttachInfo, scopeDir string) (map[string]string, error) {
 	dir := filepath.Join(scopeDir, "vm")
-	dockerDir := filepath.Join(dir, "docker")
-	for _, d := range []string{dir, dockerDir} {
-		// The sandbox can write scopeDir; refuse a planted symlink or file
-		// instead of following it with the key copy or chmod.
-		if fi, err := os.Lstat(d); err == nil && !fi.IsDir() {
-			return nil, fmt.Errorf("%s exists but is not a directory", d)
-		} else if err != nil && !os.IsNotExist(err) {
-			return nil, err
-		}
-		if err := os.Mkdir(d, 0o700); err != nil && !os.IsExist(err) {
-			return nil, err
-		}
-		if err := os.Chmod(d, 0o700); err != nil {
-			return nil, err
-		}
+	// The sandbox can write scopeDir; refuse a planted symlink or file
+	// instead of following it with the key copy or chmod.
+	if fi, err := os.Lstat(dir); err == nil && !fi.IsDir() {
+		return nil, fmt.Errorf("%s exists but is not a directory", dir)
+	} else if err != nil && !os.IsNotExist(err) {
+		return nil, err
+	}
+	if err := os.Mkdir(dir, 0o700); err != nil && !os.IsExist(err) {
+		return nil, err
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return nil, err
 	}
 	key, err := os.ReadFile(info.AgentKeyPath)
 	if err != nil {
@@ -95,8 +92,6 @@ func vmSandboxEnv(info vm.AttachInfo, scopeDir string) (map[string]string, error
 		return nil, fmt.Errorf("known_hosts: %w", err)
 	}
 	return map[string]string{
-		"DOCKER_HOST":   info.DockerHost(),
-		"DOCKER_CONFIG": dockerDir,
 		vm.EnvVMHost:    "127.0.0.1",
 		vm.EnvVMSSHPort: strconv.Itoa(info.SSHPort),
 		vm.EnvVMSSHKey:  keyPath,
@@ -128,16 +123,13 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 
 // vmProfileMisuse is the usage error for --vm on a launcher profile that
 // runs a sandbox other than omac's own: only that backend can open the
-// VM's ports. A custom policy file for omac's sandbox is fine.
+// VM's SSH port. A custom policy file for omac's sandbox is fine.
 func vmProfileMisuse(plan sandboxPlan) string {
-	return fmt.Sprintf("--vm needs omac's own sandbox; launcher profile %q runs a different sandbox, so omac cannot open the VM's ports there", plan.Name)
+	return fmt.Sprintf("--vm needs omac's own sandbox; launcher profile %q runs a different sandbox, so omac cannot open the VM's SSH port there", plan.Name)
 }
 
-// injectVMGrants opens the VM's Docker and SSH ports for the sandbox and
-// lets DOCKER_HOST and DOCKER_CONFIG through its env filter. Callers refuse
+// injectVMGrants opens the VM's SSH port for the sandbox. Callers refuse
 // --vm on non-native plans first (vmProfileMisuse).
-func injectVMGrants(argv []string, info vm.AttachInfo, plan sandboxPlan) []string {
-	argv = injectOpenPort(argv, strconv.Itoa(info.DockerPort))
-	argv = injectOpenPort(argv, strconv.Itoa(info.SSHPort))
-	return injectSandboxEnvAllow(argv, []string{"DOCKER_HOST", "DOCKER_CONFIG"}, plan)
+func injectVMGrants(argv []string, info vm.AttachInfo) []string {
+	return injectOpenPort(argv, strconv.Itoa(info.SSHPort))
 }

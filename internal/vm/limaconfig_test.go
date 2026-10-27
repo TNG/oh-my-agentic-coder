@@ -14,7 +14,7 @@ var update = flag.Bool("update", false, "rewrite golden")
 
 var goldenInputs = LimaInputs{
 	Resources: Resources{CPUs: 8, Memory: "16GiB", Disk: "60GiB"},
-	SSHPort:   42022, DockerPort: 42375, AgentUser: "alice",
+	SSHPort:   42022, AgentUser: "alice",
 	AdminPubKey: "ssh-ed25519 AAAAadmin omac-vm-admin",
 	AgentPubKey: "ssh-ed25519 AAAAagent omac-vm-agent",
 	Packages:    []string{"jq", "unzip"},
@@ -84,16 +84,13 @@ func TestRenderLimaConfigStructure(t *testing.T) {
 		"containerd: {system: false, user: false}",
 		"user:\n  name: alice",
 		"ssh:\n  localPort: 42022",
-		"guestPort: 2375",
-		"hostPort: 42375",
 		"cpus: 8",
 		"memory: 16GiB",
 		"disk: 60GiB",
-		// Lima uses the first matching rule. After the Docker forward and
-		// the published range, the ignore rules switch off Lima's default
-		// forwarding of every other guest listener to the host's loopback.
+		// Lima uses the first matching rule. After the published range, the
+		// ignore rules switch off Lima's default forwarding of every other
+		// guest listener to the host's loopback.
 		"portForwards:\n" +
-			"  - guestIP: 127.0.0.1\n    guestPort: 2375\n    hostIP: 127.0.0.1\n    hostPort: 42375\n" +
 			"  - guestIP: 127.0.0.1\n    guestPortRange: [30000, 30099]\n    hostIP: 127.0.0.1\n    hostPortRange: [30000, 30099]\n    proto: tcp\n" +
 			"  - guestIP: 127.0.0.1\n    guestPortRange: [1, 65535]\n    proto: any\n    ignore: true\n" +
 			"  - guestIP: 0.0.0.0\n    guestPortRange: [1, 65535]\n    proto: any\n    ignore: true\n" +
@@ -103,7 +100,8 @@ func TestRenderLimaConfigStructure(t *testing.T) {
 			t.Errorf("config lacks %q", want)
 		}
 	}
-	for _, bad := range []string{"location: ~", "writable: true"} {
+	// Docker is reached only over ssh: no TCP listener and no forward for it.
+	for _, bad := range []string{"location: ~", "writable: true", "2375", "guestPort:", "override.conf", "tcp://"} {
 		if strings.Contains(got, bad) {
 			t.Errorf("config must not contain %q", bad)
 		}
@@ -159,7 +157,7 @@ func TestRenderLimaConfigProvisionOrder(t *testing.T) {
 		}},
 		{"user", user, []string{
 			"dockerd-rootless-setuptool.sh install",
-			"ExecStart=/usr/bin/dockerd-rootless.sh -H unix://%%t/docker.sock -H tcp://127.0.0.1:2375",
+			"systemctl --user enable --now docker",
 			"ssh-ed25519 AAAAagent",
 			"testcontainers.properties",
 		}},
@@ -178,17 +176,13 @@ func TestRenderLimaConfigProvisionOrder(t *testing.T) {
 
 // Lima runs the user script on every boot. A failed Docker start must not
 // make later boots skip Docker: only the setuptool install is guarded, and
-// the override plus the Docker start run every time, in this order.
+// the Docker start runs every time, after it.
 func TestUserScriptRecoversAcrossBoots(t *testing.T) {
 	_, _, user := provisionBlocks(t, renderGolden(t))
 	steps := []string{
 		"systemctl --user start dbus || true\n",
 		"[ -f ~/.config/systemd/user/docker.service ] || dockerd-rootless-setuptool.sh install\n",
-		"mkdir -p ~/.config/systemd/user/docker.service.d\n",
-		`printf '[Service]\nExecStart=\nExecStart=/usr/bin/dockerd-rootless.sh -H unix://%%t/docker.sock -H tcp://127.0.0.1:2375\n' > ~/.config/systemd/user/docker.service.d/override.conf` + "\n",
-		"systemctl --user daemon-reload\n",
-		"systemctl --user enable docker\n",
-		"systemctl --user restart docker\n",
+		"systemctl --user enable --now docker\n",
 	}
 	pos := 0
 	for _, s := range steps {
@@ -197,9 +191,6 @@ func TestUserScriptRecoversAcrossBoots(t *testing.T) {
 			t.Fatalf("user block lacks %q after offset %d:\n%s", s, pos, user)
 		}
 		pos += i + len(s)
-	}
-	if strings.Contains(user, "override.conf ] && exit 0") {
-		t.Error("user script still exits early once override.conf exists")
 	}
 }
 
@@ -281,8 +272,7 @@ func TestRenderLimaConfigEmbedsRuleset(t *testing.T) {
 func TestRenderLimaConfigValidation(t *testing.T) {
 	cases := map[string]func(*LimaInputs){
 		"ssh port zero":           func(in *LimaInputs) { in.SSHPort = 0 },
-		"docker port zero":        func(in *LimaInputs) { in.DockerPort = 0 },
-		"same ports":              func(in *LimaInputs) { in.DockerPort = in.SSHPort },
+		"ssh port too large":      func(in *LimaInputs) { in.SSHPort = 65536 },
 		"empty agent user":        func(in *LimaInputs) { in.AgentUser = "" },
 		"agent user with shell":   func(in *LimaInputs) { in.AgentUser = "a;reboot" },
 		"empty admin key":         func(in *LimaInputs) { in.AdminPubKey = "" },
