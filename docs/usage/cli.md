@@ -204,6 +204,31 @@ omac cache clear        # remove the cache for the current scope
 omac cache clear --all  # remove all caches not currently in use
 ```
 
+### omac vm
+
+The omac VM is one long-lived Linux virtual machine per computer, which omac creates and manages with [Lima](https://lima-vm.io). Docker runs inside it. The VM sees none of your host files and has no network access, except while `omac vm up` or `omac vm up --reprovision` sets it up and while it is online.
+
+```bash
+omac vm up                     # create and provision once, then switch offline (needs network once)
+omac vm status                 # show state, mode, ports, images, sessions and the resources set in vm.yaml
+omac vm image add postgres:16  # import an image; the VM never pulls itself
+omac vm image list             # list the VM's images
+omac vm image rm postgres:16   # remove an image from the VM
+omac vm online                 # restart the VM with network access, e.g. to download build dependencies
+omac vm offline                # restart the VM without network access, the mode sessions need
+omac vm down                   # stop the VM
+omac vm reset                  # delete the VM and create it anew
+```
+
+You need Lima; omac is tested with Lima 2.1 (`brew install lima` on macOS; on Linux the release tarball from the Lima GitHub releases or Homebrew on Linux, plus QEMU).
+Because the VM has no network, `docker pull` inside it fails. Instead, `omac vm image add` downloads the image on your host and loads it into the VM, once per image.
+
+Container ports published in the range 30000 to 30099 (for example `docker run -p 30000:5432 postgres:16`) are reachable from your host on `localhost` at the same port. Ports outside that range stay inside the VM.
+
+The VM is either `offline` (the default) or `online`. `omac vm online`, `omac vm up --reprovision` and `omac vm reset` take the VM online.
+
+`omac vm up --reprovision` reinstalls the extra packages listed in `vm.yaml`, and `omac vm reset` deletes the VM and creates it anew. For CPUs, memory, disk and packages, see [omac VM (vm.yaml)](../configuration.md#omac-vm-vmyaml).
+
 ### omac provenance
 
 Shows what your current sandbox configuration allows and blocks — useful for verifying your effective policy before a run.
