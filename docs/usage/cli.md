@@ -210,15 +210,16 @@ omac cache clear --all  # remove all caches not currently in use
 
 ### omac vm
 
-The omac VM is one long-lived Linux virtual machine per computer, which omac creates and manages with [Lima](https://lima-vm.io). Docker runs inside it, and a session started with `--vm` uses that Docker instead of one on your host. The VM sees none of your host files and has no network access, except while `omac vm up` or `omac vm up --reprovision` sets it up and while it is online.
+The omac VM is one long-lived Linux virtual machine per computer, which omac creates and manages with [Lima](https://lima-vm.io). Docker runs inside it, and a session started with `--vm` uses that Docker instead of one on your host. The VM does not mount your host files. Only `omac vm exec` copies the current worktree (the git top level) into it, and those copies stay in the VM. The VM has no network access, except while `omac vm up` or `omac vm up --reprovision` sets it up and while it is online.
 
 ```bash
 omac vm up                     # create and provision once, then switch offline (needs network once)
-omac vm status                 # show state, mode, ports, images, sessions and the resources set in vm.yaml
+omac vm status                 # show state, mode, ports, resources, packages, JDKs, copied worktrees, images and sessions
 omac vm image add postgres:16  # import an image; the VM never pulls itself
 omac vm image list             # list the VM's images
 omac vm image rm postgres:16   # remove an image from the VM
 omac start --vm                # DOCKER_HOST inside the sandbox points at the VM
+omac vm exec -- ./gradlew test # copy the worktree into the VM and run there
 omac vm online                 # restart the VM with network access, e.g. to download build dependencies
 omac vm offline                # restart the VM without network access, the mode sessions need
 omac vm down                   # stop the VM
@@ -228,11 +229,48 @@ omac vm reset                  # delete the VM and create it anew
 You need Lima; omac is tested with Lima 2.1 (`brew install lima` on macOS; on Linux the release tarball from the Lima GitHub releases or Homebrew on Linux, plus QEMU).
 Because the VM has no network, `docker pull` inside it fails. Instead, `omac vm image add` downloads the image on your host and loads it into the VM, once per image.
 
-Container ports published in the range 30000 to 30099 (for example `docker run -p 30000:5432 postgres:16`) are reachable from your host on `localhost` at the same port. Ports outside that range stay inside the VM.
+Container ports published in the range 30000 to 30099 (for example `docker run -p 30000:5432 postgres:16`) are reachable from your host on `localhost` at the same port. Ports outside that range stay inside the VM; use `omac vm exec` to reach them from the VM side.
 
 The VM is either `offline` (the default) or `online`. Sessions attach only while it is offline. `omac vm online`, `omac vm up --reprovision` and `omac vm reset` take the VM online, so they are refused while a session is attached.
 
-`omac vm up --reprovision` reinstalls the extra packages listed in `vm.yaml`, and `omac vm reset` deletes the VM and creates it anew. For CPUs, memory, disk and packages, see [omac VM (vm.yaml)](../configuration.md#omac-vm-vmyaml).
+`omac vm up --reprovision` reinstalls the extra packages and JDKs listed in `vm.yaml`, and `omac vm reset` deletes the VM and creates it anew. For CPUs, memory, disk, packages and Java versions, see [omac VM (vm.yaml)](../configuration.md#omac-vm-vmyaml).
+
+`omac vm exec` runs a command inside the VM on a copy of your worktree (the git top level), for example a Gradle build that needs more memory or tools than the sandbox has. It works from your host and from inside a session started with `--vm`.
+
+```bash
+omac vm exec -- ./gradlew test --offline
+omac vm exec --cwd backend -- ./gradlew test --offline
+omac vm exec -- cat backend/build/reports/tests/test/index.html   # results stay in the VM; read them back like this
+```
+
+The command runs in the same place inside the copy as your current directory is in the worktree. `--cwd <dir>` runs it in `<dir>`, relative to the current directory. So `omac vm exec --cwd backend -- …` from the repository root and `omac vm exec -- …` from `backend/` both run in `backend`. Outside a git repository, omac copies the current directory.
+
+`--env NAME` passes the variable `NAME` with the value from your shell. The variable must be set there, otherwise the command fails before anything runs. `--env NAME=VALUE` sets the value explicitly. Repeat `--env` for more variables. `--env` is meant for priming, see below. `--verbose` prints which directory omac copies and where it goes in the VM.
+
+omac returns the command's exit code as is. That code can coincide with omac's own exit codes 2 (wrong usage), 4 (VM not created) and 5 (copy or connection failed). For example, a command that ends with `exit 5` looks like a failed copy, so check the error message on stderr.
+
+When both stdin and stdout are a terminal, the command gets one in the VM too, and Ctrl-C stops it there. Otherwise, for example when you pipe input into `omac vm exec` or redirect its output to a file, Ctrl-C stops only omac and the command keeps running in the VM.
+
+The copy goes one way only:
+
+- `.git`, the `.env` files the sandbox hides, and the paths git ignores, also inside submodules, are not copied. `build/`, `.gradle/` and `node_modules/` stay out only if `.gitignore` lists them.
+- Nothing on your host is deleted or changed.
+- Files you delete on the host are not removed from the copy in the VM. If a stale file gets in the way, run `omac vm exec -- rm -rf <path>` or `omac vm reset`.
+- Nothing is copied back from the VM. Build output stays there, so read it with another `omac vm exec`.
+
+`omac vm status` lists the worktrees copied so far.
+
+Since the VM is offline, a build that downloads dependencies has to fill its caches once while the VM is online. Run this from your host. omac accepts `--env` only there and only while the VM is online, which also means no session is attached. `--env` passes a token the build needs for its downloads.
+
+```bash
+omac vm online
+omac vm exec --env MY_REPO_TOKEN --cwd backend -- ./gradlew test --no-daemon
+omac vm offline
+```
+
+After that, `./gradlew test --offline` finds its dependencies in the VM.
+
+The priming run executes as the same VM user that every earlier `--vm` session controlled, and it trusts everything those sessions could leave in that user's home. Examples are a Gradle init script in `~/.gradle/init.d/`, an edited build file in the copy, or a process still running. Use `--no-daemon` for the priming build, so that no Gradle daemon keeps the token after the run.
 
 ### omac provenance
 
