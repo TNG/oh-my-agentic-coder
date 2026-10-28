@@ -445,8 +445,12 @@ func runLaunch(env *Env, opts launchOpts) int {
 		fmt.Fprintln(env.Stderr, prefix+": scan skills:", err)
 		return ExitIOError
 	}
+	var skippedUnregistered []string
 	if len(unregistered) > 0 && opts.skipUnregistered {
-		fmt.Fprintf(env.Stderr, "%s: warning: continuing without unregistered skills (--skip-unregistered): %s\n",
+		skippedUnregistered = unregistered
+		fmt.Fprintf(env.Stderr, "%s: warning: continuing without unregistered skills (--skip-unregistered): %s\n"+
+			"  Their sidecars, secrets and install scripts will not run, but their files are still\n"+
+			"  readable by the agent. Only skip skills you trust to sit in this workdir.\n",
 			prefix, strings.Join(unregistered, ", "))
 	} else if len(unregistered) > 0 {
 		fmt.Fprintln(env.Stderr, prefix+": unregistered skills found in this workdir:")
@@ -986,6 +990,9 @@ func runLaunch(env *Env, opts launchOpts) int {
 		sandboxBackend = profName
 	}
 	auditor.Emit(audit.SessionStart(env.Version, harness.Name, profName, sandboxBackend))
+	for _, name := range skippedUnregistered {
+		auditor.Emit(audit.RouteStateEvent(name, "", "skipped-unregistered", "started with --skip-unregistered"))
+	}
 	auditor.Emit(audit.InnerExec(argv, profName, sandboxed))
 
 	// The post-exit hint needs the id of the session this run created. opencode
