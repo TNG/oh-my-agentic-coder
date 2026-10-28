@@ -62,6 +62,8 @@ Fix: grant a one-time AppArmor exception — see [Installation → Linux (Debian
 ```
 omac start: unregistered skills found in this workdir:
   <skill-name> — register with: omac register <skill-name>
+...
+To start without them for now (they will not run), add --skip-unregistered: omac start --skip-unregistered
 ```
 
 Cause: the skill directory exists but `omac register` was never run for it.

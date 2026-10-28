@@ -458,6 +458,7 @@ func runLaunch(env *Env, opts launchOpts) int {
 			fmt.Fprintf(env.Stderr, "  %s — register with: omac register %s\n", name, name)
 		}
 		fmt.Fprintln(env.Stderr, "\nA skill you no longer want can be deleted with `omac deregister <skill>` (add --global for a user-global skill).")
+		fmt.Fprintf(env.Stderr, "To start without them for now (they will not run), add --skip-unregistered: omac %s --skip-unregistered\n", opts.label)
 		return ExitPrerequisiteMissing
 	}
 

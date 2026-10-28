@@ -856,3 +856,17 @@ func TestRunStart_SkipUnregisteredStartsWithWarning(t *testing.T) {
 		t.Errorf("audit log lacks the skipped-unregistered record:\n%s", logged)
 	}
 }
+
+func TestRunStart_RefusalMentionsSkipUnregistered(t *testing.T) {
+	isolateHome(t)
+	wd := t.TempDir()
+	stageSkillWithSidecar(t, wd, "no-required", sidecarNoRequired)
+
+	env, stderr := launchTestEnv(t, wd)
+	if code := runStart([]string{"--no-sandbox", "--inner", "/bin/true"}, env); code != ExitPrerequisiteMissing {
+		t.Fatalf("runStart() = %d, want ExitPrerequisiteMissing", code)
+	}
+	if !strings.Contains(stderr(), "--skip-unregistered") {
+		t.Errorf("refusal does not point at --skip-unregistered:\n%s", stderr())
+	}
+}
