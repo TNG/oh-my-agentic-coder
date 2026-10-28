@@ -358,12 +358,12 @@ func TestReprovisionKeepsPackagesWhenOfflineSwitchFails(t *testing.T) {
 func TestUpCreateClearsStaleLists(t *testing.T) {
 	m, _, _, _ := newTestManager(t)
 	stale := &State{SSHPort: 42022, DockerPort: 42375, Mode: ModeOffline,
-		Images: []string{"x"}, JDKs: []string{"17"}, Worktrees: []string{"/w"}}
+		Images: []string{"x"}, JDKs: []string{"17"}}
 	if err := SaveState(m.Layout.StatePath, stale); err != nil {
 		t.Fatal(err)
 	}
 	mustUp(t, m)
-	if st := mustState(t, m); len(st.Images)+len(st.JDKs)+len(st.Worktrees) != 0 {
+	if st := mustState(t, m); len(st.Images)+len(st.JDKs) != 0 {
 		t.Errorf("state = %+v, want lists cleared", st)
 	}
 }
@@ -452,6 +452,78 @@ func TestUpReprovisionRewritesPackagesAndCycles(t *testing.T) {
 	if !slices.Equal(st.Packages, []string{"jq"}) || st.Mode != ModeOffline {
 		t.Errorf("state = %+v, want packages [jq], offline", st)
 	}
+}
+
+func TestUpInstallsJDKPackages(t *testing.T) {
+	m, _, _, _ := newTestManager(t)
+	writeConfig(t, m, "packages: [jq]\njdks: [temurin-25]\n")
+	mustUp(t, m)
+
+	yaml, err := os.ReadFile(m.Layout.LimaYAML)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(yaml), "jq temurin-25-jdk") {
+		t.Errorf("lima yaml lacks the package line %q:\n%s", "jq temurin-25-jdk", yaml)
+	}
+	st := mustState(t, m)
+	if !slices.Equal(st.JDKs, []string{"temurin-25"}) || !slices.Equal(st.Packages, []string{"jq"}) {
+		t.Errorf("state jdks = %v, packages = %v; want [temurin-25], [jq]", st.JDKs, st.Packages)
+	}
+	r, err := m.Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	r.Write(&out)
+	if !strings.Contains(out.String(), "jdks:\n  - temurin-25\n") {
+		t.Errorf("status output lacks the jdk:\n%s", out.String())
+	}
+}
+
+func TestUpCreateRecordsJDKsOnlyAfterProvisioning(t *testing.T) {
+	m, _, ssh, _ := newTestManager(t)
+	writeConfig(t, m, "jdks: [temurin-25]\n")
+	ssh.fail = func(remote string) error {
+		if remote == verifyFirewallCmd {
+			return errors.New("exit status 1")
+		}
+		return nil
+	}
+	if err := m.Up(context.Background(), false); !errors.Is(err, ErrFirewallMissing) {
+		t.Fatalf("Up = %v, want ErrFirewallMissing", err)
+	}
+	if st := mustState(t, m); len(st.JDKs) != 0 {
+		t.Errorf("state jdks = %v after a failed provisioning, want none", st.JDKs)
+	}
+}
+
+func TestUpReprovisionAddsJDK(t *testing.T) {
+	m, _, ssh, _ := newTestManager(t)
+	writeConfig(t, m, "packages: [jq]\n")
+	mustUp(t, m)
+	writeConfig(t, m, "packages: [jq]\njdks: [temurin-21]\n")
+
+	if err := m.Up(context.Background(), true); err != nil {
+		t.Fatalf("Up(reprovision): %v", err)
+	}
+	if _, g := ssh.snapshot(); g.packages != "jq temurin-21-jdk" {
+		t.Errorf("guest packages = %q, want %q", g.packages, "jq temurin-21-jdk")
+	}
+	st := mustState(t, m)
+	if !slices.Equal(st.JDKs, []string{"temurin-21"}) || !slices.Equal(st.Packages, []string{"jq"}) {
+		t.Errorf("state jdks = %v, packages = %v; want [temurin-21], [jq]", st.JDKs, st.Packages)
+	}
+}
+
+func TestUpRejectsUnsupportedJDKBeforeLima(t *testing.T) {
+	m, lima, _, _ := newTestManager(t)
+	writeConfig(t, m, "jdks: [openjdk-21]\n")
+	err := m.Up(context.Background(), false)
+	if err == nil || !strings.Contains(err.Error(), `unsupported jdk "openjdk-21"`) {
+		t.Fatalf("Up = %v, want an unsupported jdk error", err)
+	}
+	assertVerbs(t, lima)
 }
 
 func TestUpReprovisionStartsStoppedInstanceFirst(t *testing.T) {
@@ -783,6 +855,58 @@ func TestStatusToleratesProbeFailure(t *testing.T) {
 	r, err := m.Status(context.Background())
 	if err != nil || r.Docker != nil || !r.Running {
 		t.Fatalf("Status = %+v, %v; want running with Docker nil", r, err)
+	}
+}
+
+func TestStatusListsWorktreesFromGuest(t *testing.T) {
+	m, lima, ssh, _ := newTestManager(t)
+	ctx := context.Background()
+	mustUp(t, m)
+	// Two concurrent first runs can both append the same line.
+	ssh.setWorktrees("a1b2c3 /Users/alice/proj\n\nd4e5f6 /Users/alice/my proj\na1b2c3 /Users/alice/proj\n")
+
+	r, err := m.Status(ctx)
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	want := []string{"/Users/alice/proj (a1b2c3)", "/Users/alice/my proj (d4e5f6)"}
+	if !slices.Equal(r.Worktrees, want) {
+		t.Errorf("Worktrees = %q, want %q", r.Worktrees, want)
+	}
+	calls, _ := ssh.snapshot()
+	var listed bool
+	for _, c := range calls {
+		if c.remote == listWorktreesCmd {
+			listed = true
+			if c.target.User != AgentUserName("alice") {
+				t.Errorf("listed worktrees as %q, want the agent user", c.target.User)
+			}
+		}
+	}
+	if !listed {
+		t.Errorf("Status never ran %q; remotes = %q", listWorktreesCmd, ssh.remotes())
+	}
+
+	// An SSH failure makes the list unknown, not empty.
+	ssh.fail = func(remote string) error {
+		if remote == listWorktreesCmd {
+			return errors.New("exit status 255")
+		}
+		return nil
+	}
+	if r, err = m.Status(ctx); err != nil || len(r.Worktrees) != 0 || !strings.HasPrefix(r.WorktreesNote, "unknown") {
+		t.Errorf("Status with failing ssh = %q, note %q, %v; want unknown, no error", r.Worktrees, r.WorktreesNote, err)
+	}
+	ssh.fail = nil
+
+	// A stopped VM is not asked.
+	lima.setStatus(StatusStopped)
+	before := len(ssh.remotes())
+	if r, err = m.Status(ctx); err != nil || len(r.Worktrees) != 0 || r.WorktreesNote != "unknown (VM not running)" {
+		t.Errorf("Status of stopped VM = %q, note %q, %v; want unknown (VM not running), no error", r.Worktrees, r.WorktreesNote, err)
+	}
+	if after := ssh.remotes(); len(after) != before {
+		t.Errorf("Status of stopped VM ran ssh: %q", after[before:])
 	}
 }
 
@@ -1119,18 +1243,34 @@ func TestStatusReportWrite(t *testing.T) {
 		Created: true, Running: true, Mode: ModeOffline, SSHPort: 42022, DockerPort: 42375,
 		Resources: Resources{CPUs: 8, Memory: "16GiB", Disk: "60GiB"},
 		Images:    []string{"index.docker.io/library/alpine:latest", "index.docker.io/library/busybox:1.36"},
-		Docker:    &DockerVersion{APIVersion: "1.47", Version: "27.3.1"},
+		// The agent user writes the registry and answers the Docker probe.
+		Worktrees: []string{"/Users/alice/proj (a1b2c3)", "/x\x1b]52;c;Zm9v\x07\nmode: online (s)"},
+		JDKs:      []string{"temurin-25"},
+		Docker:    &DockerVersion{APIVersion: "1.47", Version: "27.3.1\x1b[2J"},
 	}
 	var b bytes.Buffer
 	r.Write(&b)
 	out := b.String()
 	for _, want := range []string{
-		"status: running", "mode: offline", "ssh: 127.0.0.1:42022", "docker: tcp://127.0.0.1:42375",
+		"status: running", "mode: offline", "ssh: 127.0.0.1:42022", "docker: tcp://127.0.0.1:42375 (Docker 27.3.1\\x1b[2J, API 1.47)",
 		"images:\n  - index.docker.io/library/alpine:latest\n  - index.docker.io/library/busybox:1.36\n",
+		"worktrees:\n  - /Users/alice/proj (a1b2c3)\n  - /x\\x1b]52;c;Zm9v\\x07\\nmode: online (s)\n",
+		"jdks:\n  - temurin-25\n",
 		"sessions: none",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("report lacks %q:\n%s", want, out)
+		}
+	}
+	if strings.ContainsAny(out, "\x1b\x07") {
+		t.Errorf("report passes control characters through: %q", out)
+	}
+
+	b.Reset()
+	StatusReport{Created: true, WorktreesNote: "unknown (VM not running)"}.Write(&b)
+	for _, want := range []string{"status: stopped", "worktrees: unknown (VM not running)", "jdks: none"} {
+		if !strings.Contains(b.String(), want) {
+			t.Errorf("stopped report lacks %q:\n%s", want, b.String())
 		}
 	}
 

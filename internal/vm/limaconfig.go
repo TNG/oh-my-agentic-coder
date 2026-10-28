@@ -46,7 +46,7 @@ type LimaInputs struct {
 	AgentUser   string   // Lima user name, see AgentUserName
 	AdminPubKey string   // content of admin_key.pub (one line)
 	AgentPubKey string   // content of agent_key.pub
-	Packages    []string // extra apt packages from vm.yaml
+	Packages    []string // apt packages: vm.yaml packages, then the JDK packages
 	Ruleset     string
 }
 

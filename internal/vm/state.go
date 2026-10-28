@@ -24,7 +24,6 @@ type State struct {
 	DockerPort int      `json:"docker_port"`
 	Mode       string   `json:"mode"`
 	Images     []string `json:"images"`
-	Worktrees  []string `json:"worktrees"`
 	JDKs       []string `json:"jdks"`
 	Packages   []string `json:"packages"` // extra packages from the last provisioning
 }
