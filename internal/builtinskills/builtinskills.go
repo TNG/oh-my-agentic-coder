@@ -1,7 +1,7 @@
 // Package builtinskills ships skill bundles embedded in the omac binary and
 // materializes them onto disk.
 //
-// Today the only built-in is omac-write-a-skill, a guidance-only skill (a
+// The built-ins (omac-write-a-skill, omac-vm) are guidance-only skills (a
 // SKILL.md, no omac.yaml). omac deliberately ignores SKILL.md-only directories
 // (see internal/skillsource), so these bundles are NOT registered or activated
 // by omac; they are placed into a harness's own native skills directory and
@@ -151,7 +151,7 @@ func Check(name, skillsParentDir string) (State, error) {
 // already-current target is reported StatusUnchanged with no write.
 //
 // File writes are per-file atomic (temp file + rename). Directories are created
-// 0755 and files 0644 (embedded files carry no mode bits; the only built-in is
+// 0755 and files 0644 (embedded files carry no mode bits; the built-ins are
 // guidance-only text, so no executable bits are needed).
 func Materialize(name, skillsParentDir string, force bool) (Result, error) {
 	src, err := bundleFS(name)
