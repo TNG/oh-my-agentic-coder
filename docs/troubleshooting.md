@@ -72,6 +72,13 @@ Fix:
 omac register <skill-name>
 ```
 
+To start without the skill for now, pass `--skip-unregistered`. omac prints a
+warning and runs without that skill's sidecar:
+
+```bash
+omac start --skip-unregistered
+```
+
 ### exec: node: executable file not found in $PATH
 
 ```

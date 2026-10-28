@@ -819,3 +819,29 @@ func TestSkillEligibleForAutoRegister_RequiredSecretPatternBlocks(t *testing.T) 
 		t.Error("a required secret whose host value fails its pattern must not be auto-registered")
 	}
 }
+
+func TestParseLaunchArgs_SkipUnregistered(t *testing.T) {
+	opts, code := parseLaunchArgs("start", []string{"--skip-unregistered"}, devnullEnv(t))
+	if code != ExitOK || !opts.skipUnregistered {
+		t.Fatal("--skip-unregistered was not parsed")
+	}
+}
+
+func TestRunStart_SkipUnregisteredStartsWithWarning(t *testing.T) {
+	isolateHome(t)
+	wd := t.TempDir()
+	stageSkillWithSidecar(t, wd, "no-required", sidecarNoRequired)
+
+	env, stderr := launchTestEnv(t, wd)
+	if code := runStart([]string{"--skip-unregistered", "--no-sandbox", "--inner", "/bin/true"}, env); code != ExitOK {
+		t.Fatalf("runStart() = %d, want ExitOK\nstderr:\n%s", code, stderr())
+	}
+	if out := stderr(); !strings.Contains(out, "continuing without unregistered skills") || !strings.Contains(out, "no-required") {
+		t.Errorf("missing warning naming the skipped skill:\n%s", out)
+	}
+	if loaded, err := registry.Load(wd); err != nil {
+		t.Fatalf("registry.Load: %v", err)
+	} else if entry, _ := loaded.Find("no-required"); entry != nil {
+		t.Error("--skip-unregistered must not register the skill")
+	}
+}
