@@ -74,8 +74,8 @@ omac register <skill-name>
 
 To start without the skill for now, pass `--skip-unregistered`. omac prints a
 warning and runs without that skill's sidecar, secrets and install script. The
-skill's files stay readable by the agent, and the skip is recorded in the audit
-log (`route.state`, `skipped-unregistered`):
+built-in sandbox hides the skill's folder from the agent (other backends only
+print a notice), and the skip is recorded in the audit log (`route.state`, `skipped-unregistered`):
 
 ```bash
 omac start --skip-unregistered
