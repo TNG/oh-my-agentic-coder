@@ -169,7 +169,10 @@ func TestPinOpenCodeV2ServiceSeedsConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("XDG_CONFIG_HOME", cfgRoot)
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	stateHome := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", stateHome)
+	hostModel := `{"favorite":[{"providerID":"trustedtokens","modelID":"deepseek"}]}`
+	writeTestFile(t, filepath.Join(stateHome, "opencode", openCodeModelStateFile), hostModel)
 
 	sandboxTmp := t.TempDir()
 	inner := []string{fakeVersionBinary(t, "#!/bin/sh\necho 2.0.18\n")}
@@ -193,6 +196,11 @@ func TestPinOpenCodeV2ServiceSeedsConfig(t *testing.T) {
 	}
 	if want := filepath.Join(sandboxTmp, "opencode-state"); pin.StateDir != want {
 		t.Errorf("StateDir = %q, want %q", pin.StateDir, want)
+	}
+	// The pin itself seeds the host model choice; deleting that call would
+	// pass the direct seed/save tests and silently forget the choice.
+	if got, err := os.ReadFile(filepath.Join(pin.StateDir, "opencode", openCodeModelStateFile)); err != nil || string(got) != hostModel {
+		t.Errorf("pin did not seed the host model state: %q, %v", got, err)
 	}
 
 	// Only the pinned port: the host's password and port must not leak into the sandboxed service identity.
@@ -644,18 +652,26 @@ func TestVerifyService(t *testing.T) {
 	})
 }
 
+// writeTestFile creates path and its parents without the production writer,
+// so a path bug in writeFileAtomic cannot hide behind matching fixtures.
+func writeTestFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // The model choice survives into the next launch, while the host service
 // registration stays out of the sandbox in both directions.
 func TestOpenCodeModelStatePersistsAcrossPins(t *testing.T) {
 	stateHome := filepath.Join(t.TempDir(), "state")
 	t.Setenv("XDG_STATE_HOME", stateHome)
 	host := filepath.Join(stateHome, "opencode", openCodeModelStateFile)
-	if err := writeFileInDir(host, []byte(`{"variant":{"trustedtokens/deepseek":"high"}}`)); err != nil {
-		t.Fatal(err)
-	}
-	if err := writeFileInDir(filepath.Join(stateHome, "opencode", "service.json"), []byte(`{"port":49374}`)); err != nil {
-		t.Fatal(err)
-	}
+	writeTestFile(t, host, `{"variant":{"trustedtokens/deepseek":"high"}}`)
+	writeTestFile(t, filepath.Join(stateHome, "opencode", "service.json"), `{"port":49374}`)
 
 	first := &openCodeServicePin{StateDir: filepath.Join(t.TempDir(), "opencode-state")}
 	if err := first.seedModelState(); err != nil {
@@ -668,12 +684,8 @@ func TestOpenCodeModelStatePersistsAcrossPins(t *testing.T) {
 		t.Fatalf("seeded model state = %q, %v", got, err)
 	}
 
-	if err := writeFileInDir(first.sessionModelStatePath(), []byte(`{"variant":{"trustedtokens/deepseek":"max"}}`)); err != nil {
-		t.Fatal(err)
-	}
-	if err := writeFileInDir(filepath.Join(first.StateDir, "opencode", "service.json"), []byte(`{"port":12345}`)); err != nil {
-		t.Fatal(err)
-	}
+	writeTestFile(t, first.sessionModelStatePath(), `{"variant":{"trustedtokens/deepseek":"max"}}`)
+	writeTestFile(t, filepath.Join(first.StateDir, "opencode", "service.json"), `{"port":12345}`)
 	if err := first.saveModelState(); err != nil {
 		t.Fatalf("save: %v", err)
 	}
@@ -685,14 +697,150 @@ func TestOpenCodeModelStatePersistsAcrossPins(t *testing.T) {
 	}
 }
 
-// A first launch has no host model.json; seed must be a no-op, not an error.
-func TestOpenCodeModelStateSeedWithoutHostFile(t *testing.T) {
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
+// Most users do not set XDG_STATE_HOME, so the ~/.local/state fallback is the
+// path that matters in production; it needs its own round-trip test.
+func TestOpenCodeModelStateDefaultStateHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_STATE_HOME", "")
+
 	pin := &openCodeServicePin{StateDir: filepath.Join(t.TempDir(), "opencode-state")}
+	host := filepath.Join(home, ".local", "state", "opencode", openCodeModelStateFile)
+	if got := pin.hostModelStatePath(); got != host {
+		t.Fatalf("hostModelStatePath = %q, want %q", got, host)
+	}
+
+	// A first launch has no host file; seed must be a no-op, not an error.
 	if err := pin.seedModelState(); err != nil {
 		t.Fatalf("seed without a host file: %v", err)
 	}
 	if _, err := os.Stat(pin.sessionModelStatePath()); !os.IsNotExist(err) {
 		t.Fatalf("seed must not create a session file: %v", err)
+	}
+
+	writeTestFile(t, host, `{"variant":{"trustedtokens/deepseek":"high"}}`)
+	if err := pin.seedModelState(); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if got, err := os.ReadFile(pin.sessionModelStatePath()); err != nil || string(got) != `{"variant":{"trustedtokens/deepseek":"high"}}` {
+		t.Fatalf("seeded model state = %q, %v", got, err)
+	}
+
+	writeTestFile(t, pin.sessionModelStatePath(), `{"variant":{"trustedtokens/deepseek":"max"}}`)
+	if err := pin.saveModelState(); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	if got, err := os.ReadFile(host); err != nil || string(got) != `{"variant":{"trustedtokens/deepseek":"max"}}` {
+		t.Fatalf("saved model state = %q, %v", got, err)
+	}
+	if st, err := os.Stat(filepath.Dir(host)); err != nil {
+		t.Fatal(err)
+	} else if st.Mode().Perm() != 0o700 {
+		t.Errorf("host state dir mode = %o, want 0700", st.Mode().Perm())
+	}
+	if st, err := os.Stat(host); err != nil {
+		t.Fatal(err)
+	} else if st.Mode().Perm() != 0o600 {
+		t.Errorf("host model.json mode = %o, want 0600", st.Mode().Perm())
+	}
+}
+
+// A session that never wrote a model.json must not touch the host copy. This
+// is the os.IsNotExist branch, and the dangerous one to regress.
+func TestOpenCodeModelStateSaveWithoutSessionFile(t *testing.T) {
+	stateHome := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", stateHome)
+	host := filepath.Join(stateHome, "opencode", openCodeModelStateFile)
+	writeTestFile(t, host, `{"variant":{"trustedtokens/deepseek":"high"}}`)
+
+	pin := &openCodeServicePin{StateDir: filepath.Join(t.TempDir(), "opencode-state")}
+	if err := pin.saveModelState(); err != nil {
+		t.Fatalf("save without a session file: %v", err)
+	}
+	if got, err := os.ReadFile(host); err != nil || string(got) != `{"variant":{"trustedtokens/deepseek":"high"}}` {
+		t.Fatalf("host model state = %q, %v, want it untouched", got, err)
+	}
+	if _, err := os.Stat(pin.StateDir); !os.IsNotExist(err) {
+		t.Errorf("save must not create the session state dir: %v", err)
+	}
+}
+
+// No-op sessions and unreadable session data must leave the host file alone:
+// writing back identical bytes is pointless, and empty/truncated bytes would
+// destroy the very preference this path exists to keep.
+func TestOpenCodeModelStateSaveSkipsUnchangedAndInvalid(t *testing.T) {
+	const hostBody = `{"variant":{"trustedtokens/deepseek":"high"}}`
+	cases := []struct {
+		name    string
+		session string
+		wantErr bool
+	}{
+		{"unchanged", hostBody, false},
+		{"empty", "", true},
+		{"truncated", `{"variant":`, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			stateHome := t.TempDir()
+			t.Setenv("XDG_STATE_HOME", stateHome)
+			host := filepath.Join(stateHome, "opencode", openCodeModelStateFile)
+			writeTestFile(t, host, hostBody)
+			old := time.Unix(1000, 0)
+			if err := os.Chtimes(host, old, old); err != nil {
+				t.Fatal(err)
+			}
+
+			pin := &openCodeServicePin{StateDir: filepath.Join(t.TempDir(), "opencode-state")}
+			writeTestFile(t, pin.sessionModelStatePath(), tc.session)
+			err := pin.saveModelState()
+			if tc.wantErr {
+				if err == nil || !strings.Contains(err.Error(), "not valid JSON") {
+					t.Fatalf("save = %v, want a not-valid-JSON error", err)
+				}
+			} else if err != nil {
+				t.Fatalf("save: %v", err)
+			}
+			if got, err := os.ReadFile(host); err != nil || string(got) != hostBody {
+				t.Fatalf("host model state = %q, %v, want it untouched", got, err)
+			}
+			if st, err := os.Stat(host); err != nil {
+				t.Fatal(err)
+			} else if !st.ModTime().Equal(old) {
+				t.Errorf("host model state was rewritten (mtime %v), want %v", st.ModTime(), old)
+			}
+		})
+	}
+}
+
+// A symlinked host model.json (dotfiles repo) must keep its link; the save
+// goes to the link target instead of replacing the link with a regular file.
+func TestOpenCodeModelStateSaveThroughSymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation needs privileges on Windows")
+	}
+	stateHome := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", stateHome)
+	target := filepath.Join(t.TempDir(), "dotfiles-model.json")
+	writeTestFile(t, target, `{"variant":{"trustedtokens/deepseek":"high"}}`)
+	link := filepath.Join(stateHome, "opencode", openCodeModelStateFile)
+	if err := os.MkdirAll(filepath.Dir(link), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+
+	pin := &openCodeServicePin{StateDir: filepath.Join(t.TempDir(), "opencode-state")}
+	writeTestFile(t, pin.sessionModelStatePath(), `{"variant":{"trustedtokens/deepseek":"max"}}`)
+	if err := pin.saveModelState(); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	if st, err := os.Lstat(link); err != nil {
+		t.Fatal(err)
+	} else if st.Mode()&os.ModeSymlink == 0 {
+		t.Error("save replaced the symlink with a regular file")
+	}
+	if got, err := os.ReadFile(target); err != nil || string(got) != `{"variant":{"trustedtokens/deepseek":"max"}}` {
+		t.Fatalf("symlink target = %q, %v", got, err)
 	}
 }

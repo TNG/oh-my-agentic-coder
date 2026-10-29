@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -142,12 +143,17 @@ func (p *openCodeServicePin) seedModelState() error {
 		}
 		return err
 	}
-	return writeFileInDir(p.sessionModelStatePath(), raw)
+	return writeFileAtomic(p.sessionModelStatePath(), raw)
 }
 
 // saveModelState copies the session's model choice back to the host state dir.
-// Last writer wins when sessions overlap, which is harmless for a preference
-// file. service.json is deliberately never read or written here.
+// It skips the write when the session left the file unchanged, so a no-op
+// session cannot revert a preference the user changed in another OpenCode
+// meanwhile. When sessions overlap, last writer wins: OpenCode serializes its
+// own model.json writes with a lock under <state>/opencode/locks, and this
+// atomic rename does not take that lock, so an exiting omac session can still
+// overwrite a host OpenCode write that happened moments earlier. Acceptable
+// for a preference file; service.json is deliberately never read or written.
 func (p *openCodeServicePin) saveModelState() error {
 	src := p.sessionModelStatePath()
 	raw, err := os.ReadFile(src)
@@ -157,16 +163,31 @@ func (p *openCodeServicePin) saveModelState() error {
 		}
 		return err
 	}
+	if !json.Valid(raw) {
+		return fmt.Errorf("%s is not valid JSON, keeping the host copy", src)
+	}
 	dst := p.hostModelStatePath()
 	if dst == "" {
 		return nil
 	}
-	return writeFileInDir(dst, raw)
+	if host, err := os.ReadFile(dst); err == nil && bytes.Equal(host, raw) {
+		return nil
+	}
+	return writeFileAtomic(dst, raw)
 }
 
-// writeFileInDir mkdirs the parent and atomically writes data mode 0600, so
+// writeFileAtomic mkdirs the parent and atomically writes data mode 0600, so
 // a concurrent OpenCode reading model.json never sees a half-written file.
-func writeFileInDir(path string, data []byte) error {
+// A symlinked path is written through: the link stays in place and its target
+// receives the new content.
+func writeFileAtomic(path string, data []byte) error {
+	if st, err := os.Lstat(path); err == nil && st.Mode()&os.ModeSymlink != 0 {
+		target, err := filepath.EvalSymlinks(path)
+		if err != nil {
+			return fmt.Errorf("resolve symlink %s: %w", path, err)
+		}
+		path = target
+	}
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
@@ -177,11 +198,6 @@ func writeFileInDir(path string, data []byte) error {
 	}
 	tmpPath := tmp.Name()
 	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		os.Remove(tmpPath)
-		return err
-	}
-	if err := tmp.Chmod(0o600); err != nil {
 		tmp.Close()
 		os.Remove(tmpPath)
 		return err

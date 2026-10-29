@@ -998,8 +998,10 @@ func runLaunch(env *Env, opts launchOpts) int {
 	code, err := sandbox.ExecWithReadyPID(argv, extra, onReady)
 	auditor.Emit(audit.SessionStop(code))
 	if ocPin != nil {
-		if stateErr := ocPin.saveModelState(); stateErr != nil && verbose {
-			fmt.Fprintln(env.Stderr, "[verbose] opencode v2 model state:", stateErr)
+		// Always report a failed save: otherwise the user silently re-picks
+		// their model every session with nothing to diagnose.
+		if stateErr := ocPin.saveModelState(); stateErr != nil {
+			fmt.Fprintf(env.Stderr, "%s: opencode v2 model state not saved: %v\n", prefix, stateErr)
 		}
 	}
 	watch.report(func(format string, args ...any) {
