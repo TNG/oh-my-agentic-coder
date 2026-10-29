@@ -20,17 +20,17 @@ func TestWatchNewProtected(t *testing.T) {
 
 	stop := make(chan struct{})
 	defer close(stop)
-	got := make(chan string, 8)
+	got := make(chan []string, 8)
 	go func() {
-		if err := WatchNewProtected(p, dir, 10*time.Millisecond, func(path string) { got <- path }, stop, WatchTuning{}); err != nil {
+		if err := WatchNewProtected(p, dir, 10*time.Millisecond, func(paths []string) { got <- paths }, stop, WatchTuning{}); err != nil {
 			t.Errorf("WatchNewProtected: %v", err)
 		}
 	}()
 
 	// The launch-time .env is masked.
 	select {
-	case path := <-got:
-		t.Fatalf("alerted for launch-time file: %s", path)
+	case paths := <-got:
+		t.Fatalf("alerted for launch-time file: %v", paths)
 	case <-time.After(80 * time.Millisecond):
 	}
 
@@ -42,17 +42,17 @@ func TestWatchNewProtected(t *testing.T) {
 	}
 
 	select {
-	case path := <-got:
-		if want := filepath.Join(dir, "sub", ".env"); path != want {
-			t.Fatalf("alerted %s, want %s", path, want)
+	case paths := <-got:
+		if len(paths) != 1 || paths[0] != filepath.Join(dir, "sub", ".env") {
+			t.Fatalf("alerted %v, want only %s", paths, filepath.Join(dir, "sub", ".env"))
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("no alert for mid-session .env")
 	}
 
 	select {
-	case path := <-got:
-		t.Fatalf("duplicate alert: %s", path)
+	case paths := <-got:
+		t.Fatalf("duplicate alert: %v", paths)
 	case <-time.After(80 * time.Millisecond):
 	}
 }
@@ -67,17 +67,17 @@ func TestWatchNewProtectedFullPassOff(t *testing.T) {
 
 	stop := make(chan struct{})
 	defer close(stop)
-	got := make(chan string, 8)
+	got := make(chan []string, 8)
 	go func() {
-		if err := WatchNewProtected(p, dir, 10*time.Millisecond, func(path string) { got <- path }, stop, WatchTuning{}); err != nil {
+		if err := WatchNewProtected(p, dir, 10*time.Millisecond, func(paths []string) { got <- paths }, stop, WatchTuning{}); err != nil {
 			t.Errorf("WatchNewProtected: %v", err)
 		}
 	}()
 
 	// First tick = snapshot done.
 	select {
-	case path := <-got:
-		t.Fatalf("alerted on empty dir: %s", path)
+	case paths := <-got:
+		t.Fatalf("alerted on empty dir: %v", paths)
 	case <-time.After(80 * time.Millisecond):
 	}
 
@@ -85,9 +85,9 @@ func TestWatchNewProtectedFullPassOff(t *testing.T) {
 		t.Fatal(err)
 	}
 	select {
-	case path := <-got:
-		if want := filepath.Join(dir, ".env"); path != want {
-			t.Fatalf("alerted %s, want %s", path, want)
+	case paths := <-got:
+		if len(paths) != 1 || paths[0] != filepath.Join(dir, ".env") {
+			t.Fatalf("alerted %v, want only %s", paths, filepath.Join(dir, ".env"))
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("no alert for mid-session .env with the full pass off (default)")
@@ -128,9 +128,9 @@ func TestWatchNewProtectedOverrideDeny(t *testing.T) {
 
 	stop := make(chan struct{})
 	defer close(stop)
-	got := make(chan string, 8)
+	got := make(chan []string, 8)
 	go func() {
-		if err := WatchNewProtected(p, dir, 10*time.Millisecond, func(path string) { got <- path }, stop, WatchTuning{}); err != nil {
+		if err := WatchNewProtected(p, dir, 10*time.Millisecond, func(paths []string) { got <- paths }, stop, WatchTuning{}); err != nil {
 			t.Errorf("WatchNewProtected: %v", err)
 		}
 	}()
@@ -138,8 +138,8 @@ func TestWatchNewProtectedOverrideDeny(t *testing.T) {
 	// A first tick fired means the launch-time snapshot is done; only
 	// files created afterwards count as mid-session.
 	select {
-	case path := <-got:
-		t.Fatalf("alerted on empty dir: %s", path)
+	case paths := <-got:
+		t.Fatalf("alerted on empty dir: %v", paths)
 	case <-time.After(80 * time.Millisecond):
 	}
 
@@ -151,16 +151,16 @@ func TestWatchNewProtectedOverrideDeny(t *testing.T) {
 	}
 
 	select {
-	case path := <-got:
-		if want := filepath.Join(dir, ".envrc"); path != want {
-			t.Fatalf("alerted %s, want only %s (the .env override must hold)", path, want)
+	case paths := <-got:
+		if len(paths) != 1 || paths[0] != filepath.Join(dir, ".envrc") {
+			t.Fatalf("alerted %v, want only %s (the .env override must hold)", paths, filepath.Join(dir, ".envrc"))
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("no alert for mid-session .envrc")
 	}
 	select {
-	case path := <-got:
-		t.Fatalf("unexpected extra alert: %s", path)
+	case paths := <-got:
+		t.Fatalf("unexpected extra alert: %v", paths)
 	case <-time.After(80 * time.Millisecond):
 	}
 }
