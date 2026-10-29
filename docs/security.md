@@ -205,6 +205,13 @@ The one file omac copies in and out of the private OpenCode v2 state dir is
 selected reasoning variant. Without it every launch would forget the model
 choice, because the state dir is per-launch. `service.json` is never copied.
 
+This copy is a convenience, not an isolation boundary: the host state dir
+itself stays read + write to the sandbox (see the row above), so the agent can
+already read and change `model.json` directly. omac only arranges the hand-off
+so a fresh state dir starts with the host's choice. The copy back to the host
+happens after the TUI exits, so a crash, `kill -9`, or power loss before that
+leaves the host file unchanged and the session's model choice is lost.
+
 ## Self-authored skills
 
 Skill sidecars run on your machine outside the sandbox. That is intentional,
