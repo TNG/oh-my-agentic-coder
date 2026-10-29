@@ -14,21 +14,24 @@
 
 ## 2. Git-root resolution
 
-- [x] 2.1 Add a resolver that runs
-      `git -C <workdir> rev-parse --path-format=absolute --git-common-dir
-      --git-dir --show-toplevel`
-      with a bounded timeout, a clean `GIT_DIR`/`GIT_WORK_TREE`/`GIT_COMMON_DIR`
-      environment, and `GIT_TERMINAL_PROMPT=0`.
-- [x] 2.2 Map the common git dir to the main repository root; use
-      `--show-toplevel` for submodules and separate git dirs.
+- [x] 2.1 Add a resolver that walks up from the workdir to the first `.git`
+      entry and never reads `core.worktree` (it is agent-controlled and must
+      not choose the scope).
+- [x] 2.2 A `.git` directory maps to its parent. A `.git` file calls the shared
+      `sandboxrun.ResolveWorktreeCommonDir`, which checks the gitdir
+      back-pointer and the `<common>/worktrees/<name>` layout; a validated
+      linked worktree maps to the main repository, while a submodule,
+      separate git dir, or forged gitfile stays at the directory holding the
+      file.
 - [x] 2.3 Canonicalise the root and reject it unless the workdir is the root or
-      lies below it. That containment check is the security boundary and keeps
-      `{root, name}` matching simple. A worktree outside the repository gets no
-      project option.
+      lies below it. Refuse the filesystem root, the canonical `$HOME`, and a
+      strict ancestor with fewer than two path components. A worktree outside
+      the repository gets no project option.
 - [x] 2.4 Cache the result per watch; resolve lazily on the first dialog.
-- [x] 2.5 Tests: normal repo, linked worktree under `.worktrees/<name>`, nested
-      repo, submodule, non-git, bare repo, missing/failing/timeout git, forged
-      `.git`, symlinked workdir.
+- [x] 2.5 Tests: normal repo, `core.worktree=<ancestor>`, linked worktree under
+      `.worktrees/<name>`, linked worktree outside the repo, nested repo,
+      submodule, non-git, bare repo, forged `.git`, repo at `$HOME`, root and
+      too-shallow ancestors, symlinked workdir.
 
 ## 3. Persistence
 

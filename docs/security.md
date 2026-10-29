@@ -122,10 +122,11 @@ What happens then depends on the system:
   appears; the warning tells you that only a restart restores protection.
   The watch warns, it does not block or mask. Detections from one scan
   arrive as one decision dialog, not one popup per file. It lists up to
-  eight paths and offers "Ignore this file" by exact path, "Ignore all"
-  for the listed files, and, when the workdir belongs to a git repository,
-  "Ignore every `<name>` in this project". "Keep warning" is the default,
-  so pressing Enter keeps it. Exact paths are stored in
+  eight paths and offers "Ignore this file" by exact path, "Ignore all N"
+  for every file in the batch (the label says "(8 listed)" when the dialog
+  showed only the first eight), and, when the workdir belongs to a git
+  repository, "Ignore every `<name>` in this project". "Keep warning" is
+  the default, so pressing Enter keeps it. Exact paths are stored in
   `~/.config/omac/prefs.yaml` (`protected_watch_ignore`). A project choice
   stores `{root, name}` under `protected_watch_project_ignores`, where
   `root` is the repository's git root. The root is shared by every
@@ -137,14 +138,24 @@ What happens then depends on the system:
   grant itself an exception. If no dialog backend is installed, omac falls
   back to the informational dialog and a desktop notification.
 
-  omac accepts a project scope only when the resolved git root contains the
-  workdir. A worktree under `.worktrees/<name>` is covered; a worktree
-  outside the repository gets no project option, and a forged `.git` file
-  cannot scope an exception to another project. The exact-path and batch
-  choices still work there.
+  The 10-second scan pauses while a decision dialog is open; a protected
+  file created then is caught on the next tick after it closes, except one
+  created and deleted while the dialog is open.
+
+  omac resolves the project scope by walking up from the workdir to the
+  first `.git` entry, so `core.worktree` in the workdir config cannot move
+  it: a `.git` directory scopes to its parent, a linked worktree to the
+  main repository, and a submodule or unvalidated gitfile only to the
+  directory that holds it. It accepts a root only when the root contains
+  the workdir, and refuses the filesystem root, your home directory, and a
+  too-shallow ancestor. A worktree under `.worktrees/<name>` is covered; a
+  worktree outside the repository gets no project option, and a forged
+  `.git` file cannot scope an exception to another project. The exact-path
+  and batch choices still work there.
 
   The end-of-session report collapses a burst to one summary line. Pass
-  `--verbose` to list every detected path. The audit log always records one
+  `--verbose` to list every warning you kept; ignored files are not listed
+  because their warning was dismissed. The audit log always records one
   event per path, including ignored files.
 
   Directory timestamps come
