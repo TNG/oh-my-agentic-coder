@@ -147,8 +147,8 @@ What happens then depends on the system:
   it: a `.git` directory scopes to its parent, a linked worktree to the
   main repository, and a submodule or unvalidated gitfile only to the
   directory that holds it. It accepts a root only when the root contains
-  the workdir, and refuses the filesystem root, your home directory, and a
-  too-shallow ancestor. A worktree under `.worktrees/<name>` is covered; a
+  the workdir, and refuses the filesystem root and your home directory. A
+  worktree under `.worktrees/<name>` is covered; a
   worktree outside the repository gets no project option, and a forged
   `.git` file cannot scope an exception to another project. The exact-path
   and batch choices still work there.

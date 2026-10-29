@@ -3,7 +3,6 @@ package cli
 import (
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/TNG/oh-my-agentic-coder/internal/pathutil"
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxrun"
@@ -21,10 +20,9 @@ import (
 // stays at the directory that holds the `.git` file, never an ancestor.
 //
 // It returns false for a non-git checkout, a bare repository, a root that does
-// not contain workdir, the filesystem root, the user's home directory, and a
-// too-shallow ancestor. Those refusals are the security boundary: an agent that
-// forges `.git` or `core.worktree` must not scope an exception to another
-// project.
+// not contain workdir, the filesystem root, and the user's home directory.
+// Those refusals are the security boundary: an agent that forges `.git` or
+// `core.worktree` must not scope an exception to another project.
 func resolveGitProjectRoot(workdir string) (string, bool) {
 	absWorkdir, err := filepath.Abs(workdir)
 	if err != nil {
@@ -82,8 +80,10 @@ func discoverRepoRoot(dir string) (string, bool) {
 }
 
 // acceptableProjectRoot applies the containment and breadth gates. The root
-// must contain workdir, and it must not be the filesystem root, the user's home
-// directory, or a strict ancestor of workdir with fewer than two components.
+// must contain workdir, and it must not be the filesystem root or the user's
+// home directory. A legitimate shallow repo root such as /repo or /app stays
+// eligible: discovery already anchors the root at the directory that owns
+// `.git`.
 func acceptableProjectRoot(root, workdir string) bool {
 	if root == "" || root == string(filepath.Separator) {
 		return false
@@ -91,23 +91,5 @@ func acceptableProjectRoot(root, workdir string) bool {
 	if home, err := os.UserHomeDir(); err == nil && home != "" && root == pathutil.Canonical(home) {
 		return false
 	}
-	if !pathutil.Under(root, workdir) {
-		return false
-	}
-	if root != workdir && pathDepth(root) < 2 {
-		return false
-	}
-	return true
-}
-
-// pathDepth counts the path components below the volume root. "/" is 0,
-// "/Users" is 1, "/Users/me" is 2.
-func pathDepth(path string) int {
-	path = filepath.Clean(path)
-	path = strings.TrimPrefix(path, filepath.VolumeName(path))
-	path = strings.Trim(path, string(filepath.Separator))
-	if path == "" {
-		return 0
-	}
-	return len(strings.Split(path, string(filepath.Separator)))
+	return pathutil.Under(root, workdir)
 }

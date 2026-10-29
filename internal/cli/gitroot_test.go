@@ -197,11 +197,9 @@ func TestAcceptableProjectRootGates(t *testing.T) {
 	if acceptableProjectRoot(string(filepath.Separator), workdir) {
 		t.Fatal("the filesystem root must be refused")
 	}
-	shallow := filepath.Join(string(filepath.Separator), "Users")
-	if acceptableProjectRoot(shallow, filepath.Join(shallow, "x", "y")) {
-		t.Fatal("a strict ancestor with one component must be refused")
-	}
-	if !acceptableProjectRoot(filepath.Join(shallow, "x"), filepath.Join(shallow, "x")) {
-		t.Fatal("a two-component repo root must be accepted")
+	// A repo at a shallow path such as /repo or /app is legitimate. Its
+	// worktree must still get the project option.
+	if !acceptableProjectRoot("/repo", "/repo/.worktrees/x") {
+		t.Fatal("a shallow repo root must be accepted")
 	}
 }
