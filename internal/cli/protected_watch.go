@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -13,6 +14,7 @@ import (
 	"github.com/TNG/oh-my-agentic-coder/internal/audit"
 	"github.com/TNG/oh-my-agentic-coder/internal/facade"
 	"github.com/TNG/oh-my-agentic-coder/internal/netprompt"
+	"github.com/TNG/oh-my-agentic-coder/internal/pathutil"
 	"github.com/TNG/oh-my-agentic-coder/internal/prefs"
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxdeny"
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
@@ -60,10 +62,14 @@ type protectedWatch struct {
 	alert  func(title, body string)
 	notify func(title, body string)
 	// prefs holds the exact paths the user dismissed permanently. The
-	// parent owns this file; the sandboxed agent cannot write it.
+	// parent owns this file; the sandboxed agent cannot write it. It is nil
+	// when prefs.yaml could not be read: the watch then keeps exceptions
+	// in memory only, so a later save cannot overwrite the unreadable file.
 	prefs *prefs.Store
 	// ignored mirrors the prefs list plus any exception whose save failed,
-	// so the same file never prompts twice in one session.
+	// so the same file never prompts twice in one session. It is owned by
+	// the watch goroutine: only observe, ignoreProtectedPath, and
+	// ignoreProjectPaths touch it, and all three run on that goroutine.
 	ignored map[string]bool
 	// workdir is the session workdir; projectRoot is resolved from it
 	// lazily on the first dialog. projectRootTried keeps a failed or
@@ -107,10 +113,7 @@ func startProtectedWatch(a audit.Auditor, checker *sandboxrun.ProtectedPathSet, 
 		return nil
 	}
 	profile, _ := sandboxprofile.Merge(plan.Policy, flags)
-	store, _ := prefs.Load()
-	if store == nil {
-		store = &prefs.Store{}
-	}
+	store, loadNotice := loadWatchPrefs()
 	ctx, cancel := context.WithCancel(context.Background())
 	w := &protectedWatch{
 		stop:    make(chan struct{}),
@@ -123,6 +126,9 @@ func startProtectedWatch(a audit.Auditor, checker *sandboxrun.ProtectedPathSet, 
 		prefs:   store,
 		ignored: map[string]bool{},
 		workdir: workdir,
+	}
+	if loadNotice != "" {
+		w.recordNotice(loadNotice)
 	}
 	go func() {
 		defer close(w.exited)
@@ -141,6 +147,18 @@ func startProtectedWatch(a audit.Auditor, checker *sandboxrun.ProtectedPathSet, 
 	return w
 }
 
+// loadWatchPrefs reads the user-global prefs for the watch. On error it returns
+// a nil store plus one session notice: the watch then keeps exceptions in
+// memory only, because saving from an empty store would overwrite a prefs file
+// that failed to parse and drop every stored preference.
+func loadWatchPrefs() (*prefs.Store, string) {
+	store, err := prefs.Load()
+	if err != nil {
+		return nil, fmt.Sprintf("could not read %s; protected-file exceptions will not be saved this session: %v", prefs.Path(), err)
+	}
+	return store, ""
+}
+
 // observe tags and audit-logs every detection, then returns the paths the
 // user has not already dismissed. Auditing stays complete even for ignored
 // files: the exception suppresses the notice, not the security record.
@@ -153,7 +171,8 @@ func (w *protectedWatch) observe(paths []string, checker *sandboxrun.ProtectedPa
 		if a != nil {
 			a.Emit(audit.ControlMutation("protected-file-watch", path, "created mid-session; readable until restart"))
 		}
-		if w.ignored[path] || (w.prefs != nil &&
+		canonical := pathutil.Canonical(path)
+		if w.ignored[path] || w.ignored[canonical] || (w.prefs != nil &&
 			(w.prefs.IgnoresProtectedPath(path) || w.prefs.IgnoresProtectedProjectPath(path))) {
 			continue
 		}
@@ -182,6 +201,12 @@ type exceptionChoice struct {
 // It loops after a per-file or per-name choice so several entries can be
 // dismissed without reopening the session; the safe "Keep warning" option is
 // the default.
+//
+// The watch goroutine calls this inline, so the 10-second re-scan pauses while
+// a dialog is open. A protected file created during that window is detected on
+// the first tick after the dialog closes; one created and deleted inside the
+// window is missed. Re-architecting the scan around the dialog is deliberately
+// out of scope for this change.
 func (w *protectedWatch) askExceptions(paths []string) []string {
 	remaining := append([]string(nil), paths...)
 	root, hasRoot := w.projectRootForDialog()
@@ -218,9 +243,7 @@ func (w *protectedWatch) askExceptions(paths []string) []string {
 		}
 		switch selected.kind {
 		case ignoreAllListed:
-			for _, path := range remaining {
-				w.ignoreProtectedPath(path)
-			}
+			w.ignoreProtectedPaths(remaining)
 			return nil
 		case ignoreExactPath:
 			w.ignoreProtectedPath(selected.value)
@@ -272,6 +295,9 @@ func (w *protectedWatch) ignoreProjectPaths(root, name string, matched []string)
 	}
 	for _, path := range matched {
 		w.ignored[path] = true
+		if canonical := pathutil.Canonical(path); canonical != "" {
+			w.ignored[canonical] = true
+		}
 	}
 	if w.prefs == nil {
 		return
@@ -285,21 +311,39 @@ func (w *protectedWatch) ignoreProjectPaths(root, name string, matched []string)
 // in memory even when the prefs write fails, so a read-only config dir cannot
 // turn one click into a dialog loop.
 func (w *protectedWatch) ignoreProtectedPath(path string) {
+	w.ignoreProtectedPaths([]string{path})
+}
+
+// ignoreProtectedPaths records a batch of permanent exact-path exceptions with
+// one prefs write ("Ignore all" can cover dozens of paths). It mirrors every
+// path in memory even when the save fails, so a read-only config dir cannot
+// turn one click into a dialog loop.
+func (w *protectedWatch) ignoreProtectedPaths(paths []string) {
 	if w.ignored == nil {
 		w.ignored = map[string]bool{}
 	}
-	w.ignored[path] = true
+	for _, path := range paths {
+		w.ignored[path] = true
+		if canonical := pathutil.Canonical(path); canonical != "" {
+			w.ignored[canonical] = true
+		}
+	}
 	if w.prefs == nil {
 		return
 	}
-	if err := w.prefs.AddProtectedWatchIgnore(path); err != nil {
-		w.recordNotice(fmt.Sprintf("could not save protected-file exception for %s: %v", stripControlChars(path), err))
+	if err := w.prefs.AddProtectedWatchIgnores(paths); err != nil {
+		w.recordNotice(fmt.Sprintf("could not save %d protected-file exception(s): %v", len(paths), err))
 	}
 }
 
 // protectedExceptionOptions builds the dialog choices from narrow to broad,
 // after the safe default: keep, one exact file each, the whole batch, then one
 // basename per project. choices maps the displayed labels back to their scope.
+//
+// Labels double as map keys. Two paths that differ only in control characters
+// (legal in filenames) can therefore collapse to one label, and a click on the
+// first row acts on the second file. The collision is accepted for now; it
+// fails safe because either path was detected and protected the same way.
 func protectedExceptionOptions(shown, remaining []string, root string, hasRoot bool) ([]string, map[string]exceptionChoice) {
 	total := len(remaining)
 	keep := fmt.Sprintf("Keep warning for %d file", total)
@@ -315,6 +359,9 @@ func protectedExceptionOptions(shown, remaining []string, root string, hasRoot b
 	}
 	if total > 1 {
 		label := fmt.Sprintf("Ignore all %d files permanently", total)
+		if len(shown) < total {
+			label += fmt.Sprintf(" (%d listed)", len(shown))
+		}
 		options = append(options, label)
 		choices[label] = exceptionChoice{kind: ignoreAllListed}
 	}
@@ -341,7 +388,7 @@ func projectIgnoreNames(paths []string, root string, hasRoot bool) []string {
 	seen := map[string]bool{}
 	var names []string
 	for _, path := range paths {
-		name := filepath.Base(canonicalPath(path))
+		name := filepath.Base(pathutil.Canonical(path))
 		if seen[name] || !prefs.MatchesProjectIgnore(root, name, path) {
 			continue
 		}
@@ -382,13 +429,7 @@ func plural(n int, one, many string) string {
 }
 
 func removePath(paths []string, remove string) []string {
-	out := paths[:0]
-	for _, path := range paths {
-		if path != remove {
-			out = append(out, path)
-		}
-	}
-	return out
+	return slices.DeleteFunc(paths, func(path string) bool { return path == remove })
 }
 
 // removePaths removes every path in remove, preserving the order of the rest.
@@ -397,13 +438,7 @@ func removePaths(paths, remove []string) []string {
 	for _, path := range remove {
 		drop[path] = true
 	}
-	out := paths[:0]
-	for _, path := range paths {
-		if !drop[path] {
-			out = append(out, path)
-		}
-	}
-	return out
+	return slices.DeleteFunc(paths, func(path string) bool { return drop[path] })
 }
 
 // protectedBatchNotice builds the one info text for a tick's detections when
@@ -438,7 +473,7 @@ func protectedBatchNotice(paths []string) (title, msg string) {
 // stderr writes would be painted over the harness TUI's frame. Cancelling the
 // context closes a decision dialog that is still open. A single detection keeps
 // its detailed line; a burst collapses to one summary line unless verbose asks
-// for every path. Nil-safe: a watch that never started reports nothing.
+// for every kept warning. Nil-safe: a watch that never started reports nothing.
 func (w *protectedWatch) report(verbose bool, warn func(format string, args ...any)) {
 	if w == nil {
 		return
@@ -473,7 +508,7 @@ func protectedWatchNotice(path string) string {
 // protectedWatchSummary keeps a burst to one line while still naming an
 // example path. The individual paths stay in the audit log and in --verbose.
 func protectedWatchSummary(paths []string) string {
-	return fmt.Sprintf("security notice: %d protected-pattern files were created after this session started and were readable until it ended (first: %s). The next omac start masks them; pass --verbose to list every path.", len(paths), stripControlChars(paths[0]))
+	return fmt.Sprintf("security notice: %d protected-pattern files were created after this session started and were readable until it ended (first: %s). The next omac start masks them; pass --verbose to list every warning you kept.", len(paths), stripControlChars(paths[0]))
 }
 
 func (w *protectedWatch) sendAlert(title, body string) {

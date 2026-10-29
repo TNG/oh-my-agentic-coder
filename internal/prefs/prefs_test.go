@@ -1,6 +1,7 @@
 package prefs
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -121,6 +122,74 @@ func TestProtectedWatchProjectIgnoreRoundTrip(t *testing.T) {
 	}
 	if got.IgnoresProtectedPath(path) {
 		t.Fatal("a project exception must not become an exact-path exception")
+	}
+}
+
+func TestProtectedWatchIgnoreBatchSavesAll(t *testing.T) {
+	isolate(t)
+	store, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths := make([]string, 10)
+	for i := range paths {
+		paths[i] = filepath.Join("/work", fmt.Sprintf("%d/.env", i))
+	}
+	if err := store.AddProtectedWatchIgnores(paths); err != nil {
+		t.Fatalf("AddProtectedWatchIgnores: %v", err)
+	}
+	if len(store.ProtectedWatchIgnore) != len(paths) {
+		t.Fatalf("exceptions = %v, want %d", store.ProtectedWatchIgnore, len(paths))
+	}
+	// A second batch with the same paths is a no-op, not a duplicate append.
+	if err := store.AddProtectedWatchIgnores(paths); err != nil {
+		t.Fatalf("second AddProtectedWatchIgnores: %v", err)
+	}
+	got, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.ProtectedWatchIgnore) != len(paths) {
+		t.Fatalf("persisted exceptions = %v, want %d", got.ProtectedWatchIgnore, len(paths))
+	}
+	for _, path := range paths {
+		if !got.IgnoresProtectedPath(path) {
+			t.Fatalf("path %q did not round-trip", path)
+		}
+	}
+}
+
+func TestProtectedWatchIgnoreSymlinkedSpelling(t *testing.T) {
+	isolate(t)
+	base := t.TempDir()
+	real := filepath.Join(base, "repo")
+	if err := os.MkdirAll(real, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	secret := filepath.Join(real, ".env")
+	if err := os.WriteFile(secret, []byte("secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(base, "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+	store, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AddProtectedWatchIgnore(filepath.Join(link, ".env")); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.IgnoresProtectedPath(secret) {
+		t.Fatal("the canonical spelling must match a symlinked exception")
+	}
+	if !got.IgnoresProtectedPath(filepath.Join(link, ".env")) {
+		t.Fatal("the symlinked spelling must match too")
 	}
 }
 
