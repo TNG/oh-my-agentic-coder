@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -766,7 +767,7 @@ func TestOpenCodeModelStateSaveWithoutSessionFile(t *testing.T) {
 }
 
 // No-op sessions and unreadable session data must leave the host file alone:
-// writing back identical bytes is pointless, and empty/truncated bytes would
+// writing back the seeded bytes is pointless, and empty/truncated bytes would
 // destroy the very preference this path exists to keep.
 func TestOpenCodeModelStateSaveSkipsUnchangedAndInvalid(t *testing.T) {
 	const hostBody = `{"variant":{"trustedtokens/deepseek":"high"}}`
@@ -791,6 +792,9 @@ func TestOpenCodeModelStateSaveSkipsUnchangedAndInvalid(t *testing.T) {
 			}
 
 			pin := &openCodeServicePin{StateDir: filepath.Join(t.TempDir(), "opencode-state")}
+			if err := pin.seedModelState(); err != nil {
+				t.Fatalf("seed: %v", err)
+			}
 			writeTestFile(t, pin.sessionModelStatePath(), tc.session)
 			err := pin.saveModelState()
 			if tc.wantErr {
@@ -812,35 +816,179 @@ func TestOpenCodeModelStateSaveSkipsUnchangedAndInvalid(t *testing.T) {
 	}
 }
 
-// A symlinked host model.json (dotfiles repo) must keep its link; the save
-// goes to the link target instead of replacing the link with a regular file.
-func TestOpenCodeModelStateSaveThroughSymlink(t *testing.T) {
+// The no-op check uses the bytes seeded at pin time, not the current host
+// file: a host change made while the session ran must survive, even though the
+// session file still matches what was seeded.
+func TestOpenCodeModelStateSaveKeepsHostChangeFromDuringSession(t *testing.T) {
+	stateHome := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", stateHome)
+	host := filepath.Join(stateHome, "opencode", openCodeModelStateFile)
+	seeded := `{"variant":{"trustedtokens/deepseek":"high"}}`
+	changedOnHost := `{"variant":{"trustedtokens/deepseek":"low"}}`
+	writeTestFile(t, host, seeded)
+
+	pin := &openCodeServicePin{StateDir: filepath.Join(t.TempDir(), "opencode-state")}
+	if err := pin.seedModelState(); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	// While the omac session runs, the user changes the model in a plain
+	// opencode TUI on the host.
+	writeTestFile(t, host, changedOnHost)
+	if err := pin.saveModelState(); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	if got, err := os.ReadFile(host); err != nil || string(got) != changedOnHost {
+		t.Fatalf("host model state = %q, %v, want the during-session change %q", got, err, changedOnHost)
+	}
+}
+
+// An invalid host file must not be seeded (it only loses the choice) and must
+// not warn on every launch.
+func TestOpenCodeModelStateSeedSkipsInvalidHostFile(t *testing.T) {
+	stateHome := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", stateHome)
+	host := filepath.Join(stateHome, "opencode", openCodeModelStateFile)
+	writeTestFile(t, host, `{"variant":`)
+
+	pin := &openCodeServicePin{StateDir: filepath.Join(t.TempDir(), "opencode-state")}
+	if err := pin.seedModelState(); err != nil {
+		t.Fatalf("seed of an invalid host file must be a silent no-op: %v", err)
+	}
+	if _, err := os.Stat(pin.sessionModelStatePath()); !os.IsNotExist(err) {
+		t.Fatalf("invalid host JSON must not be seeded: %v", err)
+	}
+	if len(pin.seededModelState) != 0 {
+		t.Errorf("seed recorded invalid bytes: %q", pin.seededModelState)
+	}
+}
+
+// save also reads the agent-controlled session file. A link there must be
+// refused, or the host would receive whatever the link points at.
+func TestOpenCodeModelStateSaveRefusesSymlinkSource(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("symlink creation needs privileges on Windows")
 	}
 	stateHome := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", stateHome)
-	target := filepath.Join(t.TempDir(), "dotfiles-model.json")
-	writeTestFile(t, target, `{"variant":{"trustedtokens/deepseek":"high"}}`)
+	host := filepath.Join(stateHome, "opencode", openCodeModelStateFile)
+	const hostBody = `{"variant":{"trustedtokens/deepseek":"high"}}`
+	writeTestFile(t, host, hostBody)
+	victim := filepath.Join(t.TempDir(), "victim.json")
+	const victimBody = `{"leaked":"secret"}`
+	writeTestFile(t, victim, victimBody)
+
+	pin := &openCodeServicePin{StateDir: filepath.Join(t.TempDir(), "opencode-state")}
+	if err := os.MkdirAll(filepath.Dir(pin.sessionModelStatePath()), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(victim, pin.sessionModelStatePath()); err != nil {
+		t.Fatal(err)
+	}
+	err := pin.saveModelState()
+	if err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("save = %v, want a symlink refusal", err)
+	}
+	if got, err := os.ReadFile(host); err != nil || string(got) != hostBody {
+		t.Fatalf("host model state = %q, %v, want it untouched", got, err)
+	}
+}
+
+// The host state dir is sandbox-writable, so a symlinked model.json is an
+// attack, not a dotfiles convenience: save must refuse it and leave the target
+// untouched, rather than writing through the link.
+func TestOpenCodeModelStateSaveRefusesSymlinkDestination(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation needs privileges on Windows")
+	}
+	stateHome := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", stateHome)
+	victim := filepath.Join(t.TempDir(), "approvals.json")
+	const victimBody = `{"approved":["keep-me"]}`
+	writeTestFile(t, victim, victimBody)
 	link := filepath.Join(stateHome, "opencode", openCodeModelStateFile)
 	if err := os.MkdirAll(filepath.Dir(link), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(target, link); err != nil {
+	if err := os.Symlink(victim, link); err != nil {
 		t.Fatal(err)
 	}
 
 	pin := &openCodeServicePin{StateDir: filepath.Join(t.TempDir(), "opencode-state")}
 	writeTestFile(t, pin.sessionModelStatePath(), `{"variant":{"trustedtokens/deepseek":"max"}}`)
-	if err := pin.saveModelState(); err != nil {
-		t.Fatalf("save: %v", err)
+	err := pin.saveModelState()
+	if err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("save = %v, want a symlink refusal", err)
+	}
+	if got, err := os.ReadFile(victim); err != nil || string(got) != victimBody {
+		t.Fatalf("victim file = %q, %v, want it untouched", got, err)
 	}
 	if st, err := os.Lstat(link); err != nil {
 		t.Fatal(err)
 	} else if st.Mode()&os.ModeSymlink == 0 {
-		t.Error("save replaced the symlink with a regular file")
+		t.Error("save replaced the symlink instead of refusing it")
 	}
-	if got, err := os.ReadFile(target); err != nil || string(got) != `{"variant":{"trustedtokens/deepseek":"max"}}` {
-		t.Fatalf("symlink target = %q, %v", got, err)
+}
+
+// The same trust boundary applies to the seed direction: a host model.json
+// linked to a private file must not be read into the agent-readable session
+// state. FIFOs and directories are refused too, so the open cannot block.
+func TestOpenCodeModelStateSeedRefusesNonRegularHostFile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink/FIFO creation is unix-only here")
+	}
+	const secret = "-----BEGIN OPENSSH PRIVATE KEY-----\nnot-for-the-agent\n"
+	cases := []struct {
+		name string
+		// make plants the hostile entry at path and returns a victim file whose
+		// content must stay untouched ("" when there is none).
+		make func(t *testing.T, path string) string
+	}{
+		{"symlink", func(t *testing.T, path string) string {
+			victim := filepath.Join(t.TempDir(), "id_rsa")
+			writeTestFile(t, victim, secret)
+			if err := os.Symlink(victim, path); err != nil {
+				t.Fatal(err)
+			}
+			return victim
+		}},
+		{"directory", func(t *testing.T, path string) string {
+			if err := os.MkdirAll(path, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			return ""
+		}},
+		{"fifo", func(t *testing.T, path string) string {
+			if err := syscall.Mkfifo(path, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			return ""
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			stateHome := t.TempDir()
+			t.Setenv("XDG_STATE_HOME", stateHome)
+			host := filepath.Join(stateHome, "opencode", openCodeModelStateFile)
+			if err := os.MkdirAll(filepath.Dir(host), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			victim := tc.make(t, host)
+
+			pin := &openCodeServicePin{StateDir: filepath.Join(t.TempDir(), "opencode-state")}
+			if err := pin.seedModelState(); err == nil {
+				t.Fatal("seed must refuse a non-regular host file")
+			}
+			if _, err := os.Stat(pin.sessionModelStatePath()); !os.IsNotExist(err) {
+				t.Fatalf("seed must not copy anything into the session: %v", err)
+			}
+			if len(pin.seededModelState) != 0 {
+				t.Errorf("seed recorded bytes from a non-regular file: %q", pin.seededModelState)
+			}
+			if victim != "" {
+				if got, err := os.ReadFile(victim); err != nil || string(got) != secret {
+					t.Fatalf("victim file = %q, %v, want it untouched", got, err)
+				}
+			}
+		})
 	}
 }

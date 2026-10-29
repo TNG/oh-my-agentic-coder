@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -15,6 +16,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/TNG/oh-my-agentic-coder/internal/config"
@@ -31,6 +33,10 @@ type openCodeServicePin struct {
 	hold net.Listener
 	// hostPorts re-reads the host service's ports at handOff.
 	hostPorts func() map[int]string
+	// seededModelState is the host model.json copied into the session at pin
+	// time. saveModelState writes back only when the session file differs, so
+	// a no-op session cannot revert a newer host preference.
+	seededModelState []byte
 }
 
 // grant splices the pinned port into the sandbox argv as --open-port.
@@ -109,6 +115,12 @@ func pinOpenCodeV2Service(h config.Harness, inner []string, sandboxTmp string) (
 // in: recent models, favorites, and the selected reasoning variant per model.
 // It lives under $XDG_STATE_HOME/opencode/ next to the launch-private
 // service.json, which must never be copied between host and sandbox.
+//
+// The state dir is writable from the sandbox, so model.json is agent-
+// controlled in both directions. omac never follows a symlink and never reads
+// or replaces a non-regular file at either path: a link could otherwise make
+// omac copy ~/.ssh/id_rsa into the agent-readable session state, or write the
+// session's bytes into ~/.config/omac/approvals.json.
 const openCodeModelStateFile = "model.json"
 
 // hostModelStatePath is the host's model.json, or "" when no state home is
@@ -136,29 +148,40 @@ func (p *openCodeServicePin) seedModelState() error {
 	if src == "" {
 		return nil
 	}
-	raw, err := os.ReadFile(src)
+	raw, err := readModelStateFile(src)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, os.ErrNotExist) {
 			return nil
 		}
 		return err
 	}
-	return writeFileAtomic(p.sessionModelStatePath(), raw)
+	if !json.Valid(raw) {
+		// OpenCode rewrites model.json into a known shape, so an invalid host
+		// copy is not worth carrying into the session. Skip without a warning:
+		// this would otherwise repeat on every launch until it is rewritten.
+		return nil
+	}
+	if err := writeFileAtomic(p.sessionModelStatePath(), raw); err != nil {
+		return err
+	}
+	p.seededModelState = bytes.Clone(raw)
+	return nil
 }
 
 // saveModelState copies the session's model choice back to the host state dir.
-// It skips the write when the session left the file unchanged, so a no-op
-// session cannot revert a preference the user changed in another OpenCode
-// meanwhile. When sessions overlap, last writer wins: OpenCode serializes its
-// own model.json writes with a lock under <state>/opencode/locks, and this
-// atomic rename does not take that lock, so an exiting omac session can still
-// overwrite a host OpenCode write that happened moments earlier. Acceptable
-// for a preference file; service.json is deliberately never read or written.
+// It skips the write when the session file still holds the bytes seeded at pin
+// time, so a no-op session cannot revert a preference the user changed in
+// another OpenCode meanwhile. When sessions overlap, last writer wins:
+// OpenCode serializes its own model.json writes with a lock under
+// <state>/opencode/locks, and this atomic rename does not take that lock, so an
+// exiting omac session can still overwrite a host OpenCode write that happened
+// moments earlier. Acceptable for a preference file; service.json is
+// deliberately never read or written.
 func (p *openCodeServicePin) saveModelState() error {
 	src := p.sessionModelStatePath()
-	raw, err := os.ReadFile(src)
+	raw, err := readModelStateFile(src)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, os.ErrNotExist) {
 			return nil
 		}
 		return err
@@ -166,27 +189,51 @@ func (p *openCodeServicePin) saveModelState() error {
 	if !json.Valid(raw) {
 		return fmt.Errorf("%s is not valid JSON, keeping the host copy", src)
 	}
-	dst := p.hostModelStatePath()
-	if dst == "" {
+	if bytes.Equal(raw, p.seededModelState) {
 		return nil
 	}
-	if host, err := os.ReadFile(dst); err == nil && bytes.Equal(host, raw) {
+	dst := p.hostModelStatePath()
+	if dst == "" {
 		return nil
 	}
 	return writeFileAtomic(dst, raw)
 }
 
+// readModelStateFile reads a model.json without following a final symlink and
+// only when it is a regular file. O_NONBLOCK keeps the open from blocking on a
+// FIFO the agent left at the path; O_NOFOLLOW closes the gap between the Lstat
+// check and the open.
+func readModelStateFile(path string) ([]byte, error) {
+	if info, err := os.Lstat(path); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("%s is a symlink, refusing to follow it", path)
+	}
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		if errors.Is(err, syscall.ELOOP) || errors.Is(err, syscall.EMLINK) {
+			return nil, fmt.Errorf("%s is a symlink, refusing to follow it", path)
+		}
+		return nil, err
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s is not a regular file, refusing to read it", path)
+	}
+	return io.ReadAll(f)
+}
+
 // writeFileAtomic mkdirs the parent and atomically writes data mode 0600, so
 // a concurrent OpenCode reading model.json never sees a half-written file.
-// A symlinked path is written through: the link stays in place and its target
-// receives the new content.
+// A symlink at the destination is refused rather than replaced: a user's
+// dotfiles link stays intact, and an agent-planted link cannot redirect the
+// write into another file. The destination is checked again after the rename,
+// which catches a temp file swapped for a symlink between write and rename.
 func writeFileAtomic(path string, data []byte) error {
-	if st, err := os.Lstat(path); err == nil && st.Mode()&os.ModeSymlink != 0 {
-		target, err := filepath.EvalSymlinks(path)
-		if err != nil {
-			return fmt.Errorf("resolve symlink %s: %w", path, err)
-		}
-		path = target
+	if info, err := os.Lstat(path); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("%s is a symlink, refusing to write through it", path)
 	}
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -209,6 +256,14 @@ func writeFileAtomic(path string, data []byte) error {
 	if err := os.Rename(tmpPath, path); err != nil {
 		os.Remove(tmpPath)
 		return err
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		_ = os.Remove(path)
+		return fmt.Errorf("%s was replaced by a non-regular file during the write; removed it", path)
 	}
 	return nil
 }
