@@ -123,18 +123,25 @@ What happens then depends on the system:
   The watch warns, it does not block or mask. Detections from one scan
   arrive as one decision dialog, not one popup per file. It lists up to
   eight paths and offers "Ignore this file" by exact path, "Ignore all"
-  for the listed files, or "Keep warning". "Keep warning" is the default,
-  so pressing Enter keeps it. Exceptions are stored by exact path in
-  `~/.config/omac/prefs.yaml` (`protected_watch_ignore`) and are skipped in
-  later sessions, but the files stay protected at launch. The file lives
-  outside the sandbox, so the agent cannot grant itself an exception. If no
-  dialog backend is installed, omac falls back to the informational dialog
-  and a desktop notification.
+  for the listed files, and, when the workdir belongs to a git repository,
+  "Ignore every `<name>` in this project". "Keep warning" is the default,
+  so pressing Enter keeps it. Exact paths are stored in
+  `~/.config/omac/prefs.yaml` (`protected_watch_ignore`). A project choice
+  stores `{root, name}` under `protected_watch_project_ignores`, where
+  `root` is the repository's git root. The root is shared by every
+  worktree inside the repository, so a worktree created later under
+  `.worktrees/<name>` stays quiet after one choice, while another
+  repository still warns. There is deliberately no option that applies a name to every
+  project. The file stays protected at launch and every detection is still
+  audited. The prefs file lives outside the sandbox, so the agent cannot
+  grant itself an exception. If no dialog backend is installed, omac falls
+  back to the informational dialog and a desktop notification.
 
-  An exact path does not cover a new worktree under a new name. A
-  project-scoped exception keyed by the git root is proposed in
-  [`openspec/changes/protected-file-exceptions/`](../openspec/changes/protected-file-exceptions/proposal.md);
-  it is not implemented yet.
+  omac accepts a project scope only when the resolved git root contains the
+  workdir. A worktree under `.worktrees/<name>` is covered; a worktree
+  outside the repository gets no project option, and a forged `.git` file
+  cannot scope an exception to another project. The exact-path and batch
+  choices still work there.
 
   The end-of-session report collapses a burst to one summary line. Pass
   `--verbose` to list every detected path. The audit log always records one

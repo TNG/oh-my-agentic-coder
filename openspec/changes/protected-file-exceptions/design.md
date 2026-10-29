@@ -47,14 +47,19 @@ needed (no cost for quiet sessions).
      no project option for that session.
 3. The common dir is the main repository's `.git` for a linked worktree, so
    the project root is its parent. For a normal checkout, the same rule
-   applies. For a bare repository, there is no working root: no project
-   option.
+   applies. For a submodule, the common dir lives under
+   `.git/modules/<name>`; use `--show-toplevel` there. For a bare repository,
+   there is no working root: no project option.
 4. Canonicalise the root (`filepath.EvalSymlinks`, fallback to
    `filepath.Clean`).
 5. **Containment check:** accept the root only if the workdir is the root or
    lies below it (`workdir == root || strings.HasPrefix(workdir, root+sep)`).
    This blocks a forged `.git` or `core.worktree` from scoping an exception to
-   a different project's root. A failed check means no project option.
+   a different project's root. It also keeps matching simple: the detected
+   path is always below the stored root, so `{root, name}` can match without
+   extra git calls. A failed check means no project option. This covers the
+   common `.worktrees/<name>` layout; a worktree outside the repository falls
+   back to exact-path and batch choices.
 
 Fallback: if `--git-common-dir` fails, try `git rev-parse --show-toplevel`.
 It returns the linked worktree's own root, not the main repository, so it is
@@ -148,9 +153,11 @@ grant itself an exception.
 ## Test plan
 
 - Git root:
-  - normal repo, linked worktree (`git worktree add`), nested repo/submodule;
+  - normal repo, linked worktree under `.worktrees/<name>`, nested repo,
+    submodule;
   - non-git directory, bare repo, missing git, timeout;
   - a root that does not contain the workdir (forged `.git`) is rejected;
+  - a worktree outside the repository gets no project option;
   - symlinked workdir resolves to the canonical root.
 - Prefs:
   - exact and project lists round-trip;
