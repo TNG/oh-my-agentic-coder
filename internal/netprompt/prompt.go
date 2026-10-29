@@ -454,22 +454,11 @@ func Notify(title, body string) { osNotify(title, body) }
 // is installed.
 var errNoDialogBackend = errors.New("no dialog backend available")
 
-// chooseTimeout bounds a choice dialog. A user who never answers must not
-// block the caller (and the protected-file scan behind it) forever.
-const chooseTimeout = 5 * time.Minute
-
-// Choose shows a single-choice dialog and returns the selected option. An
-// empty result means the user cancelled; the caller keeps the safe default.
-// It mirrors the platform coverage of Alert: osascript on macOS, zenity or
-// kdialog on Linux.
-func Choose(title, message string, options []string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), chooseTimeout)
-	defer cancel()
-	return ChooseContext(ctx, title, message, options)
-}
-
-// ChooseContext is Choose with a caller-owned context, so a session teardown
-// can close the dialog instead of waiting out chooseTimeout.
+// ChooseContext is the generic single-choice dialog. The caller owns the
+// context, so a session teardown can close the dialog instead of waiting out a
+// fixed timeout. An empty result means the user cancelled; the caller keeps the
+// safe default. It mirrors the platform coverage of Alert: osascript on macOS,
+// zenity or kdialog on Linux.
 func ChooseContext(ctx context.Context, title, message string, options []string) (string, error) {
 	if len(options) == 0 {
 		return "", nil
@@ -477,11 +466,12 @@ func ChooseContext(ctx context.Context, title, message string, options []string)
 	if runtime.GOOS == "darwin" {
 		return chooseDarwin(ctx, title, message, options)
 	}
+	width, height := dialogDimensions()
 	if (zenityBackend{}).available() {
-		return chooseZenity(ctx, title, message, options)
+		return chooseZenity(ctx, title, message, options, width, height)
 	}
 	if (kdialogBackend{}).available() {
-		return chooseKdialog(ctx, title, message, options)
+		return chooseKdialog(ctx, title, message, options, width, height)
 	}
 	return "", errNoDialogBackend
 }
@@ -509,12 +499,8 @@ func chooseDarwin(ctx context.Context, title, message string, options []string) 
 	return choice, nil
 }
 
-func chooseZenity(ctx context.Context, title, message string, options []string) (string, error) {
-	args := []string{"--list", "--title", cleanDialogText(title), "--text", escapePangoMarkup(message), "--column", "Choice"}
-	for _, option := range options {
-		args = append(args, escapePangoMarkup(option))
-	}
-	out, err := exec.CommandContext(ctx, "zenity", args...).Output()
+func chooseZenity(ctx context.Context, title, message string, options []string, width, height int) (string, error) {
+	out, err := exec.CommandContext(ctx, "zenity", chooseZenityArgs(title, message, options, width, height)...).Output()
 	if err != nil {
 		if ctx.Err() != nil {
 			return "", ctx.Err()
@@ -525,12 +511,28 @@ func chooseZenity(ctx context.Context, title, message string, options []string) 
 	return strings.TrimSpace(string(out)), nil
 }
 
-func chooseKdialog(ctx context.Context, title, message string, options []string) (string, error) {
-	args := []string{"--title", cleanDialogText(title), "--menu", escapePangoMarkup(message)}
-	for i, option := range options {
-		args = append(args, strconv.Itoa(i), escapePangoMarkup(option))
+// chooseZenityArgs builds the generic --list argv. --no-markup keeps every
+// label literal: a path containing &, <, or > is shown as typed and returned
+// unchanged, so the caller's label lookup still matches. The explicit size
+// keeps a dialog with many long options from collapsing into a scroll box.
+// Extracted so the args can be asserted without launching a dialog.
+func chooseZenityArgs(title, message string, options []string, width, height int) []string {
+	args := []string{
+		"--list", "--no-markup",
+		"--title", cleanDialogText(title),
+		"--text", cleanDialogText(message),
+		"--column", "Choice",
+		"--width", strconv.Itoa(width),
+		"--height", strconv.Itoa(height),
 	}
-	out, err := exec.CommandContext(ctx, "kdialog", args...).Output()
+	for _, option := range options {
+		args = append(args, cleanDialogText(option))
+	}
+	return args
+}
+
+func chooseKdialog(ctx context.Context, title, message string, options []string, width, height int) (string, error) {
+	out, err := exec.CommandContext(ctx, "kdialog", chooseKdialogArgs(title, message, options, width, height)...).Output()
 	if err != nil {
 		if ctx.Err() != nil {
 			return "", ctx.Err()
@@ -543,6 +545,22 @@ func chooseKdialog(ctx context.Context, title, message string, options []string)
 		return "", nil
 	}
 	return options[index], nil
+}
+
+// chooseKdialogArgs builds the generic --menu argv. kdialog renders plain
+// text, so labels are control-stripped but not markup-escaped; escaping would
+// show "&amp;" instead of "&". --geometry gives the dialog the same explicit
+// size as the zenity path.
+func chooseKdialogArgs(title, message string, options []string, width, height int) []string {
+	args := []string{
+		"--geometry", fmt.Sprintf("%dx%d", width, height),
+		"--title", cleanDialogText(title),
+		"--menu", cleanDialogText(message),
+	}
+	for i, option := range options {
+		args = append(args, strconv.Itoa(i), cleanDialogText(option))
+	}
+	return args
 }
 
 // cleanDialogText removes control characters and collapses newlines so a
