@@ -307,7 +307,7 @@ func TestLoadWatchPrefsCorruptFileStaysUnread(t *testing.T) {
 
 func TestProtectedExceptionOptions(t *testing.T) {
 	options, choices := protectedExceptionOptions([]string{"/a/.env"}, []string{"/a/.env"}, "", false)
-	if len(options) != 2 || options[0] != "Keep warning for 1 file" ||
+	if len(options) != 2 || options[0] != "Keep warning for 1 file (report at exit)" ||
 		options[1] != "Ignore this file permanently: /a/.env" {
 		t.Fatalf("options = %v", options)
 	}
