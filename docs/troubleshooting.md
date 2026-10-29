@@ -62,6 +62,8 @@ Fix: grant a one-time AppArmor exception — see [Installation → Linux (Debian
 ```
 omac start: unregistered skills found in this workdir:
   <skill-name> — register with: omac register <skill-name>
+...
+To start without them for now (they will not run), add --skip-unregistered: omac start --skip-unregistered
 ```
 
 Cause: the skill directory exists but `omac register` was never run for it.
@@ -70,6 +72,15 @@ Fix:
 
 ```bash
 omac register <skill-name>
+```
+
+To start without the skill for now, pass `--skip-unregistered`. omac prints a
+warning and runs without that skill's sidecar, secrets and install script. The
+built-in sandbox hides the skill's folder from the agent (other backends only
+print a notice), and the skip is recorded in the audit log (`route.state`, `skipped-unregistered`):
+
+```bash
+omac start --skip-unregistered
 ```
 
 ### exec: node: executable file not found in $PATH
