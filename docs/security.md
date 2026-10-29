@@ -122,18 +122,19 @@ What happens then depends on the system:
   appears; the warning tells you that only a restart restores protection.
   The watch warns, it does not block or mask. Detections from one scan
   arrive as one decision dialog, not one popup per file. It lists up to
-  eight paths and offers, from narrow to broad: "Ignore this file" by exact
-  path, "Ignore every `.env.local` in all projects" by basename, or "Ignore
-  all" for the listed files. "Keep warning" is the default, so pressing
-  Enter keeps the warning. Exceptions are stored in
-  `~/.config/omac/prefs.yaml` (`protected_watch_ignore` for exact paths,
-  `protected_watch_ignore_names` for basenames) and are skipped in later
-  sessions, but the files stay protected at launch. A basename exception is
-  what keeps new worktrees quiet after the first review; it applies in every
-  project, so use it only for names that never hold secrets in your
-  workflow. The file lives outside the sandbox, so the agent cannot grant
-  itself an exception. If no dialog backend is installed, omac falls back to
-  the informational dialog and a desktop notification.
+  eight paths and offers "Ignore this file" by exact path, "Ignore all"
+  for the listed files, or "Keep warning". "Keep warning" is the default,
+  so pressing Enter keeps it. Exceptions are stored by exact path in
+  `~/.config/omac/prefs.yaml` (`protected_watch_ignore`) and are skipped in
+  later sessions, but the files stay protected at launch. The file lives
+  outside the sandbox, so the agent cannot grant itself an exception. If no
+  dialog backend is installed, omac falls back to the informational dialog
+  and a desktop notification.
+
+  An exact path does not cover a new worktree under a new name. A
+  project-scoped exception keyed by the git root is proposed in
+  [`openspec/changes/protected-file-exceptions/`](../openspec/changes/protected-file-exceptions/proposal.md);
+  it is not implemented yet.
 
   The end-of-session report collapses a burst to one summary line. Pass
   `--verbose` to list every detected path. The audit log always records one
