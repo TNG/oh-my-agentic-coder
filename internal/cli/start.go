@@ -997,7 +997,7 @@ func runLaunch(env *Env, opts launchOpts) int {
 
 	code, err := sandbox.ExecWithReadyPID(argv, extra, onReady)
 	auditor.Emit(audit.SessionStop(code))
-	watch.report(func(format string, args ...any) {
+	watch.report(verbose, func(format string, args ...any) {
 		fmt.Fprintf(env.Stderr, prefix+": "+format+"\n", args...)
 	})
 	if finishServiceCheck != nil {

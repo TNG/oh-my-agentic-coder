@@ -2,6 +2,7 @@ package netprompt
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -448,6 +449,133 @@ func osNotify(title, body string) {
 // Notify shows a passive desktop notification mid-session — the only
 // channel that reaches a human while a TUI harness owns the terminal.
 func Notify(title, body string) { osNotify(title, body) }
+
+// errNoDialogBackend reports that neither osascript nor a Linux dialog tool
+// is installed.
+var errNoDialogBackend = errors.New("no dialog backend available")
+
+// ChooseContext is the generic single-choice dialog. The caller owns the
+// context, so a session teardown can close the dialog instead of waiting out a
+// fixed timeout. An empty result means the user cancelled; the caller keeps the
+// safe default. It mirrors the platform coverage of Alert: osascript on macOS,
+// zenity or kdialog on Linux.
+func ChooseContext(ctx context.Context, title, message string, options []string) (string, error) {
+	if len(options) == 0 {
+		return "", nil
+	}
+	if runtime.GOOS == "darwin" {
+		return chooseDarwin(ctx, title, message, options)
+	}
+	width, height := dialogDimensions()
+	if (zenityBackend{}).available() {
+		return chooseZenity(ctx, title, message, options, width, height)
+	}
+	if (kdialogBackend{}).available() {
+		return chooseKdialog(ctx, title, message, options, width, height)
+	}
+	return "", errNoDialogBackend
+}
+
+func chooseDarwin(ctx context.Context, title, message string, options []string) (string, error) {
+	quoted := make([]string, len(options))
+	for i, option := range options {
+		quoted[i] = appleScriptString(cleanDialogText(option))
+	}
+	script := fmt.Sprintf(
+		`choose from list {%s} with title %s with prompt %s default items {%s} OK button name "Select" cancel button name "Cancel"`,
+		strings.Join(quoted, ", "),
+		appleScriptString(cleanDialogText(title)),
+		appleScriptString(cleanDialogText(message)),
+		quoted[0],
+	)
+	out, err := exec.CommandContext(ctx, "osascript", "-e", script).Output()
+	if err != nil {
+		return "", err
+	}
+	choice := strings.TrimSpace(string(out))
+	if choice == "false" || choice == "" {
+		return "", nil
+	}
+	return choice, nil
+}
+
+func chooseZenity(ctx context.Context, title, message string, options []string, width, height int) (string, error) {
+	out, err := exec.CommandContext(ctx, "zenity", chooseZenityArgs(title, message, options, width, height)...).Output()
+	if err != nil {
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
+		// zenity exits 1 on Cancel; that is not a failure.
+		return "", nil
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// chooseZenityArgs builds the generic --list argv. --no-markup keeps every
+// label literal: a path containing &, <, or > is shown as typed and returned
+// unchanged, so the caller's label lookup still matches. The explicit size
+// keeps a dialog with many long options from collapsing into a scroll box.
+// Extracted so the args can be asserted without launching a dialog.
+func chooseZenityArgs(title, message string, options []string, width, height int) []string {
+	args := []string{
+		"--list", "--no-markup",
+		"--title", cleanDialogText(title),
+		"--text", cleanDialogText(message),
+		"--column", "Choice",
+		"--width", strconv.Itoa(width),
+		"--height", strconv.Itoa(height),
+	}
+	for _, option := range options {
+		args = append(args, cleanDialogText(option))
+	}
+	return args
+}
+
+func chooseKdialog(ctx context.Context, title, message string, options []string, width, height int) (string, error) {
+	out, err := exec.CommandContext(ctx, "kdialog", chooseKdialogArgs(title, message, options, width, height)...).Output()
+	if err != nil {
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
+		// kdialog exits 1 on Cancel.
+		return "", nil
+	}
+	index, convErr := strconv.Atoi(strings.TrimSpace(string(out)))
+	if convErr != nil || index < 0 || index >= len(options) {
+		return "", nil
+	}
+	return options[index], nil
+}
+
+// chooseKdialogArgs builds the generic --menu argv. kdialog renders plain
+// text, so labels are control-stripped but not markup-escaped; escaping would
+// show "&amp;" instead of "&". --geometry gives the dialog the same explicit
+// size as the zenity path.
+func chooseKdialogArgs(title, message string, options []string, width, height int) []string {
+	args := []string{
+		"--geometry", fmt.Sprintf("%dx%d", width, height),
+		"--title", cleanDialogText(title),
+		"--menu", cleanDialogText(message),
+	}
+	for i, option := range options {
+		args = append(args, strconv.Itoa(i), cleanDialogText(option))
+	}
+	return args
+}
+
+// cleanDialogText removes control characters and collapses newlines so a
+// path or title cannot forge an extra dialog line.
+func cleanDialogText(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\r' {
+			return ' '
+		}
+		if r < 0x20 || (r >= 0x7f && r <= 0x9f) {
+			return -1
+		}
+		return r
+	}, s)
+}
 
 // Alert shows a modal info dialog mid-session — the pop-up equivalent
 // of the network approval dialogs, for notices with no decision to

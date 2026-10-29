@@ -2,10 +2,11 @@
 // small set of "remember my choice" flags that are not tied to any single
 // skill or workdir.
 //
-// Today its only field is SuppressPluginWarning, the persisted answer to
-// the "do not warn me again" option of the missing-plugin warning that
-// `omac serve` shows when the OpenCode Desktop multidir plugin is not
-// installed in a workdir.
+// It holds SuppressPluginWarning, the persisted answer to the "do not warn
+// me again" option of the missing-plugin warning that `omac serve` shows when
+// the OpenCode Desktop multidir plugin is not installed in a workdir, and
+// ProtectedWatchIgnore, the exact paths the user dismissed in the mid-session
+// protected-file dialog.
 //
 // The file lives next to the other global omac state
 // (~/.config/omac/prefs.yaml, honoring $XDG_CONFIG_HOME) and is written
@@ -21,6 +22,8 @@ import (
 	"path/filepath"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/TNG/oh-my-agentic-coder/internal/pathutil"
 )
 
 // SchemaVersion is the current on-disk format version.
@@ -35,6 +38,128 @@ type Store struct {
 	// in the active workdir. Set by choosing "do not warn me again" at
 	// the warning prompt.
 	SuppressPluginWarning bool `yaml:"suppress_plugin_warning"`
+
+	// ProtectedWatchIgnore lists absolute paths whose mid-session
+	// protected-file notice the user dismissed with "ignore
+	// permanently". The paths stay protected at launch; only the
+	// repeated warning for an already-reviewed file is skipped.
+	ProtectedWatchIgnore []string `yaml:"protected_watch_ignore"`
+
+	// ProtectedWatchProjectIgnores lists basenames the user dismissed for
+	// one project. The root is the canonical git root shared by every
+	// worktree of that repository, so a new worktree under a new path is
+	// covered. The file stays protected at launch.
+	ProtectedWatchProjectIgnores []ProtectedWatchProjectIgnore `yaml:"protected_watch_project_ignores"`
+}
+
+// ProtectedWatchProjectIgnore is one project-scoped protected-file exception:
+// every file named Name below Root is skipped by the mid-session notice.
+type ProtectedWatchProjectIgnore struct {
+	Root string `yaml:"root"`
+	Name string `yaml:"name"`
+}
+
+// IgnoresProtectedPath reports whether the exact path was dismissed by the
+// user in the mid-session watch. Both sides are canonicalised, so a symlinked
+// spelling of the same file does not prompt again.
+func (s *Store) IgnoresProtectedPath(path string) bool {
+	if s == nil {
+		return false
+	}
+	path = pathutil.Canonical(path)
+	if path == "" {
+		return false
+	}
+	for _, p := range s.ProtectedWatchIgnore {
+		if pathutil.Canonical(p) == path {
+			return true
+		}
+	}
+	return false
+}
+
+// AddProtectedWatchIgnore records path as permanently ignored and persists the
+// store. A path already in the list is a no-op.
+func (s *Store) AddProtectedWatchIgnore(path string) error {
+	return s.AddProtectedWatchIgnores([]string{path})
+}
+
+// AddProtectedWatchIgnores records every path as permanently ignored and
+// persists the store once. Paths already in the list are skipped, and a batch
+// with no new path does not rewrite the file.
+func (s *Store) AddProtectedWatchIgnores(paths []string) error {
+	if s == nil {
+		return fmt.Errorf("prefs: nil store")
+	}
+	changed := false
+	for _, path := range paths {
+		path = pathutil.Canonical(path)
+		if path == "" || s.IgnoresProtectedPath(path) {
+			continue
+		}
+		s.ProtectedWatchIgnore = append(s.ProtectedWatchIgnore, path)
+		changed = true
+	}
+	if !changed {
+		return nil
+	}
+	return Save(s)
+}
+
+// IgnoresProtectedProjectPath reports whether path matches one of the stored
+// project-scoped exceptions. It is separate from IgnoresProtectedPath so the
+// exact-path wording and behavior stay unchanged.
+func (s *Store) IgnoresProtectedProjectPath(path string) bool {
+	if s == nil {
+		return false
+	}
+	for _, ignore := range s.ProtectedWatchProjectIgnores {
+		if MatchesProjectIgnore(ignore.Root, ignore.Name, path) {
+			return true
+		}
+	}
+	return false
+}
+
+// AddProtectedWatchProjectIgnore records that every file named name below root
+// is ignored and persists the store. A pair already in the list is a no-op.
+func (s *Store) AddProtectedWatchProjectIgnore(root, name string) error {
+	if s == nil {
+		return fmt.Errorf("prefs: nil store")
+	}
+	root = pathutil.Canonical(root)
+	if root == "" || !validProjectName(name) {
+		return fmt.Errorf("prefs: invalid project ignore root=%q name=%q", root, name)
+	}
+	for _, ignore := range s.ProtectedWatchProjectIgnores {
+		if ignore.Root == root && ignore.Name == name {
+			return nil
+		}
+	}
+	s.ProtectedWatchProjectIgnores = append(s.ProtectedWatchProjectIgnores, ProtectedWatchProjectIgnore{
+		Root: root,
+		Name: name,
+	})
+	return Save(s)
+}
+
+// MatchesProjectIgnore reports whether path is a file named name below root.
+// Both sides are canonicalised, so a symlinked worktree matches the root it
+// really lives in, and the separator boundary keeps /repo-other out of /repo.
+func MatchesProjectIgnore(root, name, path string) bool {
+	if root == "" || !validProjectName(name) {
+		return false
+	}
+	path = pathutil.Canonical(path)
+	if path == "" || filepath.Base(path) != name {
+		return false
+	}
+	return pathutil.Under(root, path)
+}
+
+// validProjectName accepts a plain file basename, not a path fragment.
+func validProjectName(name string) bool {
+	return name != "" && name != "." && name != ".." && name == filepath.Base(name)
 }
 
 // GlobalDir returns the directory holding user-global omac preferences.
