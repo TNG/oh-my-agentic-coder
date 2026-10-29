@@ -1,123 +1,113 @@
 package cli
 
 import (
-	"context"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
-	"time"
+
+	"github.com/TNG/oh-my-agentic-coder/internal/pathutil"
+	"github.com/TNG/oh-my-agentic-coder/internal/sandboxrun"
 )
 
-// gitRootTimeout bounds the git call that resolves a project root. The watch
-// runs it only when the first decision dialog opens, so a hung git must not
-// hold the dialog or the scan loop.
-const gitRootTimeout = 2 * time.Second
-
 // resolveGitProjectRoot returns the canonical root of the repository that
-// contains workdir. It uses the git common dir so every linked worktree maps
-// to the main repository, which is the scope a project exception needs.
+// contains workdir. It uses git discovery (walk up to the first .git entry)
+// rather than `git rev-parse --show-toplevel`, because `--show-toplevel` is
+// driven by core.worktree: that key lives in a config file the sandboxed agent
+// can write, so it must never choose the scope. The root is the directory
+// whose `.git` entry physically names the repository.
 //
-// It returns false when workdir is not a git checkout, when git fails or times
-// out, for a bare repository, or when the reported root does not contain
-// workdir. The last check is the security boundary: a forged .git or
-// core.worktree must not scope an exception to another project.
+// A linked worktree maps to the main repository, so every worktree shares the
+// same project scope. A submodule, separate git dir, or unvalidated gitfile
+// stays at the directory that holds the `.git` file, never an ancestor.
+//
+// It returns false for a non-git checkout, a bare repository, a root that does
+// not contain workdir, the filesystem root, the user's home directory, and a
+// too-shallow ancestor. Those refusals are the security boundary: an agent that
+// forges `.git` or `core.worktree` must not scope an exception to another
+// project.
 func resolveGitProjectRoot(workdir string) (string, bool) {
 	absWorkdir, err := filepath.Abs(workdir)
 	if err != nil {
 		return "", false
 	}
-	absWorkdir = canonicalPath(absWorkdir)
-
-	ctx, cancel := context.WithTimeout(context.Background(), gitRootTimeout)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", "-C", absWorkdir, "rev-parse",
-		"--path-format=absolute", "--git-common-dir", "--show-toplevel")
-	cmd.Env = gitRootEnv()
-	// A killed helper may leave a child holding the stdout pipe. Bound that
-	// wait so the dialog cannot hang on a broken git.
-	cmd.WaitDelay = time.Second
-	out, err := cmd.Output()
-	if err != nil {
-		// Non-git workdir, bare repository (no --show-toplevel), timeout,
-		// or a dubious-ownership refusal: no project scope.
+	absWorkdir = pathutil.Canonical(absWorkdir)
+	if absWorkdir == "" {
 		return "", false
 	}
 
-	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-	if len(lines) < 2 {
+	root, ok := discoverRepoRoot(absWorkdir)
+	if !ok {
 		return "", false
 	}
-	commonDir := strings.TrimSpace(lines[0])
-	topLevel := strings.TrimSpace(lines[len(lines)-1])
-	if commonDir == "" || topLevel == "" {
-		return "", false
-	}
-
-	// The common dir of a normal checkout and of a linked worktree is
-	// <root>/.git, so its parent is the main repository. A submodule's
-	// common dir lives under .git/modules/<name>, where the parent is not
-	// the project root, so fall back to the worktree's own toplevel there.
-	root := topLevel
-	if filepath.Base(commonDir) == ".git" {
-		root = filepath.Dir(commonDir)
-	}
-	root = canonicalPath(root)
-	if root == "" || !pathUnder(root, absWorkdir) {
+	root = pathutil.Canonical(root)
+	if !acceptableProjectRoot(root, absWorkdir) {
 		return "", false
 	}
 	return root, true
 }
 
-// gitRootEnv keeps the user's git setup but removes the variables that could
-// point the check at another repository. GIT_TERMINAL_PROMPT=0 keeps a broken
-// credential helper from blocking the dialog.
-func gitRootEnv() []string {
-	env := os.Environ()
-	out := make([]string, 0, len(env)+1)
-	for _, entry := range env {
-		if strings.HasPrefix(entry, "GIT_DIR=") ||
-			strings.HasPrefix(entry, "GIT_WORK_TREE=") ||
-			strings.HasPrefix(entry, "GIT_COMMON_DIR=") {
-			continue
+// discoverRepoRoot walks up from dir to the first `.git` entry and maps it to a
+// repository root. It deliberately never reads core.worktree.
+func discoverRepoRoot(dir string) (string, bool) {
+	var dotgit string
+	for {
+		candidate := filepath.Join(dir, ".git")
+		if _, err := os.Lstat(candidate); err == nil {
+			dotgit = candidate
+			break
 		}
-		out = append(out, entry)
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", false
+		}
+		dir = parent
 	}
-	return append(out, "GIT_TERMINAL_PROMPT=0")
-}
 
-// pathUnder reports whether path is root or lies below it. The separator
-// boundary keeps /repo-other from matching a root of /repo.
-func pathUnder(root, path string) bool {
-	root = canonicalPath(root)
-	path = canonicalPath(path)
-	if root == "" || path == "" {
-		return false
-	}
-	rel, err := filepath.Rel(root, path)
+	fi, err := os.Stat(dotgit)
 	if err != nil {
-		return false
+		return "", false
 	}
-	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
+	if fi.IsDir() {
+		// A normal checkout: the directory holding `.git` is the root.
+		return dir, true
+	}
+
+	// A `.git` file is a linked worktree, a submodule, or a separate git dir.
+	// Only a validated linked worktree maps to the main repository; anything
+	// else stays at the directory that contains the file.
+	if common, _, ok := sandboxrun.ResolveWorktreeCommonDir(dir); ok {
+		return filepath.Dir(common), true
+	}
+	return dir, true
 }
 
-// canonicalPath resolves symlinks in the deepest existing ancestor and
-// re-grafts the remaining tail, so a path that does not exist yet still maps
-// /var/... to /private/var/... on macOS.
-func canonicalPath(path string) string {
-	if path == "" {
-		return ""
+// acceptableProjectRoot applies the containment and breadth gates. The root
+// must contain workdir, and it must not be the filesystem root, the user's home
+// directory, or a strict ancestor of workdir with fewer than two components.
+func acceptableProjectRoot(root, workdir string) bool {
+	if root == "" || root == string(filepath.Separator) {
+		return false
 	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" && root == pathutil.Canonical(home) {
+		return false
+	}
+	if !pathutil.Under(root, workdir) {
+		return false
+	}
+	if root != workdir && pathDepth(root) < 2 {
+		return false
+	}
+	return true
+}
+
+// pathDepth counts the path components below the volume root. "/" is 0,
+// "/Users" is 1, "/Users/me" is 2.
+func pathDepth(path string) int {
 	path = filepath.Clean(path)
-	if resolved, err := filepath.EvalSymlinks(path); err == nil {
-		return resolved
+	path = strings.TrimPrefix(path, filepath.VolumeName(path))
+	path = strings.Trim(path, string(filepath.Separator))
+	if path == "" {
+		return 0
 	}
-	dir, tail := filepath.Dir(path), filepath.Base(path)
-	for dir != "/" && dir != "." {
-		if resolved, err := filepath.EvalSymlinks(dir); err == nil {
-			return filepath.Join(resolved, tail)
-		}
-		dir, tail = filepath.Dir(dir), filepath.Join(filepath.Base(dir), tail)
-	}
-	return path
+	return len(strings.Split(path, string(filepath.Separator)))
 }
