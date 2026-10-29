@@ -1,6 +1,7 @@
 package netprompt
 
 import (
+	"context"
 	"regexp"
 	"strconv"
 	"strings"
@@ -160,6 +161,57 @@ func TestAlertArgs(t *testing.T) {
 	}
 	if got := flagValue(k, "--msgbox"); got != body {
 		t.Errorf("kdialog alert --msgbox = %q, want %q", got, body)
+	}
+}
+
+// TestChooseArgsCarrySizeAndPlainText guards the generic Choose dialog: the
+// protected-file dialog can offer up to fourteen long options, and the
+// previous argv carried neither a size nor a plain-text flag. --no-markup and
+// unescaped labels are what keep an option containing &, <, or > returnable as
+// the same string the caller passes in.
+func TestChooseArgsCarrySizeAndPlainText(t *testing.T) {
+	width, height := dialogDimensions()
+	const label = "Ignore this file permanently: /work/a&b/<x>/.env"
+	const message = "Create <one> & keep it?"
+
+	z := chooseZenityArgs("omac: choose", message, []string{label}, width, height)
+	if len(z) < 2 || z[0] != "--list" || z[1] != "--no-markup" {
+		t.Errorf("zenity args = %v, want --list --no-markup first", z)
+	}
+	if got := flagValue(z, "--width"); got != strconv.Itoa(width) {
+		t.Errorf("zenity --width = %q, want %d", got, width)
+	}
+	if got := flagValue(z, "--height"); got != strconv.Itoa(height) {
+		t.Errorf("zenity --height = %q, want %d", got, height)
+	}
+	if got := flagValue(z, "--text"); got != message {
+		t.Errorf("zenity --text = %q, want the plain message %q", got, message)
+	}
+	if got := z[len(z)-1]; got != label {
+		t.Errorf("zenity option = %q, want the plain label %q", got, label)
+	}
+
+	k := chooseKdialogArgs("omac: choose", message, []string{label}, width, height)
+	if got, want := flagValue(k, "--geometry"), strconv.Itoa(width)+"x"+strconv.Itoa(height); got != want {
+		t.Errorf("kdialog --geometry = %q, want %q", got, want)
+	}
+	if got := flagValue(k, "--menu"); got != message {
+		t.Errorf("kdialog --menu = %q, want the plain message %q", got, message)
+	}
+	if got := k[len(k)-1]; got != label {
+		t.Errorf("kdialog option = %q, want the plain label %q", got, label)
+	}
+	for _, arg := range append(append([]string{}, z...), k...) {
+		if strings.Contains(arg, "&amp;") || strings.Contains(arg, "&lt;") || strings.Contains(arg, "&gt;") {
+			t.Fatalf("plain-text dialog arg is Pango-escaped: %q", arg)
+		}
+	}
+}
+
+func TestChooseContextEmptyOptions(t *testing.T) {
+	choice, err := ChooseContext(context.Background(), "title", "message", nil)
+	if err != nil || choice != "" {
+		t.Fatalf("ChooseContext with no options = %q, %v; want empty, nil", choice, err)
 	}
 }
 
