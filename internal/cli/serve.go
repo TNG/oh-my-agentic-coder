@@ -682,7 +682,7 @@ func runServe(args []string, env *Env) int {
 		}
 	})
 	auditor.Emit(audit.SessionStop(code))
-	watch.report(func(format string, args ...any) {
+	watch.report(verbose, func(format string, args ...any) {
 		fmt.Fprintf(env.Stderr, format+"\n", args...)
 	})
 	if err != nil {

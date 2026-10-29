@@ -2,10 +2,11 @@
 // small set of "remember my choice" flags that are not tied to any single
 // skill or workdir.
 //
-// Today its only field is SuppressPluginWarning, the persisted answer to
-// the "do not warn me again" option of the missing-plugin warning that
-// `omac serve` shows when the OpenCode Desktop multidir plugin is not
-// installed in a workdir.
+// It holds SuppressPluginWarning, the persisted answer to the "do not warn
+// me again" option of the missing-plugin warning that `omac serve` shows when
+// the OpenCode Desktop multidir plugin is not installed in a workdir, and
+// ProtectedWatchIgnore, the exact paths the user dismissed in the mid-session
+// protected-file dialog.
 //
 // The file lives next to the other global omac state
 // (~/.config/omac/prefs.yaml, honoring $XDG_CONFIG_HOME) and is written
@@ -35,6 +36,41 @@ type Store struct {
 	// in the active workdir. Set by choosing "do not warn me again" at
 	// the warning prompt.
 	SuppressPluginWarning bool `yaml:"suppress_plugin_warning"`
+
+	// ProtectedWatchIgnore lists absolute paths whose mid-session
+	// protected-file notice the user dismissed with "ignore
+	// permanently". The paths stay protected at launch; only the
+	// repeated warning for an already-reviewed file is skipped.
+	ProtectedWatchIgnore []string `yaml:"protected_watch_ignore"`
+}
+
+// IgnoresProtectedPath reports whether the exact path was dismissed by the
+// user in the mid-session watch.
+func (s *Store) IgnoresProtectedPath(path string) bool {
+	if s == nil {
+		return false
+	}
+	path = filepath.Clean(path)
+	for _, p := range s.ProtectedWatchIgnore {
+		if filepath.Clean(p) == path {
+			return true
+		}
+	}
+	return false
+}
+
+// AddProtectedWatchIgnore records path as permanently ignored and persists the
+// store. A path already in the list is a no-op.
+func (s *Store) AddProtectedWatchIgnore(path string) error {
+	if s == nil {
+		return fmt.Errorf("prefs: nil store")
+	}
+	path = filepath.Clean(path)
+	if s.IgnoresProtectedPath(path) {
+		return nil
+	}
+	s.ProtectedWatchIgnore = append(s.ProtectedWatchIgnore, path)
+	return Save(s)
 }
 
 // GlobalDir returns the directory holding user-global omac preferences.

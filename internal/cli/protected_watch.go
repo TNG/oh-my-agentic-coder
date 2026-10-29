@@ -1,13 +1,17 @@
 package cli
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/TNG/oh-my-agentic-coder/internal/audit"
 	"github.com/TNG/oh-my-agentic-coder/internal/facade"
 	"github.com/TNG/oh-my-agentic-coder/internal/netprompt"
+	"github.com/TNG/oh-my-agentic-coder/internal/prefs"
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxdeny"
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxrun"
@@ -25,24 +29,55 @@ import (
 // interval is never detected. See sandboxrun.denyScanCache.
 const midsessionProtectedWatchInterval = 10 * time.Second
 
+// maxAlertPaths bounds the file choices one dialog lists. Worktree setup
+// can create dozens of dotenv files in one tick; the dialog names the
+// first few and "Ignore all" covers the rest.
+const maxAlertPaths = 8
+
+// protectedDialogTimeout bounds one decision dialog. The watch goroutine
+// blocks while it is open; a user who walks away must not stop the scan for
+// the rest of the session. report's context cancel closes it earlier.
+const protectedDialogTimeout = 5 * time.Minute
+
 // protectedWatch records what the mid-session protected-file watch
 // detects so the notices can be delivered once the harness has
 // released the terminal.
 type protectedWatch struct {
 	mu      sync.Mutex
+	paths   []string
 	notices []string
 	stop    chan struct{}
 	exited  chan struct{}
+
+	ctx    context.Context
+	cancel context.CancelFunc
+	// choose is netprompt.ChooseContext in production; tests replace it.
+	choose func(ctx context.Context, title, message string, options []string) (string, error)
+	// alert/notify are netprompt.Alert/Notify in production; tests replace
+	// them so a unit test never opens a real desktop dialog.
+	alert  func(title, body string)
+	notify func(title, body string)
+	// prefs holds the exact paths the user dismissed permanently. The
+	// parent owns this file; the sandboxed agent cannot write it.
+	prefs *prefs.Store
+	// ignored mirrors the prefs list plus any exception whose save failed,
+	// so the same file never prompts twice in one session.
+	ignored map[string]bool
 }
 
 // startProtectedWatch mirrors the sandboxed child's deny-pattern walk
 // in the parent: a protected-pattern file (".env", ...) created after
 // launch is readable by the agent until the session restarts, because
-// the kernel mask is fixed at launch. Each detection pops an info
-// dialog plus a passive notification (netprompt.Alert/Notify — stderr
-// would corrupt the TUI's frame), tagged into the facade's protected
-// set so GET /sandbox/denied answers honestly, audit-logged, and
-// recorded for the session-end report.
+// the kernel mask is fixed at launch. Each tick's new paths arrive as
+// one batch, so a worktree setup that creates several dotenv files at
+// once pops one decision dialog instead of one per file. The dialog can
+// remember an exact file ("ignore permanently"), which is stored in the
+// user-global prefs; the path stays protected at launch and only the
+// repeated warning is skipped.
+//
+// Every path is tagged into the facade's protected set so
+// GET /sandbox/denied answers honestly, and audit-logged even when the
+// user ignores its warning.
 //
 // argv is the expanded sandbox argv: its flags are parsed and merged
 // onto the policy profile exactly like the sandbox child does, so the
@@ -64,36 +99,233 @@ func startProtectedWatch(a audit.Auditor, checker *sandboxrun.ProtectedPathSet, 
 		return nil
 	}
 	profile, _ := sandboxprofile.Merge(plan.Policy, flags)
-	w := &protectedWatch{stop: make(chan struct{}), exited: make(chan struct{})}
+	store, _ := prefs.Load()
+	if store == nil {
+		store = &prefs.Store{}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	w := &protectedWatch{
+		stop:    make(chan struct{}),
+		exited:  make(chan struct{}),
+		ctx:     ctx,
+		cancel:  cancel,
+		choose:  netprompt.ChooseContext,
+		alert:   netprompt.Alert,
+		notify:  netprompt.Notify,
+		prefs:   store,
+		ignored: map[string]bool{},
+	}
 	go func() {
 		defer close(w.exited)
-		if err := sandboxrun.WatchNewProtected(profile, workdir, midsessionProtectedWatchInterval, func(path string) {
-			w.record(fmt.Sprintf("security notice: %s matches a sandbox-protected pattern but was created after this session started; the agent could read it until this session ended", path))
-			if checker != nil {
-				checker.Add(path, sandboxdeny.RuleMidSession)
+		if err := sandboxrun.WatchNewProtected(profile, workdir, midsessionProtectedWatchInterval, func(paths []string) {
+			fresh := w.observe(paths, checker, a)
+			if len(fresh) == 0 {
+				return
 			}
-			const title = "omac: protected file created"
-			msg := fmt.Sprintf("%s matches a sandbox-protected pattern and is readable by the agent until the session is restarted", path)
-			netprompt.Alert(title, msg)
-			netprompt.Notify(title, msg)
-			if a != nil {
-				a.Emit(audit.ControlMutation("protected-file-watch", path, "created mid-session; readable until restart"))
+			for _, path := range w.askExceptions(fresh) {
+				w.recordPath(path)
 			}
 		}, w.stop, tuning); err != nil {
-			w.record(fmt.Sprintf("protected-file watch not started: %v", err))
+			w.recordNotice(fmt.Sprintf("protected-file watch not started: %v", err))
 		}
 	}()
 	return w
 }
 
-// report stops the watch and prints one line per recorded notice via
-// warn. Call it only after the harness exited and the parent owns the
-// terminal again — mid-session stderr writes would be painted over the
-// harness TUI's frame. Nil-safe: a watch that never started reports
-// nothing.
-func (w *protectedWatch) report(warn func(format string, args ...any)) {
+// observe tags and audit-logs every detection, then returns the paths the
+// user has not already dismissed. Auditing stays complete even for ignored
+// files: the exception suppresses the notice, not the security record.
+func (w *protectedWatch) observe(paths []string, checker *sandboxrun.ProtectedPathSet, a audit.Auditor) []string {
+	fresh := make([]string, 0, len(paths))
+	for _, path := range paths {
+		if checker != nil {
+			checker.Add(path, sandboxdeny.RuleMidSession)
+		}
+		if a != nil {
+			a.Emit(audit.ControlMutation("protected-file-watch", path, "created mid-session; readable until restart"))
+		}
+		if w.ignored[path] || (w.prefs != nil && w.prefs.IgnoresProtectedPath(path)) {
+			continue
+		}
+		fresh = append(fresh, path)
+	}
+	return fresh
+}
+
+// exceptionKind is the scope of a dialog choice.
+type exceptionKind int
+
+const (
+	keepWarning exceptionKind = iota
+	ignoreExactPath
+	ignoreAllListed
+)
+
+type exceptionChoice struct {
+	kind  exceptionKind
+	value string
+}
+
+// askExceptions shows the decision dialog and returns the paths whose warning
+// the user kept. A nil return means every path was dismissed permanently.
+// It loops after a per-file or per-name choice so several entries can be
+// dismissed without reopening the session; the safe "Keep warning" option is
+// the default.
+func (w *protectedWatch) askExceptions(paths []string) []string {
+	remaining := append([]string(nil), paths...)
+	notified := false
+	for len(remaining) > 0 {
+		shown := remaining
+		if len(shown) > maxAlertPaths {
+			shown = shown[:maxAlertPaths]
+		}
+		options, choices := protectedExceptionOptions(shown, len(remaining))
+		if !notified {
+			title, _ := protectedBatchNotice(remaining)
+			w.sendNotify(title, "A decision dialog is waiting: ignore a protected-file warning permanently, or keep it.")
+			notified = true
+		}
+		title, message := protectedExceptionPrompt(remaining)
+		ctx, cancel := context.WithTimeout(w.ctx, protectedDialogTimeout)
+		choice, err := w.choose(ctx, title, message, options)
+		cancel()
+		if err != nil {
+			if w.ctx.Err() != nil || errors.Is(err, context.DeadlineExceeded) {
+				return remaining // session is ending, or the user did not answer
+			}
+			// No dialog backend (or it failed): keep the informational
+			// alert, which is the pre-dialog behavior.
+			alertTitle, alertBody := protectedBatchNotice(remaining)
+			w.sendAlert(alertTitle, alertBody)
+			w.sendNotify(alertTitle, alertBody)
+			return remaining
+		}
+		selected, ok := choices[choice]
+		if !ok || selected.kind == keepWarning {
+			return remaining
+		}
+		switch selected.kind {
+		case ignoreAllListed:
+			for _, path := range remaining {
+				w.ignoreProtectedPath(path)
+			}
+			return nil
+		case ignoreExactPath:
+			w.ignoreProtectedPath(selected.value)
+			remaining = removePath(remaining, selected.value)
+		}
+	}
+	return nil
+}
+
+// ignoreProtectedPath records a permanent exact-path exception and mirrors it
+// in memory even when the prefs write fails, so a read-only config dir cannot
+// turn one click into a dialog loop.
+func (w *protectedWatch) ignoreProtectedPath(path string) {
+	if w.ignored == nil {
+		w.ignored = map[string]bool{}
+	}
+	w.ignored[path] = true
+	if w.prefs == nil {
+		return
+	}
+	if err := w.prefs.AddProtectedWatchIgnore(path); err != nil {
+		w.recordNotice(fmt.Sprintf("could not save protected-file exception for %s: %v", stripControlChars(path), err))
+	}
+}
+
+// protectedExceptionOptions builds the dialog choices from narrow to broad,
+// after the safe default: keep, one exact file each, one basename each, then
+// the whole batch. choices maps the displayed labels back to their scope.
+func protectedExceptionOptions(paths []string, total int) ([]string, map[string]exceptionChoice) {
+	keep := fmt.Sprintf("Keep warning for %d file", total)
+	if total != 1 {
+		keep += "s"
+	}
+	options := []string{keep}
+	choices := map[string]exceptionChoice{keep: {kind: keepWarning}}
+	for _, path := range paths {
+		label := "Ignore this file permanently: " + stripControlChars(path)
+		options = append(options, label)
+		choices[label] = exceptionChoice{kind: ignoreExactPath, value: path}
+	}
+	if total > 1 {
+		label := fmt.Sprintf("Ignore all %d files permanently", total)
+		options = append(options, label)
+		choices[label] = exceptionChoice{kind: ignoreAllListed}
+	}
+	return options, choices
+}
+
+// protectedExceptionPrompt is the dialog body. It states the one trade-off a
+// user needs to decide: ignored files stay protected at launch, but a new one
+// stays readable without a notice until restart.
+func protectedExceptionPrompt(paths []string) (title, message string) {
+	title = "omac: protected file created"
+	if len(paths) != 1 {
+		title = "omac: protected files created"
+	}
+	return title, fmt.Sprintf(
+		"%d protected-pattern %s created during this session and %s readable by the agent until omac restarts. Ignoring a file skips this warning for that exact path in future sessions; the file is still protected at launch. Choose a file to ignore permanently, or keep the warning.",
+		len(paths), plural(len(paths), "file was", "files were"), plural(len(paths), "is", "are"))
+}
+
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return one
+	}
+	return many
+}
+
+func removePath(paths []string, remove string) []string {
+	out := paths[:0]
+	for _, path := range paths {
+		if path != remove {
+			out = append(out, path)
+		}
+	}
+	return out
+}
+
+// protectedBatchNotice builds the one info text for a tick's detections when
+// no decision dialog is available. Paths are control-stripped because they
+// reach a terminal and a desktop notification; the list is bounded so a large
+// burst cannot produce a dialog taller than the screen.
+func protectedBatchNotice(paths []string) (title, msg string) {
+	if len(paths) == 1 {
+		return "omac: protected file created",
+			fmt.Sprintf("%s matches a sandbox-protected pattern and is readable by the agent until the session is restarted. Restart omac to have the sandbox mask it.", stripControlChars(paths[0]))
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "%d files match a sandbox-protected pattern and are readable by the agent until the session is restarted:", len(paths))
+	shown := paths
+	if len(shown) > maxAlertPaths {
+		shown = shown[:maxAlertPaths]
+	}
+	for _, path := range shown {
+		b.WriteString("\n  ")
+		b.WriteString(stripControlChars(path))
+	}
+	if rest := len(paths) - len(shown); rest > 0 {
+		fmt.Fprintf(&b, "\n  … and %d more (see the session-end summary)", rest)
+	}
+	b.WriteString("\nRestart omac to have the sandbox mask them.")
+	return "omac: protected files created", b.String()
+}
+
+// report stops the watch and prints what it recorded via warn. Call it only
+// after the harness exited and the parent owns the terminal again — mid-session
+// stderr writes would be painted over the harness TUI's frame. Cancelling the
+// context closes a decision dialog that is still open. A single detection keeps
+// its detailed line; a burst collapses to one summary line unless verbose asks
+// for every path. Nil-safe: a watch that never started reports nothing.
+func (w *protectedWatch) report(verbose bool, warn func(format string, args ...any)) {
 	if w == nil {
 		return
+	}
+	if w.cancel != nil {
+		w.cancel()
 	}
 	close(w.stop)
 	<-w.exited
@@ -102,9 +334,48 @@ func (w *protectedWatch) report(warn func(format string, args ...any)) {
 	for _, n := range w.notices {
 		warn("%s", n)
 	}
+	switch {
+	case len(w.paths) == 0:
+		return
+	case verbose, len(w.paths) == 1:
+		for _, path := range w.paths {
+			warn("%s", protectedWatchNotice(path))
+		}
+	default:
+		warn("%s", protectedWatchSummary(w.paths))
+	}
 }
 
-func (w *protectedWatch) record(notice string) {
+// protectedWatchNotice is the detailed line for one mid-session detection.
+func protectedWatchNotice(path string) string {
+	return fmt.Sprintf("security notice: %s matches a sandbox-protected pattern but was created after this session started; the agent could read it until this session ended", stripControlChars(path))
+}
+
+// protectedWatchSummary keeps a burst to one line while still naming an
+// example path. The individual paths stay in the audit log and in --verbose.
+func protectedWatchSummary(paths []string) string {
+	return fmt.Sprintf("security notice: %d protected-pattern files were created after this session started and were readable until it ended (first: %s). The next omac start masks them; pass --verbose to list every path.", len(paths), stripControlChars(paths[0]))
+}
+
+func (w *protectedWatch) sendAlert(title, body string) {
+	if w.alert != nil {
+		w.alert(title, body)
+	}
+}
+
+func (w *protectedWatch) sendNotify(title, body string) {
+	if w.notify != nil {
+		w.notify(title, body)
+	}
+}
+
+func (w *protectedWatch) recordPath(path string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.paths = append(w.paths, path)
+}
+
+func (w *protectedWatch) recordNotice(notice string) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.notices = append(w.notices, notice)

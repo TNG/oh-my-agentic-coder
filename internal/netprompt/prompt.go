@@ -2,6 +2,7 @@ package netprompt
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -448,6 +449,115 @@ func osNotify(title, body string) {
 // Notify shows a passive desktop notification mid-session — the only
 // channel that reaches a human while a TUI harness owns the terminal.
 func Notify(title, body string) { osNotify(title, body) }
+
+// errNoDialogBackend reports that neither osascript nor a Linux dialog tool
+// is installed.
+var errNoDialogBackend = errors.New("no dialog backend available")
+
+// chooseTimeout bounds a choice dialog. A user who never answers must not
+// block the caller (and the protected-file scan behind it) forever.
+const chooseTimeout = 5 * time.Minute
+
+// Choose shows a single-choice dialog and returns the selected option. An
+// empty result means the user cancelled; the caller keeps the safe default.
+// It mirrors the platform coverage of Alert: osascript on macOS, zenity or
+// kdialog on Linux.
+func Choose(title, message string, options []string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), chooseTimeout)
+	defer cancel()
+	return ChooseContext(ctx, title, message, options)
+}
+
+// ChooseContext is Choose with a caller-owned context, so a session teardown
+// can close the dialog instead of waiting out chooseTimeout.
+func ChooseContext(ctx context.Context, title, message string, options []string) (string, error) {
+	if len(options) == 0 {
+		return "", nil
+	}
+	if runtime.GOOS == "darwin" {
+		return chooseDarwin(ctx, title, message, options)
+	}
+	if (zenityBackend{}).available() {
+		return chooseZenity(ctx, title, message, options)
+	}
+	if (kdialogBackend{}).available() {
+		return chooseKdialog(ctx, title, message, options)
+	}
+	return "", errNoDialogBackend
+}
+
+func chooseDarwin(ctx context.Context, title, message string, options []string) (string, error) {
+	quoted := make([]string, len(options))
+	for i, option := range options {
+		quoted[i] = appleScriptString(cleanDialogText(option))
+	}
+	script := fmt.Sprintf(
+		`choose from list {%s} with title %s with prompt %s default items {%s} OK button name "Select" cancel button name "Cancel"`,
+		strings.Join(quoted, ", "),
+		appleScriptString(cleanDialogText(title)),
+		appleScriptString(cleanDialogText(message)),
+		quoted[0],
+	)
+	out, err := exec.CommandContext(ctx, "osascript", "-e", script).Output()
+	if err != nil {
+		return "", err
+	}
+	choice := strings.TrimSpace(string(out))
+	if choice == "false" || choice == "" {
+		return "", nil
+	}
+	return choice, nil
+}
+
+func chooseZenity(ctx context.Context, title, message string, options []string) (string, error) {
+	args := []string{"--list", "--title", cleanDialogText(title), "--text", escapePangoMarkup(message), "--column", "Choice"}
+	for _, option := range options {
+		args = append(args, escapePangoMarkup(option))
+	}
+	out, err := exec.CommandContext(ctx, "zenity", args...).Output()
+	if err != nil {
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
+		// zenity exits 1 on Cancel; that is not a failure.
+		return "", nil
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+func chooseKdialog(ctx context.Context, title, message string, options []string) (string, error) {
+	args := []string{"--title", cleanDialogText(title), "--menu", escapePangoMarkup(message)}
+	for i, option := range options {
+		args = append(args, strconv.Itoa(i), escapePangoMarkup(option))
+	}
+	out, err := exec.CommandContext(ctx, "kdialog", args...).Output()
+	if err != nil {
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
+		// kdialog exits 1 on Cancel.
+		return "", nil
+	}
+	index, convErr := strconv.Atoi(strings.TrimSpace(string(out)))
+	if convErr != nil || index < 0 || index >= len(options) {
+		return "", nil
+	}
+	return options[index], nil
+}
+
+// cleanDialogText removes control characters and collapses newlines so a
+// path or title cannot forge an extra dialog line.
+func cleanDialogText(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\r' {
+			return ' '
+		}
+		if r < 0x20 || (r >= 0x7f && r <= 0x9f) {
+			return -1
+		}
+		return r
+	}, s)
+}
 
 // Alert shows a modal info dialog mid-session — the pop-up equivalent
 // of the network approval dialogs, for notices with no decision to

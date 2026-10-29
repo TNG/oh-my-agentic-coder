@@ -59,3 +59,31 @@ func TestGlobalDirHonorsXDG(t *testing.T) {
 		t.Errorf("GlobalDir = %q, want %q", got, want)
 	}
 }
+
+func TestProtectedWatchIgnoreRoundTrip(t *testing.T) {
+	isolate(t)
+	store, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if store.IgnoresProtectedPath("/work/.env.local") {
+		t.Fatal("fresh store must not ignore a path")
+	}
+	if err := store.AddProtectedWatchIgnore("/work/.env.local"); err != nil {
+		t.Fatalf("AddProtectedWatchIgnore: %v", err)
+	}
+	// Idempotent.
+	if err := store.AddProtectedWatchIgnore(filepath.Clean("/work/.env.local")); err != nil {
+		t.Fatalf("second add: %v", err)
+	}
+	got, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.IgnoresProtectedPath("/work/.env.local") {
+		t.Fatalf("path did not round-trip: %v", got.ProtectedWatchIgnore)
+	}
+	if len(got.ProtectedWatchIgnore) != 1 {
+		t.Fatalf("exceptions = %v, want one", got.ProtectedWatchIgnore)
+	}
+}
