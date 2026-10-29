@@ -91,13 +91,110 @@ func pinOpenCodeV2Service(h config.Harness, inner []string, sandboxTmp string) (
 		_ = hold.Close()
 		return nil, err
 	}
-	return &openCodeServicePin{
+	p := &openCodeServicePin{
 		Port:      port,
 		CfgDir:    cfgDir,
 		StateDir:  filepath.Join(sandboxTmp, "opencode-state"),
 		hold:      hold,
 		hostPorts: hostPorts,
-	}, nil
+	}
+	// Best-effort: a missing host file is the normal first launch. A
+	// read error only loses the saved model choice, never the session.
+	_ = p.seedModelState()
+	return p, nil
+}
+
+// openCodeModelStateFile is the one file OpenCode v2 keeps user preferences
+// in: recent models, favorites, and the selected reasoning variant per model.
+// It lives under $XDG_STATE_HOME/opencode/ next to the launch-private
+// service.json, which must never be copied between host and sandbox.
+const openCodeModelStateFile = "model.json"
+
+// hostModelStatePath is the host's model.json, or "" when no state home is
+// known. The directory itself stays granted to the sandbox; only the service
+// registration beside it is protected.
+func (p *openCodeServicePin) hostModelStatePath() string {
+	root := hostStateHome()
+	if root == "" {
+		return ""
+	}
+	return filepath.Join(root, "opencode", openCodeModelStateFile)
+}
+
+// sessionModelStatePath is the copy OpenCode reads and writes inside the
+// per-launch state dir.
+func (p *openCodeServicePin) sessionModelStatePath() string {
+	return filepath.Join(p.StateDir, "opencode", openCodeModelStateFile)
+}
+
+// seedModelState copies the host's saved model choice into the launch-private
+// state dir, so the TUI opens with the same model, variant, and recent list as
+// the previous session.
+func (p *openCodeServicePin) seedModelState() error {
+	src := p.hostModelStatePath()
+	if src == "" {
+		return nil
+	}
+	raw, err := os.ReadFile(src)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	return writeFileInDir(p.sessionModelStatePath(), raw)
+}
+
+// saveModelState copies the session's model choice back to the host state dir.
+// Last writer wins when sessions overlap, which is harmless for a preference
+// file. service.json is deliberately never read or written here.
+func (p *openCodeServicePin) saveModelState() error {
+	src := p.sessionModelStatePath()
+	raw, err := os.ReadFile(src)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	dst := p.hostModelStatePath()
+	if dst == "" {
+		return nil
+	}
+	return writeFileInDir(dst, raw)
+}
+
+// writeFileInDir mkdirs the parent and atomically writes data mode 0600, so
+// a concurrent OpenCode reading model.json never sees a half-written file.
+func writeFileInDir(path string, data []byte) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		os.Remove(tmpPath)
+		return err
+	}
+	if err := tmp.Chmod(0o600); err != nil {
+		tmp.Close()
+		os.Remove(tmpPath)
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+	return nil
 }
 
 // openCodeDefaultServicePort is OpenCode v2's built-in shared-service port (0xc0de).

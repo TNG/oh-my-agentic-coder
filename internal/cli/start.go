@@ -997,6 +997,11 @@ func runLaunch(env *Env, opts launchOpts) int {
 
 	code, err := sandbox.ExecWithReadyPID(argv, extra, onReady)
 	auditor.Emit(audit.SessionStop(code))
+	if ocPin != nil {
+		if stateErr := ocPin.saveModelState(); stateErr != nil && verbose {
+			fmt.Fprintln(env.Stderr, "[verbose] opencode v2 model state:", stateErr)
+		}
+	}
 	watch.report(func(format string, args ...any) {
 		fmt.Fprintf(env.Stderr, prefix+": "+format+"\n", args...)
 	})

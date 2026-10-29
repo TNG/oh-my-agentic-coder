@@ -200,6 +200,11 @@ cannot access.
 | Environment variables in `allow_vars` (`OMAC_*`, `HOME`, `PATH`, `LANG`, …) | passed through | Operational minimum |
 | All other environment variables (cloud secrets, `DOCKER_HOST`, `SSH_AUTH_SOCK`, …) | **stripped** | Not needed and potentially sensitive |
 
+The one file omac copies in and out of the private OpenCode v2 state dir is
+`model.json`, which holds only the TUI's recent models, favorites, and
+selected reasoning variant. Without it every launch would forget the model
+choice, because the state dir is per-launch. `service.json` is never copied.
+
 ## Self-authored skills
 
 Skill sidecars run on your machine outside the sandbox. That is intentional,

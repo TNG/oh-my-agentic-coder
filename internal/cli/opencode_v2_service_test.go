@@ -643,3 +643,56 @@ func TestVerifyService(t *testing.T) {
 		}
 	})
 }
+
+// The model choice survives into the next launch, while the host service
+// registration stays out of the sandbox in both directions.
+func TestOpenCodeModelStatePersistsAcrossPins(t *testing.T) {
+	stateHome := filepath.Join(t.TempDir(), "state")
+	t.Setenv("XDG_STATE_HOME", stateHome)
+	host := filepath.Join(stateHome, "opencode", openCodeModelStateFile)
+	if err := writeFileInDir(host, []byte(`{"variant":{"trustedtokens/deepseek":"high"}}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeFileInDir(filepath.Join(stateHome, "opencode", "service.json"), []byte(`{"port":49374}`)); err != nil {
+		t.Fatal(err)
+	}
+
+	first := &openCodeServicePin{StateDir: filepath.Join(t.TempDir(), "opencode-state")}
+	if err := first.seedModelState(); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(first.StateDir, "opencode", "service.json")); !os.IsNotExist(err) {
+		t.Fatalf("host service.json must not be seeded into the sandbox: %v", err)
+	}
+	if got, err := os.ReadFile(first.sessionModelStatePath()); err != nil || string(got) != `{"variant":{"trustedtokens/deepseek":"high"}}` {
+		t.Fatalf("seeded model state = %q, %v", got, err)
+	}
+
+	if err := writeFileInDir(first.sessionModelStatePath(), []byte(`{"variant":{"trustedtokens/deepseek":"max"}}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeFileInDir(filepath.Join(first.StateDir, "opencode", "service.json"), []byte(`{"port":12345}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := first.saveModelState(); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	if got, err := os.ReadFile(host); err != nil || string(got) != `{"variant":{"trustedtokens/deepseek":"max"}}` {
+		t.Fatalf("saved model state = %q, %v", got, err)
+	}
+	if got, err := os.ReadFile(filepath.Join(stateHome, "opencode", "service.json")); err != nil || string(got) != `{"port":49374}` {
+		t.Fatalf("host service.json must stay untouched: %q, %v", got, err)
+	}
+}
+
+// A first launch has no host model.json; seed must be a no-op, not an error.
+func TestOpenCodeModelStateSeedWithoutHostFile(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	pin := &openCodeServicePin{StateDir: filepath.Join(t.TempDir(), "opencode-state")}
+	if err := pin.seedModelState(); err != nil {
+		t.Fatalf("seed without a host file: %v", err)
+	}
+	if _, err := os.Stat(pin.sessionModelStatePath()); !os.IsNotExist(err) {
+		t.Fatalf("seed must not create a session file: %v", err)
+	}
+}
