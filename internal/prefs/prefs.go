@@ -20,9 +20,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/TNG/oh-my-agentic-coder/internal/pathutil"
 )
 
 // SchemaVersion is the current on-disk format version.
@@ -59,14 +60,18 @@ type ProtectedWatchProjectIgnore struct {
 }
 
 // IgnoresProtectedPath reports whether the exact path was dismissed by the
-// user in the mid-session watch.
+// user in the mid-session watch. Both sides are canonicalised, so a symlinked
+// spelling of the same file does not prompt again.
 func (s *Store) IgnoresProtectedPath(path string) bool {
 	if s == nil {
 		return false
 	}
-	path = filepath.Clean(path)
+	path = pathutil.Canonical(path)
+	if path == "" {
+		return false
+	}
 	for _, p := range s.ProtectedWatchIgnore {
-		if filepath.Clean(p) == path {
+		if pathutil.Canonical(p) == path {
 			return true
 		}
 	}
@@ -76,14 +81,28 @@ func (s *Store) IgnoresProtectedPath(path string) bool {
 // AddProtectedWatchIgnore records path as permanently ignored and persists the
 // store. A path already in the list is a no-op.
 func (s *Store) AddProtectedWatchIgnore(path string) error {
+	return s.AddProtectedWatchIgnores([]string{path})
+}
+
+// AddProtectedWatchIgnores records every path as permanently ignored and
+// persists the store once. Paths already in the list are skipped, and a batch
+// with no new path does not rewrite the file.
+func (s *Store) AddProtectedWatchIgnores(paths []string) error {
 	if s == nil {
 		return fmt.Errorf("prefs: nil store")
 	}
-	path = filepath.Clean(path)
-	if s.IgnoresProtectedPath(path) {
+	changed := false
+	for _, path := range paths {
+		path = pathutil.Canonical(path)
+		if path == "" || s.IgnoresProtectedPath(path) {
+			continue
+		}
+		s.ProtectedWatchIgnore = append(s.ProtectedWatchIgnore, path)
+		changed = true
+	}
+	if !changed {
 		return nil
 	}
-	s.ProtectedWatchIgnore = append(s.ProtectedWatchIgnore, path)
 	return Save(s)
 }
 
@@ -108,7 +127,7 @@ func (s *Store) AddProtectedWatchProjectIgnore(root, name string) error {
 	if s == nil {
 		return fmt.Errorf("prefs: nil store")
 	}
-	root = canonicalPath(root)
+	root = pathutil.Canonical(root)
 	if root == "" || !validProjectName(name) {
 		return fmt.Errorf("prefs: invalid project ignore root=%q name=%q", root, name)
 	}
@@ -131,45 +150,16 @@ func MatchesProjectIgnore(root, name, path string) bool {
 	if root == "" || !validProjectName(name) {
 		return false
 	}
-	path = canonicalPath(path)
-	if filepath.Base(path) != name {
+	path = pathutil.Canonical(path)
+	if path == "" || filepath.Base(path) != name {
 		return false
 	}
-	root = canonicalPath(root)
-	if root == "" {
-		return false
-	}
-	rel, err := filepath.Rel(root, path)
-	if err != nil {
-		return false
-	}
-	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+	return pathutil.Under(root, path)
 }
 
 // validProjectName accepts a plain file basename, not a path fragment.
 func validProjectName(name string) bool {
 	return name != "" && name != "." && name != ".." && name == filepath.Base(name)
-}
-
-// canonicalPath resolves symlinks in the deepest existing ancestor and
-// re-grafts the remaining tail, so a path that does not exist yet still maps
-// /var/... to /private/var/... on macOS. It returns "" for an empty input.
-func canonicalPath(path string) string {
-	if path == "" {
-		return ""
-	}
-	path = filepath.Clean(path)
-	if resolved, err := filepath.EvalSymlinks(path); err == nil {
-		return resolved
-	}
-	dir, tail := filepath.Dir(path), filepath.Base(path)
-	for dir != "/" && dir != "." {
-		if resolved, err := filepath.EvalSymlinks(dir); err == nil {
-			return filepath.Join(resolved, tail)
-		}
-		dir, tail = filepath.Dir(dir), filepath.Join(filepath.Base(dir), tail)
-	}
-	return path
 }
 
 // GlobalDir returns the directory holding user-global omac preferences.

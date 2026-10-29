@@ -178,6 +178,54 @@ func TestAskExceptionsIgnoresAll(t *testing.T) {
 	}
 }
 
+func TestAskExceptionsIgnoresAllLargerThanDialog(t *testing.T) {
+	w, _ := newExceptionWatch(t, func(options []string) string {
+		for _, option := range options {
+			if strings.HasPrefix(option, "Ignore all ") {
+				return option
+			}
+		}
+		t.Fatalf("all option missing from %v", options)
+		return ""
+	})
+	var paths []string
+	for i := range 10 {
+		paths = append(paths, fmt.Sprintf("/w/%d/.env", i))
+	}
+	if kept := w.askExceptions(paths); len(kept) != 0 {
+		t.Fatalf("kept = %v, want none", kept)
+	}
+	store, err := prefs.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(store.ProtectedWatchIgnore) != 10 {
+		t.Fatalf("persisted exceptions = %v, want all 10", store.ProtectedWatchIgnore)
+	}
+}
+
+// TestAskExceptionsUnknownAnswerStopsLoop guards the dialog loop against an
+// answer that is not one of the offered labels: it must keep the remaining
+// warnings and return, not reopen the dialog forever.
+func TestAskExceptionsUnknownAnswerStopsLoop(t *testing.T) {
+	for _, answer := range []string{"", "not-an-option"} {
+		calls := 0
+		w, _ := newExceptionWatch(t)
+		w.choose = func(context.Context, string, string, []string) (string, error) {
+			calls++
+			return answer, nil
+		}
+		paths := []string{"/a/.env", "/b/.env"}
+		kept := w.askExceptions(paths)
+		if calls != 1 {
+			t.Fatalf("answer %q reopened the dialog %d times", answer, calls)
+		}
+		if len(kept) != len(paths) {
+			t.Fatalf("answer %q kept %v, want both paths", answer, kept)
+		}
+	}
+}
+
 func TestAskExceptionsKeepAll(t *testing.T) {
 	w, _ := newExceptionWatch(t, func(options []string) string { return options[0] })
 	paths := []string{"/a/.env", "/b/.env"}
@@ -209,6 +257,54 @@ func TestAskExceptionsFallsBackWhenDialogFails(t *testing.T) {
 	}
 }
 
+// TestLoadWatchPrefsCorruptFileStaysUnread protects the "never silently
+// replace a broken prefs.yaml" rule: a parse error must produce an
+// in-memory-only watch and a session notice, and a later exception must not
+// overwrite the file.
+func TestLoadWatchPrefsCorruptFileStaysUnread(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	path := prefs.Path()
+	if path == "" {
+		t.Fatal("prefs.Path() empty")
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	corrupt := []byte("version: [unclosed\n")
+	if err := os.WriteFile(path, corrupt, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	store, notice := loadWatchPrefs()
+	if store != nil {
+		t.Fatalf("store = %+v, want nil for an unreadable prefs file", store)
+	}
+	if !strings.Contains(notice, "will not be saved") {
+		t.Fatalf("notice = %q, want the exceptions-not-saved warning", notice)
+	}
+
+	w := &protectedWatch{
+		ctx:     context.Background(),
+		ignored: map[string]bool{},
+		alert:   func(string, string) {},
+		notify:  func(string, string) {},
+		choose: func(_ context.Context, _ string, _ string, options []string) (string, error) {
+			return options[1], nil
+		},
+	}
+	w.askExceptions([]string{"/a/.env"})
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(data, corrupt) {
+		t.Fatalf("prefs.yaml was rewritten from a nil store:\n%s", data)
+	}
+	if !w.ignored["/a/.env"] {
+		t.Fatal("the exception must still be remembered in memory for this session")
+	}
+}
+
 func TestProtectedExceptionOptions(t *testing.T) {
 	options, choices := protectedExceptionOptions([]string{"/a/.env"}, []string{"/a/.env"}, "", false)
 	if len(options) != 2 || options[0] != "Keep warning for 1 file" ||
@@ -224,6 +320,16 @@ func TestProtectedExceptionOptions(t *testing.T) {
 	}
 	if c := choices["Ignore all 2 files permanently"]; c.kind != ignoreAllListed {
 		t.Fatalf("all choice = %+v", c)
+	}
+
+	var many []string
+	for i := range 10 {
+		many = append(many, fmt.Sprintf("/w/%d/.env", i))
+	}
+	options, choices = protectedExceptionOptions(many[:maxAlertPaths], many, "", false)
+	want := "Ignore all 10 files permanently (8 listed)"
+	if c, ok := choices[want]; !ok || c.kind != ignoreAllListed {
+		t.Fatalf("batch label = %v, want %q with the listed count", options, want)
 	}
 }
 
