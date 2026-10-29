@@ -127,7 +127,7 @@ from narrow to broad.
 #### Scenario: Order
 
 - **WHEN** the dialog is shown
-- **THEN** the first option is `Keep warning for N files`
+- **THEN** the first option is `Keep warning for N files (report at exit)`
 - **AND** the next options are one exact path each
 - **AND** the batch option (when N > 1) follows the exact paths
 - **AND** the project option, when offered, is last

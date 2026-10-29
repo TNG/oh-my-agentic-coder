@@ -17,7 +17,8 @@ The git root is the only scope that satisfies both constraints:
 
 Options, in order:
 
-1. `Keep warning for N files` (default; Enter or cancel keeps it)
+1. `Keep warning for N files (report at exit)` (default; Enter or cancel
+   keeps it, saves no exception, and lists the files in the session-end report)
 2. `Ignore this file permanently: <absolute path>` (one per listed file)
 3. `Ignore all N files permanently` (current batch, with `(8 listed)` when
    the dialog showed only the first eight)

@@ -59,7 +59,7 @@ originating user request:
   resolved and contains the detected path. Do not offer it for non-git
   projects or when git returns a root outside the workdir.
 - Keep the dialog order narrow to broad:
-  1. `Keep warning for N files` (default),
+  1. `Keep warning for N files (report at exit)` (default),
   2. `Ignore this file permanently: <path>` (one per file),
   3. `Ignore all N files permanently` (current batch),
   4. `Ignore every <name> in this project` (only when a root is known).

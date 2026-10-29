@@ -199,8 +199,8 @@ type exceptionChoice struct {
 // askExceptions shows the decision dialog and returns the paths whose warning
 // the user kept. A nil return means every path was dismissed permanently.
 // It loops after a per-file or per-name choice so several entries can be
-// dismissed without reopening the session; the safe "Keep warning" option is
-// the default.
+// dismissed without reopening the session; the safe "Keep warning (report at
+// exit)" option is the default and saves no exception.
 //
 // The watch goroutine calls this inline, so the 10-second re-scan pauses while
 // a dialog is open. A protected file created during that window is detected on
@@ -350,6 +350,7 @@ func protectedExceptionOptions(shown, remaining []string, root string, hasRoot b
 	if total != 1 {
 		keep += "s"
 	}
+	keep += " (report at exit)"
 	options := []string{keep}
 	choices := map[string]exceptionChoice{keep: {kind: keepWarning}}
 	for _, path := range shown {
@@ -411,7 +412,7 @@ func protectedExceptionPrompt(paths []string, root string, hasRoot bool) (title,
 		title = "omac: protected files created"
 	}
 	message = fmt.Sprintf(
-		"%d protected-pattern %s created during this session and %s readable by the agent until omac restarts. Ignoring a file skips this warning in future sessions; the file is still protected at launch. Choose an exception, or keep the warning.",
+		"%d protected-pattern %s created during this session and %s readable by the agent until omac restarts. Ignoring a file skips this warning in future sessions; the file is still protected at launch. Keeping the warning saves no exception: the file stays in the audit log and is listed when the session ends.",
 		len(paths), plural(len(paths), "file was", "files were"), plural(len(paths), "is", "are"))
 	if hasRoot {
 		message += fmt.Sprintf(

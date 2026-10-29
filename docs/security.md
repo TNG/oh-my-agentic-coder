@@ -125,8 +125,11 @@ What happens then depends on the system:
   eight paths and offers "Ignore this file" by exact path, "Ignore all N"
   for every file in the batch (the label says "(8 listed)" when the dialog
   showed only the first eight), and, when the workdir belongs to a git
-  repository, "Ignore every `<name>` in this project". "Keep warning" is
-  the default, so pressing Enter keeps it. Exact paths are stored in
+  repository, "Ignore every `<name>` in this project". "Keep warning
+  (report at exit)" is the default, so pressing Enter keeps it. Keeping the
+  warning saves no exception: the file stays in the audit log and is listed
+  in the session-end report, and the dialog does not reopen for that path in
+  this session. Exact paths are stored in
   `~/.config/omac/prefs.yaml` (`protected_watch_ignore`). A project choice
   stores `{root, name}` under `protected_watch_project_ignores`, where
   `root` is the repository's git root. The root is shared by every
