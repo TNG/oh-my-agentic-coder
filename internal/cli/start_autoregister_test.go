@@ -9,6 +9,7 @@ package cli
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -832,9 +833,14 @@ func TestRunStart_SkipUnregisteredStartsWithWarning(t *testing.T) {
 	wd := t.TempDir()
 	stageSkillWithSidecar(t, wd, "no-required", sidecarNoRequired)
 
+	// macOS has no /bin/true (it is /usr/bin/true), and this test must really launch it.
+	trueBin, err := exec.LookPath("true")
+	if err != nil {
+		t.Skipf("no true binary on PATH: %v", err)
+	}
 	env, stderr := launchTestEnv(t, wd)
 	auditPath := filepath.Join(t.TempDir(), "audit.jsonl")
-	if code := runStart([]string{"--skip-unregistered", "--audit-log", auditPath, "--no-sandbox", "--inner", "/bin/true"}, env); code != ExitOK {
+	if code := runStart([]string{"--skip-unregistered", "--audit-log", auditPath, "--no-sandbox", "--inner", trueBin}, env); code != ExitOK {
 		t.Fatalf("runStart() = %d, want ExitOK\nstderr:\n%s", code, stderr())
 	}
 	if out := stderr(); !strings.Contains(out, "continuing without unregistered skills") || !strings.Contains(out, "no-required") {
