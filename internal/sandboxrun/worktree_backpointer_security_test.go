@@ -14,7 +14,7 @@ import (
 // that exact .git file — not just that the admin dir has git's structural
 // shape.
 //
-// resolveWorktreeCommonDir follows <workdir>/.git to an admin dir and
+// ResolveWorktreeCommonDir follows <workdir>/.git to an admin dir and
 // reads <admin>/commondir, and separately checks the
 // <common>/worktrees/<name> layout invariant — but never reads
 // <admin>/gitdir, the file real git writes to point back at the one

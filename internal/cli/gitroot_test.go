@@ -5,7 +5,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
-	"time"
+
+	"github.com/TNG/oh-my-agentic-coder/internal/pathutil"
 )
 
 func testGit(t *testing.T, dir string, args ...string) {
@@ -36,8 +37,26 @@ func TestResolveGitProjectRootNormalCheckout(t *testing.T) {
 	root := t.TempDir()
 	initRepo(t, root)
 	got, ok := resolveGitProjectRoot(root)
-	if !ok || got != canonicalPath(root) {
-		t.Fatalf("resolveGitProjectRoot = %q, %v; want %q, true", got, ok, canonicalPath(root))
+	if !ok || got != pathutil.Canonical(root) {
+		t.Fatalf("resolveGitProjectRoot = %q, %v; want %q, true", got, ok, pathutil.Canonical(root))
+	}
+}
+
+func TestResolveGitProjectRootIgnoresCoreWorktree(t *testing.T) {
+	root := t.TempDir()
+	initRepo(t, root)
+	broadAncestor := filepath.Dir(root)
+	testGit(t, root, "config", "core.worktree", broadAncestor)
+
+	got, ok := resolveGitProjectRoot(root)
+	if !ok {
+		t.Fatalf("a normal checkout with core.worktree must still resolve")
+	}
+	if got == pathutil.Canonical(broadAncestor) {
+		t.Fatalf("core.worktree scoped the project to the ancestor %q", got)
+	}
+	if want := pathutil.Canonical(root); got != want {
+		t.Fatalf("root = %q, want the repo dir %q", got, want)
 	}
 }
 
@@ -48,8 +67,19 @@ func TestResolveGitProjectRootLinkedWorktree(t *testing.T) {
 	worktree := filepath.Join(root, ".worktrees", "linked")
 	testGit(t, root, "worktree", "add", "-q", worktree)
 	got, ok := resolveGitProjectRoot(worktree)
-	if !ok || got != canonicalPath(root) {
-		t.Fatalf("linked worktree root = %q, %v; want %q, true", got, ok, canonicalPath(root))
+	if !ok || got != pathutil.Canonical(root) {
+		t.Fatalf("linked worktree root = %q, %v; want %q, true", got, ok, pathutil.Canonical(root))
+	}
+}
+
+func TestResolveGitProjectRootRejectsWorktreeOutsideRepo(t *testing.T) {
+	root := t.TempDir()
+	initRepo(t, root)
+	commitRepo(t, root)
+	outside := filepath.Join(t.TempDir(), "wt")
+	testGit(t, root, "worktree", "add", "-q", outside)
+	if got, ok := resolveGitProjectRoot(outside); ok {
+		t.Fatalf("a worktree outside the repository scoped the project to %q", got)
 	}
 }
 
@@ -61,8 +91,8 @@ func TestResolveGitProjectRootSymlinkedWorkdir(t *testing.T) {
 		t.Skipf("symlink not supported: %v", err)
 	}
 	got, ok := resolveGitProjectRoot(link)
-	if !ok || got != canonicalPath(real) {
-		t.Fatalf("symlinked workdir root = %q, %v; want %q, true", got, ok, canonicalPath(real))
+	if !ok || got != pathutil.Canonical(real) {
+		t.Fatalf("symlinked workdir root = %q, %v; want %q, true", got, ok, pathutil.Canonical(real))
 	}
 }
 
@@ -75,8 +105,8 @@ func TestResolveGitProjectRootNestedRepo(t *testing.T) {
 	}
 	initRepo(t, inner)
 	got, ok := resolveGitProjectRoot(inner)
-	if !ok || got != canonicalPath(inner) {
-		t.Fatalf("nested root = %q, %v; want %q, true", got, ok, canonicalPath(inner))
+	if !ok || got != pathutil.Canonical(inner) {
+		t.Fatalf("nested root = %q, %v; want %q, true", got, ok, pathutil.Canonical(inner))
 	}
 }
 
@@ -95,9 +125,10 @@ func TestResolveGitProjectRootSubmodule(t *testing.T) {
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git submodule add: %v\n%s", err, out)
 	}
-	got, ok := resolveGitProjectRoot(filepath.Join(outer, "sub"))
-	if !ok || got != canonicalPath(filepath.Join(outer, "sub")) {
-		t.Fatalf("submodule root = %q, %v; want %q, true", got, ok, canonicalPath(filepath.Join(outer, "sub")))
+	sub := filepath.Join(outer, "sub")
+	got, ok := resolveGitProjectRoot(sub)
+	if !ok || got != pathutil.Canonical(sub) {
+		t.Fatalf("submodule root = %q, %v; want %q, true", got, ok, pathutil.Canonical(sub))
 	}
 }
 
@@ -115,6 +146,29 @@ func TestResolveGitProjectRootBare(t *testing.T) {
 	}
 }
 
+func TestResolveGitProjectRootForgedGitfileStaysAtWorkdir(t *testing.T) {
+	admin := t.TempDir()
+	// An agent-controlled admin dir: a bare repo with core.worktree moved to a
+	// broad ancestor, exactly the shape that fooled --show-toplevel.
+	testGit(t, admin, "init", "--bare", "-q")
+	testGit(t, admin, "config", "core.bare", "false")
+	testGit(t, admin, "config", "core.worktree", filepath.Dir(admin))
+
+	victim := t.TempDir()
+	gitfile := "gitdir: " + admin + "\n"
+	if err := os.WriteFile(filepath.Join(victim, ".git"), []byte(gitfile), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got, ok := resolveGitProjectRoot(victim)
+	if !ok {
+		return // no project option is also safe
+	}
+	if got != pathutil.Canonical(victim) {
+		t.Fatalf("forged .git resolved to %q, want the workdir %q or no root", got, pathutil.Canonical(victim))
+	}
+}
+
 func TestResolveGitProjectRootRejectsForgedGitDir(t *testing.T) {
 	other := t.TempDir()
 	initRepo(t, other)
@@ -123,48 +177,31 @@ func TestResolveGitProjectRootRejectsForgedGitDir(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(victim, ".git"), []byte(gitfile), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if got, ok := resolveGitProjectRoot(victim); ok {
-		t.Fatalf("forged .git scoped the project to %q", got)
+	got, ok := resolveGitProjectRoot(victim)
+	if ok && got != pathutil.Canonical(victim) {
+		t.Fatalf("forged .git scoped the project to %q, want the workdir or no root", got)
 	}
 }
 
-func TestResolveGitProjectRootFailsWhenGitMissing(t *testing.T) {
-	bin := t.TempDir()
-	script := "#!/bin/sh\nexit 1\n"
-	if err := os.WriteFile(filepath.Join(bin, "git"), []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", bin)
-	if got, ok := resolveGitProjectRoot(t.TempDir()); ok {
-		t.Fatalf("failing git resolved to %q", got)
+func TestResolveGitProjectRootRejectsHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	initRepo(t, home)
+	if got, ok := resolveGitProjectRoot(home); ok {
+		t.Fatalf("a repo at $HOME resolved to %q", got)
 	}
 }
 
-func TestResolveGitProjectRootTimesOut(t *testing.T) {
-	bin := t.TempDir()
-	script := "#!/bin/sh\n/bin/sleep 5\n"
-	if err := os.WriteFile(filepath.Join(bin, "git"), []byte(script), 0o755); err != nil {
-		t.Fatal(err)
+func TestAcceptableProjectRootGates(t *testing.T) {
+	workdir := filepath.Join(t.TempDir(), "a", "b")
+	if acceptableProjectRoot(string(filepath.Separator), workdir) {
+		t.Fatal("the filesystem root must be refused")
 	}
-	t.Setenv("PATH", bin)
-	start := time.Now()
-	if got, ok := resolveGitProjectRoot(t.TempDir()); ok {
-		t.Fatalf("timed-out git resolved to %q", got)
+	shallow := filepath.Join(string(filepath.Separator), "Users")
+	if acceptableProjectRoot(shallow, filepath.Join(shallow, "x", "y")) {
+		t.Fatal("a strict ancestor with one component must be refused")
 	}
-	if elapsed := time.Since(start); elapsed > 4*time.Second {
-		t.Fatalf("resolver waited %v, want the %v timeout", elapsed, gitRootTimeout)
-	}
-}
-
-func TestPathUnderBoundary(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "repo")
-	if !pathUnder(root, filepath.Join(root, "a", ".env")) {
-		t.Fatal("a path below the root must match")
-	}
-	if pathUnder(root, root+"-other") {
-		t.Fatal("a sibling with the same prefix must not match")
-	}
-	if pathUnder(root, filepath.Dir(root)) {
-		t.Fatal("the parent must not match")
+	if !acceptableProjectRoot(filepath.Join(shallow, "x"), filepath.Join(shallow, "x")) {
+		t.Fatal("a two-component repo root must be accepted")
 	}
 }

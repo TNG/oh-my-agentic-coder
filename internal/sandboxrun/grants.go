@@ -284,7 +284,7 @@ func ResolveGrants(p *sandboxprofile.Profile, workdir string, notices io.Writer)
 // succeeds). Granting the root writable would let a lock-rename defeat the
 // read-only config guard.
 func gitWorktreeGrants(workdir, access string) (readAdds, allowAdds, denyAdds []string, ok bool) {
-	common, admin, ok := resolveWorktreeCommonDir(workdir)
+	common, admin, ok := ResolveWorktreeCommonDir(workdir)
 	if !ok {
 		return nil, nil, nil, false
 	}
@@ -334,11 +334,11 @@ func gitWorktreeGrants(workdir, access string) (readAdds, allowAdds, denyAdds []
 	}
 }
 
-// resolveWorktreeCommonDir inspects workdir/.git. For a linked worktree it is
+// ResolveWorktreeCommonDir inspects workdir/.git. For a linked worktree it is
 // a "gitdir: <admin>" file; <admin>/commondir points at the shared common dir.
-// Returns (common, admin, true) only for a linked worktree — plain clones and
-// non-repo workdirs yield ok=false.
-func resolveWorktreeCommonDir(workdir string) (common, admin string, ok bool) {
+// Returns (common, admin, true) only for a linked worktree — plain clones,
+// submodules, separate git dirs, and non-repo workdirs yield ok=false.
+func ResolveWorktreeCommonDir(workdir string) (common, admin string, ok bool) {
 	dotgit := filepath.Join(workdir, ".git")
 	fi, err := os.Lstat(dotgit)
 	if err != nil || fi.IsDir() {
