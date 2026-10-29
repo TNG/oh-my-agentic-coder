@@ -24,14 +24,14 @@
       separate git dir, or forged gitfile stays at the directory holding the
       file.
 - [x] 2.3 Canonicalise the root and reject it unless the workdir is the root or
-      lies below it. Refuse the filesystem root, the canonical `$HOME`, and a
-      strict ancestor with fewer than two path components. A worktree outside
-      the repository gets no project option.
+      lies below it. Refuse the filesystem root and the canonical `$HOME`; a
+      shallow repo root such as `/repo` stays eligible. A worktree outside the
+      repository gets no project option.
 - [x] 2.4 Cache the result per watch; resolve lazily on the first dialog.
 - [x] 2.5 Tests: normal repo, `core.worktree=<ancestor>`, linked worktree under
       `.worktrees/<name>`, linked worktree outside the repo, nested repo,
-      submodule, non-git, bare repo, forged `.git`, repo at `$HOME`, root and
-      too-shallow ancestors, symlinked workdir.
+      submodule, non-git, bare repo, forged `.git`, repo at `$HOME`, root,
+      shallow repo root, symlinked workdir.
 
 ## 3. Persistence
 

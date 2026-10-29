@@ -59,10 +59,11 @@ must never choose the scope.
 5. **Containment check:** accept the root only if the canonical workdir is the
    root or lies below it (`pathutil.Under`). This blocks a forged `.git` or
    `core.worktree` from scoping an exception to a different project's root.
-6. **Breadth gates:** refuse the filesystem root, the user's home directory
-   (canonical `$HOME`), and a strict ancestor of the workdir with fewer than
-   two path components. Those are broad scopes that a dotfiles repo at
-   `$HOME` or a forged pointer could otherwise select.
+6. **Breadth gates:** refuse the filesystem root and the user's home directory
+   (canonical `$HOME`). These are the two scopes that would silently cover
+   unrelated projects. A shallow repo root such as `/repo` or `/app` stays
+   eligible: discovery already anchors it at the directory that owns `.git`,
+   so a depth threshold would only add an arbitrary false negative.
 
 A failed check means no project option, and there is no fallback to a broader
 main-repo-wide scope. A worktree outside the repository also gets no project
@@ -138,8 +139,8 @@ grant itself an exception.
 - The root is discovered on the host by walking the filesystem to the first
   `.git` entry and validating a linked worktree's admin dir. It is not taken
   from agent text and not from the workdir config: `core.worktree` is ignored.
-- The root must contain the workdir, and the filesystem root, the user's home
-  directory, and too-shallow ancestors are refused.
+- The root must contain the workdir, and the filesystem root and the user's
+  home directory are refused.
 
 ## Rejected alternatives
 
@@ -169,7 +170,8 @@ grant itself an exception.
     resolves to the repo dir, never the ancestor;
   - a forged `.git` file pointing at an agent-controlled admin dir resolves
     to the workdir (or no root), never an ancestor;
-  - a repo at `$HOME`, at `/`, or at a too-shallow ancestor is refused;
+  - a repo at `$HOME` or `/` is refused; a shallow root like `/repo` is accepted
+    both in the main checkout and in its worktree;
   - a root that does not contain the workdir (forged `.git`) is rejected;
   - a worktree outside the repository gets no project option.
 - Prefs:
