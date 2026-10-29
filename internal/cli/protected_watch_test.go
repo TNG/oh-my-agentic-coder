@@ -7,10 +7,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/TNG/oh-my-agentic-coder/internal/audit"
+	"github.com/TNG/oh-my-agentic-coder/internal/pathutil"
 	"github.com/TNG/oh-my-agentic-coder/internal/prefs"
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxrun"
@@ -257,6 +259,17 @@ func TestAskExceptionsFallsBackWhenDialogFails(t *testing.T) {
 	}
 }
 
+func TestAskExceptionsTimeoutKeepsWarningsWithoutFallback(t *testing.T) {
+	w, alerts := newExceptionWatch(t)
+	w.choose = func(context.Context, string, string, []string) (string, error) {
+		return "", context.DeadlineExceeded
+	}
+	paths := []string{"/a/.env"}
+	if kept := w.askExceptions(paths); !slices.Equal(kept, paths) || len(*alerts) != 0 {
+		t.Fatalf("timeout kept %v and showed %v; want kept warnings without fallback", kept, *alerts)
+	}
+}
+
 // TestLoadWatchPrefsCorruptFileStaysUnread protects the "never silently
 // replace a broken prefs.yaml" rule: a parse error must produce an
 // in-memory-only watch and a session notice, and a later exception must not
@@ -306,7 +319,7 @@ func TestLoadWatchPrefsCorruptFileStaysUnread(t *testing.T) {
 }
 
 func TestProtectedExceptionOptions(t *testing.T) {
-	options, choices := protectedExceptionOptions([]string{"/a/.env"}, []string{"/a/.env"}, "", false)
+	options, choices := protectedExceptionOptions([]string{"/a/.env"}, []string{"/a/.env"}, nil)
 	if len(options) != 2 || options[0] != "Keep warning for 1 file (report at exit)" ||
 		options[1] != "Ignore this file permanently: /a/.env" {
 		t.Fatalf("options = %v", options)
@@ -314,7 +327,7 @@ func TestProtectedExceptionOptions(t *testing.T) {
 	if c := choices["Ignore this file permanently: /a/.env"]; c.kind != ignoreExactPath || c.value != "/a/.env" {
 		t.Fatalf("exact choice = %+v", c)
 	}
-	options, choices = protectedExceptionOptions([]string{"/a/.env", "/b/.env"}, []string{"/a/.env", "/b/.env"}, "", false)
+	options, choices = protectedExceptionOptions([]string{"/a/.env", "/b/.env"}, []string{"/a/.env", "/b/.env"}, nil)
 	if options[len(options)-1] != "Ignore all 2 files permanently" {
 		t.Fatalf("all option should be last, got %v", options)
 	}
@@ -326,7 +339,7 @@ func TestProtectedExceptionOptions(t *testing.T) {
 	for i := range 10 {
 		many = append(many, fmt.Sprintf("/w/%d/.env", i))
 	}
-	options, choices = protectedExceptionOptions(many[:maxAlertPaths], many, "", false)
+	options, choices = protectedExceptionOptions(many[:maxAlertPaths], many, nil)
 	want := "Ignore all 10 files permanently (8 listed)"
 	if c, ok := choices[want]; !ok || c.kind != ignoreAllListed {
 		t.Fatalf("batch label = %v, want %q with the listed count", options, want)
@@ -352,12 +365,12 @@ func TestProtectedExceptionOptionsProjectLast(t *testing.T) {
 		writeProtectedFile(t, root, ".worktrees/b/.env.local"),
 		writeProtectedFile(t, root, ".worktrees/a/.env"),
 	}
-	options, choices := protectedExceptionOptions(paths, paths, root, true)
+	options, choices := protectedExceptionOptions(paths, paths, []string{root})
 	if len(options) < 3 {
 		t.Fatalf("options = %v", options)
 	}
-	if options[len(options)-2] != "Ignore every .env in this project ("+filepath.Base(root)+")" ||
-		options[len(options)-1] != "Ignore every .env.local in this project ("+filepath.Base(root)+")" {
+	if options[len(options)-2] != "Ignore every .env under "+root ||
+		options[len(options)-1] != "Ignore every .env.local under "+root {
 		t.Fatalf("project options must be last and sorted, got %v", options)
 	}
 	for _, option := range options {
@@ -372,13 +385,12 @@ func TestProtectedExceptionOptionsProjectLast(t *testing.T) {
 
 func TestAskExceptionsProjectChoice(t *testing.T) {
 	root := t.TempDir()
-	initRepo(t, root)
 	a := writeProtectedFile(t, root, ".worktrees/a/.env.local")
 	b := writeProtectedFile(t, root, ".worktrees/b/.env.local")
 	other := writeProtectedFile(t, root, ".worktrees/a/.env")
 	w, _ := newExceptionWatch(t, func(options []string) string {
 		for _, option := range options {
-			if strings.HasPrefix(option, "Ignore every .env.local in this project") {
+			if option == "Ignore every .env.local under "+root {
 				return option
 			}
 		}
@@ -405,9 +417,102 @@ func TestAskExceptionsProjectChoice(t *testing.T) {
 	}
 }
 
+func TestAskExceptionsWorkspaceAndExplicitParent(t *testing.T) {
+	for _, parent := range []bool{false, true} {
+		t.Run(fmt.Sprintf("parent=%v", parent), func(t *testing.T) {
+			home := pathutil.Canonical(t.TempDir())
+			t.Setenv("HOME", home)
+			root := filepath.Join(home, "repo")
+			workdir := filepath.Join(root, ".worktrees", "A")
+			path := writeProtectedFile(t, workdir, ".env.local")
+			selectedRoot := workdir
+			if parent {
+				selectedRoot = root
+			}
+			w, _ := newExceptionWatch(t, func(options []string) string {
+				want := "Ignore every .env.local under " + selectedRoot
+				var scopes []string
+				for _, option := range options {
+					if strings.HasPrefix(option, "Ignore every ") {
+						scopes = append(scopes, option)
+					}
+				}
+				if len(scopes) != 3 || scopes[0] != "Ignore every .env.local under "+workdir ||
+					scopes[1] != "Ignore every .env.local under "+filepath.Dir(workdir) ||
+					scopes[2] != "Ignore every .env.local under "+root {
+					t.Fatalf("scopes must run from workspace to parent, stopping before HOME: %v", scopes)
+				}
+				return want
+			})
+			w.workdir = workdir
+			if kept := w.askExceptions([]string{path}); len(kept) != 0 {
+				t.Fatalf("selected folder exception did not dismiss file: %v", kept)
+			}
+			got, err := prefs.Load()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(got.ProtectedWatchProjectIgnores) != 1 || got.ProtectedWatchProjectIgnores[0].Root != selectedRoot {
+				t.Fatalf("stored scope = %v, want %s", got.ProtectedWatchProjectIgnores, selectedRoot)
+			}
+			sibling := filepath.Join(root, ".worktrees", "B", ".env.local")
+			if got.IgnoresProtectedProjectPath(sibling) != parent {
+				t.Fatal("sibling worktree must only be ignored after explicit parent selection")
+			}
+			if got.IgnoresProtectedProjectPath(filepath.Join(home, "other-repo", ".env.local")) {
+				t.Fatal("selected folder must not silence a sibling project")
+			}
+		})
+	}
+}
+
+func TestAskExceptionsMetadataCannotChooseScope(t *testing.T) {
+	home := pathutil.Canonical(t.TempDir())
+	t.Setenv("HOME", home)
+	root := filepath.Join(home, "repos", "proj")
+	path := writeProtectedFile(t, root, ".env.local")
+	// Both ends of this apparently valid worktree link are agent-controlled.
+	writeProtectedFile(t, root, "worktrees/n/commondir")
+	if err := os.WriteFile(filepath.Join(root, "worktrees/n/commondir"), []byte("../..\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "worktrees/n/gitdir"), []byte(filepath.Join(root, ".git")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".git"), []byte("gitdir: "+filepath.Join(root, "worktrees/n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	w, _ := newExceptionWatch(t, func(options []string) string {
+		for _, option := range options {
+			if strings.HasPrefix(option, "Ignore every ") {
+				if option != "Ignore every .env.local under "+root {
+					t.Fatalf("metadata changed the first folder scope: %q", option)
+				}
+				return option
+			}
+		}
+		t.Fatal("workspace exception missing")
+		return ""
+	})
+	w.workdir = root
+	w.askExceptions([]string{path})
+}
+
+func TestProtectedWorkspaceRootsBoundaries(t *testing.T) {
+	home := pathutil.Canonical(t.TempDir())
+	t.Setenv("HOME", home)
+	for _, workdir := range []string{"", "relative/path", "/", home} {
+		if roots := protectedWorkspaceRoots(workdir); len(roots) != 0 {
+			t.Errorf("unsafe workspace %q offered %v", workdir, roots)
+		}
+	}
+	if roots := protectedWorkspaceRoots("/repo/.worktrees/A"); !slices.Equal(roots, []string{"/repo/.worktrees/A", "/repo/.worktrees", "/repo"}) {
+		t.Fatalf("workspace outside HOME = %v", roots)
+	}
+}
+
 func TestProjectExceptionCoversNewWorktreeAndKeepsAudit(t *testing.T) {
 	root := t.TempDir()
-	initRepo(t, root)
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	store, err := prefs.Load()
 	if err != nil {

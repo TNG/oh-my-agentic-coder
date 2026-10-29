@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -71,12 +72,9 @@ type protectedWatch struct {
 	// the watch goroutine: only observe, ignoreProtectedPath, and
 	// ignoreProjectPaths touch it, and all three run on that goroutine.
 	ignored map[string]bool
-	// workdir is the session workdir; projectRoot is resolved from it
-	// lazily on the first dialog. projectRootTried keeps a failed or
-	// non-git resolution from running git again for every tick.
-	workdir          string
-	projectRoot      string
-	projectRootTried bool
+	// workdir is fixed at launch. Folder choices come only from this path,
+	// never from agent-writable git metadata.
+	workdir string
 }
 
 // startProtectedWatch mirrors the sandboxed child's deny-pattern walk
@@ -85,7 +83,7 @@ type protectedWatch struct {
 // the kernel mask is fixed at launch. Each tick's new paths arrive as
 // one batch, so a worktree setup that creates several dotenv files at
 // once pops one decision dialog instead of one per file. The dialog can
-// remember an exact file, or a basename for the whole git project, which
+// remember an exact file, or a basename below a user-selected folder, which
 // is stored in the user-global prefs; the file stays protected at launch
 // and only the repeated warning is skipped.
 //
@@ -194,6 +192,7 @@ const (
 type exceptionChoice struct {
 	kind  exceptionKind
 	value string
+	root  string
 }
 
 // askExceptions shows the decision dialog and returns the paths whose warning
@@ -209,20 +208,20 @@ type exceptionChoice struct {
 // out of scope for this change.
 func (w *protectedWatch) askExceptions(paths []string) []string {
 	remaining := append([]string(nil), paths...)
-	root, hasRoot := w.projectRootForDialog()
+	roots := protectedWorkspaceRoots(w.workdir)
 	notified := false
 	for len(remaining) > 0 {
 		shown := remaining
 		if len(shown) > maxAlertPaths {
 			shown = shown[:maxAlertPaths]
 		}
-		options, choices := protectedExceptionOptions(shown, remaining, root, hasRoot)
+		options, choices := protectedExceptionOptions(shown, remaining, roots)
 		if !notified {
 			title, _ := protectedBatchNotice(remaining)
 			w.sendNotify(title, "A decision dialog is waiting: ignore a protected-file warning permanently, or keep it.")
 			notified = true
 		}
-		title, message := protectedExceptionPrompt(remaining, root, hasRoot)
+		title, message := protectedExceptionPrompt(remaining)
 		ctx, cancel := context.WithTimeout(w.ctx, protectedDialogTimeout)
 		choice, err := w.choose(ctx, title, message, options)
 		cancel()
@@ -249,30 +248,31 @@ func (w *protectedWatch) askExceptions(paths []string) []string {
 			w.ignoreProtectedPath(selected.value)
 			remaining = removePath(remaining, selected.value)
 		case ignoreProjectName:
-			matched := projectIgnoreMatches(remaining, root, selected.value)
-			w.ignoreProjectPaths(root, selected.value, matched)
+			matched := projectIgnoreMatches(remaining, selected.root, selected.value)
+			w.ignoreProjectPaths(selected.root, selected.value, matched)
 			remaining = removePaths(remaining, matched)
 		}
 	}
 	return nil
 }
 
-// projectRootForDialog resolves the git root once per watch. A failed or
-// non-git resolution is cached too, so every tick does not spawn git again.
-func (w *protectedWatch) projectRootForDialog() (string, bool) {
-	if w.projectRootTried {
-		return w.projectRoot, w.projectRoot != ""
+// protectedWorkspaceRoots offers the workspace first, then its parents. Stop
+// before HOME or the filesystem root: neither is an appropriate warning scope.
+// Derive candidates lexically so changes to .git cannot widen the first choice.
+func protectedWorkspaceRoots(workdir string) []string {
+	if workdir == "" || !filepath.IsAbs(workdir) {
+		return nil
 	}
-	w.projectRootTried = true
-	if w.workdir == "" {
-		return "", false
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return nil
 	}
-	root, ok := resolveGitProjectRoot(w.workdir)
-	if !ok {
-		return "", false
+	home = pathutil.Canonical(home)
+	var roots []string
+	for root := filepath.Clean(workdir); root != home && filepath.Dir(root) != root; root = filepath.Dir(root) {
+		roots = append(roots, root)
 	}
-	w.projectRoot = root
-	return root, true
+	return roots
 }
 
 // projectIgnoreMatches returns the paths covered by one project choice.
@@ -338,13 +338,13 @@ func (w *protectedWatch) ignoreProtectedPaths(paths []string) {
 
 // protectedExceptionOptions builds the dialog choices from narrow to broad,
 // after the safe default: keep, one exact file each, the whole batch, then one
-// basename per project. choices maps the displayed labels back to their scope.
+// basename per folder, from narrow to broad. choices maps labels to their scope.
 //
 // Labels double as map keys. Two paths that differ only in control characters
 // (legal in filenames) can therefore collapse to one label, and a click on the
 // first row acts on the second file. The collision is accepted for now; it
 // fails safe because either path was detected and protected the same way.
-func protectedExceptionOptions(shown, remaining []string, root string, hasRoot bool) ([]string, map[string]exceptionChoice) {
+func protectedExceptionOptions(shown, remaining []string, roots []string) ([]string, map[string]exceptionChoice) {
 	total := len(remaining)
 	keep := fmt.Sprintf("Keep warning for %d file", total)
 	if total != 1 {
@@ -366,11 +366,12 @@ func protectedExceptionOptions(shown, remaining []string, root string, hasRoot b
 		options = append(options, label)
 		choices[label] = exceptionChoice{kind: ignoreAllListed}
 	}
-	for _, name := range projectIgnoreNames(remaining, root, hasRoot) {
-		label := fmt.Sprintf("Ignore every %s in this project (%s)",
-			stripControlChars(name), stripControlChars(filepath.Base(root)))
-		options = append(options, label)
-		choices[label] = exceptionChoice{kind: ignoreProjectName, value: name}
+	for _, root := range roots {
+		for _, name := range projectIgnoreNames(remaining, root) {
+			label := fmt.Sprintf("Ignore every %s under %s", stripControlChars(name), stripControlChars(root))
+			options = append(options, label)
+			choices[label] = exceptionChoice{kind: ignoreProjectName, value: name, root: root}
+		}
 	}
 	return options, choices
 }
@@ -382,8 +383,8 @@ const maxProjectNames = 4
 
 // projectIgnoreNames returns the unique basenames under root, sorted for a
 // stable dialog. Only names that would really match are offered.
-func projectIgnoreNames(paths []string, root string, hasRoot bool) []string {
-	if !hasRoot || root == "" {
+func projectIgnoreNames(paths []string, root string) []string {
+	if root == "" {
 		return nil
 	}
 	seen := map[string]bool{}
@@ -406,7 +407,7 @@ func projectIgnoreNames(paths []string, root string, hasRoot bool) []string {
 // protectedExceptionPrompt is the dialog body. It states the one trade-off a
 // user needs to decide: ignored files stay protected at launch, but a new one
 // stays readable without a notice until restart.
-func protectedExceptionPrompt(paths []string, root string, hasRoot bool) (title, message string) {
+func protectedExceptionPrompt(paths []string) (title, message string) {
 	title = "omac: protected file created"
 	if len(paths) != 1 {
 		title = "omac: protected files created"
@@ -414,11 +415,7 @@ func protectedExceptionPrompt(paths []string, root string, hasRoot bool) (title,
 	message = fmt.Sprintf(
 		"%d protected-pattern %s created during this session and %s readable by the agent until omac restarts. Ignoring a file skips this warning in future sessions; the file is still protected at launch. Keeping the warning saves no exception: the file stays in the audit log and is listed when the session ends.",
 		len(paths), plural(len(paths), "file was", "files were"), plural(len(paths), "is", "are"))
-	if hasRoot {
-		message += fmt.Sprintf(
-			" Project scope: %s, including every worktree of this repository.",
-			stripControlChars(root))
-	}
+	message += " Folder exceptions cover every matching name below the displayed full path, including future worktrees there. Choosing a parent folder also covers its other projects."
 	return title, message
 }
 

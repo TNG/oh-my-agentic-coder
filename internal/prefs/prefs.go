@@ -20,10 +20,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 
 	"gopkg.in/yaml.v3"
 
 	"github.com/TNG/oh-my-agentic-coder/internal/pathutil"
+	"github.com/TNG/oh-my-agentic-coder/internal/registry"
 )
 
 // SchemaVersion is the current on-disk format version.
@@ -46,9 +48,8 @@ type Store struct {
 	ProtectedWatchIgnore []string `yaml:"protected_watch_ignore"`
 
 	// ProtectedWatchProjectIgnores lists basenames the user dismissed for
-	// one project. The root is the canonical git root shared by every
-	// worktree of that repository, so a new worktree under a new path is
-	// covered. The file stays protected at launch.
+	// one selected folder. A new worktree below that root is covered, too.
+	// The file stays protected at launch.
 	ProtectedWatchProjectIgnores []ProtectedWatchProjectIgnore `yaml:"protected_watch_project_ignores"`
 }
 
@@ -212,13 +213,45 @@ func Load() (*Store, error) {
 	return &s, nil
 }
 
-// Save atomically writes the prefs to disk. Returns an error when no
-// global directory can be resolved.
+// Save merges additive preferences with the latest on-disk state under a
+// process-shared lock, then writes atomically. Stale sessions cannot remove
+// another session's exceptions or re-enable its suppressed plugin warning.
+// Removing preferences requires editing prefs.yaml.
 func Save(s *Store) error {
+	if s == nil {
+		return fmt.Errorf("prefs: nil store")
+	}
 	dir := GlobalDir()
 	if dir == "" {
 		return fmt.Errorf("prefs: no global config directory available (set $HOME or $XDG_CONFIG_HOME)")
 	}
+	return registry.WithLockAt(dir, filepath.Join(dir, "prefs.yaml.lock"), func() error {
+		latest, err := Load()
+		if err != nil {
+			return err
+		}
+		latest.SuppressPluginWarning = latest.SuppressPluginWarning || s.SuppressPluginWarning
+		for _, path := range s.ProtectedWatchIgnore {
+			if !latest.IgnoresProtectedPath(path) {
+				latest.ProtectedWatchIgnore = append(latest.ProtectedWatchIgnore, path)
+			}
+		}
+		for _, ignore := range s.ProtectedWatchProjectIgnores {
+			if !slices.Contains(latest.ProtectedWatchProjectIgnores, ignore) {
+				latest.ProtectedWatchProjectIgnores = append(latest.ProtectedWatchProjectIgnores, ignore)
+			}
+		}
+		if err := save(latest); err != nil {
+			return err
+		}
+		*s = *latest
+		return nil
+	})
+}
+
+// save writes the merged store; the caller holds prefs.yaml.lock.
+func save(s *Store) error {
+	dir := GlobalDir()
 	if s.Version == 0 {
 		s.Version = SchemaVersion
 	}

@@ -490,6 +490,9 @@ func chooseDarwin(ctx context.Context, title, message string, options []string) 
 	)
 	out, err := exec.CommandContext(ctx, "osascript", "-e", script).Output()
 	if err != nil {
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
 		return "", err
 	}
 	choice := strings.TrimSpace(string(out))

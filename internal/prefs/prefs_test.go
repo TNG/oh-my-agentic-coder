@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 )
 
@@ -255,5 +256,78 @@ func TestProtectedWatchProjectIgnoreRejectsBadName(t *testing.T) {
 		if err := store.AddProtectedWatchProjectIgnore(t.TempDir(), name); err == nil {
 			t.Fatalf("name %q must be rejected", name)
 		}
+	}
+}
+
+func TestSaveMergesStaleSessions(t *testing.T) {
+	isolate(t)
+	a, _ := Load()
+	b, _ := Load()
+	plugin, _ := Load()
+	if err := a.AddProtectedWatchIgnore("/work/a/.env"); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.AddProtectedWatchProjectIgnore("/work/b", ".env.local"); err != nil {
+		t.Fatal(err)
+	}
+	plugin.SuppressPluginWarning = true
+	if err := Save(plugin); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.AddProtectedWatchIgnore("/work/c/.env"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.SuppressPluginWarning || !got.IgnoresProtectedPath("/work/a/.env") ||
+		!got.IgnoresProtectedPath("/work/c/.env") || !got.IgnoresProtectedProjectPath("/work/b/.env.local") {
+		t.Fatalf("lost another session's preferences: %+v", got)
+	}
+}
+
+func TestSaveConcurrentSessions(t *testing.T) {
+	isolate(t)
+	const sessions = 20
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := range sessions {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			s := &Store{}
+			<-start
+			if err := s.AddProtectedWatchIgnore(fmt.Sprintf("/work/%d/.env", i)); err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	got, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.ProtectedWatchIgnore) != sessions {
+		t.Fatalf("saved %d exceptions, want %d", len(got.ProtectedWatchIgnore), sessions)
+	}
+}
+
+func TestSavePreservesCorruptPrefs(t *testing.T) {
+	isolate(t)
+	if err := os.MkdirAll(GlobalDir(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	corrupt := "version: [unclosed\n"
+	if err := os.WriteFile(Path(), []byte(corrupt), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Save(&Store{SuppressPluginWarning: true}); err == nil {
+		t.Fatal("must refuse to overwrite unreadable preferences")
+	}
+	got, err := os.ReadFile(Path())
+	if err != nil || string(got) != corrupt {
+		t.Fatalf("corrupt prefs overwritten: %q, %v", got, err)
 	}
 }

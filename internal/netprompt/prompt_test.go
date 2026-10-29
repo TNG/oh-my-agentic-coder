@@ -3,6 +3,7 @@ package netprompt
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,6 +11,34 @@ import (
 	"testing"
 	"time"
 )
+
+func TestChooseDarwinContextError(t *testing.T) {
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "osascript"), []byte("#!/bin/sh\nexec /bin/sleep 10\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	for _, timeout := range []bool{false, true} {
+		ctx, cancel := context.WithCancel(context.Background())
+		want := context.Canceled
+		if timeout {
+			cancel()
+			ctx, cancel = context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+			want = context.DeadlineExceeded
+		}
+		cancel()
+		_, err := chooseDarwin(ctx, "title", "message", []string{"Keep warning"})
+		if !errors.Is(err, want) {
+			t.Errorf("error = %v, want %v", err, want)
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	_, err := chooseDarwin(ctx, "title", "message", []string{"Keep warning"})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("running dialog timeout = %v, want DeadlineExceeded", err)
+	}
+}
 
 // signalBackend is a dialogBackend stub that returns a fixed label without
 // showing any GUI, for exercising Prompt's instrumentation path.
