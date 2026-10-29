@@ -36,7 +36,7 @@ const midsessionProtectedWatchInterval = 10 * time.Second
 
 // maxAlertPaths bounds the file choices one dialog lists. Worktree setup
 // can create dozens of dotenv files in one tick; the dialog names the
-// first few and "Ignore all" covers the rest.
+// first few and "Suppress warnings for all" covers the rest.
 const maxAlertPaths = 8
 
 // protectedDialogTimeout bounds one decision dialog. The watch goroutine
@@ -72,8 +72,9 @@ type protectedWatch struct {
 	// the watch goroutine: only observe, ignoreProtectedPath, and
 	// ignoreProjectPaths touch it, and all three run on that goroutine.
 	ignored map[string]bool
-	// workdir is fixed at launch. Folder choices come only from this path,
-	// never from agent-writable git metadata.
+	// workdir is the directory omac was started in. The dialog derives its
+	// folder choices from this path alone, so nothing the agent can write
+	// (for example a .git file) can widen the scope of an exception.
 	workdir string
 }
 
@@ -198,8 +199,8 @@ type exceptionChoice struct {
 // askExceptions shows the decision dialog and returns the paths whose warning
 // the user kept. A nil return means every path was dismissed permanently.
 // It loops after a per-file or per-name choice so several entries can be
-// dismissed without reopening the session; the safe "Keep warning (report at
-// exit)" option is the default and saves no exception.
+// dismissed without reopening the session; the safe "Keep warning every time"
+// option is the default and saves no exception.
 //
 // The watch goroutine calls this inline, so the 10-second re-scan pauses while
 // a dialog is open. A protected file created during that window is detected on
@@ -315,7 +316,7 @@ func (w *protectedWatch) ignoreProtectedPath(path string) {
 }
 
 // ignoreProtectedPaths records a batch of permanent exact-path exceptions with
-// one prefs write ("Ignore all" can cover dozens of paths). It mirrors every
+// one prefs write ("Suppress warnings for all" can cover dozens of paths). It mirrors every
 // path in memory even when the save fails, so a read-only config dir cannot
 // turn one click into a dialog loop.
 func (w *protectedWatch) ignoreProtectedPaths(paths []string) {
@@ -336,9 +337,9 @@ func (w *protectedWatch) ignoreProtectedPaths(paths []string) {
 	}
 }
 
-// protectedExceptionOptions builds the dialog choices from narrow to broad,
-// after the safe default: keep, one exact file each, the whole batch, then one
-// basename per folder, from narrow to broad. choices maps labels to their scope.
+// protectedExceptionOptions builds the dialog choices: the safe default first,
+// then one exact file each, the whole batch, then one basename per folder,
+// from narrow to broad. choices maps labels to their scope.
 //
 // Labels double as map keys. Two paths that differ only in control characters
 // (legal in filenames) can therefore collapse to one label, and a click on the
@@ -346,20 +347,16 @@ func (w *protectedWatch) ignoreProtectedPaths(paths []string) {
 // fails safe because either path was detected and protected the same way.
 func protectedExceptionOptions(shown, remaining []string, roots []string) ([]string, map[string]exceptionChoice) {
 	total := len(remaining)
-	keep := fmt.Sprintf("Keep warning for %d file", total)
-	if total != 1 {
-		keep += "s"
-	}
-	keep += " (report at exit)"
+	keep := "Keep warning every time (default)"
 	options := []string{keep}
 	choices := map[string]exceptionChoice{keep: {kind: keepWarning}}
 	for _, path := range shown {
-		label := "Ignore this file permanently: " + stripControlChars(path)
+		label := "Suppress warnings for this path permanently: " + stripControlChars(path)
 		options = append(options, label)
 		choices[label] = exceptionChoice{kind: ignoreExactPath, value: path}
 	}
 	if total > 1 {
-		label := fmt.Sprintf("Ignore all %d files permanently", total)
+		label := fmt.Sprintf("Suppress warnings for all %d files permanently", total)
 		if len(shown) < total {
 			label += fmt.Sprintf(" (%d listed)", len(shown))
 		}
@@ -368,7 +365,7 @@ func protectedExceptionOptions(shown, remaining []string, roots []string) ([]str
 	}
 	for _, root := range roots {
 		for _, name := range projectIgnoreNames(remaining, root) {
-			label := fmt.Sprintf("Ignore every %s under %s", stripControlChars(name), stripControlChars(root))
+			label := fmt.Sprintf("Suppress warnings for every file %s under %s", stripControlChars(name), stripControlChars(root))
 			options = append(options, label)
 			choices[label] = exceptionChoice{kind: ignoreProjectName, value: name, root: root}
 		}
@@ -413,9 +410,10 @@ func protectedExceptionPrompt(paths []string) (title, message string) {
 		title = "omac: protected files created"
 	}
 	message = fmt.Sprintf(
-		"%d protected-pattern %s created during this session and %s readable by the agent until omac restarts. Ignoring a file skips this warning in future sessions; the file is still protected at launch. Keeping the warning saves no exception: the file stays in the audit log and is listed when the session ends.",
-		len(paths), plural(len(paths), "file was", "files were"), plural(len(paths), "is", "are"))
-	message += " Folder exceptions cover every matching name below the displayed full path, including future worktrees there. Choosing a parent folder also covers its other projects."
+		"%d %s that omac denies %s created during this session and %s readable by the agent until omac restarts.",
+		len(paths), plural(len(paths), "file", "files"), plural(len(paths), "was", "were"), plural(len(paths), "is", "are"))
+	message += " If you do not want to be warned about this every time, suppress the warning for one path, for all listed files, or for every file with the same name below a folder."
+	message += " Suppressing a warning keeps the file protected at launch and keeps it in the audit log."
 	return title, message
 }
 

@@ -160,7 +160,7 @@ func TestAskExceptionsIgnoresOneThenKeepsRest(t *testing.T) {
 func TestAskExceptionsIgnoresAll(t *testing.T) {
 	w, _ := newExceptionWatch(t, func(options []string) string {
 		for _, option := range options {
-			if strings.HasPrefix(option, "Ignore all ") {
+			if strings.HasPrefix(option, "Suppress warnings for all ") {
 				return option
 			}
 		}
@@ -183,7 +183,7 @@ func TestAskExceptionsIgnoresAll(t *testing.T) {
 func TestAskExceptionsIgnoresAllLargerThanDialog(t *testing.T) {
 	w, _ := newExceptionWatch(t, func(options []string) string {
 		for _, option := range options {
-			if strings.HasPrefix(option, "Ignore all ") {
+			if strings.HasPrefix(option, "Suppress warnings for all ") {
 				return option
 			}
 		}
@@ -320,18 +320,18 @@ func TestLoadWatchPrefsCorruptFileStaysUnread(t *testing.T) {
 
 func TestProtectedExceptionOptions(t *testing.T) {
 	options, choices := protectedExceptionOptions([]string{"/a/.env"}, []string{"/a/.env"}, nil)
-	if len(options) != 2 || options[0] != "Keep warning for 1 file (report at exit)" ||
-		options[1] != "Ignore this file permanently: /a/.env" {
+	if len(options) != 2 || options[0] != "Keep warning every time (default)" ||
+		options[1] != "Suppress warnings for this path permanently: /a/.env" {
 		t.Fatalf("options = %v", options)
 	}
-	if c := choices["Ignore this file permanently: /a/.env"]; c.kind != ignoreExactPath || c.value != "/a/.env" {
+	if c := choices["Suppress warnings for this path permanently: /a/.env"]; c.kind != ignoreExactPath || c.value != "/a/.env" {
 		t.Fatalf("exact choice = %+v", c)
 	}
 	options, choices = protectedExceptionOptions([]string{"/a/.env", "/b/.env"}, []string{"/a/.env", "/b/.env"}, nil)
-	if options[len(options)-1] != "Ignore all 2 files permanently" {
+	if options[len(options)-1] != "Suppress warnings for all 2 files permanently" {
 		t.Fatalf("all option should be last, got %v", options)
 	}
-	if c := choices["Ignore all 2 files permanently"]; c.kind != ignoreAllListed {
+	if c := choices["Suppress warnings for all 2 files permanently"]; c.kind != ignoreAllListed {
 		t.Fatalf("all choice = %+v", c)
 	}
 
@@ -340,7 +340,7 @@ func TestProtectedExceptionOptions(t *testing.T) {
 		many = append(many, fmt.Sprintf("/w/%d/.env", i))
 	}
 	options, choices = protectedExceptionOptions(many[:maxAlertPaths], many, nil)
-	want := "Ignore all 10 files permanently (8 listed)"
+	want := "Suppress warnings for all 10 files permanently (8 listed)"
 	if c, ok := choices[want]; !ok || c.kind != ignoreAllListed {
 		t.Fatalf("batch label = %v, want %q with the listed count", options, want)
 	}
@@ -369,8 +369,8 @@ func TestProtectedExceptionOptionsProjectLast(t *testing.T) {
 	if len(options) < 3 {
 		t.Fatalf("options = %v", options)
 	}
-	if options[len(options)-2] != "Ignore every .env under "+root ||
-		options[len(options)-1] != "Ignore every .env.local under "+root {
+	if options[len(options)-2] != "Suppress warnings for every file .env under "+root ||
+		options[len(options)-1] != "Suppress warnings for every file .env.local under "+root {
 		t.Fatalf("project options must be last and sorted, got %v", options)
 	}
 	for _, option := range options {
@@ -390,7 +390,7 @@ func TestAskExceptionsProjectChoice(t *testing.T) {
 	other := writeProtectedFile(t, root, ".worktrees/a/.env")
 	w, _ := newExceptionWatch(t, func(options []string) string {
 		for _, option := range options {
-			if option == "Ignore every .env.local under "+root {
+			if option == "Suppress warnings for every file .env.local under "+root {
 				return option
 			}
 		}
@@ -430,16 +430,16 @@ func TestAskExceptionsWorkspaceAndExplicitParent(t *testing.T) {
 				selectedRoot = root
 			}
 			w, _ := newExceptionWatch(t, func(options []string) string {
-				want := "Ignore every .env.local under " + selectedRoot
+				want := "Suppress warnings for every file .env.local under " + selectedRoot
 				var scopes []string
 				for _, option := range options {
-					if strings.HasPrefix(option, "Ignore every ") {
+					if strings.HasPrefix(option, "Suppress warnings for every file ") {
 						scopes = append(scopes, option)
 					}
 				}
-				if len(scopes) != 3 || scopes[0] != "Ignore every .env.local under "+workdir ||
-					scopes[1] != "Ignore every .env.local under "+filepath.Dir(workdir) ||
-					scopes[2] != "Ignore every .env.local under "+root {
+				if len(scopes) != 3 || scopes[0] != "Suppress warnings for every file .env.local under "+workdir ||
+					scopes[1] != "Suppress warnings for every file .env.local under "+filepath.Dir(workdir) ||
+					scopes[2] != "Suppress warnings for every file .env.local under "+root {
 					t.Fatalf("scopes must run from workspace to parent, stopping before HOME: %v", scopes)
 				}
 				return want
@@ -484,8 +484,8 @@ func TestAskExceptionsMetadataCannotChooseScope(t *testing.T) {
 	}
 	w, _ := newExceptionWatch(t, func(options []string) string {
 		for _, option := range options {
-			if strings.HasPrefix(option, "Ignore every ") {
-				if option != "Ignore every .env.local under "+root {
+			if strings.HasPrefix(option, "Suppress warnings for every file ") {
+				if option != "Suppress warnings for every file .env.local under "+root {
 					t.Fatalf("metadata changed the first folder scope: %q", option)
 				}
 				return option

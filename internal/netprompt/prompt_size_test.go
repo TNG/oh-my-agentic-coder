@@ -171,7 +171,7 @@ func TestAlertArgs(t *testing.T) {
 // the same string the caller passes in.
 func TestChooseArgsCarrySizeAndPlainText(t *testing.T) {
 	width, height := dialogDimensions()
-	const label = "Ignore this file permanently: /work/a&b/<x>/.env"
+	const label = "Suppress warnings for this path permanently: /work/a&b/<x>/.env"
 	const message = "Create <one> & keep it?"
 
 	z := chooseZenityArgs("omac: choose", message, []string{label}, width, height)

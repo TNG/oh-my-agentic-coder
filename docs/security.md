@@ -122,11 +122,12 @@ What happens then depends on the system:
   appears; the warning tells you that only a restart restores protection.
   The watch warns, it does not block or mask. Detections from one scan
   arrive as one decision dialog, not one popup per file. It lists up to
-  eight paths and offers "Ignore this file" by exact path, "Ignore all N"
-  for every file in the batch (the label says "(8 listed)" when the dialog
-  showed only the first eight), and "Ignore every `<name>` under `<full path>`"
-  for the session folder or an explicitly selected parent folder. "Keep warning
-  (report at exit)" is the default, so pressing Enter keeps it. Keeping the
+  eight paths and offers "Suppress warnings for this path" by exact path,
+  "Suppress warnings for all N files" for the whole batch (the label says
+  "(8 listed)" when the dialog showed only the first eight), and "Suppress
+  warnings for every file `<name>` under `<full path>`" for the session folder
+  or an explicitly selected parent folder. "Keep warning every time (default)"
+  is the first option, so pressing Enter keeps it. Keeping the
   warning saves no exception: the file stays in the audit log and is listed
   in the session-end report, and the dialog does not reopen for that path in
   this session. Exact paths are stored in
