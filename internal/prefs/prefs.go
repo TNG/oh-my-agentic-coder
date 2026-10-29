@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -42,6 +43,19 @@ type Store struct {
 	// permanently". The paths stay protected at launch; only the
 	// repeated warning for an already-reviewed file is skipped.
 	ProtectedWatchIgnore []string `yaml:"protected_watch_ignore"`
+
+	// ProtectedWatchProjectIgnores lists basenames the user dismissed for
+	// one project. The root is the canonical git root shared by every
+	// worktree of that repository, so a new worktree under a new path is
+	// covered. The file stays protected at launch.
+	ProtectedWatchProjectIgnores []ProtectedWatchProjectIgnore `yaml:"protected_watch_project_ignores"`
+}
+
+// ProtectedWatchProjectIgnore is one project-scoped protected-file exception:
+// every file named Name below Root is skipped by the mid-session notice.
+type ProtectedWatchProjectIgnore struct {
+	Root string `yaml:"root"`
+	Name string `yaml:"name"`
 }
 
 // IgnoresProtectedPath reports whether the exact path was dismissed by the
@@ -71,6 +85,91 @@ func (s *Store) AddProtectedWatchIgnore(path string) error {
 	}
 	s.ProtectedWatchIgnore = append(s.ProtectedWatchIgnore, path)
 	return Save(s)
+}
+
+// IgnoresProtectedProjectPath reports whether path matches one of the stored
+// project-scoped exceptions. It is separate from IgnoresProtectedPath so the
+// exact-path wording and behavior stay unchanged.
+func (s *Store) IgnoresProtectedProjectPath(path string) bool {
+	if s == nil {
+		return false
+	}
+	for _, ignore := range s.ProtectedWatchProjectIgnores {
+		if MatchesProjectIgnore(ignore.Root, ignore.Name, path) {
+			return true
+		}
+	}
+	return false
+}
+
+// AddProtectedWatchProjectIgnore records that every file named name below root
+// is ignored and persists the store. A pair already in the list is a no-op.
+func (s *Store) AddProtectedWatchProjectIgnore(root, name string) error {
+	if s == nil {
+		return fmt.Errorf("prefs: nil store")
+	}
+	root = canonicalPath(root)
+	if root == "" || !validProjectName(name) {
+		return fmt.Errorf("prefs: invalid project ignore root=%q name=%q", root, name)
+	}
+	for _, ignore := range s.ProtectedWatchProjectIgnores {
+		if ignore.Root == root && ignore.Name == name {
+			return nil
+		}
+	}
+	s.ProtectedWatchProjectIgnores = append(s.ProtectedWatchProjectIgnores, ProtectedWatchProjectIgnore{
+		Root: root,
+		Name: name,
+	})
+	return Save(s)
+}
+
+// MatchesProjectIgnore reports whether path is a file named name below root.
+// Both sides are canonicalised, so a symlinked worktree matches the root it
+// really lives in, and the separator boundary keeps /repo-other out of /repo.
+func MatchesProjectIgnore(root, name, path string) bool {
+	if root == "" || !validProjectName(name) {
+		return false
+	}
+	path = canonicalPath(path)
+	if filepath.Base(path) != name {
+		return false
+	}
+	root = canonicalPath(root)
+	if root == "" {
+		return false
+	}
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// validProjectName accepts a plain file basename, not a path fragment.
+func validProjectName(name string) bool {
+	return name != "" && name != "." && name != ".." && name == filepath.Base(name)
+}
+
+// canonicalPath resolves symlinks in the deepest existing ancestor and
+// re-grafts the remaining tail, so a path that does not exist yet still maps
+// /var/... to /private/var/... on macOS. It returns "" for an empty input.
+func canonicalPath(path string) string {
+	if path == "" {
+		return ""
+	}
+	path = filepath.Clean(path)
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		return resolved
+	}
+	dir, tail := filepath.Dir(path), filepath.Base(path)
+	for dir != "/" && dir != "." {
+		if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+			return filepath.Join(resolved, tail)
+		}
+		dir, tail = filepath.Dir(dir), filepath.Join(filepath.Base(dir), tail)
+	}
+	return path
 }
 
 // GlobalDir returns the directory holding user-global omac preferences.

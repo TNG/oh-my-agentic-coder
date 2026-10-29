@@ -14,46 +14,50 @@
 
 ## 2. Git-root resolution
 
-- [ ] 2.1 Add a resolver that runs
-      `git -C <workdir> rev-parse --path-format=absolute --git-common-dir`
-      with a bounded timeout, a clean `GIT_*` environment, and
-      `GIT_TERMINAL_PROMPT=0`.
-- [ ] 2.2 Map the common git dir to the main repository root, with
-      `--show-toplevel` only as a fallback for a normal checkout.
-- [ ] 2.3 Canonicalise the root and reject it unless the workdir is the root or
-      lies below it. That containment check is the security boundary.
-- [ ] 2.4 Cache the result per watch; resolve lazily on the first dialog.
-- [ ] 2.5 Tests: normal repo, linked worktree, nested repo/submodule, non-git,
-      bare repo, missing/failing/timeout git, forged root outside the workdir.
+- [x] 2.1 Add a resolver that runs
+      `git -C <workdir> rev-parse --path-format=absolute --git-common-dir
+      --git-dir --show-toplevel`
+      with a bounded timeout, a clean `GIT_DIR`/`GIT_WORK_TREE`/`GIT_COMMON_DIR`
+      environment, and `GIT_TERMINAL_PROMPT=0`.
+- [x] 2.2 Map the common git dir to the main repository root; use
+      `--show-toplevel` for submodules and separate git dirs.
+- [x] 2.3 Canonicalise the root and reject it unless the workdir is the root or
+      lies below it. That containment check is the security boundary and keeps
+      `{root, name}` matching simple. A worktree outside the repository gets no
+      project option.
+- [x] 2.4 Cache the result per watch; resolve lazily on the first dialog.
+- [x] 2.5 Tests: normal repo, linked worktree under `.worktrees/<name>`, nested
+      repo, submodule, non-git, bare repo, missing/failing/timeout git, forged
+      `.git`, symlinked workdir.
 
 ## 3. Persistence
 
-- [ ] 3.1 Add `ProtectedWatchProjectIgnore{Root, Name}` and
+- [x] 3.1 Add `ProtectedWatchProjectIgnore{Root, Name}` and
       `ProtectedWatchProjectIgnores` to `internal/prefs`.
-- [ ] 3.2 Match a path when it is below the canonical root and its basename
+- [x] 3.2 Match a path when it is below the canonical root and its basename
       equals `Name`; enforce the separator boundary.
-- [ ] 3.3 Dedupe `(root, name)` and keep the atomic `0600` write.
-- [ ] 3.4 Tests: round-trip, dedupe, sibling root, wrong name, symlinked root,
+- [x] 3.3 Dedupe `(root, name)` and keep the atomic `0600` write.
+- [x] 3.4 Tests: round-trip, dedupe, sibling root, wrong name, symlinked root,
       missing prefs file.
 
 ## 4. Dialog
 
-- [ ] 4.1 Add `Ignore every <name> in this project (<repo>)` only when the
+- [x] 4.1 Add `Ignore every <name> in this project (<repo>)` only when the
       root is known and the path is under it.
-- [ ] 4.2 Order options: keep, exact paths, batch, project. The project option
+- [x] 4.2 Order options: keep, exact paths, batch, project. The project option
       is last because it is the broadest.
-- [ ] 4.3 A project choice removes only the matching name under that root and
+- [x] 4.3 A project choice removes only the matching name under that root and
       leaves other names and other roots in the dialog.
-- [ ] 4.4 Never generate a global basename option.
-- [ ] 4.5 Tests: option order, presence/absence, persistence, a simulated new
+- [x] 4.4 Never generate a global basename option.
+- [x] 4.5 Tests: option order, presence/absence, persistence, a simulated new
       `.worktrees/<other>` path, no `all projects` label.
 
 ## 5. Docs and verification
 
-- [ ] 5.1 Update `docs/security.md` with the project scope, the git-root rule,
+- [x] 5.1 Update `docs/security.md` with the project scope, the git-root rule,
       and the trade-off.
-- [ ] 5.2 State that an ignored file stays protected at launch and in the audit
+- [x] 5.2 State that an ignored file stays protected at launch and in the audit
       log.
-- [ ] 5.3 Run `go build ./...`, `go vet`, and the focused unit tests; the full
+- [x] 5.3 Run `go build ./...`, `go vet`, and the focused unit tests; the full
       `internal/cli` suite needs a host that can write `/tmp` and
       `~/.config/omac`.

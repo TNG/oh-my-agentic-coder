@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -63,6 +65,12 @@ type protectedWatch struct {
 	// ignored mirrors the prefs list plus any exception whose save failed,
 	// so the same file never prompts twice in one session.
 	ignored map[string]bool
+	// workdir is the session workdir; projectRoot is resolved from it
+	// lazily on the first dialog. projectRootTried keeps a failed or
+	// non-git resolution from running git again for every tick.
+	workdir          string
+	projectRoot      string
+	projectRootTried bool
 }
 
 // startProtectedWatch mirrors the sandboxed child's deny-pattern walk
@@ -71,9 +79,9 @@ type protectedWatch struct {
 // the kernel mask is fixed at launch. Each tick's new paths arrive as
 // one batch, so a worktree setup that creates several dotenv files at
 // once pops one decision dialog instead of one per file. The dialog can
-// remember an exact file ("ignore permanently"), which is stored in the
-// user-global prefs; the path stays protected at launch and only the
-// repeated warning is skipped.
+// remember an exact file, or a basename for the whole git project, which
+// is stored in the user-global prefs; the file stays protected at launch
+// and only the repeated warning is skipped.
 //
 // Every path is tagged into the facade's protected set so
 // GET /sandbox/denied answers honestly, and audit-logged even when the
@@ -114,6 +122,7 @@ func startProtectedWatch(a audit.Auditor, checker *sandboxrun.ProtectedPathSet, 
 		notify:  netprompt.Notify,
 		prefs:   store,
 		ignored: map[string]bool{},
+		workdir: workdir,
 	}
 	go func() {
 		defer close(w.exited)
@@ -144,7 +153,8 @@ func (w *protectedWatch) observe(paths []string, checker *sandboxrun.ProtectedPa
 		if a != nil {
 			a.Emit(audit.ControlMutation("protected-file-watch", path, "created mid-session; readable until restart"))
 		}
-		if w.ignored[path] || (w.prefs != nil && w.prefs.IgnoresProtectedPath(path)) {
+		if w.ignored[path] || (w.prefs != nil &&
+			(w.prefs.IgnoresProtectedPath(path) || w.prefs.IgnoresProtectedProjectPath(path))) {
 			continue
 		}
 		fresh = append(fresh, path)
@@ -159,6 +169,7 @@ const (
 	keepWarning exceptionKind = iota
 	ignoreExactPath
 	ignoreAllListed
+	ignoreProjectName
 )
 
 type exceptionChoice struct {
@@ -173,19 +184,20 @@ type exceptionChoice struct {
 // the default.
 func (w *protectedWatch) askExceptions(paths []string) []string {
 	remaining := append([]string(nil), paths...)
+	root, hasRoot := w.projectRootForDialog()
 	notified := false
 	for len(remaining) > 0 {
 		shown := remaining
 		if len(shown) > maxAlertPaths {
 			shown = shown[:maxAlertPaths]
 		}
-		options, choices := protectedExceptionOptions(shown, len(remaining))
+		options, choices := protectedExceptionOptions(shown, remaining, root, hasRoot)
 		if !notified {
 			title, _ := protectedBatchNotice(remaining)
 			w.sendNotify(title, "A decision dialog is waiting: ignore a protected-file warning permanently, or keep it.")
 			notified = true
 		}
-		title, message := protectedExceptionPrompt(remaining)
+		title, message := protectedExceptionPrompt(remaining, root, hasRoot)
 		ctx, cancel := context.WithTimeout(w.ctx, protectedDialogTimeout)
 		choice, err := w.choose(ctx, title, message, options)
 		cancel()
@@ -213,9 +225,60 @@ func (w *protectedWatch) askExceptions(paths []string) []string {
 		case ignoreExactPath:
 			w.ignoreProtectedPath(selected.value)
 			remaining = removePath(remaining, selected.value)
+		case ignoreProjectName:
+			matched := projectIgnoreMatches(remaining, root, selected.value)
+			w.ignoreProjectPaths(root, selected.value, matched)
+			remaining = removePaths(remaining, matched)
 		}
 	}
 	return nil
+}
+
+// projectRootForDialog resolves the git root once per watch. A failed or
+// non-git resolution is cached too, so every tick does not spawn git again.
+func (w *protectedWatch) projectRootForDialog() (string, bool) {
+	if w.projectRootTried {
+		return w.projectRoot, w.projectRoot != ""
+	}
+	w.projectRootTried = true
+	if w.workdir == "" {
+		return "", false
+	}
+	root, ok := resolveGitProjectRoot(w.workdir)
+	if !ok {
+		return "", false
+	}
+	w.projectRoot = root
+	return root, true
+}
+
+// projectIgnoreMatches returns the paths covered by one project choice.
+func projectIgnoreMatches(paths []string, root, name string) []string {
+	var out []string
+	for _, path := range paths {
+		if prefs.MatchesProjectIgnore(root, name, path) {
+			out = append(out, path)
+		}
+	}
+	return out
+}
+
+// ignoreProjectPaths marks the affected paths in memory even when the prefs
+// write fails, so a read-only config dir cannot turn one click into a dialog
+// loop.
+func (w *protectedWatch) ignoreProjectPaths(root, name string, matched []string) {
+	if w.ignored == nil {
+		w.ignored = map[string]bool{}
+	}
+	for _, path := range matched {
+		w.ignored[path] = true
+	}
+	if w.prefs == nil {
+		return
+	}
+	if err := w.prefs.AddProtectedWatchProjectIgnore(root, name); err != nil {
+		w.recordNotice(fmt.Sprintf("could not save protected-file project exception for %s: %v", stripControlChars(name), err))
+	}
 }
 
 // ignoreProtectedPath records a permanent exact-path exception and mirrors it
@@ -235,16 +298,17 @@ func (w *protectedWatch) ignoreProtectedPath(path string) {
 }
 
 // protectedExceptionOptions builds the dialog choices from narrow to broad,
-// after the safe default: keep, one exact file each, one basename each, then
-// the whole batch. choices maps the displayed labels back to their scope.
-func protectedExceptionOptions(paths []string, total int) ([]string, map[string]exceptionChoice) {
+// after the safe default: keep, one exact file each, the whole batch, then one
+// basename per project. choices maps the displayed labels back to their scope.
+func protectedExceptionOptions(shown, remaining []string, root string, hasRoot bool) ([]string, map[string]exceptionChoice) {
+	total := len(remaining)
 	keep := fmt.Sprintf("Keep warning for %d file", total)
 	if total != 1 {
 		keep += "s"
 	}
 	options := []string{keep}
 	choices := map[string]exceptionChoice{keep: {kind: keepWarning}}
-	for _, path := range paths {
+	for _, path := range shown {
 		label := "Ignore this file permanently: " + stripControlChars(path)
 		options = append(options, label)
 		choices[label] = exceptionChoice{kind: ignoreExactPath, value: path}
@@ -254,20 +318,60 @@ func protectedExceptionOptions(paths []string, total int) ([]string, map[string]
 		options = append(options, label)
 		choices[label] = exceptionChoice{kind: ignoreAllListed}
 	}
+	for _, name := range projectIgnoreNames(remaining, root, hasRoot) {
+		label := fmt.Sprintf("Ignore every %s in this project (%s)",
+			stripControlChars(name), stripControlChars(filepath.Base(root)))
+		options = append(options, label)
+		choices[label] = exceptionChoice{kind: ignoreProjectName, value: name}
+	}
 	return options, choices
+}
+
+// maxProjectNames bounds the project-scoped options one dialog offers. A
+// worktree burst can create many distinct basenames; the exact paths and the
+// batch choice still cover the rest.
+const maxProjectNames = 4
+
+// projectIgnoreNames returns the unique basenames under root, sorted for a
+// stable dialog. Only names that would really match are offered.
+func projectIgnoreNames(paths []string, root string, hasRoot bool) []string {
+	if !hasRoot || root == "" {
+		return nil
+	}
+	seen := map[string]bool{}
+	var names []string
+	for _, path := range paths {
+		name := filepath.Base(canonicalPath(path))
+		if seen[name] || !prefs.MatchesProjectIgnore(root, name, path) {
+			continue
+		}
+		seen[name] = true
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	if len(names) > maxProjectNames {
+		names = names[:maxProjectNames]
+	}
+	return names
 }
 
 // protectedExceptionPrompt is the dialog body. It states the one trade-off a
 // user needs to decide: ignored files stay protected at launch, but a new one
 // stays readable without a notice until restart.
-func protectedExceptionPrompt(paths []string) (title, message string) {
+func protectedExceptionPrompt(paths []string, root string, hasRoot bool) (title, message string) {
 	title = "omac: protected file created"
 	if len(paths) != 1 {
 		title = "omac: protected files created"
 	}
-	return title, fmt.Sprintf(
-		"%d protected-pattern %s created during this session and %s readable by the agent until omac restarts. Ignoring a file skips this warning for that exact path in future sessions; the file is still protected at launch. Choose a file to ignore permanently, or keep the warning.",
+	message = fmt.Sprintf(
+		"%d protected-pattern %s created during this session and %s readable by the agent until omac restarts. Ignoring a file skips this warning in future sessions; the file is still protected at launch. Choose an exception, or keep the warning.",
 		len(paths), plural(len(paths), "file was", "files were"), plural(len(paths), "is", "are"))
+	if hasRoot {
+		message += fmt.Sprintf(
+			" Project scope: %s, including every worktree of this repository.",
+			stripControlChars(root))
+	}
+	return title, message
 }
 
 func plural(n int, one, many string) string {
@@ -281,6 +385,21 @@ func removePath(paths []string, remove string) []string {
 	out := paths[:0]
 	for _, path := range paths {
 		if path != remove {
+			out = append(out, path)
+		}
+	}
+	return out
+}
+
+// removePaths removes every path in remove, preserving the order of the rest.
+func removePaths(paths, remove []string) []string {
+	drop := make(map[string]bool, len(remove))
+	for _, path := range remove {
+		drop[path] = true
+	}
+	out := paths[:0]
+	for _, path := range paths {
+		if !drop[path] {
 			out = append(out, path)
 		}
 	}

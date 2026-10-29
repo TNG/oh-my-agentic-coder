@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -208,7 +210,7 @@ func TestAskExceptionsFallsBackWhenDialogFails(t *testing.T) {
 }
 
 func TestProtectedExceptionOptions(t *testing.T) {
-	options, choices := protectedExceptionOptions([]string{"/a/.env"}, 1)
+	options, choices := protectedExceptionOptions([]string{"/a/.env"}, []string{"/a/.env"}, "", false)
 	if len(options) != 2 || options[0] != "Keep warning for 1 file" ||
 		options[1] != "Ignore this file permanently: /a/.env" {
 		t.Fatalf("options = %v", options)
@@ -216,7 +218,7 @@ func TestProtectedExceptionOptions(t *testing.T) {
 	if c := choices["Ignore this file permanently: /a/.env"]; c.kind != ignoreExactPath || c.value != "/a/.env" {
 		t.Fatalf("exact choice = %+v", c)
 	}
-	options, choices = protectedExceptionOptions([]string{"/a/.env", "/b/.env"}, 2)
+	options, choices = protectedExceptionOptions([]string{"/a/.env", "/b/.env"}, []string{"/a/.env", "/b/.env"}, "", false)
 	if options[len(options)-1] != "Ignore all 2 files permanently" {
 		t.Fatalf("all option should be last, got %v", options)
 	}
@@ -224,6 +226,114 @@ func TestProtectedExceptionOptions(t *testing.T) {
 		t.Fatalf("all choice = %+v", c)
 	}
 }
+
+func writeProtectedFile(t *testing.T, root, rel string) string {
+	t.Helper()
+	path := filepath.Join(root, rel)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestProtectedExceptionOptionsProjectLast(t *testing.T) {
+	root := t.TempDir()
+	paths := []string{
+		writeProtectedFile(t, root, ".worktrees/a/.env.local"),
+		writeProtectedFile(t, root, ".worktrees/b/.env.local"),
+		writeProtectedFile(t, root, ".worktrees/a/.env"),
+	}
+	options, choices := protectedExceptionOptions(paths, paths, root, true)
+	if len(options) < 3 {
+		t.Fatalf("options = %v", options)
+	}
+	if options[len(options)-2] != "Ignore every .env in this project ("+filepath.Base(root)+")" ||
+		options[len(options)-1] != "Ignore every .env.local in this project ("+filepath.Base(root)+")" {
+		t.Fatalf("project options must be last and sorted, got %v", options)
+	}
+	for _, option := range options {
+		if strings.Contains(option, "all projects") {
+			t.Fatalf("global option must not exist: %q", option)
+		}
+	}
+	if c := choices[options[len(options)-1]]; c.kind != ignoreProjectName || c.value != ".env.local" {
+		t.Fatalf("project choice = %+v", c)
+	}
+}
+
+func TestAskExceptionsProjectChoice(t *testing.T) {
+	root := t.TempDir()
+	initRepo(t, root)
+	a := writeProtectedFile(t, root, ".worktrees/a/.env.local")
+	b := writeProtectedFile(t, root, ".worktrees/b/.env.local")
+	other := writeProtectedFile(t, root, ".worktrees/a/.env")
+	w, _ := newExceptionWatch(t, func(options []string) string {
+		for _, option := range options {
+			if strings.HasPrefix(option, "Ignore every .env.local in this project") {
+				return option
+			}
+		}
+		t.Fatalf("project option missing from %v", options)
+		return ""
+	})
+	w.workdir = root
+	kept := w.askExceptions([]string{a, b, other})
+	if len(kept) != 1 || kept[0] != other {
+		t.Fatalf("kept = %v, want only %s", kept, other)
+	}
+	store, err := prefs.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(store.ProtectedWatchProjectIgnores) != 1 {
+		t.Fatalf("project exceptions = %v", store.ProtectedWatchProjectIgnores)
+	}
+	if !store.IgnoresProtectedProjectPath(b) {
+		t.Fatal("a sibling worktree path must match the project exception")
+	}
+	if store.IgnoresProtectedProjectPath(other) {
+		t.Fatal("a different basename must stay reported")
+	}
+}
+
+func TestProjectExceptionCoversNewWorktreeAndKeepsAudit(t *testing.T) {
+	root := t.TempDir()
+	initRepo(t, root)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	store, err := prefs.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AddProtectedWatchProjectIgnore(root, ".env.local"); err != nil {
+		t.Fatal(err)
+	}
+	w := &protectedWatch{prefs: store, ignored: map[string]bool{}, workdir: root}
+	auditor := &recordingAuditor{}
+	checker := sandboxrun.UnrestrictedProtectedPathSet()
+	newWorktreePath := writeProtectedFile(t, root, ".worktrees/not-seen-yet/.env.local")
+	fresh := w.observe([]string{newWorktreePath}, checker, auditor)
+	if len(fresh) != 0 {
+		t.Fatalf("fresh = %v, want none", fresh)
+	}
+	if len(auditor.events) != 1 {
+		t.Fatalf("audit events = %d, want one", len(auditor.events))
+	}
+	if _, ok := checker.IsProtected(newWorktreePath); !ok {
+		t.Fatal("an ignored project path must stay in the facade protected set")
+	}
+}
+
+type recordingAuditor struct {
+	events []audit.Event
+}
+
+func (r *recordingAuditor) Emit(ev audit.Event) { r.events = append(r.events, ev) }
+func (r *recordingAuditor) Close() error        { return nil }
+func (r *recordingAuditor) RunID() string       { return "" }
+func (r *recordingAuditor) NextSeq() uint64     { return 0 }
 
 func TestStartProtectedWatchSkipsNonNative(t *testing.T) {
 	if w := startProtectedWatch(audit.Nop(), nil, sandboxPlan{Name: "nono"}, nil, "/workdir", sandboxrun.WatchTuning{}); w != nil {

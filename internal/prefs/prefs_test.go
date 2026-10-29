@@ -87,3 +87,104 @@ func TestProtectedWatchIgnoreRoundTrip(t *testing.T) {
 		t.Fatalf("exceptions = %v, want one", got.ProtectedWatchIgnore)
 	}
 }
+
+func TestProtectedWatchProjectIgnoreRoundTrip(t *testing.T) {
+	isolate(t)
+	root := t.TempDir()
+	path := filepath.Join(root, ".worktrees", "a", ".env.local")
+	store, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if store.IgnoresProtectedProjectPath(path) {
+		t.Fatal("fresh store must not ignore a project path")
+	}
+	if err := store.AddProtectedWatchProjectIgnore(root, ".env.local"); err != nil {
+		t.Fatalf("AddProtectedWatchProjectIgnore: %v", err)
+	}
+	// Idempotent.
+	if err := store.AddProtectedWatchProjectIgnore(root, ".env.local"); err != nil {
+		t.Fatalf("second add: %v", err)
+	}
+	got, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.ProtectedWatchProjectIgnores) != 1 {
+		t.Fatalf("project exceptions = %v, want one", got.ProtectedWatchProjectIgnores)
+	}
+	if !got.IgnoresProtectedProjectPath(path) {
+		t.Fatalf("path did not round-trip: %v", got.ProtectedWatchProjectIgnores)
+	}
+	if got.IgnoresProtectedProjectPath(filepath.Join(root, "a", ".env")) {
+		t.Fatal("a different basename must not match")
+	}
+	if got.IgnoresProtectedPath(path) {
+		t.Fatal("a project exception must not become an exact-path exception")
+	}
+}
+
+func TestProtectedWatchProjectIgnoreBoundary(t *testing.T) {
+	isolate(t)
+	root := t.TempDir()
+	store, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AddProtectedWatchProjectIgnore(root, ".env.local"); err != nil {
+		t.Fatal(err)
+	}
+	sibling := root + "-other"
+	if store.IgnoresProtectedProjectPath(filepath.Join(sibling, ".env.local")) {
+		t.Fatal("a sibling directory with the same prefix must keep the warning")
+	}
+}
+
+func TestProtectedWatchProjectIgnoreSymlinkedRoot(t *testing.T) {
+	isolate(t)
+	base := t.TempDir()
+	root := filepath.Join(base, "repo")
+	if err := os.MkdirAll(filepath.Join(root, "a"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, "a", ".env.local")
+	if err := os.WriteFile(path, []byte("secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(base, "link")
+	if err := os.Symlink(root, link); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+	store, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AddProtectedWatchProjectIgnore(link, ".env.local"); err != nil {
+		t.Fatal(err)
+	}
+	if !store.IgnoresProtectedProjectPath(filepath.Join(link, "a", ".env.local")) {
+		t.Fatal("a symlinked worktree must match the canonical root")
+	}
+	if !store.IgnoresProtectedProjectPath(path) {
+		t.Fatal("the canonical path must match too")
+	}
+}
+
+func TestProtectedWatchProjectIgnoreRejectsBadName(t *testing.T) {
+	isolate(t)
+	store, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AddProtectedWatchProjectIgnore(t.TempDir(), "sub/.env"); err == nil {
+		t.Fatal("a name with a separator must be rejected")
+	}
+	if err := store.AddProtectedWatchProjectIgnore(t.TempDir(), ""); err == nil {
+		t.Fatal("an empty name must be rejected")
+	}
+	for _, name := range []string{".", ".."} {
+		if err := store.AddProtectedWatchProjectIgnore(t.TempDir(), name); err == nil {
+			t.Fatalf("name %q must be rejected", name)
+		}
+	}
+}
