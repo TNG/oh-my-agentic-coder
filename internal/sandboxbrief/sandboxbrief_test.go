@@ -51,6 +51,20 @@ func TestDefaultNonEmpty(t *testing.T) {
 	}
 }
 
+func TestDefaultExplainsTmpPolicy(t *testing.T) {
+	got := Default()
+	for _, want := range []string{
+		"global `/tmp` is not granted",
+		"current working directory",
+		"`$TMPDIR`",
+		"per-launch temp dir",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("Default() missing %q (the /tmp denial and tmp/-in-cwd scratch rule);\ngot:\n%s", want, got)
+		}
+	}
+}
+
 func TestResolveUsesOverrideWhenSet(t *testing.T) {
 	const custom = "custom briefing text"
 	if got := Resolve(custom); got != custom {
