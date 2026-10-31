@@ -55,7 +55,8 @@ func TestResolveInnerBinaryDirsGrantsEverySymlinkHop(t *testing.T) {
 	root := t.TempDir()
 	head := writeHomebrewChain(t, root)
 
-	got := resolveInnerBinaryDirs([]string{head})
+	// Zero policy: this tests the resolution itself, not grant bounding.
+	got, _ := resolveInnerBinaryDirs([]string{head}, derivedGrantPolicy{})
 
 	cellar := filepath.Join(root, "Cellar", "opencode", "1.18.15")
 	for _, want := range []string{
@@ -76,7 +77,7 @@ func TestResolveInnerBinaryDirsGrantsEverySymlinkHopViaPATH(t *testing.T) {
 	writeHomebrewChain(t, root)
 	t.Setenv("PATH", filepath.Join(root, "bin"))
 
-	got := resolveInnerBinaryDirs([]string{"opencode"})
+	got, _ := resolveInnerBinaryDirs([]string{"opencode"}, derivedGrantPolicy{})
 
 	want := filepath.Join(root, "Cellar", "opencode", "1.18.15", "bin")
 	if !slices.Contains(got, want) {

@@ -1,6 +1,8 @@
 package sandboxrun
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -32,36 +34,64 @@ import (
 // `env` itself — otherwise only `env`'s own directory would be granted and
 // the harness (e.g. a bun/npm-installed opencode) would fail to exec.
 //
-// Returns nil when the command cannot be found or resolved.
-func resolveInnerBinaryDirs(innerArgv []string) []string {
-	dirs := resolveCommandBinaryDirs(innerArgv)
-	if cmd := UnwrapEnv(innerArgv); len(cmd) > 0 && cmd[0] != innerArgv[0] {
-		dirs = append(dirs, resolveCommandBinaryDirs(cmd)...)
+// pol bounds what may be derived: every directory the resolution grants and
+// every path it visits on the way is checked against it (see
+// derivedGrantPolicy), so an inner command the confined process can rewrite
+// cannot extend the next sandbox's read surface. The zero policy performs
+// no checks — the backends pass one derived from the grants.
+//
+// Returns nil when the command cannot be found or resolved. An error means
+// the resolution crossed the policy and the launch must fail closed.
+func resolveInnerBinaryDirs(innerArgv []string, pol derivedGrantPolicy) ([]string, error) {
+	dirs, err := commandBinaryDirs(innerArgv, pol)
+	if err != nil {
+		return nil, err
 	}
+	if cmd := UnwrapEnv(innerArgv); len(cmd) > 0 && cmd[0] != innerArgv[0] {
+		wrapped, werr := commandBinaryDirs(cmd, pol)
+		if werr != nil {
+			return nil, werr
+		}
+		dirs = append(dirs, wrapped...)
+	}
+	return dirs, nil
+}
+
+// resolveCommandBinaryDirs is the unbounded form of commandBinaryDirs for
+// callers that only inspect the resolution (diagnostics, tests): the
+// policy is the zero value, so nothing is refused. Returns nil when argv
+// is empty or unresolvable.
+func resolveCommandBinaryDirs(argv []string) []string {
+	dirs, _ := commandBinaryDirs(argv, derivedGrantPolicy{})
 	return dirs
 }
 
-// resolveCommandBinaryDirs is the core resolution for a single command argv
+// commandBinaryDirs is the core resolution for a single command argv
 // (no env-wrapper handling): the directory of every hop of the symlink chain
 // from the PATH entry to the real file, plus shebang interpreter dirs.
-// Returns nil when argv is empty or unresolvable.
-func resolveCommandBinaryDirs(argv []string) []string {
+// Returns nil when argv is empty or unresolvable. pol bounds the
+// derivation; an error means it crossed the policy.
+func commandBinaryDirs(argv []string, pol derivedGrantPolicy) ([]string, error) {
 	if len(argv) == 0 {
-		return nil
+		return nil, nil
 	}
 	resolved := lookPathAbs(argv[0])
 	if resolved == "" {
-		return nil
+		return nil, nil
 	}
-	dirs := symlinkChainDirs(resolved)
+	dirs, hops := walkSymlinkChain(resolved)
 	if real, rerr := filepath.EvalSymlinks(resolved); rerr == nil {
 		if interp := shebangInterpreter(real); interp != "" {
-			if idirs := resolveInterpreterDirs(interp); len(idirs) > 0 {
-				dirs = append(dirs, idirs...)
-			}
+			idirs, ihops := resolveInterpreterChain(interp)
+			dirs = append(dirs, idirs...)
+			hops = append(hops, ihops...)
 		}
 	}
-	return withPrefixSupportDirs(dirs)
+	dirs = withPrefixSupportDirs(dirs)
+	if err := refuseDerivedGrants(dirs, hops, pol); err != nil {
+		return nil, err
+	}
+	return dirs, nil
 }
 
 // maxSymlinkHops bounds the chain walk. Well above any real install layout
@@ -69,9 +99,209 @@ func resolveCommandBinaryDirs(argv []string) []string {
 // cyclic or adversarial chain terminates here rather than spinning.
 const maxSymlinkHops = 32
 
-// symlinkChainDirs returns the directory of every hop of the symlink chain
-// starting at path: the path itself, each intermediate link target, and the
-// real file at the end. Duplicates are removed, order preserved.
+// derivedGrantPolicy bounds what a per-launch derivation may grant. The
+// inner command's resolution (commandBinaryDirs) hands every candidate
+// directory and every path it visited to refuseDerivedGrants, which applies
+// the two rules below.
+//
+// The zero policy performs no checks: legacy callers that only inspect a
+// resolution (protectedInnerBinaryWarning, tests) have no grants to compare
+// against. The backends pass one built from the grants, which always has
+// at least the shared temp roots as writable.
+type derivedGrantPolicy struct {
+	// writable holds the roots the confined process can change: write and
+	// allow grants plus the shared temp roots. A command, symlink hop, or
+	// shebang interpreter visited there is tainted: its content at launch
+	// time is whatever the agent last wrote, so it must not pick what the
+	// sandbox grants read access to.
+	writable []string
+	// granted holds the paths the profile already allows explicitly.
+	// Deriving a directory covered by them adds nothing the user has not
+	// already granted, so only the remainder (the extension) is subject
+	// to the rules.
+	granted []string
+	// homes holds the home directories a derivation must not silently
+	// extend into; see homeSensitiveDirs.
+	homes []string
+}
+
+// derivedGrantPolicyForGrants builds the bounding policy from a grant set.
+// The workdir is deliberately NOT treated as writable on its own: a
+// read-only workdir cannot host a rewritten command, and ResolveGrants
+// already maps writable workdirs into AllowPaths.
+func derivedGrantPolicyForGrants(g *Grants) derivedGrantPolicy {
+	pol := derivedGrantPolicy{
+		writable: append(append([]string{}, g.WritePaths...), g.AllowPaths...),
+		granted:  append(append(append([]string{}, g.ReadPaths...), g.WritePaths...), g.AllowPaths...),
+	}
+	pol.writable = append(pol.writable, sharedTempRoots()...)
+	userHome, uerr := os.UserHomeDir()
+	if uerr != nil {
+		userHome = ""
+	}
+	for _, h := range []string{g.HomeDir, userHome} {
+		if h != "" && !slices.Contains(pol.homes, h) {
+			h = filepath.Clean(h)
+			if !slices.Contains(pol.homes, h) {
+				pol.homes = append(pol.homes, h)
+			}
+		}
+	}
+	return pol
+}
+
+// sharedTempRoots returns the shared temp locations: the directory the
+// process was configured with (TMPDIR and friends) plus the conventional
+// defaults. Every process on the host can typically write there, so they
+// count as agent-writable surface.
+func sharedTempRoots() []string {
+	var roots []string
+	for _, r := range []string{os.TempDir(), "/tmp", "/var/tmp"} {
+		if r == "" {
+			continue
+		}
+		r = filepath.Clean(r)
+		if !slices.Contains(roots, r) {
+			roots = append(roots, r)
+		}
+	}
+	return roots
+}
+
+// homeSensitiveDirs are the trees below a home directory that hold
+// credentials or personal config: deriving read access into them off the
+// back of a command resolution would expose secrets the profile never
+// granted. Dot-cache is deliberately absent: version managers (mise and
+// friends) keep their runtimes there, and those must keep resolving.
+// Library is the macOS user tree: Application Support holds app tokens
+// and keychain material. The home directory itself never sits in this
+// list because sensitiveUnderHome treats it as sensitive directly. All
+// other first-level dirs (~/bin, ~/homebrew, unlisted dotdirs) stay
+// derivable: they are legitimate shim locations.
+var homeSensitiveDirs = []string{
+	".config", ".ssh", ".gnupg", ".aws", ".azure", ".gcloud", ".kube",
+	".docker", ".pki", ".terraform.d", ".credentials", ".secrets", ".keys",
+	".password-store", ".1password", "Library",
+}
+
+// refuseDerivedGrants applies the derivedGrantPolicy to a resolution: dirs
+// is what the resolution wants to grant, hops is every path it visited on
+// the way (the command file itself, each symlink target, each shebang
+// interpreter).
+//
+// Two rules, in order:
+//
+//   - Taint: a hop inside agent-writable surface means the command's
+//     content is attacker-chosen. Granting anything NEW on its say-so
+//     would let the agent pick what the sandbox reads, so the launch fails
+//     when the derivation extends past the explicit grants. It is the
+//     extension that is refused, not the derivation: a tainted command
+//     whose every dir is already granted stays launchable, because
+//     nothing new is exposed.
+//   - Home boundary: a NEW dir that is itself a home or sits below one
+//     of its sensitive trees is refused even for untainted commands. A
+//     user's home and its config/credential roots must be granted by the
+//     user, not derived.
+//
+// A nil policy (no writable surface, no homes) skips both rules.
+func refuseDerivedGrants(dirs, hops []string, pol derivedGrantPolicy) error {
+	if len(pol.writable) == 0 && len(pol.homes) == 0 {
+		return nil
+	}
+	var ext []string
+	for _, d := range dirs {
+		if !pathCoveredByAny(d, pol.granted) {
+			ext = append(ext, d)
+		}
+	}
+	if len(ext) == 0 {
+		return nil
+	}
+	for _, hop := range hops {
+		if !pathCoveredByAny(hop, pol.writable) {
+			continue
+		}
+		var b strings.Builder
+		b.WriteString("omac can't start the sandbox: the inner command lives where the agent can write\n" +
+			"(the workdir or a temp dir), and launching it would have to grant read access to\n" +
+			"paths the profile does not already allow:\n")
+		for _, d := range ext {
+			fmt.Fprintf(&b, "  %s\n", d)
+		}
+		b.WriteString("\n" +
+			"The command's content at launch time is whatever the agent last wrote there, so\n" +
+			"launching it must not choose what the sandbox can read. Move the command outside\n" +
+			"the agent-writable area, or grant the paths it needs explicitly (filesystem.read /\n" +
+			"--read).")
+		return errors.New(b.String())
+	}
+	for _, d := range ext {
+		if home, sensitive := sensitiveUnderHome(d, pol.homes); sensitive {
+			//lint:ignore ST1005 multi-paragraph user-facing message, punctuation is intentional
+			return fmt.Errorf(
+				"omac can't start the sandbox: launching this command would derive read access\n"+
+					"to %s\n"+
+					"inside the home tree %s, which holds config or credentials. omac only\n"+
+					"derives access there when you grant it explicitly (filesystem.read / --read)\n"+
+					"or move the tool outside the home tree.", d, home)
+		}
+	}
+	return nil
+}
+
+// sensitiveUnderHome reports whether dir is one of the homes itself or
+// sits below one of a home's sensitive trees, returning that home when it
+// does. Both sides are compared in their literal and symlink-resolved
+// spellings: a derived dir can arrive from EvalSymlinks, while a home can
+// be spelled the way the user wrote it.
+func sensitiveUnderHome(dir string, homes []string) (string, bool) {
+	for _, home := range homes {
+		for _, hf := range pathForms(home) {
+			for _, df := range pathForms(dir) {
+				if sensitiveBelowHome(df, hf) {
+					return home, true
+				}
+			}
+		}
+	}
+	return "", false
+}
+
+// sensitiveBelowHome reports whether dir is home itself or sits below
+// one of home's sensitive trees (homeSensitiveDirs).
+func sensitiveBelowHome(dir, home string) bool {
+	rel, err := filepath.Rel(home, dir)
+	if err != nil || rel == ".." ||
+		strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return false
+	}
+	if rel == "." {
+		return true
+	}
+	first := rel
+	if i := strings.IndexByte(rel, filepath.Separator); i >= 0 {
+		first = rel[:i]
+	}
+	return slices.Contains(homeSensitiveDirs, first)
+}
+
+// pathCoveredByAny reports whether path lies at or under any of roots,
+// comparing every combination of literal and symlink-resolved forms.
+func pathCoveredByAny(path string, roots []string) bool {
+	for _, r := range roots {
+		if pathCoveredBy(path, r) {
+			return true
+		}
+	}
+	return false
+}
+
+// walkSymlinkChain walks the symlink chain starting at path and returns two
+// lists: the directory of every hop (what the sandbox must be granted), and
+// every path it visited on the way (the path itself, each intermediate link
+// target, and the real file the chain ends at). The visited paths feed the
+// derived-grant taint check: content the agent can rewrite at any hop makes
+// the whole derivation untrustworthy. Duplicates removed, order preserved.
 //
 // Granting only the two ENDS of the chain — which is what taking Dir(path)
 // and Dir(EvalSymlinks(path)) amounts to — is not enough, because the kernel
@@ -92,21 +322,28 @@ const maxSymlinkHops = 32
 // chain instead of hardening argv[0] alone: passing an absolute path would
 // only have moved the failure from ENOENT to EPERM.
 //
-// Note it is the DIRECTORIES that are returned, not the links: a subpath
+// Note the first list holds the DIRECTORIES, not the links: a subpath
 // grant on the directory is what lets the kernel both read the link and stat
 // its siblings, matching how the rest of this file grants access.
-func symlinkChainDirs(path string) []string {
-	var dirs []string
-	seen := map[string]bool{}
-	add := func(d string) {
-		if !seen[d] {
-			seen[d] = true
+func walkSymlinkChain(path string) (dirs, hops []string) {
+	seenDirs := map[string]bool{}
+	seenHops := map[string]bool{}
+	addDir := func(d string) {
+		if !seenDirs[d] {
+			seenDirs[d] = true
 			dirs = append(dirs, d)
+		}
+	}
+	addHop := func(p string) {
+		if !seenHops[p] {
+			seenHops[p] = true
+			hops = append(hops, p)
 		}
 	}
 	cur := path
 	for range maxSymlinkHops {
-		add(filepath.Dir(cur))
+		addHop(cur)
+		addDir(filepath.Dir(cur))
 		fi, err := os.Lstat(cur)
 		if err != nil || fi.Mode()&os.ModeSymlink == 0 {
 			break
@@ -125,8 +362,17 @@ func symlinkChainDirs(path string) []string {
 	// never produces. EvalSymlinks on the end of the chain closes that gap;
 	// it is a no-op for the common all-real-directories case.
 	if real, rerr := filepath.EvalSymlinks(path); rerr == nil {
-		add(filepath.Dir(real))
+		addHop(real)
+		addDir(filepath.Dir(real))
 	}
+	return dirs, hops
+}
+
+// symlinkChainDirs is walkSymlinkChain's directory list alone, for callers
+// that only inspect the grant surface (diagnostics, tests) and have no
+// policy to check the visited paths against.
+func symlinkChainDirs(path string) []string {
+	dirs, _ := walkSymlinkChain(path)
 	return dirs
 }
 
@@ -288,8 +534,12 @@ func unresolvedInnerCommandWarning(innerArgv []string) string {
 // quietly routing around it. Silently resolving the binary out of the denied
 // tree would launch it in defiance of the profile, which is not omac's call
 // to make in a security boundary.
+//
+// The zero policy keeps this a pure inspection: it has no grant set to check
+// against, and the launch-time enforcement happens in the backends.
 func protectedInnerBinaryWarning(innerArgv []string, protected []string) string {
-	for _, dir := range resolveInnerBinaryDirs(innerArgv) {
+	dirs, _ := resolveInnerBinaryDirs(innerArgv, derivedGrantPolicy{})
+	for _, dir := range dirs {
 		for _, p := range protected {
 			if pathCoveredBy(dir, p) {
 				return "omac sandbox: warning: this profile denies " + p +
@@ -390,22 +640,26 @@ func shebangInterpreter(path string) string {
 	return interp
 }
 
-// resolveInterpreterDirs resolves an interpreter (bare name like "node" or
+// resolveInterpreterChain resolves an interpreter (bare name like "node" or
 // absolute path like "/usr/bin/node") on the host and returns the dirs to
-// grant: the interpreter's dir and its symlink-resolved dir.
-func resolveInterpreterDirs(interp string) []string {
+// grant: the interpreter's dir and its symlink-resolved dir. The second list
+// holds every path the resolution visited — the interpreter file, each
+// symlink hop to it, the real file at the end — which feeds the derived-grant
+// taint check (see derivedGrantPolicy).
+func resolveInterpreterChain(interp string) (dirs, hops []string) {
 	resolved, err := exec.LookPath(interp)
 	if err != nil {
 		if filepath.IsAbs(interp) {
-			if _, err := os.Stat(interp); err == nil {
+			if _, serr := os.Stat(interp); serr == nil {
+				hops = []string{interp}
 				d := filepath.Dir(interp)
 				if isBroadGrant(d) {
-					return nil
+					return nil, hops
 				}
-				return withPrefixSupportDirs([]string{d})
+				return withPrefixSupportDirs([]string{d}), hops
 			}
 		}
-		return nil
+		return nil, nil
 	}
 	if abs, aerr := filepath.Abs(resolved); aerr == nil {
 		resolved = abs
@@ -413,8 +667,17 @@ func resolveInterpreterDirs(interp string) []string {
 	// Chain-walked for the same reason the harness itself is: an interpreter
 	// reached through a version manager (nvm, mise, asdf) is a multi-hop
 	// symlink, and a middle hop left ungranted fails the exec of every script
-	// that names it — see symlinkChainDirs.
-	return withPrefixSupportDirs(symlinkChainDirs(resolved))
+	// that names it — see walkSymlinkChain.
+	idirs, ihops := walkSymlinkChain(resolved)
+	return withPrefixSupportDirs(idirs), ihops
+}
+
+// resolveInterpreterDirs is resolveInterpreterChain's directory list alone,
+// for callers that only inspect the grant surface (diagnostics, tests) and
+// have no policy to check the visited paths against.
+func resolveInterpreterDirs(interp string) []string {
+	dirs, _ := resolveInterpreterChain(interp)
+	return dirs
 }
 
 // prefixBinDirNames are the conventional executable subdirectories of a Unix

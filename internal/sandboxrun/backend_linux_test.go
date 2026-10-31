@@ -15,16 +15,24 @@ import (
 )
 
 func TestResolveInnerBinaryDirs(t *testing.T) {
+	// The zero policy keeps this a resolution-only test: with no grants to
+	// check against, nothing is refused and the output is unchanged. The
+	// backends own the policy enforcement.
+	resolve := func(argv []string) []string {
+		dirs, _ := resolveInnerBinaryDirs(argv, derivedGrantPolicy{})
+		return dirs
+	}
+
 	// Empty / blank argv resolves to nothing.
-	if got := resolveInnerBinaryDirs(nil); got != nil {
+	if got := resolve(nil); got != nil {
 		t.Errorf("nil argv = %v, want nil", got)
 	}
-	if got := resolveInnerBinaryDirs([]string{""}); got != nil {
+	if got := resolve([]string{""}); got != nil {
 		t.Errorf("blank argv[0] = %v, want nil", got)
 	}
 
 	// A name not on PATH resolves to nothing rather than guessing.
-	if got := resolveInnerBinaryDirs([]string{"definitely-not-a-real-binary-xyz"}); got != nil {
+	if got := resolve([]string{"definitely-not-a-real-binary-xyz"}); got != nil {
 		t.Errorf("missing binary = %v, want nil", got)
 	}
 
@@ -60,7 +68,7 @@ func TestResolveInnerBinaryDirs(t *testing.T) {
 	wantBoth := append([]string{shimDir, realDir}, interpDirs...)
 
 	// Resolve via an absolute path to the shim (uses host PATH for sh).
-	if got := resolveInnerBinaryDirs([]string{shim}); !reflect.DeepEqual(got, wantBoth) {
+	if got := resolve([]string{shim}); !reflect.DeepEqual(got, wantBoth) {
 		t.Errorf("symlinked binary dirs = %v, want %v", got, wantBoth)
 	}
 
@@ -69,7 +77,7 @@ func TestResolveInnerBinaryDirs(t *testing.T) {
 	// path so the interpreter is still found via os.Stat, not PATH.
 	t.Setenv("PATH", shimDir)
 	wantPath := append([]string{shimDir, realDir}, interpDirs...)
-	if got := resolveInnerBinaryDirs([]string{"opencode"}); !reflect.DeepEqual(got, wantPath) {
+	if got := resolve([]string{"opencode"}); !reflect.DeepEqual(got, wantPath) {
 		t.Errorf("PATH-resolved binary dirs = %v, want %v", got, wantPath)
 	}
 
@@ -83,7 +91,7 @@ func TestResolveInnerBinaryDirs(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantPlain := append([]string{plainDir}, interpDirs...)
-	if got := resolveInnerBinaryDirs([]string{plainBin}); !reflect.DeepEqual(got, wantPlain) {
+	if got := resolve([]string{plainBin}); !reflect.DeepEqual(got, wantPlain) {
 		t.Errorf("plain binary dirs = %v, want %v", got, wantPlain)
 	}
 
@@ -92,7 +100,7 @@ func TestResolveInnerBinaryDirs(t *testing.T) {
 	// command's dirs must still be granted, or a bun/npm-installed opencode
 	// fails to exec inside the sandbox. Grant the shim via PATH lookup.
 	t.Setenv("PATH", shimDir+string(os.PathListSeparator)+"/usr/bin:/bin")
-	got := resolveInnerBinaryDirs([]string{"env", "FOO=bar", "BAR=baz", "opencode"})
+	got := resolve([]string{"env", "FOO=bar", "BAR=baz", "opencode"})
 	for _, want := range []string{shimDir, realDir} {
 		if !slices.Contains(got, want) {
 			t.Errorf("env-wrapped dirs = %v, missing wrapped-command dir %q", got, want)
@@ -111,7 +119,18 @@ func TestBuildChildArgvGrantsEnvWrappedHarnessDir(t *testing.T) {
 
 	// Shim in one dir, symlink target ("harness") in a different subtree,
 	// mirroring bun (~/.bun/bin/opencode -> …/opencode-ai/bin/opencode.exe).
-	root := t.TempDir()
+	// Staged below the package directory, outside every shared temp root:
+	// BuildChildArgv bounds the derived grants by the writable surface, and
+	// a t.TempDir() fixture (under TMPDIR) would count as agent-writable
+	// and the derivation would be refused.
+	root, err := os.MkdirTemp(".", "omac-harness-dir-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	if root, err = filepath.Abs(root); err != nil {
+		t.Fatal(err)
+	}
 	realDir := filepath.Join(root, "pkg", "bin")
 	if err := os.MkdirAll(realDir, 0o755); err != nil {
 		t.Fatal(err)
