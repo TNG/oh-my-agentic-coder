@@ -145,7 +145,7 @@ Child env is built from scratch (`env_clear` semantics):
 | `listen_port` | child may bind/listen | blanket `(allow network-bind)(allow network-inbound)` — Seatbelt cannot filter by port; coarse by design | `BindTcp(port)` exact |
 | `allow_tcp_connect` | direct outbound to any host on this port (e.g. SSH 22) | `(allow network-outbound (remote tcp "*:port"))` | `ConnectTcp(port)` exact |
 | `open_port` | localhost connect+bind (bridge TCP port) | outbound `localhost:port` + blanket bind | `ConnectTcp`+`BindTcp` exact |
-| (implicit) proxy port | only outbound route for everything else | `(allow network-outbound (remote tcp "localhost:proxyport"))` | `ConnectTcp(proxyport)` |
+| (implicit) proxy port | only outbound route for everything else | `(allow network-outbound (remote tcp "localhost:proxyport"))` | `ConnectTcp(proxyport)` — port-scoped only: reachable on any host address, not just loopback (see Risks) |
 | bridge Unix socket | AF_UNIX connect | explicit SBPL allow for the socket path (fixes nono's blanket `deny network*` issue) | plain file access via bind mount; Landlock net rules don't affect AF_UNIX |
 
 ### D8b: Profile directory, first-start scaffolding, pages file
@@ -170,6 +170,7 @@ Profiles live in `~/.config/omac/sandbox-profiles/<name>.json` (NOT `profiles/`,
 - [Seatbelt cannot restrict bind by port] → `listen_port` is coarse on macOS (any port once one is granted) — identical to nono today; documented in the spec.
 - [`allow_tcp_connect` is host-unconstrained] → e.g. port 22 allows SSH to *any* host (data exfil channel). Same as nono; profiles should keep this list minimal. Documented.
 - [Landlock ABI v4 floor (kernel ≥ 6.7) without nono's seccomp fallback] → Older kernels fail closed; `enforcement: "env-only"` escape hatch with loud warning. Acceptable: our Linux users run recent kernels.
+- [Landlock net rules are port-scoped, not address-scoped] → Accepted risk (kernel limitation, not a config choice). A connect grant for the proxy port (or any `open_port`) allows that port on every host address with a listener, not only loopback. The alternative, a network namespace (`--unshare-net` plus per-session relay plumbing), was rejected in D2 because it breaks the proxy-per-session model that keeps filtering and prompting in the unsandboxed supervisor. Compensating controls: host-firewall egress rules can restrict outbound TCP on the granted ports to loopback, and avoiding `open_port` removes the user-configured half of the reach. The audit surfaces a LOW address-blind notice on every kernel-enforced Linux launch (`doctor`, `provenance --check`), and a kernel-level regression test pins the limitation. Future fix: move the proxy transport to a Unix-domain socket (the mediation layer already supports AF_UNIX end-to-end), which removes the TCP grant altogether; recorded in docs/security.md as an accepted gap until then.
 - [bwrap external dependency on Linux] → Single, ubiquitous distro package (used by Flatpak); `omac doctor` verifies it.
 - [Proxy filters by CONNECT hostname, not SNI] → A malicious in-sandbox process could CONNECT to an allowed host:443 then send a different SNI. Same limitation as nono's design; mitigated by default-deny + prompt, DNS pinning, and metadata hard-denies.
 - [Prompt dialogs need a GUI session] → Headless: `on_unavailable` applies (default deny). Same as nono.
