@@ -180,7 +180,9 @@ func TestSecurityDerivedGrantsRefuseAgentWritableInnerCommand(t *testing.T) {
 // ends in trusted content; a chain entirely outside the writable
 // surface keeps resolving the way version-manager shims do; and no
 // derivation may cross into the home/config boundary without an
-// explicit user grant.
+// explicit user grant. The boundary covers the home root itself and the
+// Library tree, while unlisted first-level dirs (~/homebrew, ~/.local)
+// must keep resolving: real shims live there.
 func TestSecuritySymlinkChainGrantBounded(t *testing.T) {
 	requireSandboxBackend(t)
 
@@ -227,6 +229,54 @@ func TestSecuritySymlinkChainGrantBounded(t *testing.T) {
 		}
 		if _, err := BuildChildArgv(g, []string{hop}); err == nil {
 			t.Errorf("spawn argv was built while deriving a grant below the user's config root %q; expected a refusal", secretDir)
+		}
+	})
+
+	t.Run("command file in the home root is refused", func(t *testing.T) {
+		tool := filepath.Join(home, "tool")
+		writeExecScript(t, tool, "#!/bin/sh\n")
+		if _, err := BuildChildArgv(g, []string{tool}); err == nil {
+			t.Errorf("spawn argv was built while deriving a grant for the home root %q itself; expected a refusal", home)
+		}
+	})
+
+	t.Run("symlink hop in the home root is refused", func(t *testing.T) {
+		target := filepath.Join(installs, "real-home")
+		writeExecScript(t, target, "#!/bin/sh\n")
+		hop := filepath.Join(home, "home-hop")
+		if err := os.Symlink(target, hop); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := BuildChildArgv(g, []string{hop}); err == nil {
+			t.Errorf("spawn argv was built while deriving a grant for the home root %q from a symlink hop in it; expected a refusal", home)
+		}
+	})
+
+	t.Run("the Library tree needs an explicit grant", func(t *testing.T) {
+		libDir := filepath.Join(home, "Library", "app-support")
+		if err := os.MkdirAll(libDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		tool := filepath.Join(libDir, "tool")
+		writeExecScript(t, tool, "#!/bin/sh\n")
+		if _, err := BuildChildArgv(g, []string{tool}); err == nil {
+			t.Errorf("spawn argv was built while deriving a grant for the user's Library tree %q; expected a refusal", libDir)
+		}
+	})
+
+	t.Run("unlisted first-level home dirs still resolve", func(t *testing.T) {
+		for _, first := range []string{"homebrew", ".local"} {
+			binDir := filepath.Join(home, first, "bin")
+			if err := os.MkdirAll(binDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			tool := filepath.Join(binDir, "tool")
+			writeExecScript(t, tool, "#!/bin/sh\n")
+			argv, err := BuildChildArgv(g, []string{tool})
+			if err != nil {
+				t.Fatalf("a tool below the unlisted first-level home dir %q must keep resolving, got: %v", binDir, err)
+			}
+			requireDerivedBind(t, argv, binDir)
 		}
 	})
 }

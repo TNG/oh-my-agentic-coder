@@ -173,10 +173,15 @@ func sharedTempRoots() []string {
 // back of a command resolution would expose secrets the profile never
 // granted. Dot-cache is deliberately absent: version managers (mise and
 // friends) keep their runtimes there, and those must keep resolving.
+// Library is the macOS user tree: Application Support holds app tokens
+// and keychain material. The home directory itself never sits in this
+// list because sensitiveUnderHome treats it as sensitive directly. All
+// other first-level dirs (~/bin, ~/homebrew, unlisted dotdirs) stay
+// derivable: they are legitimate shim locations.
 var homeSensitiveDirs = []string{
 	".config", ".ssh", ".gnupg", ".aws", ".azure", ".gcloud", ".kube",
 	".docker", ".pki", ".terraform.d", ".credentials", ".secrets", ".keys",
-	".password-store", ".1password",
+	".password-store", ".1password", "Library",
 }
 
 // refuseDerivedGrants applies the derivedGrantPolicy to a resolution: dirs
@@ -193,9 +198,10 @@ var homeSensitiveDirs = []string{
 //     extension that is refused, not the derivation: a tainted command
 //     whose every dir is already granted stays launchable, because
 //     nothing new is exposed.
-//   - Home boundary: a NEW dir below a home's sensitive trees is refused
-//     even for untainted commands. A user's config root must be granted
-//     by the user, not derived.
+//   - Home boundary: a NEW dir that is itself a home or sits below one
+//     of its sensitive trees is refused even for untainted commands. A
+//     user's home and its config/credential roots must be granted by the
+//     user, not derived.
 //
 // A nil policy (no writable surface, no homes) skips both rules.
 func refuseDerivedGrants(dirs, hops []string, pol derivedGrantPolicy) error {
@@ -235,32 +241,48 @@ func refuseDerivedGrants(dirs, hops []string, pol derivedGrantPolicy) error {
 			return fmt.Errorf(
 				"omac can't start the sandbox: launching this command would derive read access\n"+
 					"to %s\n"+
-					"below the home directory %s, in a tree that holds config or credentials. omac\n"+
-					"only derives access there when you grant it explicitly (filesystem.read / --read)\n"+
+					"inside the home tree %s, which holds config or credentials. omac only\n"+
+					"derives access there when you grant it explicitly (filesystem.read / --read)\n"+
 					"or move the tool outside the home tree.", d, home)
 		}
 	}
 	return nil
 }
 
-// sensitiveUnderHome reports whether dir sits below one of a home
-// directory's sensitive trees, returning that home when it does.
+// sensitiveUnderHome reports whether dir is one of the homes itself or
+// sits below one of a home's sensitive trees, returning that home when it
+// does. Both sides are compared in their literal and symlink-resolved
+// spellings: a derived dir can arrive from EvalSymlinks, while a home can
+// be spelled the way the user wrote it.
 func sensitiveUnderHome(dir string, homes []string) (string, bool) {
 	for _, home := range homes {
-		rel, err := filepath.Rel(home, dir)
-		if err != nil || rel == ".." || rel == "." ||
-			strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			continue
-		}
-		first := rel
-		if i := strings.IndexByte(rel, filepath.Separator); i >= 0 {
-			first = rel[:i]
-		}
-		if slices.Contains(homeSensitiveDirs, first) {
-			return home, true
+		for _, hf := range pathForms(home) {
+			for _, df := range pathForms(dir) {
+				if sensitiveBelowHome(df, hf) {
+					return home, true
+				}
+			}
 		}
 	}
 	return "", false
+}
+
+// sensitiveBelowHome reports whether dir is home itself or sits below
+// one of home's sensitive trees (homeSensitiveDirs).
+func sensitiveBelowHome(dir, home string) bool {
+	rel, err := filepath.Rel(home, dir)
+	if err != nil || rel == ".." ||
+		strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return false
+	}
+	if rel == "." {
+		return true
+	}
+	first := rel
+	if i := strings.IndexByte(rel, filepath.Separator); i >= 0 {
+		first = rel[:i]
+	}
+	return slices.Contains(homeSensitiveDirs, first)
 }
 
 // pathCoveredByAny reports whether path lies at or under any of roots,
