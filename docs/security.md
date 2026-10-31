@@ -53,6 +53,29 @@ pins the resolved address and dials only that, and `network.deny_domain` blocks
 specific internal hosts. Recorded as an accepted gap, not a defect to be
 re-reported.
 
+**Accepted gap, Linux only: kernel port rules cannot be scoped to an address.**
+On Linux, kernel enforcement uses Landlock TCP rules, and those rules grant a
+*port number*, not a port on a specific address: the rule engine has no
+address dimension. Two grants are affected:
+
+- The proxy port, which every filtered launch must grant so the agent can
+  reach the proxy. The agent can also connect to that port on any other host
+  address that happens to have something listening on it.
+- Every port in `network.open_port` and any port a profile opens for local
+  services, with the same reach.
+
+This is a limitation of the kernel rule engine, not of omac's configuration:
+no Landlock rule available today can scope a port grant to `127.0.0.1`. You
+can compensate on the host side: a host firewall can restrict outbound TCP on
+those ports to loopback, and avoiding `open_port` entirely removes that half of
+the reach (the proxy port grant remains until the transport changes). The
+planned fix is architectural: move the proxy transport to a Unix-domain
+socket, which the mediation layer already supports end-to-end and which needs
+no TCP port grant at all. Until then, `omac doctor` and `omac provenance
+--check` print a low-severity notice stating this reach on every Linux launch
+that uses kernel enforcement. Recorded as an accepted gap, not a defect to be
+re-reported.
+
 ### Filesystem
 
 An agent with broad filesystem access can read SSH keys, cloud credentials, or

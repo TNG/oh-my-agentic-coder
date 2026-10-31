@@ -1,11 +1,25 @@
 package profileaudit
 
 import (
+	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
 )
+
+// isImplicitProxyPortNotice reports whether f is the LOW notice the
+// Linux audit emits for the sandbox's own proxy port grant (pinned by
+// proxy_port_notice_security_test.go). Tests that assert "no findings"
+// for a minimal profile expect exactly this one finding on Linux; it
+// never fires on other platforms.
+func isImplicitProxyPortNotice(f *Finding) bool {
+	return runtime.GOOS == "linux" &&
+		f.Severity == SeverityLow &&
+		f.Category == CatNetwork &&
+		f.Field == "network.mode" &&
+		strings.Contains(strings.ToLower(f.Message), "address-blind")
+}
 
 // cleanProfile returns a minimal profile with no grants, ready for tests
 // to populate specific fields. It carries an explicit env allowlist so it
@@ -19,10 +33,20 @@ func cleanProfile() *sandboxprofile.Profile {
 	}
 }
 
+// A default filtered+kernel profile on Linux yields exactly one
+// finding: the LOW notice for the implicit proxy port grant (see
+// proxy_port_notice_security_test.go). Any other finding is a
+// regression.
 func TestCheck_EmptyProfileNoFindings(t *testing.T) {
 	findings := Check(cleanProfile())
-	if len(findings) != 0 {
-		t.Errorf("empty profile should produce no findings; got %d: %+v", len(findings), findings)
+	var unexpected []Finding
+	for i := range findings {
+		if !isImplicitProxyPortNotice(&findings[i]) {
+			unexpected = append(unexpected, findings[i])
+		}
+	}
+	if len(unexpected) != 0 {
+		t.Errorf("empty profile should produce no findings beyond the implicit proxy port notice; got %+v", unexpected)
 	}
 }
 
@@ -247,7 +271,11 @@ func TestCheck_FSGrantWildcardGlobIsMedium(t *testing.T) {
 	if len(findings) == 0 {
 		t.Fatal("wildcard glob '~/.*' should produce findings for known secret basename globs")
 	}
-	for _, f := range findings {
+	for i := range findings {
+		f := &findings[i]
+		if isImplicitProxyPortNotice(f) {
+			continue
+		}
 		if f.Severity != SeverityMedium {
 			t.Errorf("wildcard-glob finding %q severity = %q; want medium", f.Value, f.Severity)
 		}
@@ -278,7 +306,11 @@ func TestCheck_FSGrantBroadGlobIsMedium(t *testing.T) {
 	if len(findings) == 0 {
 		t.Fatal("broad grant '.' should produce findings for known secret globs")
 	}
-	for _, f := range findings {
+	for i := range findings {
+		f := &findings[i]
+		if isImplicitProxyPortNotice(f) {
+			continue
+		}
 		if f.Severity != SeverityMedium {
 			t.Errorf("broad-glob finding %q severity = %q; want medium", f.Value, f.Severity)
 		}
@@ -405,9 +437,16 @@ func TestCheck_NetworkCleanDomainNoFinding(t *testing.T) {
 	p := cleanProfile()
 	p.Network.AllowDomain = []string{"github.com"}
 	findings := Check(p)
-	for _, f := range findings {
-		if f.Category == CatNetwork {
+	for i := range findings {
+		f := &findings[i]
+		if f.Category == CatNetwork && f.Field == "network.allow_domain" {
 			t.Errorf("clean domain should not be flagged; got %+v", f)
+		}
+		// On Linux a default filtered+kernel profile keeps its LOW
+		// implicit proxy port notice; any other network finding is
+		// unexpected.
+		if f.Category == CatNetwork && !isImplicitProxyPortNotice(f) {
+			t.Errorf("unexpected network finding for clean profile: %+v", f)
 		}
 	}
 }

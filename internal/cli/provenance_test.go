@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -375,7 +376,18 @@ func TestRunProvenance_CheckDefaultProfileClean(t *testing.T) {
 		t.Fatalf("code = %d; stdout=%q stderr=%q", code, out, errOut)
 	}
 	out, _ := read()
-	if !strings.Contains(out, "no findings") {
+	// On Linux the audit flags the default filtered+kernel shape with
+	// one LOW notice (the implicit proxy port grant is address-blind);
+	// LOW does not gate the exit code, and the profile itself stays
+	// clean of any other finding. Elsewhere the notice never fires.
+	if runtime.GOOS == "linux" {
+		if !strings.Contains(out, "address-blind") {
+			t.Errorf("default Linux launch should print the address-blind proxy port notice; got %q", out)
+		}
+		if strings.Contains(out, "[HIGH]") || strings.Contains(out, "[MEDIUM]") {
+			t.Errorf("clean profile should produce no high/medium findings; got %q", out)
+		}
+	} else if !strings.Contains(out, "no findings") {
 		t.Errorf("clean profile should print '(no findings)'; got %q", out)
 	}
 }
@@ -399,8 +411,24 @@ func TestRunProvenance_CheckJSONEmptyArray(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
 		t.Fatalf("invalid JSON %q: %v", out, err)
 	}
-	if len(parsed) != 0 {
-		t.Errorf("clean profile should produce empty JSON array; got %d items", len(parsed))
+	// On Linux the default filtered+kernel shape yields exactly one
+	// item: the LOW address-blind notice for the implicit proxy port
+	// grant. Elsewhere the array is empty.
+	want := 0
+	if runtime.GOOS == "linux" {
+		want = 1
+	}
+	if len(parsed) != want {
+		t.Fatalf("clean profile should produce %d finding(s); got %d: %s", want, len(parsed), out)
+	}
+	if want == 1 {
+		f := parsed[0]
+		if f["severity"] != "low" || f["field"] != "network.mode" {
+			t.Errorf("expected the LOW network.mode notice; got %v", f)
+		}
+		if !strings.Contains(strings.ToLower(f["message"].(string)), "address-blind") {
+			t.Errorf("notice message should state the address-blind reach; got %v", f["message"])
+		}
 	}
 }
 
