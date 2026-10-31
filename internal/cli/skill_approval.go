@@ -141,7 +141,9 @@ func refusalNotice(refusal error) string {
 
 // brokenApprovalRoute is the facade route an unapproved skill is mounted as:
 // a broken (502) stub naming the remedy, so a probe is answered instead of
-// 404'd — and no sidecar is spawned.
+// 404'd — and no sidecar is spawned. The stub is intentionally left unowned:
+// it claims no approved mount, and being replaceable is what lets the same
+// skill's owned live route take over after a host approval.
 func brokenApprovalRoute(mount, name, skillDir string, refusal error) facade.Route {
 	return facade.Route{
 		Mount:    mount,

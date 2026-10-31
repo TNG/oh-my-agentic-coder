@@ -180,7 +180,9 @@ func (r *startReloader) markNotReady(name string, st *notReadySkill) {
 // so a probe gets an actionable status instead of a 404, a manifest entry so the
 // agent can see it, and one stderr line per distinct reason for the human.
 // Deliberately does NOT markMounted, so a later reload promotes the skill once
-// the cause is fixed.
+// the cause is fixed. The stub route is likewise deliberately unowned: it
+// claims no approved mount, and its replaceability is what lets the same
+// skill's owned live route take over on a later reload.
 func (r *startReloader) reportNotReady(name, absDir string, st *notReadySkill) {
 	r.facade.AddRoute(facade.Route{
 		Mount: st.Mount, Skill: name, SkillDir: absDir,
@@ -471,7 +473,9 @@ func (r *startReloader) reload() []string {
 		// the current on-disk code is host-approved (see
 		// internal/skilltrust) and runs from the immutable approval snapshot,
 		// not the workdir. Mount a broken route (no markMounted, so a later
-		// reload after `omac register` can still bring it up).
+		// reload after `omac register` can still bring it up). The stub is
+		// intentionally unowned so that promotion can replace it; a live
+		// route owned by an approved skill is never displaced by it.
 		snapDir, refusal := approvedSpawnDir(e.Name, absDir, "")
 		if refusal != nil {
 			r.facade.AddRoute(brokenApprovalRoute(mount, e.Name, absDir, refusal))

@@ -678,6 +678,11 @@ func runLaunch(env *Env, opts launchOpts) int {
 			maxBody = lim.MaxBodyBytes
 			idle = time.Duration(lim.IdleTimeoutSecs) * time.Second
 		}
+		// Owner makes the mount-ownership guard in internal/facade
+		// protect this route: a later registration of the same mount by
+		// a different (or unowned) skill is refused. Serve mode and the
+		// reload path stamp the same field; start must not be the
+		// exception, or its routes are silently replaceable.
 		routes = append(routes, facade.Route{
 			Mount:        mount,
 			UpstreamPort: r.Port,
@@ -685,11 +690,15 @@ func runLaunch(env *Env, opts launchOpts) int {
 			IdleTimeout:  idle,
 			Skill:        r.Name,
 			SkillDir:     approved[i].AbsDir,
+			Owner:        r.Name,
 		})
 		mounts = append(mounts, mount)
 	}
 	// Mount unapproved skills as broken routes so a probe gets an
 	// actionable 502 instead of a silent 404 (and they never spawn).
+	// These stubs are deliberately unowned: the skill has no approved
+	// route yet, and a later host approval must be able to replace the
+	// stub with the owned live route (the facade's empty→owned upgrade).
 	routes = append(routes, refusedRoutes...)
 
 	// 7. Open both listeners (Unix socket + ephemeral 127.0.0.1 TCP) and
