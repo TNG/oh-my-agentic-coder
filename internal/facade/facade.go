@@ -225,9 +225,12 @@ func (f *Facade) SetAuditor(a audit.Auditor) {
 // directory's skills lazily and to swap a stub route for a live one once
 // credentials arrive.
 //
-// When both the existing route and the new route carry a non-empty Owner,
-// a replacement is refused if the owners differ — this prevents a forged
-// skill from claiming the mount of an already-running, approved skill.
+// When the existing route carries a non-empty Owner, a replacement is
+// refused unless it carries the same Owner: neither a route owned by a
+// different skill nor an unowned one (e.g. a not-ready placeholder) may
+// displace a live owned route. The upgrade direction stays open: an owned
+// route may replace an unowned stub, which is how a mount goes live once
+// approval or credentials arrive.
 func (f *Facade) AddRoute(r Route) {
 	rr := r
 	f.mu.Lock()
