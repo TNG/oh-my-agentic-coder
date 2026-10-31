@@ -260,7 +260,17 @@ func BuildChildArgv(g *Grants, innerArgv []string) ([]string, error) {
 	// sibling files (shared libs, node runtime) are reachable too. Redundant
 	// grants are harmless (bwrap re-binding under a parent bind is idempotent;
 	// BuildBwrapArgv's dedupe drops only exact-duplicate paths, not overlaps).
-	gz.ReadPaths = append(gz.ReadPaths, resolveInnerBinaryDirs(innerArgv)...)
+	//
+	// The derivation is bounded by the grants (derivedGrantPolicyForGrants):
+	// the inner command frequently lives where the agent can write (the
+	// workdir, a temp dir), and granting read access picked by whatever the
+	// agent last wrote there would let the agent choose what the sandbox can
+	// read. Crossing the boundary fails the launch instead.
+	derived, err := resolveInnerBinaryDirs(innerArgv, derivedGrantPolicyForGrants(&gz))
+	if err != nil {
+		return nil, err
+	}
+	gz.ReadPaths = append(gz.ReadPaths, derived...)
 
 	// Rewrite argv[0] to the symlink-resolved real path so stage2 execs
 	// the real binary directly instead of following a symlink chain inside

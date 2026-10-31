@@ -55,7 +55,16 @@ func BuildChildArgv(g *Grants, innerArgv []string) ([]string, error) {
 		return nil, fmt.Errorf("sandbox home %q is not a directory", home)
 	}
 	gz.HomeDir = home
-	gz.ReadPaths = append(append([]string{}, g.ReadPaths...), resolveInnerBinaryDirs(innerArgv)...)
+	// The derivation is bounded by the grants (derivedGrantPolicyForGrants):
+	// the inner command frequently lives where the agent can write (the
+	// workdir, a temp dir), and granting read access picked by whatever the
+	// agent last wrote there would let the agent choose what the sandbox can
+	// read. Crossing the boundary fails the launch instead.
+	derived, err := resolveInnerBinaryDirs(innerArgv, derivedGrantPolicyForGrants(&gz))
+	if err != nil {
+		return nil, err
+	}
+	gz.ReadPaths = append(append([]string{}, g.ReadPaths...), derived...)
 	profile := GenerateSBPL(&gz)
 	argv := []string{sandboxExecPath, "-p", profile, "--"}
 	argv = append(argv, absoluteInnerArgv(innerArgv)...)
