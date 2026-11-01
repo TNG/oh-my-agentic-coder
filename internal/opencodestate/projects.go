@@ -365,15 +365,9 @@ func defaultDesktopStateDir(home string) string {
 	return filepath.Join(home, ".config", appID)
 }
 
-// desktopGlobalWorktrees extracts project directories from one legacy
-// opencode.global.dat JSON file (pre-1.18 Desktop). See
-// globalStoreWorktrees for the keys harvested.
-func desktopGlobalWorktrees(path string) []string {
-	return globalStoreWorktrees(readGlobalStoreFile(path))
-}
-
-// readGlobalStoreFile loads a legacy opencode.global.dat JSON file as
-// its top-level key -> value map, or nil when it is missing or invalid.
+// readGlobalStoreFile loads a legacy opencode.global.dat JSON file
+// (pre-1.18 Desktop) as its top-level key -> value map, or nil when it
+// is missing or invalid.
 func readGlobalStoreFile(path string) map[string]json.RawMessage {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -386,22 +380,15 @@ func readGlobalStoreFile(path string) map[string]json.RawMessage {
 	return top
 }
 
-// desktopSQLiteWorktrees extracts project directories from the Desktop
-// 1.18+ store: the `state` table of drafts.sqlite, rows with
-// name = 'opencode.global.dat'. Each row's key/value pair is one
-// top-level key/value of the former JSON file, so the rows are folded
-// into the same map and handed to globalStoreWorktrees.
+// readGlobalStoreSQLite loads the Desktop 1.18+ store: the `state`
+// table of drafts.sqlite, rows with name = 'opencode.global.dat'. Each
+// row's key/value pair is one top-level key/value of the former JSON
+// file, so the rows are folded into the same map readGlobalStoreFile
+// returns.
 //
 // The db is opened read-only through the pure-Go driver, so a running
 // Desktop is not disturbed and no sqlite3 binary is needed. Any error
 // (no file, locked, different schema) yields nil.
-func desktopSQLiteWorktrees(path string) []string {
-	return globalStoreWorktrees(readGlobalStoreSQLite(path))
-}
-
-// readGlobalStoreSQLite loads the opencode.global.dat rows of a Desktop
-// 1.18+ drafts.sqlite as a top-level key -> value map, or nil on any
-// error.
 func readGlobalStoreSQLite(path string) map[string]json.RawMessage {
 	if fi, err := os.Stat(path); err != nil || !fi.Mode().IsRegular() {
 		return nil

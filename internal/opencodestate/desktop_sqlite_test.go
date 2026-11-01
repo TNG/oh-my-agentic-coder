@@ -113,7 +113,7 @@ func TestDesktopSQLiteUnexpectedSchema(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "drafts.sqlite"), []byte("not a db"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if got := desktopSQLiteWorktrees(filepath.Join(dir, "drafts.sqlite")); got != nil {
+	if got := readGlobalStoreSQLite(filepath.Join(dir, "drafts.sqlite")); got != nil {
 		t.Errorf("garbage db: got %v", got)
 	}
 	db, err := sql.Open("sqlite", filepath.Join(dir, "other.sqlite"))
@@ -124,7 +124,7 @@ func TestDesktopSQLiteUnexpectedSchema(t *testing.T) {
 		t.Fatal(err)
 	}
 	db.Close()
-	if got := desktopSQLiteWorktrees(filepath.Join(dir, "other.sqlite")); got != nil {
+	if got := readGlobalStoreSQLite(filepath.Join(dir, "other.sqlite")); got != nil {
 		t.Errorf("no state table: got %v", got)
 	}
 }
