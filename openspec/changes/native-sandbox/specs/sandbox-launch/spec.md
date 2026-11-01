@@ -116,7 +116,7 @@ The default cache scope SHALL be `workdir` so that each workdir gets its own iso
 - **THEN** doctor warns that an isolated `CARGO_HOME` will not pick it up, and never reads the file
 
 ### Requirement: OpenCode Desktop folder grants
-`omac serve` SHALL accept a `--for-opencode-desktop` flag. When set, omac SHALL read the project worktrees recorded in the local OpenCode state and grant each existing worktree directory read+write in the sandbox, in addition to the profile's grants. All three OpenCode project stores SHALL be merged, since they drift apart: the JSON storage files under `~/.local/share/opencode/storage/project/`, the `opencode.db` SQLite `project.worktree` column, and the Desktop app's own store (`opencode.global.dat` in the `ai.opencode.desktop` / `ai.opencode.desktop.beta` application data directories) — folders opened in the Desktop UI may exist only in the latter. Within the Desktop store both the saved project list (key `globalSync.project`) and the directories of currently open tabs/windows (key `layout.page`, field `lastProjectSession`) SHALL be harvested, since an open tab is not necessarily a saved project. The pseudo-project with worktree `/` MUST be ignored. Worktrees nested inside another recorded worktree SHALL be collapsed into the ancestor (granting the parent already covers the child); path-prefix siblings (e.g. `/a/proj` and `/a/proj-2`) MUST NOT be collapsed. The list of granted worktrees SHALL be logged at startup.
+`omac serve` SHALL accept a `--for-opencode-desktop` flag. When set, omac SHALL read the project worktrees recorded in the local OpenCode state and grant each existing worktree directory read+write in the sandbox, in addition to the profile's grants. All three OpenCode project stores SHALL be merged, since they drift apart: the JSON storage files under `~/.local/share/opencode/storage/project/`, the `opencode.db` SQLite `project.worktree` column, and the Desktop app's own store `opencode.global.dat` in the `ai.opencode.desktop` / `ai.opencode.desktop.beta` application data directories — folders opened in the Desktop UI may exist only in the latter. The Desktop store SHALL be read in both of its physical forms: the legacy JSON file `opencode.global.dat`, and (Desktop 1.18+) the rows of the `state` table in `drafts.sqlite` whose `name` is `opencode.global.dat`. Within the Desktop store both the saved project list (key `globalSync.project`) and the directories of currently open tabs/windows (key `layout.page`, field `lastProjectSession`) SHALL be harvested, since an open tab is not necessarily a saved project. For every extra server added in the Desktop on a loopback host (e.g. an `omac serve` sandbox at `http://localhost:4095`), its project list (key `server`, field `projects.<url>`) and its open tabs (key `<url>` + NUL + `layout.page`) SHALL be harvested too; records of remote servers MUST be ignored, since their paths name folders on another machine. Newer Desktop builds keep only project IDs for an extra server (key `server`, fields `usedProjectIDs.<url>` and `lastProjectID.<url>`). omac SHALL look up each such ID of a loopback server in the agent-writable OpenCode stores (storage JSON, `opencode.db`) and grant the recorded folder only if the folder's own files reproduce the ID the way OpenCode derives it: `sha1("directory:" + path)`, `sha1("git-remote:<host>/<path>")` of the `origin` remote, or the ID cached in the git common directory's `opencode` file. A folder that fails this check, or is a symlink, MUST NOT be granted through its ID. The pseudo-project with worktree `/` MUST be ignored. Worktrees nested inside another recorded worktree SHALL be collapsed into the ancestor (granting the parent already covers the child); path-prefix siblings (e.g. `/a/proj` and `/a/proj-2`) MUST NOT be collapsed. The list of granted worktrees SHALL be logged at startup.
 
 #### Scenario: Desktop projects granted
 - **WHEN** `omac serve --for-opencode-desktop` starts and the OpenCode state lists worktrees `/a` and `/b` (both existing) plus the global `/` record
@@ -125,6 +125,18 @@ The default cache scope SHALL be `workdir` so that each workdir gets its own iso
 #### Scenario: Currently open Desktop tab granted
 - **WHEN** a folder is open as a Desktop tab (present in `layout.page.lastProjectSession`) but is not in the saved `globalSync.project` list
 - **THEN** that folder is still granted read+write
+
+#### Scenario: Desktop 1.18+ SQLite store
+- **WHEN** the Desktop keeps its store in `drafts.sqlite` (no `opencode.global.dat` file) and a folder is open on the extra server `http://localhost:4095`
+- **THEN** that folder is granted read+write, while a folder recorded only for a remote server is not
+
+#### Scenario: Extra server project known only by ID
+- **WHEN** the Desktop lists project ID `X` in `server.usedProjectIDs["http://localhost:4095"]`, and `opencode.db` maps `X` to `~/proj`, a folder without git where `X = sha1("directory:" + ~/proj)`
+- **THEN** `~/proj` is granted read+write, even though it lies inside `$HOME`
+
+#### Scenario: Forged ID mapping rejected
+- **WHEN** an `opencode.db` row maps a trusted Desktop project ID to a folder whose files do not reproduce that ID
+- **THEN** the folder is not granted
 
 #### Scenario: Stale worktree skipped
 - **WHEN** a recorded worktree no longer exists on disk

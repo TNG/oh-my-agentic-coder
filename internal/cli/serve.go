@@ -569,7 +569,12 @@ func runServe(args []string, env *Env) int {
 				return ExitIOError
 			}
 			for _, s := range skipped {
-				fmt.Fprintf(env.Stderr, "omac serve: skipping OpenCode worktree %s (%s)\n", s.Path, s.Reason)
+				// The same folder can be rejected from one source and
+				// granted from another (e.g. via a verified Desktop
+				// project ID); only report folders that stay ungranted.
+				if !pathCoveredBy(s.Path, worktrees) {
+					fmt.Fprintf(env.Stderr, "omac serve: skipping OpenCode worktree %s (%s)\n", s.Path, s.Reason)
+				}
 			}
 			desktopWorktrees = worktrees
 		}
@@ -853,6 +858,16 @@ func serveSkillWorkdirs(launchDir, workdirFlag string, desktopWorktrees []string
 		out = append(out, abs)
 	}
 	return append(out, desktopWorktrees...)
+}
+
+// pathCoveredBy reports whether p equals or lies inside one of dirs.
+func pathCoveredBy(p string, dirs []string) bool {
+	for _, d := range dirs {
+		if p == d || strings.HasPrefix(p, d+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
 }
 
 // injectSandboxDenies splices --deny flags for each harness-declared path the

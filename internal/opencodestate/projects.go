@@ -5,24 +5,31 @@
 // OpenCode persists projects in three places that all drift apart:
 //   - storage JSON files under ~/.local/share/opencode/storage/project/
 //   - the opencode.db SQLite `project` table
-//   - the Desktop app's own store (opencode.global.dat, key
-//     "globalSync.project") under the ai.opencode.desktop[.beta] data
-//     dir — folders opened in the Desktop UI can exist ONLY here.
+//   - the Desktop app's own store "opencode.global.dat" under the
+//     ai.opencode.desktop[.beta] data dir: a JSON file in older
+//     Desktop builds, rows of drafts.sqlite in Desktop 1.18+. Folders
+//     opened in the Desktop UI can exist ONLY here.
 //
-// We read all three (the db via the sqlite3 CLI when available — no
-// driver dependency) and merge. The pseudo-project with worktree "/"
+// We read all three (opencode.db via the sqlite3 CLI when available,
+// drafts.sqlite via the pure-Go driver) and merge. The pseudo-project with worktree "/"
 // (OpenCode's "global" record) is always skipped, as are worktrees
-// that no longer exist.
+// that no longer exist. Projects the Desktop store names only by ID are
+// resolved and verified in project_ids.go.
 package opencodestate
 
 import (
+	"database/sql"
 	"encoding/json"
+	"net"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
+
+	_ "modernc.org/sqlite" // read-only access to the Desktop's drafts.sqlite
 )
 
 // projectRecord is the subset of OpenCode's project JSON we care about.
@@ -40,7 +47,11 @@ type worktreeOrigin int
 
 const (
 	originAgentWritable worktreeOrigin = iota // storage JSON or opencode.db
-	originDesktop                             // Desktop app's opencode.global.dat
+	originDesktop                             // Desktop app's store (opencode.global.dat / drafts.sqlite)
+	// A project the Desktop store names only by ID, whose path was looked
+	// up in the agent-writable sources and then checked against the ID
+	// (see idMatchesWorktree).
+	originVerifiedID
 )
 
 // SkipReason tells why Worktrees rejected a recorded worktree. The
@@ -92,8 +103,9 @@ func storageProjectDir() (string, error) {
 // them, so honoring an in-home record would let it steer a later
 // read+write grant at a path where the user owns every file. Such
 // records are routed into skipped. Records from the Desktop app's own
-// store (outside the sandbox mount) keep the looser isBroadWorktree
-// rule so the Desktop workflow still resolves in-home projects.
+// store (outside the sandbox mount), and paths verified against a
+// project ID from that store, keep the looser isBroadWorktree rule so
+// the Desktop workflow still resolves in-home projects.
 func Worktrees() (worktrees []string, skipped []SkippedWorktree, err error) {
 	storage, err := storageWorktrees()
 	if err != nil {
@@ -137,7 +149,7 @@ func Worktrees() (worktrees []string, skipped []SkippedWorktree, err error) {
 // (ancestor, equal, or strict descendant) because the user owns every
 // file there and DAC offers no protection against a forged record.
 func rejectsForHome(wt, home string, origin worktreeOrigin) bool {
-	if origin == originDesktop {
+	if origin == originDesktop || origin == originVerifiedID {
 		return isBroadWorktree(wt, home)
 	}
 	return isInHome(wt, home)
@@ -218,32 +230,49 @@ func storageWorktrees() ([]worktreeEntry, error) {
 
 // desktopWorktrees reads the OpenCode Desktop app's own state. Folders
 // opened in the Desktop UI may exist only here, not yet in the CLI's
-// storage/db. Two kinds of records are harvested from
-// opencode.global.dat:
-//   - "globalSync.project": the saved/pinned project list.
-//   - "layout.page" -> lastProjectSession: the directories of currently
-//     open tabs/windows, which are NOT necessarily in globalSync.project.
+// storage/db.
 //
-// Both the stable and beta app data dirs are consulted. Best-effort:
-// missing files or unexpected shapes yield nil.
+// The Desktop keeps one logical store named "opencode.global.dat" in
+// one of two physical forms, depending on its version:
+//   - older (Tauri) builds: a JSON file <datadir>/opencode.global.dat;
+//   - Desktop 1.18+ (Electron): rows of the `state` table in
+//     <datadir>/drafts.sqlite with name = 'opencode.global.dat'. The
+//     legacy file is gone after the app's one-time migration.
+//
+// Both forms are read, in the stable and beta app data dirs. See
+// globalStoreWorktrees for which keys are harvested. Projects the store
+// names only by ID are resolved through verifiedProjectWorktrees.
+// Best-effort: missing files or unexpected shapes yield nil.
 func desktopWorktrees() []worktreeEntry {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil
 	}
 	var out []worktreeEntry
+	var ids []string
 	for _, appID := range []string{"ai.opencode.desktop", "ai.opencode.desktop.beta"} {
 		for _, base := range desktopDataDirs(home, appID) {
-			for _, p := range desktopGlobalWorktrees(filepath.Join(base, "opencode.global.dat")) {
-				out = append(out, worktreeEntry{path: p, origin: originDesktop})
+			for _, top := range []map[string]json.RawMessage{
+				readGlobalStoreFile(filepath.Join(base, "opencode.global.dat")),
+				readGlobalStoreSQLite(filepath.Join(base, "drafts.sqlite")),
+			} {
+				for _, p := range globalStoreWorktrees(top) {
+					out = append(out, worktreeEntry{path: p, origin: originDesktop})
+				}
+				ids = append(ids, globalStoreProjectIDs(top)...)
 			}
 		}
+	}
+	for _, p := range verifiedProjectWorktrees(ids) {
+		out = append(out, worktreeEntry{path: p, origin: originVerifiedID})
 	}
 	return out
 }
 
 // desktopDataDirs returns the platform candidates for a desktop app's
-// data directory.
+// data directory: the legacy data dirs plus every Electron userData
+// candidate from desktopStateCandidates (e.g. ~/.config/<id> on Linux),
+// de-duplicated.
 func desktopDataDirs(home, appID string) []string {
 	dirs := []string{
 		filepath.Join(home, "Library", "Application Support", appID), // macOS
@@ -252,7 +281,16 @@ func desktopDataDirs(home, appID string) []string {
 	if xdg := os.Getenv("XDG_DATA_HOME"); xdg != "" {
 		dirs = append(dirs, filepath.Join(xdg, appID))
 	}
-	return dirs
+	dirs = append(dirs, desktopStateCandidates(home, appID)...)
+	seen := map[string]bool{}
+	out := dirs[:0]
+	for _, d := range dirs {
+		if !seen[d] {
+			seen[d] = true
+			out = append(out, d)
+		}
+	}
+	return out
 }
 
 // DesktopStateDir returns the OpenCode Desktop app's data directory —
@@ -327,13 +365,16 @@ func defaultDesktopStateDir(home string) string {
 	return filepath.Join(home, ".config", appID)
 }
 
-// desktopGlobalWorktrees extracts project directories from one
-// opencode.global.dat file: the saved project list ("globalSync.project")
-// plus the directories of currently open tabs ("layout.page" ->
-// lastProjectSession). The top-level values are frequently
-// double-encoded (a JSON string containing JSON); unwrapValue handles
-// both shapes.
+// desktopGlobalWorktrees extracts project directories from one legacy
+// opencode.global.dat JSON file (pre-1.18 Desktop). See
+// globalStoreWorktrees for the keys harvested.
 func desktopGlobalWorktrees(path string) []string {
+	return globalStoreWorktrees(readGlobalStoreFile(path))
+}
+
+// readGlobalStoreFile loads a legacy opencode.global.dat JSON file as
+// its top-level key -> value map, or nil when it is missing or invalid.
+func readGlobalStoreFile(path string) map[string]json.RawMessage {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil
@@ -342,9 +383,79 @@ func desktopGlobalWorktrees(path string) []string {
 	if json.Unmarshal(data, &top) != nil {
 		return nil
 	}
+	return top
+}
+
+// desktopSQLiteWorktrees extracts project directories from the Desktop
+// 1.18+ store: the `state` table of drafts.sqlite, rows with
+// name = 'opencode.global.dat'. Each row's key/value pair is one
+// top-level key/value of the former JSON file, so the rows are folded
+// into the same map and handed to globalStoreWorktrees.
+//
+// The db is opened read-only through the pure-Go driver, so a running
+// Desktop is not disturbed and no sqlite3 binary is needed. Any error
+// (no file, locked, different schema) yields nil.
+func desktopSQLiteWorktrees(path string) []string {
+	return globalStoreWorktrees(readGlobalStoreSQLite(path))
+}
+
+// readGlobalStoreSQLite loads the opencode.global.dat rows of a Desktop
+// 1.18+ drafts.sqlite as a top-level key -> value map, or nil on any
+// error.
+func readGlobalStoreSQLite(path string) map[string]json.RawMessage {
+	if fi, err := os.Stat(path); err != nil || !fi.Mode().IsRegular() {
+		return nil
+	}
+	db, err := sql.Open("sqlite", "file:"+path+"?mode=ro&_pragma=busy_timeout=500")
+	if err != nil {
+		return nil
+	}
+	defer db.Close()
+	rows, err := db.Query(`SELECT key, value FROM state WHERE name = 'opencode.global.dat'`)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	top := map[string]json.RawMessage{}
+	for rows.Next() {
+		var key, value string
+		if rows.Scan(&key, &value) != nil {
+			continue
+		}
+		top[key] = json.RawMessage(value)
+	}
+	if rows.Err() != nil {
+		return nil
+	}
+	return top
+}
+
+// serverScopeSep separates the server URL from the key name in the
+// Desktop's per-server keys, e.g. "http://localhost:4095\x00layout.page".
+const serverScopeSep = "\x00"
+
+// globalStoreWorktrees extracts project directories from the Desktop's
+// "opencode.global.dat" store, given as its top-level key -> value map.
+// Harvested records:
+//
+//  1. "globalSync.project": the saved/pinned project list of the
+//     built-in (local sidecar) server.
+//  2. "layout.page" -> lastProjectSession: directories of open tabs of
+//     the built-in server, which are NOT necessarily pinned.
+//  3. "<server URL>\x00layout.page": the same open-tab record for an
+//     extra server added in the Desktop (e.g. an `omac serve` sandbox
+//     registered as http://localhost:4095). Desktop 1.18+ scopes it per
+//     server this way.
+//  4. "server" -> projects -> <server URL>: the project list per extra
+//     server.
+//
+// Records of remote servers (3 and 4) are ignored: their paths name
+// folders on another machine, so granting a same-named local folder
+// would be wrong. Values are often double-encoded (a JSON string
+// containing JSON); unwrapValue handles both shapes.
+func globalStoreWorktrees(top map[string]json.RawMessage) []string {
 	var out []string
 
-	// 1. Saved/pinned projects.
 	if raw, ok := top["globalSync.project"]; ok {
 		var sync struct {
 			Value []projectRecord `json:"value"`
@@ -356,26 +467,77 @@ func desktopGlobalWorktrees(path string) []string {
 		}
 	}
 
-	// 2. Currently open tabs/windows. layout.page.lastProjectSession is
-	//    a map keyed by directory, each value carrying a "directory"
-	//    field too. Harvest the keys (the directories) directly.
-	if raw, ok := top["layout.page"]; ok {
-		var page struct {
-			LastProjectSession map[string]struct {
-				Directory string `json:"directory"`
-			} `json:"lastProjectSession"`
+	for key, raw := range top {
+		if key == "layout.page" {
+			out = append(out, openTabDirs(raw)...)
+			continue
 		}
-		if json.Unmarshal(unwrapValue(raw), &page) == nil {
-			for dir, sess := range page.LastProjectSession {
-				if sess.Directory != "" {
-					out = append(out, sess.Directory)
-				} else {
-					out = append(out, dir)
+		server, name, scoped := strings.Cut(key, serverScopeSep)
+		if scoped && name == "layout.page" && isLocalServer(server) {
+			out = append(out, openTabDirs(raw)...)
+		}
+	}
+
+	if raw, ok := top["server"]; ok {
+		var srv struct {
+			Projects map[string][]projectRecord `json:"projects"`
+		}
+		if json.Unmarshal(unwrapValue(raw), &srv) == nil {
+			for server, recs := range srv.Projects {
+				if !isLocalServer(server) {
+					continue
+				}
+				for _, rec := range recs {
+					out = append(out, rec.Worktree)
 				}
 			}
 		}
 	}
 	return out
+}
+
+// openTabDirs returns the directories of a layout.page value's
+// lastProjectSession map (keyed by directory, each value carrying a
+// "directory" field too).
+func openTabDirs(raw json.RawMessage) []string {
+	var page struct {
+		LastProjectSession map[string]struct {
+			Directory string `json:"directory"`
+		} `json:"lastProjectSession"`
+	}
+	if json.Unmarshal(unwrapValue(raw), &page) != nil {
+		return nil
+	}
+	var out []string
+	for dir, sess := range page.LastProjectSession {
+		if sess.Directory != "" {
+			out = append(out, sess.Directory)
+		} else {
+			out = append(out, dir)
+		}
+	}
+	return out
+}
+
+// isLocalServer reports whether a Desktop server key names a server on
+// this machine: the built-in one ("local" / "sidecar") or an http(s)
+// URL on a loopback host. Example: "http://localhost:4095" is local,
+// "https://build-box:4096" is not.
+func isLocalServer(server string) bool {
+	switch server {
+	case "local", "sidecar":
+		return true
+	}
+	u, err := url.Parse(server)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
+		return false
+	}
+	host := u.Hostname()
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // isBroadWorktree reports whether wt is too broad to grant read+write:

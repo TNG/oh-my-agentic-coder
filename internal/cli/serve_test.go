@@ -399,6 +399,22 @@ func TestPrepareSandboxDirsRejectsFileTarget(t *testing.T) {
 	}
 }
 
+func TestPathCoveredBy(t *testing.T) {
+	dirs := []string{"/a/proj", "/b"}
+	for p, want := range map[string]bool{
+		"/a/proj":         true,
+		"/a/proj/sub":     true,
+		"/b":              true,
+		"/a/proj-2":       false,
+		"/a":              false,
+		"/c/secret/stuff": false,
+	} {
+		if got := pathCoveredBy(p, dirs); got != want {
+			t.Errorf("pathCoveredBy(%q) = %v, want %v", p, got, want)
+		}
+	}
+}
+
 func TestServerExposureWarning(t *testing.T) {
 	oc, _ := config.LookupHarness("opencode")
 	cc, _ := config.LookupHarness("claude-code")
