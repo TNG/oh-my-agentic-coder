@@ -589,6 +589,7 @@ func runServe(args []string, env *Env) int {
 		// profile's restrictive allow_vars filter. (Control-plane port and
 		// harness runtime dirs are granted inside sandboxServeArgv.)
 		argv = forwardHarnessEnv(env, argv, harness, plan)
+		argv = forwardServerAuthEnv(argv, harness, plan)
 		var ocClass openCodeVersionKind
 		if !learn {
 			argv, ocClass, err = injectOpenCodeProjectDiscovery(argv, extra, harness, inner, plan)
@@ -948,6 +949,20 @@ func planDeniedBaseVars(plan sandboxPlan) []string {
 		return nil
 	}
 	return sandboxprofile.DeniedBaseVars(plan.Policy.Environment.DenyVars)
+}
+
+// forwardServerAuthEnv lets the harness server's own password variable
+// (e.g. OPENCODE_SERVER_PASSWORD) into the sandbox under `omac serve`.
+// Without it the server never sees the user's password and makes up a
+// random one at every start, so clients like OpenCode Desktop must be
+// given a new password after each restart. It is the password of the
+// server running in the sandbox, not a provider key, so forwarding it
+// gives the sandbox nothing it does not already control.
+func forwardServerAuthEnv(argv []string, h config.Harness, plan sandboxPlan) []string {
+	if h.ServerLaunch == nil {
+		return argv
+	}
+	return injectSandboxEnvAllow(argv, []string{h.ServerLaunch.AuthEnvVar}, plan)
 }
 
 // injectSandboxEnvAllow splices --allow-env flags for each harness-declared

@@ -749,6 +749,26 @@ func TestForwardHarnessEnvNoHomeEnvAddsNothing(t *testing.T) {
 	}
 }
 
+func TestForwardServerAuthEnv(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	stageProfile(t, home, `{"meta": {"name": "default"}, "environment": {"allow_vars": ["HOME"]}}`)
+	plan := nativePlanForTest(t)
+	argv := []string{"/usr/bin/omac", "sandbox", "run", "--profile", "default", "--", "opencode", "serve"}
+
+	oc, _ := config.LookupHarness("opencode")
+	got := strings.Join(forwardServerAuthEnv(argv, oc, plan), " ")
+	if !strings.Contains(got, "--allow-env OPENCODE_SERVER_PASSWORD --") {
+		t.Errorf("opencode serve should forward OPENCODE_SERVER_PASSWORD; got %v", got)
+	}
+
+	// A harness without a server mode gets nothing.
+	cc, _ := config.LookupHarness("claude-code")
+	if g := forwardServerAuthEnv(argv, cc, plan); !equalStrings(g, argv) {
+		t.Errorf("non-server harness: got %v, want unchanged", g)
+	}
+}
+
 // nativePlanForTest resolves the launch plan for a minimal native launcher
 // profile, so a test's staged policy file (stageProfile) is what the plan's
 // policy-derived behaviour is read from.

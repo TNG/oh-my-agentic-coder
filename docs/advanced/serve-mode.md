@@ -39,6 +39,17 @@ omac serve opencode --workdir ~/my-project -- --port 4095
 
 omac reads that `--port` value and opens the same port in the sandbox, so the server can bind it and its own plugins can call back into it over loopback. You do not need a separate `--open-port` flag for the harness server itself.
 
+## Keeping the same server password
+
+Without a fixed password, `opencode serve` makes up a new random one at every start, and OpenCode Desktop has to be given the new one after each restart. To keep one password, export `OPENCODE_SERVER_PASSWORD` before starting omac:
+
+```bash
+export OPENCODE_SERVER_PASSWORD='choose-a-password'
+omac serve opencode --workdir ~/my-project
+```
+
+`omac serve` passes this variable into the sandbox automatically. Enter the same password once when you add the server in Desktop.
+
 ## Start order matters
 
 Start `omac serve` **before** opening OpenCode Desktop. If you open Desktop first and then start `omac serve`, Desktop fails to load configured models and must be restarted. This is a known issue ([#252](https://github.com/TNG/oh-my-agentic-coder/issues/252)).
