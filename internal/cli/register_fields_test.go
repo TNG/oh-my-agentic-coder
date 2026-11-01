@@ -346,12 +346,18 @@ func TestHandleOneField_RepromptEnterResetsToSpecDefault(t *testing.T) {
 // it must be shown, not the global value alone.
 func TestHandleOneField_GlobalSkillShowsWorkdirOverride(t *testing.T) {
 	spec := config.ConfigSpec{Name: "F", Type: config.ConfigFieldBool}
-	global := &skillconfig.Store{}
-	global.Set("skill", "F", "false")
-	wd := &skillconfig.Store{}
-	wd.Set("skill", "F", "true")
 
-	for name, reprompt := range map[string]bool{"skip line": false, "prompt": true} {
+	for _, tc := range []struct {
+		name     string
+		reprompt bool
+	}{{"skip line", false}, {"prompt", true}} {
+		name, reprompt := tc.name, tc.reprompt
+		// Fresh stores per case: the prompt case stores the accepted
+		// value, which would hide the override from a later case.
+		global := &skillconfig.Store{}
+		global.Set("skill", "F", "false")
+		wd := &skillconfig.Store{}
+		wd.Set("skill", "F", "true")
 		env := envWithStdin(t, "\n")
 		out := captureStderr(t, env)
 		if _, err := handleOneField(env, global, wd, "skill", "", spec, reprompt, nil, nil, false, nil); err != nil {
