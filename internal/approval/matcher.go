@@ -70,5 +70,6 @@ func (s *Set) Lookup(method string, segs []string) (Entry, bool) {
 	return best.entry, true
 }
 
-// DenyAll returns a Set that declares nothing, so every lookup misses.
-func DenyAll() *Set { return &Set{} }
+// AskAll returns a Set that declares nothing, so every lookup misses and
+// every request asks.
+func AskAll() *Set { return &Set{} }
