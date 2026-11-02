@@ -64,9 +64,9 @@ type SidecarMeta struct {
 	Approvals      *ApprovalsSpec    `yaml:"approvals,omitempty"`
 }
 
-// ApprovalsSpec is the optional closed-world endpoint declaration under
-// sidecar.approvals. When present, the facade forwards only requests that
-// match a declared endpoint; see internal/approval.
+// ApprovalsSpec is the optional endpoint declaration under sidecar.approvals.
+// A skill without it is forwarded without asking. With it, a request asks
+// unless it matches an entry with approval: none; see internal/approval.
 type ApprovalsSpec struct {
 	Version   int            `yaml:"version"`
 	Endpoints []ApprovalSpec `yaml:"endpoints"`
