@@ -71,3 +71,19 @@ sidecar:
     linux: install/install.linux.sh
 
   protocols: ["http"]
+
+  # With an approvals block, every route asks the user unless it is listed
+  # with approval: none. The reads below are let through; POST /echo, and any
+  # route added later, asks first.
+  approvals:
+    version: 1
+    endpoints:
+      - match: "GET /status"
+        approval: none
+      - match: "GET /whoami"
+        approval: none
+      - match: "GET /tick"
+        approval: none
+      - match: "POST /echo"
+        approval: required
+        description: "Echoes the request body back"
