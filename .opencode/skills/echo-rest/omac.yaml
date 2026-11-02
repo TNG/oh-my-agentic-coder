@@ -72,9 +72,9 @@ sidecar:
 
   protocols: ["http"]
 
-  # Closed world: omac forwards only the endpoints listed here. Everything
-  # else gets 403 undeclared-endpoint without reaching the sidecar. POST
-  # /echo asks the user first; the reads need no approval.
+  # With an approvals block, every route asks the user unless it is listed
+  # with approval: none. The reads below are let through; POST /echo, and any
+  # route added later, asks first.
   approvals:
     version: 1
     endpoints:
