@@ -152,10 +152,10 @@ func TestSecurityStartModeRoutesCarryOwner(t *testing.T) {
 	requireWorkingPython3(t)
 	sectest.RequireLoopbackListener(t)
 	isolateHome(t)
-	// A short TMPDIR keeps the control-info file and any sockets the launch
-	// pipeline creates inside this test's lifetime, independent of the
-	// outer environment.
-	shortTmp, err := os.MkdirTemp(".", "omac-cli-")
+	// The Windows checkout is a DrvFS mount in the WSL2 job, which cannot
+	// bind Unix sockets. /tmp is a short native Unix filesystem on every CI
+	// platform and keeps the runtime socket within its pathname limit.
+	shortTmp, err := os.MkdirTemp("/tmp", "omac-cli-")
 	if err != nil {
 		t.Fatal(err)
 	}
