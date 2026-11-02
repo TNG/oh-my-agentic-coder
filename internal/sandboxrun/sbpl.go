@@ -245,12 +245,6 @@ func canonicalPath(p string) string {
 	return ""
 }
 
-// ancestorDirs returns every distinct ancestor directory of the given
-// paths, including "/".
-func ancestorDirs(paths []string) []string {
-	return ancestorDirsWithForms(paths, pathForms)
-}
-
 func ancestorDirsWithForms(paths []string, forms func(string) []string) []string {
 	seen := map[string]bool{}
 	var out []string
