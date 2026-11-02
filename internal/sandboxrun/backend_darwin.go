@@ -31,7 +31,7 @@ func CheckPlatform() error {
 // harness binary (e.g. claude, codex) must have its directory granted
 // as readable — (deny default) blocks exec otherwise. We resolve the
 // binary on the host PATH and add its dir (and symlink-resolved dir)
-// to ReadPaths before generating the SBPL, mirroring backend_linux.go.
+// to the per-launch read rules before generating the SBPL, mirroring Linux.
 //
 // argv[0] is handed to sandbox-exec as an absolute path (see
 // absoluteInnerArgv). A bare name would make sandbox-exec's execvp redo
@@ -64,7 +64,7 @@ func BuildChildArgv(g *Grants, innerArgv []string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	gz.ReadPaths = append(append([]string{}, g.ReadPaths...), derived...)
+	gz.derivedReadPaths = derived
 	profile := GenerateSBPL(&gz)
 	argv := []string{sandboxExecPath, "-p", profile, "--"}
 	argv = append(argv, absoluteInnerArgv(innerArgv)...)

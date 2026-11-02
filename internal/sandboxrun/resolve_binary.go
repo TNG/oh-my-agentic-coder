@@ -38,23 +38,39 @@ import (
 // every path it visits on the way is checked against it (see
 // derivedGrantPolicy), so an inner command the confined process can rewrite
 // cannot extend the next sandbox's read surface. The zero policy performs
-// no checks — the backends pass one derived from the grants.
+// no checks — the backends pass one derived from the grants. A bounded
+// resolution returns only new, resolved targets; already-granted paths are
+// omitted rather than re-emitting aliases that may have changed by lowering.
 //
 // Returns nil when the command cannot be found or resolved. An error means
 // the resolution crossed the policy and the launch must fail closed.
 func resolveInnerBinaryDirs(innerArgv []string, pol derivedGrantPolicy) ([]string, error) {
-	dirs, err := commandBinaryDirs(innerArgv, pol)
+	dirs, _, err := resolveInnerBinaryPlan(innerArgv, pol)
+	return dirs, err
+}
+
+// derivedReadDir keeps authorization identity separate from a pathname still
+// used by env, shebangs or runtime support lookups. Linux may need both names
+// in its namespace; real is never replaced by a later lookup of path.
+type derivedReadDir struct {
+	path string
+	real string
+}
+
+func resolveInnerBinaryPlan(innerArgv []string, pol derivedGrantPolicy) ([]string, []derivedReadDir, error) {
+	dirs, names, err := commandBinaryPlan(innerArgv, pol)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if cmd := UnwrapEnv(innerArgv); len(cmd) > 0 && cmd[0] != innerArgv[0] {
-		wrapped, werr := commandBinaryDirs(cmd, pol)
+		wrapped, wrappedNames, werr := commandBinaryPlan(cmd, pol)
 		if werr != nil {
-			return nil, werr
+			return nil, nil, werr
 		}
 		dirs = append(dirs, wrapped...)
+		names = append(names, wrappedNames...)
 	}
-	return dirs, nil
+	return dirs, names, nil
 }
 
 // resolveCommandBinaryDirs is the unbounded form of commandBinaryDirs for
@@ -72,26 +88,67 @@ func resolveCommandBinaryDirs(argv []string) []string {
 // Returns nil when argv is empty or unresolvable. pol bounds the
 // derivation; an error means it crossed the policy.
 func commandBinaryDirs(argv []string, pol derivedGrantPolicy) ([]string, error) {
+	dirs, _, err := commandBinaryPlan(argv, pol)
+	return dirs, err
+}
+
+func commandBinaryPlan(argv []string, pol derivedGrantPolicy) ([]string, []derivedReadDir, error) {
 	if len(argv) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	resolved := lookPathAbs(argv[0])
 	if resolved == "" {
-		return nil, nil
+		return nil, nil, nil
 	}
-	dirs, hops := walkSymlinkChain(resolved)
-	if real, rerr := filepath.EvalSymlinks(resolved); rerr == nil {
-		if interp := shebangInterpreter(real); interp != "" {
-			idirs, ihops := resolveInterpreterChain(interp)
-			dirs = append(dirs, idirs...)
-			hops = append(hops, ihops...)
+	real, dirs, hops, err := walkSymlinkPath(resolved, false)
+	if err != nil {
+		return nil, nil, err
+	}
+	if interp := shebangInterpreter(real); interp != "" {
+		idirs, ihops, err := resolveInterpreterChain(interp)
+		if err != nil {
+			return nil, nil, err
 		}
+		dirs = append(dirs, idirs...)
+		hops = append(hops, ihops...)
 	}
-	dirs = withPrefixSupportDirs(dirs)
+	dirs, supportHops, err := resolvePrefixSupportDirs(dirs)
+	if err != nil {
+		return nil, nil, err
+	}
+	hops = append(hops, supportHops...)
+	var names []derivedReadDir
+	if len(pol.writable) != 0 || len(pol.homes) != 0 {
+		// Admission uses targets, never the literal aliases used for deny
+		// matching. Return only new, resolved grants: a covered mutable alias
+		// must not be followed again when a backend lowers the policy.
+		var targets []string
+		for _, d := range dirs {
+			real, _, dhops, err := walkSymlinkPath(d, true)
+			if err != nil {
+				return nil, nil, fmt.Errorf("resolve derived directory %q: %w", d, err)
+			}
+			hops = append(hops, dhops...)
+			names = append(names, derivedReadDir{path: d, real: real})
+			if !slices.Contains(targets, real) {
+				targets = append(targets, real)
+			}
+		}
+		dirs = targets
+	}
 	if err := refuseDerivedGrants(dirs, hops, pol); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return dirs, nil
+	if len(pol.writable) != 0 || len(pol.homes) != 0 {
+		var needed []string
+		for _, d := range dirs {
+			if !targetCoveredByAny(d, pol.readable) {
+				needed = append(needed, d)
+			}
+		}
+		dirs = needed
+	}
+	return dirs, names, nil
 }
 
 // maxSymlinkHops bounds the chain walk. Well above any real install layout
@@ -115,11 +172,13 @@ type derivedGrantPolicy struct {
 	// time is whatever the agent last wrote, so it must not pick what the
 	// sandbox grants read access to.
 	writable []string
-	// granted holds the paths the profile already allows explicitly.
-	// Deriving a directory covered by them adds nothing the user has not
-	// already granted, so only the remainder (the extension) is subject
-	// to the rules.
+	// granted holds explicitly allowed path roots. Writable content may
+	// only derive read access within them; the remainder is an extension
+	// subject to the rules.
 	granted []string
+	// readable excludes write-only grants: they bound derivation, but on
+	// macOS a command there still needs a new read rule to remain runnable.
+	readable []string
 	// homes holds the home directories a derivation must not silently
 	// extend into; see homeSensitiveDirs.
 	homes []string
@@ -133,6 +192,15 @@ func derivedGrantPolicyForGrants(g *Grants) derivedGrantPolicy {
 	pol := derivedGrantPolicy{
 		writable: append(append([]string{}, g.WritePaths...), g.AllowPaths...),
 		granted:  append(append(append([]string{}, g.ReadPaths...), g.WritePaths...), g.AllowPaths...),
+		readable: append([]string{}, g.AllowPaths...),
+	}
+	// Linux deliberately does not bind root read grants. Keep a checked
+	// derived directory for that case so its lowerer can mount the directory
+	// that the command actually needs. Root allow is different: it is bound.
+	for _, p := range g.ReadPaths {
+		if filepath.Clean(p) != "/" {
+			pol.readable = append(pol.readable, p)
+		}
 	}
 	pol.writable = append(pol.writable, sharedTempRoots()...)
 	userHome, uerr := os.UserHomeDir()
@@ -198,7 +266,7 @@ var homeSensitiveDirs = []string{
 //     extension that is refused, not the derivation: a tainted command
 //     whose every dir is already granted stays launchable, because
 //     nothing new is exposed.
-//   - Home boundary: a NEW dir that is itself a home or sits below one
+//   - Home boundary: a NEW dir that contains a home or sits below one
 //     of its sensitive trees is refused even for untainted commands. A
 //     user's home and its config/credential roots must be granted by the
 //     user, not derived.
@@ -210,7 +278,7 @@ func refuseDerivedGrants(dirs, hops []string, pol derivedGrantPolicy) error {
 	}
 	var ext []string
 	for _, d := range dirs {
-		if !pathCoveredByAny(d, pol.granted) {
+		if !targetCoveredByAny(d, pol.granted) {
 			ext = append(ext, d)
 		}
 	}
@@ -241,7 +309,7 @@ func refuseDerivedGrants(dirs, hops []string, pol derivedGrantPolicy) error {
 			return fmt.Errorf(
 				"omac can't start the sandbox: launching this command would derive read access\n"+
 					"to %s\n"+
-					"inside the home tree %s, which holds config or credentials. omac only\n"+
+					"overlapping the home tree %s, which holds config or credentials. omac only\n"+
 					"derives access there when you grant it explicitly (filesystem.read / --read)\n"+
 					"or move the tool outside the home tree.", d, home)
 		}
@@ -249,9 +317,9 @@ func refuseDerivedGrants(dirs, hops []string, pol derivedGrantPolicy) error {
 	return nil
 }
 
-// sensitiveUnderHome reports whether dir is one of the homes itself or
-// sits below one of a home's sensitive trees, returning that home when it
-// does. Both sides are compared in their literal and symlink-resolved
+// sensitiveUnderHome reports whether dir contains a home or lies below one
+// of its sensitive trees, returning that home when it does.
+// Both sides are compared in their literal and symlink-resolved
 // spellings: a derived dir can arrive from EvalSymlinks, while a home can
 // be spelled the way the user wrote it.
 func sensitiveUnderHome(dir string, homes []string) (string, bool) {
@@ -267,22 +335,42 @@ func sensitiveUnderHome(dir string, homes []string) (string, bool) {
 	return "", false
 }
 
-// sensitiveBelowHome reports whether dir is home itself or sits below
-// one of home's sensitive trees (homeSensitiveDirs).
+// sensitiveBelowHome checks recursive grant overlap. An ancestor of home
+// exposes its sensitive descendants just as granting home itself does.
 func sensitiveBelowHome(dir, home string) bool {
-	rel, err := filepath.Rel(home, dir)
-	if err != nil || rel == ".." ||
-		strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return false
-	}
-	if rel == "." {
+	if pathWithin(home, dir) {
 		return true
 	}
-	first := rel
-	if i := strings.IndexByte(rel, filepath.Separator); i >= 0 {
-		first = rel[:i]
+	for _, name := range homeSensitiveDirs {
+		for _, sensitive := range pathForms(filepath.Join(home, name)) {
+			if pathWithin(dir, sensitive) || pathWithin(sensitive, dir) {
+				return true
+			}
+		}
 	}
-	return slices.Contains(homeSensitiveDirs, first)
+	return false
+}
+
+// pathWithin handles root without a double-separator prefix and recognizes
+// case aliases by filesystem identity, not by folding strings. Walking the
+// existing ancestors also handles aliases of HOME, while preserving distinct
+// .config and .CONFIG directories on case-sensitive volumes.
+func pathWithin(path, root string) bool {
+	if isUnder(filepath.Clean(path), filepath.Clean(root)) {
+		return true
+	}
+	rootInfo, err := os.Stat(root)
+	if err != nil {
+		return false
+	}
+	for p := filepath.Clean(path); ; p = filepath.Dir(p) {
+		if info, err := os.Stat(p); err == nil && os.SameFile(info, rootInfo) {
+			return true
+		}
+		if p == filepath.Dir(p) {
+			return false
+		}
+	}
 }
 
 // pathCoveredByAny reports whether path lies at or under any of roots,
@@ -290,6 +378,18 @@ func sensitiveBelowHome(dir, home string) bool {
 func pathCoveredByAny(path string, roots []string) bool {
 	for _, r := range roots {
 		if pathCoveredBy(path, r) {
+			return true
+		}
+	}
+	return false
+}
+
+// targetCoveredByAny is grant containment, not conservative deny matching:
+// an alias below a granted root does not grant its out-of-tree target.
+func targetCoveredByAny(path string, roots []string) bool {
+	for _, root := range roots {
+		real, err := filepath.EvalSymlinks(root)
+		if err == nil && pathWithin(path, real) {
 			return true
 		}
 	}
@@ -326,6 +426,15 @@ func pathCoveredByAny(path string, roots []string) bool {
 // grant on the directory is what lets the kernel both read the link and stat
 // its siblings, matching how the rest of this file grants access.
 func walkSymlinkChain(path string) (dirs, hops []string) {
+	_, dirs, hops, _ = walkSymlinkPath(path, false)
+	return dirs, hops
+}
+
+// walkSymlinkPath resolves every component, not just the final filename.
+// An ancestor link can lead through writable surface before reaching an
+// otherwise trusted endpoint. Never fall back to an endpoint-only lookup.
+// directory selects whether path itself or its parent needs a read grant.
+func walkSymlinkPath(path string, directory bool) (real string, dirs, hops []string, err error) {
 	seenDirs := map[string]bool{}
 	seenHops := map[string]bool{}
 	addDir := func(d string) {
@@ -340,32 +449,70 @@ func walkSymlinkChain(path string) (dirs, hops []string) {
 			hops = append(hops, p)
 		}
 	}
-	cur := path
-	for range maxSymlinkHops {
-		addHop(cur)
-		addDir(filepath.Dir(cur))
-		fi, err := os.Lstat(cur)
-		if err != nil || fi.Mode()&os.ModeSymlink == 0 {
-			break
+	addGrant := func(p string) {
+		if directory {
+			addDir(p)
+		} else {
+			addDir(filepath.Dir(p))
 		}
-		target, terr := os.Readlink(cur)
-		if terr != nil {
-			break
-		}
-		if !filepath.IsAbs(target) {
-			target = filepath.Join(filepath.Dir(cur), target)
-		}
-		cur = filepath.Clean(target)
 	}
-	// A symlinked ancestor (e.g. a version dir that is itself a link) means
-	// the kernel matches the resolved spelling, which the per-hop walk above
-	// never produces. EvalSymlinks on the end of the chain closes that gap;
-	// it is a no-op for the common all-real-directories case.
-	if real, rerr := filepath.EvalSymlinks(path); rerr == nil {
-		addHop(real)
-		addDir(filepath.Dir(real))
+	addGrant(path)
+	addHop(path)
+	cur := string(filepath.Separator)
+	pending := strings.Split(path, string(filepath.Separator))
+	nlinks := 0
+	for len(pending) > 0 {
+		part := pending[0]
+		pending = pending[1:]
+		if part == "" || part == "." {
+			continue
+		}
+		if part == ".." {
+			cur = filepath.Dir(cur)
+			continue
+		}
+		next := filepath.Join(cur, part)
+		addHop(next)
+		fi, lerr := os.Lstat(next)
+		if lerr != nil {
+			return "", dirs, hops, fmt.Errorf("resolve command dependency %q: %w", next, lerr)
+		}
+		if fi.Mode()&os.ModeSymlink == 0 {
+			cur = next
+			continue
+		}
+		if len(pending) == 0 {
+			addGrant(next)
+		}
+		nlinks++
+		if nlinks > maxSymlinkHops {
+			return "", dirs, hops, fmt.Errorf("resolve command dependency %q: more than %d symlink hops", path, maxSymlinkHops)
+		}
+		target, rerr := os.Readlink(next)
+		if rerr != nil {
+			return "", dirs, hops, fmt.Errorf("read command dependency %q: %w", next, rerr)
+		}
+		// The kernel continues from the link target, not just from the final
+		// resolved file. Keep that spelling too: a target such as
+		// ../current/bin/tool needs current/bin in the namespace even when
+		// current resolves to versions/v1 on the host.
+		spelling := target
+		if !filepath.IsAbs(spelling) {
+			spelling = filepath.Join(filepath.Dir(next), spelling)
+		}
+		if len(pending) > 0 {
+			spelling = filepath.Join(append([]string{spelling}, pending...)...)
+		}
+		addGrant(spelling)
+		if filepath.IsAbs(target) {
+			cur = string(filepath.Separator)
+		}
+		// Do not Clean target: a/../b must resolve a's symlink before ..
+		// is applied, just as the kernel does.
+		pending = append(strings.Split(target, string(filepath.Separator)), pending...)
 	}
-	return dirs, hops
+	addGrant(cur)
+	return cur, dirs, hops, nil
 }
 
 // symlinkChainDirs is walkSymlinkChain's directory list alone, for callers
@@ -572,7 +719,7 @@ func pathCoveredBy(path, root string) bool {
 	}
 	for _, d := range forms(path) {
 		for _, r := range forms(root) {
-			if d == r || strings.HasPrefix(d, r+string(filepath.Separator)) {
+			if pathWithin(d, r) {
 				return true
 			}
 		}
@@ -646,20 +793,16 @@ func shebangInterpreter(path string) string {
 // holds every path the resolution visited — the interpreter file, each
 // symlink hop to it, the real file at the end — which feeds the derived-grant
 // taint check (see derivedGrantPolicy).
-func resolveInterpreterChain(interp string) (dirs, hops []string) {
+func resolveInterpreterChain(interp string) (dirs, hops []string, err error) {
 	resolved, err := exec.LookPath(interp)
+	broadFallback := false
 	if err != nil {
 		if filepath.IsAbs(interp) {
-			if _, serr := os.Stat(interp); serr == nil {
-				hops = []string{interp}
-				d := filepath.Dir(interp)
-				if isBroadGrant(d) {
-					return nil, hops
-				}
-				return withPrefixSupportDirs([]string{d}), hops
-			}
+			resolved = interp
+			broadFallback = isBroadGrant(filepath.Dir(interp))
+		} else {
+			return nil, nil, nil
 		}
-		return nil, nil
 	}
 	if abs, aerr := filepath.Abs(resolved); aerr == nil {
 		resolved = abs
@@ -668,16 +811,19 @@ func resolveInterpreterChain(interp string) (dirs, hops []string) {
 	// reached through a version manager (nvm, mise, asdf) is a multi-hop
 	// symlink, and a middle hop left ungranted fails the exec of every script
 	// that names it — see walkSymlinkChain.
-	idirs, ihops := walkSymlinkChain(resolved)
-	return withPrefixSupportDirs(idirs), ihops
+	_, dirs, hops, err = walkSymlinkPath(resolved, false)
+	if broadFallback {
+		dirs = nil
+	}
+	return dirs, hops, err
 }
 
 // resolveInterpreterDirs is resolveInterpreterChain's directory list alone,
 // for callers that only inspect the grant surface (diagnostics, tests) and
 // have no policy to check the visited paths against.
 func resolveInterpreterDirs(interp string) []string {
-	dirs, _ := resolveInterpreterChain(interp)
-	return dirs
+	dirs, _, _ := resolveInterpreterChain(interp)
+	return withPrefixSupportDirs(dirs)
 }
 
 // prefixBinDirNames are the conventional executable subdirectories of a Unix
@@ -706,6 +852,16 @@ var prefixSupportDirNames = []string{"lib", "lib64", "libexec", "conf"}
 // tree, and deriving one would widen the grant to ~/lib off the back of any
 // binary the user drops there.
 func prefixSupportDirs(binDir string) []string {
+	var out []string
+	for _, p := range prefixSupportCandidates(binDir) {
+		if fi, err := os.Stat(p); err == nil && fi.IsDir() {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func prefixSupportCandidates(binDir string) []string {
 	if !slices.Contains(prefixBinDirNames, filepath.Base(binDir)) {
 		return nil
 	}
@@ -716,11 +872,39 @@ func prefixSupportDirs(binDir string) []string {
 	var out []string
 	for _, name := range prefixSupportDirNames {
 		p := filepath.Join(prefix, name)
-		if fi, err := os.Stat(p); err == nil && fi.IsDir() {
-			out = append(out, p)
-		}
+		out = append(out, p)
 	}
 	return out
+}
+
+// resolvePrefixSupportDirs keeps the provenance of support-directory aliases.
+// Lstat, unlike Stat, also exposes dangling or cyclic final links so an
+// unfinished resolution cannot silently disappear from the policy check.
+func resolvePrefixSupportDirs(dirs []string) ([]string, []string, error) {
+	out := append([]string(nil), dirs...)
+	var hops []string
+	for _, d := range dirs {
+		for _, p := range prefixSupportCandidates(d) {
+			if _, err := os.Lstat(p); os.IsNotExist(err) {
+				continue
+			} else if err != nil {
+				return nil, nil, fmt.Errorf("inspect support directory %q: %w", p, err)
+			}
+			real, _, visited, err := walkSymlinkPath(p, true)
+			if err != nil {
+				return nil, nil, err
+			}
+			hops = append(hops, visited...)
+			fi, err := os.Stat(real)
+			if err != nil {
+				return nil, nil, err
+			}
+			if fi.IsDir() && !slices.Contains(out, p) {
+				out = append(out, p)
+			}
+		}
+	}
+	return out, hops, nil
 }
 
 // isBroadGrant reports whether granting dir as a readable directory would
