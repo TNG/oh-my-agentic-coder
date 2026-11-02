@@ -22,7 +22,7 @@ func approvalsSummary(m *config.Meta) string {
 			required++
 		}
 	}
-	return fmt.Sprintf("  approvals: %d endpoint(s) declared, %d ask you first; anything not declared is rejected",
+	return fmt.Sprintf("  approvals: %d endpoint(s) declared, %d ask you first; anything not declared asks you too",
 		len(m.Sidecar.Approvals.Endpoints), required)
 }
 
