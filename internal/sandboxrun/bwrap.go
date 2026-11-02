@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -74,6 +75,15 @@ func BuildBwrapArgv(g *Grants, stage2Argv []string) ([]string, error) {
 	}
 	for _, p := range g.ReadPaths {
 		add(p, false)
+	}
+	for _, p := range g.derivedReadPaths {
+		// Omit a checked derived bind only when an explicit grant will actually
+		// be materialized in this namespace. Root read/write authorize host
+		// paths but are intentionally not bwrap binds, so they cannot cover an
+		// execution pathname here.
+		if !targetCoveredByAny(p, linuxMaterializedGrantRoots(g)) {
+			add(p, false)
+		}
 	}
 	for _, p := range g.WritePaths {
 		add(p, true)
@@ -154,6 +164,17 @@ func BuildBwrapArgv(g *Grants, stage2Argv []string) ([]string, error) {
 		}
 		argv = append(argv, flag, m.path, m.path)
 	}
+	var links []namespaceSymlink
+	if !rootGranted {
+		var err error
+		links, err = binaryNamespaceLinks(g.derivedReadDirs, ordered)
+		if err != nil {
+			return nil, err
+		}
+		for _, link := range links {
+			argv = append(argv, "--dir", filepath.Dir(link.path), "--symlink", link.target, link.path)
+		}
+	}
 
 	// Protected-path masking: when rootGranted every protected path is
 	// covered; otherwise check against the ordered mount list.
@@ -165,8 +186,13 @@ func BuildBwrapArgv(g *Grants, stage2Argv []string) ([]string, error) {
 	// marker dir holding a single .omac-denied file. When no markers are
 	// prepared, the historical /dev/null + empty-tmpfs behavior applies.
 	for _, prot := range g.ProtectedPaths {
+		dest := prot
 		if !rootGranted && !coveredByAny(prot, ordered) {
-			continue
+			var ok bool
+			dest, ok = sandboxResolveWithLinks(prot, ordered, links)
+			if !ok {
+				continue
+			}
 		}
 		fi, err := os.Lstat(prot)
 		if err != nil {
@@ -174,15 +200,15 @@ func BuildBwrapArgv(g *Grants, stage2Argv []string) ([]string, error) {
 		}
 		if fi.IsDir() {
 			if g.markerDir != "" {
-				argv = append(argv, "--ro-bind", g.markerDir, prot)
+				argv = append(argv, "--ro-bind", g.markerDir, dest)
 			} else {
-				argv = append(argv, "--tmpfs", prot)
+				argv = append(argv, "--tmpfs", dest)
 			}
 		} else {
 			if g.markerFile != "" {
-				argv = append(argv, "--ro-bind", g.markerFile, prot)
+				argv = append(argv, "--ro-bind", g.markerFile, dest)
 			} else {
-				argv = append(argv, "--ro-bind", "/dev/null", prot)
+				argv = append(argv, "--ro-bind", "/dev/null", dest)
 			}
 		}
 	}
@@ -199,6 +225,21 @@ func BuildBwrapArgv(g *Grants, stage2Argv []string) ([]string, error) {
 	argv = append(argv, "--chdir", chdir, "--")
 	argv = append(argv, stage2Argv...)
 	return argv, nil
+}
+
+// linuxMaterializedGrantRoots returns the explicit grants that become bwrap
+// mounts. Root allow is mounted to implement learn mode; root read/write are
+// authorization-only and must not suppress a narrower derived execution bind.
+func linuxMaterializedGrantRoots(g *Grants) []string {
+	roots := make([]string, 0, len(g.ReadPaths)+len(g.WritePaths)+len(g.AllowPaths))
+	for _, paths := range [][]string{g.ReadPaths, g.WritePaths, g.AllowPaths} {
+		for _, p := range paths {
+			if filepath.Clean(p) != "/" || slices.Contains(g.AllowPaths, p) {
+				roots = append(roots, p)
+			}
+		}
+	}
+	return roots
 }
 
 // mount is one bwrap bind entry.
@@ -285,6 +326,10 @@ func redundantLinkMount(m *mount, mounts []*mount) bool {
 // grant on /work alone fails here although the host resolves it. Returns
 // the resolved path, spelled as the sandbox sees it, and whether it exists.
 func sandboxResolve(p string, mounts []*mount) (string, bool) {
+	return sandboxResolveWithLinks(p, mounts, nil)
+}
+
+func sandboxResolveWithLinks(p string, mounts []*mount, links []namespaceSymlink) (string, bool) {
 	cur := "/"
 	rest := strings.Split(filepath.Clean(p), "/")
 	for hops := 0; len(rest) > 0; {
@@ -298,9 +343,28 @@ func sandboxResolve(p string, mounts []*mount) (string, bool) {
 			continue
 		}
 		next := filepath.Join(cur, name)
+		var linkTarget string
+		for _, link := range links {
+			if link.path == next {
+				linkTarget = link.target
+				break
+			}
+		}
+		if linkTarget != "" {
+			if hops++; hops > maxSymlinkHops {
+				return "", false
+			}
+			cur = "/"
+			rest = append(strings.Split(linkTarget, "/"), rest...)
+			continue
+		}
 		in := innermostMount(next, mounts)
 		if in == nil {
-			if !aboveAnyMount(next, mounts) {
+			aboveLink := false
+			for _, link := range links {
+				aboveLink = aboveLink || isUnder(link.path, next)
+			}
+			if !aboveAnyMount(next, mounts) && !aboveLink {
 				return "", false
 			}
 			cur = next

@@ -69,8 +69,15 @@ func GenerateSBPL(g *Grants) string {
 
 	// --- Read allows ---
 	readable := append(append([]string{}, g.ReadPaths...), g.AllowPaths...)
+	readable = append(readable, g.derivedReadPaths...)
+	readForms := func(p string) []string {
+		if slices.Contains(g.derivedReadPaths, p) {
+			return []string{p}
+		}
+		return pathForms(p)
+	}
 	for _, p := range readable {
-		for _, fp := range pathForms(p) {
+		for _, fp := range readForms(p) {
 			fmt.Fprintf(&b, "(allow file-read* (subpath %s))\n", sbplQuote(fp))
 		}
 	}
@@ -80,7 +87,8 @@ func GenerateSBPL(g *Grants) string {
 	// getcwd works inside the working directory, but not from HOME or
 	// above it, where only the shell builtin `pwd` works.
 	ancestorRoots := append(append(append([]string{g.Workdir}, g.ReadPaths...), g.WritePaths...), g.AllowPaths...)
-	resolvable := ancestorDirs(ancestorRoots)
+	ancestorRoots = append(ancestorRoots, g.derivedReadPaths...)
+	resolvable := ancestorDirsWithForms(ancestorRoots, readForms)
 	if g.HomeDir != "" {
 		for _, p := range pathForms(g.HomeDir) {
 			if !slices.Contains(resolvable, p) {
@@ -94,7 +102,7 @@ func GenerateSBPL(g *Grants) string {
 	// DYLD-injection defense: only readable paths may be mapped
 	// executable. (allow file-read* implies open; mapping is separate.)
 	for _, p := range readable {
-		for _, fp := range pathForms(p) {
+		for _, fp := range readForms(p) {
 			fmt.Fprintf(&b, "(allow file-map-executable (subpath %s))\n", sbplQuote(fp))
 		}
 	}
@@ -240,10 +248,14 @@ func canonicalPath(p string) string {
 // ancestorDirs returns every distinct ancestor directory of the given
 // paths, including "/".
 func ancestorDirs(paths []string) []string {
+	return ancestorDirsWithForms(paths, pathForms)
+}
+
+func ancestorDirsWithForms(paths []string, forms func(string) []string) []string {
 	seen := map[string]bool{}
 	var out []string
 	for _, p := range paths {
-		for _, form := range pathForms(p) {
+		for _, form := range forms(p) {
 			dir := filepath.Dir(form)
 			for dir != "/" && dir != "." {
 				if seen[dir] {

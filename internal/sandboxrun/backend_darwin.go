@@ -31,7 +31,7 @@ func CheckPlatform() error {
 // harness binary (e.g. claude, codex) must have its directory granted
 // as readable — (deny default) blocks exec otherwise. We resolve the
 // binary on the host PATH and add its dir (and symlink-resolved dir)
-// to ReadPaths before generating the SBPL, mirroring backend_linux.go.
+// to the per-launch read rules before generating the SBPL, mirroring Linux.
 //
 // argv[0] is handed to sandbox-exec as an absolute path (see
 // absoluteInnerArgv). A bare name would make sandbox-exec's execvp redo
@@ -55,7 +55,16 @@ func BuildChildArgv(g *Grants, innerArgv []string) ([]string, error) {
 		return nil, fmt.Errorf("sandbox home %q is not a directory", home)
 	}
 	gz.HomeDir = home
-	gz.ReadPaths = append(append([]string{}, g.ReadPaths...), resolveInnerBinaryDirs(innerArgv)...)
+	// The derivation is bounded by the grants (derivedGrantPolicyForGrants):
+	// the inner command frequently lives where the agent can write (the
+	// workdir, a temp dir), and granting read access picked by whatever the
+	// agent last wrote there would let the agent choose what the sandbox can
+	// read. Crossing the boundary fails the launch instead.
+	derived, err := resolveInnerBinaryDirs(innerArgv, derivedGrantPolicyForGrants(&gz))
+	if err != nil {
+		return nil, err
+	}
+	gz.derivedReadPaths = derived
 	profile := GenerateSBPL(&gz)
 	argv := []string{sandboxExecPath, "-p", profile, "--"}
 	argv = append(argv, absoluteInnerArgv(innerArgv)...)

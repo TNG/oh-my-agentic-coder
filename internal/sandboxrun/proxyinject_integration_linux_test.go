@@ -188,7 +188,14 @@ func runToolThroughProxy(t *testing.T, omac string, proxy *netproxy.Server, inje
 	// drift from it.
 	g.ProxyPort = proxy.Port()
 	g.ReadPaths = append(g.ReadPaths, filepath.Dir(omac))
-	g.ReadPaths = append(g.ReadPaths, resolveInnerBinaryDirs([]string{tool})...)
+	// Zero policy: the tools are staged in temp workdirs (agent-writable by
+	// design), and this harness tests proxy env injection, not grant
+	// bounding — that is BuildChildArgv's job, exercised by its own tests.
+	derived, err := resolveInnerBinaryDirs([]string{tool}, derivedGrantPolicy{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.ReadPaths = append(g.ReadPaths, derived...)
 	g.ReadPaths = append(g.ReadPaths, extraReads...)
 
 	stage2 := append([]string{omac, "sandbox", "stage2"}, Stage2Args(g)...)
