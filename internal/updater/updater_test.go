@@ -99,14 +99,26 @@ func checksumsFile(name string, content []byte) []byte {
 	return []byte(fmt.Sprintf("%s  %s\n", hex.EncodeToString(sum[:]), name))
 }
 
+// testSignatureVerifier is a test double for the production ed25519 verifier.
+// It accepts any non-empty signature so tests can exercise the rest of the
+// download/verify path without performing real cryptography; production uses
+// verifyReleaseSignature via RealDeps.
+func testSignatureVerifier(signed, sig []byte) error {
+	if len(sig) == 0 {
+		return errors.New("empty signature")
+	}
+	return nil
+}
+
 func baseDeps(t *testing.T) Deps {
 	t.Helper()
 	return Deps{
-		Executable: func() (string, error) { return filepath.Join(t.TempDir(), "omac"), nil },
-		TempDir:    t.TempDir(),
-		Stdin:      bytes.NewReader(nil),
-		Stdout:     io.Discard,
-		Stderr:     io.Discard,
+		Executable:        func() (string, error) { return filepath.Join(t.TempDir(), "omac"), nil },
+		TempDir:           t.TempDir(),
+		SignatureVerifier: testSignatureVerifier,
+		Stdin:             bytes.NewReader(nil),
+		Stdout:            io.Discard,
+		Stderr:            io.Discard,
 	}
 }
 
@@ -158,15 +170,18 @@ func TestCheck_CurrentNewerThanLatestIsUpToDate(t *testing.T) {
 func TestCheck_DevBuildUpdatesToRelease(t *testing.T) {
 	tgzBody := []byte("fake-tar-gz-bytes")
 	sumsURL := "https://example.invalid/checksums.txt"
+	sigURL := sumsURL + ".sig"
 	tgzURL := "https://example.invalid/oh-my-agentic-coder_0.1.0_linux_x86_64.tar.gz"
 
 	deps := baseDeps(t)
 	deps.Source = fakeReleaseSource{rel: Release{TagName: "v0.1.0", Assets: []Asset{
 		{Name: "oh-my-agentic-coder_0.1.0_linux_x86_64.tar.gz", BrowserDownloadURL: tgzURL},
 		{Name: "checksums.txt", BrowserDownloadURL: sumsURL},
+		{Name: "checksums.txt.sig", BrowserDownloadURL: sigURL},
 	}}}
 	deps.Fetcher = &fakeFetcher{files: map[string][]byte{
 		sumsURL: checksumsFile("oh-my-agentic-coder_0.1.0_linux_x86_64.tar.gz", tgzBody),
+		sigURL:  []byte("test-signature"),
 		tgzURL:  tgzBody,
 	}}
 	deps.GOOS, deps.GOARCH = "linux", "amd64"
@@ -204,6 +219,7 @@ func TestCheck_DarwinBrewInstalled(t *testing.T) {
 func TestCheck_LinuxPackageManagerPriority(t *testing.T) {
 	debBody := []byte("deb-bytes")
 	sumsURL := "https://example.invalid/checksums.txt"
+	sigURL := sumsURL + ".sig"
 	debURL := "https://example.invalid/oh-my-agentic-coder_2.0.0_linux_x86_64.deb"
 
 	deps := baseDeps(t)
@@ -211,9 +227,11 @@ func TestCheck_LinuxPackageManagerPriority(t *testing.T) {
 		{Name: "oh-my-agentic-coder_2.0.0_linux_x86_64.deb", BrowserDownloadURL: debURL},
 		{Name: "oh-my-agentic-coder_2.0.0_linux_x86_64.rpm", BrowserDownloadURL: "https://example.invalid/x.rpm"},
 		{Name: "checksums.txt", BrowserDownloadURL: sumsURL},
+		{Name: "checksums.txt.sig", BrowserDownloadURL: sigURL},
 	}}}
 	deps.Fetcher = &fakeFetcher{files: map[string][]byte{
 		sumsURL: checksumsFile("oh-my-agentic-coder_2.0.0_linux_x86_64.deb", debBody),
+		sigURL:  []byte("test-signature"),
 		debURL:  debBody,
 	}}
 	deps.GOOS, deps.GOARCH = "linux", "amd64"
@@ -237,6 +255,7 @@ func TestCheck_LinuxPackageManagerPriority(t *testing.T) {
 func TestCheck_PrefersSelfReplaceWhenBinaryWritable(t *testing.T) {
 	tgzBody := []byte("fake-tar-gz-bytes")
 	sumsURL := "https://example.invalid/checksums.txt"
+	sigURL := sumsURL + ".sig"
 	tgzURL := "https://example.invalid/oh-my-agentic-coder_2.0.0_linux_x86_64.tar.gz"
 	debURL := "https://example.invalid/oh-my-agentic-coder_2.0.0_linux_x86_64.deb"
 
@@ -245,9 +264,11 @@ func TestCheck_PrefersSelfReplaceWhenBinaryWritable(t *testing.T) {
 		{Name: "oh-my-agentic-coder_2.0.0_linux_x86_64.deb", BrowserDownloadURL: debURL},
 		{Name: "oh-my-agentic-coder_2.0.0_linux_x86_64.tar.gz", BrowserDownloadURL: tgzURL},
 		{Name: "checksums.txt", BrowserDownloadURL: sumsURL},
+		{Name: "checksums.txt.sig", BrowserDownloadURL: sigURL},
 	}}}
 	deps.Fetcher = &fakeFetcher{files: map[string][]byte{
 		sumsURL: checksumsFile("oh-my-agentic-coder_2.0.0_linux_x86_64.tar.gz", tgzBody),
+		sigURL:  []byte("test-signature"),
 		tgzURL:  tgzBody,
 	}}
 	deps.GOOS, deps.GOARCH = "linux", "amd64"
@@ -273,6 +294,7 @@ func TestCheck_PrefersSelfReplaceWhenBinaryWritable(t *testing.T) {
 func TestCheck_UsesPackageManagerWhenBinaryNotWritable(t *testing.T) {
 	debBody := []byte("deb-bytes")
 	sumsURL := "https://example.invalid/checksums.txt"
+	sigURL := sumsURL + ".sig"
 	debURL := "https://example.invalid/oh-my-agentic-coder_2.0.0_linux_x86_64.deb"
 
 	deps := baseDeps(t)
@@ -280,9 +302,11 @@ func TestCheck_UsesPackageManagerWhenBinaryNotWritable(t *testing.T) {
 		{Name: "oh-my-agentic-coder_2.0.0_linux_x86_64.deb", BrowserDownloadURL: debURL},
 		{Name: "oh-my-agentic-coder_2.0.0_linux_x86_64.tar.gz", BrowserDownloadURL: "https://example.invalid/x.tar.gz"},
 		{Name: "checksums.txt", BrowserDownloadURL: sumsURL},
+		{Name: "checksums.txt.sig", BrowserDownloadURL: sigURL},
 	}}}
 	deps.Fetcher = &fakeFetcher{files: map[string][]byte{
 		sumsURL: checksumsFile("oh-my-agentic-coder_2.0.0_linux_x86_64.deb", debBody),
+		sigURL:  []byte("test-signature"),
 		debURL:  debBody,
 	}}
 	deps.GOOS, deps.GOARCH = "linux", "amd64"
@@ -305,15 +329,18 @@ func TestCheck_UsesPackageManagerWhenBinaryNotWritable(t *testing.T) {
 func TestCheck_LinuxNoPackageManagerFallsBackToTarball(t *testing.T) {
 	tgzBody := []byte("fake-tar-gz-bytes")
 	sumsURL := "https://example.invalid/checksums.txt"
+	sigURL := sumsURL + ".sig"
 	tgzURL := "https://example.invalid/oh-my-agentic-coder_2.0.0_linux_x86_64.tar.gz"
 
 	deps := baseDeps(t)
 	deps.Source = fakeReleaseSource{rel: Release{TagName: "v2.0.0", Assets: []Asset{
 		{Name: "oh-my-agentic-coder_2.0.0_linux_x86_64.tar.gz", BrowserDownloadURL: tgzURL},
 		{Name: "checksums.txt", BrowserDownloadURL: sumsURL},
+		{Name: "checksums.txt.sig", BrowserDownloadURL: sigURL},
 	}}}
 	deps.Fetcher = &fakeFetcher{files: map[string][]byte{
 		sumsURL: checksumsFile("oh-my-agentic-coder_2.0.0_linux_x86_64.tar.gz", tgzBody),
+		sigURL:  []byte("test-signature"),
 		tgzURL:  tgzBody,
 	}}
 	deps.GOOS, deps.GOARCH = "linux", "amd64"
@@ -330,15 +357,18 @@ func TestCheck_LinuxNoPackageManagerFallsBackToTarball(t *testing.T) {
 
 func TestCheck_ChecksumMismatch(t *testing.T) {
 	sumsURL := "https://example.invalid/checksums.txt"
+	sigURL := sumsURL + ".sig"
 	debURL := "https://example.invalid/oh-my-agentic-coder_2.0.0_linux_x86_64.deb"
 
 	deps := baseDeps(t)
 	deps.Source = fakeReleaseSource{rel: Release{TagName: "v2.0.0", Assets: []Asset{
 		{Name: "oh-my-agentic-coder_2.0.0_linux_x86_64.deb", BrowserDownloadURL: debURL},
 		{Name: "checksums.txt", BrowserDownloadURL: sumsURL},
+		{Name: "checksums.txt.sig", BrowserDownloadURL: sigURL},
 	}}}
 	deps.Fetcher = &fakeFetcher{files: map[string][]byte{
 		sumsURL: checksumsFile("oh-my-agentic-coder_2.0.0_linux_x86_64.deb", []byte("expected-bytes")),
+		sigURL:  []byte("test-signature"),
 		debURL:  []byte("actually-different-bytes"),
 	}}
 	deps.GOOS, deps.GOARCH = "linux", "amd64"
@@ -354,15 +384,18 @@ func TestCheck_ChecksumMismatch(t *testing.T) {
 
 func TestCheck_ChecksumMismatch_CleansTempFile(t *testing.T) {
 	sumsURL := "https://example.invalid/checksums.txt"
+	sigURL := sumsURL + ".sig"
 	debURL := "https://example.invalid/oh-my-agentic-coder_2.0.0_linux_x86_64.deb"
 
 	deps := baseDeps(t)
 	deps.Source = fakeReleaseSource{rel: Release{TagName: "v2.0.0", Assets: []Asset{
 		{Name: "oh-my-agentic-coder_2.0.0_linux_x86_64.deb", BrowserDownloadURL: debURL},
 		{Name: "checksums.txt", BrowserDownloadURL: sumsURL},
+		{Name: "checksums.txt.sig", BrowserDownloadURL: sigURL},
 	}}}
 	fetcher := &fakeFetcher{files: map[string][]byte{
 		sumsURL: checksumsFile("oh-my-agentic-coder_2.0.0_linux_x86_64.deb", []byte("expected-bytes")),
+		sigURL:  []byte("test-signature"),
 		debURL:  []byte("actually-different-bytes"),
 	}}
 	deps.Fetcher = fetcher
