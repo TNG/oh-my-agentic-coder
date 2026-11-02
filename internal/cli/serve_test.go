@@ -423,8 +423,8 @@ func TestServerExposureWarning(t *testing.T) {
 	unset := func(string) string { return "" }
 	inner := []string{"opencode", "serve"}
 	w := serverExposureWarning(oc, inner, unset)
-	if w == "" || !strings.Contains(w, "4096") || !strings.Contains(w, "OPENCODE_SERVER_PASSWORD") {
-		t.Errorf("expected warning naming :4096 and OPENCODE_SERVER_PASSWORD, got %q", w)
+	if w == "" || !strings.Contains(w, "4096") || !strings.Contains(w, "OMAC_SERVE_PASSWORD") || !strings.Contains(w, "no fixed password") || strings.Contains(w, "require authentication") {
+		t.Errorf("expected accurate no-fixed-password warning naming :4096 and the dedicated source, got %q", w)
 	}
 
 	// The warning names the port actually bound, not the harness default.
@@ -749,23 +749,22 @@ func TestForwardHarnessEnvNoHomeEnvAddsNothing(t *testing.T) {
 	}
 }
 
-func TestForwardServerAuthEnv(t *testing.T) {
+func TestServeAuthEnvDoesNotAutomaticallyAllowAmbient(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	stageProfile(t, home, `{"meta": {"name": "default"}, "environment": {"allow_vars": ["HOME"]}}`)
 	plan := nativePlanForTest(t)
-	argv := []string{"/usr/bin/omac", "sandbox", "run", "--profile", "default", "--", "opencode", "serve"}
 
 	oc, _ := config.LookupHarness("opencode")
-	got := strings.Join(forwardServerAuthEnv(argv, oc, plan), " ")
-	if !strings.Contains(got, "--allow-env OPENCODE_SERVER_PASSWORD --") {
-		t.Errorf("opencode serve should forward OPENCODE_SERVER_PASSWORD; got %v", got)
+	got, err := prepareServeAuthEnv("", oc, plan, false)
+	if err != nil || len(got) != 0 {
+		t.Errorf("ambient server password must not receive an automatic exception; error %v", err)
 	}
 
 	// A harness without a server mode gets nothing.
 	cc, _ := config.LookupHarness("claude-code")
-	if g := forwardServerAuthEnv(argv, cc, plan); !equalStrings(g, argv) {
-		t.Errorf("non-server harness: got %v, want unchanged", g)
+	if g, err := prepareServeAuthEnv("", cc, plan, false); err != nil || len(g) != 0 {
+		t.Errorf("non-server harness should preserve normal behavior; error %v", err)
 	}
 }
 

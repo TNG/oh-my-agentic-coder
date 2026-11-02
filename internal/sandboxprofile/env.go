@@ -5,6 +5,13 @@ import (
 	"strings"
 )
 
+// ServePasswordEnv is consumed by the host launcher, never the sandbox.
+const ServePasswordEnv = "OMAC_SERVE_PASSWORD"
+
+// ServeAuthTargetEnv carries only the target variable's name to the native
+// supervisor, which verifies final filtering and strips this marker.
+const ServeAuthTargetEnv = "OMAC_SERVE_AUTH_TARGET"
+
 // dangerousEnvExact are always dropped from the child environment,
 // even when matched by allow_vars (nono's env_sanitization list plus
 // the 1Password meta-secrets).
@@ -262,7 +269,7 @@ func envVarAllowed(key string, allowVars []string) bool {
 }
 
 // FilterEnv builds the child environment from scratch:
-//  1. drop the hardcoded danger blocklist,
+//  1. drop the hardcoded danger blocklist and host-only serve variables,
 //  2. apply the optional allow_vars allowlist,
 //  3. overlay injected vars (which win over inherited values),
 //  4. LAST, drop everything matching denyVars.
@@ -276,6 +283,7 @@ func envVarAllowed(key string, allowVars []string) bool {
 // warn when deny_vars removes a base operational var; see DeniedBaseVars).
 //
 // environ entries are "KEY=VALUE" as from os.Environ().
+// Host-only serve variables are also excluded from the injected overlay.
 func FilterEnv(environ []string, allowVars, denyVars []string, injected map[string]string) []string {
 	out := make([]string, 0, len(environ)+len(injected))
 	for _, kv := range environ {
@@ -284,7 +292,7 @@ func FilterEnv(environ []string, allowVars, denyVars []string, injected map[stri
 			continue
 		}
 		key := kv[:eq]
-		if IsDangerousEnvVar(key) {
+		if IsDangerousEnvVar(key) || key == ServePasswordEnv || key == ServeAuthTargetEnv {
 			continue
 		}
 		if !envVarAllowed(key, allowVars) {
@@ -296,6 +304,9 @@ func FilterEnv(environ []string, allowVars, denyVars []string, injected map[stri
 		out = append(out, kv)
 	}
 	for k, v := range injected {
+		if k == ServePasswordEnv || k == ServeAuthTargetEnv {
+			continue
+		}
 		out = append(out, k+"="+v)
 	}
 	if len(denyVars) == 0 {

@@ -12,12 +12,16 @@ import (
 	"os"
 
 	"github.com/TNG/oh-my-agentic-coder/internal/cli"
+	"github.com/TNG/oh-my-agentic-coder/internal/opencodestate"
 )
 
 // Version is the binary version string. Overridden at link time via -ldflags.
 var Version = "0.1.0-dev"
 
 func main() {
+	if handled, code := opencodestate.DispatchSQLiteReader(os.Args[1:]); handled {
+		os.Exit(code)
+	}
 	exitCode := cli.Run(os.Args[1:], Version)
 	if exitCode != 0 {
 		// cli.Run has already printed a user-facing message.

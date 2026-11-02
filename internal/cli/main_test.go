@@ -7,6 +7,7 @@ import (
 	"github.com/zalando/go-keyring"
 
 	"github.com/TNG/oh-my-agentic-coder/internal/config"
+	"github.com/TNG/oh-my-agentic-coder/internal/opencodestate"
 )
 
 // TestMain installs go-keyring's in-memory mock provider for the whole
@@ -24,6 +25,12 @@ import (
 // friends): tests fake $HOME, but an ambient override names an absolute
 // path and would survive the fake.
 func TestMain(m *testing.M) {
+	if handled, code := opencodestate.DispatchSQLiteReader(os.Args[1:]); handled {
+		os.Exit(code)
+	}
+	if mode := os.Getenv("OMAC_TEST_SERVE_AUTH_LAUNCH"); mode != "" {
+		os.Exit(serveAuthLaunchChild(mode))
+	}
 	keyring.MockInit()
 	clearHarnessHomeEnvs()
 	os.Exit(m.Run())

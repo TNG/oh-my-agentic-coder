@@ -10,20 +10,18 @@
 //     Desktop builds, rows of drafts.sqlite in Desktop 1.18+. Folders
 //     opened in the Desktop UI can exist ONLY here.
 //
-// We read all three (opencode.db via the sqlite3 CLI when available,
-// drafts.sqlite via the pure-Go driver) and merge. The pseudo-project with worktree "/"
+// We read all three with bounded JSON and pure-Go SQLite readers and merge.
+// The pseudo-project with worktree "/"
 // (OpenCode's "global" record) is always skipped, as are worktrees
 // that no longer exist. Projects the Desktop store names only by ID are
 // resolved and verified in project_ids.go.
 package opencodestate
 
 import (
-	"database/sql"
 	"encoding/json"
 	"net"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -64,9 +62,12 @@ type SkipReason string
 const (
 	SkipStale     SkipReason = "no longer exists"
 	SkipUntrusted SkipReason = "untrusted for a grant decision (record from agent-writable OpenCode state names an in-home path)"
+	// SkipInvalidSource uses Path for the source, not a worktree. No record
+	// contents or underlying parser/database error are included.
+	SkipInvalidSource SkipReason = "invalid, oversized, or unreadable discovery source (ignored)"
 )
 
-// SkippedWorktree pairs a rejected worktree path with its reason.
+// SkippedWorktree pairs a rejected worktree or discovery source with its reason.
 type SkippedWorktree struct {
 	Path   string
 	Reason SkipReason
@@ -95,7 +96,8 @@ func storageProjectDir() (string, error) {
 // emitting both would only add redundant sandbox rules.
 // Missing state (OpenCode not installed / never run) yields an empty
 // list, not an error. skipped receives worktrees that were recorded
-// but rejected, each with its reason.
+// but rejected, each with its reason. Invalid sources are reported with
+// SkipInvalidSource without discarding grants from independent valid sources.
 //
 // Records from agent-writable sources (the storage JSON tree and the
 // opencode.db SQLite db, both under ~/.local/share/opencode) are not
@@ -107,19 +109,35 @@ func storageProjectDir() (string, error) {
 // project ID from that store, keep the looser isBroadWorktree rule so
 // the Desktop workflow still resolves in-home projects.
 func Worktrees() (worktrees []string, skipped []SkippedWorktree, err error) {
-	storage, err := storageWorktrees()
+	records, diagnostics, err := readProjectSources()
 	if err != nil {
 		return nil, nil, err
 	}
-	raw := append(storage, dbWorktrees()...)
-	raw = append(raw, desktopWorktrees()...)
+	var raw []worktreeEntry
+	for _, rec := range records {
+		raw = append(raw, worktreeEntry{path: rec.Worktree, origin: originAgentWritable})
+	}
+	desktop, desktopDiagnostics := desktopWorktreesFromRecords(records)
+	raw = append(raw, desktop...)
+	skipped = append(diagnostics, desktopDiagnostics...)
 
 	home, _ := os.UserHomeDir()
+	if canonical, herr := filepath.EvalSymlinks(home); herr == nil {
+		home = canonical
+	}
 	seen := map[string]bool{}
 	for _, e := range raw {
 		wt := e.path
 		// Skip the global pseudo-project and anything non-absolute.
-		if wt == "" || wt == "/" || !filepath.IsAbs(wt) || seen[wt] {
+		if wt == "" || wt == "/" || !filepath.IsAbs(wt) {
+			continue
+		}
+		wt, serr := canonicalWorktree(wt)
+		if serr != nil {
+			skipped = append(skipped, SkippedWorktree{Path: e.path, Reason: SkipStale})
+			continue
+		}
+		if seen[wt] {
 			continue
 		}
 		// Reject broad paths ($HOME and its ancestors) from every
@@ -130,10 +148,6 @@ func Worktrees() (worktrees []string, skipped []SkippedWorktree, err error) {
 			continue
 		}
 		seen[wt] = true
-		if fi, serr := os.Stat(wt); serr != nil || !fi.IsDir() {
-			skipped = append(skipped, SkippedWorktree{Path: wt, Reason: SkipStale})
-			continue
-		}
 		worktrees = append(worktrees, wt)
 	}
 	sort.Slice(skipped, func(i, j int) bool {
@@ -160,6 +174,10 @@ func rejectsForHome(wt, home string, origin worktreeOrigin) bool {
 func isInHome(wt, home string) bool {
 	clean := filepath.Clean(wt)
 	homeClean := filepath.Clean(home)
+	// Appending a separator to root would make the prefix "//".
+	if clean == string(filepath.Separator) || homeClean == string(filepath.Separator) {
+		return true
+	}
 	if clean == homeClean {
 		return true
 	}
@@ -203,26 +221,15 @@ func storageWorktrees() ([]worktreeEntry, error) {
 	if err != nil {
 		return nil, err
 	}
-	entries, err := os.ReadDir(dir)
+	records, err := readStorageProjectRecords(dir)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, err
+		return nil, errInvalidSource
 	}
 	var out []worktreeEntry
-	for _, e := range entries {
-		if e.IsDir() || filepath.Ext(e.Name()) != ".json" {
-			continue
-		}
-		data, rerr := os.ReadFile(filepath.Join(dir, e.Name()))
-		if rerr != nil {
-			continue
-		}
-		var rec projectRecord
-		if json.Unmarshal(data, &rec) != nil {
-			continue
-		}
+	for _, rec := range records {
 		out = append(out, worktreeEntry{path: rec.Worktree, origin: originAgentWritable})
 	}
 	return out, nil
@@ -244,29 +251,77 @@ func storageWorktrees() ([]worktreeEntry, error) {
 // names only by ID are resolved through verifiedProjectWorktrees.
 // Best-effort: missing files or unexpected shapes yield nil.
 func desktopWorktrees() []worktreeEntry {
+	records := projectRecords()
+	out, _ := desktopWorktreesFromRecords(records)
+	return out
+}
+
+func desktopWorktreesFromRecords(records []projectRecord) ([]worktreeEntry, []SkippedWorktree) {
+	var out []worktreeEntry
+	var ids []string
+	var diagnostics []SkippedWorktree
+	for _, base := range desktopStoreDirs() {
+		for _, name := range []string{"opencode.global.dat", "drafts.sqlite"} {
+			path := filepath.Join(base, name)
+			var top map[string]json.RawMessage
+			var err error
+			if name == "drafts.sqlite" {
+				top, err = readDesktopSQLite(path)
+			} else {
+				top, err = readDesktopFile(path)
+			}
+			diagnostics = append(diagnostics, sourceDiagnostic(path, err)...)
+			if err != nil {
+				continue
+			}
+			for _, p := range globalStoreWorktrees(top) {
+				out = append(out, worktreeEntry{path: p, origin: originDesktop})
+			}
+			ids = append(ids, globalStoreProjectIDs(top)...)
+		}
+	}
+	for _, p := range verifiedProjectRecords(ids, records) {
+		out = append(out, worktreeEntry{path: p, origin: originVerifiedID})
+	}
+	return out, diagnostics
+}
+
+// desktopStoreDirs is the single enumeration used for reads and protection.
+// Keep literal absolute spellings: callers must not expand runtime metacharacters.
+func desktopStoreDirs() []string {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil
 	}
-	var out []worktreeEntry
-	var ids []string
+	var dirs []string
 	for _, appID := range []string{"ai.opencode.desktop", "ai.opencode.desktop.beta"} {
-		for _, base := range desktopDataDirs(home, appID) {
-			for _, top := range []map[string]json.RawMessage{
-				readGlobalStoreFile(filepath.Join(base, "opencode.global.dat")),
-				readGlobalStoreSQLite(filepath.Join(base, "drafts.sqlite")),
-			} {
-				for _, p := range globalStoreWorktrees(top) {
-					out = append(out, worktreeEntry{path: p, origin: originDesktop})
-				}
-				ids = append(ids, globalStoreProjectIDs(top)...)
-			}
+		dirs = append(dirs, desktopDataDirs(home, appID)...)
+	}
+	if state := os.Getenv("XDG_STATE_HOME"); state != "" {
+		dirs = append(dirs, state)
+	}
+	var out []string
+	seen := map[string]bool{}
+	for _, dir := range dirs {
+		absolute, err := filepath.Abs(dir)
+		if err == nil && !seen[absolute] {
+			seen[absolute] = true
+			out = append(out, absolute)
 		}
 	}
-	for _, p := range verifiedProjectWorktrees(ids) {
-		out = append(out, worktreeEntry{path: p, origin: originVerifiedID})
-	}
 	return out
+}
+
+// DesktopStorePaths returns all literal absolute paths consulted for Desktop
+// discovery, including absent stores and SQLite companions that need protection.
+func DesktopStorePaths() []string {
+	var paths []string
+	for _, base := range desktopStoreDirs() {
+		for _, name := range []string{"drafts.sqlite", "drafts.sqlite-wal", "drafts.sqlite-shm", "drafts.sqlite-journal", "opencode.global.dat"} {
+			paths = append(paths, filepath.Join(base, name))
+		}
+	}
+	return paths
 }
 
 // desktopDataDirs returns the platform candidates for a desktop app's
@@ -369,14 +424,7 @@ func defaultDesktopStateDir(home string) string {
 // (pre-1.18 Desktop) as its top-level key -> value map, or nil when it
 // is missing or invalid.
 func readGlobalStoreFile(path string) map[string]json.RawMessage {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil
-	}
-	var top map[string]json.RawMessage
-	if json.Unmarshal(data, &top) != nil {
-		return nil
-	}
+	top, _ := readDesktopFile(path)
 	return top
 }
 
@@ -390,30 +438,7 @@ func readGlobalStoreFile(path string) map[string]json.RawMessage {
 // Desktop is not disturbed and no sqlite3 binary is needed. Any error
 // (no file, locked, different schema) yields nil.
 func readGlobalStoreSQLite(path string) map[string]json.RawMessage {
-	if fi, err := os.Stat(path); err != nil || !fi.Mode().IsRegular() {
-		return nil
-	}
-	db, err := sql.Open("sqlite", "file:"+path+"?mode=ro&_pragma=busy_timeout=500")
-	if err != nil {
-		return nil
-	}
-	defer db.Close()
-	rows, err := db.Query(`SELECT key, value FROM state WHERE name = 'opencode.global.dat'`)
-	if err != nil {
-		return nil
-	}
-	defer rows.Close()
-	top := map[string]json.RawMessage{}
-	for rows.Next() {
-		var key, value string
-		if rows.Scan(&key, &value) != nil {
-			continue
-		}
-		top[key] = json.RawMessage(value)
-	}
-	if rows.Err() != nil {
-		return nil
-	}
+	top, _ := readDesktopSQLite(path)
 	return top
 }
 
@@ -552,10 +577,9 @@ func unwrapValue(raw json.RawMessage) []byte {
 	return raw
 }
 
-// dbWorktrees scrapes the project table from opencode.db via the
-// sqlite3 CLI. Best-effort: a missing db or missing sqlite3 binary
-// yields nil. The db is opened read-only so a live OpenCode instance
-// is not disturbed. The db lives under ~/.local/share/opencode, which
+// dbWorktrees reads the project table from opencode.db using the same
+// bounded reader as ID resolution. Read-only access does not disturb a live
+// OpenCode instance. The db lives under ~/.local/share/opencode, which
 // the harness mounts read+write into the confined agent, so records
 // from here are tagged originAgentWritable.
 func dbWorktrees() []worktreeEntry {
@@ -564,23 +588,9 @@ func dbWorktrees() []worktreeEntry {
 		return nil
 	}
 	db := filepath.Join(home, ".local", "share", "opencode", "opencode.db")
-	if _, err := os.Stat(db); err != nil {
-		return nil
-	}
-	sqlite, err := exec.LookPath("sqlite3")
-	if err != nil {
-		return nil
-	}
-	out, err := exec.Command(sqlite,
-		"file:"+db+"?mode=ro", "SELECT worktree FROM project;").Output()
-	if err != nil {
-		return nil
-	}
 	var entries []worktreeEntry
-	for _, line := range strings.Split(string(out), "\n") {
-		if line = strings.TrimSpace(line); line != "" {
-			entries = append(entries, worktreeEntry{path: line, origin: originAgentWritable})
-		}
+	for _, rec := range dbProjectRecords(db) {
+		entries = append(entries, worktreeEntry{path: rec.Worktree, origin: originAgentWritable})
 	}
 	return entries
 }

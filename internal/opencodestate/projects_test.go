@@ -123,11 +123,6 @@ func TestWorktrees(t *testing.T) {
 	writeProject(t, stateDir, "fff", prefixSib) // prefix sibling -> kept
 	writeProject(t, stateDir, "global", "/")    // pseudo-project
 	writeProject(t, stateDir, "rel", "relative/path")
-	// Garbage file must not break parsing.
-	if err := os.WriteFile(filepath.Join(stateDir, "junk.json"), []byte("{nope"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
 	worktrees, skipped, err := Worktrees()
 	if err != nil {
 		t.Fatal(err)

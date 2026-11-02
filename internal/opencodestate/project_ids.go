@@ -3,9 +3,9 @@ package opencodestate
 import (
 	"bufio"
 	"crypto/sha1"
-	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -19,9 +19,10 @@ import (
 // project IDs ("usedProjectIDs", "lastProjectID"). The ID -> folder
 // mapping lives in OpenCode's own state (opencode.db, storage JSON),
 // which the confined agent can write, so a looked-up path is granted
-// only if the folder's own files reproduce the ID the same way OpenCode
-// derives it. The agent cannot change files in a folder it has no
-// access to, so it cannot make a forged path pass this check.
+// only if the canonical path or repository identity matches that trusted ID.
+// Directory hashes bind path spelling, not contents; their authority comes
+// from the protected Desktop store. Git IDs describe a repository, not one
+// particular clone's path.
 //
 // Two accepted limits: a second clone of a repository with the same
 // "origin" remote verifies too (OpenCode gives clones one ID), and a
@@ -59,9 +60,13 @@ func globalStoreProjectIDs(top map[string]json.RawMessage) []string {
 }
 
 // verifiedProjectWorktrees resolves trusted project IDs to folders via
-// OpenCode's project records and keeps only the folders whose files
-// reproduce the ID (see idMatchesWorktree).
+// OpenCode's project records and checks canonical path or repository identity
+// against the trusted ID (see idMatchesWorktree).
 func verifiedProjectWorktrees(ids []string) []string {
+	return verifiedProjectRecords(ids, projectRecords())
+}
+
+func verifiedProjectRecords(ids []string, records []projectRecord) []string {
 	if len(ids) == 0 {
 		return nil
 	}
@@ -76,13 +81,14 @@ func verifiedProjectWorktrees(ids []string) []string {
 	}
 	var out []string
 	seen := map[string]bool{}
-	for _, rec := range projectRecords() {
-		if !want[rec.ID] || seen[rec.Worktree] {
+	for _, rec := range records {
+		if !want[rec.ID] {
 			continue
 		}
-		if idMatchesWorktree(rec.ID, rec.Worktree) {
-			seen[rec.Worktree] = true
-			out = append(out, rec.Worktree)
+		canonical, err := canonicalWorktree(rec.Worktree)
+		if err == nil && !seen[canonical] && idMatchesWorktree(rec.ID, canonical) {
+			seen[canonical] = true
+			out = append(out, canonical)
 		}
 	}
 	return out
@@ -92,57 +98,15 @@ func verifiedProjectWorktrees(ids []string) []string {
 // storage JSON files and opencode.db. These sources are agent-writable,
 // so callers must verify a record before trusting it.
 func projectRecords() []projectRecord {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil
-	}
-	var out []projectRecord
-	if dir, derr := storageProjectDir(); derr == nil {
-		entries, _ := os.ReadDir(dir)
-		for _, e := range entries {
-			if e.IsDir() || filepath.Ext(e.Name()) != ".json" {
-				continue
-			}
-			data, rerr := os.ReadFile(filepath.Join(dir, e.Name()))
-			if rerr != nil {
-				continue
-			}
-			var rec projectRecord
-			if json.Unmarshal(data, &rec) == nil {
-				out = append(out, rec)
-			}
-		}
-	}
-	return append(out, dbProjectRecords(filepath.Join(home, ".local", "share", "opencode", "opencode.db"))...)
+	records, _, _ := readProjectSources()
+	return records
 }
 
 // dbProjectRecords reads the id/worktree pairs of opencode.db's project
 // table, read-only. Any error yields nil.
 func dbProjectRecords(path string) []projectRecord {
-	if fi, err := os.Stat(path); err != nil || !fi.Mode().IsRegular() {
-		return nil
-	}
-	db, err := sql.Open("sqlite", "file:"+path+"?mode=ro&_pragma=busy_timeout=500")
-	if err != nil {
-		return nil
-	}
-	defer db.Close()
-	rows, err := db.Query(`SELECT id, worktree FROM project`)
-	if err != nil {
-		return nil
-	}
-	defer rows.Close()
-	var out []projectRecord
-	for rows.Next() {
-		var rec projectRecord
-		if rows.Scan(&rec.ID, &rec.Worktree) == nil {
-			out = append(out, rec)
-		}
-	}
-	if rows.Err() != nil {
-		return nil
-	}
-	return out
+	records, _ := readDBProjectRecords(path)
+	return records
 }
 
 // idMatchesWorktree reports whether OpenCode would derive project ID id
@@ -152,20 +116,19 @@ func dbProjectRecords(path string) []projectRecord {
 //     the ID cached in <git common dir>/opencode, else the root commit;
 //   - no git, or git discovery failed: sha1("directory:" + wt).
 //
-// Each candidate is computed from files inside wt only. The root-commit
+// The directory form hashes canonical path spelling. Git metadata may live
+// outside wt through legitimate gitdir/commondir references. The root-commit
 // form is not checked: it would need git to run in a folder named by
 // agent-writable data, and git executes hooks and config from the repo.
 // Such projects keep needing an explicit profile grant.
 //
-// wt must be a clean absolute path to a real directory, not a symlink:
-// OpenCode stores resolved paths, so a symlink in its place means the
-// folder was replaced after OpenCode recorded it.
+// Validation and the eventual grant both refer to the resolved directory.
 func idMatchesWorktree(id, wt string) bool {
-	if id == "" || id == "global" || !filepath.IsAbs(wt) || filepath.Clean(wt) != wt {
+	if id == "" || id == "global" {
 		return false
 	}
-	fi, err := os.Lstat(wt)
-	if err != nil || !fi.IsDir() {
+	wt, err := canonicalWorktree(wt)
+	if err != nil {
 		return false
 	}
 	if sha1Hex("directory:"+wt) == id {
@@ -175,10 +138,12 @@ func idMatchesWorktree(id, wt string) bool {
 	if common == "" {
 		return false
 	}
-	if data, err := os.ReadFile(filepath.Join(common, "opencode")); err == nil {
+	if data, err := readMetadata(filepath.Join(common, "opencode")); err == nil {
 		if cached := strings.TrimSpace(string(data)); cached != "" && cached == id {
 			return true
 		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return false
 	}
 	if n := normalizeRemote(originURL(filepath.Join(common, "config"))); n != "" {
 		return sha1Hex("git-remote:"+n) == id
@@ -196,13 +161,13 @@ func sha1Hex(s string) string {
 // ".git" file points at. Returns "" when wt is not a repository root.
 func gitCommonDir(wt string) string {
 	dotGit := filepath.Join(wt, ".git")
-	fi, err := os.Stat(dotGit)
+	fi, err := os.Lstat(dotGit)
 	if err != nil {
 		return ""
 	}
 	gitDir := dotGit
 	if !fi.IsDir() {
-		data, err := os.ReadFile(dotGit)
+		data, err := readMetadata(dotGit)
 		if err != nil {
 			return ""
 		}
@@ -211,18 +176,40 @@ func gitCommonDir(wt string) string {
 			return ""
 		}
 		gitDir = strings.TrimSpace(target)
+		if gitDir == "" {
+			return ""
+		}
 		if !filepath.IsAbs(gitDir) {
 			gitDir = filepath.Join(wt, gitDir)
 		}
 	}
-	if data, err := os.ReadFile(filepath.Join(gitDir, "commondir")); err == nil {
+	gitDir = filepath.Clean(gitDir)
+	if !isMetadataDir(gitDir) {
+		return ""
+	}
+	if data, err := readMetadata(filepath.Join(gitDir, "commondir")); err == nil {
 		c := strings.TrimSpace(string(data))
+		if c == "" {
+			return ""
+		}
 		if !filepath.IsAbs(c) {
 			c = filepath.Join(gitDir, c)
 		}
-		return filepath.Clean(c)
+		c = filepath.Clean(c)
+		if !isMetadataDir(c) {
+			return ""
+		}
+		return c
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return ""
 	}
 	return gitDir
+}
+
+// Git references may leave the worktree, but not traverse symlink metadata.
+func isMetadataDir(path string) bool {
+	canonical, err := canonicalWorktree(path)
+	return err == nil && canonical == path
 }
 
 // originURL returns the url of [remote "origin"] in a git config file,
@@ -230,13 +217,13 @@ func gitCommonDir(wt string) string {
 // usually sees is supported; url.<base>.insteadOf rewrites are not
 // applied.
 func originURL(configPath string) string {
-	f, err := os.Open(configPath)
+	data, err := readMetadata(configPath)
 	if err != nil {
 		return ""
 	}
-	defer f.Close()
 	inOrigin := false
-	sc := bufio.NewScanner(f)
+	sc := bufio.NewScanner(strings.NewReader(string(data)))
+	sc.Buffer(make([]byte, 4096), metadataMaxBytes+1)
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
 		if strings.HasPrefix(line, "[") {
