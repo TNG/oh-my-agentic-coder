@@ -260,7 +260,7 @@ The other harnesses follow the same pattern with their own base directory (plus 
 
 ## Asking the user before a route runs
 
-By default, a call from the agent to your sidecar is forwarded without a prompt. To make omac ask the user first, add an `approvals` block to `omac.yaml`. Once the block exists, **every route asks, except the ones you list with `ask: false`**:
+By default, a call from the agent to your sidecar is forwarded without a prompt. To make omac ask the user first, add an `approvals` block to `omac.yaml`. Once the block exists, **every route asks, except the ones you list with `approval: none`**:
 
 ```yaml
 sidecar:
@@ -268,13 +268,14 @@ sidecar:
     version: 1
     endpoints:
       - match: "GET /folders"
-        ask: false
+        approval: none
       - match: "POST /send"
+        approval: required
         description: "Sends an email as you"
 ```
 
 - `match` is `<METHOD> <path>`. The path is relative to your mount, matched after omac cleans it (`/a/../b` becomes `/b`). `{name}` matches one segment, and `**` matches the rest and may only be last. No regular expressions, and the query string is not part of the match.
-- A route asks unless its entry says `ask: false`. `ask: true` is the same as leaving `ask` out. A route with no entry asks too, so a route you add to the sidecar later is safe until you list it.
+- A route asks unless its entry says `approval: none`. `approval: required` is the explicit form of asking. A route with no entry asks too, so a route you add to the sidecar later is safe until you list it.
 - When a route asks, omac holds the call until the user answers. The user can allow it once, for the session, or permanently, or deny it.
 - A skill without the `approvals` block is forwarded without a prompt, which is what every skill did before this field existed.
 - `description` is one sentence shown to the user next to what omac saw itself (method, path, query). It never replaces that.
