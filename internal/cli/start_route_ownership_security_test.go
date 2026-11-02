@@ -155,7 +155,7 @@ func TestSecurityStartModeRoutesCarryOwner(t *testing.T) {
 	// A short TMPDIR keeps the control-info file and any sockets the launch
 	// pipeline creates inside this test's lifetime, independent of the
 	// outer environment.
-	shortTmp, err := os.MkdirTemp("/tmp", "omac-cli-")
+	shortTmp, err := os.MkdirTemp(".", "omac-cli-")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,12 +165,16 @@ func TestSecurityStartModeRoutesCarryOwner(t *testing.T) {
 
 	workdir := t.TempDir()
 	const (
-		approvedName = "keeper"
-		claimedMount = "keeper"
-		latecomer    = "latecomer"
-		approvedBody = "answer-from-keeper"
+		approvedName     = "keeper"
+		claimedMount     = "keeper"
+		initialLatecomer = "initial-latecomer"
+		latecomer        = "latecomer"
+		approvedBody     = "answer-from-keeper"
 	)
 	stageApprovedSidecarSkill(t, workdir, approvedName, claimedMount, approvedBody)
+	// This collision is present before runLaunch constructs the facade. Its
+	// initial route installation must apply the same ownership rule as reload.
+	registerUnapprovedSkill(t, workdir, initialLatecomer, claimedMount)
 
 	// A hold script plays the launched agent: it dumps its environment and
 	// stays alive until the test releases it. The dump carries OMAC_PORT
@@ -306,6 +310,37 @@ func TestSecurityStartModeRoutesCarryOwner(t *testing.T) {
 	code, body = getThroughFacade(probeURL, facadeToken)
 	if code != http.StatusOK || body != approvedBody {
 		t.Errorf("after reload, /%s/answer via the facade is %d %q, want 200 %q: a mid-session registration replaced a live approved skill's route\nstderr:\n%s", claimedMount, code, body, approvedBody, stderrText())
+	}
+
+	// Removing the rejected registration must clean up only its own stub.
+	// The facade still maps this mount to the approved keeper route.
+	if err := registry.WithLock(workdir, func() error {
+		reg, err := registry.Load(workdir)
+		if err != nil {
+			return err
+		}
+		reg.Remove(latecomer)
+		return registry.Save(workdir, reg)
+	}); err != nil {
+		t.Fatalf("remove latecomer: %v", err)
+	}
+	req, err = http.NewRequest(http.MethodPost, controlBase+"/__omac__/reload", nil)
+	if err != nil {
+		t.Fatalf("build second reload request: %v", err)
+	}
+	req.Header.Set("X-Omac-Control-Token", controlToken)
+	resp, err = (&http.Client{Timeout: 10 * time.Second}).Do(req)
+	if err != nil {
+		t.Fatalf("POST second reload: %v", err)
+	}
+	respBody, _ = io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST second reload: status %d, body %q", resp.StatusCode, string(respBody))
+	}
+	code, body = getThroughFacade(probeURL, facadeToken)
+	if code != http.StatusOK || body != approvedBody {
+		t.Errorf("after removing the rejected registration, /%s/answer via the facade is %d %q, want 200 %q", claimedMount, code, body, approvedBody)
 	}
 
 	// Release the inner agent and let runLaunch finish.

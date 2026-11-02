@@ -128,3 +128,59 @@ func TestSecurityReloadCannotReplaceOwnedRoute(t *testing.T) {
 		t.Errorf("UpstreamPort(fresh) = %d after the upgrade, want %d", got, answerA)
 	}
 }
+
+func TestSecurityConstructorCannotReplaceOwnedRoute(t *testing.T) {
+	answer := startOwnershipUpstream(t, "approved-answer")
+	f := New("", "127.0.0.1:0", []Route{
+		{Mount: "keeper", UpstreamPort: answer, Skill: "keeper", Owner: "keeper", State: RouteReady},
+		{Mount: "keeper", Skill: "latecomer", State: RouteBroken, Detail: "waiting for approval"},
+	}, 0, 30*time.Second, "", "route-ownership-test")
+	if err := f.Start(context.Background()); err != nil {
+		t.Fatalf("start facade: %v", err)
+	}
+	t.Cleanup(func() { _ = f.Close() })
+
+	resp, err := http.Get("http://127.0.0.1:" + strconv.Itoa(f.TCPPort()) + "/keeper/data")
+	if err != nil {
+		t.Fatalf("probe owned route: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK || string(body) != "approved-answer" {
+		t.Fatalf("initial unowned placeholder displaced the approved route: got %d %q, want 200 %q", resp.StatusCode, body, "approved-answer")
+	}
+}
+
+func TestRemoveUnownedStubLeavesOtherRoutesAndCleansItsOwn(t *testing.T) {
+	answer := startOwnershipUpstream(t, "approved-answer")
+	f := New("", "127.0.0.1:0", []Route{
+		{Mount: "keeper", UpstreamPort: answer, Skill: "keeper", Owner: "keeper", State: RouteReady},
+		{Mount: "orphan", Skill: "orphan", State: RouteBroken, Detail: "waiting for approval"},
+	}, 0, 30*time.Second, "", "route-ownership-test")
+	if err := f.Start(context.Background()); err != nil {
+		t.Fatalf("start facade: %v", err)
+	}
+	t.Cleanup(func() { _ = f.Close() })
+	base := "http://127.0.0.1:" + strconv.Itoa(f.TCPPort())
+
+	f.RemoveUnownedStub("", "keeper", "latecomer")
+	resp, err := http.Get(base + "/keeper/data")
+	if err != nil {
+		t.Fatalf("probe owned route: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || string(body) != "approved-answer" {
+		t.Fatalf("stub cleanup removed another skill's route: got %d %q, want 200 %q", resp.StatusCode, body, "approved-answer")
+	}
+
+	f.RemoveUnownedStub("", "orphan", "orphan")
+	resp, err = http.Get(base + "/orphan/data")
+	if err != nil {
+		t.Fatalf("probe removed stub: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("removed unowned stub answers %d, want 404", resp.StatusCode)
+	}
+}

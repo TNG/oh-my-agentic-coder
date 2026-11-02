@@ -203,17 +203,21 @@ func (r *startReloader) pruneNotReady(reg *registry.Registry) {
 		registered[e.Name] = struct{}{}
 	}
 	r.mu.Lock()
-	var dropped []*notReadySkill
+	type droppedStub struct {
+		name string
+		st   *notReadySkill
+	}
+	var dropped []droppedStub
 	for name, st := range r.notReady {
 		if _, ok := registered[name]; !ok {
-			dropped = append(dropped, st)
+			dropped = append(dropped, droppedStub{name: name, st: st})
 			delete(r.notReady, name)
 			delete(r.warned, name)
 		}
 	}
 	r.mu.Unlock()
-	for _, st := range dropped {
-		r.facade.RemoveRoute("", st.Mount)
+	for _, dropped := range dropped {
+		r.facade.RemoveUnownedStub("", dropped.st.Mount, dropped.name)
 	}
 }
 
