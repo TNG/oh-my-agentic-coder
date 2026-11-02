@@ -33,6 +33,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/TNG/oh-my-agentic-coder/internal/approval"
 	"github.com/TNG/oh-my-agentic-coder/internal/audit"
 	"github.com/TNG/oh-my-agentic-coder/internal/intent"
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxdeny"
@@ -85,6 +86,12 @@ type Route struct {
 	// the root learn what the skill exposes without the skill needing to
 	// implement a discovery endpoint itself. Empty disables this.
 	SkillDir string
+
+	// Approvals is the skill's declared endpoint set (from the approved
+	// snapshot's omac.yaml). Nil means the skill declares none and is
+	// forwarded as before; non-nil means the gate admits only declared
+	// endpoints (see gate.go).
+	Approvals *approval.Set
 
 	// State selects forward vs. stub behavior. The zero value ("") is
 	// treated as RouteReady so existing callers that don't set it keep
@@ -153,6 +160,10 @@ type Facade struct {
 	// the /sandbox/denied endpoint. When empty the facade uses
 	// sandboxdeny.Default().FacadeNote.
 	DenialNote string
+
+	// Approver answers the gate for endpoints declared approval: required.
+	// Nil means no answer is possible and such requests are denied.
+	Approver Approver
 
 	// IntentRegistry records agent-declared access intents from
 	// POST /sandbox/intent. nil disables the endpoint (returns 503).
@@ -456,6 +467,9 @@ func (f *Facade) handle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	started := time.Now()
+	// The escaped path as received, before the "//" collapse below discards
+	// it: the gate needs the encoded form to reject %2F and friends.
+	rawEscaped := r.URL.EscapedPath()
 	// Normalize: collapse every run of slashes so $OMAC_BASE/sandbox/intent
 	// works when OMAC_BASE ends with a trailing slash (it always does —
 	// "http://127.0.0.1:PORT/" from start.go) regardless of where the
@@ -535,6 +549,15 @@ func (f *Facade) handle(w http.ResponseWriter, r *http.Request) {
 		if f.serveSkillDoc(w, r, route, started) {
 			return
 		}
+	}
+
+	// Declared-endpoint gate: only for routes whose skill declares approvals.
+	if route.Approvals != nil {
+		cleaned, ok := f.gate(w, r, route, rawEscaped, started)
+		if !ok {
+			return
+		}
+		rest = cleaned
 	}
 
 	// WebSocket / generic Upgrade path.
