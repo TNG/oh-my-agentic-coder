@@ -34,7 +34,8 @@ type ApprovalDecision struct {
 	Source string
 }
 
-// Approver answers the gate for endpoints declared approval: required. It
+// Approver answers the gate for requests that ask: routes declared
+// approval: required, and routes the declaration does not list. It
 // blocks until there is an answer; ctx ends when the client goes away.
 type Approver interface {
 	Approve(ctx context.Context, req ApprovalRequest) ApprovalDecision
@@ -66,14 +67,19 @@ func (f *Facade) gate(w http.ResponseWriter, r *http.Request, route *Route, rawE
 	// sidecar run a method other than the one that was approved.
 	approval.StripOverrideHeaders(r.Header)
 
-	entry, ok := route.Approvals.Lookup(r.Method, segs)
-	if !ok {
-		return deny(http.StatusForbidden, "undeclared-endpoint", "undeclared-endpoint", forward, nil)
-	}
 	rest := strings.TrimPrefix(forward, "/")
-	if entry.Approval == approval.None {
+	// With an approvals block, a route the block does not list asks too;
+	// only an entry with approval: none lets a request through unasked.
+	entry, matched := route.Approvals.Lookup(r.Method, segs)
+	if matched && entry.Approval == approval.None {
 		f.auditApproval(route, r.Method, forward, "allow", "declared", "")
 		return rest, true
+	}
+	if !matched {
+		// A stored answer is keyed on the rule. An unlisted route has none,
+		// so it gets its own exact one: "always" for one route must not
+		// cover every other route the block does not list.
+		entry.Match = r.Method + " " + forward
 	}
 
 	if f.Approver == nil {
