@@ -16,7 +16,7 @@ func TestIntegrationDesktopStoresBwrapLandlock(t *testing.T) {
 			g := fx.grants(t, false) // RO ancestors and a writable runtime sibling are supported.
 			g.ReadPaths = append(g.ReadPaths, omac)
 			stage2 := append([]string{omac, "sandbox", "stage2"}, Stage2Args(g)...)
-			stage2 = append(stage2, "--", "/bin/sh", "-c", fx.script())
+			stage2 = append(stage2, "--", "/bin/sh", fx.writeScript(t))
 			argv, err := BuildBwrapArgv(g, stage2)
 			if err != nil {
 				t.Fatal(err)

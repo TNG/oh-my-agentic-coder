@@ -429,8 +429,9 @@ func TestHardeningExactBounds(t *testing.T) {
 		t.Error("project row at exactly 1 MiB was rejected")
 	}
 	fixtureSQL(t, projectDB, `DELETE FROM project; WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<10000) INSERT INTO project SELECT CAST(x AS TEXT), '/good' FROM n`)
-	if got := dbProjectRecords(projectDB); len(got) != 10000 {
-		t.Errorf("source at exactly 10,000 records returned %d", len(got))
+	got, err := readDBProjectRecords(projectDB)
+	if err != nil || len(got) != 10000 {
+		t.Errorf("source at exactly 10,000 records returned %d: %v", len(got), err)
 	}
 	writeDesktopSQLite(t, home, map[string]string{"k": `"` + strings.Repeat("x", 1048573) + `"`})
 	if got := readGlobalStoreSQLite(filepath.Join(home, "drafts.sqlite")); len(got) != 1 {

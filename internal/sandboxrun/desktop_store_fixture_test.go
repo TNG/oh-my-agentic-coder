@@ -133,6 +133,15 @@ func (fx *desktopStoreFixture) script() string {
 	return strings.Join(lines, "\n")
 }
 
+func (fx *desktopStoreFixture) writeScript(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(fx.runtime, ".desktop-store-probe.sh")
+	if err := os.WriteFile(path, []byte(fx.script()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
 func (fx *desktopStoreFixture) checkDiscovery(t *testing.T) {
 	t.Helper()
 	got, _, err := opencodestate.Worktrees()

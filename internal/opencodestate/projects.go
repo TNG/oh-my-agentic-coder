@@ -212,29 +212,6 @@ func collapseNested(paths []string) []string {
 	return out
 }
 
-// storageWorktrees reads the JSON records under storage/project. The
-// storage tree lives under ~/.local/share/opencode, which the harness
-// mounts read+write into the confined agent, so records from here are
-// tagged originAgentWritable.
-func storageWorktrees() ([]worktreeEntry, error) {
-	dir, err := storageProjectDir()
-	if err != nil {
-		return nil, err
-	}
-	records, err := readStorageProjectRecords(dir)
-	if os.IsNotExist(err) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, errInvalidSource
-	}
-	var out []worktreeEntry
-	for _, rec := range records {
-		out = append(out, worktreeEntry{path: rec.Worktree, origin: originAgentWritable})
-	}
-	return out, nil
-}
-
 // desktopWorktrees reads the OpenCode Desktop app's own state. Folders
 // opened in the Desktop UI may exist only here, not yet in the CLI's
 // storage/db.
@@ -248,14 +225,8 @@ func storageWorktrees() ([]worktreeEntry, error) {
 //
 // Both forms are read, in the stable and beta app data dirs. See
 // globalStoreWorktrees for which keys are harvested. Projects the store
-// names only by ID are resolved through verifiedProjectWorktrees.
+// names only by ID are resolved through verifiedProjectRecords.
 // Best-effort: missing files or unexpected shapes yield nil.
-func desktopWorktrees() []worktreeEntry {
-	records := projectRecords()
-	out, _ := desktopWorktreesFromRecords(records)
-	return out
-}
-
 func desktopWorktreesFromRecords(records []projectRecord) ([]worktreeEntry, []SkippedWorktree) {
 	var out []worktreeEntry
 	var ids []string
@@ -575,22 +546,4 @@ func unwrapValue(raw json.RawMessage) []byte {
 		return []byte(asString)
 	}
 	return raw
-}
-
-// dbWorktrees reads the project table from opencode.db using the same
-// bounded reader as ID resolution. Read-only access does not disturb a live
-// OpenCode instance. The db lives under ~/.local/share/opencode, which
-// the harness mounts read+write into the confined agent, so records
-// from here are tagged originAgentWritable.
-func dbWorktrees() []worktreeEntry {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil
-	}
-	db := filepath.Join(home, ".local", "share", "opencode", "opencode.db")
-	var entries []worktreeEntry
-	for _, rec := range dbProjectRecords(db) {
-		entries = append(entries, worktreeEntry{path: rec.Worktree, origin: originAgentWritable})
-	}
-	return entries
 }

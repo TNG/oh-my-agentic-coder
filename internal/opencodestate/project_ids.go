@@ -59,13 +59,6 @@ func globalStoreProjectIDs(top map[string]json.RawMessage) []string {
 	return out
 }
 
-// verifiedProjectWorktrees resolves trusted project IDs to folders via
-// OpenCode's project records and checks canonical path or repository identity
-// against the trusted ID (see idMatchesWorktree).
-func verifiedProjectWorktrees(ids []string) []string {
-	return verifiedProjectRecords(ids, projectRecords())
-}
-
 func verifiedProjectRecords(ids []string, records []projectRecord) []string {
 	if len(ids) == 0 {
 		return nil

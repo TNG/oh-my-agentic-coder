@@ -28,15 +28,19 @@ func DispatchSQLiteReader(args []string) (handled bool, code int) {
 	if query == "" || installSQLiteWorkerGuard() != nil {
 		return true, 2
 	}
-	if _, err := io.WriteString(os.Stdout, sqliteProtocolMagic); err != nil {
+	out := bufio.NewWriterSize(os.Stdout, 64*1024)
+	if _, err := io.WriteString(out, sqliteProtocolMagic); err != nil {
 		return true, 1
 	}
 	if err := readSQLiteRows(args[2], args[1], query, func(first, second string) error {
-		return writeSQLiteRow(os.Stdout, first, second)
+		return writeSQLiteRow(out, first, second)
 	}); err != nil {
 		return true, 1
 	}
-	if _, err := os.Stdout.Write([]byte{0}); err != nil {
+	if err := out.WriteByte(0); err != nil {
+		return true, 1
+	}
+	if err := out.Flush(); err != nil {
 		return true, 1
 	}
 	return true, 0

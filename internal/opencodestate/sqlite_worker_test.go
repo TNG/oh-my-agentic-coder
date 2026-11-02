@@ -82,14 +82,14 @@ func prepareSQLiteTestWorker(args []string) (bool, int) {
 }
 
 func TestSQLiteReaderRealBinary(t *testing.T) {
-	home := hardeningHome(t)
-	writeOpenCodeDB(t, home, [][2]string{{"good", "/good"}})
 	binary := filepath.Join(t.TempDir(), "omac")
 	build := exec.Command("go", "build", "-o", binary, "./cmd/omac")
 	build.Dir = "../.."
 	if output, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build real omac: %v\n%s", err, output)
 	}
+	home := hardeningHome(t)
+	writeOpenCodeDB(t, home, [][2]string{{"good", "/good"}})
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, binary, "--omac-internal-sqlite-reader-v1", "project", filepath.Join(home, ".local/share/opencode/opencode.db"))
