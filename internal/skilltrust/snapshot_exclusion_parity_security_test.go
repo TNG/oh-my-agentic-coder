@@ -1,8 +1,10 @@
 package skilltrust
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 )
 
@@ -69,10 +71,19 @@ func TestSecuritySnapshotFrozenSetMatchesHashedSet(t *testing.T) {
 		"omac.yaml":      "name: parity\n",
 		"sidecar.py":     "print('reviewed')\n",
 		"scripts/run.sh": "echo run\n",
+		"helper.py":      "def f(): pass\n",
+		"sub/mod.py":     "x = 1\n",
+		".gitignore":     "ignored.py\n",
+		"ignored.py":     "print('still hashed')\n",
+		".pyc":           "suffix-only name\n",
+		".pyo":           "suffix-only name\n",
+		".swp":           "suffix-only name\n",
+		"~":              "suffix-only name\n",
 	}
 	excludedNames := map[string]string{
 		"foo.pyc":           "compiled artifact",
 		".DS_Store":         "os artifact",
+		"Thumbs.db":         "os artifact",
 		"draft.txt~":        "editor artifact",
 		"scripts/cache.pyo": "compiled artifact",
 		"scripts/notes.swp": "editor artifact",
@@ -103,6 +114,28 @@ func TestSecuritySnapshotFrozenSetMatchesHashedSet(t *testing.T) {
 	for _, rel := range frozen {
 		frozenSet[rel] = true
 	}
+	// Determine the expected set through the real hash, not an exclusion list:
+	// temporarily removing a hash-visible source file must change its digest.
+	t.Run("frozen set equals behaviorally hash-visible source set", func(t *testing.T) {
+		var visible []string
+		stash := filepath.Join(t.TempDir(), "removed")
+		for _, rel := range frozenRelPaths(t, src) {
+			p := filepath.Join(src, filepath.FromSlash(rel))
+			if err := os.Rename(p, stash); err != nil {
+				t.Fatal(err)
+			}
+			after := bundleHash(t, src)
+			if err := os.Rename(stash, p); err != nil {
+				t.Fatal(err)
+			}
+			if after != hash {
+				visible = append(visible, rel)
+			}
+		}
+		if !slices.Equal(frozen, visible) {
+			t.Errorf("frozen = %v; hash-visible = %v", frozen, visible)
+		}
+	})
 
 	t.Run("no hash-excluded name is frozen", func(t *testing.T) {
 		excludedBase := make(map[string]bool, len(excludedNames))
@@ -182,13 +215,24 @@ func TestSecuritySnapshotFrozenSetMatchesHashedSet(t *testing.T) {
 			t.Skipf("symlinks unsupported here: %v", err)
 		}
 		dst := filepath.Join(t.TempDir(), "frozen-entry")
-		// Whether copyFile reports an error is its choice; the frozen
-		// set is what matters. The walk classified this path as a
-		// regular file, and the copy step must not silently resolve
-		// whatever sits there at open time: the file is dropped.
-		_ = copyFile(link, dst, 0o644)
-		if _, err := os.Lstat(dst); err == nil {
-			t.Error("copyFile froze a path that had become a symlink instead of dropping it")
+		if err := copyFile(link, dst, 0o644); err != nil {
+			t.Fatalf("ELOOP must successfully drop the file: %v", err)
+		}
+		if _, err := os.Lstat(dst); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("copyFile did not drop a path that had become a symlink: %v", err)
+		}
+	})
+
+	t.Run("ordinary copy errors propagate", func(t *testing.T) {
+		dst := filepath.Join(t.TempDir(), "missing-copy")
+		if err := copyFile(filepath.Join(t.TempDir(), "missing-source"), dst, 0o644); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("missing source error = %v, want os.ErrNotExist", err)
+		}
+		if _, err := os.Lstat(dst); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("failed source open created a destination: %v", err)
+		}
+		if err := copyFile(filepath.Join(src, "sidecar.py"), t.TempDir(), 0o644); err == nil {
+			t.Error("destination-open error was swallowed")
 		}
 	})
 }

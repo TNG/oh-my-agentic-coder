@@ -22,17 +22,23 @@ import (
 // check-then-exec TOCTOU: the gate verifies a hash, but exec then runs the
 // frozen copy, not the still-mutable workdir.
 //
-// Snapshots live under <store>/skills/<name>/<hash> (content-addressed), so
-// identical content is stored once and re-approval is idempotent.
+// Snapshots live under <store>/skills-v2/<name>/<hash> (content-addressed), so
+// identical content under the same copy policy is stored once.
+
+// snapshotRoot versions the copy policy independently of the bundle digest.
+// Legacy <store>/skills snapshots may contain hash-excluded files, so neither
+// lookup nor the spawn backstop may accept them. Host re-registration rebuilds
+// under this root with the approved hash and staged-copy verification.
+const snapshotRoot = "skills-v2"
 
 // snapshotRel returns the store-relative snapshot path for (name, hash).
 // The bundle hash's "sha256:" prefix is stripped to a bare hex leaf.
 func snapshotRel(name, bundleHash string) string {
-	return filepath.Join("skills", name, strings.TrimPrefix(bundleHash, "sha256:"))
+	return filepath.Join(snapshotRoot, name, strings.TrimPrefix(bundleHash, "sha256:"))
 }
 
 // SnapshotPath returns the absolute snapshot directory for (name, hash) and
-// whether it currently exists on disk.
+// whether it exists under the current snapshot policy.
 func SnapshotPath(name, bundleHash string) (string, bool) {
 	d := dir()
 	if d == "" {
@@ -46,7 +52,7 @@ func SnapshotPath(name, bundleHash string) (string, bool) {
 }
 
 // IsSnapshotPath reports whether spawnDir is an existing directory under the
-// host-only snapshot root (<store>/skills). It is the spawn backstop: a
+// current-policy host-only snapshot root. It is the spawn backstop: a
 // sidecar may run only from the snapshot area, which the sandbox cannot
 // write — so a path here is, by construction, host-frozen content.
 //
@@ -60,7 +66,7 @@ func IsSnapshotPath(spawnDir string) bool {
 	if d == "" || spawnDir == "" {
 		return false
 	}
-	if !containedIn(filepath.Join(d, "skills"), spawnDir) {
+	if !containedIn(filepath.Join(d, snapshotRoot), spawnDir) {
 		return false
 	}
 	fi, err := os.Stat(spawnDir)
@@ -77,9 +83,9 @@ func containedIn(root, path string) bool {
 
 // snapshot freezes srcDir into the snapshot location for (name, hash) and
 // returns the snapshot directory. It is idempotent and content-addressed: an
-// existing snapshot for the same (name, hash) is returned unchanged (the
-// content is identical by construction). The copy is staged in a temp dir and
-// atomically renamed into place, so a snapshot directory is never partial.
+// existing current-policy snapshot for the same (name, hash) is returned
+// unchanged. The copy is staged in a temp dir and atomically renamed into
+// place, so a snapshot directory is never partial.
 func snapshot(name, bundleHash, srcDir string) (string, error) {
 	if err := config.ValidSkillName(name); err != nil {
 		return "", fmt.Errorf("snapshot: %w", err)
@@ -133,7 +139,7 @@ func removeSnapshot(name, bundleHash string) {
 		return
 	}
 	_ = os.RemoveAll(filepath.Join(d, snapshotRel(name, bundleHash)))
-	_ = os.Remove(filepath.Join(d, "skills", name)) // succeeds only if empty
+	_ = os.Remove(filepath.Join(d, snapshotRoot, name)) // succeeds only if empty
 }
 
 // copyTree recursively copies src into dst, which must already exist. It
