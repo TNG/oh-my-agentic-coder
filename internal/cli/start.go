@@ -478,10 +478,10 @@ func runLaunch(env *Env, opts launchOpts) int {
 	// Secret values are eagerly fetched from the keychain even when we may not
 	// end up using them; the deferred Zero wipes them on every path out.
 	resolver := skillstate.New(skillstate.Options{
-		// Workdir-scoped, with an unscoped fallback inside GetWithFallback, so
-		// secrets stored by a serve-aware register (scoped per workdir) and
-		// legacy/global ones (unscoped) both resolve. See
-		// docs/contributing/serve-spec.md.
+		// Workdir-scoped. GetWithFallback only bridges a scoped miss to the
+		// unscoped (global) entry when keychain.FallbackConsent grants it,
+		// so a same-named skill in another workdir cannot inherit a global
+		// secret. See docs/contributing/serve-spec.md.
 		Scope:             keychain.WorkdirID(env.Workdir),
 		AcceptBundleDrift: acceptSkillChanges,
 		SkipSecretPattern: skipSecretPattern,
