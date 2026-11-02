@@ -51,7 +51,8 @@ func Compile(entries []Entry) (*Set, error) {
 
 // Lookup returns the most specific declared entry that admits the request.
 // method is the upper-case request method; segs comes from CleanPath. ok is
-// false when nothing is declared for the request: the caller rejects it.
+// false when nothing is declared for the request: the caller treats it as
+// `approval: required`, so an unlisted route asks.
 func (s *Set) Lookup(method string, segs []string) (Entry, bool) {
 	var best *compiled
 	for i := range s.items {
