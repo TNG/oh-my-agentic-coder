@@ -108,27 +108,49 @@ func do(f *Facade, method, target string, hdr ...string) *httptest.ResponseRecor
 	return w
 }
 
-func TestGate_UndeclaredIsRejectedAndNeverForwarded(t *testing.T) {
-	ap := &fakeApprover{d: ApprovalDecision{Allow: true}}
+func TestGate_UnlistedRouteAsksAndDeniedIsNeverForwarded(t *testing.T) {
+	ap := &fakeApprover{d: ApprovalDecision{Allow: false, Source: "prompt"}}
 	f, rec, seen := gatedFacade(t, ap)
 	for _, c := range [][2]string{
 		{"GET", "/echo/new-route"}, {"POST", "/echo/status"}, {"GET", "/echo/status/"},
 		{"DELETE", "/echo/echo"}, {"GET", "/echo/live/"},
 	} {
 		w := do(f, c[0], c[1])
-		if w.Code != 403 || w.Header().Get("X-Omac-Reason") != "undeclared-endpoint" {
+		if w.Code != 403 || w.Header().Get("X-Omac-Reason") != "approval-denied" {
 			t.Errorf("%s %s = %d %q", c[0], c[1], w.Code, w.Header().Get("X-Omac-Reason"))
 		}
 	}
 	if len(seen()) != 0 {
 		t.Errorf("upstream reached: %v", seen())
 	}
-	if len(ap.calls) != 0 {
-		t.Errorf("dialog raised for undeclared requests: %v", ap.calls)
+	if len(ap.calls) != 5 || ap.calls[0].Match != "GET /new-route" || ap.calls[0].Path != "/new-route" {
+		t.Errorf("dialog calls = %+v", ap.calls)
 	}
 	ev := rec.approvals()
-	if len(ev) != 5 || ev[0].Source != "undeclared-endpoint" || ev[0].Result != "deny" || ev[0].Method != "GET" || ev[0].Path != "/new-route" {
+	if len(ev) != 5 || ev[0].Source != "prompt" || ev[0].Result != "deny" || ev[0].Method != "GET" || ev[0].Path != "/new-route" {
 		t.Errorf("audit = %+v", ev)
+	}
+}
+
+func TestGate_UnlistedRouteIsForwardedOnceAllowed(t *testing.T) {
+	ap := &fakeApprover{d: ApprovalDecision{Allow: true, Scope: "once", Source: "prompt"}}
+	f, _, seen := gatedFacade(t, ap)
+	if w := do(f, "GET", "/echo/new-route"); w.Code != 200 {
+		t.Fatalf("code = %d", w.Code)
+	}
+	if len(ap.calls) != 1 || len(seen()) != 1 {
+		t.Errorf("calls=%d seen=%v", len(ap.calls), seen())
+	}
+}
+
+func TestGate_UnlistedRoutesGetSeparateRules(t *testing.T) {
+	ap := &fakeApprover{d: ApprovalDecision{Allow: true, Scope: "always", Source: "prompt"}}
+	f, _, _ := gatedFacade(t, ap)
+	do(f, "GET", "/echo/a")
+	do(f, "POST", "/echo/a")
+	do(f, "GET", "/echo/b")
+	if len(ap.calls) != 3 || ap.calls[0].Match == ap.calls[1].Match || ap.calls[0].Match == ap.calls[2].Match {
+		t.Errorf("unlisted routes share a rule: %+v", ap.calls)
 	}
 }
 
