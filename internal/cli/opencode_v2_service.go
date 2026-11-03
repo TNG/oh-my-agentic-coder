@@ -453,75 +453,138 @@ func seedOpenCodeServiceConfig(realCfg, cfgDir string, port int) (string, error)
 }
 
 // openCodeVersionRe matches the first semver-ish token in --version output.
-var openCodeVersionRe = regexp.MustCompile(`v?(\d+)\.\d+\.\d+`)
+var openCodeVersionRe = regexp.MustCompile(`v?(\d+)\.(\d+)\.\d+`)
 
 // openCodeWrappers are package runners whose cmd[0] is the runner itself, not the opencode binary.
 var openCodeWrappers = map[string]bool{
 	"npx": true, "bunx": true, "pnpm": true, "yarn": true, "uvx": true, "uv": true,
 }
 
-// Match whole package arguments so similarly named packages cannot select a version.
-var openCodeSpecRe = regexp.MustCompile(`^(?:--package=)?(?:@opencode/cli|opencode(?:-ai)?)@v?(\d+)(?:\.\d+(?:\.\d+)?(?:[-+][0-9A-Za-z.-]+)?)?$`)
+// Match whole package arguments so similarly named packages cannot select a version. A pre-release or
+// build suffix may follow the minor version (opencode-ai@2.1-rc), which still proves the minor.
+var openCodeSpecRe = regexp.MustCompile(`^(?:--package=)?(?:@opencode/cli|opencode(?:-ai)?)@v?(\d+)(?:\.(\d+)(?:[-+][0-9A-Za-z.-]+)?)?(?:\.\d+(?:[-+][0-9A-Za-z.-]+)?)?$`)
 
-// openCodeIsV2 reports whether inner is opencode v2+; wrappers decide from a versioned package spec in their args, only a direct opencode binary is probed with --version, undecidable → true.
+// openCodeVersionKind classifies which OpenCode the inner command will launch.
+type openCodeVersionKind int
+
+const (
+	openCodeOther       openCodeVersionKind = iota // not opencode, or its binary cannot be resolved
+	openCodeV1                                     // confirmed v1
+	openCodeV20x                                   // confirmed 2.0.x
+	openCodeV21Plus                                // confirmed 2.1.0 or later
+	openCodeV2MajorOnly                            // wrapper spec pins only @2, so the minor version is unknown
+	openCodeUndecidable                            // opencode, but the version is unknown
+)
+
+// openCodeIsV2 reports whether inner launches OpenCode v2 or later; an undecidable version counts as v2.
 func openCodeIsV2(inner []string) bool {
-	return openCodeV2(inner, true)
+	switch classifyOpenCode(inner) {
+	case openCodeOther, openCodeV1:
+		return false
+	default:
+		return true
+	}
 }
 
-// Service pinning tolerates unknown versions; disabling project sources requires a confirmed version.
-func openCodeV2(inner []string, unknown bool) bool {
-	cmd := sandboxrun.UnwrapEnv(inner)
-	for len(cmd) > 0 && strings.HasPrefix(cmd[0], "-") {
-		cmd = cmd[1:]
-	}
+// classifyOpenCode determines which OpenCode the inner command launches, from a wrapper's pinned
+// package spec or a direct opencode binary's --version probe. openCodeOther avoids the probe cost
+// for non-opencode commands and unresolvable binaries.
+func classifyOpenCode(inner []string) openCodeVersionKind {
+	cmd := openCodeInnerCommand(inner)
 	if len(cmd) == 0 || cmd[0] == "" {
-		return false
+		return openCodeOther
 	}
 	if openCodeWrappers[filepath.Base(cmd[0])] {
-		if maj, ok := openCodeSpecVersion(cmd[1:]); ok {
-			return maj != 1 && (unknown || maj >= 2)
+		major, minor, hasMinor, ok := openCodeSpecVersion(cmd[1:])
+		if !ok {
+			return openCodeUndecidable
 		}
-		return unknown
+		return openCodeKind(major, minor, hasMinor)
 	}
 	switch filepath.Base(cmd[0]) {
 	case "opencode", "opencode-ai":
 		// Direct binary: probe its version below.
 	default:
-		return false
+		return openCodeOther
 	}
 	bin, err := exec.LookPath(cmd[0])
 	if err != nil {
-		return false
+		return openCodeOther
 	}
+	major, minor, ok := openCodeProbeVersion(bin)
+	if !ok {
+		return openCodeUndecidable
+	}
+	return openCodeKind(major, minor, true)
+}
+
+// openCodeKind classifies a resolved OpenCode version; hasMinor is false for a spec pinned to @2 only.
+func openCodeKind(major, minor int, hasMinor bool) openCodeVersionKind {
+	switch {
+	case major == 1:
+		return openCodeV1
+	case major == 2 && !hasMinor:
+		return openCodeV2MajorOnly
+	case major == 2 && minor < 1:
+		return openCodeV20x
+	default:
+		return openCodeV21Plus
+	}
+}
+
+func openCodeInnerCommand(inner []string) []string {
+	cmd := sandboxrun.UnwrapEnv(inner)
+	for len(cmd) > 0 && strings.HasPrefix(cmd[0], "-") {
+		cmd = cmd[1:]
+	}
+	return cmd
+}
+
+// openCodeProbeVersion returns the major and minor version printed by `bin --version`; ok is false when the probe fails or prints no version.
+func openCodeProbeVersion(bin string) (major, minor int, ok bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	out, err := exec.CommandContext(ctx, bin, "--version").CombinedOutput()
 	if err != nil || len(out) == 0 {
-		return unknown
+		return 0, 0, false
 	}
 	m := openCodeVersionRe.FindStringSubmatch(string(out))
 	if m == nil {
-		return unknown
+		return 0, 0, false
 	}
-	major, convErr := strconv.Atoi(m[1])
-	if convErr != nil {
-		return unknown
+	major, err = strconv.Atoi(m[1])
+	if err != nil {
+		return 0, 0, false
 	}
-	return major != 1 && (unknown || major >= 2)
+	minor, err = strconv.Atoi(m[2])
+	if err != nil {
+		return 0, 0, false
+	}
+	return major, minor, true
 }
 
-// openCodeSpecVersion extracts the pinned major from a versioned opencode spec among args (bunx opencode-ai@1.2.0 → 1).
-func openCodeSpecVersion(args []string) (int, bool) {
+// openCodeSpecVersion extracts the pinned major and optional minor from a versioned opencode spec among args
+// (bunx opencode-ai@2.1.0 → major 2, minor 1, hasMinor true, ok true).
+func openCodeSpecVersion(args []string) (major, minor int, hasMinor, ok bool) {
 	for _, arg := range args {
 		m := openCodeSpecRe.FindStringSubmatch(arg)
 		if m == nil {
 			continue
 		}
-		if major, err := strconv.Atoi(m[1]); err == nil {
-			return major, true
+		maj, err := strconv.Atoi(m[1])
+		if err != nil {
+			continue
 		}
+		if m[2] == "" {
+			return maj, 0, false, true
+		}
+		min, err := strconv.Atoi(m[2])
+		if err != nil {
+			continue
+		}
+		return maj, min, true, true
 	}
-	return 0, false
+	return 0, 0, false, false
 }
 
 // openCodePinDenied hard-errors when the profile's deny_vars would strip a var the pin's config/state redirects rely on.

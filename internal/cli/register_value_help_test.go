@@ -166,7 +166,7 @@ func TestRegisterFieldShowsHintDocsAndRepeatsAfterInvalidValue(t *testing.T) {
 		Docs:        "SKILL.md#regions",
 	}
 
-	if _, err := handleOneField(env, store, "help-field", dir, spec, true, nil, nil, false, nil); err != nil {
+	if _, err := handleOneField(env, store, nil, "help-field", dir, spec, true, nil, nil, false, nil); err != nil {
 		t.Fatalf("handleOneField: %v", err)
 	}
 	drain()
@@ -199,7 +199,7 @@ func TestRegisterFieldWithoutHelpIsUnchanged(t *testing.T) {
 	store := &skillconfig.Store{}
 	spec := config.ConfigSpec{Name: "MODE", Description: "Mode.", Type: config.ConfigFieldEnum, Choices: []string{"a", "b"}}
 
-	if _, err := handleOneField(env, store, "help-field-plain", helpSkillDir(t), spec, true, nil, nil, false, nil); err != nil {
+	if _, err := handleOneField(env, store, nil, "help-field-plain", helpSkillDir(t), spec, true, nil, nil, false, nil); err != nil {
 		t.Fatalf("handleOneField: %v", err)
 	}
 	drain()

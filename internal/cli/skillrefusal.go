@@ -48,7 +48,7 @@ func renderSkillRefusal(w io.Writer, prefix string, problems []skillstate.Proble
 	// user did not make may have been written inside the sandbox, and the
 	// flag must not be the recommended way past that.
 	labeledSkills(w, s, problems, skillstate.BundleDrift,
-		"bundle changed since register (review it on the host and re-register; a change you did not make may have been made inside the sandbox):",
+		"files changed since register, so code and SKILL.md instructions are untrusted (review it on the host and re-register; a change you did not make may have been made inside the sandbox):",
 		"re-register")
 
 	perField(w, problems, skillstate.MissingSecret,
