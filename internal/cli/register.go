@@ -94,8 +94,8 @@ func runRegister(args []string, env *Env) int {
 	if fields := meta.PatternlessSecretStringFields(); len(fields) > 0 {
 		fmt.Fprintf(env.Stderr,
 			"[warn] %s declares secrets and unconstrained string config field(s): %s\n"+
-				"       these fields accept any value from the agent-writable config store, which the sidecar receives alongside its secrets;\n"+
-				"       add a `pattern` (or `choices`) in %s to constrain them\n",
+				"       these fields accept any string you approve, and the sidecar receives it alongside its secrets;\n"+
+				"       add a `pattern` (or `choices`) in %s so omac rejects unexpected values\n",
 			skillName, strings.Join(fields, ", "), config.MetaFileName)
 	}
 	// A `docs` entry that is not a file inside the skill only loses some
@@ -230,8 +230,17 @@ func runRegister(args []string, env *Env) int {
 				}
 				defStore = gs
 			}
+			// For a global skill the workdir layer overrides the global store
+			// and is what gets anchored below, so handleOneField must show it.
+			// The workdir file is agent-writable: never approve it unseen.
+			var wdOverride *skillconfig.Store
+			if global {
+				if wd, err := skillconfig.Load(env.Workdir); err == nil {
+					wdOverride = wd
+				}
+			}
 			for _, spec := range meta.Sidecar.Config {
-				skipped, err := handleOneField(env, store, skillName, skillDir, spec, *repromptFields, prevSkippedFields, fromFile, *useDefaults, defStore)
+				skipped, err := handleOneField(env, store, wdOverride, skillName, skillDir, spec, *repromptFields, prevSkippedFields, fromFile, *useDefaults, defStore)
 				if err != nil {
 					return err
 				}
@@ -816,10 +825,14 @@ var readSecretInput = secrets.ReadPassword
 // optional field on this run (entered an empty line, no default,
 // required: false). Symmetric to handleOneSecret. See its doc comment.
 //
+// override is the agent-writable workdir store when registering a global
+// skill (nil otherwise). Its value wins over store at launch and is what
+// register anchors as approved, so it is shown before anything is approved.
+//
 // Errors with the prefix "refused:" map to ExitSecretRefused at the
 // caller level (we reuse that exit code because the semantics — user
 // explicitly didn't supply a required value — are the same).
-func handleOneField(env *Env, store *skillconfig.Store, skill, skillDir string, spec config.ConfigSpec, reprompt bool, prevSkipped map[string]bool, fromFile map[string]string, useDefaults bool, defStore *skillconfig.Store) (bool, error) {
+func handleOneField(env *Env, store, override *skillconfig.Store, skill, skillDir string, spec config.ConfigSpec, reprompt bool, prevSkipped map[string]bool, fromFile map[string]string, useDefaults bool, defStore *skillconfig.Store) (bool, error) {
 	st := newStyler(env.Stderr)
 	// setField stores the value in the runtime store and, when defaults
 	// are in play, mirrors it into the defaults store too.
@@ -830,16 +843,35 @@ func handleOneField(env *Env, store *skillconfig.Store, skill, skillDir string, 
 		}
 	}
 
+	// A workdir override of a global skill's field wins at launch and gets
+	// anchored, so say so before approving it.
+	ovr, hasOvr := "", false
+	if override != nil {
+		ovr, hasOvr = override.Get(skill, spec.Name)
+	}
+	storedVal, hasStored := store.Get(skill, spec.Name)
+	if hasOvr && (!hasStored || ovr != storedVal) {
+		st.status(env.Stderr, "[warn]", fmt.Sprintf("%s is overridden by the agent-writable workdir config: %q (this value wins and is what gets approved)",
+			stripControlChars(spec.Name), stripControlChars(ovr)), ansiYellow)
+	} else {
+		hasOvr = false
+	}
+
 	// 1. Already stored?
 	if !reprompt {
 		if cur, ok := store.Get(skill, spec.Name); ok {
+			if hasOvr {
+				cur = ovr
+			}
 			// Backfill the remembered default from the already-stored value
 			// so `register --defaults` can reuse it later, even if the value
 			// predates the defaults feature.
 			if defStore != nil {
 				defStore.SetDefault(skill, spec.Name, cur)
 			}
-			st.status(env.Stderr, "[skip]", st.dim(spec.Name+" already configured"), ansiYellow)
+			// Show the value: register anchors it as approved, and the
+			// workdir file it may come from is agent-writable.
+			st.status(env.Stderr, "[skip]", st.dim(spec.Name+" already configured: "+stripControlChars(cur)), ansiYellow)
 			return false, nil
 		}
 		// 1b. Previously skipped on a prior register run? Honor that
@@ -898,6 +930,29 @@ func handleOneField(env *Env, store *skillconfig.Store, skill, skillDir string, 
 		if v, ok := os.LookupEnv(spec.DefaultFromEnv); ok && v != "" {
 			defaultVal = v
 			defaultSource = "$" + spec.DefaultFromEnv
+		}
+	}
+
+	// 4b. Under --reprompt-fields a value is already stored (an agent may
+	//     have rewritten it in the workdir file). Print it so it is never
+	//     approved unseen. Enter then keeps it only when nothing else would
+	//     apply: a `default:` still wins, so Enter resets to the safe value.
+	//     A workdir override wins at launch whatever is typed here, so Enter
+	//     keeps exactly that value. A value the spec rejects is not offered.
+	if reprompt {
+		cur, ok := store.Get(skill, spec.Name)
+		if hasOvr {
+			cur, ok = ovr, true
+		}
+		if ok {
+			fmt.Fprintf(env.Stderr, "    %s %s\n", st.gray("currently stored:"), st.cyan(stripControlChars(cur)))
+			if _, err := canonicalizeFieldValue(spec, cur); err == nil && (hasOvr || defaultVal == "") {
+				defaultVal = cur
+				defaultSource = "stored value"
+				if hasOvr {
+					defaultSource = "workdir override"
+				}
+			}
 		}
 	}
 

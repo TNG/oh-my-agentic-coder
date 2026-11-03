@@ -274,3 +274,41 @@ func TestSnapshotDoesNotBakeEscapingSymlink(t *testing.T) {
 		t.Errorf("in-tree symlink not preserved: body=%q err=%v", b, err)
 	}
 }
+
+func TestApprovalsLoadedOnce(t *testing.T) {
+	isolate(t)
+	d := skillDir(t)
+	h := approveDir(t, "s", d)
+	a := LoadApprovals()
+	if ok, err := a.IsApproved("s", h); !ok || err != nil {
+		t.Errorf("IsApproved = %v, %v; want true", ok, err)
+	}
+	if ok, _ := a.IsApproved("s", "sha256:other"); ok {
+		t.Error("a different hash must not be approved")
+	}
+	if ok, err := a.HasName("s"); !ok || err != nil {
+		t.Errorf("HasName = %v, %v; want true", ok, err)
+	}
+	if ok, _ := a.HasName("other"); ok {
+		t.Error("an unknown name must not be known")
+	}
+}
+
+// An unreadable store fails closed: every name counts as known, so the
+// caller checks it, and nothing counts as approved.
+func TestApprovalsFailClosed(t *testing.T) {
+	isolate(t)
+	if err := os.MkdirAll(dir(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path(), []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	a := LoadApprovals()
+	if ok, err := a.HasName("s"); !ok || err == nil {
+		t.Errorf("HasName = %v, %v; want true and an error", ok, err)
+	}
+	if ok, err := a.IsApproved("s", "sha256:abc"); ok || err == nil {
+		t.Errorf("IsApproved = %v, %v; want false and an error", ok, err)
+	}
+}

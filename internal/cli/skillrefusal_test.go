@@ -51,11 +51,11 @@ func TestRenderSkillRefusalEveryKind(t *testing.T) {
 		{
 			name: "bundle drift",
 			problem: skillstate.Problem{Kind: skillstate.BundleDrift, Skill: "bravo",
-				Detail: "bundle changed since register", Fix: "omac register bravo --force"},
+				Detail: "files changed since register", Fix: "omac register bravo --force"},
 			// The remedy is review-then-re-register. The drift-acceptance
 			// flag must NOT be recommended: a change the user did not make
 			// may have been written inside the sandbox.
-			want: []string{"bundle changed since register", "review it on the host",
+			want: []string{"files changed since register", "code and SKILL.md instructions are untrusted", "review it on the host",
 				"inside the sandbox", "bravo",
 				"re-register", "omac register bravo --force"},
 			banned: []string{"--accept-skill-changes"},
@@ -199,7 +199,7 @@ func TestRenderSkillRefusalOmitsAbsentSections(t *testing.T) {
 		{Kind: skillstate.MissingSecret, Skill: "alpha", Field: "TOKEN", Fix: "omac secrets set alpha TOKEN"},
 	})
 	for _, unwanted := range []string{
-		"omac.yaml broken", "bundle changed", "pattern validation",
+		"omac.yaml broken", "files changed since register", "pattern validation",
 		"required config field missing", "keychain unavailable",
 	} {
 		if strings.Contains(out, unwanted) {

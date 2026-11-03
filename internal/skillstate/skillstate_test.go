@@ -292,7 +292,7 @@ func TestConfigPrecedence(t *testing.T) {
 		wantSource Source
 		wantProbs  []ProblemKind
 	}{
-		{"stored wins over everything", store, "spec-default",
+		{"stored wins over everything", MergeConfig(store, nil), "spec-default",
 			map[string]string{"F_ENV": "env-value"}, "stored-value", SourceStored, nil},
 		{"default beats default_from_env", nil, "spec-default",
 			map[string]string{"F_ENV": "env-value"}, "spec-default", SourceDefault, nil},

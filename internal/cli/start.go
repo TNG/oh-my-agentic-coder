@@ -94,7 +94,7 @@ func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, int) 
 		acceptSkillChanges = fs.Bool("accept-skill-changes", false, "Tolerate bundle_hash drift in registered skills (proceed even if the on-disk skill differs from what was registered).")
 		skipSecretPattern  = fs.Bool("skip-secret-pattern", false, "Do not enforce a secret's pattern against an env_passthrough-supplied value (escape hatch for an outdated pattern; the raw value is still passed through).")
 		verbose            = fs.Bool("verbose", false, "Verbose lifecycle logging.")
-		autoRegisterSkills = fs.Bool("auto-register-skills", false, "Silently register discovered workdir-local skills whose required values resolve without prompting, instead of refusing to start. Skills with unresolved required values still prompt via `omac register`.")
+		autoRegisterSkills = fs.Bool("auto-register-skills", false, "Silently register discovered workdir-local skills whose required values resolve without prompting, instead of refusing to start. Values only in the agent-writable workdir skill-config.yaml do not count, since nothing approved them. Skills with unresolved required values need `omac register` (non-interactively: --fields-from or OMAC_CONFIG_<NAME>).")
 		auditLog           = fs.String("audit-log", "", "Path to the audit log (default: persistent central location). Overrides config.")
 		noAudit            = fs.Bool("no-audit", false, "Disable the security audit trail.")
 		auditStrict        = fs.Bool("audit-strict", false, "Fail-closed: abort if the audit log cannot be written.")
@@ -820,6 +820,7 @@ func runLaunch(env *Env, opts launchOpts) int {
 		}
 		argv = injectSandboxDirs(argv, harness.ResolvedSandboxDirs())
 		argv = injectSandboxDenies(argv, harness.SandboxDenyPaths, prof)
+		argv = injectUntrustedSkillDenies(argv, env.Stderr, prefix, prof, env.Workdir)
 		if cacheScope != nil {
 			argv = injectSandboxFlag(argv, "--allow", cacheScope.Dir)
 		}
@@ -888,12 +889,14 @@ func runLaunch(env *Env, opts launchOpts) int {
 		ocPin.apply(extra)
 	}
 	if !noSandbox {
-		argv, err = injectOpenCodeProjectDiscovery(argv, extra, harness, inner, plan)
+		var ocClass openCodeVersionKind
+		argv, ocClass, err = injectOpenCodeProjectDiscovery(argv, extra, harness, inner, plan)
 		if err != nil {
 			fmt.Fprintln(env.Stderr, prefix+": opencode project discovery:", err)
 			return ExitConfigInvalid
 		}
-		warnOpenCodeAgentsAccess(env, argv, plan, extra)
+		warnOpenCodeMajorOnlySpec(env, ocClass)
+		warnOpenCodeAgentsAccess(env, argv, plan, ocClass)
 	}
 	if harness.LaunchEnvFunc != nil {
 		for k, v := range harness.LaunchEnvFunc(harness.ConfigHome(), sandboxTmp) {
