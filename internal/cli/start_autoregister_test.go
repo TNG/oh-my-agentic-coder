@@ -9,6 +9,7 @@ package cli
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -817,5 +818,61 @@ func TestSkillEligibleForAutoRegister_RequiredSecretPatternBlocks(t *testing.T) 
 	}
 	if got {
 		t.Error("a required secret whose host value fails its pattern must not be auto-registered")
+	}
+}
+
+func TestParseLaunchArgs_SkipUnregistered(t *testing.T) {
+	opts, code := parseLaunchArgs("start", []string{"--skip-unregistered"}, devnullEnv(t))
+	if code != ExitOK || !opts.skipUnregistered {
+		t.Fatal("--skip-unregistered was not parsed")
+	}
+}
+
+func TestRunStart_SkipUnregisteredStartsWithWarning(t *testing.T) {
+	isolateHome(t)
+	wd := t.TempDir()
+	stageSkillWithSidecar(t, wd, "no-required", sidecarNoRequired)
+
+	// macOS has no /bin/true (it is /usr/bin/true), and this test must really launch it.
+	trueBin, err := exec.LookPath("true")
+	if err != nil {
+		t.Skipf("no true binary on PATH: %v", err)
+	}
+	env, stderr := launchTestEnv(t, wd)
+	auditPath := filepath.Join(t.TempDir(), "audit.jsonl")
+	if code := runStart([]string{"--skip-unregistered", "--audit-log", auditPath, "--no-sandbox", "--inner", trueBin}, env); code != ExitOK {
+		t.Fatalf("runStart() = %d, want ExitOK\nstderr:\n%s", code, stderr())
+	}
+	if out := stderr(); !strings.Contains(out, "continuing without unregistered skills") || !strings.Contains(out, "no-required") {
+		t.Errorf("missing warning naming the skipped skill:\n%s", out)
+	}
+	if !strings.Contains(stderr(), "hides") || !strings.Contains(stderr(), "other backends") {
+		t.Errorf("warning must say who hides the skill and where it stays visible:\n%s", stderr())
+	}
+	if loaded, err := registry.Load(wd); err != nil {
+		t.Fatalf("registry.Load: %v", err)
+	} else if entry, _ := loaded.Find("no-required"); entry != nil {
+		t.Error("--skip-unregistered must not register the skill")
+	}
+	logged, err := os.ReadFile(auditPath)
+	if err != nil {
+		t.Fatalf("read audit log: %v", err)
+	}
+	if !strings.Contains(string(logged), `"state":"skipped-unregistered"`) || !strings.Contains(string(logged), `"skill":"no-required"`) {
+		t.Errorf("audit log lacks the skipped-unregistered record:\n%s", logged)
+	}
+}
+
+func TestRunStart_RefusalMentionsSkipUnregistered(t *testing.T) {
+	isolateHome(t)
+	wd := t.TempDir()
+	stageSkillWithSidecar(t, wd, "no-required", sidecarNoRequired)
+
+	env, stderr := launchTestEnv(t, wd)
+	if code := runStart([]string{"--no-sandbox", "--inner", "/bin/true"}, env); code != ExitPrerequisiteMissing {
+		t.Fatalf("runStart() = %d, want ExitPrerequisiteMissing", code)
+	}
+	if !strings.Contains(stderr(), "--skip-unregistered") {
+		t.Errorf("refusal does not point at --skip-unregistered:\n%s", stderr())
 	}
 }
