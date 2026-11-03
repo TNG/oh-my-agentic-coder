@@ -61,7 +61,7 @@ func TestIsUnavailable(t *testing.T) {
 		// go-keyring's real error on a fresh WSL2 install: the daemon is
 		// running but no keyring collection exists yet, so GetLoginCollection
 		// falls back to the alias path and Unlock returns zero unlocked paths.
-		{"no keyring created", errors.New(`keychain set omac/skill-marketplace/ASML_BEARER_TOKEN: failed to unlock correct collection '/org/freedesktop/secrets/aliases/default'`), true},
+		{"no keyring created", errors.New(`keychain set omac/skill-marketplace/MARKETPLACE_BEARER_TOKEN: failed to unlock correct collection '/org/freedesktop/secrets/aliases/default'`), true},
 		{"unrelated error", errors.New("permission denied"), false},
 		// A generic "no such file" that is NOT a bus dial must not be masked.
 		{"unrelated missing file", errors.New("open /some/config: no such file or directory"), false},

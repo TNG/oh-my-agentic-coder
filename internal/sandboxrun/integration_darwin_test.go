@@ -3,6 +3,7 @@
 package sandboxrun
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"net/http"
@@ -51,6 +52,27 @@ func testGrants(t *testing.T) *Grants {
 		t.Fatal(err)
 	}
 	return g
+}
+
+func TestIntegrationPseudoTerminal(t *testing.T) {
+	argv, err := BuildChildArgv(testGrants(t), []string{
+		"/usr/bin/script", "-q", "/dev/null", "/bin/sh", "-c",
+		"test -t 0 && test -t 1 && printf 'pty-ok\\n'",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	cmd.WaitDelay = time.Second
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("sandboxed PTY command failed: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "pty-ok") {
+		t.Fatalf("sandboxed command did not run with a terminal: %s", out)
+	}
 }
 
 func TestIntegrationWorkdirReadWrite(t *testing.T) {

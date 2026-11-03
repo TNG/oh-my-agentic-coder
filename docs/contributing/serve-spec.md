@@ -112,13 +112,13 @@ OMAC_<SKILL>_BASE
 
 The control plane is a loopback HTTP server, advertised to the sandbox as `OMAC_CONTROL_BASE`.
 
-All control-plane endpoints except `GET /__omac__/global` require the per-session bearer token delivered as `OMAC_CONTROL_TOKEN` in the sandbox environment. Include it as:
+All control-plane endpoints require the per-session bearer token delivered as `OMAC_CONTROL_TOKEN` in the sandbox environment. Include it as:
 
 ```
 X-Omac-Control-Token: <value of OMAC_CONTROL_TOKEN>
 ```
 
-Requests without a valid token receive `401 Unauthorized`. `GET /__omac__/global` is the only public endpoint: the global skill list carries no per-directory secrets. `GET /__omac__/dirs` is token-gated like the rest — which directories a session manages is per-session state.
+Requests without a valid token receive `401 Unauthorized`, including requests to the global skill list. Global skills remain shared across projects; authentication does not change their scope or discovery at startup.
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
@@ -127,7 +127,7 @@ Requests without a valid token receive `401 Unauthorized`. `GET /__omac__/global
 | `POST` | `/__omac__/reload` | required | Body `{"dir": "/abs/path"}`. Re-resolves secrets; promotes `pending-credentials` skills to active. |
 | `POST` | `/__omac__/reload-global` | required | Re-activates the global skill layer (after `omac register --global`). |
 | `GET` | `/__omac__/dirs` | required | List active dirs and their states (the response carries no tokens). |
-| `GET` | `/__omac__/global` | none | Global skills and their `/__global__/<mount>` URLs. |
+| `GET` | `/__omac__/global` | required | Global skills and their `/__global__/<mount>` URLs. |
 
 ---
 

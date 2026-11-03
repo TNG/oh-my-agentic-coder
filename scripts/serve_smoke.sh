@@ -102,7 +102,7 @@ FAC_PORT="$(grep -oE 'facade tcp=127.0.0.1:[0-9]+' "$TMP/serve.log" | grep -oE '
 if [ -z "$CTRL" ]; then bad "could not read control URL"; cat "$TMP/serve.log"; exit 1; fi
 ok "control plane: $CTRL  facade: 127.0.0.1:$FAC_PORT"
 
-# Every /__omac__/* request (except the public /global listing) must present
+# Every /__omac__/* request must present
 # the per-session control token. serve publishes it in a control-info file
 # under XDG_CONFIG_HOME (see internal/cli/controlinfo.go).
 CTOK=""
@@ -166,7 +166,7 @@ CODE="$(curl -s -m 5 -o /dev/null -w '%{http_code}' -H "$FTOKH" "http://127.0.0.
 
 # --- Tier 3: real skill round trip (echo-rest global) ---
 hdr "Tier 3: echo-rest round trip"
-GLOB="$(curl -s -m 5 "$CTRL/__omac__/global")"
+GLOB="$(curl -s -m 5 "$CTRL/__omac__/global" -H "$CTOKH")"
 if printf '%s' "$GLOB" | grep -q 'echo-rest\|"mount":"echo"'; then
   # echo-rest mounts at "echo"; POST /echo round-trips JSON.
   RESP="$(curl -s -m 5 -X POST -H "$FTOKH" "http://127.0.0.1:$FAC_PORT/__global__/echo/echo" \

@@ -3,6 +3,7 @@ package sandboxrun
 import (
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 	"unicode"
 
@@ -62,8 +63,8 @@ func GenerateSBPL(g *Grants) string {
 	b.WriteString("(allow ipc-posix-shm)\n")
 	b.WriteString("(allow system-socket)\n\n")
 
-	// The root directory inode itself must be readable (dyld stats and
-	// reads "/" during startup; literal only — not subpath).
+	// dyld reads "/" at startup; with metadata only every process aborts.
+	// Literal only, not subpath. So `ls /` stays possible.
 	b.WriteString("(allow file-read* (literal \"/\"))\n")
 
 	// --- Read allows ---
@@ -73,16 +74,22 @@ func GenerateSBPL(g *Grants) string {
 			fmt.Fprintf(&b, "(allow file-read* (subpath %s))\n", sbplQuote(fp))
 		}
 	}
-	// Metadata on ancestors so path resolution works.
-	for _, p := range ancestorDirs(append(append(append([]string{}, g.ReadPaths...), g.WritePaths...), g.AllowPaths...)) {
-		fmt.Fprintf(&b, "(allow file-read-metadata (literal %s))\n", sbplQuote(p))
+	// Metadata, not data, on every directory above the working directory
+	// and the grants, and on HOME (OpenCode v2 resolves it even when no
+	// grant lies below it): a data read would let `ls` list entry names.
+	// getcwd works inside the working directory, but not from HOME or
+	// above it, where only the shell builtin `pwd` works.
+	ancestorRoots := append(append(append([]string{g.Workdir}, g.ReadPaths...), g.WritePaths...), g.AllowPaths...)
+	resolvable := ancestorDirs(ancestorRoots)
+	if g.HomeDir != "" {
+		for _, p := range pathForms(g.HomeDir) {
+			if !slices.Contains(resolvable, p) {
+				resolvable = append(resolvable, p)
+			}
+		}
 	}
-	// The working directory's ancestors need directory data reads so the
-	// confined process can resolve its cwd (getcwd). Granting data reads on
-	// every grant's ancestors instead lets a process list sibling names in
-	// unrelated trees (e.g. sibling tool-cache scopes).
-	for _, p := range ancestorDirs([]string{g.Workdir}) {
-		fmt.Fprintf(&b, "(allow file-read-data (literal %s))\n", sbplQuote(p))
+	for _, p := range resolvable {
+		fmt.Fprintf(&b, "(allow file-read-metadata (literal %s))\n", sbplQuote(p))
 	}
 	// DYLD-injection defense: only readable paths may be mapped
 	// executable. (allow file-read* implies open; mapping is separate.)
@@ -127,7 +134,7 @@ func GenerateSBPL(g *Grants) string {
 		fmt.Fprintf(&b, "(allow file-read* file-write-data (literal %s))\n", sbplQuote(dev))
 	}
 	b.WriteString("(allow file-read* file-write-data (regex #\"^/dev/tty\"))\n")
-	b.WriteString("(allow file-ioctl (regex #\"^/dev/tty\") (literal \"/dev/null\") (literal \"/dev/zero\") (literal \"/dev/random\") (literal \"/dev/urandom\"))\n")
+	b.WriteString("(allow file-ioctl (regex #\"^/dev/tty\") (literal \"/dev/ptmx\") (literal \"/dev/null\") (literal \"/dev/zero\") (literal \"/dev/random\") (literal \"/dev/urandom\"))\n")
 	b.WriteString("(allow pseudo-tty)\n\n")
 
 	// --- Network ---
@@ -231,7 +238,7 @@ func canonicalPath(p string) string {
 }
 
 // ancestorDirs returns every distinct ancestor directory of the given
-// paths (excluding "/" itself is fine to include; Seatbelt tolerates it).
+// paths, including "/".
 func ancestorDirs(paths []string) []string {
 	seen := map[string]bool{}
 	var out []string
