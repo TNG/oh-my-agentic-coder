@@ -128,6 +128,11 @@ func TestSQLiteProtocolBounds(t *testing.T) {
 		t.Fatal(err)
 	}
 	valid.WriteByte(0)
+	exactLimit := []byte(sqliteProtocolMagic)
+	for range sourceMaxRecords {
+		exactLimit = append(exactLimit, 1, 0, 0, 0, 0, 0, 0, 0, 0)
+	}
+	exactLimit = append(exactLimit, 0)
 	oversized := append([]byte("OSR1\x01"), make([]byte, 8)...)
 	binary.BigEndian.PutUint32(oversized[5:9], 1048577)
 	tooMany := []byte("OSR1")
@@ -142,6 +147,7 @@ func TestSQLiteProtocolBounds(t *testing.T) {
 		ok   bool
 	}{
 		{"valid", valid.Bytes(), true},
+		{"exact record limit", exactLimit, true},
 		{"bad magic", []byte("nope\x00"), false},
 		{"truncated", valid.Bytes()[:len(valid.Bytes())-1], false},
 		{"oversized before allocation", oversized, false},
