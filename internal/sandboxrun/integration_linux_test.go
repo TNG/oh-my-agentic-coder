@@ -193,6 +193,84 @@ func TestIntegrationProtectedMaskedUnderGrant(t *testing.T) {
 	}
 }
 
+// Issue #302: a granted symlink inside another grant (/usr/lib64 -> lib
+// under /usr) crashed bwrap >= 0.12 ("Can't mount on symlink destination").
+// The sandbox must start and the path must still resolve.
+func TestIntegrationNestedSymlinkGrant(t *testing.T) {
+	requireBwrap(t)
+	home := stagedHome(t)
+	usr := filepath.Join(home, "usr")
+	if err := os.MkdirAll(filepath.Join(usr, "lib"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(usr, "lib", "libc.so"), []byte("LIBC"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	symlinkAt(t, "lib", filepath.Join(usr, "lib64"))
+
+	p := &sandboxprofile.Profile{
+		Workdir:    sandboxprofile.Workdir{Access: sandboxprofile.AccessReadWrite},
+		Filesystem: sandboxprofile.Filesystem{Read: []string{home, filepath.Join(usr, "lib64")}},
+		Network:    sandboxprofile.Network{Mode: sandboxprofile.ModeBlocked},
+	}
+	g, err := ResolveGrants(p, t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, code := runBwrapped(t, g, "cat", filepath.Join(usr, "lib64", "libc.so"))
+	if code != 0 || !strings.Contains(out, "LIBC") {
+		t.Errorf("nested symlinked grant unreadable (exit %d): %s", code, out)
+	}
+}
+
+// A protected symlink inside the workdir can't be masked on bwrap >= 0.12.
+// omac must say so and name the path instead of passing on bwrap's error;
+// older bwrap still masks it, so there the launch must go ahead.
+func TestIntegrationSymlinkDestinationError(t *testing.T) {
+	requireBwrap(t)
+	g := linuxTestGrants(t)
+	g.NetworkMode = sandboxprofile.ModeOpen // no Landlock needed for this check
+	env := filepath.Join(g.Workdir, ".env")
+	symlinkAt(t, "shared.env", env)
+	g.ProtectedPaths = append(g.ProtectedPaths, env)
+	_, err := BuildChildArgv(g, []string{"true"})
+	t.Logf("launch error: %v", err)
+	if !bwrapRefusesSymlinkDest() {
+		if err != nil {
+			t.Errorf("older bwrap masks the symlink, launch must go ahead: %v", err)
+		}
+		return
+	}
+	if err == nil || !strings.Contains(err.Error(), env) || !strings.Contains(err.Error(), "override_deny") {
+		t.Errorf("want an error naming %s and the fix, got: %v", env, err)
+	}
+}
+
+// A protected symlink granted on its own (e.g. ~/.netrc -> dotfiles/netrc)
+// is not a mount onto a symlink: bwrap creates a plain file for the grant,
+// and the mask goes on top of that. It must start on every bwrap and stay
+// masked.
+func TestIntegrationStandaloneProtectedSymlinkGrant(t *testing.T) {
+	requireBwrap(t)
+	g := linuxTestGrants(t)
+	g.NetworkMode = sandboxprofile.ModeOpen // no Landlock needed for this check
+	dotfiles := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dotfiles, "netrc"), []byte("SECRET"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	netrc := filepath.Join(t.TempDir(), ".netrc")
+	symlinkAt(t, filepath.Join(dotfiles, "netrc"), netrc)
+	g.ReadPaths = append(g.ReadPaths, netrc)
+	g.ProtectedPaths = append(g.ProtectedPaths, netrc)
+	if _, err := BuildChildArgv(g, []string{"true"}); err != nil {
+		t.Fatalf("standalone protected symlink grant refused: %v", err)
+	}
+	out, _ := runBwrapped(t, g, "cat", netrc)
+	if strings.Contains(out, "symlink destination") || strings.Contains(out, "SECRET") {
+		t.Errorf("want a sandbox that starts with the secret masked, got: %s", out)
+	}
+}
+
 // TestIntegrationProtectedMarkerLaunchAndContent guards the regression
 // where the marker bind sources were deleted before bwrap exec: with
 // DenialText set and a protected path present, the sandbox must still

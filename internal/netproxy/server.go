@@ -761,8 +761,8 @@ func inetAtonDecode(s string) (netip.Addr, bool) {
 // It is called on the raw value from the CONNECT/forward request before DNS,
 // so it must catch every syntactic variant: trailing dots, unspecified addrs,
 // non-canonical IPv4 spellings that inet_aton decodes to loopback, and
-// embedded-IPv4 spellings whose destination is local. Exported so omac
-// diagnose --probe can use the same definition as the proxy.
+// embedded-IPv4 spellings whose destination is local. This runtime refusal
+// guard includes embedded link-local addresses, not only loopback/unspecified.
 func IsLoopbackHost(host string) bool {
 	h := NormalizeHost(host) // strips trailing dots, lowercases
 	if h == "localhost" || strings.HasSuffix(h, ".localhost") {

@@ -41,14 +41,13 @@ func TestSecurityWorkdirEnvControlVarRefusedOnLegacySkill(t *testing.T) {
 	}
 }
 
-// TestSecurityEnvControlDenylistAppliesToAnchoredSkill asserts that the
-// denylist coverage reaches anchored skills while the anchor-match exception
-// is preserved: a workdir value equal to the host-approved anchor is accepted
-// (legitimate re-supply of a host-approved interpreter flag), but a
-// workdir-sourced override that differs from the anchor is refused. A
-// host-only global value for the same name also resolves (control), so the
-// acceptance is proven to track the anchor match, not a missing denylist.
-func TestSecurityEnvControlDenylistAppliesToAnchoredSkill(t *testing.T) {
+// TestSecurityEnvControlVarOnAnchoredSkillMustMatchAnchor asserts that on an
+// anchored skill a workdir value for a code-execution variable is accepted
+// only if it equals the host-approved anchor (legitimate re-supply of an
+// approved interpreter flag), and refused if it differs. A host-only global
+// value for the same name also resolves (control), so the acceptance is
+// proven to track the anchor match rather than the variable's name.
+func TestSecurityEnvControlVarOnAnchoredSkillMustMatchAnchor(t *testing.T) {
 	dir := skillDir(t)
 	e := entry(t, "probe", dir)
 	spec := config.ConfigSpec{Name: "NODE_OPTIONS", Type: config.ConfigFieldString}
@@ -57,18 +56,17 @@ func TestSecurityEnvControlDenylistAppliesToAnchoredSkill(t *testing.T) {
 	const approved = "--max-old-space-size=256"
 	r := New(Options{Scope: "wd"})
 
-	// Control: a denylisted name whose value comes only from the host-only
-	// global layer, matching the host-approved anchor, resolves normally. The
-	// denylist guards the agent-writable workdir layer, not host-approved
-	// values, so a fix that refused every value for the name would not make
-	// this control pass for the wrong reason.
+	// Control: a value that comes only from the host-only global layer,
+	// matching the host-approved anchor, resolves normally. Only the
+	// agent-writable workdir layer is checked, so a fix that refused every
+	// value for the name would fail here.
 	hostOnly := &skillconfig.Store{Version: skillconfig.SchemaVersion}
 	hostOnly.Set("probe", "NODE_OPTIONS", approved)
 	hostOnly.RecordApproved("wd", "probe", map[string]string{"NODE_OPTIONS": approved})
 	armed, problems := r.Resolve(m, e, dir, hostOnly)
 	defer armed.Zero()
 	if got := armed.Config["NODE_OPTIONS"]; got != approved || Has(problems, InvalidConfig) {
-		t.Fatalf("control: a host-only denylisted value did not resolve (value=%q, problems=%v): the fixture is broken, not the security property", got, problems)
+		t.Fatalf("control: a host-only value did not resolve (value=%q, problems=%v): the fixture is broken, not the security property", got, problems)
 	}
 
 	// The workdir layer supplies the same value the host approved, with no
@@ -88,15 +86,14 @@ func TestSecurityEnvControlDenylistAppliesToAnchoredSkill(t *testing.T) {
 	armed2, problems2 := r.Resolve(m, e, dir, merged)
 	defer armed2.Zero()
 	if got := armed2.Config["NODE_OPTIONS"]; got != approved {
-		t.Errorf("a workdir-sourced denylisted value equal to the anchor did not reach armed.Config (got %q): legitimate re-supply of a host-approved value must be accepted", got)
+		t.Errorf("a workdir-sourced value equal to the anchor did not reach armed.Config (got %q): legitimate re-supply of a host-approved value must be accepted", got)
 	}
 	if Has(problems2, InvalidConfig) {
 		t.Errorf("an anchor-matching workdir value was refused: %v", problems2)
 	}
 
 	// A workdir-sourced override that differs from the host-approved anchor
-	// is refused: the anchor check rejects the mismatch before any denylist
-	// consideration, so the sandbox cannot steer the sidecar with a flipped
+	// is refused, so the sandbox cannot steer the sidecar with a flipped
 	// value.
 	const hostile = "--require=/tmp/evil.js"
 	workdir2 := &skillconfig.Store{Version: skillconfig.SchemaVersion}

@@ -90,6 +90,36 @@ type SandboxConfig struct {
 	// Empty/unset uses the compiled-in default (sandboxbrief.Default);
 	// resolution happens at launch, not here.
 	Briefing string `yaml:"briefing"        json:"briefing"`
+
+	// MidsessionWatch tunes the parent's periodic re-scan for protected
+	// files created after launch (see sandboxrun.WatchNewProtected).
+	// Security-sensitive like the rest of Sandbox: only the user-global
+	// config may set it (stripSecurityFields drops it from workdir
+	// configs), because weaker values widen the window in which a
+	// mid-session secret file goes unnoticed.
+	MidsessionWatch MidsessionWatchConfig `yaml:"midsession_watch" json:"midsession_watch"`
+}
+
+// MidsessionWatchConfig tunes the mid-session protected-file watch.
+// Zero fields are the defaults: no optional full pass and unthrottled
+// full-pass concurrency. Keep the semantics in sync with
+// sandboxrun.WatchTuning (config cannot import sandboxrun).
+type MidsessionWatchConfig struct {
+	// FullPassTicks enables an optional full uncached re-scan every Nth
+	// tick, as a backstop for filesystems whose directory timestamps are
+	// coarser than the watch's re-check window (see
+	// sandboxrun.denyScanCache). Unset and 0 both leave it off, which is
+	// the default: the per-directory re-check catches the same-tick case
+	// on local filesystems without a periodic CPU burst. N runs it every
+	// Nth tick, trading detection latency (worst case N × tick interval)
+	// for that extra coverage.
+	FullPassTicks int `yaml:"full_pass_ticks" json:"full_pass_ticks"`
+	// FullPassConcurrency is how many folders the optional full re-scan
+	// reads in parallel. Unset runs it at the walk's normal concurrency
+	// (a short full-core burst); set a lower value to flatten that burst
+	// at the cost of a proportionally longer scan. It has no effect while
+	// full_pass_ticks is 0.
+	FullPassConcurrency int `yaml:"full_pass_concurrency" json:"full_pass_concurrency"`
 }
 
 // SandboxProfile describes how to launch the sandbox for a given runtime.
@@ -174,6 +204,10 @@ func defaultLauncherConfigFor(h Harness) LauncherConfig {
 	return LauncherConfig{
 		Sandbox: SandboxConfig{
 			DefaultProfile: "builtin",
+			MidsessionWatch: MidsessionWatchConfig{
+				FullPassTicks:       0, // off; per-directory re-check is the default
+				FullPassConcurrency: 0, // 0 = unthrottled (walk's normal concurrency)
+			},
 			Profiles: map[string]SandboxProfile{
 				// builtin re-execs the running omac binary as
 				// `omac sandbox run` — the native replacement for nono
@@ -394,6 +428,9 @@ func LoadLauncher(workdir string) (LauncherConfig, string, error) {
 		if _, err := merged.Cache.Resolve(); err != nil {
 			return LauncherConfig{}, "", fmt.Errorf("parse %s: %w", localPath, err)
 		}
+		if err := merged.Sandbox.MidsessionWatch.validate(); err != nil {
+			return LauncherConfig{}, "", fmt.Errorf("parse %s: %w", globalPath, err)
+		}
 		return merged, localPath, nil
 	case localPath != "":
 		// Workdir file only: strip all security-sensitive fields; fill
@@ -407,6 +444,9 @@ func LoadLauncher(workdir string) (LauncherConfig, string, error) {
 	case globalPath != "":
 		lc := mergeDefaults(global)
 		if _, err := lc.Cache.Resolve(); err != nil {
+			return LauncherConfig{}, "", fmt.Errorf("parse %s: %w", globalPath, err)
+		}
+		if err := lc.Sandbox.MidsessionWatch.validate(); err != nil {
 			return LauncherConfig{}, "", fmt.Errorf("parse %s: %w", globalPath, err)
 		}
 		return lc, globalPath, nil
@@ -453,6 +493,20 @@ func pickInt(override, fallback int) int {
 	return fallback
 }
 
+// validate rejects negative watch tuning: zero for full_pass_ticks
+// disables the optional full re-scan; a negative value is meaningless
+// and would be clamped to zero in the watch anyway, so reject it at load
+// instead of silently changing the user's intent.
+func (m MidsessionWatchConfig) validate() error {
+	if m.FullPassTicks < 0 {
+		return fmt.Errorf("sandbox.midsession_watch.full_pass_ticks must be >= 0 (0 = disabled), got %d", m.FullPassTicks)
+	}
+	if m.FullPassConcurrency < 0 {
+		return fmt.Errorf("sandbox.midsession_watch.full_pass_concurrency must be >= 0 (0 = default), got %d", m.FullPassConcurrency)
+	}
+	return nil
+}
+
 // pickInt64 returns override when non-zero, else fallback.
 func pickInt64(override, fallback int64) int64 {
 	if override != 0 {
@@ -466,6 +520,8 @@ func mergeDefaults(lc LauncherConfig) LauncherConfig {
 	if lc.Sandbox.DefaultProfile == "" {
 		lc.Sandbox.DefaultProfile = def.Sandbox.DefaultProfile
 	}
+	// FullPassTicks and FullPassConcurrency are zero when unset, which is
+	// their default: no full pass, unthrottled if one is requested.
 	// Merge built-in profiles into the map so a config declaring custom
 	// profiles cannot erase the compiled-in ones (e.g. "builtin").
 	if lc.Sandbox.Profiles == nil {

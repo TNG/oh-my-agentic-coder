@@ -53,13 +53,22 @@ omac serve --workdir ~/my-project
 
 #### OpenCode v2 project discovery on macOS
 
-For confirmed OpenCode v2+ versions, `omac start` and `omac serve` set
-`OPENCODE_CONFIG_PROJECT_DISABLE=1` in the native macOS sandbox. This avoids
-discovery attempts outside granted directories. Project and parent-directory
-sources such as `opencode.json`, `.opencode`, `.claude`, and `.agents` are not
-loaded automatically, even inside the project. Other versions and sandbox
-backends are unchanged. If `environment.deny_vars` blocks this variable, omac
-stops the launch instead of silently dropping the workaround.
+OpenCode 2.0.x treats denied configuration-discovery probes as fatal. In the
+native macOS sandbox, `omac start` and `omac serve` therefore set
+`OPENCODE_CONFIG_PROJECT_DISABLE=1` for confirmed 2.0.x versions. This avoids
+startup failures and HTTP 500 responses from discovery attempts outside granted
+directories.
+
+OpenCode 2.1.0 and later tolerate denied discovery probes, so project-local
+config, skills, agents, plugins, and instructions load normally there and omac
+does not set the variable. A wrapper spec pinned only to `@2` cannot prove the
+minor version, so omac treats it conservatively like 2.0.x and prints a
+warning at launch; pin `@2.1` or newer to get project sources back.
+
+When the sandbox profile cannot read `~/.agents`, omac warns as well: OpenCode
+2.0.x may fail to start there, and OpenCode 2.1+ silently skips the global
+skills stored in that directory. Add `~/.agents` to the profile's
+`filesystem.read` to load them.
 
 ### omac continue
 

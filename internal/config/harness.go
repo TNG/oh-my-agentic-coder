@@ -95,6 +95,13 @@ type Harness struct {
 	// leaves this nil.
 	BriefingEnvFunc func(briefing, tmpDir string) map[string]string
 
+	// LaunchEnvFunc returns env vars injected on every launch, regardless of
+	// the briefing. It relocates hardcoded runtime paths the sandbox does not
+	// grant into dirs it does: configHome is ConfigHome() and tmpDir is the
+	// per-launch scratch dir exported as TMPDIR. Each returned var must also
+	// be listed in SandboxEnvAllow. Nil means no extra env.
+	LaunchEnvFunc func(configHome, tmpDir string) map[string]string
+
 	// BriefingFileFunc delivers the briefing by writing a file into the
 	// workdir, for harnesses that (a) expose no system-prompt flag or env
 	// pointer and (b) load always-on context only from files in the
@@ -327,10 +334,14 @@ func harnessRegistry() []Harness {
 				"ANTHROPIC_AUTH_TOKEN",
 				"ANTHROPIC_BASE_URL",
 				"ANTHROPIC_MODEL",
-				// omac-injected (see start.go): claude's per-session temp dir
-				// reads CLAUDE_CODE_TMPDIR and otherwise hardcodes /tmp,
-				// which the macOS baseline deliberately does not grant.
+				// Injected by LaunchEnvFunc.
 				"CLAUDE_CODE_TMPDIR",
+			},
+			// claude's per-session temp dir reads CLAUDE_CODE_TMPDIR and
+			// otherwise hardcodes /tmp, ignoring TMPDIR. The macOS baseline
+			// deliberately does not grant /tmp, so claude would exit silently.
+			LaunchEnvFunc: func(_, tmpDir string) map[string]string {
+				return map[string]string{"CLAUDE_CODE_TMPDIR": tmpDir}
 			},
 			Session: &HarnessSession{
 				ContinueArgs:   []string{"--continue"},
@@ -399,6 +410,19 @@ func harnessRegistry() []Harness {
 				"COPILOT_PROVIDER_API_KEY",
 				"COPILOT_MODEL",
 				"COPILOT_PROVIDER_WIRE_API",
+				// Injected by LaunchEnvFunc.
+				"COPILOT_CACHE_HOME",
+			},
+			// The standalone (SEA) copilot binary extracts its bundled package
+			// to $COPILOT_CACHE_HOME/pkg, defaulting to the OS user cache dir
+			// (~/Library/Caches/copilot on macOS), which the sandbox keeps
+			// ungranted for tool-cache isolation (#26). Relocate it into the
+			// granted config home (#375).
+			LaunchEnvFunc: func(configHome, _ string) map[string]string {
+				if configHome == "" {
+					return nil
+				}
+				return map[string]string{"COPILOT_CACHE_HOME": configHome}
 			},
 			Session: &HarnessSession{
 				ContinueArgs:   []string{"--continue"},

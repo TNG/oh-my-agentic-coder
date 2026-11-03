@@ -59,6 +59,72 @@ func TestBuildChildArgvKeepsAnUnresolvableInnerCommand(t *testing.T) {
 	}
 }
 
+func TestBuildChildArgvRejectsInvalidHome(t *testing.T) {
+	root := t.TempDir()
+	file := filepath.Join(root, "file")
+	if err := os.WriteFile(file, []byte("not a home directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "file-link")
+	if err := os.Symlink(file, link); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name string
+		home string
+	}{
+		{"file", file},
+		{"symlink-to-file", link},
+		{"missing", filepath.Join(root, "missing")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("HOME", tc.home)
+			argv, err := BuildChildArgv(&Grants{Workdir: root}, []string{"/bin/sh"})
+			if err == nil {
+				t.Fatal("invalid HOME must not produce a sandbox profile")
+			}
+			if len(argv) != 0 {
+				t.Errorf("invalid HOME produced child argv: %q", argv)
+			}
+		})
+	}
+}
+
+func TestBuildChildArgvHomeOutsideWorkdir(t *testing.T) {
+	root := t.TempDir()
+	home := filepath.Join(root, "home")
+	if err := os.Mkdir(home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	canonical, err := filepath.EvalSymlinks(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "home-link")
+	if err := os.Symlink(home, link); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", link)
+
+	argv, err := BuildChildArgv(&Grants{Workdir: "/opt/homebrew/var/www/my-page"}, []string{"/bin/sh"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := argv[2]
+	for _, path := range []string{link, canonical} {
+		want := "(allow file-read-metadata (literal " + sbplQuote(path) + "))"
+		if !strings.Contains(profile, want) {
+			t.Errorf("home directory cannot be resolved: profile missing %s", want)
+		}
+		if strings.Contains(profile, "(allow file-read-data (literal "+sbplQuote(path)+"))") {
+			t.Errorf("home entry names must not be listable: %s", path)
+		}
+		if strings.Contains(profile, "(subpath "+sbplQuote(path)+")") {
+			t.Errorf("home must not receive recursive access: %s", path)
+		}
+	}
+}
+
 // Regression guard for the reported failure: a Homebrew install at a custom
 // $HOME-rooted prefix (/Users/<u>/homebrew, not /opt/homebrew) whose bin entry
 // is a relative symlink into Cellar. The darwin baseline hard-codes

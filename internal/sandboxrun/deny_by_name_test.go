@@ -105,7 +105,7 @@ func TestResolveGrantsHidesByNameWhenScanIsIncomplete(t *testing.T) {
 
 	stop := make(chan struct{})
 	close(stop)
-	if err := WatchNewProtected(prof, workdir, time.Hour, func(string) {}, stop); err != nil {
+	if err := WatchNewProtected(prof, workdir, time.Hour, func(string) {}, stop, WatchTuning{}); err != nil {
 		t.Errorf("the mid-session watch must start too: %v", err)
 	}
 
@@ -143,7 +143,9 @@ func TestWatchNewProtectedStopsWhenFolderOutgrowsCap(t *testing.T) {
 	stop := make(chan struct{})
 	defer close(stop)
 	done := make(chan error, 1)
-	go func() { done <- WatchNewProtected(prof, workdir, 10*time.Millisecond, func(string) {}, stop) }()
+	go func() {
+		done <- WatchNewProtected(prof, workdir, 10*time.Millisecond, func(string) {}, stop, WatchTuning{})
+	}()
 
 	populateLargeTree(t, workdir)
 	select {

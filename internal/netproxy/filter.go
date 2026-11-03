@@ -486,18 +486,19 @@ func MatchDomainList(host string, list []string) bool {
 	return false
 }
 
-// translationPrefixes are the well-known IPv6 prefixes that carry an IPv4
-// destination in their low 32 bits (RFC 6052 and RFC 8215). On a network
-// with an address-family translator, a connection to such a spelling is
-// delivered to the embedded IPv4 address.
-var translationPrefixes = []netip.Prefix{
+// supportedNAT64Prefixes use the RFC 6052 /96 layout: IPv4 in the low 32 bits.
+// The second prefix is the supported /96 subset of RFC 8215's /48 allocation;
+// the remaining local-use space may use other layouts and is refused below.
+var supportedNAT64Prefixes = []netip.Prefix{
 	netip.MustParsePrefix("64:ff9b::/96"),
 	netip.MustParsePrefix("64:ff9b:1::/96"),
 }
 
+var localUseNAT64Prefix = netip.MustParsePrefix("64:ff9b:1::/48")
+
 // embeddedIPv4 returns the IPv4 destination that ip's spelling embeds: the
-// IPv4-mapped form plus the well-known translation prefixes. ok is false
-// for addresses that embed nothing.
+// IPv4-mapped form plus the supported NAT64 /96 layouts. ok is false when
+// no supported layout matches; other layouts must not be decoded by low bits.
 func embeddedIPv4(ip netip.Addr) (netip.Addr, bool) {
 	if ip.Is4In6() {
 		return ip.Unmap(), true
@@ -511,7 +512,7 @@ func embeddedIPv4(ip netip.Addr) (netip.Addr, bool) {
 	if ip.Zone() != "" {
 		ip = ip.WithZone("")
 	}
-	for _, p := range translationPrefixes {
+	for _, p := range supportedNAT64Prefixes {
 		if p.Contains(ip) {
 			b := ip.As16()
 			return netip.AddrFrom4([4]byte{b[12], b[13], b[14], b[15]}), true
@@ -521,9 +522,10 @@ func embeddedIPv4(ip netip.Addr) (netip.Addr, bool) {
 }
 
 // unwrapEmbedded resolves any embedded-IPv4 spelling to the IPv4
-// destination it denotes, so policy verdicts depend on the destination
-// rather than on the spelling used to name it.
+// destination and removes zones for policy comparisons. Callers retain
+// the original address, including its interface zone, for transport.
 func unwrapEmbedded(ip netip.Addr) netip.Addr {
+	ip = ip.WithZone("")
 	if v4, ok := embeddedIPv4(ip); ok {
 		return v4
 	}
@@ -541,6 +543,13 @@ func isLinkLocal(ip netip.Addr) bool {
 // any embedded IPv4).
 func IsLoopback(ip netip.Addr) bool {
 	return unwrapEmbedded(ip).IsLoopback()
+}
+
+// IsHostLocal reports whether ip is loopback or unspecified after decoding
+// embedded IPv4. Unlike the runtime's IsLoopbackHost refusal guard, this does
+// not include embedded link-local destinations.
+func IsHostLocal(ip netip.Addr) bool {
+	return isHostLocal(ip)
 }
 
 // isHostLocal reports whether ip is loopback or the unspecified address.
@@ -574,6 +583,7 @@ func isCloudMetadata(ip netip.Addr) bool {
 // Applied at every address-level decision point: literal IPs in Check/CheckHost
 // and resolved IPs in the DNS loop.
 func hardDeniedAddr(ip netip.Addr) (string, bool) {
+	ip = unwrapEmbedded(ip)
 	if isLinkLocal(ip) {
 		return "hard-deny link-local address", true
 	}
@@ -583,20 +593,10 @@ func hardDeniedAddr(ip netip.Addr) (string, bool) {
 	if isCloudMetadata(ip) {
 		return "hard-deny cloud-metadata address", true
 	}
-	// Any other address inside a translation prefix is refused too: the
-	// spelling may be rewritten to an IPv4 destination downstream, so it
-	// must never reach a translator unverified. Zone-suffixed spellings
-	// denote the same destination, so the zone is stripped before the
-	// prefix match (Prefix.Contains is false for zoned addresses).
-	if !ip.Is4() && !ip.Is4In6() {
-		if ip.Zone() != "" {
-			ip = ip.WithZone("")
-		}
-		for _, p := range translationPrefixes {
-			if p.Contains(ip) {
-				return "hard-deny IPv6 translation prefix", true
-			}
-		}
+	// Successfully decoded forms are IPv4 now. Refuse the residual RFC 8215
+	// space without guessing which prefix length or layout a translator uses.
+	if localUseNAT64Prefix.Contains(ip) {
+		return "hard-deny IPv6 translation prefix", true
 	}
 	return "", false
 }

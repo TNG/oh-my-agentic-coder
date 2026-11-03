@@ -1376,3 +1376,59 @@ func TestCodewhaleBriefingFileFunc(t *testing.T) {
 		t.Errorf("briefing file = %q, want %q", string(data), "BRIEF")
 	}
 }
+
+// An injected var the env filter drops would silently undo the relocation.
+func TestLaunchEnvFuncVarsAreForwarded(t *testing.T) {
+	for _, h := range AllHarnesses() {
+		if h.LaunchEnvFunc == nil {
+			continue
+		}
+		for k := range h.LaunchEnvFunc("/cfg", "/tmp/x") {
+			if !slices.Contains(h.ForwardedEnvVars(), k) {
+				t.Errorf("%s: LaunchEnvFunc sets %s, which ForwardedEnvVars() drops", h.Name, k)
+			}
+		}
+	}
+}
+
+func TestLaunchEnvFuncClaudeTmpDir(t *testing.T) {
+	h, _ := LookupHarness("claude-code")
+	got := h.LaunchEnvFunc(h.ConfigHome(), "/tmp/omac-x")
+	if got["CLAUDE_CODE_TMPDIR"] != "/tmp/omac-x" {
+		t.Errorf("CLAUDE_CODE_TMPDIR = %q; want /tmp/omac-x", got["CLAUDE_CODE_TMPDIR"])
+	}
+}
+
+// The SEA copilot binary extracts into $COPILOT_CACHE_HOME/pkg; that must be
+// inside a granted dir, including when COPILOT_HOME redirects the config home.
+func TestLaunchEnvFuncCopilotCacheInGrantedHome(t *testing.T) {
+	for _, redirect := range []string{"", ".work-copilot"} {
+		t.Run("redirect="+redirect, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("COPILOT_HOME", "")
+			if redirect != "" {
+				t.Setenv("COPILOT_HOME", filepath.Join(home, redirect))
+			}
+			h, _ := LookupHarness("copilot")
+
+			cache := h.LaunchEnvFunc(h.ConfigHome(), "/tmp/x")["COPILOT_CACHE_HOME"]
+			granted := false
+			for _, d := range h.ResolvedSandboxDirs() {
+				if normalizeHomePath(d) == cache {
+					granted = true
+				}
+			}
+			if cache == "" || !granted {
+				t.Errorf("COPILOT_CACHE_HOME = %q; want one of the granted dirs %v", cache, h.ResolvedSandboxDirs())
+			}
+		})
+	}
+}
+
+func TestLaunchEnvFuncCopilotNoHome(t *testing.T) {
+	h, _ := LookupHarness("copilot")
+	if got := h.LaunchEnvFunc("", "/tmp/x"); len(got) != 0 {
+		t.Errorf("LaunchEnvFunc(\"\") = %v; want no env", got)
+	}
+}

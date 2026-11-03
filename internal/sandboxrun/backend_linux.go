@@ -3,10 +3,12 @@
 package sandboxrun
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -30,6 +32,44 @@ func CheckPlatform() error {
 		return fmt.Errorf("%s", usernsDiagnosis(err, firstLine(out)))
 	}
 	return nil
+}
+
+// bwrapRefusesSymlinkDest reports whether this bwrap refuses to mount onto
+// a path that is a symlink inside the sandbox, as bwrap >= 0.12 does
+// (GHSA-pxhw-h44j-8pfx). It probes the behavior rather than the version
+// because distros may backport the fix.
+func bwrapRefusesSymlinkDest() bool {
+	dir, err := os.MkdirTemp("", "omac-bwrap-probe-")
+	if err != nil {
+		return false
+	}
+	defer os.RemoveAll(dir)
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink(".", link); err != nil {
+		return false
+	}
+	out, _ := exec.Command("bwrap", "--ro-bind", "/", "/", "--tmpfs", link, "true").CombinedOutput()
+	return strings.Contains(string(out), "symlink destination")
+}
+
+// symlinkDestError explains a launch that bwrap would refuse because of
+// symlinks it can't mount onto, and what the user can do about each one.
+func symlinkDestError(dests, protected []string) error {
+	var b strings.Builder
+	b.WriteString("omac can't start the sandbox: this bubblewrap version refuses to mount onto symlinks, and these paths are symlinks:\n")
+	for _, d := range dests {
+		kind := "granted"
+		if slices.Contains(protected, d) {
+			kind = "protected"
+		}
+		fmt.Fprintf(&b, "  %s (%s)\n", d, kind)
+	}
+	b.WriteString("\n" +
+		"For a protected path (omac hides it from the agent), replace the symlink with\n" +
+		"the real file or folder, or add the path to filesystem.override_deny in your\n" +
+		"sandbox profile if the agent may use it.\n" +
+		"For a granted path, grant the folder the symlink points to instead.")
+	return errors.New(b.String())
 }
 
 // procUint reads a sysctl-style /proc file expected to hold a single
@@ -239,5 +279,13 @@ func BuildChildArgv(g *Grants, innerArgv []string) ([]string, error) {
 	stage2 = append(stage2, Stage2Args(&gz)...)
 	stage2 = append(stage2, "--")
 	stage2 = append(stage2, resolvedArgv...)
-	return BuildBwrapArgv(&gz, stage2)
+	argv, err := BuildBwrapArgv(&gz, stage2)
+	if err != nil {
+		return nil, err
+	}
+	// bwrap's own error for these names the path but not the cause or fix.
+	if dests := symlinkMountDests(argv); len(dests) > 0 && bwrapRefusesSymlinkDest() {
+		return nil, symlinkDestError(dests, gz.ProtectedPaths)
+	}
+	return argv, nil
 }

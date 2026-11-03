@@ -121,6 +121,20 @@ Fix: export `COPILOT_PROVIDER_WIRE_API=completions` before `omac start copilot`
 — it is in the auto-forwarded set, so no profile change is needed. The full
 variable set is documented by `copilot help providers`.
 
+### Copilot: `Failed to extract bundled package: EPERM ... mkdir '.../Library/Caches/copilot/pkg/...'`
+
+The standalone copilot binary (for example the Homebrew cask) unpacks its
+bundled package on first start. By default it unpacks into the OS user cache
+dir, e.g. `~/Library/Caches/copilot` on macOS. omac keeps that dir out of
+reach of the agent on purpose, so the unpack fails. Copilot reads the target
+from `COPILOT_CACHE_HOME`, not from `TMPDIR`.
+
+Fix: update omac. Current builds set `COPILOT_CACHE_HOME` to copilot's config
+home (`~/.copilot`, or `$COPILOT_HOME`), which the sandbox already grants. If
+you cannot update, add `~/Library/Caches/copilot` to `filesystem.allow` in
+your sandbox profile. Running copilot once outside the sandbox does not help,
+because the sandbox cannot read that cache dir either.
+
 ### claude-code exits silently on macOS (no output, no model calls)
 
 The claude process starts and exits with status 0 within a second. It

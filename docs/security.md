@@ -37,17 +37,23 @@ interactively. Any hostname resolving to a loopback, unspecified, link-local,
 or metadata address is also blocked.
 
 An IPv4 destination can also be named by an IPv6 address that embeds it.
-The proxy unwraps the IPv4-mapped form (`::ffff:` followed by the IPv4
-address) and the well-known translation prefixes `64:ff9b::/96` and
-`64:ff9b:1::/96` (RFC 6052 and RFC 8215). Networks that translate between
-IPv6 and IPv4 (known as NAT64) use these prefixes to carry an IPv4 address
-in their low 32 bits, so a connection to such a spelling is delivered to
-the embedded IPv4 destination. These spellings therefore receive the
-verdict of the IPv4 destination they name, including when they carry a
-trailing `%zone` interface suffix. Any other address inside those two
-prefixes is blocked unconditionally and cannot be approved interactively:
-on a network with a translator, the connection would be delivered to an
-IPv4 destination the policy never evaluated.
+For hard-deny checks, the proxy decodes the IPv4-mapped form (`::ffff:`
+followed by the IPv4 address) and two supported NAT64 layouts:
+`64:ff9b::/96` (RFC 6052) and `64:ff9b:1::/96`. Both `/96` layouts carry
+IPv4 in their low 32 bits. A decoded public destination continues through
+the normal hostname rules and prompt; it is not denied merely for using NAT64.
+
+RFC 8215 allocates the broader local-use range `64:ff9b:1::/48`, not just
+that second `/96`. Addresses outside the supported `/96` within this `/48`
+are blocked unconditionally: their translation layout is unknown, so the
+proxy cannot safely infer the destination from the low 32 bits. This
+includes alternate prefixes such as `64:ff9b:1:fffe::/96`.
+
+Address checks ignore any trailing `%zone` interface suffix, including on
+native IPv6 metadata addresses such as `fd00:ec2::254%0`. Only the policy
+copy is normalized. The admitted address and its interface zone remain
+pinned for transport, so NAT64 traffic still uses the translator rather
+than silently switching to a direct IPv4 connection.
 
 `host.docker.internal` (the Docker bridge gateway, typically 172.17.0.1) is
 not in the hard-deny set. It is a private RFC 1918 address and is subject to
@@ -56,7 +62,7 @@ prevent the agent from reaching it, add it to `network.deny_domain`.
 
 **Accepted gap, by design: private address ranges are not hard-denied.**
 Only loopback, unspecified, link-local, cloud-metadata, and
-translation-prefix addresses (see above) are blocked unconditionally.
+unsupported local-use translation addresses (see above) are blocked unconditionally.
 RFC 1918 (`10/8`, `172.16/12`, `192.168/16`), carrier-grade NAT
 (`100.64/10`), and IPv6 unique-local (`fc00::/7`) stay
 subject to the normal prompt and allow/deny policy. A hard deny would make VPN
@@ -75,11 +81,12 @@ unrelated projects, and can write outside its intended scope.
 omac gives the agent access only to what it needs:
 
 - Your working directory (read and write).
-- On macOS, ancestor directories of the working directory can be listed so
-  programs can resolve their current directory. This exposes file and directory
-  names, including sibling names along that path, but grants no access to their
-  contents or writes. Ancestors of other granted paths expose metadata only,
-  not directory listings.
+- On macOS, every directory above the working directory and above each
+  granted path, and your home directory, can be looked up (for example with
+  `stat`) but not listed: `ls ~` and `ls ..` fail. Guessing a name still
+  reveals whether it exists. In your home directory, `/bin/pwd -P` fails;
+  the shell's built-in `pwd` works. The root directory `/` stays listable
+  because every macOS program reads it at startup.
 - The config directories the active harness requires. Each
   harness declares exactly which directories it needs; omac injects them at
   launch.
@@ -107,6 +114,12 @@ dotenv secrets live, and walking them would make launch scale with your whole
 home directory. A file inside a skipped tree is not masked; keep dotenv files
 outside such trees, or deny their directory by path.
 
+The scan also skips the Nix store (`/nix/store`), even when you grant it or
+a folder that contains it. On NixOS every installed program lives there, so
+granting it is how the agent gets to run them, and it is far too large to
+list at launch. Nix makes everything in the store readable by every user on
+the machine, so a secret there is not protected by hiding it.
+
 Some directories have more files and folders than omac lists at launch.
 What happens then depends on the system:
 
@@ -121,6 +134,25 @@ What happens then depends on the system:
   file readable with an absolute `override_deny` path inside that directory
   (the rule would hide it too), or a `filesystem.deny` pattern uses `[...]`
   or `\` (for example `*.[pk]em`).
+
+  **During the session:** the masking above is fixed at launch — a `.env`
+  file created later is *not* masked, because the sandbox rules cannot be
+  changed while the session runs. The omac parent therefore re-scans the
+  same roots every 10 seconds and warns you when a new protected file
+  appears; the warning tells you that only a restart restores protection.
+  The watch warns, it does not block or mask. Directory timestamps come
+  from the filesystem's coarse clock, so a file created in the same clock
+  tick as a scan can share the previous scan's timestamp and slip past
+  that scan. The watch therefore lists any directory once more on the
+  next pass if its last scan fell within one timestamp tick; that catches
+  the hidden file, so a mid-session `.env` is detected within 10 seconds
+  on filesystems whose timestamps are no coarser than the two-second
+  re-check window. For coarser filesystems (some network mounts) you can
+  opt into a periodic full re-scan with
+  `sandbox.midsession_watch.full_pass_ticks: N` in the user config: it is
+  off by default, runs every Nth tick, and bounds that case at N × 10
+  seconds. `full_pass_concurrency` throttles that optional pass. A file
+  that appears and disappears between two scans is never detected.
 
 On macOS, keychain files are also blocked: the keychain folders
 (`~/Library/Keychains`, `/Library/Keychains`) and any file named
@@ -216,6 +248,50 @@ and the spawn is refused. The agent cannot sneak in modified code by editing a
 skill after it was approved. At approval time, the skill directory is frozen
 into a host-only snapshot; the sidecar is always spawned from that snapshot,
 never from the still-agent-writable workdir.
+
+### Skill instructions
+
+The harness also reads each skill's `SKILL.md` itself and gives it to the model
+as instructions. The agent can edit those files too, for example to plant
+instructions that every later session would follow. So at every launch, omac
+checks each omac skill in the workdir and in the user-global skill folders.
+Under `omac serve --for-opencode-desktop` it checks every project folder it
+grants the sandbox. An omac skill is a skill folder with an `omac.yaml`, or one
+whose name you have approved before. Harnesses also load skills from folders
+nested inside a skill folder, so omac checks those too: an approved
+`.opencode/skills/slack` moved to `.opencode/skills/team/slack` and edited is
+still hidden. omac hides the whole skill folder from the sandbox for that
+session, and prints why, when:
+
+- the skill's files do not match an approved version,
+- its `omac.yaml` is missing or is not a regular file, or
+- the skill contains a `SKILL.md` that the approval does not cover: a symlink
+  named `SKILL.md`, a file under a folder the bundle hash skips (such as
+  `build/` or `node_modules/`), or anything behind a symlinked folder that
+  leads outside the skill. Symlinked folders that stay inside the skill, like
+  a Python venv's `lib64 -> lib`, are fine.
+
+If omac cannot list one of the skill folders (for example because it was
+replaced by a file), or it holds more than 50,000 folders, omac hides that
+whole folder and keeps checking the others.
+
+For example, if an agent appends text to `.opencode/skills/slack/SKILL.md`,
+`omac start` refuses to launch; `omac start --accept-skill-changes` instead
+prints `skill "slack": its files do not match an approved version, so its
+SKILL.md instructions are untrusted ...` and hides the skill when using the
+built-in sandbox.
+Review the change, then run `omac register slack --force`.
+
+This has limits:
+
+- The check runs at launch. An edit made during a session is visible to that
+  session and, under `omac serve`, to every session until serve restarts.
+- Plain skills (a `SKILL.md` without an `omac.yaml`) have no approval, so omac
+  cannot check them. They carry no integrity guarantee: like `AGENTS.md` or
+  any other file in your project, the agent can change them. Review changes to
+  them as you would review code.
+- Hiding needs omac's built-in sandbox. With the deprecated nono backend, omac
+  only prints a warning.
 
 When upgrading omac on a machine with existing registered skills, only
 **user-global** skills (registered outside any workdir) are automatically
