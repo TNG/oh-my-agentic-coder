@@ -65,7 +65,7 @@ func newServeServerForTest(t *testing.T) *serveServer {
 	_ = f.Start(t.Context())
 	t.Cleanup(func() { f.Close() })
 
-	return &serveServer{
+	s := &serveServer{
 		env:          makeEnv(t.TempDir()),
 		harness:      config.DefaultHarness(),
 		facade:       f,
@@ -79,6 +79,8 @@ func newServeServerForTest(t *testing.T) *serveServer {
 		byToken:      map[string]*dirState{},
 		global:       map[string]*skillRoute{},
 	}
+	t.Cleanup(s.closeDirectoryRoots)
+	return s
 }
 
 // addServeTestToken adds the test control token to a request.

@@ -379,6 +379,11 @@ func runServe(args []string, env *Env) int {
 		byToken:           map[string]*dirState{},
 		global:            map[string]*skillRoute{},
 	}
+	defer srv.closeDirectoryRoots()
+	if err := srv.pinRoots(); err != nil {
+		fmt.Fprintln(env.Stderr, "omac serve:", err)
+		return ExitMisuse
+	}
 	if cacheScope != nil {
 		srv.cacheEnv = map[string]string{
 			"OMAC_CACHE_DIR":  cacheScope.Dir,
@@ -1058,6 +1063,7 @@ type skillRoute struct {
 
 type dirState struct {
 	Dir          string
+	Root         *os.Root // owned until teardown; all project I/O is relative to it
 	Token        string
 	State        string // activating|active|active_partial
 	Skills       map[string]*skillRoute
@@ -1086,13 +1092,15 @@ type serveServer struct {
 	// pattern would have no way back to a live route short of editing the skill.
 	skipSecretPattern bool
 	verbose           bool
-	roots             []string // §5.4 Option B; empty = allow any directory
+	roots             []string            // §5.4 Option B; empty = allow any directory
+	rootDirs          map[string]*os.Root // pinned before requests; guarded by actMu
 	cacheEnv          map[string]string
 
-	mu      sync.RWMutex
-	dirs    map[string]*dirState   // abs dir -> state
-	byToken map[string]*dirState   // token -> dir
-	global  map[string]*skillRoute // mount -> global skill
+	mu       sync.RWMutex
+	dirs     map[string]*dirState   // abs dir -> state
+	byToken  map[string]*dirState   // token -> dir
+	dirNames map[string]*dirState   // accepted lexical names -> original managed identity
+	global   map[string]*skillRoute // mount -> global skill
 
 	// actMu serializes per-dir activation so two concurrent activate
 	// calls for the same directory coalesce (§5.2 step 1) without holding
@@ -1258,11 +1266,11 @@ func (s *serveServer) checkGlobalDrift() int {
 	return ExitConfigInvalid
 }
 
-// loadWorkdirConfig merges a project's config with the host-only global layer,
+// loadWorkdirConfigRoot merges a project's config with the host-only global layer,
 // so serve resolves stored values, the approval anchor and the workdir/value
 // provenance exactly as `omac start` does.
-func loadWorkdirConfig(absDir string) (*skillconfig.Store, error) {
-	w, err := skillconfig.Load(absDir)
+func loadWorkdirConfigRoot(root *os.Root) (*skillconfig.Store, error) {
+	w, err := skillconfig.LoadRoot(root)
 	if err != nil {
 		return nil, err
 	}
@@ -1338,36 +1346,17 @@ func (s *serveServer) reloadGlobals() error {
 
 // activate brings a directory online (idempotent) and returns its manifest.
 func (s *serveServer) activate(absDir string) (map[string]any, error) {
-	// Validation runs before any side effect, so every path through
-	// activation — including re-discovery of an already-active directory —
-	// is gated identically.
-
-	// Validate it's a real directory.
-	if info, err := os.Stat(absDir); err != nil || !info.IsDir() {
-		return nil, fmt.Errorf("not a directory: %s", absDir)
+	absDir = filepath.Clean(absDir)
+	resolved, root, err := s.openActivationRoot(absDir)
+	if err != nil {
+		return nil, err
 	}
-	// A link as the final path component is refused even when its target
-	// would be allowed: a directory must be named by the directory itself,
-	// never through a link, mirroring the facade's doc-serving discipline.
-	if fi, err := os.Lstat(absDir); err == nil && fi.Mode()&os.ModeSymlink != 0 {
-		return nil, fmt.Errorf("refusing to activate %s: the final path component is a symbolic link", absDir)
-	}
-	// Resolve all components before the policy check: a link earlier in
-	// the path must not be able to point the activation at a directory the
-	// roots policy forbids.
-	resolved, rerr := filepath.EvalSymlinks(absDir)
-	if rerr != nil {
-		return nil, fmt.Errorf("resolving %s: %w", absDir, rerr)
-	}
-	// Enforce the pre-declared roots policy (§5.4 Option B) on the
-	// resolved path.
-	if !s.dirAllowed(resolved) {
-		return nil, fmt.Errorf("directory %s is not under any allowed --root", absDir)
-	}
-
-	// All state and privileged work below runs on the resolved path, so
-	// the validated path and the operated-on path are the same object,
-	// and two lexical names for one physical directory share one entry.
+	owned := false
+	defer func() {
+		if !owned {
+			root.Close()
+		}
+	}()
 
 	// Per-dir coalescing (§5.2 step 1): concurrent activate calls for the
 	// same directory serialize here, so only the first does the work and
@@ -1375,20 +1364,44 @@ func (s *serveServer) activate(absDir string) (map[string]any, error) {
 	lock := s.dirActLock(resolved)
 	lock.Lock()
 	defer lock.Unlock()
+	if !sameDirectoryName(absDir, root) || !sameDirectoryName(resolved, root) {
+		return nil, fmt.Errorf("directory %s changed while activation waited", absDir)
+	}
 
 	s.mu.RLock()
 	existing, already := s.dirs[resolved]
 	s.mu.RUnlock()
 	if already {
+		oldInfo, _ := existing.Root.Stat(".")
+		newInfo, _ := root.Stat(".")
+		if oldInfo == nil || newInfo == nil || !os.SameFile(oldInfo, newInfo) {
+			return nil, fmt.Errorf("directory %s no longer names the managed directory", absDir)
+		}
 		// Already active: re-discover so a skill installed/registered since
 		// this dir was first activated is mounted now — no manual reload or
 		// restart needed. Existing healthy skills are left untouched.
-		s.rediscover(existing)
+		if err := s.rediscover(existing); err != nil {
+			return nil, err
+		}
+		s.rememberDirName(absDir, existing)
 		return s.manifestFor(existing), nil
 	}
 
+	discovered, err := skillsource.DiscoverRoot(root, s.harness)
+	if err != nil {
+		return nil, err
+	}
+	wReg, err := registry.LoadRoot(root)
+	if err != nil {
+		return nil, err
+	}
+	wCfg, err := loadWorkdirConfigRoot(root)
+	if err != nil {
+		return nil, err
+	}
+
 	token := mintToken()
-	d := &dirState{Dir: resolved, Token: token, State: "activating", Skills: map[string]*skillRoute{}}
+	d := &dirState{Dir: resolved, Root: root, Token: token, State: "activating", Skills: map[string]*skillRoute{}}
 	s.mu.Lock()
 	// Clear flat aliases before the second dir becomes visible so there is
 	// no instant at which len(s.dirs) >= 2 and a token-less alias from the
@@ -1396,21 +1409,9 @@ func (s *serveServer) activate(absDir string) (map[string]any, error) {
 	s.clearFlatAliases()
 	s.dirs[resolved] = d
 	s.byToken[token] = d
+	owned = true
 	s.mu.Unlock()
-
-	discovered, err := skillsource.Discover(resolved, s.harness)
-	if err != nil {
-		return nil, err
-	}
-
-	wReg, err := registry.Load(resolved)
-	if err != nil {
-		return nil, err
-	}
-	wCfg, err := loadWorkdirConfig(resolved)
-	if err != nil {
-		return nil, err
-	}
+	s.rememberDirName(absDir, d)
 	workdirID := keychain.WorkdirID(resolved)
 
 	partial := false
@@ -1423,7 +1424,7 @@ func (s *serveServer) activate(absDir string) (map[string]any, error) {
 		// Auto-register workdir-local skills not yet in this dir's registry.
 		e, _ := wReg.Find(ent.Name)
 		if e == nil {
-			ne, rerr := s.autoRegister(resolved, ent)
+			ne, rerr := s.autoRegister(root, ent)
 			if rerr != nil {
 				// Surface as a broken route rather than failing the whole dir.
 				sr := &skillRoute{Name: ent.Name, Mount: ent.Name, Namespace: token,
@@ -1439,7 +1440,7 @@ func (s *serveServer) activate(absDir string) (map[string]any, error) {
 		}
 		// workdir-local skill: OMAC_WORKDIR is the activated project dir
 		// (resolved), not the skill's own directory (ent.Dir).
-		sr := s.bringUp(*e, ent.Dir, resolved, token, workdirID, wCfg)
+		sr := s.bringUpRoot(*e, root, ent.Dir, resolved, token, workdirID, wCfg)
 		if sr.State != facade.RouteReady {
 			partial = true
 		}
@@ -1467,20 +1468,20 @@ func (s *serveServer) activate(absDir string) (map[string]any, error) {
 // so this is cheap to call on every agent turn and never churns healthy
 // sidecars. It is the mechanism that makes "install a skill -> it appears"
 // work without a manual reload.
-func (s *serveServer) rediscover(d *dirState) {
+func (s *serveServer) rediscover(d *dirState) error {
 	absDir := d.Dir
 	token := d.Token
-	discovered, err := skillsource.Discover(absDir, s.harness)
+	discovered, err := skillsource.DiscoverRoot(d.Root, s.harness)
 	if err != nil {
-		return
+		return err
 	}
-	wReg, err := registry.Load(absDir)
+	wReg, err := registry.LoadRoot(d.Root)
 	if err != nil {
-		return
+		return err
 	}
-	wCfg, err := loadWorkdirConfig(absDir)
+	wCfg, err := loadWorkdirConfigRoot(d.Root)
 	if err != nil {
-		return
+		return err
 	}
 	workdirID := keychain.WorkdirID(absDir)
 
@@ -1493,7 +1494,7 @@ func (s *serveServer) rediscover(d *dirState) {
 		// a healthy skill to 404 mid-session). d.Skills is keyed by MOUNT
 		// (matching how every other path stores it), so look up by mount.
 		mnt := ent.Name
-		if m, merr := config.LoadMeta(filepath.Join(ent.Dir, config.MetaFileName)); merr == nil && m.Sidecar != nil {
+		if m, merr := config.LoadMetaRoot(d.Root, filepath.Join(ent.Dir, config.MetaFileName)); merr == nil && m.Sidecar != nil {
 			mnt = m.Sidecar.MountOrDefault(ent.Name)
 		}
 		d.mu.Lock()
@@ -1510,7 +1511,7 @@ func (s *serveServer) rediscover(d *dirState) {
 		// stop.)
 		e, _ := wReg.Find(ent.Name)
 		if e == nil {
-			ne, rerr := s.autoRegister(absDir, ent)
+			ne, rerr := s.autoRegister(d.Root, ent)
 			if rerr != nil {
 				sr := &skillRoute{Name: ent.Name, Mount: ent.Name, Namespace: token,
 					State: facade.RouteBroken, Detail: rerr.Error()}
@@ -1522,7 +1523,7 @@ func (s *serveServer) rediscover(d *dirState) {
 			}
 			e = ne
 		}
-		sr := s.bringUp(*e, ent.Dir, absDir, token, workdirID, wCfg)
+		sr := s.bringUpRoot(*e, d.Root, ent.Dir, absDir, token, workdirID, wCfg)
 		d.mu.Lock()
 		d.Skills[sr.Mount] = sr
 		d.mu.Unlock()
@@ -1543,21 +1544,26 @@ func (s *serveServer) rediscover(d *dirState) {
 		d.State = "active"
 	}
 	d.mu.Unlock()
+	return nil
 }
 
 // autoRegister writes a registry entry for a discovered workdir-local skill
 // without prompting (serve mode has no human at the keyboard). Mirrors the
 // non-interactive parts of `omac register`.
-func (s *serveServer) autoRegister(absDir string, ent skillsource.Entry) (*registry.Entry, error) {
-	metaPath := filepath.Join(ent.Dir, config.MetaFileName)
-	m, err := config.LoadMeta(metaPath)
+func (s *serveServer) autoRegister(root *os.Root, ent skillsource.Entry) (*registry.Entry, error) {
+	skill, err := root.OpenRoot(ent.Dir)
+	if err != nil {
+		return nil, err
+	}
+	defer skill.Close()
+	m, err := config.LoadMetaRoot(skill, config.MetaFileName)
 	if err != nil {
 		return nil, err
 	}
 	if m.Sidecar == nil {
 		return nil, fmt.Errorf("skill %q has no sidecar block", ent.Name)
 	}
-	bundle, err := config.BundleHash(ent.Dir)
+	bundle, err := config.BundleHashRoot(skill)
 	if err != nil {
 		return nil, err
 	}
@@ -1566,26 +1572,22 @@ func (s *serveServer) autoRegister(absDir string, ent skillsource.Entry) (*regis
 		declared = append(declared, sp.Name)
 	}
 	var out *registry.Entry
-	err = registry.WithLock(absDir, func() error {
-		reg, err := registry.Load(absDir)
+	err = registry.WithRootLock(root, func() error {
+		reg, err := registry.LoadRoot(root)
 		if err != nil {
 			return err
-		}
-		stored := ent.Dir
-		if rel, rerr := filepath.Rel(absDir, ent.Dir); rerr == nil {
-			stored = rel
 		}
 		// Harness-keyed: a legacy (Harness "") Upsert keys by name only
 		// and would clobber another harness's entry of the same name.
 		reg.Upsert(registry.Entry{
 			Name:                ent.Name,
 			Harness:             s.harness.Name,
-			SkillDir:            stored,
+			SkillDir:            ent.Dir,
 			BundleHash:          bundle,
 			RegisteredAt:        time.Now().UTC(),
 			DeclaredSecretNames: declared,
 		})
-		if err := registry.Save(absDir, reg); err != nil {
+		if err := registry.SaveRoot(root, reg); err != nil {
 			return err
 		}
 		e, _ := reg.FindForHarness(ent.Name, s.harness.Name)
@@ -1611,6 +1613,22 @@ func (s *serveServer) autoRegister(absDir string, ent skillsource.Entry) (*regis
 //     skill this is the activated project; for a global skill there is no
 //     single project, so the server's launch workdir is used as a default.
 func (s *serveServer) bringUp(e registry.Entry, absDir, workdir, namespace, secretScope string, cfg *skillconfig.Store) *skillRoute {
+	return s.bringUpInspected(e, nil, absDir, workdir, namespace, secretScope, cfg)
+}
+
+func (s *serveServer) bringUpRoot(e registry.Entry, project *os.Root, rel, workdir, namespace, secretScope string, cfg *skillconfig.Store) *skillRoute {
+	absDir := filepath.Join(workdir, rel)
+	root, err := project.OpenRoot(rel)
+	if err != nil {
+		sr := &skillRoute{Name: e.Name, Mount: e.Name, Namespace: namespace, SkillDir: absDir, State: facade.RouteBroken, Detail: err.Error()}
+		s.installRoute(sr, 0)
+		return sr
+	}
+	defer root.Close()
+	return s.bringUpInspected(e, root, absDir, workdir, namespace, secretScope, cfg)
+}
+
+func (s *serveServer) bringUpInspected(e registry.Entry, root *os.Root, absDir, workdir, namespace, secretScope string, cfg *skillconfig.Store) *skillRoute {
 	// The readiness rule is shared with start, live reload, doctor and `config
 	// show` (internal/skillstate); serve's job is only to turn its problems
 	// into a route state. Before #174 this was serve's own copy, which had
@@ -1627,7 +1645,13 @@ func (s *serveServer) bringUp(e registry.Entry, absDir, workdir, namespace, secr
 	// not cost a keychain read, which on macOS is one blocking authorization
 	// prompt per refused skill, nor have its credentials materialized here for
 	// nothing.
-	armed, problems := resolver.Inspect(e, absDir)
+	var armed skillstate.Armed
+	var problems []skillstate.Problem
+	if root != nil {
+		armed, problems = resolver.InspectRoot(e, absDir, root)
+	} else {
+		armed, problems = resolver.Inspect(e, absDir)
+	}
 	// Once filled, armed holds live secret material on every path out of this
 	// function, including the ones that return a stub route without spawning.
 	defer armed.Zero()
@@ -1649,6 +1673,9 @@ func (s *serveServer) bringUp(e registry.Entry, absDir, workdir, namespace, secr
 	if skillstate.Has(problems, skillstate.BundleDrift) {
 		return broken("files changed since register; code and SKILL.md instructions are untrusted, so do not follow them; review it on the host and re-register")
 	}
+	if armed.BundleErr != nil {
+		return broken(armed.BundleErr.Error())
+	}
 
 	// Spawn-approval gate: refuse unless the current on-disk code is
 	// host-approved, and run from the immutable approval snapshot rather than
@@ -1660,8 +1687,7 @@ func (s *serveServer) bringUp(e registry.Entry, absDir, workdir, namespace, secr
 	// when the gate ran before resolution — so an unapproved skill's route
 	// always names the security refusal rather than an incidental keychain
 	// error found on the way. armed.Bundle was hashed once above and is reused
-	// here; it is empty when hashing failed, which leaves approvalRefusal to
-	// re-derive and report.
+	// here; a hash failure has already failed closed without a pathname retry.
 	snapDir, refusal := approvedSpawnDir(e.Name, absDir, armed.Bundle)
 	if refusal != nil {
 		return broken(refusal.Error())
@@ -2130,29 +2156,54 @@ func (s *serveServer) handleGlobal(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"skills": skills})
 }
 
-// deactivate tears down absDir's routes and state (idempotent). It applies
-// the same path discipline as activate: a link as the final component never
-// names a managed directory, and teardown addresses the physical path the
-// caller's name resolves to — the same key activation stores state under. A
-// directory deleted since activation has nothing left to resolve, so it is
-// addressed by its given name.
+// deactivate accepts a previously admitted name even after deletion. A name
+// that now resolves to another identity is refused, never silently retargeted.
 func (s *serveServer) deactivate(absDir string) error {
+	absDir = filepath.Clean(absDir)
 	if fi, err := os.Lstat(absDir); err == nil && fi.Mode()&os.ModeSymlink != 0 {
 		return fmt.Errorf("refusing to deactivate %s: the final path component is a symbolic link", absDir)
 	}
+	s.mu.RLock()
+	known := s.dirNames[absDir]
+	s.mu.RUnlock()
 	key := absDir
-	if resolved, err := filepath.EvalSymlinks(absDir); err == nil {
+	resolved, resolveErr := filepath.EvalSymlinks(absDir)
+	if known != nil {
+		key = known.Dir
+	} else if resolveErr == nil {
 		key = resolved
+	} else {
+		return fmt.Errorf("cannot identify managed directory %s: %w", absDir, resolveErr)
 	}
+	lock := s.dirActLock(key)
+	lock.Lock()
+	defer lock.Unlock()
+	if fi, err := os.Lstat(absDir); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("refusing to deactivate %s: the final path component is a symbolic link", absDir)
+	}
+	_, resolveErr = filepath.EvalSymlinks(absDir)
 	s.mu.Lock()
 	d, ok := s.dirs[key]
-	if !ok {
-		key = absDir
-		d, ok = s.dirs[key]
+	if ok && resolveErr == nil && !sameDirectoryName(absDir, d.Root) {
+		s.mu.Unlock()
+		return fmt.Errorf("directory %s no longer names the managed directory", absDir)
+	}
+	if known != nil && (!ok || d != known) {
+		s.mu.Unlock()
+		return fmt.Errorf("directory %s is no longer managed by that name", absDir)
+	}
+	if resolveErr != nil && !errors.Is(resolveErr, os.ErrNotExist) {
+		s.mu.Unlock()
+		return fmt.Errorf("cannot identify managed directory %s: %w", absDir, resolveErr)
 	}
 	if ok {
 		delete(s.dirs, key)
 		delete(s.byToken, d.Token)
+		for name, entry := range s.dirNames {
+			if entry == d {
+				delete(s.dirNames, name)
+			}
+		}
 	}
 	s.mu.Unlock()
 	if !ok {
@@ -2166,6 +2217,7 @@ func (s *serveServer) deactivate(absDir string) error {
 		}
 	}
 	d.mu.Unlock()
+	d.Root.Close()
 	s.refreshSingleDirAliases()
 	return nil
 }

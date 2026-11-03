@@ -265,7 +265,23 @@ func (r *Resolver) Load(e registry.Entry, absDir string, cfg *skillconfig.Store)
 // MetaBroken problem; nothing further can be resolved, and Fill on that Armed
 // is a no-op.
 func (r *Resolver) Inspect(e registry.Entry, absDir string) (Armed, []Problem) {
-	m, err := config.LoadMeta(filepath.Join(absDir, config.MetaFileName))
+	return r.inspect(e, absDir, nil)
+}
+
+// InspectRoot performs Inspect through an opened skill identity. absDir is
+// diagnostic only; neither metadata nor hashing reopens it.
+func (r *Resolver) InspectRoot(e registry.Entry, absDir string, root *os.Root) (Armed, []Problem) {
+	return r.inspect(e, absDir, root)
+}
+
+func (r *Resolver) inspect(e registry.Entry, absDir string, root *os.Root) (Armed, []Problem) {
+	var m *config.Meta
+	var err error
+	if root != nil {
+		m, err = config.LoadMetaRoot(root, config.MetaFileName)
+	} else {
+		m, err = config.LoadMeta(filepath.Join(absDir, config.MetaFileName))
+	}
 	if err != nil {
 		return Armed{Entry: e, AbsDir: absDir, Mount: e.Name}, []Problem{{
 			Kind:   MetaBroken,
@@ -283,11 +299,15 @@ func (r *Resolver) Inspect(e registry.Entry, absDir string) (Armed, []Problem) {
 			Fix:    "omac register " + e.Name + " --force",
 		}}
 	}
-	return r.inspectMeta(m, e, absDir)
+	return r.inspectMetaRoot(m, e, absDir, root)
 }
 
 // inspectMeta is Inspect for an already-parsed meta.
 func (r *Resolver) inspectMeta(m *config.Meta, e registry.Entry, absDir string) (Armed, []Problem) {
+	return r.inspectMetaRoot(m, e, absDir, nil)
+}
+
+func (r *Resolver) inspectMetaRoot(m *config.Meta, e registry.Entry, absDir string, root *os.Root) (Armed, []Problem) {
 	armed := Armed{
 		Entry:         e,
 		Meta:          m,
@@ -300,7 +320,13 @@ func (r *Resolver) inspectMeta(m *config.Meta, e registry.Entry, absDir string) 
 	}
 	var problems []Problem
 	if !r.opts.SkipBundleHash {
-		bundle, err := config.BundleHash(absDir)
+		var bundle string
+		var err error
+		if root != nil {
+			bundle, err = config.BundleHashRoot(root)
+		} else {
+			bundle, err = config.BundleHash(absDir)
+		}
 		armed.Bundle, armed.BundleErr = bundle, err
 		// Report drift only when the hash is trustworthy; a hashing failure
 		// is the caller's to interpret via BundleErr.

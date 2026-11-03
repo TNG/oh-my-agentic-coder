@@ -132,6 +132,12 @@ func Load(workdir string) (*Store, error) {
 	return loadFrom(Path(workdir))
 }
 
+// LoadRoot reads project config through the admitted directory identity.
+func LoadRoot(root *os.Root) (*Store, error) {
+	raw, err := root.ReadFile(".opencode/skill-config.yaml")
+	return parseStore(raw, err)
+}
+
 // LoadGlobal reads the user-global store. A missing file (or an
 // unresolvable global directory) returns an empty Store.
 func LoadGlobal() (*Store, error) {
@@ -145,6 +151,10 @@ func LoadGlobal() (*Store, error) {
 // loadFrom reads and parses a store from an arbitrary path.
 func loadFrom(p string) (*Store, error) {
 	raw, err := os.ReadFile(p)
+	return parseStore(raw, err)
+}
+
+func parseStore(raw []byte, err error) (*Store, error) {
 	if errors.Is(err, os.ErrNotExist) {
 		return &Store{Version: SchemaVersion, Skills: map[string]map[string]string{}}, nil
 	}

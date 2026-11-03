@@ -131,6 +131,10 @@ func LoadGlobal() (*Registry, error) {
 // cannot reach name→path sinks downstream.
 func loadFrom(p string) (*Registry, error) {
 	raw, err := os.ReadFile(p)
+	return parseRegistry(raw, err)
+}
+
+func parseRegistry(raw []byte, err error) (*Registry, error) {
 	if errors.Is(err, os.ErrNotExist) {
 		return &Registry{Version: SchemaVersion}, nil
 	}

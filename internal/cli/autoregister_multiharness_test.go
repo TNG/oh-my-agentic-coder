@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -65,7 +66,16 @@ func TestServeAutoRegisterDoesNotClobberHarnessKeyedEntry(t *testing.T) {
 	seedHarnessKeyedEntry(t, wd, "slack", ".opencode/skills/slack", ocBundle)
 
 	s := &serveServer{harness: claudeHarness(t)}
-	ne, err := s.autoRegister(wd, skillsource.Entry{Name: "slack", Dir: sharedDir, Kind: "workdir"})
+	root, err := os.OpenRoot(wd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	rel, err := filepath.Rel(wd, sharedDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ne, err := s.autoRegister(root, skillsource.Entry{Name: "slack", Dir: rel, Kind: "workdir"})
 	if err != nil {
 		t.Fatalf("autoRegister: %v", err)
 	}
