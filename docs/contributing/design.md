@@ -31,7 +31,7 @@ curl -sS "${OMAC_SLACK_BASE}/api/chat.postMessage" -d '...'
 
 ### Explicit registration, not auto-discovery at start time
 
-Silently starting any sidecar found under `.opencode/skills/` would let install scripts run and secrets be collected without the user's awareness. So omac refuses to start if a skill directory holds an `omac.yaml` that is not in `sidecar.json`. Registration is deliberate: `omac register <skill>` lets the user inspect and run the install script and answer each secret prompt. A `bundle_hash` guards against drift — if a skill's source changes after registration, `omac start` refuses until the user re-registers with `--force`. `--auto-register-skills` exists for CI where all values resolve without prompting, but is not the default.
+Silently starting any sidecar found under `.opencode/skills/` would let install scripts run and secrets be collected without the user's awareness. So omac refuses to start if a skill directory holds an `omac.yaml` that is not in `sidecar.json`. Registration is deliberate: `omac register <skill>` lets the user inspect and run the install script and answer each secret prompt. A `bundle_hash` guards against drift — if a skill's source changes after registration, `omac start` refuses until the user re-registers with `--force`. `--auto-register-skills` registers skills whose required values resolve without prompting, but is not the default. A value found only in the agent-writable `<workdir>/.opencode/skill-config.yaml` does not count, because nobody approved it. For CI, run `omac register <skill> --fields-from <file>` or set `OMAC_CONFIG_<NAME>` instead.
 
 ### `omac.yaml` is separate from the marketplace's `meta.yaml`
 

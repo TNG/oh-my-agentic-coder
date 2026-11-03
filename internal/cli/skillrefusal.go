@@ -45,7 +45,7 @@ func renderSkillRefusal(w io.Writer, prefix string, problems []skillstate.Proble
 	// Bundle drift uses skillProblemLine so the skill name is labeled
 	// separately from the copy-pasteable command (issue #227).
 	labeledSkills(w, s, problems, skillstate.BundleDrift,
-		"bundle changed since register (pass --accept-skill-changes to proceed, or re-register):",
+		"files changed since register, so code and SKILL.md instructions are untrusted (re-register, or pass --accept-skill-changes to start without these skills):",
 		"re-register")
 
 	perField(w, problems, skillstate.MissingSecret,

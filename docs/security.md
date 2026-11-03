@@ -61,11 +61,12 @@ unrelated projects, and can write outside its intended scope.
 omac gives the agent access only to what it needs:
 
 - Your working directory (read and write).
-- On macOS, ancestor directories of the working directory can be listed so
-  programs can resolve their current directory. This exposes file and directory
-  names, including sibling names along that path, but grants no access to their
-  contents or writes. Ancestors of other granted paths expose metadata only,
-  not directory listings.
+- On macOS, every directory above the working directory and above each
+  granted path, and your home directory, can be looked up (for example with
+  `stat`) but not listed: `ls ~` and `ls ..` fail. Guessing a name still
+  reveals whether it exists. In your home directory, `/bin/pwd -P` fails;
+  the shell's built-in `pwd` works. The root directory `/` stays listable
+  because every macOS program reads it at startup.
 - The config directories the active harness requires. Each
   harness declares exactly which directories it needs; omac injects them at
   launch.
@@ -92,6 +93,12 @@ you grant explicitly, but it skips large dependency, build, and cache trees:
 dotenv secrets live, and walking them would make launch scale with your whole
 home directory. A file inside a skipped tree is not masked; keep dotenv files
 outside such trees, or deny their directory by path.
+
+The scan also skips the Nix store (`/nix/store`), even when you grant it or
+a folder that contains it. On NixOS every installed program lives there, so
+granting it is how the agent gets to run them, and it is far too large to
+list at launch. Nix makes everything in the store readable by every user on
+the machine, so a secret there is not protected by hiding it.
 
 Some directories have more files and folders than omac lists at launch.
 What happens then depends on the system:
@@ -227,6 +234,50 @@ their bundle hash still matches: they may contain files the hash never covered.
 Review the skill and run `omac register <skill>` from a host terminal to rebuild
 its snapshot with the current copy policy. For unchanged source, rebuilding
 preserves the bundle hash. It does not reopen automatic first-upgrade approval.
+
+### Skill instructions
+
+The harness also reads each skill's `SKILL.md` itself and gives it to the model
+as instructions. The agent can edit those files too, for example to plant
+instructions that every later session would follow. So at every launch, omac
+checks each omac skill in the workdir and in the user-global skill folders.
+Under `omac serve --for-opencode-desktop` it checks every project folder it
+grants the sandbox. An omac skill is a skill folder with an `omac.yaml`, or one
+whose name you have approved before. Harnesses also load skills from folders
+nested inside a skill folder, so omac checks those too: an approved
+`.opencode/skills/slack` moved to `.opencode/skills/team/slack` and edited is
+still hidden. omac hides the whole skill folder from the sandbox for that
+session, and prints why, when:
+
+- the skill's files do not match an approved version,
+- its `omac.yaml` is missing or is not a regular file, or
+- the skill contains a `SKILL.md` that the approval does not cover: a symlink
+  named `SKILL.md`, a file under a folder the bundle hash skips (such as
+  `build/` or `node_modules/`), or anything behind a symlinked folder that
+  leads outside the skill. Symlinked folders that stay inside the skill, like
+  a Python venv's `lib64 -> lib`, are fine.
+
+If omac cannot list one of the skill folders (for example because it was
+replaced by a file), or it holds more than 50,000 folders, omac hides that
+whole folder and keeps checking the others.
+
+For example, if an agent appends text to `.opencode/skills/slack/SKILL.md`,
+`omac start` refuses to launch; `omac start --accept-skill-changes` instead
+prints `skill "slack": its files do not match an approved version, so its
+SKILL.md instructions are untrusted ...` and hides the skill when using the
+built-in sandbox.
+Review the change, then run `omac register slack --force`.
+
+This has limits:
+
+- The check runs at launch. An edit made during a session is visible to that
+  session and, under `omac serve`, to every session until serve restarts.
+- Plain skills (a `SKILL.md` without an `omac.yaml`) have no approval, so omac
+  cannot check them. They carry no integrity guarantee: like `AGENTS.md` or
+  any other file in your project, the agent can change them. Review changes to
+  them as you would review code.
+- Hiding needs omac's built-in sandbox. With the deprecated nono backend, omac
+  only prints a warning.
 
 When upgrading omac on a machine with existing registered skills, only
 **user-global** skills (registered outside any workdir) are automatically

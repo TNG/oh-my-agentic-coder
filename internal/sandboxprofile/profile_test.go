@@ -630,6 +630,26 @@ func TestParseAndMergeDenyFlag(t *testing.T) {
 	}
 }
 
+// --deny-literal keeps paths as written: "$" and "[" are part of the name,
+// and the result passes validation that rejects "[" in a --deny path.
+func TestParseAndMergeDenyLiteralFlag(t *testing.T) {
+	f, err := ParseFlags([]string{"--deny-literal", "/w/foo${UNSET}", "--deny-literal=/w/foo[1]", "--", "true"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	merged, _ := Merge(&Profile{}, f)
+	if got := merged.Filesystem.DenyLiteral; len(got) != 2 || got[0] != "/w/foo${UNSET}" || got[1] != "/w/foo[1]" {
+		t.Fatalf("merged deny literal = %v", got)
+	}
+	if err := merged.Validate(); err != nil {
+		t.Errorf("validate: %v", err)
+	}
+	merged.Filesystem.DenyLiteral = []string{"relative/foo"}
+	if err := merged.Validate(); err == nil {
+		t.Error("a relative --deny-literal path must be rejected")
+	}
+}
+
 func TestMergeAdditive(t *testing.T) {
 	p := &Profile{
 		Filesystem: Filesystem{Read: []string{"~/.gitconfig"}},

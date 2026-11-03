@@ -28,7 +28,7 @@ func TestSecurityRegisterOutputStripsControlSequences(t *testing.T) {
 	payload := "harmless\x1b[2Jname"
 	spec := config.ConfigSpec{Name: payload, Type: config.ConfigFieldString}
 
-	if _, err := handleOneField(env, store, "skill", "", spec, false, nil, nil, false, nil); err != nil {
+	if _, err := handleOneField(env, store, nil, "skill", "", spec, false, nil, nil, false, nil); err != nil {
 		t.Fatalf("handleOneField: %v", err)
 	}
 	drain()
@@ -147,7 +147,7 @@ func TestSecurityRegisterHintAndDocsStripControlSequences(t *testing.T) {
 	t.Run("config field", func(t *testing.T) {
 		env, _, errBuf, drain := newPipeEnv(t, "BAD\nok\n")
 		spec := config.ConfigSpec{Name: "FIELD", Pattern: "^[a-z]+$", Hint: hint, Docs: docs}
-		if _, err := handleOneField(env, &skillconfig.Store{}, "sec-hint-field", dir, spec, true, nil, nil, false, nil); err != nil {
+		if _, err := handleOneField(env, &skillconfig.Store{}, nil, "sec-hint-field", dir, spec, true, nil, nil, false, nil); err != nil {
 			t.Fatalf("handleOneField: %v", err)
 		}
 		drain()
@@ -175,7 +175,7 @@ func TestSecurityRegisterDefaultsStripControlSequences(t *testing.T) {
 	t.Run("config default", func(t *testing.T) {
 		env, _, errBuf, drain := newPipeEnv(t, "\n")
 		spec := config.ConfigSpec{Name: "FIELD", Default: "def" + payload + "ault" + c1}
-		if _, err := handleOneField(env, &skillconfig.Store{}, "sec-default", "", spec, true, nil, nil, false, nil); err != nil {
+		if _, err := handleOneField(env, &skillconfig.Store{}, nil, "sec-default", "", spec, true, nil, nil, false, nil); err != nil {
 			t.Fatalf("handleOneField: %v", err)
 		}
 		drain()
@@ -194,7 +194,7 @@ func TestSecurityRegisterDefaultsStripControlSequences(t *testing.T) {
 		t.Setenv(envName, "fromenv")
 		env, _, errBuf, drain := newPipeEnv(t, "\n")
 		spec := config.ConfigSpec{Name: "FIELD", DefaultFromEnv: envName}
-		if _, err := handleOneField(env, &skillconfig.Store{}, "sec-default-env", "", spec, true, nil, nil, false, nil); err != nil {
+		if _, err := handleOneField(env, &skillconfig.Store{}, nil, "sec-default-env", "", spec, true, nil, nil, false, nil); err != nil {
 			t.Fatalf("handleOneField: %v", err)
 		}
 		drain()

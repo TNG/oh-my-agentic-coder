@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -26,7 +27,10 @@ import (
 // the platform backends.
 type Grants struct {
 	Workdir string // absolute; always the child's cwd
-	HomeDir string // literal directory access for macOS home resolution; not recursive
+	// HomeDir is resolvable on macOS because OpenCode v2 resolves HOME's
+	// real path and fails with EPERM if it cannot (#337), even when HOME
+	// lies outside every other grant.
+	HomeDir string
 
 	// Path grants (expanded, absolute, existing).
 	ReadPaths  []string // read-only
@@ -221,6 +225,7 @@ func ResolveGrants(p *sandboxprofile.Profile, workdir string, notices io.Writer)
 
 	protected := sandboxprofile.EffectiveProtectedPaths(base, p.Filesystem.OverrideDeny)
 	protected = append(protected, worktreeDeny...)
+	protected = append(protected, literalDenies(p)...)
 
 	// User deny entries and baseline workdir-protected basenames share
 	// a single walk over the granted (non-baseline) scan roots. Path-form
@@ -484,10 +489,33 @@ var denyScanSkipDirNames = map[string]bool{
 	"Library": true,
 }
 
+// denyScanSkipPaths are folders the deny walk never enters, even when
+// granted. The Nix store (/nix/store) holds every Nix-installed program
+// (on NixOS, all of them) and easily exceeds maxDenyScanEntries, which
+// made launch refuse when it was granted. Nix makes everything in it
+// readable by every user, so hiding a .env there protects nothing.
+// Tests replace the list (setDenyScanSkipPaths).
+var denyScanSkipPaths = []string{"/nix/store"}
+
+// inDenyScanSkipPath reports whether p, as written or with symlinks
+// resolved, is a denyScanSkipPaths folder or inside one. The resolved
+// form matters because grants such as ~/.nix-profile are symlinks into
+// the store.
+func inDenyScanSkipPath(p string) bool {
+	for _, fp := range pathForms(p) {
+		for _, s := range denyScanSkipPaths {
+			if fp == s || strings.HasPrefix(fp, s+string(filepath.Separator)) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // denyScanRoots returns the roots a basename-glob deny scans: the
 // explicit (non-baseline) grants plus the workdir when granted.
 // Baseline grants are excluded so a deny like ".env" never walks /usr
-// or /lib.
+// or /lib, and so are grants inside denyScanSkipPaths.
 func denyScanRoots(p *sandboxprofile.Profile, workdir string) ([]string, error) {
 	roots, err := sandboxprofile.ExpandExisting(
 		append(append(append([]string{}, p.Filesystem.Read...), p.Filesystem.Write...), p.Filesystem.Allow...),
@@ -498,6 +526,7 @@ func denyScanRoots(p *sandboxprofile.Profile, workdir string) ([]string, error) 
 	if p.Workdir.Access != "" && p.Workdir.Access != sandboxprofile.AccessNone {
 		roots = append(roots, workdir)
 	}
+	roots = slices.DeleteFunc(roots, inDenyScanSkipPath)
 	return dedupe(roots), nil
 }
 
@@ -621,6 +650,17 @@ func insideFolder(p, root string) bool {
 	return false
 }
 
+// literalDenies returns the profile's DenyLiteral paths cleaned but
+// otherwise as written: a folder named "foo$HOME" or "foo[1]" is denied
+// under that very name, not an expansion or a pattern of it.
+func literalDenies(p *sandboxprofile.Profile) []string {
+	out := make([]string, 0, len(p.Filesystem.DenyLiteral))
+	for _, d := range p.Filesystem.DenyLiteral {
+		out = append(out, filepath.Clean(d))
+	}
+	return out
+}
+
 // pathFormDenies expands the path-form (non basename-glob) entries of a
 // filesystem.deny list to absolute paths. Glob entries are skipped —
 // they need a tree walk (walkGlobMatches). Shared by ResolveGrants (the
@@ -683,7 +723,8 @@ func clampInt(v, lo, hi int) int {
 // refusing launch and hiding files there by name.
 //
 // protectedDirs are already-denied paths the walk prunes without
-// descending (any match inside is masked by the ancestor rule), and
+// descending (any match inside is masked by the ancestor rule),
+// denyScanSkipPaths are pruned the same way but not masked, and
 // denyScanSkipDirNames prunes large dependency/cache trees.
 func walkGlobMatches(roots, globs, protectedDirs []string, cache *denyScanCache, concurrency int) (matches, incomplete []string) {
 	if len(globs) == 0 || len(roots) == 0 {
@@ -692,6 +733,13 @@ func walkGlobMatches(roots, globs, protectedDirs []string, cache *denyScanCache,
 	protected := map[string]bool{}
 	for _, p := range protectedDirs {
 		for _, fp := range pathForms(p) {
+			protected[fp] = true
+		}
+	}
+	// A broad grant such as / or /nix contains a skip folder: prune it
+	// like an already-denied one (pruned folders are not masked).
+	for _, s := range denyScanSkipPaths {
+		for _, fp := range pathForms(s) {
 			protected[fp] = true
 		}
 	}
