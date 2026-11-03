@@ -84,6 +84,25 @@ E2E tests use temporary home directories and do not modify your real keychain or
 All harnesses except claude-code use a shared model gateway (`zai-org/GLM-5.3`) because it is cost-effective.
 claude-code is the exception because it communicates directly with the Anthropic API — it cannot route through a third-party gateway — so it uses `claude-sonnet-5-5` with an Anthropic key.
 
+### Against the real OpenCode Desktop app
+
+`scripts/e2e-desktop-store.sh` launches a real OpenCode Desktop release
+(headless, in a throwaway home) and checks what `omac serve
+--for-opencode-desktop` does with the store Desktop wrote: which folders are
+granted, that a forged project list or a server on another port adds nothing,
+and that the sandbox can neither read nor change the store. It needs no model
+and no credentials, but it downloads about 300 MB per Desktop version, so CI
+runs it weekly (`e2e-desktop-store.yml`) instead of on every PR.
+
+```sh
+scripts/e2e-desktop-store.sh --install-deps           # Ubuntu: installs Xvfb and the Electron libraries (sudo)
+DESKTOP_VERSION=v1.18.35 scripts/e2e-desktop-store.sh # another release, or "latest"
+DESKTOP_CACHE=~/.cache/omac-desktop scripts/e2e-desktop-store.sh  # keep the download between runs
+```
+
+It runs on Linux x86_64 only. The macOS (Seatbelt) side of the store protection
+is covered by `TestIntegrationDesktopStoresSeatbelt`, which runs on the macOS CI job.
+
 ### With the wrapper scripts
 
 The bare `go test -tags=e2e` above needs the full toolchain (harness installs,
