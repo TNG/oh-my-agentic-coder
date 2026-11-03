@@ -33,7 +33,7 @@
 # Env:
 #   DESKTOP_VERSION  release tag of anomalyco/opencode, or "latest" (default: v2.2.5)
 #   OMAC_BIN         prebuilt omac binary (default: built from this checkout)
-#   WORK             scratch dir (default: a fresh mktemp -d, removed on exit)
+#   WORK             scratch dir, must be empty or new (default: a fresh mktemp -d); removed on exit
 #   KEEP_WORK=1      keep $WORK for inspection
 #   DESKTOP_CACHE    dir that keeps the downloaded AppImage between runs
 set -u
@@ -60,17 +60,39 @@ fi
 [ "$(uname -s)" = "Linux" ] && [ "$(uname -m)" = "x86_64" ] || die "Linux x86_64 only"
 for c in go curl python3 Xvfb bwrap; do command -v "$c" >/dev/null || die "missing command: $c (try --install-deps)"; done
 
-WORK="${WORK:-$(mktemp -d)}"
+# $WORK is deleted on exit, so only an empty (or new) directory is accepted.
+if [ -n "${WORK:-}" ]; then
+  case "$WORK" in /*) ;; *) die "WORK must be an absolute path";; esac
+  [ "$WORK" != "/" ] || die "WORK must not be /"
+  mkdir -p "$WORK" || die "cannot create WORK"
+  [ -z "$(ls -A "$WORK")" ] || die "WORK=$WORK is not empty; it is removed on exit, so use an empty directory"
+else
+  WORK="$(mktemp -d)"
+fi
 DL="$WORK/download"; APP="$WORK/app"; FH="$WORK/home"; SCRIPTS="$WORK/scripts"
 mkdir -p "$DL" "$APP" "$FH" "$SCRIPTS"
 
 APP_PID=""; XVFB_PID=""
+# Processes started with HOME=$FH: Desktop, its helpers, and the background service it
+# starts detached (opencode-cli), which outlives the window. Matching on the environment
+# cannot hit an unrelated process, whatever its command line looks like.
+desktop_pids() {
+  local d p
+  [ -n "${FH:-}" ] || return 0
+  for d in /proc/[0-9]*; do
+    p="${d#/proc/}"
+    [ "$p" = "$$" ] && continue
+    if tr '\0' '\n' <"$d/environ" 2>/dev/null | grep -qxF "HOME=$FH"; then echo "$p"; fi
+  done
+}
 stop_desktop() {
+  local pids
   [ -n "$APP_PID" ] && kill -TERM -- "-$APP_PID" 2>/dev/null
-  # Desktop starts its background service (opencode-cli) detached; it outlives the window.
-  pkill -TERM -f "^$FH/.config/ai.opencode.desktop/cli/" 2>/dev/null
-  sleep 3
+  pids="$(desktop_pids)"; [ -n "$pids" ] && kill -TERM $pids 2>/dev/null
+  for _ in $(seq 1 20); do [ -z "$(desktop_pids)" ] && break; sleep 1; done
+  pids="$(desktop_pids)"; [ -n "$pids" ] && kill -KILL $pids 2>/dev/null
   APP_PID=""
+  return 0
 }
 cleanup() {
   stop_desktop
@@ -81,11 +103,16 @@ cleanup() {
 trap cleanup EXIT
 
 # --- download, verify, extract (the AppImage is untrusted until its digest matches) ---
+# GITHUB_TOKEN (set in CI) is used for the two API calls only, to avoid the anonymous rate
+# limit, and is removed before the downloaded app or omac run.
+gh_api() {
+  if [ -n "${GITHUB_TOKEN:-}" ]; then curl -fsS -m 30 -H "Authorization: Bearer $GITHUB_TOKEN" "$1"; else curl -fsS -m 30 "$1"; fi
+}
 if [ "$DESKTOP_VERSION" = "latest" ]; then
-  DESKTOP_VERSION="$(curl -fsS -m 30 "https://api.github.com/repos/$RELEASE_REPO/releases/latest" | python3 -I -c "import sys,json; print(json.load(sys.stdin)['tag_name'])")" || die "cannot resolve the latest release"
+  DESKTOP_VERSION="$(gh_api "https://api.github.com/repos/$RELEASE_REPO/releases/latest" | python3 -I -c "import sys,json; print(json.load(sys.stdin)['tag_name'])")" || die "cannot resolve the latest release"
 fi
 hdr "fetch OpenCode Desktop $DESKTOP_VERSION"
-meta="$(curl -fsS -m 30 "https://api.github.com/repos/$RELEASE_REPO/releases/tags/$DESKTOP_VERSION")" || die "release $DESKTOP_VERSION not found"
+meta="$(gh_api "https://api.github.com/repos/$RELEASE_REPO/releases/tags/$DESKTOP_VERSION")" || die "release $DESKTOP_VERSION not found"
 want_sha="$(printf '%s' "$meta" | python3 -I -c "
 import sys,json
 for a in json.load(sys.stdin)['assets']:
@@ -100,6 +127,7 @@ got_sha="$(sha256sum "$DL/$ASSET" | cut -d' ' -f1)"
 if [ -n "$want_sha" ] && [ "$want_sha" != "$got_sha" ]; then die "sha256 mismatch for $ASSET"; fi
 [ -n "$want_sha" ] && ok "sha256 matches the release digest" || echo "  [warn] release lists no digest; skipping checksum"
 if [ -n "$cached" ] && [ ! -f "$cached" ]; then mkdir -p "$DESKTOP_CACHE" && cp "$DL/$ASSET" "$cached"; fi
+unset GITHUB_TOKEN
 chmod +x "$DL/$ASSET"
 ( cd "$APP" && "$DL/$ASSET" --appimage-extract >/dev/null 2>&1 ) || die "AppImage extraction failed"
 BIN=""

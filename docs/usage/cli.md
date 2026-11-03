@@ -65,8 +65,12 @@ Which Desktop projects count:
   granted.
 - Folders opened on the server omac runs, matched by port (for example
   `http://localhost:4095`).
-- Not counted: other servers in the Desktop list, such as a dev server on
-  another port or a remote machine.
+- Not counted: other servers in Desktop's list, such as a dev server on
+  another port or a remote machine. This applies to the folders Desktop's own
+  store names. OpenCode's project database does not record which server opened a
+  folder, so a folder **outside your home** that is listed there is granted
+  whichever server opened it. For folders inside your home, only the verified
+  ones above are granted.
 - Desktop keeps a history, not only the current sidebar. A folder you opened
   once stays granted on every later start. The startup output lists every
   granted folder; check it for a parent folder such as `~/projects`.
@@ -76,8 +80,8 @@ folder itself reproduces that ID (for a plain folder: a hash of its path; for a
 git repo: a hash of its `origin` URL). A folder is therefore skipped, with a
 message, when its ID cannot be checked: a git repo without commits (Desktop
 records it as `global`), a repo without an `origin`, or any other ID derived
-from git history. Grant such a folder yourself with `--allow <dir>` or in your
-sandbox profile.
+from git history. To grant such a folder, add it to `filesystem.allow` in your
+sandbox profile (`~/.config/omac/sandbox-profiles/default.json`), then restart.
 
 Only `<XDG_STATE_HOME>/opencode` is granted for OpenCode runtime state, not the
 whole Desktop data directory. Every trusted stable, beta, legacy and

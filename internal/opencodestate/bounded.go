@@ -128,10 +128,11 @@ func readSQLiteRows(path, table, query string, consume func(string, string) erro
 	var kind string
 	var rootPage int
 	switch err := conn.QueryRowContext(ctx, `SELECT type, rootpage FROM sqlite_master WHERE name = ?`, table).Scan(&kind, &rootPage); {
-	case errors.Is(err, sql.ErrNoRows):
-		// A valid database without this table is another format, not a bad
+	case errors.Is(err, sql.ErrNoRows) && table == "state":
+		// A valid database without a `state` table is another format, not a bad
 		// source: Desktop 1.18.x keeps its store in files and its drafts.sqlite
-		// has no `state` table.
+		// has no such table. (opencode.db always has `project`, so a missing
+		// one stays invalid: the sandbox can write that file.)
 		return fs.ErrNotExist
 	case err != nil || kind != "table" || rootPage <= 0:
 		return errInvalidSource

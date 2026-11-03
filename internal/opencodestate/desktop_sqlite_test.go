@@ -130,26 +130,34 @@ func TestDesktopSQLiteUnexpectedSchema(t *testing.T) {
 }
 
 func TestServerScope(t *testing.T) {
-	servers := map[string][2]bool{ // server key -> {any port, port 4095}
-		"local":                  {true, true},
-		"sidecar":                {true, true},
-		"http://localhost:4095":  {true, true},
-		"http://127.0.0.1:4095":  {true, true},
-		"http://[::1]:4095":      {true, true},
-		"http://localhost:3000":  {true, false},
-		"http://127.0.0.1:4096":  {true, false},
-		"http://localhost":       {true, false}, // scheme default port 80
-		"https://build-box:4096": {false, false},
-		"http://10.0.0.5:4095":   {false, false},
-		"ssh://localhost":        {false, false},
-		"":                       {false, false},
+	// server key -> {any loopback port, served port 4095, no port known}
+	servers := map[string][3]bool{
+		"local":                  {true, true, true},
+		"sidecar":                {true, true, true},
+		"http://localhost:4095":  {true, true, false},
+		"http://127.0.0.1:4095":  {true, true, false},
+		"http://[::1]:4095":      {true, true, false},
+		"http://localhost:3000":  {true, false, false},
+		"http://127.0.0.1:4096":  {true, false, false},
+		"http://localhost":       {true, false, false}, // scheme default port 80
+		"https://build-box:4096": {false, false, false},
+		"http://10.0.0.5:4095":   {false, false, false},
+		"ssh://localhost":        {false, false, false},
+		"":                       {false, false, false},
 	}
-	for s, want := range servers {
-		if got := (serverScope{}).includes(s); got != want[0] {
-			t.Errorf("serverScope{}.includes(%q) = %v, want %v", s, got, want[0])
-		}
-		if got := (serverScope{port: 4095}).includes(s); got != want[1] {
-			t.Errorf("serverScope{4095}.includes(%q) = %v, want %v", s, got, want[1])
+	scopes := []struct {
+		name  string
+		scope serverScope
+	}{
+		{"any loopback", serverScope{anyLoopback: true}},
+		{"port 4095", serverScope{port: 4095}},
+		{"no port known", serverScope{}},
+	}
+	for server, want := range servers {
+		for i, sc := range scopes {
+			if got := sc.scope.includes(server); got != want[i] {
+				t.Errorf("%s: includes(%q) = %v, want %v", sc.name, server, got, want[i])
+			}
 		}
 	}
 }

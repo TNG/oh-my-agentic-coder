@@ -2,6 +2,7 @@ package opencodestate
 
 import (
 	"database/sql"
+	"fmt"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -166,5 +167,141 @@ func TestDesktopSQLiteWithoutStateTableIsNotInvalid(t *testing.T) {
 	writeFile(t, filepath.Join(desktop, "drafts.sqlite"), "this is not a database")
 	if !invalid() {
 		t.Error("a corrupt drafts.sqlite must still be reported")
+	}
+}
+
+func TestRelevantGlobalKey(t *testing.T) {
+	for key, want := range map[string]bool{
+		"server":                                 true,
+		"globalSync.project":                     true,
+		"layout.page":                            true,
+		"http://localhost:4095\x00layout.page":   true,
+		"\x00layout.page":                        true,
+		"command.catalog.v1":                     false,
+		"layout.pages":                           false,
+		"xlayout.page":                           false, // suffix without the NUL separator
+		"http://localhost:4095layout.page":       false,
+		"http://localhost:4095\x00layout.page.x": false,
+		"Server":                                 false, // keys are case-sensitive
+		"":                                       false,
+	} {
+		if got := relevantGlobalKey(key); got != want {
+			t.Errorf("relevantGlobalKey(%q) = %v, want %v", key, got, want)
+		}
+	}
+}
+
+// Without a known server port (a harness that declares none) only the
+// built-in Desktop server may name projects.
+func TestWorktreesForPortWithoutPort(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", "")
+	t.Setenv("XDG_CONFIG_HOME", "")
+	builtin := filepath.Join(home, "builtin")
+	served := filepath.Join(home, "served")
+	mkdirs(t, builtin, served)
+	builtinID, servedID := sha1Hex("directory:"+builtin), sha1Hex("directory:"+served)
+	writeDesktopSQLite(t, filepath.Join(home, ".config", "ai.opencode.desktop"), map[string]string{
+		"server": `{"usedProjectIDs":{"local":["` + builtinID + `"],"http://localhost:4096":["` + servedID + `"]}}`,
+	})
+	writeOpenCodeDB(t, home, [][2]string{{builtinID, builtin}, {servedID, served}})
+	for port, want := range map[int][]string{0: {builtin}, -1: {builtin}, 4096: {builtin, served}, 3000: {builtin}} {
+		got, _, err := WorktreesForPort(port)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Equal(sorted(got), sorted(want)) {
+			t.Errorf("WorktreesForPort(%d) = %v, want %v", port, got, want)
+		}
+	}
+}
+
+// The file form has the same unrelated keys. They must not count against
+// the record bound or invalidate the file.
+func TestDesktopFileIgnoresUnrelatedKeys(t *testing.T) {
+	home := t.TempDir()
+	var b strings.Builder
+	b.WriteString(`{"server":{"usedProjectIDs":{"local":["x"]}}`)
+	for i := 0; i <= sourceMaxRecords; i++ { // more unrelated keys than the record bound
+		fmt.Fprintf(&b, `,"unrelated.%d":%d`, i, i)
+	}
+	b.WriteString("}")
+	path := filepath.Join(home, "opencode.global.dat")
+	writeFile(t, path, b.String())
+	got, err := readDesktopFile(path)
+	if err != nil || len(got) != 1 {
+		t.Fatalf("readDesktopFile = %d keys, %v; want the one relevant key", len(got), err)
+	}
+}
+
+// A long key of a row omac does not read must not trip SQLite's string length
+// limit and invalidate the store.
+func TestDesktopSQLiteLongUnrelatedKey(t *testing.T) {
+	home := t.TempDir()
+	desktop := filepath.Join(home, "desktop")
+	writeDesktopSQLite(t, desktop, map[string]string{"server": `{}`})
+	db, err := sql.Open("sqlite", filepath.Join(desktop, "drafts.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for _, n := range []int{100 << 10, 700 << 10} {
+		if _, err := db.Exec(`INSERT INTO state VALUES ('opencode.global.dat', ?, '{}', 0)`, strings.Repeat("k", n)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := readGlobalStoreSQLite(filepath.Join(desktop, "drafts.sqlite")); len(got) != 1 {
+		t.Errorf("long unrelated keys invalidated the store: %d keys", len(got))
+	}
+}
+
+// opencode.db is written by the sandbox. A copy without its project table is
+// not "another format": it stays reported, so the sandbox cannot silence the
+// warning by dropping the table.
+func TestMissingProjectTableStaysInvalid(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", "")
+	t.Setenv("XDG_CONFIG_HOME", "")
+	dir := filepath.Join(home, ".local", "share", "opencode")
+	mkdirs(t, dir)
+	db, err := sql.Open("sqlite", filepath.Join(dir, "opencode.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("CREATE TABLE other (x int)"); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	_, skipped, err := Worktrees()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(skipped, func(s SkippedWorktree) bool { return s.Reason == SkipInvalidSource }) {
+		t.Errorf("opencode.db without a project table was not reported: %v", skipped)
+	}
+}
+
+// KNOWN LIMIT, pinned on purpose: the port scope covers the Desktop store.
+// OpenCode's project database has no notion of a server, so a folder outside
+// $HOME that is listed there is granted even if only another server opened it.
+func TestPortScopeDoesNotCoverOutOfHomeRecords(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", "")
+	t.Setenv("XDG_CONFIG_HOME", "")
+	outside := t.TempDir() // not under home
+	id := sha1Hex("directory:" + outside)
+	writeDesktopSQLite(t, filepath.Join(home, ".config", "ai.opencode.desktop"), map[string]string{
+		"server": `{"usedProjectIDs":{"http://localhost:3000":["` + id + `"]}}`,
+	})
+	writeOpenCodeDB(t, home, [][2]string{{id, outside}})
+	got, _, err := WorktreesForPort(4095)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(got, outside) {
+		t.Errorf("expected the out-of-home record to be granted (documented limit); got %v", got)
 	}
 }

@@ -309,7 +309,7 @@ func TestHardeningCanonicalRootAlias(t *testing.T) {
 	writeProject(t, storage, "root", alias)
 	writeProject(t, storage, "good", project)
 	got, skipped, err := Worktrees()
-	if err != nil || !slices.Equal(got, []string{project}) || !slices.Contains(skipped, SkippedWorktree{Path: "/", Reason: SkipUntrusted}) {
+	if err != nil || !slices.Equal(got, []string{project}) || !slices.Contains(skipped, SkippedWorktree{Path: "/", Reason: SkipBroad}) {
 		t.Errorf("root alias escaped broad-path filtering: %v %v %v", got, skipped, err)
 	}
 	if !rejectsForHome("/outside", "/", originAgentWritable) {

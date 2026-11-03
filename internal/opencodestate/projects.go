@@ -62,7 +62,8 @@ type SkipReason string
 
 const (
 	SkipStale     SkipReason = "no longer exists"
-	SkipUntrusted SkipReason = "not granted: the sandbox can edit OpenCode's own project list, so an in-home folder is only granted when Desktop's store verifies it; to grant it anyway, pass --allow <dir>"
+	SkipUntrusted SkipReason = "its record can be edited by the sandbox and Desktop's store does not vouch for it; to grant it, add it to filesystem.allow in ~/.config/omac/sandbox-profiles/default.json"
+	SkipBroad     SkipReason = "too broad: it is your home folder or a parent of it"
 	// SkipInvalidSource uses Path for the source, not a worktree. No record
 	// contents or underlying parser/database error are included.
 	SkipInvalidSource SkipReason = "invalid, oversized, or unreadable discovery source (ignored)"
@@ -111,9 +112,10 @@ func storageProjectDir() (string, error) {
 // the Desktop workflow still resolves in-home projects.
 //
 // Worktrees reads the projects of every loopback server in the Desktop
-// store. Use WorktreesForPort to limit that to the server omac runs.
+// store. A launch should use WorktreesForPort, which limits that to the
+// server omac runs.
 func Worktrees() (worktrees []string, skipped []SkippedWorktree, err error) {
-	return WorktreesForPort(0)
+	return discoverWorktrees(serverScope{anyLoopback: true})
 }
 
 // WorktreesForPort is Worktrees for a launch whose server listens on
@@ -121,10 +123,17 @@ func Worktrees() (worktrees []string, skipped []SkippedWorktree, err error) {
 // "http://localhost:3000" or a second omac instance) contributes
 // projects only if it uses that port. The built-in Desktop server
 // ("local" / "sidecar") always counts, because the folders a user picks
-// in the Desktop are recorded there first. servePort <= 0 accepts every
-// loopback server.
+// in the Desktop are recorded there first. With servePort <= 0 (the
+// harness has no known server port) only the built-in server counts.
+//
+// The port scope applies to the Desktop store. Records in OpenCode's own
+// project database carry no server, so a folder outside $HOME that is
+// listed there is granted whichever server opened it.
 func WorktreesForPort(servePort int) (worktrees []string, skipped []SkippedWorktree, err error) {
-	scope := serverScope{port: servePort}
+	return discoverWorktrees(serverScope{port: servePort})
+}
+
+func discoverWorktrees(scope serverScope) (worktrees []string, skipped []SkippedWorktree, err error) {
 	records, diagnostics, err := readProjectSources()
 	if err != nil {
 		return nil, nil, err
@@ -160,7 +169,11 @@ func WorktreesForPort(servePort int) (worktrees []string, skipped []SkippedWorkt
 		// source, and additionally any path inside $HOME from
 		// agent-writable sources.
 		if home != "" && rejectsForHome(wt, home, e.origin) {
-			skipped = append(skipped, SkippedWorktree{Path: wt, Reason: SkipUntrusted})
+			reason := SkipUntrusted
+			if isBroadWorktree(wt, home) {
+				reason = SkipBroad
+			}
+			skipped = append(skipped, SkippedWorktree{Path: wt, Reason: reason})
 			continue
 		}
 		seen[wt] = true
@@ -520,13 +533,14 @@ func openTabDirs(raw json.RawMessage) []string {
 
 // serverScope selects which Desktop server keys contribute projects.
 type serverScope struct {
-	port int // port of the server omac runs; <= 0 accepts any loopback port
+	port        int  // port of the server omac runs
+	anyLoopback bool // accept loopback servers on every port (Worktrees only)
 }
 
 // includes reports whether a Desktop server key names a server whose
 // projects may be granted: the built-in one ("local" / "sidecar"), or an
-// http(s) URL on a loopback host that uses the scope's port. Examples
-// with port 4095: "http://localhost:4095" is included,
+// http(s) URL on a loopback host that uses the scope's port (no port
+// known means no loopback server). Examples with port 4095: "http://localhost:4095" is included,
 // "http://localhost:3000" and "https://build-box:4096" are not.
 func (sc serverScope) includes(server string) bool {
 	switch server {
@@ -544,10 +558,10 @@ func (sc serverScope) includes(server string) bool {
 			return false
 		}
 	}
-	if sc.port <= 0 {
+	if sc.anyLoopback {
 		return true
 	}
-	return urlPort(u) == sc.port
+	return sc.port > 0 && urlPort(u) == sc.port
 }
 
 // urlPort returns the explicit port of u, or the scheme default.

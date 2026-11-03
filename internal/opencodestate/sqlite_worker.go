@@ -66,13 +66,18 @@ func sqliteSourceQuery(kind string) string {
  AND length(CAST(id AS BLOB)) + length(CAST(worktree AS BLOB)) <= ? THEN worktree END
  FROM project LIMIT ?`
 	case "state":
+		// The last line keeps the keys omac reads: server, globalSync.project, layout.page
+		// and "<url>\x00layout.page". The suffix test compares bytes (a NUL cannot go
+		// in a LIKE pattern or a text compare) and does not copy the key, so a long
+		// unrelated key cannot trip SQLite's string length limit.
 		return `SELECT
  CASE WHEN typeof(key) = 'text' AND typeof(value) = 'text'
  AND length(CAST(key AS BLOB)) + length(CAST(value AS BLOB)) <= ? THEN key END,
  CASE WHEN typeof(key) = 'text' AND typeof(value) = 'text'
  AND length(CAST(key AS BLOB)) + length(CAST(value AS BLOB)) <= ? THEN value END
  FROM state WHERE name = 'opencode.global.dat'
- AND (key IN ('server', 'globalSync.project', 'layout.page') OR hex(key) LIKE '%006C61796F75742E70616765') LIMIT ?`
+ AND (key IN ('server', 'globalSync.project', 'layout.page')
+ OR substr(CAST(key AS BLOB), -12) = X'006C61796F75742E70616765') LIMIT ?`
 	default:
 		return ""
 	}
