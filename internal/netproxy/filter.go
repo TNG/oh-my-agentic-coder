@@ -486,31 +486,77 @@ func MatchDomainList(host string, list []string) bool {
 	return false
 }
 
-// isLinkLocal covers 169.254.0.0/16, fe80::/10 and their IPv4-mapped
-// IPv6 forms.
-func isLinkLocal(ip netip.Addr) bool {
+// supportedNAT64Prefixes use the RFC 6052 /96 layout: IPv4 in the low 32 bits.
+// The second prefix is the supported /96 subset of RFC 8215's /48 allocation;
+// the remaining local-use space may use other layouts and is refused below.
+var supportedNAT64Prefixes = []netip.Prefix{
+	netip.MustParsePrefix("64:ff9b::/96"),
+	netip.MustParsePrefix("64:ff9b:1::/96"),
+}
+
+var localUseNAT64Prefix = netip.MustParsePrefix("64:ff9b:1::/48")
+
+// embeddedIPv4 returns the IPv4 destination that ip's spelling embeds: the
+// IPv4-mapped form plus the supported NAT64 /96 layouts. ok is false when
+// no supported layout matches; other layouts must not be decoded by low bits.
+func embeddedIPv4(ip netip.Addr) (netip.Addr, bool) {
 	if ip.Is4In6() {
-		ip = ip.Unmap()
+		return ip.Unmap(), true
 	}
+	if ip.Is4() {
+		return netip.Addr{}, false
+	}
+	// Prefix.Contains is false for any zoned address, so match on the
+	// zone-stripped form. The zone only selects an outgoing interface;
+	// it never changes which IPv4 destination the spelling embeds.
+	if ip.Zone() != "" {
+		ip = ip.WithZone("")
+	}
+	for _, p := range supportedNAT64Prefixes {
+		if p.Contains(ip) {
+			b := ip.As16()
+			return netip.AddrFrom4([4]byte{b[12], b[13], b[14], b[15]}), true
+		}
+	}
+	return netip.Addr{}, false
+}
+
+// unwrapEmbedded resolves any embedded-IPv4 spelling to the IPv4
+// destination and removes zones for policy comparisons. Callers retain
+// the original address, including its interface zone, for transport.
+func unwrapEmbedded(ip netip.Addr) netip.Addr {
+	ip = ip.WithZone("")
+	if v4, ok := embeddedIPv4(ip); ok {
+		return v4
+	}
+	return ip
+}
+
+// isLinkLocal covers 169.254.0.0/16, fe80::/10 and every spelling that
+// embeds them.
+func isLinkLocal(ip netip.Addr) bool {
+	ip = unwrapEmbedded(ip)
 	return ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast()
 }
 
-// IsLoopback reports whether ip is a loopback address (after unmapping).
+// IsLoopback reports whether ip is a loopback address (after unwrapping
+// any embedded IPv4).
 func IsLoopback(ip netip.Addr) bool {
-	if ip.Is4In6() {
-		ip = ip.Unmap()
-	}
-	return ip.IsLoopback()
+	return unwrapEmbedded(ip).IsLoopback()
+}
+
+// IsHostLocal reports whether ip is loopback or unspecified after decoding
+// embedded IPv4. Unlike the runtime's IsLoopbackHost refusal guard, this does
+// not include embedded link-local destinations.
+func IsHostLocal(ip netip.Addr) bool {
+	return isHostLocal(ip)
 }
 
 // isHostLocal reports whether ip is loopback or the unspecified address.
 // Connecting to 0.0.0.0 or :: on Linux routes to 127.0.0.1, making them
 // equivalent to loopback from a security standpoint.
 func isHostLocal(ip netip.Addr) bool {
-	u := ip
-	if u.Is4In6() {
-		u = u.Unmap()
-	}
+	u := unwrapEmbedded(ip)
 	return u.IsLoopback() || u.IsUnspecified()
 }
 
@@ -530,17 +576,14 @@ var cloudMetadataAddrs = func() map[netip.Addr]bool {
 }()
 
 func isCloudMetadata(ip netip.Addr) bool {
-	u := ip
-	if u.Is4In6() {
-		u = u.Unmap()
-	}
-	return cloudMetadataAddrs[u]
+	return cloudMetadataAddrs[unwrapEmbedded(ip)]
 }
 
 // hardDeniedAddr returns a "hard-deny ..." reason if ip must never be dialed.
 // Applied at every address-level decision point: literal IPs in Check/CheckHost
 // and resolved IPs in the DNS loop.
 func hardDeniedAddr(ip netip.Addr) (string, bool) {
+	ip = unwrapEmbedded(ip)
 	if isLinkLocal(ip) {
 		return "hard-deny link-local address", true
 	}
@@ -549,6 +592,11 @@ func hardDeniedAddr(ip netip.Addr) (string, bool) {
 	}
 	if isCloudMetadata(ip) {
 		return "hard-deny cloud-metadata address", true
+	}
+	// Successfully decoded forms are IPv4 now. Refuse the residual RFC 8215
+	// space without guessing which prefix length or layout a translator uses.
+	if localUseNAT64Prefix.Contains(ip) {
+		return "hard-deny IPv6 translation prefix", true
 	}
 	return "", false
 }
