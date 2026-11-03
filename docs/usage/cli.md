@@ -53,10 +53,31 @@ omac serve --workdir ~/my-project
 
 #### Desktop automatic project grants
 
-`omac serve --for-opencode-desktop` temporarily grants read+write access to all
-accepted local Desktop projects known at startup, including historical projects
-and projects inside your home. It does not edit your sandbox profile. Profile
-denies still apply; a new project outside these grants needs a restart.
+`omac serve --for-opencode-desktop` temporarily grants read+write access to the
+Desktop projects known at startup, including projects inside your home. It does
+not edit your sandbox profile. Profile denies still apply; a new project needs
+a restart.
+
+Which Desktop projects count:
+
+- Folders you opened on Desktop's built-in server ("This computer"). Desktop
+  records them there first; the omac server cannot open a folder before it is
+  granted.
+- Folders opened on the server omac runs, matched by port (for example
+  `http://localhost:4095`).
+- Not counted: other servers in the Desktop list, such as a dev server on
+  another port or a remote machine.
+- Desktop keeps a history, not only the current sidebar. A folder you opened
+  once stays granted on every later start. The startup output lists every
+  granted folder; check it for a parent folder such as `~/projects`.
+
+Desktop identifies a project by an ID, and omac grants a folder only if the
+folder itself reproduces that ID (for a plain folder: a hash of its path; for a
+git repo: a hash of its `origin` URL). A folder is therefore skipped, with a
+message, when its ID cannot be checked: a git repo without commits (Desktop
+records it as `global`), a repo without an `origin`, or any other ID derived
+from git history. Grant such a folder yourself with `--allow <dir>` or in your
+sandbox profile.
 
 Only `<XDG_STATE_HOME>/opencode` is granted for OpenCode runtime state, not the
 whole Desktop data directory. Every trusted stable, beta, legacy and

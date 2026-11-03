@@ -129,20 +129,27 @@ func TestDesktopSQLiteUnexpectedSchema(t *testing.T) {
 	}
 }
 
-func TestIsLocalServer(t *testing.T) {
-	for s, want := range map[string]bool{
-		"local":                  true,
-		"sidecar":                true,
-		"http://localhost:4095":  true,
-		"http://127.0.0.1:4096":  true,
-		"http://[::1]:4096":      true,
-		"https://build-box:4096": false,
-		"http://10.0.0.5:4095":   false,
-		"ssh://localhost":        false,
-		"":                       false,
-	} {
-		if got := isLocalServer(s); got != want {
-			t.Errorf("isLocalServer(%q) = %v, want %v", s, got, want)
+func TestServerScope(t *testing.T) {
+	servers := map[string][2]bool{ // server key -> {any port, port 4095}
+		"local":                  {true, true},
+		"sidecar":                {true, true},
+		"http://localhost:4095":  {true, true},
+		"http://127.0.0.1:4095":  {true, true},
+		"http://[::1]:4095":      {true, true},
+		"http://localhost:3000":  {true, false},
+		"http://127.0.0.1:4096":  {true, false},
+		"http://localhost":       {true, false}, // scheme default port 80
+		"https://build-box:4096": {false, false},
+		"http://10.0.0.5:4095":   {false, false},
+		"ssh://localhost":        {false, false},
+		"":                       {false, false},
+	}
+	for s, want := range servers {
+		if got := (serverScope{}).includes(s); got != want[0] {
+			t.Errorf("serverScope{}.includes(%q) = %v, want %v", s, got, want[0])
+		}
+		if got := (serverScope{port: 4095}).includes(s); got != want[1] {
+			t.Errorf("serverScope{4095}.includes(%q) = %v, want %v", s, got, want[1])
 		}
 	}
 }

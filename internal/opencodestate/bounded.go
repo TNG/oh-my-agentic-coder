@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"io/fs"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -126,7 +127,13 @@ func readSQLiteRows(path, table, query string, consume func(string, string) erro
 	}
 	var kind string
 	var rootPage int
-	if conn.QueryRowContext(ctx, `SELECT type, rootpage FROM sqlite_master WHERE name = ?`, table).Scan(&kind, &rootPage) != nil || kind != "table" || rootPage <= 0 {
+	switch err := conn.QueryRowContext(ctx, `SELECT type, rootpage FROM sqlite_master WHERE name = ?`, table).Scan(&kind, &rootPage); {
+	case errors.Is(err, sql.ErrNoRows):
+		// A valid database without this table is another format, not a bad
+		// source: Desktop 1.18.x keeps its store in files and its drafts.sqlite
+		// has no `state` table.
+		return fs.ErrNotExist
+	case err != nil || kind != "table" || rootPage <= 0:
 		return errInvalidSource
 	}
 	rows, err := conn.QueryContext(ctx, query, metadataMaxBytes, metadataMaxBytes, sourceMaxRecords+1)
@@ -167,6 +174,9 @@ func readDBProjectRecords(path string) ([]projectRecord, error) {
 func readDesktopSQLite(path string) (map[string]json.RawMessage, error) {
 	top := map[string]json.RawMessage{}
 	err := readSQLiteSource(path, "state", func(key, value string) error {
+		if !relevantGlobalKey(key) { // the SQL prefilter is a superset ("%layout.page")
+			return nil
+		}
 		if !json.Valid([]byte(value)) {
 			return errInvalidSource
 		}
@@ -194,10 +204,33 @@ func readDesktopFile(path string) (map[string]json.RawMessage, error) {
 	if json.Unmarshal(data, &top) != nil || top == nil {
 		return nil, errInvalidSource
 	}
+	top = relevantGlobalKeys(top)
 	if err := validateGlobalStore(top); err != nil {
 		return nil, err
 	}
 	return top, nil
+}
+
+// relevantGlobalKey reports whether omac reads the store key at all. The
+// store holds dozens of unrelated keys (command catalogs, plugin state, ...)
+// that Desktop may grow or change; one oversized or non-JSON value there must
+// not make omac drop the project records next to it.
+func relevantGlobalKey(key string) bool {
+	switch key {
+	case "server", "globalSync.project", "layout.page":
+		return true
+	}
+	return strings.HasSuffix(key, serverScopeSep+"layout.page")
+}
+
+func relevantGlobalKeys(top map[string]json.RawMessage) map[string]json.RawMessage {
+	out := make(map[string]json.RawMessage, len(top))
+	for key, raw := range top {
+		if relevantGlobalKey(key) {
+			out[key] = raw
+		}
+	}
+	return out
 }
 
 // Each Desktop row can contain many projects, tabs, or IDs. Bound those

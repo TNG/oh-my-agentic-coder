@@ -587,7 +587,10 @@ func runServe(args []string, env *Env) int {
 		// covers exactly the projects the sandbox is granted.
 		var desktopWorktrees []string
 		if forDesktop {
-			worktrees, skipped, derr := opencodestate.Worktrees()
+			// Only the built-in Desktop server and the server omac itself runs
+			// may name projects; other loopback servers in the Desktop store
+			// (a dev server, another omac) must not widen this launch's grants.
+			worktrees, skipped, derr := opencodestate.WorktreesForPort(harness.ResolveListenPort(inner))
 			if derr != nil {
 				fmt.Fprintln(env.Stderr, "omac serve: --for-opencode-desktop:", derr)
 				return ExitIOError
