@@ -7,9 +7,20 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/TNG/oh-my-agentic-coder/internal/config"
 	"github.com/TNG/oh-my-agentic-coder/internal/opencodestate"
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
 )
+
+// discoverDesktopWorktrees lists the Desktop projects this launch may grant.
+// Only the built-in Desktop server and the server omac itself runs (the port
+// in inner, including a --port override) may name projects; other loopback
+// servers in the Desktop store (a dev server, another omac) must not widen
+// this launch's grants. A harness without a known server port gets the
+// built-in server only.
+func discoverDesktopWorktrees(h config.Harness, inner []string) ([]string, []opencodestate.SkippedWorktree, error) {
+	return opencodestate.WorktreesForPort(h.ResolveListenPort(inner))
+}
 
 func reportDesktopSkipped(out io.Writer, skipped []opencodestate.SkippedWorktree, worktrees []string) {
 	for _, s := range skipped {

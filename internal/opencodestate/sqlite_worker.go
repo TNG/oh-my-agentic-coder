@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"context"
 	"encoding/binary"
+	"errors"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,6 +16,11 @@ import (
 
 const sqliteWorkerFlag = "--omac-internal-sqlite-reader-v1"
 const sqliteProtocolMagic = "OSR1"
+
+// sqliteExitNoTable is the worker's exit status for a database that opened
+// fine but has no table of the requested kind: another format, not an
+// invalid source.
+const sqliteExitNoTable = 3
 
 // DispatchSQLiteReader is a private executable entry point. Call it before
 // launcher setup; it never reads configuration, credentials, or arbitrary SQL.
@@ -35,6 +42,9 @@ func DispatchSQLiteReader(args []string) (handled bool, code int) {
 	if err := readSQLiteRows(args[2], args[1], query, func(first, second string) error {
 		return writeSQLiteRow(out, first, second)
 	}); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return true, sqliteExitNoTable
+		}
 		return true, 1
 	}
 	if err := out.WriteByte(0); err != nil {
@@ -56,12 +66,18 @@ func sqliteSourceQuery(kind string) string {
  AND length(CAST(id AS BLOB)) + length(CAST(worktree AS BLOB)) <= ? THEN worktree END
  FROM project LIMIT ?`
 	case "state":
+		// The last line keeps the keys omac reads: server, globalSync.project, layout.page
+		// and "<url>\x00layout.page". The suffix test compares bytes (a NUL cannot go
+		// in a LIKE pattern or a text compare) and does not copy the key, so a long
+		// unrelated key cannot trip SQLite's string length limit.
 		return `SELECT
  CASE WHEN typeof(key) = 'text' AND typeof(value) = 'text'
  AND length(CAST(key AS BLOB)) + length(CAST(value AS BLOB)) <= ? THEN key END,
  CASE WHEN typeof(key) = 'text' AND typeof(value) = 'text'
  AND length(CAST(key AS BLOB)) + length(CAST(value AS BLOB)) <= ? THEN value END
- FROM state WHERE name = 'opencode.global.dat' LIMIT ?`
+ FROM state WHERE name = 'opencode.global.dat'
+ AND (key IN ('server', 'globalSync.project', 'layout.page')
+ OR substr(CAST(key AS BLOB), -12) = X'006C61796F75742E70616765') LIMIT ?`
 	default:
 		return ""
 	}
@@ -138,6 +154,10 @@ func readSQLiteSourceContext(parent context.Context, path, kind string, consume 
 	waitErr := cmd.Wait()
 	if ctx.Err() != nil {
 		return ctx.Err()
+	}
+	var exitErr *exec.ExitError
+	if errors.As(waitErr, &exitErr) && exitErr.ExitCode() == sqliteExitNoTable {
+		return fs.ErrNotExist
 	}
 	if decodeErr != nil || waitErr != nil {
 		return errInvalidSource

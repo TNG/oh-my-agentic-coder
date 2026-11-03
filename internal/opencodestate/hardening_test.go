@@ -63,7 +63,7 @@ func TestHardeningSQLiteBounds(t *testing.T) {
 					writeOpenCodeDB(t, home, [][2]string{{"good", "/good"}})
 					path = filepath.Join(home, ".local/share/opencode/opencode.db")
 				} else {
-					writeDesktopSQLite(t, home, map[string]string{"good": `{}`})
+					writeDesktopSQLite(t, home, map[string]string{"server": `{}`})
 					path = filepath.Join(home, "drafts.sqlite")
 				}
 				var statement string
@@ -72,19 +72,19 @@ func TestHardeningSQLiteBounds(t *testing.T) {
 					if table == "project" {
 						statement = `INSERT INTO project VALUES ('bad', printf('%.*c', 1048577, 'x'))`
 					} else {
-						statement = `INSERT INTO state VALUES ('opencode.global.dat', 'bad', printf('%.*c', 1048577, 'x'), 0)`
+						statement = `INSERT INTO state VALUES ('opencode.global.dat', 'layout.page', printf('%.*c', 1048577, 'x'), 0)`
 					}
 				case "too many rows":
 					if table == "project" {
 						statement = `WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<10000) INSERT INTO project SELECT CAST(x AS TEXT), '/extra' FROM n`
 					} else {
-						statement = `WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<10000) INSERT INTO state SELECT 'opencode.global.dat', CAST(x AS TEXT), '{}', 0 FROM n`
+						statement = `WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<10000) INSERT INTO state SELECT 'opencode.global.dat', CAST(x AS TEXT) || char(0) || 'layout.page', '{}', 0 FROM n`
 					}
 				case "invalid row":
 					if table == "project" {
 						statement = `INSERT INTO project VALUES ('bad', x'ff')`
 					} else {
-						statement = `INSERT INTO state VALUES ('opencode.global.dat', 'bad', '{not-json', 0)`
+						statement = `INSERT INTO state VALUES ('opencode.global.dat', 'layout.page', '{not-json', 0)`
 					}
 				case "view":
 					statement = fmt.Sprintf(`ALTER TABLE %s RENAME TO backing; CREATE VIEW %s AS SELECT * FROM backing`, table, table)
@@ -94,7 +94,7 @@ func TestHardeningSQLiteBounds(t *testing.T) {
 					if table == "project" {
 						statement = `DROP TABLE project; CREATE VIRTUAL TABLE project USING fts5(id, worktree); INSERT INTO project VALUES ('good', '/good')`
 					} else {
-						statement = `DROP TABLE state; CREATE VIRTUAL TABLE state USING fts5(name, key, value); INSERT INTO state VALUES ('opencode.global.dat', 'good', '{}')`
+						statement = `DROP TABLE state; CREATE VIRTUAL TABLE state USING fts5(name, key, value); INSERT INTO state VALUES ('opencode.global.dat', 'server', '{}')`
 					}
 				}
 				fixtureSQL(t, path, statement)
@@ -124,7 +124,7 @@ func TestHardeningSQLiteEscapedPaths(t *testing.T) {
 	if got := dbProjectRecords(project); len(got) != 1 || got[0].Worktree != "/good" {
 		t.Errorf("escaped project path returned %v", got)
 	}
-	writeDesktopSQLite(t, home, map[string]string{"good": `{}`})
+	writeDesktopSQLite(t, home, map[string]string{"server": `{}`})
 	desktop := filepath.Join(home, "desktop?#%.sqlite")
 	if err := os.Rename(filepath.Join(home, "drafts.sqlite"), desktop); err != nil {
 		t.Fatal(err)
@@ -219,7 +219,7 @@ func TestHardeningMetadataKinds(t *testing.T) {
 					path = filepath.Join(home, ".local/share/opencode/storage/project/bad.json")
 					mkdirs(t, filepath.Dir(path))
 				case "Desktop SQLite":
-					writeDesktopSQLite(t, home, map[string]string{"good": `{}`})
+					writeDesktopSQLite(t, home, map[string]string{"server": `{}`})
 					target = filepath.Join(home, "drafts.sqlite")
 				case "project SQLite":
 					writeOpenCodeDB(t, home, [][2]string{{"good", "/good"}})
@@ -309,7 +309,7 @@ func TestHardeningCanonicalRootAlias(t *testing.T) {
 	writeProject(t, storage, "root", alias)
 	writeProject(t, storage, "good", project)
 	got, skipped, err := Worktrees()
-	if err != nil || !slices.Equal(got, []string{project}) || !slices.Contains(skipped, SkippedWorktree{Path: "/", Reason: SkipUntrusted}) {
+	if err != nil || !slices.Equal(got, []string{project}) || !slices.Contains(skipped, SkippedWorktree{Path: "/", Reason: SkipBroad}) {
 		t.Errorf("root alias escaped broad-path filtering: %v %v %v", got, skipped, err)
 	}
 	if !rejectsForHome("/outside", "/", originAgentWritable) {
@@ -417,7 +417,7 @@ func TestDesktopStorePaths(t *testing.T) {
 func TestHardeningExactBounds(t *testing.T) {
 	home := hardeningHome(t)
 	path := filepath.Join(home, "opencode.global.dat")
-	data := `{"padding":"` + strings.Repeat("x", 1048576-len(`{"padding":""}`)) + `"}`
+	data := `{"layout.page":{"padding":"` + strings.Repeat("x", 1048576-len(`{"layout.page":{"padding":""}}`)) + `"}}`
 	writeFile(t, path, data)
 	if got := readGlobalStoreFile(path); len(got) != 1 {
 		t.Error("JSON file at exactly 1 MiB was rejected")
@@ -428,7 +428,7 @@ func TestHardeningExactBounds(t *testing.T) {
 	if got := dbProjectRecords(projectDB); len(got) != 1 {
 		t.Error("project row at exactly 1 MiB was rejected")
 	}
-	writeDesktopSQLite(t, home, map[string]string{"k": `"` + strings.Repeat("x", 1048573) + `"`})
+	writeDesktopSQLite(t, home, map[string]string{"server": `{"padding":"` + strings.Repeat("x", 1048576-len("server")-len(`{"padding":""}`)) + `"}`})
 	if got := readGlobalStoreSQLite(filepath.Join(home, "drafts.sqlite")); len(got) != 1 {
 		t.Error("Desktop row at exactly 1 MiB was rejected")
 	}
@@ -443,7 +443,7 @@ func TestHardeningSQLiteLocked(t *testing.T) {
 				writeOpenCodeDB(t, home, [][2]string{{"good", "/good"}})
 				path = filepath.Join(home, ".local/share/opencode/opencode.db")
 			} else {
-				writeDesktopSQLite(t, home, map[string]string{"good": `{}`})
+				writeDesktopSQLite(t, home, map[string]string{"server": `{}`})
 			}
 			db, err := sql.Open("sqlite", path)
 			if err != nil {
@@ -486,13 +486,13 @@ func TestHardeningSQLiteReadOnlyWAL(t *testing.T) {
 		t.Run(table, func(t *testing.T) {
 			home := hardeningHome(t)
 			path := filepath.Join(home, "drafts.sqlite")
-			insert := `INSERT INTO state VALUES ('opencode.global.dat', 'wal', '{}', 0)`
+			insert := `INSERT INTO state VALUES ('opencode.global.dat', 'layout.page', '{}', 0)`
 			if table == "project" {
 				writeOpenCodeDB(t, home, [][2]string{{"good", "/good"}})
 				path = filepath.Join(home, ".local/share/opencode/opencode.db")
 				insert = `INSERT INTO project VALUES ('wal', '/wal')`
 			} else {
-				writeDesktopSQLite(t, home, map[string]string{"good": `{}`})
+				writeDesktopSQLite(t, home, map[string]string{"server": `{}`})
 			}
 			db, err := sql.Open("sqlite", path)
 			if err != nil {

@@ -25,6 +25,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 
 	_ "modernc.org/sqlite" // read-only access to the Desktop's drafts.sqlite
@@ -61,7 +62,8 @@ type SkipReason string
 
 const (
 	SkipStale     SkipReason = "no longer exists"
-	SkipUntrusted SkipReason = "untrusted for a grant decision (record from agent-writable OpenCode state names an in-home path)"
+	SkipUntrusted SkipReason = "its record can be edited by the sandbox and Desktop's store does not vouch for it; to grant it, add it to filesystem.allow in ~/.config/omac/sandbox-profiles/default.json"
+	SkipBroad     SkipReason = "too broad: it is your home folder or a parent of it"
 	// SkipInvalidSource uses Path for the source, not a worktree. No record
 	// contents or underlying parser/database error are included.
 	SkipInvalidSource SkipReason = "invalid, oversized, or unreadable discovery source (ignored)"
@@ -108,7 +110,30 @@ func storageProjectDir() (string, error) {
 // store (outside the sandbox mount), and paths verified against a
 // project ID from that store, keep the looser isBroadWorktree rule so
 // the Desktop workflow still resolves in-home projects.
+//
+// Worktrees reads the projects of every loopback server in the Desktop
+// store. A launch should use WorktreesForPort, which limits that to the
+// server omac runs.
 func Worktrees() (worktrees []string, skipped []SkippedWorktree, err error) {
+	return discoverWorktrees(serverScope{anyLoopback: true})
+}
+
+// WorktreesForPort is Worktrees for a launch whose server listens on
+// servePort. A loopback server of the Desktop store (for example
+// "http://localhost:3000" or a second omac instance) contributes
+// projects only if it uses that port. The built-in Desktop server
+// ("local" / "sidecar") always counts, because the folders a user picks
+// in the Desktop are recorded there first. With servePort <= 0 (the
+// harness has no known server port) only the built-in server counts.
+//
+// The port scope applies to the Desktop store. Records in OpenCode's own
+// project database carry no server, so a folder outside $HOME that is
+// listed there is granted whichever server opened it.
+func WorktreesForPort(servePort int) (worktrees []string, skipped []SkippedWorktree, err error) {
+	return discoverWorktrees(serverScope{port: servePort})
+}
+
+func discoverWorktrees(scope serverScope) (worktrees []string, skipped []SkippedWorktree, err error) {
 	records, diagnostics, err := readProjectSources()
 	if err != nil {
 		return nil, nil, err
@@ -117,7 +142,7 @@ func Worktrees() (worktrees []string, skipped []SkippedWorktree, err error) {
 	for _, rec := range records {
 		raw = append(raw, worktreeEntry{path: rec.Worktree, origin: originAgentWritable})
 	}
-	desktop, desktopDiagnostics := desktopWorktreesFromRecords(records)
+	desktop, desktopDiagnostics := desktopWorktreesFromRecords(records, scope)
 	raw = append(raw, desktop...)
 	skipped = append(diagnostics, desktopDiagnostics...)
 
@@ -144,7 +169,11 @@ func Worktrees() (worktrees []string, skipped []SkippedWorktree, err error) {
 		// source, and additionally any path inside $HOME from
 		// agent-writable sources.
 		if home != "" && rejectsForHome(wt, home, e.origin) {
-			skipped = append(skipped, SkippedWorktree{Path: wt, Reason: SkipUntrusted})
+			reason := SkipUntrusted
+			if isBroadWorktree(wt, home) {
+				reason = SkipBroad
+			}
+			skipped = append(skipped, SkippedWorktree{Path: wt, Reason: reason})
 			continue
 		}
 		seen[wt] = true
@@ -227,7 +256,7 @@ func collapseNested(paths []string) []string {
 // globalStoreWorktrees for which keys are harvested. Projects the store
 // names only by ID are resolved through verifiedProjectRecords.
 // Best-effort: missing files or unexpected shapes yield nil.
-func desktopWorktreesFromRecords(records []projectRecord) ([]worktreeEntry, []SkippedWorktree) {
+func desktopWorktreesFromRecords(records []projectRecord, scope serverScope) ([]worktreeEntry, []SkippedWorktree) {
 	var out []worktreeEntry
 	var ids []string
 	var diagnostics []SkippedWorktree
@@ -245,10 +274,10 @@ func desktopWorktreesFromRecords(records []projectRecord) ([]worktreeEntry, []Sk
 			if err != nil {
 				continue
 			}
-			for _, p := range globalStoreWorktrees(top) {
+			for _, p := range globalStoreWorktrees(top, scope) {
 				out = append(out, worktreeEntry{path: p, origin: originDesktop})
 			}
-			ids = append(ids, globalStoreProjectIDs(top)...)
+			ids = append(ids, globalStoreProjectIDs(top, scope)...)
 		}
 	}
 	for _, p := range verifiedProjectRecords(ids, records) {
@@ -436,7 +465,7 @@ const serverScopeSep = "\x00"
 // folders on another machine, so granting a same-named local folder
 // would be wrong. Values are often double-encoded (a JSON string
 // containing JSON); unwrapValue handles both shapes.
-func globalStoreWorktrees(top map[string]json.RawMessage) []string {
+func globalStoreWorktrees(top map[string]json.RawMessage, scope serverScope) []string {
 	var out []string
 
 	if raw, ok := top["globalSync.project"]; ok {
@@ -456,7 +485,7 @@ func globalStoreWorktrees(top map[string]json.RawMessage) []string {
 			continue
 		}
 		server, name, scoped := strings.Cut(key, serverScopeSep)
-		if scoped && name == "layout.page" && isLocalServer(server) {
+		if scoped && name == "layout.page" && scope.includes(server) {
 			out = append(out, openTabDirs(raw)...)
 		}
 	}
@@ -467,7 +496,7 @@ func globalStoreWorktrees(top map[string]json.RawMessage) []string {
 		}
 		if json.Unmarshal(unwrapValue(raw), &srv) == nil {
 			for server, recs := range srv.Projects {
-				if !isLocalServer(server) {
+				if !scope.includes(server) {
 					continue
 				}
 				for _, rec := range recs {
@@ -502,11 +531,18 @@ func openTabDirs(raw json.RawMessage) []string {
 	return out
 }
 
-// isLocalServer reports whether a Desktop server key names a server on
-// this machine: the built-in one ("local" / "sidecar") or an http(s)
-// URL on a loopback host. Example: "http://localhost:4095" is local,
-// "https://build-box:4096" is not.
-func isLocalServer(server string) bool {
+// serverScope selects which Desktop server keys contribute projects.
+type serverScope struct {
+	port        int  // port of the server omac runs
+	anyLoopback bool // accept loopback servers on every port (Worktrees only)
+}
+
+// includes reports whether a Desktop server key names a server whose
+// projects may be granted: the built-in one ("local" / "sidecar"), or an
+// http(s) URL on a loopback host that uses the scope's port (no port
+// known means no loopback server). Examples with port 4095: "http://localhost:4095" is included,
+// "http://localhost:3000" and "https://build-box:4096" are not.
+func (sc serverScope) includes(server string) bool {
 	switch server {
 	case "local", "sidecar":
 		return true
@@ -516,11 +552,31 @@ func isLocalServer(server string) bool {
 		return false
 	}
 	host := u.Hostname()
-	if host == "localhost" {
+	if host != "localhost" {
+		ip := net.ParseIP(host)
+		if ip == nil || !ip.IsLoopback() {
+			return false
+		}
+	}
+	if sc.anyLoopback {
 		return true
 	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
+	return sc.port > 0 && urlPort(u) == sc.port
+}
+
+// urlPort returns the explicit port of u, or the scheme default.
+func urlPort(u *url.URL) int {
+	if p := u.Port(); p != "" {
+		n, err := strconv.Atoi(p)
+		if err != nil {
+			return 0
+		}
+		return n
+	}
+	if u.Scheme == "https" {
+		return 443
+	}
+	return 80
 }
 
 // isBroadWorktree reports whether wt is too broad to grant read+write:

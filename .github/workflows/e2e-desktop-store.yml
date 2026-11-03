@@ -1,0 +1,67 @@
+# E2E: Desktop store — omac against the real OpenCode Desktop app.
+#
+# omac decides from OpenCode Desktop's private store which folders the
+# `omac serve --for-opencode-desktop` sandbox may write. The unit tests use
+# hand-built stores, so they cannot notice when a Desktop release changes how
+# it writes that store. This job launches the real app (headless, Linux) and
+# checks what omac does with the store it wrote. No model, no credentials.
+# See scripts/e2e-desktop-store.sh.
+#
+# Runs weekly and on manual dispatch. Not part of the PR checks: it downloads
+# ~300 MB per Desktop version.
+name: "E2E: Desktop store"
+
+on:
+  workflow_dispatch:
+    inputs:
+      versions:
+        description: 'JSON array of Desktop release tags to test; "latest" means the newest release'
+        type: string
+        default: '["v1.18.35","v2.2.5","latest"]'
+  schedule:
+    # Saturdays 09:00 UTC, after the other drift jobs (08:00).
+    - cron: '0 9 * * 6'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-desktop-store-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  desktop-store:
+    name: Desktop ${{ matrix.version }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ${{ fromJSON(inputs.versions || '["v1.18.35","v2.2.5","latest"]') }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install bubblewrap
+        run: |
+          sudo apt-get update && sudo apt-get install -y bubblewrap
+          # Ubuntu 24.04 AppArmor restricts unprivileged user namespaces.
+          sudo tee /etc/apparmor.d/bwrap > /dev/null <<'EOT'
+          abi <abi/4.0>,
+          /usr/bin/bwrap flags=(unconfined) {
+            userns,
+          }
+          EOT
+          sudo apparmor_parser -r /etc/apparmor.d/bwrap
+
+      - name: Run against the real Desktop app
+        env:
+          DESKTOP_VERSION: ${{ matrix.version }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: scripts/e2e-desktop-store.sh --install-deps

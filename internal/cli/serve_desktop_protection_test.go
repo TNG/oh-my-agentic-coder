@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -131,5 +132,77 @@ func TestDesktopProtectionRejectsExpandedLearn(t *testing.T) {
 	_, err := desktopProtectionArgv([]string{"omac", "sandbox", "run", "--learn", "--", "opencode"}, nil)
 	if err == nil {
 		t.Fatal("expanded launcher --learn must not erase startup denies")
+	}
+}
+
+// The projects Desktop lists for the server omac runs are matched by port, and
+// a --port override moves that port.
+func TestDiscoverDesktopWorktreesFollowsServedPort(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	for _, k := range []string{"XDG_DATA_HOME", "XDG_CONFIG_HOME", "XDG_STATE_HOME"} {
+		t.Setenv(k, "")
+	}
+	dirs := map[string]string{}
+	for _, name := range []string{"builtin", "p4096", "p4095", "p3000"} {
+		dirs[name] = filepath.Join(home, name)
+		if err := os.MkdirAll(dirs[name], 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var store string
+	for _, p := range opencodestate.DesktopStorePaths() {
+		if filepath.Base(p) == "opencode.global.dat" {
+			store = p
+			break
+		}
+	}
+	if err := os.MkdirAll(filepath.Dir(store), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	project := func(name string) string { return `[{"worktree":"` + dirs[name] + `"}]` }
+	content := `{"server":{"projects":{"local":` + project("builtin") +
+		`,"http://localhost:4096":` + project("p4096") +
+		`,"http://localhost:4095":` + project("p4095") +
+		`,"http://localhost:3000":` + project("p3000") + `}}}`
+	if err := os.WriteFile(store, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	oc, _ := config.LookupHarness("opencode")
+	launch := func(args ...string) []string {
+		inner := oc.ApplyServerLaunch(oc.ResolveInnerCmd(nil, ""), args)
+		return append(inner, args...)
+	}
+	for _, tc := range []struct {
+		name  string
+		inner []string
+		want  []string
+	}{
+		{"default port", launch(), []string{"builtin", "p4096"}},
+		{"--port override", launch("--port", "4095"), []string{"builtin", "p4095"}},
+	} {
+		got, _, err := discoverDesktopWorktrees(oc, tc.inner)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var want []string
+		for _, n := range tc.want {
+			want = append(want, dirs[n])
+		}
+		slices.Sort(got)
+		slices.Sort(want)
+		if !slices.Equal(got, want) {
+			t.Errorf("%s: got %v, want %v", tc.name, got, want)
+		}
+	}
+	// A harness that declares no server port gets the built-in server only.
+	cc, _ := config.LookupHarness("claude-code")
+	got, _, err := discoverDesktopWorktrees(cc, []string{"claude"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(got, []string{dirs["builtin"]}) {
+		t.Errorf("no known port: got %v, want only the built-in server's project", got)
 	}
 }

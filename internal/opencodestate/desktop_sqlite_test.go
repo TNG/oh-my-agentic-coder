@@ -129,20 +129,35 @@ func TestDesktopSQLiteUnexpectedSchema(t *testing.T) {
 	}
 }
 
-func TestIsLocalServer(t *testing.T) {
-	for s, want := range map[string]bool{
-		"local":                  true,
-		"sidecar":                true,
-		"http://localhost:4095":  true,
-		"http://127.0.0.1:4096":  true,
-		"http://[::1]:4096":      true,
-		"https://build-box:4096": false,
-		"http://10.0.0.5:4095":   false,
-		"ssh://localhost":        false,
-		"":                       false,
-	} {
-		if got := isLocalServer(s); got != want {
-			t.Errorf("isLocalServer(%q) = %v, want %v", s, got, want)
+func TestServerScope(t *testing.T) {
+	// server key -> {any loopback port, served port 4095, no port known}
+	servers := map[string][3]bool{
+		"local":                  {true, true, true},
+		"sidecar":                {true, true, true},
+		"http://localhost:4095":  {true, true, false},
+		"http://127.0.0.1:4095":  {true, true, false},
+		"http://[::1]:4095":      {true, true, false},
+		"http://localhost:3000":  {true, false, false},
+		"http://127.0.0.1:4096":  {true, false, false},
+		"http://localhost":       {true, false, false}, // scheme default port 80
+		"https://build-box:4096": {false, false, false},
+		"http://10.0.0.5:4095":   {false, false, false},
+		"ssh://localhost":        {false, false, false},
+		"":                       {false, false, false},
+	}
+	scopes := []struct {
+		name  string
+		scope serverScope
+	}{
+		{"any loopback", serverScope{anyLoopback: true}},
+		{"port 4095", serverScope{port: 4095}},
+		{"no port known", serverScope{}},
+	}
+	for server, want := range servers {
+		for i, sc := range scopes {
+			if got := sc.scope.includes(server); got != want[i] {
+				t.Errorf("%s: includes(%q) = %v, want %v", sc.name, server, got, want[i])
+			}
 		}
 	}
 }

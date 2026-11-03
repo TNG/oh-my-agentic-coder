@@ -53,7 +53,20 @@ The sandbox can read this password. **Do not reuse it for another service or san
 
 `environment.deny_vars` remains authoritative, including prefix and `*` denies. A blocked dedicated password stops startup instead of falling back to another password. An opaque external backend cannot verify forwarding, so omac refuses this dedicated setting there; configure that backend explicitly instead.
 
-An ambient `OPENCODE_SERVER_PASSWORD` gets no automatic exception. An explicit profile allowance can still forward it, subject to `deny_vars`. Without a dedicated password, the harness retains its normal authentication behavior, which may include generated credentials. A warning about no fixed password does not mean authentication is disabled.
+An ambient `OPENCODE_SERVER_PASSWORD` gets no automatic exception. An explicit profile allowance can still forward it, subject to `deny_vars`.
+
+Without a dedicated password, the server follows OpenCode's own defaults, and those can mean **no authentication at all**: OpenCode 1.18 answers every request when no password is set. The "no fixed password verified" warning therefore means the server may be open to every process on this machine.
+
+A password does not protect every route in every version. In OpenCode 2.2.5, `/api/*` requires it, but the older routes (`/session`, `/project`, `/path`, `/config`) answer without credentials, with or without omac. Treat the password as protection against other users and browsers on the machine, not as a boundary against local processes.
+
+## Desktop and OpenCode must be the same major version
+
+OpenCode Desktop 2.x stores its projects in a version-2 `opencode.db`. An
+`opencode` 1.x server started by `omac serve` cannot open that database and
+stops with `Database is not empty and has no session table`. Use an
+`opencode` 2.x on your `PATH` (or `--inner`) with Desktop 2.x, and 1.x with
+Desktop 1.x. Check with `opencode --version` and compare it with Desktop's
+**About** page.
 
 ## Start order matters
 

@@ -33,7 +33,7 @@ import (
 // records for local servers: "server" -> usedProjectIDs.<url> and
 // "server" -> lastProjectID.<url>. Remote servers are ignored, like in
 // globalStoreWorktrees.
-func globalStoreProjectIDs(top map[string]json.RawMessage) []string {
+func globalStoreProjectIDs(top map[string]json.RawMessage, scope serverScope) []string {
 	raw, ok := top["server"]
 	if !ok {
 		return nil
@@ -47,12 +47,12 @@ func globalStoreProjectIDs(top map[string]json.RawMessage) []string {
 	}
 	var out []string
 	for server, ids := range srv.Used {
-		if isLocalServer(server) {
+		if scope.includes(server) {
 			out = append(out, ids...)
 		}
 	}
 	for server, id := range srv.Last {
-		if isLocalServer(server) {
+		if scope.includes(server) {
 			out = append(out, id)
 		}
 	}

@@ -587,7 +587,7 @@ func runServe(args []string, env *Env) int {
 		// covers exactly the projects the sandbox is granted.
 		var desktopWorktrees []string
 		if forDesktop {
-			worktrees, skipped, derr := opencodestate.Worktrees()
+			worktrees, skipped, derr := discoverDesktopWorktrees(harness, inner)
 			if derr != nil {
 				fmt.Fprintln(env.Stderr, "omac serve: --for-opencode-desktop:", derr)
 				return ExitIOError
@@ -824,7 +824,7 @@ func serverExposureWarning(h config.Harness, innerArgv []string, getenv func(str
 		return ""
 	}
 	return fmt.Sprintf("omac serve: %s server will listen on 127.0.0.1:%d; no fixed password verified "+
-		"for this launch. Harness authentication defaults still apply. Set OMAC_SERVE_PASSWORD to configure a fixed password with the native backend.", h.Name, port)
+		"for this launch. Depending on the %s version, the server may accept every request from this machine. Set OMAC_SERVE_PASSWORD to configure a fixed password with the native backend.", h.Name, port, h.Name)
 }
 
 // injectOpenPort splices `--open-port <port>` into a sandbox argv so the
