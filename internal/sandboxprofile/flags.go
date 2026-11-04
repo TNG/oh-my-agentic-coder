@@ -10,27 +10,29 @@ import (
 // list-valued flags are repeatable and merge additively into the
 // loaded profile; --block-net and --workdir-access replace.
 type Flags struct {
-	ProfileRef    string
-	Allow         []string // --allow <path>        read+write dir/file
-	Read          []string // --read <path>         read-only
-	Write         []string // --write <path>        write-only
-	Deny          []string // --deny <path|glob>    mask within granted trees
-	DenyLiteral   []string // --deny-literal <path> mask this absolute path, unexpanded
-	AllowFile     []string // --allow-file <path>   read+write single file
-	AllowUnixDir  []string // --allow-unix-dir <dir> AF_UNIX connect to any socket under dir
-	OpenPort      []int    // --open-port <port>
-	ListenPort    []int    // --listen-port <port>
-	AllowTCP      []int    // --allow-tcp-connect <port>
-	AllowDomain   []string // --allow-domain <domain>
-	DenyDomain    []string // --deny-domain <domain>
-	AllowEnv      []string // --allow-env <name>    additive env allow_vars entry
-	BlockNet      bool     // --block-net
-	Learn         bool     // --learn: unrestricted fs + folder recording
-	WorkdirAccess string   // --workdir-access <level>
-	AuditLog      string   // --audit-log <path>: append net.decision events here ("" = disabled)
-	AuditRunID    string   // --audit-run-id <id>: inherit parent's run_id ("" = mint fresh)
-	AuditMode     string   // --audit-mode <start|serve>: inherit parent's mode ("" = start)
-	InnerArgv     []string // everything after --
+	ProfileRef         string
+	Allow              []string // --allow <path>        read+write dir/file
+	AllowLiteral       []string // --allow-literal <path> absolute, unexpanded grant
+	Read               []string // --read <path>         read-only
+	Write              []string // --write <path>        write-only
+	Deny               []string // --deny <path|glob>    mask within granted trees
+	DenyLiteral        []string // --deny-literal <path> mask this absolute path, unexpanded
+	AllowFile          []string // --allow-file <path>   read+write single file
+	AllowUnixDir       []string // --allow-unix-dir <dir> AF_UNIX connect to any socket under dir
+	OpenPort           []int    // --open-port <port>
+	ListenPort         []int    // --listen-port <port>
+	AllowTCP           []int    // --allow-tcp-connect <port>
+	AllowDomain        []string // --allow-domain <domain>
+	DenyDomain         []string // --deny-domain <domain>
+	AllowEnv           []string // --allow-env <name>    additive env allow_vars entry
+	BlockNet           bool     // --block-net
+	Learn              bool     // --learn: unrestricted fs + folder recording
+	ForOpenCodeDesktop bool     // --for-opencode-desktop: protect trusted Desktop stores
+	WorkdirAccess      string   // --workdir-access <level>
+	AuditLog           string   // --audit-log <path>: append net.decision events here ("" = disabled)
+	AuditRunID         string   // --audit-run-id <id>: inherit parent's run_id ("" = mint fresh)
+	AuditMode          string   // --audit-mode <start|serve>: inherit parent's mode ("" = start)
+	InnerArgv          []string // everything after --
 }
 
 // ParseFlags parses the argument vector for `omac sandbox run` (the
@@ -110,6 +112,12 @@ func ParseFlags(args []string) (*Flags, error) {
 				return nil, err
 			}
 			f.Read = append(f.Read, v)
+		case "--allow-literal":
+			v, err := val(a)
+			if err != nil {
+				return nil, err
+			}
+			f.AllowLiteral = append(f.AllowLiteral, v)
 		case "--write":
 			v, err := val(a)
 			if err != nil {
@@ -186,6 +194,11 @@ func ParseFlags(args []string) (*Flags, error) {
 				return nil, fmt.Errorf("--learn takes no value")
 			}
 			f.Learn = true
+		case "--for-opencode-desktop":
+			if hasInline {
+				return nil, fmt.Errorf("--for-opencode-desktop takes no value")
+			}
+			f.ForOpenCodeDesktop = true
 		case "--audit-log":
 			v, err := val(a)
 			if err != nil {
@@ -231,6 +244,7 @@ func Merge(p *Profile, f *Flags) (*Profile, []string) {
 	var warnings []string
 
 	out.Filesystem.Allow = appendCopy(p.Filesystem.Allow, append(f.Allow, f.AllowFile...)...)
+	out.Filesystem.AllowLiteral = appendCopy(p.Filesystem.AllowLiteral, f.AllowLiteral...)
 	out.Filesystem.Read = appendCopy(p.Filesystem.Read, f.Read...)
 	out.Filesystem.Write = appendCopy(p.Filesystem.Write, f.Write...)
 	out.Filesystem.AllowUnixDir = appendCopy(p.Filesystem.AllowUnixDir, f.AllowUnixDir...)

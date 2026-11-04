@@ -93,8 +93,10 @@ type Workdir struct {
 // support ~ and $VAR expansion (see Expand).
 type Filesystem struct {
 	Allow []string `json:"allow,omitempty"` // read+write
-	Read  []string `json:"read,omitempty"`  // read-only
-	Write []string `json:"write,omitempty"` // write-only
+	// AllowLiteral is populated only by --allow-literal for discovered paths.
+	AllowLiteral []string `json:"-"`
+	Read         []string `json:"read,omitempty"`  // read-only
+	Write        []string `json:"write,omitempty"` // write-only
 	// AllowUnixDir grants AF_UNIX connect to every socket under the given
 	// directory (a subpath rule) plus read+write access to it, for tools
 	// that mint sockets with dynamic names at runtime (e.g. Claude Code's

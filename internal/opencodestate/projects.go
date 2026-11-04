@@ -252,6 +252,34 @@ func desktopDataDirs(home, appID string) []string {
 	if xdg := os.Getenv("XDG_DATA_HOME"); xdg != "" {
 		dirs = append(dirs, filepath.Join(xdg, appID))
 	}
+	dirs = append(dirs, desktopStateCandidates(home, appID)...)
+	return dirs
+}
+
+// DesktopStorePaths is shared by discovery and the native sandbox. Include
+// missing stores and companions: Desktop can create them after launch.
+func DesktopStorePaths() []string {
+	var out []string
+	for _, dir := range desktopStoreDirs() {
+		for _, name := range []string{"opencode.global.dat", "drafts.sqlite", "drafts.sqlite-wal", "drafts.sqlite-shm", "drafts.sqlite-journal"} {
+			out = append(out, filepath.Join(dir, name))
+		}
+	}
+	return out
+}
+
+func desktopStoreDirs() []string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	var dirs []string
+	for _, id := range []string{"ai.opencode.desktop", "ai.opencode.desktop.beta"} {
+		dirs = append(dirs, desktopDataDirs(home, id)...)
+	}
+	if state := os.Getenv("XDG_STATE_HOME"); state != "" {
+		dirs = append(dirs, state)
+	}
 	return dirs
 }
 
