@@ -32,6 +32,17 @@ func skipOrFailCI(t *testing.T, format string, args ...any) {
 	t.Skip(msg)
 }
 
+func TestIntegrationDiscoverySnapshotProtected(t *testing.T) {
+	requireBwrap(t)
+	g, probe, snapshot := discoverySnapshotFixture(t)
+	if out, code := runBwrapped(t, g, "/bin/sh", "-c", `printf ok > "$1"`, "sh", probe); code != 0 {
+		t.Fatalf("writable control failed: %s", out)
+	}
+	if _, code := runBwrapped(t, g, "/bin/sh", "-c", `printf forged > "$1"`, "sh", snapshot); code == 0 {
+		t.Fatal("agent overwrote a trusted SQLite snapshot")
+	}
+}
+
 // requireBwrap skips locally when bubblewrap is unavailable (CI containers
 // often lack the userns privileges too); in CI it fails the test instead.
 func requireBwrap(t *testing.T) {

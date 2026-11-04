@@ -6,9 +6,12 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
 
 	_ "modernc.org/sqlite"
 )
@@ -31,6 +34,7 @@ func testSQLite(t *testing.T, path, schema string) *sql.DB {
 }
 
 func TestSQLiteDiscoveryReader(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	path := filepath.Join(t.TempDir(), "state?#%.db")
 	db := testSQLite(t, path, `PRAGMA journal_mode=WAL; CREATE TABLE project(id TEXT, worktree TEXT); INSERT INTO project VALUES ('one', '/projects/one')`)
 	before, err := os.ReadDir(filepath.Dir(path))
@@ -59,6 +63,7 @@ func TestSQLiteDiscoveryReader(t *testing.T) {
 }
 
 func TestSQLiteDiscoveryRejectsUnsafeInput(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	for _, schema := range []string{
 		"CREATE VIEW project AS SELECT 'one' AS id, '/projects/one' AS worktree",
 		"CREATE VIEW project AS WITH RECURSIVE t(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM t) SELECT 'one' AS id, '/projects/one' AS worktree FROM t",
@@ -95,6 +100,7 @@ func TestSQLiteDiscoveryRejectsUnsafeInput(t *testing.T) {
 }
 
 func TestSQLiteDiscoveryBoundsQuery(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	path := filepath.Join(t.TempDir(), "project.db")
 	testSQLite(t, path, `CREATE TABLE project(id TEXT, worktree TEXT);
  INSERT INTO project WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x < 10001) SELECT x, '/project' FROM n`)
@@ -106,4 +112,31 @@ func TestSQLiteDiscoveryBoundsQuery(t *testing.T) {
 	if err == nil || time.Since(start) > 3*time.Second {
 		t.Fatalf("query deadline: %v", err)
 	}
+}
+
+func TestSQLiteSnapshotIsProtectedFromAgents(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	path := filepath.Join(t.TempDir(), "source.db")
+	testSQLite(t, path, "CREATE TABLE project(id TEXT, worktree TEXT)")
+	snapshot, cleanup, err := sqliteSnapshot(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	canonical, err := filepath.EvalSymlinks(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, raw := range sandboxprofile.EffectiveProtectedPaths(sandboxprofile.PlatformBaseline(), nil) {
+		protected, err := sandboxprofile.ExpandPath(raw)
+		if err != nil {
+			continue
+		}
+		protected, err = filepath.EvalSymlinks(protected)
+		if err == nil && strings.HasPrefix(canonical, protected+string(filepath.Separator)) {
+			return
+		}
+	}
+	t.Fatal("SQLite snapshot is not inside any native protected path")
 }
