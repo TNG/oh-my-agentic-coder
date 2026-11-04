@@ -57,4 +57,11 @@ Start `omac serve` **before** opening OpenCode Desktop. If you open Desktop firs
 
 ## Switching projects
 
+With `--for-opencode-desktop`, only the Desktop's `opencode` runtime subtree
+is writable. Its project store and saved server credentials stay hidden.
+This mode requires the native sandbox without `--learn`. Broad writable
+grants covering a Desktop store or its parent directories are refused;
+narrow them to project folders. Trusted Desktop state must use real
+directories, not symlinked paths.
+
 When you switch to a different project in OpenCode Desktop, omac is not notified — Desktop does not yet call omac's activation API. Skills from the new project will not be active. The workaround is to restart `omac serve --workdir` pointing at the new project.

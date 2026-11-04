@@ -202,6 +202,10 @@ func runServe(args []string, env *Env) int {
 	}
 	profName := plan.Name
 	prof := plan.Launcher
+	if forDesktop && !noInner && (noSandbox || learn || !plan.Native || plan.Policy == nil) {
+		fmt.Fprintln(env.Stderr, "omac serve: --for-opencode-desktop requires the native sandbox without --learn or --no-sandbox")
+		return ExitConfigInvalid
+	}
 	var authExtra map[string]string
 	if !noInner {
 		authExtra, err = prepareServeAuthEnv(password, harness, plan, noSandbox)
@@ -276,6 +280,10 @@ func runServe(args []string, env *Env) int {
 		if verbose {
 			fmt.Fprintf(env.Stderr, "[verbose] --for-opencode-desktop: XDG_STATE_HOME=%s\n", dir)
 		}
+	}
+	if forDesktop && (!filepath.IsAbs(os.Getenv("XDG_STATE_HOME")) || filepath.Clean(os.Getenv("XDG_STATE_HOME")) != os.Getenv("XDG_STATE_HOME")) {
+		fmt.Fprintln(env.Stderr, "omac serve: Desktop XDG_STATE_HOME must be an absolute, clean directory path")
+		return ExitConfigInvalid
 	}
 
 	rtDir, err := createRuntimeDirServe(env.Workdir)
@@ -562,6 +570,12 @@ func runServe(args []string, env *Env) int {
 			fmt.Fprintln(env.Stderr, "omac serve: harness runtime dirs:", err)
 			return ExitIOError
 		}
+		if forDesktop {
+			if err := os.MkdirAll(filepath.Join(os.Getenv("XDG_STATE_HOME"), "opencode"), 0700); err != nil {
+				fmt.Fprintln(env.Stderr, "omac serve: Desktop runtime directory:", err)
+				return ExitIOError
+			}
+		}
 		argv, err = sandboxServeArgv(prof, sandbox.Inputs{
 			Workdir:  env.Workdir,
 			Socket:   socketPath,
@@ -632,17 +646,15 @@ func runServe(args []string, env *Env) int {
 				fmt.Fprintf(env.Stderr, "omac serve: granting %d OpenCode project folder(s):\n", len(desktopWorktrees))
 				for _, wt := range desktopWorktrees {
 					fmt.Fprintf(env.Stderr, "  r+w %s\n", wt)
-					argv = injectSandboxFlag(argv, "--allow", wt)
+					argv = injectSandboxFlag(argv, "--allow-literal", wt)
 				}
 			}
-			// Grant the Desktop's shared state dir (XDG_STATE_HOME, set
-			// above) read+write so the inner opencode can read the
-			// Desktop's auth/config there. The default profile already
-			// lists it; granting here keeps it working under trimmed
-			// custom profiles too.
+			argv = injectSandboxFlag(argv, "--for-opencode-desktop", "")
+			// Runtime state is separate from Desktop's trusted project store.
 			if dir := os.Getenv("XDG_STATE_HOME"); dir != "" {
-				fmt.Fprintf(env.Stderr, "  r+w %s (shared Desktop state)\n", dir)
-				argv = injectSandboxFlag(argv, "--allow", dir)
+				runtimeDir := filepath.Join(dir, "opencode")
+				fmt.Fprintf(env.Stderr, "  r+w %s (OpenCode runtime state)\n", runtimeDir)
+				argv = injectSandboxFlag(argv, "--allow-literal", runtimeDir)
 			}
 		}
 		// --learn: pass through to the built-in sandbox, which lifts
