@@ -117,20 +117,29 @@ func requireControlTokenStart(token string, next http.HandlerFunc) http.HandlerF
 
 // startControlPlane binds a loopback control-plane HTTP server for start and
 // publishes its URL via the shared control-info file. Returns the listener,
-// the control URL, and a close func. On bind failure it returns ok=false and
-// start proceeds without live reload (non-fatal).
+// the control URL, and a close func. On bind failure (or token-mint failure)
+// it returns ok=false and start proceeds without live reload (non-fatal).
 func startControlPlane(r *startReloader) (controlURL string, closeFn func(), ok bool) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return "", func() {}, false
 	}
-	token := mintToken()
+	// Minting fails closed: without crypto-grade randomness there is no
+	// token, and without a token every control-plane request would be
+	// either refused (gated routes) or unauthenticated (ungated ones).
+	// Refuse to bring the plane up at all; start proceeds without it.
+	token, err := mintToken()
+	if err != nil {
+		fmt.Fprintln(r.env.Stderr, "omac start: control token:", err)
+		ln.Close()
+		return "", func() {}, false
+	}
 	r.controlToken = token
 	controlURL = fmt.Sprintf("http://%s", ln.Addr().String())
 	mux := http.NewServeMux()
 	auth := func(h http.HandlerFunc) http.HandlerFunc { return requireControlTokenStart(token, h) }
 	mux.HandleFunc("/__omac__/reload", auth(r.handleReload))
-	mux.HandleFunc("/__omac__/dirs", r.handleDirs)
+	mux.HandleFunc("/__omac__/dirs", auth(r.handleDirs))
 	// The omac plugin (built for serve) calls activate/deactivate. In the
 	// single-workdir start model "activate <dir>" maps to a reload of our
 	// one workdir; we accept it and return a serve-shaped manifest so the
@@ -140,7 +149,7 @@ func startControlPlane(r *startReloader) (controlURL string, closeFn func(), ok 
 	mux.HandleFunc("/__omac__/reload-global", auth(r.handleReloadGlobalStart))
 	// The harness plugin reports the id of the session it created here, so the
 	// post-exit "resume" hint is exact without enumerating sessions.
-	mux.HandleFunc("/__omac__/session", r.handleSession)
+	mux.HandleFunc("/__omac__/session", auth(r.handleSession))
 	srv := &http.Server{Handler: mux}
 	go func() {
 		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {

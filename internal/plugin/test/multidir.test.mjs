@@ -35,6 +35,9 @@ function fixture(t, enabled = true, opts = {}) {
     const body = JSON.parse(options.body)
     calls.push({ path: new URL(url).pathname, ...body })
     const dir = body.dir
+    if (new URL(url).pathname !== "/__omac__/activate") {
+      return Response.json({ status: "ok" })
+    }
     // Simulate a control plane that never answers: reject only when the
     // caller's signal aborts (as a real fetch would). Without a signal this
     // request never settles, which is exactly the hang under test.
@@ -151,6 +154,56 @@ test("one object entrypoint, without duplicate named exports or npm runtime impo
 })
 
 for (const version of [1, 2]) {
+  test(`v${version}: a server-canonical directory reuses the capability learned through its alias`, async (t) => {
+    const state = fixture(t)
+    const skills = [{ name: "demo", mount: "demo", scope: "workdir", state: "ready", base: "http://skill.test/canonical" }]
+    state.manifests.set("/alias/app", { dir: "/app", dir_token: "canonical", skills })
+    state.manifests.set("/app", { dir: "/app", skills })
+    const api = await adapter(t, version, state, "/alias/app")
+    await api.event("session.created", "s", "/app")
+    assert.equal((await api.shell("s", "/app/src")).OMAC_D_CANONICAL_DEMO_BASE, "http://skill.test/canonical")
+  })
+
+  test(`v${version}: repeated delete/reopen retains only this directory's capability`, async (t) => {
+    const state = fixture(t)
+    const api = await adapter(t, version, state)
+    await api.event("session.created", "other", "/other")
+    for (let i = 0; i < 3; i++) {
+      const id = `app-${i}`
+      await api.event("session.created", id, "/app")
+      const env = await api.shell(id, "/app/src", { KEEP: "yes" })
+      assert.deepEqual(env, {
+        KEEP: "yes", OMAC_DEMO_BASE: "http://skill.test/app",
+        OMAC_D__APP_DEMO_BASE: "http://skill.test/app", OMAC_G_SHARED_BASE: "http://global.test",
+      })
+      await api.event("session.deleted", id)
+      // Retaining a capability must not keep a deleted directory active or
+      // make it a v2 cwd candidate just because another project still lives.
+      assert.deepEqual(state.calls.at(-1), { path: "/__omac__/deactivate", dir: "/app" })
+      const other = await api.shell("other", "/other/src")
+      assert.equal(other.OMAC_D__OTHER_DEMO_BASE, "http://skill.test/other")
+      assert.equal(other.OMAC_D__APP_DEMO_BASE, undefined)
+    }
+  })
+
+  test(`v${version}: unknown capability fails explicitly before partially injecting skill env`, async (t) => {
+    const state = fixture(t)
+    state.sessions.set("s", "/app")
+    state.manifests.set("/app", {
+      dir: "/app", state: "active", skills: [
+        { name: "shared", mount: "shared", scope: "global", state: "ready", base: "http://global.test" },
+        { name: "demo", mount: "demo", scope: "workdir", state: "ready", base: "http://skill.test/app" },
+      ],
+    })
+    const api = await adapter(t, version, state)
+    const env = { KEEP: "yes" }
+    await assert.rejects(api.shell("s", "/app", env), /directory capability unavailable/)
+    assert.deepEqual(env, { KEEP: "yes" })
+    // A token is not needed when only global skills are ready.
+    state.manifests.get("/app").skills.pop()
+    assert.equal((await api.shell("s", "/app")).OMAC_G_SHARED_BASE, "http://global.test")
+  })
+
   test(`v${version}: activation, manifest refresh, session isolation and deletion`, async (t) => {
     const state = fixture(t)
     const api = await adapter(t, version, state)
