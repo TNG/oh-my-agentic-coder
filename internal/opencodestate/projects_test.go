@@ -91,19 +91,14 @@ func TestDesktopStateDir(t *testing.T) {
 }
 
 func TestWorktrees(t *testing.T) {
-	home := t.TempDir()
+	home := testDesktopHome(t)
 	t.Setenv("HOME", home)
 	stateDir := filepath.Join(home, ".local", "share", "opencode", "storage", "project")
 	if err := os.MkdirAll(stateDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 
-	// Legitimate storage records must live outside $HOME: records from
-	// the agent-writable storage tree that name an in-home path are
-	// rejected (the confined process can forge them and DAC offers no
-	// protection inside $HOME). In-home paths are exercised by the
-	// security tests in home_grant_security_test.go.
-	base := t.TempDir()
+	base, _ := filepath.EvalSymlinks(t.TempDir())
 	existing1 := filepath.Join(base, "proj-a")
 	existing2 := filepath.Join(base, "proj-b")
 	nested := filepath.Join(existing1, "sub", "module") // inside proj-a
@@ -128,7 +123,8 @@ func TestWorktrees(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	worktrees, skipped, err := Worktrees()
+	writeDesktopPinnedProject(t, home, existing1, existing2, existing2, stale, nested, prefixSib, "/", "relative/path")
+	worktrees, skipped, err := Worktrees(0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,7 +152,7 @@ func TestCollapseNested(t *testing.T) {
 }
 
 func TestDesktopWorktrees(t *testing.T) {
-	home := t.TempDir()
+	home := testDesktopHome(t)
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_DATA_HOME", "")
 
@@ -185,7 +181,7 @@ func TestDesktopWorktrees(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	worktrees, skipped, err := Worktrees()
+	worktrees, skipped, err := Worktrees(0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,7 +194,7 @@ func TestDesktopWorktrees(t *testing.T) {
 }
 
 func TestDesktopOpenTabsPickedUp(t *testing.T) {
-	home := t.TempDir()
+	home := testDesktopHome(t)
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_DATA_HOME", "")
 
@@ -228,7 +224,7 @@ func TestDesktopOpenTabsPickedUp(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	worktrees, _, err := Worktrees()
+	worktrees, _, err := Worktrees(0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -239,7 +235,7 @@ func TestDesktopOpenTabsPickedUp(t *testing.T) {
 
 func TestDesktopWorktreesPlainObject(t *testing.T) {
 	// Defensive: also accept the non-double-encoded form.
-	home := t.TempDir()
+	home := testDesktopHome(t)
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_DATA_HOME", "")
 	proj := filepath.Join(home, "p2")
@@ -254,7 +250,7 @@ func TestDesktopWorktreesPlainObject(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "opencode.global.dat"), []byte(raw), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	worktrees, _, err := Worktrees()
+	worktrees, _, err := Worktrees(0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -264,8 +260,8 @@ func TestDesktopWorktreesPlainObject(t *testing.T) {
 }
 
 func TestWorktreesNoState(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	worktrees, skipped, err := Worktrees()
+	testDesktopHome(t)
+	worktrees, skipped, err := Worktrees(0)
 	if err != nil {
 		t.Fatal(err)
 	}
