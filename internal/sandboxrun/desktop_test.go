@@ -94,3 +94,24 @@ func TestDesktopLiteralGrantStillScansSecrets(t *testing.T) {
 		t.Fatal("literal grant bypasses secret scan")
 	}
 }
+
+func discoverySnapshotFixture(t *testing.T) (*Grants, string, string) {
+	t.Helper()
+	home := stagedHome(t)
+	snapshot := filepath.Join(home, ".config", "omac", "discovery-fixture", "state.db")
+	if err := os.MkdirAll(filepath.Dir(snapshot), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(snapshot, []byte("trusted-store"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	p := &sandboxprofile.Profile{
+		Filesystem: sandboxprofile.Filesystem{Allow: []string{home}},
+		Network:    sandboxprofile.Network{Mode: sandboxprofile.ModeBlocked},
+	}
+	g, err := ResolveGrants(p, t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return g, filepath.Join(home, "writable-probe"), snapshot
+}
