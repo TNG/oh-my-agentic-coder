@@ -4,6 +4,8 @@ package sandboxrun
 
 import "fmt"
 
+const childLeavesSession = false
+
 // CheckPlatform: the built-in sandbox supports macOS and Linux only.
 func CheckPlatform() error {
 	return fmt.Errorf("the built-in sandbox supports macOS (Seatbelt) and Linux (bubblewrap) only")

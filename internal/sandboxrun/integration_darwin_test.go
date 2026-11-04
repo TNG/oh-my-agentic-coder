@@ -3,6 +3,7 @@
 package sandboxrun
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"net/http"
@@ -51,6 +52,27 @@ func testGrants(t *testing.T) *Grants {
 		t.Fatal(err)
 	}
 	return g
+}
+
+func TestIntegrationPseudoTerminal(t *testing.T) {
+	argv, err := BuildChildArgv(testGrants(t), []string{
+		"/usr/bin/script", "-q", "/dev/null", "/bin/sh", "-c",
+		"test -t 0 && test -t 1 && printf 'pty-ok\\n'",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	cmd.WaitDelay = time.Second
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("sandboxed PTY command failed: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "pty-ok") {
+		t.Fatalf("sandboxed command did not run with a terminal: %s", out)
+	}
 }
 
 func TestIntegrationWorkdirReadWrite(t *testing.T) {
@@ -223,8 +245,8 @@ func TestIntegrationAllowUnixDirGrantsSocketAccess(t *testing.T) {
 func TestIntegrationKeychainDenied(t *testing.T) {
 	// The hard guarantee is layered: (a) the keychain DB files under
 	// ~/Library/Keychains are protected paths (unreadable even under a
-	// broad home grant), and (b) the keychain daemons' mach services
-	// are denied. The deterministic, prompt-free check is (a): the
+	// broad home grant), and (b) keychain daemons other than securityd
+	// are denied (#340). The deterministic, prompt-free check is (a): the
 	// legacy in-process keychain API cannot read what it cannot open.
 	home := stagedHome(t)
 	kcDir := filepath.Join(home, "Library", "Keychains")
@@ -243,6 +265,34 @@ func TestIntegrationKeychainDenied(t *testing.T) {
 	}
 	if out, code := runSandboxed(t, g, "/bin/ls", kcDir); code == 0 {
 		t.Errorf("~/Library/Keychains must be denied even under broad home grant, got: %s", out)
+	}
+}
+
+func TestIntegrationKeychainFileOutsideKeychainsDirDenied(t *testing.T) {
+	// securityd is reachable, so it decrypts any unlocked keychain whose
+	// file the process can read. A keychain kept in the workdir or /tmp
+	// (e.g. a CI signing keychain) must stay unreadable by name.
+	g := testGrants(t)
+	kc := filepath.Join(g.Workdir, "signing.keychain-db")
+	if err := os.WriteFile(kc, []byte("kych"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out, code := runSandboxed(t, g, "/bin/cat", kc); code == 0 {
+		t.Errorf("keychain file in a granted folder must be denied, got: %s", out)
+	}
+}
+
+func TestIntegrationSystemRootCertificatesReadable(t *testing.T) {
+	// TLS clients on Secure Transport (e.g. Rust native-tls) look up Apple's
+	// root certificates through securityd. When the sandbox denied that
+	// service, every HTTPS request failed with "bad certificate format"
+	// (#340). Reading the root store with `security` exercises the same
+	// lookup without needing the network.
+	g := testGrants(t)
+	out, code := runSandboxed(t, g, "/usr/bin/security", "find-certificate",
+		"/System/Library/Keychains/SystemRootCertificates.keychain")
+	if code != 0 {
+		t.Errorf("system root certificates must be readable in the sandbox: exit=%d out=%s", code, out)
 	}
 }
 
@@ -393,5 +443,24 @@ func TestIntegrationDNSTimeboxSanity(t *testing.T) {
 	runSandboxed(t, g, "/usr/bin/curl", "-sS", "--max-time", "5", "https://example.com/")
 	if elapsed := time.Since(start); elapsed > 30*time.Second {
 		t.Errorf("blocked-network curl took %v", elapsed)
+	}
+}
+
+// TestIntegrationDeniedFileInGrantedDir is the Seatbelt half of #347: a file
+// denied inside a read+write dir grant (the opencode harness's service.json)
+// can be neither read, written, removed, nor replaced by a rename or a symlink
+// from the parent dir. A file that does not exist yet cannot be created either,
+// since Seatbelt matches the path, not an inode.
+func TestIntegrationDeniedFileInGrantedDir(t *testing.T) {
+	for _, withFile := range []bool{true, false} {
+		name := "existing"
+		if !withFile {
+			name = "absent"
+		}
+		t.Run(name, func(t *testing.T) {
+			fx, g := newDenyFileFixture(t, withFile)
+			out, _ := runSandboxed(t, g, "/bin/sh", "-c", fx.probeScript())
+			fx.check(t, out, withFile)
+		})
 	}
 }

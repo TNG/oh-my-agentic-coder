@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"sort"
 	"strconv"
@@ -32,7 +33,9 @@ import (
 const MetaFileName = "omac.yaml"
 
 // Meta is the skill metadata as stored in omac.yaml. Only the fields
-// omac cares about are declared; unknown keys are ignored.
+// omac cares about are declared. Unknown keys do not stop a skill from
+// loading, but LoadMetaWithWarnings reports them, so that `omac register`
+// can point out a typo such as `hnit:` instead of silently dropping it.
 type Meta struct {
 	Name         string   `yaml:"name"`
 	Type         string   `yaml:"type"`
@@ -67,6 +70,15 @@ type SecretSpec struct {
 	Pattern        string `yaml:"pattern,omitempty"`
 	DefaultFromEnv string `yaml:"default_from_env,omitempty"`
 	Multiline      bool   `yaml:"multiline,omitempty"`
+	// Hint is optional multi-line help printed under the description at
+	// `omac register`, for example the steps to obtain the value. It is
+	// printed again after a value fails the pattern check.
+	Hint string `yaml:"hint,omitempty"`
+	// Docs optionally points to a file inside the skill that explains the
+	// value, with an optional section anchor, e.g.
+	// "SKILL.md#obtaining-the-token". An unusable value is a warning at
+	// `omac register`, never a load error; see DocsWarnings.
+	Docs string `yaml:"docs,omitempty"`
 }
 
 // IsRequired returns true unless the spec explicitly opts out.
@@ -127,6 +139,8 @@ type ConfigSpec struct {
 	DefaultFromEnv string          `yaml:"default_from_env,omitempty"`
 	Pattern        string          `yaml:"pattern,omitempty"` // string-only; regex
 	Choices        []string        `yaml:"choices,omitempty"` // enum-only; non-empty
+	Hint           string          `yaml:"hint,omitempty"`    // multi-line help; see SecretSpec.Hint
+	Docs           string          `yaml:"docs,omitempty"`    // file in the skill; see SecretSpec.Docs
 }
 
 // IsRequired returns true unless the spec explicitly opts out.
@@ -229,7 +243,8 @@ func ValidSkillName(name string) error {
 	return nil
 }
 
-// LoadMeta reads omac.yaml from path and validates it.
+// LoadMeta reads omac.yaml from path and validates it. Keys omac does not
+// know are ignored; use LoadMetaWithWarnings to list them.
 func LoadMeta(path string) (*Meta, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -243,6 +258,150 @@ func LoadMeta(path string) (*Meta, error) {
 		return nil, err
 	}
 	return &m, nil
+}
+
+// LoadMetaWithWarnings is LoadMeta plus one warning per key in the file
+// that omac does not know, e.g.
+// "sidecar.secrets[0].hnit: unknown field (ignored)". The keys are
+// ignored exactly as LoadMeta ignores them; the warnings are only for
+// showing to the skill author.
+//
+// The warnings are also returned when decoding or validation fails,
+// because an unknown key often explains the failure: with `- nmae: TOKEN`
+// the error is "name is not a valid env var name", and the warning names
+// the typo. Only a read or YAML syntax error returns no warnings.
+func LoadMetaWithWarnings(path string) (*Meta, []string, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, nil, fmt.Errorf("read meta: %w", err)
+	}
+	// Parse once into a node tree, then decode the Meta from it and walk
+	// the same tree for unknown keys.
+	var doc yaml.Node
+	if err := yaml.Unmarshal(raw, &doc); err != nil {
+		return nil, nil, fmt.Errorf("parse meta: %w", err)
+	}
+	var m Meta
+	var warnings []string
+	if len(doc.Content) > 0 {
+		// Collect the unknown keys first, so they are also reported when
+		// decoding fails on a value of the wrong type.
+		for _, key := range unknownMetaKeys(doc.Content[0]) {
+			warnings = append(warnings, key+": unknown field (ignored)")
+		}
+		if err := doc.Decode(&m); err != nil {
+			return nil, warnings, fmt.Errorf("parse meta: %w", err)
+		}
+	}
+	if err := m.Validate(); err != nil {
+		return nil, warnings, err
+	}
+	return &m, warnings, nil
+}
+
+// unknownMetaKeys lists the keys in a parsed omac.yaml document that do
+// not map to a field of Meta, as dotted paths with list indexes, e.g.
+// "sidecar.secrets[0].hnit". Map-typed fields such as install_scripts
+// accept any key and are not checked.
+//
+// yaml.v3's Decoder.KnownFields(true) finds the same keys, but reports
+// them as decode errors with a Go type name, e.g. "line 7: field hnit not
+// found in type config.SecretSpec". Walking the parsed YAML tree next to
+// the Go type gives the path a skill author knows from the docs instead.
+func unknownMetaKeys(root *yaml.Node) []string {
+	var out []string
+	collectUnknownKeys(root, reflect.TypeOf(Meta{}), "", &out)
+	return out
+}
+
+// collectUnknownKeys walks node, which should hold a value of type t, and
+// appends the path of every mapping key that t has no field for.
+func collectUnknownKeys(node *yaml.Node, t reflect.Type, path string, out *[]string) {
+	if node == nil {
+		return
+	}
+	if node.Kind == yaml.AliasNode {
+		collectUnknownKeys(node.Alias, t, path, out)
+		return
+	}
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	switch t.Kind() {
+	case reflect.Struct:
+		if node.Kind != yaml.MappingNode {
+			return
+		}
+		fields := yamlFieldTypes(t)
+		for i := 0; i+1 < len(node.Content); i += 2 {
+			key, val := node.Content[i], node.Content[i+1]
+			// "<<: *anchor" merges another mapping into this one; check
+			// the merged keys as if they were written here.
+			if key.Value == "<<" && key.Tag == "!!merge" {
+				if val.Kind == yaml.SequenceNode {
+					for _, m := range val.Content {
+						collectUnknownKeys(m, t, path, out)
+					}
+				} else {
+					collectUnknownKeys(val, t, path, out)
+				}
+				continue
+			}
+			p := key.Value
+			if path != "" {
+				p = path + "." + key.Value
+			}
+			ft, ok := fields[key.Value]
+			if !ok {
+				*out = append(*out, p)
+				continue
+			}
+			collectUnknownKeys(val, ft, p, out)
+		}
+	case reflect.Slice:
+		if node.Kind != yaml.SequenceNode {
+			return
+		}
+		for i, item := range node.Content {
+			collectUnknownKeys(item, t.Elem(), fmt.Sprintf("%s[%d]", path, i), out)
+		}
+	}
+}
+
+// yamlFieldTypes maps each YAML key of struct type t to its field type,
+// following the `yaml:"name,..."` tags the way yaml.v3 does: a field
+// without a name in its tag uses its lowercased Go name, "-" is skipped,
+// and ",inline" pulls in the fields of an embedded struct.
+func yamlFieldTypes(t reflect.Type) map[string]reflect.Type {
+	out := map[string]reflect.Type{}
+	for i := 0; i < t.NumField(); i++ {
+		f := t.Field(i)
+		if !f.IsExported() {
+			continue
+		}
+		tag := f.Tag.Get("yaml")
+		if tag == "-" {
+			continue
+		}
+		name, opts, _ := strings.Cut(tag, ",")
+		if strings.Contains(","+opts+",", ",inline,") {
+			ft := f.Type
+			for ft.Kind() == reflect.Pointer {
+				ft = ft.Elem()
+			}
+			if ft.Kind() == reflect.Struct {
+				for k, v := range yamlFieldTypes(ft) {
+					out[k] = v
+				}
+			}
+			continue
+		}
+		if name == "" {
+			name = strings.ToLower(f.Name)
+		}
+		out[name] = f.Type
+	}
+	return out
 }
 
 // Validate checks the invariants of a Meta value (including the sidecar block).
@@ -381,10 +540,98 @@ func (s *SidecarMeta) Validate(skillName string) error {
 	return nil
 }
 
+// splitDocsRef splits a `docs` value into the file path and the optional
+// section anchor after the first '#'. For "SKILL.md#getting-a-token" it
+// returns "SKILL.md" and "getting-a-token".
+func splitDocsRef(ref string) (path, anchor string) {
+	path, anchor, _ = strings.Cut(ref, "#")
+	return path, anchor
+}
+
+// docsRefProblem says why a `docs` value cannot be shown, or returns ""
+// when it can. The path must name a file inside the skill directory:
+// relative, and without ".." steps that leave it. "docs/token.md#steps"
+// is fine; "/etc/passwd", "../other/SKILL.md", "~/notes.md",
+// "https://example.com/help" and "#steps" (no file) are not.
+//
+// This is deliberately not part of Validate. `docs` is only help text, and
+// before omac knew the key, a skill with any `docs` value loaded fine; a
+// bad value must not make such a skill fail to start. `omac register`
+// reports it as a warning (see DocsWarnings) and shows no "More:" line.
+func docsRefProblem(ref string) string {
+	path, _ := splitDocsRef(ref)
+	switch {
+	case path == "":
+		return fmt.Sprintf("%q does not name a file; use a path inside the skill, e.g. SKILL.md#section", ref)
+	case strings.Contains(path, "://"):
+		return fmt.Sprintf("%q must be a file path inside the skill, not a URL", ref)
+	case strings.HasPrefix(path, "~"):
+		return fmt.Sprintf("%q must be a path relative to the skill directory; '~' is not expanded", ref)
+	case filepath.IsAbs(path) || strings.HasPrefix(path, "/"):
+		return fmt.Sprintf("%q must be a path relative to the skill directory, not an absolute path", ref)
+	case !filepath.IsLocal(path):
+		return fmt.Sprintf("%q must stay inside the skill directory (no '..' that leaves it)", ref)
+	}
+	return ""
+}
+
+// DocsPath returns the absolute path of a `docs` value inside skillDir,
+// plus its section anchor. It returns "" when ref is empty or unusable
+// (see docsRefProblem). It does not check that the file exists.
+func DocsPath(skillDir, ref string) (abs, anchor string) {
+	if ref == "" || docsRefProblem(ref) != "" {
+		return "", ""
+	}
+	path, anchor := splitDocsRef(ref)
+	dir, err := filepath.Abs(skillDir)
+	if err != nil {
+		dir = skillDir
+	}
+	return filepath.Join(dir, path), anchor
+}
+
+// DocsWarnings returns one message per `docs` entry that omac cannot show,
+// e.g. "sidecar.secrets[0].docs: SKILL.md not found in the skill
+// directory". Reasons: the value is not a path inside the skill (see
+// docsRefProblem), the file does not exist, or it is a directory. A bad
+// docs value only loses some help text, so callers report these as
+// warnings rather than refusing the skill.
+func (m *Meta) DocsWarnings(skillDir string) []string {
+	if m.Sidecar == nil {
+		return nil
+	}
+	var out []string
+	check := func(field, ref string) {
+		if ref == "" {
+			return
+		}
+		if problem := docsRefProblem(ref); problem != "" {
+			out = append(out, field+": "+problem)
+			return
+		}
+		abs, _ := DocsPath(skillDir, ref)
+		path, _ := splitDocsRef(ref)
+		fi, err := os.Stat(abs)
+		switch {
+		case err != nil:
+			out = append(out, fmt.Sprintf("%s: %s not found in the skill directory", field, path))
+		case fi.IsDir():
+			out = append(out, fmt.Sprintf("%s: %s is a directory, not a file", field, path))
+		}
+	}
+	for i, s := range m.Sidecar.Secrets {
+		check(fmt.Sprintf("sidecar.secrets[%d].docs", i), s.Docs)
+	}
+	for i, c := range m.Sidecar.Config {
+		check(fmt.Sprintf("sidecar.config[%d].docs", i), c.Docs)
+	}
+	return out
+}
+
 // PatternlessSecretStringFields returns the string config fields that carry
 // neither a pattern nor choices on a skill that also declares secrets. Such a
-// field accepts any value from the agent-writable config store, which the
-// sidecar then receives alongside its secrets, so registration warns about it.
+// field accepts any string the user approves, and the sidecar receives it
+// alongside its secrets, so registration and `omac doctor` warn about it.
 func (s *SidecarMeta) PatternlessSecretStringFields() []string {
 	if len(s.Secrets) == 0 {
 		return nil

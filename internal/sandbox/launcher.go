@@ -282,16 +282,22 @@ func Exec(argv []string, extraEnv map[string]string) (int, error) {
 // be wired via the caller's own defers (the caller still owns the facade
 // and supervisor).
 func ExecWithReady(argv []string, extraEnv map[string]string, onReady func()) (int, error) {
+	var hook func(int)
+	if onReady != nil {
+		hook = func(int) { onReady() }
+	}
+	return ExecWithReadyPID(argv, extraEnv, hook)
+}
+
+// ExecWithReadyPID is ExecWithReady with the child's pid (also its process
+// group id) passed to onReady.
+func ExecWithReadyPID(argv []string, extraEnv map[string]string, onReady func(pid int)) (int, error) {
 	// Inherit host env, then overlay extras.
 	env := os.Environ()
 	for k, v := range extraEnv {
 		env = append(env, k+"="+v)
 	}
-	var hook func(int)
-	if onReady != nil {
-		hook = func(int) { onReady() }
-	}
-	return ExecWithEnv(argv, env, "", hook)
+	return ExecWithEnv(argv, env, "", onReady)
 }
 
 // newChildCmd builds the child command with its stdio, environment and
@@ -323,10 +329,46 @@ func newChildCmd(argv []string, env []string, workdir string) *exec.Cmd {
 // group). Used by `omac sandbox run`, which builds the child env from
 // scratch (env_clear semantics with blocklist/allowlist filtering).
 func ExecWithEnv(argv []string, env []string, workdir string, onReady func(pid int)) (int, error) {
+	return execChild(argv, env, workdir, onReady, false)
+}
+
+// ExecDetachedSession is ExecWithEnv for a child that leaves the terminal
+// session (Linux bwrap --new-session calls setsid before starting the inner
+// command). Such a child has no controlling terminal, so the kernel never
+// sends it SIGWINCH when the window is resized. What differs from
+// ExecWithEnv to make up for that:
+//
+//   - The child stays in omac's process group and omac keeps the terminal
+//     foreground. The kernel sends SIGWINCH to the foreground group only, so
+//     this is how omac learns about a resize at all. The child (bwrap's
+//     outer process) stays in the foreground too, so it can still print its
+//     own errors when the terminal has `stty tostop` set.
+//   - SIGWINCH is relayed to the new session's process group, found via the
+//     child's direct children (for bwrap: the process that called setsid,
+//     whose group the inner command shares).
+//   - Signals are forwarded to the child's pid rather than its group, which
+//     is now omac's own.
+//   - omac does not stop on SIGTSTP. The confined program shares the
+//     terminal and can turn on signal keys (e.g. make "q" send SIGTSTP). If
+//     that stopped omac, a job-control shell would take the terminal back
+//     while the sandbox kept reading it, so the sandbox could read what the
+//     user types into the shell. omac resumes the child instead.
+//
+// Example: the user resizes the window from 172x42 to 242x62. The kernel
+// signals omac, omac signals the sandboxed TUI, and the TUI reads the new
+// size with TIOCGWINSZ and redraws.
+func ExecDetachedSession(argv []string, env []string, workdir string, onReady func(pid int)) (int, error) {
+	return execChild(argv, env, workdir, onReady, true)
+}
+
+func execChild(argv []string, env []string, workdir string, onReady func(pid int), detached bool) (int, error) {
 	if len(argv) == 0 {
 		return 1, fmt.Errorf("empty argv")
 	}
 	cmd := newChildCmd(argv, env, workdir)
+	if detached {
+		cmd.SysProcAttr.Setpgid = false
+	}
 
 	// CRITICAL: install our own signal handlers BEFORE we fork+exec the
 	// child. POSIX execve(2) preserves SIG_IGN through exec, but converts
@@ -344,6 +386,9 @@ func ExecWithEnv(argv []string, env []string, workdir string, onReady func(pid i
 	signal.Notify(sigCh,
 		syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGQUIT,
 		syscall.SIGWINCH)
+	if detached {
+		signal.Notify(sigCh, syscall.SIGTSTP)
+	}
 	defer signal.Stop(sigCh)
 
 	if err := cmd.Start(); err != nil {
@@ -359,18 +404,28 @@ func ExecWithEnv(argv []string, env []string, workdir string, onReady func(pid i
 		// target, which is degraded but not broken).
 		pgid = pid
 	}
+	// kill(target, sig) reaches the child: its process group normally, its
+	// pid alone when it shares omac's group.
+	target := -pgid
+	if detached {
+		target = pid
+	}
 
 	// If we have a controlling terminal, give it to the child's pgid so the
 	// kernel's terminal-driver-driven SIGINT goes there. Ignore SIGTTOU
 	// during tcsetpgrp itself; otherwise we get suspended on the syscall
 	// because we are no longer the foreground group.
-	tty, restoreTTY := claimTerminalFor(pgid)
-	defer restoreTTY()
-	_ = tty
+	// A detached child cannot use the terminal for job control anyway, and
+	// omac must stay in the foreground to receive SIGWINCH (see
+	// ExecDetachedSession).
+	if !detached {
+		_, restoreTTY := claimTerminalFor(pgid)
+		defer restoreTTY()
+	}
 	done := make(chan struct{})
 	go func() {
 		// Escalation policy when omac itself receives a termination signal:
-		//   1. Forward the original signal to -pgid.
+		//   1. Forward the original signal to target.
 		//   2. If the child is still alive after 2s, send SIGTERM.
 		//   3. If still alive after another 3s, send SIGKILL.
 		// This makes us robust to children that inherited SIG_IGN for the
@@ -384,10 +439,21 @@ func ExecWithEnv(argv []string, env []string, workdir string, onReady func(pid i
 				return
 			case s := <-sigCh:
 				if ss, ok := s.(syscall.Signal); ok {
-					_ = syscall.Kill(-pgid, ss)
+					if ss == syscall.SIGTSTP {
+						// Detached only (see ExecDetachedSession). The
+						// terminal stopped the child as well; resume it.
+						_ = syscall.Kill(pid, syscall.SIGCONT)
+						continue
+					}
+					_ = syscall.Kill(target, ss)
 					// SIGWINCH is a resize notification, not a termination
 					// request; forward it but do not start the kill escalation.
 					if ss == syscall.SIGWINCH {
+						if detached {
+							for _, g := range detachedSessionGroups(pid) {
+								_ = syscall.Kill(-g, ss)
+							}
+						}
 						continue
 					}
 					if !first {
@@ -398,13 +464,13 @@ func ExecWithEnv(argv []string, env []string, workdir string, onReady func(pid i
 								return
 							case <-time.After(2 * time.Second):
 							}
-							_ = syscall.Kill(-pgid, syscall.SIGTERM)
+							_ = syscall.Kill(target, syscall.SIGTERM)
 							select {
 							case <-done:
 								return
 							case <-time.After(3 * time.Second):
 							}
-							_ = syscall.Kill(-pgid, syscall.SIGKILL)
+							_ = syscall.Kill(target, syscall.SIGKILL)
 						}()
 					}
 				}

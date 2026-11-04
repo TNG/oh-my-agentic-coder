@@ -66,5 +66,5 @@
 
 - [ ] 8.1 Document the sandbox in README.md (profile schema, CLI, platform limitations: macOS coarse `listen_port`, host-unconstrained `allow_tcp_connect`, Landlock v4 floor)
 - [ ] 8.2 Document migration from nono (translate the user's *installed* profile incl. accumulated filesystem grants and `policy.override_deny`; copy learned-policy files from nono's locations; note dropped credential injection) and rollback (select `nono` launch profile)
-- [ ] 8.2b Parity checklist run: side-by-side `nono run` vs `omac sandbox run` with the tng-sandbox profile — verify identical outcomes for protected-path reads, temp-dir writes, keychain access, SSH (port 22), inner-harness listen on 4097, prompt flow, and learned-policy reuse
+- [ ] 8.2b Parity checklist run: side-by-side `nono run` vs `omac sandbox run` with the tng-sandbox profile — verify identical outcomes for protected-path reads, temp-dir writes, keychain access, SSH (port 22), inner-harness listen on 4097, prompt flow, and learned-policy reuse (keychain access diverges on purpose since #340: omac lets the child reach securityd and blocks keychain files by name instead, so compare item lookups, not the daemon denial)
 - [ ] 8.3 `openspec validate native-sandbox --strict`

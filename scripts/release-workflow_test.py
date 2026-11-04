@@ -154,7 +154,88 @@ def main() -> int:
         )
 
     print("release notify condition skips prerelease tag pushes")
+
+    check_release_tags(goreleaser)
+    print("release tag pinning picks the pushed tag and the previous final tag")
     return 0
+
+
+def git(repo: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", "-C", str(repo), *args],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+
+def check_release_tags(goreleaser: str) -> None:
+    """Guard #350: an RC and the final release on the same commit."""
+    if not re.search(
+        r"^\s*id: release_tags\s*\n\s*if: github\.ref_type == 'tag'\s*$",
+        goreleaser,
+        re.M,
+    ):
+        raise SystemExit(
+            "release_tags step must run only for tag refs "
+            "(if: github.ref_type == 'tag'), so branch dry runs stay unpinned"
+        )
+    if goreleaser.index("id: release_tags") > goreleaser.index("name: Run GoReleaser"):
+        raise SystemExit("release_tags step must run before GoReleaser")
+
+    script = extract_step_script(goreleaser, "release_tags")
+    with tempfile.TemporaryDirectory() as temp_dir:
+        repo = Path(temp_dir) / "repo"
+        repo.mkdir()
+        git(repo, "init", "-q")
+        ident = ["-c", "user.name=t", "-c", "user.email=t@example.invalid"]
+
+        def commit_and_tag(*tags: str) -> None:
+            git(repo, *ident, "commit", "-q", "--allow-empty", "-m", "c")
+            for tag in tags:
+                git(repo, *ident, "tag", "-a", tag, "-m", tag)
+
+        commit_and_tag("v0.8.0")
+        commit_and_tag("v0.9.0")
+        commit_and_tag("v0.10.0-rc.1")
+        # RC and final release on the same commit (the #350 case).
+        commit_and_tag("v0.10.0-rc.2", "v0.10.0")
+        # A newer final tag on a later commit must never become "previous".
+        commit_and_tag("v0.11.0")
+
+        env_file = Path(temp_dir) / "github-env"
+        cases = {
+            ("v0.10.0", "false"): {
+                "GORELEASER_CURRENT_TAG": "v0.10.0",
+                "GORELEASER_PREVIOUS_TAG": "v0.9.0",
+            },
+            ("v0.10.0-rc.2", "true"): {"GORELEASER_CURRENT_TAG": "v0.10.0-rc.2"},
+            ("v0.8.0", "false"): {"GORELEASER_CURRENT_TAG": "v0.8.0"},
+        }
+        for (version, prerelease), want in cases.items():
+            env_file.write_text("")
+            env = os.environ | {
+                "VERSION": version,
+                "PRERELEASE": prerelease,
+                "GITHUB_ENV": str(env_file),
+            }
+            subprocess.run(
+                ["bash", "-e"],
+                input=script,
+                text=True,
+                env=env,
+                cwd=repo,
+                check=True,
+                capture_output=True,
+            )
+            got = dict(
+                line.split("=", 1) for line in env_file.read_text().splitlines()
+            )
+            if got != want:
+                raise SystemExit(
+                    f"release_tags for {version} (prerelease={prerelease}) "
+                    f"set {got}, want {want}"
+                )
 
 
 if __name__ == "__main__":

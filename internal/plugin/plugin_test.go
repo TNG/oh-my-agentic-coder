@@ -1,10 +1,12 @@
 package plugin
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -32,34 +34,6 @@ func TestEmbeddedSourceMatchesCanonical(t *testing.T) {
 	if string(want) != string(MultiDirSource()) {
 		t.Fatalf("embedded %s drifted from %s; re-sync the two files",
 			MultiDirFileName, canonical)
-	}
-}
-
-// TestBriefingMergesIntoExistingSystemBlock guards the invariant that the
-// plugin never increases the number of entries in OpenCode's `system`
-// array. OpenCode maps every entry to its own {role:"system"} message
-// (session/llm/request.ts), and strict OpenAI-compatible servers — Qwen
-// chat templates in particular — reject a system message at index > 0
-// with "system message must come first". The briefing and the skills
-// manifest must therefore be appended to the last existing block.
-//
-// This is a source-level guard because the repo has no TypeScript test
-// runner; if one is ever added, replace it with a real hook test.
-func TestBriefingMergesIntoExistingSystemBlock(t *testing.T) {
-	src := string(MultiDirSource())
-	for _, banned := range []string{
-		"output.system.push(brief",
-		"output.system.push(renderManifest",
-	} {
-		if strings.Contains(src, banned) {
-			t.Errorf("%s must not %s: pushing a new system block adds a second "+
-				"system message and breaks providers that require exactly one "+
-				"at index 0", MultiDirFileName, banned)
-		}
-	}
-	if !strings.Contains(src, "output.system[last] =") {
-		t.Errorf("%s no longer merges into the last system block; the "+
-			"single-system-message invariant is unenforced", MultiDirFileName)
 	}
 }
 
@@ -152,5 +126,44 @@ func TestInstallMultiDirIn_AbsoluteDir(t *testing.T) {
 	ok, err := IsMultiDirInstalledIn(dir)
 	if err != nil || !ok {
 		t.Errorf("IsMultiDirInstalledIn = %v, %v; want true, nil", ok, err)
+	}
+}
+
+// A plugin change must record its old hash, or users holding the old copy
+// keep it forever after an upgrade (issue #360).
+func TestMultiDirHashesUpToDate(t *testing.T) {
+	sum := sha256.Sum256(multiDirSource)
+	if got := hex.EncodeToString(sum[:]); got != multiDirSHA256 {
+		t.Fatalf("assets/omac-multidir.ts changed: add the old multiDirSHA256 (%s) to previousMultiDirSHA256, then set multiDirSHA256 to %s", multiDirSHA256, got)
+	}
+	if previousMultiDirSHA256[multiDirSHA256] {
+		t.Fatal("the current plugin hash must not be listed as a previous version")
+	}
+}
+
+func TestInstallUpgradesPreviousVersionWithoutForce(t *testing.T) {
+	old := []byte("// plugin from an older omac\n")
+	sum := sha256.Sum256(old)
+	previousMultiDirSHA256[hex.EncodeToString(sum[:])] = true
+	t.Cleanup(func() { delete(previousMultiDirSHA256, hex.EncodeToString(sum[:])) })
+
+	dir := t.TempDir()
+	dest := MultiDirPathIn(dir)
+	if err := os.WriteFile(dest, old, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res, err := InstallMultiDirIn(dir, false)
+	if err != nil {
+		t.Fatalf("install over a previous version: %v", err)
+	}
+	if !res.Upgraded || !res.Overwrote {
+		t.Errorf("want Upgraded and Overwrote, got %+v", res)
+	}
+	got, err := os.ReadFile(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, multiDirSource) {
+		t.Error("the previous version was not replaced with the embedded plugin")
 	}
 }

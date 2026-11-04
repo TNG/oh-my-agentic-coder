@@ -50,8 +50,8 @@ func TestRenderSkillRefusalEveryKind(t *testing.T) {
 		{
 			name: "bundle drift",
 			problem: skillstate.Problem{Kind: skillstate.BundleDrift, Skill: "bravo",
-				Detail: "bundle changed since register", Fix: "omac register bravo --force"},
-			want: []string{"bundle changed since register", "--accept-skill-changes", "bravo",
+				Detail: "files changed since register", Fix: "omac register bravo --force"},
+			want: []string{"files changed since register", "instructions are untrusted", "--accept-skill-changes", "bravo",
 				"re-register", "omac register bravo --force"},
 		},
 		{
@@ -188,7 +188,7 @@ func TestRenderSkillRefusalOmitsAbsentSections(t *testing.T) {
 		{Kind: skillstate.MissingSecret, Skill: "alpha", Field: "TOKEN", Fix: "omac secrets set alpha TOKEN"},
 	})
 	for _, unwanted := range []string{
-		"omac.yaml broken", "bundle changed", "pattern validation",
+		"omac.yaml broken", "files changed since register", "pattern validation",
 		"required config field missing", "keychain unavailable",
 	} {
 		if strings.Contains(out, unwanted) {

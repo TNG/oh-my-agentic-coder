@@ -127,10 +127,12 @@ func ensureBuiltinSkills(env *Env, harness config.Harness) {
 // ensureOpenCodePlugin idempotently provisions omac's OpenCode bridge plugin
 // into the harness's global plugins dir (~/.config/opencode/plugins) on
 // launch, so the sandbox-briefing relay works even when the user never ran
-// `omac plugin install`. Mirrors the global provisioning ensureBuiltinSkills
-// does for skills: OpenCode-only, quiet when unchanged, and a failure (or a
-// foreign same-named file, which InstallMultiDirIn refuses to clobber) is a
-// warning, never a launch blocker.
+// `omac plugin install`. On the common path where the installed plugin is
+// already current, it is silent. It prints the minimum supported OpenCode
+// version only when it changed something or found a conflict. An unedited
+// copy from an older omac is replaced. Installation failures and conflicting
+// local edits produce warnings, never block launch, and never overwrite the
+// local file.
 func ensureOpenCodePlugin(env *Env, harness config.Harness) {
 	if !harness.NeedsPluginBootstrap {
 		return
@@ -139,6 +141,7 @@ func ensureOpenCodePlugin(env *Env, harness config.Harness) {
 	if dir == "" {
 		return
 	}
+	warnStaleLocalPlugin(env, harness, plugin.MultiDirPathIn(dir))
 	// force=false, so an existing differing file yields an error (not an
 	// overwrite) and Unchanged covers the silent common path.
 	res, err := plugin.InstallMultiDirIn(dir, false)
@@ -148,8 +151,10 @@ func ensureOpenCodePlugin(env *Env, harness config.Harness) {
 			// The common post-upgrade case: a stale/edited copy differs from
 			// the embedded plugin. A plain re-install hits the same guard, so
 			// point at the actual remedy (overwrite, or delete + relaunch).
-			fmt.Fprintf(env.Stderr, "[warn] an existing, differing %s is at %s; the sandbox briefing won't appear in OpenCode until it is refreshed.\n", plugin.MultiDirFileName, conflict.Path)
-			fmt.Fprintln(env.Stderr, "       Overwrite it:  omac plugin install opencode-desktop --global --force")
+			fmt.Fprintln(env.Stderr, "[warn]", plugin.MultiDirCompatibility)
+			fmt.Fprintf(env.Stderr, "[warn] an existing, differing %s is at %s. It is not a version omac shipped, so it was left alone.\n", plugin.MultiDirFileName, conflict.Path)
+			fmt.Fprintln(env.Stderr, "       Until it is refreshed, OpenCode may not activate this directory's skills (e.g. \"/__omac__/activate -> 401\") or show the sandbox briefing.")
+			fmt.Fprintln(env.Stderr, "       Overwrite it:  omac plugin install opencode-desktop --global --force (then restart OpenCode to load the replacement)")
 			fmt.Fprintf(env.Stderr, "       Or delete %s and relaunch (omac reprovisions it automatically).\n", conflict.Path)
 			return
 		}
@@ -157,7 +162,14 @@ func ensureOpenCodePlugin(env *Env, harness config.Harness) {
 		return
 	}
 	if !res.Unchanged {
-		fmt.Fprintln(env.Stderr, "[ok] provisioned the omac OpenCode plugin")
+		fmt.Fprintln(env.Stderr, "[warn]", plugin.MultiDirCompatibility)
+		if res.Upgraded {
+			// An older omac wrote it and nobody edited it; an old copy can
+			// fail every control-plane call (issue #360), so replace it.
+			fmt.Fprintf(env.Stderr, "[ok] updated the omac OpenCode plugin at %s from an older omac version (restart OpenCode if it is already running)\n", res.Path)
+		} else {
+			fmt.Fprintln(env.Stderr, "[ok] provisioned the omac OpenCode plugin")
+		}
 	}
 }
 

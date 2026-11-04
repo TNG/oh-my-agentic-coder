@@ -4,11 +4,15 @@ package sandboxrun
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 )
 
 // sandboxExecPath is the Seatbelt CLI shipped with every macOS.
 const sandboxExecPath = "/usr/bin/sandbox-exec"
+
+// childLeavesSession: sandbox-exec keeps the terminal session.
+const childLeavesSession = false
 
 // CheckPlatform verifies the macOS sandbox prerequisites.
 func CheckPlatform() error {
@@ -39,6 +43,18 @@ func BuildChildArgv(g *Grants, innerArgv []string) ([]string, error) {
 		return nil, err
 	}
 	gz := *g
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, fmt.Errorf("resolve sandbox home directory: %w", err)
+	}
+	info, err := os.Stat(home)
+	if err != nil {
+		return nil, fmt.Errorf("stat sandbox home directory: %w", err)
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("sandbox home %q is not a directory", home)
+	}
+	gz.HomeDir = home
 	gz.ReadPaths = append(append([]string{}, g.ReadPaths...), resolveInnerBinaryDirs(innerArgv)...)
 	profile := GenerateSBPL(&gz)
 	argv := []string{sandboxExecPath, "-p", profile, "--"}

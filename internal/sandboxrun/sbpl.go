@@ -3,18 +3,27 @@ package sandboxrun
 import (
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
+	"unicode"
 
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
 )
+
+// sbplKeychainNameRegex matches keychain files by name anywhere, in any
+// letter case: login.keychain-db, ci.keychain, X.KEYCHAIN.
+const sbplKeychainNameRegex = `\.[kK][eE][yY][cC][hH][aA][iI][nN](-[dD][bB])?$`
 
 // GenerateSBPL renders the Seatbelt profile for the grant set. Pure
 // string generation — unit-testable on every platform; only the exec
 // path is darwin-specific.
 //
-// Rule order matters: read allows -> write allows -> protected-path denies.
-// Seatbelt is last-match-wins, so protected denies placed last override
-// both read and write allows for those paths.
+// Rule order matters: read allows -> write allows -> protected-path denies
+// -> secret-name denies (.env, ...) -> keychain name-deny -> read-only
+// root-store re-allow. Seatbelt is last-match-wins, so the denies override
+// both read and write allows for those paths. The root-store re-allow is
+// the one rule allowed to undo a deny; any file allow emitted later (e.g.
+// the /dev devices) must not cover a protected path or a keychain file.
 func GenerateSBPL(g *Grants) string {
 	var b strings.Builder
 	b.WriteString("(version 1)\n")
@@ -31,9 +40,15 @@ func GenerateSBPL(g *Grants) string {
 
 	// Mach: allow lookups generally but wall off the Keychain daemons
 	// (nono parity; `security` and friends fail cleanly).
+	//
+	// com.apple.SecurityServer (securityd) stays reachable: Security.framework
+	// needs it to read Apple's root certificates, so TLS clients built on
+	// Secure Transport (e.g. Rust native-tls in Copilot CLI >= 1.0.93) fail
+	// with "bad certificate format" without it (#340). Keychain items stay
+	// unreadable: the legacy keychain API opens the keychain files in-process,
+	// and keychain files are denied by folder and by name (see below).
 	b.WriteString("(allow mach-lookup)\n")
 	for _, svc := range []string{
-		"com.apple.SecurityServer",
 		"com.apple.securityd",
 		"com.apple.security.keychaind",
 		"com.apple.secd",
@@ -48,8 +63,8 @@ func GenerateSBPL(g *Grants) string {
 	b.WriteString("(allow ipc-posix-shm)\n")
 	b.WriteString("(allow system-socket)\n\n")
 
-	// The root directory inode itself must be readable (dyld stats and
-	// reads "/" during startup; literal only — not subpath).
+	// dyld reads "/" at startup; with metadata only every process aborts.
+	// Literal only, not subpath. So `ls /` stays possible.
 	b.WriteString("(allow file-read* (literal \"/\"))\n")
 
 	// --- Read allows ---
@@ -59,8 +74,21 @@ func GenerateSBPL(g *Grants) string {
 			fmt.Fprintf(&b, "(allow file-read* (subpath %s))\n", sbplQuote(fp))
 		}
 	}
-	// Metadata on ancestors so path resolution works.
-	for _, p := range ancestorDirs(append(append(append([]string{}, g.ReadPaths...), g.WritePaths...), g.AllowPaths...)) {
+	// Metadata, not data, on every directory above the working directory
+	// and the grants, and on HOME (OpenCode v2 resolves it even when no
+	// grant lies below it): a data read would let `ls` list entry names.
+	// getcwd works inside the working directory, but not from HOME or
+	// above it, where only the shell builtin `pwd` works.
+	ancestorRoots := append(append(append([]string{g.Workdir}, g.ReadPaths...), g.WritePaths...), g.AllowPaths...)
+	resolvable := ancestorDirs(ancestorRoots)
+	if g.HomeDir != "" {
+		for _, p := range pathForms(g.HomeDir) {
+			if !slices.Contains(resolvable, p) {
+				resolvable = append(resolvable, p)
+			}
+		}
+	}
+	for _, p := range resolvable {
 		fmt.Fprintf(&b, "(allow file-read-metadata (literal %s))\n", sbplQuote(p))
 	}
 	// DYLD-injection defense: only readable paths may be mapped
@@ -81,13 +109,24 @@ func GenerateSBPL(g *Grants) string {
 	}
 	b.WriteString("\n")
 
-	// --- Protected-path denies (after all allows, so last-match-wins blocks both reads and writes) ---
+	// --- Protected-path and keychain denies (after all allows, so last-match-wins blocks both reads and writes) ---
 	for _, p := range g.ProtectedPaths {
 		for _, fp := range pathForms(p) {
 			fmt.Fprintf(&b, "(deny file-read* (subpath %s))\n", sbplQuote(fp))
 			fmt.Fprintf(&b, "(deny file-write* (subpath %s))\n", sbplQuote(fp))
 		}
 	}
+	b.WriteString(sbplNameDenies(g))
+	// securityd is reachable (see the mach section), so it decrypts any
+	// unlocked keychain whose file the process can read. Keychains outside
+	// the protected folders (e.g. a CI signing keychain in /tmp) must be
+	// hidden by name. Apple's read-only root stores stay readable: TLS
+	// trust evaluation needs them. The re-allow must stay directly after
+	// the name-deny: moved before it, the deny would hide the root store
+	// and break TLS again.
+	fmt.Fprintf(&b, "(deny file-read* (regex #\"%s\"))\n", sbplKeychainNameRegex)
+	fmt.Fprintf(&b, "(deny file-write* (regex #\"%s\"))\n", sbplKeychainNameRegex)
+	b.WriteString("(allow file-read* (subpath \"/System/Library/Keychains\"))\n")
 	b.WriteString("\n")
 
 	// --- Devices every process needs ---
@@ -95,7 +134,7 @@ func GenerateSBPL(g *Grants) string {
 		fmt.Fprintf(&b, "(allow file-read* file-write-data (literal %s))\n", sbplQuote(dev))
 	}
 	b.WriteString("(allow file-read* file-write-data (regex #\"^/dev/tty\"))\n")
-	b.WriteString("(allow file-ioctl (regex #\"^/dev/tty\") (literal \"/dev/null\") (literal \"/dev/zero\") (literal \"/dev/random\") (literal \"/dev/urandom\"))\n")
+	b.WriteString("(allow file-ioctl (regex #\"^/dev/tty\") (literal \"/dev/ptmx\") (literal \"/dev/null\") (literal \"/dev/zero\") (literal \"/dev/random\") (literal \"/dev/urandom\"))\n")
 	b.WriteString("(allow pseudo-tty)\n\n")
 
 	// --- Network ---
@@ -199,7 +238,7 @@ func canonicalPath(p string) string {
 }
 
 // ancestorDirs returns every distinct ancestor directory of the given
-// paths (excluding "/" itself is fine to include; Seatbelt tolerates it).
+// paths, including "/".
 func ancestorDirs(paths []string) []string {
 	seen := map[string]bool{}
 	var out []string
@@ -227,4 +266,81 @@ func sbplQuote(s string) string {
 	s = strings.ReplaceAll(s, `\`, `\\`)
 	s = strings.ReplaceAll(s, `"`, `\"`)
 	return `"` + s + `"`
+}
+
+// sbplNameDenies hides secret files by name in the folders too large for
+// the launch-time scan (Grants.NameDenyRoots): below each such folder,
+// every file or folder whose name matches one of NameDenyGlobs. Unlike
+// the scan, this also covers files created during the session. It is
+// stricter than the scan in one way: it also matches inside dependency
+// and cache folders the scan skips (node_modules, ...).
+// resolveDenyPaths only puts a folder here if canDenyByName accepted it,
+// so sbplNameRegex cannot fail for it.
+func sbplNameDenies(g *Grants) string {
+	var b strings.Builder
+	for _, root := range g.NameDenyRoots {
+		for _, fp := range pathForms(root) {
+			res, err := sbplNameRegex(fp, g.NameDenyGlobs)
+			if err != nil {
+				continue
+			}
+			for _, re := range res {
+				fmt.Fprintf(&b, "(deny file-read* (regex #\"%s\"))\n", re)
+				fmt.Fprintf(&b, "(deny file-write* (regex #\"%s\"))\n", re)
+			}
+		}
+	}
+	return b.String()
+}
+
+// sbplNameRegex returns one regular expression per glob that matches a
+// path below root whose name, or the name of a folder on the way below
+// root, matches the glob. For root /p and glob .env it matches /p/.env,
+// /p/a/b/.env, /p/a/.env/x and /p/.ENV (letters match either case, as
+// the disk does by default), but not /p/.env.example, /p/x.env or
+// /q/.env. Globs use filepath.Match syntax; only * and ? are supported,
+// and a path or glob the rule cannot spell (a quote, a control
+// character or backslash, [ in a glob) is an error.
+func sbplNameRegex(root string, globs []string) ([]string, error) {
+	if strings.ContainsAny(root, "\"\\\x00\n\r") {
+		return nil, fmt.Errorf("folder path %q cannot be used in a name rule", root)
+	}
+	prefix := "^" + regexQuote(strings.TrimSuffix(root, "/")) + "/(.*/)?"
+	var out []string
+	for _, g := range globs {
+		if g == "" || strings.ContainsAny(g, "[\\/\"\x00\n\r") {
+			return nil, fmt.Errorf("pattern %q cannot be used in a name rule", g)
+		}
+		var name strings.Builder
+		for _, r := range g {
+			switch r {
+			case '*':
+				name.WriteString("[^/]*")
+			case '?':
+				name.WriteString("[^/]")
+			default:
+				// macOS disks ignore case by default: .ENV opens .env.
+				if lo, up := unicode.ToLower(r), unicode.ToUpper(r); lo != up {
+					name.WriteString("[" + string(lo) + string(up) + "]")
+				} else {
+					name.WriteString(regexQuote(string(r)))
+				}
+			}
+		}
+		out = append(out, prefix+name.String()+"(/.*)?$")
+	}
+	return out, nil
+}
+
+// regexQuote escapes the characters that have a meaning in a regular
+// expression.
+func regexQuote(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if strings.ContainsRune(`\.+*?()|[]{}^$`, r) {
+			b.WriteByte('\\')
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }

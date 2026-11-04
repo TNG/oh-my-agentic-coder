@@ -5,6 +5,8 @@ description: Registering and using skills with omac.
 
 A skill gives the agent a controlled path to an external service without exposing credentials inside the sandbox (see the [glossary](../README.md#glossary)).
 
+**Note**: Conceptually, skills in omac are the same as standard agent skills. Omac only provides sidecars to inject secrets into requests without the agent having access to them.  
+
 ## Getting a skill running
 
 1. **Install**: place the skill directory under `.opencode/skills/<name>/` / `.claude/skills/` / `.agents/skills/` / `~/.config/` (depending on your harness and preferences) in your project.

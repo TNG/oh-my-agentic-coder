@@ -53,6 +53,11 @@ type Store struct {
 	// agent-writable workdir layer rather than the host-only global layer.
 	// Not serialized; runtime-only provenance.
 	FromWorkdir map[string]map[string]bool `yaml:"-"`
+	// Merged is set by MergeConfig. FromWorkdir is only filled in by a merge,
+	// so a store that was loaded directly has no provenance at all; callers
+	// that need it must treat !Merged as "unknown", not as "host-only".
+	// Not serialized.
+	Merged bool `yaml:"-"`
 }
 
 // GlobalApprovedKey is the reserved Approved workdir-id under which a

@@ -92,7 +92,12 @@ func (s styler) status(w *os.File, tag, detail string, codes ...string) {
 
 // setLine prints a "set NAME = VALUE  (source)" assignment line with the
 // name bolded, the value greened, and the optional source dimmed.
+//
+// The value can be a skill's `default:` from omac.yaml and the source can
+// name its `default_from_env:` variable, so all three parts go through
+// stripControlChars.
 func (s styler) setLine(w *os.File, name, value, source string) {
+	name, value, source = stripControlChars(name), stripControlChars(value), stripControlChars(source)
 	tail := ""
 	if source != "" {
 		tail = s.gray(" " + source)
@@ -146,16 +151,32 @@ func boxPad(cell string, inner, pad int) string {
 	return strings.Repeat(" ", pad) + cell + strings.Repeat(" ", gap) + strings.Repeat(" ", pad)
 }
 
-// stripControlChars removes C0/C1 control characters from s. This prevents
-// terminal escape sequences planted in session ids or titles from injecting
-// display commands when the text is printed to a terminal.
+// stripControlChars removes C0/C1 controls, Unicode line separators, zero-width
+// characters and bidi controls from display text. Never use it for lookup keys.
 func stripControlChars(s string) string {
 	return strings.Map(func(r rune) rune {
 		if r < 0x20 || (r >= 0x7f && r <= 0x9f) {
 			return -1
 		}
+		switch r {
+		case '\u2028', '\u2029', // line / paragraph separators
+			'\u200b', '\u200c', '\u200d', '\u2060', '\ufeff', // zero-width
+			'\u061c', '\u200e', '\u200f', // directional marks
+			'\u202a', '\u202b', '\u202c', '\u202d', '\u202e', // bidi overrides
+			'\u2066', '\u2067', '\u2068', '\u2069': // bidi isolates
+			return -1
+		}
 		return r
 	}, s)
+}
+
+// oneLine prepares text that is printed on a single line, such as a
+// skill's description. Line breaks and tabs become spaces, so that
+// "line one\nline two" reads "line one line two" instead of running the
+// words together, and then the remaining control characters are removed.
+func oneLine(s string) string {
+	s = strings.NewReplacer("\r\n", " ", "\n", " ", "\r", " ", "\t", " ").Replace(s)
+	return strings.TrimSpace(stripControlChars(s))
 }
 
 // visibleLen returns the display width of s, ignoring ANSI SGR escape

@@ -306,6 +306,13 @@ func Apply(ctx context.Context, plan Plan, deps Deps) error {
 	case MethodUpToDate:
 		return nil
 	case MethodBrew:
+		// Refresh the local tap clone first. omac learned about the new
+		// release from GitHub, but brew reads versions from its local tap
+		// clone, which it only auto-refreshes every 24h. Without this, brew
+		// can report the old version as "already installed and up-to-date".
+		if err := deps.Runner.Run(ctx, "brew", []string{"update"}, deps.Stdin, deps.Stdout, deps.Stderr); err != nil {
+			return err
+		}
 		return deps.Runner.Run(ctx, "brew", []string{"upgrade", "oh-my-agentic-coder"}, deps.Stdin, deps.Stdout, deps.Stderr)
 	case MethodLinuxPackage:
 		var pm PackageManager

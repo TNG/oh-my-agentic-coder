@@ -546,6 +546,95 @@ func TestSandboxCreateDirsAreGranted(t *testing.T) {
 	}
 }
 
+// clearOpenCodeServiceEnv unsets the env vars openCodeHostServiceFiles reads.
+func clearOpenCodeServiceEnv(t *testing.T) {
+	t.Helper()
+	for _, v := range []string{"XDG_CONFIG_HOME", "OPENCODE_CONFIG_DIR", "XDG_STATE_HOME"} {
+		t.Setenv(v, "")
+	}
+}
+
+// The opencode harness denies exactly the host OpenCode service's two
+// service.json files, spelled like the dir grants they sit in, and leaves the
+// dir grants themselves unchanged.
+func TestSandboxDenyPathsOpenCode(t *testing.T) {
+	clearOpenCodeServiceEnv(t)
+	t.Setenv("XDG_DATA_HOME", "")
+	h, ok := LookupHarness("opencode")
+	if !ok {
+		t.Fatal("opencode harness not found")
+	}
+	want := []string{
+		"~/.config/opencode/service.json",
+		"~/.local/state/opencode/service.json",
+	}
+	if !reflect.DeepEqual(h.SandboxDenyPaths, want) {
+		t.Errorf("opencode SandboxDenyPaths = %v; want %v", h.SandboxDenyPaths, want)
+	}
+	for _, p := range h.SandboxDenyPaths {
+		if !slices.Contains(h.SandboxDirs, filepath.Dir(p)) {
+			t.Errorf("deny %q is not inside an opencode SandboxDirs grant %v", p, h.SandboxDirs)
+		}
+		if sandboxprofile.IsBasenameGlob(p) || strings.ContainsAny(p, "*?[") {
+			t.Errorf("deny %q must be an explicit path, not a glob", p)
+		}
+	}
+	// The grants that hold the files stay read+write grants.
+	for _, dir := range []string{"~/.config/opencode", "~/.local/state/opencode"} {
+		if !slices.Contains(h.ResolvedSandboxDirs(), dir) {
+			t.Errorf("opencode no longer grants %s: %v", dir, h.ResolvedSandboxDirs())
+		}
+	}
+}
+
+// The env-relocated config, config-dir and state homes that omac resolves for
+// the host service are denied too, deduplicated, and an env value that
+// filesystem.deny would reject as a glob is skipped instead of breaking the
+// launch.
+func TestSandboxDenyPathsOpenCodeEnvVariants(t *testing.T) {
+	clearOpenCodeServiceEnv(t)
+	cfg, ocDir, state := t.TempDir(), t.TempDir(), t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", cfg)
+	t.Setenv("OPENCODE_CONFIG_DIR", ocDir)
+	t.Setenv("XDG_STATE_HOME", state)
+	h, _ := LookupHarness("opencode")
+	want := []string{
+		"~/.config/opencode/service.json",
+		"~/.local/state/opencode/service.json",
+		filepath.Join(cfg, "opencode", "service.json"),
+		filepath.Join(ocDir, "service.json"),
+		filepath.Join(state, "opencode", "service.json"),
+	}
+	if !reflect.DeepEqual(h.SandboxDenyPaths, want) {
+		t.Errorf("SandboxDenyPaths = %v; want %v", h.SandboxDenyPaths, want)
+	}
+
+	// OPENCODE_CONFIG_DIR pointing at the XDG config home adds no duplicate.
+	t.Setenv("OPENCODE_CONFIG_DIR", filepath.Join(cfg, "opencode"))
+	h, _ = LookupHarness("opencode")
+	if len(h.SandboxDenyPaths) != 4 {
+		t.Errorf("duplicate deny entries: %v", h.SandboxDenyPaths)
+	}
+
+	t.Setenv("OPENCODE_CONFIG_DIR", "")
+	t.Setenv("XDG_STATE_HOME", filepath.Join(state, "odd[dir"))
+	h, _ = LookupHarness("opencode")
+	for _, p := range h.SandboxDenyPaths {
+		if strings.ContainsAny(p, "*?[") {
+			t.Errorf("glob-like env path %q must be skipped", p)
+		}
+	}
+}
+
+// No other harness declares deny paths: the change is scoped to opencode.
+func TestSandboxDenyPathsOnlyOpenCode(t *testing.T) {
+	for _, h := range AllHarnesses() {
+		if h.Name != "opencode" && len(h.SandboxDenyPaths) != 0 {
+			t.Errorf("%s SandboxDenyPaths = %v; want none", h.Name, h.SandboxDenyPaths)
+		}
+	}
+}
+
 func TestSandboxDirsClaude(t *testing.T) {
 	h, ok := LookupHarness("claude")
 	if !ok {
@@ -1285,5 +1374,61 @@ func TestCodewhaleBriefingFileFunc(t *testing.T) {
 	}
 	if string(data) != "BRIEF" {
 		t.Errorf("briefing file = %q, want %q", string(data), "BRIEF")
+	}
+}
+
+// An injected var the env filter drops would silently undo the relocation.
+func TestLaunchEnvFuncVarsAreForwarded(t *testing.T) {
+	for _, h := range AllHarnesses() {
+		if h.LaunchEnvFunc == nil {
+			continue
+		}
+		for k := range h.LaunchEnvFunc("/cfg", "/tmp/x") {
+			if !slices.Contains(h.ForwardedEnvVars(), k) {
+				t.Errorf("%s: LaunchEnvFunc sets %s, which ForwardedEnvVars() drops", h.Name, k)
+			}
+		}
+	}
+}
+
+func TestLaunchEnvFuncClaudeTmpDir(t *testing.T) {
+	h, _ := LookupHarness("claude-code")
+	got := h.LaunchEnvFunc(h.ConfigHome(), "/tmp/omac-x")
+	if got["CLAUDE_CODE_TMPDIR"] != "/tmp/omac-x" {
+		t.Errorf("CLAUDE_CODE_TMPDIR = %q; want /tmp/omac-x", got["CLAUDE_CODE_TMPDIR"])
+	}
+}
+
+// The SEA copilot binary extracts into $COPILOT_CACHE_HOME/pkg; that must be
+// inside a granted dir, including when COPILOT_HOME redirects the config home.
+func TestLaunchEnvFuncCopilotCacheInGrantedHome(t *testing.T) {
+	for _, redirect := range []string{"", ".work-copilot"} {
+		t.Run("redirect="+redirect, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("COPILOT_HOME", "")
+			if redirect != "" {
+				t.Setenv("COPILOT_HOME", filepath.Join(home, redirect))
+			}
+			h, _ := LookupHarness("copilot")
+
+			cache := h.LaunchEnvFunc(h.ConfigHome(), "/tmp/x")["COPILOT_CACHE_HOME"]
+			granted := false
+			for _, d := range h.ResolvedSandboxDirs() {
+				if normalizeHomePath(d) == cache {
+					granted = true
+				}
+			}
+			if cache == "" || !granted {
+				t.Errorf("COPILOT_CACHE_HOME = %q; want one of the granted dirs %v", cache, h.ResolvedSandboxDirs())
+			}
+		})
+	}
+}
+
+func TestLaunchEnvFuncCopilotNoHome(t *testing.T) {
+	h, _ := LookupHarness("copilot")
+	if got := h.LaunchEnvFunc("", "/tmp/x"); len(got) != 0 {
+		t.Errorf("LaunchEnvFunc(\"\") = %v; want no env", got)
 	}
 }

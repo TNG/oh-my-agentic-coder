@@ -96,7 +96,7 @@ async function controlPost(path: string, body: unknown): Promise<DirManifest | n
 }
 
 function sanitizeField(s: string): string {
-  return s.replace(/[\n\r]/g, " ").replace(/\*/g, "").replace(/[\x00-\x1f\x7f-\x9f]/g, "")
+  return s.replace(/[\n\r]/g, " ").replace(/\*/g, "").replace(/[\x00-\x1f\x7f-\x9f\u061c\u200b-\u200f\u2028-\u202e\u2060\u2066-\u2069\ufeff]/g, "")
 }
 
 function secretsHint(name: string, missing: string[]): string {

@@ -18,6 +18,21 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  opencode-plugin:
+    name: OpenCode plugin adapters
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: internal/plugin/package-lock.json
+      - run: npm ci --ignore-scripts
+        working-directory: internal/plugin
+      - run: npm run typecheck && npm test
+        working-directory: internal/plugin
+
   test:
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

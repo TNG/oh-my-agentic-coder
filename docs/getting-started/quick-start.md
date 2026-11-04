@@ -14,6 +14,10 @@ omac needs four system components:
 
 You also need at least one harness installed — see [Supported harnesses](../README.md#supported-harnesses-and-os).
 
+## TNG-Employees
+
+Please use the internal [omac-tng-installer repo](https://bitbucket.int.tngtech.com/projects/TNG/repos/omac-tng-installer/browse) to install and set up omac for use with internally hosted models.
+
 ### macOS
 
 The sandbox, secret storage, and dialog components are built into macOS. Install `jq` via Homebrew:

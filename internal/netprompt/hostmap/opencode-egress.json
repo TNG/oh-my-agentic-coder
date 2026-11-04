@@ -6,6 +6,7 @@
     "source_commit": "355a0bcf5",
     "source_version": "1.17.8",
     "audited_against_installed": "1.17.12",
+    "reverification_pending_against": "1.18.29",
     "method": "manual source audit (call-site attribution); NOT auto-generated. See README.md.",
     "purpose": "Map an egress hostname to the opencode subsystem that dials it, so the network prompt can render a human-readable 'likely cause' line. The proxy never terminates TLS, so only host+port+source-process are observable; this map resolves the cause from the hostname alone.",
     "origin_values": {

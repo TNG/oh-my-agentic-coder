@@ -75,6 +75,9 @@ sources. Both are **manually authored, not generated.**
 
 - Source: `anomalyco/opencode` @ `355a0bcf5` (`v1.17.8`), audited against the
   installed `v1.17.12` — call-site attribution from the real source tree.
+- **Re-verification pending:** omac's v1 pin is now `1.18.29`, but this map has
+  not been re-audited against it. The `meta.reverification_pending_against`
+  field records the version still to check. New languages or LSPs may add hosts.
 - Rebuild by re-auditing call-sites:
 
 ```sh

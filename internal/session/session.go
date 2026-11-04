@@ -20,6 +20,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -66,12 +67,15 @@ func validSessionID(id string) bool {
 	return true
 }
 
-// runner runs a command and returns its stdout. Swappable in tests.
-type runner func(name string, args ...string) ([]byte, error)
+// runner runs a command in dir ("" = the current directory) and returns its
+// stdout. Swappable in tests.
+type runner func(dir, name string, args ...string) ([]byte, error)
 
 // execRunner is the production runner: it shells out to the named binary.
-func execRunner(name string, args ...string) ([]byte, error) {
-	return exec.Command(name, args...).Output()
+func execRunner(dir, name string, args ...string) ([]byte, error) {
+	cmd := exec.Command(name, args...)
+	cmd.Dir = dir
+	return cmd.Output()
 }
 
 // List returns harness's prior sessions for workdir, most-recent first.
@@ -233,12 +237,19 @@ func listOpenCodeDB(workdir, dbPath string) []Session {
 	// most-recently-updated row — so without this filter the newest-first
 	// listing can surface a non-resumable child. This mirrors what
 	// `opencode session list` already returns.
-	q := "SELECT id, title, time_updated FROM session WHERE directory = '" +
-		strings.ReplaceAll(workdir, "'", "''") +
+	where := " WHERE directory = '" + strings.ReplaceAll(workdir, "'", "''") +
 		"' AND parent_id IS NULL ORDER BY time_updated DESC;"
-	out, err := exec.Command(sqlite, "file:"+dbPath+"?mode=ro", q).Output()
+	out, err := exec.Command(sqlite, "file:"+dbPath+"?mode=ro",
+		"SELECT id, title, time_updated FROM session"+where).Output()
 	if err != nil {
-		return nil
+		// OpenCode v2 has no session table; it keeps sessions in session_v2
+		// with the same columns for what we read. Archived sessions stay in
+		// the list because v2's `opencode session list` shows them too.
+		out, err = exec.Command(sqlite, "file:"+dbPath+"?mode=ro",
+			"SELECT id, title, time_updated FROM session_v2"+where).Output()
+		if err != nil {
+			return nil
+		}
 	}
 	var sessions []Session
 	for _, line := range strings.Split(string(out), "\n") {
@@ -270,8 +281,22 @@ func listOpenCodeDB(workdir, dbPath string) []Session {
 // listOpenCodeCLI runs the opencode CLI and keeps records for workdir. A
 // missing CLI, non-zero exit, or unparseable output yields nil (best-effort).
 // This is the slow fallback (~1s) used when sqlite3 is not on PATH.
+//
+// On OpenCode v2 a plain `opencode session list` connects to, or starts, the
+// shared per-user background server (`opencode serve --service`), which then
+// keeps running after omac is done. --standalone makes the CLI use a private
+// server that exits with the command. v2 also scopes the list to the project
+// of its working directory, so it runs in workdir.
 func listOpenCodeCLI(workdir string, run runner) []Session {
-	out, err := run("opencode", "session", "list", "--format", "json")
+	var (
+		out []byte
+		err error
+	)
+	if openCodeMajor(run) >= 2 {
+		out, err = run(workdir, "opencode", "session", "list", "--standalone", "--format", "json")
+	} else {
+		out, err = run("", "opencode", "session", "list", "--format", "json")
+	}
 	if err != nil {
 		return nil
 	}
@@ -292,6 +317,30 @@ func listOpenCodeCLI(workdir string, run runner) []Session {
 	}
 	sortNewestFirst(sessions)
 	return sessions
+}
+
+// openCodeVersionRe matches the first semver-ish token in `opencode --version`
+// output ("1.18.29", "opencode v2.0.26").
+var openCodeVersionRe = regexp.MustCompile(`v?(\d+)\.\d+\.\d+`)
+
+// openCodeMajor returns the major version of the opencode CLI, or 0 when it
+// cannot be determined. Callers treat 0 like v1 (no v2-only flags).
+// internal/cli has a richer probe (openCodeV2) that also understands package
+// runners such as bunx; this package always invokes `opencode` directly.
+func openCodeMajor(run runner) int {
+	out, err := run("", "opencode", "--version")
+	if err != nil {
+		return 0
+	}
+	m := openCodeVersionRe.FindSubmatch(out)
+	if m == nil {
+		return 0
+	}
+	major, err := strconv.Atoi(string(m[1]))
+	if err != nil {
+		return 0
+	}
+	return major
 }
 
 // --- Claude Code backend ----------------------------------------------------

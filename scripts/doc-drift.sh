@@ -48,7 +48,7 @@ set -euo pipefail
 
 # Keep in sync with internal/e2e/versions.go's "opencode" pin (duplicated
 # there too, per the existing e2e convention).
-DEFAULT_OPENCODE_VERSION="opencode-ai@1.17.12"
+DEFAULT_OPENCODE_VERSION="opencode-ai@1.18.29"
 # 40 min: the full-repo two-pass audit (read docs, verify each claim against
 # code) is heavy, and the model's per-step latency through the gateway adds up.
 # The agent writes its report incrementally, so a run cut short here still

@@ -46,7 +46,7 @@ set -euo pipefail
 
 # Keep this in sync with internal/e2e/versions.go's "opencode" pin
 # (duplicated there too, per existing e2e.yml convention).
-DEFAULT_OPENCODE_VERSION="opencode-ai@1.17.12"
+DEFAULT_OPENCODE_VERSION="opencode-ai@1.18.29"
 DEFAULT_TIMEOUT_SECS="1200"
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"

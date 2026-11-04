@@ -94,7 +94,7 @@ func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, int) 
 		acceptSkillChanges = fs.Bool("accept-skill-changes", false, "Tolerate bundle_hash drift in registered skills (proceed even if the on-disk skill differs from what was registered).")
 		skipSecretPattern  = fs.Bool("skip-secret-pattern", false, "Do not enforce a secret's pattern against an env_passthrough-supplied value (escape hatch for an outdated pattern; the raw value is still passed through).")
 		verbose            = fs.Bool("verbose", false, "Verbose lifecycle logging.")
-		autoRegisterSkills = fs.Bool("auto-register-skills", false, "Silently register discovered workdir-local skills whose required values resolve without prompting, instead of refusing to start. Skills with unresolved required values still prompt via `omac register`.")
+		autoRegisterSkills = fs.Bool("auto-register-skills", false, "Silently register discovered workdir-local skills whose required values resolve without prompting, instead of refusing to start. Values only in the agent-writable workdir skill-config.yaml do not count, since nothing approved them. Skills with unresolved required values need `omac register` (non-interactively: --fields-from or OMAC_CONFIG_<NAME>).")
 		auditLog           = fs.String("audit-log", "", "Path to the audit log (default: persistent central location). Overrides config.")
 		noAudit            = fs.Bool("no-audit", false, "Disable the security audit trail.")
 		auditStrict        = fs.Bool("audit-strict", false, "Fail-closed: abort if the audit log cannot be written.")
@@ -761,6 +761,8 @@ func runLaunch(env *Env, opts launchOpts) int {
 		inner = append(inner, innerArgs...)
 	}
 
+	// ocPin pins opencode v2's background service; set only for sandboxed v2 launches.
+	var ocPin *openCodeServicePin
 	var argv []string
 	var watch *protectedWatch
 	if noSandbox {
@@ -786,6 +788,31 @@ func runLaunch(env *Env, opts launchOpts) int {
 				argv = injectOpenPort(argv, port)
 			}
 		}
+		// opencode v2's service binds fixed port 49374, which Landlock denies; pin it to a granted port instead.
+		var pinErr error
+		if plan.Native {
+			ocPin, pinErr = pinOpenCodeV2Service(harness, inner, sandboxTmp)
+			// The pin holds its port until handOff; free it on every early return.
+			defer ocPin.release()
+			// The pin redirect matters only when the pin applies, so the denied-var check fires only then.
+			if pinErr == nil && ocPin != nil {
+				if denyErr := openCodePinDenied(plan); denyErr != nil {
+					fmt.Fprintln(env.Stderr, prefix+": opencode v2 service pin:", denyErr)
+					return ExitConfigInvalid
+				}
+			}
+		}
+		if pinErr != nil {
+			// No fallback: without the pin the service would use a port omac has not checked.
+			fmt.Fprintln(env.Stderr, prefix+": opencode v2 service pin:", pinErr)
+			return ExitSandboxAbnormal
+		} else if ocPin != nil {
+			argv = ocPin.install(argv, plan)
+			if verbose {
+				fmt.Fprintf(env.Stderr, "[verbose] opencode v2 service pin: port=%d config=%s state=%s\n",
+					ocPin.Port, ocPin.CfgDir, ocPin.StateDir)
+			}
+		}
 		// Create the harness's runtime dirs (plus a redirected config home)
 		// before grant resolution existence-filters them.
 		if err := prepareSandboxDirs(harness.ResolvedCreateDirs()); err != nil {
@@ -793,6 +820,8 @@ func runLaunch(env *Env, opts launchOpts) int {
 			return ExitIOError
 		}
 		argv = injectSandboxDirs(argv, harness.ResolvedSandboxDirs())
+		argv = injectSandboxDenies(argv, harness.SandboxDenyPaths, prof)
+		argv = injectUntrustedSkillDenies(argv, env.Stderr, prefix, prof, env.Workdir)
 		if cacheScope != nil {
 			argv = injectSandboxFlag(argv, "--allow", cacheScope.Dir)
 		}
@@ -816,7 +845,10 @@ func runLaunch(env *Env, opts launchOpts) int {
 		// The kernel mask cannot grow mid-session, so detect
 		// protected-pattern files (e.g. .env) created after launch and
 		// warn the user.
-		watch = startProtectedWatch(auditor, protectedChecker(f), plan, argv, env.Workdir)
+		watch = startProtectedWatch(auditor, protectedChecker(f), plan, argv, env.Workdir, sandboxrun.WatchTuning{
+			FullPassTicks:       lc.Sandbox.MidsessionWatch.FullPassTicks,
+			FullPassConcurrency: lc.Sandbox.MidsessionWatch.FullPassConcurrency,
+		})
 	}
 	if verbose {
 		fmt.Fprintf(env.Stderr, "[verbose] sandbox argv: %v\n", argv)
@@ -853,14 +885,24 @@ func runLaunch(env *Env, opts launchOpts) int {
 		// their runtime into a writable, allowed location.
 		"TMPDIR": sandboxTmp,
 	}
-	if harness.Name == "claude-code" {
-		// claude-code's per-session temp dir reads CLAUDE_CODE_TMPDIR and
-		// otherwise falls back to a hardcoded /tmp, ignoring TMPDIR. On
-		// Linux the sandbox's private /tmp absorbs that; the macOS baseline
-		// deliberately does not grant /tmp, so the create fails and claude
-		// exits silently without output. Point it at the same granted
-		// scratch dir as TMPDIR.
-		extra["CLAUDE_CODE_TMPDIR"] = sandboxTmp
+	if ocPin != nil {
+		// Config home carries the pinned port; state home keeps the sandboxed registration off the host's.
+		ocPin.apply(extra)
+	}
+	if !noSandbox {
+		var ocClass openCodeVersionKind
+		argv, ocClass, err = injectOpenCodeProjectDiscovery(argv, extra, harness, inner, plan)
+		if err != nil {
+			fmt.Fprintln(env.Stderr, prefix+": opencode project discovery:", err)
+			return ExitConfigInvalid
+		}
+		warnOpenCodeMajorOnlySpec(env, ocClass)
+		warnOpenCodeAgentsAccess(env, argv, plan, ocClass)
+	}
+	if harness.LaunchEnvFunc != nil {
+		for k, v := range harness.LaunchEnvFunc(harness.ConfigHome(), sandboxTmp) {
+			extra[k] = v
+		}
 	}
 	for _, m := range mounts {
 		extra[sandbox.OmacEnvName(m)] = sandbox.OmacTCPEnvValue(m, tcpPort)
@@ -915,6 +957,19 @@ func runLaunch(env *Env, opts launchOpts) int {
 		os.Exit(ExitIOError)
 	}
 
+	// Hand the pinned port over as late as possible: release omac's hold and
+	// re-check it, so only the inner startup is left for another process to
+	// take it. The watch below covers that remainder.
+	var onReady func(pid int)
+	var finishServiceCheck func() (int, error)
+	if ocPin != nil {
+		if err := ocPin.handOff(); err != nil {
+			fmt.Fprintln(env.Stderr, prefix+": opencode v2 service:", err)
+			return ExitSandboxAbnormal
+		}
+		onReady, finishServiceCheck = ocPin.watch(defaultServiceCheck)
+	}
+
 	// session.start is emitted just before the inner command launches. In
 	// strict mode a failure to write it invokes fatalTeardown above.
 	sandboxed := !noSandbox
@@ -941,11 +996,21 @@ func runLaunch(env *Env, opts launchOpts) int {
 		}, hintTimeout)
 	}
 
-	code, err := sandbox.ExecWithReady(argv, extra, nil)
+	code, err := sandbox.ExecWithReadyPID(argv, extra, onReady)
 	auditor.Emit(audit.SessionStop(code))
 	watch.report(func(format string, args ...any) {
 		fmt.Fprintf(env.Stderr, prefix+": "+format+"\n", args...)
 	})
+	if finishServiceCheck != nil {
+		svcPID, svcErr := finishServiceCheck()
+		if svcErr != nil {
+			fmt.Fprintln(env.Stderr, prefix+": opencode v2 service:", svcErr)
+			return ExitSandboxAbnormal
+		}
+		if verbose && svcPID > 0 {
+			fmt.Fprintf(env.Stderr, "[verbose] opencode v2 service on port %d confirmed (pid %d)\n", ocPin.Port, svcPID)
+		}
+	}
 	if err != nil {
 		fmt.Fprintln(env.Stderr, prefix+": exec:", err)
 		return ExitSandboxAbnormal

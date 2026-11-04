@@ -44,7 +44,6 @@ func TestSBPLBaselineStructure(t *testing.T) {
 func TestSBPLKeychainDenied(t *testing.T) {
 	p := GenerateSBPL(baseGrants())
 	for _, svc := range []string{
-		"com.apple.SecurityServer",
 		"com.apple.securityd",
 		"com.apple.security.keychaind",
 		"com.apple.secd",
@@ -53,6 +52,34 @@ func TestSBPLKeychainDenied(t *testing.T) {
 		if !strings.Contains(p, `(deny mach-lookup (global-name "`+svc+`"))`) {
 			t.Errorf("keychain daemon %s not denied", svc)
 		}
+	}
+	// securityd's SecurityServer service is needed for TLS certificate
+	// trust (#340); denying it breaks Secure Transport clients.
+	if strings.Contains(p, `"com.apple.SecurityServer"`) {
+		t.Error("com.apple.SecurityServer must stay reachable for TLS trust evaluation")
+	}
+}
+
+func TestSBPLKeychainFilesDeniedByName(t *testing.T) {
+	// With securityd reachable, a readable keychain file anywhere (e.g.
+	// /tmp/signing.keychain-db) would be decryptable, so keychain files
+	// are denied by name after every allow. Apple's root store is the
+	// one exception and must come after the deny to win.
+	p := GenerateSBPL(baseGrants())
+	deny := `(deny file-read* (regex #"\.[kK][eE][yY][cC][hH][aA][iI][nN](-[dD][bB])?$"))`
+	roots := `(allow file-read* (subpath "/System/Library/Keychains"))`
+	di, ri := strings.Index(p, deny), strings.Index(p, roots)
+	if di < 0 || ri < 0 {
+		t.Fatalf("keychain name deny or root-store allow missing:\n%s", p)
+	}
+	if di < strings.Index(p, `(allow file-read* (subpath "/work"))`) {
+		t.Error("keychain name deny must come after the grant allows")
+	}
+	if ri < di {
+		t.Error("root-store allow must come after the keychain name deny")
+	}
+	if !strings.Contains(p, `(deny file-write* (regex #"\.[kK][eE][yY][cC][hH][aA][iI][nN](-[dD][bB])?$"))`) {
+		t.Error("keychain files must not be writable either")
 	}
 }
 
@@ -322,17 +349,28 @@ func TestSBPLQuoteEscaping(t *testing.T) {
 	}
 }
 
-func TestAncestorMetadataRules(t *testing.T) {
-	p := GenerateSBPL(baseGrants())
-	for _, want := range []string{
-		`(allow file-read-metadata (literal "/cfg"))`,
-		`(allow file-read-metadata (literal "/home/u"))`, // ancestors of write paths too
-	} {
-		if want == `(allow file-read-metadata (literal "/home/u"))` {
-			continue // protected paths don't need metadata; skip
+func TestAncestorDirectoryReadRules(t *testing.T) {
+	for _, workdir := range []string{"/work/app", "/Users/u/src/app"} {
+		g := baseGrants()
+		g.Workdir = workdir
+		g.HomeDir = "/Users/u"
+		p := GenerateSBPL(g)
+		for _, dir := range []string{"/Users/u", filepath.Dir(workdir), filepath.Dir(filepath.Dir(workdir)), "/cfg"} {
+			if !strings.Contains(p, "(allow file-read-metadata (literal "+sbplQuote(dir)+"))") {
+				t.Errorf("workdir %s: ancestor %s must stay resolvable", workdir, dir)
+			}
 		}
-		if !strings.Contains(p, want) {
-			t.Errorf("profile missing %q", want)
+		if strings.Contains(p, `(subpath "/Users/u")`) {
+			t.Errorf("workdir %s: home directory must not receive recursive access", workdir)
+		}
+		// A data read on a directory lets `ls` list its entry names. Only
+		// "/" keeps one, because dyld aborts without it. /dev entries are
+		// device files, not directories.
+		for _, line := range strings.Split(p, "\n") {
+			if (strings.Contains(line, "file-read-data") || strings.Contains(line, "file-read*")) &&
+				strings.Contains(line, "(literal ") && !strings.Contains(line, `(literal "/")`) && !strings.Contains(line, `"/dev/`) {
+				t.Errorf("workdir %s: directory names must not be listable: %s", workdir, line)
+			}
 		}
 	}
 }

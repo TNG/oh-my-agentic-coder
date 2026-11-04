@@ -61,6 +61,12 @@ unrelated projects, and can write outside its intended scope.
 omac gives the agent access only to what it needs:
 
 - Your working directory (read and write).
+- On macOS, every directory above the working directory and above each
+  granted path, and your home directory, can be looked up (for example with
+  `stat`) but not listed: `ls ~` and `ls ..` fail. Guessing a name still
+  reveals whether it exists. In your home directory, `/bin/pwd -P` fails;
+  the shell's built-in `pwd` works. The root directory `/` stays listable
+  because every macOS program reads it at startup.
 - The config directories the active harness requires. Each
   harness declares exactly which directories it needs; omac injects them at
   launch.
@@ -86,9 +92,65 @@ you grant explicitly, but it skips large dependency, build, and cache trees:
 `.pnpm-store`, `.cache`, and `~/Library` on macOS. Those trees are not where
 dotenv secrets live, and walking them would make launch scale with your whole
 home directory. A file inside a skipped tree is not masked; keep dotenv files
-outside such trees, or deny their directory by path. If a scan would still
-have to look at more entries than omac allows, launch stops rather than run
-with a partially protected set.
+outside such trees, or deny their directory by path.
+
+The scan also skips the Nix store (`/nix/store`), even when you grant it or
+a folder that contains it. On NixOS every installed program lives there, so
+granting it is how the agent gets to run them, and it is far too large to
+list at launch. Nix makes everything in the store readable by every user on
+the machine, so a secret there is not protected by hiding it.
+
+Some directories have more files and folders than omac lists at launch.
+What happens then depends on the system:
+
+- **Linux:** launch stops rather than run with a partially protected set.
+- **macOS:** launch goes ahead. Instead of listing the directory, a sandbox
+  rule hides every file or folder in it whose name matches (for example any
+  `.env`, however deep). This rule also covers the skipped trees above and
+  files created during the session. omac notes the directory in the sandbox
+  log. Upper and lower case count as the same, as on the macOS disk.
+
+  Launch still stops in two cases the rule cannot express: you made one such
+  file readable with an absolute `override_deny` path inside that directory
+  (the rule would hide it too), or a `filesystem.deny` pattern uses `[...]`
+  or `\` (for example `*.[pk]em`).
+
+  **During the session:** the masking above is fixed at launch — a `.env`
+  file created later is *not* masked, because the sandbox rules cannot be
+  changed while the session runs. The omac parent therefore re-scans the
+  same roots every 10 seconds and warns you when a new protected file
+  appears; the warning tells you that only a restart restores protection.
+  The watch warns, it does not block or mask. Directory timestamps come
+  from the filesystem's coarse clock, so a file created in the same clock
+  tick as a scan can share the previous scan's timestamp and slip past
+  that scan. The watch therefore lists any directory once more on the
+  next pass if its last scan fell within one timestamp tick; that catches
+  the hidden file, so a mid-session `.env` is detected within 10 seconds
+  on filesystems whose timestamps are no coarser than the two-second
+  re-check window. For coarser filesystems (some network mounts) you can
+  opt into a periodic full re-scan with
+  `sandbox.midsession_watch.full_pass_ticks: N` in the user config: it is
+  off by default, runs every Nth tick, and bounds that case at N × 10
+  seconds. `full_pass_concurrency` throttles that optional pass. A file
+  that appears and disappears between two scans is never detected.
+
+On macOS, keychain files are also blocked: the keychain folders
+(`~/Library/Keychains`, `/Library/Keychains`) and any file named
+`*.keychain` or `*.keychain-db` anywhere, for example a CI signing keychain
+in `/tmp`. Apple's read-only certificate store in `/System/Library/Keychains`
+stays readable, because HTTPS clients need it to check certificates.
+
+**Known limitation — two keychain gaps remain on macOS.** HTTPS clients such
+as Copilot CLI need the macOS security service (`securityd`), so the sandbox
+lets the agent talk to it. That service hands out the items of any unlocked
+keychain whose file the agent can read, which leaves two gaps:
+
+- A keychain stored outside the keychain folders under a name without the
+  `.keychain` extension can be read while it is unlocked. It only exists if
+  someone created it with an explicit path, such as
+  `security create-keychain /tmp/plainname`.
+- The agent can send the service other requests, for example to lock your
+  keychains.
 
 ### Secrets
 
@@ -130,6 +192,7 @@ cannot access.
 | Facade socket (in `~/.local/state/omac/run/` on Linux, `~/Library/Application Support/omac/run/` on macOS) | connect | The socket the agent uses to reach skill sidecars; created by the facade at an unpredictable path the agent cannot pre-compute |
 | `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.kube`, … | **blocked** | Sensitive credentials |
 | `~/.npmrc` | **blocked**; registry addresses can be shared as a stripped copy | Usually holds an access token. See [Private package registries](./configuration.md#private-package-registries) |
+| The host OpenCode service's `service.json` in `~/.config/opencode` and `~/.local/state/opencode` (also under `$XDG_CONFIG_HOME`, `$OPENCODE_CONFIG_DIR` and `$XDG_STATE_HOME` when set) | **blocked** (OpenCode harness) | Least privilege: these files hold the configuration and registration of the host's OpenCode v2 shared service. A sandboxed OpenCode v2 uses its own private `service.json` in the per-launch temp dir instead, so the sandbox doesn't need the host's copies. Keeping them out of reach means a sandboxed session cannot read or change the host service's settings. The rest of both dirs stays read + write. On Linux the file is masked when it exists at launch |
 | `~/.config/omac` (approval store, sandbox profiles, global registry) | **blocked** | The agent must not be able to forge skill approvals; protected in the baseline even under broader grants |
 | `.env` / `.envrc` files (including nested ones inside the project; dependency/cache trees are skipped) | **blocked** | Often contain secrets |
 | `~/.cache`, `~/Library/Caches` (host cache roots) | **blocked** | Prevents cross-project cache poisoning; omac provides its own isolated cache |
@@ -165,6 +228,50 @@ and the spawn is refused. The agent cannot sneak in modified code by editing a
 skill after it was approved. At approval time, the skill directory is frozen
 into a host-only snapshot; the sidecar is always spawned from that snapshot,
 never from the still-agent-writable workdir.
+
+### Skill instructions
+
+The harness also reads each skill's `SKILL.md` itself and gives it to the model
+as instructions. The agent can edit those files too, for example to plant
+instructions that every later session would follow. So at every launch, omac
+checks each omac skill in the workdir and in the user-global skill folders.
+Under `omac serve --for-opencode-desktop` it checks every project folder it
+grants the sandbox. An omac skill is a skill folder with an `omac.yaml`, or one
+whose name you have approved before. Harnesses also load skills from folders
+nested inside a skill folder, so omac checks those too: an approved
+`.opencode/skills/slack` moved to `.opencode/skills/team/slack` and edited is
+still hidden. omac hides the whole skill folder from the sandbox for that
+session, and prints why, when:
+
+- the skill's files do not match an approved version,
+- its `omac.yaml` is missing or is not a regular file, or
+- the skill contains a `SKILL.md` that the approval does not cover: a symlink
+  named `SKILL.md`, a file under a folder the bundle hash skips (such as
+  `build/` or `node_modules/`), or anything behind a symlinked folder that
+  leads outside the skill. Symlinked folders that stay inside the skill, like
+  a Python venv's `lib64 -> lib`, are fine.
+
+If omac cannot list one of the skill folders (for example because it was
+replaced by a file), or it holds more than 50,000 folders, omac hides that
+whole folder and keeps checking the others.
+
+For example, if an agent appends text to `.opencode/skills/slack/SKILL.md`,
+`omac start` refuses to launch; `omac start --accept-skill-changes` instead
+prints `skill "slack": its files do not match an approved version, so its
+SKILL.md instructions are untrusted ...` and hides the skill when using the
+built-in sandbox.
+Review the change, then run `omac register slack --force`.
+
+This has limits:
+
+- The check runs at launch. An edit made during a session is visible to that
+  session and, under `omac serve`, to every session until serve restarts.
+- Plain skills (a `SKILL.md` without an `omac.yaml`) have no approval, so omac
+  cannot check them. They carry no integrity guarantee: like `AGENTS.md` or
+  any other file in your project, the agent can change them. Review changes to
+  them as you would review code.
+- Hiding needs omac's built-in sandbox. With the deprecated nono backend, omac
+  only prints a warning.
 
 When upgrading omac on a machine with existing registered skills, only
 **user-global** skills (registered outside any workdir) are automatically

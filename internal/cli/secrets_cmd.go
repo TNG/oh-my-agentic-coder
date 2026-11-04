@@ -63,7 +63,10 @@ func runSecretsList(args []string, env *Env) int {
 		if s.IsRequired() {
 			req = "required"
 		}
-		fmt.Fprintf(env.Stdout, "  %-28s %-8s %-8s %s\n", s.Name, req, status, s.Description)
+		// The description comes from the skill's omac.yaml; oneLine strips
+		// control characters so it cannot inject terminal escape sequences,
+		// and keeps a multi-line description on this row.
+		fmt.Fprintf(env.Stdout, "  %-28s %-8s %-8s %s\n", s.Name, req, status, oneLine(s.Description))
 	}
 	return ExitOK
 }
@@ -74,7 +77,7 @@ func runSecretsSet(args []string, env *Env) int {
 		return ExitMisuse
 	}
 	skill, name := args[0], args[1]
-	meta, global, err := loadRegisteredMeta(env, skill)
+	meta, global, skillDir, err := loadRegisteredSkill(env, skill)
 	if err != nil {
 		fmt.Fprintln(env.Stderr, "omac secrets set:", err)
 		return ExitPrerequisiteMissing
@@ -91,7 +94,7 @@ func runSecretsSet(args []string, env *Env) int {
 	// return value is also irrelevant: `omac secrets set` is a
 	// pinpoint operation on a single secret and does not touch the
 	// registry's skip list — that is solely owned by `omac register`.
-	if _, err := handleOneSecret(env, scope, skill, spec, true, nil, nil, false, osinfo.Detect()); err != nil {
+	if _, err := handleOneSecret(env, scope, skill, skillDir, spec, true, nil, nil, false, osinfo.Detect()); err != nil {
 		fmt.Fprintln(env.Stderr, "omac secrets set:", err)
 		return ExitKeychainError
 	}
@@ -201,13 +204,21 @@ func secretScopeFor(env *Env, global bool) string {
 // (false) — the workdir layer wins on a name collision, matching
 // mergeRegistries — so callers can pick the right keychain scope.
 func loadRegisteredMeta(env *Env, skill string) (*config.Meta, bool, error) {
+	m, global, _, err := loadRegisteredSkill(env, skill)
+	return m, global, err
+}
+
+// loadRegisteredSkill is loadRegisteredMeta plus the skill's absolute
+// source directory, which callers need to resolve paths declared in
+// omac.yaml (for example a secret's `docs` file).
+func loadRegisteredSkill(env *Env, skill string) (*config.Meta, bool, string, error) {
 	workdirReg, err := registry.Load(env.Workdir)
 	if err != nil {
-		return nil, false, err
+		return nil, false, "", err
 	}
 	globalReg, err := registry.LoadGlobal()
 	if err != nil {
-		return nil, false, err
+		return nil, false, "", err
 	}
 	// Workdir-local wins on collision; it's global only if present in the
 	// global registry and NOT the workdir registry.
@@ -222,14 +233,14 @@ func loadRegisteredMeta(env *Env, skill string) (*config.Meta, bool, error) {
 		global = true
 	}
 	if entry == nil {
-		return nil, false, fmt.Errorf("skill %q is not registered in this workdir or globally", skill)
+		return nil, false, "", fmt.Errorf("skill %q is not registered in this workdir or globally", skill)
 	}
 	absDir := entry.SkillDir
 	if !filepath.IsAbs(absDir) {
 		absDir = filepath.Join(env.Workdir, absDir)
 	}
 	m, err := config.LoadMeta(filepath.Join(absDir, config.MetaFileName))
-	return m, global, err
+	return m, global, absDir, err
 }
 
 func findSecret(m *config.Meta, name string) (config.SecretSpec, bool) {

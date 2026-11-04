@@ -15,6 +15,10 @@ The result: a capable coding agent with a clear boundary.
 
 Want to try it? See the [Quick start](./getting-started/quick-start.md) to install omac, set up prerequisites, and launch your first session.
 
+## TNG-Employees
+
+Please use the internal [omac-tng-installer repo](https://bitbucket.int.tngtech.com/projects/TNG/repos/omac-tng-installer/browse) to install and set up omac for use with internally hosted models.
+
 ## Architecture
 
 ```mermaid

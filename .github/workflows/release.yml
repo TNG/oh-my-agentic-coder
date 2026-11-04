@@ -91,6 +91,45 @@ jobs:
           fi
           echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
 
+      # Tell GoReleaser which tag it is releasing. When an RC and the final
+      # release are tagged on the same commit (v1.2.3-rc.1 and v1.2.3),
+      # GoReleaser otherwise picks one of them itself and may publish the RC
+      # again (#350). For a final release, also set the previous final tag, so
+      # the generated changelog covers the whole release (v1.2.2 -> v1.2.3)
+      # instead of only the changes since the last RC. Branch runs (dry-run
+      # dispatches on main) set neither and keep GoReleaser's own choice.
+      - name: Pin release tags
+        id: release_tags
+        if: github.ref_type == 'tag'
+        env:
+          VERSION: ${{ github.ref_name }}
+          PRERELEASE: ${{ steps.classify_release.outputs.prerelease }}
+        run: |
+          echo "GORELEASER_CURRENT_TAG=$VERSION" >> "$GITHUB_ENV"
+          if [ "$PRERELEASE" = "true" ]; then
+            exit 0
+          fi
+          current_commit=$(git rev-parse "$VERSION^{commit}")
+          previous=""
+          while IFS= read -r tag; do
+            core=${tag%%+*}
+            if [[ "$core" == *-* ]]; then
+              continue
+            fi
+            tag_commit=$(git rev-parse "$tag^{commit}")
+            if [ "$tag_commit" = "$current_commit" ]; then
+              continue
+            fi
+            if git merge-base --is-ancestor "$tag_commit" "$current_commit"; then
+              previous=$tag
+              break
+            fi
+          done < <(git tag -l 'v*.*.*' --sort=-v:refname)
+          if [ -n "$previous" ]; then
+            echo "GORELEASER_PREVIOUS_TAG=$previous" >> "$GITHUB_ENV"
+          fi
+          echo "current tag: $VERSION, previous final tag: ${previous:-(none)}"
+
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6
         with:

@@ -3,6 +3,18 @@ title: Serve mode (OpenCode Desktop)
 description: Using omac serve with OpenCode Desktop.
 ---
 
+> **OpenCode version requirement:** omac's bridge plugin supports OpenCode
+> **1.18.29 or newer in the v1 series, and OpenCode 2.x**. Older v1 releases
+> cannot load it. Check `opencode --version` and upgrade before installing
+> this plugin or starting `omac serve` with an older OpenCode.
+
+The same plugin file supports both versions. OpenCode selects its v1 or v2
+entrypoint automatically; no extra plugin dependency installation is needed.
+After upgrading omac, an existing plugin with different contents is preserved.
+To replace it with the bundled version, review any local edits, then run
+`omac plugin install opencode-desktop --global --force` (omit `--global` for
+a project-local copy). Restart OpenCode to load the replacement.
+
 :::caution[Experimental]
 Multi-project switching is not yet implemented. Single-project use with `--workdir` works today.
 :::

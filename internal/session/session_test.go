@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -36,7 +37,7 @@ func TestListUnsupported(t *testing.T) {
 
 func TestListOpenCodeParseAndFilter(t *testing.T) {
 	const wd = "/home/u/proj"
-	run := func(name string, args ...string) ([]byte, error) {
+	run := func(_, name string, args ...string) ([]byte, error) {
 		return []byte(`[
 			{"id":"ses_new","title":"newest","updated":2000,"directory":"/home/u/proj"},
 			{"id":"ses_old","title":"oldest","updated":1000,"directory":"/home/u/proj"},
@@ -59,7 +60,7 @@ func TestListOpenCodeParseAndFilter(t *testing.T) {
 }
 
 func TestListOpenCodeCLIFailureIsEmpty(t *testing.T) {
-	run := func(name string, args ...string) ([]byte, error) { return nil, errors.New("not found") }
+	run := func(_, name string, args ...string) ([]byte, error) { return nil, errors.New("not found") }
 	got, err := list(opencodeHarness(t), "/w", run, "", "", "", "", "", "", "")
 	if err != nil {
 		t.Fatalf("CLI failure should not error, got %v", err)
@@ -128,6 +129,133 @@ func createSessionTable(t *testing.T, db string, rows []ocDBRow) {
 	cmd := exec.Command("sqlite3", args...)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("create session table: %v\n%s", err, out)
+	}
+}
+
+// createSessionV2Table builds OpenCode v2's session_v2 table (the columns
+// listOpenCodeDB reads plus time_archived). v2 databases have no session table.
+func createSessionV2Table(t *testing.T, db string, rows []ocDBRow, archived map[string]bool) {
+	t.Helper()
+	args := []string{db,
+		"CREATE TABLE session_v2 (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, parent_id TEXT, slug TEXT NOT NULL, directory TEXT NOT NULL, title TEXT, version TEXT NOT NULL, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, time_archived INTEGER);"}
+	for _, r := range rows {
+		parent := "NULL"
+		if r.ParentID != "" {
+			parent = "'" + r.ParentID + "'"
+		}
+		arch := "NULL"
+		if archived[r.ID] {
+			arch = "1"
+		}
+		args = append(args,
+			"INSERT INTO session_v2 (id, project_id, parent_id, slug, directory, title, version, time_created, time_updated, time_archived) VALUES ('"+
+				r.ID+"','p',"+parent+",'s','"+r.Directory+"','"+r.Title+"','v',0,"+strconv.FormatInt(r.Updated, 10)+","+arch+");")
+	}
+	if out, err := exec.Command("sqlite3", args...).CombinedOutput(); err != nil {
+		t.Fatalf("create session_v2 table: %v\n%s", err, out)
+	}
+}
+
+func TestListOpenCodeDBV2Table(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("sqlite3 not on PATH; skipping DB parse test")
+	}
+	db := filepath.Join(t.TempDir(), "opencode.db")
+	wd := "/home/u/proj"
+	createSessionV2Table(t, db, []ocDBRow{
+		{ID: "ses_new", Title: "newest", Updated: 2000, Directory: wd},
+		{ID: "ses_old", Title: "oldest", Updated: 1000, Directory: wd},
+		{ID: "ses_other", Title: "elsewhere", Updated: 3000, Directory: "/home/u/other"},
+		{ID: "ses_child", Title: "child", Updated: 9000, Directory: wd, ParentID: "ses_new"},
+	}, map[string]bool{"ses_old": true})
+	got := listOpenCodeDB(wd, db)
+	// Archived ses_old stays listed: v2's `opencode session list` shows it too.
+	if len(got) != 2 {
+		t.Fatalf("got %d sessions, want 2 (workdir + top-level only): %+v", len(got), got)
+	}
+	if got[0].ID != "ses_new" || got[1].ID != "ses_old" {
+		t.Errorf("order = [%s,%s], want newest-first top-level [ses_new,ses_old]", got[0].ID, got[1].ID)
+	}
+	if got[0].Title != "newest" || !got[0].When.Equal(time.UnixMilli(2000)) {
+		t.Errorf("ses_new = %+v, want title newest at epoch-ms 2000", got[0])
+	}
+}
+
+// ocCall records one invocation made through a fake runner.
+type ocCall struct {
+	dir  string
+	args []string
+}
+
+// fakeOpenCode returns a runner that answers `opencode --version` with
+// version and `opencode session list ...` with listJSON, recording each call.
+func fakeOpenCode(version, listJSON string, calls *[]ocCall) runner {
+	return func(dir, name string, args ...string) ([]byte, error) {
+		if name != "opencode" {
+			return nil, errors.New("unexpected binary " + name)
+		}
+		*calls = append(*calls, ocCall{dir: dir, args: args})
+		if len(args) == 1 && args[0] == "--version" {
+			return []byte(version + "\n"), nil
+		}
+		if len(args) >= 2 && args[0] == "session" && args[1] == "list" {
+			return []byte(listJSON), nil
+		}
+		return nil, errors.New("unexpected args")
+	}
+}
+
+const ocListJSON = `[
+	{"id":"ses_a","title":"a","updated":2000,"created":1000,"projectId":"p","directory":"/home/u/proj"},
+	{"id":"ses_b","title":"b","updated":3000,"created":1000,"projectId":"p","directory":"/home/u/other"}
+]`
+
+func TestListOpenCodeCLIV2UsesStandaloneInWorkdir(t *testing.T) {
+	const wd = "/home/u/proj"
+	var calls []ocCall
+	got := listOpenCodeCLI(wd, fakeOpenCode("opencode v2.0.26", ocListJSON, &calls))
+	if len(got) != 1 || got[0].ID != "ses_a" {
+		t.Fatalf("got %+v, want only ses_a", got)
+	}
+	last := calls[len(calls)-1]
+	want := []string{"session", "list", "--standalone", "--format", "json"}
+	if strings.Join(last.args, " ") != strings.Join(want, " ") {
+		t.Errorf("args = %q, want %q (--standalone keeps the shared v2 service from starting)", last.args, want)
+	}
+	if last.dir != wd {
+		t.Errorf("dir = %q, want workdir %q (v2 lists the cwd's project)", last.dir, wd)
+	}
+}
+
+func TestListOpenCodeCLIV1Unchanged(t *testing.T) {
+	// "garbage": an unparseable version falls back to the v1 invocation.
+	for _, version := range []string{"1.18.29", "garbage"} {
+		var calls []ocCall
+		got := listOpenCodeCLI("/home/u/proj", fakeOpenCode(version, ocListJSON, &calls))
+		if len(got) != 1 || got[0].ID != "ses_a" {
+			t.Fatalf("version %q: got %+v, want only ses_a", version, got)
+		}
+		last := calls[len(calls)-1]
+		want := []string{"session", "list", "--format", "json"}
+		if strings.Join(last.args, " ") != strings.Join(want, " ") || last.dir != "" {
+			t.Errorf("version %q: call = %+v, want args %q in the current dir", version, last, want)
+		}
+	}
+}
+
+func TestExecRunnerHonorsDir(t *testing.T) {
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("sh not on PATH")
+	}
+	dir := t.TempDir()
+	out, err := execRunner(dir, sh, "-c", "pwd -P")
+	if err != nil {
+		t.Fatalf("execRunner: %v", err)
+	}
+	want, _ := filepath.EvalSymlinks(dir)
+	if got := strings.TrimSpace(string(out)); got != want {
+		t.Errorf("cwd = %q, want %q", got, want)
 	}
 }
 

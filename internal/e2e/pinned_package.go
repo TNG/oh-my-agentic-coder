@@ -7,7 +7,7 @@ import (
 
 // harnessVersions holds the pinned package spec for each supported harness.
 var harnessVersions = map[string]string{
-	"opencode":    "opencode-ai@1.17.12",
+	"opencode":    "opencode-ai@1.18.29",
 	"claude-code": "@anthropic-ai/claude-code@2.1.197",
 	"codex":       "@openai/codex@0.142.5",
 	"copilot":     "@github/copilot@1.0.68",

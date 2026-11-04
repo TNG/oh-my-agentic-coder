@@ -20,7 +20,23 @@ go test -race ./...    # with race detector (matches CI)
 
 These cover: CLI subcommands, config parsing, sandbox grant resolution, the HTTP facade (SSE and WebSocket forwarding), the network proxy, keychain reads and writes, skill registry atomic writes, and plugin discovery.
 
+The OpenCode bridge also has adapter tests and a typecheck against both
+supported APIs, run on every PR. With Node 24 and npm:
+
+```sh
+cd internal/plugin
+npm ci --ignore-scripts
+npm run typecheck
+npm test
+```
+
+These exercise the v1 and v2 hooks with simulated host contexts. The oldest
+supported OpenCode release is **1.18.29**; earlier v1 loaders cannot load the
+dual entrypoint. The pinned OpenCode E2E version exercises that minimum.
+
 Platform-specific behaviour lives in separate files gated by a `//go:build` constraint — `*_integration_linux_test.go` (tagged `linux`) tests bwrap and Landlock; `*_integration_darwin_test.go` (tagged `darwin`) tests Seatbelt. Go compiles each file only on its target OS, so on the other OS those tests are left out of the test binary entirely.
+
+Terminal resize on Linux is covered at two levels, because bwrap detaches the sandboxed program from the terminal and omac has to pass resize notifications (`SIGWINCH`) on by itself. The tests in `internal/sandboxrun/resize_integration_linux_test.go` run a small shell script that prints the window size on every resize. They start it inside a pseudo-terminal, through `omac sandbox run` and through `omac start`, resize the terminal and check that the new size arrives. The E2E stage `resize` (below) does the same with the real OpenCode interface.
 
 Runtime skipping is a separate mechanism: some facade and serve tests are compiled everywhere but skip themselves at runtime when they cannot open a loopback TCP port or Unix socket (e.g. on locked-down CI runners), and these do show up as skipped in the test output.
 
@@ -62,10 +78,11 @@ E2E tests use temporary home directories and do not modify your real keychain or
 | `sandbox_denied` | Protected paths (`.ssh`, `.aws`, `.env`, …) stay inaccessible inside the sandbox | no | all                   |
 | `security_assertions` | A live agent runs an in-sandbox self-audit script; the test then checks its output to confirm protected files (read/write, incl. symlink escape), secrets, filtered env vars, and disallowed network requests were all blocked, while allowed paths still worked | yes | all                   |
 | `self_authored_skill` | A user-written skill can be registered and executed | no | all                   |
+| `resize` | `omac start opencode` runs in a pseudo-terminal that is resized from 24x80 to 50x160; OpenCode must redraw at the new size (Linux only) | no | OpenCode only         |
 
 **For the `llm` stage:** credentials are read from environment variables at runtime — `internal/e2e/versions.go` declares which variable names, and `.github/workflows/e2e.yml` wires them from GitHub Actions encrypted secrets. When running tests locally, you supply credentials through your own shell environment.
-All harnesses except claude-code use a shared model gateway (`zai-org/GLM-5.2`) because it is cost-effective.
-claude-code is the exception because it communicates directly with the Anthropic API — it cannot route through a third-party gateway — so it uses `claude-sonnet-5` with an Anthropic key.
+All harnesses except claude-code use a shared model gateway (`zai-org/GLM-5.3`) because it is cost-effective.
+claude-code is the exception because it communicates directly with the Anthropic API — it cannot route through a third-party gateway — so it uses `claude-sonnet-5-5` with an Anthropic key.
 
 ### With the wrapper scripts
 

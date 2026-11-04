@@ -14,6 +14,8 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/term"
+
 	"github.com/TNG/oh-my-agentic-coder/internal/config"
 	"github.com/TNG/oh-my-agentic-coder/internal/keychain"
 	"github.com/TNG/oh-my-agentic-coder/internal/osinfo"
@@ -67,8 +69,17 @@ func runRegister(args []string, env *Env) int {
 		fmt.Fprintf(env.Stdout, "[info] using user-global skill source: %s\n", skillDir)
 	}
 
-	// 1. Load + validate meta.
-	meta, err := config.LoadMeta(metaPath)
+	// 1. Load + validate meta. Keys omac does not know are ignored, but
+	//    register is where a skill author looks at the result, so it
+	//    names them (a typo like `hnit:` would otherwise drop the help
+	//    text without notice). Other commands load omac.yaml on every
+	//    start and stay quiet about it.
+	//    The warnings come first, also when loading fails: a typo like
+	//    `nmae:` is often the reason for the error below it.
+	meta, unknownKeys, err := config.LoadMetaWithWarnings(metaPath)
+	for _, w := range unknownKeys {
+		fmt.Fprintf(env.Stderr, "[warn] %s: %s\n", config.MetaFileName, stripControlChars(w))
+	}
 	if err != nil {
 		fmt.Fprintln(env.Stderr, "omac register:", err)
 		if errors.Is(err, iofs.ErrNotExist) {
@@ -83,9 +94,15 @@ func runRegister(args []string, env *Env) int {
 	if fields := meta.PatternlessSecretStringFields(); len(fields) > 0 {
 		fmt.Fprintf(env.Stderr,
 			"[warn] %s declares secrets and unconstrained string config field(s): %s\n"+
-				"       these fields accept any value from the agent-writable config store, which the sidecar receives alongside its secrets;\n"+
-				"       add a `pattern` (or `choices`) in %s to constrain them\n",
+				"       these fields accept any string you approve, and the sidecar receives it alongside its secrets;\n"+
+				"       add a `pattern` (or `choices`) in %s so omac rejects unexpected values\n",
 			skillName, strings.Join(fields, ", "), config.MetaFileName)
+	}
+	// A `docs` entry that is not a file inside the skill only loses some
+	// help text, so it is a warning, not an error. The prompt then leaves
+	// the "More:" line out.
+	for _, w := range meta.DocsWarnings(skillDir) {
+		fmt.Fprintf(env.Stderr, "[warn] %s: %s\n", config.MetaFileName, stripControlChars(w))
 	}
 	bundleHash, err := config.BundleHash(skillDir)
 	if err != nil {
@@ -147,7 +164,7 @@ func runRegister(args []string, env *Env) int {
 			return ExitConfigInvalid
 		}
 		for _, spec := range meta.Sidecar.Secrets {
-			skipped, err := handleOneSecret(env, secretScope, skillName, spec, *reprompt, prevSkippedSecrets, fromFile, *useDefaults, host)
+			skipped, err := handleOneSecret(env, secretScope, skillName, skillDir, spec, *reprompt, prevSkippedSecrets, fromFile, *useDefaults, host)
 			if err != nil {
 				// Determine exit code from err message tag.
 				if strings.HasPrefix(err.Error(), "keychain:") {
@@ -213,8 +230,17 @@ func runRegister(args []string, env *Env) int {
 				}
 				defStore = gs
 			}
+			// For a global skill the workdir layer overrides the global store
+			// and is what gets anchored below, so handleOneField must show it.
+			// The workdir file is agent-writable: never approve it unseen.
+			var wdOverride *skillconfig.Store
+			if global {
+				if wd, err := skillconfig.Load(env.Workdir); err == nil {
+					wdOverride = wd
+				}
+			}
 			for _, spec := range meta.Sidecar.Config {
-				skipped, err := handleOneField(env, store, skillName, spec, *repromptFields, prevSkippedFields, fromFile, *useDefaults, defStore)
+				skipped, err := handleOneField(env, store, wdOverride, skillName, skillDir, spec, *repromptFields, prevSkippedFields, fromFile, *useDefaults, defStore)
 				if err != nil {
 					return err
 				}
@@ -255,7 +281,8 @@ func runRegister(args []string, env *Env) int {
 				fmt.Fprintln(env.Stderr, "omac register:", err)
 				return ExitSecretRefused
 			}
-			fmt.Fprintln(env.Stderr, "omac register: skill-config:", err)
+			// The error can quote enum choices or a default from omac.yaml.
+			fmt.Fprintln(env.Stderr, "omac register: skill-config:", stripControlChars(err.Error()))
 			return ExitIOError
 		}
 	} else if *noFields {
@@ -532,7 +559,10 @@ func dedupSorted(names []string) []string {
 // workdir-local skills (omac/<workdir-id>/<skill>) — it MUST match the scope
 // serve reads with (see serve.go bringUp), or the skill will never see the
 // value. See docs/contributing/serve-spec.md.
-func handleOneSecret(env *Env, scope, skill string, spec config.SecretSpec, reprompt bool, prevSkipped map[string]bool, fromFile map[string]string, useDefaults bool, host osinfo.OS) (bool, error) {
+//
+// skillDir is the skill's source directory. It resolves the spec's `docs`
+// path to an absolute path for the help text.
+func handleOneSecret(env *Env, scope, skill, skillDir string, spec config.SecretSpec, reprompt bool, prevSkipped map[string]bool, fromFile map[string]string, useDefaults bool, host osinfo.OS) (bool, error) {
 	st := newStyler(env.Stderr)
 	// 1. Already in keychain?
 	if !reprompt {
@@ -614,20 +644,25 @@ func handleOneSecret(env *Env, scope, skill string, spec config.SecretSpec, repr
 		if v, ok := os.LookupEnv(spec.DefaultFromEnv); ok && v != "" {
 			// Accept on empty input.
 			if err := spec.ValidateValue(v); err == nil {
-				defaultHint = fmt.Sprintf(" (press Enter to accept value from $%s)", spec.DefaultFromEnv)
+				// The variable name comes from omac.yaml and is not
+				// validated, so strip control characters before printing.
+				defaultHint = fmt.Sprintf("press Enter to accept value from $%s", stripControlChars(spec.DefaultFromEnv))
 			}
 		}
 	}
 
 	// 5. Interactive prompt loop.
-	if spec.Description != "" {
-		fmt.Fprintf(env.Stderr, "  %s %s\n", st.bold(spec.Name), st.dim(spec.Description))
-	}
+	// The description, hint and docs come from the skill author's
+	// omac.yaml. printValueHelp strips control characters so an ANSI
+	// sequence in them cannot repaint the terminal right before the user
+	// types a secret.
+	printValueHelp(env.Stderr, st, spec.Name, spec.Description, spec.Hint, spec.Docs, skillDir)
+	prompt := fmt.Sprintf("  %s %s%s ", st.cyan("?"), st.bold(spec.Name),
+		st.gray(secretPromptNote(spec, secretInputHidden(), defaultHint)+":"))
 	attempts := 0
 	for {
 		attempts++
-		prompt := fmt.Sprintf("  %s %s%s ", st.cyan("?"), st.bold(spec.Name), st.gray(defaultHint+":"))
-		value, err := secrets.ReadPassword(prompt)
+		value, err := readSecretInput(prompt)
 		if err != nil {
 			return false, fmt.Errorf("read %s: %w", spec.Name, err)
 		}
@@ -642,7 +677,7 @@ func handleOneSecret(env *Env, scope, skill string, spec config.SecretSpec, repr
 						return false, fmt.Errorf("keychain: %w", keychain.WrapUnavailable(err, host))
 					}
 					s.Zero()
-					st.status(env.Stderr, "stored", spec.Name+st.gray(fmt.Sprintf(" (from $%s)", spec.DefaultFromEnv)), ansiGreen)
+					st.status(env.Stderr, "stored", spec.Name+st.gray(fmt.Sprintf(" (from $%s)", stripControlChars(spec.DefaultFromEnv))), ansiGreen)
 					return false, nil
 				}
 			}
@@ -661,7 +696,10 @@ func handleOneSecret(env *Env, scope, skill string, spec config.SecretSpec, repr
 			if attempts >= 3 {
 				return false, fmt.Errorf("refused: %s does not match pattern after %d attempts", spec.Name, attempts)
 			}
-			st.status(env.Stderr, "[retry]", err.Error(), ansiRed)
+			st.status(env.Stderr, "[retry]", stripControlChars(err.Error()), ansiRed)
+			// Show the author's instructions again: a value that fails the
+			// pattern usually means the user copied the wrong thing.
+			printValueHelp(env.Stderr, st, "", "", spec.Hint, spec.Docs, skillDir)
 			continue
 		}
 		if err := keychain.SetWithDefault(scope, skill, spec.Name, value); err != nil {
@@ -674,6 +712,111 @@ func handleOneSecret(env *Env, scope, skill string, spec config.SecretSpec, repr
 	}
 }
 
+// printValueHelp prints what a skill author wrote about one secret or
+// config value, just above its prompt. With a name it first prints the
+// "NAME description" line; with an empty name it prints only the hint and
+// docs block (used under the config field line and on a retry). For
+// example:
+//
+//	SLACK_TOKEN Slack session token
+//
+//	  How to get it:
+//	    1. Open https://app.slack.com.
+//
+//	  More: /home/me/.config/opencode/skills/slack/SKILL.md (section "tokens")
+//
+// The hint is plain text, printed line by line with a 4-space indent. The
+// docs file is printed as an absolute path inside skillDir; it is left out
+// when the value is not a file inside the skill or the file does not exist
+// (`omac register` warns about that up front).
+// Without a hint and docs, only the name line is printed, as before.
+//
+// All of this text comes from the skill's omac.yaml, so every piece goes
+// through stripControlChars before it reaches the terminal.
+func printValueHelp(w *os.File, st styler, name, description, hint, docs, skillDir string) {
+	if name != "" && (description != "" || hint != "" || docs != "") {
+		fmt.Fprintln(w, valueHeadline(st, name, description))
+	}
+	var lines []string
+	if hint = strings.TrimLeft(strings.TrimRight(hint, " \t\r\n"), "\r\n"); hint != "" {
+		for _, l := range strings.Split(hint, "\n") {
+			l = strings.ReplaceAll(strings.TrimRight(l, "\r"), "\t", "    ")
+			if l = strings.TrimRight(stripControlChars(l), " "); l == "" {
+				lines = append(lines, "")
+				continue
+			}
+			lines = append(lines, "    "+l)
+		}
+	}
+	if abs, anchor := config.DocsPath(skillDir, docs); abs != "" {
+		if fi, err := os.Stat(abs); err == nil && !fi.IsDir() {
+			more := "    " + st.gray("More:") + " " + stripControlChars(abs)
+			if anchor = stripControlChars(anchor); anchor != "" {
+				// Plain quotes, not %q: %q would escape some characters
+				// and hide whether the strip above did its job.
+				more += st.gray(` (section "` + anchor + `")`)
+			}
+			if len(lines) > 0 {
+				lines = append(lines, "")
+			}
+			lines = append(lines, more)
+		}
+	}
+	if len(lines) == 0 {
+		return
+	}
+	fmt.Fprintln(w)
+	for _, l := range lines {
+		fmt.Fprintln(w, l)
+	}
+	fmt.Fprintln(w)
+}
+
+// valueHeadline renders the "  NAME description" line above a prompt, with
+// control characters stripped from both parts. A multi-line description is
+// joined into one line (see oneLine).
+func valueHeadline(st styler, name, description string) string {
+	line := "  " + st.bold(stripControlChars(name))
+	if d := oneLine(description); d != "" {
+		line += " " + st.dim(d)
+	}
+	return line
+}
+
+// secretPromptNote builds the parenthesized note on a secret prompt, e.g.
+// " (input hidden; must match ^xoxc-.+)". hidden says whether the input is
+// read without echo; it is false when stdin is not a terminal, and then
+// secrets.ReadPassword warns that the input will be echoed. defaultHint is
+// the optional "press Enter to accept ..." text. The note is "" when there
+// is nothing to say.
+func secretPromptNote(spec config.SecretSpec, hidden bool, defaultHint string) string {
+	var parts []string
+	if hidden {
+		parts = append(parts, "input hidden")
+	}
+	if spec.Pattern != "" {
+		parts = append(parts, "must match "+stripControlChars(spec.Pattern))
+	}
+	if defaultHint != "" {
+		parts = append(parts, defaultHint)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return " (" + strings.Join(parts, "; ") + ")"
+}
+
+// secretInputHidden reports whether readSecretInput will read without echo,
+// which secrets.ReadPassword does exactly when os.Stdin is a terminal. A
+// variable so tests can pick either answer.
+var secretInputHidden = func() bool { return term.IsTerminal(int(os.Stdin.Fd())) }
+
+// readSecretInput prints prompt and reads one secret value without echo
+// when stdin is a terminal. It is a variable so tests can feed values and
+// capture the prompt; secrets.ReadPassword itself always uses the real
+// os.Stdin and os.Stderr.
+var readSecretInput = secrets.ReadPassword
+
 // handleOneField implements the per-field prompting flow. Mirrors
 // handleOneSecret but writes to the skillconfig store instead of the
 // keychain, and supports typed inputs (string/bool/int/enum).
@@ -682,10 +825,14 @@ func handleOneSecret(env *Env, scope, skill string, spec config.SecretSpec, repr
 // optional field on this run (entered an empty line, no default,
 // required: false). Symmetric to handleOneSecret. See its doc comment.
 //
+// override is the agent-writable workdir store when registering a global
+// skill (nil otherwise). Its value wins over store at launch and is what
+// register anchors as approved, so it is shown before anything is approved.
+//
 // Errors with the prefix "refused:" map to ExitSecretRefused at the
 // caller level (we reuse that exit code because the semantics — user
 // explicitly didn't supply a required value — are the same).
-func handleOneField(env *Env, store *skillconfig.Store, skill string, spec config.ConfigSpec, reprompt bool, prevSkipped map[string]bool, fromFile map[string]string, useDefaults bool, defStore *skillconfig.Store) (bool, error) {
+func handleOneField(env *Env, store, override *skillconfig.Store, skill, skillDir string, spec config.ConfigSpec, reprompt bool, prevSkipped map[string]bool, fromFile map[string]string, useDefaults bool, defStore *skillconfig.Store) (bool, error) {
 	st := newStyler(env.Stderr)
 	// setField stores the value in the runtime store and, when defaults
 	// are in play, mirrors it into the defaults store too.
@@ -696,16 +843,35 @@ func handleOneField(env *Env, store *skillconfig.Store, skill string, spec confi
 		}
 	}
 
+	// A workdir override of a global skill's field wins at launch and gets
+	// anchored, so say so before approving it.
+	ovr, hasOvr := "", false
+	if override != nil {
+		ovr, hasOvr = override.Get(skill, spec.Name)
+	}
+	storedVal, hasStored := store.Get(skill, spec.Name)
+	if hasOvr && (!hasStored || ovr != storedVal) {
+		st.status(env.Stderr, "[warn]", fmt.Sprintf("%s is overridden by the agent-writable workdir config: %q (this value wins and is what gets approved)",
+			stripControlChars(spec.Name), stripControlChars(ovr)), ansiYellow)
+	} else {
+		hasOvr = false
+	}
+
 	// 1. Already stored?
 	if !reprompt {
 		if cur, ok := store.Get(skill, spec.Name); ok {
+			if hasOvr {
+				cur = ovr
+			}
 			// Backfill the remembered default from the already-stored value
 			// so `register --defaults` can reuse it later, even if the value
 			// predates the defaults feature.
 			if defStore != nil {
 				defStore.SetDefault(skill, spec.Name, cur)
 			}
-			st.status(env.Stderr, "[skip]", st.dim(spec.Name+" already configured"), ansiYellow)
+			// Show the value: register anchors it as approved, and the
+			// workdir file it may come from is agent-writable.
+			st.status(env.Stderr, "[skip]", st.dim(spec.Name+" already configured: "+stripControlChars(cur)), ansiYellow)
 			return false, nil
 		}
 		// 1b. Previously skipped on a prior register run? Honor that
@@ -767,10 +933,33 @@ func handleOneField(env *Env, store *skillconfig.Store, skill string, spec confi
 		}
 	}
 
+	// 4b. Under --reprompt-fields a value is already stored (an agent may
+	//     have rewritten it in the workdir file). Print it so it is never
+	//     approved unseen. Enter then keeps it only when nothing else would
+	//     apply: a `default:` still wins, so Enter resets to the safe value.
+	//     A workdir override wins at launch whatever is typed here, so Enter
+	//     keeps exactly that value. A value the spec rejects is not offered.
+	if reprompt {
+		cur, ok := store.Get(skill, spec.Name)
+		if hasOvr {
+			cur, ok = ovr, true
+		}
+		if ok {
+			fmt.Fprintf(env.Stderr, "    %s %s\n", st.gray("currently stored:"), st.cyan(stripControlChars(cur)))
+			if _, err := canonicalizeFieldValue(spec, cur); err == nil && (hasOvr || defaultVal == "") {
+				defaultVal = cur
+				defaultSource = "stored value"
+				if hasOvr {
+					defaultSource = "workdir override"
+				}
+			}
+		}
+	}
+
 	// 5. Interactive prompt loop.
 	displayName := stripControlChars(spec.Name)
-	if spec.Description != "" {
-		fmt.Fprintf(env.Stderr, "  %s %s\n", st.bold(displayName), st.dim(stripControlChars(spec.Description)))
+	if spec.Description != "" || spec.Hint != "" || spec.Docs != "" {
+		fmt.Fprintln(env.Stderr, valueHeadline(st, spec.Name, spec.Description))
 	}
 	if spec.EffectiveType() == config.ConfigFieldEnum {
 		safeChoices := make([]string, len(spec.Choices))
@@ -779,6 +968,7 @@ func handleOneField(env *Env, store *skillconfig.Store, skill string, spec confi
 		}
 		fmt.Fprintf(env.Stderr, "    %s %s\n", st.gray("choices:"), st.cyan(strings.Join(safeChoices, ", ")))
 	}
+	printValueHelp(env.Stderr, st, "", "", spec.Hint, spec.Docs, skillDir)
 
 	reader := bufio.NewReader(env.Stdin)
 	attempts := 0
@@ -786,7 +976,9 @@ func handleOneField(env *Env, store *skillconfig.Store, skill string, spec confi
 		attempts++
 		var hint string
 		if defaultVal != "" {
-			hint = fmt.Sprintf(" [%s, from %s]", defaultVal, defaultSource)
+			// Both parts can come from omac.yaml (`default:` and the
+			// `default_from_env:` variable name) or from the host env.
+			hint = fmt.Sprintf(" [%s, from %s]", stripControlChars(defaultVal), stripControlChars(defaultSource))
 		}
 		fmt.Fprintf(env.Stderr, "  %s %s%s ", st.cyan("?"), st.bold(displayName), st.gray(hint+":"))
 
@@ -824,7 +1016,9 @@ func handleOneField(env *Env, store *skillconfig.Store, skill string, spec confi
 			if attempts >= 3 {
 				return false, fmt.Errorf("refused: %s rejected after %d attempts: %w", spec.Name, attempts, err)
 			}
-			st.status(env.Stderr, "[retry]", err.Error(), ansiRed)
+			st.status(env.Stderr, "[retry]", stripControlChars(err.Error()), ansiRed)
+			// As for secrets: show the author's instructions again.
+			printValueHelp(env.Stderr, st, "", "", spec.Hint, spec.Docs, skillDir)
 			continue
 		}
 		setField(canon)

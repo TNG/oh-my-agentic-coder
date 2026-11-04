@@ -9,6 +9,12 @@ These two files are all omac needs. A skill published through the marketplace al
 
 ## omac.yaml
 
+omac reads only the fields listed below. Other keys do not stop the skill from loading, but `omac register` names each one in a warning, so a typo does not go unnoticed:
+
+```
+[warn] omac.yaml: sidecar.secrets[0].hnit: unknown field (ignored)
+```
+
 **Top-level fields**
 
 | Field | Required | Description |
@@ -48,6 +54,8 @@ These two files are all omac needs. A skill published through the marketplace al
 | `pattern` | no | — | Regex the value must match. |
 | `default_from_env` | no | — | Host env var to pre-fill at the prompt. |
 | `multiline` | no | `false` | Allow multi-line input. |
+| `hint` | no | — | Multi-line help shown under the description at the prompt, e.g. how to obtain the value. Shown again when a value does not match `pattern`. Plain text; Markdown is not rendered. |
+| `docs` | no | — | File inside the skill that explains the value, with an optional section: `SKILL.md#getting-a-token`. Shown as an absolute path at the prompt. Must be a relative path to a file inside the skill directory (not a URL, not absolute, no `~`, no `..` that leaves the skill). |
 
 **`config[]` entry fields**
 
@@ -61,6 +69,8 @@ These two files are all omac needs. A skill published through the marketplace al
 | `default_from_env` | no | — | Host env var to pre-fill at the prompt. |
 | `pattern` | no | — | Regex the value must match (`string` only). |
 | `choices` | no | — | Allowed values list (`enum` only; required when `type: enum`). |
+| `hint` | no | — | Multi-line help shown under the description at the prompt. Shown again after an invalid value. |
+| `docs` | no | — | File inside the skill that explains the value, with an optional section (`docs/config.md#region`). Same rules as for secrets. |
 
 Minimal `omac.yaml`:
 
@@ -112,6 +122,37 @@ Keep the body under 500 lines. Move detailed reference material into `references
 **Config fields** (`sidecar.config`) are non-secret operational values. Prompted with echoing input, stored in `<workdir>/.opencode/skill-config.yaml` (mode 0600), and injected identically to secrets.
 
 Config values are converted to string before injection: a `bool` arrives as the string `"true"` or `"false"`, an `int` as its plain decimal string, and an `enum` as the exact chosen value.
+
+If a value is hard to find, tell the user how to get it with `hint` and `docs`:
+
+```yaml
+  secrets:
+    - name: SLACK_XOXC_TOKEN
+      description: Slack browser session token (xoxc-...)
+      pattern: "^xoxc-.+"
+      hint: |
+        How to get it:
+          1. Open https://app.slack.com, log in, wait until the workspace has loaded.
+          2. Open the browser DevTools (F12) and copy the token of your workspace.
+      docs: SKILL.md#obtaining-slack-tokens
+```
+
+`omac register` then shows:
+
+```
+── Secrets ─────────────────────────────────────────────
+  SLACK_XOXC_TOKEN Slack browser session token (xoxc-...)
+
+    How to get it:
+      1. Open https://app.slack.com, log in, wait until the workspace has loaded.
+      2. Open the browser DevTools (F12) and copy the token of your workspace.
+
+    More: /home/me/.config/opencode/skills/slack/SKILL.md (section "obtaining-slack-tokens")
+
+  ? SLACK_XOXC_TOKEN (input hidden; must match ^xoxc-.+):
+```
+
+If a `docs` value is not a file inside the skill, or the file does not exist, `omac register` warns and leaves the `More:` line out. The skill still loads and runs; `docs` is only help text. omac removes control characters (such as terminal escape sequences) from `description`, `hint` and `docs` before printing them.
 
 To update stored values after registration:
 
@@ -229,8 +270,9 @@ When you run `omac register`, omac copies your skill directory. It always runs t
 Before launching, `omac start` compares the skills on disk against what you registered. It refuses to start, and prints the exact fix, if it finds any of:
 
 - An **unregistered** skill directory. Run `omac register <skill>`.
-- A registered skill whose files **changed since you registered it** (bundle drift). Re-register with `omac register <skill> --force`, or pass `omac start --accept-skill-changes` to run the edited files as they are.
+- A registered skill whose files **changed since you registered it** (bundle drift). Re-register with `omac register <skill> --force`, or pass `omac start --accept-skill-changes` to start without the edited skills. omac does not run them, and it hides them from the agent.
 - A **required config field** with no value. Run `omac register <skill> --reprompt-fields`.
+- A **config value you never approved** in `<workdir>/.opencode/skill-config.yaml`. The agent can write that file, so omac only accepts a value from it if it matches what you approved at `omac register`. For example, if `GH_ALLOW_WRITE` was `false` when you registered and the file now says `true`, the skill is refused. Run `omac register <skill> --reprompt-fields` to approve the current values; the prompt prints each stored value (and any workdir override), so check it before pressing Enter. Skills registered before omac v0.10.0 (or added with `--auto-register-skills`) have no approval on record yet, so they need this once if they keep values in that file.
 
 If a registered skill's directory has been deleted, omac auto-deregisters it and continues.
 

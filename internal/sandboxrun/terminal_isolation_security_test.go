@@ -17,27 +17,19 @@ import (
 // proxy and the approval store are all bypassed, because none of them is in
 // the path of a command the user's own shell executes.
 //
-// omac does not detach the terminal, and the reason is a real one: setsid(2)
-// costs the child SIGWINCH, so a TUI inside the sandbox renders once and never
-// reflows on resize. The judgement attached to it is that the kernel closes
-// the vector anyway, via dev.tty.legacy_tiocsti, which defaults to 0 from
-// Linux 6.2.
+// The kernel can close the vector via dev.tty.legacy_tiocsti, which defaults
+// to 0 from Linux 6.2, but that does not hold on older kernels. Debian 12
+// ships 6.1, Ubuntu 22.04 ships 5.15, RHEL 9 ships 5.14, all supported for
+// years yet and all without the sysctl. The sysctl can also be set to 1, and
+// a container inherits whatever the host decided. So omac detaches the child
+// from the terminal session with bwrap --new-session (setsid(2)).
 //
-// That holds on a current kernel and not otherwise. Debian 12 ships 6.1,
-// Ubuntu 22.04 ships 5.15, RHEL 9 ships 5.14 — all supported for years yet,
-// all without the sysctl, and all ordinary places to run a coding agent. The
-// sysctl is also a sysctl: it can be set to 1, and a container inherits
-// whatever the host decided. So the mitigation is real but conditional, and
-// omac neither tests the condition nor says anything when it does not hold. A
-// broken terminal resize is a visible annoyance; a silent escape on a
-// long-term-support kernel is not, and the two are not the same kind of cost.
-//
-// Detaching is not one fix among several. Recovering resize means giving the
-// child its own pseudo-terminal and forwarding window changes to it, and a
-// process only becomes the session leader of a new terminal by leaving the old
-// session — which for a bwrap child is --new-session either way. The flag is
-// the floor, not the ceiling: asserting it does not rule out the pty-proxying
-// version, it is a component of it.
+// Detaching costs the child kernel-delivered SIGWINCH, so omac keeps the
+// terminal foreground, receives SIGWINCH itself and relays it into the
+// detached session (sandbox.ExecDetachedSession, covered by
+// TestIntegrationResizeReachesSandboxedTUI). omac also refuses to stop on
+// SIGTSTP: confined code can remap a key to send it, and a stopped omac would
+// let the shell take the terminal back while the sandbox still reads it.
 
 // TestSecuritySandboxDoesNotShareControllingTerminal asserts that the sandbox
 // child leaves the terminal the user launched it from.
