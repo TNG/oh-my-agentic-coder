@@ -593,13 +593,17 @@ func runServe(args []string, env *Env) int {
 		// covers exactly the projects the sandbox is granted.
 		var desktopWorktrees []string
 		if forDesktop {
-			worktrees, skipped, derr := opencodestate.Worktrees()
+			worktrees, skipped, derr := opencodestate.Worktrees(harness.ResolveListenPort(inner))
 			if derr != nil {
 				fmt.Fprintln(env.Stderr, "omac serve: --for-opencode-desktop:", derr)
 				return ExitIOError
 			}
 			for _, s := range skipped {
-				fmt.Fprintf(env.Stderr, "omac serve: skipping OpenCode worktree %s (%s)\n", s.Path, s.Reason)
+				if s.Reason == opencodestate.SkipInvalidSource {
+					fmt.Fprintf(env.Stderr, "omac serve: ignoring OpenCode state source %q (%s)\n", s.Path, s.Reason)
+				} else {
+					fmt.Fprintf(env.Stderr, "omac serve: skipping OpenCode worktree %q (%s)\n", s.Path, s.Reason)
+				}
 			}
 			desktopWorktrees = worktrees
 		}
