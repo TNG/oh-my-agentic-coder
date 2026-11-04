@@ -54,7 +54,17 @@ func readRegular(path string, limit int64) ([]byte, error) {
 // follows a swapped FIFO, or creates/updates the host database's WAL/SHM files.
 // A concurrent Desktop checkpoint may make the copy inconsistent; fail closed.
 func sqliteSnapshot(source string) (string, func(), error) {
-	dir, err := os.MkdirTemp("", "omac-discovery-")
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", nil, err
+	}
+	// TMPDIR is agent-writable on macOS. The existing omac config deny
+	// keeps these authorization inputs out of other running sandboxes.
+	root := filepath.Join(home, ".config", "omac")
+	if err := os.MkdirAll(root, 0700); err != nil {
+		return "", nil, err
+	}
+	dir, err := os.MkdirTemp(root, "discovery-")
 	if err != nil {
 		return "", nil, err
 	}
