@@ -5,6 +5,12 @@ import (
 	"strings"
 )
 
+// ServePasswordEnv is consumed by serve before it launches host sidecars.
+const ServePasswordEnv = "OMAC_SERVE_PASSWORD"
+
+// ServeAuthTargetEnv names the auth variable the native supervisor must retain.
+const ServeAuthTargetEnv = "OMAC_SERVE_AUTH_TARGET"
+
 // dangerousEnvExact are always dropped from the child environment,
 // even when matched by allow_vars (nono's env_sanitization list plus
 // the 1Password meta-secrets).
@@ -284,7 +290,7 @@ func FilterEnv(environ []string, allowVars, denyVars []string, injected map[stri
 			continue
 		}
 		key := kv[:eq]
-		if IsDangerousEnvVar(key) {
+		if IsDangerousEnvVar(key) || key == ServePasswordEnv || key == ServeAuthTargetEnv {
 			continue
 		}
 		if !envVarAllowed(key, allowVars) {
@@ -296,6 +302,9 @@ func FilterEnv(environ []string, allowVars, denyVars []string, injected map[stri
 		out = append(out, kv)
 	}
 	for k, v := range injected {
+		if k == ServePasswordEnv || k == ServeAuthTargetEnv {
+			continue
+		}
 		out = append(out, k+"="+v)
 	}
 	if len(denyVars) == 0 {
