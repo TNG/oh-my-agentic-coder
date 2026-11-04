@@ -388,7 +388,7 @@ func TestDesktopProjectSkipsMatchSandboxRefusals(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			kept, skipped, err := opencodestate.Worktrees()
+			kept, skipped, err := opencodestate.Worktrees(0)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -397,19 +397,19 @@ func TestDesktopProjectSkipsMatchSandboxRefusals(t *testing.T) {
 					t.Errorf("kept project %s is refused: %v", dir, err)
 				}
 			}
-			var skippedForStore []string
+			var skippedPaths []string
 			for _, s := range skipped {
+				skippedPaths = append(skippedPaths, s.Path)
 				if s.Reason != opencodestate.SkipDesktopStore {
 					continue
 				}
-				skippedForStore = append(skippedForStore, s.Path)
 				if err := protectDesktopStores(&Grants{AllowPaths: []string{s.Path}}, false); err == nil {
 					t.Errorf("skipped project %s is accepted", s.Path)
 				}
 			}
 			for _, want := range tc.wantSkipped {
-				if !slices.Contains(skippedForStore, filepath.Join(root, want)) {
-					t.Errorf("%s not skipped: %v", want, skippedForStore)
+				if !slices.Contains(skippedPaths, filepath.Join(root, want)) {
+					t.Errorf("%s not skipped: %v", want, skipped)
 				}
 			}
 		})

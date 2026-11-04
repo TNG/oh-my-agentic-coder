@@ -94,6 +94,36 @@ OpenCode Desktop and lets the agent read and write each of these project
 folders. The sandbox cannot add folders later, so restart `omac serve` after
 opening a new project in Desktop.
 
+### Which projects omac grants
+
+On startup, omac reads Desktop's project list from `opencode.global.dat`
+(older Desktop versions) and `drafts.sqlite` (newer ones), in each of
+Desktop's folders listed under [What stays protected](#what-stays-protected).
+It grants the projects of Desktop's built-in server and of the server on the
+port `omac serve` uses, not those of other servers saved in Desktop:
+
+```bash
+omac serve opencode --for-opencode-desktop -- --port 4095
+```
+
+Projects you opened earlier stay granted after a restart, because Desktop
+keeps their history.
+
+OpenCode's own project records, which the agent can write, never grant a
+folder on their own. A project Desktop knows only by its ID is granted only
+if the ID matches the folder or its git repository. Some repositories, for
+example those that OpenCode identifies only by their first commit or that use
+a git `insteadOf` rewrite, then need an explicit grant in `filesystem.allow`
+in your sandbox profile.
+
+A project whose path goes through a symlink is not granted, so that a link
+changed in an earlier session can't redirect the grant to another folder.
+Open the project in Desktop by its real path instead.
+
+Discovery skips sources it can't read or that are too large, such as a
+database over 512 MiB or more than 10,000 projects in one source. Grant a
+missing project in your sandbox profile if needed.
+
 ### What stays protected
 
 Desktop keeps your project list and your saved servers, including their
@@ -117,8 +147,7 @@ platform, and also the folder `XDG_STATE_HOME` points to:
 - `~/.local/share/ai.opencode.desktop`, or under `$XDG_DATA_HOME` (older
   Linux installs)
 
-The beta app uses `ai.opencode.desktop.beta` instead. omac reads your project
-list from `opencode.global.dat` in all of these folders.
+The beta app uses `ai.opencode.desktop.beta` instead.
 
 The path to these folders may go through a symlink, for example a home folder
 on another disk or a `~/.config` that a dotfiles tool links into a
