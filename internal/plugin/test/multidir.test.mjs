@@ -6,6 +6,33 @@ import * as entry from "../assets/omac-multidir.ts"
 
 const plugin = entry.default
 
+for (const version of [1, 2]) {
+  test(`v${version}: every forbidden display rune is stripped at prompt sinks`, async (t) => {
+    const state = fixture(t)
+    state.sessions.set("display", "/app")
+    const runes = [..."\u061c\u200b\u200c\u200d\u200e\u200f\u2028\u2029\u202a\u202b\u202c\u202d\u202e\u2060\u2066\u2067\u2068\u2069\ufeff"]
+    for (let code = 0; code <= 0x9f; code++) {
+      if (code < 0x20 || code >= 0x7f) runes.push(String.fromCodePoint(code))
+    }
+    state.manifests.set("/app", { dir: "/app", state: "active", skills: runes.flatMap(r => {
+      const payload = `café 東京 عربي left${r}right`
+      return [
+        { name: payload, scope: payload, state: "broken", detail: payload },
+        { name: "ok", scope: "workdir", state: "pending-credentials", missing: [payload, "TOKEN"] },
+      ]
+    }) })
+    const api = await adapter(t, version, state)
+    const system = await api.prompt("display")
+    const text = version === 1 ? system.join("\n") : system.map(p => p.text).join("\n")
+    for (const r of runes) {
+      assert.ok(!text.includes(`left${r}right`), `retained U+${r.codePointAt(0).toString(16)}`)
+    }
+    assert.equal((text.match(/café 東京 عربي left ?right/g) ?? []).length, runes.length * 4)
+    assert.equal((text.match(/omac secrets set ok TOKEN/g) ?? []).length, runes.length)
+    await api.dispose?.()
+  })
+}
+
 // setControlTimeout overrides the control-plane request timeout for one test.
 function setControlTimeout(t, ms) {
   const old = process.env.OMAC_CONTROL_TIMEOUT_MS
