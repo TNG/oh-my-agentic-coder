@@ -34,15 +34,22 @@ const (
 
 // Event types. Dotted namespaces group related actions.
 const (
-	TypeSessionStart    = "session.start"
-	TypeSessionStop     = "session.stop"
-	TypeProcessExec     = "process.exec"
-	TypeProcessExit     = "process.exit"
-	TypeNetDecision     = "net.decision"
-	TypeFacadeRequest   = "facade.request"
-	TypeControlMutation = "control.mutation"
-	TypeSecretInject    = "secret.inject"
-	TypeRouteState      = "route.state"
+	TypeSessionStart = "session.start"
+	TypeSessionStop  = "session.stop"
+	TypeProcessExec  = "process.exec"
+	TypeProcessExit  = "process.exit"
+	TypeNetDecision  = "net.decision"
+	// TypeNetPromptAbandoned records a network prompt that was raised but
+	// never resolved because the requesting tool gave up (its own timeout
+	// is shorter than the human's answer time) or the run ended first.
+	// Without it such a run looks clean: no decision is ever logged, so
+	// `omac diagnose` reports "nothing was blocked" for a launch that in
+	// fact failed. See #257.
+	TypeNetPromptAbandoned = "net.prompt_abandoned"
+	TypeFacadeRequest      = "facade.request"
+	TypeControlMutation    = "control.mutation"
+	TypeSecretInject       = "secret.inject"
+	TypeRouteState         = "route.state"
 )
 
 // Event is one audit record. The envelope fields (Ts, RunID, Seq, Type,
@@ -81,9 +88,14 @@ type Event struct {
 	Sandboxed   *bool    `json:"sandboxed,omitempty"`
 	DurationMS  int64    `json:"duration_ms,omitempty"`
 
-	// --- net.decision ---
-	Host      string `json:"host,omitempty"`
-	Port      int    `json:"port,omitempty"`
+	// --- net.decision / net.prompt_abandoned ---
+	Host string `json:"host,omitempty"`
+	Port int    `json:"port,omitempty"`
+	// WaitedMS is how long the interactive prompt was open: until it was
+	// abandoned (net.prompt_abandoned) or until the user answered
+	// (net.decision, prompt-sourced only). Compared against the requesting
+	// tool's own timeout, it is what explains a silent failure.
+	WaitedMS  int64  `json:"waited_ms,omitempty"`
 	Allow     *bool  `json:"allow,omitempty"`
 	Scope     string `json:"scope,omitempty"`  // once|host|suffix
 	Source    string `json:"source,omitempty"` // prompt|learned|allowlist|blocklist|timeout|unavailable|hard-deny|dns|default|session
