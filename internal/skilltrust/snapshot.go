@@ -197,6 +197,9 @@ func copyTree(src, dst string) error {
 		if !info.Mode().IsRegular() {
 			return nil // sockets, devices, fifos: nothing to run
 		}
+		if config.IsExcludedFileName(d.Name()) {
+			return nil // skip the same files BundleHash skips
+		}
 		return copyFile(p, target, info.Mode().Perm())
 	})
 }
