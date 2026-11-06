@@ -169,6 +169,8 @@ Cause: the Gradle daemon talks to its client over a random loopback port, which 
 
 Fix: run Gradle without the daemon — `./gradlew --no-daemon` (or set `org.gradle.daemon=false`). This is the recommended fix.
 
+Alternatively, run the build in the omac VM, where the daemon works: `omac vm exec -- ./gradlew test --offline` from a session started with `--vm`. See [omac vm](./usage/cli.md#omac-vm).
+
 On macOS only, if you must keep the daemon, you can grant loopback with `"network": { "open_port": [0] }` in the sandbox grants file (`~/.config/omac/sandbox-profiles/default.json`) — `0` means "any loopback port" and external TCP egress stays kernel-blocked. On Linux there is no equivalent that keeps kernel enforcement, so use `--no-daemon`.
 
 ### Undo a network allow/deny decision
