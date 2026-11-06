@@ -200,6 +200,23 @@ cannot access.
 | Environment variables in `allow_vars` (`OMAC_*`, `HOME`, `PATH`, `LANG`, …) | passed through | Operational minimum |
 | All other environment variables (cloud secrets, `DOCKER_HOST`, `SSH_AUTH_SOCK`, …) | **stripped** | Not needed and potentially sensitive |
 
+The one file omac copies in and out of the private OpenCode v2 state dir is
+`model.json`, which holds only the TUI's recent models, favorites, and
+selected reasoning variant. Without it every launch would forget the model
+choice, because the state dir is per-launch. `service.json` is never copied.
+
+This copy is a convenience, not an isolation boundary: the host state dir
+itself stays read + write to the sandbox (see the row above), so the agent can
+already read and change `model.json` directly. omac only arranges the hand-off
+so a fresh state dir starts with the host's choice. Because that directory
+stays sandbox-writable, omac treats `model.json` as untrusted: it refuses
+symlinks and non-regular files in both directions, so the agent cannot use the
+file as a link to make omac read `~/.ssh/id_rsa` or write into
+`~/.config/omac/approvals.json`. The copy back to the host happens after the
+TUI exits and only when the session changed the choice, so a crash, `kill -9`,
+or power loss before that leaves the host file unchanged and the session's
+model choice is lost.
+
 ## Self-authored skills
 
 Skill sidecars run on your machine outside the sandbox. That is intentional,
