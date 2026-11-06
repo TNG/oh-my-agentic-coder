@@ -2,6 +2,7 @@ package profileaudit
 
 import (
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -342,6 +343,9 @@ func checkNetwork(profile *sandboxprofile.Profile) []Finding {
 			Message:  "Linux Landlock is address-blind: also allows outbound TCP to any host on this port",
 		})
 	}
+	if finding, ok := ImplicitProxyPortFinding(profile, runtime.GOOS); ok {
+		findings = append(findings, finding)
+	}
 	for _, port := range profile.Network.AllowTCPConnect {
 		switch port {
 		case 22, 3389:
@@ -355,4 +359,23 @@ func checkNetwork(profile *sandboxprofile.Profile) []Finding {
 		}
 	}
 	return findings
+}
+
+// ImplicitProxyPortFinding reports the address-blind Landlock reach of the
+// supervisor proxy's TCP port when evaluating a Linux filtered, kernel-
+// enforced profile. goos is explicit so launch-time callers and tests can
+// apply the same platform condition without duplicating the finding.
+func ImplicitProxyPortFinding(profile *sandboxprofile.Profile, goos string) (Finding, bool) {
+	if profile == nil || goos != "linux" ||
+		profile.Network.EffectiveMode() != sandboxprofile.ModeFiltered ||
+		profile.Network.EffectiveEnforcement() != sandboxprofile.EnforceKernel {
+		return Finding{}, false
+	}
+	return Finding{
+		Severity: SeverityLow,
+		Category: CatNetwork,
+		Field:    "network.mode",
+		Value:    sandboxprofile.ModeFiltered,
+		Message:  "Linux Landlock is address-blind: the implicit proxy port grant allows outbound TCP to any host listening on that port, not only loopback",
+	}, true
 }
