@@ -399,6 +399,22 @@ func TestPrepareSandboxDirsRejectsFileTarget(t *testing.T) {
 	}
 }
 
+func TestPathCoveredBy(t *testing.T) {
+	dirs := []string{"/a/proj", "/b"}
+	for p, want := range map[string]bool{
+		"/a/proj":         true,
+		"/a/proj/sub":     true,
+		"/b":              true,
+		"/a/proj-2":       false,
+		"/a":              false,
+		"/c/secret/stuff": false,
+	} {
+		if got := pathCoveredBy(p, dirs); got != want {
+			t.Errorf("pathCoveredBy(%q) = %v, want %v", p, got, want)
+		}
+	}
+}
+
 func TestServerExposureWarning(t *testing.T) {
 	oc, _ := config.LookupHarness("opencode")
 	cc, _ := config.LookupHarness("claude-code")
@@ -407,8 +423,8 @@ func TestServerExposureWarning(t *testing.T) {
 	unset := func(string) string { return "" }
 	inner := []string{"opencode", "serve"}
 	w := serverExposureWarning(oc, inner, unset)
-	if w == "" || !strings.Contains(w, "4096") || !strings.Contains(w, "OPENCODE_SERVER_PASSWORD") {
-		t.Errorf("expected warning naming :4096 and OPENCODE_SERVER_PASSWORD, got %q", w)
+	if w == "" || !strings.Contains(w, "4096") || !strings.Contains(w, "OMAC_SERVE_PASSWORD") || !strings.Contains(w, "no fixed password") || strings.Contains(w, "require authentication") {
+		t.Errorf("expected accurate no-fixed-password warning naming :4096 and the dedicated source, got %q", w)
 	}
 
 	// The warning names the port actually bound, not the harness default.
@@ -730,6 +746,25 @@ func TestForwardHarnessEnvNoHomeEnvAddsNothing(t *testing.T) {
 		if a == "--allow-env" && (i+1 >= len(got) || got[i+1] == "") {
 			t.Errorf("dangling --allow-env with no value: %v", got)
 		}
+	}
+}
+
+func TestServeAuthEnvDoesNotAutomaticallyAllowAmbient(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	stageProfile(t, home, `{"meta": {"name": "default"}, "environment": {"allow_vars": ["HOME"]}}`)
+	plan := nativePlanForTest(t)
+
+	oc, _ := config.LookupHarness("opencode")
+	got, err := prepareServeAuthEnv("", oc, plan, false)
+	if err != nil || len(got) != 0 {
+		t.Errorf("ambient server password must not receive an automatic exception; error %v", err)
+	}
+
+	// A harness without a server mode gets nothing.
+	cc, _ := config.LookupHarness("claude-code")
+	if g, err := prepareServeAuthEnv("", cc, plan, false); err != nil || len(g) != 0 {
+		t.Errorf("non-server harness should preserve normal behavior; error %v", err)
 	}
 }
 

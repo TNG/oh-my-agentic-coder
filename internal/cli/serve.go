@@ -156,6 +156,12 @@ func parseServeArgs(args []string, env *Env) (serveParse, bool) {
 // without OpenCode). When --workdir is given, that one directory is
 // auto-activated at cold start (§5.5).
 func runServe(args []string, env *Env) int {
+	// Consume the host-only source before any child or sidecar can inherit it.
+	servePassword := os.Getenv(sandboxprofile.ServePasswordEnv)
+	if err := os.Unsetenv(sandboxprofile.ServePasswordEnv); err != nil {
+		fmt.Fprintln(env.Stderr, "omac serve: cannot consume OMAC_SERVE_PASSWORD")
+		return ExitIOError
+	}
 	parsed, ok := parseServeArgs(args, env)
 	if !ok {
 		return ExitMisuse
@@ -197,6 +203,18 @@ func runServe(args []string, env *Env) int {
 	}
 	profName := plan.Name
 	prof := plan.Launcher
+	if err := validateDesktopSandbox(forDesktop, noInner, noSandbox, learn, plan); err != nil {
+		fmt.Fprintln(env.Stderr, "omac serve:", err)
+		return ExitConfigInvalid
+	}
+	var authExtra map[string]string
+	if !noInner {
+		authExtra, err = prepareServeAuthEnv(servePassword, harness, plan, noSandbox)
+		if err != nil {
+			fmt.Fprintln(env.Stderr, "omac serve:", err)
+			return ExitConfigInvalid
+		}
+	}
 
 	// Pre-flight: inner harness binary must be on $PATH (unless --no-inner
 	// or --inner override). Checked on the RESOLVED argv so a profile-pinned
@@ -253,8 +271,8 @@ func runServe(args []string, env *Env) int {
 	// like `opencode attach` report as an opaque "Unexpected server
 	// error"). Set it in omac's OWN environment when unset so it both
 	// drives our provisioning and is inherited by the sandboxed child;
-	// an explicit value is respected. The dir is granted read+write in
-	// the sandbox in the --for-opencode-desktop block below.
+	// an explicit value is respected. Only its opencode runtime subtree is
+	// granted read+write; the Desktop authorization stores stay protected.
 	if dir, set := resolveDesktopStateDir(forDesktop); set {
 		if err := os.Setenv("XDG_STATE_HOME", dir); err != nil {
 			fmt.Fprintln(env.Stderr, "omac serve: --for-opencode-desktop: set XDG_STATE_HOME:", err)
@@ -272,15 +290,12 @@ func runServe(args []string, env *Env) int {
 	}
 	socketPath := filepath.Join(rtDir, "bridge.sock")
 
-	// Audit trail (persistent central path; NOT rtDir). Constructed before
-	// the inner command launches. In serve there is no set of pre-resolved
-	// secret values at this point (skills are brought up lazily), so the
-	// redactor's value-matching is seeded empty; secret NAMES are still
-	// always logged and never values, and namespaces are always hashed.
+	// Audit trail (persistent central path; NOT rtDir). Skills are brought
+	// up lazily; seed value redaction with the dedicated server password.
 	var auditFatal func(error) // assigned once sup/facade exist
 	auditCfg, auditMisuse := resolveAuditConfig(lc.Audit, auditFlags{
 		logPath: auditLog, disable: noAudit, strict: auditStrict,
-	}, audit.ModeServe, env.Version, nil, func(err error) {
+	}, audit.ModeServe, env.Version, []string{servePassword}, func(err error) {
 		if auditFatal != nil {
 			auditFatal(err)
 		}
@@ -513,6 +528,9 @@ func runServe(args []string, env *Env) int {
 	// per-skill OMAC_G_*/OMAC_D_* vars are added on top by serve as routes
 	// come and go; the static globals are set here once.
 	extra := srv.baseEnv()
+	for key, value := range authExtra {
+		extra[key] = value
+	}
 	if injectBriefing {
 		// Consumed by the OpenCode plugin; see start.go.
 		extra["OMAC_SANDBOX_BRIEFING"] = briefingText
@@ -546,6 +564,12 @@ func runServe(args []string, env *Env) int {
 			fmt.Fprintln(env.Stderr, "omac serve: harness runtime dirs:", err)
 			return ExitIOError
 		}
+		if forDesktop && os.Getenv("XDG_STATE_HOME") != "" {
+			if err := os.MkdirAll(filepath.Join(os.Getenv("XDG_STATE_HOME"), "opencode"), 0o700); err != nil {
+				fmt.Fprintln(env.Stderr, "omac serve: Desktop runtime directory:", err)
+				return ExitIOError
+			}
+		}
 		argv, err = sandboxServeArgv(prof, sandbox.Inputs{
 			Workdir:  env.Workdir,
 			Socket:   socketPath,
@@ -568,9 +592,7 @@ func runServe(args []string, env *Env) int {
 				fmt.Fprintln(env.Stderr, "omac serve: --for-opencode-desktop:", derr)
 				return ExitIOError
 			}
-			for _, s := range skipped {
-				fmt.Fprintf(env.Stderr, "omac serve: skipping OpenCode worktree %s (%s)\n", s.Path, s.Reason)
-			}
+			reportDesktopSkipped(env.Stderr, skipped, worktrees)
 			desktopWorktrees = worktrees
 		}
 		// Checked once at launch: the sandbox cannot gain new denies later, so
@@ -584,6 +606,9 @@ func runServe(args []string, env *Env) int {
 		// profile's restrictive allow_vars filter. (Control-plane port and
 		// harness runtime dirs are granted inside sandboxServeArgv.)
 		argv = forwardHarnessEnv(env, argv, harness, plan)
+		if servePassword != "" {
+			argv = injectSandboxEnvAllow(argv, []string{harness.ServerLaunch.AuthEnvVar}, plan)
+		}
 		var ocClass openCodeVersionKind
 		if !learn {
 			argv, ocClass, err = injectOpenCodeProjectDiscovery(argv, extra, harness, inner, plan)
@@ -605,7 +630,7 @@ func runServe(args []string, env *Env) int {
 		// --for-opencode-desktop: grant every project worktree OpenCode
 		// knows about. The kernel sandbox cannot grow after launch, so
 		// folders opened for the first time during this session still
-		// need a restart (or --learn).
+		// need a restart.
 		if forDesktop {
 			if len(desktopWorktrees) == 0 {
 				fmt.Fprintln(env.Stderr, "omac serve: --for-opencode-desktop: no OpenCode projects found")
@@ -613,17 +638,15 @@ func runServe(args []string, env *Env) int {
 				fmt.Fprintf(env.Stderr, "omac serve: granting %d OpenCode project folder(s):\n", len(desktopWorktrees))
 				for _, wt := range desktopWorktrees {
 					fmt.Fprintf(env.Stderr, "  r+w %s\n", wt)
-					argv = injectSandboxFlag(argv, "--allow", wt)
 				}
 			}
-			// Grant the Desktop's shared state dir (XDG_STATE_HOME, set
-			// above) read+write so the inner opencode can read the
-			// Desktop's auth/config there. The default profile already
-			// lists it; granting here keeps it working under trimmed
-			// custom profiles too.
+			argv, err = desktopProtectionArgv(argv, desktopWorktrees)
+			if err != nil {
+				fmt.Fprintln(env.Stderr, "omac serve:", err)
+				return ExitConfigInvalid
+			}
 			if dir := os.Getenv("XDG_STATE_HOME"); dir != "" {
-				fmt.Fprintf(env.Stderr, "  r+w %s (shared Desktop state)\n", dir)
-				argv = injectSandboxFlag(argv, "--allow", dir)
+				fmt.Fprintf(env.Stderr, "  r+w %s (OpenCode runtime state only)\n", filepath.Join(dir, "opencode"))
 			}
 		}
 		// --learn: pass through to the built-in sandbox, which lifts
@@ -649,9 +672,9 @@ func runServe(args []string, env *Env) int {
 		fmt.Fprintf(env.Stderr, "[verbose] inner argv: %v\n", argv)
 	}
 
-	// Caution when the harness server will expose an unauthenticated loopback
-	// port (fires whether sandboxed or not — the server listens either way).
-	if w := serverExposureWarning(harness, inner, os.Getenv); w != "" {
+	// Describe the fixed-password configuration, not the harness's default
+	// authentication behavior (which may generate credentials itself).
+	if w := serverExposureWarning(harness, inner, serveAuthGetenv(harness, plan, authExtra, noSandbox)); w != "" {
 		fmt.Fprintln(env.Stderr, w)
 	}
 
@@ -785,11 +808,9 @@ func injectServerPortGrant(argv []string, h config.Harness, innerArgv []string) 
 	return injectSandboxFlag(argv, "--open-port", strconv.Itoa(port))
 }
 
-// serverExposureWarning returns a one-line caution when a harness's server
-// daemon will bind a loopback port that is NOT protected by its auth env var
-// — that port is reachable by any local process, so an unauthenticated server
-// lets local callers drive the agent (bounded by the sandbox, but still). It
-// returns "" when there is no server port or the auth env var is set.
+// serverExposureWarning reports the absence of a configured fixed password,
+// without claiming the harness's normal authentication is disabled.
+// It returns "" when there is no server port or a fixed password is forwarded.
 // innerArgv is the launch's resolved inner command so the warning names the
 // port the server will really bind, not the harness default. getenv is
 // injected for testability.
@@ -802,8 +823,8 @@ func serverExposureWarning(h config.Harness, innerArgv []string, getenv func(str
 	if getenv(sl.AuthEnvVar) != "" {
 		return ""
 	}
-	return fmt.Sprintf("omac serve: %s server will listen on 127.0.0.1:%d, reachable by any local "+
-		"process; set %s to require authentication.", h.Name, port, sl.AuthEnvVar)
+	return fmt.Sprintf("omac serve: %s server will listen on 127.0.0.1:%d; no fixed password verified "+
+		"for this launch. Harness authentication defaults still apply. Set OMAC_SERVE_PASSWORD to configure a fixed password with the native backend.", h.Name, port)
 }
 
 // injectOpenPort splices `--open-port <port>` into a sandbox argv so the
@@ -853,6 +874,16 @@ func serveSkillWorkdirs(launchDir, workdirFlag string, desktopWorktrees []string
 		out = append(out, abs)
 	}
 	return append(out, desktopWorktrees...)
+}
+
+// pathCoveredBy reports whether p equals or lies inside one of dirs.
+func pathCoveredBy(p string, dirs []string) bool {
+	for _, d := range dirs {
+		if p == d || strings.HasPrefix(p, d+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
 }
 
 // injectSandboxDenies splices --deny flags for each harness-declared path the

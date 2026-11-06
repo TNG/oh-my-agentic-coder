@@ -28,6 +28,9 @@ import (
 // re-exec'd `omac sandbox stage2 ...` argv (which applies Landlock net
 // rules and then execs the inner command).
 func BuildBwrapArgv(g *Grants, stage2Argv []string) ([]string, error) {
+	if err := g.validateRequiredProtection(true); err != nil {
+		return nil, err
+	}
 	if len(stage2Argv) == 0 {
 		return nil, fmt.Errorf("bwrap: empty stage2 argv")
 	}

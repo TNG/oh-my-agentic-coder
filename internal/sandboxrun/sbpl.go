@@ -2,6 +2,7 @@ package sandboxrun
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -20,10 +21,9 @@ const sbplKeychainNameRegex = `\.[kK][eE][yY][cC][hH][aA][iI][nN](-[dD][bB])?$`
 //
 // Rule order matters: read allows -> write allows -> protected-path denies
 // -> secret-name denies (.env, ...) -> keychain name-deny -> read-only
-// root-store re-allow. Seatbelt is last-match-wins, so the denies override
-// both read and write allows for those paths. The root-store re-allow is
-// the one rule allowed to undo a deny; any file allow emitted later (e.g.
-// the /dev devices) must not cover a protected path or a keychain file.
+// root-store re-allow -> device allows -> required launch denies. Seatbelt is
+// last-match-wins. The root-store exception may undo ordinary keychain denies,
+// but required trusted-input protection follows every filesystem allow.
 func GenerateSBPL(g *Grants) string {
 	var b strings.Builder
 	b.WriteString("(version 1)\n")
@@ -111,6 +111,9 @@ func GenerateSBPL(g *Grants) string {
 
 	// --- Protected-path and keychain denies (after all allows, so last-match-wins blocks both reads and writes) ---
 	for _, p := range g.ProtectedPaths {
+		if slices.Contains(g.RequiredProtectedPaths, p) {
+			continue // Required denies follow even the platform read exceptions.
+		}
 		for _, fp := range pathForms(p) {
 			fmt.Fprintf(&b, "(deny file-read* (subpath %s))\n", sbplQuote(fp))
 			fmt.Fprintf(&b, "(deny file-write* (subpath %s))\n", sbplQuote(fp))
@@ -136,6 +139,25 @@ func GenerateSBPL(g *Grants) string {
 	b.WriteString("(allow file-read* file-write-data (regex #\"^/dev/tty\"))\n")
 	b.WriteString("(allow file-ioctl (regex #\"^/dev/tty\") (literal \"/dev/ptmx\") (literal \"/dev/null\") (literal \"/dev/zero\") (literal \"/dev/random\") (literal \"/dev/urandom\"))\n")
 	b.WriteString("(allow pseudo-tty)\n\n")
+	for _, p := range g.RequiredProtectedPaths {
+		for _, fp := range pathForms(p) {
+			fmt.Fprintf(&b, "(deny file-read* (subpath %s))\n", sbplQuote(fp))
+			fmt.Fprintf(&b, "(deny file-write* (subpath %s))\n", sbplQuote(fp))
+		}
+	}
+	// Pin only the directory entry, not its contents: moving an ancestor
+	// would expose protected files under a new spelling and allow planting
+	// replacement state. Runtime siblings must remain writable.
+	if len(g.RequiredProtectedPaths) > 0 {
+		for _, dir := range ancestorDirs(g.RequiredProtectedPaths) {
+			fmt.Fprintf(&b, "(deny file-write-unlink (literal %s))\n", sbplQuote(dir))
+			// An absent directory could otherwise be planted as a symlink
+			// into a writable project, bypassing the store's denied spelling.
+			if _, err := os.Lstat(dir); os.IsNotExist(err) {
+				fmt.Fprintf(&b, "(deny file-write-create (literal %s))\n", sbplQuote(dir))
+			}
+		}
+	}
 
 	// --- Network ---
 	b.WriteString(generateSBPLNetwork(g))

@@ -116,7 +116,11 @@ The default cache scope SHALL be `workdir` so that each workdir gets its own iso
 - **THEN** doctor warns that an isolated `CARGO_HOME` will not pick it up, and never reads the file
 
 ### Requirement: OpenCode Desktop folder grants
-`omac serve` SHALL accept a `--for-opencode-desktop` flag. When set, omac SHALL read the project worktrees recorded in the local OpenCode state and grant each existing worktree directory read+write in the sandbox, in addition to the profile's grants. All three OpenCode project stores SHALL be merged, since they drift apart: the JSON storage files under `~/.local/share/opencode/storage/project/`, the `opencode.db` SQLite `project.worktree` column, and the Desktop app's own store (`opencode.global.dat` in the `ai.opencode.desktop` / `ai.opencode.desktop.beta` application data directories) — folders opened in the Desktop UI may exist only in the latter. Within the Desktop store both the saved project list (key `globalSync.project`) and the directories of currently open tabs/windows (key `layout.page`, field `lastProjectSession`) SHALL be harvested, since an open tab is not necessarily a saved project. The pseudo-project with worktree `/` MUST be ignored. Worktrees nested inside another recorded worktree SHALL be collapsed into the ancestor (granting the parent already covers the child); path-prefix siblings (e.g. `/a/proj` and `/a/proj-2`) MUST NOT be collapsed. The list of granted worktrees SHALL be logged at startup.
+`omac serve` SHALL accept a `--for-opencode-desktop` flag. When set, omac SHALL read the project worktrees recorded in the local OpenCode state and grant each existing worktree directory read+write in the sandbox, in addition to the profile's grants. All three OpenCode project stores SHALL be merged, since they drift apart: the JSON storage files under `~/.local/share/opencode/storage/project/`, the `opencode.db` SQLite `project.worktree` column, and the Desktop app's own store `opencode.global.dat` in the `ai.opencode.desktop` / `ai.opencode.desktop.beta` application data directories — folders opened in the Desktop UI may exist only in the latter. The Desktop store SHALL be read in both of its physical forms: the legacy JSON file `opencode.global.dat`, and (Desktop 1.18+) the rows of the `state` table in `drafts.sqlite` whose `name` is `opencode.global.dat`. Within the Desktop store both the saved project list (key `globalSync.project`) and the directories of currently open tabs/windows (key `layout.page`, field `lastProjectSession`) SHALL be harvested, since an open tab is not necessarily a saved project. For every extra server added in the Desktop on a loopback host (e.g. an `omac serve` sandbox at `http://localhost:4095`), its project list (key `server`, field `projects.<url>`) and its open tabs (key `<url>` + NUL + `layout.page`) SHALL be harvested too; records of remote servers MUST be ignored, since their paths name folders on another machine.
+
+Newer Desktop builds keep only project IDs for an extra server (key `server`, fields `usedProjectIDs.<url>` and `lastProjectID.<url>`). omac SHALL look up each such ID of a loopback server in the agent-writable OpenCode stores (storage JSON, `opencode.db`) and validate the mapping against the ID from the protected Desktop store. A directory ID is `sha1("directory:" + canonicalAbsolutePath)`: it binds the canonical path string, not folder contents, and its authority depends on its protected Desktop origin. Git IDs describe repository identity: `sha1("git-remote:<host>/<path>")` of the `origin` remote, or the ID cached in the git common directory's `opencode` file. Another clone or linked worktree may match the same repository ID; this equivalence SHALL be retained and does not prove authorization of one unique Desktop folder path.
+
+Paths, including symlink aliases, SHALL be resolved and checked before ID validation, home/broad-path filtering, and granting, so every check and the eventual grant refer to the same canonical target. A mapping that fails the ID check MUST NOT grant its target; an alias MUST NOT bypass the home/broad-path filters. The pseudo-project with worktree `/` MUST be ignored. Worktrees nested inside another recorded worktree SHALL be collapsed into the ancestor (granting the parent already covers the child); path-prefix siblings (e.g. `/a/proj` and `/a/proj-2`) MUST NOT be collapsed. The list of granted worktrees SHALL be logged at startup.
 
 #### Scenario: Desktop projects granted
 - **WHEN** `omac serve --for-opencode-desktop` starts and the OpenCode state lists worktrees `/a` and `/b` (both existing) plus the global `/` record
@@ -125,6 +129,26 @@ The default cache scope SHALL be `workdir` so that each workdir gets its own iso
 #### Scenario: Currently open Desktop tab granted
 - **WHEN** a folder is open as a Desktop tab (present in `layout.page.lastProjectSession`) but is not in the saved `globalSync.project` list
 - **THEN** that folder is still granted read+write
+
+#### Scenario: Desktop 1.18+ SQLite store
+- **WHEN** the Desktop keeps its store in `drafts.sqlite` (no `opencode.global.dat` file) and a folder is open on the extra server `http://localhost:4095`
+- **THEN** that folder is granted read+write, while a folder recorded only for a remote server is not
+
+#### Scenario: Extra server project known only by ID
+- **WHEN** the protected Desktop store lists project ID `X` in `server.usedProjectIDs["http://localhost:4095"]`, and `opencode.db` maps `X` to `~/proj`, a folder without git where `X = sha1("directory:" + canonicalAbsolutePathOf(~/proj))`
+- **THEN** `~/proj` is granted read+write, even though it lies inside `$HOME`
+
+#### Scenario: Forged ID mapping rejected
+- **WHEN** an `opencode.db` row maps a trusted Desktop project ID to a canonical target whose directory path hash or repository identity does not match that ID
+- **THEN** the folder is not granted
+
+#### Scenario: Canonical alias checked against the granted target
+- **WHEN** an ID mapping names an alias that resolves to `/actual/proj`
+- **THEN** ID validation, home/broad-path filtering, and any resulting grant all use `/actual/proj`, not the alias spelling
+
+#### Scenario: Same-repository clone or linked worktree retained
+- **WHEN** an ID from the protected Desktop store matches another clone or linked worktree through its origin remote or cached Git ID
+- **THEN** that canonical target remains eligible for a grant, subject to the same home/broad-path filters and effective sandbox denies
 
 #### Scenario: Stale worktree skipped
 - **WHEN** a recorded worktree no longer exists on disk
