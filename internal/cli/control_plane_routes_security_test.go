@@ -19,7 +19,7 @@ import (
 func TestSecurityServeActivateRejectsUnauthenticatedCaller(t *testing.T) {
 	sectest.RequireLoopbackListener(t)
 	s := newServeServerForTest(t)
-	wd := t.TempDir()
+	wd := resolvedTempDir(t)
 
 	srv := httptest.NewServer(s.controlMux())
 	t.Cleanup(srv.Close)
@@ -75,7 +75,7 @@ func TestSecurityStartActivateRejectsUnauthenticatedCaller(t *testing.T) {
 func TestSecurityServeDeactivateRejectsUnauthenticatedCaller(t *testing.T) {
 	sectest.RequireLoopbackListener(t)
 	s := newServeServerForTest(t)
-	wd := t.TempDir()
+	wd := resolvedTempDir(t)
 	stageSkillWithSecret(t, wd, "slack")
 
 	// Control: activation itself works and the dir is tracked, so the
@@ -116,7 +116,7 @@ func TestSecurityServeDeactivateRejectsUnauthenticatedCaller(t *testing.T) {
 func TestSecurityServeReloadRejectsUnauthenticatedCaller(t *testing.T) {
 	sectest.RequireLoopbackListener(t)
 	s := newServeServerForTest(t)
-	wd := t.TempDir()
+	wd := resolvedTempDir(t)
 	stageSkillWithSecret(t, wd, "slack")
 	if _, err := s.activate(wd); err != nil {
 		t.Fatalf("control: s.activate: %v", err)

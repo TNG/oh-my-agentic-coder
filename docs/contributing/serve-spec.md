@@ -56,6 +56,20 @@ The routing token must be random. The loopback port is reachable by any process 
 
 The workdir identity keys a directory's persistent state — its keychain secrets and skill registry. It must be **unique**, so one project's secrets and registrations never collide with another's, and **stable across restarts**, so that state is still found next run instead of being orphaned. Both properties come from the absolute path: the same directory always resolves to the same path, and no two directories share one. A bare name like `acme` would not do — `~/work/acme` and `~/clients/acme` would collide.
 
+Serve resolves directory names before applying `--root` policy, refuses a
+symlink as the final component, and coalesces accepted aliases under the resolved
+name. It also holds opened directory handles: discovery, registration and
+workdir metadata/config reads use those handles, not a later reopen of the
+name. Replacing a project or its ancestors therefore cannot redirect that work.
+Project-internal symlinks must remain relative and inside the opened project
+(or inside the skill when reading its bundle); escaping or absolute links are
+refused. This does not confine an explicitly approved sidecar's own host access.
+
+An accepted activation name remains usable for teardown after deletion. If it
+now names another directory, teardown is refused instead of retargeted. Teardown
+removes its accepted-name mappings, routes and token, then closes the handle.
+An unknown name that cannot be resolved returns an error, not successful cleanup.
+
 ### Manifest
 
 When a directory is activated, omac returns a **manifest** — a JSON document listing the directory's workdir-local skills and the server's global skills, each with its state and base URL. Harnesses read it to find each skill's endpoint, and in multi-directory mode to get the namespaced URLs (rather than the flat `OMAC_<SKILL>_BASE` aliases).

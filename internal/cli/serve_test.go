@@ -65,7 +65,7 @@ func newServeServerForTest(t *testing.T) *serveServer {
 	_ = f.Start(t.Context())
 	t.Cleanup(func() { f.Close() })
 
-	return &serveServer{
+	s := &serveServer{
 		env:          makeEnv(t.TempDir()),
 		harness:      config.DefaultHarness(),
 		facade:       f,
@@ -79,11 +79,27 @@ func newServeServerForTest(t *testing.T) *serveServer {
 		byToken:      map[string]*dirState{},
 		global:       map[string]*skillRoute{},
 	}
+	t.Cleanup(s.closeDirectoryRoots)
+	return s
 }
 
 // addServeTestToken adds the test control token to a request.
 func addServeTestToken(req *http.Request) {
 	req.Header.Set("X-Omac-Control-Token", "test-control-token")
+}
+
+// resolvedTempDir returns t.TempDir() with every symlink component resolved.
+// Activation keys its per-directory state by the resolved path, so tests
+// that index s.dirs (or configure roots) must use the resolved spelling —
+// on platforms where the temp dir sits behind a symlink (e.g. macOS /var)
+// the lexical and resolved spellings differ.
+func resolvedTempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("resolve temp dir: %v", err)
+	}
+	return dir
 }
 
 func TestActivatePendingCredentials(t *testing.T) {
@@ -126,7 +142,7 @@ func TestActivatePendingCredentials(t *testing.T) {
 
 func TestActivateIdempotent(t *testing.T) {
 	s := newServeServerForTest(t)
-	wd := t.TempDir()
+	wd := resolvedTempDir(t)
 	stageSkillWithSecret(t, wd, "slack")
 
 	m1, err := s.activate(wd)
@@ -168,7 +184,7 @@ func TestActivateUnknownDir(t *testing.T) {
 
 func TestDeactivateRemovesRoutesAndToken(t *testing.T) {
 	s := newServeServerForTest(t)
-	wd := t.TempDir()
+	wd := resolvedTempDir(t)
 	stageSkillWithSecret(t, wd, "slack")
 
 	m, err := s.activate(wd)
@@ -194,8 +210,9 @@ func TestDeactivateRemovesRoutesAndToken(t *testing.T) {
 
 func TestRootsPolicy(t *testing.T) {
 	s := newServeServerForTest(t)
-	rootA := t.TempDir()
-	rootB := t.TempDir()
+	// Roots in resolved form, as the flag-parse normalization produces them.
+	rootA := resolvedTempDir(t)
+	rootB := resolvedTempDir(t)
 	s.roots = []string{rootA, rootB}
 
 	// A subdirectory of an allowed root is allowed.
@@ -1223,7 +1240,7 @@ func TestTwoDirsDistinctTokensAndRoutes(t *testing.T) {
 
 func TestRediscoverPicksUpNewSkill(t *testing.T) {
 	s := newServeServerForTest(t)
-	wd := t.TempDir()
+	wd := resolvedTempDir(t)
 	stageSkillWithSecret(t, wd, "slack")
 
 	m1, err := s.activate(wd)

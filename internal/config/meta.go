@@ -247,6 +247,16 @@ func ValidSkillName(name string) error {
 // know are ignored; use LoadMetaWithWarnings to list them.
 func LoadMeta(path string) (*Meta, error) {
 	raw, err := os.ReadFile(path)
+	return parseMeta(raw, err)
+}
+
+// LoadMetaRoot reads without reopening an untrusted absolute pathname.
+func LoadMetaRoot(root *os.Root, path string) (*Meta, error) {
+	raw, err := root.ReadFile(path)
+	return parseMeta(raw, err)
+}
+
+func parseMeta(raw []byte, err error) (*Meta, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read meta: %w", err)
 	}
@@ -729,20 +739,26 @@ func BundleHash(skillDir string) (string, error) {
 	if resolved, evalErr := filepath.EvalSymlinks(abs); evalErr == nil {
 		root = resolved
 	}
+	return bundleHashFS(os.DirFS(root))
+}
+
+// BundleHashRoot hashes the opened skill directory, including across renames.
+func BundleHashRoot(root *os.Root) (string, error) {
+	return bundleHashFS(root.FS())
+}
+
+func bundleHashFS(root fs.FS) (string, error) {
 	type item struct {
 		rel string
 		sum [sha256.Size]byte
 	}
 	var items []item
 
-	err = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+	err := fs.WalkDir(root, ".", func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		rel, relErr := filepath.Rel(root, p)
-		if relErr != nil {
-			return relErr
-		}
+		rel := p
 		if rel == "." {
 			return nil
 		}
@@ -773,7 +789,7 @@ func BundleHash(skillDir string) (string, error) {
 		if isExcludedFileName(d.Name()) {
 			return nil
 		}
-		raw, readErr := os.ReadFile(p)
+		raw, readErr := fs.ReadFile(root, p)
 		if readErr != nil {
 			return fmt.Errorf("bundle hash: read %s: %w", rel, readErr)
 		}
