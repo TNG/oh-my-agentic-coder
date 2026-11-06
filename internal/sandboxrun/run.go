@@ -250,7 +250,10 @@ func Run(opts Options) int {
 	// user where runtime diagnostics will land.
 	diag.AnnouncePath()
 
-	env := sandboxprofile.FilterEnv(os.Environ(), sandboxprofile.EffectiveAllowVars(merged.Environment.AllowVars), merged.Environment.DenyVars, injected)
+	env, err := filterServeAuthEnv(os.Environ(), merged.Environment, injected)
+	if err != nil {
+		return fail("%v", err)
+	}
 	var onReady func(int)
 	if recorder != nil {
 		onReady = recorder.Start
