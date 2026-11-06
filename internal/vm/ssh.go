@@ -14,6 +14,9 @@ type SSHTarget struct {
 	Port       int
 	KeyPath    string
 	KnownHosts string
+	// TTY requests a terminal in the VM (ssh -t), so that Ctrl-C reaches
+	// the remote command.
+	TTY bool
 }
 
 // SSHRunner runs remote, a shell command line, as t.User inside the VM.
@@ -32,7 +35,7 @@ func DefaultSSH(ctx context.Context, t SSHTarget, stdin io.Reader, stdout, stder
 // SSHArgs are the ssh options shared by every connection: only the given
 // key, a dedicated known_hosts file, and no interactive prompts.
 func SSHArgs(t SSHTarget) []string {
-	return []string{
+	args := []string{
 		"-i", t.KeyPath,
 		"-p", strconv.Itoa(t.Port),
 		"-o", "StrictHostKeyChecking=accept-new",
@@ -41,6 +44,10 @@ func SSHArgs(t SSHTarget) []string {
 		"-o", "BatchMode=yes",
 		"-o", "IdentitiesOnly=yes",
 	}
+	if t.TTY {
+		args = append(args, "-t")
+	}
+	return args
 }
 
 // ShellQuote wraps s in POSIX single quotes; each embedded single quote
