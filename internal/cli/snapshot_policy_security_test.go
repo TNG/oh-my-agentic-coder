@@ -78,8 +78,20 @@ func TestSecurityLegacySnapshotRequiresHostReRegistration(t *testing.T) {
 	}
 	if got, err := approvedSpawnDir(name, src, h); err == nil || got != "" {
 		t.Errorf("preflight accepted legacy snapshot: %q, %v", got, err)
-	} else if !strings.Contains(err.Error(), "omac register "+name) {
-		t.Errorf("refusal lacks host-registration remedy: %v", err)
+	} else {
+		msg := err.Error()
+		if !strings.Contains(msg, "omac register "+name) {
+			t.Errorf("refusal lacks host-registration remedy: %v", err)
+		}
+		// The skill is approved; only its snapshot predates the current
+		// policy. Saying "not host-approved" sends the user to the wrong
+		// mental model and hides that rebuilding is all that is needed.
+		if !strings.Contains(msg, "older copy policy") {
+			t.Errorf("refusal must blame the old snapshot policy, got: %v", err)
+		}
+		if strings.Contains(msg, "not host-approved") {
+			t.Errorf("approved skill must not be reported as unapproved: %v", err)
+		}
 	}
 	fromLegacy := supervisor.SidecarSpec{SkillName: name, SkillDir: legacy}
 	if err := skillSpawnAuthorizer(fromLegacy); err == nil {

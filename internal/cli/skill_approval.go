@@ -104,7 +104,7 @@ func approvedSpawnDir(name, workdirSkillDir, bundleHash string) (snapshotDir str
 	// rather than letting the supervisor backstop fail the whole launch.
 	snap, present := skilltrust.SnapshotPath(name, h)
 	if !present {
-		return "", errSkillNotApproved(name)
+		return "", errSkillSnapshotMissing(name)
 	}
 	return snap, nil
 }
@@ -129,6 +129,15 @@ func snapshotMeta(name, snapDir string) (*config.Meta, error) {
 // host-side remedy the sandboxed agent cannot perform itself.
 func errSkillNotApproved(name string) error {
 	return fmt.Errorf("spawn refused: skill %q is not host-approved; run `omac register %s` from a host terminal (outside the sandbox) to approve its current code", name, name)
+}
+
+// errSkillSnapshotMissing is the refusal for an approved skill whose snapshot
+// is unavailable under the current copy policy: the host store was partly
+// deleted, or the snapshot was written by an older policy (and so may contain
+// bytes the approval hash never covered). The wording deliberately names the
+// policy rather than a release, so a future policy bump can reuse it.
+func errSkillSnapshotMissing(name string) error {
+	return fmt.Errorf("spawn refused: skill %q is approved, but its snapshot is missing or was made by an older copy policy; run `omac register %s` from a host terminal (outside the sandbox) to rebuild it", name, name)
 }
 
 // refusalNotice is the operator-facing line the launch paths print when a

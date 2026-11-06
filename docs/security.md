@@ -229,12 +229,6 @@ skill after it was approved. At approval time, the skill directory is frozen
 into a host-only snapshot; the sidecar is always spawned from that snapshot,
 never from the still-agent-writable workdir.
 
-Snapshots made before the file-exclusion fix are no longer accepted, even if
-their bundle hash still matches: they may contain files the hash never covered.
-Review the skill and run `omac register <skill>` from a host terminal to rebuild
-its snapshot with the current copy policy. For unchanged source, rebuilding
-preserves the bundle hash. It does not reopen automatic first-upgrade approval.
-
 ### Skill instructions
 
 The harness also reads each skill's `SKILL.md` itself and gives it to the model
