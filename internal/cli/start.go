@@ -27,6 +27,7 @@ import (
 	"github.com/TNG/oh-my-agentic-coder/internal/skillstate"
 	"github.com/TNG/oh-my-agentic-coder/internal/supervisor"
 	"github.com/TNG/oh-my-agentic-coder/internal/toolcache"
+	"github.com/TNG/oh-my-agentic-coder/internal/vm"
 )
 
 // launchOpts carries everything runLaunch needs: the resolved harness, the
@@ -71,6 +72,8 @@ type launchOpts struct {
 	// openPorts are extra loopback ports from --open-port (repeatable),
 	// typically a local webServer port for browser tests.
 	openPorts []int
+	// vm attaches the session to the running, offline omac VM (--vm).
+	vm bool
 	// innerArgs are appended to the resolved inner command (user-supplied
 	// trailing `-- args` plus any command-specific flags like --continue).
 	innerArgs []string
@@ -99,6 +102,7 @@ func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, int) 
 		noAudit            = fs.Bool("no-audit", false, "Disable the security audit trail.")
 		auditStrict        = fs.Bool("audit-strict", false, "Fail-closed: abort if the audit log cannot be written.")
 		sessionID          = fs.String("session", "", "Continue a specific session by id instead of the most recent one. (shorthand: -s)")
+		vmAttach           = fs.Bool("vm", false, "Attach to the omac VM: DOCKER_HOST points at its Docker API, its two loopback ports are opened for the sandbox. Requires `omac vm up` and offline mode.")
 	)
 	var openPorts intMultiFlag
 	fs.Var(&openPorts, "open-port", "Allow the sandboxed process to bind and connect on this TCP port (repeatable). Useful for a local app/dev server the agent or its tools talk to — e.g. Playwright/Vite/Next on :3000. On Linux, Landlock cannot limit that to loopback: outbound TCP to any host on the same port is also allowed.")
@@ -136,6 +140,10 @@ func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, int) 
 		fmt.Fprintf(env.Stderr, "omac %s: --ephemeral-cache cannot be used with --no-sandbox\n", cmdName)
 		return launchOpts{}, ExitMisuse
 	}
+	if *vmAttach && *noSandbox {
+		fmt.Fprintf(env.Stderr, "omac %s: --vm cannot be used with --no-sandbox\n", cmdName)
+		return launchOpts{}, ExitMisuse
+	}
 	if *cacheScope != "" {
 		if _, err := config.ValidateCacheScope(*cacheScope); err != nil {
 			fmt.Fprintf(env.Stderr, "omac %s: %v\n", cmdName, err)
@@ -161,6 +169,7 @@ func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, int) 
 		auditStrict:        *auditStrict,
 		sessionID:          *sessionID,
 		openPorts:          append([]int(nil), openPorts...),
+		vm:                 *vmAttach,
 		innerArgs:          innerArgs,
 	}, ExitOK
 }
@@ -235,6 +244,11 @@ func runLaunch(env *Env, opts launchOpts) int {
 		fmt.Fprintln(env.Stderr, prefix+": --no-audit cannot be combined with --audit-strict")
 		return ExitMisuse
 	}
+	// The parser refuses this combination; guard programmatic callers too.
+	if opts.vm && noSandbox {
+		fmt.Fprintln(env.Stderr, prefix+": --vm cannot be used with --no-sandbox")
+		return ExitMisuse
+	}
 
 	// 1. Load launcher config.
 	lc, cfgPath, err := config.LoadLauncher(env.Workdir)
@@ -253,6 +267,10 @@ func runLaunch(env *Env, opts launchOpts) int {
 	if planErr != nil && !noSandbox {
 		fmt.Fprintln(env.Stderr, prefix+":", planErr)
 		return ExitConfigInvalid
+	}
+	if opts.vm && !plan.Native {
+		fmt.Fprintln(env.Stderr, prefix+": "+vmProfileMisuse(plan))
+		return ExitMisuse
 	}
 	profName := plan.Name
 	prof := plan.Launcher
@@ -744,6 +762,34 @@ func runLaunch(env *Env, opts launchOpts) int {
 		fmt.Fprintf(env.Stderr, "[verbose] control plane: %s\n", controlURL)
 	}
 
+	// 7b. omac VM (--vm): attach only. The VM must already run offline; it is
+	//     never booted or stopped here and outlives the session.
+	var vmInfo vm.AttachInfo
+	var vmEnv map[string]string
+	releaseVM := func() {}
+	if opts.vm {
+		info, release, aerr := prepareVMAttach(ctx, env)
+		if aerr != nil {
+			fmt.Fprintln(env.Stderr, prefix+": --vm:", aerr)
+			return vmAttachExitCode(aerr)
+		}
+		releaseVM = release
+		defer releaseVM()
+		vmInfo = info
+		scopeDir := sandboxTmp
+		if cacheScope != nil {
+			scopeDir = cacheScope.Dir
+		}
+		vmEnv, err = vmSandboxEnv(info, scopeDir)
+		if err != nil {
+			fmt.Fprintln(env.Stderr, prefix+": --vm:", err)
+			return ExitIOError
+		}
+		if verbose {
+			fmt.Fprintf(env.Stderr, "[verbose] omac vm: docker %s api %s, ssh 127.0.0.1:%d\n", info.Docker.Version, info.Docker.APIVersion, info.SSHPort)
+		}
+	}
+
 	// 8. Build sandbox argv and exec.
 	//
 	// Resolve the inner command for the selected harness: an explicit
@@ -831,6 +877,9 @@ func runLaunch(env *Env, opts launchOpts) int {
 		// User --open-port grants (e.g. local Playwright webServer). Additive
 		// on top of the profile; no-op on non-native backends (with a warning).
 		argv = injectUserOpenPorts(env, argv, opts.openPorts, prof)
+		if opts.vm {
+			argv = injectVMGrants(argv, vmInfo, plan)
+		}
 		// Pass the resolved audit path down to `omac sandbox run` so the
 		// network-filter subprocess appends net.decision events to the
 		// same persistent log. Inherit the parent's run_id + mode so the
@@ -887,6 +936,9 @@ func runLaunch(env *Env, opts launchOpts) int {
 	if ocPin != nil {
 		// Config home carries the pinned port; state home keeps the sandboxed registration off the host's.
 		ocPin.apply(extra)
+	}
+	for k, v := range vmEnv {
+		extra[k] = v
 	}
 	if !noSandbox {
 		var ocClass openCodeVersionKind
@@ -953,6 +1005,7 @@ func runLaunch(env *Env, opts launchOpts) int {
 		}
 		_ = f.Close()
 		closeControl()
+		releaseVM() // os.Exit skips the deferred release
 		os.Exit(ExitIOError)
 	}
 
