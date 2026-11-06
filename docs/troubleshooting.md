@@ -154,6 +154,18 @@ your profile's `filesystem.write` works as a workaround — but that makes
 the shared host temp directory writable for the agent and weakens the
 default hardening, so prefer the update.
 
+### zsh: `can't create temp file for here document: operation not permitted`
+
+Every zsh heredoc (`cat <<EOF`) and here-string (`cat <<< text`) fails
+inside the macOS sandbox. zsh writes their content to a temp file named
+after `TMPPREFIX`, which defaults to `/tmp/zsh`, and the macOS sandbox does
+not grant `/tmp`.
+
+Fix: update omac. Current builds set `TMPPREFIX` to `$TMPDIR/zsh` on macOS.
+A `TMPPREFIX` you set yourself is kept if your profile's `allow_vars` lets
+it through and it points into a writable directory. If you cannot update,
+run `export TMPPREFIX="$TMPDIR/zsh"` inside the session.
+
 ### An MCP server or other harness-launched tool cannot reach its token or open its port
 
 The harness (opencode, claude-code, …) launches MCP servers **inside the sandbox**, so the MCP server is limited by the sandbox restrictions. Two things commonly need granting:
