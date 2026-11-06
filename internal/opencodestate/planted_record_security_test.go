@@ -11,15 +11,9 @@ import (
 // filesystem root, or an ancestor of it) does not come back from
 // Worktrees() as a directory to grant.
 //
-// Worktrees() only rejects "", "/", non-absolute paths, and duplicates; a
-// record naming $HOME passes every check and $HOME exists and is a
-// directory, so it comes back as an ordinary worktree. The caller
-// (`omac serve --for-opencode-desktop`) turns every returned worktree into
-// a `--allow <dir>` (read+write) sandbox grant — one JSON file dropped in
-// ~/.local/share/opencode/storage/project/ is enough to turn the next
-// activation into a full-home grant.
+// The caller turns returned directories into read+write sandbox grants.
 func TestSecurityPlantedProjectRecordYieldsNoWorktree(t *testing.T) {
-	home := t.TempDir()
+	home := testDesktopHome(t)
 	t.Setenv("HOME", home)
 	stateDir := filepath.Join(home, ".local", "share", "opencode", "storage", "project")
 	if err := os.MkdirAll(stateDir, 0o755); err != nil {
@@ -31,12 +25,13 @@ func TestSecurityPlantedProjectRecordYieldsNoWorktree(t *testing.T) {
 	// test pass for the wrong reason. (A project inside $HOME would
 	// collapse into the planted $HOME entry itself, which is the exact
 	// bug under test — so the control has to live elsewhere.)
-	legit := t.TempDir()
+	legit, _ := filepath.EvalSymlinks(t.TempDir())
 	writeProject(t, stateDir, "legit", legit)
+	writeDesktopPinnedProject(t, home, legit)
 
 	writeProject(t, stateDir, "planted", home)
 
-	worktrees, _, err := Worktrees()
+	worktrees, _, err := Worktrees(0)
 	if err != nil {
 		t.Fatal(err)
 	}
