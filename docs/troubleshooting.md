@@ -11,7 +11,7 @@ Run `omac doctor` first — it checks all prerequisites and prints the fix for w
 - **Launcher config**: validates the launcher config file if one exists
 - **Skill registry**: loads registered skills with sidecars and checks each one: is a binary/script present, are required secrets present?
 - **Inner harnesses**: reports which harness CLIs (`opencode`, `claude`, …) are on `PATH`
-- **Built-in skills**: checks whether `omac-write-a-skill` is provisioned for each installed harness
+- **Built-in skills**: checks whether the built-in skills `omac-write-a-skill` and `omac-vm` are provisioned for each installed harness
 - **Sandbox backend**: checks the platform sandbox binary (`sandbox-exec` on macOS, `bwrap` on Linux) and warns if the network prompt dialog (osascript / zenity / kdialog) is missing
 - **Sandbox profile**: warns about broad filesystem grants that weaken isolation
 

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"reflect"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -288,5 +289,26 @@ func TestVMExecVerboseLogs(t *testing.T) {
 	}
 	if (*calls)[0].Log != nil || (*calls)[1].Log == nil {
 		t.Errorf("Log should be nil without --verbose and set with it")
+	}
+}
+
+// The omac-vm skill tells agents which commands to run, so a renamed flag
+// must fail here rather than in an agent's session.
+func TestVMExecSkillCommandsParse(t *testing.T) {
+	env, _, stderr := vmTestEnv(t)
+	for file, want := range map[string]int{"SKILL.md": 5, "setup.md": 2} {
+		text, err := os.ReadFile("../builtinskills/assets/omac-vm/" + file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cmds := regexp.MustCompile("omac vm exec( [^`\n]*-- [^`\n]*)").FindAllStringSubmatch(string(text), -1)
+		if len(cmds) < want {
+			t.Errorf("found %d `omac vm exec` commands in %s, want at least %d", len(cmds), file, want)
+		}
+		for _, m := range cmds {
+			if _, _, ok := parseVMExecArgs(strings.Fields(m[1]), env); !ok {
+				t.Errorf("%s command does not parse: omac vm exec %s\n%s", file, m[1], stderr())
+			}
+		}
 	}
 }
