@@ -103,6 +103,11 @@ func Run(opts Options) int {
 	if err := grants.Validate(); err != nil {
 		return fail("%v", err)
 	}
+	if opts.Flags.ForOpenCodeDesktop {
+		if err := protectDesktopStores(grants, opts.Flags.Learn); err != nil {
+			return fail("%v", err)
+		}
+	}
 	den := resolvedDenial(merged.Denial)
 	grants.DenialText = den.MarkerFile
 	grants.DenialDirName = den.MarkerDirName
