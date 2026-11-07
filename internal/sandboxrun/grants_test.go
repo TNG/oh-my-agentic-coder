@@ -628,7 +628,7 @@ func TestResolveGrantsWorktreeAccessNone(t *testing.T) {
 
 // TestResolveGrantsSubmoduleNoWorktreeGrants pins the submodule exclusion
 // claim in the PR body: a submodule's admin dir lives under the parent's
-// .git/modules/ but has NO commondir file, so resolveWorktreeCommonDir
+// .git/modules/ but has NO commondir file, so ResolveWorktreeCommonDir
 // returns ok=false and no extra grants are added.
 func TestResolveGrantsSubmoduleNoWorktreeGrants(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
