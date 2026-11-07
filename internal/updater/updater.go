@@ -63,6 +63,13 @@ type Plan struct {
 	Asset            Asset
 	LocalPath        string
 	ChecksumVerified bool
+
+	// WantChecksum is the hex SHA-256 the downloaded asset verified
+	// against, captured when Check verified it. Apply re-verifies whatever
+	// bytes it actually installs against this digest and refuses to
+	// install a plan that carries none, so the file at LocalPath cannot
+	// silently change between Check and Apply.
+	WantChecksum string
 }
 
 // Options configures Plan.
@@ -225,7 +232,8 @@ func Check(ctx context.Context, opts Options, deps Deps) (Plan, error) {
 }
 
 // downloadAndVerify fetches p.Asset into a temp file and checks its SHA-256
-// against the release's checksums.txt, setting p.LocalPath/ChecksumVerified.
+// against the release's checksums.txt, setting p.LocalPath/ChecksumVerified
+// and recording the verified digest in p.WantChecksum for Apply to re-check.
 func downloadAndVerify(ctx context.Context, p *Plan, rel Release, deps Deps) error {
 	var sums Asset
 	var ok bool
@@ -265,6 +273,7 @@ func downloadAndVerify(ctx context.Context, p *Plan, rel Release, deps Deps) err
 	}
 	p.LocalPath = path
 	p.ChecksumVerified = true
+	p.WantChecksum = wantSum
 	return nil
 }
 
@@ -325,6 +334,19 @@ func Apply(ctx context.Context, plan Plan, deps Deps) error {
 		if pm.Name == "" {
 			return fmt.Errorf("unknown package manager %q", plan.PackageManager)
 		}
+		if err := plan.requireVerifiedDigest(); err != nil {
+			return err
+		}
+		// Re-read the file on disk right before handing it to the
+		// installer, so the digest covers the bytes being installed, not
+		// an earlier observation of them.
+		gotSum, err := sha256File(plan.LocalPath)
+		if err != nil {
+			return fmt.Errorf("checksum %s: %w", plan.Asset.Name, err)
+		}
+		if !strings.EqualFold(gotSum, plan.WantChecksum) {
+			return plan.digestMismatchError()
+		}
 		args := append([]string{pm.Name}, pm.InstallArgs(plan.LocalPath)...)
 		return deps.Runner.Run(ctx, "sudo", args, deps.Stdin, deps.Stdout, deps.Stderr)
 	case MethodTarballSelfReplace:
@@ -335,15 +357,30 @@ func Apply(ctx context.Context, plan Plan, deps Deps) error {
 }
 
 func applySelfReplace(plan Plan, deps Deps) error {
+	if err := plan.requireVerifiedDigest(); err != nil {
+		return err
+	}
 	f, err := os.Open(plan.LocalPath)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
 
-	data, mode, err := ExtractBinary(f, "omac")
+	// Hash the archive through the same reader that unpacks it, so the
+	// digest is computed over the exact bytes being installed.
+	h := sha256.New()
+	tee := io.TeeReader(f, h)
+	data, mode, err := ExtractBinary(tee, "omac")
 	if err != nil {
 		return fmt.Errorf("extract omac from %s: %w", plan.Asset.Name, err)
+	}
+	// Drain whatever the extractor left unread so the digest covers the
+	// whole file, then compare before anything is written.
+	if _, err := io.Copy(io.Discard, tee); err != nil {
+		return fmt.Errorf("read %s: %w", plan.Asset.Name, err)
+	}
+	if !strings.EqualFold(hex.EncodeToString(h.Sum(nil)), plan.WantChecksum) {
+		return plan.digestMismatchError()
 	}
 
 	target, err := runningBinary(deps)
@@ -352,6 +389,19 @@ func applySelfReplace(plan Plan, deps Deps) error {
 	}
 
 	return deps.Replacer.Replace(target, bytes.NewReader(data), mode)
+}
+
+// requireVerifiedDigest rejects a plan that carries no digest captured at
+// verification time: Apply must never install unverified bytes.
+func (p Plan) requireVerifiedDigest() error {
+	if p.WantChecksum == "" {
+		return fmt.Errorf("%w: %s has no verified digest on the plan", ErrChecksumMismatch, p.Asset.Name)
+	}
+	return nil
+}
+
+func (p Plan) digestMismatchError() error {
+	return fmt.Errorf("%w: %s changed on disk since it was verified", ErrChecksumMismatch, p.Asset.Name)
 }
 
 // runningBinary resolves the path of the executable currently running,
