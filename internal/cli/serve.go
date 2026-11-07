@@ -1965,9 +1965,28 @@ func (s *serveServer) controlMux() *http.ServeMux {
 	mux.HandleFunc("/__omac__/deactivate", s.requireControlToken(s.handleDeactivate))
 	mux.HandleFunc("/__omac__/reload", s.requireControlToken(s.handleReload))
 	mux.HandleFunc("/__omac__/reload-global", s.requireControlToken(s.handleReloadGlobal))
-	mux.HandleFunc("/__omac__/dirs", s.handleDirs)
-	mux.HandleFunc("/__omac__/global", s.handleGlobal)
+	mux.HandleFunc("/__omac__/dirs", s.requireControlToken(s.handleDirs))
+	mux.HandleFunc("/__omac__/global", s.requireControlToken(s.handleGlobal))
 	return mux
+}
+
+// dirTokenOK reports whether the caller may mutate the namespace of absDir.
+// The control token is daemon-wide, so it proves only "one of this daemon's
+// sessions"; the per-directory token is the proof a caller owns that
+// directory's namespace. A directory that is not active has no namespace to
+// take over, so it passes without a dir token (reload then acts as a plain
+// activation, deactivate as a no-op).
+func (s *serveServer) dirTokenOK(absDir, got string) bool {
+	s.mu.RLock()
+	d, active := s.dirs[absDir]
+	var live string
+	if active {
+		d.mu.Lock()
+		live = d.Token
+		d.mu.Unlock()
+	}
+	s.mu.RUnlock()
+	return !active || (got != "" && subtle.ConstantTimeCompare([]byte(got), []byte(live)) == 1)
 }
 
 // handleReloadGlobal re-activates the user-global skill layer (POST). Used
@@ -2038,6 +2057,10 @@ func (s *serveServer) handleDeactivate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+	if !s.dirTokenOK(abs, r.Header.Get("X-Omac-Dir-Token")) {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "this directory is owned by a live session; deactivate must be performed from within that session"})
+		return
+	}
 	s.deactivate(abs)
 	s.aud().Emit(audit.ControlMutation("deactivate", abs, "ok"))
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deactivated", "dir": abs})
@@ -2053,6 +2076,10 @@ func (s *serveServer) handleReload(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+	if !s.dirTokenOK(abs, r.Header.Get("X-Omac-Dir-Token")) {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "this directory is owned by a live session; reload must be performed from within that session"})
+		return
+	}
 	// Reload = re-run activation logic for an already-known dir: drop and
 	// re-activate so pending-credentials skills get promoted.
 	s.deactivate(abs)
@@ -2062,6 +2089,9 @@ func (s *serveServer) handleReload(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+	// The owning session already holds the dir token; a copy in this
+	// response could only reach a caller that does not own the namespace.
+	delete(manifest, "dir_token")
 	s.aud().Emit(audit.ControlMutation("reload", abs, "ok"))
 	writeJSON(w, http.StatusOK, manifest)
 }

@@ -378,7 +378,7 @@ func runServeProbe(t *testing.T, h harnessConfig, omacBin, home, workdir, cwd st
 	}
 
 	// Activate the workdir and assert the manifest carries a namespacing token.
-	manifest, err := serveControlPost(client, controlBase+"/__omac__/activate", workdir, controlToken)
+	manifest, err := serveControlPost(client, controlBase+"/__omac__/activate", workdir, controlToken, "")
 	if err != nil {
 		return fmt.Errorf("activate %s: %w\nSTDERR:\n%s", workdir, err, tailLines(stderr.String(), 60))
 	}
@@ -399,8 +399,9 @@ func runServeProbe(t *testing.T, h harnessConfig, omacBin, home, workdir, cwd st
 		return fmt.Errorf("/__omac__/dirs did not list the activated dir %q: %s", workdir, dirsBody)
 	}
 
-	// Deactivate cleanly.
-	if _, err := serveControlPost(client, controlBase+"/__omac__/deactivate", workdir, controlToken); err != nil {
+	// Deactivate cleanly. The workdir is live, so the control plane demands
+	// its dir token alongside the control token.
+	if _, err := serveControlPost(client, controlBase+"/__omac__/deactivate", workdir, controlToken, token); err != nil {
 		return fmt.Errorf("deactivate %s: %w", workdir, err)
 	}
 
@@ -569,8 +570,10 @@ func waitForServeControlToken(home string, waitCh <-chan error, timeout time.Dur
 }
 
 // serveControlPost POSTs {"dir": dir} to a control-plane endpoint and returns
-// the decoded JSON response, erroring on any non-200 status.
-func serveControlPost(client *http.Client, url, dir, controlToken string) (map[string]any, error) {
+// the decoded JSON response, erroring on any non-200 status. dirToken, when
+// non-empty, is sent as the per-directory ownership proof the mutating
+// endpoints of a live workdir require.
+func serveControlPost(client *http.Client, url, dir, controlToken, dirToken string) (map[string]any, error) {
 	body, _ := json.Marshal(map[string]string{"dir": dir})
 	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
@@ -578,6 +581,9 @@ func serveControlPost(client *http.Client, url, dir, controlToken string) (map[s
 	}
 	req.Header.Set("content-type", "application/json")
 	req.Header.Set("X-Omac-Control-Token", controlToken)
+	if dirToken != "" {
+		req.Header.Set("X-Omac-Dir-Token", dirToken)
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err

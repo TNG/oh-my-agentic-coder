@@ -190,6 +190,11 @@ func notifyReload(absDir string) (bool, string) {
 		// e.g. dir not under the server's --root, or not a directory.
 		return false, fmt.Sprintf("omac serve declined reload (%d) — dir may be outside the server's --root", resp.StatusCode)
 	}
+	if resp.StatusCode == http.StatusForbidden {
+		// A live session owns that directory; the host-side CLI never holds
+		// its dir token, by design.
+		return false, fmt.Sprintf("omac serve declined reload (%d) — a live session owns this directory; run the reload from within that session", resp.StatusCode)
+	}
 	return false, fmt.Sprintf("omac serve reload returned %d", resp.StatusCode)
 }
 
