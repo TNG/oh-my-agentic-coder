@@ -94,11 +94,13 @@ Prompts for secrets (API keys) and config fields (non-secret settings such as ba
 ```bash
 omac register <skill>
 omac register <skill> --defaults   # use previously stored values, prompt only for new ones
+omac register <skill> --required-only   # ask only for values the skill cannot run without
 ```
 
 | Flag | Default | Description |
 |---|---|---|
 | `--defaults` | false | Use previously remembered values without prompting. omac saves values from every registration globally, matched by skill and secret name. The first registration still prompts; after that, `--defaults` reuses them silently in any project. |
+| `--required-only` | false | Ask only for required secrets and for required config fields without a default. Optional values are not asked and not stored; neither are fields with a `default:`, because `omac start` falls back to it. A field whose default comes from an environment variable (`default_from_env`) stores that variable's value. Values from `--secrets-from`, `--fields-from`, `OMAC_SECRET_<NAME>`, `OMAC_CONFIG_<NAME>` or `--defaults` are still stored. Run `omac register <skill>` without the flag later to set the rest. Cannot be combined with `--reprompt-secrets` or `--reprompt-fields`. |
 | `--no-secrets` | false | Skip secret prompts. Use together with `--secrets-from`, or when you already stored the secrets in a prior step via `omac secrets import` and don't want to be prompted again. |
 | `--secrets-from <file>` | — | Read secrets from a `KEY=VALUE` file instead of prompting. Each line must match a secret name declared in the skill's `omac.yaml`. |
 

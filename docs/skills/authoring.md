@@ -166,6 +166,8 @@ To update stored values after registration:
 
 To inspect what omac would inject for a skill, run `omac config show <skill>` (add `--json` for machine-readable output). It prints each config value with its source. Secrets are never shown in full — you get a short fingerprint (a truncated hash like `sha256:a1b2c3…`) that confirms a value is set and lets you check two setups share the same one. `omac config get <skill> <field>` prints one resolved config value.
 
+`omac register <skill> --required-only` asks only for required secrets and for required config fields without a `default:`. Everything else stays unstored, and `omac start` uses the `default:` (installers use this so new users are not asked about every setting). So give a field a `default:` whenever a sensible value exists: users then only see it if they ask for it, and a later change of the default in your skill reaches them.
+
 For non-interactive setup (CI), skip the prompts: pass `--no-fields` / `--no-secrets`, and supply values with `--fields-from <file>` / `--secrets-from <file>`, or `OMAC_CONFIG_<NAME>` environment variables.
 
 ## Sidecar
