@@ -123,7 +123,7 @@ async function createBridge(
     return typeof controlBase === "string" && controlBase.length > 0
   }
 
-  async function controlPost(path: string, body: unknown): Promise<DirManifest | null> {
+  async function controlPost(path: string, body: unknown, dirToken?: string): Promise<DirManifest | null> {
     if (!enabled()) return null
     // One controller serves both bounds: the request timeout and plugin
     // shutdown. This avoids depending on AbortSignal.any, which older type
@@ -136,9 +136,14 @@ async function createBridge(
     try {
       // omac requires the control token on every /__omac__/* call; omitted
       // when unset so this plugin also works against pre-token omac builds.
+      // The dir token is the ownership proof a live workdir demands before
+      // its namespace may be ended or re-run.
       const headers: Record<string, string> = { "content-type": "application/json" }
       if (process.env.OMAC_CONTROL_TOKEN) {
         headers["X-Omac-Control-Token"] = process.env.OMAC_CONTROL_TOKEN
+      }
+      if (dirToken) {
+        headers["X-Omac-Dir-Token"] = dirToken
       }
       const res = await fetch(`${controlBase}${path}`, {
         method: "POST",
@@ -197,7 +202,9 @@ async function createBridge(
     for (const d of sessionDir.values()) {
       if (d === dir) return
     }
-    await controlPost("/__omac__/deactivate", { dir })
+    // A live workdir may be deactivated only by its owner; the cached dir
+    // token is that proof.
+    await controlPost("/__omac__/deactivate", { dir }, manifests.get(dir)?.dir_token)
     manifests.delete(dir)
     activated.delete(dir)
   }
@@ -287,17 +294,22 @@ async function createBridge(
     // server is `omac serve`, NOT `omac start`; the way to re-activate a
     // directory after installing/fixing a skill is the control-plane reload
     // endpoint, which re-discovers, re-registers, re-resolves secrets and
-    // re-spawns sidecars for the directory in place.
+    // re-spawns sidecars for the directory in place. A live directory is
+    // reloaded only from within the session that owns it: the dir-token
+    // header is that proof of ownership.
     if (anyUnavailable && controlBase) {
+      const reloadCurl =
+        `curl -s -X POST "${controlBase}/__omac__/reload" ` +
+        `-H 'content-type: application/json' -d '{"dir":"${m.dir}"}'` +
+        (m.dir_token ? ` -H 'X-Omac-Dir-Token: ${m.dir_token}'` : "")
       lines.push("")
       lines.push(
         "To make a newly installed or just-fixed skill available, do NOT run " +
           "`omac start` (this is an `omac serve` deployment). Instead reload this " +
           `directory in place by POSTing to the omac control plane:\n` +
           "```\n" +
-          `curl -s -X POST "${controlBase}/__omac__/reload" ` +
-          `-H 'content-type: application/json' -d '{"dir":"${m.dir}"}'\n` +
-          "```\n" +
+          reloadCurl +
+          "\n```\n" +
           "Then re-read this list — the skill should move from BROKEN/UNAVAILABLE to ready.",
       )
     }
