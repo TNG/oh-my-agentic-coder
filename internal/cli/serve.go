@@ -1330,6 +1330,15 @@ func (s *serveServer) reloadGlobals() error {
 
 // activate brings a directory online (idempotent) and returns its manifest.
 func (s *serveServer) activate(absDir string) (map[string]any, error) {
+	return s.activateDir(absDir, "")
+}
+
+// activateDir activates absDir. A non-empty keep reuses that exact namespace
+// token instead of minting a fresh one: the caller has already proven it
+// holds keep, and it has no channel to receive a replacement (the one-shot
+// emission was spent on first activation), so a fresh token would strand
+// the owning session. The kept token counts as emitted for that reason.
+func (s *serveServer) activateDir(absDir, keep string) (map[string]any, error) {
 	// Per-dir coalescing (§5.2 step 1): concurrent activate calls for the
 	// same directory serialize here, so only the first does the work and
 	// the rest observe the finished state.
@@ -1357,8 +1366,12 @@ func (s *serveServer) activate(absDir string) (map[string]any, error) {
 		return nil, fmt.Errorf("directory %s is not under any allowed --root", absDir)
 	}
 
-	token := mintToken()
-	d := &dirState{Dir: absDir, Token: token, State: "activating", Skills: map[string]*skillRoute{}}
+	token := keep
+	emitted := keep != ""
+	if token == "" {
+		token = mintToken()
+	}
+	d := &dirState{Dir: absDir, Token: token, State: "activating", Skills: map[string]*skillRoute{}, tokenEmitted: emitted}
 	s.mu.Lock()
 	// Clear flat aliases before the second dir becomes visible so there is
 	// no instant at which len(s.dirs) >= 2 and a token-less alias from the
@@ -1970,23 +1983,27 @@ func (s *serveServer) controlMux() *http.ServeMux {
 	return mux
 }
 
-// dirTokenOK reports whether the caller may mutate the namespace of absDir.
-// The control token is daemon-wide, so it proves only "one of this daemon's
-// sessions"; the per-directory token is the proof a caller owns that
-// directory's namespace. A directory that is not active has no namespace to
-// take over, so it passes without a dir token (reload then acts as a plain
-// activation, deactivate as a no-op).
-func (s *serveServer) dirTokenOK(absDir, got string) bool {
+// dirTokenOK reports whether the caller may mutate the namespace of absDir,
+// and whether that namespace is live. The control token is daemon-wide, so it
+// proves only "one of this daemon's sessions"; the per-directory token is the
+// proof a caller owns that directory's namespace. A directory that is not
+// active has no namespace to take over, so it passes without a dir token
+// (reload then acts as a plain activation, deactivate as a no-op). For a live
+// directory it also returns the current token: a caller that just proved
+// ownership of it must keep that same token, not a replacement.
+func (s *serveServer) dirTokenOK(absDir, got string) (ok, active bool, live string) {
 	s.mu.RLock()
-	d, active := s.dirs[absDir]
-	var live string
-	if active {
+	d, act := s.dirs[absDir]
+	if act {
 		d.mu.Lock()
 		live = d.Token
 		d.mu.Unlock()
 	}
 	s.mu.RUnlock()
-	return !active || (got != "" && subtle.ConstantTimeCompare([]byte(got), []byte(live)) == 1)
+	if act && (got == "" || subtle.ConstantTimeCompare([]byte(got), []byte(live)) != 1) {
+		return false, act, live
+	}
+	return true, act, live
 }
 
 // handleReloadGlobal re-activates the user-global skill layer (POST). Used
@@ -2057,7 +2074,7 @@ func (s *serveServer) handleDeactivate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	if !s.dirTokenOK(abs, r.Header.Get("X-Omac-Dir-Token")) {
+	if ok, _, _ := s.dirTokenOK(abs, r.Header.Get("X-Omac-Dir-Token")); !ok {
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "this directory is owned by a live session; deactivate must be performed from within that session"})
 		return
 	}
@@ -2076,22 +2093,39 @@ func (s *serveServer) handleReload(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	if !s.dirTokenOK(abs, r.Header.Get("X-Omac-Dir-Token")) {
+	ok, active, live := s.dirTokenOK(abs, r.Header.Get("X-Omac-Dir-Token"))
+	if !ok {
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "this directory is owned by a live session; reload must be performed from within that session"})
 		return
 	}
 	// Reload = re-run activation logic for an already-known dir: drop and
 	// re-activate so pending-credentials skills get promoted.
-	s.deactivate(abs)
-	manifest, err := s.activate(abs)
-	if err != nil {
-		s.aud().Emit(audit.ControlMutation("reload", abs, "error: "+err.Error()))
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
+	var manifest map[string]any
+	if active {
+		// Re-activate with the token the caller just proved it holds: the
+		// owner has no way to receive a replacement, so a fresh token
+		// here would lock it out of its own workdir. The re-used token is
+		// already emitted, and a copy in this response could only reach a
+		// caller that does not own the namespace.
+		s.deactivate(abs)
+		manifest, err = s.activateDir(abs, live)
+		if err != nil {
+			s.aud().Emit(audit.ControlMutation("reload", abs, "error: "+err.Error()))
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		delete(manifest, "dir_token")
+	} else {
+		// Not active: this is a plain first activation, and its response
+		// legitimately hands the freshly minted token to the caller, which
+		// becomes the directory's owner.
+		manifest, err = s.activate(abs)
+		if err != nil {
+			s.aud().Emit(audit.ControlMutation("reload", abs, "error: "+err.Error()))
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
 	}
-	// The owning session already holds the dir token; a copy in this
-	// response could only reach a caller that does not own the namespace.
-	delete(manifest, "dir_token")
 	s.aud().Emit(audit.ControlMutation("reload", abs, "ok"))
 	writeJSON(w, http.StatusOK, manifest)
 }

@@ -324,3 +324,106 @@ func TestSecurityDirsAndGlobalRequireControlToken(t *testing.T) {
 		t.Errorf("the authenticated global listing carried a namespace token: %s", raw)
 	}
 }
+
+// TestSecurityReloadKeepsOwnerTokenUsable asserts the owner's half of the
+// reload contract: a reload that accepted the directory's token must leave
+// that token working. The one-shot token emission was spent on first
+// activation and a reload response carries no replacement, so a reload that
+// replaced the token would strand the owning session permanently: every
+// later reload and deactivate of that workdir would answer 403 while its
+// sidecars keep running.
+func TestSecurityReloadKeepsOwnerTokenUsable(t *testing.T) {
+	sectest.RequireLoopbackListener(t)
+	s := newServeServerForTest(t)
+	wd := t.TempDir()
+	token := activateWorkdirForTest(t, s, wd)
+
+	control := httptest.NewServer(s.controlMux())
+	t.Cleanup(control.Close)
+	body := fmt.Sprintf(`{"dir":%q}`, wd)
+
+	for i := 1; i <= 2; i++ {
+		status, raw, out := controlRequest(t, http.MethodPost, control.URL+"/__omac__/reload", body, s.controlToken, token)
+		if status != http.StatusOK {
+			t.Fatalf("owner reload #%d with the activation dir token answered %d, want 200 (body=%s): the token handed over at activation must keep working across reloads", i, status, raw)
+		}
+		if got, _ := out["dir_token"].(string); got != "" || strings.Contains(raw, "dir_token") {
+			t.Errorf("owner reload #%d response carried a dir_token (%q): the owner already holds its key, so a token here can only reach a caller that does not own the namespace", i, got)
+		}
+		s.mu.RLock()
+		d, active := s.dirs[wd]
+		live := ""
+		if active {
+			live = d.Token
+		}
+		s.mu.RUnlock()
+		if !active || live != token {
+			t.Fatalf("owner reload #%d left the workdir active=%v with token %q, want the activation token %q: a reload must not strand the session that owns the directory", i, active, live, token)
+		}
+	}
+
+	// The same cached token must still end the namespace afterwards.
+	status, raw, _ := controlRequest(t, http.MethodPost, control.URL+"/__omac__/deactivate", body, s.controlToken, token)
+	if status != http.StatusOK {
+		t.Fatalf("deactivate with the activation dir token after reloads answered %d, want 200 (body=%s)", status, raw)
+	}
+	s.mu.RLock()
+	_, still := s.dirs[wd]
+	s.mu.RUnlock()
+	if still {
+		t.Error("deactivate with the preserved dir token left the workdir active")
+	}
+}
+
+// TestSecurityReloadOfInactiveDirHandsOverToken asserts the inactive-dir
+// half of the reload contract: a directory that is not yet active has no
+// owner to check, so its reload is a plain first activation — and it must
+// deliver the freshly minted dir_token exactly once. Suppressing it there
+// would leave the directory active but with a token issued to no one, so it
+// could never be reloaded or deactivated again.
+func TestSecurityReloadOfInactiveDirHandsOverToken(t *testing.T) {
+	sectest.RequireLoopbackListener(t)
+	s := newServeServerForTest(t)
+	wd := t.TempDir()
+	stageSkillWithSecret(t, wd, "slack")
+
+	control := httptest.NewServer(s.controlMux())
+	t.Cleanup(control.Close)
+	body := fmt.Sprintf(`{"dir":%q}`, wd)
+
+	// No prior activation: reload with only the control token must succeed
+	// and hand over the new token, exactly like POST /__omac__/activate.
+	status, raw, out := controlRequest(t, http.MethodPost, control.URL+"/__omac__/reload", body, s.controlToken, "")
+	if status != http.StatusOK {
+		t.Fatalf("reload of a not-yet-active workdir answered %d, want 200 (body=%s)", status, raw)
+	}
+	token, _ := out["dir_token"].(string)
+	if token == "" {
+		t.Fatalf("reload of a not-yet-active workdir returned no dir_token (body=%s): the workdir becomes active here, so its caller must receive the key or it can never be reloaded or deactivated", raw)
+	}
+
+	// From here the workdir behaves like any activated one: a second reload
+	// demands the token, succeeds with it, and carries no dir_token.
+	status, raw, _ = controlRequest(t, http.MethodPost, control.URL+"/__omac__/reload", body, s.controlToken, "")
+	if status != http.StatusForbidden {
+		t.Errorf("reload of the now-active workdir without its dir token answered %d, want 403 (body=%s)", status, raw)
+	}
+	status, raw, out = controlRequest(t, http.MethodPost, control.URL+"/__omac__/reload", body, s.controlToken, token)
+	if status != http.StatusOK {
+		t.Fatalf("reload of the now-active workdir with its dir token answered %d, want 200 (body=%s)", status, raw)
+	}
+	if got, _ := out["dir_token"].(string); got != "" || strings.Contains(raw, "dir_token") {
+		t.Errorf("the second reload response carried a dir_token (%q): the token was already handed over once", got)
+	}
+
+	status, raw, _ = controlRequest(t, http.MethodPost, control.URL+"/__omac__/deactivate", body, s.controlToken, token)
+	if status != http.StatusOK {
+		t.Fatalf("deactivate with the reload-issued dir token answered %d, want 200 (body=%s)", status, raw)
+	}
+	s.mu.RLock()
+	_, still := s.dirs[wd]
+	s.mu.RUnlock()
+	if still {
+		t.Error("deactivate with the reload-issued dir token left the workdir active")
+	}
+}
