@@ -43,6 +43,7 @@ omac reads only the fields listed below. Other keys do not stop the skill from l
 | `limits.idle_timeout_secs` | no | — | Seconds of inactivity before the proxy closes a sidecar connection. |
 | `secrets` | no | `[]` | List of credential declarations (see below). |
 | `config` | no | `[]` | List of non-secret config field declarations (see below). |
+| `approvals` | no | — | Routes that need the user's consent before they run. See [Asking the user before a route runs](#asking-the-user-before-a-route-runs). |
 
 **`secrets[]` entry fields**
 
@@ -265,7 +266,6 @@ By default, a call from the agent to your sidecar is forwarded without a prompt.
 ```yaml
 sidecar:
   approvals:
-    version: 1
     endpoints:
       - match: "GET /folders"
         approval: none
