@@ -44,7 +44,7 @@ func TestApprovalsSummary(t *testing.T) {
 	if s := approvalsSummary(&config.Meta{Sidecar: &config.SidecarMeta{}}); !strings.Contains(s, "ungated") {
 		t.Errorf("ungated skill: %q", s)
 	}
-	m := &config.Meta{Sidecar: &config.SidecarMeta{Approvals: &config.ApprovalsSpec{Version: 1, Endpoints: []config.ApprovalSpec{
+	m := &config.Meta{Sidecar: &config.SidecarMeta{Approvals: &config.ApprovalsSpec{Endpoints: []config.ApprovalSpec{
 		{Match: "GET /a", Approval: approval.None}, {Match: "POST /b", Approval: approval.Required},
 	}}}}
 	if s := approvalsSummary(m); !strings.Contains(s, "2 endpoint(s) declared, 1 ask you first") {
