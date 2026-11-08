@@ -199,7 +199,6 @@ A sidecar can declare its endpoints in `omac.yaml` so omac enforces them in the 
 sidecar:
   mount: my-skill
   approvals:
-    version: 1
     endpoints:
       - match: "GET /status"
         approval: none
@@ -214,9 +213,12 @@ sidecar:
 - **`approval: none`** forwards the request. **`approval: required`** holds the request and shows the user a dialog: allow once, for the session, always, deny, or deny everything from this skill for the session. The dialog's extra choices and the timeout (no answer is a deny) are omac's choice and can change; do not rely on them. `none` is not allowed on `ANY` or on a `**` path, so a catch-all is always `required`.
 - **Split by what a route can do.** A route that can do everything (a generic passthrough such as a raw API or a command runner) is always `required`: omac cannot see inside the body, so the user decides per call. Offer subsets as separate routes instead, for example a read-only route and a write route, and enforce the subset in the sidecar (refuse what does not belong on the route). A subset route that can only read is `none`; one that can send, change or delete is `required`.
 - **`description`** is one sentence shown in the dialog beside what omac itself saw (method, path, query). Credential-like query values are masked. The request body is not shown.
-- Unknown keys, an unknown `version` or any other `approval` value stop the registration.
+- Unknown keys or any other `approval` value stop the registration, so a misspelled key cannot silently turn the prompt off.
 - omac cleans the path before it matches and forwards that same cleaned path (dot segments, `//`, percent-encoded forms; an encoded `/` or `\` is refused with `400`), and removes `X-HTTP-Method-Override` style headers. A held request still streams its response; a WebSocket upgrade is decided once, when it connects.
 - A skill without the block is forwarded as before. `omac register` says so.
+- An omac that predates this block ignores it and forwards every call. Do not publish a skill that relies on it before a release that has it.
+
+The reasoning behind this design is in [ADR 0001](../adr/0001-optional-route-consent.md).
 
 The user manages stored "allow always" answers with `omac approvals list` and `omac approvals revoke <id>`.
 
