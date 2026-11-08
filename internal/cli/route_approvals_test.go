@@ -13,7 +13,6 @@ func TestRouteApprovals(t *testing.T) {
 		t.Error("a skill without an approvals block must be ungated")
 	}
 	m := &config.Meta{Sidecar: &config.SidecarMeta{Approvals: &config.ApprovalsSpec{
-		Version:   1,
 		Endpoints: []config.ApprovalSpec{{Match: "GET /status", Approval: approval.None}},
 	}}}
 	set := routeApprovals(m)
@@ -24,7 +23,9 @@ func TestRouteApprovals(t *testing.T) {
 		t.Error("undeclared endpoint matched")
 	}
 	// A declaration that cannot compile admits nothing.
-	bad := &config.Meta{Sidecar: &config.SidecarMeta{Approvals: &config.ApprovalsSpec{Version: 9}}}
+	bad := &config.Meta{Sidecar: &config.SidecarMeta{Approvals: &config.ApprovalsSpec{
+		Endpoints: []config.ApprovalSpec{{Match: "/status", Approval: approval.None}},
+	}}}
 	if _, ok := routeApprovals(bad).Lookup("GET", nil); ok {
 		t.Error("broken declaration admitted a request")
 	}
