@@ -218,8 +218,6 @@ sidecar:
 - A skill without the block is forwarded as before. `omac register` says so.
 - An omac that predates this block ignores it and forwards every call. Do not publish a skill that relies on it before a release that has it.
 
-The reasoning behind this design is in [ADR 0001](../adr/0001-optional-route-consent.md).
-
 The user manages stored "allow always" answers with `omac approvals list` and `omac approvals revoke <id>`.
 
 ## Environment variables injected into the sidecar
