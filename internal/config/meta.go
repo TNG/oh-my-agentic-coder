@@ -68,7 +68,6 @@ type SidecarMeta struct {
 // A skill without it is forwarded without asking. With it, a request asks
 // unless it matches an entry with approval: none; see internal/approval.
 type ApprovalsSpec struct {
-	Version   int            `yaml:"version"`
 	Endpoints []ApprovalSpec `yaml:"endpoints"`
 }
 
@@ -101,9 +100,6 @@ func (a *ApprovalsSpec) UnmarshalYAML(node *yaml.Node) error {
 
 // Compile validates the declaration and returns the matcher the facade uses.
 func (a *ApprovalsSpec) Compile() (*approval.Set, error) {
-	if a.Version != 1 {
-		return nil, fmt.Errorf("sidecar.approvals.version must be 1, got %d", a.Version)
-	}
 	entries := make([]approval.Entry, len(a.Endpoints))
 	for i, e := range a.Endpoints {
 		entries[i] = approval.Entry{Match: e.Match, Approval: e.Approval, Description: e.Description}
