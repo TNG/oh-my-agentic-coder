@@ -1,6 +1,6 @@
 ---
 title: "ADR 0001: Optional consent per sidecar route"
-description: Why a skill marks the routes that need the user's consent, and nothing more
+description: Introduction of an opt-in per-route skill approval mechanism and it's configuration-format.
 ---
 
 Status: proposed. Tracked in [#455](https://github.com/TNG/oh-my-agentic-coder/issues/455), builds on [#428](https://github.com/TNG/oh-my-agentic-coder/issues/428).
