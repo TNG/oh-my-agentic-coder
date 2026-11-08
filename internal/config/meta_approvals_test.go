@@ -19,7 +19,6 @@ func loadApprovalsMeta(t *testing.T, block string) (*Meta, error) {
 
 func TestApprovals_Valid(t *testing.T) {
 	m, err := loadApprovalsMeta(t, `  approvals:
-    version: 1
     endpoints:
       - match: "GET /status"
         approval: none
@@ -47,17 +46,15 @@ func TestApprovals_AbsentIsUngated(t *testing.T) {
 
 func TestApprovals_Refused(t *testing.T) {
 	cases := map[string]string{
-		"unknown version":   "  approvals:\n    version: 2\n    endpoints:\n      - {match: \"GET /a\", approval: none}\n",
-		"missing version":   "  approvals:\n    endpoints:\n      - {match: \"GET /a\", approval: none}\n",
-		"unknown key":       "  approvals:\n    version: 1\n    endpoints:\n      - {match: \"GET /a\", approval: none}\n    default: none\n",
-		"unknown entry key": "  approvals:\n    version: 1\n    endpoints:\n      - {match: \"GET /a\", approval: none, body: {}}\n",
-		"typo approval":     "  approvals:\n    version: 1\n    endpoints:\n      - {match: \"GET /a\", aproval: none}\n",
-		"bad value":         "  approvals:\n    version: 1\n    endpoints:\n      - {match: \"GET /a\", approval: ask}\n",
-		"none on ANY":       "  approvals:\n    version: 1\n    endpoints:\n      - {match: \"ANY /a\", approval: none}\n",
-		"none on **":        "  approvals:\n    version: 1\n    endpoints:\n      - {match: \"GET /a/**\", approval: none}\n",
-		"equal specificity": "  approvals:\n    version: 1\n    endpoints:\n      - {match: \"GET /a/{x}\", approval: none}\n      - {match: \"GET /a/{y}\", approval: required}\n",
-		"no endpoints":      "  approvals:\n    version: 1\n    endpoints: []\n",
-		"bad match":         "  approvals:\n    version: 1\n    endpoints:\n      - {match: \"/a\", approval: none}\n",
+		"unknown key":       "  approvals:\n    endpoints:\n      - {match: \"GET /a\", approval: none}\n    default: none\n",
+		"unknown entry key": "  approvals:\n    endpoints:\n      - {match: \"GET /a\", approval: none, body: {}}\n",
+		"typo approval":     "  approvals:\n    endpoints:\n      - {match: \"GET /a\", aproval: none}\n",
+		"bad value":         "  approvals:\n    endpoints:\n      - {match: \"GET /a\", approval: ask}\n",
+		"none on ANY":       "  approvals:\n    endpoints:\n      - {match: \"ANY /a\", approval: none}\n",
+		"none on **":        "  approvals:\n    endpoints:\n      - {match: \"GET /a/**\", approval: none}\n",
+		"equal specificity": "  approvals:\n    endpoints:\n      - {match: \"GET /a/{x}\", approval: none}\n      - {match: \"GET /a/{y}\", approval: required}\n",
+		"no endpoints":      "  approvals:\n    endpoints: []\n",
+		"bad match":         "  approvals:\n    endpoints:\n      - {match: \"/a\", approval: none}\n",
 	}
 	for name, block := range cases {
 		if _, err := loadApprovalsMeta(t, block); err == nil {
