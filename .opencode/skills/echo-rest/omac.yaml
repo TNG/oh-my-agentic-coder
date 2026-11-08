@@ -76,7 +76,6 @@ sidecar:
   # with approval: none. The reads below are let through; POST /echo, and any
   # route added later, asks first.
   approvals:
-    version: 1
     endpoints:
       - match: "GET /status"
         approval: none
