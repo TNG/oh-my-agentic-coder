@@ -8,18 +8,6 @@ import (
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
 )
 
-// On Linux, a filtered profile with kernel enforcement has its TCP
-// mediated by the stage2 Landlock ruleset, and the supervisor proxy's
-// port is always granted for connect. The kernel's net-port rule has no
-// address dimension, so that implicit grant reaches every host
-// listening on the port, not only loopback. This is an accepted risk
-// recorded in docs/security.md; the audit's job is to surface it.
-//
-// The implicit-grant finding under test must fire for the proxy port
-// whenever that Landlock path is active, and stay silent on every
-// other shape: blocked mode grants no proxy port at all, open mode
-// has no kernel mediation, and env-only enforcement is advisory.
-
 // linuxAuditProfile returns a profile shaped like a resolved Linux
 // launch, ready for a test to vary the network section. It mirrors
 // check_test.go's cleanProfile so unrelated categories stay quiet.
@@ -47,7 +35,8 @@ func findAddressBlindNotice(findings []Finding) *Finding {
 // audit: the address-blind finding must cover the proxy port the
 // sandbox itself grants, not only user-configured open ports. Without
 // it, every default Linux profile carries an undocumented residual
-// reach while profiles that name an open_port get a finding.
+// reach while profiles that name an open_port get a finding. The
+// accepted risk is documented in docs/security.md.
 func TestSecurityProfileAuditFlagsImplicitProxyPort(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skipf("the Landlock path is Linux-only (GOOS=%s)", runtime.GOOS)

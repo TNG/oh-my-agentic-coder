@@ -16,24 +16,6 @@ import (
 	"time"
 )
 
-// The kernel's Landlock net-port rule (ABI 4+) scopes a TCP connect
-// grant to a port number; it has no address dimension. Every launch
-// that uses Landlock networking grants the supervisor proxy's port for
-// connect (plus any profile open_port values), so that grant holds for
-// every host address, not only the loopback interface the proxy listens
-// on. This residual reach is an accepted, documented risk
-// (docs/security.md; the LOW address-blind notice from profileaudit),
-// not a code defect: the rule engine cannot express anything tighter
-// today.
-//
-// This test pins the kernel-level behaviour so the documentation can
-// never silently drift from the enforcement: while the limitation
-// exists, the granted port is reachable on a second loopback address
-// while an ungranted port is not. If the granted-port dial ever starts
-// failing while the control dial is still denied, the kernel has grown
-// address scoping: remove this pin together with the accepted-risk
-// notes in docs/security.md and the profileaudit notice.
-
 // pinProbeEnv marks a re-exec'd test-binary invocation that installs
 // the Landlock ruleset and runs the probe dials. The ruleset is
 // irreversible for the whole process, so it must be installed in a
@@ -47,8 +29,12 @@ const (
 	pinOtherEnv   = "OMAC_LANDLOCK_PIN_OTHER_PORT"
 )
 
-// TestSecurityLandlockPortGrantAddressBlindnessPinned pins the
-// port-scoped (address-less) shape of a Landlock connect grant.
+// TestSecurityLandlockPortGrantAddressBlindnessPinned pins the kernel's
+// port-scoped connect grant: a granted port is reachable on every host
+// address, not only loopback. This is the accepted risk documented in
+// docs/security.md. If the granted dial starts failing while the
+// control port is still denied, the kernel has gained address scoping;
+// remove this pin and the accepted-risk notes with it.
 func TestSecurityLandlockPortGrantAddressBlindnessPinned(t *testing.T) {
 	if os.Getenv(pinProbeEnv) == "1" {
 		os.Exit(landlockPinProbe())

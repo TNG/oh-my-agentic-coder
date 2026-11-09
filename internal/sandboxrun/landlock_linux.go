@@ -47,13 +47,11 @@ type landlockNetPortAttr struct {
 // with no_new_privs + restrict_self. Irreversible for this process and
 // all descendants. Empty slices mean "deny all" for that operation.
 //
-// The kernel's net-port rule is scoped to the port number only: it has
-// no address dimension, so a connect grant for a port permits that
-// port on every host address, not only the loopback interface the
-// supervisor proxy listens on. This residual reach is an accepted,
-// documented risk (docs/security.md); the audit surfaces it as a LOW
-// notice (internal/profileaudit) and a kernel-level regression test
-// pins it (TestSecurityLandlockPortGrantAddressBlindnessPinned).
+// The kernel's net-port rule is port-only: a connect grant for a port
+// permits that port on every host address, not only the loopback the
+// proxy listens on. docs/security.md records this accepted risk; the
+// audit reports it as a LOW finding. The kernel-level pin lives in
+// TestSecurityLandlockPortGrantAddressBlindnessPinned.
 func ApplyLandlockNet(connectPorts, bindPorts []int) error {
 	if !LandlockNetSupported() {
 		return fmt.Errorf("landlock ABI >= %d required for network rules (kernel >= 6.7); this kernel has ABI %d",
