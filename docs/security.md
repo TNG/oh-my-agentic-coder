@@ -71,11 +71,11 @@ those ports to loopback, and avoiding `open_port` entirely removes that half of
 the reach (the proxy port grant remains until the transport changes). The
 planned fix is architectural: move the proxy transport to a Unix-domain
 socket, which the mediation layer already supports end-to-end and which needs
-no TCP port grant at all. Until then, each Linux launch using filtered network
-mode with kernel enforcement prints a low-severity notice about this reach.
-`omac doctor` and `omac provenance --check` expose the same finding on demand
-for qualifying profiles. Recorded as an accepted gap, not a defect to be
-re-reported.
+no TCP port grant at all. `omac doctor` and `omac provenance --check` report
+this reach as a low-severity finding for any profile that uses filtered
+network mode with kernel enforcement. The launch itself stays silent, so the
+gap is recorded here and surfaced by those audit commands rather than on
+every start. Recorded as an accepted gap, not a defect to be re-reported.
 
 ### Filesystem
 

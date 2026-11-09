@@ -7,7 +7,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strings"
 
@@ -18,7 +17,6 @@ import (
 	"github.com/TNG/oh-my-agentic-coder/internal/netprompt/hostmap"
 	"github.com/TNG/oh-my-agentic-coder/internal/netprompt/origin"
 	"github.com/TNG/oh-my-agentic-coder/internal/netproxy"
-	"github.com/TNG/oh-my-agentic-coder/internal/profileaudit"
 	"github.com/TNG/oh-my-agentic-coder/internal/sandbox"
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxdeny"
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
@@ -64,12 +62,6 @@ func warnEmptyAllowVars(stderr io.Writer, allowVars []string) {
 // signals, propagate the exit code, tear everything down. Returns the
 // process exit code.
 func Run(opts Options) int {
-	return run(opts, runtime.GOOS, execSandboxChild)
-}
-
-// run keeps launch setup testable without invoking the platform sandbox;
-// goos controls platform-specific launch notices.
-func run(opts Options, goos string, runChild func(argv, env []string, workdir string, onReady func(int)) (int, error)) int {
 	stderr := opts.Stderr
 	if stderr == nil {
 		stderr = os.Stderr
@@ -253,12 +245,6 @@ func run(opts Options, goos string, runChild func(argv, env []string, workdir st
 	if err != nil {
 		return fail("%v", err)
 	}
-	if proxy != nil {
-		if finding, ok := profileaudit.ImplicitProxyPortFinding(merged, goos); ok {
-			fmt.Fprintf(stderr, "omac sandbox: notice: [%s] %s: %s (%s)\n",
-				finding.Severity, finding.Field, finding.Message, finding.Value)
-		}
-	}
 
 	// Last line before the inner process owns the terminal: tell the
 	// user where runtime diagnostics will land.
@@ -269,7 +255,7 @@ func run(opts Options, goos string, runChild func(argv, env []string, workdir st
 	if recorder != nil {
 		onReady = recorder.Start
 	}
-	code, err := runChild(childArgv, env, grants.Workdir, onReady)
+	code, err := execSandboxChild(childArgv, env, grants.Workdir, onReady)
 	if err != nil {
 		return fail("%v", err)
 	}

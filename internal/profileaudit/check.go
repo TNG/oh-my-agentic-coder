@@ -343,8 +343,22 @@ func checkNetwork(profile *sandboxprofile.Profile) []Finding {
 			Message:  "Linux Landlock is address-blind: also allows outbound TCP to any host on this port",
 		})
 	}
-	if finding, ok := ImplicitProxyPortFinding(profile, runtime.GOOS); ok {
-		findings = append(findings, finding)
+	// The port-scoped reach is not limited to user-configured ports: in
+	// kernel-enforced filtered mode the sandbox itself always grants the
+	// supervisor proxy's port for connect, so the default Linux launch
+	// carries the same residual reach even with no open_port entries.
+	// LOW so doctor / provenance --check surface it without failing
+	// closed; it is an accepted risk recorded in docs/security.md.
+	if runtime.GOOS == "linux" &&
+		profile.Network.EffectiveMode() == sandboxprofile.ModeFiltered &&
+		profile.Network.EffectiveEnforcement() == sandboxprofile.EnforceKernel {
+		findings = append(findings, Finding{
+			Severity: SeverityLow,
+			Category: CatNetwork,
+			Field:    "network.mode",
+			Value:    sandboxprofile.ModeFiltered,
+			Message:  "Linux Landlock is address-blind: the implicit proxy port grant allows outbound TCP to any host listening on that port, not only loopback",
+		})
 	}
 	for _, port := range profile.Network.AllowTCPConnect {
 		switch port {
@@ -359,23 +373,4 @@ func checkNetwork(profile *sandboxprofile.Profile) []Finding {
 		}
 	}
 	return findings
-}
-
-// ImplicitProxyPortFinding reports the address-blind Landlock reach of the
-// supervisor proxy's TCP port when evaluating a Linux filtered, kernel-
-// enforced profile. goos is explicit so launch-time callers and tests can
-// apply the same platform condition without duplicating the finding.
-func ImplicitProxyPortFinding(profile *sandboxprofile.Profile, goos string) (Finding, bool) {
-	if profile == nil || goos != "linux" ||
-		profile.Network.EffectiveMode() != sandboxprofile.ModeFiltered ||
-		profile.Network.EffectiveEnforcement() != sandboxprofile.EnforceKernel {
-		return Finding{}, false
-	}
-	return Finding{
-		Severity: SeverityLow,
-		Category: CatNetwork,
-		Field:    "network.mode",
-		Value:    sandboxprofile.ModeFiltered,
-		Message:  "Linux Landlock is address-blind: the implicit proxy port grant allows outbound TCP to any host listening on that port, not only loopback",
-	}, true
 }
