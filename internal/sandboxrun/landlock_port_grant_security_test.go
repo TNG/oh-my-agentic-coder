@@ -32,9 +32,9 @@ const (
 // TestSecurityLandlockPortGrantAddressBlindnessPinned pins the kernel's
 // port-scoped connect grant: a granted port is reachable on every host
 // address, not only loopback. This is the accepted risk documented in
-// docs/security.md. If the granted dial starts failing while the
-// control port is still denied, the kernel has gained address scoping;
-// remove this pin and the accepted-risk notes with it.
+// docs/security.md. If the granted dial starts failing, investigate
+// before changing the pin. Remove it only after confirming that the
+// kernel now scopes connect grants by address.
 func TestSecurityLandlockPortGrantAddressBlindnessPinned(t *testing.T) {
 	if os.Getenv(pinProbeEnv) == "1" {
 		os.Exit(landlockPinProbe())
@@ -96,8 +96,8 @@ func TestSecurityLandlockPortGrantAddressBlindnessPinned(t *testing.T) {
 		// kernel behaviour cannot be probed here.
 		t.Skipf("Landlock net rules unavailable in this environment:\n%s", text)
 	case strings.Contains(text, "grant-denied"):
-		t.Fatalf("the granted port was NOT reachable on %s while the control port was still denied:\n%s\n"+
-			"The kernel now scopes connect grants by address. Remove this pin and revisit the accepted-risk record in docs/security.md and the profileaudit notice.", pinAddr, text)
+		t.Fatalf("the granted port was NOT reachable on %s:\n%s\n"+
+			"Investigate before changing the pin. Remove it only after confirming that the kernel now scopes connect grants by address.", pinAddr, text)
 	case strings.Contains(text, "control-allowed"):
 		t.Fatalf("the ungranted control port was reachable, so the ruleset was not in force and the probe proves nothing:\n%s", text)
 	default:
