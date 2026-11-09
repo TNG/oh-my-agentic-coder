@@ -36,15 +36,35 @@ metadata.azure.internal) are blocked unconditionally and cannot be approved
 interactively. Any hostname resolving to a loopback, unspecified, link-local,
 or metadata address is also blocked.
 
+An IPv4 destination can also be named by an IPv6 address that embeds it.
+For hard-deny checks, the proxy decodes the IPv4-mapped form (`::ffff:`
+followed by the IPv4 address) and two supported NAT64 layouts:
+`64:ff9b::/96` (RFC 6052) and `64:ff9b:1::/96`. Both `/96` layouts carry
+IPv4 in their low 32 bits. A decoded public destination continues through
+the normal hostname rules and prompt; it is not denied merely for using NAT64.
+
+RFC 8215 allocates the broader local-use range `64:ff9b:1::/48`, not just
+that second `/96`. Addresses outside the supported `/96` within this `/48`
+are blocked unconditionally: their translation layout is unknown, so the
+proxy cannot safely infer the destination from the low 32 bits. This
+includes alternate prefixes such as `64:ff9b:1:fffe::/96`.
+
+Address checks ignore any trailing `%zone` interface suffix, including on
+native IPv6 metadata addresses such as `fd00:ec2::254%0`. Only the policy
+copy is normalized. The admitted address and its interface zone remain
+pinned for transport, so NAT64 traffic still uses the translator rather
+than silently switching to a direct IPv4 connection.
+
 `host.docker.internal` (the Docker bridge gateway, typically 172.17.0.1) is
 not in the hard-deny set. It is a private RFC 1918 address and is subject to
 the normal prompt or allow/deny policy. If you run Docker and want to
 prevent the agent from reaching it, add it to `network.deny_domain`.
 
 **Accepted gap, by design: private address ranges are not hard-denied.**
-Only loopback, unspecified, link-local, and cloud-metadata addresses are
-blocked unconditionally. RFC 1918 (`10/8`, `172.16/12`, `192.168/16`),
-carrier-grade NAT (`100.64/10`), and IPv6 unique-local (`fc00::/7`) stay
+Only loopback, unspecified, link-local, cloud-metadata, and
+unsupported local-use translation addresses (see above) are blocked unconditionally.
+RFC 1918 (`10/8`, `172.16/12`, `192.168/16`), carrier-grade NAT
+(`100.64/10`), and IPv6 unique-local (`fc00::/7`) stay
 subject to the normal prompt and allow/deny policy. A hard deny would make VPN
 and corporate-internal hosts unreachable even after you allow them, for every
 user behind a VPN. The accepted tradeoff is that a granted hostname can reach a
@@ -241,6 +261,27 @@ cannot access.
 | Environment variables in `allow_vars` (`OMAC_*`, `HOME`, `PATH`, `LANG`, …) | passed through | Operational minimum |
 | All other environment variables (cloud secrets, `DOCKER_HOST`, `SSH_AUTH_SOCK`, …) | **stripped** | Not needed and potentially sensitive |
 
+### OpenCode v2 model state
+
+OpenCode v2 saves your selected model, recent models, favorites, and the
+selected reasoning variant in `model.json` inside its state directory. omac
+gives every sandboxed session a fresh, temporary state directory, so it copies
+the host's file into the session before launch and copies it back after the
+session exits. It skips the copy back when the session did not change the
+file, so an untouched session cannot overwrite a newer host choice.
+`service.json` is never copied.
+
+This hand-off is a convenience, not an isolation boundary. The host state
+directory stays read + write for the sandbox (see the table above), so the
+agent can already read and change `model.json` directly. The session state
+directory is writable too, so omac treats `model.json` as untrusted: it refuses
+to follow symlinks and only reads regular files. Without that check, the agent
+could use the file as a link to make omac copy `~/.ssh/id_rsa` into the session
+state or write session data into `~/.config/omac/approvals.json`.
+
+If omac is killed before the copy back, the host file stays unchanged and only
+the session's model change is lost.
+
 ## Self-authored skills
 
 Skill sidecars run on your machine outside the sandbox. That is intentional,
@@ -316,8 +357,13 @@ This has limits:
 
 When upgrading omac on a machine with existing registered skills, only
 **user-global** skills (registered outside any workdir) are automatically
-approved for the first run. Workdir-local skills — which the agent can write —
-always require an explicit `omac register` from a host terminal.
+approved for the first run, and only when the skill's on-disk content still
+matches the bundle hash recorded at registration. The recorded hash is the
+only evidence of what you reviewed when you registered the skill, so it is
+what the upgrade trusts. A user-global skill whose content has changed since
+registration is not migrated: review the change on the host and re-register
+the skill with `omac register --force`. Workdir-local skills — which the agent
+can write — always require an explicit `omac register` from a host terminal.
 
 If you change an approved skill yourself, omac refuses to run it until you
 review the change and re-register it with `omac register --force`.
