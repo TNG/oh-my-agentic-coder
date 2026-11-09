@@ -220,6 +220,27 @@ cannot access.
 | Environment variables in `allow_vars` (`OMAC_*`, `HOME`, `PATH`, `LANG`, …) | passed through | Operational minimum |
 | All other environment variables (cloud secrets, `DOCKER_HOST`, `SSH_AUTH_SOCK`, …) | **stripped** | Not needed and potentially sensitive |
 
+### OpenCode v2 model state
+
+OpenCode v2 saves your selected model, recent models, favorites, and the
+selected reasoning variant in `model.json` inside its state directory. omac
+gives every sandboxed session a fresh, temporary state directory, so it copies
+the host's file into the session before launch and copies it back after the
+session exits. It skips the copy back when the session did not change the
+file, so an untouched session cannot overwrite a newer host choice.
+`service.json` is never copied.
+
+This hand-off is a convenience, not an isolation boundary. The host state
+directory stays read + write for the sandbox (see the table above), so the
+agent can already read and change `model.json` directly. The session state
+directory is writable too, so omac treats `model.json` as untrusted: it refuses
+to follow symlinks and only reads regular files. Without that check, the agent
+could use the file as a link to make omac copy `~/.ssh/id_rsa` into the session
+state or write session data into `~/.config/omac/approvals.json`.
+
+If omac is killed before the copy back, the host file stays unchanged and only
+the session's model change is lost.
+
 ## Self-authored skills
 
 Skill sidecars run on your machine outside the sandbox. That is intentional,
