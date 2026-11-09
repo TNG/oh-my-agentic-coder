@@ -200,6 +200,10 @@ cannot access.
 | Environment variables in `allow_vars` (`OMAC_*`, `HOME`, `PATH`, `LANG`, …) | passed through | Operational minimum |
 | All other environment variables (cloud secrets, `DOCKER_HOST`, `SSH_AUTH_SOCK`, …) | **stripped** | Not needed and potentially sensitive |
 
+## Local control plane
+
+`omac serve` exposes a loopback HTTP API that activates project directories and routes skill traffic. Every request must carry the per-session bearer token, including the read-only listings `/__omac__/dirs` and `/__omac__/global`; without it the server answers `401`. The token is written to `~/.config/omac/serve-control.json` (mode `0600`), which the sandbox blocks, so the confined agent can reach the port but cannot read the credential.
+
 ## Self-authored skills
 
 Skill sidecars run on your machine outside the sandbox. That is intentional,
