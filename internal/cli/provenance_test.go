@@ -377,12 +377,12 @@ func TestRunProvenance_CheckDefaultProfileClean(t *testing.T) {
 	}
 	out, _ := read()
 	// On Linux the audit flags the default filtered+kernel shape with
-	// one LOW notice (the implicit proxy port grant is address-blind);
+	// one LOW finding (the implicit proxy port grant is address-blind);
 	// LOW does not gate the exit code, and the profile itself stays
-	// clean of any other finding. Elsewhere the notice never fires.
+	// clean of any other finding. Elsewhere the finding never appears.
 	if runtime.GOOS == "linux" {
 		if !strings.Contains(out, "address-blind") {
-			t.Errorf("default Linux launch should print the address-blind proxy port notice; got %q", out)
+			t.Errorf("provenance --check on Linux should report the address-blind proxy port finding; got %q", out)
 		}
 		if strings.Contains(out, "[HIGH]") || strings.Contains(out, "[MEDIUM]") {
 			t.Errorf("clean profile should produce no high/medium findings; got %q", out)

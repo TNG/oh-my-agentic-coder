@@ -15,7 +15,7 @@ import (
 // listening on the port, not only loopback. This is an accepted risk
 // recorded in docs/security.md; the audit's job is to surface it.
 //
-// The implicit-grant notice under test must fire for the proxy port
+// The implicit-grant finding under test must fire for the proxy port
 // whenever that Landlock path is active, and stay silent on every
 // other shape: blocked mode grants no proxy port at all, open mode
 // has no kernel mediation, and env-only enforcement is advisory.
@@ -43,11 +43,11 @@ func findAddressBlindNotice(findings []Finding) *Finding {
 	return nil
 }
 
-// TestSecurityProfileAuditFlagsImplicitProxyPort pins the launch-time
-// audit: the address-blind notice must cover the proxy port the
+// TestSecurityProfileAuditFlagsImplicitProxyPort pins the on-demand
+// audit: the address-blind finding must cover the proxy port the
 // sandbox itself grants, not only user-configured open ports. Without
-// it, every default Linux launch ships with an undocumented residual
-// reach while profiles that name an open_port get a notice.
+// it, every default Linux profile carries an undocumented residual
+// reach while profiles that name an open_port get a finding.
 func TestSecurityProfileAuditFlagsImplicitProxyPort(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skipf("the Landlock path is Linux-only (GOOS=%s)", runtime.GOOS)
