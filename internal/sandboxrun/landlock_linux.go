@@ -46,6 +46,12 @@ type landlockNetPortAttr struct {
 // connect to connectPorts and TCP bind to bindPorts, then locks it in
 // with no_new_privs + restrict_self. Irreversible for this process and
 // all descendants. Empty slices mean "deny all" for that operation.
+//
+// The kernel's net-port rule is port-only: a connect grant for a port
+// permits that port on every host address, not only the loopback the
+// proxy listens on. docs/security.md records this accepted risk; the
+// audit reports it as a LOW finding. The kernel-level pin lives in
+// TestSecurityLandlockPortGrantAddressBlindnessPinned.
 func ApplyLandlockNet(connectPorts, bindPorts []int) error {
 	if !LandlockNetSupported() {
 		return fmt.Errorf("landlock ABI >= %d required for network rules (kernel >= 6.7); this kernel has ABI %d",
