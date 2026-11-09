@@ -274,10 +274,15 @@ func runRegister(args []string, env *Env) int {
 				if err != nil {
 					return err
 				}
-				store.RecordApproved(anchorID, skillName, effectiveConfig(store, wdStore, skillName))
+				effective := effectiveConfig(store, wdStore, skillName)
+				store.RecordApproved(anchorID, skillName, effective)
 				store.RecordApproved(skillconfig.GlobalApprovedKey, skillName, store.Skills[skillName])
+				store.RecordApprovedDefaults(anchorID, skillName, unstoredDefaults(meta.Sidecar.Config, effective))
+				store.RecordApprovedDefaults(skillconfig.GlobalApprovedKey, skillName, unstoredDefaults(meta.Sidecar.Config, store.Skills[skillName]))
 			} else if defStore != nil {
-				defStore.RecordApproved(anchorID, skillName, effectiveConfig(defStore, store, skillName))
+				effective := effectiveConfig(defStore, store, skillName)
+				defStore.RecordApproved(anchorID, skillName, effective)
+				defStore.RecordApprovedDefaults(anchorID, skillName, unstoredDefaults(meta.Sidecar.Config, effective))
 			}
 			if err := saveSkillConfig(env.Workdir, global, store); err != nil {
 				return err
@@ -504,6 +509,19 @@ func effectiveConfig(global, workdir *skillconfig.Store, skill string) map[strin
 	}
 	if len(out) == 0 {
 		return nil
+	}
+	return out
+}
+
+// unstoredDefaults returns the `default:` of every field without a value in
+// stored: what omac start falls back to. register records it so start can
+// refuse a default the skill changed since (skillstate.resolveConfig).
+func unstoredDefaults(specs []config.ConfigSpec, stored map[string]string) map[string]string {
+	out := map[string]string{}
+	for _, spec := range specs {
+		if _, ok := stored[spec.Name]; !ok && spec.Default != "" {
+			out[spec.Name] = spec.Default
+		}
 	}
 	return out
 }
@@ -1007,9 +1025,28 @@ func registerField(env *Env, store, override *skillconfig.Store, skill, skillDir
 	//     value is left unstored too, and not remembered as declined. A
 	//     required field whose only default is $default_from_env gets that
 	//     value stored, as Enter at the prompt would: the variable may be
-	//     unset when omac start runs, and then start would refuse.
+	//     unset when omac start runs, and then start would refuse. A default
+	//     that differs from the one recorded at the last register is asked,
+	//     not taken: the skill changed it since, and start would refuse it.
+	defaultChanged := false
+	if defStore != nil {
+		if prev, ok := defStore.ApprovedDefaultsFor(keychain.WorkdirID(env.Workdir), skill); ok && prev[spec.Name] != spec.Default {
+			defaultChanged = true
+			was, now := "none", "none"
+			if prev[spec.Name] != "" {
+				was = stripControlChars(prev[spec.Name])
+			}
+			if spec.Default != "" {
+				now = stripControlChars(spec.Default)
+			}
+			st.status(env.Stderr, "[warn]", fmt.Sprintf("%s: default changed since last register (was %s, now %s)",
+				stripControlChars(spec.Name), was, now), ansiYellow)
+		}
+	}
 	if requiredOnly {
 		switch {
+		case defaultChanged:
+			// Asked below.
 		case spec.Default != "":
 			if _, err := canonicalizeFieldValue(spec, spec.Default); err != nil {
 				return valueStored, fmt.Errorf("default for %s rejected: %w", spec.Name, err)

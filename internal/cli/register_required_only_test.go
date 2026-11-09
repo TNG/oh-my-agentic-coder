@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/TNG/oh-my-agentic-coder/internal/config"
+	"github.com/TNG/oh-my-agentic-coder/internal/keychain"
 	"github.com/TNG/oh-my-agentic-coder/internal/registry"
 	"github.com/TNG/oh-my-agentic-coder/internal/skillconfig"
 	"github.com/TNG/oh-my-agentic-coder/internal/skillstate"
@@ -255,5 +256,52 @@ func TestRunRegisterRequiredOnlyRejectsReprompt(t *testing.T) {
 		if !strings.Contains(errBuf.String(), "cannot be combined") {
 			t.Errorf("%s: stderr = %q", flag, errBuf.String())
 		}
+	}
+}
+
+// A default that differs from the one recorded at the last register is
+// asked, not taken: the skill changed it since, and start would refuse it.
+func TestRegisterFieldRequiredOnlyAsksChangedDefault(t *testing.T) {
+	no := false
+	cases := []struct {
+		name      string
+		spec      config.ConfigSpec
+		recorded  map[string]string
+		wantValue string // "" = nothing stored
+	}{
+		{"unchanged default is left out", config.ConfigSpec{Name: "F", Default: "d"}, map[string]string{"F": "d"}, ""},
+		{"changed default is asked", config.ConfigSpec{Name: "F", Default: "new"}, map[string]string{"F": "old"}, "typed"},
+		{"added default is asked", config.ConfigSpec{Name: "F", Required: &no, Default: "new"}, map[string]string{}, "typed"},
+		{"optional with changed default is asked", config.ConfigSpec{Name: "F", Required: &no, Default: "new"}, map[string]string{"F": "old"}, "typed"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			env := envWithStdin(t, "typed\n")
+			env.Workdir = t.TempDir()
+			defStore := &skillconfig.Store{}
+			defStore.RecordApprovedDefaults(keychain.WorkdirID(env.Workdir), "skill", c.recorded)
+			store := &skillconfig.Store{}
+			if _, err := registerField(env, store, nil, "skill", "", c.spec, false, nil, nil, false, defStore, true); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			v, ok := store.Get("skill", "F")
+			if c.wantValue == "" && ok {
+				t.Errorf("stored %q, want nothing stored", v)
+			}
+			if c.wantValue != "" && v != c.wantValue {
+				t.Errorf("stored %q (present=%v), want %q", v, ok, c.wantValue)
+			}
+		})
+	}
+}
+
+func TestUnstoredDefaults(t *testing.T) {
+	specs := []config.ConfigSpec{{Name: "A", Default: "a"}, {Name: "B", Default: "b"}, {Name: "C"}}
+	got := unstoredDefaults(specs, map[string]string{"B": "set"})
+	if len(got) != 1 || got["A"] != "a" {
+		t.Errorf("unstoredDefaults = %v, want map[A:a]", got)
+	}
+	if got := unstoredDefaults(nil, nil); got == nil || len(got) != 0 {
+		t.Errorf("unstoredDefaults(nil) = %#v, want an empty, non-nil map", got)
 	}
 }

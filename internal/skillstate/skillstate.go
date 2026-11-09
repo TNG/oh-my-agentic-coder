@@ -524,6 +524,18 @@ func (r *Resolver) resolveConfig(armed *Armed, cfg *skillconfig.Store) []Problem
 				continue
 			}
 		}
+		// register recorded the default it left unstored. A skill update that
+		// changes it, adds one or removes one must not reach the sidecar unseen.
+		if defaults, ok := cfg.ApprovedDefaultsFor(r.opts.Scope, skill); ok && defaults[spec.Name] != spec.Default {
+			problems = append(problems, Problem{
+				Kind:   InvalidConfig,
+				Skill:  skill,
+				Field:  spec.Name,
+				Detail: "default changed since last register",
+				Fix:    "omac register " + skill,
+			})
+			continue
+		}
 		if spec.Default != "" {
 			armed.Config[spec.Name] = spec.Default
 			armed.ConfigSources[spec.Name] = SourceDefault
@@ -735,9 +747,10 @@ func MergeConfig(global, workdir *skillconfig.Store) *skillconfig.Store {
 	}
 	// The host-only global store carries the approval anchor; the
 	// agent-writable workdir store must never supply one, even if it declares
-	// an `approved:` block.
+	// an `approved:` (or `approved_defaults:`) block.
 	if global != nil {
 		out.Approved = global.Approved
+		out.ApprovedDefaults = global.ApprovedDefaults
 	}
 	// Record which merged values came from the workdir layer. The workdir
 	// skill-config.yaml is agent-writable, so resolveConfig uses this

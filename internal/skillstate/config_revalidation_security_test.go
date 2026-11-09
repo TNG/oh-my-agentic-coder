@@ -232,3 +232,50 @@ func TestSecurityUnmergedStoreRefused(t *testing.T) {
 		t.Errorf("an unanchored value from an unmerged store resolved (value=%q, problems=%v)", got, problems)
 	}
 }
+
+// TestSecurityChangedDefaultRefusedAtLaunch asserts that a default register
+// left unstored (--required-only) is only used while it matches the default
+// recorded at that register. A skill version that changes, adds or removes a
+// default must not change the sidecar's value unseen.
+func TestSecurityChangedDefaultRefusedAtLaunch(t *testing.T) {
+	dir := skillDir(t)
+	e := entry(t, "probe", dir)
+	r := New(Options{Env: env(nil)})
+	cases := []struct {
+		name      string
+		dflt      string
+		recorded  map[string]string // nil = no record (registered before records existed)
+		wantValue string
+		refused   bool
+	}{
+		{"unchanged default is used", "read", map[string]string{"MODE": "read"}, "read", false},
+		{"changed default is refused", "write", map[string]string{"MODE": "read"}, "", true},
+		{"added default is refused", "write", map[string]string{}, "", true},
+		{"removed default is refused", "", map[string]string{"MODE": "read"}, "", true},
+		{"no record: default is used", "write", nil, "write", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			no := false
+			m := meta(nil, nil, []config.ConfigSpec{{Name: "MODE", Required: &no, Default: c.dflt}})
+			global := &skillconfig.Store{Version: skillconfig.SchemaVersion}
+			if c.recorded != nil {
+				global.RecordApprovedDefaults(skillconfig.GlobalApprovedKey, "probe", c.recorded)
+			}
+			armed, problems := r.Resolve(m, e, dir, MergeConfig(global, nil))
+			defer armed.Zero()
+			if got := armed.Config["MODE"]; got != c.wantValue {
+				t.Errorf("MODE = %q, want %q", got, c.wantValue)
+			}
+			refused := false
+			for _, p := range problems {
+				if p.Field == "MODE" && p.Detail == "default changed since last register" && p.Fix == "omac register probe" {
+					refused = true
+				}
+			}
+			if refused != c.refused {
+				t.Errorf("refused = %v, want %v (problems: %v)", refused, c.refused, problems)
+			}
+		})
+	}
+}
