@@ -220,7 +220,7 @@ async function createBridge(
   // Collapse newlines and strip markdown bold markers from a skill-supplied
   // field so it cannot inject new blocks or forged structure into the manifest.
   function sanitizeField(s: string): string {
-    return s.replace(/[\n\r]/g, " ").replace(/\*/g, "").replace(/[\x00-\x1f\x7f-\x9f]/g, "")
+    return s.replace(/[\n\r]/g, " ").replace(/\*/g, "").replace(/[\x00-\x1f\x7f-\x9f\u061c\u200b-\u200f\u2028-\u202e\u2060\u2066-\u2069\ufeff]/g, "")
   }
 
   // Only emit omac secrets set when the name is a valid identifier and each
