@@ -34,6 +34,48 @@ func waitActivationStack(t *testing.T, marker string) {
 	}
 }
 
+// TestSecurityServeSwapAfterValidationRefused pauses activation at the
+// per-directory lock, after admission but before discovery and registration,
+// and replaces the validated name with a link to a foreign tree. Activation
+// must refuse instead of working on the replacement.
+func TestSecurityServeSwapAfterValidationRefused(t *testing.T) {
+	s := newServeServerForTest(t)
+	root := resolvedTempDir(t)
+	outside := resolvedTempDir(t)
+	s.roots = []string{root}
+	project := filepath.Join(root, "project")
+	if err := os.Mkdir(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stageSkillWithSecret(t, outside, "foreign")
+	lock := s.dirActLock(project)
+	lock.Lock()
+	held := true
+	defer func() {
+		if held {
+			lock.Unlock()
+		}
+	}()
+	done := make(chan error, 1)
+	go func() { _, err := s.activate(project); done <- err }()
+	waitActivationStack(t, "Mutex")
+	if err := os.Rename(project, project+"-saved"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, project); err != nil {
+		t.Fatal(err)
+	}
+	lock.Unlock()
+	held = false
+	if err := <-done; err == nil {
+		t.Error("activation succeeded after validated directory was replaced by an outside symlink")
+	}
+	if _, err := os.Stat(registry.Path(outside)); !os.IsNotExist(err) {
+		t.Errorf("host registration wrote outside the root: %v", err)
+	}
+	assertActiveDirs(t, s)
+}
+
 func TestSecurityServeWaitingRediscoveryReplacement(t *testing.T) {
 	for _, ancestor := range []bool{false, true} {
 		t.Run(fmt.Sprintf("ancestor=%v", ancestor), func(t *testing.T) {
@@ -213,7 +255,7 @@ func TestSecurityServeAliasTeardownIdentity(t *testing.T) {
 	if err := os.Symlink(b, alias); err != nil {
 		t.Fatal(err)
 	}
-	w := deactivateIdentityRequest(s, name)
+	w := controlRequest(s, "deactivate", name)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("retarget status=%d body=%s", w.Code, w.Body)
 	}
@@ -223,7 +265,7 @@ func TestSecurityServeAliasTeardownIdentity(t *testing.T) {
 	if err := os.RemoveAll(filepath.Join(a, "project")); err != nil {
 		t.Fatal(err)
 	}
-	w = deactivateIdentityRequest(s, filepath.Join(a, "project"))
+	w = controlRequest(s, "deactivate", filepath.Join(a, "project"))
 	if w.Code != http.StatusOK {
 		t.Fatalf("deleted canonical teardown: %d %s", w.Code, w.Body)
 	}
@@ -238,14 +280,14 @@ func TestSecurityServeAliasTeardownIdentity(t *testing.T) {
 	if s.byToken[other] == nil || !s.facade.HasRoute(other, "other") {
 		t.Fatal("other directory was torn down")
 	}
-	w = deactivateIdentityRequest(s, filepath.Join(root, "never-admitted"))
+	w = controlRequest(s, "deactivate", filepath.Join(root, "never-admitted"))
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("unknown missing name falsely succeeded: %d", w.Code)
 	}
 }
 
-func deactivateIdentityRequest(s *serveServer, name string) *httptest.ResponseRecorder {
-	req := httptest.NewRequest(http.MethodPost, "/__omac__/deactivate", strings.NewReader(fmt.Sprintf(`{"dir":%q}`, name)))
+func controlRequest(s *serveServer, action, name string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodPost, "/__omac__/"+action, strings.NewReader(fmt.Sprintf(`{"dir":%q}`, name)))
 	addServeTestToken(req)
 	w := httptest.NewRecorder()
 	s.controlMux().ServeHTTP(w, req)

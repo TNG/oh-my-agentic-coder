@@ -1,16 +1,14 @@
 package cli
 
 import (
-	"fmt"
-	"io"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 
+	"github.com/TNG/oh-my-agentic-coder/internal/audit"
 	"github.com/TNG/oh-my-agentic-coder/internal/sectest"
 )
 
@@ -41,6 +39,9 @@ func TestSecurityActivateSymlinkOutsideRootsRefused(t *testing.T) {
 		t.Fatalf("resolve outside dir: %v", err)
 	}
 	stageSkillWithSecret(t, outside, "notifier")
+	// A second project behind the same foreign tree, reached through an
+	// intermediate link below.
+	stageSkillWithSecret(t, filepath.Join(outside, "project"), "intermediate")
 	before := treeFiles(t, outside)
 
 	link := filepath.Join(root, "linked")
@@ -72,6 +73,17 @@ func TestSecurityActivateSymlinkOutsideRootsRefused(t *testing.T) {
 	}
 	assertActiveDirs(t, s, project)
 
+	// An intermediate link must be resolved before the policy check too, so
+	// linking a parent directory must not admit the directory behind it.
+	parentLink := filepath.Join(root, "linked-parent")
+	if err := os.Symlink(outside, parentLink); err != nil {
+		t.Fatalf("symlink parent: %v", err)
+	}
+	if _, err := s.activate(filepath.Join(parentLink, "project")); err == nil {
+		t.Errorf("activate through the intermediate link %s succeeded: links must be resolved before the roots policy runs", parentLink)
+	}
+	assertActiveDirs(t, s, project)
+
 	// Refusal must also mean no host-side writes into the foreign tree.
 	if after := treeFiles(t, outside); !slices.Equal(before, after) {
 		t.Errorf("files appeared in the foreign directory after the refused activation: %v", after)
@@ -92,23 +104,8 @@ func TestSecurityActivateSymlinkOutsideRootsRefused(t *testing.T) {
 
 	// The teardown endpoint applies the same discipline: naming the link
 	// must be refused, not reported as a successful deactivation.
-	control := httptest.NewServer(s.controlMux())
-	t.Cleanup(control.Close)
-	req, err := http.NewRequest(http.MethodPost, control.URL+"/__omac__/deactivate",
-		strings.NewReader(fmt.Sprintf("{%q:%q}", "dir", link)))
-	if err != nil {
-		t.Fatalf("new request: %v", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	addServeTestToken(req)
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("POST /__omac__/deactivate: %v", err)
-	}
-	defer resp.Body.Close()
-	respBody, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode == http.StatusOK {
-		t.Errorf("POST /__omac__/deactivate for %s reported success (%s): a link path must be refused by the same policy as activation", link, strings.TrimSpace(string(respBody)))
+	if resp := controlRequest(s, "deactivate", link); resp.Code == http.StatusOK {
+		t.Errorf("deactivate for %s reported success (%s): a link path must be refused by the same policy as activation", link, strings.TrimSpace(resp.Body.String()))
 	}
 	assertActiveDirs(t, s, project)
 }
@@ -218,6 +215,65 @@ func TestSecurityActivateAliasCollapsesToSingleEntry(t *testing.T) {
 	}
 	if entries != 1 {
 		t.Errorf("activate through two lexical names produced %d active entries; want 1", entries)
+	}
+}
+
+func TestSecurityUnresolvableRootsFailStartup(t *testing.T) {
+	for _, name := range []string{"missing", "dangling"} {
+		t.Run(name, func(t *testing.T) {
+			isolateHome(t)
+			base := t.TempDir()
+			root := filepath.Join(base, name)
+			if name == "dangling" {
+				if err := os.Symlink(filepath.Join(base, "absent"), root); err != nil {
+					t.Fatal(err)
+				}
+			}
+			env := makeEnv(base)
+			if code := runServe([]string{"--no-inner", "--root", root}, env); code != ExitMisuse {
+				t.Errorf("unresolvable root exit=%d, want %d", code, ExitMisuse)
+			}
+		})
+	}
+}
+
+// TestSecuritySymlinkFailuresHTTPAndAudit pins the control-plane response and
+// the audit event for a symlinked name: both must report an error.
+func TestSecuritySymlinkFailuresHTTPAndAudit(t *testing.T) {
+	s := newServeServerForTest(t)
+	base := resolvedTempDir(t)
+	project := filepath.Join(base, "project")
+	if err := os.Mkdir(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(base, "link")
+	if err := os.Symlink(project, link); err != nil {
+		t.Fatal(err)
+	}
+	logPath := filepath.Join(base, "audit.jsonl")
+	a, err := audit.New(audit.Config{Enabled: true, Path: logPath, Mode: audit.ModeServe})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.auditor = a
+	for _, action := range []string{"deactivate", "reload"} {
+		if w := controlRequest(s, action, link); w.Code != http.StatusBadRequest {
+			t.Errorf("%s status=%d", action, w.Code)
+		}
+	}
+	if err := a.Close(); err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, event := range readAuditEvents(t, logPath) {
+		if event["type"] == "control.mutation" {
+			if result, ok := event["result"].(string); ok && strings.HasPrefix(result, "error: ") {
+				seen[event["action"].(string)] = true
+			}
+		}
+	}
+	if !seen["deactivate"] || !seen["reload"] {
+		t.Errorf("missing audited errors: %v", seen)
 	}
 }
 
