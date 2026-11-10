@@ -90,7 +90,7 @@ const stubSSH = `#!/bin/sh
 for a in "$@"; do printf '%s\n' "$a" >> "$SSH_ARGS_FILE"; done
 while [ $# -gt 0 ]; do
 	case "$1" in
-	-i|-p|-o|-l) shift 2 ;;
+	-F|-i|-p|-o|-l) shift 2 ;;
 	-*) shift ;;
 	*) break ;;
 	esac
