@@ -10,8 +10,9 @@ import (
 	"github.com/TNG/oh-my-agentic-coder/internal/netprompt"
 )
 
-// newSidecarApprover builds the Approver the facade asks for endpoints
-// declared approval: required. Without a dialog backend it still returns an
+// newSidecarApprover builds the Approver the facade asks for requests that
+// ask: endpoints declared approval: required, and routes an approvals block
+// does not list. Without a dialog backend it still returns an
 // Approver, which then denies every such request as unavailable, and says so
 // once. scopeFor maps a route namespace to what verdicts are bound to.
 func newSidecarApprover(stderr io.Writer, prefix string, scopeFor func(namespace string) string) *approver.Approver {
@@ -23,7 +24,7 @@ func newSidecarApprover(stderr io.Writer, prefix string, scopeFor func(namespace
 	if ch, ok := netprompt.NewChooser(); ok {
 		cfg.Chooser = ch
 	} else {
-		fmt.Fprintf(stderr, "%s: notice: no dialog backend available; sidecar endpoints declared approval: required are denied\n", prefix)
+		fmt.Fprintf(stderr, "%s: notice: no dialog backend available; sidecar requests that need approval are denied\n", prefix)
 	}
 	return approver.New(cfg)
 }
