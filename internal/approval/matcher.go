@@ -23,10 +23,8 @@ type Set struct {
 // match, a value other than required/none, `approval: none` on a catch-all
 // (ANY or a `**` path), and two entries of the same shape (same method and
 // same literal/{name}/** layout), which would otherwise be ambiguous.
+// No entries is valid: nothing matches, so every request asks.
 func Compile(entries []Entry) (*Set, error) {
-	if len(entries) == 0 {
-		return nil, fmt.Errorf("approvals.endpoints must declare at least one endpoint")
-	}
 	seen := map[string]string{}
 	s := &Set{}
 	for i, e := range entries {
