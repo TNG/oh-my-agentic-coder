@@ -58,7 +58,7 @@ func TestApprovalsListMarksUnlistedRoutes(t *testing.T) {
 }
 
 func TestApprovalsSummary(t *testing.T) {
-	if s := approvalsSummary(&config.Meta{Sidecar: &config.SidecarMeta{}}); !strings.Contains(s, "ungated") {
+	if s := approvalsSummary(&config.Meta{Sidecar: &config.SidecarMeta{}}); !strings.Contains(s, "no approvals block") {
 		t.Errorf("ungated skill: %q", s)
 	}
 	m := &config.Meta{Sidecar: &config.SidecarMeta{Approvals: &config.ApprovalsSpec{Endpoints: []config.ApprovalSpec{
@@ -68,7 +68,7 @@ func TestApprovalsSummary(t *testing.T) {
 		t.Errorf("gated skill: %q", s)
 	}
 	empty := &config.Meta{Sidecar: &config.SidecarMeta{Approvals: &config.ApprovalsSpec{}}}
-	if s := approvalsSummary(empty); !strings.Contains(s, "0 endpoint(s) run without asking") {
+	if s := approvalsSummary(empty); !strings.Contains(s, "every request to this skill asks you first") {
 		t.Errorf("empty block: %q", s)
 	}
 }
