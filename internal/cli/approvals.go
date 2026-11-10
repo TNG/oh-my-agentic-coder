@@ -14,13 +14,16 @@ import (
 // facade will enforce for the skill.
 func approvalsSummary(m *config.Meta) string {
 	if m == nil || m.Sidecar == nil || m.Sidecar.Approvals == nil {
-		return "  approvals: none declared; every endpoint of this skill is forwarded without asking (ungated)"
+		return "  approvals: no approvals block; every request to this skill is forwarded without asking"
 	}
 	unasked := 0
 	for _, e := range m.Sidecar.Approvals.Endpoints {
 		if e.Approval == approval.None {
 			unasked++
 		}
+	}
+	if unasked == 0 {
+		return "  approvals: every request to this skill asks you first"
 	}
 	return fmt.Sprintf("  approvals: %d endpoint(s) run without asking; every other request asks you first",
 		unasked)
