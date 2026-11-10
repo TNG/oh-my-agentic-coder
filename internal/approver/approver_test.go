@@ -113,6 +113,30 @@ func TestAlwaysPersistsAcrossRestartAndRevokes(t *testing.T) {
 	}
 }
 
+func TestAlwaysForAnUnlistedRouteDoesNotCoverADeclaredEntry(t *testing.T) {
+	dir := t.TempDir()
+	unlisted := req("/send")
+	unlisted.Unlisted, unlisted.Description = true, ""
+	a := New(Config{Chooser: &fakeChooser{answers: []string{LabelAlways}}, Store: NewStore(dir), Timeout: time.Second})
+	if d := a.Approve(context.Background(), unlisted); !d.Allow || d.Scope != "always" {
+		t.Fatalf("decision = %+v", d)
+	}
+	vs, err := NewStore(dir).List()
+	if err != nil || len(vs) != 1 || vs[0].Approval != "unlisted" {
+		t.Fatalf("list = %+v %v", vs, err)
+	}
+	// The same text as a declared entry asks again.
+	c := &fakeChooser{answers: []string{LabelDeny}}
+	b := New(Config{Chooser: c, Store: NewStore(dir), Timeout: time.Second})
+	if d := b.Approve(context.Background(), req("/send")); d.Allow || c.asked() != 1 {
+		t.Errorf("declared entry inherited the unlisted answer: %+v asked=%d", d, c.asked())
+	}
+	// The unlisted route itself is still remembered.
+	if d := b.Approve(context.Background(), unlisted); !d.Allow || d.Source != "always" {
+		t.Errorf("unlisted answer lost: %+v", d)
+	}
+}
+
 func TestAlwaysIsBoundToScope(t *testing.T) {
 	dir := t.TempDir()
 	c := &fakeChooser{answers: []string{LabelAlways}}
@@ -212,6 +236,19 @@ func TestDialogTextIsFromObservedFactsAndMasksCredentials(t *testing.T) {
 	}
 	if strings.Contains(txt, "SECRET") {
 		t.Errorf("credential leaked into the dialog:\n%s", txt)
+	}
+}
+
+// An unlisted route has no description from the skill; the dialog says so
+// instead of leaving the user to guess why nothing is declared.
+func TestDialogTextSaysWhenARouteIsUnlisted(t *testing.T) {
+	r := req("/send")
+	r.Unlisted, r.Description = true, ""
+	if txt := DialogText(r); !strings.Contains(txt, "does not list this route") {
+		t.Errorf("unlisted route not called out:\n%s", txt)
+	}
+	if txt := DialogText(req("/send")); strings.Contains(txt, "does not list") {
+		t.Errorf("declared route called unlisted:\n%s", txt)
 	}
 }
 
