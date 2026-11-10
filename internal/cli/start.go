@@ -1004,7 +1004,7 @@ func runLaunch(env *Env, opts launchOpts) int {
 			fmt.Fprintf(env.Stderr, "%s: opencode v2 model state not saved: %v\n", prefix, stateErr)
 		}
 	}
-	watch.report(func(format string, args ...any) {
+	watch.report(verbose, func(format string, args ...any) {
 		fmt.Fprintf(env.Stderr, prefix+": "+format+"\n", args...)
 	})
 	if finishServiceCheck != nil {

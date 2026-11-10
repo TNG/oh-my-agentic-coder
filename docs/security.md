@@ -164,7 +164,51 @@ What happens then depends on the system:
   changed while the session runs. The omac parent therefore re-scans the
   same roots every 10 seconds and warns you when a new protected file
   appears; the warning tells you that only a restart restores protection.
-  The watch warns, it does not block or mask. Directory timestamps come
+  The watch warns, it does not block or mask. Detections from one scan
+  arrive as one decision dialog, not one popup per file. It lists up to
+  eight paths and offers "Suppress warnings for this path" by exact path,
+  "Suppress warnings for all N files" for the whole batch (the label says
+  "(8 listed)" when the dialog showed only the first eight), and "Suppress
+  warnings for every file `<name>` under `<full path>`" for the session folder
+  or an explicitly selected parent folder. Choose one option at a time: after
+  suppressing warnings for one path or a filename under a folder, the dialog
+  reopens for any remaining files, so you can handle several paths in turn.
+  "Keep warning every time (default)"
+  is the first option, so pressing Enter keeps it. Keeping the
+  warning saves no exception: the file stays in the audit log and is listed
+  in the session-end report, and the dialog does not reopen for that path in
+  this session. Exact paths are stored in
+  `~/.config/omac/prefs.yaml` (`protected_watch_ignore`). A project choice
+  stores `{root, name}` under `protected_watch_project_ignores`, where
+  `root` is the selected folder. Selecting `repo/` covers existing and future
+  worktrees under `repo/.worktrees/`; selecting just `repo/.worktrees/A/`
+  leaves sibling worktrees unaffected. A parent-folder exception also covers
+  any other projects below that folder, so check the full path before selecting
+  it. There is no global basename exception. The file stays protected at launch and every detection is still
+  audited. The prefs file lives outside the sandbox, so the agent cannot
+  grant itself an exception. Concurrent sessions merge preferences under a
+  shared file lock so they cannot overwrite each other's choices.
+  If no dialog backend is installed, omac falls
+  back to the informational dialog and a desktop notification.
+
+  The 10-second scan pauses while a decision dialog is open; a protected
+  file created then is caught on the next tick after it closes, except one
+  created and deleted while the dialog is open.
+
+  Folder choices come only from the session's launch path, never from `.git`
+  files or repository configuration. The session folder comes first, then its
+  parents, stopping before your home directory or the filesystem root. Only
+  the folder you explicitly select is saved. Worktrees outside that folder
+  are not covered, regardless of whether they share a Git repository. These
+  choices also work in non-Git projects. The exact-path and batch choices
+  remain available when no folder scope can be offered.
+
+  The end-of-session report collapses a burst to one summary line. Pass
+  `--verbose` to list every warning you kept; ignored files are not listed
+  because their warning was dismissed. The audit log always records one
+  event per path, including ignored files.
+
+  Directory timestamps come
   from the filesystem's coarse clock, so a file created in the same clock
   tick as a scan can share the previous scan's timestamp and slip past
   that scan. The watch therefore lists any directory once more on the
