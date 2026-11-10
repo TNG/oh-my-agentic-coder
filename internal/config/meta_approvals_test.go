@@ -44,6 +44,32 @@ func TestApprovals_AbsentIsUngated(t *testing.T) {
 	}
 }
 
+// An empty block is a declaration that lists nothing as safe, so every
+// route asks. It must not be confused with a missing block (nothing asks).
+func TestApprovals_EmptyBlockAsksForEverything(t *testing.T) {
+	for name, block := range map[string]string{
+		"empty list": "  approvals:\n    endpoints: []\n",
+		"empty map":  "  approvals: {}\n",
+		"no value":   "  approvals:\n",
+		"null":       "  approvals: null\n",
+	} {
+		m, err := loadApprovalsMeta(t, block)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if m.Sidecar.Approvals == nil {
+			t.Fatalf("%s: block read as absent", name)
+		}
+		set, err := m.Sidecar.Approvals.Compile()
+		if err != nil {
+			t.Fatalf("%s: Compile: %v", name, err)
+		}
+		if _, ok := set.Lookup("GET", []string{"status"}); ok {
+			t.Errorf("%s: GET /status matched an empty declaration", name)
+		}
+	}
+}
+
 func TestApprovals_Refused(t *testing.T) {
 	cases := map[string]string{
 		"unknown key":       "  approvals:\n    endpoints:\n      - {match: \"GET /a\", approval: none}\n    default: none\n",
@@ -53,7 +79,6 @@ func TestApprovals_Refused(t *testing.T) {
 		"none on ANY":       "  approvals:\n    endpoints:\n      - {match: \"ANY /a\", approval: none}\n",
 		"none on **":        "  approvals:\n    endpoints:\n      - {match: \"GET /a/**\", approval: none}\n",
 		"equal specificity": "  approvals:\n    endpoints:\n      - {match: \"GET /a/{x}\", approval: none}\n      - {match: \"GET /a/{y}\", approval: required}\n",
-		"no endpoints":      "  approvals:\n    endpoints: []\n",
 		"bad match":         "  approvals:\n    endpoints:\n      - {match: \"/a\", approval: none}\n",
 	}
 	for name, block := range cases {

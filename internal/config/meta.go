@@ -79,6 +79,28 @@ type ApprovalSpec struct {
 	Description string        `yaml:"description,omitempty"`
 }
 
+// UnmarshalYAML decodes the sidecar block as usual, with one exception: an
+// `approvals:` key with no value is read as an empty declaration (every route
+// asks), not as a missing one (nothing asks). yaml.v3 leaves a pointer nil for
+// a null value, which would turn a block whose entries are all commented out
+// into no gate at all.
+func (s *SidecarMeta) UnmarshalYAML(node *yaml.Node) error {
+	type plain SidecarMeta
+	var p plain
+	if err := node.Decode(&p); err != nil {
+		return err
+	}
+	*s = SidecarMeta(p)
+	if s.Approvals == nil && node.Kind == yaml.MappingNode {
+		for i := 0; i+1 < len(node.Content); i += 2 {
+			if node.Content[i].Value == "approvals" {
+				s.Approvals = &ApprovalsSpec{}
+			}
+		}
+	}
+	return nil
+}
+
 // UnmarshalYAML decodes the block strictly: unknown keys are an error here,
 // unlike the rest of omac.yaml, because a misspelled key in a security
 // declaration must not silently weaken it.
