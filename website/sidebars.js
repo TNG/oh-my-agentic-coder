@@ -42,6 +42,11 @@ const sidebars = {
         'contributing/serve-spec',
       ],
     },
+    {
+      type: 'category',
+      label: 'Decision records',
+      items: ['adr/optional-route-consent'],
+    },
   ],
 };
 
