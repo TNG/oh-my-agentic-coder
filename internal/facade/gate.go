@@ -22,6 +22,11 @@ type ApprovalRequest struct {
 	RawQuery    string // as received; the approver must mask credentials
 	Match       string // the declared pattern that matched
 	Description string // the declaration's one-line description
+	// Unlisted is true when the declaration has no entry for the request.
+	// Match is then the exact method and cleaned path, not a pattern. The
+	// cleaned path percent-encodes `{`, `}` and `*`, so it cannot spell a
+	// pattern today; the flag keeps the two apart without relying on that.
+	Unlisted bool
 }
 
 // ApprovalDecision is the answer to an ApprovalRequest.
@@ -88,7 +93,7 @@ func (f *Facade) gate(w http.ResponseWriter, r *http.Request, route *Route, rawE
 	d := f.Approver.Approve(r.Context(), ApprovalRequest{
 		Skill: route.Skill, Mount: route.Mount, Namespace: route.Namespace,
 		Method: r.Method, Path: forward, RawQuery: r.URL.RawQuery,
-		Match: entry.Match, Description: entry.Description,
+		Match: entry.Match, Description: entry.Description, Unlisted: !matched,
 	})
 	if !d.Allow {
 		reason := "approval-denied"
