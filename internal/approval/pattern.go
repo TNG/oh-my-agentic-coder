@@ -149,13 +149,19 @@ func (p Pattern) shapeKey() string {
 	return b.String()
 }
 
-// moreSpecific reports whether a beats b: compared segment by segment from
-// the left, a literal beats `{name}` beats `**` beats no segment; if the
-// paths tie, a concrete method beats ANY.
+// moreSpecific reports whether a beats b, for two patterns that both match
+// a request: compared segment by segment from the left, a literal beats
+// `{name}`, and the end of the pattern beats `**`; if the paths tie, a
+// concrete method beats ANY.
+//
+// The end of a pattern can only meet `**` at the same position when the
+// request has exactly that many segments (the shorter pattern matched it),
+// so the exact pattern is the more specific one: `GET /a` beats `GET /a/**`
+// for a request to /a.
 func (a Pattern) moreSpecific(b Pattern) bool {
 	rank := func(p Pattern, i int) int {
 		if i >= len(p.segs) {
-			return 0
+			return 1
 		}
 		switch p.segs[i].kind {
 		case segLiteral:
@@ -163,7 +169,7 @@ func (a Pattern) moreSpecific(b Pattern) bool {
 		case segParam:
 			return 2
 		}
-		return 1
+		return 0
 	}
 	n := len(a.segs)
 	if len(b.segs) > n {

@@ -89,6 +89,27 @@ func TestMostSpecificWins(t *testing.T) {
 	}
 }
 
+// An exact entry beats a `**` that would match zero segments of the same
+// request, in either order of declaration.
+func TestExactPathBeatsEmptyRest(t *testing.T) {
+	for _, es := range [][]Entry{
+		{{Match: "GET /a", Approval: None}, {Match: "GET /a/**", Approval: Required}},
+		{{Match: "GET /a/**", Approval: Required}, {Match: "GET /a", Approval: None}},
+	} {
+		s := mustSet(t, es...)
+		if e, ok := lookup(t, s, "GET", "/a"); !ok || e.Match != "GET /a" {
+			t.Errorf("GET /a matched %q (%v)", e.Match, ok)
+		}
+		if e, ok := lookup(t, s, "GET", "/a/b"); !ok || e.Match != "GET /a/**" {
+			t.Errorf("GET /a/b matched %q (%v)", e.Match, ok)
+		}
+	}
+	s := mustSet(t, Entry{Match: "GET /a/{x}", Approval: None}, Entry{Match: "GET /a/**", Approval: Required})
+	if e, _ := lookup(t, s, "GET", "/a/b"); e.Match != "GET /a/{x}" {
+		t.Errorf("GET /a/b matched %q, want the {x} entry", e.Match)
+	}
+}
+
 func TestUnlistedRoutesDoNotMatch(t *testing.T) {
 	s := mustSet(t,
 		Entry{Match: "GET /status", Approval: None},
