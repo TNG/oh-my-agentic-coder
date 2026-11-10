@@ -257,3 +257,56 @@ func TestVerdictIDChangesWithTheDeclaration(t *testing.T) {
 		t.Error("different entries share an id")
 	}
 }
+
+// Identical requests waiting on a dialog nobody answers share its timeout
+// instead of each showing the dialog again for the full timeout.
+func TestWaitingCopiesShareATimeout(t *testing.T) {
+	c := &fakeChooser{answers: []string{LabelOnce}, block: make(chan struct{})}
+	a := New(Config{Chooser: c, Store: NewStore(t.TempDir()), Timeout: 150 * time.Millisecond})
+	var wg sync.WaitGroup
+	results := make([]facade.ApprovalDecision, 4)
+	for i := range results {
+		wg.Add(1)
+		go func(i int) { defer wg.Done(); results[i] = a.Approve(context.Background(), req("/send")) }(i)
+		time.Sleep(10 * time.Millisecond)
+	}
+	wg.Wait()
+	if c.asked() != 1 {
+		t.Errorf("dialog shown %d times, want 1", c.asked())
+	}
+	for i, d := range results {
+		if d.Allow || d.Source != "timeout" {
+			t.Errorf("request %d: %+v", i, d)
+		}
+	}
+}
+
+// A request that cannot be tied to a project is denied without a dialog
+// and nothing is stored under a scope other projects would share.
+func TestUnknownScopeIsDeniedAndNothingIsStored(t *testing.T) {
+	dir := t.TempDir()
+	c := &fakeChooser{answers: []string{LabelAlways}}
+	a := New(Config{Chooser: c, Store: NewStore(dir), Timeout: time.Second, ScopeFor: func(string) string { return "" }})
+	if d := a.Approve(context.Background(), req("/send")); d.Allow || d.Source != "unavailable" {
+		t.Errorf("decision = %+v", d)
+	}
+	if c.asked() != 0 {
+		t.Errorf("dialog shown %d times", c.asked())
+	}
+	if vs, _ := NewStore(dir).List(); len(vs) != 0 {
+		t.Errorf("stored %+v", vs)
+	}
+}
+
+// "For the session" and "always" cover the declared entry, so the dialog
+// names it when it is wider than the request.
+func TestDialogTextNamesTheEntryAnAnswerCovers(t *testing.T) {
+	r := req("/repos/x")
+	r.Method, r.Match = "DELETE", "ANY /**"
+	if txt := DialogText(r); !strings.Contains(txt, "Covers:   ANY /**") {
+		t.Errorf("wide entry not named:\n%s", txt)
+	}
+	if txt := DialogText(req("/send")); strings.Contains(txt, "Covers:") {
+		t.Errorf("exact entry named as wider:\n%s", txt)
+	}
+}

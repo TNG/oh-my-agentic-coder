@@ -109,6 +109,12 @@ func (a *Approver) known(skillKey, id string) (facade.ApprovalDecision, bool) {
 // Approve implements facade.Approver.
 func (a *Approver) Approve(ctx context.Context, req facade.ApprovalRequest) facade.ApprovalDecision {
 	scope := a.scope(req.Namespace)
+	if a.cfg.ScopeFor != nil && scope == "" {
+		// The request cannot be tied to a project, so no answer may be
+		// stored for it or read from another project's answers.
+		a.cfg.Logf("omac approvals: cannot tell which project %s %s belongs to; denied", req.Method, req.Path)
+		return facade.ApprovalDecision{Source: "unavailable"}
+	}
 	skillKey := scope + "\x00" + req.Skill
 	id := VerdictID(scope, req.Skill, req.Match, ruleKind(req))
 	if d, ok := a.known(skillKey, id); ok {
@@ -116,8 +122,10 @@ func (a *Approver) Approve(ctx context.Context, req facade.ApprovalRequest) faca
 	}
 
 	// Identical requests that are pending right now share the leader's
-	// dialog: a denial is returned to all of them, any other answer is
-	// re-read from the stored state.
+	// dialog: a denial, timeout or missing dialog is returned to all of them,
+	// so one unanswered dialog is not shown again for each waiting copy. An
+	// allow is re-read from the stored state. Only when the leader's own
+	// client went away does a follower ask again.
 	flight := strings.Join([]string{skillKey, req.Method, req.Path, req.RawQuery}, "\x00")
 	a.mu.Lock()
 	if p, ok := a.inflight[flight]; ok {
@@ -127,7 +135,7 @@ func (a *Approver) Approve(ctx context.Context, req facade.ApprovalRequest) faca
 		case <-ctx.Done():
 			return facade.ApprovalDecision{Source: "abandoned"}
 		}
-		if !p.dec.Allow && p.dec.Source == "prompt" {
+		if !p.dec.Allow && p.dec.Source != "abandoned" {
 			return p.dec
 		}
 		if d, ok := a.known(skillKey, id); ok {
@@ -235,6 +243,11 @@ func DialogText(r facade.ApprovalRequest) string {
 		b.WriteString("    Declared: no, the skill does not list this route\n")
 	case r.Description != "":
 		fmt.Fprintf(&b, "    Declared: %s\n", clip(r.Description, 200))
+	}
+	if !r.Unlisted && r.Match != r.Method+" "+r.Path {
+		// "for the session" and "always" cover the whole declared entry,
+		// not just the request above.
+		fmt.Fprintf(&b, "    Covers:   %s\n", clip(r.Match, 160))
 	}
 	b.WriteString("    Body:     not shown\n\n")
 	b.WriteString("Allow it?")

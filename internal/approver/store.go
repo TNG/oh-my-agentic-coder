@@ -28,7 +28,7 @@ type Verdict struct {
 	ID        string    `json:"id"`
 	Scope     string    `json:"scope"` // what the verdict is bound to: a workdir hash
 	Skill     string    `json:"skill"`
-	Match     string    `json:"match"` // the declared pattern, e.g. "POST /tools/conversations_add_message"
+	Match     string    `json:"match"` // the declared pattern, e.g. "POST /tools/{name}", or the exact route when Approval is "unlisted"
 	Approval  string    `json:"approval"`
 	CreatedAt time.Time `json:"created_at"`
 }
