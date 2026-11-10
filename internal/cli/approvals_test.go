@@ -26,6 +26,9 @@ func TestApprovalsListAndRevoke(t *testing.T) {
 	if code := runApprovals([]string{"list"}, env); code != ExitOK || !strings.Contains(out.String(), "tng-slack") || !strings.Contains(out.String(), id) {
 		t.Fatalf("list: code=%d out=%q err=%q", code, out.String(), errb.String())
 	}
+	if strings.Contains(out.String(), "not declared") {
+		t.Errorf("declared entry listed as not declared: %q", out.String())
+	}
 	out.Reset()
 	if code := runApprovals([]string{"revoke", id}, env); code != ExitOK {
 		t.Fatalf("revoke: code=%d err=%q", code, errb.String())
@@ -40,6 +43,20 @@ func TestApprovalsListAndRevoke(t *testing.T) {
 	}
 }
 
+func TestApprovalsListMarksUnlistedRoutes(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	id := approver.VerdictID("wd-1", "tng-slack", "GET /messages/123", "unlisted")
+	if err := approver.NewStore("").Add(approver.Verdict{ID: id, Scope: "wd-1", Skill: "tng-slack", Match: "GET /messages/123", Approval: "unlisted", CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	outF, _ := os.CreateTemp(t.TempDir(), "out")
+	errF, _ := os.CreateTemp(t.TempDir(), "err")
+	out := &capture{outF}
+	if code := runApprovals([]string{"list"}, &Env{Stdout: outF, Stderr: errF}); code != ExitOK || !strings.Contains(out.String(), "GET /messages/123 (not declared)") {
+		t.Errorf("list: code=%d out=%q", code, out.String())
+	}
+}
+
 func TestApprovalsSummary(t *testing.T) {
 	if s := approvalsSummary(&config.Meta{Sidecar: &config.SidecarMeta{}}); !strings.Contains(s, "ungated") {
 		t.Errorf("ungated skill: %q", s)
@@ -47,8 +64,12 @@ func TestApprovalsSummary(t *testing.T) {
 	m := &config.Meta{Sidecar: &config.SidecarMeta{Approvals: &config.ApprovalsSpec{Endpoints: []config.ApprovalSpec{
 		{Match: "GET /a", Approval: approval.None}, {Match: "POST /b", Approval: approval.Required},
 	}}}}
-	if s := approvalsSummary(m); !strings.Contains(s, "2 endpoint(s) declared, 1 ask you first") {
+	if s := approvalsSummary(m); !strings.Contains(s, "1 endpoint(s) run without asking") {
 		t.Errorf("gated skill: %q", s)
+	}
+	empty := &config.Meta{Sidecar: &config.SidecarMeta{Approvals: &config.ApprovalsSpec{}}}
+	if s := approvalsSummary(empty); !strings.Contains(s, "0 endpoint(s) run without asking") {
+		t.Errorf("empty block: %q", s)
 	}
 }
 

@@ -191,9 +191,9 @@ Before forwarding the request, omac strips your skill's mount prefix (`/my-skill
 
 **Python sidecars.** `http.server`'s `ThreadingHTTPServer` does a reverse-DNS lookup when it binds, which can stall startup by about 35 seconds on macOS. echo-rest's `sidecar.py` shows the one-line `server_bind` override that avoids it.
 
-## Approvals: declare what the agent may call
+## Approvals: which routes run without asking
 
-A sidecar can declare its endpoints in `omac.yaml` so omac enforces them in the facade, outside your code. The block is part of the registered snapshot; editing it in the workdir changes nothing until the skill is registered again.
+With an `approvals` block in `omac.yaml`, omac asks the user before it forwards a request to your sidecar, except for the routes you list with `approval: none`. omac does this in the facade, outside your code. The block is part of the registered snapshot; editing it in the workdir changes nothing until the skill is registered again.
 
 ```yaml
 sidecar:
@@ -207,7 +207,8 @@ sidecar:
         description: "Sends a message"
 ```
 
-- **Unlisted routes ask.** With the block present, a request that matches no entry asks the user, the same as `approval: required`. omac does not read your code: a route you add and forget to declare asks, it is not open. Without the block, nothing asks.
+- **Unlisted routes ask.** With the block present, a request that matches no entry asks the user, the same as `approval: required`. omac does not read your code: a route you add and forget to declare asks, it is not open. Without the block, nothing asks. An empty block (`endpoints: []`, or `approvals:` with no value) means every route asks.
+- **Declare routes with ids.** An "always" answer for a declared entry covers everything the entry matches. For an unlisted route it covers only that exact method and path: allowing `GET /messages/123` does not allow `GET /messages/124`. Declare `GET /messages/{id}` if one answer should cover them all.
 - **`match`** is `<METHOD> <path>`: `GET`, `HEAD`, `POST`, `PUT`, `PATCH`, `DELETE`, `OPTIONS` or `ANY`; the path is relative to the mount. `{name}` matches one segment, `**` matches the rest and only works last. No regular expressions, and the query string is not matched. List each spelling your sidecar accepts: if it serves a tool at both `/tools/x` and `/x`, declare both.
 - **Most specific wins**: a literal segment beats `{name}` beats `**`; a concrete method beats `ANY`. Two entries of the same shape are an error.
 - **`approval: none`** forwards the request. **`approval: required`** holds the request and shows the user a dialog: allow once, for the session, always, deny, or deny everything from this skill for the session. The dialog's extra choices and the timeout (no answer is a deny) are omac's choice and can change; do not rely on them. `none` is not allowed on `ANY` or on a `**` path, so a catch-all is always `required`.

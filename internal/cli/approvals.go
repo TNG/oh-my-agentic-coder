@@ -16,14 +16,14 @@ func approvalsSummary(m *config.Meta) string {
 	if m == nil || m.Sidecar == nil || m.Sidecar.Approvals == nil {
 		return "  approvals: none declared; every endpoint of this skill is forwarded without asking (ungated)"
 	}
-	required := 0
+	unasked := 0
 	for _, e := range m.Sidecar.Approvals.Endpoints {
-		if e.Approval == approval.Required {
-			required++
+		if e.Approval == approval.None {
+			unasked++
 		}
 	}
-	return fmt.Sprintf("  approvals: %d endpoint(s) declared, %d ask you first; anything not declared asks you too",
-		len(m.Sidecar.Approvals.Endpoints), required)
+	return fmt.Sprintf("  approvals: %d endpoint(s) run without asking; every other request asks you first",
+		unasked)
 }
 
 // runApprovals implements `omac approvals list|revoke`: the always-verdicts
@@ -52,7 +52,12 @@ func runApprovals(args []string, env *Env) int {
 		tw := tabwriter.NewWriter(env.Stdout, 0, 4, 2, ' ', 0)
 		fmt.Fprintln(tw, "ID\tSKILL\tENDPOINT\tSCOPE\tSINCE")
 		for _, v := range verdicts {
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", v.ID, v.Skill, v.Match, v.Scope, v.CreatedAt.Format("2006-01-02"))
+			endpoint := v.Match
+			if v.Approval == "unlisted" {
+				// An exact route the skill does not declare, not a pattern.
+				endpoint += " (not declared)"
+			}
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", v.ID, v.Skill, endpoint, v.Scope, v.CreatedAt.Format("2006-01-02"))
 		}
 		tw.Flush()
 		return ExitOK
