@@ -187,6 +187,56 @@ func TestGate_OtherMethodOnADeclaredPathAsks(t *testing.T) {
 	}
 }
 
+// The gate must hand the proxy the decoded path: an escaped one is escaped
+// again on the way out ("a%20b" → "a%2520b").
+func TestGate_ForwardsEscapedCharactersOnce(t *testing.T) {
+	f, _, seen := gatedFacade(t, &fakeApprover{})
+	for _, c := range []struct{ in, want string }{
+		{"/echo/live/a%20b", "GET /live/a%20b ovr="},
+		{"/echo/live/caf%C3%A9", "GET /live/caf%C3%A9 ovr="},
+		{"/echo/live/x%3Fy", "GET /live/x%3Fy ovr="},
+	} {
+		if w := do(f, "GET", c.in); w.Code != 200 {
+			t.Fatalf("%s: code = %d", c.in, w.Code)
+		}
+		got := seen()
+		if last := got[len(got)-1]; last != c.want {
+			t.Errorf("%s reached the sidecar as %q, want %q", c.in, last, c.want)
+		}
+	}
+}
+
+// An override header spelled with underscores is removed too.
+func TestGate_StripsUnderscoreOverrideHeader(t *testing.T) {
+	f, _, seen := gatedFacade(t, &fakeApprover{})
+	req := httptest.NewRequest("GET", "/echo/status", nil)
+	req.Header["X_HTTP_Method_Override"] = []string{"DELETE"}
+	f.handle(httptest.NewRecorder(), req)
+	if got := seen(); len(got) != 1 {
+		t.Fatalf("upstream saw %v", got)
+	}
+	// The proxy forwards r.Header, which the gate cleans in place.
+	if v, ok := req.Header["X_HTTP_Method_Override"]; ok {
+		t.Errorf("override header forwarded: %v", v)
+	}
+}
+
+// An answer for a catch-all entry covers only the route the user saw.
+func TestGate_CatchAllIsAnsweredPerRoute(t *testing.T) {
+	ap := &fakeApprover{d: ApprovalDecision{Allow: true, Scope: "always", Source: "prompt"}}
+	f, _, _ := gatedFacade(t, ap)
+	do(f, "GET", "/echo/admin/users")
+	do(f, "DELETE", "/echo/admin/users")
+	if len(ap.calls) != 2 {
+		t.Fatalf("calls = %+v", ap.calls)
+	}
+	for i, want := range []string{"GET /admin/users", "DELETE /admin/users"} {
+		if c := ap.calls[i]; c.Match != want || c.Unlisted {
+			t.Errorf("call %d = %+v, want Match %q", i, c, want)
+		}
+	}
+}
+
 func TestGate_NoneForwardsWithoutAsking(t *testing.T) {
 	ap := &fakeApprover{}
 	f, rec, seen := gatedFacade(t, ap)

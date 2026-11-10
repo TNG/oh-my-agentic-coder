@@ -72,7 +72,12 @@ func (f *Facade) gate(w http.ResponseWriter, r *http.Request, route *Route, rawE
 	// sidecar run a method other than the one that was approved.
 	approval.StripOverrideHeaders(r.Header)
 
-	rest := strings.TrimPrefix(forward, "/")
+	// The proxy puts rest into URL.Path, which holds the decoded form and is
+	// escaped once more when the request is written. forward is already
+	// escaped, so passing it would encode it twice ("a%20b" → "a%2520b").
+	// CleanPath refuses an encoded "/", so joining the decoded segments
+	// gives back the same path.
+	rest := strings.Join(segs, "/")
 	// With an approvals block, a route the block does not list asks too;
 	// only an entry with approval: none lets a request through unasked.
 	entry, matched := route.Approvals.Lookup(r.Method, segs)
@@ -80,10 +85,13 @@ func (f *Facade) gate(w http.ResponseWriter, r *http.Request, route *Route, rawE
 		f.auditApproval(route, r.Method, forward, "allow", "declared", "")
 		return rest, true
 	}
-	if !matched {
+	if !matched || isCatchAll(entry.Match) {
 		// A stored answer is keyed on the rule. An unlisted route has none,
 		// so it gets its own exact one: "always" for one route must not
-		// cover every other route the block does not list.
+		// cover every other route the block does not list. The same holds
+		// for a catch-all entry (ANY or a ** path): the user saw one
+		// request, so "always" must not stretch to DELETE because they
+		// allowed a GET.
 		entry.Match = r.Method + " " + forward
 	}
 
@@ -114,6 +122,15 @@ func (f *Facade) gate(w http.ResponseWriter, r *http.Request, route *Route, rawE
 	}
 	f.auditApproval(route, r.Method, forward, "allow", d.Source, d.Scope)
 	return rest, true
+}
+
+// isCatchAll reports whether a declared match is ANY or ends in **. The
+// entry compiled when the route was installed, so a parse error cannot
+// happen here; if it did, treating the entry as a catch-all is the
+// narrower choice.
+func isCatchAll(match string) bool {
+	p, err := approval.ParsePattern(match)
+	return err != nil || p.IsCatchAll()
 }
 
 func (f *Facade) auditApproval(route *Route, method, path, result, source, scope string) {
