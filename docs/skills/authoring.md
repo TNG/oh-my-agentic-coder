@@ -240,7 +240,7 @@ sidecar:
 
 **How omac reads a request**
 
-- omac cleans the path before it matches and forwards that same cleaned path (dot segments, `//`, percent-encoded forms), and removes `X-HTTP-Method-Override` style headers so the sidecar runs the method that was approved.
+- omac cleans the path before it matches and forwards that same cleaned path (dot segments, `//`, percent-encoded forms), and removes `X-HTTP-Method-Override` style headers (also spelled with `_`) so the sidecar runs the method that was approved. omac does not read the query or body, so your sidecar must not honour a method override there either, such as a `_method=DELETE` parameter that Rack, Laravel or Symfony accept by default.
 - A held request still streams its response. A WebSocket upgrade is decided once, when it connects; frames are not checked.
 - An omac that predates this block ignores it and forwards every call. Do not publish a skill that relies on it before a release that has it.
 
