@@ -206,17 +206,18 @@ func TestGate_ForwardsEscapedCharactersOnce(t *testing.T) {
 	}
 }
 
-// An override header spelled with underscores is removed too.
+// An override header spelled with underscores is removed too. net/http
+// stores it under the key "X_http_method_override".
 func TestGate_StripsUnderscoreOverrideHeader(t *testing.T) {
 	f, _, seen := gatedFacade(t, &fakeApprover{})
 	req := httptest.NewRequest("GET", "/echo/status", nil)
-	req.Header["X_HTTP_Method_Override"] = []string{"DELETE"}
+	req.Header["X_http_method_override"] = []string{"DELETE"}
 	f.handle(httptest.NewRecorder(), req)
 	if got := seen(); len(got) != 1 {
 		t.Fatalf("upstream saw %v", got)
 	}
 	// The proxy forwards r.Header, which the gate cleans in place.
-	if v, ok := req.Header["X_HTTP_Method_Override"]; ok {
+	if v, ok := req.Header["X_http_method_override"]; ok {
 		t.Errorf("override header forwarded: %v", v)
 	}
 }
