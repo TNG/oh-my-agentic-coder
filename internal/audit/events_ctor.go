@@ -92,7 +92,7 @@ func FacadeRequest(method, mount, namespace, path string, status int, bytesOut, 
 
 // FacadeApproval builds a facade.approval event: the gate's decision for one
 // request to a skill that declares approvals. result is "allow" or "deny";
-// source is why (declared, prompt, session, always, undeclared-endpoint,
+// source is why (declared, prompt, session, always,
 // invalid-path, timeout, unavailable, abandoned, deny-all); scope is
 // once|session|always when a user answer was involved. The query string is
 // never recorded.

@@ -203,6 +203,18 @@ func TestCleanPathForwardMatchesMatched(t *testing.T) {
 	}
 }
 
+// Go keeps a header with underscores under its own key, but CGI-style
+// servers read it as the dashed name.
+func TestStripOverrideHeadersWithUnderscores(t *testing.T) {
+	h := http.Header{"X_http_method_override": {"DELETE"}, "X_method_override": {"PUT"}, "X_other": {"keep"}}
+	if got := StripOverrideHeaders(h); len(got) != 2 {
+		t.Errorf("removed %v", got)
+	}
+	if len(h) != 1 || h["X_other"] == nil {
+		t.Errorf("headers left: %v", h)
+	}
+}
+
 func TestStripOverrideHeaders(t *testing.T) {
 	h := http.Header{}
 	h.Set("x-http-method-override", "DELETE")
