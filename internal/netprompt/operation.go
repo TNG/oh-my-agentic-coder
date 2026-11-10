@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"unicode"
 )
 
 // Chooser shows one native single-choice dialog and returns the chosen label.
@@ -78,6 +79,12 @@ func sanitizeDialogText(s string) string {
 			return r
 		}
 		if r == '\r' || r < 0x20 || (r >= 0x7f && r <= 0x9f) {
+			return ' '
+		}
+		// Line and paragraph separators render as line breaks, and format
+		// characters such as U+202E reorder text, so the agent could forge a
+		// line of the dialog through the query or path it controls.
+		if unicode.In(r, unicode.Zl, unicode.Zp, unicode.Cf) {
 			return ' '
 		}
 		return r
