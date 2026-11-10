@@ -48,18 +48,10 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update && sudo apt-get install -y bubblewrap
-          # Ubuntu 24.04 AppArmor restricts unprivileged user namespaces.
-          # Grant bwrap the userns permission so it can create sandboxes.
-          # Without this, every internal/sandboxrun integration test that
+          # Without a working bwrap, every internal/sandboxrun integration test that
           # launches a real bwrap sandbox silently skips via requireBwrap,
           # instead of actually exercising the sandbox it claims to test.
-          sudo tee /etc/apparmor.d/bwrap > /dev/null <<'EOF'
-          abi <abi/4.0>,
-          /usr/bin/bwrap flags=(unconfined) {
-            userns,
-          }
-          EOF
-          sudo apparmor_parser -r /etc/apparmor.d/bwrap
+          .github/scripts/allow-bwrap-userns.sh
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -100,17 +92,10 @@ jobs:
       - name: Install bubblewrap
         run: |
           sudo apt-get update && sudo apt-get install -y bubblewrap
-          # This job degrades the session, not the sandbox, so bwrap still
-          # needs the unprivileged-userns permission AppArmor denies by default
-          # on Ubuntu 24.04 — otherwise the sandbox integration tests would
-          # skip rather than run under the degraded session.
-          sudo tee /etc/apparmor.d/bwrap > /dev/null <<'EOF'
-          abi <abi/4.0>,
-          /usr/bin/bwrap flags=(unconfined) {
-            userns,
-          }
-          EOF
-          sudo apparmor_parser -r /etc/apparmor.d/bwrap
+          # This job degrades the session, not the sandbox, so bwrap must still
+          # work; otherwise the sandbox integration tests would skip rather
+          # than run under the degraded session.
+          .github/scripts/allow-bwrap-userns.sh
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -258,16 +243,9 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update && sudo apt-get install -y bubblewrap
-          # Ubuntu 24.04 AppArmor restricts unprivileged user namespaces.
-          # Grant bwrap the userns permission so the shell fix-leg test can
-          # run its sandboxed branch instead of only the fallback one.
-          sudo tee /etc/apparmor.d/bwrap > /dev/null <<'EOF'
-          abi <abi/4.0>,
-          /usr/bin/bwrap flags=(unconfined) {
-            userns,
-          }
-          EOF
-          sudo apparmor_parser -r /etc/apparmor.d/bwrap
+          # A working bwrap lets the shell fix-leg test run its sandboxed
+          # branch instead of only the fallback one.
+          .github/scripts/allow-bwrap-userns.sh
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -318,14 +296,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y bubblewrap python3-pip
-          printf '%s\n' \
-            'abi <abi/4.0>,' \
-            '/usr/bin/bwrap flags=(unconfined) {' \
-            '  userns,' \
-            '}' \
-            | sudo tee /etc/apparmor.d/bwrap > /dev/null
-          sudo apparmor_parser -r /etc/apparmor.d/bwrap
-          bwrap --ro-bind / / -- /bin/true
+          .github/scripts/allow-bwrap-userns.sh
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
@@ -360,16 +331,9 @@ jobs:
       - name: Install bubblewrap
         run: |
           sudo apt-get update && sudo apt-get install -y bubblewrap
-          # Ubuntu 24.04 AppArmor restricts unprivileged user namespaces;
-          # grant bwrap the userns permission (see the test job above) so the
-          # sandbox launches instead of silently skipping via requireBwrap.
-          sudo tee /etc/apparmor.d/bwrap > /dev/null <<'EOF'
-          abi <abi/4.0>,
-          /usr/bin/bwrap flags=(unconfined) {
-            userns,
-          }
-          EOF
-          sudo apparmor_parser -r /etc/apparmor.d/bwrap
+          # A working bwrap makes the sandbox launch instead of silently
+          # skipping via requireBwrap.
+          .github/scripts/allow-bwrap-userns.sh
 
       - name: Set up Go
         uses: actions/setup-go@v5
