@@ -154,6 +154,39 @@ func TestGate_UnlistedRoutesGetSeparateRules(t *testing.T) {
 	}
 }
 
+// The approver must be able to tell an unlisted request from a declared
+// entry. The agent picks the path of an unlisted request, so it must not be
+// able to make its rule text look like a pattern such as "GET /a/**".
+func TestGate_UnlistedRequestIsMarked(t *testing.T) {
+	ap := &fakeApprover{d: ApprovalDecision{Allow: true, Scope: "always", Source: "prompt"}}
+	f, _, _ := gatedFacade(t, ap)
+	do(f, "GET", "/echo/a/**")
+	do(f, "POST", "/echo/echo")
+	if len(ap.calls) != 2 {
+		t.Fatalf("calls = %+v", ap.calls)
+	}
+	if u := ap.calls[0]; !u.Unlisted || u.Match != "GET /a/%2A%2A" {
+		t.Errorf("unlisted request not marked: %+v", u)
+	}
+	if d := ap.calls[1]; d.Unlisted || d.Match != "POST /echo" {
+		t.Errorf("declared request = %+v", d)
+	}
+}
+
+// An entry covers only the method it names: HEAD is not GET.
+func TestGate_OtherMethodOnADeclaredPathAsks(t *testing.T) {
+	ap := &fakeApprover{d: ApprovalDecision{Source: "prompt"}}
+	f, _, seen := gatedFacade(t, ap)
+	for _, m := range []string{"HEAD", "POST", "DELETE"} {
+		if w := do(f, m, "/echo/status"); w.Code != 403 {
+			t.Errorf("%s /status: code = %d", m, w.Code)
+		}
+	}
+	if len(ap.calls) != 3 || len(seen()) != 0 {
+		t.Errorf("calls=%d seen=%v", len(ap.calls), seen())
+	}
+}
+
 func TestGate_NoneForwardsWithoutAsking(t *testing.T) {
 	ap := &fakeApprover{}
 	f, rec, seen := gatedFacade(t, ap)
