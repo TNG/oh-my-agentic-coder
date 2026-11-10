@@ -52,6 +52,7 @@ func TestApprovals_EmptyBlockAsksForEverything(t *testing.T) {
 		"empty map":  "  approvals: {}\n",
 		"no value":   "  approvals:\n",
 		"null":       "  approvals: null\n",
+		"via merge":  "  <<: {approvals: null}\n",
 	} {
 		m, err := loadApprovalsMeta(t, block)
 		if err != nil {
@@ -77,6 +78,12 @@ func TestApprovals_MisspelledBlockKeyIsRefused(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "did you mean approvals") {
 			t.Errorf("%s: err = %v", k, err)
 		}
+	}
+	// At the top level the block would be ignored.
+	p := filepath.Join(t.TempDir(), MetaFileName)
+	os.WriteFile(p, []byte("name: t\napprovals:\n  endpoints: []\nsidecar:\n  command: [\"true\"]\n"), 0o600)
+	if _, err := LoadMeta(p); err == nil || !strings.Contains(err.Error(), "belongs under sidecar") {
+		t.Errorf("top-level approvals: err = %v", err)
 	}
 	// Real sidecar keys are not near-misses.
 	if _, err := loadApprovalsMeta(t, "  protocols: [\"http\"]\n"); err != nil {
