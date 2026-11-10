@@ -412,8 +412,9 @@ func protectedExceptionPrompt(paths []string) (title, message string) {
 	message = fmt.Sprintf(
 		"%d %s that omac denies %s created during this session and %s readable by the agent until omac restarts.",
 		len(paths), plural(len(paths), "file", "files"), plural(len(paths), "was", "were"), plural(len(paths), "is", "are"))
-	message += " If you do not want to be warned about this every time, suppress the warning for one path, for all listed files, or for every file with the same name below a folder."
-	message += " Suppressing a warning keeps the file protected at launch and keeps it in the audit log."
+	message += " Suppress future warnings by path, for all files, or by filename under a folder."
+	message += " If files remain after your choice, this dialog reopens for them."
+	message += " Files stay protected at launch and recorded in the audit log."
 	return title, message
 }
 

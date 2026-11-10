@@ -146,7 +146,10 @@ What happens then depends on the system:
   "Suppress warnings for all N files" for the whole batch (the label says
   "(8 listed)" when the dialog showed only the first eight), and "Suppress
   warnings for every file `<name>` under `<full path>`" for the session folder
-  or an explicitly selected parent folder. "Keep warning every time (default)"
+  or an explicitly selected parent folder. Choose one option at a time: after
+  suppressing warnings for one path or a filename under a folder, the dialog
+  reopens for any remaining files, so you can handle several paths in turn.
+  "Keep warning every time (default)"
   is the first option, so pressing Enter keeps it. Keeping the
   warning saves no exception: the file stays in the audit log and is listed
   in the session-end report, and the dialog does not reopen for that path in
