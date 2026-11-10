@@ -46,8 +46,8 @@ func TestChooserWithoutDisplayIsUnavailable(t *testing.T) {
 // The agent controls the path and query. Characters that render as a line
 // break or reorder text must not let it forge a line of the dialog.
 func TestSanitizeDialogTextDropsUnicodeLineBreaksAndFormatChars(t *testing.T) {
-	got := sanitizeDialogText("x=1 Declared: safe y‮z​")
-	if strings.ContainsAny(got, "  ‮​") {
+	got := sanitizeDialogText("x=1\u2028Declared: safe\u2029y\u202Ez\u200B")
+	if strings.ContainsAny(got, "\u2028\u2029\u202E\u200B") {
 		t.Errorf("survived: %q", got)
 	}
 	if got != "x=1 Declared: safe y z " {
