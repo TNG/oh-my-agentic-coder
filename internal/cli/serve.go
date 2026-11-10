@@ -357,7 +357,9 @@ func runServe(args []string, env *Env) int {
 				}
 			}
 		}
-		return "ns-unknown"
+		// Unknown: the approver denies instead of storing an answer under a
+		// scope that every project would share.
+		return ""
 	})
 	wireFacadeSandbox(f, noSandbox, learn, plan, func(format string, args ...any) {
 		fmt.Fprintf(env.Stderr, format+"\n", args...)
