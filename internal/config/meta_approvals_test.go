@@ -70,6 +70,20 @@ func TestApprovals_EmptyBlockAsksForEverything(t *testing.T) {
 	}
 }
 
+// A misspelled block key would otherwise read as "no block": nothing asks.
+func TestApprovals_MisspelledBlockKeyIsRefused(t *testing.T) {
+	for _, k := range []string{"aprovals", "approval", "Approvals", "approvls", "aproval"} {
+		_, err := loadApprovalsMeta(t, "  "+k+":\n    endpoints:\n      - {match: \"GET /a\", approval: none}\n")
+		if err == nil || !strings.Contains(err.Error(), "did you mean approvals") {
+			t.Errorf("%s: err = %v", k, err)
+		}
+	}
+	// Real sidecar keys are not near-misses.
+	if _, err := loadApprovalsMeta(t, "  protocols: [\"http\"]\n"); err != nil {
+		t.Errorf("protocols refused: %v", err)
+	}
+}
+
 func TestApprovals_Refused(t *testing.T) {
 	cases := map[string]string{
 		"unknown key":       "  approvals:\n    endpoints:\n      - {match: \"GET /a\", approval: none}\n    default: none\n",
