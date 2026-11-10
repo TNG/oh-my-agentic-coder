@@ -38,7 +38,6 @@ func TestParsePatternRejects(t *testing.T) {
 
 func TestCompileRejects(t *testing.T) {
 	cases := map[string][]Entry{
-		"empty":            nil,
 		"bad mode":         {{Match: "GET /a", Approval: "maybe"}},
 		"none on ANY":      {{Match: "ANY /a", Approval: None}},
 		"none on **":       {{Match: "GET /a/**", Approval: None}},
@@ -48,6 +47,18 @@ func TestCompileRejects(t *testing.T) {
 	for name, es := range cases {
 		if _, err := Compile(es); err == nil {
 			t.Errorf("%s: accepted", name)
+		}
+	}
+}
+
+func TestEmptyDeclarationMatchesNothing(t *testing.T) {
+	for name, es := range map[string][]Entry{"nil": nil, "empty": {}} {
+		s, err := Compile(es)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if e, ok := lookup(t, s, "GET", "/status"); ok {
+			t.Errorf("%s: GET /status matched %q", name, e.Match)
 		}
 	}
 }
@@ -78,7 +89,7 @@ func TestMostSpecificWins(t *testing.T) {
 	}
 }
 
-func TestClosedWorld(t *testing.T) {
+func TestUnlistedRoutesDoNotMatch(t *testing.T) {
 	s := mustSet(t,
 		Entry{Match: "GET /status", Approval: None},
 		Entry{Match: "POST /echo", Approval: Required},
