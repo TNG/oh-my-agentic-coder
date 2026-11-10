@@ -252,7 +252,7 @@ agent calls that skill through the facade and never sees the actual token.
 
 ### Sidecar calls
 
-A skill's sidecar runs on the host with the user's rights, so what the agent may ask it to do matters as much as what the agent can reach itself. A sidecar can declare its endpoints in `omac.yaml` (see [authoring](skills/authoring.md#approvals-declare-what-the-agent-may-call)).
+A skill's sidecar runs on the host with the user's rights, so what the agent may ask it to do matters as much as what the agent can reach itself. A sidecar can declare its endpoints in `omac.yaml` (see [authoring](skills/authoring.md#approvals-which-routes-run-without-asking)).
 
 - **Gated.** For a skill with an `approvals` block, the facade holds every request until the user answers a native dialog, except those the block declares `approval: none`. A route the author forgot to declare therefore asks. The declaration comes from the host-side approved snapshot, so the agent cannot weaken it by editing the project copy.
 - **Answers.** The agent cannot create one: they come from the dialog only, "allow always" is stored under `~/.config/omac` (blocked in the sandbox), and no route reachable from the sandbox accepts a verdict. `omac approvals list` and `omac approvals revoke` manage them.
