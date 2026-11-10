@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -89,11 +90,10 @@ type ApprovalSpec struct {
 //     error. Other unknown keys in omac.yaml are only warned about, but this
 //     one would silently mean "no block".
 func (s *SidecarMeta) UnmarshalYAML(node *yaml.Node) error {
-	if node.Kind == yaml.MappingNode {
-		for i := 0; i+1 < len(node.Content); i += 2 {
-			if k := node.Content[i].Value; k != "approvals" && editDistance(strings.ToLower(k), "approvals") <= 2 {
-				return fmt.Errorf("sidecar.%s: unknown key; did you mean approvals? Misspelled, the block is ignored and nothing asks", k)
-			}
+	keys := mappingKeys(node)
+	for _, k := range keys {
+		if k != "approvals" && nearApprovals(k) {
+			return fmt.Errorf("sidecar.%s: unknown key; did you mean approvals? Misspelled, the block is ignored and nothing asks", k)
 		}
 	}
 	type plain SidecarMeta
@@ -102,14 +102,55 @@ func (s *SidecarMeta) UnmarshalYAML(node *yaml.Node) error {
 		return err
 	}
 	*s = SidecarMeta(p)
-	if s.Approvals == nil && node.Kind == yaml.MappingNode {
-		for i := 0; i+1 < len(node.Content); i += 2 {
-			if node.Content[i].Value == "approvals" {
-				s.Approvals = &ApprovalsSpec{}
-			}
-		}
+	if s.Approvals == nil && slices.Contains(keys, "approvals") {
+		s.Approvals = &ApprovalsSpec{}
 	}
 	return nil
+}
+
+// UnmarshalYAML decodes omac.yaml as usual, but refuses an `approvals`
+// block at the top level: it belongs under `sidecar`, and in the wrong
+// place it would be ignored, so nothing would ask.
+func (m *Meta) UnmarshalYAML(node *yaml.Node) error {
+	for _, k := range mappingKeys(node) {
+		if nearApprovals(k) {
+			return fmt.Errorf("%s: unknown top-level key; the approvals block belongs under sidecar, otherwise it is ignored and nothing asks", k)
+		}
+	}
+	type plain Meta
+	var p plain
+	if err := node.Decode(&p); err != nil {
+		return err
+	}
+	*m = Meta(p)
+	return nil
+}
+
+// mappingKeys returns the keys of a YAML mapping, including those pulled in
+// with a `<<` merge key, so a block written through an anchor is seen too.
+func mappingKeys(node *yaml.Node) []string {
+	if node.Kind != yaml.MappingNode {
+		return nil
+	}
+	var m map[string]any
+	if err := node.Decode(&m); err != nil {
+		// Not a string-keyed mapping; the literal keys are all there is.
+		var keys []string
+		for i := 0; i+1 < len(node.Content); i += 2 {
+			keys = append(keys, node.Content[i].Value)
+		}
+		return keys
+	}
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
+// nearApprovals reports whether k is `approvals` or within two typos of it.
+func nearApprovals(k string) bool {
+	return editDistance(strings.ToLower(k), "approvals") <= 2
 }
 
 // editDistance is the Levenshtein distance between a and b (bytes).
