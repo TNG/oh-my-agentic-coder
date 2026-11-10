@@ -110,7 +110,7 @@ func (a *Approver) known(skillKey, id string) (facade.ApprovalDecision, bool) {
 func (a *Approver) Approve(ctx context.Context, req facade.ApprovalRequest) facade.ApprovalDecision {
 	scope := a.scope(req.Namespace)
 	skillKey := scope + "\x00" + req.Skill
-	id := VerdictID(scope, req.Skill, req.Match, "required")
+	id := VerdictID(scope, req.Skill, req.Match, ruleKind(req))
 	if d, ok := a.known(skillKey, id); ok {
 		return d
 	}
@@ -190,7 +190,7 @@ func (a *Approver) ask(ctx context.Context, req facade.ApprovalRequest, skillKey
 		a.mu.Unlock()
 		return facade.ApprovalDecision{Allow: true, Scope: "session", Source: "prompt"}
 	case LabelAlways:
-		v := Verdict{ID: id, Scope: scope, Skill: req.Skill, Match: req.Match, Approval: "required", CreatedAt: time.Now().UTC()}
+		v := Verdict{ID: id, Scope: scope, Skill: req.Skill, Match: req.Match, Approval: ruleKind(req), CreatedAt: time.Now().UTC()}
 		if a.cfg.Store == nil || a.cfg.Store.Add(v) != nil {
 			// Could not persist: honor the answer for this session only.
 			a.cfg.Logf("omac approvals: could not store the always-verdict for %s %s; allowing for this session", req.Skill, req.Match)
@@ -212,6 +212,16 @@ func (a *Approver) ask(ctx context.Context, req facade.ApprovalRequest, skillKey
 
 // DialogText is built only from what omac observed and declared; the
 // description is the skill author's one sentence and is shown as such.
+// ruleKind is what an answer is stored under besides the rule text: a
+// declared entry ("required"), or an exact unlisted route ("unlisted"). An
+// answer for one is never read as an answer for the other.
+func ruleKind(r facade.ApprovalRequest) string {
+	if r.Unlisted {
+		return "unlisted"
+	}
+	return "required"
+}
+
 func DialogText(r facade.ApprovalRequest) string {
 	var b strings.Builder
 	b.WriteString("The sandboxed agent wants a skill's sidecar to do this:\n\n")
@@ -220,7 +230,10 @@ func DialogText(r facade.ApprovalRequest) string {
 	if q := MaskQuery(r.RawQuery); q != "" {
 		fmt.Fprintf(&b, "    Query:    %s\n", q)
 	}
-	if r.Description != "" {
+	switch {
+	case r.Unlisted:
+		b.WriteString("    Declared: no, the skill does not list this route\n")
+	case r.Description != "":
 		fmt.Fprintf(&b, "    Declared: %s\n", clip(r.Description, 200))
 	}
 	b.WriteString("    Body:     not shown\n\n")
