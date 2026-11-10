@@ -2,6 +2,7 @@ package netprompt
 
 import (
 	"context"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -25,5 +26,19 @@ func TestSanitizeDialogTextKeepsNewlinesDropsControls(t *testing.T) {
 	}
 	if strings.ContainsAny(got, "\r\x00\x1b") {
 		t.Errorf("control characters survived: %q", got)
+	}
+}
+
+// On Linux without a display, no dialog can be shown, so the chooser must
+// say it is unavailable rather than let a failed zenity read as "deny".
+func TestChooserWithoutDisplayIsUnavailable(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("display detection is Linux-only")
+	}
+	t.Setenv("OMAC_APPROVAL_STUB", "")
+	t.Setenv("DISPLAY", "")
+	t.Setenv("WAYLAND_DISPLAY", "")
+	if _, ok := NewChooser(); ok {
+		t.Error("chooser reported available without a display")
 	}
 }

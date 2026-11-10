@@ -118,7 +118,15 @@ type zenityChoice struct{}
 func (zenityChoice) name() string { return "zenity" }
 func (zenityChoice) available() bool {
 	_, err := exec.LookPath("zenity")
-	return err == nil
+	return err == nil && hasDisplay()
+}
+
+// hasDisplay reports whether a Linux dialog can be shown at all. Without a
+// display, zenity and kdialog exit 1, the same code as Cancel, so a failed
+// dialog would be read as the user's "deny" and nobody would learn that no
+// dialog was ever shown.
+func hasDisplay() bool {
+	return os.Getenv("DISPLAY") != "" || os.Getenv("WAYLAND_DISPLAY") != ""
 }
 
 func (zenityChoice) choose(ctx context.Context, title, text string, labels []string, def string) (string, error) {
@@ -149,7 +157,7 @@ type kdialogChoice struct{}
 func (kdialogChoice) name() string { return "kdialog" }
 func (kdialogChoice) available() bool {
 	_, err := exec.LookPath("kdialog")
-	return err == nil
+	return err == nil && hasDisplay()
 }
 
 func (kdialogChoice) choose(ctx context.Context, title, text string, labels []string, def string) (string, error) {
