@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"os"
 
 	"github.com/TNG/oh-my-agentic-coder/internal/approver"
 	"github.com/TNG/oh-my-agentic-coder/internal/netprompt"
@@ -20,6 +21,11 @@ func newSidecarApprover(stderr io.Writer, prefix string, scopeFor func(namespace
 		Store:    approver.NewStore(""),
 		ScopeFor: scopeFor,
 		Logf:     func(format string, args ...any) { fmt.Fprintf(stderr, prefix+": "+format+"\n", args...) },
+	}
+	if stub := os.Getenv("OMAC_APPROVAL_STUB"); stub != "" {
+		// A test hook. Left exported by accident, it would answer every
+		// dialog silently, so say so on every start.
+		fmt.Fprintf(stderr, "%s: warning: OMAC_APPROVAL_STUB is set; every sidecar approval is answered %q without a dialog\n", prefix, stub)
 	}
 	if ch, ok := netprompt.NewChooser(); ok {
 		cfg.Chooser = ch
