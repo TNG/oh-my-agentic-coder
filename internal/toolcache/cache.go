@@ -123,6 +123,9 @@ func Environment(dir string, mode Mode) map[string]string {
 		"NPM_CONFIG_CACHE": filepath.Join(dir, "npm"),
 		"PIP_CACHE_DIR":    filepath.Join(dir, "pip"),
 		"CARGO_HOME":       filepath.Join(dir, "cargo"),
+		"UV_CACHE_DIR":     filepath.Join(dir, "uv", "cache"),
+		"UV_TOOL_DIR":      filepath.Join(dir, "uv", "tools"),
+		"UV_TOOL_BIN_DIR":  filepath.Join(dir, "uv", "bin"),
 		"OMAC_CACHE_DIR":   dir,
 		"OMAC_CACHE_MODE":  string(mode),
 	}

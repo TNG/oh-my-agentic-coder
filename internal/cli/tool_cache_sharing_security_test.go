@@ -14,7 +14,8 @@ import (
 //
 // Hard-coded cache locations are denied by the sandbox, so omac redirects
 // every tool's cache — GOCACHE, GOMODCACHE, CARGO_HOME, NPM_CONFIG_CACHE,
-// PIP_CACHE_DIR, XDG_CACHE_HOME — into a directory it grants the confined
+// PIP_CACHE_DIR, UV_CACHE_DIR, UV_TOOL_DIR, UV_TOOL_BIN_DIR,
+// XDG_CACHE_HOME — into a directory it grants the confined
 // agent read-write. Without it every session would re-download and rebuild
 // from scratch, so the cache is a feature and sharing it is the point.
 //

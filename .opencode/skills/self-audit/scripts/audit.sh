@@ -257,13 +257,14 @@ echo "=== PROBE: cache ==="
 # The allow_vars fixture intentionally lists only OMAC_* for cache
 # names (see allowance.go), so the non-OMAC_* tool mappings
 # (GOCACHE, GOMODCACHE, NPM_CONFIG_CACHE, PIP_CACHE_DIR, CARGO_HOME,
-# XDG_CACHE_HOME) appearing here proves Task 3's trusted re-injection
-# re-added them after FilterEnv stripped the inherited values.
+# UV_CACHE_DIR, UV_TOOL_DIR, UV_TOOL_BIN_DIR, XDG_CACHE_HOME)
+# appearing here proves Task 3's trusted re-injection re-added them
+# after FilterEnv stripped the inherited values.
 echo "--- OMAC cache env ---"
 echo "OMAC_CACHE_DIR=${OMAC_CACHE_DIR:-<unset>}"
 echo "OMAC_CACHE_MODE=${OMAC_CACHE_MODE:-<unset>}"
 echo "--- tool cache mappings (must point under OMAC_CACHE_DIR) ---"
-for var in XDG_CACHE_HOME GOCACHE GOMODCACHE NPM_CONFIG_CACHE PIP_CACHE_DIR CARGO_HOME; do
+for var in XDG_CACHE_HOME GOCACHE GOMODCACHE NPM_CONFIG_CACHE PIP_CACHE_DIR CARGO_HOME UV_CACHE_DIR UV_TOOL_DIR UV_TOOL_BIN_DIR; do
     eval "val=\${$var:-<unset>}"
     echo "$var=$val"
 done

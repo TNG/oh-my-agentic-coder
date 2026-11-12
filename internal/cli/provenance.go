@@ -70,7 +70,7 @@ type skillsView struct {
 
 // cacheView describes the default persistent tool-cache scope for the
 // current workdir — not a live ephemeral/serve process's scope. The
-// environment field is the eight-variable map toolcache.Environment
+// environment field is the eleven-variable map toolcache.Environment
 // produces for this scope; provenance does not re-derive hashing or
 // environment mappings.
 type cacheView struct {

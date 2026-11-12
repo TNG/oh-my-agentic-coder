@@ -1249,9 +1249,10 @@ func logCrossSkillIsolation(t *testing.T, output string) {
 }
 
 // assertCacheIsolation verifies the cache probe ran and proves omac
-// injected OMAC_CACHE_DIR / OMAC_CACHE_MODE plus the six tool cache
-// mappings (XDG_CACHE_HOME, GOCACHE, GOMODCACHE, NPM_CONFIG_CACHE,
-// PIP_CACHE_DIR, CARGO_HOME) and that the agent could write a marker
+// injected OMAC_CACHE_DIR / OMAC_CACHE_MODE plus the nine tool cache
+// and tool-state mappings (XDG_CACHE_HOME, GOCACHE, GOMODCACHE,
+// NPM_CONFIG_CACHE, PIP_CACHE_DIR, CARGO_HOME, UV_CACHE_DIR,
+// UV_TOOL_DIR, UV_TOOL_BIN_DIR) and that the agent could write a marker
 // to the selected cache and read it back.
 //
 // The allow_vars fixture (allowance.go) only lists OMAC_* for cache
@@ -1292,6 +1293,7 @@ func assertCacheIsolation(t *testing.T, output, expectedMode string) {
 	for _, varName := range []string{
 		"XDG_CACHE_HOME", "GOCACHE", "GOMODCACHE",
 		"NPM_CONFIG_CACHE", "PIP_CACHE_DIR", "CARGO_HOME",
+		"UV_CACHE_DIR", "UV_TOOL_DIR", "UV_TOOL_BIN_DIR",
 	} {
 		val := extractEnv(output, varName+"=")
 		if val == "" || val == "<unset>" {

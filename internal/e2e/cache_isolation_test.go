@@ -584,7 +584,7 @@ func rustupUpdateHashesDirs(t *testing.T) []string {
 
 func validateCacheRedirects(cacheDir string, environment map[string]string) error {
 	expected := toolcache.Environment(cacheDir, toolcache.ModePersistent)
-	for _, name := range []string{"XDG_CACHE_HOME", "GOCACHE", "GOMODCACHE", "NPM_CONFIG_CACHE", "PIP_CACHE_DIR", "CARGO_HOME"} {
+	for _, name := range []string{"XDG_CACHE_HOME", "GOCACHE", "GOMODCACHE", "NPM_CONFIG_CACHE", "PIP_CACHE_DIR", "CARGO_HOME", "UV_CACHE_DIR", "UV_TOOL_DIR", "UV_TOOL_BIN_DIR"} {
 		if environment[name] != expected[name] {
 			return fmt.Errorf("%s = %q; want %q", name, environment[name], expected[name])
 		}
@@ -719,10 +719,17 @@ func TestE2ECacheEnvironmentOverridesAllowlist(t *testing.T) {
 	if err := os.MkdirAll(hostileCARGO, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	hostileUV := filepath.Join(home, "hostile-uv")
+	if err := os.MkdirAll(hostileUV, 0o755); err != nil {
+		t.Fatal(err)
+	}
 
 	out, code := runOmacShellWithEnv(t, omacBin, home, workdir, nil,
-		[]string{"GOCACHE=" + hostileGOCACHE, "CARGO_HOME=" + hostileCARGO},
-		"/bin/sh", "-c", "echo XDG_CACHE_HOME=$XDG_CACHE_HOME; echo GOCACHE=$GOCACHE; echo GOMODCACHE=$GOMODCACHE; echo NPM_CONFIG_CACHE=$NPM_CONFIG_CACHE; echo PIP_CACHE_DIR=$PIP_CACHE_DIR; echo CARGO_HOME=$CARGO_HOME; echo OMAC_CACHE_DIR=$OMAC_CACHE_DIR")
+		[]string{
+			"GOCACHE=" + hostileGOCACHE, "CARGO_HOME=" + hostileCARGO,
+			"UV_CACHE_DIR=" + hostileUV, "UV_TOOL_DIR=" + hostileUV,
+		},
+		"/bin/sh", "-c", "echo XDG_CACHE_HOME=$XDG_CACHE_HOME; echo GOCACHE=$GOCACHE; echo GOMODCACHE=$GOMODCACHE; echo NPM_CONFIG_CACHE=$NPM_CONFIG_CACHE; echo PIP_CACHE_DIR=$PIP_CACHE_DIR; echo CARGO_HOME=$CARGO_HOME; echo UV_CACHE_DIR=$UV_CACHE_DIR; echo UV_TOOL_DIR=$UV_TOOL_DIR; echo UV_TOOL_BIN_DIR=$UV_TOOL_BIN_DIR; echo OMAC_CACHE_DIR=$OMAC_CACHE_DIR")
 	if code != 0 {
 		t.Fatalf("launch failed (exit %d): %s", code, out)
 	}
@@ -732,12 +739,15 @@ func TestE2ECacheEnvironmentOverridesAllowlist(t *testing.T) {
 	if strings.Contains(out, hostileCARGO) {
 		t.Errorf("hostile CARGO_HOME leaked into sandbox: %s", out)
 	}
+	if strings.Contains(out, hostileUV) {
+		t.Errorf("hostile uv cache/tool dirs leaked into sandbox: %s", out)
+	}
 	cacheDir := extractEnv(out, "OMAC_CACHE_DIR=")
 	if cacheDir == "" {
 		t.Fatalf("OMAC_CACHE_DIR not exposed: %s", out)
 	}
 	environment := map[string]string{}
-	for _, name := range []string{"XDG_CACHE_HOME", "GOCACHE", "GOMODCACHE", "NPM_CONFIG_CACHE", "PIP_CACHE_DIR", "CARGO_HOME"} {
+	for _, name := range []string{"XDG_CACHE_HOME", "GOCACHE", "GOMODCACHE", "NPM_CONFIG_CACHE", "PIP_CACHE_DIR", "CARGO_HOME", "UV_CACHE_DIR", "UV_TOOL_DIR", "UV_TOOL_BIN_DIR"} {
 		environment[name] = extractEnv(out, name+"=")
 	}
 	if err := validateCacheRedirects(cacheDir, environment); err != nil {

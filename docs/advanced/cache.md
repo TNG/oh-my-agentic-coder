@@ -3,7 +3,7 @@ title: Tool cache isolation
 description: How omac isolates tool caches per scope
 ---
 
-omac redirects the tool caches (npm, pip, cargo, Go, and others) into a directory it controls (`~/.cache/omac/`), rather than letting the agent use your real `~/.cache`. This isolation is **always on**, at every scope: the agent can never read or write your host's package caches directly.
+omac redirects the tool caches (npm, pip, cargo, Go, uv, and others) into a directory it controls (`~/.cache/omac/`), rather than letting the agent use your real `~/.cache`. This isolation is **always on**, at every scope: the agent can never read or write your host's package caches directly.
 ## Cache scopes
 
 The scope controls how widely a single omac cache directory is shared between different projects:
@@ -39,6 +39,27 @@ To set the scope for one project only, put this in a project-local config file; 
 ## Ephemeral cache
 
 `--ephemeral-cache` creates a temporary cache directory that is removed when the session ends. Use it for clean-room builds, or when the normal (persistent) cache cannot be set up safely.
+
+## uv
+
+uv keeps three writable directories outside the project. omac redirects all of them into its cache:
+
+| Variable | Points to | Holds |
+|---|---|---|
+| `UV_CACHE_DIR` | `$OMAC_CACHE_DIR/uv/cache` | Downloaded wheels and sdists |
+| `UV_TOOL_DIR` | `$OMAC_CACHE_DIR/uv/tools` | Environments created by `uvx` and `uv tool install` |
+| `UV_TOOL_BIN_DIR` | `$OMAC_CACHE_DIR/uv/bin` | Executables installed by `uv tool install` |
+
+`uvx` therefore works without any setup. Tools installed with `uv tool install` are not on `PATH`; run them as `$UV_TOOL_BIN_DIR/<tool>`, or add that directory to `PATH` in your shell. Because the tool environments live in the cache, `omac cache clear` removes them.
+
+uv's managed Python installs are **not** redirected by default. Setting `UV_PYTHON_INSTALL_DIR` would also change where uv *looks* for interpreters, which would hide the ones already installed on the host. Projects that use a system Python, or a managed Python the sandbox can read, therefore need no setup. If you want uv to download a missing interpreter inside the sandbox, point the install and executable directories at the cache in the session shell:
+
+```bash
+export UV_PYTHON_INSTALL_DIR="$OMAC_CACHE_DIR/uv/python"
+export UV_PYTHON_BIN_DIR="$OMAC_CACHE_DIR/uv/bin"
+```
+
+Without that, `uv python install` fails with a write denial and uv can only use interpreters it can already find.
 
 ## Clearing caches
 
