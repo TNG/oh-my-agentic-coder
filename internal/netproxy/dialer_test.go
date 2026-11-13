@@ -383,6 +383,52 @@ func TestUpstreamProxyDialerNoProxyBypass(t *testing.T) {
 	}
 }
 
+// TestUpstreamProxyDialerNoProxyBypassLeadingDot pins the common
+// corporate-NO_PROXY spelling: an entry like ".test" (leading dot, also
+// written "*.test") must bypass the upstream proxy and dial the pinned
+// addresses directly, exactly like the bare-domain form does.
+func TestUpstreamProxyDialerNoProxyBypassLeadingDot(t *testing.T) {
+	var conns int32
+	ln := startFakeUpstreamProxy(t, "", "", "", nil, &conns)
+	defer ln.Close()
+
+	echoLn := startEchoListener(t)
+	defer echoLn.Close()
+	echoPort := echoLn.Addr().(*net.TCPAddr).Port
+
+	proxyURL := &url.URL{Scheme: "http", Host: ln.Addr().String()}
+	d := newUpstreamProxyDialerAllowLoopback(proxyURL, []string{".test"}, t.Logf)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if planner, ok := d.(TunnelPlanner); !ok || planner.ChainsHost("svc.test") {
+		t.Fatal("ChainsHost(svc.test) = true for leading-dot NO_PROXY entry, want bypass")
+	}
+
+	conn, err := d.DialTunnel(ctx, "svc.test", echoPort, pin("127.0.0.1"))
+	if err != nil {
+		t.Fatalf("DialTunnel svc.test bypass: %v", err)
+	}
+	defer conn.Close()
+
+	payload := []byte("dotted-bypass-echo")
+	if _, err := conn.Write(payload); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	buf := make([]byte, len(payload))
+	if _, err := io.ReadFull(conn, buf); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if string(buf) != string(payload) {
+		t.Errorf("echo mismatch: got %q want %q", buf, payload)
+	}
+
+	if got := atomic.LoadInt32(&conns); got != 0 {
+		t.Errorf("upstream connections for leading-dot bypass = %d, want 0", got)
+	}
+}
+
 func TestProxyAuthHeader(t *testing.T) {
 	proxyURL := &url.URL{
 		Scheme: "http",
@@ -431,6 +477,17 @@ func TestHostMatchesNoProxy(t *testing.T) {
 		{"example.com", []string{" EXAMPLE.com "}, true},
 		{"example.com", []string{""}, false},
 		{"a.b.c.test", []string{"c.test"}, true},
+		{"example.com", []string{".example.com"}, true},
+		{"sub.example.com", []string{".example.com"}, true},
+		{"notexample.com", []string{".example.com"}, false},
+		{"example.com", []string{"*.example.com"}, true},
+		{"sub.example.com", []string{"*.example.com"}, true},
+		{"notexample.com", []string{"*.example.com"}, false},
+		{"example.org", []string{"*.example.com"}, false},
+		{"example.com", []string{"*"}, true},
+		{"a.b.example", []string{"*"}, true},
+		{"example.com", []string{"."}, false},
+		{"example.com", []string{"*."}, false},
 	}
 	for _, c := range cases {
 		got := hostMatchesNoProxy(c.host, c.entries)

@@ -187,4 +187,6 @@ By default, a write error emits a warning and the run continues.
 
 If your network routes outbound traffic through a corporate proxy, omac picks it up automatically from `HTTPS_PROXY` / `HTTP_PROXY` / `NO_PROXY` in your shell environment — you do not need to configure anything. omac's own network filtering runs first, then allowed traffic is forwarded through the proxy.
 
+`NO_PROXY` entries accept `example.com`, `.example.com`, and `*.example.com`. All three match the domain itself and its subdomains. A lone `*` bypasses the upstream proxy for every host. CIDR entries are not supported: omac matches `NO_PROXY` on the hostname before resolving it.
+
 If you need omac to use a different proxy than what your shell environment specifies, set `network.upstream_proxy` and `network.no_proxy` in the sandbox grants file.

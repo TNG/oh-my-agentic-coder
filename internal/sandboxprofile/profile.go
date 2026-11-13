@@ -166,9 +166,10 @@ type Network struct {
 	// NoProxy is a list of hostnames or parent domains that must bypass the
 	// upstream proxy and be dialed directly. Matching is case-insensitive:
 	// an entry matches that exact host or any subdomain of it (e.g.
-	// "example.com" also matches "api.example.com"). CIDR ranges and
-	// leading-dot forms (".example.com") are not supported. Empty entries
-	// are rejected.
+	// "example.com" also matches "api.example.com"). The forms
+	// ".example.com" and "*.example.com" are equivalent to "example.com",
+	// and a lone "*" matches every host. CIDR ranges are not supported.
+	// Empty entries are rejected.
 	NoProxy []string `json:"no_proxy,omitempty"`
 	// ProxyInjection opts proxy-unaware toolchains into the omac proxy by
 	// injecting their native proxy configuration at launch. Most tools
