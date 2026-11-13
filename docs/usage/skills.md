@@ -30,6 +30,7 @@ If a skill in your project is not registered, omac refuses to start and tells yo
 After running `omac setup`, these skills appear in `omac list`:
 
 - **omac-write-a-skill**: lets the agent draft and register new skills without leaving the sandbox. Useful if you want AI assistance creating a new integration — see [Authoring skills](../skills/authoring.md).
+- **omac-vm**: tells the agent in a session started with `--vm` how to run builds and tests in the omac VM, how to read their results, and when to ask you to import an image or prime the VM. See [omac vm](./cli.md#omac-vm).
 - **echo-rest** and **self-audit**: development and testing tools for contributors verifying the omac stack. Not needed for normal use — see [echo-rest](../contributing/echo-rest.md).
 
 ## Commands
