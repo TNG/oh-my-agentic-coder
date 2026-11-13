@@ -299,23 +299,32 @@ func runRegister(args []string, env *Env) int {
 	//    most common "what next?" after a register, so it shouldn't be
 	//    buried mid-output. We never print the body of the script, and
 	//    omac never runs it for you; that's entirely the user's call.
+	//    The reference is skill-authored and lands inside a shell
+	//    command the operator pastes, so anything but a plain relative
+	//    path is refused below before it can reach the callout.
 	var installScriptAbs string
 	if scriptRel := meta.Sidecar.InstallScriptFor(host); scriptRel != "" {
-		scriptAbs := filepath.Join(skillDir, scriptRel)
-		if _, statErr := os.Stat(scriptAbs); statErr == nil {
-			installScriptAbs = scriptAbs
-		} else if errors.Is(statErr, os.ErrNotExist) {
-			// omac.yaml declares an install script but the file isn't
-			// on disk. Surface this as a hint instead of a hard error
-			// because the meta has already been validated and lots of
-			// skills reference an install_scripts: entry without
-			// shipping every OS variant.
+		if problem := config.InstallScriptRefProblem(scriptRel); problem != "" {
 			fmt.Fprintf(env.Stderr,
-				"[warn] install script for %s declared in %s but missing on disk: %s\n",
-				host, config.MetaFileName, scriptAbs)
+				"[warn] install script for %s not shown: %s\n",
+				host, problem)
 		} else {
-			fmt.Fprintln(env.Stderr, "omac register: stat install script:", statErr)
-			return ExitIOError
+			scriptAbs := filepath.Join(skillDir, scriptRel)
+			if _, statErr := os.Stat(scriptAbs); statErr == nil {
+				installScriptAbs = scriptAbs
+			} else if errors.Is(statErr, os.ErrNotExist) {
+				// omac.yaml declares an install script but the file isn't
+				// on disk. Surface this as a hint instead of a hard error
+				// because the meta has already been validated and lots of
+				// skills reference an install_scripts: entry without
+				// shipping every OS variant.
+				fmt.Fprintf(env.Stderr,
+					"[warn] install script for %s declared in %s but missing on disk: %s\n",
+					host, config.MetaFileName, scriptAbs)
+			} else {
+				fmt.Fprintln(env.Stderr, "omac register: stat install script:", statErr)
+				return ExitIOError
+			}
 		}
 	}
 
@@ -410,14 +419,15 @@ func runRegister(args []string, env *Env) int {
 	// Prominent "what next?" callout for the install script. This is the
 	// single most actionable follow-up after a register, so it gets a
 	// bordered box at the very end where it can't be missed. omac never
-	// runs the script itself.
+	// runs the script itself, and the hint only shows how to inspect the
+	// file — what the operator does afterwards stays their own decision.
 	if installScriptAbs != "" {
 		sOut.callout(env.Stdout, ansiYellow,
 			fmt.Sprintf("NEXT STEP — install dependencies (%s)", host),
 			[]string{
-				sOut.dim("omac does not run this for you. Inspect it, then run:"),
+				sOut.dim("omac does not run this for you. Review it, then run it yourself:"),
 				"",
-				"    " + sOut.paint("bash "+fmt.Sprintf("%q", installScriptAbs), ansiBold, ansiGreen),
+				"    " + sOut.paint("sed -n 1,50p "+fmt.Sprintf("%q", installScriptAbs), ansiBold, ansiGreen),
 			})
 	}
 	return ExitOK

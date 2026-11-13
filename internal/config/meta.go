@@ -688,6 +688,35 @@ func (s *SidecarMeta) InstallScriptFor(o osinfo.OS) string {
 	return s.InstallScripts[string(o)]
 }
 
+// InstallScriptRefProblem says why a `sidecar.install_scripts` value cannot
+// be shown in `omac register`'s suggested-command callout, or returns "" when
+// it can. The callout names the script path inside a shell command the
+// operator is invited to paste, and the value is authored by the skill, so
+// only a plain relative path may be surfaced: no control characters, no
+// shell-active characters (including whitespace), and nothing that escapes
+// the skill directory.
+//
+// Like docsRefProblem this is deliberately not part of Validate: a skill
+// with an odd-but-harmless script name must keep registering; it merely
+// loses the callout.
+func InstallScriptRefProblem(ref string) string {
+	switch {
+	case ref == "":
+		return "no script path"
+	case strings.ContainsAny(ref, "\x00\n\r\t"):
+		return fmt.Sprintf("%q contains control characters", ref)
+	case strings.HasPrefix(ref, "~"):
+		return fmt.Sprintf("%q must be a path relative to the skill directory; '~' is not expanded", ref)
+	case filepath.IsAbs(ref) || strings.HasPrefix(ref, "/"):
+		return fmt.Sprintf("%q must be a path relative to the skill directory, not an absolute path", ref)
+	case !filepath.IsLocal(ref):
+		return fmt.Sprintf("%q must stay inside the skill directory (no '..' that leaves it)", ref)
+	case strings.ContainsAny(ref, "$`\"'\\ \t|;&<>(){}!*?[]#"):
+		return fmt.Sprintf("%q is not a plain file name; use a relative path without shell-active characters", ref)
+	}
+	return ""
+}
+
 // BundleHash returns a sha256 digest covering every meaningful file in
 // a skill directory: omac.yaml, the sidecar entry-point, helper
 // modules, install scripts. Runtime artifacts and developer caches
