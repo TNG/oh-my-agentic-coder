@@ -271,7 +271,7 @@ cannot access.
 | `<workdir>` | read + write | Your project files |
 | Harness config dirs (e.g. `~/.claude`, `~/.local/share/opencode`, `~/.local/share/opentui`) | read + write | The harness stores its state and credentials here; omac pre-creates declared first-use dirs (e.g. OpenCode's `opentui` tree-sitter grammar cache) before sandbox grant resolution |
 | omac-managed tool cache (isolated from `~/.cache`; see [Cache](./advanced/cache.md)) | read + write | Build artifacts and downloaded packages; isolated from your host caches |
-| Language toolchain binaries (`~/.cargo/bin`, `~/go/bin`, `~/.nvm`, `~/.bun/bin`, `~/.rustup`) | read-only | So installed compilers and build tools can run |
+| Language toolchain binaries and managed runtimes (`~/.cargo/bin`, `~/go/bin`, `~/.nvm`, `~/.bun/bin`, `~/.rustup`, `~/.local/share/uv`) | read-only | So installed compilers, build tools, and uv-managed Python interpreters can run |
 | pnpm home (`~/.local/share/pnpm`, `~/Library/pnpm`) | read-only | So the agent can run `pnpm` at all: the `pnpm` executables, pnpm-installed global tools, and the `pnpm` store live here. |
 | Shared skills dirs (`~/.config/agents/skills`, `~/.agents/skills`) | read-only | So the agent can read skill descriptions (`SKILL.md`) |
 | Git config (`~/.gitconfig`, `~/.gitignore_global`) | read-only | Read commit settings and global ignores; write access would affect all your repos |
