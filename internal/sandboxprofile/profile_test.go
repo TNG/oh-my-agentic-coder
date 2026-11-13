@@ -321,7 +321,7 @@ func TestDefaultProfileIsolatesToolCaches(t *testing.T) {
 			}
 		}
 	}
-	for _, dir := range []string{"~/go", "~/.cargo", "~/.rustup"} {
+	for _, dir := range []string{"~/go", "~/.cargo", "~/.rustup", "~/.local/share/uv"} {
 		for _, paths := range [][]string{p.Filesystem.Allow, p.Filesystem.Write} {
 			if containsPath(paths, dir) {
 				t.Errorf("DefaultProfile grants write access to %q: %v", dir, paths)
@@ -333,7 +333,7 @@ func TestDefaultProfileIsolatesToolCaches(t *testing.T) {
 			t.Errorf("DefaultProfile grants read access to %q: %v", dir, p.Filesystem.Read)
 		}
 	}
-	for _, dir := range []string{"~/.nvm", "~/.bun/bin", "~/.cargo/bin", "~/.rustup", "~/go/bin"} {
+	for _, dir := range []string{"~/.nvm", "~/.bun/bin", "~/.cargo/bin", "~/.rustup", "~/go/bin", "~/.local/share/uv"} {
 		if !containsPath(p.Filesystem.Read, dir) {
 			t.Errorf("DefaultProfile.Filesystem.Read missing %q: %v", dir, p.Filesystem.Read)
 		}

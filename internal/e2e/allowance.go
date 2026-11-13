@@ -115,7 +115,8 @@ func allowanceSpecFor(h harnessConfig) AllowanceSpec {
 	//
 	// Intentionally DOES NOT include the tool-cache env names
 	// (XDG_CACHE_HOME, GOCACHE, GOMODCACHE, NPM_CONFIG_CACHE,
-	// PIP_CACHE_DIR, CARGO_HOME). Those are re-injected by omac
+	// PIP_CACHE_DIR, CARGO_HOME, UV_CACHE_DIR, UV_TOOL_DIR,
+	// UV_TOOL_BIN_DIR). Those are re-injected by omac
 	// after FilterEnv via the trusted re-injection path (Task 3),
 	// bypassing the allow_vars filter. Listing only OMAC_* here
 	// keeps the fixture unaware of the cache names so the

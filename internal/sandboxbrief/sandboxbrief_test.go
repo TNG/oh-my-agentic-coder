@@ -21,6 +21,9 @@ func TestCacheGuidanceNamesPathModeAndAllVars(t *testing.T) {
 		"NPM_CONFIG_CACHE",
 		"PIP_CACHE_DIR",
 		"CARGO_HOME",
+		"UV_CACHE_DIR",
+		"UV_TOOL_DIR",
+		"UV_TOOL_BIN_DIR",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("CacheGuidance missing %q;\ngot:\n%s", want, got)
