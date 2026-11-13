@@ -64,4 +64,25 @@ grants covering a Desktop store or its parent directories are refused;
 narrow them to project folders. Trusted Desktop state must use real
 directories, not symlinked paths.
 
+```bash
+omac serve opencode --for-opencode-desktop -- --port 4095
+```
+
+On startup, omac reads Desktop's legacy JSON store and newer `drafts.sqlite`.
+It includes the built-in server's projects and those of the loopback server
+on the selected port, not other saved servers. Desktop's project-ID history
+is included, so previously opened projects remain granted after restart.
+Database/JSON project records alone no longer authorize any folder, including
+folders outside `$HOME`. ID-only entries must match the canonical directory
+hash or repository metadata. Git root-commit-only IDs and config rewrites
+such as `insteadOf` may need an explicit `filesystem.allow` grant.
+Automatically discovered project paths must not traverse symlinks; use the
+real path in Desktop instead. This prevents a link changed by an earlier
+agent session from redirecting the next grant.
+
+Discovery is best-effort: metadata values are limited to 1 MiB, SQLite
+database plus WAL/journal snapshots to 512 MiB, and results per source to
+10,000 rows / 8 MiB. SQL queries have a one-second timeout. Oversized or
+unreadable sources are ignored; explicitly grant a missing project if needed.
+
 When you switch to a different project in OpenCode Desktop, omac is not notified — Desktop does not yet call omac's activation API. Skills from the new project will not be active. The workaround is to restart `omac serve --workdir` pointing at the new project.

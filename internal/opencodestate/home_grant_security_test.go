@@ -10,14 +10,9 @@ import (
 
 // TestSecurityPlantedRecordRejectsStrictHomeDescendant asserts that a project
 // record harvested from the agent-writable storage tree cannot name any
-// directory inside the user's home directory. Files under that tree are
-// themselves writable by the confined process, so accepting an in-home path
-// from them would let the process steer a later grant at a path where DAC
-// offers no protection. The rejected record must surface in `skipped` so the
-// caller can log it, while a legitimate out-of-home record from the same
-// source still resolves.
+// directory, whether inside or outside HOME. Only Desktop authorizes grants.
 func TestSecurityPlantedRecordRejectsStrictHomeDescendant(t *testing.T) {
-	home := t.TempDir()
+	home := testDesktopHome(t)
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_DATA_HOME", "")
 
@@ -34,14 +29,12 @@ func TestSecurityPlantedRecordRejectsStrictHomeDescendant(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Control: a record outside $HOME from the same source must keep
-	// resolving, so a fix that drops the source entirely can't satisfy this
-	// test for the wrong reason.
-	legit := t.TempDir()
+	legit, _ := filepath.EvalSymlinks(t.TempDir())
 	writeProject(t, stateDir, "planted", inHome)
 	writeProject(t, stateDir, "legit", legit)
+	writeDesktopPinnedProject(t, home, legit)
 
-	worktrees, skipped, err := Worktrees()
+	worktrees, skipped, err := Worktrees(0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +57,7 @@ func TestSecurityPlantedRecordRejectsStrictHomeDescendant(t *testing.T) {
 // be rejected. Asserting both halves keeps the test honest about which source
 // contributed the grant.
 func TestSecurityDesktopWorktreeInHomeStillHonored(t *testing.T) {
-	home := t.TempDir()
+	home := testDesktopHome(t)
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_DATA_HOME", "")
 
@@ -83,7 +76,7 @@ func TestSecurityDesktopWorktreeInHomeStillHonored(t *testing.T) {
 	writeProject(t, stateDir, "planted", inHome)
 	writeDesktopPinnedProject(t, home, inHome)
 
-	worktrees, skipped, err := Worktrees()
+	worktrees, skipped, err := Worktrees(0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,18 +84,22 @@ func TestSecurityDesktopWorktreeInHomeStillHonored(t *testing.T) {
 	if !slices.Contains(worktrees, inHome) {
 		t.Errorf("in-home Desktop record %q was not honored: %v", inHome, worktrees)
 	}
-	if !slices.Contains(skipped, SkippedWorktree{Path: inHome, Reason: SkipUntrusted}) {
-		t.Errorf("in-home storage record %q was not surfaced in skipped as untrusted: %v", inHome, skipped)
+	if len(skipped) != 0 {
+		t.Errorf("authorized path should not be logged as skipped: %v", skipped)
 	}
 }
 
 // writeDesktopPinnedProject writes an opencode.global.dat entry naming worktree
 // as a pinned project under the Desktop app's data dir, mirroring the real
 // double-encoded on-disk shape.
-func writeDesktopPinnedProject(t *testing.T, home, worktree string) {
+func writeDesktopPinnedProject(t *testing.T, home string, worktrees ...string) {
 	t.Helper()
-	inner := `{"value":[{"id":"d","worktree":"` + worktree + `"}]}`
-	top := map[string]any{"globalSync.project": inner}
+	var records []projectRecord
+	for _, worktree := range worktrees {
+		records = append(records, projectRecord{ID: "d", Worktree: worktree})
+	}
+	inner, _ := json.Marshal(map[string]any{"value": records})
+	top := map[string]any{"globalSync.project": string(inner)}
 	data, err := json.Marshal(top)
 	if err != nil {
 		t.Fatal(err)
