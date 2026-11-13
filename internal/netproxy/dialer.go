@@ -92,15 +92,15 @@ func (e *UpstreamError) Error() string {
 type upstreamProxyDialer struct {
 	proxyURL  *url.URL
 	proxyAuth string   // "Basic <base64>" or ""
-	noProxy   []string // host suffixes that bypass the upstream proxy
+	noProxy   []string // NO_PROXY entries (see hostMatchesNoProxy) that bypass the upstream proxy
 	direct    Dialer   // fallback for NO_PROXY matches (wraps the filter)
 	logf      func(string, ...any)
 }
 
 // NewUpstreamProxyDialer creates a Dialer that tunnels through the
 // corporate proxy at proxyURL. Hosts matching any entry in noProxy
-// (suffix match on the hostname) bypass the upstream proxy and dial the
-// server-pinned IPs directly instead.
+// (a domain, ".domain", "*.domain" or "*"; see hostMatchesNoProxy) bypass
+// the upstream proxy and dial the server-pinned IPs directly instead.
 func NewUpstreamProxyDialer(proxyURL *url.URL, noProxy []string, logf func(string, ...any)) Dialer {
 	return newUpstreamProxyDialerInternal(proxyURL, noProxy, logf, false)
 }
@@ -132,13 +132,24 @@ func newUpstreamProxyDialerInternal(proxyURL *url.URL, noProxy []string, logf fu
 	}
 }
 
-// hostMatchesNoProxy reports whether host matches any entry in noProxy
-// using simple hostname suffix matching: host == entry or host ends in
-// "."+entry. CIDR ranges are not supported in this simple version.
+// hostMatchesNoProxy reports whether host matches any entry in noProxy.
+// All domain forms are equivalent: "example.com", ".example.com", and
+// "*.example.com" each match the domain itself and any subdomain, and
+// "*" matches every host. CIDR ranges and "<local>" are not supported:
+// matching happens on the unresolved hostname, so an address-based
+// entry could not be evaluated here.
 func hostMatchesNoProxy(host string, entries []string) bool {
 	h := NormalizeHost(host)
 	for _, e := range entries {
-		entry := NormalizeHost(strings.TrimSpace(e))
+		entry := strings.TrimSpace(e)
+		// Check "*" before NormalizeHost: it trims trailing dots, which
+		// would turn the malformed entry "*." into a match-all "*".
+		if entry == "*" {
+			return true
+		}
+		entry = strings.TrimPrefix(entry, "*.")
+		entry = strings.TrimPrefix(entry, ".")
+		entry = NormalizeHost(entry)
 		if entry == "" {
 			continue
 		}
