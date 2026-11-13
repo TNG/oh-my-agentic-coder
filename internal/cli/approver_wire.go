@@ -1,0 +1,43 @@
+package cli
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"io"
+	"os"
+
+	"github.com/TNG/oh-my-agentic-coder/internal/approver"
+	"github.com/TNG/oh-my-agentic-coder/internal/netprompt"
+)
+
+// newSidecarApprover builds the Approver the facade asks for requests that
+// ask: endpoints declared approval: required, and routes an approvals block
+// does not list. Without a dialog backend it still returns an
+// Approver, which then denies every such request as unavailable, and says so
+// once. scopeFor maps a route namespace to what verdicts are bound to.
+func newSidecarApprover(stderr io.Writer, prefix string, scopeFor func(namespace string) string) *approver.Approver {
+	cfg := approver.Config{
+		Store:    approver.NewStore(""),
+		ScopeFor: scopeFor,
+		Logf:     func(format string, args ...any) { fmt.Fprintf(stderr, prefix+": "+format+"\n", args...) },
+	}
+	if stub := os.Getenv("OMAC_APPROVAL_STUB"); stub != "" {
+		// A test hook. Left exported by accident, it would answer every
+		// dialog silently, so say so on every start.
+		fmt.Fprintf(stderr, "%s: warning: OMAC_APPROVAL_STUB is set; every sidecar approval is answered %q without a dialog\n", prefix, stub)
+	}
+	if ch, ok := netprompt.NewChooser(); ok {
+		cfg.Chooser = ch
+	} else {
+		fmt.Fprintf(stderr, "%s: notice: no dialog backend available; sidecar requests that need approval are denied\n", prefix)
+	}
+	return approver.New(cfg)
+}
+
+// workdirScope is the identity "always" verdicts are bound to for a skill
+// that runs in one project: a short hash of the absolute workdir.
+func workdirScope(workdir string) string {
+	h := sha256.Sum256([]byte(workdir))
+	return "wd-" + hex.EncodeToString(h[:6])
+}
