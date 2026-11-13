@@ -807,6 +807,17 @@ func TestDirsEndpointDoesNotLeakTokens(t *testing.T) {
 	req := httptest.NewRequest("GET", "/__omac__/dirs", nil)
 	rec := httptest.NewRecorder()
 	s.controlMux().ServeHTTP(rec, req)
+	if rec.Code != 401 {
+		t.Fatalf("tokenless dirs status = %d, want 401 (body=%s)", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "dir_token") {
+		t.Errorf("tokenless /__omac__/dirs leaked dir_token: %s", rec.Body.String())
+	}
+
+	req = httptest.NewRequest("GET", "/__omac__/dirs", nil)
+	addServeTestToken(req)
+	rec = httptest.NewRecorder()
+	s.controlMux().ServeHTTP(rec, req)
 	if rec.Code != 200 {
 		t.Fatalf("dirs status = %d, want 200 (body=%s)", rec.Code, rec.Body.String())
 	}

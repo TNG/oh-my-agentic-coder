@@ -243,6 +243,7 @@ func TestStartReloaderDirsEndpoint(t *testing.T) {
 	r.markMounted("slack", "slack")
 	mux := r.startTestMux()
 	req := httptest.NewRequest("GET", "/__omac__/dirs", nil)
+	r.addTestToken(req)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 	if rec.Code != 200 {
@@ -287,6 +288,7 @@ func TestStartReloaderSessionReport(t *testing.T) {
 	post := func(body string) int {
 		req := httptest.NewRequest("POST", "/__omac__/session", stringReader(body))
 		req.Header.Set("content-type", "application/json")
+		r.addTestToken(req)
 		rec := httptest.NewRecorder()
 		mux.ServeHTTP(rec, req)
 		return rec.Code
@@ -321,11 +323,11 @@ func (r *startReloader) startTestMux() *http.ServeMux {
 	auth := func(h http.HandlerFunc) http.HandlerFunc { return requireControlTokenStart(r.controlToken, h) }
 	m := http.NewServeMux()
 	m.HandleFunc("/__omac__/reload", auth(r.handleReload))
-	m.HandleFunc("/__omac__/dirs", r.handleDirs)
+	m.HandleFunc("/__omac__/dirs", auth(r.handleDirs))
 	m.HandleFunc("/__omac__/activate", auth(r.handleActivate))
 	m.HandleFunc("/__omac__/deactivate", auth(r.handleActivate))
 	m.HandleFunc("/__omac__/reload-global", auth(r.handleReloadGlobalStart))
-	m.HandleFunc("/__omac__/session", r.handleSession)
+	m.HandleFunc("/__omac__/session", auth(r.handleSession))
 	return m
 }
 

@@ -53,7 +53,7 @@ interface ManifestSkill {
 
 interface DirManifest {
   dir: string
-  dir_token: string
+  dir_token?: string
   state: "activating" | "active" | "active_partial"
   skills: ManifestSkill[]
 }
@@ -112,6 +112,9 @@ async function createBridge(
   const sessionDir = new Map<string, string>()
   // absolute directory -> latest manifest (cache; refreshed on activate/reload).
   const manifests = new Map<string, DirManifest>()
+  // Capabilities already held by this bridge outlive active manifests. The
+  // server never re-emits them after deletion; keep them private to this instance.
+  const dirTokens = new Map<string, string>()
   // directories we've already issued an activate for (dedupe; omac itself is
   // idempotent, but this avoids needless round-trips).
   const activated = new Set<string>()
@@ -178,13 +181,8 @@ async function createBridge(
     }
     const m = await controlPost("/__omac__/activate", { dir })
     if (m) {
-      // The server emits dir_token only on the first activation. A refresh
-      // response therefore omits it; carry the token learned earlier forward,
-      // or the env names built from it break.
-      if (!m.dir_token) {
-        const cached = manifests.get(dir)?.dir_token
-        if (cached) m.dir_token = cached
-      }
+      if (m.dir_token) dirTokens.set(m.dir, m.dir_token)
+      else m.dir_token = dirTokens.get(m.dir)
       manifests.set(dir, m)
       activated.add(dir)
     }
@@ -366,12 +364,16 @@ async function createBridge(
     // Refresh on each command so skills installed mid-session are available.
     const m = (await activate(dir, true)) ?? manifests.get(dir)
     if (!m) return
+    const token = m.dir_token
+    if (!token && m.skills.some(sk => sk.scope === "workdir" && sk.state === "ready" && sk.base)) {
+      throw new Error("[omac] directory capability unavailable; restart omac serve to reconnect this bridge")
+    }
     for (const sk of m.skills) {
       if (sk.state !== "ready" || !sk.base) continue
       if (sk.scope === "global") {
         env[globalEnvName(sk.mount)] = sk.base
       } else {
-        env[dirEnvName(m.dir_token, sk.mount)] = sk.base
+        env[dirEnvName(token!, sk.mount)] = sk.base
         env[`OMAC_${envIdent(sk.mount)}_BASE`] = sk.base
       }
     }

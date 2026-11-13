@@ -50,6 +50,7 @@ omac serve --workdir ~/my-project
 |---|---|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `--workdir <dir>` | — | Activate this directory immediately at startup, so skills are ready as soon as OpenCode Desktop connects. Without this flag, no skills will be active — OpenCode Desktop does not yet automatically tell omac which project is currently open. |
 | `--root <dir>` | — | Only allow directories under this path to be activated (repeatable). For example, `--root ~/work --root ~/personal` restricts activation to those two trees. If not set, any directory can be activated.                                       |
+| `--max-dirs <n>` | `128` | Maximum number of project directories active at once. Further activations are refused until one is deactivated; raise the value when you work with more.                                                                                        |
 
 #### OpenCode v2 project discovery on macOS
 

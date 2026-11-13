@@ -46,3 +46,9 @@ Start `omac serve` **before** opening OpenCode Desktop. If you open Desktop firs
 ## Switching projects
 
 When you switch to a different project in OpenCode Desktop, omac is not notified — Desktop does not yet call omac's activation API. Skills from the new project will not be active. The workaround is to restart `omac serve --workdir` pointing at the new project.
+
+## Limits and token lifetime
+
+One `omac serve` process keeps at most 128 project directories active at once. Raise the limit with `--max-dirs` (see the [command reference](../usage/cli.md#omac-serve)).
+
+A project keeps its directory token for the life of the serve process. Deactivating and reactivating it, including the reload after `omac register` or `omac secrets set`, reuses the same token and URLs. The token is disclosed only once. Restart `omac serve` to invalidate it.
