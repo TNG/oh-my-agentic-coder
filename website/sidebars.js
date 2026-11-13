@@ -9,7 +9,7 @@ const sidebars = {
       type: 'category',
       label: 'Getting started',
       collapsed: false,
-      items: ['getting-started/quick-start'],
+      items: ['getting-started/quick-start', 'getting-started/uninstall'],
     },
     {
       type: 'category',
