@@ -93,7 +93,7 @@ func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, int) 
 		innerCmdOverride   = fs.String("inner", "", "Override inner_cmd's executable.")
 		noSandbox          = fs.Bool("no-sandbox", false, "Run inner command directly, without a sandbox (debug only).")
 		ephemeralCache     = fs.Bool("ephemeral-cache", false, "Use a per-launch cache instead of the persistent cache.")
-		cacheScope         = fs.String("cache-scope", "", "Persistent cache scope: global, config, or workdir. Overrides config (default: global).")
+		cacheScope         = fs.String("cache-scope", "", "Persistent cache scope: global, config, or workdir. Overrides config (default: workdir).")
 		keepRunning        = fs.Bool("keep-running", false, "Do not stop sidecars when the inner command exits.")
 		acceptSkillChanges = fs.Bool("accept-skill-changes", false, "Tolerate bundle_hash drift in registered skills (proceed even if the on-disk skill differs from what was registered).")
 		skipSecretPattern  = fs.Bool("skip-secret-pattern", false, "Do not enforce a secret's pattern against an env_passthrough-supplied value (escape hatch for an outdated pattern; the raw value is still passed through).")
@@ -1068,7 +1068,7 @@ func prepareLaunchCache(noSandbox, ephemeral bool, scope config.CacheScope, work
 }
 
 // resolveCacheScope merges the config's cache scope with an optional
-// --cache-scope flag override (precedence: flag > config > default global).
+// --cache-scope flag override (precedence: flag > config > default workdir).
 func resolveCacheScope(cfg config.CacheConfig, override string) (config.CacheScope, error) {
 	if override != "" {
 		return config.ValidateCacheScope(override)
