@@ -51,6 +51,42 @@ omac serve --workdir ~/my-project
 | `--workdir <dir>` | — | Activate this directory immediately at startup, so skills are ready as soon as OpenCode Desktop connects. Without this flag, no skills will be active — OpenCode Desktop does not yet automatically tell omac which project is currently open. |
 | `--root <dir>` | — | Only allow directories under this path to be activated (repeatable). For example, `--root ~/work --root ~/personal` restricts activation to those two trees. If not set, any directory can be activated.                                       |
 
+#### Desktop automatic project grants
+
+`omac serve --for-opencode-desktop` temporarily grants read+write access to all
+accepted local Desktop projects known at startup, including historical projects
+and projects inside your home. It does not edit your sandbox profile. Profile
+denies still apply; a new project outside these grants needs a restart.
+
+Only `<XDG_STATE_HOME>/opencode` is granted for OpenCode runtime state, not the
+whole Desktop data directory. Every trusted stable, beta, legacy and
+environment-selected Desktop store, including SQLite companion files, is
+protected at each launch with existing/custom profiles too. Names containing
+`$` or `[` are treated literally.
+
+Automatic grants require omac's native filesystem sandbox. They cannot be
+combined with `--learn`, `--no-sandbox` or an opaque external launcher.
+`--no-inner` remains available for control-plane-only use and launches no grants.
+
+On macOS, protected paths also pin their enclosing directory entries so a
+sandbox cannot rename the Desktop directory away and plant a replacement.
+Ordinary runtime sibling files remain writable. On Linux, writable grants that
+contain a trusted store are refused, even if it is absent: file masks alone
+cannot secure that layout. Narrow the profile/workdir to project folders and
+the `opencode` runtime subtree, or move Desktop state outside the writable
+grant. Read-only ancestors with writable runtime siblings are supported;
+aliased read grants that bypass a store's mask must use the real path instead.
+
+On both platforms, a dangling/unresolvable symlink in a trusted store's route
+refuses automatic-grant mode. A writable intermediate symlink, or a writable
+directory traversed by an indirect route but not covered by the ancestor
+protections, also causes refusal. On the host, replace the indirect path with
+real directories or narrow the writable grant; for a dangling link, create its
+target or remove the link, then restart. Immutable system links such as macOS
+`/var` remain supported. On macOS, creating a previously missing Desktop parent
+directory is blocked too, so the sandbox cannot plant a symlink there. Runtime
+sibling files in existing directories stay writable.
+
 #### OpenCode v2 project discovery on macOS
 
 OpenCode 2.0.x treats denied configuration-discovery probes as fatal. In the

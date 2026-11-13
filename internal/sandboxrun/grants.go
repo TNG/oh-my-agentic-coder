@@ -41,6 +41,9 @@ type Grants struct {
 	// override_deny holes already punched). Not existence-filtered:
 	// a missing ~/.ssh today may exist tomorrow.
 	ProtectedPaths []string
+	// RequiredProtectedPaths must remain inaccessible even when missing, and
+	// cannot be moved out of their denied spelling by renaming an ancestor.
+	RequiredProtectedPaths []string
 
 	// NameDenyRoots are granted folders with too many entries for the
 	// launch-time scan (maxDenyScanEntries). Instead of listing their
@@ -171,6 +174,11 @@ func ResolveGrants(p *sandboxprofile.Profile, workdir string, notices io.Writer)
 	if err != nil {
 		return nil, err
 	}
+	literalAllow, err := existingLiteralGrants(p.Filesystem.AllowLiteral)
+	if err != nil {
+		return nil, err
+	}
+	allow = append(allow, literalAllow...)
 
 	// Expand but don't existence-filter: the daemon may create the dir
 	// after launch. Also appended to allow so the socket files can be opened.
@@ -245,19 +253,20 @@ func ResolveGrants(p *sandboxprofile.Profile, workdir string, notices io.Writer)
 	}
 
 	g := &Grants{
-		Workdir:         workdir,
-		ReadPaths:       dedupe(read),
-		WritePaths:      dedupe(write),
-		AllowPaths:      dedupe(allow),
-		ProtectedPaths:  dedupe(protected),
-		NameDenyRoots:   byName.roots,
-		NameDenyGlobs:   byName.globs,
-		NetworkMode:     p.Network.EffectiveMode(),
-		ListenPorts:     dedupeInts(p.Network.ListenPort),
-		AllowTCPConnect: dedupeInts(p.Network.AllowTCPConnect),
-		OpenPorts:       dedupeInts(p.Network.OpenPort),
-		UnixSocketDirs:  dedupe(unixDirs),
-		Enforcement:     p.Network.EffectiveEnforcement(),
+		Workdir:                workdir,
+		ReadPaths:              dedupe(read),
+		WritePaths:             dedupe(write),
+		AllowPaths:             dedupe(allow),
+		ProtectedPaths:         dedupe(protected),
+		RequiredProtectedPaths: dedupe(p.Filesystem.RequireProtectedPath),
+		NameDenyRoots:          byName.roots,
+		NameDenyGlobs:          byName.globs,
+		NetworkMode:            p.Network.EffectiveMode(),
+		ListenPorts:            dedupeInts(p.Network.ListenPort),
+		AllowTCPConnect:        dedupeInts(p.Network.AllowTCPConnect),
+		OpenPorts:              dedupeInts(p.Network.OpenPort),
+		UnixSocketDirs:         dedupe(unixDirs),
+		Enforcement:            p.Network.EffectiveEnforcement(),
 	}
 
 	// Unix sockets: any allow-granted path that is a socket file gets
@@ -523,6 +532,11 @@ func denyScanRoots(p *sandboxprofile.Profile, workdir string) ([]string, error) 
 	if err != nil {
 		return nil, err
 	}
+	literal, err := existingLiteralGrants(p.Filesystem.AllowLiteral)
+	if err != nil {
+		return nil, err
+	}
+	roots = append(roots, literal...)
 	if p.Workdir.Access != "" && p.Workdir.Access != sandboxprofile.AccessNone {
 		roots = append(roots, workdir)
 	}

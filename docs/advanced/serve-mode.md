@@ -27,7 +27,7 @@ See [omac serve](../usage/cli.md#omac-serve) for the command reference. This pag
 omac serve opencode --workdir ~/my-project
 ```
 
-omac automatically launches `opencode serve` on port 4096 and handles authentication. OpenCode Desktop connects to it there by default — no additional port configuration is needed.
+omac automatically launches `opencode serve` on port 4096. OpenCode Desktop connects to it there by default; no additional port configuration is needed. Authentication follows the harness's defaults unless you configure a fixed password below.
 
 ## Choosing a different port
 
@@ -38,6 +38,22 @@ omac serve opencode --workdir ~/my-project -- --port 4095
 ```
 
 omac reads that `--port` value and opens the same port in the sandbox, so the server can bind it and its own plugins can call back into it over loopback. You do not need a separate `--open-port` flag for the harness server itself.
+
+## Keeping the same server password
+
+To configure a fixed password for this sandbox server, set `OMAC_SERVE_PASSWORD` for this invocation:
+
+```bash
+OMAC_SERVE_PASSWORD='a-unique-password-for-this-sandbox' omac serve --for-opencode-desktop
+```
+
+With the native sandbox backend, `omac serve` consumes this host-only source and passes its value only as the selected harness's server-auth variable (`OPENCODE_SERVER_PASSWORD` for OpenCode). It takes precedence over an inherited target value. Enter this password when adding the server in Desktop; use the same dedicated value on subsequent invocations to reconnect after a restart.
+
+The sandbox can read this password. **Do not reuse it for another service or sandbox.** It is never stored in an omac profile or passed in command-line arguments.
+
+`environment.deny_vars` remains authoritative, including prefix and `*` denies. A blocked dedicated password stops startup instead of falling back to another password. An opaque external backend cannot verify forwarding, so omac refuses this dedicated setting there; configure that backend explicitly instead.
+
+An ambient `OPENCODE_SERVER_PASSWORD` gets no automatic exception. An explicit profile allowance can still forward it, subject to `deny_vars`. Without a dedicated password, the harness retains its normal authentication behavior, which may include generated credentials. A warning about no fixed password does not mean authentication is disabled.
 
 ## Start order matters
 

@@ -39,6 +39,9 @@ func CheckPlatform() error {
 // as ENOENT — a second resolution that can disagree with the host-side
 // one this function just used to build the grants.
 func BuildChildArgv(g *Grants, innerArgv []string) ([]string, error) {
+	if err := g.validateRequiredProtection(false); err != nil {
+		return nil, err
+	}
 	if err := CheckPlatform(); err != nil {
 		return nil, err
 	}

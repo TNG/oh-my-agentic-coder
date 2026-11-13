@@ -92,9 +92,10 @@ type Workdir struct {
 // Filesystem lists path grants. Entries may be directories or files and
 // support ~ and $VAR expansion (see Expand).
 type Filesystem struct {
-	Allow []string `json:"allow,omitempty"` // read+write
-	Read  []string `json:"read,omitempty"`  // read-only
-	Write []string `json:"write,omitempty"` // write-only
+	Allow        []string `json:"allow,omitempty"` // read+write
+	AllowLiteral []string `json:"-"`               // launch-only absolute grants, without expansion
+	Read         []string `json:"read,omitempty"`  // read-only
+	Write        []string `json:"write,omitempty"` // write-only
 	// AllowUnixDir grants AF_UNIX connect to every socket under the given
 	// directory (a subpath rule) plus read+write access to it, for tools
 	// that mint sockets with dynamic names at runtime (e.g. Claude Code's
@@ -116,6 +117,9 @@ type Filesystem struct {
 	// contain "$" or "[" (e.g. a folder named "foo$HOME"). Not settable
 	// from a profile file.
 	DenyLiteral []string `json:"-"`
+	// RequireProtectedPath strengthens launch-injected denies: fail rather than
+	// expose missing files or allow enclosing-directory replacement. Runtime only.
+	RequireProtectedPath []string `json:"-"`
 	// OverrideDeny removes entries from the built-in protected-path
 	// deny set (Baseline.ProtectedPaths). It does not grant access by
 	// itself; a matching allow/read/write grant is still required.
@@ -428,6 +432,16 @@ func (p *Profile) Validate() error {
 	for _, d := range p.Filesystem.DenyLiteral {
 		if !filepath.IsAbs(d) {
 			return fmt.Errorf("sandbox: --deny-literal %q is not an absolute path", d)
+		}
+	}
+	for _, d := range p.Filesystem.RequireProtectedPath {
+		if !filepath.IsAbs(d) {
+			return fmt.Errorf("sandbox: --require-protected-path %q is not an absolute path", d)
+		}
+	}
+	for _, d := range p.Filesystem.AllowLiteral {
+		if !filepath.IsAbs(d) || filepath.Clean(d) == "/" {
+			return fmt.Errorf("sandbox: --allow-literal %q must be absolute and must not grant the filesystem root", d)
 		}
 	}
 	if d := p.Denial; d != nil && d.MarkerDirName != "" {
