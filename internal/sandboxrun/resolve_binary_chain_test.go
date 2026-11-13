@@ -39,6 +39,26 @@ func writeHomebrewChain(t *testing.T, root string) string {
 	return head
 }
 
+func distinctDirectoryCount(t *testing.T, dirs []string) int {
+	t.Helper()
+	var distinct []os.FileInfo
+	for _, dir := range dirs {
+		info, err := os.Stat(dir)
+		if err != nil {
+			t.Fatalf("stat %s: %v", dir, err)
+		}
+		if !info.IsDir() {
+			t.Fatalf("symlink chain returned non-directory %s", dir)
+		}
+		if !slices.ContainsFunc(distinct, func(existing os.FileInfo) bool {
+			return os.SameFile(info, existing)
+		}) {
+			distinct = append(distinct, info)
+		}
+	}
+	return len(distinct)
+}
+
 // The kernel resolves a symlink chain one hop at a time and needs read access
 // to each link on the way, so granting only the two ENDS of the chain — the
 // PATH-entry dir and the fully resolved dir — leaves the middle link
@@ -55,7 +75,8 @@ func TestResolveInnerBinaryDirsGrantsEverySymlinkHop(t *testing.T) {
 	root := t.TempDir()
 	head := writeHomebrewChain(t, root)
 
-	got := resolveInnerBinaryDirs([]string{head})
+	// Zero policy: this tests the resolution itself, not grant bounding.
+	got, _ := resolveInnerBinaryDirs([]string{head}, derivedGrantPolicy{})
 
 	cellar := filepath.Join(root, "Cellar", "opencode", "1.18.15")
 	for _, want := range []string{
@@ -76,7 +97,7 @@ func TestResolveInnerBinaryDirsGrantsEverySymlinkHopViaPATH(t *testing.T) {
 	writeHomebrewChain(t, root)
 	t.Setenv("PATH", filepath.Join(root, "bin"))
 
-	got := resolveInnerBinaryDirs([]string{"opencode"})
+	got, _ := resolveInnerBinaryDirs([]string{"opencode"}, derivedGrantPolicy{})
 
 	want := filepath.Join(root, "Cellar", "opencode", "1.18.15", "bin")
 	if !slices.Contains(got, want) {
@@ -110,8 +131,8 @@ func TestSymlinkChainDirsTerminatesOnCycle(t *testing.T) {
 			t.Errorf("missing %s in %v", want, got)
 		}
 	}
-	if len(got) != 2 {
-		t.Errorf("cycle produced %d dirs, want the 2 distinct ones: %v", len(got), got)
+	if count := distinctDirectoryCount(t, got); count != 2 {
+		t.Errorf("cycle produced %d distinct dirs, want 2: %v", count, got)
 	}
 }
 
