@@ -20,6 +20,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/TNG/oh-my-agentic-coder/internal/approval"
 	"github.com/TNG/oh-my-agentic-coder/internal/audit"
 	"github.com/TNG/oh-my-agentic-coder/internal/config"
 	"github.com/TNG/oh-my-agentic-coder/internal/facade"
@@ -1046,6 +1047,7 @@ type skillRoute struct {
 	State     facade.RouteState
 	Detail    string
 	Missing   []string
+	Approvals *approval.Set // declared endpoints from the approved snapshot; nil = ungated
 }
 
 type dirState struct {
@@ -1690,7 +1692,7 @@ func (s *serveServer) bringUp(e registry.Entry, absDir, workdir, namespace, secr
 		s.installRoute(sr, 0)
 		return sr
 	}
-	sr := &skillRoute{Name: e.Name, Mount: mount, Namespace: namespace, SkillDir: snapDir, State: facade.RouteReady}
+	sr := &skillRoute{Name: e.Name, Mount: mount, Namespace: namespace, SkillDir: snapDir, State: facade.RouteReady, Approvals: routeApprovals(snapM)}
 	s.installRoute(sr, running.Port)
 	return sr
 }
@@ -1813,6 +1815,7 @@ func (s *serveServer) installRoute(sr *skillRoute, port int) {
 		Skill:        sr.Name,
 		Owner:        sr.Name,
 		SkillDir:     sr.SkillDir,
+		Approvals:    sr.Approvals,
 		State:        sr.State,
 		Detail:       sr.Detail,
 	})
@@ -1864,7 +1867,7 @@ func (s *serveServer) refreshSingleDirAliases() {
 		if port == 0 {
 			continue
 		}
-		s.facade.AddRoute(facade.Route{Mount: sr.Mount, Namespace: "", UpstreamPort: port, Skill: sr.Name, Owner: sr.Name, SkillDir: sr.SkillDir, State: facade.RouteReady})
+		s.facade.AddRoute(facade.Route{Mount: sr.Mount, Namespace: "", UpstreamPort: port, Skill: sr.Name, Owner: sr.Name, SkillDir: sr.SkillDir, Approvals: sr.Approvals, State: facade.RouteReady})
 		s.flatAliasMu.Lock()
 		if s.flatAliases == nil {
 			s.flatAliases = map[string]struct{}{}
