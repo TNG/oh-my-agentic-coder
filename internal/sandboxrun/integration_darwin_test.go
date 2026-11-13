@@ -166,6 +166,16 @@ func TestIntegrationProtectedPathDeniedUnderBroadGrant(t *testing.T) {
 	}
 }
 
+func TestIntegrationDiscoverySnapshotProtected(t *testing.T) {
+	g, probe, snapshot := discoverySnapshotFixture(t)
+	if out, code := runSandboxed(t, g, "/bin/sh", "-c", `printf ok > "$1"`, "sh", probe); code != 0 {
+		t.Fatalf("writable control failed: %s", out)
+	}
+	if _, code := runSandboxed(t, g, "/bin/sh", "-c", `printf forged > "$1"`, "sh", snapshot); code == 0 {
+		t.Fatal("agent overwrote a trusted SQLite snapshot")
+	}
+}
+
 // TestIntegrationOverrideDenyGrantsAccess proves the documented
 // filesystem.override_deny escape hatch (README's Docker-socket / cloud
 // creds recipe) actually works through a real Seatbelt sandbox, not
