@@ -102,7 +102,7 @@ type Event struct {
 	Result string `json:"result,omitempty"` // ok|error summary
 
 	// --- route.state ---
-	State string `json:"state,omitempty"` // pending-credentials|broken
+	State string `json:"state,omitempty"` // pending-credentials|broken|skipped-unregistered
 }
 
 // bptr / iptr / sptr are small helpers for the pointer-typed optional
