@@ -191,12 +191,7 @@ type ProtectedPathChecker interface {
 // "127.0.0.1:0" asks the OS for an ephemeral port (read it back via
 // TCPPort() after Start).
 func New(socketPath, tcpAddr string, routes []Route, maxBody int64, idle time.Duration, accessLog, version string) *Facade {
-	m := make(map[string]*Route, len(routes))
-	for i := range routes {
-		r := routes[i]
-		m[r.key()] = &r
-	}
-	return &Facade{
+	f := &Facade{
 		SocketPath:    socketPath,
 		TCPAddr:       tcpAddr,
 		Routes:        routes,
@@ -204,8 +199,12 @@ func New(socketPath, tcpAddr string, routes []Route, maxBody int64, idle time.Du
 		IdleTimeout:   idle,
 		AccessLogPath: accessLog,
 		Version:       version,
-		routes:        m,
+		routes:        make(map[string]*Route, len(routes)),
 	}
+	for _, r := range routes {
+		f.AddRoute(r)
+	}
+	return f
 }
 
 // TCPPort returns the bound TCP port (after Start). Zero means TCP is
@@ -225,9 +224,12 @@ func (f *Facade) SetAuditor(a audit.Auditor) {
 // directory's skills lazily and to swap a stub route for a live one once
 // credentials arrive.
 //
-// When both the existing route and the new route carry a non-empty Owner,
-// a replacement is refused if the owners differ — this prevents a forged
-// skill from claiming the mount of an already-running, approved skill.
+// When the existing route carries a non-empty Owner, a replacement is
+// refused unless it carries the same Owner: neither a route owned by a
+// different skill nor an unowned one (e.g. a not-ready placeholder) may
+// displace a live owned route. The upgrade direction stays open: an owned
+// route may replace an unowned stub, which is how a mount goes live once
+// approval or credentials arrive.
 func (f *Facade) AddRoute(r Route) {
 	rr := r
 	f.mu.Lock()
@@ -248,6 +250,19 @@ func (f *Facade) RemoveRoute(namespace, mount string) {
 	f.mu.Lock()
 	delete(f.routes, routeKey(namespace, mount))
 	f.mu.Unlock()
+}
+
+// RemoveUnownedStub removes the route only when it is still the unowned stub
+// installed for skill. It lets reload discard a deregistered skill's stale
+// placeholder without deleting a route that has since been promoted or
+// claimed by another skill.
+func (f *Facade) RemoveUnownedStub(namespace, mount, skill string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	key := routeKey(namespace, mount)
+	if r, ok := f.routes[key]; ok && r.Owner == "" && r.Skill == skill && r.State != "" && r.State != RouteReady {
+		delete(f.routes, key)
+	}
 }
 
 // HasRoute reports whether a route exists for namespace/mount.
