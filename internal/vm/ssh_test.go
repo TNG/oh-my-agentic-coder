@@ -1,8 +1,10 @@
 package vm
 
 import (
+	"bytes"
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -12,6 +14,7 @@ import (
 func TestSSHArgs(t *testing.T) {
 	args := SSHArgs(SSHTarget{User: "agent", Port: 42022, KeyPath: "/k", KnownHosts: "/kh"})
 	pairs := [][2]string{
+		{"-F", "/dev/null"},
 		{"-p", "42022"},
 		{"-i", "/k"},
 		{"-o", "UserKnownHostsFile=/kh"},
@@ -37,6 +40,49 @@ func TestSSHArgs(t *testing.T) {
 	}
 	if args := SSHArgs(SSHTarget{User: "agent", Port: 42022, KeyPath: "/k", KnownHosts: "/kh", TTY: true}); !slices.Contains(args, "-t") {
 		t.Errorf("SSHArgs with TTY = %v, want -t", args)
+	}
+}
+
+func TestSSHArgsIgnoreAmbientConfig(t *testing.T) {
+	ssh, err := exec.LookPath("ssh")
+	if err != nil {
+		t.Skip("ssh not installed")
+	}
+	dir := t.TempDir()
+	key := filepath.Join(dir, "agent_key")
+	if err := os.WriteFile(key, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	target := SSHTarget{User: "agent", Port: 42022, KeyPath: key, KnownHosts: filepath.Join(dir, "known_hosts")}
+	args := append([]string{"-G", "-v"}, SSHArgs(target)...)
+	args = append(args, target.User+"@127.0.0.1")
+	cmd := exec.Command(ssh, args...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("ssh config check: %v: %s", err, &stderr)
+	}
+	readNull := false
+	for line := range strings.Lines(stderr.String()) {
+		if _, config, ok := strings.Cut(strings.TrimSpace(line), "Reading configuration data "); ok {
+			if config != "/dev/null" {
+				t.Errorf("ssh loaded ambient config %q", config)
+			}
+			readNull = readNull || config == "/dev/null"
+		}
+	}
+	if !readNull {
+		t.Errorf("ssh did not read the isolated config: %s", &stderr)
+	}
+	for _, want := range []string{
+		"user agent", "hostname 127.0.0.1", "port 42022",
+		"identityfile " + key, "userknownhostsfile " + target.KnownHosts,
+		"stricthostkeychecking accept-new", "batchmode yes", "identitiesonly yes",
+	} {
+		if !slices.Contains(strings.Split(string(out), "\n"), want) {
+			t.Errorf("ssh effective config lacks %q", want)
+		}
 	}
 }
 

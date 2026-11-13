@@ -36,6 +36,8 @@ func DefaultSSH(ctx context.Context, t SSHTarget, stdin io.Reader, stdout, stder
 // key, a dedicated known_hosts file, and no interactive prompts.
 func SSHArgs(t SSHTarget) []string {
 	args := []string{
+		// System config includes can fail ownership checks in Linux user namespaces.
+		"-F", "/dev/null",
 		"-i", t.KeyPath,
 		"-p", strconv.Itoa(t.Port),
 		"-o", "StrictHostKeyChecking=accept-new",

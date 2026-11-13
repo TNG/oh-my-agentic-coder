@@ -244,7 +244,7 @@ func TestRsyncArgs(t *testing.T) {
 	if !reflect.DeepEqual(args, want) {
 		t.Fatalf("args =\n%q\nwant\n%q", args, want)
 	}
-	if !strings.Contains(args[6], "-p 31022") || !strings.Contains(args[6], "'/k/agent key'") {
+	if !strings.Contains(args[6], "-F /dev/null") || !strings.Contains(args[6], "-p 31022") || !strings.Contains(args[6], "'/k/agent key'") {
 		t.Fatalf("-e value = %q", args[6])
 	}
 	for _, a := range args {
