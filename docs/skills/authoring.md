@@ -191,6 +191,59 @@ Before forwarding the request, omac strips your skill's mount prefix (`/my-skill
 
 **Python sidecars.** `http.server`'s `ThreadingHTTPServer` does a reverse-DNS lookup when it binds, which can stall startup by about 35 seconds on macOS. echo-rest's `sidecar.py` shows the one-line `server_bind` override that avoids it.
 
+## Approvals: which routes run without asking
+
+With an `approvals` block in `omac.yaml`, omac asks the user before it forwards a request to your sidecar, except for the routes you list with `approval: none`. omac does this in the facade, outside your code. The block is part of the [registered snapshot](#registering-the-skill-snapshot): editing it in the workdir changes nothing until the skill is registered again.
+
+```yaml
+sidecar:
+  mount: my-skill
+  approvals:
+    endpoints:
+      - match: "GET /status"
+        approval: none
+      - match: "POST /send"
+        approval: required
+        description: "Sends a message"
+```
+
+**What asks**
+
+- **Unlisted routes ask.** With the block present, a request that matches no entry asks the user, the same as `approval: required`. omac does not read your code: a route you add and forget to declare asks, it is not open.
+- **Without the block, nothing asks.** `omac register` says so. An empty block (`endpoints: []`, or `approvals:` with no value) is different: every route asks.
+- **`approval: none`** forwards the request. **`approval: required`** holds it and shows the user a dialog. `none` is not allowed on `ANY` or on a `**` path, so a catch-all always asks.
+- **Split by what a route can do.** A route that can do everything (a generic passthrough such as a raw API or a command runner) is always `required`: omac cannot see inside the body, so the user decides per call. Offer subsets as separate routes instead, for example a read-only route and a write route, and enforce the subset in the sidecar (refuse what does not belong on the route). A subset route that can only read is `none`; one that can send, change or delete is `required`.
+
+**Writing `match`**
+
+- `match` is `<METHOD> <path>`. The method is upper case: `GET`, `HEAD`, `POST`, `PUT`, `PATCH`, `DELETE`, `OPTIONS` or `ANY`. The path is relative to the mount.
+- A path segment is a literal (letters, digits, `.`, `_`, `~`, `-`), `{name}` for exactly one non-empty segment, or `**` for the rest of the path, including nothing, and only as the last segment. No regular expressions, and the query string is not matched.
+- An entry covers exactly what it says. `GET /status` does not cover `HEAD /status` or `GET /status/` (trailing slash). List each spelling your sidecar accepts: if it serves a tool at both `/tools/x` and `/x`, declare both.
+- **Most specific wins**: compared segment by segment, a literal beats `{name}`, and an exact path beats a `**` that would match nothing (`GET /a` beats `GET /a/**` for a request to `/a`). If the paths tie, a concrete method beats `ANY`. Two entries of the same shape are an error.
+- Unknown keys in the block, a misspelled block name such as `aprovals:`, or any other `approval` value stop the registration, so a typo cannot silently turn the dialog off.
+
+**What the user sees and answers**
+
+- The dialog shows what omac itself saw (method, cleaned path, query) and your `description`, one sentence. Credential-like query values are masked. The request body is not shown.
+- The user can answer once, for the session, or always. "For the session" and "always" cover everything the matched entry covers, and the dialog names the entry when it is wider than the request. For an unlisted route, and for an entry on `ANY` or a `**` path, they cover only that exact method and path: allowing `GET /messages/123` does not allow `GET /messages/124`. Declare `GET /messages/{id}` if one answer should cover them all.
+- Stored answers belong to one project directory and to the entry's `match` text. Rewording an entry, or registering the skill in another project, asks again. The user lists and removes them with `omac approvals list` and `omac approvals revoke <id>`.
+- Other choices in the dialog, its wording and its timeout are omac's choice and can change; do not rely on them.
+
+**What the agent gets back**
+
+| Status | `X-Omac-Reason` | When |
+|---|---|---|
+| `403` | `approval-denied` | The user said no. |
+| `403` | `approval-timeout` | Nobody answered in time. |
+| `503` | `approval-unavailable` | No dialog can be shown, e.g. a host without a display. |
+| `400` | `invalid-path` | The path is ambiguous: an encoded `/` or `\`, a raw `\`, control characters, or invalid percent-encoding. |
+
+**How omac reads a request**
+
+- omac cleans the path before it matches and forwards that same cleaned path (dot segments, `//`, percent-encoded forms), and removes `X-HTTP-Method-Override` style headers (also spelled with `_`) so the sidecar runs the method that was approved. omac does not read the query or body, so your sidecar must not honour a method override there either, such as a `_method=DELETE` parameter that Rack, Laravel or Symfony accept by default.
+- A held request still streams its response. A WebSocket upgrade is decided once, when it connects; frames are not checked.
+- An omac that predates this block ignores it and forwards every call. Do not publish a skill that relies on it before a release that has it.
+
 ## Environment variables injected into the sidecar
 
 omac sets the injected variables in the sidecar process before spawning it.
@@ -308,4 +361,5 @@ Because omac runs the skill from the copy made at register time (see above), re-
 - All credentials declared under `secrets:`, not `env_passthrough`.
 - No secret value appears in any response body or log line.
 - Install scripts (`install/install.macos.sh`, `install/install.linux.sh`) are executable (`chmod +x`), idempotent (run twice, same result), and exit non-zero on missing prerequisites. For a platform you cannot run: `ls -la install/` shows whether the scripts are executable (look for `x` in the permissions column) and `bash -n <script>` checks syntax.
+- If the skill can send, delete or otherwise change things, it declares `approvals` with those endpoints `required`, offers read-only access on its own route marked `none`, and keeps every do-everything route `required`; `omac register` reports the counts.
 - Smoke-tested end-to-end with `omac start` (sandboxed) and the agent reaching the sidecar via `$OMAC_<MOUNT>_BASE`.
