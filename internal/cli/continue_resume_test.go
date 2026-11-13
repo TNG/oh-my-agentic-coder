@@ -225,7 +225,7 @@ func TestLaunchCachePersistentAndEphemeral(t *testing.T) {
 		t.Errorf("persistent cache root exists or stat failed: %v", err)
 	}
 
-	// Default global scope resolves to the shared domain.
+	// Global scope resolves to the shared domain.
 	shared, err := prepareLaunchCache(false, false, config.CacheScopeGlobal, workdir, "", sandboxTmp)
 	if err != nil {
 		t.Fatalf("shared cache: %v", err)

@@ -76,7 +76,7 @@ func parseServeArgs(args []string, env *Env) (serveParse, bool) {
 		noSandbox         = fs.Bool("no-sandbox", false, "Run the inner command directly, without a sandbox (debug only).")
 		noInner           = fs.Bool("no-inner", false, "Do not launch any inner command; run the control plane only (testing/headless).")
 		ephemeralCache    = fs.Bool("ephemeral-cache", false, "Use a per-launch cache instead of the persistent cache.")
-		cacheScopeFlag    = fs.String("cache-scope", "", "Persistent cache scope: global, config, or workdir. Overrides config (default: global).")
+		cacheScopeFlag    = fs.String("cache-scope", "", "Persistent cache scope: global, config, or workdir. Overrides config (default: workdir).")
 		verbose           = fs.Bool("verbose", false, "Verbose lifecycle logging.")
 		forDesktop        = fs.Bool("for-opencode-desktop", false, "Grant every project worktree from the local OpenCode state (Desktop projects) read+write in the sandbox.")
 		learn             = fs.Bool("learn", false, "Learn mode: do not restrict filesystem access; record folders used and offer to add them to the sandbox profile at session end.")
