@@ -3,127 +3,89 @@ package vm
 import (
 	"context"
 	"errors"
-	"net"
-	"net/http"
-	"net/http/httptest"
+	"fmt"
+	"io"
+	"strings"
 	"testing"
 	"time"
-
-	"github.com/TNG/oh-my-agentic-coder/internal/sectest"
 )
 
-func serverPort(t *testing.T, h http.HandlerFunc) int {
-	t.Helper()
-	sectest.RequireLoopbackListener(t)
-	srv := httptest.NewServer(h)
-	t.Cleanup(srv.Close)
-	return srv.Listener.Addr().(*net.TCPAddr).Port
+// answerDocker makes the manager's ssh print out for every command, or fail
+// with err.
+func answerDocker(m *Manager, out string, err error) *[]string {
+	var remotes []string
+	m.Deps.SSH = func(_ context.Context, _ SSHTarget, _ io.Reader, stdout, _ io.Writer, remote string) error {
+		remotes = append(remotes, remote)
+		if err != nil {
+			return err
+		}
+		fmt.Fprint(stdout, out)
+		return nil
+	}
+	return &remotes
 }
 
-func TestDefaultDockerProbeAcceptsDocker(t *testing.T) {
-	var path string
-	port := serverPort(t, func(w http.ResponseWriter, r *http.Request) {
-		path = r.URL.Path
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"ApiVersion":"1.47","Version":"29.9.2"}`))
-	})
-	v, err := DefaultDockerProbe(context.Background(), port)
+func TestDockerVersionParsesOutput(t *testing.T) {
+	m, _, _ := newTestManager(t)
+	remotes := answerDocker(m, "1.47 27.3.1\n", nil)
+	v, err := m.dockerVersion(context.Background(), &State{SSHPort: 42022})
 	if err != nil {
-		t.Fatalf("probe: %v", err)
+		t.Fatal(err)
 	}
-	if v != (DockerVersion{APIVersion: "1.47", Version: "29.9.2"}) {
+	if v != (DockerVersion{APIVersion: "1.47", Version: "27.3.1"}) {
 		t.Errorf("version = %+v", v)
 	}
-	if path != "/version" {
-		t.Errorf("path = %q, want /version", path)
+	if len(*remotes) != 1 || (*remotes)[0] != dockerVersionCmd {
+		t.Errorf("ssh commands = %q, want only %q", *remotes, dockerVersionCmd)
+	}
+	if !strings.Contains(dockerVersionCmd, "unix:///run/user/$(id -u)/docker.sock") || strings.Contains(dockerVersionCmd, "tcp://") {
+		t.Errorf("dockerVersionCmd = %q, want the rootless Unix socket", dockerVersionCmd)
 	}
 }
 
-func TestDefaultDockerProbeRejectsNonDocker(t *testing.T) {
-	cases := map[string]http.HandlerFunc{
-		"html 200": func(w http.ResponseWriter, _ *http.Request) {
-			w.Header().Set("Content-Type", "text/html")
-			_, _ = w.Write([]byte("<html>hello</html>"))
-		},
-		"404": func(w http.ResponseWriter, r *http.Request) { http.NotFound(w, r) },
-		"json without ApiVersion": func(w http.ResponseWriter, _ *http.Request) {
-			_, _ = w.Write([]byte(`{"Version":"1.0"}`))
-		},
-		"docker json with 500": func(w http.ResponseWriter, _ *http.Request) {
-			w.WriteHeader(http.StatusInternalServerError)
-			_, _ = w.Write([]byte(`{"ApiVersion":"1.47","Version":"29.9.2"}`))
-		},
+func TestDockerVersionFailures(t *testing.T) {
+	cases := map[string]struct {
+		out string
+		err error
+	}{
+		"ssh fails":    {err: errors.New("exit status 1: Cannot connect to the Docker daemon")},
+		"empty output": {out: "\n"},
 	}
-	for name, h := range cases {
+	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
-			port := serverPort(t, h)
-			_, err := DefaultDockerProbe(context.Background(), port)
-			if !errors.Is(err, ErrNotDocker) {
-				t.Fatalf("err = %v, want ErrNotDocker", err)
+			m, _, _ := newTestManager(t)
+			answerDocker(m, c.out, c.err)
+			if v, err := m.dockerVersion(context.Background(), &State{SSHPort: 42022}); err == nil {
+				t.Fatalf("dockerVersion = %+v, want an error", v)
 			}
 		})
 	}
 }
 
-func TestDefaultDockerProbeClosedPort(t *testing.T) {
-	sectest.RequireLoopbackListener(t)
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	port := ln.Addr().(*net.TCPAddr).Port
-	ln.Close()
-
-	_, err = DefaultDockerProbe(context.Background(), port)
-	if err == nil {
-		t.Fatal("probe of closed port returned nil")
-	}
-	if errors.Is(err, ErrNotDocker) {
-		t.Fatalf("closed port reported as ErrNotDocker: %v", err)
-	}
-}
-
-func TestWaitForDockerRetriesConnectionErrors(t *testing.T) {
+func TestWaitDockerRetriesUntilDockerAnswers(t *testing.T) {
+	m, _, _ := newTestManager(t)
 	calls := 0
-	probe := func(context.Context, int) (DockerVersion, error) {
+	m.Deps.SSH = func(_ context.Context, _ SSHTarget, _ io.Reader, stdout, _ io.Writer, _ string) error {
 		calls++
 		if calls <= 2 {
-			return DockerVersion{}, errors.New("connection refused")
+			return errors.New("exit status 1")
 		}
-		return DockerVersion{APIVersion: "1.47"}, nil
+		fmt.Fprint(stdout, "1.47 27.3.1\n")
+		return nil
 	}
-	v, err := WaitForDocker(context.Background(), 1, time.Millisecond, probe)
-	if err != nil {
+	if err := m.waitDocker(context.Background(), &State{SSHPort: 42022}, time.Second); err != nil {
 		t.Fatal(err)
 	}
-	if v.APIVersion != "1.47" || calls != 3 {
-		t.Errorf("v = %+v, calls = %d", v, calls)
+	if calls != 3 {
+		t.Errorf("calls = %d, want 3", calls)
 	}
 }
 
-func TestWaitForDockerStopsOnNotDocker(t *testing.T) {
-	calls := 0
-	probe := func(context.Context, int) (DockerVersion, error) {
-		calls++
-		return DockerVersion{}, ErrNotDocker
-	}
-	_, err := WaitForDocker(context.Background(), 1, time.Millisecond, probe)
-	if !errors.Is(err, ErrNotDocker) {
-		t.Fatalf("err = %v, want ErrNotDocker", err)
-	}
-	if calls != 1 {
-		t.Errorf("calls = %d, want 1", calls)
-	}
-}
-
-func TestWaitForDockerHonorsDeadline(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
-	defer cancel()
-	probe := func(context.Context, int) (DockerVersion, error) {
-		return DockerVersion{}, errors.New("connection refused")
-	}
-	_, err := WaitForDocker(ctx, 1, time.Millisecond, probe)
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("err = %v, want DeadlineExceeded", err)
+func TestWaitDockerTimesOut(t *testing.T) {
+	m, _, _ := newTestManager(t)
+	answerDocker(m, "", errors.New("exit status 1"))
+	err := m.waitDocker(context.Background(), &State{SSHPort: 42022}, 20*time.Millisecond)
+	if !errors.Is(err, context.DeadlineExceeded) || !strings.HasPrefix(err.Error(), "omac vm: docker in the VM not ready") {
+		t.Fatalf("err = %v, want the not-ready DeadlineExceeded", err)
 	}
 }

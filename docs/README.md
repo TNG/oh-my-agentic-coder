@@ -77,8 +77,8 @@ This is handled by `omac serve` instead of `omac start`. Desktop integration is 
   [troubleshooting](./troubleshooting.md#gradle-build-hangs-or-cannot-reach-its-daemon).
   Alternatively, run the build in the omac VM with
   [`omac vm exec`](./usage/cli.md#omac-vm), where the daemon works.
-- **Docker is not available inside the sandbox by default.** Start the session
-  with `--vm` to use Docker in the omac VM; see
+- **Docker is not available inside the sandbox.** Start the session with
+  `--vm` and run Docker, and tests that need it, through `omac vm exec`; see
   [omac vm](./usage/cli.md#omac-vm).
 
 ## Security model

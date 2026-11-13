@@ -1,73 +1,51 @@
 package vm
 
 import (
+	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"net/http"
-	"strconv"
+	"strings"
 	"time"
 )
 
-// DockerVersion is the part of Docker's GET /version answer omac checks.
+// DockerVersion is the part of `docker version` omac reports.
 type DockerVersion struct {
-	APIVersion string `json:"ApiVersion"`
-	Version    string `json:"Version"`
+	APIVersion string
+	Version    string
 }
 
-// ErrNotDocker means something listens on the port but it is not Docker,
-// for example another local service that took the port.
-var ErrNotDocker = errors.New("endpoint answered but is not a Docker API")
+// dockerVersionCmd prints "<api version> <version>" of the VM's dockerd and
+// fails while dockerd does not answer on its socket.
+var dockerVersionCmd = dockerCmd("version --format '{{.Server.APIVersion}} {{.Server.Version}}'")
 
-// DockerProbe asks the forwarded Docker port on 127.0.0.1 for its version.
-type DockerProbe func(ctx context.Context, port int) (DockerVersion, error)
-
-// DefaultDockerProbe calls GET http://127.0.0.1:<port>/version. Only a 200
-// answer with a JSON body carrying a non-empty ApiVersion counts as Docker;
-// any other answer yields ErrNotDocker. Connection failures are returned
-// as they are, so callers can keep waiting.
-func DefaultDockerProbe(ctx context.Context, port int) (DockerVersion, error) {
-	url := "http://127.0.0.1:" + strconv.Itoa(port) + "/version"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
+// dockerVersion asks the VM's Docker for its version over the agent's ssh.
+func (m *Manager) dockerVersion(ctx context.Context, st *State) (DockerVersion, error) {
+	var out bytes.Buffer
+	if err := m.ssh(ctx, m.agentTarget(st), nil, &out, dockerVersionCmd); err != nil {
 		return DockerVersion{}, err
 	}
-	client := http.Client{Timeout: 2 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return DockerVersion{}, err
+	api, version, _ := strings.Cut(strings.TrimSpace(out.String()), " ")
+	if api == "" {
+		return DockerVersion{}, errors.New("docker version printed no API version")
 	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
-	if err != nil {
-		return DockerVersion{}, err
-	}
-	var v DockerVersion
-	if resp.StatusCode != http.StatusOK || json.Unmarshal(body, &v) != nil || v.APIVersion == "" {
-		return DockerVersion{}, fmt.Errorf("port %d: %w", port, ErrNotDocker)
-	}
-	return v, nil
+	return DockerVersion{APIVersion: api, Version: version}, nil
 }
 
-// WaitForDocker polls probe every interval until Docker answers or ctx ends.
-// ErrNotDocker stops the wait at once: a wrong service is answering, and
-// waiting longer will not change that.
-func WaitForDocker(ctx context.Context, port int, interval time.Duration, probe DockerProbe) (DockerVersion, error) {
-	ticker := time.NewTicker(interval)
+// waitDocker polls dockerVersion until Docker answers or timeout passes.
+func (m *Manager) waitDocker(ctx context.Context, st *State, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	ticker := time.NewTicker(m.Deps.ProbeInterval)
 	defer ticker.Stop()
 	for {
-		v, err := probe(ctx, port)
+		_, err := m.dockerVersion(ctx, st)
 		if err == nil {
-			return v, nil
-		}
-		if errors.Is(err, ErrNotDocker) {
-			return DockerVersion{}, err
+			return nil
 		}
 		select {
 		case <-ctx.Done():
-			return DockerVersion{}, fmt.Errorf("omac vm: docker on port %d not ready (last error: %v): %w", port, err, ctx.Err())
+			return fmt.Errorf("omac vm: docker in the VM not ready (last error: %v): %w", err, ctx.Err())
 		case <-ticker.C:
 		}
 	}

@@ -12,10 +12,6 @@ ssh:
   localPort: 42022
 portForwards:
   - guestIP: 127.0.0.1
-    guestPort: 2375
-    hostIP: 127.0.0.1
-    hostPort: 42375
-  - guestIP: 127.0.0.1
     guestPortRange: [30000, 30099]
     hostIP: 127.0.0.1
     hostPortRange: [30000, 30099]
@@ -39,7 +35,7 @@ provision:
       # omac-vmguard: network boundary of the omac VM in offline mode.
       # The output chain rejects every packet that leaves the VM, except
       # loopback and replies to inbound connections such as the forwarded
-      # Docker API port. The forward chain drops forwarded packets the same way.
+      # SSH port. The forward chain drops forwarded packets the same way.
       table inet omac-vmguard {
         chain output {
           type filter hook output priority filter + 10; policy drop;
@@ -106,10 +102,6 @@ provision:
       command -v dockerd-rootless-setuptool.sh >/dev/null || exit 0
       systemctl --user start dbus || true
       [ -f ~/.config/systemd/user/docker.service ] || dockerd-rootless-setuptool.sh install
-      mkdir -p ~/.config/systemd/user/docker.service.d
-      printf '[Service]\nExecStart=\nExecStart=/usr/bin/dockerd-rootless.sh -H unix://%%t/docker.sock -H tcp://127.0.0.1:2375\n' > ~/.config/systemd/user/docker.service.d/override.conf
-      systemctl --user daemon-reload
-      systemctl --user enable docker
-      systemctl --user restart docker
+      systemctl --user enable --now docker
       for f in ~/.bashrc ~/.profile; do grep -q '^export DOCKER_HOST=' "$f" 2>/dev/null || printf 'export DOCKER_HOST=unix:///run/user/%s/docker.sock\n' "$(id -u)" >> "$f"; done
       printf 'docker.host=unix:///run/user/%s/docker.sock\n' "$(id -u)" > ~/.testcontainers.properties

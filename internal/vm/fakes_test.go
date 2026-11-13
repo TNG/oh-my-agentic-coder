@@ -125,6 +125,7 @@ type sshCall struct {
 // reads: ModeFile, PackagesFile, ProvisionedMarker, plus whether the
 // omac-vmguard table is loaded and which images Docker holds. bootDone is
 // /run/lima-boot-done: set once a boot's provisioning finished, cleared by
+// a shutdown. docker is whether dockerd answers: set by a boot, cleared by
 // a shutdown.
 type fakeGuest struct {
 	modeFile    string
@@ -132,6 +133,7 @@ type fakeGuest struct {
 	provisioned bool
 	firewall    bool
 	bootDone    bool
+	docker      bool
 	images      []string
 	worktrees   string // content of omac/.worktrees in the agent's home
 }
@@ -200,6 +202,11 @@ func (f *fakeSSH) run(_ context.Context, t SSHTarget, stdin io.Reader, stdout, _
 		}
 	case remote == listWorktreesCmd:
 		fmt.Fprint(stdout, g.worktrees)
+	case remote == dockerVersionCmd:
+		if !g.docker {
+			return errors.New("exit status 1: Cannot connect to the Docker daemon")
+		}
+		fmt.Fprint(stdout, "1.47 27.3.1\n")
 	case remote == dockerCmd("load"):
 		g.images = append(g.images, in)
 	case strings.HasPrefix(remote, dockerCmd("image ls")):
@@ -234,6 +241,7 @@ func (f *fakeSSH) boot() {
 		mode = f.guest.modeFile
 	}
 	f.guest.firewall = mode == ModeOffline || f.stickyFirewall
+	f.guest.docker = true
 	if f.slowBoots > 0 {
 		f.slowBoots--
 		f.pending = true
@@ -266,6 +274,7 @@ func (f *fakeSSH) halt() {
 	}
 	f.guest.firewall = false
 	f.guest.bootDone = false
+	f.guest.docker = false
 	f.pending = false
 }
 
@@ -298,43 +307,21 @@ func (f *fakeSSH) remotes() []string {
 	return out
 }
 
-// fakeProbe answers like Docker while the fake instance runs; err forces a
-// failure.
-type fakeProbe struct {
-	mu    sync.Mutex
-	calls int
-	err   error
-	lima  *fakeLimaCtl
-}
-
-func (p *fakeProbe) run(_ context.Context, _ int) (DockerVersion, error) {
-	p.mu.Lock()
-	p.calls++
-	forced := p.err
-	p.mu.Unlock()
-	if forced != nil {
-		return DockerVersion{}, forced
+// dockerDown is a fakeSSH.fail that makes Docker in the VM not answer.
+func dockerDown(remote string) error {
+	if remote == dockerVersionCmd {
+		return errors.New("exit status 1: Cannot connect to the Docker daemon")
 	}
-	if p.lima.status() != StatusRunning {
-		return DockerVersion{}, errors.New("connection refused")
-	}
-	return DockerVersion{APIVersion: "1.47", Version: "27.3.1"}, nil
+	return nil
 }
 
-func (p *fakeProbe) setErr(err error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.err = err
-}
-
-func newTestManager(t *testing.T) (*Manager, *fakeLimaCtl, *fakeSSH, *fakeProbe) {
+func newTestManager(t *testing.T) (*Manager, *fakeLimaCtl, *fakeSSH) {
 	t.Helper()
 	root := filepath.Join(t.TempDir(), "vm")
 	lima := &fakeLimaCtl{failOn: map[string]error{}}
 	ssh := &fakeSSH{}
 	lima.onStart = ssh.boot
 	lima.onStop = ssh.halt
-	probe := &fakeProbe{lima: lima}
 	n := 0
 	keygen := func(_ context.Context, name string, args []string, _ io.Reader, _, _ io.Writer) error {
 		i := slices.Index(args, "-f")
@@ -349,10 +336,9 @@ func newTestManager(t *testing.T) (*Manager, *fakeLimaCtl, *fakeSSH, *fakeProbe)
 		return os.WriteFile(path+".pub", fmt.Appendf(nil, "ssh-ed25519 AAAAkey%d test\n", n), 0o644)
 	}
 	deps := Deps{
-		Lima:  lima.run,
-		SSH:   ssh.run,
-		Run:   keygen,
-		Probe: probe.run,
+		Lima: lima.run,
+		SSH:  ssh.run,
+		Run:  keygen,
 		Pull: func(_ context.Context, ref, tar string) error {
 			return os.WriteFile(tar, []byte(ref), 0o600)
 		},
@@ -366,5 +352,5 @@ func newTestManager(t *testing.T) (*Manager, *fakeLimaCtl, *fakeSSH, *fakeProbe)
 		ProvisionTimeout: time.Second,
 		RestartTimeout:   time.Second,
 	}
-	return NewManager(NewLayout(root), filepath.Join(t.TempDir(), "vm.yaml"), deps, io.Discard), lima, ssh, probe
+	return NewManager(NewLayout(root), filepath.Join(t.TempDir(), "vm.yaml"), deps, io.Discard), lima, ssh
 }
