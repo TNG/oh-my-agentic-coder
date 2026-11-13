@@ -27,7 +27,19 @@ See [omac serve](../usage/cli.md#omac-serve) for the command reference. This pag
 omac serve opencode --workdir ~/my-project
 ```
 
-omac automatically launches `opencode serve` on port 4096 and handles authentication. OpenCode Desktop connects to it there by default — no additional port configuration is needed.
+omac automatically launches `opencode serve` on port 4096. Add that server in OpenCode Desktop and use the password reported by OpenCode.
+
+For a stable password across restarts, set a password used only for this server:
+
+```bash
+OMAC_SERVE_PASSWORD='a-unique-server-password' omac serve opencode --workdir ~/my-project
+```
+
+omac passes it as `OPENCODE_SERVER_PASSWORD` only to the inner server. It does
+not automatically forward an ambient `OPENCODE_SERVER_PASSWORD` or provider
+keys. With sandboxing enabled, this requires the native backend; a policy's
+`environment.deny_vars` still wins and a blocked dedicated password aborts
+startup. Never reuse this password for another service: the agent can read it.
 
 ## Choosing a different port
 
