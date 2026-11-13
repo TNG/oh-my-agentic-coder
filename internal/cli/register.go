@@ -40,6 +40,7 @@ func runRegister(args []string, env *Env) int {
 		useDefaults     = fs.Bool("defaults", false, "Non-interactive: use remembered global defaults where available; prompt only for values never set anywhere.")
 		harnessName     = fs.String("harness", "", "Resolve the skill in this harness's scope (opencode|claude). Default: opencode. Use to disambiguate a skill name present under multiple harnesses.")
 		globalOnly      = fs.Bool("global", false, "When a skill name exists both workdir-local and user-global, register the user-global one.")
+		requiredOnly    = fs.Bool("required-only", false, "Ask only for values omac start cannot do without: required secrets and required config fields without a default. Optional values and defaults are left unstored.")
 	)
 	fs.Usage = func() {
 		fmt.Fprintln(fs.Output(), "Usage: omac register <skill> [flags]")
@@ -50,6 +51,12 @@ func runRegister(args []string, env *Env) int {
 	}
 	if fs.NArg() != 1 {
 		fs.Usage()
+		return ExitMisuse
+	}
+	// --reprompt-* asks again for values that are already stored, which is
+	// the opposite of asking as little as possible.
+	if *requiredOnly && (*reprompt || *repromptFields) {
+		fmt.Fprintln(env.Stderr, "omac register: --required-only cannot be combined with --reprompt-secrets or --reprompt-fields")
 		return ExitMisuse
 	}
 	skillName := fs.Arg(0)
@@ -149,6 +156,10 @@ func runRegister(args []string, env *Env) int {
 	// time but answered this time correctly drops out of the list.
 	skippedSecrets := make([]string, 0)
 	skippedFields := make([]string, 0)
+	// leftOut counts the values --required-only did not ask for. They are
+	// not added to the skipped lists above, so a later register without
+	// the flag still asks for them.
+	leftOut := 0
 
 	// Styler for the human-facing status lines and prompts (these go to
 	// stderr); a separate one drives stdout's final summary + callout.
@@ -164,7 +175,7 @@ func runRegister(args []string, env *Env) int {
 			return ExitConfigInvalid
 		}
 		for _, spec := range meta.Sidecar.Secrets {
-			skipped, err := handleOneSecret(env, secretScope, skillName, skillDir, spec, *reprompt, prevSkippedSecrets, fromFile, *useDefaults, host)
+			outcome, err := registerSecret(env, secretScope, skillName, skillDir, spec, *reprompt, prevSkippedSecrets, fromFile, *useDefaults, host, *requiredOnly)
 			if err != nil {
 				// Determine exit code from err message tag.
 				if strings.HasPrefix(err.Error(), "keychain:") {
@@ -178,8 +189,11 @@ func runRegister(args []string, env *Env) int {
 				fmt.Fprintln(env.Stderr, "omac register:", err)
 				return ExitGeneric
 			}
-			if skipped {
+			switch outcome {
+			case valueSkipped:
 				skippedSecrets = append(skippedSecrets, spec.Name)
+			case valueLeftOut:
+				leftOut++
 			}
 		}
 	} else {
@@ -218,7 +232,7 @@ func runRegister(args []string, env *Env) int {
 			// The defaults store is ALWAYS populated (not just under
 			// --defaults), so the first register remembers config values for
 			// later `register --defaults` reuse. --defaults only controls the
-			// read/adopt side inside handleOneField. For a global skill the
+			// read/adopt side inside registerField. For a global skill the
 			// global skill-config IS the defaults store.
 			var defStore *skillconfig.Store
 			if global {
@@ -231,7 +245,7 @@ func runRegister(args []string, env *Env) int {
 				defStore = gs
 			}
 			// For a global skill the workdir layer overrides the global store
-			// and is what gets anchored below, so handleOneField must show it.
+			// and is what gets anchored below, so registerField must show it.
 			// The workdir file is agent-writable: never approve it unseen.
 			var wdOverride *skillconfig.Store
 			if global {
@@ -240,12 +254,15 @@ func runRegister(args []string, env *Env) int {
 				}
 			}
 			for _, spec := range meta.Sidecar.Config {
-				skipped, err := handleOneField(env, store, wdOverride, skillName, skillDir, spec, *repromptFields, prevSkippedFields, fromFile, *useDefaults, defStore)
+				outcome, err := registerField(env, store, wdOverride, skillName, skillDir, spec, *repromptFields, prevSkippedFields, fromFile, *useDefaults, defStore, *requiredOnly)
 				if err != nil {
 					return err
 				}
-				if skipped {
+				switch outcome {
+				case valueSkipped:
 					skippedFields = append(skippedFields, spec.Name)
+				case valueLeftOut:
+					leftOut++
 				}
 			}
 			// Anchor the values the user just approved in the host-only global
@@ -257,10 +274,15 @@ func runRegister(args []string, env *Env) int {
 				if err != nil {
 					return err
 				}
-				store.RecordApproved(anchorID, skillName, effectiveConfig(store, wdStore, skillName))
+				effective := effectiveConfig(store, wdStore, skillName)
+				store.RecordApproved(anchorID, skillName, effective)
 				store.RecordApproved(skillconfig.GlobalApprovedKey, skillName, store.Skills[skillName])
+				store.RecordApprovedDefaults(anchorID, skillName, unstoredDefaults(meta.Sidecar.Config, effective))
+				store.RecordApprovedDefaults(skillconfig.GlobalApprovedKey, skillName, unstoredDefaults(meta.Sidecar.Config, store.Skills[skillName]))
 			} else if defStore != nil {
-				defStore.RecordApproved(anchorID, skillName, effectiveConfig(defStore, store, skillName))
+				effective := effectiveConfig(defStore, store, skillName)
+				defStore.RecordApproved(anchorID, skillName, effective)
+				defStore.RecordApprovedDefaults(anchorID, skillName, unstoredDefaults(meta.Sidecar.Config, effective))
 			}
 			if err := saveSkillConfig(env.Workdir, global, store); err != nil {
 				return err
@@ -290,6 +312,14 @@ func runRegister(args []string, env *Env) int {
 		for n := range prevSkippedFields {
 			skippedFields = append(skippedFields, n)
 		}
+	}
+	if leftOut > 0 {
+		what := fmt.Sprintf("%d values", leftOut)
+		if leftOut == 1 {
+			what = "1 value"
+		}
+		sErr.status(env.Stderr, "[info]", fmt.Sprintf(
+			"%s not asked (optional, or omac start uses the default); to set them, run omac register %s", what, skillName), ansiCyan)
 	}
 
 	// 3. Install-script discovery. We resolve the path here (so a
@@ -483,6 +513,19 @@ func effectiveConfig(global, workdir *skillconfig.Store, skill string) map[strin
 	return out
 }
 
+// unstoredDefaults returns the `default:` of every field without a value in
+// stored: what omac start falls back to. register records it so start can
+// refuse a default the skill changed since (skillstate.resolveConfig).
+func unstoredDefaults(specs []config.ConfigSpec, stored map[string]string) map[string]string {
+	out := map[string]string{}
+	for _, spec := range specs {
+		if _, ok := stored[spec.Name]; !ok && spec.Default != "" {
+			out[spec.Name] = spec.Default
+		}
+	}
+	return out
+}
+
 // rel returns path relative to base, or the original if not reachable.
 func rel(base, path string) string {
 	r, err := filepath.Rel(base, path)
@@ -541,20 +584,53 @@ func dedupSorted(names []string) []string {
 	return out
 }
 
-// handleOneSecret implements the per-secret flow from §16.4.
+// valueOutcome says what register did with one secret or config field.
+type valueOutcome int
+
+const (
+	// valueStored: a value is stored now (new, or already there before).
+	valueStored valueOutcome = iota
+	// valueSkipped: the user declined an optional value, now or on an
+	// earlier run. It goes into the registry's skipped list so the next
+	// register does not ask again.
+	valueSkipped
+	// valueLeftOut: --required-only did not ask for it. Nothing is stored
+	// and nothing is remembered, so the next register without the flag
+	// asks for it.
+	valueLeftOut
+)
+
+// handleOneSecret is registerSecret without --required-only. The bool
+// reports valueSkipped. `omac secrets set` and tests use it.
+func handleOneSecret(env *Env, scope, skill, skillDir string, spec config.SecretSpec, reprompt bool, prevSkipped map[string]bool, fromFile map[string]string, useDefaults bool, host osinfo.OS) (bool, error) {
+	outcome, err := registerSecret(env, scope, skill, skillDir, spec, reprompt, prevSkipped, fromFile, useDefaults, host, false)
+	return outcome == valueSkipped, err
+}
+
+// handleOneField is registerField without --required-only. The bool
+// reports valueSkipped.
+func handleOneField(env *Env, store, override *skillconfig.Store, skill, skillDir string, spec config.ConfigSpec, reprompt bool, prevSkipped map[string]bool, fromFile map[string]string, useDefaults bool, defStore *skillconfig.Store) (bool, error) {
+	outcome, err := registerField(env, store, override, skill, skillDir, spec, reprompt, prevSkipped, fromFile, useDefaults, defStore, false)
+	return outcome == valueSkipped, err
+}
+
+// registerSecret implements the per-secret flow from §16.4.
 //
-// The bool return reports whether the user explicitly skipped an
-// optional secret on this run (entered an empty line, no
-// default_from_env, required: false). Callers persist the names of
+// valueSkipped means the user explicitly skipped an optional secret
+// (entered an empty line, no default_from_env, required: false), now or
+// on an earlier run. Callers persist the names of
 // skipped optional secrets in the registry so a later
 // `omac register --force <skill>` doesn't pester the user about the
 // same optional value over and over. `--reprompt-secrets` ignores the
 // memory and resets it.
 //
 // The "already in keychain" branch and the "from --secrets-from / env"
-// branches all return skipped=false: they record actual values, which
-// take priority over any previous skip.
-// handleOneSecret stores a secret under the given keychain scope. scope is
+// branches all return valueStored: they record actual values, which
+// take priority over any previous skip. With requiredOnly, an optional
+// secret that no non-interactive source supplies returns valueLeftOut
+// without a prompt.
+//
+// registerSecret stores a secret under the given keychain scope. scope is
 // "" for global skills (unscoped omac/<skill>) and the workdir-id for
 // workdir-local skills (omac/<workdir-id>/<skill>) — it MUST match the scope
 // serve reads with (see serve.go bringUp), or the skill will never see the
@@ -562,13 +638,13 @@ func dedupSorted(names []string) []string {
 //
 // skillDir is the skill's source directory. It resolves the spec's `docs`
 // path to an absolute path for the help text.
-func handleOneSecret(env *Env, scope, skill, skillDir string, spec config.SecretSpec, reprompt bool, prevSkipped map[string]bool, fromFile map[string]string, useDefaults bool, host osinfo.OS) (bool, error) {
+func registerSecret(env *Env, scope, skill, skillDir string, spec config.SecretSpec, reprompt bool, prevSkipped map[string]bool, fromFile map[string]string, useDefaults bool, host osinfo.OS, requiredOnly bool) (valueOutcome, error) {
 	st := newStyler(env.Stderr)
 	// 1. Already in keychain?
 	if !reprompt {
 		present, err := keychain.HasScoped(scope, skill, spec.Name)
 		if err != nil {
-			return false, fmt.Errorf("keychain: %w", err)
+			return valueStored, fmt.Errorf("keychain: %w", err)
 		}
 		if present {
 			// Backfill the remembered-default mirror from the already-stored
@@ -580,14 +656,14 @@ func handleOneSecret(env *Env, scope, skill, skillDir string, spec config.Secret
 				cur.Zero()
 			}
 			st.status(env.Stderr, "[skip]", st.dim(spec.Name+" already in keychain"), ansiYellow)
-			return false, nil
+			return valueStored, nil
 		}
 		// 1b. Previously skipped on a prior register run? Honor that
 		//     unless --reprompt-secrets is set. This is the fix for
 		//     "register --force re-asks every optional secret".
 		if prevSkipped[spec.Name] && !spec.IsRequired() {
 			st.status(env.Stderr, "[skip]", st.dim(spec.Name+" (optional, previously declined)"), ansiYellow)
-			return true, nil
+			return valueSkipped, nil
 		}
 	}
 
@@ -600,11 +676,11 @@ func handleOneSecret(env *Env, scope, skill, skillDir string, spec config.Secret
 			if verr := spec.ValidateValue(def.ExposeString()); verr == nil {
 				if serr := keychain.SetWithDefault(scope, skill, spec.Name, def); serr != nil {
 					def.Zero()
-					return false, fmt.Errorf("keychain: %w", keychain.WrapUnavailable(serr, host))
+					return valueStored, fmt.Errorf("keychain: %w", keychain.WrapUnavailable(serr, host))
 				}
 				def.Zero()
 				st.status(env.Stderr, "stored", spec.Name+st.gray(" (from remembered default)"), ansiGreen)
-				return false, nil
+				return valueStored, nil
 			}
 			def.Zero()
 		}
@@ -613,29 +689,39 @@ func handleOneSecret(env *Env, scope, skill, skillDir string, spec config.Secret
 	// 2. --secrets-from file takes precedence over prompting.
 	if v, ok := fromFile[spec.Name]; ok {
 		if err := spec.ValidateValue(v); err != nil {
-			return false, err
+			return valueStored, err
 		}
 		s := secrets.NewSecretString(v)
 		defer s.Zero()
 		if err := keychain.SetWithDefault(scope, skill, spec.Name, s); err != nil {
-			return false, fmt.Errorf("keychain: %w", keychain.WrapUnavailable(err, host))
+			return valueStored, fmt.Errorf("keychain: %w", keychain.WrapUnavailable(err, host))
 		}
 		st.status(env.Stderr, "stored", spec.Name+st.gray(" (from file)"), ansiGreen)
-		return false, nil
+		return valueStored, nil
 	}
 
 	// 3. Env-based non-interactive supply: OMAC_SECRET_<NAME>.
 	if v, ok := os.LookupEnv("OMAC_SECRET_" + spec.Name); ok {
 		if err := spec.ValidateValue(v); err != nil {
-			return false, err
+			return valueStored, err
 		}
 		s := secrets.NewSecretString(v)
 		defer s.Zero()
 		if err := keychain.SetWithDefault(scope, skill, spec.Name, s); err != nil {
-			return false, fmt.Errorf("keychain: %w", keychain.WrapUnavailable(err, host))
+			return valueStored, fmt.Errorf("keychain: %w", keychain.WrapUnavailable(err, host))
 		}
 		st.status(env.Stderr, "stored", spec.Name+st.gray(fmt.Sprintf(" (from OMAC_SECRET_%s)", spec.Name)), ansiGreen)
-		return false, nil
+		return valueStored, nil
+	}
+
+	// 3b. --required-only: an optional secret is not asked. Nothing is
+	//     stored and it is not remembered as declined, so a later register
+	//     without the flag still asks for it. A required secret is asked as
+	//     usual, also when default_from_env offers a value: copying a host
+	//     variable into the keychain needs the user's Enter.
+	if requiredOnly && !spec.IsRequired() {
+		st.status(env.Stderr, "[skip]", st.dim(spec.Name+" (optional, not asked)"), ansiYellow)
+		return valueLeftOut, nil
 	}
 
 	// 4. default_from_env offers a pre-filled default on the prompt.
@@ -664,7 +750,7 @@ func handleOneSecret(env *Env, scope, skill, skillDir string, spec config.Secret
 		attempts++
 		value, err := readSecretInput(prompt)
 		if err != nil {
-			return false, fmt.Errorf("read %s: %w", spec.Name, err)
+			return valueStored, fmt.Errorf("read %s: %w", spec.Name, err)
 		}
 		// Empty input → accept default_from_env if offered, else treat per `required`.
 		if value.IsEmpty() {
@@ -674,19 +760,19 @@ func handleOneSecret(env *Env, scope, skill, skillDir string, spec config.Secret
 					s := secrets.NewSecretString(v)
 					if err := keychain.SetWithDefault(scope, skill, spec.Name, s); err != nil {
 						s.Zero()
-						return false, fmt.Errorf("keychain: %w", keychain.WrapUnavailable(err, host))
+						return valueStored, fmt.Errorf("keychain: %w", keychain.WrapUnavailable(err, host))
 					}
 					s.Zero()
 					st.status(env.Stderr, "stored", spec.Name+st.gray(fmt.Sprintf(" (from $%s)", stripControlChars(spec.DefaultFromEnv))), ansiGreen)
-					return false, nil
+					return valueStored, nil
 				}
 			}
 			if !spec.IsRequired() {
 				st.status(env.Stderr, "[skip]", st.dim(spec.Name+" (optional, not provided)"), ansiYellow)
-				return true, nil
+				return valueSkipped, nil
 			}
 			if attempts >= 3 {
-				return false, fmt.Errorf("refused: required secret %q not supplied", spec.Name)
+				return valueStored, fmt.Errorf("refused: required secret %q not supplied", spec.Name)
 			}
 			st.status(env.Stderr, "[retry]", "required; please enter a value", ansiRed)
 			continue
@@ -694,7 +780,7 @@ func handleOneSecret(env *Env, scope, skill, skillDir string, spec config.Secret
 		if err := spec.ValidateValue(value.ExposeString()); err != nil {
 			value.Zero()
 			if attempts >= 3 {
-				return false, fmt.Errorf("refused: %s does not match pattern after %d attempts", spec.Name, attempts)
+				return valueStored, fmt.Errorf("refused: %s does not match pattern after %d attempts", spec.Name, attempts)
 			}
 			st.status(env.Stderr, "[retry]", stripControlChars(err.Error()), ansiRed)
 			// Show the author's instructions again: a value that fails the
@@ -704,11 +790,11 @@ func handleOneSecret(env *Env, scope, skill, skillDir string, spec config.Secret
 		}
 		if err := keychain.SetWithDefault(scope, skill, spec.Name, value); err != nil {
 			value.Zero()
-			return false, fmt.Errorf("keychain: %w", keychain.WrapUnavailable(err, host))
+			return valueStored, fmt.Errorf("keychain: %w", keychain.WrapUnavailable(err, host))
 		}
 		value.Zero()
 		st.status(env.Stderr, "stored", spec.Name, ansiGreen)
-		return false, nil
+		return valueStored, nil
 	}
 }
 
@@ -817,13 +903,12 @@ var secretInputHidden = func() bool { return term.IsTerminal(int(os.Stdin.Fd()))
 // os.Stdin and os.Stderr.
 var readSecretInput = secrets.ReadPassword
 
-// handleOneField implements the per-field prompting flow. Mirrors
-// handleOneSecret but writes to the skillconfig store instead of the
+// registerField implements the per-field prompting flow. Mirrors
+// registerSecret but writes to the skillconfig store instead of the
 // keychain, and supports typed inputs (string/bool/int/enum).
 //
-// The bool return reports whether the user explicitly skipped an
-// optional field on this run (entered an empty line, no default,
-// required: false). Symmetric to handleOneSecret. See its doc comment.
+// The outcome is symmetric to registerSecret; see its doc comment. With
+// requiredOnly, only a required field without any default is prompted.
 //
 // override is the agent-writable workdir store when registering a global
 // skill (nil otherwise). Its value wins over store at launch and is what
@@ -832,7 +917,7 @@ var readSecretInput = secrets.ReadPassword
 // Errors with the prefix "refused:" map to ExitSecretRefused at the
 // caller level (we reuse that exit code because the semantics — user
 // explicitly didn't supply a required value — are the same).
-func handleOneField(env *Env, store, override *skillconfig.Store, skill, skillDir string, spec config.ConfigSpec, reprompt bool, prevSkipped map[string]bool, fromFile map[string]string, useDefaults bool, defStore *skillconfig.Store) (bool, error) {
+func registerField(env *Env, store, override *skillconfig.Store, skill, skillDir string, spec config.ConfigSpec, reprompt bool, prevSkipped map[string]bool, fromFile map[string]string, useDefaults bool, defStore *skillconfig.Store, requiredOnly bool) (valueOutcome, error) {
 	st := newStyler(env.Stderr)
 	// setField stores the value in the runtime store and, when defaults
 	// are in play, mirrors it into the defaults store too.
@@ -872,7 +957,7 @@ func handleOneField(env *Env, store, override *skillconfig.Store, skill, skillDi
 			// Show the value: register anchors it as approved, and the
 			// workdir file it may come from is agent-writable.
 			st.status(env.Stderr, "[skip]", st.dim(spec.Name+" already configured: "+stripControlChars(cur)), ansiYellow)
-			return false, nil
+			return valueStored, nil
 		}
 		// 1b. Previously skipped on a prior register run? Honor that
 		//     unless --reprompt-fields is set. Without this branch
@@ -881,7 +966,7 @@ func handleOneField(env *Env, store, override *skillconfig.Store, skill, skillDi
 		//     a regression.
 		if prevSkipped[spec.Name] && !spec.IsRequired() {
 			st.status(env.Stderr, "[skip]", st.dim(spec.Name+" (optional, previously declined)"), ansiYellow)
-			return true, nil
+			return valueSkipped, nil
 		}
 	}
 
@@ -893,7 +978,7 @@ func handleOneField(env *Env, store, override *skillconfig.Store, skill, skillDi
 			if canon, err := canonicalizeFieldValue(spec, def); err == nil {
 				setField(canon)
 				st.setLine(env.Stderr, spec.Name, canon, "(from remembered default)")
-				return false, nil
+				return valueStored, nil
 			}
 		}
 	}
@@ -902,11 +987,11 @@ func handleOneField(env *Env, store, override *skillconfig.Store, skill, skillDi
 	if v, ok := fromFile[spec.Name]; ok {
 		canon, err := canonicalizeFieldValue(spec, v)
 		if err != nil {
-			return false, err
+			return valueStored, err
 		}
 		setField(canon)
 		st.setLine(env.Stderr, spec.Name, canon, "(from file)")
-		return false, nil
+		return valueStored, nil
 	}
 
 	// 3. Env-based non-interactive supply: OMAC_CONFIG_<NAME>.
@@ -915,11 +1000,11 @@ func handleOneField(env *Env, store, override *skillconfig.Store, skill, skillDi
 	if v, ok := os.LookupEnv("OMAC_CONFIG_" + spec.Name); ok {
 		canon, err := canonicalizeFieldValue(spec, v)
 		if err != nil {
-			return false, err
+			return valueStored, err
 		}
 		setField(canon)
 		st.setLine(env.Stderr, spec.Name, canon, fmt.Sprintf("(from $OMAC_CONFIG_%s)", spec.Name))
-		return false, nil
+		return valueStored, nil
 	}
 
 	// 4. Pre-computed default for the prompt: explicit `default:`,
@@ -930,6 +1015,55 @@ func handleOneField(env *Env, store, override *skillconfig.Store, skill, skillDi
 		if v, ok := os.LookupEnv(spec.DefaultFromEnv); ok && v != "" {
 			defaultVal = v
 			defaultSource = "$" + spec.DefaultFromEnv
+		}
+	}
+
+	// 4a. --required-only: ask only when start would otherwise refuse. A
+	//     `default:` is left unstored, because start falls back to it
+	//     (skillstate.resolveConfig) and a later skill update that changes
+	//     the default then reaches the user. An optional field without a
+	//     value is left unstored too, and not remembered as declined. A
+	//     required field whose only default is $default_from_env gets that
+	//     value stored, as Enter at the prompt would: the variable may be
+	//     unset when omac start runs, and then start would refuse. A default
+	//     that differs from the one recorded at the last register is asked,
+	//     not taken: the skill changed it since, and start would refuse it.
+	defaultChanged := false
+	if defStore != nil {
+		if prev, ok := defStore.ApprovedDefaultsFor(keychain.WorkdirID(env.Workdir), skill); ok && prev[spec.Name] != spec.Default {
+			defaultChanged = true
+			was, now := "none", "none"
+			if prev[spec.Name] != "" {
+				was = stripControlChars(prev[spec.Name])
+			}
+			if spec.Default != "" {
+				now = stripControlChars(spec.Default)
+			}
+			st.status(env.Stderr, "[warn]", fmt.Sprintf("%s: default changed since last register (was %s, now %s)",
+				stripControlChars(spec.Name), was, now), ansiYellow)
+		}
+	}
+	if requiredOnly {
+		switch {
+		case defaultChanged:
+			// Asked below.
+		case spec.Default != "":
+			if _, err := canonicalizeFieldValue(spec, spec.Default); err != nil {
+				return valueStored, fmt.Errorf("default for %s rejected: %w", spec.Name, err)
+			}
+			st.status(env.Stderr, "[skip]", st.dim(stripControlChars(spec.Name)+" uses the default: "+stripControlChars(spec.Default)), ansiYellow)
+			return valueLeftOut, nil
+		case !spec.IsRequired():
+			st.status(env.Stderr, "[skip]", st.dim(stripControlChars(spec.Name)+" (optional, not asked)"), ansiYellow)
+			return valueLeftOut, nil
+		case defaultVal != "":
+			canon, err := canonicalizeFieldValue(spec, defaultVal)
+			if err != nil {
+				return valueStored, fmt.Errorf("default for %s rejected: %w", spec.Name, err)
+			}
+			setField(canon)
+			st.setLine(env.Stderr, spec.Name, canon, fmt.Sprintf("(default from %s)", defaultSource))
+			return valueStored, nil
 		}
 	}
 
@@ -994,18 +1128,18 @@ func handleOneField(env *Env, store, override *skillconfig.Store, skill, skillDi
 			if defaultVal != "" {
 				canon, err := canonicalizeFieldValue(spec, defaultVal)
 				if err != nil {
-					return false, fmt.Errorf("default for %s rejected: %w", spec.Name, err)
+					return valueStored, fmt.Errorf("default for %s rejected: %w", spec.Name, err)
 				}
 				setField(canon)
 				st.setLine(env.Stderr, displayName, canon, fmt.Sprintf("(default from %s)", defaultSource))
-				return false, nil
+				return valueStored, nil
 			}
 			if !spec.IsRequired() {
 				st.status(env.Stderr, "[skip]", st.dim(displayName+" (optional, not provided)"), ansiYellow)
-				return true, nil
+				return valueSkipped, nil
 			}
 			if attempts >= 3 {
-				return false, fmt.Errorf("refused: required config field %q not supplied", spec.Name)
+				return valueStored, fmt.Errorf("refused: required config field %q not supplied", spec.Name)
 			}
 			st.status(env.Stderr, "[retry]", "required; please enter a value", ansiRed)
 			continue
@@ -1014,7 +1148,7 @@ func handleOneField(env *Env, store, override *skillconfig.Store, skill, skillDi
 		canon, err := canonicalizeFieldValue(spec, line)
 		if err != nil {
 			if attempts >= 3 {
-				return false, fmt.Errorf("refused: %s rejected after %d attempts: %w", spec.Name, attempts, err)
+				return valueStored, fmt.Errorf("refused: %s rejected after %d attempts: %w", spec.Name, attempts, err)
 			}
 			st.status(env.Stderr, "[retry]", stripControlChars(err.Error()), ansiRed)
 			// As for secrets: show the author's instructions again.
@@ -1023,7 +1157,7 @@ func handleOneField(env *Env, store, override *skillconfig.Store, skill, skillDi
 		}
 		setField(canon)
 		st.setLine(env.Stderr, displayName, canon, "")
-		return false, nil
+		return valueStored, nil
 	}
 }
 

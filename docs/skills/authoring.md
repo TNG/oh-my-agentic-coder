@@ -166,6 +166,8 @@ To update stored values after registration:
 
 To inspect what omac would inject for a skill, run `omac config show <skill>` (add `--json` for machine-readable output). It prints each config value with its source. Secrets are never shown in full — you get a short fingerprint (a truncated hash like `sha256:a1b2c3…`) that confirms a value is set and lets you check two setups share the same one. `omac config get <skill> <field>` prints one resolved config value.
 
+`omac register <skill> --required-only` asks only for required secrets and for required config fields without a `default:`. Everything else stays unstored, and `omac start` uses the `default:` (installers use this so new users are not asked about every setting). So give a field a `default:` whenever a sensible value exists: users then only see it if they ask for it, and a later change of the default in your skill reaches them.
+
 For non-interactive setup (CI), skip the prompts: pass `--no-fields` / `--no-secrets`, and supply values with `--fields-from <file>` / `--secrets-from <file>`, or `OMAC_CONFIG_<NAME>` environment variables.
 
 ## Sidecar
@@ -273,6 +275,7 @@ Before launching, `omac start` compares the skills on disk against what you regi
 - A registered skill whose files **changed since you registered it** (bundle drift). Re-register with `omac register <skill> --force`, or pass `omac start --accept-skill-changes` to start without the edited skills. omac does not run them, and it hides them from the agent.
 - A **required config field** with no value. Run `omac register <skill> --reprompt-fields`.
 - A **config value you never approved** in `<workdir>/.opencode/skill-config.yaml`. The agent can write that file, so omac only accepts a value from it if it matches what you approved at `omac register`. For example, if `GH_ALLOW_WRITE` was `false` when you registered and the file now says `true`, the skill is refused. Run `omac register <skill> --reprompt-fields` to approve the current values; the prompt prints each stored value (and any workdir override), so check it before pressing Enter. Skills registered before omac v0.10.0 (or added with `--auto-register-skills`) have no approval on record yet, so they need this once if they keep values in that file.
+- A **default that changed since you registered**. `omac register --required-only` does not store a field's `default:`; it records it instead. If a newer version of the skill changes, adds or removes that default, the skill is refused until you run `omac register <skill>`, which asks for the field and shows the old and new default.
 
 If a registered skill's directory has been deleted, omac auto-deregisters it and continues.
 
