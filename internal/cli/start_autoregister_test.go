@@ -846,8 +846,14 @@ func TestRunStart_SkipUnregisteredStartsWithWarning(t *testing.T) {
 	if out := stderr(); !strings.Contains(out, "continuing without unregistered skills") || !strings.Contains(out, "no-required") {
 		t.Errorf("missing warning naming the skipped skill:\n%s", out)
 	}
-	if !strings.Contains(stderr(), "hides") || !strings.Contains(stderr(), "other backends") {
-		t.Errorf("warning must say who hides the skill and where it stays visible:\n%s", stderr())
+	for _, want := range []string{
+		"hides\n  only skill content that is not host-approved",
+		"previously approved, unchanged content\n  stays visible",
+		"Other backends do not hide skill content",
+	} {
+		if !strings.Contains(stderr(), want) {
+			t.Errorf("warning lacks %q:\n%s", want, stderr())
+		}
 	}
 	if loaded, err := registry.Load(wd); err != nil {
 		t.Fatalf("registry.Load: %v", err)

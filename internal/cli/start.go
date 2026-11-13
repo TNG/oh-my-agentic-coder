@@ -449,8 +449,9 @@ func runLaunch(env *Env, opts launchOpts) int {
 	if len(unregistered) > 0 && opts.skipUnregistered {
 		skippedUnregistered = unregistered
 		fmt.Fprintf(env.Stderr, "%s: warning: continuing without unregistered skills (--skip-unregistered): %s\n"+
-			"  Their sidecars, secrets and install scripts will not run. The built-in sandbox also hides\n"+
-			"  them from the agent; on other backends they stay visible (see the notices below).\n",
+			"  Their sidecars, secrets and install scripts will not run. The built-in sandbox hides\n"+
+			"  only skill content that is not host-approved; previously approved, unchanged content\n"+
+			"  stays visible. Other backends do not hide skill content.\n",
 			prefix, strings.Join(unregistered, ", "))
 	} else if len(unregistered) > 0 {
 		fmt.Fprintln(env.Stderr, prefix+": unregistered skills found in this workdir:")
