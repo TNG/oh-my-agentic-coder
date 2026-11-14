@@ -114,9 +114,8 @@ func TestSecurityServeDeactivateRejectsUnauthenticatedCaller(t *testing.T) {
 
 // TestSecurityServeReloadRejectsUnauthenticatedCaller extends the
 // control-plane-auth property to serve-mode's /__omac__/reload, which
-// tears down and re-activates a directory (deactivate+activate), issuing a
-// fresh per-dir token in the process — an observable side effect an
-// unauthenticated caller should not be able to trigger.
+// re-activates a directory (in place when already active) — an observable
+// side effect an unauthenticated caller should not be able to trigger.
 func TestSecurityServeReloadRejectsUnauthenticatedCaller(t *testing.T) {
 	sectest.RequireLoopbackListener(t)
 	s := newServeServerForTest(t)

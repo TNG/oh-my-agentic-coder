@@ -28,6 +28,18 @@ func isolateHome(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	// On Linux the session runtime dir (bridge socket) lives under
+	// $XDG_RUNTIME_DIR when set, else under $HOME/.local/state. A HOME
+	// inside this test's TempDir makes that fallback path outgrow the
+	// kernel's Unix socket name limit, so the socket bind fails. Point
+	// XDG_RUNTIME_DIR at a short temp dir, like the facade-launching tests
+	// that set it up individually do.
+	shortXDG, err := os.MkdirTemp("/tmp", "omac-xdg-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(shortXDG) })
+	t.Setenv("XDG_RUNTIME_DIR", shortXDG)
 }
 
 // stageWorkdir creates a workdir layout suitable for the drift

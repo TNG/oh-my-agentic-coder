@@ -2208,7 +2208,11 @@ func (s *serveServer) reload(absDir string) (map[string]any, error) {
 func (s *serveServer) deactivate(absDir string) {
 	// State is keyed on the resolved path, so any spelling of the directory
 	// tears down the same dirState. If the path can no longer be resolved
-	// (the directory was deleted), fall back to the lexical key.
+	// (the directory was deleted), fall back to the lexical key: callers
+	// hold the resolved path from their manifest, so their spelling still
+	// matches. A stale symlink spelling of a deleted dir misses and leaves
+	// the entry in place, but its token was already emitted (never re-issued)
+	// and its routes point at a dir that no longer exists.
 	key := absDir
 	if resolved, err := resolveDir(absDir); err == nil {
 		key = resolved
