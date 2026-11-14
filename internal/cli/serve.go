@@ -1988,17 +1988,18 @@ func (s *serveServer) manifestFor(d *dirState) map[string]any {
 	return out
 }
 
-// redactedManifestDir strips control characters, double quotes and
-// backticks from the directory name before it is handed to a renderer.
+// redactedManifestDir strips control characters, single and double quotes
+// and backticks from the directory name before it is handed to a renderer.
 // The manifest dir is display data only — activation works from the
 // separately posted cwd — and a renderer interpolates the name into the
 // instruction block it injects, so those characters are removed at the
 // source to keep the block and its JSON/curl samples in shape whatever
-// the name contains.
+// the name contains. The single quote is included because a renderer may
+// place the name inside a single-quoted shell word.
 func redactedManifestDir(dir string) string {
 	return strings.Map(func(r rune) rune {
 		switch {
-		case r == '"', r == '`':
+		case r == '"', r == '\'', r == '`':
 			return -1
 		case r < 0x20, r >= 0x7f && r <= 0x9f:
 			return -1

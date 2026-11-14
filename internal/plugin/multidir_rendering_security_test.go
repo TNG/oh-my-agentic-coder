@@ -40,6 +40,15 @@ func stripsQuoteAndBacktick(expr string) bool {
 	return strings.Contains(expr, `\x60`) || strings.Contains(expr, "`")
 }
 
+// stripsSingleQuote reports whether a rendered-dir expression also removes
+// the single quote. Only the curl sample needs this: its -d argument is a
+// single-quoted shell word, so a single quote in the name would end that
+// word and let the rest of the name run as shell syntax when the agent
+// executes the sample.
+func stripsSingleQuote(expr string) bool {
+	return strings.Contains(expr, `["'`)
+}
+
 // TestSecurityMultidirPluginSanitizesSessionDirectory asserts that the
 // embedded OpenCode plugin renders the manifest's session-directory field
 // through the same field sanitizer the skill fields go through.
@@ -51,7 +60,8 @@ func stripsQuoteAndBacktick(expr string) bool {
 // is rendered at three sites in the block, so a line break in it must not
 // add lines to omac's instructions, and a quote or backtick in it must leave
 // the JSON and curl samples the block hands the agent in their intended
-// shape.
+// shape. The curl sample's shell word is single-quoted, so a single quote
+// in the name must be stripped there as well.
 func TestSecurityMultidirPluginSanitizesSessionDirectory(t *testing.T) {
 	src, err := os.ReadFile("assets/omac-multidir.ts")
 	if err != nil {
@@ -75,14 +85,15 @@ func TestSecurityMultidirPluginSanitizesSessionDirectory(t *testing.T) {
 
 	// Each render site, anchored to its surrounding text.
 	for _, site := range []struct {
-		name      string
-		open      string
-		close     string
-		needStrip bool
+		name            string
+		open            string
+		close           string
+		needStrip       bool
+		needSingleQuote bool
 	}{
-		{"project-directory line", "project directory is: \\`${", "}", false},
-		{"target-path sample", `"target_path": "${`, "/${skillsDir}", true},
-		{"curl sample", `{"dir":"${`, "}", true},
+		{"project-directory line", "project directory is: \\`${", "}", false, false},
+		{"target-path sample", `"target_path": "${`, "/${skillsDir}", true, false},
+		{"curl sample", `{"dir":"${`, "}", true, true},
 	} {
 		expr := dirRenderExpr(t, compact, stripSpace(site.open), stripSpace(site.close))
 		if !strings.Contains(expr, stripSpace("sanitizeField(m.dir")) {
@@ -90,6 +101,9 @@ func TestSecurityMultidirPluginSanitizesSessionDirectory(t *testing.T) {
 		}
 		if site.needStrip && !stripsQuoteAndBacktick(expr) {
 			t.Errorf("multidir plugin renders the dir into the %s without stripping quote and backtick characters: the sample must keep its shape whatever the name contains", site.name)
+		}
+		if site.needSingleQuote && !stripsSingleQuote(expr) {
+			t.Errorf("multidir plugin renders the dir into the %s without stripping the single quote: the sample is a single-quoted shell word the agent executes, so a quote in the name would break it out of that word", site.name)
 		}
 	}
 }

@@ -297,7 +297,7 @@ async function createBridge(
           `directory in place by POSTing to the omac control plane:\n` +
           "```\n" +
           `curl -s -X POST "${controlBase}/__omac__/reload" ` +
-          `-H 'content-type: application/json' -d '{"dir":"${sanitizeField(m.dir).replace(/["\x60]/g, "")}"}'\n` +
+          `-H 'content-type: application/json' -d '{"dir":"${sanitizeField(m.dir).replace(/["'\x60]/g, "")}"}'\n` +
           "```\n" +
           "Then re-read this list — the skill should move from BROKEN/UNAVAILABLE to ready.",
       )
