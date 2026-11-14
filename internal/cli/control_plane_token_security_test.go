@@ -70,9 +70,15 @@ func TestSecurityActivateDoesNotDiscloseDirToken(t *testing.T) {
 	control := httptest.NewServer(s.controlMux())
 	t.Cleanup(control.Close)
 
-	// Control: the directory is discoverable without its token, which is what
-	// makes the disclosure below reachable — an attacker needs only the path.
-	dirs := postJSONGet(t, control.URL+"/__omac__/dirs")
+	// Control, as a control-plane client: the path is all an attacker lacks,
+	// and every sandboxed session can enumerate directories. The read carries
+	// the control token every such client holds, so the fixture asserts the
+	// no-token-leak property without depending on the listing being
+	// reachable unauthenticated.
+	status, dirs := getJSONControlAuthed(t, control.URL+"/__omac__/dirs")
+	if status != http.StatusOK {
+		t.Fatalf("control: GET /__omac__/dirs: status %d (body %v): the fixture is broken, not the security property", status, dirs)
+	}
 	if !strings.Contains(fmt.Sprint(dirs), victimDir) {
 		t.Fatalf("the active directory was not listed at all (%v): the fixture is broken", dirs)
 	}
@@ -92,10 +98,18 @@ func TestSecurityActivateDoesNotDiscloseDirToken(t *testing.T) {
 	}
 }
 
-// postJSONGet performs a GET and decodes the JSON response.
-func postJSONGet(t *testing.T, url string) map[string]any {
+// getJSONControlAuthed performs a GET with the control-plane token and
+// returns the response status and decoded JSON body. Every sandboxed session
+// holds this token, so it authenticates the control plane's callers in
+// general, not the owner of any particular workdir.
+func getJSONControlAuthed(t *testing.T, url string) (int, map[string]any) {
 	t.Helper()
-	resp, err := http.Get(url)
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		t.Fatalf("build GET %s: %v", url, err)
+	}
+	addServeTestToken(req)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("GET %s: %v", url, err)
 	}
@@ -104,7 +118,7 @@ func postJSONGet(t *testing.T, url string) map[string]any {
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		t.Fatalf("decode response from %s: %v", url, err)
 	}
-	return out
+	return resp.StatusCode, out
 }
 
 // postJSONControlAuthed posts body with the control-plane bearer token and
