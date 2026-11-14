@@ -1112,10 +1112,16 @@ func printContinueHint(env *Env, harness config.Harness, resumedID string, prior
 	// When the session that ran is already known — an explicit resume, or a
 	// harness that self-reported its id via the control plane — advertise it
 	// directly. No enumeration needed (and for opencode none is attempted, so a
-	// slow/blocking `session list` never runs).
+	// slow/blocking `session list` never runs). Defense in depth: the hint is
+	// pasteable command text, so an id that fails the identifier grammar is
+	// never embedded in it — no hint rather than an unsafe one (enumerated ids
+	// are already filtered by the same grammar in session.List).
 	if resumedID != "" {
+		if !session.ValidSessionID(resumedID) {
+			return
+		}
 		fmt.Fprintf(env.Stderr, "\nTo resume this session: omac continue%s -s %s\n",
-			continueHintToken(harness), stripControlChars(resumedID))
+			continueHintToken(harness), resumedID)
 		return
 	}
 	// session.List may shell out to the harness CLI (opencode: ~500ms) or
