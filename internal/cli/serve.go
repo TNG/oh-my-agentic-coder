@@ -226,13 +226,18 @@ func runServe(args []string, env *Env) int {
 		return ExitConfigInvalid
 	}
 
-	// Normalize pre-declared roots to absolute paths (§5.4 Option B).
+	// Normalize pre-declared roots to absolute paths (§5.4 Option B), and
+	// resolve links so the policy compares real paths — activation resolves
+	// the candidate directory the same way.
 	absRoots := make([]string, 0, len(roots))
 	for _, r := range roots {
 		ar, err := filepath.Abs(r)
 		if err != nil {
 			fmt.Fprintln(env.Stderr, "omac serve: --root:", err)
 			return ExitMisuse
+		}
+		if resolved, rerr := filepath.EvalSymlinks(ar); rerr == nil {
+			ar = resolved
 		}
 		absRoots = append(absRoots, ar)
 	}
@@ -369,6 +374,7 @@ func runServe(args []string, env *Env) int {
 		roots:             absRoots,
 		dirs:              map[string]*dirState{},
 		byToken:           map[string]*dirState{},
+		dirTombstones:     map[string]dirTombstone{},
 		global:            map[string]*skillRoute{},
 	}
 	if cacheScope != nil {
@@ -1057,6 +1063,14 @@ type dirState struct {
 	mu           sync.Mutex
 }
 
+// dirTombstone preserves a directory's token identity across deactivate, so
+// a later activate of the same directory restores that token (and its
+// already-issued state) instead of minting a second live one.
+type dirTombstone struct {
+	token        string
+	tokenEmitted bool
+}
+
 type serveServer struct {
 	env           *Env
 	harness       config.Harness // active harness; scopes skill discovery
@@ -1082,9 +1096,13 @@ type serveServer struct {
 	cacheEnv          map[string]string
 
 	mu      sync.RWMutex
-	dirs    map[string]*dirState   // abs dir -> state
+	dirs    map[string]*dirState   // resolved abs dir -> state
 	byToken map[string]*dirState   // token -> dir
 	global  map[string]*skillRoute // mount -> global skill
+	// dirTombstones keeps a deactivated directory's token identity (keyed
+	// by resolved path) for the life of the serve process, so a token is
+	// bound to its directory and never issued twice.
+	dirTombstones map[string]dirTombstone
 
 	// actMu serializes per-dir activation so two concurrent activate
 	// calls for the same directory coalesce (§5.2 step 1) without holding
@@ -1330,13 +1348,44 @@ func (s *serveServer) reloadGlobals() error {
 
 // activate brings a directory online (idempotent) and returns its manifest.
 func (s *serveServer) activate(absDir string) (map[string]any, error) {
+	// A directory's identity is its symlink-resolved path: the roots policy
+	// and all per-dir state are keyed on where a path really leads, not on
+	// how the caller spelled it.
+	resolved, err := resolveDir(absDir)
+	if err != nil {
+		return nil, err
+	}
+	// Enforce the pre-declared roots policy (§5.4 Option B) on the resolved
+	// path, so a link planted under an allowed root is admitted only when
+	// its target is too.
+	if !s.dirAllowed(resolved) {
+		return nil, fmt.Errorf("directory %s is not under any allowed --root", absDir)
+	}
 	// Per-dir coalescing (§5.2 step 1): concurrent activate calls for the
 	// same directory serialize here, so only the first does the work and
 	// the rest observe the finished state.
-	lock := s.dirActLock(absDir)
+	lock := s.dirActLock(resolved)
 	lock.Lock()
 	defer lock.Unlock()
+	return s.activateLocked(resolved)
+}
 
+// resolveDir reports whether absDir names a real directory and returns its
+// symlink-resolved absolute path — the key all per-dir state is keyed on.
+func resolveDir(absDir string) (string, error) {
+	if info, err := os.Stat(absDir); err != nil || !info.IsDir() {
+		return "", fmt.Errorf("not a directory: %s", absDir)
+	}
+	resolved, err := filepath.EvalSymlinks(absDir)
+	if err != nil {
+		return "", err
+	}
+	return resolved, nil
+}
+
+// activateLocked runs activation for a resolved, policy-checked directory;
+// the caller holds that directory's act lock.
+func (s *serveServer) activateLocked(absDir string) (map[string]any, error) {
 	s.mu.RLock()
 	existing, already := s.dirs[absDir]
 	s.mu.RUnlock()
@@ -1348,18 +1397,21 @@ func (s *serveServer) activate(absDir string) (map[string]any, error) {
 		return s.manifestFor(existing), nil
 	}
 
-	// Validate it's a real directory.
-	if info, err := os.Stat(absDir); err != nil || !info.IsDir() {
-		return nil, fmt.Errorf("not a directory: %s", absDir)
-	}
-	// Enforce the pre-declared roots policy (§5.4 Option B).
-	if !s.dirAllowed(absDir) {
-		return nil, fmt.Errorf("directory %s is not under any allowed --root", absDir)
-	}
-
-	token := mintToken()
-	d := &dirState{Dir: absDir, Token: token, State: "activating", Skills: map[string]*skillRoute{}}
 	s.mu.Lock()
+	// A dirState a deactivate destroyed gets its previous token identity
+	// back: the token is bound to the directory for the life of the serve
+	// process, so re-activation after deactivation can neither mint a fresh
+	// namespace key (which the response would hand to whoever asked) nor
+	// cut off the session that still holds the original token.
+	token := ""
+	emitted := false
+	if ts, ok := s.dirTombstones[absDir]; ok {
+		token, emitted = ts.token, ts.tokenEmitted
+		delete(s.dirTombstones, absDir)
+	} else {
+		token = mintToken()
+	}
+	d := &dirState{Dir: absDir, Token: token, State: "activating", Skills: map[string]*skillRoute{}, tokenEmitted: emitted}
 	// Clear flat aliases before the second dir becomes visible so there is
 	// no instant at which len(s.dirs) >= 2 and a token-less alias from the
 	// first dir is still routeable.
@@ -1368,18 +1420,30 @@ func (s *serveServer) activate(absDir string) (map[string]any, error) {
 	s.byToken[token] = d
 	s.mu.Unlock()
 
+	if err := s.bringUpDir(d); err != nil {
+		return nil, err
+	}
+	return s.manifestFor(d), nil
+}
+
+// bringUpDir discovers a directory's workdir-local skills and mounts them
+// under d's token, then recomputes the aggregate state. Shared by first
+// activation and in-place reload.
+func (s *serveServer) bringUpDir(d *dirState) error {
+	absDir := d.Dir
+	token := d.Token
 	discovered, err := skillsource.Discover(absDir, s.harness)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	wReg, err := registry.Load(absDir)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	wCfg, err := loadWorkdirConfig(absDir)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	workdirID := keychain.WorkdirID(absDir)
 
@@ -1427,7 +1491,7 @@ func (s *serveServer) activate(absDir string) (map[string]any, error) {
 	d.mu.Unlock()
 
 	s.refreshSingleDirAliases()
-	return s.manifestFor(d), nil
+	return nil
 }
 
 // rediscover re-scans an already-active directory and brings up workdir-local
@@ -1965,8 +2029,12 @@ func (s *serveServer) controlMux() *http.ServeMux {
 	mux.HandleFunc("/__omac__/deactivate", s.requireControlToken(s.handleDeactivate))
 	mux.HandleFunc("/__omac__/reload", s.requireControlToken(s.handleReload))
 	mux.HandleFunc("/__omac__/reload-global", s.requireControlToken(s.handleReloadGlobal))
-	mux.HandleFunc("/__omac__/dirs", s.handleDirs)
-	mux.HandleFunc("/__omac__/global", s.handleGlobal)
+	// Every /__omac__/* route is token-gated, including the read-only GETs:
+	// /dirs and /global expose live route identifiers, so an unauthenticated
+	// caller must learn nothing about the running instance (not even that
+	// it exists).
+	mux.HandleFunc("/__omac__/dirs", s.requireControlToken(s.handleDirs))
+	mux.HandleFunc("/__omac__/global", s.requireControlToken(s.handleGlobal))
 	return mux
 }
 
@@ -2053,10 +2121,11 @@ func (s *serveServer) handleReload(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	// Reload = re-run activation logic for an already-known dir: drop and
-	// re-activate so pending-credentials skills get promoted.
-	s.deactivate(abs)
-	manifest, err := s.activate(abs)
+	// Reload = re-run activation for the dir, keeping its identity: an
+	// active dir re-activates in place (same dirState, same token, token
+	// stays issued), so the response can never hand the namespace key to
+	// whoever asked.
+	manifest, err := s.reload(abs)
 	if err != nil {
 		s.aud().Emit(audit.ControlMutation("reload", abs, "error: "+err.Error()))
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
@@ -2092,12 +2161,70 @@ func (s *serveServer) handleGlobal(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"skills": skills})
 }
 
+// reload re-runs a directory's activation so pending-credentials skills
+// get promoted. A directory that is already active re-activates in place:
+// its dirState survives with the same token, and the token stays in its
+// already-issued state, so the response manifest carries no dir_token and
+// the session that owns the token is neither re-keyed nor cut off. A
+// directory that is not active activates as if fresh.
+func (s *serveServer) reload(absDir string) (map[string]any, error) {
+	resolved, err := resolveDir(absDir)
+	if err != nil {
+		return nil, err
+	}
+	if !s.dirAllowed(resolved) {
+		return nil, fmt.Errorf("directory %s is not under any allowed --root", absDir)
+	}
+	lock := s.dirActLock(resolved)
+	lock.Lock()
+	defer lock.Unlock()
+
+	s.mu.RLock()
+	d, active := s.dirs[resolved]
+	s.mu.RUnlock()
+	if !active {
+		return s.activateLocked(resolved)
+	}
+
+	// In-place: tear the directory's skills down and bring them back up
+	// under the same dirState and token.
+	d.mu.Lock()
+	for _, sr := range d.Skills {
+		s.facade.RemoveRoute(sr.Namespace, sr.Mount)
+		if sr.State == facade.RouteReady {
+			s.sup.StopSidecar(sr.Namespace+"/"+sr.Name, 5*time.Second)
+		}
+	}
+	d.Skills = map[string]*skillRoute{}
+	d.State = "activating"
+	d.mu.Unlock()
+
+	if err := s.bringUpDir(d); err != nil {
+		return nil, err
+	}
+	return s.manifestFor(d), nil
+}
+
 func (s *serveServer) deactivate(absDir string) {
+	// State is keyed on the resolved path, so any spelling of the directory
+	// tears down the same dirState. If the path can no longer be resolved
+	// (the directory was deleted), fall back to the lexical key.
+	key := absDir
+	if resolved, err := resolveDir(absDir); err == nil {
+		key = resolved
+	}
 	s.mu.Lock()
-	d, ok := s.dirs[absDir]
+	d, ok := s.dirs[key]
 	if ok {
-		delete(s.dirs, absDir)
+		delete(s.dirs, key)
 		delete(s.byToken, d.Token)
+		// Keep the token identity for a later activate of the same
+		// directory: it must restore this token rather than mint a fresh
+		// one, so tokens are only ever issued once per workdir per serve
+		// process.
+		d.mu.Lock()
+		s.dirTombstones[key] = dirTombstone{token: d.Token, tokenEmitted: d.tokenEmitted}
+		d.mu.Unlock()
 	}
 	s.mu.Unlock()
 	if !ok {
