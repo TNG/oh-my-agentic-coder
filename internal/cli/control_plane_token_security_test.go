@@ -70,9 +70,15 @@ func TestSecurityActivateDoesNotDiscloseDirToken(t *testing.T) {
 	control := httptest.NewServer(s.controlMux())
 	t.Cleanup(control.Close)
 
-	// Control: the directory is discoverable without its token, which is what
-	// makes the disclosure below reachable — an attacker needs only the path.
-	dirs := postJSONGet(t, control.URL+"/__omac__/dirs")
+	// Control, as a control-plane client: the path is all an attacker lacks,
+	// and every sandboxed session can enumerate directories. The read carries
+	// the control token every such client holds, so the fixture asserts the
+	// no-token-leak property without depending on the listing being
+	// reachable unauthenticated.
+	status, dirs := getJSONControlAuthed(t, control.URL+"/__omac__/dirs")
+	if status != http.StatusOK {
+		t.Fatalf("control: GET /__omac__/dirs: status %d (body %v): the fixture is broken, not the security property", status, dirs)
+	}
 	if !strings.Contains(fmt.Sprint(dirs), victimDir) {
 		t.Fatalf("the active directory was not listed at all (%v): the fixture is broken", dirs)
 	}
@@ -92,10 +98,18 @@ func TestSecurityActivateDoesNotDiscloseDirToken(t *testing.T) {
 	}
 }
 
-// postJSONGet performs a GET and decodes the JSON response.
-func postJSONGet(t *testing.T, url string) map[string]any {
+// getJSONControlAuthed performs a GET with the control-plane token and
+// returns the response status and decoded JSON body. Every sandboxed session
+// holds this token, so it authenticates the control plane's callers in
+// general, not the owner of any particular workdir.
+func getJSONControlAuthed(t *testing.T, url string) (int, map[string]any) {
 	t.Helper()
-	resp, err := http.Get(url)
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		t.Fatalf("build GET %s: %v", url, err)
+	}
+	addServeTestToken(req)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("GET %s: %v", url, err)
 	}
@@ -104,5 +118,143 @@ func postJSONGet(t *testing.T, url string) map[string]any {
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		t.Fatalf("decode response from %s: %v", url, err)
 	}
-	return out
+	return resp.StatusCode, out
+}
+
+// postJSONControlAuthed posts body with the control-plane bearer token and
+// returns the response status and decoded JSON body. Every sandboxed session
+// holds this token, so it authenticates the control plane's callers in
+// general, not the owner of any particular workdir.
+func postJSONControlAuthed(t *testing.T, url, body string) (int, map[string]any) {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, url, strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("build POST %s: %v", url, err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	addServeTestToken(req)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST %s: %v", url, err)
+	}
+	defer resp.Body.Close()
+	var out map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode response from %s: %v", url, err)
+	}
+	return resp.StatusCode, out
+}
+
+// TestSecurityReloadDoesNotRemintDirToken asserts that a reload of an active
+// directory preserves that directory's namespace: the reload response carries
+// no dir_token, and the token issued at that directory's first activation
+// keeps routing. The control token held by every control-plane client does not
+// identify a workdir's owner, so a reload response must never issue the
+// workdir's namespace key to whoever asked, and must not re-key the namespace
+// the owning session already holds.
+func TestSecurityReloadDoesNotRemintDirToken(t *testing.T) {
+	sectest.RequireLoopbackListener(t)
+	s := newServeServerForTest(t)
+
+	wd := t.TempDir()
+	stageSkillWithSecret(t, wd, "slack")
+
+	manifest, err := s.activate(wd)
+	if err != nil {
+		t.Fatalf("control: activate: %v", err)
+	}
+	token, _ := manifest["dir_token"].(string)
+	if token == "" {
+		t.Fatal("control: first activation returned no dir token: the fixture is broken, not the security property")
+	}
+
+	control := httptest.NewServer(s.controlMux())
+	t.Cleanup(control.Close)
+
+	status, out := postJSONControlAuthed(t, control.URL+"/__omac__/reload",
+		fmt.Sprintf("{%q:%q}", "dir", wd))
+	if status != http.StatusOK {
+		t.Fatalf("control: POST /__omac__/reload: status %d (body %v): the fixture is broken, not the security property", status, out)
+	}
+
+	// The token is issued exactly once, at first activation. A reload
+	// response reaches whoever asked for the reload, so it must carry no
+	// dir_token at all — a merely different token would be a live namespace
+	// key in the hands of a caller that proved nothing.
+	if got, _ := out["dir_token"].(string); got != "" {
+		t.Errorf("reload response carried dir_token %q: a workdir's namespace key must not be issued a second time", got)
+	}
+
+	// The directory keeps its identity across reload: the token handed out
+	// at first activation is still the one stored and still routes, so the
+	// owning session is neither re-keyed nor cut off.
+	s.mu.RLock()
+	stored, active := "", false
+	if d, ok := s.dirs[wd]; ok {
+		stored, active = d.Token, true
+	}
+	s.mu.RUnlock()
+	if !active || stored != token {
+		t.Errorf("reload re-keyed the workdir namespace: active=%v, stored token %q, token issued at first activation %q", active, stored, token)
+	}
+	if !s.facade.HasRoute(token, "slack") {
+		t.Error("the token issued at first activation no longer routes after reload: the owning session lost access to its own skills")
+	}
+}
+
+// TestSecurityDeactivateActivatePairDoesNotRemintDirToken asserts the same
+// property through an explicit deactivate followed by activate: the token
+// issued at first activation stays bound to the directory for the life of the
+// serve session, so the pair must neither hand a namespace key to the caller
+// nor invalidate the token the owning session holds.
+func TestSecurityDeactivateActivatePairDoesNotRemintDirToken(t *testing.T) {
+	sectest.RequireLoopbackListener(t)
+	s := newServeServerForTest(t)
+
+	wd := t.TempDir()
+	stageSkillWithSecret(t, wd, "slack")
+
+	manifest, err := s.activate(wd)
+	if err != nil {
+		t.Fatalf("control: activate: %v", err)
+	}
+	token, _ := manifest["dir_token"].(string)
+	if token == "" {
+		t.Fatal("control: first activation returned no dir token: the fixture is broken, not the security property")
+	}
+
+	control := httptest.NewServer(s.controlMux())
+	t.Cleanup(control.Close)
+
+	if status, out := postJSONControlAuthed(t, control.URL+"/__omac__/deactivate",
+		fmt.Sprintf("{%q:%q}", "dir", wd)); status != http.StatusOK {
+		t.Fatalf("control: POST /__omac__/deactivate: status %d (body %v): the fixture is broken, not the security property", status, out)
+	}
+
+	status, out := postJSONControlAuthed(t, control.URL+"/__omac__/activate",
+		fmt.Sprintf("{%q:%q}", "dir", wd))
+	if status != http.StatusOK {
+		t.Fatalf("control: POST /__omac__/activate: status %d (body %v): the fixture is broken, not the security property", status, out)
+	}
+
+	// Re-activation after deactivation is a re-activation like any other:
+	// its response goes to whoever asked, so it must carry no dir_token.
+	if got, _ := out["dir_token"].(string); got != "" {
+		t.Errorf("activate response carried dir_token %q after a deactivate: a workdir's namespace key must not be issued a second time", got)
+	}
+
+	// The directory's namespace identity survives the pair: same token
+	// stored, same token routing, owning session unaffected.
+	s.mu.RLock()
+	stored, active := "", false
+	if d, ok := s.dirs[wd]; ok {
+		stored, active = d.Token, true
+	}
+	s.mu.RUnlock()
+	if !active || stored != token {
+		t.Errorf("deactivate+activate re-keyed the workdir namespace: active=%v, stored token %q, token issued at first activation %q", active, stored, token)
+	}
+	if !s.facade.HasRoute(token, "slack") {
+		t.Error("the token issued at first activation no longer routes after deactivate+activate: the owning session lost access to its own skills")
+	}
 }

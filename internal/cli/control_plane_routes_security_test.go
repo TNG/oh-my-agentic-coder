@@ -1,8 +1,12 @@
 package cli
 
 import (
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -110,9 +114,8 @@ func TestSecurityServeDeactivateRejectsUnauthenticatedCaller(t *testing.T) {
 
 // TestSecurityServeReloadRejectsUnauthenticatedCaller extends the
 // control-plane-auth property to serve-mode's /__omac__/reload, which
-// tears down and re-activates a directory (deactivate+activate), issuing a
-// fresh per-dir token in the process — an observable side effect an
-// unauthenticated caller should not be able to trigger.
+// re-activates a directory (in place when already active) — an observable
+// side effect an unauthenticated caller should not be able to trigger.
 func TestSecurityServeReloadRejectsUnauthenticatedCaller(t *testing.T) {
 	sectest.RequireLoopbackListener(t)
 	s := newServeServerForTest(t)
@@ -179,6 +182,102 @@ func TestSecurityServeReloadGlobalRejectsUnauthenticatedCaller(t *testing.T) {
 
 	if !stillThere {
 		t.Errorf("an unauthenticated POST /__omac__/reload-global (status %d) cleared and rebuilt the global skill set: any process on the machine can force this", resp.StatusCode)
+	}
+}
+
+// TestSecurityServeDirsAndGlobalRequireControlToken extends the control-plane
+// auth property to the two read routes: /__omac__/dirs lists every active
+// workdir's host path and /__omac__/global the global skill inventory, so
+// they must sit behind the same token check as the mutating routes beside
+// them.
+func TestSecurityServeDirsAndGlobalRequireControlToken(t *testing.T) {
+	sectest.RequireLoopbackListener(t)
+	s := newServeServerForTest(t)
+	wd := t.TempDir()
+	stageSkillWithSecret(t, wd, "slack")
+	if _, err := s.activate(wd); err != nil {
+		t.Fatalf("control: s.activate: %v", err)
+	}
+
+	srv := httptest.NewServer(s.controlMux())
+	t.Cleanup(srv.Close)
+
+	for _, path := range []string{"/__omac__/dirs", "/__omac__/global"} {
+		resp, err := http.Get(srv.URL + path)
+		if err != nil {
+			t.Fatalf("GET %s: %v", path, err)
+		}
+		_, _ = io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Errorf("GET %s without the control token returned %d, want 401: the control-plane read routes disclose active workdir paths and the global skill inventory to any local process", path, resp.StatusCode)
+		}
+
+		req, err := http.NewRequest(http.MethodGet, srv.URL+path, nil)
+		if err != nil {
+			t.Fatalf("build GET %s: %v", path, err)
+		}
+		addServeTestToken(req)
+		authed, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("GET %s with the control token: %v", path, err)
+		}
+		_, _ = io.ReadAll(authed.Body)
+		authed.Body.Close()
+		if authed.StatusCode != http.StatusOK {
+			t.Errorf("GET %s with the control token returned %d, want 200: the fixture is broken, not the security property", path, authed.StatusCode)
+		}
+	}
+}
+
+// TestSecurityServeRootPolicyResolvesSymlinks asserts that the --root policy
+// is enforced on the directory a path refers to, not on its spelling: a link
+// placed inside an allowed root may be activated only when its target is also
+// under an allowed root.
+func TestSecurityServeRootPolicyResolvesSymlinks(t *testing.T) {
+	sectest.RequireLoopbackListener(t)
+	s := newServeServerForTest(t)
+
+	root := t.TempDir()    // the only allowed --root
+	outside := t.TempDir() // a directory outside the policy
+	s.roots = []string{root}
+	stageSkillWithSecret(t, outside, "slack")
+
+	link := filepath.Join(root, "linked")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("symlink: %v", err)
+	}
+
+	srv := httptest.NewServer(s.controlMux())
+	t.Cleanup(srv.Close)
+
+	status, body := postJSONControlAuthed(t, srv.URL+"/__omac__/activate",
+		fmt.Sprintf("{%q:%q}", "dir", link))
+	if status == http.StatusOK {
+		t.Errorf("POST /__omac__/activate for %q (status %d, body %v) succeeded: a link under an allowed root whose target lies outside every allowed root must be refused", link, status, body)
+	}
+
+	// Neither the link's spelling nor its target may end up registered and
+	// token-issued for an out-of-policy directory.
+	s.mu.RLock()
+	_, viaLink := s.dirs[link]
+	_, viaTarget := s.dirs[outside]
+	s.mu.RUnlock()
+	if viaLink || viaTarget {
+		t.Errorf("an out-of-policy directory was registered (via link=%v, via target=%v): the roots policy must hold on the resolved path", viaLink, viaTarget)
+	}
+
+	// Control: a real subdirectory of the allowed root still activates, so
+	// the gate keeps admitting what it should.
+	inside := filepath.Join(root, "inside")
+	if err := os.MkdirAll(inside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stageSkillWithSecret(t, inside, "slack")
+	status, _ = postJSONControlAuthed(t, srv.URL+"/__omac__/activate",
+		fmt.Sprintf("{%q:%q}", "dir", inside))
+	if status != http.StatusOK {
+		t.Errorf("POST /__omac__/activate for %q (status %d) failed: activation under an allowed root must keep working", inside, status)
 	}
 }
 

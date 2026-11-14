@@ -62,6 +62,8 @@ When a directory is activated, omac returns a **manifest** — a JSON document l
 
 `dir_token` is included **only in the first activation response**. A re-activation of an already-active directory (e.g. `SessionStart` fired twice) returns the manifest without `dir_token` — the caller already holds it, and re-issuing it would hand the namespace key to whoever asked, regardless of whether they are the session that originally activated the directory.
 
+The same applies across deactivation: a token is bound to its directory for the lifetime of the server process. Deactivating and later re-activating a directory restores the original token rather than minting a fresh one, and since that token was already issued once, the re-activation response carries no `dir_token`. Reload behaves identically: it re-activates an already-active directory *in place*, keeping the same token, so it never re-issues one.
+
 ```json
 {
   "dir": "/Users/me/projects/acme",
@@ -112,13 +114,13 @@ OMAC_<SKILL>_BASE
 
 The control plane is a loopback HTTP server, advertised to the sandbox as `OMAC_CONTROL_BASE`.
 
-All mutation endpoints (`POST`) require the per-session bearer token delivered as `OMAC_CONTROL_TOKEN` in the sandbox environment. Include it as:
+All control-plane endpoints — including the read-only `GET`s — require the per-session bearer token delivered as `OMAC_CONTROL_TOKEN` in the sandbox environment. Include it as:
 
 ```
 X-Omac-Control-Token: <value of OMAC_CONTROL_TOKEN>
 ```
 
-Requests without a valid token receive `401 Unauthorized`. Read-only endpoints (`GET`) are not token-gated.
+Requests without a valid token receive `401 Unauthorized`. Token-gating the read-only endpoints too means an unauthenticated caller (for example, a sandboxed process that lost its token, or some other loopback client) learns nothing about the running instance — not even which directories are active.
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
@@ -126,8 +128,8 @@ Requests without a valid token receive `401 Unauthorized`. Read-only endpoints (
 | `POST` | `/__omac__/deactivate` | required | Body `{"dir": "/abs/path"}`. Tears down sidecars and routes. |
 | `POST` | `/__omac__/reload` | required | Body `{"dir": "/abs/path"}`. Re-resolves secrets; promotes `pending-credentials` skills to active. |
 | `POST` | `/__omac__/reload-global` | required | Re-activates the global skill layer (after `omac register --global`). |
-| `GET` | `/__omac__/dirs` | none | List active dirs and their states. |
-| `GET` | `/__omac__/global` | none | Global skills and their `/__global__/<mount>` URLs. |
+| `GET` | `/__omac__/dirs` | required | List active dirs and their states. |
+| `GET` | `/__omac__/global` | required | Global skills and their `/__global__/<mount>` URLs. |
 
 ---
 
@@ -139,7 +141,7 @@ Route-level isolation (preventing one project's agent from calling another proje
 
 | Level | Control | Prohibits                                                       | Status |
 |---|---|-----------------------------------------------------------------|---|
-| Route isolation | Random dir-token routing | One project's agent reaching another's skills                   | shipped |
+| Route isolation | Random dir-token routing, issued once per workdir for the server's lifetime | One project's agent reaching another's skills                   | shipped |
 | L1 — credential isolation | Secrets keyed `omac/<workdir-id>/<skill>` | Same-name sidecars in different projects sharing a credential   | shipped |
 | L2 — bundle-hash pinning | Skill source must match what `omac register` approved | A different skill binary swapped in under the same name         | user-global skills only |
 | L3 — sidecar OS confinement | Per-sidecar seccomp / Landlock / dedicated uid | A hostile sidecar reading other projects' files or host secrets | deferred |

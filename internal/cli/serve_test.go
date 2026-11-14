@@ -66,18 +66,19 @@ func newServeServerForTest(t *testing.T) *serveServer {
 	t.Cleanup(func() { f.Close() })
 
 	return &serveServer{
-		env:          makeEnv(t.TempDir()),
-		harness:      config.DefaultHarness(),
-		facade:       f,
-		sup:          nil, // not used for pending-credentials path
-		ctx:          t.Context(),
-		rtDir:        rt,
-		socketPath:   filepath.Join(rt, "bridge.sock"),
-		tcpPort:      f.TCPPort(),
-		controlToken: "test-control-token",
-		dirs:         map[string]*dirState{},
-		byToken:      map[string]*dirState{},
-		global:       map[string]*skillRoute{},
+		env:           makeEnv(t.TempDir()),
+		harness:       config.DefaultHarness(),
+		facade:        f,
+		sup:           nil, // not used for pending-credentials path
+		ctx:           t.Context(),
+		rtDir:         rt,
+		socketPath:    filepath.Join(rt, "bridge.sock"),
+		tcpPort:       f.TCPPort(),
+		controlToken:  "test-control-token",
+		dirs:          map[string]*dirState{},
+		byToken:       map[string]*dirState{},
+		dirTombstones: map[string]dirTombstone{},
+		global:        map[string]*skillRoute{},
 	}
 }
 
@@ -804,8 +805,16 @@ func TestDirsEndpointDoesNotLeakTokens(t *testing.T) {
 		t.Fatalf("activate B: %v", err)
 	}
 
+	// GET /dirs requires the control token like every other control route.
 	req := httptest.NewRequest("GET", "/__omac__/dirs", nil)
+	unauth := httptest.NewRequest("GET", "/__omac__/dirs", nil)
 	rec := httptest.NewRecorder()
+	s.controlMux().ServeHTTP(rec, unauth)
+	if rec.Code != 401 {
+		t.Fatalf("unauthenticated dirs status = %d, want 401", rec.Code)
+	}
+	addServeTestToken(req)
+	rec = httptest.NewRecorder()
 	s.controlMux().ServeHTTP(rec, req)
 	if rec.Code != 200 {
 		t.Fatalf("dirs status = %d, want 200 (body=%s)", rec.Code, rec.Body.String())
