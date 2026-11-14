@@ -19,6 +19,7 @@ import (
 	"github.com/TNG/oh-my-agentic-coder/internal/keychain"
 	"github.com/TNG/oh-my-agentic-coder/internal/registry"
 	"github.com/TNG/oh-my-agentic-coder/internal/sandbox"
+	"github.com/TNG/oh-my-agentic-coder/internal/session"
 	"github.com/TNG/oh-my-agentic-coder/internal/skillconfig"
 	"github.com/TNG/oh-my-agentic-coder/internal/skillstate"
 	"github.com/TNG/oh-my-agentic-coder/internal/supervisor"
@@ -139,8 +140,10 @@ func startControlPlane(r *startReloader) (controlURL string, closeFn func(), ok 
 	mux.HandleFunc("/__omac__/deactivate", auth(r.handleActivate)) // no-op deactivate, same response
 	mux.HandleFunc("/__omac__/reload-global", auth(r.handleReloadGlobalStart))
 	// The harness plugin reports the id of the session it created here, so the
-	// post-exit "resume" hint is exact without enumerating sessions.
-	mux.HandleFunc("/__omac__/session", r.handleSession)
+	// post-exit "resume" hint is exact without enumerating sessions. Gated
+	// like its siblings: the reported id ends up in command text, so this is
+	// a control-plane route, not a public one.
+	mux.HandleFunc("/__omac__/session", auth(r.handleSession))
 	srv := &http.Server{Handler: mux}
 	go func() {
 		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -243,6 +246,10 @@ func (r *startReloader) isMounted(name string) bool {
 // run (opencode posts it on session.created). Best-effort: a malformed or
 // empty body is ignored. The recorded id feeds the post-exit continue hint,
 // replacing the need to enumerate sessions to guess which one this run created.
+//
+// The id is a trust-boundary input: only an id the session package deems safe
+// to splice into an argv may be stored. Anything else is refused with 400 and
+// leaves the previously recorded id untouched.
 func (r *startReloader) handleSession(w http.ResponseWriter, req *http.Request) {
 	if req.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "POST only"})
@@ -252,8 +259,13 @@ func (r *startReloader) handleSession(w http.ResponseWriter, req *http.Request) 
 		Session string `json:"session"`
 	}
 	if err := json.NewDecoder(req.Body).Decode(&body); err == nil && body.Session != "" {
+		id := stripControlChars(body.Session)
+		if !session.ValidSessionID(id) {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid session id"})
+			return
+		}
 		r.mu.Lock()
-		r.lastSession = stripControlChars(body.Session)
+		r.lastSession = id
 		r.mu.Unlock()
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
