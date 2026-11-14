@@ -113,7 +113,7 @@ function renderManifest(manifest: DirManifest): string {
     "",
     "You can call the following skill HTTP endpoints. Each `base` is the root URL for that skill's sidecar; append the skill's documented path.",
     "",
-    `This workspace's project directory is: \`${manifest.dir || ""}\``,
+    `This workspace's project directory is: \`${sanitizeField(manifest.dir || "")}\``,
   ]
 
   const globalReady = manifest.skills?.filter(
@@ -122,7 +122,7 @@ function renderManifest(manifest: DirManifest): string {
   if (globalReady && globalReady.length > 0) {
     lines.push(
       "",
-      `IMPORTANT: **global** skills are shared by every workspace. When a global skill writes into the project (e.g. the marketplace installing a skill), you MUST pass this workspace's project directory explicitly — for the marketplace use \`"target_path": "${manifest.dir || ""}/${skillsDir}"\` (the active harness's skills directory) in the /install request body.`,
+      `IMPORTANT: **global** skills are shared by every workspace. When a global skill writes into the project (e.g. the marketplace installing a skill), you MUST pass this workspace's project directory explicitly — for the marketplace use \`"target_path": "${sanitizeField(manifest.dir || "").replace(/["\x60]/g, "")}/${skillsDir}"\` (the active harness's skills directory) in the /install request body.`,
     )
   }
 

@@ -90,10 +90,10 @@ render_manifest() {
     "\n" +
     "You can call the following skill HTTP endpoints. Each `base` is the root URL for that skill'"'"'s sidecar; append the skill'"'"'s documented path.\n" +
     "\n" +
-    "This workspace'"'"'s project directory is: `" + (.dir // "") + "`\n" +
+    "This workspace'"'"'s project directory is: `" + (.dir // "" | sanitize_field) + "`\n" +
     (if (skillsarr | map(select(.scope == "global" and .state == "ready")) | length) > 0 then
       "\n" +
-      "IMPORTANT: **global** skills are shared by every workspace. When a global skill writes into the project (e.g. the marketplace installing a skill), you MUST pass this workspace'"'"'s project directory explicitly — for the marketplace use `\"target_path\": \"" + (.dir // "") + "/" + $skillsdir + "\"` (the active harness'"'"'s skills directory) in the /install request body. Otherwise it installs into the wrong directory.\n"
+      "IMPORTANT: **global** skills are shared by every workspace. When a global skill writes into the project (e.g. the marketplace installing a skill), you MUST pass this workspace'"'"'s project directory explicitly — for the marketplace use `\"target_path\": \"" + (.dir // "" | sanitize_field | gsub("[\"`]"; "")) + "/" + $skillsdir + "\"` (the active harness'"'"'s skills directory) in the /install request body. Otherwise it installs into the wrong directory.\n"
      else "" end) +
     "\n" +
     ( skillsarr | sort_by(.name) | map(

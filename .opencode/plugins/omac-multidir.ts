@@ -218,7 +218,8 @@ async function createBridge(
   }
 
   // Collapse newlines and strip markdown bold markers from a skill-supplied
-  // field so it cannot inject new blocks or forged structure into the manifest.
+  // field or the manifest dir so neither can inject new blocks or forged
+  // structure into the manifest.
   function sanitizeField(s: string): string {
     return s.replace(/[\n\r]/g, " ").replace(/\*/g, "").replace(/[\x00-\x1f\x7f-\x9f]/g, "")
   }
@@ -243,7 +244,7 @@ async function createBridge(
         "root URL for that skill's sidecar; append the skill's documented path.",
     )
     lines.push("")
-    lines.push(`This workspace's project directory is: \`${m.dir}\``)
+    lines.push(`This workspace's project directory is: \`${sanitizeField(m.dir)}\``)
     if (hasGlobal) {
       // The active harness's own skills dir (omac injects this). OpenCode →
       // .opencode/skills. Installs must land where this harness's loader reads
@@ -255,7 +256,7 @@ async function createBridge(
           "single process; they do NOT know which project you are in. When a global " +
           "skill writes into the project (e.g. the marketplace installing a skill), " +
           "you MUST pass this workspace's project directory explicitly — for the " +
-          `marketplace use \`"target_path": "${m.dir}/${skillsDir}"\` in the /install ` +
+          `marketplace use \`"target_path": "${sanitizeField(m.dir).replace(/["\x60]/g, "")}/${skillsDir}"\` in the /install ` +
           "request body (this is the active harness's skills directory). Otherwise it " +
           "installs into the wrong directory.",
       )
@@ -296,7 +297,7 @@ async function createBridge(
           `directory in place by POSTing to the omac control plane:\n` +
           "```\n" +
           `curl -s -X POST "${controlBase}/__omac__/reload" ` +
-          `-H 'content-type: application/json' -d '{"dir":"${m.dir}"}'\n` +
+          `-H 'content-type: application/json' -d '{"dir":"${sanitizeField(m.dir).replace(/["\x60]/g, "")}"}'\n` +
           "```\n" +
           "Then re-read this list — the skill should move from BROKEN/UNAVAILABLE to ready.",
       )
