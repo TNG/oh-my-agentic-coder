@@ -17,6 +17,9 @@ type UserConfig struct {
 	Disk     string   `yaml:"disk"`
 	JDKs     []string `yaml:"jdks"`
 	Packages []string `yaml:"packages"`
+	// Setup is a shell script run as root while the VM is online after
+	// packages and JDKs are installed. It must tolerate running again.
+	Setup string `yaml:"setup"`
 }
 
 // Resources are the VM sizes handed to Lima.

@@ -1,0 +1,172 @@
+package vm
+
+import (
+	"context"
+	"errors"
+	"os"
+	"slices"
+	"strings"
+	"testing"
+
+	"gopkg.in/yaml.v3"
+)
+
+// hostile is a setup script that would break a naive quoting or heredoc
+// embedding.
+const hostile = "echo 'it'\"s\" $HOME `id`\ncat <<'EOF'\nEOF\nOMACVMGUARD\n$(reboot)\n"
+
+func yamlSetup(script string) (string, error) {
+	b, err := yaml.Marshal(map[string]string{"setup": script})
+	return string(b), err
+}
+
+func readFile(t *testing.T, path string) string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+func setupCalls(ssh *fakeSSH) []sshCall {
+	calls, _ := ssh.snapshot()
+	var out []sshCall
+	for _, c := range calls {
+		if c.remote == setupCmd {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+func TestLoadUserConfigSetup(t *testing.T) {
+	m, _, _ := newTestManager(t)
+	writeConfig(t, m, "setup: |\n  echo hi\n")
+	cfg, err := LoadUserConfig(m.ConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Setup != "echo hi\n" {
+		t.Errorf("Setup = %q", cfg.Setup)
+	}
+}
+
+func TestUpCreateRunsSetupOnceAsRootBetweenProvisioningAndOffline(t *testing.T) {
+	m, _, ssh := newTestManager(t)
+	cfgYAML, err := yamlSetup(hostile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeConfig(t, m, cfgYAML)
+	mustUp(t, m)
+
+	calls := setupCalls(ssh)
+	if len(calls) != 1 {
+		t.Fatalf("setup ran %d times, want 1", len(calls))
+	}
+	if calls[0].stdin != hostile {
+		t.Errorf("setup stdin = %q, want the script verbatim", calls[0].stdin)
+	}
+	if calls[0].target.User != "root" {
+		t.Errorf("setup ran as %q, want root", calls[0].target.User)
+	}
+	remotes := ssh.remotes()
+	setupAt := slices.Index(remotes, setupCmd)
+	offlineAt := slices.Index(remotes, writeModeCmd(ModeOffline))
+	dockerAt := slices.Index(remotes, dockerVersionCmd)
+	if !(dockerAt >= 0 && dockerAt < setupAt && setupAt < offlineAt) {
+		t.Errorf("order wrong: docker %d, setup %d, offline %d in %v", dockerAt, setupAt, offlineAt, remotes)
+	}
+}
+
+func TestUpCreateWithoutSetupMakesNoSetupCall(t *testing.T) {
+	m, _, ssh := newTestManager(t)
+	mustUp(t, m)
+	if n := len(setupCalls(ssh)); n != 0 {
+		t.Errorf("setup ran %d times without a setup field", n)
+	}
+}
+
+func TestSetupNeverReachesLimaConfig(t *testing.T) {
+	m, _, _ := newTestManager(t)
+	cfgYAML, err := yamlSetup(hostile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeConfig(t, m, cfgYAML)
+	mustUp(t, m)
+	yaml := readFile(t, m.Layout.LimaYAML)
+	if strings.Contains(yaml, "reboot") {
+		t.Error("lima config contains the setup script")
+	}
+}
+
+func TestUpReprovisionRunsSetupAgainBeforeOffline(t *testing.T) {
+	m, _, ssh := newTestManager(t)
+	mustUp(t, m)
+	writeConfig(t, m, "setup: |\n  echo new\n")
+	if err := m.Up(context.Background(), true); err != nil {
+		t.Fatalf("Up(reprovision): %v", err)
+	}
+	calls := setupCalls(ssh)
+	if len(calls) != 1 || calls[0].stdin != "echo new\n" {
+		t.Fatalf("setup calls = %+v, want one with the new script", calls)
+	}
+	remotes := ssh.remotes()
+	setupAt := slices.Index(remotes, setupCmd)
+	lastOffline := slices.Index(remotes[setupAt:], writeModeCmd(ModeOffline))
+	if lastOffline < 0 {
+		t.Errorf("no offline switch after setup in %v", remotes)
+	}
+	if _, g := ssh.snapshot(); !g.provisioned || !g.firewall {
+		t.Errorf("guest = %+v, want provisioned and offline", g)
+	}
+}
+
+func TestUpReprovisionWithoutSetupMakesNoSetupCall(t *testing.T) {
+	m, _, ssh := newTestManager(t)
+	mustUp(t, m)
+	if err := m.Up(context.Background(), true); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(setupCalls(ssh)); n != 0 {
+		t.Errorf("setup ran %d times", n)
+	}
+}
+
+func TestSetupFailureRemovesMarkerAndShowsOutput(t *testing.T) {
+	m, _, ssh := newTestManager(t)
+	writeConfig(t, m, "setup: |\n  false\n")
+	ssh.fail = func(remote string) error {
+		if remote == setupCmd {
+			return errors.New("exit status 7")
+		}
+		return nil
+	}
+	err := m.Up(context.Background(), false)
+	if err == nil || !strings.Contains(err.Error(), "setup") || !strings.Contains(err.Error(), "exit status 7") {
+		t.Fatalf("Up = %v, want a setup failure", err)
+	}
+	if !strings.Contains(err.Error(), "omac vm up") {
+		t.Errorf("error %q lacks the retry hint", err)
+	}
+	_, g := ssh.snapshot()
+	if g.provisioned {
+		t.Error("marker still present after a failed setup")
+	}
+	if st := mustState(t, m); st.Mode != ModeOnline {
+		t.Errorf("state mode = %q, want online", st.Mode)
+	}
+	if slices.Contains(ssh.remotes(), writeModeCmd(ModeOffline)) {
+		t.Error("VM went offline despite the failed setup")
+	}
+}
+
+func TestSetupFailureOutputIsCapped(t *testing.T) {
+	big := strings.Repeat("x", 100000)
+	got := capOutput(big)
+	if len(got) > 5000 {
+		t.Errorf("capped output is %d bytes", len(got))
+	}
+}
