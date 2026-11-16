@@ -257,7 +257,7 @@ jobs:
               fi
             fi
           else
-            echo "SKAINET creds not set — using deterministic commit bullets"
+            echo "Gateway creds (TRUSTEDTOKENS_TOKEN) not set — using deterministic commit bullets"
           fi
           # Workflow Builder variables render as plain text only (no bold or
           # headings). So the changelog is emitted as SEPARATE variables —
