@@ -44,6 +44,22 @@ func TestCacheGuidanceExplainsHardcodedHostCachesDenied(t *testing.T) {
 	}
 }
 
+func TestCacheGuidanceExplainsHowToGetMissingPython(t *testing.T) {
+	got := CacheGuidance("/c", toolcache.ModePersistent)
+	for _, want := range []string{
+		"uv cannot download Python",
+		"installed on the host",
+		"UV_PYTHON_INSTALL_DIR=$OMAC_CACHE_DIR/uv/python",
+		"UV_PYTHON_BIN_DIR=$OMAC_CACHE_DIR/uv/bin",
+		"in this session",
+		"hides the host's interpreters",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("CacheGuidance missing %q;\ngot:\n%s", want, got)
+		}
+	}
+}
+
 func TestDefaultNonEmpty(t *testing.T) {
 	got := Default()
 	if strings.TrimSpace(got) == "" {

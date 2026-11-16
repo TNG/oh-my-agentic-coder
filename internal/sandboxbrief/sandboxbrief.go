@@ -54,5 +54,8 @@ func CacheGuidance(dir string, mode toolcache.Mode) string {
 	}
 	fmt.Fprintf(&b, "\nHardcoded host cache locations (e.g. `~/.cache`, `~/Library/Caches`, `~/.cargo`, `~/.npm`) ")
 	fmt.Fprintf(&b, "are denied by the sandbox: write through the variables above instead of touching host paths.\n")
+	fmt.Fprintf(&b, "\nuv cannot download Python here; use an interpreter installed on the host, or set ")
+	fmt.Fprintf(&b, "`UV_PYTHON_INSTALL_DIR=$OMAC_CACHE_DIR/uv/python` and `UV_PYTHON_BIN_DIR=$OMAC_CACHE_DIR/uv/bin` ")
+	fmt.Fprintf(&b, "in this session (this hides the host's interpreters).\n")
 	return b.String()
 }
