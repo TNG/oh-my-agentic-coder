@@ -16,18 +16,26 @@ Do this first, while the `omac` command still exists. A skill can store API toke
 List your registered skills:
 
 ```bash
-omac list
+omac list --all
 ```
 
-Then deregister each one and delete its secrets:
+Without `--all`, `omac list` hides skills whose folder you deleted, and those can still have secrets.
+
+Then deregister each one and delete everything omac stored for it:
 
 ```bash
-omac deregister <skill> --purge-secrets --purge-defaults
+omac deregister <skill> --purge-secrets --purge-fields --purge-defaults
 ```
+
+- `--purge-secrets` deletes the skill's secrets from the keychain.
+- `--purge-fields` deletes the skill's configuration values from `.opencode/skill-config.yaml`.
+- `--purge-defaults` deletes the default values omac remembered for the skill across projects.
 
 For a skill that `omac list` shows as `global`, add `--global`. Run the command from the project folder for the other skills, since they are registered per project.
 
-If you skipped this step, you can remove the entries by hand. Their names all start with `omac/`, for example `omac/slack`:
+If the command reports a keychain error, or `deleted 0 secret(s)` for a skill you know had secrets, the secrets may still be there. This happens for example when you run the command a second time after a keychain error: the skill is already deregistered, so omac no longer knows its secrets.
+
+If you skipped this step, or it reported an error or 0 secrets, you can remove the entries by hand. Their names all start with `omac/`, for example `omac/slack`:
 
 - **macOS:** open Keychain Access and search for `omac/`.
 - **Linux:** open Seahorse ("Passwords and Keys") and search for `omac/`.
@@ -42,7 +50,7 @@ Use the command that matches how you installed omac:
 | `.deb` package (Debian, Ubuntu) | `sudo apt remove oh-my-agentic-coder` |
 | `.pkg.tar.zst` package (Arch) | `sudo pacman -R oh-my-agentic-coder` |
 | Mise | `mise unuse -g github:TNG/oh-my-agentic-coder` |
-| `go install` or a local build | `rm "$(go env GOPATH)/bin/omac"` |
+| `go install` or a local build | `rm "$(which omac)"` |
 
 If you are unsure, `which omac` shows where the program is.
 
@@ -76,12 +84,13 @@ If you set `XDG_CONFIG_HOME`, the registered skills, their configuration, approv
 
 **Keychain:** secrets of skills, stored under names starting with `omac/`. See [step 1](#1-remove-your-skills-secrets).
 
-**Projects:** in each project where you registered a skill, omac creates two files. They are in the `.opencode` folder for every harness, including Claude Code:
+**Projects:** in each project where you registered a skill, omac creates three files. They are in the `.opencode` folder for every harness, including Claude Code:
 
 - `.opencode/sidecar.json`: the skills registered for this project
+- `.opencode/sidecar.json.lock`: a lock file, so that two omac processes don't change `sidecar.json` at the same time
 - `.opencode/skill-config.yaml`: their configuration values
 
-The `.opencode` folder can also hold OpenCode's own files, so delete only these two files unless you know the folder is not needed. Skills you wrote or downloaded into a project stay where they are.
+The `.opencode` folder can also hold OpenCode's own files, so delete only these three files unless you know the folder is not needed. Skills you wrote or downloaded into a project stay where they are.
 
 ### Linux
 
@@ -119,11 +128,11 @@ Every harness gets a copy of the built-in skill `omac-write-a-skill`, which help
 |---|---|---|
 | `~/.config/opencode/skills/omac-write-a-skill` | `$XDG_CONFIG_HOME/opencode/skills/omac-write-a-skill` | The built-in skill |
 | `~/.config/opencode/plugins/omac-multidir.ts` | `$XDG_CONFIG_HOME/opencode/plugins/omac-multidir.ts` | omac's OpenCode plugin. `omac start` installs it so OpenCode can show omac's sandbox information and use skills. |
-| `.opencode/plugins/omac-multidir.ts` in a project | (same) | The same plugin, only if you ran `omac plugin install` in that project without `--global` |
+| `.opencode/plugins/omac-multidir.ts` in a project | (same) | The same plugin, only if you ran `omac plugin install opencode-desktop` in that project without `--global` |
 
 ```bash
 rm -rf ~/.config/opencode/skills/omac-write-a-skill
-rm ~/.config/opencode/plugins/omac-multidir.ts
+rm -f ~/.config/opencode/plugins/omac-multidir.ts
 ```
 
 #### Claude Code

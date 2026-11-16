@@ -86,7 +86,10 @@ func TestUninstallDocListsEveryLocation(t *testing.T) {
 			t.Errorf("%s has no section %q", uninstallDoc, section)
 			return
 		}
-		if loc := show(path); !strings.Contains(body, loc) {
+		// Match the path in backticks, so a shorter path does not pass just
+		// because a longer one contains it (".opencode/sidecar.json" inside
+		// ".opencode/sidecar.json.lock").
+		if loc := show(path); !strings.Contains(body, "`"+loc+"`") {
 			t.Errorf("%s: section %q does not mention %q (written by %s); update the page", uninstallDoc, section, loc, writer)
 		}
 	}
@@ -100,8 +103,9 @@ func TestUninstallDocListsEveryLocation(t *testing.T) {
 	unset(append(harnessHomes, "XDG_STATE_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_RUNTIME_DIR")...)
 
 	// omac's own folders, at their defaults and with XDG_CONFIG_HOME set.
-	// The page names the folder; every file inside it must stay under one
-	// of them.
+	// The page names folders, not the files in them, so each check only
+	// confirms that a writer's folder is named. Writers that share a folder
+	// are checked once, together.
 	const general = "On every system"
 	cache, err := toolcache.DescribeShared()
 	if err != nil {
@@ -114,12 +118,23 @@ func TestUninstallDocListsEveryLocation(t *testing.T) {
 		if xdg {
 			redirect("XDG_CONFIG_HOME")
 		}
-		check(general, registry.GlobalDir(), "registry.GlobalDir")
-		check(general, skillconfig.GlobalDir(), "skillconfig.GlobalDir")
-		check(general, prefs.GlobalDir(), "prefs.GlobalDir")
+		writers := map[string][]string{}
+		for _, w := range []struct{ dir, name string }{
+			{registry.GlobalDir(), "registry.GlobalDir"},
+			{skillconfig.GlobalDir(), "skillconfig.GlobalDir"},
+			{prefs.GlobalDir(), "prefs.GlobalDir"},
+		} {
+			writers[w.dir] = append(writers[w.dir], w.name)
+		}
+		for dir, names := range writers {
+			check(general, dir, strings.Join(names, ", "))
+		}
 	}
 	unset("XDG_CONFIG_HOME")
+
+	// Files in each project, relative to the project folder.
 	check(general, registry.Path(""), "registry.Path")
+	check(general, registry.LockPath(""), "registry.LockPath")
 	check(general, skillconfig.Path(""), "skillconfig.Path")
 	check(general, strings.TrimSuffix(keychain.Service("x"), "x"), "keychain.Service")
 
@@ -136,7 +151,10 @@ func TestUninstallDocListsEveryLocation(t *testing.T) {
 			redirect("XDG_STATE_HOME")
 			redirect("XDG_RUNTIME_DIR")
 		}
-		auditDir, _ := audit.DefaultDir()
+		auditDir, fallback := audit.DefaultDir()
+		if fallback {
+			t.Fatalf("audit.DefaultDir fell back to a temporary folder (%s); the test's HOME is not usable", auditDir)
+		}
 		check(osSection, auditDir, "audit.DefaultDir")
 		if runtime.GOOS != "darwin" {
 			check(osSection, must(runtimeDirBase()), "runtimeDirBase")
