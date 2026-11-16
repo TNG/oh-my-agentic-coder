@@ -251,9 +251,11 @@ type ServerLaunch struct {
 
 	// AuthEnvVar names the environment variable the harness's server reads to
 	// require authentication on its exposed loopback port (OpenCode uses
-	// OPENCODE_SERVER_PASSWORD). `omac serve` warns when a listen port is
-	// exposed while this var is unset — the port is reachable by any local
-	// process otherwise. Empty means the harness declares no auth control.
+	// OPENCODE_SERVER_PASSWORD). `omac serve` sets it from OMAC_SERVE_PASSWORD
+	// when that is given. When the server will not see this var (after the
+	// sandbox's env filter), OpenCode protects the port with a random password
+	// of its own, and `omac serve` prints a hint on how to keep a stable one.
+	// Empty means the harness declares no auth control.
 	AuthEnvVar string
 }
 

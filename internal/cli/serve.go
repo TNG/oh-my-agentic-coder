@@ -676,8 +676,8 @@ func runServe(args []string, env *Env) int {
 		fmt.Fprintf(env.Stderr, "[verbose] inner argv: %v\n", argv)
 	}
 
-	// Caution when the harness server will expose an unauthenticated loopback
-	// port (fires whether sandboxed or not — the server listens either way).
+	// Hint when the harness server gets no password through omac and will use
+	// a random one (sandboxed or not; the server listens either way).
 	if w := serverExposureWarning(harness, inner, serveAuthGetenv(harness, plan, authExtra, noSandbox)); w != "" {
 		fmt.Fprintln(env.Stderr, w)
 	}
@@ -812,14 +812,16 @@ func injectServerPortGrant(argv []string, h config.Harness, innerArgv []string) 
 	return injectSandboxFlag(argv, "--open-port", strconv.Itoa(port))
 }
 
-// serverExposureWarning returns a one-line caution when a harness's server
-// daemon will bind a loopback port that is NOT protected by its auth env var
-// — that port is reachable by any local process, so an unauthenticated server
-// lets local callers drive the agent (bounded by the sandbox, but still). It
-// returns "" when there is no server port or the auth env var is set.
-// innerArgv is the launch's resolved inner command so the warning names the
-// port the server will really bind, not the harness default. getenv is
-// injected for testability.
+// serverExposureWarning returns a one-line hint when a harness's server will
+// bind a loopback port without a password supplied through omac. OpenCode
+// then protects the port with a random password that changes on every
+// restart and prints it itself; the hint says so and points at
+// OMAC_SERVE_PASSWORD (sandboxprofile.ServePasswordEnv) for a stable one. It
+// returns "" when there is no server port or getenv reports the auth env var
+// as set. getenv must answer what the server will see, i.e. after the
+// sandbox's env filter (see serveAuthGetenv). innerArgv is the launch's
+// resolved inner command so the hint names the port the server will really
+// bind, not the harness default.
 func serverExposureWarning(h config.Harness, innerArgv []string, getenv func(string) string) string {
 	sl := h.ServerLaunch
 	port := h.ResolveListenPort(innerArgv)
