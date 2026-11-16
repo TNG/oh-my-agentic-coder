@@ -821,8 +821,9 @@ func serverExposureWarning(h config.Harness, innerArgv []string, getenv func(str
 	if getenv(sl.AuthEnvVar) != "" {
 		return ""
 	}
-	return fmt.Sprintf("omac serve: %s server on 127.0.0.1:%d has no fixed password configured through omac; "+
-		"set OMAC_SERVE_PASSWORD to supply %s across restarts (the server may generate a random password).", h.Name, port, sl.AuthEnvVar)
+	return fmt.Sprintf("omac serve: %s server on 127.0.0.1:%d uses a random password that changes on every restart "+
+		"(%s prints it as \"server password …\"). To keep the same password, set %s.",
+		h.Name, port, h.Name, sandboxprofile.ServePasswordEnv)
 }
 
 // injectOpenPort splices `--open-port <port>` into a sandbox argv so the
