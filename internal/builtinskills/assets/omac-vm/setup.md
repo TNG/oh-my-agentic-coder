@@ -7,11 +7,11 @@ and explain what each one does.
 
 ## 1. What the VM is for
 
-The omac VM is one Linux virtual machine per computer that stays around
-between sessions. It runs Docker and builds that the sandbox cannot run, for
-example Testcontainers tests. It has no internet access by default, so the
-human brings in Docker images and build dependencies. A session started with
-`--vm` can then use it.
+The omac VM is a Linux virtual machine that stays around between sessions.
+It runs Docker and builds that the sandbox cannot run, for example
+Testcontainers tests. It has no internet access by default, so the human
+brings in Docker images and build dependencies. A session started with `--vm`
+can then use it.
 
 ## 2. Prerequisites
 
@@ -22,7 +22,7 @@ human brings in Docker images and build dependencies. A session started with
 - **rsync** on the host, which copies the project into the VM. macOS ships
   one; on Linux install the `rsync` package.
 - **Resources**: by default the VM takes half the host's CPU cores (at least
-  4), a quarter of its RAM (at least 8 GiB) and 60 GiB of disk.
+  4), a quarter of its RAM (at least 8 GiB, at most 12 GiB) and 60 GiB of disk.
 
 ## 3. Optional: `~/.config/omac/vm.yaml`
 
@@ -36,7 +36,16 @@ jdks: [temurin-21]
 packages: [jq]
 ```
 
-`jdks` takes `temurin-<version>`; `packages` are Ubuntu package names.
+`jdks` takes `temurin-<version>`; `packages` are Ubuntu package names. A
+`setup` field holds a shell script for anything else, for example
+`npm install --global pnpm`. It runs as root with network access at
+provisioning (the first `omac vm up` and every `--reprovision`), so it must be
+safe to run again.
+
+Projects that must not see each other belong in separate VMs. Each extra VM
+has its own name and its own file `~/.config/omac/vms/<name>.yaml`; the human
+adds `--name <name>` to every `omac vm` command below and starts sessions with
+`omac start --vm=<name>`. Without a name, everything uses the default VM `omac`.
 
 ## 4. Create the VM
 
@@ -122,10 +131,13 @@ symlink, and every file it `[include]`s.
 omac start --vm
 ```
 
-`omac continue`, `omac resume` and `omac serve` accept `--vm` as well. omac
-refuses `--vm` while the VM is online, with `--no-sandbox`, and with launcher
-profiles that use a sandbox other than omac's own. Once the human has started
-the session, offer to check the connection with `omac vm exec -- true`.
+`omac continue`, `omac resume` and `omac serve` accept `--vm` as well. A bare
+`--vm` uses the VM that `~/.config/omac/vm-projects.yaml` assigns to the
+project (a line such as `/home/alex/work/acme: acme`), else `omac`;
+`--vm=<name>` picks one. omac refuses `--vm` while the VM is online, with
+`--no-sandbox`, and with launcher profiles that use a sandbox other than
+omac's own. Once the human has started the session, offer to check the
+connection with `omac vm exec -- true`.
 
 ## 9. Day-to-day
 

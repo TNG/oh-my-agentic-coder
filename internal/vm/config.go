@@ -17,6 +17,9 @@ type UserConfig struct {
 	Disk     string   `yaml:"disk"`
 	JDKs     []string `yaml:"jdks"`
 	Packages []string `yaml:"packages"`
+	// Setup is a shell script run as root while the VM is online after
+	// packages and JDKs are installed. It must tolerate running again.
+	Setup string `yaml:"setup"`
 }
 
 // Resources are the VM sizes handed to Lima.
@@ -35,6 +38,7 @@ type HostResources struct {
 const (
 	minCPUs     = 4
 	minMemGiB   = 8
+	maxMemGiB   = 12
 	defaultDisk = "60GiB"
 )
 
@@ -62,7 +66,7 @@ func LoadUserConfig(path string) (UserConfig, error) {
 }
 
 // ResolveResources applies the spec defaults: half the host cores (min 4),
-// a quarter of host RAM (min 8GiB), 60GiB disk; explicit values win.
+// a quarter of host RAM clamped to 8-12GiB, 60GiB disk; explicit values win.
 func ResolveResources(cfg UserConfig, host HostResources) Resources {
 	res := Resources{CPUs: cfg.CPUs, Memory: cfg.Memory, Disk: cfg.Disk}
 	if res.CPUs <= 0 {
@@ -70,7 +74,7 @@ func ResolveResources(cfg UserConfig, host HostResources) Resources {
 	}
 	if res.Memory == "" {
 		gib := int(host.MemoryBytes / (1 << 30) / 4)
-		res.Memory = fmt.Sprintf("%dGiB", max(gib, minMemGiB))
+		res.Memory = fmt.Sprintf("%dGiB", min(max(gib, minMemGiB), maxMemGiB))
 	}
 	if res.Disk == "" {
 		res.Disk = defaultDisk

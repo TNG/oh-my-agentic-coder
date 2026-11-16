@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // Sentinel errors of the Manager. Their texts already name the omac vm and
@@ -200,11 +201,33 @@ func (m *Manager) loadOrInitState(cfg UserConfig, instanceExists bool) (*State, 
 	if err != nil || st != nil {
 		return st, err
 	}
-	sshPort, err := PickSSHPort(m.Deps.PortFree)
+	// A stopped VM keeps its ports, so peers count by what they stored, not
+	// by whether the port is bindable now.
+	peers, err := ListInstances()
 	if err != nil {
 		return nil, err
 	}
-	st = &State{Version: StateVersion, SSHPort: sshPort, Mode: ModeOffline, Packages: cfg.Packages}
+	var usedBlocks, usedSSH []int
+	for _, p := range peers {
+		if p.Err != nil {
+			return nil, fmt.Errorf("omac vm: cannot pick ports while the state of VM %q is unreadable: %w", p.Name, p.Err)
+		}
+		if p.SSHPort > 0 {
+			usedBlocks = append(usedBlocks, p.PortBlock)
+			usedSSH = append(usedSSH, p.SSHPort)
+		}
+	}
+	block, err := PickPortBlock(usedBlocks)
+	if err != nil {
+		return nil, err
+	}
+	sshPort, err := PickSSHPort(func(p int) bool {
+		return !slices.Contains(usedSSH, p) && m.Deps.PortFree(p)
+	})
+	if err != nil {
+		return nil, err
+	}
+	st = &State{Version: StateVersion, SSHPort: sshPort, PortBlock: block, Mode: ModeOffline, Packages: cfg.Packages}
 	return st, SaveState(m.Layout.StatePath, st)
 }
 
@@ -220,6 +243,7 @@ func (m *Manager) create(ctx context.Context, st *State, cfg UserConfig, aptPkgs
 	yaml, err := RenderLimaConfig(LimaInputs{
 		Resources:   res,
 		SSHPort:     st.SSHPort,
+		PortBlock:   st.PortBlock,
 		AgentUser:   AgentUserName(m.Deps.HostUser),
 		AdminPubKey: adminPub,
 		AgentPubKey: agentPub,
@@ -259,11 +283,54 @@ func (m *Manager) create(ctx context.Context, st *State, cfg UserConfig, aptPkgs
 	if err := m.waitDocker(ctx, st, m.Deps.ProvisionTimeout); err != nil {
 		return fmt.Errorf("%w; %s", err, retryUpHint)
 	}
+	if err := m.runSetup(ctx, st, cfg.Setup); err != nil {
+		return fmt.Errorf("%w; %s", err, retryUpHint)
+	}
 	if err := m.switchMode(ctx, st, ModeOffline, true, m.Deps.RestartTimeout); err != nil {
 		return err
 	}
 	st.JDKs = cfg.JDKs
 	return SaveState(m.Layout.StatePath, st)
+}
+
+// setupCmd reads the setup script from stdin, so its content never passes
+// through a shell command line.
+const setupCmd = "bash -s"
+
+const maxSetupOutput = 4096
+
+// capOutput keeps the end of s, where a failing script says why.
+func capOutput(s string) string {
+	if len(s) <= maxSetupOutput {
+		return s
+	}
+	cut := len(s) - maxSetupOutput
+	for cut < len(s) && !utf8.RuneStart(s[cut]) {
+		cut++
+	}
+	return "…" + s[cut:]
+}
+
+// runSetup runs the user's setup script as root. On failure it removes the
+// provisioned marker, so the next `omac vm up` provisions again, and
+// returns the script's output.
+func (m *Manager) runSetup(ctx context.Context, st *State, script string) error {
+	if strings.TrimSpace(script) == "" {
+		return nil
+	}
+	fmt.Fprintln(m.Out, "omac vm: running setup…")
+	var out bytes.Buffer
+	err := m.ssh(ctx, m.rootTarget(st), strings.NewReader(script), &out, setupCmd)
+	if err == nil {
+		return nil
+	}
+	_ = m.ssh(ctx, m.rootTarget(st), nil, nil, "rm -f "+ProvisionedMarker)
+	// err already carries the script's stderr, so the cap covers both streams.
+	detail := err.Error()
+	if s := strings.TrimSpace(out.String()); s != "" {
+		detail = s + "\n" + detail
+	}
+	return fmt.Errorf("omac vm: setup failed:\n%s", capOutput(detail))
 }
 
 const retryUpHint = "run `omac vm up` again (or `omac vm up --reprovision`)"
@@ -343,6 +410,9 @@ func (m *Manager) reprovision(ctx context.Context, st *State, cfg UserConfig, ap
 	}
 	if err := m.switchMode(ctx, st, ModeOnline, true, m.Deps.ProvisionTimeout); err != nil {
 		return err
+	}
+	if err := m.runSetup(ctx, st, cfg.Setup); err != nil {
+		return fmt.Errorf("%w; %s", err, retryUpHint)
 	}
 	st.Packages, st.JDKs = cfg.Packages, cfg.JDKs
 	if err := SaveState(m.Layout.StatePath, st); err != nil {
@@ -530,7 +600,9 @@ func (m *Manager) refuseAttached() error {
 
 // AttachInfo is what a session needs to reach the VM over ssh.
 type AttachInfo struct {
+	Name               string // the VM's name; PrepareAttach leaves it for the caller, which chose the VM
 	SSHPort            int
+	PortBlock          int
 	AgentKeyPath, User string
 	Docker             DockerVersion
 }
@@ -554,6 +626,7 @@ func (m *Manager) PrepareAttach(ctx context.Context) (AttachInfo, error) {
 	}
 	return AttachInfo{
 		SSHPort:      st.SSHPort,
+		PortBlock:    st.PortBlock,
 		AgentKeyPath: m.Layout.AgentKey,
 		User:         AgentUserName(m.Deps.HostUser),
 		Docker:       v,

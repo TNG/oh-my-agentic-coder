@@ -52,7 +52,7 @@ func TestVMAttachExitCode(t *testing.T) {
 func stubVMAttachFailure(t *testing.T, err error) {
 	t.Helper()
 	orig := prepareVMAttach
-	prepareVMAttach = func(context.Context, *Env) (vm.AttachInfo, func(), error) {
+	prepareVMAttach = func(context.Context, *Env, string, string) (vm.AttachInfo, func(), error) {
 		return vm.AttachInfo{}, nil, err
 	}
 	t.Cleanup(func() { prepareVMAttach = orig })
@@ -180,16 +180,19 @@ func TestVMSandboxEnv(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(scope, "vm", "agent_key"), []byte("OLD OLD OLD OLD\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	got, err := vmSandboxEnv(vm.AttachInfo{SSHPort: 31022, User: "alice", AgentKeyPath: key}, scope)
+	got, err := vmSandboxEnv(vm.AttachInfo{Name: "omac", SSHPort: 31022, PortBlock: 2, User: "alice", AgentKeyPath: key}, scope)
 	if err != nil {
 		t.Fatal(err)
 	}
 	// No DOCKER_* vars: the session reaches Docker only through `omac vm exec`.
 	want := map[string]string{
-		"OMAC_VM_HOST":     "127.0.0.1",
-		"OMAC_VM_SSH_PORT": "31022",
-		"OMAC_VM_SSH_KEY":  filepath.Join(scope, "vm", "agent_key"),
-		"OMAC_VM_USER":     "alice",
+		"OMAC_VM_HOST":       "127.0.0.1",
+		"OMAC_VM_SSH_PORT":   "31022",
+		"OMAC_VM_SSH_KEY":    filepath.Join(scope, "vm", "agent_key"),
+		"OMAC_VM_USER":       "alice",
+		"OMAC_VM_NAME":       "omac",
+		"OMAC_VM_PORT_FIRST": "30200",
+		"OMAC_VM_PORT_LAST":  "30299",
 	}
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Errorf("env = %v\nwant  %v", got, want)
@@ -249,6 +252,36 @@ func TestVMSandboxEnvMissingKey(t *testing.T) {
 	}
 }
 
+// Sessions on different VMs can share one cache scope; each VM's key copy
+// needs its own place, or the later attach redirects the earlier session.
+func TestVMSandboxEnvKeepsInstancesApart(t *testing.T) {
+	scope := t.TempDir()
+	keyA, keyB := testAgentKey(t), testAgentKey(t)
+	if err := os.WriteFile(keyB, []byte("OTHER KEY\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	a, err := vmSandboxEnv(vm.AttachInfo{Name: "work", AgentKeyPath: keyA}, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := vmSandboxEnv(vm.AttachInfo{Name: "other", AgentKeyPath: keyB}, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(scope, "vm", "work", "agent_key"); a["OMAC_VM_SSH_KEY"] != want {
+		t.Errorf("work key path = %q, want %q", a["OMAC_VM_SSH_KEY"], want)
+	}
+	if a["OMAC_VM_SSH_KEY"] == b["OMAC_VM_SSH_KEY"] {
+		t.Fatalf("both instances use %q", a["OMAC_VM_SSH_KEY"])
+	}
+	if got, _ := os.ReadFile(a["OMAC_VM_SSH_KEY"]); string(got) != "PRIVATE KEY\n" {
+		t.Errorf("work key copy = %q, overwritten by the other instance", got)
+	}
+	if got, _ := os.ReadFile(b["OMAC_VM_SSH_KEY"]); string(got) != "OTHER KEY\n" {
+		t.Errorf("other key copy = %q", got)
+	}
+}
+
 // A sandboxed session can write the cache dir, so it could plant a symlink
 // that redirects the key copy anywhere the host user writes.
 func TestVMSandboxEnvRefusesSymlinks(t *testing.T) {
@@ -290,20 +323,21 @@ func (a *attachOrderManager) PrepareAttach(context.Context) (vm.AttachInfo, erro
 func useAttachOrderManager(t *testing.T, attachErr error) (*attachOrderManager, string) {
 	t.Helper()
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	root, err := vm.DefaultRoot()
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	root, err := vm.InstanceRoot(vm.DefaultVMName)
 	if err != nil {
 		t.Fatal(err)
 	}
 	fake := &attachOrderManager{sessions: vm.NewLayout(root).SessionsDir, attachErr: attachErr}
 	orig := newVMManager
-	newVMManager = func(*Env) (vmManager, error) { return fake, nil }
+	newVMManager = func(*Env, string) (vmManager, error) { return fake, nil }
 	t.Cleanup(func() { newVMManager = orig })
 	return fake, fake.sessions
 }
 
 func TestPrepareVMAttachRegistersBeforeChecking(t *testing.T) {
 	fake, sessions := useAttachOrderManager(t, nil)
-	_, release, err := prepareVMAttach(context.Background(), devnullEnv(t))
+	_, release, err := prepareVMAttach(context.Background(), devnullEnv(t), "", t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -318,7 +352,7 @@ func TestPrepareVMAttachRegistersBeforeChecking(t *testing.T) {
 
 func TestPrepareVMAttachFailureLeavesNoMarker(t *testing.T) {
 	_, sessions := useAttachOrderManager(t, vm.ErrOnline)
-	_, release, err := prepareVMAttach(context.Background(), devnullEnv(t))
+	_, release, err := prepareVMAttach(context.Background(), devnullEnv(t), "", t.TempDir())
 	if !errors.Is(err, vm.ErrOnline) || release != nil {
 		t.Fatalf("prepareVMAttach = (release=%v, %v), want (nil, ErrOnline)", release != nil, err)
 	}

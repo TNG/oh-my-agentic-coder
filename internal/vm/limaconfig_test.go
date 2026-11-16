@@ -121,6 +121,28 @@ func provisionBlocks(t *testing.T, cfg string) (boot, system, user string) {
 	return cfg[b:s], cfg[s:u], cfg[u:]
 }
 
+func TestRenderLimaConfigPortBlock(t *testing.T) {
+	in := goldenInputs
+	in.PortBlock = 1
+	got, err := RenderLimaConfig(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "    guestPortRange: [30100, 30199]\n    hostIP: 127.0.0.1\n    hostPortRange: [30100, 30199]\n"
+	if !strings.Contains(got, want) {
+		t.Errorf("config lacks %q:\n%s", want, got)
+	}
+	if strings.Contains(got, "30000") {
+		t.Error("block 1 config still mentions block 0")
+	}
+	for _, bad := range []int{-1, 10} {
+		in.PortBlock = bad
+		if _, err := RenderLimaConfig(in); err == nil {
+			t.Errorf("port block %d accepted", bad)
+		}
+	}
+}
+
 func TestRenderLimaConfigProvisionOrder(t *testing.T) {
 	boot, system, user := provisionBlocks(t, renderGolden(t))
 	checks := []struct {

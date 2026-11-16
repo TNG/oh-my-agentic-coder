@@ -44,9 +44,12 @@ func protectedCommon() []string {
 		"~/.config/omac",
 		"$XDG_CONFIG_HOME/omac",
 		// omac VM state: holds admin_key, root access to the omac VM;
-		// the sandbox must never read it.
+		// the sandbox must never read it. vm is the default VM, vms/<name>
+		// the named ones.
 		"~/.local/state/omac/vm",
 		"$XDG_STATE_HOME/omac/vm",
+		"~/.local/state/omac/vms",
+		"$XDG_STATE_HOME/omac/vms",
 		// credentials
 		"~/.ssh",
 		"~/.gnupg",

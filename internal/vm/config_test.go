@@ -45,7 +45,9 @@ func TestResolveResourcesDefaults(t *testing.T) {
 		host HostResources
 		want Resources
 	}{
-		{"16 cores 64 GiB", HostResources{CPUs: 16, MemoryBytes: 64 * gib}, Resources{CPUs: 8, Memory: "16GiB", Disk: "60GiB"}},
+		{"16 cores 64 GiB caps at 12", HostResources{CPUs: 16, MemoryBytes: 64 * gib}, Resources{CPUs: 8, Memory: "12GiB", Disk: "60GiB"}},
+		{"48 GiB quarter is 12", HostResources{CPUs: 16, MemoryBytes: 48 * gib}, Resources{CPUs: 8, Memory: "12GiB", Disk: "60GiB"}},
+		{"32 GiB quarter is 8", HostResources{CPUs: 16, MemoryBytes: 32 * gib}, Resources{CPUs: 8, Memory: "8GiB", Disk: "60GiB"}},
 		{"4 cores 8 GiB floors", HostResources{CPUs: 4, MemoryBytes: 8 * gib}, Resources{CPUs: 4, Memory: "8GiB", Disk: "60GiB"}},
 		{"unknown host floors", HostResources{}, Resources{CPUs: 4, Memory: "8GiB", Disk: "60GiB"}},
 		{"odd rounds down", HostResources{CPUs: 11, MemoryBytes: 37 * gib}, Resources{CPUs: 5, Memory: "9GiB", Disk: "60GiB"}},

@@ -5,10 +5,14 @@ import (
 	"testing"
 )
 
-// The omac VM state directory holds admin_key, root access to the VM. Both
-// spellings must stay protected on every platform.
+// The state directories of the default VM (vm) and of named VMs (vms) hold
+// admin_key, root access to the VM. Both spellings of each must stay
+// protected on every platform.
 func TestProtectedCommonCoversVMState(t *testing.T) {
-	for _, want := range []string{"~/.local/state/omac/vm", "$XDG_STATE_HOME/omac/vm"} {
+	for _, want := range []string{
+		"~/.local/state/omac/vm", "$XDG_STATE_HOME/omac/vm",
+		"~/.local/state/omac/vms", "$XDG_STATE_HOME/omac/vms",
+	} {
 		if !slices.Contains(protectedCommon(), want) {
 			t.Errorf("protectedCommon() lacks %q", want)
 		}
