@@ -18,12 +18,19 @@ const ServeAuthTargetEnv = "OMAC_SERVE_AUTH_TARGET"
 // variable (e.g. OPENCODE_SERVER_PASSWORD); profile is the policy profile
 // reference, or "" when unknown. Callers print it after "omac serve:".
 func ServeAuthDeniedError(target, profile string) error {
-	blocker := "the sandbox profile blocks"
-	if profile != "" {
-		blocker = fmt.Sprintf("profile %q blocks", profile)
+	return fmt.Errorf("%s is passed to the server as %s, but %s blocks that variable in environment.deny_vars. "+
+		"Remove the matching entry or unset %s.", ServePasswordEnv, target, ServeAuthProfileName(profile), ServePasswordEnv)
+}
+
+// ServeAuthProfileName is how the OMAC_SERVE_PASSWORD messages name a
+// sandbox profile: by its reference, which is also the name of the file the
+// user edits (e.g. "strict" for ~/.config/omac/sandbox-profiles/strict.json).
+// ref "" (unknown) gives "the sandbox profile".
+func ServeAuthProfileName(ref string) string {
+	if ref == "" {
+		return "the sandbox profile"
 	}
-	return fmt.Errorf("%s is passed to the server as %s, but %s that variable in environment.deny_vars. "+
-		"Remove the matching entry or unset %s.", ServePasswordEnv, target, blocker, ServePasswordEnv)
+	return fmt.Sprintf("sandbox profile %q", ref)
 }
 
 // dangerousEnvExact are always dropped from the child environment,

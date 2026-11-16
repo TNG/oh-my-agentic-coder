@@ -25,17 +25,21 @@ func prepareServeAuthEnv(password string, h config.Harness, plan sandboxPlan, no
 	extra := map[string]string{target: password}
 	if !noSandbox {
 		if !plan.Native {
-			profile := "the selected sandbox profile"
+			// plan.Name is the sandbox runtime (sandbox.default_profile or
+			// --sandbox), not a sandbox profile file, so it is not called a
+			// profile here; see sandboxprofile.ServeAuthProfileName.
+			runtimeName := "the selected sandbox runtime"
 			if plan.Name != "" {
-				profile = fmt.Sprintf("profile %q", plan.Name)
+				runtimeName = fmt.Sprintf("sandbox runtime %q", plan.Name)
 			}
 			return nil, fmt.Errorf("%s only works with the native sandbox backend, and %s uses another one. "+
 				"Unset %s, or set %s yourself where that backend runs the server.",
-				sandboxprofile.ServePasswordEnv, profile, sandboxprofile.ServePasswordEnv, target)
+				sandboxprofile.ServePasswordEnv, runtimeName, sandboxprofile.ServePasswordEnv, target)
 		}
 		if plan.Policy == nil {
-			return nil, fmt.Errorf("%s needs the sandbox policy %q to check its environment.deny_vars, but it could not be loaded: %v. "+
-				"Fix that profile or unset %s.", sandboxprofile.ServePasswordEnv, plan.PolicyRef, plan.PolicyErr, sandboxprofile.ServePasswordEnv)
+			return nil, fmt.Errorf("%s needs %s to check its environment.deny_vars, but it could not be loaded: %v. "+
+				"Fix that profile or unset %s.", sandboxprofile.ServePasswordEnv, sandboxprofile.ServeAuthProfileName(plan.PolicyRef),
+				plan.PolicyErr, sandboxprofile.ServePasswordEnv)
 		}
 		if sandboxprofile.EnvDenied(target, plan.Policy.Environment.DenyVars) {
 			return nil, sandboxprofile.ServeAuthDeniedError(target, plan.PolicyRef)
@@ -107,10 +111,11 @@ func serveAuthAdvice(h config.Harness, plan sandboxPlan, noSandbox bool) string 
 	case !plan.Native:
 		return fmt.Sprintf("set %s where your sandbox backend runs the server", target)
 	case plan.Policy == nil:
-		return fmt.Sprintf("fix sandbox profile %q, which could not be loaded, then %s", plan.PolicyRef, setPassword)
+		return fmt.Sprintf("fix %s, which could not be loaded, then %s",
+			sandboxprofile.ServeAuthProfileName(plan.PolicyRef), setPassword)
 	case sandboxprofile.EnvDenied(target, plan.Policy.Environment.DenyVars):
-		return fmt.Sprintf("remove the entry matching %s from environment.deny_vars in sandbox profile %q, then %s",
-			target, plan.PolicyRef, setPassword)
+		return fmt.Sprintf("remove the entry matching %s from environment.deny_vars in %s, then %s",
+			target, sandboxprofile.ServeAuthProfileName(plan.PolicyRef), setPassword)
 	}
 	return setPassword
 }
