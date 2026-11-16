@@ -268,6 +268,36 @@ for var in XDG_CACHE_HOME GOCACHE GOMODCACHE NPM_CONFIG_CACHE PIP_CACHE_DIR CARG
     eval "val=\${$var:-<unset>}"
     echo "$var=$val"
 done
+# omac appends UV_TOOL_BIN_DIR to PATH so `uv tool install` commands run
+# by name. It must come after the host entries: the dir is agent-writable,
+# so it must never shadow a host command such as git. Prints the position
+# only, not PATH itself.
+echo "--- UV_TOOL_BIN_DIR on PATH (must be there once, ideally last) ---"
+if [ -z "${UV_TOOL_BIN_DIR:-}" ]; then
+    echo "UV_TOOL_BIN_DIR_ON_PATH=unset"
+else
+    uv_hits=0 uv_last=no
+    old_ifs=$IFS
+    IFS=:
+    for entry in ${PATH:-}; do
+        if [ "$entry" = "$UV_TOOL_BIN_DIR" ]; then
+            uv_hits=$((uv_hits + 1))
+            uv_last=yes
+        else
+            uv_last=no
+        fi
+    done
+    IFS=$old_ifs
+    if [ "$uv_hits" -eq 0 ]; then
+        echo "UV_TOOL_BIN_DIR_ON_PATH=missing"
+    elif [ "$uv_hits" -gt 1 ]; then
+        echo "UV_TOOL_BIN_DIR_ON_PATH=duplicate"
+    elif [ "$uv_last" = yes ]; then
+        echo "UV_TOOL_BIN_DIR_ON_PATH=last"
+    else
+        echo "UV_TOOL_BIN_DIR_ON_PATH=not-last"
+    fi
+fi
 echo "--- write marker to OMAC_CACHE_DIR ---"
 if [ -z "${OMAC_CACHE_DIR:-}" ]; then
     echo "OMAC_CACHE_DIR not set (cache not injected)"

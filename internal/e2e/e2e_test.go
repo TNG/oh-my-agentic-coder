@@ -1307,6 +1307,19 @@ func assertCacheIsolation(t *testing.T, output, expectedMode string) {
 			return
 		}
 	}
+	// omac appends UV_TOOL_BIN_DIR to the sandbox PATH exactly once.
+	// Where it ends up is checked by the sandboxrun unit tests: a harness
+	// may re-order or extend PATH in its own shell, so "not-last" is only
+	// logged here.
+	switch onPath := extractEnv(output, "UV_TOOL_BIN_DIR_ON_PATH="); onPath {
+	case "last":
+	case "not-last":
+		t.Logf("note: UV_TOOL_BIN_DIR is on PATH but not the last entry in the harness's shell")
+	default:
+		failWithClassification(t, "cacheIsolation", fmSandboxFail,
+			output+": UV_TOOL_BIN_DIR_ON_PATH="+onPath+" (want it on PATH exactly once)")
+		return
+	}
 	if !strings.Contains(output, "CACHE_MARKER_WROTE:") {
 		failWithClassification(t, "cacheIsolation", fmSandboxFail,
 			output+": cache marker not written")
