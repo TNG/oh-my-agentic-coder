@@ -25,7 +25,12 @@ import (
 // learnMode (`omac serve --learn`) is a launch fact the policy file cannot
 // carry: it lifts every filesystem restriction in the child, so the static
 // protected set must not be reported for that session.
-func wireFacadeSandbox(f *facade.Facade, noSandbox, learnMode bool, plan sandboxPlan, warn func(format string, args ...any)) {
+//
+// desktopStores are the OpenCode Desktop stores the sandbox denies under
+// `omac serve --for-opencode-desktop` (nil otherwise). The policy file does
+// not list them, so they are added here; without them the facade would
+// answer denied:false for files the sandbox blocks.
+func wireFacadeSandbox(f *facade.Facade, noSandbox, learnMode bool, plan sandboxPlan, desktopStores []string, warn func(format string, args ...any)) {
 	if !noSandbox {
 		switch {
 		case learnMode:
@@ -33,7 +38,9 @@ func wireFacadeSandbox(f *facade.Facade, noSandbox, learnMode bool, plan sandbox
 			// claiming the profile's static set is in force.
 			f.ProtectedPathChecker = sandboxrun.UnrestrictedProtectedPathSet()
 		case plan.Policy != nil:
-			f.ProtectedPathChecker = sandboxrun.NewProtectedPathSet(plan.Policy)
+			set := sandboxrun.NewProtectedPathSet(plan.Policy)
+			set.AddLaunchPaths(desktopStores, "opencode-desktop")
+			f.ProtectedPathChecker = set
 			if d := plan.Policy.Denial; d != nil && d.FacadeNote != "" {
 				f.DenialNote = d.FacadeNote
 			}

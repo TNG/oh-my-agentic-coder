@@ -391,7 +391,14 @@ func runServe(args []string, env *Env) int {
 		env.Version,
 	)
 	f.SetAuditor(auditor)
-	wireFacadeSandbox(f, noSandbox, learn, plan, func(format string, args ...any) {
+	// The sandbox denies OpenCode Desktop's stores (protectDesktopStores);
+	// the facade must report them as denied too. XDG_STATE_HOME is final
+	// here, so both compute the same paths.
+	var desktopStores []string
+	if forDesktop && !noInner {
+		desktopStores = opencodestate.DesktopStorePaths()
+	}
+	wireFacadeSandbox(f, noSandbox, learn, plan, desktopStores, func(format string, args ...any) {
 		fmt.Fprintf(env.Stderr, format+"\n", args...)
 	})
 	// Mint both per-session tokens before the listener accepts connections so
