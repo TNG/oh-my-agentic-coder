@@ -46,11 +46,11 @@ Never approve, merge, close, label or push. The only write is the one comment, a
    | `tests.md` | T | adds or changes code paths, or tests |
    | `documentation.md` | D | changes docs or comments, or behavior, flags, config, defaults or help texts that docs describe |
    | `ux-consistency.md` | U | changes anything users see: messages, prompts, flags, config keys, endpoints, exit codes, file locations |
-   | `security.md` | X | touches a trust boundary: sandboxing, filesystem or network grants, environment filtering, credentials and secrets, approvals and registration, control-plane or API endpoints, parsing data an attacker can write, updates or installs |
+   | `security.md` | X | always: even a docs change can promise a guarantee the code doesn't give. Trust boundaries to focus on: sandboxing, filesystem or network grants, environment filtering, credentials and secrets, approvals and registration, control-plane or API endpoints, parsing data an attacker can write, updates or installs |
    | `complexity.md` | K | adds abstractions, flags, settings, dependencies or new files, or is large compared with the problem it solves |
    | `performance.md` | P | changes code that runs per request, per file, at every start, or in loops over external data |
 
-   A docs-only PR usually gets D and U; a typical code change gets S, E, T and whatever else applies. When unsure, include the reviewer. Apply the requester's additions and removals. Note one line per reviewer you skipped and why; it goes into the comment.
+   Skip a reviewer only when its condition clearly doesn't apply; when in doubt, run it. Running all of them on a code change is fine. A docs-only PR, for example, usually needs only D, U and X. Apply the requester's additions and removals. Note one line per reviewer you skipped and why; it goes into the comment.
 4. **Review.** Each selected reviewer gets its prompt file, `reviewers/report-format.md`, the diff, the PR context, `tests.md`, and read access to the repo at the PR head.
    - If your agent can start subagents, start all selected reviewers at once, on a smaller, faster model if you can choose one (in Claude Code: `model: "sonnet"`).
    - Otherwise do the passes yourself, one after another, keeping each report separate.
