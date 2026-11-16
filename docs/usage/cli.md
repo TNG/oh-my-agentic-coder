@@ -53,7 +53,7 @@ omac serve --workdir ~/my-project
 
 | Environment variable | Description |
 |---|---|
-| `OMAC_SERVE_PASSWORD` | Password for the OpenCode server that `omac serve` starts. Without it, OpenCode picks a new random password on every start. See [Serve mode](../advanced/serve-mode.md#how-to-use-it-today). |
+| `OMAC_SERVE_PASSWORD` | Password for the OpenCode server that `omac serve` starts. Needs omac's own sandbox (or `--no-sandbox`) and can't be combined with `--no-inner`. Without it, OpenCode picks a new random password on every start. See [Serve mode](../advanced/serve-mode.md#how-to-use-it-today). |
 
 #### OpenCode v2 project discovery on macOS
 

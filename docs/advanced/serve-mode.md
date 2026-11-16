@@ -58,15 +58,18 @@ How your shell environment is handled depends on the sandbox:
   [`environment.allow_vars`](../configuration.md#sandbox-grants).
   `OMAC_SERVE_PASSWORD` needs omac's own sandbox (the default
   `builtin` profile); with another sandbox backend such as
-  [nono](./nono.md), omac stops with an error. If your sandbox profile lists
-  `OPENCODE_SERVER_PASSWORD` in `environment.deny_vars`, omac also stops
-  instead of starting the server without the password.
+  [nono](./nono.md), omac stops with an error. omac also stops, instead of
+  starting the server without the password, if `environment.deny_vars` in
+  your sandbox profile (the list of variables the sandbox never passes on, in
+  the same file as `allow_vars`) matches `OPENCODE_SERVER_PASSWORD`, either
+  by name or by a pattern such as `OPENCODE_*`.
 - **With `--no-sandbox`:** the server sees your shell environment as usual,
   including any `OPENCODE_SERVER_PASSWORD` you set there.
   `OMAC_SERVE_PASSWORD` takes precedence over it.
 
 `OMAC_SERVE_PASSWORD` cannot be combined with `--no-inner`, because omac
-then starts no server to pass it to.
+then starts no server to pass it to. (`--no-inner` makes omac skip starting
+OpenCode, for when you run your own server.)
 
 ## Choosing a different port
 
