@@ -162,7 +162,7 @@ func (f *vmFlag) Set(s string) error {
 	return nil
 }
 
-const vmFlagUsage = "Attach to an omac VM, --vm[=<name>]: its SSH port is opened for the sandbox, so `omac vm exec` runs Docker, Gradle and tests there. Without a name, the VM that vm-projects.yaml assigns to the project, else `omac`. Requires `omac vm up` and offline mode."
+const vmFlagUsage = "Attach to an omac VM, --vm[=<name>]: its SSH port is opened for the sandbox, so 'omac vm exec' runs Docker, Gradle and tests there. Without a name, the VM that vm-projects.yaml assigns to the project, else 'omac'. Requires 'omac vm up' and offline mode."
 
 // vmSelection is the VM a session attaches to and why.
 type vmSelection struct {
@@ -336,7 +336,7 @@ func vmProfileMisuse(plan sandboxPlan) string {
 	if plan.Policy == nil {
 		return fmt.Sprintf("--vm: sandbox profile %q could not be loaded (%v), so omac cannot check that it keeps the VM state protected", plan.PolicyRef, plan.PolicyErr)
 	}
-	root, err := vm.DefaultRoot()
+	root, err := vm.InstanceRoot(vm.DefaultVMName)
 	if err != nil {
 		return "--vm: " + err.Error()
 	}

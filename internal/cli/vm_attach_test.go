@@ -329,7 +329,7 @@ func TestVMProfileMisuse(t *testing.T) {
 // session markers.
 func TestVMProfileMisuseRefusesReachableState(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	root, err := vm.DefaultRoot()
+	root, err := vm.InstanceRoot(vm.DefaultVMName)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -451,7 +451,7 @@ func useAttachOrderManager(t *testing.T, attachErr error) (*attachOrderManager, 
 	t.Helper()
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	root, err := vm.DefaultRoot()
+	root, err := vm.InstanceRoot(vm.DefaultVMName)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -503,7 +503,7 @@ func TestAttachVMKeyFailureLeavesNoMarker(t *testing.T) {
 // with or without --vm, must still keep the sandbox out of it.
 func TestSandboxDeniesKeepHostVMStateUnderAnotherStateHome(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	hostRoot, err := vm.DefaultRoot()
+	hostRoot, err := vm.InstanceRoot(vm.DefaultVMName)
 	if err != nil {
 		t.Fatal(err)
 	}

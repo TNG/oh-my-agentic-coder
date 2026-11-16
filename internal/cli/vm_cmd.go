@@ -234,17 +234,25 @@ func runVMExec(args []string, env *Env) int {
 	if !ok {
 		return code
 	}
+	inSession := os.Getenv(vm.EnvVMSSHPort) != ""
+	if a.named && inSession {
+		if attached := os.Getenv(vm.EnvVMName); attached != "" && attached != a.name {
+			return vmExecMisuse(env, fmt.Sprintf("this session is attached to VM %q; to use VM %q, start a session with --vm=%s", attached, a.name, a.name))
+		}
+	}
 	if !a.named {
 		a.name = vm.DefaultVMName
 		// Inside a --vm session the exported OMAC_VM_* variables decide the
 		// VM, so the project map does not apply there.
-		if os.Getenv(vm.EnvVMSSHPort) == "" {
+		if !inSession {
 			mapped, ok, err := vm.MappedInstance(env.Workdir)
-			if err != nil {
+			// The sandbox blocks the map, so a session started without
+			// --vm gets ConnInfo's hint instead.
+			if err != nil && !errors.Is(err, os.ErrPermission) {
 				fmt.Fprintln(env.Stderr, err)
 				return ExitConfigInvalid
 			}
-			if ok {
+			if err == nil && ok {
 				a.name = mapped
 			}
 		}
@@ -306,7 +314,7 @@ func runVMExec(args []string, env *Env) int {
 		Log:    logf,
 	})
 	if err != nil {
-		fmt.Fprintln(env.Stderr, err)
+		fmt.Fprintln(env.Stderr, vm.WithNameHints(a.name, err))
 		if errors.Is(err, vm.ErrInterrupted) {
 			return code
 		}
@@ -357,7 +365,7 @@ func checkVMOnline(name string) error {
 		return err
 	}
 	if st == nil || st.Mode != vm.ModeOnline {
-		return fmt.Errorf("%w; run `omac vm online%s` first", errVMNotOnline, vmNameSuffix(name))
+		return fmt.Errorf("%w; %s", errVMNotOnline, vm.NameHints(name, "run `omac vm online` first"))
 	}
 	return nil
 }
@@ -425,14 +433,6 @@ func vmExecMisuseErr(env *Env, err error) int {
 	fmt.Fprintln(env.Stderr, err)
 	printVMExecUsage(env.Stderr)
 	return ExitMisuse
-}
-
-// vmNameSuffix is the " --name <x>" a hint needs for any VM but the default.
-func vmNameSuffix(name string) string {
-	if name == vm.DefaultVMName {
-		return ""
-	}
-	return " --name " + name
 }
 
 func writeVMList(w io.Writer, rows []vm.InstanceRow) {
@@ -548,9 +548,11 @@ vm-projects.yaml assigns to the project, else "omac"; inside a session it uses
 the VM the session is attached to.
 
 Usage:
-  omac vm list                 Show every VM with its state and SSH port.
+  omac vm list                 Show every VM with its state, SSH port and port block.
   omac vm up [--reprovision]   Create or start the VM. A new VM ends offline; a VM switched online stays online.
-                               --reprovision reinstalls the packages and JDKs from vm.yaml, then switches offline.
+                               --reprovision reinstalls the packages and JDKs from vm.yaml
+                               (vms/<name>.yaml for other VMs), reruns its setup script, then
+                               switches offline.
   omac vm down                 Stop the VM.
   omac vm reset                Delete the VM with all its host-side state and create it anew.
   omac vm status               Show whether the VM runs, its mode, SSH port, images, JDKs, packages,

@@ -8,38 +8,38 @@ import (
 	"testing"
 )
 
-func TestDefaultRootHonorsXDGStateHome(t *testing.T) {
+func TestInstanceRootDefaultHonorsXDGStateHome(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", "/x/state")
-	got, err := DefaultRoot()
+	got, err := InstanceRoot(DefaultVMName)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if want := filepath.Join("/x/state", "omac", "vm"); got != want {
-		t.Errorf("DefaultRoot() = %q, want %q", got, want)
+		t.Errorf("InstanceRoot(default) = %q, want %q", got, want)
 	}
 }
 
-func TestDefaultRootFallsBackToLocalState(t *testing.T) {
+func TestInstanceRootDefaultFallsBackToLocalState(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", "")
 	t.Setenv("HOME", "/home/u")
-	got, err := DefaultRoot()
+	got, err := InstanceRoot(DefaultVMName)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if want := filepath.Join("/home/u", ".local", "state", "omac", "vm"); got != want {
-		t.Errorf("DefaultRoot() = %q, want %q", got, want)
+		t.Errorf("InstanceRoot(default) = %q, want %q", got, want)
 	}
 }
 
-func TestDefaultRootIgnoresRelativeXDGStateHome(t *testing.T) {
+func TestInstanceRootDefaultIgnoresRelativeXDGStateHome(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", "rel")
 	t.Setenv("HOME", "/home/u")
-	got, err := DefaultRoot()
+	got, err := InstanceRoot(DefaultVMName)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if want := filepath.Join("/home/u", ".local", "state", "omac", "vm"); got != want {
-		t.Errorf("DefaultRoot() = %q, want %q", got, want)
+		t.Errorf("InstanceRoot(default) = %q, want %q", got, want)
 	}
 }
 
@@ -57,10 +57,10 @@ func TestNewLayoutPaths(t *testing.T) {
 	}
 }
 
-func TestUserConfigPathUsesXDGConfigHome(t *testing.T) {
+func TestInstanceConfigPathUsesXDGConfigHome(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", "/x/cfg")
-	if got, want := UserConfigPath(), filepath.Join("/x/cfg", "omac", "vm.yaml"); got != want {
-		t.Errorf("UserConfigPath() = %q, want %q", got, want)
+	if got, want := InstanceConfigPath(DefaultVMName), filepath.Join("/x/cfg", "omac", "vm.yaml"); got != want {
+		t.Errorf("InstanceConfigPath(DefaultVMName) = %q, want %q", got, want)
 	}
 }
 

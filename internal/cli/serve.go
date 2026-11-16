@@ -953,7 +953,7 @@ func injectSandboxDenies(argv []string, paths []string, prof config.SandboxProfi
 		}
 		argv = injectSandboxFlag(argv, "--deny", p)
 	}
-	if root, err := vm.DefaultRoot(); err == nil {
+	if root, err := vm.InstanceRoot(vm.DefaultVMName); err == nil {
 		argv = injectSandboxFlag(argv, "--deny-literal", root)
 	}
 	return argv

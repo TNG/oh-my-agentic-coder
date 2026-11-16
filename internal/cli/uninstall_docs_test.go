@@ -119,7 +119,7 @@ func TestUninstallDocListsEveryLocation(t *testing.T) {
 		if xdg {
 			redirect("XDG_STATE_HOME")
 		}
-		check(general, must(vm.DefaultRoot()), "vm.DefaultRoot")
+		check(general, must(vm.InstanceRoot(vm.DefaultVMName)), "vm.InstanceRoot")
 	}
 	unset("XDG_STATE_HOME")
 	if body, _ := markdownSection(doc, general); !strings.Contains(body, `rm -rf "$XDG_STATE_HOME/omac"`) {

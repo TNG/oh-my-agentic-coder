@@ -13,7 +13,10 @@ func TestNameHints(t *testing.T) {
 		{"run `omac vm up` again (or `omac vm up --reprovision`)", "run `omac vm up --name yarp3` again (or `omac vm up --name yarp3 --reprovision`)"},
 		{"run `omac vm offline` before attaching", "run `omac vm offline --name yarp3` before attaching"},
 		{"is missing; run `omac vm reset`", "is missing; run `omac vm reset --name yarp3`"},
-		{"try `omac vm status` or `omac vm list`", "try `omac vm status` or `omac vm list`"},
+		{"try `omac vm status` or `omac vm list`", "try `omac vm status --name yarp3` or `omac vm list`"},
+		{"pull it with `omac vm image add <ref>`", "pull it with `omac vm image add --name yarp3 <ref>`"},
+		{"run `omac vm up --name yarp3`", "run `omac vm up --name yarp3`"},
+		{"run `omac vm online --name other` first", "run `omac vm online --name other` first"},
 		{"no hint", "no hint"},
 	}
 	for _, c := range cases {

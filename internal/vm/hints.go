@@ -3,20 +3,28 @@ package vm
 import (
 	"io"
 	"regexp"
+	"strings"
 )
 
 // hintRE matches a quoted omac vm command that acts on one VM, as used in
 // the hints of error and progress messages.
-var hintRE = regexp.MustCompile("`omac vm (up|down|reset|online|offline)((?: [^`]*)?)`")
+var hintRE = regexp.MustCompile("`omac vm (up|down|reset|status|online|offline|image add)((?: [^`]*)?)`")
 
 // NameHints rewrites the omac vm commands quoted in s so they act on the
 // named VM, e.g. "run `omac vm up`" becomes "run `omac vm up --name yarp3`".
-// The default VM needs no flag, so s is returned unchanged.
+// The default VM needs no flag, so s is returned unchanged; so is a command
+// that already carries --name.
 func NameHints(name, s string) string {
 	if name == DefaultVMName {
 		return s
 	}
-	return hintRE.ReplaceAllString(s, "`omac vm $1 --name "+name+"$2`")
+	return hintRE.ReplaceAllStringFunc(s, func(m string) string {
+		if strings.Contains(m, " --name") {
+			return m
+		}
+		sub := hintRE.FindStringSubmatch(m)
+		return "`omac vm " + sub[1] + " --name " + name + sub[2] + "`"
+	})
 }
 
 type hintedError struct {

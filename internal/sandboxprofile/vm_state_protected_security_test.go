@@ -9,8 +9,8 @@ import (
 	"github.com/TNG/oh-my-agentic-coder/internal/vm"
 )
 
-// Checking the path vm.DefaultRoot resolves to, not the literals in
-// protectedCommon, catches a DefaultRoot that moves without the baseline.
+// Checking the path vm.InstanceRoot resolves to, not the literals in
+// protectedCommon, catches a state root that moves without the baseline.
 func TestSecurityVMStateRootIsProtected(t *testing.T) {
 	for name, xdgState := range map[string]string{
 		"XDG_STATE_HOME unset": "",
