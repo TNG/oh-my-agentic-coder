@@ -10,7 +10,7 @@ for (const version of [1, 2]) {
   test(`v${version}: every forbidden display rune is stripped at prompt sinks`, async (t) => {
     const state = fixture(t)
     state.sessions.set("display", "/app")
-    const runes = [..."\u061c\u200b\u200c\u200d\u200e\u200f\u2028\u2029\u202a\u202b\u202c\u202d\u202e\u2060\u2066\u2067\u2068\u2069\ufeff"]
+    const runes = [..."\u061c\u200b\u200e\u200f\u2028\u2029\u202a\u202b\u202c\u202d\u202e\u2060\u2066\u2067\u2068\u2069\ufeff"]
     for (let code = 0; code <= 0x9f; code++) {
       if (code < 0x20 || code >= 0x7f) runes.push(String.fromCodePoint(code))
     }

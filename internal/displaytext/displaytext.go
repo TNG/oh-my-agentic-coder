@@ -21,14 +21,20 @@ import "strings"
 
 // Unsafe reports whether r must not reach a display: C0 and C1 control
 // characters (including newline and tab), Unicode line and paragraph
-// separators, invisible zero-width characters and bidi controls.
+// separators, the zero-width space, word joiner and byte-order mark, and
+// bidi controls.
+//
+// The zero-width non-joiner (U+200C) and joiner (U+200D) are kept: they are
+// part of correct spelling in scripts such as Persian or Hindi and of emoji
+// sequences like "woman technologist", and they cannot reorder text or
+// start a new line.
 func Unsafe(r rune) bool {
 	if r < 0x20 || (r >= 0x7f && r <= 0x9f) {
 		return true
 	}
 	switch r {
 	case '\u2028', '\u2029', // line / paragraph separators
-		'\u200b', '\u200c', '\u200d', '\u2060', '\ufeff', // zero-width
+		'\u200b', '\u2060', '\ufeff', // zero-width space, word joiner, BOM
 		'\u061c', '\u200e', '\u200f', // directional marks
 		'\u202a', '\u202b', '\u202c', '\u202d', '\u202e', // bidi overrides
 		'\u2066', '\u2067', '\u2068', '\u2069': // bidi isolates

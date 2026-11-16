@@ -28,14 +28,14 @@ var bridgeCopies = []string{
 }
 
 // unsafeClass finds the character class that starts with NUL, written as
-// \x00 (TypeScript) or \u0000 (jq), e.g. [\x00-\x1f\x7f-\x9f؜...].
+// \x00 (TypeScript) or \u0000 (jq), e.g. [\x00-\x1f\x7f-\x9f\u061c...].
 var unsafeClass = regexp.MustCompile(`\[(?:\\x00|\\u0000)[^\]]*\]`)
 
 // classItem matches one \xHH or \uHHHH escape, optionally followed by
 // -\xHH or -\uHHHH to form a range.
 var classItem = regexp.MustCompile(`\\(?:x([0-9a-fA-F]{2})|u([0-9a-fA-F]{4}))(?:-\\(?:x([0-9a-fA-F]{2})|u([0-9a-fA-F]{4})))?`)
 
-// parseClass returns the runes a class like [\x00-\x1f؜] matches. It
+// parseClass returns the runes a class like [\x00-\x1f\u061c] matches. It
 // fails the test on any syntax it does not understand, so a copy cannot
 // slip past the comparison by using another notation.
 func parseClass(t *testing.T, class string) map[rune]bool {
@@ -89,5 +89,18 @@ func TestBridgeCopiesMatch(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestStripKeepsJoiners checks that U+200C and U+200D survive: removing
+// them would misspell Persian text and break emoji sequences.
+func TestStripKeepsJoiners(t *testing.T) {
+	for _, s := range []string{
+		"\u0645\u06cc\u200c\u062e\u0648\u0627\u0647\u0645", // Persian "I want", with a non-joiner
+		"\U0001f469\u200d\U0001f4bb",                       // woman technologist emoji
+	} {
+		if got := Strip(s); got != s {
+			t.Errorf("Strip(%q) = %q, want it unchanged", s, got)
+		}
 	}
 }
