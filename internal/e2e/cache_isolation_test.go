@@ -728,6 +728,7 @@ func TestE2ECacheEnvironmentOverridesAllowlist(t *testing.T) {
 		[]string{
 			"GOCACHE=" + hostileGOCACHE, "CARGO_HOME=" + hostileCARGO,
 			"UV_CACHE_DIR=" + hostileUV, "UV_TOOL_DIR=" + hostileUV,
+			"UV_TOOL_BIN_DIR=" + hostileUV,
 		},
 		"/bin/sh", "-c", "echo XDG_CACHE_HOME=$XDG_CACHE_HOME; echo GOCACHE=$GOCACHE; echo GOMODCACHE=$GOMODCACHE; echo NPM_CONFIG_CACHE=$NPM_CONFIG_CACHE; echo PIP_CACHE_DIR=$PIP_CACHE_DIR; echo CARGO_HOME=$CARGO_HOME; echo UV_CACHE_DIR=$UV_CACHE_DIR; echo UV_TOOL_DIR=$UV_TOOL_DIR; echo UV_TOOL_BIN_DIR=$UV_TOOL_BIN_DIR; echo OMAC_CACHE_DIR=$OMAC_CACHE_DIR")
 	if code != 0 {
@@ -740,7 +741,7 @@ func TestE2ECacheEnvironmentOverridesAllowlist(t *testing.T) {
 		t.Errorf("hostile CARGO_HOME leaked into sandbox: %s", out)
 	}
 	if strings.Contains(out, hostileUV) {
-		t.Errorf("hostile uv cache/tool dirs leaked into sandbox: %s", out)
+		t.Errorf("hostile uv cache/tool/bin dirs leaked into sandbox: %s", out)
 	}
 	cacheDir := extractEnv(out, "OMAC_CACHE_DIR=")
 	if cacheDir == "" {
