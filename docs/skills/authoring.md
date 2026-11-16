@@ -152,7 +152,7 @@ If a value is hard to find, tell the user how to get it with `hint` and `docs`:
   ? SLACK_XOXC_TOKEN (input hidden; must match ^xoxc-.+):
 ```
 
-If a `docs` value is not a file inside the skill, or the file does not exist, `omac register` warns and leaves the `More:` line out. The skill still loads and runs; `docs` is only help text. omac removes control characters (such as terminal escape sequences) from `description`, `hint` and `docs` before printing them.
+If a `docs` value is not a file inside the skill, or the file does not exist, `omac register` warns and leaves the `More:` line out. The skill still loads and runs; `docs` is only help text. omac removes control and invisible formatting characters (such as terminal escape sequences, bidirectional-text controls and zero-width spaces) from `description`, `hint` and `docs` before printing them.
 
 To update stored values after registration:
 
