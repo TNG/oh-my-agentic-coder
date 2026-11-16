@@ -38,14 +38,35 @@ server password <random password>
 For a stable password across restarts, set a password used only for this server:
 
 ```bash
-OMAC_SERVE_PASSWORD='a-unique-server-password' omac serve opencode --workdir ~/my-project
+# Read the password from a password manager rather than typing it inline,
+# so it does not end up in your shell history. For example, on macOS:
+OMAC_SERVE_PASSWORD="$(security find-generic-password -s omac-serve -w)" \
+  omac serve opencode --workdir ~/my-project
 ```
 
-omac passes it as `OPENCODE_SERVER_PASSWORD` only to the inner server. It does
-not automatically forward an ambient `OPENCODE_SERVER_PASSWORD` or provider
-keys. With sandboxing enabled, this requires the native backend; a policy's
-`environment.deny_vars` still wins and a blocked dedicated password aborts
-startup. Never reuse this password for another service: the agent can read it.
+omac passes this value to the OpenCode server as `OPENCODE_SERVER_PASSWORD`.
+Other processes omac starts, such as skill helpers on your machine, do not
+see it. Never reuse this password for another service: the agent inside the
+sandbox can read it.
+
+How your shell environment is handled depends on the sandbox:
+
+- **In the sandbox (the default):** a password you set in your shell for other
+  tools (`OPENCODE_SERVER_PASSWORD`) is not passed to the server; only
+  `OMAC_SERVE_PASSWORD` is. The exception is a sandbox profile that lists
+  `OPENCODE_SERVER_PASSWORD` in
+  [`environment.allow_vars`](../configuration.md#sandbox-grants).
+  `OMAC_SERVE_PASSWORD` needs omac's own sandbox (the default
+  `builtin` profile); with another sandbox backend such as
+  [nono](./nono.md), omac stops with an error. If your sandbox profile lists
+  `OPENCODE_SERVER_PASSWORD` in `environment.deny_vars`, omac also stops
+  instead of starting the server without the password.
+- **With `--no-sandbox`:** the server sees your shell environment as usual,
+  including any `OPENCODE_SERVER_PASSWORD` you set there.
+  `OMAC_SERVE_PASSWORD` takes precedence over it.
+
+`OMAC_SERVE_PASSWORD` cannot be combined with `--no-inner`, because omac
+then starts no server to pass it to.
 
 ## Choosing a different port
 
