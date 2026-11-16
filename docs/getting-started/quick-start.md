@@ -189,3 +189,4 @@ Keep each downloaded file under its original release name. `sha256sum -c` matche
 - [Security model](../security.md): What is and what is not available to your agent inside the sandbox.
 - Skills — [usage](../usage/skills.md) and [authoring](../skills/authoring.md): How to use and create skills that require secrets without exposing them to the agent.
 - [Troubleshooting](../troubleshooting.md): Tips for common problems and instructions on how to report a bug.
+- [Uninstall](./uninstall.md): How to remove omac and every file it wrote.
