@@ -1176,11 +1176,12 @@ func (s *serveServer) checkGlobalDrift() int {
 	// 1. Unregistered global skills on disk. Discover everything visible to
 	//    the active harness, keep only the user-global ones, and flag any
 	//    that aren't in the global registry.
-	discovered, derr := skillsource.Discover(s.env.Workdir, s.harness)
+	discovered, skipped, derr := skillsource.DiscoverWithSkipped(s.env.Workdir, s.harness)
 	if derr != nil {
 		fmt.Fprintln(s.env.Stderr, "omac serve: scan global skills:", derr)
 		return ExitIOError
 	}
+	warnSkippedSkillFolders(s.env.Stderr, "omac serve", skipped, "user-global")
 	var unregistered []string
 	for _, e := range discovered {
 		if e.Kind != "user-global" {
@@ -1368,10 +1369,11 @@ func (s *serveServer) activate(absDir string) (map[string]any, error) {
 	s.byToken[token] = d
 	s.mu.Unlock()
 
-	discovered, err := skillsource.Discover(absDir, s.harness)
+	discovered, skipped, err := skillsource.DiscoverWithSkipped(absDir, s.harness)
 	if err != nil {
 		return nil, err
 	}
+	warnSkippedSkillFolders(s.env.Stderr, "omac serve", skipped, "workdir")
 
 	wReg, err := registry.Load(absDir)
 	if err != nil {

@@ -85,6 +85,25 @@ recorded in the audit log (`route.state`, `skipped-unregistered`):
 omac start --skip-unregistered
 ```
 
+### Skill folder not detected: ignoring skill folder
+
+```
+omac start: ignoring skill folder "My_Skill": skill names may only contain lowercase letters, digits and "-", and must start with a letter or digit; rename the folder
+```
+
+Cause: the folder has an `omac.yaml`, but its name is not a valid skill name.
+omac ignores such folders: they do not show up as unregistered skills and do not
+start. Skill names may only use lowercase letters, digits and `-`, and must
+start with a letter or digit. `omac serve` prints the same line, prefixed
+`omac serve:`.
+
+Fix: rename the folder, and the `name` in its `omac.yaml` and `SKILL.md`, for
+example from `My_Skill` to `my-skill`. Then register it:
+
+```bash
+omac register my-skill
+```
+
 ### exec: node: executable file not found in $PATH
 
 ```

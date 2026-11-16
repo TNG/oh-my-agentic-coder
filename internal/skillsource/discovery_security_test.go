@@ -1,7 +1,9 @@
 package skillsource
 
 import (
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -43,5 +45,34 @@ func TestSecuritySkillNameValidatedAtDiscovery(t *testing.T) {
 		if seen[n] {
 			t.Errorf("Discover surfaced a directory name that is not a valid skill identifier: %q", n)
 		}
+	}
+}
+
+// TestDiscoverWithSkippedReportsInvalidNames checks that a skill folder
+// with an invalid name is reported instead of vanishing silently, and that
+// a folder without omac.yaml (not a skill) is not reported.
+func TestDiscoverWithSkippedReportsInvalidNames(t *testing.T) {
+	withFakeHome(t)
+	wd := t.TempDir()
+	root := filepath.Join(wd, ".opencode", "skills")
+	stageSkill(t, root, "real-skill")
+	stageSkill(t, root, "My_Skill")
+	if err := os.MkdirAll(filepath.Join(root, "Notes_Not_A_Skill"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	got, skipped, err := DiscoverWithSkipped(wd, ocHarness(t))
+	if err != nil {
+		t.Fatalf("DiscoverWithSkipped: %v", err)
+	}
+	if len(got) != 1 || got[0].Name != "real-skill" {
+		t.Errorf("entries = %+v, want only real-skill", got)
+	}
+	if len(skipped) != 1 {
+		t.Fatalf("skipped = %+v, want exactly My_Skill", skipped)
+	}
+	s := skipped[0]
+	if s.Name != "My_Skill" || s.Kind != "workdir" || s.Dir != filepath.Join(root, "My_Skill") || !strings.Contains(s.Reason, "lowercase letters") {
+		t.Errorf("skipped[0] = %+v", s)
 	}
 }
