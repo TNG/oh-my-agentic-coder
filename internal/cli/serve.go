@@ -938,12 +938,22 @@ func forwardHarnessEnv(env *Env, argv []string, harness config.Harness, plan san
 		fmt.Fprintln(env.Stderr, `      allow_vars: ["*"] is not recommended because it forwards almost every ambient var.`)
 		fmt.Fprintln(env.Stderr, "      Continuing shortly…")
 		time.Sleep(emptyAllowVarsWarnDelay)
+	}
+	return injectSandboxEnvAllow(argv, harnessEnvAllowVars(harness, plan), plan)
+}
+
+// harnessEnvAllowVars returns the variable names forwardHarnessEnv adds to
+// the sandbox's env allowlist via --allow-env. It is the single place for
+// that rule, so code that predicts the server's environment (see
+// serveAuthGetenv) cannot drift from what the sandbox really lets through.
+func harnessEnvAllowVars(harness config.Harness, plan sandboxPlan) []string {
+	if planAllowVarsEmpty(plan) {
 		// Seed only the operational minimum; do NOT auto-forward auth vars.
 		// HomeEnv goes through: it is a path, not a credential, and
 		// ResolvedSandboxDirs already granted the config home it names.
-		return injectSandboxEnvAllow(argv, append(sandboxprofile.DefaultAllowVars(), harness.HomeEnv), plan)
+		return append(sandboxprofile.DefaultAllowVars(), harness.HomeEnv)
 	}
-	return injectSandboxEnvAllow(argv, harness.ForwardedEnvVars(), plan)
+	return harness.ForwardedEnvVars()
 }
 
 // planAllowVarsEmpty reports whether the launch's resolved policy profile

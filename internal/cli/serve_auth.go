@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/TNG/oh-my-agentic-coder/internal/config"
@@ -61,12 +62,9 @@ func serveAuthGetenv(h config.Harness, plan sandboxPlan, extra map[string]string
 		if !plan.Native || plan.Policy == nil {
 			return func(string) string { return "" }
 		}
-		allow = sandboxprofile.EffectiveAllowVars(plan.Policy.Environment.AllowVars)
-		if len(plan.Policy.Environment.AllowVars) > 0 {
-			allow = append(allow, h.ForwardedEnvVars()...)
-		} else if h.HomeEnv != "" {
-			allow = append(allow, h.HomeEnv)
-		}
+		// Same inputs as the sandbox's filter: the policy's allowlist plus the
+		// --allow-env names forwardHarnessEnv adds.
+		allow = slices.Concat(sandboxprofile.EffectiveAllowVars(plan.Policy.Environment.AllowVars), harnessEnvAllowVars(h, plan))
 		deny = plan.Policy.Environment.DenyVars
 	}
 	values := map[string]string{}
