@@ -12,7 +12,7 @@ description: omac configuration files and options
 | `sandbox-profiles/default.pages.json` | Permanent allow/deny network decisions made via the prompt dialog | Network prompt dialog (user answers)  |
 | `sidecar.json` | Skill registry: names, directories, bundle hashes, declared secrets | `omac register` / `omac deregister`   |
 | `skill-config.yaml` | Non-secret per-skill fields: API base URLs, region names, feature flags | `omac register` / `omac config`       |
-| `vm.yaml` | Size and extra packages of the omac VM (user-global only); see [omac VM](#omac-vm-vmyaml) | User                                  |
+| `vm.yaml`, `vms/<name>.yaml` | Size, extra packages and setup script of the omac VM and of each named VM (user-global only); see [omac VM](#omac-vm-vmyaml) | User                                  |
 
 These files live under `~/.config/omac/` (user-global) or `<workdir>/.opencode/` (workdir-local). The launcher config is read from both locations when both exist; see [Per-project configuration](#per-project-configuration) for what each location can control.
 
@@ -190,17 +190,39 @@ By default, a write error emits a warning and the run continues.
 
 ```yaml
 cpus: 8             # default: half the host's cores, at least 4
-memory: 12GiB       # default: a quarter of the host's RAM, between 8GiB and 12GiB
+memory: 10GiB       # default: a quarter of the host's RAM, between 8GiB and 12GiB
 disk: 60GiB         # default: 60GiB
 packages: [jq]      # extra Ubuntu packages to install; default: none
 jdks: [temurin-25]  # Java versions to install; default: none
+setup: |            # shell script run once as root while provisioning; default: none
+  npm install --global pnpm
 ```
 
-The default memory is capped at 12GiB. A full test suite of a large Java project that uses Testcontainers needed about 7.6 GB, so 8GiB was too tight, and 12GiB leaves headroom.
+The default memory is capped at 12GiB because a full test suite of a large Java project that uses Testcontainers needs about 7.6 GB, which 8GiB cannot hold comfortably and 12GiB does. The values above are examples, not recommendations.
 
 Each `jdks` entry installs the matching Adoptium package during `omac vm up` or `omac vm up --reprovision`: `temurin-25` installs `temurin-25-jdk`. Only entries of the form `temurin-<version>` are supported, where the version has no leading zero. The package name itself, such as `temurin-25-jdk`, works as well. An unknown field is an error, so a typo does not silently fall back to the defaults.
 
 omac applies this file only when it creates the VM or reprovisions it. After changing `packages` or `jdks`, run `omac vm up --reprovision`. After changing `cpus`, `memory` or `disk`, run `omac vm reset`, which deletes the VM, its imported images and its keys, then creates it anew; add the images again afterwards.
+
+### Setup script
+
+`setup` is a shell script (run with `bash`) for anything `packages` and `jdks` cannot express, for example installing Node packages or tools from a download. omac runs it as root inside the VM, with network access, during provisioning: on the first `omac vm up` and on `omac vm up --reprovision`, after the packages and JDKs are installed. It runs again each time you reprovision, so write it to be safe to repeat. For example, `npm install --global pnpm` can run twice, while appending a line to a file would add it twice.
+
+If the script fails, omac prints its output, and the VM stays online. Fix the script and run `omac vm up` again, which provisions once more. Until provisioning succeeds the VM does not switch offline, so a session cannot attach to it.
+
+`setup` is read only from your own config file, never from a project. A repository cannot add a script that runs as root in your VM.
+
+### Several VMs
+
+The file above configures the default VM `omac`. Another VM, created with `omac vm up --name <name>`, reads `~/.config/omac/vms/<name>.yaml`, next to `vm.yaml`, with the same fields. The file is optional there too. For example, `~/.config/omac/vms/acme.yaml`:
+
+```yaml
+jdks: [temurin-21]
+setup: |
+  npm install --global @angular/cli
+```
+
+For how to create such a VM and make projects use it, see [Several VMs and the project map](./usage/cli.md#several-vms-and-the-project-map).
 
 ## Corporate proxy
 
