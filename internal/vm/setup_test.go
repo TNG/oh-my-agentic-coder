@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
 )
@@ -168,5 +169,64 @@ func TestSetupFailureOutputIsCapped(t *testing.T) {
 	got := capOutput(big)
 	if len(got) > 5000 {
 		t.Errorf("capped output is %d bytes", len(got))
+	}
+}
+
+func TestCapOutputKeepsValidUTF8(t *testing.T) {
+	got := capOutput(strings.Repeat("ä", maxSetupOutput))
+	if !utf8.ValidString(got) {
+		t.Error("capped output is not valid UTF-8")
+	}
+}
+
+func TestSetupFailureWithHugeStderrYieldsCappedError(t *testing.T) {
+	m, _, ssh := newTestManager(t)
+	writeConfig(t, m, "setup: |\n  false\n")
+	ssh.fail = func(remote string) error {
+		if remote == setupCmd {
+			return errors.New("exit status 1: " + strings.Repeat("apt error ", 20000))
+		}
+		return nil
+	}
+	err := m.Up(context.Background(), false)
+	if err == nil {
+		t.Fatal("Up succeeded")
+	}
+	if len(err.Error()) > 6000 {
+		t.Errorf("error is %d bytes, want it capped", len(err.Error()))
+	}
+	if !strings.Contains(err.Error(), "apt error") || !strings.Contains(err.Error(), "omac vm up") {
+		t.Errorf("error lost the tail or the hint: %.200s", err)
+	}
+}
+
+func TestReprovisionSetupFailureAfterOnlineSwitchRemovesMarker(t *testing.T) {
+	m, _, ssh := newTestManager(t)
+	mustUp(t, m)
+	writeConfig(t, m, "setup: |\n  false\n")
+	ssh.fail = func(remote string) error {
+		if remote == setupCmd {
+			return errors.New("exit status 3")
+		}
+		return nil
+	}
+	err := m.Up(context.Background(), true)
+	if err == nil || !strings.Contains(err.Error(), "exit status 3") {
+		t.Fatalf("Up(reprovision) = %v, want the setup failure", err)
+	}
+	remotes := ssh.remotes()
+	setupAt := slices.Index(remotes, setupCmd)
+	onlineAt := slices.Index(remotes, writeModeCmd(ModeOnline))
+	if onlineAt < 0 || setupAt < onlineAt {
+		t.Errorf("setup (%d) must follow the online switch (%d): %v", setupAt, onlineAt, remotes)
+	}
+	if offlineAfter := slices.Index(remotes[setupAt:], writeModeCmd(ModeOffline)); offlineAfter >= 0 {
+		t.Error("VM went offline after the failed setup")
+	}
+	if _, g := ssh.snapshot(); g.provisioned {
+		t.Error("marker present after a failed setup")
+	}
+	if st := mustState(t, m); st.Mode != ModeOnline {
+		t.Errorf("state mode = %q, want online", st.Mode)
 	}
 }
