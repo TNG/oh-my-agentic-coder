@@ -130,11 +130,6 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	var req request
-	if err := json.Unmarshal(body, &req); err != nil {
-		http.Error(w, "invalid JSON body: "+err.Error(), http.StatusBadRequest)
-		return
-	}
 
 	headers := visibleHeaders(r.Header)
 	s.mu.Lock()
@@ -148,6 +143,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "dump failed: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
+	}
+
+	var req request
+	if err := json.Unmarshal(body, &req); err != nil {
+		http.Error(w, "invalid JSON body: "+err.Error(), http.StatusBadRequest)
+		return
 	}
 
 	text := describe(kind, req, headers, n)
@@ -242,10 +243,11 @@ func (r request) toolNames() []string {
 
 // omittedHeaders carry credentials and never appear in a response or dump.
 var omittedHeaders = map[string]bool{
-	"Authorization": true,
-	"X-Api-Key":     true,
-	"Cookie":        true,
-	"Set-Cookie":    true,
+	"Authorization":       true,
+	"Proxy-Authorization": true,
+	"X-Api-Key":           true,
+	"Cookie":              true,
+	"Set-Cookie":          true,
 }
 
 func visibleHeaders(h http.Header) map[string]string {

@@ -28,27 +28,38 @@ func startServer(t *testing.T, opts Options) *Server {
 	return s
 }
 
-func post(t *testing.T, url, body string) (*http.Response, string) {
-	t.Helper()
+func doPost(url, body string) (*http.Response, string, error) {
 	req, err := http.NewRequest(http.MethodPost, url, strings.NewReader(body))
 	if err != nil {
-		t.Fatal(err)
+		return nil, "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+secretValue)
+	req.Header.Set("Proxy-Authorization", "Basic "+secretValue)
 	req.Header.Set("X-Api-Key", secretValue)
 	req.Header.Set("Cookie", "session="+secretValue)
+	req.Header.Set("Set-Cookie", "session="+secretValue)
 	req.Header.Set("X-Custom", "visible-header")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		t.Fatal(err)
+		return nil, "", err
 	}
 	defer resp.Body.Close()
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
+		return nil, "", err
+	}
+	return resp, string(data), nil
+}
+
+// post is for the test goroutine only; spawned goroutines use doPost.
+func post(t *testing.T, url, body string) (*http.Response, string) {
+	t.Helper()
+	resp, data, err := doPost(url, body)
+	if err != nil {
 		t.Fatal(err)
 	}
-	return resp, string(data)
+	return resp, data
 }
 
 const openAIBody = `{"model":"gpt-x","stream":%t,"messages":[
@@ -90,7 +101,7 @@ func assertNoSecrets(t *testing.T, what, s string) {
 		t.Errorf("%s leaks credential:\n%s", what, s)
 	}
 	low := strings.ToLower(s)
-	for _, h := range []string{"authorization", "x-api-key", "cookie"} {
+	for _, h := range []string{"authorization", "proxy-authorization", "x-api-key", "cookie", "set-cookie"} {
 		if strings.Contains(low, h) {
 			t.Errorf("%s mentions header %q:\n%s", what, h, s)
 		}
@@ -309,7 +320,10 @@ func TestConcurrentRequests(t *testing.T) {
 			if i%3 == 0 {
 				url, body = "/v1/messages", fmt.Sprintf(anthropicBody, i%2 == 0)
 			}
-			post(t, s.URL()+url, body)
+			if _, _, err := doPost(s.URL()+url, body); err != nil {
+				t.Error(err)
+				return
+			}
 			_ = s.Requests()
 		}()
 	}
@@ -342,4 +356,24 @@ func TestUnknownRouteAndBadBody(t *testing.T) {
 	if resp, _ := post(t, s.URL()+"/v1/messages", "not json"); resp.StatusCode != 400 {
 		t.Errorf("bad body: %d", resp.StatusCode)
 	}
+}
+
+func TestMalformedBodyIsRecordedAndDumped(t *testing.T) {
+	dir := t.TempDir()
+	s := startServer(t, Options{DumpDir: dir})
+	post(t, s.URL()+"/v1/messages", "not json")
+	if got := s.Requests(); len(got) != 1 || string(got[0]) != "not json" {
+		t.Fatalf("recorded %q", got)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "000001.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var d struct {
+		Body string `json:"body"`
+	}
+	if err := json.Unmarshal(data, &d); err != nil || d.Body != "not json" {
+		t.Fatalf("dump body %q (err %v): %s", d.Body, err, data)
+	}
+	assertNoSecrets(t, "dump", string(data))
 }

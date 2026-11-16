@@ -122,10 +122,9 @@ func TestOpenCodeSingleSystemMessage(t *testing.T) {
 	}
 
 	// --- stub model endpoint -------------------------------------------
-	// Records every chat/completions request body. OpenCode forks
-	// concurrent title- and summary-generation calls alongside the main
-	// turn, so more than one request is expected and the handler must be
-	// concurrency-safe.
+	// Records every request body. OpenCode forks title- and
+	// summary-generation calls alongside the main turn, so more than one
+	// request is expected.
 	stub := echomodel.New(echomodel.Options{})
 	if err := stub.Start(); err != nil {
 		t.Fatal(err)
