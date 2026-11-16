@@ -312,6 +312,9 @@ func runServe(args []string, env *Env) int {
 	// drives our provisioning and is inherited by the sandboxed child;
 	// an explicit value is respected. The dir is granted read+write in
 	// the sandbox in the --for-opencode-desktop block below.
+	if forDesktop {
+		defer vm.PinStateHome(vmStateHome(os.Getenv("XDG_STATE_HOME"), opencodestate.DesktopStateDir()))()
+	}
 	if dir, set := resolveDesktopStateDir(forDesktop); set {
 		if err := os.Setenv("XDG_STATE_HOME", dir); err != nil {
 			fmt.Fprintln(env.Stderr, "omac serve: --for-opencode-desktop: set XDG_STATE_HOME:", err)
@@ -793,6 +796,17 @@ func resolveDesktopStateDir(forDesktop bool) (dir string, setEnv bool) {
 		return d, true
 	}
 	return "", false
+}
+
+// vmStateHome is the XDG_STATE_HOME the VM state is found under in
+// --for-opencode-desktop mode. When the Desktop app launched omac,
+// XDG_STATE_HOME is the app's data folder, so the VM state falls back to
+// $HOME/.local/state, where `omac vm up` created it.
+func vmStateHome(xdg, desktopDir string) string {
+	if xdg == desktopDir {
+		return ""
+	}
+	return xdg
 }
 
 // controlPortOf returns the port the control-plane listener is bound to,

@@ -826,6 +826,19 @@ func TestRootsEmptyAllowsAny(t *testing.T) {
 	}
 }
 
+func TestVMStateHome(t *testing.T) {
+	cases := []struct{ xdg, desktop, want string }{
+		{"", "/desktop", ""},                 // manual serve: XDG_STATE_HOME unset
+		{"/desktop", "/desktop", ""},         // launched by the Desktop app
+		{"/x/state", "/desktop", "/x/state"}, // the user's own XDG_STATE_HOME
+	}
+	for _, c := range cases {
+		if got := vmStateHome(c.xdg, c.desktop); got != c.want {
+			t.Errorf("vmStateHome(%q, %q) = %q, want %q", c.xdg, c.desktop, got, c.want)
+		}
+	}
+}
+
 func TestResolveDesktopStateDir(t *testing.T) {
 	t.Run("not desktop mode: no injection", func(t *testing.T) {
 		t.Setenv("XDG_STATE_HOME", "/whatever")

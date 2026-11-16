@@ -38,9 +38,22 @@ func ValidateName(name string) error {
 	return nil
 }
 
+// stateHome returns the XDG_STATE_HOME the VM state lives under.
+var stateHome = func() string { return os.Getenv("XDG_STATE_HOME") }
+
+// PinStateHome makes the VM state resolve against dir ("" means
+// $HOME/.local/state) instead of the current XDG_STATE_HOME, until the
+// returned func restores it. `omac serve --for-opencode-desktop` needs this:
+// it points XDG_STATE_HOME at the OpenCode Desktop app's data folder.
+func PinStateHome(dir string) (restore func()) {
+	prev := stateHome
+	stateHome = func() string { return dir }
+	return func() { stateHome = prev }
+}
+
 // stateBase is <state home>/omac.
 func stateBase() (string, error) {
-	home, err := stateHomeDir(os.Getenv("XDG_STATE_HOME"))
+	home, err := stateHomeDir(stateHome())
 	if err != nil {
 		return "", err
 	}

@@ -43,6 +43,23 @@ func TestInstanceRootDefaultIgnoresRelativeXDGStateHome(t *testing.T) {
 	}
 }
 
+func TestPinStateHomeIgnoresLaterXDGStateHome(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", "/x/state")
+	restore := PinStateHome("/x/state")
+	t.Setenv("XDG_STATE_HOME", "/desktop")
+	got, err := InstanceRoot(DefaultVMName)
+	restore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join("/x/state", "omac", "vm"); got != want {
+		t.Errorf("pinned InstanceRoot = %q, want %q", got, want)
+	}
+	if got, _ := InstanceRoot(DefaultVMName); got != filepath.Join("/desktop", "omac", "vm") {
+		t.Errorf("after restore InstanceRoot = %q, want it to follow XDG_STATE_HOME again", got)
+	}
+}
+
 func TestNewLayoutPaths(t *testing.T) {
 	l := NewLayout("/r")
 	cases := map[string]string{
