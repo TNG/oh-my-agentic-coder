@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -136,5 +137,36 @@ func TestListInstances(t *testing.T) {
 	}
 	if !reflect.DeepEqual(rows, want) {
 		t.Errorf("rows = %+v, want %+v", rows, want)
+	}
+}
+
+func TestListInstancesShowsCorruptStateAsError(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	for name, st := range map[string]*State{"omac": {SSHPort: 42022, Mode: ModeOffline}, "zed": {SSHPort: 42024, Mode: ModeOnline}} {
+		root, _ := InstanceRoot(name)
+		if err := SaveState(NewLayout(root).StatePath, st); err != nil {
+			t.Fatal(err)
+		}
+	}
+	root, _ := InstanceRoot("bad")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	broken := NewLayout(root).StatePath
+	if err := os.WriteFile(broken, []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := ListInstances()
+	if err != nil {
+		t.Fatalf("ListInstances = %v, want the broken instance as a row", err)
+	}
+	if len(rows) != 3 || rows[0].Name != "omac" || rows[1].Name != "bad" || rows[2].Name != "zed" {
+		t.Fatalf("rows = %+v, want omac, bad, zed", rows)
+	}
+	if rows[1].Mode != "error" || rows[1].Err == nil || !strings.Contains(rows[1].Err.Error(), broken) {
+		t.Errorf("bad row = %+v, want state error naming %s", rows[1], broken)
+	}
+	if rows[2].Mode != ModeOnline || rows[2].SSHPort != 42024 {
+		t.Errorf("zed row = %+v, want it listed normally", rows[2])
 	}
 }

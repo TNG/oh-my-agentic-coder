@@ -210,6 +210,9 @@ func (m *Manager) loadOrInitState(cfg UserConfig, instanceExists bool) (*State, 
 	}
 	var usedBlocks, usedSSH []int
 	for _, p := range peers {
+		if p.Err != nil {
+			return nil, fmt.Errorf("omac vm: cannot pick ports while the state of VM %q is unreadable: %w", p.Name, p.Err)
+		}
 		if p.SSHPort > 0 {
 			usedBlocks = append(usedBlocks, p.PortBlock)
 			usedSSH = append(usedSSH, p.SSHPort)

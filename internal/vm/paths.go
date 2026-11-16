@@ -118,6 +118,7 @@ type InstanceRow struct {
 	Mode      string // "not created" when state.json is missing
 	SSHPort   int    // 0 when state.json is missing
 	PortBlock int
+	Err       error // set, with Mode "error", when state.json cannot be read
 }
 
 // ListInstances reads the state of the default VM and of every VM under
@@ -148,11 +149,10 @@ func ListInstances() ([]InstanceRow, error) {
 			return nil, err
 		}
 		st, err := LoadState(NewLayout(root).StatePath)
-		if err != nil {
-			return nil, err
-		}
 		row := InstanceRow{Name: n, Mode: "not created"}
-		if st != nil {
+		if err != nil {
+			row.Mode, row.Err = "error", err
+		} else if st != nil {
 			row.Mode, row.SSHPort, row.PortBlock = st.Mode, st.SSHPort, st.PortBlock
 		}
 		rows = append(rows, row)

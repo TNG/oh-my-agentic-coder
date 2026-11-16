@@ -76,8 +76,10 @@ type launchOpts struct {
 	// openPorts are extra loopback ports from --open-port (repeatable),
 	// typically a local webServer port for browser tests.
 	openPorts []int
-	// vm attaches the session to the running, offline omac VM (--vm).
-	vm bool
+	// vm attaches the session to a running, offline omac VM (--vm);
+	// vmName is the VM chosen with --vm=<name>, empty to use the project map.
+	vm     bool
+	vmName string
 	// innerArgs are appended to the resolved inner command (user-supplied
 	// trailing `-- args` plus any command-specific flags like --continue).
 	innerArgs []string
@@ -107,8 +109,9 @@ func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, int) 
 		noAudit            = fs.Bool("no-audit", false, "Disable the security audit trail.")
 		auditStrict        = fs.Bool("audit-strict", false, "Fail-closed: abort if the audit log cannot be written.")
 		sessionID          = fs.String("session", "", "Continue a specific session by id instead of the most recent one. (shorthand: -s)")
-		vmAttach           = fs.Bool("vm", false, "Attach to the omac VM: its SSH port is opened for the sandbox, so `omac vm exec` runs Docker, Gradle and tests there. Requires `omac vm up` and offline mode.")
 	)
+	var vmAttach vmFlag
+	fs.Var(&vmAttach, "vm", vmFlagUsage)
 	var openPorts intMultiFlag
 	fs.Var(&openPorts, "open-port", "Allow the sandboxed process to bind and connect on this TCP port (repeatable). Useful for a local app/dev server the agent or its tools talk to — e.g. Playwright/Vite/Next on :3000. On Linux, Landlock cannot limit that to loopback: outbound TCP to any host on the same port is also allowed.")
 	// -s is the documented shorthand for --session (opencode mirrors this
@@ -145,7 +148,7 @@ func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, int) 
 		fmt.Fprintf(env.Stderr, "omac %s: --ephemeral-cache cannot be used with --no-sandbox\n", cmdName)
 		return launchOpts{}, ExitMisuse
 	}
-	if *vmAttach && *noSandbox {
+	if vmAttach.on && *noSandbox {
 		fmt.Fprintf(env.Stderr, "omac %s: --vm cannot be used with --no-sandbox\n", cmdName)
 		return launchOpts{}, ExitMisuse
 	}
@@ -175,7 +178,8 @@ func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, int) 
 		auditStrict:        *auditStrict,
 		sessionID:          *sessionID,
 		openPorts:          append([]int(nil), openPorts...),
-		vm:                 *vmAttach,
+		vm:                 vmAttach.on,
+		vmName:             vmAttach.name,
 		innerArgs:          innerArgs,
 	}, ExitOK
 }
@@ -788,7 +792,7 @@ func runLaunch(env *Env, opts launchOpts) int {
 	// 7b. omac VM (--vm): attach only. The VM must already run offline.
 	var vmSess *vmSession
 	if opts.vm {
-		vmSess, err = attachVM(ctx, env, sandboxTmp)
+		vmSess, err = attachVM(ctx, env, sandboxTmp, opts.vmName, env.Workdir)
 		if err != nil {
 			fmt.Fprintln(env.Stderr, prefix+": --vm:", err)
 			return vmAttachExitCode(err)

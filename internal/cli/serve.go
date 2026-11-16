@@ -61,6 +61,7 @@ type serveParse struct {
 	roots             multiFlag
 	openPorts         []int
 	vm                bool
+	vmName            string
 }
 
 // parseServeArgs parses serve's harness token, flags, and trailing `--`
@@ -85,8 +86,9 @@ func parseServeArgs(args []string, env *Env) (serveParse, bool) {
 		auditLog          = fs.String("audit-log", "", "Path to the audit log (default: persistent central location). Overrides config.")
 		noAudit           = fs.Bool("no-audit", false, "Disable the security audit trail.")
 		auditStrict       = fs.Bool("audit-strict", false, "Fail-closed: abort if the audit log cannot be written.")
-		vmAttach          = fs.Bool("vm", false, "Attach to the omac VM: its SSH port is opened for the sandbox, so `omac vm exec` runs Docker, Gradle and tests there. Requires `omac vm up` and offline mode.")
 	)
+	var vmAttach vmFlag
+	fs.Var(&vmAttach, "vm", vmFlagUsage)
 	var roots multiFlag
 	var openPorts intMultiFlag
 	fs.Var(&roots, "root", "Pre-declared root directory under which projects may be activated (§5.4 Option B). Repeatable. Empty = allow any directory.")
@@ -118,17 +120,17 @@ func parseServeArgs(args []string, env *Env) (serveParse, bool) {
 		fmt.Fprintln(env.Stderr, "omac serve: --ephemeral-cache cannot be used with --no-sandbox")
 		return serveParse{}, false
 	}
-	if *vmAttach && (*noSandbox || *noInner) {
+	if vmAttach.on && (*noSandbox || *noInner) {
 		fmt.Fprintln(env.Stderr, "omac serve: --vm cannot be used with --no-sandbox or --no-inner")
 		return serveParse{}, false
 	}
 	// --for-opencode-desktop moves XDG_STATE_HOME, so serve would look for
 	// the VM's state in another directory than `omac vm up` created.
-	if *vmAttach && *forDesktop {
+	if vmAttach.on && *forDesktop {
 		fmt.Fprintln(env.Stderr, "omac serve: --vm cannot be used with --for-opencode-desktop")
 		return serveParse{}, false
 	}
-	if *vmAttach && *learn {
+	if vmAttach.on && *learn {
 		fmt.Fprintln(env.Stderr, "omac serve: --vm cannot be used with --learn, which would let the sandbox reach the VM's admin key")
 		return serveParse{}, false
 	}
@@ -159,7 +161,8 @@ func parseServeArgs(args []string, env *Env) (serveParse, bool) {
 		auditStrict:       *auditStrict,
 		roots:             roots,
 		openPorts:         append([]int(nil), openPorts...),
-		vm:                *vmAttach,
+		vm:                vmAttach.on,
+		vmName:            vmAttach.name,
 	}, true
 }
 
@@ -379,7 +382,11 @@ func runServe(args []string, env *Env) int {
 
 	var vmSess *vmSession
 	if parsed.vm {
-		vmSess, err = attachVM(ctx, env, sandboxTmp)
+		vmDir := env.Workdir
+		if workdir != "" {
+			vmDir = workdir
+		}
+		vmSess, err = attachVM(ctx, env, sandboxTmp, parsed.vmName, vmDir)
 		if err != nil {
 			fmt.Fprintln(env.Stderr, "omac serve: --vm:", err)
 			return vmAttachExitCode(err)

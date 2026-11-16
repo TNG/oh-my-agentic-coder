@@ -1755,3 +1755,22 @@ func TestImageAddEscapesDockerLoadOutput(t *testing.T) {
 		t.Errorf("output = %q, want the docker load line escaped", out.String())
 	}
 }
+
+func TestNewInstanceRefusesWhenPeerStateIsUnreadable(t *testing.T) {
+	m, lima, _ := newTestManager(t)
+	root, _ := InstanceRoot("broken")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	broken := NewLayout(root).StatePath
+	if err := os.WriteFile(broken, []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err := m.Up(context.Background(), false)
+	if err == nil || !strings.Contains(err.Error(), broken) {
+		t.Fatalf("Up = %v, want an error naming %s", err, broken)
+	}
+	if slices.Contains(lima.verbs(), "create") {
+		t.Error("limactl create ran despite the unreadable peer")
+	}
+}
