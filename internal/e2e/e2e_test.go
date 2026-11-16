@@ -450,6 +450,26 @@ func installHarness(t *testing.T, h harnessConfig, home string) {
 	t.Helper()
 	env := withHome(os.Environ(), home)
 
+	if preinstalledEnabled() {
+		// withHome keeps the host PATH, so the tests find this binary
+		// without it being linked into the temp HOME.
+		binPath := lookPathInHome(t, h.BinaryName, env)
+		cmd := exec.Command(binPath, "--version")
+		cmd.Env = env
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("preinstalled %s: --version failed: %v\n%s", h.Name, err, out)
+		}
+		if err := checkPreinstalledVersion(h.Name, pinnedPackage(h.Name), string(out)); err != nil {
+			t.Fatalf("%v", err)
+		}
+		t.Logf("using preinstalled %s at %s", h.BinaryName, binPath)
+		if h.ExtraInstallSteps != nil {
+			h.ExtraInstallSteps(t, home)
+		}
+		return
+	}
+
 	// First attempt: the harness's declared install command, with the
 	// bun→npm fallback applied when bun is unavailable under
 	// E2E_RECOVER_INSTALL (the omac sandbox blocks writes to ~/.bun).
