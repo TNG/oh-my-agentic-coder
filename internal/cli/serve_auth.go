@@ -71,10 +71,13 @@ func injectServeAuthAllow(argv []string, h config.Harness, plan sandboxPlan, pas
 }
 
 // The warning must consider the sandbox filter, not just the host shell.
+// For another sandbox backend omac cannot see that backend's filter, so it
+// reads the host environment, which is what such a backend starts from.
 func serveAuthGetenv(h config.Harness, plan sandboxPlan, extra map[string]string, noSandbox bool) func(string) string {
 	var allow, deny []string
-	if !noSandbox {
-		if !plan.Native || plan.Policy == nil {
+	if !noSandbox && plan.Native {
+		if plan.Policy == nil {
+			// The policy could not be loaded, so nothing is known to pass.
 			return func(string) string { return "" }
 		}
 		// Same inputs as the sandbox's filter: the policy's allowlist plus the
@@ -88,4 +91,26 @@ func serveAuthGetenv(h config.Harness, plan sandboxPlan, extra map[string]string
 		values[key] = value
 	}
 	return func(key string) string { return values[key] }
+}
+
+// serveAuthAdvice completes the hint's "To keep the same password, …"
+// sentence. It recommends OMAC_SERVE_PASSWORD only where prepareServeAuthEnv
+// would accept it, and otherwise names what to do instead, so a user who
+// follows the hint never runs into an error.
+func serveAuthAdvice(h config.Harness, plan sandboxPlan, noSandbox bool) string {
+	setPassword := "set " + sandboxprofile.ServePasswordEnv
+	if noSandbox || h.ServerLaunch == nil || h.ServerLaunch.AuthEnvVar == "" {
+		return setPassword
+	}
+	target := h.ServerLaunch.AuthEnvVar
+	switch {
+	case !plan.Native:
+		return fmt.Sprintf("set %s where your sandbox backend runs the server", target)
+	case plan.Policy == nil:
+		return fmt.Sprintf("fix sandbox profile %q, which could not be loaded, then %s", plan.PolicyRef, setPassword)
+	case sandboxprofile.EnvDenied(target, plan.Policy.Environment.DenyVars):
+		return fmt.Sprintf("remove the entry matching %s from environment.deny_vars in sandbox profile %q, then %s",
+			target, plan.PolicyRef, setPassword)
+	}
+	return setPassword
 }

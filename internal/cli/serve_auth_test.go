@@ -173,11 +173,71 @@ func TestServePasswordSuppressesHint(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			hint := serverExposureWarning(h, inner, serveAuthGetenv(h, plan, extra, noSandbox))
+			hint := serverExposureWarning(h, inner, serveAuthGetenv(h, plan, extra, noSandbox), serveAuthAdvice(h, plan, noSandbox))
 			if (hint == "") != (password != "") {
 				t.Errorf("noSandbox=%v password=%q: hint = %q", noSandbox, password, hint)
 			}
 		}
+	}
+}
+
+// The hint must never recommend OMAC_SERVE_PASSWORD where the same run would
+// reject it, and must read the host environment for another sandbox backend.
+func TestServePasswordHintAdvice(t *testing.T) {
+	h, ok := config.LookupHarness("opencode")
+	if !ok {
+		t.Fatal("opencode harness not found")
+	}
+	const prefix = `omac serve: opencode server on 127.0.0.1:4096 uses a random password that changes on every restart ` +
+		`(opencode prints it as "server password …"). To keep the same password, `
+	inner := []string{"opencode", "serve"}
+	for _, tc := range []struct {
+		name string
+		plan sandboxPlan
+		want string
+	}{
+		{
+			name: "native",
+			plan: sandboxPlan{Name: "builtin", Native: true, PolicyRef: "default", Policy: &sandboxprofile.Profile{}},
+			want: prefix + "set OMAC_SERVE_PASSWORD.",
+		},
+		{
+			name: "other backend",
+			plan: sandboxPlan{Name: "nono"},
+			want: prefix + "set OPENCODE_SERVER_PASSWORD where your sandbox backend runs the server.",
+		},
+		{
+			name: "policy not loaded",
+			plan: sandboxPlan{Name: "builtin", Native: true, PolicyRef: "broken", PolicyErr: os.ErrNotExist},
+			want: prefix + `fix sandbox profile "broken", which could not be loaded, then set OMAC_SERVE_PASSWORD.`,
+		},
+		{
+			name: "denied",
+			plan: sandboxPlan{Name: "builtin", Native: true, PolicyRef: "strict", Policy: &sandboxprofile.Profile{Environment: sandboxprofile.Environment{DenyVars: []string{"OPENCODE_*"}}}},
+			want: prefix + `remove the entry matching OPENCODE_SERVER_PASSWORD from environment.deny_vars in sandbox profile "strict", then set OMAC_SERVE_PASSWORD.`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("OPENCODE_SERVER_PASSWORD", "")
+			os.Unsetenv("OPENCODE_SERVER_PASSWORD")
+			advice := serveAuthAdvice(h, tc.plan, false)
+			if got := serverExposureWarning(h, inner, serveAuthGetenv(h, tc.plan, nil, false), advice); got != tc.want {
+				t.Errorf("hint = %q\nwant   %q", got, tc.want)
+			}
+			// Advice that simply says to set OMAC_SERVE_PASSWORD must hold.
+			_, err := prepareServeAuthEnv("serve-only", h, tc.plan, false)
+			if advice == "set OMAC_SERVE_PASSWORD" && err != nil {
+				t.Errorf("hint recommends OMAC_SERVE_PASSWORD, but it is rejected: %v", err)
+			}
+		})
+	}
+
+	// Another backend starts from the host environment, so a password set
+	// there must silence the hint, as it did before OMAC_SERVE_PASSWORD.
+	t.Setenv("OPENCODE_SERVER_PASSWORD", "from-shell")
+	plan := sandboxPlan{Name: "nono"}
+	if got := serverExposureWarning(h, inner, serveAuthGetenv(h, plan, nil, false), serveAuthAdvice(h, plan, false)); got != "" {
+		t.Errorf("other backend with OPENCODE_SERVER_PASSWORD set: hint = %q", got)
 	}
 }
 
