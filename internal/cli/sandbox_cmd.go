@@ -40,7 +40,7 @@ func runSandboxRun(args []string, env *Env) int {
 	flags, err := sandboxprofile.ParseFlags(args)
 	if err != nil {
 		fmt.Fprintln(env.Stderr, "omac sandbox run:", err)
-		fmt.Fprintln(env.Stderr, "usage: omac sandbox run [--profile <ref>] [--allow <path>] [--read <path>] [--write <path>] [--deny <path|glob>] [--deny-literal <path>] [--allow-file <path>] [--allow-unix-dir <dir>] [--open-port <port>] [--listen-port <port>] [--allow-tcp-connect <port>] [--allow-domain <d>] [--deny-domain <d>] [--allow-env <name>] [--block-net] [--workdir-access <level>] -- <cmd> [args...]")
+		fmt.Fprintln(env.Stderr, "usage: omac sandbox run [--profile <ref>] [--allow <path>] [--read <path>] [--write <path>] [--deny <path|glob>] [--deny-literal <path>] [--allow-file <path>] [--allow-unix-dir <dir>] [--open-port <port>] [--listen-port <port>] [--allow-tcp-connect <port>] [--allow-domain <d>] [--deny-domain <d>] [--allow-env <name>] [--block-net] [--workdir-access <level>] [--allow-literal <path>] [--for-opencode-desktop] -- <cmd> [args...]")
 		return ExitMisuse
 	}
 	return sandboxrun.Run(sandboxrun.Options{
@@ -80,5 +80,12 @@ repeatable and merge additively onto the profile's grants:
   --allow-env <name>         pass an environment variable into the sandbox for
                              this run (adds to the profile's allow_vars)
   --block-net                block all network access (overrides profile)
-  --workdir-access <level>   none|read|write|readwrite (replaces profile value)`)
+  --workdir-access <level>   none|read|write|readwrite (replaces profile value)
+
+Set by omac serve --for-opencode-desktop (not meant for direct use):
+  --allow-literal <path>     grant read+write on an absolute path, used as
+                             written (no ~, $VAR or glob expansion)
+  --for-opencode-desktop     hide OpenCode Desktop's project list and saved
+                             servers from the agent; refuses write grants
+                             that cover them (no --learn)`)
 }

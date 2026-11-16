@@ -79,7 +79,7 @@ func parseServeArgs(args []string, env *Env) (serveParse, bool) {
 		ephemeralCache    = fs.Bool("ephemeral-cache", false, "Use a per-launch cache instead of the persistent cache.")
 		cacheScopeFlag    = fs.String("cache-scope", "", "Persistent cache scope: global, config, or workdir. Overrides config (default: workdir).")
 		verbose           = fs.Bool("verbose", false, "Verbose lifecycle logging.")
-		forDesktop        = fs.Bool("for-opencode-desktop", false, "Grant every project worktree from the local OpenCode state (Desktop projects) read+write in the sandbox.")
+		forDesktop        = fs.Bool("for-opencode-desktop", false, "Grant every project worktree from the local OpenCode state (Desktop projects) read+write in the sandbox. Desktop's own project store and saved server credentials stay protected. Needs the native sandbox, without --learn.")
 		learn             = fs.Bool("learn", false, "Learn mode: do not restrict filesystem access; record folders used and offer to add them to the sandbox profile at session end.")
 		auditLog          = fs.String("audit-log", "", "Path to the audit log (default: persistent central location). Overrides config.")
 		noAudit           = fs.Bool("no-audit", false, "Disable the security audit trail.")
@@ -280,9 +280,10 @@ func runServe(args []string, env *Env) int {
 	}
 
 	// --for-opencode-desktop: the OpenCode Desktop app runs opencode with
-	// XDG_STATE_HOME pointing at its own data dir (auth, credentials,
-	// config), and both omac's desktop provisioning AND the inner
-	// opencode must resolve state against that same store. When the
+	// XDG_STATE_HOME pointing at its own data dir (opencode keeps its
+	// state in the opencode subdirectory there), and both omac's desktop
+	// provisioning AND the inner opencode must resolve state against that
+	// same dir. When the
 	// Desktop launches omac it exports XDG_STATE_HOME for us; a manual
 	// `omac serve --for-opencode-desktop` from a shell does not, so the
 	// inner reads an empty state dir, providers resolve without
@@ -290,8 +291,10 @@ func runServe(args []string, env *Env) int {
 	// like `opencode attach` report as an opaque "Unexpected server
 	// error"). Set it in omac's OWN environment when unset so it both
 	// drives our provisioning and is inherited by the sandboxed child;
-	// an explicit value is respected. The dir is granted read+write in
-	// the sandbox in the --for-opencode-desktop block below.
+	// an explicit value is respected. Only its opencode runtime
+	// subdirectory is made writable in the sandbox (injectDesktopGrants);
+	// the Desktop's own stores in this dir stay denied
+	// (sandboxrun.protectDesktopStores).
 	if dir, set := resolveDesktopStateDir(forDesktop); set {
 		if err := os.Setenv("XDG_STATE_HOME", dir); err != nil {
 			fmt.Fprintln(env.Stderr, "omac serve: --for-opencode-desktop: set XDG_STATE_HOME:", err)
@@ -786,8 +789,8 @@ func desktopStateHome(raw string) (string, error) {
 }
 
 // resolveDesktopStateDir decides the XDG_STATE_HOME to use under
-// --for-opencode-desktop, so omac and the inner opencode share the
-// Desktop app's auth/config/state (see the call site). It returns the
+// --for-opencode-desktop, so omac and the inner opencode use the Desktop
+// app's state dir (see the call site). It returns the
 // directory and whether omac should set it in its own environment.
 //
 //   - not desktop mode               -> ("", false)

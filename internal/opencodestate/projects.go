@@ -316,15 +316,18 @@ func desktopStoreDirs() []string {
 
 // DesktopStateDir returns the OpenCode Desktop app's data directory —
 // the location the Desktop exposes to its child processes as
-// XDG_STATE_HOME so they share its auth, credentials and config.
+// XDG_STATE_HOME. Its opencode child keeps state in <dir>/opencode; the
+// Desktop's own stores (DesktopStorePaths) sit next to it.
 //
 // `omac serve --for-opencode-desktop` uses this to point the inner
-// opencode at the same state store the Desktop uses when the launching
+// opencode at the same state dir the Desktop uses when the launching
 // shell didn't already set XDG_STATE_HOME (e.g. a manual run from a
 // terminal). Without it the inner reads an empty state dir, provider
 // credentials don't resolve, and opencode's /config/providers 500s —
 // which surfaces to clients like `opencode attach` as an opaque
 // "Unexpected server error".
+// In the sandbox only <dir>/opencode is writable; the Desktop's stores
+// are denied to the agent.
 //
 // It prefers an existing stable-then-beta directory (so a machine with
 // only the beta installed still works, and so the actual on-disk

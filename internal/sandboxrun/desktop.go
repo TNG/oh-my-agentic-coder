@@ -8,8 +8,13 @@ import (
 	"github.com/TNG/oh-my-agentic-coder/internal/opencodestate"
 )
 
-// Do not mask files inside writable parents: an absent file or a renamed
-// directory defeats that approach on Linux. Keep the entire route read-only.
+// protectDesktopStores keeps OpenCode Desktop's own stores (its project
+// list and saved servers) out of the agent's reach for
+// --for-opencode-desktop. Masking files inside a writable parent is not
+// enough: on Linux an absent file or a renamed directory defeats it. So
+// refuse any write grant that covers a store or one of its parent
+// directories, refuse symlinks on that route, and then deny the store
+// paths themselves (reading and writing).
 func protectDesktopStores(g *Grants, learn bool) error {
 	if learn {
 		return fmt.Errorf("--for-opencode-desktop cannot be combined with --learn: learn mode lifts the file restrictions that keep OpenCode Desktop's project list out of the agent's reach. Remove --learn")
