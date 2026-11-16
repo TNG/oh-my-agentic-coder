@@ -211,6 +211,11 @@ jobs:
       - name: Release notification policy
         run: python3 scripts/release-workflow_test.py
 
+      - name: Nix release publication policy
+        run: |
+          python3 scripts/update-nix-release_test.py
+          python3 scripts/nix-release-workflow_test.py
+
       # Keeps README.md an entry point (line cap) and the docs/ split honest
       # (every relative link + anchor resolves). See issue #190.
       - name: Doc guardrails
