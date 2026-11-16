@@ -46,19 +46,17 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net"
-	"net/http"
-	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
+	"github.com/TNG/oh-my-agentic-coder/internal/e2e/echomodel"
 	"github.com/TNG/oh-my-agentic-coder/internal/plugin"
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxbrief"
 )
@@ -128,32 +126,27 @@ func TestOpenCodeSingleSystemMessage(t *testing.T) {
 	// concurrent title- and summary-generation calls alongside the main
 	// turn, so more than one request is expected and the handler must be
 	// concurrency-safe.
-	var mu sync.Mutex
-	var bodies [][]byte
-	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/chat/completions") {
-			body, err := io.ReadAll(r.Body)
-			if err == nil {
-				mu.Lock()
-				bodies = append(bodies, body)
-				mu.Unlock()
-			}
-		}
-		writeStubCompletion(w)
-	}))
-	t.Cleanup(stub.Close)
-
-	addr, ok := stub.Listener.Addr().(*net.TCPAddr)
-	if !ok {
-		t.Fatalf("stub listener is not TCP: %T", stub.Listener.Addr())
+	stub := echomodel.New(echomodel.Options{})
+	if err := stub.Start(); err != nil {
+		t.Fatal(err)
 	}
-	t.Logf("stub model endpoint at %s (loopback port %d)", stub.URL, addr.Port)
+	t.Cleanup(func() { _ = stub.Close() })
+
+	stubURL, err := url.Parse(stub.URL())
+	if err != nil {
+		t.Fatal(err)
+	}
+	stubPort, err := strconv.Atoi(stubURL.Port())
+	if err != nil {
+		t.Fatalf("stub URL %q has no port: %v", stub.URL(), err)
+	}
+	t.Logf("stub model endpoint at %s (loopback port %d)", stub.URL(), stubPort)
 
 	// --- real omac + real opencode -------------------------------------
 	omacBin := buildOmac(t)
 	installHarness(t, h, home)
 	version := harnessVersion(t, h, home)
-	writeStubProviderConfig(t, home, stub.URL)
+	writeStubProviderConfig(t, home, stub.URL())
 
 	// Provision the plugin the way `omac start` does (cli/setup.go:142).
 	// omac would do this itself at launch; doing it here first makes the
@@ -173,7 +166,7 @@ func TestOpenCodeSingleSystemMessage(t *testing.T) {
 	// grant the stub needs. The child dials the stub directly because
 	// netproxy injects NO_PROXY for loopback and refuses loopback
 	// destinations itself; open_port is what permits the connect.
-	writeSandboxProfile(t, home, h, &AllowanceSpec{OpenPorts: []int{addr.Port}})
+	writeSandboxProfile(t, home, h, &AllowanceSpec{OpenPorts: []int{stubPort}})
 
 	// --- run, sandboxed ------------------------------------------------
 	// No --no-sandbox: that would suppress the briefing entirely.
@@ -206,9 +199,7 @@ func TestOpenCodeSingleSystemMessage(t *testing.T) {
 	writeSessionArtifacts(t, h, "plugin-briefing", home, workdir, prompt,
 		stdout.String(), stderr.String(), cmd.Env, profilePath)
 
-	mu.Lock()
-	captured := append([][]byte{}, bodies...)
-	mu.Unlock()
+	captured := stub.Requests()
 
 	result := "PASS"
 	if len(captured) == 0 {
@@ -353,34 +344,6 @@ func describeBlocks(blocks []string) string {
 // oneLine collapses newlines so a block preview stays on one line.
 func oneLine(s string) string {
 	return strings.Join(strings.Fields(s), " ")
-}
-
-// writeStubCompletion emits a minimal OpenAI-compatible streaming
-// response: one content chunk, one terminal chunk with finish_reason and
-// usage, then [DONE]. Enough for the client to complete a turn; the test
-// does not depend on OpenCode being satisfied by it.
-func writeStubCompletion(w http.ResponseWriter) {
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.WriteHeader(http.StatusOK)
-	flusher, _ := w.(http.Flusher)
-	chunks := []string{
-		`{"id":"omac-e2e","object":"chat.completion.chunk","created":0,` +
-			`"model":"` + stubModelID + `","choices":[{"index":0,` +
-			`"delta":{"role":"assistant","content":"ok"},"finish_reason":null}]}`,
-		`{"id":"omac-e2e","object":"chat.completion.chunk","created":0,` +
-			`"model":"` + stubModelID + `","choices":[{"index":0,` +
-			`"delta":{},"finish_reason":"stop"}],` +
-			`"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`,
-		"[DONE]",
-	}
-	for _, c := range chunks {
-		fmt.Fprintf(w, "data: %s\n\n", c)
-		if flusher != nil {
-			flusher.Flush()
-		}
-	}
 }
 
 func writeStubProviderConfig(t *testing.T, home, baseURL string) {
