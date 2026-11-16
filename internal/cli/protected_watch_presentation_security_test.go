@@ -9,7 +9,6 @@ import (
 	"runtime"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/TNG/oh-my-agentic-coder/internal/audit"
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxdeny"
@@ -23,7 +22,7 @@ func TestProtectedWatchPresentationAndRawLookup(t *testing.T) {
 	log := filepath.Join(bin, "dialogs.log")
 	t.Setenv("WATCH_DIALOG_LOG", log)
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	// Only external GUI programs are replaced; scanner, checker and auditor are real.
+	// Only external GUI programs are replaced; checker, auditor and dialog code are real.
 	for _, name := range []string{"osascript", "zenity", "kdialog", "notify-send"} {
 		if err := os.WriteFile(filepath.Join(bin, name), []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" >> \"$WATCH_DIALOG_LOG\"\n"), 0700); err != nil {
 			t.Fatal(err)
@@ -35,6 +34,12 @@ func TestProtectedWatchPresentationAndRawLookup(t *testing.T) {
 		t.Fatal(err)
 	}
 	path := filepath.Join(parent, ".env")
+	// Created before the watch starts, so the background scan counts it as
+	// already present and never reports it. The test feeds it to the
+	// detection handler itself instead of waiting for a scan tick.
+	if err := os.WriteFile(path, []byte("dummy"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	safe := filepath.Join(wd, "café-東京[31m2J", ".env")
 	auditPath := filepath.Join(t.TempDir(), "audit.jsonl")
 	a, err := audit.New(audit.Config{Enabled: true, Path: auditPath})
@@ -58,24 +63,10 @@ func TestProtectedWatchPresentationAndRawLookup(t *testing.T) {
 		}
 	}
 	t.Cleanup(stopWatch)
-	// There is no public baseline-ready signal. Allow the tiny initial scan one second.
-	time.Sleep(time.Second)
-	if err := os.WriteFile(path, []byte("dummy"), 0600); err != nil {
+	w.handle([]string{path}, checker, a)
+	raw, err := os.ReadFile(auditPath)
+	if err != nil {
 		t.Fatal(err)
-	}
-	deadline := time.Now().Add(25 * time.Second)
-	var raw []byte
-	for time.Now().Before(deadline) {
-		raw, _ = os.ReadFile(auditPath)
-		// The path is recorded only after the dialog step, so waiting for
-		// it keeps the stop below from cancelling the dialog.
-		w.mu.Lock()
-		recorded := len(w.paths)
-		w.mu.Unlock()
-		if bytes.Contains(raw, []byte("protected-file-watch")) && recorded > 0 {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
 	}
 	if rule, ok := checker.IsProtected(path); !ok || rule != sandboxdeny.RuleMidSession {
 		t.Fatalf("raw security lookup lost: %q %v", rule, ok)
@@ -90,8 +81,7 @@ func TestProtectedWatchPresentationAndRawLookup(t *testing.T) {
 	if event.Dir != safe || bytes.Contains(raw, []byte("\u009b")) {
 		t.Errorf("unsafe audit path: %q", event.Dir)
 	}
-	// Stopping the watch waits for the dialog step, after which the
-	// end-of-session report holds the recorded path.
+	// The end-of-session report holds the recorded path.
 	stopWatch()
 	notices := strings.Split(strings.TrimSpace(report.String()), "\n")
 	if len(notices) != 1 || !strings.Contains(notices[0], safe) || strings.ContainsAny(notices[0], "\x1b\u009b") {

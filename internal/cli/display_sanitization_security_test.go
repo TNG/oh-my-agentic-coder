@@ -172,6 +172,10 @@ func TestSkillMetadataToActivationBridges(t *testing.T) {
 	defer srv.Close()
 	for _, harness := range []string{"claude", "codex", "copilot"} {
 		t.Run(harness, func(t *testing.T) {
+			// Without jq the hooks emit no manifest at all, so there is nothing to check.
+			if _, err := exec.LookPath("jq"); err != nil {
+				t.Skip("jq is required by the shell hooks")
+			}
 			cmd := exec.Command("bash", "../../."+harness+"/hooks/omac-bridge.sh")
 			t.Setenv("OMAC_CONTROL_BASE", srv.URL)
 			t.Setenv("OMAC_CONTROL_TOKEN", s.controlToken)
