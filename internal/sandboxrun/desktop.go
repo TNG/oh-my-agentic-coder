@@ -45,6 +45,9 @@ func protectDesktopStores(g *Grants, learn bool, goos string) error {
 		reads = append(reads, c)
 	}
 	paths := opencodestate.DesktopStorePaths()
+	if len(paths) == 0 {
+		return fmt.Errorf("cannot find OpenCode Desktop's project list because HOME is not set and XDG_STATE_HOME is not an absolute path, so omac cannot keep it out of the agent's reach. Set HOME, or export XDG_STATE_HOME as an absolute path")
+	}
 	for _, path := range paths {
 		if !filepath.IsAbs(path) {
 			return fmt.Errorf("the OpenCode Desktop project store path %q is not absolute. Set HOME, XDG_CONFIG_HOME, XDG_DATA_HOME and XDG_STATE_HOME to absolute paths", path)

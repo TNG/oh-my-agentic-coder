@@ -295,13 +295,14 @@ func desktopDirs(home string) []string {
 // project list and saved servers, in every directory from desktopDirs and
 // in $XDG_STATE_HOME. Missing stores and SQLite companion files are
 // included: Desktop can create them after the sandbox started.
+// $XDG_STATE_HOME counts even when the home directory is unknown, so the
+// result is empty only when neither is available.
 func DesktopStorePaths() []string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil
+	var dirs []string
+	if home, err := os.UserHomeDir(); err == nil {
+		dirs = desktopDirs(home)
 	}
-	dirs := desktopDirs(home)
-	if state := os.Getenv("XDG_STATE_HOME"); state != "" {
+	if state := absEnv("XDG_STATE_HOME"); state != "" {
 		dirs = uniquePaths(append(dirs, state))
 	}
 	var out []string
@@ -311,6 +312,16 @@ func DesktopStorePaths() []string {
 		}
 	}
 	return out
+}
+
+// absEnv returns the environment variable name if it holds an absolute
+// path, else "". The XDG Base Directory spec says to ignore relative
+// values: XDG_STATE_HOME=state counts as unset.
+func absEnv(name string) string {
+	if v := os.Getenv(name); filepath.IsAbs(v) {
+		return v
+	}
+	return ""
 }
 
 // uniquePaths returns paths cleaned, without duplicates, in their order.

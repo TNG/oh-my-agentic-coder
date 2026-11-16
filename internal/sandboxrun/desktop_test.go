@@ -87,6 +87,17 @@ func TestProtectDesktopStores(t *testing.T) {
 	}
 }
 
+// Without HOME and XDG_STATE_HOME there is no store to protect, which
+// must refuse the session instead of silently protecting nothing.
+func TestProtectDesktopStoresFailsClosedWithoutStorePaths(t *testing.T) {
+	t.Setenv("HOME", "")
+	t.Setenv("XDG_STATE_HOME", "")
+	err := protectDesktopStores(&Grants{}, false, "linux")
+	if err == nil || !strings.Contains(err.Error(), "Set HOME, or export XDG_STATE_HOME") {
+		t.Fatalf("error = %v, want a refusal naming HOME and XDG_STATE_HOME", err)
+	}
+}
+
 // resolveRunGrants is what Run launches with, so these cases fail if Run
 // stops honoring --for-opencode-desktop.
 func TestResolveRunGrantsProtectsDesktopStores(t *testing.T) {

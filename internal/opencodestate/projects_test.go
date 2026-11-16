@@ -366,3 +366,18 @@ func TestDesktopStorePathsListsEachDirOnce(t *testing.T) {
 		t.Error("DesktopStorePaths misses the XDG_STATE_HOME store")
 	}
 }
+
+// Without a home directory, the $XDG_STATE_HOME stores are still listed.
+func TestDesktopStorePathsWithoutHome(t *testing.T) {
+	state := t.TempDir()
+	t.Setenv("HOME", "")
+	t.Setenv("XDG_STATE_HOME", state)
+	paths := DesktopStorePaths()
+	if len(paths) != 5 || !slices.Contains(paths, filepath.Join(state, "opencode.global.dat")) {
+		t.Errorf("DesktopStorePaths = %v, want the 5 stores in %s", paths, state)
+	}
+	t.Setenv("XDG_STATE_HOME", "")
+	if paths := DesktopStorePaths(); len(paths) != 0 {
+		t.Errorf("DesktopStorePaths = %v, want none without HOME and XDG_STATE_HOME", paths)
+	}
+}
