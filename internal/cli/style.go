@@ -13,6 +13,8 @@ import (
 	"strings"
 
 	"golang.org/x/term"
+
+	"github.com/TNG/oh-my-agentic-coder/internal/displaytext"
 )
 
 // ANSI SGR codes. Kept as small constants so the styler can assemble
@@ -151,16 +153,10 @@ func boxPad(cell string, inner, pad int) string {
 	return strings.Repeat(" ", pad) + cell + strings.Repeat(" ", gap) + strings.Repeat(" ", pad)
 }
 
-// stripControlChars removes C0/C1 control characters from s. This prevents
-// terminal escape sequences planted in session ids or titles from injecting
-// display commands when the text is printed to a terminal.
+// stripControlChars removes characters that could change how text is
+// displayed (see displaytext.Unsafe). Never use it for lookup keys.
 func stripControlChars(s string) string {
-	return strings.Map(func(r rune) rune {
-		if r < 0x20 || (r >= 0x7f && r <= 0x9f) {
-			return -1
-		}
-		return r
-	}, s)
+	return displaytext.Strip(s)
 }
 
 // oneLine prepares text that is printed on a single line, such as a

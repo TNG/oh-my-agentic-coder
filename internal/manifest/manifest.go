@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/TNG/oh-my-agentic-coder/internal/config"
+	"github.com/TNG/oh-my-agentic-coder/internal/displaytext"
 )
 
 // skill mirrors the fields from the activate response's skills array.
@@ -107,9 +108,12 @@ func Render(activateJSON, skillsDir string) string {
 	return b.String()
 }
 
-// sanitizeField collapses newlines, strips C0/C1 control chars, and removes
-// markdown bold markers (*) so skill-supplied values cannot inject new
-// markdown blocks or forge bold structure into the manifest text.
+// sanitizeField turns newlines into spaces and removes markdown bold markers
+// (*) and every character that could change how text is displayed (see
+// displaytext.Unsafe), so skill-supplied values cannot start new
+// markdown blocks, forge bold structure or reorder the manifest text. It is
+// the last step before the text joins the agent's own system prompt, so it
+// defends regardless of what discovery accepted.
 func sanitizeField(s string) string {
 	return strings.Map(func(r rune) rune {
 		if r == '\n' || r == '\r' {
@@ -118,7 +122,7 @@ func sanitizeField(s string) string {
 		if r == '*' {
 			return -1
 		}
-		if r < 0x20 || (r >= 0x7f && r <= 0x9f) {
+		if displaytext.Unsafe(r) {
 			return -1
 		}
 		return r

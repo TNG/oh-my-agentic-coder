@@ -1,0 +1,42 @@
+package manifest
+
+import (
+	"encoding/json"
+	"fmt"
+	"strings"
+	"testing"
+
+	"github.com/TNG/oh-my-agentic-coder/internal/displaytext"
+)
+
+// TestManifestEveryForbiddenRune feeds every displaytext.Unsafe character
+// through each skill-supplied manifest field and checks it is gone while the
+// surrounding text still renders.
+func TestManifestEveryForbiddenRune(t *testing.T) {
+	// Control: an ordinary skill name renders in bold, so a sanitizer that
+	// emptied the manifest would not pass for the wrong reason.
+	benign := Render(`{"dir":"/work","skills":[{"name":"jira","scope":"workdir","state":"broken","detail":"boom"}]}`, ".opencode/skills")
+	if !strings.Contains(benign, "**jira**") {
+		t.Fatalf("control: an ordinary skill name did not render: %q", benign)
+	}
+	for _, r := range displaytext.UnsafeRunes() {
+		t.Run(fmt.Sprintf("U+%04X", r), func(t *testing.T) {
+			payload := "café 東京 عربي left" + string(r) + "right"
+			raw, err := json.Marshal(activateResponse{Dir: "/work", Skills: []skill{
+				{Name: payload, Scope: payload, State: "broken", Detail: payload},
+				{Name: "ok", Scope: "workdir", State: "pending-credentials", Missing: []string{payload, "TOKEN"}},
+			}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			text := Render(string(raw), ".opencode/skills")
+			want := "café 東京 عربي leftright"
+			if r == '\n' || r == '\r' {
+				want = "café 東京 عربي left right"
+			}
+			if strings.Contains(text, payload) || strings.Count(text, want) != 4 || !strings.Contains(text, "omac secrets set ok TOKEN") {
+				t.Errorf("unsafe or missing field/hint: %q", text)
+			}
+		})
+	}
+}

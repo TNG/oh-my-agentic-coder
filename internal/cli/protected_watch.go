@@ -132,13 +132,7 @@ func startProtectedWatch(a audit.Auditor, checker *sandboxrun.ProtectedPathSet, 
 	go func() {
 		defer close(w.exited)
 		if err := sandboxrun.WatchNewProtected(profile, workdir, midsessionProtectedWatchInterval, func(paths []string) {
-			fresh := w.observe(paths, checker, a)
-			if len(fresh) == 0 {
-				return
-			}
-			for _, path := range w.askExceptions(fresh) {
-				w.recordPath(path)
-			}
+			w.handle(paths, checker, a)
 		}, w.stop, tuning); err != nil {
 			w.recordNotice(fmt.Sprintf("protected-file watch not started: %v", err))
 		}
@@ -158,6 +152,19 @@ func loadWatchPrefs() (*prefs.Store, string) {
 	return store, ""
 }
 
+// handle processes one batch of newly detected protected files: it tags and
+// audit-logs each, asks the user about exceptions, and records the rest for
+// the end-of-session report.
+func (w *protectedWatch) handle(paths []string, checker *sandboxrun.ProtectedPathSet, a audit.Auditor) {
+	fresh := w.observe(paths, checker, a)
+	if len(fresh) == 0 {
+		return
+	}
+	for _, path := range w.askExceptions(fresh) {
+		w.recordPath(path)
+	}
+}
+
 // observe tags and audit-logs every detection, then returns the paths the
 // user has not already dismissed. Auditing stays complete even for ignored
 // files: the exception suppresses the notice, not the security record.
@@ -168,7 +175,10 @@ func (w *protectedWatch) observe(paths []string, checker *sandboxrun.ProtectedPa
 			checker.Add(path, sandboxdeny.RuleMidSession)
 		}
 		if a != nil {
-			a.Emit(audit.ControlMutation("protected-file-watch", path, "created mid-session; readable until restart"))
+			// The path is filesystem-derived and the audit log is read in
+			// a terminal, so the logged copy is stripped of control
+			// characters. The raw path stays the lookup key above.
+			a.Emit(audit.ControlMutation("protected-file-watch", stripControlChars(path), "created mid-session; readable until restart"))
 		}
 		canonical := pathutil.Canonical(path)
 		if w.ignored[path] || w.ignored[canonical] || (w.prefs != nil &&

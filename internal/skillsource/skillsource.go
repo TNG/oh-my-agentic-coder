@@ -334,6 +334,20 @@ type Entry struct {
 	Kind string // "workdir" | "user-global"
 }
 
+// Skipped is a folder that contains an omac.yaml but that discovery
+// ignored, for example ".opencode/skills/My_Skill". Callers print it so
+// users learn why their skill does not show up.
+type Skipped struct {
+	Name   string // folder name as found on disk; strip it before printing
+	Dir    string // absolute
+	Kind   string // "workdir" | "user-global"
+	Reason string // why it was ignored, e.g. the skill name grammar
+}
+
+// invalidNameReason explains the skill name grammar enforced by
+// config.ValidSkillName.
+const invalidNameReason = `skill names may only contain lowercase letters, digits and "-", and must start with a letter or digit. Rename the folder and the name in its omac.yaml and SKILL.md, then run omac register.`
+
 // Discover returns every in-scope skill (for the active harness) found across
 // every source, with duplicates resolved by precedence (workdir wins, own-base
 // before shared). A directory is considered a skill if and only if it contains
@@ -342,35 +356,59 @@ type Entry struct {
 //
 // Errors from individual readdir calls bubble up unless they are "directory
 // does not exist", which we treat as "no skills here".
+//
+// Discover drops folders whose name is not a valid skill name; use
+// DiscoverWithSkipped to also learn which ones.
 func Discover(workdir string, harness config.Harness) ([]Entry, error) {
+	out, _, err := DiscoverWithSkipped(workdir, harness)
+	return out, err
+}
+
+// DiscoverWithSkipped is Discover that also returns the skill folders it
+// ignored because their name is not a valid skill name (e.g. "My_Skill" or
+// "a.b"). Folders without an omac.yaml are not skills and are never listed.
+func DiscoverWithSkipped(workdir string, harness config.Harness) ([]Entry, []Skipped, error) {
 	seen := make(map[string]struct{})
 	var out []Entry
+	var skipped []Skipped
 	for _, s := range Sources(workdir, harness) {
 		entries, err := os.ReadDir(s.Root)
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
 				continue
 			}
-			return nil, fmt.Errorf("skillsource: read %s: %w", s.Root, err)
+			return nil, nil, fmt.Errorf("skillsource: read %s: %w", s.Root, err)
 		}
 		for _, ent := range entries {
 			if !ent.IsDir() {
 				continue
 			}
-			if _, dup := seen[ent.Name()]; dup {
+			name := ent.Name()
+			if _, dup := seen[name]; dup {
 				continue
 			}
-			metaPath := filepath.Join(s.Root, ent.Name(), config.MetaFileName)
-			if _, err := os.Stat(metaPath); err != nil {
+			dir := filepath.Join(s.Root, name)
+			if _, err := os.Stat(filepath.Join(dir, config.MetaFileName)); err != nil {
 				continue
 			}
-			seen[ent.Name()] = struct{}{}
+			// Discovery is the trust boundary for skill names: the
+			// workdir roots are writable by the confined agent, so an
+			// on-disk name can carry control bytes or path-breaking
+			// characters. Reject anything that is not a valid skill
+			// identifier before it reaches any downstream consumer.
+			// Mark invalid names as seen too, so the same folder in a
+			// later root (e.g. through a symlink) is not reported twice.
+			seen[name] = struct{}{}
+			if err := config.ValidSkillName(name); err != nil {
+				skipped = append(skipped, Skipped{Name: name, Dir: dir, Kind: s.Kind, Reason: invalidNameReason})
+				continue
+			}
 			out = append(out, Entry{
-				Name: ent.Name(),
-				Dir:  filepath.Join(s.Root, ent.Name()),
+				Name: name,
+				Dir:  dir,
 				Kind: s.Kind,
 			})
 		}
 	}
-	return out, nil
+	return out, skipped, nil
 }

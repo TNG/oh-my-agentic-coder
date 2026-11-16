@@ -19,7 +19,7 @@ omac reads only the fields listed below. Other keys do not stop the skill from l
 
 | Field | Required | Description |
 |---|---|---|
-| `name` | yes | Must match the directory name and `SKILL.md` frontmatter `name`. |
+| `name` | yes | Must match the directory name and `SKILL.md` frontmatter `name`. Only lowercase letters, digits and `-`, starting with a letter or digit (`^[a-z0-9][a-z0-9-]*$`, e.g. `my-skill`). omac ignores a skill folder with any other name, such as `My_Skill`, and prints `ignoring skill folder` at start. |
 | `type` | no | Should be `skill`. |
 | `version` | no | SemVer string (e.g. `0.1.0`). |
 | `description` | no | One-line summary shown in `omac list`. |
@@ -152,7 +152,7 @@ If a value is hard to find, tell the user how to get it with `hint` and `docs`:
   ? SLACK_XOXC_TOKEN (input hidden; must match ^xoxc-.+):
 ```
 
-If a `docs` value is not a file inside the skill, or the file does not exist, `omac register` warns and leaves the `More:` line out. The skill still loads and runs; `docs` is only help text. omac removes control characters (such as terminal escape sequences) from `description`, `hint` and `docs` before printing them.
+If a `docs` value is not a file inside the skill, or the file does not exist, `omac register` warns and leaves the `More:` line out. The skill still loads and runs; `docs` is only help text. omac removes control and invisible formatting characters (such as terminal escape sequences, bidirectional-text controls and zero-width spaces) from `description`, `hint` and `docs` before printing them.
 
 To update stored values after registration:
 

@@ -1054,7 +1054,10 @@ type dirState struct {
 	State        string // activating|active|active_partial
 	Skills       map[string]*skillRoute
 	tokenEmitted bool // true after dir_token was included in the first manifest response
-	mu           sync.Mutex
+	// warnedSkipped holds the Dir of every skill folder already reported
+	// as ignored, so rediscover (run on every agent turn) warns only once.
+	warnedSkipped map[string]struct{}
+	mu            sync.Mutex
 }
 
 type serveServer struct {
@@ -1176,11 +1179,12 @@ func (s *serveServer) checkGlobalDrift() int {
 	// 1. Unregistered global skills on disk. Discover everything visible to
 	//    the active harness, keep only the user-global ones, and flag any
 	//    that aren't in the global registry.
-	discovered, derr := skillsource.Discover(s.env.Workdir, s.harness)
+	discovered, skipped, derr := skillsource.DiscoverWithSkipped(s.env.Workdir, s.harness)
 	if derr != nil {
 		fmt.Fprintln(s.env.Stderr, "omac serve: scan global skills:", derr)
 		return ExitIOError
 	}
+	warnSkippedSkillFolders(s.env.Stderr, "omac serve", skipped, "user-global")
 	var unregistered []string
 	for _, e := range discovered {
 		if e.Kind != "user-global" {
@@ -1368,10 +1372,11 @@ func (s *serveServer) activate(absDir string) (map[string]any, error) {
 	s.byToken[token] = d
 	s.mu.Unlock()
 
-	discovered, err := skillsource.Discover(absDir, s.harness)
+	discovered, skipped, err := skillsource.DiscoverWithSkipped(absDir, s.harness)
 	if err != nil {
 		return nil, err
 	}
+	s.warnNewSkippedSkillFolders(d, skipped)
 
 	wReg, err := registry.Load(absDir)
 	if err != nil {
@@ -1440,10 +1445,11 @@ func (s *serveServer) activate(absDir string) (map[string]any, error) {
 func (s *serveServer) rediscover(d *dirState) {
 	absDir := d.Dir
 	token := d.Token
-	discovered, err := skillsource.Discover(absDir, s.harness)
+	discovered, skipped, err := skillsource.DiscoverWithSkipped(absDir, s.harness)
 	if err != nil {
 		return
 	}
+	s.warnNewSkippedSkillFolders(d, skipped)
 	wReg, err := registry.Load(absDir)
 	if err != nil {
 		return
@@ -1515,9 +1521,34 @@ func (s *serveServer) rediscover(d *dirState) {
 	d.mu.Unlock()
 }
 
+// warnNewSkippedSkillFolders prints the "ignoring skill folder" warning for
+// the workdir skill folders of d that were not reported before. activate and
+// rediscover both call it, so a folder such as My_Skill created mid-session
+// is reported once instead of on every agent turn.
+func (s *serveServer) warnNewSkippedSkillFolders(d *dirState, skipped []skillsource.Skipped) {
+	var fresh []skillsource.Skipped
+	d.mu.Lock()
+	for _, sk := range skipped {
+		if sk.Kind != "workdir" {
+			continue
+		}
+		if _, done := d.warnedSkipped[sk.Dir]; done {
+			continue
+		}
+		if d.warnedSkipped == nil {
+			d.warnedSkipped = map[string]struct{}{}
+		}
+		d.warnedSkipped[sk.Dir] = struct{}{}
+		fresh = append(fresh, sk)
+	}
+	d.mu.Unlock()
+	warnSkippedSkillFolders(s.env.Stderr, "omac serve", fresh, "workdir")
+}
+
 // autoRegister writes a registry entry for a discovered workdir-local skill
 // without prompting (serve mode has no human at the keyboard). Mirrors the
-// non-interactive parts of `omac register`.
+// non-interactive parts of `omac register`. ent comes from skillsource.Discover,
+// which only returns valid skill names, so ent.Name needs no further check.
 func (s *serveServer) autoRegister(absDir string, ent skillsource.Entry) (*registry.Entry, error) {
 	metaPath := filepath.Join(ent.Dir, config.MetaFileName)
 	m, err := config.LoadMeta(metaPath)

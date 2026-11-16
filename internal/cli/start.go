@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -440,6 +441,12 @@ func runLaunch(env *Env, opts launchOpts) int {
 	//     "Skill" here means a directory with a omac.yaml. The user
 	//     must explicitly register each one (so registration prompts,
 	//     keychain seeding, etc. don't get silently skipped).
+	//     Folders with an omac.yaml but an invalid skill name are not
+	//     skills; say so, or the user is left wondering where theirs went.
+	//     A scan error is reported by findUnregisteredSkills below.
+	if _, skipped, err := skillsource.DiscoverWithSkipped(env.Workdir, harness); err == nil {
+		warnSkippedSkillFolders(env.Stderr, prefix, skipped, "")
+	}
 	unregistered, err := findUnregisteredSkills(env.Workdir, harness, reg)
 	if err != nil {
 		fmt.Fprintln(env.Stderr, prefix+": scan skills:", err)
@@ -1291,6 +1298,22 @@ func mergeRegistries(global, workdir *registry.Registry) *registry.Registry {
 		seen[e.Name] = struct{}{}
 	}
 	return out
+}
+
+// warnSkippedSkillFolders prints one line per skill folder that discovery
+// ignored, so a user whose skill is missing learns what to rename. With a
+// non-empty kind ("workdir" or "user-global") only folders of that kind are
+// listed. Example:
+//
+//	omac start: ignoring skill folder "My_Skill": skill names may only contain ...
+func warnSkippedSkillFolders(w io.Writer, prefix string, skipped []skillsource.Skipped, kind string) {
+	for _, s := range skipped {
+		if kind != "" && s.Kind != kind {
+			continue
+		}
+		// The folder name is agent-writable and may carry control bytes.
+		fmt.Fprintf(w, "%s: ignoring skill folder %q: %s\n", prefix, stripControlChars(s.Name), s.Reason)
+	}
 }
 
 // findUnregisteredSkills returns the names of every skill discovered

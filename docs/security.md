@@ -327,9 +327,14 @@ installing a skill. The sandbox never mounts `~/.config/omac`, so the agent
 cannot create or modify approvals itself.
 
 Skill names and descriptions shown during `omac register` and in the agent's
-system prompt are sanitized before display. Control sequences and markdown
-structure characters are stripped, so a skill directory with a hostile name
-cannot inject fake instructions into the approval output or the system prompt.
+system prompt are sanitized before display. Characters that could change how
+the text is displayed, such as terminal escape sequences or right-to-left
+overrides, are removed, along with markdown structure characters. Folders whose
+names are not valid skill names (only lowercase letters, digits and `-`) are
+ignored at discovery. So a skill directory with a hostile name cannot inject
+fake instructions into the approval output or the system prompt, nor make text
+display in a different order than it is stored (for example, a right-to-left
+override that shows `invoice<U+202E>fdp.exe` as `invoiceexe.pdf`).
 
 Each approval is tied to a specific version of the skill's code via a bundle
 hash. If the skill's files change after approval, the hash no longer matches
