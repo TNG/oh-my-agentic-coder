@@ -311,7 +311,7 @@ func opencodeCWDReadPaths() []string {
 //
 // Env vars injected:
 //
-//	ANTHROPIC_AUTH_TOKEN                      — API key (from SKAINET_TOKEN)
+//	ANTHROPIC_AUTH_TOKEN                      — SkaiNet API key, passed through as-is
 //	ANTHROPIC_BASE_URL                        — Anthropic-compatible proxy URL
 //	CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC  — disables telemetry/analytics
 //
@@ -352,8 +352,11 @@ func claudeCodeConfig() harnessConfig {
 			}
 		},
 		ProviderSetup: func(t *testing.T, home string) {
-			if os.Getenv("SKAINET_TOKEN") == "" {
-				t.Fatal("SKAINET_TOKEN not set")
+			// Its own token, not SKAINET_TOKEN: in CI that one holds the
+			// trustedtokens.eu key the gateway harnesses use, while
+			// claude-code still talks to SkaiNet.
+			if os.Getenv("ANTHROPIC_AUTH_TOKEN") == "" {
+				t.Fatal("ANTHROPIC_AUTH_TOKEN not set (SkaiNet key for the Anthropic proxy)")
 			}
 			if os.Getenv("ANTHROPIC_BASE_URL") == "" {
 				t.Fatal("ANTHROPIC_BASE_URL not set (CI secret for the Anthropic proxy)")
@@ -369,9 +372,9 @@ func claudeCodeConfig() harnessConfig {
 			// ANTHROPIC_BASE_URL). No file-based config needed.
 		},
 		EnvVars: func(t *testing.T) []string {
-			token := os.Getenv("SKAINET_TOKEN")
+			token := os.Getenv("ANTHROPIC_AUTH_TOKEN")
 			if token == "" {
-				t.Fatal("SKAINET_TOKEN not set")
+				t.Fatal("ANTHROPIC_AUTH_TOKEN not set")
 			}
 			baseURL := os.Getenv("ANTHROPIC_BASE_URL")
 			if baseURL == "" {

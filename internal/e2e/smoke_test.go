@@ -178,7 +178,7 @@ func TestHarnessLaunchProbe(t *testing.T) {
 			cmd.Dir = workdir
 			// A `--version` probe needs no provider creds, so use a bare HOME
 			// env — NOT buildAgentEnv, whose per-harness EnvVars t.Fatal when
-			// SKAINET_TOKEN is unset (claude-code, copilot). This keeps the
+			// their token (SKAINET_TOKEN, or ANTHROPIC_AUTH_TOKEN for claude-code) is unset. This keeps the
 			// launch probe genuinely model-free and secret-free.
 			//
 			// When nested in an omac sandbox, still apply the short-TMPDIR

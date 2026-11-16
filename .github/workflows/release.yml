@@ -173,8 +173,8 @@ jobs:
           RELEASE_URL: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ github.ref_name }}
           # Optional: when present, the thread bullets are rewritten by the LLM
           # into user-facing highlights. Absent -> deterministic commit bullets.
-          SKAINET_TOKEN: ${{ secrets.SKAINET_TOKEN }}
-          SKAINET_INTERNAL: ${{ secrets.SKAINET_INTERNAL }}
+          SKAINET_TOKEN: ${{ secrets.TRUSTEDTOKENS_TOKEN }}
+          SKAINET_INTERNAL: https://api.trustedtokens.eu/v1
           # Read by scripts/probe-model.sh below. Empty on a tag push (the
           # normal path), so a real release starts from the committed pin.
           E2E_MODEL: ${{ github.event.inputs.model }}

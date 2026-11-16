@@ -35,18 +35,18 @@ jobs:
       - name: Validate gateway configuration
         id: configure
         env:
-          SKAINET_INTERNAL: ${{ secrets.SKAINET_INTERNAL }}
-          SKAINET_TOKEN: ${{ secrets.SKAINET_TOKEN }}
+          SKAINET_INTERNAL: https://api.trustedtokens.eu/v1
+          SKAINET_TOKEN: ${{ secrets.TRUSTEDTOKENS_TOKEN }}
         run: |
-          : "${SKAINET_INTERNAL:?Set the SKAINET_INTERNAL repository secret}"
-          : "${SKAINET_TOKEN:?Set the SKAINET_TOKEN repository secret}"
+          : "${SKAINET_INTERNAL:?SKAINET_INTERNAL (gateway base URL) is empty}"
+          : "${SKAINET_TOKEN:?Set the TRUSTEDTOKENS_TOKEN repository secret}"
           printf 'url=%s/chat/completions\n' "${SKAINET_INTERNAL%/}" >> "$GITHUB_OUTPUT"
 
       - name: Resolve and verify model
         id: model
         env:
-          SKAINET_INTERNAL: ${{ secrets.SKAINET_INTERNAL }}
-          SKAINET_TOKEN: ${{ secrets.SKAINET_TOKEN }}
+          SKAINET_INTERNAL: https://api.trustedtokens.eu/v1
+          SKAINET_TOKEN: ${{ secrets.TRUSTEDTOKENS_TOKEN }}
         run: scripts/probe-model.sh opencode --github-output
 
       - name: Review and publish
@@ -56,7 +56,7 @@ jobs:
           ocr_version: '1.13.10'
           github_token: ${{ github.token }}
           llm_url: ${{ steps.configure.outputs.url }}
-          llm_auth_token: ${{ secrets.SKAINET_TOKEN }}
+          llm_auth_token: ${{ secrets.TRUSTEDTOKENS_TOKEN }}
           llm_model: ${{ steps.model.outputs.model }}
           llm_use_anthropic: 'false'
           # The Action otherwise disables model thinking by default.

@@ -93,8 +93,8 @@ jobs:
       SEVERITY_THRESHOLD: ${{ inputs.severity_threshold || 'high' }}
       # probe-model.sh reads these; E2E_MODEL empty falls through to the
       # committed pin inside resolve-model.sh.
-      LLM_API_BASE: ${{ secrets.SKAINET_INTERNAL }}
-      LLM_API_KEY: ${{ secrets.SKAINET_TOKEN }}
+      LLM_API_BASE: https://api.trustedtokens.eu/v1
+      LLM_API_KEY: ${{ secrets.TRUSTEDTOKENS_TOKEN }}
       E2E_MODEL: ${{ inputs.model || '' }}
     steps:
       - name: Checkout
@@ -149,8 +149,8 @@ jobs:
       # cannot infer the repo from a remote; GH_REPO provides it globally.
       GH_REPO: ${{ github.repository }}
       GH_TOKEN: ${{ github.token }}
-      SKAINET_TOKEN: ${{ secrets.SKAINET_TOKEN }}
-      SKAINET_INTERNAL: ${{ secrets.SKAINET_INTERNAL }}
+      SKAINET_TOKEN: ${{ secrets.TRUSTEDTOKENS_TOKEN }}
+      SKAINET_INTERNAL: https://api.trustedtokens.eu/v1
       MAX_PLANS: ${{ inputs.max_plans || '3' }}
       PLANS_FILTER: ${{ inputs.plans || '' }}
       BUDGET_MINUTES: ${{ inputs.budget_minutes || '60' }}
@@ -341,8 +341,8 @@ jobs:
       GH_REPO: ${{ github.repository }}
       GH_TOKEN: ${{ github.token }}
       REPO_TOKEN: ${{ github.token }}
-      SKAINET_TOKEN: ${{ secrets.SKAINET_TOKEN }}
-      SKAINET_INTERNAL: ${{ secrets.SKAINET_INTERNAL }}
+      SKAINET_TOKEN: ${{ secrets.TRUSTEDTOKENS_TOKEN }}
+      SKAINET_INTERNAL: https://api.trustedtokens.eu/v1
       BUDGET_MINUTES: ${{ inputs.budget_minutes || '60' }}
       STRICT_REVIEW: ${{ inputs.strict_review }}
     steps:
@@ -426,8 +426,8 @@ jobs:
       GH_REPO: ${{ github.repository }}
       GH_TOKEN: ${{ github.token }}
       REPO_TOKEN: ${{ github.token }}
-      SKAINET_TOKEN: ${{ secrets.SKAINET_TOKEN }}
-      SKAINET_INTERNAL: ${{ secrets.SKAINET_INTERNAL }}
+      SKAINET_TOKEN: ${{ secrets.TRUSTEDTOKENS_TOKEN }}
+      SKAINET_INTERNAL: https://api.trustedtokens.eu/v1
       BUDGET_MINUTES: ${{ inputs.budget_minutes || '60' }}
       STRICT_REVIEW: ${{ inputs.strict_review }}
     steps:
@@ -501,8 +501,8 @@ jobs:
       GH_REPO: ${{ github.repository }}
       GH_TOKEN: ${{ github.token }}
       REPO_TOKEN: ${{ github.token }}
-      SKAINET_TOKEN: ${{ secrets.SKAINET_TOKEN }}
-      SKAINET_INTERNAL: ${{ secrets.SKAINET_INTERNAL }}
+      SKAINET_TOKEN: ${{ secrets.TRUSTEDTOKENS_TOKEN }}
+      SKAINET_INTERNAL: https://api.trustedtokens.eu/v1
       BUDGET_MINUTES: ${{ inputs.budget_minutes || '60' }}
       STRICT_REVIEW: ${{ inputs.strict_review }}
     steps:
@@ -576,8 +576,8 @@ jobs:
       GH_REPO: ${{ github.repository }}
       GH_TOKEN: ${{ github.token }}
       REPO_TOKEN: ${{ github.token }}
-      SKAINET_TOKEN: ${{ secrets.SKAINET_TOKEN }}
-      SKAINET_INTERNAL: ${{ secrets.SKAINET_INTERNAL }}
+      SKAINET_TOKEN: ${{ secrets.TRUSTEDTOKENS_TOKEN }}
+      SKAINET_INTERNAL: https://api.trustedtokens.eu/v1
       BUDGET_MINUTES: ${{ inputs.budget_minutes || '60' }}
       STRICT_REVIEW: ${{ inputs.strict_review }}
     steps:

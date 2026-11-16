@@ -39,7 +39,7 @@ on:
         type: boolean
         default: true
       model:
-        description: 'Model id for EVERY harness, for THIS RUN ONLY. Set empty to use each harness''s pin in internal/e2e/versions.go (opencode/codex/copilot/pi/codewhale: zai-org/GLM-5.3, claude-code: claude-sonnet-5-5).'
+        description: 'Model id for EVERY harness, for THIS RUN ONLY. Set empty to use each harness''s pin in internal/e2e/versions.go (opencode/codex/copilot/pi/codewhale: deepseek-ai/DeepSeek-V4.1-Flash, claude-code: claude-sonnet-5-5).'
         type: string
         default: ''
       claude_code_model:
@@ -73,8 +73,8 @@ jobs:
       claude_code: ${{ steps.probe.outputs.claude_code }}
       codex_responses: ${{ steps.probe.outputs.responses_model }}
     env:
-      SKAINET_TOKEN: ${{ secrets.SKAINET_TOKEN }}
-      SKAINET_INTERNAL: ${{ secrets.SKAINET_INTERNAL }}
+      SKAINET_TOKEN: ${{ secrets.TRUSTEDTOKENS_TOKEN }}
+      SKAINET_INTERNAL: https://api.trustedtokens.eu/v1
       E2E_MODEL: ${{ github.event.inputs.model }}
       E2E_MODEL_CLAUDE_CODE: ${{ github.event.inputs.claude_code_model }}
     steps:
@@ -149,9 +149,11 @@ jobs:
       group: e2e-smoke-${{ matrix.os }}-${{ matrix.harness }}-${{ matrix.omac }}
       cancel-in-progress: false
     env:
-      SKAINET_TOKEN: ${{ secrets.SKAINET_TOKEN }}
-      SKAINET_INTERNAL: ${{ secrets.SKAINET_INTERNAL }}
+      SKAINET_TOKEN: ${{ secrets.TRUSTEDTOKENS_TOKEN }}
+      SKAINET_INTERNAL: https://api.trustedtokens.eu/v1
       ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
+      # claude-code stays on SkaiNet; the other harnesses use trustedtokens.eu.
+      ANTHROPIC_AUTH_TOKEN: ${{ secrets.SKAINET_TOKEN }}
       E2E_HARNESS: ${{ matrix.harness }}
       # Schedule runs always test latest (drift); dispatch honors the input.
       E2E_USE_LATEST: ${{ (github.event_name == 'schedule' || github.event.inputs.use_latest != 'false') && '1' || '' }}
@@ -408,9 +410,11 @@ jobs:
       group: e2e-smoke-wsl2-${{ matrix.harness }}-${{ matrix.omac }}
       cancel-in-progress: false
     env:
-      SKAINET_TOKEN: ${{ secrets.SKAINET_TOKEN }}
-      SKAINET_INTERNAL: ${{ secrets.SKAINET_INTERNAL }}
+      SKAINET_TOKEN: ${{ secrets.TRUSTEDTOKENS_TOKEN }}
+      SKAINET_INTERNAL: https://api.trustedtokens.eu/v1
       ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
+      # claude-code stays on SkaiNet; the other harnesses use trustedtokens.eu.
+      ANTHROPIC_AUTH_TOKEN: ${{ secrets.SKAINET_TOKEN }}
       E2E_HARNESS: ${{ matrix.harness }}
       E2E_USE_LATEST: ${{ (github.event_name == 'schedule' || github.event.inputs.use_latest != 'false') && '1' || '' }}
       E2E_MODEL_OPENCODE: ${{ needs.model.outputs.gateway }}
@@ -426,7 +430,7 @@ jobs:
       # set via GITHUB_ENV by the "Set log dir" step (runner.temp is not
       # available in job-level env — only github/needs/strategy/matrix/
       # vars/secrets/inputs are).
-      WSLENV: GITHUB_ENV:GITHUB_OUTPUT:GITHUB_STEP_SUMMARY:OMAC_BIN:OMAC_RELEASE_TAG:SKAINET_TOKEN:SKAINET_INTERNAL:ANTHROPIC_BASE_URL:E2E_HARNESS:E2E_USE_LATEST:E2E_MODEL_OPENCODE:E2E_MODEL_CODEX:E2E_MODEL_COPILOT:E2E_MODEL_PI:E2E_MODEL_CLAUDE_CODE:E2E_CONTEXT_LIMIT:E2E_CACHE_DIR:SMOKE_LOG_DIR:OMAC_VERSION
+      WSLENV: GITHUB_ENV:GITHUB_OUTPUT:GITHUB_STEP_SUMMARY:OMAC_BIN:OMAC_RELEASE_TAG:SKAINET_TOKEN:SKAINET_INTERNAL:ANTHROPIC_BASE_URL:ANTHROPIC_AUTH_TOKEN:E2E_HARNESS:E2E_USE_LATEST:E2E_MODEL_OPENCODE:E2E_MODEL_CODEX:E2E_MODEL_COPILOT:E2E_MODEL_PI:E2E_MODEL_CLAUDE_CODE:E2E_CONTEXT_LIMIT:E2E_CACHE_DIR:SMOKE_LOG_DIR:OMAC_VERSION
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -711,9 +715,11 @@ jobs:
       group: e2e-smoke-codewhale-${{ matrix.omac }}
       cancel-in-progress: false
     env:
-      SKAINET_TOKEN: ${{ secrets.SKAINET_TOKEN }}
-      SKAINET_INTERNAL: ${{ secrets.SKAINET_INTERNAL }}
+      SKAINET_TOKEN: ${{ secrets.TRUSTEDTOKENS_TOKEN }}
+      SKAINET_INTERNAL: https://api.trustedtokens.eu/v1
       ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
+      # claude-code stays on SkaiNet; the other harnesses use trustedtokens.eu.
+      ANTHROPIC_AUTH_TOKEN: ${{ secrets.SKAINET_TOKEN }}
       E2E_HARNESS: codewhale
       E2E_USE_LATEST: ${{ (github.event_name == 'schedule' || github.event.inputs.use_latest != 'false') && '1' || '' }}
       E2E_MODEL_CODEWHALE: ${{ needs.model.outputs.gateway }}
@@ -1003,8 +1009,8 @@ jobs:
         if: always() && steps.rows.outputs.has_failures == 'true' && steps.reason.outputs.infra_only != 'true'
         continue-on-error: true # a summariser hiccup must never mask the failure
         env:
-          SKAINET_TOKEN: ${{ secrets.SKAINET_TOKEN }}
-          SKAINET_INTERNAL: ${{ secrets.SKAINET_INTERNAL }}
+          SKAINET_TOKEN: ${{ secrets.TRUSTEDTOKENS_TOKEN }}
+          SKAINET_INTERNAL: https://api.trustedtokens.eu/v1
           # The summariser is an LLM call too, so it uses the model the preflight
           # proved is served — re-resolving the pin here would 422 in exactly
           # the situation the summary is most needed.

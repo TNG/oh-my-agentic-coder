@@ -72,7 +72,7 @@ class OCRWorkflowTest(unittest.TestCase):
             "checkpoint_range": "true",
             "llm_url": "${{ steps.configure.outputs.url }}",
             "llm_model": "${{ steps.model.outputs.model }}",
-            "llm_auth_token": "${{ secrets.SKAINET_TOKEN }}",
+            "llm_auth_token": "${{ secrets.TRUSTEDTOKENS_TOKEN }}",
             "github_token": "${{ github.token }}",
             "full_review": "${{ contains(github.event.pull_request.labels.*.name, 'ocr-full-review') }}",
         }.items():
@@ -97,8 +97,8 @@ class OCRWorkflowTest(unittest.TestCase):
         self.assertEqual(
             configure["env"],
             {
-                "SKAINET_INTERNAL": "${{ secrets.SKAINET_INTERNAL }}",
-                "SKAINET_TOKEN": "${{ secrets.SKAINET_TOKEN }}",
+                "SKAINET_INTERNAL": "https://api.trustedtokens.eu/v1",
+                "SKAINET_TOKEN": "${{ secrets.TRUSTEDTOKENS_TOKEN }}",
             },
         )
         with tempfile.TemporaryDirectory() as directory:
