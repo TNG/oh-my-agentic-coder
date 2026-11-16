@@ -50,7 +50,7 @@ func (f *fakeVMManager) PrepareAttach(context.Context) (vm.AttachInfo, error) {
 func useFakeVM(t *testing.T, fake *fakeVMManager) {
 	t.Helper()
 	orig := newVMManager
-	newVMManager = func(*Env) (vmManager, error) { return fake, nil }
+	newVMManager = func(*Env, string) (vmManager, error) { return fake, nil }
 	t.Cleanup(func() { newVMManager = orig })
 }
 
@@ -95,7 +95,7 @@ func TestVMHelpListsEveryVerb(t *testing.T) {
 			t.Fatalf("%s: exit = %d, want 0", arg, code)
 		}
 		out := stderr()
-		for _, verb := range []string{"up [--reprovision]", "down", "reset", "status", "online", "offline", "image add <ref>", "image list", "image rm <ref>", "exec [--cwd <dir>]"} {
+		for _, verb := range []string{"list", "up [--reprovision]", "down", "reset", "status", "online", "offline", "image add <ref>", "image list", "image rm <ref>", "exec [--name <x>] [--cwd <dir>]"} {
 			if !strings.Contains(out, "omac vm "+verb) {
 				t.Errorf("%s: usage lacks %q:\n%s", arg, verb, out)
 			}
@@ -223,7 +223,7 @@ func TestVMErrorMapping(t *testing.T) {
 
 func TestVMManagerConstructionFailureIsIOError(t *testing.T) {
 	orig := newVMManager
-	newVMManager = func(*Env) (vmManager, error) { return nil, errors.New("no home") }
+	newVMManager = func(*Env, string) (vmManager, error) { return nil, errors.New("no home") }
 	t.Cleanup(func() { newVMManager = orig })
 	env, _, stderr := vmTestEnv(t)
 	if code := runVM([]string{"status"}, env); code != ExitIOError {

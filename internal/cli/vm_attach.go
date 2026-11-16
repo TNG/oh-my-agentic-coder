@@ -17,11 +17,11 @@ import (
 // or makes the check below fail. The returned func removes the registration;
 // it never stops the VM, which outlives every session. Tests replace it.
 var prepareVMAttach = func(ctx context.Context, env *Env) (vm.AttachInfo, func(), error) {
-	m, err := newVMManager(env)
+	m, err := newVMManager(env, vm.DefaultVMName)
 	if err != nil {
 		return vm.AttachInfo{}, nil, err
 	}
-	root, err := vm.DefaultRoot()
+	root, err := vm.InstanceRoot(vm.DefaultVMName)
 	if err != nil {
 		return vm.AttachInfo{}, nil, err
 	}

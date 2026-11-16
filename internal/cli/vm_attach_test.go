@@ -296,7 +296,7 @@ func useAttachOrderManager(t *testing.T, attachErr error) (*attachOrderManager, 
 	}
 	fake := &attachOrderManager{sessions: vm.NewLayout(root).SessionsDir, attachErr: attachErr}
 	orig := newVMManager
-	newVMManager = func(*Env) (vmManager, error) { return fake, nil }
+	newVMManager = func(*Env, string) (vmManager, error) { return fake, nil }
 	t.Cleanup(func() { newVMManager = orig })
 	return fake, fake.sessions
 }
