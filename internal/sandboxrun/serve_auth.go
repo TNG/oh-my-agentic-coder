@@ -25,7 +25,7 @@ func filterServeAuthEnv(environ []string, policy sandboxprofile.Environment, inj
 	// Not denied, but allow_vars (or a missing --allow-env) may still drop it.
 	if value := lookupEnv(environ, target); value == "" || !slices.Contains(filtered, target+"="+value) {
 		return nil, fmt.Errorf("%s cannot reach the server: the sandbox filtered out %s. "+
-			"Check environment.allow_vars and environment.deny_vars in %s, or unset %s.",
+			"Check environment.allow_vars and environment.deny_vars in %s, or unset %s",
 			sandboxprofile.ServePasswordEnv, target, sandboxprofile.ServeAuthProfileName(profile), sandboxprofile.ServePasswordEnv)
 	}
 	return filtered, nil

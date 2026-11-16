@@ -86,19 +86,19 @@ func TestServePasswordErrorsNameTheSetting(t *testing.T) {
 			name: "other backend",
 			plan: sandboxPlan{Name: "nono"},
 			want: `OMAC_SERVE_PASSWORD only works with the native sandbox backend, and sandbox runtime "nono" uses another one. ` +
-				"Unset OMAC_SERVE_PASSWORD, or set OPENCODE_SERVER_PASSWORD yourself where that backend runs the server.",
+				"Unset OMAC_SERVE_PASSWORD, or set OPENCODE_SERVER_PASSWORD yourself where that backend runs the server",
 		},
 		{
 			name: "policy not loaded",
 			plan: sandboxPlan{Name: "builtin", Native: true, PolicyRef: "broken", PolicyErr: errors.New("bad JSON")},
 			want: `OMAC_SERVE_PASSWORD needs sandbox profile "broken" to check its environment.deny_vars, but it could not be loaded: bad JSON. ` +
-				"Fix that profile or unset OMAC_SERVE_PASSWORD.",
+				"Fix that profile or unset OMAC_SERVE_PASSWORD",
 		},
 		{
 			name: "denied",
 			plan: sandboxPlan{Name: "builtin", Native: true, PolicyRef: "strict", Policy: &sandboxprofile.Profile{Environment: sandboxprofile.Environment{DenyVars: []string{"OPENCODE_*"}}}},
 			want: `OMAC_SERVE_PASSWORD is passed to the server as OPENCODE_SERVER_PASSWORD, but sandbox profile "strict" blocks that variable in environment.deny_vars. ` +
-				"Remove the matching entry or unset OMAC_SERVE_PASSWORD.",
+				"Remove the matching entry or unset OMAC_SERVE_PASSWORD",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

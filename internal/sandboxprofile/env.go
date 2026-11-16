@@ -19,7 +19,7 @@ const ServeAuthTargetEnv = "OMAC_SERVE_AUTH_TARGET"
 // reference, or "" when unknown. Callers print it after "omac serve:".
 func ServeAuthDeniedError(target, profile string) error {
 	return fmt.Errorf("%s is passed to the server as %s, but %s blocks that variable in environment.deny_vars. "+
-		"Remove the matching entry or unset %s.", ServePasswordEnv, target, ServeAuthProfileName(profile), ServePasswordEnv)
+		"Remove the matching entry or unset %s", ServePasswordEnv, target, ServeAuthProfileName(profile), ServePasswordEnv)
 }
 
 // ServeAuthProfileName is how the OMAC_SERVE_PASSWORD messages name a

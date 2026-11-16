@@ -27,7 +27,7 @@ func TestServeAuthFinalFilter(t *testing.T) {
 			name:   "not allowed",
 			policy: sandboxprofile.Environment{AllowVars: []string{"PATH"}},
 			wantErr: "OMAC_SERVE_PASSWORD cannot reach the server: the sandbox filtered out OPENCODE_SERVER_PASSWORD. " +
-				`Check environment.allow_vars and environment.deny_vars in sandbox profile "default", or unset OMAC_SERVE_PASSWORD.`,
+				`Check environment.allow_vars and environment.deny_vars in sandbox profile "default", or unset OMAC_SERVE_PASSWORD`,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

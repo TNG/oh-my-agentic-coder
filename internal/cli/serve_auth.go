@@ -18,7 +18,7 @@ func prepareServeAuthEnv(password string, h config.Harness, plan sandboxPlan, no
 		return nil, nil
 	}
 	if h.ServerLaunch == nil || h.ServerLaunch.AuthEnvVar == "" {
-		return nil, fmt.Errorf("%s only works with a harness whose server takes a password, and %s has none. Unset %s.",
+		return nil, fmt.Errorf("%s only works with a harness whose server takes a password, and %s has none. Unset %s",
 			sandboxprofile.ServePasswordEnv, h.Name, sandboxprofile.ServePasswordEnv)
 	}
 	target := h.ServerLaunch.AuthEnvVar
@@ -33,12 +33,12 @@ func prepareServeAuthEnv(password string, h config.Harness, plan sandboxPlan, no
 				runtimeName = fmt.Sprintf("sandbox runtime %q", plan.Name)
 			}
 			return nil, fmt.Errorf("%s only works with the native sandbox backend, and %s uses another one. "+
-				"Unset %s, or set %s yourself where that backend runs the server.",
+				"Unset %s, or set %s yourself where that backend runs the server",
 				sandboxprofile.ServePasswordEnv, runtimeName, sandboxprofile.ServePasswordEnv, target)
 		}
 		if plan.Policy == nil {
 			return nil, fmt.Errorf("%s needs %s to check its environment.deny_vars, but it could not be loaded: %v. "+
-				"Fix that profile or unset %s.", sandboxprofile.ServePasswordEnv, sandboxprofile.ServeAuthProfileName(plan.PolicyRef),
+				"Fix that profile or unset %s", sandboxprofile.ServePasswordEnv, sandboxprofile.ServeAuthProfileName(plan.PolicyRef),
 				plan.PolicyErr, sandboxprofile.ServePasswordEnv)
 		}
 		if sandboxprofile.EnvDenied(target, plan.Policy.Environment.DenyVars) {
