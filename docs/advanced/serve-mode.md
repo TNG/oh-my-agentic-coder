@@ -136,6 +136,10 @@ error in these cases:
 
   Grant only the folders the agent needs, such as
   `"allow": ["~/work/my-project"]`;
+- on Linux, when a read grant covers one of Desktop's folders, for example
+  `"read": ["~/.config"]`. The Linux sandbox can hide only files that exist
+  when it starts, and Desktop creates some of these files later (the
+  `drafts.sqlite-wal` file, for example), so the agent could read them;
 - when the path to one of Desktop's folders goes through a symlink, for
   example a home directory that is a symlink to another disk. Point `HOME`
   and the `XDG_*` variables at the real directories;

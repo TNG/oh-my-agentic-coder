@@ -26,21 +26,38 @@ func TestProtectDesktopStores(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, tc := range []struct {
-		name, write    string
-		learn, wantErr bool
+		name, write, writeOnly, read, goos string
+		learn, wantErr                     bool
 	}{
 		{name: "runtime subtree", write: runtime},
 		{name: "whole desktop dir", write: state, wantErr: true},
 		{name: "ancestor", write: filepath.Dir(state), wantErr: true},
 		{name: "absent store", write: filepath.Join(state, "drafts.sqlite"), wantErr: true},
+		{name: "write-only grant", writeOnly: state, wantErr: true},
 		{name: "learn mode", learn: true, wantErr: true},
+		// bwrap hides only files that exist at launch, so a read grant
+		// over a store dir would expose stores Desktop creates later.
+		{name: "linux read on desktop dir", read: state, goos: "linux", wantErr: true},
+		{name: "linux read on ancestor", read: home, goos: "linux", wantErr: true},
+		{name: "linux read on runtime subtree", read: runtime, goos: "linux"},
+		{name: "darwin read on desktop dir", read: state, goos: "darwin"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			g := &Grants{}
 			if tc.write != "" {
 				g.AllowPaths = []string{tc.write}
 			}
-			err := protectDesktopStores(g, tc.learn)
+			if tc.writeOnly != "" {
+				g.WritePaths = []string{tc.writeOnly}
+			}
+			if tc.read != "" {
+				g.ReadPaths = []string{tc.read}
+			}
+			goos := tc.goos
+			if goos == "" {
+				goos = "linux"
+			}
+			err := protectDesktopStores(g, tc.learn, goos)
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("error = %v", err)
 			}
@@ -62,7 +79,7 @@ func TestProtectDesktopStores(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("XDG_STATE_HOME", link)
-	if err := protectDesktopStores(&Grants{}, false); err == nil {
+	if err := protectDesktopStores(&Grants{}, false, "linux"); err == nil {
 		t.Fatal("symlink routing accepted")
 	}
 	if len(opencodestate.DesktopStorePaths()) == 0 {
