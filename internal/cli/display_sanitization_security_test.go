@@ -38,7 +38,7 @@ func TestSkillRefusalForbiddenRunesAndInputIdentity(t *testing.T) {
 					t.Fatal("problem semantics changed")
 				}
 				var out bytes.Buffer
-				if renderSkillRefusal(&out, "omac start", input) == ExitOK || !strings.Contains(out.String(), want) || strings.Contains(out.String(), payload) {
+				if renderSkillRefusal(&out, "omac start", input) == ExitOK || !strings.Contains(out.String(), "refusing to start") || !strings.Contains(out.String(), want) || strings.Contains(out.String(), payload) {
 					t.Errorf("unsafe or missing refusal: %q", out.String())
 				}
 				if !reflect.DeepEqual(input, before) {

@@ -9,7 +9,16 @@ import (
 	"github.com/TNG/oh-my-agentic-coder/internal/displaytext"
 )
 
+// TestManifestEveryForbiddenRune feeds every displaytext.Unsafe character
+// through each skill-supplied manifest field and checks it is gone while the
+// surrounding text still renders.
 func TestManifestEveryForbiddenRune(t *testing.T) {
+	// Control: an ordinary skill name renders in bold, so a sanitizer that
+	// emptied the manifest would not pass for the wrong reason.
+	benign := Render(`{"dir":"/work","skills":[{"name":"jira","scope":"workdir","state":"broken","detail":"boom"}]}`, ".opencode/skills")
+	if !strings.Contains(benign, "**jira**") {
+		t.Fatalf("control: an ordinary skill name did not render: %q", benign)
+	}
 	for _, r := range displaytext.UnsafeRunes() {
 		t.Run(fmt.Sprintf("U+%04X", r), func(t *testing.T) {
 			payload := "café 東京 عربي left" + string(r) + "right"
