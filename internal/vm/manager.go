@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // Sentinel errors of the Manager. Their texts already name the omac vm and
@@ -280,7 +281,11 @@ func capOutput(s string) string {
 	if len(s) <= maxSetupOutput {
 		return s
 	}
-	return "…" + s[len(s)-maxSetupOutput:]
+	cut := len(s) - maxSetupOutput
+	for cut < len(s) && !utf8.RuneStart(s[cut]) {
+		cut++
+	}
+	return "…" + s[cut:]
 }
 
 // runSetup runs the user's setup script as root. On failure it removes the
@@ -297,7 +302,12 @@ func (m *Manager) runSetup(ctx context.Context, st *State, script string) error 
 		return nil
 	}
 	_ = m.ssh(ctx, m.rootTarget(st), nil, nil, "rm -f "+ProvisionedMarker)
-	return fmt.Errorf("omac vm: setup failed: %w\n%s", err, capOutput(strings.TrimSpace(out.String())))
+	// err already carries the script's stderr, so the cap covers both streams.
+	detail := err.Error()
+	if s := strings.TrimSpace(out.String()); s != "" {
+		detail = s + "\n" + detail
+	}
+	return fmt.Errorf("omac vm: setup failed:\n%s", capOutput(detail))
 }
 
 const retryUpHint = "run `omac vm up` again (or `omac vm up --reprovision`)"
