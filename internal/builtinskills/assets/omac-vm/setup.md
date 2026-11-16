@@ -69,29 +69,29 @@ login work if `docker login` was done on the host.
 
 ## 6. Prime the build caches
 
-Builds run with `--offline` in the VM, so their dependencies must be
+The VM has no network access, so everything a build downloads must be
 downloaded once while the VM is online. No session may be attached, because
 omac refuses `omac vm online` while one is.
 
 ```sh
 omac vm online
-omac vm exec --env MY_REPO_TOKEN --cwd backend -- ./gradlew check --no-daemon
+omac vm exec --env MY_REPO_TOKEN --cwd backend -- <full build command>
 omac vm offline
 ```
 
 - Run it from the project directory. `--cwd` is the module with the build,
   relative to the current directory.
-- Use the task that runs all checks (`check` or the project's own), not only
-  `test`: Gradle downloads the tools behind tasks such as Checkstyle or
-  Spotless only when those tasks run.
+- `<full build command>` runs all checks, not only the tests, because some
+  tools, such as Checkstyle or Spotless, are downloaded only when their task
+  runs. Examples: Gradle `./gradlew check --no-daemon`, Maven `./mvnw verify`.
 - `--env NAME` passes a token from the host's shell. The human exports `NAME`
   in that shell first; otherwise omac stops with `environment variable NAME
   is not set`. Never look for the token or its value yourself. Leave `--env`
   out if the downloads need no token. Use a short-lived token, because
   anything a session left behind in the VM runs online with it.
-  `--no-daemon` makes sure no Gradle daemon keeps the token afterwards.
-- If the token sits in `~/.gradle/gradle.properties`, the human lists the
-  property names (without values) and picks the token:
+  With Gradle, `--no-daemon` makes sure no daemon keeps the token afterwards.
+- Gradle: if the token sits in `~/.gradle/gradle.properties`, the human
+  lists the property names (without values) and picks the token:
 
   ```sh
   cut -d= -f1 ~/.gradle/gradle.properties | grep -iE 'token|password|secret|key'
@@ -105,7 +105,7 @@ omac vm offline
   omac vm exec --env ORG_GRADLE_PROJECT_foo --cwd backend -- ./gradlew check --no-daemon
   ```
 
-- Priming has to end with `BUILD SUCCESSFUL`. If it fails, every offline
+- Priming has to end with a successful build. If it fails, every offline
   build in a session fails too.
 
 ## 7. Sandbox grants
