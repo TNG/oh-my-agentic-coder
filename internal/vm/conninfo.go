@@ -17,6 +17,11 @@ const (
 	EnvVMSSHPort = "OMAC_VM_SSH_PORT"
 	EnvVMSSHKey  = "OMAC_VM_SSH_KEY"
 	EnvVMUser    = "OMAC_VM_USER"
+	// The VM's name and the host port range it publishes, for tools that
+	// need a free port to publish a container on.
+	EnvVMName      = "OMAC_VM_NAME"
+	EnvVMPortFirst = "OMAC_VM_PORT_FIRST"
+	EnvVMPortLast  = "OMAC_VM_PORT_LAST"
 )
 
 // ConnInfo is how to reach the agent user in the VM. FromSandbox is true

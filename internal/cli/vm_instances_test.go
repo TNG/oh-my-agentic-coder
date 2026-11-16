@@ -147,7 +147,7 @@ func TestVMListShowsEveryInstance(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", state)
 	for name, st := range map[string]*vm.State{
 		"omac": {SSHPort: 42022, Mode: vm.ModeOffline},
-		"work": {SSHPort: 42023, Mode: vm.ModeOnline},
+		"work": {SSHPort: 42023, Mode: vm.ModeOnline, PortBlock: 1},
 	} {
 		root, err := vm.InstanceRoot(name)
 		if err != nil {
@@ -165,7 +165,7 @@ func TestVMListShowsEveryInstance(t *testing.T) {
 		t.Fatalf("exit = %d; stderr:\n%s", code, stderr())
 	}
 	got := strings.Fields(stdout())
-	want := []string{"NAME", "STATE", "SSH", "PORT", "omac", "offline", "42022", "work", "online", "42023"}
+	want := []string{"NAME", "STATE", "SSH", "PORT", "PORTS", "omac", "offline", "42022", "30000-30099", "work", "online", "42023", "30100-30199"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("list output fields = %q, want %q", got, want)
 	}

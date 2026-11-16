@@ -308,13 +308,15 @@ func vmNameSuffix(name string) string {
 
 func writeVMList(w io.Writer, rows []vm.InstanceRow) {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "NAME\tSTATE\tSSH PORT")
+	fmt.Fprintln(tw, "NAME\tSTATE\tSSH PORT\tPORTS")
 	for _, r := range rows {
-		port := "-"
+		port, ports := "-", "-"
 		if r.SSHPort > 0 {
 			port = strconv.Itoa(r.SSHPort)
+			first, last := vm.PortBlockRange(r.PortBlock)
+			ports = fmt.Sprintf("%d-%d", first, last)
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\n", r.Name, r.Mode, port)
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", r.Name, r.Mode, port, ports)
 	}
 	tw.Flush()
 }

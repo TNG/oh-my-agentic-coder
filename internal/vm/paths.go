@@ -104,9 +104,10 @@ func InstanceConfigPath(name string) string {
 
 // InstanceRow is one line of `omac vm list`.
 type InstanceRow struct {
-	Name    string
-	Mode    string // "not created" when state.json is missing
-	SSHPort int
+	Name      string
+	Mode      string // "not created" when state.json is missing
+	SSHPort   int    // 0 when state.json is missing
+	PortBlock int
 }
 
 // ListInstances reads the state of the default VM and of every VM under
@@ -142,7 +143,7 @@ func ListInstances() ([]InstanceRow, error) {
 		}
 		row := InstanceRow{Name: n, Mode: "not created"}
 		if st != nil {
-			row.Mode, row.SSHPort = st.Mode, st.SSHPort
+			row.Mode, row.SSHPort, row.PortBlock = st.Mode, st.SSHPort, st.PortBlock
 		}
 		rows = append(rows, row)
 	}

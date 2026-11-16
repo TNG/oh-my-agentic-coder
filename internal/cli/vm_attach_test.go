@@ -180,16 +180,19 @@ func TestVMSandboxEnv(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(scope, "vm", "agent_key"), []byte("OLD OLD OLD OLD\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	got, err := vmSandboxEnv(vm.AttachInfo{SSHPort: 31022, User: "alice", AgentKeyPath: key}, scope)
+	got, err := vmSandboxEnv(vm.AttachInfo{Name: "work", SSHPort: 31022, PortBlock: 2, User: "alice", AgentKeyPath: key}, scope)
 	if err != nil {
 		t.Fatal(err)
 	}
 	// No DOCKER_* vars: the session reaches Docker only through `omac vm exec`.
 	want := map[string]string{
-		"OMAC_VM_HOST":     "127.0.0.1",
-		"OMAC_VM_SSH_PORT": "31022",
-		"OMAC_VM_SSH_KEY":  filepath.Join(scope, "vm", "agent_key"),
-		"OMAC_VM_USER":     "alice",
+		"OMAC_VM_HOST":       "127.0.0.1",
+		"OMAC_VM_SSH_PORT":   "31022",
+		"OMAC_VM_SSH_KEY":    filepath.Join(scope, "vm", "agent_key"),
+		"OMAC_VM_USER":       "alice",
+		"OMAC_VM_NAME":       "work",
+		"OMAC_VM_PORT_FIRST": "30200",
+		"OMAC_VM_PORT_LAST":  "30299",
 	}
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Errorf("env = %v\nwant  %v", got, want)

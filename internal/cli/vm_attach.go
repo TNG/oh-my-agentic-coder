@@ -34,6 +34,7 @@ var prepareVMAttach = func(ctx context.Context, env *Env) (vm.AttachInfo, func()
 		release()
 		return vm.AttachInfo{}, nil, err
 	}
+	info.Name = vm.DefaultVMName
 	return info, release, nil
 }
 
@@ -91,11 +92,15 @@ func vmSandboxEnv(info vm.AttachInfo, scopeDir string) (map[string]string, error
 	case !os.IsNotExist(err):
 		return nil, fmt.Errorf("known_hosts: %w", err)
 	}
+	first, last := vm.PortBlockRange(info.PortBlock)
 	return map[string]string{
-		vm.EnvVMHost:    "127.0.0.1",
-		vm.EnvVMSSHPort: strconv.Itoa(info.SSHPort),
-		vm.EnvVMSSHKey:  keyPath,
-		vm.EnvVMUser:    info.User,
+		vm.EnvVMHost:      "127.0.0.1",
+		vm.EnvVMSSHPort:   strconv.Itoa(info.SSHPort),
+		vm.EnvVMSSHKey:    keyPath,
+		vm.EnvVMUser:      info.User,
+		vm.EnvVMName:      info.Name,
+		vm.EnvVMPortFirst: strconv.Itoa(first),
+		vm.EnvVMPortLast:  strconv.Itoa(last),
 	}, nil
 }
 
