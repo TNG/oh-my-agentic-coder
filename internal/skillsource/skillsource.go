@@ -396,11 +396,13 @@ func DiscoverWithSkipped(workdir string, harness config.Harness) ([]Entry, []Ski
 			// on-disk name can carry control bytes or path-breaking
 			// characters. Reject anything that is not a valid skill
 			// identifier before it reaches any downstream consumer.
+			// Mark invalid names as seen too, so the same folder in a
+			// later root (e.g. through a symlink) is not reported twice.
+			seen[name] = struct{}{}
 			if err := config.ValidSkillName(name); err != nil {
 				skipped = append(skipped, Skipped{Name: name, Dir: dir, Kind: s.Kind, Reason: invalidNameReason})
 				continue
 			}
-			seen[name] = struct{}{}
 			out = append(out, Entry{
 				Name: name,
 				Dir:  dir,

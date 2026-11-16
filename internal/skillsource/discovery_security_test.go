@@ -50,13 +50,15 @@ func TestSecuritySkillNameValidatedAtDiscovery(t *testing.T) {
 
 // TestDiscoverWithSkippedReportsInvalidNames checks that a skill folder
 // with an invalid name is reported instead of vanishing silently, and that
-// a folder without omac.yaml (not a skill) is not reported.
+// a folder without omac.yaml (not a skill) is not reported. The same
+// folder name in a second skill root is reported only once.
 func TestDiscoverWithSkippedReportsInvalidNames(t *testing.T) {
 	withFakeHome(t)
 	wd := t.TempDir()
 	root := filepath.Join(wd, ".opencode", "skills")
 	stageSkill(t, root, "real-skill")
 	stageSkill(t, root, "My_Skill")
+	stageSkill(t, filepath.Join(wd, ".agents", "skills"), "My_Skill")
 	if err := os.MkdirAll(filepath.Join(root, "Notes_Not_A_Skill"), 0o755); err != nil {
 		t.Fatal(err)
 	}
