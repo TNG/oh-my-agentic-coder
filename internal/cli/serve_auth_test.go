@@ -65,6 +65,35 @@ func TestServeAuthRespectsExplicitAllowance(t *testing.T) {
 	}
 }
 
+func TestServePasswordErrorsNameTheSetting(t *testing.T) {
+	h, _ := config.LookupHarness("opencode")
+	for _, tc := range []struct {
+		name string
+		plan sandboxPlan
+		want string
+	}{
+		{
+			name: "other backend",
+			plan: sandboxPlan{Name: "nono"},
+			want: `OMAC_SERVE_PASSWORD only works with the native sandbox backend, and profile "nono" uses another one. ` +
+				"Unset OMAC_SERVE_PASSWORD, or set OPENCODE_SERVER_PASSWORD yourself where that backend runs the server.",
+		},
+		{
+			name: "denied",
+			plan: sandboxPlan{Name: "builtin", Native: true, PolicyRef: "strict", Policy: &sandboxprofile.Profile{Environment: sandboxprofile.Environment{DenyVars: []string{"OPENCODE_*"}}}},
+			want: `OMAC_SERVE_PASSWORD is passed to the server as OPENCODE_SERVER_PASSWORD, but profile "strict" blocks that variable in environment.deny_vars. ` +
+				"Remove the matching entry or unset OMAC_SERVE_PASSWORD.",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := prepareServeAuthEnv("serve-only", h, tc.plan, false)
+			if err == nil || err.Error() != tc.want {
+				t.Fatalf("error = %v\nwant    %s", err, tc.want)
+			}
+		})
+	}
+}
+
 func TestRunServeRejectsPasswordWithNoInner(t *testing.T) {
 	t.Setenv(sandboxprofile.ServePasswordEnv, "serve-only")
 	env, stderr := launchTestEnv(t, t.TempDir())

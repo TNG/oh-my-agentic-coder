@@ -1,6 +1,7 @@
 package sandboxprofile
 
 import (
+	"fmt"
 	"sort"
 	"strings"
 )
@@ -10,6 +11,20 @@ const ServePasswordEnv = "OMAC_SERVE_PASSWORD"
 
 // ServeAuthTargetEnv names the auth variable the native supervisor must retain.
 const ServeAuthTargetEnv = "OMAC_SERVE_AUTH_TARGET"
+
+// ServeAuthDeniedError is the one message for "deny_vars blocks the auth
+// variable OMAC_SERVE_PASSWORD is passed as", shared by the `omac serve`
+// startup check and the supervisor's final check. target is the auth
+// variable (e.g. OPENCODE_SERVER_PASSWORD); profile is the policy profile
+// reference, or "" when unknown. Callers print it after "omac serve:".
+func ServeAuthDeniedError(target, profile string) error {
+	blocker := "the sandbox profile blocks"
+	if profile != "" {
+		blocker = fmt.Sprintf("profile %q blocks", profile)
+	}
+	return fmt.Errorf("%s is passed to the server as %s, but %s that variable in environment.deny_vars. "+
+		"Remove the matching entry or unset %s.", ServePasswordEnv, target, blocker, ServePasswordEnv)
+}
 
 // dangerousEnvExact are always dropped from the child environment,
 // even when matched by allow_vars (nono's env_sanitization list plus

@@ -253,9 +253,11 @@ func Run(opts Options) int {
 	// user where runtime diagnostics will land.
 	diag.AnnouncePath()
 
-	env, err := filterServeAuthEnv(os.Environ(), merged.Environment, injected)
+	env, err := filterServeAuthEnv(os.Environ(), merged.Environment, injected, opts.Flags.ProfileRef)
 	if err != nil {
-		return fail("%v", err)
+		// Same prefix as the matching `omac serve` startup check.
+		fmt.Fprintln(stderr, "omac serve:", err)
+		return 1
 	}
 	var onReady func(int)
 	if recorder != nil {

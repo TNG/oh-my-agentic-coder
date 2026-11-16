@@ -15,16 +15,27 @@ func prepareServeAuthEnv(password string, h config.Harness, plan sandboxPlan, no
 		return nil, nil
 	}
 	if h.ServerLaunch == nil || h.ServerLaunch.AuthEnvVar == "" {
-		return nil, fmt.Errorf("OMAC_SERVE_PASSWORD requires a harness with server authentication")
+		return nil, fmt.Errorf("%s only works with a harness whose server takes a password, and %s has none. Unset %s.",
+			sandboxprofile.ServePasswordEnv, h.Name, sandboxprofile.ServePasswordEnv)
 	}
 	target := h.ServerLaunch.AuthEnvVar
 	extra := map[string]string{target: password}
 	if !noSandbox {
-		if !plan.Native || plan.Policy == nil {
-			return nil, fmt.Errorf("OMAC_SERVE_PASSWORD requires the native sandbox; configure other backends explicitly")
+		if !plan.Native {
+			profile := "the selected sandbox profile"
+			if plan.Name != "" {
+				profile = fmt.Sprintf("profile %q", plan.Name)
+			}
+			return nil, fmt.Errorf("%s only works with the native sandbox backend, and %s uses another one. "+
+				"Unset %s, or set %s yourself where that backend runs the server.",
+				sandboxprofile.ServePasswordEnv, profile, sandboxprofile.ServePasswordEnv, target)
+		}
+		if plan.Policy == nil {
+			return nil, fmt.Errorf("%s needs the sandbox policy %q to check its environment.deny_vars, but it could not be loaded: %v. "+
+				"Fix that profile or unset %s.", sandboxprofile.ServePasswordEnv, plan.PolicyRef, plan.PolicyErr, sandboxprofile.ServePasswordEnv)
 		}
 		if len(sandboxprofile.FilterEnv(nil, nil, plan.Policy.Environment.DenyVars, extra)) != 1 {
-			return nil, fmt.Errorf("OMAC_SERVE_PASSWORD is blocked by the sandbox environment policy")
+			return nil, sandboxprofile.ServeAuthDeniedError(target, plan.PolicyRef)
 		}
 		// The supervisor rechecks the final policy, then removes this marker.
 		extra[sandboxprofile.ServeAuthTargetEnv] = target

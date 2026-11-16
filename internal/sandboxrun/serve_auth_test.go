@@ -9,9 +9,12 @@ import (
 
 func TestServeAuthFinalFilter(t *testing.T) {
 	for _, deny := range [][]string{nil, {"OPENCODE_*"}} {
-		env, err := filterServeAuthEnv([]string{"OMAC_SERVE_AUTH_TARGET=OPENCODE_SERVER_PASSWORD", "OPENCODE_SERVER_PASSWORD=dedicated"}, sandboxprofile.Environment{AllowVars: []string{"OPENCODE_SERVER_PASSWORD"}, DenyVars: deny}, nil)
+		env, err := filterServeAuthEnv([]string{"OMAC_SERVE_AUTH_TARGET=OPENCODE_SERVER_PASSWORD", "OPENCODE_SERVER_PASSWORD=dedicated"}, sandboxprofile.Environment{AllowVars: []string{"OPENCODE_SERVER_PASSWORD"}, DenyVars: deny}, nil, "default")
 		if (err != nil) != (len(deny) > 0) {
 			t.Fatalf("deny %v: %v", deny, err)
+		}
+		if want := sandboxprofile.ServeAuthDeniedError("OPENCODE_SERVER_PASSWORD", "default"); err != nil && err.Error() != want.Error() {
+			t.Fatalf("error = %q, want the shared deny message %q", err, want)
 		}
 		if err == nil && !slices.Contains(env, "OPENCODE_SERVER_PASSWORD=dedicated") {
 			t.Fatal("password missing")
