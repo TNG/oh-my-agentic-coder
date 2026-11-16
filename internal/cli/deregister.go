@@ -147,7 +147,7 @@ func runDeregister(args []string, env *Env) int {
 	}
 
 	if *purge {
-		if err := keychain.DeleteAll(name, declared); err != nil {
+		if err := keychain.DeleteAllScoped(secretScopeFor(env, global), name, declared); err != nil {
 			fmt.Fprintln(env.Stderr, "omac deregister: keychain:", err)
 			return ExitKeychainError
 		}

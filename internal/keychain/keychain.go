@@ -319,13 +319,8 @@ func SetScopedDefaultMirror(skillName, name string, value secrets.Secret) error 
 	return SetScoped(DefaultsScope, skillName, name, value)
 }
 
-// DeleteAll removes every declared unscoped secret for a skill. Secrets not
-// listed are left in place (go-keyring has no list-by-service primitive).
-func DeleteAll(skillName string, names []string) error {
-	return DeleteAllScoped("", skillName, names)
-}
-
-// DeleteAllScoped removes every declared secret for (scope, skill).
+// DeleteAllScoped removes every declared secret for (scope, skill). Secrets
+// not listed are left in place (go-keyring has no list-by-service primitive).
 func DeleteAllScoped(scope, skillName string, names []string) error {
 	for _, n := range names {
 		if err := DeleteScoped(scope, skillName, n); err != nil {

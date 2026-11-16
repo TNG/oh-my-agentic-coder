@@ -6,7 +6,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/TNG/oh-my-agentic-coder/internal/keychain"
 	"github.com/TNG/oh-my-agentic-coder/internal/registry"
+	"github.com/TNG/oh-my-agentic-coder/internal/secrets"
 )
 
 // captureEnv returns an Env whose Stdout/Stderr are temp files plus a
@@ -191,6 +193,38 @@ func TestDeregisterKeepsRegisteredSkillFiles(t *testing.T) {
 	// must survive (deleting source is reserved for unregistered ones).
 	if _, err := os.Stat(dir); err != nil {
 		t.Errorf("registered skill's files must be kept, stat err = %v", err)
+	}
+}
+
+func TestDeregisterPurgeSecretsDeletesWorkdirScopedSecret(t *testing.T) {
+	isolateHome(t)
+	wd := t.TempDir()
+	stageRegisteredSkill(t, wd, "purgeme")
+	reg, err := registry.Load(wd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e, _ := reg.Find("purgeme")
+	e.DeclaredSecretNames = []string{"API_KEY"}
+	if err := registry.Save(wd, reg); err != nil {
+		t.Fatal(err)
+	}
+	scope := keychain.WorkdirID(wd)
+	if err := keychain.SetScoped(scope, "purgeme", "API_KEY", secrets.NewSecretString("v")); err != nil {
+		t.Fatal(err)
+	}
+
+	env, read := captureEnv(t, wd)
+	if code := runDeregister([]string{"--purge-secrets", "purgeme"}, env); code != ExitOK {
+		_, errOut := read()
+		t.Fatalf("deregister code = %d, stderr = %q", code, errOut)
+	}
+	present, err := keychain.HasScoped(scope, "purgeme", "API_KEY")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if present {
+		t.Error("workdir-scoped secret survived deregister --purge-secrets")
 	}
 }
 
