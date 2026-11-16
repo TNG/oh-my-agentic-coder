@@ -327,9 +327,9 @@ installing a skill. The sandbox never mounts `~/.config/omac`, so the agent
 cannot create or modify approvals itself.
 
 Skill names and descriptions shown during `omac register` and in the agent's
-system prompt are sanitized before display. Control characters (such as
-terminal escape sequences), bidirectional-text controls, zero-width characters,
-line separators and markdown structure characters are stripped. Folders whose
+system prompt are sanitized before display. Characters that could change how
+the text is displayed, such as terminal escape sequences or right-to-left
+overrides, are removed, along with markdown structure characters. Folders whose
 names are not valid skill names (only lowercase letters, digits and `-`) are
 ignored at discovery. So a skill directory with a hostile name cannot inject
 fake instructions into the approval output or the system prompt, nor make text

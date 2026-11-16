@@ -109,8 +109,8 @@ func Render(activateJSON, skillsDir string) string {
 }
 
 // sanitizeField turns newlines into spaces and removes markdown bold markers
-// (*) and every displaytext.Unsafe character (control, bidi, zero-width and
-// line-separator characters), so skill-supplied values cannot start new
+// (*) and every character that could change how text is displayed (see
+// displaytext.Unsafe), so skill-supplied values cannot start new
 // markdown blocks, forge bold structure or reorder the manifest text. It is
 // the last step before the text joins the agent's own system prompt, so it
 // defends regardless of what discovery accepted.
