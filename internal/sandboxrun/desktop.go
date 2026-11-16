@@ -50,7 +50,7 @@ func protectDesktopStores(g *Grants, learn bool, goos string) error {
 	}
 	for _, path := range paths {
 		if !filepath.IsAbs(path) {
-			return fmt.Errorf("the OpenCode Desktop project store path %q is not absolute. Set HOME, XDG_CONFIG_HOME, XDG_DATA_HOME and XDG_STATE_HOME to absolute paths", path)
+			return fmt.Errorf("the OpenCode Desktop project store path %q is not absolute. Set HOME to an absolute path", path)
 		}
 		for p := path; ; p = filepath.Dir(p) {
 			fi, err := os.Lstat(p)

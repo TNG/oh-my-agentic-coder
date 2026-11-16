@@ -382,15 +382,16 @@ func DesktopStateDir() string {
 // probed for older layouts. Candidates are listed for every platform
 // (not branched on GOOS) so the on-disk Stat check finds the real one on
 // any host and unit tests stay platform-independent. Most likely first.
+// Relative XDG values are skipped, as the XDG Base Directory spec asks.
 func desktopStateCandidates(home, appID string) []string {
 	dirs := []string{
 		filepath.Join(home, "Library", "Application Support", appID), // macOS (Electron userData)
 	}
-	if x := os.Getenv("XDG_CONFIG_HOME"); x != "" { // Linux (Electron userData)
+	if x := absEnv("XDG_CONFIG_HOME"); x != "" { // Linux (Electron userData)
 		dirs = append(dirs, filepath.Join(x, appID))
 	}
 	dirs = append(dirs, filepath.Join(home, ".config", appID)) // Linux default
-	if x := os.Getenv("XDG_DATA_HOME"); x != "" {              // legacy/data layout
+	if x := absEnv("XDG_DATA_HOME"); x != "" {                 // legacy/data layout
 		dirs = append(dirs, filepath.Join(x, appID))
 	}
 	dirs = append(dirs, filepath.Join(home, ".local", "share", appID))
@@ -407,7 +408,7 @@ func defaultDesktopStateDir(home string) string {
 	if runtime.GOOS == "darwin" {
 		return filepath.Join(home, "Library", "Application Support", appID)
 	}
-	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
+	if xdg := absEnv("XDG_CONFIG_HOME"); xdg != "" {
 		return filepath.Join(xdg, appID)
 	}
 	return filepath.Join(home, ".config", appID)

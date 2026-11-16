@@ -381,3 +381,25 @@ func TestDesktopStorePathsWithoutHome(t *testing.T) {
 		t.Errorf("DesktopStorePaths = %v, want none without HOME and XDG_STATE_HOME", paths)
 	}
 }
+
+// The XDG spec says relative XDG_* values count as unset, so they must not
+// turn into relative store paths.
+func TestDesktopDirsIgnoreRelativeXDG(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", "cfg")
+	t.Setenv("XDG_DATA_HOME", "data")
+	t.Setenv("XDG_STATE_HOME", "state")
+	paths := DesktopStorePaths()
+	if len(paths) == 0 {
+		t.Fatal("DesktopStorePaths is empty")
+	}
+	for _, p := range paths {
+		if !filepath.IsAbs(p) {
+			t.Errorf("DesktopStorePaths has the relative path %q", p)
+		}
+	}
+	if got := defaultDesktopStateDir(home); !filepath.IsAbs(got) {
+		t.Errorf("defaultDesktopStateDir = %q, want an absolute path", got)
+	}
+}
