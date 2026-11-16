@@ -1247,7 +1247,7 @@ func TestStatusReportsEverything(t *testing.T) {
 	}
 	want := StatusReport{
 		Created: true, Running: true, Mode: ModeOffline, SSHPort: 42022,
-		Resources: Resources{CPUs: 8, Memory: "16GiB", Disk: "60GiB"},
+		Resources: Resources{CPUs: 8, Memory: "12GiB", Disk: "60GiB"},
 		Images:    []string{"index.docker.io/library/alpine:latest"},
 		Sessions:  []int{77},
 	}

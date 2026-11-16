@@ -190,11 +190,13 @@ By default, a write error emits a warning and the run continues.
 
 ```yaml
 cpus: 8             # default: half the host's cores, at least 4
-memory: 16GiB       # default: a quarter of the host's RAM, at least 8GiB
+memory: 12GiB       # default: a quarter of the host's RAM, between 8GiB and 12GiB
 disk: 60GiB         # default: 60GiB
 packages: [jq]      # extra Ubuntu packages to install; default: none
 jdks: [temurin-25]  # Java versions to install; default: none
 ```
+
+The default memory is capped at 12GiB. A full test suite of a large Java project that uses Testcontainers needed about 7.6 GB, so 8GiB was too tight, and 12GiB leaves headroom.
 
 When omac creates the VM or reprovisions it, each `jdks` entry installs the matching Adoptium package: `temurin-25` installs `temurin-25-jdk`. An entry is either `temurin-<version>`, where the version has no leading zero, or the package name itself, such as `temurin-25-jdk`. An unknown field is an error, so a typo does not silently fall back to the defaults.
 
