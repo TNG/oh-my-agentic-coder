@@ -111,3 +111,12 @@ Reviews are advisory: **do not add OCR review to required status checks or
 required workflows** in branch protection or repository rulesets. Findings do
 not fail the job; technical errors remain visible as a failed OCR run, separate
 from the existing CI checks.
+
+## Reviewing pull requests with agents
+
+The repo ships two agent skills in `.agents/skills` (linked from `.claude/skills` for Claude Code). Ask your agent to use them by name, for example "review PR 487 with the agent-review skill".
+
+- **`agent-review`** reviews a PR from four angles (code style, documentation, UX consistency, error handling), checks each finding against the code, and writes one PR comment with numbered findings, each with a type and a severity. To get findings fixed, reply e.g. "Please address F2, F5" and point an agent at the comment; it commits the fixes on a local `review-fixes/<N>` branch and leaves pushing to you.
+- **`explain-pr`** writes an explainer page for a complex PR: what it changes, where that fits in the codebase, the usage scenarios that matter, alternative approaches, and how to review it.
+
+Both read the PR with `gh`, the omac `omac-gh` skill, or a GitHub MCP server. `agent-review` posts a comment only when you ask it to.
