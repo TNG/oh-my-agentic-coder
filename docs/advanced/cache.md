@@ -50,7 +50,7 @@ uv keeps three writable directories outside the project. omac redirects all of t
 | `UV_TOOL_DIR` | `$OMAC_CACHE_DIR/uv/tools` | Environments created by `uvx` and `uv tool install` |
 | `UV_TOOL_BIN_DIR` | `$OMAC_CACHE_DIR/uv/bin` | Executables installed by `uv tool install` |
 
-`uvx` therefore works without any setup. Tools installed with `uv tool install` are not on `PATH`; run them as `$UV_TOOL_BIN_DIR/<tool>`, or add that directory to `PATH` in your shell. Because the tool environments live in the cache, `omac cache clear` removes them.
+`uvx` therefore works without any setup. omac also appends `UV_TOOL_BIN_DIR` to the end of the sandbox's `PATH`, so after `uv tool install ruff` you can run `ruff` directly. The directory goes last on purpose: it is writable by the agent and reused by later sessions, so nothing placed there can replace a host command such as `git`. If the host already has a command with the same name, that one wins; run `$UV_TOOL_BIN_DIR/<tool>` to get the uv-installed one. Because the tool environments live in the cache, `omac cache clear` removes them.
 
 uv's managed Python installs are **not** redirected by default. omac gives the sandbox read access to `~/.local/share/uv/python` (where uv keeps its managed interpreters), so interpreters you installed on the host with `uv python install` are reused. The rest of `~/.local/share/uv` stays unreadable, because uv can store index credentials there (`uv auth login`). `UV_PYTHON_INSTALL_DIR` stays unset because it is also uv's discovery location: pointing it at the cache would hide those host interpreters. If you want uv to download a missing interpreter inside the sandbox, point the install and executable directories at the cache in the session shell:
 
